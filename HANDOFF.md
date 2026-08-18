@@ -1,3 +1,78 @@
+# HANDOFF — 2026-08-18 (Discord Activity work RESTORED from stash) — READ FIRST
+
+## This session (latest) — recovered the 07-23 Discord Activity change set
+
+The 07-23 Discord Activity work below was never committed and had vanished from the working
+tree — GitHub Desktop had stashed it (`stash@{0}: On main: !!GitHub_Desktop<main>`, based on
+`ec5a7ae`, so it carried forward cleanly). Restored every file from that stash (except
+`.idea/`, already present) via `git restore --source=stash@{0}`; the stash entry itself was
+KEPT (not dropped). Re-verified on today's main: `npm run build`, `npm test` (ALL PASS),
+`npm run server:check` all green. Still not committed; next steps unchanged (Portal setup,
+section below). Gotcha: global npm `script-shell` points at scoop-git's bash, which is
+currently broken (`sed`/`dirname`/`uname` missing) — run npm scripts with
+`--script-shell=C:\WINDOWS\system32\cmd.exe` until scoop git is fixed.
+
+---
+
+# HANDOFF — 2026-07-23 (Discord Activity integration)
+
+## DSIM runs as a Discord Activity (code done; Portal config pending)
+
+**Green:** `npm run build`, `npm test` (ALL PASS — no `src/sim` touch), `npm run server:check`.
+**Not committed.** **NOT live-tested inside Discord yet** — that needs the one-time Developer
+Portal setup in the new **`docs/discord-activity.md`** (read it first; it's the runbook).
+
+**What it does:** launched from a Discord voice channel, DSIM runs in the activity iframe and
+everyone in the channel **auto-joins one multiplayer lobby** (no room-code sharing) with their
+Discord display names pre-filled. Normal web/Electron builds are bit-identical in behavior —
+every change is behind a sync `isDiscordActivity` flag that's false outside Discord.
+
+**How (all pieces):**
+- **`src/lib/discordActivity.ts` (NEW)** — sync detection (`?frame_id` / `.discordsays.com`
+  host); `initDiscordActivity()` = dynamic-import `@discord/embedded-app-sdk` (new dep) →
+  `ready()` → `authorize({identify})` → POST the code to OUR server → `authenticate()`;
+  identity failure is non-fatal (anonymous). `discordInstanceRoomCode(scope)` derives the
+  shared per-instance room code: FNV-1a of `instanceId:scope:salt` over the room alphabet,
+  re-salted past the profanity check, **region-coded `iad-XXXXXX`** (`ACTIVITY_ROOM_REGION`)
+  so every joiner's WS fly-replays to ONE machine — without it Anycast splits a
+  cross-continent channel into two rooms. `DISCORD_PROXY_PATH = '/.proxy/gs'` must match the
+  Portal URL mapping.
+- **`src/net/env.ts`** — in an activity, `parseServers()` returns one server:
+  `wss://<host>/.proxy/gs` (the iframe CSP only allows the discordsays proxy). All WS + read
+  APIs flow through it unchanged.
+- **`src/lib/authClient.ts`** — Neon Auth is **OFF in an activity** (origin unproxied +
+  redirect OAuth can't run in an iframe) ⇒ activity runs are anonymous: no ranked/records
+  writes (those screens already self-gate on sign-in).
+- **`src/main.tsx`** — `Promise.all([initPhysics(), initDiscordActivity()])` before mount.
+- **`src/ui/Lobby.tsx`** — auto-joins the instance room when in an activity (reuses the
+  invite `autoJoin` path; scope `versus` / `record-duo` keeps kinds apart); join URL passes
+  `?room=` as the fly-replay hint in activity mode; player name defaults to
+  `discordDisplayName()`.
+- **`server/index.ts`** — `POST /api/discord/token`: exchanges the authorize code at
+  discord.com using `DISCORD_CLIENT_ID`/`DISCORD_CLIENT_SECRET` (503 until set; only the
+  access_token returns to the client, the refresh token is dropped). Backward-compatible —
+  additive HTTP route, no protocol change, safe under the one-Fly-app-serves-all-versions rule.
+
+**Exact next steps (in docs/discord-activity.md §One-time setup):** create the Discord app →
+enable Activities → URL mappings `/` → Vercel host, `/gs` → `dohun-sim-decode.fly.dev` → set
+`VITE_DISCORD_CLIENT_ID` on Vercel (redeploy) → `fly secrets set DISCORD_CLIENT_ID=…
+DISCORD_CLIENT_SECRET=…` → deploy server via `./scripts/fly-deploy.sh` → test with two
+accounts in one voice channel.
+
+**Gotchas / deliberate v1 scope:**
+- Activity rooms always host in **iad** (deterministic shared code can't know regions).
+- Instance code is kind-scoped, but the FIRST joiner's game (DECODE/CR) wins the room; a
+  mismatched joiner gets the standard "different game mode" error.
+- The SDK bundles into the main chunk (the app is single-chunk by config-less default —
+  pre-existing shape, dynamic import kept anyway for intent).
+- Local `.env` also flipped `VITE_GAME_SERVER_URL` back to `ws://localhost:8787` earlier this
+  session (prod URL kept commented) — restart `npm run dev` after swapping.
+- Discord login on the WEB (outside activities) is NOT included — Neon Auth has no Discord
+  provider; the options were assessed (parallel server-minted identity recommended; the new
+  token-exchange endpoint is its first half) and the user chose activity-only for now.
+
+---
+
 # HANDOFF — 2026-07-27c (badges on every name) — READ FIRST
 
 ## This session (latest) — the badge everywhere a name appears

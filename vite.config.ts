@@ -136,6 +136,10 @@ export default defineConfig({
     },
   ],
   define: { __BUILD_ID__: JSON.stringify(BUILD_ID) },
+  // Dev-only: allow cloudflared quick tunnels (Discord Activity local testing —
+  // docs/discord-activity.md §Local development). Vite otherwise rejects the
+  // proxied Host header with "Blocked request".
+  server: { allowedHosts: ['.trycloudflare.com'] },
   // Absolute base for the WEB build so path-based routes (/leaderboard, /replay/…)
   // still resolve assets on a deep load / refresh (paired with the vercel.json SPA
   // rewrite). The Electron desktop build sets ELECTRON=1 (see the `dist` script) to

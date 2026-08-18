@@ -12,6 +12,8 @@
  * `gameServerUrl()` / `gameServerHttpUrl()`.
  */
 
+import { isDiscordActivity, DISCORD_PROXY_PATH } from '../lib/discordActivity';
+
 export interface GameServer {
   /** stable id used to persist the player's preference */
   id: string;
@@ -24,6 +26,14 @@ export interface GameServer {
 }
 
 function parseServers(): GameServer[] {
+  // Discord Activity: the iframe's CSP only allows the discordsays.com proxy, so
+  // the ONE reachable game server is the `/gs` URL mapping on our own host —
+  // every WS connect and HTTP read API below flows through it unchanged.
+  if (isDiscordActivity) {
+    return [
+      { id: 'discord', label: 'Discord', region: '', url: `wss://${location.host}${DISCORD_PROXY_PATH}` },
+    ];
+  }
   const raw = import.meta.env.VITE_GAME_SERVERS as string | undefined;
   if (raw) {
     try {

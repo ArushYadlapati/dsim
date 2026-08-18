@@ -4,6 +4,7 @@ import { App } from './ui/App';
 import { ServerNoticeBanner } from './ui/ServerNoticeBanner';
 import { NoticePoller } from './ui/NoticePoller';
 import { initPhysics } from './sim/physicsEngine';
+import { initDiscordActivity } from './lib/discordActivity';
 import { initTheme } from './theme';
 import { AdsProvider } from './ads/AdsProvider';
 import { loadCmp } from './ads/adsense';
@@ -31,7 +32,10 @@ loadCmp();
 // Init the Rapier physics WASM (shared src/sim) before the first sim step. It
 // inlines its WASM as base64 (no separate asset), so this is a fast local
 // decode — block the initial render on it so no GameController steps early.
-initPhysics().then(() => {
+// The Discord Activity handshake (no-op outside Discord) rides the same gate:
+// the SDK must `ready()` before the iframe is interactive, and blocking here
+// means the instance room code + player identity exist before any UI mounts.
+Promise.all([initPhysics(), initDiscordActivity()]).then(() => {
   createRoot(document.getElementById('root')!).render(
     <StrictMode>
       {/* Wraps everything because the game screen renders OUTSIDE the app shell

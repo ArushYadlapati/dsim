@@ -18,6 +18,13 @@ import { roomCapacity, type LobbyPlayer, type RoomConfig } from '../net/protocol
 import type { NetSession } from '../net/session';
 import { useServerNotice } from '../net/notice';
 import { generateRoomCode, normalizeRoomCode, isValidRoomCode, ROOM_CODE_LENGTH } from '../net/roomCode';
+import {
+  isDiscordActivity,
+  discordDisplayName,
+  discordInstanceRoomCode,
+  discordOpenInvite,
+  discordSetParty,
+} from '../lib/discordActivity';
 import { APP_NAME } from '../seasons';
 import { Logo } from './Logo';
 import { useEscape } from './useEscape';
@@ -79,7 +86,7 @@ export function Lobby({
   // one-app multi-region: friends must meet on the SAME region for a cross-region
   // room to land them on the same machine. Defaults to the account's picked region.
   const [region, setRegion] = useState(selectedServer()?.region ?? '');
-  const [name, setName] = useState(settings.spec.teamName || 'Player');
+  const [name, setName] = useState(settings.spec.teamName || discordDisplayName() || 'Player');
   const [players, setPlayers] = useState<LobbyPlayer[]>([]);
   const [hostId, setHostId] = useState('');
   const [myId, setMyId] = useState('');
@@ -146,8 +153,15 @@ export function Lobby({
       return;
     }
     setPhase('connecting');
-    // route both players to the same region so a shared code lands on one machine
-    const url = multiServer() && region ? gameServerUrlWith({ region }) : gameServerUrl();
+    // route both players to the same region so a shared code lands on one machine.
+    // In a Discord Activity the instance room code is REGION-CODED (`iad-…`), so
+    // pass it as the `?room=` fly-replay hint — every participant's connection
+    // lands on that one machine no matter which region Anycast picked for them.
+    const url = isDiscordActivity
+      ? gameServerUrlWith({ room: roomCode })
+      : multiServer() && region
+        ? gameServerUrlWith({ region })
+        : gameServerUrl();
     let transport: WebSocketTransport;
     try {
       transport = new WebSocketTransport(url);
@@ -199,15 +213,29 @@ export function Lobby({
 
   // auto-join once on mount if a friend's invite carried a room code — the same
   // `join()` a manual code entry calls, just triggered without a button click.
+  // In a Discord Activity (and with no explicit invite) auto-join the INSTANCE
+  // room instead: everyone who launches the activity in the same voice channel
+  // derives the same code, so they all land in one lobby with zero code-sharing.
   const autoJoinedRef = useRef(false);
   useEffect(() => {
-    if (autoJoin && !autoJoinedRef.current) {
+    const target =
+      autoJoin ||
+      (isDiscordActivity
+        ? discordInstanceRoomCode(isRecord ? `record-${config.record ?? 'duo'}` : 'versus')
+        : '');
+    if (target && !autoJoinedRef.current) {
       autoJoinedRef.current = true;
-      join(autoJoin);
-      onAutoJoinConsumed?.();
+      join(target);
+      if (autoJoin) onAutoJoinConsumed?.();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [autoJoin]);
+
+  // mirror the lobby's fill into Discord rich presence — the "N of M" party bar
+  // on invite cards and the voice-channel member list
+  useEffect(() => {
+    if (isDiscordActivity && players.length > 0) discordSetParty(players.length, capacity);
+  }, [players.length, capacity]);
 
   const setAlliance = (alliance: Alliance): void => lobbyRef.current?.update({ alliance });
   const toggleReady = (): void => lobbyRef.current?.update({ ready: !me?.ready });
@@ -388,6 +416,16 @@ export function Lobby({
           >
             {copied ? '✓ Copied' : '⧉ Copy code'}
           </button>
+          {isDiscordActivity && (
+            <button
+              className="ds-chip"
+              title="Send a Discord invite with a Join button — it opens this activity and lands in this lobby"
+              style={{ cursor: 'pointer' }}
+              onClick={() => void discordOpenInvite()}
+            >
+              ✉ Invite
+            </button>
+          )}
         </p>
 
         <section className="ds-sec">

@@ -246,8 +246,8 @@ function broadcastAll(m: ServerMsg): number {
   return n;
 }
 
-/** read a small request body (admin POSTs) with a hard cap so a bad client can't
- * exhaust memory. Rejects past 16KB — announcements are tiny. */
+/** read a small request body (admin + discord-token POSTs) with a hard cap so a
+ * bad client can't exhaust memory. Rejects past 16KB — these bodies are tiny. */
 function readAdminBody(req: import('node:http').IncomingMessage): Promise<string> {
   return new Promise((resolve, reject) => {
     let data = '';
@@ -509,6 +509,76 @@ const httpServer = createServer((req, res) => {
       ...(REGION ? { 'x-region': REGION } : {}),
     });
     res.end('ok');
+    return;
+  }
+  // DISCORD ACTIVITY token exchange — the Embedded App SDK's `authorize()` hands
+  // the client a one-time code; we swap it for an access_token HERE because the
+  // exchange needs DISCORD_CLIENT_SECRET, which must never ship in the client
+  // bundle. POST {code} → {access_token}. In production the call arrives
+  // same-origin through the discordsays.com proxy (`/gs` URL mapping); the CORS
+  // headers are for local/tunnel testing. 503 until the Fly secrets are set.
+  if (new URL(req.url ?? '/', 'http://x').pathname === '/api/discord/token') {
+    const cors = {
+      'access-control-allow-origin': '*',
+      'access-control-allow-headers': 'content-type',
+      'access-control-allow-methods': 'POST, OPTIONS',
+    };
+    if (req.method === 'OPTIONS') {
+      res.writeHead(204, cors);
+      res.end();
+      return;
+    }
+    if (req.method !== 'POST') {
+      res.writeHead(405, cors);
+      res.end();
+      return;
+    }
+    void (async () => {
+      const jsonOut = (status: number, body: unknown): void => {
+        res.writeHead(status, { ...cors, 'content-type': 'application/json' });
+        res.end(JSON.stringify(body));
+      };
+      const clientId = process.env.DISCORD_CLIENT_ID;
+      const clientSecret = process.env.DISCORD_CLIENT_SECRET;
+      if (!clientId || !clientSecret) {
+        jsonOut(503, { error: 'Discord activity not configured on this server' });
+        return;
+      }
+      let code = '';
+      try {
+        code = String((JSON.parse(await readAdminBody(req)) as { code?: unknown }).code ?? '');
+      } catch {
+        /* handled below as missing */
+      }
+      if (!code) {
+        jsonOut(400, { error: 'missing code' });
+        return;
+      }
+      const r = await fetch('https://discord.com/api/oauth2/token', {
+        method: 'POST',
+        headers: { 'content-type': 'application/x-www-form-urlencoded' },
+        body: new URLSearchParams({
+          client_id: clientId,
+          client_secret: clientSecret,
+          grant_type: 'authorization_code',
+          code,
+        }),
+      });
+      if (!r.ok) {
+        console.error(`[discord] code exchange failed: ${r.status} ${await r.text().catch(() => '')}`);
+        jsonOut(502, { error: 'Discord rejected the code' });
+        return;
+      }
+      const data = (await r.json()) as { access_token?: string };
+      // ONLY the access_token crosses back — the refresh token (long-lived
+      // credential) stays server-side and is simply dropped; the activity
+      // re-authorizes on its next launch anyway.
+      jsonOut(200, { access_token: data.access_token });
+    })().catch((e) => {
+      console.error('[discord] token handler error:', e);
+      if (!res.headersSent) res.writeHead(500, cors);
+      res.end();
+    });
     return;
   }
   // ADMIN API — gated by ADMIN_USER_IDS (your account's UUID, via the signed-in

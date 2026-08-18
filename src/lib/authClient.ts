@@ -9,7 +9,15 @@ import { BetterAuthReactAdapter } from '@neondatabase/auth/react/adapters';
  * server-verified, not client-asserted.
  */
 
-const url = import.meta.env.VITE_NEON_AUTH_URL as string | undefined;
+// Inside a Discord Activity the auth origin isn't reachable (the iframe's CSP
+// only allows the discordsays.com proxy) and redirect OAuth can't run in the
+// iframe anyway — treat auth as OFF and identify players by Discord instead
+// (src/lib/discordActivity.ts). Activity runs are anonymous, like no-auth builds.
+import { isDiscordActivity } from './discordActivity';
+
+const url = isDiscordActivity
+  ? undefined
+  : (import.meta.env.VITE_NEON_AUTH_URL as string | undefined);
 
 export const authEnabled = !!url;
 
