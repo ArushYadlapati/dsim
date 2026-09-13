@@ -2190,8 +2190,13 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
       sendRaw,
       backlog,
       // NEVER trust the wire spec: sanitize the whole player to legal ranges
-      // before it lands on the roster (a spoofed devtools spec is clamped here)
-      player: { ...sanitizePlayer(msg.player, cfg.game), clientId: id },
+      // before it lands on the roster (a spoofed devtools spec is clamped here).
+      // ⚠️ WITH THE ROOM'S GAME, not the joiner's claim. A matchmaker-staged room's game
+      // comes from `applyPending`, and the client joins it with NO config — so `cfg.game`
+      // read 'decode', and a BIOBUZZ driver's spec was coerced as a DECODE one on the way
+      // in: `bbMech` dropped and the mounts reset, i.e. a default robot in every ranked
+      // BIOBUZZ match. For a custom room the two agree (a mismatched joiner is refused above).
+      player: { ...sanitizePlayer(msg.player, r.gameId), clientId: id },
       connected: true,
       disconnectAt: 0,
       // protocol capabilities this client build understands (mixed-version safe:

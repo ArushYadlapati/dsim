@@ -139,11 +139,11 @@ const HTML = `<!doctype html><html><head><meta charset="utf-8"><style>
   <div class="glow"></div>
   <p class="eyebrow">FIRST Tech Challenge &middot; 2D Driver Practice</p>
   <div class="row"><img src="${logo}" alt=""><b>DSIM</b></div>
-  <!-- APP_BLURB (src/seasons.ts) verbatim, then the two games. Same sentence the
-       homepage and the meta description use — keep them identical. -->
+  <!-- APP_BLURB (src/seasons.ts) verbatim, then the three games, in SEASONS order.
+       Same sentence the homepage and the meta description use — keep them identical. -->
   <p class="lead">
     An online 2D driving simulator for FIRST Tech Challenge.<br>
-    <b>DECODE</b> &middot; <b>Chain Reaction</b>
+    <b>DECODE</b> &middot; <b>Chain Reaction</b> &middot; <b>BIOBUZZ</b>
   </p>
   <p class="foot">playdsim.com</p>
   ${SPONSOR_HTML}

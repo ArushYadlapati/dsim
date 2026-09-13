@@ -1221,7 +1221,8 @@ export class GameController {
 
   /** ranked pre-match intro roster (name/team/drivetrain + ELO per driver), or
    * null for solo / free drive / non-ranked custom rooms. Drives the RankedIntro
-   * overlay. Static after matchStart, so the UI reads it once. */
+   * overlay. Fixed for one match, but a rematch's `matchStart` carries new ratings, so the UI
+   * re-reads it whenever a match enters its countdown. */
   getIntro(): IntroPlayer[] | null {
     const s = this.session;
     if (!s || !s.ranked) return null;

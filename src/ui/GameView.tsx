@@ -279,6 +279,13 @@ export function GameView({
     controllerRef.current?.setRestartRequest(onRestartRun ?? null);
   }, [onRestartRun]);
 
+  // A REMATCH IS A NEW MATCH IN THE SAME GameView. The intro used to be read once at mount,
+  // so a rematch replayed the first match's intro, ratings and all. Re-read it every time a
+  // match enters its countdown: `getIntro` reads the session's CURRENT `matchStart` intros.
+  useEffect(() => {
+    if (hud?.phase === 'pre') setIntro(controllerRef.current?.getIntro() ?? null);
+  }, [hud?.phase]);
+
   /**
    * SOLO PRACTICE finishing is the only end-of-run event this client owns — every other mode
    * is told by the server. Keeping the run is the app's job, so the controller just hands it

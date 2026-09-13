@@ -1,3 +1,25 @@
+# HANDOFF — 2026-09-13, late (DEPLOYED: alpha is production, BIOBUZZ is public)
+
+- **`main` is `088addb`** (alpha fast-forwarded onto it and pushed; this handoff note is on alpha
+  only, so a docs commit does not rebuild the site). Vercel production serves it
+  (`https://www.playdsim.com/version.json` → `088addb`, `/biobuzz` in the sitemap).
+- **BIOBUZZ is public**: `src/seasons.ts` has no `channels` for it. The crawler files were edited to
+  match (`public/sitemap.xml`, `public/robots.txt`, the static nav and the four home-description
+  copies in `index.html`), as the BIOBUZZ suite requires. `test:bb` 1272 PASS, `npm run build` ok.
+- **Production game server deployed** with `./scripts/fly-deploy.sh` (the owner said to skip the
+  in-game warning; the countdown was cancelled before it deployed anything). Verified after:
+  every machine on one image; iad `performance-2x`/4096; ord, sjc, lhr `performance-1x`/2048;
+  gru, jnb, syd, nrt `shared-cpu-4x`/1024 (stopped until someone connects); `/health` ok;
+  `/api/perf` `admitting:true` on every started machine; `/api/presence` caps `party,lan`;
+  `/api/seasons`: DECODE Act 2 · S1 (bv 7), Chain Reaction Act 2 · S1 (bv 5), BIOBUZZ Act 1 · S1 (bv 4).
+- **Alpha preview deployed** too (`--alpha`), healthy, caps `party,lan`.
+- **Announcements published** from `docs/announcements/biobuzz-act1-season1.md`: a `season` reveal
+  and the `patch` notes.
+- The room-leak fix (`8e2ea2b`) is now live in production, so `iad` should no longer need restarts.
+- `ADMIN_SECRET` lives in `D:\Projects\2ddecodesim\.env`; load it into one command, never print it.
+
+---
+
 # HANDOFF — 2026-09-13 (preparing the alpha → production promotion)
 
 Branch **alpha**, pushed. `npm run server:check` clean; the new room-leak smoke check was run in
