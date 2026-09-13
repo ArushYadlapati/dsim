@@ -267,6 +267,9 @@ export const BB_BOX_TUBE_W = 1.1;
 export const BB_BOX_TUBE_LEN = 2.2;
 /** how far inside the frame rail the tube's outer end sits, per axis the mount touches (in) */
 const BB_BOX_TUBE_INSET = 0.7;
+/** how far back over the glyph the REACH section (glyph outer end → placement ring) starts (in),
+ * so the two draw as one continuous tube across the frame rail — both renderers */
+export const BB_BOX_TUBE_OVERLAP = 0.3;
 /** the placement-point marker's ring radius (in) — both renderers */
 export const BB_PLACE_MARK_R = 1.0;
 
@@ -278,20 +281,35 @@ export const BB_PLACE_MARK_R = 1.0;
  * vector (a corner mount lies along the 45° diagonal, as every corner mechanism does). Pulled
  * inboard PER AXIS the mount touches, the same rule `turretLocal` uses, so a corner tube never
  * hangs off either rail. `center` is not a tube mount; it reads as the front edge.
+ *
+ * `toward` is the placement point (`bbPlacePointLocal`). When given, the tube is AIMED at it, so
+ * the stub inside the frame and the reach out to the ring are one straight length. On an edge
+ * mount that is `MOUNT_DIR` anyway; on a corner the footprint can grow unevenly (a sweeper on one
+ * axis only) and the point sits off the 45° line, which drew the tube with a bend at the rail.
  */
 export function bbBoxTubeGlyph(
   spec: Pick<RobotSpec, 'length' | 'width'>,
   mount: BbMountPos,
+  toward?: { x: number; y: number } | null,
 ): { cx: number; cy: number; ux: number; uy: number; len: number; w: number; outer: { x: number; y: number } } {
   const pos: BbMountPos = mount === 'center' ? 'front' : mount;
   const o = mountOrigin(spec, pos);
   const d = MOUNT_DIR[pos];
   const outer = { x: o.x - Math.sign(d.x) * BB_BOX_TUBE_INSET, y: o.y - Math.sign(d.y) * BB_BOX_TUBE_INSET };
+  let ux = d.x;
+  let uy = d.y;
+  if (toward) {
+    const k = Math.hypot(toward.x - outer.x, toward.y - outer.y);
+    if (k > 1e-6) {
+      ux = (toward.x - outer.x) / k;
+      uy = (toward.y - outer.y) / k;
+    }
+  }
   return {
-    cx: outer.x - (d.x * BB_BOX_TUBE_LEN) / 2,
-    cy: outer.y - (d.y * BB_BOX_TUBE_LEN) / 2,
-    ux: d.x,
-    uy: d.y,
+    cx: outer.x - (ux * BB_BOX_TUBE_LEN) / 2,
+    cy: outer.y - (uy * BB_BOX_TUBE_LEN) / 2,
+    ux,
+    uy,
     len: BB_BOX_TUBE_LEN,
     w: BB_BOX_TUBE_W,
     outer,

@@ -3,6 +3,8 @@ import type { GameSettings, RobotSpec } from '../types';
 import { START_POSES } from '../config';
 import { CHAIN_START_POSES } from '../games/chain/config';
 import { StartPositionEditor } from './StartPositionEditor';
+import { savedStartCap } from './startPositions';
+import { useAds } from '../ads/AdsProvider';
 import { ChainStartEditor } from './ChainStartEditor';
 import { selectStart, switchCategory, saveStart, deleteSavedStart, indexCategory, startSelectionLegal } from './startPositions';
 import { useRoleSwap, useDismissable } from './useRoleSwap';
@@ -149,6 +151,9 @@ export function MatchStrategy({
   };
 
   const mySpec = me?.spec ?? settings.spec;
+  // the saved-pose cap a game's own start editor is handed (it cannot read the ads context
+  // itself). Up here, before the `building` early return, so the hook runs on every render.
+  const maxSaved = savedStartCap(useAds().supporter);
   // my start pose must be legal for my (possibly just-swapped) chassis to ready up —
   // DECODE gates on G304, CR on G04 Lab-Area containment (both games now offer free
   // placement, so neither is legal-by-construction any more).
@@ -276,7 +281,9 @@ export function MatchStrategy({
                           ? 'CUSTOM'
                           : settings.game === 'chain'
                             ? (CHAIN_START_POSES[pl.startIndex]?.name ?? '-')
-                            : (START_POSES[pl.startIndex]?.label ?? '-')}
+                            : (moduleFor(settings.game).startAnchorName?.(pl.startIndex, pl.alliance) ??
+                              START_POSES[pl.startIndex]?.label ??
+                              '-')}
                       </span>
                       <span className="ds-chip">ELO {eloOf(pl)}</span>
                       <span className={`ds-chip ${pl.ready ? 'on' : 'off'}`}>
@@ -302,10 +309,12 @@ export function MatchStrategy({
                 dismissed={swapDismissed}
                 onDismiss={dismissSwap}
                 game={settings.game}
+                alliance={me.alliance}
               />
             )}
             {StartEd ? (
               <StartEd
+                maxSaved={maxSaved}
                 spec={me.spec}
                 alliance={me.alliance}
                 value={me.startPose}

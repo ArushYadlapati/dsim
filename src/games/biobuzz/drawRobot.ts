@@ -2,7 +2,7 @@ import type { Artifact, ArtifactColor, RobotSpec, RobotState, Vec2, World } from
 import * as C from '../../config';
 import { clamp } from '../../math';
 import { roundRect } from '../../render/drawRobot';
-import { BB_PLACE_MARK_R, bbBoxTubeGlyph, drawChassisBody, drawChassisOutline, drawWheels } from './parts';
+import { BB_BOX_TUBE_OVERLAP, BB_PLACE_MARK_R, bbBoxTubeGlyph, drawChassisBody, drawChassisOutline, drawWheels } from './parts';
 import {
   BB_HOOD_DEFAULT_DEG,
   BB_LAUNCH_LINE_FRAC,
@@ -514,7 +514,7 @@ function drawTurret(
  * each end. It has no raise, so there is no state to show on it; the state lives on the marker.
  */
 function drawBoxTube(ctx: CanvasRenderingContext2D, spec: RobotSpec, lift: BbLiftSpec): void {
-  const g = bbBoxTubeGlyph(spec, lift.mount);
+  const g = bbBoxTubeGlyph(spec, lift.mount, bbPlacePointLocal(spec));
   ctx.save();
   ctx.translate(g.cx, g.cy);
   ctx.rotate(Math.atan2(g.uy, g.ux));
@@ -536,54 +536,64 @@ function drawBoxTube(ctx: CanvasRenderingContext2D, spec: RobotSpec, lift: BbLif
 }
 
 /**
- * THE PLACEMENT POINT — a ring with a crosshair at `bbPlacePointLocal`, the ONE point the sim
- * tests FLOWER reach from, joined to the tube by a thin reach line. HOLLOW normally; FILLED and
+ * THE PLACEMENT POINT — a plain ring at `bbPlacePointLocal`, the ONE point the sim tests FLOWER
+ * reach from, and the box tube carried out past the frame to meet it. HOLLOW normally; FILLED and
  * green while `bbFlowerInReach` says a FLOWER ring is within tolerance, which is exactly the state
  * in which the place buttons do something.
  *
- * Drawn with a dark under-stroke first, because it sits on the mat outside the robot and has to
- * read against the mat, a FLOWER foot and the perimeter alike.
+ * The reach is the SAME section as the glyph inside the clip (`drawBoxTube`) — walls, hollow and
+ * all — starting a little inboard of the glyph's outer end so the two read as one length of tube
+ * crossing the frame rail. It stops at the ring, so the ring stays open over whatever FLOWER is
+ * under it. Both get a dark under-stroke, because they sit on the mat outside the robot and have
+ * to read against the mat, a FLOWER foot and the perimeter alike.
  */
 function drawPlaceMarker(ctx: CanvasRenderingContext2D, spec: RobotSpec, lift: BbLiftSpec, lit: boolean): void {
   const p = bbPlacePointLocal(spec);
   if (!p) return;
-  const g = bbBoxTubeGlyph(spec, lift.mount);
+  const g = bbBoxTubeGlyph(spec, lift.mount, p);
   const R = BB_PLACE_MARK_R;
   const ink = lit ? GREEN : 'rgba(226,234,242,0.92)';
-  const path = (): void => {
+
+  const dx = p.x - g.outer.x;
+  const dy = p.y - g.outer.y;
+  const d = Math.hypot(dx, dy);
+  const x0 = -BB_BOX_TUBE_OVERLAP;
+  const x1 = d - R + 0.1; // tucked just under the ring's stroke
+  if (d > 0 && x1 > x0) {
+    ctx.save();
+    ctx.translate(g.outer.x, g.outer.y);
+    ctx.rotate(Math.atan2(dy, dx));
+    const hw = g.w / 2;
+    ctx.fillStyle = 'rgba(6,9,13,0.75)';
+    ctx.fillRect(0, -hw - 0.17, x1, g.w + 0.34);
+    ctx.fillStyle = ALU_MID;
+    ctx.fillRect(x0, -hw, x1 - x0, g.w);
+    ctx.fillStyle = ALU_DK;
+    ctx.fillRect(x0, -hw + 0.28, x1 - x0, g.w - 0.56);
+    // the two long walls only: the tube's end is under the ring, and its inner end merges into the glyph
+    ctx.strokeStyle = 'rgba(210,224,240,0.55)';
+    ctx.lineWidth = 0.18;
     ctx.beginPath();
-    ctx.moveTo(g.outer.x, g.outer.y);
-    const d = Math.hypot(p.x - g.outer.x, p.y - g.outer.y);
-    const t = d > R ? (d - R) / d : 0;
-    ctx.lineTo(g.outer.x + (p.x - g.outer.x) * t, g.outer.y + (p.y - g.outer.y) * t);
-    ctx.moveTo(p.x + R, p.y);
-    ctx.arc(p.x, p.y, R, 0, TAU);
-    for (const [dx, dy] of [
-      [1, 0],
-      [-1, 0],
-      [0, 1],
-      [0, -1],
-    ] as const) {
-      ctx.moveTo(p.x + dx * (R + 0.2), p.y + dy * (R + 0.2));
-      ctx.lineTo(p.x + dx * (R + 0.75), p.y + dy * (R + 0.75));
-    }
-  };
-  ctx.lineCap = 'round';
+    ctx.moveTo(x0, -hw);
+    ctx.lineTo(x1, -hw);
+    ctx.moveTo(x0, hw);
+    ctx.lineTo(x1, hw);
+    ctx.stroke();
+    ctx.restore();
+  }
+
   ctx.strokeStyle = 'rgba(6,9,13,0.75)';
   ctx.lineWidth = 0.62;
-  path();
+  ctx.beginPath();
+  ctx.arc(p.x, p.y, R, 0, TAU);
   ctx.stroke();
   if (lit) {
     ctx.fillStyle = 'rgba(34,197,94,0.55)';
-    ctx.beginPath();
-    ctx.arc(p.x, p.y, R, 0, TAU);
     ctx.fill();
   }
   ctx.strokeStyle = ink;
   ctx.lineWidth = 0.28;
-  path();
   ctx.stroke();
-  ctx.lineCap = 'butt';
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -638,6 +648,8 @@ export function bbHeldSlots(spec: RobotSpec, launcher: BbLauncherSpec, lift: BbL
     launcher.mount,
     launcher.mount2 ?? '',
     lift?.mount ?? '',
+    // the tube aims at the placement point, which moves with the footprint, i.e. the sweepers
+    spec.intakeMount ?? '',
   ].join('|');
   const hit = heldLayoutCache.get(key);
   if (hit) return hit;
@@ -653,7 +665,7 @@ export function bbHeldSlots(spec: RobotSpec, launcher: BbLauncherSpec, lift: BbL
   circles.push({ x: -hl + 3.2, y: 0, r: 1.6 }); // the heading chevron
   // NOT the wheels: on a 13.5 in chassis with a centre turret there is no spot that clears both
   // the ring and all four wheels, and a disc over a tyre still reads — a disc over a ring does not.
-  const tube = lift ? bbBoxTubeGlyph(spec, lift.mount) : null;
+  const tube = lift ? bbBoxTubeGlyph(spec, lift.mount, bbPlacePointLocal(spec)) : null;
 
   const clearance = (px: number, py: number): number => {
     // inside the frame rail, hard

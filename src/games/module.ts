@@ -268,6 +268,13 @@ export interface StartEditorProps {
   onCategory: (cat: StartCat) => void;
   onSave: (pose: StartPose) => void;
   onDeleteSaved: (cat: StartCat, i: number) => void;
+  /**
+   * how many saved poses per role this player may keep (`savedStartCap`, the supporter perk).
+   * Passed in by the HOST screen rather than read in the editor: the perk comes from the ads
+   * context, and `src/ads/adsense.ts` reads `import.meta.env` at load, which a game module's
+   * editor must not drag into the headless test suites. Absent ⇒ the free cap.
+   */
+  maxSaved?: number;
   size?: number;
 }
 
