@@ -74,7 +74,7 @@ import { evalStart, scoreTargets } from '../../src/games/biobuzz/elements';
 import type { ScoreTarget } from '../../src/games/biobuzz/state';
 import { updateBiobuzz } from '../../src/games/biobuzz/play';
 import { bbFootprint } from '../../src/games/biobuzz/robot';
-import { bbEvalStart, bbSnapStart, bbStartBox } from '../../src/games/biobuzz/start';
+import { bbActiveStartLegal, bbEvalStart, bbSnapStart, bbStartBox } from '../../src/games/biobuzz/start';
 import { BB_INTAKE_MOUNTS } from '../../src/games/biobuzz/mounts';
 import { bbSizeLimits } from '../../src/games/biobuzz/config';
 import { bbCoerceSpec } from '../../src/games/biobuzz/robotConfig';
@@ -213,12 +213,15 @@ export function fieldChecks(check: Check): void {
     // Flipped 2026-09-12 (kickoff evening) once score.ts covered Table 10-2. Alpha-only via
     // `channels`, so what persists lands on an alpha board nobody competes on yet.
     check('registry: BIOBUZZ declares scored:true (Table 10-2 is live; persists per game)', mod.scored === true);
-    // STILL FALSE, and no longer for want of a rule: `bbEvalStart` assesses G304 and both the
-    // spawner and the lane contract call it. What the flag turns on is `server/room.ts`'s
-    // `activeStartLegal`, which is DECODE's `evalStartPose` and is not game-dispatched -- so
-    // flipping it judges a BIOBUZZ pose against DECODE's launch lines and refuses every legal
-    // start on this field. The flag moves when that gate learns to ask the module.
-    check('registry: BIOBUZZ declares startLegality:false (the server gate is DECODE-only)', mod.startLegality === false);
+    // TRUE since the `startLegal` slot landed. The rule was never the blocker -- `bbEvalStart`
+    // has assessed G304 since kickoff day -- the READER was: `server/room.ts` and
+    // `startSelectionLegal` both called DECODE's `activeStartLegal`, so the flag would have
+    // judged a BIOBUZZ pose against DECODE's launch lines and refused every legal start on
+    // this field. BOTH halves are asserted, because the flag alone is a promise the module
+    // cannot keep: an enforcement flag with no predicate behind it silently waves everything
+    // through, which is the failure this pair exists to catch.
+    check('registry: BIOBUZZ declares startLegality:true (G304 is enforced)', mod.startLegality === true);
+    check('registry: ...and fills the `startLegal` predicate the flag promises', typeof mod.startLegal === 'function');
     check(
       'registry: bounds are the 144x144 field',
       mod.bounds.halfX === BB_HALF_X && mod.bounds.halfY === BB_HALF_Y,
@@ -411,6 +414,48 @@ export function fieldChecks(check: Check): void {
       const m = a === 'blue' ? { x: p.pos.x, y: p.pos.y, heading: p.heading } : bbMirror({ x: p.pos.x, y: p.pos.y, heading: p.heading });
       return { x: m.x, y: m.y, headingDeg: ((m.heading ?? p.heading) * 180) / Math.PI };
     };
+
+    // 0. THE MODULE PREDICATE MIRRORS BEFORE IT ASSESSES.
+    //
+    // Every start pose in the repo is stored in the CANONICAL BLUE frame and mirrored onto the
+    // alliance at spawn (`spawn.ts` `bbStartPose`). This field is POINT-symmetric, so red's
+    // version of a stored pose is a 180 degree rotation of it -- a predicate that assessed the
+    // stored pose directly would judge red against BLUE's own side, BLUE's LOADING ZONE and
+    // BLUE's FLOWERS: wrong on exactly half the field, and right-looking on the other half,
+    // which is how it would survive a careless test.
+    //
+    // So the check is the DIFFERENCE. It takes a canonical pose that is legal for blue, asserts
+    // the module says legal for BOTH alliances, and then asserts that the UNMIRRORED reading of
+    // it for red says something else -- without that third line the first two pass against a
+    // predicate that ignores the alliance entirely.
+    {
+      const canon = anchorPose(0, 'blue');
+      const naiveRed = bbEvalStart(BB_DEFAULT_SPEC, canon, 'red').legal;
+      check(
+        'G304: the module predicate accepts a canonical pose for BLUE',
+        bbActiveStartLegal(BB_DEFAULT_SPEC, 'blue', canon) === true,
+      );
+      check(
+        'G304: ...and for RED, because it point-mirrors the pose first',
+        bbActiveStartLegal(BB_DEFAULT_SPEC, 'red', canon) === true,
+      );
+      check(
+        'G304: ...and the mirror is load-bearing — read unmirrored, that same pose is NOT legal for red',
+        naiveRed === false,
+        `unmirrored red verdict=${naiveRed} (if true, this check proves nothing)`,
+      );
+      check(
+        'G304: an absent pose is the named anchor, which is legal by construction',
+        bbActiveStartLegal(BB_DEFAULT_SPEC, 'red', null) === true &&
+          bbActiveStartLegal(BB_DEFAULT_SPEC, 'blue', undefined) === true,
+      );
+      // and the module's own slot IS this function, not a second copy of the rule.
+      const modLegal = moduleFor('biobuzz').startLegal;
+      check(
+        'G304: the module slot and `bbActiveStartLegal` are the same predicate',
+        !!modLegal && modLegal(BB_DEFAULT_SPEC, 'red', canon) === bbActiveStartLegal(BB_DEFAULT_SPEC, 'red', canon),
+      );
+    }
 
     // 1. THE DEFAULT BUILD'S ANCHORS NEED NO REPAIR.
     for (const a of ['blue', 'red'] as const) {

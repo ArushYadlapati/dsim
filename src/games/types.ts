@@ -1,4 +1,14 @@
-import type { Artifact, GameMode, GameSettings, RobotCommand, RobotState, World } from '../types';
+import type {
+  Alliance,
+  Artifact,
+  GameMode,
+  GameSettings,
+  RobotCommand,
+  RobotSpec,
+  RobotState,
+  StartPose,
+  World,
+} from '../types';
 import type { RobotSetup } from '../sim/spawn';
 import type { RobotSolids } from '../sim/artifactSolids';
 import type { IntakeStyle } from '../types';
@@ -144,6 +154,31 @@ export interface GameSimModule {
    * miss.
    */
   startPoseCount: number;
+  /**
+   * Is this CANONICAL start pose legal for a robot of this spec on this alliance?
+   *
+   * THE PREDICATE, where `startLegality` above is the ENFORCEMENT FLAG — a game may answer
+   * this and still not have the server refuse a ready-up on it (Chain Reaction does exactly
+   * that: its editor checks G04 live, and the server gate stays off). Absent ⇒ the game has
+   * no start rule and every pose is legal.
+   *
+   * It exists because both readers had grown a hand-written branch over the game id, which is
+   * the failure mode CLAUDE.md's seam section names: `startSelectionLegal` was
+   * `game === 'chain' ? chainStartLegal(…) : activeStartLegal(…)`, so a THIRD game fell into
+   * DECODE's arm and had its poses judged against DECODE's launch lines and goal triangles.
+   * That is a worse answer than no answer, and it is what kept BIOBUZZ's `startLegality` down
+   * after G304 was already modelled.
+   *
+   * THE POSE IS CANONICAL, not the one the robot will spawn on: every caller holds what is in
+   * `RobotSetup.startPose` / `GameSettings.startPose`, and each game mirrors that onto the
+   * actual alliance its own way (DECODE reflects in x, BIOBUZZ rotates 180° about the origin).
+   * An implementation that forgets to mirror judges red's pose in blue's frame and is wrong on
+   * exactly half the field, silently — so mirror first, then assess.
+   *
+   * A null/absent pose is the game's named anchor, which every game seats legally by
+   * construction: answer `true` rather than making each caller special-case it.
+   */
+  startLegal?(spec: RobotSpec, a: Alliance, startPose: StartPose | null | undefined): boolean;
   bounds: FieldBounds;
   colliders: FieldColliders;
   createWorld(mode: GameMode, seed: number, setups: RobotSetup[], settings?: GameSettings): World;

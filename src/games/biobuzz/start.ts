@@ -9,6 +9,7 @@ import {
   BB_HALF_Y,
   BB_LZ,
   FLOWER_MOUTH,
+  bbMirror,
   type BbRect,
 } from './config';
 import { bbFootprint } from './robot';
@@ -310,4 +311,38 @@ export function bbSnapStart(spec: RobotSpec, pose: StartPose, a: Alliance): Star
  * re-derives the rectangle the rules above are written against. */
 export function bbStartBox(spec: RobotSpec, pose: StartPose): BbRect {
   return box(spec, pose);
+}
+
+/**
+ * Is this CANONICAL start pose legal? — the `GameSimModule.startLegal` predicate, and the
+ * BIOBUZZ twin of DECODE's `activeStartLegal` (`src/sim/field.ts`).
+ *
+ * ⚠️ **IT MIRRORS FIRST.** Everything that stores a start pose stores it in the CANONICAL BLUE
+ * frame (`spawn.ts` `bbStartPose`), and this field is POINT-symmetric: red's version of a pose
+ * is `bbMirror` of it — a 180° rotation about the origin — not an x-reflection. Assessing the
+ * stored pose directly would judge red against blue's own side, blue's LOADING ZONE and blue's
+ * FLOWERS, i.e. be wrong on exactly half the field while looking right on the other half.
+ *
+ * The mirror is `spawn.ts`'s rule ("applied HERE and nowhere else") and this is the one place
+ * that had to join it, because the two live at opposite ends of the same fact: the spawner
+ * decides where the robot goes, and this decides whether it may. They call the same `bbMirror`
+ * out of `config.ts`, so there is still ONE definition of "the other alliance's version of
+ * this" — what the rule forbids is a second hand-rolled mirror, not a second caller.
+ *
+ * An ABSENT pose is the named anchor, which `bbStartPose` seats through `bbSnapStart` and is
+ * therefore legal by construction.
+ */
+export function bbActiveStartLegal(
+  spec: RobotSpec,
+  a: Alliance,
+  startPose: StartPose | null | undefined,
+): boolean {
+  if (!startPose) return true;
+  if (a === 'blue') return bbEvalStart(spec, startPose, a).legal;
+  const m = bbMirror({ x: startPose.x, y: startPose.y, heading: (startPose.headingDeg * Math.PI) / 180 });
+  return bbEvalStart(
+    spec,
+    { x: m.x, y: m.y, headingDeg: ((m.heading ?? 0) * 180) / Math.PI },
+    a,
+  ).legal;
 }

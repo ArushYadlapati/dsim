@@ -4,6 +4,7 @@ import { biobuzzColliders } from './colliders';
 import { biobuzzHud } from './hudRobot';
 import { bbRobotSolids } from './robot';
 import { createBiobuzzWorld } from './spawn';
+import { bbActiveStartLegal } from './start';
 import { biobuzzStep } from './step';
 
 /**
@@ -18,7 +19,7 @@ import { biobuzzStep } from './step';
  * (`src/games/index.ts`, `src/games/sim.ts`) the whole of "adding a game" — see CLAUDE.md's
  * seam section for the four registrations and why all four fail silently when missed.
  *
- * ── `scored` IS TRUE, `startLegality` IS STILL FALSE ─────────────────────────
+ * ── `scored` AND `startLegality` ARE BOTH TRUE ───────────────────────────────
  *   • `scored: true` since 2026-09-12 (kickoff evening): `score.ts` scores the whole of
  *     Table 10-2 every tick (TIPS, CELL contents, FLOWER ownership, GARDEN, LEAVE, PARK) and
  *     `scoreTargets()` returns the real openings, so a BIOBUZZ match may reach the record
@@ -26,15 +27,15 @@ import { biobuzzStep } from './step';
  *     ALPHA-ONLY through `channels`. Several inputs are `APPROX` (`BB_TIP_POLLEN[0]`,
  *     `BB_FRAME_RAM_SPEED`), so numbers on the alpha board before the 2026-09-14 field test
  *     are provisional. Setting this back to `false` is the one-line way to stop persisting.
- *   • `startLegality: false` — and NOT because the rule is missing any more. G304 published
- *     with the rest of the V1 manual and `bbEvalStart` (`./start`) assesses it: own side,
- *     touching the perimeter, clear of every FLOWER, out of the LOADING ZONE. The flag stays
- *     down because of what READS it: `server/room.ts` gates a ready-up on `activeStartLegal`,
- *     which is DECODE's `evalStartPose` and is NOT dispatched through this module, so flipping
- *     it would have a BIOBUZZ pose judged against DECODE's launch lines and goal triangles —
- *     a worse answer than no answer, and one that would refuse every legal start on this
- *     field. It flips the day that gate asks the module; `bbEvalStart` is ready for it, and
- *     `spawn.ts` and `elements.ts`'s `evalStart` already call it.
+ *   • `startLegality: true` since the `startLegal` slot landed. It was held down for one
+ *     reason, and it was never that the rule was missing: `bbEvalStart` (`./start`) has
+ *     assessed G304 since kickoff day — own side, touching the perimeter, clear of every
+ *     FLOWER, out of the LOADING ZONE. What blocked it was the READER. `server/room.ts` and
+ *     `startSelectionLegal` both called DECODE's `activeStartLegal` directly, so flipping the
+ *     flag would have judged a BIOBUZZ pose against DECODE's launch lines and goal triangles
+ *     and refused every legal start on this field. Both now ask the module
+ *     (`GameSimModule.startLegal`, filled below), so the flag means what it says: a driver
+ *     cannot ready up, and a host cannot start, on a pose G304 refuses.
  *
  * `initialAct: 1` (`BB_INITIAL_ACT`) — BIOBUZZ's records and ranked open at Act 1 · Season 1
  * (owner, 2026-09-12). Acts are stored PER GAME (`seasons` is keyed on game, `elo_ratings` on
@@ -44,12 +45,16 @@ import { biobuzzStep } from './step';
 export const BIOBUZZ_SIM: GameSimModule = {
   id: 'biobuzz',
   scored: true,
-  startLegality: false,
+  startLegality: true,
   initialAct: BB_INITIAL_ACT,
   // the legal range of a `startIndex` — read by `coerceStartIndex`, `coerceSetup`,
   // `coerceSettings` and the server's per-alliance de-conflict loop, none of which may use
   // DECODE's five anchors for a game that has two
   startPoseCount: BB_START_POSE_COUNT,
+  // G304, off `bbEvalStart`. It MIRRORS the canonical pose onto the alliance first — this
+  // field is point-symmetric, so red's version of a stored pose is a 180° rotation of it and
+  // not an x-reflection; see `bbActiveStartLegal`.
+  startLegal: bbActiveStartLegal,
   bounds: { halfX: BB_HALF_X, halfY: BB_HALF_Y, viewMargin: BB_VIEW_MARGIN },
   colliders: biobuzzColliders,
   createWorld: createBiobuzzWorld,

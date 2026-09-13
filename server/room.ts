@@ -5,7 +5,6 @@
 const randomUUID = (): string => crypto.randomUUID();
 import { envVar } from './runtimeEnv';
 import * as C from '../src/config';
-import { activeStartLegal } from '../src/sim/field';
 import { coerceAutoPath, DEFAULT_SPEC, DEFAULT_ASSISTS, type RobotSetup } from '../src/sim/spawn';
 import { simModuleFor } from '../src/games/sim';
 import { scrubName } from './moderation';
@@ -19,6 +18,7 @@ import type {
   DrivetrainType,
   RobotCommand,
   RobotSpec,
+  StartPose,
   World,
 } from '../src/types';
 import {
@@ -841,6 +841,28 @@ export class Room {
     }
   }
 
+  /**
+   * Is this player's CANONICAL start pose legal for this game? — the ONE place the server
+   * asks, so the ready gate and the start gate cannot answer differently.
+   *
+   * TWO FACTS, not one. `startLegality` is whether this game wants the server to ENFORCE a
+   * start rule at all, and `startLegal` is the rule. A game that answers the second and not
+   * the first (Chain Reaction, whose editor checks G04 live) is deliberately waved through
+   * here. Both used to read DECODE's `activeStartLegal` directly, which judged every other
+   * game's poses against DECODE's launch lines and goal triangles — see the slot's own note.
+   *
+   * ⚠️ A `server/` change: it needs a deploy to take effect for live rooms.
+   */
+  private startPoseLegal(
+    spec: RobotSpec,
+    a: Alliance,
+    startPose: StartPose | null | undefined,
+  ): boolean {
+    const mod = simModuleFor(this.game);
+    if (!mod.startLegality || !mod.startLegal) return true;
+    return mod.startLegal(spec, a, startPose);
+  }
+
   onMessage(id: string, msg: ClientMsg): void {
     const c = this.clients.get(id);
     if (!c) return;
@@ -862,8 +884,7 @@ export class Room {
         // stale/spoofed ready.
         if (
           c.player.ready &&
-          simModuleFor(this.game).startLegality &&
-          !activeStartLegal(c.player.spec, c.player.alliance, c.player.startPose)
+          !this.startPoseLegal(c.player.spec, c.player.alliance, c.player.startPose)
         ) {
           c.player.ready = false;
         }
@@ -975,10 +996,10 @@ export class Room {
     // closes the host-start path, which is NOT gated on all-ready server-side.
     // start-pose legality is a DECODE (G304) concept — only enforce it for a game
     // that has a start editor (CR has none yet).
-    if (simModuleFor(this.game).startLegality) {
+    {
       for (const c of this.clients.values()) {
         const a: Alliance = record ? 'blue' : c.player.alliance;
-        if (!activeStartLegal(c.player.spec, a, c.player.startPose)) {
+        if (!this.startPoseLegal(c.player.spec, a, c.player.startPose)) {
           this.broadcast({
             t: 'error',
             message: 'A driver’s start position is invalid for their chassis - fix it to start.',
