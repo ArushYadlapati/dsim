@@ -1,3 +1,87 @@
+# HANDOFF — 2026-09-13 (preparing the alpha → production promotion)
+
+Branch **alpha**, pushed. `npm run server:check` clean; the new room-leak smoke check was run in
+isolation and mutation-checked (fails without the fix). The full `npm test` was NOT run (owner).
+**Nothing deployed to production — the owner said not to until the promotion is ready.**
+
+## READ FIRST — production `iad` was refusing every new room
+
+`/api/perf` on the always-warm primary read `rooms: 0, admitting: false`, and its log was a wall
+of `[admit] refused room rec-…: at cap (24/24)` from at least 04:53 UTC. US-East players could not
+start a record run or a custom room at all.
+
+**Cause:** `finalizeMatch` stops the room's loop and keeps the room for the results screen, but
+the reconnect grace is only ever checked BY that loop. A driver who closed the tab from the
+results screen was held forever and the room never deleted — one leaked room per finished match
+someone walked away from. Satellites auto-stop and start clean; `iad` never does, so only it
+filled up.
+
+- **Mitigated:** `iad` (6836e6dc0e2348) restarted 2026-09-13 with the owner's go; it read
+  `admitting: true` 43 s later.
+- **Fixed on alpha only:** `8e2ea2b` (`Room.armGraceReap`). The owner chose to ship it WITH the
+  promotion, so **production will leak again until then.** If `/api/perf` on `iad` shows
+  `admitting: false` with few live `rooms`, restart that machine (ask first). The scheduled
+  checkup below flags exactly this as URGENT.
+
+## Promotion checklist
+
+1. **BIOBUZZ is still hidden on stable.** `src/seasons.ts` has `channels: ['alpha']` and the blurb
+   "Rules land at kickoff on 2026-09-12." Both must change for it to appear in production. The
+   CLAUDE.md BIOBUZZ section still describes a placeholder, alpha-only, unscored shell — stale.
+2. **Open PRs to alpha** (reviewed 2026-09-13, nothing merged):
+   | PR | verdict | why |
+   |---|---|---|
+   | #45 | **URGENT** | any socket can send a malformed `input` (NaN, `ld: 1e9`) into the authoritative world broadcast to the room. Server-only, merges clean, `test:mm` 186 pass on a trial merge |
+   | #57 | recommended | real client/sim fixes (auto-path waits, replay `coerceSetup`); CONFLICTS in 3 files (trivial). Changes sim output for two narrow inputs without a `SIM_VERSION` bump — decide. Its `coerceSetup` gate keys on `startLegality`, which BIOBUZZ now sets, so BIOBUZZ replays still get DECODE's snap |
+   | #60 | recommended | solo practice saves its score before the 2.8 s settle; practice-only, clean |
+   | #58 | defer | `stageBiobuzz` idempotency; no shipped path calls it twice |
+   | #61 | defer | LAN guest ack-keyed deltas; LAN is off in production; the shared WebSocket path measured byte-identical |
+3. **Merge `origin/main` into alpha before promoting.** main has 10 commits alpha lacks (the
+   ord/gru/jnb fleet, satellites at 512 MB, `fly-deploy.sh` re-shrinking all 7 satellites, fly.toml
+   notes, the 8-region `.env.example`, a replay fix, controls copy). ⚠️ Deploying production from
+   alpha's current `scripts/fly-deploy.sh` would re-shrink only 4 satellites, leaving ord/gru/jnb on
+   fly.toml's `shared-cpu-4x`, and put the rest back on 1024 MB. A trial merge has ONE conflict:
+   the HUD chip block in `src/ui/GameView.tsx` (both sides removed the pose readout) — take alpha's.
+4. **Seasons.** Production: DECODE Act 2 · Season 1 (bv 7), Chain Reaction Act 2 · Season 1 (bv 5).
+   `BALANCE_VERSION` is 4 on both branches and `currentSeasonNumber` returns each game's existing
+   max, so **the deploy does not advance DECODE or Chain Reaction.** BIOBUZZ has no production rows
+   (today's prod server coerces `biobuzz` to DECODE, so `/api/seasons?game=biobuzz` shows DECODE's
+   list); the new server seeds `(biobuzz, 4, act 1)` on first use — alpha's database already holds
+   exactly that. **Do not use the admin season/act roll for this launch.**
+5. **Migrations:** none differ between main and alpha. `lan_runs` has `check (game in ('decode',
+   'chain'))`, harmless while LAN is off in production, but it refuses a BIOBUZZ LAN upload on alpha.
+6. **Announcements:** `docs/announcements/biobuzz-act1-season1.md` (a `season` reveal + `patch`
+   notes), with a pre-publish checklist. Publish only after the deploy is verified.
+7. **Order:** merge #45 (and any other chosen PRs) → merge main into alpha → full gates (`npm test`,
+   `test:mm`, `dbtest`, `build`, `server:check`, `uiaudit`) → alpha into main →
+   `scripts/announce-deploy.sh` (players are online) → verify `/health`, `fly machine list` sizes,
+   `/api/perf` `admitting` on every started machine, `/api/seasons` per game → Vercel production →
+   publish the announcements.
+
+## Capacity — recommendation, NOT applied
+
+Load today is tiny: 3 online; `iad` 0.02–0.04 cores; alpha ran 2 rooms / 8 players at 0.17 cores.
+`npm run costprobe` (sim-only, laptop): a BIOBUZZ solo room costs 0.0245 cores (same as DECODE), a
+2v2 0.0345; 10.2 / 38.4 KiB/s per client on the wire. Size on `docs/capacity.md`'s driven 0.075.
+
+- **`iad`: `shared-cpu-4x`/1024 ($8.08/mo) → `performance-1x`/2048 ($32.19/mo).** The only size step
+  that adds rooms: a dedicated core never throttles (~8–10 driven rooms against 5–8), and two rooms
+  with 8 players already sat on the 4x sustained baseline (0.244 of ~0.25 cores, 2026-09-06).
+  `shared-cpu-8x` buys nothing — one process uses one core.
+- **`ord` and `sjc`: `shared-cpu-1x`/512 → `shared-cpu-4x`/1024 for the launch.** A 1x baseline is
+  about one busy room. They auto-stop, so the extra ~$4.76/mo each is only paid while awake.
+  Needs per-region sizes in `scripts/fly-deploy.sh` (today one `SATELLITE_SIZE` for all seven).
+- Everything else stays `shared-cpu-1x`/512. Never a second machine in a region (room codes route
+  by region); past `performance-2x` the fix is `SIM_WORKERS` (`docs/scaling-multicore.md`).
+
+**Scheduled checkup:** the Claude desktop task `dsim-capacity-checkup` runs every 3 hours while the
+app is open. It is read-only (machine list, `/api/perf` per started machine via
+`fly-force-instance-id`, presence, log signals), recommends only, and keeps a history in
+`C:\Users\geniu\.claude\scheduled-tasks\dsim-capacity-checkup\history.jsonl` so a downscale is only
+ever suggested after 7 days of low readings.
+
+---
+
 # HANDOFF — 2026-09-12g (BIOBUZZ Lane A: four shared-core asks landed, from the master chat)
 
 > ⚠️ **TWO SERVER-SIDE CHANGES ARE SITTING ON `alpha` AND ARE INERT IN LIVE ROOMS UNTIL
