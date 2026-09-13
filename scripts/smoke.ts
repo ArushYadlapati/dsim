@@ -13563,6 +13563,30 @@ function pinScene(
   );
   check('a null baseline yields a full keyframe (every ball in upd)', encodeBallDelta(null, w.balls).upd.length === w.balls.length);
 
+  // ALIASING: what a client is handed must NOT be what the baseline holds. The sim
+  // mutates artifacts in place (pos/vel, and `state` on the rail or in a hopper), so
+  // if `applyBallDelta` served the baseline's own objects the client's own stepping
+  // would rewrite the diff baseline, and every ball the server then did NOT re-send
+  // would rebuild from the client's drifted value.
+  {
+    const held = applied[0];
+    const inBase = clientBase.get(held.id)!;
+    check(
+      'applyBallDelta serves COPIES, nested objects included (no baseline aliasing)',
+      held !== inBase && held.pos !== inBase.pos && held.vel !== inBase.vel && held.state !== inBase.state,
+    );
+    // and the property that matters: mutate what the client holds, then take a delta
+    // that OMITS that ball — the rebuild must still be the server's value.
+    const truth = JSON.parse(JSON.stringify(clientBase.get(held.id)));
+    held.pos.x += 12.5;
+    (held.state as { pending?: boolean }).pending = !(held.state as { pending?: boolean }).pending;
+    const reb = applyBallDelta(clientBase, { order: d1.order, upd: [] });
+    check(
+      'a ball the client mutated and the server did not re-send rebuilds to the SERVER value',
+      JSON.stringify(reb.find((b) => b.id === held.id)) === JSON.stringify(truth),
+    );
+  }
+
   // ACK-KEYED / DROPPED-FRAME: the property the unreliable lane needs. A client sits
   // at baseline b0 and MISSES the intermediate frame; the next delta is encoded vs
   // b0 (the ack), NOT vs the skipped frame. It must still reconstruct the live world
@@ -14497,6 +14521,32 @@ function pinScene(
   room.detach('watch-1');
   check('spectate: after the watcher leaves, the match summary drops the spectator', (room.summary()?.spectators ?? 1) === 0);
   check('spectate: a room with ONLY a hidden observer reads as unwatched', room.visibleSpectators() === 0);
+
+  /**
+   * A WATCHER WHOSE SOCKET REOPENS RE-SPECTATES; IT MUST NEVER SEND `rejoin`.
+   *
+   * `rejoin` reclaims a held DRIVER slot and `Room.reattach` looks only in `clients`, so a
+   * spectator asking for one is answered `{rejoined, ok:false}` — which `ServerSession`
+   * treats as a hard failure and closes the transport on, freezing the match behind the
+   * "connection lost" panel on a connection that had just come back.
+   *
+   * Source-level because `ServerSession` cannot be imported here (`src/net/env.ts` reads
+   * `import.meta.env` at load). Both halves are asserted because the bug was the SEAM
+   * between them: `Transport.onReopen` is a single slot, not a listener list, so the
+   * session's registration silently replaced the lobby's correct one.
+   */
+  {
+    const sess = readFileSync('src/net/serverSession.ts', 'utf8');
+    const lob = readFileSync('src/net/lobbyClient.ts', 'utf8');
+    check(
+      'spectate: ServerSession registers its `rejoin`-on-reopen for DRIVERS only',
+      /if\s*\(!spectator\)\s*\{\s*transport\.onReopen\(/.test(sess),
+    );
+    check(
+      'spectate: ...so the lobby’s re-spectate handler survives the handover',
+      /this\.transport\.onReopen\(\(\) => void doSpectate\(\)\)/.test(lob),
+    );
+  }
 
   // ---- the operator snapshot: signed-in by id, anonymous by COUNT --------
   // The privacy line lives here rather than in the UI: an anonymous session gets

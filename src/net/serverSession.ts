@@ -152,11 +152,29 @@ export class ServerSession implements NetSession {
     transport.onDown(() => {
       this.connected = false; // HUD shows "reconnecting"; prediction keeps running
     });
-    transport.onReopen(() => {
-      // reclaim our in-match slot on the fresh socket; a snapshot resyncs us
-      this.failed = false;
-      transport.send(encodeMsg({ t: 'rejoin', room: this.room, clientId: this.clientId }));
-    });
+    /**
+     * ⚠️ A SPECTATOR HAS NO SLOT TO RECLAIM, SO IT MUST NOT CLAIM ONE.
+     *
+     * `rejoin` asks the room to hand back a held DRIVER slot, and `Room.reattach` looks
+     * only in `clients` — a watcher lives in `spectators` and is dropped outright on
+     * `detach`. So a spectator whose socket reopened was answered `{rejoined, ok:false}`,
+     * which this session treats as a hard failure: it closes the transport and the world
+     * freezes behind the "connection lost" panel, on a connection that had just come back.
+     *
+     * The reopen handshake for a watcher already exists and is CORRECT — `LobbyClient.
+     * spectate` re-sends `spectate` (with `caps` and the admin token, so a hidden observer
+     * stays hidden) on both open and reopen, and the room answers with `matchStart` plus a
+     * keyframe, which is exactly the resync. Registering ours here REPLACED it: `onReopen`
+     * is a single slot, not a listener list. So the driver path registers and the spectator
+     * path deliberately leaves the lobby's handler in place.
+     */
+    if (!spectator) {
+      transport.onReopen(() => {
+        // reclaim our in-match slot on the fresh socket; a snapshot resyncs us
+        this.failed = false;
+        transport.send(encodeMsg({ t: 'rejoin', room: this.room, clientId: this.clientId }));
+      });
+    }
     transport.onFail(() => {
       this.connected = false; // retries exhausted (the server likely restarted)
       this.failed = true;
