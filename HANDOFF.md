@@ -10,6 +10,19 @@ neither door`. They assert `fly.toml` carries no `LAN_UPLOADS` / `LAN_SIGNALLING
 production. The check is stale against that owner decision; the files it reads are untouched by
 this commit. Whoever owns the LAN policy should either retire those two checks or drop the flags.
 
+**MERGED INTO `alpha`** (`f3f74dc`), no conflicts: alpha's own `state.ts` change adds `startWalls`
+to `BiobuzzState` while this one adds `swingRate` to `BbHiveState`, and alpha's HUD change only
+moves the `tipping > 0` readout from a chip to the score bar's `cellLine`, which this preserves.
+Gates on the MERGED tree: `tsc` / `server:check` / `build` / `uiaudit` clean, `test:bb` **1294 ALL
+PASS**.
+
+⚠️ **A SEPARATE ALPHA BUG WAS FIXED TO GET A GATE AT ALL** (`scripts/smoke.ts`, own commit). Alpha's
+LAN commit `d14895b` added a check reading `roomSrc` ~126 lines ABOVE the `const roomSrc` in the same
+block, so it threw `ReferenceError: Cannot access 'roomSrc' before initialization` and **aborted the
+whole shared suite** — which, being `&&`-chained, also meant the BIOBUZZ suite never ran under
+`npm test` at all. The read is hoisted to its first use. The two checks involved now run and pass,
+and the shared suite completes at its 2 pre-existing LAN gate failures. Nothing else moved.
+
 - **A heavier tray tips faster** (`hive.ts` `hiveSwingRate`, `hiveSurplus`). The 4 s swing is
   the swing of a tray at EXACTLY its tip-table threshold; each element over the threshold adds
   `BB_TIP_RATE_PER_EXTRA` 0.35 to the rate, capped at `BB_TIP_RATE_MAX` 3. The surplus is

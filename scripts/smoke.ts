@@ -8009,6 +8009,11 @@ function pushContest(A: Partial<RobotSpec>, B: Partial<RobotSpec>, seconds = 3):
       'lan tab: a room that empties stays hosted, so a host stepping out does not kill it',
       /if \(m\.k === 'empty'\) return;/.test(hr) && !/this\.stop\('Everyone left the room\.'\)/.test(hr),
     );
+    /* `server/room.ts` is read HERE, at its first use, and not beside the room-game check
+       further down: both sites are one block, so a `const` declared there is in the temporal
+       dead zone up here and this check threw `Cannot access 'roomSrc' before initialization` —
+       which aborts the WHOLE shared suite, and with it the `&&`-chained BIOBUZZ one. */
+    const roomSrc = readFileSync('server/room.ts', 'utf8');
     check(
       'lan tab: the room itself stops its loop when it empties, so nothing steps an empty room',
       /if \(this\.clients\.size === 0\) \{\s*\n\s*this\.stop\(\);\s*\n\s*this\.onEmpty\(\);/.test(roomSrc),
@@ -8137,7 +8142,6 @@ function pushContest(A: Partial<RobotSpec>, B: Partial<RobotSpec>, seconds = 3):
      * cloud refuses a mismatched joiner ("That code is for a different game mode."); the Worker
      * now does the same, and the host re-enters as the game the room runs, not the setting.
      */
-    const roomSrc = readFileSync('server/room.ts', 'utf8');
     check(
       "lan tab: the room a tab hosts is built for the PLAYER'S game, not the protocol default",
       /\.start\(code, \{ kind: 'versus', game \}\)/.test(lp),
