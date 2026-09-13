@@ -38,6 +38,28 @@ Do not fold one into the other.
 | `replay` | burned into every exported MP4/WebM | `src/ui/replayOverlay.ts` | logo, h=20 |
 | `loading` | the pre-React loading screen / no-JS page | `#seo-home` in `index.html` | text link |
 
+One more surface carries the artwork but is **GENERATED, not rendered**:
+
+| placement id | where | component | artwork |
+|---|---|---|---|
+| *(none — see below)* | `public/og.png`, the link-preview card | `scripts/og-image.cjs` (`npm run og`) | logo, h=46 |
+
+**This is the one surface a person sees WITHOUT opening the app.** Every link pasted into a
+Discord server, an iMessage thread or a Slack channel renders that PNG, and every one of those
+was a DSIM impression with the sponsor absent from it. `index.html`'s `og:image:alt` and
+`twitter:image:alt` name the sponsor for the same reason.
+
+⚠️ **IT IS A BUILD ARTIFACT, SO THE TERM AND THE KILL SWITCH DO NOT REACH IT.** A scraper
+fetches a committed file; there is no React, no `import.meta.env` and no clock. `og-image.cjs`
+reads `SPONSOR.term` **at generate time** instead and omits the lockup outside it, saying which
+it did on stdout — so taking the mark off the card is `npm run og` plus a commit, exactly like
+the Discord server icon is a manual step. Put it on the same list.
+
+⚠️ **IT HAS NO PLACEMENT ID AND CARRIES NO UTM TAG, deliberately.** An image inside a link
+preview has no click target of its own, so there is no click to attribute; an id that can never
+appear in `utm_medium` would put a permanently-zero row in the monthly report. It is an
+impression, and the impression it belongs to is the one Vercel already counts as a session.
+
 Two more surfaces carry the mark as TEXT rather than artwork, deliberately:
 
 - **The loading screen** is `#seo-home` in `index.html` — React clears `#root` on mount, so
@@ -50,6 +72,23 @@ Two more surfaces carry the mark as TEXT rather than artwork, deliberately:
   It fires no event: there is no analytics script on the page yet.
 - **The Discord server** is not a repo change at all. The logo and the "presented by" line
   go on the server itself (icon, banner, or the rules channel) by hand.
+
+### The images that deliberately do NOT carry the mark
+
+Asked directly ("put it on every embed and image"), and answered no, so the question is not
+re-opened every season:
+
+- **The app icons** — `public/favicon.svg`, `public/apple-touch-icon.png`,
+  `public/icon-192.png`, `public/icon-512.png`, `build/icon.png`. An icon is IDENTITY: it is
+  what a tab, a home screen and a taskbar use to mean "DSIM", it renders at 16–192px, and the
+  512 is also the **maskable** source, which a launcher crops to a circle. A 3.96:1 wordmark
+  inside that is illegible at every size it is actually drawn at, and a co-branded app icon is
+  a different deal from a presenting sponsorship of the app. The OG card is where a mark at
+  that scale belongs, and it has one.
+- **`dsim-logo.png`** (repo root) — not referenced by the app or the build; it is repo art.
+- **The GitHub repository's social preview** — a setting in the repo's own settings page, not
+  a file here. It is a real link-preview surface, so it belongs on the manual list beside the
+  Discord server icon if the sponsor ever asks for it.
 
 One more piece of the deal is a PRODUCT NAME, not a placement: in the BIOBUZZ robot builder
 the FLOWER-scoring mechanism reads **"OFFSET™ Box Tube"** (`bbLiftKindLabel`,
@@ -87,6 +126,10 @@ toward SHOWING the mark — a wrong clock must not quietly void a placement some
 string `0`; anything else (including absent) leaves the sponsorship on, so a typo in the
 deploy env cannot silently take it down.
 
+⚠️ **NEITHER REACHES `public/og.png` OR THE DISCORD SERVER.** Both are artifacts somebody
+generated once, not code that runs. When the term ends: `npm run og`, commit the card, edit the
+two `*:image:alt` strings in `index.html`, and change the server icon by hand.
+
 ## The artwork, and swapping it
 
 The repo carries Offset's own two cuts, 1735×438 (≈3.96:1) each, as supplied:
@@ -103,7 +146,11 @@ Both readings are reasonable and they are exact opposites, so `on-light` / `on-d
 spelling in this repo, and a new file gets placed **by looking at the pixels**, never by
 trusting the label on the download. Getting it backwards puts white ink on a white page.
 
-**Replace all four, every time.** 1 and 2 go through a Vite `import`
+**Replace all four, every time — then run `npm run og` and commit the card.** `og-image.cjs`
+inlines `src/assets/sponsors/offset-on-dark.png` as base64 at generate time, so a swap that
+stops there leaves the OLD artwork in the one image every pasted link shows.
+
+1 and 2 go through a Vite `import`
 (`src/ui/sponsorAssets.ts`) so the fingerprinted URL resolves under Electron's `base: './'`;
 3 and 4 are duplicates beside the splash, which is a `file://` page and cannot reach a
 fingerprinted name. Swapping one pair and forgetting the other is the obvious way to get
