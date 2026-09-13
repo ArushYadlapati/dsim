@@ -163,7 +163,7 @@ function WatchByCode({ onWatch }: { onWatch: (roomCode: string, region?: string)
         </div>
         {status === 'missing' && (
           <p className="ds-hint">
-            No live match under that code — it may have finished, or not started yet.
+            No live match under that code. It may have finished, or not started yet.
           </p>
         )}
       </div>

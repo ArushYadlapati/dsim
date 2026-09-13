@@ -924,15 +924,15 @@ export function Menu({ settings, onChange }: Props) {
                             onClick={() => setSpec({ catalystMount: m })}
                             title={
                               noTrack
-                                ? 'A rail needs a whole chassis side to run along — corners and the centre have no span for a track'
+                                ? 'A rail needs a whole chassis side to run along. Corners and the centre have no span for a track'
                                 : taken
                                   ? 'The shooter is mounted here'
                                   : noPivot
                                     ? swung === 'lr'
-                                      ? 'A left–right swing pivots between the flanks — bolt it to the centre line or an end'
-                                      : 'A front–back swing pivots between the ends — bolt it to the centre line or a flank'
+                                      ? 'A left-right swing pivots between the flanks. Bolt it to the centre line or an end'
+                                      : 'A front-back swing pivots between the ends. Bolt it to the centre line or a flank'
                                     : noReach
-                                      ? 'Nothing reaches from the middle of a chassis — turn on the swing arm to work from here'
+                                      ? 'Nothing reaches from the middle of a chassis. Turn on the swing arm to work from here'
                                       : // an ENABLED cell gets none: its label already names
                                         // the mount, and the swing picker above names the swing
                                         undefined

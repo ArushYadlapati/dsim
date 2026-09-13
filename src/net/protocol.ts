@@ -116,6 +116,18 @@ export function localizeCommand(c: RobotCommand): RobotCommand {
 /** max drivers per room (2v2) */
 export const ROOM_CAPACITY = 4;
 
+/**
+ * The two clocks a staged ranked match runs on, and the reason they live out here.
+ *
+ * They are the SERVER's rules (`server/room.ts` owns both timers), but the queue screen has
+ * to state them before a player joins the queue: missing either one is a dodge, and a dodge
+ * costs account standing. A player who finds that out by being charged was never told the
+ * rule. Quoting one number from the wire module keeps the screen and the timer in step; a
+ * second copy in the UI would drift the first time either is tuned.
+ */
+export const RANKED_JOIN_GRACE_MS = 20000;
+export const STRATEGY_DURATION_MS = 20000;
+
 /** who runs the service — the staff badge beside a name. Lives here rather than
  * in the UI because it travels on the wire (`LobbyPlayer`, the leaderboard rows,
  * the entitlements payload) and `src/net` must not depend on `src/ui`. */
