@@ -7143,8 +7143,9 @@ function pushContest(A: Partial<RobotSpec>, B: Partial<RobotSpec>, seconds = 3):
     const launcher = readFileSync('scripts/lan.mjs', 'utf8');
     const css = readFileSync('src/ui/styles.css', 'utf8');
 
-    // the label sits OUTSIDE the bridge guard now; inside it, the web build shows no host half
-    const hostLabel = lan.indexOf('Host · this computer');
+    // the label sits OUTSIDE the bridge guard now; inside it, the web build shows no host half.
+    // Matched as the whole label element: the copy pass (2026-09-13) shortened it to "Host".
+    const hostLabel = lan.indexOf('<p className="ds-tileset-label">Host</p>');
     const bridgeGuard = lan.indexOf('{bridge?.lan && (');
     check(
       'lan guide: the Host heading renders without the desktop bridge',
@@ -7162,7 +7163,7 @@ function pushContest(A: Partial<RobotSpec>, B: Partial<RobotSpec>, seconds = 3):
     );
     check(
       'lan guide: the page says guests install nothing (the half people assume wrong)',
-      /guests install nothing/i.test(lan),
+      /Players don’t install anything/.test(lan),
     );
 
     // the four commands, and that the clone URL is not a second copy of the repo address
@@ -7944,7 +7945,7 @@ function pushContest(A: Partial<RobotSpec>, B: Partial<RobotSpec>, seconds = 3):
     );
     check(
       'lan tab: the copy states the one internet dependency up front',
-      /You need internet for about a second/.test(lp),
+      /Needs internet for a moment at the start/.test(lp),
     );
     check(
       'lan tab: joining by code normalizes it, so a host reading letters out is enough',
