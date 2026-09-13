@@ -1,6 +1,6 @@
 import type { RobotSpec } from '../../types';
 import { rangeFill } from '../../ui/rangeFill';
-import { BB_HOOD_DEFAULT_DEG, BB_STORAGE_MIN } from './config';
+import { BB_DUMP_MAX_DIST, BB_HOOD_DEFAULT_DEG, BB_STORAGE_MIN } from './config';
 import {
   BB_MOUNT_POSITIONS,
   BB_SCORE_MODES,
@@ -168,9 +168,6 @@ export function BiobuzzBuilder({ spec, setSpec }: BiobuzzBuilderProps) {
   }
 
   /** HOOD angle — a dumper's only dial. */
-  function setHood(hoodDeg: number) {
-    send({ ...launcher, hoodDeg }, lift);
-  }
 
   /** BOX TUBE pick: none, or a tube. A new tube starts at the back when that is free, else at
    * the first free perimeter cell — the same fallback `coerceBbMech` itself uses. Re-picking the
@@ -262,30 +259,13 @@ export function BiobuzzBuilder({ spec, setSpec }: BiobuzzBuilderProps) {
           ))}
         </div>
       )}
-      {/* HOOD vs PITCH: a dumper's elevation is a fixed piece of hardware, so it gets a slider,
-          and the range is where a dumper can still reach the HIVE (`BB_HOOD_DEFAULT_DEG`). A
-          turret solves its own elevation per shot, so a slider would offer a control the sim
-          never reads; one line says why there is none. */}
+      {/* NO ELEVATION DIAL FOR EITHER. A turret solves its own elevation per shot, and a dumper
+          lobs each dump for its distance (owner, 2026-09-13 — `bbLobThrow`), so a Hood slider
+          would offer a control the sim never reads. One line says what each does instead. */}
       {bbIsTurreted(launcher) ? (
         <p className="ds-hint">A turret sets its own elevation for every shot.</p>
       ) : (
-        <div className="ds-fields">
-          <label className="ds-field">
-            <span className="cap">
-              Hood <span className="val">{launcher.hoodDeg}&deg;</span>
-            </span>
-            <input
-              className="ds-range"
-              type="range"
-              min={dials.hood.min}
-              max={dials.hood.max}
-              step={1}
-              value={launcher.hoodDeg}
-              style={rangeFill(launcher.hoodDeg, dials.hood.min, dials.hood.max)}
-              onChange={(e) => setHood(Number(e.target.value))}
-            />
-          </label>
-        </div>
+        <p className="ds-hint">A dumper lobs its load from up to {BB_DUMP_MAX_DIST} in away.</p>
       )}
 
       {/* ---- FLOWER SCORING: the Box Tube ---- */}

@@ -203,8 +203,8 @@ export function bbConfigSummary(spec: RobotSpec): string {
  *
  * The SUB line carries what the value has no room for and only what the mechanism actually
  * has: a single turret aims itself, so its mount is just where it is bolted; a double turret
- * names both cells; a dumper fires over a fixed edge at a fixed HOOD — a real dial the builder
- * offers, and the one number that changes where its elements land.
+ * names both cells; a dumper fires over its edge, and lobs each dump for its distance, so the edge
+ * is all there is to say (it used to print a HOOD, which no longer exists — owner, 2026-09-13).
  */
 export function bbStatTiles(spec: RobotSpec): readonly GameStatTile[] {
   const launcher = bbLauncherOf(spec, BB_HOOD_DEFAULT_DEG);
@@ -215,7 +215,7 @@ export function bbStatTiles(spec: RobotSpec): readonly GameStatTile[] {
       label: 'launcher',
       sub: bbIsTurreted(launcher)
         ? bbLauncherMountLabel(launcher)
-        : `${BB_MOUNT_POS_LABELS[launcher.mount]} · ${launcher.hoodDeg}° hood`,
+        : BB_MOUNT_POS_LABELS[launcher.mount],
     },
     {
       value: bbLiftLabel(lift),

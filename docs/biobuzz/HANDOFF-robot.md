@@ -6,6 +6,21 @@ Reverse-chronological. Prepend a new dated section; demote the old "READ FIRST".
 
 ## READ FIRST — 2026-09-12, night: the owner's builder feedback — three launchers, the Box Tube places
 
+> **2026-09-13, later still: A DUMP IS A LOB, CLOSE IN TO A STRICT CAP (owner).** The owner found
+> the dumper had to stand too far away and could reach too far. The cause was the fixed hood: an
+> arc only descends past its own apex, so at 75° the accepted band was 23–71 in.
+>
+> - **The lob:** each element is now thrown by `bbLobThrow` (`robot.ts`) to peak
+>   `BB_DUMP_APEX_ABOVE` (4 in, APPROX) over the cell and drop onto it. It arrives descending from
+>   any distance.
+> - **The range:** `BB_DUMP_MIN_DIST` (1 in) to `BB_DUMP_MAX_DIST` (36 in, APPROX), measured from
+>   each release point to the cell centre.
+> - **The hood:** no longer read by the sim. The Builder slider and the "° hood" label are gone.
+>   `hoodDeg` stays on the spec and is still clamped, so saves round-trip.
+> - **Removed:** `bbHoodSpeed` and `bbHoodDescends`.
+> - **Tests:** the smoke dumper poses moved in (they stood 45 in out). New checks: the `dump lob:`
+>   property sweep, and `dump range:` scores from 6 in and does nothing past the cap.
+>
 > **2026-09-13, later: AUTO-FIRE IS GONE; AIM ASSIST GATES THE DRIVER'S FIRE (owner).** The owner
 > ruled that auto-fire could not exist on a real robot. It fired whenever the real up cell would
 > take a shot, and `bbCellTaking` held fire back once elements already in the air would tip that
