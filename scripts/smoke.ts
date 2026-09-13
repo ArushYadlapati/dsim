@@ -15401,6 +15401,80 @@ function pinScene(
   }
 }
 
+// ---- a RANKED REMATCH introduces the ratings the last match produced ---------
+// `intros` was set once from the staged roster and re-sent on every rematch's matchStart, so a
+// rematch introduced each driver at the rating from BEFORE the match they had just played.
+// The room now writes the persisted `after` back into `intros`, and a rematch voted through
+// before that write lands waits for it.
+{
+  const rec: Record<string, ServerMsg[]> = { red: [], blue: [] };
+  const mkC = (id: string, userId: string, teamNumber: number): Client => ({
+    id,
+    send: (m) => rec[id].push(m),
+    player: {
+      clientId: id,
+      name: id,
+      teamName: 'T',
+      teamNumber,
+      alliance: 'red',
+      startIndex: 0,
+      ready: false,
+      spec: { ...DEFAULT_SPEC },
+      assists: { ...DEFAULT_ASSISTS },
+    },
+    connected: true,
+    disconnectAt: 0,
+    userId,
+    caps: ['strategy'],
+  });
+  const onResult = () =>
+    Promise.resolve({
+      elo: [
+        { userId: 'u-red', before: 1200, after: 1216, rd: 110 },
+        { userId: 'u-blue', before: 1300, after: 1284, rd: 110 },
+      ],
+    });
+  const room = new Room('smoke-rematch-elo', () => {}, { kind: 'versus' }, onResult);
+  room.applyPending({
+    code: 'iad-rematch-elo',
+    hostRegion: 'iad',
+    mode: '1v1',
+    seed: 42,
+    ranked: true,
+    roster: [
+      { userId: 'u-red', name: 'red', teamName: 'T', teamNumber: 111, spec: { ...DEFAULT_SPEC }, assists: { ...DEFAULT_ASSISTS }, startIndex: 0, alliance: 'red', introElo: 1200 },
+      { userId: 'u-blue', name: 'blue', teamName: 'T', teamNumber: 222, spec: { ...DEFAULT_SPEC }, assists: { ...DEFAULT_ASSISTS }, startIndex: 0, alliance: 'blue', introElo: 1300 },
+    ],
+  });
+  room.add(mkC('red', 'u-red', 111));
+  room.add(mkC('blue', 'u-blue', 222));
+  room.maybeStartRanked();
+  room.onMessage('red', { t: 'update', patch: { ready: true } });
+  room.onMessage('blue', { t: 'update', patch: { ready: true } });
+  type MatchStart = Extract<ServerMsg, { t: 'matchStart' }>;
+  const starts = (): MatchStart[] => rec.red.filter((m): m is MatchStart => m.t === 'matchStart');
+  const eloOf = (m: MatchStart | undefined, id: number): number | null | undefined =>
+    m?.intros?.find((i) => i.id === id)?.elo;
+  check(
+    'rematch elo: the first match introduces the staged ratings',
+    eloOf(starts()[0], 0) === 1200 && eloOf(starts()[0], 1) === 1300,
+    `${eloOf(starts()[0], 0)} / ${eloOf(starts()[0], 1)}`,
+  );
+  room.advanceForTest(maxMatchTicks() + 5);
+  // both vote BEFORE the result's write has resolved
+  room.onMessage('red', { t: 'rematch', on: true });
+  room.onMessage('blue', { t: 'rematch', on: true });
+  check('rematch elo: a rematch voted before the ratings are written waits for them', starts().length === 1, `${starts().length} starts`);
+  await new Promise((r) => setTimeout(r, 0));
+  check('rematch elo: once written, the rematch starts', starts().length === 2, `${starts().length} starts`);
+  check(
+    'rematch elo: …and introduces the UPDATED ratings, not the staged ones',
+    eloOf(starts()[1], 0) === 1216 && eloOf(starts()[1], 1) === 1284,
+    `${eloOf(starts()[1], 0)} / ${eloOf(starts()[1], 1)}`,
+  );
+  room.advanceForTest(1); // stops the rematch's real-time loop
+}
+
 // ---- pre-match STRATEGY window: reveal / re-pick / ready gate / redaction ----
 // a staged ranked 1v1 opens a strategy window instead of starting immediately: both
 // drivers see their own alliance (opponents redacted), may re-pick within the build

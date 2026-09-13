@@ -17,7 +17,7 @@ import { fileURLToPath } from 'node:url';
 import { GAME_IDS, coerceGameId, isGameId, type GameId } from '../../src/games/types';
 import { GAMES, moduleFor, registeredGames } from '../../src/games';
 import { SIM_GAMES, simModuleFor } from '../../src/games/sim';
-import { coerceStartIndex } from '../../src/net/sanitize';
+import { coerceStartIndex, sanitizePlayer } from '../../src/net/sanitize';
 import { coerceSetup, DEFAULT_ASSISTS, DEFAULT_SPEC } from '../../src/sim/spawn';
 import {
   SEASONS,
@@ -717,6 +717,49 @@ export function coreChecks(check: Check): void {
       'every bb* command counts as driver input, `bbNectar` included',
       missing.length === 0,
       missing.length ? `missing: ${missing.join(', ')}` : buttons.join(', '),
+    );
+  }
+
+  /**
+   * A BIOBUZZ BUILD SURVIVES THE JOIN INTO A RANKED ROOM.
+   *
+   * A matchmaker-staged room is joined with NO config, and `server/index.ts` used to sanitize
+   * the joiner's player with that config's game — 'decode' — so every ranked BIOBUZZ driver
+   * arrived as a default robot: `bbMech` dropped and the mounts reset. The join now uses the
+   * room's own game. `server/index.ts` opens sockets on import, so that half is read as source.
+   */
+  section('server: a BIOBUZZ build survives the ranked join');
+  {
+    const built = BB_PRESET_LIST.find((s) => bbLiftOf(s) !== null) ?? BB_PRESET_LIST[0];
+    const wire = JSON.parse(
+      JSON.stringify({
+        clientId: 'x', name: 'x', teamName: 'T', teamNumber: 1, alliance: 'blue',
+        startIndex: 0, ready: false, spec: built, assists: DEFAULT_ASSISTS,
+      }),
+    );
+    const asBiobuzz = sanitizePlayer(wire, 'biobuzz').spec;
+    const asDecode = sanitizePlayer(wire, 'decode').spec;
+    const mechOf = (s: RobotSpec): string => JSON.stringify(s.bbMech ?? null);
+    check(
+      'the test build really has a Box Tube (else the checks below prove nothing)',
+      bbLiftOf(built) !== null,
+      built.name,
+    );
+    check(
+      "sanitized as BIOBUZZ, the build's mechanisms and intake mount survive the wire",
+      mechOf(asBiobuzz) === mechOf(built) && asBiobuzz.intakeMount === built.intakeMount,
+      mechOf(asBiobuzz),
+    );
+    check(
+      'sanitized as DECODE, they do NOT (so the check above can fail)',
+      mechOf(asDecode) !== mechOf(built),
+      mechOf(asDecode),
+    );
+    const indexSrc = readRepo('server/index.ts');
+    check(
+      "the room join sanitizes the player with the ROOM's game",
+      indexSrc.includes('sanitizePlayer(msg.player, r.gameId)') &&
+        !indexSrc.includes('sanitizePlayer(msg.player, cfg.game)'),
     );
   }
 

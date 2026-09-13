@@ -366,6 +366,10 @@ export class Room {
   // robot id assigned in startMatch = the client's add-order index)
   private ranked = false;
   private intros: PlayerIntro[] = [];
+  /** the finished match's result is still being persisted, so the ratings a rematch would
+   *  introduce are not known yet — see `maybeRematch` */
+  private resultPending = false;
+  private resultWait: ReturnType<typeof setTimeout> | null = null;
   // set on the HOST machine when this room was staged by the designated matchmaker
   // (region-aware ranked). The roster is authoritative; the match starts once every
   // staged player has (re)connected here, or cancels after RANKED_JOIN_GRACE_MS.
@@ -1689,10 +1693,37 @@ export class Room {
       // record → the run's leaderboard standing. Broadcast so the results screen
       // can reveal the ELO change (versus) or the PB / WR / rank line (record).
       if (ret && typeof (ret as Promise<unknown>).then === 'function') {
+        // A REMATCH WAITS FOR THIS. The rematch's `matchStart` re-sends `this.intros`, and
+        // those are the ratings from when the pairing was STAGED — so a rematch voted through
+        // before this lands introduced every driver at their pre-match rating. Capped, so a
+        // slow or failed write can delay a rematch but never block it.
+        this.resultPending = true;
+        if (this.resultWait) clearTimeout(this.resultWait);
+        const settle = (): void => {
+          if (!this.resultPending) return;
+          this.resultPending = false;
+          if (this.resultWait) clearTimeout(this.resultWait);
+          this.resultWait = null;
+          this.maybeRematch();
+        };
+        this.resultWait = setTimeout(settle, 5000);
+        if (this.resultWait.unref) this.resultWait.unref();
         void (ret as Promise<PersistOutcome | void>)
           .then((out) => {
             if (!out) return;
             if (out.matchId) this.lastMatchId = out.matchId;
+            // THE INTRO RATINGS FOLLOW THE RESULT. `intros` is set once from the staged
+            // roster and re-sent on every rematch's `matchStart`; without this the rematch
+            // showed each driver the rating from BEFORE the match they just played. Done
+            // before the empty-room return, since nothing is sent from here.
+            if (out.elo && out.elo.length && this.intros.length) {
+              const afterByRobot = new Map<number, number>();
+              for (const e of out.elo) {
+                const robotId = robotByUser.get(e.userId);
+                if (robotId !== undefined) afterByRobot.set(robotId, e.after);
+              }
+              this.intros = this.intros.map((i) => ({ ...i, elo: afterByRobot.get(i.id) ?? i.elo }));
+            }
             if (this.clients.size === 0) return;
             if (out.record) {
               this.broadcast({ t: 'recordResult', info: out.record });
@@ -1708,7 +1739,8 @@ export class Room {
               if (results.length) this.broadcast({ t: 'eloResult', results });
             }
           })
-          .catch((err) => console.error('[room] result broadcast failed:', err));
+          .catch((err) => console.error('[room] result broadcast failed:', err))
+          .finally(settle);
       }
     }
     this.stop();
@@ -1825,6 +1857,9 @@ export class Room {
     if (ids.length === 0) return;
     if (!ids.every((i) => this.rematchVotes.has(i))) return;
     if (!this.matchSetups.length) return;
+    // the last match's ratings are still being written: start once they are in (the
+    // persist's `settle` calls back here), so the rematch introduces the updated ones
+    if (this.resultPending) return;
     // a FRESH seed: a rematch is a new run at a new motif, not a replay of the old
     // one. `beginMatch` does the whole reset (world, buffers, recorder, generation)
     // through exactly the path a first start takes, so there is no second, subtly
