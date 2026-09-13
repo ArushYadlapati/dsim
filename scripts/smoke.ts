@@ -19492,6 +19492,30 @@ const mkMM = () => {
     gsrc.includes('this.harvestPracticeRun(true)'),
   );
 
+  // ...but NOT on the buzzer tick. `stepMatch` re-runs `assessMatchEnd` every `post` tick
+  // because TELEOP PATTERN / DEPOT / BASE are resting-position rules, and the server waits
+  // `MATCH_SETTLE_S` of sim time before `finalizeMatch` for exactly that reason
+  // (`server/room.ts:1539-1546`). Solo closed the recorder and snapshotted `worldResult` on the
+  // FIRST `post` tick, so a ball still draining the ramp scored for the server and not for the
+  // practice history — the saved score could come in under both the one the driver watched
+  // reveal and the one the same run scores online. Pinned by reading the source for the reason
+  // the wiring checks above are: GameController needs a canvas, and the failure is silent.
+  const audioBody = gsrc.slice(gsrc.indexOf('private handlePhaseAudio(): void {'));
+  const postBranch = audioBody.slice(
+    audioBody.indexOf("if (phase === 'post') {"),
+    audioBody.indexOf('this.prevPhase = phase;'),
+  );
+  const settleGate = audioBody.indexOf('this.world.time - this.settleSince >= C.MATCH_SETTLE_S');
+  const settleHarvest = audioBody.indexOf('this.harvestPracticeRun(true)');
+  check(
+    'save policy: the completed harvest waits out MATCH_SETTLE_S, not the buzzer tick',
+    postBranch.length > 0 &&
+      !postBranch.includes('harvestPracticeRun') &&
+      settleGate > 0 &&
+      settleHarvest > settleGate,
+    `postBranchHarvest=${postBranch.includes('harvestPracticeRun')} gate@${settleGate} harvest@${settleHarvest}`,
+  );
+
   // ONE exit point: the recorder may only be finished inside the harvest, or a second call site
   // is a second policy.
   const finishCalls = (gsrc.match(/\.finish\(\)/g) ?? []).length;
