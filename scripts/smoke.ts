@@ -7143,12 +7143,38 @@ function pushContest(A: Partial<RobotSpec>, B: Partial<RobotSpec>, seconds = 3):
     const launcher = readFileSync('scripts/lan.mjs', 'utf8');
     const css = readFileSync('src/ui/styles.css', 'utf8');
 
+    /* The whole page as ONE LINE, so a sentence this block pins is matched as a sentence and
+       not as whatever fragment happened to survive the last time the JSX was re-wrapped. Three
+       checks below read the page's COPY rather than its code, and copy lives inside elements
+       that a formatter breaks wherever the column runs out. */
+    const lanText = lan.replace(/\s+/g, ' ');
+
     // the label sits OUTSIDE the bridge guard now; inside it, the web build shows no host half
-    const hostLabel = lan.indexOf('Host · this computer');
+    /* ⚠️ THE HEADING THIS PINS WAS RENAMED, and the fact underneath it did not move.
+       It read `Host · this computer`, which was true while the only two host paths were the
+       desktop app and the terminal — both of them literally THIS computer, the machine opening
+       a listening socket. A browser TAB hosts now (`docs/lan-webrtc.md`), on a Chromebook with
+       nothing installed, so the qualifier had stopped being true of the first panel on the
+       page and the section is plainly `Host`.
+       What is still pinned is what the check was always for: the host half of this screen must
+       render on the WEB build, i.e. ABOVE `{bridge?.lan && (`. Below that guard it exists only
+       in the desktop shell, and a player on the web then gets a page titled "LAN play" whose
+       only control asks for somebody ELSE'S address — which reads as hosting being broken.
+       Pinned on the whole JSX element, not the bare word `Host`, which appears a dozen times
+       on this page (`Host in this tab`, `Host without internet`, `Host address`, `hostErr`).
+       The tab-host panel's own heading is pinned WITH it, because that panel IS the web build's
+       host path: it sliding inside the guard would be exactly the original bug again, with the
+       section label still sitting innocently outside. */
+    const hostLabel = lan.indexOf('<p className="ds-tileset-label">Host</p>');
+    const tabHostPanel = lan.indexOf('<p className="ds-lan-state">Host in this tab</p>');
     const bridgeGuard = lan.indexOf('{bridge?.lan && (');
     check(
       'lan guide: the Host heading renders without the desktop bridge',
-      hostLabel > 0 && bridgeGuard > 0 && hostLabel < bridgeGuard,
+      hostLabel > 0 &&
+        tabHostPanel > 0 &&
+        bridgeGuard > 0 &&
+        hostLabel < bridgeGuard &&
+        tabHostPanel < bridgeGuard,
     );
     /* This used to assert the page says "a browser tab can’t be a server". That sentence was
        REMOVED, on purpose: a tab now hosts (`docs/lan-webrtc.md`), so printing it directly
@@ -7160,9 +7186,22 @@ function pushContest(A: Partial<RobotSpec>, B: Partial<RobotSpec>, seconds = 3):
       'lan guide: the terminal path is presented as the NO-INTERNET one, not as the only one',
       /no internet at all/i.test(lan) && !/can’t be a server/.test(lan),
     );
+    /* ⚠️ SAME FACT, NEW SENTENCE. This read `/guests install nothing/i`, which matched a bolded
+       `Your guests install nothing.` The plain-copy pass replaced it with `Players don’t install
+       anything.` — shorter, and it drops a guests-versus-hosts split the rest of the screen no
+       longer makes: everyone who is not the host is a PLAYER here, in the join box, in the
+       waiting count and in the code hint.
+       The reason the check exists is untouched. The block above this sentence lists four
+       terminal commands and names Node.js and Git, and a person reading that assumes every one
+       of their players will have to do the same on their own laptop — that is the half people
+       get wrong, and getting it wrong makes the whole path look unaffordable for a room of
+       eight. Only the HOST needs any of it; the page has to say so in its own words rather than
+       leaving it to `docs/lan-selfhost.md`, which nobody at a venue is reading. Pinned on the
+       full sentence, because the bare word `install` also sits in the requirements line
+       directly above it. */
     check(
       'lan guide: the page says guests install nothing (the half people assume wrong)',
-      /guests install nothing/i.test(lan),
+      /Players don’t install anything\./.test(lanText),
     );
 
     // the four commands, and that the clone URL is not a second copy of the repo address
@@ -7942,9 +7981,27 @@ function pushContest(A: Partial<RobotSpec>, B: Partial<RobotSpec>, seconds = 3):
       /disabled=\{!mayTabHost \|\| tabBusy\}/.test(lp) &&
         /const mayTabHost = signedIn \|\| anonHostOk;/.test(lp),
     );
+    /* ⚠️ SAME FACT, NEW SENTENCE. This read `/You need internet for about a second/`, matching
+       a bolded lead-in that the plain-copy pass rewrote as two plain ones: `Needs internet for
+       a moment at the start so players can find each other.` and `After that the match stays on
+       your network.` BOTH are pinned, because they are two halves of one disclosure and the
+       second is what stops the first from reading as "this needs the venue's Wi-Fi to hold up
+       for the whole match", which is the opposite of true and the opposite of the feature.
+       The fact is `docs/lan-webrtc.md` §3 and it is the single most consequential thing on this
+       panel: the tab path introduces the peers THROUGH THE CLOUD rendezvous, so it is the one
+       host path that cannot work at a venue with no internet at all — the table in §1 of that
+       document has it as the only "no" in the column. Nothing about the buttons reveals it, the
+       handshake is the last second before a match rather than the first, and a host who finds
+       it out in a gym has already lost the match and the room's patience. So it must be on the
+       screen BEFORE anyone presses START HOSTING, which is why this reads the copy that renders
+       in the `!tabHost` branch and not a sentence that only appears once hosting is live. The
+       terminal panel further down is the answer for that venue, and its own no-internet line is
+       pinned by `lan guide:` above. */
+    const lpText = lp.replace(/\s+/g, ' ');
     check(
       'lan tab: the copy states the one internet dependency up front',
-      /You need internet for about a second/.test(lp),
+      /Needs internet for a moment at the start so players can find each other\./.test(lpText) &&
+        /After that the match stays on your network\./.test(lpText),
     );
     check(
       'lan tab: joining by code normalizes it, so a host reading letters out is enough',
