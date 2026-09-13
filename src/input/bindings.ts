@@ -5,6 +5,8 @@
 export type KeyAction =
   | 'driveUp'
   | 'driveDown'
+  | 'tankRightUp'
+  | 'tankRightDown'
   | 'driveLeft'
   | 'driveRight'
   | 'rotateCCW'
@@ -60,6 +62,8 @@ export interface ControlBindings {
 export const KEY_ACTIONS: KeyAction[] = [
   'driveUp',
   'driveDown',
+  'tankRightUp',
+  'tankRightDown',
   'driveLeft',
   'driveRight',
   'rotateCCW',
@@ -97,6 +101,13 @@ export const DEFAULT_BINDINGS: ControlBindings = {
   keys: {
     driveUp: ['w'],
     driveDown: ['s'],
+    // TANK steers as two sides: `driveUp`/`driveDown` are the LEFT track and these are the
+    // RIGHT one. They exist as actions because the right side used to read `arrowup`/
+    // `arrowdown` straight off the keyboard — the one pair of controls in the game that
+    // ignored the rebinder, so reassigning the arrows left them driving half the chassis AND
+    // firing whatever they had been moved to. The defaults are the keys that were hard-coded.
+    tankRightUp: ['arrowup'],
+    tankRightDown: ['arrowdown'],
     driveLeft: ['a'],
     driveRight: ['d'],
     rotateCCW: ['arrowleft', 'q'],
