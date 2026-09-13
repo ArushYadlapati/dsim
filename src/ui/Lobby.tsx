@@ -165,6 +165,8 @@ export function Lobby({
 
   const lobbyRef = useRef<LobbyClient | null>(null);
   const startedRef = useRef(false);
+  /** the room said no (an `error` frame) — a close that follows is the same event, not a new one */
+  const refusedRef = useRef(false);
   const nameEditedRef = useRef(false);
 
   // tear down on unmount unless a match started (which hands the socket onward)
@@ -239,6 +241,7 @@ export function Lobby({
   function join(roomCode: string, hostRegion?: string | null): void {
     if (!roomCode) return;
     setCode(roomCode);
+    refusedRef.current = false;
     /**
      * A TAB-HOSTED LAN ROOM ARRIVES ALREADY CONNECTED.
      *
@@ -290,6 +293,7 @@ export function Lobby({
     });
     lobby.on('matchStart', handleStart);
     lobby.on('error', (msg, code) => {
+      refusedRef.current = true;
       setError(msg);
       setErrorCode(code);
       setPhase('error');
@@ -301,7 +305,13 @@ export function Lobby({
       if (code === 'region_full') setRegionLocked(false);
     });
     lobby.on('closed', () => {
-      if (!startedRef.current) {
+      /* A REFUSAL IS NOT A LOST CONNECTION. A tab-hosted LAN room sends its `error` frame
+         ("Room is full…", "That code is for a different game mode.") and then closes the
+         link a beat later — there is nothing else to keep it open for — and this handler
+         used to overwrite the sentence that explained the refusal with one that blamed the
+         network. The cloud keeps its socket open after a refusal, which is why it never
+         showed. The first thing said stands. */
+      if (!startedRef.current && !refusedRef.current) {
         setError('Lost connection to the game server.');
         setPhase('error');
       }

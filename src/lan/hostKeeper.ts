@@ -13,8 +13,9 @@
  * a Stop hosting button and still sees the code they read out.
  *
  * ⚠️ **THE ROOM STILL HAS TO END SOMEWHERE.** Parked, it has no UI attached at all, so the two
- * things that stop it are the host stopping it from the LAN screen and the room going EMPTY
- * (`LanHost` acts on the Worker's `empty`). A tab that is closed takes the Worker with it.
+ * things that stop it are the host stopping it from the LAN screen and the tab closing, which
+ * takes the Worker with it. An EMPTY room does not end it: the room idles (its loop runs only
+ * during a match), the host can step back in, and a guest can still join by the same code.
  */
 import type { LanHost } from './hostRuntime';
 
@@ -26,16 +27,26 @@ export function keepHostedRoom(host: LanHost): void {
   held = host;
 }
 
-/** adopt it back (the LAN screen mounting again). Clears as it returns. */
+/**
+ * Adopt it back (the LAN screen mounting again). Clears as it returns.
+ *
+ * ⚠️ **A ROOM THAT ENDED WHILE PARKED IS NOT HANDED BACK.** Nothing here hears the room end —
+ * the `LanHost` tells the events it was built with, which belong to a screen that has
+ * unmounted — so a host who went to the lobby alone and pressed Back (the room empties and
+ * stops itself) came back to a LAN screen showing the dead room's code, a Stop button that
+ * did nothing and a GO TO THE ROOM that threw. Asking the host whether it is still live at
+ * the moment of adoption is the one place that knows; a dead one is dropped and the screen
+ * starts clean.
+ */
 export function takeHostedRoom(): LanHost | null {
   const h = held;
   held = null;
-  return h;
+  return h?.live ? h : null;
 }
 
-/** is a room parked here? — for a caller that must not consume it */
+/** is a LIVE room parked here? — for a caller that must not consume it */
 export function hostedRoomParked(): boolean {
-  return held !== null;
+  return held?.live === true;
 }
 
 /** end a parked room and forget it */

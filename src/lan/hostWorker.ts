@@ -37,6 +37,7 @@
 import { Room, type Client } from '../../server/room';
 import { decodeClientMsg, encodeMsg, type ClientMsg, type ServerMsg } from '../net/protocol';
 import { initPhysics } from '../sim/physicsEngine';
+import { coerceGameId } from '../games/types';
 import { HEALTH_INTERVAL_MS, HOST_SEAT, type HostIn, type HostOut } from './hostProtocol';
 
 const post = (m: HostOut): void => {
@@ -128,6 +129,15 @@ self.addEventListener('message', (e: MessageEvent) => {
        reserved but not yet taken (they join last; see `reserveHost`). */
     if (!room.canSeat(m.id)) {
       post({ k: 'refused', id: m.id, message: 'Room is full or a match is already in progress.' });
+      return;
+    }
+    /* THE SAME GAME, OR NOT SEATED — the cloud's rule (`joinRoom`, server/index.ts), with the
+       cloud's sentence. The rendezvous introduces anyone holding the code; it knows nothing
+       about games. Seating a joiner whose client is set to a different game than the room
+       runs put a BIOBUZZ lobby in front of a DECODE room: the room judged every start pose
+       by DECODE's rules, cleared `ready` each time it was pressed, and nothing said why. */
+    if (m.config && coerceGameId(m.config.game) !== room.gameId) {
+      post({ k: 'refused', id: m.id, message: 'That code is for a different game mode.' });
       return;
     }
     room.add(seat(m.id, m));

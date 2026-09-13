@@ -30,8 +30,23 @@ export const HOST_SEAT = 'host-local';
 export type HostIn =
   /** start a room. Sent once, before anything else. */
   | { k: 'open'; code: string; config: RoomConfig }
-  /** a player arrived (the host itself included, as a loopback peer) */
-  | { k: 'add'; id: string; player: Omit<LobbyPlayer, 'clientId'>; caps?: string[]; channel?: string; userId?: string }
+  /**
+   * A player arrived (the host itself included, as a loopback peer).
+   *
+   * `config` is what the joiner's `join` frame asked for. The cloud refuses a joiner whose
+   * game differs from the room's ("That code is for a different game mode.") and the Worker
+   * does the same — without it a DECODE player was seated in a BIOBUZZ room, and the two
+   * halves then disagreed about every start pose.
+   */
+  | {
+      k: 'add';
+      id: string;
+      player: Omit<LobbyPlayer, 'clientId'>;
+      config?: RoomConfig;
+      caps?: string[];
+      channel?: string;
+      userId?: string;
+    }
   /** one encoded ClientMsg from that player */
   | { k: 'msg'; id: string; raw: string }
   /** that player's link is gone */

@@ -297,6 +297,8 @@ export class Room {
   // but hold no robot slot and never count toward capacity/roster/persistence.
   private readonly spectators = new Map<string, Client>();
   private hostId = '';
+  /** the seat `reserveHost` named, or '' for every room the cloud runs — see `detach` */
+  private reservedHost = '';
   // monotonic connection counter: every add/reattach stamps the owning socket with
   // the next value so a stale old socket's close can be recognised and ignored.
   private connSeq = 0;
@@ -513,6 +515,8 @@ export class Room {
    */
   reserveHost(id: string): void {
     if (!this.hostId) this.hostId = id;
+    // remembered so `detach` can tell a reserved host stepping out from a cloud host leaving
+    if (this.hostId === id) this.reservedHost = id;
   }
 
   add(client: Client): void {
@@ -757,7 +761,15 @@ export class Room {
       this.clients.delete(id);
       this.snapPrimed.delete(id);
       this.snapAck.delete(id);
-      if (this.hostId === id) this.hostId = this.clients.keys().next().value ?? '';
+      /* THE CROWN PASSES TO WHOEVER IS LEFT — unless it was RESERVED. A cloud host who leaves
+         the lobby is gone; the next player through the door should be able to start. A
+         tab-hosted room's host (`reserveHost`) is different: the room lives in THEIR tab, and
+         stepping out to the LAN screen and back is an ordinary thing for them to do. Handing
+         the crown to a guest meanwhile meant the host came back to their own room as a guest
+         of it, and `canSeat` stopped holding their seat. The reservation outlives the visit. */
+      if (this.hostId === id && this.reservedHost !== id) {
+        this.hostId = this.clients.keys().next().value ?? '';
+      }
       this.robotOf.delete(id);
       this.broadcastRoster();
       this.refreshRematch(); // the tally is against CONNECTED drivers

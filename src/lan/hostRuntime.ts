@@ -20,6 +20,7 @@
 import type { Transport } from '../net/transport';
 import type { LobbyPlayer, RoomConfig } from '../net/protocol';
 import { DEFAULT_ROOM_CONFIG, encodeMsg } from '../net/protocol';
+import { coerceGameId, type GameId } from '../games/types';
 import { LanSignalClient } from '../net/lanSignalClient';
 import { acceptLanGuest, type LanLink } from '../net/lanPeer';
 import { HOST_SEAT, REFUSE_CLOSE_MS, type HostIn, type HostOut } from './hostProtocol';
@@ -151,6 +152,11 @@ export class LanHost {
   /** seats the room has already been told about, so a `join` seats exactly once */
   private readonly seated = new Set<string>();
   private local: LoopbackTransport | null = null;
+  /** the page → Worker post, kept so `transport` can build a replacement loopback */
+  private toWorker: ((m: HostIn) => void) | null = null;
+  /** the Worker has said `ready`: the room exists */
+  private booted = false;
+  private roomConfig: RoomConfig = DEFAULT_ROOM_CONFIG;
   private wakeLock: { release: () => Promise<void> } | null = null;
   private stopped = false;
 
@@ -180,14 +186,50 @@ export class LanHost {
     return this.links.size;
   }
 
-  /** the host's own transport, handed to the stock LobbyClient */
+  /** true from `start()` resolving until `stop()` — a parked room that is not live is over */
+  get live(): boolean {
+    return this.booted && !this.stopped;
+  }
+
+  /** the game this room was built for, so a screen adopting it back can join as that game */
+  get game(): GameId {
+    return coerceGameId(this.roomConfig.game);
+  }
+
+  /**
+   * The host's own transport, handed to the stock LobbyClient.
+   *
+   * ⚠️ **A FRESH ONE EVERY TIME THE LAST WAS CLOSED.** The lobby disposes its transport on the
+   * way out (`Lobby.tsx`, unmount), which for a loopback drops the host's seat — correct — and
+   * leaves the object closed for good. The room is still running in this tab, the LAN screen
+   * adopts it back and offers GO TO THE ROOM again, and that click used to hand the lobby a
+   * transport that could never open: the host sat on CONNECTING in a room they were hosting.
+   * The seat was released on close, so a new loopback re-seats the host by the same `join`
+   * a first visit does.
+   */
   get transport(): Transport {
-    if (!this.local) throw new Error('start() first');
+    if (this.stopped || !this.toWorker) throw new Error('start() first');
+    if (!this.local || !this.local.isOpen) {
+      this.local = this.makeLocal(this.toWorker);
+      if (this.booted) this.local.open();
+    }
     return this.local;
+  }
+
+  private makeLocal(toWorker: (m: HostIn) => void): LoopbackTransport {
+    return new LoopbackTransport(
+      (raw) => this.fromSeat(HOST_SEAT, raw, toWorker),
+      () => {
+        this.seated.delete(HOST_SEAT);
+        toWorker({ k: 'drop', id: HOST_SEAT });
+      },
+    );
   }
 
   async start(code: string, config: RoomConfig = DEFAULT_ROOM_CONFIG): Promise<string> {
     this.stopped = false;
+    this.booted = false;
+    this.roomConfig = config;
     const signals = new LanSignalClient();
     this.signals = signals;
     // claim the code FIRST: if it is taken, or the account is missing, nothing else should
@@ -198,13 +240,8 @@ export class LanHost {
     const worker = new Worker(new URL('./hostWorker.ts', import.meta.url), { type: 'module' });
     this.worker = worker;
     const toWorker = (m: HostIn): void => worker.postMessage(m);
-    this.local = new LoopbackTransport(
-      (raw) => this.fromSeat(HOST_SEAT, raw, toWorker),
-      () => {
-        this.seated.delete(HOST_SEAT);
-        toWorker({ k: 'drop', id: HOST_SEAT });
-      },
-    );
+    this.toWorker = toWorker;
+    this.local = this.makeLocal(toWorker);
 
     /* ⚠️ START() DOES NOT RESOLVE UNTIL THE ROOM EXISTS. Claiming the code and building the room are separate steps on separate
        threads, and resolving on the claim alone published a code for a room that had not been
@@ -213,7 +250,6 @@ export class LanHost {
        was still null. A Worker that fails to load is SILENT (`error` fires for a load or a
        synchronous throw, `failed` covers the async half, and neither is guaranteed), so the
        timeout is what makes the wait terminate in every case. */
-    let booted = false;
     let onBoot: () => void = () => {};
     let onBootFail: (e: Error) => void = () => {};
     const roomReady = new Promise<void>((res, rej) => {
@@ -222,7 +258,7 @@ export class LanHost {
     });
     /** a Worker problem before the room exists fails `start()`; after it, it stops hosting */
     const workerDied = (reason: string): void => {
-      if (booted) this.stop(reason);
+      if (this.booted) this.stop(reason);
       else onBootFail(new Error(reason));
     };
     worker.addEventListener('error', (e: ErrorEvent) => workerDied(e.message || 'The match room stopped.'));
@@ -235,7 +271,7 @@ export class LanHost {
         return;
       }
       if (m.k === 'ready') {
-        booted = true;
+        this.booted = true;
         onBoot();
         /* The host is NOT seated here. Its own `LobbyClient` sends a `join` through the
            loopback like any other client, and that frame is what carries the player — so the
@@ -263,14 +299,16 @@ export class LanHost {
         }
         return;
       }
-      /* EVERYONE LEFT. The Worker's room has already stopped itself; this is the page
-         deciding what that means, which for a tab-hosted match is that hosting is over —
-         there is nobody left to host for, and the alternative is a Worker stepping an empty
-         room until the tab closes. */
-      if (m.k === 'empty') {
-        this.stop('Everyone left the room.');
-        return;
-      }
+      /* EVERYONE LEFT — AND THE ROOM STAYS OPEN. It used to end hosting here, on the theory
+         that an empty room is a Worker stepping nothing until the tab closes. It is not: the
+         room's loop runs only during a match (`Room.startMatch`) and the room has already
+         stopped it on its own, so an empty room is an idle object, exactly what it was the
+         moment after START HOSTING. Ending hosting here meant a host who went to the lobby
+         alone and pressed Back — to re-read the code, to change a setting — killed their own
+         room, and every guest about to type that code was told nobody hosts it. Hosting ends
+         when the host says so (Stop hosting) or the tab goes; the LAN screen shows the room
+         as "Waiting for players…" meanwhile, which is the truth. */
+      if (m.k === 'empty') return;
       /* THE ROOM WOULD NOT SEAT THIS PEER — tell it so, then let it go.
          An `error` frame is what the cloud sends a client it turns away, and the stock
          `LobbyClient` already surfaces one, so a refused LAN guest reads the same sentence
@@ -347,14 +385,26 @@ export class LanHost {
   private fromSeat(id: string, raw: string, toWorker: (m: HostIn) => void): void {
     if (!this.seated.has(id)) {
       this.seated.add(id);
-      let intro: { player?: Omit<LobbyPlayer, 'clientId'>; caps?: string[]; channel?: string } = {};
+      let intro: {
+        player?: Omit<LobbyPlayer, 'clientId'>;
+        config?: RoomConfig;
+        caps?: string[];
+        channel?: string;
+      } = {};
       try {
         intro = JSON.parse(raw) as typeof intro;
       } catch {
         /* fall through with an empty intro; the room sanitizes whatever it is given */
       }
       if (intro.player) {
-        toWorker({ k: 'add', id, player: intro.player, caps: intro.caps, channel: intro.channel });
+        toWorker({
+          k: 'add',
+          id,
+          player: intro.player,
+          config: intro.config,
+          caps: intro.caps,
+          channel: intro.channel,
+        });
       } else {
         // not a join — nothing to seat with, so let the room answer the frame on its own terms
         this.seated.delete(id);
@@ -368,8 +418,12 @@ export class LanHost {
     let link: LanLink;
     try {
       link = await acceptLanGuest(signals, peer);
-    } catch {
-      return; // the guest gave up or could not be reached; nothing to clean up
+    } catch (e) {
+      // the guest gave up or could not be reached; nothing to clean up — but SAY SO, on the
+      // one machine that can see both halves of a failed introduction (the guest only ever
+      // sees its own side)
+      console.warn('[lan] a guest could not be connected:', e instanceof Error ? e.message : e);
+      return;
     }
     if (this.stopped) {
       link.pc.close();
@@ -441,6 +495,7 @@ export class LanHost {
     this.worker?.postMessage({ k: 'close' } satisfies HostIn);
     this.worker?.terminate();
     this.worker = null;
+    this.toWorker = null;
     this.signals?.stopHosting();
     this.signals?.close();
     this.signals = null;

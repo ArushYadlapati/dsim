@@ -8002,9 +8002,16 @@ function pushContest(A: Partial<RobotSpec>, B: Partial<RobotSpec>, seconds = 3):
       'lan tab: the host letting go of its loopback drops its seat from the room',
       /toWorker\(\{ k: 'drop', id: HOST_SEAT \}\)/.test(hr),
     );
+    /* …but an EMPTY room is an idle one, not a stepping one — the room's loop runs only during
+       a match and the room stops it itself — so emptying no longer ends hosting. It did, and a
+       host who went to the lobby alone and pressed Back killed their own room. */
     check(
-      'lan tab: and a room that empties stops hosting rather than stepping forever',
-      /if \(m\.k === 'empty'\) \{\s*\n\s*this\.stop\(/.test(hr),
+      'lan tab: a room that empties stays hosted, so a host stepping out does not kill it',
+      /if \(m\.k === 'empty'\) return;/.test(hr) && !/this\.stop\('Everyone left the room\.'\)/.test(hr),
+    );
+    check(
+      'lan tab: the room itself stops its loop when it empties, so nothing steps an empty room',
+      /if \(this\.clients\.size === 0\) \{\s*\n\s*this\.stop\(\);\s*\n\s*this\.onEmpty\(\);/.test(roomSrc),
     );
 
     /**
@@ -8115,11 +8122,70 @@ function pushContest(A: Partial<RobotSpec>, B: Partial<RobotSpec>, seconds = 3):
        paths deliberately do not, because reaching a LAN server is not picking a room on it. */
     check(
       'lan tab: arriving at the room screen JOINS the code, rather than asking for it again',
-      /onConnected\(tabCode\)/.test(lp) && /onConnected\(r\.code\)/.test(lp),
+      /onConnected\(tabCode, tabHost\.game\)/.test(lp) && /onConnected\(r\.code\)/.test(lp),
     );
     check(
       'lan tab: and the app turns that into the same one-shot auto-join an invite uses',
       /setPendingAutoJoin\(\{ room: code, config: \{ kind: 'versus'/.test(app),
+    );
+
+    /**
+     * ⚠️ **THE ROOM A TAB HOSTS RUNS THE PLAYER'S GAME, AND SEATS ONLY THAT GAME.** It was
+     * built with the protocol default — no game, so DECODE — while the host's own lobby joined
+     * it as whatever their settings said. With BIOBUZZ selected, every READY UP was judged
+     * against DECODE's start rules by the room, cleared, and nothing on screen said why. The
+     * cloud refuses a mismatched joiner ("That code is for a different game mode."); the Worker
+     * now does the same, and the host re-enters as the game the room runs, not the setting.
+     */
+    const roomSrc = readFileSync('server/room.ts', 'utf8');
+    check(
+      "lan tab: the room a tab hosts is built for the PLAYER'S game, not the protocol default",
+      /\.start\(code, \{ kind: 'versus', game \}\)/.test(lp),
+    );
+    check(
+      "lan tab: the Worker refuses a joiner set to a DIFFERENT game, with the cloud's sentence",
+      /coerceGameId\(m\.config\.game\) !== room\.gameId/.test(hw) &&
+        /That code is for a different game mode\./.test(hw),
+    );
+    check(
+      'lan tab: the join frame carries its config to the Worker, so there is something to refuse on',
+      /config: intro\.config/.test(hr),
+    );
+    check(
+      'lan tab: the host re-enters its room as the game the ROOM runs, not the current setting',
+      /game: game \?\? settings\.game/.test(app) && /get game\(\): GameId/.test(hr),
+    );
+
+    /**
+     * ⚠️ **BACK OUT OF THE LOBBY, BACK INTO THE LAN SCREEN, AND NOTHING WORKED.** The lobby
+     * disposes its transport on unmount, which drops the host's seat; alone, the room empties
+     * and stops itself. The keeper still handed the dead `LanHost` back: a code for a room that
+     * was over, a Stop that returned early, a GO TO THE ROOM that threw on a null transport.
+     * With guests present the room lived on, but the crown had passed to a guest and the
+     * loopback was closed for good, so the host could never sit in their own room again.
+     */
+    check(
+      'lan tab: a room that ENDED while parked is not handed back to the LAN screen',
+      /return h\?\.live \? h : null;/.test(keeper) && /get live\(\): boolean/.test(hr),
+    );
+    check(
+      'lan tab: the host gets a FRESH loopback after the lobby disposed the last one',
+      /if \(!this\.local \|\| !this\.local\.isOpen\)/.test(hr) && /this\.makeLocal\(this\.toWorker\)/.test(hr),
+    );
+    check(
+      'lan tab: a RESERVED host keeps the crown when they step out of the lobby',
+      /this\.hostId === id && this\.reservedHost !== id/.test(roomSrc) &&
+        /if \(this\.hostId === id\) this\.reservedHost = id;/.test(roomSrc),
+    );
+    check(
+      'lan tab: but a cloud room still hands the crown on — nothing there reserves one',
+      !/reserveHost\(/.test(readFileSync('server/index.ts', 'utf8')),
+    );
+    check(
+      'lan rtc: a failed handshake says WHICH leg failed, on both ends, not just that it did',
+      /explainNoConnect\(pc, diag, 'host'\)/.test(peerSrc) &&
+        /explainNoConnect\(pc, diag, 'player'\)/.test(peerSrc) &&
+        /remoteMdns/.test(peerSrc),
     );
 
     check(
