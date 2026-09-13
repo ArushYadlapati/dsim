@@ -210,6 +210,48 @@ export function sponsorChecks(check: Check): void {
     `index.html — expected ${sponsorLink('loading')}`,
   );
 
+  // ── the link-preview card ─────────────────────────────────────────────────
+  // `public/og.png` is what Discord / iMessage / Slack / X draw when anyone pastes
+  // a playdsim.com link — the one surface a person sees WITHOUT opening the app,
+  // and the only placement that is GENERATED rather than rendered. It therefore
+  // fails silently in a way none of the others can: the term and `VITE_SPONSOR=0`
+  // cannot reach a committed PNG, and nothing at runtime ever looks at it.
+  const ogGen = code('scripts/og-image.cjs');
+  check(
+    'sponsor: the OG card generator reads the sponsor out of src/sponsor.ts',
+    ogGen.includes("'..', 'src', 'sponsor.ts'") || ogGen.includes('SPONSOR_TS'),
+    'a second copy of the name in scripts/og-image.cjs is drift waiting to happen',
+  );
+  check(
+    'sponsor: the OG card draws the artwork',
+    ogGen.includes('offset-on-dark.png'),
+    'scripts/og-image.cjs — the card is #20262c, so the dark-SURFACE cut',
+  );
+  check(
+    'sponsor: the OG card carries the words as well as the logo',
+    ogGen.includes('SPONSOR_PRESENTS'),
+    '"presented by" is the claim that was bought; a bare logo is decoration',
+  );
+  check(
+    'sponsor: the OG card honours the term at GENERATE time',
+    ogGen.includes('SPONSOR_ON') && /from'\)|until'\)/.test(ogGen),
+    'a committed PNG cannot be taken down by SPONSOR.term or VITE_SPONSOR=0',
+  );
+  // the alt text is the placement for anyone reading a pasted link with a screen
+  // reader, and it is also the only part of the card that lives in the repo as text
+  check(
+    'sponsor: both link-preview alt strings name the sponsor',
+    (read('index.html').match(
+      new RegExp(`image:alt"\\s*\\n?\\s*content="[^"]*${SPONSOR.name}`, 'g'),
+    ) ?? []).length === 2,
+    'index.html — og:image:alt and twitter:image:alt',
+  );
+  check(
+    'sponsor: the card is documented as a manual take-down, like the Discord icon',
+    read('docs/sponsor.md').includes('npm run og'),
+    'docs/sponsor.md — nothing at runtime can retire a committed image',
+  );
+
   // ── the desktop build ─────────────────────────────────────────────────────
   const splash = read('electron/splash.html');
   check('sponsor: the desktop splash names the sponsor', splash.includes(SPONSOR.name), 'electron/splash.html');
