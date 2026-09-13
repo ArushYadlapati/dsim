@@ -218,8 +218,11 @@ const CELL_ACCEPT_R = 8;
  * AIM IS NOT CAPTURE, and the two answers are deliberately different for the first half of the
  * swing: `hiveTakingSide` (`hive.ts`) still says `up` until the release, because a shot already
  * in the air belongs to the tray that is still holding its load. So a volley in flight lands in
- * the old cell while the turret is already slewing to the new one, and AUTO-FIRE holds the gap
- * (`bbCellTaking`, `play.ts`) until the release hands over.
+ * the old cell while the new one is already the list's target.
+ *
+ * ⚠️ AIM ASSIST DOES NOT READ THIS (owner, 2026-09-13). A robot cannot sense which cell is up or
+ * swinging, so `play.ts` `bbAimTarget` aims at the NEARER cell of the own HIVE and pretends it is
+ * up. This list is the field's own answer, for the capture pass and the gallery.
  *
  * `world.biobuzz` is optional on `World` (it is absent in a DECODE or Chain Reaction world),
  * and the STAGED pose is the fallback for that one case rather than a `!`: a missing bag means
@@ -230,6 +233,27 @@ function aimCell(world: World, a: Alliance): BbCellSide {
   const hive = world.biobuzz?.hives[a];
   if (!hive) return BB_HIVE_UP_STAGED[a];
   return hive.tipping > 0 ? otherSide(hive.up) : hive.up;
+}
+
+/**
+ * `owner`'s CELL on `side` as a target — where its opening is and which way it opens IF IT WERE
+ * THE UP CELL, whichever way the HIVE is actually tilted. ONE geometry for both readers:
+ * `scoreTargets` passes the cell that really is up, and Aim Assist (`play.ts` `bbAimTarget`)
+ * passes the NEARER cell and pretends it is up (owner, 2026-09-13).
+ *
+ * The mouth is the cell's own offset direction: an up cell opens AWAY from its pivot, back down
+ * the +y or −y it was raised along, so position and direction cannot disagree.
+ */
+export function hiveCellTarget(owner: Alliance, side: BbCellSide): ScoreTarget {
+  const s = side === 'south' ? -1 : 1;
+  return {
+    id: `hive:${owner}`,
+    alliance: owner,
+    pos: { x: owner === 'red' ? -BB_HIVE_X : BB_HIVE_X, y: s * BB_HIVE_CELL_DY },
+    z: CELL_AIM_Z,
+    r: CELL_ACCEPT_R,
+    mouth: { x: 0, y: s },
+  };
 }
 
 /**
@@ -262,20 +286,7 @@ export function scoreTargets(world: World, a: Alliance): ScoreTarget[] {
   // lifted its far end, so the opening looks back down the +y or −y the cell was raised along.
   // It is the SAME sign as the cell's own offset, which is why this reads off `aimCell` once
   // and uses it for both the position and the direction: they cannot disagree.
-  const cell = (owner: Alliance): ScoreTarget => {
-    const s = aimCell(world, owner) === 'south' ? -1 : 1;
-    return {
-      id: `hive:${owner}`,
-      alliance: owner,
-      pos: {
-        x: owner === 'red' ? -BB_HIVE_X : BB_HIVE_X,
-        y: s * BB_HIVE_CELL_DY,
-      },
-      z: CELL_AIM_Z,
-      r: CELL_ACCEPT_R,
-      mouth: { x: 0, y: s },
-    };
-  };
+  const cell = (owner: Alliance): ScoreTarget => hiveCellTarget(owner, aimCell(world, owner));
   return [
     cell(a),
     ...BB_FLOWERS.map((f, i) => ({

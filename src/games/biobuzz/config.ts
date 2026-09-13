@@ -584,11 +584,6 @@ export const BB_DUMP_RELOAD_S = 0.75;
  * this only bounds a pathological catch-up. APPROX. */
 export const BB_FIRE_BURST_MAX = 6;
 
-/** how close a turret's yaw AND pitch must be to its HIVE solution for AUTO-FIRE to count it as
- * ON TARGET (rad). Manual fire never waits for it — a turret fired mid-slew misses honestly.
- * APPROX. */
-export const BB_ON_TARGET_TOL = 0.05;
-
 /**
  * ⚠️ THE HOOD IS THE ONLY ANGLE IN THIS GAME MEASURED IN DEGREES, AND ONLY ON THE SPEC.
  *
@@ -1047,7 +1042,7 @@ const BB_PRESET_ASSISTS: AssistConfig = {
   fieldCentric: false,
   aimAssist: true,
   autoIntake: true,
-  autoFire: true,
+  autoFire: false, // BIOBUZZ has no auto-fire — Aim Assist gates the driver's own fire (robot.ts `bbLaunch`)
 };
 
 /**

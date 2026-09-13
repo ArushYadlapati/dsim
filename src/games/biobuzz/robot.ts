@@ -293,22 +293,17 @@ function isNectarColour(c: string): boolean {
  * and a per-tick robot field ships 30 times a second to every client in the room.
  */
 export interface BbShot {
-  /** the HIVE cell being tracked (`bbPickTarget`), or `null` with nothing on the open side */
-  target: ScoreTarget | null;
+  /** the cell Aim Assist is on (`bbAimTarget`): the nearer cell of the own HIVE, as if it were up */
+  target: ScoreTarget;
   /** solved muzzle speed per turret exit — [0] a turret / a double turret's POLLEN turret,
    * [1] a double turret's NECTAR turret. `undefined` fires at `BB_LAUNCH_SPEED_DEFAULT`. A
    * dumper solves per element (`bbDumpSolution`) and leaves this empty. */
   speed: readonly (number | undefined)[];
-  /** ON TARGET per exit (same indexing): a turret settled on a REACHABLE HIVE solution within
-   * `BB_ON_TARGET_TOL`, or a dumper within `BB_AIM_TOL` of its aim heading with every element
-   * inside the accepted band. Manual fire does not wait for it, except a dumper's aim gate. */
-  onTarget: readonly boolean[];
-  /** WILL SCORE per exit (same indexing): on target, AND the release this exit would make now,
-   * run forward through the flight stage (`bbFlightEnters`), enters the own up-CELL, AND that
-   * cell will still be taking elements when it arrives (`bbCellTaking` — not mid-swing, and not
-   * about to be tipped by what is already in the air). This is what AUTO-FIRE waits for. Only
-   * computed for a robot that will auto-fire; `false` otherwise. */
-  scores: readonly boolean[];
+  /** WILL LAND per exit (same indexing): the release this exit would make now, run forward through
+   * the flight stage (`bbFlightEnters`), enters `target` PRETENDING THAT CELL IS UP AND SETTLED.
+   * A dumper additionally has to be within `BB_AIM_TOL` of its aim heading. Only predicted while
+   * the driver holds fire; `false` otherwise. This is the whole of Aim Assist's firing gate. */
+  lands: readonly boolean[];
 }
 
 /**
@@ -326,22 +321,15 @@ export interface BbShot {
  *                  firing edge along its own CONVERGING arc into the target cell
  *                  (`bbDumpSolution`), then `BB_DUMP_RELOAD_S` to re-arm.
  *
- * ── WHEN IT FIRES ───────────────────────────────────────────────────────────
- * MANUAL fire fires. AUTO-FIRE fires whenever stage 5b says the next exit WILL SCORE
- * (`BbShot.scores`), with however many elements are held. Two earlier gates made it fire at
- * odd moments and are gone:
- *  · it armed only on a FULL hopper, so it threw ONE element each time the intake took the
- *    fourth and then stopped — firing when the hopper happened to fill, never when a shot was on;
- *  · "on target" was the turret's geometry alone, so with a steady feed it kept firing into a
- *    cell that the elements already in the air were about to TIP, and every one of those arrived
- *    at a swinging HIVE and fell through (measured: 58 of 61 auto-fired shots missed).
- * An unconditional auto-fire is still wrong: every robot is staged full, and a Box Tube robot
- * must be able to carry its load to a FLOWER without throwing it off the closed side. A DUMPER with aim assist and a target holds
- * even a manual press until it is on target: it throws its whole hopper at once, before the
- * assist has had a tick to steer, and a dump thrown 8° off a 20-in cell is a dump on the floor.
- * With NO target (nothing on the open side) a manual dump still throws, straight over its edge
- * at `BB_LAUNCH_SPEED_DEFAULT` — emptying a hopper somewhere that is not the HIVE is a real
- * thing a driver does.
+ * ── WHEN IT FIRES — AIM ASSIST (owner, 2026-09-13) ─────────────────────────
+ * ONLY ON THE DRIVER'S FIRE BUTTON. BIOBUZZ has no auto-fire: `r.autoFire` is never read here
+ * (spawn forces it false), because the auto-fire it replaced fired whenever the real up cell
+ * would take a shot and held back once the elements in the air would tip it — sensing no robot
+ * has. With aim assist on (always, `coerceAssists`), a held fire is released only when stage 5b
+ * says this exit's shot would LAND in the cell the assist is on, pretending that cell is up
+ * (`BbShot.lands`). So a turret still slewing waits, a robot out of range does nothing, and a
+ * shot at a cell that is actually down — or that tips before the shot arrives — is released and
+ * misses, which is what the driver would get on a real field. With aim assist off, fire is fire.
  *
  * CADENCE IS ACCUMULATED, not re-anchored (`fireReadyAt += interval`), so the long-run turret
  * rate is exactly 13/s. The idle guard (clamp forward when the hopper is empty) stops a burst
@@ -352,9 +340,8 @@ export function bbLaunch(world: World, r: RobotState, cmd: RobotCommand, enabled
   const dumper = launcher.kind === 'dumper';
   const top = r.hopper.length > 0 ? r.hopper[r.hopper.length - 1] : undefined;
   const nextExit = dumper || top === undefined ? 0 : bbTurretFor(launcher, isNectarColour(top));
-  const onTarget = shot?.onTarget[nextExit] ?? false;
-  const scores = shot?.scores[nextExit] ?? false;
-  const want = enabled && (cmd.fire || (r.autoFire && scores));
+  const lands = (which: number): boolean => !r.aimAssist || (shot?.lands[which] ?? false);
+  const want = enabled && cmd.fire && lands(nextExit);
   if (!want || r.hopper.length === 0) {
     // IDLE GUARD: hold the cadence clock at "now" while there is nothing to fire, so a robot
     // that sat empty for ten seconds does not empty its hopper in one tick on refill.
@@ -367,14 +354,13 @@ export function bbLaunch(world: World, r: RobotState, cmd: RobotCommand, enabled
     // re-dumping on every capture.
     if (r.fireReadyAt > world.time) return;
     const target = shot?.target ?? null;
-    if (r.aimAssist && target && !onTarget) return;
     const n = r.hopper.length;
     const throws = target ? bbDumpSolution(r, target, n) : null;
     if (throws) {
       // LIFO, each element onto its own converging arc
       for (const t of throws) releasePollen(world, r, t.vel, target ?? undefined, t.origin);
     } else {
-      // no target (or aim assist off and out of band): straight over the edge, a parallel line
+      // aim assist off and out of band: straight over the edge, a parallel line
       const elev = launcher.hoodDeg * BB_DEG;
       const speed = BB_LAUNCH_SPEED_DEFAULT;
       const { origin, dir, perp, half } = launchLine(r, bbShooterEdgeOf({ shooterMount: launcher.mount }));
@@ -401,6 +387,7 @@ export function bbLaunch(world: World, r: RobotState, cmd: RobotCommand, enabled
   while (r.fireReadyAt <= world.time && r.hopper.length > 0 && fired < BB_FIRE_BURST_MAX) {
     const colour = r.hopper[r.hopper.length - 1];
     const which = bbTurretFor(launcher, isNectarColour(colour));
+    if (!lands(which)) break; // a double turret's next element leaves the OTHER turret
     const rel = bbTurretRelease(r, which, shot?.speed[which] ?? BB_LAUNCH_SPEED_DEFAULT);
     releasePollen(world, r, rel.vel, undefined, rel.origin, colour);
     r.fireReadyAt += BB_FIRE_INTERVAL;
@@ -525,8 +512,8 @@ export function bbMuzzleZ(spec: RobotSpec): number {
  * ⚠️ ALL THREE, TOGETHER, BECAUSE THE ARC IS ONE ANSWER AND NOT THREE. `bbSolveShot` returns a
  * MATCHED (speed, angle) pair. The pitch is clamped into the barrel's real envelope and the speed
  * into `BB_LAUNCH_SPEED_MAX`, so a solution the hardware cannot reach comes back as the nearest
- * one it can — which then MISSES, honestly — and says so in `reachable`, which is what AUTO-FIRE
- * reads before calling the turret on target.
+ * one it can — which then MISSES, honestly — and says so in `reachable`, which stage 5b reads before
+ * running Aim Assist's landing prediction.
  */
 export function bbTurretSolution(
   r: RobotState,

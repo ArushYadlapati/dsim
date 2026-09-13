@@ -278,7 +278,10 @@ function makeBiobuzzRobot(setup: RobotSetup, nth: number): RobotState {
     fieldCentric: assists.fieldCentric,
     aimAssist: assists.aimAssist,
     autoIntake: assists.autoIntake,
-    autoFire: assists.autoFire,
+    // BIOBUZZ HAS NO AUTO-FIRE (owner, 2026-09-13): the driver fires and Aim Assist only lets a
+    // shot go when it would land (`bbLaunch`). Forced false rather than ignored so the HUD and the
+    // touch SHOOT button, which read this flag, do not show an assist that does nothing.
+    autoFire: false,
     passive: setup.passive,
     lastFireAt: -10,
     lastIntakeAt: -10,
