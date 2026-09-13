@@ -85,7 +85,17 @@ import { bbRobotSolids } from '../../src/games/biobuzz/robot';
 import { robotPenetration } from '../../src/sim/artifactSolids';
 import { solveArtifacts, type SweepFrom } from '../../src/sim/physicsEngine';
 import { stepGroundBall } from '../../src/sim/physics';
-import { maxMatchTicks } from '../../src/sim/replay';
+import {
+  maxMatchTicks,
+  recordSetups,
+  runRecordMatch,
+  simulateReplay,
+  verifyReplay,
+  worldResult,
+  type CommandSource,
+  type Replay,
+} from '../../src/sim/replay';
+import { bbNectarLocked } from '../../src/games/biobuzz/penalties';
 import { localizeCommand, type ServerMsg } from '../../src/net/protocol';
 import { Room, type Client } from '../../server/room';
 import { BB_DEFAULT_SPEC } from '../../src/games/biobuzz/robotConfig';
@@ -2440,7 +2450,7 @@ export function fieldChecks(check: Check): void {
       );
     }
 
-    // ── A REPLAY ROUND-TRIP CARRIES THE BIT ──────────────────────────────────
+    // ── THE WIRE CARRIES THE BIT ─────────────────────────────────────────────
     /**
      * The wire is the contract: a command the client PREDICTS with must be the command the
      * server steps, and `localizeCommand` is the quantize round-trip that makes the two equal.
@@ -2473,6 +2483,90 @@ export function fieldChecks(check: Check): void {
             'bbNectar']
             .filter((k) => (only as unknown as Record<string, boolean>)[k]).join(',')
         }`,
+      );
+    }
+
+    // ── A REPLAY ROUND-TRIP CARRIES THE BIT ──────────────────────────────────
+    /**
+     * Surviving the quantize lattice is not the same as surviving the RECORDER, and the block
+     * above only proves the first. A replay is {seed, setups, command log}, and the log is
+     * written by a SECOND quantize pass inside `ReplayRecorder` — so a bit that localizes
+     * correctly and is dropped on the way into the track plays back as `false`: the NECTAR
+     * never enters on re-simulation, the stored match diverges from the one that was played,
+     * and a press that worked on the driver's own screen is missing from the only copy of it
+     * that survives. That is the same failure `REPLAY_FORMAT` 2 exists because of.
+     *
+     * So this records a real match and re-simulates the container after the trip through JSON
+     * a stored replay actually takes (`scripts/smoke.ts` does the same for DECODE's presets and
+     * CR's archetypes). Agreeing hashes alone would prove nothing — two matches in which
+     * nothing happened agree perfectly — so the NECTAR has to have LEFT THE STOCK and LANDED in
+     * the LOADING ZONE in BOTH worlds before the comparison is worth reading.
+     *
+     * The clock is the price of admission: G410 locks entry until the 1:00 cue, so the run
+     * carries the whole pre-countdown, AUTO and the transition before a press can be granted.
+     * Driving the clock is not what is under test, which is why the source asks the WORLD
+     * whether the entry is live rather than counting ticks itself.
+     */
+    {
+      const SEED = 9;
+      const setups = recordSetups(BB_DEFAULT_SPEC, 'solo');
+      // the staged stock, read off an identical world: `runRecordMatch` builds its own, so
+      // there is no other moment at which the before-picture can be taken.
+      const staged = createBiobuzzWorld('match', SEED, setups);
+      const STOCK0 = staged.biobuzz!.nectarStock.blue;
+      const LZ0 = inLZ(staged, 'blue');
+      // one tick past the cue plus a few seconds of presses — the whole stock drains in that
+      // window, which is what makes the entry visible in the stock count as well as on the tiles
+      const CUE_TICK = Math.ceil(
+        (C.PRE_COUNTDOWN + C.AUTO_DURATION + C.TRANSITION_DURATION +
+          (C.TELEOP_DURATION - BB_FLOWER_UNLOCK_S)) / C.SIM_DT,
+      );
+      const STOP = Math.min(CUE_TICK + 240, maxMatchTicks());
+      /**
+       * Alternating down/up, because the button is an EDGE and a held one enters once. Reading
+       * the world to decide WHEN is fine for a replay: the recorder stores the commands that
+       * were ISSUED, so playback replays those numbers rather than re-running this logic.
+       */
+      const src: CommandSource = (tick, w) =>
+        new Map([[0, press(!bbNectarLocked(w) && tick % 2 === 0)]]);
+      const rec = runRecordMatch(SEED, setups, src, {
+        mode: 'match',
+        // BIOBUZZ, or `simModuleFor` falls back to DECODE and this records a different sport
+        game: 'biobuzz',
+        stopTick: STOP,
+      });
+      const liveBB = rec.world.biobuzz!;
+      const liveEntered = inLZ(rec.world, 'blue') - LZ0;
+      check(
+        'human player: the RECORDED match really entered NECTAR — the check is not vacuous',
+        liveEntered > 0 && liveBB.nectarStock.blue === STOCK0 - liveEntered,
+        `${liveEntered} entered · stock ${STOCK0} → ${liveBB.nectarStock.blue} · ` +
+          `${rec.replay.ticks} ticks`,
+      );
+
+      // the trip a stored replay really takes — the server keeps it as a JSON document, and an
+      // `undefined` optional field does not survive that trip
+      const stored: Replay = JSON.parse(JSON.stringify(rec.replay)) as Replay;
+      const back = simulateReplay(stored);
+      const backBB = back.biobuzz!;
+      check(
+        'human player: the press survives the recorder — the replay enters the SAME NECTAR',
+        inLZ(back, 'blue') - LZ0 === liveEntered &&
+          backBB.nectarStock.blue === liveBB.nectarStock.blue,
+        `replay entered ${inLZ(back, 'blue') - LZ0} vs ${liveEntered} · ` +
+          `stock ${backBB.nectarStock.blue} vs ${liveBB.nectarStock.blue}`,
+      );
+      const played = worldResult(rec.world);
+      const verified = verifyReplay(stored);
+      check(
+        'human player: re-simulating the stored replay reproduces the match exactly',
+        verified.hash === played.hash && verified.ticks === played.ticks,
+        `hash ${verified.hash} vs ${played.hash} · ticks ${verified.ticks} vs ${played.ticks}`,
+      );
+      check(
+        'human player: the container names BIOBUZZ, so the log re-simulates the right game',
+        stored.game === 'biobuzz' && stored.setups.length === setups.length,
+        `game ${stored.game} · ${stored.setups.length} setups`,
       );
     }
   }
