@@ -72,6 +72,8 @@ export const BIOBUZZ_SIM: GameSimModule = {
   startDefaultIndex: bbDefaultIndex,
   startRoleLabel: bbRoleLabel,
   startAnchorName: bbAnchorName,
+  // BIOBUZZ's step never calls `updatePathTraversal`, so an imported `.pp` path would be inert
+  autoPaths: false,
   bounds: { halfX: BB_HALF_X, halfY: BB_HALF_Y, viewMargin: BB_VIEW_MARGIN },
   colliders: biobuzzColliders,
   createWorld: createBiobuzzWorld,

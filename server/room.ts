@@ -23,6 +23,7 @@ import type {
 } from '../src/types';
 import {
   dequantizeCommand,
+  sanitizeQCommand,
   encodeMsg,
   quantizeCommand,
   slimWorld,
@@ -365,11 +366,17 @@ export class Room {
   // robot id assigned in startMatch = the client's add-order index)
   private ranked = false;
   private intros: PlayerIntro[] = [];
+  /** the finished match's result is still being persisted, so the ratings a rematch would
+   *  introduce are not known yet — see `maybeRematch` */
+  private resultPending = false;
+  private resultWait: ReturnType<typeof setTimeout> | null = null;
   // set on the HOST machine when this room was staged by the designated matchmaker
   // (region-aware ranked). The roster is authoritative; the match starts once every
   // staged player has (re)connected here, or cancels after RANKED_JOIN_GRACE_MS.
   private pendingMatch: PendingMatch | null = null;
   private pendingTimer: ReturnType<typeof setTimeout> | null = null;
+  /** reaps held slots when no loop is running to do it — see `armGraceReap` */
+  private graceReap: ReturnType<typeof setTimeout> | null = null;
   // ranked lifecycle: 'connecting' while paired players are still arriving, then
   // 'strategy' during the pre-match coordination window, then 'match' once the world
   // is built. Custom rooms skip 'strategy' (connecting → match). `world===null` still
@@ -466,6 +473,29 @@ export class Room {
       this.world === null &&
       this.phase !== 'strategy'
     );
+  }
+
+  /**
+   * CAN *THIS* ID TAKE A SEAT? — `canJoin` plus the RESERVED HOST.
+   *
+   * `canJoin` answers for a room whose host is one of the people already in it, which is
+   * every room the cloud runs: `add` gives the crown to the first client through the door,
+   * so the host is seated by definition and capacity is a single number.
+   *
+   * A TAB-HOSTED LAN ROOM INVERTS THAT. Its host reserves the crown at open (`reserveHost`)
+   * and then joins LAST — they are reading the code out while guests arrive — so the seat
+   * they will need is not occupied yet and plain capacity does not know it is spoken for.
+   * With four guests admitted the host was refused their own room, or (before any refusal
+   * existed at all) seated into an oversized roster that `POST /api/lan` then rejected.
+   *
+   * The reserved seat is held ONLY until its holder actually arrives, and only for a room
+   * that reserved one: with no reservation, or once the host is in `clients`, this is
+   * exactly `canJoin`.
+   */
+  canSeat(id: string): boolean {
+    if (!this.canJoin()) return false;
+    const hostPending = this.hostId !== '' && id !== this.hostId && !this.clients.has(this.hostId);
+    return !hostPending || this.clients.size + 1 < roomCapacity(this.config);
   }
 
   /** authoritative sim tick (0 before the match starts) */
@@ -746,7 +776,31 @@ export class Room {
       // a partner who drops must not leave the run un-restartable: their vote is
       // no longer required, so a rematch the other driver already asked for lands
       this.refreshRematch();
+      // ⚠️ THE GRACE IS ONLY EVER CHECKED BY THE LOOP, AND A FINISHED MATCH HAS NO LOOP.
+      // `finalizeMatch` stops it and keeps the room for the results screen, so a player who
+      // closed the tab from there was held forever: never reaped, the room never deleted.
+      // Every finished match somebody walked away from leaked one room, and the always-warm
+      // primary (which never auto-stops to clear them) filled `MAX_ROOMS` with rooms that
+      // had nobody in them and refused every new room in the region (2026-09-13, 24/24
+      // with `/api/perf` reading 0 live). So with no loop running, reap on a timer instead.
+      if (!this.loop) this.armGraceReap();
     }
+  }
+
+  /** run `checkGrace` once the grace has lapsed, for a room whose loop is not running */
+  private armGraceReap(): void {
+    if (this.graceReap) clearTimeout(this.graceReap);
+    this.graceReap = setTimeout(() => {
+      this.graceReap = null;
+      // a rematch restarted the loop meanwhile: it owns the check again
+      if (this.loop) return;
+      this.checkGrace();
+      // someone is still inside their own grace (they dropped later) — look again
+      if (this.clients.size > 0 && ![...this.clients.values()].every((x) => x.connected)) {
+        this.armGraceReap();
+      }
+    }, RECONNECT_GRACE_MS + 1000);
+    if (this.graceReap.unref) this.graceReap.unref();
   }
 
   /** reclaim a held slot on a fresh socket. Returns the new owning-connection id on
@@ -920,7 +974,7 @@ export class Room {
     }
   }
 
-  private onInput(id: string, tick: number, q: QCommand, ack?: number, gen?: number): void {
+  private onInput(id: string, tick: number, q: unknown, ack?: number, gen?: number): void {
     // STALE GENERATION: an input produced for a match this room has already replaced.
     // Dropping it is the whole reason a rematch can rebuild in place — see `matchGen`.
     // Absent (older client) ⇒ accepted, exactly as before.
@@ -946,7 +1000,14 @@ export class Room {
     // high-water marks that cannot be lowered once poisoned. Reject at the door instead.
     if (!Number.isSafeInteger(tick) || tick < 0) return;
     if (this.world && tick - this.world.tick > MAX_INPUT_LEAD_TICKS) return;
-    const cmd = dequantizeCommand(q);
+    // AND THE PAYLOAD ITSELF, for the same reason the tick above is checked here: `q` is
+    // typed `QCommand` by the wire types and is in fact whatever `JSON.parse` produced.
+    // `dequantizeCommand` would turn a missing axis into NaN and an out-of-range one into a
+    // track speed no motor can reach, inside the world every OTHER member of this room is
+    // being sent as authority. Refused before `latest`, `pending` or liveness see it.
+    const safe = sanitizeQCommand(q);
+    if (!safe) return;
+    const cmd = dequantizeCommand(safe);
     // track the freshest command by tick (even if it's now in the past) — this is
     // what a late input still contributes, so the robot keeps moving
     if (tick > (this.latestTick.get(rid) ?? -1)) {
@@ -1507,7 +1568,7 @@ export class Room {
         (Math.abs(c.driveX) > 0.05 || Math.abs(c.driveY) > 0.05 || Math.abs(c.rotate) > 0.05 ||
           Math.abs(c.leftDrive) > 0.05 || Math.abs(c.rightDrive) > 0.05 ||
           c.intake || c.fire || !!c.catalyst || !!c.fling || !!c.driveMode ||
-          !!c.bbPlaceNectar || !!c.bbPlace);
+          !!c.bbPlaceNectar || !!c.bbPlace || !!c.bbNectar);
       if (moving) this.driveTicks.set(r.id, (this.driveTicks.get(r.id) ?? 0) + 1);
       // AWAY is measured from the socket, not from the sticks: a driver whose client is
       // gone is a different thing from one who is present and idle, and only the first is
@@ -1632,10 +1693,37 @@ export class Room {
       // record → the run's leaderboard standing. Broadcast so the results screen
       // can reveal the ELO change (versus) or the PB / WR / rank line (record).
       if (ret && typeof (ret as Promise<unknown>).then === 'function') {
+        // A REMATCH WAITS FOR THIS. The rematch's `matchStart` re-sends `this.intros`, and
+        // those are the ratings from when the pairing was STAGED — so a rematch voted through
+        // before this lands introduced every driver at their pre-match rating. Capped, so a
+        // slow or failed write can delay a rematch but never block it.
+        this.resultPending = true;
+        if (this.resultWait) clearTimeout(this.resultWait);
+        const settle = (): void => {
+          if (!this.resultPending) return;
+          this.resultPending = false;
+          if (this.resultWait) clearTimeout(this.resultWait);
+          this.resultWait = null;
+          this.maybeRematch();
+        };
+        this.resultWait = setTimeout(settle, 5000);
+        if (this.resultWait.unref) this.resultWait.unref();
         void (ret as Promise<PersistOutcome | void>)
           .then((out) => {
             if (!out) return;
             if (out.matchId) this.lastMatchId = out.matchId;
+            // THE INTRO RATINGS FOLLOW THE RESULT. `intros` is set once from the staged
+            // roster and re-sent on every rematch's `matchStart`; without this the rematch
+            // showed each driver the rating from BEFORE the match they just played. Done
+            // before the empty-room return, since nothing is sent from here.
+            if (out.elo && out.elo.length && this.intros.length) {
+              const afterByRobot = new Map<number, number>();
+              for (const e of out.elo) {
+                const robotId = robotByUser.get(e.userId);
+                if (robotId !== undefined) afterByRobot.set(robotId, e.after);
+              }
+              this.intros = this.intros.map((i) => ({ ...i, elo: afterByRobot.get(i.id) ?? i.elo }));
+            }
             if (this.clients.size === 0) return;
             if (out.record) {
               this.broadcast({ t: 'recordResult', info: out.record });
@@ -1651,7 +1739,8 @@ export class Room {
               if (results.length) this.broadcast({ t: 'eloResult', results });
             }
           })
-          .catch((err) => console.error('[room] result broadcast failed:', err));
+          .catch((err) => console.error('[room] result broadcast failed:', err))
+          .finally(settle);
       }
     }
     this.stop();
@@ -1768,6 +1857,9 @@ export class Room {
     if (ids.length === 0) return;
     if (!ids.every((i) => this.rematchVotes.has(i))) return;
     if (!this.matchSetups.length) return;
+    // the last match's ratings are still being written: start once they are in (the
+    // persist's `settle` calls back here), so the rematch introduces the updated ones
+    if (this.resultPending) return;
     // a FRESH seed: a rematch is a new run at a new motif, not a replay of the old
     // one. `beginMatch` does the whole reset (world, buffers, recorder, generation)
     // through exactly the path a first start takes, so there is no second, subtly

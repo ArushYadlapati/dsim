@@ -17,7 +17,7 @@ import { fileURLToPath } from 'node:url';
 import { GAME_IDS, coerceGameId, isGameId, type GameId } from '../../src/games/types';
 import { GAMES, moduleFor, registeredGames } from '../../src/games';
 import { SIM_GAMES, simModuleFor } from '../../src/games/sim';
-import { coerceStartIndex } from '../../src/net/sanitize';
+import { coerceStartIndex, sanitizePlayer } from '../../src/net/sanitize';
 import { coerceSetup, DEFAULT_ASSISTS, DEFAULT_SPEC } from '../../src/sim/spawn';
 import {
   SEASONS,
@@ -31,7 +31,8 @@ import { CHAIN_CATALYST_LABELS } from '../../src/games/chain/labels';
 import { INTAKE_SHORT } from '../../src/ui/labelData';
 import type { RobotSpec } from '../../src/types';
 import { SPONSOR, sponsorActive } from '../../src/sponsor';
-import { BB_HOOD_DEFAULT_DEG, BB_START_POSES } from '../../src/games/biobuzz/config';
+import { BB_HOOD_DEFAULT_DEG, BB_NECTAR_R, BB_POLLEN_R, BB_START_POSES } from '../../src/games/biobuzz/config';
+import { elementLine } from '../../src/games/biobuzz/Gallery';
 import { categoryDefaultIndex, indexCategory } from '../../src/ui/startPositions';
 import { BB_DEFAULT_SPEC } from '../../src/games/biobuzz/robotConfig';
 import { bbLauncherOf, bbLiftOf } from '../../src/games/biobuzz/mechs';
@@ -615,6 +616,150 @@ export function coreChecks(check: Check): void {
       '...and it is the slice answering, not the world default state.ts seeds',
       hud.nectarWhy.red === bb.nectarWhy.red && hud.nectarWhy.red !== 'none-left',
       `slice ${hud.nectarWhy.red} · world ${bb.nectarWhy.red}`,
+    );
+  }
+
+  // ---- the gallery caption counts what is actually there ------------------
+  /**
+   * The cell caption under every gallery still read `${world.balls.length} pollen`, written
+   * when POLLEN was the only element. `hive-tip` loads 3 NECTAR over 3 POLLEN and the caption
+   * said `6 pollen` — and a caption is precisely the line a reader checks a picture against,
+   * so the one surface meant to explain a confusing cell was the surface lying about it.
+   *
+   * `elementLine` classifies through `bbKindOf`, the same function the SCORE uses, so a
+   * caption cannot disagree with what the rules think is on the field. The single-element
+   * scenes keep their shorter caption, which the second check pins — a caption that always
+   * printed `. 0 nectar` would be a different regression.
+   */
+  section('BIOBUZZ gallery caption — two element sizes, two counts');
+  {
+    const w = createBiobuzzWorld('match', 17, [setup(0, 'red', {}, 0)]);
+    const mk = (id: number, color: 'yellow' | 'red' | 'blue') => ({
+      ...w.balls[0], id, color, r: color === 'yellow' ? BB_POLLEN_R : BB_NECTAR_R,
+    });
+    w.balls = [mk(901, 'yellow'), mk(902, 'yellow'), mk(903, 'yellow'), mk(904, 'red'), mk(905, 'blue')];
+    check(
+      'a mixed field names both kinds, and never calls a NECTAR a POLLEN',
+      elementLine(w) === '3 pollen · 2 nectar',
+      elementLine(w),
+    );
+    w.balls = [mk(901, 'yellow'), mk(902, 'yellow')];
+    check(
+      '...and a POLLEN-only field keeps the short caption, no zero-nectar tail',
+      elementLine(w) === '2 pollen',
+      elementLine(w),
+    );
+  }
+
+  // ---- the phase EVENT says the same word every other surface says --------
+  /**
+   * ⚠️ `world.events` IS ONE OF THE THREE SURFACES THE TERMINOLOGY RULING BINDS — with the
+   * live HUD and the burned-in video overlay. `src/sim/match.ts` pushes `DRIVER-CONTROLLED`
+   * for the other seasons; BIOBUZZ runs its own phase machine in `step.ts` and was pushing
+   * `TELEOP`, so one event log carried two names for one phase and a viewer reading the
+   * overlay against the log saw a disagreement that meant nothing.
+   *
+   * The negative half matters as much as the positive one: asserting only that the right
+   * string is present would still pass if both were pushed.
+   */
+  section('BIOBUZZ phase events — the shared vocabulary');
+  {
+    const w = createBiobuzzWorld('match', 13, [setup(0, 'red', {}, 0), setup(1, 'blue', {}, 0)]);
+    w.match.phase = 'transition';
+    w.match.phaseTimeLeft = SIM_DT / 2; // one tick short of the flip
+    const none = new Map([[0, cmd({})], [1, cmd({})]]);
+    biobuzzStep(w, SIM_DT, none);
+    check(
+      'the AUTO -> TELEOP flip really happened (else the next two prove nothing)',
+      w.match.phase === 'teleop',
+      w.match.phase,
+    );
+    check(
+      'BIOBUZZ announces DRIVER-CONTROLLED, the word the HUD and the overlay use',
+      w.events.includes('DRIVER-CONTROLLED'),
+      JSON.stringify(w.events),
+    );
+    check(
+      '...and it does NOT also push the season-local `TELEOP`',
+      !w.events.includes('TELEOP'),
+      JSON.stringify(w.events),
+    );
+  }
+
+  // ---- participation credit knows every button this game has --------------
+  /**
+   * `Room.countParticipation` decides whether a driver is AFK for ranked standing, and it
+   * does it by listing the commands that count as input. The list is written by hand, so a
+   * button added later is simply absent — which is exactly what happened to `bbNectar`: the
+   * human-player button landed on bit 128 after the list was written, and a driver whose only
+   * input was that key read as idle and lost standing for playing their position.
+   *
+   * Derived from `RobotCommand` rather than hard-coded, so the NEXT button to land fails here
+   * on the day it lands instead of the day somebody is wrongly marked AFK. `server/room.ts`
+   * is read as source because the method is private and the room needs a live socket.
+   */
+  section('server: participation credit covers every BIOBUZZ button');
+  {
+    const types = readRepo('src/types.ts');
+    const roomSrc = readRepo('server/room.ts');
+    const iface = types.slice(types.indexOf('interface RobotCommand'));
+    const body = iface.slice(0, iface.search(/^\}/m));
+    const buttons = [...new Set([...body.matchAll(/^\s*(bb[A-Za-z]+)\??:/gm)].map((m) => m[1]))];
+    const moving = roomSrc.slice(roomSrc.indexOf('const moving ='));
+    const expr = moving.slice(0, moving.indexOf(';'));
+    check(
+      'RobotCommand really declares BIOBUZZ buttons (else the next check is vacuous)',
+      buttons.length >= 3,
+      buttons.join(', '),
+    );
+    const missing = buttons.filter((b) => !expr.includes(`c.${b}`));
+    check(
+      'every bb* command counts as driver input, `bbNectar` included',
+      missing.length === 0,
+      missing.length ? `missing: ${missing.join(', ')}` : buttons.join(', '),
+    );
+  }
+
+  /**
+   * A BIOBUZZ BUILD SURVIVES THE JOIN INTO A RANKED ROOM.
+   *
+   * A matchmaker-staged room is joined with NO config, and `server/index.ts` used to sanitize
+   * the joiner's player with that config's game — 'decode' — so every ranked BIOBUZZ driver
+   * arrived as a default robot: `bbMech` dropped and the mounts reset. The join now uses the
+   * room's own game. `server/index.ts` opens sockets on import, so that half is read as source.
+   */
+  section('server: a BIOBUZZ build survives the ranked join');
+  {
+    const built = BB_PRESET_LIST.find((s) => bbLiftOf(s) !== null) ?? BB_PRESET_LIST[0];
+    const wire = JSON.parse(
+      JSON.stringify({
+        clientId: 'x', name: 'x', teamName: 'T', teamNumber: 1, alliance: 'blue',
+        startIndex: 0, ready: false, spec: built, assists: DEFAULT_ASSISTS,
+      }),
+    );
+    const asBiobuzz = sanitizePlayer(wire, 'biobuzz').spec;
+    const asDecode = sanitizePlayer(wire, 'decode').spec;
+    const mechOf = (s: RobotSpec): string => JSON.stringify(s.bbMech ?? null);
+    check(
+      'the test build really has a Box Tube (else the checks below prove nothing)',
+      bbLiftOf(built) !== null,
+      built.name,
+    );
+    check(
+      "sanitized as BIOBUZZ, the build's mechanisms and intake mount survive the wire",
+      mechOf(asBiobuzz) === mechOf(built) && asBiobuzz.intakeMount === built.intakeMount,
+      mechOf(asBiobuzz),
+    );
+    check(
+      'sanitized as DECODE, they do NOT (so the check above can fail)',
+      mechOf(asDecode) !== mechOf(built),
+      mechOf(asDecode),
+    );
+    const indexSrc = readRepo('server/index.ts');
+    check(
+      "the room join sanitizes the player with the ROOM's game",
+      indexSrc.includes('sanitizePlayer(msg.player, r.gameId)') &&
+        !indexSrc.includes('sanitizePlayer(msg.player, cfg.game)'),
     );
   }
 

@@ -232,6 +232,18 @@ export class GameController {
    * whoosh-synced results reveal); null until the match ends */
   private matchOverAt: number | null = null;
   /**
+   * `world.time` at the buzzer — the start of the post-match SETTLE WINDOW; null before the
+   * match ends and again once the window has been spent. Multiplayer marks it too and the
+   * harvest it triggers is simply a no-op there (no local recorder — the server owns that
+   * recording, and its own settle window), which is cheaper than a second phase test here.
+   *
+   * SIM time, deliberately, where `matchOverAt` beside it is WALL time. `matchOverAt` drives an
+   * animation, so it belongs on the user's clock; this one decides how much SIMULATION the
+   * saved score is allowed to see, and must not shrink because a frame stuttered or the tab was
+   * backgrounded — the server counts the same window off `w.time` (`server/room.ts:1543-1545`).
+   */
+  private settleSince: number | null = null;
+  /**
    * SOLO PRACTICE IS RECORDED, so it has to be REPRODUCIBLE — which it was not.
    *
    * `replay.ts` states the invariant a replay depends on: a run is fully SIM-DRIVEN
@@ -488,13 +500,11 @@ export class GameController {
       if (phase === 'transition') this.audio.play('end');
       if (phase === 'teleop' && this.prevPhase === 'transition') this.audio.play('resume');
       if (phase === 'post') {
-        // THE MATCH ENDING IS THE END OF THE RECORDING. Solo practice reaches `post` on its
-        // own (a real 2:30 match), so there is no session boundary to invent and the replay is
-        // bounded by the match itself — the same size as a record run's.
-        // It goes through the SAME policy call as every abandoned exit, even though a completed
-        // run is always kept: the point of `replaySavePolicy` is that ONE function answers
-        // "is this run worth keeping", and a path that decides for itself is a second answer.
-        this.harvestPracticeRun(true);
+        // THE MATCH ENDING IS THE END OF THE RECORDING — but the match does not stop SCORING on
+        // the buzzer tick. Solo practice reaches `post` on its own (a real 2:30 match), so there
+        // is no session boundary to invent and the replay is bounded by the match itself plus
+        // the settle window below — the same span a record run's server-side recording covers.
+        this.settleSince = this.world.time;
         this.audio.play('end');
         // record the moment the match ended so the results screen can hold its
         // score reveal until the whoosh lands (both use MATCH_RESULT_REVEAL_MS)
@@ -504,6 +514,33 @@ export class GameController {
         }, C.MATCH_RESULT_REVEAL_MS);
       }
       this.prevPhase = phase;
+    }
+    /**
+     * HARVEST WHEN THE FIELD HAS SETTLED, NOT ON THE BUZZER TICK.
+     *
+     * `stepMatch` re-runs `assessMatchEnd` on EVERY `post` tick (`src/sim/match.ts:29-38`)
+     * because TELEOP PATTERN / DEPOT / BASE are resting-position rules: an artifact still
+     * draining the ramp or rolling in the depot is worth points the moment it stops, a beat
+     * after the buzzer. The server is built around that — it keeps stepping and recording and
+     * only calls `finalizeMatch` once `MATCH_SETTLE_S` of sim time has passed in `post`
+     * (`server/room.ts:1539-1546`), so the number it saves is the SETTLED one.
+     *
+     * Closing the recorder and snapshotting `worldResult` on the first `post` tick made solo
+     * the one path that scored the field early: the saved history entry and the replay's stored
+     * result could both come in UNDER the score the driver watched land on the results screen,
+     * and under what the identical run would have scored online. Waiting the same window makes
+     * the two agree, and the extra ticks stay in the log so a replay of the run ends where the
+     * run ended rather than mid-drain.
+     *
+     * The window is `MATCH_RESULT_REVEAL_MS` (`src/config.ts:35`), the same delay the results
+     * screen holds its reveal for, so the snapshot is taken on the beat the score appears —
+     * nothing is kept waiting that the driver was not already waiting for.
+     */
+    if (this.settleSince !== null && this.world.time - this.settleSince >= C.MATCH_SETTLE_S) {
+      // cleared first: `harvestPracticeRun` is a no-op once the recorder is closed, and a mark
+      // left standing would re-ask that question on every frame of the results screen.
+      this.settleSince = null;
+      this.harvestPracticeRun(true);
     }
     if (
       phase === 'teleop' &&
@@ -1106,6 +1143,7 @@ export class GameController {
     // free drive never reaches `pre`, so this is a solo PRACTICE match by construction
     this.recorder = new ReplayRecorder(this.soloSeed, this.soloSetups, 'match', this.gameId);
     this.drivenTicks = 0;
+    this.settleSince = null;
     this.lastBeepAt = -1;
   }
 
@@ -1117,11 +1155,18 @@ export class GameController {
     }
     // BEFORE the rebuild, both because the run is scored against the world it happened in and
     // because `makeWorld` is the moment it becomes unrecoverable.
+    // RESET inside the settle window (the ~2.8 s between the buzzer and the harvest) lands here
+    // rather than on the completed path, and that is right: the driver cut the settle short, so
+    // the field never came to rest and the score is the partial one. It is still KEPT — a whole
+    // match is far past `PRACTICE_SAVE_MIN_S`, so the policy answers `long-enough` instead of
+    // `completed` — and `this.practice` is cleared below anyway, because a restart has no
+    // results screen to show it on.
     this.harvestPracticeRun(false);
     this.world = this.makeWorld();
     this.prevPhase = this.world.match.phase;
     this.warningPlayed = false;
     this.matchOverAt = null;
+    this.settleSince = null;
     this.hudCountdown = null;
     // `harvestPracticeRun` above has already closed the recorder and either kept the run or
     // dropped it; these clear whatever it left, so the next `startMatch` opens a fresh recorder
@@ -1176,7 +1221,8 @@ export class GameController {
 
   /** ranked pre-match intro roster (name/team/drivetrain + ELO per driver), or
    * null for solo / free drive / non-ranked custom rooms. Drives the RankedIntro
-   * overlay. Static after matchStart, so the UI reads it once. */
+   * overlay. Fixed for one match, but a rematch's `matchStart` carries new ratings, so the UI
+   * re-reads it whenever a match enters its countdown. */
   getIntro(): IntroPlayer[] | null {
     const s = this.session;
     if (!s || !s.ranked) return null;

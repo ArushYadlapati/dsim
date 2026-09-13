@@ -299,6 +299,9 @@ export function bbBoxTubeGlyph(
   let ux = d.x;
   let uy = d.y;
   if (toward) {
+    // `hyp`, not `Math.hypot`: this runs in sim code, and `Math.hypot` is one of the calls
+    // whose result is engine-defined, so a host and a guest on different browsers can
+    // disagree in the last bit and desync. `hyp` was already imported here.
     const k = hyp(toward.x - outer.x, toward.y - outer.y);
     if (k > 1e-6) {
       ux = (toward.x - outer.x) / k;

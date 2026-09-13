@@ -19,10 +19,10 @@
  */
 import type { Transport } from '../net/transport';
 import type { LobbyPlayer, RoomConfig } from '../net/protocol';
-import { DEFAULT_ROOM_CONFIG } from '../net/protocol';
+import { DEFAULT_ROOM_CONFIG, encodeMsg } from '../net/protocol';
 import { LanSignalClient } from '../net/lanSignalClient';
 import { acceptLanGuest, type LanLink } from '../net/lanPeer';
-import { HOST_SEAT, type HostIn, type HostOut } from './hostProtocol';
+import { HOST_SEAT, REFUSE_CLOSE_MS, type HostIn, type HostOut } from './hostProtocol';
 
 // the Worker needs this too (it reserves the room's host with it), so the constant lives in
 // the module both threads already share; re-exported here, where its users look for it
@@ -269,6 +269,32 @@ export class LanHost {
          room until the tab closes. */
       if (m.k === 'empty') {
         this.stop('Everyone left the room.');
+        return;
+      }
+      /* THE ROOM WOULD NOT SEAT THIS PEER — tell it so, then let it go.
+         An `error` frame is what the cloud sends a client it turns away, and the stock
+         `LobbyClient` already surfaces one, so a refused LAN guest reads the same sentence
+         over the same path instead of watching a link it cannot use go quiet. The link is
+         closed a beat later (`REFUSE_CLOSE_MS`) so the frame is actually gone before the
+         peer connection is torn down. */
+      if (m.k === 'refused') {
+        const raw = encodeMsg({ t: 'error', message: m.message });
+        if (m.id === HOST_SEAT) {
+          // the host's own seat was refused: nothing it can do about it, and a room it
+          // cannot sit in is not a room it can host
+          this.local?.deliver(raw);
+          this.stop(m.message);
+          return;
+        }
+        const link = this.links.get(m.id);
+        if (link && link.control.readyState === 'open') {
+          try {
+            link.control.send(raw);
+          } catch {
+            /* the close below is the refusal either way */
+          }
+        }
+        setTimeout(() => this.dropGuest(m.id, toWorker), REFUSE_CLOSE_MS);
         return;
       }
       if (m.k === 'health') {

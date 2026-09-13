@@ -39,6 +39,7 @@ import {
 import {
   BB_CONTROL_LIMIT,
   BB_FRAME_RAM_SPEED,
+  BB_G417_ENABLED,
   bbAwardFoul,
   bbFootprintGap,
   bbNectarLocked,
@@ -1056,66 +1057,36 @@ function penaltyChecks(check: Check): void {
   };
   const fe = footprintExtents(bare([{ id: 0, alliance: 'blue' }]).robots[0].spec);
   {
-    const w = bare([{ id: 0, alliance: 'blue' }]);
-    w.match.phase = 'teleop';
-    w.match.phaseTimeLeft = 60;
-    const r = w.robots[0];
-    // OUTSIDE the +x frame bar, its rear flush on the bar's outer face (x = +25), driving INTO it
-    place(w, 0, BB_FRAME_BAR_OUT + fe.rear, 0);
-    r.vel = { x: -(BB_FRAME_RAM_SPEED + 10), y: 0 };
-    const first = bill(w, 20);
-    check('G417: the FIRST high-speed ram is STRATEGIC — a MAJOR, not a free warning',
-      first.major.blue === 1, String(first.major.blue));
-    check(`G417: red is +${BB_PTS.foulMajor}`, first.pts.red === BB_PTS.foulMajor, String(first.pts.red));
-    check('G417: and it names itself STRATEGIC on the event feed',
-      w.events.some((e) => e.includes('G417') && e.includes('STRATEGIC')),
-      w.events.filter((e) => e.includes('G417')).join(' | '));
-
-    // back off, then ram again — the tariff is PER MATCH, so it is not paid twice
-    r.vel = { x: 0, y: 0 };
-    bill(w, 5);
-    r.vel = { x: -(BB_FRAME_RAM_SPEED + 10), y: 0 };
-    const second = bill(w, 20);
-    check('G417: a SECOND ram bills nothing more — the tariff is per MATCH',
-      second.major.blue === 1, String(second.major.blue));
-    check('G417: so red is still +20 and not +40', second.pts.red === BB_PTS.foulMajor, String(second.pts.red));
-
-    // driving ALONG the structure at the same speed is not ramming (on the INNER face, between
-    // the bars, where G409 says robots drive under the hives)
-    const innerX = BB_FRAME_BAR_IN - fe.front; // front flush on the +x bar's inner face (x = +24)
-    const q = ramWorld(innerX, 0, 0, BB_FRAME_RAM_SPEED + 40);
-    check('G417: driving ALONG a frame bar is not ramming', bill(q, 20).major.blue === 0);
-    // ...and a gentle nudge is the manual's own likely-NOT-STRATEGIC case ("accidentally
-    // bumping the frame while attempting to pick up POLLEN"), so it is not a foul either
-    q.robots[0].vel = { x: BB_FRAME_RAM_SPEED - 10, y: 0 };
-    check('G417: contact below the ram threshold is not STRATEGIC, and not a foul',
-      bill(q, 20).major.blue === 0);
-
     /**
-     * EXAMPLE A NAMES NO FACE. A ram from BETWEEN the bars into the INNER face, and a ram along y
-     * into a bar END, are the same act as the outside-in ram above — and the old closing speed
-     * (`-sign * vel.x`) read the first as driving AWAY and the second as zero.
+     * G417 IS OFF (`BB_G417_ENABLED`, owner ruling 2026-09-13), so what these cases assert is
+     * that NONE of them bills. They are the same five geometries the rule used to be measured
+     * on — outside-in, inner face, bar end, the mirrored bar, and the along-the-bar and gentle
+     * cases that never billed — kept rather than deleted because they are what proves the
+     * rule is off everywhere it used to be on, and because they come straight back if the
+     * HIVE ever becomes something a robot can tip.
      */
-    const inner = ramWorld(innerX, 0, BB_FRAME_RAM_SPEED + 10, 0);
-    check('G417: a high-speed ram on the INNER face (from under the hives) bills a MAJOR',
-      bill(inner, 20).major.blue === 1, String(inner.match.fouls.blue.major));
-    const away = ramWorld(innerX, 0, -(BB_FRAME_RAM_SPEED + 10), 0);
-    check('G417: driving fast AWAY from the inner face while touching it is not a ram',
-      bill(away, 20).major.blue === 0, String(away.match.fouls.blue.major));
-    // off the +y END of the +x bar, centred on the bar's width, its −y face flush on y = +BB_FRAME_Y
+    check('G417: the rule is disabled', BB_G417_ENABLED === false);
+    const innerX = BB_FRAME_BAR_IN - fe.front;
     const endX = (BB_FRAME_BAR_IN + BB_FRAME_BAR_OUT) / 2;
-    const end = ramWorld(endX, BB_FRAME_Y + fe.half, 0, -(BB_FRAME_RAM_SPEED + 10));
-    check('G417: a high-speed ram into a bar END along y bills a MAJOR',
-      bill(end, 20).major.blue === 1, String(end.match.fouls.blue.major));
-    const brush = ramWorld(endX, BB_FRAME_Y + fe.half, 0, -(BB_FRAME_RAM_SPEED - 10));
-    check('G417: a slow brush on a bar END is not a foul',
-      bill(brush, 20).major.blue === 0, String(brush.match.fouls.blue.major));
-    // and the −x bar is the mirror: outside it at x < −25, driving +x
-    const mirror = ramWorld(-BB_FRAME_BAR_OUT - fe.front, 0, BB_FRAME_RAM_SPEED + 10, 0);
-    mirror.robots[0].heading = Math.PI; // rear toward the bar, as on the +x side
-    mirror.robots[0].pos.x = -BB_FRAME_BAR_OUT - fe.rear;
-    check('G417: the outside-in ram on the −x bar still bills',
-      bill(mirror, 20).major.blue === 1, String(mirror.match.fouls.blue.major));
+    const cases: [string, World][] = [
+      ['an outside-in ram on the +x bar', ramWorld(BB_FRAME_BAR_OUT + fe.rear, 0, -(BB_FRAME_RAM_SPEED + 10), 0)],
+      ['a ram on the INNER face', ramWorld(innerX, 0, BB_FRAME_RAM_SPEED + 10, 0)],
+      ['a ram into a bar END along y', ramWorld(endX, BB_FRAME_Y + fe.half, 0, -(BB_FRAME_RAM_SPEED + 10))],
+      ['driving ALONG a frame bar', ramWorld(innerX, 0, 0, BB_FRAME_RAM_SPEED + 40)],
+      ['a gentle brush', ramWorld(endX, BB_FRAME_Y + fe.half, 0, -(BB_FRAME_RAM_SPEED - 10))],
+    ];
+    for (const [what, q] of cases) {
+      const out = bill(q, 20);
+      check(`G417: ${what} bills nothing`, out.major.blue === 0 && out.pts.red === 0,
+        `major=${out.major.blue} red=${out.pts.red}`);
+      check(`G417: ${what} writes no event`, !q.events.some((e) => e.includes('G417')),
+        q.events.filter((e) => e.includes('G417')).join(' | '));
+    }
+    // the mirrored bar, staged the way the +x side is (rear toward the bar)
+    const mirror = ramWorld(-BB_FRAME_BAR_OUT - fe.rear, 0, BB_FRAME_RAM_SPEED + 10, 0);
+    mirror.robots[0].heading = Math.PI;
+    check('G417: the -x bar bills nothing either', bill(mirror, 20).major.blue === 0,
+      String(mirror.match.fouls.blue.major));
   }
 
   // ── the edge memory is CLEARED outside the played periods ─────────────────

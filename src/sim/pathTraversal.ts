@@ -149,6 +149,7 @@ export function initializePathTraversal(robot: RobotState) {
   robot.currentPathSegmentIndex = 0;
   robot.pathSegmentProgress = 0; // This will be 't' along the current path segment
   robot.pathWaitTimer = 0;
+  robot.pathWaitedBefore = -1;
   robot.pathSequenceIndex = 0;
   robot.pathTargetPoint = null;
   robot.pathTargetHeading = null;
@@ -286,7 +287,17 @@ export function updatePathTraversal(
   }
 
   // --- Apply waitBeforeMs if not already applied ---
-  if (robot.pathSegmentProgress === 0 && currentPathLine.waitBeforeMs && currentPathLine.waitBeforeMs > 0) {
+  // `pathWaitedBefore` is what makes "if not already applied" mean anything. The test used to
+  // be progress === 0 alone, which is ALSO the state the robot is in when the wait's own timer
+  // expires — so the wait re-armed itself every tick and the segment never started. Recorded
+  // per sequence index, and reset by `initializePathTraversal`, so each segment waits once.
+  if (
+    robot.pathSegmentProgress === 0 &&
+    robot.pathWaitedBefore !== robot.pathSequenceIndex &&
+    currentPathLine.waitBeforeMs &&
+    currentPathLine.waitBeforeMs > 0
+  ) {
+    robot.pathWaitedBefore = robot.pathSequenceIndex;
     robot.pathWaitTimer = currentPathLine.waitBeforeMs;
     // console.log(`[PathTraversal] Robot ${robot.id}: Waiting for ${currentPathLine.waitBeforeMs}ms (before segment).`);
     return {
@@ -393,7 +404,12 @@ export function updatePathTraversal(
     // If no alignment needed or last segment, handle waitAfterMs or advance
     if (currentPathLine.waitAfterMs && currentPathLine.waitAfterMs > 0) {
       robot.pathWaitTimer = currentPathLine.waitAfterMs;
-      // console.log(`[PathTraversal] Robot ${robot.id}: Waiting for ${currentPathLine.waitAfterMs}ms (after segment).`);
+      // ADVANCED WITH THE TIMER, exactly as a `wait` sequence item is. Arming alone left the
+      // index on the finished segment with progress still at 1.0, so the tick the timer ran
+      // out re-entered this same branch and armed it again — the after-wait never ended, and
+      // the robot sat on that segment for the rest of AUTO.
+      robot.pathSequenceIndex++;
+      robot.pathSegmentProgress = 0;
     } else {
       robot.pathSequenceIndex++;
       robot.pathSegmentProgress = 0; // Reset for next sequence item

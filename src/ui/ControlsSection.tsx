@@ -13,8 +13,10 @@ import {
 import { rangeFill } from './rangeFill';
 
 const KEY_LABELS: Record<KeyAction, string> = {
-  driveUp: 'Drive forward',
-  driveDown: 'Drive back',
+  driveUp: 'Drive forward (Tank: left side)',
+  driveDown: 'Drive back (Tank: left side)',
+  tankRightUp: 'Tank right side forward',
+  tankRightDown: 'Tank right side back',
   driveLeft: 'Strafe left',
   driveRight: 'Strafe right',
   rotateCCW: 'Turn left',

@@ -1127,9 +1127,11 @@
   justify-content: center;
   margin: 0 0 var(--ds-s-5);
 }
-/* Discord / GitHub — prominent pills near the top of the home menu */
+/* Discord / Instagram / GitHub — prominent pills near the top of the home menu. They WRAP:
+   three pills no longer fit side by side on the narrowest phones. */
 .ds-home-links {
   display: flex;
+  flex-wrap: wrap;
   justify-content: center;
   gap: 10px;
   margin: 0 0 var(--ds-s-5);
@@ -2619,6 +2621,22 @@ tr.lb-detail td {
   display: flex;
   flex-direction: column;
 }
+/* "recorded before a small physics correction" — informational, not a warning.
+   The replay plays fine; only the final number may be a point or two off, so this
+   sits back rather than shouting. */
+.ds-replay-drift {
+  margin: 0 auto 8px;
+  max-width: 640px;
+  padding: 8px 12px;
+  border: 1px solid var(--ds-line);
+  border-radius: 8px;
+  background: var(--ds-tile);
+  color: var(--ds-mut);
+  font-size: 13px;
+  line-height: 1.5;
+  text-align: center;
+}
+
 .ds-replay-top {
   display: flex;
   align-items: center;
@@ -4173,14 +4191,6 @@ button.ds-key:active {
   cursor: default;
   background: var(--ds-panel);
 }
-.ds-bind-foot {
-  display: flex;
-  align-items: center;
-  gap: 14px;
-  margin-top: 12px;
-  flex-wrap: wrap;
-}
-
 /* ---- lobby roster ---------------------------------------------------- */
 .ds-players {
   display: flex;
@@ -4671,6 +4681,9 @@ button.ds-key:active {
 .ds-qcount.bar {
   white-space: normal;
   margin-right: 2px;
+  /* the bar's other text (the presence chip) is 13px sans; match it so the queue
+     indicator doesn't read as a different, smaller UI element */
+  font-size: 13px;
 }
 /* ON A FILLED SURFACE the defaults above are wrong, and one of them was invisible:
    the home menu's PLAY button is `.primary`, i.e. an --ds-accent FILL, and the count
