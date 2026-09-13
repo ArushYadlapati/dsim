@@ -52,10 +52,9 @@ const BACKGROUND_QUEUE_TIP = (
  */
 const READY_WINDOW_NOTE = (
   <>
-    Stay at your keyboard once you queue. When a match is found you have{' '}
-    <b>{Math.round(RANKED_JOIN_GRACE_MS / 1000)}s</b> to load in and{' '}
-    <b>{Math.round(STRATEGY_DURATION_MS / 1000)}s</b> on the strategy screen to ready up. Miss
-    either and the match is cancelled for everyone and your account standing drops.
+    Once a match is found: <b>{Math.round(RANKED_JOIN_GRACE_MS / 1000)}s</b> to load in, then{' '}
+    <b>{Math.round(STRATEGY_DURATION_MS / 1000)}s</b> to ready up. Miss either and the match is
+    cancelled and your standing drops.
   </>
 );
 

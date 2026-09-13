@@ -736,11 +736,12 @@ function Hud({ hud, showEventLog }: { hud: HudSnapshot; showEventLog: boolean })
                 <span className="chip">{hud.butterflyMode === 'tank' ? 'TRACTION' : 'MECANUM'}</span>
               )}
               <span className={`chip ${hud.gamepadConnected ? 'on' : 'off'}`}>🎮</span>
-              {hud.net && (
-                <span className={`chip ${hud.net.peers > 0 ? 'on' : 'warn'}`}>
-                  NET {hud.net.peers + 1}P
-                </span>
-              )}
+              {/* NO PEER-COUNT CHIP. "NET 2P" was a headcount, and a headcount is only news
+                  the moment it CHANGES — which is exactly what the two chips beside it already
+                  say out loud: `WAITING · <name>` when somebody is missing, `⚠ DESYNC` when the
+                  link is bad, and `NetQuality` for the link itself. A standing count of a
+                  roster the player assembled themselves is the same class of noise as the
+                  "0 watching" spectator chip that was taken out below. */}
               {hud.net?.server && (
                 <span className="chip on">🌐 {hud.net.server}</span>
               )}
