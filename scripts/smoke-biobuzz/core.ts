@@ -31,7 +31,8 @@ import { CHAIN_CATALYST_LABELS } from '../../src/games/chain/labels';
 import { INTAKE_SHORT } from '../../src/ui/labelData';
 import type { RobotSpec } from '../../src/types';
 import { SPONSOR, sponsorActive } from '../../src/sponsor';
-import { BB_HOOD_DEFAULT_DEG } from '../../src/games/biobuzz/config';
+import { BB_HOOD_DEFAULT_DEG, BB_START_POSES } from '../../src/games/biobuzz/config';
+import { categoryDefaultIndex, indexCategory } from '../../src/ui/startPositions';
 import { BB_DEFAULT_SPEC } from '../../src/games/biobuzz/robotConfig';
 import { bbLauncherOf, bbLiftOf } from '../../src/games/biobuzz/mechs';
 import type { BbMechSpec } from '../../src/games/biobuzz/mechs';
@@ -93,6 +94,45 @@ export function coreChecks(check: Check): void {
   // act number shared between games is fine; BIOBUZZ's first period is Act 1 · Season 1
   // (owner, 2026-09-12).
   check('biobuzz: records and ranked open at Act 1', simModuleFor('biobuzz').initialAct === 1, String(simModuleFor('biobuzz').initialAct));
+
+  // ---- BIOBUZZ start roles are TOP / BOTTOM, and it has its own editor --------
+  // Configure fell into Chain Reaction's editor and the 2v2 screens into DECODE's, the shared
+  // start helpers used DECODE's CLOSE/FAR anchor table, and the role bar said CLOSE/FAR.
+  section('biobuzz start roles');
+  {
+    const bb = simModuleFor('biobuzz');
+    check('biobuzz: the module brings its own start editor (not CR\'s or DECODE\'s)', !!moduleFor('biobuzz').startEditor);
+    check('biobuzz: roles are TOP / BOTTOM', bb.startRoleLabel?.('close') === 'TOP' && bb.startRoleLabel?.('far') === 'BOTTOM');
+    const n = bb.startPoseCount;
+    const tops = Array.from({ length: n }, (_, i) => i).filter((i) => indexCategory(i, 'biobuzz') === 'close');
+    const bottoms = Array.from({ length: n }, (_, i) => i).filter((i) => indexCategory(i, 'biobuzz') === 'far');
+    check('biobuzz: two default anchors per role', tops.length === 2 && bottoms.length === 2, `top=[${tops}] bottom=[${bottoms}]`);
+    check('biobuzz: anchor 0 is TOP and anchor 1 is BOTTOM (a 2-robot alliance spreads onto them)', indexCategory(0, 'biobuzz') === 'close' && indexCategory(1, 'biobuzz') === 'far');
+    check(
+      'biobuzz: each role defaults to one of its own anchors',
+      indexCategory(categoryDefaultIndex('close', 'biobuzz'), 'biobuzz') === 'close' &&
+        indexCategory(categoryDefaultIndex('far', 'biobuzz'), 'biobuzz') === 'far',
+    );
+    check('biobuzz: anchors are named for their role', Array.from({ length: n }, (_, i) => bb.startAnchorName?.(i) ?? '').every((s, i) => s.startsWith(indexCategory(i, 'biobuzz') === 'close' ? 'TOP' : 'BOTTOM')));
+    // THE WORDS FOLLOW THE SCREEN ON A POINT-SYMMETRIC FIELD: for each alliance, a TOP anchor is
+    // drawn at the top (actual y >= 0) and is named for the wall it is really on. Red's anchors are
+    // the canonical ones rotated 180°, so red's TOP role is the canonical BOTTOM slot.
+    for (const alliance of ['blue', 'red'] as const) {
+      let bad = '';
+      for (let i = 0; i < n; i++) {
+        const p = BB_START_POSES[i];
+        const actualY = alliance === 'blue' ? p.pos.y : -p.pos.y;
+        const label = bb.startRoleLabel?.(indexCategory(i, 'biobuzz'), alliance) ?? '';
+        const name = bb.startAnchorName?.(i, alliance) ?? '';
+        const wall = p.wall === 'side' ? 'SIDE' : (actualY >= 0) ? 'REAR' : 'AUDIENCE';
+        if ((actualY >= 0) !== (label === 'TOP') || name !== `${label} · ${wall} WALL`) {
+          if (!bad) bad = `anchor ${i}: y=${actualY} label=${label} name=${name}`;
+        }
+      }
+      check(`biobuzz: ${alliance}'s TOP anchors are the ones drawn at the top, named for their real wall`, bad === '', bad);
+    }
+    check('decode: roles and anchor categories are unchanged (no module hooks)', !simModuleFor('decode').startRoleLabel && indexCategory(0, 'decode') === 'close');
+  }
   // the back-compat rule: an absent or unknown game is DECODE, never a throw
   check('moduleFor(undefined) is decode', moduleFor(undefined).id === 'decode');
   check('simModuleFor(null) is decode', simModuleFor(null).id === 'decode');

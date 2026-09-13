@@ -4,6 +4,8 @@ import type { Alliance, GameSettings as GS, RobotSpec } from '../types';
 import { START_POSES } from '../config';
 import { CHAIN_START_POSES } from '../games/chain/config';
 import { StartPositionEditor } from './StartPositionEditor';
+import { savedStartCap } from './startPositions';
+import { useAds } from '../ads/AdsProvider';
 import { ChainStartEditor } from './ChainStartEditor';
 import { moduleFor } from '../games';
 import { selectStart, switchCategory, saveStart, deleteSavedStart, indexCategory, startSelectionLegal } from './startPositions';
@@ -188,6 +190,8 @@ export function Lobby({
   // for a different-sized robot would otherwise be silently relocated at spawn)
   // DECODE gates on G304, CR on G04 Lab-Area containment.
   const startLegal = !me || startSelectionLegal(settings.game, me.spec, me.alliance, me.startPose);
+  // the saved-pose cap a game's own start editor is handed (it cannot read the ads context itself)
+  const maxSaved = savedStartCap(useAds().supporter);
   // a duo record run needs BOTH drivers present before it can start (it's 2v0);
   // versus custom rooms can start with fewer (1v1, etc.)
   const enoughPlayers = !isRecord || players.length >= capacity;
@@ -665,7 +669,9 @@ export function Lobby({
                       ? 'CUSTOM'
                       : settings.game === 'chain'
                         ? (CHAIN_START_POSES[p.startIndex]?.name ?? '-')
-                        : (START_POSES[p.startIndex]?.label ?? '-')}
+                        : (moduleFor(settings.game).startAnchorName?.(p.startIndex, p.alliance) ??
+                          START_POSES[p.startIndex]?.label ??
+                          '-')}
                   </span>
                   <span className={`ds-chip ${p.ready ? 'on' : 'off'}`}>
                     {p.ready ? 'READY' : 'NOT READY'}
@@ -707,6 +713,7 @@ export function Lobby({
                 dismissed={swapDismissed}
                 onDismiss={dismissSwap}
                 game={settings.game}
+                alliance={me.alliance}
               />
             )}
             {moduleFor(settings.game).startEditor ? (
@@ -716,6 +723,7 @@ export function Lobby({
                 const StartEd = moduleFor(settings.game).startEditor!;
                 return (
                   <StartEd
+                    maxSaved={maxSaved}
                     spec={me.spec}
                     alliance={me.alliance}
                     value={me.startPose}

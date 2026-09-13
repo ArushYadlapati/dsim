@@ -1,5 +1,15 @@
 import type { GameSimModule } from '../types';
-import { BB_HALF_X, BB_HALF_Y, BB_INITIAL_ACT, BB_START_POSE_COUNT, BB_VIEW_MARGIN } from './config';
+import {
+  BB_HALF_X,
+  BB_HALF_Y,
+  BB_INITIAL_ACT,
+  BB_START_POSE_COUNT,
+  BB_VIEW_MARGIN,
+  bbAnchorCat,
+  bbAnchorName,
+  bbDefaultIndex,
+  bbRoleLabel,
+} from './config';
 import { biobuzzColliders } from './colliders';
 import { biobuzzHud } from './hudRobot';
 import { bbRobotSolids } from './robot';
@@ -55,6 +65,13 @@ export const BIOBUZZ_SIM: GameSimModule = {
   // field is point-symmetric, so red's version of a stored pose is a 180° rotation of it and
   // not an x-reflection; see `bbActiveStartLegal`.
   startLegal: bbActiveStartLegal,
+  // start ROLES are TOP / BOTTOM (which end of the field a robot starts at), like Chain
+  // Reaction's, not DECODE's CLOSE / FAR — read by the shared start-position helpers, the
+  // role-swap bar and the lobby/strategy start chips
+  startAnchorCategory: bbAnchorCat,
+  startDefaultIndex: bbDefaultIndex,
+  startRoleLabel: bbRoleLabel,
+  startAnchorName: bbAnchorName,
   bounds: { halfX: BB_HALF_X, halfY: BB_HALF_Y, viewMargin: BB_VIEW_MARGIN },
   colliders: biobuzzColliders,
   createWorld: createBiobuzzWorld,

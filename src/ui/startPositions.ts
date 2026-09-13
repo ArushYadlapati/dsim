@@ -65,12 +65,17 @@ export function categoryPresets(cat: StartCat): CatPreset[] {
  * the category onto its TOP/BOTTOM Lab-corner anchors, DECODE onto its Close/Far presets. */
 export function categoryDefaultIndex(cat: StartCat, game?: GameId): number {
   if (game === 'chain') return chainDefaultIndex(cat);
+  // a game with its own roles answers through its module (BIOBUZZ's TOP / BOTTOM)
+  const byModule = simModuleFor(game).startDefaultIndex;
+  if (byModule) return byModule(cat);
   return categoryPresets(cat)[0]?.index ?? 0;
 }
 
 /** the category a preset/anchor index belongs to (game-aware, see above) */
 export function indexCategory(index: number, game?: GameId): StartCat {
   if (game === 'chain') return chainAnchorCat(index);
+  const byModule = simModuleFor(game).startAnchorCategory;
+  if (byModule) return byModule(index);
   return START_POSES[index]?.cat ?? 'close';
 }
 

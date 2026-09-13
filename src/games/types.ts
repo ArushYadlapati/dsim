@@ -179,6 +179,23 @@ export interface GameSimModule {
    * construction: answer `true` rather than making each caller special-case it.
    */
   startLegal?(spec: RobotSpec, a: Alliance, startPose: StartPose | null | undefined): boolean;
+  /**
+   * THE START ROLES, for a game whose roles are not DECODE's CLOSE / FAR table. The shared
+   * `StartCat` slots ('close' / 'far') carry whatever a game's two roles are; these say which
+   * anchor belongs to which, which anchor a role defaults to, and what the roles and anchors are
+   * called on screen. Absent ⇒ DECODE's `START_POSES` table and CLOSE / FAR words.
+   *
+   * They exist for the same reason `startLegal` does: `startPositions.ts`, the role-swap bar and
+   * the lobby/strategy start chips each branched `game === 'chain' ? … : <DECODE>`, so BIOBUZZ got
+   * DECODE's anchor categories, DECODE's anchor names and CLOSE / FAR for its TOP / BOTTOM roles.
+   * Chain Reaction's existing branches are left as they are.
+   */
+  startAnchorCategory?(index: number): import('../types').StartCat;
+  startDefaultIndex?(cat: import('../types').StartCat): number;
+  /** `alliance` matters on a point-symmetric field, where the same role slot is drawn at the top
+   * for one alliance and the bottom for the other (BIOBUZZ). */
+  startRoleLabel?(cat: import('../types').StartCat | undefined, alliance?: Alliance): string;
+  startAnchorName?(index: number, alliance?: Alliance): string;
   bounds: FieldBounds;
   colliders: FieldColliders;
   createWorld(mode: GameMode, seed: number, setups: RobotSetup[], settings?: GameSettings): World;

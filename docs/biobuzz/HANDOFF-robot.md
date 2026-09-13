@@ -6,6 +6,27 @@ Reverse-chronological. Prepend a new dated section; demote the old "READ FIRST".
 
 ## READ FIRST — 2026-09-12, night: the owner's builder feedback — three launchers, the Box Tube places
 
+> **2026-09-13: BIOBUZZ HAS ITS OWN START EDITOR, WITH TOP / BOTTOM ROLES.** With the
+> `startEditor` slot empty, Configure fell into Chain Reaction's editor and the 2v2 lobby and
+> strategy screens into DECODE's.
+>
+> - **The editor:** `src/games/biobuzz/StartEditor.tsx` fills the slot. It draws the BIOBUZZ
+>   field, judges G304 with `bbEvalStart`, seats with `bbSnapStart` (the spawn's own seat), and
+>   stores poses canonical (blue), with red as the 180° point rotation.
+> - **Roles:** TOP / BOTTOM, with two anchors each. New `TOP · SIDE WALL` (61.5, 45) and
+>   `BOTTOM · SIDE WALL` (61.5, −60) join the rear and audience wall ones. Indices 0 and 1 are
+>   still the 2v2 spread.
+> - **New sim-module hooks:** `startAnchorCategory`, `startDefaultIndex`, `startRoleLabel` and
+>   `startAnchorName` (`src/games/types.ts`). `startPositions.ts`, `RoleSwapBar` and the
+>   lobby/strategy start chips read them, so BIOBUZZ no longer gets DECODE's CLOSE/FAR table or
+>   anchor labels. Chain Reaction's branches are unchanged.
+> - ⚠️ **The labels depend on the alliance** (`bbRoleLabel`, `bbAnchorName`): on a
+>   point-symmetric field red's canonical TOP slot is drawn at the bottom, so the words flip for
+>   red. The stored slot does not.
+> - **Supporter save cap:** now passed in by the host screens (`StartEditorProps.maxSaved`).
+>   `src/ads/adsense.ts` reads `import.meta.env` at load and must not enter a game module the
+>   headless suites import.
+
 > **2026-09-13, later still: A DUMP IS A LOB, CLOSE IN TO A STRICT CAP (owner).** The owner found
 > the dumper had to stand too far away and could reach too far. The cause was the fixed hood: an
 > arc only descends past its own apex, so at 75° the accepted band was 23–71 in.

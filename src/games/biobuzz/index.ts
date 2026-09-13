@@ -13,6 +13,7 @@ import { drawBiobuzzRobot } from './drawRobot';
 import { bbConfigSummary, bbStatTiles } from './labels';
 import { BB_PRESET_LIST, BB_REAL_PRESETS, bbPresetLines, bbSpecMatches } from './presets';
 import { BIOBUZZ_SIM } from './sim';
+import { BiobuzzStartEditor } from './StartEditor';
 
 /**
  * BIOBUZZ as a full (CLIENT) `GameModule` — the DOM-free `BIOBUZZ_SIM` plus every
@@ -31,8 +32,6 @@ import { BIOBUZZ_SIM } from './sim';
  *    BIOBUZZ has no published structure to underlay: Section 9 (ARENA) is a Kickoff
  *    placeholder, so the field is four walls and a tile grid. A no-op costs a call per frame
  *    and tells the next reader there is something to see. It lands with the geometry.
- *  • `startEditor` — `startLegality: false`: there is no legality to edit against, and the two
- *    anchors are picked from the shared preset list.
  */
 export const BIOBUZZ_MODULE: GameModule = {
   ...BIOBUZZ_SIM,
@@ -49,6 +48,10 @@ export const BIOBUZZ_MODULE: GameModule = {
   scoreBar: BiobuzzScoreBar,
   resultsRows: biobuzzResultsRows,
   labels: { configSummary: bbConfigSummary },
+  // THE START EDITOR. Empty, Configure fell into Chain Reaction's editor and the 2v2 lobby and
+  // strategy screens into DECODE's; this one draws the BIOBUZZ field and judges G304 with
+  // `bbEvalStart`, with TOP / BOTTOM roles.
+  startEditor: BiobuzzStartEditor,
   // no auto-fire: the driver fires, and Aim Assist only releases a shot that would land
   offersAutoFire: false,
   /**

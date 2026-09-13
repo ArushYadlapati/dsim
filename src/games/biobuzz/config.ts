@@ -948,7 +948,10 @@ export function bbMassFloorBump(spec: RobotSpec): number {
 // ─────────────────────────────────────────────────────────────────────────────
 
 export interface BbStartAnchor {
+  /** the anchor's name in the CANONICAL (blue) frame — see `bbAnchorName` for what a player sees */
   name: string;
+  /** which perimeter wall the robot backs onto, in the canonical frame */
+  wall: 'rear' | 'audience' | 'side';
   pos: { x: number; y: number };
   heading: number;
 }
@@ -994,8 +997,16 @@ export interface BbStartAnchor {
  * buzzer, which is the whole reason there are two.
  */
 export const BB_START_POSES: readonly BbStartAnchor[] = [
-  { name: 'START · REAR', pos: { x: 34, y: 61.5 }, heading: -Math.PI / 2 },
-  { name: 'START · AUDIENCE', pos: { x: 46, y: -61.5 }, heading: Math.PI / 2 },
+  { name: 'TOP · REAR WALL', wall: 'rear', pos: { x: 34, y: 61.5 }, heading: -Math.PI / 2 },
+  { name: 'BOTTOM · AUDIENCE WALL', wall: 'audience', pos: { x: 46, y: -61.5 }, heading: Math.PI / 2 },
+  // THE SIDE-WALL PAIR (owner, 2026-09-13: "come up with some default positions"). The start
+  // editor offers each role two anchors, like Chain Reaction's corners. Both back onto the
+  // alliance's OWN side wall (x = 72 − 10.5, facing into the field) on either side of its LOADING
+  // ZONE (y ∈ [−48, −24], G304.E): TOP at y = 45 clears the zone and F3's foot (y ∈ [21, 27]),
+  // BOTTOM at y = −60 sits between the zone and the audience corner. Indices 0 and 1 are still
+  // the TOP / BOTTOM defaults a 2-robot alliance spreads onto; these are the alternatives.
+  { name: 'TOP · SIDE WALL', wall: 'side', pos: { x: 61.5, y: 45 }, heading: Math.PI },
+  { name: 'BOTTOM · SIDE WALL', wall: 'side', pos: { x: 61.5, y: -60 }, heading: Math.PI },
 ];
 
 /** how many start anchors this game offers — read by the shared per-game start-index clamp
@@ -1013,8 +1024,31 @@ export const bbDefaultIndex = (cat: StartCat): number => {
   const i = BB_START_POSES.findIndex((_, idx) => bbAnchorCat(idx) === cat);
   return i >= 0 ? i : 0;
 };
-export const bbRoleLabel = (cat: StartCat | undefined): string =>
-  cat === 'close' ? 'TOP' : cat === 'far' ? 'BOTTOM' : '-';
+/**
+ * THE ROLE AS A PLAYER READS IT — TOP means the pair of anchors drawn at the TOP of the field for
+ * THIS alliance.
+ *
+ * ⚠️ IT DEPENDS ON THE ALLIANCE, because this field is POINT-symmetric. The role slots are
+ * canonical (close = the blue-frame y ≥ 0 anchors), and red's anchors are those rotated 180°, so
+ * red's `close` anchors are drawn at the BOTTOM. Chain Reaction mirrors in x and never meets this;
+ * labelling red by the canonical slot put "TOP · REAR WALL" on the audience wall at the bottom of
+ * red's editor. Only the WORDS flip — the stored slot, the anchor indices and the 2v2 role split
+ * are unchanged.
+ */
+export const bbRoleLabel = (cat: StartCat | undefined, alliance: Alliance = 'blue'): string => {
+  if (cat !== 'close' && cat !== 'far') return '-';
+  return (cat === 'close') === (alliance === 'blue') ? 'TOP' : 'BOTTOM';
+};
+
+/** an anchor's name as `alliance` sees it: its role (`bbRoleLabel`) and the wall it is really on —
+ * red's rear-wall anchor is on the AUDIENCE wall once rotated, and a side wall stays a side wall. */
+export function bbAnchorName(index: number, alliance: Alliance = 'blue'): string {
+  const p = BB_START_POSES[index];
+  if (!p) return '-';
+  const wall =
+    alliance === 'blue' || p.wall === 'side' ? p.wall : p.wall === 'rear' ? 'audience' : 'rear';
+  return `${bbRoleLabel(bbAnchorCat(index), alliance)} · ${wall.toUpperCase()} WALL`;
+}
 
 /** a field point, optionally with a heading (radians). What `bbMirror` maps. */
 export interface BbPoint {
