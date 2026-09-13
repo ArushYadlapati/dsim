@@ -5,6 +5,8 @@ import { worldHash } from '../../src/net/checksum';
 import { defaultSettings, switchGame } from '../../src/settings';
 import { DEFAULT_ASSISTS, DEFAULT_SPEC } from '../../src/sim/spawn';
 import {
+  BB_SIZE_STEP,
+  bbSizeLimits,
   BB_AIM_TOL,
   BB_DEG,
   BB_DUMP_RELOAD_S,
@@ -593,6 +595,29 @@ export function robotChecks(check: Check): void {
     const flank = bbCoerce({ ...oldMax, ...mech({ launcher: { kind: 'turret', mount: 'center', hoodDeg: 75 }, lift: { kind: 'vslide', mount: 'left' } }) });
     const fl = extent(flank);
     check('R105.A: a flank Box Tube on a maxed chassis keeps its size (18 × 24 either way round)', inPrism(flank) && flank.length === 15 && flank.width === 17, `${flank.length} × ${flank.width} → ${fl.ex.toFixed(2)} × ${fl.ey.toFixed(2)}`);
+    // NO 15-DIGIT SIZES (owner report, 2026-09-13): a corner tube's reach is 2.36·√½, and the
+    // clamp used to land a chassis on 16.331227996399747. Every size limit sits on the slider grid.
+    const onGrid = (v: number): boolean => Math.abs(v / BB_SIZE_STEP - Math.round(v / BB_SIZE_STEP)) < 1e-9;
+    check('R105.A: the corner-tube chassis is clamped onto the slider grid', onGrid(fixed.length) && onGrid(fixed.width), `${fixed.length} × ${fixed.width}`);
+    {
+      let off = 0;
+      let first = '';
+      for (const intake of ['sloped', 'vector', 'triangle'] as const) {
+        for (const intakeMount of BB_INTAKE_MOUNTS) {
+          for (const lm of [null, ...BB_MOUNT_POSITIONS.filter((m) => m !== 'center')]) {
+            const s = { ...BB_DEFAULT_SPEC, intake, intakeMount, ...mech({ launcher: { kind: 'turret', mount: 'center', hoodDeg: 75 }, lift: lm ? { kind: 'vslide', mount: lm } : null }) } as RobotSpec;
+            const l = bbSizeLimits(s);
+            for (const v of [l.maxLength, l.maxWidth]) {
+              if (!onGrid(v)) {
+                off++;
+                if (!first) first = `${intake}/${intakeMount}/${lm}: ${v}`;
+              }
+            }
+          }
+        }
+      }
+      check(`R105.A: every build's maximum length and width is a multiple of ${BB_SIZE_STEP} in`, off === 0, first);
+    }
 
     const builds: RobotSpec[] = [];
     const lifts = [null, ...BB_MOUNT_POSITIONS.filter((m) => m !== 'center')];
