@@ -595,16 +595,37 @@ export function coerceStartPose(raw: unknown): StartPose | null {
 }
 
 export function coerceSetup(s: RobotSetup, game?: GameId): RobotSetup {
-  const autoPath = s.autoPath !== undefined ? coerceAutoPath(s.autoPath) : null;
+  // EVERY per-game answer this function needs comes off the module, not off `game ===`:
+  // the anchor count, whether start legality exists, whether paths run at all. An
+  // absent/unknown game resolves to DECODE, like every other module lookup.
+  const mod = simModuleFor(game);
+  // A PATH A GAME CANNOT RUN IS DROPPED HERE. Only DECODE's step drives path traversal
+  // (`autoPaths`), so for the others this was state that survived localStorage, the wire,
+  // the world and the replay while doing nothing — and an `autoPathActive` robot whose
+  // game never advances the path is the one shape `pathTraversal` has no answer for.
+  const autoPath = mod.autoPaths && s.autoPath !== undefined ? coerceAutoPath(s.autoPath) : null;
   const alliance = s.alliance === 'red' || s.alliance === 'blue' ? s.alliance : 'blue';
-  const spec = coerceSpec(s.spec);
+  // THE GAME IS PASSED ON. `coerceSpec`'s per-game arms (CR's mount fits, BIOBUZZ's own
+  // clamps, the mount reset for a game that does not use those fields) were being skipped
+  // at the one call site that is supposed to be the last line of defence.
+  const spec = coerceSpec(s.spec, DEFAULT_SPEC, game);
   // a custom pose overrides the preset; snap it G304-legal for THIS spec+alliance
   // so no spawn path (localStorage, wire, staged match) can place an illegal robot.
+  //
+  // ONLY FOR A GAME THAT HAS START LEGALITY. `snapStartToLegal` is G304 geometry — launch
+  // lines, goal faces, DECODE's alliance halves — so running it for a game with
+  // `startLegality: false` moves that game's robot to satisfy a rule it does not have.
+  // Such a game keeps the structurally-validated, field-clamped pose (and supplies its own
+  // fit pass if it has one, as BIOBUZZ's spawn does).
   let startPose: StartPose | undefined;
   const raw = coerceStartPose(s.startPose);
   if (raw) {
-    const actual = snapStartToLegal(spec, mirrorStartPose(raw, alliance), alliance);
-    startPose = mirrorStartPose(actual, alliance); // store back canonical
+    if (mod.startLegality) {
+      const actual = snapStartToLegal(spec, mirrorStartPose(raw, alliance), alliance);
+      startPose = mirrorStartPose(actual, alliance); // store back canonical
+    } else {
+      startPose = raw;
+    }
   }
   return {
     id: s.id,
@@ -614,7 +635,7 @@ export function coerceSetup(s: RobotSetup, game?: GameId): RobotSetup {
     // the anchor count is PER GAME (DECODE 5, CR 4) — see `coerceStartIndex`. An
     // absent/unknown game resolves to DECODE, like every other module lookup.
     startIndex: Number.isFinite(s.startIndex)
-      ? clamp(Math.round(s.startIndex), 0, simModuleFor(game).startPoseCount - 1)
+      ? clamp(Math.round(s.startIndex), 0, mod.startPoseCount - 1)
       : 0,
     startPose,
     autoPath: autoPath ?? undefined,
@@ -805,6 +826,7 @@ export function createWorld(mode: GameMode, seed: number, setups: RobotSetup[], 
       currentPathSegmentIndex: 0,
       pathSegmentProgress: 0,
       pathWaitTimer: 0,
+      pathWaitedBefore: -1,
       pathSequenceIndex: 0,
       pathTargetPoint: null,
       pathTargetHeading: null,
