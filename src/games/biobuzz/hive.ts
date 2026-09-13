@@ -43,9 +43,13 @@ export type HiveState = BbHiveState;
  * Duration of the swing from one stable state to the other, seconds.
  *
  * RULING (field-plan §2.1, 2026-09-12): **4.0**. A 43.95-in bar carrying a dozen elements is a
- * slow, damped see-saw, not a trigger — and the length is gameplay-load-bearing, because the
- * CELL accepts nothing while it moves (`hiveAccepts`) so a TIP costs the launcher four seconds
- * of its own target. Not APPROX: it is a decision, not a measurement.
+ * slow, damped see-saw, not a trigger. Not APPROX: it is a decision, not a measurement.
+ *
+ * It is gameplay-load-bearing because of what the swing does to the TARGET, which is no longer
+ * "the cell takes nothing for four seconds" (owner feedback, 2026-09-12): the tray keeps taking
+ * throughout, and the release HANDS OVER from the filled tray to the incoming one half way
+ * through (`hiveTakingSide`). What the length costs a launcher is the two seconds in which its
+ * own opening is the one about to empty, and the aim change at the hand-over.
  */
 export const BB_TIP_SWING_S = 4.0;
 
@@ -101,12 +105,41 @@ export function hiveApproachSign(up: BbCellSide): 1 | -1 {
 }
 
 /**
- * CAPTURE test for one flight element: inside the up-CELL's accept footprint (`BB_CELL_OPEN`,
- * centred on the up cell), at opening height (`BB_HIVE_OPEN_Z`, plus `margin` above),
- * DESCENDING, and travelling INBOARD along the HIVE axis (`hiveApproachSign`).
+ * WHICH CELL IS TAKING ELEMENTS RIGHT NOW — the ONE answer, and every capture, park, aim and
+ * readout has to come through it.
  *
- * A HIVE mid-swing accepts nothing — its opening is moving, and the tray is tipping its load
- * out rather than taking one on.
+ * Settled, it is `up`, as it always was. THROUGH A SWING IT FOLLOWS THE RELEASE (owner
+ * feedback, 2026-09-12):
+ *
+ *  • BEFORE the bar passes level (`released` false) it is still `up` — the tray that just
+ *    filled. It is tilted back, it is holding its load, and a shot already in the air when the
+ *    swing started arrives at a cell that is still a cell. Refusing those was the old
+ *    behaviour, and the thing it produced was a driver watching a volley he had already fired
+ *    pass through the tray and land on the tiles.
+ *  • AFTER the release it is `otherSide(up)` — the tray coming UP, now empty, whose opening is
+ *    rising into the launch window. (Aim Assist does not know any of this — it aims at the
+ *    nearer own cell as if it were up, `play.ts` `bbAimTarget` — but a shot that reaches the
+ *    rising tray after the release still goes in.)
+ *
+ * So the HIVE is never a hole in the field; the only thing a swing changes is WHICH tray your
+ * element lands in, and the handover is the same instant as the spill. `hiveStep` carries a
+ * post-release load through the settle for exactly this reason.
+ */
+export function hiveTakingSide(hive: HiveState): BbCellSide {
+  return hive.tipping > 0 && hive.released ? otherSide(hive.up) : hive.up;
+}
+
+/**
+ * CAPTURE test for one flight element: inside the TAKING cell's accept footprint
+ * (`BB_CELL_OPEN`, centred on `hiveTakingSide`), at opening height (`BB_HIVE_OPEN_Z`, plus
+ * `margin` above), DESCENDING, and travelling INBOARD along the HIVE axis
+ * (`hiveApproachSign`).
+ *
+ * MID-SWING IT STILL ACCEPTS, into whichever tray `hiveTakingSide` names — see that function
+ * for which one and why. The opening is genuinely moving through the swing and this test does
+ * not model that: it uses the taking cell's SETTLED footprint throughout. That is the honest
+ * trade. The alternative the code had was refusing everything for four seconds, and a cell
+ * that is 10.43 in deep in plan sweeps most of its own footprint anyway.
  */
 export function hiveAccepts(
   hive: HiveState,
@@ -116,9 +149,10 @@ export function hiveAccepts(
   vel: Vec3,
   margin: number = BB_HIVE_ACCEPT_MARGIN,
 ): boolean {
-  if (hive.tipping > 0 || vel.z >= 0) return false;
-  if (vel.y * hiveApproachSign(hive.up) <= 0) return false;
-  const c = hiveCellPos(alliance, hive.up);
+  if (vel.z >= 0) return false;
+  const side = hiveTakingSide(hive);
+  if (vel.y * hiveApproachSign(side) <= 0) return false;
+  const c = hiveCellPos(alliance, side);
   if (Math.abs(pos.x - c.x) > BB_CELL_OPEN.w / 2 || Math.abs(pos.y - c.y) > BB_CELL_OPEN.d / 2) return false;
   return z >= BB_HIVE_OPEN_Z[0] && z <= BB_HIVE_OPEN_Z[1] + margin;
 }
@@ -163,6 +197,13 @@ export interface HiveStepResult {
  *    swing.
  * 3. **The swing reaching zero** ⇒ the cells swap, `tips` increments, `tipped` is true.
  *
+ * ⚠️ `contents` SURVIVES THE SETTLE ONCE THE TRAY HAS RELEASED. The cell goes on taking
+ * elements through the swing (`hiveTakingSide`), and after the release the tray filling is the
+ * one coming UP — the one that `up` names a tick later. Emptying `contents` unconditionally at
+ * the settle threw those away, silently, a second or two after they were captured. So the
+ * settle keeps them when `released` is set, and only clears (and spills) when it is not, which
+ * is the `dt`-longer-than-half-a-swing fallback and nothing else.
+ *
  * The spill therefore lands while the bar is still moving, a couple of seconds before the
  * points — which is what a real HIVE does, and what makes the elements available to a robot
  * under the structure before the score changes. Never mutates `hive`.
@@ -185,7 +226,15 @@ export function hiveStep(hive: HiveState, dt: number, kindOf: (id: number) => Bb
       };
     }
     return {
-      hive: { up: otherSide(hive.up), contents: [], tips: hive.tips + 1, tipping: 0, released: false },
+      hive: {
+        up: otherSide(hive.up),
+        // the load the INCOMING tray took after the release — see the note above. Empty in the
+        // ordinary case, because nothing was launched during the second half of the swing.
+        contents: released ? [...hive.contents] : [],
+        tips: hive.tips + 1,
+        tipping: 0,
+        released: false,
+      },
       tipped: true,
       // normally empty — the tray emptied at level. Non-empty only when one `dt` spanned the
       // whole second half of the swing, and then the elements still have to go somewhere.
@@ -205,26 +254,31 @@ export function hiveStep(hive: HiveState, dt: number, kindOf: (id: number) => Bb
 /**
  * How hard a TIP throws its contents, and how wide.
  *
- * CALIBRATED TO THE OWNER'S LANDING LINES (ruling 2026-09-12, off the visuals chat's field-v4
- * page): the pile leaves at **50-88 in/s** in a **±55° fan** about the outboard axis and comes
- * to rest **57-107 in from the PIVOT**, median about 70, wall to wall once the bounces are in.
- * A TIP is a THROW, not a drop — the tray is a ramp on a see-saw that has been accelerating for
- * two seconds when it passes level, and the spill crossing half the field is the point of it.
+ * ⚠️ **OWNER FEEDBACK, 2026-09-12, FROM PLAYING IT: A TIP IS A DUMP, NOT A CANNON.** The
+ * elements should fall out of the tray, run STRAIGHT-ISH outboard, and do their scattering
+ * against each other once they are on the tiles — which is what round elements sharing a floor
+ * do, and what the shared solve already models. Two numbers moved:
  *
- * BOTH STILL APPROX. V1 prints no spill kinematics at all; these two numbers are fitted to
- * where the elements LAND on a drawing, which is the observable a person can actually read off
- * a field, and the landing distance is what should be re-checked against a real tip — not the
- * speed. The previous pair (40-60 in/s straight outboard, ±12 in/s across, i.e. a ±13° fan)
- * landed the six staged elements in a strip about 20 in wide; see
- * `docs/biobuzz/feedback/001-spill-kinematics.md` for the measurement either side of this change.
+ *  • SPEED **down 30%**, 50-88 → 35-62 in/s. The ruling asked for "about thirty percent less
+ *    power" in as many words; the pair is the old one times 0.7, rounded to whole in/s.
+ *  • FAN **55° → 18°**. 55° is a ramp firing a shell of elements across a third of a circle,
+ *    and it is the half of the old calibration that made a spill read as an explosion. 18° is
+ *    a tray emptying downhill with the spread a pile of balls leaving a lip actually has.
+ *
+ * BOTH STILL APPROX, and MORE approx than the pair they replace: the previous numbers were
+ * fitted to the owner's landing lines off the visuals chat's field-v4 page, and these are a
+ * ruling about FEEL that moves the landing distance with it (~57-107 in from the pivot before,
+ * roughly half that now — the throw is not what puts a spill across the field any more, the
+ * roll is). V1 prints no spill kinematics at all, so neither pair was ever a measurement. See
+ * `docs/biobuzz/feedback/001-spill-kinematics.md` for the numbers either side of both changes.
  *
  * ⚠️ THE FAN IS AN ANGLE, NOT A CROSS-SPEED. `BB_SPILL_LATERAL` was ±12 in/s added across the
  * throw, so the widest possible fan was `atan(12 / 50)` — the FASTER an element left, the
  * NARROWER its spread, which is backwards: a ramp scatters by direction, and how far a given
  * element goes is then a consequence of its own angle and speed rather than a cap on the width.
  */
-export const BB_SPILL_SPEED: readonly [number, number] = [50, 88]; // APPROX
-export const BB_SPILL_FAN = 55; // degrees off the outboard axis, half-angle. APPROX
+export const BB_SPILL_SPEED: readonly [number, number] = [35, 62]; // APPROX
+export const BB_SPILL_FAN = 18; // degrees off the outboard axis, half-angle. APPROX
 
 /** one spilled element: where it re-enters the world and how fast it is going. */
 export interface SpillPose {

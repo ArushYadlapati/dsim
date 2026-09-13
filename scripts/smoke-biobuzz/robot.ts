@@ -3,7 +3,7 @@ import * as C from '../../src/config';
 import { wrapAngle } from '../../src/math';
 import { worldHash } from '../../src/net/checksum';
 import { defaultSettings, switchGame } from '../../src/settings';
-import { DEFAULT_SPEC } from '../../src/sim/spawn';
+import { DEFAULT_ASSISTS, DEFAULT_SPEC } from '../../src/sim/spawn';
 import {
   BB_AIM_TOL,
   BB_DEG,
@@ -1033,6 +1033,45 @@ export function robotChecks(check: Check): void {
     check('dump: an UNALIGNED dumper holds its load on the first tick of fire', r.hopper.length === n0, `hopper ${n0}→${r.hopper.length}`);
     run(w, cmd({ fire: true }), 2.5);
     check('dump: ...the aim assist steers it on target and then it dumps', r.hopper.length === 0, `hopper=${r.hopper.length} heading err=${wrapAngle(r.heading + Math.PI / 2).toFixed(3)}`);
+  }
+  /**
+   * HOLD FIRE AND A DUMPER TURNS ALL THE WAY ONTO THE CELL, THEN DUMPS INTO IT — Chain Reaction's
+   * dumper feel — FOR A TANK TOO. The StarterBot is a tank dumper, and a tank's yaw comes only from
+   * its side drives (`src/sim/robot.ts`), so an aim hook that overrode `rotate` alone never turned
+   * it. Each robot starts facing directly AWAY from the cell, at a distance its own hood can dump
+   * from (found by `bbDumpSolution`, not hard-coded, so a retuned hood does not break the check).
+   */
+  for (const [label, spec] of [
+    ['default dumper', mech({ launcher: { kind: 'dumper', mount: 'front', hoodDeg: BB_HOOD_DEFAULT_DEG }, lift: null }, { intakeMount: 'back' })],
+    ['StarterBot (tank)', BB_STARTER_BOTS[0]],
+  ] as const) {
+    const w = createBiobuzzWorld('free', 57, [{ ...setup(0, 'blue', spec), assists: { ...DEFAULT_ASSISTS, fieldCentric: false } }]);
+    const r = w.robots[0];
+    const edge = bbLauncherOf(r.spec, BB_HOOD_DEFAULT_DEG);
+    check(`dump turn [${label}]: (scene) the build is a dumper`, edge.kind === 'dumper', edge.kind);
+    const cell = hiveCellTarget('blue', 'north');
+    let placed = false;
+    for (let dy = 20; dy <= 90 && !placed; dy += 1) {
+      park(r, cell.pos.x, cell.pos.y + dy, 0);
+      r.heading = bbAimHeading(r, cell) ?? 0;
+      placed = bbDumpSolution(r, cell, r.hopper.length) !== null;
+    }
+    check(`dump turn [${label}]: (scene) there is a distance its hood dumps from`, placed, `y=${r.pos.y.toFixed(1)}`);
+    const want = r.heading;
+    r.heading = wrapAngle(want + Math.PI); // facing directly AWAY
+    const load = w.balls.filter((b) => b.state.kind === 'held' && b.state.robot === r.id).map((b) => b.id);
+    tick(w, cmd({ fire: true }));
+    check(`dump turn [${label}]: facing away, the first tick of fire dumps nothing`, r.hopper.length === load.length && load.length > 0, `hopper=${r.hopper.length}/${load.length}`);
+    const entered = new Set<number>();
+    let minErr = Math.PI;
+    for (let t = 0; t < Math.round(6 / C.SIM_DT); t++) {
+      tick(w, cmd({ fire: true }));
+      minErr = Math.min(minErr, Math.abs(wrapAngle(r.heading - want)));
+      for (const b of w.balls) if (b.state.kind === 'element' && b.state.el === 'hive:blue') entered.add(b.id);
+    }
+    const scored = load.filter((id) => entered.has(id)).length;
+    check(`dump turn [${label}]: holding fire TURNS the chassis onto the cell`, minErr < BB_AIM_TOL, `closest heading error ${minErr.toFixed(3)} rad`);
+    check(`dump turn [${label}]: ...and then it dumps, into the cell`, r.hopper.length === 0 && scored > 0, `hopper=${r.hopper.length} scored ${scored}/${load.length}`);
   }
   /**
    * RE-ARM: a held fire does not re-dump the moment something is back in the hopper. The

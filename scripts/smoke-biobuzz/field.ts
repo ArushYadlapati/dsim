@@ -46,6 +46,7 @@ import {
   hiveApproachSign,
   hiveCellPos,
   hivePivot,
+  hiveTakingSide,
   hiveLoad,
   hiveStep,
   hiveWillTip,
@@ -66,6 +67,7 @@ import {
   bbMirror,
   type BbRect,
 } from '../../src/games/biobuzz/config';
+import { tipProjection } from '../../src/games/biobuzz/drawField';
 import { BB_SOLID_COUNT, BB_WALL_COUNT, biobuzzColliders } from '../../src/games/biobuzz/colliders';
 import { bbFlowerSectionBox } from '../../src/games/biobuzz/drawField';
 import { createBiobuzzWorld, stageBiobuzz } from '../../src/games/biobuzz/spawn';
@@ -2480,6 +2482,42 @@ export function fieldChecks(check: Check): void {
     );
   }
 
+  // -- AIM TRACKS THE INCOMING CELL FROM THE FIRST TICK OF THE SWING --------
+  /**
+   * `up` names the tray going DOWN until the swing settles, so a target list built off it held
+   * every turret on the emptying cell for four seconds and then snapped across the pivot
+   * (owner feedback, 2026-09-12). `aimCell` (`elements.ts`) flips at the START of the tip.
+   *
+   * AIM AND CAPTURE ARE DELIBERATELY DIFFERENT FOR THE FIRST HALF: `hiveTakingSide` still says
+   * `up` until the release, because a volley already in the air belongs to the tray still
+   * holding its load. Both halves are pinned here, because "the turret tracks the cell that
+   * takes the shot" is the invariant that is true at the release and NOT before it.
+   */
+  {
+    const w = createBiobuzzWorld('match', 3, [setup(0, 'red', {}, 0)]);
+    const bb = w.biobuzz!;
+    const a: Alliance = 'red';
+    const bad: string[] = [];
+    const aimAt = (): { x: number; y: number } => scoreTargets(w, a).find((x) => x.id === `hive:${a}`)!.pos;
+    const same = (p: { x: number; y: number }, q: { x: number; y: number }) =>
+      Math.abs(p.x - q.x) < 1e-9 && Math.abs(p.y - q.y) < 1e-9;
+    bb.hives[a] = { up: 'south', contents: [], tips: 0, tipping: 0, released: false };
+    if (!same(aimAt(), hiveCellPos(a, 'south'))) bad.push('settled: aim is not the up cell');
+    // first tick of the swing — nothing has moved yet, and the aim has already changed
+    bb.hives[a] = { ...bb.hives[a], tipping: BB_TIP_SWING_S, released: false };
+    if (!same(aimAt(), hiveCellPos(a, 'north'))) bad.push('tip start: aim did not move to the incoming cell');
+    if (hiveTakingSide(bb.hives[a]) !== 'south') bad.push('tip start: capture left the filled cell');
+    // after the release the two agree again
+    bb.hives[a] = { ...bb.hives[a], tipping: BB_TIP_RELEASE_S / 2, released: true };
+    if (!same(aimAt(), hiveCellPos(a, 'north'))) bad.push('post-release: aim moved off the incoming cell');
+    if (hiveTakingSide(bb.hives[a]) !== 'north') bad.push('post-release: capture did not hand over');
+    check(
+      'live: aim flips to the incoming CELL at the start of the tip; capture hands over at the release',
+      bad.length === 0,
+      bad.length ? bad.join(' · ') : 'settled/tip-start/post-release all as specified',
+    );
+  }
+
   // -- THE TIP TABLE IS A TABLE ---------------------------------------------
   /**
    * `BB_TIP_POLLEN` is MEASURED, indexed by the NECTAR already in the cell, and nothing
@@ -2767,6 +2805,32 @@ export function fieldChecks(check: Check): void {
         settleStep > 0 && Math.abs(settleAt - BB_TIP_SWING_S) <= dt + 1e-9 && h.up === 'north' && h.tips === 1 && h.contents.length === 0 && h.tipping === 0,
         `tipped after ${settleStep} swing steps = ${settleAt.toFixed(4)} s (swing ${BB_TIP_SWING_S}); up=${h.up} tips=${h.tips} contents=[${h.contents.join(',')}] tipping=${h.tipping}`,
       );
+      // A POST-RELEASE CAPTURE BELONGS TO THE INCOMING TRAY AND MUST SURVIVE THE SETTLE. The
+      // cell goes on taking elements through the swing (`hiveTakingSide`), so anything that
+      // lands after the bar passes level is in the cell that `up` names one tick later — and
+      // the settle used to clear `contents` unconditionally, which threw it away silently.
+      {
+        let g = settled([...staged.ids]);
+        const late = 9901;
+        let landedAt = -1;
+        let spilledLate = false;
+        for (let i = 0; i < 1200; i++) {
+          const r = hiveStep(g, dt, kindOf(staged.kinds));
+          if (r.spilled.includes(late)) spilledLate = true;
+          g = r.hive;
+          // drop one in a tick AFTER the release, the way a capture does
+          if (g.released && landedAt < 0) {
+            g = { ...g, contents: [...g.contents, late] };
+            landedAt = i;
+          }
+          if (r.tipped) break;
+        }
+        check(
+          'hive: an element taken AFTER the release rides the incoming cell through the settle',
+          landedAt >= 0 && !spilledLate && g.tipping === 0 && g.up === 'north' && g.contents.join() === String(late),
+          `landed at step ${landedAt}; spilled=${spilledLate}; after settle up=${g.up} contents=[${g.contents.join(',')}]`,
+        );
+      }
       check(
         'hive: spilled ids == the contents that tipped it',
         spilled.length === staged.ids.length && [...spilled].sort((a, b) => a - b).join() === [...staged.ids].sort((a, b) => a - b).join(),
@@ -2827,6 +2891,35 @@ export function fieldChecks(check: Check): void {
       );
     }
 
+    // 8b. THE DRAWN SWING (`tipProjection`, `drawField.ts`). The renderer's only motion is the
+    // bar's own foreshortening, so a TIP that does not move the geometry is a TIP nobody sees
+    // happen. Pinned here rather than left to the eye: at rest nothing is scaled, at LEVEL the
+    // assembly reaches its TRUE length (1 / cos 30°), and the up-cell's brightness passes
+    // through a half exactly where the load leaves.
+    {
+      const rest = tipProjection(0);
+      const start = tipProjection(BB_TIP_SWING_S);
+      const level = tipProjection(BB_TIP_RELEASE_S);
+      const end = tipProjection(1e-6);
+      const level1 = 1 / Math.cos((30 * Math.PI) / 180);
+      const near = (x: number, y: number) => Math.abs(x - y) < 1e-3;
+      check(
+        'hive: the TIP is DRAWN as a swing — the bar reaches out at level and the fill follows its height',
+        near(rest.proj, 1) &&
+          near(rest.up, 1) &&
+          near(start.proj, 1) &&
+          near(start.up, 1) &&
+          near(level.proj, level1) &&
+          near(level.up, 0.5) &&
+          near(end.proj, 1) &&
+          Math.abs(end.up) < 1e-3 &&
+          level.proj > start.proj,
+        `rest ${rest.proj.toFixed(4)}/${rest.up.toFixed(3)} · start ${start.proj.toFixed(4)}/${start.up.toFixed(3)} · ` +
+          `level ${level.proj.toFixed(4)}/${level.up.toFixed(3)} (want ${level1.toFixed(4)}/0.5) · ` +
+          `settle ${end.proj.toFixed(4)}/${end.up.toFixed(3)}`,
+      );
+    }
+
     // 9. the ACCEPT test: through the OPEN OUTER END, descending, inside the footprint — and
     // nothing else. The wrong-side case is the one the ruling added: a shot crossing the same
     // rectangle OUTBOUND is arriving through the cell's closed back wall.
@@ -2849,7 +2942,14 @@ export function fieldChecks(check: Check): void {
         ['the DOWN cell', hiveAccepts(h, a, downPos, zMid, inbound), false],
         ['above the margin', hiveAccepts(h, a, up, BB_HIVE_OPEN_Z[1] + BB_HIVE_ACCEPT_MARGIN + 1, inbound), false],
         ['below the opening bottom', hiveAccepts(h, a, up, BB_HIVE_OPEN_Z[0] - 1, inbound), false],
-        ['mid-swing', hiveAccepts({ ...h, tipping: BB_TIP_SWING_S / 2 }, a, up, zMid, inbound), false],
+        // MID-SWING IT STILL TAKES, and WHICH tray follows the release (owner feedback,
+        // 2026-09-12; `hiveTakingSide`). Before the release the up cell is still holding its
+        // load, so a volley already in the air lands in it; after the release the incoming
+        // tray is the one taking, and the up cell's own footprint is refused.
+        ['mid-swing BEFORE the release: the up cell still takes it', hiveAccepts({ ...h, tipping: BB_TIP_SWING_S / 2, released: false }, a, up, zMid, inbound), true],
+        ['mid-swing before the release: the DOWN cell does not', hiveAccepts({ ...h, tipping: BB_TIP_SWING_S / 2, released: false }, a, downPos, zMid, outbound), false],
+        ['mid-swing AFTER the release: the INCOMING cell takes it', hiveAccepts({ ...h, tipping: 1, released: true }, a, downPos, zMid, outbound), true],
+        ['mid-swing after the release: the emptied cell does not', hiveAccepts({ ...h, tipping: 1, released: true }, a, up, zMid, inbound), false],
       ];
       const wrong = cases.filter(([, got, want]) => got !== want);
       check(

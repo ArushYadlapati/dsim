@@ -22,7 +22,15 @@ Reverse-chronological. Prepend a new dated section; demote the old "READ FIRST".
 > - **Removed:** `bbPickTarget`, `bbCellTaking`, `BbShot.onTarget/scores` and `BB_ON_TARGET_TOL`.
 >
 > **Behaviour change:** a held fire where no shot would land now does nothing, including a dumper
-> emptying its hopper away from the HIVE. Smoke `robot.ts` has an `aim assist:` section, and the
+> emptying its hopper away from the HIVE.
+>
+> **Dumpers turn onto the cell while fire is held, now on TANKS too.** Holding fire on a dumper
+> turns the chassis onto the cell, like Chain Reaction's dumper, then dumps. The aim hook in
+> `step.ts` used to override only `rotate`, but the shared drive model gives a tank its yaw from
+> the side drives alone. The StarterBot is a tank dumper, and it never turned. The turn is now
+> written into `leftDrive`/`rightDrive` as well. Smoke `dump turn [...]` starts a default dumper
+> and the StarterBot facing directly away. **Chain Reaction's `chainAimAssist` in `chain/step.ts`
+> has the same rotate-only override and so the same tank gap. Not fixed there.** Smoke `robot.ts` has an `aim assist:` section, and the
 > aim grid now pins "nearest own cell, unchanged by a tip".
 >
 > **2026-09-13: THE TIP THRESHOLDS ARE IN THE FIELD SETUP GUIDE.** The 2026-2027 Event Field

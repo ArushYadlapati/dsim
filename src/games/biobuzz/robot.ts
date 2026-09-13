@@ -512,8 +512,8 @@ export function bbMuzzleZ(spec: RobotSpec): number {
  * ⚠️ ALL THREE, TOGETHER, BECAUSE THE ARC IS ONE ANSWER AND NOT THREE. `bbSolveShot` returns a
  * MATCHED (speed, angle) pair. The pitch is clamped into the barrel's real envelope and the speed
  * into `BB_LAUNCH_SPEED_MAX`, so a solution the hardware cannot reach comes back as the nearest
- * one it can — which then MISSES, honestly — and says so in `reachable`, which is what AUTO-FIRE
- * reads before calling the turret on target.
+ * one it can — which then MISSES, honestly — and says so in `reachable`, which stage 5b reads before
+ * running Aim Assist's landing prediction.
  */
 export function bbTurretSolution(
   r: RobotState,

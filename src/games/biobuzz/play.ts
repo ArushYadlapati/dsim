@@ -29,7 +29,7 @@ import {
 import { biobuzzColliders } from './colliders';
 import { capturePollen, hiveCellTarget, scoreTargets, takeHeld } from './elements';
 import { bbElementRadius, flowerFits, flowerRetrieve, flowerStackZ, type BbElementKind } from './flower';
-import { hiveAccepts, hiveCellPos, hiveStep, spillPoses } from './hive';
+import { hiveAccepts, hiveCellPos, hiveStep, hiveTakingSide, spillPoses } from './hive';
 import { bbIsTurreted, bbLauncherOf, bbLiftOf } from './mechs';
 import {
   type BbShot,
@@ -340,7 +340,7 @@ const NECTAR_PRESS_KEY = 'nectarPress';
  *      launch so a turret that slewed this tick fires on this tick's bearing.
  *   5c. the BOX TUBE PLACES: an edge on the place-POLLEN / place-NECTAR buttons, with a FLOWER
  *      in reach, moves one held element into that FLOWER's stack. Before the launch, so an
- *      auto-fire on the same tick cannot throw away the element being placed.
+ *      held fire on the same tick cannot throw away the element being placed.
  *   6. LAUNCHERS fire, which is what creates tick-N+1's flight pollen.
  *   7. the HUMAN PLAYERS enter what they are owed (G426), as ground elements in their own
  *      LOADING ZONE.
@@ -498,7 +498,11 @@ export function updateBiobuzz(
       if (launchedBy && launchedBy !== owner) continue;
       const hive = bb.hives[owner];
       if (!hiveAccepts(hive, owner, b.pos, b.z, vel)) continue;
-      park(b, t.id, hive.contents, hiveCellPos(owner, hive.up), CELL_MID_Z);
+      // PARKED IN THE CELL THAT TOOK IT, which through a swing is not always `up`
+      // (`hiveTakingSide`): before the release it is the tray still holding its load, after it
+      // the tray coming up. Reading `hive.up` here would draw a post-release capture inside the
+      // cell it is NOT in, on the far side of the pivot.
+      park(b, t.id, hive.contents, hiveCellPos(owner, hiveTakingSide(hive)), CELL_MID_Z);
       took = true;
       break;
     }
@@ -515,9 +519,12 @@ export function updateBiobuzz(
    *
    * A SPILLED ELEMENT COMES BACK AS A GROUND ARTIFACT CARRYING THE SPILL VELOCITY. It leaves
    * the tray over the cell's open outer end and lands just outboard of the cell centre, and it
-   * arrives ALREADY MOVING (`BB_SPILL_SPEED`, aimed within `BB_SPILL_FAN` of outboard), so it rolls
-   * out from under its own structure the way the manual describes — G409: it "hits the TILE
-   * floor before it is collected" — rather than sitting in a pile under the down cell.
+   * arrives ALREADY MOVING (`BB_SPILL_SPEED`, aimed within `BB_SPILL_FAN` of outboard), so it
+   * rolls out from under its own structure the way the manual describes — G409: it "hits the
+   * TILE floor before it is collected" — rather than sitting in a pile under the down cell. The
+   * fan is narrow (owner feedback, 2026-09-12): a spill runs STRAIGHT-ISH outboard and most of
+   * what spreads it is the elements pushing each other apart once they are on the tiles, which
+   * the shared solve below does on the very tick they land there.
    *
    * GROUND AND NOT FLIGHT, which is a decision about WHO OWNS IT from here: a ground element
    * belongs to `solveArtifacts` from the very next stage of this same tick, so a spill that
@@ -665,7 +672,7 @@ export function updateBiobuzz(
     // how many elements are already on their way. The real capture (stage 2) still reads the real
     // HIVE, so a shot at a down or swinging cell misses.
     const target = bbAimTarget(world, rob);
-    const pretend: BiobuzzState['hives'][Alliance] = { ...bb.hives[rob.alliance], up: bbCellSideOf(target), tipping: 0 };
+    const pretend: BiobuzzState['hives'][Alliance] = { ...bb.hives[rob.alliance], up: bbCellSideOf(target), tipping: 0, released: false };
     // `lands` is read only while the driver is holding fire, so only then is it predicted.
     const asking = enabled && (cmds.get(rob.id)?.fire ?? false) && rob.hopper.length > 0;
     if (bbIsTurreted(launcher)) {
