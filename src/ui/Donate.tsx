@@ -121,7 +121,7 @@ export function Donate({ signedIn }: { signedIn: boolean }) {
         <section className="ds-panel">
           <div className="ds-panel-body">
             <p className="ds-hint">
-              DSIM is free and stays free. There is nothing to pay for yet — a way to chip in
+              DSIM is free and stays free. There is nothing to pay for yet. A way to chip in
               for the servers is coming.
             </p>
           </div>
@@ -197,7 +197,7 @@ export function Donate({ signedIn }: { signedIn: boolean }) {
             </p>
             <p className="ds-hint">
               {autoRenews
-                ? 'Renews automatically through Ko-fi. Cancel any time — benefits run to the end of the paid period.'
+                ? 'Renews automatically through Ko-fi. Cancel any time; benefits run to the end of the paid period.'
                 : 'This membership isn’t linked to a Ko-fi account yet, so it won’t renew on its own. Claim a payment below to link it.'}
             </p>
           </div>

@@ -433,8 +433,8 @@ export function GameView({
             onClick={() => controllerRef.current?.toggleRematch()}
             title={
               hud.rematch.mine
-                ? 'You want a rematch — press again to take it back'
-                : 'Vote to restart — everyone still connected has to agree'
+                ? 'You want a rematch. Press again to take it back'
+                : 'Vote to restart. Everyone still connected has to agree'
             }
           >
             ⟲ REMATCH {hud.rematch.votes}/{hud.rematch.need}
@@ -1217,7 +1217,7 @@ function Results({
           <p className="ds-hint ok">
             {signedIn
               ? '✓ Saved to your practice replays.'
-              : '✓ Saved on this device — sign in to keep it on your account.'}
+              : '✓ Saved on this device. Sign in to keep it on your account.'}
           </p>
         )}
         <div className="overlay-buttons">
@@ -1260,7 +1260,7 @@ function Results({
         )}
         {scoreReported && (
           <p className="results-report-done">
-            Misscore reported — a moderator will check the replay.
+            Misscore reported. A moderator will check the replay.
           </p>
         )}
         {scoreReporting && onReportScore && (

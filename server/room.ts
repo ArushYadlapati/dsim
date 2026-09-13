@@ -28,6 +28,8 @@ import {
   slimWorld,
   roomCapacity,
   DEFAULT_ROOM_CONFIG,
+  RANKED_JOIN_GRACE_MS,
+  STRATEGY_DURATION_MS,
   type BallDelta,
   type ClientMsg,
   type EloDelta,
@@ -174,14 +176,15 @@ const SNAP_BACKLOG_BYTES = 256 * 1024;
  * enough to cover a full page reload / navigate-away-and-come-back (the "rejoin your
  * match" flow), not just a transient socket blip. The robot coasts to ZERO meanwhile. */
 const RECONNECT_GRACE_MS = 45000;
-/** a staged ranked match waits this long for every paired player to (re)connect to
- * the host machine before it gives up and cancels (a no-show ⇒ no rated match) */
-const RANKED_JOIN_GRACE_MS = 20000;
-/** ranked pre-match STRATEGY window: once everyone has connected, drivers see their
- * alliance's builds, re-pick, claim a close/far start pose, and ready up. The match
- * begins the instant all ready; if anyone hasn't readied by the deadline the match
- * is CANCELLED (user decision — strict, so nobody waits forever on an idle player). */
-const STRATEGY_DURATION_MS = 20000;
+/* BOTH RANKED CLOCKS NOW LIVE IN `src/net/protocol.ts`, and are imported above.
+   `RANKED_JOIN_GRACE_MS` is how long a staged match waits for every paired player to
+   (re)connect before it cancels as a no-show; `STRATEGY_DURATION_MS` is the pre-match
+   window in which drivers see their alliance's builds, re-pick, claim a start pose and
+   ready up. The match begins the instant all are ready, and is CANCELLED if anyone has
+   not readied by the deadline (user decision: strict, so nobody waits on an idle player).
+   They moved because the queue screen states both to the player BEFORE they queue, and a
+   rule the client restates from its own copy of the number drifts the first time one of
+   them is tuned. */
 
 /** the Fly region this server machine runs in (blank on a single-region / local
  * deploy). Sent to clients at matchStart so the HUD can show "matched on <region>". */
