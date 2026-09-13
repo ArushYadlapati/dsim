@@ -465,6 +465,29 @@ export class Room {
     );
   }
 
+  /**
+   * CAN *THIS* ID TAKE A SEAT? — `canJoin` plus the RESERVED HOST.
+   *
+   * `canJoin` answers for a room whose host is one of the people already in it, which is
+   * every room the cloud runs: `add` gives the crown to the first client through the door,
+   * so the host is seated by definition and capacity is a single number.
+   *
+   * A TAB-HOSTED LAN ROOM INVERTS THAT. Its host reserves the crown at open (`reserveHost`)
+   * and then joins LAST — they are reading the code out while guests arrive — so the seat
+   * they will need is not occupied yet and plain capacity does not know it is spoken for.
+   * With four guests admitted the host was refused their own room, or (before any refusal
+   * existed at all) seated into an oversized roster that `POST /api/lan` then rejected.
+   *
+   * The reserved seat is held ONLY until its holder actually arrives, and only for a room
+   * that reserved one: with no reservation, or once the host is in `clients`, this is
+   * exactly `canJoin`.
+   */
+  canSeat(id: string): boolean {
+    if (!this.canJoin()) return false;
+    const hostPending = this.hostId !== '' && id !== this.hostId && !this.clients.has(this.hostId);
+    return !hostPending || this.clients.size + 1 < roomCapacity(this.config);
+  }
+
   /** authoritative sim tick (0 before the match starts) */
   get tick(): number {
     return this.world?.tick ?? 0;

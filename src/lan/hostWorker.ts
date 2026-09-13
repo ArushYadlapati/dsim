@@ -119,6 +119,17 @@ self.addEventListener('message', (e: MessageEvent) => {
   if (!room) return;
 
   if (m.k === 'add') {
+    /* CAPACITY IS ENFORCED HERE, BECAUSE SIGNALLING DOES NOT ENFORCE IT.
+       The rendezvous will introduce far more guests than a room has seats for (it knows
+       nothing about `roomCapacity`), and this used to seat every one of them: a fifth driver
+       joined a 2v2, `matchStart` went out with a roster the protocol has no slots for, and
+       the replay upload afterwards refused the oversized match. `canSeat` is the room's own
+       answer — capacity, mid-match, the strategy window, and the seat this room's host has
+       reserved but not yet taken (they join last; see `reserveHost`). */
+    if (!room.canSeat(m.id)) {
+      post({ k: 'refused', id: m.id, message: 'Room is full or a match is already in progress.' });
+      return;
+    }
     room.add(seat(m.id, m));
     members.add(m.id);
     return;
