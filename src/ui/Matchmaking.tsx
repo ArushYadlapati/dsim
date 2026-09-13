@@ -11,6 +11,7 @@ import { MatchStrategy } from './MatchStrategy';
 import { MatchAudio } from '../audio';
 import { DODGE_REASON, type DodgeVerdict } from '../dodge';
 import { STANDING_MAX, WINDOW_HOURS, lockRemaining, tierOf } from '../standing';
+import { RANKED_JOIN_GRACE_MS, STRATEGY_DURATION_MS } from '../net/protocol';
 import { widenHint, queuesFor } from './queueDepth';
 import { parkQueue, takeQueue, updateQueue, dropQueue, elapsedSeconds, type ParkedQueue } from './queueKeeper';
 import { usePresence } from './usePresence';
@@ -32,6 +33,29 @@ import { formatLabel, type PendingChallenge } from './challenge';
 const BACKGROUND_QUEUE_TIP = (
   <>
     <b>← Back</b> keeps you in the queue.
+  </>
+);
+
+/**
+ * WHAT QUEUEING COMMITS YOU TO, said before you queue.
+ *
+ * Both ranked clocks are short and strict (`server/room.ts`: connect inside
+ * `RANKED_JOIN_GRACE_MS`, ready up inside `STRATEGY_DURATION_MS`, or the match is cancelled
+ * for everyone in it and the miss is charged to your account standing as a dodge). Nothing
+ * said so until the charge arrived, so the first time a player learned the rule was the
+ * screen telling them they had broken it. That is a bad way to publish a rule and it is the
+ * complaint this fixes.
+ *
+ * The numbers are READ from the same constants the server counts on, so the sentence cannot
+ * go stale if either window is tuned. It is shown on the queue screen and again while
+ * searching, because the second one is where people walk away.
+ */
+const READY_WINDOW_NOTE = (
+  <>
+    Stay at your keyboard once you queue. When a match is found you have{' '}
+    <b>{Math.round(RANKED_JOIN_GRACE_MS / 1000)}s</b> to load in and{' '}
+    <b>{Math.round(STRATEGY_DURATION_MS / 1000)}s</b> on the strategy screen to ready up. Miss
+    either and the match is cancelled for everyone and your account standing drops.
   </>
 );
 
@@ -394,7 +418,7 @@ export function Matchmaking({
           <span>
             You {DODGE_REASON[y.kind]}. That is your {nth} in {WINDOW_HOURS.dodge} hours
             {st && st.cooldownMin > 0
-              ? ` — ranked is locked for ${minutesText(st.cooldownMin)}.`
+              ? `. Ranked is locked for ${minutesText(st.cooldownMin)}.`
               : '.'}
           </span>
           {/* TELL THEM WHAT THE NEXT ONE COSTS. Both systems this is patterned on publish the
@@ -417,7 +441,7 @@ export function Matchmaking({
         <b>Nothing was charged to you</b>
         <span>
           {who > 0
-            ? `${who === 1 ? 'A player' : `${who} players`} didn’t make it to the match. You were ready — this one is on them.`
+            ? `${who === 1 ? 'A player' : `${who} players`} didn’t make it to the match. You were ready, so this one is on them.`
             : 'The match was cancelled before it started.'}
         </span>
       </div>
@@ -694,6 +718,7 @@ export function Matchmaking({
           </p>
         )}
         <p className="ds-tip">{BACKGROUND_QUEUE_TIP}</p>
+        <p className="ds-hint">{READY_WINDOW_NOTE}</p>
         {error && <p className="ds-form-err">⚠ {error}</p>}
         {dodgeNote()}
         {lockNote()}
@@ -755,6 +780,7 @@ export function Matchmaking({
           </button>
         </div>
       )}
+      <p className="ds-hint">{READY_WINDOW_NOTE}</p>
       {error && <p className="ds-form-err">⚠ {error}</p>}
       {dodgeNote()}
       {lockNote()}

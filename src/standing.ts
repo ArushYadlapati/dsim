@@ -275,7 +275,7 @@ export const STANDING_TIERS: readonly StandingTier[] = [
     name: 'Warning',
     floor: 60,
     bump: 0,
-    blurb: 'Nothing extra is being applied — but the next one escalates.',
+    blurb: 'Nothing extra is applied yet. The next one escalates.',
   },
   {
     key: 'restricted',
@@ -296,7 +296,7 @@ export const STANDING_TIERS: readonly StandingTier[] = [
     name: 'Suspended',
     floor: 0,
     bump: 3,
-    blurb: 'Every offence lands at the top of the ladder — day-long ranked locks.',
+    blurb: 'Every offence lands at the top of the ladder: day-long ranked locks.',
   },
 ];
 

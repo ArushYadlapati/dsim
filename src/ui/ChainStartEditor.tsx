@@ -309,7 +309,7 @@ export function ChainStartEditor({
       // robot cannot repair, and blaming containment there would send the player
       // dragging around a corner that was never going to accept this angle
       !legality.headingFits
-      ? 'Turned too far to fit the Lab Area — square it up'
+      ? 'Turned too far to fit the Lab Area. Square it up'
       : !legality.inLab
         ? 'Must start completely inside a Lab Area corner'
         : 'Robot overlaps the Ring Stand assembly';

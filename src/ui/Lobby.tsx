@@ -524,7 +524,7 @@ export function Lobby({
                 {errorCode === 'region_full' && (
                   <p className="ds-hint warn">
                     Nothing is wrong with your connection. Choose another region above,
-                    then try again — whoever you are playing with needs to pick the same one.
+                    then try again. Whoever you are playing with needs to pick the same one.
                   </p>
                 )}
               </>
