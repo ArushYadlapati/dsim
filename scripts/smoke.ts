@@ -15149,6 +15149,32 @@ for (const game of ['decode', 'chain', 'biobuzz'] as const) {
   check('spectate: after the watcher leaves, the match summary drops the spectator', (room.summary()?.spectators ?? 1) === 0);
   check('spectate: a room with ONLY a hidden observer reads as unwatched', room.visibleSpectators() === 0);
 
+  /**
+   * A WATCHER WHOSE SOCKET REOPENS RE-SPECTATES; IT MUST NEVER SEND `rejoin`.
+   *
+   * `rejoin` reclaims a held DRIVER slot and `Room.reattach` looks only in `clients`, so a
+   * spectator asking for one is answered `{rejoined, ok:false}` — which `ServerSession`
+   * treats as a hard failure and closes the transport on, freezing the match behind the
+   * "connection lost" panel on a connection that had just come back.
+   *
+   * Source-level because `ServerSession` cannot be imported here (`src/net/env.ts` reads
+   * `import.meta.env` at load). Both halves are asserted because the bug was the SEAM
+   * between them: `Transport.onReopen` is a single slot, not a listener list, so the
+   * session's registration silently replaced the lobby's correct one.
+   */
+  {
+    const sess = readFileSync('src/net/serverSession.ts', 'utf8');
+    const lob = readFileSync('src/net/lobbyClient.ts', 'utf8');
+    check(
+      'spectate: ServerSession registers its `rejoin`-on-reopen for DRIVERS only',
+      /if\s*\(!spectator\)\s*\{\s*transport\.onReopen\(/.test(sess),
+    );
+    check(
+      'spectate: ...so the lobby’s re-spectate handler survives the handover',
+      /this\.transport\.onReopen\(\(\) => void doSpectate\(\)\)/.test(lob),
+    );
+  }
+
   // ---- the operator snapshot: signed-in by id, anonymous by COUNT --------
   // The privacy line lives here rather than in the UI: an anonymous session gets
   // no identifier at any layer, so there is nothing for a later feature to
