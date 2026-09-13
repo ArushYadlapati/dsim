@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { fetchReplay } from '../net/api';
 import {
   ReplayPlayer,
+  replayFidelity,
   replayRefusal,
   replayViewpoint,
   type Replay,
@@ -67,6 +68,22 @@ const REFUSAL_TEXT: Record<ReplayRefusal, (r: Replay) => string> = {
 };
 
 /**
+ * ...and WHY a replay that still plays may not finish on the number beside it. Only the two
+ * “the sim moved” reasons reach this — the fatal three take the stale screen above — and each
+ * says which one it is, because “we know the sim changed” and “we have no idea what it ran”
+ * are different admissions. Every one of them ends on the same sentence: the leaderboard
+ * figure is the authority, so nothing here can restate a record.
+ */
+const DRIFT_TEXT: Record<'behaviour' | 'unstamped', (r: Replay) => string> = {
+  behaviour: (r) =>
+    `Recorded on sim v${r.sim}; this build runs v${SIM_VERSION}. It plays, but the ending may ` +
+    'not land on exactly the saved score. The leaderboard figure is the real one.',
+  unstamped: () =>
+    'Recorded before DSIM tracked which sim version produced a replay. It plays, but the ' +
+    'ending may not land on exactly the saved score. The leaderboard figure is the real one.',
+};
+
+/**
  * Replay viewer: fetches a deterministic input-log replay and re-simulates it in
  * the browser, drawing with the same Renderer the live game uses. Physics WASM is
  * already inited (main.tsx) before any screen renders, so `ReplayPlayer` is safe.
@@ -93,6 +110,9 @@ export function ReplayView({
   const [error, setError] = useState('');
   // WHICH refusal, so the stale screen can give the real reason instead of one guess
   const [refusal, setRefusal] = useState<ReplayRefusal | null>(null);
+  /** set when the replay PLAYS but the sim has moved under it, so the note can name which of
+   *  the two “the sim moved” reasons it is. Null while it re-simulates exactly. */
+  const [drift, setDrift] = useState<'behaviour' | 'unstamped' | null>(null);
   /** a real-time canvas capture is running; playback controls are locked while it is */
   const [recording, setRecording] = useState(false);
   const recorder = useRef<MediaRecorder | null>(null);
@@ -140,17 +160,21 @@ export function ReplayView({
     setError('');
     const use = (r: Replay): void => {
       replay.current = r;
-      // A replay is a deterministic INPUT log — it only re-simulates to its original
-      // outcome under the exact sim build that recorded it. `replayRefusal` owns the whole
-      // decision (see it for the container-vs-behaviour split): an OLDER container is still
-      // readable and still plays, a mismatched balance/sim version cannot, and a format-1
-      // replay of a tank robot is refused because its drive input was never stored.
+      // A replay is a deterministic INPUT log, and whether this build can re-run it —
+      // exactly, approximately, or not at all — is `replayFidelity`, which is deliberately
+      // three-valued. A SIM_VERSION move must NOT make every match recorded before it
+      // vanish: it means only that the ending may not land on precisely the saved number,
+      // so it PLAYS, with a note, and both exports stay available. A refusal is reserved
+      // for a container this build cannot parse, a different SEASON, and the format-1 tank
+      // replay whose drive input was never stored. `replayRefusal` supplies the reason for
+      // whichever of the two it turns out to be.
       const why = replayRefusal(r, BALANCE_VERSION, SIM_VERSION);
-      if (why) {
+      if (replayFidelity(r, BALANCE_VERSION, SIM_VERSION) === 'stale') {
         setRefusal(why);
         setStatus('stale');
         return;
       }
+      setDrift(why === 'behaviour' || why === 'unstamped' ? why : null);
       player.current = new ReplayPlayer(r);
       renderer.current = new Renderer();
       setTotal(Math.max(1, r.ticks));
@@ -758,6 +782,9 @@ export function ReplayView({
               for something a refresh fixes */}
           {refusal !== 'future' && ' The score on the leaderboard still stands.'}
         </div>
+      )}
+      {status === 'ready' && drift && replay.current && (
+        <p className="ds-replay-drift">{DRIFT_TEXT[drift](replay.current)}</p>
       )}
       {status === 'ready' && (
         <div className={`ds-replay-score${done ? ' final' : ''}`}>

@@ -73,12 +73,31 @@ FLEET_REGIONS=(iad ord sjc lhr syd nrt gru jnb)
 # EVERY region except the always-warm primary (iad) runs the cheap shared size.
 # sjc joined this list 2026-07-20 (cost pass): US West is redundant with iad for
 # the ~75% of games that are solo record runs, and it auto-stops when idle anyway.
-# ⚠️ ord/gru/jnb are deliberately NOT here yet: they sit at 512MB, under the 1024 this
-# script's own note says Node+Rapier needs, and adding them to the re-shrink would
-# silently change their memory. Size them deliberately, then move them in.
-SATELLITES=(sjc lhr syd nrt)
+# ord (US Central) joined 2026-09-06 for the same reason it is cheap to have: a
+# satellite costs nothing while it is stopped, and it only wakes when somebody in
+# the middle of the country actually hosts a room there.
+# gru (Sao Paulo) and jnb (Johannesburg) joined the same day, on the same logic:
+# both continents were >200ms from EVERY existing region, which is the difference
+# between playable and not. There is NO Middle East region on Fly - the nearest
+# option for those players stays lhr, or fra if it is ever added here.
+#
+# WARNING: ALL SEVEN STAY IN THIS LIST. alpha proposed trimming it to four, to avoid
+# silently bumping ord/gru/jnb from 512MB to 1024 - a fair concern, but omitting a
+# region here does not leave it ALONE, it leaves it to fly.toml, whose single [[vm]]
+# is shared-cpu-4x. So dropping three regions from the re-shrink would have UPSIZED
+# them to 4x on the next deploy, which is the exact bug this wrapper exists to
+# prevent and the opposite of the intent. Memory stays at the live 512 for now:
+# re-provisioning the fleet is a deliberate cost decision, not something to fold
+# into a penalty hotfix. Raise SATELLITE_MEMORY on its own, with all seven listed.
+SATELLITES=(ord sjc lhr gru jnb syd nrt)
 SATELLITE_SIZE=shared-cpu-1x
-SATELLITE_MEMORY=1024 # MB — shared-cpu-1x defaults to 256MB, too tight for Node+tsx+Rapier
+# MB. Was 1024, on the grounds that shared-cpu-1x's 256MB default is "too tight for
+# Node+tsx+Rapier" — but the runtime stopped using tsx when the Dockerfile started
+# esbuild-BUNDLING the server (`CMD ["node", "dist-server/index.js"]`), so that
+# rationale went with it. MEASURED 2026-09-06: RSS is 111MB on the busy primary with
+# two live rooms. 512 is still 4.6x that, and 256 stays off the table because V8
+# wants headroom over the live set, not a ceiling on it.
+SATELLITE_MEMORY=512
 
 echo "==> fly deploy ($APP)"
 # NOTE: do NOT let a non-zero deploy skip the re-shrink below. `fly deploy` exits

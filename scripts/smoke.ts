@@ -196,6 +196,7 @@ import {
   trackStride,
   type CommandSource,
   replayViewpoint,
+  replayFidelity,
   type Replay,
   type ReplayResult,
 } from '../src/sim/replay';
@@ -13014,17 +13015,29 @@ function pinScene(
      * playable, since that is the last moment it is provably the real thing.
      *
      * Records are unaffected either way — the server stores the score it computed at the time
-     * and never re-derives it from the replay.
+     * and never re-derives it from the replay, so a drifting playback can never restate one.
+     *
+     * ⚠️ A SIM bump DRIFTS rather than retires. Gating playback on SIM_VERSION as well as the
+     * season once took every replay of a whole live season off the board over a float-level
+     * determinism fix; the recording is still a valid input log against the same physics, the
+     * same field and the same season. Only a container we cannot parse, a different SEASON, and
+     * the format-1 tank log are refused. See `replayFidelity`.
      */
     const patched: Replay = { ...r, sim: (r.sim ?? 0) + 1 };
     check(
-      'replay: a SIM bump retires older replays (the gate refuses, it does not warn)',
-      !replayPlayable(patched, patched.balanceVersion, SIM_VERSION),
+      'replay: a SIM bump DRIFTS an older replay, it does not retire it',
+      replayPlayable(patched, patched.balanceVersion, SIM_VERSION) &&
+        replayFidelity(patched, patched.balanceVersion, SIM_VERSION) === 'drift',
       `sim ${patched.sim} vs build ${SIM_VERSION}`,
     );
     check(
-      'replay: an UNSTAMPED replay is refused rather than assumed to be version 0',
-      !replayPlayable({ ...r, sim: undefined }, r.balanceVersion, SIM_VERSION),
+      'replay: ...so BOTH exports stay offered on it (the video is what outlives the sim)',
+      replayPlayable(patched, patched.balanceVersion, SIM_VERSION),
+    );
+    check(
+      'replay: an UNSTAMPED replay drifts rather than being assumed to be version 0',
+      replayPlayable({ ...r, sim: undefined }, r.balanceVersion, SIM_VERSION) &&
+        replayFidelity({ ...r, sim: undefined }, r.balanceVersion, SIM_VERSION) === 'drift',
     );
     check(
       'replay: a container from a FUTURE build is refused',
@@ -13237,8 +13250,8 @@ function pinScene(
      * quantity, it called a FUTURE container old when the fix is to refresh, and it asserted a
      * specific mismatch for an UNSTAMPED replay whose behaviour is genuinely unknown.
      *
-     * `unstamped` is a MESSAGE distinction only — the checks above and below pin that the
-     * yes/no policy is unchanged — so it is checked here against the same containers.
+     * `unstamped` is a MESSAGE distinction only — it rides the same DRIFT path as `behaviour`
+     * (see the three-valued block below) — so it is checked here against the same containers.
      */
     check(
       'replay: a FUTURE container refuses as `future`, not as stale',
@@ -13966,6 +13979,47 @@ function pinScene(
   check('verifyReplay reproduces the final worldHash', v.hash === run.result.hash, `${v.hash} vs ${run.result.hash}`);
   check('verifyReplay reproduces the score', v.score.blue === run.result.score.blue && v.score.red === run.result.score.red);
   check('verifyReplay reproduces the tick count', v.ticks === run.result.ticks);
+
+  // ---- CAN THIS BUILD PLAY IT? three-valued, on purpose ------------------
+  // The first cut of this gate refused playback whenever the SIM version differed,
+  // which made every match recorded before a float-level determinism fix vanish —
+  // including the entire current season. That is a far worse outcome than an ending
+  // that lands a point or two off the saved score. A refusal is now reserved for the
+  // cases where playback would be MEANINGLESS rather than merely imprecise.
+  {
+    const rp = (over: Partial<Pick<Replay, 'format' | 'balanceVersion' | 'sim' | 'setups'>>) =>
+      replayFidelity(
+        { format: REPLAY_FORMAT, balanceVersion: 5, sim: 2, setups: [], ...over },
+        5,
+        2,
+      );
+    check('playability: a current replay plays exactly', rp({}) === 'ok');
+    check('playability: an OLDER SIM version still PLAYS (this season stays watchable)',
+      rp({ sim: 1 }) === 'drift');
+    check('playability: ...including one recorded before sim versions existed',
+      rp({ sim: undefined }) === 'drift');
+    // the three genuine refusals
+    check('playability: a different SEASON is refused (different tuning, different game)',
+      rp({ balanceVersion: 4 }) === 'stale');
+    check('playability: an unreadable container is refused',
+      rp({ format: REPLAY_FORMAT + 1 }) === 'stale');
+    check('playability: a season change outranks a sim change',
+      rp({ balanceVersion: 4, sim: 1 }) === 'stale');
+    /*
+     * ORDER IS LOAD-BEARING, and this is the check that pins it. A format-1 TANK replay never
+     * had its drive input stored, and every format-1 replay ALSO predates the current
+     * SIM_VERSION — so if the sim test ran first, the tank case would be reported as a mere
+     * drift and PLAYED, showing a robot sitting still. `replayRefusal` asks the fatal
+     * questions first for exactly this reason.
+     */
+    const tankLegacy = { format: 1, balanceVersion: 5, sim: 1, setups: [setup(0, 'blue', { drivetrain: 'tank' })] };
+    check('playability: a format-1 TANK replay is STALE even though its sim also moved',
+      replayFidelity(tankLegacy, 5, 2) === 'stale');
+    check('playability: ...and it is named `tank`, not `behaviour`',
+      replayRefusal(tankLegacy, 5, 2) === 'tank');
+    check('playability: a format-1 MECANUM replay with the same sim gap merely drifts',
+      replayFidelity({ ...tankLegacy, setups: [setup(0, 'blue', { drivetrain: 'mecanum' })] }, 5, 2) === 'drift');
+  }
 
   // ---- WHOSE VIEW the replay is watched from ------------------------------
   // The camera swings a full 180° between alliances, so the wrong seat shows every
