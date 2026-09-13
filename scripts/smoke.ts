@@ -14722,6 +14722,46 @@ function pinScene(
   check('single-game lock released when the match finalizes', inactive.includes('user-1'));
 }
 
+// ---- a driver who leaves a FINISHED match is reaped, and the room with them -----
+// The reconnect grace is checked only by the room's loop, and `finalizeMatch` stops the loop
+// to keep the room for the results screen — so a tab closed from there was held forever and
+// the room was never deleted. Production's always-warm primary filled MAX_ROOMS with those
+// and refused every new room in the region (2026-09-13). `detach` arms a timer instead.
+{
+  let emptied = 0;
+  const room = new Room('smoke-post-reap', () => {
+    emptied++;
+  }, { kind: 'versus' });
+  room.add({
+    id: 'p1',
+    send: () => {},
+    player: { clientId: 'p1', name: 'p1', teamName: 'T', teamNumber: 1, alliance: 'red', startIndex: 0, ready: true, spec: { ...DEFAULT_SPEC }, assists: { ...DEFAULT_ASSISTS } },
+    connected: true,
+    disconnectAt: 0,
+  });
+  room.onMessage('p1', { t: 'start' });
+  room.advanceForTest(maxMatchTicks() + 5);
+  const realTimeout = globalThis.setTimeout;
+  const realNow = Date.now;
+  const armed: Array<() => void> = [];
+  (globalThis as { setTimeout: unknown }).setTimeout = (fn: () => void) => {
+    armed.push(fn);
+    return { unref() {} };
+  };
+  try {
+    room.detach('p1');
+    check('post-match drop: a reap is armed, since no loop is running to check the grace', armed.length === 1, `${armed.length}`);
+    check('post-match drop: the slot is still held inside the grace', emptied === 0);
+    const t0 = realNow();
+    Date.now = () => t0 + 60_000;
+    armed.shift()?.();
+    check('post-match drop: once the grace lapses the room EMPTIES (it leaked forever)', emptied === 1, `${emptied}`);
+  } finally {
+    (globalThis as { setTimeout: unknown }).setTimeout = realTimeout;
+    Date.now = realNow;
+  }
+}
+
 // ---- ranked ELO math (Phase 3) ---------------------------------------------
 {
   const p = (

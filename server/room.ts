@@ -370,6 +370,8 @@ export class Room {
   // staged player has (re)connected here, or cancels after RANKED_JOIN_GRACE_MS.
   private pendingMatch: PendingMatch | null = null;
   private pendingTimer: ReturnType<typeof setTimeout> | null = null;
+  /** reaps held slots when no loop is running to do it — see `armGraceReap` */
+  private graceReap: ReturnType<typeof setTimeout> | null = null;
   // ranked lifecycle: 'connecting' while paired players are still arriving, then
   // 'strategy' during the pre-match coordination window, then 'match' once the world
   // is built. Custom rooms skip 'strategy' (connecting → match). `world===null` still
@@ -746,7 +748,31 @@ export class Room {
       // a partner who drops must not leave the run un-restartable: their vote is
       // no longer required, so a rematch the other driver already asked for lands
       this.refreshRematch();
+      // ⚠️ THE GRACE IS ONLY EVER CHECKED BY THE LOOP, AND A FINISHED MATCH HAS NO LOOP.
+      // `finalizeMatch` stops it and keeps the room for the results screen, so a player who
+      // closed the tab from there was held forever: never reaped, the room never deleted.
+      // Every finished match somebody walked away from leaked one room, and the always-warm
+      // primary (which never auto-stops to clear them) filled `MAX_ROOMS` with rooms that
+      // had nobody in them and refused every new room in the region (2026-09-13, 24/24
+      // with `/api/perf` reading 0 live). So with no loop running, reap on a timer instead.
+      if (!this.loop) this.armGraceReap();
     }
+  }
+
+  /** run `checkGrace` once the grace has lapsed, for a room whose loop is not running */
+  private armGraceReap(): void {
+    if (this.graceReap) clearTimeout(this.graceReap);
+    this.graceReap = setTimeout(() => {
+      this.graceReap = null;
+      // a rematch restarted the loop meanwhile: it owns the check again
+      if (this.loop) return;
+      this.checkGrace();
+      // someone is still inside their own grace (they dropped later) — look again
+      if (this.clients.size > 0 && ![...this.clients.values()].every((x) => x.connected)) {
+        this.armGraceReap();
+      }
+    }, RECONNECT_GRACE_MS + 1000);
+    if (this.graceReap.unref) this.graceReap.unref();
   }
 
   /** reclaim a held slot on a fresh socket. Returns the new owning-connection id on
