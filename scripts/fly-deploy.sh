@@ -8,7 +8,8 @@
 #
 # Sizing policy: iad (matchmaker + always-warm primary) runs shared-cpu-4x (from
 # fly.toml — 4 shared vCPUs, ample headroom for the 60Hz loop without a dedicated
-# vCPU's cost). EVERY other region, INCLUDING sjc, runs shared-cpu-1x — much cheaper,
+# vCPU's cost). [SUPERSEDED 2026-09-13: see LAUNCH SIZING below — iad is performance-2x and
+# each satellite has its own size in SATELLITE_SIZES.] EVERY other region, INCLUDING sjc, runs shared-cpu-1x — much cheaper,
 # but SHARED: a sustained match there can burn burst
 # credits and throttle the 60Hz loop (the flap risk fly.toml warns about). They rarely
 # host a match and auto-stop when idle, so the cost win outweighs it; bump back to a
@@ -81,23 +82,37 @@ FLEET_REGIONS=(iad ord sjc lhr syd nrt gru jnb)
 # between playable and not. There is NO Middle East region on Fly - the nearest
 # option for those players stays lhr, or fra if it is ever added here.
 #
-# WARNING: ALL SEVEN STAY IN THIS LIST. alpha proposed trimming it to four, to avoid
-# silently bumping ord/gru/jnb from 512MB to 1024 - a fair concern, but omitting a
-# region here does not leave it ALONE, it leaves it to fly.toml, whose single [[vm]]
-# is shared-cpu-4x. So dropping three regions from the re-shrink would have UPSIZED
-# them to 4x on the next deploy, which is the exact bug this wrapper exists to
-# prevent and the opposite of the intent. Memory stays at the live 512 for now:
-# re-provisioning the fleet is a deliberate cost decision, not something to fold
-# into a penalty hotfix. Raise SATELLITE_MEMORY on its own, with all seven listed.
-SATELLITES=(ord sjc lhr gru jnb syd nrt)
-SATELLITE_SIZE=shared-cpu-1x
-# MB. Was 1024, on the grounds that shared-cpu-1x's 256MB default is "too tight for
-# Node+tsx+Rapier" — but the runtime stopped using tsx when the Dockerfile started
-# esbuild-BUNDLING the server (`CMD ["node", "dist-server/index.js"]`), so that
-# rationale went with it. MEASURED 2026-09-06: RSS is 111MB on the busy primary with
-# two live rooms. 512 is still 4.6x that, and 256 stays off the table because V8
-# wants headroom over the live set, not a ceiling on it.
-SATELLITE_MEMORY=512
+# WARNING: EVERY SATELLITE STAYS IN SATELLITE_SIZES. Omitting a region here does not
+# leave it ALONE, it leaves it to fly.toml, whose single [[vm]] is the PRIMARY's size
+# (performance-2x). So a region missing from the list is UPSIZED to that on the next
+# deploy, which is the exact bug this wrapper exists to prevent.
+#
+# LAUNCH SIZING (2026-09-13, BIOBUZZ + the alpha promotion). PER-REGION now, because the
+# regions are not alike. Each entry is region:size:memoryMB. Reasoning, from docs/capacity.md:
+#   · one server process uses ~one core (Node is single-threaded), so the only size step
+#     that buys ROOMS is a DEDICATED core: ~8-10 driven rooms on performance-1x against 3-5 on
+#     shared-cpu-1x, whose sustained baseline (~6% of a core) is about ONE busy room. A bigger
+#     shared size barely helps; shared-cpu-1x is what flapped /health under a single match.
+#   · US Central, US West and Europe carry real traffic, so they get the dedicated core.
+#   · Sydney, Tokyo, São Paulo and Johannesburg rarely host, so they get shared-cpu-4x: four
+#     shared vCPUs of baseline headroom (it sustained 2 rooms / 8 players at 0.244 cores).
+#   · every satellite AUTO-STOPS, and a stopped machine bills only its rootfs, so a bigger
+#     satellite costs money only while somebody is playing on it.
+# The primary (iad) is not listed: it takes fly.toml's [[vm]], performance-2x/4096.
+# performance-* enforces a 2048MB-per-core memory floor and shared-cpu-4x a 1024MB one, so
+# the memory column is the floor, not a choice. Change a size HERE — a manual
+# `fly machine update` is undone by the next deploy.
+SATELLITE_SIZES=(
+  ord:performance-1x:2048
+  sjc:performance-1x:2048
+  lhr:performance-1x:2048
+  gru:shared-cpu-4x:1024
+  jnb:shared-cpu-4x:1024
+  syd:shared-cpu-4x:1024
+  nrt:shared-cpu-4x:1024
+)
+SATELLITES=()
+for entry in "${SATELLITE_SIZES[@]}"; do SATELLITES+=("${entry%%:*}"); done
 
 echo "==> fly deploy ($APP)"
 # NOTE: do NOT let a non-zero deploy skip the re-shrink below. `fly deploy` exits
@@ -109,7 +124,7 @@ deploy_rc=0
 fly deploy --remote-only -a "$APP" "$@" || deploy_rc=$?
 [ "$deploy_rc" -ne 0 ] && echo "!! fly deploy exited $deploy_rc — re-applying VM sizes anyway, then failing"
 
-echo "==> re-applying per-region VM sizes (satellites -> $SATELLITE_SIZE/${SATELLITE_MEMORY}MB)"
+echo "==> re-applying per-region VM sizes (satellites: ${SATELLITE_SIZES[*]})"
 ids=$(fly machine list -a "$APP" --json | node -e '
   const data = JSON.parse(require("fs").readFileSync(0, "utf8"));
   const want = new Set(process.argv.slice(1));
@@ -118,8 +133,21 @@ ids=$(fly machine list -a "$APP" --json | node -e '
 
 while read -r region id; do
   [ -z "$id" ] && continue
-  fly machine update "$id" --vm-size "$SATELLITE_SIZE" --vm-memory "$SATELLITE_MEMORY" -a "$APP" -y >/dev/null
-  echo "   $region ($id) -> $SATELLITE_SIZE/${SATELLITE_MEMORY}MB"
+  size=""
+  memory=""
+  for entry in "${SATELLITE_SIZES[@]}"; do
+    if [ "${entry%%:*}" = "$region" ]; then
+      rest="${entry#*:}"
+      size="${rest%%:*}"
+      memory="${rest#*:}"
+    fi
+  done
+  if [ -z "$size" ] || [ -z "$memory" ]; then
+    echo "!! no size listed for $region ($id), leaving it alone"
+    continue
+  fi
+  fly machine update "$id" --vm-size "$size" --vm-memory "$memory" -a "$APP" -y >/dev/null
+  echo "   $region ($id) -> $size/${memory}MB"
 done <<< "$ids"
 
 if [ "$deploy_rc" -ne 0 ]; then

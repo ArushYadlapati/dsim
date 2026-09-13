@@ -23,6 +23,43 @@ filled up.
   `admitting: false` with few live `rooms`, restart that machine (ask first). The scheduled
   checkup below flags exactly this as URGENT.
 
+## Update, later the same day: PRs merged, main merged, LAN on, launch fleet sized
+
+All on alpha, **still not deployed**.
+
+- **main merged into alpha** (`a335bb0`). One conflict, the HUD chip block in `GameView.tsx`,
+  kept as alpha had it. `fly-deploy.sh`, `fly.toml` and `.env.example` now carry main's fleet.
+- **PRs #45, #60 and #57 merged** (`a4dd082`, `7d301f5`, `3b1d3c9`). #57's three conflicts kept
+  both sides. Its replay start-pose snap was gated on `startLegality`, which BIOBUZZ sets too, so
+  it became a per-game hook, **`GameSimModule.startSnap`**: DECODE fills it with the same G304
+  snap; BIOBUZZ and Chain Reaction keep their field-clamped pose. **No `SIM_VERSION` bump**
+  (owner): some pre-deploy replays may play back differently from what happened.
+- **LAN is ON for production**: `LAN_UPLOADS` and `LAN_SIGNALLING` in `fly.toml [env]`. The client
+  lights LAN from the server's `lan` capability, so Vercel needs nothing. Migration
+  **`0034_lan_runs_biobuzz.sql`** widens `lan_runs.game` to accept BIOBUZZ, which 0033 refused.
+- **Launch fleet, from `docs/capacity.md`** (one machine per region is a hard rule, and one
+  process uses about one core, so a dedicated core is the only size step that adds rooms):
+
+  | region | size | why | $/mo if never stopped |
+  |---|---|---|---|
+  | iad (primary, matchmaker, API) | `performance-2x` / 4096 | dedicated core for the loop; 2nd core for GC and every socket's deflate | 64.39 |
+  | ord, sjc, lhr | `performance-1x` / 2048 | real traffic; ~8–10 driven rooms, never throttled | 32.19 each |
+  | gru, jnb, syd, nrt | `shared-cpu-4x` / 1024 | rarely host; 4x's baseline held 2 rooms / 8 players | 8.08 each |
+
+  Satellites auto-stop and bill only rootfs while stopped, so their real cost is only while
+  someone plays. Worst case, all eight never stopping: **~$193/mo** (today's worst case ~$31).
+  Rough ceiling with margin: ~60 driven rooms fleet-wide, roughly 90 concurrent players at the
+  real solo/1v1/2v2 mix, ~130 at redline. Past that, the fix is `SIM_WORKERS`
+  (`docs/scaling-multicore.md`), not bigger VMs or a second machine per region.
+  `fly.toml [[vm]]` is the primary's size; `scripts/fly-deploy.sh` `SATELLITE_SIZES` puts each
+  satellite on its own after the deploy. Checked with `bash -n` and a dry run of the lookup.
+- ⚠️ **gru and jnb still do not host CROSS-region matches** (`DEPLOY_REGIONS` unchanged). Adding
+  them failed 8 `test:mm` checks: their real distances to syd/nrt and to each other (315–395 ms)
+  are above `RTT_UNKNOWN` (300), so a real far pair looked like a missing row. They do host every
+  room their own players open.
+- Gates run for this: `npx tsc --noEmit -p .` clean, `server:check` clean, `test:bb` 1270 PASS,
+  `test:mm` 186 PASS, `uiaudit` at baseline, `dbtest` ALL PASS (0034 applied). Full `npm test` NOT run (owner).
+
 ## Promotion checklist
 
 1. **BIOBUZZ is still hidden on stable.** `src/seasons.ts` has `channels: ['alpha']` and the blurb
