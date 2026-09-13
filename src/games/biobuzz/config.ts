@@ -310,10 +310,20 @@ export const BB_FLOWER_OPEN_R = 2.0;
 export const BB_FLOWER_FOOT = { along: 6, deep: 4.9 };
 
 /**
- * THE HIVE TIP TABLE — MEASURED on a real HIVE (owner, 2026-09-12), not published in the
- * manual. Indexed by the number of NECTAR in the up-CELL; the value is how many POLLEN also
- * have to be in it for the CELL to tip. A cell tips when
+ * THE HIVE TIP TABLE. Indexed by the number of NECTAR in the up-CELL; the value is how many
+ * POLLEN also have to be in it for the CELL to tip. A cell tips when
  * `pollen >= BB_TIP_POLLEN[Math.min(nectar, 5)]`.
+ *
+ * ── TWO ROWS ARE OFFICIAL — the 2026-2027 EVENT FIELD SETUP GUIDE, §12 Hive Calibration ──
+ * The Competition Manual prints no load, but the field guide requires every HIVE to be
+ * CALIBRATED (with ballast washers) to tip at "[8] Pollen + [0] Nectar" and "[3] Pollen + [3]
+ * Nectar" (§12, V1.0 p26), and its §12.3 acceptance table makes both rows exact:
+ *   · 0 NECTAR — with 6 in, a TOSSED-IN 7th must NOT tip; with 7 in, a tossed-in 8th MUST tip;
+ *   · 3 NECTAR — with 1 in, a tossed-in 2nd must NOT tip; with 2 in, a tossed-in 3rd MUST tip.
+ * ("Gently placed" is only "preferred" to tip.) A launched element is the tossed-in case, so
+ * rows 0 and 3 below are the guide's thresholds exactly.
+ *
+ * Rows 1, 2, 4 and 5 are NOT in the guide: MEASURED on a real HIVE (owner, 2026-09-12), once.
  *
  * **IT IS A TABLE, NOT A MASS, AND NOTHING INTERPOLATES IT.** No single linear weighting fits
  * the measured rows: 1n+7p and 2n+6p together make a NECTAR worth one POLLEN, and 3n+3p then
@@ -323,10 +333,10 @@ export const BB_FLOWER_FOOT = { along: 6, deep: 4.9 };
  * The STAGED row is the one that decides how a match opens: a CELL is staged with 3 NECTAR
  * (§10.3.1), so the first TIP costs **3 POLLEN** and is reachable in AUTO.
  *
- * Only index 0 is a guess. APPROX: an empty cell was not measured — 8 extrapolates the 7/6
- * trend at the top of the table. `docs/biobuzz/feedback/002-thresholds.md` §2 asks for that row
- * (and for a second reading of the other five); the smoke lane pins this array as a literal so
- * a re-measure has to come through it.
+ * Index 0 used to be an `APPROX` extrapolation of the 7/6 trend; the field guide confirms 8
+ * (2026-09-13), so no row is a guess any more. `docs/biobuzz/feedback/002-thresholds.md` §2
+ * still asks for a second reading of the owner-measured rows; the smoke lane pins this array as
+ * a literal so a re-measure has to come through it.
  *
  * See `docs/biobuzz-reference.md` §4.1.
  */

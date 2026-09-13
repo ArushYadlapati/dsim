@@ -23,8 +23,8 @@ import { biobuzzStep } from './step';
  *     Table 10-2 every tick (TIPS, CELL contents, FLOWER ownership, GARDEN, LEAVE, PARK) and
  *     `scoreTargets()` returns the real openings, so a BIOBUZZ match may reach the record
  *     board, the ranked periods and `persistMatch` — all keyed per game, and all still
- *     ALPHA-ONLY through `channels`. Several inputs are `APPROX` (`BB_TIP_POLLEN[0]`,
- *     `BB_FRAME_RAM_SPEED`), so numbers on the alpha board before the 2026-09-14 field test
+ *     ALPHA-ONLY through `channels`. Some inputs are `APPROX` (`BB_FRAME_RAM_SPEED`,
+ *     `BB_FLOWER_MID_Z`), so numbers on the alpha board before the 2026-09-14 field test
  *     are provisional. Setting this back to `false` is the one-line way to stop persisting.
  *   • `startLegality: false` — and NOT because the rule is missing any more. G304 published
  *     with the rest of the V1 manual and `bbEvalStart` (`./start`) assesses it: own side,

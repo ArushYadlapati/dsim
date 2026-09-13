@@ -2488,9 +2488,9 @@ export function fieldChecks(check: Check): void {
    * points would still be a mass model, which the owner ruled out (config.ts, 2026-09-12).
    *
    * ⚠️ THE LITERAL IS DELIBERATE AND IT IS THE POINT — do NOT "fix" this by comparing the
-   * table against itself. Index 0 is a GUESS (8, extrapolating the 7/6 trend; an empty cell
-   * was never put on the scale) and the rest was measured once, so this check exists to FAIL
-   * the day somebody re-measures, and the failure is what sends them to
+   * table against itself. Rows 0 and 3 are the Event Field Setup Guide's calibration points
+   * (§12.3: 8 POLLEN empty, 3 POLLEN + 3 NECTAR) and the other four were measured once by the
+   * owner, so this check exists to FAIL the day somebody re-measures, and the failure is what sends them to
    * `docs/biobuzz/feedback/002-thresholds.md` §2 to say which row moved. A re-measure is one
    * edit in `config.ts` and one here, in that order.
    */

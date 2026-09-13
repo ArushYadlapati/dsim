@@ -239,7 +239,7 @@ function scoringChecks(check: Check): void {
     check('TIP: 3 NECTAR + 2 POLLEN does not', !hiveWillTip(load(2, 3)));
     check('TIP: 5 NECTAR alone tips (row 5 is 0 POLLEN)', hiveWillTip(load(0, 5)));
     check('TIP: 4 NECTAR needs 1 POLLEN', hiveWillTip(load(1, 4)) && !hiveWillTip(load(0, 4)));
-    check('TIP: an EMPTY cell needs 8 POLLEN (APPROX row)', hiveWillTip(load(8, 0)) && !hiveWillTip(load(7, 0)));
+    check('TIP: an EMPTY cell needs 8 POLLEN, and 7 does not tip (Event Field Setup Guide §12.3)', hiveWillTip(load(8, 0)) && !hiveWillTip(load(7, 0)));
     check('TIP: past the table the last row holds', hiveWillTip(load(0, 9)));
     const w = bare([]);
     intoCell(w, 'red', ['red', 'red', 'red', 'yellow', 'yellow']);

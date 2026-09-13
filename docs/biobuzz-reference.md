@@ -186,17 +186,25 @@ and Championship TBA).
 TIPPED when (A) the HIVE moves from one stable state to the other, the down-CELL becoming the
 up-CELL, and (B) the damper that was not contacting the frame begins to contact it. "Bi-stable
 … holds its position until enough POLLEN or NECTAR are LAUNCHED into the upwards-facing CELL"
-(§9.6). **The manual does not print the load.** It was MEASURED on a real HIVE (owner,
-2026-09-12) — these are the configurations in the up-CELL that tip it:
+(§9.6). **The manual does not print the load.** Two rows come from the **2026-2027 Event Field
+Setup Guide §12 Hive Calibration** (V1.0 pp26–27,
+<https://ftc-resources.firstinspires.org/ftc/archive/2027/field/eventfieldguide>): every HIVE is
+ballast-calibrated to tip at **8 POLLEN + 0 NECTAR** and **3 POLLEN + 3 NECTAR**, and the §12.3
+acceptance table requires a tossed-in 8th POLLEN (empty cell) and 3rd POLLEN (3 NECTAR) to tip,
+while a tossed-in 7th and 2nd must not. The other rows were MEASURED on a real HIVE (owner,
+2026-09-12):
 
-| NECTAR in cell | POLLEN needed to tip |
-|---|---|
-| 0 | not measured — `APPROX` 8 |
-| 1 | 7 |
-| 2 | 6 |
-| 3 | **3** |
-| 4 | 1 |
-| 5 | 0 (tips on the fifth NECTAR alone) |
+| NECTAR in cell | POLLEN needed to tip | source |
+|---|---|---|
+| 0 | **8** | field guide §12.3 |
+| 1 | 7 | owner measurement |
+| 2 | 6 | owner measurement |
+| 3 | **3** | field guide §12.3 (and owner measurement) |
+| 4 | 1 | owner measurement |
+| 5 | 0 (tips on the fifth NECTAR alone) | owner measurement |
+
+The guide also notes "[3] Pollen + [3] Nectar has less mass than [8] Pollen" — one more reason
+the table is not a mass model.
 
 **This is a TABLE, not a mass.** No single linear weighting fits it: 1n+7p and 2n+6p equal
 would make a NECTAR worth one POLLEN, and 3n+3p then contradicts it. The seesaw is torque and
@@ -281,7 +289,7 @@ What is still open:
 - LOADING ZONE tape: inside edge at x = ±61, and which side of the row-4 / row-5 seams the tape
   sits on. `APPROX` ±0.5 in, cosmetic.
 - HIVE pair centred on the field? Pivot x = ±12.75 assumed from "25.5 centre to centre".
-- **Tip load with an EMPTY cell** — the one row of §4.1 not measured (`APPROX` 8 POLLEN).
+- ~~Tip load with an EMPTY cell~~ — settled: 8 POLLEN, Event Field Setup Guide §12.3 (§4.1).
 - Spill kinematics: how fast contents leave the open face as the bar passes level (`APPROX`
   40–60 in/s outboard), and how far they roll on the tiles.
 - Element rolling behaviour: does a NECTAR roll like a POLLEN on the soft tiles (owner note).

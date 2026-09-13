@@ -6,6 +6,13 @@ Reverse-chronological. Prepend a new dated section; demote the old "READ FIRST".
 
 ## READ FIRST — 2026-09-12, night: the owner's builder feedback — three launchers, the Box Tube places
 
+> **2026-09-13: THE TIP THRESHOLDS ARE IN THE FIELD SETUP GUIDE.** The 2026-2027 Event Field
+> Setup Guide §12 Hive Calibration requires every HIVE to tip at 8 POLLEN + 0 NECTAR and 3 POLLEN +
+> 3 NECTAR, and the §12.3 acceptance table makes a tossed-in 7th / 2nd POLLEN a no-tip.
+> `BB_TIP_POLLEN = [8,7,6,3,1,0]` already matched, so there is no behaviour change. Row 0 lost its
+> `APPROX` flag, and the comments, reference §4.1, feedback 002 §2 and test labels now cite the
+> guide. Rows 1, 2, 4 and 5 remain the owner's measurement. Work now happens directly on `alpha`.
+>
 > **2026-09-12, later still: INTAKE OFF A FLOWER (G418.B).** A running intake whose mouth is on a
 > FLOWER foot's field-side face pulls the BOTTOM element into the hopper, only if it is a POLLEN.
 >
