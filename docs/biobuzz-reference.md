@@ -186,17 +186,25 @@ and Championship TBA).
 TIPPED when (A) the HIVE moves from one stable state to the other, the down-CELL becoming the
 up-CELL, and (B) the damper that was not contacting the frame begins to contact it. "Bi-stable
 … holds its position until enough POLLEN or NECTAR are LAUNCHED into the upwards-facing CELL"
-(§9.6). **The manual does not print the load.** It was MEASURED on a real HIVE (owner,
-2026-09-12) — these are the configurations in the up-CELL that tip it:
+(§9.6). **The manual does not print the load.** Two rows come from the **2026-2027 Event Field
+Setup Guide §12 Hive Calibration** (V1.0 pp26–27,
+<https://ftc-resources.firstinspires.org/ftc/archive/2027/field/eventfieldguide>): every HIVE is
+ballast-calibrated to tip at **8 POLLEN + 0 NECTAR** and **3 POLLEN + 3 NECTAR**, and the §12.3
+acceptance table requires a tossed-in 8th POLLEN (empty cell) and 3rd POLLEN (3 NECTAR) to tip,
+while a tossed-in 7th and 2nd must not. The other rows were MEASURED on a real HIVE (owner,
+2026-09-12):
 
-| NECTAR in cell | POLLEN needed to tip |
-|---|---|
-| 0 | not measured — `APPROX` 8 |
-| 1 | 7 |
-| 2 | 6 |
-| 3 | **3** |
-| 4 | 1 |
-| 5 | 0 (tips on the fifth NECTAR alone) |
+| NECTAR in cell | POLLEN needed to tip | source |
+|---|---|---|
+| 0 | **8** | field guide §12.3 |
+| 1 | 7 | owner measurement |
+| 2 | 6 | owner measurement |
+| 3 | **3** | field guide §12.3 (and owner measurement) |
+| 4 | 1 | owner measurement |
+| 5 | 0 (tips on the fifth NECTAR alone) | owner measurement |
+
+The guide also notes "[3] Pollen + [3] Nectar has less mass than [8] Pollen" — one more reason
+the table is not a mass model.
 
 **This is a TABLE, not a mass.** No single linear weighting fits it: 1n+7p and 2n+6p equal
 would make a NECTAR worth one POLLEN, and 3n+3p then contradicts it. The seesaw is torque and
@@ -230,15 +238,15 @@ CONTINUOUS > ~10 s, REPEATED = more than once per match, STRATEGIC = for advanta
 
 | rule | text | penalty | sim treatment |
 |---|---|---|---|
-| G304 | start position (see §3) | match will not start | `evalStart` + editor, `startLegality: true` |
+| G304 | start position (see §3) | match will not start | `bbEvalStart` (A/C/D/E) + the anchor snap at spawn; `startLegality: false` (the shared ready-up gate is DECODE's `evalStartPose`, see `sim.ts`) |
 | G402 | no AUTO opponent interference; red side = columns A–C, blue = D–F | MAJOR per match (+ card if STRATEGIC) | DECODE's G402 shape: crosser on the wrong side + contact during AUTO |
 | G405 | don't eject elements from the field | MAJOR per element | structural (nothing leaves the field) |
-| G407 | **CONTROL no more than 4 SCORING ELEMENTS** | VERBAL; MAJOR + card if STRATEGIC (example A: 6+) | hopper cap 4; herding count warned at 5, MAJOR at 6+ |
+| G407 | **CONTROL no more than 4 SCORING ELEMENTS** | VERBAL; MAJOR + card if STRATEGIC (example A: 6+) | hopper cap 4; CONTROL of 5+ (hopper + herded) is a VERBAL WARNING only, never a foul (owner ruling) |
 | G408 | don't CONTROL opponent NECTAR | VERBAL; card if STRATEGIC | intake refuses opponent nectar |
 | G409 | don't catch elements spilling from a TIPPED HIVE | VERBAL; card if STRATEGIC | not modelled (spill lands on tiles) |
 | **G410** | **no NECTAR into a FLOWER before 1:00 left** | **MAJOR per NECTAR** | element entry event; the achievement still scores |
 | G411 | no hoarding | MAJOR + card | not modelled |
-| G417 | don't meddle with the HIVE (ram the frame, launch at the outside of a cell) | VERBAL; MAJOR + card if STRATEGIC | frame-ram speed threshold `APPROX`; VERBAL then MAJOR if REPEATED |
+| G417 | don't meddle with the HIVE (ram the frame, launch at the outside of a cell) | VERBAL; MAJOR + card if STRATEGIC | a frame ram at/over `BB_FRAME_RAM_SPEED` (`APPROX`) is the STRATEGIC test: MAJOR once per MATCH per robot; below it, nothing. Card not modelled |
 | G418 | FLOWER: enter only via the top, remove only POLLEN from the bottom | VERBAL; MAJOR + card if STRATEGIC | structural |
 | G421 | PIN ≤ 3 s (2-ft / 3-s release, pause/resume) | MAJOR + MAJOR per further 3 s | DECODE's pin detector, MAJOR tariff |
 | G426/G427 | humans enter NECTAR only per TIP / at ≤ 60 s, only via own LOADING ZONE, contacting the tile first | MINOR per nectar | structural (the sim's human player obeys) |
@@ -250,7 +258,9 @@ card the whole alliance (§10.6.3).
 
 - **R102** STARTING CONFIGURATION 18 × 18 × 18 in; preloaded elements may extend outside.
 - **R105** expanded envelope **18 × 24 × 29 in tall**, physically constrained, one assembly.
-  So a robot expands along ONE horizontal axis only (`BB_PRISM` 24 was the right guess).
+  So a robot expands along ONE horizontal axis only (`BB_PRISM` 24 / `BB_PRISM_NARROW` 18,
+  either orientation). `bbSizeLimits` budgets the deployed sweepers AND the Box Tube's
+  `BB_PLACE_REACH` against it.
 - **R104** no weight limit. **G407** effectively caps the hopper at **4** elements.
 - A 29-in robot is taller than the 25.5-in bottom of the down-HIVE — 2D sim ignores it.
 
@@ -279,7 +289,7 @@ What is still open:
 - LOADING ZONE tape: inside edge at x = ±61, and which side of the row-4 / row-5 seams the tape
   sits on. `APPROX` ±0.5 in, cosmetic.
 - HIVE pair centred on the field? Pivot x = ±12.75 assumed from "25.5 centre to centre".
-- **Tip load with an EMPTY cell** — the one row of §4.1 not measured (`APPROX` 8 POLLEN).
+- ~~Tip load with an EMPTY cell~~ — settled: 8 POLLEN, Event Field Setup Guide §12.3 (§4.1).
 - Spill kinematics: how fast contents leave the open face as the bar passes level (`APPROX`
   40–60 in/s outboard), and how far they roll on the tiles.
 - Element rolling behaviour: does a NECTAR roll like a POLLEN on the soft tiles (owner note).

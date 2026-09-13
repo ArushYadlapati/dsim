@@ -44,7 +44,7 @@ BB_FRAME_BAR_IN = 24, BB_FRAME_BAR_OUT = 25, BB_FRAME_Y = 19.4  // measured: 1-i
 BB_FLOWERS: (-69.46,-24) (-24,69.46) (69.46,24) (24,-69.46)     // measured: 2.54 off the wall, on the seam centreline
 BB_FLOWER_FOOT = { along: 6, deep: 4.9 }  // RECTANGLE flush to the wall, measured
 BB_FLOWER_TOP_Z = 21.5, BB_FLOWER_OPEN_R = 2.0, BB_FLOWER_VOL_Z = [3.98, 21.5] APPROX // Fig 9-12
-BB_TIP_POLLEN = [8, 7, 6, 3, 1, 0]   // MEASURED (ref §4.1); index = NECTAR in cell; [0] APPROX
+BB_TIP_POLLEN = [8, 7, 6, 3, 1, 0]   // index = NECTAR in cell; [0],[3] Event Field Setup Guide §12.3, rest MEASURED (ref §4.1)
 BB_FLOWER_UNLOCK_S = 60                                       // G410
 PTS: leave 3, park 5/5, tip 20, cell 2, bottom-nectar 5, owned 2, garden 1; RP 16 / 4 / 7
 ```

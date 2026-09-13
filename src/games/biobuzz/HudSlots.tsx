@@ -75,9 +75,10 @@ function heldPhrase(held: readonly ArtifactColor[]): string {
  * the next element takes it and still prints as 0 rather than as READY: every other value
  * this line shows is a count of shots, and so is that one.
  *
- * TIPPING wins over the number for the 4 s of the swing, because the CELL accepts nothing
- * while it moves (`hiveAccepts`) — a launcher that keeps firing at it is emptying its hopper
- * onto the floor.
+ * TIPPING wins over the number for the 4 s of the swing. The HIVE does keep taking elements
+ * through it (`hiveTakingSide`), but which tray it is putting them in changes at the release,
+ * so a count of "more to tip" against a moving bar is a number about to be answered by a
+ * different cell.
  */
 const cellLine = (c: BbCellHud | undefined): string =>
   !c ? '' : c.tipping > 0 ? 'TIPPING' : `${c.needed} MORE TO TIP`;
@@ -388,7 +389,10 @@ export function biobuzzResultsRows(hud: HudSnapshot): readonly ResultsSection[] 
         row('TIPS (count)', 'tips'),
         row('TIPS (points)', 'tipPts'),
         row('Up CELL contents (elements)', 'cellCount'),
-        row('Up CELL contents (points)', 'cellPts'),
+        // 0 for the whole match — Table 10-2 pays for what is LEFT IN the cell at the buzzer
+        // (owner ruling, 2026-09-12), so the label says when the number arrives rather than
+        // leaving a driver to read a permanent 0 beside a tray with four elements in it.
+        row('Up CELL contents (points at the buzzer)', 'cellPts'),
       ],
     ],
     [

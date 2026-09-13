@@ -10,7 +10,7 @@ Two numbers, and a third that FALLS OUT of the first:
 | | what it decides | today | provenance |
 |---|---|---|---|
 | `BB_FLOWER_MID_Z` | where the scoring volume starts, and where a NECTAR seats | **3.98** | `APPROX`, derived — see §1 |
-| `BB_TIP_POLLEN[0]` | whether an EMPTY cell can tip at all | **8** | `APPROX`, extrapolated — see §2 |
+| `BB_TIP_POLLEN[0]` | whether an EMPTY cell can tip at all | **8** | **SETTLED 2026-09-13** — Event Field Setup Guide §12.3; see §2 |
 | capacity | how many fit: **POLLEN 8 · NECTAR 5** | derived | falls out of `BB_FLOWER_MID_Z` — see §3 |
 
 Cells to look at: **`flower-stack@0`** (all four column states in one frame — the shaded band IS
@@ -59,6 +59,15 @@ render all read it. **The one thing that does NOT re-derive is the two capacity 
 ---
 
 ## 2. THE TIP TABLE'S EMPTY ROW
+
+> **SETTLED 2026-09-13 — no field measurement needed for row 0.** The 2026-2027 **Event Field
+> Setup Guide**, §12 Hive Calibration (V1.0 pp26–27), requires every HIVE to be ballast-calibrated
+> to tip at **[8] POLLEN + [0] NECTAR** and **[3] POLLEN + [3] NECTAR**. Its §12.3 acceptance
+> table: with 0 NECTAR, a tossed-in 7th POLLEN must NOT tip and a tossed-in 8th MUST; with 3
+> NECTAR, a tossed-in 2nd must NOT tip and a tossed-in 3rd MUST. So rows 0 and 3 are official and
+> match the sim. Rows 1, 2, 4, 5 are not in the guide and are still the owner's single measurement
+> — items 2 and 3 below (a second reading, and whether order matters) still stand. Note a field
+> is calibrated to these two rows, so an event HIVE may not reproduce the owner's other rows.
 
 **What the sim does with it.** `BB_TIP_POLLEN` is indexed by the NECTAR in the up-CELL and gives
 the POLLEN also needed to tip it; a cell tips when `pollen >= BB_TIP_POLLEN[min(nectar, 5)]`.

@@ -30,7 +30,7 @@ import {
 import { biobuzzColliders } from './colliders';
 import { capturePollen, scoreTargets, takeHeld } from './elements';
 import { bbElementRadius, flowerFits, flowerRetrieve, flowerStackZ, type BbElementKind } from './flower';
-import { hiveAccepts, hiveCellPos, hiveLoad, hiveStep, hiveWillTip, spillPoses } from './hive';
+import { hiveAccepts, hiveCellPos, hiveLoad, hiveStep, hiveTakingSide, hiveWillTip, spillPoses } from './hive';
 import { bbIsTurreted, bbLauncherOf, bbLiftOf } from './mechs';
 import {
   type BbShot,
@@ -48,11 +48,11 @@ import { rectContains, type BiobuzzState, type ScoreTarget, type Vec3 } from './
 /**
  * BIOBUZZ GAMEPLAY TICK — POLLEN physics and the intake/launch loop.
  *
- * This is the shell's only real gameplay: pollen roll, settle, get collected, and get thrown
- * back out. There is no scoring, because Section 10 of the V0 manual is a Kickoff placeholder
- * (`scored: false` on the sim module says so at the seam). What there IS, and what has to be
- * right before anything is built on top of it, is a POLLEN model that CONSERVES COUNT and
- * NEVER LEAKS OUT OF THE FIELD under every input a driver can produce.
+ * The element loop: POLLEN and NECTAR roll, settle, get collected, get launched into the HIVE
+ * or placed into a FLOWER, and spill back out of a TIPPED HIVE. The points themselves are
+ * `score.ts`'s (the module is `scored: true`, `sim.ts`); what this file owns, and what has to
+ * be right before anything is built on top of it, is an element model that CONSERVES COUNT
+ * and NEVER LEAKS OUT OF THE FIELD under every input a driver can produce.
  *
  * ── THERE IS ONE SOLVER, AND IT IS NOT IN THIS FILE ────────────────────────
  * GROUND POLLEN are solved by the SHARED artifact solve, `solveArtifacts`
@@ -499,7 +499,11 @@ export function updateBiobuzz(
       if (launchedBy && launchedBy !== owner) continue;
       const hive = bb.hives[owner];
       if (!hiveAccepts(hive, owner, b.pos, b.z, vel)) continue;
-      park(b, t.id, hive.contents, hiveCellPos(owner, hive.up), CELL_MID_Z);
+      // PARKED IN THE CELL THAT TOOK IT, which through a swing is not always `up`
+      // (`hiveTakingSide`): before the release it is the tray still holding its load, after it
+      // the tray coming up. Reading `hive.up` here would draw a post-release capture inside the
+      // cell it is NOT in, on the far side of the pivot.
+      park(b, t.id, hive.contents, hiveCellPos(owner, hiveTakingSide(hive)), CELL_MID_Z);
       took = true;
       break;
     }
@@ -516,9 +520,12 @@ export function updateBiobuzz(
    *
    * A SPILLED ELEMENT COMES BACK AS A GROUND ARTIFACT CARRYING THE SPILL VELOCITY. It leaves
    * the tray over the cell's open outer end and lands just outboard of the cell centre, and it
-   * arrives ALREADY MOVING (`BB_SPILL_SPEED` outboard, `BB_SPILL_LATERAL` across), so it rolls
-   * out from under its own structure the way the manual describes — G409: it "hits the TILE
-   * floor before it is collected" — rather than sitting in a pile under the down cell.
+   * arrives ALREADY MOVING (`BB_SPILL_SPEED`, aimed within `BB_SPILL_FAN` of outboard), so it
+   * rolls out from under its own structure the way the manual describes — G409: it "hits the
+   * TILE floor before it is collected" — rather than sitting in a pile under the down cell. The
+   * fan is narrow (owner feedback, 2026-09-12): a spill runs STRAIGHT-ISH outboard and most of
+   * what spreads it is the elements pushing each other apart once they are on the tiles, which
+   * the shared solve below does on the very tick they land there.
    *
    * GROUND AND NOT FLIGHT, which is a decision about WHO OWNS IT from here: a ground element
    * belongs to `solveArtifacts` from the very next stage of this same tick, so a spill that
@@ -1149,11 +1156,22 @@ export function bbFlightEnters(
 /**
  * WILL `owner`'s up-CELL STILL BE TAKING ELEMENTS when a shot fired now arrives?
  *
- * No while it is mid-swing (`hiveAccepts` refuses everything then). And no when what is already
- * in it PLUS every element of that alliance already in the air and predicted to enter
- * (`bbFlightEnters`) will tip it: the element that completes the load goes in and starts the
- * swing, so anything arriving after it reaches a moving HIVE and falls through. A shot that would
- * itself complete the load is fine — it is the one that goes in.
+ * ── THROUGH A SWING, AUTO-FIRE RESUMES AT THE RELEASE (owner feedback, 2026-09-12) ─────────
+ * No in the FIRST half. The cell has not refused since `hiveTakingSide` landed, but the tray
+ * taking elements there is the one about to empty, so a shot fired into it is a shot thrown on
+ * the floor two seconds later. The turret is already slewing to the incoming cell through this
+ * window (`aimCell`, `elements.ts`); what holds is the trigger, not the aim.
+ *
+ * Yes in the SECOND half. The release hands the opening over to the incoming tray, and from
+ * that instant a shot aimed at the cell the turret has been tracking for two seconds goes in
+ * and stays in — `hiveStep` carries a post-release load through the settle. Waiting for the
+ * settle instead threw away the two seconds the tracking existed to buy.
+ *
+ * ── AND NO WHEN THE LOAD IS ABOUT TO TIP ───────────────────────────────────────────────────
+ * No when what is already in it PLUS every element of that alliance already in the air and
+ * predicted to enter (`bbFlightEnters`) will tip it: the element that completes the load goes
+ * in and starts the swing, so anything arriving after it reaches a tray on its way down. A shot
+ * that would itself complete the load is fine — it is the one that goes in.
  *
  * Measured before this existed, a turret on a steady feed auto-fired 61 elements and 58 missed,
  * every one of them launched at a settled cell that the shots ahead of it were about to tip.
@@ -1167,7 +1185,7 @@ export function bbCellTaking(
   const bb = world.biobuzz as BiobuzzState | undefined;
   if (!bb) return false;
   const hive = bb.hives[owner];
-  if (hive.tipping > 0) return false;
+  if (hive.tipping > 0 && !hive.released) return false;
   const load = [...hive.contents];
   for (const b of world.balls) {
     if (b.state.kind !== 'flight' || b.state.by !== owner) continue;
