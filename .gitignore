@@ -16,3 +16,6 @@ scratch/
 .coord.json
 .coord.retired.json
 scripts/.mm-fuzz-baseline.json
+
+# Serena MCP per-developer project config
+.serena/
