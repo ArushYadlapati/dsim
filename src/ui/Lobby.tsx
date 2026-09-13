@@ -453,10 +453,7 @@ export function Lobby({
                 match will not be rated and will not reach a board — is the sort of thing
                 that has to be said before, not discovered after. */}
             {lanActive() && (
-              <p className="ds-hint warn">
-                This room will be hosted on the LAN server you’re connected to. Matches there
-                are unofficial — not rated, and never on a leaderboard.
-              </p>
+              <p className="ds-hint warn">This room runs on your LAN server and isn’t ranked.</p>
             )}
             <label className="ds-field">
               <span className="cap">Your name</span>
