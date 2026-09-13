@@ -31,7 +31,8 @@ import { CHAIN_CATALYST_LABELS } from '../../src/games/chain/labels';
 import { INTAKE_SHORT } from '../../src/ui/labelData';
 import type { RobotSpec } from '../../src/types';
 import { SPONSOR, sponsorActive } from '../../src/sponsor';
-import { BB_HOOD_DEFAULT_DEG, BB_START_POSES } from '../../src/games/biobuzz/config';
+import { BB_HOOD_DEFAULT_DEG, BB_NECTAR_R, BB_POLLEN_R, BB_START_POSES } from '../../src/games/biobuzz/config';
+import { elementLine } from '../../src/games/biobuzz/Gallery';
 import { categoryDefaultIndex, indexCategory } from '../../src/ui/startPositions';
 import { BB_DEFAULT_SPEC } from '../../src/games/biobuzz/robotConfig';
 import { bbLauncherOf, bbLiftOf } from '../../src/games/biobuzz/mechs';
@@ -615,6 +616,38 @@ export function coreChecks(check: Check): void {
       '...and it is the slice answering, not the world default state.ts seeds',
       hud.nectarWhy.red === bb.nectarWhy.red && hud.nectarWhy.red !== 'none-left',
       `slice ${hud.nectarWhy.red} · world ${bb.nectarWhy.red}`,
+    );
+  }
+
+  // ---- the gallery caption counts what is actually there ------------------
+  /**
+   * The cell caption under every gallery still read `${world.balls.length} pollen`, written
+   * when POLLEN was the only element. `hive-tip` loads 3 NECTAR over 3 POLLEN and the caption
+   * said `6 pollen` — and a caption is precisely the line a reader checks a picture against,
+   * so the one surface meant to explain a confusing cell was the surface lying about it.
+   *
+   * `elementLine` classifies through `bbKindOf`, the same function the SCORE uses, so a
+   * caption cannot disagree with what the rules think is on the field. The single-element
+   * scenes keep their shorter caption, which the second check pins — a caption that always
+   * printed `. 0 nectar` would be a different regression.
+   */
+  section('BIOBUZZ gallery caption — two element sizes, two counts');
+  {
+    const w = createBiobuzzWorld('match', 17, [setup(0, 'red', {}, 0)]);
+    const mk = (id: number, color: 'yellow' | 'red' | 'blue') => ({
+      ...w.balls[0], id, color, r: color === 'yellow' ? BB_POLLEN_R : BB_NECTAR_R,
+    });
+    w.balls = [mk(901, 'yellow'), mk(902, 'yellow'), mk(903, 'yellow'), mk(904, 'red'), mk(905, 'blue')];
+    check(
+      'a mixed field names both kinds, and never calls a NECTAR a POLLEN',
+      elementLine(w) === '3 pollen · 2 nectar',
+      elementLine(w),
+    );
+    w.balls = [mk(901, 'yellow'), mk(902, 'yellow')];
+    check(
+      '...and a POLLEN-only field keeps the short caption, no zero-nectar tail',
+      elementLine(w) === '2 pollen',
+      elementLine(w),
     );
   }
 

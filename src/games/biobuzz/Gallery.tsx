@@ -14,6 +14,7 @@ import { drawBiobuzzRobot } from './drawRobot';
 import { biobuzzHud, type BiobuzzHud } from './hudRobot';
 import { biobuzzStep } from './step';
 import { BiobuzzRobotPreview } from './RobotPreview';
+import { bbKindOf } from './score';
 import { BB_SCENES, bbScene, bbSceneStills, type Scene } from './scenes';
 
 /**
@@ -192,12 +193,17 @@ function SceneCell({ scene, tick, world, onOpen }: { scene: Scene; tick: number;
       <span className="ot">
         {scene.id}@{tick}
       </span>
-      {/* the numbers that explain a cell you are confused by: how many POLLEN are on the field
-          at all, how full the first robot's hopper is, and where each HIVE stands. A pile that
-          looks empty is a different bug from a pile that got collected, and the count is the
-          difference. */}
+      {/* the numbers that explain a cell you are confused by: what is on the field at all, how
+          full the first robot's hopper is, and where each HIVE stands. A pile that looks empty
+          is a different bug from a pile that got collected, and the count is the difference.
+
+          COUNTED BY KIND, because there are two element sizes now and calling all of them
+          "pollen" mislabelled every mixed cell — `hive-tip`'s load is 3 NECTAR over 3 POLLEN
+          and the caption read `6 pollen`, which is the one line a reader checks a picture
+          against. The nectar half is omitted when there is none, so the single-element scenes
+          keep the shorter caption they had. */}
       <span className="om">
-        {world.balls.length} pollen · {hud.robot ? `${hud.robot.hopper}/${hud.robot.cap} held · ${hud.robot.mode}` : 'no robot'}
+        {elementLine(world)} · {hud.robot ? `${hud.robot.hopper}/${hud.robot.cap} held · ${hud.robot.mode}` : 'no robot'}
       </span>
       <span className="om">{bbHudLine(hud)}</span>
     </button>
@@ -474,6 +480,15 @@ export function bbGalleryPath(sceneId?: string): string {
 function sceneIdOf(pathname: string): string | null {
   const m = /^\/biobuzz\/gallery\/([a-z0-9-]+)\/?$/.exec(pathname);
   return m ? m[1] : null;
+}
+
+/** the cell caption's element count, BY KIND. `bbKindOf` is the same classifier the score
+ * uses, so a caption can never disagree with what the rules think is on the field. */
+export function elementLine(world: World): string {
+  let pollen = 0;
+  let nectar = 0;
+  for (const b of world.balls) (bbKindOf(b) === 'pollen' ? pollen++ : nectar++);
+  return nectar === 0 ? `${pollen} pollen` : `${pollen} pollen · ${nectar} nectar`;
 }
 
 export function BiobuzzGallery() {
