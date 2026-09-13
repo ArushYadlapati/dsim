@@ -321,8 +321,12 @@ export interface Artifact {
   id: number;
   color: ArtifactColor;
   /** radius in inches when it differs from the game's default (BIOBUZZ NECTAR 1.8 vs POLLEN
-   * 1.4). Renderers read it; the shared artifact solve does NOT yet — it runs one radius per
-   * call. Owner item, see docs/biobuzz/feedback/000-solver-observations.md. */
+   * 1.4). Read as `b.r ?? radius` by the renderers AND by the whole shared artifact solve —
+   * `solveArtifacts`, `bounceFirstContacts`, `clampBallPosToStatics`, `fieldPushback`,
+   * `supported`, `pinnedArtifacts` and the held plugs in `artifactSolids`. DECODE sets it on
+   * nothing, so a game that leaves it undefined behaves exactly as it did before it existed.
+   * ⚠️ `bbRobotSolids` (the robot lane) is the one held-plug builder still using its `radius`
+   * argument for every plug; see docs/biobuzz/feedback/000-solver-observations.md. */
   r?: number;
   state: BallState;
   pos: Vec2;

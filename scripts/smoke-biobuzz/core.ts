@@ -578,6 +578,75 @@ export function coreChecks(check: Check): void {
     );
   }
 
+  // ---- the phase EVENT says the same word every other surface says --------
+  /**
+   * ⚠️ `world.events` IS ONE OF THE THREE SURFACES THE TERMINOLOGY RULING BINDS — with the
+   * live HUD and the burned-in video overlay. `src/sim/match.ts` pushes `DRIVER-CONTROLLED`
+   * for the other seasons; BIOBUZZ runs its own phase machine in `step.ts` and was pushing
+   * `TELEOP`, so one event log carried two names for one phase and a viewer reading the
+   * overlay against the log saw a disagreement that meant nothing.
+   *
+   * The negative half matters as much as the positive one: asserting only that the right
+   * string is present would still pass if both were pushed.
+   */
+  section('BIOBUZZ phase events — the shared vocabulary');
+  {
+    const w = createBiobuzzWorld('match', 13, [setup(0, 'red', {}, 0), setup(1, 'blue', {}, 0)]);
+    w.match.phase = 'transition';
+    w.match.phaseTimeLeft = SIM_DT / 2; // one tick short of the flip
+    const none = new Map([[0, cmd({})], [1, cmd({})]]);
+    biobuzzStep(w, SIM_DT, none);
+    check(
+      'the AUTO -> TELEOP flip really happened (else the next two prove nothing)',
+      w.match.phase === 'teleop',
+      w.match.phase,
+    );
+    check(
+      'BIOBUZZ announces DRIVER-CONTROLLED, the word the HUD and the overlay use',
+      w.events.includes('DRIVER-CONTROLLED'),
+      JSON.stringify(w.events),
+    );
+    check(
+      '...and it does NOT also push the season-local `TELEOP`',
+      !w.events.includes('TELEOP'),
+      JSON.stringify(w.events),
+    );
+  }
+
+  // ---- participation credit knows every button this game has --------------
+  /**
+   * `Room.countParticipation` decides whether a driver is AFK for ranked standing, and it
+   * does it by listing the commands that count as input. The list is written by hand, so a
+   * button added later is simply absent — which is exactly what happened to `bbNectar`: the
+   * human-player button landed on bit 128 after the list was written, and a driver whose only
+   * input was that key read as idle and lost standing for playing their position.
+   *
+   * Derived from `RobotCommand` rather than hard-coded, so the NEXT button to land fails here
+   * on the day it lands instead of the day somebody is wrongly marked AFK. `server/room.ts`
+   * is read as source because the method is private and the room needs a live socket.
+   */
+  section('server: participation credit covers every BIOBUZZ button');
+  {
+    const types = readRepo('src/types.ts');
+    const roomSrc = readRepo('server/room.ts');
+    const iface = types.slice(types.indexOf('interface RobotCommand'));
+    const body = iface.slice(0, iface.search(/^\}/m));
+    const buttons = [...new Set([...body.matchAll(/^\s*(bb[A-Za-z]+)\??:/gm)].map((m) => m[1]))];
+    const moving = roomSrc.slice(roomSrc.indexOf('const moving ='));
+    const expr = moving.slice(0, moving.indexOf(';'));
+    check(
+      'RobotCommand really declares BIOBUZZ buttons (else the next check is vacuous)',
+      buttons.length >= 3,
+      buttons.join(', '),
+    );
+    const missing = buttons.filter((b) => !expr.includes(`c.${b}`));
+    check(
+      'every bb* command counts as driver input, `bbNectar` included',
+      missing.length === 0,
+      missing.length ? `missing: ${missing.join(', ')}` : buttons.join(', '),
+    );
+  }
+
   // ---- the STATIC crawler files -------------------------------------------
   // `public/robots.txt` and `public/sitemap.xml` are hand-written and do NOT read
   // the registry, so a season flipping to `stable` needs both edited by hand — an

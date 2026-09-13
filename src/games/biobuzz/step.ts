@@ -231,7 +231,11 @@ function biobuzzStepMatch(world: World, dt: number): void {
     case 'transition':
       m.phase = 'teleop';
       m.phaseTimeLeft = C.TELEOP_DURATION;
-      world.events.push('TELEOP');
+      // DRIVER-CONTROLLED, not TELEOP. `world.events` is one of the three surfaces the
+      // terminology ruling names (with the live HUD and the burned-in video overlay), and
+      // `src/sim/match.ts:64` already says it for the other games. A season pushing its own
+      // word here puts two names for one phase into the same event log.
+      world.events.push('DRIVER-CONTROLLED');
       break;
     case 'teleop':
       // TELEOP PARK, the second of the two assessments. Same instant rule as AUTO's.
