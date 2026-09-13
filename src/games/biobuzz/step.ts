@@ -8,7 +8,7 @@ import { BB_FLOWER_UNLOCK_S, BB_HALF_X, BB_HALF_Y } from './config';
 import { biobuzzColliders } from './colliders';
 import { bbAimAssist, updateBiobuzz } from './play';
 import { updateBiobuzzPenalties } from './penalties';
-import { bbApplyScore, bbLeftNow, bbParkedNow, bbScoreWorld } from './score';
+import { BB_WALL, bbApplyScore, bbLeftNow, bbParkedNow, bbScoreWorld, bbWallsTouched } from './score';
 
 /**
  * BIOBUZZ step — a playable, unscored match.
@@ -163,7 +163,7 @@ function bbAssess(world: World, at: 'auto' | 'match'): void {
   for (const r of world.robots) {
     if (r.passive) continue;
     if (at === 'auto') {
-      bb.leave[r.id] = bbLeftNow(r);
+      bb.leave[r.id] = bbLeftNow(r, bb.startWalls[r.id] ?? BB_WALL.all);
       bb.parkAuto[r.id] = bbParkedNow(r);
     } else {
       bb.parkTele[r.id] = bbParkedNow(r);
@@ -198,6 +198,14 @@ function bbAssess(world: World, at: 'auto' | 'match'): void {
 function biobuzzStepMatch(world: World, dt: number): void {
   const m = world.match;
   if (m.phase === 'pre') {
+    // WHICH WALLS EACH ROBOT IS STARTING AGAINST, re-read every tick until the match begins.
+    // LEAVE is measured against these (`bbLeftNow`), start poses are free-placed in this game,
+    // and a pose can still change while the field is frozen — so the last `pre` tick is the
+    // one that counts. `spawn.ts` seeds the same masks, for a world that is started with no
+    // `pre` tick at all (`startMatch` straight off `createWorld`, which is the headless path).
+    if (world.biobuzz) {
+      for (const r of world.robots) world.biobuzz.startWalls[r.id] = bbWallsTouched(r);
+    }
     if (m.preCountdown == null) return; // solo: the controller starts the match
     m.preCountdown -= dt;
     if (m.preCountdown <= 0) {

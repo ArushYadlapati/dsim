@@ -294,9 +294,25 @@ export interface BiobuzzState {
    * the current situation, so a stale value is a lie the HUD would print.
    */
   nectarWhy: Record<Alliance, BbNectarWhy>;
-  /** per robot id: did it LEAVE (stop contacting the perimeter) by the end of AUTO? Latched at
-   * that instant and never recomputed, because the achievement is assessed once (Table 10-2)
-   * and a robot that drives back to the wall in TELEOP keeps its 3. DRAFT. */
+  /**
+   * per robot id: WHICH PERIMETER WALLS IT STARTED AGAINST, as a `BbWall` bitmask.
+   *
+   * LEAVE is "no longer contacting the perimeter wall" (§10.5.4), and THE is the whole word:
+   * the wall in question is the one the ROBOT began the MATCH on. Tested against all four
+   * instead, the achievement is unreachable in ordinary play — the HIVE, the FLOWERS and both
+   * GARDENS are all at the perimeter, so a robot that drives the length of the field and ends
+   * AUTO anywhere useful is "contacting the perimeter wall" and scores nothing for a journey
+   * it plainly made. Measured: 3 points live all through AUTO, gone at the buzzer.
+   *
+   * WRITTEN EVERY TICK OF `pre`, so it is whatever pose the robot actually starts from — start
+   * poses are free-placed in this game (`startLegality: false`) and the anchors sit on three
+   * different walls — and FROZEN from the moment AUTO begins. 0 is a legal value: a robot
+   * placed clear of the perimeter has nothing to stop contacting and has LEFT by definition.
+   */
+  startWalls: Record<number, number>;
+  /** per robot id: did it LEAVE (stop contacting the wall it started on) by the end of AUTO?
+   * Latched at that instant and never recomputed, because the achievement is assessed once
+   * (Table 10-2) and a robot that drives back to the wall in TELEOP keeps its 3. DRAFT. */
   leave: Record<number, boolean>;
   /** per robot id: PARK at end of AUTO / end of MATCH, the two separate 5-point assessments.
    * Two maps rather than one because they are two achievements that can disagree. DRAFT. */
@@ -350,6 +366,7 @@ export function emptyBiobuzzState(): BiobuzzState {
     // 'none-left' rather than 'ok': a fresh state has no stock (`spawn.ts` stages it), and the
     // honest answer for a world nobody has staged is the one the tick would compute for it.
     nectarWhy: { red: 'none-left', blue: 'none-left' },
+    startWalls: {},
     leave: {},
     parkAuto: {},
     parkTele: {},

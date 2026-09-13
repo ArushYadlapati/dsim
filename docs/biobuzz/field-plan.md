@@ -168,8 +168,12 @@ solves the arc for the target's z (the existing `Vec3` + `BB_LAUNCH_Z0`).
 - Garden: every tick, count ground elements whose circle overlaps the strip; 1 each to the
   garden's colour. Displayed live, **banked at match end** like DECODE's pattern points
   (assessed at rest, §10.5.E). Same for cell contents (§10.5.C).
-- LEAVE: at end of AUTO, robot not contacting the perimeter (SAT vs the four wall lines with
-  `START_TOUCH_TOL` slack) ⇒ 3. PARK: at end of AUTO / end of MATCH, footprint intersects **own**
+- LEAVE: at end of AUTO, robot not contacting **the wall it started against** (the mask
+  `BiobuzzState.startWalls` records on every `pre` tick, `START_TOUCH_TOL` slack) ⇒ 3.
+  ⚠️ REVISED 2026-09-13 from "not contacting the perimeter" (all four wall lines): the HIVE,
+  the FLOWERS and both GARDENS are at the perimeter, so under that reading a robot that
+  crossed the field and ended AUTO anywhere useful scored nothing — 3 points live all
+  through AUTO and 0 from the buzzer. §10.5.4's article is read as the wall it began on. PARK: at end of AUTO / end of MATCH, footprint intersects **own**
   LOADING ZONE (assumed own — the zone "belongs to" the alliance; ask in Q&A) ⇒ 5 each.
 - RP: SWARM = leave + park points ≥ 16 (both robots LEAVE + both PARK in AUTO is exactly 16);
   POLLINATOR 1/2 at 4 / 7 tips. Ranked/record boards read `total`; RP go to `resultsRows`.

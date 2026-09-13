@@ -84,22 +84,57 @@ export function bbKindIndex(world: World): (id: number) => BbElementKind {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
- * LEAVE (Table 10-2): the ROBOT is "no longer contacting the perimeter wall".
+ * THE FOUR PERIMETER WALLS, as bits.
  *
- * Every corner of the footprint strictly inside the wall planes, by the shared
- * `START_TOUCH_TOL` of slack. The slack is the same 1.25 in the START rules use for "touching
- * the wall" (`spawn.ts`), and it is on this side of the test on purpose: a robot that has
- * pulled away by a millimetre has not LEFT in any sense a referee would recognise, and
- * without the tolerance the achievement would flicker for a robot resting against the wall as
- * the solve nudges it.
+ * A BITMASK rather than a list of booleans because it is stored per robot on the state bag,
+ * which is plain JSON on every snapshot and every replay: one small integer per robot, and the
+ * "did it start on any of these" test is one `&`.
  */
-export function bbLeftNow(r: RobotState): boolean {
+export const BB_WALL = { xPos: 1, xNeg: 2, yPos: 4, yNeg: 8, all: 15 } as const;
+
+/**
+ * WHICH PERIMETER WALLS THE ROBOT IS CONTACTING, as a bitmask.
+ *
+ * A corner of the footprint within the shared `START_TOUCH_TOL` of a wall plane counts as
+ * touching that wall. The slack is the same 1.25 in the START rules use for "touching the
+ * wall" (`spawn.ts`), and it is on this side of the test on purpose: a robot that has pulled
+ * away by a millimetre has not LEFT in any sense a referee would recognise, and without the
+ * tolerance the reading would flicker for a robot resting against the wall as the solve
+ * nudges it (measured: a settled chassis sits 0.2 in THROUGH the plane).
+ */
+export function bbWallsTouched(r: RobotState): number {
   const lim = BB_HALF_X - START_TOUCH_TOL;
   const limY = BB_HALF_Y - START_TOUCH_TOL;
+  let walls = 0;
   for (const c of robotCorners(r)) {
-    if (Math.abs(c.x) > lim || Math.abs(c.y) > limY) return false;
+    if (c.x > lim) walls |= BB_WALL.xPos;
+    if (c.x < -lim) walls |= BB_WALL.xNeg;
+    if (c.y > limY) walls |= BB_WALL.yPos;
+    if (c.y < -limY) walls |= BB_WALL.yNeg;
   }
-  return true;
+  return walls;
+}
+
+/**
+ * LEAVE (Table 10-2): the ROBOT is "no longer contacting the perimeter wall".
+ *
+ * ⚠️ **THE perimeter wall — the article is the rule.** `walls` is the mask of walls the ROBOT STARTED
+ * AGAINST (`BiobuzzState.startWalls`), and LEAVE is being clear of THOSE. Written against all
+ * four instead — which is how it shipped, and what `field-plan` §2.3 guessed pre-kickoff — the
+ * achievement is unreachable in ordinary play: the HIVE, the FLOWERS and both GARDENS are all
+ * at the perimeter, so a robot that crosses the field and ends AUTO somewhere useful is
+ * "contacting the perimeter wall" and is charged for a journey it plainly made. Measured on a
+ * solo practice match: 3 points live for the whole of AUTO, 0 from the buzzer on.
+ *
+ * A robot that started clear of the perimeter (`walls` 0) has nothing to stop contacting and
+ * has LEFT wherever it ends up — free start placement is legal in this game, and the
+ * alternative reading would make the achievement unearnable for those poses instead.
+ *
+ * `walls` DEFAULTS TO ALL FOUR, so a caller with no start latch in hand (an older snapshot, a
+ * scene that spawns a robot mid-tick) gets the literal reading rather than a free 3.
+ */
+export function bbLeftNow(r: RobotState, walls: number = BB_WALL.all): boolean {
+  return (bbWallsTouched(r) & walls) === 0;
 }
 
 /**
@@ -261,7 +296,10 @@ export function bbScoreWorld(world: World): BbScore {
   for (const r of world.robots) {
     if (r.passive) continue; // a practice dummy is not a competitor and scores nothing
     const s = out[r.alliance];
-    const left = phase === 'pre' || phase === 'auto' ? bbLeftNow(r) : (bb.leave[r.id] ?? false);
+    const left =
+      phase === 'pre' || phase === 'auto'
+        ? bbLeftNow(r, bb.startWalls[r.id] ?? BB_WALL.all)
+        : (bb.leave[r.id] ?? false);
     if (left) s.leaveCount++;
     const parkA = phase === 'auto' ? bbParkedNow(r) : (bb.parkAuto[r.id] ?? false);
     if (parkA) s.parkAutoCount++;
