@@ -5,6 +5,9 @@ import { clamp, datan2, dcos, dsin, hyp, rot, wrapAngle } from '../../math';
 import { GRAVITY } from '../../config';
 import {
   BB_DEFAULT_INTAKE,
+  BB_DUMP_APEX_ABOVE,
+  BB_DUMP_MAX_DIST,
+  BB_DUMP_MIN_DIST,
   BB_DUMP_RELOAD_S,
   BB_FIRE_BURST_MAX,
   BB_FIRE_INTERVAL,
@@ -34,7 +37,6 @@ import {
 import { releasePollen } from './elements';
 import type { LocalRect, ScoreTarget, Vec3 } from './state';
 import {
-  BB_DEG,
   BB_HOOD_DEFAULT_DEG,
   BB_TURRET_PITCH_MAX,
   BB_TURRET_PITCH_MIN,
@@ -293,22 +295,17 @@ function isNectarColour(c: string): boolean {
  * and a per-tick robot field ships 30 times a second to every client in the room.
  */
 export interface BbShot {
-  /** the HIVE cell being tracked (`bbPickTarget`), or `null` with nothing on the open side */
-  target: ScoreTarget | null;
+  /** the cell Aim Assist is on (`bbAimTarget`): the nearer cell of the own HIVE, as if it were up */
+  target: ScoreTarget;
   /** solved muzzle speed per turret exit — [0] a turret / a double turret's POLLEN turret,
    * [1] a double turret's NECTAR turret. `undefined` fires at `BB_LAUNCH_SPEED_DEFAULT`. A
    * dumper solves per element (`bbDumpSolution`) and leaves this empty. */
   speed: readonly (number | undefined)[];
-  /** ON TARGET per exit (same indexing): a turret settled on a REACHABLE HIVE solution within
-   * `BB_ON_TARGET_TOL`, or a dumper within `BB_AIM_TOL` of its aim heading with every element
-   * inside the accepted band. Manual fire does not wait for it, except a dumper's aim gate. */
-  onTarget: readonly boolean[];
-  /** WILL SCORE per exit (same indexing): on target, AND the release this exit would make now,
-   * run forward through the flight stage (`bbFlightEnters`), enters the own up-CELL, AND that
-   * cell will still be taking elements when it arrives (`bbCellTaking` — not mid-swing, and not
-   * about to be tipped by what is already in the air). This is what AUTO-FIRE waits for. Only
-   * computed for a robot that will auto-fire; `false` otherwise. */
-  scores: readonly boolean[];
+  /** WILL LAND per exit (same indexing): the release this exit would make now, run forward through
+   * the flight stage (`bbFlightEnters`), enters `target` PRETENDING THAT CELL IS UP AND SETTLED.
+   * A dumper additionally has to be within `BB_AIM_TOL` of its aim heading. Only predicted while
+   * the driver holds fire; `false` otherwise. This is the whole of Aim Assist's firing gate. */
+  lands: readonly boolean[];
 }
 
 /**
@@ -326,22 +323,15 @@ export interface BbShot {
  *                  firing edge along its own CONVERGING arc into the target cell
  *                  (`bbDumpSolution`), then `BB_DUMP_RELOAD_S` to re-arm.
  *
- * ── WHEN IT FIRES ───────────────────────────────────────────────────────────
- * MANUAL fire fires. AUTO-FIRE fires whenever stage 5b says the next exit WILL SCORE
- * (`BbShot.scores`), with however many elements are held. Two earlier gates made it fire at
- * odd moments and are gone:
- *  · it armed only on a FULL hopper, so it threw ONE element each time the intake took the
- *    fourth and then stopped — firing when the hopper happened to fill, never when a shot was on;
- *  · "on target" was the turret's geometry alone, so with a steady feed it kept firing into a
- *    cell that the elements already in the air were about to TIP, and every one of those arrived
- *    at a swinging HIVE and fell through (measured: 58 of 61 auto-fired shots missed).
- * An unconditional auto-fire is still wrong: every robot is staged full, and a Box Tube robot
- * must be able to carry its load to a FLOWER without throwing it off the closed side. A DUMPER with aim assist and a target holds
- * even a manual press until it is on target: it throws its whole hopper at once, before the
- * assist has had a tick to steer, and a dump thrown 8° off a 20-in cell is a dump on the floor.
- * With NO target (nothing on the open side) a manual dump still throws, straight over its edge
- * at `BB_LAUNCH_SPEED_DEFAULT` — emptying a hopper somewhere that is not the HIVE is a real
- * thing a driver does.
+ * ── WHEN IT FIRES — AIM ASSIST (owner, 2026-09-13) ─────────────────────────
+ * ONLY ON THE DRIVER'S FIRE BUTTON. BIOBUZZ has no auto-fire: `r.autoFire` is never read here
+ * (spawn forces it false), because the auto-fire it replaced fired whenever the real up cell
+ * would take a shot and held back once the elements in the air would tip it — sensing no robot
+ * has. With aim assist on (always, `coerceAssists`), a held fire is released only when stage 5b
+ * says this exit's shot would LAND in the cell the assist is on, pretending that cell is up
+ * (`BbShot.lands`). So a turret still slewing waits, a robot out of range does nothing, and a
+ * shot at a cell that is actually down — or that tips before the shot arrives — is released and
+ * misses, which is what the driver would get on a real field. With aim assist off, fire is fire.
  *
  * CADENCE IS ACCUMULATED, not re-anchored (`fireReadyAt += interval`), so the long-run turret
  * rate is exactly 13/s. The idle guard (clamp forward when the hopper is empty) stops a burst
@@ -352,9 +342,8 @@ export function bbLaunch(world: World, r: RobotState, cmd: RobotCommand, enabled
   const dumper = launcher.kind === 'dumper';
   const top = r.hopper.length > 0 ? r.hopper[r.hopper.length - 1] : undefined;
   const nextExit = dumper || top === undefined ? 0 : bbTurretFor(launcher, isNectarColour(top));
-  const onTarget = shot?.onTarget[nextExit] ?? false;
-  const scores = shot?.scores[nextExit] ?? false;
-  const want = enabled && (cmd.fire || (r.autoFire && scores));
+  const lands = (which: number): boolean => !r.aimAssist || (shot?.lands[which] ?? false);
+  const want = enabled && cmd.fire && lands(nextExit);
   if (!want || r.hopper.length === 0) {
     // IDLE GUARD: hold the cadence clock at "now" while there is nothing to fire, so a robot
     // that sat empty for ten seconds does not empty its hopper in one tick on refill.
@@ -367,23 +356,22 @@ export function bbLaunch(world: World, r: RobotState, cmd: RobotCommand, enabled
     // re-dumping on every capture.
     if (r.fireReadyAt > world.time) return;
     const target = shot?.target ?? null;
-    if (r.aimAssist && target && !onTarget) return;
     const n = r.hopper.length;
     const throws = target ? bbDumpSolution(r, target, n) : null;
     if (throws) {
       // LIFO, each element onto its own converging arc
       for (const t of throws) releasePollen(world, r, t.vel, target ?? undefined, t.origin);
     } else {
-      // no target (or aim assist off and out of band): straight over the edge, a parallel line
-      const elev = launcher.hoodDeg * BB_DEG;
-      const speed = BB_LAUNCH_SPEED_DEFAULT;
+      // aim assist off and out of range: straight over the edge, a parallel line, lobbed as far
+      // as a dumper throws
+      const lob = bbLobThrow(BB_DUMP_MAX_DIST, (target?.z ?? BB_LAUNCH_Z0) - BB_LAUNCH_Z0) ?? { vh: 0, vz: 0 };
       const { origin, dir, perp, half } = launchLine(r, bbShooterEdgeOf({ shooterMount: launcher.mount }));
       for (let i = 0; i < n; i++) {
         const t = n === 1 ? 0 : (i / (n - 1)) * 2 - 1;
         releasePollen(
           world,
           r,
-          { x: dir.x * speed * dcos(elev), y: dir.y * speed * dcos(elev), z: speed * dsin(elev) },
+          { x: dir.x * lob.vh, y: dir.y * lob.vh, z: lob.vz },
           undefined,
           { x: origin.x + perp.x * t * half, y: origin.y + perp.y * t * half },
         );
@@ -401,6 +389,7 @@ export function bbLaunch(world: World, r: RobotState, cmd: RobotCommand, enabled
   while (r.fireReadyAt <= world.time && r.hopper.length > 0 && fired < BB_FIRE_BURST_MAX) {
     const colour = r.hopper[r.hopper.length - 1];
     const which = bbTurretFor(launcher, isNectarColour(colour));
+    if (!lands(which)) break; // a double turret's next element leaves the OTHER turret
     const rel = bbTurretRelease(r, which, shot?.speed[which] ?? BB_LAUNCH_SPEED_DEFAULT);
     releasePollen(world, r, rel.vel, undefined, rel.origin, colour);
     r.fireReadyAt += BB_FIRE_INTERVAL;
@@ -430,30 +419,25 @@ export function bbSolveShot(d: number, dh: number): { speed: number; angle: numb
 }
 
 /**
- * THE SPEED A FIXED HOOD NEEDS to pass through a point `d` inches downrange and `dh` inches above
- * the release, or `null` when no speed at that elevation gets there.
+ * A DUMP IS A LOB (owner, 2026-09-13) — the horizontal and vertical launch speed that throws an
+ * element up to `BB_DUMP_APEX_ABOVE` over a target `dh` inches above the release and down onto it
+ * `d` inches away, or `null` when `d` is outside the dumper's range (`BB_DUMP_MIN_DIST` ..
+ * `BB_DUMP_MAX_DIST`) or the throw would exceed `BB_LAUNCH_SPEED_MAX`.
  *
- *   v² = g·d² / (2·cos²θ·(d·tanθ − dh))  =  g·d² / (2·cosθ·(d·sinθ − dh·cosθ))
+ *   rise h = dh + apex:   vz = √(2·g·h),   t = vz/g + √(2·apex/g),   vh = d / t
  *
- * written in the second form so there is no `tan` (and no division by `cos` near vertical), and
- * with `dcos`/`dsin` because this is sim code (the smoke source scan bans engine trig here). No
- * solution when the hood is too flat to rise `dh` over `d` at any speed or `d` is not downrange.
+ * The apex is always ABOVE the target, so the element always arrives descending — the thing
+ * `hiveAccepts` needs, and the thing a fixed hood only managed past its own apex distance. That is
+ * why the minimum is geometry alone and a dumper scores from right under the opening's outer lip.
  */
-export function bbHoodSpeed(d: number, dh: number, hoodRad: number): number | null {
-  const c = dcos(hoodRad);
-  const s = dsin(hoodRad);
-  const denom = 2 * c * (d * s - dh * c);
-  if (!(d > 0) || !(denom > 0)) return null;
-  return Math.sqrt((GRAVITY * d * d) / denom);
-}
-
-/**
- * does a hood-`hoodRad` arc through (`d`, `dh`) arrive there DESCENDING? True when the apex is
- * short of `d`: `d·sinθ > 2·dh·cosθ`. The up-CELL only accepts a descending element
- * (`hiveAccepts`), so a dump that would reach the opening still climbing is not a shot.
- */
-export function bbHoodDescends(d: number, dh: number, hoodRad: number): boolean {
-  return d * dsin(hoodRad) > 2 * dh * dcos(hoodRad);
+export function bbLobThrow(d: number, dh: number): { vh: number; vz: number } | null {
+  if (!(d >= BB_DUMP_MIN_DIST) || d > BB_DUMP_MAX_DIST) return null;
+  const rise = dh + BB_DUMP_APEX_ABOVE;
+  if (!(rise > 0)) return null;
+  const vz = Math.sqrt(2 * GRAVITY * rise);
+  const vh = d / (vz / GRAVITY + Math.sqrt((2 * BB_DUMP_APEX_ABOVE) / GRAVITY));
+  if (hyp(vh, vz) > BB_LAUNCH_SPEED_MAX) return null;
+  return { vh, vz };
 }
 
 /** one element's throw out of a dump: where it leaves and the velocity it leaves with. */
@@ -473,19 +457,15 @@ export interface BbThrow {
  * lateral tolerance left at range is only a couple of inches. Aiming each element from its OWN
  * release point at the cell centre removes both.
  *
- * ── THE BAND ────────────────────────────────────────────────────────────────
- * Each element is solved from the actual release height `BB_LAUNCH_Z0` (that is where
- * `releasePollen` puts it) at the built hood. It is ACCEPTED only when the hood has a solution
- * (`bbHoodSpeed`), that solution is within `BB_LAUNCH_SPEED_MAX`, and it arrives descending
- * (`bbHoodDescends`). Outside the band there is no dump to solve, and stage 5b does not call the
- * dumper on target.
+ * ── THE RANGE ───────────────────────────────────────────────────────────────
+ * Each element is thrown from the actual release height `BB_LAUNCH_Z0` (that is where
+ * `releasePollen` puts it) as a LOB (`bbLobThrow`). It has a throw only inside the dumper's range,
+ * `BB_DUMP_MIN_DIST`..`BB_DUMP_MAX_DIST` from its own release point; outside it there is no dump to
+ * solve, and Aim Assist does not let the dump go.
  */
 export function bbDumpSolution(r: RobotState, target: ScoreTarget, n: number): BbThrow[] | null {
   const launcher = bbLauncherOf(r.spec, BB_HOOD_DEFAULT_DEG);
   if (launcher.kind !== 'dumper') return null;
-  const hood = launcher.hoodDeg * BB_DEG;
-  const c = dcos(hood);
-  const s = dsin(hood);
   const dh = target.z - BB_LAUNCH_Z0;
   const { origin, perp, half } = launchLine(r, bbShooterEdgeOf({ shooterMount: launcher.mount }));
   const out: BbThrow[] = [];
@@ -496,9 +476,9 @@ export function bbDumpSolution(r: RobotState, target: ScoreTarget, n: number): B
     const dx = target.pos.x - o.x;
     const dy = target.pos.y - o.y;
     const d = hyp(dx, dy);
-    const v = bbHoodSpeed(d, dh, hood);
-    if (v === null || v > BB_LAUNCH_SPEED_MAX || !bbHoodDescends(d, dh, hood)) return null;
-    out.push({ origin: o, vel: { x: (dx / d) * v * c, y: (dy / d) * v * c, z: v * s } });
+    const lob = bbLobThrow(d, dh);
+    if (!lob) return null;
+    out.push({ origin: o, vel: { x: (dx / d) * lob.vh, y: (dy / d) * lob.vh, z: lob.vz } });
   }
   return out;
 }
@@ -525,8 +505,8 @@ export function bbMuzzleZ(spec: RobotSpec): number {
  * ⚠️ ALL THREE, TOGETHER, BECAUSE THE ARC IS ONE ANSWER AND NOT THREE. `bbSolveShot` returns a
  * MATCHED (speed, angle) pair. The pitch is clamped into the barrel's real envelope and the speed
  * into `BB_LAUNCH_SPEED_MAX`, so a solution the hardware cannot reach comes back as the nearest
- * one it can — which then MISSES, honestly — and says so in `reachable`, which is what AUTO-FIRE
- * reads before calling the turret on target.
+ * one it can — which then MISSES, honestly — and says so in `reachable`, which stage 5b reads before
+ * running Aim Assist's landing prediction.
  */
 export function bbTurretSolution(
   r: RobotState,

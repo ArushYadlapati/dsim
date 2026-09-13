@@ -1202,9 +1202,9 @@ function Results({
             {lanActive()
               ? lanHost
                 ? signedIn
-                  ? '✓ Unofficial match — kept on this computer, and saved to your account when you’re online.'
-                  : '✓ Unofficial match — kept on this computer. Sign in to save it to your account.'
-                : '✓ Unofficial match. The host keeps the replay.'
+                  ? '✓ Saved on this computer. It goes to your account next time you’re online.'
+                  : '✓ Saved on this computer. Sign in to save it to your account.'
+                : '✓ Match over. The host keeps the replay.'
               : matchResult.kind === 'record'
                 ? '✓ Recorded - sign in to save it to the leaderboard.'
                 : '✓ Match recorded.'}

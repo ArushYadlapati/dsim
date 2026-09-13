@@ -3,7 +3,7 @@ import * as C from '../../src/config';
 import { wrapAngle } from '../../src/math';
 import { worldHash } from '../../src/net/checksum';
 import { defaultSettings, switchGame } from '../../src/settings';
-import { DEFAULT_SPEC } from '../../src/sim/spawn';
+import { DEFAULT_ASSISTS, DEFAULT_SPEC } from '../../src/sim/spawn';
 import {
   BB_SIZE_STEP,
   bbSizeLimits,
@@ -17,8 +17,9 @@ import {
   BB_FLOWERS,
   BB_HIVE_OPEN_Z,
   BB_HOOD_DEFAULT_DEG,
-  BB_HOOD_MAX_DEG,
-  BB_HOOD_MIN_DEG,
+  BB_DUMP_APEX_ABOVE,
+  BB_DUMP_MAX_DIST,
+  BB_DUMP_MIN_DIST,
   BB_LAUNCH_SPEED_MAX,
   BB_LAUNCH_Z0,
   BB_PLACE_REACH,
@@ -33,7 +34,7 @@ import {
 import { biobuzzColliders } from '../../src/games/biobuzz/colliders';
 import { bbEvalStart, bbStartBox } from '../../src/games/biobuzz/start';
 import { capturePollen, pollenIn, releasePollen, scoreTargets, takeHeld } from '../../src/games/biobuzz/elements';
-import type { BbHiveState, ScoreTarget } from '../../src/games/biobuzz/state';
+import type { ScoreTarget } from '../../src/games/biobuzz/state';
 import {
   BB_INTAKE_MOUNTS,
   BB_MOUNT_POSITIONS,
@@ -49,8 +50,7 @@ import {
   bbDumpSolution,
   bbFlowerInReach,
   bbFootprint,
-  bbHoodDescends,
-  bbHoodSpeed,
+  bbLobThrow,
   bbHopperCap,
   bbMouths,
   bbMuzzleZ,
@@ -62,7 +62,8 @@ import {
   bbTurretSolution,
 } from '../../src/games/biobuzz/robot';
 import { bbConfigSummary } from '../../src/games/biobuzz/labels';
-import { bbKindOf, bbPickTarget } from '../../src/games/biobuzz/play';
+import { bbAimTarget, bbKindOf } from '../../src/games/biobuzz/play';
+import { hiveCellTarget } from '../../src/games/biobuzz/elements';
 import {
   bbCarriesNectar,
   bbCellsAdjacent,
@@ -747,95 +748,80 @@ export function robotChecks(check: Check): void {
     check('aim: bbIsTurreted agrees with the resolved launcher', bbIsTurreted(bbLauncherOf(r.spec, BB_HOOD_DEFAULT_DEG)));
   }
 
-  // ── THE DUMPER'S HOOD REACHES THE HIVE ────────────────────────────────────
+  // ── THE DUMPER LOBS, FROM CLOSE IN TO A STRICT CAP ────────────────────────
   /**
-   * EVERY BUILDABLE HOOD SCORES FROM SOMEWHERE. The up-CELL accepts only a DESCENDING element, a
-   * dump's speed is capped, and a robot on the open side has a limited stand-off — so the hood
-   * range is exactly the set of angles that still has an accepted distance. This replaces the
-   * old pin that NO turretless hood reached the HIVE: the owner ruled that a dumper must.
+   * Owner, 2026-09-13: the fixed hood made a dumper stand far off (23–71 in at 75°) and reach too
+   * far. A dump is now a LOB peaking `BB_DUMP_APEX_ABOVE` over the cell: it has a throw at every
+   * distance in `BB_DUMP_MIN_DIST`..`BB_DUMP_MAX_DIST`, none past the cap, and every throw comes
+   * down ON the target while descending (which `hiveAccepts` requires).
    */
   {
     const dh = (BB_HIVE_OPEN_Z[0] + BB_HIVE_OPEN_Z[1]) / 2 - BB_LAUNCH_Z0;
-    for (let deg = BB_HOOD_MIN_DEG; deg <= BB_HOOD_MAX_DEG; deg++) {
-      let lo = Infinity;
-      let hi = -Infinity;
-      for (let d = 1; d <= 150; d += 0.5) {
-        const v = bbHoodSpeed(d, dh, deg * BB_DEG);
-        if (v !== null && v <= BB_LAUNCH_SPEED_MAX && bbHoodDescends(d, dh, deg * BB_DEG)) {
-          lo = Math.min(lo, d);
-          hi = Math.max(hi, d);
-        }
+    let bad = 0;
+    let firstBad = '';
+    for (let d = BB_DUMP_MIN_DIST; d <= BB_DUMP_MAX_DIST; d += 0.5) {
+      const lob = bbLobThrow(d, dh);
+      if (!lob) {
+        bad++;
+        if (!firstBad) firstBad = `d=${d}: no throw`;
+        continue;
       }
-      check(`dump hood ${deg}°: an accepted (descending, under the cap) distance exists`, hi >= lo, `${lo}–${hi} in`);
+      const t = d / lob.vh; // time to cover d
+      const z = lob.vz * t - 0.5 * C.GRAVITY * t * t;
+      const vz = lob.vz - C.GRAVITY * t;
+      const apex = (lob.vz * lob.vz) / (2 * C.GRAVITY);
+      if (Math.abs(z - dh) > 1e-6 || !(vz < 0) || Math.abs(apex - (dh + BB_DUMP_APEX_ABOVE)) > 1e-6 || Math.hypot(lob.vh, lob.vz) > BB_LAUNCH_SPEED_MAX) {
+        bad++;
+        if (!firstBad) firstBad = `d=${d}: z=${z.toFixed(3)} vz=${vz.toFixed(1)} apex=${apex.toFixed(2)}`;
+      }
     }
-    const th = 75 * BB_DEG;
-    const v = bbHoodSpeed(40, dh, th)!;
-    const t = 40 / (v * Math.cos(th));
-    const rise = v * Math.sin(th) * t - 0.5 * C.GRAVITY * t * t;
-    check('dump: the hood-speed formula passes through the target height', Math.abs(rise - dh) < 1e-6, `rise=${rise} dh=${dh}`);
-    check('dump: a hood too flat for the rise has no speed', bbHoodSpeed(10, 60, 20 * BB_DEG) === null);
+    check(`dump lob: every distance ${BB_DUMP_MIN_DIST}–${BB_DUMP_MAX_DIST} in has a throw that comes down ON the cell, descending, under the speed cap`, bad === 0, firstBad);
+    check('dump lob: the minimum is close in (a throw from 3 in exists)', bbLobThrow(3, dh) !== null);
+    check('dump lob: nothing past the strict cap', bbLobThrow(BB_DUMP_MAX_DIST + 0.5, dh) === null && bbLobThrow(60, dh) === null);
   }
 
   // ── TARGET SELECTION: HIVE ONLY, OWN CELL, OPEN SIDE ─────────────────────
   /**
-   * Launchers aim at HIVE cells only (owner ruling 2026-09-12 — a FLOWER is placed into, never
-   * shot into), never at the opponent's cell, and only from the side a cell's mouth opens to.
-   * Property checks over a grid: the expected pick count is DERIVED from the own cell's open
-   * half-plane, so the check keeps meaning something when the HIVE moves.
+   * AIM ASSIST AIMS AT THE NEARER CELL OF THE OWN HIVE, WHICHEVER WAY IT IS TILTED (owner,
+   * 2026-09-13). No robot can sense which cell is up, so the pick must not change when the HIVE
+   * tips. Never a FLOWER, never the opponent's HIVE. Property checks over a grid.
    */
   {
     const w = mkWorld('free', 41);
     const r = w.robots[0]; // blue
-    const own = scoreTargets(w, r.alliance).find((t) => t.id === `hive:${r.alliance}`)!;
-    let picked = 0;
-    let expected = 0;
-    let oppWouldHaveWon = 0;
-    let badAlliance = 0;
-    let badMouth = 0;
-    let notHive = 0;
+    const hive = w.biobuzz!.hives.blue;
+    const upWas = hive.up;
+    const own = (['north', 'south'] as const).map((s) => hiveCellTarget('blue', s));
+    const opp = (['north', 'south'] as const).map((s) => hiveCellTarget('red', s));
+    const d2 = (t: ScoreTarget, x: number, y: number): number => (t.pos.x - x) ** 2 + (t.pos.y - y) ** 2;
+    let n = 0;
+    let notNearest = 0;
+    let notOwn = 0;
+    let tipChanged = 0;
+    let oppNearer = 0;
+    let aimedAtDown = 0;
     for (let x = -66; x <= 66; x += 6) {
       for (let y = -66; y <= 66; y += 6) {
         r.pos = { x, y };
-        if ((x - own.pos.x) * own.mouth!.x + (y - own.pos.y) * own.mouth!.y > 0) expected++;
-        // What nearest-by-distance ALONE would have chosen among the HIVE cells. It is measured
-        // over the FIELD-WIDE list (both alliances, merged), not over the one this robot is
-        // offered: since the owner's ruling of 2026-09-12 `scoreTargets(w, a)` already drops the
-        // opponent's cell, so asking it alone would make this check vacuous by construction and
-        // prove nothing about `bbPickTarget`'s own filter.
-        const hives: ScoreTarget[] = [];
-        {
-          const seen = new Set<string>();
-          for (const a of ['red', 'blue'] as const) {
-            for (const t of scoreTargets(w, a)) {
-              if (!t.id.startsWith('hive:') || seen.has(t.id)) continue;
-              seen.add(t.id);
-              hives.push(t);
-            }
-          }
-        }
-        let raw = hives[0];
-        let rawD = Infinity;
-        for (const t of hives) {
-          const d = (t.pos.x - x) ** 2 + (t.pos.y - y) ** 2;
-          if (d < rawD) {
-            rawD = d;
-            raw = t;
-          }
-        }
-        if (raw.alliance !== r.alliance) oppWouldHaveWon++;
-        const got = bbPickTarget(w, r);
-        if (!got) continue;
-        picked++;
-        if (!got.id.startsWith('hive:')) notHive++;
-        if (got.alliance !== r.alliance) badAlliance++;
-        if (got.mouth && -(got.pos.x - x) * got.mouth.x + -(got.pos.y - y) * got.mouth.y <= 0) badMouth++;
+        n++;
+        hive.up = 'north';
+        const a = bbAimTarget(w, r);
+        hive.up = 'south';
+        const b = bbAimTarget(w, r);
+        const want = d2(own[1], x, y) < d2(own[0], x, y) ? own[1] : own[0];
+        if (a.pos.x !== want.pos.x || a.pos.y !== want.pos.y) notNearest++;
+        if (a.id !== 'hive:blue' || a.alliance !== 'blue') notOwn++;
+        if (a.pos.y !== b.pos.y || a.mouth?.y !== b.mouth?.y) tipChanged++;
+        if (Math.min(d2(opp[0], x, y), d2(opp[1], x, y)) < Math.min(d2(own[0], x, y), d2(own[1], x, y))) oppNearer++;
+        if (a.pos.y < 0) aimedAtDown++; // with the north cell up, a south pick is aimed at the DOWN cell
       }
     }
-    check('aim: a target is picked from exactly the poses on the own cell\'s open side', picked === expected && expected > 0, `picked=${picked} expected=${expected}`);
-    check('aim: bbPickTarget never returns a FLOWER', notHive === 0, `${notHive} flower picks`);
-    check('aim: the OPPONENT’s CELL is never aimed at', badAlliance === 0, `${badAlliance} of ${picked}`);
-    check('aim: ...and that filter is not vacuous — raw nearest WOULD have picked it', oppWouldHaveWon > 100, `${oppWouldHaveWon}`);
-    check('aim: a target is only ever picked from the side its MOUTH opens toward', badMouth === 0, `${badMouth}`);
+    hive.up = upWas;
+    check('aim assist: always the NEARER cell of the own HIVE', notNearest === 0, `${notNearest}/${n}`);
+    check('aim assist: never a FLOWER and never the opponent\'s HIVE', notOwn === 0, `${notOwn}/${n}`);
+    check('aim assist: ...not vacuous — the opponent\'s HIVE was nearer at many poses', oppNearer > 100, `${oppNearer}`);
+    check('aim assist: the pick does NOT change when the HIVE tips (it cannot sense which cell is up)', tipChanged === 0, `${tipChanged}/${n}`);
+    check('aim assist: ...so it does aim at the DOWN cell from that side', aimedAtDown > 0, `${aimedAtDown}`);
   }
 
   // ── A TURRET SLEWS, AND ITS ARC ARRIVES (through the world) ──────────────
@@ -846,8 +832,8 @@ export function robotChecks(check: Check): void {
     const yaw0 = r.turretHeading;
     const pitch0 = r.bbTurretPitch ?? 0;
     run(w, cmd({}), 1.5);
-    const target = bbPickTarget(w, r);
-    check('turret: the test pose has a target (the open side)', target !== null);
+    const target = bbAimTarget(w, r);
+    check('turret: the test pose aims at the own up cell (the nearer one, from its open side)', target.pos.y > 0);
     if (target) {
       const sol = bbTurretSolution(r, target)!;
       check('turret: STEPPING THE WORLD moves the yaw axis off its spawn bearing', Math.abs(r.turretHeading - yaw0) > 1e-3, `${yaw0.toFixed(3)} -> ${r.turretHeading.toFixed(3)} rad`);
@@ -875,7 +861,7 @@ export function robotChecks(check: Check): void {
     const yaw0 = r.turretHeading;
     const yaw1 = r.bbTurret2Heading ?? 0;
     run(w, cmd({}), 1.5);
-    const target = bbPickTarget(w, r)!;
+    const target = bbAimTarget(w, r);
     const s0 = bbTurretSolution(r, target, 0)!;
     const s1 = bbTurretSolution(r, target, 1)!;
     check('twin: STEPPING THE WORLD slews BOTH turrets', Math.abs(r.turretHeading - yaw0) > 1e-3 && Math.abs((r.bbTurret2Heading ?? 0) - yaw1) > 1e-3);
@@ -992,6 +978,7 @@ export function robotChecks(check: Check): void {
     capturePollen(w, r, p);
     if (w.biobuzz) w.biobuzz.nextBallId = id + 2;
     check('release sync: staged NECTAR under POLLEN', r.hopper.join(',') === 'blue,yellow', r.hopper.join(','));
+    run(w, cmd({}), 1.5); // let both turrets settle, so Aim Assist lets the first held fire go
     r.fireReadyAt = w.time;
     tick(w, cmd({ fire: true }));
     check('release sync: the POLLEN on top of the hopper is the element that flies', p.state.kind === 'flight' && n.state.kind === 'held', `pollen=${p.state.kind} nectar=${n.state.kind}`);
@@ -1035,18 +1022,36 @@ export function robotChecks(check: Check): void {
    * owner's "the dumper must reach the HIVE", end to end — the band, the converging throws,
    * `hiveAccepts`' descending-and-inboard rule, all through the real tick.
    */
-  const dumperWorld = (seed: number): { w: World; r: RobotState; cellY: number } => {
+  /** `edge` is how far the dumper's FRONT EDGE (where it releases) stands from the cell centre */
+  const dumperWorld = (seed: number, edge = 18): { w: World; r: RobotState; cellY: number } => {
     const w = mkWorld('free', seed, mech({ launcher: { kind: 'dumper', mount: 'front', hoodDeg: BB_HOOD_DEFAULT_DEG }, lift: null }, { intakeMount: 'back' }));
     const r = w.robots[0];
     r.aimAssist = true;
     r.autoFire = false;
     const cell = scoreTargets(w, 'blue').find((t) => t.id === 'hive:blue')!;
-    park(r, cell.pos.x, cell.pos.y + 45, -Math.PI / 2);
+    park(r, cell.pos.x, cell.pos.y + edge + r.spec.length / 2, -Math.PI / 2);
     return { w, r, cellY: cell.pos.y };
   };
+  /** CLOSE IN it scores, and PAST THE CAP a held fire does nothing (Aim Assist: it would not land). */
+  {
+    const run2 = (edge: number): { scored: number; load: number; hopper: number } => {
+      const { w, r } = dumperWorld(59, edge);
+      const load = w.balls.filter((b) => b.state.kind === 'held' && b.state.robot === r.id).map((b) => b.id);
+      const entered = new Set<number>();
+      for (let t = 0; t < 120; t++) {
+        tick(w, cmd({ fire: true }));
+        for (const b of w.balls) if (b.state.kind === 'element' && b.state.el === 'hive:blue') entered.add(b.id);
+      }
+      return { scored: load.filter((id) => entered.has(id)).length, load: load.length, hopper: r.hopper.length };
+    };
+    const close = run2(6);
+    check('dump range: 6 in from the cell a held fire dumps the whole load IN', close.scored === close.load && close.load > 0, JSON.stringify(close));
+    const far = run2(BB_DUMP_MAX_DIST + 8);
+    check('dump range: past the cap a held fire dumps nothing', far.hopper === far.load && far.scored === 0, JSON.stringify(far));
+  }
   {
     const { w, r } = dumperWorld(53);
-    const cell = bbPickTarget(w, r);
+    const cell = bbAimTarget(w, r);
     const load = w.balls.filter((b) => b.state.kind === 'held' && b.state.robot === r.id).map((b) => b.id);
     check('dump: the test robot has a load and a target', load.length > 0 && cell?.id === 'hive:blue', `load=${load.length} target=${cell?.id}`);
     if (cell) {
@@ -1074,6 +1079,45 @@ export function robotChecks(check: Check): void {
     check('dump: an UNALIGNED dumper holds its load on the first tick of fire', r.hopper.length === n0, `hopper ${n0}→${r.hopper.length}`);
     run(w, cmd({ fire: true }), 2.5);
     check('dump: ...the aim assist steers it on target and then it dumps', r.hopper.length === 0, `hopper=${r.hopper.length} heading err=${wrapAngle(r.heading + Math.PI / 2).toFixed(3)}`);
+  }
+  /**
+   * HOLD FIRE AND A DUMPER TURNS ALL THE WAY ONTO THE CELL, THEN DUMPS INTO IT — Chain Reaction's
+   * dumper feel — FOR A TANK TOO. The StarterBot is a tank dumper, and a tank's yaw comes only from
+   * its side drives (`src/sim/robot.ts`), so an aim hook that overrode `rotate` alone never turned
+   * it. Each robot starts facing directly AWAY from the cell, at a distance its own hood can dump
+   * from (found by `bbDumpSolution`, not hard-coded, so a retuned hood does not break the check).
+   */
+  for (const [label, spec] of [
+    ['default dumper', mech({ launcher: { kind: 'dumper', mount: 'front', hoodDeg: BB_HOOD_DEFAULT_DEG }, lift: null }, { intakeMount: 'back' })],
+    ['StarterBot (tank)', BB_STARTER_BOTS[0]],
+  ] as const) {
+    const w = createBiobuzzWorld('free', 57, [{ ...setup(0, 'blue', spec), assists: { ...DEFAULT_ASSISTS, fieldCentric: false } }]);
+    const r = w.robots[0];
+    const edge = bbLauncherOf(r.spec, BB_HOOD_DEFAULT_DEG);
+    check(`dump turn [${label}]: (scene) the build is a dumper`, edge.kind === 'dumper', edge.kind);
+    const cell = hiveCellTarget('blue', 'north');
+    let placed = false;
+    for (let dy = 20; dy <= 90 && !placed; dy += 1) {
+      park(r, cell.pos.x, cell.pos.y + dy, 0);
+      r.heading = bbAimHeading(r, cell) ?? 0;
+      placed = bbDumpSolution(r, cell, r.hopper.length) !== null;
+    }
+    check(`dump turn [${label}]: (scene) there is a distance its hood dumps from`, placed, `y=${r.pos.y.toFixed(1)}`);
+    const want = r.heading;
+    r.heading = wrapAngle(want + Math.PI); // facing directly AWAY
+    const load = w.balls.filter((b) => b.state.kind === 'held' && b.state.robot === r.id).map((b) => b.id);
+    tick(w, cmd({ fire: true }));
+    check(`dump turn [${label}]: facing away, the first tick of fire dumps nothing`, r.hopper.length === load.length && load.length > 0, `hopper=${r.hopper.length}/${load.length}`);
+    const entered = new Set<number>();
+    let minErr = Math.PI;
+    for (let t = 0; t < Math.round(6 / C.SIM_DT); t++) {
+      tick(w, cmd({ fire: true }));
+      minErr = Math.min(minErr, Math.abs(wrapAngle(r.heading - want)));
+      for (const b of w.balls) if (b.state.kind === 'element' && b.state.el === 'hive:blue') entered.add(b.id);
+    }
+    const scored = load.filter((id) => entered.has(id)).length;
+    check(`dump turn [${label}]: holding fire TURNS the chassis onto the cell`, minErr < BB_AIM_TOL, `closest heading error ${minErr.toFixed(3)} rad`);
+    check(`dump turn [${label}]: ...and then it dumps, into the cell`, r.hopper.length === 0 && scored > 0, `hopper=${r.hopper.length} scored ${scored}/${load.length}`);
   }
   /**
    * RE-ARM: a held fire does not re-dump the moment something is back in the hopper. The
@@ -1235,107 +1279,104 @@ export function robotChecks(check: Check): void {
     check('place: a NECTAR placed before 1:00 bills G410 (one MAJOR to the opponent)', w.match.scores.red.foulPoints - red0 === BB_PTS.foulMajor, `red fouls ${red0}→${w.match.scores.red.foulPoints}`);
   }
 
-  // ── AUTO-FIRE WAITS FOR A SHOT ────────────────────────────────────────────
+  // ── AIM ASSIST: THE DRIVER FIRES, THE ASSIST ONLY LETS A LANDING SHOT GO ──
   /**
-   * Every robot is staged FULL and the presets ship auto-fire, so an unconditional auto-fire
-   * emptied a Box Tube robot the moment the match started. Auto-fire now waits for ON TARGET.
+   * Owner, 2026-09-13: auto-fire is gone. It fired whenever the real up cell would take a shot and
+   * stopped once the elements in the air would tip it — sensing no robot has. Aim Assist aims at
+   * the NEARER own cell, pretends it is up, and releases a held fire only when the shot would land
+   * there. Everything else is the real field's business.
    */
   {
-    const w = mkWorld('free', 83, mech({ launcher: { kind: 'turret', mount: 'center', hoodDeg: 75 }, lift: { kind: 'vslide', mount: 'back' } }));
-    const r = w.robots[0];
-    r.autoFire = true;
-    park(r, 40, -50, Math.PI); // blue's CLOSED side: nothing to shoot at
-    const full = r.hopper.length;
-    run(w, cmd({}), 2);
-    check('autofire: a full robot with NO target keeps its load (it can carry it to a FLOWER)', r.hopper.length === full && full > 0, `hopper ${full}→${r.hopper.length}`);
-    park(r, 40, 50, Math.PI);
-    run(w, cmd({}), 3);
-    check('autofire: ...and on the open side, once the turret is settled on the HIVE, it fires', r.hopper.length < full, `hopper=${r.hopper.length}`);
-  }
-  /**
-   * AUTO-FIRE DOES NOT WAIT FOR A FULL HOPPER. It armed only at the cap, so it threw ONE element
-   * each time the intake took the fourth and then stopped: it fired when the hopper happened to
-   * fill, never when a shot was on.
-   */
-  {
-    const w = mkWorld('free', 87, mech({ launcher: { kind: 'turret', mount: 'center', hoodDeg: 75 }, lift: null }));
-    const r = w.robots[0];
-    r.autoFire = true;
-    park(r, 12, 50, Math.PI);
-    emptyHopper(w, r);
-    give(w, r, ['yellow']);
-    const cell = w.biobuzz!.hives.blue;
-    const in0 = cell.contents.length;
-    run(w, cmd({}), 3);
-    check(
-      'autofire: holding ONE element (not full) on the open side, it fires, and the element scores',
-      r.hopper.length === 0 && w.biobuzz!.hives.blue.contents.length === in0 + 1,
-      `hopper=${r.hopper.length} cell ${in0}→${w.biobuzz!.hives.blue.contents.length}`,
-    );
-  }
-  /**
-   * AUTO-FIRE THROUGH A SWING: HOLD, THEN RESUME AT THE RELEASE (owner feedback, 2026-09-12).
-   *
-   * It holds in the FIRST half — the tray taking elements there is the one about to empty, so a
-   * shot into it lands on the floor two seconds later — and fires again in the SECOND, because
-   * the release hands the opening to the incoming cell the turret has been tracking since the
-   * tip started. Three scenes, because each alone is ambiguous: unswung proves the turret CAN
-   * fire here, pre-release proves the hold is the swing and not an unsettled turret, and
-   * post-release proves the hold ends at the release rather than at the settle.
-   */
-  {
-    const scene = (hive: Partial<BbHiveState> | null): number => {
-      const w = mkWorld('free', 89, mech({ launcher: { kind: 'turret', mount: 'center', hoodDeg: 75 }, lift: null }));
-      const r = w.robots[0];
-      r.autoFire = true;
-      park(r, 12, 50, Math.PI);
-      if (hive) w.biobuzz!.hives.blue = { ...w.biobuzz!.hives.blue, ...hive };
-      run(w, cmd({}), 0.9);
-      return r.hopper.length;
-    };
-    const held = scene({ tipping: 1.0, released: false });
-    const free = scene(null);
-    // POST-RELEASE, staged so the INCOMING cell is the north one the robot is parked in front
-    // of: `up` still names the south tray that just emptied, and the opening the robot can
-    // reach is the one coming up.
-    const after = scene({ up: 'south', contents: [], tipping: 1.0, released: true });
-    check('autofire: holds its load while the own cell is mid-swing (and fires in the same scene unswung)', held === 4 && free < 4, `swinging hopper=${held}, settled hopper=${free}`);
-    check(
-      'autofire: RESUMES at the release, on the incoming cell — it does not wait for the settle',
-      after < 4,
-      `post-release hopper=${after} (pre-release ${held}, settled ${free})`,
-    );
-  }
-  /**
-   * A STEADY FEED NEVER THROWS INTO A CELL THAT IS ABOUT TO TIP. "On target" used to be the
-   * turret's geometry alone, so shots kept leaving at a settled cell that the elements ahead of
-   * them would tip, and arrived at a swinging HIVE: 58 of 61 auto-fired elements missed. Every
-   * element auto-fired here must score, and the cell must actually tip (non-vacuous).
-   */
-  {
-    const w = mkWorld('free', 91, mech({ launcher: { kind: 'turret', mount: 'center', hoodDeg: 75 }, lift: null }));
-    const r = w.robots[0];
-    r.autoFire = true;
-    park(r, 12, 45, Math.PI);
-    const tips0 = w.biobuzz!.hives.blue.tips;
-    const flying = new Set<number>();
-    let scored = 0;
-    let missed = 0;
-    for (let i = 0; i < Math.round(8 / C.SIM_DT); i++) {
-      if (r.hopper.length < bbHopperCap(r.spec)) give(w, r, ['yellow']);
-      const before = new Set(w.balls.filter((b) => b.state.kind === 'flight').map((b) => b.id));
-      tick(w, cmd({}));
-      for (const b of w.balls) if (b.state.kind === 'flight' && !before.has(b.id)) flying.add(b.id);
-      for (const id of [...flying]) {
-        const b = w.balls.find((q) => q.id === id)!;
-        if (b.state.kind === 'flight') continue;
-        flying.delete(id);
-        if (b.state.kind === 'element' && b.state.el === 'hive:blue') scored++;
-        else missed++;
+    const AIM_TURRET = mech({ launcher: { kind: 'turret', mount: 'center', hoodDeg: 75 }, lift: null });
+    /** step `secs` with fire held for the first `fireFor` seconds (and an optional steady feed),
+     * then count what every launched element did once it came down. */
+    const aimRun = (w: World, r: RobotState, secs: number, fireFor: number, feed = false): { fired: number; scored: number; missed: number } => {
+      const flying = new Set<number>();
+      let fired = 0;
+      let scored = 0;
+      let missed = 0;
+      const n = Math.round(secs / C.SIM_DT);
+      const nFire = Math.round(fireFor / C.SIM_DT);
+      for (let i = 0; i < n; i++) {
+        if (feed && i < nFire && r.hopper.length < bbHopperCap(r.spec)) give(w, r, ['yellow']);
+        const before = new Set(w.balls.filter((b) => b.state.kind === 'flight').map((b) => b.id));
+        tick(w, cmd({ fire: i < nFire }));
+        for (const b of w.balls) {
+          if (b.state.kind === 'flight' && !before.has(b.id)) {
+            flying.add(b.id);
+            fired++;
+          }
+        }
+        for (const id of [...flying]) {
+          const b = w.balls.find((q) => q.id === id)!;
+          if (b.state.kind === 'flight') continue;
+          flying.delete(id);
+          if (b.state.kind === 'element' && b.state.el === `hive:${r.alliance}`) scored++;
+          else missed++;
+        }
       }
+      return { fired, scored, missed };
+    };
+    {
+      const w = createBiobuzzWorld('free', 83, [{ ...setup(0, 'blue', AIM_TURRET), assists: { ...DEFAULT_ASSISTS, autoFire: true } }]);
+      const r = w.robots[0];
+      check('aim assist: BIOBUZZ spawns with auto-fire OFF even when the assists ask for it', r.autoFire === false);
+      r.autoFire = true; // and a flag forced on anyway does nothing
+      park(r, 12, 50, Math.PI);
+      const res = aimRun(w, r, 3, 0);
+      check('aim assist: with fire NOT held, nothing is ever launched (no auto-fire)', res.fired === 0 && r.hopper.length === 4, `fired=${res.fired} hopper=${r.hopper.length}`);
     }
-    const tips = w.biobuzz!.hives.blue.tips - tips0;
-    check('autofire: on a steady feed every auto-fired element scores, and the cell tips', missed === 0 && scored > 0 && tips > 0, `scored=${scored} missed=${missed} tips=${tips}`);
+    {
+      const w = mkWorld('free', 87, AIM_TURRET);
+      const r = w.robots[0];
+      park(r, 12, 50, Math.PI);
+      emptyHopper(w, r);
+      give(w, r, ['yellow']);
+      const res = aimRun(w, r, 4, 2);
+      check('aim assist: fire held on the up cell\'s open side releases the shot once it would land, and it scores', res.fired === 1 && res.scored === 1, JSON.stringify(res));
+    }
+    {
+      const w = mkWorld('free', 89, AIM_TURRET);
+      const r = w.robots[0];
+      park(r, 12, 22, Math.PI); // too close under the cell for the barrel's pitch envelope
+      const res = aimRun(w, r, 2, 2);
+      check('aim assist: where no shot would land, a held fire releases nothing', res.fired === 0 && r.hopper.length === 4, JSON.stringify(res));
+    }
+    {
+      // blue's NORTH cell is up; from y = −50 the nearer cell is the SOUTH one, which is DOWN
+      const w = mkWorld('free', 91, AIM_TURRET);
+      const r = w.robots[0];
+      check('aim assist: (scene) blue\'s north cell is up', w.biobuzz!.hives.blue.up === 'north');
+      park(r, 12, -50, Math.PI);
+      run(w, cmd({}), 1.5);
+      const down = hiveCellTarget('blue', 'south');
+      const sol = bbTurretSolution(r, down)!;
+      check('aim assist: from the down cell\'s side the turret settles on the DOWN cell', Math.abs(wrapAngle(r.turretHeading - sol.yaw)) < 0.03, `yaw=${r.turretHeading.toFixed(3)} want=${sol.yaw.toFixed(3)}`);
+      const res = aimRun(w, r, 5, 2);
+      check('aim assist: ...a held fire is released (it pretends that cell is up) and every shot MISSES', res.fired > 0 && res.scored === 0 && res.missed === res.fired, JSON.stringify(res));
+    }
+    {
+      const w = mkWorld('free', 93, AIM_TURRET);
+      const r = w.robots[0];
+      park(r, 12, 50, Math.PI);
+      run(w, cmd({}), 1.5);
+      w.biobuzz!.hives.blue = { ...w.biobuzz!.hives.blue, tipping: 1.0, released: false };
+      const res = aimRun(w, r, 0.5, 0.5);
+      check('aim assist: it cannot sense a SWINGING HIVE — a held fire still goes', res.fired > 0, JSON.stringify(res));
+    }
+    {
+      const w = mkWorld('free', 95, AIM_TURRET);
+      const r = w.robots[0];
+      park(r, 12, 45, Math.PI);
+      const tips0 = w.biobuzz!.hives.blue.tips;
+      const res = aimRun(w, r, 10, 6, true);
+      const tips = w.biobuzz!.hives.blue.tips - tips0;
+      check(
+        'aim assist: on a steady feed it does NOT hold back for a tip it cannot sense — some shots reach a tipping cell and miss',
+        res.scored > 0 && tips > 0 && res.missed > 0,
+        `${JSON.stringify(res)} tips=${tips}`,
+      );
+    }
   }
 
   // ── INTAKE OFF A FLOWER (G418.B) ──────────────────────────────────────────
@@ -1686,7 +1727,14 @@ export function robotChecks(check: Check): void {
       capturePollen(world, r, b);
     }
     const before = world.balls.length;
-    const seconds = cap * BB_FIRE_INTERVAL + 0.5;
+    // at field centre, between the own HIVE's two cells, no shot lands: Aim Assist holds fire
+    run(world, cmd({ fire: true }), 1);
+    check(`launch [${scoreMode}]: where no shot would land, holding fire keeps the load`, r.hopper.length === cap, `hopper=${r.hopper.length}/${cap}`);
+    // ...and from the own up cell's open side it goes (a dumper is turned onto it by the assist)
+    r.pos = { x: 12.75, y: 37.4 };
+    r.vel = { x: 0, y: 0 };
+    r.heading = -Math.PI / 2;
+    const seconds = cap * BB_FIRE_INTERVAL + 3;
     run(world, cmd({ fire: true }), seconds);
     check(`launch [${scoreMode}]: holding fire empties the hopper`, r.hopper.length === 0, `hopper=${r.hopper.length} after ${seconds.toFixed(2)}s`);
     check(`launch [${scoreMode}]: launching conserves the POLLEN count`, world.balls.length === before, `${before} -> ${world.balls.length}`);

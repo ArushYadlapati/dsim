@@ -556,20 +556,29 @@ export const BB_FLOWER_RETRIEVE_PAD = 1.0;
 export const BB_LIFT_MASS_FLOOR = 2.0;
 
 /**
- * The hood elevation a DUMPER is built at, in DEGREES above level, and the range the builder
- * offers. APPROX all three.
+ * A DUMPER'S RANGE (owner, 2026-09-13) — how far from the cell it is dumping into a dumper can
+ * throw from, measured horizontally from each element's release point on the dumper's edge to
+ * the cell centre (in). APPROX all three.
  *
- * THE RANGE IS WHERE A DUMPER CAN STILL REACH THE HIVE FROM ITS OPEN SIDE. A dump's speed is
- * solved per element for the built hood (`bbDumpSolution`, `robot.ts`) and capped at
- * `BB_LAUNCH_SPEED_MAX`, and the up-CELL only accepts an element that is DESCENDING and
- * travelling toward the pivot (`hiveAccepts`). A robot squarely in front of its cell with its
- * back to the wall has only ~41–45 in of stand-off, so a shallow hood (60° needs ≥ ~54 in to
- * arrive descending) cannot score from the obvious spot. Simulated accepted edge-to-cell
- * distances under a 260 cap: 70°: 32–90 · 75°: 23–71 · 80°: 14–49 · 85°: 7–25. So a steep hood
- * is a short-range dumper and a shallower one a long-range one, and every hood in this range
- * scores from somewhere on the open side (smoke asserts it).
+ * A DUMP IS A LOB, NOT A FIXED-HOOD SHOT. Each element is thrown to peak `BB_DUMP_APEX_ABOVE`
+ * over the cell's aim height and drop onto it (`bbLobThrow`, `robot.ts`), so it arrives
+ * DESCENDING — which `hiveAccepts` requires — from any distance, and the minimum is geometry
+ * alone: `BB_DUMP_MIN_DIST` is only the floor below which a throw has no direction. The fixed hood
+ * this replaced made a dumper stand far off (23–71 in at the default 75°, since a flat-ish arc
+ * only descends past its apex) and also reach far; the owner ruled both wrong, so the MAXIMUM is
+ * a strict cap rather than whatever `BB_LAUNCH_SPEED_MAX` happens to allow (~108 in).
+ */
+export const BB_DUMP_MIN_DIST = 1;
+export const BB_DUMP_MAX_DIST = 36;
+export const BB_DUMP_APEX_ABOVE = 4;
+
+/**
+ * The hood elevation a DUMPER used to be built at, in DEGREES above level.
  *
- * ⚠️ CHANGING THE DEFAULT RE-HASHES EVERY SCENE IN WHICH A DUMPER FIRES.
+ * ⚠️ NO LONGER READ BY THE SIM (owner, 2026-09-13). A dump is solved as a lob for its distance
+ * (`BB_DUMP_MAX_DIST` above), so the builder offers no Hood dial and no label prints one. The
+ * field stays on `BbLauncherSpec` and the coercer still clamps it to this range, so saved robots,
+ * presets and replays keep round-tripping unchanged.
  */
 export const BB_HOOD_DEFAULT_DEG = 75;
 export const BB_HOOD_MIN_DEG = 70;
@@ -583,11 +592,6 @@ export const BB_DUMP_RELOAD_S = 0.75;
  * accumulated cadence clock (`bbLaunch`). With `BB_FIRE_INTERVAL` above a tick it is normally 1;
  * this only bounds a pathological catch-up. APPROX. */
 export const BB_FIRE_BURST_MAX = 6;
-
-/** how close a turret's yaw AND pitch must be to its HIVE solution for AUTO-FIRE to count it as
- * ON TARGET (rad). Manual fire never waits for it — a turret fired mid-slew misses honestly.
- * APPROX. */
-export const BB_ON_TARGET_TOL = 0.05;
 
 /**
  * ⚠️ THE HOOD IS THE ONLY ANGLE IN THIS GAME MEASURED IN DEGREES, AND ONLY ON THE SPEC.
@@ -1064,7 +1068,7 @@ const BB_PRESET_ASSISTS: AssistConfig = {
   fieldCentric: false,
   aimAssist: true,
   autoIntake: true,
-  autoFire: true,
+  autoFire: false, // BIOBUZZ has no auto-fire — Aim Assist gates the driver's own fire (robot.ts `bbLaunch`)
 };
 
 /**

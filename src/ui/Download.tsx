@@ -1,6 +1,7 @@
 import { DESKTOP_BUILDS, releasesUrl, appVersion, detectOS, isMobile, OS_LABEL, type DesktopBuild } from '../download';
 import { APP_NAME } from '../seasons';
 import { SponsorDownloadMark } from './Sponsor';
+import { trackEvent } from '../analytics';
 
 /**
  * Download page — where users get the Electron desktop build of the sim (Windows
@@ -18,8 +19,22 @@ export function Download() {
     (a, b) => (a.os === os ? -1 : 0) - (b.os === os ? -1 : 0),
   );
 
+  /**
+   * THE ELECTRON SPLASH'S ONLY PROXY.
+   *
+   * The splash (`electron/splash.html`) carries the mark on the slowest frame the
+   * app has, and it is unmeasurable by construction — the desktop build does not
+   * beacon a host it does not run on, which is the rule the whole analytics module
+   * is gated by. So the report counts the DOWNLOAD instead and says so: one
+   * download is at least one splash, and the `os` property is the only property —
+   * no id, no version, no filename (`src/analytics.ts`).
+   */
+  const taken = (build: DesktopBuild) => (): void => {
+    trackEvent('desktop_download', { os: build.os });
+  };
+
   const card = (build: DesktopBuild) => (
-    <a className="ds-opt" key={build.label} href={build.url} download>
+    <a className="ds-opt" key={build.label} href={build.url} download onClick={taken(build)}>
       <span className="ot">{build.label}</span>
       <span className="od">{build.note}</span>
       <span className="go">↓</span>
@@ -78,7 +93,12 @@ export function Download() {
             <span>{version ? version : 'latest release'}</span>
           </div>
           {featured && (
-            <a className="ds-btn primary ds-dl-get" href={featured.url} download>
+            <a
+              className="ds-btn primary ds-dl-get"
+              href={featured.url}
+              download
+              onClick={taken(featured)}
+            >
               Download for {osName} ↓
             </a>
           )}

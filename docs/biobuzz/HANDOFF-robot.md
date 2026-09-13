@@ -6,6 +6,48 @@ Reverse-chronological. Prepend a new dated section; demote the old "READ FIRST".
 
 ## READ FIRST — 2026-09-12, night: the owner's builder feedback — three launchers, the Box Tube places
 
+> **2026-09-13, later still: A DUMP IS A LOB, CLOSE IN TO A STRICT CAP (owner).** The owner found
+> the dumper had to stand too far away and could reach too far. The cause was the fixed hood: an
+> arc only descends past its own apex, so at 75° the accepted band was 23–71 in.
+>
+> - **The lob:** each element is now thrown by `bbLobThrow` (`robot.ts`) to peak
+>   `BB_DUMP_APEX_ABOVE` (4 in, APPROX) over the cell and drop onto it. It arrives descending from
+>   any distance.
+> - **The range:** `BB_DUMP_MIN_DIST` (1 in) to `BB_DUMP_MAX_DIST` (36 in, APPROX), measured from
+>   each release point to the cell centre.
+> - **The hood:** no longer read by the sim. The Builder slider and the "° hood" label are gone.
+>   `hoodDeg` stays on the spec and is still clamped, so saves round-trip.
+> - **Removed:** `bbHoodSpeed` and `bbHoodDescends`.
+> - **Tests:** the smoke dumper poses moved in (they stood 45 in out). New checks: the `dump lob:`
+>   property sweep, and `dump range:` scores from 6 in and does nothing past the cap.
+>
+> **2026-09-13, later: AUTO-FIRE IS GONE; AIM ASSIST GATES THE DRIVER'S FIRE (owner).** The owner
+> ruled that auto-fire could not exist on a real robot. It fired whenever the real up cell would
+> take a shot, and `bbCellTaking` held fire back once elements already in the air would tip that
+> cell. No robot can sense either. What replaces it:
+>
+> - **Aiming:** `bbAimTarget` (`play.ts`) aims at the NEARER cell of the own HIVE, whichever way
+>   the HIVE is tilted. It is built from `hiveCellTarget` (`elements.ts`).
+> - **Firing:** stage 5b predicts each shot against a copy of the HIVE with that cell up and
+>   settled, and sets `BbShot.lands`. `bbLaunch` releases a held fire only when that prediction
+>   says the shot lands. Capture still reads the real HIVE, so a shot at a down or tipping cell
+>   misses.
+> - **No auto-fire in BIOBUZZ:** spawn forces `autoFire` false, the preset assists say false, and
+>   the new `GameModule.offersAutoFire: false` slot hides Menu's Auto fire toggle.
+> - **Removed:** `bbPickTarget`, `bbCellTaking`, `BbShot.onTarget/scores` and `BB_ON_TARGET_TOL`.
+>
+> **Behaviour change:** a held fire where no shot would land now does nothing, including a dumper
+> emptying its hopper away from the HIVE.
+>
+> **Dumpers turn onto the cell while fire is held, now on TANKS too.** Holding fire on a dumper
+> turns the chassis onto the cell, like Chain Reaction's dumper, then dumps. The aim hook in
+> `step.ts` used to override only `rotate`, but the shared drive model gives a tank its yaw from
+> the side drives alone. The StarterBot is a tank dumper, and it never turned. The turn is now
+> written into `leftDrive`/`rightDrive` as well. Smoke `dump turn [...]` starts a default dumper
+> and the StarterBot facing directly away. **Chain Reaction's `chainAimAssist` in `chain/step.ts`
+> has the same rotate-only override and so the same tank gap. Not fixed there.** Smoke `robot.ts` has an `aim assist:` section, and the
+> aim grid now pins "nearest own cell, unchanged by a tip".
+>
 > **2026-09-13: THE TIP THRESHOLDS ARE IN THE FIELD SETUP GUIDE.** The 2026-2027 Event Field
 > Setup Guide §12 Hive Calibration requires every HIVE to tip at 8 POLLEN + 0 NECTAR and 3 POLLEN +
 > 3 NECTAR, and the §12.3 acceptance table makes a tossed-in 7th / 2nd POLLEN a no-tip.

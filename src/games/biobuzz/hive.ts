@@ -117,8 +117,9 @@ export function hiveApproachSign(up: BbCellSide): 1 | -1 {
  *    behaviour, and the thing it produced was a driver watching a volley he had already fired
  *    pass through the tray and land on the tiles.
  *  • AFTER the release it is `otherSide(up)` — the tray coming UP, now empty, whose opening is
- *    rising into the launch window. It is what a turret tracking the incoming cell is aiming
- *    at, and what auto-fire resumes on.
+ *    rising into the launch window. (Aim Assist does not know any of this — it aims at the
+ *    nearer own cell as if it were up, `play.ts` `bbAimTarget` — but a shot that reaches the
+ *    rising tray after the release still goes in.)
  *
  * So the HIVE is never a hole in the field; the only thing a swing changes is WHICH tray your
  * element lands in, and the handover is the same instant as the spill. `hiveStep` carries a

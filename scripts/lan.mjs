@@ -133,17 +133,16 @@ const urls = addresses().map((a) => `http://${a.address}:${port}`);
 console.log('');
 console.log('  ─────────────────────────────────────────────────────────────');
 if (urls.length === 0) {
-  console.log('  This computer is not on a network anyone else can reach.');
-  console.log('  Join the venue Wi-Fi or plug into the switch, then start again.');
+  console.log('  This computer isn’t on a network other players can reach.');
+  console.log('  Connect to Wi-Fi or ethernet, then start again.');
 } else {
-  console.log('  Everyone else opens ONE of these, in any browser, same network:');
+  console.log('  Players open one of these in a browser on the same network:');
   for (const u of urls) console.log(`      ${u}`);
-  if (urls.length > 1) console.log('  (More than one network adapter. If the first fails, try the next.)');
+  if (urls.length > 1) console.log('  If the first address doesn’t work, try the next.');
 }
 console.log('');
 console.log(`  You play here:  http://localhost:${port}`);
-console.log('  LAN matches are unofficial — never rated, never on a leaderboard.');
-console.log('  Ctrl-C to stop hosting.');
+console.log('  Press Ctrl-C to stop hosting.');
 console.log('  ─────────────────────────────────────────────────────────────');
 console.log('');
 
