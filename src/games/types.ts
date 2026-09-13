@@ -179,6 +179,7 @@ export interface GameSimModule {
    * construction: answer `true` rather than making each caller special-case it.
    */
   startLegal?(spec: RobotSpec, a: Alliance, startPose: StartPose | null | undefined): boolean;
+  /**
    * DOES THIS GAME RUN AUTO PATHS?
    *
    * Only DECODE's step drives path traversal — `initializePathTraversal` /
