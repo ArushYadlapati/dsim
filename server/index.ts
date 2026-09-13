@@ -2532,7 +2532,7 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
     }
   });
 
-  ws.on('close', () => {
+  ws.on('close', (code: number) => {
     closed = true; // an in-flight async join must stop and hand its room back
     onlineCount--;
     if (spectating) {
@@ -2550,7 +2550,10 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
     lanSignals.release(signalId); // a LAN host going away takes its room's guests with it
     // lobby ⇒ leave; mid-match ⇒ hold the slot for a reconnect. `conn` lets the room
     // ignore this close if a newer socket already reclaimed the slot (fast reconnect).
-    room?.detach(id, conn);
+    // 1000/1005 is the client closing on purpose (`transport.close()`: a restart, back to
+    // the menu); a dropped network is 1006 and a closing tab 1001, both of which keep the
+    // grace — a phone that backgrounds the tab may send 1001 and come straight back.
+    room?.detach(id, conn, code === 1000 || code === 1005);
   });
 
   ws.on('error', () => {

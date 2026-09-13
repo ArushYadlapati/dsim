@@ -730,8 +730,11 @@ export class Room {
   }
 
   /** a socket dropped. In the lobby that's an outright leave; mid-match the slot
-   * is HELD for the reconnect grace (the robot coasts to ZERO meanwhile). */
-  detach(id: string, conn?: number): void {
+   * is HELD for the reconnect grace (the robot coasts to ZERO meanwhile).
+   *
+   * `clean` is true when the CLIENT closed the socket on purpose (WebSocket close code
+   * 1000/1005 — `transport.close()`), as opposed to a network drop (1006). See below. */
+  detach(id: string, conn?: number, clean = false): void {
     // a spectator socket closing — just drop it (no roster/grace/persistence impact)
     if (this.spectators.has(id)) {
       this.spectators.delete(id);
@@ -784,6 +787,19 @@ export class Room {
     } else {
       c.connected = false;
       c.disconnectAt = Date.now();
+      // ⚠️ A SOLO RECORD RUN THE PLAYER CLOSED ON PURPOSE IS OVER — DO NOT HOLD IT.
+      // Restarting a record run is a full teardown: the client disposes its session (a
+      // CLEAN close) and opens a brand-new `rec-` room. Holding the old one for the
+      // reconnect grace kept it SIMULATING for 45 s with nobody who could ever come back
+      // to it, so a player restarting every few seconds occupied several rooms at once —
+      // on launch day (2026-09-13, BIOBUZZ public) iad sat at 24/24 with 8-12 real runs
+      // and refused new ones as `region_full` ("Couldn’t start"). A network drop is not
+      // clean (1006) and keeps its grace; so does every room with a second driver in it.
+      if (clean && this.config.kind === 'record' && this.config.record === 'solo') {
+        c.disconnectAt = -Infinity;
+        this.checkGrace();
+        return;
+      }
       this.broadcastRoster();
       // a partner who drops must not leave the run un-restartable: their vote is
       // no longer required, so a rematch the other driver already asked for lands
