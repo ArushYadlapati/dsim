@@ -625,6 +625,140 @@ function drawFlowerSection(
 // THE RENDERER
 // ─────────────────────────────────────────────────────────────────────────────
 
+/**
+ * THE CONTENTS — ONE ROW OF DISCS HUGGING THE OPEN EDGE, INSIDE THE BOX.
+ *
+ * At element scale and in element colours, oldest at the −x end, so the row grows the same
+ * way every time and a NECTAR arriving at the far end is visibly the newest thing in the
+ * cell. Against the OPEN edge (`outerY`, the box's outer short edge; `s` is +1 for the north
+ * cell) because that is the end everything came in through; against the closed back it would
+ * read as the far wall of a container nothing can reach.
+ *
+ * A full cell holds more diameters than the 20-in width has room for (3 NECTAR and 8 POLLEN
+ * is 30.8 in of ball), so when the row runs long the PITCH closes up and the discs overlap
+ * while their RADII stay true. Shrinking the balls instead would make a NECTAR and a POLLEN
+ * the same size, which is the one distinction the row exists to carry; overlapping reads as
+ * packed, which is what a full cell is.
+ *
+ * `alpha` is the cell's own fill weight through the swing (`tipProjection`'s `up`, 1 at rest),
+ * so the row fades with the tray it is in. Shared with `drawHiveCanopy`, which repaints it over
+ * whatever drove under the structure.
+ */
+function drawCellContents(
+  ctx: CanvasRenderingContext2D,
+  x0: number,
+  x1: number,
+  outerY: number,
+  s: number,
+  contents: readonly Artifact[],
+  alpha: number,
+): void {
+  if (contents.length === 0) return;
+  const rMax = contents.reduce((m, b) => Math.max(m, elementR(b)), 0);
+  const rowY = outerY - s * (rMax + CELL_ROW_IN);
+  const span = x1 - x0 - 2 * CELL_ROW_PAD;
+  const want = contents.reduce((t, b) => t + 2 * elementR(b), 0);
+  const pitch = want > span ? span / want : 1;
+  let t = x0 + CELL_ROW_PAD + Math.max(0, (span - want) / 2);
+  ctx.save();
+  ctx.globalAlpha = alpha;
+  ctx.strokeStyle = 'rgba(12,14,18,0.65)';
+  ctx.lineWidth = 0.3;
+  for (const b of contents) {
+    const r = elementR(b);
+    t += r * pitch;
+    ctx.fillStyle = elementInk(b.color);
+    ctx.beginPath();
+    ctx.arc(t, rowY, r, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.stroke();
+    t += r * pitch;
+  }
+  ctx.restore();
+}
+
+/**
+ * HOW MUCH OF THE HIVE SHOWS THROUGH WHATEVER IS UNDER IT — the canopy's opacity.
+ *
+ * The robot and the pollen beneath the structure are drawn at full strength and the canopy is
+ * laid over them at this alpha, so what a driver sees is the robot at `1 − CANOPY_A` of itself
+ * through the assembly, only where the assembly actually is. "Slightly translucent" (owner,
+ * 2026-09-13): the robot has to stay readable enough to drive by, and the structure has to
+ * read as overhead rather than as a stain on the deck. 0.42 is the wash at which both hold in
+ * both themes; the up cell's own fill rides on top at its usual weight times this.
+ */
+const CANOPY_A = 0.42;
+
+/**
+ * THE CANOPY — the HIVE assembly repainted, TRANSLUCENTLY, over everything that was drawn after
+ * the field (owner feedback, 2026-09-13: "make the robot and pollen that are below the hive
+ * slightly translucent… only the portion that is below the hive").
+ *
+ * The HIVE hangs 25.5 in over the tiles and G409 assumes robots drive under it, but the field
+ * is drawn FIRST and the robots and the ground elements after it, so a robot under the
+ * structure was painted ON TOP of a thing that is physically above it. This pass, called from
+ * the element renderer (`draw.ts`, the last of the three drawing slots) once the robots and the
+ * ground elements are down and before the airborne ones go on, puts the assembly back on top:
+ * the body, the up cell's fill and its contents row, at `CANOPY_A`, over exactly the assembly's
+ * own footprint and nothing else. A robot half under the hive is half dimmed; a POLLEN spilled
+ * under the down cell is dimmed; the rest of both is untouched, because there is nothing over
+ * them.
+ *
+ * It is NOT a `globalAlpha` on the robot sprite. That fades the whole robot — the part in the
+ * open as much as the part under the structure — and the ruling is specifically the portion
+ * below the hive. Clipping the robot instead would need every game's sprite to know about this
+ * field. Repainting the structure is the one place the footprint is already known.
+ *
+ * Reads the same state the field pass reads, through the same helpers (`tipProjection`,
+ * `cellSpan`, `drawCellContents`), so the canopy swings with the swing and its contents row is
+ * the field's row: two drawings of one hive that cannot disagree about where it is. The down
+ * cell's dashed outline and the edge marks are not repainted — lines that thin over a robot
+ * are noise, and the body wash already says "structure here".
+ */
+export function drawHiveCanopy(ctx: CanvasRenderingContext2D, world: World): void {
+  const bb = world.biobuzz;
+  const byId = new Map<number, Artifact>();
+  for (const b of world.balls) byId.set(b.id, b);
+  for (const a of ALLIANCES) {
+    const h = bb?.hives?.[a];
+    const up = h?.up ?? BB_HIVE_UP_STAGED[a];
+    const taking = h ? hiveTakingSide(h) : BB_HIVE_UP_STAGED[a];
+    const px = a === 'red' ? -BB_HIVE_X : BB_HIVE_X;
+    const x0 = px - BB_HIVE_W / 2;
+    const x1 = px + BB_HIVE_W / 2;
+    const { proj, up: f } = tipProjection(h?.tipping ?? 0);
+    const bodyHalf = (BB_HIVE_LEN / 2) * proj;
+
+    ctx.save();
+    ctx.globalAlpha = CANOPY_A;
+    roundRectPath(ctx, x0, -bodyHalf, x1, bodyHalf, HIVE_R);
+    ctx.fillStyle = C.COLORS.tile;
+    ctx.fill();
+    ctx.strokeStyle = C.COLORS.wall;
+    ctx.lineWidth = 0.8;
+    ctx.stroke();
+    ctx.restore();
+
+    for (const side of ['north', 'south'] as const) {
+      const s = side === 'north' ? 1 : -1;
+      const { y0, y1 } = cellSpan(s, proj);
+      const k = up === side ? f : 1 - f;
+      if (k > 0.01) {
+        ctx.save();
+        roundRectPath(ctx, x0, y0, x1, y1, HIVE_R);
+        ctx.globalAlpha = k * CELL_FILL_A * CANOPY_A;
+        ctx.fillStyle = allianceColor(a);
+        ctx.fill();
+        ctx.restore();
+      }
+      if (side !== taking) continue;
+      const outerY = s > 0 ? y1 : y0;
+      const contents = (h?.contents ?? []).map((id) => byId.get(id)).filter((b): b is Artifact => b !== undefined);
+      drawCellContents(ctx, x0, x1, outerY, s, contents, k * CANOPY_A);
+    }
+  }
+}
+
 export function drawBiobuzzField(
   ctx: CanvasRenderingContext2D,
   world: World,
@@ -891,29 +1025,7 @@ export function drawBiobuzzField(
        * NECTAR and a POLLEN the same size, which is the one distinction the row exists to
        * carry; overlapping reads as packed, which is what a full cell is.
        */
-      const contents = elements(bb?.hives?.[a]?.contents);
-      if (contents.length === 0) continue;
-      const rMax = contents.reduce((m, b) => Math.max(m, elementR(b)), 0);
-      const rowY = outerY - s * (rMax + CELL_ROW_IN);
-      const span = x1 - x0 - 2 * CELL_ROW_PAD;
-      const want = contents.reduce((t, b) => t + 2 * elementR(b), 0);
-      const pitch = want > span ? span / want : 1;
-      let t = x0 + CELL_ROW_PAD + Math.max(0, (span - want) / 2);
-      ctx.save();
-      ctx.globalAlpha = k;
-      ctx.strokeStyle = 'rgba(12,14,18,0.65)';
-      ctx.lineWidth = 0.3;
-      for (const b of contents) {
-        const r = elementR(b);
-        t += r * pitch;
-        ctx.fillStyle = elementInk(b.color);
-        ctx.beginPath();
-        ctx.arc(t, rowY, r, 0, Math.PI * 2);
-        ctx.fill();
-        ctx.stroke();
-        t += r * pitch;
-      }
-      ctx.restore();
+      drawCellContents(ctx, x0, x1, outerY, s, elements(bb?.hives?.[a]?.contents), k);
     }
   }
 
