@@ -134,11 +134,20 @@ export function step(world: World, dt: number, commands: Map<number, RobotComman
     if (world.match.phase === 'auto' && r.autoPathActive) {
       // Use r.autoPath directly, which is already mirrored if necessary
       if (r.autoPath) {
-        // Initialize auto path once at the very beginning of the auto phase
+        /* INITIALIZE ONCE, and `pathWaitedBefore` is what makes "once" decidable.
+           The other three are all ZERO AGAIN on the tick a first-segment `waitBeforeMs`
+           expires — index 0, progress 0, timer just run down — so this re-initialized the
+           path there, which put the robot back on the start point and cleared the record of
+           the wait it had just served, which armed the wait again. A path with a wait on its
+           first segment therefore never left the start point for the whole of AUTO (measured:
+           600 ticks, 540 of them waiting, x never moved). `initializePathTraversal` sets
+           `pathWaitedBefore` to -1 and only an armed before-wait moves it off, so it is the
+           one piece of state here that says "this path has already started". */
         if (
           r.pathSequenceIndex === 0 &&
           r.pathSegmentProgress === 0 &&
-          r.pathWaitTimer === 0
+          r.pathWaitTimer === 0 &&
+          r.pathWaitedBefore === -1
         ) {
           initializePathTraversal(r);
         }

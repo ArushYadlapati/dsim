@@ -515,6 +515,19 @@ const slotCount = (w: World, a: 'red' | 'blue') =>
     // and CR's 18" build is preserved in the archive (would clamp to ~15 if it lived under DECODE)
     s = switchGame(s, 'chain');
     check('per-game: CR loadout (max-length build) survives the round-trip', s.spec.name === 'ChainBot' && s.spec.length === crCap && s.startIndex === 3);
+
+    /* THE ARCHIVED GAME'S REMEMBERED START SURVIVES A RELOAD.
+       `coerceLoadout` validated the stored `startMemory` and then returned the DEFAULT one,
+       so every JSON round-trip quietly reset the game the player was not currently on: pick
+       close=2 / far=3 under DECODE, play a CR match, reload, switch back — anchors 0 and 1. */
+    s = { ...s, startMemory: { close: { index: 2, pose: null }, far: { index: 3, pose: null } } };
+    const stored = JSON.parse(JSON.stringify(switchGame(s, 'decode'))) as unknown;
+    const back = switchGame(coerceSettings(stored), 'chain');
+    check(
+      'per-game: an archived startMemory survives the JSON round-trip',
+      back.startMemory.close.index === 2 && back.startMemory.far.index === 3,
+      `close=${back.startMemory.close.index} far=${back.startMemory.far.index}`,
+    );
   }
 }
 
@@ -5491,11 +5504,16 @@ function queueTenth(w: World): void {
   );
   // Escape is reserved for menu / cancel and is never bindable.
   check('bindings: escape is never a default key', !keyOwner.has('escape'));
-  // `input.ts` reads arrowup / arrowdown DIRECTLY for the tank right side, so a default bound
-  // to either would drive half a tank chassis as a side effect of pressing it.
+  /* THE TANK RIGHT SIDE IS A BINDING NOW, not two hard-coded key names.
+     `input.ts` used to read `arrowup` / `arrowdown` DIRECTLY, so half a tank chassis was
+     unrebindable: reassigning the arrows to some other action left them still driving the
+     right side, and pressing one then did two things at once. The defaults are unchanged
+     (arrows), so nothing moves for a player who never opened the controls screen — but they
+     are OWNED by an action now, which is what makes the duplicate check above cover them. */
   check(
-    'bindings: no default key collides with the tank arrowup/arrowdown mapping',
-    !keyOwner.has('arrowup') && !keyOwner.has('arrowdown'),
+    'bindings: the tank right side owns the arrows by default',
+    keyOwner.get('arrowup') === 'tankRightUp' && keyOwner.get('arrowdown') === 'tankRightDown',
+    `${keyOwner.get('arrowup')} / ${keyOwner.get('arrowdown')}`,
   );
   // Standard-mapping pads report 17 buttons; anything past that is a pad-specific extra no
   // ordinary controller has, so a default there is a button most people cannot press.
@@ -6083,6 +6101,52 @@ function ramOffCentre(offset: number, ticks = 90): { victim: number; peakW: numb
     worstOverlap < 0 && worstSideways < 1,
     `worst overlap ${worstOverlap.toFixed(2)}in (negative = never touching), sideways ${worstSideways.toFixed(2)}in`,
   );
+  /* ------------------------------------------------ a path WAIT ends, and the path goes on ----
+     Both of a segment's waits re-armed themselves, so either one stalled the whole auto:
+       • waitBeforeMs fired whenever `pathSegmentProgress === 0` — which is ALSO the state the
+         robot is in the tick its own timer runs out, so it armed again, forever.
+       • waitAfterMs armed the timer but left the sequence index on the FINISHED segment with
+         progress still at 1.0, so the tick it expired re-entered the same branch.
+     A wait is now recorded (`pathWaitedBefore`) / advanced with the timer, exactly as a `wait`
+     sequence item already was. The measurable consequence is the only one that matters: the
+     robot reaches the end of a two-segment path with waits on it. */
+  {
+    const waited: AutoPathData = {
+      fileName: 'waits',
+      startPoint: { x: -50, y: 0, heading: 'constant', degrees: 0 },
+      lines: [
+        { id: 'w1', endPoint: { x: -20, y: 0, heading: 'constant', degrees: 0 }, waitBeforeMs: 150, waitAfterMs: 150 },
+        { id: 'w2', endPoint: { x: 10, y: 0, heading: 'constant', degrees: 0 } },
+      ],
+      sequence: [{ kind: 'path', lineId: 'w1' }, { kind: 'path', lineId: 'w2' }],
+    };
+    const ww = createWorld('match', 11, [{ ...setup(0, 'red', {}, 0), autoPath: waited, autoPathEnabled: true }]);
+    for (const ball of ww.balls) ball.state = { kind: 'held', robot: 99 };
+    ww.match.phase = 'auto';
+    ww.match.phaseTimeLeft = 30;
+    ww.match.preCountdown = undefined;
+    const runner = ww.robots[0];
+    let waitTicks = 0;
+    for (let i = 0; i < 600 && runner.autoPathActive; i++) {
+      step(ww, SIM_DT, new Map());
+      if (runner.pathWaitTimer > 0) waitTicks++;
+    }
+    // RED, so the canonical path is MIRRORED at spawn: it runs +50 → −10, not −50 → +10
+    check(
+      'auto path: a segment WAIT expires and the path finishes (it used to re-arm forever)',
+      !runner.autoPathActive && runner.pos.x < -5,
+      `x=${runner.pos.x.toFixed(1)} active=${runner.autoPathActive}`,
+    );
+    // and the waits were actually SERVED — a fix that merely skipped them would also finish.
+    // 150 ms before + 150 ms after = 18 ticks at 60 Hz, and nothing like the 540 the stall
+    // spent sitting on the start point.
+    check(
+      'auto path: the waits were served once each, not skipped and not repeated',
+      waitTicks >= 14 && waitTicks <= 24,
+      `${waitTicks} ticks waiting`,
+    );
+  }
+
   /**
    * ...and crushing it against the far wall is a bounded SHOVE, not a launch. A kinematic body
    * that will not yield plus a wall that will not move is the one genuinely over-constrained
@@ -14334,6 +14398,43 @@ function pinScene(
 }
 
 // ---- SPECTATING: a read-only watcher gets the stream, affects nothing -----------
+/* ------------------------------------------------ tab-hosted LAN: the host's seat is RESERVED ----
+   Signalling admits far more guests than a room has seats for (it knows nothing about
+   `roomCapacity`), and the tab host used to seat every one of them — so a fifth driver joined
+   a 2v2, `matchStart` went out with a roster the protocol has no slots for, and `POST /api/lan`
+   refused the oversized replay afterwards. Worse, a host joins LAST (they are reading the code
+   out while guests arrive), so four guests could take every seat in the host's own room.
+   `canSeat` is capacity plus that reservation; `hostWorker` asks it before `room.add`. */
+{
+  const seatFor = (id: string): Client => ({
+    id,
+    send: () => {},
+    player: { clientId: id, name: id, teamName: 'T', teamNumber: 1, alliance: 'blue', startIndex: 0, ready: false, spec: { ...DEFAULT_SPEC }, assists: { ...DEFAULT_ASSISTS } },
+    connected: true,
+    disconnectAt: 0,
+  });
+  const lan = new Room('smoke-lan-cap', () => {}, { kind: 'versus' });
+  lan.reserveHost('host-local');
+  check('LAN capacity: a room with a reserved host still admits a guest', lan.canSeat('g1'));
+  lan.add(seatFor('g1'));
+  lan.add(seatFor('g2'));
+  lan.add(seatFor('g3'));
+  check('LAN capacity: the 4th GUEST is refused — the last seat belongs to the host', !lan.canSeat('g4'));
+  check('LAN capacity: the host itself is admitted into its reserved seat', lan.canSeat('host-local'));
+  lan.add(seatFor('host-local'));
+  check('LAN capacity: with the host seated the room is full for everyone', !lan.canSeat('g4') && !lan.canJoin());
+
+  // a CLOUD room reserves nothing (its host is the first client through the door), so
+  // `canSeat` is exactly `canJoin` there and the 4th driver is admitted as before
+  const cloud = new Room('smoke-cloud-cap', () => {}, { kind: 'versus' });
+  cloud.add(seatFor('c1'));
+  cloud.add(seatFor('c2'));
+  cloud.add(seatFor('c3'));
+  check('cloud room: the 4th driver is admitted (nothing is reserved)', cloud.canSeat('c4') && cloud.canJoin());
+  cloud.add(seatFor('c4'));
+  check('cloud room: a 5th driver is refused by capacity', !cloud.canSeat('c5'));
+}
+
 {
   const mkDriver = (id: string, alliance: Alliance, sink: ServerMsg[]): Client => ({
     id,
@@ -15854,6 +15955,46 @@ const mkMM = () => {
   check('registry: an unknown game id degrades to decode', moduleFor('nope' as never).id === 'decode');
   check('chain module is SCORED (ranked + records on, keyed per game)', moduleFor('chain').scored === true);
 
+  /* AUTO PATHS ARE DECODE'S, AND ONLY DECODE'S.
+     `initializePathTraversal` / `updatePathTraversal` are driven from `src/sim/world.ts` and
+     nowhere else — CR and BIOBUZZ have steps of their own — so a `.pp` path selected under
+     one of those games was accepted, saved, reported "Auto path ON", carried into the match
+     and then did NOTHING for the whole autonomous period. The capability says which game can
+     run one, and both ends of the path read it: the builder hides the section, and the spawn
+     chokepoint drops the data so it never reaches a world, a snapshot or a replay. */
+  check('autoPaths: DECODE runs auto paths', moduleFor('decode').autoPaths === true);
+  check('autoPaths: CR does not (its step never traverses one)', moduleFor('chain').autoPaths === false);
+  check('autoPaths: BIOBUZZ does not (its step never traverses one)', moduleFor('biobuzz').autoPaths === false);
+  {
+    const p = {
+      fileName: 'cap.pp',
+      startPoint: { x: 0, y: 0, heading: 'constant', degrees: 0 },
+      lines: [{ id: 'l1', endPoint: { x: 10, y: 0, heading: 'constant', degrees: 0 } }],
+      sequence: [{ kind: 'path', lineId: 'l1' }],
+    } as AutoPathData;
+    const withPath = (game: GameId) =>
+      coerceSetup(
+        { id: 0, alliance: 'blue', spec: DEFAULT_SPEC, assists: DEFAULT_ASSISTS, startIndex: 0, autoPath: p, autoPathEnabled: true },
+        game,
+      );
+    check('coerceSetup keeps a path for DECODE', !!withPath('decode').autoPath && withPath('decode').autoPathEnabled === true);
+    check('coerceSetup drops a path CR cannot run', withPath('chain').autoPath === undefined && withPath('chain').autoPathEnabled === false);
+    check('coerceSetup drops a path BIOBUZZ cannot run', withPath('biobuzz').autoPath === undefined && withPath('biobuzz').autoPathEnabled === false);
+
+    /* G304 IS DECODE'S RULE, so the snap is DECODE's too. A game with `startLegality: false`
+       has no launch lines, goal faces or alliance halves to be snapped against, and moving
+       its robot to satisfy them is a repair for a rule it does not have. */
+    const pose = (game: GameId) =>
+      coerceSetup(
+        { id: 0, alliance: 'blue', spec: DEFAULT_SPEC, assists: DEFAULT_ASSISTS, startIndex: 0, startPose: { x: 0, y: 0, headingDeg: 0 } },
+        game,
+      ).startPose;
+    const dp = pose('decode');
+    check('coerceSetup snaps an illegal centre pose for DECODE', !!dp && (dp.x !== 0 || dp.y !== 0));
+    const cp = pose('chain');
+    check('coerceSetup leaves a CR pose where the player put it', !!cp && cp.x === 0 && cp.y === 0 && cp.headingDeg === 0);
+  }
+
   // the DECODE collider extraction is intact: 4 walls + per-alliance (face + classifier)
   check(
     'decode colliders: 4 walls + 2 goal-face + 2 classifier = 8 statics',
@@ -17192,6 +17333,38 @@ const mkMM = () => {
       'chain move-shot: a strafing turret still scores (turret leads to compensate)',
       gw.chain!.scored.blue - before >= 3,
       `scored+=${gw.chain!.scored.blue - before}`,
+    );
+  }
+
+  /* ONE MECHANISM, ONE COOLDOWN — pressing GRAB and THROW on the same tick.
+     The cooldown was sampled ONCE, before the grab branch, and the throw branch then reused
+     that stale `true`: the claw closed on a ring and the catapult threw the same ring in the
+     same update, for one press of each button, ignoring the re-cock the cooldown exists to
+     charge. The throw reads the CURRENT cooldown now, so the grab's own cycle covers it. */
+  {
+    const spec = coerceSpec({ ...DEFAULT_SPEC, catalystType: 'launcher' }, DEFAULT_SPEC, 'chain');
+    const gw = createChainWorld('match', 5, [{ id: 0, alliance: 'blue', spec, assists: { ...DEFAULT_ASSISTS }, startIndex: 0 }]);
+    gw.match.phase = 'teleop';
+    gw.match.phaseTimeLeft = 120;
+    const rob = gw.robots[0];
+    rob.pos = { x: 0, y: 0 };
+    rob.heading = 0;
+    rob.vel = { x: 0, y: 0 };
+    const rings = gw.chain!.catalysts;
+    // one ring in the claw's face, the rest parked in a corner so the grab is unambiguous
+    rings.forEach((c, i) => {
+      c.hook = null;
+      c.carriedBy = null;
+      c.vel = { x: 0, y: 0 };
+      c.z = 0;
+      c.vz = 0;
+      c.pos = i === 0 ? { x: 6, y: 0 } : { x: -60, y: -60 + i };
+    });
+    updateChain(gw, SIM_DT, new Map([[rob.id, cmd({ catalyst: true, fling: true })]]), true);
+    check(
+      'chain: grab + throw on ONE tick does not throw the ring the claw just closed on',
+      rings[0].carriedBy === rob.id && rings[0].z === 0,
+      `carriedBy=${rings[0].carriedBy} z=${rings[0].z}`,
     );
   }
 

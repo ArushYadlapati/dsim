@@ -25,6 +25,8 @@ export const CHAIN_SIM: GameSimModule = {
   // the frame it is stored in. Changing that is a CR rules question, not a seam change.
   startLegal: (spec, _a, pose) =>
     !pose || chainStartLegal(spec, { x: pose.x, y: pose.y }, pose.headingDeg),
+  // CR's step never calls `updatePathTraversal`, so an imported `.pp` path would be inert
+  autoPaths: false,
   // camera bounds include the protruding goals (walls/colliders stay at ±72)
   bounds: { halfX: CHAIN_VIEW_HALF_X, halfY: CHAIN_HALF_Y, viewMargin: CHAIN_VIEW_MARGIN },
   colliders: chainColliders,

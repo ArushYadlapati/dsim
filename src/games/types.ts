@@ -180,6 +180,16 @@ export interface GameSimModule {
    */
   startLegal?(spec: RobotSpec, a: Alliance, startPose: StartPose | null | undefined): boolean;
   /**
+   * SEAT a custom CANONICAL start pose legal for this spec + alliance, returning it canonical.
+   *
+   * `coerceSetup` calls it at the spawn chokepoint, so no path (localStorage, the wire, a staged
+   * match, a replay) spawns an illegal robot. Absent ⇒ the pose is kept as structurally
+   * validated and field-clamped, and the game's own spawn may fit it further (BIOBUZZ does).
+   * It used to be DECODE's `snapStartToLegal` for any game with `startLegality`, which seated a
+   * BIOBUZZ pose against DECODE's field and mirrored it in x.
+   */
+  startSnap?(spec: RobotSpec, a: Alliance, startPose: StartPose): StartPose;
+  /**
    * THE START ROLES, for a game whose roles are not DECODE's CLOSE / FAR table. The shared
    * `StartCat` slots ('close' / 'far') carry whatever a game's two roles are; these say which
    * anchor belongs to which, which anchor a role defaults to, and what the roles and anchors are
@@ -196,6 +206,22 @@ export interface GameSimModule {
    * for one alliance and the bottom for the other (BIOBUZZ). */
   startRoleLabel?(cat: import('../types').StartCat | undefined, alliance?: Alliance): string;
   startAnchorName?(index: number, alliance?: Alliance): string;
+  /**
+   * DOES THIS GAME RUN AUTO PATHS?
+   *
+   * Only DECODE's step drives path traversal — `initializePathTraversal` /
+   * `updatePathTraversal` are called from `src/sim/world.ts` and nowhere else, and Chain
+   * Reaction and BIOBUZZ have steps of their own. So a `.pp` path imported while one of
+   * those games was selected was accepted by the builder, saved to the library, reported
+   * "Auto path ON", rode the wire into the match — and then the robot sat still for the
+   * whole autonomous period with nothing anywhere saying why.
+   *
+   * Two readers, and they are the two ends of that path: the builder hides the section for
+   * a game that cannot run one (`MatchSetup`), and the spawn chokepoint drops `autoPath` /
+   * `autoPathEnabled` for it (`coerceSetup`) so a path already sitting in localStorage or
+   * arriving off the wire never reaches a world, a snapshot or a replay.
+   */
+  autoPaths: boolean;
   bounds: FieldBounds;
   colliders: FieldColliders;
   createWorld(mode: GameMode, seed: number, setups: RobotSetup[], settings?: GameSettings): World;

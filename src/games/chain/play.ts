@@ -296,7 +296,12 @@ export function updateChain(
     // (you cannot claw and throw in the same instant; it is one mechanism).
     const fHeld = chain.flingHeld[r.id] ?? false;
     const fNow = enabled && (cmd?.fling ?? false);
-    if (fNow && !fHeld && ready) flingCatalyst(world, chain, r, rand);
+    // READ THE COOLDOWN AGAIN. `ready` was sampled before the pick-up branch above, which
+    // sets `catalystReadyAt` when it fires — so pressing both bits on one tick used a stale
+    // `true` here and threw the ring the claw had just closed on, in the same update. One
+    // mechanism, one cooldown: it has to be the CURRENT one.
+    const fReady = world.time >= (chain.catalystReadyAt[r.id] ?? 0);
+    if (fNow && !fHeld && fReady) flingCatalyst(world, chain, r, rand);
     chain.flingHeld[r.id] = fNow;
   }
 

@@ -111,6 +111,19 @@ function defaultLoadout(game: GameId): GameLoadout {
   };
 }
 
+/** clamp one remembered start SELECTION (a preset index or a custom pose) for `game`.
+ * Module-scope because BOTH readers need it — `coerceSettings` for the active game and
+ * `coerceLoadout` for an archived one, which used to drop the stored value on the floor. */
+function coerceStartSel(raw: unknown, fallback: StartSel, game: GameId): StartSel {
+  if (typeof raw !== 'object' || raw === null) return fallback;
+  const r = raw as Record<string, unknown>;
+  const index = typeof r.index === 'number' && Number.isFinite(r.index)
+    ? clamp(Math.round(r.index), -1, startPoseCount(game) - 1)
+    : fallback.index;
+  const pose = r.pose == null ? null : coerceStartPose(r.pose);
+  return { index, pose };
+}
+
 /** validate an archived loadout (spec + saved robots clamped for THAT game; start fields
  * light-checked). Written from already-clean data, so this mostly guards a hand-edited store. */
 function coerceLoadout(raw: unknown, game: GameId): GameLoadout {
@@ -138,7 +151,18 @@ function coerceLoadout(raw: unknown, game: GameId): GameLoadout {
     startPose: r.startPose == null ? null : coerceStartPose(r.startPose),
     startCat: r.startCat === 'far' ? 'far' : 'close',
     savedStartPoses: { close: saves(sp.close), far: saves(sp.far) },
-    startMemory: d.startMemory,
+    // the STORED memory, coerced — not the default. Returning `d.startMemory` here threw the
+    // archived game's remembered start away on every load: switch to it and its close/far
+    // picks were back at anchors 0 and 1, whatever the player had left them on.
+    startMemory: (() => {
+      const m = typeof r.startMemory === 'object' && r.startMemory !== null
+        ? (r.startMemory as Record<string, unknown>)
+        : {};
+      return {
+        close: coerceStartSel(m.close, d.startMemory.close, game),
+        far: coerceStartSel(m.far, d.startMemory.far, game),
+      };
+    })(),
   };
 }
 
@@ -241,21 +265,12 @@ export function coerceSettings(raw: unknown): GameSettings {
       const sp = s.savedStartPoses as Record<string, unknown>;
       out.savedStartPoses = { close: coerceSaves(sp.close), far: coerceSaves(sp.far) };
     }
-    // per-category memory: clamp index, coerce pose
-    const coerceSel = (raw: unknown, fallback: StartSel): StartSel => {
-      if (typeof raw !== 'object' || raw === null) return fallback;
-      const r = raw as Record<string, unknown>;
-      const index = typeof r.index === 'number' && Number.isFinite(r.index)
-        ? clamp(Math.round(r.index), -1, startPoseCount(out.game) - 1)
-        : fallback.index;
-      const pose = r.pose == null ? null : coerceStartPose(r.pose);
-      return { index, pose };
-    };
+    // per-category memory: clamp index, coerce pose (see `coerceStartSel`)
     if (typeof s.startMemory === 'object' && s.startMemory !== null) {
       const m = s.startMemory as Record<string, unknown>;
       out.startMemory = {
-        close: coerceSel(m.close, out.startMemory.close),
-        far: coerceSel(m.far, out.startMemory.far),
+        close: coerceStartSel(m.close, out.startMemory.close, out.game),
+        far: coerceStartSel(m.far, out.startMemory.far, out.game),
       };
     }
     // the NON-active games' archived loadouts (robot + saved robots + start positions), so a

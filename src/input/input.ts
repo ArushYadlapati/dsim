@@ -91,9 +91,11 @@ export class InputManager {
     const ky = (heldAny(keys.driveUp) ? 1 : 0) - (heldAny(keys.driveDown) ? 1 : 0);
     const krot = (heldAny(keys.rotateCCW) ? 1 : 0) - (heldAny(keys.rotateCW) ? 1 : 0);
 
-    // Tank drive specific keyboard mapping: W/S for left, Up/Down for right
+    // Tank drive specific keyboard mapping: the LEFT track shares the forward/back actions,
+    // the RIGHT track has two of its own. Both sides go through `bindings`, or the right one
+    // is the only control in the game a player cannot rebind.
     const kLeft = (heldAny(keys.driveUp) ? 1 : 0) - (heldAny(keys.driveDown) ? 1 : 0);
-    const kRight = (k.held('arrowup') ? 1 : 0) - (k.held('arrowdown') ? 1 : 0);
+    const kRight = (heldAny(keys.tankRightUp) ? 1 : 0) - (heldAny(keys.tankRightDown) ? 1 : 0);
 
     this.startPressed = pressedAny(keys.start) || g.start;
     this.restartPressed = pressedAny(keys.restart) || g.restart;

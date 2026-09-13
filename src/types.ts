@@ -456,6 +456,11 @@ export interface RobotState {
   currentPathSegmentIndex: number;
   pathSegmentProgress: number; // 0.0 to 1.0 along the current segment
   pathWaitTimer: number; // countdown for waitBeforeMs/waitAfterMs
+  /** which sequence index's `waitBeforeMs` has already been served (-1 = none). A wait that
+   * cannot say it has HAPPENED re-arms itself: the before-wait fires while segment progress
+   * is 0, and progress is still 0 when its own timer expires, so the robot waited for that
+   * segment forever and the whole auto stalled on it. */
+  pathWaitedBefore: number;
   pathSequenceIndex: number; // index in the overall sequence
   pathTargetPoint: Vec2 | null;
   pathTargetHeading: number | null;
