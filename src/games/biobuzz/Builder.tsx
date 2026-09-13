@@ -1,6 +1,6 @@
 import type { RobotSpec } from '../../types';
 import { rangeFill } from '../../ui/rangeFill';
-import { BB_HOOD_DEFAULT_DEG, BB_STORAGE_MIN } from './config';
+import { BB_HOOD_DEFAULT_DEG, BB_SIZE_STEP, BB_STORAGE_MIN } from './config';
 import {
   BB_MOUNT_POSITIONS,
   BB_SCORE_MODES,
@@ -361,7 +361,7 @@ export function BiobuzzBuilder({ spec, setSpec }: BiobuzzBuilderProps) {
             type="range"
             min={dials.length.min}
             max={dials.length.max}
-            step={0.5}
+            step={BB_SIZE_STEP}
             value={spec.length}
             style={rangeFill(spec.length, dials.length.min, dials.length.max)}
             onChange={(e) => setSpec({ length: Number(e.target.value) })}
@@ -376,7 +376,7 @@ export function BiobuzzBuilder({ spec, setSpec }: BiobuzzBuilderProps) {
             type="range"
             min={dials.width.min}
             max={dials.width.max}
-            step={0.5}
+            step={BB_SIZE_STEP}
             value={spec.width}
             style={rangeFill(spec.width, dials.width.min, dials.width.max)}
             onChange={(e) => setSpec({ width: Number(e.target.value) })}

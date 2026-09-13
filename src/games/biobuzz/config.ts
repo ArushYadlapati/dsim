@@ -730,6 +730,13 @@ export const BB_MAX_WIDTH = 17;
  * range simply widens to term 1 the moment term 2 stops binding. The intersection is also
  * what keeps `BB_PRESETS` a coercer no-op, which is what makes a preset card highlight as
  * selected — smoke asserts it.
+ *
+ * ⚠️ THE PRISM-DERIVED MAXIMUMS ARE FLOORED TO `BB_SIZE_STEP`. A corner Box Tube reaches
+ * `BB_PLACE_REACH · √½` (1.669…) along each axis, so `18 − reach` is 16.331227996399747, and the
+ * coercer clamped a chassis to exactly that, which the builder printed as a 15-digit width
+ * (owner report, 2026-09-13). Flooring keeps the limit inside the prism, keeps coercion
+ * idempotent, lands every clamped size on the slider's own grid, and re-coerces a robot already
+ * saved with the long number onto it.
  */
 export function bbSizeLimits(spec: RobotSpec): {
   minLength: number;
@@ -761,6 +768,16 @@ export function bbEnvelopeReach(spec: RobotSpec): { length: number; width: numbe
   };
 }
 
+/** the Frame sliders' step (in) — and the grid a size LIMIT derived from the prism is floored to
+ * (`bbSizeLimits`), so a clamped chassis is never a 15-digit number. The builder reads this. */
+export const BB_SIZE_STEP = 0.5;
+
+/** `v` floored to `BB_SIZE_STEP`, with a hair of tolerance so a limit that is already on the
+ * grid (17, 16.5) is not knocked a whole step down by float noise. */
+function floorToSizeStep(v: number): number {
+  return Math.floor(v / BB_SIZE_STEP + 1e-9) * BB_SIZE_STEP;
+}
+
 /** the resolved envelope: which rectangle of R105.A was picked (`lengthLong` — the 24 runs along
  * the chassis LENGTH), the slider limits inside it, and whether its minimum chassis fits the
  * prism at all. See `bbSizeLimits` for the rule. */
@@ -779,9 +796,9 @@ function bbEnvelope(spec: RobotSpec): {
     const capW = lengthLong ? BB_PRISM_NARROW : BB_PRISM;
     const limits = {
       minLength,
-      maxLength: Math.min(BB_MAX_LENGTH, capL - ext.length, shL.max),
+      maxLength: Math.min(BB_MAX_LENGTH, floorToSizeStep(capL - ext.length), shL.max),
       minWidth,
-      maxWidth: Math.min(BB_MAX_WIDTH, capW - ext.width, shW.max),
+      maxWidth: Math.min(BB_MAX_WIDTH, floorToSizeStep(capW - ext.width), shW.max),
     };
     // THE MINIMUM CHASSIS, not the max: the coercer widens an inverted range UP to the floor,
     // so the floor is the size a build actually gets when nothing else fits, and it has to be
