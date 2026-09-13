@@ -183,8 +183,8 @@ export function coreChecks(check: Check): void {
   // ---- the four loadouts both summary surfaces are pinned against --------
   // A launcher is MANDATORY (owner ruling 2026-09-12) and a Box Tube is optional, and a launcher
   // is one of three kinds, so these four are the shapes that print differently: a single turret
-  // with and without a tube, a double turret (two cells to name) and a dumper (an edge and a
-  // hood) with a tube.
+  // with and without a tube, a double turret (two cells to name) and a dumper (an edge; its stored
+  // hood is no longer printed — a dump is a lob, owner 2026-09-13) with a tube.
   //
   // The Box Tube's name is CLOCK-DEPENDENT by design — it carries the sponsor's product name only
   // inside `SPONSOR.term` — so the expected strings are built from `bbLiftKindLabel` rather than
@@ -222,7 +222,7 @@ export function coreChecks(check: Check): void {
         launcher: { kind: 'dumper', mount: 'front', hoodDeg: 80 },
         lift: { kind: 'vslide', mount: 'back' },
       },
-      tiles: ['Dumper / launcher / FRONT · 80° hood', `${TUBE} / flower scoring / BACK`],
+      tiles: ['Dumper / launcher / FRONT', `${TUBE} / flower scoring / BACK`],
       line: `Dumper · FRONT+BACK sweeper · FRONT launcher · ${TUBE} · BACK · 4 pollen`,
     },
   ];

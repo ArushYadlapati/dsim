@@ -5,6 +5,9 @@ import { clamp, datan2, dcos, dsin, hyp, rot, wrapAngle } from '../../math';
 import { GRAVITY } from '../../config';
 import {
   BB_DEFAULT_INTAKE,
+  BB_DUMP_APEX_ABOVE,
+  BB_DUMP_MAX_DIST,
+  BB_DUMP_MIN_DIST,
   BB_DUMP_RELOAD_S,
   BB_FIRE_BURST_MAX,
   BB_FIRE_INTERVAL,
@@ -34,7 +37,6 @@ import {
 import { releasePollen } from './elements';
 import type { LocalRect, ScoreTarget, Vec3 } from './state';
 import {
-  BB_DEG,
   BB_HOOD_DEFAULT_DEG,
   BB_TURRET_PITCH_MAX,
   BB_TURRET_PITCH_MIN,
@@ -360,16 +362,16 @@ export function bbLaunch(world: World, r: RobotState, cmd: RobotCommand, enabled
       // LIFO, each element onto its own converging arc
       for (const t of throws) releasePollen(world, r, t.vel, target ?? undefined, t.origin);
     } else {
-      // aim assist off and out of band: straight over the edge, a parallel line
-      const elev = launcher.hoodDeg * BB_DEG;
-      const speed = BB_LAUNCH_SPEED_DEFAULT;
+      // aim assist off and out of range: straight over the edge, a parallel line, lobbed as far
+      // as a dumper throws
+      const lob = bbLobThrow(BB_DUMP_MAX_DIST, (target?.z ?? BB_LAUNCH_Z0) - BB_LAUNCH_Z0) ?? { vh: 0, vz: 0 };
       const { origin, dir, perp, half } = launchLine(r, bbShooterEdgeOf({ shooterMount: launcher.mount }));
       for (let i = 0; i < n; i++) {
         const t = n === 1 ? 0 : (i / (n - 1)) * 2 - 1;
         releasePollen(
           world,
           r,
-          { x: dir.x * speed * dcos(elev), y: dir.y * speed * dcos(elev), z: speed * dsin(elev) },
+          { x: dir.x * lob.vh, y: dir.y * lob.vh, z: lob.vz },
           undefined,
           { x: origin.x + perp.x * t * half, y: origin.y + perp.y * t * half },
         );
@@ -417,30 +419,25 @@ export function bbSolveShot(d: number, dh: number): { speed: number; angle: numb
 }
 
 /**
- * THE SPEED A FIXED HOOD NEEDS to pass through a point `d` inches downrange and `dh` inches above
- * the release, or `null` when no speed at that elevation gets there.
+ * A DUMP IS A LOB (owner, 2026-09-13) — the horizontal and vertical launch speed that throws an
+ * element up to `BB_DUMP_APEX_ABOVE` over a target `dh` inches above the release and down onto it
+ * `d` inches away, or `null` when `d` is outside the dumper's range (`BB_DUMP_MIN_DIST` ..
+ * `BB_DUMP_MAX_DIST`) or the throw would exceed `BB_LAUNCH_SPEED_MAX`.
  *
- *   v² = g·d² / (2·cos²θ·(d·tanθ − dh))  =  g·d² / (2·cosθ·(d·sinθ − dh·cosθ))
+ *   rise h = dh + apex:   vz = √(2·g·h),   t = vz/g + √(2·apex/g),   vh = d / t
  *
- * written in the second form so there is no `tan` (and no division by `cos` near vertical), and
- * with `dcos`/`dsin` because this is sim code (the smoke source scan bans engine trig here). No
- * solution when the hood is too flat to rise `dh` over `d` at any speed or `d` is not downrange.
+ * The apex is always ABOVE the target, so the element always arrives descending — the thing
+ * `hiveAccepts` needs, and the thing a fixed hood only managed past its own apex distance. That is
+ * why the minimum is geometry alone and a dumper scores from right under the opening's outer lip.
  */
-export function bbHoodSpeed(d: number, dh: number, hoodRad: number): number | null {
-  const c = dcos(hoodRad);
-  const s = dsin(hoodRad);
-  const denom = 2 * c * (d * s - dh * c);
-  if (!(d > 0) || !(denom > 0)) return null;
-  return Math.sqrt((GRAVITY * d * d) / denom);
-}
-
-/**
- * does a hood-`hoodRad` arc through (`d`, `dh`) arrive there DESCENDING? True when the apex is
- * short of `d`: `d·sinθ > 2·dh·cosθ`. The up-CELL only accepts a descending element
- * (`hiveAccepts`), so a dump that would reach the opening still climbing is not a shot.
- */
-export function bbHoodDescends(d: number, dh: number, hoodRad: number): boolean {
-  return d * dsin(hoodRad) > 2 * dh * dcos(hoodRad);
+export function bbLobThrow(d: number, dh: number): { vh: number; vz: number } | null {
+  if (!(d >= BB_DUMP_MIN_DIST) || d > BB_DUMP_MAX_DIST) return null;
+  const rise = dh + BB_DUMP_APEX_ABOVE;
+  if (!(rise > 0)) return null;
+  const vz = Math.sqrt(2 * GRAVITY * rise);
+  const vh = d / (vz / GRAVITY + Math.sqrt((2 * BB_DUMP_APEX_ABOVE) / GRAVITY));
+  if (hyp(vh, vz) > BB_LAUNCH_SPEED_MAX) return null;
+  return { vh, vz };
 }
 
 /** one element's throw out of a dump: where it leaves and the velocity it leaves with. */
@@ -460,19 +457,15 @@ export interface BbThrow {
  * lateral tolerance left at range is only a couple of inches. Aiming each element from its OWN
  * release point at the cell centre removes both.
  *
- * ── THE BAND ────────────────────────────────────────────────────────────────
- * Each element is solved from the actual release height `BB_LAUNCH_Z0` (that is where
- * `releasePollen` puts it) at the built hood. It is ACCEPTED only when the hood has a solution
- * (`bbHoodSpeed`), that solution is within `BB_LAUNCH_SPEED_MAX`, and it arrives descending
- * (`bbHoodDescends`). Outside the band there is no dump to solve, and stage 5b does not call the
- * dumper on target.
+ * ── THE RANGE ───────────────────────────────────────────────────────────────
+ * Each element is thrown from the actual release height `BB_LAUNCH_Z0` (that is where
+ * `releasePollen` puts it) as a LOB (`bbLobThrow`). It has a throw only inside the dumper's range,
+ * `BB_DUMP_MIN_DIST`..`BB_DUMP_MAX_DIST` from its own release point; outside it there is no dump to
+ * solve, and Aim Assist does not let the dump go.
  */
 export function bbDumpSolution(r: RobotState, target: ScoreTarget, n: number): BbThrow[] | null {
   const launcher = bbLauncherOf(r.spec, BB_HOOD_DEFAULT_DEG);
   if (launcher.kind !== 'dumper') return null;
-  const hood = launcher.hoodDeg * BB_DEG;
-  const c = dcos(hood);
-  const s = dsin(hood);
   const dh = target.z - BB_LAUNCH_Z0;
   const { origin, perp, half } = launchLine(r, bbShooterEdgeOf({ shooterMount: launcher.mount }));
   const out: BbThrow[] = [];
@@ -483,9 +476,9 @@ export function bbDumpSolution(r: RobotState, target: ScoreTarget, n: number): B
     const dx = target.pos.x - o.x;
     const dy = target.pos.y - o.y;
     const d = hyp(dx, dy);
-    const v = bbHoodSpeed(d, dh, hood);
-    if (v === null || v > BB_LAUNCH_SPEED_MAX || !bbHoodDescends(d, dh, hood)) return null;
-    out.push({ origin: o, vel: { x: (dx / d) * v * c, y: (dy / d) * v * c, z: v * s } });
+    const lob = bbLobThrow(d, dh);
+    if (!lob) return null;
+    out.push({ origin: o, vel: { x: (dx / d) * lob.vh, y: (dy / d) * lob.vh, z: lob.vz } });
   }
   return out;
 }

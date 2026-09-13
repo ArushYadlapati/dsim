@@ -15,8 +15,9 @@ import {
   BB_FLOWERS,
   BB_HIVE_OPEN_Z,
   BB_HOOD_DEFAULT_DEG,
-  BB_HOOD_MAX_DEG,
-  BB_HOOD_MIN_DEG,
+  BB_DUMP_APEX_ABOVE,
+  BB_DUMP_MAX_DIST,
+  BB_DUMP_MIN_DIST,
   BB_LAUNCH_SPEED_MAX,
   BB_LAUNCH_Z0,
   BB_PLACE_REACH,
@@ -47,8 +48,7 @@ import {
   bbDumpSolution,
   bbFlowerInReach,
   bbFootprint,
-  bbHoodDescends,
-  bbHoodSpeed,
+  bbLobThrow,
   bbHopperCap,
   bbMouths,
   bbMuzzleZ,
@@ -723,33 +723,36 @@ export function robotChecks(check: Check): void {
     check('aim: bbIsTurreted agrees with the resolved launcher', bbIsTurreted(bbLauncherOf(r.spec, BB_HOOD_DEFAULT_DEG)));
   }
 
-  // ── THE DUMPER'S HOOD REACHES THE HIVE ────────────────────────────────────
+  // ── THE DUMPER LOBS, FROM CLOSE IN TO A STRICT CAP ────────────────────────
   /**
-   * EVERY BUILDABLE HOOD SCORES FROM SOMEWHERE. The up-CELL accepts only a DESCENDING element, a
-   * dump's speed is capped, and a robot on the open side has a limited stand-off — so the hood
-   * range is exactly the set of angles that still has an accepted distance. This replaces the
-   * old pin that NO turretless hood reached the HIVE: the owner ruled that a dumper must.
+   * Owner, 2026-09-13: the fixed hood made a dumper stand far off (23–71 in at 75°) and reach too
+   * far. A dump is now a LOB peaking `BB_DUMP_APEX_ABOVE` over the cell: it has a throw at every
+   * distance in `BB_DUMP_MIN_DIST`..`BB_DUMP_MAX_DIST`, none past the cap, and every throw comes
+   * down ON the target while descending (which `hiveAccepts` requires).
    */
   {
     const dh = (BB_HIVE_OPEN_Z[0] + BB_HIVE_OPEN_Z[1]) / 2 - BB_LAUNCH_Z0;
-    for (let deg = BB_HOOD_MIN_DEG; deg <= BB_HOOD_MAX_DEG; deg++) {
-      let lo = Infinity;
-      let hi = -Infinity;
-      for (let d = 1; d <= 150; d += 0.5) {
-        const v = bbHoodSpeed(d, dh, deg * BB_DEG);
-        if (v !== null && v <= BB_LAUNCH_SPEED_MAX && bbHoodDescends(d, dh, deg * BB_DEG)) {
-          lo = Math.min(lo, d);
-          hi = Math.max(hi, d);
-        }
+    let bad = 0;
+    let firstBad = '';
+    for (let d = BB_DUMP_MIN_DIST; d <= BB_DUMP_MAX_DIST; d += 0.5) {
+      const lob = bbLobThrow(d, dh);
+      if (!lob) {
+        bad++;
+        if (!firstBad) firstBad = `d=${d}: no throw`;
+        continue;
       }
-      check(`dump hood ${deg}°: an accepted (descending, under the cap) distance exists`, hi >= lo, `${lo}–${hi} in`);
+      const t = d / lob.vh; // time to cover d
+      const z = lob.vz * t - 0.5 * C.GRAVITY * t * t;
+      const vz = lob.vz - C.GRAVITY * t;
+      const apex = (lob.vz * lob.vz) / (2 * C.GRAVITY);
+      if (Math.abs(z - dh) > 1e-6 || !(vz < 0) || Math.abs(apex - (dh + BB_DUMP_APEX_ABOVE)) > 1e-6 || Math.hypot(lob.vh, lob.vz) > BB_LAUNCH_SPEED_MAX) {
+        bad++;
+        if (!firstBad) firstBad = `d=${d}: z=${z.toFixed(3)} vz=${vz.toFixed(1)} apex=${apex.toFixed(2)}`;
+      }
     }
-    const th = 75 * BB_DEG;
-    const v = bbHoodSpeed(40, dh, th)!;
-    const t = 40 / (v * Math.cos(th));
-    const rise = v * Math.sin(th) * t - 0.5 * C.GRAVITY * t * t;
-    check('dump: the hood-speed formula passes through the target height', Math.abs(rise - dh) < 1e-6, `rise=${rise} dh=${dh}`);
-    check('dump: a hood too flat for the rise has no speed', bbHoodSpeed(10, 60, 20 * BB_DEG) === null);
+    check(`dump lob: every distance ${BB_DUMP_MIN_DIST}–${BB_DUMP_MAX_DIST} in has a throw that comes down ON the cell, descending, under the speed cap`, bad === 0, firstBad);
+    check('dump lob: the minimum is close in (a throw from 3 in exists)', bbLobThrow(3, dh) !== null);
+    check('dump lob: nothing past the strict cap', bbLobThrow(BB_DUMP_MAX_DIST + 0.5, dh) === null && bbLobThrow(60, dh) === null);
   }
 
   // ── TARGET SELECTION: HIVE ONLY, OWN CELL, OPEN SIDE ─────────────────────
@@ -994,15 +997,33 @@ export function robotChecks(check: Check): void {
    * owner's "the dumper must reach the HIVE", end to end — the band, the converging throws,
    * `hiveAccepts`' descending-and-inboard rule, all through the real tick.
    */
-  const dumperWorld = (seed: number): { w: World; r: RobotState; cellY: number } => {
+  /** `edge` is how far the dumper's FRONT EDGE (where it releases) stands from the cell centre */
+  const dumperWorld = (seed: number, edge = 18): { w: World; r: RobotState; cellY: number } => {
     const w = mkWorld('free', seed, mech({ launcher: { kind: 'dumper', mount: 'front', hoodDeg: BB_HOOD_DEFAULT_DEG }, lift: null }, { intakeMount: 'back' }));
     const r = w.robots[0];
     r.aimAssist = true;
     r.autoFire = false;
     const cell = scoreTargets(w, 'blue').find((t) => t.id === 'hive:blue')!;
-    park(r, cell.pos.x, cell.pos.y + 45, -Math.PI / 2);
+    park(r, cell.pos.x, cell.pos.y + edge + r.spec.length / 2, -Math.PI / 2);
     return { w, r, cellY: cell.pos.y };
   };
+  /** CLOSE IN it scores, and PAST THE CAP a held fire does nothing (Aim Assist: it would not land). */
+  {
+    const run2 = (edge: number): { scored: number; load: number; hopper: number } => {
+      const { w, r } = dumperWorld(59, edge);
+      const load = w.balls.filter((b) => b.state.kind === 'held' && b.state.robot === r.id).map((b) => b.id);
+      const entered = new Set<number>();
+      for (let t = 0; t < 120; t++) {
+        tick(w, cmd({ fire: true }));
+        for (const b of w.balls) if (b.state.kind === 'element' && b.state.el === 'hive:blue') entered.add(b.id);
+      }
+      return { scored: load.filter((id) => entered.has(id)).length, load: load.length, hopper: r.hopper.length };
+    };
+    const close = run2(6);
+    check('dump range: 6 in from the cell a held fire dumps the whole load IN', close.scored === close.load && close.load > 0, JSON.stringify(close));
+    const far = run2(BB_DUMP_MAX_DIST + 8);
+    check('dump range: past the cap a held fire dumps nothing', far.hopper === far.load && far.scored === 0, JSON.stringify(far));
+  }
   {
     const { w, r } = dumperWorld(53);
     const cell = bbAimTarget(w, r);
@@ -1685,7 +1706,7 @@ export function robotChecks(check: Check): void {
     run(world, cmd({ fire: true }), 1);
     check(`launch [${scoreMode}]: where no shot would land, holding fire keeps the load`, r.hopper.length === cap, `hopper=${r.hopper.length}/${cap}`);
     // ...and from the own up cell's open side it goes (a dumper is turned onto it by the assist)
-    r.pos = { x: 12.75, y: 58.4 };
+    r.pos = { x: 12.75, y: 37.4 };
     r.vel = { x: 0, y: 0 };
     r.heading = -Math.PI / 2;
     const seconds = cap * BB_FIRE_INTERVAL + 3;
