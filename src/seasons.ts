@@ -92,17 +92,15 @@ export const SEASONS: readonly Season[] = [
     playable: true,
   },
   {
-    // ALPHA-ONLY until the season is announced. The repo is public, so `channels`
-    // is what keeps an unreleased season off the stable site while it is built on
-    // the alpha deployment — see `seasonVisibleOn` below.
+    // PUBLIC since 2026-09-13 (the promotion to production). It was alpha-only while it was
+    // built before kickoff; `channels` is still the switch if a future season needs the same.
     key: 'biobuzz',
     name: 'BIOBUZZ',
     presenter: 'RTX',
     program: 'FIRST Tech Challenge',
     years: '2026–27',
-    blurb: 'Rules land at kickoff on 2026-09-12.',
+    blurb: 'Tip the HIVE, fill the FLOWERS and park, with a turret, a double turret or a dumper.',
     playable: true,
-    channels: ['alpha'],
   },
 ] as const;
 

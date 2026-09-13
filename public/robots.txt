@@ -30,6 +30,16 @@ Disallow: /chain/watch
 Disallow: /chain/replay/
 Disallow: /chain/account
 Disallow: /chain/admin
+Disallow: /biobuzz/play
+Disallow: /biobuzz/lobby
+Disallow: /biobuzz/record$
+Disallow: /biobuzz/duo-record
+Disallow: /biobuzz/ranked
+Disallow: /biobuzz/watch
+Disallow: /biobuzz/replay/
+Disallow: /biobuzz/account
+Disallow: /biobuzz/admin
+Disallow: /biobuzz/gallery
 Disallow: /admin
 
 Sitemap: https://www.playdsim.com/sitemap.xml
