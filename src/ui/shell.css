@@ -1127,9 +1127,11 @@
   justify-content: center;
   margin: 0 0 var(--ds-s-5);
 }
-/* Discord / GitHub — prominent pills near the top of the home menu */
+/* Discord / Instagram / GitHub — prominent pills near the top of the home menu. They WRAP:
+   three pills no longer fit side by side on the narrowest phones. */
 .ds-home-links {
   display: flex;
+  flex-wrap: wrap;
   justify-content: center;
   gap: 10px;
   margin: 0 0 var(--ds-s-5);

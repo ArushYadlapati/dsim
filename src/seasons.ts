@@ -24,6 +24,7 @@ export const APP_BLURB = 'An online 2D driving simulator for FIRST Tech Challeng
 export const LINKS = {
   repo: 'https://github.com/genius0412/dsim',
   discord: 'https://discord.gg/YB4tXnx7Pj',
+  instagram: 'https://www.instagram.com/playdsim/',
   /** Ko-fi page - donations + the supporter membership tier. The Donate screen
    *  reads it from this one place; the webhook (server/api.ts) is what actually
    *  grants the tier once a payment is claimed. */
