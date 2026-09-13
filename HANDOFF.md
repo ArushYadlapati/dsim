@@ -1,3 +1,52 @@
+# HANDOFF — 2026-09-13, later (BIOBUZZ hive feel: tip rate, spill scatter, miss bounce, canopy)
+
+Branch **`claude/hive-physics-rendering-tjz7mj`**. Four owner-reported HIVE items, all inside
+`src/games/biobuzz/` (nothing shared touched). Gates: `npx tsc --noEmit -p .` clean,
+`server:check` clean, `test:bb` **1289 ALL PASS**, `npm run build` ok. Full `npm test` run to the
+end: the shared suite reports **2 FAILURES, both PRE-EXISTING and not this branch's** — `lan gate:
+alpha opens it; production does not mention it at all` and `lan gate: and production still opens
+neither door`. They assert `fly.toml` carries no `LAN_UPLOADS` / `LAN_SIGNALLING`, and the
+2026-09-13 promotion (below) deliberately put both in `fly.toml [env]` to turn LAN on for
+production. The check is stale against that owner decision; the files it reads are untouched by
+this commit. Whoever owns the LAN policy should either retire those two checks or drop the flags.
+
+- **A heavier tray tips faster** (`hive.ts` `hiveSwingRate`, `hiveSurplus`). The 4 s swing is
+  the swing of a tray at EXACTLY its tip-table threshold; each element over the threshold adds
+  `BB_TIP_RATE_PER_EXTRA` 0.35 to the rate, capped at `BB_TIP_RATE_MAX` 3. The surplus is
+  measured against `BB_TIP_POLLEN`, so every row's threshold load still takes 4.0 s and every
+  existing timing check is untouched. Pre-release the rate reads the live contents (the cell
+  keeps taking, so feeding a swinging tray speeds it up — measured: 2 pollen dropped in at
+  0.5 s settle it at 2.57 s instead of 4.0); post-release the rate is carried in the NEW
+  optional `BbHiveState.swingRate` (absent when settled and on old snapshots = nominal).
+  `tipping` stays in nominal seconds, so `tipProjection` / `tipProgress` are unchanged.
+- **Spill scatter** (`hive.ts`): `BB_SPILL_SPEED` [35,62] → **[30,62]**, `BB_SPILL_FAN` 18° →
+  **40°**, plus a new all-directions **`BB_SPILL_KICK`** 12 in/s. Every pose still leaves
+  outboard by construction (23 in/s outboard minimum vs a 12 kick). `spillPoses` now draws SIX
+  rng values per pose. `docs/biobuzz/feedback/001-spill-kinematics.md` has the addendum.
+- **A miss bounces off the structure** (`hive.ts` `hiveDeflect`, called from `play.ts` after
+  the capture loop for BOTH hives). The assembly is an APPROX box (`BB_HIVE_W` × `BB_HIVE_LEN`,
+  `BB_HIVE_BOTTOM_Z`..`BB_HIVE_OPEN_Z[1]`) with: the two long sides, the DOWN cell's outer end
+  and the underside solid; an interior PIVOT PLANE (y = 0) solid; **no top** (a descent from
+  above is the capture test's business, and a top is a shelf a ball could rest on); and the
+  **TAKING cell's outer end OPEN at every height** (`hiveTakingSide`, so it follows the
+  release). ⚠️ That mouth exemption is load-bearing: with the face solid, the dumper parked at
+  the lip and Aim Assist's flat lobs (which cross the lip a hair before apex, still climbing)
+  were ALL refused — 8 checks red. Bounce is `BB_HIVE_MISS_REST` 0.3 on the normal,
+  `BB_HIVE_MISS_TANGENT` 0.5 on the rest, vz kept on a side hit. Measured: a 150 in/s shot into
+  the red hive's flank lands 18.8 in short of the face on the side it came from; the same shot
+  at 70 in clears the top and lands downrange.
+- **Translucent canopy** (`drawField.ts` `drawHiveCanopy`, called from `draw.ts` between the
+  low and high element passes). The renderer draws field → robots → elements, so a robot under
+  the hive was painted OVER it. The canopy repaints the body, the up cell's fill and its
+  contents row at `CANOPY_A` 0.42 over the assembly's own footprint, after the robots and the
+  ground/low-flight elements and before the airborne ones (split at `BB_HIVE_BOTTOM_Z`). The
+  contents row is now `drawCellContents`, shared by the field pass and the canopy. Not a
+  `globalAlpha` on the sprite — the ruling is the PORTION under the hive, not the robot.
+- No `SIM_VERSION` bump was made (owner's standing call on this branch); spill RNG draw count
+  and the miss bounce both change sim output for the same inputs.
+
+---
+
 # HANDOFF — 2026-09-13, late (DEPLOYED: alpha is production, BIOBUZZ is public)
 
 - **`main` is `088addb`** (alpha fast-forwarded onto it and pushed; this handoff note is on alpha
@@ -26,7 +75,7 @@ Branch **alpha**, pushed. `npm run server:check` clean; the new room-leak smoke 
 isolation and mutation-checked (fails without the fix). The full `npm test` was NOT run (owner).
 **Nothing deployed to production — the owner said not to until the promotion is ready.**
 
-## READ FIRST — production `iad` was refusing every new room
+## (was READ FIRST) — production `iad` was refusing every new room
 
 `/api/perf` on the always-warm primary read `rooms: 0, admitting: false`, and its log was a wall
 of `[admit] refused room rec-…: at cap (24/24)` from at least 04:53 UTC. US-East players could not
