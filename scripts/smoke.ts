@@ -14858,6 +14858,45 @@ function pinScene(
   check('reattach: the DEAD socket receives nothing further', dead.length === deadAtDrop, `${dead.length - deadAtDrop} leaked`);
 }
 
+// ---- a solo record run the player CLOSED ON PURPOSE frees its room at once ---
+// Restarting a record run opens a NEW room; the old one used to be held for the 45 s
+// reconnect grace, still simulating, so restarts stacked ghost rooms against MAX_ROOMS
+// (iad 24/24 with 8-12 real runs on BIOBUZZ launch day). A NETWORK drop keeps its grace.
+{
+  const mkS = (id: string): Client => ({
+    id,
+    send: () => {},
+    player: { clientId: id, name: id, teamName: 'T', teamNumber: 1, alliance: 'blue', startIndex: 0, ready: true, spec: { ...DEFAULT_SPEC }, assists: { ...DEFAULT_ASSISTS } },
+    connected: true,
+    disconnectAt: 0,
+  });
+  let emptied = 0;
+  const clean = new Room('smoke-rec-clean', () => { emptied++; }, { kind: 'record', record: 'solo' });
+  clean.add(mkS('p'));
+  clean.onMessage('p', { t: 'start' });
+  clean.advanceForTest(6);
+  clean.detach('p', undefined, true);
+  check('record reap: a CLEAN close mid-run deletes the solo record room immediately', emptied === 1, `${emptied}`);
+
+  let dropped = 0;
+  const drop = new Room('smoke-rec-drop', () => { dropped++; }, { kind: 'record', record: 'solo' });
+  drop.add(mkS('p'));
+  drop.onMessage('p', { t: 'start' });
+  drop.advanceForTest(6);
+  drop.detach('p');
+  drop.advanceForTest(6);
+  check('record reap: a NETWORK drop keeps the solo run for the reconnect grace', dropped === 0 && drop.reattach('p', () => {}) !== null, `${dropped}`);
+
+  let duoEmptied = 0;
+  const duo = new Room('smoke-rec-duo-clean', () => { duoEmptied++; }, { kind: 'record', record: 'duo' });
+  duo.add(mkS('a'));
+  duo.add(mkS('b'));
+  duo.onMessage('a', { t: 'start' });
+  duo.advanceForTest(6);
+  duo.detach('a', undefined, true);
+  check('record reap: a clean close in a DUO run still holds the slot (a partner is there)', duoEmptied === 0, `${duoEmptied}`);
+}
+
 // ---- spectator admission is COUNTABLE, and hidden observers count -----------
 // The per-room / machine-wide spectator caps live in server/index.ts (which opens sockets on
 // import and so cannot be loaded here), but the figure they admit against is the room's, and
