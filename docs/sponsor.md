@@ -36,13 +36,18 @@ Do not fold one into the other.
 | `download` | the download page | `SponsorDownloadMark` | logo, h=28 |
 | `splash` | the Electron splash window | `electron/splash.html` | logo, 158×40 |
 | `replay` | burned into every exported MP4/WebM | `src/ui/replayOverlay.ts` | logo, h=20 |
+| `loading` | the pre-React loading screen / no-JS page | `#seo-home` in `index.html` | text link |
 
 Two more surfaces carry the mark as TEXT rather than artwork, deliberately:
 
 - **The loading screen** is `#seo-home` in `index.html` — React clears `#root` on mount, so
   that static markup is what a visitor looks at while the bundle parses and the Rapier WASM
   decodes. The bundled logos are fingerprinted by Vite and an absolute `/public/...` path
-  404s under Electron's `file://`, so the line is a plain link.
+  404s under Electron's `file://`, so the line is a plain link. Its href is the ONE sponsor
+  URL in the repo written by hand rather than by `sponsorLink` — the markup ships before any
+  bundle runs — so it is UTM-tagged literally, as the `loading` placement, and the smoke lane
+  compares the hand-written string against `sponsorLink('loading')` so the two cannot drift.
+  It fires no event: there is no analytics script on the page yet.
 - **The Discord server** is not a repo change at all. The logo and the "presented by" line
   go on the server itself (icon, banner, or the rules channel) by hand.
 
@@ -127,13 +132,35 @@ whose plate is painted `rgba(18,21,26,0.86)` regardless of theme.
 
 ## The monthly attribution report
 
-Three lines, all from **Vercel Web Analytics** (`src/analytics.ts`, `VITE_ANALYTICS=1`,
-cookieless). No database migration, no server change, no identifiers in any payload.
+All of it from **Vercel Web Analytics** (`src/analytics.ts`, `VITE_ANALYTICS=1`, cookieless).
+No database migration, no server change, no identifiers in any payload.
+
+### What counts as an impression
+
+**An impression is a VIEW, not a render.** `sponsor_shown` fires once the mark has been at
+least **50% on screen for one unbroken second**, with a backgrounded tab counting as off
+screen (`useSponsorExposure`, `src/ui/Sponsor.tsx`). That is the MRC display standard, and it
+is the definition Offset's own ad vendor will quote back at us.
+
+The alternative — counting mounts — was what this did first, and it is wrong in the direction
+that matters. The footer mark is in the DOM of *every* shell page whether or not the visitor
+ever scrolls to it, so mount-counting inflates precisely the denominator the click-through
+rate is divided by. The one figure we would be overstating is the one a renewal is argued
+over, so the deliberate choice here is to under-count honestly.
+
+The one browser that cannot do this (no `IntersectionObserver`) falls back to counting the
+mount. Under-reporting a placement somebody paid for is the worse failure of the two.
+
+### The lines
 
 | line | where it comes from |
 |---|---|
-| **Clicks** | Events → `sponsor_click`, for the month. Break down by the `placement` property for per-surface numbers (`home` / `footer` / `game` / `download`). |
-| **Impressions** | Events → `sponsor_shown`, same filter. This is the denominator: a click count with no scale attached to it is not a number anyone can renew on. |
+| **Impressions** | Events → `sponsor_shown`. Break down by `placement` for per-surface numbers (`home` / `footer` / `game` / `download` / `replay`). This is the denominator: a click count with no scale attached to it is not a number anyone can renew on. |
+| **Clicks** | Events → `sponsor_click`, same `placement` breakdown. |
+| **Click-through rate** | Clicks ÷ impressions, per placement. Only meaningful because the impression is viewability-gated — divide by mounts and every rate is understated. |
+| **Time on screen** | Events → `sponsor_dwell`, property `dwell` — a bucket (`<5s`, `5-15s`, `15-60s`, `1-5m`, `5m+`), broken down by `placement`. Report it as a DISTRIBUTION, never a total: one flush per mount, so the shape is the finding. This is where the in-game chip earns its keep — it is the longest-exposure placement in the app and a plain impression count cannot show that. |
+| **Videos carrying the mark** | Events → `sponsor_shown` filtered to `placement=replay`, property `format` for mp4/webm. Counts FILES PRODUCED with the burn-in, not views of them — see the caveat below. |
+| **Desktop downloads** | Events → `desktop_download`, property `os`. Stands in for the Electron splash, which cannot be measured at all. |
 | **Sessions** | Vercel's own Visitors / Sessions for the site over the month. The mark is on the shell footer, so site sessions and sponsor-exposed sessions are the same set. |
 | **New players** | Events → `player_joined`, for the month. |
 
@@ -141,13 +168,33 @@ Offset's own side of the funnel (landing-page sessions attributable to DSIM) is 
 UTM tags every link carries: `utm_source=dsim`, `utm_medium=<placement>`,
 `utm_campaign=biobuzz-2026`. That is the only thing in the query string — no ids, ever.
 
-⚠️ **`player_joined` over-counts once, and the report must footnote it.** It fires when the
-username gate is satisfied, which is the last step of signing up — and that gate also
-catches LEGACY accounts that predate usernames, so each of those bills as a join the first
-time its owner comes back. A one-off tail, not a recurring bias. A second signal that
-avoided it would need a server change to carry, which is more machinery than a footnote is
-worth.
+### ⚠️ The deploy has to have it switched on
 
-Two things the report cannot say, and should not pretend to: Vercel Analytics is cookieless,
-so "sessions" are not deduplicated people across devices; and a click is a click-through,
-not a visit — Offset's own analytics is the authority on what arrived.
+`VITE_ANALYTICS=1` must be set in the Vercel project's environment, and Web Analytics enabled
+for the project. If it is not, every event above silently reports **zero** — the app is
+working, the placements are rendering, and the report is empty. Custom events are also a
+**paid-plan** feature of Vercel Web Analytics; on the free tier the page-view lines (Sessions)
+still work and every `sponsor_*` line reads zero. Check that a `sponsor_shown` row exists in
+the dashboard before the first report month closes, not after.
+
+### What the report cannot say, and must not pretend to
+
+- **`player_joined` over-counts once, and the report must footnote it.** It fires when the
+  username gate is satisfied, which is the last step of signing up — and that gate also
+  catches LEGACY accounts that predate usernames, so each of those bills as a join the first
+  time its owner comes back. A one-off tail, not a recurring bias. A second signal that
+  avoided it would need a server change to carry, which is more machinery than a footnote is
+  worth.
+- **`placement=replay` is files, not views.** The burn-in is counted when an export finishes
+  and lands on the user's disk. A clip posted to Discord or YouTube is then watched by people
+  who never opened DSIM — real reach, and the only placement with any beyond our own traffic —
+  but we cannot see it. Report the file count as a floor and say so.
+- **The Electron splash is unmeasurable by construction.** The desktop build does not beacon a
+  host it does not run on, which is the rule `src/analytics.ts` is gated by. `desktop_download`
+  is its proxy: one download is at least one splash, and repeat launches are invisible.
+- **The loading screen fires nothing.** Its markup ships before the analytics script exists.
+  Its clicks are visible only to Offset, via the `utm_medium=loading` tag.
+- **Sessions are not people.** Vercel Analytics is cookieless, so they are not deduplicated
+  across devices.
+- **A click is a click-through, not a visit.** Offset's own analytics is the authority on what
+  arrived.

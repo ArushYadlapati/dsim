@@ -278,8 +278,20 @@
              WASM decodes (main.tsx blocks the first render on both) — and what a
              non-JS client sees forever. The presenting sponsor belongs on it for
              exactly that reason. Keep it in step with `SponsorPresents`. -->
+        <!-- ⚠️ THE HREF IS UTM-TAGGED BY HAND, and it has to be: this markup ships
+             before any bundle runs, so it cannot call `sponsorLink('loading')` —
+             but an untagged link is one Offset's own analytics files under "direct"
+             and cannot attribute to us at all. The tag below IS `sponsorLink('loading')`
+             spelled out, and the smoke lane compares the two strings so they cannot
+             drift. It fires no event, for the same reason: there is no analytics
+             script on the page yet. -->
         <p class="sh-presents">
-          Presented by <a href="https://offsetrobotics.com" rel="noreferrer">Offset Robotics</a>
+          Presented by
+          <a
+            href="https://offsetrobotics.com/?utm_source=dsim&amp;utm_medium=loading&amp;utm_campaign=biobuzz-2026"
+            rel="noreferrer"
+            >Offset Robotics</a
+          >
         </p>
         <p class="sh-lead">An online 2D driving simulator for FIRST Tech Challenge.</p>
         <!-- The two games, as real links. Each is its own indexable page with its

@@ -11,6 +11,8 @@ import { moduleFor } from '../games';
 import { Renderer } from '../render/renderer';
 import { rangeFill } from './rangeFill';
 import { drawReplayHud, fieldScreenBottom, HUD_RESERVE, loadSponsorMark } from './replayOverlay';
+import { trackEvent } from '../analytics';
+import { sponsorActive } from '../sponsor';
 import {
   availableVideoFormats,
   videoFormat,
@@ -369,6 +371,24 @@ export function ReplayView({
    * re-playable in-sim at full fidelity by any build whose versions match, and the shape the
    * server stores. A video cannot be stepped, seeked in-sim, or verified.
    */
+  /**
+   * A VIDEO CARRYING THE SPONSOR'S BURN-IN LEFT THE APP.
+   *
+   * The `replay` placement was declared from the start and counted nothing, so
+   * the one surface with reach BEYOND our own traffic — a clip posted to Discord
+   * or YouTube, watched by people who never opened DSIM — was the only placement
+   * missing from the report. It is not an on-screen impression and `docs/sponsor.md`
+   * reports it on its own line: this counts FILES PRODUCED with the mark in them,
+   * which is a floor on the views they go on to earn, not an estimate of them.
+   *
+   * `sponsorActive()` is re-checked because `drawSponsorMark` is what actually
+   * decides whether the frames carry the mark — counting an export made after the
+   * term ended would bill Offset for a file with no Offset in it.
+   */
+  const countBurnIn = (ext: string): void => {
+    if (sponsorActive()) trackEvent('sponsor_shown', { placement: 'replay', format: ext });
+  };
+
   const filename = (ext: string): string => {
     const r = replay.current;
     const id = replayId ?? r?.seed ?? 0;
@@ -510,7 +530,10 @@ export function ReplayView({
       return;
     }
     // a cancelled capture is not a failure and must not claim to be one
-    if (blob) saveBlob(blob, filename(fmt.ext));
+    if (blob) {
+      saveBlob(blob, filename(fmt.ext));
+      countBurnIn(fmt.ext);
+    }
     else if (!abortCapture.current) downloadData();
     // playback is left exactly where the viewer had it — it was never taken away
   };
@@ -542,7 +565,10 @@ export function ReplayView({
       stopVisibility.current = null;
       setRecording(false);
       setCapturing(null);
-      if (!discard.current && parts.length) saveBlob(new Blob(parts, { type: mime }), filename(fmt.ext));
+      if (!discard.current && parts.length) {
+        saveBlob(new Blob(parts, { type: mime }), filename(fmt.ext));
+        countBurnIn(fmt.ext);
+      }
     };
     /**
      * HIDE THE TAB AND A REAL-TIME CAPTURE STARVES — so pause the encoder with it.
