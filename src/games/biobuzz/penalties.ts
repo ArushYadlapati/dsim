@@ -122,6 +122,14 @@ export function bbAwardFoul(
 export const BB_CONTROL_LIMIT = 4;
 
 /**
+ * IS G417 ENFORCED AT ALL? No, by owner ruling (2026-09-13). The rule is about TIPPING the
+ * HIVE, which no robot in this sim can do, so the loop that awarded it (`updateBiobuzzPenalties`)
+ * reads this and stops. Kept as a named constant rather than commented-out code: the rule is a
+ * decision with a reason attached, and turning it back on is one word.
+ */
+export const BB_G417_ENABLED = false;
+
+/**
  * HOW MANY SCORING ELEMENTS THIS ROBOT IS CONTROLLING (G407) — HOPPER **PLUS HERDED**.
  *
  * `controlledArtifacts` landed as an export on `alpha` `ea2cba4` (the field-plan §6 request-5
@@ -392,6 +400,24 @@ export function updateBiobuzzPenalties(
    * threshold is `APPROX` and belongs on the 09-14 field-test list.
    */
   for (const r of world.robots) {
+    /**
+     * G417 IS OFF, AND IT IS OFF DELIBERATELY (owner ruling, 2026-09-13).
+     *
+     * The rule exists to stop a robot TIPPING THE HIVE, and in this sim no robot can. The
+     * structure is not a body a chassis can topple: nothing a driver does with a drivetrain
+     * moves it, and the only way to disturb what sits on it at all is a shot fired underneath
+     * a CELL, which is not ramming and is not what G417 describes. So every award this loop
+     * could make was a major charged for an outcome the simulation cannot produce, to a
+     * driver who clipped a bar while doing something else.
+     *
+     * A penalty that cannot be earned and can only be suffered is worse than an unmodelled
+     * one, so it does not fire. The measurement below (`frameRam`, `BB_FRAME_RAM_SPEED`) is
+     * LEFT INTACT rather than deleted: if the HIVE ever becomes tippable the rule comes back
+     * by flipping one flag, and re-deriving a closing-speed test against the right bar face
+     * is the expensive half to lose. The `bb.foulEdge` / `flags.g417billed` keys simply stop
+     * being written, which is inert: nothing else reads them.
+     */
+    if (!BB_G417_ENABLED) break;
     if (r.passive) continue;
     const ram = frameRam(r);
     if (ram === null) continue;
