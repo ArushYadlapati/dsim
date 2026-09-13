@@ -626,6 +626,12 @@ export function solveArtifacts(
    * argument) — the held-artifact circles are the plug in the robot's own mouth, and two
    * radii in one solve is two descriptions of one element, which is the disagreement
    * `artifactSolids.ts` exists to prevent.
+   *
+   * ⚠️ IT IS THE FALLBACK, NOT THE SIZE. An artifact that carries its own `r` is solved at
+   * that, because a field may hold two sizes at once: BIOBUZZ's POLLEN is 1.4 and its NECTAR
+   * 1.8, and one flat number gives whichever is not it a collider that disagrees with the
+   * circle the renderer draws. DECODE sets no `r` on anything, so every DECODE contact is
+   * byte-identical.
    */
   radius: number = C.BALL_RADIUS,
 ): void {
@@ -663,7 +669,7 @@ export function solveArtifacts(
      */
     const filter = A_BALLS | A_FIELD | A_STRUCT | A_CHASSIS | (isDoor ? 0 : A_HELD);
     rw.createCollider(
-      RAPIER.ColliderDesc.ball(radius)
+      RAPIER.ColliderDesc.ball(b.r ?? radius)
         .setMass(C.BALL_MASS)
         .setRestitution(C.BALL_BALL_RESTITUTION)
         .setRestitutionCombineRule(RAPIER.CoefficientCombineRule.Min)
@@ -753,32 +759,40 @@ export interface PinnedReport {
  * null when it is not at a static at all: its own position clamped, or a probe a hair around
  * it clamped.
  */
-export function fieldPushback(p: Vec2): Vec2 | null {
+export function fieldPushback(p: Vec2, radius: number = C.BALL_RADIUS): Vec2 | null {
   const eps = C.ARTIFACT_PIN_SUPPORT;
   const back = (from: Vec2, to: Vec2): Vec2 | null => {
     const d = hyp(to.x - from.x, to.y - from.y);
     return d > 0 ? { x: (to.x - from.x) / d, y: (to.y - from.y) / d } : null;
   };
-  const c = clampBallPosToStatics(p);
+  const c = clampBallPosToStatics(p, radius);
   if (c.x !== p.x || c.y !== p.y) return back(p, c);
   for (let k = 0; k < 8; k++) {
     const a = (k * Math.PI) / 4;
     const q = { x: p.x + dcos(a) * eps, y: p.y + dsin(a) * eps };
-    const r = clampBallPosToStatics(q);
+    const r = clampBallPosToStatics(q, radius);
     if (r.x !== q.x || r.y !== q.y) return back(q, r);
   }
   return null;
 }
 
-function supported(world: World, b: Artifact, by: RobotState, solids: ReadonlyMap<number, RobotSolids>): boolean {
+function supported(
+  world: World,
+  b: Artifact,
+  by: RobotState,
+  solids: ReadonlyMap<number, RobotSolids>,
+  radius: number = C.BALL_RADIUS,
+): boolean {
   const eps = C.ARTIFACT_PIN_SUPPORT;
-  const nearStatic = (p: Vec2): boolean => fieldPushback(p) !== null;
-  const nearOtherRobot = (p: Vec2): boolean => {
+  // every probe below is FOR a particular artifact, and this chain may walk two sizes at once
+  const rad = (x: Artifact): number => x.r ?? radius;
+  const nearStatic = (p: Vec2, rr: number): boolean => fieldPushback(p, rr) !== null;
+  const nearOtherRobot = (p: Vec2, rr: number): boolean => {
     for (const r of world.robots) {
       if (r === by) continue;
       const sol = solids.get(r.id);
       if (!sol) continue;
-      const q = robotPenetration(r, sol, p, C.BALL_RADIUS, false, false, -eps);
+      const q = robotPenetration(r, sol, p, rr, false, false, -eps);
       if (q && q.pen > -eps) return true;
     }
     return false;
@@ -787,13 +801,13 @@ function supported(world: World, b: Artifact, by: RobotState, solids: ReadonlyMa
   // rests on the field or on another robot
   const seen = new Set<number>([b.id]);
   const queue: Artifact[] = [b];
-  const touch = 2 * C.BALL_RADIUS + eps;
   while (queue.length > 0) {
     const cur = queue.shift()!;
-    if (nearStatic(cur.pos) || nearOtherRobot(cur.pos)) return true;
+    if (nearStatic(cur.pos, rad(cur)) || nearOtherRobot(cur.pos, rad(cur))) return true;
     for (const o of world.balls) {
       if (o.state.kind !== 'ground' || seen.has(o.id)) continue;
-      if (hyp(o.pos.x - cur.pos.x, o.pos.y - cur.pos.y) < touch) {
+      // two circles touch at the SUM of their radii, not at twice one of them
+      if (hyp(o.pos.x - cur.pos.x, o.pos.y - cur.pos.y) < rad(cur) + rad(o) + eps) {
         seen.add(o.id);
         queue.push(o);
       }
@@ -827,6 +841,11 @@ export function pinnedArtifacts(
   /** artifacts already pinned (last tick's set, or this tick's earlier rounds): these stay
    *  pinned on the RELEASE threshold rather than the entry one */
   held: ReadonlySet<number>,
+  /** the FALLBACK ground-artifact radius; an artifact carrying its own `r` is measured at that.
+   *  Same rule as `solveArtifacts`, and it has to be the same answer — the pin test decides what
+   *  the robot solve is allowed to drive into, so a pin measured at a different size from the
+   *  solve is the two-descriptions-of-one-element bug this module exists to prevent. */
+  radius: number = C.BALL_RADIUS,
 ): PinnedReport {
   const out: PinnedReport = { pinned: [], pins: new Map(), buried: [] };
   for (const b of world.balls) {
@@ -835,13 +854,14 @@ export function pinnedArtifacts(
     let deepest: { r: RobotState; pen: number; nx: number; ny: number } | null = null;
     // a squeeze the solve could not satisfy is split between the two things squeezing, so
     // what the artifact is still inside of the FIELD counts toward the pin too
-    const cl = clampBallPosToStatics(b.pos);
+    const br = b.r ?? radius;
+    const cl = clampBallPosToStatics(b.pos, br);
     const inField = hyp(cl.x - b.pos.x, cl.y - b.pos.y);
     let isPinned = false;
     for (const r of world.robots) {
       const sol = solids.get(r.id);
       if (!sol) continue;
-      const q = robotPenetration(r, sol, b.pos, C.BALL_RADIUS, claimed.has(b.id), doorway.has(b.id), -C.ARTIFACT_PIN_RELEASE);
+      const q = robotPenetration(r, sol, b.pos, br, claimed.has(b.id), doorway.has(b.id), -C.ARTIFACT_PIN_RELEASE);
       if (!q) continue;
       if (q.pen > C.ARTIFACT_PIN_SLOP && q.buried) {
         out.buried.push({ b, r, nx: q.nx, ny: q.ny, pen: q.pen });
@@ -873,8 +893,8 @@ export function pinnedArtifacts(
        * the robot follows a ball that is sliding out of its way and is stopped by one that is
        * not. The pin test itself stays what it is: still inside, with something behind it.
        */
-      if (q.pen > 0 && q.pen + inField > C.ARTIFACT_PIN_SLOP && (inField > 0 || supported(world, b, r, solids))) isPinned = true;
-      else if (keep && q.pen > -C.ARTIFACT_PIN_RELEASE && supported(world, b, r, solids)) isPinned = true;
+      if (q.pen > 0 && q.pen + inField > C.ARTIFACT_PIN_SLOP && (inField > 0 || supported(world, b, r, solids, radius))) isPinned = true;
+      else if (keep && q.pen > -C.ARTIFACT_PIN_RELEASE && supported(world, b, r, solids, radius)) isPinned = true;
       if (!deepest || q.pen > deepest.pen) deepest = { r, pen: q.pen, nx: q.nx, ny: q.ny };
     }
     if (isPinned && deepest) {

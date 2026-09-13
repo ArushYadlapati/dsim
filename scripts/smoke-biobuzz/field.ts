@@ -168,13 +168,18 @@ function aabb(r: { pos: { x: number; y: number }; heading: number; spec: RobotSp
 }
 
 /**
- * How far a POLLEN's SKIN is past the nearest wall plane; 0 when it is inside.
+ * How far an element's SKIN is past the nearest wall plane; 0 when it is inside.
  *
  * The measure rather than a boolean, because "it left the field" and "it left the field by two
  * inches" are different reports and the second is the one worth printing.
+ *
+ * It reads the element's OWN radius, because this field carries two: a NECTAR measured at the
+ * POLLEN radius reads 0.4" inside the wall while its skin is on it.
  */
-const outBy = (b: Artifact): number =>
-  Math.max(Math.abs(b.pos.x) - (BB_HALF_X - BB_POLLEN_R), Math.abs(b.pos.y) - (BB_HALF_Y - BB_POLLEN_R), 0);
+const outBy = (b: Artifact): number => {
+  const r = b.r ?? BB_POLLEN_R;
+  return Math.max(Math.abs(b.pos.x) - (BB_HALF_X - r), Math.abs(b.pos.y) - (BB_HALF_Y - r), 0);
+};
 
 /** the containment tolerance. Any soft solver leaves a hair of penetration in a resting
  * contact; a quarter inch on a 1.5" pollen is that, and anything more is a pollen leaving the
@@ -918,6 +923,97 @@ export function fieldChecks(check: Check): void {
     );
   }
 
+
+  // -- ...AND THE FIELD HOLDS TWO SIZES AT ONCE: NECTAR IS NOT POLLEN -------
+  /**
+   * A NECTAR IS 1.8 AND A POLLEN IS 1.4, AND THE SOLVE HAS TO KNOW BOTH AT THE SAME TIME.
+   *
+   * The radius used to be one number per CALL — the game passed `BB_POLLEN_R` and everything in
+   * the world was solved at it. That is exactly right for a game whose elements are all one
+   * size and wrong for this one: a NECTAR is a GROUND element for as long as it takes a robot
+   * to come and collect it (the human player enters it onto the tiles, `play.ts`), and solved
+   * at the POLLEN radius it came to rest with **0.4 in of its skin through the wall** — the
+   * note in HANDOFF-field — and let a POLLEN sit 0.4 in inside it.
+   *
+   * So `solveArtifacts`, the held-artifact plugs and the perimeter clamp all read the
+   * artifact's OWN `r` and fall back to the call's radius. DECODE sets `r` on nothing, which is
+   * what keeps the first `npm test` suite byte-identical; BIOBUZZ's spawner sets it on every
+   * NECTAR it stages.
+   *
+   * Both checks are measured on where the SOLVE settles, not on the constant, and both print
+   * the POLLEN answer beside the NECTAR one — a regression to one-size puts the measured number
+   * on the other line.
+   */
+  {
+    /** a NECTAR: an alliance-coloured element carrying its own radius, the way `spawn.ts` stages it. */
+    const nectar = (id: number, x: number, y: number): Artifact => ({
+      id,
+      color: 'blue',
+      r: BB_NECTAR_R,
+      state: { kind: 'ground' },
+      pos: { x, y },
+      vel: { x: 0, y: 0 },
+      z: 0,
+      vz: 0,
+    });
+
+    check(
+      'radius: a NECTAR and a POLLEN really are different sizes (so the two checks below mean something)',
+      BB_NECTAR_R !== BB_POLLEN_R,
+      `nectar ${BB_NECTAR_R}" vs pollen ${BB_POLLEN_R}"`,
+    );
+
+    /**
+     * (a) A NECTAR PUT DOWN OVERLAPPING THE WALL is returned to its OWN radius off the wall
+     * plane. Placed rather than thrown, and at rest: `BB_POLLEN_WALL_REST` bounces a moving
+     * element back off the wall, so an element rolled at it comes to rest three inches away and
+     * measures the restitution instead of the containment. y = 40 is the same clear lane the
+     * pollen check above uses — no HIVE bar, no FLOWER foot, no zone.
+     *
+     * TWO AUTHORITIES ARE BEING CHECKED AND THEY FAIL SEPARATELY, which is why the skin check
+     * below is its own line rather than a restatement of the first. The SOLVE is what settles
+     * the resting distance: run at one flat radius it reads 1.400". The CLAMP
+     * (`clampPollenToWalls`) is what puts an element back when the solve had no answer: run at
+     * the POLLEN radius it ACTIVELY PUSHES a NECTAR 0.4" through the wall, and with the solve
+     * already fixed it still leaks 0.010" — small, and the direction that matters, because the
+     * clamp is unconditional and runs last.
+     */
+    const w = createBiobuzzWorld('free', 5, []);
+    w.robots.length = 0;
+    w.balls.length = 0;
+    const n1 = nectar(1, BB_HALF_X - 0.5, 40);
+    w.balls.push(n1);
+    for (let i = 0; i < 240; i++) updateBiobuzz(w, C.SIM_DT, new Map(), true, NO_SWEEP);
+    const gap = BB_HALF_X - n1.pos.x;
+    check(
+      'radius: a resting NECTAR sits its OWN radius off the wall, not the POLLEN radius',
+      Math.abs(gap - BB_NECTAR_R) <= 0.1,
+      `${gap.toFixed(3)}" off the wall; nectar R=${BB_NECTAR_R}", pollen R=${BB_POLLEN_R}"`,
+    );
+    check(
+      'radius: ...so no part of it is outside the field',
+      Math.abs(n1.pos.x) <= BB_HALF_X - BB_NECTAR_R + 1e-6,
+      `skin ${(Math.abs(n1.pos.x) - (BB_HALF_X - BB_NECTAR_R)).toFixed(3)}" past the wall plane`,
+    );
+
+    // (b) A NECTAR AGAINST A POLLEN rests at the SUM of the two radii. One flat number is only
+    // right when every element is the same size, and the two wrong answers bracket this one:
+    // 2*POLLEN is 2.80 and 2*NECTAR is 3.60, against a correct 3.20.
+    const w2 = createBiobuzzWorld('free', 5, []);
+    w2.robots.length = 0;
+    w2.balls.length = 0;
+    const n2 = nectar(1, -0.5, 0);
+    const p2 = bbPollen(2, 0.5, 0);
+    w2.balls.push(n2, p2);
+    for (let i = 0; i < 240; i++) updateBiobuzz(w2, C.SIM_DT, new Map(), true, NO_SWEEP);
+    const d2 = Math.hypot(n2.pos.x - p2.pos.x, n2.pos.y - p2.pos.y);
+    check(
+      'radius: a NECTAR resting on a POLLEN sits at the SUM of the two radii',
+      Math.abs(d2 - (BB_NECTAR_R + BB_POLLEN_R)) <= 0.1,
+      `${d2.toFixed(3)}" apart; sum ${(BB_NECTAR_R + BB_POLLEN_R).toFixed(2)}", two pollen ${
+        (2 * BB_POLLEN_R).toFixed(2)}", two nectar ${(2 * BB_NECTAR_R).toFixed(2)}"`,
+    );
+  }
   // -- WHAT THE SOLVE ITSELF DOES ABOUT THE PERIMETER, WITH NO CLAMP OVER IT -
   /**
    * EVERY OTHER CONTAINMENT CHECK IN THIS FILE READS THE WORLD AFTER `clampPollenToWalls` HAS

@@ -162,9 +162,12 @@ behind, intaking the pile clears every one.
 The count also runs for **every** robot, `passive` included, and only the warning is skipped —
 freezing a passive robot's clocks would leave an element latched to it across the gap.
 
-#### ⚠️ THREE DECODE CONSTANTS COME ALONG WITH IT — one of them matters
+#### ⚠️ THREE DECODE CONSTANTS CAME ALONG WITH IT — **ALL THREE CLOSED 2026-09-12**
 
-The shared function is written against DECODE's field and DECODE's artifact. Measured:
+`controlledArtifacts` now takes a `ControlGeometry` and BIOBUZZ fills all three slots
+(`BB_CONTROL_GEOMETRY` in `penalties.ts`): `carveOut` is `BB_LZ`, `hopperCap` is `bbHopperCap`,
+and the radius is each artifact's own `r`. Landed from the master chat, not the owner. The
+sizes are kept below because they are what the numbers in this file were measured at:
 
 1. **`C.BALL_RADIUS` is 2.5 in; a BIOBUZZ element is simulated at `BB_POLLEN_R` = 1.4.** So
    `reach` (touching) is 2.9 in rather than 1.8, and the transitive `chain` is 5.4 in rather
@@ -182,9 +185,10 @@ The shared function is written against DECODE's field and DECODE's artifact. Mea
    BIOBUZZ floor that is not a loading zone gets one. Both halves wrong, neither reachable from
    this lane — the carve-out is chosen inside the shared function.
 
-All three are ONE request: a per-game geometry for the shared CONTROL test. None is a reason to
-keep hand-rolling the rule — a slightly generous radius on a real detector beats an exact hopper
-count that cannot see herding at all.
+All three were ONE request — a per-game geometry for the shared CONTROL test — and it landed.
+The smoke that proves it: two elements carried and three herded is five, and inside blue's own
+LOADING ZONE that warns nothing while the same shove in open floor does
+(`scripts/smoke-biobuzz/rules.ts`).
 
 ### Item 2 — YELLOW CARDS: not modelled, as instructed
 
@@ -362,11 +366,11 @@ Base: merged `origin/alpha` `e5d866d` (fast-forward — alpha carried only `fiel
   radius. One constant each was the instruction, so there is no knob separating "far" from
   "wide". Needs a second term if the real field never puts one that close. Question 1 of the
   feedback note.
-- **A NECTAR rests up to 0.40 in PAST the wall plane** (35 of 360 spilled elements). SHARED
-  physics, not this lane's: the solve runs one radius per call and `clampPollenToWalls` clamps
-  at `BB_POLLEN_R` 1.4, so a 1.8 NECTAR overhangs by the difference. Already field-plan §6
-  request 1 and `feedback/000-solver-observations.md`; this is the first sighting that is
-  visible in a screenshot (`hive-tip@480`, the elements on the audience wall).
+- ~~**A NECTAR rests up to 0.40 in PAST the wall plane** (35 of 360 spilled elements)~~ —
+  **CLOSED 2026-09-12** (master chat). The shared ground-artifact path reads `b.r ?? radius`
+  everywhere and `clampPollenToWalls` reads `bbElementRadius`, so a resting NECTAR moved from
+  1.400 to 1.800 in off the wall and its skin from 0.400 in outside to 0.000. Re-shoot
+  `hive-tip@480` before quoting the elements on the audience wall.
 - `BB_FLOWER_MID_Z`, `BB_FLOWER_VOL_Z`, `BB_SPILL_SPEED`, `BB_SPILL_FAN` are all **APPROX** and
   all now load-bearing for a scoring outcome.
 

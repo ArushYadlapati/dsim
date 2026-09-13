@@ -100,7 +100,7 @@ export function placeGroundArtifact(world: World, b: Artifact, solids: ReadonlyM
       b.pos.y += q.ny * q.pen;
       moved = true;
     }
-    const c = clampBallPosToStatics(b.pos);
+    const c = clampBallPosToStatics(b.pos, b.r ?? C.BALL_RADIUS);
     if (c.x !== b.pos.x || c.y !== b.pos.y) {
       b.pos.x = c.x;
       b.pos.y = c.y;
@@ -405,7 +405,7 @@ export function step(world: World, dt: number, commands: Map<number, RobotComman
      * the field first puts the shortfall where the pin test measures it.
      */
     for (const b of ground) {
-      const c = clampBallPosToStatics(b.pos);
+      const c = clampBallPosToStatics(b.pos, b.r ?? C.BALL_RADIUS);
       if (hyp(c.x - b.pos.x, c.y - b.pos.y) > C.BALL_CONTAIN_SLOP) {
         b.pos.x = c.x;
         b.pos.y = c.y;
@@ -420,7 +420,7 @@ export function step(world: World, dt: number, commands: Map<number, RobotComman
        * robot off the ball. The wall is an invariant for the velocity too: whatever the solve
        * left pointing into it is removed, and the sideways part — the squirt — is kept.
        */
-      const u = fieldPushback(b.pos);
+      const u = fieldPushback(b.pos, b.r ?? C.BALL_RADIUS);
       if (u) {
         const into = b.vel.x * u.x + b.vel.y * u.y;
         if (into < 0) {

@@ -120,8 +120,17 @@ import { rectContains, type BiobuzzState, type ScoreTarget, type Vec3 } from './
  * BIOBUZZ copy of shared physics, which is the thing this file just stopped doing.
  */
 function clampPollenToWalls(b: Artifact): void {
-  const lim = BB_HALF_X - BB_POLLEN_R;
-  const limY = BB_HALF_Y - BB_POLLEN_R;
+  /**
+   * ⚠️ THE ELEMENT'S OWN RADIUS, NOT THE POLLEN'S. This field carries two sizes at once —
+   * POLLEN 1.4 and NECTAR 1.8 — and a NECTAR entered by the human player is a GROUND element
+   * for as long as it takes a robot to come and get it. Clamped at the POLLEN radius it came
+   * to rest with 0.4 in of its skin through the wall, which is the "0.4 in past the wall" note
+   * in HANDOFF-field. `bbElementRadius` is the same answer `land`, the spawner and the
+   * renderer give, so there is one definition of how big a NECTAR is.
+   */
+  const r = bbElementRadius(bbKindOf(b));
+  const lim = BB_HALF_X - r;
+  const limY = BB_HALF_Y - r;
   if (b.pos.x > lim) {
     b.pos.x = lim;
     if (b.vel.x > 0) b.vel.x = -b.vel.x * BB_POLLEN_WALL_REST;

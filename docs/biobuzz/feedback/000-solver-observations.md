@@ -266,10 +266,37 @@ the shared pipeline does for DECODE and does not do for BIOBUZZ.
   in the direction of "less bad" — the ratios to `C.BALL_RADIUS` (2.5) all shift, and the
   2.1-in persistent overlap under a pressing chassis was measured on a 3-in element.
   Re-measure before quoting any of them; nothing about the SOLVE changed.
-- **NECTAR is a second element size (1.8) and the shared solve has no per-artifact radius.**
+- ~~**NECTAR is a second element size (1.8) and the shared solve has no per-artifact radius.**
   Until `field-plan.md` §6 request 1 lands, a nectar will be simulated at pollen size — a 3.6-in
-  ball solved as a 2.8-in one, visibly wrong in a pile. `drawField` already draws the field at
-  the real sizes, so the first cell that stages nectar will show the mismatch directly.
+  ball solved as a 2.8-in one, visibly wrong in a pile.~~ **CLOSED** — see the 09-12 entry below.
 - Nothing in `field-labelled@0` looks physically wrong: it is a static drawing with no elements
   and no robots. The first real physics question here will be what a spilled cell's contents do
   when they land, and that needs the hive lifecycle first.
+
+### 2026-09-12 — the master chat, per-artifact radius (shared core)
+
+**Request 1 landed.** The shared ground-artifact path reads each element's OWN `r` and falls
+back to the call's radius, so this field's two sizes are solved at the sizes they are drawn at:
+
+- `solveArtifacts` builds each ball collider at `b.r ?? radius`.
+- `robotSolids`' held-artifact plugs likewise, so a hopper holding a NECTAR plugs its own mouth
+  at 1.8 and not 1.4. ⚠️ `bbRobotSolids` (`robot.ts`, Lane B) still builds every plug at the
+  `radius` argument and needs the same one-line change.
+- `clampBallPosToStatics`, `fieldPushback` and `pinnedArtifacts` take the radius as a parameter
+  and every caller with an element in hand passes its own. DECODE sets `r` on nothing, so all
+  of that is byte-identical there; it is groundwork for the day BIOBUZZ runs the round loop.
+- `bounceFirstContacts` computes the impact distance as the SUM of the pair's radii, and the
+  `supported` chain likewise. Same DECODE-identical property.
+- This game's own perimeter clamp (`clampPollenToWalls`) reads `bbElementRadius`.
+
+Measured before and after, on the solve's own settled distances:
+
+| what | one flat radius | per artifact |
+|---|---|---|
+| a resting NECTAR off the wall | 1.400 in | 1.800 in |
+| its skin past the wall plane | 0.400 in | 0.000 in |
+| a NECTAR resting on a POLLEN | 2.790 in | 3.190 in (sum 3.20) |
+
+The "0.4 in past the wall" note in `HANDOFF-field` is this, and it is gone. All three numbers
+are asserted in `scripts/smoke-biobuzz/field.ts` and all three were shown to flip when the
+change is backed out.

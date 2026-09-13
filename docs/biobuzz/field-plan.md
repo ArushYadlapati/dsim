@@ -237,10 +237,14 @@ Not modelled: G405/G406/G409/G411/G419/G420 (2D sim or referee judgement), and t
 
 ## 6. Requests for the shared core (integration chat / owner)
 
-1. **Per-artifact radius** in `solveArtifacts` and `robotSolids`/`bbRobotSolids` — an
-   `Artifact.r?: number` (default `C.BALL_RADIUS`) or a radius-by-colour map. Without it nectar
-   is simulated at pollen size (APPROX, visibly wrong: a 3.6 ball in a 2.8 pile). Interim: run
-   nectar at 1.4 and say so on the gallery cell.
+1. ~~**Per-artifact radius** in `solveArtifacts` and `robotSolids`/`bbRobotSolids`~~ — **LANDED
+   2026-09-12** (master chat). Every shared ground-artifact site reads `b.r ?? radius`:
+   `solveArtifacts`, `robotSolids`' held plugs, `clampBallPosToStatics`, `fieldPushback`,
+   `bounceFirstContacts`, `supported` and `pinnedArtifacts`. A resting NECTAR moved from 1.400
+   to 1.800 in off the wall and a NECTAR on a POLLEN from 2.790 to 3.190. DECODE sets `r` on
+   nothing and is byte-identical. ⚠️ **Still open for Lane B**: `bbRobotSolids` (`robot.ts`)
+   builds every held plug at its `radius` argument, so a NECTAR in a hopper still plugs the
+   mouth at POLLEN size — one line, `r: b.r ?? radius`.
 2. **`Artifact.state` member for "inside a field element"**: `{ kind: 'element'; el: string;
    slot: number }` — one generic member covers CELL and FLOWER (and any future game's goal), and
    keeps the element in `world.balls` so conservation is one array. Alternative: park them as
@@ -249,11 +253,19 @@ Not modelled: G405/G406/G409/G411/G419/G420 (2D sim or referee judgement), and t
    BIOBUZZ maps pollen → `green`, nectar → `purple` + alliance in the state. The renderer and
    the shared hopper HUD read the colour, so a real union is the honest fix.
 4. **Foul tariff per game**: `awardFoul(world, offender, severity, rule, pts?)` or a
-   `GameSimModule.foulPoints` slot; BIOBUZZ is 5 / 20, DECODE 5 / 15.
+   `GameSimModule.foulPoints` slot; BIOBUZZ is 5 / 20, DECODE 5 / 15. **Not blocking** —
+   `bbAwardFoul` already bills 5 / 20 locally and adds the `warning` severity this game needs;
+   the request stands only to collapse that mirror back to one call.
 5. (Later) extract DECODE's pin detector (`isPinning`, criteria A/B/C, pause/resume) from
    `src/sim/penalties.ts` into a helper both games call, for G421.
 
 None of these block kickoff-day geometry (§1) or staging; 1–3 block the element lifecycle.
+
+**Landed since**: request 1 (above). A sixth, filed and landed the same day, is a per-game
+geometry for the shared CONTROL test (`ControlGeometry` on `controlledArtifacts`: the LOADING
+ZONE carve-out, the hopper cap and the element radius) — see §4.3. A seventh is per-game start
+legality (`GameSimModule.startLegal`), which is what let BIOBUZZ turn `startLegality` on. Both
+are shared-core changes made from the master chat, not by the owner.
 
 ## 7. For Lane B (robot) — facts from the manual that change the dials
 
