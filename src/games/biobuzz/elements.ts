@@ -213,6 +213,27 @@ function upCell(world: World, a: Alliance): BbCellSide {
 }
 
 /**
+ * `owner`'s CELL on `side` as a target — where its opening is and which way it opens IF IT WERE
+ * THE UP CELL, whichever way the HIVE is actually tilted. ONE geometry for both readers:
+ * `scoreTargets` passes the cell that really is up, and Aim Assist (`play.ts` `bbAimTarget`)
+ * passes the NEARER cell and pretends it is up (owner, 2026-09-13).
+ *
+ * The mouth is the cell's own offset direction: an up cell opens AWAY from its pivot, back down
+ * the +y or −y it was raised along, so position and direction cannot disagree.
+ */
+export function hiveCellTarget(owner: Alliance, side: BbCellSide): ScoreTarget {
+  const s = side === 'south' ? -1 : 1;
+  return {
+    id: `hive:${owner}`,
+    alliance: owner,
+    pos: { x: owner === 'red' ? -BB_HIVE_X : BB_HIVE_X, y: s * BB_HIVE_CELL_DY },
+    z: CELL_AIM_Z,
+    r: CELL_ACCEPT_R,
+    mouth: { x: 0, y: s },
+  };
+}
+
+/**
  * Every place `a` can aim POLLEN, nearest-in-value first: its OWN up-CELL, then the four
  * FLOWER tops.
  *
@@ -242,20 +263,7 @@ export function scoreTargets(world: World, a: Alliance): ScoreTarget[] {
   // lifted its far end, so the opening looks back down the +y or −y the cell was raised along.
   // It is the SAME sign as the cell's own offset, which is why this reads off `upCell` once
   // and uses it for both the position and the direction: they cannot disagree.
-  const cell = (owner: Alliance): ScoreTarget => {
-    const s = upCell(world, owner) === 'south' ? -1 : 1;
-    return {
-      id: `hive:${owner}`,
-      alliance: owner,
-      pos: {
-        x: owner === 'red' ? -BB_HIVE_X : BB_HIVE_X,
-        y: s * BB_HIVE_CELL_DY,
-      },
-      z: CELL_AIM_Z,
-      r: CELL_ACCEPT_R,
-      mouth: { x: 0, y: s },
-    };
-  };
+  const cell = (owner: Alliance): ScoreTarget => hiveCellTarget(owner, upCell(world, owner));
   return [
     cell(a),
     ...BB_FLOWERS.map((f, i) => ({

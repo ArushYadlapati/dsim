@@ -49,6 +49,8 @@ export const BIOBUZZ_MODULE: GameModule = {
   scoreBar: BiobuzzScoreBar,
   resultsRows: biobuzzResultsRows,
   labels: { configSummary: bbConfigSummary },
+  // no auto-fire: the driver fires, and Aim Assist only releases a shot that would land
+  offersAutoFire: false,
   /**
    * THE BUILDER HERO'S PER-GAME TILES. The second instance of the preset bug, and the same
    * shape of fix: the hero picked its mechanism tiles with `isDecode ? … : …`, so BIOBUZZ fell
