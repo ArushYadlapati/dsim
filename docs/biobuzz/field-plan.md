@@ -245,32 +245,55 @@ Not modelled: G405/G406/G409/G411/G419/G420 (2D sim or referee judgement), and t
    nothing and is byte-identical. ⚠️ **Still open for Lane B**: `bbRobotSolids` (`robot.ts`)
    builds every held plug at its `radius` argument, so a NECTAR in a hopper still plugs the
    mouth at POLLEN size — one line, `r: b.r ?? radius`.
-2. **`Artifact.state` member for "inside a field element"**: `{ kind: 'element'; el: string;
-   slot: number }` — one generic member covers CELL and FLOWER (and any future game's goal), and
-   keeps the element in `world.balls` so conservation is one array. Alternative: park them as
-   `stock` and index by id from `world.biobuzz` (works, but `stock` means "in a human's hand").
-3. **`ArtifactColor`** gains `'yellow' | 'red' | 'blue'` (it is `'purple' | 'green'`), or
-   BIOBUZZ maps pollen → `green`, nectar → `purple` + alliance in the state. The renderer and
-   the shared hopper HUD read the colour, so a real union is the honest fix.
+2. ~~**`Artifact.state` member for "inside a field element"**: `{ kind: 'element'; el: string;
+   slot: number }`~~ — **LANDED** (`24fc564`, `src/types.ts`). The `BallState` union carries
+   exactly that variant, `el` naming the element (`'hive:red'`, `'flower:2'`) and `slot` its
+   position in that element's order; the ball stays in `world.balls`, so conservation is still
+   one array and nothing is solved or drawn as a loose ball while it is in there. The `stock`
+   alternative was not taken — `stock` means "in a human's hand" and a CELL is not a hand.
+3. ~~**`ArtifactColor`** gains `'yellow' | 'red' | 'blue'`~~ — **LANDED** (`24fc564`). It is the
+   real union (`'purple' | 'green' | 'yellow' | 'red' | 'blue'`), not a mapping, so POLLEN and
+   each alliance's NECTAR are their own colours to the renderer and to the shared hopper HUD.
 4. **Foul tariff per game**: `awardFoul(world, offender, severity, rule, pts?)` or a
-   `GameSimModule.foulPoints` slot; BIOBUZZ is 5 / 20, DECODE 5 / 15. **Not blocking** —
-   `bbAwardFoul` already bills 5 / 20 locally and adds the `warning` severity this game needs;
-   the request stands only to collapse that mirror back to one call.
-5. (Later) extract DECODE's pin detector (`isPinning`, criteria A/B/C, pause/resume) from
-   `src/sim/penalties.ts` into a helper both games call, for G421.
+   `GameSimModule.foulPoints` slot; BIOBUZZ is 5 / 20, DECODE 5 / 15. **STILL OPEN, and still
+   not blocking** — `bbAwardFoul` bills 5 / 20 locally and carries the `warning` severity the
+   shared `awardFoul` has no concept of, so collapsing the mirror back to one call would mean
+   teaching the shared function a third severity for one game's sake; the request stands only
+   for the day that trade looks worth making.
+5. ~~(Later) extract DECODE's pin detector (`isPinning`…)~~ — **HALF LANDED.** `isPinning` and
+   `controlledArtifacts` are exported from `src/sim/penalties.ts` and BIOBUZZ's `penalties.ts`
+   calls both, with `bbPinSolid` supplying this field's own solids (request 6 below).
+   **STILL OPEN: the criteria A/B/C pause/resume ACCUMULATOR is duplicated**, not shared — the
+   loop over `pen.pins` in `src/games/biobuzz/penalties.ts` re-implements DECODE's, reading the
+   shared `PIN_END_S` / `PIN_ESCAPE_DIST` / `PIN_SECONDS` / `PIN_STUCK_SPEED` from `config.ts`.
+   Left that way deliberately: the predicate is pure geometry and shares cleanly, the
+   accumulator writes game-owned state and would need a home that is neither game's.
+6. ~~**Per-game geometry for the shared CONTROL test**~~ — **LANDED 2026-09-12** (`4fde19d`,
+   master chat). `ControlGeometry` on `controlledArtifacts`: `carveOut` (BIOBUZZ passes
+   `BB_LZ`, so G407's acquire exemption is scoped to THIS game's LOADING ZONE), `hopperCap`
+   (`bbHopperCap`, so a robot carrying its legal four is not billed against DECODE's 3) and
+   `radius`. See §4 item 3.
+7. ~~**Per-game start legality** (`GameSimModule.startLegal`)~~ — **LANDED 2026-09-12**
+   (`be09953`, master chat). `startLegality` stays the ENFORCEMENT FLAG and `startLegal` is the
+   PREDICATE; `Room.startPoseLegal` is the single place the server asks, so the ready gate and
+   the start gate cannot disagree. This is what let BIOBUZZ turn `startLegality` on.
+   ⚠️ **It is a `server/room.ts` change and is INERT IN LIVE ROOMS UNTIL A DEPLOY** — until
+   `./scripts/fly-deploy.sh` runs, a live BIOBUZZ ready-up is still judged against DECODE's
+   launch lines.
 
-None of these block kickoff-day geometry (§1) or staging; 1–3 block the element lifecycle.
-
-**Landed since**: request 1 (above). A sixth, filed and landed the same day, is a per-game
-geometry for the shared CONTROL test (`ControlGeometry` on `controlledArtifacts`: the LOADING
-ZONE carve-out, the hopper cap and the element radius) — see §4.3. A seventh is per-game start
-legality (`GameSimModule.startLegal`), which is what let BIOBUZZ turn `startLegality` on. Both
-are shared-core changes made from the master chat, not by the owner.
+None of these blocked kickoff-day geometry (§1) or staging, and 1–3 — the three that blocked the
+element lifecycle — have all landed. **What is left is 4 (a convenience) and half of 5 (a
+refactor).** Requests 1, 6 and 7 were shared-core changes made from the MASTER CHAT, not by the
+owner; 2 and 3 landed with the BIOBUZZ types commit.
 
 ## 7. For Lane B (robot) — facts from the manual that change the dials
 
-- Hopper ceiling is the VOLUME LAW, not 4 (owner ruling 2026-09-12, late: G407 is a warning —
-  §4.3 item 3). Default 4; preloads fill it. `BB_STORAGE_MAX = 4` goes; `bbStorageMax` stands.
+- Hopper ceiling: ⚠️ **this bullet was reversed the same day and the reversal is what stands.**
+  The late G407 ruling (a WARNING, not a cap — §4 item 3) said the volume law alone should bound
+  the hopper and `BB_STORAGE_MAX = 4` should go; the owner then put the 4-element cap back
+  (`177947b`), so `BB_STORAGE_MAX` is 4 in `config.ts` today and `bbStorageMax` clamps the volume
+  law to it. Default 4; preloads fill it. Do not re-lift the cap. The two rulings are not in
+  conflict — G407 stops being a POINTS rule, and 4 stays as a HARDWARE limit.
 - Expansion **18 × 24 × 29** (R105): one horizontal axis only — `BB_PRISM` 24 stands, but the
   other axis stays 18.
 - Two launch targets with real heights: cell opening 53.5–65.6 in (a genuine lob, 12–14 in
@@ -295,3 +318,27 @@ are shared-core changes made from the master chat, not by the owner.
   2026-09-12): not penalised, and the sim does not let it enter (§2.1).
 - G410 binds NECTAR only — SETTLED (owner, 2026-09-12): POLLEN may enter a FLOWER at any time and
   earns nothing until an owner exists.
+
+### Still waiting on the owner (2026-09-12, end of day)
+
+Three questions, none of them a bug, and the code sits on its current ruling until each is
+answered. Do not guess at any of them.
+
+1. **YELLOW CARDS — model them game-wide, or leave them to the referee for this season?**
+   G414/G415/G417/G418/G419/G420 all name a card and **BIOBUZZ has no card machinery at all**:
+   `bbAwardFoul` awards points and nothing else, so every one of those rules is currently
+   modelled as its foul half only. DECODE's `awardCard` is the shape if the answer is yes (a
+   second card escalates to RED and voids that alliance's score); if it is no, that belongs
+   written down once rather than re-asked per rule.
+2. **The spill's SHORT tail — acceptable, or is a second term wanted?** ⚠️ Answer against the
+   CURRENT constants, not the ones the question was first asked about: the ±55° fan that
+   produced "11% rest inside the 57 in floor" was replaced by the ±30% dump ruling
+   (`BB_SPILL_SPEED` [35, 62], `BB_SPILL_FAN` 18° in `hive.ts`), and
+   `docs/biobuzz/feedback/001-spill-kinematics.md` measures the chord-shaped tail as gone at
+   that fan while raising the reach question in its place. One constant each was the
+   instruction, so there is still no knob separating "far" from "wide" if a second term turns
+   out to be wanted.
+3. **The G304 frontage** — the one start-pose number in `BB_START_POSES` read off a drawing
+   rather than measured. `docs/biobuzz/feedback/002-thresholds.md` row A4 settles it on the real
+   field on 09-14; the ±72 walls, the x = 0 seam and the FLOWER centres around it are measured
+   and are not APPROX.

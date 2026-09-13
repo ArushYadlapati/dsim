@@ -1,3 +1,101 @@
+# HANDOFF — 2026-09-12g (BIOBUZZ Lane A: four shared-core asks landed, from the master chat)
+
+> ⚠️ **TWO SERVER-SIDE CHANGES ARE SITTING ON `alpha` AND ARE INERT IN LIVE ROOMS UNTIL
+> SOMEBODY DEPLOYS.** Lane B's participation credit and this session's per-game start-legality
+> dispatch are both `server/room.ts` changes, so the code being on the branch changes nothing
+> for anyone playing until `./scripts/fly-deploy.sh` has run — **never a bare `flyctl deploy`**,
+> which re-applies `shared-cpu-4x` to every satellite machine. Until that deploy:
+> `Room.startPoseLegal` on the live server still judges a BIOBUZZ ready-up against DECODE's
+> `activeStartLegal` — DECODE's launch lines and goal triangles, on a field that has neither —
+> and `countParticipation` still does not know BIOBUZZ's own buttons are somebody driving.
+> **Neither fails loudly. They simply do not happen**, which is why this is the first line of
+> this section rather than a footnote in it.
+
+Branch **`alpha-merge`**, off **`alpha`**. **`alpha` is the BIOBUZZ base AND the deploy branch**
+— `biobuzz` was merged into it and deleted on origin, so every lane now merges `alpha` before it
+commits and lands back into `alpha`, and `alpha` is what ships. Wherever an older section of this
+file or of `docs/biobuzz/` says branch `biobuzz`, read `alpha`.
+
+This session was Lane A (field + scoring) run from the master chat rather than from its own lane
+chat, which is itself a fact the next person needs — `docs/biobuzz-contract.md` §1 now says so.
+Nothing was re-run here beyond what each commit below gated on; the last item is documentation
+only.
+
+## What landed, in order
+
+**Phase 0 — `origin/biobuzz-field` merged (A6a).** The HUMAN PLAYER NECTAR button (`d301bd4`),
+G304 start legality with its evaluator, its snap and two anchors that satisfy it (`180025f`), and
+the FLOWER readout redrawn as a SECTION of its column rather than a row of discs (`656033f`).
+The wire bits settled at **32 `bbPlaceNectar`, 64 `bbPlace`, 128 `bbNectar`**, and ⚠️ **128 is
+the LAST bit that fits** — `src/sim/replay.ts` packs `q.buttons & 0xff`, so a ninth button needs a
+`REPLAY_FORMAT` bump and nobody should add one casually.
+
+**Phase 1.1 — start legality became a MODULE question** (`be09953`). `GameSimModule.startLegal`
+is the PREDICATE and `startLegality` stays the ENFORCEMENT FLAG; `Room.startPoseLegal` is the one
+place the server asks, so the ready gate and the start gate cannot answer differently. BIOBUZZ's
+`startLegality` flipped to `true` on the back of it, which is what the field lane had been
+holding it down for. ⚠️ This is the first of the two deploy-pending halves above.
+
+**Phase 1.2 — the pin test reads THIS field's solids** (`5ef37dc`). `pinnedAgainstWall` and
+`isPinning` take an optional `PinSolid`; BIOBUZZ passes `bbPinSolid`, which walks
+`biobuzzColliders.statics` rather than re-listing the field, so a solid added to that array is
+seen by the pin test the same day. Left on DECODE's tables the test was wrong in both directions
+at once — a solid where BIOBUZZ keeps open floor (which CANCELS a real pin, since a cornered
+robot reads as ESCAPING) and open floor where the FLOWER feet and HIVE frame bars actually stand,
+which is most of where a G421 pin happens here.
+
+**Phase 1.3 — per-game CONTROL geometry** (`4fde19d`). `controlledArtifacts` takes an optional
+`ControlGeometry` with `carveOut`, `hopperCap` and `radius`, so G407's herding test measures
+BIOBUZZ's own LOADING ZONE, its own hopper cap and its own element size instead of DECODE's.
+
+**Phase 1.4 — a ground artifact is solved at ITS OWN radius** (`1754ce8`). Every shared
+ground-artifact site now reads `b.r ?? radius`. Measured: a resting NECTAR moved 1.400 → 1.800 in
+off the wall, its skin from 0.400 in OUTSIDE the wall plane to 0.000, and a NECTAR on a POLLEN
+2.790 → 3.190. **DECODE sets `r` on nothing, so DECODE and Chain Reaction are byte-identical.**
+⚠️ One line of this is still owed and it is **Lane B's, not ours**: `bbRobotSolids`
+(`src/games/biobuzz/robot.ts`) still builds every held plug at its `radius` argument, so a NECTAR
+in a hopper plugs the mouth at POLLEN size. It wants `r: b.r ?? radius`, and it has to be relayed
+to that lane rather than reached into.
+
+**Phase 2 — the chip, the round-trip and the ledger.** The NECTAR chip now says WHY a press would
+do nothing (`0837250`) off `nectarWhy`, and `FLOWERS OPEN` flips in at the 1:00 cue as a HELD
+chip rather than a permanent one. The human-player bit got a REAL replay round-trip
+(`cf5c1b7`) — record → JSON → re-simulate → hash — replacing a banner that promised one over a
+body that only ran `localizeCommand`. And the APPROX ledger was transcribed into
+`docs/biobuzz/feedback/002-thresholds.md` (`8b96dd7`), sorted by what a tape measure can actually
+settle on 09-14.
+
+Alpha also carries, from the other lanes, Lane B's robot rework and its `server/room.ts`
+participation credit (the second deploy-pending half), and a sponsor/og-image change.
+
+## Three owner questions are OPEN, and the code sits on its current ruling
+
+None of these is a bug and none should be guessed at. They are recorded in
+`docs/biobuzz/field-plan.md` §8 and in `docs/biobuzz/HANDOFF-field.md`.
+
+1. **YELLOW CARDS, game-wide?** BIOBUZZ has no card machinery at all — `bbAwardFoul` awards
+   points and nothing else — while G414/G415/G417/G418/G419/G420 all name a card. Either model
+   cards for the season (DECODE's `awardCard`, where a second card is RED and voids the
+   alliance's score) or leave them to the referee and say so once.
+2. **The spill's SHORT tail** — acceptable, or is a second term wanted? ⚠️ Read the current
+   numbers before answering: the ±55° fan that produced the 11%-inside-57-in figure was replaced
+   by the ±30% dump ruling (`BB_SPILL_SPEED` [35, 62], `BB_SPILL_FAN` 18°), and
+   `docs/biobuzz/feedback/001-spill-kinematics.md` measures the tail as gone at that fan while
+   posing the reach question in its place.
+3. **The G304 frontage** — the one start-pose number read off a drawing rather than measured.
+   `docs/biobuzz/feedback/002-thresholds.md` row A4 settles it on the real field on 09-14; there
+   is nothing separate to measure.
+
+## Docs reconciled with the code this session
+
+`HANDOFF.md` (this section), `docs/biobuzz/field-plan.md` §6 (every shared-core request is now
+either struck as landed or carries one sentence saying why it is still open),
+`docs/biobuzz/prompts.md` (Round 6 closed), `docs/biobuzz-contract.md` §1 (Lane A runs from the
+master chat) and `docs/biobuzz/HANDOFF-field.md` (the closed entries struck against the source
+that closed them).
+
+---
+
 > **2026-09-12f — BIOBUZZ builder feedback (branch `biobuzz-robot`, UNCOMMITTED).** The launcher
 > is mandatory (Single turret POLLEN-only / Double turret with a POLLEN and a NECTAR turret /
 > Dumper that reaches the HIVE; the Drum is gone). Launchers aim at the HIVE only. "Vertical

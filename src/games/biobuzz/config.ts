@@ -413,8 +413,11 @@ export const BB_RP = {
 export const BB_POLLEN_R = 1.4;
 
 /** NECTAR radius (in) — 3.6 in diameter, §9.8 (am-5852). The second element size, and the
- * reason the shared solve needs a per-artifact radius: today a nectar is SIMULATED at
- * `BB_POLLEN_R` (see `docs/biobuzz/field-plan.md` §6 request 1) and only drawn at this one. */
+ * reason the shared solve grew a per-artifact radius: it is now SIMULATED at this value too,
+ * not only drawn at it. Every site reads `b.r ?? radius` (field-plan §6 request 1, LANDED),
+ * so a resting NECTAR sits 1.8 in off a wall instead of 1.4 and no longer puts 0.4 in of
+ * itself outside the field. ⚠️ `bbRobotSolids` is the one holdout — it still builds every
+ * held plug at its `radius` argument, so a CARRIED nectar collides as a POLLEN. */
 export const BB_NECTAR_R = 1.8;
 
 /** how many POLLEN are on the field at staging — §10.3.1: 16 in the four FLOWERS, 4 in each

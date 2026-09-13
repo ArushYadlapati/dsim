@@ -1,5 +1,43 @@
 # HANDOFF — Lane A (field)
 
+## 2026-09-12 · Lane A moves to the MASTER chat · four shared-core asks landed · docs reconciled
+
+The field and rules lane chats closed with Round 6. **Lane A is run from the master /
+integration chat from here on** — `docs/biobuzz-contract.md` §1 carries the note, the ownership
+map is unchanged, and Lane B's files are still relayed to Lane B rather than reached into. This
+file is still the lane's log and still gets a dated section per round.
+
+⚠️ **TWO `server/room.ts` CHANGES ARE ON `alpha` AND DO NOTHING IN A LIVE ROOM UNTIL A DEPLOY**
+— the per-game start-legality dispatch below, and Lane B's participation credit. Run
+`./scripts/fly-deploy.sh`, never a bare `flyctl deploy`.
+
+Four requests this lane filed in `field-plan.md` §6 landed the same day, from the master chat:
+
+| what | commit | what it changed for this lane |
+|---|---|---|
+| per-game start legality (`GameSimModule.startLegal`) | `be09953` | `startLegality` is `true`; the A6a note saying it must stay `false` is struck below |
+| per-game pin solids (`PinSolid` → `bbPinSolid`) | `5ef37dc` | G421 sees the FLOWER feet and the HIVE frame bars; the "shared-core request" note below is struck |
+| per-game CONTROL geometry (`ControlGeometry`) | `4fde19d` | G407 reads `BB_LZ`, `bbHopperCap` and the element radius instead of DECODE's |
+| per-artifact radius (`b.r ?? radius`) | `1754ce8` | a resting NECTAR sits 1.800 in off the wall, skin 0.000 outside; already struck below |
+
+Also landed: the `nectarWhy` chip and the held `FLOWERS OPEN` chip (`0837250`), a REAL replay
+round-trip for the human-player bit 128 (`cf5c1b7`, replacing a check that only ran
+`localizeCommand`), and the APPROX ledger in `docs/biobuzz/feedback/002-thresholds.md`
+(`8b96dd7`).
+
+⚠️ **One line of the radius work is Lane B's and is still owed**: `bbRobotSolids` (`robot.ts`)
+builds every held plug at its `radius` argument, so a NECTAR in a hopper plugs the mouth at
+POLLEN size. It wants `r: b.r ?? radius`. **Relay it; do not reach into that file.**
+
+**Three owner questions are open** and the code stays on its current ruling until each is
+answered — yellow cards game-wide, the spill's short tail, and the G304 frontage. They are
+written out in `docs/biobuzz/field-plan.md` §8 under "Still waiting on the owner", and each one
+is also marked at the entry below that raised it.
+
+**Docs only in this pass** — no code was touched, so no gate was re-run. Every sha, path, symbol
+and number written into this section was checked against the working tree first.
+
+
 ## 2026-09-12 · A6a items 1–4 (Round 6) · `GREEN`
 
 Base: merged `origin/alpha` `a68401f` (fast-forward — alpha carried only the Round 6 prompts,
@@ -45,10 +83,16 @@ themes (`scratch/hires/flower-stack@0.{light,dark}.png`, gitignored throwaway).
   which keeps the index 0/1 rule (two robots of one alliance cannot reach each other at the
   buzzer). Clearances are numeric in the `BB_START_POSES` comment; the frontage is marked
   APPROX where it is figure-derived.
-- **`startLegality` STAYS `false`, and that is not an oversight.** `server/room.ts` gates a
+- ~~**`startLegality` STAYS `false`, and that is not an oversight.** `server/room.ts` gates a
   ready-up on `activeStartLegal`, which is DECODE's `evalStartPose` and is NOT dispatched per
   game — flipping the flag would judge a BIOBUZZ pose against DECODE's launch lines and refuse
-  every legal start. Documented in `sim.ts`, in `elements.ts`, and in the smoke label itself.
+  every legal start.~~ — **CLOSED 2026-09-12** (master chat, `be09953`). The reason it was held
+  down is exactly what got fixed: `GameSimModule.startLegal` is now the per-game PREDICATE,
+  `startLegality` stays the ENFORCEMENT FLAG, and `Room.startPoseLegal` is the one place the
+  server asks either question. `sim.ts` reads `startLegality: true` and `startLegal:
+  bbActiveStartLegal`; the notes in `sim.ts`, `elements.ts` and the smoke label were rewritten
+  with it. ⚠️ **It is a `server/room.ts` change, so a LIVE room still runs the old gate until
+  `./scripts/fly-deploy.sh` has been run.**
 - **Smoke** (48 legal chassis = every intake × every mount at both size extremes): the DEFAULT
   build's anchors are legal AS WRITTEN and returned by the snap byte for byte; every anchor
   seats legally on every one of the 48 after the snap; and each of the four clauses REFUSES its
@@ -245,13 +289,16 @@ verified to FAIL with the latch removed, so neither passes for the wrong reason.
 
 ### Two findings OUTSIDE this lane's files — flagged, not edited
 
-1. ⚠️ **`src/games/biobuzz/step.ts:221` pushes `'TELEOP'` into `world.events`.** CLAUDE.md's
+1. ⚠️ **`src/games/biobuzz/step.ts` pushes `'TELEOP'` into `world.events`.** STILL TRUE at the
+   end of 2026-09-12 — A6a did not pick it up, and the line has drifted from 221 to **234**, so
+   grep the string rather than the line. CLAUDE.md's
    settled terminology ruling: teleop is **DRIVER-CONTROLLED** on all three surfaces that name
    it — the live HUD, `world.events`, and the burned-in overlay — and `src/sim/match.ts:64`
    pushes `'DRIVER-CONTROLLED'`. BIOBUZZ's own HUD already says DRIVER-CONTROLLED
-   (`HudSlots.tsx:122`), so the two surfaces disagree **inside this game**, which is exactly the
-   inconsistency the ruling was made to end. One word, in Lane A's file, which A6a is editing
-   this round — so it is left to the field lane rather than raced.
+   (`HudSlots.tsx`, the `teleop:` label — line 322 now, not 122), so the two surfaces disagree
+   **inside this game**, which is exactly the inconsistency the ruling was made to end. One word,
+   in Lane A's file. It was left to the field lane rather than raced, and the field lane has
+   since closed — so it now belongs to whoever runs Lane A next.
 2. The shared `bbAwardFoul` event envelope uses an ASCII ` - ` separator (`MAJOR FOUL - BLUE
    +20 (…)`), mirroring DECODE's shape on purpose so a toast reads identically in both games.
    UI COPY prefers a full stop or a colon to a dash, and `—` where a dash is right. Changing
@@ -274,8 +321,12 @@ way; this is the same shape of call as the G407 ruling.
 
 ### Still open from before
 
-- `BB_FRAME_RAM_SPEED` (30 in/s) is `APPROX` and on the 09-14 field-test list.
+- `BB_FRAME_RAM_SPEED` (30 in/s) is `APPROX` and on the 09-14 field-test list. **Still open** —
+  `penalties.ts` still carries `export const BB_FRAME_RAM_SPEED = 30; // APPROX`.
 - The YELLOW CARD is named in every rule above that carries one and modelled in none of them.
+  **Still open, and now an explicit owner question** (field-plan §8, question 1): model cards
+  game-wide off DECODE's `awardCard`, or leave them to the referee for the season and write that
+  down once.
 
 
 ## 2026-09-12 · A5a items 1–7 (Round 5 + both addenda) · `GREEN`
@@ -361,11 +412,16 @@ Base: merged `origin/alpha` `e5d866d` (fast-forward — alpha carried only `fiel
 
 ### Still open (this lane)
 
-- **The spill's SHORT tail.** 11% of spilled elements rest closer than the 57 in floor — a wide
-  fan angle throws an element ACROSS the field rather than out, and a chord is shorter than a
-  radius. One constant each was the instruction, so there is no knob separating "far" from
-  "wide". Needs a second term if the real field never puts one that close. Question 1 of the
-  feedback note.
+- **The spill's SHORT tail — STILL OPEN, and it is the OWNER's to settle.** As written here:
+  11% of spilled elements rest closer than the 57 in floor, because a wide fan angle throws an
+  element ACROSS the field rather than out and a chord is shorter than a radius. One constant
+  each was the instruction, so there is no knob separating "far" from "wide".
+  ⚠️ **Those numbers are from BEFORE the ±30% dump recalibration and must not be quoted as
+  current.** `BB_SPILL_SPEED` is `[35, 62]` and `BB_SPILL_FAN` is `18`° in `hive.ts` today, and
+  `docs/biobuzz/feedback/001-spill-kinematics.md` measures the chord-shaped tail as GONE at that
+  fan (35.9–73.8 in over 360 elements, against 24.5–108.8 before) while raising a different
+  question in its place: whether 36–74 in from the pivot is the right REACH at all. Not struck,
+  because whether the tail is acceptable is a ruling and a re-measurement is not a ruling.
 - ~~**A NECTAR rests up to 0.40 in PAST the wall plane** (35 of 360 spilled elements)~~ —
   **CLOSED 2026-09-12** (master chat). The shared ground-artifact path reads `b.r ?? radius`
   everywhere and `clampPollenToWalls` reads `bbElementRadius`, so a resting NECTAR moved from
@@ -456,13 +512,21 @@ item 7 — `play.ts` and `elements.ts`, Lane A4a's files, not touched here.
 
 ### Still open from the A5b sections below
 
-`isPinning`'s private `pinnedAgainstWall` probe hard-codes DECODE's goal wedges and classifier
+~~`isPinning`'s private `pinnedAgainstWall` probe hard-codes DECODE's goal wedges and classifier
 channels as solids and cannot see the HIVE frame bars, so a pin in one of those corner regions
-goes unbilled. Shared-core request, under-billing rather than inventing a foul.
+goes unbilled.~~ — **CLOSED 2026-09-12** (master chat, `5ef37dc`). `pinnedAgainstWall` and
+`isPinning` take an optional `PinSolid` and BIOBUZZ passes `bbPinSolid` (`colliders.ts`), which
+walks `biobuzzColliders.statics` rather than re-listing the field — so the four FLOWER feet and
+the two HIVE frame bars are solids to the pin test, and a solid added to that array is seen the
+same day. It fixed BOTH directions: DECODE's tables also reported a solid in the two corners
+where this field keeps open floor, and a victim wrongly read as cornered reads as ESCAPING, which
+CANCELS a real pin rather than merely missing one.
 
 The **YELLOW CARD is still not modelled anywhere in BIOBUZZ** (G414/G415/G417/G418/G419/G420
 all card). Game-wide decision for the master, unchanged by this commit — G407 was the one rule
-where the ruling made the card moot.
+where the ruling made the card moot. **Still open at the end of 2026-09-12**, now filed as owner
+question 1 in `docs/biobuzz/field-plan.md` §8: `bbAwardFoul` awards points and nothing else, so
+BIOBUZZ has no card machinery at all to hang a decision on either way.
 
 ## 2026-09-12 · rules lane (A5b addendum) · the distilled manual corrects two rules · `biobuzz-rules`
 

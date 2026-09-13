@@ -9,6 +9,29 @@ This file is the interface between them and the list of who may edit what. If a 
 is wrong, change it here first, then change the code. Companion: `biobuzz-plan.md`
 (why), `biobuzz-reference.md` (the manual, distilled — Lane A writes it on kickoff day).
 
+> ⚠️ **LANE A IS NOW RUN FROM THE MASTER / INTEGRATION CHAT, not from a lane chat of its own**
+> (2026-09-12, end of kickoff day). The field and rules lane chats closed with Round 6; their
+> branches (`biobuzz-field`, `biobuzz-rules`) are merged into `alpha` and the work continues
+> from the chat that does the integrating.
+>
+> **The ownership map below is unchanged and still binds.** What changes is who is sitting in
+> the seat, and that has one real consequence: the master chat can edit both Lane A's files and
+> the integration-only row of the table, so the boundary that used to be enforced by being in a
+> different chat is now enforced only by reading this table. **Lane B's files are still Lane B's**
+> — the **B** rows below, plus `mechs.ts`, `presets.ts` and `coerce.ts`, which are B's and landed
+> after the table was written. (A note for anyone working from an older list: there is no
+> `launcher.ts`, `turret.ts` or `dumper.ts` in this directory — the launcher archetypes live in
+> `mechs.ts` and `robot.ts`.) A one-line fix that obviously belongs in one of them is
+> still RELAYED to that lane through the user, exactly as it was when a chat boundary made it
+> impossible to do otherwise; see `docs/biobuzz/field-plan.md` §6 request 1 for the one
+> currently outstanding.
+>
+> Whoever picks Lane A up next: read `docs/biobuzz/HANDOFF-field.md` first (it is still the
+> lane's log and still gets a dated section per round), then §6 of the field plan for what the
+> shared core does and does not yet answer, then the "Still waiting on the owner" list at the
+> end of §8. A cross-lane edit still gets written into the handoff, even when the same chat
+> could have made it.
+
 Everything BIOBUZZ lives in `src/games/biobuzz/`. Nothing BIOBUZZ goes into `src/sim/`
 or `src/config.ts` (repo rule, same as Chain Reaction). The sim code obeys the shared
 determinism rule: no DOM, no clock, no `Math.random`, no `Date`; all game state is plain
