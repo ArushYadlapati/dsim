@@ -936,6 +936,17 @@ function escapeDir(pinner: RobotState, pinned: RobotState): { x: number; y: numb
 }
 
 /**
+ * Is this point inside something a robot cannot drive through? — `PinSolid`, the one thing
+ * `pinnedAgainstWall` needs to know that is not the same in every game.
+ *
+ * A game whose field is not DECODE's supplies its own; absent, the test below uses DECODE's,
+ * which is where DECODE's rules live by design (see CLAUDE.md's note that `src/sim/` IS
+ * DECODE's rules). The probe point is a FIELD point, not a robot, so the predicate is pure
+ * geometry and a game can answer it from its own colliders.
+ */
+export type PinSolid = (p: Vec2) => boolean;
+
+/**
  * Is `pinned` trapped against a SOLID with `pinner` on the open-field side?
  *
  * True when the pinned robot's leading corner (straight AWAY from the pinner) sits
@@ -947,8 +958,15 @@ function escapeDir(pinner: RobotState, pinned: RobotState): { x: number; y: numb
  * wall alone, so a robot held against a GOAL WEDGE or a CLASSIFIER CHANNEL — the two
  * corners of the field where pinning actually happens, since that is where everyone
  * is trying to score — was never recognised as pinned at all.
+ *
+ * ⚠️ AND "EVERY SOLID" IS PER GAME, which is why `solid` is a parameter. Read against
+ * DECODE's tables on another game's field the test is wrong in BOTH directions at once:
+ * it reports a solid in the two corners where DECODE keeps its goals and that game keeps
+ * open floor — cancelling a real pin, since a cornered robot is ESCAPING and never PINNING —
+ * and it reports open floor wherever that game's own structures actually stand. On BIOBUZZ
+ * that is the four FLOWER feet and the two HIVE frame bars, i.e. most of where a pin happens.
  */
-function pinnedAgainstWall(pinner: RobotState, pinned: RobotState): boolean {
+function pinnedAgainstWall(pinner: RobotState, pinned: RobotState, solid?: PinSolid): boolean {
   const e = escapeDir(pinner, pinned);
   if (!e) return false;
   let reach = 0;
@@ -959,6 +977,7 @@ function pinnedAgainstWall(pinner: RobotState, pinned: RobotState): boolean {
     x: pinned.pos.x + e.x * (reach + C.PIN_WALL_SLOP),
     y: pinned.pos.y + e.y * (reach + C.PIN_WALL_SLOP),
   };
+  if (solid) return solid(p);
   if (Math.abs(p.x) >= C.FIELD_HALF || Math.abs(p.y) >= C.FIELD_HALF) return true; // perimeter
   for (const a of ['red', 'blue'] as Alliance[]) {
     // goalLineValue > 0 is BEHIND the goal face — inside the wedge. The probe point
@@ -1006,6 +1025,7 @@ export function isPinning(
   contact: boolean,
   cmd: RobotCommand | undefined,
   pinnerCmd: RobotCommand | undefined,
+  solid?: PinSolid,
 ): boolean {
   if (!contact) return false;
   const e = escapeDir(pinner, pinned);
@@ -1052,7 +1072,7 @@ export function isPinning(
    * Two robots meeting in open floor are both free to leave, so both still qualify, and
    * criterion C throws that out as the mutual shove it is.
    */
-  if (pinnedAgainstWall(pinned, pinner)) return false;
+  if (pinnedAgainstWall(pinned, pinner, solid)) return false;
 
   /**
    * A VICTIM DOES NOT HAVE TO BE STRUGGLING TO BE PINNED.
@@ -1085,7 +1105,7 @@ export function isPinning(
    * afterwards by `PIN_STUCK_SPEED` and criteria A/B — prevention is an outcome, not a stick
    * direction.
    */
-  if (!pinnedAgainstWall(pinner, pinned)) return true;
+  if (!pinnedAgainstWall(pinner, pinned, solid)) return true;
   return e.x * want.x + e.y * want.y < C.PIN_INTO_TRAP_COS;
 }
 

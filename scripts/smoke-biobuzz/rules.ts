@@ -2,7 +2,8 @@ import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { Alliance, Artifact, ArtifactColor, RobotCommand, World } from '../../src/types';
-import { SIM_DT } from '../../src/config';
+import { PIN_WALL_SLOP, SIM_DT } from '../../src/config';
+import { bbPinSolid } from '../../src/games/biobuzz/colliders';
 import { createBiobuzzWorld } from '../../src/games/biobuzz/spawn';
 import { biobuzzStep } from '../../src/games/biobuzz/step';
 import {
@@ -990,6 +991,51 @@ function pinChecks(check: Check): void {
     return w;
   };
   const press = new Map<number, RobotCommand>([[0, driveX(1)]]);
+
+  /**
+   * THE PIN TEST READS *THIS* FIELD'S SOLIDS, AND THAT CHANGES THE VERDICT.
+   *
+   * `isPinning` throws out a pin whose AGGRESSOR is itself backed against something solid — a
+   * robot with a wall behind it and an opponent in front is the one being HELD, and pressing
+   * forward is its only way out. That test probes a point behind the aggressor, and left to
+   * its default it probes DECODE's field: the perimeter, the two GOAL WEDGES and the two
+   * CLASSIFIER CHANNELS.
+   *
+   * BIOBUZZ has OPEN FLOOR in both of those corners. So an aggressor standing where DECODE
+   * keeps a goal reads as cornered, reads as escaping, and the pin it is holding bills
+   * NOTHING — on a quarter of this field, silently.
+   *
+   * (62, 62) is the witness: inside DECODE's red goal wedge, empty tiles on this field. The
+   * scene backs the aggressor up so its rear probe lands exactly there, and the check is that
+   * a MAJOR is billed anyway. With the solids left at DECODE's, this is 0.
+   *
+   * The victim is IDLE on purpose — the aggressor-cornered test runs BEFORE the victim is ever
+   * asked anything, so an idle victim isolates it.
+   */
+  {
+    const WITNESS = { x: 62, y: 62 };
+    check(
+      'G421: the DECODE goal wedge that would cancel this pin is OPEN FLOOR on the BIOBUZZ field',
+      bbPinSolid(WITNESS) === false,
+      'if this is true the scene below proves nothing',
+    );
+    const w = bare([
+      { id: 0, alliance: 'red' },
+      { id: 1, alliance: 'blue' },
+    ]);
+    w.match.phase = 'teleop';
+    w.match.phaseTimeLeft = 90;
+    // rear probe = centre + footprint reach (10.5) + PIN_WALL_SLOP, straight away from the victim
+    const aggX = WITNESS.x - 10.5 - PIN_WALL_SLOP;
+    place(w, 0, aggX, WITNESS.y); // red, its BACK where DECODE keeps a goal
+    place(w, 1, aggX - 20.5, WITNESS.y); // blue, idle, held in front of it
+    const out = bill(w, ticks(3.3), new Map<number, RobotCommand>([[0, driveX(-1)]]));
+    check(
+      'G421: an aggressor standing where DECODE keeps a GOAL is not "cornered" here — the pin bills',
+      out.major.red === 1,
+      `${out.major.red} MAJORs (0 means the pin test is reading DECODE's field)`,
+    );
+  }
 
   {
     const w = frame();

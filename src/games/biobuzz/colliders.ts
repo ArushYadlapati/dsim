@@ -1,4 +1,5 @@
 import type { FieldColliders, StaticSpec } from '../types';
+import { dcos, dsin } from '../../math';
 import {
   BB_FLOWER_D,
   BB_FLOWER_FOOT,
@@ -109,3 +110,37 @@ export const BB_WALL_COUNT = walls.length;
 /** every static the field declares — walls + frame bars + flower feet. Smoke asserts this
  * against the pieces it knows about, so a solid added without a check fails the count. */
 export const BB_SOLID_COUNT = biobuzzColliders.statics.length;
+
+/**
+ * Is this field point inside something a robot cannot drive through? — the `PinSolid` G422/G421
+ * asks (`src/sim/penalties.ts`), answered from THIS field's own statics.
+ *
+ * ⚠️ WITHOUT IT THE PIN TEST READS DECODE'S FIELD, and is then wrong in both directions at
+ * once. It reports a solid in the two corners where DECODE keeps its goal wedges and BIOBUZZ
+ * keeps open floor — which CANCELS a real pin, because a robot cornered against a solid is
+ * ESCAPING and never PINNING — and it reports open floor where this field's own structures
+ * actually stand: the four FLOWER feet and the two HIVE frame bars, which is most of the
+ * geometry a driver gets held against here.
+ *
+ * IT IS THE COLLIDER ARRAY, not a second description of the field. `statics` already carries
+ * the perimeter (whose bodies lie OUTSIDE the play area with their inner faces exactly on
+ * ±`BB_HALF_*`, so a probe point pushed past the wall lands inside one), the frame bars and
+ * the feet. A solid added to that array is seen by this predicate the same day, which is the
+ * whole reason it reads the array rather than re-listing its contents.
+ *
+ * The general rotated-box test, though every BIOBUZZ static is axis-aligned today: a `rot`
+ * that appears later must not silently start being ignored here.
+ */
+export function bbPinSolid(p: { x: number; y: number }): boolean {
+  for (const s of biobuzzColliders.statics) {
+    const dx = p.x - s.tx;
+    const dy = p.y - s.ty;
+    const c = dcos(s.rot);
+    const sn = dsin(s.rot);
+    // into the box's own frame: rotate by -rot
+    const lx = dx * c + dy * sn;
+    const ly = -dx * sn + dy * c;
+    if (Math.abs(lx) <= s.hx && Math.abs(ly) <= s.hy) return true;
+  }
+  return false;
+}

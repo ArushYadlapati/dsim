@@ -3,6 +3,7 @@ import { hyp } from '../../math';
 import { PIN_END_S, PIN_ESCAPE_DIST, PIN_SECONDS, PIN_STUCK_SPEED } from '../../config';
 import { robotCorners } from '../../sim/physics';
 import { controlledArtifacts, isPinning } from '../../sim/penalties';
+import { bbPinSolid } from './colliders';
 import {
   BB_FLOWER_UNLOCK_S,
   BB_FOUL_SLOP,
@@ -552,6 +553,12 @@ function bbUpdatePins(world: World, dt: number, commands: Map<number, RobotComma
           robotsContact(pinner, pinned),
           commands.get(pinned.id),
           commands.get(pinner.id),
+          // THIS field's solids. Left to its default the test reads DECODE's goal wedges and
+          // classifier channels, which on this field are open floor in two corners and say
+          // nothing about the FLOWER feet and HIVE frame bars a robot is actually held
+          // against — and a victim wrongly read as cornered is read as ESCAPING, so the pin
+          // it is in bills nothing. See `bbPinSolid`.
+          bbPinSolid,
         ),
       );
     }
