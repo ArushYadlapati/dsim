@@ -126,7 +126,14 @@ export async function scrubName(raw: string | undefined | null, fallback: string
  *  `server/db/repo.ts` now needs it too (`saveReplay` is the one funnel all three replay
  *  writers share) and persist.ts imports repo.ts — importing it back would be a cycle. */
 export async function scrubSpecNames(spec: RobotSpec): Promise<RobotSpec> {
-  const name = await scrubName(spec.name, DEFAULT_SPEC.name);
-  const teamName = await scrubName(spec.teamName, '');
+  // ⚠️ CONCURRENT, because this is now on the RESULTS-SCREEN path. `saveReplay` calls it, and
+  // `Room`'s `eloResult` broadcast awaits `onResult` → `persistMatch` → `saveReplay`, so two
+  // SEQUENTIAL hosted round trips per robot are two of them added to every player's wait for
+  // their own rating change (`MODERATION_TIMEOUT_MS` is 4 s each). They are independent
+  // lookups against a shared cache; there is no reason to order them.
+  const [name, teamName] = await Promise.all([
+    scrubName(spec.name, DEFAULT_SPEC.name),
+    scrubName(spec.teamName, ''),
+  ]);
   return name === spec.name && teamName === spec.teamName ? spec : { ...spec, name, teamName };
 }
