@@ -13434,6 +13434,30 @@ function pinScene(
   );
   check('a null baseline yields a full keyframe (every ball in upd)', encodeBallDelta(null, w.balls).upd.length === w.balls.length);
 
+  // ALIASING: what a client is handed must NOT be what the baseline holds. The sim
+  // mutates artifacts in place (pos/vel, and `state` on the rail or in a hopper), so
+  // if `applyBallDelta` served the baseline's own objects the client's own stepping
+  // would rewrite the diff baseline, and every ball the server then did NOT re-send
+  // would rebuild from the client's drifted value.
+  {
+    const held = applied[0];
+    const inBase = clientBase.get(held.id)!;
+    check(
+      'applyBallDelta serves COPIES, nested objects included (no baseline aliasing)',
+      held !== inBase && held.pos !== inBase.pos && held.vel !== inBase.vel && held.state !== inBase.state,
+    );
+    // and the property that matters: mutate what the client holds, then take a delta
+    // that OMITS that ball — the rebuild must still be the server's value.
+    const truth = JSON.parse(JSON.stringify(clientBase.get(held.id)));
+    held.pos.x += 12.5;
+    (held.state as { pending?: boolean }).pending = !(held.state as { pending?: boolean }).pending;
+    const reb = applyBallDelta(clientBase, { order: d1.order, upd: [] });
+    check(
+      'a ball the client mutated and the server did not re-send rebuilds to the SERVER value',
+      JSON.stringify(reb.find((b) => b.id === held.id)) === JSON.stringify(truth),
+    );
+  }
+
   // ACK-KEYED / DROPPED-FRAME: the property the unreliable lane needs. A client sits
   // at baseline b0 and MISSES the intermediate frame; the next delta is encoded vs
   // b0 (the ack), NOT vs the skipped frame. It must still reconstruct the live world
