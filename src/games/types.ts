@@ -179,6 +179,21 @@ export interface GameSimModule {
    * construction: answer `true` rather than making each caller special-case it.
    */
   startLegal?(spec: RobotSpec, a: Alliance, startPose: StartPose | null | undefined): boolean;
+   * DOES THIS GAME RUN AUTO PATHS?
+   *
+   * Only DECODE's step drives path traversal — `initializePathTraversal` /
+   * `updatePathTraversal` are called from `src/sim/world.ts` and nowhere else, and Chain
+   * Reaction and BIOBUZZ have steps of their own. So a `.pp` path imported while one of
+   * those games was selected was accepted by the builder, saved to the library, reported
+   * "Auto path ON", rode the wire into the match — and then the robot sat still for the
+   * whole autonomous period with nothing anywhere saying why.
+   *
+   * Two readers, and they are the two ends of that path: the builder hides the section for
+   * a game that cannot run one (`MatchSetup`), and the spawn chokepoint drops `autoPath` /
+   * `autoPathEnabled` for it (`coerceSetup`) so a path already sitting in localStorage or
+   * arriving off the wire never reaches a world, a snapshot or a replay.
+   */
+  autoPaths: boolean;
   bounds: FieldBounds;
   colliders: FieldColliders;
   createWorld(mode: GameMode, seed: number, setups: RobotSetup[], settings?: GameSettings): World;

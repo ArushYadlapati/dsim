@@ -163,6 +163,11 @@ export function MatchSetup({
   // a game that brings its own start editor supplies it through the module slot;
   // absent ⇒ the two inline branches below (DECODE's and CR's), unchanged
   const StartEd = moduleFor(settings.game).startEditor;
+  // an auto path only DOES something in a game whose step drives path traversal
+  // (`autoPaths`, today DECODE alone). The section used to be shown for every game, so a
+  // CR/BIOBUZZ player could import a `.pp`, see "Auto path ON", and then watch their robot
+  // do nothing for the whole autonomous period. `coerceSetup` drops the path at spawn.
+  const runsAutoPaths = moduleFor(settings.game).autoPaths;
 
   return (
     <section className="ds-panel">
@@ -244,6 +249,7 @@ export function MatchSetup({
           </div>
         </section>
 
+        {runsAutoPaths && (
         <section className="ds-sec">
           <h2>
             Auto path{' '}
@@ -314,6 +320,7 @@ export function MatchSetup({
             .
           </p>
         </section>
+        )}
       </div>
     </section>
   );

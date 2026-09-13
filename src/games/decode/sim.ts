@@ -20,6 +20,7 @@ export const DECODE_SIM: GameSimModule = {
   // G304 itself. `activeStartLegal` already mirrors the canonical pose onto the alliance and
   // waves an absent one through, which is exactly this slot's contract — so it IS the slot.
   startLegal: activeStartLegal,
+  autoPaths: true, // `src/sim/world.ts` — the only step that drives path traversal
   bounds: { halfX: C.FIELD_HALF, halfY: C.FIELD_HALF, viewMargin: C.VIEW_MARGIN },
   colliders: decodeColliders,
   createWorld,

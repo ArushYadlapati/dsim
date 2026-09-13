@@ -55,6 +55,8 @@ export const BIOBUZZ_SIM: GameSimModule = {
   // field is point-symmetric, so red's version of a stored pose is a 180° rotation of it and
   // not an x-reflection; see `bbActiveStartLegal`.
   startLegal: bbActiveStartLegal,
+  // BIOBUZZ's step never calls `updatePathTraversal`, so an imported `.pp` path would be inert
+  autoPaths: false,
   bounds: { halfX: BB_HALF_X, halfY: BB_HALF_Y, viewMargin: BB_VIEW_MARGIN },
   colliders: biobuzzColliders,
   createWorld: createBiobuzzWorld,
