@@ -138,7 +138,7 @@ function LanReplaysPanel({ signedIn, game, onWatchId, onWatchLocal }: LanReplays
   return (
     <div className="ds-panel">
       <div className="ds-panel-h">
-        <span className="ds-panel-title">Self-hosted matches</span>
+        <span className="ds-panel-title">LAN matches</span>
       </div>
       <div className="mh-scroll">
         <table className="ds-table">
@@ -197,8 +197,8 @@ function LanReplaysPanel({ signedIn, game, onWatchId, onWatchLocal }: LanReplays
       </div>
       <p className="ds-panel-foot ds-hint">
         {signedIn
-          ? `Matches you hosted on your own network. They are unofficial — never rated, and never on a leaderboard. Last ${MAX_LOCAL_LAN_RUNS} are kept on this computer.`
-          : `Matches you hosted on your own network, kept on this computer. Sign in to save them to your account.`}
+          ? `Matches you hosted. The last ${MAX_LOCAL_LAN_RUNS} stay on this computer.`
+          : 'Matches you hosted, kept on this computer. Sign in to save them to your account.'}
       </p>
     </div>
   );

@@ -715,6 +715,8 @@ button {
 @media (prefers-reduced-motion: reduce) {
   .game-btn:hover,
   .game-btn:active,
+  .sponsor-chip:hover,
+  .sponsor-chip:active,
   .overlay-buttons button:hover,
   .overlay-buttons button:active {
     transform: none;
@@ -2795,7 +2797,7 @@ input.admin-months {
   gap: var(--ds-s-2);
   margin: 0;
   padding: 8px 12px;
-  border: 1px solid var(--ds-sky-ink);
+  border: 1px solid var(--ds-line-strong);
   border-radius: var(--ds-round-md);
   background: var(--ds-tile);
   color: var(--ds-ink);
@@ -2840,17 +2842,21 @@ input.admin-months {
   color: var(--ds-ink-dim);
   text-decoration: none;
   padding: var(--ds-s-1) var(--ds-s-2);
-  border-radius: var(--ds-round-full);
+  border-radius: var(--ds-round);
   background: var(--ds-hud);
   border: 1px solid var(--ds-hud-line);
   pointer-events: auto;
-  transition: border-color 0.15s, opacity 0.15s;
+  box-shadow: var(--ds-edge-soft);
+  transition: transform 0.06s ease, box-shadow 0.06s ease, border-color 0.15s;
 }
 .sponsor-chip:hover {
   border-color: var(--ds-accent);
+  transform: translateY(1px);
+  box-shadow: 0 2px 0 var(--ds-line);
 }
 .sponsor-chip:active {
-  opacity: 0.7;
+  transform: translateY(3px);
+  box-shadow: 0 0 0 var(--ds-line);
 }
 .sponsor-chip:focus-visible {
   outline: 2px solid var(--ds-accent);

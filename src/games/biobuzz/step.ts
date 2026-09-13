@@ -100,12 +100,24 @@ export function biobuzzStep(world: World, dt: number, commands: Map<number, Robo
   for (const r of world.robots) from.set(r.id, { x: r.pos.x, y: r.pos.y, heading: r.heading });
   for (const r of world.robots) {
     let cmd = enabled ? (commands.get(r.id) ?? ZERO_CMD) : ZERO_CMD;
-    // 2. AIM HOOK — turretless launchers turn the whole robot to face their target while the
-    // fire button is held. Null when this build aims some other way (a turret slews itself)
-    // or when there is nothing to aim at, which in the shell is always: `scoreTargets()` is
-    // empty until Section 9 exists.
+    // 2. AIM HOOK — holding fire on a DUMPER turns the whole robot onto the cell Aim Assist is on
+    // (`bbAimAssist`), and `bbLaunch` dumps once it is lined up and the dump would land — the
+    // same feel as Chain Reaction's dumper. Null when this build aims some other way (a turret
+    // slews itself).
+    //
+    // ⚠️ A TANK TURNS ONLY FROM ITS SIDE DRIVES. The shared drive model takes a tank's yaw from
+    // `rightDrive − leftDrive` and ignores `rotate` (`src/sim/robot.ts`), so overriding `rotate`
+    // alone left a tank dumper — the StarterBot — facing wherever the driver left it. The turn is
+    // written into both: `rotate` for every other drivetrain (`omega = rotate · maxTurn`), and the
+    // side drives as the driver's own forward (their mean) ∓ the turn (`omega = (rd − ld) ·
+    // maxTurn / 2`, the same rate), with the forward trimmed so the turn always gets its share.
     const aim = bbAimAssist(world, r, cmd, enabled);
-    if (aim !== null) cmd = { ...cmd, rotate: aim };
+    if (aim !== null) {
+      const fwd = ((cmd.leftDrive ?? 0) + (cmd.rightDrive ?? 0)) / 2;
+      const room = 1 - Math.abs(aim);
+      const f = Math.max(-room, Math.min(room, fwd));
+      cmd = { ...cmd, rotate: aim, leftDrive: f - aim, rightDrive: f + aim };
+    }
     actual.set(r.id, cmd);
     // 3. DRIVETRAIN
     drive.set(r.id, updateRobot(world, r, cmd, dt));

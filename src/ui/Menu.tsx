@@ -1159,12 +1159,14 @@ export function Menu({ settings, onChange }: Props) {
             >
               <span className="ot">Auto intake {settings.assists.autoIntake ? 'ON' : 'OFF'}</span>
             </button>
-            <button
-              className={`ds-opt ${settings.assists.autoFire ? 'on' : ''}`}
-              onClick={() => setAssist({ autoFire: !settings.assists.autoFire })}
-            >
-              <span className="ot">Auto fire {settings.assists.autoFire ? 'ON' : 'OFF'}</span>
-            </button>
+            {mod.offersAutoFire !== false && (
+              <button
+                className={`ds-opt ${settings.assists.autoFire ? 'on' : ''}`}
+                onClick={() => setAssist({ autoFire: !settings.assists.autoFire })}
+              >
+                <span className="ot">Auto fire {settings.assists.autoFire ? 'ON' : 'OFF'}</span>
+              </button>
+            )}
           </div>
         </section>
 

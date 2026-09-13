@@ -61,7 +61,7 @@ const BB_STARTER_ASSISTS = {
   fieldCentric: false,
   aimAssist: true,
   autoIntake: true,
-  autoFire: true,
+  autoFire: false, // BIOBUZZ has no auto-fire — Aim Assist gates the driver's own fire
 } as const;
 
 /**

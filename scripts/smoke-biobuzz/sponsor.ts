@@ -199,6 +199,16 @@ export function sponsorChecks(check: Check): void {
     html.includes(SPONSOR.url),
     'index.html',
   );
+  // The loading screen ships before any bundle runs, so its href is the ONE
+  // sponsor link in the repo written by hand instead of by `sponsorLink`. An
+  // untagged one files under "direct" in Offset's own analytics and is
+  // attributable to nobody — which is invisible rather than wrong, i.e. the exact
+  // failure this lane exists for. Compare the two strings so they cannot drift.
+  check(
+    'sponsor: the loading-screen link is UTM-tagged as the `loading` placement',
+    html.includes(sponsorLink('loading').replace(/&/g, '&amp;')),
+    `index.html — expected ${sponsorLink('loading')}`,
+  );
 
   // ── the desktop build ─────────────────────────────────────────────────────
   const splash = read('electron/splash.html');
@@ -259,6 +269,50 @@ export function sponsorChecks(check: Check): void {
       ui.includes("trackEvent('sponsor_click', { placement })"),
     'a click count with no impression count has no scale attached to it',
   );
+  // AN IMPRESSION IS A VIEW, NOT A MOUNT. The footer mark is in the DOM of every
+  // shell page whether or not the visitor scrolled to it, so a mount-counted
+  // denominator is inflated — and it is the denominator the click rate is
+  // divided by, i.e. the number the renewal is argued over. Reverting this to a
+  // bare mount effect is a two-line edit that nothing else would notice.
+  const uiCode = code('src/ui/Sponsor.tsx');
+  check(
+    'sponsor: an impression requires the mark to be VISIBLE, not merely mounted',
+    uiCode.includes('IntersectionObserver') && uiCode.includes('VIEWABLE_MS'),
+    'src/ui/Sponsor.tsx — useSponsorExposure',
+  );
+  check(
+    'sponsor: a backgrounded tab does not accrue exposure',
+    uiCode.includes("document.visibilityState === 'hidden'"),
+    'src/ui/Sponsor.tsx — an impression nobody could see is not an impression',
+  );
+  check(
+    'sponsor: time-on-screen is reported, bucketed',
+    uiCode.includes("trackEvent('sponsor_dwell'") && uiCode.includes('dwellBucket('),
+    'src/ui/Sponsor.tsx — a 20-minute session and a 3-second bounce are one row without it',
+  );
+  // The `replay` placement reaches people who never opened DSIM, and counted
+  // nothing at all until the burn-in was tallied at export.
+  const replayCode = code('src/ui/ReplayView.tsx');
+  check(
+    'sponsor: an exported video carrying the burn-in is counted',
+    replayCode.includes("placement: 'replay'") && replayCode.includes('countBurnIn('),
+    'src/ui/ReplayView.tsx — the one placement with reach beyond our own traffic',
+  );
+  check(
+    'sponsor: the burn-in is only counted while the term is live',
+    replayCode.includes('if (sponsorActive()) trackEvent'),
+    'src/ui/ReplayView.tsx — an export after the term has no mark in it to bill',
+  );
+  // The Electron splash cannot beacon (the desktop build does not report to a host
+  // it does not run on), so the download is the only number standing in for it.
+  check(
+    'sponsor: desktop downloads are counted, as the splash’s proxy',
+    code('src/ui/Download.tsx').includes("trackEvent('desktop_download'"),
+    'src/ui/Download.tsx',
+  );
+  for (const ev of ['sponsor_dwell', 'desktop_download']) {
+    check(`sponsor: '${ev}' is a declared analytics event`, analytics.includes(`'${ev}'`), 'src/analytics.ts');
+  }
   check(
     'sponsor: new players are counted where signup COMPLETES',
     read('src/ui/UsernameGate.tsx').includes("trackEvent('player_joined')"),

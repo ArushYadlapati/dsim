@@ -214,6 +214,7 @@ inline branches stay untouched:
 | `mobileButtons` | `MobileControls.tsx`. A new key needs a `GameSettings.mobileLayout` entry, and a genuinely new action needs a protocol bit |
 | `labels.configSummary` | `robotLabels.ts` + `Leaderboard.tsx` |
 | `devRoutes` | `App.tsx` routing — **alpha channel only** (`devRoutesEnabled()`) |
+| `offersAutoFire` | `Menu.tsx` Driver assists — `false` hides the Auto fire toggle (BIOBUZZ: Aim Assist gates the driver's fire instead) |
 
 and, on the DOM-free side, `GameSimModule.hud?(world, robotId)` → `HudSnapshot.gameHud`:
 the game's own HUD slice, opaque (`unknown`) because only its own components read it — plus

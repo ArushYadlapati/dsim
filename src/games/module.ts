@@ -92,6 +92,10 @@ export interface GameModule extends GameSimModule {
   /** extra touch action buttons. Each one's POSITION comes from
    * `GameSettings.mobileLayout`, so a genuinely new action needs a key there too. */
   mobileButtons?: readonly GameMobileButton[];
+  /** `false` when this game has no auto-fire assist, which hides `Menu`'s Auto fire toggle. The
+   * game's sim must also ignore the flag (BIOBUZZ forces it false at spawn). Absent means the
+   * toggle is offered, as it is for DECODE and Chain Reaction. */
+  offersAutoFire?: boolean;
   /** the game's start-position editor, used in place of the
    * `isDecode ? StartPositionEditor : ChainStartEditor` branch. */
   startEditor?: ComponentType<StartEditorProps>;
