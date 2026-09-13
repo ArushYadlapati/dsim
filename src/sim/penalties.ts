@@ -552,11 +552,57 @@ function contactPush(
   return { speed, dirX: pv.x / speed, dirY: pv.y / speed };
 }
 
-export function controlledArtifacts(world: World, r: RobotState, dt: number, intaking: boolean): number {
+/**
+ * The two things the CONTROL test needs that are NOT the same in every game.
+ *
+ * Everything else in `controlledArtifacts` is already game-neutral and stays that way: the
+ * flat-or-concave face is `robotExtents`, which resolves whatever intake and mount THIS robot
+ * has, and the station/carry tests are about the artifact's motion. These two are not.
+ */
+export interface ControlGeometry {
+  /**
+   * The zone carve-out C is scoped to — the manual's "attempting to acquire a SCORING ELEMENT
+   * FROM THE LOADING ZONE". Every game has a restock corner and no two put it in the same
+   * place; read against DECODE's, a BIOBUZZ robot collecting its own NECTAR is billed for
+   * herding and a robot in DECODE's corner is excused for nothing.
+   */
+  carveOut?(a: Alliance): Rect | null;
+  /**
+   * How many elements this robot's hopper holds, when that is not `C.HOPPER_CAPACITY`.
+   *
+   * It is the ceiling on the intake-MOUTH carve-out — an artifact on its way into a slot is
+   * already charged against the limit by the slot waiting for it, so a robot with no room is
+   * acquiring nothing and gets no exemption. Read against DECODE's 3, a BIOBUZZ robot carrying
+   * its legal 4 reads as full and loses the carve-out entirely.
+   */
+  hopperCap?(r: RobotState): number;
+  /**
+   * The artifact radius to assume for an artifact that does not carry its own (`Artifact.r`).
+   * It sets how close counts as TOUCHING and how far the transitive chain reaches, so
+   * DECODE's 2.5 in applied to a 2.8 in BIOBUZZ POLLEN makes both too generous by more than
+   * an inch — the chain by twice that.
+   */
+  radius?: number;
+}
+
+export function controlledArtifacts(
+  world: World,
+  r: RobotState,
+  dt: number,
+  intaking: boolean,
+  geom?: ControlGeometry,
+): number {
   const pen = world.penalties;
-  const home = loadZone(r.alliance);
-  const reach = C.BALL_RADIUS + C.POSSESSION_CONTROL_MARGIN; // touching the footprint
-  const chain = C.BALL_RADIUS * 2 + C.POSSESSION_CONTROL_MARGIN; // ...or touching one that is
+  const home = geom?.carveOut ? geom.carveOut(r.alliance) : loadZone(r.alliance);
+  const R0 = geom?.radius ?? C.BALL_RADIUS;
+  /**
+   * This artifact's own radius. TOUCHING the footprint is one of these plus the margin, and
+   * the transitive chain is TWO of them — which is why both tests read it per artifact rather
+   * than off a pair of constants: a game with two element sizes (BIOBUZZ's 2.8 in POLLEN and
+   * 3.6 in NECTAR) has no single right answer to either. DECODE sets no `Artifact.r`, so both
+   * collapse to exactly the constants they replace.
+   */
+  const rad = (b: Artifact): number => b.r ?? R0;
   const loose = world.balls.filter((b) => b.state.kind === 'ground');
 
   const held = new Set<number>();
@@ -572,7 +618,9 @@ export function controlledArtifacts(world: World, r: RobotState, dt: number, int
   for (const b of loose) {
     const key = `${r.id}:${b.id}`;
     const cp = closestPointOnRobot(r, b.pos);
-    if (hyp(b.pos.x - cp.x, b.pos.y - cp.y) > reach) {
+    // `rad(b)` rather than the flat `reach`, so a game with two element SIZES measures each
+    // one against its own skin. DECODE sets no `Artifact.r`, so this IS `reach` there.
+    if (hyp(b.pos.x - cp.x, b.pos.y - cp.y) > rad(b) + C.POSSESSION_CONTROL_MARGIN) {
       /**
        * Not touching THIS TICK: the clock drains, and a long enough gap forgets the station.
        *
@@ -730,7 +778,8 @@ export function controlledArtifacts(world: World, r: RobotState, dt: number, int
    * An intake takes one per cycle; excusing a hopper's worth at once modelled nothing.
    */
   const perCycle = C.INTAKE_PRESETS[r.spec.intake].mouth.dual ? 2 : 1;
-  let room = Math.min(perCycle, Math.max(0, C.HOPPER_CAPACITY - r.hopper.length));
+  const cap = geom?.hopperCap ? geom.hopperCap(r) : C.HOPPER_CAPACITY;
+  let room = Math.min(perCycle, Math.max(0, cap - r.hopper.length));
   if (room > 0 && intaking) {
     const mouth = [...held]
       .map((id) => {
@@ -778,7 +827,7 @@ export function controlledArtifacts(world: World, r: RobotState, dt: number, int
    *
    * Carrying one OUT is therefore control again, correctly, and always was.
    */
-  if (robotInZone(r, home)) {
+  if (home && robotInZone(r, home)) {
     for (const b of loose) {
       // unconditionally, NOT just the ones already held: the artifact the robot has not got a
       // grip on yet still has to be excused, or the CHAIN reaches it through one that is and
@@ -832,7 +881,9 @@ export function controlledArtifacts(world: World, r: RobotState, dt: number, int
       if (reached.has(b.id)) continue;
       for (const o of loose) {
         if (!reached.has(o.id)) continue;
-        if (hyp(b.pos.x - o.pos.x, b.pos.y - o.pos.y) <= chain) {
+        // the two SKINS meeting, which is the sum of the two radii — one flat `chain` is only
+        // right for a game whose elements are all one size.
+        if (hyp(b.pos.x - o.pos.x, b.pos.y - o.pos.y) <= rad(b) + rad(o) + C.POSSESSION_CONTROL_MARGIN) {
           reached.add(b.id);
           grew = true;
           break;

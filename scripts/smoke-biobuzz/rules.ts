@@ -42,7 +42,8 @@ import {
 } from '../../src/games/biobuzz/penalties';
 import { biobuzzFieldHud } from '../../src/games/biobuzz/hud';
 import { bbScene, bbSceneAt } from '../../src/games/biobuzz/scenes';
-import { footprintExtents } from '../../src/sim/field';
+import { footprintExtents, loadZone } from '../../src/sim/field';
+import { robotIntersectsRect } from '../../src/sim/physics';
 import { cmd, setup, type Check } from './harness';
 
 /** the repo root, for the source-text checks below — `core.ts`'s pattern. */
@@ -761,8 +762,8 @@ function penaltyChecks(check: Check): void {
      *
      * y = 40 keeps the whole run clear of the HIVE frame bars (|y| ≤ `BB_FRAME_Y` = 19.4), so a
      * 30 in/s herd cannot also trip G417 and pollute the event list; x runs −40 → −10, clear of
-     * both DECODE loading-zone rects (blue’s is x ≥ 49, and it is DECODE’s that the shared
-     * CONTROL test reads — see `bbControlled`) and of every wall.
+     * every wall and of BOTH loading-zone rectangles — this field’s `BB_LZ` (which is what
+     * carve-out C now reads, see `BB_CONTROL_GEOMETRY`) and DECODE’s, which it used to.
      */
     const stagePile = (n: number): Artifact[] => {
       w.balls = [];
@@ -871,6 +872,123 @@ function penaltyChecks(check: Check): void {
         Object.keys(w.penalties.ballAnchor).length === 0 &&
         Object.keys(w.penalties.ballCarry ?? {}).length === 0,
       `${Object.keys(w.penalties.ballHold).length}/${Object.keys(w.penalties.ballAnchor).length}`);
+  }
+
+  // ── G407: CARVE-OUT C is THIS field's LOADING ZONE, not DECODE's ──────────
+  /**
+   * The shared CONTROL test carries three pieces of geometry that used to be DECODE's by
+   * default, and this is the one a BIOBUZZ driver meets every restock cycle: carve-out C,
+   * "inadvertent contact with a SCORING ELEMENT while attempting to acquire a SCORING ELEMENT
+   * FROM THE LOADING ZONE". `controlledArtifacts` read `loadZone(a)` — DECODE's 23 x 23
+   * audience corner — so on this field the exemption was granted in a corner where BIOBUZZ has
+   * open tiles and withheld in the 11 x 24 strip where its own human player actually hands
+   * elements in. `BB_CONTROL_GEOMETRY.carveOut` supplies `BB_LZ` instead.
+   *
+   * ── WHY THE SCENE IS 2 CARRIED + 3 HERDED AND NOT 5 HERDED ────────────────
+   * `BB_LZ.blue` is ELEVEN inches wide. A row of five POLLEN spread across a 17 in bumper is
+   * twelve, so five abreast cannot be inside the zone at all and a check that staged them
+   * there would be asserting something the field cannot hold. Two in the hopper are clause A
+   * (fully supported), which no carve-out touches, so the count is still five and the only
+   * thing the zone can change is the three on the bumper.
+   *
+   * `autoIntake` stays OFF. The mouth exemption would excuse one more and has its own checks
+   * above; what is under test here is the ZONE and nothing else.
+   *
+   * ── AND THE OPEN-FLOOR TWIN IS THE NON-VACUITY PROOF, KEPT ────────────────
+   * Both scenes are the same five elements herded the same way for the same time. The only
+   * difference is where on the field it happens, so a carve-out that reads the wrong rectangle
+   * cannot pass both. The BLUE scene also sits clear of DECODE's blue LOADING ZONE
+   * (`loadZone('blue')`, the y <= -49 corner), asserted below — with the old geometry every
+   * element here is outside the excusing rectangle and the zone scene warns.
+   */
+  {
+    const w = bare([{ id: 0, alliance: 'blue' }]);
+    w.match.phase = 'teleop';
+    w.match.phaseTimeLeft = 90;
+    const r = w.robots[0];
+    r.autoIntake = false;
+    const warnings = () => w.events.filter((e) => e.includes('G407')).length;
+
+    /**
+     * TWO IN THE HOPPER, THREE ON THE FRONT BUMPER, nose pointing +y.
+     *
+     * The row is laid from the robot's centre TOWARD +x at one diameter's pitch rather than
+     * centred on it, because the zone hugs the +x wall: a 17 in bumper centred inside an 11 in
+     * strip overhangs it on both sides, and an element off the near end would sit outside the
+     * rectangle, escape the carve-out, and re-enter through the transitive chain. Every element
+     * still meets the FRONT FACE (the face spans the full width and the row is inset from both
+     * corners), which `contactPush` requires — it refuses a convex corner outright.
+     */
+    const restock = (cx: number, cy: number): Artifact[] => {
+      w.balls = [];
+      w.events.length = 0;
+      r.pos = { x: cx, y: cy };
+      r.heading = Math.PI / 2;
+      r.vel = { x: 0, y: 0 };
+      r.hopper = ['yellow', 'yellow'];
+      w.penalties.ballHold = {};
+      w.penalties.ballAnchor = {};
+      w.penalties.ballCarry = {};
+      const bb = w.biobuzz;
+      if (bb) bb.foulEdge = {};
+      const e = footprintExtents(r.spec);
+      const pile: Artifact[] = [];
+      for (let i = 0; i < 3; i++) {
+        const b = el('yellow', { kind: 'ground' }, cx + i * BB_POLLEN_R * 2, cy + e.front + BB_POLLEN_R);
+        w.balls.push(b);
+        pile.push(b);
+      }
+      return pile;
+    };
+
+    /** the `herd` above, turned 90 degrees: robot and row travel +y together at `v`. */
+    const herdY = (pile: Artifact[], s: number, v: number): void => {
+      r.vel = { x: 0, y: v };
+      for (const b of pile) b.vel = { x: 0, y: v };
+      for (let i = 0; i < ticks(s); i++) {
+        r.pos = { x: r.pos.x, y: r.pos.y + v * SIM_DT };
+        for (const b of pile) b.pos = { x: b.pos.x, y: b.pos.y + v * SIM_DT };
+        updateBiobuzzPenalties(w, SIM_DT, NO_CMD);
+      }
+    };
+
+    /**
+     * 23 in/s for 0.7 s is 16.1 in of travel — over `POSSESSION_HERD_SPEED` (22), past
+     * `POSSESSION_CARRY_DIST` (5 in) in the first fifth of a second and then `POSSESSION_CONFIRM`
+     * (0.45 s) with room to spare. It is deliberately the SLOWEST shove that still qualifies,
+     * because the zone is only 24 in deep in y and the row has to still be inside it when the
+     * count lands.
+     */
+    const HERD_S = 0.7;
+    const HERD_V = 23;
+
+    // OPEN FLOOR: clear of both LOADING ZONES, both GARDENS and the HIVE frame bars.
+    const open = restock(-50, 20);
+    herdY(open, HERD_S, HERD_V);
+    check('G407: two carried and three herded is five, and in open floor that warns',
+      warnings() === 1, String(warnings()));
+
+    // ...and the SAME five, the same shove, inside blue's own LOADING ZONE.
+    const zone = restock(63.5, -53.9);
+    herdY(zone, HERD_S, HERD_V);
+    check('G407: collecting the restock inside the own LOADING ZONE is not herding',
+      warnings() === 0, String(warnings()));
+
+    // the fixture is only worth anything if it really is in the zone at the end of the shove
+    const lz = BB_LZ.blue;
+    const inLz = (b: Artifact): boolean =>
+      b.pos.x >= lz.x0 && b.pos.x <= lz.x1 && b.pos.y >= lz.y0 && b.pos.y <= lz.y1;
+    check('G407: ...and every element of it was inside BB_LZ.blue when the shove ended',
+      zone.every(inLz), zone.map((b) => `${b.pos.x.toFixed(1)},${b.pos.y.toFixed(1)}`).join(' '));
+    check('G407: ...while the ROBOT overlapped the zone too, which carve-out C also requires',
+      robotIntersectsRect(r, { x0: lz.x0, x1: lz.x1, y0: lz.y0, y1: lz.y1 }));
+
+    // ...and NONE of it was inside DECODE's blue LOADING ZONE, which is what the shared test
+    // read before `BB_CONTROL_GEOMETRY`. So the silence above is this field's rectangle.
+    const dz = loadZone('blue');
+    check('G407: ...and none of it is inside DECODE’s blue LOADING ZONE, so the pass is BB_LZ’s',
+      zone.every((b) => !(b.pos.x >= dz.x0 && b.pos.x <= dz.x1 && b.pos.y >= dz.y0 && b.pos.y <= dz.y1)),
+      zone.map((b) => `${b.pos.x.toFixed(1)},${b.pos.y.toFixed(1)}`).join(' '));
   }
 
   // ── G417: ramming the HIVE frame — STRATEGIC, so a MAJOR on the FIRST hit ─

@@ -2,7 +2,7 @@ import type { Alliance, RobotCommand, RobotState, Vec2, World } from '../../type
 import { hyp } from '../../math';
 import { PIN_END_S, PIN_ESCAPE_DIST, PIN_SECONDS, PIN_STUCK_SPEED } from '../../config';
 import { robotCorners } from '../../sim/physics';
-import { controlledArtifacts, isPinning } from '../../sim/penalties';
+import { type ControlGeometry, controlledArtifacts, isPinning } from '../../sim/penalties';
 import { bbPinSolid } from './colliders';
 import {
   BB_FLOWER_UNLOCK_S,
@@ -10,7 +10,10 @@ import {
   BB_FRAME_BAR_IN,
   BB_FRAME_BAR_OUT,
   BB_FRAME_Y,
+  BB_LZ,
+  BB_POLLEN_R,
   BB_PTS,
+  bbHopperCap,
 } from './config';
 import { bbKindOf } from './score';
 
@@ -128,39 +131,40 @@ export const BB_CONTROL_LIMIT = 4;
  * distance, a re-station rule, an intake-mouth carve-out and a transitive contact chain — and
  * duplicating any of it here would have been a second opinion about the same sentence.
  *
- * ── THREE CONSTANTS IT READS ARE DECODE’S, AND ONE OF THEM MATTERS ──────────
- * The shared function is written against DECODE’s field and DECODE’s artifact, and BIOBUZZ
- * borrows it whole. Measured, the divergences are:
+ * ── THE THREE DECODE CONSTANTS IT USED TO READ ARE NOW PASSED IN ────────────
+ * `ControlGeometry` is the field-plan §6 request this lane filed, and all three divergences it
+ * named are closed. What they were, so the sizes are on record:
  *
- *  1. ⚠️ **`C.BALL_RADIUS` is 2.5 in; a BIOBUZZ element is simulated at `BB_POLLEN_R` = 1.4.**
- *     So `reach` (touching) is 2.9 in rather than 1.8, and the transitive `chain` is 5.4 in
- *     rather than 3.2 — nearly two element DIAMETERS of gap still links two elements. This is
- *     the one that can bill a robot for a pile it is not touching, and it is the field-plan §6
- *     request this change adds: **`controlledArtifacts` should read the artifact’s own `r`**
- *     (every `Artifact` already carries one) instead of the module constant. Until it does, the
- *     count errs HARSH on a loose scatter, which for a rule whose only sanction is a warning is
- *     the survivable direction — but it is still wrong, and the smoke pins the gap so the day
- *     the shared function takes `b.r` the numbers here move visibly rather than quietly.
- *  2. `C.HOPPER_CAPACITY` is 3 and a BIOBUZZ hopper holds 4, so the intake-mouth carve-out
- *     (`room = HOPPER_CAPACITY - hopper.length`) is already spent at 3 elements and a BIOBUZZ
- *     robot carrying its legal four gets none of it. Harsh again, and small: the carve-out is
- *     worth one element for the second or so an intake takes.
- *  3. `loadZone(r.alliance)` is DECODE’s driver-side rect, not `BB_LZ` — which in BIOBUZZ is a
- *     23 × 11 strip against the SIDE wall at a different place entirely. So the real BIOBUZZ
- *     LOADING ZONE gets no carve-out (a robot collecting its restock is counted), and a strip
- *     of BIOBUZZ floor that is not a loading zone gets one. Both halves are wrong; neither is
- *     reachable from this lane, because the carve-out is chosen inside the shared function.
- *
- * All three are one request — a per-game geometry for the shared CONTROL test — and all three
- * are named in the handoff. None of them is a reason to keep hand-rolling the rule: a slightly
- * generous radius on a real detector beats an exact hopper count that cannot see herding at all.
+ *  1. **`C.BALL_RADIUS` 2.5 in against a BIOBUZZ element simulated at 1.4.** TOUCHING was
+ *     2.9 in rather than 1.8 and the transitive chain 5.4 rather than 3.2 — nearly two element
+ *     DIAMETERS of gap still linked two elements, which bills a robot for a pile it is not
+ *     touching. The shared function now reads each artifact's OWN `r` and falls back to
+ *     `radius`, so this game's two sizes (POLLEN 2.8, NECTAR 3.6) each measure against their
+ *     own skin.
+ *  2. **`C.HOPPER_CAPACITY` 3 against a BIOBUZZ hopper of 4**, so the intake-MOUTH carve-out
+ *     was already spent at 3 and a robot carrying its legal four got none of it. `hopperCap`
+ *     is `bbHopperCap`, the same function the intake and the HUD read.
+ *  3. **`loadZone(r.alliance)` is DECODE's driver-side rect, not `BB_LZ`** — a 23 × 11 strip
+ *     against the SIDE wall, somewhere else entirely. Both halves were wrong at once: a robot
+ *     collecting its own restock was counted, and a strip of ordinary BIOBUZZ floor was
+ *     excused. `carveOut` is `BB_LZ`.
  *
  * ⚠️ AND A SEPARATE, STILL-OPEN GAP: until Lane B lifts `BB_STORAGE_MAX` (relay 2), `bbHopperCap`
  * clamps every hopper to 4. The HOPPER half therefore still cannot exceed the limit on its own
  * in a driven match; the HERDED half can, and now does, which is the whole point of this change.
  */
+const BB_CONTROL_GEOMETRY: ControlGeometry = {
+  // the REAL LOADING ZONE, so a robot collecting its own restock is not billed for herding it.
+  carveOut: (a) => BB_LZ[a],
+  // the fallback for an element that carries no `r` of its own; POLLEN is the common case.
+  radius: BB_POLLEN_R,
+  // the same cap the intake and the HUD read, so the carve-out closes exactly when the hopper
+  // is actually full rather than one element early.
+  hopperCap: (r) => bbHopperCap(r.spec),
+};
+
 function bbControlled(world: World, r: RobotState, dt: number, intaking: boolean): number {
-  return controlledArtifacts(world, r, dt, intaking);
+  return controlledArtifacts(world, r, dt, intaking, BB_CONTROL_GEOMETRY);
 }
 
 /**
