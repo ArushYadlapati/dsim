@@ -2,8 +2,13 @@
 
 Branch **`claude/hive-physics-rendering-tjz7mj`**. Four owner-reported HIVE items, all inside
 `src/games/biobuzz/` (nothing shared touched). Gates: `npx tsc --noEmit -p .` clean,
-`server:check` clean, `test:bb` **1289 ALL PASS**, `npm run build` ok. Full `npm test` — see the
-commit message / final report for whether it was run to the end.
+`server:check` clean, `test:bb` **1289 ALL PASS**, `npm run build` ok. Full `npm test` run to the
+end: the shared suite reports **2 FAILURES, both PRE-EXISTING and not this branch's** — `lan gate:
+alpha opens it; production does not mention it at all` and `lan gate: and production still opens
+neither door`. They assert `fly.toml` carries no `LAN_UPLOADS` / `LAN_SIGNALLING`, and the
+2026-09-13 promotion (below) deliberately put both in `fly.toml [env]` to turn LAN on for
+production. The check is stale against that owner decision; the files it reads are untouched by
+this commit. Whoever owns the LAN policy should either retire those two checks or drop the flags.
 
 - **A heavier tray tips faster** (`hive.ts` `hiveSwingRate`, `hiveSurplus`). The 4 s swing is
   the swing of a tray at EXACTLY its tip-table threshold; each element over the threshold adds
