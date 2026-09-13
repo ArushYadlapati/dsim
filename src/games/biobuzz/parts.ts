@@ -299,7 +299,7 @@ export function bbBoxTubeGlyph(
   let ux = d.x;
   let uy = d.y;
   if (toward) {
-    const k = Math.hypot(toward.x - outer.x, toward.y - outer.y);
+    const k = hyp(toward.x - outer.x, toward.y - outer.y);
     if (k > 1e-6) {
       ux = (toward.x - outer.x) / k;
       uy = (toward.y - outer.y) / k;
