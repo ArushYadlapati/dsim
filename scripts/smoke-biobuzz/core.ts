@@ -42,7 +42,11 @@ import {
   BB_STARTER_BOTS,
   bbPresetLines,
 } from '../../src/games/biobuzz/presets';
-import { bbCoerce, type Check } from './harness';
+import { SIM_DT } from '../../src/config';
+import { createBiobuzzWorld } from '../../src/games/biobuzz/spawn';
+import { biobuzzStep } from '../../src/games/biobuzz/step';
+import { biobuzzFieldHud } from '../../src/games/biobuzz/hud';
+import { bbCoerce, cmd, setup, type Check } from './harness';
 
 /** a section heading in the log — the suite is read as a transcript, like smoke.ts */
 function section(title: string): void {
@@ -475,6 +479,103 @@ export function coreChecks(check: Check): void {
     check('HudSlots.tsx renders no HOPPER count chip', !hudSrc.includes('HOPPER'));
     check('HudSlots.tsx renders the held elements as hopper pips', hudSrc.includes('hopper-pip'));
     check('HudSlots.tsx shows the FLOWER IN REACH chip', hudSrc.includes('FLOWER IN REACH'));
+
+    /**
+     * THE NECTAR CHIP NAMES WHICH REFUSAL IT WAS, and there is one line per member of
+     * `BbNectarWhy`. Pinned at the source for the same reason the HOPPER check above is: a
+     * mapping that quietly loses a branch still renders a perfectly plausible chip, and the
+     * field draws no text, so a wrong line here is a driver's only reading of the rule.
+     */
+    check(
+      'HudSlots.tsx drives the NECTAR chip from nectarWhy, not from the stock and the debt',
+      hudSrc.includes('nectarWhy[hud.alliance]'),
+    );
+    check(
+      'NECTAR chip: `ok` with a banked TIP states the stock and what is owed',
+      hudSrc.includes('due > 0 ? `NECTAR ${n} · ${due} DUE`'),
+    );
+    // Past the 1:00 cue the whole remaining stock may go in with nothing banked, so `due` is 0
+    // while the press is still granted. `0 DUE` would read as "nothing to do" in the one minute
+    // where the answer is "all of it" — the same word the FLOWERS OPEN chip uses, on purpose.
+    check(
+      'NECTAR chip: `ok` in the dump window says OPEN, never `0 DUE`',
+      hudSrc.includes('`NECTAR ${n} · OPEN`'),
+    );
+    check(
+      'NECTAR chip: `none-owed` says so, so a dead button does not read as broken',
+      hudSrc.includes('`NECTAR ${n} · NONE OWED`'),
+    );
+    check(
+      'NECTAR chip: `none-left` drops the count — an empty stock is not a quantity',
+      hudSrc.includes("'NECTAR OUT'"),
+    );
+    check(
+      'NECTAR chip: `locked` (the FROZEN FIELD, not G410) states the stock alone',
+      hudSrc.includes('locked: (n) => `NECTAR ${n}`'),
+    );
+    // G410 keeps its OWN chip. The two are different rules about different acts — a frozen
+    // field versus a NECTAR entering a FLOWER — and one line for both would misstate both.
+    check('...and G410 keeps its own separate chip', hudSrc.includes('NECTAR LOCKED'));
+
+    /**
+     * THE CUE HAS A POSITIVE SIGNAL, HELD, NOT A CHIP THAT SITS THERE FOR A MINUTE.
+     * NECTAR LOCKED used to just stop being drawn at 1:00, which is not a cue. The chip must
+     * go through `useHeldBump` (`opened`) or it becomes noise for the rest of the match, and
+     * it must reuse `chip on` — a colour token invented for one chip is a new pair for
+     * `npm run contrast` to audit.
+     */
+    check('HudSlots.tsx shows FLOWERS OPEN at the 1:00 cue', hudSrc.includes('FLOWERS OPEN'));
+    check(
+      '...HELD off the match clock, not bound to the state for the rest of the match',
+      hudSrc.includes('{opened && '),
+    );
+    check(
+      '...and it reuses `chip on` rather than a colour of its own',
+      hudSrc.includes('<span className="chip on">FLOWERS OPEN</span>'),
+    );
+  }
+
+  // ---- ...and the slice really carries the value the chip is indexed by ----
+  /**
+   * THE BEHAVIOURAL HALF. The source checks above prove the four lines exist; this proves the
+   * HUD slice hands the component something to pick between. It is the `none-owed` case
+   * specifically because that is the one the chip was written for — a FULL stock with no
+   * entitlement is indistinguishable, from outside, from a full stock with one, and it is the
+   * state an alliance sits in for most of a match.
+   *
+   * TELEOP with 90 s left: play is running (so the answer is not the frozen-field `locked`)
+   * and the 1:00 dump window has not opened (so it is not `ok` either). One real tick of the
+   * BIOBUZZ pipeline, because `nectarWhy` is recomputed in `play.ts` rather than seeded — a
+   * freshly built world still reads the `none-left` that `state.ts` starts it at.
+   */
+  section('BIOBUZZ HUD slice — nectarWhy');
+  {
+    const w = createBiobuzzWorld('match', 11, [setup(0, 'red', {}, 0), setup(1, 'blue', {}, 0)]);
+    w.match.phase = 'teleop';
+    w.match.phaseTimeLeft = 90;
+    biobuzzStep(w, SIM_DT, new Map([[0, cmd({})], [1, cmd({})]]));
+    const hud = biobuzzFieldHud(w);
+    const bb = w.biobuzz!;
+    check(
+      'the field slice carries nectarWhy, per alliance',
+      typeof hud.nectarWhy?.red === 'string' && typeof hud.nectarWhy?.blue === 'string',
+      JSON.stringify(hud.nectarWhy),
+    );
+    check(
+      'the scene really is a FULL stock with no entitlement (else the next check proves nothing)',
+      bb.nectarStock.red > 0 && bb.nectarDue.red === 0 && bb.nectarStock.blue > 0 && bb.nectarDue.blue === 0,
+      `red ${bb.nectarStock.red}/${bb.nectarDue.red} · blue ${bb.nectarStock.blue}/${bb.nectarDue.blue}`,
+    );
+    check(
+      'a full stock with nothing owed reads `none-owed`, on BOTH alliances',
+      hud.nectarWhy.red === 'none-owed' && hud.nectarWhy.blue === 'none-owed',
+      `red ${hud.nectarWhy.red} · blue ${hud.nectarWhy.blue}`,
+    );
+    check(
+      '...and it is the slice answering, not the world default state.ts seeds',
+      hud.nectarWhy.red === bb.nectarWhy.red && hud.nectarWhy.red !== 'none-left',
+      `slice ${hud.nectarWhy.red} · world ${bb.nectarWhy.red}`,
+    );
   }
 
   // ---- the STATIC crawler files -------------------------------------------

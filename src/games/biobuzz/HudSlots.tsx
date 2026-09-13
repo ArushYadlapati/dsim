@@ -9,6 +9,7 @@ import type { BbCellHud, BbPinHud, BiobuzzFieldHud } from './hud';
 import type { BiobuzzHud } from './hudRobot';
 import { BB_MODE_LABELS } from './labels';
 import type { BbAllianceScore, BbRankPoints } from './score';
+import type { BbNectarWhy } from './state';
 
 /**
  * The BIOBUZZ UI SLOTS that need JSX — the builder adapter, the two live-HUD slots and the
@@ -116,6 +117,47 @@ const pinLine = (p: BbPinHud): string =>
   (p.billed > 0 ? ` · ${p.billed * BB_PTS.foulMajor} BILLED` : '');
 
 /**
+ * WHAT THE NECTAR CHIP SAYS, ONE LINE PER REASON THE BUTTON WOULD REFUSE.
+ *
+ * The stock and the debt are two numbers and the answer is a THIRD fact neither of them
+ * gives, which is why `nectarWhy` exists on the slice at all: a full stock the alliance is
+ * not yet entitled to spend looks from the outside exactly like a full stock it is. A driver
+ * who presses and sees nothing happen cannot tell a refusal from a broken button, and the
+ * refusal is the common case for most of a match — so the chip names which refusal it was
+ * rather than leaving it to be inferred from a bare count.
+ *
+ * A RECORD rather than a chain of ternaries because the four cases are the four members of
+ * `BbNectarWhy`: adding a fifth reason to the slice then fails to compile here instead of
+ * quietly falling through to whichever branch happened to be last.
+ *
+ * `locked` HERE IS THE FROZEN FIELD — pre-match, the auto→teleop transition, after the
+ * buzzer — and NOT G410. G410 is `nectarLocked`, it is about a NECTAR entering a FLOWER, and
+ * it has its own chip below; the two are different rules about different acts and folding
+ * them into one line would tell a driver the wrong thing about both.
+ *
+ * `ok` HAS TWO WORDINGS, BECAUSE IT ARRIVES BY TWO ROUTES. A banked TIP grants ONE entry and
+ * the count is the whole point of the line. Past the 1:00 cue the ENTIRE remaining stock may
+ * go in without any TIP having banked anything, so `due` is 0 while the press is granted —
+ * and `0 DUE` reads as "nothing to do" in the one minute of the match where the answer is
+ * "all of it". OPEN is that state said out loud.
+ *
+ * OPEN IS THE SAME WORD THE `FLOWERS OPEN` CHIP USES, DELIBERATELY. They are one fact from
+ * two sides of the same 1:00 cue: the flip chip announces it for a few seconds and goes away,
+ * this one is the standing state for the rest of the match. Saying it twice with two
+ * different words would imply two different things had happened.
+ */
+const NECTAR_CHIP: Record<BbNectarWhy, (n: number, due: number) => string> = {
+  ok: (n, due) => (due > 0 ? `NECTAR ${n} · ${due} DUE` : `NECTAR ${n} · OPEN`),
+  'none-owed': (n) => `NECTAR ${n} · NONE OWED`,
+  // the count is dropped on purpose: an empty stock is not a quantity, and "NECTAR 0" is a
+  // number a driver would keep re-reading for a change that can no longer come.
+  'none-left': () => 'NECTAR OUT',
+  // a frozen field says nothing about entitlement, so the chip states the stock and stops
+  // short of promising what a press would do once play resumes.
+  locked: (n) => `NECTAR ${n}`,
+};
+
+/**
  * A CHIP THAT HAS TO OUTLIVE ITS FACT.
  *
  * `warnings` is a monotonic COUNT — G407 moves it by one on the tick a robot takes CONTROL of
@@ -190,6 +232,27 @@ export function BiobuzzHudChips({ hud }: GameHudProps) {
     hud.phase,
     BB_WARN_HOLD_S,
   );
+  /**
+   * G410, FROM THE OTHER SIDE: the moment the FLOWERS OPEN.
+   *
+   * Today NECTAR LOCKED simply stops being drawn at the 1:00 cue, and a chip that vanishes is
+   * not a cue — a driver watching the field rather than the strip has nothing that says the
+   * rule just changed. `step.ts` already pushes `FLOWER OWNERSHIP UNLOCKED` on the crossing
+   * tick, but the event log is the muted left edge and this is a fact worth a beat in the
+   * driver's own row.
+   *
+   * HELD, NOT PERMANENT, and that is the whole design: FLOWERS OPEN is true for the last
+   * minute of every match, so a chip bound to the state itself would sit there as noise for
+   * exactly as long as it was useless. It reuses `useHeldBump` off the match clock, like the
+   * G407 warning, which also makes it a SWAP for the NECTAR LOCKED chip it replaces — the two
+   * can never be on screen together, so the row costs no extra width.
+   *
+   * `nectarLocked` IS A STATE, so it is turned into the monotonic count the hook wants: 0 while
+   * the FLOWERS are shut, 1 once they open. Inside TELEOP the cue is one-way, so it only ever
+   * counts up; the re-lock at the buzzer is a PHASE change, which the hook already refuses to
+   * read as a bump.
+   */
+  const opened = useHeldBump(f?.nectarLocked === false ? 1 : 0, hud.timeLeft, hud.phase, BB_WARN_HOLD_S);
   const held = r?.held ?? [];
   const free = r ? Math.max(0, r.cap - held.length) : 0;
   const said = heldPhrase(held);
@@ -213,22 +276,23 @@ export function BiobuzzHudChips({ hud }: GameHudProps) {
         ) : (
           <span className="chip">CELL {cell.needed} MORE</span>
         ))}
-      {/* STOCK AND DUE ON ONE CHIP, because they are one fact: what the human player can
+      {/* STOCK AND WHY ON ONE CHIP, because they are one fact: what the human player can
           still enter. Two chips cost ~130px on a row that is `nowrap`, right-anchored and
           grows LEFTWARD into the sponsor mark — measured at 1440px with the alpha pose
-          readout on, a sixth chip put the archetype behind the mark. */}
+          readout on, a sixth chip put the archetype behind the mark. So the chip's TEXT
+          carries the reason (`NECTAR_CHIP` above); nothing is added beside it. `on` marks
+          the one state in which a press would actually do something. */}
       {f && (
-        <span className={`chip ${due > 0 ? 'on' : ''}`}>
-          NECTAR {f.nectarStock[hud.alliance]}
-          {due > 0 ? ` · ${due} DUE` : ''}
+        <span className={`chip ${f.nectarWhy[hud.alliance] === 'ok' ? 'on' : ''}`}>
+          {NECTAR_CHIP[f.nectarWhy[hud.alliance]](f.nectarStock[hud.alliance], due)}
         </span>
       )}
       {f?.nectarLocked && <span className="chip warn">NECTAR LOCKED</span>}
-      {/* TODO(A6a): `nectarWhy: 'ok' | 'locked' | 'none-owed' | 'none-left'` is not on the
-          slice yet (grepped at a68401f — the human-player button is still in the field lane).
-          When it lands, the NECTAR chip says WHY a press did nothing instead of leaving the
-          driver to infer it from the stock and the lock, and NONE OWED stops reading as a
-          broken button. */}
+      {/* ...and the swap for it at the cue — see `opened` above. `on` rather than a colour of
+          its own: `npm run contrast` audits the palette pair by pair, so a token invented for
+          one chip is a new pair to justify, and the meaning here is the same one `FLOWER IN
+          REACH` already uses — a thing you may now do. */}
+      {opened && <span className="chip on">FLOWERS OPEN</span>}
       {/* G407 — CONTROL of a fifth SCORING ELEMENT. The owner's ruling makes this a WARNING
           worth no points and no card, which is exactly why it needs a chip: a sanction that
           moves no number is invisible on a scoreboard unless the HUD says it happened. Held
