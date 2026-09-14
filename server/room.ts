@@ -45,7 +45,7 @@ import {
 } from '../src/net/protocol';
 import { sanitizePlayerPatch } from '../src/net/sanitize';
 import type { DodgeKind, DodgeVerdict } from '../src/dodge';
-import { judgeParticipation } from '../src/standing';
+import { chargedForParticipation, judgeParticipation } from '../src/standing';
 import { roomPersists } from './channel';
 import { eloMode } from './eloMode';
 /* TYPE-ONLY, and it has to stay that way: `./ranked` imports `./db/repo`, which imports `pg`.
@@ -1832,6 +1832,7 @@ export class Room {
    */
   private reportBehaviour(participants: MatchParticipant[]): void {
     if (!this.onBehaviour || !this.ranked || this.unpersisted) return;
+    const mode: '1v1' | '2v2' = participants.length > 2 ? '2v2' : '1v1';
     const offenders: { userId: string; kind: 'afk' | 'leave' }[] = [];
     const cleanUserIds: string[] = [];
     for (const p of participants) {
@@ -1843,8 +1844,9 @@ export class Room {
         driveTicks: this.driveTicks.get(rid) ?? 0,
         awayTicks: this.awayTicks.get(rid) ?? 0,
       });
-      if (kind) offenders.push({ userId: p.userId, kind });
-      else cleanUserIds.push(p.userId);
+      if (!kind) cleanUserIds.push(p.userId);
+      else if (chargedForParticipation(kind, mode)) offenders.push({ userId: p.userId, kind });
+      // else: an EXCUSED 1v1 leaver — neither charged nor credited as clean
     }
     /**
      * CARDS travel with the behaviour report, from the world the match was played in.
@@ -1868,7 +1870,7 @@ export class Room {
       offenders,
       carded,
       cleanUserIds,
-      mode: participants.length > 2 ? '2v2' : '1v1',
+      mode,
       game: this.game,
       roomCode: this.code,
     });

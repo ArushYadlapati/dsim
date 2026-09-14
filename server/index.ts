@@ -9,7 +9,7 @@ import { sanitizePlayer } from '../src/net/sanitize';
 import { authConfigured, verifyAuthToken } from './auth';
 import { initPhysics } from '../src/sim/physicsEngine';
 import { migrate } from './db/migrate';
-import { persistMatch, persistDodges } from './persist';
+import { persistMatch, persistDodges, persistBehaviour } from './persist';
 import { routeTarget } from './routing';
 import { SERVER_CHANNEL, isAlphaServer } from './channel';
 import { LAN_MODE, enforceLanPolicy } from './lanMode';
@@ -2088,6 +2088,9 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
           if (userRoom.get(uid) === code) userRoom.delete(uid);
         },
         persistDodges,
+        // AFK / leave / card charges and the clean-match heal. Omitted here for months, so
+        // every one of them was dead in production while the DB-off dev path ran them fine.
+        (b) => void persistBehaviour(b),
       );
       rooms.set(code, r);
       created = true;

@@ -1363,7 +1363,11 @@ path. See §7.5 / §17.6.
 
 ## 17. Risks
 
-### 17.1 HIGH — `onBehaviour` is never wired in production **[C]**
+### 17.1 FIXED (2026-09-14) — `onBehaviour` was never wired in production **[C]**
+
+`server/index.ts` now passes `(b) => void persistBehaviour(b)`. The same change repriced the
+events it fires (AFK 8, leave 8, yellow 5, red 15) and excused walking out of a 1v1
+(`chargedForParticipation`). The original finding follows.
 
 `Room`'s constructor takes **8** parameters (`room.ts:398-426`), the 8th being `onBehaviour`.
 `server/index.ts:1907-1917` — the **only** production room-creation site — passes **7**:

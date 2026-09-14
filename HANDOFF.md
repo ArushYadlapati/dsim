@@ -1,6 +1,29 @@
+# HANDOFF — 2026-09-14, later (account standing: behaviour charges WIRED, repriced — alpha only)
+
+**READ FIRST.** On `alpha`, NOT deployed, NOT on `main`. It is a SERVER change: it does nothing
+until the Fly game server is redeployed (from a main worktree — see below).
+
+- **`persistBehaviour` was never wired into production rooms** (`server/index.ts` passed 7 of
+  `Room`'s 8 args; `docs/multiplayer-architecture.md` §17.1 had flagged it). So in production
+  the clean-match heal (+2), AFK, leave and card standing charges had NEVER fired — only dodges
+  did. Now wired. ⚠️ Deploying it turns ALL of those on at once, for the first time against real
+  matches.
+- **Repriced (owner):** AFK 8 (was 12), leave 8 (was 15), yellow card 5 (was 20), red card 15
+  (was a flat 40 override). A red is now `severity: RED_CARD_MULT` (3) through the ladder, so it
+  rides the repeat multiplier like every other kind (a 2nd red in the week costs 23, a 2nd
+  yellow 8). Cooldown/rating ladders unchanged.
+- **Leaving a 1v1 is not charged** (`chargedForParticipation`, `src/standing.ts`); leaving a 2v2
+  is. AFK is charged in both. An excused 1v1 leaver is NOT credited clean either. The 1v1 match
+  is still rated, so the leaver still takes the loss.
+- Verified: `server:check` and client `tsc` clean; the changed standing checks run green through
+  the real functions in a scratch script. Full `npm test` NOT run (owner preference); the smoke
+  checks in `scripts/smoke.ts` were updated to the new values.
+
+---
+
 # HANDOFF — 2026-09-14, early (settle-based finalize LIVE, PR 65 landed, all night fixes shipped)
 
-**READ FIRST — what production is running.** Fly release **v111** = `main` @ `b09f12e`, deployed
+**What production is running.** Fly release **v111** = `main` @ `b09f12e`, deployed
 from a main WORKTREE (never this alpha tree — `fly-deploy.sh` builds whatever tree it runs in).
 Everything below the line is on BOTH `main` and `alpha`.
 

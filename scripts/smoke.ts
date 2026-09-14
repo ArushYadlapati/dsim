@@ -218,6 +218,7 @@ import {
   COOLDOWN_LADDER, RATING_LADDER, WINDOW_HOURS, ladderRung,
   tierOf, healed, clampScore, repeatMult, applyStandingEvent, queueLocked, lockRemaining,
   judgeParticipation, MIN_JUDGED_TICKS, AFK_DRIVE_FRACTION, LEAVE_AWAY_FRACTION,
+  RED_CARD_MULT, chargedForParticipation,
   type StandingEventKind, type StandingState,
 } from '../src/standing';
 import type { ServerMsg, QueueMode } from '../src/net/protocol';
@@ -3443,10 +3444,9 @@ function queueTenth(w: World): void {
  * sanctioned for it, which is a behaviour finding with the evidence already attached: it is
  * in the match record, on the results screen and in the replay.
  *
- * Priced between a walk-out (15) and a moderator's upheld verdict (25): worse than wasting
- * one match's worth of other people's time, lighter than a human's judgement, because no
- * human has looked at it. A RED is charged double — it is the second card, and it voids the
- * alliance's score on top.
+ * Owner, 2026-09-14: "Yellow card should only take away 5. Red card take away 15." The card
+ * has already cost the alliance points (a red voids the score), so the standing charge is
+ * the lesser half. A red still rides the repeat multiplier — `severity`, not a flat override.
  *
  * No cooldown for a first one, deliberately: the card already cost the alliance the match, so
  * locking the driver out of the queue for it is a second punishment for one act.
@@ -3454,10 +3454,15 @@ function queueTenth(w: World): void {
 {
   const clean = { score: STANDING_MAX, restrictedUntil: null };
   const yellow = applyStandingEvent(clean, 'card', { now: 0, priorSameKind: 0 });
+  const red = applyStandingEvent(clean, 'card', { now: 0, priorSameKind: 0, severity: RED_CARD_MULT });
   check(
-    'a card costs standing, between a walk-out and an upheld report',
-    yellow.points > STANDING_COST.leave && yellow.points < STANDING_COST.reportUpheld,
-    `${yellow.points} points (leave ${STANDING_COST.leave}, upheld ${STANDING_COST.reportUpheld})`,
+    'a yellow card costs 5 standing and a red 15',
+    yellow.points === 5 && red.points === 15,
+    `yellow ${yellow.points}, red ${red.points}`,
+  );
+  check(
+    '...and a red is still escalated by a repeat inside the window',
+    applyStandingEvent(clean, 'card', { now: 0, priorSameKind: 1, severity: RED_CARD_MULT }).points > red.points,
   );
   check(
     '...and a FIRST card does not lock the queue — the match already paid for it',
@@ -15339,11 +15344,13 @@ function pinScene(
   // 2. SEVERITY ORDER, in points. These events are not comparable and must not cost the
   //    same: a dodge postpones a match, an AFK destroys one, and a moderator upholding a
   //    report is the only event backed by a human looking at the evidence.
+  //    AFK and LEAVE cost the same 8 (owner, 2026-09-14): to the partner left alone they are
+  //    the same match.
   check(
-    'standing: severity is ordered report < dodge < afk < leave < upheld',
+    'standing: severity is ordered report < dodge < afk = leave (8) < upheld',
     STANDING_COST.report < STANDING_COST.dodge &&
       STANDING_COST.dodge < STANDING_COST.afk &&
-      STANDING_COST.afk < STANDING_COST.leave &&
+      STANDING_COST.afk === 8 && STANDING_COST.leave === 8 &&
       STANDING_COST.leave < STANDING_COST.reportUpheld,
     kinds.map((k) => `${k} ${STANDING_COST[k]}`).join(' · '),
   );
@@ -15622,6 +15629,15 @@ function pinScene(
       'standing: broken counters never produce a charge',
       judgeParticipation({ liveTicks: NaN, driveTicks: 0, awayTicks: 0 }) === null &&
         judgeParticipation({ liveTicks: -5, driveTicks: 0, awayTicks: 0 }) === null,
+    );
+    // LEAVING A 1v1 IS ALLOWED; leaving a partner in a 2v2 is not. AFK is charged in both.
+    check(
+      'standing: walking out of a 1v1 is not charged, walking out on a 2v2 partner is',
+      !chargedForParticipation('leave', '1v1') && chargedForParticipation('leave', '2v2'),
+    );
+    check(
+      'standing: AFK is charged in a 1v1 and a 2v2 alike',
+      chargedForParticipation('afk', '1v1') && chargedForParticipation('afk', '2v2'),
     );
   }
 }
