@@ -993,7 +993,9 @@ The old P2P lockstep/mesh/TURN/Supabase-lobby is DELETED. Full roadmap: `docs/ne
 Neon Postgres via `server/db/` (`repo.ts` + `migrations/`), written at match end OFF the hot
 path. **Ranked is Glicko-2** (`server/ranked.ts`: rating + RD + volatility, `SCALE 173.7178`,
 `CENTER 1500`, provisional RD shown with "?"), decided AFTER the score SETTLES
-(`MATCH_SETTLE_S` — late-draining balls finish scoring before finalize); an opponent who
+(the match finalizes only once the field has come to REST — `src/sim/settle.ts`, each game's
+`GameSimModule.settled`, a 0.5 s hold and a 10 s cap — and the results screen reveals only on
+that finalized score); an opponent who
 LEAVES mid-match is retained (`departed`) so the match still rates. **SOLO RECORD RUNS**
 (score-attack): results show NET score (earned − own penalties), no opponent/winner, and
 PB / WR / global rank per **mode × drivetrain × season**. Boards, records, and Act→Season

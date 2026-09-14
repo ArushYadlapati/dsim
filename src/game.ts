@@ -24,6 +24,7 @@ import { chainCatalystPrompt } from './games/chain/play';
 import { beamRide } from './games/chain/beams';
 import { robotsEnabled } from './sim/match';
 import { ReplayRecorder, worldResult, type Replay, type ReplayResult } from './sim/replay';
+import { MATCH_SETTLE_MAX_S, newSettleClock, settleStep } from './sim/settle';
 import { practiceSaveDecision } from './replaySavePolicy';
 import { robotInLaunchZone } from './sim/robot';
 import { InputManager } from './input/input';
@@ -33,6 +34,10 @@ import type { MatchResultInfo, NetSession, NetStatus, Snapshot } from './net/ses
 import { localizeCommand } from './net/protocol';
 import { clamp } from './math';
 import type { RecordRankInfo } from './net/protocol';
+
+/** online, how long after the buzzer (wall seconds) to stop waiting for the server's final score
+ *  and say it never came: the longest honest settle, plus room for a slow network */
+const RESULT_LOST_AFTER_S = MATCH_SETTLE_MAX_S + 10;
 
 // GameSettings is defined canonically in ./types; re-exported here because many
 // modules import it from './game'.
@@ -196,9 +201,13 @@ export interface HudSnapshot {
   overflowCount: number;
   /** pre-match "3-2-1" countdown value, or null when not counting down */
   countdown: number | null;
-  /** performance.now() ms at which the end-of-match fanfare (whoosh) fires and
-   * the results reveal should land; null except during phase 'post' */
-  resultRevealAt: number | null;
+  /** the match's score is FINAL and the results screen may reveal it: online, the server's
+   * finalized result has arrived; in solo practice, the field has settled (`src/sim/settle.ts`).
+   * False before the buzzer and while the field is still settling. */
+  resultFinal: boolean;
+  /** online only: the match ended but the final score never arrived — the connection failed, or
+   * nothing came within `RESULT_LOST_AFTER_S`. The results screen says so instead of waiting. */
+  resultLost: boolean;
   toasts: Toast[];
   /** multiplayer status (null in solo): stall target + desync + connection quality */
   net: NetStatus | null;
@@ -228,21 +237,18 @@ export class GameController {
   private disposed = false;
   private prevPhase: MatchPhase;
   private warningPlayed = false;
-  /** performance.now() ms when the match entered phase 'post' (drives the
-   * whoosh-synced results reveal); null until the match ends */
+  /** performance.now() ms when the match entered phase 'post' — WALL time, used only to give up
+   * on a final score that never arrives (`resultLost`); null until the match ends */
   private matchOverAt: number | null = null;
   /**
-   * `world.time` at the buzzer — the start of the post-match SETTLE WINDOW; null before the
-   * match ends and again once the window has been spent. Multiplayer marks it too and the
-   * harvest it triggers is simply a no-op there (no local recorder — the server owns that
-   * recording, and its own settle window), which is cheaper than a second phase test here.
-   *
-   * SIM time, deliberately, where `matchOverAt` beside it is WALL time. `matchOverAt` drives an
-   * animation, so it belongs on the user's clock; this one decides how much SIMULATION the
-   * saved score is allowed to see, and must not shrink because a frame stuttered or the tab was
-   * backgrounded — the server counts the same window off `w.time` (`server/room.ts:1543-1545`).
+   * The post-buzzer SETTLE CLOCK, the same one the server finalizes on (`src/sim/settle.ts`).
+   * Solo practice has no server, so it decides for itself when the field has come to rest — on
+   * the same per-game predicate and in TICKS, so a stuttering frame or a backgrounded tab
+   * cannot shorten how much simulation the saved score sees.
    */
-  private settleSince: number | null = null;
+  private settle = newSettleClock();
+  /** this match's score is final (see `HudSnapshot.resultFinal`); reset on entering `post` */
+  private settleDone = false;
   /**
    * SOLO PRACTICE IS RECORDED, so it has to be REPRODUCIBLE — which it was not.
    *
@@ -500,47 +506,41 @@ export class GameController {
       if (phase === 'transition') this.audio.play('end');
       if (phase === 'teleop' && this.prevPhase === 'transition') this.audio.play('resume');
       if (phase === 'post') {
-        // THE MATCH ENDING IS THE END OF THE RECORDING — but the match does not stop SCORING on
-        // the buzzer tick. Solo practice reaches `post` on its own (a real 2:30 match), so there
-        // is no session boundary to invent and the replay is bounded by the match itself plus
-        // the settle window below — the same span a record run's server-side recording covers.
-        this.settleSince = this.world.time;
+        // THE MATCH ENDING IS THE END OF DRIVING — not of SCORING, and not of the recording.
+        // Solo practice reaches `post` on its own (a real 2:30 match), so the replay is bounded by
+        // the match itself plus the settle below — the same span a server-side recording covers.
+        this.settle = newSettleClock();
+        this.settleDone = false;
         this.audio.play('end');
-        // record the moment the match ended so the results screen can hold its
-        // score reveal until the whoosh lands (both use MATCH_RESULT_REVEAL_MS)
         this.matchOverAt = performance.now();
-        window.setTimeout(() => {
-          if (!this.disposed && this.world.match.phase === 'post') this.audio.play('match_result');
-        }, C.MATCH_RESULT_REVEAL_MS);
       }
       this.prevPhase = phase;
     }
     /**
-     * HARVEST WHEN THE FIELD HAS SETTLED, NOT ON THE BUZZER TICK.
+     * THE SCORE IS FINAL WHEN NOTHING ON THE FIELD CAN CHANGE IT, AND NOT A MOMENT BEFORE.
      *
-     * `stepMatch` re-runs `assessMatchEnd` on EVERY `post` tick (`src/sim/match.ts:29-38`)
-     * because TELEOP PATTERN / DEPOT / BASE are resting-position rules: an artifact still
-     * draining the ramp or rolling in the depot is worth points the moment it stops, a beat
-     * after the buzzer. The server is built around that — it keeps stepping and recording and
-     * only calls `finalizeMatch` once `MATCH_SETTLE_S` of sim time has passed in `post`
-     * (`server/room.ts:1539-1546`), so the number it saves is the SETTLED one.
+     * The buzzer ends driving, not scoring: an artifact can still be in the air or draining the
+     * ramp, a hive can still be tipping. The results screen used to reveal on a fixed 2.8 s
+     * wall-clock timer, off this client's PREDICTED world, while the server finalized on its own
+     * 2.8 s — so a number could land on screen that was neither settled nor the one saved.
      *
-     * Closing the recorder and snapshotting `worldResult` on the first `post` tick made solo
-     * the one path that scored the field early: the saved history entry and the replay's stored
-     * result could both come in UNDER the score the driver watched land on the results screen,
-     * and under what the identical run would have scored online. Waiting the same window makes
-     * the two agree, and the extra ticks stay in the log so a replay of the run ends where the
-     * run ended rather than mid-drain.
+     * ONLINE the server decides: it finalizes once the game says the field has settled
+     * (`src/sim/settle.ts`), and its `matchResult` is the moment the score is final here.
+     * SOLO PRACTICE has no server, so it runs the same settle clock on its own world, and the
+     * harvest (the saved run and its replay) happens on that same beat — so a practice score is
+     * the settled one, and matches what the identical run would score online.
      *
-     * The window is `MATCH_RESULT_REVEAL_MS` (`src/config.ts:35`), the same delay the results
-     * screen holds its reveal for, so the snapshot is taken on the beat the score appears —
-     * nothing is kept waiting that the driver was not already waiting for.
+     * The whoosh plays on the reveal, so the sound, the count-up and the saved score are one moment.
      */
-    if (this.settleSince !== null && this.world.time - this.settleSince >= C.MATCH_SETTLE_S) {
-      // cleared first: `harvestPracticeRun` is a no-op once the recorder is closed, and a mark
-      // left standing would re-ask that question on every frame of the results screen.
-      this.settleSince = null;
-      this.harvestPracticeRun(true);
+    if (this.world.match.phase === 'post' && !this.settleDone) {
+      const decided = this.session
+        ? this.session.getMatchResult() !== null
+        : settleStep(this.settle, this.world, this.mod.settled);
+      if (decided) {
+        this.settleDone = true;
+        this.audio.play('match_result');
+        this.harvestPracticeRun(true);
+      }
     }
     if (
       phase === 'teleop' &&
@@ -1077,6 +1077,8 @@ export class GameController {
     this.prevPhase = this.world.match.phase;
     this.warningPlayed = false;
     this.matchOverAt = null;
+    this.settle = newSettleClock();
+    this.settleDone = false;
     this.hudCountdown = null;
     this.frontFlipped = false;
     this.parked = false;
@@ -1143,7 +1145,8 @@ export class GameController {
     // free drive never reaches `pre`, so this is a solo PRACTICE match by construction
     this.recorder = new ReplayRecorder(this.soloSeed, this.soloSetups, 'match', this.gameId);
     this.drivenTicks = 0;
-    this.settleSince = null;
+    this.settle = newSettleClock();
+    this.settleDone = false;
     this.lastBeepAt = -1;
   }
 
@@ -1155,7 +1158,7 @@ export class GameController {
     }
     // BEFORE the rebuild, both because the run is scored against the world it happened in and
     // because `makeWorld` is the moment it becomes unrecoverable.
-    // RESET inside the settle window (the ~2.8 s between the buzzer and the harvest) lands here
+    // RESET inside the settle (between the buzzer and the field coming to rest) lands here
     // rather than on the completed path, and that is right: the driver cut the settle short, so
     // the field never came to rest and the score is the partial one. It is still KEPT — a whole
     // match is far past `PRACTICE_SAVE_MIN_S`, so the policy answers `long-enough` instead of
@@ -1166,7 +1169,8 @@ export class GameController {
     this.prevPhase = this.world.match.phase;
     this.warningPlayed = false;
     this.matchOverAt = null;
-    this.settleSince = null;
+    this.settle = newSettleClock();
+    this.settleDone = false;
     this.hudCountdown = null;
     // `harvestPracticeRun` above has already closed the recorder and either kept the run or
     // dropped it; these clear whatever it left, so the next `startMatch` opens a fresh recorder
@@ -1324,10 +1328,14 @@ export class GameController {
       classifiedCount: goal.classifiedCount,
       overflowCount: goal.overflowCount,
       countdown: this.hudCountdown,
-      resultRevealAt:
-        w.match.phase === 'post' && this.matchOverAt !== null
-          ? this.matchOverAt + C.MATCH_RESULT_REVEAL_MS
-          : null,
+      resultFinal: w.match.phase === 'post' && this.settleDone,
+      resultLost:
+        w.match.phase === 'post' &&
+        !this.settleDone &&
+        !!this.session &&
+        (this.session.status().failed ||
+          (this.matchOverAt !== null &&
+            performance.now() - this.matchOverAt > RESULT_LOST_AFTER_S * 1000)),
       toasts: [...this.toasts],
       net: this.session ? this.session.status() : null,
       spectators: this.session?.spectatorCount?.() ?? 0,

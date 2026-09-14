@@ -5,6 +5,7 @@
 const randomUUID = (): string => crypto.randomUUID();
 import { envVar } from './runtimeEnv';
 import * as C from '../src/config';
+import { newSettleClock, settleStep, type SettleClock } from '../src/sim/settle';
 import { coerceAutoPath, DEFAULT_SPEC, DEFAULT_ASSISTS, type RobotSetup } from '../src/sim/spawn';
 import { simModuleFor } from '../src/games/sim';
 import { scrubName } from './moderation';
@@ -358,9 +359,9 @@ export class Room {
    * `ServerMsg` 'matchArchive' for what it is for and why only the host gets it.
    */
   private matchId: string | null = null;
-  // world.time at which phase 'post' began, to hold the settle window before
-  // finalizing (null until the match ends)
-  private postSince: number | null = null;
+  // the post-buzzer settle: the match is finalized once nothing left on the field can change
+  // the score (see `src/sim/settle.ts`)
+  private settle: SettleClock = newSettleClock();
   // authed players who LEFT mid-match (robotId -> identity). Their robot stays in
   // the world coasting at ZERO, but their client object is gone once grace lapses,
   // so they'd drop out of the finalize roster and the match would become unratable
@@ -809,7 +810,7 @@ export class Room {
       // clean (1006) and keeps its grace; so does every room with a second driver in it.
       const soloRecord = this.config.kind === 'record' && this.config.record === 'solo';
       // ⚠️ A RUN THAT IS ALREADY DECIDED IS FINISHED AND SAVED, WITH NOBODY WATCHING. The score
-      // is final at the buzzer plus the 2.8 s settle, and that is when `finalizeMatch` writes
+      // is final once the field settles after the buzzer, and that is when `finalizeMatch` writes
       // the PB / leaderboard row. A player who pressed restart or Back in that window used to
       // lose the run outright: the loop FREEZES a room with no connected driver (the ghost-room
       // guard in `startLoop`), so the match never reached finalize and the room died unsaved
@@ -1207,7 +1208,7 @@ export class Room {
     // the replay re-sims through the right module (CR vs DECODE).
     this.recorder = new ReplayRecorder(seed, setups, 'match', this.game);
     this.finalized = false;
-    this.postSince = null;
+    this.settle = newSettleClock();
     this.departed.clear();
 
     // register each authed driver's single-game lock: while this match is live they
@@ -1662,13 +1663,12 @@ export class Room {
     this.recorder?.record(w.tick, this.lastFrame);
     this.countParticipation(w);
     const due = w.tick % SNAPSHOT_INTERVAL === 0;
-    // Don't finalize the instant the match ends: balls are still flowing down the
-    // ramp/through the gate and scoring for a beat. Keep stepping (and recording)
-    // through a settle window so the authoritative score we save is the SETTLED
-    // one the client reveals at the whoosh — not an early undercount.
-    if (w.match.phase === 'post' && !this.finalized) {
-      if (this.postSince === null) this.postSince = w.time;
-      if (w.time - this.postSince >= C.MATCH_SETTLE_S) this.finalizeMatch();
+    // FINALIZE WHEN THE FIELD HAS SETTLED, NOT ON A TIMER. The buzzer ends driving, not
+    // scoring: an artifact can still be in the air or on the ramp, a hive can still be tipping.
+    // Keep stepping (and recording) until the game says nothing left can change the score, so
+    // the number saved is the settled one — and the results screen reveals only on it.
+    if (!this.finalized && settleStep(this.settle, w, simModuleFor(this.game).settled)) {
+      this.finalizeMatch();
     }
     return due;
   }

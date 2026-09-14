@@ -28,6 +28,8 @@ import {
   hiveWillTip,
 } from '../../src/games/biobuzz/hive';
 import { flowerScore } from '../../src/games/biobuzz/flower';
+import { bbSettled } from '../../src/games/biobuzz/settle';
+import { mkWorld as bbSettleWorld } from './harness';
 import {
   bbApplyScore,
   bbInGarden,
@@ -1624,10 +1626,42 @@ function sceneChecks(check: Check): void {
   }
 }
 
+/**
+ * THE MATCH IS FINALIZED WHEN THE FIELD HAS SETTLED (`src/sim/settle.ts`), and BIOBUZZ decides
+ * what "settled" means (`bbSettled`). §10.5 A assesses TIPS "until all SCORING ELEMENTS and
+ * ROBOTS have come to rest", and §10.5 C what REMAINS in a CELL after that — so a swing, an
+ * element in the air and one still rolling toward a GARDEN all hold the finalize open.
+ */
+function settleChecks(check: Check): void {
+  const w = bbSettleWorld('match', 5);
+  for (const b of w.balls) b.vel = { x: 0, y: 0 };
+  const bb = w.biobuzz;
+  check('SETTLE: a quiet BIOBUZZ field is settled', bbSettled(w));
+  if (bb) {
+    bb.hives.red.tipping = 1.5;
+    check('SETTLE (§10.5 A): a HIVE still swinging is not settled — its TIP has not paid yet', !bbSettled(w));
+    bb.hives.red.tipping = 0;
+  }
+  const g = w.balls.find((b) => b.state.kind === 'ground');
+  check('SETTLE: the quiet field had a ground element to test with', !!g);
+  if (g) {
+    g.vel = { x: 25, y: 0 };
+    check('SETTLE: a ROLLING element is not settled (a GARDEN counts where it stops)', !bbSettled(w));
+    g.vel = { x: 0, y: 0 };
+    const keep = g.state;
+    g.state = { kind: 'flight', target: 'red', by: 'red' };
+    check('SETTLE: an element in FLIGHT is not settled (a CELL can still take it)', !bbSettled(w));
+    g.state = keep;
+  }
+  w.robots[0].angVel = 1;
+  check('SETTLE: a robot still turning is not settled', !bbSettled(w));
+}
+
 export function rulesChecks(check: Check): void {
   scoringChecks(check);
   penaltyChecks(check);
   pinChecks(check);
   cueChecks(check);
   sceneChecks(check);
+  settleChecks(check);
 }
