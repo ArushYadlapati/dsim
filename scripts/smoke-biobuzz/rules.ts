@@ -2,7 +2,8 @@ import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { Alliance, Artifact, ArtifactColor, RobotCommand, World } from '../../src/types';
-import { MATCH_SETTLE_S, PIN_WALL_SLOP, SIM_DT } from '../../src/config';
+import { PIN_WALL_SLOP, SIM_DT } from '../../src/config';
+import { MATCH_SETTLE_MAX_S, newSettleClock, settleStep } from '../../src/sim/settle';
 import { bbPinSolid } from '../../src/games/biobuzz/colliders';
 import { createBiobuzzWorld } from '../../src/games/biobuzz/spawn';
 import { biobuzzStep } from '../../src/games/biobuzz/step';
@@ -506,7 +507,8 @@ function scoringChecks(check: Check): void {
    * and the points get deducted”.
    *
    * Two clocks made that inevitable: the swing is `BB_TIP_SWING_S` 4.0 s and the window the
-   * results screen and the server both harvest the final score on is `MATCH_SETTLE_S` 2.8 s, so
+   * results screen and the server both harvested the final score on was a fixed 2.8 s (it is
+   * now the field coming to rest — `src/sim/settle.ts`), so
    * a TIP triggered in the last four seconds of TELEOP could not reach `hive.tips` in time. The
    * bar passes level at `BB_TIP_RELEASE_S`, which then emptied the tray and took the cell line
    * away with it — measured on this very scene before the fix, 16 points at the buzzer and 0
@@ -532,9 +534,9 @@ function scoringChecks(check: Check): void {
     const load = bb.hives.red.contents.length;
     w.match.phase = 'teleop';
     // the swing starts on the next tick, so the buzzer catches it 0.5 s in: it passes LEVEL
-    // 1.5 s into `post` and settles 3.5 s in, PAST the 2.8 s at which the score is harvested.
-    // That is the reported case exactly — the load left the tray before the harvest and the TIP
-    // landed after it, so the run banked neither.
+    // 1.5 s into `post` and settles 3.5 s in — past the fixed 2.8 s the score used to be
+    // harvested at, which is the reported case exactly. The score is now harvested when the
+    // SETTLE CLOCK finalizes (the one the server uses), and that has to wait for the swing.
     w.match.phaseTimeLeft = 0.5;
     const cmds = new Map<number, RobotCommand>();
     let buzzer = -1;
@@ -543,8 +545,10 @@ function scoringChecks(check: Check): void {
     let harvest = -1;
     let tipsAtHarvest = -1;
     let post = 0;
-    const ticks = Math.round((0.5 + BB_TIP_SWING_S + 1) / SIM_DT);
-    for (let i = 0; i < ticks; i++) {
+    let harvestAt = -1;
+    const clock = newSettleClock();
+    const ticks = Math.round((0.5 + MATCH_SETTLE_MAX_S + 1) / SIM_DT);
+    for (let i = 0; i < ticks && harvest < 0; i++) {
       biobuzzStep(w, SIM_DT, cmds);
       if (w.match.phase !== 'post') continue;
       const sc = bbScoreWorld(w).red;
@@ -554,9 +558,10 @@ function scoringChecks(check: Check): void {
       }
       lowest = Math.min(lowest, sc.total);
       post += SIM_DT;
-      if (harvest < 0 && post >= MATCH_SETTLE_S) {
+      if (harvest < 0 && settleStep(clock, w, bbSettled)) {
         harvest = sc.total;
         tipsAtHarvest = sc.tipPts;
+        harvestAt = post;
       }
     }
     check(
@@ -575,9 +580,9 @@ function scoringChecks(check: Check): void {
       `cell points at the buzzer ${buzzerCellPts} on ${load} elements`,
     );
     check(
-      'BUZZER TIP (§10.5 A): the TIP is on the board when the score is harvested (2.8 s < a 4.0 s swing)',
-      tipsAtHarvest === BB_PTS.tip,
-      `tip points at +${MATCH_SETTLE_S}s: ${tipsAtHarvest}`,
+      'BUZZER TIP (§10.5 A): the TIP is on the board when the score is FINALIZED — the settle waits for the swing',
+      tipsAtHarvest === BB_PTS.tip && harvestAt >= BB_TIP_SWING_S - 0.5,
+      `tip points at finalize (+${harvestAt.toFixed(2)}s after the buzzer): ${tipsAtHarvest}`,
     );
     check(
       'BUZZER TIP: the score never goes DOWN after the buzzer — the reported deduction',
