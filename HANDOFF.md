@@ -1,11 +1,45 @@
-# HANDOFF — 2026-09-13, night (production hotfixes: record-room reap LIVE, dodge double-cancel HELD)
+# HANDOFF — 2026-09-14, early (settle-based finalize LIVE, PR 65 landed, all night fixes shipped)
 
-**READ FIRST — what production is running.** Production is **`main`**, and the game server
-must be deployed from a MAIN checkout (a worktree off `origin/main`), never from this alpha
-tree: `fly-deploy.sh` builds whatever tree it runs in. Fly release **v109** = `main` @
-`f0e0430`. (v108, built from alpha by mistake, was live for about 5 minutes around 01:19Z and
-was replaced.) Killing a background deploy does NOT kill its `flyctl` child, so run deploys
-in the foreground.
+**READ FIRST — what production is running.** Fly release **v111** = `main` @ `b09f12e`, deployed
+from a main WORKTREE (never this alpha tree — `fly-deploy.sh` builds whatever tree it runs in).
+Everything below the line is on BOTH `main` and `alpha`.
+
+- **LIVE: a match is finalized when the field comes to rest, and the score is shown only then**
+  (`34bf3a2` main / `6326a6b` alpha). New `src/sim/settle.ts`: `settleStep` finalizes once the
+  game's `GameSimModule.settled` has held for `MATCH_SETTLE_HOLD_S` 0.5 s, capped at
+  `MATCH_SETTLE_MAX_S` **10 s — the owner's absolute maximum, do not raise it**. DECODE
+  (`decodeSettled`): nothing in flight, nothing pending or moving on a rail, ground/basin
+  artifacts and robots at rest. CR (`chainSettled`): no non-staged particle in flight, ground
+  particles and robots at rest. BIOBUZZ (`bbSettled`, `src/games/biobuzz/settle.ts`): nothing in
+  flight, no hive swinging or loaded past its tip, ground elements and robots at rest. The server
+  (`room.ts` `stepOnce`) and solo practice (`game.ts`) share the clock, in ticks.
+  `MATCH_SETTLE_S` / `MATCH_RESULT_REVEAL_MS` are DELETED. Client: the results screen reveals only
+  on `HudSnapshot.resultFinal` (online = the server's `matchResult` arrived; practice = its own
+  settle) and shows the SERVER's totals; the live HUD, replay viewer and burned-in video say
+  MATCH OVER until then and FINAL only on the finalized score; `resultLost` says so if the result
+  never comes. `maxMatchTicks` carries the 10 s cap. Measured: an idle DECODE or CR run finalizes
+  on the 0.5 s hold (no jitter); a rolling artifact held it to 116 ticks.
+  ⚠️ **Known to bind:** a BIOBUZZ tip that sets off a SECOND tip can outlast 10 s; PR 65's rule
+  (below) still pays a swing the cap cuts off.
+- **LIVE: PR 65, a BIOBUZZ tip caught by the buzzer scores and its load is not deducted**
+  (`7d0331c` main / `04ce456` alpha; its check moved onto the settle clock in `b09f12e` /
+  `41865e7`). Landed as CLEAN commits and the PR CLOSED, not merged: its own commits were
+  authored `Claude <noreply@anthropic.com>` with `Co-Authored-By`/`Claude-Session` trailers, and
+  the owner wants no attribution anywhere. No `BALANCE_VERSION` bump (owner's call).
+- **LIVE (since v110): a cancelled ranked match cannot be cancelled again** — no longer held; see
+  the section below. **LIVE: a solo record run left after the buzzer is still saved** (the room
+  keeps stepping with nobody connected until it finalizes).
+- ⚠️ **A gated shell chain lied once tonight:** `grep -c` exits 1 on a count of 0, so
+  `X=$(… | grep -c …) && cd worktree && …` stopped before the `cd` and the "main" tests ran on
+  alpha. The push gate caught it. Use `|| true` on counts and guard every `cd`.
+- `npm test`'s shared suite still ends at the 2 pre-existing `lan gate` failures. Alpha still
+  carries unreviewed BIOBUZZ commits that are not on main (see the review note below).
+
+# HANDOFF — 2026-09-13, night (production hotfixes: record-room reap LIVE, dodge double-cancel shipped in v110)
+
+Superseded by the section above. Deploys go from a MAIN worktree, never this alpha tree; killing
+a background deploy does NOT kill its `flyctl` child, so run deploys in the foreground. (v108,
+built from alpha by mistake, was live for about 5 minutes around 01:19Z and was replaced.)
 
 - **LIVE: a solo record run closed on purpose frees its room at once** (`f0e0430` main /
   `df5872d` alpha, `server/room.ts` `detach(id, conn, clean)`, `server/index.ts` close code).
@@ -14,8 +48,8 @@ in the foreground.
   ones as `region_full`, which the Record Run screen shows as "Couldn’t start". A close with
   code 1000/1005 on a solo record room now reaps immediately. 1006 (network) and 1001 (tab)
   keep the grace, and so does every room with a second driver.
-- **HELD (owner): a cancelled ranked match can no longer be cancelled a second time**
-  (`28575be` on alpha; verified as a cherry-pick onto main, NOT pushed to main, NOT deployed).
+- **SHIPPED in v110 (was held earlier that night): a cancelled ranked match can no longer be
+  cancelled a second time** (`28575be` on alpha, `406f506` on main).
   `cancelPending` left `pendingMatch`/`phase` set, and a socket's `room` is never cleared. So
   the first player to leave the cancelled screen re-ran the cancel from `detach` and was billed
   a STRATEGY BAIL. The innocent driver was shown "Nothing was charged to you" and then lost
