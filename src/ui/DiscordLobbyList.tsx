@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
-import { APP_NAME } from '../seasons';
+import { APP_NAME, seasonFor } from '../seasons';
+import type { GameId } from '../types';
 import { Logo } from './Logo';
 import { useEscape } from './useEscape';
 import { fetchLobbies, type DiscordLobby } from '../net/api';
@@ -16,19 +17,35 @@ import { generateRoomCode } from '../net/roomCode';
  * - each listed lobby has its own Join, showing how full it is.
  * - "Create a separate lobby" mints a fresh random code for a parallel game.
  *
- * Every path calls `onEnter(code)`, which navigates to the real lobby with that
+ * Every path calls `onEnter(code, game)`, which navigates to the real lobby with that
  * code tagged to this group — so a room created here shows up in everyone else's
  * browser on their next poll (every 3s).
+ *
+ * A ROOM HAS ONE SEASON, AND THE CREATOR PICKS IT. Rooms used to be pinned to DECODE
+ * here, so the activity could not play Chain Reaction or BIOBUZZ at all — and worse,
+ * the Lobby draws its start editor and robot summary from the PLAYER's selected
+ * season, so a BIOBUZZ player joining a pinned room saw a BIOBUZZ lobby for a match
+ * that ran DECODE. Now a new room (the main lobby while nobody has opened it, or a
+ * separate one) takes the season the player picked on the home page, and joining an
+ * EXISTING room hands back THAT room's season, which `App` switches to before the
+ * join — the same rule an accepted invite follows. The server refuses a joiner whose
+ * config disagrees with the room's, so the two must be reconciled here, before the
+ * socket opens, not discovered as an error after.
  */
 export function DiscordLobbyList({
   group,
   mainCode,
+  game,
   onEnter,
   onBack,
 }: {
   group: string;
   mainCode: string;
-  onEnter: (code: string) => void;
+  /** the player's currently selected season — what a room CREATED from here will run */
+  game: GameId;
+  /** enter a room; `game` is the season that room runs (its own if it exists, else the
+   * creator's pick), so the caller can switch to it before joining */
+  onEnter: (code: string, game: GameId) => void;
   onBack: () => void;
 }) {
   const [lobbies, setLobbies] = useState<DiscordLobby[] | null>(null);
@@ -50,7 +67,11 @@ export function DiscordLobbyList({
   }, [group]);
 
   // the main lobby has its own button, so don't also list it as an "other" room
+  const main = (lobbies ?? []).find((l) => l.code.toLowerCase() === mainCode.toLowerCase());
   const others = (lobbies ?? []).filter((l) => l.code.toLowerCase() !== mainCode.toLowerCase());
+  // an open main lobby runs ITS season; an unopened one will run the player's pick
+  const mainGame: GameId = main?.game ?? game;
+  const mainFull = !!main && main.players >= main.capacity;
 
   return (
     <div className="ds-console">
@@ -75,9 +96,14 @@ export function DiscordLobbyList({
         </p>
 
         <section className="ds-sec">
-          <button className="ds-cta" onClick={() => onEnter(mainCode)}>
-            JOIN MAIN LOBBY ▶
+          <button className="ds-cta" disabled={mainFull} onClick={() => onEnter(mainCode, mainGame)}>
+            {mainFull ? 'MAIN LOBBY FULL' : `JOIN MAIN LOBBY · ${seasonFor(mainGame).name.toUpperCase()} ▶`}
           </button>
+          <p className="ds-hint">
+            {main
+              ? `${main.players}/${main.capacity} in the main lobby.`
+              : `Nobody has opened the main lobby yet. It will run ${seasonFor(game).name}, the season picked on the home page.`}
+          </p>
         </section>
 
         <section className="ds-sec">
@@ -95,9 +121,10 @@ export function DiscordLobbyList({
                     key={l.code}
                     className="ds-lobby-row"
                     disabled={full}
-                    onClick={() => onEnter(l.code)}
+                    onClick={() => onEnter(l.code.toUpperCase(), l.game)}
                   >
-                    <span className="ll-code">{l.code}</span>
+                    <span className="ll-code">{l.code.toUpperCase()}</span>
+                    <span className="ll-game">{seasonFor(l.game).name}</span>
                     <span className="ll-count">
                       {l.players}/{l.capacity}
                     </span>
@@ -110,9 +137,10 @@ export function DiscordLobbyList({
         </section>
 
         <section className="ds-sec">
-          <button className="ds-btn" onClick={() => onEnter(generateRoomCode())}>
-            + Create a separate lobby
+          <button className="ds-btn" onClick={() => onEnter(generateRoomCode(), game)}>
+            + Create a separate {seasonFor(game).name} lobby
           </button>
+          <p className="ds-hint">To run a different season, pick it on the home page first.</p>
         </section>
       </div>
     </div>

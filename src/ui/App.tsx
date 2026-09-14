@@ -501,9 +501,14 @@ export function App() {
   // of everyone piling into a single four-seat room. `discordGroupId` (the sanitized
   // instance id) is the room GROUP the server lists by; `discordMainCode` is the
   // deterministic "main lobby" code so simultaneous first-joiners still converge on
-  // one room. Config is pinned (versus/decode): the server refuses a config-
-  // mismatched joiner. All captured once at mount (before SPA navigation strips the
-  // ?instance_id= query).
+  // one room. The KIND is pinned (versus); the SEASON is the room's own — the browser
+  // reports it per room and the creator's pick for a new one — and is switched to
+  // BEFORE the join, exactly as an accepted invite does, because the server refuses a
+  // config-mismatched joiner and the Lobby renders the PLAYER's season, not the
+  // room's. (Pinned to DECODE, the activity could not play Chain Reaction or BIOBUZZ,
+  // and a BIOBUZZ player saw a BIOBUZZ lobby for a DECODE match.) All captured once at
+  // mount; `discordInstanceId` also remembers the id for the tab, since the router
+  // canonicalizes the launch URL to a bare path and a reload would otherwise lose it.
   const discordGroupId = useMemo(() => (inDiscordActivity() ? discordGroup() : ''), []);
   const discordMainCode = useMemo(
     () => (discordGroupId ? roomCodeForInstance(discordInstanceId()) : ''),
@@ -516,9 +521,12 @@ export function App() {
   }, [discordGroupId]);
   const joinDiscordLobby = (): void => navigate('discordlobbies');
   /** enter a specific Discord room (from the browser) — join-or-create, tagged with
-   * the activity group so it shows in everyone else's lobby browser. */
-  const enterDiscordRoom = (code: string): void => {
-    setPendingAutoJoin({ room: code, config: { kind: 'versus', game: 'decode' } });
+   * the activity group so it shows in everyone else's lobby browser. `game` is the
+   * season the room runs; switch to it first so the lobby, the start editor and the
+   * robot all belong to the match about to be played. */
+  const enterDiscordRoom = (code: string, game: GameId): void => {
+    selectGame(game);
+    setPendingAutoJoin({ room: code, config: { kind: 'versus', game } });
     navigate('lobby');
   };
   // a RATED challenge waiting to be queued under its party token. Same one-shot
@@ -1230,6 +1238,7 @@ export function App() {
       <DiscordLobbyList
         group={discordGroupId}
         mainCode={discordMainCode}
+        game={settings.game}
         onEnter={enterDiscordRoom}
         onBack={() => navigate('home')}
       />

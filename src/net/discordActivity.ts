@@ -39,10 +39,37 @@ export function inDiscordActivity(): boolean {
   return onDiscordHost() || discordInstanceId() !== '';
 }
 
-/** the activity instance id shared by every participant of one launch ('' outside) */
+/** where the launch's instance id is remembered for the life of the TAB */
+const INSTANCE_KEY = 'dsim.discord.instance';
+
+/**
+ * The activity instance id shared by every participant of one launch ('' outside).
+ *
+ * It arrives ONLY on the launch URL — and the router canonicalizes that URL to a
+ * bare path on first load, then pushes bare paths on every navigation. So a RELOAD
+ * inside the activity (Vite's reconnect reload after a dev-server restart, the
+ * REFRESH button on a dropped match, a manual refresh) came back with no
+ * `instance_id`: the home page lost its Join Discord Lobby button and the reloaded
+ * participant could no longer see the party at all — reported as "others who join
+ * my activity can't see the join button". The id is therefore REMEMBERED for the
+ * tab in sessionStorage. The URL still wins whenever it carries one: a fresh launch
+ * always does, so a stale id can never outlive the instance it names, and
+ * sessionStorage dies with the tab (the activity iframe) rather than persisting to
+ * an unrelated visit the way localStorage would.
+ */
 export function discordInstanceId(): string {
   if (typeof window === 'undefined') return '';
-  return new URLSearchParams(window.location.search).get('instance_id') ?? '';
+  const fromUrl = new URLSearchParams(window.location.search).get('instance_id') ?? '';
+  try {
+    if (fromUrl) {
+      window.sessionStorage.setItem(INSTANCE_KEY, fromUrl);
+      return fromUrl;
+    }
+    return window.sessionStorage.getItem(INSTANCE_KEY) ?? '';
+  } catch {
+    // storage blocked (private mode, a throwing accessor) — the URL is all there is
+    return fromUrl;
+  }
 }
 
 /**
