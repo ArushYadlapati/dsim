@@ -1,6 +1,7 @@
 import * as C from '../../config';
 import { activeStartLegal, mirrorStartPose, snapStartToLegal } from '../../sim/field';
 import { createWorld } from '../../sim/spawn';
+import { decodeSettled } from '../../sim/settle';
 import { step } from '../../sim/world';
 import type { GameSimModule } from '../types';
 import { decodeColliders } from './colliders';
@@ -27,4 +28,6 @@ export const DECODE_SIM: GameSimModule = {
   colliders: decodeColliders,
   createWorld,
   step,
+  // the match is finalized when nothing left can score — see `decodeSettled`
+  settled: decodeSettled,
 };

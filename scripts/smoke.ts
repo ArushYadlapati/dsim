@@ -226,6 +226,13 @@ import { initPhysics } from '../src/sim/physicsEngine';
 import { moduleFor, gameOf } from '../src/games';
 import { decodeColliders } from '../src/games/decode/colliders';
 import { createChainWorld } from '../src/games/chain/spawn';
+import {
+  MATCH_SETTLE_HOLD_S,
+  MATCH_SETTLE_MAX_S,
+  decodeSettled,
+  newSettleClock,
+  settleStep,
+} from '../src/sim/settle';
 import { chainStep } from '../src/games/chain/step';
 import { chainGoalAimHeading, chainCatalystPrompt, updateChain } from '../src/games/chain/play';
 import { chainColliders } from '../src/games/chain/colliders';
@@ -13324,6 +13331,17 @@ function pinScene(
           'replay HUD: a solo run reports no winner',
           hudLabels(hw, 'red').result === null && hudLabels(hw, 'red').phase === 'FINAL',
         );
+        // between the buzzer and the finalized score it can still change: not FINAL, no winner
+        hw.match.scores.red.total = 142;
+        hw.match.scores.blue.total = 118;
+        check(
+          'replay HUD: after the buzzer but before the score is FINALIZED it says MATCH OVER and names nobody',
+          hudLabels(hw, null, false).phase === 'MATCH OVER' &&
+            hudLabels(hw, null, false).result === null &&
+            hudLabels(hw, null, false).clock === null &&
+            hudLabels(hw, null, true).result === 'RED WINS',
+          `${hudLabels(hw, null, false).phase} / ${hudLabels(hw, null, false).result}`,
+        );
       }
       check(
         'replay video: MP4 samples are contiguous and sized as the table says',
@@ -14946,6 +14964,100 @@ function pinScene(
     r.room.detach('p', undefined, true);
     r.room.pumpForTest(maxMatchTicks());
     check('record buzzer: a run ABANDONED mid-match is not saved, and its room is freed at once', reached && r.saved() === 0 && r.gone() === 1, `reached=${reached} saved=${r.saved()} gone=${r.gone()}`);
+  }
+
+  // ---- THE SETTLE: a match is finalized when the field comes to REST, not on a timer -------
+  // The buzzer ends driving, not scoring. The server (and solo practice) finalize once the game
+  // says nothing left can change the score and that has HELD, or at the cap. `src/sim/settle.ts`.
+  const holdTicks = Math.round(MATCH_SETTLE_HOLD_S / SIM_DT);
+  const capTicks = Math.round(MATCH_SETTLE_MAX_S / SIM_DT);
+  {
+    const sw = createWorld('match', 3, [{ id: 0, alliance: 'blue', spec: DEFAULT_SPEC, assists: DEFAULT_ASSISTS, startIndex: 0 }]);
+    sw.match.phase = 'post';
+    /** tick (relative to the buzzer) the clock finalizes on, for a field settled from `from` on */
+    const finalizesAt = (settledAt: (i: number) => boolean): number => {
+      const clock = newSettleClock();
+      for (let i = 0; i <= capTicks + 5; i++) {
+        sw.tick = 5000 + i;
+        if (settleStep(clock, sw, () => settledAt(i))) return i;
+      }
+      return -1;
+    };
+    check('settle: the cap is at most 10 s (owner’s absolute maximum)', MATCH_SETTLE_MAX_S <= 10, `${MATCH_SETTLE_MAX_S}`);
+    check('settle: a field already at rest is finalized after the HOLD, not on the buzzer tick',
+      finalizesAt(() => true) === holdTicks, `${finalizesAt(() => true)} vs ${holdTicks}`);
+    check('settle: it WAITS for the field — at rest from 3 s finalizes at 3 s plus the hold',
+      finalizesAt((i) => i >= 180) === 180 + holdTicks, `${finalizesAt((i) => i >= 180)}`);
+    check('settle: a moment of motion inside the hold restarts it',
+      finalizesAt((i) => i !== holdTicks - 1) === 2 * holdTicks, `${finalizesAt((i) => i !== holdTicks - 1)}`);
+    check('settle: a field that never comes to rest is still finalized at the cap',
+      finalizesAt(() => false) === capTicks, `${finalizesAt(() => false)} vs ${capTicks}`);
+    const clock = newSettleClock();
+    sw.match.phase = 'teleop';
+    check('settle: nothing is finalized before the buzzer', !settleStep(clock, sw, () => true) && clock.postTick === null);
+  }
+  {
+    const dw = createWorld('match', 4, [{ id: 0, alliance: 'blue', spec: DEFAULT_SPEC, assists: DEFAULT_ASSISTS, startIndex: 0 }]);
+    for (const b of dw.balls) b.vel = { x: 0, y: 0 };
+    check('settle DECODE: a quiet field is settled', decodeSettled(dw));
+    const g = dw.balls.find((b) => b.state.kind === 'ground');
+    if (g) {
+      g.vel = { x: 30, y: 0 };
+      check('settle DECODE: a ROLLING artifact is not (depot is where it stops)', !decodeSettled(dw));
+      g.vel = { x: 0, y: 0 };
+      const keep = g.state;
+      g.state = { kind: 'flight', target: 'blue' };
+      check('settle DECODE: an artifact in FLIGHT is not (it can still enter the goal)', !decodeSettled(dw));
+      g.state = { kind: 'rail', goal: 'blue', s: 10, v: 0, overflow: false, pending: true };
+      check('settle DECODE: a PENDING rail artifact is not (classified vs overflow is undecided)', !decodeSettled(dw));
+      g.state = { kind: 'rail', goal: 'blue', s: 10, v: 0, overflow: false };
+      check('settle DECODE: a rail artifact resting on the stack is settled', decodeSettled(dw));
+      g.state = keep;
+    }
+    check('settle DECODE: the quiet field had a ground artifact to test with', !!g);
+    dw.robots[0].vel = { x: 20, y: 0 };
+    check('settle DECODE: a robot still coasting is not (BASE is where it stops)', !decodeSettled(dw));
+  }
+  {
+    // THROUGH THE REAL ROOM: an artifact rolling at the buzzer holds the finalize until it stops
+    const r = recRun('smoke-settle-rolling');
+    runUntil(r.room, (w) => w.match.phase === 'post');
+    const w0 = r.room.worldForTest();
+    const postTick = w0?.tick ?? 0;
+    const roll = w0?.balls.find((b) => b.state.kind === 'ground');
+    if (roll) roll.vel = { x: 60, y: 20 };
+    let lastUnsettled = -1;
+    let savedAt = -1;
+    for (let i = 0; i < capTicks + 10 && savedAt < 0; i++) {
+      r.room.advanceForTest(1);
+      const w = r.room.worldForTest();
+      if (!w) break;
+      if (r.saved() === 1) savedAt = w.tick - postTick;
+      else if (!decodeSettled(w)) lastUnsettled = w.tick - postTick;
+    }
+    check('settle room: an artifact ROLLING at the buzzer delays the finalize until it has stopped and held',
+      !!roll && lastUnsettled > 0 && savedAt === lastUnsettled + 1 + holdTicks && savedAt < capTicks,
+      `rolled ${lastUnsettled} ticks, finalized ${savedAt} ticks after the buzzer (hold ${holdTicks}, cap ${capTicks})`);
+  }
+  {
+    // an IDLE match of each game settles well inside the cap — a game whose field jitters forever
+    // would make every match wait the full cap, which is the failure to catch
+    const idle = (code: string, game: 'decode' | 'chain'): { at: number; saved: number } => {
+      let saved = 0;
+      const room = new Room(code, () => {}, { kind: 'record', record: 'solo', game }, () => { saved++; });
+      room.add(mkS('p'));
+      room.onMessage('p', { t: 'start' });
+      runUntil(room, (w) => w.match.phase === 'post');
+      const post = room.worldForTest()?.tick ?? 0;
+      room.advanceForTest(capTicks + 10);
+      return { at: (room.worldForTest()?.tick ?? 0) - post, saved };
+    };
+    const d = idle('smoke-settle-idle-decode', 'decode');
+    check('settle room: an idle DECODE run finalizes once, after the hold and before the cap',
+      d.saved === 1 && d.at >= holdTicks && d.at < capTicks, `${d.at} ticks after the buzzer`);
+    const c = idle('smoke-settle-idle-chain', 'chain');
+    check('settle room: an idle Chain Reaction run finalizes once, after the hold and before the cap',
+      c.saved === 1 && c.at >= holdTicks && c.at < capTicks, `${c.at} ticks after the buzzer`);
   }
 }
 
@@ -19890,23 +20002,22 @@ const mkMM = () => {
     gsrc.includes('this.harvestPracticeRun(true)'),
   );
 
-  // ...but NOT on the buzzer tick. `stepMatch` re-runs `assessMatchEnd` every `post` tick
-  // because TELEOP PATTERN / DEPOT / BASE are resting-position rules, and the server waits
-  // `MATCH_SETTLE_S` of sim time before `finalizeMatch` for exactly that reason
-  // (`server/room.ts:1539-1546`). Solo closed the recorder and snapshotted `worldResult` on the
-  // FIRST `post` tick, so a ball still draining the ramp scored for the server and not for the
-  // practice history — the saved score could come in under both the one the driver watched
-  // reveal and the one the same run scores online. Pinned by reading the source for the reason
-  // the wiring checks above are: GameController needs a canvas, and the failure is silent.
+  // ...but NOT on the buzzer tick. The buzzer ends driving, not scoring, and the server
+  // finalizes a match only once nothing on the field can change the score (`src/sim/settle.ts`).
+  // Solo closed the recorder and snapshotted `worldResult` on the FIRST `post` tick, so a ball
+  // still draining the ramp scored for the server and not for the practice history. Solo now
+  // harvests on the SAME settle clock and the SAME per-game predicate. Pinned by reading the
+  // source for the reason the wiring checks above are: GameController needs a canvas, and the
+  // failure is silent.
   const audioBody = gsrc.slice(gsrc.indexOf('private handlePhaseAudio(): void {'));
   const postBranch = audioBody.slice(
     audioBody.indexOf("if (phase === 'post') {"),
     audioBody.indexOf('this.prevPhase = phase;'),
   );
-  const settleGate = audioBody.indexOf('this.world.time - this.settleSince >= C.MATCH_SETTLE_S');
+  const settleGate = audioBody.indexOf('settleStep(this.settle, this.world, this.mod.settled)');
   const settleHarvest = audioBody.indexOf('this.harvestPracticeRun(true)');
   check(
-    'save policy: the completed harvest waits out MATCH_SETTLE_S, not the buzzer tick',
+    'save policy: the completed harvest waits for the field to SETTLE, not the buzzer tick',
     postBranch.length > 0 &&
       !postBranch.includes('harvestPracticeRun') &&
       settleGate > 0 &&

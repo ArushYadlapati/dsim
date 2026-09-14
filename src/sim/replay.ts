@@ -2,6 +2,7 @@ import type { Alliance, GameId, GameMode, RobotCommand, RobotSpec, World, AutoPa
 import * as C from '../config';
 import { DEFAULT_ASSISTS, type RobotSetup } from './spawn';
 import { simModuleFor } from '../games/sim';
+import { MATCH_SETTLE_MAX_S } from './settle';
 import {
   dequantizeCommand,
   localizeCommand,
@@ -457,10 +458,11 @@ export interface RecordRun {
   result: ReplayResult;
 }
 
-/** upper bound on a full match's ticks (+ slack), so a runaway can't spin forever */
+/** upper bound on a full match's ticks (+ slack), so a runaway can't spin forever. The settle
+ *  after the buzzer ends when the field comes to rest, so the bound carries its CAP. */
 export function maxMatchTicks(): number {
   const secs =
-    C.PRE_COUNTDOWN + C.AUTO_DURATION + C.TRANSITION_DURATION + C.TELEOP_DURATION + C.MATCH_SETTLE_S + 2;
+    C.PRE_COUNTDOWN + C.AUTO_DURATION + C.TRANSITION_DURATION + C.TELEOP_DURATION + MATCH_SETTLE_MAX_S + 2;
   return Math.ceil(secs / C.SIM_DT);
 }
 

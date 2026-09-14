@@ -242,6 +242,16 @@ export interface GameSimModule {
    */
   hud?(world: World, robotId: number): unknown;
   /**
+   * NOTHING LEFT ON THE FIELD CAN CHANGE THE SCORE — read in phase `post` by the shared settle
+   * clock (`src/sim/settle.ts`), which finalizes the match once this has held for
+   * `MATCH_SETTLE_HOLD_S` (or at `MATCH_SETTLE_MAX_S`, whatever it says). The server saves the
+   * score then, and the results screen reveals only on that saved score.
+   *
+   * A PURE READ of world state — it decides the tick a match is captured on, so it must answer
+   * the same on every machine. Absent ⇒ the field counts as settled at once.
+   */
+  settled?(world: World): boolean;
+  /**
    * WHAT ON THIS GAME'S ROBOT IS SOLID TO A GROUND ARTIFACT — the game-owned override of
    * `robotSolids` (`src/sim/artifactSolids.ts`).
    *

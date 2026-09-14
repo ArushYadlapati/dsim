@@ -13,6 +13,7 @@ import {
 import { biobuzzColliders } from './colliders';
 import { biobuzzHud } from './hudRobot';
 import { bbRobotSolids } from './robot';
+import { bbSettled } from './settle';
 import { createBiobuzzWorld } from './spawn';
 import { bbActiveStartLegal } from './start';
 import { biobuzzStep } from './step';
@@ -85,4 +86,7 @@ export const BIOBUZZ_SIM: GameSimModule = {
   // `robotSolids` unchanged; filled here because a BIOBUZZ sweeper is a roller bar on any
   // edge and DECODE's front funnel is not a description of it. See `bbRobotSolids`.
   artifactSolids: bbRobotSolids,
+  // the match is finalized only once nothing left on the field can score (§10.5 A/C) — a tip
+  // swing that the buzzer caught finishes and pays before anything is saved. See `bbSettled`.
+  settled: bbSettled,
 };

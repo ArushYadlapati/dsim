@@ -1,5 +1,13 @@
+import { movingFaster, robotsAtRest } from '../../sim/settle';
+import type { World } from '../../types';
 import type { GameSimModule } from '../types';
-import { CHAIN_HALF_Y, CHAIN_START_POSES, CHAIN_VIEW_HALF_X, CHAIN_VIEW_MARGIN } from './config';
+import {
+  CHAIN_HALF_Y,
+  CHAIN_PART_REST_SPEED,
+  CHAIN_START_POSES,
+  CHAIN_VIEW_HALF_X,
+  CHAIN_VIEW_MARGIN,
+} from './config';
 import { chainColliders } from './colliders';
 import { chainStartLegal } from './state';
 import { createChainWorld } from './spawn';
@@ -11,6 +19,23 @@ import { chainStep } from './step';
  * Season periods, separate from DECODE). CR start poses are legal by construction (Lab-Area
  * anchors), so `startLegality:false` keeps the server's DECODE-only G304 gate off.
  */
+/**
+ * Chain Reaction: nothing left that can change the score (`GameSimModule.settled`).
+ *   · no particle in FLIGHT — an unscored one can still enter an accelerator (`play.ts` has no
+ *     phase gate on that), and a scored one being ejected lands as ground. `staged` particles
+ *     are the pre-match load held inside a goal and never move again after the buzzer;
+ *   · every GROUND particle at rest;
+ *   · every ROBOT at rest — ASCEND and PARK are derived from where a robot sits, every tick.
+ */
+export function chainSettled(world: World): boolean {
+  for (const b of world.balls) {
+    const s = b.state;
+    if (s.kind === 'flight' && !s.staged) return false;
+    if (s.kind === 'ground' && movingFaster(b.vel, CHAIN_PART_REST_SPEED)) return false;
+  }
+  return robotsAtRest(world);
+}
+
 export const CHAIN_SIM: GameSimModule = {
   id: 'chain',
   scored: true,
@@ -32,4 +57,5 @@ export const CHAIN_SIM: GameSimModule = {
   colliders: chainColliders,
   createWorld: createChainWorld,
   step: chainStep,
+  settled: chainSettled,
 };

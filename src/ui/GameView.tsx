@@ -520,7 +520,8 @@ export function GameView({
       {hud?.phase === 'post' && (
         <Results
           hud={hud}
-          revealAt={hud.resultRevealAt}
+          final={hud.resultFinal}
+          lost={hud.resultLost}
           ranked={!!session?.ranked}
           eloResults={controllerRef.current?.getEloResults() ?? null}
           canRematch={!session}
@@ -628,7 +629,13 @@ function Hud({ hud, showEventLog }: { hud: HudSnapshot; showEventLog: boolean })
             {/* status on the PHASE only — the digits beside it retick every frame and
                 would flood a screen reader. This changes ~4 times a match. */}
             <span className="timer-phase" role="status">
-              {endgame ? 'END GAME' : PHASE_LABEL[hud.phase]}
+              {/* FINAL only once the score is final: between the buzzer and the field coming to
+                  rest it can still change, and the bar must not call it FINAL beside it */}
+              {endgame
+                ? 'END GAME'
+                : hud.phase === 'post' && !hud.resultFinal
+                  ? 'MATCH OVER'
+                  : PHASE_LABEL[hud.phase]}
             </span>
             <span className="timer-time">
               {hud.phase === 'post' ? '0:00' : fmtTime(hud.timeLeft)}
@@ -958,7 +965,8 @@ function RematchVote({
 
 function Results({
   hud,
-  revealAt,
+  final,
+  lost,
   ranked,
   eloResults,
   canRematch,
@@ -978,9 +986,10 @@ function Results({
   onReportScore,
 }: {
   hud: HudSnapshot;
-  /** performance.now() ms the whoosh fires — the reveal (count-up + winner slam)
-   * lands here; null ⇒ reveal immediately */
-  revealAt: number | null;
+  /** the score is FINALIZED (see `HudSnapshot.resultFinal`) — the reveal lands then, not on a timer */
+  final: boolean;
+  /** the final score never arrived (see `HudSnapshot.resultLost`) */
+  lost: boolean;
   /** ranked match? shows the ELO-change section */
   ranked: boolean;
   /** per-driver ELO changes, or null until the server's eloResult lands */
@@ -1020,8 +1029,18 @@ function Results({
   const [scoreReported, setScoreReported] = useState(false);
   const red = hud.alliance === 'red' ? hud.score : hud.oppScore;
   const blue = hud.alliance === 'blue' ? hud.score : hud.oppScore;
+  /**
+   * THE TOTALS SHOWN ARE THE SAVED ONES. Online, the server's finalized result is the score of
+   * record; the HUD beside it is this client's PREDICTED world, which can run a few ticks past
+   * the last snapshot. The breakdown rows still come from the HUD — the field has settled by the
+   * time this reveals, so they agree — but the numbers a driver reads as "the score" are exactly
+   * the numbers that were saved. Solo practice has no server, and its own world IS the result.
+   */
+  const saved = matchResult?.result ?? null;
+  const redFinal = saved ? saved.score.red : red.total;
+  const blueFinal = saved ? saved.score.blue : blue.total;
   const winner: Alliance | 'tie' =
-    red.total > blue.total ? 'red' : blue.total > red.total ? 'blue' : 'tie';
+    redFinal > blueFinal ? 'red' : blueFinal > redFinal ? 'blue' : 'tie';
 
   // RECORD runs are opponent-free score attacks: no winner, and the player's own
   // fouls (which are "awarded" to the empty opposing alliance) SUBTRACT from the
@@ -1029,21 +1048,16 @@ function Results({
   const isRecord = matchResult?.kind === 'record';
   const mine = hud.score; // the player's own breakdown
   const penaltyPts = hud.oppScore.foulPoints; // points the player's fouls handed the empty opponent
-  const netScore = Math.max(0, mine.total - penaltyPts);
+  const oppAlliance: Alliance = hud.alliance === 'red' ? 'blue' : 'red';
+  const netScore = saved
+    ? Math.max(0, saved.score[hud.alliance] - saved.foulPoints[oppAlliance])
+    : Math.max(0, mine.total - penaltyPts);
 
-  // hold the reveal until the whoosh fires, then count up + slam the winner
-  const [revealed, setRevealed] = useState(false);
-  useEffect(() => {
-    if (revealAt === null) {
-      setRevealed(true);
-      return;
-    }
-    const delay = Math.max(0, revealAt - performance.now());
-    const id = window.setTimeout(() => setRevealed(true), delay);
-    return () => window.clearTimeout(id);
-  }, [revealAt]);
-  const redTotal = useCountUp(red.total, revealed, 900);
-  const blueTotal = useCountUp(blue.total, revealed, 900);
+  // the reveal lands when the score is FINAL — nothing on the field can change it any more —
+  // then counts up and slams the winner
+  const revealed = final;
+  const redTotal = useCountUp(redFinal, revealed, 900);
+  const blueTotal = useCountUp(blueFinal, revealed, 900);
   const netTotal = useCountUp(netScore, revealed, 900);
 
   if (isRecord) {
@@ -1055,6 +1069,7 @@ function Results({
         netScore={netScore}
         netTotal={netTotal}
         revealed={revealed}
+        lost={lost}
         practiceRun={practiceRun}
         recordResult={recordResult}
         signedIn={signedIn}
@@ -1166,7 +1181,13 @@ function Results({
             forfeited the match. Points earned are shown below but do not count.
           </p>
         )}
-        {!revealed && <p className="ds-hint results-wait">Tallying the score…</p>}
+        {!revealed && (
+          <p className="ds-hint results-wait">
+            {lost
+              ? 'Couldn’t get the final score from the server. Check Career for the result.'
+              : 'Waiting for the field to settle…'}
+          </p>
+        )}
         {revealed && (
           <>
         <table className="score-table results-table">
@@ -1193,9 +1214,9 @@ function Results({
               </Fragment>
             ))}
             <tr className="total-row">
-              <td className="rv">{red.total}</td>
+              <td className="rv">{redFinal}</td>
               <td className="cat">TOTAL</td>
-              <td className="bv">{blue.total}</td>
+              <td className="bv">{blueFinal}</td>
             </tr>
           </tbody>
         </table>
@@ -1361,6 +1382,7 @@ function RecordResults({
   netScore,
   netTotal,
   revealed,
+  lost,
   recordResult,
   signedIn,
   matchResult,
@@ -1378,6 +1400,8 @@ function RecordResults({
   netScore: number;
   netTotal: number;
   revealed: boolean;
+  /** the final score never arrived — see `HudSnapshot.resultLost` */
+  lost: boolean;
   recordResult: RecordRankInfo | null;
   signedIn: boolean;
   matchResult: MatchResultInfo | null;
@@ -1432,7 +1456,13 @@ function RecordResults({
           <strong className="record-total">{revealed ? netTotal : '-'}</strong>
           <span className="record-total-label">POINTS</span>
         </div>
-        {!revealed && <p className="ds-hint results-wait">Tallying the score…</p>}
+        {!revealed && (
+          <p className="ds-hint results-wait">
+            {lost
+              ? 'Couldn’t get the final score from the server. Check Career for the result.'
+              : 'Waiting for the field to settle…'}
+          </p>
+        )}
         {revealed && (
           <>
             <RecordStanding info={recordResult} signedIn={signedIn} />

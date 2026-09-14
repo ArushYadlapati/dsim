@@ -536,7 +536,7 @@ export function ReplayView({
           // the scoreboard is DOM in the viewer, so the canvas alone carries no score, no
           // clock and no match start — see `drawReplayHud`. It draws in CSS units, which is
           // why the transform is left where the camera put it.
-          drawReplayHud(ctx, shot.world, view);
+          drawReplayHud(ctx, shot.world, { ...view, final: shot.done });
         },
         onProgress: setCapturePct,
         cancelled: () => abortCapture.current,
@@ -650,7 +650,9 @@ export function ReplayView({
   const alliances = new Set((replay.current?.setups ?? []).map((s) => s.alliance));
   const solo = alliances.size < 2;
   const soloSide = solo ? ([...alliances][0] ?? 'blue') : null;
-  const done = phase === 'post' || (player.current?.done ?? false);
+  // FINAL only at the recorded end: a replay runs up to the tick its match was FINALIZED, and
+  // between the buzzer and that tick the score can still change
+  const done = player.current?.done ?? false;
   const clock = `${Math.floor(timeLeft / 60)}:${String(timeLeft % 60).padStart(2, '0')}`;
   // the REAL-TIME capture runs at 1×, so what is left of the replay is what is left of it
   const runtime = total * SIM_DT;
@@ -797,12 +799,12 @@ export function ReplayView({
             <>
               <span className="rs-side red">RED</span>
               <b className="rs-num">{score.red}</b>
-              <span className="rs-mid">{done ? 'FINAL' : clock}</span>
+              <span className="rs-mid">{done ? 'FINAL' : phase === 'post' ? 'MATCH OVER' : clock}</span>
               <b className="rs-num">{score.blue}</b>
               <span className="rs-side blue">BLUE</span>
             </>
           )}
-          {solo && <span className="rs-mid">{done ? 'FINAL' : clock}</span>}
+          {solo && <span className="rs-mid">{done ? 'FINAL' : phase === 'post' ? 'MATCH OVER' : clock}</span>}
         </div>
       )}
       <canvas ref={canvasRef} className="ds-replay-canvas" style={{ display: status === 'ready' ? 'block' : 'none' }} />
