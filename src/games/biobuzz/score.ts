@@ -160,11 +160,14 @@ export interface BbAllianceScore {
   /** robots PARKED at the end of the MATCH, and 5 each */
   parkTeleCount: number;
   parkTele: number;
-  /** completed HIVE TIPS, and 20 each */
+  /** completed HIVE TIPS, and 20 each — plus, once the match is over, a swing that was still
+   * moving at the buzzer, which will certainly settle (see `bbScoreWorld`) */
   tips: number;
   tipPts: number;
   /** elements in this alliance's upward-facing CELL right now — LIVE, a readout and not a
-   * score. What is in a tray is on its way to being tipped out of it. */
+   * score. What is in a tray is on its way to being tipped out of it. The ONE exception is a
+   * tray caught mid-swing at the buzzer, whose load is counted as the TIP it is about to
+   * complete rather than twice (see `bbScoreWorld`). */
   cellCount: number;
   /** 2 for each of those, **and 0 until the match is over** (owner ruling, 2026-09-12): Table
    * 10-2 pays for an element LEFT IN the cell, which is a state of the field at the buzzer.
@@ -273,7 +276,10 @@ export function bbScoreWorld(world: World): BbScore {
 
   // ── HIVE TIP, and the elements LEFT in the up-CELL at the END ─────────────
   /**
-   * ⚠️ THE CELL LINE IS SCORED AT THE END OF THE MATCH, NOT LIVE (owner ruling, 2026-09-12).
+   * ⚠️ THE CELL LINE IS SCORED AT THE END OF THE MATCH, NOT LIVE (owner ruling, 2026-09-12;
+   * confirmed by §10.5 C, 2026-09-13: "Assessment of POLLEN and NECTAR remaining in the CELL
+   * will occur after all SCORING ELEMENTS and ROBOTS have come to rest at the conclusion of the
+   * MATCH").
    *
    * Table 10-2 pays 2 for an element "left in" the up-CELL, and LEFT IN is a state of the
    * field at the buzzer, not a running total: everything in a cell is on its way to being
@@ -296,8 +302,51 @@ export function bbScoreWorld(world: World): BbScore {
   const matchOver = phase === 'post';
   for (const a of ALLIANCES) {
     const hive = bb.hives[a];
-    out[a].tips = hive.tips;
-    out[a].cellCount = hive.contents.length;
+    /**
+     * ⚠️ A SWING ALREADY UNDER WAY AT THE BUZZER IS A TIP, AND ITS LOAD IS NOT ALSO LEFT IN THE
+     * TRAY. Reported from a solo record run (2026-09-13): “sometimes when I get a tip at the end
+     * of the game it deducts points from me rather than adding the points for the tip … the tip
+     * doesn't count and the points get deducted”.
+     *
+     * Two clocks made that inevitable: the swing is `BB_TIP_SWING_S` 4.0 s and the window the
+     * results screen and the server both harvest the final score on is `MATCH_SETTLE_S` 2.8 s,
+     * so a TIP triggered in the last four seconds of TELEOP never reached `hive.tips` before the
+     * score was captured. The bar passes level half way through, and that is the half that hurt:
+     * a swing that started in the last two seconds paid its load 2 apiece at the buzzer and then
+     * had the tray emptied under it, so the saved number came in BELOW the one on screen by the
+     * whole cell line with the 20 nowhere. Measured on the smoke scene: 16 at the buzzer, 0
+     * harvested. Tipping — the one thing the HIVE is for — cost points.
+     *
+     * ── THE RULE SAYS SO IN AS MANY WORDS (§10.5 A and C) ─────────────────
+     *   A. "Assessment of HIVE TIPS occurs throughout the MATCH **and continues until all
+     *      SCORING ELEMENTS and ROBOTS have come to rest at the conclusion of the MATCH**."
+     *   C. "Assessment of POLLEN and NECTAR **remaining in the CELL** will occur **after** all
+     *      SCORING ELEMENTS and ROBOTS have come to rest at the conclusion of the MATCH."
+     *
+     * So the state that is scored is the one at REST, not the one at 0:00 — a swing still moving
+     * when the buzzer goes is assessed as the TIP it becomes, and the load it is dumping is not
+     * remaining in the CELL by the time C is asked. That is both halves of this fix, and the two
+     * clauses are also why the answer is not "wait for the swing": the sim CANNOT wait, because
+     * `MATCH_SETTLE_S` is fixed at 2.8 s and a swing takes 4.0. Predicting it is exact rather
+     * than optimistic — nothing cancels a swing (`hiveStep` counts one down to zero and has no
+     * other exit), so a bar that is moving at the buzzer WILL come to rest tipped, and the
+     * number this pays at 0:00 is the number the field settles on.
+     *
+     * Paying both lines would bill one tray twice; paying neither is the bug.
+     *
+     * `released` tells the two trays apart. Before the bar passes level, `contents` is the load
+     * about to be dumped — counted as the tip, so 0 here. After it, `contents` is the INCOMING
+     * tray's load (`hiveStep` carries it through the settle), which really is left in the
+     * up-CELL and is counted as ever.
+     *
+     * This can never cost anyone points. The largest load that has NOT tipped is 7 elements —
+     * `BB_TIP_POLLEN` tips a bare cell at 8 POLLEN, and at 5 NECTAR on their own — i.e. 14
+     * points against the tip's 20, so an element that lands during the settle window and tips a
+     * cell only ever adds.
+     */
+    const swinging = hive.tipping > 0;
+    out[a].tips = hive.tips + (matchOver && swinging ? 1 : 0);
+    out[a].cellCount = matchOver && swinging && !hive.released ? 0 : hive.contents.length;
   }
 
   // ── FLOWERS: 2 per element to the OWNER, 5 to the bottom NECTAR's alliance ─
