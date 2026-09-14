@@ -177,6 +177,10 @@ const SNAP_BACKLOG_BYTES = 256 * 1024;
  * enough to cover a full page reload / navigate-away-and-come-back (the "rejoin your
  * match" flow), not just a transient socket blip. The robot coasts to ZERO meanwhile. */
 const RECONNECT_GRACE_MS = 45000;
+/** how close to the buzzer a solo record run counts as DECIDED: a driver who leaves inside it
+ *  still has the run finished and saved. One second of slack because the client's predicted
+ *  clock runs a little ahead of the server's, so "I restarted at 0:00" can land in teleop. */
+const RECORD_FINISH_WINDOW_S = 1;
 /* BOTH RANKED CLOCKS NOW LIVE IN `src/net/protocol.ts`, and are imported above.
    `RANKED_JOIN_GRACE_MS` is how long a staged match waits for every paired player to
    (re)connect before it cancels as a no-show; `STRATEGY_DURATION_MS` is the pre-match
@@ -386,6 +390,10 @@ export class Room {
    *  still point here (`server/index.ts` never clears a socket's `room`), so everything that
    *  can arrive afterwards — a close, a late ready — must be a no-op. See `cancelPending`. */
   private cancelled = false;
+  /** a solo record run whose driver left AFTER it was decided: keep stepping with nobody
+   *  connected until `finalizeMatch` saves it, then free the room (`reap`, a clean close) or
+   *  hold it for the reconnect grace (a dropped network). See `detach`. */
+  private finishing: { reap: boolean } | null = null;
   // release channel of this room, set from the FIRST client to join (or the staged
   // ranked roster). 'alpha' rooms are IN-DEVELOPMENT: their results are never
   // persisted to the leaderboard/ELO DB (see finalizeMatch), and the matchmaker
@@ -787,7 +795,19 @@ export class Room {
       // on launch day (2026-09-13, BIOBUZZ public) iad sat at 24/24 with 8-12 real runs
       // and refused new ones as `region_full` ("Couldn’t start"). A network drop is not
       // clean (1006) and keeps its grace; so does every room with a second driver in it.
-      if (clean && this.config.kind === 'record' && this.config.record === 'solo') {
+      const soloRecord = this.config.kind === 'record' && this.config.record === 'solo';
+      // ⚠️ A RUN THAT IS ALREADY DECIDED IS FINISHED AND SAVED, WITH NOBODY WATCHING. The score
+      // is final at the buzzer plus the 2.8 s settle, and that is when `finalizeMatch` writes
+      // the PB / leaderboard row. A player who pressed restart or Back in that window used to
+      // lose the run outright: the loop FREEZES a room with no connected driver (the ghost-room
+      // guard in `startLoop`), so the match never reached finalize and the room died unsaved
+      // — reported as "record runs are not updating their personal best or the leaderboard".
+      if (soloRecord && this.inFinishWindow()) {
+        this.finishing = { reap: clean };
+        this.broadcastRoster();
+        return;
+      }
+      if (clean && soloRecord) {
         c.disconnectAt = -Infinity;
         this.checkGrace();
         return;
@@ -1545,7 +1565,7 @@ export class Room {
         //     post-match settle) does not see.
         // `checkGrace` deliberately keeps running on the WALL clock through the freeze, so
         // a player who never comes back is still reaped on schedule.
-        if (!this.anyConnected()) {
+        if (this.frozenForNobody()) {
           last = Date.now();
           acc = 0;
           return;
@@ -1774,6 +1794,18 @@ export class Room {
       }
     }
     this.stop();
+    // the driver left once the run was decided (see `finishing`): it is saved now, so free the
+    // room — at once for a deliberate close, after the reconnect grace for a dropped network
+    const f = this.finishing;
+    this.finishing = null;
+    if (f) {
+      if (f.reap) {
+        for (const x of this.clients.values()) if (!x.connected) x.disconnectAt = -Infinity;
+        this.checkGrace();
+      } else {
+        this.armGraceReap();
+      }
+    }
   }
 
   /**
@@ -1922,6 +1954,31 @@ export class Room {
     for (let i = 0; i < maxTicks && this.world && !this.finalized; i++) {
       if (this.stepOnce()) this.broadcastSnapshot();
     }
+  }
+
+  /** TEST SEAM: pump the way the REAL loop does — grace reaping and the ghost-room freeze
+   *  included. `advanceForTest` steps unconditionally, so it cannot see a room that the live
+   *  loop would have frozen, which is exactly how an unsaved buzzer restart went unnoticed. */
+  pumpForTest(maxTicks: number): void {
+    this.stop();
+    for (let i = 0; i < maxTicks && this.world && !this.finalized; i++) {
+      this.checkGrace();
+      if (this.clients.size === 0 || this.frozenForNobody()) return;
+      if (this.stepOnce()) this.broadcastSnapshot();
+    }
+  }
+
+  /** the ghost-room freeze (`startLoop`): nobody connected, and nothing still owed to anyone */
+  private frozenForNobody(): boolean {
+    return !this.anyConnected() && this.finishing === null;
+  }
+
+  /** is this match decided, or within `RECORD_FINISH_WINDOW_S` of it, and not yet saved? */
+  private inFinishWindow(): boolean {
+    const w = this.world;
+    if (!w || this.finalized) return false;
+    const m = w.match;
+    return m.phase === 'post' || (m.phase === 'teleop' && m.phaseTimeLeft <= RECORD_FINISH_WINDOW_S);
   }
 
   /** TEST SEAM: how many future inputs are buffered, in total and for the worst robot.

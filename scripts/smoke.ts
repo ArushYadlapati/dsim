@@ -14895,6 +14895,58 @@ function pinScene(
   duo.advanceForTest(6);
   duo.detach('a', undefined, true);
   check('record reap: a clean close in a DUO run still holds the slot (a partner is there)', duoEmptied === 0, `${duoEmptied}`);
+
+  // THE BUZZER. A run the driver leaves once it is DECIDED is finished and SAVED (the PB /
+  // leaderboard write happens in finalize, 2.8 s after the buzzer), even though the live loop
+  // freezes a room with nobody connected. `pumpForTest` runs that freeze; `advanceForTest`
+  // does not, which is how the unsaved restart hid.
+  type W = NonNullable<ReturnType<Room['worldForTest']>>;
+  const recRun = (code: string): { room: Room; saved: () => number; gone: () => number } => {
+    let saved = 0;
+    let gone = 0;
+    const room = new Room(code, () => { gone++; }, { kind: 'record', record: 'solo' }, () => { saved++; });
+    room.add(mkS('p'));
+    room.onMessage('p', { t: 'start' });
+    return { room, saved: () => saved, gone: () => gone };
+  };
+  const runUntil = (room: Room, pred: (w: W) => boolean): boolean => {
+    for (let i = 0; i < maxMatchTicks(); i++) {
+      const w = room.worldForTest();
+      if (!w) return false;
+      if (pred(w)) return true;
+      room.advanceForTest(1);
+    }
+    return false;
+  };
+  {
+    const r = recRun('smoke-rec-buzzer-clean');
+    const reached = runUntil(r.room, (w) => w.match.phase === 'post');
+    r.room.detach('p', undefined, true);
+    r.room.pumpForTest(maxMatchTicks());
+    check('record buzzer: restarting after the buzzer still SAVES the run', reached && r.saved() === 1, `reached=${reached} saved=${r.saved()}`);
+    check('record buzzer: ...and frees the room once it is saved', r.gone() === 1, `${r.gone()}`);
+  }
+  {
+    const r = recRun('smoke-rec-lastsecond-clean');
+    const reached = runUntil(r.room, (w) => w.match.phase === 'teleop' && w.match.phaseTimeLeft <= 0.5);
+    r.room.detach('p', undefined, true);
+    r.room.pumpForTest(maxMatchTicks());
+    check('record buzzer: restarting in the last half second (client clock ahead) still SAVES it', reached && r.saved() === 1 && r.gone() === 1, `reached=${reached} saved=${r.saved()} gone=${r.gone()}`);
+  }
+  {
+    const r = recRun('smoke-rec-buzzer-drop');
+    const reached = runUntil(r.room, (w) => w.match.phase === 'post');
+    r.room.detach('p');
+    r.room.pumpForTest(maxMatchTicks());
+    check('record buzzer: a NETWORK drop after the buzzer saves the run and holds the room for the grace', reached && r.saved() === 1 && r.gone() === 0, `reached=${reached} saved=${r.saved()} gone=${r.gone()}`);
+  }
+  {
+    const r = recRun('smoke-rec-midrun-clean');
+    const reached = runUntil(r.room, (w) => w.match.phase === 'teleop' && w.match.phaseTimeLeft > 10);
+    r.room.detach('p', undefined, true);
+    r.room.pumpForTest(maxMatchTicks());
+    check('record buzzer: a run ABANDONED mid-match is not saved, and its room is freed at once', reached && r.saved() === 0 && r.gone() === 1, `reached=${reached} saved=${r.saved()} gone=${r.gone()}`);
+  }
 }
 
 // ---- spectator admission is COUNTABLE, and hidden observers count -----------
