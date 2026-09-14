@@ -15821,6 +15821,16 @@ function pinScene(
       'dodge: the player who readied on time is not billed',
       !culpritsOf(reports).includes('u-red'),
     );
+    // the cancelled room's sockets still route here: the innocent player leaving the
+    // cancelled screen used to cancel it a SECOND time and be billed a strategy bail
+    room.detach('red');
+    room.detach('blue');
+    room.onMessage('blue', { t: 'update', patch: { ready: true } });
+    check(
+      'dodge: leaving a match that was ALREADY cancelled bills nobody again',
+      reports.length === 1 && culpritsOf(reports) === 'u-blue:unready',
+      `${reports.length} reports: ${culpritsOf(reports)}`,
+    );
   }
 
   // 4. A CUSTOM room is not ranked, so abandoning one costs nothing — the contract the
