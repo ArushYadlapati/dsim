@@ -709,13 +709,34 @@ const CANOPY_A = 0.42;
  * below the hive. Clipping the robot instead would need every game's sprite to know about this
  * field. Repainting the structure is the one place the footprint is already known.
  *
+ * ⚠️ **IT COMPOSITES THROUGH AN OFFSCREEN LAYER, AND THAT IS NOT AN OPTIMISATION — IT IS THE
+ * ONLY WAY TO GET THE BLEND RIGHT.** The first version painted the structure's parts straight
+ * onto the field with each part's alpha pre-multiplied by `CANOPY_A`, and that is not the same
+ * arithmetic: the body wash took 42% of the CELL's colour away and the cell was added back at
+ * only `0.45 × 0.42` of it, so the tray came out muted and the whole assembly read as a haze
+ * over the field where nothing was under it at all. Measured on the `under-hive` cell, the mat
+ * and both trays changed colour even where no robot overlapped them, which is exactly what the
+ * pass must not do. Drawn into a transparent layer at FULL field-pass weight and blitted once
+ * at `CANOPY_A`, the result is exactly `CANOPY_A × structure + (1 − CANOPY_A) × whatever is
+ * beneath` — so a pixel with only the mat under it is repainted with the same structure that is
+ * already there and does not change at all, and only a pixel with a robot or a POLLEN under it
+ * is dimmed. The layer is cached and re-used; it is resized only when the canvas is.
+ *
  * Reads the same state the field pass reads, through the same helpers (`tipProjection`,
  * `cellSpan`, `drawCellContents`), so the canopy swings with the swing and its contents row is
  * the field's row: two drawings of one hive that cannot disagree about where it is. The down
  * cell's dashed outline and the edge marks are not repainted — lines that thin over a robot
  * are noise, and the body wash already says "structure here".
  */
-export function drawHiveCanopy(ctx: CanvasRenderingContext2D, world: World): void {
+/** the canopy's compositing layer, kept between frames — see `drawHiveCanopy`. */
+let canopyLayer: HTMLCanvasElement | null = null;
+
+/**
+ * THE STRUCTURE ITSELF, at full weight — the body, each cell's fill, and the taking cell's
+ * contents row. Shared by the canopy layer; the FIELD pass draws the same shapes inline with
+ * its own edge marks and dashed outline, which are lines too fine to repaint over a robot.
+ */
+function paintHiveAssembly(ctx: CanvasRenderingContext2D, world: World): void {
   const bb = world.biobuzz;
   const byId = new Map<number, Artifact>();
   for (const b of world.balls) byId.set(b.id, b);
@@ -730,7 +751,6 @@ export function drawHiveCanopy(ctx: CanvasRenderingContext2D, world: World): voi
     const bodyHalf = (BB_HIVE_LEN / 2) * proj;
 
     ctx.save();
-    ctx.globalAlpha = CANOPY_A;
     roundRectPath(ctx, x0, -bodyHalf, x1, bodyHalf, HIVE_R);
     ctx.fillStyle = C.COLORS.tile;
     ctx.fill();
@@ -746,17 +766,48 @@ export function drawHiveCanopy(ctx: CanvasRenderingContext2D, world: World): voi
       if (k > 0.01) {
         ctx.save();
         roundRectPath(ctx, x0, y0, x1, y1, HIVE_R);
-        ctx.globalAlpha = k * CELL_FILL_A * CANOPY_A;
+        ctx.globalAlpha = k * CELL_FILL_A;
         ctx.fillStyle = allianceColor(a);
         ctx.fill();
+        ctx.globalAlpha = k;
+        ctx.strokeStyle = allianceColor(a);
+        ctx.lineWidth = 0.8;
+        ctx.stroke();
         ctx.restore();
       }
       if (side !== taking) continue;
       const outerY = s > 0 ? y1 : y0;
       const contents = (h?.contents ?? []).map((id) => byId.get(id)).filter((b): b is Artifact => b !== undefined);
-      drawCellContents(ctx, x0, x1, outerY, s, contents, k * CANOPY_A);
+      drawCellContents(ctx, x0, x1, outerY, s, contents, k);
     }
   }
+}
+
+export function drawHiveCanopy(ctx: CanvasRenderingContext2D, world: World): void {
+  const { canvas } = ctx;
+  const w = canvas.width;
+  const h = canvas.height;
+  if (w <= 0 || h <= 0) return;
+  // a canvas that has not been laid out is 0x0 and `getContext` on the layer would be useless
+  if (!canopyLayer) canopyLayer = document.createElement('canvas');
+  if (canopyLayer.width !== w || canopyLayer.height !== h) {
+    canopyLayer.width = w;
+    canopyLayer.height = h;
+  }
+  const lc = canopyLayer.getContext('2d');
+  if (!lc) return;
+  lc.setTransform(1, 0, 0, 1, 0, 0);
+  lc.clearRect(0, 0, w, h);
+  // the SAME camera transform the field was drawn under, so the layer's structure lands exactly
+  // on top of the structure already on the field
+  lc.setTransform(ctx.getTransform());
+  paintHiveAssembly(lc, world);
+
+  ctx.save();
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.globalAlpha = CANOPY_A;
+  ctx.drawImage(canopyLayer, 0, 0);
+  ctx.restore();
 }
 
 export function drawBiobuzzField(
