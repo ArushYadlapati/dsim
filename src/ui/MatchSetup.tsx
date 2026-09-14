@@ -10,6 +10,8 @@ import type {
 } from '../types';
 import { MAX_SAVED_AUTOS } from '../config';
 import { StartPositionEditor } from './StartPositionEditor';
+import { savedStartCap } from './startPositions';
+import { useAds } from '../ads/AdsProvider';
 import { selectStart, switchCategory, saveStart, deleteSavedStart } from './startPositions';
 import { ChainStartEditor } from './ChainStartEditor';
 import { moduleFor } from '../games';
@@ -163,6 +165,13 @@ export function MatchSetup({
   // a game that brings its own start editor supplies it through the module slot;
   // absent ⇒ the two inline branches below (DECODE's and CR's), unchanged
   const StartEd = moduleFor(settings.game).startEditor;
+  // the saved-pose cap a game's own editor is handed (it cannot read the ads context itself)
+  const maxSaved = savedStartCap(useAds().supporter);
+  // an auto path only DOES something in a game whose step drives path traversal
+  // (`autoPaths`, today DECODE alone). The section used to be shown for every game, so a
+  // CR/BIOBUZZ player could import a `.pp`, see "Auto path ON", and then watch their robot
+  // do nothing for the whole autonomous period. `coerceSetup` drops the path at spawn.
+  const runsAutoPaths = moduleFor(settings.game).autoPaths;
 
   return (
     <section className="ds-panel">
@@ -193,6 +202,7 @@ export function MatchSetup({
           <h2>Start position</h2>
           {StartEd ? (
             <StartEd
+              maxSaved={maxSaved}
               spec={settings.spec}
               alliance={settings.alliance}
               value={settings.startPose}
@@ -244,6 +254,7 @@ export function MatchSetup({
           </div>
         </section>
 
+        {runsAutoPaths && (
         <section className="ds-sec">
           <h2>
             Auto path{' '}
@@ -314,6 +325,7 @@ export function MatchSetup({
             .
           </p>
         </section>
+        )}
       </div>
     </section>
   );

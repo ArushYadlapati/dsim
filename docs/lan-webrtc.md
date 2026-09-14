@@ -367,6 +367,39 @@ exists (it was publishing a code for a room that might never have been built —
 fails to load is silent), and the room RESERVES its host seat, because the tab that runs the
 room joins LAST and `Room.add` had handed the crown to a guest.
 
+### First field report (2026-09-13, alpha, one host + guests on one Wi-Fi)
+
+Three things were wrong, two of them in the flow the probe never exercises — a host who has
+already STARTED the room and then moves around the app:
+
+1. **READY UP did nothing for a BIOBUZZ host.** The tab room was built with the protocol
+   default config, which has no game, so it was a DECODE room; the host's lobby joined it as
+   BIOBUZZ and the room cleared `ready` on every press because the pose was illegal under
+   DECODE's start rules. The room is now built for the host's game (`LanPanel` →
+   `LanHost.start(code, { kind: 'versus', game })`), the join frame's config reaches the
+   Worker, and a joiner set to a different game is REFUSED with the cloud's sentence. The
+   lobby no longer overwrites that sentence with "Lost connection" when the host closes the
+   refused link a beat later.
+2. **Back out of the lobby, back into LAN, and the room was unusable.** Alone, the room
+   emptied and `LanHost` stopped itself on `empty`, but `hostKeeper` still handed the dead
+   host back: a stale code, a Stop that returned early, a GO TO THE ROOM that threw on a null
+   transport. With guests present the loopback was closed for good and `Room.detach` had
+   passed the crown to a guest. Now: an empty room stays hosted (it is idle, not stepping —
+   the loop runs only during a match), the keeper drops a host that is not `live`, `transport`
+   hands out a fresh loopback after the last was disposed, and a `reserveHost` seat keeps the
+   crown across the host stepping out. Verified between three tabs on `npm run lan:tab`:
+   host → lobby → Back → LAN (code still shown, "Waiting for players…") → GO TO THE ROOM →
+   host again; guest joins; host steps out (guest sees 1/4, no crown change) and back in
+   (2/4, "You are the host"); a Chain Reaction guest is refused by name.
+3. **Guests on OTHER machines sat on CONNECTING.** Alpha runs one Fly machine, so this is not
+   rendezvous routing; it is the ICE leg, which only the probe (two windows, ONE machine) had
+   ever run, and which the `.local` mDNS candidates make dependent on multicast working
+   between two real hosts and on each browser being allowed inbound UDP by its firewall.
+   Not reproducible on one machine. The guest's timeout now says WHICH leg failed — no
+   answer / no remote candidates / candidates but ICE never paired (with the ICE state and
+   candidate counts) — and both ends log the same to the console (`[lan] could not
+   connect…`), so the next two-machine run reports a cause and not a spinner.
+
 ⚠️ **NOT yet verified end-to-end between two machines THROUGH THE CLOUD**, and it cannot be
 until the server carrying `lanSignal.ts` is deployed — hosting claims a code through the cloud
 rendezvous and verifies an auth token there, so the first real signed-in host-and-guest test is

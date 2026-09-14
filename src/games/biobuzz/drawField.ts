@@ -1,10 +1,12 @@
 import type { Alliance, Artifact, ArtifactColor, Vec2, World } from '../../types';
 import * as C from '../../config';
+import { dcos, dsin } from '../../math';
 import {
   BB_FLOWERS,
   BB_FLOWER_D,
   BB_FLOWER_FOOT,
   BB_FLOWER_OPEN_R,
+  BB_FLOWER_TOP_Z,
   BB_FRAME_BAR_IN,
   BB_FRAME_BAR_OUT,
   BB_FRAME_Y,
@@ -15,15 +17,26 @@ import {
   BB_HIVE_CELL_LEN,
   BB_HIVE_LEN,
   BB_HIVE_TAGS,
+  BB_HIVE_TILT_DEG,
   BB_HIVE_UP_STAGED,
   BB_HIVE_W,
   BB_HIVE_X,
   BB_LZ,
   BB_POLLEN_R,
   BB_TAPE_1,
+  FLOWER_MOUTH,
   type BbRect,
 } from './config';
-import { BB_TIP_SWING_S } from './hive';
+import {
+  BB_FLOWER_FLOOR_Z,
+  BB_FLOWER_MID_Z,
+  BB_FLOWER_VOL_Z,
+  flowerRetrieve,
+  flowerScore,
+  flowerStackZ,
+  type BbElementKind,
+} from './flower';
+import { BB_TIP_SWING_S, hiveTakingSide } from './hive';
 
 /**
  * BIOBUZZ field renderer — THE MAT, THE ZONES, THE HIVE STRUCTURE, THE FLOWERS, THE WALL.
@@ -94,8 +107,27 @@ const FRAME_BAR_MID = (BB_FRAME_BAR_IN + BB_FRAME_BAR_OUT) / 2;
 const HIVE_R = 2; // rounded-rect corner radius on a HIVE body and its CELLS
 const DASH: readonly number[] = [3.2, 2.4]; // crossbar dash pitch, in WORLD INCHES
 const WALL_INSET = 2.5; // how far OUTSIDE a wall a tile letter/number sits, in the view margin
-const STACK_OUT = 6.5; // how far OUTSIDE a wall a FLOWER's stack readout sits
-const STACK_GAP = 0.5; // clear air between two discs of a stack
+// how far out a FLOWER section's NEAR bore wall sits, from the wall FACE. Balanced between two
+// neighbours it must not touch: the tile ruler, which sits WALL_INSET out and whose glyphs
+// reach about 0.9 further, and the edge of the camera at BB_VIEW_MARGIN — see
+// `bbFlowerSectionBox`, which the smoke lane measures against both.
+const SECT_OUT = 5.6;
+const SECT_RING = 1.2; // how far the TOP RING's material shows to each side of the bore
+const SECT_LOCK = 2.6; // how far BELOW the lower ring the retrieval LOCK glyph sits
+const SECT_LOCK_R = 1.5; // half-size of that glyph — a NECTAR's own radius, near enough
+/**
+ * THE PANEL'S ENDS, in column z. Both are FIXED — the panel is the same size for an empty
+ * FLOWER as for a full one, because the drawing is the COLUMN and the elements are inside it.
+ * The row of discs this replaced grew with the stack, which made `BB_VIEW_MARGIN` a function
+ * of capacity and therefore wrong every time the capacity moved.
+ *
+ * `SECT_Z1` clears an element HELD ON THE BACKSTOP: `flowerFits` admits one whose centre is
+ * below the top ring, so the top of a full column stands about 2.1 in proud of it (Fig 10-5
+ * D/H — it still counts). It also lands the panel's far end within an inch of the field's
+ * centreline, which is the whole frontage a FLOWER one tile off centre has to run into.
+ */
+const SECT_Z0 = -(SECT_LOCK + SECT_LOCK_R + 0.5);
+const SECT_Z1 = BB_FLOWER_TOP_Z + 2.6;
 const GARDEN_LABEL_IN = 12; // how far off its wall a GARDEN caption sits — see the label block
 const TAG_SIZE = 2.2; // AprilTag id groups — deliberately small, see below
 const LABEL_SIZE = 3; // zone / flower / tile labels
@@ -145,30 +177,80 @@ function elementInk(color: ArtifactColor): string {
   return t === 1 ? C.COLORS.red : t === 2 ? C.COLORS.blue : POLLEN_INK;
 }
 
+/** the same classification as `elementType`, in the vocabulary `flower.ts` scores in. Both
+ * exist because the two questions are different: a RENDERER wants an ink, a RULE wants a kind,
+ * and routing one through the other is what keeps a green-spelled pollen from being a nectar in
+ * one of the two. */
+function elementKind(color: ArtifactColor): BbElementKind {
+  const t = elementType(color);
+  return t === 1 ? 'red' : t === 2 ? 'blue' : 'pollen';
+}
+
 const ALLIANCES: readonly Alliance[] = ['red', 'blue'];
 
-/** which way the FIELD is, from each FLOWER's wall. A badge or a label placed the other way
- * is outside the perimeter, where the wall clips it. */
-const FIELD_SIDE: Record<(typeof BB_FLOWERS)[number]['wall'], Vec2> = {
-  left: { x: 1, y: 0 },
-  rear: { x: 0, y: -1 },
-  right: { x: -1, y: 0 },
-  audience: { x: 0, y: 1 },
-};
-
-/** the point on a FLOWER's own wall PLANE level with it, and the direction to run its stack
- * readout ALONG that wall. The stack runs toward the middle of the wall — every FLOWER sits
- * one tile off centre, so that direction always has the whole half-wall of room, where the
- * other one runs into a corner after 48 in. */
-function stackAxis(f: (typeof BB_FLOWERS)[number]): { base: Vec2; along: Vec2 } {
-  const out = FIELD_SIDE[f.wall];
+/**
+ * THE FLOWER SECTION'S FRAME — where its z = 0 sits, and the two axes it is drawn in.
+ *
+ * A FLOWER is a 21.5-in COLUMN and the field is a plan view, so its contents are the one part
+ * of this game a top-down drawing cannot say at all: four discs seen from above are four discs
+ * whatever height they are at, and height is the whole rule (a POLLEN below the middle ring
+ * scores nothing, a NECTAR on it always scores, §10.5.2). So the readout is a SECTION — the
+ * column cut open and laid out beside itself, outside the perimeter, at 1:1 with the field's
+ * own inches so an element's drawn radius is its real one.
+ *
+ * ⚠️ `up` IS THE COLUMN'S z AND IT RUNS ALONG THE WALL, not out of it. A section drawn with z
+ * pointing away from the field would be the more natural picture and there is nowhere to put
+ * it: `BB_VIEW_MARGIN` is 12 in of outboard room and the column is 21.5 in tall, so an
+ * outward z would need the camera pulled back by a foot on every wall — every still in the
+ * gallery smaller so that four readouts can be upright. Along the wall it costs nothing: each
+ * FLOWER sits one tile off centre, so the direction TOWARD the wall's midpoint has 24 in of
+ * clear frontage and the section ends 2.5 in short of the centreline.
+ *
+ * THE SECTION IS THEREFORE ROTATED WITH ITS WALL, which is the same rule the rest of this
+ * renderer follows: `up` is the tangent toward the middle of the wall, `out` is the outward
+ * normal (the bore's width), and `org` is the WALL FACE level with the ring — so the base of
+ * the column is level with the FLOWER it belongs to on all four walls.
+ */
+function sectionFrame(f: (typeof BB_FLOWERS)[number]): { org: Vec2; up: Vec2; out: Vec2 } {
+  const n = FLOWER_MOUTH[f.wall]; // unit INWARD normal
   const onY = f.wall === 'left' || f.wall === 'right';
   return {
-    base: {
-      x: onY ? -out.x * (BB_HALF_X + STACK_OUT) : f.x,
-      y: onY ? f.y : -out.y * (BB_HALF_Y + STACK_OUT),
-    },
-    along: onY ? { x: 0, y: -Math.sign(f.y) } : { x: -Math.sign(f.x), y: 0 },
+    org: { x: f.x - n.x * BB_FLOWER_D, y: f.y - n.y * BB_FLOWER_D },
+    up: onY ? { x: 0, y: -Math.sign(f.y) } : { x: -Math.sign(f.x), y: 0 },
+    out: { x: -n.x, y: -n.y },
+  };
+}
+
+/** a SECTION coordinate — `z` above the tiles, `s` across the bore from its centreline — as a
+ * point in world inches. Every line, disc and glyph below is placed through this and nothing
+ * else, so the whole readout rotates with its wall by construction rather than by four cases. */
+function sectionPt(fr: { org: Vec2; up: Vec2; out: Vec2 }, z: number, s: number): Vec2 {
+  const d = SECT_OUT + BB_FLOWER_OPEN_R + s;
+  return { x: fr.org.x + fr.up.x * z + fr.out.x * d, y: fr.org.y + fr.up.y * z + fr.out.y * d };
+}
+
+/**
+ * THE OUTBOARD BOX a FLOWER's section occupies, in world inches — EXPORTED for the smoke lane.
+ *
+ * `BB_VIEW_MARGIN` is a promise that everything this renderer draws outside the perimeter is
+ * on camera, and this readout is the widest thing out there. A box the lane can measure turns
+ * that promise into a check: a section that grew past the margin is a cropped readout in every
+ * still, which is exactly the kind of regression a picture hides until someone looks closely.
+ */
+export function bbFlowerSectionBox(f: (typeof BB_FLOWERS)[number]): BbRect {
+  const fr = sectionFrame(f);
+  const w = BB_FLOWER_OPEN_R + SECT_RING;
+  const pts = [
+    sectionPt(fr, SECT_Z0, -w),
+    sectionPt(fr, SECT_Z0, w),
+    sectionPt(fr, SECT_Z1, -w),
+    sectionPt(fr, SECT_Z1, w),
+  ];
+  return {
+    x0: Math.min(...pts.map((q) => q.x)),
+    x1: Math.max(...pts.map((q) => q.x)),
+    y0: Math.min(...pts.map((q) => q.y)),
+    y1: Math.max(...pts.map((q) => q.y)),
   };
 }
 
@@ -271,17 +353,50 @@ function tileCentre(i: number): number {
 
 /**
  * the drawn y-extent of one CELL. `side` is +1 for the north cell (y > 0) and −1 for the south
- * one, and THAT IS THE ONLY ARGUMENT — there is no per-cell length factor.
+ * one; `proj` is the SWING's foreshortening factor (`tipProjection`), 1 at either stable end.
  *
- * Both cells are `BB_HIVE_CELL_LEN` long centred `BB_HIVE_CELL_DY` from the pivot, because
- * both numbers are ALREADY the plan projection of one rigid bar at 30° (reference §2.2): the
- * cell spans 8.16 to 18.58 from the pivot whichever end is up. Foreshortening one of the two
- * would draw a see-saw that changes length as it tips.
+ * There is still no PER-CELL length factor, and that is the invariant: both cells are
+ * `BB_HIVE_CELL_LEN` long centred `BB_HIVE_CELL_DY` from the pivot, because both numbers are
+ * ALREADY the plan projection of one rigid bar at 30° (reference §2.2). Foreshortening ONE of
+ * the two would draw a see-saw that bends. `proj` scales BOTH, which is what a rigid bar
+ * changing its tilt actually does to a plan view — see `tipProjection`.
  */
-function cellSpan(side: number): { y0: number; y1: number } {
-  const c = side * BB_HIVE_CELL_DY;
-  const h = BB_HIVE_CELL_LEN / 2;
+function cellSpan(side: number, proj = 1): { y0: number; y1: number } {
+  const c = side * BB_HIVE_CELL_DY * proj;
+  const h = (BB_HIVE_CELL_LEN * proj) / 2;
   return { y0: Math.min(c - h, c + h), y1: Math.max(c - h, c + h) };
+}
+
+/**
+ * THE SWING, AS THE PLAN VIEW ACTUALLY SEES IT (owner feedback, 2026-09-12).
+ *
+ * `tipping` is SECONDS LEFT in the swing (`state.ts`). This turns it into the two numbers the
+ * renderer needs, both derived from ONE angle so they cannot disagree:
+ *
+ *  • `proj` — the FORESHORTENING. Every plan length on the HIVE is a true length times
+ *    cos 30°, so at tilt θ it is the true length times cos θ, i.e. the drawn length scales by
+ *    `cos θ / cos 30°`. That runs 1 → 1.155 → 1 across the swing: the assembly REACHES OUT as
+ *    it comes level and draws back in as it settles the other way. It is small, and it is the
+ *    only honest motion a top-down camera has — but it is motion, and it is what makes a TIP
+ *    read as a swing rather than as a state that changed while you were looking away.
+ *
+ *  • `up` — how HIGH the currently-`up` cell is, 1 at its stable top and 0 at the bottom,
+ *    taken as its own height `sin θ` normalised over the ±30° travel. Not a linear ramp: a bar
+ *    rocking at a steady rate moves its ends FASTEST through level, which is also the instant
+ *    the load leaves, so the brightness swaps hardest exactly when the spill appears.
+ *
+ * At rest (`tipping` 0) this is `{ proj: 1, up: 1 }` and every drawn length is the constant it
+ * always was.
+ */
+export function tipProjection(tipping: number): { proj: number; up: number } {
+  if (!(tipping > 0)) return { proj: 1, up: 1 };
+  const p = Math.min(1, Math.max(0, 1 - tipping / BB_TIP_SWING_S)); // 0 → 1 across the swing
+  const rest = BB_HIVE_TILT_DEG * (Math.PI / 180);
+  const tilt = rest * (1 - 2 * p); // +30° → 0 (LEVEL, the release) → −30°
+  return {
+    proj: dcos(tilt) / dcos(rest),
+    up: (dsin(tilt) + dsin(rest)) / (2 * dsin(rest)),
+  };
 }
 
 /**
@@ -293,7 +408,7 @@ function cellSpan(side: number): { y0: number; y1: number } {
  * Doing it in that order is what keeps the foot flush when the stand-off changes.
  */
 function flowerFoot(f: (typeof BB_FLOWERS)[number]): BbRect {
-  const n = FIELD_SIDE[f.wall]; // unit inward normal — one component is 0, the other ±1
+  const n = FLOWER_MOUTH[f.wall]; // unit inward normal — one component is 0, the other ±1
   const wx = f.x - n.x * BB_FLOWER_D;
   const wy = f.y - n.y * BB_FLOWER_D;
   const half = BB_FLOWER_FOOT.along / 2;
@@ -309,9 +424,340 @@ function flowerFoot(f: (typeof BB_FLOWERS)[number]): BbRect {
   };
 }
 
+/**
+ * THE FLOWER SECTION — the column cut open beside itself, outside the perimeter.
+ *
+ * It is the c-flower page from the visuals set with the buttons taken off: the same drawing,
+ * driven by the same three functions the SCORER reads the column through (`flowerStackZ`,
+ * `flowerScore`, `flowerRetrieve`), so the picture cannot disagree with the points. A readout
+ * with its own copy of the stacking arithmetic would drift the first time the middle ring moves.
+ *
+ * WHAT EACH PART OF IT MEANS, because every one of them is a rule a driver acts on:
+ *   • the SHADED BAND is the scoring volume (`BB_FLOWER_VOL_Z`, §10.5.2) — an element inside it
+ *     scores 2 for whoever owns the flower and an element below it scores nothing, which is
+ *     the single fact a plan view of four discs cannot show.
+ *   • the DASHED line is the MIDDLE RING, the sorter: a POLLEN passes it and a NECTAR seats on
+ *     it (field-plan §2.2). Dashed and not a gapped bar because V1 prints neither the ring's
+ *     thickness nor its hole diameter — `docs/biobuzz/feedback/002-thresholds.md` is the
+ *     measurement that would let this be drawn to size, and a drawn hole would be a field
+ *     dimension invented in a renderer.
+ *   • the SOLID bar at the bottom is the LOWER RING, whose 2.79-in hole passes nothing.
+ *   • the TOP RING is stroked in the OWNER's colour — the alliance of the top-most scoring
+ *     NECTAR, which collects for every element in the volume whoever put them there.
+ *   • the LOCK under the base is G418: retrieval takes the BOTTOM element and only if it is a
+ *     POLLEN, so a NECTAR at the bottom shuts the gate. It is drawn in that nectar's own
+ *     colour, because the same element is the 5-point BOTTOM NECTAR bonus.
+ *
+ * `stack` is already JOINED to `world.balls` (ids with no element behind them are gone), so
+ * every id here resolves and the z column is the one the scorer computes.
+ */
+function drawFlowerSection(
+  ctx: CanvasRenderingContext2D,
+  f: (typeof BB_FLOWERS)[number],
+  stack: readonly Artifact[],
+): void {
+  const fr = sectionFrame(f);
+  const R = BB_FLOWER_OPEN_R;
+  const ids = stack.map((b) => b.id);
+  const kinds = new Map<number, BbElementKind>(stack.map((b) => [b.id, elementKind(b.color)]));
+  const kindOf = (id: number): BbElementKind => kinds.get(id) ?? 'pollen';
+  const zs = flowerStackZ(ids, kindOf);
+  const owner = flowerScore(ids, kindOf).owner;
+  const locked = ids.length > 0 && flowerRetrieve(ids, kindOf).id === null;
+
+  const pt = (z: number, t: number): Vec2 => sectionPt(fr, z, t);
+  const seg = (z0: number, s0: number, z1: number, s1: number): void => {
+    const a = pt(z0, s0);
+    const b = pt(z1, s1);
+    ctx.moveTo(a.x, a.y);
+    ctx.lineTo(b.x, b.y);
+  };
+  const quad = (z0: number, z1: number, s: number): void => {
+    const c = [pt(z0, -s), pt(z0, s), pt(z1, s), pt(z1, -s)];
+    ctx.beginPath();
+    ctx.moveTo(c[0].x, c[0].y);
+    for (const q of c.slice(1)) ctx.lineTo(q.x, q.y);
+    ctx.closePath();
+  };
+
+  ctx.save();
+
+  // A STEM from the ring to the panel, so the section belongs to THIS flower and not to the
+  // wall in general. It crosses the perimeter, which is drawn after the flowers and covers it.
+  ctx.strokeStyle = C.COLORS.wall;
+  ctx.lineWidth = 0.5;
+  ctx.beginPath();
+  const near = pt(0, -(R + SECT_RING));
+  ctx.moveTo(f.x, f.y);
+  ctx.lineTo(near.x, near.y);
+  ctx.stroke();
+
+  /**
+   * THE PANEL THE SECTION IS DRAWN ON — `COLORS.mat`, the field's own dark ground, and it is
+   * the reason everything above can be drawn in the renderer's ordinary on-field ink.
+   *
+   * This readout lives OUTSIDE the perimeter, on the BACKDROP, and the backdrop is the one
+   * surface in this view that THEMES (`#f9faf7` light, `#20262c` dark). `COLORS.white` is
+   * `#e5e7eb`, so a white bore line on the light backdrop is very nearly invisible — the tile
+   * ruler out there only survives because `text()` haloes every glyph in near-black. Haloing a
+   * drawing is not an option, and a second ink chosen per theme would be a second vocabulary
+   * for the same lines.
+   *
+   * A ground of its own settles it exactly the way the field mat does (`COLORS.mat` never
+   * themes — see its declaration): the section is an instrument sitting on the floor beside
+   * the board, its outline separates it from either floor, and one set of colours is correct
+   * on both. It also says what the drawing IS — a section is a separate diagram beside the
+   * plan, not more field.
+   */
+  const box = pt(0, 0);
+  ctx.transform(fr.out.x, fr.out.y, fr.up.x, fr.up.y, box.x, box.y);
+  roundRectPath(ctx, -(R + SECT_RING), SECT_Z0, R + SECT_RING, SECT_Z1, 0.9);
+  ctx.fillStyle = C.COLORS.mat;
+  ctx.fill();
+  ctx.strokeStyle = C.COLORS.wall;
+  ctx.lineWidth = 0.4;
+  ctx.stroke();
+  ctx.restore(); // drops the section-frame transform with it — every point below is world
+
+  ctx.save();
+
+  // THE SCORING VOLUME, shaded.
+  ctx.globalAlpha = 0.12;
+  ctx.fillStyle = C.COLORS.white;
+  quad(BB_FLOWER_VOL_Z[0], BB_FLOWER_VOL_Z[1], R);
+  ctx.fill();
+
+  // THE BORE — the two inner faces, lower ring to top ring.
+  ctx.globalAlpha = 0.4;
+  ctx.lineWidth = 0.35;
+  ctx.beginPath();
+  seg(BB_FLOWER_FLOOR_Z, -R, BB_FLOWER_TOP_Z, -R);
+  seg(BB_FLOWER_FLOOR_Z, R, BB_FLOWER_TOP_Z, R);
+  ctx.stroke();
+
+  // THE MIDDLE RING — see the header: dashed, because its hole is unmeasured.
+  ctx.globalAlpha = 0.65;
+  ctx.lineWidth = 0.45;
+  ctx.setLineDash(CELL_DASH);
+  ctx.beginPath();
+  seg(BB_FLOWER_MID_Z, -R, BB_FLOWER_MID_Z, R);
+  ctx.stroke();
+  ctx.setLineDash([]);
+  ctx.restore();
+
+  // THE LOWER RING — solid, the same ink as the FOOT, because it is the same object seen from
+  // the side. Drawn from the tiles up so the section has a visible floor to stand on.
+  ctx.save();
+  ctx.fillStyle = C.COLORS.wall;
+  quad(0, BB_FLOWER_FLOOR_Z, R);
+  ctx.fill();
+  ctx.strokeStyle = C.COLORS.white;
+  ctx.globalAlpha = 0.55;
+  ctx.lineWidth = 0.3;
+  ctx.stroke();
+  ctx.restore();
+
+  // THE TOP RING — material to each SIDE of the bore, because the bore IS its 4.0-in opening.
+  // Owner colour when a NECTAR owns the flower (§10.5.2), white when nobody does.
+  ctx.save();
+  ctx.strokeStyle = owner ? allianceColor(owner) : C.COLORS.white;
+  ctx.globalAlpha = owner ? 1 : 0.7;
+  ctx.lineWidth = 0.9;
+  ctx.lineCap = 'round';
+  ctx.beginPath();
+  seg(BB_FLOWER_TOP_Z, R, BB_FLOWER_TOP_Z, R + SECT_RING);
+  seg(BB_FLOWER_TOP_Z, -R, BB_FLOWER_TOP_Z, -R - SECT_RING);
+  ctx.stroke();
+  ctx.restore();
+
+  // THE ELEMENTS, at their real heights and their real radii, in their own colours.
+  ctx.save();
+  ctx.strokeStyle = 'rgba(12,14,18,0.65)';
+  ctx.lineWidth = 0.3;
+  stack.forEach((b, k) => {
+    const c = pt(zs[k], 0);
+    ctx.fillStyle = elementInk(b.color);
+    ctx.beginPath();
+    ctx.arc(c.x, c.y, elementR(b), 0, Math.PI * 2);
+    ctx.fill();
+    ctx.stroke();
+  });
+  ctx.restore();
+
+  if (!locked) return;
+
+  /**
+   * THE LOCK, at the retrieval gate — under the lower ring, where a robot reaches in.
+   *
+   * Drawn through the section's own axes rather than in world x/y: the glyph has an up and a
+   * side of its own, and on the rear and audience walls the section is rotated 90°, so a
+   * padlock laid out in world coordinates would be lying on its back on half the field.
+   */
+  const o = pt(-SECT_LOCK, 0);
+  const ink = allianceColor(kindOf(ids[0]) as Alliance);
+  // body / shackle / keyhole, in the section's own (across, height) axes. The shackle is the
+  // half that makes it a padlock rather than a box, so it is drawn at a padlock's proportions
+  // — a little over a third of the glyph — and the arc sweeps t = 0..π, which is the half
+  // ABOVE its centre in these axes whichever way the wall has turned them.
+  const bodyTop = SECT_LOCK_R * 0.13;
+  const w = SECT_LOCK_R * 0.7;
+  ctx.save();
+  ctx.transform(fr.out.x, fr.out.y, fr.up.x, fr.up.y, o.x, o.y);
+  ctx.strokeStyle = ink;
+  ctx.lineWidth = 0.3;
+  ctx.lineJoin = 'round';
+  ctx.beginPath();
+  ctx.arc(0, bodyTop, w * 0.62, 0, Math.PI);
+  ctx.stroke();
+  roundRectPath(ctx, -w, -SECT_LOCK_R, w, bodyTop, 0.25);
+  ctx.fillStyle = ink;
+  ctx.globalAlpha = 0.22;
+  ctx.fill();
+  ctx.globalAlpha = 1;
+  ctx.stroke();
+  ctx.beginPath();
+  ctx.arc(0, -SECT_LOCK_R * 0.45, w * 0.3, 0, Math.PI * 2);
+  ctx.stroke();
+  ctx.restore();
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // THE RENDERER
 // ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * THE CONTENTS — ONE ROW OF DISCS HUGGING THE OPEN EDGE, INSIDE THE BOX.
+ *
+ * At element scale and in element colours, oldest at the −x end, so the row grows the same
+ * way every time and a NECTAR arriving at the far end is visibly the newest thing in the
+ * cell. Against the OPEN edge (`outerY`, the box's outer short edge; `s` is +1 for the north
+ * cell) because that is the end everything came in through; against the closed back it would
+ * read as the far wall of a container nothing can reach.
+ *
+ * A full cell holds more diameters than the 20-in width has room for (3 NECTAR and 8 POLLEN
+ * is 30.8 in of ball), so when the row runs long the PITCH closes up and the discs overlap
+ * while their RADII stay true. Shrinking the balls instead would make a NECTAR and a POLLEN
+ * the same size, which is the one distinction the row exists to carry; overlapping reads as
+ * packed, which is what a full cell is.
+ *
+ * `alpha` is the cell's own fill weight through the swing (`tipProjection`'s `up`, 1 at rest),
+ * so the row fades with the tray it is in. Shared with `drawHiveCanopy`, which repaints it over
+ * whatever drove under the structure.
+ */
+function drawCellContents(
+  ctx: CanvasRenderingContext2D,
+  x0: number,
+  x1: number,
+  outerY: number,
+  s: number,
+  contents: readonly Artifact[],
+  alpha: number,
+): void {
+  if (contents.length === 0) return;
+  const rMax = contents.reduce((m, b) => Math.max(m, elementR(b)), 0);
+  const rowY = outerY - s * (rMax + CELL_ROW_IN);
+  const span = x1 - x0 - 2 * CELL_ROW_PAD;
+  const want = contents.reduce((t, b) => t + 2 * elementR(b), 0);
+  const pitch = want > span ? span / want : 1;
+  let t = x0 + CELL_ROW_PAD + Math.max(0, (span - want) / 2);
+  ctx.save();
+  ctx.globalAlpha = alpha;
+  ctx.strokeStyle = 'rgba(12,14,18,0.65)';
+  ctx.lineWidth = 0.3;
+  for (const b of contents) {
+    const r = elementR(b);
+    t += r * pitch;
+    ctx.fillStyle = elementInk(b.color);
+    ctx.beginPath();
+    ctx.arc(t, rowY, r, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.stroke();
+    t += r * pitch;
+  }
+  ctx.restore();
+}
+
+/**
+ * HOW MUCH OF THE HIVE SHOWS THROUGH WHATEVER IS UNDER IT — the canopy's opacity.
+ *
+ * The robot and the pollen beneath the structure are drawn at full strength and the canopy is
+ * laid over them at this alpha, so what a driver sees is the robot at `1 − CANOPY_A` of itself
+ * through the assembly, only where the assembly actually is. "Slightly translucent" (owner,
+ * 2026-09-13): the robot has to stay readable enough to drive by, and the structure has to
+ * read as overhead rather than as a stain on the deck. 0.42 is the wash at which both hold in
+ * both themes; the up cell's own fill rides on top at its usual weight times this.
+ */
+const CANOPY_A = 0.42;
+
+/**
+ * THE CANOPY — the HIVE assembly repainted, TRANSLUCENTLY, over everything that was drawn after
+ * the field (owner feedback, 2026-09-13: "make the robot and pollen that are below the hive
+ * slightly translucent… only the portion that is below the hive").
+ *
+ * The HIVE hangs 25.5 in over the tiles and G409 assumes robots drive under it, but the field
+ * is drawn FIRST and the robots and the ground elements after it, so a robot under the
+ * structure was painted ON TOP of a thing that is physically above it. This pass, called from
+ * the element renderer (`draw.ts`, the last of the three drawing slots) once the robots and the
+ * ground elements are down and before the airborne ones go on, puts the assembly back on top:
+ * the body, the up cell's fill and its contents row, at `CANOPY_A`, over exactly the assembly's
+ * own footprint and nothing else. A robot half under the hive is half dimmed; a POLLEN spilled
+ * under the down cell is dimmed; the rest of both is untouched, because there is nothing over
+ * them.
+ *
+ * It is NOT a `globalAlpha` on the robot sprite. That fades the whole robot — the part in the
+ * open as much as the part under the structure — and the ruling is specifically the portion
+ * below the hive. Clipping the robot instead would need every game's sprite to know about this
+ * field. Repainting the structure is the one place the footprint is already known.
+ *
+ * Reads the same state the field pass reads, through the same helpers (`tipProjection`,
+ * `cellSpan`, `drawCellContents`), so the canopy swings with the swing and its contents row is
+ * the field's row: two drawings of one hive that cannot disagree about where it is. The down
+ * cell's dashed outline and the edge marks are not repainted — lines that thin over a robot
+ * are noise, and the body wash already says "structure here".
+ */
+export function drawHiveCanopy(ctx: CanvasRenderingContext2D, world: World): void {
+  const bb = world.biobuzz;
+  const byId = new Map<number, Artifact>();
+  for (const b of world.balls) byId.set(b.id, b);
+  for (const a of ALLIANCES) {
+    const h = bb?.hives?.[a];
+    const up = h?.up ?? BB_HIVE_UP_STAGED[a];
+    const taking = h ? hiveTakingSide(h) : BB_HIVE_UP_STAGED[a];
+    const px = a === 'red' ? -BB_HIVE_X : BB_HIVE_X;
+    const x0 = px - BB_HIVE_W / 2;
+    const x1 = px + BB_HIVE_W / 2;
+    const { proj, up: f } = tipProjection(h?.tipping ?? 0);
+    const bodyHalf = (BB_HIVE_LEN / 2) * proj;
+
+    ctx.save();
+    ctx.globalAlpha = CANOPY_A;
+    roundRectPath(ctx, x0, -bodyHalf, x1, bodyHalf, HIVE_R);
+    ctx.fillStyle = C.COLORS.tile;
+    ctx.fill();
+    ctx.strokeStyle = C.COLORS.wall;
+    ctx.lineWidth = 0.8;
+    ctx.stroke();
+    ctx.restore();
+
+    for (const side of ['north', 'south'] as const) {
+      const s = side === 'north' ? 1 : -1;
+      const { y0, y1 } = cellSpan(s, proj);
+      const k = up === side ? f : 1 - f;
+      if (k > 0.01) {
+        ctx.save();
+        roundRectPath(ctx, x0, y0, x1, y1, HIVE_R);
+        ctx.globalAlpha = k * CELL_FILL_A * CANOPY_A;
+        ctx.fillStyle = allianceColor(a);
+        ctx.fill();
+        ctx.restore();
+      }
+      if (side !== taking) continue;
+      const outerY = s > 0 ? y1 : y0;
+      const contents = (h?.contents ?? []).map((id) => byId.get(id)).filter((b): b is Artifact => b !== undefined);
+      drawCellContents(ctx, x0, x1, outerY, s, contents, k * CANOPY_A);
+    }
+  }
+}
 
 export function drawBiobuzzField(
   ctx: CanvasRenderingContext2D,
@@ -325,6 +771,13 @@ export function drawBiobuzzField(
   // STAGED field rather than throwing — see the header.
   const bb = world.biobuzz;
   const upCell = (a: Alliance): 'north' | 'south' => bb?.hives?.[a]?.up ?? BB_HIVE_UP_STAGED[a];
+  /** the cell CONTENTS belong to — `up` at rest, and through a swing whichever tray is taking
+   * elements (`hiveTakingSide`), which flips to the incoming one at the release. Drawing the
+   * row off `up` alone puts a post-release capture in the wrong box for the rest of the swing. */
+  const takingCell = (a: Alliance): 'north' | 'south' => {
+    const h = bb?.hives?.[a];
+    return h ? hiveTakingSide(h) : BB_HIVE_UP_STAGED[a];
+  };
 
   /**
    * ELEMENTS ARE LOOKED UP IN `world.balls`, BY ID.
@@ -452,23 +905,32 @@ export function drawBiobuzzField(
     const ink = allianceColor(a);
 
     /**
-     * THE SWING, AS A CROSS-FADE (owner ruling, 2026-09-12).
+     * THE SWING, AS THE SWING (owner feedback, 2026-09-12).
      *
      * `tipping` is SECONDS LEFT in the swing (`state.ts`), counted down by `hive.ts`, and `up`
-     * still names the cell that is going DOWN until the swing completes. So `f` runs 1 → 0
-     * across it and `k` below is each cell's UPNESS: the loaded cell fades fill → outline while
-     * its partner fades outline → fill, and at rest the two are exactly the old states.
+     * still names the cell that is going DOWN until the swing completes. `tipProjection` turns
+     * the countdown into the bar's ANGLE and hands back the two things the drawing needs: how
+     * far the assembly is foreshortened right now (`proj`), and how high the `up` cell is
+     * (`f`). Both are read off ONE angle, so the geometry and the brightness cannot animate on
+     * different clocks.
      *
-     * The denominator is IMPORTED from `hive.ts` rather than written here, because a renderer
-     * with its own copy of the swing length is a cross-fade that finishes at a different
-     * instant from the flip it is animating — the one bug this whole device can have.
+     * This replaces a plain linear cross-fade. The fade alone was the entire animation, at cell
+     * alpha, over four seconds — slow enough per frame to be invisible and yet the only thing
+     * moving, so a TIP looked like a state that had simply changed. Now the bar visibly REACHES
+     * as it comes level and draws back in as it settles, the brightness swaps hardest at the
+     * level crossing, and the level crossing is the instant the load falls out.
+     *
+     * The swing length is IMPORTED from `hive.ts` rather than written here, because a renderer
+     * with its own copy of it is an animation that finishes at a different instant from the
+     * flip it is animating — the one bug this whole device can have.
      */
     const tipping = bb?.hives?.[a]?.tipping ?? 0;
-    const f = tipping > 0 ? Math.min(1, Math.max(0, tipping / BB_TIP_SWING_S)) : 1;
+    const { proj, up: f } = tipProjection(tipping);
+    const bodyHalf = (BB_HIVE_LEN / 2) * proj;
 
     // the assembly body — the connecting bar and shell the two cells ride on.
     ctx.save();
-    roundRectPath(ctx, x0, -BB_HIVE_LEN / 2, x1, BB_HIVE_LEN / 2, HIVE_R);
+    roundRectPath(ctx, x0, -bodyHalf, x1, bodyHalf, HIVE_R);
     ctx.fillStyle = C.COLORS.tile;
     ctx.fill();
     ctx.strokeStyle = C.COLORS.wall;
@@ -479,9 +941,9 @@ export function drawBiobuzzField(
     for (const side of ['north', 'south'] as const) {
       const s = side === 'north' ? 1 : -1;
       const isUp = up === side;
-      // SAME SIZE, BOTH ENDS. See `cellSpan` — one rigid bar at 30° projects both cells by the
-      // same cosine, so UP is said by the FILL, not by shape.
-      const { y0, y1 } = cellSpan(s);
+      // SAME SIZE, BOTH ENDS. See `cellSpan` — one rigid bar projects both cells by the same
+      // cosine at every instant of the swing, so UP is said by the FILL, not by shape.
+      const { y0, y1 } = cellSpan(s, proj);
       const k = isUp ? f : 1 - f; // 1 = fully up (filled), 0 = fully down (outline)
 
       /**
@@ -545,7 +1007,9 @@ export function drawBiobuzzField(
       }
       ctx.restore();
 
-      if (!isUp) continue;
+      // the CONTENTS ride the tray that is TAKING elements, which is not `up` once the bar has
+      // passed level (`hiveTakingSide`).
+      if (side !== takingCell(a)) continue;
 
       /**
        * THE CONTENTS — ONE ROW OF DISCS HUGGING THE OPEN EDGE, INSIDE THE BOX.
@@ -561,29 +1025,7 @@ export function drawBiobuzzField(
        * NECTAR and a POLLEN the same size, which is the one distinction the row exists to
        * carry; overlapping reads as packed, which is what a full cell is.
        */
-      const contents = elements(bb?.hives?.[a]?.contents);
-      if (contents.length === 0) continue;
-      const rMax = contents.reduce((m, b) => Math.max(m, elementR(b)), 0);
-      const rowY = outerY - s * (rMax + CELL_ROW_IN);
-      const span = x1 - x0 - 2 * CELL_ROW_PAD;
-      const want = contents.reduce((t, b) => t + 2 * elementR(b), 0);
-      const pitch = want > span ? span / want : 1;
-      let t = x0 + CELL_ROW_PAD + Math.max(0, (span - want) / 2);
-      ctx.save();
-      ctx.globalAlpha = k;
-      ctx.strokeStyle = 'rgba(12,14,18,0.65)';
-      ctx.lineWidth = 0.3;
-      for (const b of contents) {
-        const r = elementR(b);
-        t += r * pitch;
-        ctx.fillStyle = elementInk(b.color);
-        ctx.beginPath();
-        ctx.arc(t, rowY, r, 0, Math.PI * 2);
-        ctx.fill();
-        ctx.stroke();
-        t += r * pitch;
-      }
-      ctx.restore();
+      drawCellContents(ctx, x0, x1, outerY, s, elements(bb?.hives?.[a]?.contents), k);
     }
   }
 
@@ -609,51 +1051,21 @@ export function drawBiobuzzField(
     ctx.restore();
 
     /**
-     * THE STACK READOUT — THE STACK ITSELF, OUTSIDE THE PERIMETER (owner ruling, 2026-09-12).
+     * THE STACK READOUT — A SECTION OF THE COLUMN, OUTSIDE THE PERIMETER (owner ruling,
+     * 2026-09-12; `drawFlowerSection`).
      *
-     * One disc per element, at element scale, in its own colour, in STACK ORDER, running along
-     * the wall with the BOTTOM of the stack nearest the FLOWER. It replaces a count badge,
-     * which said the one thing about a FLOWER that a driver cannot use: the number of elements
-     * in it decides nothing. The COLOURS decide everything — the BOTTOM-most NECTAR is the
-     * 5-point bonus AND the thing that locks retrieval (a 3.6 NECTAR does not fit the 3.55
-     * opening, G418), and the TOP-most NECTAR is who OWNS the flower and collects 2 per
-     * element in it (§10.5.2). A badge also read as an unexplained second circle beside a ring.
+     * DRAWN EVEN WHEN THE FLOWER IS EMPTY, which the row of discs it replaces was not. An
+     * empty section is a rule on the field — the band an element has to reach and the ring it
+     * has to pass — and a readout that appears only once something is in there makes "F1 is
+     * empty" and "F1 has no readout" the same picture.
      *
-     * OUTSIDE the wall because inside it there is no room: the ring is BB_FLOWER_D from the
-     * perimeter and a six-element stack is two feet long. `BB_VIEW_MARGIN` was widened to
-     * carry this.
+     * WHY NOT A COUNT. The number of elements in a FLOWER decides nothing; the ORDER and the
+     * HEIGHTS decide everything. The bottom-most NECTAR is the 5-point bonus and the thing
+     * that locks retrieval (G418), the top-most NECTAR is who owns the flower and collects 2
+     * per element in the volume (§10.5.2), and a POLLEN under the middle ring is worth zero.
+     * A badge says none of that; the section says all four at a glance.
      */
-    const stack = elements(bb?.flowers?.[i]?.stack);
-    if (stack.length > 0) {
-      const { base, along } = stackAxis(f);
-      // a stem from the ring out to the stack, so the readout belongs to THIS flower and not
-      // to the wall in general.
-      ctx.save();
-      ctx.strokeStyle = C.COLORS.white;
-      ctx.globalAlpha = 0.35;
-      ctx.lineWidth = 0.4;
-      ctx.beginPath();
-      ctx.moveTo(f.x, f.y);
-      ctx.lineTo(base.x, base.y);
-      ctx.stroke();
-      ctx.restore();
-
-      let t = 0;
-      for (const b of stack) {
-        const r = b.r ?? BB_POLLEN_R;
-        t += r;
-        ctx.save();
-        ctx.fillStyle = elementInk(b.color);
-        ctx.strokeStyle = 'rgba(12,14,18,0.65)';
-        ctx.lineWidth = 0.3;
-        ctx.beginPath();
-        ctx.arc(base.x + along.x * t, base.y + along.y * t, r, 0, Math.PI * 2);
-        ctx.fill();
-        ctx.stroke();
-        ctx.restore();
-        t += r + STACK_GAP;
-      }
-    }
+    drawFlowerSection(ctx, f, elements(bb?.flowers?.[i]?.stack));
   });
 
   // PERIMETER — drawn last, so it sits over the grid lines and the garden tape that run into
@@ -758,7 +1170,7 @@ export function drawBiobuzzField(
   // the stack badge goes, and a label that moves depending on whether a flower happens to be
   // empty is worse than one that is always in the same place.
   for (const f of BB_FLOWERS) {
-    const d = FIELD_SIDE[f.wall];
+    const d = FLOWER_MOUTH[f.wall];
     const off = BB_FLOWER_FOOT.along / 2 + LABEL_SIZE;
     text(ctx, screenUp, f.x - d.y * off, f.y + d.x * off, LABEL_SIZE, C.COLORS.white, f.id);
   }

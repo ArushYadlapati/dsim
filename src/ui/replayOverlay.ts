@@ -88,8 +88,18 @@ export interface HudLabels {
  * be watching, and a recording that never marked it would lose the moment the match changes
  * character. A TIE says so rather than leaving two equal numbers to be compared by eye.
  */
-export function hudLabels(world: World, solo: Alliance | null): HudLabels {
+export function hudLabels(
+  world: World,
+  solo: Alliance | null,
+  /** is this the FINALIZED score? A replay is recorded up to the tick its match was finalized,
+   *  so the viewer passes "at the recorded end". Between the buzzer and that tick the score can
+   *  still change, and the bar must not call it FINAL or name a winner. */
+  final: boolean = world.match.phase === 'post',
+): HudLabels {
   const m = world.match;
+  if (m.phase === 'post' && !final) {
+    return { phase: 'MATCH OVER', clock: null, result: null };
+  }
   if (m.phase === 'post') {
     const r = m.scores.red.total;
     const b = m.scores.blue.total;
@@ -266,11 +276,13 @@ export function drawReplayHud(
     /** where the field ends, so the countdown stays centred on it */
     fieldHeight: number;
     solo: Alliance | null;
+    /** the finalized score is on screen — the recorded end of the replay (see `hudLabels`) */
+    final?: boolean;
   },
 ): void {
   const { width: w, height: h, solo } = view;
   const m = world.match;
-  const labels = hudLabels(world, solo);
+  const labels = hudLabels(world, solo, view.final ?? m.phase === 'post');
   const done = m.phase === 'post';
   const y = h - BAR_H - 10;
   const barW = Math.min(w - PAD * 2, BAR_MAX_W);

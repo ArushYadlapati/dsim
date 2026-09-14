@@ -1,4 +1,4 @@
-import type { Alliance, Artifact, RobotCommand, RobotSpec, World } from '../../src/types';
+import type { Alliance, Artifact, RobotCommand, RobotSpec, StartPose, World } from '../../src/types';
 import * as C from '../../src/config';
 import { worldHash } from '../../src/net/checksum';
 import { slimWorld, unslimWorld } from '../../src/net/protocol';
@@ -15,8 +15,10 @@ import {
   BB_HALF_Y,
   BB_HIVE_BOTTOM_Z,
   BB_HIVE_CELL_DY,
+  BB_HIVE_LEN,
   BB_HIVE_OPEN_Z,
   BB_HIVE_UP_STAGED,
+  BB_HIVE_W,
   BB_NECTAR_R,
   BB_POLLEN_R,
   BB_POLLEN_SIM,
@@ -25,6 +27,7 @@ import {
 } from '../../src/games/biobuzz/config';
 import {
   BB_FLOWER_FLOOR_Z,
+  BB_FLOWER_MID_Z,
   BB_FLOWER_VOL_Z,
   bbElementRadius,
   flowerAccepts,
@@ -37,44 +40,73 @@ import {
 } from '../../src/games/biobuzz/flower';
 import {
   BB_HIVE_ACCEPT_MARGIN,
-  BB_SPILL_LATERAL,
+  BB_HIVE_MISS_REST,
+  BB_HIVE_MISS_TANGENT,
+  BB_SPILL_FAN,
+  BB_SPILL_KICK,
   BB_SPILL_SPEED,
+  BB_TIP_RATE_MAX,
+  BB_TIP_RATE_PER_EXTRA,
   BB_TIP_RELEASE_S,
   BB_TIP_SWING_S,
   hiveAccepts,
   hiveApproachSign,
   hiveCellPos,
+  hiveDeflect,
   hivePivot,
+  hiveSurplus,
+  hiveSwingRate,
+  hiveTakingSide,
   hiveLoad,
   hiveStep,
   hiveWillTip,
   spillPoses,
   type HiveState,
+  type SpillPose,
 } from '../../src/games/biobuzz/hive';
 import { nextRandom } from '../../src/math';
 import {
   BB_FLOWER_D,
+  BB_FLOWER_UNLOCK_S,
   BB_GARDEN,
   BB_LZ,
   BB_NECTAR_COUNT,
   BB_POLLEN_COUNT,
   BB_START_POSES,
+  BB_VIEW_MARGIN,
   bbMirror,
   type BbRect,
 } from '../../src/games/biobuzz/config';
+import { tipProjection } from '../../src/games/biobuzz/drawField';
 import { BB_SOLID_COUNT, BB_WALL_COUNT, biobuzzColliders } from '../../src/games/biobuzz/colliders';
+import { bbFlowerSectionBox } from '../../src/games/biobuzz/drawField';
 import { createBiobuzzWorld, stageBiobuzz } from '../../src/games/biobuzz/spawn';
 import { biobuzzStep } from '../../src/games/biobuzz/step';
-import { scoreTargets } from '../../src/games/biobuzz/elements';
+import { evalStart, scoreTargets } from '../../src/games/biobuzz/elements';
+import type { ScoreTarget } from '../../src/games/biobuzz/state';
 import { updateBiobuzz } from '../../src/games/biobuzz/play';
 import { bbFootprint } from '../../src/games/biobuzz/robot';
+import { bbActiveStartLegal, bbEvalStart, bbSnapStart, bbStartBox } from '../../src/games/biobuzz/start';
+import { BB_INTAKE_MOUNTS } from '../../src/games/biobuzz/mounts';
+import { bbSizeLimits } from '../../src/games/biobuzz/config';
+import { bbCoerceSpec } from '../../src/games/biobuzz/robotConfig';
 import { BB_IDLE, BB_SCENES, bbPollen, bbSceneAt, bbSceneStills, type Scene } from '../../src/games/biobuzz/scenes';
 import { bbRobotSolids } from '../../src/games/biobuzz/robot';
 import { robotPenetration } from '../../src/sim/artifactSolids';
 import { solveArtifacts, type SweepFrom } from '../../src/sim/physicsEngine';
 import { stepGroundBall } from '../../src/sim/physics';
-import { maxMatchTicks } from '../../src/sim/replay';
-import type { ServerMsg } from '../../src/net/protocol';
+import {
+  maxMatchTicks,
+  recordSetups,
+  runRecordMatch,
+  simulateReplay,
+  verifyReplay,
+  worldResult,
+  type CommandSource,
+  type Replay,
+} from '../../src/sim/replay';
+import { bbNectarLocked } from '../../src/games/biobuzz/penalties';
+import { localizeCommand, type ServerMsg } from '../../src/net/protocol';
 import { Room, type Client } from '../../server/room';
 import { BB_DEFAULT_SPEC } from '../../src/games/biobuzz/robotConfig';
 import { cmd, mkWorld, run, setup, type Check } from './harness';
@@ -156,13 +188,18 @@ function aabb(r: { pos: { x: number; y: number }; heading: number; spec: RobotSp
 }
 
 /**
- * How far a POLLEN's SKIN is past the nearest wall plane; 0 when it is inside.
+ * How far an element's SKIN is past the nearest wall plane; 0 when it is inside.
  *
  * The measure rather than a boolean, because "it left the field" and "it left the field by two
  * inches" are different reports and the second is the one worth printing.
+ *
+ * It reads the element's OWN radius, because this field carries two: a NECTAR measured at the
+ * POLLEN radius reads 0.4" inside the wall while its skin is on it.
  */
-const outBy = (b: Artifact): number =>
-  Math.max(Math.abs(b.pos.x) - (BB_HALF_X - BB_POLLEN_R), Math.abs(b.pos.y) - (BB_HALF_Y - BB_POLLEN_R), 0);
+const outBy = (b: Artifact): number => {
+  const r = b.r ?? BB_POLLEN_R;
+  return Math.max(Math.abs(b.pos.x) - (BB_HALF_X - r), Math.abs(b.pos.y) - (BB_HALF_Y - r), 0);
+};
 
 /** the containment tolerance. Any soft solver leaves a hair of penetration in a resting
  * contact; a quarter inch on a 1.5" pollen is that, and anything more is a pollen leaving the
@@ -200,8 +237,18 @@ export function fieldChecks(check: Check): void {
   {
     const mod = moduleFor('biobuzz');
     check('registry: moduleFor("biobuzz") resolves to the BIOBUZZ module', mod.id === 'biobuzz', `id=${mod.id}`);
-    check('registry: BIOBUZZ declares scored:false (never persists ELO/records)', mod.scored === false);
-    check('registry: BIOBUZZ declares startLegality:false (no published G304 analogue)', mod.startLegality === false);
+    // Flipped 2026-09-12 (kickoff evening) once score.ts covered Table 10-2. Alpha-only via
+    // `channels`, so what persists lands on an alpha board nobody competes on yet.
+    check('registry: BIOBUZZ declares scored:true (Table 10-2 is live; persists per game)', mod.scored === true);
+    // TRUE since the `startLegal` slot landed. The rule was never the blocker -- `bbEvalStart`
+    // has assessed G304 since kickoff day -- the READER was: `server/room.ts` and
+    // `startSelectionLegal` both called DECODE's `activeStartLegal`, so the flag would have
+    // judged a BIOBUZZ pose against DECODE's launch lines and refused every legal start on
+    // this field. BOTH halves are asserted, because the flag alone is a promise the module
+    // cannot keep: an enforcement flag with no predicate behind it silently waves everything
+    // through, which is the failure this pair exists to catch.
+    check('registry: BIOBUZZ declares startLegality:true (G304 is enforced)', mod.startLegality === true);
+    check('registry: ...and fills the `startLegal` predicate the flag promises', typeof mod.startLegal === 'function');
     check(
       'registry: bounds are the 144x144 field',
       mod.bounds.halfX === BB_HALF_X && mod.bounds.halfY === BB_HALF_Y,
@@ -264,11 +311,13 @@ export function fieldChecks(check: Check): void {
    * A robot spawned at any anchor, in either alliance, must be fully inside `bounds` BEFORE
    * anything steps.
    *
-   * The anchors are hand-placed APPROX numbers (there is no published BIOBUZZ start geometry —
-   * `startLegality: false`), and an anchor an inch too far out spawns a robot intersecting the
-   * wall, which Rapier then resolves by shoving it — so the match begins with four robots
-   * sliding. This is the cheapest possible guard on a number a human typed, and it is checked
-   * on the FOOTPRINT, so an anchor that fits a bare chassis but not its sweeper fails here.
+   * CONTAINMENT ONLY, and that is why it survives the G304 block below rather than being
+   * folded into it: G304.A's own note is about overhanging the perimeter, but this asks the
+   * question of the SPAWNED robot — after the mirror, the snap and `bbFitPose` — where the
+   * rule block asks it of a pose. An anchor an inch too far out spawns a robot intersecting
+   * the wall, which Rapier resolves by shoving it, so the match begins with four robots
+   * sliding. Checked on the FOOTPRINT, so an anchor that fits a bare chassis but not its
+   * sweeper fails here.
    */
   {
     const w = createBiobuzzWorld('match', 4, [
@@ -345,59 +394,226 @@ export function fieldChecks(check: Check): void {
     );
   }
 
-  // -- THE ANCHORS ARE LEGAL AS WRITTEN -------------------------------------
+  // -- G304: THE EVALUATOR, AND THE ANCHORS AGAINST IT ----------------------
   /**
-   * `BB_START_POSES` SATISFIES G304 WITHOUT REPAIR.
+   * `bbEvalStart` IS THE RULE AND `BB_START_POSES` IS MEASURED AGAINST IT.
    *
-   * `bbSnapStart` was carrying these: the old pair stopped 2 in short of the wall and the
-   * BOTTOM one sat inside `BB_LZ.blue`, so the anchor a builder places, the anchor the
-   * selector labels TOP/BOTTOM, and the pose the robot got were three different things. The
-   * repair still exists -- the seating is spec-dependent and a deep sweeper still needs it --
-   * but it must now have nothing to move.
+   * G304 (manual-distilled S6.2) asks a start pose for four things a pose can answer: fully on
+   * the alliance's own side (A), TOUCHING the perimeter wall (C), clear of every FLOWER foot
+   * and scoring volume (D), NOT in the LOADING ZONE (E). C and E fight -- the LOADING ZONE is
+   * itself against the perimeter -- so the legal frontage is a short list of stretches on
+   * three walls, and the anchors moved onto the rear and audience ones because the alliance's
+   * own SIDE wall is the one its zone eats.
    *
-   * MEASURED AS DISPLACEMENT, not as "is the result legal": the spawned pose was already legal
-   * before this change, which is exactly why the bad anchors survived so long. What is asserted
-   * is that spawning MOVED the anchor by less than `WALL_SEAT` and a hair -- the 0.01 in
-   * float-tangency seat is the only correction left, and any real repair is orders above it.
+   * THREE THINGS ARE ASSERTED, and they are deliberately different questions:
+   *   1. the DEFAULT build's anchors are legal AS WRITTEN, unsnapped. An anchor a builder
+   *      reads, an anchor the selector labels, and the pose a robot gets must be one thing.
+   *   2. EVERY anchor is legal at EVERY legal chassis, after `bbSnapStart`. The seat is
+   *      spec-dependent by nature (a deeper sweeper reaches further), so the snap is what
+   *      makes the anchor a NAMED SEAT rather than a coordinate that happens to suit one
+   *      build -- and it must find a legal seat for all of them, not merely most.
+   *   3. each clause REFUSES its own violation. A rule that never says no is not a rule, and
+   *      three of these four clauses are the ones a pose can plausibly break by accident.
    */
   {
-    const SEAT_TOL = 0.05; // WALL_SEAT is 0.01; anything larger is a genuine repair
-    const w = createBiobuzzWorld('match', 13, [
-      setup(0, 'blue', {}, 0),
-      setup(1, 'blue', {}, 1),
-      setup(2, 'red', {}, 0),
-      setup(3, 'red', {}, 1),
-    ]);
+    // THE LEGAL CHASSIS ENVELOPE, built the way the builder builds it: every intake preset x
+    // every mount, at the CORNERS of the per-mount size envelope `bbSizeLimits` publishes.
+    // Corners rather than a grid because both extents enter the footprint linearly, so the
+    // worst rotated AABB is always at a corner of (length, width).
+    const specs: RobotSpec[] = [];
+    for (const intake of ['sloped', 'vector', 'triangle'] as const) {
+      for (const intakeMount of BB_INTAKE_MOUNTS) {
+        const lim = bbSizeLimits({ ...BB_DEFAULT_SPEC, intake, intakeMount });
+        for (const length of [lim.minLength, lim.maxLength]) {
+          for (const width of [lim.minWidth, lim.maxWidth]) {
+            specs.push(bbCoerceSpec({ ...BB_DEFAULT_SPEC, intake, intakeMount, length, width }));
+          }
+        }
+      }
+    }
+    check('G304: the chassis sweep covers every preset x mount at both size extremes', specs.length === 48, `${specs.length} specs`);
+
+    /** the anchor as `spawn.ts` resolves it for `a`, in the shared `StartPose` degrees: the
+     * canonical BLUE anchor, point-mirrored for red, and nothing else. Deliberately NOT read
+     * off a spawned robot -- this has to be able to fail while spawning still repairs it. */
+    const anchorPose = (i: number, a: Alliance): StartPose => {
+      const p = BB_START_POSES[i];
+      const m = a === 'blue' ? { x: p.pos.x, y: p.pos.y, heading: p.heading } : bbMirror({ x: p.pos.x, y: p.pos.y, heading: p.heading });
+      return { x: m.x, y: m.y, headingDeg: ((m.heading ?? p.heading) * 180) / Math.PI };
+    };
+
+    // 0. THE MODULE PREDICATE MIRRORS BEFORE IT ASSESSES.
+    //
+    // Every start pose in the repo is stored in the CANONICAL BLUE frame and mirrored onto the
+    // alliance at spawn (`spawn.ts` `bbStartPose`). This field is POINT-symmetric, so red's
+    // version of a stored pose is a 180 degree rotation of it -- a predicate that assessed the
+    // stored pose directly would judge red against BLUE's own side, BLUE's LOADING ZONE and
+    // BLUE's FLOWERS: wrong on exactly half the field, and right-looking on the other half,
+    // which is how it would survive a careless test.
+    //
+    // So the check is the DIFFERENCE. It takes a canonical pose that is legal for blue, asserts
+    // the module says legal for BOTH alliances, and then asserts that the UNMIRRORED reading of
+    // it for red says something else -- without that third line the first two pass against a
+    // predicate that ignores the alliance entirely.
+    {
+      const canon = anchorPose(0, 'blue');
+      const naiveRed = bbEvalStart(BB_DEFAULT_SPEC, canon, 'red').legal;
+      check(
+        'G304: the module predicate accepts a canonical pose for BLUE',
+        bbActiveStartLegal(BB_DEFAULT_SPEC, 'blue', canon) === true,
+      );
+      check(
+        'G304: ...and for RED, because it point-mirrors the pose first',
+        bbActiveStartLegal(BB_DEFAULT_SPEC, 'red', canon) === true,
+      );
+      check(
+        'G304: ...and the mirror is load-bearing — read unmirrored, that same pose is NOT legal for red',
+        naiveRed === false,
+        `unmirrored red verdict=${naiveRed} (if true, this check proves nothing)`,
+      );
+      check(
+        'G304: an absent pose is the named anchor, which is legal by construction',
+        bbActiveStartLegal(BB_DEFAULT_SPEC, 'red', null) === true &&
+          bbActiveStartLegal(BB_DEFAULT_SPEC, 'blue', undefined) === true,
+      );
+      // and the module's own slot IS this function, not a second copy of the rule.
+      const modLegal = moduleFor('biobuzz').startLegal;
+      check(
+        'G304: the module slot and `bbActiveStartLegal` are the same predicate',
+        !!modLegal && modLegal(BB_DEFAULT_SPEC, 'red', canon) === bbActiveStartLegal(BB_DEFAULT_SPEC, 'red', canon),
+      );
+    }
+
+    // 1. THE DEFAULT BUILD'S ANCHORS NEED NO REPAIR.
+    for (const a of ['blue', 'red'] as const) {
+      for (let i = 0; i < BB_START_POSES.length; i++) {
+        const pose = anchorPose(i, a);
+        const v = bbEvalStart(BB_DEFAULT_SPEC, pose, a);
+        check(
+          `G304: ${a} anchor ${i} (${BB_START_POSES[i].name}) is legal as written on the default chassis`,
+          v.legal,
+          v.reason ?? `pos=(${pose.x},${pose.y}) heading=${pose.headingDeg.toFixed(0)}deg`,
+        );
+        const snapped = bbSnapStart(BB_DEFAULT_SPEC, pose, a);
+        check(
+          `G304: ${a} anchor ${i} is returned by the snap byte for byte`,
+          snapped.x === pose.x && snapped.y === pose.y && snapped.headingDeg === pose.headingDeg,
+          `got=(${snapped.x.toFixed(3)},${snapped.y.toFixed(3)})`,
+        );
+      }
+    }
+
+    // 2. EVERY ANCHOR, EVERY CHASSIS, AFTER THE SNAP. One check per (alliance, anchor) over
+    // the whole sweep rather than 192 lines of PASS: the interesting output is the first
+    // build that fails and what it failed on.
+    for (const a of ['blue', 'red'] as const) {
+      for (let i = 0; i < BB_START_POSES.length; i++) {
+        const pose = anchorPose(i, a);
+        let bad: string | null = null;
+        let worstWall = Infinity;
+        for (const spec of specs) {
+          const seated = bbSnapStart(spec, pose, a);
+          const v = bbEvalStart(spec, seated, a);
+          if (!v.legal && bad === null) bad = `${spec.intake}/${spec.intakeMount} ${spec.length}x${spec.width}: ${v.reason}`;
+          const b = bbStartBox(spec, seated);
+          // how far the seated footprint is off the nearest wall -- the slack G304.C spends,
+          // reported so a snap that started merely scraping through is visible before it fails
+          worstWall = Math.min(
+            worstWall,
+            Math.min(b.x0 + BB_HALF_X, BB_HALF_X - b.x1, b.y0 + BB_HALF_Y, BB_HALF_Y - b.y1),
+          );
+        }
+        check(
+          `G304: ${a} anchor ${i} seats legally on every legal chassis (${specs.length} builds)`,
+          bad === null,
+          bad ?? `worst wall gap ${worstWall.toFixed(3)}" (tol ${C.START_TOUCH_TOL})`,
+        );
+      }
+    }
+
+    // 3. EACH CLAUSE REFUSES ITS OWN VIOLATION, and the snap repairs each refusal.
+    //
+    // Every pose below is built for BLUE and seated by hand against the wall the clause is
+    // about, so exactly ONE clause fails and `reason` names it -- a pose that broke two would
+    // pass a "returns false" check while proving nothing about the clause it was written for.
     const e = bbFootprint(BB_DEFAULT_SPEC);
-    const half = (e.front + e.rear) / 2;
-    for (const r of w.robots) {
-      const i = r.id % BB_START_POSES.length;
-      const raw = BB_START_POSES[i].pos;
-      // RED is the POINT mirror, the same one `spawn.ts` applies -- an x-mirror here would
-      // "pass" against a red robot standing at blue's y.
-      const want = r.alliance === 'blue' ? raw : { x: -raw.x, y: -raw.y };
-      const moved = Math.hypot(r.pos.x - want.x, r.pos.y - want.y);
+    const lz = BB_LZ.blue;
+    const probe = { contained: 0, ownSide: 0, touching: 0, clearFlower: 0, outOfLZ: 0 };
+    const cases: { name: string; pose: StartPose; want: keyof typeof probe }[] = [];
+    // E -- dead centre of blue's LOADING ZONE, against the side wall it backs onto. Heading
+    // 180 puts the footprint's half-length along x, which is how a robot actually sits there.
+    cases.push({
+      name: 'in the LOADING ZONE (G304.E)',
+      pose: { x: BB_HALF_X - (e.front + e.rear) / 2, y: (lz.y0 + lz.y1) / 2, headingDeg: 180 },
+      want: 'outOfLZ',
+    });
+    // D -- against the same side wall, at F3's y. F3 stands on +x at y = 24, so a robot seated
+    // there is in its foot and its scoring volume.
+    cases.push({
+      name: 'touching a FLOWER (G304.D)',
+      pose: { x: BB_HALF_X - (e.front + e.rear) / 2, y: BB_FLOWERS[2].y, headingDeg: 180 },
+      want: 'clearFlower',
+    });
+    // C -- open floor on blue's own half. NOT the field centre, which is the obvious choice
+    // and the wrong one: a footprint straddling x = 0 is on neither side, so clause A fails
+    // first and the check would pass while proving nothing about C.
+    cases.push({ name: 'off the wall (G304.C)', pose: { x: 36, y: 0, headingDeg: 180 }, want: 'touching' });
+    // A -- blue seated on RED's own anchor 1. Legal for red, which is the point: the only
+    // thing wrong with it is whose side it is on.
+    cases.push({ name: "on the opponent's side (G304.A)", pose: { x: -46, y: 61.5, headingDeg: -90 }, want: 'ownSide' });
+
+    for (const c of cases) {
+      const v = bbEvalStart(BB_DEFAULT_SPEC, c.pose, 'blue');
       check(
-        `anchors: ${r.alliance} anchor ${i} spawns where it is written, unsnapped`,
-        moved < SEAT_TOL,
-        `moved=${moved.toFixed(3)}" want=(${want.x},${want.y}) got=(${r.pos.x.toFixed(2)},${r.pos.y.toFixed(2)})`,
+        `G304: a pose ${c.name} is refused, and for that clause`,
+        !v.legal && v[c.want] === false && Object.keys(probe).every((k) => k === c.want || v[k as keyof typeof probe] === true),
+        `reason=${v.reason} · ${Object.keys(probe).map((k) => `${k}=${v[k as keyof typeof probe]}`).join(' ')}`,
       );
-      // AND IT IS LEGAL: touching its own side wall, and clear of its own LOADING ZONE. Both
-      // are read off the RAW anchor, not off the spawned pose, so the check cannot be
-      // satisfied by the repair it exists to make unnecessary.
-      const b = {
-        x0: want.x - half, x1: want.x + half,
-        y0: want.y - e.half, y1: want.y + e.half,
-      };
-      const gap = BB_HALF_X - Math.max(Math.abs(b.x0), Math.abs(b.x1));
-      const z = BB_LZ[r.alliance];
-      const inLz = b.x1 > z.x0 && b.x0 < z.x1 && b.y1 > z.y0 && b.y0 < z.y1;
-      const ownSide = r.alliance === 'red' ? b.x1 < 0 : b.x0 > 0;
+      const fixed = bbSnapStart(BB_DEFAULT_SPEC, c.pose, 'blue');
+      const fv = bbEvalStart(BB_DEFAULT_SPEC, fixed, 'blue');
       check(
-        `anchors: ${r.alliance} anchor ${i} contacts its own wall, on its own side, outside its LOADING ZONE`,
-        gap >= 0 && gap <= C.START_TOUCH_TOL && !inLz && ownSide,
-        `wall gap=${gap.toFixed(2)}" (tol ${C.START_TOUCH_TOL}) · inLZ=${inLz} · ownSide=${ownSide}`,
+        `G304: the snap repairs a pose ${c.name}`,
+        fv.legal,
+        `${fv.reason ?? 'legal'} at (${fixed.x.toFixed(1)},${fixed.y.toFixed(1)})`,
       );
+    }
+
+    // THE LANE CONTRACT'S FACE OF IT. `elements.ts`'s `evalStart` is what Lane B calls, and it
+    // used to be a stub that said yes to everything; a delegation that silently reverted would
+    // be invisible from inside `start.ts`, where every check above lives.
+    {
+      const bad = cases[0].pose;
+      const viaContract = evalStart(BB_DEFAULT_SPEC, 'blue', bad);
+      const viaRule = bbEvalStart(BB_DEFAULT_SPEC, bad, 'blue');
+      check(
+        'G304: the lane contract `evalStart` is `bbEvalStart`, not a stub',
+        viaContract.legal === viaRule.legal && viaContract.reason === viaRule.reason,
+        `contract=${JSON.stringify(viaContract)}`,
+      );
+    }
+
+    // AND THE SPAWNER ACTUALLY USES IT. Everything above is the rule in isolation; this is the
+    // four robots a match really starts with, measured through `createBiobuzzWorld`.
+    {
+      const w = createBiobuzzWorld('match', 13, [
+        setup(0, 'blue', {}, 0),
+        setup(1, 'blue', {}, 1),
+        setup(2, 'red', {}, 0),
+        setup(3, 'red', {}, 1),
+      ]);
+      for (const r of w.robots) {
+        const v = bbEvalStart(r.spec, { x: r.pos.x, y: r.pos.y, headingDeg: (r.heading * 180) / Math.PI }, r.alliance);
+        check(
+          `G304: spawned robot ${r.id} (${r.alliance}) starts on a legal pose`,
+          v.legal,
+          v.reason ?? `pos=(${r.pos.x.toFixed(2)},${r.pos.y.toFixed(2)})`,
+        );
+      }
+      // The two anchors are at opposite ends of the field on purpose: two robots of one
+      // alliance must not be able to reach each other at the buzzer.
+      const blue = w.robots.filter((r) => r.alliance === 'blue');
+      const apart = Math.hypot(blue[0].pos.x - blue[1].pos.x, blue[0].pos.y - blue[1].pos.y);
+      check('G304: an alliance’s two anchors are far apart', apart > 100, `apart=${apart.toFixed(1)}"`);
     }
   }
 
@@ -419,14 +635,37 @@ export function fieldChecks(check: Check): void {
   {
     const w = createBiobuzzWorld('match', 14, [setup(0, 'blue', {}, 0)]);
     const bb = w.biobuzz!;
+    // THE LIST IS PER ALLIANCE SINCE THE 2026-09-12 RULING: `scoreTargets(w, a)` carries a's
+    // OWN up-CELL and the four neutral FLOWERS, and NOT the opponent's cell, because an element
+    // launched by a does not enter it. `both` is the field-wide union `play.ts` builds for the
+    // capture pass; the per-alliance lists are what a launcher sees.
+    const both = (): ScoreTarget[] => {
+      const out: ScoreTarget[] = [];
+      const seen = new Set<string>();
+      for (const a of ['red', 'blue'] as const) {
+        for (const t of scoreTargets(w, a)) {
+          if (seen.has(t.id)) continue;
+          seen.add(t.id);
+          out.push(t);
+        }
+      }
+      return out;
+    };
     for (const tilt of ['staged', 'tipped'] as const) {
       if (tilt === 'tipped') {
         bb.hives.red.up = 'north';
         bb.hives.blue.up = 'south';
       }
-      const ts = scoreTargets(w, 'red');
+      const own = scoreTargets(w, 'red');
       check(
-        `targets [${tilt}]: two CELLS and four FLOWERS, every one with a mouth`,
+        `targets [${tilt}]: RED is offered its OWN CELL and four FLOWERS — never blue's cell`,
+        own.length === 1 + BB_FLOWERS.length &&
+          own.filter((t) => t.id.startsWith('hive:')).map((t) => t.id).join() === 'hive:red',
+        `${own.length} targets · cells [${own.filter((t) => t.id.startsWith('hive:')).map((t) => t.id).join(' ')}]`,
+      );
+      const ts = both();
+      check(
+        `targets [${tilt}]: two CELLS and four FLOWERS in the union, every one with a mouth`,
         ts.length === 2 + BB_FLOWERS.length && ts.every((t) => t.mouth !== undefined),
         `${ts.length} targets · ${ts.filter((t) => t.mouth).length} with mouth`,
       );
@@ -446,7 +685,7 @@ export function fieldChecks(check: Check): void {
     }
     // A FLOWER OPENS INTO THE FIELD: step one inch along the mouth and you are further from
     // the wall the flower stands against than the flower itself is.
-    const ts = scoreTargets(w, 'red');
+    const ts = both();
     BB_FLOWERS.forEach((f, i) => {
       const t = ts.find((x) => x.id === `flower:${i}`)!;
       const wallDist = (p: { x: number; y: number }): number =>
@@ -704,6 +943,97 @@ export function fieldChecks(check: Check): void {
     );
   }
 
+
+  // -- ...AND THE FIELD HOLDS TWO SIZES AT ONCE: NECTAR IS NOT POLLEN -------
+  /**
+   * A NECTAR IS 1.8 AND A POLLEN IS 1.4, AND THE SOLVE HAS TO KNOW BOTH AT THE SAME TIME.
+   *
+   * The radius used to be one number per CALL — the game passed `BB_POLLEN_R` and everything in
+   * the world was solved at it. That is exactly right for a game whose elements are all one
+   * size and wrong for this one: a NECTAR is a GROUND element for as long as it takes a robot
+   * to come and collect it (the human player enters it onto the tiles, `play.ts`), and solved
+   * at the POLLEN radius it came to rest with **0.4 in of its skin through the wall** — the
+   * note in HANDOFF-field — and let a POLLEN sit 0.4 in inside it.
+   *
+   * So `solveArtifacts`, the held-artifact plugs and the perimeter clamp all read the
+   * artifact's OWN `r` and fall back to the call's radius. DECODE sets `r` on nothing, which is
+   * what keeps the first `npm test` suite byte-identical; BIOBUZZ's spawner sets it on every
+   * NECTAR it stages.
+   *
+   * Both checks are measured on where the SOLVE settles, not on the constant, and both print
+   * the POLLEN answer beside the NECTAR one — a regression to one-size puts the measured number
+   * on the other line.
+   */
+  {
+    /** a NECTAR: an alliance-coloured element carrying its own radius, the way `spawn.ts` stages it. */
+    const nectar = (id: number, x: number, y: number): Artifact => ({
+      id,
+      color: 'blue',
+      r: BB_NECTAR_R,
+      state: { kind: 'ground' },
+      pos: { x, y },
+      vel: { x: 0, y: 0 },
+      z: 0,
+      vz: 0,
+    });
+
+    check(
+      'radius: a NECTAR and a POLLEN really are different sizes (so the two checks below mean something)',
+      BB_NECTAR_R !== BB_POLLEN_R,
+      `nectar ${BB_NECTAR_R}" vs pollen ${BB_POLLEN_R}"`,
+    );
+
+    /**
+     * (a) A NECTAR PUT DOWN OVERLAPPING THE WALL is returned to its OWN radius off the wall
+     * plane. Placed rather than thrown, and at rest: `BB_POLLEN_WALL_REST` bounces a moving
+     * element back off the wall, so an element rolled at it comes to rest three inches away and
+     * measures the restitution instead of the containment. y = 40 is the same clear lane the
+     * pollen check above uses — no HIVE bar, no FLOWER foot, no zone.
+     *
+     * TWO AUTHORITIES ARE BEING CHECKED AND THEY FAIL SEPARATELY, which is why the skin check
+     * below is its own line rather than a restatement of the first. The SOLVE is what settles
+     * the resting distance: run at one flat radius it reads 1.400". The CLAMP
+     * (`clampPollenToWalls`) is what puts an element back when the solve had no answer: run at
+     * the POLLEN radius it ACTIVELY PUSHES a NECTAR 0.4" through the wall, and with the solve
+     * already fixed it still leaks 0.010" — small, and the direction that matters, because the
+     * clamp is unconditional and runs last.
+     */
+    const w = createBiobuzzWorld('free', 5, []);
+    w.robots.length = 0;
+    w.balls.length = 0;
+    const n1 = nectar(1, BB_HALF_X - 0.5, 40);
+    w.balls.push(n1);
+    for (let i = 0; i < 240; i++) updateBiobuzz(w, C.SIM_DT, new Map(), true, NO_SWEEP);
+    const gap = BB_HALF_X - n1.pos.x;
+    check(
+      'radius: a resting NECTAR sits its OWN radius off the wall, not the POLLEN radius',
+      Math.abs(gap - BB_NECTAR_R) <= 0.1,
+      `${gap.toFixed(3)}" off the wall; nectar R=${BB_NECTAR_R}", pollen R=${BB_POLLEN_R}"`,
+    );
+    check(
+      'radius: ...so no part of it is outside the field',
+      Math.abs(n1.pos.x) <= BB_HALF_X - BB_NECTAR_R + 1e-6,
+      `skin ${(Math.abs(n1.pos.x) - (BB_HALF_X - BB_NECTAR_R)).toFixed(3)}" past the wall plane`,
+    );
+
+    // (b) A NECTAR AGAINST A POLLEN rests at the SUM of the two radii. One flat number is only
+    // right when every element is the same size, and the two wrong answers bracket this one:
+    // 2*POLLEN is 2.80 and 2*NECTAR is 3.60, against a correct 3.20.
+    const w2 = createBiobuzzWorld('free', 5, []);
+    w2.robots.length = 0;
+    w2.balls.length = 0;
+    const n2 = nectar(1, -0.5, 0);
+    const p2 = bbPollen(2, 0.5, 0);
+    w2.balls.push(n2, p2);
+    for (let i = 0; i < 240; i++) updateBiobuzz(w2, C.SIM_DT, new Map(), true, NO_SWEEP);
+    const d2 = Math.hypot(n2.pos.x - p2.pos.x, n2.pos.y - p2.pos.y);
+    check(
+      'radius: a NECTAR resting on a POLLEN sits at the SUM of the two radii',
+      Math.abs(d2 - (BB_NECTAR_R + BB_POLLEN_R)) <= 0.1,
+      `${d2.toFixed(3)}" apart; sum ${(BB_NECTAR_R + BB_POLLEN_R).toFixed(2)}", two pollen ${
+        (2 * BB_POLLEN_R).toFixed(2)}", two nectar ${(2 * BB_NECTAR_R).toFixed(2)}"`,
+    );
+  }
   // -- WHAT THE SOLVE ITSELF DOES ABOUT THE PERIMETER, WITH NO CLAMP OVER IT -
   /**
    * EVERY OTHER CONTAINMENT CHECK IN THIS FILE READS THE WORLD AFTER `clampPollenToWalls` HAS
@@ -1066,6 +1396,63 @@ export function fieldChecks(check: Check): void {
       rotated < 0,
       rotated < 0 ? 'all six axis-aligned' : `static ${BB_WALL_COUNT + rotated} has rot=${extras[rotated].rot}`,
     );
+  }
+
+  // -- THE FLOWER SECTION FITS IN THE VIEW MARGIN ---------------------------
+  /**
+   * A FLOWER's contents are drawn as a SECTION of its column, OUTSIDE the perimeter beside it
+   * (`drawFlowerSection`). That is the one thing this game draws off the field, and it is
+   * therefore the one thing the CAMERA can silently cut in half: `bounds.viewMargin` is what a
+   * viewport is fitted to, and a readout that grew past it is not an error anywhere — it is
+   * simply missing from the right-hand side of every still, which a reviewer reads as "the
+   * stack is short" rather than as "the picture is cropped".
+   *
+   * So `bbFlowerSectionBox` is exported for exactly this, and the three things asked of it are
+   * the three ways the readout can be wrong without throwing: off the camera, back inside the
+   * play area (where it would be drawn over the field it is describing), or on top of the
+   * NEIGHBOURING flower's readout.
+   */
+  {
+    const cam = { x: BB_HALF_X + BB_VIEW_MARGIN, y: BB_HALF_Y + BB_VIEW_MARGIN };
+    const boxes = BB_FLOWERS.map((f) => ({ id: f.id, b: bbFlowerSectionBox(f) }));
+
+    let tightest = Infinity;
+    let tightestAt = '';
+    for (const { id, b } of boxes) {
+      const slack = Math.min(cam.x - b.x1, b.x0 + cam.x, cam.y - b.y1, b.y0 + cam.y);
+      if (slack < tightest) {
+        tightest = slack;
+        tightestAt = id;
+      }
+    }
+    check(
+      `section: every FLOWER's section is inside the camera (viewMargin ${BB_VIEW_MARGIN}")`,
+      tightest > 0,
+      `tightest is ${tightestAt}, ${tightest.toFixed(2)}" of margin left`,
+    );
+
+    // OUTSIDE the play area: a section that reached back over the perimeter would be drawn on
+    // top of the tiles, the zones and the robots it is a readout for.
+    let inside = '';
+    for (const { id, b } of boxes) {
+      const out = Math.max(b.x0 - BB_HALF_X, -BB_HALF_X - b.x1, b.y0 - BB_HALF_Y, -BB_HALF_Y - b.y1);
+      if (out <= 0) inside = `${id} overlaps the field by ${(-out).toFixed(2)}"`;
+    }
+    check('section: every FLOWER section is entirely OUTSIDE the perimeter', inside === '', inside || 'all four clear');
+
+    // AND CLEAR OF EACH OTHER. The section runs 21.5" ALONG its wall toward the middle, and
+    // every FLOWER is one tile off centre — so the four readouts converge on the four corners
+    // of the margin band, which is the only place they could ever meet.
+    let clash = '';
+    for (let i = 0; i < boxes.length; i++) {
+      for (let j = i + 1; j < boxes.length; j++) {
+        const a = boxes[i].b;
+        const b = boxes[j].b;
+        if (a.x0 < b.x1 && b.x0 < a.x1 && a.y0 < b.y1 && b.y0 < a.y1) clash = `${boxes[i].id} x ${boxes[j].id}`;
+      }
+    }
+    check('section: no two FLOWER sections overlap', clash === '', clash || 'all six pairs disjoint');
+
   }
 
   // ── STAGING: WHAT A SPAWNED MATCH ACTUALLY HAS ON THE FIELD ───────────────
@@ -1643,6 +2030,813 @@ export function fieldChecks(check: Check): void {
     check(`scene [${scene.id}@${last}]: hashes deterministically`, h1 === h2, `${h1} vs ${h2}`);
   }
 
+  // ── NO SCENE CARRIES A DANGLING ELEMENT ID ──────────────────────────────
+  /**
+   * `flowers[i].stack` and `hives[a].contents` hold IDS; the elements themselves live in
+   * `world.balls`. The readout is that JOIN, so an id with no ball behind it draws NOTHING and
+   * the world still looks plausible — until the id ALIASES something else and the miss becomes
+   * a ball drawn in the wrong place. `hive-ground` lost three floor POLLEN to F1's staged stack
+   * exactly that way: `createBiobuzzWorld` stages a full field, `bbWorld` then replaces
+   * `world.balls` with the scene's own layout, and the staged ids stayed in the bag.
+   *
+   * EVERY SCENE, AT EVERY STILL, and both directions. The forward check is the one the fix
+   * buys (`bbWorld` reindexes after its replace); the reverse one is what stops the fix being
+   * "clear the stacks" — an element ball that exists and is listed by nobody renders as a disc
+   * floating where its parked position happens to be, which is the same picture from the other
+   * side. The tag has to agree too: a ball tagged `flower:2` listed under F1 is a stack that
+   * scores the wrong FLOWER.
+   */
+  for (const scene of BB_SCENES.filter((s) => s.lane === 'field')) {
+    for (const { tick, world } of bbSceneStills(scene)) {
+      const bb = world.biobuzz;
+      if (!bb) continue;
+      const byId = new Map(world.balls.map((b) => [b.id, b]));
+      const listed: number[] = [];
+      const bad: string[] = [];
+      const view = (tag: string, ids: readonly number[]): void => {
+        for (const id of ids) {
+          listed.push(id);
+          const b = byId.get(id);
+          if (!b) bad.push(`${tag} lists ${id}, which is not a ball`);
+          else if (b.state.kind !== 'element') bad.push(`${tag}:${id} is ${b.state.kind}`);
+          else if (b.state.el !== tag) bad.push(`${tag}:${id} is tagged ${b.state.el}`);
+        }
+      };
+      bb.flowers.forEach((f, i) => view(`flower:${i}`, f.stack));
+      for (const a of ['red', 'blue'] as const) view(`hive:${a}`, bb.hives[a].contents);
+      check(
+        `scene [${scene.id}@${tick}]: every id in a FLOWER stack or an up-CELL resolves to a ball`,
+        bad.length === 0,
+        bad.length ? bad.join(' · ') : `${listed.length} ids resolve`,
+      );
+      const seen = new Set(listed);
+      const orphans = world.balls.filter((b) => b.state.kind === 'element' && !seen.has(b.id));
+      check(
+        `scene [${scene.id}@${tick}]: every element ball is listed exactly once`,
+        orphans.length === 0 && seen.size === listed.length,
+        `${listed.length} listed · ${seen.size} distinct · ${orphans.length} unlisted`,
+      );
+    }
+  }
+
+  // -- THE FIELD IS LIVE: A REAL TIP, THROUGH THE REAL PIPELINE --------------
+  /**
+   * Everything above tests a PURE function. This drives `updateBiobuzz` itself, tick by tick,
+   * and watches one HIVE go all the way round: three POLLEN launched into the up-CELL, the
+   * swing starting on the tick the load completes, the contents leaving the tray as it passes
+   * LEVEL, and the TIP landing two seconds later with the cells swapped.
+   *
+   * It is the check the pure ones cannot make: `hiveStep` is correct in isolation and still
+   * useless if `play.ts` calls it before the capture stage, drops the spilled ids on the floor
+   * as a count rather than as the ELEMENTS they are, or lets the swing run while the cell is
+   * still accepting. Every one of those is a conservation bug, and conservation is asserted
+   * here on EVERY TICK rather than at the end — a leak that cancels a duplicate is invisible
+   * to an end-state count, and a bucket-by-bucket per-tick partition is what catches it.
+   */
+  {
+    const w = createBiobuzzWorld('match', 7, [setup(0, 'red', {}, 0), setup(1, 'blue', {}, 0)]);
+    const bb = w.biobuzz!;
+    w.match.phase = 'teleop';
+    w.match.phaseTimeLeft = 120;
+    const TOTAL = w.balls.length;
+    const A: Alliance = 'red';
+    const upAt0 = bb.hives[A].up;
+    const cellAt0 = hiveCellPos(A, upAt0);
+    const zMid = (BB_HIVE_OPEN_Z[0] + BB_HIVE_OPEN_Z[1]) / 2;
+    const sign = hiveApproachSign(upAt0); // +1 for a south-up cell: it takes vy > 0
+
+    // THE LOAD. The staged cell already holds 3 NECTAR (10.3.1), and `BB_TIP_POLLEN[3]` is 3,
+    // so three POLLEN is exactly the row that tips it — the threshold is READ from the table
+    // rather than typed, so a revised table revises the scene instead of breaking it.
+    const NEED = BB_TIP_POLLEN[3];
+    const shots = w.balls
+      .filter((b) => b.state.kind === 'ground' && b.color !== 'red' && b.color !== 'blue')
+      .slice(0, NEED);
+    for (const b of shots) {
+      b.state = { kind: 'flight', target: A };
+      b.pos = { x: cellAt0.x, y: cellAt0.y - sign * 2 };
+      b.vel = { x: 0, y: sign * 24 };
+      b.z = zMid + 1;
+      b.vz = -18;
+    }
+
+    // THE PARTITION. Every ball is in exactly one of five states, and the five have to add up
+    // to the array they are drawn from — on every tick, not at the end.
+    const buckets = (): Record<string, number> => {
+      const n: Record<string, number> = { ground: 0, flight: 0, held: 0, element: 0, stock: 0, other: 0 };
+      for (const b of w.balls) n[b.state.kind in n ? b.state.kind : 'other']++;
+      return n;
+    };
+    const inCells = (): number => bb.hives.red.contents.length + bb.hives.blue.contents.length;
+    const inFlowers = (): number => bb.flowers.reduce((s, f) => s + f.stack.length, 0);
+
+    let leak = '';
+    let loadedAt = -1;
+    let swingAt = -1;
+    let spillAt = -1;
+    let tipAt = -1;
+    let spilledGround = 0;
+    let contentsAtRelease: number[] = [];
+    // measured ON THE SPILL TICK: these are ground elements from that moment on, so the shared
+    // solve and the rolling-friction pass have them by the end of the very next tick and the
+    // velocity they LEFT THE TRAY with is gone. Reading it at the end of the scene would assert
+    // that a spilled element comes to rest, which it should, and nothing about the spill.
+    let spillVel: { v: number; out: boolean }[] = [];
+    const TICKS = Math.round((BB_TIP_SWING_S + 0.5) / C.SIM_DT);
+    for (let t = 0; t < TICKS; t++) {
+      const before = [...bb.hives[A].contents];
+      updateBiobuzz(w, C.SIM_DT, new Map(), true, NO_SWEEP);
+      const n = buckets();
+      const sum = n.ground + n.flight + n.held + n.element + n.stock;
+      if (!leak) {
+        if (sum !== TOTAL || n.other !== 0 || w.balls.length !== TOTAL) {
+          leak = `tick ${t}: ${JSON.stringify(n)} sums to ${sum}, array ${w.balls.length}, expected ${TOTAL}`;
+        } else if (n.element !== inCells() + inFlowers()) {
+          leak = `tick ${t}: ${n.element} element-state balls but ${inCells()} in cells + ${inFlowers()} in flowers`;
+        }
+      }
+      if (loadedAt < 0 && bb.hives[A].contents.length === before.length + NEED) loadedAt = t;
+      if (swingAt < 0 && bb.hives[A].tipping > 0) swingAt = t;
+      if (spillAt < 0 && before.length > 0 && bb.hives[A].contents.length === 0) {
+        spillAt = t;
+        contentsAtRelease = before;
+        const back = before.map((id) => w.balls.find((x) => x.id === id));
+        spilledGround = back.filter((b) => !!b && b.state.kind === 'ground').length;
+        spillVel = back
+          .filter((b): b is Artifact => !!b)
+          .map((b) => ({ v: Math.hypot(b.vel.x, b.vel.y), out: b.vel.y * sign < 0 }));
+      }
+      if (tipAt < 0 && bb.hives[A].tips > 0) tipAt = t;
+    }
+
+    check(
+      'live: three POLLEN launched INBOARD over the opening are taken by the up-CELL',
+      loadedAt === 0,
+      loadedAt === 0
+        ? `captured on the first tick; the cell holds ${NEED} POLLEN over the 3 staged NECTAR`
+        : `loaded at tick ${loadedAt} (expected 0); contents ${bb.hives[A].contents.length}`,
+    );
+    check(
+      'live: element conservation holds on EVERY tick — ground + flight + held + element + stock',
+      leak === '',
+      leak || `${TICKS} ticks, ${TOTAL} elements, five buckets, no tick off by one`,
+    );
+    // The swing starts on the SAME tick the load completes: stage 3 runs after the capture
+    // stage, on purpose, so the element that fills the cell tips it on arrival.
+    check(
+      'live: the swing starts on the tick the load completes, not the tick after',
+      swingAt === loadedAt && swingAt === 0,
+      `loaded at ${loadedAt}, swinging at ${swingAt}`,
+    );
+    // RELEASE AT LEVEL, i.e. half way: `BB_TIP_RELEASE_S` of a `BB_TIP_SWING_S` swing REMAIN,
+    // so the spill lands after SWING - RELEASE seconds. One tick of slack, because the swing
+    // is started partway through the tick that triggers it.
+    const wantSpill = Math.round((BB_TIP_SWING_S - BB_TIP_RELEASE_S) / C.SIM_DT);
+    check(
+      `live: the tray empties as it passes LEVEL, ~${(BB_TIP_SWING_S - BB_TIP_RELEASE_S).toFixed(1)}s into the swing`,
+      spillAt >= 0 && Math.abs(spillAt - wantSpill) <= 1,
+      `spilled at tick ${spillAt} (expected ~${wantSpill})`,
+    );
+    check(
+      'live: the release puts EXACTLY the contents back on the tiles, as GROUND elements',
+      contentsAtRelease.length === NEED + 3 && spilledGround === contentsAtRelease.length,
+      `${contentsAtRelease.length} in the cell (expected ${NEED + 3}) → ${spilledGround} on the ground`,
+    );
+    // ...AND THEY ARE MOVING. A spill that arrives at rest piles under the down cell; the whole
+    // point of `spillPoses` is that the elements leave over the open OUTER end with outboard
+    // speed and cross the field (G409).
+    //
+    // ⚠️ THE EXACT RANGE IS PINNED BY THE PURE `spillPoses` CHECK, NOT HERE, because six elements
+    // land in one 20 × 10.43 in cell mouth OVERLAPPING (a real tray dumps a pile, not a rank) and
+    // with the ±`BB_SPILL_FAN` fan they now diverge INTO each other — measured, one pair of the
+    // six starts 3.44 in apart on 3.60 in of diameter. The shared solve separates them on this
+    // very tick, so what is readable here is each element's speed AFTER its first collision, and
+    // two of six come out under the draw. Under the old straight-outboard model every element
+    // went the same way and nothing collided, which is the only reason a hard per-element band
+    // ever passed. So this asserts what the LIVE path can honestly assert: everything is
+    // outboard, nothing GAINED speed, nothing arrived near rest, and most of them still carry
+    // their draw.
+    // the draw is `BB_SPILL_SPEED` plus or minus the all-directions kick (`BB_SPILL_KICK`), so
+    // the band a pose can honestly be in is that wide
+    {
+      const moving = spillVel;
+      const lo = BB_SPILL_SPEED[0] - BB_SPILL_KICK;
+      const hi = BB_SPILL_SPEED[1] + BB_SPILL_KICK;
+      const inBand = moving.filter((m) => m.v >= lo - 1 && m.v <= hi + 1);
+      const fastest = Math.max(...moving.map((m) => m.v));
+      check(
+        'live: spilled elements carry the spill velocity — outboard, none faster than the draw, none at rest',
+        moving.length > 0 &&
+          moving.every((m) => m.out && m.v <= hi + 1 && m.v > C.BALL_REST_SPEED * 4) &&
+          fastest >= lo &&
+          inBand.length * 2 >= moving.length,
+        `speeds ${moving.map((m) => m.v.toFixed(1)).join(', ')} in/s (draw ${lo}..${hi} with the kick)` +
+          ` · ${inBand.length}/${moving.length} still in band after the first solve · fastest ${fastest.toFixed(1)}` +
+          ` · all outboard ${moving.every((m) => m.out)}`,
+      );
+    }
+    const wantTip = Math.round(BB_TIP_SWING_S / C.SIM_DT);
+    check(
+      `live: the TIP completes after BB_TIP_SWING_S (${BB_TIP_SWING_S}s) and flips the up cell`,
+      tipAt >= 0 && Math.abs(tipAt - wantTip) <= 1 && bb.hives[A].up !== upAt0 && bb.hives[A].tips === 1,
+      `tipped at tick ${tipAt} (expected ~${wantTip}) · up ${upAt0} → ${bb.hives[A].up} · tips ${bb.hives[A].tips}`,
+    );
+    // `released` is the latch that makes the spill happen ONCE. Back to false at the settle, or
+    // the next swing would empty the tray the instant it started.
+    check(
+      'live: `released` latches through the swing and resets at the settle',
+      bb.hives[A].released === false && bb.hives[A].tipping === 0,
+      `released=${bb.hives[A].released} tipping=${bb.hives[A].tipping}`,
+    );
+    // THE ENTITLEMENT THE TIP EARNS (G426) — this lane's half of the human player. The tip
+    // EARNS an entry and nothing more: the nectar stays in the hands until a driver presses
+    // the button, which is the whole of the Round 6 change. Nobody pressed anything in the
+    // loop above, so the stock is untouched and the debt is banked.
+    check(
+      'live: a completed TIP earns one NECTAR entry and does NOT spend it',
+      bb.nectarStock[A] === 5 && bb.nectarDue[A] === 1,
+      `stock ${bb.nectarStock[A]} (5 at setup, unspent) · due ${bb.nectarDue[A]}`,
+    );
+    check(
+      'live: with an entry owed and the field live, the button would take it',
+      bb.nectarWhy[A] === 'ok',
+      `nectarWhy ${bb.nectarWhy[A]}`,
+    );
+    {
+      const entered = w.balls.filter(
+        (b) => b.state.kind === 'ground' && b.color === A && Math.abs(b.pos.x) > BB_HALF_X - 24,
+      );
+      check(
+        'live: nothing entered on its own — no press, no NECTAR on the tiles',
+        entered.length === 0 && w.balls.length === TOTAL,
+        `${entered.length} red NECTAR near the red wall · ${w.balls.length} balls (was ${TOTAL})`,
+      );
+    }
+  }
+
+  // -- THE HUMAN PLAYER BUTTON (G426) ---------------------------------------
+  /**
+   * NECTAR ENTRY IS A DRIVER ACTION. `RobotCommand.bbNectar` is an EDGE: one press puts one
+   * NECTAR from the alliance's stock into its own LOADING ZONE, and only when the alliance is
+   * ENTITLED to one — a banked TIP (`nectarDue`), or TELEOP at 60 s or less. Everything else
+   * the button can do is nothing, and `nectarWhy` names which nothing it was.
+   *
+   * NOTHING IS SPAWNED. The five exist from setup as `stock` balls (`spawn.ts`) already sitting
+   * on their entry spot, so an entry is a STATE FLIP and the array length never changes — which
+   * is the whole reason conservation is a count over one array.
+   *
+   * The old drip is what this replaces, and the checks below are written against the failure
+   * modes a button has that a timer did not: a press with no entitlement, a HELD button, two
+   * robots on one alliance, and a press on a frozen field.
+   */
+  {
+    const press = (on: boolean): RobotCommand => cmd({ bbNectar: on });
+    const inLZ = (w: World, a: Alliance): number =>
+      w.balls.filter((b) => {
+        const z = BB_LZ[a];
+        return (
+          b.state.kind === 'ground' &&
+          b.color === a &&
+          b.pos.x >= z.x0 && b.pos.x <= z.x1 && b.pos.y >= z.y0 && b.pos.y <= z.y1
+        );
+      }).length;
+
+    // ── BEFORE ANY TIP: the button is live, the entitlement is not ───────────
+    {
+      const w = createBiobuzzWorld('match', 9, [setup(0, 'red', {}, 0), setup(1, 'blue', {}, 0)]);
+      const bb = w.biobuzz!;
+      w.match.phase = 'teleop';
+      w.match.phaseTimeLeft = C.TELEOP_DURATION; // well before the cue
+      const TOTAL = w.balls.length;
+      const STOCK0 = bb.nectarStock.red;
+      // ten presses, each a real edge (down, up, down, …), so this is not one press misread
+      for (let i = 0; i < 20; i++) {
+        updateBiobuzz(w, C.SIM_DT, new Map([[0, press(i % 2 === 0)]]), true, NO_SWEEP);
+      }
+      check(
+        'human player: a press with nothing owed places NOTHING, and says why',
+        bb.nectarStock.red === STOCK0 && inLZ(w, 'red') === 0 && bb.nectarWhy.red === 'none-owed' &&
+          w.balls.length === TOTAL,
+        `stock ${bb.nectarStock.red}/${STOCK0} · ${inLZ(w, 'red')} in the zone · why ${bb.nectarWhy.red}`,
+      );
+    }
+
+    // ── AFTER ONE TIP: one press, exactly one NECTAR, and the debt is spent ──
+    {
+      const w = createBiobuzzWorld('match', 9, [setup(0, 'red', {}, 0), setup(1, 'blue', {}, 0)]);
+      const bb = w.biobuzz!;
+      w.match.phase = 'teleop';
+      w.match.phaseTimeLeft = C.TELEOP_DURATION;
+      const TOTAL = w.balls.length;
+      const STOCK0 = bb.nectarStock.red;
+      bb.nectarDue.red = 1; // what a completed TIP banks (stage 3)
+      updateBiobuzz(w, C.SIM_DT, new Map([[0, press(true)]]), true, NO_SWEEP);
+      const afterOne = inLZ(w, 'red');
+      const stockAfterOne = bb.nectarStock.red;
+      const dueAfterOne = bb.nectarDue.red;
+      // ...and HOLDING it does not drain the stock. 120 more ticks with the button still down.
+      for (let t = 0; t < 120; t++) {
+        updateBiobuzz(w, C.SIM_DT, new Map([[0, press(true)]]), true, NO_SWEEP);
+      }
+      check(
+        'human player: one press after a TIP enters EXACTLY one NECTAR and spends the entry',
+        afterOne === 1 && stockAfterOne === STOCK0 - 1 && dueAfterOne === 0,
+        `${afterOne} in the zone · stock ${STOCK0} → ${stockAfterOne} · due ${dueAfterOne}`,
+      );
+      check(
+        'human player: the button is an EDGE — holding it for 2 s enters nothing more',
+        inLZ(w, 'red') === 1 && bb.nectarStock.red === STOCK0 - 1 && w.balls.length === TOTAL,
+        `${inLZ(w, 'red')} in the zone after 2 s held · stock ${bb.nectarStock.red} · ` +
+          `balls ${w.balls.length} (was ${TOTAL})`,
+      );
+      check(
+        'human player: with the entry spent and the cue not reached, the button refuses again',
+        bb.nectarWhy.red === 'none-owed',
+        `nectarWhy ${bb.nectarWhy.red}`,
+      );
+    }
+
+    // ── AT 59 s: one per press until the stock is empty ──────────────────────
+    {
+      const w = createBiobuzzWorld('match', 9, [setup(0, 'red', {}, 0), setup(1, 'blue', {}, 0)]);
+      const bb = w.biobuzz!;
+      w.match.phase = 'teleop';
+      w.match.phaseTimeLeft = BB_FLOWER_UNLOCK_S - 1; // 59 s: inside the cue
+      const TOTAL = w.balls.length;
+      const STOCK0 = bb.nectarStock.red;
+      let maxPerPress = 0;
+      let prev = inLZ(w, 'red');
+      // one press per two ticks (down, up), STOCK0 + 2 presses — two more than there is stock
+      for (let i = 0; i < (STOCK0 + 2) * 2; i++) {
+        updateBiobuzz(w, C.SIM_DT, new Map([[0, press(i % 2 === 0)]]), true, NO_SWEEP);
+        const now = inLZ(w, 'red');
+        maxPerPress = Math.max(maxPerPress, now - prev);
+        prev = now;
+      }
+      check(
+        'human player: at 59 s, ONE NECTAR per press until the stock is empty',
+        bb.nectarStock.red === 0 && inLZ(w, 'red') === STOCK0 && maxPerPress === 1 &&
+          w.balls.length === TOTAL,
+        `stock ${STOCK0} → ${bb.nectarStock.red} · ${inLZ(w, 'red')} in the zone · ` +
+          `most per press ${maxPerPress} · balls ${w.balls.length} (was ${TOTAL})`,
+      );
+      check(
+        'human player: two presses past the last one place nothing, and the HUD says none left',
+        bb.nectarWhy.red === 'none-left',
+        `nectarWhy ${bb.nectarWhy.red}`,
+      );
+      // the cue is an ENTITLEMENT, not an unlock of the opponent's stock: blue pressed nothing
+      check(
+        'human player: BLUE, who pressed nothing, still holds its whole stock',
+        bb.nectarStock.blue === STOCK0 && inLZ(w, 'blue') === 0,
+        `blue stock ${bb.nectarStock.blue} · ${inLZ(w, 'blue')} in the blue zone`,
+      );
+    }
+
+    // ── EITHER ROBOT MAY PRESS, AND ONE TICK ENTERS ONE ──────────────────────
+    /**
+     * The per-ROBOT latch is what this pins. A per-ALLIANCE one would swallow robot 1's press
+     * while robot 0 held the button — the bug that only ever appears with two humans on one
+     * alliance, which is every real match.
+     */
+    {
+      const w = createBiobuzzWorld('match', 9, [setup(0, 'red', {}, 0), setup(1, 'red', {}, 1)]);
+      const bb = w.biobuzz!;
+      w.match.phase = 'teleop';
+      w.match.phaseTimeLeft = BB_FLOWER_UNLOCK_S - 1;
+      const STOCK0 = bb.nectarStock.red;
+      // robot 0 holds the button DOWN for the whole scene; robot 1 taps it twice
+      const both = (r1: boolean): Map<number, RobotCommand> =>
+        new Map([[0, press(true)], [1, press(r1)]]);
+      updateBiobuzz(w, C.SIM_DT, both(false), true, NO_SWEEP); // robot 0's own edge: 1 in
+      const afterHold = inLZ(w, 'red');
+      for (let i = 0; i < 4; i++) updateBiobuzz(w, C.SIM_DT, both(i % 2 === 0), true, NO_SWEEP);
+      check(
+        "human player: a partner's press lands while the other driver holds the button down",
+        afterHold === 1 && inLZ(w, 'red') === 3 && bb.nectarStock.red === STOCK0 - 3,
+        `${afterHold} after robot 0's edge, ${inLZ(w, 'red')} after robot 1's two taps · ` +
+          `stock ${STOCK0} → ${bb.nectarStock.red}`,
+      );
+      // BOTH robots' rising edges on the SAME tick: one instruction, one element.
+      {
+        const v = createBiobuzzWorld('match', 9, [setup(0, 'red', {}, 0), setup(1, 'red', {}, 1)]);
+        const vb = v.biobuzz!;
+        v.match.phase = 'teleop';
+        v.match.phaseTimeLeft = BB_FLOWER_UNLOCK_S - 1;
+        const S0 = vb.nectarStock.red;
+        updateBiobuzz(v, C.SIM_DT, new Map([[0, press(true)], [1, press(true)]]), true, NO_SWEEP);
+        check(
+          'human player: both drivers pressing on ONE tick enter ONE NECTAR, not two',
+          inLZ(v, 'red') === 1 && vb.nectarStock.red === S0 - 1,
+          `${inLZ(v, 'red')} in the zone · stock ${S0} → ${vb.nectarStock.red}`,
+        );
+      }
+    }
+
+    // ── THE FROZEN FIELD IGNORES IT ──────────────────────────────────────────
+    // `enabled` false is the transition and the period after the buzzer, which is exactly when
+    // G426 forbids a human player reaching in. Through `step.ts` the command is zeroed before
+    // it ever arrives; this drives `updateBiobuzz` directly with the button DOWN, which is the
+    // stronger statement.
+    {
+      const f = createBiobuzzWorld('match', 9, [setup(0, 'red', {}, 0)]);
+      const fb = f.biobuzz!;
+      f.match.phase = 'teleop';
+      f.match.phaseTimeLeft = BB_FLOWER_UNLOCK_S - 1;
+      const STOCK0 = fb.nectarStock.red;
+      for (let t = 0; t < 600; t++) {
+        updateBiobuzz(f, C.SIM_DT, new Map([[0, press(t % 2 === 0)]]), false, NO_SWEEP);
+      }
+      check(
+        'human player: nothing enters while the field is frozen (enabled === false)',
+        fb.nectarStock.red === STOCK0 && inLZ(f, 'red') === 0 && fb.nectarWhy.red === 'locked',
+        `stock ${fb.nectarStock.red} (was ${STOCK0}) after 10 s of presses while disabled · ` +
+          `why ${fb.nectarWhy.red}`,
+      );
+      // ...and the moment the field comes back, the SAME press works. The refusal is the flag,
+      // not a latch the frozen ticks left behind.
+      fb.nectarDue.red = 0; // no banked TIP: the 59 s cue is the entitlement here
+      updateBiobuzz(f, C.SIM_DT, new Map([[0, press(true)]]), true, NO_SWEEP);
+      check(
+        'human player: the first press after the field comes live is taken',
+        inLZ(f, 'red') === 1 && fb.nectarStock.red === STOCK0 - 1 && fb.nectarWhy.red === 'ok',
+        `${inLZ(f, 'red')} in the zone · stock ${fb.nectarStock.red} · why ${fb.nectarWhy.red}`,
+      );
+    }
+
+    // ── THE WIRE CARRIES THE BIT ─────────────────────────────────────────────
+    /**
+     * The wire is the contract: a command the client PREDICTS with must be the command the
+     * server steps, and `localizeCommand` is the quantize round-trip that makes the two equal.
+     * A new button that is not in the `buttons` mask decodes as `false` — so the press would
+     * work locally, do nothing on the server, and the desync would look like lag.
+     */
+    {
+      const down = localizeCommand(press(true));
+      const up = localizeCommand(press(false));
+      check(
+        'human player: `bbNectar` survives the quantize round-trip in both states',
+        down.bbNectar === true && up.bbNectar === false,
+        `down ${down.bbNectar} · up ${up.bbNectar}`,
+      );
+      // ...and it does not collide with any other button bit: every flag set at once comes back
+      // set, and none alone sets another.
+      const all = localizeCommand(
+        cmd({ intake: true, fire: true, catalyst: true, fling: true, driveMode: true,
+              bbPlaceNectar: true, bbPlace: true, bbNectar: true }),
+      );
+      const only = localizeCommand(press(true));
+      check(
+        'human player: its protocol bit is its own — all eight set, and `bbNectar` alone sets one',
+        all.intake && all.fire && all.catalyst && all.fling && all.driveMode &&
+          all.bbPlaceNectar && all.bbPlace && all.bbNectar &&
+          !only.intake && !only.fire && !only.catalyst && !only.fling && !only.driveMode &&
+          !only.bbPlaceNectar && !only.bbPlace,
+        `all ${JSON.stringify(all.bbNectar)} · only-nectar sets ${
+          ['intake', 'fire', 'catalyst', 'fling', 'driveMode', 'bbPlaceNectar', 'bbPlace',
+            'bbNectar']
+            .filter((k) => (only as unknown as Record<string, boolean>)[k]).join(',')
+        }`,
+      );
+    }
+
+    // ── A REPLAY ROUND-TRIP CARRIES THE BIT ──────────────────────────────────
+    /**
+     * Surviving the quantize lattice is not the same as surviving the RECORDER, and the block
+     * above only proves the first. A replay is {seed, setups, command log}, and the log is
+     * written by a SECOND quantize pass inside `ReplayRecorder` — so a bit that localizes
+     * correctly and is dropped on the way into the track plays back as `false`: the NECTAR
+     * never enters on re-simulation, the stored match diverges from the one that was played,
+     * and a press that worked on the driver's own screen is missing from the only copy of it
+     * that survives. That is the same failure `REPLAY_FORMAT` 2 exists because of.
+     *
+     * So this records a real match and re-simulates the container after the trip through JSON
+     * a stored replay actually takes (`scripts/smoke.ts` does the same for DECODE's presets and
+     * CR's archetypes). Agreeing hashes alone would prove nothing — two matches in which
+     * nothing happened agree perfectly — so the NECTAR has to have LEFT THE STOCK and LANDED in
+     * the LOADING ZONE in BOTH worlds before the comparison is worth reading.
+     *
+     * The clock is the price of admission: G410 locks entry until the 1:00 cue, so the run
+     * carries the whole pre-countdown, AUTO and the transition before a press can be granted.
+     * Driving the clock is not what is under test, which is why the source asks the WORLD
+     * whether the entry is live rather than counting ticks itself.
+     */
+    {
+      const SEED = 9;
+      const setups = recordSetups(BB_DEFAULT_SPEC, 'solo');
+      // the staged stock, read off an identical world: `runRecordMatch` builds its own, so
+      // there is no other moment at which the before-picture can be taken.
+      const staged = createBiobuzzWorld('match', SEED, setups);
+      const STOCK0 = staged.biobuzz!.nectarStock.blue;
+      const LZ0 = inLZ(staged, 'blue');
+      // one tick past the cue plus a few seconds of presses — the whole stock drains in that
+      // window, which is what makes the entry visible in the stock count as well as on the tiles
+      const CUE_TICK = Math.ceil(
+        (C.PRE_COUNTDOWN + C.AUTO_DURATION + C.TRANSITION_DURATION +
+          (C.TELEOP_DURATION - BB_FLOWER_UNLOCK_S)) / C.SIM_DT,
+      );
+      const STOP = Math.min(CUE_TICK + 240, maxMatchTicks());
+      /**
+       * Alternating down/up, because the button is an EDGE and a held one enters once. Reading
+       * the world to decide WHEN is fine for a replay: the recorder stores the commands that
+       * were ISSUED, so playback replays those numbers rather than re-running this logic.
+       */
+      const src: CommandSource = (tick, w) =>
+        new Map([[0, press(!bbNectarLocked(w) && tick % 2 === 0)]]);
+      const rec = runRecordMatch(SEED, setups, src, {
+        mode: 'match',
+        // BIOBUZZ, or `simModuleFor` falls back to DECODE and this records a different sport
+        game: 'biobuzz',
+        stopTick: STOP,
+      });
+      const liveBB = rec.world.biobuzz!;
+      const liveEntered = inLZ(rec.world, 'blue') - LZ0;
+      check(
+        'human player: the RECORDED match really entered NECTAR — the check is not vacuous',
+        liveEntered > 0 && liveBB.nectarStock.blue === STOCK0 - liveEntered,
+        `${liveEntered} entered · stock ${STOCK0} → ${liveBB.nectarStock.blue} · ` +
+          `${rec.replay.ticks} ticks`,
+      );
+
+      // the trip a stored replay really takes — the server keeps it as a JSON document, and an
+      // `undefined` optional field does not survive that trip
+      const stored: Replay = JSON.parse(JSON.stringify(rec.replay)) as Replay;
+      const back = simulateReplay(stored);
+      const backBB = back.biobuzz!;
+      check(
+        'human player: the press survives the recorder — the replay enters the SAME NECTAR',
+        inLZ(back, 'blue') - LZ0 === liveEntered &&
+          backBB.nectarStock.blue === liveBB.nectarStock.blue,
+        `replay entered ${inLZ(back, 'blue') - LZ0} vs ${liveEntered} · ` +
+          `stock ${backBB.nectarStock.blue} vs ${liveBB.nectarStock.blue}`,
+      );
+      const played = worldResult(rec.world);
+      const verified = verifyReplay(stored);
+      check(
+        'human player: re-simulating the stored replay reproduces the match exactly',
+        verified.hash === played.hash && verified.ticks === played.ticks,
+        `hash ${verified.hash} vs ${played.hash} · ticks ${verified.ticks} vs ${played.ticks}`,
+      );
+      check(
+        'human player: the container names BIOBUZZ, so the log re-simulates the right game',
+        stored.game === 'biobuzz' && stored.setups.length === setups.length,
+        `game ${stored.game} · ${stored.setups.length} setups`,
+      );
+    }
+  }
+
+
+  // -- THE OPEN FACE IS ONE FACE: A SHOT FROM THE CLOSED SIDE IS A MISS ------
+  /**
+   * The ruling (field-plan 2.1) is that a CELL is open at its OUTER end ONLY, so the two shots
+   * below differ in NOTHING but the sign of `vy` — same point, same height, same descent — and
+   * exactly one of them scores. A miss is not a foul (G417.H): the element keeps flying and
+   * lands on the tiles, which is what the second half asserts.
+   */
+  {
+    const shoot = (toward: 1 | -1): { took: boolean; kind: string; balls: number } => {
+      const w = createBiobuzzWorld('match', 11, [setup(0, 'red', {}, 0)]);
+      const bb = w.biobuzz!;
+      w.match.phase = 'teleop';
+      w.match.phaseTimeLeft = 120;
+      const A: Alliance = 'red';
+      const up = bb.hives[A].up;
+      const cell = hiveCellPos(A, up);
+      const s = hiveApproachSign(up) * toward; // toward=+1 inboard, -1 through the closed back
+      const before = bb.hives[A].contents.length;
+      const b = w.balls.find((x) => x.state.kind === 'ground')!;
+      b.state = { kind: 'flight', target: A };
+      b.pos = { x: cell.x, y: cell.y - s * 2 };
+      b.vel = { x: 0, y: s * 24 };
+      b.z = (BB_HIVE_OPEN_Z[0] + BB_HIVE_OPEN_Z[1]) / 2 + 1;
+      b.vz = -18;
+      updateBiobuzz(w, C.SIM_DT, new Map(), true, NO_SWEEP);
+      return { took: bb.hives[A].contents.length > before, kind: b.state.kind, balls: w.balls.length };
+    };
+    const inbound = shoot(1);
+    const closed = shoot(-1);
+    check(
+      'live: a shot travelling TOWARD THE PIVOT is accepted by the up-CELL',
+      inbound.took && inbound.kind === 'element',
+      `took=${inbound.took} state=${inbound.kind}`,
+    );
+    check(
+      'live: the same shot from the CLOSED side is rejected and stays a live element',
+      !closed.took && closed.kind === 'flight' && closed.balls === inbound.balls,
+      `took=${closed.took} state=${closed.kind} — a miss keeps flying (G417.H), it is not consumed`,
+    );
+  }
+
+  // -- A CELL TAKES ONLY ITS OWN ALLIANCE'S ELEMENT (owner ruling 2026-09-12) -
+  /**
+   * Nothing in the manual bans launching into the OPPONENT's up-CELL, and nothing in the
+   * geometry stops it: the two HIVES are 25.5 in apart across field centre, so either opening
+   * is reachable from most of the field, and a TIP is worth 20 to whoever owns the cell. The
+   * owner's ruling is that the shot simply DOES NOT ENTER — it is a miss, it lands as ground,
+   * and it is not penalised (field-plan 2.1, ruling 2).
+   *
+   * The two shots below differ in NOTHING but `by`, the alliance that launched them: same
+   * cell, same point, same approach, same descent. One goes in and one does not, which is the
+   * ruling and nothing else. The third case is the fallback: a flight element with NO `by` —
+   * every DECODE and Chain Reaction flight, and any BIOBUZZ snapshot recorded before the field
+   * stamped it — is still accepted, because refusing those would break replays of matches that
+   * were legal when they were played.
+   *
+   * A REFUSED SHOT IS STILL A LIVE ELEMENT. It is not consumed, not teleported and not fouled;
+   * it keeps the arc it had and reaches the tiles, which is the second check.
+   */
+  {
+    const shoot = (by: Alliance | undefined): { took: boolean; kind: string; balls: number; landed: string } => {
+      const w = createBiobuzzWorld('match', 23, [setup(0, 'red', {}, 0), setup(1, 'blue', {}, 0)]);
+      const bb = w.biobuzz!;
+      w.match.phase = 'teleop';
+      w.match.phaseTimeLeft = 120;
+      // THE HIVE UNDER TEST IS BLUE'S, FIXED, so `by` is the only thing that varies.
+      const H: Alliance = 'blue';
+      const up = bb.hives[H].up;
+      const cell = hiveCellPos(H, up);
+      const sgn = hiveApproachSign(up);
+      const before = bb.hives[H].contents.length;
+      const b = w.balls.find((x) => x.state.kind === 'ground')!;
+      b.state = by ? { kind: 'flight', target: by, by } : { kind: 'flight', target: H };
+      b.pos = { x: cell.x, y: cell.y - sgn * 2 };
+      b.vel = { x: 0, y: sgn * 24 };
+      b.z = (BB_HIVE_OPEN_Z[0] + BB_HIVE_OPEN_Z[1]) / 2 + 1;
+      b.vz = -18;
+      updateBiobuzz(w, C.SIM_DT, new Map(), true, NO_SWEEP);
+      const took = bb.hives[H].contents.length > before;
+      const kind = b.state.kind;
+      // and then let the miss finish its arc: 1 s is well past the fall from the opening.
+      for (let t = 0; t < 60; t++) updateBiobuzz(w, C.SIM_DT, new Map(), true, NO_SWEEP);
+      return { took, kind, balls: w.balls.length, landed: b.state.kind };
+    };
+    const own = shoot('blue');
+    const opp = shoot('red');
+    const legacy = shoot(undefined);
+    check(
+      'live: BLUE\u2019s up-CELL takes a shot launched BY BLUE',
+      own.took && own.kind === 'element',
+      `took=${own.took} state=${own.kind}`,
+    );
+    check(
+      'live: the SAME shot launched BY RED is refused — it is a miss, not a TIP for blue',
+      !opp.took && opp.kind === 'flight' && opp.balls === own.balls,
+      `took=${opp.took} state=${opp.kind} \u00b7 balls ${opp.balls} vs ${own.balls} \u2014 nothing consumed`,
+    );
+    check(
+      'live: ...and the refused element lands on the tiles as GROUND, un-fouled',
+      opp.landed === 'ground',
+      `after 1 s it is ${opp.landed}`,
+    );
+    check(
+      'live: a flight element with NO `by` is still accepted — old snapshots keep working',
+      legacy.took && legacy.kind === 'element',
+      `took=${legacy.took} state=${legacy.kind}`,
+    );
+  }
+
+  // -- THE AIM LIST AND THE CAPTURE TEST DESCRIBE THE SAME OPENING -----------
+  /**
+   * `play.ts` captures by walking `scoreTargets()`, and `hiveAccepts` decides whether a CELL
+   * took the shot. Those are two descriptions of one face — `ScoreTarget.mouth` is the outward
+   * normal, `hiveApproachSign` is the direction an element must TRAVEL to get in — and they
+   * are opposite by construction. Nothing at run time notices if they stop being opposite:
+   * Lane B would aim at a cell the field then refuses, which reads as "my shots do not score"
+   * and is invisible to every pure test on either side.
+   */
+  {
+    const w = createBiobuzzWorld('match', 3, [setup(0, 'red', {}, 0)]);
+    const bb = w.biobuzz!;
+    const bad: string[] = [];
+    for (const a of ['red', 'blue'] as const) {
+      for (const up of ['north', 'south'] as const) {
+        bb.hives[a].up = up;
+        const t = scoreTargets(w, a).find((x) => x.id === `hive:${a}`)!;
+        const m = t.mouth!;
+        if (m.x !== 0 || m.y !== -hiveApproachSign(up)) {
+          bad.push(`${a}/${up}: mouth (${m.x},${m.y}) vs approach ${hiveApproachSign(up)}`);
+        }
+        const c = hiveCellPos(a, up);
+        if (Math.abs(t.pos.x - c.x) > 1e-9 || Math.abs(t.pos.y - c.y) > 1e-9) {
+          bad.push(`${a}/${up}: target at (${t.pos.x},${t.pos.y}) vs cell (${c.x},${c.y})`);
+        }
+      }
+    }
+    check(
+      'live: ScoreTarget.mouth is the exact opposite of hiveApproachSign, on both hives',
+      bad.length === 0,
+      bad.length
+        ? bad.join(' · ')
+        : 'four cases: an element enters AGAINST the mouth normal, and the target sits on the up cell',
+    );
+  }
+
+  // -- AIM TRACKS THE INCOMING CELL FROM THE FIRST TICK OF THE SWING --------
+  /**
+   * `up` names the tray going DOWN until the swing settles, so a target list built off it held
+   * every turret on the emptying cell for four seconds and then snapped across the pivot
+   * (owner feedback, 2026-09-12). `aimCell` (`elements.ts`) flips at the START of the tip.
+   *
+   * AIM AND CAPTURE ARE DELIBERATELY DIFFERENT FOR THE FIRST HALF: `hiveTakingSide` still says
+   * `up` until the release, because a volley already in the air belongs to the tray still
+   * holding its load. Both halves are pinned here, because "the turret tracks the cell that
+   * takes the shot" is the invariant that is true at the release and NOT before it.
+   */
+  {
+    const w = createBiobuzzWorld('match', 3, [setup(0, 'red', {}, 0)]);
+    const bb = w.biobuzz!;
+    const a: Alliance = 'red';
+    const bad: string[] = [];
+    const aimAt = (): { x: number; y: number } => scoreTargets(w, a).find((x) => x.id === `hive:${a}`)!.pos;
+    const same = (p: { x: number; y: number }, q: { x: number; y: number }) =>
+      Math.abs(p.x - q.x) < 1e-9 && Math.abs(p.y - q.y) < 1e-9;
+    bb.hives[a] = { up: 'south', contents: [], tips: 0, tipping: 0, released: false };
+    if (!same(aimAt(), hiveCellPos(a, 'south'))) bad.push('settled: aim is not the up cell');
+    // first tick of the swing — nothing has moved yet, and the aim has already changed
+    bb.hives[a] = { ...bb.hives[a], tipping: BB_TIP_SWING_S, released: false };
+    if (!same(aimAt(), hiveCellPos(a, 'north'))) bad.push('tip start: aim did not move to the incoming cell');
+    if (hiveTakingSide(bb.hives[a]) !== 'south') bad.push('tip start: capture left the filled cell');
+    // after the release the two agree again
+    bb.hives[a] = { ...bb.hives[a], tipping: BB_TIP_RELEASE_S / 2, released: true };
+    if (!same(aimAt(), hiveCellPos(a, 'north'))) bad.push('post-release: aim moved off the incoming cell');
+    if (hiveTakingSide(bb.hives[a]) !== 'north') bad.push('post-release: capture did not hand over');
+    check(
+      'live: aim flips to the incoming CELL at the start of the tip; capture hands over at the release',
+      bad.length === 0,
+      bad.length ? bad.join(' · ') : 'settled/tip-start/post-release all as specified',
+    );
+  }
+
+  // -- THE TIP TABLE IS A TABLE ---------------------------------------------
+  /**
+   * `BB_TIP_POLLEN` is MEASURED, indexed by the NECTAR already in the cell, and nothing
+   * interpolates it — a see-saw is torque and packing, not weight. Pinned as literal values
+   * because the row IS the rule: an interpolation that happened to pass through two of these
+   * points would still be a mass model, which the owner ruled out (config.ts, 2026-09-12).
+   *
+   * ⚠️ THE LITERAL IS DELIBERATE AND IT IS THE POINT — do NOT "fix" this by comparing the
+   * table against itself. Rows 0 and 3 are the Event Field Setup Guide's calibration points
+   * (§12.3: 8 POLLEN empty, 3 POLLEN + 3 NECTAR) and the other four were measured once by the
+   * owner, so this check exists to FAIL the day somebody re-measures, and the failure is what sends them to
+   * `docs/biobuzz/feedback/002-thresholds.md` §2 to say which row moved. A re-measure is one
+   * edit in `config.ts` and one here, in that order.
+   */
+  {
+    const want = [8, 7, 6, 3, 1, 0];
+    check(
+      'hive: BB_TIP_POLLEN is the measured table [8,7,6,3,1,0], unchanged',
+      BB_TIP_POLLEN.length === want.length && want.every((v, i) => BB_TIP_POLLEN[i] === v),
+      `[${BB_TIP_POLLEN.join(',')}]`,
+    );
+    const bad: string[] = [];
+    for (let nectar = 0; nectar < want.length; nectar++) {
+      const need = want[nectar];
+      if (need > 0 && hiveWillTip({ pollen: need - 1, nectar })) bad.push(`${nectar}n + ${need - 1}p tipped`);
+      if (!hiveWillTip({ pollen: need, nectar })) bad.push(`${nectar}n + ${need}p did NOT tip`);
+    }
+    // past the end of the table the LAST row holds, which is 0 pollen: five nectar are enough
+    // on their own, and so are six.
+    if (!hiveWillTip({ pollen: 0, nectar: want.length })) bad.push('past the table, 0p did not tip');
+    check(
+      'hive: every row tips at its own threshold and not one element below it',
+      bad.length === 0,
+      bad.length
+        ? bad.join(' · ')
+        : `${want.length} rows, each at need-1 and need, plus the past-the-end row`,
+    );
+  }
+
+  // -- `released` SURVIVES THE WIRE -----------------------------------------
+  /**
+   * A HIVE mid-swing is the one state where `released` carries information nothing else does,
+   * and a snapshot reaches a client as JSON. Lose the field there and the arriving peer spills
+   * a tray that has already emptied — the same elements a second time, which is a duplicate in
+   * `world.balls` and the end of the conservation invariant asserted above.
+   *
+   * BOTH trips are checked, because they can fail separately: `JSON.parse(JSON.stringify(x))`
+   * is what a replay and `localStorage` do, and `slimWorld`/`unslimWorld` is what the socket
+   * does — the second one REBUILDS the world rather than copying it.
+   */
+  {
+    const w = createBiobuzzWorld('match', 5, [setup(0, 'red', {}, 0)]);
+    const bb = w.biobuzz!;
+    bb.hives.red = { up: 'south', contents: [], tips: 2, tipping: 1.5, released: true };
+    bb.hives.blue = { up: 'north', contents: [], tips: 0, tipping: 0, released: false };
+    const plain = JSON.parse(JSON.stringify(w.biobuzz)) as typeof bb;
+    const specOf = (id: number): RobotSpec => w.robots.find((r) => r.id === id)!.spec;
+    const wire = unslimWorld(JSON.parse(JSON.stringify(slimWorld(w))), w.balls, specOf).biobuzz!;
+    check(
+      '`released` survives a JSON round-trip and the snapshot codec, on both hives',
+      plain.hives.red.released === true &&
+        plain.hives.blue.released === false &&
+        wire.hives.red.released === true &&
+        wire.hives.blue.released === false &&
+        wire.hives.red.tipping === 1.5,
+      `json red=${plain.hives.red.released}/blue=${plain.hives.blue.released} · ` +
+        `wire red=${wire.hives.red.released}/blue=${wire.hives.blue.released} tipping=${wire.hives.red.tipping}`,
+    );
+  }
+
   // -- PERFORMANCE BUDGET ---------------------------------------------------
   /**
    * A 2v2 BIOBUZZ world must not cost more than `STEP_BUDGET` x a 2v2 Chain Reaction world per
@@ -1860,6 +3054,32 @@ export function fieldChecks(check: Check): void {
         settleStep > 0 && Math.abs(settleAt - BB_TIP_SWING_S) <= dt + 1e-9 && h.up === 'north' && h.tips === 1 && h.contents.length === 0 && h.tipping === 0,
         `tipped after ${settleStep} swing steps = ${settleAt.toFixed(4)} s (swing ${BB_TIP_SWING_S}); up=${h.up} tips=${h.tips} contents=[${h.contents.join(',')}] tipping=${h.tipping}`,
       );
+      // A POST-RELEASE CAPTURE BELONGS TO THE INCOMING TRAY AND MUST SURVIVE THE SETTLE. The
+      // cell goes on taking elements through the swing (`hiveTakingSide`), so anything that
+      // lands after the bar passes level is in the cell that `up` names one tick later — and
+      // the settle used to clear `contents` unconditionally, which threw it away silently.
+      {
+        let g = settled([...staged.ids]);
+        const late = 9901;
+        let landedAt = -1;
+        let spilledLate = false;
+        for (let i = 0; i < 1200; i++) {
+          const r = hiveStep(g, dt, kindOf(staged.kinds));
+          if (r.spilled.includes(late)) spilledLate = true;
+          g = r.hive;
+          // drop one in a tick AFTER the release, the way a capture does
+          if (g.released && landedAt < 0) {
+            g = { ...g, contents: [...g.contents, late] };
+            landedAt = i;
+          }
+          if (r.tipped) break;
+        }
+        check(
+          'hive: an element taken AFTER the release rides the incoming cell through the settle',
+          landedAt >= 0 && !spilledLate && g.tipping === 0 && g.up === 'north' && g.contents.join() === String(late),
+          `landed at step ${landedAt}; spilled=${spilledLate}; after settle up=${g.up} contents=[${g.contents.join(',')}]`,
+        );
+      }
       check(
         'hive: spilled ids == the contents that tipped it',
         spilled.length === staged.ids.length && [...spilled].sort((a, b) => a - b).join() === [...staged.ids].sort((a, b) => a - b).join(),
@@ -1894,12 +3114,21 @@ export function fieldChecks(check: Check): void {
           Math.abs(p.pos.y) > BB_HIVE_CELL_DY + BB_CELL_OPEN.d + eps ||
           p.pos.z !== BB_HIVE_BOTTOM_Z,
       );
+      // THE SPEED is what `BB_SPILL_SPEED` says and the FAN is the direction it left along — two
+      // independent facts, which is exactly what the ±lateral model could not express (its fan
+      // narrowed as the speed rose). `vel.y` alone is now only a COMPONENT and bounds nothing.
+      const speedOf = (p: SpillPose): number => Math.hypot(p.vel.x, p.vel.y);
+      const fanOf = (p: SpillPose): number => Math.abs(Math.atan2(p.vel.x, sign * p.vel.y)) * (180 / Math.PI);
+      // THE KICK (`BB_SPILL_KICK`) widens both: it can add or take its whole magnitude from the
+      // speed, and it can turn the slowest throw by at most asin(kick / vMin). Still OUTBOARD
+      // for every pose — that is the bound the constants were chosen against.
+      const fanMax = BB_SPILL_FAN + Math.asin(BB_SPILL_KICK / BB_SPILL_SPEED[0]) * (180 / Math.PI);
       const badVel = poses.filter(
         (p) =>
           Math.sign(p.vel.y) !== sign ||
-          Math.abs(p.vel.y) < BB_SPILL_SPEED[0] - eps ||
-          Math.abs(p.vel.y) > BB_SPILL_SPEED[1] + eps ||
-          Math.abs(p.vel.x) > BB_SPILL_LATERAL + eps ||
+          speedOf(p) < BB_SPILL_SPEED[0] - BB_SPILL_KICK - eps ||
+          speedOf(p) > BB_SPILL_SPEED[1] + BB_SPILL_KICK + eps ||
+          fanOf(p) > fanMax + eps ||
           p.vel.z !== 0,
       );
       check(
@@ -1909,8 +3138,290 @@ export function fieldChecks(check: Check): void {
           `pos x ${Math.min(...poses.map((p) => p.pos.x)).toFixed(2)}..${Math.max(...poses.map((p) => p.pos.x)).toFixed(2)} ` +
           `y ${Math.min(...poses.map((p) => p.pos.y)).toFixed(2)}..${Math.max(...poses.map((p) => p.pos.y)).toFixed(2)} ` +
           `z ${[...new Set(poses.map((p) => p.pos.z))].join('/')} · ` +
-          `vel y ${Math.min(...poses.map((p) => p.vel.y)).toFixed(1)}..${Math.max(...poses.map((p) => p.vel.y)).toFixed(1)} ` +
-          `x ${Math.min(...poses.map((p) => p.vel.x)).toFixed(1)}..${Math.max(...poses.map((p) => p.vel.x)).toFixed(1)}`,
+          `speed ${Math.min(...poses.map(speedOf)).toFixed(1)}..${Math.max(...poses.map(speedOf)).toFixed(1)} in/s ` +
+          `(range ${BB_SPILL_SPEED[0]}..${BB_SPILL_SPEED[1]} ± kick ${BB_SPILL_KICK}) · ` +
+          `fan ${Math.max(...poses.map(fanOf)).toFixed(1)}° of ±${BB_SPILL_FAN}° (+${(fanMax - BB_SPILL_FAN).toFixed(1)}° kick)`,
+      );
+    }
+
+    // 8a-ii. THE KICK IS REAL: across a spill, the poses are NOT all on the fan. With the kick
+    // drawn from the whole circle some poses come out faster than their throw and some slower,
+    // so over a decent sample the speed spread exceeds what `BB_SPILL_SPEED` alone allows on at
+    // least one side. This is what "slightly more randomly in all directions" has to mean in a
+    // check: a fan alone, however wide, is symmetric about outboard and never does this.
+    {
+      let rngState = 21;
+      const rng = (): number => {
+        const r = nextRandom(rngState);
+        rngState = r.state;
+        return r.value;
+      };
+      const mid: HiveState = { up: 'north', contents: [], tips: 0, tipping: BB_TIP_RELEASE_S, released: true };
+      const poses = spillPoses(mid, 'blue', 60, rng);
+      const speeds = poses.map((p) => Math.hypot(p.vel.x, p.vel.y));
+      const over = speeds.filter((v) => v > BB_SPILL_SPEED[1] + 0.5).length;
+      const under = speeds.filter((v) => v < BB_SPILL_SPEED[0] - 0.5).length;
+      const fans = poses.map((p) => Math.abs(Math.atan2(p.vel.x, p.vel.y)) * (180 / Math.PI));
+      const wide = fans.filter((f) => f > BB_SPILL_FAN + 0.5).length;
+      check(
+        'hive: the spill KICK scatters beyond the fan — some poses faster than the draw, some slower',
+        BB_SPILL_KICK > 0 && over > 0 && under > 0 && poses.every((p) => p.vel.y > 0),
+        `of 60: ${over} over ${BB_SPILL_SPEED[1]}, ${under} under ${BB_SPILL_SPEED[0]}, ${wide} wider than ±${BB_SPILL_FAN}°; all outboard=${poses.every((p) => p.vel.y > 0)}`,
+      );
+    }
+
+    // ── HIVE: A HEAVIER TRAY SWINGS FASTER (`hiveSwingRate`, owner 2026-09-13) ──
+    /**
+     * `BB_TIP_SWING_S` is the swing of a tray at EXACTLY its threshold; every element over it
+     * multiplies the rate by `BB_TIP_RATE_PER_EXTRA`, capped at `BB_TIP_RATE_MAX`. The surplus is
+     * measured against the tip TABLE, so every row's threshold load swings at the nominal rate
+     * — which is also what keeps every timing check above, all written at threshold, exactly
+     * where it was.
+     */
+    {
+      // 1. at threshold, every row: surplus 0, rate 1
+      const atRow: string[] = [];
+      for (let n = 0; n < BB_TIP_POLLEN.length; n++) {
+        const at = mix(n, BB_TIP_POLLEN[n]);
+        const load = hiveLoad(at.ids, kindOf(at.kinds));
+        if (hiveSurplus(load) !== 0 || hiveSwingRate(load) !== 1) atRow.push(`${n}n+${BB_TIP_POLLEN[n]}p → surplus ${hiveSurplus(load)} rate ${hiveSwingRate(load)}`);
+      }
+      check('hive rate: a tray at its threshold swings at the nominal rate, every row', atRow.length === 0, atRow.join('; ') || 'all rows rate 1');
+
+      // 2. surplus counts pollen over the row AND nectar past the table's end; the cap holds
+      const two = mix(3, BB_TIP_POLLEN[3] + 2);
+      const r2 = hiveSwingRate(hiveLoad(two.ids, kindOf(two.kinds)));
+      const eightN = mix(8, 0);
+      const s8 = hiveSurplus(hiveLoad(eightN.ids, kindOf(eightN.kinds)));
+      const heavy = mix(3, BB_TIP_POLLEN[3] + 40);
+      const rHeavy = hiveSwingRate(hiveLoad(heavy.ids, kindOf(heavy.kinds)));
+      check(
+        'hive rate: two extra pollen → 1 + 2·PER_EXTRA; 8 nectar → surplus 3; a huge load hits the cap',
+        Math.abs(r2 - (1 + 2 * BB_TIP_RATE_PER_EXTRA)) < 1e-9 && s8 === 8 - (BB_TIP_POLLEN.length - 1) && rHeavy === BB_TIP_RATE_MAX,
+        `rate(3n+${BB_TIP_POLLEN[3] + 2}p)=${r2.toFixed(3)} · surplus(8n)=${s8} · rate(3n+${BB_TIP_POLLEN[3] + 40}p)=${rHeavy} (cap ${BB_TIP_RATE_MAX})`,
+      );
+
+      // 3. THROUGH hiveStep: the heavier tray releases AND settles at SWING / rate — the rate is
+      // carried through the second half, after the load has left the tray.
+      const run = (load: { ids: number[]; kinds: Map<number, BbElementKind> }): { release: number; settle: number; rate: number } => {
+        let h: HiveState = settled([...load.ids]);
+        let t = 0;
+        let release = -1;
+        let settle = -1;
+        let rate = 0;
+        for (let i = 0; i < 600 && settle < 0; i++) {
+          const r = hiveStep(h, dt, kindOf(load.kinds));
+          t += dt;
+          if (r.spilled.length > 0 && release < 0) release = t;
+          if (r.hive.swingRate !== undefined) rate = Math.max(rate, r.hive.swingRate);
+          if (r.tipped) settle = t;
+          h = r.hive;
+        }
+        // `t` includes the one step that only STARTS the swing
+        return { release: release - dt, settle: settle - dt, rate };
+      };
+      const base = run(mix(3, BB_TIP_POLLEN[3]));
+      const fast = run(two);
+      const want = BB_TIP_SWING_S / (1 + 2 * BB_TIP_RATE_PER_EXTRA);
+      check(
+        'hive rate: the threshold tray takes BB_TIP_SWING_S; two extra pollen take SWING / rate, release and settle alike',
+        Math.abs(base.settle - BB_TIP_SWING_S) <= dt + 1e-9 &&
+          Math.abs(base.release - BB_TIP_RELEASE_S) <= dt + 1e-9 &&
+          Math.abs(fast.settle - want) <= dt + 1e-9 &&
+          Math.abs(fast.release - want / 2) <= dt + 1e-9 &&
+          fast.settle < base.settle - 1,
+        `threshold: release ${base.release.toFixed(3)} settle ${base.settle.toFixed(3)} (rate ${base.rate}) · +2 pollen: release ${fast.release.toFixed(3)} settle ${fast.settle.toFixed(3)} (rate ${fast.rate.toFixed(2)}, want ${want.toFixed(3)})`,
+      );
+
+      // 4. FEEDING A TIPPING TRAY SPEEDS IT UP: the same threshold tray, with two pollen dropped
+      // into `contents` half a second into the swing, settles earlier than one left alone.
+      {
+        const load = mix(3, BB_TIP_POLLEN[3] + 2);
+        const kinds = kindOf(load.kinds);
+        const extra = load.ids.slice(-2);
+        let h: HiveState = settled(load.ids.slice(0, -2));
+        let t = 0;
+        let settle = -1;
+        let rateAtStart = -1;
+        for (let i = 0; i < 600 && settle < 0; i++) {
+          if (Math.abs(t - 0.5) < dt / 2) h = { ...h, contents: [...h.contents, ...extra] };
+          const r = hiveStep(h, dt, kinds);
+          t += dt;
+          if (rateAtStart < 0 && r.hive.tipping > 0) rateAtStart = r.hive.swingRate ?? -1;
+          if (r.tipped) settle = t - dt;
+          h = r.hive;
+        }
+        check(
+          'hive rate: elements shot into a tray ALREADY swinging speed the swing up',
+          rateAtStart === 1 && settle > want && settle < BB_TIP_SWING_S - 0.5 && h.swingRate === undefined,
+          `started at rate ${rateAtStart}, fed 2 at 0.5 s, settled at ${settle.toFixed(3)} s (alone: ${BB_TIP_SWING_S}; loaded from the start: ${want.toFixed(3)}); settled hive carries no rate=${h.swingRate === undefined}`,
+        );
+      }
+    }
+
+    // ── HIVE: A MISS BOUNCES OFF THE STRUCTURE (`hiveDeflect`, owner 2026-09-13) ──
+    /**
+     * The assembly is a BOX with no top: four sides and the underside deflect, a descent from
+     * above is left alone, and an element that was already inside is never touched. Pure, so
+     * the faces are checked one by one here; the LIVE consequence — a shot at the hive's flank
+     * comes down beside it instead of downrange — is the check after.
+     */
+    {
+      const A: Alliance = 'blue';
+      const p = hivePivot(A);
+      const xMax = p.x + BB_HIVE_W / 2;
+      const yMax = BB_HIVE_LEN / 2;
+      // blue's staged up cell is NORTH, so +y is the MOUTH end and −y the down cell's end
+      const H: HiveState = { up: 'north', contents: [], tips: 0, tipping: 0, released: false };
+      const v = (x: number, y: number, z: number): { x: number; y: number; z: number } => ({ x, y, z });
+      const near = (a: number, b: number, tol = 1e-6): boolean => Math.abs(a - b) <= tol;
+
+      // a. the DOWN cell's outer end (−y), hit square: put back on the face, normal reversed at
+      // MISS_REST, vz kept
+      const side = hiveDeflect(H, A, v(p.x, -25, 45), v(p.x, -17, 44), v(0, 480, -60));
+      check(
+        'deflect: a shot into the DOWN cell\u2019s end is put back on it with the normal reversed at BB_HIVE_MISS_REST and vz untouched',
+        side !== null &&
+          near(side.pos.y, -yMax - 0.01) &&
+          near(side.pos.x, p.x) &&
+          near(side.vel.y, -480 * BB_HIVE_MISS_REST) &&
+          near(side.vel.x, 0) &&
+          near(side.vel.z, -60),
+        side ? `pos ${side.pos.x.toFixed(2)},${side.pos.y.toFixed(2)},${side.pos.z.toFixed(2)} vel ${side.vel.x.toFixed(1)},${side.vel.y.toFixed(1)},${side.vel.z.toFixed(1)}` : 'null',
+      );
+
+      // a-ii. the MOUTH (+y, the taking cell's outer end) is OPEN at every height: the same
+      // shot from the other side, below the window and still climbing, is let in
+      const mouthLow = hiveDeflect(H, A, v(p.x, 25, 35), v(p.x, 17, 37), v(0, -480, 120));
+      // ...and the mouth FOLLOWS THE RELEASE: once the bar has passed level the incoming
+      // (south) tray is the taking one, so −y opens and +y closes
+      const swung: HiveState = { ...H, tipping: BB_TIP_RELEASE_S / 2, released: true };
+      const mouthSwung = hiveDeflect(swung, A, v(p.x, -25, 35), v(p.x, -17, 37), v(0, 480, 120));
+      const backSwung = hiveDeflect(swung, A, v(p.x, 25, 35), v(p.x, 17, 37), v(0, -480, 120));
+      check(
+        'deflect: the TAKING cell\u2019s outer end is open at every height, and which end that is follows the release',
+        mouthLow === null && mouthSwung === null && backSwung !== null,
+        `settled: +y open=${mouthLow === null} · after the release: −y open=${mouthSwung === null}, +y solid=${backSwung !== null}`,
+      );
+
+      // a-iii. THE PIVOT PLANE: a shot that came in through the mouth and runs on toward the
+      // other cell meets the bar; a shot from the closed side meets the up cell's back
+      const throughMouth = hiveDeflect(H, A, v(p.x, 3, 45), v(p.x + 1, -5, 44), v(60, -480, -60));
+      const fromBack = hiveDeflect(H, A, v(p.x, -3, 50), v(p.x, 5, 49), v(0, 480, -60));
+      const lowPast = hiveDeflect(H, A, v(p.x, 3, 20), v(p.x, -5, 19), v(0, -480, -60)); // under the box
+      check(
+        'deflect: the PIVOT PLANE stops an element crossing the hive axis inside the structure, from either side, and not under it',
+        throughMouth !== null &&
+          near(throughMouth.pos.y, 0.01) &&
+          near(throughMouth.vel.y, 480 * BB_HIVE_MISS_REST) &&
+          near(throughMouth.vel.x, 60 * BB_HIVE_MISS_TANGENT) &&
+          near(throughMouth.vel.z, -60) &&
+          fromBack !== null &&
+          near(fromBack.pos.y, -0.01) &&
+          near(fromBack.vel.y, -480 * BB_HIVE_MISS_REST) &&
+          lowPast === null,
+        `through the mouth → ${throughMouth ? `y ${throughMouth.pos.y.toFixed(2)} vy ${throughMouth.vel.y.toFixed(1)}` : 'null'} · from the back → ${fromBack ? `y ${fromBack.pos.y.toFixed(2)} vy ${fromBack.vel.y.toFixed(1)}` : 'null'} · under the box → ${lowPast === null ? 'free' : 'hit'}`,
+      );
+
+      // b. the UNDERSIDE: a ball climbing into it from below is turned down, run dumped
+      const under = hiveDeflect(H, A, v(p.x, 0, 24), v(p.x + 1, 0, 27), v(60, 0, 180));
+      check(
+        'deflect: a shot rising into the UNDERSIDE comes back down at BB_HIVE_MISS_REST with its run cut to BB_HIVE_MISS_TANGENT',
+        under !== null &&
+          near(under.pos.z, BB_HIVE_BOTTOM_Z - 0.01) &&
+          near(under.vel.z, -180 * BB_HIVE_MISS_REST) &&
+          near(under.vel.x, 60 * BB_HIVE_MISS_TANGENT),
+        under ? `pos z ${under.pos.z.toFixed(2)} vel ${under.vel.x.toFixed(1)},${under.vel.y.toFixed(1)},${under.vel.z.toFixed(1)}` : 'null',
+      );
+
+      // c. NO TOP: a descent into the footprint from above is not a hit (the capture test already
+      // had its say, and a surface a ball can rest on 65 in up is a ball lost for the match)
+      const top = hiveDeflect(H, A, v(p.x, 5, 70), v(p.x, 4, 60), v(0, -60, -600));
+      // d. already inside (a scene placed it there, or it came in through the open top last tick)
+      const inside = hiveDeflect(H, A, v(p.x, 4, 60), v(p.x, 3, 50), v(0, -60, -600));
+      // e. nowhere near
+      const clear = hiveDeflect(H, A, v(-40, 0, 45), v(-38, 0, 45), v(120, 0, 0));
+      check(
+        'deflect: a descent through the OPEN TOP, an element already inside, and one clear of the box are all left alone',
+        top === null && inside === null && clear === null,
+        `top=${top === null} inside=${inside === null} clear=${clear === null}`,
+      );
+
+      // f. a CORNER approach hits the face crossed LAST
+      const corner = hiveDeflect(H, A, v(30, -25, 45), v(20, -15, 45), v(-600, 600, 0));
+      check(
+        'deflect: an element crossing two slabs in one tick meets the face it crossed LAST',
+        corner !== null && near(corner.pos.x, xMax + 0.01) && corner.vel.x > 0 && near(corner.vel.y, 600 * BB_HIVE_MISS_TANGENT),
+        corner ? `pos ${corner.pos.x.toFixed(2)},${corner.pos.y.toFixed(2)} vel ${corner.vel.x.toFixed(1)},${corner.vel.y.toFixed(1)}` : 'null',
+      );
+    }
+
+    // -- LIVE: A MISSED SHOT AT THE HIVE COMES DOWN BESIDE IT, NOT DOWNRANGE ----
+    /**
+     * Two identical shots along +x at the red HIVE from its −x flank; one at 40 in, into the
+     * assembly's side, one at 70 in, over the top of it. The low one bounces and lands on the
+     * side it came from, within a couple of feet of the face; the high one clears the
+     * structure and lands well beyond it. Before `hiveDeflect` both landed downrange.
+     */
+    {
+      const fly = (z: number): { landed: boolean; x: number; y: number; t: number } => {
+        const w = createBiobuzzWorld('match', 31, [setup(0, 'red', {}, 0)]);
+        w.match.phase = 'teleop';
+        w.match.phaseTimeLeft = 120;
+        const b = w.balls.find((x) => x.state.kind === 'ground')!;
+        b.state = { kind: 'flight', target: 'red', by: 'red' };
+        b.pos = { x: -40, y: 0 };
+        b.vel = { x: 150, y: 0 };
+        b.z = z;
+        b.vz = 20;
+        let t = 0;
+        while (b.state.kind === 'flight' && t < 3) {
+          updateBiobuzz(w, C.SIM_DT, new Map(), true, NO_SWEEP);
+          t += C.SIM_DT;
+        }
+        return { landed: b.state.kind === 'ground', x: b.pos.x, y: b.pos.y, t };
+      };
+      const face = hivePivot('red').x - BB_HIVE_W / 2; // the flank it is flying at
+      const low = fly(40);
+      const high = fly(70);
+      check(
+        'live: a shot into the HIVE\u2019s flank bounces off and lands beside it, on the side it came from',
+        low.landed && low.x < face && face - low.x < 30,
+        `landed=${low.landed} at x ${low.x.toFixed(1)} (face at ${face.toFixed(2)}, ${(face - low.x).toFixed(1)} in short of it) after ${low.t.toFixed(2)} s`,
+      );
+      check(
+        'live: the same shot over the TOP of the structure clears it and lands downrange',
+        high.landed && high.x > hivePivot('red').x + BB_HIVE_W / 2,
+        `landed=${high.landed} at x ${high.x.toFixed(1)} after ${high.t.toFixed(2)} s`,
+      );
+    }
+
+    // 8b. THE DRAWN SWING (`tipProjection`, `drawField.ts`). The renderer's only motion is the
+    // bar's own foreshortening, so a TIP that does not move the geometry is a TIP nobody sees
+    // happen. Pinned here rather than left to the eye: at rest nothing is scaled, at LEVEL the
+    // assembly reaches its TRUE length (1 / cos 30°), and the up-cell's brightness passes
+    // through a half exactly where the load leaves.
+    {
+      const rest = tipProjection(0);
+      const start = tipProjection(BB_TIP_SWING_S);
+      const level = tipProjection(BB_TIP_RELEASE_S);
+      const end = tipProjection(1e-6);
+      const level1 = 1 / Math.cos((30 * Math.PI) / 180);
+      const near = (x: number, y: number) => Math.abs(x - y) < 1e-3;
+      check(
+        'hive: the TIP is DRAWN as a swing — the bar reaches out at level and the fill follows its height',
+        near(rest.proj, 1) &&
+          near(rest.up, 1) &&
+          near(start.proj, 1) &&
+          near(start.up, 1) &&
+          near(level.proj, level1) &&
+          near(level.up, 0.5) &&
+          near(end.proj, 1) &&
+          Math.abs(end.up) < 1e-3 &&
+          level.proj > start.proj,
+        `rest ${rest.proj.toFixed(4)}/${rest.up.toFixed(3)} · start ${start.proj.toFixed(4)}/${start.up.toFixed(3)} · ` +
+          `level ${level.proj.toFixed(4)}/${level.up.toFixed(3)} (want ${level1.toFixed(4)}/0.5) · ` +
+          `settle ${end.proj.toFixed(4)}/${end.up.toFixed(3)}`,
       );
     }
 
@@ -1936,7 +3447,14 @@ export function fieldChecks(check: Check): void {
         ['the DOWN cell', hiveAccepts(h, a, downPos, zMid, inbound), false],
         ['above the margin', hiveAccepts(h, a, up, BB_HIVE_OPEN_Z[1] + BB_HIVE_ACCEPT_MARGIN + 1, inbound), false],
         ['below the opening bottom', hiveAccepts(h, a, up, BB_HIVE_OPEN_Z[0] - 1, inbound), false],
-        ['mid-swing', hiveAccepts({ ...h, tipping: BB_TIP_SWING_S / 2 }, a, up, zMid, inbound), false],
+        // MID-SWING IT STILL TAKES, and WHICH tray follows the release (owner feedback,
+        // 2026-09-12; `hiveTakingSide`). Before the release the up cell is still holding its
+        // load, so a volley already in the air lands in it; after the release the incoming
+        // tray is the one taking, and the up cell's own footprint is refused.
+        ['mid-swing BEFORE the release: the up cell still takes it', hiveAccepts({ ...h, tipping: BB_TIP_SWING_S / 2, released: false }, a, up, zMid, inbound), true],
+        ['mid-swing before the release: the DOWN cell does not', hiveAccepts({ ...h, tipping: BB_TIP_SWING_S / 2, released: false }, a, downPos, zMid, outbound), false],
+        ['mid-swing AFTER the release: the INCOMING cell takes it', hiveAccepts({ ...h, tipping: 1, released: true }, a, downPos, zMid, outbound), true],
+        ['mid-swing after the release: the emptied cell does not', hiveAccepts({ ...h, tipping: 1, released: true }, a, up, zMid, inbound), false],
       ];
       const wrong = cases.filter(([, got, want]) => got !== want);
       check(
@@ -1987,10 +3505,17 @@ export function fieldChecks(check: Check): void {
    * and written as a NUMBER, so a change to `flowerScore` that happens to agree with itself
    * still has to agree with the arithmetic.
    *
-   * The geometry that decides the interesting cases: a bottom POLLEN's top is 3.23, BELOW the
-   * volume floor at 3.98, so it does NOT score; a bottom NECTAR's top is 4.03, so it does
-   * (partially). That is the manual's "on the tiles under the lower ring does not count" and
-   * the reason A has 3 in volume of 4 and C has 4 of 4.
+   * The geometry that decides the interesting cases: a bottom POLLEN passes the middle ring and
+   * rests on the LOWER ring, so its top is 3.23, BELOW the volume floor at 3.98, and it does NOT
+   * score. A NECTAR cannot pass the ring and SEATS on it (`BB_FLOWER_MID_Z`, field-plan §2.2),
+   * so it spans 3.98-7.58 and ALWAYS scores. That is the manual's "on the tiles under the lower
+   * ring does not count", and the reason A has 3 in volume of 4 and C has 4 of 4.
+   *
+   * ⚠️ EVERY OUTCOME BELOW IS UNCHANGED BY THE SORTER RULING and four of the z ROWS moved. That
+   * is the ruling working: a bottom nectar used to score because 0.43 + 3.6 = 4.03 cleared 3.98
+   * BY 0.05 IN, an accident of two APPROX numbers, and case H's nectar cleared it by the same
+   * 0.05. Seated on the ring they clear it by construction, so these outcomes survive the ring's
+   * height being re-measured and the old ones would not have.
    */
   {
     type Row = {
@@ -2011,18 +3536,19 @@ export function fieldChecks(check: Check): void {
       { id: 'A', what: '4 pollen, no nectar', stack: [P, P, P, P], owner: null, ownerPts: 0, bonus: null, inVolume: 3 },
       // zs 1.83 / 4.63 / 7.43 / nectar 10.63 — 2 pollen + nectar in
       { id: 'B', what: '3 pollen + red nectar on top', stack: [P, P, P, R], owner: 'red', ownerPts: 3 * O, bonus: 'red', inVolume: 3 },
-      // nectar 2.23 (top 4.03, partially in) / 5.43 / 8.23 / 11.03 — all 4 in
+      // nectar SEATED ON THE RING at 5.78 (spans 3.98-7.58) / 8.98 / 11.78 / 14.58 — all 4 in
       { id: 'C', what: 'red nectar at the bottom, 3 pollen above', stack: [R, P, P, P], owner: 'red', ownerPts: 4 * O, bonus: 'red', inVolume: 4 },
-      // 2.23 / 5.43 / 8.23 / nectar 11.43 — owner is the TOP nectar, bonus the BOTTOM one
+      // seated nectar 5.78 / 8.98 / 11.78 / nectar 16.38 — owner is the TOP nectar, bonus the BOTTOM one
       { id: 'D', what: 'red nectar bottom, blue nectar top, pollen between', stack: [R, P, P, B], owner: 'blue', ownerPts: 4 * O, bonus: 'red', inVolume: 4 },
-      // 2.23 / 5.83 / 9.43 — three nectars, alternating
+      // seated nectar 5.78 / 9.38 / 12.98 — three nectars; only the FIRST one meets the ring
       { id: 'E', what: 'blue, red, blue nectars', stack: [B, R, B], owner: 'blue', ownerPts: 3 * O, bonus: 'blue', inVolume: 3 },
       { id: 'F', what: 'empty', stack: [], owner: null, ownerPts: 0, bonus: null, inVolume: 0 },
       // 7 pollen (top 20.03) + nectar centred 21.83: ABOVE the top ring but its underside is
       // below it, so it is partially inside and counts (the backstop case). 6 pollen + nectar in.
       { id: 'G', what: '7 pollen + red nectar held on the backstop', stack: [P, P, P, P, P, P, P, R], owner: 'red', ownerPts: 7 * O, bonus: 'red', inVolume: 7 },
-      // pollen 1.83 (out) / nectar 5.03 (in: underside 3.23 < 3.98, so PARTIALLY, not fully) —
-      // the owner's points count only the in-volume elements, so the bottom pollen earns nothing
+      // pollen 1.83 (out, top 3.23) / nectar SEATED ON THE RING at 5.78, not stacked on the
+      // pollen — the pollen passed the ring and sits in the space underneath it. The owner's
+      // points count only the in-volume elements, so the bottom pollen earns nothing
       { id: 'H', what: 'pollen bottom, blue nectar second', stack: [P, B], owner: 'blue', ownerPts: 1 * O, bonus: 'blue', inVolume: 1 },
     ];
     for (const row of rows) {
@@ -2074,22 +3600,85 @@ export function fieldChecks(check: Check): void {
       );
     }
 
-    // 10. CAPACITY by height. floor 0.43, top ring 21.5: pollen (2.8) — the 8th's top lands at
-    // 22.83, so 8; nectar (3.6) — the 6th's top at 22.03, so 6. And `flowerFits` agrees with
-    // `flowerCapacity` when an empty flower is filled one pollen at a time.
+    // 10. CAPACITY by height, AND THE SORTER COSTS THE COLUMN A NECTAR. Floor 0.43, top ring
+    // 21.5. POLLEN pass the middle ring and stack from the floor: the 8th's top lands at 22.83,
+    // so 8. NECTAR seat ON the ring at 3.98 — 3.55 in of clearance the old arithmetic spent on a
+    // sixth nectar the column does not have room for, since 3.98 + 5*3.6 = 21.98 is already over
+    // the ring. So FIVE. Both are filled one at a time through `flowerFits`, which since the
+    // ruling is the only stacking rule there is.
+    //
+    // ⚠️ 8 AND 5 ARE PINNED AS BARE LITERALS ON PURPOSE, and this is the same discipline as the
+    // tip table above. Capacity is DERIVED from `BB_FLOWER_MID_Z`, which is `APPROX` and which
+    // V1 cannot confirm — it is 3.55 + 0.43, the retrieval opening plus the BOTTOM ring, and
+    // the manual prints no middle-ring height at all. Asserting `flowerCapacity(...)` against
+    // itself would pass forever and never mention that the column had quietly lost an element.
+    // Pinned, this check breaks the moment the ring is re-measured and names the two numbers a
+    // human has to look at. `docs/biobuzz/feedback/002-thresholds.md` §3 is that conversation,
+    // and it carries the arithmetic for both columns so a new ring can be checked on paper.
     {
-      const capP = flowerCapacity(BB_POLLEN_R);
-      const capN = flowerCapacity(BB_NECTAR_R);
-      const stack: number[] = [];
-      let placed = 0;
-      while (flowerFits(stack, () => P, BB_POLLEN_R) && placed < 50) {
-        stack.push(400 + placed);
-        placed++;
-      }
+      const capP = flowerCapacity('pollen');
+      const capN = flowerCapacity('red');
+      const fill = (kind: BbElementKind): number[] => {
+        const stack: number[] = [];
+        while (flowerFits(stack, () => kind, bbElementRadius(kind)) && stack.length < 50) {
+          stack.push(400 + stack.length);
+        }
+        return stack;
+      };
+      const byP = fill(P);
+      const byN = fill(R);
+      const zN = flowerStackZ(byN, () => R);
       check(
-        'flower: capacity by height',
-        capP === 8 && capN === 6 && placed === capP,
-        `pollen ${capP} (expect 8), nectar ${capN} (expect 6); filled one pollen at a time: ${placed}`,
+        'flower: capacity by height — 8 POLLEN, and only 5 NECTAR because the ring seats the first',
+        capP === 8 && capN === 5 && byP.length === capP && byN.length === capN,
+        `pollen ${capP} (expect 8, filled ${byP.length}), nectar ${capN} (expect 5, filled ${byN.length}); ` +
+          `nectar zs [${zN.map((z) => z.toFixed(2)).join(', ')}] under TOP_Z ${BB_FLOWER_TOP_Z}`,
+      );
+    }
+
+    // 10b. THE SORTER ITSELF (field-plan §2.2, owner ruling 2026-09-12). Three cases, each an
+    // OUTCOME the seat rule exists to produce rather than a restatement of its arithmetic.
+    {
+      // (a) a bare NECTAR spans the ring to its own diameter above it, and SCORES.
+      const bare = flowerStackZ([1], () => R);
+      const bareScore = flowerScore([1], () => R);
+      const lo = bare[0] - BB_NECTAR_R;
+      const hi = bare[0] + BB_NECTAR_R;
+      check(
+        'flower sorter: a bare NECTAR seats ON the middle ring — 3.98 to 7.58, scoring by geometry',
+        Math.abs(lo - BB_FLOWER_MID_Z) < 1e-9 &&
+          Math.abs(hi - (BB_FLOWER_MID_Z + 2 * BB_NECTAR_R)) < 1e-9 &&
+          bareScore.inVolume === 1 &&
+          bareScore.owner === 'red',
+        `spans ${lo.toFixed(2)}..${hi.toFixed(2)} (ring ${BB_FLOWER_MID_Z}) · inVolume ${bareScore.inVolume} owner ${bareScore.owner}` +
+          ` · it used to rest on the floor at 0.43..4.03 and clear the volume by 0.05 in`,
+      );
+
+      // (b) a POLLEN UNDER a seated NECTAR is in the space the ring leaves. Retrieval pops the
+      // pollen (G418.B) and the NECTAR DOES NOT DROP — it was never resting on it.
+      const kinds = new Map<number, BbElementKind>([[10, P], [11, R]]);
+      const kindOf = (id: number): BbElementKind => kinds.get(id) ?? 'pollen';
+      const before = flowerStackZ([10, 11], kindOf);
+      const got = flowerRetrieve([10, 11], kindOf);
+      const after = flowerStackZ(got.stack, kindOf);
+      check(
+        'flower sorter: retrieving the POLLEN from under a ring-seated NECTAR does not lower the NECTAR',
+        got.id === 10 && got.stack.join() === '11' && Math.abs(after[0] - before[1]) < 1e-9,
+        `popped ${got.id}, stack [${got.stack}] · nectar z ${before[1].toFixed(2)} → ${after[0].toFixed(2)} · ` +
+          `the pollen was at ${before[0].toFixed(2)}, under the ring`,
+      );
+
+      // (c) the STAGED flower (§10.3.1, four POLLEN) still reads 3 in volume and 0 points — the
+      // outcome `spawn.ts` now stages through this same function.
+      const staged = [20, 21, 22, 23];
+      const stagedZ = flowerStackZ(staged, () => P);
+      const stagedScore = flowerScore(staged, () => P);
+      check(
+        'flower sorter: the STAGED 4 POLLEN still read 3 in volume and 0 points',
+        stagedScore.inVolume === 3 && stagedScore.ownerPts === 0 && stagedScore.owner === null && stagedScore.bonusPts === 0,
+        `inVolume ${stagedScore.inVolume} pts ${stagedScore.ownerPts} owner ${stagedScore.owner} bonus ${stagedScore.bonusPts} · ` +
+          `zs [${stagedZ.map((z) => z.toFixed(2)).join(', ')}] · the bottom one tops out at ` +
+          `${(stagedZ[0] + BB_POLLEN_R).toFixed(2)} < ${BB_FLOWER_MID_Z}`,
       );
     }
 
@@ -2235,18 +3824,36 @@ export function roomChecks(check: Check): void {
   // presence is the proof the match ran the clock out and ended instead of stalling.
   const res = msgs.find((m) => m.t === 'matchResult') as Extract<ServerMsg, { t: 'matchResult' }> | undefined;
   check('room: the BIOBUZZ match reaches post and broadcasts matchResult', !!res);
+  /**
+   * A MATCH NOBODY DROVE SCORES THE STAGED LAYOUT, AND BOTH ALLIANCES SCORE THE SAME.
+   *
+   * This check asserted 0-0 while the shell was unscored; `score.ts` landed and the setup
+   * itself is now worth points, because Table 10-2 counts what is IN the up-CELL and what is
+   * in the GARDEN and the spawn stages both. So the assertion moved from "nothing scores" to
+   * the two things that are still load-bearing here:
+   *
+   *  • EQUAL. The layout is point-symmetric, so four idle robots must leave the two alliances
+   *    on the same number. An x-MIRRORED garden or loading zone is internally consistent and
+   *    wrong (reference §2.1), and this is the cheapest place that difference shows up.
+   *  • THE STAGED VALUE, derived from the tariff rather than typed: 3 elements in the up-CELL
+   *    and 4 POLLEN in the GARDEN. A hard-coded 10 would pin the staging from the server lane,
+   *    which is not this file's business; the arithmetic is.
+   *
+   * The score being live is ALSO what makes the game persist — `simModuleFor('biobuzz').scored`
+   * is checked below and is what `persistMatch` reads. It flipped to true 2026-09-12.
+   */
+  const staged = 3 * BB_PTS.cell + 4 * BB_PTS.garden;
   check(
-    'room: the finished BIOBUZZ match scored nothing (an unscored shell must stay 0-0)',
-    res?.result.score.blue === 0 && res?.result.score.red === 0,
-    `blue=${res?.result.score.blue} red=${res?.result.score.red}`,
+    'room: a BIOBUZZ match nobody drove scores the staged layout, equally for both alliances',
+    res?.result.score.blue === staged && res?.result.score.red === staged,
+    `blue=${res?.result.score.blue} red=${res?.result.score.red} staged=${staged}`,
   );
-  // The outcome still has to be GAME-TAGGED even though nothing is written: it is what
-  // `persistMatch` reads to decide to skip, and an absent `game` defaults to DECODE — which
-  // would file a BIOBUZZ run onto the DECODE boards.
+  // The outcome has to be GAME-TAGGED: it is what `persistMatch` keys the write on, and an
+  // absent `game` defaults to DECODE — which would file a BIOBUZZ run onto the DECODE boards.
   check('room: the MatchOutcome carries game:"biobuzz"', outcomeGame === 'biobuzz', `game=${outcomeGame}`);
   check(
-    'room: the SERVER-SAFE registry declares BIOBUZZ unscored, so persistMatch skips it',
-    simModuleFor('biobuzz').scored === false,
+    'room: the SERVER-SAFE registry declares BIOBUZZ scored, so persistMatch writes it (per game)',
+    simModuleFor('biobuzz').scored === true,
   );
 
   // -- THE START-POSE DE-CONFLICT LOOP READS THIS GAME'S ANCHOR COUNT ------------

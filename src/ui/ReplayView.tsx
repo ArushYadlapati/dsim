@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { fetchReplay } from '../net/api';
 import {
   ReplayPlayer,
+  replayFidelity,
   replayRefusal,
   replayViewpoint,
   type Replay,
@@ -11,6 +12,8 @@ import { moduleFor } from '../games';
 import { Renderer } from '../render/renderer';
 import { rangeFill } from './rangeFill';
 import { drawReplayHud, fieldScreenBottom, HUD_RESERVE, loadSponsorMark } from './replayOverlay';
+import { trackEvent } from '../analytics';
+import { sponsorActive } from '../sponsor';
 import {
   availableVideoFormats,
   videoFormat,
@@ -65,6 +68,22 @@ const REFUSAL_TEXT: Record<ReplayRefusal, (r: Replay) => string> = {
 };
 
 /**
+ * ...and WHY a replay that still plays may not finish on the number beside it. Only the two
+ * “the sim moved” reasons reach this — the fatal three take the stale screen above — and each
+ * says which one it is, because “we know the sim changed” and “we have no idea what it ran”
+ * are different admissions. Every one of them ends on the same sentence: the leaderboard
+ * figure is the authority, so nothing here can restate a record.
+ */
+const DRIFT_TEXT: Record<'behaviour' | 'unstamped', (r: Replay) => string> = {
+  behaviour: (r) =>
+    `Recorded on sim v${r.sim}; this build runs v${SIM_VERSION}. It plays, but the ending may ` +
+    'not land on exactly the saved score. The leaderboard figure is the real one.',
+  unstamped: () =>
+    'Recorded before DSIM tracked which sim version produced a replay. It plays, but the ' +
+    'ending may not land on exactly the saved score. The leaderboard figure is the real one.',
+};
+
+/**
  * Replay viewer: fetches a deterministic input-log replay and re-simulates it in
  * the browser, drawing with the same Renderer the live game uses. Physics WASM is
  * already inited (main.tsx) before any screen renders, so `ReplayPlayer` is safe.
@@ -91,6 +110,9 @@ export function ReplayView({
   const [error, setError] = useState('');
   // WHICH refusal, so the stale screen can give the real reason instead of one guess
   const [refusal, setRefusal] = useState<ReplayRefusal | null>(null);
+  /** set when the replay PLAYS but the sim has moved under it, so the note can name which of
+   *  the two “the sim moved” reasons it is. Null while it re-simulates exactly. */
+  const [drift, setDrift] = useState<'behaviour' | 'unstamped' | null>(null);
   /** a real-time canvas capture is running; playback controls are locked while it is */
   const [recording, setRecording] = useState(false);
   const recorder = useRef<MediaRecorder | null>(null);
@@ -138,17 +160,21 @@ export function ReplayView({
     setError('');
     const use = (r: Replay): void => {
       replay.current = r;
-      // A replay is a deterministic INPUT log — it only re-simulates to its original
-      // outcome under the exact sim build that recorded it. `replayRefusal` owns the whole
-      // decision (see it for the container-vs-behaviour split): an OLDER container is still
-      // readable and still plays, a mismatched balance/sim version cannot, and a format-1
-      // replay of a tank robot is refused because its drive input was never stored.
+      // A replay is a deterministic INPUT log, and whether this build can re-run it —
+      // exactly, approximately, or not at all — is `replayFidelity`, which is deliberately
+      // three-valued. A SIM_VERSION move must NOT make every match recorded before it
+      // vanish: it means only that the ending may not land on precisely the saved number,
+      // so it PLAYS, with a note, and both exports stay available. A refusal is reserved
+      // for a container this build cannot parse, a different SEASON, and the format-1 tank
+      // replay whose drive input was never stored. `replayRefusal` supplies the reason for
+      // whichever of the two it turns out to be.
       const why = replayRefusal(r, BALANCE_VERSION, SIM_VERSION);
-      if (why) {
+      if (replayFidelity(r, BALANCE_VERSION, SIM_VERSION) === 'stale') {
         setRefusal(why);
         setStatus('stale');
         return;
       }
+      setDrift(why === 'behaviour' || why === 'unstamped' ? why : null);
       player.current = new ReplayPlayer(r);
       renderer.current = new Renderer();
       setTotal(Math.max(1, r.ticks));
@@ -369,6 +395,24 @@ export function ReplayView({
    * re-playable in-sim at full fidelity by any build whose versions match, and the shape the
    * server stores. A video cannot be stepped, seeked in-sim, or verified.
    */
+  /**
+   * A VIDEO CARRYING THE SPONSOR'S BURN-IN LEFT THE APP.
+   *
+   * The `replay` placement was declared from the start and counted nothing, so
+   * the one surface with reach BEYOND our own traffic — a clip posted to Discord
+   * or YouTube, watched by people who never opened DSIM — was the only placement
+   * missing from the report. It is not an on-screen impression and `docs/sponsor.md`
+   * reports it on its own line: this counts FILES PRODUCED with the mark in them,
+   * which is a floor on the views they go on to earn, not an estimate of them.
+   *
+   * `sponsorActive()` is re-checked because `drawSponsorMark` is what actually
+   * decides whether the frames carry the mark — counting an export made after the
+   * term ended would bill Offset for a file with no Offset in it.
+   */
+  const countBurnIn = (ext: string): void => {
+    if (sponsorActive()) trackEvent('sponsor_shown', { placement: 'replay', format: ext });
+  };
+
   const filename = (ext: string): string => {
     const r = replay.current;
     const id = replayId ?? r?.seed ?? 0;
@@ -492,7 +536,7 @@ export function ReplayView({
           // the scoreboard is DOM in the viewer, so the canvas alone carries no score, no
           // clock and no match start — see `drawReplayHud`. It draws in CSS units, which is
           // why the transform is left where the camera put it.
-          drawReplayHud(ctx, shot.world, view);
+          drawReplayHud(ctx, shot.world, { ...view, final: shot.done });
         },
         onProgress: setCapturePct,
         cancelled: () => abortCapture.current,
@@ -510,7 +554,10 @@ export function ReplayView({
       return;
     }
     // a cancelled capture is not a failure and must not claim to be one
-    if (blob) saveBlob(blob, filename(fmt.ext));
+    if (blob) {
+      saveBlob(blob, filename(fmt.ext));
+      countBurnIn(fmt.ext);
+    }
     else if (!abortCapture.current) downloadData();
     // playback is left exactly where the viewer had it — it was never taken away
   };
@@ -542,7 +589,10 @@ export function ReplayView({
       stopVisibility.current = null;
       setRecording(false);
       setCapturing(null);
-      if (!discard.current && parts.length) saveBlob(new Blob(parts, { type: mime }), filename(fmt.ext));
+      if (!discard.current && parts.length) {
+        saveBlob(new Blob(parts, { type: mime }), filename(fmt.ext));
+        countBurnIn(fmt.ext);
+      }
     };
     /**
      * HIDE THE TAB AND A REAL-TIME CAPTURE STARVES — so pause the encoder with it.
@@ -600,7 +650,9 @@ export function ReplayView({
   const alliances = new Set((replay.current?.setups ?? []).map((s) => s.alliance));
   const solo = alliances.size < 2;
   const soloSide = solo ? ([...alliances][0] ?? 'blue') : null;
-  const done = phase === 'post' || (player.current?.done ?? false);
+  // FINAL only at the recorded end: a replay runs up to the tick its match was FINALIZED, and
+  // between the buzzer and that tick the score can still change
+  const done = player.current?.done ?? false;
   const clock = `${Math.floor(timeLeft / 60)}:${String(timeLeft % 60).padStart(2, '0')}`;
   // the REAL-TIME capture runs at 1×, so what is left of the replay is what is left of it
   const runtime = total * SIM_DT;
@@ -733,6 +785,9 @@ export function ReplayView({
           {refusal !== 'future' && ' The score on the leaderboard still stands.'}
         </div>
       )}
+      {status === 'ready' && drift && replay.current && (
+        <p className="ds-replay-drift">{DRIFT_TEXT[drift](replay.current)}</p>
+      )}
       {status === 'ready' && (
         <div className={`ds-replay-score${done ? ' final' : ''}`}>
           {solo ? (
@@ -744,12 +799,12 @@ export function ReplayView({
             <>
               <span className="rs-side red">RED</span>
               <b className="rs-num">{score.red}</b>
-              <span className="rs-mid">{done ? 'FINAL' : clock}</span>
+              <span className="rs-mid">{done ? 'FINAL' : phase === 'post' ? 'MATCH OVER' : clock}</span>
               <b className="rs-num">{score.blue}</b>
               <span className="rs-side blue">BLUE</span>
             </>
           )}
-          {solo && <span className="rs-mid">{done ? 'FINAL' : clock}</span>}
+          {solo && <span className="rs-mid">{done ? 'FINAL' : phase === 'post' ? 'MATCH OVER' : clock}</span>}
         </div>
       )}
       <canvas ref={canvasRef} className="ds-replay-canvas" style={{ display: status === 'ready' ? 'block' : 'none' }} />

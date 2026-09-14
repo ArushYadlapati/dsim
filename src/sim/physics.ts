@@ -1037,12 +1037,14 @@ export function collideBallBall(a: Artifact, b: Artifact): void {
  * only ever acts on a contact this pass did not see. Frictionless, like the contacts.
  */
 export function bounceFirstContacts(ground: readonly Artifact[], dt: number): void {
-  const R = C.BALL_RADIUS;
-  const touch = 2 * R;
+  // each artifact's OWN size: two circles meet at the SUM of their radii, and one flat number
+  // is only right for a game whose elements are all one size. DECODE sets no `r`.
+  const rad = (b: Artifact): number => b.r ?? C.BALL_RADIUS;
   for (let i = 0; i < ground.length; i++) {
     const a = ground[i];
     for (let j = i + 1; j < ground.length; j++) {
       const b = ground[j];
+      const touch = rad(a) + rad(b);
       const dx = b.pos.x - a.pos.x;
       const dy = b.pos.y - a.pos.y;
       const d2 = dx * dx + dy * dy;
@@ -1081,11 +1083,11 @@ export function bounceFirstContacts(ground: readonly Artifact[], dt: number): vo
     // sustained contact, the solver's, and never a bounce
     const sp = hyp(b.vel.x, b.vel.y);
     const near = { x: b.pos.x + (b.vel.x / sp) * C.BALL_FIRST_CONTACT_GAP, y: b.pos.y + (b.vel.y / sp) * C.BALL_FIRST_CONTACT_GAP };
-    const nc = clampBallPosToStatics(near);
+    const nc = clampBallPosToStatics(near, rad(b));
     if (nc.x !== near.x || nc.y !== near.y) continue;
     const px = b.pos.x + b.vel.x * dt * C.BALL_FIRST_CONTACT_LOOKAHEAD;
     const py = b.pos.y + b.vel.y * dt * C.BALL_FIRST_CONTACT_LOOKAHEAD;
-    const c = clampBallPosToStatics({ x: px, y: py });
+    const c = clampBallPosToStatics({ x: px, y: py }, rad(b));
     const ux = c.x - px;
     const uy = c.y - py;
     const ul = hyp(ux, uy);
@@ -1183,13 +1185,20 @@ function clampOutOfRect(p: Vec2, rect: Rect): Vec2 {
  * being driven in for the eviction to argue with. It also makes the containment clamp
  * in `world.ts` enforce the "artifacts never enter the classifier" invariant directly, and
  * lets the pin test see the channel as something an artifact can be pinned against.
+ *
+ * ⚠️ `radius` IS PER ARTIFACT, NOT PER GAME. It defaults to `C.BALL_RADIUS`, so every DECODE
+ * call site is byte-identical, and callers that have an artifact in hand pass `b.r ?? …` —
+ * because a field can carry two sizes at once (BIOBUZZ's POLLEN 1.4 and NECTAR 1.8) and a
+ * clamp run at the wrong one either leaves a skin outside the wall or parks it a visible gap
+ * short of it. A bare POINT (a probe around an artifact, a predicted position) still passes
+ * the radius of the artifact it is a probe FOR.
  */
-export function clampBallPosToStatics(p: Vec2): Vec2 {
-  const f = C.FIELD_HALF - C.BALL_RADIUS;
+export function clampBallPosToStatics(p: Vec2, radius: number = C.BALL_RADIUS): Vec2 {
+  const f = C.FIELD_HALF - radius;
   let out = { x: clamp(p.x, -f, f), y: clamp(p.y, -f, f) };
   for (const a of ALLIANCES) {
     const dist = goalLineValue(out, a); // perpendicular distance behind the face
-    const pen = dist + C.BALL_RADIUS;
+    const pen = dist + radius;
     // from ANY depth: a ground artifact behind a goal face is inside the goal, wherever it is
     if (pen > 0) {
       const n = goalFaceNormal(a);
@@ -1632,7 +1641,7 @@ export function collideBallRobot(b: Artifact, r: RobotState): void {
   // what "artifacts sometimes jump over the chassis" looks like. Measured 12 of 15 low
   // approaches crossing, 7.3in deep, including one at z = 0.
   if (!overMouth && b.state.kind === 'ground' && localX <= r.spec.length / 2) return;
-  const c = clampBallPosToStatics({ x: b.pos.x + nx * pen, y: b.pos.y + ny * pen });
+  const c = clampBallPosToStatics({ x: b.pos.x + nx * pen, y: b.pos.y + ny * pen }, b.r ?? C.BALL_RADIUS);
   b.pos.x = c.x;
   b.pos.y = c.y;
   const sv = robotPointVelocity(r, cp);

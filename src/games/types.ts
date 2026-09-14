@@ -1,4 +1,14 @@
-import type { Artifact, GameMode, GameSettings, RobotCommand, RobotState, World } from '../types';
+import type {
+  Alliance,
+  Artifact,
+  GameMode,
+  GameSettings,
+  RobotCommand,
+  RobotSpec,
+  RobotState,
+  StartPose,
+  World,
+} from '../types';
 import type { RobotSetup } from '../sim/spawn';
 import type { RobotSolids } from '../sim/artifactSolids';
 import type { IntakeStyle } from '../types';
@@ -144,6 +154,74 @@ export interface GameSimModule {
    * miss.
    */
   startPoseCount: number;
+  /**
+   * Is this CANONICAL start pose legal for a robot of this spec on this alliance?
+   *
+   * THE PREDICATE, where `startLegality` above is the ENFORCEMENT FLAG — a game may answer
+   * this and still not have the server refuse a ready-up on it (Chain Reaction does exactly
+   * that: its editor checks G04 live, and the server gate stays off). Absent ⇒ the game has
+   * no start rule and every pose is legal.
+   *
+   * It exists because both readers had grown a hand-written branch over the game id, which is
+   * the failure mode CLAUDE.md's seam section names: `startSelectionLegal` was
+   * `game === 'chain' ? chainStartLegal(…) : activeStartLegal(…)`, so a THIRD game fell into
+   * DECODE's arm and had its poses judged against DECODE's launch lines and goal triangles.
+   * That is a worse answer than no answer, and it is what kept BIOBUZZ's `startLegality` down
+   * after G304 was already modelled.
+   *
+   * THE POSE IS CANONICAL, not the one the robot will spawn on: every caller holds what is in
+   * `RobotSetup.startPose` / `GameSettings.startPose`, and each game mirrors that onto the
+   * actual alliance its own way (DECODE reflects in x, BIOBUZZ rotates 180° about the origin).
+   * An implementation that forgets to mirror judges red's pose in blue's frame and is wrong on
+   * exactly half the field, silently — so mirror first, then assess.
+   *
+   * A null/absent pose is the game's named anchor, which every game seats legally by
+   * construction: answer `true` rather than making each caller special-case it.
+   */
+  startLegal?(spec: RobotSpec, a: Alliance, startPose: StartPose | null | undefined): boolean;
+  /**
+   * SEAT a custom CANONICAL start pose legal for this spec + alliance, returning it canonical.
+   *
+   * `coerceSetup` calls it at the spawn chokepoint, so no path (localStorage, the wire, a staged
+   * match, a replay) spawns an illegal robot. Absent ⇒ the pose is kept as structurally
+   * validated and field-clamped, and the game's own spawn may fit it further (BIOBUZZ does).
+   * It used to be DECODE's `snapStartToLegal` for any game with `startLegality`, which seated a
+   * BIOBUZZ pose against DECODE's field and mirrored it in x.
+   */
+  startSnap?(spec: RobotSpec, a: Alliance, startPose: StartPose): StartPose;
+  /**
+   * THE START ROLES, for a game whose roles are not DECODE's CLOSE / FAR table. The shared
+   * `StartCat` slots ('close' / 'far') carry whatever a game's two roles are; these say which
+   * anchor belongs to which, which anchor a role defaults to, and what the roles and anchors are
+   * called on screen. Absent ⇒ DECODE's `START_POSES` table and CLOSE / FAR words.
+   *
+   * They exist for the same reason `startLegal` does: `startPositions.ts`, the role-swap bar and
+   * the lobby/strategy start chips each branched `game === 'chain' ? … : <DECODE>`, so BIOBUZZ got
+   * DECODE's anchor categories, DECODE's anchor names and CLOSE / FAR for its TOP / BOTTOM roles.
+   * Chain Reaction's existing branches are left as they are.
+   */
+  startAnchorCategory?(index: number): import('../types').StartCat;
+  startDefaultIndex?(cat: import('../types').StartCat): number;
+  /** `alliance` matters on a point-symmetric field, where the same role slot is drawn at the top
+   * for one alliance and the bottom for the other (BIOBUZZ). */
+  startRoleLabel?(cat: import('../types').StartCat | undefined, alliance?: Alliance): string;
+  startAnchorName?(index: number, alliance?: Alliance): string;
+  /**
+   * DOES THIS GAME RUN AUTO PATHS?
+   *
+   * Only DECODE's step drives path traversal — `initializePathTraversal` /
+   * `updatePathTraversal` are called from `src/sim/world.ts` and nowhere else, and Chain
+   * Reaction and BIOBUZZ have steps of their own. So a `.pp` path imported while one of
+   * those games was selected was accepted by the builder, saved to the library, reported
+   * "Auto path ON", rode the wire into the match — and then the robot sat still for the
+   * whole autonomous period with nothing anywhere saying why.
+   *
+   * Two readers, and they are the two ends of that path: the builder hides the section for
+   * a game that cannot run one (`MatchSetup`), and the spawn chokepoint drops `autoPath` /
+   * `autoPathEnabled` for it (`coerceSetup`) so a path already sitting in localStorage or
+   * arriving off the wire never reaches a world, a snapshot or a replay.
+   */
+  autoPaths: boolean;
   bounds: FieldBounds;
   colliders: FieldColliders;
   createWorld(mode: GameMode, seed: number, setups: RobotSetup[], settings?: GameSettings): World;
@@ -163,6 +241,16 @@ export interface GameSimModule {
    * that forwards a snapshot.
    */
   hud?(world: World, robotId: number): unknown;
+  /**
+   * NOTHING LEFT ON THE FIELD CAN CHANGE THE SCORE — read in phase `post` by the shared settle
+   * clock (`src/sim/settle.ts`), which finalizes the match once this has held for
+   * `MATCH_SETTLE_HOLD_S` (or at `MATCH_SETTLE_MAX_S`, whatever it says). The server saves the
+   * score then, and the results screen reveals only on that saved score.
+   *
+   * A PURE READ of world state — it decides the tick a match is captured on, so it must answer
+   * the same on every machine. Absent ⇒ the field counts as settled at once.
+   */
+  settled?(world: World): boolean;
   /**
    * WHAT ON THIS GAME'S ROBOT IS SOLID TO A GROUND ARTIFACT — the game-owned override of
    * `robotSolids` (`src/sim/artifactSolids.ts`).

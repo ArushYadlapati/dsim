@@ -4,6 +4,8 @@ import type { Alliance, GameSettings as GS, RobotSpec } from '../types';
 import { START_POSES } from '../config';
 import { CHAIN_START_POSES } from '../games/chain/config';
 import { StartPositionEditor } from './StartPositionEditor';
+import { savedStartCap } from './startPositions';
+import { useAds } from '../ads/AdsProvider';
 import { ChainStartEditor } from './ChainStartEditor';
 import { moduleFor } from '../games';
 import { selectStart, switchCategory, saveStart, deleteSavedStart, indexCategory, startSelectionLegal } from './startPositions';
@@ -175,6 +177,8 @@ export function Lobby({
 
   const lobbyRef = useRef<LobbyClient | null>(null);
   const startedRef = useRef(false);
+  /** the room said no (an `error` frame) — a close that follows is the same event, not a new one */
+  const refusedRef = useRef(false);
   const nameEditedRef = useRef(false);
   // which room code the auto-join effect below has already fired for (value-keyed,
   // not a one-shot boolean, so accepting a DIFFERENT invite while mounted rejoins).
@@ -212,6 +216,8 @@ export function Lobby({
   // for a different-sized robot would otherwise be silently relocated at spawn)
   // DECODE gates on G304, CR on G04 Lab-Area containment.
   const startLegal = !me || startSelectionLegal(settings.game, me.spec, me.alliance, me.startPose);
+  // the saved-pose cap a game's own start editor is handed (it cannot read the ads context itself)
+  const maxSaved = savedStartCap(useAds().supporter);
   // a duo record run needs BOTH drivers present before it can start (it's 2v0);
   // versus custom rooms can start with fewer (1v1, etc.)
   const enoughPlayers = !isRecord || players.length >= capacity;
@@ -259,6 +265,7 @@ export function Lobby({
   function join(roomCode: string, hostRegion?: string | null): void {
     if (!roomCode) return;
     setCode(roomCode);
+    refusedRef.current = false;
     /**
      * A TAB-HOSTED LAN ROOM ARRIVES ALREADY CONNECTED.
      *
@@ -318,6 +325,7 @@ export function Lobby({
     });
     lobby.on('matchStart', handleStart);
     lobby.on('error', (msg, code) => {
+      refusedRef.current = true;
       setError(msg);
       setErrorCode(code);
       setPhase('error');
@@ -329,7 +337,13 @@ export function Lobby({
       if (code === 'region_full') setRegionLocked(false);
     });
     lobby.on('closed', () => {
-      if (!startedRef.current) {
+      /* A REFUSAL IS NOT A LOST CONNECTION. A tab-hosted LAN room sends its `error` frame
+         ("Room is full…", "That code is for a different game mode.") and then closes the
+         link a beat later — there is nothing else to keep it open for — and this handler
+         used to overwrite the sentence that explained the refusal with one that blamed the
+         network. The cloud keeps its socket open after a refusal, which is why it never
+         showed. The first thing said stands. */
+      if (!startedRef.current && !refusedRef.current) {
         setError('Lost connection to the game server.');
         setPhase('error');
       }
@@ -522,10 +536,7 @@ export function Lobby({
                 match will not be rated and will not reach a board — is the sort of thing
                 that has to be said before, not discovered after. */}
             {lanActive() && (
-              <p className="ds-hint warn">
-                This room will be hosted on the LAN server you’re connected to. Matches there
-                are unofficial — not rated, and never on a leaderboard.
-              </p>
+              <p className="ds-hint warn">This room runs on your LAN server and isn’t ranked.</p>
             )}
             <label className="ds-field">
               <span className="cap">Your name</span>
@@ -596,7 +607,7 @@ export function Lobby({
                 {errorCode === 'region_full' && (
                   <p className="ds-hint warn">
                     Nothing is wrong with your connection. Choose another region above,
-                    then try again — whoever you are playing with needs to pick the same one.
+                    then try again. Whoever you are playing with needs to pick the same one.
                   </p>
                 )}
               </>
@@ -739,7 +750,9 @@ export function Lobby({
                       ? 'CUSTOM'
                       : settings.game === 'chain'
                         ? (CHAIN_START_POSES[p.startIndex]?.name ?? '-')
-                        : (START_POSES[p.startIndex]?.label ?? '-')}
+                        : (moduleFor(settings.game).startAnchorName?.(p.startIndex, p.alliance) ??
+                          START_POSES[p.startIndex]?.label ??
+                          '-')}
                   </span>
                   <span className={`ds-chip ${p.ready ? 'on' : 'off'}`}>
                     {p.ready ? 'READY' : 'NOT READY'}
@@ -813,6 +826,7 @@ export function Lobby({
                 dismissed={swapDismissed}
                 onDismiss={dismissSwap}
                 game={settings.game}
+                alliance={me.alliance}
               />
             )}
             {moduleFor(settings.game).startEditor ? (
@@ -822,6 +836,7 @@ export function Lobby({
                 const StartEd = moduleFor(settings.game).startEditor!;
                 return (
                   <StartEd
+                    maxSaved={maxSaved}
                     spec={me.spec}
                     alliance={me.alliance}
                     value={me.startPose}

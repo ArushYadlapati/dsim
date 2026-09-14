@@ -131,7 +131,7 @@ export function AppShell({
           connection — which is exactly where somebody stands when they are about to
           start the thing we need them not to start. */}
       <MaintenanceBanner presence={presence} />
-      {/* "LAN — unofficial, not ranked", whenever this device is pointed at a self-hosted
+      {/* "LAN game · address · not ranked", whenever this device is pointed at a self-hosted
           server. On the SHELL screens specifically, which is where the misunderstanding
           would actually happen: somebody looking at a leaderboard and wondering why the
           match they just played is not on it. The room screens replace this shell outright

@@ -34,11 +34,11 @@ export function maintenanceLine(m: MaintenanceInfo | null | undefined, now = Dat
   const win = windowLabel(m);
   const base = m.message?.trim();
   if (m.biting) {
-    return `${base || 'Maintenance in progress'} — new games are paused${win ? ` (${win})` : ''}.`;
+    return `${base || 'Maintenance in progress'}. New games are paused${win ? ` (${win})` : ''}.`;
   }
   if (m.startsAt && m.startsAt > now) {
     const mins = Math.max(1, Math.round((m.startsAt - now) / 60000));
-    return `${base || 'Scheduled maintenance'} — starting in ${mins} minute${mins === 1 ? '' : 's'}${
+    return `${base || 'Scheduled maintenance'}. Starts in ${mins} minute${mins === 1 ? '' : 's'}${
       win ? ` (${win})` : ''
     }. New games will be paused.`;
   }

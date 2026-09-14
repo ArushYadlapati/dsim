@@ -41,7 +41,6 @@ import {
   searchProfiles,
   setHandle,
   getProfile,
-  getSupporter,
   grantSupporter,
   revokeSupporter,
   refundKofiPayment,
@@ -1970,6 +1969,19 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
    * socket nobody is holding. See `joinRoom`.
    */
   let closed = false;
+  /**
+   * Which ranked-queue ATTEMPT is the live one.
+   *
+   * Entering the queue is four awaits deep (token, standing, party, profile) and none of
+   * them can be cancelled, so a player who pressed CANCEL — or whose socket closed, or who
+   * pressed SEARCH a second time — still had the original attempt finish and call
+   * `matchmaker.enqueue` unconditionally. `matchmaker.remove` at that moment removes an
+   * entry that does not exist yet, so the cancel does nothing and the pool keeps a ghost:
+   * an entry whose socket is gone, which is then paired and staged into a ranked match the
+   * player never sees. Every attempt takes a generation here and re-checks it after each
+   * await; a bump makes the in-flight one a no-op.
+   */
+  let queueGen = 0;
   /** true once this socket is attached as a SPECTATOR, so the global tally can be
    *  decremented exactly once on close (a spectator never becomes a driver — the
    *  `spectate` branch is only reachable while `room` is null, and it sets it). */
@@ -2227,8 +2239,13 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
       sendRaw,
       backlog,
       // NEVER trust the wire spec: sanitize the whole player to legal ranges
-      // before it lands on the roster (a spoofed devtools spec is clamped here)
-      player: { ...sanitizePlayer(msg.player, cfg.game), clientId: id },
+      // before it lands on the roster (a spoofed devtools spec is clamped here).
+      // ⚠️ WITH THE ROOM'S GAME, not the joiner's claim. A matchmaker-staged room's game
+      // comes from `applyPending`, and the client joins it with NO config — so `cfg.game`
+      // read 'decode', and a BIOBUZZ driver's spec was coerced as a DECODE one on the way
+      // in: `bbMech` dropped and the mounts reset, i.e. a default robot in every ranked
+      // BIOBUZZ match. For a custom room the two agree (a mismatched joiner is refused above).
+      player: { ...sanitizePlayer(msg.player, r.gameId), clientId: id },
       connected: true,
       disconnectAt: 0,
       // protocol capabilities this client build understands (mixed-version safe:
@@ -2239,17 +2256,27 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
     };
     if (user) {
       client.userId = user.userId;
+      // THE DISPLAY NAME IS `profiles.handle`, NEVER `user.handle`. The latter is the
+      // JWT `name` claim — i.e. whatever the account was called at the identity provider
+      // ("syun gin" off a Google sign-up) — and its ONLY legitimate job is SEEDING the
+      // profile row on first insert (`ensureProfile`). Renaming yourself in Profile
+      // settings writes the column and never touches the token, so trusting the claim
+      // put the stale provider name on the roster of every lobby while the friends list
+      // beside it (which joins `profiles`) showed the real one. `profiles.handle` is also
+      // the MODERATED value — `POST /api/user/handle` length-bounds it and runs
+      // `moderateName` — which is the property `room.ts` already assumes of this field.
       client.player.name = user.handle;
-      // Supporter badge, resolved once at join rather than per broadcast. A lapse
-      // mid-match therefore keeps the badge until the next join, which is the
-      // right trade: the alternative is a database read on every roster frame.
+      // ONE READ FOR NAME + BADGES, resolved once at join rather than per broadcast. A
+      // lapse mid-match therefore keeps the badge until the next join, which is the right
+      // trade: the alternative is a database read on every roster frame. `getProfile`
+      // carries the handle, the supporter predicate and the staff role, so this is the
+      // same single query the supporter lookup already cost.
       // Never fatal — a DB hiccup costs a badge, not a join.
       if (dbEnabled) {
-        const ent = await getSupporter(user.userId).catch(() => null);
-        if (ent?.supporter) client.player.supporter = true;
-        // staff badge rides the same read — `getSupporter` already returns the
-        // role, so this costs nothing extra
-        if (ent?.role) client.player.role = ent.role;
+        const p = await getProfile(user.userId).catch(() => null);
+        if (p?.handle) client.player.name = p.handle;
+        if (p?.supporter) client.player.supporter = true;
+        if (p?.role) client.player.role = p.role;
       }
       markAuthed(user.userId);
     }
@@ -2432,11 +2459,16 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
         send({ t: 'reported', ok: true });
       } else if (msg.t === 'queue') {
         if (room) return; // already in a room/match
+        const gen = ++queueGen;
+        /** has this queue attempt been overtaken — cancelled, closed, re-issued, or already
+         *  seated in a room — while one of its awaits was outstanding? */
+        const stale = (): boolean => closed || room !== null || gen !== queueGen;
         // ranked REQUIRES a verified account (ELO/leaderboard only make sense with
         // an identity). Anonymous players can still use custom rooms, just not
         // ranked. Verify the JWT, then enqueue; on a match the matchmaker sets our
         // `room` so subsequent input routes there.
         verifyAuthToken(msg.authToken).then((u) => {
+          if (stale()) return;
           if (!u) {
             send({ t: 'error', message: 'Sign in to play ranked.' });
             return;
@@ -2452,7 +2484,9 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
           }
           markAuthed(u.userId);
           const enqueueNow = (): void => {
-          void verifyParty(u.userId, msg).then((party) => {
+          if (stale()) return;
+          void verifyParty(u.userId, msg).then(async (party) => {
+            if (stale()) return;
             if (party === 'bad-token') {
               // Never silently fall back to the OPEN queue here. The player asked
               // to play one specific person; quietly matching them against a
@@ -2460,11 +2494,22 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
               send({ t: 'error', message: 'That challenge expired - send a new one.' });
               return;
             }
+            // Same rule as the join path above: the roster name is `profiles.handle`,
+            // not the JWT `name` claim. It matters more here, because the ranked client
+            // does not even send a real one — `Matchmaking.tsx` sends the ROBOT's
+            // `teamName` — so this read is the only thing that can name the player.
+            const prof = dbEnabled ? await getProfile(u.userId).catch(() => null) : null;
+            // LAST GAP, and the one that matters: nothing may await between here and
+            // `enqueue`, or the entry outlives the cancel that was meant to stop it.
+            if (stale()) return;
             matchmaker.enqueue({
             id,
             send,
             // sanitize the ranked player's spec/assists too (same clamp as join)
-            player: { ...sanitizePlayer(msg.player, coerceGameId(msg.game)), name: u.handle ?? msg.player.name },
+            player: {
+              ...sanitizePlayer(msg.player, coerceGameId(msg.game)),
+              name: prof?.handle || u.handle || msg.player.name,
+            },
             userId: u.userId,
             mode: msg.mode,
             // the client's home region (Fly's x-region for its connection) + measured
@@ -2502,6 +2547,7 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
           // requeued, which costs the wrong people their minutes. Fails OPEN (see
           // `rankedLock`): a database that cannot answer must not lock everybody out.
           void rankedLock(u.userId).then((lock) => {
+            if (stale()) return;
             if (!lock) {
               enqueueNow();
               return;
@@ -2525,6 +2571,7 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
       } else if (msg.t === 'expandSearch') {
         matchmaker.expand(id);
       } else if (msg.t === 'leaveQueue') {
+        queueGen++; // cancels an attempt still working through its awaits
         matchmaker.remove(id);
       } else if (room) {
         room.onMessage(id, msg);
@@ -2534,7 +2581,7 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
     }
   });
 
-  ws.on('close', () => {
+  ws.on('close', (code: number) => {
     closed = true; // an in-flight async join must stop and hand its room back
     onlineCount--;
     if (spectating) {
@@ -2547,11 +2594,15 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
       if (n <= 0) authedUsers.delete(authedUserId);
       else authedUsers.set(authedUserId, n);
     }
+    queueGen++; // an in-flight queue attempt must not enqueue a socket that is gone
     matchmaker.remove(id); // drop from any ranked queue
     lanSignals.release(signalId); // a LAN host going away takes its room's guests with it
     // lobby ⇒ leave; mid-match ⇒ hold the slot for a reconnect. `conn` lets the room
     // ignore this close if a newer socket already reclaimed the slot (fast reconnect).
-    room?.detach(id, conn);
+    // 1000/1005 is the client closing on purpose (`transport.close()`: a restart, back to
+    // the menu); a dropped network is 1006 and a closing tab 1001, both of which keep the
+    // grace — a phone that backgrounds the tab may send 1001 and come straight back.
+    room?.detach(id, conn, code === 1000 || code === 1005);
   });
 
   ws.on('error', () => {

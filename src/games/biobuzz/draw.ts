@@ -1,5 +1,6 @@
 import type { Artifact, ArtifactColor, Vec2, World } from '../../types';
-import { BB_POLLEN_R } from './config';
+import { BB_HIVE_BOTTOM_Z, BB_POLLEN_R } from './config';
+import { drawHiveCanopy } from './drawField';
 
 /**
  * BIOBUZZ element renderer (the `drawBalls` slot — drawn AFTER the robots, so an element at
@@ -16,9 +17,10 @@ import { BB_POLLEN_R } from './config';
  *    only way a top-down view can say "this is in the air" at all.
  *
  * NOT DRAWN HERE:
- *  • HELD — inside a hopper. The robot sprite draws its own hopper fill from `hopper.length`
- *    (see `drawRobot.ts`), and drawing the individual balls as well would show them sitting
- *    on top of the robot.
+ *  • HELD — inside a hopper. The robot sprite draws what it is holding itself, as small discs
+ *    in these same colours at fixed slots on the deck read off `r.hopper` (see `drawRobot.ts`,
+ *    which imports `ELEMENT_FILL`/`ELEMENT_LINE` from here). A held ball's own position is the
+ *    chassis centre, so drawing it here would stack every held element on one point.
  *  • ELEMENT — parked inside a FLOWER stack or a HIVE CELL. Those are STRUCTURES with their
  *    own renderers: a FLOWER's contents belong in its stacked-pips badge and a CELL's in the
  *    hive's content count (`drawField.ts`), both of which can say "4 deep" in a top-down view
@@ -29,14 +31,24 @@ import { BB_POLLEN_R } from './config';
  * filled and stroked once, so a full field is three draw calls rather than two per element.
  * `moveTo` before each `arc` is what keeps the subpaths disjoint — without it the arcs are
  * joined by a chord and the fill bleeds between neighbours.
+ *
+ * TWO PASSES AROUND THE HIVE CANOPY (owner feedback, 2026-09-13). This slot is the LAST thing
+ * drawn, after the robots, so it is also where the HIVE structure gets put back on top of
+ * whatever drove under it: everything on or near the tiles — ground elements, and airborne
+ * ones still below the underside of the down cell (`BB_HIVE_BOTTOM_Z`) — is drawn first, then
+ * `drawHiveCanopy` (`drawField.ts`) repaints the assembly translucently over its own
+ * footprint, then the elements that are genuinely above the structure go on last. A spilled
+ * POLLEN under the down cell reads as under it; a lob on its way to the up cell reads as over
+ * it. The split is by HEIGHT alone: the canopy covers only its footprint, so a low element out
+ * in the open is drawn before it and covered by nothing.
  */
 
 /** Fixed rather than themed: the mat token already flips between light and dark, and an
  * element that also flipped would be a light ball on a light field half the time. The rim is
  * shared — one dark outline reads against the mat in both themes and against all three
  * fills. */
-const ELEMENT_LINE = 'rgba(28,22,6,0.6)';
-const ELEMENT_FILL: Record<ArtifactColor, string> = {
+export const ELEMENT_LINE = 'rgba(28,22,6,0.6)';
+export const ELEMENT_FILL: Record<ArtifactColor, string> = {
   yellow: '#f2d14b', // POLLEN
   red: '#e2564d', // red NECTAR
   blue: '#4d8fe2', // blue NECTAR
@@ -77,13 +89,27 @@ export function drawBiobuzzBalls(
     ctx.fill();
   }
 
+  // below the structure: on the tiles, or in the air but under the down cell's underside
+  drawLoose(ctx, world, screenUp, (b) => b.state.kind === 'ground' || b.z < BB_HIVE_BOTTOM_Z);
+  drawHiveCanopy(ctx, world);
+  // above it
+  drawLoose(ctx, world, screenUp, (b) => b.state.kind === 'flight' && b.z >= BB_HIVE_BOTTOM_Z);
+}
+
+/** the batched colour passes over every loose element `pick` admits — see the header. */
+function drawLoose(
+  ctx: CanvasRenderingContext2D,
+  world: World,
+  screenUp: Vec2,
+  pick: (b: Artifact) => boolean,
+): void {
   ctx.strokeStyle = ELEMENT_LINE;
   ctx.lineWidth = 0.35;
   for (const color of BATCH_ORDER) {
     let any = false;
     ctx.beginPath();
     for (const b of world.balls) {
-      if (b.color !== color || !isLoose(b)) continue;
+      if (b.color !== color || !isLoose(b) || !pick(b)) continue;
       const r = radiusOf(b);
       const lift = b.state.kind === 'flight' ? b.z * 0.12 : 0;
       const x = b.pos.x + screenUp.x * lift;

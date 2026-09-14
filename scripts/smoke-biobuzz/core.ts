@@ -17,7 +17,7 @@ import { fileURLToPath } from 'node:url';
 import { GAME_IDS, coerceGameId, isGameId, type GameId } from '../../src/games/types';
 import { GAMES, moduleFor, registeredGames } from '../../src/games';
 import { SIM_GAMES, simModuleFor } from '../../src/games/sim';
-import { coerceStartIndex } from '../../src/net/sanitize';
+import { coerceStartIndex, sanitizePlayer } from '../../src/net/sanitize';
 import { coerceSetup, DEFAULT_ASSISTS, DEFAULT_SPEC } from '../../src/sim/spawn';
 import {
   SEASONS,
@@ -27,7 +27,28 @@ import {
   visibleSeasonsOn,
 } from '../../src/seasons';
 import { HOME_DESC } from '../../src/seo';
-import type { Check } from './harness';
+import { CHAIN_CATALYST_LABELS } from '../../src/games/chain/labels';
+import { INTAKE_SHORT } from '../../src/ui/labelData';
+import type { RobotSpec } from '../../src/types';
+import { SPONSOR, sponsorActive } from '../../src/sponsor';
+import { BB_HOOD_DEFAULT_DEG, BB_NECTAR_R, BB_POLLEN_R, BB_START_POSES } from '../../src/games/biobuzz/config';
+import { elementLine } from '../../src/games/biobuzz/Gallery';
+import { categoryDefaultIndex, indexCategory } from '../../src/ui/startPositions';
+import { BB_DEFAULT_SPEC } from '../../src/games/biobuzz/robotConfig';
+import { bbLauncherOf, bbLiftOf } from '../../src/games/biobuzz/mechs';
+import type { BbMechSpec } from '../../src/games/biobuzz/mechs';
+import { bbConfigSummary, bbLiftKindLabel } from '../../src/games/biobuzz/labels';
+import {
+  BB_PRESET_LIST,
+  BB_REAL_PRESETS,
+  BB_STARTER_BOTS,
+  bbPresetLines,
+} from '../../src/games/biobuzz/presets';
+import { SIM_DT } from '../../src/config';
+import { createBiobuzzWorld } from '../../src/games/biobuzz/spawn';
+import { biobuzzStep } from '../../src/games/biobuzz/step';
+import { biobuzzFieldHud } from '../../src/games/biobuzz/hud';
+import { bbCoerce, cmd, setup, type Check } from './harness';
 
 /** a section heading in the log — the suite is read as a transcript, like smoke.ts */
 function section(title: string): void {
@@ -70,12 +91,49 @@ export function coreChecks(check: Check): void {
     registeredGames().length === GAME_IDS.length,
     `${registeredGames().length}/${GAME_IDS.length}`,
   );
-  // every game's initialAct is distinct: a shared act would put two games' first
-  // ranked period in the same bucket
-  check(
-    'initialAct is distinct per game',
-    new Set(GAME_IDS.map((g) => simModuleFor(g).initialAct)).size === GAME_IDS.length,
-  );
+  // acts are stored PER GAME (`seasons` keyed on game, `elo_ratings` on game + act), so an
+  // act number shared between games is fine; BIOBUZZ's first period is Act 1 · Season 1
+  // (owner, 2026-09-12).
+  check('biobuzz: records and ranked open at Act 1', simModuleFor('biobuzz').initialAct === 1, String(simModuleFor('biobuzz').initialAct));
+
+  // ---- BIOBUZZ start roles are TOP / BOTTOM, and it has its own editor --------
+  // Configure fell into Chain Reaction's editor and the 2v2 screens into DECODE's, the shared
+  // start helpers used DECODE's CLOSE/FAR anchor table, and the role bar said CLOSE/FAR.
+  section('biobuzz start roles');
+  {
+    const bb = simModuleFor('biobuzz');
+    check('biobuzz: the module brings its own start editor (not CR\'s or DECODE\'s)', !!moduleFor('biobuzz').startEditor);
+    check('biobuzz: roles are TOP / BOTTOM', bb.startRoleLabel?.('close') === 'TOP' && bb.startRoleLabel?.('far') === 'BOTTOM');
+    const n = bb.startPoseCount;
+    const tops = Array.from({ length: n }, (_, i) => i).filter((i) => indexCategory(i, 'biobuzz') === 'close');
+    const bottoms = Array.from({ length: n }, (_, i) => i).filter((i) => indexCategory(i, 'biobuzz') === 'far');
+    check('biobuzz: two default anchors per role', tops.length === 2 && bottoms.length === 2, `top=[${tops}] bottom=[${bottoms}]`);
+    check('biobuzz: anchor 0 is TOP and anchor 1 is BOTTOM (a 2-robot alliance spreads onto them)', indexCategory(0, 'biobuzz') === 'close' && indexCategory(1, 'biobuzz') === 'far');
+    check(
+      'biobuzz: each role defaults to one of its own anchors',
+      indexCategory(categoryDefaultIndex('close', 'biobuzz'), 'biobuzz') === 'close' &&
+        indexCategory(categoryDefaultIndex('far', 'biobuzz'), 'biobuzz') === 'far',
+    );
+    check('biobuzz: anchors are named for their role', Array.from({ length: n }, (_, i) => bb.startAnchorName?.(i) ?? '').every((s, i) => s.startsWith(indexCategory(i, 'biobuzz') === 'close' ? 'TOP' : 'BOTTOM')));
+    // THE WORDS FOLLOW THE SCREEN ON A POINT-SYMMETRIC FIELD: for each alliance, a TOP anchor is
+    // drawn at the top (actual y >= 0) and is named for the wall it is really on. Red's anchors are
+    // the canonical ones rotated 180°, so red's TOP role is the canonical BOTTOM slot.
+    for (const alliance of ['blue', 'red'] as const) {
+      let bad = '';
+      for (let i = 0; i < n; i++) {
+        const p = BB_START_POSES[i];
+        const actualY = alliance === 'blue' ? p.pos.y : -p.pos.y;
+        const label = bb.startRoleLabel?.(indexCategory(i, 'biobuzz'), alliance) ?? '';
+        const name = bb.startAnchorName?.(i, alliance) ?? '';
+        const wall = p.wall === 'side' ? 'SIDE' : (actualY >= 0) ? 'REAR' : 'AUDIENCE';
+        if ((actualY >= 0) !== (label === 'TOP') || name !== `${label} · ${wall} WALL`) {
+          if (!bad) bad = `anchor ${i}: y=${actualY} label=${label} name=${name}`;
+        }
+      }
+      check(`biobuzz: ${alliance}'s TOP anchors are the ones drawn at the top, named for their real wall`, bad === '', bad);
+    }
+    check('decode: roles and anchor categories are unchanged (no module hooks)', !simModuleFor('decode').startRoleLabel && indexCategory(0, 'decode') === 'close');
+  }
   // the back-compat rule: an absent or unknown game is DECODE, never a throw
   check('moduleFor(undefined) is decode', moduleFor(undefined).id === 'decode');
   check('simModuleFor(null) is decode', simModuleFor(null).id === 'decode');
@@ -166,6 +224,544 @@ export function coreChecks(check: Check): void {
   );
   // an id with no season is visible (nothing restricts it) rather than throwing
   check('gameVisibleOn is true for an id with no season', gameVisibleOn('nope' as GameId, 'stable'));
+
+  // ---- the four loadouts both summary surfaces are pinned against --------
+  // A launcher is MANDATORY (owner ruling 2026-09-12) and a Box Tube is optional, and a launcher
+  // is one of three kinds, so these four are the shapes that print differently: a single turret
+  // with and without a tube, a double turret (two cells to name) and a dumper (an edge; its stored
+  // hood is no longer printed — a dump is a lob, owner 2026-09-13) with a tube.
+  //
+  // The Box Tube's name is CLOCK-DEPENDENT by design — it carries the sponsor's product name only
+  // inside `SPONSOR.term` — so the expected strings are built from `bbLiftKindLabel` rather than
+  // typing either spelling; both spellings are pinned against the term further down.
+  const TUBE = bbLiftKindLabel('vslide');
+  const LOADOUTS: { name: string; mech: BbMechSpec; tiles: string[]; line: string }[] = [
+    {
+      name: 'single turret',
+      mech: { launcher: { kind: 'turret', mount: 'center', hoodDeg: BB_HOOD_DEFAULT_DEG }, lift: null },
+      // a TURRET solves its own elevation per shot, so it has no hood to report
+      tiles: ['Single turret / launcher / CENTER', 'No box tube / flower scoring'],
+      line: 'Single turret · FRONT+BACK sweeper · CENTER launcher · 4 pollen',
+    },
+    {
+      name: 'single turret + Box Tube',
+      mech: {
+        launcher: { kind: 'turret', mount: 'center', hoodDeg: BB_HOOD_DEFAULT_DEG },
+        lift: { kind: 'vslide', mount: 'back' },
+      },
+      tiles: ['Single turret / launcher / CENTER', `${TUBE} / flower scoring / BACK`],
+      line: `Single turret · FRONT+BACK sweeper · CENTER launcher · ${TUBE} · BACK · 4 pollen`,
+    },
+    {
+      name: 'double turret',
+      mech: {
+        launcher: { kind: 'twinturret', mount: 'right', mount2: 'left', hoodDeg: BB_HOOD_DEFAULT_DEG },
+        lift: null,
+      },
+      tiles: ['Double turret / launcher / RIGHT + LEFT', 'No box tube / flower scoring'],
+      line: 'Double turret · FRONT+BACK sweeper · RIGHT + LEFT launcher · 4 pollen',
+    },
+    {
+      name: 'dumper + Box Tube',
+      mech: {
+        launcher: { kind: 'dumper', mount: 'front', hoodDeg: 80 },
+        lift: { kind: 'vslide', mount: 'back' },
+      },
+      tiles: ['Dumper / launcher / FRONT', `${TUBE} / flower scoring / BACK`],
+      line: `Dumper · FRONT+BACK sweeper · FRONT launcher · ${TUBE} · BACK · 4 pollen`,
+    },
+  ];
+  /** the raw build for a loadout — the flat mirror is set to agree with the container, the way
+   * every Builder edit sends it. */
+  const rawOf = (m: BbMechSpec): RobotSpec => ({
+    ...BB_DEFAULT_SPEC,
+    scoreMode: m.launcher.kind,
+    shooterMount: m.launcher.mount,
+    bbMech: m,
+  });
+  /** NOT VACUOUS: the COERCED spec still carries the loadout being described. A coercer that
+   * moved a turret, dropped `mount2`, re-clamped the hood or relocated the tube would make the
+   * text below describe a different robot than the one the test built. */
+  const carries = (spec: RobotSpec, m: BbMechSpec): boolean => {
+    const got = bbLauncherOf(spec, BB_HOOD_DEFAULT_DEG);
+    const want = m.launcher;
+    return (
+      got.kind === want.kind &&
+      got.mount === want.mount &&
+      got.mount2 === want.mount2 &&
+      (want.kind !== 'dumper' || got.hoodDeg === want.hoodDeg) &&
+      (bbLiftOf(spec)?.mount ?? null) === (m.lift?.mount ?? null)
+    );
+  };
+
+  // ---- the builder hero's per-game stat tiles (the `statTiles` slot) -------
+  // THE SAME SEAM BUG THE PRESET LIST HAD, at a second site. `Menu.tsx` picks the hero's
+  // mechanism tiles with `mod.statTiles ? <slot> : isDecode ? <intake> : <scoring + catalyst>`.
+  // That tail is an `else`, not a default, so a game filling neither branch is shown CHAIN
+  // REACTION's tiles — which is how BIOBUZZ once advertised a CATALYST.
+  section('builder stat tiles (the per-game hero summary)');
+  const bbTiles = moduleFor('biobuzz').statTiles;
+  check('biobuzz FILLS the statTiles slot', typeof bbTiles === 'function');
+  check('decode does NOT fill it (its inline branch stays the live path)', !moduleFor('decode').statTiles);
+  check('chain does NOT fill it (its inline branch stays the live path)', !moduleFor('chain').statTiles);
+
+  /** one tile as the hero renders it: value, caption, and the optional second caption. */
+  const fmt = (t: { value: string; label: string; sub?: string }): string =>
+    `${t.value} / ${t.label}${t.sub ? ` / ${t.sub}` : ''}`;
+  const tilesFor = (raw: unknown): string[] => (bbTiles ? bbTiles(bbCoerce(raw)).map(fmt) : []);
+
+  for (const l of LOADOUTS) {
+    const raw = rawOf(l.mech);
+    const spec = bbCoerce(raw);
+    check(`${l.name}: the coerced spec really carries that loadout`, carries(spec, l.mech), JSON.stringify(spec.bbMech));
+    const got = tilesFor(raw);
+    check(`stat tiles — ${l.name}`, got.join(' | ') === l.tiles.join(' | '), got.join(' | '));
+  }
+
+  // NO FOREIGN VOCABULARY, anywhere in what a BIOBUZZ builder prints. CATALYST is Chain
+  // Reaction's word and ARTIFACT is DECODE's; this game's elements are POLLEN and NECTAR.
+  // The CR catalyst labels are taken from CR's own map rather than retyped, so a rename
+  // there cannot quietly make this check stop covering the string it was written for.
+  const FOREIGN = [
+    ...Object.values(CHAIN_CATALYST_LABELS),
+    'catalyst',
+    'particle',
+    'ring stand',
+    'accelerator',
+    'artifact',
+    'sorter',
+    'motif',
+    'classifier',
+  ].map((s) => s.toLowerCase());
+  const everyBuild = [...LOADOUTS.map((l) => rawOf(l.mech)), BB_DEFAULT_SPEC, ...(moduleFor('biobuzz').presets?.list ?? [])];
+  const printed = everyBuild.flatMap(tilesFor).join(' | ').toLowerCase();
+  for (const word of FOREIGN) {
+    check(`biobuzz stat tiles never say "${word}"`, !printed.includes(word));
+  }
+  // and the CAPTIONS are this game's own mechanisms, not the CHAIN arm's two
+  const captions = new Set(everyBuild.flatMap((s) => (bbTiles ? bbTiles(bbCoerce(s)).map((t) => t.label) : [])));
+  check(
+    'the captions are launcher + flower scoring (not CR’s scoring + catalyst)',
+    captions.size === 2 && captions.has('launcher') && captions.has('flower scoring'),
+    [...captions].join(', '),
+  );
+
+  // ---- saved-robot lines (the `labels.configSummary` slot) ------------------
+  // THE SAME SEAM BUG THE PRESET LIST HAD, at a second site. `Menu.tsx` picks the detail
+  // line under each SAVED robot with `mod.labels?.configSummary ? <slot> : isDecode ?
+  // <DECODE fields> : <CR fields>`. A game filling neither branch was described in CHAIN
+  // REACTION's words, off the lossy `scoreMode` mirror, with the Box Tube omitted entirely.
+  section('saved-robot lines (the per-game config summary)');
+  {
+    const summary = moduleFor('biobuzz').labels?.configSummary;
+    check('biobuzz FILLS the labels.configSummary slot', typeof summary === 'function');
+    check('decode does NOT fill labels (its inline arm stays the live path)', !moduleFor('decode').labels);
+    check('chain does NOT fill labels (its inline arm stays the live path)', !moduleFor('chain').labels);
+
+    // THE WIRING, pinned at the source. A correct `bbConfigSummary` that no screen reads is
+    // the whole bug this section exists for, and it is invisible to every check that calls
+    // the function directly — the same reason the crawler files below are pinned as text.
+    const menu = readRepo('src/ui/Menu.tsx');
+    check(
+      'Menu.tsx reads the slot for the saved-robot line',
+      menu.includes('const gameSummary = mod.labels?.configSummary;'),
+    );
+    check(
+      'Menu.tsx renders it as the `.om` detail line',
+      menu.includes('<span className="om">{gameSummary(r)}</span>'),
+    );
+    // and BOTH shipped arms are still there, byte for byte.
+    check(
+      'the DECODE saved-robot arm is unchanged',
+      menu.includes('{INTAKE_SHORT[r.intake]} · {r.flywheelInertia} inertia'),
+    );
+    check(
+      'the CR saved-robot arm is unchanged',
+      menu.includes('{CHAIN_MODE_LABELS[r.scoreMode ?? CHAIN_DEFAULT_SCORE_MODE]}'),
+    );
+    // THE PRESET CARD BODY is keyed on the SAME slot that picks the LIST, so the words under a
+    // card can never describe a robot out of a different game's list.
+    check(
+      'the preset card body is keyed on the same slot as the preset list',
+      menu.includes('const presets = gamePresets ? gamePresets.list :') &&
+        menu.includes('{gamePresets ? ('),
+    );
+    // THE DRIVETRAIN CHROME IS EVERY GAME'S. A filled `Builder` slot used to replace the whole
+    // Customize section, and BIOBUZZ lost the drivetrain picker (and name, team, RPM) with it.
+    // The picker must render BEFORE the Builder ternary opens, i.e. outside it.
+    {
+      const drive = menu.indexOf('<h3 className="ds-subh">Drivetrain</h3>');
+      const slot = menu.indexOf('{Builder ? (');
+      check(
+        'Menu.tsx renders the Drivetrain picker outside the Builder slot (before its ternary)',
+        drive >= 0 && slot >= 0 && drive < slot,
+        `drivetrain@${drive} builder@${slot}`,
+      );
+    }
+
+    /** the sentence as a saved slot, a leaderboard row and the strategy card all print it. */
+    const say = (raw: unknown): string => (summary ? summary(bbCoerce(raw)) : '');
+    check('the slot IS bbConfigSummary', summary === bbConfigSummary);
+
+    for (const l of LOADOUTS) {
+      const raw = rawOf(l.mech);
+      check(`${l.name}: the coerced spec really carries that loadout`, carries(bbCoerce(raw), l.mech));
+      check(`saved-robot line — ${l.name}`, say(raw) === l.line, say(raw));
+    }
+    // A BOX TUBE IS HALF THE BUILD. Two robots differing only by one must not read identically.
+    check(
+      'a Box Tube CHANGES the sentence',
+      say(rawOf(LOADOUTS[0].mech)) !== say(rawOf(LOADOUTS[1].mech)),
+    );
+    // and so does the NECTAR turret's cell: two double turrets differing only by it are two robots
+    check(
+      'a double turret’s NECTAR cell CHANGES the sentence',
+      say(rawOf(LOADOUTS[2].mech)) !==
+        say(rawOf({ ...LOADOUTS[2].mech, launcher: { ...LOADOUTS[2].mech.launcher, mount2: 'backleft' } })),
+    );
+
+    const builds: unknown[] = [...LOADOUTS.map((l) => rawOf(l.mech)), BB_DEFAULT_SPEC, ...BB_PRESET_LIST];
+    const lines = builds.map(say).join(' | ').toLowerCase();
+
+    // NO FOREIGN VOCABULARY. CATALYST and PARTICLE are Chain Reaction's words; ARTIFACT,
+    // SORTER and INERTIA are DECODE's. This game's element is POLLEN. The CR catalyst labels
+    // and DECODE's intake names are taken from their own maps rather than retyped. NOT swept:
+    // SWEEPER, which both games genuinely use for the same part. A shared word is not a leak.
+    const FOREIGN_LINE = [
+      ...Object.values(CHAIN_CATALYST_LABELS),
+      ...Object.values(INTAKE_SHORT),
+      'catalyst',
+      'particle',
+      'ring stand',
+      'accelerator',
+      'artifact',
+      'sorter',
+      'inertia',
+      'motif',
+      'classifier',
+      'drum',
+      'no launcher',
+      'vertical slide',
+    ].map((w) => w.toLowerCase());
+    for (const word of FOREIGN_LINE) {
+      check(`biobuzz saved-robot lines never say "${word}"`, !lines.includes(word));
+    }
+    // and the POSITIVE half: every build names this game's own element, so a summary cannot
+    // pass the sweep above by saying nothing at all.
+    check('every biobuzz build names POLLEN', builds.every((b) => say(b).includes('pollen')));
+  }
+
+  // ---- the preset cards: ONE StarterBot, no vendor names -------------------
+  // Owner ruling 2026-09-12: the kit robots collapse into one card, and nothing user-visible
+  // names a company. A vendor name slipping back into a card is exactly the kind of thing
+  // nobody reports, because the card still looks fine.
+  section('preset cards (one StarterBot, no vendor names)');
+  {
+    const starters = BB_PRESET_LIST.filter((p) => /starter\s*bot/i.test(p.name));
+    check(
+      'exactly one StarterBot card',
+      starters.length === 1 && BB_STARTER_BOTS.length === 1,
+      BB_PRESET_LIST.map((p) => p.name).join(', '),
+    );
+    check(
+      'realCount is 1, and the StarterBot leads the list',
+      BB_REAL_PRESETS === 1 && BB_PRESET_LIST[0].name === 'StarterBot',
+      `${BB_REAL_PRESETS} / ${BB_PRESET_LIST[0]?.name}`,
+    );
+    check(
+      'the module slot offers that list',
+      (moduleFor('biobuzz').presets?.list ?? []).map((p) => p.name).join(',') === BB_PRESET_LIST.map((p) => p.name).join(','),
+    );
+    const VENDOR = /gobilda|\brev\b|andymark|robits|studica/i;
+    const shown = BB_PRESET_LIST.flatMap((p) => {
+      const l = bbPresetLines(p);
+      return [p.name, p.teamName, l.meta, l.zone ?? '', bbConfigSummary(p)];
+    });
+    const hits = shown.filter((t) => VENDOR.test(t));
+    check('no vendor name in any preset name, team name, card line or summary', hits.length === 0, hits.join(' | '));
+    // not vacuous: the sweep read real text for every card, and there is more than one card
+    check(
+      '...and the sweep actually read every card',
+      BB_PRESET_LIST.length >= 4 && shown.every((t) => t.length > 0),
+      `${BB_PRESET_LIST.length} cards`,
+    );
+  }
+
+  // ---- the Box Tube's product name follows the sponsor term --------------
+  // "OFFSET™ Box Tube" is part of the sponsorship (docs/sponsor.md), so it has to come down
+  // when the term ends, exactly like every placement. The instants come from `SPONSOR.term`
+  // itself, so a renewal edits one date and this keeps covering it.
+  section('Box Tube label (follows the sponsor term)');
+  {
+    const from = Date.parse(`${SPONSOR.term.from}T00:00:00Z`);
+    const until = Date.parse(`${SPONSOR.term.until}T00:00:00Z`);
+    const inside = from + (until - from) / 2;
+    const after = until + 24 * 3600e3;
+    check('the sponsor is live mid-term (else the next check proves nothing)', sponsorActive(inside));
+    check(
+      'inside the term the Box Tube carries OFFSET™',
+      bbLiftKindLabel('vslide', inside).includes('OFFSET™'),
+      bbLiftKindLabel('vslide', inside),
+    );
+    check(
+      'after the term it does not',
+      !bbLiftKindLabel('vslide', after).includes('OFFSET'),
+      bbLiftKindLabel('vslide', after),
+    );
+    check('...and reads as the plain part name', bbLiftKindLabel('vslide', after) === 'Box tube');
+  }
+
+  // ---- the live HUD shows WHAT is held, not a count ------------------------
+  // Owner ruling 2026-09-12: the robot row draws one disc per held element and no count chip.
+  // Pinned at the source because a count chip creeping back in still renders plausibly.
+  section('BIOBUZZ HUD chips');
+  {
+    const hudSrc = readRepo('src/games/biobuzz/HudSlots.tsx');
+    check('HudSlots.tsx renders no HOPPER count chip', !hudSrc.includes('HOPPER'));
+    check('HudSlots.tsx renders the held elements as hopper pips', hudSrc.includes('hopper-pip'));
+    check('HudSlots.tsx shows the FLOWER IN REACH chip', hudSrc.includes('FLOWER IN REACH'));
+
+    /**
+     * THE NECTAR CHIP NAMES WHICH REFUSAL IT WAS, and there is one line per member of
+     * `BbNectarWhy`. Pinned at the source for the same reason the HOPPER check above is: a
+     * mapping that quietly loses a branch still renders a perfectly plausible chip, and the
+     * field draws no text, so a wrong line here is a driver's only reading of the rule.
+     */
+    check(
+      'HudSlots.tsx drives the NECTAR chip from nectarWhy, not from the stock and the debt',
+      hudSrc.includes('nectarWhy[hud.alliance]'),
+    );
+    check(
+      'NECTAR chip: `ok` with a banked TIP states the stock and what is owed',
+      hudSrc.includes('due > 0 ? `NECTAR ${n} · ${due} DUE`'),
+    );
+    // Past the 1:00 cue the whole remaining stock may go in with nothing banked, so `due` is 0
+    // while the press is still granted. `0 DUE` would read as "nothing to do" in the one minute
+    // where the answer is "all of it" — the same word the FLOWERS OPEN chip uses, on purpose.
+    check(
+      'NECTAR chip: `ok` in the dump window says OPEN, never `0 DUE`',
+      hudSrc.includes('`NECTAR ${n} · OPEN`'),
+    );
+    check(
+      'NECTAR chip: `none-owed` says so, so a dead button does not read as broken',
+      hudSrc.includes('`NECTAR ${n} · NONE OWED`'),
+    );
+    check(
+      'NECTAR chip: `none-left` drops the count — an empty stock is not a quantity',
+      hudSrc.includes("'NECTAR OUT'"),
+    );
+    check(
+      'NECTAR chip: `locked` (the FROZEN FIELD, not G410) states the stock alone',
+      hudSrc.includes('locked: (n) => `NECTAR ${n}`'),
+    );
+    // G410 keeps its OWN chip. The two are different rules about different acts — a frozen
+    // field versus a NECTAR entering a FLOWER — and one line for both would misstate both.
+    check('...and G410 keeps its own separate chip', hudSrc.includes('NECTAR LOCKED'));
+
+    /**
+     * THE CUE HAS A POSITIVE SIGNAL, HELD, NOT A CHIP THAT SITS THERE FOR A MINUTE.
+     * NECTAR LOCKED used to just stop being drawn at 1:00, which is not a cue. The chip must
+     * go through `useHeldBump` (`opened`) or it becomes noise for the rest of the match, and
+     * it must reuse `chip on` — a colour token invented for one chip is a new pair for
+     * `npm run contrast` to audit.
+     */
+    check('HudSlots.tsx shows FLOWERS OPEN at the 1:00 cue', hudSrc.includes('FLOWERS OPEN'));
+    check(
+      '...HELD off the match clock, not bound to the state for the rest of the match',
+      hudSrc.includes('{opened && '),
+    );
+    check(
+      '...and it reuses `chip on` rather than a colour of its own',
+      hudSrc.includes('<span className="chip on">FLOWERS OPEN</span>'),
+    );
+  }
+
+  // ---- ...and the slice really carries the value the chip is indexed by ----
+  /**
+   * THE BEHAVIOURAL HALF. The source checks above prove the four lines exist; this proves the
+   * HUD slice hands the component something to pick between. It is the `none-owed` case
+   * specifically because that is the one the chip was written for — a FULL stock with no
+   * entitlement is indistinguishable, from outside, from a full stock with one, and it is the
+   * state an alliance sits in for most of a match.
+   *
+   * TELEOP with 90 s left: play is running (so the answer is not the frozen-field `locked`)
+   * and the 1:00 dump window has not opened (so it is not `ok` either). One real tick of the
+   * BIOBUZZ pipeline, because `nectarWhy` is recomputed in `play.ts` rather than seeded — a
+   * freshly built world still reads the `none-left` that `state.ts` starts it at.
+   */
+  section('BIOBUZZ HUD slice — nectarWhy');
+  {
+    const w = createBiobuzzWorld('match', 11, [setup(0, 'red', {}, 0), setup(1, 'blue', {}, 0)]);
+    w.match.phase = 'teleop';
+    w.match.phaseTimeLeft = 90;
+    biobuzzStep(w, SIM_DT, new Map([[0, cmd({})], [1, cmd({})]]));
+    const hud = biobuzzFieldHud(w);
+    const bb = w.biobuzz!;
+    check(
+      'the field slice carries nectarWhy, per alliance',
+      typeof hud.nectarWhy?.red === 'string' && typeof hud.nectarWhy?.blue === 'string',
+      JSON.stringify(hud.nectarWhy),
+    );
+    check(
+      'the scene really is a FULL stock with no entitlement (else the next check proves nothing)',
+      bb.nectarStock.red > 0 && bb.nectarDue.red === 0 && bb.nectarStock.blue > 0 && bb.nectarDue.blue === 0,
+      `red ${bb.nectarStock.red}/${bb.nectarDue.red} · blue ${bb.nectarStock.blue}/${bb.nectarDue.blue}`,
+    );
+    check(
+      'a full stock with nothing owed reads `none-owed`, on BOTH alliances',
+      hud.nectarWhy.red === 'none-owed' && hud.nectarWhy.blue === 'none-owed',
+      `red ${hud.nectarWhy.red} · blue ${hud.nectarWhy.blue}`,
+    );
+    check(
+      '...and it is the slice answering, not the world default state.ts seeds',
+      hud.nectarWhy.red === bb.nectarWhy.red && hud.nectarWhy.red !== 'none-left',
+      `slice ${hud.nectarWhy.red} · world ${bb.nectarWhy.red}`,
+    );
+  }
+
+  // ---- the gallery caption counts what is actually there ------------------
+  /**
+   * The cell caption under every gallery still read `${world.balls.length} pollen`, written
+   * when POLLEN was the only element. `hive-tip` loads 3 NECTAR over 3 POLLEN and the caption
+   * said `6 pollen` — and a caption is precisely the line a reader checks a picture against,
+   * so the one surface meant to explain a confusing cell was the surface lying about it.
+   *
+   * `elementLine` classifies through `bbKindOf`, the same function the SCORE uses, so a
+   * caption cannot disagree with what the rules think is on the field. The single-element
+   * scenes keep their shorter caption, which the second check pins — a caption that always
+   * printed `. 0 nectar` would be a different regression.
+   */
+  section('BIOBUZZ gallery caption — two element sizes, two counts');
+  {
+    const w = createBiobuzzWorld('match', 17, [setup(0, 'red', {}, 0)]);
+    const mk = (id: number, color: 'yellow' | 'red' | 'blue') => ({
+      ...w.balls[0], id, color, r: color === 'yellow' ? BB_POLLEN_R : BB_NECTAR_R,
+    });
+    w.balls = [mk(901, 'yellow'), mk(902, 'yellow'), mk(903, 'yellow'), mk(904, 'red'), mk(905, 'blue')];
+    check(
+      'a mixed field names both kinds, and never calls a NECTAR a POLLEN',
+      elementLine(w) === '3 pollen · 2 nectar',
+      elementLine(w),
+    );
+    w.balls = [mk(901, 'yellow'), mk(902, 'yellow')];
+    check(
+      '...and a POLLEN-only field keeps the short caption, no zero-nectar tail',
+      elementLine(w) === '2 pollen',
+      elementLine(w),
+    );
+  }
+
+  // ---- the phase EVENT says the same word every other surface says --------
+  /**
+   * ⚠️ `world.events` IS ONE OF THE THREE SURFACES THE TERMINOLOGY RULING BINDS — with the
+   * live HUD and the burned-in video overlay. `src/sim/match.ts` pushes `DRIVER-CONTROLLED`
+   * for the other seasons; BIOBUZZ runs its own phase machine in `step.ts` and was pushing
+   * `TELEOP`, so one event log carried two names for one phase and a viewer reading the
+   * overlay against the log saw a disagreement that meant nothing.
+   *
+   * The negative half matters as much as the positive one: asserting only that the right
+   * string is present would still pass if both were pushed.
+   */
+  section('BIOBUZZ phase events — the shared vocabulary');
+  {
+    const w = createBiobuzzWorld('match', 13, [setup(0, 'red', {}, 0), setup(1, 'blue', {}, 0)]);
+    w.match.phase = 'transition';
+    w.match.phaseTimeLeft = SIM_DT / 2; // one tick short of the flip
+    const none = new Map([[0, cmd({})], [1, cmd({})]]);
+    biobuzzStep(w, SIM_DT, none);
+    check(
+      'the AUTO -> TELEOP flip really happened (else the next two prove nothing)',
+      w.match.phase === 'teleop',
+      w.match.phase,
+    );
+    check(
+      'BIOBUZZ announces DRIVER-CONTROLLED, the word the HUD and the overlay use',
+      w.events.includes('DRIVER-CONTROLLED'),
+      JSON.stringify(w.events),
+    );
+    check(
+      '...and it does NOT also push the season-local `TELEOP`',
+      !w.events.includes('TELEOP'),
+      JSON.stringify(w.events),
+    );
+  }
+
+  // ---- participation credit knows every button this game has --------------
+  /**
+   * `Room.countParticipation` decides whether a driver is AFK for ranked standing, and it
+   * does it by listing the commands that count as input. The list is written by hand, so a
+   * button added later is simply absent — which is exactly what happened to `bbNectar`: the
+   * human-player button landed on bit 128 after the list was written, and a driver whose only
+   * input was that key read as idle and lost standing for playing their position.
+   *
+   * Derived from `RobotCommand` rather than hard-coded, so the NEXT button to land fails here
+   * on the day it lands instead of the day somebody is wrongly marked AFK. `server/room.ts`
+   * is read as source because the method is private and the room needs a live socket.
+   */
+  section('server: participation credit covers every BIOBUZZ button');
+  {
+    const types = readRepo('src/types.ts');
+    const roomSrc = readRepo('server/room.ts');
+    const iface = types.slice(types.indexOf('interface RobotCommand'));
+    const body = iface.slice(0, iface.search(/^\}/m));
+    const buttons = [...new Set([...body.matchAll(/^\s*(bb[A-Za-z]+)\??:/gm)].map((m) => m[1]))];
+    const moving = roomSrc.slice(roomSrc.indexOf('const moving ='));
+    const expr = moving.slice(0, moving.indexOf(';'));
+    check(
+      'RobotCommand really declares BIOBUZZ buttons (else the next check is vacuous)',
+      buttons.length >= 3,
+      buttons.join(', '),
+    );
+    const missing = buttons.filter((b) => !expr.includes(`c.${b}`));
+    check(
+      'every bb* command counts as driver input, `bbNectar` included',
+      missing.length === 0,
+      missing.length ? `missing: ${missing.join(', ')}` : buttons.join(', '),
+    );
+  }
+
+  /**
+   * A BIOBUZZ BUILD SURVIVES THE JOIN INTO A RANKED ROOM.
+   *
+   * A matchmaker-staged room is joined with NO config, and `server/index.ts` used to sanitize
+   * the joiner's player with that config's game — 'decode' — so every ranked BIOBUZZ driver
+   * arrived as a default robot: `bbMech` dropped and the mounts reset. The join now uses the
+   * room's own game. `server/index.ts` opens sockets on import, so that half is read as source.
+   */
+  section('server: a BIOBUZZ build survives the ranked join');
+  {
+    const built = BB_PRESET_LIST.find((s) => bbLiftOf(s) !== null) ?? BB_PRESET_LIST[0];
+    const wire = JSON.parse(
+      JSON.stringify({
+        clientId: 'x', name: 'x', teamName: 'T', teamNumber: 1, alliance: 'blue',
+        startIndex: 0, ready: false, spec: built, assists: DEFAULT_ASSISTS,
+      }),
+    );
+    const asBiobuzz = sanitizePlayer(wire, 'biobuzz').spec;
+    const asDecode = sanitizePlayer(wire, 'decode').spec;
+    const mechOf = (s: RobotSpec): string => JSON.stringify(s.bbMech ?? null);
+    check(
+      'the test build really has a Box Tube (else the checks below prove nothing)',
+      bbLiftOf(built) !== null,
+      built.name,
+    );
+    check(
+      "sanitized as BIOBUZZ, the build's mechanisms and intake mount survive the wire",
+      mechOf(asBiobuzz) === mechOf(built) && asBiobuzz.intakeMount === built.intakeMount,
+      mechOf(asBiobuzz),
+    );
+    check(
+      'sanitized as DECODE, they do NOT (so the check above can fail)',
+      mechOf(asDecode) !== mechOf(built),
+      mechOf(asDecode),
+    );
+    const indexSrc = readRepo('server/index.ts');
+    check(
+      "the room join sanitizes the player with the ROOM's game",
+      indexSrc.includes('sanitizePlayer(msg.player, r.gameId)') &&
+        !indexSrc.includes('sanitizePlayer(msg.player, cfg.game)'),
+    );
+  }
 
   // ---- the STATIC crawler files -------------------------------------------
   // `public/robots.txt` and `public/sitemap.xml` are hand-written and do NOT read

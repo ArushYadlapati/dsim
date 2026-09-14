@@ -136,35 +136,37 @@ function WatchByCode({ onWatch }: { onWatch: (roomCode: string, region?: string)
 
   return (
     <div className="ds-panel">
-      <h2 className="ds-h2">Watch a custom game</h2>
-      {/* "Enter the room code to watch one" was the heading, the input's placeholder
-          and its aria-label said a third time. The sentence that stays answers a real
-          question — why isn't my friend's room in the list above? */}
-      <p className="ds-hint">Custom rooms aren’t listed publicly.</p>
-      <div className="ds-watchcode">
-        <input
-          className="ds-input"
-          value={code}
-          onChange={(e) => {
-            setCode(normalizeRoomCode(e.target.value));
-            setStatus('idle');
-          }}
-          onKeyDown={(e) => e.key === 'Enter' && go()}
-          placeholder={'X'.repeat(ROOM_CODE_LENGTH)}
-          maxLength={ROOM_CODE_LENGTH}
-          spellCheck={false}
-          autoCapitalize="characters"
-          aria-label="Room code"
-        />
-        <button className="ds-btn" disabled={!ready || status === 'looking'} onClick={go}>
-          {status === 'looking' ? 'LOOKING…' : 'WATCH'}
-        </button>
+      <div className="ds-panel-body stack">
+        <h2 className="ds-h2">Watch a custom game</h2>
+        {/* "Enter the room code to watch one" was the heading, the input's placeholder
+            and its aria-label said a third time. The sentence that stays answers a real
+            question — why isn't my friend's room in the list above? */}
+        <p className="ds-hint">Custom rooms aren’t listed publicly.</p>
+        <div className="ds-watchcode">
+          <input
+            className="ds-input"
+            value={code}
+            onChange={(e) => {
+              setCode(normalizeRoomCode(e.target.value));
+              setStatus('idle');
+            }}
+            onKeyDown={(e) => e.key === 'Enter' && go()}
+            placeholder={'X'.repeat(ROOM_CODE_LENGTH)}
+            maxLength={ROOM_CODE_LENGTH}
+            spellCheck={false}
+            autoCapitalize="characters"
+            aria-label="Room code"
+          />
+          <button className="ds-btn" disabled={!ready || status === 'looking'} onClick={go}>
+            {status === 'looking' ? 'LOOKING…' : 'WATCH'}
+          </button>
+        </div>
+        {status === 'missing' && (
+          <p className="ds-hint">
+            No live match under that code. It may have finished, or not started yet.
+          </p>
+        )}
       </div>
-      {status === 'missing' && (
-        <p className="ds-hint">
-          No live match under that code — it may have finished, or not started yet.
-        </p>
-      )}
     </div>
   );
 }

@@ -1,24 +1,25 @@
 /**
  * BIOBUZZ (FTC 2026–27) — field + element constants.
  *
- * ── WHAT IS ACTUALLY KNOWN, AS OF THE V0 PRE-SEASON MANUAL ──────────────────
- * `BIOBUZZ_Competition_Manual_V0.pdf` (93 pages, fetched with `scripts/manual.mjs`) ships
- * Sections 1–7 and 12–16. Sections 8 (Game Overview), 9 (ARENA), 10 (Game Details) and 11
- * (Game Rules) are each a single page reading "This section will be updated with the Kickoff
- * Competition Manual release on September 12, 2026". So NOTHING about the field, the scoring
- * elements, the goals, the zones or the point values is published yet.
- *
- * What Section 12 DOES fix, and what this file is therefore entitled to assume:
+ * ── WHERE THE NUMBERS COME FROM: THE V1 KICKOFF MANUAL ──────────────────────
+ * `BIOBUZZ_Competition_Manual_V1` (2026-09-12, 173 pages) is the source, distilled in
+ * `docs/biobuzz/manual-distilled.md` and `docs/biobuzz-reference.md`. Section 9 (ARENA) gives
+ * the field, the HIVES, the FLOWERS and the zones; Section 10 the elements, match periods and
+ * point values; Section 11 the game rules (G304 start, the fouls `penalties.ts` enforces);
+ * Section 12 the robot:
  *  • R102 — STARTING CONFIGURATION is limited to an 18-inch CUBE.
  *  • R104 — there is NO ROBOT weight limit.
- *  • R105 — a ROBOT stays one assembly and may expand past its starting configuration, but
- *    "Sizing Constraints and more details will be released at Kickoff". The expansion PRISM
- *    below is therefore the one number in the robot envelope that is still a guess.
+ *  • R105.A — once the match starts a ROBOT may expand, but must stay within an
+ *    18 × 24 × 29 in (tall) sizing volume (`BB_PRISM` / `BB_PRISM_NARROW`).
+ * Some shapes are still owner CAD or figure reads rather than printed dimensions (the FLOWER
+ * foot, the LOADING ZONE tape edge), and every robot MECHANISM number is the sim's own model:
+ * the manual constrains robots, it does not describe one.
  *
  * ── THE APPROX CONVENTION ───────────────────────────────────────────────────
- * Every constant whose value is NOT in the V0 manual carries an `APPROX` comment naming what
- * it was derived from. That is not decoration: at Kickoff someone greps `APPROX` in this file
- * and that grep IS the work list. A number without the marker is a number the manual gave us.
+ * Every constant whose value is NOT printed in the V1 manual carries an `APPROX` comment naming
+ * what it was derived from. That is not decoration: someone greps `APPROX` in this file and
+ * that grep IS the work list for the next manual revision or field test. A number without the
+ * marker is a number the manual gave us.
  *
  * The FIELD is the safe part: every FTC field since 2007 has been a 12 ft × 12 ft (144") soft
  * tile field inside a perimeter wall, and R102/R104 are unchanged from DECODE. Origin at the
@@ -37,7 +38,7 @@
  * empty field, because it would look finished.
  */
 
-import type { Alliance, AssistConfig, RobotSpec, StartCat } from '../../types';
+import type { Alliance, AssistConfig, RobotSpec, StartCat, Vec2 } from '../../types';
 import { INTAKE_PRESETS, ROBOT_MAX_SIZE } from '../../config';
 import { wrapAngle } from '../../math';
 import { lengthLimits, massLimits, widthLimits } from '../../sim/drivetrain';
@@ -45,8 +46,12 @@ import {
   BB_DEFAULT_INTAKE_MOUNT,
   type BbIntakeMount,
   type BbScoreMode,
+  MOUNT_DIR,
   bbIntakeMountOf,
 } from './mounts';
+// `mechs.ts` is a LEAF over `types` + `mounts`, so this import adds no cycle — the same reason
+// `mounts.ts` itself is safe to import here.
+import { bbLauncherOf, bbLiftOf } from './mechs';
 
 /** millimetres → inches (the sim's world unit). The manual dimensions arrive in mm, so this
  * is the conversion every element constant is written THROUGH rather than pre-multiplied,
@@ -70,16 +75,23 @@ export const BB_WALL_T = 10;
 /** camera fit margin (in) — breathing room around the field so the walls are not flush with
  * the viewport edge.
  *
- * WIDENED from 8 for the FLOWER STACK READOUT: a flower's contents are drawn OUTSIDE the
- * perimeter beside it (`drawField.ts`), one disc per element, and a NECTAR is 3.6 in across.
- * The margin has to clear one disc plus the tile ruler that also lives out there, or the
- * readout is cropped by the viewport on the two walls that carry both. */
+ * WIDENED from 8 for the FLOWER SECTION: a flower's contents are drawn OUTSIDE the perimeter
+ * beside it (`drawField.ts`), as a section of the column with the scoring band shaded. It
+ * reaches 10.8 in out, and the tile ruler lives in the same band, so the margin has to clear
+ * both or the readout is cropped by the viewport on the two walls that carry them.
+ *
+ * IT IS A FIXED COST, not a per-element one — the section is as wide for an empty FLOWER as
+ * for a full one, because the drawing is the COLUMN and the elements are inside it. The row of
+ * discs it replaced grew with the stack, which made this number a function of capacity and
+ * therefore wrong every time the capacity moved. `bbFlowerSectionBox` measures the real extent
+ * and the smoke lane checks it against this. */
 export const BB_VIEW_MARGIN = 12;
 
-/** the outer x half-extent the CAMERA must show. Equal to the wall for now: BIOBUZZ has no
- * known structure protruding outside the perimeter (CR's accelerators did, which is why the
- * shared `bounds` carries a view extent distinct from the collider extent at all).
- * APPROX — Section 9 (ARENA) lands at Kickoff and may add an outboard goal. */
+/** the outer x half-extent the CAMERA must show. Equal to the wall: V1's ARENA (Section 9) puts
+ * the HIVES, FLOWERS and zones all inside the perimeter, so BIOBUZZ has no structure protruding
+ * outside it (CR's accelerators did, which is why the shared `bounds` carries a view extent
+ * distinct from the collider extent at all). The FLOWER sections drawn beside the walls are a
+ * READOUT, and `BB_VIEW_MARGIN` above is what clears them. */
 export const BB_VIEW_HALF_X = BB_HALF_X;
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -118,6 +130,22 @@ export const BB_LZ: Record<Alliance, BbRect> = {
 };
 
 /**
+ * WHERE AN ELEMENT ENTERS THE FIELD FROM A HUMAN PLAYER'S HAND — the centre of `a`'s LOADING
+ * ZONE, pulled `r` off the side wall the zone backs onto.
+ *
+ * ONE definition, because three callers need the same point and they must not drift: staging
+ * puts a no-show robot's preloads there (§10.3.4), the human player enters NECTAR there all
+ * match (G426/G427, `play.ts`), and the smoke lane asserts both. `r` is the entering element's
+ * RADIUS: "contacting the wall" is a body touching it, which for a circle solved at its centre
+ * means a centre one radius clear — put the centre ON the wall line and the solve's first job
+ * is to eject it.
+ */
+export function bbLoadingZoneSpot(a: Alliance, r: number = BB_POLLEN_R): Vec2 {
+  const z = BB_LZ[a];
+  return { x: a === 'red' ? -BB_HALF_X + r : BB_HALF_X - r, y: (z.y0 + z.y1) / 2 };
+}
+
+/**
  * GARDEN — a ~23 × 2 in strip in the alliance's own corner, "defined by the outside edge of
  * tape", two 1-in tapes (§9.3, §10.5.3, Fig 9-2/9-3). Red's runs along the AUDIENCE wall from
  * the red corner; blue's along the REAR wall from the blue corner. Not protected (G411 note).
@@ -138,6 +166,18 @@ export const BB_TAPE_2 = 2;
 /** pivot x of each HIVE (in): the pair is 25.5 in centre to centre (Fig 9-10), red at −x.
  * APPROX: Fig 9-2 — that the PAIR is centred on the field, which the plan view shows. */
 export const BB_HIVE_X = 12.75;
+
+/**
+ * the BAR's tilt off level at either stable end (degrees) — the ±30° of a bi-stable see-saw
+ * (§9.6, Figs 9-7…9-11; owner CAD, 2026-09-12; `docs/biobuzz-reference.md` §2.2).
+ *
+ * It is already baked into every PLAN length below as a cos 30° — `BB_HIVE_CELL_DY`,
+ * `BB_HIVE_CELL_LEN` and `BB_HIVE_LEN` are the projected numbers, not the true ones. The
+ * constant exists so the SWING can be drawn: mid-tip the bar passes LEVEL, where the
+ * foreshortening is 1 and the assembly reaches its true length, and a renderer animating that
+ * needs the angle the projection came from rather than a second copy of 30 typed into it.
+ */
+export const BB_HIVE_TILT_DEG = 30;
 
 /** horizontal projection (in) of a CELL centre from its pivot, along the HIVE axis (y) —
  * 15.44 · cos 30°. MEASURED (owner CAD, 2026-09-12; `docs/biobuzz-reference.md` §2.2). */
@@ -239,6 +279,26 @@ export const BB_FLOWERS: readonly {
   { id: 'F4', wall: 'audience', x: 24, y: -72 + BB_FLOWER_D, nearest: 'blue' },
 ];
 
+/**
+ * WHICH WAY A FLOWER'S MOUTH FACES — out of the wall it stands against, into the field.
+ *
+ * The FLOWER is a column on the perimeter, so its open top is reachable from one half-space
+ * only: the field side. The wall side is the wall.
+ *
+ * IT LIVES IN `config.ts`, BESIDE `BB_FLOWERS`, because it is a property of that table: given
+ * a wall, the inward normal is fixed geometry and nothing about it is a rule or a drawing. It
+ * sat in `elements.ts` while its only readers were that file and `drawField.ts`; `start.ts`
+ * became a third (G304.D measures the keep-out along this normal) and `elements.ts` in turn
+ * needs `start.ts` for `evalStart`, which would have closed a two-file import cycle for the
+ * sake of a four-entry map. Moving the map breaks the cycle without duplicating anything.
+ */
+export const FLOWER_MOUTH: Record<(typeof BB_FLOWERS)[number]['wall'], Vec2> = {
+  left: { x: 1, y: 0 }, // F1 stands on −x, opens toward +x
+  rear: { x: 0, y: -1 }, // F2 stands on +y, opens toward −y
+  right: { x: -1, y: 0 }, // F3 stands on +x, opens toward −x
+  audience: { x: 0, y: 1 }, // F4 stands on −y, opens toward +y
+};
+
 /** top ring height above the tiles (in) — Fig 9-12. The z a deposit arc solves for. */
 export const BB_FLOWER_TOP_Z = 21.5;
 
@@ -262,10 +322,20 @@ export const BB_FLOWER_OPEN_R = 2.0;
 export const BB_FLOWER_FOOT = { along: 6, deep: 4.9 };
 
 /**
- * THE HIVE TIP TABLE — MEASURED on a real HIVE (owner, 2026-09-12), not published in the
- * manual. Indexed by the number of NECTAR in the up-CELL; the value is how many POLLEN also
- * have to be in it for the CELL to tip. A cell tips when
+ * THE HIVE TIP TABLE. Indexed by the number of NECTAR in the up-CELL; the value is how many
+ * POLLEN also have to be in it for the CELL to tip. A cell tips when
  * `pollen >= BB_TIP_POLLEN[Math.min(nectar, 5)]`.
+ *
+ * ── TWO ROWS ARE OFFICIAL — the 2026-2027 EVENT FIELD SETUP GUIDE, §12 Hive Calibration ──
+ * The Competition Manual prints no load, but the field guide requires every HIVE to be
+ * CALIBRATED (with ballast washers) to tip at "[8] Pollen + [0] Nectar" and "[3] Pollen + [3]
+ * Nectar" (§12, V1.0 p26), and its §12.3 acceptance table makes both rows exact:
+ *   · 0 NECTAR — with 6 in, a TOSSED-IN 7th must NOT tip; with 7 in, a tossed-in 8th MUST tip;
+ *   · 3 NECTAR — with 1 in, a tossed-in 2nd must NOT tip; with 2 in, a tossed-in 3rd MUST tip.
+ * ("Gently placed" is only "preferred" to tip.) A launched element is the tossed-in case, so
+ * rows 0 and 3 below are the guide's thresholds exactly.
+ *
+ * Rows 1, 2, 4 and 5 are NOT in the guide: MEASURED on a real HIVE (owner, 2026-09-12), once.
  *
  * **IT IS A TABLE, NOT A MASS, AND NOTHING INTERPOLATES IT.** No single linear weighting fits
  * the measured rows: 1n+7p and 2n+6p together make a NECTAR worth one POLLEN, and 3n+3p then
@@ -275,8 +345,10 @@ export const BB_FLOWER_FOOT = { along: 6, deep: 4.9 };
  * The STAGED row is the one that decides how a match opens: a CELL is staged with 3 NECTAR
  * (§10.3.1), so the first TIP costs **3 POLLEN** and is reachable in AUTO.
  *
- * Only index 0 is a guess. APPROX: an empty cell was not measured — 8 extrapolates the 7/6
- * trend at the top of the table.
+ * Index 0 used to be an `APPROX` extrapolation of the 7/6 trend; the field guide confirms 8
+ * (2026-09-13), so no row is a guess any more. `docs/biobuzz/feedback/002-thresholds.md` §2
+ * still asks for a second reading of the owner-measured rows; the smoke lane pins this array as
+ * a literal so a re-measure has to come through it.
  *
  * See `docs/biobuzz-reference.md` §4.1.
  */
@@ -341,8 +413,11 @@ export const BB_RP = {
 export const BB_POLLEN_R = 1.4;
 
 /** NECTAR radius (in) — 3.6 in diameter, §9.8 (am-5852). The second element size, and the
- * reason the shared solve needs a per-artifact radius: today a nectar is SIMULATED at
- * `BB_POLLEN_R` (see `docs/biobuzz/field-plan.md` §6 request 1) and only drawn at this one. */
+ * reason the shared solve grew a per-artifact radius: it is now SIMULATED at this value too,
+ * not only drawn at it. Every site reads `b.r ?? radius` (field-plan §6 request 1, LANDED),
+ * so a resting NECTAR sits 1.8 in off a wall instead of 1.4 and no longer puts 0.4 in of
+ * itself outside the field. ⚠️ `bbRobotSolids` is the one holdout — it still builds every
+ * held plug at its `radius` argument, so a CARRIED nectar collides as a POLLEN. */
 export const BB_NECTAR_R = 1.8;
 
 /** how many POLLEN are on the field at staging — §10.3.1: 16 in the four FLOWERS, 4 in each
@@ -381,17 +456,16 @@ export const BB_POLLEN_SIM = 60;
 export const BB_POLLEN_WALL_REST = 0.35;
 
 // ─────────────────────────────────────────────────────────────────────────────
-// MATCH — the shell reuses the shared phase durations (`src/config.ts`), because auto /
-// transition / teleop lengths are set by the Tournament section, not by the game, and
-// Section 13 (Tournament) IS published in V0 and unchanged.
+// MATCH — BIOBUZZ reuses the shared phase durations (`src/config.ts`): V1 §10.1/§10.4 give
+// 30 s AUTO, an 8 s transition and 2:00 TELEOP, the same three numbers DECODE runs.
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
- * The ACT this season starts on. BIOBUZZ is DSIM's third game, so its record/ranked periods
- * begin at 2 (DECODE 0, Chain Reaction 1). Read by the shared `initialAct` slot rather than a
- * per-game ternary in the season code.
+ * The ACT this season starts on: BIOBUZZ's records and ranked open at Act 1 · Season 1 (owner,
+ * 2026-09-12). Acts are per game (`seasons` is keyed on game), so this need not differ from
+ * DECODE's or Chain Reaction's. Read through the shared `initialAct` slot (`sim.ts`).
  */
-export const BB_INITIAL_ACT = 2;
+export const BB_INITIAL_ACT = 1;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // ROBOT — intake geometry
@@ -444,10 +518,133 @@ export const BB_AIM_GAIN = 4.5;
  * under 1 so the outermost POLLEN of a burst is not born exactly on the frame line. APPROX. */
 export const BB_LAUNCH_LINE_FRAC = 0.92;
 
-/** launch height (in) — how high off the tile a POLLEN leaves the mechanism. APPROX and
- * PLACEHOLDER: without Section 9 there is no target height to arc into, so `releasePollen`
- * lobs with whatever velocity the caller hands it and this is only the z it starts at. */
+/** launch height (in) — how high off the tile a POLLEN leaves the mechanism.
+ *
+ * ⚠️ THIS IS A HEIGHT, AND IT WAS ALSO BEING USED AS A VERTICAL VELOCITY. Every launch path in
+ * `robot.ts` used to pass it as the `z` of the velocity `Vec3` handed to `releasePollen`, as
+ * well as `elements.ts` using it (correctly) as `held.z`. So every POLLEN left at 10 in/s
+ * upward and apexed 0.13 in: there was effectively no arc in this game. The velocity use is
+ * gone — a launch's vertical speed is now solved from the target's height (`bbSolveShot`) or
+ * set by the hood angle — and this is a height and only a height. The name is left alone
+ * because renaming it touches Lane A's `elements.ts`; that is a separate cross-lane change. */
 export const BB_LAUNCH_Z0 = 10;
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ROBOT — mechanism composition (launcher elevation, the lift)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * THE BOX TUBE'S PLACEMENT POINT — how far past the collision footprint, along the tube's mount
+ * direction, the point a FLOWER must be near sits (in). APPROX.
+ *
+ * FLOWER scoring is a PROXIMITY action (owner ruling 2026-09-12), not a raise: there is no
+ * carriage height and no travel. `bbPlacePointLocal` (`robot.ts`) is the one geometry, and it is
+ * sized against the FLOWER solid (`BB_FLOWER_FOOT`, 4.9 deep, ring `BB_FLOWER_D` = 2.54 off the
+ * wall): a chassis face flush on the flower is 4.9 − 2.54 = 2.36 in past the ring centre. The
+ * reach is DERIVED as exactly that, so a robot pressed square against a FLOWER foot has its
+ * placement point dead on the ring.
+ */
+export const BB_PLACE_REACH = BB_FLOWER_FOOT.deep - BB_FLOWER_D; // 2.36 — flush on the foot = dead centre
+/** how close the placement point must be to a FLOWER ring centre to place (in). APPROX — the
+ * slop of a real tube lining up on a 4.0-in ring; a placement should not need the pixel. */
+export const BB_PLACE_TOL = 2.0;
+/** how often a running intake pulls one POLLEN out of a FLOWER's retrieval opening (G418.B), in
+ * seconds. APPROX — one element worked out from under the stack through a 3.55-in hole, not a
+ * roller sweeping loose elements off the tiles, so it is slower than a ground pickup. */
+export const BB_FLOWER_RETRIEVE_S = 0.35;
+/** how far past its roller line an intake mouth can be from the FLOWER foot's field-side face and
+ * still pull from the retrieval opening (in). APPROX — the contact slop of a compliant roller. */
+export const BB_FLOWER_RETRIEVE_PAD = 1.0;
+/** extra lb on the chassis mass FLOOR for carrying a Box Tube. APPROX. */
+export const BB_LIFT_MASS_FLOOR = 2.0;
+
+/**
+ * A DUMPER'S RANGE (owner, 2026-09-13) — how far from the cell it is dumping into a dumper can
+ * throw from, measured horizontally from each element's release point on the dumper's edge to
+ * the cell centre (in). APPROX all three.
+ *
+ * A DUMP IS A LOB, NOT A FIXED-HOOD SHOT. Each element is thrown to peak `BB_DUMP_APEX_ABOVE`
+ * over the cell's aim height and drop onto it (`bbLobThrow`, `robot.ts`), so it arrives
+ * DESCENDING — which `hiveAccepts` requires — from any distance, and the minimum is geometry
+ * alone: `BB_DUMP_MIN_DIST` is only the floor below which a throw has no direction. The fixed hood
+ * this replaced made a dumper stand far off (23–71 in at the default 75°, since a flat-ish arc
+ * only descends past its apex) and also reach far; the owner ruled both wrong, so the MAXIMUM is
+ * a strict cap rather than whatever `BB_LAUNCH_SPEED_MAX` happens to allow (~108 in).
+ */
+export const BB_DUMP_MIN_DIST = 1;
+export const BB_DUMP_MAX_DIST = 36;
+export const BB_DUMP_APEX_ABOVE = 4;
+
+/**
+ * The hood elevation a DUMPER used to be built at, in DEGREES above level.
+ *
+ * ⚠️ NO LONGER READ BY THE SIM (owner, 2026-09-13). A dump is solved as a lob for its distance
+ * (`BB_DUMP_MAX_DIST` above), so the builder offers no Hood dial and no label prints one. The
+ * field stays on `BbLauncherSpec` and the coercer still clamps it to this range, so saved robots,
+ * presets and replays keep round-tripping unchanged.
+ */
+export const BB_HOOD_DEFAULT_DEG = 75;
+export const BB_HOOD_MIN_DEG = 70;
+export const BB_HOOD_MAX_DEG = 85;
+
+/** how long a DUMPER takes to re-arm after a dump (s). APPROX — a tray swinging back down. It is
+ * what stops a held fire button re-dumping on every capture. */
+export const BB_DUMP_RELOAD_S = 0.75;
+
+/** the most elements one turret feed can release in a single tick — the burst bound on the
+ * accumulated cadence clock (`bbLaunch`). With `BB_FIRE_INTERVAL` above a tick it is normally 1;
+ * this only bounds a pathological catch-up. APPROX. */
+export const BB_FIRE_BURST_MAX = 6;
+
+/**
+ * ⚠️ THE HOOD IS THE ONLY ANGLE IN THIS GAME MEASURED IN DEGREES, AND ONLY ON THE SPEC.
+ *
+ * The sim is radians throughout — `dsin`/`dcos`/`datan2` are DETERMINISTIC trig, not DEGREE
+ * trig (the `d` has burned people), `BB_TURRET_SLEW` is rad/s and `BB_AIM_TOL` is rad. But a
+ * hood angle is a number a player reads off a slider, and "35°" is what that player means;
+ * Chain Reaction makes the same call for `catapultYaw` ("in DEGREES relative to chassis
+ * forward"). So it is stored in degrees and converted HERE, once, at the boundary — never
+ * passed to a trig function raw.
+ */
+export const BB_DEG = Math.PI / 180;
+
+/** how fast a TURRET's pitch axis slews, in RADIANS per second (~92 deg/s). APPROX, and deliberately
+ * slower than the yaw slew: elevation carries the barrel's weight where yaw turns a ring. The
+ * HIVE's up-CELL is the only thing a turret aims at (launched elements never enter a FLOWER),
+ * and the elevation that cell needs swings widely with range — a lob from beside the HIVE
+ * against a flat shot from the far corner at a 53.5–65.6 in opening — so a turret that
+ * re-elevated instantly would make close and far shots feel identical. Driving between them is
+ * what the pitch axis exists to make cost something. */
+export const BB_TURRET_PITCH_SLEW = 1.6;
+/** the pitch envelope a turret can actually reach, in RADIANS — level to ~80 deg. A barrel
+ * cannot depress below level (it would fire into the robot's own deck) and cannot go fully
+ * vertical (the feed path is in the way). APPROX both ends. */
+export const BB_TURRET_PITCH_MIN = 0;
+export const BB_TURRET_PITCH_MAX = 80 * BB_DEG;
+
+/**
+ * EVERY LAUNCHER'S TOP SPEED (in/s) — a turret's flywheel ceiling AND a dumper's, and the reason
+ * a launcher's range is a number rather than an infinity. (It was `BB_TURRET_SPEED_MAX` while
+ * only a turret solved its speed; the dumper solves its own per shot now too, so it is shared.)
+ *
+ * A launcher solves its own arc (`bbTurretSolution`, `bbHoodSpeed`), so unless the speed is
+ * bounded somewhere it reaches every opening on the field from everywhere and the pitch envelope
+ * and the hood become decoration. A dump whose hood has no solution fires AT this cap.
+ * SIZED SO IT IS NOT NORMALLY WHAT BITES: the longest legal shot at a HIVE is a robot in the
+ * far corner (~66, 66) firing at the opposite up-CELL — d = 111.8 in, dh = 47.6 in above a
+ * turret muzzle, which the minimum-speed solution takes at **255.5 in/s**. 260 clears that with
+ * a little margin, so today the thing that makes a turret miss is the SLEW (aim is a physical
+ * state) and not the range. A target further or higher than the HIVE would fall short, which is
+ * a miss the driver can see and drive out of rather than a silent skip.
+ *
+ * APPROX, like every launcher number here — see the risks in `docs/biobuzz/plan-mechanisms.md`.
+ */
+export const BB_LAUNCH_SPEED_MAX = 260;
+
+/** the muzzle speed a launcher fires at when there is NO target to solve against (in/s) — a
+ * turret or dumper with nothing on its open side still fires, into nothing in particular.
+ * APPROX: the old drum's tuned speed, kept as a neutral number. */
+export const BB_LAUNCH_SPEED_DEFAULT = 175;
 
 /** the launcher's plate channel, in inches — `GAP` is the clear width between the two plates
  * a POLLEN passes between, `OVERHANG` how far they reach past the flywheel. GAP is
@@ -455,22 +652,12 @@ export const BB_LAUNCH_Z0 = 10;
  * than being an independent number. APPROX with the element. */
 export const BB_LAUNCH_PLATE_GAP = BB_POLLEN_R * 2 + 0.3;
 export const BB_LAUNCH_PLATE_OVERHANG = 1.2;
-/** lateral spacing of a TWIN turret's two barrels from the turret centre (in) — half the
- * plate gap, so the two channels sit shoulder to shoulder. */
-export const BB_TWIN_BARREL_OFFSET = BB_LAUNCH_PLATE_GAP / 2;
-/** a twin turret's throughput bonus and the mass floor its second flywheel assembly adds. */
-export const BB_TWIN_FIRE_MULT = 1.15;
-export const BB_TWIN_MASS_FLOOR = 2.5; // lb on the chassis mass FLOOR
+/** the mass floor a DOUBLE turret's second turret assembly adds (lb on the chassis mass FLOOR).
+ * Its two turrets share one feed and one cadence clock (`BB_FIRE_INTERVAL`), so there is no
+ * throughput bonus — the second turret is what lets it launch NECTAR, not a faster stream. */
+export const BB_TWIN_MASS_FLOOR = 2.5;
 
-/** DRUM: a chassis-wide flywheel drum. `MAX` is its pocket count (an 18" drum of 3" pockets),
- * `INTERVAL` the nominal gap between shots with `JITTER` of natural variation either side,
- * and `SPEED` the uniform horizontal launch speed. APPROX — all four are CR's tuning. */
-export const BB_DRUM_MAX = 6;
-export const BB_DRUM_INTERVAL = 1 / 30;
-export const BB_DRUM_JITTER = 0.55;
-export const BB_DRUM_SPEED = 175;
-
-/** single-shooter cadence (s between shots) — 13 POLLEN/s. The turret ACCUMULATES this
+/** shooter cadence (s between shots) — 13 elements/s, shared by both turrets of a double. The turret ACCUMULATES this
  * interval rather than re-anchoring to `world.time`, so the sub-tick remainder carries and
  * the long-run rate averages exactly 13/s instead of tick-quantizing to 12 or 15. APPROX. */
 export const BB_FIRE_INTERVAL = 1 / 13;
@@ -480,14 +667,18 @@ export const BB_FIRE_INTERVAL = 1 / 13;
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
- * The EXPANSION PRISM (in) a robot may grow into once the match starts.
+ * The EXPANSION PRISM (in) a robot may grow into once the match starts — R105.A (V1, p122):
+ * "at all times must remain within a 18 in. (45.70 cm) by 24 in. (61.0 cm) by 29 in. (73.65 cm)
+ * tall sizing volume when fully expanded". Manual numbers, not a guess.
  *
- * APPROX, and the single biggest robot-envelope guess in this file. R105 says expansion is
- * bounded but that "Sizing Constraints and more details will be released at Kickoff", so 24"
- * is carried over from Chain Reaction's manual as a plausible bound rather than a known one.
- * `BB_EXPANSION` is what that leaves past the 18" starting cube.
+ * TWO horizontal dimensions, and the rule does not say which chassis axis gets which: the
+ * volume is oriented only in HEIGHT ("the 29 in. dimension is always the vertical height"). So
+ * a robot may grow to 24 along ONE horizontal axis while staying within 18 along the other,
+ * and it may pick either. `BB_PRISM` is the long side, `BB_PRISM_NARROW` the short one.
+ * `BB_EXPANSION` is what the long side leaves past R102's 18" starting cube.
  */
 export const BB_PRISM = 24;
+export const BB_PRISM_NARROW = 18;
 export const BB_EXPANSION = BB_PRISM - ROBOT_MAX_SIZE; // 6" past the starting cube
 
 /**
@@ -495,8 +686,9 @@ export const BB_EXPANSION = BB_PRISM - ROBOT_MAX_SIZE; // 6" past the starting c
  *
  * The CEILING is R102's 18" starting cube less a working inch for the bumper and frame slop a
  * real build has. The FLOORS are DECODE's per-intake floors, because there is no BIOBUZZ rule
- * to argue a different one from: Section 9 (ARENA) is the page that would tell us how big a
- * start zone is, and it lands at Kickoff. All four are APPROX.
+ * to argue a different one from: V1 sets robot size CEILINGS (R102, R105) and no minimum, and
+ * its start rule (G304) is a set of pose clauses rather than a start zone a small chassis
+ * would have to fill. All four are APPROX.
  */
 export const BB_MIN_LENGTH = 13.5;
 export const BB_MAX_LENGTH = 17;
@@ -508,14 +700,32 @@ export const BB_MAX_WIDTH = 17;
  *
  * 1. WHAT BIOBUZZ WANTS. The SWEEPER DEPLOYS, so it does not have to fit inside R102's 18"
  *    starting cube alongside the chassis — that is what most real FTC intakes do. But it is
- *    real structure once deployed, so chassis + sweepers must fit the EXPANSION prism, and
- *    which AXIS it eats depends on the mount, which is the whole point of having mounts:
+ *    real structure once deployed, so chassis + sweepers must fit R105.A's 18 × 24 EXPANSION
+ *    prism, and which AXIS it eats depends on the mount, which is the whole point of having
+ *    mounts:
  *      • front / back → one reach off the LENGTH
  *      • front+back   → TWO reaches off the LENGTH (a sweeper on each end)
  *      • side         → TWO reaches off the WIDTH (a sweeper on each flank)
+ *    THE BOX TUBE COUNTS TOO. Its placement point (`bbPlacePointLocal`) sits `BB_PLACE_REACH`
+ *    past the footprint along the tube's mount direction, and the tube is the structure that
+ *    reaches it, so it occupies that much of the envelope: an END mount off the length, a
+ *    FLANK mount off the width, and a CORNER mount its diagonal's component off BOTH. It used
+ *    to be left out, which let the builder offer a maxed chassis whose tube poked past R105.
  *    NOT floored to the minimum on purpose: when the deployed sweepers leave nothing legal
  *    the max drops BELOW the min, and `bbMountFits` is what reports that combination as
  *    impossible. Flooring here would instead hand back a robot that overruns the prism.
+ *
+ *    ⚠️ R105 DOES NOT SAY WHICH AXIS IS THE 24, so there are two candidate rectangles — the
+ *    LENGTH axis long, or the WIDTH axis long — and the legal set is their UNION, which is not
+ *    a rectangle two independent sliders can describe. One is picked PER BUILD, from the
+ *    fields that do not move under the sliders (intake, intake mount, tube mount, drivetrain):
+ *    a rectangle whose MINIMUM chassis fits the prism beats one whose minimum does not, then
+ *    the wider pair of ranges wins, and a tie goes to the length-long one. Choosing off the
+ *    size itself would make the range move as the slider moves, and a coercer that could land
+ *    in a different rectangle on its second pass would not be idempotent. The price is that a
+ *    few chassis legal only in the OTHER rectangle are not offered, which is the safe
+ *    direction. With no tube this is byte-identical to the old single-24 envelope: every
+ *    non-sweeper axis is already capped at `BB_MAX_*` 17, under the narrow side's 18.
  *
  * 2. WHAT THE SHARED COERCER CURRENTLY ALLOWS. `coerceSpec` has a `game === 'chain'` arm that
  *    swaps in CR's size envelope, and no BIOBUZZ arm yet (Lane B owns adding one — see
@@ -527,6 +737,13 @@ export const BB_MAX_WIDTH = 17;
  * range simply widens to term 1 the moment term 2 stops binding. The intersection is also
  * what keeps `BB_PRESETS` a coercer no-op, which is what makes a preset card highlight as
  * selected — smoke asserts it.
+ *
+ * ⚠️ THE PRISM-DERIVED MAXIMUMS ARE FLOORED TO `BB_SIZE_STEP`. A corner Box Tube reaches
+ * `BB_PLACE_REACH · √½` (1.669…) along each axis, so `18 − reach` is 16.331227996399747, and the
+ * coercer clamped a chassis to exactly that, which the builder printed as a 15-digit width
+ * (owner report, 2026-09-13). Flooring keeps the limit inside the prism, keeps coercion
+ * idempotent, lands every clamped size on the slider's own grid, and re-coerces a robot already
+ * saved with the long number onto it.
  */
 export function bbSizeLimits(spec: RobotSpec): {
   minLength: number;
@@ -534,32 +751,92 @@ export function bbSizeLimits(spec: RobotSpec): {
   minWidth: number;
   maxWidth: number;
 } {
+  return bbEnvelope(spec).limits;
+}
+
+/**
+ * How far past the CHASSIS box this build's deployed structure reaches along each chassis
+ * axis, in total over both ends of that axis (in): sweepers plus the Box Tube. The one
+ * description of "what R105 has to contain besides the frame", shared by `bbSizeLimits` and
+ * the smoke lane, so the envelope and the check against it cannot measure different robots.
+ */
+export function bbEnvelopeReach(spec: RobotSpec): { length: number; width: number } {
   const reach = INTAKE_PRESETS[spec.intake].reach;
   const mount = bbIntakeMountOf(spec);
   const ends = mount === 'front' || mount === 'back' ? 1 : mount === 'frontback' ? 2 : 0;
   const flanks = mount === 'side' ? 2 : 0;
-  const shL = lengthLimits(spec.intake);
-  const shW = widthLimits(spec.intake, spec.drivetrain);
+  const lift = bbLiftOf(spec);
+  // `Math.abs` of the exact unit vector: 1 on the axis an edge mount points along, 0 on the
+  // other, and SQRT1_2 on both for a corner, which is where a diagonal tube's tip actually is.
+  const tube = lift ? MOUNT_DIR[lift.mount] : { x: 0, y: 0 };
   return {
-    minLength: Math.max(BB_MIN_LENGTH, shL.min),
-    maxLength: Math.min(BB_MAX_LENGTH, BB_PRISM - ends * reach, shL.max),
-    minWidth: Math.max(BB_MIN_WIDTH, shW.min),
-    maxWidth: Math.min(BB_MAX_WIDTH, BB_PRISM - flanks * reach, shW.max),
+    length: ends * reach + Math.abs(tube.x) * BB_PLACE_REACH,
+    width: flanks * reach + Math.abs(tube.y) * BB_PLACE_REACH,
   };
 }
 
+/** the Frame sliders' step (in) — and the grid a size LIMIT derived from the prism is floored to
+ * (`bbSizeLimits`), so a clamped chassis is never a 15-digit number. The builder reads this. */
+export const BB_SIZE_STEP = 0.5;
+
+/** `v` floored to `BB_SIZE_STEP`, with a hair of tolerance so a limit that is already on the
+ * grid (17, 16.5) is not knocked a whole step down by float noise. */
+function floorToSizeStep(v: number): number {
+  return Math.floor(v / BB_SIZE_STEP + 1e-9) * BB_SIZE_STEP;
+}
+
+/** the resolved envelope: which rectangle of R105.A was picked (`lengthLong` — the 24 runs along
+ * the chassis LENGTH), the slider limits inside it, and whether its minimum chassis fits the
+ * prism at all. See `bbSizeLimits` for the rule. */
+function bbEnvelope(spec: RobotSpec): {
+  limits: { minLength: number; maxLength: number; minWidth: number; maxWidth: number };
+  lengthLong: boolean;
+  prismFits: boolean;
+} {
+  const ext = bbEnvelopeReach(spec);
+  const shL = lengthLimits(spec.intake);
+  const shW = widthLimits(spec.intake, spec.drivetrain);
+  const minLength = Math.max(BB_MIN_LENGTH, shL.min);
+  const minWidth = Math.max(BB_MIN_WIDTH, shW.min);
+  const candidate = (lengthLong: boolean) => {
+    const capL = lengthLong ? BB_PRISM : BB_PRISM_NARROW;
+    const capW = lengthLong ? BB_PRISM_NARROW : BB_PRISM;
+    const limits = {
+      minLength,
+      maxLength: Math.min(BB_MAX_LENGTH, floorToSizeStep(capL - ext.length), shL.max),
+      minWidth,
+      maxWidth: Math.min(BB_MAX_WIDTH, floorToSizeStep(capW - ext.width), shW.max),
+    };
+    // THE MINIMUM CHASSIS, not the max: the coercer widens an inverted range UP to the floor,
+    // so the floor is the size a build actually gets when nothing else fits, and it has to be
+    // inside the prism for the rectangle to be honest.
+    const prismFits = minLength + ext.length <= capL + 1e-9 && minWidth + ext.width <= capW + 1e-9;
+    const span = (Math.max(minLength, limits.maxLength) - minLength) + (Math.max(minWidth, limits.maxWidth) - minWidth);
+    return { limits, lengthLong, prismFits, span };
+  };
+  const a = candidate(true);
+  const b = candidate(false);
+  const pick = a.prismFits !== b.prismFits ? (a.prismFits ? a : b) : b.span > a.span + 1e-9 ? b : a;
+  return { limits: pick.limits, lengthLong: pick.lengthLong, prismFits: pick.prismFits };
+}
+
 /**
- * Can this intake preset be mounted this way at all?
+ * Can this intake preset be mounted this way at all, with this loadout?
  *
- * TRUE for every combination today — the sweeper deploys, so no mount can push the chassis
- * envelope below its own floor. Kept, and kept CALLED, on purpose: it is the one place that
- * answers "is this build possible" for both the coercer and the builder's greying-out, and
- * re-deriving that at two call sites the day a mechanism does constrain size is exactly how
- * the two drift apart.
+ * FALSE when the deployed sweepers plus the Box Tube leave no chassis inside R105.A's prism
+ * (a front+back triangle sweeper with a tube on an end, for one), or when the size range is
+ * empty. Kept, and kept CALLED, on purpose: it is the one place that answers "is this build
+ * possible" for both the coercer and the builder's greying-out, and re-deriving that at two
+ * call sites is exactly how the two drift apart.
+ *
+ * The coercer's fallback for a mount that does not fit is `front`, and `front` is always
+ * PRISM-legal at the floor: the deepest sweeper (5) plus a full end tube (2.36) on the 13.5
+ * floor is 20.9 of 24, and a flank tube on the widest floor (15.5) is 17.9 of 18.
  */
 export function bbMountFits(spec: RobotSpec, mount: BbIntakeMount): boolean {
-  const l = bbSizeLimits({ ...spec, intakeMount: mount });
-  return l.maxLength >= l.minLength && l.maxWidth >= l.minWidth;
+  const e = bbEnvelope({ ...spec, intakeMount: mount });
+  const l = e.limits;
+  return e.prismFits && l.maxLength >= l.minLength && l.maxWidth >= l.minWidth;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -569,33 +846,39 @@ export function bbMountFits(spec: RobotSpec, mount: BbIntakeMount): boolean {
 /** a floor of one POLLEN; NOT scaled with the rest. */
 export const BB_STORAGE_MIN = 1;
 /**
- * CEILING. APPROX, and RETUNED after looking at it.
+ * CEILING: **4 elements, POLLEN and NECTAR together. This is an OWNER RULING (2026-09-12), final.**
  *
- * The first pass at these two numbers was carried over from a game whose element is much
- * smaller, and it made a mid-size dumper hold THIRTY-NINE POLLEN with a ceiling of 122. The
- * gallery is what showed it: `launch-wall-bounce` dumped a full hopper and drew a single-file
- * line of pollen along the entire 144" wall, because thirty-nine 3" balls is not a hopper, it
- * is a third of the field's supply riding inside one robot.
+ * In the manual, G407 ("A ROBOT may not CONTROL more than 4 SCORING ELEMENTS") is only a
+ * WARNING: Table 10-4 gives it a VERBAL WARNING, with MAJOR + YELLOW only if STRATEGIC. The
+ * sim caps the hopper at 4 anyway, so a robot cannot hold a fifth element. The owner's ruling
+ * overrides the earlier request to lift this cap (Lane B relay 2, field-plan §4.3). The rules
+ * lane's G407 warning (`penalties.ts`, `BB_CONTROL_LIMIT`) stays as written. It is a separate
+ * number, and it still catches anything that reaches five without going through the hopper.
  *
- * The model now assumes ONE LAYER: a 3" POLLEN needs ~9 in² of hopper floor (hex packing is
- * 7.8, and nothing packs perfectly), plus the walls, the feed path and the shooter's own
- * volume — call it 12 in² apiece. A second layer would need a lift, and the shell has no
- * mechanism for one. That puts the default 15×17 turret at ~11 POLLEN and an open 18" dumper at
- * the 24 ceiling, which is the shape of a real FTC hopper.
+ * The staging rule agrees from the other side: §10.3.1 pre-loads exactly 4 POLLEN per ROBOT,
+ * so a legal robot starts FULL.
  *
- * STILL A GUESS. Section 7 (the element) and Section 10 (Game Details) both land at Kickoff,
- * and either could move the diameter — which moves all of this. It is one constant.
+ * ── THE VOLUME LAW IS KEPT UNDERNEATH ──────────────────────────────────────
+ * `bbStorageMax` still runs the one-layer packing model (~12 in² of hopper floor per 3" POLLEN)
+ * and the archetype/mount multipliers. They remain the honest description of the hardware. The
+ * cap binds first for every chassis in the legal envelope, and the volume law stays written
+ * down so it takes over again if the ruling ever changes. The number a robot may hold is the
+ * SMALLER of what fits and what the ruling allows.
+ *
+ * ⚠️ CONSEQUENCE: the storage slider is a 1–4 dial and every archetype reaches the same
+ * ceiling, so hopper size does not tell two builds apart. Cadence, range and cycle time do.
  */
-export const BB_STORAGE_MAX = 24;
-export const BB_STORAGE_DEFAULT = 8;
+export const BB_STORAGE_MAX = 4;
+/** a legal robot starts FULL: §10.3.1 stages exactly 4 pre-loaded POLLEN per ROBOT. */
+export const BB_STORAGE_DEFAULT = 4;
 
 /** square inches of footprint per stored POLLEN — the derived cap's only size term, so it is
- * the single dial for storage across every archetype, mount and chassis size. APPROX; see the
- * note on `BB_STORAGE_MAX` for where 12 comes from. */
+ * the single dial for storage across every archetype, mount and chassis size. APPROX: a
+ * one-layer packing model, ~12 in² of hopper floor per 3" POLLEN. */
 export const BB_STORE_AREA_PER_BALL = 12;
 export const BB_STORE_TURRET_MULT = 0.55; // a turret loses centre volume to the rotor + shooter
 export const BB_STORE_TWIN_MULT = 0.45; // a second shooter assembly eats even more of it
-export const BB_STORE_LAUNCHER_MULT = 1.0; // drum + dumper: open hopper (large, equal)
+export const BB_STORE_LAUNCHER_MULT = 1.0; // dumper: open hopper
 /** INTAKE MOUNT storage cost — every mounted edge is an OPENING the hopper cannot use.
  * front and back are mirror images (one open end), so a rear sweeper is a free stylistic
  * choice; two mounts cost real volume. SIDE is harshest, because the flanks run the full
@@ -611,14 +894,21 @@ export function bbMountStoreMult(mount: BbIntakeMount): number {
 }
 
 /** the MAX POLLEN this robot can hold — footprint × an archetype factor × the intake-mount
- * factor, clamped to [MIN, MAX]. */
+ * factor, clamped to [MIN, MAX].
+ *
+ * The volume law below describes the HARDWARE and `BB_STORAGE_MAX` is the owner's 4-element cap
+ * (2026-09-12). For every chassis in the legal size envelope the volume answer is larger, so the
+ * cap is what actually binds and this returns 4. See the note on `BB_STORAGE_MAX` for why both
+ * layers are kept. */
 export function bbStorageMax(spec: RobotSpec): number {
   const area = spec.length * spec.width;
-  const mode = (spec.scoreMode ?? BB_DEFAULT_SCORE_MODE) as BbScoreMode;
+  // Through the RESOLVER, not `spec.scoreMode`: the container is authoritative and the flat
+  // field only mirrors it (a legacy `drum` reads as a dumper here too).
+  const kind = bbLauncherOf(spec, BB_HOOD_DEFAULT_DEG).kind;
   const mult =
-    (mode === 'turret'
+    (kind === 'turret'
       ? BB_STORE_TURRET_MULT
-      : mode === 'twinturret'
+      : kind === 'twinturret'
         ? BB_STORE_TWIN_MULT
         : BB_STORE_LAUNCHER_MULT) * bbMountStoreMult(bbIntakeMountOf(spec));
   const cap = Math.round((area / BB_STORE_AREA_PER_BALL) * mult);
@@ -644,7 +934,16 @@ export function bbHopperCap(spec: RobotSpec): number {
  * priced into the base chassis. Threaded into `massLimits` by the coercer and by the
  * builder's mass slider, so the floor the UI offers is the floor the sim enforces. */
 export function bbMassFloorBump(spec: RobotSpec): number {
-  return (spec.scoreMode ?? BB_DEFAULT_SCORE_MODE) === 'twinturret' ? BB_TWIN_MASS_FLOOR : 0;
+  const launcher = bbLauncherOf(spec, BB_HOOD_DEFAULT_DEG);
+  // A SECOND FLYWHEEL ASSEMBLY, and now A MAST — both are hardware bolted to the chassis, and
+  // both were previously invisible to the mass model. `BB_LIFT_MASS_FLOOR` existed as a
+  // constant with no reader, which is the same shape of bug `BB_TURRET_SLEW` was: a number
+  // documenting an intention nothing implemented.
+  //
+  // Read through `bbLauncherOf` rather than off `spec.scoreMode`: the container is authoritative.
+  const twin = launcher.kind === 'twinturret' ? BB_TWIN_MASS_FLOOR : 0;
+  const lift = bbLiftOf(spec) ? BB_LIFT_MASS_FLOOR : 0;
+  return twin + lift;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -652,7 +951,10 @@ export function bbMassFloorBump(spec: RobotSpec): number {
 // ─────────────────────────────────────────────────────────────────────────────
 
 export interface BbStartAnchor {
+  /** the anchor's name in the CANONICAL (blue) frame — see `bbAnchorName` for what a player sees */
   name: string;
+  /** which perimeter wall the robot backs onto, in the canonical frame */
+  wall: 'rear' | 'audience' | 'side';
   pos: { x: number; y: number };
   heading: number;
 }
@@ -663,37 +965,51 @@ export interface BbStartAnchor {
  *
  * TWO anchors, because a BIOBUZZ alliance is two robots and each locks one so they cannot
  * stack. There is no third or fourth because there is no known reason for one: CR's extra
- * pair existed to put a robot on a Ring Stand, and BIOBUZZ has no such structure published.
+ * pair existed to put a robot on a Ring Stand, and BIOBUZZ has no such structure.
  *
- * THEY ARE LEGAL AS WRITTEN, which they were not. G304 asks for three things a pose can
- * satisfy on its own — own side, CONTACTING the perimeter wall, NOT in a LOADING ZONE — and
- * the old pair satisfied one: at (60, ±36) the chassis stopped 2 in short of the wall, and the
- * BOTTOM one sat squarely in blue's LOADING ZONE (`BB_LZ.blue`, y ∈ [−48, −24]). `spawn.ts`
- * repaired both every single spawn, which worked and hid the problem: the anchor a builder
- * sees, the anchor the selector labels TOP/BOTTOM, and the pose the robot actually got were
- * three different things. An anchor that needs repairing is a wrong anchor.
+ * ── THEY ARE ON THE REAR AND AUDIENCE WALLS, AND THAT IS G304 ──────────────
+ * G304 (manual-distilled §6.2, p104) asks a start pose for four things at once: fully on the
+ * alliance's own side (A), TOUCHING the perimeter wall (C), clear of every FLOWER foot and
+ * scoring volume (D), and NOT in the LOADING ZONE (E). C and E fight: a robot must be against
+ * the perimeter, and the LOADING ZONE is itself against the perimeter — so the legal frontage
+ * is the wall MINUS that zone. Blue's zone (`BB_LZ.blue`, x ∈ [61, 72]) eats the useful middle
+ * of blue's own SIDE wall, which is exactly where both anchors used to sit.
  *
- *   x = 61.5   the +x wall at 72 less a default chassis half-extent of 10.5, so the footprint
- *              CONTACTS the wall rather than hovering off it. Spec-dependent by nature — a
- *              deeper sweeper reaches further — so `bbSnapStart` still runs and still owns the
- *              exact seating; it now has nothing to move, not merely less to move.
- *   y = +36    unchanged. The quarter point of the wall, clear of blue's zone and of the
- *              GARDEN strip at y ≈ 71.
- *   y = −60    was −36, inside the zone. Below it now, with 3.5 in of clearance at both ends
- *              (the footprint spans −68.5 … −51.5 against a zone edge at −48 and a wall at −72)
- *              and 96 in between the two anchors, so two robots cannot reach each other.
+ * So they moved to the two walls an alliance shares with nobody's zone:
  *
- * STILL APPROX. Section 9 (ARENA) is the page that says where a robot may actually start and
- * it lands at Kickoff; `startLegality` is FALSE for this game, so these are a convenience
- * rather than a rule the server enforces. What changed is that the convenience is now
- * self-consistent.
+ *   index 0  REAR wall     (34, 61.5) facing −y.  x = 34 keeps the footprint clear of blue's
+ *                          GARDEN strip (x ≥ 49) and of F2, which is on RED's half at x = −24.
+ *   index 1  AUDIENCE wall (46, −61.5) facing +y. x = 46 clears F4's foot (x ∈ [21, 27]) by
+ *                          seven inches on one side and blue's LOADING ZONE (x ≥ 61) by three
+ *                          on the other.
+ *
+ * `y = ±61.5` is ±72 less a default chassis half-extent of 10.5, so the footprint CONTACTS its
+ * wall rather than hovering off it. Spec-dependent by nature — a deeper sweeper reaches
+ * further — so `bbSnapStart` still re-seats per build; it now has a hair to move, not a foot.
+ *
+ * ⚠️ **APPROX, AND IN ONE PLACE: THE FRONTAGE.** The CLAUSES are verbatim, but two of the
+ * shapes they are measured against are figure-derived — `BB_LZ` is a Fig 9-2/9-3 read with
+ * ±0.5 in of slop on the tape edge, and `BB_FLOWER_FOOT` is owner CAD rather than a printed
+ * dimension. The three-inch margin at the LOADING ZONE end of anchor 1 is deliberate cover for
+ * exactly that: at ±0.5 in of tape error the pose is still plainly legal. The ±72 walls, the
+ * x = 0 seam and the FLOWER centres are measured and are not APPROX.
  *
  * ORDER IS LOAD-BEARING: a 2-robot alliance defaults to anchors 0 and 1, so index 0 must be
- * the TOP (y ≥ 0) anchor and index 1 the BOTTOM one.
+ * the TOP (y ≥ 0) anchor and index 1 the BOTTOM one (`bbAnchorCat`). They are 123 in apart —
+ * opposite ends of the field — so two robots of one alliance cannot reach each other at the
+ * buzzer, which is the whole reason there are two.
  */
 export const BB_START_POSES: readonly BbStartAnchor[] = [
-  { name: 'START · TOP', pos: { x: 61.5, y: 36 }, heading: Math.PI },
-  { name: 'START · BOTTOM', pos: { x: 61.5, y: -60 }, heading: Math.PI },
+  { name: 'TOP · REAR WALL', wall: 'rear', pos: { x: 34, y: 61.5 }, heading: -Math.PI / 2 },
+  { name: 'BOTTOM · AUDIENCE WALL', wall: 'audience', pos: { x: 46, y: -61.5 }, heading: Math.PI / 2 },
+  // THE SIDE-WALL PAIR (owner, 2026-09-13: "come up with some default positions"). The start
+  // editor offers each role two anchors, like Chain Reaction's corners. Both back onto the
+  // alliance's OWN side wall (x = 72 − 10.5, facing into the field) on either side of its LOADING
+  // ZONE (y ∈ [−48, −24], G304.E): TOP at y = 45 clears the zone and F3's foot (y ∈ [21, 27]),
+  // BOTTOM at y = −60 sits between the zone and the audience corner. Indices 0 and 1 are still
+  // the TOP / BOTTOM defaults a 2-robot alliance spreads onto; these are the alternatives.
+  { name: 'TOP · SIDE WALL', wall: 'side', pos: { x: 61.5, y: 45 }, heading: Math.PI },
+  { name: 'BOTTOM · SIDE WALL', wall: 'side', pos: { x: 61.5, y: -60 }, heading: Math.PI },
 ];
 
 /** how many start anchors this game offers — read by the shared per-game start-index clamp
@@ -711,8 +1027,31 @@ export const bbDefaultIndex = (cat: StartCat): number => {
   const i = BB_START_POSES.findIndex((_, idx) => bbAnchorCat(idx) === cat);
   return i >= 0 ? i : 0;
 };
-export const bbRoleLabel = (cat: StartCat | undefined): string =>
-  cat === 'close' ? 'TOP' : cat === 'far' ? 'BOTTOM' : '-';
+/**
+ * THE ROLE AS A PLAYER READS IT — TOP means the pair of anchors drawn at the TOP of the field for
+ * THIS alliance.
+ *
+ * ⚠️ IT DEPENDS ON THE ALLIANCE, because this field is POINT-symmetric. The role slots are
+ * canonical (close = the blue-frame y ≥ 0 anchors), and red's anchors are those rotated 180°, so
+ * red's `close` anchors are drawn at the BOTTOM. Chain Reaction mirrors in x and never meets this;
+ * labelling red by the canonical slot put "TOP · REAR WALL" on the audience wall at the bottom of
+ * red's editor. Only the WORDS flip — the stored slot, the anchor indices and the 2v2 role split
+ * are unchanged.
+ */
+export const bbRoleLabel = (cat: StartCat | undefined, alliance: Alliance = 'blue'): string => {
+  if (cat !== 'close' && cat !== 'far') return '-';
+  return (cat === 'close') === (alliance === 'blue') ? 'TOP' : 'BOTTOM';
+};
+
+/** an anchor's name as `alliance` sees it: its role (`bbRoleLabel`) and the wall it is really on —
+ * red's rear-wall anchor is on the AUDIENCE wall once rotated, and a side wall stays a side wall. */
+export function bbAnchorName(index: number, alliance: Alliance = 'blue'): string {
+  const p = BB_START_POSES[index];
+  if (!p) return '-';
+  const wall =
+    alliance === 'blue' || p.wall === 'side' ? p.wall : p.wall === 'rear' ? 'audience' : 'rear';
+  return `${bbRoleLabel(bbAnchorCat(index), alliance)} · ${wall.toUpperCase()} WALL`;
+}
 
 /** a field point, optionally with a heading (radians). What `bbMirror` maps. */
 export interface BbPoint {
@@ -743,10 +1082,10 @@ export function bbMirror(p: BbPoint): BbPoint {
 // PENALTIES
 // ─────────────────────────────────────────────────────────────────────────────
 
-/** inches of bumper slack for the robot-robot contact test. The BIOBUZZ penalty engine is
- * EMPTY (`penalties.ts`) — Section 11 (Game Rules) is a Kickoff page, so there are no rules
- * to enforce. This constant exists because the edge-trigger scaffold is wired and tested; the
- * first real foul only has to add its own predicate. */
+/** inches of bumper slack for the robot-robot contact test the BIOBUZZ penalty engine
+ * (`penalties.ts`) reads. That engine enforces the V1 Section 11 rules a 2D sim can see (G402,
+ * G407's warning, G410, G417, G421); its header lists them and says why the rest are not
+ * modelled. */
 export const BB_FOUL_SLOP = 1;
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -766,16 +1105,22 @@ const BB_PRESET_ASSISTS: AssistConfig = {
   fieldCentric: false,
   aimAssist: true,
   autoIntake: true,
-  autoFire: true,
+  autoFire: false, // BIOBUZZ has no auto-fire — Aim Assist gates the driver's own fire (robot.ts `bbLaunch`)
 };
 
 /**
- * BIOBUZZ ROBOT PRESETS — one card per scoring archetype, so a single click sets a coherent
- * playstyle and the four cards between them demonstrate every mount.
+ * BIOBUZZ ARCHETYPE DEMOS — one card per launcher, so a single click sets a coherent playstyle
+ * and the three cards between them show every launcher, both kinds of mount and a Box Tube.
  *
- * FOUR cards, not CR's nine: the five named team robots in CR's list are real builds for a
- * real game, and inventing BIOBUZZ equivalents before Section 10 exists would be inventing
- * playstyles for a game nobody has read. These four are archetype DEMOS and say so.
+ * DEMOS, and they say so. The one real kit robot (the StarterBot) is defined in `presets.ts`
+ * and leads the builder's list; these follow it.
+ *
+ * ⚠️ `BB_PRESETS[0]` MUST STAY SNIPER, AS A LITERAL WITH NO `bbMech` CONTAINER. `coerce.ts`
+ * builds `BB_DEFAULT_SPEC` from it and is a leaf of the spawn chokepoint, so the default robot
+ * is whatever this first literal migrates to. Sniper's Box Tube is therefore attached at the
+ * display boundary instead (`BB_DEMO_LIFT`, `presets.ts`). Skimmer carries no container either:
+ * a double turret's NECTAR-turret cell resolves from the POLLEN turret's (`bbResolveMount2`),
+ * so `shooterMount: 'right'` alone coerces to a right + left pair.
  *
  * All numbers stay inside the coercer's ranges, so applying a card is a no-op through the
  * coercer and the card highlights as selected — smoke asserts this.
@@ -784,8 +1129,9 @@ const BB_PRESET_BUILDS: readonly RobotSpec[] = [
   {
     // long-range precision: a turret aims itself, so the chassis never has to face anything —
     // which is exactly the build that can afford FRONT+BACK sweepers and collect while
-    // driving in either direction. It pays ~25% of the hopper for that.
-    name: 'Sniper', teamName: 'Turret · shoots and collects any direction', teamNumber: 0,
+    // driving in either direction. A single turret feeds POLLEN only, so its FLOWER half is the
+    // Box Tube `BB_DEMO_LIFT` gives it.
+    name: 'Sniper', teamName: 'Single turret · shoots and collects anywhere', teamNumber: 0,
     length: 15, width: 17, intake: 'sloped', massLb: 24, drivetrain: 'swerve',
     driveRpm: 500, flywheelInertia: 0.2, canSort: false,
     scoreMode: 'turret',
@@ -794,8 +1140,8 @@ const BB_PRESET_BUILDS: readonly RobotSpec[] = [
   },
   {
     // volume hauler: a REAR dumper makes the whole cycle one straight line — drive forward to
-    // fill the hopper, reverse into range, unload. No turning around at either end, and two
-    // end mounts on opposite edges cost NO storage, so it keeps the biggest hopper in the set.
+    // fill the hopper, reverse into range, unload. No turning around at either end. The hopper
+    // is capped at 4 for every build, so what it offers is the cycle SHAPE, and it carries NECTAR too.
     name: 'Hauler', teamName: 'Dumper · fill forward, reverse and unload', teamNumber: 0,
     length: 15, width: 17, intake: 'sloped', massLb: 38, drivetrain: 'tank',
     driveRpm: 340, flywheelInertia: 0.2, canSort: false,
@@ -804,22 +1150,11 @@ const BB_PRESET_BUILDS: readonly RobotSpec[] = [
     assists: BB_PRESET_ASSISTS,
   },
   {
-    // the volume shooter: SIDE sweepers turn a mecanum's strafe into the collection tool —
-    // slide sideways along a line of POLLEN and hoover it up with the flank rollers, then face
-    // the target and stream. Open flanks are the harshest storage cost, and the smallest
-    // chassis in the set keeps the strafe quick.
-    name: 'Drummer', teamName: 'Drum · strafe-collect, stream from anywhere', teamNumber: 0,
-    length: 15, width: 15, intake: 'sloped', massLb: 25, drivetrain: 'mecanum',
-    driveRpm: 470, flywheelInertia: 0.3, canSort: false,
-    scoreMode: 'drum',
-    intakeMount: 'side', shooterMount: 'front',
-    assists: BB_PRESET_ASSISTS,
-  },
-  {
-    // fast wall-runner: an x-drive strafes as fast as it drives, so a BROADSIDE launcher lets
-    // it run the wall and fire sideways without ever turning — and the launch line then spans
-    // the chassis LENGTH rather than its width.
-    name: 'Skimmer', teamName: 'Twin turret · run the wall, fire broadside', teamNumber: 0,
+    // fast wall-runner: an x-drive strafes as fast as it drives, and a DOUBLE turret aims both
+    // of its turrets itself — POLLEN out of the right flank, NECTAR out of the left — so it
+    // scores either element on the move without ever turning. The two cells are partners
+    // (grid distance 2), which is what a double turret requires.
+    name: 'Skimmer', teamName: 'Double turret · both elements on the strafe', teamNumber: 0,
     length: 15, width: 16, intake: 'sloped', massLb: 26, drivetrain: 'xdrive',
     driveRpm: 520, flywheelInertia: 0.1, canSort: false,
     scoreMode: 'twinturret',

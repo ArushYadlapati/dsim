@@ -27,6 +27,12 @@
  * `ord` had a live machine and was missing from this list. When adding a region to
  * the fleet, add it HERE and to `RTT` in the same change.
  */
+// gru and jnb are sized to host since 2026-09-13 (shared-cpu-4x/1024, scripts/fly-deploy.sh
+// SATELLITE_SIZES), and they do host every room their own players open. They stay OUT of this
+// list, which is the candidate set for choosing a CROSS-region host, for a second reason the
+// memory was hiding: their real distances to syd/nrt and to each other (315-395ms) are above
+// `RTT_UNKNOWN`, so the host picker could not tell a far real pair from a missing row, and
+// `npm run test:mm` fails on exactly that. Adding them needs `RTT_UNKNOWN` re-thought first.
 export const DEPLOY_REGIONS = ['iad', 'ord', 'sjc', 'lhr', 'syd', 'nrt'] as const;
 export type Region = (typeof DEPLOY_REGIONS)[number];
 
@@ -48,12 +54,10 @@ const RTT: Record<string, Record<string, number>> = {
   lhr: { lhr: 0, iad: 76, ord: 95, sjc: 133, syd: 251, nrt: 236, gru: 185, jnb: 155 },
   syd: { syd: 0, iad: 190, ord: 195, sjc: 148, lhr: 251, nrt: 114, gru: 315, jnb: 395 },
   nrt: { nrt: 0, iad: 164, ord: 155, sjc: 109, lhr: 236, syd: 114, gru: 265, jnb: 355 },
-  // gru (São Paulo) and jnb (Johannesburg) have live machines but are NOT in
-  // DEPLOY_REGIONS, deliberately: both run at 512MB, which is under the 1024 the
-  // deploy script's own note says Node+Rapier needs, so they should not be chosen to
-  // HOST a match yet. They still need rows here — without one their players read as
-  // 300ms from everywhere and wait the full six seconds to be matched at all. With a
-  // row they are simply far, and pair to a real host on the normal schedule.
+  // gru (São Paulo) and jnb (Johannesburg). Held out of DEPLOY_REGIONS while they ran at
+  // 512MB; hostable since the launch sizing (2026-09-13) put them on shared-cpu-4x/1024.
+  // A region needs a row here either way — without one its players read as 300ms from
+  // everywhere and wait the full six seconds to be matched at all.
   gru: { gru: 0, iad: 118, ord: 135, sjc: 190, lhr: 185, syd: 315, nrt: 265, jnb: 340 },
   jnb: { jnb: 0, iad: 228, ord: 245, sjc: 285, lhr: 155, syd: 395, nrt: 355, gru: 340 },
 };

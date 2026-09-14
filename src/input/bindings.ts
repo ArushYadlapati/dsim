@@ -5,6 +5,8 @@
 export type KeyAction =
   | 'driveUp'
   | 'driveDown'
+  | 'tankRightUp'
+  | 'tankRightDown'
   | 'driveLeft'
   | 'driveRight'
   | 'rotateCCW'
@@ -13,13 +15,28 @@ export type KeyAction =
   | 'fire'
   | 'catalyst'
   | 'fling'
+  | 'bbPlaceNectar'
+  | 'bbPlace'
+  | 'bbNectar'
   | 'driveMode'
   | 'flipFront'
   | 'park'
   | 'start'
   | 'restart';
 
-export type PadAction = 'fire' | 'intake' | 'catalyst' | 'fling' | 'driveMode' | 'flipFront' | 'park' | 'start' | 'restart';
+export type PadAction =
+  | 'fire'
+  | 'intake'
+  | 'catalyst'
+  | 'fling'
+  | 'bbPlaceNectar'
+  | 'bbPlace'
+  | 'bbNectar'
+  | 'driveMode'
+  | 'flipFront'
+  | 'park'
+  | 'start'
+  | 'restart';
 
 export interface PadBindings {
   /** which stick translates the robot — the other stick's X axis turns */
@@ -45,6 +62,8 @@ export interface ControlBindings {
 export const KEY_ACTIONS: KeyAction[] = [
   'driveUp',
   'driveDown',
+  'tankRightUp',
+  'tankRightDown',
   'driveLeft',
   'driveRight',
   'rotateCCW',
@@ -53,6 +72,9 @@ export const KEY_ACTIONS: KeyAction[] = [
   'fire',
   'catalyst',
   'fling',
+  'bbPlaceNectar',
+  'bbPlace',
+  'bbNectar',
   'driveMode',
   'flipFront',
   'park',
@@ -60,12 +82,32 @@ export const KEY_ACTIONS: KeyAction[] = [
   'restart',
 ];
 
-export const PAD_ACTIONS: PadAction[] = ['fire', 'intake', 'catalyst', 'fling', 'driveMode', 'flipFront', 'park', 'start', 'restart'];
+export const PAD_ACTIONS: PadAction[] = [
+  'fire',
+  'intake',
+  'catalyst',
+  'fling',
+  'bbPlaceNectar',
+  'bbPlace',
+  'bbNectar',
+  'driveMode',
+  'flipFront',
+  'park',
+  'start',
+  'restart',
+];
 
 export const DEFAULT_BINDINGS: ControlBindings = {
   keys: {
     driveUp: ['w'],
     driveDown: ['s'],
+    // TANK steers as two sides: `driveUp`/`driveDown` are the LEFT track and these are the
+    // RIGHT one. They exist as actions because the right side used to read `arrowup`/
+    // `arrowdown` straight off the keyboard — the one pair of controls in the game that
+    // ignored the rebinder, so reassigning the arrows left them driving half the chassis AND
+    // firing whatever they had been moved to. The defaults are the keys that were hard-coded.
+    tankRightUp: ['arrowup'],
+    tankRightDown: ['arrowdown'],
     driveLeft: ['a'],
     driveRight: ['d'],
     rotateCCW: ['arrowleft', 'q'],
@@ -76,6 +118,17 @@ export const DEFAULT_BINDINGS: ControlBindings = {
     // CATAPULT throw (launcher catalyst mechanism) — its OWN button, so it is never
     // ambiguous with the claw's grab/place on the same press.
     fling: ['v'],
+    // BIOBUZZ Box Tube: place a held NECTAR into the FLOWER in reach. 'x' and 'z' extend the
+    // bottom-row mechanism cluster (c / v / b) leftward, so every mechanism button sits on one
+    // row under the drive hand; both were free on the default map.
+    bbPlaceNectar: ['x'],
+    // BIOBUZZ Box Tube: place a held POLLEN into the FLOWER in reach.
+    bbPlace: ['z'],
+    // BIOBUZZ HUMAN PLAYER: enter one NECTAR into the alliance's own LOADING ZONE. 'n' for
+    // nectar, and deliberately NOT on the c/v/b/x/z mechanism row: this is the one button that
+    // does something to the ALLIANCE rather than to the robot, and it is pressed at a cue
+    // rather than in the drive rhythm, so it sits away from the cluster a thumb sweeps.
+    bbNectar: ['n'],
     // BUTTERFLY: drop the other wheel set. 'b' for butterfly; free on the default map.
     driveMode: ['b'],
     flipFront: ['f'],
@@ -90,6 +143,19 @@ export const DEFAULT_BINDINGS: ControlBindings = {
       intake: [6, 1], // LT or B
       catalyst: [4], // LB
       fling: [10], // L3 (left stick click)
+      // D-DOWN — place a NECTAR. The pair sits on the d-pad because placement is a MOMENTARY
+      // press, which can afford to cost the drive thumb its stick; every trigger, bumper and
+      // face button was already taken. RS (11) is free again.
+      bbPlaceNectar: [13],
+      // D-UP — place a POLLEN.
+      bbPlace: [12],
+      // D-LEFT. It is NOT on D-DOWN, which this lane originally took: Lane B's placement pair
+      // landed on D-UP/D-DOWN in the same round, and two actions on one index is a silent
+      // double-fire, not a conflict the rebinder reports. The d-pad is still the right home —
+      // a MOMENTARY press can afford the drive thumb leaving its stick for an instant — and
+      // this button keeps its own direction, one step away from the pair it must not be
+      // confused with. RS (11) stays free.
+      bbNectar: [14],
       driveMode: [5], // RB — the only unused face/shoulder button
       flipFront: [3], // Y
       park: [2], // X

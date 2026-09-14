@@ -10,9 +10,13 @@ import {
   BB_HIVE_X,
   BB_LAUNCH_Z0,
   BB_POLLEN_R,
+  FLOWER_MOUTH,
   bbHopperCap,
 } from './config';
+import { otherSide } from './hive';
+import { bbIntakeAccepts } from './mechs';
 import { rectContains, type BbCellSide, type LocalRect, type ScoreTarget, type Vec3 } from './state';
+import { bbEvalStart } from './start';
 
 /**
  * BIOBUZZ ELEMENTS — the contract surface Lane A exports to Lane B
@@ -24,17 +28,16 @@ import { rectContains, type BbCellSide, type LocalRect, type ScoreTarget, type V
  * `robot.ts`, `drawRobot.ts` or the builder.
  *
  * ── WHAT IS REAL AND WHAT IS A STUB, AND WHY ────────────────────────────────
- * REAL: `pollenIn`, `capturePollen`, `releasePollen`. Capturing a ball you drove over and
- * throwing it back out is ROBOT behaviour, and R102's 18" cube plus the mount geometry are
- * enough to model it. These work, and the smoke checks drive them.
+ * REAL: `pollenIn`, `capturePollen`, `releasePollen`, `scoreTargets` and `evalStart`. Each of
+ * them was writable the moment the V1 manual gave it geometry — the mount and R102's 18" cube
+ * for the first three, Fig 9-12's FLOWERS and the HIVE for the fourth, G304 and the zone
+ * tables for the fifth. The smoke lane drives all five.
  *
- * STUBS, deliberately: `scoreTargets` returns `[]`, `evalStart` says legal, `actOnElement`
- * says false. All three answer questions only the manual can answer, and Sections 9 (ARENA),
- * 10 (Game Details) and 11 (Game Rules) of the V0 pre-season manual are each a single page
- * reading "will be updated with the Kickoff Competition Manual release on September 12, 2026".
- * A stub that returns nothing is honest. A guessed goal at a guessed coordinate worth a
- * guessed number of points is a thing that LOOKS finished, and the difference matters most on
- * the day someone opens the gallery to check the field.
+ * A STUB, deliberately: `actOnElement` says false. There is no BIOBUZZ action that is neither
+ * a capture nor a release nor the HIVE's own TIP, so the hook has nothing to dispatch yet; it
+ * exists so the first one that arrives is a case in a switch rather than a new path through
+ * four files. A hook that returns nothing is honest, and a guessed action bound to a guessed
+ * button is a thing that LOOKS finished.
  */
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -79,9 +82,18 @@ export function pollenIn(world: World, r: RobotState, mouth: LocalRect): Artifac
  *
  * `r.hopper` still gets a colour pushed, because the shared renderer, HUD and wire all read
  * hopper LENGTH; the two are mirrored, and `releasePollen` unmirrors them in the same step.
+ *
+ * ── WHICH ELEMENTS AN INTAKE REFUSES (owner ruling 2026-09-12) ─────────────
+ * A NECTAR (colour `red`/`blue`) is refused when:
+ *  · it belongs to the OTHER alliance — G408, for every build; and
+ *  · this robot's launcher cannot carry NECTAR at all (`bbCarriesNectar`: a SINGLE turret
+ *    feeds POLLEN only; a double turret and a dumper take their own NECTAR).
+ * Both are the one pure predicate `bbIntakeAccepts` (`mechs.ts`). A refused element is simply
+ * not taken: it stays on the floor for the solve to push, exactly like one meeting a full hopper.
  */
 export function capturePollen(world: World, r: RobotState, ball: Artifact): boolean {
   if (ball.state.kind !== 'ground') return false;
+  if (!bbIntakeAccepts(r.spec, r.alliance, ball.color)) return false;
   if (r.hopper.length >= bbHopperCap(r.spec)) return false;
   ball.state = { kind: 'held', robot: r.id, slot: r.hopper.length, lx: 0, ly: 0, side: 0 };
   ball.vel = { x: 0, y: 0 };
@@ -100,12 +112,36 @@ export function capturePollen(world: World, r: RobotState, ball: Artifact): bool
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
+ * TAKE ONE HELD ELEMENT OF `color` OUT OF `r` — the ONE place the hopper and the held set are
+ * unmirrored, used by the launch (`releasePollen`) and the Box Tube's placement (`play.ts`).
+ *
+ * Removes the LAST occurrence of `color` from `r.hopper` and returns the held ball of THIS robot
+ * with THAT colour at the highest `world.balls` index. It changes NOTHING and returns `null` when
+ * either half is missing: hopper and held set out of sync means something wrote one without the
+ * other, and inventing an element would break the conservation invariant this game's smoke
+ * proves. The returned ball is still `held` — the caller decides where it goes.
+ */
+export function takeHeld(world: World, r: RobotState, color: Artifact['color']): Artifact | null {
+  const j = r.hopper.lastIndexOf(color);
+  if (j < 0) return null;
+  for (let i = world.balls.length - 1; i >= 0; i--) {
+    const b = world.balls[i];
+    if (b.state.kind === 'held' && b.state.robot === r.id && b.color === color) {
+      r.hopper.splice(j, 1);
+      return b;
+    }
+  }
+  return null;
+}
+
+/**
  * Throw one held POLLEN back out, with velocity `v`.
  *
- * A LOB, NOT A SHOT. `scoreTargets()` is empty, so there is nothing to solve an arc against;
- * the caller hands over the velocity it wants and this puts a POLLEN on that trajectory. When
- * Section 9 gives BIOBUZZ real targets, the `target` argument is where the arc solution goes,
- * and every existing caller keeps working because it is optional.
+ * THE CALLER SOLVES THE ARC, NOT THIS FUNCTION. `scoreTargets()` returns the up-CELL, and the
+ * launcher (`robot.ts`, `bbSolveShot` / the hood) works the velocity out against it before
+ * calling here; this only puts a held element on that trajectory. `target` is accepted for
+ * the contract's signature and deliberately unused, and it is optional so a caller with
+ * nothing to aim at (a turret or dumper firing into open floor) still works.
  *
  * `origin` is an extension past the contract signature (which is `(world, r, v, target?)`) and
  * is optional for that reason: a turret fires from its ring and a turretless launcher from a
@@ -113,8 +149,16 @@ export function capturePollen(world: World, r: RobotState, ball: Artifact): bool
  * centre — inside the robot, which the separation pass then has to shove out through the
  * frame. Callers that do not care omit it and get the chassis centre.
  *
- * LIFO — the last POLLEN in is the first out. A hopper is a stack, not a queue: the feed path
+ * LIFO — the last element in is the first out. A hopper is a stack, not a queue: the feed path
  * is at the top.
+ *
+ * ⚠️ THE HELD ELEMENT RELEASED IS THE ONE WHOSE COLOUR LEAVES THE HOPPER (`takeHeld`). This
+ * used to release the held ball with the highest `world.balls` index while popping the hopper's
+ * last colour, which is the same ball only while every element is a POLLEN. Once NECTAR and
+ * POLLEN mix, the two drifted: a NECTAR could leave the robot while the hopper said a POLLEN
+ * had.
+ *
+ * `color` (trailing, optional) names which colour to release; absent, it is the hopper's top.
  */
 export function releasePollen(
   world: World,
@@ -122,25 +166,17 @@ export function releasePollen(
   v: Vec3,
   target?: ScoreTarget,
   origin?: Vec2,
+  color?: Artifact['color'],
 ): void {
-  void target; // no targets exist yet — see the note above
+  void target; // the caller has already solved the arc
   if (r.hopper.length === 0) return;
-  // the LAST held pollen of this robot, matching the `pop` below
-  let held: Artifact | null = null;
-  for (let i = world.balls.length - 1; i >= 0; i--) {
-    const b = world.balls[i];
-    if (b.state.kind === 'held' && b.state.robot === r.id) {
-      held = b;
-      break;
-    }
-  }
-  // Hopper and held-pollen set out of sync means something wrote one without the other. Bail
-  // rather than invent a POLLEN: a spawned ball would break the conservation invariant, which
-  // is the one property this game's smoke actually proves.
+  const held = takeHeld(world, r, color ?? r.hopper[r.hopper.length - 1]);
   if (!held) return;
-  r.hopper.pop();
   const o = origin ?? { x: r.pos.x, y: r.pos.y };
-  held.state = { kind: 'flight', target: r.alliance };
+  // `by` is what makes the opponent's CELL refuse this element (`play.ts`, owner ruling
+  // 2026-09-12). It is stamped HERE, at the one place a POLLEN becomes a flight, so no launcher
+  // archetype can forget it.
+  held.state = { kind: 'flight', target: r.alliance, by: r.alliance };
   held.pos = { x: o.x, y: o.y };
   held.vel = { x: v.x, y: v.y };
   held.z = BB_LAUNCH_Z0;
@@ -148,7 +184,7 @@ export function releasePollen(
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// STUBS — the manual has not published the rules these answer
+// SCORE TARGETS, START LEGALITY AND THE ACTION HOOK
 // ─────────────────────────────────────────────────────────────────────────────
 
 /** the mid-height of the up-CELL opening (in) — Fig 9-10 gives the opening as a band from
@@ -158,33 +194,85 @@ const CELL_AIM_Z = (BB_HIVE_OPEN_Z[0] + BB_HIVE_OPEN_Z[1]) / 2;
 /**
  * ACCEPTING RADIUS of a CELL opening (in).
  *
- * APPROX: the opening is a 20 x 12 rect (`BB_CELL_OPEN`, Fig 9-11), and `ScoreTarget` carries
- * one radius. 8 is the inscribed-ish compromise — under the 10 half-width so a shot at the
- * radius limit is still over the opening, over the 6 half-depth so the target is not
- * artificially harder than the real mouth. Replace with the rect when `ScoreTarget` grows one.
+ * APPROX: the opening is a 20 x 10.43 rect (`BB_CELL_OPEN`: `w` 20 by `d` = `BB_HIVE_CELL_LEN`,
+ * Fig 9-11), and `ScoreTarget` carries one radius. 8 is the inscribed-ish compromise — under the
+ * 10 half-width so a shot at the radius limit is still over the opening, over the 5.2 half-depth
+ * so the target is not artificially harder than the real mouth. Replace with the rect when
+ * `ScoreTarget` grows one.
  */
 const CELL_ACCEPT_R = 8;
 
-/** the CELL of `a`'s HIVE that currently faces UP — `world.biobuzz.hives[a].up`, the state the
- * tip machine will drive, so aim follows a real TIP the day tipping lands with no edit here.
+/**
+ * The CELL of `a`'s HIVE that a launcher should be POINTED AT.
+ *
+ * Settled, that is the one facing up — `world.biobuzz.hives[a].up`.
+ *
+ * ⚠️ THROUGH A SWING IT IS THE INCOMING CELL, FROM THE FIRST TICK OF THE TIP (owner feedback,
+ * 2026-09-12). `up` goes on naming the tray that is going DOWN until the swing settles, so a
+ * target list built off `up` held every turret on the emptying cell for four seconds and then
+ * snapped across the pivot at the settle — which is the opposite of tracking. A TIP is a
+ * four-second announcement that the target is moving, and the aim should start moving with it
+ * immediately; by the time the bar is level the turret is already on the cell that will be
+ * taking elements.
+ *
+ * AIM IS NOT CAPTURE, and the two answers are deliberately different for the first half of the
+ * swing: `hiveTakingSide` (`hive.ts`) still says `up` until the release, because a shot already
+ * in the air belongs to the tray that is still holding its load. So a volley in flight lands in
+ * the old cell while the new one is already the list's target.
+ *
+ * ⚠️ AIM ASSIST DOES NOT READ THIS (owner, 2026-09-13). A robot cannot sense which cell is up or
+ * swinging, so `play.ts` `bbAimTarget` aims at the NEARER cell of the own HIVE and pretends it is
+ * up. This list is the field's own answer, for the capture pass and the gallery.
  *
  * `world.biobuzz` is optional on `World` (it is absent in a DECODE or Chain Reaction world),
  * and the STAGED pose is the fallback for that one case rather than a `!`: a missing bag means
  * the caller is not in a BIOBUZZ match at all, and the field's own t = 0 tilt (§10.3.1
- * Fig 10-2) is the only honest answer to "which cell is up" when there is no match to ask. */
-function upCell(world: World, a: Alliance): BbCellSide {
-  return world.biobuzz?.hives[a].up ?? BB_HIVE_UP_STAGED[a];
+ * Fig 10-2) is the only honest answer to "which cell is up" when there is no match to ask.
+ */
+function aimCell(world: World, a: Alliance): BbCellSide {
+  const hive = world.biobuzz?.hives[a];
+  if (!hive) return BB_HIVE_UP_STAGED[a];
+  return hive.tipping > 0 ? otherSide(hive.up) : hive.up;
 }
 
 /**
- * Every place `a` can aim POLLEN, nearest-in-value first: its OWN up-CELL, the opponent's
- * up-CELL, then the four FLOWER tops.
+ * `owner`'s CELL on `side` as a target — where its opening is and which way it opens IF IT WERE
+ * THE UP CELL, whichever way the HIVE is actually tilted. ONE geometry for both readers:
+ * `scoreTargets` passes the cell that really is up, and Aim Assist (`play.ts` `bbAimTarget`)
+ * passes the NEARER cell and pretends it is up (owner, 2026-09-13).
  *
- * The opponent's CELL is in the list because it is a LEGAL shot that simply scores nothing —
- * `alliance` is set on both cells so a launcher can tell them apart and skip the one that
- * wastes a POLLEN, rather than the field pretending the opening is not there. The FLOWERS are
- * `alliance: null`: a FLOWER is owned at run time by whoever holds the top-most NECTAR in it
- * (§10.5.2), so it belongs to nobody at aim time.
+ * The mouth is the cell's own offset direction: an up cell opens AWAY from its pivot, back down
+ * the +y or −y it was raised along, so position and direction cannot disagree.
+ */
+export function hiveCellTarget(owner: Alliance, side: BbCellSide): ScoreTarget {
+  const s = side === 'south' ? -1 : 1;
+  return {
+    id: `hive:${owner}`,
+    alliance: owner,
+    pos: { x: owner === 'red' ? -BB_HIVE_X : BB_HIVE_X, y: s * BB_HIVE_CELL_DY },
+    z: CELL_AIM_Z,
+    r: CELL_ACCEPT_R,
+    mouth: { x: 0, y: s },
+  };
+}
+
+/**
+ * Every place `a` can aim POLLEN, nearest-in-value first: its OWN up-CELL, then the four
+ * FLOWER tops.
+ *
+ * ⚠️ **THE OPPONENT'S CELL IS NOT ON THIS LIST** (owner ruling 2026-09-12, field-plan §2.1).
+ * It used to be, on the reading that it was a legal shot which simply scored nothing. The
+ * ruling is stronger than that: an element launched by the other alliance does NOT ENTER at
+ * all — it misses and lands as ground, and it is not penalised. So the opponent's opening is
+ * not a place `a` can put a POLLEN, and a list of "where may `a` score" that carries it is
+ * telling a launcher about a target that cannot exist. `play.ts` enforces the same ruling at
+ * the capture end, off the flight element's `by`; this is the AIM end of one rule.
+ *
+ * The consequence for a caller that wants EVERY opening on the field — the capture pass is the
+ * only one — is that it must ask for both alliances and merge. `play.ts` does, by id.
+ *
+ * The FLOWERS are `alliance: null` and appear for both: a FLOWER is owned at run time by
+ * whoever holds the top-most NECTAR in it (§10.5.2), so it belongs to nobody at aim time.
  *
  * STATIC GEOMETRY ONLY. Positions come from the constants and from which CELL is up; nothing
  * here runs the tip, counts contents or decides whether a shot went in. A CELL centre sits
@@ -192,48 +280,15 @@ function upCell(world: World, a: Alliance): BbCellSide {
  * tilt — Fig 9-9/9-10), and the pivots are at x = -/+`BB_HIVE_X` for red/blue (Fig 9-10,
  * centre to centre 25.5).
  */
-/**
- * WHICH WAY A FLOWER'S MOUTH FACES — out of the wall it stands against, into the field.
- *
- * The FLOWER is a column on the perimeter, so its open top is reachable from one half-space
- * only: the field side. The wall side is the wall.
- *
- * ⚠️ `drawField.ts` holds a private `FIELD_SIDE` with exactly this table, for placing badges
- * where the perimeter will not clip them. Two copies of a four-entry map is two chances to
- * disagree about which way `rear` is; they should collapse into one exported constant, and
- * `drawField.ts` is not this lane's file — see `docs/biobuzz/HANDOFF-field.md`.
- */
-const FLOWER_MOUTH: Record<(typeof BB_FLOWERS)[number]['wall'], Vec2> = {
-  left: { x: 1, y: 0 }, // F1 stands on −x, opens toward +x
-  rear: { x: 0, y: -1 }, // F2 stands on +y, opens toward −y
-  right: { x: -1, y: 0 }, // F3 stands on +x, opens toward −x
-  audience: { x: 0, y: 1 }, // F4 stands on −y, opens toward +y
-};
-
 export function scoreTargets(world: World, a: Alliance): ScoreTarget[] {
-  const opp: Alliance = a === 'red' ? 'blue' : 'red';
   // THE CELL'S MOUTH IS ITS TILT DIRECTION. Both CELLS sit on the same pivot, offset along y
   // by ±`BB_HIVE_CELL_DY`, and the one facing UP opens AWAY from that pivot — the see-saw has
   // lifted its far end, so the opening looks back down the +y or −y the cell was raised along.
-  // It is the SAME sign as the cell's own offset, which is why this reads off `upCell` once
+  // It is the SAME sign as the cell's own offset, which is why this reads off `aimCell` once
   // and uses it for both the position and the direction: they cannot disagree.
-  const cell = (owner: Alliance): ScoreTarget => {
-    const s = upCell(world, owner) === 'south' ? -1 : 1;
-    return {
-      id: `hive:${owner}`,
-      alliance: owner,
-      pos: {
-        x: owner === 'red' ? -BB_HIVE_X : BB_HIVE_X,
-        y: s * BB_HIVE_CELL_DY,
-      },
-      z: CELL_AIM_Z,
-      r: CELL_ACCEPT_R,
-      mouth: { x: 0, y: s },
-    };
-  };
+  const cell = (owner: Alliance): ScoreTarget => hiveCellTarget(owner, aimCell(world, owner));
   return [
     cell(a),
-    cell(opp),
     ...BB_FLOWERS.map((f, i) => ({
       id: `flower:${i}`,
       alliance: null,
@@ -246,23 +301,32 @@ export function scoreTargets(world: World, a: Alliance): ScoreTarget[] {
 }
 
 /**
- * Is this robot's start pose legal? ALWAYS YES, and the sim module says so out loud with
- * `startLegality: false`, which is what keeps the server's DECODE-only start gate off this
- * game entirely.
+ * Is this robot's start pose legal? REAL NOW — `bbEvalStart` (`./start`) assesses G304 A/C/D/E
+ * against this field's own geometry, and this is the frozen-contract face of it.
  *
- * Start legality is a rule about ZONES, and Section 9 is the page that defines them. Making
- * one up would be worse than having none: a fabricated zone would reject poses a real BIOBUZZ
- * rule allows, and players would build around a constraint that does not exist.
+ * IT WAS A STUB THAT SAID YES, and the reason it was is gone: G304 is a rule about the
+ * perimeter, the LOADING ZONES and the FLOWER feet, Section 9 had not published any of those,
+ * and a fabricated zone would have rejected poses the real rule allows. The V1 manual
+ * published all four, so the honest answer is now an assessment rather than a shrug.
+ *
+ * ⚠️ **THE SERVER STILL DOES NOT GATE ON IT** — `startLegality` stays `false` in `sim.ts`, and
+ * that is not an oversight. `server/room.ts` gates a ready-up on `activeStartLegal`, which is
+ * DECODE's `evalStartPose` and is NOT dispatched per game: flipping the flag would have a
+ * BIOBUZZ pose judged against DECODE's launch lines and goal triangles, which is a worse
+ * answer than no answer. The flag flips when that gate learns to ask the module.
+ *
+ * WHY THE SHAPE IS DIFFERENT from `BbStartLegality`: this is the LANE CONTRACT
+ * (`docs/biobuzz-contract.md` §3), so Lane B sees `{ legal, reason? }` and nothing about
+ * which clause failed. Anything that wants the per-clause breakdown — the start editor, the
+ * smoke lane — calls `bbEvalStart` directly.
  */
 export function evalStart(
   spec: RobotSpec,
   a: Alliance,
   pose: StartPose,
 ): { legal: boolean; reason?: string } {
-  void spec;
-  void a;
-  void pose;
-  return { legal: true };
+  const v = bbEvalStart(spec, pose, a);
+  return v.reason === null ? { legal: true } : { legal: false, reason: v.reason };
 }
 
 /**

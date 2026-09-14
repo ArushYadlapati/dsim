@@ -2,8 +2,7 @@ import type { Alliance, GameId, GameSettings, RobotSpec, StartCat, StartPose, St
 import type { LobbyPlayer } from '../net/protocol';
 import { START_POSES, MAX_SAVED_STARTS, MAX_SAVED_STARTS_SUPPORTER } from '../config';
 import { chainAnchorCat, chainDefaultIndex } from '../games/chain/config';
-import { chainStartLegal } from '../games/chain/state';
-import { activeStartLegal } from '../sim/field';
+import { simModuleFor } from '../games/sim';
 
 export const otherCat = (c: StartCat): StartCat => (c === 'close' ? 'far' : 'close');
 
@@ -66,12 +65,17 @@ export function categoryPresets(cat: StartCat): CatPreset[] {
  * the category onto its TOP/BOTTOM Lab-corner anchors, DECODE onto its Close/Far presets. */
 export function categoryDefaultIndex(cat: StartCat, game?: GameId): number {
   if (game === 'chain') return chainDefaultIndex(cat);
+  // a game with its own roles answers through its module (BIOBUZZ's TOP / BOTTOM)
+  const byModule = simModuleFor(game).startDefaultIndex;
+  if (byModule) return byModule(cat);
   return categoryPresets(cat)[0]?.index ?? 0;
 }
 
 /** the category a preset/anchor index belongs to (game-aware, see above) */
 export function indexCategory(index: number, game?: GameId): StartCat {
   if (game === 'chain') return chainAnchorCat(index);
+  const byModule = simModuleFor(game).startAnchorCategory;
+  if (byModule) return byModule(index);
   return START_POSES[index]?.cat ?? 'close';
 }
 
@@ -145,7 +149,11 @@ export function startSelectionLegal(
   startPose: StartPose | null | undefined,
 ): boolean {
   if (!startPose) return true;
-  return game === 'chain'
-    ? chainStartLegal(spec, { x: startPose.x, y: startPose.y }, startPose.headingDeg)
-    : activeStartLegal(spec, alliance, startPose);
+  // THE MODULE ANSWERS, because this used to be `game === 'chain' ? … : …` and a two-valued
+  // branch over a five-valued registry is the seam bug CLAUDE.md names: BIOBUZZ fell into
+  // DECODE's arm and had its poses measured against DECODE's launch lines. A game with no
+  // start rule fills nothing and every pose is legal — which is what the old DECODE arm could
+  // not express. `src/games/sim.ts` is the SERVER-SAFE registry, so this stays DOM-free.
+  const legal = simModuleFor(game).startLegal;
+  return legal ? legal(spec, alliance, startPose) : true;
 }

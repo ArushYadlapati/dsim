@@ -23,16 +23,9 @@ export const TELEOP_DURATION = 120;
 export const ENDGAME_START = 20; // s left in teleop
 /** announcer countdown after pressing start ("Match begins in" + 3,2,1) */
 export const PRE_COUNTDOWN = 4;
-/** delay from match end (phase 'post') to the "match_result" fanfare/whoosh.
- * The results screen holds its score reveal until this exact moment so the
- * count-up + winner slam land on the whoosh. Shared by the audio (game.ts) and
- * the reveal animation (GameView). */
-export const MATCH_RESULT_REVEAL_MS = 2800;
-/** seconds the SERVER keeps stepping the sim in phase 'post' before it captures
- * the authoritative final score + saves the record — long enough for balls still
- * flowing down the ramp/gate to settle and score. Matched to the reveal delay so
- * the number saved to the leaderboard is exactly the one shown at the whoosh. */
-export const MATCH_SETTLE_S = MATCH_RESULT_REVEAL_MS / 1000;
+// WHEN A MATCH IS OVER after the buzzer is decided by the field coming to rest, not by a fixed
+// delay — see `src/sim/settle.ts` (`MATCH_SETTLE_HOLD_S`, `MATCH_SETTLE_MAX_S`). The old
+// `MATCH_SETTLE_S` / `MATCH_RESULT_REVEAL_MS` 2.8 s timer is gone on purpose.
 
 // --------------------------------------------------------------- season ----
 /** Balance / season version. Leaderboards (Phase 3) are keyed to this: it is
@@ -1511,18 +1504,6 @@ export const INTAKE_ROLLER_MM = { sloped: 72, vector: 48, triangle: 72 } as cons
 /** fore-aft thickness of the gate-opener tab on each shaft end. A tab on a beam end, not a
  * slab: drawing it the full roller diameter made the front read as one solid block. */
 export const INTAKE_OPENER_THICK = 0.9; // in
-/**
- * ALPHA ONLY — a live pose readout (x, y, heading) on the in-match chip row.
- *
- * Added to settle a disagreement about geometry with measurements instead of argument: a
- * search over 792 robot poses found essentially none that could intake off the gate
- * outflow, and the user does it routinely, so the search is wrong somewhere and the pose
- * that works has to come from the game rather than from me guessing at it.
- *
- * MUST NOT REACH MAIN. This branch is never merged (standing rule in CLAUDE.md), but if
- * that ever changes, set this to false first — it is a debug overlay, not a feature.
- */
-export const DEBUG_POSE_READOUT = true;
 /**
  * The roller beam is covered in rollers ALONG ITS WHOLE LENGTH, out to the gate openers that
  * cap its ends — not a short stack in the middle.

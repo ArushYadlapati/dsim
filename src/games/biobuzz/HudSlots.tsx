@@ -1,8 +1,14 @@
+import { useRef } from 'react';
+import type { Alliance } from '../../types';
 import type { HudSnapshot } from '../../game';
+import type { ArtifactColor } from '../../types';
 import type { GameBuilderProps, GameHudProps, ResultsSection } from '../module';
 import { BiobuzzBuilder } from './Builder';
+import { BB_PTS, BB_RP } from './config';
+import type { BbCellHud, BbPinHud, BiobuzzFieldHud } from './hud';
 import type { BiobuzzHud } from './hudRobot';
-import { BB_MODE_LABELS } from './labels';
+import type { BbAllianceScore, BbRankPoints } from './score';
+import type { BbNectarWhy } from './state';
 
 /**
  * The BIOBUZZ UI SLOTS that need JSX — the builder adapter, the two live-HUD slots and the
@@ -13,10 +19,20 @@ import { BB_MODE_LABELS } from './labels';
  * (`GameSimModule.hud` → `hudRobot.ts`'s `biobuzzHud`). It is typed `unknown` at the seam on
  * purpose: only this game's own components know its shape, so the cast happens HERE, once, in
  * `sliceOf`, rather than at every read.
+ *
+ * ── WHY THIS FILE CARRIES SO MUCH OF THE GAME ───────────────────────────────
+ * The BIOBUZZ field draws STATE and never text: a CELL's contents are a row of discs, a
+ * FLOWER's stack is a column of discs outside the wall, and there are no letters or digits
+ * anywhere in a match (field-plan §2.5, owner ruling 2026-09-12). Everything a driver has to
+ * COUNT rather than SEE therefore has to be here, and `hud.ts` exists to supply exactly that
+ * list. A chip removed from this file is a number a driver cannot get any other way.
  */
 
 /** the game's HUD slice off the snapshot. Undefined when a snapshot predates this game. */
 const sliceOf = (hud: HudSnapshot): BiobuzzHud | undefined => hud.gameHud as BiobuzzHud | undefined;
+
+/** the OTHER alliance. One spelling, because the results rows need it on every line. */
+const other = (a: Alliance): Alliance => (a === 'red' ? 'blue' : 'red');
 
 /**
  * The BUILDER props ADAPTER.
@@ -31,25 +47,276 @@ export function BiobuzzBuilderSlot({ spec, onChange }: GameBuilderProps) {
   return <BiobuzzBuilder spec={spec} setSpec={onChange} />;
 }
 
+/** the words for one held element, for the row's accessible name. POLLEN is yellow; a NECTAR
+ * is named by its alliance colour because whose NECTAR it is decides what it may do. */
+const HELD_WORD: Partial<Record<ArtifactColor, string>> = {
+  yellow: 'POLLEN',
+  red: 'red NECTAR',
+  blue: 'blue NECTAR',
+};
+
+/** "Holding 2 POLLEN, 1 red NECTAR. Next out: red NECTAR" — the disc row said in words. */
+function heldPhrase(held: readonly ArtifactColor[]): string {
+  if (held.length === 0) return 'Holding nothing';
+  const word = (c: ArtifactColor): string => HELD_WORD[c] ?? c;
+  const counts = (['yellow', 'red', 'blue'] as const)
+    .map((c) => [c, held.filter((h) => h === c).length] as const)
+    .filter(([, n]) => n > 0)
+    .map(([c, n]) => `${n} ${word(c)}`);
+  return `Holding ${counts.join(', ')}. Next out: ${word(held[held.length - 1])}`;
+}
+
 /**
- * The ROBOT-level chips in the live HUD's `.robot-status` row.
+ * THE UP-CELL LINE: how many more POLLEN would TIP this alliance's HIVE.
  *
- * Exactly the two facts `hudRobot.ts` argues a BIOBUZZ driver needs and cannot infer: how full
- * the hopper is (it decides whether to go collect or go score) and which archetype's rules are
- * in force (it decides whether the fire button STEERS the chassis). Rendered INSIDE the
- * existing row, so it inherits the chip styles and the touch-layout suppression.
+ * A NUMBER, never a word. `BB_TIP_POLLEN` is a measured table indexed by the NECTAR count
+ * (reference §4.1) — 3 NECTAR takes 3 POLLEN, 2 takes 6 — so "a few more" is not something a
+ * driver can act on, and it is not derivable from the discs the field draws. `needed` 0 means
+ * the next element takes it and still prints as 0 rather than as READY: every other value
+ * this line shows is a count of shots, and so is that one.
  *
- * ALLIANCE-level facts are the score bar's, not this row's — see `BiobuzzScoreBar`.
+ * TIPPING wins over the number for the 4 s of the swing. The HIVE does keep taking elements
+ * through it (`hiveTakingSide`), but which tray it is putting them in changes at the release,
+ * so a count of "more to tip" against a moving bar is a number about to be answered by a
+ * different cell.
+ */
+const cellLine = (c: BbCellHud | undefined): string =>
+  !c ? '' : c.tipping > 0 ? 'TIPPING' : `${c.needed} MORE TO TIP`;
+
+const fmtTime = (s: number): string => {
+  const t = Math.max(0, Math.ceil(s));
+  return `${Math.floor(t / 60)}:${String(t % 60).padStart(2, '0')}`;
+};
+
+/** seconds a G407 CONTROL warning stays on screen after the count moves. */
+const BB_WARN_HOLD_S = 3;
+
+/**
+ * THE PIN THAT BILLS SOONEST, or null when nobody is pinning.
+ *
+ * `pins` is usually empty and holds more than one entry only in a genuine multi-robot tangle.
+ * The chip shows ONE, and it is the one with the least time left on its tariff: every entry
+ * carries the same 20-point-per-3-second clock, so the soonest is the only one whose number
+ * changes what either driver does in the next second.
+ */
+const soonestPin = (pins: readonly BbPinHud[] | undefined): BbPinHud | null =>
+  !pins || pins.length === 0 ? null : pins.reduce((a, b) => (b.nextIn < a.nextIn ? b : a));
+
+/**
+ * THE PIN LINE. `PIN · 20 IN 1.4 S` — the ACT, the tariff, and the seconds until it lands.
+ *
+ * ONE DECIMAL, and that is the point of the line. `nextIn` runs 3 → 0 and a whole-second
+ * readout would spend a third of every tariff cycle showing the same digit while 20 points
+ * moved; the tenths are what make it read as a countdown rather than as a label. `billed` is
+ * appended only once it is non-zero, because a PIN that has not yet cost anything is a warning
+ * and a PIN that has is a running bill, and the driver reaction to the two is different.
+ */
+const pinLine = (p: BbPinHud): string =>
+  `PIN · ${BB_PTS.foulMajor} IN ${p.nextIn.toFixed(1)} S` +
+  (p.billed > 0 ? ` · ${p.billed * BB_PTS.foulMajor} BILLED` : '');
+
+/**
+ * WHAT THE NECTAR CHIP SAYS, ONE LINE PER REASON THE BUTTON WOULD REFUSE.
+ *
+ * The stock and the debt are two numbers and the answer is a THIRD fact neither of them
+ * gives, which is why `nectarWhy` exists on the slice at all: a full stock the alliance is
+ * not yet entitled to spend looks from the outside exactly like a full stock it is. A driver
+ * who presses and sees nothing happen cannot tell a refusal from a broken button, and the
+ * refusal is the common case for most of a match — so the chip names which refusal it was
+ * rather than leaving it to be inferred from a bare count.
+ *
+ * A RECORD rather than a chain of ternaries because the four cases are the four members of
+ * `BbNectarWhy`: adding a fifth reason to the slice then fails to compile here instead of
+ * quietly falling through to whichever branch happened to be last.
+ *
+ * `locked` HERE IS THE FROZEN FIELD — pre-match, the auto→teleop transition, after the
+ * buzzer — and NOT G410. G410 is `nectarLocked`, it is about a NECTAR entering a FLOWER, and
+ * it is stated on the score bar; the two are different rules about different acts and folding
+ * them into one line would tell a driver the wrong thing about both.
+ *
+ * `ok` HAS TWO WORDINGS, BECAUSE IT ARRIVES BY TWO ROUTES. A banked TIP grants ONE entry and
+ * the count is the whole point of the line. Past the 1:00 cue the ENTIRE remaining stock may
+ * go in without any TIP having banked anything, so `due` is 0 while the press is granted —
+ * and `0 DUE` reads as "nothing to do" in the one minute of the match where the answer is
+ * "all of it". OPEN is that state said out loud.
+ *
+ * OPEN IS THE SAME WORD THE `FLOWERS OPEN` CHIP USES, DELIBERATELY. They are one fact from
+ * two sides of the same 1:00 cue: the flip chip announces it for a few seconds and goes away,
+ * this one is the standing state for the rest of the match. Saying it twice with two
+ * different words would imply two different things had happened.
+ */
+const NECTAR_CHIP: Record<BbNectarWhy, (n: number, due: number) => string> = {
+  ok: (n, due) => (due > 0 ? `NECTAR ${n} · ${due} DUE` : `NECTAR ${n} · OPEN`),
+  'none-owed': (n) => `NECTAR ${n} · NONE OWED`,
+  // the count is dropped on purpose: an empty stock is not a quantity, and "NECTAR 0" is a
+  // number a driver would keep re-reading for a change that can no longer come.
+  'none-left': () => 'NECTAR OUT',
+  // a frozen field says nothing about entitlement, so the chip states the stock and stops
+  // short of promising what a press would do once play resumes.
+  locked: (n) => `NECTAR ${n}`,
+};
+
+/**
+ * A CHIP THAT HAS TO OUTLIVE ITS FACT.
+ *
+ * `warnings` is a monotonic COUNT — G407 moves it by one on the tick a robot takes CONTROL of
+ * a fifth SCORING ELEMENT, and it never comes back down. A chip bound to the count itself
+ * would therefore be a chip that appears once and then stays up for the rest of the match,
+ * which is not what a warning is. So it is bound to the MOMENT the count moved, and held for
+ * `BB_WARN_HOLD_S` after it.
+ *
+ * THE CLOCK IS THE MATCH CLOCK, not `Date.now()`. `GameView` re-samples the HUD every 100 ms
+ * and match time is already on the props, so the hold costs no timer of its own: it PAUSES
+ * when the match does and it is identical on a replay of the same match, neither of which is
+ * true of a `setTimeout`. 100 ms of resolution on a 3 s hold is a 3% error on when the chip
+ * goes away, which is not a number anybody reads.
+ *
+ * `timeLeft` counts DOWN inside a phase and JUMPS UP at a phase boundary, so the hold is only
+ * ever measured within ONE phase: a warning drawn in the last second of AUTO does not carry a
+ * stale chip into TELEOP, and the arithmetic never sees a negative elapsed.
+ */
+function useHeldBump(count: number, timeLeft: number, phase: string, hold: number): boolean {
+  // `at` starts at -Infinity so a HUD that MOUNTS onto a match already carrying warnings (a
+  // spectator joining late, a replay scrubbed into the middle) does not flash one that was
+  // drawn before it was watching.
+  const seen = useRef({ count, at: -Infinity, phase });
+  const s = seen.current;
+  if (count !== s.count || phase !== s.phase) {
+    s.at = count > s.count && phase === s.phase ? timeLeft : -Infinity;
+    s.count = count;
+    s.phase = phase;
+  }
+  const since = s.at - timeLeft;
+  return since >= 0 && since < hold;
+}
+
+/**
+ * The chips in the live HUD's `.robot-status` row — the DRIVER'S ROBOT and the DRIVER'S
+ * ALLIANCE ONLY.
+ *
+ * The split with the score bar is by AUDIENCE, not by subject: the bar is the audience
+ * display and prints both alliances, this row is the driver's own strip and prints the facts
+ * that change what THEY do next. So the robot half and the alliance half (own CELL, own NECTAR
+ * supply) both belong here, and the opponent's numbers do not.
+ *
+ * The ROBOT half, which a BIOBUZZ driver needs and cannot infer:
+ *  • which launcher's rules are in force (it decides whether the fire button STEERS the chassis).
+ *  • WHAT IS IN THE ROBOT — one disc per held element, coloured by element, then a hollow ring
+ *    per free slot up to the cap. The row runs NEXT-OUT FIRST: the leftmost filled disc is the
+ *    element the launcher (or the Box Tube) takes next, and it carries the `.next` ring. The
+ *    discs carry no letters or digits and the row prints no count chip (owner ruling
+ *    2026-09-12); the row's accessible name says the same thing in words. It reuses DECODE's
+ *    `.hopper` / `.hopper-pip` anatomy, so the empty slot's contrast-audited ring is the same one.
+ *  • FLOWER IN REACH — the Box Tube's placement point is on a FLOWER, so a place button will do
+ *    something. Proximity is hard to judge top-down.
+ *
+ * G410 LIVES ON THE BAR, NOT HERE. `GameView` suppresses this whole row on a coarse pointer,
+ * so a chip on it is not a place a phone can read a rule from — and a MAJOR 20 per NECTAR
+ * entered one second early is not a rule to leave to a cue the device does not render. The
+ * bar's row states the lock and carries the countdown; this row keeps only the CROSSING, the
+ * one instant of it that is news.
  */
 export function BiobuzzHudChips({ hud }: GameHudProps) {
-  const r = sliceOf(hud)?.robot;
-  if (!r) return null;
+  const s = sliceOf(hud);
+  const f = s?.field;
+  const r = s?.robot;
+  const due = f?.nectarDue[hud.alliance] ?? 0;
+  const pin = soonestPin(f?.pins);
+  // G407. The hook runs on every sample, including the ones where an absent slice reads 0, so
+  // the hold is measured against the same clock the rest of the row is drawn from.
+  const warned = useHeldBump(
+    f?.warnings[hud.alliance] ?? 0,
+    hud.timeLeft,
+    hud.phase,
+    BB_WARN_HOLD_S,
+  );
+  /**
+   * G410, FROM THE OTHER SIDE: the moment the FLOWERS OPEN.
+   *
+   * The bar's NECTAR LOCKED line simply stops being drawn at the 1:00 cue, and a line that
+   * vanishes is not a cue — a driver watching the field rather than the strip has nothing that
+   * says the rule just changed. `step.ts` already pushes `FLOWER OWNERSHIP UNLOCKED` on the crossing
+   * tick, but the event log is the muted left edge and this is a fact worth a beat in the
+   * driver's own row.
+   *
+   * HELD, NOT PERMANENT, and that is the whole design: FLOWERS OPEN is true for the last
+   * minute of every match, so a chip bound to the state itself would sit there as noise for
+   * exactly as long as it was useless — which is the same objection that took the standing
+   * NECTAR LOCKED chip off this row. It reuses `useHeldBump` off the match clock, like the
+   * G407 warning, so it costs the row width for `BB_WARN_HOLD_S` and then gives it back.
+   *
+   * `nectarLocked` IS A STATE, so it is turned into the monotonic count the hook wants: 0 while
+   * the FLOWERS are shut, 1 once they open. Inside TELEOP the cue is one-way, so it only ever
+   * counts up; the re-lock at the buzzer is a PHASE change, which the hook already refuses to
+   * read as a bump.
+   */
+  const opened = useHeldBump(f?.nectarLocked === false ? 1 : 0, hud.timeLeft, hud.phase, BB_WARN_HOLD_S);
+  const held = r?.held ?? [];
+  const free = r ? Math.max(0, r.cap - held.length) : 0;
+  const said = heldPhrase(held);
   return (
     <>
-      <span className="chip">{BB_MODE_LABELS[r.mode].toUpperCase()}</span>
-      <span className={`chip ${r.hopper >= r.cap ? 'on' : ''}`}>
-        HOPPER {r.hopper}/{r.cap}
-      </span>
+      {/* NO ARCHETYPE CHIP. The launcher's name is a thing the driver CHOSE in the builder and
+          cannot change mid-match, so it told them nothing they did not already know while
+          costing the width of the longest label in `BB_MODE_LABELS` ("DOUBLE TURRET") on a
+          `nowrap` row. What the launcher's rules actually DO to the controls is already in the
+          controls themselves; the hopper row beside it is the part that changes. */}
+      {r && (
+        <div className="hopper" role="img" aria-label={said} title={said}>
+          {[...held].reverse().map((c, i) => (
+            <span key={`h${i}`} className={`hopper-pip ${c}${i === 0 ? ' next' : ''}`} />
+          ))}
+          {Array.from({ length: free }, (_, i) => (
+            <span key={`e${i}`} className="hopper-pip empty" />
+          ))}
+        </div>
+      )}
+      {r?.flowerInReach && <span className="chip on">FLOWER IN REACH</span>}
+      {/* NO CELL CHIP. `BiobuzzScoreBar` already prints this alliance's up-CELL line under its
+          own score panel — `cellLine`, the same two states ("n MORE TO TIP" / "TIPPING") the
+          chips carried, in the place a driver already watches for the score. Two readouts of
+          one number is one readout too many on a row that grows leftward into the sponsor
+          mark. */}
+      {/* STOCK AND WHY ON ONE CHIP, because they are one fact: what the human player can
+          still enter. Two chips cost ~130px on a row that is `nowrap`, right-anchored and
+          grows LEFTWARD into the sponsor mark — measured at 1440px with the alpha pose
+          readout on, a sixth chip put the archetype behind the mark. So the chip's TEXT
+          carries the reason (`NECTAR_CHIP` above); nothing is added beside it. `on` marks
+          the one state in which a press would actually do something. */}
+      {f && (
+        <span className={`chip ${f.nectarWhy[hud.alliance] === 'ok' ? 'on' : ''}`}>
+          {NECTAR_CHIP[f.nectarWhy[hud.alliance]](f.nectarStock[hud.alliance], due)}
+        </span>
+      )}
+      {/* NO NECTAR LOCKED CHIP HERE. The lock is TRUE for all of AUTO and the first minute of
+          TELEOP — most of a match — so as a chip it was a permanent fixture rather than a cue,
+          and a chip that is always on is read as furniture. The bar's row above the score
+          panels still states it AND carries the countdown (`BiobuzzScoreBar`), which is the
+          version that survives a coarse pointer anyway; the cue worth a beat on this row is
+          the CROSSING, below. */}
+      {/* ...the moment the lock lifts — see `opened` above. `on` rather than a colour of
+          its own: `npm run contrast` audits the palette pair by pair, so a token invented for
+          one chip is a new pair to justify, and the meaning here is the same one `FLOWER IN
+          REACH` already uses — a thing you may now do. */}
+      {opened && <span className="chip on">FLOWERS OPEN</span>}
+      {/* G407 — CONTROL of a fifth SCORING ELEMENT. The owner's ruling makes this a WARNING
+          worth no points and no card, which is exactly why it needs a chip: a sanction that
+          moves no number is invisible on a scoreboard unless the HUD says it happened. Held
+          `BB_WARN_HOLD_S` off the match clock (see `useHeldBump`), because the underlying
+          count never comes back down. */}
+      {warned && <span className="chip warn">CONTROL 5+</span>}
+      {/* G421 — a PIN, counting. 20 points every three seconds, and the clock runs in a
+          referee's head, so `nextIn` is the only warning either driver gets.
+
+          NEUTRAL COLOUR, DELIBERATELY, AND IT IS A GAP: the chip cannot yet say whether THIS
+          alliance is the one pinning or the one being held. `BbPinHud` carries robot IDs, and
+          nothing that reaches a HUD component maps an ID to an alliance — `HudSnapshot` has no
+          roster and no local robot ID, and the slice's robot half (Lane B's `hudRobot.ts`) has
+          no ID either. A PIN is always cross-alliance, so the chip is always relevant to
+          whoever is reading it and the COUNTDOWN is the same number for both sides (let go /
+          keep trying); only the colour split is blocked. Requested of the master: one
+          `pinnerAlliance: Alliance` on `BbPinHud` and the victim's chip becomes `chip bad`. */}
+      {pin && <span className="chip warn">{pinLine(pin)}</span>}
     </>
   );
 }
@@ -63,29 +330,26 @@ const PHASE_LABEL: Record<HudSnapshot['phase'], string> = {
   freeplay: 'FREE DRIVE',
 };
 
-const fmtTime = (s: number): string => {
-  const t = Math.max(0, Math.ceil(s));
-  return `${Math.floor(t / 60)}:${String(t % 60).padStart(2, '0')}`;
-};
-
 /**
- * The whole bottom bar — red | timer | blue, then a BIOBUZZ breakdown row.
+ * The whole bottom bar — red | timer | blue, each alliance's up-CELL line under its total,
+ * and the G410 cue above.
  *
- * It exists because the SHARED bar is DECODE's: it draws the motif dots and the
- * CLASSIFIED / OVERFLOW / PATTERN / RAMP breakdown for every game that is not Chain Reaction,
- * and BIOBUZZ has neither a motif nor any of those four. The LAYOUT is the shared one on
- * purpose (the same `scorebar` / `score-panel` / `timer-panel` classes), so it themes
- * identically and a driver who plays two games reads the same bar in both.
+ * It exists because the SHARED bar is DECODE's: it draws the motif dots for every game that
+ * is not Chain Reaction, and BIOBUZZ has no motif. The LAYOUT is the shared one on purpose
+ * (the same `scorebar` / `score-panel` / `timer-panel` classes), so it themes identically and
+ * a driver who plays two games reads the same bar in both. The one addition is the sub-line,
+ * which is `.score-panel.bb` stacking its children instead of centring one.
  *
- * The panels show POLLEN SCORED, which is structurally 0 in the shell, and the breakdown row
- * says so out loud. That is the honest rendering of `scored: false`: a bar that quietly read
- * 0-0 looks like a scoring bug rather than like a game whose Scoring section is a Kickoff
- * placeholder.
+ * The panels show the alliance TOTAL, read from the shared `ScoreBreakdown` rather than from
+ * `score[a].total`: the shared number already folds in foul points and already reads 0 for a
+ * VOIDED alliance, and a bar that disagreed with the results screen about who is winning
+ * would be worse than either number on its own.
  */
 export function BiobuzzScoreBar({ hud }: GameHudProps) {
   const f = sliceOf(hud)?.field;
-  const red = f?.scored.red ?? 0;
-  const blue = f?.scored.blue ?? 0;
+  const pin = soonestPin(f?.pins);
+  const red = hud.alliance === 'red' ? hud.score.total : hud.oppTotal;
+  const blue = hud.alliance === 'blue' ? hud.score.total : hud.oppTotal;
   const urgent = hud.timeLeft <= 10 && (hud.phase === 'auto' || hud.phase === 'teleop');
   if (hud.mode !== 'match') {
     return (
@@ -98,10 +362,31 @@ export function BiobuzzScoreBar({ hud }: GameHudProps) {
   }
   return (
     <>
+      {/* G410: a NECTAR into a FLOWER before the 1:00 cue is a MAJOR, PER NECTAR. On a real
+          field the cue is audio; here it has to be readable from the driver's station, so it
+          sits on the bar rather than only in the desktop-only chip row. `nectarIn` is null
+          outside TELEOP, where a countdown would be a guess at the remaining AUTO — so the
+          chip states the lock and says nothing about when. */}
+      {/* G421 rides the same row and for the same reason G410 does: `GameView` suppresses the
+          whole chip row on a coarse pointer, so on a phone the bar is the only place a PIN can
+          be read — and 20 points every three seconds is not a tariff to leave to a cue the
+          device does not render. `.warn` because it is a clock running against somebody, not a
+          state of the field like the lock beside it. */}
+      {(f?.nectarLocked || pin) && (
+        <div className="breakdown-row">
+          {f?.nectarLocked && (
+            <span>NECTAR LOCKED{f.nectarIn === null ? '' : ` ${fmtTime(f.nectarIn)}`}</span>
+          )}
+          {pin && <span className="warn">{pinLine(pin)}</span>}
+        </div>
+      )}
       <div className="scorebar">
-        <div className={`score-panel red ${hud.alliance === 'red' ? 'mine' : ''}`}>
+        <div className={`score-panel bb red ${hud.alliance === 'red' ? 'mine' : ''}`}>
           {hud.alliance === 'red' && <span className="you-tag">YOU</span>}
           <span className="panel-score">{red}</span>
+          <span className={`bb-tip ${f && f.cells.red.tipping > 0 ? 'go' : ''}`}>
+            {cellLine(f?.cells.red)}
+          </span>
         </div>
         <div className={`timer-panel ${urgent ? 'urgent' : ''}`}>
           {/* status on the PHASE only — the digits beside it retick every frame and would
@@ -111,34 +396,95 @@ export function BiobuzzScoreBar({ hud }: GameHudProps) {
           </span>
           <span className="timer-time">{hud.phase === 'post' ? '0:00' : fmtTime(hud.timeLeft)}</span>
         </div>
-        <div className={`score-panel blue ${hud.alliance === 'blue' ? 'mine' : ''}`}>
+        <div className={`score-panel bb blue ${hud.alliance === 'blue' ? 'mine' : ''}`}>
           {hud.alliance === 'blue' && <span className="you-tag">YOU</span>}
           <span className="panel-score">{blue}</span>
+          <span className={`bb-tip ${f && f.cells.blue.tipping > 0 ? 'go' : ''}`}>
+            {cellLine(f?.cells.blue)}
+          </span>
         </div>
-      </div>
-      <div className="breakdown-row">
-        <span>POLLEN SCORED {red + blue}</span>
-        <span>UNSCORED SHELL &mdash; SCORING LANDS AT KICKOFF</span>
       </div>
     </>
   );
 }
 
 /**
- * The results-screen breakdown. Rows are ALLIANCE-RELATIVE (`[label, mine, opp]`) because the
- * two screens want different things from the same numbers: the versus results print
- * red | blue, and a solo record run has no opponent column at all.
+ * The results-screen breakdown — every line of Table 10-2 (§10.5, p91), then the RPs.
  *
- * Two sections and no more: what this game scores (nothing yet, stated as a row rather than
- * hidden) and the fouls, which are the ONLY points a shell match can actually produce —
- * `play.ts`'s score pass sets each alliance's total to its `foulPoints` and nothing else.
+ * Rows are ALLIANCE-RELATIVE (`[label, mine, opp]`) because the two screens want different
+ * things from the same numbers: the versus results print red | blue, and a solo record run
+ * has no opponent column at all.
+ *
+ * ── COUNTS AND POINTS, BOTH ─────────────────────────────────────────────────
+ * Every achievement that has both gets two rows. A points-only table cannot be checked
+ * against the field — GARDEN 7 is seven elements at 1 each, and nothing on the screen says
+ * so — and a count-only table does not add up to the total printed under it. The
+ * parenthetical names the unit, and it is the same word on every row that shares one.
+ *
+ * ── THERE IS NO TOTAL ROW HERE, DELIBERATELY ────────────────────────────────
+ * Both consumers append their own (`GameView`'s `total-row`, off the shared
+ * `ScoreBreakdown.total`), so a second one would print the number twice — and would DISAGREE
+ * with it on a VOIDED match, where the shared row reads 0 over a full breakdown on purpose.
+ * RANKING POINTS is therefore the last section and the screen's own TOTAL closes the table.
+ *
+ * RPs print as 1 / 0, because a section row is `[label, number, number]`. The threshold goes
+ * in the label rather than in a legend: a bare 0 in a numeric column says nothing about what
+ * would have earned it. The numbers come from `BB_RP`, so a label cannot drift from the test
+ * that sets the flag.
  */
 export function biobuzzResultsRows(hud: HudSnapshot): readonly ResultsSection[] {
-  const f = sliceOf(hud)?.field;
-  const mine = hud.alliance === 'red' ? (f?.scored.red ?? 0) : (f?.scored.blue ?? 0);
-  const opp = hud.alliance === 'red' ? (f?.scored.blue ?? 0) : (f?.scored.red ?? 0);
+  const f: BiobuzzFieldHud | undefined = sliceOf(hud)?.field;
+  const me = hud.alliance;
+  const opp = other(me);
+  /** one breakdown field, alliance-relative. An absent slice reads 0, never throws. */
+  const n = (s: BbAllianceScore | undefined, k: keyof BbAllianceScore): number => s?.[k] ?? 0;
+  const row = (label: string, k: keyof BbAllianceScore) =>
+    [label, n(f?.score[me], k), n(f?.score[opp], k)] as const;
+  const rp = (label: string, k: keyof BbRankPoints) =>
+    [label, f?.rp[me][k] ? 1 : 0, f?.rp[opp][k] ? 1 : 0] as const;
   return [
-    ['SCORING (UNSCORED SHELL)', [['Pollen scored', mine, opp]]],
-    ['PENALTIES', [['Fouls awarded', hud.score.foulPoints, hud.oppScore.foulPoints]]],
+    [
+      'AUTONOMOUS',
+      [
+        row('LEAVE (robots)', 'leaveCount'),
+        row('LEAVE (points)', 'leave'),
+        row('PARK (robots)', 'parkAutoCount'),
+        row('PARK (points)', 'parkAuto'),
+      ],
+    ],
+    ['END OF MATCH', [row('PARK (robots)', 'parkTeleCount'), row('PARK (points)', 'parkTele')]],
+    [
+      'HIVE',
+      [
+        row('TIPS (count)', 'tips'),
+        row('TIPS (points)', 'tipPts'),
+        row('Up CELL contents (elements)', 'cellCount'),
+        // 0 for the whole match — Table 10-2 pays for what is LEFT IN the cell at the buzzer
+        // (owner ruling, 2026-09-12), so the label says when the number arrives rather than
+        // leaving a driver to read a permanent 0 beside a tray with four elements in it.
+        row('Up CELL contents (points at the buzzer)', 'cellPts'),
+      ],
+    ],
+    [
+      'FLOWER',
+      [
+        row('OWNED FLOWER (elements)', 'ownedCount'),
+        row('OWNED FLOWER (points)', 'ownedPts'),
+        row('Bottom NECTAR Bonus (FLOWERS)', 'bottomCount'),
+        row('Bottom NECTAR Bonus (points)', 'bottomPts'),
+      ],
+    ],
+    ['GARDEN', [row('GARDEN (elements)', 'gardenCount'), row('GARDEN (points)', 'gardenPts')]],
+    // points AWARDED to each alliance, i.e. earned from the OPPONENT's violations — the same
+    // direction the shared breakdown prints, so the two reconcile against their totals.
+    ['PENALTIES', [row('Fouls awarded (points)', 'foul')]],
+    [
+      'RANKING POINTS',
+      [
+        rp(`SWARM (${BB_RP.swarm} LEAVE + PARK points)`, 'swarm'),
+        rp(`POLLINATOR 1 (${BB_RP.pollinator1} TIPS)`, 'pollinator1'),
+        rp(`POLLINATOR 2 (${BB_RP.pollinator2} TIPS)`, 'pollinator2'),
+      ],
+    ],
   ];
 }

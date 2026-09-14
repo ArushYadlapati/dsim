@@ -1,18 +1,460 @@
-# HANDOFF — 2026-09-12c (matchmaker: a live region bug, then skill-based pairing)
+# HANDOFF — 2026-09-14, early (settle-based finalize LIVE, PR 65 landed, all night fixes shipped)
+
+**READ FIRST — what production is running.** Fly release **v111** = `main` @ `b09f12e`, deployed
+from a main WORKTREE (never this alpha tree — `fly-deploy.sh` builds whatever tree it runs in).
+Everything below the line is on BOTH `main` and `alpha`.
+
+- **LIVE: a match is finalized when the field comes to rest, and the score is shown only then**
+  (`34bf3a2` main / `6326a6b` alpha). New `src/sim/settle.ts`: `settleStep` finalizes once the
+  game's `GameSimModule.settled` has held for `MATCH_SETTLE_HOLD_S` 0.5 s, capped at
+  `MATCH_SETTLE_MAX_S` **10 s — the owner's absolute maximum, do not raise it**. DECODE
+  (`decodeSettled`): nothing in flight, nothing pending or moving on a rail, ground/basin
+  artifacts and robots at rest. CR (`chainSettled`): no non-staged particle in flight, ground
+  particles and robots at rest. BIOBUZZ (`bbSettled`, `src/games/biobuzz/settle.ts`): nothing in
+  flight, no hive swinging or loaded past its tip, ground elements and robots at rest. The server
+  (`room.ts` `stepOnce`) and solo practice (`game.ts`) share the clock, in ticks.
+  `MATCH_SETTLE_S` / `MATCH_RESULT_REVEAL_MS` are DELETED. Client: the results screen reveals only
+  on `HudSnapshot.resultFinal` (online = the server's `matchResult` arrived; practice = its own
+  settle) and shows the SERVER's totals; the live HUD, replay viewer and burned-in video say
+  MATCH OVER until then and FINAL only on the finalized score; `resultLost` says so if the result
+  never comes. `maxMatchTicks` carries the 10 s cap. Measured: an idle DECODE or CR run finalizes
+  on the 0.5 s hold (no jitter); a rolling artifact held it to 116 ticks.
+  ⚠️ **Known to bind:** a BIOBUZZ tip that sets off a SECOND tip can outlast 10 s; PR 65's rule
+  (below) still pays a swing the cap cuts off.
+- **LIVE: PR 65, a BIOBUZZ tip caught by the buzzer scores and its load is not deducted**
+  (`7d0331c` main / `04ce456` alpha; its check moved onto the settle clock in `b09f12e` /
+  `41865e7`). Landed as CLEAN commits and the PR CLOSED, not merged: its own commits were
+  authored `Claude <noreply@anthropic.com>` with `Co-Authored-By`/`Claude-Session` trailers, and
+  the owner wants no attribution anywhere. No `BALANCE_VERSION` bump (owner's call).
+- **LIVE (since v110): a cancelled ranked match cannot be cancelled again** — no longer held; see
+  the section below. **LIVE: a solo record run left after the buzzer is still saved** (the room
+  keeps stepping with nobody connected until it finalizes).
+- ⚠️ **A gated shell chain lied once tonight:** `grep -c` exits 1 on a count of 0, so
+  `X=$(… | grep -c …) && cd worktree && …` stopped before the `cd` and the "main" tests ran on
+  alpha. The push gate caught it. Use `|| true` on counts and guard every `cd`.
+- `npm test`'s shared suite still ends at the 2 pre-existing `lan gate` failures. Alpha still
+  carries unreviewed BIOBUZZ commits that are not on main (see the review note below).
+
+# HANDOFF — 2026-09-13, night (production hotfixes: record-room reap LIVE, dodge double-cancel shipped in v110)
+
+Superseded by the section above. Deploys go from a MAIN worktree, never this alpha tree; killing
+a background deploy does NOT kill its `flyctl` child, so run deploys in the foreground. (v108,
+built from alpha by mistake, was live for about 5 minutes around 01:19Z and was replaced.)
+
+- **LIVE: a solo record run closed on purpose frees its room at once** (`f0e0430` main /
+  `df5872d` alpha, `server/room.ts` `detach(id, conn, clean)`, `server/index.ts` close code).
+  Record-run restarts used to hold the old `rec-` room for the 45 s reconnect grace, still
+  simulating. At the BIOBUZZ launch spike iad sat at 24/24 with 8-12 real runs and refused new
+  ones as `region_full`, which the Record Run screen shows as "Couldn’t start". A close with
+  code 1000/1005 on a solo record room now reaps immediately. 1006 (network) and 1001 (tab)
+  keep the grace, and so does every room with a second driver.
+- **SHIPPED in v110 (was held earlier that night): a cancelled ranked match can no longer be
+  cancelled a second time** (`28575be` on alpha, `406f506` on main).
+  `cancelPending` left `pendingMatch`/`phase` set, and a socket's `room` is never cleared. So
+  the first player to leave the cancelled screen re-ran the cancel from `detach` and was billed
+  a STRATEGY BAIL. The innocent driver was shown "Nothing was charged to you" and then lost
+  standing anyway; the player who never readied was billed twice. Smoke reproduces it: 3
+  charges without the fix, 1 with it. **Standing already lost this way is not refunded:** the
+  false rows are `standing_events` kind `dodge` whose `room_code` also carries a legitimate
+  charge to the other player.
+- `npm test`'s shared suite still ends at the 2 pre-existing `lan gate` failures (below).
+- Unreviewed alpha content not on main (review summary): BIOBUZZ hive tip rate / spill / miss
+  bounce and LEAVE-from-start-wall change scoring and RNG draw counts with no `SIM_VERSION`
+  bump; `startWalls` is read without a guard, so an alpha client against a main server throws in
+  online BIOBUZZ. Deploy the server before clients, or guard it, before promoting.
+
+# HANDOFF — 2026-09-13, later (BIOBUZZ hive feel: tip rate, spill scatter, miss bounce, canopy)
+
+Branch **`claude/hive-physics-rendering-tjz7mj`**. Four owner-reported HIVE items, all inside
+`src/games/biobuzz/` (nothing shared touched). Gates: `npx tsc --noEmit -p .` clean,
+`server:check` clean, `test:bb` **1289 ALL PASS**, `npm run build` ok. Full `npm test` run to the
+end: the shared suite reports **2 FAILURES, both PRE-EXISTING and not this branch's** — `lan gate:
+alpha opens it; production does not mention it at all` and `lan gate: and production still opens
+neither door`. They assert `fly.toml` carries no `LAN_UPLOADS` / `LAN_SIGNALLING`, and the
+2026-09-13 promotion (below) deliberately put both in `fly.toml [env]` to turn LAN on for
+production. The check is stale against that owner decision; the files it reads are untouched by
+this commit. Whoever owns the LAN policy should either retire those two checks or drop the flags.
+
+**MERGED INTO `alpha`** (`f3f74dc`), no conflicts: alpha's own `state.ts` change adds `startWalls`
+to `BiobuzzState` while this one adds `swingRate` to `BbHiveState`, and alpha's HUD change only
+moves the `tipping > 0` readout from a chip to the score bar's `cellLine`, which this preserves.
+Gates on the MERGED tree: `tsc` / `server:check` / `build` / `uiaudit` clean, `test:bb` **1294 ALL
+PASS**.
+
+⚠️ **A SEPARATE ALPHA BUG WAS FIXED TO GET A GATE AT ALL** (`scripts/smoke.ts`, own commit). Alpha's
+LAN commit `d14895b` added a check reading `roomSrc` ~126 lines ABOVE the `const roomSrc` in the same
+block, so it threw `ReferenceError: Cannot access 'roomSrc' before initialization` and **aborted the
+whole shared suite** — which, being `&&`-chained, also meant the BIOBUZZ suite never ran under
+`npm test` at all. The read is hoisted to its first use. The two checks involved now run and pass,
+and the shared suite completes at its 2 pre-existing LAN gate failures. Nothing else moved.
+
+- **A heavier tray tips faster** (`hive.ts` `hiveSwingRate`, `hiveSurplus`). The 4 s swing is
+  the swing of a tray at EXACTLY its tip-table threshold; each element over the threshold adds
+  `BB_TIP_RATE_PER_EXTRA` 0.35 to the rate, capped at `BB_TIP_RATE_MAX` 3. The surplus is
+  measured against `BB_TIP_POLLEN`, so every row's threshold load still takes 4.0 s and every
+  existing timing check is untouched. Pre-release the rate reads the live contents (the cell
+  keeps taking, so feeding a swinging tray speeds it up — measured: 2 pollen dropped in at
+  0.5 s settle it at 2.57 s instead of 4.0); post-release the rate is carried in the NEW
+  optional `BbHiveState.swingRate` (absent when settled and on old snapshots = nominal).
+  `tipping` stays in nominal seconds, so `tipProjection` / `tipProgress` are unchanged.
+- **Spill scatter** (`hive.ts`): `BB_SPILL_SPEED` [35,62] → **[30,62]**, `BB_SPILL_FAN` 18° →
+  **40°**, plus a new all-directions **`BB_SPILL_KICK`** 12 in/s. Every pose still leaves
+  outboard by construction (23 in/s outboard minimum vs a 12 kick). `spillPoses` now draws SIX
+  rng values per pose. `docs/biobuzz/feedback/001-spill-kinematics.md` has the addendum.
+- **A miss bounces off the structure** (`hive.ts` `hiveDeflect`, called from `play.ts` after
+  the capture loop for BOTH hives). The assembly is an APPROX box (`BB_HIVE_W` × `BB_HIVE_LEN`,
+  `BB_HIVE_BOTTOM_Z`..`BB_HIVE_OPEN_Z[1]`) with: the two long sides, the DOWN cell's outer end
+  and the underside solid; an interior PIVOT PLANE (y = 0) solid; **no top** (a descent from
+  above is the capture test's business, and a top is a shelf a ball could rest on); and the
+  **TAKING cell's outer end OPEN at every height** (`hiveTakingSide`, so it follows the
+  release). ⚠️ That mouth exemption is load-bearing: with the face solid, the dumper parked at
+  the lip and Aim Assist's flat lobs (which cross the lip a hair before apex, still climbing)
+  were ALL refused — 8 checks red. Bounce is `BB_HIVE_MISS_REST` 0.3 on the normal,
+  `BB_HIVE_MISS_TANGENT` 0.5 on the rest, vz kept on a side hit. Measured: a 150 in/s shot into
+  the red hive's flank lands 18.8 in short of the face on the side it came from; the same shot
+  at 70 in clears the top and lands downrange.
+- **Translucent canopy** (`drawField.ts` `drawHiveCanopy`, called from `draw.ts` between the
+  low and high element passes). The renderer draws field → robots → elements, so a robot under
+  the hive was painted OVER it. The canopy repaints the body, the up cell's fill and its
+  contents row at `CANOPY_A` 0.42 over the assembly's own footprint, after the robots and the
+  ground/low-flight elements and before the airborne ones (split at `BB_HIVE_BOTTOM_Z`). The
+  contents row is now `drawCellContents`, shared by the field pass and the canopy. Not a
+  `globalAlpha` on the sprite — the ruling is the PORTION under the hive, not the robot.
+- No `SIM_VERSION` bump was made (owner's standing call on this branch); spill RNG draw count
+  and the miss bounce both change sim output for the same inputs.
+
+---
+
+# HANDOFF — 2026-09-13, late (DEPLOYED: alpha is production, BIOBUZZ is public)
+
+- **`main` is `088addb`** (alpha fast-forwarded onto it and pushed; this handoff note is on alpha
+  only, so a docs commit does not rebuild the site). Vercel production serves it
+  (`https://www.playdsim.com/version.json` → `088addb`, `/biobuzz` in the sitemap).
+- **BIOBUZZ is public**: `src/seasons.ts` has no `channels` for it. The crawler files were edited to
+  match (`public/sitemap.xml`, `public/robots.txt`, the static nav and the four home-description
+  copies in `index.html`), as the BIOBUZZ suite requires. `test:bb` 1272 PASS, `npm run build` ok.
+- **Production game server deployed** with `./scripts/fly-deploy.sh` (the owner said to skip the
+  in-game warning; the countdown was cancelled before it deployed anything). Verified after:
+  every machine on one image; iad `performance-2x`/4096; ord, sjc, lhr `performance-1x`/2048;
+  gru, jnb, syd, nrt `shared-cpu-4x`/1024 (stopped until someone connects); `/health` ok;
+  `/api/perf` `admitting:true` on every started machine; `/api/presence` caps `party,lan`;
+  `/api/seasons`: DECODE Act 2 · S1 (bv 7), Chain Reaction Act 2 · S1 (bv 5), BIOBUZZ Act 1 · S1 (bv 4).
+- **Alpha preview deployed** too (`--alpha`), healthy, caps `party,lan`.
+- **Announcements published** from `docs/announcements/biobuzz-act1-season1.md`: a `season` reveal
+  and the `patch` notes.
+- The room-leak fix (`8e2ea2b`) is now live in production, so `iad` should no longer need restarts.
+- `ADMIN_SECRET` lives in `D:\Projects\2ddecodesim\.env`; load it into one command, never print it.
+
+---
+
+# HANDOFF — 2026-09-13 (preparing the alpha → production promotion)
+
+Branch **alpha**, pushed. `npm run server:check` clean; the new room-leak smoke check was run in
+isolation and mutation-checked (fails without the fix). The full `npm test` was NOT run (owner).
+**Nothing deployed to production — the owner said not to until the promotion is ready.**
+
+## (was READ FIRST) — production `iad` was refusing every new room
+
+`/api/perf` on the always-warm primary read `rooms: 0, admitting: false`, and its log was a wall
+of `[admit] refused room rec-…: at cap (24/24)` from at least 04:53 UTC. US-East players could not
+start a record run or a custom room at all.
+
+**Cause:** `finalizeMatch` stops the room's loop and keeps the room for the results screen, but
+the reconnect grace is only ever checked BY that loop. A driver who closed the tab from the
+results screen was held forever and the room never deleted — one leaked room per finished match
+someone walked away from. Satellites auto-stop and start clean; `iad` never does, so only it
+filled up.
+
+- **Mitigated:** `iad` (6836e6dc0e2348) restarted 2026-09-13 with the owner's go; it read
+  `admitting: true` 43 s later.
+- **Fixed on alpha only:** `8e2ea2b` (`Room.armGraceReap`). The owner chose to ship it WITH the
+  promotion, so **production will leak again until then.** If `/api/perf` on `iad` shows
+  `admitting: false` with few live `rooms`, restart that machine (ask first). The scheduled
+  checkup below flags exactly this as URGENT.
+
+## Update, later the same day: PRs merged, main merged, LAN on, launch fleet sized
+
+All on alpha, **still not deployed**.
+
+- **main merged into alpha** (`a335bb0`). One conflict, the HUD chip block in `GameView.tsx`,
+  kept as alpha had it. `fly-deploy.sh`, `fly.toml` and `.env.example` now carry main's fleet.
+- **PRs #45, #60 and #57 merged** (`a4dd082`, `7d301f5`, `3b1d3c9`). #57's three conflicts kept
+  both sides. Its replay start-pose snap was gated on `startLegality`, which BIOBUZZ sets too, so
+  it became a per-game hook, **`GameSimModule.startSnap`**: DECODE fills it with the same G304
+  snap; BIOBUZZ and Chain Reaction keep their field-clamped pose. **No `SIM_VERSION` bump**
+  (owner): some pre-deploy replays may play back differently from what happened.
+- **LAN is ON for production**: `LAN_UPLOADS` and `LAN_SIGNALLING` in `fly.toml [env]`. The client
+  lights LAN from the server's `lan` capability, so Vercel needs nothing. Migration
+  **`0034_lan_runs_biobuzz.sql`** widens `lan_runs.game` to accept BIOBUZZ, which 0033 refused.
+- **Launch fleet, from `docs/capacity.md`** (one machine per region is a hard rule, and one
+  process uses about one core, so a dedicated core is the only size step that adds rooms):
+
+  | region | size | why | $/mo if never stopped |
+  |---|---|---|---|
+  | iad (primary, matchmaker, API) | `performance-2x` / 4096 | dedicated core for the loop; 2nd core for GC and every socket's deflate | 64.39 |
+  | ord, sjc, lhr | `performance-1x` / 2048 | real traffic; ~8–10 driven rooms, never throttled | 32.19 each |
+  | gru, jnb, syd, nrt | `shared-cpu-4x` / 1024 | rarely host; 4x's baseline held 2 rooms / 8 players | 8.08 each |
+
+  Satellites auto-stop and bill only rootfs while stopped, so their real cost is only while
+  someone plays. Worst case, all eight never stopping: **~$193/mo** (today's worst case ~$31).
+  Rough ceiling with margin: ~60 driven rooms fleet-wide, roughly 90 concurrent players at the
+  real solo/1v1/2v2 mix, ~130 at redline. Past that, the fix is `SIM_WORKERS`
+  (`docs/scaling-multicore.md`), not bigger VMs or a second machine per region.
+  `fly.toml [[vm]]` is the primary's size; `scripts/fly-deploy.sh` `SATELLITE_SIZES` puts each
+  satellite on its own after the deploy. Checked with `bash -n` and a dry run of the lookup.
+- ⚠️ **gru and jnb still do not host CROSS-region matches** (`DEPLOY_REGIONS` unchanged). Adding
+  them failed 8 `test:mm` checks: their real distances to syd/nrt and to each other (315–395 ms)
+  are above `RTT_UNKNOWN` (300), so a real far pair looked like a missing row. They do host every
+  room their own players open.
+- Gates run for this: `npx tsc --noEmit -p .` clean, `server:check` clean, `test:bb` 1270 PASS,
+  `test:mm` 186 PASS, `uiaudit` at baseline, `dbtest` ALL PASS (0034 applied). Full `npm test` NOT run (owner).
+
+## Promotion checklist
+
+1. **BIOBUZZ is still hidden on stable.** `src/seasons.ts` has `channels: ['alpha']` and the blurb
+   "Rules land at kickoff on 2026-09-12." Both must change for it to appear in production. The
+   CLAUDE.md BIOBUZZ section still describes a placeholder, alpha-only, unscored shell — stale.
+2. **Open PRs to alpha** (reviewed 2026-09-13, nothing merged):
+   | PR | verdict | why |
+   |---|---|---|
+   | #45 | **URGENT** | any socket can send a malformed `input` (NaN, `ld: 1e9`) into the authoritative world broadcast to the room. Server-only, merges clean, `test:mm` 186 pass on a trial merge |
+   | #57 | recommended | real client/sim fixes (auto-path waits, replay `coerceSetup`); CONFLICTS in 3 files (trivial). Changes sim output for two narrow inputs without a `SIM_VERSION` bump — decide. Its `coerceSetup` gate keys on `startLegality`, which BIOBUZZ now sets, so BIOBUZZ replays still get DECODE's snap |
+   | #60 | recommended | solo practice saves its score before the 2.8 s settle; practice-only, clean |
+   | #58 | defer | `stageBiobuzz` idempotency; no shipped path calls it twice |
+   | #61 | defer | LAN guest ack-keyed deltas; LAN is off in production; the shared WebSocket path measured byte-identical |
+3. **Merge `origin/main` into alpha before promoting.** main has 10 commits alpha lacks (the
+   ord/gru/jnb fleet, satellites at 512 MB, `fly-deploy.sh` re-shrinking all 7 satellites, fly.toml
+   notes, the 8-region `.env.example`, a replay fix, controls copy). ⚠️ Deploying production from
+   alpha's current `scripts/fly-deploy.sh` would re-shrink only 4 satellites, leaving ord/gru/jnb on
+   fly.toml's `shared-cpu-4x`, and put the rest back on 1024 MB. A trial merge has ONE conflict:
+   the HUD chip block in `src/ui/GameView.tsx` (both sides removed the pose readout) — take alpha's.
+4. **Seasons.** Production: DECODE Act 2 · Season 1 (bv 7), Chain Reaction Act 2 · Season 1 (bv 5).
+   `BALANCE_VERSION` is 4 on both branches and `currentSeasonNumber` returns each game's existing
+   max, so **the deploy does not advance DECODE or Chain Reaction.** BIOBUZZ has no production rows
+   (today's prod server coerces `biobuzz` to DECODE, so `/api/seasons?game=biobuzz` shows DECODE's
+   list); the new server seeds `(biobuzz, 4, act 1)` on first use — alpha's database already holds
+   exactly that. **Do not use the admin season/act roll for this launch.**
+5. **Migrations:** none differ between main and alpha. `lan_runs` has `check (game in ('decode',
+   'chain'))`, harmless while LAN is off in production, but it refuses a BIOBUZZ LAN upload on alpha.
+6. **Announcements:** `docs/announcements/biobuzz-act1-season1.md` (a `season` reveal + `patch`
+   notes), with a pre-publish checklist. Publish only after the deploy is verified.
+7. **Order:** merge #45 (and any other chosen PRs) → merge main into alpha → full gates (`npm test`,
+   `test:mm`, `dbtest`, `build`, `server:check`, `uiaudit`) → alpha into main →
+   `scripts/announce-deploy.sh` (players are online) → verify `/health`, `fly machine list` sizes,
+   `/api/perf` `admitting` on every started machine, `/api/seasons` per game → Vercel production →
+   publish the announcements.
+
+## Capacity — recommendation, NOT applied
+
+Load today is tiny: 3 online; `iad` 0.02–0.04 cores; alpha ran 2 rooms / 8 players at 0.17 cores.
+`npm run costprobe` (sim-only, laptop): a BIOBUZZ solo room costs 0.0245 cores (same as DECODE), a
+2v2 0.0345; 10.2 / 38.4 KiB/s per client on the wire. Size on `docs/capacity.md`'s driven 0.075.
+
+- **`iad`: `shared-cpu-4x`/1024 ($8.08/mo) → `performance-1x`/2048 ($32.19/mo).** The only size step
+  that adds rooms: a dedicated core never throttles (~8–10 driven rooms against 5–8), and two rooms
+  with 8 players already sat on the 4x sustained baseline (0.244 of ~0.25 cores, 2026-09-06).
+  `shared-cpu-8x` buys nothing — one process uses one core.
+- **`ord` and `sjc`: `shared-cpu-1x`/512 → `shared-cpu-4x`/1024 for the launch.** A 1x baseline is
+  about one busy room. They auto-stop, so the extra ~$4.76/mo each is only paid while awake.
+  Needs per-region sizes in `scripts/fly-deploy.sh` (today one `SATELLITE_SIZE` for all seven).
+- Everything else stays `shared-cpu-1x`/512. Never a second machine in a region (room codes route
+  by region); past `performance-2x` the fix is `SIM_WORKERS` (`docs/scaling-multicore.md`).
+
+**Scheduled checkup:** the Claude desktop task `dsim-capacity-checkup` runs every 3 hours while the
+app is open. It is read-only (machine list, `/api/perf` per started machine via
+`fly-force-instance-id`, presence, log signals), recommends only, and keeps a history in
+`C:\Users\geniu\.claude\scheduled-tasks\dsim-capacity-checkup\history.jsonl` so a downscale is only
+ever suggested after 7 days of low readings.
+
+---
+
+# HANDOFF — 2026-09-12g (BIOBUZZ Lane A: four shared-core asks landed, from the master chat)
+
+> ⚠️ **TWO SERVER-SIDE CHANGES ARE SITTING ON `alpha` AND ARE INERT IN LIVE ROOMS UNTIL
+> SOMEBODY DEPLOYS.** Lane B's participation credit and this session's per-game start-legality
+> dispatch are both `server/room.ts` changes, so the code being on the branch changes nothing
+> for anyone playing until `./scripts/fly-deploy.sh` has run — **never a bare `flyctl deploy`**,
+> which re-applies `shared-cpu-4x` to every satellite machine. Until that deploy:
+> `Room.startPoseLegal` on the live server still judges a BIOBUZZ ready-up against DECODE's
+> `activeStartLegal` — DECODE's launch lines and goal triangles, on a field that has neither —
+> and `countParticipation` still does not know BIOBUZZ's own buttons are somebody driving.
+> **Neither fails loudly. They simply do not happen**, which is why this is the first line of
+> this section rather than a footnote in it.
+
+Branch **`alpha-merge`**, off **`alpha`**. **`alpha` is the BIOBUZZ base AND the deploy branch**
+— `biobuzz` was merged into it and deleted on origin, so every lane now merges `alpha` before it
+commits and lands back into `alpha`, and `alpha` is what ships. Wherever an older section of this
+file or of `docs/biobuzz/` says branch `biobuzz`, read `alpha`.
+
+This session was Lane A (field + scoring) run from the master chat rather than from its own lane
+chat, which is itself a fact the next person needs — `docs/biobuzz-contract.md` §1 now says so.
+Nothing was re-run here beyond what each commit below gated on; the last item is documentation
+only.
+
+## What landed, in order
+
+**Phase 0 — `origin/biobuzz-field` merged (A6a).** The HUMAN PLAYER NECTAR button (`d301bd4`),
+G304 start legality with its evaluator, its snap and two anchors that satisfy it (`180025f`), and
+the FLOWER readout redrawn as a SECTION of its column rather than a row of discs (`656033f`).
+The wire bits settled at **32 `bbPlaceNectar`, 64 `bbPlace`, 128 `bbNectar`**, and ⚠️ **128 is
+the LAST bit that fits** — `src/sim/replay.ts` packs `q.buttons & 0xff`, so a ninth button needs a
+`REPLAY_FORMAT` bump and nobody should add one casually.
+
+**Phase 1.1 — start legality became a MODULE question** (`be09953`). `GameSimModule.startLegal`
+is the PREDICATE and `startLegality` stays the ENFORCEMENT FLAG; `Room.startPoseLegal` is the one
+place the server asks, so the ready gate and the start gate cannot answer differently. BIOBUZZ's
+`startLegality` flipped to `true` on the back of it, which is what the field lane had been
+holding it down for. ⚠️ This is the first of the two deploy-pending halves above.
+
+**Phase 1.2 — the pin test reads THIS field's solids** (`5ef37dc`). `pinnedAgainstWall` and
+`isPinning` take an optional `PinSolid`; BIOBUZZ passes `bbPinSolid`, which walks
+`biobuzzColliders.statics` rather than re-listing the field, so a solid added to that array is
+seen by the pin test the same day. Left on DECODE's tables the test was wrong in both directions
+at once — a solid where BIOBUZZ keeps open floor (which CANCELS a real pin, since a cornered
+robot reads as ESCAPING) and open floor where the FLOWER feet and HIVE frame bars actually stand,
+which is most of where a G421 pin happens here.
+
+**Phase 1.3 — per-game CONTROL geometry** (`4fde19d`). `controlledArtifacts` takes an optional
+`ControlGeometry` with `carveOut`, `hopperCap` and `radius`, so G407's herding test measures
+BIOBUZZ's own LOADING ZONE, its own hopper cap and its own element size instead of DECODE's.
+
+**Phase 1.4 — a ground artifact is solved at ITS OWN radius** (`1754ce8`). Every shared
+ground-artifact site now reads `b.r ?? radius`. Measured: a resting NECTAR moved 1.400 → 1.800 in
+off the wall, its skin from 0.400 in OUTSIDE the wall plane to 0.000, and a NECTAR on a POLLEN
+2.790 → 3.190. **DECODE sets `r` on nothing, so DECODE and Chain Reaction are byte-identical.**
+⚠️ One line of this is still owed and it is **Lane B's, not ours**: `bbRobotSolids`
+(`src/games/biobuzz/robot.ts`) still builds every held plug at its `radius` argument, so a NECTAR
+in a hopper plugs the mouth at POLLEN size. It wants `r: b.r ?? radius`, and it has to be relayed
+to that lane rather than reached into.
+
+**Phase 2 — the chip, the round-trip and the ledger.** The NECTAR chip now says WHY a press would
+do nothing (`0837250`) off `nectarWhy`, and `FLOWERS OPEN` flips in at the 1:00 cue as a HELD
+chip rather than a permanent one. The human-player bit got a REAL replay round-trip
+(`cf5c1b7`) — record → JSON → re-simulate → hash — replacing a banner that promised one over a
+body that only ran `localizeCommand`. And the APPROX ledger was transcribed into
+`docs/biobuzz/feedback/002-thresholds.md` (`8b96dd7`), sorted by what a tape measure can actually
+settle on 09-14.
+
+Alpha also carries, from the other lanes, Lane B's robot rework and its `server/room.ts`
+participation credit (the second deploy-pending half), and a sponsor/og-image change.
+
+## Three owner questions are OPEN, and the code sits on its current ruling
+
+None of these is a bug and none should be guessed at. They are recorded in
+`docs/biobuzz/field-plan.md` §8 and in `docs/biobuzz/HANDOFF-field.md`.
+
+1. **YELLOW CARDS, game-wide?** BIOBUZZ has no card machinery at all — `bbAwardFoul` awards
+   points and nothing else — while G414/G415/G417/G418/G419/G420 all name a card. Either model
+   cards for the season (DECODE's `awardCard`, where a second card is RED and voids the
+   alliance's score) or leave them to the referee and say so once.
+2. **The spill's SHORT tail** — acceptable, or is a second term wanted? ⚠️ Read the current
+   numbers before answering: the ±55° fan that produced the 11%-inside-57-in figure was replaced
+   by the ±30% dump ruling (`BB_SPILL_SPEED` [35, 62], `BB_SPILL_FAN` 18°), and
+   `docs/biobuzz/feedback/001-spill-kinematics.md` measures the tail as gone at that fan while
+   posing the reach question in its place.
+3. **The G304 frontage** — the one start-pose number read off a drawing rather than measured.
+   `docs/biobuzz/feedback/002-thresholds.md` row A4 settles it on the real field on 09-14; there
+   is nothing separate to measure.
+
+## Docs reconciled with the code this session
+
+`HANDOFF.md` (this section), `docs/biobuzz/field-plan.md` §6 (every shared-core request is now
+either struck as landed or carries one sentence saying why it is still open),
+`docs/biobuzz/prompts.md` (Round 6 closed), `docs/biobuzz-contract.md` §1 (Lane A runs from the
+master chat) and `docs/biobuzz/HANDOFF-field.md` (the closed entries struck against the source
+that closed them).
+
+---
+
+> **2026-09-12f — BIOBUZZ builder feedback (branch `biobuzz-robot`, UNCOMMITTED).** The launcher
+> is mandatory (Single turret POLLEN-only / Double turret with a POLLEN and a NECTAR turret /
+> Dumper that reaches the HIVE; the Drum is gone). Launchers aim at the HIVE only. "Vertical
+> slide" is the OFFSET™ Box Tube, which scores a FLOWER by PROXIMITY placement (`z` POLLEN, `x`
+> NECTAR on protocol **bit 32, formerly `bbLift`**). The intake refuses opponent NECTAR. The
+> `Menu.tsx` Customize section now gives BIOBUZZ its drivetrain picker. Gates: `npm test` ALL
+> PASS twice (921 BIOBUZZ checks), `build`, `server:check`, `uiaudit` at baseline, `contrast`
+> 223, `shiftaudit` 0 shifts in 514. ⚠️ **Needs a server deploy** (`server/room.ts`
+> `countParticipation` plus the authoritative BIOBUZZ sim) via `./scripts/fly-deploy.sh`, never
+> a bare `flyctl deploy`. Full write-up, the cross-lane edits table and the gotchas are in
+> **`docs/biobuzz/HANDOFF-robot.md` → "READ FIRST — 2026-09-12, night"**.
+
+> **2026-09-12e — the SAVED-ROBOT line reads the `labels.configSummary` slot.** The third
+> site of the seam bug the preset LIST and the hero STAT TILES had, and the last one in
+> `Menu.tsx`: the `.om` detail line under each saved robot was `isDecode ? … : …`, an `else`
+> rather than a default, so a BIOBUZZ slot was described in Chain Reaction’s words off
+> `scoreMode` — the lossy legacy mirror — printing a launcher-less build as a turret and
+> never mentioning the lift. No new slot: BIOBUZZ already filled `labels.configSummary` and
+> `buildSummary` already read it. DECODE’s and CR’s inline arms are byte-identical.
+> Audited the rest of the file with it: the PRESET card body has no equivalent gap (its slot
+> test is the same slot that picks the list — now pinned), and every other `isDecode` is
+> either non-printing or inside the `Builder ? … : (…)` else-branch BIOBUZZ never renders.
+> Its smoke section sits directly after the stat-tiles one in `scripts/smoke-biobuzz/core.ts`
+> and pins the WIRING at the source — a correct `bbConfigSummary` no screen reads is
+> invisible to any check that calls it directly. Merged with alpha (both sections kept);
+> `npm test` ALL PASS twice, `npm run build` clean, `npm run uiaudit` at baseline.
+
+# HANDOFF — 2026-09-12d (the sync-engine review, verified and rewritten)
 
 > **2026-09-12d — alpha IS deployed, and LAN no longer needs a Vercel edit.** The alpha Fly app
 > now runs the rendezvous (verified by protocol, not by `/health`, which answers the literal
 > string `ok` and cannot tell you which build is running). The client gate moved from the
 > build-time `VITE_LAN_ENABLED` to the server's `lan` capability, because the two halves were
 > held by different people and had silently drifted apart. Cost: +6.1 KB brotli, measured.
+> Branch **alpha**, 7 commits, all pushed. `npm test` **ALL PASS**, `npm run dbtest` **ALL PASS**,
+> `npm run server:check` clean, `npm run test:mm` **184 checks** (was 58 at the last handoff).
 
-Branch **alpha**, 7 commits, all pushed. `npm test` **ALL PASS**, `npm run dbtest` **ALL PASS**,
-`npm run server:check` clean, `npm run test:mm` **184 checks** (was 58 at the last handoff).
+Branch **alpha**, **no code changes since the above** — one doc rewritten. `npm run test:mm`
+184 checks re-run and green; nothing else re-run, nothing to deploy.
 
-⚠️ **NOT DEPLOYED. All of this is server-side and does nothing until `./scripts/fly-deploy.sh`
-runs** — never a bare `flyctl deploy`.
+## `docs/multiplayer-sync-engine-review.md` was audited and is now 494 lines, was 985
 
-## READ FIRST — `ord` was not in the region table, and it is your US Central
+Every claim a RECOMMENDATION rests on was re-read at HEAD `593ac86` and at the review's own
+`8cd4d61`. The measurement half holds and is kept verbatim — it is the only place the corrected
+wire rates, the 32.0 µs/artifact figure and the per-room memory table exist. What changed:
+
+- **Finding #9 (`onBehaviour` never wired) was FALSE, and was false when written.** It is now a
+  struck-through row that says so. `server/matchmaking.ts` passes `persistBehaviour` as the 8th
+  `Room` argument and did at `8cd4d61` (line 363 then, 621 now); the first pass read only the
+  custom-room construction in `index.ts`, and those rooms never set `Room.ranked`, which
+  `reportBehaviour` guards on. **Nothing to fix — do not "wire" it.** It carried the ✔ that
+  marks an adversarially-verified row, so that mark is worth less than it looks.
+- **The client-side ball aliasing (was #11, now #5) is promoted and SEQUENCED FIRST.**
+  `applyBallDelta` returns the objects it stores, `ServerSession` keeps them as `baseBalls`, and
+  the controller steps them — so a ball absent from `upd` is never corrected. The review's own
+  safety case for 3 dp rounding ("the client re-anchors every snapshot") is only true for balls
+  the server re-sends, which is exactly what rounding shrinks. **Clone in `applyBallDelta`
+  before rounding anything.**
+- **The 3 dp safety argument was leaning on the wrong prop.** `worldHash` quantizing at 1e-3
+  proves replay COMPARISON is blind below it, not that `step()` is. Accumulated clocks read
+  against `world.time` (`fireReadyAt`) would round independently of it. §5 now carries a
+  `TIME_KEYS` exemption in the replacer — one `Set`, no measurable cost.
+- **The fleet numbers were stale.** `DEPLOY_REGIONS` is 6 since `ade7d60`, so the ceiling is
+  **144 rooms, 11.3× short**, not 120/13.5×. And `MAX_ROOMS` already reads `process.env`, so the
+  per-machine cap is `-e MAX_ROOMS=N` in `fly-deploy.sh`'s satellite loop, not new code.
+  `gru`/`jnb` are +2 regions for the price of a memory resize.
+- **`autoPath` (was #3, now #6) is not the amplifier it was billed as** — `Room.beginMatch`
+  strips it from every setup — but `coerceAutoPath` is still unbounded and also guards settings
+  load and the practice-run upload into `replays`. Bound the coercer, then delete the wire field.
+- **#5 overstated "no retention at all"**: `purgeSeasonReplays` is an existing per-season lever.
+  The `matches.replay_id` gap in `deleteAccount` is real and stays Critical.
+- **The Rapier 48× figure is a property of the rebuild-per-round design**, which is deliberate
+  for reconcile safety. Said out loud now, so nobody re-measures against a persistent world and
+  concludes the review was wrong.
+- Also: `#13` is sharper (`sanitizeReplay` DOES take a `game` and simply never passes it on),
+  `world.events` has 15 push sites not 11, `#16`/`spectateRoom` dropped to Low (a spectator gets
+  "no such room", not a second lobby), citations are by SYMBOL because every line number in
+  `room.ts`/`index.ts`/`protocol.ts` drifted with the LAN work, `costprobe`'s baseline is `:220`
+  and `worldHash` is in `src/net/`.
+
+Cut: the end-to-end ASCII path diagram (it duplicates `multiplayer-architecture.md`) and the
+template phases that concluded "does not apply" — folded into one §4 table. The six findings
+had been restated in six places; they are stated once, and the plan and dev spec are what is
+left.
+
+**Nothing here is deployed or deployable — it is a document.** The work it describes starts at
+Stage 0 (`costprobe.ts:220`, one line) and Stage 1 item 3 (`applyBallDelta`, one line).
+
+## `ord` was not in the region table, and it is your US Central
 
 The worst thing found this session, and it was live. `DEPLOY_REGIONS` listed five regions while
 EIGHT machines were running (iad ord sjc lhr syd nrt gru jnb). `interRegionMs` answers a

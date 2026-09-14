@@ -44,7 +44,7 @@ BB_FRAME_BAR_IN = 24, BB_FRAME_BAR_OUT = 25, BB_FRAME_Y = 19.4  // measured: 1-i
 BB_FLOWERS: (-69.46,-24) (-24,69.46) (69.46,24) (24,-69.46)     // measured: 2.54 off the wall, on the seam centreline
 BB_FLOWER_FOOT = { along: 6, deep: 4.9 }  // RECTANGLE flush to the wall, measured
 BB_FLOWER_TOP_Z = 21.5, BB_FLOWER_OPEN_R = 2.0, BB_FLOWER_VOL_Z = [3.98, 21.5] APPROX // Fig 9-12
-BB_TIP_POLLEN = [8, 7, 6, 3, 1, 0]   // MEASURED (ref §4.1); index = NECTAR in cell; [0] APPROX
+BB_TIP_POLLEN = [8, 7, 6, 3, 1, 0]   // index = NECTAR in cell; [0],[3] Event Field Setup Guide §12.3, rest MEASURED (ref §4.1)
 BB_FLOWER_UNLOCK_S = 60                                       // G410
 PTS: leave 3, park 5/5, tip 20, cell 2, bottom-nectar 5, owned 2, garden 1; RP 16 / 4 / 7
 ```
@@ -81,8 +81,10 @@ B's cap is lower, the rest go on the tiles touching the robot; a no-show's go to
 **conserved across floor + hopper + flight + cells + flowers + stock** — the smoke invariant.
 
 `scoreTargets(world, a)` returns, in order: the alliance's own up-CELL (pos, z = 59.5, accept
-rect 20 × 12 → `r` 8 APPROX), the opponent's up-CELL (legal, pointless — `alliance` set so a
-launcher can skip it), and the four FLOWER tops (z 21.5, r 2.0). `releasePollen(…, target)`
+rect 20 × 12 → `r` 8 APPROX), the opponent's up-CELL (REFUSED — owner ruling 2026-09-12, late:
+an element launched by the other alliance does not enter; it is a miss and lands as ground.
+`alliance` on the target is what the field and the launcher both read), and the four FLOWER
+tops (z 21.5, r 2.0). `releasePollen(…, target)`
 solves the arc for the target's z (the existing `Vec3` + `BB_LAUNCH_Z0`).
 
 ### 2.1 HIVE (hive.ts)
@@ -134,6 +136,16 @@ solves the arc for the target's z (the existing `Vec3` + `BB_LAUNCH_Z0`).
   (a flight element within `r` 2.0 of the top centre, z near 21.5, descending; a 3.6 nectar in a
   4.0 hole is a PLACEMENT — Lane B's deposit mechanism calls `releasePollen` with the flower
   target and a low arc).
+- **The middle ring is a SORTER** (owner ruling 2026-09-12, from the visuals chat's section
+  drawing): its hole is between the 2.8 POLLEN and the 3.6 NECTAR. POLLEN passes it and sits on
+  the lower ring (0.43); NECTAR cannot and seats on the middle ring. So a NECTAR is never below
+  the scoring floor and ALWAYS scores, and a lone POLLEN at the bottom (0.43-3.23) scores nothing
+  at rest. `flowerStackZ` seats a NECTAR at `max(columnTop, BB_FLOWER_MID_Z) + r`; everything
+  above rests on it as before, and retrieving a POLLEN from under a ring-seated NECTAR does not
+  lower the NECTAR. The ring's HEIGHT stays APPROX: 3.98 is the retrieval opening 3.55 + bottom
+  ring 0.43, i.e. the ring's UNDERSIDE, and V1 prints neither its thickness nor whether the
+  volume starts at its top (manual-distilled section 11, item 1). The seat rule is what keeps the
+  outcomes right whatever that number becomes.
 - Retrieval (G418.B): `actOnElement(world, r, 'retrieve')` when a robot's mouth overlaps the
   flower's field-side face — pops the **bottom** element **only if it is POLLEN** (nectar 3.6 >
   3.55 opening) into the hopper. A nectar at the bottom locks the flower.
@@ -156,8 +168,12 @@ solves the arc for the target's z (the existing `Vec3` + `BB_LAUNCH_Z0`).
 - Garden: every tick, count ground elements whose circle overlaps the strip; 1 each to the
   garden's colour. Displayed live, **banked at match end** like DECODE's pattern points
   (assessed at rest, §10.5.E). Same for cell contents (§10.5.C).
-- LEAVE: at end of AUTO, robot not contacting the perimeter (SAT vs the four wall lines with
-  `START_TOUCH_TOL` slack) ⇒ 3. PARK: at end of AUTO / end of MATCH, footprint intersects **own**
+- LEAVE: at end of AUTO, robot not contacting **the wall it started against** (the mask
+  `BiobuzzState.startWalls` records on every `pre` tick, `START_TOUCH_TOL` slack) ⇒ 3.
+  ⚠️ REVISED 2026-09-13 from "not contacting the perimeter" (all four wall lines): the HIVE,
+  the FLOWERS and both GARDENS are at the perimeter, so under that reading a robot that
+  crossed the field and ended AUTO anywhere useful scored nothing — 3 points live all
+  through AUTO and 0 from the buzzer. §10.5.4's article is read as the wall it began on. PARK: at end of AUTO / end of MATCH, footprint intersects **own**
   LOADING ZONE (assumed own — the zone "belongs to" the alliance; ask in Q&A) ⇒ 5 each.
 - RP: SWARM = leave + park points ≥ 16 (both robots LEAVE + both PARK in AUTO is exactly 16);
   POLLINATOR 1/2 at 4 / 7 tips. Ranked/record boards read `total`; RP go to `resultsRows`.
@@ -193,9 +209,10 @@ assessment (TELEOP PARK, garden, cell contents, final flower state). `scored: tr
 1. **G410** nectar-in-flower early — MAJOR per nectar. One predicate on the flower entry event.
 2. **G402** AUTO interference — DECODE's shape: during AUTO, a robot fully on the opponent's
    side (x sign) in contact with an opponent ⇒ MAJOR on the crosser.
-3. **G407** — structural cap 4 in the hopper; herding of ground elements counted with a
-   simplified CONTROL test (contact + moving with the robot's face); VERBAL (log line) at 5,
-   MAJOR + YELLOW at 6+ (the manual's own "likely STRATEGIC" example A).
+3. **G407** — a WARNING, not a cap (owner ruling 2026-09-12, late): the hopper is bounded by the
+   volume law alone, and CONTROL of a 5th element (hopper + herded, the simplified CONTROL test:
+   contact + moving with the robot's face) is a VERBAL WARNING — a log line and a HUD chip, no
+   points. MAJOR + YELLOW "if STRATEGIC" is referee judgement and is not modelled.
 4. **G417** frame ram — bumper contact with a frame bar at closing speed > `APPROX` 30 in/s:
    VERBAL first, MAJOR + YELLOW if REPEATED (example B).
 5. **G421** PIN — reuse DECODE's `isPinning` machinery once it is extractable (§6 request 5);
@@ -224,28 +241,63 @@ Not modelled: G405/G406/G409/G411/G419/G420 (2D sim or referee judgement), and t
 
 ## 6. Requests for the shared core (integration chat / owner)
 
-1. **Per-artifact radius** in `solveArtifacts` and `robotSolids`/`bbRobotSolids` — an
-   `Artifact.r?: number` (default `C.BALL_RADIUS`) or a radius-by-colour map. Without it nectar
-   is simulated at pollen size (APPROX, visibly wrong: a 3.6 ball in a 2.8 pile). Interim: run
-   nectar at 1.4 and say so on the gallery cell.
-2. **`Artifact.state` member for "inside a field element"**: `{ kind: 'element'; el: string;
-   slot: number }` — one generic member covers CELL and FLOWER (and any future game's goal), and
-   keeps the element in `world.balls` so conservation is one array. Alternative: park them as
-   `stock` and index by id from `world.biobuzz` (works, but `stock` means "in a human's hand").
-3. **`ArtifactColor`** gains `'yellow' | 'red' | 'blue'` (it is `'purple' | 'green'`), or
-   BIOBUZZ maps pollen → `green`, nectar → `purple` + alliance in the state. The renderer and
-   the shared hopper HUD read the colour, so a real union is the honest fix.
+1. ~~**Per-artifact radius** in `solveArtifacts` and `robotSolids`/`bbRobotSolids`~~ — **LANDED
+   2026-09-12** (master chat). Every shared ground-artifact site reads `b.r ?? radius`:
+   `solveArtifacts`, `robotSolids`' held plugs, `clampBallPosToStatics`, `fieldPushback`,
+   `bounceFirstContacts`, `supported` and `pinnedArtifacts`. A resting NECTAR moved from 1.400
+   to 1.800 in off the wall and a NECTAR on a POLLEN from 2.790 to 3.190. DECODE sets `r` on
+   nothing and is byte-identical. ⚠️ **Still open for Lane B**: `bbRobotSolids` (`robot.ts`)
+   builds every held plug at its `radius` argument, so a NECTAR in a hopper still plugs the
+   mouth at POLLEN size — one line, `r: b.r ?? radius`.
+2. ~~**`Artifact.state` member for "inside a field element"**: `{ kind: 'element'; el: string;
+   slot: number }`~~ — **LANDED** (`24fc564`, `src/types.ts`). The `BallState` union carries
+   exactly that variant, `el` naming the element (`'hive:red'`, `'flower:2'`) and `slot` its
+   position in that element's order; the ball stays in `world.balls`, so conservation is still
+   one array and nothing is solved or drawn as a loose ball while it is in there. The `stock`
+   alternative was not taken — `stock` means "in a human's hand" and a CELL is not a hand.
+3. ~~**`ArtifactColor`** gains `'yellow' | 'red' | 'blue'`~~ — **LANDED** (`24fc564`). It is the
+   real union (`'purple' | 'green' | 'yellow' | 'red' | 'blue'`), not a mapping, so POLLEN and
+   each alliance's NECTAR are their own colours to the renderer and to the shared hopper HUD.
 4. **Foul tariff per game**: `awardFoul(world, offender, severity, rule, pts?)` or a
-   `GameSimModule.foulPoints` slot; BIOBUZZ is 5 / 20, DECODE 5 / 15.
-5. (Later) extract DECODE's pin detector (`isPinning`, criteria A/B/C, pause/resume) from
-   `src/sim/penalties.ts` into a helper both games call, for G421.
+   `GameSimModule.foulPoints` slot; BIOBUZZ is 5 / 20, DECODE 5 / 15. **STILL OPEN, and still
+   not blocking** — `bbAwardFoul` bills 5 / 20 locally and carries the `warning` severity the
+   shared `awardFoul` has no concept of, so collapsing the mirror back to one call would mean
+   teaching the shared function a third severity for one game's sake; the request stands only
+   for the day that trade looks worth making.
+5. ~~(Later) extract DECODE's pin detector (`isPinning`…)~~ — **HALF LANDED.** `isPinning` and
+   `controlledArtifacts` are exported from `src/sim/penalties.ts` and BIOBUZZ's `penalties.ts`
+   calls both, with `bbPinSolid` supplying this field's own solids (request 6 below).
+   **STILL OPEN: the criteria A/B/C pause/resume ACCUMULATOR is duplicated**, not shared — the
+   loop over `pen.pins` in `src/games/biobuzz/penalties.ts` re-implements DECODE's, reading the
+   shared `PIN_END_S` / `PIN_ESCAPE_DIST` / `PIN_SECONDS` / `PIN_STUCK_SPEED` from `config.ts`.
+   Left that way deliberately: the predicate is pure geometry and shares cleanly, the
+   accumulator writes game-owned state and would need a home that is neither game's.
+6. ~~**Per-game geometry for the shared CONTROL test**~~ — **LANDED 2026-09-12** (`4fde19d`,
+   master chat). `ControlGeometry` on `controlledArtifacts`: `carveOut` (BIOBUZZ passes
+   `BB_LZ`, so G407's acquire exemption is scoped to THIS game's LOADING ZONE), `hopperCap`
+   (`bbHopperCap`, so a robot carrying its legal four is not billed against DECODE's 3) and
+   `radius`. See §4 item 3.
+7. ~~**Per-game start legality** (`GameSimModule.startLegal`)~~ — **LANDED 2026-09-12**
+   (`be09953`, master chat). `startLegality` stays the ENFORCEMENT FLAG and `startLegal` is the
+   PREDICATE; `Room.startPoseLegal` is the single place the server asks, so the ready gate and
+   the start gate cannot disagree. This is what let BIOBUZZ turn `startLegality` on.
+   ⚠️ **It is a `server/room.ts` change and is INERT IN LIVE ROOMS UNTIL A DEPLOY** — until
+   `./scripts/fly-deploy.sh` runs, a live BIOBUZZ ready-up is still judged against DECODE's
+   launch lines.
 
-None of these block kickoff-day geometry (§1) or staging; 1–3 block the element lifecycle.
+None of these blocked kickoff-day geometry (§1) or staging, and 1–3 — the three that blocked the
+element lifecycle — have all landed. **What is left is 4 (a convenience) and half of 5 (a
+refactor).** Requests 1, 6 and 7 were shared-core changes made from the MASTER CHAT, not by the
+owner; 2 and 3 landed with the BIOBUZZ types commit.
 
 ## 7. For Lane B (robot) — facts from the manual that change the dials
 
-- Hopper ceiling **4** (G407); default 4; preloads fill it. `BB_STORAGE_*` and the storage-area
-  law shrink to a 1–4 dial or disappear.
+- Hopper ceiling: ⚠️ **this bullet was reversed the same day and the reversal is what stands.**
+  The late G407 ruling (a WARNING, not a cap — §4 item 3) said the volume law alone should bound
+  the hopper and `BB_STORAGE_MAX = 4` should go; the owner then put the 4-element cap back
+  (`177947b`), so `BB_STORAGE_MAX` is 4 in `config.ts` today and `bbStorageMax` clamps the volume
+  law to it. Default 4; preloads fill it. Do not re-lift the cap. The two rulings are not in
+  conflict — G407 stops being a POINTS rule, and 4 stays as a HARDWARE limit.
 - Expansion **18 × 24 × 29** (R105): one horizontal axis only — `BB_PRISM` 24 stands, but the
   other axis stays 18.
 - Two launch targets with real heights: cell opening 53.5–65.6 in (a genuine lob, 12–14 in
@@ -266,4 +318,31 @@ None of these block kickoff-day geometry (§1) or staging; 1–3 block the eleme
 - PARK requires the **OWN** LOADING ZONE — SETTLED (owner, 2026-09-12), matching Fig 10-7.
 - Flower stand-off from the wall and exact footprint (CAD ref 10-4 when the field CAD is out).
 - Exact tape placement of the LZ (which side of the seam) — ±0.5 in, cosmetic.
-- Whether a pollen launched into the OPPONENT's up-cell is ever penalised (text: no).
+- ~~Whether a pollen launched into the OPPONENT's up-cell is ever penalised~~ SETTLED (owner,
+  2026-09-12): not penalised, and the sim does not let it enter (§2.1).
+- G410 binds NECTAR only — SETTLED (owner, 2026-09-12): POLLEN may enter a FLOWER at any time and
+  earns nothing until an owner exists.
+
+### Still waiting on the owner (2026-09-12, end of day)
+
+Three questions, none of them a bug, and the code sits on its current ruling until each is
+answered. Do not guess at any of them.
+
+1. **YELLOW CARDS — model them game-wide, or leave them to the referee for this season?**
+   G414/G415/G417/G418/G419/G420 all name a card and **BIOBUZZ has no card machinery at all**:
+   `bbAwardFoul` awards points and nothing else, so every one of those rules is currently
+   modelled as its foul half only. DECODE's `awardCard` is the shape if the answer is yes (a
+   second card escalates to RED and voids that alliance's score); if it is no, that belongs
+   written down once rather than re-asked per rule.
+2. **The spill's SHORT tail — acceptable, or is a second term wanted?** ⚠️ Answer against the
+   CURRENT constants, not the ones the question was first asked about: the ±55° fan that
+   produced "11% rest inside the 57 in floor" was replaced by the ±30% dump ruling
+   (`BB_SPILL_SPEED` [35, 62], `BB_SPILL_FAN` 18° in `hive.ts`), and
+   `docs/biobuzz/feedback/001-spill-kinematics.md` measures the chord-shaped tail as gone at
+   that fan while raising the reach question in its place. One constant each was the
+   instruction, so there is still no knob separating "far" from "wide" if a second term turns
+   out to be wanted.
+3. **The G304 frontage** — the one start-pose number in `BB_START_POSES` read off a drawing
+   rather than measured. `docs/biobuzz/feedback/002-thresholds.md` row A4 settles it on the real
+   field on 09-14; the ±72 walls, the x = 0 seam and the FLOWER centres around it are measured
+   and are not APPROX.

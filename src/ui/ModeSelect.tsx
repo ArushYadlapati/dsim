@@ -124,32 +124,7 @@ export function ModeSelect({
       </section>
       )}
 
-      {/* LAN — the only mode that needs NEITHER the internet nor an account to play.
-          It sits above Custom because at a competition venue it is the one that works:
-          the wifi is saturated, the cloud is far away, and the whole team is on one
-          network. Never disabled on `multiplayer` — not needing our servers is the
-          entire point.
-
-          Hidden entirely where `LAN_ENABLED` is off, rather than shown disabled: a
-          greyed tile advertises a mode this build will not play, and the reason it is
-          off is that the feature is being held back, not that the player is missing a
-          prerequisite. Disabled states are for the latter. */}
-      {lanOn && (
-        <section className="ds-tileset">
-          <p className="ds-tileset-label">LAN · same network</p>
-          <div className="ds-tiles">
-            <button className="ds-tile" onClick={onLan}>
-              <span className="k">LAN</span>
-              <span>
-                <span className="t">Host or Join</span>
-                <span className="d">Unofficial — not rated</span>
-              </span>
-            </button>
-          </div>
-        </section>
-      )}
-
-      {/* Custom room — last, per its niche use */}
+      {/* Custom room */}
       <section className="ds-tileset">
         <p className="ds-tileset-label">Custom · online</p>
         <div className="ds-tiles">
@@ -169,6 +144,26 @@ export function ModeSelect({
           </button>
         </div>
       </section>
+
+      {/* LAN — LAST on the page (owner, 2026-09-13). Never disabled on `multiplayer`: not
+          needing our servers is the point of it.
+
+          Hidden entirely where `LAN_ENABLED` is off, rather than shown disabled: a greyed tile
+          advertises a mode this build will not play, and the reason it is off is that the
+          feature is being held back, not that the player is missing a prerequisite. */}
+      {lanOn && (
+        <section className="ds-tileset">
+          <p className="ds-tileset-label">LAN · same network</p>
+          <div className="ds-tiles">
+            <button className="ds-tile" onClick={onLan}>
+              <span className="k">LAN</span>
+              <span>
+                <span className="t">Host or Join</span>
+              </span>
+            </button>
+          </div>
+        </section>
+      )}
     </>
   );
 }

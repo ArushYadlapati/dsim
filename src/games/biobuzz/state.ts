@@ -54,11 +54,15 @@ export interface Vec3 {
 /**
  * A place POLLEN can be SCORED, in world coordinates.
  *
- * SHELL STUB, and honestly so: `scoreTargets()` returns `[]` because Section 9 (ARENA) and
- * Section 10 (Game Details) of the V0 manual are Kickoff placeholders, so there is no goal,
- * basket, hive or zone to describe. The TYPE exists now because Lane B's `bbAimHeading` and
- * `bbLaunch` are written against it, and a type that arrives after its callers is a refactor
- * rather than a fill-in.
+ * FILLED IN SINCE KICKOFF: `scoreTargets()` now lists the asking alliance's own up-CELL and
+ * the four FLOWER tops. It does NOT list the opponent's CELL — an element launched by the
+ * other alliance does not enter it (owner ruling 2026-09-12) — so a caller that wants every
+ * opening on the FIELD rather than every opening this alliance can score in has to ask for
+ * both and merge, which is what `play.ts`'s capture pass does.
+ *
+ * `alliance` is `null` for a NEUTRAL target. The FLOWERS are neutral at aim time even though
+ * they are owned at score time: ownership is whoever holds the top-most NECTAR (10.5.2), which
+ * is a fact about the stack, not about the opening.
  *
  * `id` is stable and JSON-safe (it ends up in HUD text and in events). `pos` is the point to
  * aim at; `z` is how high it sits, so a lob has an arc to solve for; `r` is the accepting
@@ -130,6 +134,31 @@ export interface BbHiveState {
   contents: number[];
   tips: number;
   tipping: number;
+  /**
+   * HAS THE SWING IN PROGRESS ALREADY DROPPED ITS LOAD?
+   *
+   * The spill and the TIP are two moments of ONE swing: the tray empties as the bar passes
+   * LEVEL (`BB_TIP_RELEASE_S`) and the 20 points land two seconds later when it SETTLES
+   * (§10.5.1 — the damper has to make contact). `tipping` alone cannot tell those apart,
+   * because a bar with 2 s left has either just emptied or is about to, depending on nothing
+   * the rest of the state records — so without this latch a re-entrant step spills the same
+   * contents twice, which is a duplicate in `world.balls` and the end of the conservation
+   * invariant. `false` whenever `tipping` is 0, and reset at the end of every swing.
+   */
+  released: boolean;
+  /**
+   * HOW FAST THE SWING IN PROGRESS IS RUNNING, as a multiple of the nominal rate.
+   *
+   * A heavier tray tips faster (owner feedback, 2026-09-13): `hiveSwingRate` (`hive.ts`) reads
+   * it off how far the load is OVER the tip threshold, and the cell keeps taking elements
+   * through the first half of the swing, so the rate can rise mid-swing. It has to be STATE
+   * because the second half of the swing runs after the load has left the tray — the bar
+   * carries the momentum the load gave it, and nothing else in the state remembers what that
+   * load was. `tipping` stays in NOMINAL seconds (the renderer maps it to an angle), and this
+   * is what the countdown is multiplied by. Absent or 1 when settled; absent on any snapshot
+   * recorded before it existed, which reads as the nominal rate.
+   */
+  swingRate?: number;
 }
 
 /**
@@ -142,6 +171,22 @@ export interface BbHiveState {
  */
 export interface BbFlowerState {
   stack: number[];
+  /** which FLOWER this is — `BB_FLOWERS[i].id`, i.e. `F1`…`F4`.
+   *
+   * REDUNDANT WITH THE INDEX, AND CARRIED ANYWAY, because the state is the thing that reaches
+   * the wire, a snapshot and the rules lane, and an array position is not a name. A row that
+   * says which flower it is can be logged, asserted against and read in a HUD slice without
+   * the reader also holding `BB_FLOWERS` in the right order. */
+  id: string;
+  /**
+   * NO PER-FLOWER SUPPLY. The A4 state contract carried a draft `stock` / `nectarDue` pair
+   * here against the possibility that a FLOWER dispenses its own NECTAR. The reference now
+   * answers that: `docs/biobuzz-reference.md` §2.4 and G426 put every NECTAR into the field
+   * through the HUMAN PLAYER — one per own-HIVE TIP, and all remaining stock at ≤ 60 s — and
+   * nothing anywhere gives a flower a supply of its own. The two fields are deleted rather
+   * than left at 0: a field the rules can read but the sim will never write is a trap, and
+   * the per-ALLIANCE `nectarStock` / `nectarDue` below are the whole supply.
+   */
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -158,6 +203,26 @@ export interface BbFlowerState {
  * climb something — kept so the HUD and the results rows have a value space to render.
  */
 export type BbEndgame = 'none' | 'parked' | 'climbed';
+
+/**
+ * WHY THE HUMAN PLAYER BUTTON WOULD DO NOTHING RIGHT NOW — the four answers, in the order the
+ * tick tests them, most permanent first.
+ *
+ * `'ok'`         a press right now enters one NECTAR.
+ * `'none-left'`  the stock is empty. TERMINAL: nothing refills it, so this never becomes
+ *                anything else for the rest of the match, which is why it outranks the
+ *                other two refusals — "you have none" is more use than "not yet".
+ * `'locked'`     the field is frozen (`enabled` false — pre-match, the auto→teleop
+ *                transition, after the buzzer). G426 forbids a human player reaching over
+ *                the wall then, whatever they are owed.
+ * `'none-owed'`  live, with stock, and no entitlement: no TIP has been banked since the last
+ *                entry and TELEOP has more than `BB_FLOWER_UNLOCK_S` left.
+ *
+ * A STRING UNION rather than a boolean pair because the HUD prints one of four sentences and
+ * a pair of booleans would make two of the four unreachable-looking. It is recomputed every
+ * tick and never latched.
+ */
+export type BbNectarWhy = 'ok' | 'locked' | 'none-owed' | 'none-left';
 
 export interface BiobuzzState {
   /** POLLEN scored per alliance, as a COUNT. Separate from `points` because a count is what
@@ -222,9 +287,45 @@ export interface BiobuzzState {
    * be owed an entry it has no stock for, and at ≤ 60 s the remaining stock enters regardless
    * of what is due (§2.4 of the field plan). DRAFT. */
   nectarDue: Record<Alliance, number>;
-  /** per robot id: did it LEAVE (stop contacting the perimeter) by the end of AUTO? Latched at
-   * that instant and never recomputed, because the achievement is assessed once (Table 10-2)
-   * and a robot that drives back to the wall in TELEOP keeps its 3. DRAFT. */
+  /**
+   * WHAT A HUMAN PLAYER BUTTON PRESS WOULD DO RIGHT NOW, per alliance (`BbNectarWhy`).
+   *
+   * ── WHY IT IS STATE AND NOT A DERIVED READ ─────────────────────────────────
+   * Three of its four inputs are on the world (`nectarStock`, `nectarDue`, `match`) but the
+   * fourth is NOT: `enabled` is the step's own "may the robots run" flag, computed in
+   * `step.ts` from the phase and never written down. A HUD that re-derived this would have to
+   * re-derive that too, in a second place, from a snapshot — and a snapshot taken during the
+   * auto→teleop transition looks exactly like a live teleop tick from the outside. So the
+   * tick that knows the answer records it.
+   *
+   * It replaces `nectarTimer`, the drip clock, which is deleted: NECTAR entry is a driver
+   * ACTION now (`RobotCommand.bbNectar`, G426), so there is no beat left to count down. The
+   * whole of the old mechanism — `BB_NECTAR_ENTRY_S`, `BB_NECTAR_DUMP_S` and this clock — is
+   * gone; `nectarDue` stays and is still the entitlement counter.
+   *
+   * Recomputed EVERY tick, including while disabled, and never latched: it is a read-out of
+   * the current situation, so a stale value is a lie the HUD would print.
+   */
+  nectarWhy: Record<Alliance, BbNectarWhy>;
+  /**
+   * per robot id: WHICH PERIMETER WALLS IT STARTED AGAINST, as a `BbWall` bitmask.
+   *
+   * LEAVE is "no longer contacting the perimeter wall" (§10.5.4), and THE is the whole word:
+   * the wall in question is the one the ROBOT began the MATCH on. Tested against all four
+   * instead, the achievement is unreachable in ordinary play — the HIVE, the FLOWERS and both
+   * GARDENS are all at the perimeter, so a robot that drives the length of the field and ends
+   * AUTO anywhere useful is "contacting the perimeter wall" and scores nothing for a journey
+   * it plainly made. Measured: 3 points live all through AUTO, gone at the buzzer.
+   *
+   * WRITTEN EVERY TICK OF `pre`, so it is whatever pose the robot actually starts from — start
+   * poses are free-placed in this game (`startLegality: false`) and the anchors sit on three
+   * different walls — and FROZEN from the moment AUTO begins. 0 is a legal value: a robot
+   * placed clear of the perimeter has nothing to stop contacting and has LEFT by definition.
+   */
+  startWalls: Record<number, number>;
+  /** per robot id: did it LEAVE (stop contacting the wall it started on) by the end of AUTO?
+   * Latched at that instant and never recomputed, because the achievement is assessed once
+   * (Table 10-2) and a robot that drives back to the wall in TELEOP keeps its 3. DRAFT. */
   leave: Record<number, boolean>;
   /** per robot id: PARK at end of AUTO / end of MATCH, the two separate 5-point assessments.
    * Two maps rather than one because they are two achievements that can disagree. DRAFT. */
@@ -262,14 +363,23 @@ export function emptyBiobuzzState(): BiobuzzState {
     // red's south CELL up and blue's north (§10.3.1, Fig 10-2). Contents stay empty — the
     // three NECTAR in each up-cell are `spawn.ts`'s to place.
     hives: {
-      red: { up: 'south', contents: [], tips: 0, tipping: 0 },
-      blue: { up: 'north', contents: [], tips: 0, tipping: 0 },
+      red: { up: 'south', contents: [], tips: 0, tipping: 0, released: false },
+      blue: { up: 'north', contents: [], tips: 0, tipping: 0, released: false },
     },
     // four literals rather than a `map`, so the tuple type holds and so the four stacks are
     // four distinct arrays — a `fill()` of one object would alias every flower to one stack.
-    flowers: [{ stack: [] }, { stack: [] }, { stack: [] }, { stack: [] }],
+    flowers: [
+      { id: 'F1', stack: [] },
+      { id: 'F2', stack: [] },
+      { id: 'F3', stack: [] },
+      { id: 'F4', stack: [] },
+    ],
     nectarStock: { red: 0, blue: 0 },
     nectarDue: { red: 0, blue: 0 },
+    // 'none-left' rather than 'ok': a fresh state has no stock (`spawn.ts` stages it), and the
+    // honest answer for a world nobody has staged is the one the tick would compute for it.
+    nectarWhy: { red: 'none-left', blue: 'none-left' },
+    startWalls: {},
     leave: {},
     parkAuto: {},
     parkTele: {},

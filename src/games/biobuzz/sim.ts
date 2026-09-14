@@ -1,9 +1,21 @@
 import type { GameSimModule } from '../types';
-import { BB_HALF_X, BB_HALF_Y, BB_START_POSE_COUNT, BB_VIEW_MARGIN } from './config';
+import {
+  BB_HALF_X,
+  BB_HALF_Y,
+  BB_INITIAL_ACT,
+  BB_START_POSE_COUNT,
+  BB_VIEW_MARGIN,
+  bbAnchorCat,
+  bbAnchorName,
+  bbDefaultIndex,
+  bbRoleLabel,
+} from './config';
 import { biobuzzColliders } from './colliders';
 import { biobuzzHud } from './hudRobot';
 import { bbRobotSolids } from './robot';
+import { bbSettled } from './settle';
 import { createBiobuzzWorld } from './spawn';
+import { bbActiveStartLegal } from './start';
 import { biobuzzStep } from './step';
 
 /**
@@ -18,31 +30,51 @@ import { biobuzzStep } from './step';
  * (`src/games/index.ts`, `src/games/sim.ts`) the whole of "adding a game" — see CLAUDE.md's
  * seam section for the four registrations and why all four fail silently when missed.
  *
- * ── WHY `scored` AND `startLegality` ARE BOTH FALSE ────────────────────────
- * Not as a stub, but as the truth about a pre-Kickoff game. Sections 7-11 of the V0 manual
- * (Game Details, Scoring, ARENA) are one-line placeholders reading "updated with the Kickoff
- * Competition Manual release on September 12, 2026", so:
- *   • `scored: false` — `scoreTargets()` is empty and `play.ts`'s score pass writes zeroes, so
- *     nothing here may reach a leaderboard, a record board or an ELO. `persistMatch` reads
- *     this flag off the SERVER-SAFE registry and skips the write entirely.
- *   • `startLegality: false` — there is no published G304 analogue, so the two anchors are a
- *     convenience rather than a rule, and the server's legality gate stays off. The anchors
- *     are `APPROX` and say so at their definition.
- * Both flip in one commit the day the manual lands. Nothing else about the module changes.
+ * ── `scored` AND `startLegality` ARE BOTH TRUE ───────────────────────────────
+ *   • `scored: true` since 2026-09-12 (kickoff evening): `score.ts` scores the whole of
+ *     Table 10-2 every tick (TIPS, CELL contents, FLOWER ownership, GARDEN, LEAVE, PARK) and
+ *     `scoreTargets()` returns the real openings, so a BIOBUZZ match may reach the record
+ *     board, the ranked periods and `persistMatch` — all keyed per game, and all still
+ *     ALPHA-ONLY through `channels`. Some inputs are `APPROX` (`BB_FRAME_RAM_SPEED`,
+ *     `BB_FLOWER_MID_Z`), so numbers on the alpha board before the 2026-09-14 field test
+ *     are provisional. Setting this back to `false` is the one-line way to stop persisting.
+ *   • `startLegality: true` since the `startLegal` slot landed. It was held down for one
+ *     reason, and it was never that the rule was missing: `bbEvalStart` (`./start`) has
+ *     assessed G304 since kickoff day — own side, touching the perimeter, clear of every
+ *     FLOWER, out of the LOADING ZONE. What blocked it was the READER. `server/room.ts` and
+ *     `startSelectionLegal` both called DECODE's `activeStartLegal` directly, so flipping the
+ *     flag would have judged a BIOBUZZ pose against DECODE's launch lines and goal triangles
+ *     and refused every legal start on this field. Both now ask the module
+ *     (`GameSimModule.startLegal`, filled below), so the flag means what it says: a driver
+ *     cannot ready up, and a host cannot start, on a pose G304 refuses.
  *
- * `initialAct: 2` — DECODE opened in act 0 (its beta bucket) and Chain Reaction in act 1, so
- * this game's first ranked period opens in act 2. Distinct per game is asserted by the smoke
- * suite: a shared act would file two games' first season into one bucket.
+ * `initialAct: 1` (`BB_INITIAL_ACT`) — BIOBUZZ's records and ranked open at Act 1 · Season 1
+ * (owner, 2026-09-12). Acts are stored PER GAME (`seasons` is keyed on game, `elo_ratings` on
+ * game + act), so the number does not have to differ from another game's: DECODE and Chain
+ * Reaction already share an act number in production without touching each other's boards.
  */
 export const BIOBUZZ_SIM: GameSimModule = {
   id: 'biobuzz',
-  scored: false,
-  startLegality: false,
-  initialAct: 2,
+  scored: true,
+  startLegality: true,
+  initialAct: BB_INITIAL_ACT,
   // the legal range of a `startIndex` — read by `coerceStartIndex`, `coerceSetup`,
   // `coerceSettings` and the server's per-alliance de-conflict loop, none of which may use
   // DECODE's five anchors for a game that has two
   startPoseCount: BB_START_POSE_COUNT,
+  // G304, off `bbEvalStart`. It MIRRORS the canonical pose onto the alliance first — this
+  // field is point-symmetric, so red's version of a stored pose is a 180° rotation of it and
+  // not an x-reflection; see `bbActiveStartLegal`.
+  startLegal: bbActiveStartLegal,
+  // start ROLES are TOP / BOTTOM (which end of the field a robot starts at), like Chain
+  // Reaction's, not DECODE's CLOSE / FAR — read by the shared start-position helpers, the
+  // role-swap bar and the lobby/strategy start chips
+  startAnchorCategory: bbAnchorCat,
+  startDefaultIndex: bbDefaultIndex,
+  startRoleLabel: bbRoleLabel,
+  startAnchorName: bbAnchorName,
+  // BIOBUZZ's step never calls `updatePathTraversal`, so an imported `.pp` path would be inert
+  autoPaths: false,
   bounds: { halfX: BB_HALF_X, halfY: BB_HALF_Y, viewMargin: BB_VIEW_MARGIN },
   colliders: biobuzzColliders,
   createWorld: createBiobuzzWorld,
@@ -54,4 +86,7 @@ export const BIOBUZZ_SIM: GameSimModule = {
   // `robotSolids` unchanged; filled here because a BIOBUZZ sweeper is a roller bar on any
   // edge and DECODE's front funnel is not a description of it. See `bbRobotSolids`.
   artifactSolids: bbRobotSolids,
+  // the match is finalized only once nothing left on the field can score (§10.5 A/C) — a tip
+  // swing that the buzzer caught finishes and pays before anything is saved. See `bbSettled`.
+  settled: bbSettled,
 };

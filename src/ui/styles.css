@@ -248,6 +248,33 @@ button {
   color: rgba(255, 255, 255, 0.85);
 }
 
+/* BIOBUZZ: the alliance panel STACKS its total over the up-CELL line. The BIOBUZZ field
+   draws no letters or digits anywhere in a match (field-plan §2.5), so "how many more
+   POLLEN would TIP that HIVE" has nowhere else to live — and it is per-ALLIANCE, which
+   makes the alliance panel its column rather than the shared breakdown row. */
+.score-panel.bb {
+  flex-direction: column;
+  gap: var(--ds-s-0);
+}
+
+/* fixed ink on the fixed alliance gradient, like `.panel-score` and `.you-tag` beside it
+   (category 2 in the theming note: it does not invert). */
+.bb-tip {
+  font-family: var(--ds-font-mono);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 1px;
+  line-height: 1;
+  white-space: nowrap;
+  color: rgba(255, 255, 255, 0.85);
+}
+
+/* TIPPING is a state that changes what to do — hold fire, the CELL accepts nothing while
+   it swings — so it comes forward to full-strength ink instead of sitting back. */
+.bb-tip.go {
+  color: #fff;
+}
+
 .timer-panel {
   display: flex;
   flex-direction: column;
@@ -318,6 +345,15 @@ button {
   font-weight: 700;
   letter-spacing: 1px;
   color: var(--muted);
+}
+
+/* A COUNTDOWN AGAINST SOMEBODY, not a state of the field. The rest of this row is
+   `--muted` because NECTAR LOCKED, RAMP and the rest describe where the match IS; BIOBUZZ's
+   G421 line is 20 points every three seconds and has to carry the same weight here as the
+   `.chip.warn` it mirrors in the desktop chip row — this row is the only one a phone renders. */
+.breakdown-row span.warn {
+  color: var(--ds-warn);
+  border-color: var(--ds-warn);
 }
 
 .chip {
@@ -440,6 +476,15 @@ button {
   flex-direction: column;
   align-items: flex-end;
   gap: 8px;
+  /* NEITHER TOP CLUSTER MAY CROSS THE CENTRE LINE. This row is `nowrap` and grows
+     LEFTWARD from the right edge with nothing stopping it running under MENU / RESET /
+     the sponsor mark in the opposite corner — and it did, as soon as a game's `hudChips`
+     put six chips in it (BIOBUZZ, measured at 1440px with the alpha pose readout on: the
+     archetype chip sat behind the sponsor mark). 50% is the one bound that needs no
+     number: the opposite cluster cannot be wider than its own half either. The compact
+     block below already caps and wraps this row on a phone; this is the same rule for the
+     desktop, where nobody had yet built a row long enough to need it. */
+  max-width: 50%;
 }
 
 /* the connection chip doubles as a toggle for the expandable ping graph */
@@ -514,6 +559,10 @@ button {
 .robot-status {
   display: flex;
   align-items: center;
+  /* wraps against `.status-wrap`'s cap rather than overflowing it — see the note there.
+     The chips already right-align, so a second line stacks under the first. */
+  flex-wrap: wrap;
+  justify-content: flex-end;
   gap: 12px;
   background: var(--ds-hud);
   border: 1px solid var(--ds-hud-line);
@@ -545,6 +594,27 @@ button {
 
 .hopper-pip.green {
   background: var(--green);
+}
+
+/* BIOBUZZ's held elements (`BiobuzzHudChips`): POLLEN and the two NECTARs. All three are FILLS
+   (category 2, they do not invert) inside the same `--ds-mut` ring as an empty slot, so the
+   ring, not the fill, keeps separating each disc from the card in both themes. */
+.hopper-pip.yellow {
+  background: var(--ds-pollen);
+}
+
+.hopper-pip.red {
+  background: var(--ds-red);
+}
+
+.hopper-pip.blue {
+  background: var(--ds-blue);
+}
+
+/* the element that leaves NEXT. An outer ink ring drawn as a box-shadow, so marking a pip never
+   changes its box (the row does not move as the hopper cycles). */
+.hopper-pip.next {
+  box-shadow: 0 0 0 2px var(--ds-ink);
 }
 
 /* drive power-draw gauge in the top-right status bar */
@@ -645,6 +715,8 @@ button {
 @media (prefers-reduced-motion: reduce) {
   .game-btn:hover,
   .game-btn:active,
+  .sponsor-chip:hover,
+  .sponsor-chip:active,
   .overlay-buttons button:hover,
   .overlay-buttons button:active {
     transform: none;
@@ -2725,7 +2797,7 @@ input.admin-months {
   gap: var(--ds-s-2);
   margin: 0;
   padding: 8px 12px;
-  border: 1px solid var(--ds-sky-ink);
+  border: 1px solid var(--ds-line-strong);
   border-radius: var(--ds-round-md);
   background: var(--ds-tile);
   color: var(--ds-ink);
@@ -2770,17 +2842,21 @@ input.admin-months {
   color: var(--ds-ink-dim);
   text-decoration: none;
   padding: var(--ds-s-1) var(--ds-s-2);
-  border-radius: var(--ds-round-full);
+  border-radius: var(--ds-round);
   background: var(--ds-hud);
   border: 1px solid var(--ds-hud-line);
   pointer-events: auto;
-  transition: border-color 0.15s, opacity 0.15s;
+  box-shadow: var(--ds-edge-soft);
+  transition: transform 0.06s ease, box-shadow 0.06s ease, border-color 0.15s;
 }
 .sponsor-chip:hover {
   border-color: var(--ds-accent);
+  transform: translateY(1px);
+  box-shadow: 0 2px 0 var(--ds-line);
 }
 .sponsor-chip:active {
-  opacity: 0.7;
+  transform: translateY(3px);
+  box-shadow: 0 0 0 var(--ds-line);
 }
 .sponsor-chip:focus-visible {
   outline: 2px solid var(--ds-accent);

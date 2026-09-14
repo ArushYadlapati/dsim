@@ -1,5 +1,7 @@
 import * as C from '../../config';
+import { activeStartLegal, mirrorStartPose, snapStartToLegal } from '../../sim/field';
 import { createWorld } from '../../sim/spawn';
+import { decodeSettled } from '../../sim/settle';
 import { step } from '../../sim/world';
 import type { GameSimModule } from '../types';
 import { decodeColliders } from './colliders';
@@ -16,8 +18,16 @@ export const DECODE_SIM: GameSimModule = {
   startLegality: true, // G304 start-pose legality applies
   initialAct: 0, // DECODE's boards opened in the beta/pre-season act
   startPoseCount: C.START_POSES.length,
+  // G304 itself. `activeStartLegal` already mirrors the canonical pose onto the alliance and
+  // waves an absent one through, which is exactly this slot's contract — so it IS the slot.
+  startLegal: activeStartLegal,
+  // G304's snap, on the CANONICAL pose: mirror onto the alliance, seat legal, mirror back.
+  startSnap: (spec, a, pose) => mirrorStartPose(snapStartToLegal(spec, mirrorStartPose(pose, a), a), a),
+  autoPaths: true, // `src/sim/world.ts` — the only step that drives path traversal
   bounds: { halfX: C.FIELD_HALF, halfY: C.FIELD_HALF, viewMargin: C.VIEW_MARGIN },
   colliders: decodeColliders,
   createWorld,
   step,
+  // the match is finalized when nothing left can score — see `decodeSettled`
+  settled: decodeSettled,
 };

@@ -1,36 +1,49 @@
 import type { Artifact, RobotCommand, RobotSpec, RobotState, Vec2, World } from '../../types';
 import { INTAKE_PRESETS, INTAKE_RAIL_T } from '../../config';
 import type { RobotSolids, SolidShape } from '../../sim/artifactSolids';
-import { datan2, dcos, dsin, rot, wrapAngle } from '../../math';
+import { clamp, datan2, dcos, dsin, hyp, rot, wrapAngle } from '../../math';
+import { GRAVITY } from '../../config';
 import {
   BB_DEFAULT_INTAKE,
-  BB_DEFAULT_SCORE_MODE,
-  BB_DRUM_INTERVAL,
-  BB_DRUM_MAX,
-  BB_DRUM_SPEED,
+  BB_DUMP_APEX_ABOVE,
+  BB_DUMP_MAX_DIST,
+  BB_DUMP_MIN_DIST,
+  BB_DUMP_RELOAD_S,
+  BB_FIRE_BURST_MAX,
   BB_FIRE_INTERVAL,
+  BB_FLOWERS,
   BB_INTAKES,
   BB_LAUNCH_LINE_FRAC,
+  BB_LAUNCH_SPEED_DEFAULT,
+  BB_LAUNCH_SPEED_MAX,
   BB_LAUNCH_Z0,
+  BB_PLACE_REACH,
+  BB_PLACE_TOL,
   BB_POLLEN_R,
-  BB_TWIN_FIRE_MULT,
   bbHopperCap,
 } from './config';
 import {
   EDGE_DIR,
   EDGE_PERP,
+  MOUNT_DIR,
   type BbEdge,
-  type BbScoreMode,
   bbIntakeEdges,
   bbIntakeMountOf,
   bbShooterEdgeOf,
   edgeGeom,
-  isTurreted,
   mountOrigin,
   turretLocal,
 } from './mounts';
 import { releasePollen } from './elements';
-import type { LocalRect, ScoreTarget } from './state';
+import type { LocalRect, ScoreTarget, Vec3 } from './state';
+import {
+  BB_HOOD_DEFAULT_DEG,
+  BB_TURRET_PITCH_MAX,
+  BB_TURRET_PITCH_MIN,
+  BB_TURRET_PITCH_SLEW,
+  BB_TURRET_SLEW,
+} from './config';
+import { bbIsTurreted, bbLauncherOf, bbLiftOf, bbTurretFor } from './mechs';
 
 /**
  * BIOBUZZ ROBOT GEOMETRY — the Lane B contract surface (`docs/biobuzz-contract.md` §4).
@@ -45,12 +58,18 @@ import type { LocalRect, ScoreTarget } from './state';
  * derived the intake band from the spec independently, and they disagreed by an inch, so
  * balls were swallowed from outside the visible roller. One geometry, three readers.
  *
- * SHELL SCOPE. There is no target to aim at: Sections 9 and 10 of the V0 manual are Kickoff
- * placeholders, so `scoreTargets()` returns `[]` and `bbAimHeading` has nothing to solve
- * against. What IS real here is the mechanism geometry — mouths, footprint, hopper, launch
- * origins and the four archetypes' firing behaviour — because that is robot hardware and R102
- * pins the envelope it lives in. A launch therefore LOBS into the field rather than at
- * anything, which is exactly what an unscored shell should do.
+ * THERE IS A TARGET NOW. This header used to say there was not — that Sections 9 and 10 were
+ * Kickoff placeholders, `scoreTargets()` returned `[]`, and a launch therefore LOBBED into the
+ * field rather than at anything. Lane A has filled the field in, and `ScoreTarget` carries a
+ * `mouth`, so the aim path in this file is live code rather than a written-ahead shape: a
+ * turret SOLVES (`bbTurretSolution`), SLEWS onto the solution on both axes (`bbSlewTurret`) and
+ * fires the matched speed/elevation pair; a turretless launcher turns its whole chassis
+ * (`bbAimHeading`) and lives with the hood it was built with.
+ *
+ * SCORING is still Lane A's and still absent — `play.ts`'s score pass writes zeroes and the
+ * module declares `scored: false` — so a POLLEN that arrives dead centre in a CELL today counts
+ * for nothing. Aiming and scoring are separate landings on purpose: this half is robot
+ * hardware, and R102 pins the envelope it lives in.
  */
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -194,38 +213,60 @@ export { bbHopperCap };
 
 /**
  * The heading a TURRETLESS robot must turn to in order to point its firing edge at `target`,
- * or `null` when there is nothing to aim (the archetype is turreted, so it aims itself).
+ * or `null` when there is nothing to aim (the launcher is turreted, so it aims itself).
  *
- * A turretless drum or dumper fires along ONE chassis edge, so aiming means turning the whole
- * robot — and the answer is not simply "the bearing to the target", it is that bearing MINUS
- * the edge's own outward angle. Get that subtraction wrong and a broadside launcher aims 90°
- * off, which is exactly the class of bug the single `EDGE_*` table exists to prevent.
+ * A dumper fires over ONE chassis edge, so aiming means turning the whole robot — and the
+ * answer is not simply "the bearing to the target", it is that bearing MINUS the edge's own
+ * outward angle. Get that subtraction wrong and a broadside launcher aims 90° off, which is
+ * exactly the class of bug the single `EDGE_*` table exists to prevent.
  *
- * SHELL: `scoreTargets()` is empty, so nothing in the shell calls this with a real target.
- * It is written and exported now because Lane A's aim-assist hook is a call to it, and a
- * function that shows up after its caller is a refactor instead of a fill-in.
+ * Read through `bbLauncherOf`, never the flat `scoreMode` mirror. The callers are `bbAimAssist`
+ * (`play.ts`), which applies the result as a rotate override while fire is held, and stage 5b,
+ * which only calls a dumper ON TARGET once the chassis is within `BB_AIM_TOL` of it.
  */
 export function bbAimHeading(r: RobotState, target: ScoreTarget): number | null {
-  const mode = (r.spec.scoreMode ?? BB_DEFAULT_SCORE_MODE) as BbScoreMode;
-  if (isTurreted(mode)) return null; // the turret slews to it; the chassis is free
-  const edge = bbShooterEdgeOf(r.spec);
+  const launcher = bbLauncherOf(r.spec, BB_HOOD_DEFAULT_DEG);
+  if (bbIsTurreted(launcher)) return null; // the turret slews to it; the chassis is free
+  const edge = bbShooterEdgeOf({ shooterMount: launcher.mount });
   const bearing = datan2(target.pos.y - r.pos.y, target.pos.x - r.pos.x);
   // heading + EDGE_ANGLE[edge] === bearing  ⇒  heading = bearing − EDGE_ANGLE[edge]
   return wrapAngle(bearing - datan2(EDGE_DIR[edge].y, EDGE_DIR[edge].x));
 }
 
-/** WHERE THE TURRET IS BOLTED, in world space — the point a POLLEN is actually born at, so a
+/**
+ * WHERE A TURRET IS BOLTED, in world space — the point an element is actually born at, so a
  * back-mounted turret visibly shoots off the back and a corner-mounted one off that corner.
- * The pivot rotates with the chassis, so the local offset is rotated into the world frame.
- * The AIM solution and the LAUNCH both read this: solving a lead from the chassis centre
- * while firing from an offset muzzle leaves a systematic miss that grows with the offset. */
-export function bbTurretOrigin(r: RobotState): Vec2 {
-  const off = rot(turretLocal(r.spec), r.heading);
+ * The AIM solution and the LAUNCH both read this: solving a lead from the chassis centre while
+ * firing from an offset muzzle leaves a systematic miss that grows with the offset.
+ *
+ * `which` names the turret: 0 is the launcher's `mount` (a DOUBLE turret's POLLEN turret), 1 is
+ * a double turret's `mount2` (its NECTAR turret). A build with one turret reads 1 as 0.
+ */
+export function bbTurretOrigin(r: RobotState, which: 0 | 1 = 0): Vec2 {
+  const launcher = bbLauncherOf(r.spec, BB_HOOD_DEFAULT_DEG);
+  const pos = which === 1 ? (launcher.mount2 ?? launcher.mount) : launcher.mount;
+  const off = rot(turretLocal(r.spec, pos), r.heading);
   return { x: r.pos.x + off.x, y: r.pos.y + off.y };
 }
 
+/**
+ * THE RELEASE turret `which` makes RIGHT NOW at `speed`: where the element is born and the
+ * velocity it leaves with, along that turret's current heading and pitch (not its solution —
+ * a turret still swinging fires where it points). ONE function because two readers need the same
+ * answer: `bbLaunch` releases it, and stage 5b runs it forward to ask whether it will score.
+ */
+export function bbTurretRelease(r: RobotState, which: 0 | 1, speed: number): { origin: Vec2; vel: Vec3 } {
+  const h = which === 1 ? (r.bbTurret2Heading ?? r.turretHeading) : r.turretHeading;
+  const pitch = which === 1 ? (r.bbTurret2Pitch ?? 0) : (r.bbTurretPitch ?? 0);
+  const vh = dcos(pitch);
+  return {
+    origin: bbTurretOrigin(r, which),
+    vel: { x: dcos(h) * speed * vh, y: dsin(h) * speed * vh, z: speed * dsin(pitch) },
+  };
+}
+
 /** the mid-point of a turretless launcher's firing EDGE, in world space, plus that edge's
- * outward direction and the half-span a parallel launch LINE spreads across. */
+ * outward direction and the half-span a launch LINE spreads its release points across. */
 function launchLine(r: RobotState, edge: BbEdge): { origin: Vec2; dir: Vec2; perp: Vec2; half: number } {
   const g = edgeGeom(r.spec, edge);
   const local = mountOrigin(r.spec, edge);
@@ -242,36 +283,67 @@ function launchLine(r: RobotState, edge: BbEdge): { origin: Vec2; dir: Vec2; per
 // LAUNCH
 // ─────────────────────────────────────────────────────────────────────────────
 
+/** is a hopper colour a NECTAR? POLLEN are yellow; NECTAR carry their alliance colour (§9.8). */
+function isNectarColour(c: string): boolean {
+  return c === 'red' || c === 'blue';
+}
+
+/**
+ * WHAT STAGE 5b WORKED OUT ABOUT A SHOT, handed to `bbLaunch` in the same tick.
+ *
+ * Carried as a local, never as a `RobotState` field: it is read one stage after it is written,
+ * and a per-tick robot field ships 30 times a second to every client in the room.
+ */
+export interface BbShot {
+  /** the cell Aim Assist is on (`bbAimTarget`): the nearer cell of the own HIVE, as if it were up */
+  target: ScoreTarget;
+  /** solved muzzle speed per turret exit — [0] a turret / a double turret's POLLEN turret,
+   * [1] a double turret's NECTAR turret. `undefined` fires at `BB_LAUNCH_SPEED_DEFAULT`. A
+   * dumper solves per element (`bbDumpSolution`) and leaves this empty. */
+  speed: readonly (number | undefined)[];
+  /** WILL LAND per exit (same indexing): the release this exit would make now, run forward through
+   * the flight stage (`bbFlightEnters`), enters `target` PRETENDING THAT CELL IS UP AND SETTLED.
+   * A dumper additionally has to be within `BB_AIM_TOL` of its aim heading. Only predicted while
+   * the driver holds fire; `false` otherwise. This is the whole of Aim Assist's firing gate. */
+  lands: readonly boolean[];
+}
+
 /**
  * FIRE, if this mechanism wants to this tick.
  *
- * The four archetypes differ in exactly one thing — the CADENCE and the SHAPE of what leaves
- * the robot — and this is where that difference lives:
+ *  • turret      — one element every `BB_FIRE_INTERVAL`, from the turret ring, along
+ *                  `turretHeading`. A SINGLE turret only ever holds POLLEN (its intake refuses
+ *                  NECTAR — `bbIntakeAccepts`).
+ *  • twinturret  — TWO INDIVIDUAL turrets on one feed. The next element is the LIFO top of
+ *                  `r.hopper`: a POLLEN leaves turret 0 (`mount`, `turretHeading`,
+ *                  `bbTurretPitch`) and a NECTAR leaves turret 1 (`mount2`, `bbTurret2Heading`,
+ *                  `bbTurret2Pitch`), each at its own solved speed, on the SHARED
+ *                  `BB_FIRE_INTERVAL` clock.
+ *  • dumper      — the WHOLE hopper at once, each element thrown from its own point across the
+ *                  firing edge along its own CONVERGING arc into the target cell
+ *                  (`bbDumpSolution`), then `BB_DUMP_RELOAD_S` to re-arm.
  *
- *  • turret      — one POLLEN every `BB_FIRE_INTERVAL`, from the turret ring, along
- *                  `turretHeading` (the turret slews there at a finite rate, so a turreted
- *                  robot spawns already pointed rather than spending auto swinging round).
- *  • twinturret  — the same, `BB_TWIN_FIRE_MULT` faster: two barrels, one aim solution.
- *  • drum        — a chassis-wide flywheel drum streaming up to `BB_DRUM_MAX` pockets at
- *                  `BB_DRUM_INTERVAL`, in a PARALLEL LINE across the firing edge.
- *  • dumper      — the WHOLE hopper at once, fanned across the firing edge. No cadence at
- *                  all: that is the trade, a huge burst you then have to go and refill.
+ * ── WHEN IT FIRES — AIM ASSIST (owner, 2026-09-13) ─────────────────────────
+ * ONLY ON THE DRIVER'S FIRE BUTTON. BIOBUZZ has no auto-fire: `r.autoFire` is never read here
+ * (spawn forces it false), because the auto-fire it replaced fired whenever the real up cell
+ * would take a shot and held back once the elements in the air would tip it — sensing no robot
+ * has. With aim assist on (always, `coerceAssists`), a held fire is released only when stage 5b
+ * says this exit's shot would LAND in the cell the assist is on, pretending that cell is up
+ * (`BbShot.lands`). So a turret still slewing waits, a robot out of range does nothing, and a
+ * shot at a cell that is actually down — or that tips before the shot arrives — is released and
+ * misses, which is what the driver would get on a real field. With aim assist off, fire is fire.
  *
- * CADENCE IS ACCUMULATED, not re-anchored: `fireReadyAt += interval` rather than
- * `= world.time + interval`, so the sub-tick remainder carries and the long-run rate is
- * exactly 13/s instead of quantizing to the 12 or 15 a per-tick re-anchor would give. The
- * idle guard (clamp forward when the hopper is empty) is what stops a burst catch-up the
- * moment it refills.
- *
- * DETERMINISM: no jitter. CR's drum randomized its interval off the world RNG for a more
- * organic stream; the shell deliberately does not, because a scene's hash is a determinism
- * test and an RNG draw whose count depends on how long a button was held makes that test
- * about the input rather than the physics. Lane B can add jitter behind the same world RNG
- * the scatter uses once the scenes are green without it.
+ * CADENCE IS ACCUMULATED, not re-anchored (`fireReadyAt += interval`), so the long-run turret
+ * rate is exactly 13/s. The idle guard (clamp forward when the hopper is empty) stops a burst
+ * catch-up on refill; `BB_FIRE_BURST_MAX` bounds any that remains. DETERMINISM: no jitter.
  */
-export function bbLaunch(world: World, r: RobotState, cmd: RobotCommand, enabled: boolean): void {
-  const mode = (r.spec.scoreMode ?? BB_DEFAULT_SCORE_MODE) as BbScoreMode;
-  const want = enabled && (cmd.fire || (r.autoFire && r.hopper.length >= bbHopperCap(r.spec)));
+export function bbLaunch(world: World, r: RobotState, cmd: RobotCommand, enabled: boolean, shot?: BbShot): void {
+  const launcher = bbLauncherOf(r.spec, BB_HOOD_DEFAULT_DEG);
+  const dumper = launcher.kind === 'dumper';
+  const top = r.hopper.length > 0 ? r.hopper[r.hopper.length - 1] : undefined;
+  const nextExit = dumper || top === undefined ? 0 : bbTurretFor(launcher, isNectarColour(top));
+  const lands = (which: number): boolean => !r.aimAssist || (shot?.lands[which] ?? false);
+  const want = enabled && cmd.fire && lands(nextExit);
   if (!want || r.hopper.length === 0) {
     // IDLE GUARD: hold the cadence clock at "now" while there is nothing to fire, so a robot
     // that sat empty for ten seconds does not empty its hopper in one tick on refill.
@@ -279,74 +351,281 @@ export function bbLaunch(world: World, r: RobotState, cmd: RobotCommand, enabled
     return;
   }
 
-  if (mode === 'dumper') {
-    // THE WHOLE HOPPER, in one fan across the firing edge. Fired back-to-front so the POLLEN
-    // are laid down in a line rather than all from one point.
-    const edge = bbShooterEdgeOf(r.spec);
-    const { origin, dir, perp, half } = launchLine(r, edge);
+  if (dumper) {
+    // RE-ARM, and the aim gate. Respecting `fireReadyAt` is what stops a held fire button
+    // re-dumping on every capture.
+    if (r.fireReadyAt > world.time) return;
+    const target = shot?.target ?? null;
     const n = r.hopper.length;
-    for (let i = 0; i < n; i++) {
-      // spread across the edge: i=0 at one end, i=n-1 at the other (a single POLLEN goes
-      // dead centre rather than to an arbitrary end)
-      const t = n === 1 ? 0 : (i / (n - 1)) * 2 - 1;
-      const speed = BB_DRUM_SPEED * 0.55; // a dump is a heave, not a shot. APPROX.
-      releasePollen(
-        world,
-        r,
-        {
-          x: dir.x * speed + perp.x * t * 12,
-          y: dir.y * speed + perp.y * t * 12,
-          z: BB_LAUNCH_Z0,
-        },
-        undefined,
-        { x: origin.x + perp.x * t * half, y: origin.y + perp.y * t * half },
-      );
+    const throws = target ? bbDumpSolution(r, target, n) : null;
+    if (throws) {
+      // LIFO, each element onto its own converging arc
+      for (const t of throws) releasePollen(world, r, t.vel, target ?? undefined, t.origin);
+    } else {
+      // aim assist off and out of range: straight over the edge, a parallel line, lobbed as far
+      // as a dumper throws
+      const lob = bbLobThrow(BB_DUMP_MAX_DIST, (target?.z ?? BB_LAUNCH_Z0) - BB_LAUNCH_Z0) ?? { vh: 0, vz: 0 };
+      const { origin, dir, perp, half } = launchLine(r, bbShooterEdgeOf({ shooterMount: launcher.mount }));
+      for (let i = 0; i < n; i++) {
+        const t = n === 1 ? 0 : (i / (n - 1)) * 2 - 1;
+        releasePollen(
+          world,
+          r,
+          { x: dir.x * lob.vh, y: dir.y * lob.vh, z: lob.vz },
+          undefined,
+          { x: origin.x + perp.x * t * half, y: origin.y + perp.y * t * half },
+        );
+      }
     }
     r.lastFireAt = world.time;
-    r.fireReadyAt = world.time + BB_FIRE_INTERVAL;
+    r.fireReadyAt = world.time + BB_DUMP_RELOAD_S;
     return;
   }
 
-  if (mode === 'drum') {
-    const edge = bbShooterEdgeOf(r.spec);
-    const { origin, dir, perp, half } = launchLine(r, edge);
-    let fired = 0;
-    while (r.fireReadyAt <= world.time && r.hopper.length > 0 && fired < BB_DRUM_MAX) {
-      // −1..+1 across the launch line, so the burst comes out as a parallel row rather than
-      // a stack. `span` is typed `number` rather than left as the literal: a `BB_DRUM_MAX` of
-      // 1 is a legal retune and the guard against dividing by its zero span has to survive
-      // TypeScript narrowing the constant to the value it happens to have today.
-      const span: number = BB_DRUM_MAX - 1;
-      const t = span > 0 ? (fired / span) * 2 - 1 : 0;
-      releasePollen(
-        world,
-        r,
-        { x: dir.x * BB_DRUM_SPEED, y: dir.y * BB_DRUM_SPEED, z: BB_LAUNCH_Z0 },
-        undefined,
-        { x: origin.x + perp.x * t * half, y: origin.y + perp.y * t * half },
-      );
-      r.fireReadyAt += BB_DRUM_INTERVAL;
-      fired++;
-    }
-    if (fired > 0) r.lastFireAt = world.time;
-    return;
-  }
-
-  // TURRET / TWIN TURRET: from the ring, along the turret's own heading.
-  const interval = mode === 'twinturret' ? BB_FIRE_INTERVAL / BB_TWIN_FIRE_MULT : BB_FIRE_INTERVAL;
+  // TURRETS: from the ring, along that turret's own heading and pitch, at the speed its arc
+  // solution asked for. Speed and elevation travel TOGETHER — `bbSolveShot` returns a matched
+  // pair — so a turret still swinging fires the stale pair and misses.
   let fired = 0;
-  while (r.fireReadyAt <= world.time && r.hopper.length > 0 && fired < BB_DRUM_MAX) {
-    const o = bbTurretOrigin(r);
-    const h = r.turretHeading;
-    releasePollen(
-      world,
-      r,
-      { x: dcos(h) * BB_DRUM_SPEED, y: dsin(h) * BB_DRUM_SPEED, z: BB_LAUNCH_Z0 },
-      undefined,
-      o,
-    );
-    r.fireReadyAt += interval;
+  while (r.fireReadyAt <= world.time && r.hopper.length > 0 && fired < BB_FIRE_BURST_MAX) {
+    const colour = r.hopper[r.hopper.length - 1];
+    const which = bbTurretFor(launcher, isNectarColour(colour));
+    if (!lands(which)) break; // a double turret's next element leaves the OTHER turret
+    const rel = bbTurretRelease(r, which, shot?.speed[which] ?? BB_LAUNCH_SPEED_DEFAULT);
+    releasePollen(world, r, rel.vel, undefined, rel.origin, colour);
+    r.fireReadyAt += BB_FIRE_INTERVAL;
     fired++;
   }
   if (fired > 0) r.lastFireAt = world.time;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// THE ARC — solving a launch against a target that has a HEIGHT
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * The minimum-speed ballistic solution to a target `d` inches away and `dh` inches ABOVE the
+ * muzzle. Returns the launch speed and the elevation, both of which a turret then has to be
+ * able to produce.
+ *
+ * DECODE's `solveShot` is the same mathematics with a CONSTANT height difference (one goal);
+ * `dh` is a parameter here, and nothing BIOBUZZ may go into the shared tree.
+ *
+ *   v_min^2 = g * (dh + sqrt(d^2 + dh^2)),   angle = atan2(dh + sqrt(d^2 + dh^2), d)
+ */
+export function bbSolveShot(d: number, dh: number): { speed: number; angle: number } {
+  const dd = Math.max(d, 0.5);
+  const reach = hyp(dd, dh);
+  return { speed: Math.sqrt(GRAVITY * (dh + reach)), angle: datan2(dh + reach, dd) };
+}
+
+/**
+ * A DUMP IS A LOB (owner, 2026-09-13) — the horizontal and vertical launch speed that throws an
+ * element up to `BB_DUMP_APEX_ABOVE` over a target `dh` inches above the release and down onto it
+ * `d` inches away, or `null` when `d` is outside the dumper's range (`BB_DUMP_MIN_DIST` ..
+ * `BB_DUMP_MAX_DIST`) or the throw would exceed `BB_LAUNCH_SPEED_MAX`.
+ *
+ *   rise h = dh + apex:   vz = √(2·g·h),   t = vz/g + √(2·apex/g),   vh = d / t
+ *
+ * The apex is always ABOVE the target, so the element always arrives descending — the thing
+ * `hiveAccepts` needs, and the thing a fixed hood only managed past its own apex distance. That is
+ * why the minimum is geometry alone and a dumper scores from right under the opening's outer lip.
+ */
+export function bbLobThrow(d: number, dh: number): { vh: number; vz: number } | null {
+  if (!(d >= BB_DUMP_MIN_DIST) || d > BB_DUMP_MAX_DIST) return null;
+  const rise = dh + BB_DUMP_APEX_ABOVE;
+  if (!(rise > 0)) return null;
+  const vz = Math.sqrt(2 * GRAVITY * rise);
+  const vh = d / (vz / GRAVITY + Math.sqrt((2 * BB_DUMP_APEX_ABOVE) / GRAVITY));
+  if (hyp(vh, vz) > BB_LAUNCH_SPEED_MAX) return null;
+  return { vh, vz };
+}
+
+/** one element's throw out of a dump: where it leaves and the velocity it leaves with. */
+export interface BbThrow {
+  origin: Vec2;
+  vel: Vec3;
+}
+
+/**
+ * THE DUMP, SOLVED — `n` release points spread across the dumper's firing edge, each with its
+ * own velocity CONVERGING on `target`'s centre, or `null` when this build is not a dumper or ANY
+ * element has no accepted arc.
+ *
+ * ── WHY CONVERGE, NOT A PARALLEL LINE ───────────────────────────────────────
+ * The cell's accept footprint is 20 in wide and the release points span up to ~16 in, but an
+ * element thrown parallel to the chassis heading also carries that heading's error, and the
+ * lateral tolerance left at range is only a couple of inches. Aiming each element from its OWN
+ * release point at the cell centre removes both.
+ *
+ * ── THE RANGE ───────────────────────────────────────────────────────────────
+ * Each element is thrown from the actual release height `BB_LAUNCH_Z0` (that is where
+ * `releasePollen` puts it) as a LOB (`bbLobThrow`). It has a throw only inside the dumper's range,
+ * `BB_DUMP_MIN_DIST`..`BB_DUMP_MAX_DIST` from its own release point; outside it there is no dump to
+ * solve, and Aim Assist does not let the dump go.
+ */
+export function bbDumpSolution(r: RobotState, target: ScoreTarget, n: number): BbThrow[] | null {
+  const launcher = bbLauncherOf(r.spec, BB_HOOD_DEFAULT_DEG);
+  if (launcher.kind !== 'dumper') return null;
+  const dh = target.z - BB_LAUNCH_Z0;
+  const { origin, perp, half } = launchLine(r, bbShooterEdgeOf({ shooterMount: launcher.mount }));
+  const out: BbThrow[] = [];
+  const count = Math.max(1, n);
+  for (let i = 0; i < count; i++) {
+    const t = count === 1 ? 0 : (i / (count - 1)) * 2 - 1;
+    const o = { x: origin.x + perp.x * t * half, y: origin.y + perp.y * t * half };
+    const dx = target.pos.x - o.x;
+    const dy = target.pos.y - o.y;
+    const d = hyp(dx, dy);
+    const lob = bbLobThrow(d, dh);
+    if (!lob) return null;
+    out.push({ origin: o, vel: { x: (dx / d) * lob.vh, y: (dy / d) * lob.vh, z: lob.vz } });
+  }
+  return out;
+}
+
+/** how high above the tiles this build's element leaves the robot, for the arc solve (in).
+ *
+ * ⚠️ IT IS THE RELEASE HEIGHT, FOR EVERY LAUNCHER. `releasePollen` (`elements.ts`) puts every
+ * launched element at `BB_LAUNCH_Z0`, turret or dumper, so that is the height the solve has to
+ * start from. The turret used to solve from `BB_LAUNCH_Z0 + 2` ("the turret rides on the deck")
+ * while the element was still born at `BB_LAUNCH_Z0` — every turret shot was aimed for a muzzle
+ * two inches above where it actually left, and arrived two inches low. Raising a turret's muzzle
+ * is a change to the RELEASE (pass the height through `releasePollen`), never to this solve
+ * alone. `spec` stays so that change has somewhere to go. */
+export function bbMuzzleZ(spec: RobotSpec): number {
+  void spec;
+  return BB_LAUNCH_Z0;
+}
+
+/**
+ * THE WHOLE TURRET SOLUTION — yaw, elevation and muzzle speed — to put an element into `target`
+ * from turret `which`, or `null` when this build has no such turret (a dumper, or turret 1 on a
+ * single turret).
+ *
+ * ⚠️ ALL THREE, TOGETHER, BECAUSE THE ARC IS ONE ANSWER AND NOT THREE. `bbSolveShot` returns a
+ * MATCHED (speed, angle) pair. The pitch is clamped into the barrel's real envelope and the speed
+ * into `BB_LAUNCH_SPEED_MAX`, so a solution the hardware cannot reach comes back as the nearest
+ * one it can — which then MISSES, honestly — and says so in `reachable`, which stage 5b reads before
+ * running Aim Assist's landing prediction.
+ */
+export function bbTurretSolution(
+  r: RobotState,
+  target: ScoreTarget,
+  which: 0 | 1 = 0,
+): { yaw: number; pitch: number; speed: number; reachable: boolean } | null {
+  const launcher = bbLauncherOf(r.spec, BB_HOOD_DEFAULT_DEG);
+  if (!bbIsTurreted(launcher)) return null;
+  if (which === 1 && launcher.kind !== 'twinturret') return null;
+  // FROM THE MUZZLE, NOT THE CHASSIS CENTRE — see `bbTurretOrigin`.
+  const o = bbTurretOrigin(r, which);
+  const dx = target.pos.x - o.x;
+  const dy = target.pos.y - o.y;
+  const sol = bbSolveShot(hyp(dx, dy), target.z - bbMuzzleZ(r.spec));
+  const pitch = clamp(sol.angle, BB_TURRET_PITCH_MIN, BB_TURRET_PITCH_MAX);
+  return {
+    yaw: datan2(dy, dx),
+    pitch,
+    speed: Math.min(sol.speed, BB_LAUNCH_SPEED_MAX),
+    reachable: sol.speed <= BB_LAUNCH_SPEED_MAX && pitch === sol.angle,
+  };
+}
+
+/** The ELEVATION turret 0 must be at to put an element into `target`, in RADIANS, or `null` when
+ * this build has no turret to elevate. The pitch half of `bbTurretSolution`. */
+export function bbAimPitch(r: RobotState, target: ScoreTarget): number | null {
+  return bbTurretSolution(r, target)?.pitch ?? null;
+}
+
+/**
+ * Ease turret `which`'s yaw and pitch toward a solution, one tick's worth. BOTH AXES SLEW, and
+ * neither snaps; pitch is deliberately the slower axis. Turret 1 (a double turret's NECTAR
+ * turret) writes `bbTurret2Heading` / `bbTurret2Pitch`, so only a caller that has a second
+ * turret should name it.
+ */
+export function bbSlewTurret(
+  r: RobotState,
+  wantYaw: number | null,
+  wantPitch: number | null,
+  dt: number,
+  which: 0 | 1 = 0,
+): void {
+  const yawStep = BB_TURRET_SLEW * dt; // rad/s * s
+  const pitchStep = BB_TURRET_PITCH_SLEW * dt;
+  if (which === 1) {
+    if (wantYaw !== null) {
+      const now = r.bbTurret2Heading ?? r.turretHeading;
+      r.bbTurret2Heading = wrapAngle(now + clamp(wrapAngle(wantYaw - now), -yawStep, yawStep));
+    }
+    if (wantPitch !== null) {
+      const now = r.bbTurret2Pitch ?? 0;
+      r.bbTurret2Pitch = clamp(now + clamp(wantPitch - now, -pitchStep, pitchStep), BB_TURRET_PITCH_MIN, BB_TURRET_PITCH_MAX);
+    }
+    return;
+  }
+  if (wantYaw !== null) {
+    const err = wrapAngle(wantYaw - r.turretHeading);
+    r.turretHeading = wrapAngle(r.turretHeading + clamp(err, -yawStep, yawStep));
+  }
+  if (wantPitch !== null) {
+    const now = r.bbTurretPitch ?? 0;
+    r.bbTurretPitch = clamp(now + clamp(wantPitch - now, -pitchStep, pitchStep), BB_TURRET_PITCH_MIN, BB_TURRET_PITCH_MAX);
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// THE BOX TUBE — proximity placement into a FLOWER
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * THE PLACEMENT POINT, in the robot frame — the ONE geometry for "where does this robot place
+ * into a FLOWER". The sim's reach test reads it, and the sprite and the builder preview are to
+ * draw their marker at it, so the marker can never sit somewhere placement does not act from.
+ * (Drawing note: the marker lies OUTSIDE the collision footprint by construction, so a sprite
+ * must draw it outside its footprint clip, and the preview's viewBox must grow to include it.)
+ *
+ * `null` without a Box Tube. Otherwise the tube's mount origin PUSHED OUT to the collision
+ * footprint on that side (`bbFootprint`, so a sweeper on the same edge counts — the robot cannot
+ * get its frame any closer to a FLOWER than its sweeper allows), plus `BB_PLACE_REACH` along
+ * `MOUNT_DIR` (a corner mount reaches along the diagonal). An axis the mount does not touch keeps
+ * the mount origin's coordinate (0 for an edge mid-point). `center` is never a tube mount.
+ */
+export function bbPlacePointLocal(spec: RobotSpec): Vec2 | null {
+  const lift = bbLiftOf(spec);
+  if (!lift) return null;
+  const d = MOUNT_DIR[lift.mount];
+  const f = bbFootprint(spec);
+  const o = mountOrigin(spec, lift.mount);
+  const x = d.x > 0 ? f.front : d.x < 0 ? -f.rear : o.x;
+  const y = d.y > 0 ? f.half : d.y < 0 ? -f.half : o.y;
+  return { x: x + d.x * BB_PLACE_REACH, y: y + d.y * BB_PLACE_REACH };
+}
+
+/** `bbPlacePointLocal` in world space, or `null` without a Box Tube. */
+export function bbPlacePoint(r: RobotState): Vec2 | null {
+  const local = bbPlacePointLocal(r.spec);
+  if (!local) return null;
+  const off = rot(local, r.heading);
+  return { x: r.pos.x + off.x, y: r.pos.y + off.y };
+}
+
+/**
+ * The index (into `BB_FLOWERS`) of the FLOWER ring nearest this robot's placement point, if one
+ * is within `BB_PLACE_TOL` — else `null`. Always `null` for a build with no Box Tube, and in a
+ * world that is not a BIOBUZZ match (no `world.biobuzz` bag, so no FLOWER state to place into).
+ */
+export function bbFlowerInReach(world: World, r: RobotState): number | null {
+  if (!world.biobuzz) return null;
+  const p = bbPlacePoint(r);
+  if (!p) return null;
+  let best: number | null = null;
+  let bestD = BB_PLACE_TOL * BB_PLACE_TOL;
+  for (let i = 0; i < BB_FLOWERS.length; i++) {
+    const f = BB_FLOWERS[i];
+    const d = (f.x - p.x) ** 2 + (f.y - p.y) ** 2;
+    if (d <= bestD) {
+      bestD = d;
+      best = i;
+    }
+  }
+  return best;
 }

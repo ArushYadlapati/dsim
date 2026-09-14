@@ -9,6 +9,29 @@ This file is the interface between them and the list of who may edit what. If a 
 is wrong, change it here first, then change the code. Companion: `biobuzz-plan.md`
 (why), `biobuzz-reference.md` (the manual, distilled — Lane A writes it on kickoff day).
 
+> ⚠️ **LANE A IS NOW RUN FROM THE MASTER / INTEGRATION CHAT, not from a lane chat of its own**
+> (2026-09-12, end of kickoff day). The field and rules lane chats closed with Round 6; their
+> branches (`biobuzz-field`, `biobuzz-rules`) are merged into `alpha` and the work continues
+> from the chat that does the integrating.
+>
+> **The ownership map below is unchanged and still binds.** What changes is who is sitting in
+> the seat, and that has one real consequence: the master chat can edit both Lane A's files and
+> the integration-only row of the table, so the boundary that used to be enforced by being in a
+> different chat is now enforced only by reading this table. **Lane B's files are still Lane B's**
+> — the **B** rows below, plus `mechs.ts`, `presets.ts` and `coerce.ts`, which are B's and landed
+> after the table was written. (A note for anyone working from an older list: there is no
+> `launcher.ts`, `turret.ts` or `dumper.ts` in this directory — the launcher archetypes live in
+> `mechs.ts` and `robot.ts`.) A one-line fix that obviously belongs in one of them is
+> still RELAYED to that lane through the user, exactly as it was when a chat boundary made it
+> impossible to do otherwise; see `docs/biobuzz/field-plan.md` §6 request 1 for the one
+> currently outstanding.
+>
+> Whoever picks Lane A up next: read `docs/biobuzz/HANDOFF-field.md` first (it is still the
+> lane's log and still gets a dated section per round), then §6 of the field plan for what the
+> shared core does and does not yet answer, then the "Still waiting on the owner" list at the
+> end of §8. A cross-lane edit still gets written into the handoff, even when the same chat
+> could have made it.
+
 Everything BIOBUZZ lives in `src/games/biobuzz/`. Nothing BIOBUZZ goes into `src/sim/`
 or `src/config.ts` (repo rule, same as Chain Reaction). The sim code obeys the shared
 determinism rule: no DOM, no clock, no `Math.random`, no `Date`; all game state is plain
@@ -118,12 +141,22 @@ B's mechanisms never touch `world.balls` or `world.biobuzz` directly. They call 
 ```ts
 /** ground pollen inside a robot-local rect (B's mouth), oldest-first. Pure. */
 export function pollenIn(world: World, r: RobotState, mouth: LocalRect): Artifact[];
-/** move ONE pollen from the ground into r.hopper. Returns false if the hopper is full
- * or a possession rule (manual) forbids it. */
+/** move ONE element from the ground into r.hopper. Returns false if the hopper is full or
+ * the intake refuses it: `bbIntakeAccepts` (mechs.ts) — opponent NECTAR for every build
+ * (G408), and any NECTAR for a single turret. A refused element stays on the floor. */
 export function capturePollen(world: World, r: RobotState, ball: Artifact): boolean;
-/** launch/deposit ONE pollen from r.hopper with a world-frame velocity (+z lift) and an
- * optional scoring target. A decides what it hits; B decides how it leaves. */
-export function releasePollen(world: World, r: RobotState, v: Vec3, target?: ScoreTarget): void;
+/** take ONE held element of `color` out of r: removes the LAST occurrence of `color` from
+ * r.hopper and returns this robot's held ball of that colour (highest world.balls index),
+ * still `held` — the caller decides where it goes. Changes nothing and returns null if either
+ * half is missing. The ONE place hopper and held set are unmirrored (launch AND Box Tube
+ * placement use it). */
+export function takeHeld(world: World, r: RobotState, color: Artifact['color']): Artifact | null;
+/** launch ONE element with a world-frame velocity (+z), born at `origin` (default: chassis
+ * centre) at height BB_LAUNCH_Z0. `color` names which to release (default: the hopper's LIFO
+ * top), via `takeHeld`. `target` is unused — the caller has already solved the arc. */
+export function releasePollen(
+  world: World, r: RobotState, v: Vec3, target?: ScoreTarget, origin?: Vec2, color?: Artifact['color'],
+): void;
 /** the scoring targets an alliance can aim at, with the geometry a launcher needs
  * (opening centre / normal / height) — replaces CR's accelMouth. */
 export function scoreTargets(world: World, a: Alliance): ScoreTarget[];
@@ -145,11 +178,30 @@ drivetrain → Rapier + containment → `updateBiobuzz` (A) → penalties (A) �
 // src/games/biobuzz/robot.ts
 export function bbMouths(spec: RobotSpec): LocalRect[];          // capture areas, robot-local
 export function bbFootprint(spec: RobotSpec): { front: number; rear: number; half: number };
-export function bbHopperCap(spec: RobotSpec): number;
-export function bbAimHeading(r: RobotState, target: ScoreTarget): number | null; // turretless aim
-export function bbLaunch(world: World, r: RobotState, cmd: RobotCommand, enabled: boolean): void;
+export function bbAimHeading(r: RobotState, target: ScoreTarget): number | null; // dumper aim; null for a turret
+export function bbLaunch(world: World, r: RobotState, cmd: RobotCommand, enabled: boolean, shot?: BbShot): void;
 export function bbRobotSolids(r: RobotState, held: readonly Artifact[], radius?: number): RobotSolids;
+// aim (stage 5b calls these; `which` 0 = a turret / the POLLEN turret, 1 = the NECTAR turret)
+export function bbTurretOrigin(r: RobotState, which?: 0 | 1): Vec2;
+export function bbTurretSolution(r: RobotState, target: ScoreTarget, which?: 0 | 1):
+  { yaw: number; pitch: number; speed: number; reachable: boolean } | null;
+export function bbSlewTurret(r: RobotState, wantYaw: number | null, wantPitch: number | null, dt: number, which?: 0 | 1): void;
+export function bbDumpSolution(r: RobotState, target: ScoreTarget, n: number): BbThrow[] | null;
+export function bbMuzzleZ(spec: RobotSpec): number;              // === BB_LAUNCH_Z0, the release height
+// Box Tube placement (stage 5c reads these; the sprite + preview draw the marker at the point)
+export function bbPlacePointLocal(spec: RobotSpec): Vec2 | null; // null without a Box Tube
+export function bbPlacePoint(r: RobotState): Vec2 | null;
+export function bbFlowerInReach(world: World, r: RobotState): number | null; // BB_FLOWERS index within BB_PLACE_TOL
+
+// src/games/biobuzz/config.ts
+export function bbHopperCap(spec: RobotSpec): number;
+// src/games/biobuzz/play.ts
+export function bbPickTarget(world: World, r: RobotState): ScoreTarget | null; // own HIVE cell, open side only
 ```
+
+`bbPlace` (POLLEN, bit 64) and `bbPlaceNectar` (NECTAR, bit 32, formerly `bbLift`) are consumed
+by **stage 5c of `updateBiobuzz`**, edge-triggered through a namespaced latch in
+`world.biobuzz.held`. They do NOT go through `actOnElement`.
 
 `bbRobotSolids` is what a ground POLLEN actually collides with, wired to the sim module through
 the `GameSimModule.artifactSolids` slot and read by `play.ts` stage 4. It is GEOMETRY, not
@@ -168,7 +220,18 @@ all read `bbMouths`. Never a second geometry.
 
 | field | type | range / enum | since |
 |---|---|---|---|
-| (filled at T0+2h) | | | |
+| `bbMech` | `{ launcher: BbLauncherSpec; lift: BbLiftSpec \| null }` | container; absent or a stored `launcher: null` migrates from `scoreMode`/`shooterMount`, which the coercer always mirrors out | 2026-09-12 |
+| `bbMech.launcher.kind` | `BbScoreMode` | `turret` · `twinturret` · `dumper` (a stored `drum` folds to `dumper`) | 2026-09-12 night |
+| `bbMech.launcher.mount` | `BbMountPos` | a turret: any of 9 cells; a double turret: its POLLEN turret, never `center`; a dumper: folded to one of the 4 edges | 2026-09-12 |
+| `bbMech.launcher.mount2` | `BbMountPos?` | `twinturret` only: the NECTAR turret, never `mount`, never a neighbour of it, never `center` (`bbResolveMount2`); deleted for other kinds | 2026-09-12 night |
+| `bbMech.launcher.hoodDeg` | number | `BB_HOOD_MIN_DEG`..`BB_HOOD_MAX_DEG` = 70..85, default 75 (APPROX). Read by the dumper only | 2026-09-12 |
+| `bbMech.lift` | `BbLiftSpec \| null` | `null` = no Box Tube | 2026-09-12 |
+| `bbMech.lift.kind` | `BbLiftKind` | `vslide` (the OFFSET™ Box Tube; `bbLiftKindLabel`) | 2026-09-12 |
+| `bbMech.lift.mount` | `BbMountPos` | the 8 perimeter cells (`BB_LIFT_POSITIONS`), clear of every launcher cell (`bbLauncherBlocker`). A `center` request is relocated, and a stored `maxZ` is dropped | 2026-09-12 night |
+
+Per-tick `RobotState` fields B writes (each one ships on every snapshot, so price it with
+`npm run costprobe`): `bbTurretPitch` (turret 0 elevation, rad), and, for a double turret only,
+`bbTurret2Heading` / `bbTurret2Pitch`. The removed `bbLiftZ` is gone.
 
 Sizing law to build against: **R102** 18 in cube start configuration; **R105** expansion
 limits published at kickoff (read the rule before choosing any reach/extension dial).

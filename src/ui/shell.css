@@ -116,6 +116,10 @@
   --ds-blue: #3d8bff;
   --ds-green: #37d67a;
   --ds-purple: #a96bff;
+  /* BIOBUZZ POLLEN — the canvas colour in `src/games/biobuzz/draw.ts`, as a FILL for the HUD's
+     held-element discs. Never type: it is ~1.4:1 on the light card, and the pip's own
+     `--ds-mut` ring is what bounds it. */
+  --ds-pollen: #f2d14b;
   --ds-danger: #ba1a1a;
   --ds-ok: #2f9e5f;
 
@@ -685,10 +689,17 @@
      under the bar with a viewport-bounded height gives it a scrollbar of its own and
      keeps it in view while the page moves behind it.
 
-     `flex-start` rather than `stretch` is load-bearing: a stretched flex item has no
-     definite height, and `position: sticky` needs one. The +1 is the bar's own
-     border-bottom, which `--ds-bar-h` does not include. */
-  align-self: flex-start;
+     STRETCH, not `flex-start`. `max-height` is what bounds this panel, and it bounds it
+     whichever way the item is aligned — so `flex-start` bought nothing and cost the whole
+     right-hand column: the aside shrink-wrapped its own content, so a short friends list
+     left the border and the `--ds-bar` surface stopping a third of the way down a
+     full-height page, which reads as a panel cut in half. `.ds-rail` opposite it stretches
+     for exactly this reason and the two are meant to be structural mirrors. Stretching
+     costs the sticky height nothing: the item resolves to the flex line's cross size,
+     which is definite, and on a tall page `max-height` clamps it back under the viewport
+     so it still travels. The +1 is the bar's own border-bottom, which `--ds-bar-h` does
+     not include. */
+  align-self: stretch;
   position: sticky;
   top: calc(var(--ds-bar-h) + 1px);
   max-height: calc(100dvh - var(--ds-bar-h) - 1px);
@@ -709,6 +720,9 @@
    The surface stays `--ds-bar` rather than `--ds-panel`: `.fr-toggle` hovers TO
    `--ds-panel`, and a panel-coloured card would swallow its only hover state. */
 .ds-friends.collapsed {
+  /* the expanded column stretches; this card must NOT — that is the "page-length border
+     for one button" the note above rejects. */
+  align-self: flex-start;
   /* 64, not 56: "Friends" at 11px is 39px wide and the rail keeps 8px a side, so 56
      left one pixel of slack. */
   width: 64px;
@@ -1119,9 +1133,11 @@
   justify-content: center;
   margin: 0 0 var(--ds-s-5);
 }
-/* Discord / GitHub — prominent pills near the top of the home menu */
+/* Discord / Instagram / GitHub — prominent pills near the top of the home menu. They WRAP:
+   three pills no longer fit side by side on the narrowest phones. */
 .ds-home-links {
   display: flex;
+  flex-wrap: wrap;
   justify-content: center;
   gap: 10px;
   margin: 0 0 var(--ds-s-5);
@@ -2728,6 +2744,22 @@ tr.lb-detail td {
   display: flex;
   flex-direction: column;
 }
+/* "recorded before a small physics correction" — informational, not a warning.
+   The replay plays fine; only the final number may be a point or two off, so this
+   sits back rather than shouting. */
+.ds-replay-drift {
+  margin: 0 auto 8px;
+  max-width: 640px;
+  padding: 8px 12px;
+  border: 1px solid var(--ds-line);
+  border-radius: 8px;
+  background: var(--ds-tile);
+  color: var(--ds-mut);
+  font-size: 13px;
+  line-height: 1.5;
+  text-align: center;
+}
+
 .ds-replay-top {
   display: flex;
   align-items: center;
@@ -3347,6 +3379,18 @@ tr.lb-detail td {
 .ds-opt:not(.mini):not(:has(.od)) {
   min-height: 62px;
   justify-content: center;
+}
+/* A preset card for a REAL, documented robot (a manufacturer StarterBot, a real team's
+   build) as opposed to an archetype demo. The two kinds answer different questions — "what
+   did that team actually bring" vs "what does a drum shooter feel like" — and a player
+   choosing between them deserves to know which is which.
+
+   An inset left edge rather than a divider between the groups, because `.ds-opts` is an
+   auto-fit grid: any rule drawn "between card 4 and card 5" is wrong at every column count
+   but one. Inset (not `border-left`) so the card's own 1px border stays unbroken and the
+   mark cannot be mistaken for a selection state — `.on` owns that. */
+.ds-opt.real {
+  box-shadow: var(--ds-block-sm), inset 3px 0 0 color-mix(in srgb, var(--ds-accent) 55%, transparent);
 }
 /* Drivetrain grid (the only `.ds-opts.four`): now label-only chips — center the
    label so the four read as an even segmented row instead of top-left labels. */
@@ -4270,14 +4314,6 @@ button.ds-key:active {
   cursor: default;
   background: var(--ds-panel);
 }
-.ds-bind-foot {
-  display: flex;
-  align-items: center;
-  gap: 14px;
-  margin-top: 12px;
-  flex-wrap: wrap;
-}
-
 /* ---- lobby roster ---------------------------------------------------- */
 .ds-players {
   display: flex;
@@ -4768,6 +4804,9 @@ button.ds-key:active {
 .ds-qcount.bar {
   white-space: normal;
   margin-right: 2px;
+  /* the bar's other text (the presence chip) is 13px sans; match it so the queue
+     indicator doesn't read as a different, smaller UI element */
+  font-size: 13px;
 }
 /* ON A FILLED SURFACE the defaults above are wrong, and one of them was invisible:
    the home menu's PLAY button is `.primary`, i.e. an --ds-accent FILL, and the count

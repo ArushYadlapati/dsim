@@ -53,11 +53,16 @@ export interface RobotSolids {
 /**
  * the robot's artifact-solid geometry, in the robot frame.
  *
- * `radius` is the ARTIFACT radius the held-artifact circles are built at, and it is a
+ * `radius` is the FALLBACK artifact radius the held-artifact circles are built at, and it is a
  * parameter rather than `C.BALL_RADIUS` outright because a second game's element is a
- * different size: BIOBUZZ's POLLEN is 1.5in against DECODE's 2.5in artifact, and a hopper
+ * different size: BIOBUZZ's POLLEN is 1.4in against DECODE's 2.5in artifact, and a hopper
  * plugging its own mouth has to be the size of what is in it. DECODE passes nothing and gets
  * `C.BALL_RADIUS`, so every DECODE call site is unchanged.
+ *
+ * ⚠️ AND A HELD ARTIFACT THAT CARRIES ITS OWN `r` IS BUILT AT THAT, because one hopper can
+ * hold two sizes: a BIOBUZZ robot stages POLLEN at 1.4 and NECTAR at 1.8 in the same slots.
+ * The plug is the size of what is actually in the mouth, not the size of the commonest thing
+ * that could be.
  */
 export function robotSolids(
   r: RobotState,
@@ -119,7 +124,7 @@ export function robotSolids(
   const held: SolidShape[] = [];
   for (const b of heldBalls) {
     if (b.state.kind !== 'held' || b.state.robot !== r.id) continue;
-    held.push({ kind: 'circle', cx: b.state.lx, cy: b.state.ly, r: radius });
+    held.push({ kind: 'circle', cx: b.state.lx, cy: b.state.ly, r: b.r ?? radius });
   }
   return { chassis: { kind: 'box', cx: 0, cy: 0, hx: hl, hy: hw }, structure, held };
 }

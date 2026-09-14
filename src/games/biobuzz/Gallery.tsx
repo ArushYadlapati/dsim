@@ -11,9 +11,10 @@ import { biobuzzColliders } from './colliders';
 import { drawBiobuzzField } from './drawField';
 import { drawBiobuzzBalls } from './draw';
 import { drawBiobuzzRobot } from './drawRobot';
-import { biobuzzHud } from './hudRobot';
+import { biobuzzHud, type BiobuzzHud } from './hudRobot';
 import { biobuzzStep } from './step';
 import { BiobuzzRobotPreview } from './RobotPreview';
+import { bbKindOf } from './score';
 import { BB_SCENES, bbScene, bbSceneStills, type Scene } from './scenes';
 
 /**
@@ -107,7 +108,7 @@ const CANVAS_STYLE: CSSProperties = {
 function fitCell(ctx: CanvasRenderingContext2D, px: number, half = 0): void {
   // `half` frames a SMALLER square window around the field centre (0 = the whole field). An
   // archetype sheet holds three 15" robots on a 144" field, which at full field scale draws
-  // each of them about 20px across — too small to see whether a drum sits on the right edge,
+  // each of them about 20px across — too small to see whether a dumper sits on the right edge,
   // which is the only thing the sheet is for. Zooming is a CAMERA choice and stays here with
   // the rest of the layout; every draw call below it is still the module's own renderer.
   const ex = half > 0 ? half : BOUNDS.halfX + BOUNDS.viewMargin;
@@ -152,6 +153,30 @@ function drawCell(canvas: HTMLCanvasElement, world: World, half = 0): void {
   drawBiobuzzBalls(ctx, world, SCREEN_UP);
 }
 
+/**
+ * THE HUD LINE UNDER A CANVAS — the module's own slice as text.
+ *
+ * The gallery has no match chrome (`GameController` builds its own world and there is no seam
+ * to hand it one; requested in `docs/biobuzz/HANDOFF-shell.md`), so the numbers the score bar
+ * and the chips would show are printed instead. They are read from `biobuzzHud`, the SAME
+ * function the chrome reads, so a cell and a match can never disagree about a HIVE.
+ *
+ * The one number that decides what to look at is the up-CELL's `needed`: the field draws the
+ * cell's contents as discs and no digits, and the tip threshold is a measured table indexed by
+ * the NECTAR count (reference §4.1), so a screenshot of a HIVE does not say how close it is.
+ * `tipping` displaces it for the 4 s of the swing, which is what a cell caught mid-tip should
+ * say rather than a stale count.
+ */
+function bbHudLine(hud: BiobuzzHud): string {
+  const f = hud.field;
+  const cell = (a: 'red' | 'blue'): string => {
+    const c = f.cells[a];
+    const state = c.tipping > 0 ? 'tipping' : `${c.needed} to tip`;
+    return `${a.toUpperCase()} ${f.score[a].total} (${state})`;
+  };
+  return `${cell('red')} · ${cell('blue')}`;
+}
+
 /** one still of one scene. */
 function SceneCell({ scene, tick, world, onOpen }: { scene: Scene; tick: number; world: World; onOpen(): void }) {
   const ref = useRef<HTMLCanvasElement | null>(null);
@@ -168,12 +193,19 @@ function SceneCell({ scene, tick, world, onOpen }: { scene: Scene; tick: number;
       <span className="ot">
         {scene.id}@{tick}
       </span>
-      {/* the two numbers that explain a cell you are confused by: how many POLLEN are on the
-          field at all, and how full the first robot's hopper is. A pile that looks empty is a
-          different bug from a pile that got collected, and the count is the difference. */}
+      {/* the numbers that explain a cell you are confused by: what is on the field at all, how
+          full the first robot's hopper is, and where each HIVE stands. A pile that looks empty
+          is a different bug from a pile that got collected, and the count is the difference.
+
+          COUNTED BY KIND, because there are two element sizes now and calling all of them
+          "pollen" mislabelled every mixed cell — `hive-tip`'s load is 3 NECTAR over 3 POLLEN
+          and the caption read `6 pollen`, which is the one line a reader checks a picture
+          against. The nectar half is omitted when there is none, so the single-element scenes
+          keep the shorter caption they had. */}
       <span className="om">
-        {world.balls.length} pollen · {hud.robot ? `${hud.robot.hopper}/${hud.robot.cap} held · ${hud.robot.mode}` : 'no robot'}
+        {elementLine(world)} · {hud.robot ? `${hud.robot.hopper}/${hud.robot.cap} held · ${hud.robot.mode}` : 'no robot'}
       </span>
+      <span className="om">{bbHudLine(hud)}</span>
     </button>
   );
 }
@@ -393,9 +425,38 @@ function LiveScene({ scene, onBack }: { scene: Scene; onBack(): void }) {
         {/* the module's own HUD slice, as text — see the note on the missing chrome above */}
         <p className="ds-note">
           {hud?.robot
-            ? `hopper ${hud.robot.hopper}/${hud.robot.cap} · ${hud.robot.mode} · scored ${hud.field.scored.blue}–${hud.field.scored.red}`
+            ? `hopper ${hud.robot.hopper}/${hud.robot.cap} · ${hud.robot.mode}`
             : 'no robot in this scene'}
         </p>
+        {hud && <p className="ds-note">{bbHudLine(hud)}</p>}
+        {/* G410 and the human player's supply: the two field facts a driver acts on that the
+            canvas cannot show at all. The lock is stated, not counted down — `nectarIn` is
+            null outside TELEOP, and a scene rarely runs a real phase clock. */}
+        {hud && (
+          <p className="ds-note">
+            {hud.field.nectarLocked ? 'nectar locked (G410)' : 'nectar unlocked'} · RED in hand{' '}
+            {hud.field.nectarStock.red}, due {hud.field.nectarDue.red} · BLUE in hand{' '}
+            {hud.field.nectarStock.blue}, due {hud.field.nectarDue.blue}
+          </p>
+        )}
+        {/* THE TWO SANCTIONS THAT ARE INVISIBLE ON THE CANVAS. A G421 PIN is two robots
+            touching, which a still cannot tell from a shove, and its whole content is a clock;
+            a G407 warning moves no number at all, so a scene that draws one looks identical to
+            a scene that does not. Both are printed unconditionally — "no pins, no warnings" is
+            the reading that says the detector ran, and a blank line would not. */}
+        {hud && (
+          <p className="ds-note">
+            {hud.field.pins.length === 0
+              ? 'no pins'
+              : hud.field.pins
+                  .map(
+                    (p) =>
+                      `pin ${p.pinner}→${p.pinned} ${p.seconds.toFixed(1)}s, ${p.billed} billed, next in ${p.nextIn.toFixed(1)}s`,
+                  )
+                  .join(' · ')}{' '}
+            · G407 warnings RED {hud.field.warnings.red}, BLUE {hud.field.warnings.blue}
+          </p>
+        )}
       </div>
     </section>
   );
@@ -419,6 +480,15 @@ export function bbGalleryPath(sceneId?: string): string {
 function sceneIdOf(pathname: string): string | null {
   const m = /^\/biobuzz\/gallery\/([a-z0-9-]+)\/?$/.exec(pathname);
   return m ? m[1] : null;
+}
+
+/** the cell caption's element count, BY KIND. `bbKindOf` is the same classifier the score
+ * uses, so a caption can never disagree with what the rules think is on the field. */
+export function elementLine(world: World): string {
+  let pollen = 0;
+  let nectar = 0;
+  for (const b of world.balls) (bbKindOf(b) === 'pollen' ? pollen++ : nectar++);
+  return nectar === 0 ? `${pollen} pollen` : `${pollen} pollen · ${nectar} nectar`;
 }
 
 export function BiobuzzGallery() {

@@ -14,6 +14,9 @@ export interface VirtualInput {
   fire: boolean;
   catalyst: boolean;
   fling: boolean;
+  bbPlaceNectar: boolean;
+  bbPlace: boolean;
+  bbNectar: boolean;
   driveMode: boolean;
 }
 
@@ -42,6 +45,9 @@ export class InputManager {
     fire: false,
     catalyst: false,
     fling: false,
+    bbPlaceNectar: false,
+    bbPlace: false,
+    bbNectar: false,
     driveMode: false,
   };
 
@@ -85,9 +91,11 @@ export class InputManager {
     const ky = (heldAny(keys.driveUp) ? 1 : 0) - (heldAny(keys.driveDown) ? 1 : 0);
     const krot = (heldAny(keys.rotateCCW) ? 1 : 0) - (heldAny(keys.rotateCW) ? 1 : 0);
 
-    // Tank drive specific keyboard mapping: W/S for left, Up/Down for right
+    // Tank drive specific keyboard mapping: the LEFT track shares the forward/back actions,
+    // the RIGHT track has two of its own. Both sides go through `bindings`, or the right one
+    // is the only control in the game a player cannot rebind.
     const kLeft = (heldAny(keys.driveUp) ? 1 : 0) - (heldAny(keys.driveDown) ? 1 : 0);
-    const kRight = (k.held('arrowup') ? 1 : 0) - (k.held('arrowdown') ? 1 : 0);
+    const kRight = (heldAny(keys.tankRightUp) ? 1 : 0) - (heldAny(keys.tankRightDown) ? 1 : 0);
 
     this.startPressed = pressedAny(keys.start) || g.start;
     this.restartPressed = pressedAny(keys.restart) || g.restart;
@@ -106,6 +114,17 @@ export class InputManager {
       catalyst: heldAny(keys.catalyst) || g.catalyst || this.virtualState.catalyst,
       // CATAPULT throw — held; the sim edge-triggers it (same contract as `catalyst`)
       fling: heldAny(keys.fling) || g.fling || this.virtualState.fling,
+      // BIOBUZZ vertical slide — genuinely held: the carriage rises while the button is down
+      // and drives back to stowed when it is released.
+      bbPlaceNectar: heldAny(keys.bbPlaceNectar) || g.bbPlaceNectar || this.virtualState.bbPlaceNectar,
+      // BIOBUZZ place-into-a-FLOWER — held here even though the sim acts once per press, the
+      // same contract as `catalyst` and `fling` (see `driveMode` below for why).
+      bbPlace: heldAny(keys.bbPlace) || g.bbPlace || this.virtualState.bbPlace,
+      // BIOBUZZ HUMAN PLAYER — held here, edge-detected in the sim, same contract as the three
+      // above. Sim-side is the only place the edge can live: this is an ALLIANCE action that
+      // either robot may trigger, so the press has to be reconciled and replayed like any
+      // other command bit rather than latched on one client.
+      bbNectar: heldAny(keys.bbNectar) || g.bbNectar || this.virtualState.bbNectar,
       // BUTTERFLY wheel-set swap — also passed HELD, edge-triggered in the sim. Doing the
       // edge sim-side (not here) keeps it deterministic under prediction + reconcile:
       // a replayed input can't double-toggle the way a client-side edge flag would.

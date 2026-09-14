@@ -13,8 +13,10 @@ import {
 import { rangeFill } from './rangeFill';
 
 const KEY_LABELS: Record<KeyAction, string> = {
-  driveUp: 'Drive forward',
-  driveDown: 'Drive back',
+  driveUp: 'Drive forward (Tank: left side)',
+  driveDown: 'Drive back (Tank: left side)',
+  tankRightUp: 'Tank right side forward',
+  tankRightDown: 'Tank right side back',
   driveLeft: 'Strafe left',
   driveRight: 'Strafe right',
   rotateCCW: 'Turn left',
@@ -23,6 +25,9 @@ const KEY_LABELS: Record<KeyAction, string> = {
   fire: 'Shoot (hold)',
   catalyst: 'Catalyst pick up / place (Chain Reaction)',
   fling: 'Catapult throw (Chain Reaction)',
+  bbPlaceNectar: 'Place NECTAR (BIOBUZZ)',
+  bbPlace: 'Place POLLEN (BIOBUZZ)',
+  bbNectar: 'Human player: enter NECTAR (BIOBUZZ)',
   driveMode: 'Swap wheel set (Butterfly)',
   flipFront: 'Flip front',
   park: 'Toggle park mode',
@@ -35,6 +40,9 @@ const PAD_LABELS: Record<PadAction, string> = {
   intake: 'Intake (hold)',
   catalyst: 'Catalyst pick up / place (Chain Reaction)',
   fling: 'Catapult throw (Chain Reaction)',
+  bbPlaceNectar: 'Place NECTAR (BIOBUZZ)',
+  bbPlace: 'Place POLLEN (BIOBUZZ)',
+  bbNectar: 'Human player: enter NECTAR (BIOBUZZ)',
   driveMode: 'Swap wheel set (Butterfly)',
   flipFront: 'Flip front',
   park: 'Toggle park mode',

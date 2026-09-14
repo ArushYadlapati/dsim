@@ -55,6 +55,18 @@ const BTN_CATALYST = 4;
 // predicted/replayed step) is concerned.
 const BTN_FLING = 8;
 const BTN_DRIVEMODE = 16;
+// BIOBUZZ Box Tube placement, both EDGE-triggered in the sim: `bbPlaceNectar` places a NECTAR
+// and `bbPlace` a POLLEN into the FLOWER in reach. Bit 32 used to be the removed hold-to-raise
+// `bbLift`; it is REUSED (BIOBUZZ is alpha-only and version-gated) so bit 128, the last spare
+// replay bit, stays free. Neither is an analog axis, so no `REPLAY_FORMAT` bump is needed.
+const BTN_BBPLACE_NECTAR = 32;
+const BTN_BBPLACE = 64;
+// The HUMAN PLAYER button (G426) — an EDGE like `catalyst`, held on the wire and edge-detected
+// in the sim, so a reconciled or replayed tick cannot enter two NECTAR off one press. This is
+// the LAST bit `buttons` has: it is a uint8 and 128 fills it, so the next held action added to
+// this protocol needs a wider field, not another constant. Say so here rather than discover it
+// when bit 256 silently truncates to 0.
+const BTN_BBNECTAR = 128;
 
 export function quantizeCommand(c: RobotCommand): QCommand {
   return {
@@ -66,10 +78,56 @@ export function quantizeCommand(c: RobotCommand): QCommand {
       (c.fire ? BTN_FIRE : 0) |
       (c.catalyst ? BTN_CATALYST : 0) |
       (c.fling ? BTN_FLING : 0) |
-      (c.driveMode ? BTN_DRIVEMODE : 0),
+      (c.driveMode ? BTN_DRIVEMODE : 0) |
+      (c.bbPlaceNectar ? BTN_BBPLACE_NECTAR : 0) |
+      (c.bbPlace ? BTN_BBPLACE : 0) |
+      (c.bbNectar ? BTN_BBNECTAR : 0),
     ld: Math.round(clamp(c.leftDrive ?? 0, -1, 1) * 127),
     rd: Math.round(clamp(c.rightDrive ?? 0, -1, 1) * 127),
   };
+}
+
+/** the wire range of a packed axis — `int8`, and exactly what `quantizeCommand` can emit */
+const Q_AXIS_MAX = 127;
+/**
+ * Force an UNTRUSTED `q` payload into a QCommand, or refuse it outright.
+ *
+ * `dequantizeCommand` divides by 127 and masks bits; it does not type-check, because the
+ * packet it was written for came from `quantizeCommand` one function above. A packet off a
+ * WebSocket did not: `{}` dequantizes to `driveX: NaN`, and `{ ld: 1e9 }` to a left track
+ * running at 7,874,015 — both inside the SERVER-OWNED world every other member of the room
+ * is watching, so the poisoned pose is broadcast to them as authoritative truth.
+ *
+ * REFUSED, not clamped. Every honest sender is `quantizeCommand`, which rounds and clamps
+ * already, so anything out of range was hand-made — and a clamp would answer it with a legal
+ * command the driver never gave. Dropping the frame costs the sender their own input for one
+ * tick and costs nobody else anything.
+ */
+export function sanitizeQCommand(raw: unknown): QCommand | null {
+  if (raw === null || typeof raw !== 'object') return null;
+  const q = raw as Record<string, unknown>;
+  const axis = (v: unknown): number | null =>
+    typeof v === 'number' && Number.isInteger(v) && v >= -Q_AXIS_MAX && v <= Q_AXIS_MAX ? v : null;
+  const dx = axis(q.dx);
+  const dy = axis(q.dy);
+  const rot = axis(q.rot);
+  if (dx === null || dy === null || rot === null) return null;
+  if (typeof q.buttons !== 'number' || !Number.isInteger(q.buttons) || q.buttons < 0 || q.buttons > 255) {
+    return null;
+  }
+  // ld/rd stay OPTIONAL (a pre-tank client sends neither and means zero), but a present
+  // one must still be a legal axis — absent and malformed are not the same packet.
+  const ld = q.ld === undefined ? undefined : axis(q.ld);
+  const rd = q.rd === undefined ? undefined : axis(q.rd);
+  if (ld === null || rd === null) return null;
+  // `buttons` is kept WHOLE rather than masked to the bits this build knows: `buttons` is a
+  // uint8 and every one of its eight bits is now a button, so a mask here is either a no-op or
+  // — once the field widens — a silent way to drop a newer client's action. `dequantizeCommand`
+  // reads the bits it understands and ignores the rest, which is the back-compat rule already.
+  const out: QCommand = { dx, dy, rot, buttons: q.buttons };
+  if (ld !== undefined) out.ld = ld;
+  if (rd !== undefined) out.rd = rd;
+  return out;
 }
 
 export function dequantizeCommand(q: QCommand): RobotCommand {
@@ -84,6 +142,9 @@ export function dequantizeCommand(q: QCommand): RobotCommand {
     catalyst: (q.buttons & BTN_CATALYST) !== 0,
     fling: (q.buttons & BTN_FLING) !== 0,
     driveMode: (q.buttons & BTN_DRIVEMODE) !== 0,
+    bbPlaceNectar: (q.buttons & BTN_BBPLACE_NECTAR) !== 0,
+    bbPlace: (q.buttons & BTN_BBPLACE) !== 0,
+    bbNectar: (q.buttons & BTN_BBNECTAR) !== 0,
   };
 }
 
@@ -97,6 +158,18 @@ export function localizeCommand(c: RobotCommand): RobotCommand {
 
 /** max drivers per room (2v2) */
 export const ROOM_CAPACITY = 4;
+
+/**
+ * The two clocks a staged ranked match runs on, and the reason they live out here.
+ *
+ * They are the SERVER's rules (`server/room.ts` owns both timers), but the queue screen has
+ * to state them before a player joins the queue: missing either one is a dodge, and a dodge
+ * costs account standing. A player who finds that out by being charged was never told the
+ * rule. Quoting one number from the wire module keeps the screen and the timer in step; a
+ * second copy in the UI would drift the first time either is tuned.
+ */
+export const RANKED_JOIN_GRACE_MS = 20000;
+export const STRATEGY_DURATION_MS = 20000;
 
 /** who runs the service — the staff badge beside a name. Lives here rather than
  * in the UI because it travels on the wire (`LobbyPlayer`, the leaderboard rows,

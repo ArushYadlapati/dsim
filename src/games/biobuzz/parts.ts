@@ -12,13 +12,18 @@
  * byte-identical while every other game keeps evolving.
  *
  * What is drawn here is the part of a robot that is NOT a game mechanism — frame and
- * drivetrain. The mechanisms (sweeper, drum, dumper, turret) are `drawRobot.ts`'s job, and the
- * split is what keeps a mechanism change out of the chassis code.
+ * drivetrain. The mechanisms themselves (sweeper, dumper, turrets, Box Tube) are
+ * `drawRobot.ts`'s (canvas) and `RobotPreview.tsx`'s (SVG) job to DRAW, which keeps a mechanism
+ * change out of the chassis code. The one exception is `bbBoxTubeGlyph` below: it is GEOMETRY
+ * (where a fixture sits and which way it points), not drawing, and both of those renderers need
+ * the identical answer — the same reason `mounts.ts` holds `turretLocal` rather than either
+ * renderer computing its own.
  */
-import type { RobotState } from '../../types';
+import type { RobotSpec, RobotState } from '../../types';
 import * as C from '../../config';
 import { roundRect, strokeInside } from '../../render/drawRobot';
 import { hyp } from '../../math';
+import { MOUNT_DIR, mountOrigin, type BbMountPos } from './mounts';
 
 /**
  * The CHASSIS — an FTC frame seen from above. Deliberately PLAIN: extruded aluminium rails
@@ -248,4 +253,68 @@ export function drawWheels(ctx: CanvasRenderingContext2D, r: RobotState, color: 
       if (r.spec.drivetrain === 'mecanum') drawMecanumRollers(px, py);
     }
   }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// BOX TUBE — the static glyph both renderers draw at the tube's mount
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** the drawn tube's section width and length along its mount direction (in). DRAWING sizes,
+ * not hardware: the Box Tube has no raise and no modelled length (`bbPlacePointLocal`,
+ * `robot.ts`, is the only geometry the sim reads), so these only have to read as "a length of
+ * box tube bolted to this edge" and stay clear of a turret ring at the neighbouring cell. */
+export const BB_BOX_TUBE_W = 1.1;
+export const BB_BOX_TUBE_LEN = 2.2;
+/** how far inside the frame rail the tube's outer end sits, per axis the mount touches (in) */
+const BB_BOX_TUBE_INSET = 0.7;
+/** how far back over the glyph the REACH section (glyph outer end → placement ring) starts (in),
+ * so the two draw as one continuous tube across the frame rail — both renderers */
+export const BB_BOX_TUBE_OVERLAP = 0.3;
+/** the placement-point marker's ring radius (in) — both renderers */
+export const BB_PLACE_MARK_R = 1.0;
+
+/**
+ * THE BOX TUBE GLYPH, in the robot frame: a short tube lying along the mount's outward
+ * direction (`MOUNT_DIR`), its OUTER end just inside the frame rail at the mount cell.
+ *
+ * `outer` is where the reach line to the placement point starts; `ux`/`uy` is the outward unit
+ * vector (a corner mount lies along the 45° diagonal, as every corner mechanism does). Pulled
+ * inboard PER AXIS the mount touches, the same rule `turretLocal` uses, so a corner tube never
+ * hangs off either rail. `center` is not a tube mount; it reads as the front edge.
+ *
+ * `toward` is the placement point (`bbPlacePointLocal`). When given, the tube is AIMED at it, so
+ * the stub inside the frame and the reach out to the ring are one straight length. On an edge
+ * mount that is `MOUNT_DIR` anyway; on a corner the footprint can grow unevenly (a sweeper on one
+ * axis only) and the point sits off the 45° line, which drew the tube with a bend at the rail.
+ */
+export function bbBoxTubeGlyph(
+  spec: Pick<RobotSpec, 'length' | 'width'>,
+  mount: BbMountPos,
+  toward?: { x: number; y: number } | null,
+): { cx: number; cy: number; ux: number; uy: number; len: number; w: number; outer: { x: number; y: number } } {
+  const pos: BbMountPos = mount === 'center' ? 'front' : mount;
+  const o = mountOrigin(spec, pos);
+  const d = MOUNT_DIR[pos];
+  const outer = { x: o.x - Math.sign(d.x) * BB_BOX_TUBE_INSET, y: o.y - Math.sign(d.y) * BB_BOX_TUBE_INSET };
+  let ux = d.x;
+  let uy = d.y;
+  if (toward) {
+    // `hyp`, not `Math.hypot`: this runs in sim code, and `Math.hypot` is one of the calls
+    // whose result is engine-defined, so a host and a guest on different browsers can
+    // disagree in the last bit and desync. `hyp` was already imported here.
+    const k = hyp(toward.x - outer.x, toward.y - outer.y);
+    if (k > 1e-6) {
+      ux = (toward.x - outer.x) / k;
+      uy = (toward.y - outer.y) / k;
+    }
+  }
+  return {
+    cx: outer.x - (ux * BB_BOX_TUBE_LEN) / 2,
+    cy: outer.y - (uy * BB_BOX_TUBE_LEN) / 2,
+    ux,
+    uy,
+    len: BB_BOX_TUBE_LEN,
+    w: BB_BOX_TUBE_W,
+    outer,
+  };
 }

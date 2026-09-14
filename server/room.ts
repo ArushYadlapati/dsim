@@ -5,7 +5,7 @@
 const randomUUID = (): string => crypto.randomUUID();
 import { envVar } from './runtimeEnv';
 import * as C from '../src/config';
-import { activeStartLegal } from '../src/sim/field';
+import { newSettleClock, settleStep, type SettleClock } from '../src/sim/settle';
 import { coerceAutoPath, DEFAULT_SPEC, DEFAULT_ASSISTS, type RobotSetup } from '../src/sim/spawn';
 import { simModuleFor } from '../src/games/sim';
 import { scrubName } from './moderation';
@@ -19,15 +19,19 @@ import type {
   DrivetrainType,
   RobotCommand,
   RobotSpec,
+  StartPose,
   World,
 } from '../src/types';
 import {
   dequantizeCommand,
+  sanitizeQCommand,
   encodeMsg,
   quantizeCommand,
   slimWorld,
   roomCapacity,
   DEFAULT_ROOM_CONFIG,
+  RANKED_JOIN_GRACE_MS,
+  STRATEGY_DURATION_MS,
   type BallDelta,
   type ClientMsg,
   type EloDelta,
@@ -175,14 +179,19 @@ const SNAP_BACKLOG_BYTES = 256 * 1024;
  * enough to cover a full page reload / navigate-away-and-come-back (the "rejoin your
  * match" flow), not just a transient socket blip. The robot coasts to ZERO meanwhile. */
 const RECONNECT_GRACE_MS = 45000;
-/** a staged ranked match waits this long for every paired player to (re)connect to
- * the host machine before it gives up and cancels (a no-show ⇒ no rated match) */
-const RANKED_JOIN_GRACE_MS = 20000;
-/** ranked pre-match STRATEGY window: once everyone has connected, drivers see their
- * alliance's builds, re-pick, claim a close/far start pose, and ready up. The match
- * begins the instant all ready; if anyone hasn't readied by the deadline the match
- * is CANCELLED (user decision — strict, so nobody waits forever on an idle player). */
-const STRATEGY_DURATION_MS = 20000;
+/** how close to the buzzer a solo record run counts as DECIDED: a driver who leaves inside it
+ *  still has the run finished and saved. One second of slack because the client's predicted
+ *  clock runs a little ahead of the server's, so "I restarted at 0:00" can land in teleop. */
+const RECORD_FINISH_WINDOW_S = 1;
+/* BOTH RANKED CLOCKS NOW LIVE IN `src/net/protocol.ts`, and are imported above.
+   `RANKED_JOIN_GRACE_MS` is how long a staged match waits for every paired player to
+   (re)connect before it cancels as a no-show; `STRATEGY_DURATION_MS` is the pre-match
+   window in which drivers see their alliance's builds, re-pick, claim a start pose and
+   ready up. The match begins the instant all are ready, and is CANCELLED if anyone has
+   not readied by the deadline (user decision: strict, so nobody waits on an idle player).
+   They moved because the queue screen states both to the player BEFORE they queue, and a
+   rule the client restates from its own copy of the number drifts the first time one of
+   them is tuned. */
 
 /** the Fly region this server machine runs in (blank on a single-region / local
  * deploy). Sent to clients at matchStart so the HUD can show "matched on <region>". */
@@ -294,6 +303,8 @@ export class Room {
   // but hold no robot slot and never count toward capacity/roster/persistence.
   private readonly spectators = new Map<string, Client>();
   private hostId = '';
+  /** the seat `reserveHost` named, or '' for every room the cloud runs — see `detach` */
+  private reservedHost = '';
   // monotonic connection counter: every add/reattach stamps the owning socket with
   // the next value so a stale old socket's close can be recognised and ignored.
   private connSeq = 0;
@@ -349,9 +360,9 @@ export class Room {
    * `ServerMsg` 'matchArchive' for what it is for and why only the host gets it.
    */
   private matchId: string | null = null;
-  // world.time at which phase 'post' began, to hold the settle window before
-  // finalizing (null until the match ends)
-  private postSince: number | null = null;
+  // the post-buzzer settle: the match is finalized once nothing left on the field can change
+  // the score (see `src/sim/settle.ts`)
+  private settle: SettleClock = newSettleClock();
   // authed players who LEFT mid-match (robotId -> identity). Their robot stays in
   // the world coasting at ZERO, but their client object is gone once grace lapses,
   // so they'd drop out of the finalize roster and the match would become unratable
@@ -363,16 +374,30 @@ export class Room {
   // robot id assigned in startMatch = the client's add-order index)
   private ranked = false;
   private intros: PlayerIntro[] = [];
+  /** the finished match's result is still being persisted, so the ratings a rematch would
+   *  introduce are not known yet — see `maybeRematch` */
+  private resultPending = false;
+  private resultWait: ReturnType<typeof setTimeout> | null = null;
   // set on the HOST machine when this room was staged by the designated matchmaker
   // (region-aware ranked). The roster is authoritative; the match starts once every
   // staged player has (re)connected here, or cancels after RANKED_JOIN_GRACE_MS.
   private pendingMatch: PendingMatch | null = null;
   private pendingTimer: ReturnType<typeof setTimeout> | null = null;
+  /** reaps held slots when no loop is running to do it — see `armGraceReap` */
+  private graceReap: ReturnType<typeof setTimeout> | null = null;
   // ranked lifecycle: 'connecting' while paired players are still arriving, then
   // 'strategy' during the pre-match coordination window, then 'match' once the world
   // is built. Custom rooms skip 'strategy' (connecting → match). `world===null` still
   // means "not in a match" (true for both connecting and strategy).
   private phase: 'connecting' | 'strategy' | 'match' = 'connecting';
+  /** a staged ranked match was CANCELLED and the room torn down. The sockets that were in it
+   *  still point here (`server/index.ts` never clears a socket's `room`), so everything that
+   *  can arrive afterwards — a close, a late ready — must be a no-op. See `cancelPending`. */
+  private cancelled = false;
+  /** a solo record run whose driver left AFTER it was decided: keep stepping with nobody
+   *  connected until `finalizeMatch` saves it, then free the room (`reap`, a clean close) or
+   *  hold it for the reconnect grace (a dropped network). See `detach`. */
+  private finishing: { reap: boolean } | null = null;
   // release channel of this room, set from the FIRST client to join (or the staged
   // ranked roster). 'alpha' rooms are IN-DEVELOPMENT: their results are never
   // persisted to the leaderboard/ELO DB (see finalizeMatch), and the matchmaker
@@ -486,6 +511,29 @@ export class Room {
     };
   }
 
+  /**
+   * CAN *THIS* ID TAKE A SEAT? — `canJoin` plus the RESERVED HOST.
+   *
+   * `canJoin` answers for a room whose host is one of the people already in it, which is
+   * every room the cloud runs: `add` gives the crown to the first client through the door,
+   * so the host is seated by definition and capacity is a single number.
+   *
+   * A TAB-HOSTED LAN ROOM INVERTS THAT. Its host reserves the crown at open (`reserveHost`)
+   * and then joins LAST — they are reading the code out while guests arrive — so the seat
+   * they will need is not occupied yet and plain capacity does not know it is spoken for.
+   * With four guests admitted the host was refused their own room, or (before any refusal
+   * existed at all) seated into an oversized roster that `POST /api/lan` then rejected.
+   *
+   * The reserved seat is held ONLY until its holder actually arrives, and only for a room
+   * that reserved one: with no reservation, or once the host is in `clients`, this is
+   * exactly `canJoin`.
+   */
+  canSeat(id: string): boolean {
+    if (!this.canJoin()) return false;
+    const hostPending = this.hostId !== '' && id !== this.hostId && !this.clients.has(this.hostId);
+    return !hostPending || this.clients.size + 1 < roomCapacity(this.config);
+  }
+
   /** authoritative sim tick (0 before the match starts) */
   get tick(): number {
     return this.world?.tick ?? 0;
@@ -505,6 +553,8 @@ export class Room {
    */
   reserveHost(id: string): void {
     if (!this.hostId) this.hostId = id;
+    // remembered so `detach` can tell a reserved host stepping out from a cloud host leaving
+    if (this.hostId === id) this.reservedHost = id;
   }
 
   add(client: Client): void {
@@ -714,8 +764,11 @@ export class Room {
   }
 
   /** a socket dropped. In the lobby that's an outright leave; mid-match the slot
-   * is HELD for the reconnect grace (the robot coasts to ZERO meanwhile). */
-  detach(id: string, conn?: number): void {
+   * is HELD for the reconnect grace (the robot coasts to ZERO meanwhile).
+   *
+   * `clean` is true when the CLIENT closed the socket on purpose (WebSocket close code
+   * 1000/1005 — `transport.close()`), as opposed to a network drop (1006). See below. */
+  detach(id: string, conn?: number, clean = false): void {
     // a spectator socket closing — just drop it (no roster/grace/persistence impact)
     if (this.spectators.has(id)) {
       this.spectators.delete(id);
@@ -749,7 +802,15 @@ export class Room {
       this.clients.delete(id);
       this.snapPrimed.delete(id);
       this.snapAck.delete(id);
-      if (this.hostId === id) this.hostId = this.clients.keys().next().value ?? '';
+      /* THE CROWN PASSES TO WHOEVER IS LEFT — unless it was RESERVED. A cloud host who leaves
+         the lobby is gone; the next player through the door should be able to start. A
+         tab-hosted room's host (`reserveHost`) is different: the room lives in THEIR tab, and
+         stepping out to the LAN screen and back is an ordinary thing for them to do. Handing
+         the crown to a guest meanwhile meant the host came back to their own room as a guest
+         of it, and `canSeat` stopped holding their seat. The reservation outlives the visit. */
+      if (this.hostId === id && this.reservedHost !== id) {
+        this.hostId = this.clients.keys().next().value ?? '';
+      }
       this.robotOf.delete(id);
       this.broadcastRoster();
       this.refreshRematch(); // the tally is against CONNECTED drivers
@@ -760,11 +821,60 @@ export class Room {
     } else {
       c.connected = false;
       c.disconnectAt = Date.now();
+      // ⚠️ A SOLO RECORD RUN THE PLAYER CLOSED ON PURPOSE IS OVER — DO NOT HOLD IT.
+      // Restarting a record run is a full teardown: the client disposes its session (a
+      // CLEAN close) and opens a brand-new `rec-` room. Holding the old one for the
+      // reconnect grace kept it SIMULATING for 45 s with nobody who could ever come back
+      // to it, so a player restarting every few seconds occupied several rooms at once —
+      // on launch day (2026-09-13, BIOBUZZ public) iad sat at 24/24 with 8-12 real runs
+      // and refused new ones as `region_full` ("Couldn’t start"). A network drop is not
+      // clean (1006) and keeps its grace; so does every room with a second driver in it.
+      const soloRecord = this.config.kind === 'record' && this.config.record === 'solo';
+      // ⚠️ A RUN THAT IS ALREADY DECIDED IS FINISHED AND SAVED, WITH NOBODY WATCHING. The score
+      // is final once the field settles after the buzzer, and that is when `finalizeMatch` writes
+      // the PB / leaderboard row. A player who pressed restart or Back in that window used to
+      // lose the run outright: the loop FREEZES a room with no connected driver (the ghost-room
+      // guard in `startLoop`), so the match never reached finalize and the room died unsaved
+      // — reported as "record runs are not updating their personal best or the leaderboard".
+      if (soloRecord && this.inFinishWindow()) {
+        this.finishing = { reap: clean };
+        this.broadcastRoster();
+        return;
+      }
+      if (clean && soloRecord) {
+        c.disconnectAt = -Infinity;
+        this.checkGrace();
+        return;
+      }
       this.broadcastRoster();
       // a partner who drops must not leave the run un-restartable: their vote is
       // no longer required, so a rematch the other driver already asked for lands
       this.refreshRematch();
+      // ⚠️ THE GRACE IS ONLY EVER CHECKED BY THE LOOP, AND A FINISHED MATCH HAS NO LOOP.
+      // `finalizeMatch` stops it and keeps the room for the results screen, so a player who
+      // closed the tab from there was held forever: never reaped, the room never deleted.
+      // Every finished match somebody walked away from leaked one room, and the always-warm
+      // primary (which never auto-stops to clear them) filled `MAX_ROOMS` with rooms that
+      // had nobody in them and refused every new room in the region (2026-09-13, 24/24
+      // with `/api/perf` reading 0 live). So with no loop running, reap on a timer instead.
+      if (!this.loop) this.armGraceReap();
     }
+  }
+
+  /** run `checkGrace` once the grace has lapsed, for a room whose loop is not running */
+  private armGraceReap(): void {
+    if (this.graceReap) clearTimeout(this.graceReap);
+    this.graceReap = setTimeout(() => {
+      this.graceReap = null;
+      // a rematch restarted the loop meanwhile: it owns the check again
+      if (this.loop) return;
+      this.checkGrace();
+      // someone is still inside their own grace (they dropped later) — look again
+      if (this.clients.size > 0 && ![...this.clients.values()].every((x) => x.connected)) {
+        this.armGraceReap();
+      }
+    }, RECONNECT_GRACE_MS + 1000);
+    if (this.graceReap.unref) this.graceReap.unref();
   }
 
   /** reclaim a held slot on a fresh socket. Returns the new owning-connection id on
@@ -862,9 +972,34 @@ export class Room {
     }
   }
 
+  /**
+   * Is this player's CANONICAL start pose legal for this game? — the ONE place the server
+   * asks, so the ready gate and the start gate cannot answer differently.
+   *
+   * TWO FACTS, not one. `startLegality` is whether this game wants the server to ENFORCE a
+   * start rule at all, and `startLegal` is the rule. A game that answers the second and not
+   * the first (Chain Reaction, whose editor checks G04 live) is deliberately waved through
+   * here. Both used to read DECODE's `activeStartLegal` directly, which judged every other
+   * game's poses against DECODE's launch lines and goal triangles — see the slot's own note.
+   *
+   * ⚠️ A `server/` change: it needs a deploy to take effect for live rooms.
+   */
+  private startPoseLegal(
+    spec: RobotSpec,
+    a: Alliance,
+    startPose: StartPose | null | undefined,
+  ): boolean {
+    const mod = simModuleFor(this.game);
+    if (!mod.startLegality || !mod.startLegal) return true;
+    return mod.startLegal(spec, a, startPose);
+  }
+
   onMessage(id: string, msg: ClientMsg): void {
     const c = this.clients.get(id);
     if (!c) return;
+    // a late message into a cancelled room (a ready landing after the deadline) must not
+    // begin a match nobody is registered for — see `cancelled`
+    if (this.cancelled) return;
     switch (msg.t) {
       case 'update': {
         // sanitize the patch against this player's current config: a spoofed
@@ -883,8 +1018,7 @@ export class Room {
         // stale/spoofed ready.
         if (
           c.player.ready &&
-          simModuleFor(this.game).startLegality &&
-          !activeStartLegal(c.player.spec, c.player.alliance, c.player.startPose)
+          !this.startPoseLegal(c.player.spec, c.player.alliance, c.player.startPose)
         ) {
           c.player.ready = false;
         }
@@ -917,7 +1051,7 @@ export class Room {
     }
   }
 
-  private onInput(id: string, tick: number, q: QCommand, ack?: number, gen?: number): void {
+  private onInput(id: string, tick: number, q: unknown, ack?: number, gen?: number): void {
     // STALE GENERATION: an input produced for a match this room has already replaced.
     // Dropping it is the whole reason a rematch can rebuild in place — see `matchGen`.
     // Absent (older client) ⇒ accepted, exactly as before.
@@ -943,7 +1077,14 @@ export class Room {
     // high-water marks that cannot be lowered once poisoned. Reject at the door instead.
     if (!Number.isSafeInteger(tick) || tick < 0) return;
     if (this.world && tick - this.world.tick > MAX_INPUT_LEAD_TICKS) return;
-    const cmd = dequantizeCommand(q);
+    // AND THE PAYLOAD ITSELF, for the same reason the tick above is checked here: `q` is
+    // typed `QCommand` by the wire types and is in fact whatever `JSON.parse` produced.
+    // `dequantizeCommand` would turn a missing axis into NaN and an out-of-range one into a
+    // track speed no motor can reach, inside the world every OTHER member of this room is
+    // being sent as authority. Refused before `latest`, `pending` or liveness see it.
+    const safe = sanitizeQCommand(q);
+    if (!safe) return;
+    const cmd = dequantizeCommand(safe);
     // track the freshest command by tick (even if it's now in the past) — this is
     // what a late input still contributes, so the robot keeps moving
     if (tick > (this.latestTick.get(rid) ?? -1)) {
@@ -996,10 +1137,10 @@ export class Room {
     // closes the host-start path, which is NOT gated on all-ready server-side.
     // start-pose legality is a DECODE (G304) concept — only enforce it for a game
     // that has a start editor (CR has none yet).
-    if (simModuleFor(this.game).startLegality) {
+    {
       for (const c of this.clients.values()) {
         const a: Alliance = record ? 'blue' : c.player.alliance;
-        if (!activeStartLegal(c.player.spec, a, c.player.startPose)) {
+        if (!this.startPoseLegal(c.player.spec, a, c.player.startPose)) {
           this.broadcast({
             t: 'error',
             message: 'A driver’s start position is invalid for their chassis - fix it to start.',
@@ -1088,7 +1229,7 @@ export class Room {
     // the replay re-sims through the right module (CR vs DECODE).
     this.recorder = new ReplayRecorder(seed, setups, 'match', this.game);
     this.finalized = false;
-    this.postSince = null;
+    this.settle = newSettleClock();
     this.departed.clear();
 
     // register each authed driver's single-game lock: while this match is live they
@@ -1351,6 +1492,13 @@ export class Room {
     culprits: { userId: string; kind: DodgeKind }[] = [],
   ): void {
     if (this.world !== null) return; // already started
+    // ⚠️ ONCE. The room is gone after this, but its sockets are not: each still routes its
+    // close to `detach`, and `pendingMatch`/`phase` still read as an open strategy window, so
+    // the first player to leave the cancelled screen used to cancel it AGAIN — billed as a
+    // STRATEGY BAIL. The innocent player was told "Nothing was charged to you" by the first
+    // verdict and then lost standing to the second, which went to a socket already closing.
+    if (this.cancelled) return;
+    this.cancelled = true;
     if (this.pendingTimer) {
       clearTimeout(this.pendingTimer);
       this.pendingTimer = null;
@@ -1451,7 +1599,7 @@ export class Room {
         //     post-match settle) does not see.
         // `checkGrace` deliberately keeps running on the WALL clock through the freeze, so
         // a player who never comes back is still reaped on schedule.
-        if (!this.anyConnected()) {
+        if (this.frozenForNobody()) {
           last = Date.now();
           acc = 0;
           return;
@@ -1503,7 +1651,8 @@ export class Room {
         !!c &&
         (Math.abs(c.driveX) > 0.05 || Math.abs(c.driveY) > 0.05 || Math.abs(c.rotate) > 0.05 ||
           Math.abs(c.leftDrive) > 0.05 || Math.abs(c.rightDrive) > 0.05 ||
-          c.intake || c.fire || !!c.catalyst || !!c.fling || !!c.driveMode);
+          c.intake || c.fire || !!c.catalyst || !!c.fling || !!c.driveMode ||
+          !!c.bbPlaceNectar || !!c.bbPlace || !!c.bbNectar);
       if (moving) this.driveTicks.set(r.id, (this.driveTicks.get(r.id) ?? 0) + 1);
       // AWAY is measured from the socket, not from the sticks: a driver whose client is
       // gone is a different thing from one who is present and idle, and only the first is
@@ -1535,13 +1684,12 @@ export class Room {
     this.recorder?.record(w.tick, this.lastFrame);
     this.countParticipation(w);
     const due = w.tick % SNAPSHOT_INTERVAL === 0;
-    // Don't finalize the instant the match ends: balls are still flowing down the
-    // ramp/through the gate and scoring for a beat. Keep stepping (and recording)
-    // through a settle window so the authoritative score we save is the SETTLED
-    // one the client reveals at the whoosh — not an early undercount.
-    if (w.match.phase === 'post' && !this.finalized) {
-      if (this.postSince === null) this.postSince = w.time;
-      if (w.time - this.postSince >= C.MATCH_SETTLE_S) this.finalizeMatch();
+    // FINALIZE WHEN THE FIELD HAS SETTLED, NOT ON A TIMER. The buzzer ends driving, not
+    // scoring: an artifact can still be in the air or on the ramp, a hive can still be tipping.
+    // Keep stepping (and recording) until the game says nothing left can change the score, so
+    // the number saved is the settled one — and the results screen reveals only on it.
+    if (!this.finalized && settleStep(this.settle, w, simModuleFor(this.game).settled)) {
+      this.finalizeMatch();
     }
     return due;
   }
@@ -1628,10 +1776,37 @@ export class Room {
       // record → the run's leaderboard standing. Broadcast so the results screen
       // can reveal the ELO change (versus) or the PB / WR / rank line (record).
       if (ret && typeof (ret as Promise<unknown>).then === 'function') {
+        // A REMATCH WAITS FOR THIS. The rematch's `matchStart` re-sends `this.intros`, and
+        // those are the ratings from when the pairing was STAGED — so a rematch voted through
+        // before this lands introduced every driver at their pre-match rating. Capped, so a
+        // slow or failed write can delay a rematch but never block it.
+        this.resultPending = true;
+        if (this.resultWait) clearTimeout(this.resultWait);
+        const settle = (): void => {
+          if (!this.resultPending) return;
+          this.resultPending = false;
+          if (this.resultWait) clearTimeout(this.resultWait);
+          this.resultWait = null;
+          this.maybeRematch();
+        };
+        this.resultWait = setTimeout(settle, 5000);
+        if (this.resultWait.unref) this.resultWait.unref();
         void (ret as Promise<PersistOutcome | void>)
           .then((out) => {
             if (!out) return;
             if (out.matchId) this.lastMatchId = out.matchId;
+            // THE INTRO RATINGS FOLLOW THE RESULT. `intros` is set once from the staged
+            // roster and re-sent on every rematch's `matchStart`; without this the rematch
+            // showed each driver the rating from BEFORE the match they just played. Done
+            // before the empty-room return, since nothing is sent from here.
+            if (out.elo && out.elo.length && this.intros.length) {
+              const afterByRobot = new Map<number, number>();
+              for (const e of out.elo) {
+                const robotId = robotByUser.get(e.userId);
+                if (robotId !== undefined) afterByRobot.set(robotId, e.after);
+              }
+              this.intros = this.intros.map((i) => ({ ...i, elo: afterByRobot.get(i.id) ?? i.elo }));
+            }
             if (this.clients.size === 0) return;
             if (out.record) {
               this.broadcast({ t: 'recordResult', info: out.record });
@@ -1647,10 +1822,23 @@ export class Room {
               if (results.length) this.broadcast({ t: 'eloResult', results });
             }
           })
-          .catch((err) => console.error('[room] result broadcast failed:', err));
+          .catch((err) => console.error('[room] result broadcast failed:', err))
+          .finally(settle);
       }
     }
     this.stop();
+    // the driver left once the run was decided (see `finishing`): it is saved now, so free the
+    // room — at once for a deliberate close, after the reconnect grace for a dropped network
+    const f = this.finishing;
+    this.finishing = null;
+    if (f) {
+      if (f.reap) {
+        for (const x of this.clients.values()) if (!x.connected) x.disconnectAt = -Infinity;
+        this.checkGrace();
+      } else {
+        this.armGraceReap();
+      }
+    }
   }
 
   /**
@@ -1764,6 +1952,9 @@ export class Room {
     if (ids.length === 0) return;
     if (!ids.every((i) => this.rematchVotes.has(i))) return;
     if (!this.matchSetups.length) return;
+    // the last match's ratings are still being written: start once they are in (the
+    // persist's `settle` calls back here), so the rematch introduces the updated ones
+    if (this.resultPending) return;
     // a FRESH seed: a rematch is a new run at a new motif, not a replay of the old
     // one. `beginMatch` does the whole reset (world, buffers, recorder, generation)
     // through exactly the path a first start takes, so there is no second, subtly
@@ -1796,6 +1987,31 @@ export class Room {
     for (let i = 0; i < maxTicks && this.world && !this.finalized; i++) {
       if (this.stepOnce()) this.broadcastSnapshot();
     }
+  }
+
+  /** TEST SEAM: pump the way the REAL loop does — grace reaping and the ghost-room freeze
+   *  included. `advanceForTest` steps unconditionally, so it cannot see a room that the live
+   *  loop would have frozen, which is exactly how an unsaved buzzer restart went unnoticed. */
+  pumpForTest(maxTicks: number): void {
+    this.stop();
+    for (let i = 0; i < maxTicks && this.world && !this.finalized; i++) {
+      this.checkGrace();
+      if (this.clients.size === 0 || this.frozenForNobody()) return;
+      if (this.stepOnce()) this.broadcastSnapshot();
+    }
+  }
+
+  /** the ghost-room freeze (`startLoop`): nobody connected, and nothing still owed to anyone */
+  private frozenForNobody(): boolean {
+    return !this.anyConnected() && this.finishing === null;
+  }
+
+  /** is this match decided, or within `RECORD_FINISH_WINDOW_S` of it, and not yet saved? */
+  private inFinishWindow(): boolean {
+    const w = this.world;
+    if (!w || this.finalized) return false;
+    const m = w.match;
+    return m.phase === 'post' || (m.phase === 'teleop' && m.phaseTimeLeft <= RECORD_FINISH_WINDOW_S);
   }
 
   /** TEST SEAM: how many future inputs are buffered, in total and for the worst robot.

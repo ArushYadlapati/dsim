@@ -1,13 +1,17 @@
 import type { Artifact, ArtifactColor, RobotCommand } from '../../types';
+import * as C from '../../config';
 import {
+  BB_FLOWER_UNLOCK_S,
   BB_FLOWERS,
   BB_HALF_X,
   BB_HALF_Y,
   BB_HIVE_CELL_DY,
   BB_HIVE_UP_STAGED,
   BB_HIVE_X,
+  BB_LZ,
   BB_NECTAR_R,
   BB_POLLEN_R,
+  bbLoadingZoneSpot,
 } from './config';
 import { BB_FRAME_BAR_IN } from './config';
 import {
@@ -60,6 +64,47 @@ const ID0 = 1;
  * layout in this file so the two can never collide, and so a parked id is recognisable as one
  * in a state dump. */
 const PARKED_ID0 = 900;
+
+/**
+ * PUSH ONE PARKED ELEMENT and return its id.
+ *
+ * A parked element is one INSIDE a field element — a HIVE cell, a FLOWER column. It is not
+ * solved and has no position of its own, so `pos` is only ever somewhere to point at; what
+ * makes it real is the `el` tag, which is what `bbWorld` reindexes the state bag off
+ * (`spawn.ts`'s `bbIndexBiobuzz`). So a scene never assigns into `bb.flowers[i].stack` — it
+ * builds the BALLS, and the stacks come back derived, in slot order, from the balls that exist.
+ *
+ * SHARED BY THE TWO CELLS THAT DRAW READOUTS (`field-labelled` and `flower-stack`), because
+ * the ids are the delicate part: `PARKED_ID0 + balls.length` is unique only while ONE array is
+ * doing the counting, and two copies of that line in two builds is two chances for a scene to
+ * park two elements on one id and lose one of them to the `byId` join.
+ */
+function parkedEl(
+  balls: Artifact[],
+  color: ArtifactColor,
+  where: string,
+  slot: number,
+  x: number,
+  y: number,
+): number {
+  const id = PARKED_ID0 + balls.length;
+  balls.push({
+    id,
+    color,
+    r: color === 'yellow' ? BB_POLLEN_R : BB_NECTAR_R,
+    state: { kind: 'element', el: where, slot },
+    pos: { x, y },
+    vel: { x: 0, y: 0 },
+    z: 0,
+    vz: 0,
+  });
+  return id;
+}
+
+/** the colours of FLOWER `i`'s column, BOTTOM FIRST — slot order is stack order. */
+function inFlower(balls: Artifact[], i: number, colors: ArtifactColor[]): number[] {
+  return colors.map((c, slot) => parkedEl(balls, c, `flower:${i}`, slot, BB_FLOWERS[i].x, BB_FLOWERS[i].y));
+}
 
 /** how far a POLLEN's centre sits from a wall when it is resting against it. */
 const AT_WALL_X = BB_HALF_X - BB_POLLEN_R;
@@ -139,7 +184,8 @@ export const BB_FIELD_SCENES: readonly Scene[] = [
      *      here that pins the drawing to the real field.
      *   6. The two READOUTS, which is why this cell holds elements at all — see `build`. Both
      *      are balls, never text: the cell's contents are a row of discs against its open edge
-     *      and a flower's are its stack outside the wall.
+     *      and a flower's are a SECTION of the column outside the wall. `flower-stack` is the
+     *      cell that exercises the section's four states; this one only shows it in place.
      */
     build: (seed) => {
       /**
@@ -157,51 +203,91 @@ export const BB_FIELD_SCENES: readonly Scene[] = [
        * somewhere to point at.
        */
       const balls: Artifact[] = [];
-      const el = (color: ArtifactColor, where: string, slot: number, x: number, y: number): number => {
-        const id = PARKED_ID0 + balls.length;
-        balls.push({
-          id,
-          color,
-          r: color === 'yellow' ? BB_POLLEN_R : BB_NECTAR_R,
-          state: { kind: 'element', el: where, slot },
-          pos: { x, y },
-          vel: { x: 0, y: 0 },
-          z: 0,
-          vz: 0,
-        });
-        return id;
-      };
       const inCell = (a: 'red' | 'blue', colors: ArtifactColor[]): number[] => {
         const x = a === 'red' ? -BB_HIVE_X : BB_HIVE_X;
         const y = (BB_HIVE_UP_STAGED[a] === 'north' ? 1 : -1) * BB_HIVE_CELL_DY;
-        return colors.map((c, i) => el(c, `hive:${a}`, i, x, y));
+        return colors.map((c, i) => parkedEl(balls, c, `hive:${a}`, i, x, y));
       };
-      const inFlower = (i: number, colors: ArtifactColor[]): number[] =>
-        colors.map((c, slot) => el(c, `flower:${BB_FLOWERS[i].id}`, slot, BB_FLOWERS[i].x, BB_FLOWERS[i].y));
+
+      /**
+       * A MID-MATCH SPREAD, NOT THE STAGED FIELD — `spawn.ts` owns staging, this cell owns the
+       * DRAWING, so the contents are chosen to make each readout say something a reader can
+       * CHECK against a rule rather than to be legal at t=0:
+       *  • red's up-CELL is 3 NECTAR + 2 POLLEN, one POLLEN short of a TIP
+       *    (`BB_TIP_POLLEN[3]` is 3) — exactly the split a single total would hide;
+       *  • blue's holds a RED nectar, because any alliance may LAUNCH into any cell;
+       *  • F2 carries a NECTAR on TOP (blue OWNS it) and F3 one at the BOTTOM (red's 5-point
+       *    bonus, and retrieval locked — a 3.6 NECTAR does not fit the 3.55 opening), which is
+       *    the pair of cases the stack order exists to tell apart;
+       *  • F4 holds SIX, near enough a full column that its top element is against the top
+       *    ring — the case `flower-stack` isolates and this cell only has to not contradict.
+       *
+       * BUILT BEFORE THE WORLD, AND NOT ASSIGNED INTO THE BAG. The `el` tags on these artifacts
+       * ARE the readout: `bbWorld` reindexes the state bag off the array it is handed, so the
+       * stacks and both cells come back derived, in slot order, from the balls that exist. An
+       * earlier pass called `bbWorld` first and pushed into the array afterwards — it worked
+       * only because the array was the same object, and it needed six hand-written assignments
+       * to say what the tags already said.
+       */
+      inCell('red', ['red', 'red', 'red', 'yellow', 'yellow']);
+      inCell('blue', ['blue', 'red', 'yellow', 'yellow', 'yellow', 'yellow']);
+      inFlower(balls, 0, ['yellow', 'yellow', 'yellow', 'yellow']);
+      inFlower(balls, 1, ['yellow', 'yellow', 'blue']);
+      inFlower(balls, 2, ['red', 'yellow', 'yellow', 'yellow']);
+      inFlower(balls, 3, ['yellow', 'yellow', 'yellow', 'yellow', 'yellow', 'blue']);
 
       const world = bbWorld(seed, [], balls);
-      const bb = world.biobuzz;
-      if (bb) {
-        bb.labels = true;
-        /**
-         * A MID-MATCH SPREAD, NOT THE STAGED FIELD — `spawn.ts` owns staging, this cell owns
-         * the DRAWING, so the contents are chosen to make each readout say something a reader
-         * can CHECK against a rule rather than to be legal at t=0:
-         *  • red's up-CELL is 3 NECTAR + 2 POLLEN, one POLLEN short of a TIP
-         *    (`BB_TIP_POLLEN[3]` is 3) — exactly the split a single total would hide;
-         *  • blue's holds a RED nectar, because any alliance may LAUNCH into any cell;
-         *  • F2 carries a NECTAR on TOP (blue OWNS it) and F3 one at the BOTTOM (red's 5-point
-         *    bonus, and retrieval locked — a 3.6 NECTAR does not fit the 3.55 opening), which
-         *    is the pair of cases the stack order exists to tell apart;
-         *  • F4 holds SIX, a full flower, which is the length `BB_VIEW_MARGIN` has to clear.
-         */
-        bb.hives.red.contents = inCell('red', ['red', 'red', 'red', 'yellow', 'yellow']);
-        bb.hives.blue.contents = inCell('blue', ['blue', 'red', 'yellow', 'yellow', 'yellow', 'yellow']);
-        bb.flowers[0].stack = inFlower(0, ['yellow', 'yellow', 'yellow', 'yellow']);
-        bb.flowers[1].stack = inFlower(1, ['yellow', 'yellow', 'blue']);
-        bb.flowers[2].stack = inFlower(2, ['red', 'yellow', 'yellow', 'yellow']);
-        bb.flowers[3].stack = inFlower(3, ['yellow', 'yellow', 'yellow', 'yellow', 'yellow', 'blue']);
-      }
+      if (world.biobuzz) world.biobuzz.labels = true;
+      return world;
+    },
+    stills: [0],
+  },
+
+  {
+    id: 'flower-stack',
+    title: 'The four FLOWER states in one frame — empty, staged, nectar-bottom, full',
+    lane: 'field',
+    /**
+     * THE SECTION READOUT, IN ITS FOUR STATES AT ONCE.
+     *
+     * A FLOWER is a 21.5-in column and the field is a plan view, so its contents are drawn as a
+     * SECTION beside it, outside the perimeter (`drawFlowerSection`). Everything that readout
+     * has to say is a case that only exists at certain stack orders, and a cell per case would
+     * make them four pictures a reviewer has to remember between. There are four FLOWERS. So
+     * each one carries a different case and the comparison is one frame:
+     *
+     *   F1 · EMPTY. The section is still drawn — the shaded band and the two rings are a rule
+     *        about the field, not a property of its contents, and a readout that appeared only
+     *        once something was inside would make "empty" and "not drawn" the same picture.
+     *   F2 · STAGED, the four POLLEN `spawn.ts` preloads. They pass the middle ring and rest on
+     *        the LOWER one, so the bottom POLLEN sits BELOW the shaded band: a staged flower is
+     *        3 elements in volume and 0 points, which is the sorter ruling drawn.
+     *   F3 · NECTAR AT THE BOTTOM. It SEATS on the middle ring instead of passing it (so it is
+     *        never below the scoring floor), it takes the 5-point bottom-nectar bonus, and it
+     *        LOCKS retrieval — 3.6 in of nectar through a 3.55-in opening, G418 — which is the
+     *        LOCK GLYPH under the base, drawn in that nectar's own colour.
+     *   F4 · FULL, and OWNED. Five POLLEN, a BLUE NECTAR, two more POLLEN: `flowerFits` stops
+     *        there, and the top POLLEN straddles the top ring rather than sitting under it,
+     *        because an element held on the backstop still counts (Fig 10-5 D/H). The top ring
+     *        is stroked BLUE — the top-most scoring nectar owns the flower and collects 2 per
+     *        element in the volume whoever put them there (§10.5.2).
+     *
+     * WHAT TO CHECK, in the order it is easy to get wrong: that each section is OUTSIDE its own
+     * wall and rotated with it (F2's and F4's run along the rear and audience walls, and their
+     * z still runs toward the middle of the wall); that F2's bottom POLLEN is below the shading
+     * and F3's NECTAR is above it; that F3 has the lock and F1/F2/F4 do not; that F4's ring is
+     * blue and the other three are white. `bbFlowerSectionBox` is the smoke lane's version of
+     * the first of those — the rest is what a human eye is for.
+     */
+    build: (seed) => {
+      const balls: Artifact[] = [];
+      inFlower(balls, 0, []); // F1 · EMPTY — the call is here so the four cases read as four
+      inFlower(balls, 1, ['yellow', 'yellow', 'yellow', 'yellow']); // F2 · STAGED
+      inFlower(balls, 2, ['red', 'yellow', 'yellow', 'yellow']); // F3 · NECTAR AT THE BOTTOM
+      // F4 · FULL AND OWNED — see the header for why it is eight and not six.
+      inFlower(balls, 3, ['yellow', 'yellow', 'yellow', 'yellow', 'yellow', 'blue', 'yellow', 'yellow']);
+      const world = bbWorld(seed, [], balls);
+      if (world.biobuzz) world.biobuzz.labels = true;
       return world;
     },
     stills: [0],
@@ -467,27 +553,228 @@ export const BB_FIELD_SCENES: readonly Scene[] = [
       const bb = world.biobuzz;
       if (bb) {
         /**
-         * ⚠️ CLEAR THE STAGED ELEMENT REFERENCES, because `bbWorld` does not.
-         *
-         * `createBiobuzzWorld` runs `stageBiobuzz`, which puts ids into every FLOWER stack and
-         * both up-CELLS; `bbWorld` then REPLACES `world.balls` with the scene's own array and
-         * leaves those ids behind, pointing at elements that no longer exist. The readouts are
-         * a join, so a dangling id normally draws nothing and the omission is invisible — but
-         * `bbPollen` numbers from 1 and so does the staging, so three floor pollen ALIASED
-         * F1's staged stack and the scene rendered them hanging outside the perimeter beside a
-         * flower instead of on the tiles where it put them. High ids avoid the collision;
-         * clearing the references is what actually makes the picture true, and it is what this
-         * cell means by "nothing else in it".
+         * THE READOUTS ARE ALREADY EMPTY — `bbWorld` reindexes the state bag off the array it
+         * just installed, and this one holds three loose POLLEN and nothing tagged, so every
+         * FLOWER stack and both up-CELLs come back empty. That is what this cell means by
+         * "nothing else in it", and it is now a property of the helper rather than three lines
+         * of clearing here. (The ids still start high: an earlier pass numbered from 1, the
+         * staging does too, and the three floor pollen ALIASED F1's staged stack and drew
+         * outside the perimeter beside a flower. The reindex is the fix; distinct ids are
+         * cheap insurance and they keep the cell's own numbering readable.)
          */
-        bb.flowers.forEach((f) => {
-          f.stack = [];
-        });
-        bb.hives.red.contents = [];
-        bb.hives.blue.contents = [];
         bb.hives.red.tips = 1;
       }
       return world;
     },
     stills: [0],
+  },
+
+  {
+    id: 'hive-tip',
+    title: 'One TIP, across the 4-second swing — loaded, level, settled',
+    lane: 'field',
+    /**
+     * THE SWING, IN FOUR FRAMES: t = 0 (loaded and about to go), t = 2 s (LEVEL — the tray
+     * empties here), t = 4 s (SETTLED — the damper meets the frame and the 20 lands) and
+     * t = 8 s (the SPILL at rest, wherever the throw put it).
+     *
+     * The first three are the three moments §10.5.1 and field-plan §2.1 distinguish, and they
+     * are distinguished because they happen at different times: a CELL empties as the bar
+     * passes level (`BB_TIP_RELEASE_S`), and the POINTS arrive two seconds later when it stops
+     * (§10.5.1 needs the damper in contact). Anything that collapses them — scoring at the
+     * start of the swing, or spilling at the end — reads as one event in the code and as two
+     * on a real field.
+     *
+     * THE FOURTH FRAME IS THE SPILL'S OWN, and it is a separate question from the swing's.
+     * A TIP is a DUMP (`BB_SPILL_SPEED` 35-62 in/s in a ±`BB_SPILL_FAN` 18° fan — owner
+     * feedback 2026-09-12, 30% less power and a much tighter fan than the first calibration),
+     * so the contents leave the tray running straight-ish outboard and come to rest at about
+     * 3.9 s — just BEFORE the swing settles at 4 s, where the first calibration's throw was
+     * still crossing the field at that tick. Measured, they settle 45-71 in from the PIVOT in a
+     * 15 x 25 in patch. Numbers in `docs/biobuzz/feedback/001-spill-kinematics.md`.
+     *
+     * WHAT TO LOOK AT:
+     *   1. t = 0 — RED's SOUTH cell is up and FILLED, holding 3 NECTAR + 3 POLLEN. That is the
+     *      staged row of the measured table (`BB_TIP_POLLEN[3] === 3`), so this is exactly the
+     *      load that tips a match's first HIVE, and the swing has not started: the assembly is
+     *      drawn at its foreshortened plan length, the same as BLUE's.
+     *   2. t = 2 s — the bar is LEVEL, so it is drawn at its TRUE length (1/cos 30° longer than
+     *      BLUE's, the one frame where the two hives are different sizes), the two cells are
+     *      half faded into each other, and the contents have LEFT:
+     *      they draw as ordinary GROUND balls under the structure, on top of the dashed
+     *      outline, not as discs inside a box (`hive-ground` is the dedicated cell for that
+     *      distinction).
+     *   3. t = 4 s — the NORTH cell is up, filled and EMPTY; `tips` is 1. The spill has just
+     *      come to rest, in a patch outboard of the emptied cell.
+     *   4. t = 8 s — nothing is moving. This is the frame to read the SCATTER off: how wide,
+     *      how far, and how much of it is the balls having pushed each other apart on the tiles
+     *      rather than the throw.
+     *   5. BLUE's hive, untouched in all four, is the control: both cells the same length,
+     *      because the see-saw is one rigid bar at 30° and a plan view foreshortens both ends
+     *      equally (reference §2.2).
+     *
+     * ⚠️ THE SWING IS ADVANCED BY `play.ts`, WHICH IS LANE A4a's FILE AND IS NOT WIRED YET.
+     * `hiveStep` is written, pure and checked directly by `scripts/smoke-biobuzz/rules.ts`, but
+     * nothing calls it per tick until A4a lands its gameplay pass — so until that merge these
+     * four stills render the SAME frame. The scene is built against the finished behaviour on
+     * purpose: the cell that proves the wire is the one that has to exist before the wire, or
+     * the wire lands with nothing looking at it. Named in `docs/biobuzz/HANDOFF-field.md`.
+     */
+    build: (seed) => {
+      const world = bbWorld(seed, [], []);
+      const bb = world.biobuzz;
+      if (!bb) return world;
+      // `bbWorld` handed back an EMPTY array, so the bag it reindexed is empty too — no FLOWER
+      // stack, neither up-CELL. This scene then installs its own `world.balls` below and writes
+      // `hives.red.contents` to match, which is the one readout it is about.
+      const up = BB_HIVE_UP_STAGED.red;
+      const cy = (up === 'north' ? 1 : -1) * BB_HIVE_CELL_DY;
+      // 3 NECTAR + 3 POLLEN: the STAGED row of the measured tip table (reference §4.1), i.e.
+      // the load a first TIP of a real match actually costs.
+      const load: ArtifactColor[] = ['red', 'red', 'red', 'yellow', 'yellow', 'yellow'];
+      world.balls = load.map((color, slot) => ({
+        id: PARKED_ID0 + slot,
+        color,
+        r: color === 'yellow' ? BB_POLLEN_R : BB_NECTAR_R,
+        state: { kind: 'element' as const, el: 'hive:red', slot },
+        pos: { x: -BB_HIVE_X, y: cy },
+        vel: { x: 0, y: 0 },
+        z: 0,
+        vz: 0,
+      }));
+      bb.hives.red.contents = world.balls.map((b) => b.id);
+      bb.nextBallId = PARKED_ID0 + load.length;
+      return world;
+    },
+    // 0 · 2 s · 4 s at the shared 60 Hz tick — the load, the level, the settle.
+    stills: [0, 120, 240, 480],
+  },
+
+  {
+    id: 'park-examples',
+    title: 'PARK — deep in, one corner over the tape, and clear of it (Fig 10-7)',
+    lane: 'field',
+    /**
+     * WHAT COUNTS AS "AT LEAST PARTIALLY IN THE LOADING ZONE" (Table 10-2, Fig 10-7).
+     *
+     * The LOADING ZONE is 24 in along the wall and only ~11 in DEEP, which is narrower than an
+     * 18-in robot — so "fully inside" is not a pose that exists, and the achievement has to be
+     * an overlap test rather than a containment one. That is the whole reason this cell is
+     * three robots and not one.
+     *
+     * The four poses, and what each one proves:
+     *   1. RED deep against the wall, half its footprint over the tape — PARKED, and the
+     *      obvious case.
+     *   2. RED rotated 45° with ONE CORNER across the tape line and its centre well outside —
+     *      PARKED. `bbParkedNow` is an OBB-vs-rect intersection, so this passes; a
+     *      centre-in-rect test would refuse it, and refusing it is the bug this pose catches.
+     *   3. BLUE clear of the tape by 2.5 in — NOT parked. The near miss, so the cell shows the
+     *      boundary rather than just the two extremes.
+     *   4. BLUE deep in BLUE's own zone, diagonally opposite.
+     *
+     * ⚠️ THE TWO NEAR-MISS/DEEP PAIRS ARE SPLIT ACROSS THE TWO ZONES BECAUSE THREE ROBOTS DO
+     * NOT FIT IN ONE. The LOADING ZONE is 11 in deep × 24 in along the wall and the footprint
+     * is 21 × 17 (`robotExtents` — the sweeper reaches past each end of the chassis), so two
+     * robots fill it and a third has to interpenetrate one of them. Two per corner also makes
+     * the POINT symmetry visible rather than asserted: the layout is 180° about the origin,
+     * not mirrored (reference §2.1) — red's zone is on the left wall at y > 0 and blue's on
+     * the right wall at y < 0 — so the two pairs are the SAME two canonical poses, and an
+     * x-mirror of that is internally consistent and wrong.
+     *
+     * PARK requires the robot's OWN zone (owner ruling, field-plan §8). That is a boolean, so
+     * it is asserted in `scripts/smoke-biobuzz/rules.ts` rather than drawn here — a blue robot
+     * parked in red's corner would be a picture that looks like a mistake either way round.
+     *
+     * ⚠️ A `bbSetup` POSE IS CANONICAL (the BLUE frame), NOT where the robot ends up. The spawn
+     * mirrors a RED one through the origin — (x, y, θ) → (−x, −y, θ + 180°) — so red's two
+     * poses below read as blue's. The actual poses are robot 0 (−61, 22, 0°), robot 1
+     * (−48, 47, 45°), robot 2 (48, −47, 0°), robot 3 (61, −22, 180°).
+     *
+     * The phase is set to TELEOP so the world is a coherent mid-match one and the live PARK
+     * predicate is the one being scored (`score.ts` reads the live value during teleop and the
+     * latch afterwards).
+     */
+    build: (seed) => {
+      const world = bbWorld(
+        seed,
+        [
+          bbSetup(0, 'red', { x: 61, y: -22, headingDeg: 180 }),
+          bbSetup(1, 'red', { x: 48, y: -47, headingDeg: 225 }),
+          bbSetup(2, 'blue', { x: 48, y: -47, headingDeg: 0 }),
+          bbSetup(3, 'blue', { x: 61, y: -22, headingDeg: 180 }),
+        ],
+        [],
+      );
+      world.match.phase = 'teleop';
+      world.match.phaseTimeLeft = C.TELEOP_DURATION;
+      return world;
+    },
+    stills: [0],
+  },
+
+  {
+    id: 'nectar-entry',
+    title: 'NECTAR entering from the LOADING ZONES, at the 1:00 cue',
+    lane: 'field',
+    /**
+     * WHERE A HUMAN PLAYER'S NECTAR ARRIVES, AND WHEN IT IS ALLOWED TO.
+     *
+     * G426/G427: NECTAR enters through the alliance's OWN LOADING ZONE, contacting the tile
+     * first — one per own-HIVE TIP, and all remaining stock at ≤ 60 s. `bbLoadingZoneSpot`
+     * (config) is the one definition of that point: the centre of the zone, pulled one element
+     * RADIUS off the side wall so a circle solved at its centre is TOUCHING the wall rather
+     * than buried in it.
+     *
+     * WHAT TO LOOK AT:
+     *   1. The red NECTAR sits against the LEFT wall at y > 0, inside red's tape; the blue one
+     *      against the RIGHT wall at y < 0. Point symmetry again — this is the second cell
+     *      that catches an x-mirror, and it catches it in the one place a driver would notice
+     *      first, because it is where their own elements appear.
+     *   2. Both are drawn at NECTAR size (3.6 in), visibly larger than the POLLEN beside them.
+     *      A nectar simulated at the POLLEN radius is a known, flagged approximation
+     *      (field-plan §6 request 1) — this cell is where the SIZE difference is checked, and
+     *      the spacing between the two elements is what would give away a wrong radius.
+     *   3. The two POLLEN in each zone are what a robot would be collecting there; they are in
+     *      the picture so the zone reads as a place with traffic rather than as a swatch.
+     *
+     * THE CLOCK: the scene starts at 61 s of TELEOP left, one second before the cue, so
+     * stepping it crosses the G410 boundary — `FLOWER OWNERSHIP UNLOCKED` fires at tick 60 and
+     * `bbNectarLocked` flips there. The second still is after the crossing, and the elements
+     * have settled against the wall by then, so the two frames differ in the picture as well as
+     * in the rule. `scripts/smoke-biobuzz/rules.ts` asserts the cue tick off this same scene.
+     */
+    build: (seed) => {
+      const world = bbWorld(seed, [], []);
+      const bb = world.biobuzz;
+      if (!bb) return world;
+      const balls: Artifact[] = [];
+      for (const a of ['red', 'blue'] as const) {
+        const spot = bbLoadingZoneSpot(a, BB_NECTAR_R);
+        balls.push({
+          id: PARKED_ID0 + balls.length,
+          color: a,
+          r: BB_NECTAR_R,
+          state: { kind: 'ground' },
+          pos: { x: spot.x, y: spot.y },
+          vel: { x: 0, y: 0 },
+          z: 0,
+          vz: 0,
+        });
+        // two POLLEN a few inches further into the field, along the zone's own length
+        const lz = BB_LZ[a];
+        for (const dy of [-7, 7]) {
+          balls.push(bbPollen(PARKED_ID0 + balls.length, (lz.x0 + lz.x1) / 2, spot.y + dy));
+        }
+      }
+      world.balls = balls;
+      bb.nextBallId = PARKED_ID0 + balls.length;
+      bb.nectarStock.red = 4;
+      bb.nectarStock.blue = 4;
+      world.match.phase = 'teleop';
+      // one second before the cue, so stepping the scene crosses it
+      world.match.phaseTimeLeft = BB_FLOWER_UNLOCK_S + 1;
+      return world;
+    },
+    stills: [0, 120],
   },
 ];

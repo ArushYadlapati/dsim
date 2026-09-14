@@ -92,6 +92,10 @@ export interface GameModule extends GameSimModule {
   /** extra touch action buttons. Each one's POSITION comes from
    * `GameSettings.mobileLayout`, so a genuinely new action needs a key there too. */
   mobileButtons?: readonly GameMobileButton[];
+  /** `false` when this game has no auto-fire assist, which hides `Menu`'s Auto fire toggle. The
+   * game's sim must also ignore the flag (BIOBUZZ forces it false at spawn). Absent means the
+   * toggle is offered, as it is for DECODE and Chain Reaction. */
+  offersAutoFire?: boolean;
   /** the game's start-position editor, used in place of the
    * `isDecode ? StartPositionEditor : ChainStartEditor` branch. */
   startEditor?: ComponentType<StartEditorProps>;
@@ -100,6 +104,67 @@ export interface GameModule extends GameSimModule {
    * strategy screen. */
   labels?: {
     configSummary(spec: RobotSpec): string;
+  };
+  /**
+   * The PER-GAME tiles in the builder hero's stat grid — the summary of what
+   * MECHANISMS this build carries, beside the shared speed / mass / drivetrain tiles.
+   *
+   * ── WHY THIS IS A SLOT, AND A SIBLING OF `labels` RATHER THAN A MEMBER OF IT ──
+   * `Menu.tsx` picked these tiles with `isDecode ? <intake tile> : <scoring + catalyst
+   * tiles>` — the same two-valued shape `presets` was built to replace, and with the
+   * same result: a third game did not fall back to "no per-game tile", it fell into the
+   * CHAIN arm. BIOBUZZ therefore advertised a "Claw arm · CATALYST" chip, a Chain
+   * Reaction mechanism, off a field (`catalystType`) its own coercer DELETES — so the
+   * tile was printing `CHAIN_CATALYST_LABELS[CHAIN_DEFAULT_CATALYST]`, a default label
+   * for a field the spec does not have. Confident, populated, and about another game.
+   *
+   * It is a SIBLING of `labels` because the slot table is a map from slot to CONSUMER,
+   * and these have different ones: `labels.configSummary` is a SENTENCE for screens that
+   * are not the builder (`robotLabels.buildSummary` → the leaderboard, the lobby roster,
+   * the strategy card), while this is the builder hero's own tile grid and its shape is
+   * structured, not a line. Folding a tile list into a bag named `labels` would turn that
+   * bag into a catch-all with two unrelated readers, which is the point at which a slot
+   * stops saying where it is rendered. A game that wants both still writes them off ONE
+   * vocabulary module, which is what keeps the two from describing a robot differently.
+   *
+   * Returns DATA, not markup, for the reason `presets.lines` and `resultsRows` do: the
+   * `.ds-stat` tile (and its CSS) has one owner, and a game contributing a tile cannot
+   * drift it.
+   */
+  statTiles?(spec: RobotSpec): readonly GameStatTile[];
+  /**
+   * The game's PRESET ROBOTS — the cards the builder's `Presets` section offers.
+   *
+   * ── WHY THIS IS A SLOT ──────────────────────────────────────────────────
+   * `Menu.tsx` picked the list with `isDecode ? ROBOT_PRESETS : CHAIN_PRESETS`, and the
+   * card BODY under each name with a second two-valued branch. A third game therefore
+   * did not fall back to "no presets" — it fell into the CHAIN arm and was offered
+   * Chain Reaction's robots, described in Chain Reaction's words. Not a missing feature:
+   * a wrong one, and invisible, because the section still rendered nine plausible cards.
+   *
+   * A game fills this and gets its own list, its own match test and its own card body;
+   * a game that does not is routed through the unchanged branch exactly as before.
+   *
+   * `matches` is a BUILD comparison and deliberately not a deep equality: the player's
+   * name / team / number are theirs and are copied across when a card is applied, so a
+   * card must still read as selected afterwards. Each game supplies its own because
+   * each game's build is a different set of fields — DECODE ignores the mount fields,
+   * Chain Reaction ignores flywheel inertia.
+   */
+  presets?: {
+    /** the shipped builds, in display order. */
+    list: readonly RobotSpec[];
+    /** does `spec` carry this preset's BUILD? Identity fields are excluded — see above. */
+    matches(spec: RobotSpec, preset: RobotSpec): boolean;
+    /** the detail lines under the preset's name. `meta` is the build; `zone` is the
+     * one-line "what it is for", rendered with the same emphasis DECODE gives its
+     * optimised-range line. Absent `zone` simply renders nothing. */
+    lines(preset: RobotSpec): { meta: string; zone?: string };
+    /** how many LEADING entries are real, documented robots rather than archetype
+     * demos. The builder rules off after them so a player can tell "this is a real
+     * team's robot" from "this is what a drum shooter feels like". Absent ⇒ all demos.
+     * Mirrors Chain Reaction's `CHAIN_REAL_PRESETS`. */
+    realCount?: number;
   };
   /**
    * DEV-ONLY routes this game mounts under `/<id>/...` (the BIOBUZZ scene gallery).
@@ -131,12 +196,30 @@ export interface GameHudProps {
   hud: HudSnapshot;
 }
 
+/**
+ * One tile in the builder hero's stat grid (`GameModule.statTiles`).
+ *
+ * `label` and `sub` are written in SENTENCE CASE and rendered uppercase by `.ds-stat .sl`
+ * — the caption is a category, not a heading, so the CSS owns the casing and a caller
+ * that shouted its own would be the only one on the row that did.
+ */
+export interface GameStatTile {
+  /** the tile's value. A WORD here rather than a number — the consumer renders it with
+   * the repo's `.sv.sm` bare-word modifier, same as the drivetrain tile beside it. */
+  value: string;
+  /** the caption under the value ("launcher"). */
+  label: string;
+  /** an optional SECOND caption line, for a fact the value has no room for: where the
+   * mechanism is mounted, what it is dialled to. Absent renders nothing. */
+  sub?: string;
+}
+
 /** one results-screen section: a heading and its rows, each `[label, mine, opp]`. */
 export type ResultsSection = readonly [string, readonly (readonly [string, number, number])[]];
 
 /** which `RobotCommand` action a touch button holds down. A genuinely new game
  * action needs a protocol bit as well — see the netcode section of CLAUDE.md. */
-export type MobileActionField = 'intake' | 'fire' | 'catalyst' | 'fling';
+export type MobileActionField = 'intake' | 'fire' | 'catalyst' | 'fling' | 'bbNectar';
 
 /** one extra touch action button contributed by a game */
 export interface GameMobileButton {
@@ -185,6 +268,13 @@ export interface StartEditorProps {
   onCategory: (cat: StartCat) => void;
   onSave: (pose: StartPose) => void;
   onDeleteSaved: (cat: StartCat, i: number) => void;
+  /**
+   * how many saved poses per role this player may keep (`savedStartCap`, the supporter perk).
+   * Passed in by the HOST screen rather than read in the editor: the perk comes from the ads
+   * context, and `src/ads/adsense.ts` reads `import.meta.env` at load, which a game module's
+   * editor must not drag into the headless test suites. Absent ⇒ the free cap.
+   */
+  maxSaved?: number;
   size?: number;
 }
 

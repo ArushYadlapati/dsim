@@ -2,6 +2,7 @@ import type { ControlBindings } from './input/bindings';
 import type { GameId } from './games/types';
 import type { ChainState } from './games/chain/state';
 import type { BiobuzzState } from './games/biobuzz/state';
+import type { BbMechSpec } from './games/biobuzz/mechs';
 export type { GameId } from './games/types';
 
 export type Alliance = 'red' | 'blue';
@@ -31,6 +32,28 @@ export interface RobotCommand {
   /** Chain Reaction: pick up a nearby ring / place a carried ring on a hook. Edge-
    * triggered in the sim (acts once per press). Optional (DECODE omits it). */
   catalyst?: boolean;
+  /** BIOBUZZ, Box Tube: PLACE one held NECTAR into the FLOWER the robot's placement point is
+   * near (`bbPlacePointLocal`). EDGE-triggered — a held button places once. Protocol bit 32,
+   * which used to be the removed hold-to-raise `bbLift`; BIOBUZZ is alpha-only and version-gated,
+   * so the bit is reused rather than burning the last spare one. Optional; absent reads false. */
+  bbPlaceNectar?: boolean;
+  /** BIOBUZZ, Box Tube: PLACE one held POLLEN into the FLOWER in reach. Edge-triggered.
+   *
+   * ITS OWN BUTTONS (one per element kind) rather than reusing `fire`: a robot's fire button
+   * always launches, and overloading it by proximity would be a mode with no on-screen
+   * transition. */
+  bbPlace?: boolean;
+  /** BIOBUZZ, the HUMAN PLAYER button: put ONE NECTAR from the alliance's own stock into the
+   * alliance's own LOADING ZONE (G426). Edge-triggered in the sim, like `catalyst`.
+   *
+   * It is a DRIVER ACTION and not a drip, because the human player is a person standing at
+   * the wall waiting for a cue, not a timer: the sim used to enter nectar on its own clock,
+   * which meant the one thing a drive team actually decides about their entitlement — WHEN to
+   * spend it — was decided for them. Either robot of the alliance may press it; the rule is
+   * per ALLIANCE, so the two share one entitlement counter.
+   *
+   * Optional: every DECODE and CR command, and every replay recorded before this, omits it. */
+  bbNectar?: boolean;
   /** Chain Reaction, LAUNCHER catalyst: THROW the carried ring downfield from the catapult.
    * Its own button so it is never ambiguous with the claw's grab/place. Edge-triggered in
    * the sim. Optional (old clients/replays omit it). */
@@ -158,6 +181,22 @@ export interface RobotSpec {
   /** @deprecated superseded by `shooterMount` (same mirroring contract as `intakeSide`).
    * Never read it directly; use `shooterMountOf`. */
   shooterRear?: boolean;
+  /**
+   * BIOBUZZ: the robot's MECHANISM LOADOUT — a launcher, a vertical extension slide, either,
+   * both, or neither. See `src/games/biobuzz/mechs.ts` for the vocabulary and the mount-clash
+   * rule; `coerceBiobuzzSpec` validates and mounts it.
+   *
+   * ⚠️ IT IS A CONTAINER, AND THE CONTAINER IS LOAD-BEARING. `bbMech === undefined` means "a
+   * spec written before mechanisms were composable — migrate it from `scoreMode`", while
+   * a stored `bbMech.launcher === null` is an OLD launcher-less save: a launcher is MANDATORY
+   * (owner ruling 2026-09-12), so both migrate from the flat `scoreMode`/`shooterMount` mirror,
+   * which the shared pass in `coerceSpec` always writes.
+   *
+   * `scoreMode` / `shooterMount` above stay real, primary fields for CHAIN REACTION and become
+   * MIRRORS for BIOBUZZ, kept in step by the coercer so a spec routed through an older peer or
+   * server (which drops fields it does not know) returns as the nearest hardware it can name.
+   */
+  bbMech?: BbMechSpec;
 }
 
 /** Chain Reaction scoring archetype (see `RobotSpec.scoreMode`).
@@ -246,8 +285,15 @@ export type BallState =
    * once it enters that accelerator it is `scored`, then FUNNELS down inside the goal
    * for `funnelT` seconds before the wall-side launcher flings it back onto the field
    * (same ball, still 'flight' until it lands). `staged` = pre-match: HELD inside the goal
-   * (inert) until the launcher ejects it during field randomization (see prematchRandomize). */
-  | { kind: 'flight'; target: Alliance; scored?: boolean; funnelT?: number; staged?: boolean }
+   * (inert) until the launcher ejects it during field randomization (see prematchRandomize).
+   *
+   * `by` is the alliance that LAUNCHED it, which is not the same fact as `target` and cannot be
+   * derived from it: BIOBUZZ's up-CELL takes only its own alliance's element (owner ruling
+   * 2026-09-12), so a red shot arriving over blue's open cell is a MISS that lands as ground
+   * rather than a TIP for blue. Optional because DECODE and Chain Reaction never ask — an older
+   * snapshot, and every non-BIOBUZZ flight, carries nothing here and is accepted by whatever it
+   * reaches, which is the pre-ruling behaviour. Plain JSON, so it survives `slimWorld`. */
+  | { kind: 'flight'; target: Alliance; by?: Alliance; scored?: boolean; funnelT?: number; staged?: boolean }
   /** jumbling inside the goal's triangular basin, funnelling toward the
    * classifier entrance under gravity */
   | { kind: 'basin'; goal: Alliance }
@@ -275,8 +321,12 @@ export interface Artifact {
   id: number;
   color: ArtifactColor;
   /** radius in inches when it differs from the game's default (BIOBUZZ NECTAR 1.8 vs POLLEN
-   * 1.4). Renderers read it; the shared artifact solve does NOT yet — it runs one radius per
-   * call. Owner item, see docs/biobuzz/feedback/000-solver-observations.md. */
+   * 1.4). Read as `b.r ?? radius` by the renderers AND by the whole shared artifact solve —
+   * `solveArtifacts`, `bounceFirstContacts`, `clampBallPosToStatics`, `fieldPushback`,
+   * `supported`, `pinnedArtifacts` and the held plugs in `artifactSolids`. DECODE sets it on
+   * nothing, so a game that leaves it undefined behaves exactly as it did before it existed.
+   * ⚠️ `bbRobotSolids` (the robot lane) is the one held-plug builder still using its `radius`
+   * argument for every plug; see docs/biobuzz/feedback/000-solver-observations.md. */
   r?: number;
   state: BallState;
   pos: Vec2;
@@ -308,6 +358,29 @@ export interface RobotState {
   slipW?: number;
   angVel: number;
   turretHeading: number; // field frame
+  /**
+   * BIOBUZZ turreted launcher: the ELEVATION angle in RADIANS above level — the pitch twin of
+   * `turretHeading`, the axis that lets a turret put an arc into the 53.5-65.6in HIVE CELL.
+   * Eased toward the arc solution at a finite rate, exactly as the yaw is: an actuator, not a
+   * promise. For a DOUBLE turret this is the POLLEN turret (turret 0).
+   *
+   * Optional, and an absent value reads as 0 (level) everywhere — the same convention
+   * `catalystRail` uses, so a DECODE or Chain Reaction robot never writes it and never pays for
+   * it on the wire.
+   */
+  bbTurretPitch?: number;
+  /**
+   * BIOBUZZ DOUBLE turret only: the NECTAR turret's (turret 1's) field-frame YAW, the twin of
+   * `turretHeading`. Seeded at spawn and slewed by `bbSlewTurret(…, 1)`; written ONLY for a
+   * `twinturret` build, so no other robot carries it on the wire. Absent reads as
+   * `turretHeading`.
+   */
+  bbTurret2Heading?: number;
+  /**
+   * BIOBUZZ DOUBLE turret only: the NECTAR turret's elevation in RADIANS, the twin of
+   * `bbTurretPitch`. Written ONLY for a `twinturret` build. Absent reads as 0 (level).
+   */
+  bbTurret2Pitch?: number;
   /** SWERVE per-module steer angles (robot frame, rad), one per wheel in the
    * corner order [FL, FR, BL, BR] (matching drawRobot's wheels). Each module has
    * its OWN imperfect steering loop, so their small INDEPENDENT angle errors don't
@@ -383,6 +456,11 @@ export interface RobotState {
   currentPathSegmentIndex: number;
   pathSegmentProgress: number; // 0.0 to 1.0 along the current segment
   pathWaitTimer: number; // countdown for waitBeforeMs/waitAfterMs
+  /** which sequence index's `waitBeforeMs` has already been served (-1 = none). A wait that
+   * cannot say it has HAPPENED re-arms itself: the before-wait fires while segment progress
+   * is 0, and progress is still 0 when its own timer expires, so the robot waited for that
+   * segment forever and the whole auto stalled on it. */
+  pathWaitedBefore: number;
   pathSequenceIndex: number; // index in the overall sequence
   pathTargetPoint: Vec2 | null;
   pathTargetHeading: number | null;
@@ -743,6 +821,11 @@ export interface MobileLayout {
    * same reason it has its own keybind — a throw is not the claw's grab/place, and a
    * driver must never have to guess which one a press means. */
   fling: MobilePos;
+  /** BIOBUZZ, the HUMAN PLAYER button: enter one NECTAR into the own LOADING ZONE. Its own
+   * position because it is the one touch control that acts on the ALLIANCE rather than on the
+   * robot, and a driver reaches for it at a moment (a TIP completing, the 1:00 cue) rather
+   * than in a drive rhythm — so it wants to be somewhere the thumb does not pass by accident. */
+  bbNectar: MobilePos;
   /** overall control size multiplier (0.7..1.5). */
   scale: number;
 }
