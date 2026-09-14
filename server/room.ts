@@ -384,6 +384,10 @@ export class Room {
   // is built. Custom rooms skip 'strategy' (connecting → match). `world===null` still
   // means "not in a match" (true for both connecting and strategy).
   private phase: 'connecting' | 'strategy' | 'match' = 'connecting';
+  /** a staged ranked match was CANCELLED and the room torn down. The sockets that were in it
+   *  still point here (`server/index.ts` never clears a socket's `room`), so everything that
+   *  can arrive afterwards — a close, a late ready — must be a no-op. See `cancelPending`. */
+  private cancelled = false;
   // release channel of this room, set from the FIRST client to join (or the staged
   // ranked roster). 'alpha' rooms are IN-DEVELOPMENT: their results are never
   // persisted to the leaderboard/ELO DB (see finalizeMatch), and the matchmaker
@@ -951,6 +955,9 @@ export class Room {
   onMessage(id: string, msg: ClientMsg): void {
     const c = this.clients.get(id);
     if (!c) return;
+    // a late message into a cancelled room (a ready landing after the deadline) must not
+    // begin a match nobody is registered for — see `cancelled`
+    if (this.cancelled) return;
     switch (msg.t) {
       case 'update': {
         // sanitize the patch against this player's current config: a spoofed
@@ -1443,6 +1450,13 @@ export class Room {
     culprits: { userId: string; kind: DodgeKind }[] = [],
   ): void {
     if (this.world !== null) return; // already started
+    // ⚠️ ONCE. The room is gone after this, but its sockets are not: each still routes its
+    // close to `detach`, and `pendingMatch`/`phase` still read as an open strategy window, so
+    // the first player to leave the cancelled screen used to cancel it AGAIN — billed as a
+    // STRATEGY BAIL. The innocent player was told "Nothing was charged to you" by the first
+    // verdict and then lost standing to the second, which went to a socket already closing.
+    if (this.cancelled) return;
+    this.cancelled = true;
     if (this.pendingTimer) {
       clearTimeout(this.pendingTimer);
       this.pendingTimer = null;
