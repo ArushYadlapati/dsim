@@ -1,3 +1,34 @@
+# HANDOFF — 2026-09-13, night (production hotfixes: record-room reap LIVE, dodge double-cancel HELD)
+
+**READ FIRST — what production is running.** Production is **`main`**, and the game server
+must be deployed from a MAIN checkout (a worktree off `origin/main`), never from this alpha
+tree: `fly-deploy.sh` builds whatever tree it runs in. Fly release **v109** = `main` @
+`f0e0430`. (v108, built from alpha by mistake, was live for about 5 minutes around 01:19Z and
+was replaced.) Killing a background deploy does NOT kill its `flyctl` child, so run deploys
+in the foreground.
+
+- **LIVE: a solo record run closed on purpose frees its room at once** (`f0e0430` main /
+  `df5872d` alpha, `server/room.ts` `detach(id, conn, clean)`, `server/index.ts` close code).
+  Record-run restarts used to hold the old `rec-` room for the 45 s reconnect grace, still
+  simulating. At the BIOBUZZ launch spike iad sat at 24/24 with 8-12 real runs and refused new
+  ones as `region_full`, which the Record Run screen shows as "Couldn’t start". A close with
+  code 1000/1005 on a solo record room now reaps immediately. 1006 (network) and 1001 (tab)
+  keep the grace, and so does every room with a second driver.
+- **HELD (owner): a cancelled ranked match can no longer be cancelled a second time**
+  (`28575be` on alpha; verified as a cherry-pick onto main, NOT pushed to main, NOT deployed).
+  `cancelPending` left `pendingMatch`/`phase` set, and a socket's `room` is never cleared. So
+  the first player to leave the cancelled screen re-ran the cancel from `detach` and was billed
+  a STRATEGY BAIL. The innocent driver was shown "Nothing was charged to you" and then lost
+  standing anyway; the player who never readied was billed twice. Smoke reproduces it: 3
+  charges without the fix, 1 with it. **Standing already lost this way is not refunded:** the
+  false rows are `standing_events` kind `dodge` whose `room_code` also carries a legitimate
+  charge to the other player.
+- `npm test`'s shared suite still ends at the 2 pre-existing `lan gate` failures (below).
+- Unreviewed alpha content not on main (review summary): BIOBUZZ hive tip rate / spill / miss
+  bounce and LEAVE-from-start-wall change scoring and RNG draw counts with no `SIM_VERSION`
+  bump; `startWalls` is read without a guard, so an alpha client against a main server throws in
+  online BIOBUZZ. Deploy the server before clients, or guard it, before promoting.
+
 # HANDOFF — 2026-09-13, later (BIOBUZZ hive feel: tip rate, spill scatter, miss bounce, canopy)
 
 Branch **`claude/hive-physics-rendering-tjz7mj`**. Four owner-reported HIVE items, all inside
