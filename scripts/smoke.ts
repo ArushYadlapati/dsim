@@ -14001,6 +14001,129 @@ function pinScene(
     stally?.need === 1, String(stally?.need));
 }
 
+// ---- RECYCLING A FINISHED ROOM ---------------------------------------------
+// A room used to be single-use: `world` was set once and never cleared, so after one
+// match `canJoin` refused every later joiner and the `start` gate refused every later
+// match. The only way on was a rematch, which REPLAYS the roster frozen at the first
+// start — so a group that lost a player, or wanted to re-pick sides, had to mint a new
+// code and all re-join it. These checks are that whole loop: play, leave, recycle,
+// re-pick, play again.
+{
+  const sink: Record<string, ServerMsg[]> = { a: [], b: [], c: [] };
+  const lastRoster = (ms: ServerMsg[]) =>
+    [...ms].reverse().find((m) => m.t === 'roster') as Extract<ServerMsg, { t: 'roster' }> | undefined;
+  const mkR = (id: string, alliance: Alliance): Client => ({
+    id,
+    send: (m) => sink[id].push(m),
+    player: { clientId: id, name: id, teamName: 'T', teamNumber: 1, alliance, startIndex: 0, ready: true, spec: { ...DEFAULT_SPEC }, assists: { ...DEFAULT_ASSISTS } },
+    connected: true,
+    disconnectAt: 0,
+    caps: ['recycle'],
+    userId: 'u-' + id,
+  });
+  const room = new Room('smoke-recycle', () => {}, { kind: 'versus' });
+  room.add(mkR('a', 'red'));
+  room.add(mkR('b', 'blue'));
+  room.add(mkR('c', 'blue'));
+  room.onMessage('a', { t: 'start' });
+  room.advanceForTest(maxMatchTicks() + 5);
+  check('recycle: the match actually finished (everything below is about a FINISHED room)',
+    room.worldForTest()?.match.phase === 'post', String(room.worldForTest()?.match.phase));
+
+  // THE OLD BEHAVIOUR, asserted so the reason for the feature stays on the record:
+  // a room that has played is shut to everyone until its world is cleared.
+  check('recycle: a played room admits nobody while its world stands', !room.canJoin());
+
+  // one player leaves from the results screen — their slot is HELD, because a finished
+  // match is still something you can reconnect to and read
+  room.detach('c');
+  check('recycle: a player who leaves a finished match still holds their slot',
+    (lastRoster(sink.a)?.players.length ?? 0) === 3);
+
+  // a non-host may not tear the results screen out from under everyone else
+  room.onMessage('b', { t: 'lobby' });
+  check('recycle: a NON-host asking for the lobby is ignored', room.worldForTest() !== null);
+
+  room.onMessage('a', { t: 'lobby' });
+  check('recycle: the host sends the room back to its lobby', room.worldForTest() === null);
+  check('recycle: ...and every member is TOLD, with their own id (no `join`, so no `welcome`)',
+    sink.a.some((m) => m.t === 'lobby' && m.clientId === 'a') &&
+    sink.b.some((m) => m.t === 'lobby' && m.clientId === 'b'));
+  check('recycle: the held slot of the player who left is released',
+    (lastRoster(sink.a)?.players.length ?? 0) === 2);
+  check('recycle: ...so the room takes new players again', room.canJoin());
+  check('recycle: nobody carries a READY into the next game',
+    (lastRoster(sink.a)?.players ?? []).every((p) => !p.ready));
+
+  // THE POINT OF ALL OF IT: re-pick sides, and play a full game the new roster authored.
+  room.onMessage('b', { t: 'update', patch: { alliance: 'red' } });
+  room.onMessage('a', { t: 'start' });
+  const start2 = [...sink.b].reverse().find((m) => m.t === 'matchStart') as Extract<ServerMsg, { t: 'matchStart' }> | undefined;
+  check('recycle: the second match is built from the roster that is here NOW, not the frozen one',
+    start2?.setups.length === 2, String(start2?.setups.length));
+  check('recycle: ...and it honours the alliance somebody switched to after the first game',
+    start2?.setups.every((s) => s.alliance === 'red') === true,
+    JSON.stringify(start2?.setups.map((s) => s.alliance)));
+
+  // the generation must keep climbing, or an input still in flight from match 1 would be
+  // accepted by match 2 as fresh (a rebuild starts at tick 0)
+  const gens = sink.b
+    .filter((m) => m.t === 'matchStart')
+    .map((m) => (m as Extract<ServerMsg, { t: 'matchStart' }>).gen ?? 0);
+  check('recycle: the match generation never rewinds across a recycle',
+    gens.length >= 2 && gens[gens.length - 1] > gens[0], JSON.stringify(gens));
+}
+
+// A MIXED-VERSION ROOM MUST NOT RECYCLE. One Fly app serves every client build, so a
+// client that predates `t: 'lobby'` would ignore it and sit on a results screen for a
+// match the room no longer has — the same discipline the strategy window uses.
+{
+  const sink: Record<string, ServerMsg[]> = { h: [], old: [] };
+  const mk = (id: string, caps: string[]): Client => ({
+    id,
+    send: (m) => sink[id].push(m),
+    player: { clientId: id, name: id, teamName: 'T', teamNumber: 1, alliance: id === 'h' ? 'red' : 'blue', startIndex: 0, ready: true, spec: { ...DEFAULT_SPEC }, assists: { ...DEFAULT_ASSISTS } },
+    connected: true, disconnectAt: 0, caps, userId: 'u-' + id,
+  });
+  const room = new Room('smoke-recycle-mixed', () => {}, { kind: 'versus' });
+  room.add(mk('h', ['recycle']));
+  room.add(mk('old', [])); // a build from before this feature
+  room.onMessage('h', { t: 'start' });
+  room.advanceForTest(maxMatchTicks() + 5);
+  room.onMessage('h', { t: 'lobby' });
+  check('recycle: a room holding ONE old client stays put rather than stranding it',
+    room.worldForTest() !== null);
+}
+
+// THE CROWN HAS TO MOVE, or the feature is unreachable in the case that motivates it.
+// Host migration used to live in `detach`'s LOBBY branch alone, so a host who left during
+// or after a match was never replaced: `hostId` went on naming a client no longer in the
+// room, and every host-only control — `start`, and now `lobby` — was dead for everyone left.
+{
+  const sink: Record<string, ServerMsg[]> = { h: [], g: [] };
+  const lastRoster = (ms: ServerMsg[]) =>
+    [...ms].reverse().find((m) => m.t === 'roster') as Extract<ServerMsg, { t: 'roster' }> | undefined;
+  const mk = (id: string): Client => ({
+    id,
+    send: (m) => sink[id].push(m),
+    player: { clientId: id, name: id, teamName: 'T', teamNumber: 1, alliance: id === 'h' ? 'red' : 'blue', startIndex: 0, ready: true, spec: { ...DEFAULT_SPEC }, assists: { ...DEFAULT_ASSISTS } },
+    connected: true, disconnectAt: 0, caps: ['recycle'], userId: 'u-' + id,
+  });
+  const room = new Room('smoke-recycle-crown', () => {}, { kind: 'versus' });
+  room.add(mk('h'));
+  room.add(mk('g'));
+  check('recycle: the first player through the door is host', lastRoster(sink.g)?.hostId === 'h');
+  room.onMessage('h', { t: 'start' });
+  room.advanceForTest(maxMatchTicks() + 5);
+  room.detach('h'); // the host closes the tab on the results screen
+  check('recycle: the crown passes when the host leaves a FINISHED match',
+    lastRoster(sink.g)?.hostId === 'g', String(lastRoster(sink.g)?.hostId));
+  room.onMessage('g', { t: 'lobby' });
+  check('recycle: ...so whoever is left can actually take the room back to its lobby',
+    room.worldForTest() === null);
+  check('recycle: ...and start a game of their own', room.canJoin());
+}
+
 // ---- MAINTENANCE LOCKDOWN: when the window actually bites -------------------
 // The scheduling semantics are the whole feature: an armed window with a FUTURE
 // start must announce itself WITHOUT locking anyone out (otherwise it is just an

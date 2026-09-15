@@ -194,6 +194,19 @@ interface Props {
    *  counterpart to the rematch vote — that plays the same people again, this
    *  finds new ones. */
   onQueueAgain?: () => void;
+  /**
+   * CUSTOM ROOMS: take the whole room back to its own lobby (host only).
+   *
+   * The third thing you can do with a finished match, beside REMATCH and MENU, and the one
+   * the other two cannot cover. A rematch replays the roster frozen at the first start — it
+   * cannot drop the player who left, take a new one, or see a side anyone re-picked — and
+   * MENU abandons the room entirely, which is what made "make a new code and everyone
+   * re-join" the only way to play a second, differently-arranged game together.
+   *
+   * Absent unless the App has a room this can apply to; the button also waits on the
+   * session's own `isHost`, which tracks the crown as it migrates.
+   */
+  onBackToLobby?: () => void;
 }
 
 export function GameView({
@@ -207,6 +220,7 @@ export function GameView({
   editLayout = false,
   onRestartRun,
   onQueueAgain,
+  onBackToLobby,
 }: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const controllerRef = useRef<GameController | null>(null);
@@ -528,6 +542,10 @@ export function GameView({
           onRematch={() => controllerRef.current?.rematch()}
           rematchVote={hud.rematch}
           onQueueAgain={session?.ranked ? onQueueAgain : undefined}
+          /* Host only, and read fresh on every results render rather than captured once:
+             the crown migrates when a host leaves, and this overlay re-renders off the HUD
+             clock, so the player who inherits the room sees the control appear. */
+          onBackToLobby={onBackToLobby && session?.isHost() ? onBackToLobby : undefined}
           onRematchVote={() => controllerRef.current?.toggleRematch()}
           onExit={onExit}
           /* every OTHER driver in this match, by robot id + the name they played under.
@@ -975,6 +993,7 @@ function Results({
   rematchVote,
   onRematchVote,
   onQueueAgain,
+  onBackToLobby,
   onExit,
   matchResult,
   practiceRun,
@@ -1001,6 +1020,7 @@ function Results({
   rematchVote: { votes: number; need: number; mine: boolean } | null;
   onRematchVote: () => void;
   onQueueAgain?: () => void;
+  onBackToLobby?: () => void;
   onExit: () => void;
   matchResult: MatchResultInfo | null;
   /**
@@ -1261,6 +1281,10 @@ function Results({
               the same people again; this finds new ones without going out to the
               menu and back in through Play ▸ Ranked. */}
           {onQueueAgain && <button onClick={onQueueAgain}>QUEUE AGAIN</button>}
+          {/* REMATCH plays these same people on these same sides. This re-opens the room,
+              so the next game is built from whoever is in it then — which is what you want
+              when somebody left, or when the sides want swapping. */}
+          {onBackToLobby && <button onClick={onBackToLobby}>BACK TO LOBBY</button>}
           {/* the EXIT, not a fourth primary: `.overlay-buttons button` is accent-filled
               unless `.ghost`, so an unmarked MENU sat beside REMATCH and WATCH REPLAY
               with nothing saying which one the screen expects. */}
