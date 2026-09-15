@@ -295,7 +295,7 @@ export type PlayerPatch = Partial<
  * client is never stranded waiting for a `strategyStart` it can't render. Absent/old
  * clients send nothing ⇒ treated as no caps. Add new capability strings here as the
  * protocol grows. */
-export const CLIENT_CAPS: string[] = ['strategy', 'startpose', 'game', 'standing'];
+export const CLIENT_CAPS: string[] = ['strategy', 'startpose', 'game', 'standing', 'recycle'];
 
 /**
  * Capabilities the SERVER advertises, reported on `GET /api/presence`.
@@ -386,6 +386,15 @@ export type ClientMsg =
   | { t: 'update'; patch: PlayerPatch }
   | { t: 'start' } // host only: build + broadcast the match world
   | { t: 'restart' } // host only: re-author the match with a fresh seed
+  /**
+   * HOST ONLY: send a FINISHED room back to its lobby so it can host another game.
+   *
+   * A rematch replays the roster frozen at the first start; this recycles the room
+   * instead — the world is torn down, everyone un-readies, and the next `start`
+   * rebuilds setups from whoever is in the room THEN. That is what lets a group
+   * switch alliances, or replace a player who left, without minting a new code.
+   */
+  | { t: 'lobby' }
   /**
    * DUO RECORD rematch vote — a TOGGLE, not a trigger.
    *
@@ -524,6 +533,20 @@ export type ErrorCode =
 export type ServerMsg =
   | { t: 'welcome'; clientId: string }
   | { t: 'roster'; players: LobbyPlayer[]; hostId: string }
+  /**
+   * THE ROOM IS A LOBBY AGAIN — tear down the match view and show the roster.
+   *
+   * Sent to every member when the host recycles a finished room. A `roster` follows
+   * immediately, so the client that adopts the socket back into a `LobbyClient` has
+   * the players without asking for them. `clientId` is re-sent because the adopting
+   * lobby never sends a `join` (it is already in the room) and so never gets a
+   * `welcome` of its own.
+   *
+   * Gated on the 'recycle' capability: the room only offers this when EVERY member
+   * advertises it, because a client that ignores this message would sit on a dead
+   * results screen while the room restarted around it.
+   */
+  | { t: 'lobby'; clientId: string }
   /**
    * `message` is human-readable and every client since the first build shows it.
    *
