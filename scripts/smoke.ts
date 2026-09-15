@@ -14074,6 +14074,44 @@ function pinScene(
     gens.length >= 2 && gens[gens.length - 1] > gens[0], JSON.stringify(gens));
 }
 
+// ...AND IT IS THE SAME LOOP IN EVERY GAME. Nothing in the recycle is game-shaped — the
+// room's `config.game` is readonly and untouched, and `startMatch`/`beginMatch` resolve
+// `simModuleFor(this.game)` on each call — but "should be game-agnostic" is exactly the
+// claim that goes stale, and BIOBUZZ has FEWER start anchors than DECODE, which is the one
+// place a rebuilt roster could pick an index its game cannot resolve.
+for (const game of ['decode', 'chain', 'biobuzz'] as const) {
+  const sink: Record<string, ServerMsg[]> = { p1: [], p2: [] };
+  const mk = (id: string, alliance: Alliance): Client => ({
+    id,
+    send: (m) => sink[id].push(m),
+    player: { clientId: id, name: id, teamName: 'T', teamNumber: 1, alliance, startIndex: 0, ready: true, spec: { ...DEFAULT_SPEC }, assists: { ...DEFAULT_ASSISTS } },
+    connected: true, disconnectAt: 0, caps: ['recycle'], userId: 'u-' + id + '-' + game,
+  });
+  const room = new Room('smoke-recycle-' + game, () => {}, { kind: 'versus', game });
+  room.add(mk('p1', 'red'));
+  room.add(mk('p2', 'blue'));
+  room.onMessage('p1', { t: 'start' });
+  room.advanceForTest(maxMatchTicks() + 5);
+  check(`recycle/${game}: the match finished`, room.worldForTest()?.match.phase === 'post');
+  // ⚠️ A DECODE WORLD CARRIES NO `game` AT ALL — that absence IS how an old world reads as
+  // DECODE (`simModuleFor` falls back), so the expectation has to be written the way every
+  // reader of the field writes it, or this check fails on the one game it cannot fail for.
+  check(`recycle/${game}: ...in THIS game, not DECODE by fallback`,
+    (room.worldForTest()?.game ?? 'decode') === game, String(room.worldForTest()?.game));
+
+  room.detach('p2'); // somebody leaves from the results screen
+  room.onMessage('p1', { t: 'lobby' });
+  check(`recycle/${game}: the room goes back to its lobby`, room.worldForTest() === null);
+  check(`recycle/${game}: ...and admits players again`, room.canJoin());
+
+  room.onMessage('p1', { t: 'start' });
+  const w = room.worldForTest();
+  check(`recycle/${game}: the second match is built, and still in this game`,
+    w !== null && (w.game ?? 'decode') === game, String(w?.game));
+  check(`recycle/${game}: ...from the roster that is left, not the frozen one`,
+    w?.robots.length === 1, String(w?.robots.length));
+}
+
 // A MIXED-VERSION ROOM MUST NOT RECYCLE. One Fly app serves every client build, so a
 // client that predates `t: 'lobby'` would ignore it and sit on a results screen for a
 // match the room no longer has — the same discipline the strategy window uses.
