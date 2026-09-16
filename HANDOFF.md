@@ -1,3 +1,45 @@
+# HANDOFF — 2026-09-16 (main: the admin panel + five fixes backported, NOT deployed)
+
+**READ FIRST.** `main` now carries the admin-panel work and PRs **#58, #61, #67, #68, #69**,
+cherry-picked rather than taken with the rest of `alpha` — main is still ~28 commits behind it
+(settle-based finalize, the standing repricing, room recycle, the LAN tab host, the BIOBUZZ hive
+work). **Nothing here is deployed.** Two of the six are SERVER changes and two are MIGRATIONS.
+
+All gates green on this branch: `npm test` **ALL PASS twice** (shared + BIOBUZZ 1299),
+`npm run test:mm` 186, `npm run dbtest` ALL PASS, `build`, `server:check`, `uiaudit`, `contrast`.
+
+## What was backported
+
+| | what | where it bites |
+|---|---|---|
+| admin panel | misscore replays open (they 404'd on every claim), the score is editable from the replay, penalties show on EVERY replay for everyone, standing is pardonable | client + **server** + **migrations 0035/0036** |
+| #69 | the lan-gate asserts follow the config that moved under them | test only |
+| #58 | `stageBiobuzz` is idempotent — the hopper is cleared with the ball array | sim |
+| #61 | a lossy LAN guest's snapshot delta is keyed to its ACK, not the last broadcast | **server** |
+| #68 | a rematch cannot field a seat nobody is in (the "match I never played" ghosts) | **server** |
+| #67 | a backgrounded ranked queue cannot lose the match it was given | client only |
+
+## ⚠️ The one resolution that needed a decision
+
+`src/standing.ts` conflicted on `STANDING_COST`. **main keeps its own prices** — `afk: 12`,
+`leave: 15`, `card: 20` — because the repricing (`afk`/`leave` to 8, yellow 5 / red 15 via
+`RED_CARD_MULT`) is a separate alpha decision that was not part of this backport. Only the new
+`adjustment` kind was added. So the two branches now price behaviour differently ON PURPOSE;
+whoever promotes alpha next should expect this file to conflict again and should take ALPHA's
+side then, since the repricing is the later decision.
+
+## Next steps
+
+1. **Deploy the game server** (`./scripts/fly-deploy.sh` from a main worktree — never a bare
+   `flyctl deploy`). Migrations 0035/0036 apply at boot. Until then the admin panel's two new
+   endpoints 404 and #61/#68 are inert.
+2. **Vercel picks up the client half on push** — #67 and the replay penalties need nothing else.
+3. Still outstanding from the admin-panel session: clear every infraction on
+   `018fdc59-4e80-4a16-908c-682be86bfee8`. After the deploy it is one press of CLEAR ALL
+   INFRACTIONS in Admin → Moderation.
+
+---
+
 # HANDOFF — 2026-09-13, late (DEPLOYED: alpha is production, BIOBUZZ is public)
 
 - **`main` is `088addb`** (alpha fast-forwarded onto it and pushed; this handoff note is on alpha
