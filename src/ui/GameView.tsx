@@ -23,6 +23,7 @@ import type { Replay, ReplayResult } from '../sim/replay';
 import { CHAIN_MODE_LABELS } from '../games/chain/labels';
 import { moduleFor } from '../games';
 import { seasonFor } from '../seasons';
+import { useCoarsePointer } from './useCoarsePointer';
 import type { Alliance, DrivetrainType, ScoreBreakdown } from '../types';
 
 /** top-right connection-quality readout (multiplayer only): a coloured signal dot
@@ -236,6 +237,9 @@ export function GameView({
   // sees by accident. It is how the in-game ad columns get signed off: measure
   // p95 with them off, then on. Read ONCE (not per render) since a query string
   // cannot change without a reload.
+  // one subscription, not five MediaQueryList constructions per render at the 10 Hz HUD poll
+  // — and, unlike reading the query during render, this actually updates when it changes
+  const coarsePointer = useCoarsePointer();
   const [perf] = useState(
     () => typeof location !== 'undefined' && new URLSearchParams(location.search).has('perf'),
   );
@@ -380,7 +384,7 @@ export function GameView({
         role="img"
         aria-label={`${seasonFor(hud?.game ?? 'decode').name} field, top-down view. Match state is announced in the event log.`}
       />
-      {window.matchMedia('(pointer: coarse)').matches && controllerRef.current && (
+      {coarsePointer && controllerRef.current && (
         <MobileControls
           inputManager={controllerRef.current.getInputManager()}
           game={hud?.game}
@@ -492,7 +496,7 @@ export function GameView({
                 ))}
               </p>
             )}
-            {!window.matchMedia('(pointer: coarse)').matches && (
+            {!coarsePointer && (
               <p className="big">
                 Press {keyLabel(settings.bindings.keys.start[0] ?? 'enter')} or{' '}
                 {padButtonLabel(settings.bindings.pad.buttons.start[0] ?? 9)} to start
@@ -502,7 +506,7 @@ export function GameView({
                 `.overlay-panel` — including the net overlay's REFRESH/MENU a few
                 lines up — is that one, and `.ds-cta.ghost` grounds on `--ds-line`,
                 which is the wrong edge for a card floating on a dark scrim. */}
-            {window.matchMedia('(pointer: coarse)').matches && (
+            {coarsePointer && (
               <div className="overlay-buttons stack">
                 <button onClick={() => controllerRef.current?.startMatch()}>START MATCH</button>
                 <button className="ghost" onClick={onExit}>
@@ -512,7 +516,7 @@ export function GameView({
             )}
             {/* KEYBOARD ONLY. A phone has just been handed START MATCH and BACK TO
                 MENU precisely because it has no keys to press. */}
-            {!window.matchMedia('(pointer: coarse)').matches && (
+            {!coarsePointer && (
               <p className="ds-hint">
                 Esc · menu &nbsp;·&nbsp; {keyLabel(settings.bindings.keys.restart[0] ?? '?')} · restart
               </p>
@@ -607,6 +611,7 @@ const PHASE_LABEL: Record<string, string> = {
 /** styled after the FTC live scoring audience display: red panel | timer | blue panel */
 function Hud({ hud, showEventLog }: { hud: HudSnapshot; showEventLog: boolean }) {
   const [pingGraph, setPingGraph] = useState(false);
+  const coarsePointer = useCoarsePointer();
   // MODULE UI SLOTS. Neither current game fills either, so both branches below are
   // the ones that were already there.
   const GameScoreBar = moduleFor(hud.game).scoreBar;
@@ -712,7 +717,7 @@ function Hud({ hud, showEventLog }: { hud: HudSnapshot; showEventLog: boolean })
         </div>
       )}
 
-      {(!window.matchMedia('(pointer: coarse)').matches) && (
+      {(!coarsePointer) && (
         <div className="status-wrap">
           {/* ONE LINE: the status card and the presenting sponsor's mark, right-
               aligned together. The mark used to sit in its own line above and push

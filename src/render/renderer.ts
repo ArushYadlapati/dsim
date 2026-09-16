@@ -1,4 +1,4 @@
-import type { RobotCommand, World, PathPoint, RobotState } from '../types';
+import type { Artifact, RobotCommand, World, PathPoint, RobotState } from '../types';
 import { COLORS } from '../config';
 import { Camera } from './camera';
 import { drawRobot } from './drawRobot';
@@ -15,6 +15,9 @@ const backdropColor = (): string =>
   typeof document !== 'undefined' && document.documentElement.dataset.theme === 'dark'
     ? COLORS.backdropDark
     : COLORS.backdrop;
+
+/** the held list handed to a robot carrying nothing — shared, never written to */
+const NO_HELD: readonly Artifact[] = [];
 
 export class Renderer {
   readonly camera = new Camera();
@@ -37,6 +40,20 @@ export class Renderer {
     mod.drawField(ctx, world, screenUp);
     mod.drawOverlays?.(ctx, world);
 
+    /* Held artifacts grouped in ONE pass, not re-filtered per robot. This used to be a
+       `world.balls.filter(...)` inside the loop below, i.e. O(robots × balls) every frame —
+       in a 2v2 Chain Reaction room that is 4 arrays and 1,200 predicate calls per frame, and
+       the render loop is rAF, so on a 144 Hz display it was ~173,000 predicate calls a second
+       to answer a question one pass over the balls answers. Order is preserved exactly: a
+       forward pass appends in `world.balls` order, which is what `filter` returned. */
+    const heldBy = new Map<number, Artifact[]>();
+    for (const b of world.balls) {
+      if (b.state.kind !== 'held') continue;
+      const list = heldBy.get(b.state.robot);
+      if (list) list.push(b);
+      else heldBy.set(b.state.robot, [b]);
+    }
+
     for (const r of world.robots) {
       // Draw auto paths if active for this robot
       if (r.autoPathActive && r.autoPath) {
@@ -46,7 +63,8 @@ export class Renderer {
       const intakeOn =
         (r.id === localRobotId && (lastCommand?.intake ?? false)) ||
         (r.autoIntake && r.hopper.length < 3);
-      const held = world.balls.filter((b) => b.state.kind === 'held' && b.state.robot === r.id);
+      // NO_HELD is shared and never written to — every `drawRobot` treats `held` as read-only.
+      const held = heldBy.get(r.id) ?? NO_HELD;
       (mod.drawRobot ?? drawRobot)(ctx, r, intakeOn, held, screenUp, world);
     }
     mod.drawBalls(ctx, world, screenUp);
