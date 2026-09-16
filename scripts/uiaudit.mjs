@@ -26,7 +26,8 @@
  *     later block won and laid the replay export menu out as a column. Both files are one
  *     cascade; source order is the only tiebreak, and nothing warns you.
  */
-import { readFileSync, readdirSync } from 'node:fs';
+import { readFileSync, readdirSync, writeFileSync, existsSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
 
 const UI = 'src/ui';
@@ -52,15 +53,16 @@ const BASELINE = {
   'inline-spacing': 29,
   'fractional-font-size': 0,
   'banned-font-weight': 0,
-  'off-grid-gap': 164,
+  'off-grid-gap': 163,
   // measured 2026-09-16, when these three rules were written. §4's own ruling ("10px … rounds
   // to --ds-round-md") was executed in the same commit, which is why radius starts at 17 and
   // not the 31 first measured. The other two start where they stand: paying them down needs a
   // visual decision per site, and a baseline is how that gets paid off in any order without
   // being able to grow back.
   'off-scale-font-size': 46,
-  'literal-radius': 17,
+  'literal-radius': 16,
   'shadow-sprawl': 14,
+  'stale-component-index': 0,
 };
 
 // ── 1. undefined custom properties ───────────────────────────────────────────
@@ -239,6 +241,25 @@ for (const f of css) {
   });
 }
 
+// ── 7. the component index is current ────────────────────────────────────────
+// `docs/ui-components.md` is generated from the CSS by `scripts/uiindex.mjs`, and its whole
+// value is answering "does a class for this already exist?". A STALE index answers that with
+// a confident no, which is worse than having none — so it is regenerated here and compared.
+{
+  const OUT = 'docs/ui-components.md';
+  const before = existsSync(OUT) ? readFileSync(OUT, 'utf8') : '';
+  try {
+    execFileSync(process.execPath, ['scripts/uiindex.mjs'], { stdio: 'pipe' });
+    const after = readFileSync(OUT, 'utf8');
+    if (before !== after) {
+      writeFileSync(OUT, before); // leave the tree as we found it; the run is the report
+      hit('stale-component-index', OUT, 1, 'run `npm run uiindex` and commit the result');
+    }
+  } catch (e) {
+    hit('stale-component-index', OUT, 1, `uiindex failed: ${String(e).slice(0, 80)}`);
+  }
+}
+
 // ── report ───────────────────────────────────────────────────────────────────
 const DESC = {
   'undefined-token': 'var() names a custom property that is defined nowhere',
@@ -252,6 +273,7 @@ const DESC = {
   'off-scale-font-size': 'font-size outside the six-step scale (§3)',
   'literal-radius': 'literal border-radius; §4 says use a --ds-round token',
   'shadow-sprawl': 'distinct box-shadow declarations; DESIGN.md commits to ONE depth model',
+  'stale-component-index': 'docs/ui-components.md is out of date with the CSS',
 };
 
 let failed = 0;
