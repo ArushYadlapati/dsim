@@ -197,9 +197,16 @@ import {
   type CommandSource,
   replayViewpoint,
   replayFidelity,
+  ReplayPlayer,
   type Replay,
   type ReplayResult,
 } from '../src/sim/replay';
+import {
+  cardEventText,
+  foulEventText,
+  parsePenaltyEvent,
+  warningEventText,
+} from '../src/sim/penaltyLog';
 import { EMPTY_ACTIVITY, averageMatch, playtimeLong, playtimeText } from '../src/playtime';
 import { routeTarget } from '../server/routing';
 import { roomPersists } from '../server/channel';
@@ -20106,6 +20113,197 @@ const mkMM = () => {
     'save policy: drivenTicks is reset on start, on restart and in the harvest',
     resets === 3,
     `${resets} resets`,
+  );
+}
+
+/* ============================================================================
+   PENALTY LINES — the one text a sanction reaches a human as, written and read
+   back by the same module (`src/sim/penaltyLog.ts`).
+   ============================================================================
+
+   The replay viewer now names every foul it can, FOR EVERYBODY — a score that moved nine
+   points in one second used to have no explanation anywhere in the viewer. It gets them by
+   reading `world.events` back apart, which makes the emitter's wording load-bearing in a way
+   it never was when the only consumer was a toast that flashed for two seconds. So the
+   formatter and the parser live in one leaf module, and this round-trips them: change the
+   template and this fails, instead of the penalty list silently emptying.
+*/
+{
+  const foulTrip = parsePenaltyEvent(foulEventText('minor', 'blue', 5, 'G424 contact in the gate zone'));
+  check(
+    'penalty line: a MINOR foul reads back with its rule, its points and BOTH alliances',
+    foulTrip?.kind === 'foul' &&
+      foulTrip.severity === 'minor' &&
+      foulTrip.awardedTo === 'blue' &&
+      // the OFFENDER is derived: the sim's line names who GAINED the points, and "who
+      // committed it" is the half a watcher is actually asking about
+      foulTrip.offender === 'red' &&
+      foulTrip.points === 5 &&
+      foulTrip.rule === 'G424 contact in the gate zone',
+    JSON.stringify(foulTrip),
+  );
+
+  const major = parsePenaltyEvent(foulEventText('major', 'red', 20, 'G06 contact in the alliance section'));
+  check(
+    "penalty line: a MAJOR at BIOBUZZ's 20-point tariff reads back intact",
+    major?.kind === 'foul' && major.severity === 'major' && major.points === 20 && major.offender === 'blue',
+    JSON.stringify(major),
+  );
+
+  // `G408 over-possession (continuing)` is a REAL rule name with brackets in it. A lazy match
+  // cuts it in half and prints a stray close-bracket, so the rule group is greedy to the last.
+  const nested = parsePenaltyEvent(foulEventText('minor', 'red', 5, 'G408 over-possession (continuing)'));
+  check(
+    'penalty line: a rule name containing brackets survives the round trip',
+    nested?.kind === 'foul' && nested.rule === 'G408 over-possession (continuing)',
+    nested?.kind === 'foul' ? nested.rule : String(nested),
+  );
+
+  const card = parsePenaltyEvent(cardEventText('yellow', 'red', '#4239', 'G408 excessive control'));
+  check(
+    'penalty line: a CARD reads back with its colour, its team and its rule',
+    card?.kind === 'card' &&
+      card.colour === 'yellow' &&
+      card.alliance === 'red' &&
+      card.who === '#4239' &&
+      card.rule === 'G408 excessive control',
+    JSON.stringify(card),
+  );
+
+  const warn = parsePenaltyEvent(warningEventText('blue', 'G407 hive contact'));
+  check(
+    "penalty line: BIOBUZZ's verbal WARNING is a third kind, not a zero-point foul",
+    warn?.kind === 'warning' && warn.alliance === 'blue' && warn.rule === 'G407 hive contact',
+    JSON.stringify(warn),
+  );
+
+  // everything else in world.events is not a sanction and must not be read as one
+  check(
+    'penalty line: an ordinary event is not mistaken for a sanction',
+    parsePenaltyEvent('LEAVE +3') === null &&
+      parsePenaltyEvent('DRIVER-CONTROLLED') === null &&
+      parsePenaltyEvent('GATE OPEN') === null,
+  );
+
+  // THROUGH THE REAL EMITTER, not just the formatter: this is the pairing the viewer depends
+  // on, and a template that drifted inside `awardFoul` would pass every check above.
+  {
+    const w = createWorld('match', 0x9001, [
+      { id: 0, alliance: 'red', spec: coerceSpec({ ...DEFAULT_SPEC }, DEFAULT_SPEC, 'decode'), assists: { ...DEFAULT_ASSISTS }, startIndex: 0 },
+      { id: 1, alliance: 'blue', spec: coerceSpec({ ...DEFAULT_SPEC }, DEFAULT_SPEC, 'decode'), assists: { ...DEFAULT_ASSISTS }, startIndex: 0 },
+    ]);
+    w.events.length = 0;
+    awardFoul(w, 'red', 'major', 'G417 touching an opponent gate');
+    const real = parsePenaltyEvent(w.events[w.events.length - 1]);
+    check(
+      'penalty line: a foul the SIM actually awarded reads back, and names red as the offender',
+      real?.kind === 'foul' &&
+        real.offender === 'red' &&
+        real.awardedTo === 'blue' &&
+        real.severity === 'major' &&
+        real.points === w.match.scores.blue.foulPoints,
+      `${w.events[w.events.length - 1]}`,
+    );
+    awardCard(w, w.robots[0], 'G408 excessive control');
+    const realCard = parsePenaltyEvent(w.events[w.events.length - 1]);
+    check(
+      'penalty line: a card the SIM actually issued reads back on the carded alliance',
+      realCard?.kind === 'card' && realCard.alliance === 'red' && realCard.colour === 'yellow',
+      `${w.events[w.events.length - 1]}`,
+    );
+  }
+
+  /* THE EMITTERS GO THROUGH THE FORMATTER — both of them. The shared `awardFoul`/`awardCard`
+     and BIOBUZZ's own tariff wrapper, which mirrors the same text for its 20-point majors. A
+     hand-rolled template in either file is a penalty list that empties for that game only,
+     which is the kind of failure nobody notices until somebody asks. */
+  const scoringSrc = readFileSync('src/sim/scoring.ts', 'utf8');
+  const bbPenSrc = readFileSync('src/games/biobuzz/penalties.ts', 'utf8');
+  check(
+    'penalty line: the shared emitter formats through penaltyLog, not a local template',
+    scoringSrc.includes('foulEventText(severity, victim, pts, rule)') &&
+      scoringSrc.includes('cardEventText(colour, robot.alliance, who, rule)'),
+  );
+  check(
+    "penalty line: BIOBUZZ's own tariff emitter formats through penaltyLog too",
+    bbPenSrc.includes('foulEventText(severity, victim, pts, rule)') &&
+      bbPenSrc.includes('warningEventText(offender, rule)'),
+  );
+}
+
+/* ---- the replay's own event log, with WHEN ---------------------------------
+   `ReplayPlayer.log` is what the viewer's penalty timeline is built from. It stamps each line
+   with the tick AND the phase clock inside `stepOnce`, because the alternative is the viewer
+   wrapping both of its step loops — and a seek that steps four thousand ticks in one
+   synchronous burst would stamp all four thousand with the moment the seek finished. */
+{
+  const setup: RobotSetup = {
+    id: 0,
+    alliance: 'blue',
+    spec: coerceSpec({ ...DEFAULT_SPEC }, DEFAULT_SPEC, 'decode'),
+    assists: { ...DEFAULT_ASSISTS, fieldCentric: false },
+    startIndex: 0,
+  };
+  const drive: CommandSource = (tick) =>
+    new Map([[0, cmd({ driveX: tick % 90 < 45 ? 0.6 : -0.3, intake: true, fire: true })]]);
+  const run = runRecordMatch(0x9002, [setup], drive, { stopTick: 900 });
+
+  const p1 = new ReplayPlayer(run.replay);
+  check('replay log: nothing is stamped before the first step', p1.log.length === 0);
+  while (!p1.done) p1.stepOnce();
+  // NOT VACUOUS: a match that emitted nothing would pass every assertion below on an empty
+  // list. The phase machine alone guarantees at least the AUTO line.
+  check(
+    'replay log: the run actually emitted something to stamp',
+    p1.log.length > 0,
+    `${p1.log.length} lines`,
+  );
+  check(
+    'replay log: every line the sim emitted is stamped, and with a REAL tick',
+    p1.log.length === p1.world.events.length &&
+      p1.log.every((e) => e.tick >= 1 && e.tick <= run.replay.ticks),
+    `${p1.log.length} lines, ${p1.world.events.length} events`,
+  );
+  check(
+    'replay log: ticks are non-decreasing, so the timeline is already in order',
+    p1.log.every((e, i) => i === 0 || e.tick >= p1.log[i - 1].tick),
+  );
+  // the phase stamp is what lets a row read "AUTO 0:12" rather than an offset into the file
+  check(
+    'replay log: each line carries the phase and the clock it landed on',
+    p1.log.every((e) => typeof e.phase === 'string' && e.timeLeft >= 0),
+  );
+
+  // A REBUILD IS A NEW PLAYER: the viewer seeks backwards by constructing one, and the log has
+  // to come back identically or the timeline would grow duplicates every time somebody dragged
+  // the seek bar to the left.
+  const p2 = new ReplayPlayer(run.replay);
+  while (!p2.done) p2.stepOnce();
+  check(
+    'replay log: a re-built player reproduces the same log, so seeking cannot duplicate it',
+    JSON.stringify(p1.log) === JSON.stringify(p2.log),
+  );
+}
+
+/* ---- the replay viewer shows penalties to EVERYONE --------------------------
+   The request this was built for was explicit that the penalty list is not an admin feature.
+   It is easy to regress into one by accident — the score editor beside it IS gated, and both
+   live in the same rail — so the gate is pinned here: the summary row renders on `status ===
+   'ready'` with no admin term in it, and only the editor reads `adminMatchId`. */
+{
+  const rv = readFileSync('src/ui/ReplayView.tsx', 'utf8');
+  const rail = readFileSync('src/ui/ReplayRail.tsx', 'utf8');
+  check(
+    'replay penalties: the summary row is ungated — no admin condition on it',
+    /status === 'ready' && \(\s*<div className="ds-replay-pen">/.test(rv),
+  );
+  check(
+    'replay penalties: the timeline renders for every watcher, the score editor only with a match',
+    /<PenaltyLog entries=\{penalties\}[^/]*\/>/.test(rv) && rv.includes('{adminMatchId && ('),
+  );
+  check(
+    'replay penalties: the timeline component itself knows nothing about admin',
+    !/admin/i.test(rail.slice(rail.indexOf('export function PenaltyLog'), rail.indexOf('THE SCORE EDITOR'))),
   );
 }
 

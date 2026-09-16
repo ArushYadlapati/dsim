@@ -48,6 +48,7 @@ const BASELINE = {
   'undefined-token': 0,
   'duplicate-selector': 0,
   'var-literal-fallback': 0,
+  'ghost-primary': 0,
   'inline-spacing': 29,
   'fractional-font-size': 0,
   'banned-font-weight': 0,
@@ -120,6 +121,22 @@ for (const f of css) {
   });
 }
 
+// ── 3b. `ghost` and `primary` on one button ──────────────────────────────────
+// `.ds-btn.ghost` is declared AFTER `.ds-btn.primary`, so it wins on `background: none`
+// while primary's white `color: var(--ds-accent-ink)` survives — a button whose label is
+// white on the page's own surface. It reads as a missing control rather than a broken one,
+// which is why it gets a rule rather than a fix: the two modifiers are alternatives.
+for (const f of tsx) {
+  read(f).forEach((l, i) => {
+    for (const m of l.matchAll(/(?:className|class)=[^\n]*?['"`]([^'"`]*ds-btn[^'"`]*)['"`]/g)) {
+      // a TEMPLATE literal spans the whole attribute, so test the line's ds-btn runs
+      if (/\bghost\b/.test(m[1]) && /\bprimary\b/.test(m[1])) hit('ghost-primary', f, i + 1, l);
+    }
+    // the common template form: `ds-btn ghost ...${cond ? ' primary' : ''}`
+    if (/ds-btn[^`'"]*\bghost\b/.test(l) && /'\s*primary/.test(l)) hit('ghost-primary', f, i + 1, l);
+  });
+}
+
 // ── 4. spacing literals in JSX ───────────────────────────────────────────────
 for (const f of tsx) {
   read(f).forEach((l, i) => {
@@ -162,6 +179,7 @@ const DESC = {
   'undefined-token': 'var() names a custom property that is defined nowhere',
   'duplicate-selector': 'one selector declared by two top-level blocks',
   'var-literal-fallback': 'var(--x, #literal) — the fallback hides a missing token',
+  'ghost-primary': 'ghost + primary on one button — the label goes white on the page surface',
   'inline-spacing': 'spacing literal in JSX; it belongs to a class',
   'fractional-font-size': 'fractional font-size; the scale has six whole steps',
   'banned-font-weight': 'weight outside the seven the variable cuts actually use',

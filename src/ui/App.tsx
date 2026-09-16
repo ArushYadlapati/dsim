@@ -407,6 +407,17 @@ export function App() {
   // their own driver station instead of whichever alliance is first on the roster
   // (the camera flips a full 180° between alliances — see `replayViewpoint`).
   const [replayRobot, setReplayRobot] = useState<number | null>(null);
+  /**
+   * The MATCH a replay opened from a moderation surface belongs to, so the viewer can offer
+   * the score editor beside it.
+   *
+   * In-memory state rather than a route argument, deliberately, and it is the same shape
+   * `replayObj` uses: a replay URL is shareable and a match id in it would be an invitation
+   * to anyone who has the link. This only ever comes from the admin panel, in this tab, this
+   * session — and the server re-checks the admin gate on every call regardless, so the worst
+   * a forged one could do is show a moderator's panel to somebody the API then refuses.
+   */
+  const [replayMatch, setReplayMatch] = useState<string | null>(null);
   // one-time "this simulation isn't realistic" disclaimer (shown the first time CR is
   // the selected game, on this device; dismissal persists in localStorage)
   const [showChainDisclaimer, setShowChainDisclaimer] = useState(false);
@@ -463,7 +474,10 @@ export function App() {
     const a: RouteArgs = { ...NO_ARGS, ...args };
     setScreen(next);
     setRoute(a);
-    if (next !== 'replay') setReplayObj(null); // leaving the viewer drops the in-memory replay
+    if (next !== 'replay') {
+      setReplayObj(null); // leaving the viewer drops the in-memory replay
+      setReplayMatch(null); // ...and the moderation context it may have been opened with
+    }
     if (isWebHistory) {
       const path = pathFor(next, a, settingsRef.current.game);
       if (window.location.pathname !== path) window.history.pushState(null, '', path);
@@ -472,7 +486,12 @@ export function App() {
 
   /** open a player's public profile page (/profile/<username>) */
   const openProfile = (username: string): void => navigate('profile', { username });
-  const watchReplay = (replayId: string): void => navigate('replay', { replayId });
+  /** open a replay. `matchId` is passed only from the admin panel, where the match behind the
+   *  replay is known and a moderator may need to correct what it scored. */
+  const watchReplay = (replayId: string, matchId?: string): void => {
+    setReplayMatch(matchId ?? null);
+    navigate('replay', { replayId });
+  };
 
   // a friend's room invite, waiting to be auto-joined by the Lobby screen it
   // navigates to. One-shot: Lobby clears it once its mount effect consumes it
@@ -1257,6 +1276,7 @@ export function App() {
         replayId={route.replayId ?? undefined}
         preloadReplay={replayObj ?? undefined}
         viewerRobotId={replayObj ? replayRobot : null}
+        adminMatchId={isAdmin ? replayMatch : null}
         onClose={() => (replayObj ? navigate('home') : navigate('records'))}
       />
     );

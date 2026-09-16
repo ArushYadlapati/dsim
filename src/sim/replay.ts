@@ -1,4 +1,4 @@
-import type { Alliance, GameId, GameMode, RobotCommand, RobotSpec, World, AutoPathData, StartPose } from '../types';
+import type { Alliance, GameId, GameMode, MatchPhase, RobotCommand, RobotSpec, World, AutoPathData, StartPose } from '../types';
 import * as C from '../config';
 import { DEFAULT_ASSISTS, type RobotSetup } from './spawn';
 import { simModuleFor } from '../games/sim';
@@ -278,8 +278,36 @@ const tankSteered = (dt: RobotSpec['drivetrain']): boolean => dt === 'tank' || d
  * feeding the recorded (hold-last) commands. `world` is live for rendering; the
  * UI replay viewer drives this at 60 Hz, the verifier runs it to completion.
  */
+/** one line the sim emitted, with WHEN — see `ReplayPlayer.log` */
+export interface ReplayLogEntry {
+  tick: number;
+  text: string;
+  phase: MatchPhase;
+  /** seconds left in that phase when it landed */
+  timeLeft: number;
+}
+
 export class ReplayPlayer {
   readonly world: World;
+  /**
+   * Every line the sim emitted, with the TICK it landed on — fouls, cards, the phase
+   * transitions, LEAVE credits, all of it. `world.events` is the same list, but it is only a
+   * list of strings: the live game drains it each frame into toasts and nothing ever needed
+   * to know WHEN one of them happened. A replay does. "MINOR FOUL - BLUE +5 (G424)" with no
+   * time against it cannot be seeked to, and a watcher asking why the score jumped at 1:12 is
+   * asking exactly that question.
+   *
+   * Recorded here rather than in the viewer because both of the viewer's step loops — play
+   * and seek — would otherwise have to wrap the call and stay in step with each other, and a
+   * seek that stepped 4,000 ticks in one synchronous burst would stamp all 4,000 ticks'
+   * events with the moment the seek finished.
+   *
+   * `world.events` is NOT drained: the world is the replay's own, nobody else reads it, and
+   * emptying an array the sim owns to keep a local index tidy is a side effect this class has
+   * no business having.
+   */
+  readonly log: ReplayLogEntry[] = [];
+  private logged = 0; // how much of world.events has been stamped
   private readonly cursor: Record<number, number> = {}; // robotId -> next entry index
   private readonly current = new Map<number, RobotCommand>();
   private readonly mod; // CR vs DECODE re-sim module (createWorld/step)
@@ -323,6 +351,18 @@ export class ReplayPlayer {
       this.cursor[s.id] = ei;
     }
     this.mod.step(this.world, C.SIM_DT, this.current);
+    const evs = this.world.events;
+    for (; this.logged < evs.length; this.logged++) {
+      // the PHASE and the clock are stamped with it, because "1:23 into the file" is not how
+      // anybody reads a match — a call lands in AUTO with 4 seconds left, or in the last ten
+      // of ENDGAME, and that is the sentence a watcher wants back
+      this.log.push({
+        tick: this.world.tick,
+        text: evs[this.logged],
+        phase: this.world.match.phase,
+        timeLeft: Math.max(0, Math.round(this.world.match.phaseTimeLeft)),
+      });
+    }
     return true;
   }
 }

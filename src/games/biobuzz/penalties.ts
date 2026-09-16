@@ -2,6 +2,7 @@ import type { Alliance, RobotCommand, RobotState, Vec2, World } from '../../type
 import { hyp } from '../../math';
 import { PIN_END_S, PIN_ESCAPE_DIST, PIN_SECONDS, PIN_STUCK_SPEED } from '../../config';
 import { robotCorners } from '../../sim/physics';
+import { foulEventText, warningEventText } from '../../sim/penaltyLog';
 import { type ControlGeometry, controlledArtifacts, isPinning } from '../../sim/penalties';
 import { bbPinSolid } from './colliders';
 import {
@@ -96,7 +97,7 @@ export function bbAwardFoul(
   // A WARNING IS NOT A FOUL. No points, no tally — it leaves the score exactly where it was,
   // which is the whole difference between the owner's G407 ruling and the cap it replaced.
   if (severity === 'warning') {
-    world.events.push(`WARNING - ${offender.toUpperCase()} (${rule})`);
+    world.events.push(warningEventText(offender, rule));
     return;
   }
   const victim: Alliance = offender === 'red' ? 'blue' : 'red';
@@ -105,9 +106,7 @@ export function bbAwardFoul(
   const tally = world.match.fouls[offender];
   if (severity === 'major') tally.major += 1;
   else tally.minor += 1;
-  world.events.push(
-    `${severity === 'major' ? 'MAJOR' : 'MINOR'} FOUL - ${victim.toUpperCase()} +${pts} (${rule})`,
-  );
+  world.events.push(foulEventText(severity, victim, pts, rule));
 }
 
 /**

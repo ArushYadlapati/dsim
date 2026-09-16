@@ -60,6 +60,9 @@ import {
   listReportedUsers,
   listReportsFor,
   listScoreReports,
+  matchScoreDetail,
+  correctMatchScore,
+  adminEditStanding,
   resolveScoreReport,
   submitScoreReport,
   setReportsStatus,
@@ -1025,6 +1028,145 @@ const httpServer = createServer((req, res) => {
         const reports = await listScoreReports({ status: u.searchParams.get('status') ?? undefined });
         res.writeHead(200, { ...cors, 'content-type': 'application/json' });
         res.end(JSON.stringify({ reports }));
+        return;
+      }
+      /**
+       * GET/POST /api/admin/match — READ or CORRECT one finished match's score.
+       *
+       *   GET  ?id=<matchId>                       who played, what it says, what has been done
+       *   POST ?id=<matchId>&red=N&blue=N&note=…   correct it
+       *
+       * This is the half the misscore queue was missing. Upholding a claim recorded that the
+       * sim got a result wrong and then left the wrong number on the match, in both players'
+       * history, in front of the person who filed the claim. A moderator watches the replay,
+       * which re-simulates the match and shows what it should have scored, and sets it.
+       *
+       * THE RATING IS NOT RE-DERIVED — see `correctMatchScore`. Glicko-2 is sequential, so
+       * re-rating one match in the middle means re-rating every match since for everyone in
+       * it. The result is corrected, `won` follows it, the ratings stand, and the console
+       * says so rather than leaving a moderator to assume either way.
+       */
+      if (u.pathname === '/api/admin/match') {
+        if (!isAdmin) {
+          res.writeHead(403, cors);
+          res.end('forbidden');
+          return;
+        }
+        const id = u.searchParams.get('id');
+        if (!id || !dbEnabled) {
+          res.writeHead(dbEnabled ? 400 : 503, cors);
+          res.end(dbEnabled ? 'bad request' : 'database disabled');
+          return;
+        }
+        if (req.method === 'POST') {
+          const red = Number(u.searchParams.get('red'));
+          const blue = Number(u.searchParams.get('blue'));
+          // A SCORE IS A NON-NEGATIVE INTEGER and nothing else. `Number('')` is 0 and
+          // `Number('x')` is NaN, and either one written into a published result silently is
+          // worse than a 400 — this endpoint exists precisely because the number was wrong.
+          if (!Number.isFinite(red) || !Number.isFinite(blue) || red < 0 || blue < 0) {
+            res.writeHead(400, cors);
+            res.end('bad score');
+            return;
+          }
+          const done = await correctMatchScore(
+            id,
+            { red, blue },
+            user?.userId ?? 'admin',
+            u.searchParams.get('note') ?? undefined,
+          );
+          if (done) {
+            console.log(
+              `[admin] match ${id} score corrected by ${user?.userId ?? 'admin'}: ` +
+                `${done.redBefore}-${done.blueBefore} -> ${done.redAfter}-${done.blueAfter}`,
+            );
+          }
+          res.writeHead(done ? 200 : 404, { ...cors, 'content-type': 'application/json' });
+          res.end(JSON.stringify(done ? { ok: true, ...done } : { error: 'no such match' }));
+          return;
+        }
+        const match = await matchScoreDetail(id);
+        res.writeHead(match ? 200 : 404, { ...cors, 'content-type': 'application/json' });
+        res.end(JSON.stringify(match ? { match } : { error: 'no such match' }));
+        return;
+      }
+      /**
+       * GET/POST /api/admin/standing — read or EDIT one account's standing.
+       *
+       *   GET  ?user=<id>
+       *   POST ?user=<id>&score=N&pardon=all|<id,id>&lock=clear|<minutes>&note=…
+       *
+       * Standing is charged entirely by a server watching sockets (server/standing.ts), and
+       * some of those readings are wrong: a router died mid-match, a room crashed and billed
+       * everyone in it, a brigade moved someone two tiers before anybody read the reports.
+       * Until this endpoint the honest answer to "that penalty was not mine" was a shrug.
+       *
+       * A PARDON VOIDS RATHER THAN DELETES (migration 0036): the offence stops counting toward
+       * escalation and stops costing points, and stays on the record with who forgave it. Both
+       * halves matter — a pardon that left the ladder intact is a pardon in name only, and one
+       * that erased the row leaves the next moderator unable to see this is the fourth.
+       */
+      if (u.pathname === '/api/admin/standing') {
+        if (!isAdmin) {
+          res.writeHead(403, cors);
+          res.end('forbidden');
+          return;
+        }
+        const target = u.searchParams.get('user');
+        if (!target || !dbEnabled) {
+          res.writeHead(dbEnabled ? 400 : 503, cors);
+          res.end(dbEnabled ? 'bad request' : 'database disabled');
+          return;
+        }
+        if (req.method === 'POST') {
+          const rawScore = u.searchParams.get('score');
+          const score = rawScore === null || rawScore === '' ? undefined : Number(rawScore);
+          if (score !== undefined && (!Number.isFinite(score) || score < 0 || score > STANDING_MAX)) {
+            res.writeHead(400, cors);
+            res.end('bad score');
+            return;
+          }
+          const pardon = u.searchParams.get('pardon');
+          const rawLock = u.searchParams.get('lock');
+          // THREE-VALUED on purpose: absent leaves a cooldown somebody is legitimately serving
+          // alone, `clear` lifts it, a number sets one. Folding absent into "clear" would make
+          // every unrelated edit — a note, a single pardon — quietly unlock the queue.
+          const lock =
+            rawLock === null || rawLock === ''
+              ? undefined
+              : rawLock === 'clear'
+                ? (false as const)
+                : Math.max(0, Math.round(Number(rawLock) || 0));
+          const out = await adminEditStanding(target, user?.userId ?? 'admin', {
+            score,
+            pardonAll: pardon === 'all',
+            pardonIds: pardon && pardon !== 'all' ? pardon.split(',').filter(Boolean) : undefined,
+            lock,
+            note: u.searchParams.get('note') ?? undefined,
+          });
+          console.log(
+            `[standing] ${target} edited by ${user?.userId ?? 'admin'}: ` +
+              `${out.scoreBefore} -> ${out.scoreAfter}` +
+              `${out.pardoned ? `, ${out.pardoned} offence(s) voided` : ''}` +
+              `${lock === false ? ', lock cleared' : ''}`,
+          );
+          res.writeHead(200, { ...cors, 'content-type': 'application/json' });
+          res.end(JSON.stringify({ ok: true, ...out }));
+          return;
+        }
+        const [standings, events, profile] = await Promise.all([
+          standingsFor([target]),
+          listStandingEvents(target, 50),
+          getProfile(target),
+        ]);
+        res.writeHead(200, { ...cors, 'content-type': 'application/json' });
+        res.end(JSON.stringify({
+          userId: target,
+          handle: profile?.handle ?? null,
+          username: profile?.username ?? null,
+          standing: standings[target] ?? null,
+          events,
+        }));
         return;
       }
       /**

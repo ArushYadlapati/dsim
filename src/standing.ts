@@ -52,6 +52,9 @@ export const WINDOW_HOURS: Record<StandingEventKind, number> = {
   // a week, like walking out of matches: one card is a bad match, cards on two weekends
   // running is how someone plays
   card: 24 * 7,
+  // never read: an adjustment does not escalate anything (see COOLDOWN_LADDER below), so the
+  // window has nothing to count. Present because the record is exhaustive by type.
+  adjustment: 24,
 };
 
 export type StandingEventKind =
@@ -81,7 +84,21 @@ export type StandingEventKind =
    * results screen, and in the replay. "Getting a yellow card in a game should decrease
    * someone's account standing."
    */
-  | 'card';
+  | 'card'
+  /**
+   * A MODERATOR moved this account's standing by hand.
+   *
+   * Every other kind here is something that HAPPENED and the server priced. This one is the
+   * pricing itself being overruled: a pardon for a penalty that was not the player's fault, a
+   * correction after an appeal, or a charge for something no rule in this file can see. It
+   * carries a SIGNED cost — negative points are standing GIVEN BACK — which nothing else here
+   * does, and it is the only kind that never escalates, never locks the queue and never
+   * touches rating, because a human already decided the whole of it.
+   *
+   * It lands in the ordinary ledger on purpose. A moderator's correction the player cannot
+   * see is indistinguishable, from their side, from the number moving for no reason.
+   */
+  | 'adjustment';
 
 /**
  * BASE COST of each event, in standing points.
@@ -131,6 +148,11 @@ export const STANDING_COST: Record<StandingEventKind, number> = {
    * punishment, not the main one.
    */
   card: 5,
+  /**
+   * adjustment 0 — a moderator always states the amount. There is no base cost to scale
+   * because there is no offence to price: the number IS the judgement.
+   */
+  adjustment: 0,
 };
 
 /** a RED card costs this many yellows (5 × 3 = 15). The sim decides the colour, so the
@@ -199,6 +221,10 @@ export const COOLDOWN_LADDER: Record<StandingEventKind, readonly number[]> = {
   // point and locking someone out for one is a second punishment for one act. A repeat is
   // where it starts to bite.
   card: [0, 60, 240, 1440],
+  // a manual adjustment NEVER locks the queue. Clearing a lock and setting one are separate
+  // deliberate acts in the admin console; an adjustment that silently added a cooldown would
+  // make a pardon punish someone.
+  adjustment: [0],
 };
 
 /** ranked rating charged for the n-th offence of a kind. Zero everywhere it should be. */
@@ -216,6 +242,9 @@ export const RATING_LADDER: Record<StandingEventKind, readonly number[]> = {
   falseReport: [0, 10, 20, 30],
   // a card is a match-conduct finding, not a driving one, so rating only enters on repeats
   card: [0, 0, 10, 20],
+  // and never rating. Rating is the skill number; a behaviour correction has no business
+  // moving it, and a moderator who wants to move a rating has the record tools for that.
+  adjustment: [0],
 };
 
 /**
@@ -496,4 +525,33 @@ export const STANDING_EVENT_LABEL: Record<StandingEventKind, string> = {
   reportUpheld: 'A moderator upheld reports against you',
   falseReport: 'A moderator found a report you filed to be false',
   card: 'Carded by the referee during a match',
+  // the neutral wording; `standingEventLabel` picks the credit/charge phrasing from the sign
+  adjustment: 'A moderator adjusted your standing',
 };
+
+/**
+ * What ONE ledger row is called, given its SIGN.
+ *
+ * `adjustment` is the only kind that can go either way, and "A moderator adjusted your
+ * standing" over a +20 credit reads like a penalty — which is the opposite of what happened
+ * and exactly the confusion a pardon is supposed to end. Everything else has one meaning and
+ * falls through to the table.
+ */
+export function standingEventLabel(kind: string, points: number): string {
+  if (kind === 'adjustment') {
+    return points < 0
+      ? 'A moderator restored standing points'
+      : points > 0
+        ? 'A moderator took standing points'
+        : 'A moderator reviewed your standing';
+  }
+  return STANDING_EVENT_LABEL[kind as StandingEventKind] ?? kind;
+}
+
+/**
+ * A ledger row's cost as a SIGNED string. Every other kind only ever subtracts, so the ledger
+ * hard-coded a minus sign in front of the number — which prints "−-20" the first time a
+ * moderator gives points back.
+ */
+export const standingDelta = (points: number): string =>
+  points > 0 ? `−${points}` : points < 0 ? `+${-points}` : '±0';

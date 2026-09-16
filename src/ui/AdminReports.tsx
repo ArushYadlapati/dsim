@@ -8,7 +8,8 @@ import {
   type ScoreReport,
 } from '../net/api';
 import { REPORT_LABELS, type ReportedUser, type ReportReason } from '../report';
-import { STANDING_COST, STANDING_EVENT_LABEL, STANDING_MAX, tierOf, type StandingEventKind } from '../standing';
+import { STANDING_COST, STANDING_MAX, tierOf } from '../standing';
+import { StandingEditor } from './AdminStanding';
 import { SEASONS } from '../seasons';
 
 /**
@@ -27,7 +28,19 @@ import { SEASONS } from '../seasons';
  */
 const GAME_LABEL: Record<string, string> = Object.fromEntries(SEASONS.map((s) => [s.key, s.name]));
 
-export function AdminReports({ onWatchReplay }: { onWatchReplay?: (replayId: string) => void }) {
+/**
+ * How a replay is opened from here.
+ *
+ * TWO IDS, and confusing them is what made every WATCH button in the misscore queue return a
+ * 404: `replayId` is what `/api/replay/<id>` serves, `matchId` is the row that points at it,
+ * and the misscore queue only ever had the second one. The match is still passed — as the
+ * second argument — because a moderator watching a replay from a misscore claim needs to
+ * correct THAT MATCH's score, and the viewer cannot work out which match a replay belongs to
+ * from the replay alone.
+ */
+export type WatchReplay = (replayId: string, matchId?: string) => void;
+
+export function AdminReports({ onWatchReplay }: { onWatchReplay?: WatchReplay }) {
   const [users, setUsers] = useState<ReportedUser[] | null>(null);
   const [err, setErr] = useState(false);
   const [open, setOpen] = useState<string | null>(null);
@@ -91,7 +104,7 @@ function ReportedRow({
   u: ReportedUser;
   expanded: boolean;
   onToggle: () => void;
-  onWatchReplay?: (replayId: string) => void;
+  onWatchReplay?: WatchReplay;
   onTriaged: () => void;
 }) {
   const [detail, setDetail] = useState<Awaited<ReturnType<typeof adminFetchReportedUser>>>(null);
@@ -168,25 +181,13 @@ function ReportedRow({
                 ))}
               </div>
 
-              {detail.standingEvents.length > 0 && (
-                <>
-                  <h4 className="adm-h3">
-                    What the server saw{detail.standing ? ` — standing ${detail.standing.score}/${STANDING_MAX}` : ''}
-                  </h4>
-                  <div className="adm-report-list">
-                    {detail.standingEvents.slice(0, 8).map((e) => (
-                      <div className="adm-report-item row" key={e.id}>
-                        <span className="ds-muted">
-                          {STANDING_EVENT_LABEL[e.kind as StandingEventKind] ?? e.kind} · −{e.points}
-                          {e.cooldownMin > 0 && ` · ${e.cooldownMin}min lock`}
-                          {e.ratingCharge > 0 && ` · −${e.ratingCharge} rating`}
-                          {' · '}{ago(e.at)}
-                        </span>
-                      </div>
-                    ))}
-                  </div>
-                </>
-              )}
+              {/* WHAT THE SERVER SAW, and the controls to overrule it, in one place.
+                  This used to be a read-only list: a moderator could see that someone had
+                  been charged for three abandons and had no way to say the room crashed. The
+                  editor is the same component the Moderation tab's user search opens, so
+                  there is one standing panel in the console rather than two that drift. */}
+              <h4 className="adm-h3">What the server saw</h4>
+              <StandingEditor userId={u.userId} handleHint={u.handle} />
 
               <h4 className="adm-h3">Their recent matches</h4>
               {detail.matches.length === 0 ? (
@@ -200,7 +201,10 @@ function ReportedRow({
                         {m.score} pts · {m.won === null ? '—' : m.won ? 'won' : 'lost'} · {ago(m.createdAt)}
                       </span>
                       {m.replayId && onWatchReplay ? (
-                        <button className="ds-btn small" onClick={() => onWatchReplay(m.replayId as string)}>
+                        <button
+                          className="ds-btn small"
+                          onClick={() => onWatchReplay(m.replayId as string, m.matchId)}
+                        >
                           Watch replay
                         </button>
                       ) : (
@@ -252,7 +256,7 @@ function ago(iso: string): string {
  * as real, which is what stops the filer's rejected-count from growing and is the record that
  * the sim got something wrong.
  */
-function ScoreReportQueue({ onWatchReplay }: { onWatchReplay?: (replayId: string) => void }) {
+function ScoreReportQueue({ onWatchReplay }: { onWatchReplay?: WatchReplay }) {
   const [rows, setRows] = useState<ScoreReport[] | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const load = (): void => {
@@ -300,11 +304,21 @@ function ScoreReportQueue({ onWatchReplay }: { onWatchReplay?: (replayId: string
             </div>
             <p className="adm-report-detail">{r.detail}</p>
             <div className="adm-report-actions">
-              {r.matchId && onWatchReplay && (
-                <button className="ds-btn ghost" onClick={() => onWatchReplay(r.matchId!)}>
-                  WATCH
-                </button>
-              )}
+              {/* THE REPLAY, not the match. This button passed `matchId` to a route that
+                  serves replays by `replays.id`, so it 404'd on every single claim — the one
+                  thing a misscore queue exists to let a moderator do. A claim whose match
+                  never finished writing, or whose replay was purged with an archived season,
+                  genuinely has nothing to open, and says so instead of offering a dead button. */}
+              {onWatchReplay &&
+                (r.replayId ? (
+                  <button className="ds-btn ghost" onClick={() => onWatchReplay(r.replayId!, r.matchId ?? undefined)}>
+                    WATCH
+                  </button>
+                ) : (
+                  <span className="ds-muted" title={r.matchId ? 'This match saved no replay' : 'This claim points at no stored match'}>
+                    no replay
+                  </span>
+                ))}
               <button
                 className="ds-btn ghost"
                 disabled={busy === r.id}

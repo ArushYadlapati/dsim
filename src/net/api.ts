@@ -872,12 +872,19 @@ export async function adminFetchMatches(limit = 40, game?: GameId): Promise<Admi
 export interface StandingEvent {
   id: string;
   kind: string;
+  /** SIGNED: positive is points taken, negative is points given back by a moderator's
+   *  adjustment. Render it through `standingDelta`, never with a hard-coded minus sign. */
   points: number;
   scoreAfter: number;
   cooldownMin: number;
   ratingCharge: number;
   game: string | null;
   at: string;
+  /** set when a moderator pardoned this offence — it no longer counts toward escalation and
+   *  no longer costs points, and is shown struck through rather than hidden */
+  voidedAt?: string | null;
+  /** a moderator's stated reason for a manual adjustment */
+  note?: string | null;
 }
 
 export interface StandingInfo {
@@ -988,6 +995,9 @@ export async function adminSetReportStatus(
 export interface ScoreReport {
   id: string;
   matchId: string | null;
+  /** the match's REPLAY — what the WATCH button opens. A match id is not a replay id, and
+   *  passing one where the other belongs is what made every WATCH here 404. */
+  replayId: string | null;
   roomCode: string;
   game: string;
   detail: string;
@@ -1043,6 +1053,150 @@ export async function adminResolveScoreReport(
     return res.ok;
   } catch {
     return false;
+  }
+}
+
+/** one finished match, as the score editor reads it */
+export interface AdminMatch {
+  matchId: string;
+  replayId: string | null;
+  game: string;
+  mode: string;
+  ranked: boolean | null;
+  createdAt: string;
+  red: number;
+  blue: number;
+  participants: {
+    userId: string;
+    handle: string;
+    username: string | null;
+    alliance: 'red' | 'blue';
+    drivetrain: string;
+    score: number;
+    won: boolean | null;
+    ratingBefore: number | null;
+    ratingAfter: number | null;
+  }[];
+  corrections: {
+    id: string;
+    adminId: string;
+    redBefore: number;
+    blueBefore: number;
+    redAfter: number;
+    blueAfter: number;
+    note: string | null;
+    at: string;
+  }[];
+}
+
+/** who played a match, what it scored, and every correction already applied to it */
+export async function adminFetchMatch(matchId: string): Promise<AdminMatch | null> {
+  const base = gameServerHttpUrl();
+  const token = await getAuthToken();
+  if (!base || !token) return null;
+  try {
+    const res = await fetch(`${base}/api/admin/match?id=${encodeURIComponent(matchId)}`, {
+      headers: { authorization: `Bearer ${token}` },
+      cache: 'no-store',
+    });
+    if (!res.ok) return null;
+    return ((await res.json()) as { match: AdminMatch }).match ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Set a finished match's alliance scores.
+ *
+ * The win/loss flag is re-derived by the server from the new numbers; the RATINGS are not
+ * touched, because Glicko-2 is sequential and re-rating one match in the middle means
+ * re-rating every match since. Returns the before/after pair, or null if it did not land.
+ */
+export async function adminCorrectMatchScore(
+  matchId: string,
+  red: number,
+  blue: number,
+  note?: string,
+): Promise<{ redBefore: number; blueBefore: number; redAfter: number; blueAfter: number } | null> {
+  const base = gameServerHttpUrl();
+  const token = await getAuthToken();
+  if (!base || !token) return null;
+  const q = new URLSearchParams({
+    id: matchId,
+    red: String(Math.max(0, Math.round(red))),
+    blue: String(Math.max(0, Math.round(blue))),
+  });
+  if (note) q.set('note', note);
+  try {
+    const res = await fetch(`${base}/api/admin/match?${q.toString()}`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${token}` },
+    });
+    if (!res.ok) return null;
+    return (await res.json()) as { redBefore: number; blueBefore: number; redAfter: number; blueAfter: number };
+  } catch {
+    return null;
+  }
+}
+
+/** one account's standing as a MODERATOR reads it — the same ledger the player sees, plus
+ *  the name, so the console never shows a bare uuid next to a punishment */
+export interface AdminStanding {
+  userId: string;
+  handle: string | null;
+  username: string | null;
+  standing: StandingInfo | null;
+  events: StandingEvent[];
+}
+
+export async function adminFetchStanding(userId: string): Promise<AdminStanding | null> {
+  const base = gameServerHttpUrl();
+  const token = await getAuthToken();
+  if (!base || !token) return null;
+  try {
+    const res = await fetch(`${base}/api/admin/standing?user=${encodeURIComponent(userId)}`, {
+      headers: { authorization: `Bearer ${token}` },
+      cache: 'no-store',
+    });
+    if (!res.ok) return null;
+    return (await res.json()) as AdminStanding;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Edit one account's standing.
+ *
+ * Every field is OPTIONAL and an absent one changes nothing — `lock` especially: leaving it
+ * out keeps a cooldown somebody is legitimately serving, `false` lifts it, a number sets one
+ * that many minutes out. A pardon VOIDS the offences rather than deleting them, so escalation
+ * forgets them while the record does not.
+ */
+export async function adminEditStanding(
+  userId: string,
+  opts: { score?: number; pardonAll?: boolean; pardonIds?: string[]; lock?: false | number; note?: string },
+): Promise<{ scoreBefore: number; scoreAfter: number; pardoned: number } | null> {
+  const base = gameServerHttpUrl();
+  const token = await getAuthToken();
+  if (!base || !token) return null;
+  const q = new URLSearchParams({ user: userId });
+  if (opts.score !== undefined) q.set('score', String(Math.round(opts.score)));
+  if (opts.pardonAll) q.set('pardon', 'all');
+  else if (opts.pardonIds?.length) q.set('pardon', opts.pardonIds.join(','));
+  if (opts.lock === false) q.set('lock', 'clear');
+  else if (typeof opts.lock === 'number') q.set('lock', String(Math.max(0, Math.round(opts.lock))));
+  if (opts.note) q.set('note', opts.note);
+  try {
+    const res = await fetch(`${base}/api/admin/standing?${q.toString()}`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${token}` },
+    });
+    if (!res.ok) return null;
+    return (await res.json()) as { scoreBefore: number; scoreAfter: number; pardoned: number };
+  } catch {
+    return null;
   }
 }
 

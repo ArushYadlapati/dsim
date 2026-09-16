@@ -26,11 +26,26 @@ import {
   type VideoFormatId,
 } from './replayVideo';
 import { SIM_DT, BALANCE_VERSION, SIM_VERSION } from '../config';
+import { parsePenaltyEvent } from '../sim/penaltyLog';
+import { PenaltyLog, ScoreEditor, type PenaltyEntry } from './ReplayRail';
 import type { MatchPhase } from '../types';
 
 /** how many times faster than real time the WebCodecs path encodes, measured across VP9, VP8
  *  and H.264 at a 1920 long edge (5.2-5.7×; the low end is the honest one to quote) */
 const FAST_ENCODE_SPEED = 5;
+
+/** one alliance's sanctions SO FAR: what it committed, what its opponent's fouls handed it,
+ *  and its cards. `awarded` is the points term of the total, which is the half a watcher is
+ *  usually trying to account for. */
+interface FoulTally {
+  minor: number;
+  major: number;
+  awarded: number;
+  yellow: number;
+  red: number;
+}
+const NO_FOULS: FoulTally = { minor: 0, major: 0, awarded: 0, yellow: 0, red: 0 };
+const EMPTY_FOULS: Record<'red' | 'blue', FoulTally> = { red: NO_FOULS, blue: NO_FOULS };
 
 /** m:ss from seconds. Rounds ONCE, before splitting — rounding the two halves separately
  *  prints "1:00" for 119.7 s, because the minutes half floors the unrounded value. */
@@ -94,6 +109,7 @@ export function ReplayView({
   replayId,
   preloadReplay,
   viewerRobotId,
+  adminMatchId,
   onClose,
 }: {
   replayId?: string;
@@ -103,6 +119,16 @@ export function ReplayView({
    * station rather than whichever alliance happens to be first on the roster.
    * See `replayViewpoint` — getting this wrong mirrors the whole field. */
   viewerRobotId?: number | null;
+  /**
+   * The MATCH this replay belongs to, when an admin opened it from a moderation surface.
+   *
+   * Present ⇒ the rail offers the score editor. It is passed IN rather than looked up, because
+   * "which match is this" is only knowable from where the replay was opened: a replay id is
+   * the only thing the viewer's own URL carries, and the same replay reached from a player's
+   * own history is not an invitation to edit a result. The server re-checks the admin gate on
+   * every call regardless — this decides what is OFFERED, never what is allowed.
+   */
+  adminMatchId?: string | null;
   onClose: () => void;
 }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -132,6 +158,21 @@ export function ReplayView({
   const [score, setScore] = useState({ red: 0, blue: 0 });
   const [phase, setPhase] = useState<MatchPhase>('pre');
   const [timeLeft, setTimeLeft] = useState(0);
+  /**
+   * PENALTIES, ON EVERY REPLAY AND FOR EVERYBODY.
+   *
+   * The viewer used to draw the fouls on the field and name none of them: a score that moved
+   * nine points in one second had no explanation anywhere on the screen. This is the summary
+   * (always on) and, in the rail, the timeline. It was never an admin feature — the driver
+   * reviewing their own match is the person most entitled to know which rule they broke.
+   */
+  const [fouls, setFouls] = useState(EMPTY_FOULS);
+  const [penalties, setPenalties] = useState<PenaltyEntry[]>([]);
+  /** how much of the player's log has been parsed, so the 10 Hz readout does not re-parse an
+   *  unchanged list — and so a REBUILD (which resets the log to empty) is noticed */
+  const logLen = useRef(-1);
+  /** the rail: the penalty timeline, and the score editor when an admin opened a match */
+  const [railOpen, setRailOpen] = useState(false);
 
   const renderer = useRef<Renderer | null>(null);
   const player = useRef<ReplayPlayer | null>(null);
@@ -292,7 +333,7 @@ export function ReplayView({
   useEffect(() => {
     if (recorder.current) return;
     refit.current?.();
-  }, [recording, status]);
+  }, [recording, status, railOpen]);
 
   /**
    * A RECORDING MUST NOT OUTLIVE THE SCREEN THAT STARTED IT. Leaving the viewer mid-capture
@@ -345,12 +386,41 @@ export function ReplayView({
   /** pull tick + scoreboard off the sim in one go, so seeking/restarting can't
    *  leave the score showing a different moment than the field does. */
   const sync = (): void => {
-    const w = player.current?.world;
-    if (!w) return;
+    const p = player.current;
+    const w = p?.world;
+    if (!p || !w) return;
     setTick(w.tick);
     setScore({ red: w.match.scores.red.total, blue: w.match.scores.blue.total });
     setPhase(w.match.phase);
     setTimeLeft(Math.max(0, Math.round(w.match.phaseTimeLeft)));
+    const cards = w.match.cards;
+    setFouls({
+      red: {
+        ...w.match.fouls.red,
+        awarded: w.match.scores.red.foulPoints,
+        yellow: cards?.red.yellow ?? 0,
+        red: cards?.red.red ?? 0,
+      },
+      blue: {
+        ...w.match.fouls.blue,
+        awarded: w.match.scores.blue.foulPoints,
+        yellow: cards?.blue.yellow ?? 0,
+        red: cards?.blue.red ?? 0,
+      },
+    });
+    // LENGTH, not content: the log only ever grows within one player, and a seek backwards
+    // builds a NEW player whose log starts empty — which this catches as a length that went
+    // down. Re-parsing an unchanged list ten times a second would be the only cost of not
+    // checking, and the list is re-rendered from state either way.
+    if (p.log.length !== logLen.current) {
+      logLen.current = p.log.length;
+      const out: PenaltyEntry[] = [];
+      for (const e of p.log) {
+        const line = parsePenaltyEvent(e.text);
+        if (line) out.push({ tick: e.tick, phase: e.phase, timeLeft: e.timeLeft, line });
+      }
+      setPenalties(out);
+    }
   };
 
   const setPlay = (v: boolean): void => {
@@ -363,6 +433,14 @@ export function ReplayView({
     if (!replay.current) return;
     player.current = new ReplayPlayer(replay.current);
     sync();
+  };
+  /** run it out to the recorded end — how a moderator gets the FINAL score the misscore claim
+   *  is about, and what the seek bar's right edge does anyway */
+  const playToEnd = (): void => {
+    if (!player.current) return;
+    seek(total);
+    playingRef.current = false;
+    setPlaying(false);
   };
   const seek = (target: number): void => {
     const r = replay.current;
@@ -807,7 +885,52 @@ export function ReplayView({
           {solo && <span className="rs-mid">{done ? 'FINAL' : phase === 'post' ? 'MATCH OVER' : clock}</span>}
         </div>
       )}
-      <canvas ref={canvasRef} className="ds-replay-canvas" style={{ display: status === 'ready' ? 'block' : 'none' }} />
+      {/* PENALTIES, ON THE FACE OF IT. One always-present row under the scoreboard, mirroring
+          its RED · middle · BLUE order, saying what each alliance has been called for and what
+          those calls are worth. A clean match says so — "no fouls" is an answer, and hiding
+          the row when there are none would mean a watcher could never tell the difference
+          between a clean match and a viewer that does not show fouls. The TIMELINE is behind
+          the button, because a list of calls does not need to cost the field its height. */}
+      {status === 'ready' && (
+        <div className="ds-replay-pen">
+          {/* A RECORD RUN HAS ONE ALLIANCE ON THE FIELD, and its fouls are "awarded" to an
+              opponent that never existed — the same phantom the score strip already refuses
+              to print a 0 for. So a solo replay gets ONE chip, and what it reports is what
+              those fouls COST: the record screen's net score is exactly this subtraction. */}
+          {solo ? (
+            <FoulChip side={soloSide as 'red' | 'blue'} t={fouls[soloSide as 'red' | 'blue']} cost={fouls[soloSide === 'red' ? 'blue' : 'red'].awarded} />
+          ) : (
+            <FoulChip side="red" t={fouls.red} />
+          )}
+          <button
+            // NOT `ghost primary`: `.ds-btn.ghost` is declared after `.ds-btn.primary` and
+            // wins on `background: none` while primary's white `color` stays, so the label
+            // goes invisible on a light bar. One or the other, never both.
+            className={railOpen ? 'ds-btn small primary' : 'ds-btn ghost small'}
+            onClick={() => setRailOpen((v) => !v)}
+            aria-expanded={railOpen}
+          >
+            {railOpen ? 'Hide details' : 'Details'}
+            {penalties.length > 0 && ` (${penalties.length})`}
+          </button>
+          {!solo && <FoulChip side="blue" t={fouls.blue} />}
+        </div>
+      )}
+
+      {/* the field and the rail share a row, so opening the rail narrows the canvas instead of
+          shortening it — the camera fits the field to the SHORTER of its two spans, and height
+          is the one the HUD bands are already eating into */}
+      <div className="ds-replay-stage">
+        <canvas ref={canvasRef} className="ds-replay-canvas" style={{ display: status === 'ready' ? 'block' : 'none' }} />
+        {status === 'ready' && railOpen && (
+          <aside className="ds-replay-rail">
+            <PenaltyLog entries={penalties} done={done} solo={solo} onSeek={seek} />
+            {adminMatchId && (
+              <ScoreEditor matchId={adminMatchId} live={score} onSeekEnd={playToEnd} />
+            )}
+          </aside>
+        )}
+      </div>
 
       {/* THE REAL-TIME FALLBACK REPLACES THE TRANSPORT ROW rather than greying it out: it is
           filming this canvas, so scrubbing mid-record would scrub the file, and a row of dead
@@ -856,5 +979,42 @@ export function ReplayView({
         </div>
       )}
     </div>
+  );
+}
+
+/**
+ * One alliance's penalty chip.
+ *
+ * It reports TWO different things and has to keep them apart, because they belong to opposite
+ * alliances: the fouls this alliance COMMITTED (a count) and the points its opponent's fouls
+ * AWARDED it (part of its own total). Printing one number would be printing whichever of the
+ * two the reader did not mean.
+ */
+function FoulChip({ side, t, cost }: { side: 'red' | 'blue'; t: FoulTally; cost?: number }) {
+  // on a SOLO run there is no opponent to award anything to, so `awarded` is always 0 and the
+  // number that matters is what this alliance's own fouls took OFF its net
+  const solo = cost !== undefined;
+  const clean =
+    t.minor === 0 && t.major === 0 && t.yellow === 0 && t.red === 0 && t.awarded === 0 && !cost;
+  return (
+    <span className="pen-chip">
+      <span className={`pen-side ${side}`}>{side === 'red' ? 'RED' : 'BLUE'}</span>
+      {clean ? (
+        <span className="pen-clean">No fouls</span>
+      ) : (
+        <>
+          {(t.minor > 0 || t.major > 0) && (
+            <span className="pen-count">
+              {t.minor} MIN · {t.major} MAJ
+            </span>
+          )}
+          {solo
+            ? (cost as number) > 0 && <span className="pen-awarded">−{cost} from the score</span>
+            : t.awarded > 0 && <span className="pen-awarded">+{t.awarded} awarded</span>}
+          {t.yellow > 0 && <span className="pen-card yellow">■ {t.yellow}</span>}
+          {t.red > 0 && <span className="pen-card red">■ {t.red}</span>}
+        </>
+      )}
+    </span>
   );
 }

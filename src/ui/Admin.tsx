@@ -23,7 +23,8 @@ import {
 } from '../net/api';
 import { Markdown } from './markdown';
 import { AdminLive } from './AdminLive';
-import { AdminReports } from './AdminReports';
+import { AdminReports, type WatchReplay } from './AdminReports';
+import { StandingEditor } from './AdminStanding';
 import { adminFail } from './adminCopy';
 
 type AdminTab = 'live' | 'server' | 'content' | 'moderation';
@@ -75,8 +76,9 @@ export function Admin({
 }: {
   /** spectate a live room (hidden — an admin watcher is not counted) */
   onWatch?: (room: string, region?: string) => void;
-  /** open a finished game's replay */
-  onWatchReplay?: (replayId: string) => void;
+  /** open a finished game's replay — with the MATCH it belongs to, when that is known, so a
+   *  moderator can correct what it scored while watching it */
+  onWatchReplay?: WatchReplay;
 }) {
   // LIVE first: it is the tab you open during an incident, and the panel's other
   // jobs are all deliberate, unhurried ones you go looking for.
@@ -115,6 +117,9 @@ export function Admin({
   // second place to paste the same user id).
   const [grantMonths, setGrantMonths] = useState<Record<string, string>>({});
   const [history, setHistory] = useState<Record<string, SupporterGrantRow[]>>({});
+  /** which searched player's standing panel is open. One at a time: it is a tall panel and
+   *  two of them open at once is a page you scroll rather than a decision you make. */
+  const [standingFor, setStandingFor] = useState<string | null>(null);
   const [userStatus, setUserStatus] = useState<string | null>(null);
   const [userBusy, setUserBusy] = useState(false);
 
@@ -547,11 +552,12 @@ export function Admin({
 
       {/* main's heading was "Moderation - display names"; this section now does
           memberships too. */}
-      <h2 className="ds-h2" style={{ marginTop: 32 }}>Players · names &amp; memberships</h2>
+      <h2 className="ds-h2" style={{ marginTop: 32 }}>Players · names, memberships &amp; standing</h2>
       <p className="ds-sub" style={{ margin: '0 0 20px' }}>
         Find a player by display name, username, or exact user id. Force an inappropriate name to
-        something clean, comp a supporter membership, or revoke one after a chargeback. Every
-        membership change is written to an audit trail with your account id and your reason.
+        something clean, comp or revoke a supporter membership, or open their account standing to
+        pardon penalties the server got wrong. Every membership change and every standing edit is
+        written to an audit trail with your account id and your reason.
       </p>
       <div className="admin-card">
         <div className="admin-field">
@@ -635,7 +641,18 @@ export function Admin({
                   <button className="ds-btn ghost small" disabled={userBusy} onClick={() => loadHistory(u.userId)}>
                     HISTORY
                   </button>
+                  {/* STANDING on the same row as the name and the membership, for the reason
+                      the membership tools are there: this is the one search in the console
+                      that takes an exact user id, and "someone sent me a uuid and says their
+                      penalties are wrong" is the errand it gets used for. */}
+                  <button
+                    className={standingFor === u.userId ? 'ds-btn small primary' : 'ds-btn ghost small'}
+                    onClick={() => setStandingFor(standingFor === u.userId ? null : u.userId)}
+                  >
+                    STANDING
+                  </button>
                 </div>
+                {standingFor === u.userId && <StandingEditor userId={u.userId} handleHint={u.handle} />}
                 {history[u.userId] && (
                   <div className="admin-history">
                     {history[u.userId].length === 0 ? (
