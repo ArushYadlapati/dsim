@@ -1,6 +1,75 @@
+# HANDOFF — 2026-09-15 (branch `admin-panel`: misscore replays, score editing, replay penalties, standing edits)
+
+**READ FIRST.** Branch **`admin-panel`** off `alpha` (`2a095b3`, pushed). NOT merged, NOT
+deployed. It is a SERVER change AND a MIGRATION change — two new migrations (0035, 0036) that
+apply at game-server boot, so nothing here works until the Fly server is redeployed.
+
+Build green: `npm run build`, `npm run server:check`, `npm run contrast`, `npm run uiaudit`,
+`npm run dbtest` (ALL PASS, +29 checks). `scripts/smoke.ts` passes +23 new checks.
+
+⚠️ **`npm test` is RED on alpha already, and not from this work.** Two stale checks —
+`lan gate: alpha opens it; production does not mention it at all` and `lan gate: and
+production still opens neither door` — assert that production's `fly.toml` mentions neither
+`LAN_UPLOADS` nor `LAN_SIGNALLING`. Both were deliberately turned ON in production on
+2026-09-13 (see that section below), and nobody updated the checks. They fail on `alpha` with
+no changes at all. **The consequence is the one CLAUDE.md warns about: while the first suite
+is red the BIOBUZZ suite never runs.** Either update the two checks to the fleet as deployed
+or revert the config; it is a policy call, not a bug fix, so it was left alone here.
+
+## What landed
+
+1. **The misscore queue's WATCH button 404'd on every claim.** `listScoreReports` returned a
+   MATCH id and the button passed it to `/api/replay/<id>`, which serves `replays.id`. It now
+   carries `replayId`, joined through `matches.replay_id`; a claim with no stored match says
+   "no replay" rather than offering a dead button. `onWatchReplay` is
+   `(replayId, matchId?) => void` everywhere (`WatchReplay` in `AdminReports.tsx`).
+2. **Score correction** — `GET/POST /api/admin/match`, `correctMatchScore`, migration
+   **0035** (`match_score_corrections`). `won` is re-derived; **ratings are deliberately not**
+   (Glicko-2 is sequential). The editor is `ScoreEditor` in `src/ui/ReplayRail.tsx`, offered
+   only when `ReplayView` gets an `adminMatchId`, which only ever comes from the admin panel
+   via in-memory state in `App.tsx` — never from the URL, which is shareable.
+3. **Penalties on every replay, for everyone.** `src/sim/penaltyLog.ts` is the ONE place a
+   sanction line is written and read (`awardFoul`/`awardCard` and BIOBUZZ's tariff wrapper
+   both format through it); `ReplayPlayer.log` stamps each line with its tick and phase clock.
+   The viewer has an always-on summary row and a seekable timeline in the rail. A solo record
+   run shows one chip and reads its fouls as a deduction.
+4. **Standing editing** — `GET/POST /api/admin/standing`, `adminEditStanding`, migration
+   **0036** (`voided_at`/`voided_by`/`admin_id`/`note` on `standing_events`). A pardon VOIDS:
+   `recentStandingCount` filters voided rows so escalation forgets them, and the row stays on
+   the record. `src/standing.ts` gained an `adjustment` kind with a SIGNED cost — render every
+   ledger row through `standingDelta`, never a hard-coded minus.
+
+## Next steps
+
+- **Nothing is deployed.** Merge to `alpha`, then promote and deploy the Fly server from a
+  **main** worktree (see the 2026-09-13 note). The migrations run at boot.
+- **Not yet exercised against a live server**: the two new admin endpoints have unit coverage
+  in `dbtest` and typecheck against the server, but no request has been made to a running
+  instance. First deploy, then open `/admin` → Moderation → search a player → STANDING.
+- The owner asked to clear every infraction on `018fdc59-4e80-4a16-908c-682be86bfee8`. **Not
+  done** — production DB and production HTTP reads are blocked in this environment, and the
+  admin endpoint that would do it is on this undeployed branch. Once deployed it is one press
+  of CLEAR ALL INFRACTIONS on that uuid.
+
+## Gotchas found on the way
+
+- **`ghost` + `primary` on one `.ds-btn` makes the label white on the page's own surface.**
+  `.ds-btn.ghost` is declared after `.ds-btn.primary`, so it wins on `background: none` while
+  primary's `color: var(--ds-accent-ink)` survives. It reads as a missing control. There is a
+  `uiaudit` rule for it now at baseline 0.
+- A replay's penalty list is built from `world.events`, so **the foul strings are now parsed,
+  not just displayed** — changing one is still a server change, and now also breaks a reader.
+  `npm test` round-trips the formatter against the parser.
+- The default robot's start anchor faces its own goal: a full-throttle `driveX: 1` holds it
+  flush against the goal for the whole match. Crossing the field from anchor 0 is `driveX: -1`.
+  Cost several throwaway scenes before it was noticed; worth knowing when writing any headless
+  scene that needs the robot to actually go somewhere.
+
+---
+
 # HANDOFF — 2026-09-14, later (account standing: behaviour charges WIRED, repriced — alpha only)
 
-**READ FIRST.** On `alpha`, NOT deployed, NOT on `main`. It is a SERVER change: it does nothing
+**(superseded as READ FIRST by the 2026-09-15 section above; still current for its own subject.)** On `alpha`, NOT deployed, NOT on `main`. It is a SERVER change: it does nothing
 until the Fly game server is redeployed (from a main worktree — see below).
 
 - **`persistBehaviour` was never wired into production rooms** (`server/index.ts` passed 7 of
