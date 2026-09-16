@@ -590,6 +590,62 @@ function scoringChecks(check: Check): void {
       `buzzer ${buzzer}, lowest ${lowest}, harvested ${harvest}`,
     );
 
+    /* ── A TRAY OVER ITS LOAD WHEN THE MATCH IS CALLED IS A TIP ──────────────
+       Reported as "last tips are not counted": the balls settle in the HIVE, the field goes
+       still, the score is taken, and the 20 for the TIP that follows is not in it.
+
+       The state this pins is the one between the two the checks above cover: the load has
+       crossed `BB_TIP_POLLEN` but `hiveStep` has not yet started the swing, so `tipping` is
+       still 0. `bbSettled` does hold the clock open here — but the clock has a CAP
+       (`MATCH_SETTLE_MAX_S`), and the cap finalizes whatever the field looks like. Landing on
+       this state used to pay NOTHING for the tip and then pay its load a SECOND time as
+       elements remaining in the CELL, which is a few points against the tip's 20.
+
+       Built by hand rather than driven, because the window is one tick wide in a driven run
+       and the rule is about the STATE, not about how long it lasts. */
+    {
+      const q = bare([{ id: 0, alliance: 'red' }]);
+      const qb = q.biobuzz;
+      if (!qb) return;
+      place(q, 0, -40, 20); // clear of the wall and the LOADING ZONE: no LEAVE, no PARK
+      // a bare cell tips at BB_TIP_POLLEN[0]; load it to exactly that and leave it UNSWUNG
+      intoCell(q, 'red', Array.from({ length: BB_TIP_POLLEN[0] }, () => 'yellow' as ArtifactColor));
+      const held = qb.hives.red.contents.length;
+      q.match.phase = 'post';
+      const before = bbScoreWorld(q).red;
+      check(
+        'PENDING TIP: a tray over its calibrated load is paid its 20 when the match is called',
+        before.tipPts === BB_PTS.tip,
+        `tip points ${before.tipPts} on ${held} in the tray, swing not started (tipping ${qb.hives.red.tipping})`,
+      );
+      check(
+        'PENDING TIP (§10.5 C): its load is NOT also paid as remaining in the up-CELL',
+        before.cellPts === 0,
+        `cell points ${before.cellPts} on ${held} elements`,
+      );
+      // ...and it is ONE tip, not two: mid-swing `contents` still holds the load, so the
+      // pending test must not fire on top of the swinging one.
+      qb.hives.red.tipping = BB_TIP_SWING_S - 0.5;
+      check(
+        'PENDING TIP: a swing already moving is still ONE tip, not two',
+        bbScoreWorld(q).red.tipPts === BB_PTS.tip,
+        `tip points ${bbScoreWorld(q).red.tipPts} while swinging with the load still aboard`,
+      );
+      // a tray UNDER its load is not a tip, and its contents are scored as contents
+      const u = bare([{ id: 0, alliance: 'red' }]);
+      const ub = u.biobuzz;
+      if (!ub) return;
+      place(u, 0, -40, 20);
+      intoCell(u, 'red', Array.from({ length: BB_TIP_POLLEN[0] - 1 }, () => 'yellow' as ArtifactColor));
+      u.match.phase = 'post';
+      const under = bbScoreWorld(u).red;
+      check(
+        'PENDING TIP: one element short is NOT a tip, and its load still counts in the CELL',
+        under.tipPts === 0 && under.cellPts > 0,
+        `tip ${under.tipPts}, cell ${under.cellPts} on ${BB_TIP_POLLEN[0] - 1} elements`,
+      );
+    }
+
     // and both halves of the rule, read straight off the score on a hand-built HIVE
     const t = bare([{ id: 0, alliance: 'red' }]);
     const tb = t.biobuzz;
