@@ -2133,6 +2133,12 @@ BIOBUZZ, a persistent 2.1" overlap under a pressing chassis, a struck pollen rea
   intent with different padding, used only by `Admin.tsx`; it is gone.
 - **`prefers-reduced-motion` must cap `animation-iteration-count`, not just duration** —
   capping the duration of an INFINITE animation only makes it loop faster.
+- **SEARCH WITH `rg`, NOT `grep -r` OR `find`, FROM THE REPO ROOT.** `.claude/worktrees/`
+  holds full checkouts of this repo (810 MB at the last look), so a recursive `grep`/`find`
+  walks four copies of `src/`, `scripts/` and `docs/` and returns the same hit four times —
+  measured, it is also slow enough to blow a two-minute tool timeout. Ripgrep honours
+  `.git/info/exclude:13`, which already excludes them, so it returns 7 hits where `grep -r`
+  returns 28. Scope the exception (`find src server scripts …`) when only `find` will do.
 - Windows PowerShell 5.1: no `&&` in npm-adjacent commands; use `;` or `if ($?)`.
 
 ---
