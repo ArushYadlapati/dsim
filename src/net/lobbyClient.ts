@@ -99,6 +99,45 @@ export class LobbyClient {
     this.transport.onReopen(() => void doJoin());
   }
 
+  /**
+   * ADOPT A SOCKET THAT IS ALREADY IN THIS ROOM — the way back from a finished match.
+   *
+   * When the host recycles a room (`ServerMsg` 't: lobby'), the client hands the LIVE
+   * transport from its `ServerSession` to a fresh `LobbyClient` rather than dropping the
+   * connection and dialling again. So there is deliberately NO `join` frame here: the
+   * server still holds this socket's seat, and joining again would add a second client
+   * under the same socket id. The server re-sent our `clientId` with the recycle, and a
+   * `roster` follows it, so both halves of the lobby state arrive without asking.
+   *
+   * ⚠️ `join`'s `transport.onOpen` fires IMMEDIATELY on an already-open socket
+   * (`WebSocketTransport.onOpen`), which is exactly the duplicate join this avoids. A
+   * REOPEN is different: the seat is gone with the old socket — a lobby departure deletes
+   * the client outright rather than holding it like a mid-match one — so coming back from
+   * a drop is an ordinary fresh `join`, the same frame `join()` would have sent.
+   */
+  resume(room: string, player: Omit<LobbyPlayer, 'clientId'>, clientId: string, config?: RoomConfig): void {
+    this.clientId = clientId;
+    /**
+     * ASK FOR THE ROSTER RATHER THAN HOPING WE CAUGHT IT.
+     *
+     * The room broadcasts one immediately after the recycle, but that frame is in flight
+     * while the old `ServerSession` still owns `transport.onMessage` — the App cannot
+     * re-point it until React has rendered this screen — so it lands on a handler that
+     * throws it away, and the lobby would show an empty room until something else happened
+     * to trigger a broadcast. An EMPTY patch is the ask: `sanitizePlayerPatch` reduces it to
+     * `{}`, so it changes nothing about us and the server answers with a `roster` anyway.
+     */
+    this.transport.send(encodeMsg({ t: 'update', patch: {} }));
+    this.transport.onReopen(() => {
+      void (async () => {
+        const authToken = (await getAuthToken()) ?? undefined;
+        this.transport.send(
+          encodeMsg({ t: 'join', room, player, config, authToken, caps: CLIENT_CAPS, channel: appChannel() }),
+        );
+      })();
+    });
+  }
+
   /** SPECTATE a live match read-only. (Re)sends on open + reconnect. `matchStart`
    * arrives with yourRobotId -1 → build a spectator ServerSession from it. */
   spectate(room: string): void {
@@ -177,6 +216,10 @@ export class LobbyClient {
   private onMessage(data: string): void {
     const m = decodeServerMsg(data);
     if (m.t === 'welcome') {
+      this.clientId = m.clientId;
+    } else if (m.t === 'lobby') {
+      // a recycle that landed on a lobby rather than a session (the host recycled while
+      // we were still coming back). The id is ours either way — take it.
       this.clientId = m.clientId;
     } else if (m.t === 'roster') {
       this.players = m.players;

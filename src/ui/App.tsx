@@ -58,6 +58,7 @@ import { ServerSession } from '../net/serverSession';
 import { WebSocketTransport } from '../net/transport';
 import { encodeMsg } from '../net/protocol';
 import { loadActiveGame, saveActiveGame, clearActiveGame, type ActiveGameRef } from '../net/activeGame';
+import type { ResumedRoom } from './roomReturn';
 import { recordScore, type Replay, type ReplayResult } from '../sim/replay';
 import {
   savePracticeRun,
@@ -1004,6 +1005,57 @@ export function App() {
     screenRef.current = screen;
   }, [screen]);
 
+  /**
+   * ---- BACK TO THE ROOM'S OWN LOBBY ----------------------------------------------
+   *
+   * A custom room used to be worth exactly one game. Everything about the ROOM was frozen
+   * at the first start: a rematch replays that roster, so a group that lost a player, or
+   * wanted to swap sides, had to mint a new code and all re-join it. The room is now
+   * recycled in place instead — the server clears its world and puts it back in the lobby
+   * state, keeping every seat.
+   *
+   * WHICH MEANS THE SOCKET MUST SURVIVE THE SCREEN CHANGE. We hold a seat the server is
+   * still counting; closing the connection would give it up and make everyone re-join the
+   * room they never left (and lose it outright if it filled in between). So the session
+   * `release()`s the transport rather than disposing it, and the Lobby adopts the same
+   * connection — the mirror image of the handover `Lobby.handleStart` makes on the way in.
+   */
+  const [resumedRoom, setResumedRoom] = useState<ResumedRoom | null>(null);
+
+  const backToRoomLobby = (): void => {
+    const s = session;
+    if (!s?.release || !s.room || !s.clientId) return;
+    const transport = s.release();
+    setEditMobileLayout(false);
+    setSession(null);
+    setSessionKind(null);
+    setSessionCoop(false);
+    // the match is over and the room no longer holds one: there is nothing to rejoin, and
+    // leaving the record behind would offer Home a "rejoin your match" that cannot work.
+    clearActiveGame();
+    setActiveGame(null);
+    setResumedRoom({ transport, code: s.room, region: s.region, clientId: s.clientId });
+    navigate('lobby');
+  };
+
+  /**
+   * EVERY MEMBER FOLLOWS THE ROOM, not just whoever pressed the button.
+   *
+   * `requestLobby` only ASKS; the room answers all of its clients at once (`t: 'lobby'`), and
+   * that answer is what moves each of them. Driving the screen change off the press instead
+   * would leave the rest of the room staring at a results screen for a match the server no
+   * longer has — and would move the host even on a request the server refused (a rated room,
+   * a result still being written, a member too old to understand the recycle).
+   *
+   * ⚠️ RE-REGISTERED ON EVERY SESSION, never mount-only: `onLobby` REPLACES, and a callback
+   * captured on the first render reads the session that render had. That is the same trap
+   * `onPracticeRun` fell into.
+   */
+  useEffect(() => {
+    session?.onLobby?.(() => backToRoomLobby());
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [session]);
+
   /** tear the session down without deciding where to go next */
   const leaveSession = (): void => {
     setEditMobileLayout(false);
@@ -1201,6 +1253,15 @@ export function App() {
         }}
         onPracticeRun={keepPracticeRun}
         onQueueAgain={queueAgain}
+        /* CUSTOM ROOMS ONLY. A ranked room is the matchmaker's pairing and re-opening it
+           would hand a rated match a roster nobody was matched into; a record run already
+           restarts into a fresh room of its own. `requestLobby` is also absent on an older
+           session, so this is undefined rather than a button that does nothing. */
+        onBackToLobby={
+          sessionKind === 'custom' && session?.requestLobby
+            ? () => session.requestLobby?.()
+            : undefined
+        }
       />
     );
   }
@@ -1210,8 +1271,16 @@ export function App() {
       <Lobby
         settings={settings}
         onSettingsChange={update}
-        onStart={(s) => beginSession(s, 'custom')}
-        onCancel={() => navigate('modes')}
+        /* Both exits from the lobby drop the handed-over socket reference, so a later,
+           ordinary visit to this screen cannot re-adopt a room the player has left. */
+        onStart={(s) => {
+          setResumedRoom(null);
+          beginSession(s, 'custom');
+        }}
+        onCancel={() => {
+          setResumedRoom(null);
+          navigate('modes');
+        }}
         config={auto?.config}
         signedIn={signedIn}
         displayName={handle}
@@ -1222,6 +1291,7 @@ export function App() {
         autoJoin={auto?.room}
         autoJoinRegion={auto?.region}
         onAutoJoinConsumed={() => setPendingAutoJoin(null)}
+        resume={resumedRoom ?? undefined}
       />
     );
   }

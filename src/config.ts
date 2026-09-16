@@ -45,6 +45,18 @@ export const BALANCE_VERSION = 4; // 2: real-motor drivetrain retune (torque–s
 //    head-to-head outcome moves, and the stiffer robot contact moves solo record scores too.
 // Bumping this INVALIDATES older replays for playback (they only re-sim exactly under their own
 // version's build): ReplayView gates on it and shows "recorded on an older version" instead.
+//
+// ⚠️ **A BUMP TO 5 IS OWED, AND IS TAKEN WHEN ALPHA MERGES INTO MAIN — NOT BEFORE** (owner,
+// 2026-09-15). The alpha batch DOES move scores, so by the rule above it has earned one:
+//   · BIOBUZZ — a TIP still swinging at the buzzer is scored as the TIP it becomes and its load
+//     is no longer also paid as left in the CELL (§10.5 A/C, `games/biobuzz/score.ts`);
+//   · every game — a match is finalized when the FIELD COMES TO REST rather than at a fixed
+//     2.8 s (`sim/settle.ts`), so anything still scoring after the buzzer now lands.
+// What it has NOT earned is a new SEASON, which is the other thing this number does: bumping
+// archives the standings for everyone on the one Fly app, and the changes above exist only on
+// alpha. So the bump rides the promotion commit, where the season it starts is the season those
+// changes are actually live for. Add to the list above rather than bumping early; if a later
+// alpha change makes the batch unshippable without a reset, that is the moment to reconsider.
 
 /**
  * SIM BEHAVIOUR version — "which builds can re-simulate a replay", which is a

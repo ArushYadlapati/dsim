@@ -1,3 +1,4 @@
+import type { Transport } from './transport';
 import type { GameId, RobotCommand, World } from '../types';
 import type { RobotSetup } from '../sim/spawn';
 import type { Replay, ReplayResult } from '../sim/replay';
@@ -147,5 +148,27 @@ export interface NetSession {
   rematchVote?(): RematchVote;
   /** toggle our rematch vote — the server restarts only on unanimity */
   setRematch?(on: boolean): void;
+  /**
+   * ---- BACK TO THE ROOM'S OWN LOBBY -----------------------------------------------
+   *
+   * A rematch replays the roster frozen at the first start. These three are the other
+   * exit from a finished match: the room clears its world, everyone lands back in the
+   * lobby they came from, and the NEXT start is built from whoever is in the room then —
+   * so a group can re-pick sides, or carry on without the player who left, on the code
+   * they already have.
+   *
+   * All optional: a solo practice run has no session at all, a record run does not
+   * recycle, and a build older than the feature simply never offers the control.
+   */
+  /** host only: ask the server to send this finished room back to its lobby */
+  requestLobby?(): void;
+  /** the room went back to its lobby; `clientId` is ours on the socket being handed over */
+  onLobby?(cb: (clientId: string) => void): void;
+  /**
+   * Give up the socket WITHOUT closing it, so the lobby can adopt the same connection.
+   * The caller must re-point the transport's `onMessage` immediately — see
+   * `LobbyClient.resume`.
+   */
+  release?(): Transport;
   dispose(): void;
 }
