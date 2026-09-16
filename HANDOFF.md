@@ -1,13 +1,65 @@
-# HANDOFF — 2026-09-15 (branch `admin-panel`: misscore replays, score editing, replay penalties, standing edits)
+# HANDOFF — 2026-09-16 (alpha: the admin panel merged, five PRs merged, main backported)
 
-**READ FIRST.** Branch **`admin-panel`** off `alpha` (`2a095b3`, pushed). NOT merged, NOT
-deployed. It is a SERVER change AND a MIGRATION change — two new migrations (0035, 0036) that
-apply at game-server boot, so nothing here works until the Fly server is redeployed.
+**READ FIRST.** `alpha` and `main` are both green and both pushed. **NOTHING IS DEPLOYED.**
+
+`npm test` prints **ALL PASS twice** for the first time in a while — PR #69 fixed the stale
+lan-gate asserts that had been failing on a clean tree since LAN went on in production on
+2026-09-13, which (because the suites chain with `&&`) meant the BIOBUZZ suite had not been
+running at all.
+
+## Merged into alpha
+
+| PR | what |
+|---|---|
+| #69 | the lan-gate asserts follow the config that moved under them — **this is what unblocked the second suite** |
+| #58 | `stageBiobuzz` is idempotent: the hopper is cleared with the ball array, so a re-stage stops refusing its own preloads |
+| #61 | a lossy LAN guest's snapshot delta is keyed to its **ACK**, not the last broadcast — **server** |
+| #68 | a rematch cannot field a seat nobody is in; the format comes from the room, not a head count — **server** |
+| #67 | a backgrounded ranked queue cannot lose the match it was given — client only |
+
+Plus the **admin-panel** batch (its own section below).
+
+Gates on alpha: `npm test` ALL PASS ×2 (BIOBUZZ 1317) · `test:mm` 186 · `dbtest` ALL PASS ·
+`build` · `server:check` · `uiaudit` · `contrast`.
+
+## main was CHERRY-PICKED, not promoted
+
+`main` took those six changes only and is still **~28 commits behind alpha** (settle-based
+finalize, the standing repricing, room recycle, the LAN tab host, the BIOBUZZ hive work). Same
+gates, all green there (BIOBUZZ 1299 — fewer checks because main lacks the alpha-only features
+those checks cover).
+
+⚠️ **`src/standing.ts` conflicted and the two branches now price behaviour DIFFERENTLY ON
+PURPOSE.** main keeps `afk: 12` / `leave: 15` / `card: 20`; alpha has the repricing (8 / 8,
+yellow 5 with `RED_CARD_MULT` for red). Only the new `adjustment` kind was backported. **On the
+next promotion this file will conflict again and ALPHA should win** — the repricing is the later
+decision.
+
+## Next steps
+
+1. **Deploy the game server** from a **main** worktree (`./scripts/fly-deploy.sh`, never a bare
+   `flyctl deploy`). Migrations 0035/0036 apply at boot; until then the admin panel's two new
+   endpoints 404 and #61/#68 are inert.
+2. Vercel picks up the client half on push (#67, the replay penalties).
+3. Still outstanding: clear every infraction on `018fdc59-4e80-4a16-908c-682be86bfee8` —
+   after the deploy, one press of CLEAR ALL INFRACTIONS in Admin → Moderation.
+4. Neither #61's LAN path nor #68's rematch gate has been exercised against a live server; both
+   are covered by driven smoke checks only.
+
+---
+
+# HANDOFF — 2026-09-15 (the admin-panel batch: misscore replays, score editing, replay penalties, standing edits)
+
+**(MERGED into `alpha` and cherry-picked onto `main` on 2026-09-16 — see the section above.
+Still NOT deployed.)** It is a SERVER change AND a MIGRATION change — two new migrations
+(0035, 0036) that apply at game-server boot, so nothing here works until the Fly server is
+redeployed.
 
 Build green: `npm run build`, `npm run server:check`, `npm run contrast`, `npm run uiaudit`,
 `npm run dbtest` (ALL PASS, +29 checks). `scripts/smoke.ts` passes +23 new checks.
 
-⚠️ **`npm test` is RED on alpha already, and not from this work.** Two stale checks —
+⚠️ ~~**`npm test` is RED on alpha already, and not from this work.**~~ **FIXED by PR #69**,
+merged 2026-09-16. Left below because the reasoning is why it mattered. Two stale checks —
 `lan gate: alpha opens it; production does not mention it at all` and `lan gate: and
 production still opens neither door` — assert that production's `fly.toml` mentions neither
 `LAN_UPLOADS` nor `LAN_SIGNALLING`. Both were deliberately turned ON in production on
