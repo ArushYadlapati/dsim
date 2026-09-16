@@ -41,6 +41,7 @@
     "dbtest": "tsx scripts/dbtest.ts",
     "loadtest": "tsx scripts/loadtest.ts",
     "uiaudit": "node scripts/uiaudit.mjs",
+    "docaudit": "node scripts/docaudit.mjs",
     "costprobe": "tsx scripts/costprobe.ts"
   },
   "build": {
