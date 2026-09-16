@@ -1864,8 +1864,11 @@ export async function standingsFor(userIds: string[]): Promise<Record<string, St
  *  mid-window, and switching between the 1v1 and 2v2 queues does not reset it. */
 export async function recentStandingCount(userId: string, kind: string, hours: number): Promise<number> {
   const rows = await q<{ n: number }>(
+    // VOIDED ROWS DO NOT COUNT. A pardon that left the escalation intact would be a pardon in
+    // name only: the points come back and the next offence of that kind is still priced as a
+    // second one, with the longer lock and the rating charge that go with it (migration 0036).
     `select count(*)::int as n from standing_events
-      where user_id = $1 and kind = $2 and at > now() - $3::interval`,
+      where user_id = $1 and kind = $2 and at > now() - $3::interval and voided_at is null`,
     [userId, kind, `${Math.max(1, Math.floor(hours))} hours`],
   );
   return Number(rows[0]?.n ?? 0);
@@ -1934,8 +1937,11 @@ export async function listStandingEvents(userId: string, limit = 20): Promise<St
   const rows = await q<{
     id: string; kind: string; points: number; score_after: number;
     cooldown_min: number; rating_charge: number; game: string | null; at: string;
+    voided_at: string | null; note: string | null;
   }>(
-    `select id, kind, points, score_after, cooldown_min, rating_charge, game, at
+    // VOIDED ROWS ARE STILL RETURNED, and shown struck through. A pardoned player needs to see
+    // that their appeal was acted on, and the next moderator needs to see that it was.
+    `select id, kind, points, score_after, cooldown_min, rating_charge, game, at, voided_at, note
        from standing_events where user_id = $1 order by at desc limit $2`,
     [userId, Math.min(100, Math.max(1, Math.floor(limit)))],
   );
@@ -1948,6 +1954,8 @@ export async function listStandingEvents(userId: string, limit = 20): Promise<St
     ratingCharge: Number(r.rating_charge),
     game: r.game,
     at: r.at,
+    voidedAt: r.voided_at,
+    note: r.note,
   }));
 }
 
@@ -1960,6 +1968,106 @@ export interface StandingEventRow {
   ratingCharge: number;
   game: string | null;
   at: string;
+  /** set when a moderator pardoned this offence: it no longer escalates and is shown struck
+   *  through, but it is still on the record (migration 0036) */
+  voidedAt?: string | null;
+  /** a moderator's reason for a manual adjustment. Shown to the PLAYER — an edit they cannot
+   *  see the reason for is the arbitrary moderation this whole system is written against. */
+  note?: string | null;
+}
+
+/**
+ * MODERATOR EDITS to one account's standing — the manual half of a system that is otherwise
+ * charged entirely by a server watching sockets.
+ *
+ * ONE function rather than three endpoints, because the three things a moderator does here are
+ * one fact: void the offences, put the score back, lift the lock. Split apart, a pardon can
+ * land half-applied — points restored while the queue stays shut, or a lock lifted that the
+ * next offence immediately reinstates at the old rung because the ledger still counts what was
+ * supposedly forgiven.
+ *
+ * `score` is an ABSOLUTE target rather than a delta, because that is the decision actually
+ * being made ("put them back to 100"). The ledger row then records the SIGNED difference,
+ * which is the form the player reads (src/standing.ts `standingDelta`).
+ */
+export async function adminEditStanding(
+  userId: string,
+  adminId: string,
+  opts: {
+    /** absolute target 0..STANDING_MAX; omitted leaves the score where it is */
+    score?: number;
+    /** void every offence still counting, so escalation forgets them */
+    pardonAll?: boolean;
+    /** void exactly these ledger rows */
+    pardonIds?: string[];
+    /** false clears the ranked lock; a number sets one that many minutes out; omitted
+     *  leaves a cooldown somebody is legitimately serving alone */
+    lock?: false | number;
+    /** why, in the moderator's own words — stored on the ledger row the player reads */
+    note?: string;
+  },
+): Promise<{ scoreBefore: number; scoreAfter: number; restrictedUntil: string | null; pardoned: number }> {
+  return tx(async (query) => {
+    // a player who has never offended has no row, and a moderator can still be looking at one
+    await query(`insert into account_standing (user_id) values ($1) on conflict (user_id) do nothing`, [userId]);
+    const before = (
+      await query<{ score: number; restricted_until: string | null }>(
+        `select score, restricted_until from account_standing where user_id = $1 for update`,
+        [userId],
+      )
+    )[0];
+    const scoreBefore = Number(before?.score ?? STANDING_MAX);
+
+    let pardoned: { id: string }[] = [];
+    if (opts.pardonAll) {
+      pardoned = await query<{ id: string }>(
+        `update standing_events set voided_at = now(), voided_by = $2
+          where user_id = $1 and voided_at is null returning id`,
+        [userId, adminId],
+      );
+    } else if (opts.pardonIds?.length) {
+      pardoned = await query<{ id: string }>(
+        `update standing_events set voided_at = now(), voided_by = $3
+          where user_id = $1 and id = any($2::bigint[]) and voided_at is null returning id`,
+        [userId, opts.pardonIds, adminId],
+      );
+    }
+
+    const scoreAfter =
+      opts.score === undefined
+        ? scoreBefore
+        : Math.max(0, Math.min(STANDING_MAX, Math.round(opts.score)));
+    const until =
+      opts.lock === undefined
+        ? before?.restricted_until ?? null
+        : opts.lock === false
+          ? null
+          : new Date(Date.now() + Math.max(0, Math.round(opts.lock)) * 60_000).toISOString();
+
+    await query(
+      // `healed_at` moves with the score for the same reason an offence resets it: healing
+      // credits elapsed time since it was last written, and banking idle days across an edit
+      // then spending them a second later is exactly what that column exists to stop.
+      `update account_standing
+          set score = $2, restricted_until = $3, healed_at = now(), updated_at = now()
+        where user_id = $1`,
+      [userId, scoreAfter, until],
+    );
+
+    // ONE ledger row for the whole edit, carrying the SIGNED difference — negative points are
+    // standing given back. Written even when the score did not move, because voiding offences
+    // and lifting a lock are themselves the act, and a player whose queue reopened with
+    // nothing in the ledger to explain it is back to the arbitrary system 0027 set out to
+    // avoid.
+    await query(
+      `insert into standing_events
+         (user_id, kind, points, score_after, cooldown_min, rating_charge, note, admin_id)
+       values ($1, 'adjustment', $2, $3, 0, 0, $4, $5)`,
+      [userId, scoreBefore - scoreAfter, scoreAfter, (opts.note ?? '').slice(0, 120) || null, adminId],
+    );
+
+    return { scoreBefore, scoreAfter, restrictedUntil: until, pardoned: pardoned.length };
+  });
 }
 
 // -------------------------------------------------------- score reports ------
@@ -1967,6 +2075,15 @@ export interface StandingEventRow {
 export interface ScoreReportRow {
   id: string;
   matchId: string | null;
+  /**
+   * The REPLAY of that match, which is the only thing that can settle a misscore claim.
+   *
+   * It has to be carried here rather than derived by the caller, and that is the whole bug
+   * this column fixes: the queue passed `matchId` to `/api/replay/<id>` and every WATCH
+   * button in the misscore queue 404'd. A match id and a replay id are different rows —
+   * `matches.replay_id` is the join — and nothing about the two being uuids says so.
+   */
+  replayId: string | null;
   roomCode: string;
   game: string;
   detail: string;
@@ -2007,17 +2124,23 @@ export async function submitScoreReport(r: {
 export async function listScoreReports(opts: { status?: string; limit?: number } = {}): Promise<ScoreReportRow[]> {
   const limit = Math.min(200, Math.max(1, Math.floor(opts.limit ?? 50)));
   const rows = await q<{
-    id: string; match_id: string | null; room_code: string; game: string; detail: string;
+    id: string; match_id: string | null; replay_id: string | null; room_code: string;
+    game: string; detail: string;
     status: string; smite: number; created_at: string; reporter_id: string;
     handle: string; username: string | null; filed: string; rejected: string;
   }>(
-    `select sr.id::text as id, sr.match_id::text as match_id, sr.room_code, sr.game, sr.detail,
+    // LEFT JOIN, because `score_reports.match_id` is nullable on purpose: a player looking at
+    // a result that never finished writing is exactly the case worth hearing about, and it
+    // must not drop out of the queue for having no match to point at.
+    `select sr.id::text as id, sr.match_id::text as match_id, m.replay_id::text as replay_id,
+            sr.room_code, sr.game, sr.detail,
             sr.status, sr.smite, sr.created_at, sr.reporter_id, p.handle, p.username,
             (select count(*) from score_reports x where x.reporter_id = sr.reporter_id) as filed,
             (select count(*) from score_reports x
               where x.reporter_id = sr.reporter_id and x.status = 'rejected') as rejected
        from score_reports sr
        join profiles p on p.user_id = sr.reporter_id
+       left join matches m on m.id = sr.match_id
       where ($1::text is null or sr.status = $1::text)
       order by sr.created_at desc
       limit $2`,
@@ -2026,6 +2149,7 @@ export async function listScoreReports(opts: { status?: string; limit?: number }
   return rows.map((x) => ({
     id: x.id,
     matchId: x.match_id,
+    replayId: x.replay_id,
     roomCode: x.room_code,
     game: x.game,
     detail: x.detail,
@@ -2066,6 +2190,170 @@ export async function resolveScoreReport(
   );
   if (!rows.length) return null;
   return { reporterId: rows[0].reporter_id, roomCode: rows[0].room_code, game: rows[0].game };
+}
+
+// ------------------------------------------------- match score corrections ---
+
+export interface MatchScoreRow {
+  matchId: string;
+  replayId: string | null;
+  game: string;
+  mode: string;
+  ranked: boolean | null;
+  createdAt: string;
+  /** the alliance totals as they stand. Every participant on an alliance carries that
+   *  alliance's total (see `persistVersusMatch`), so the pair below IS the stored result. */
+  red: number;
+  blue: number;
+  participants: {
+    userId: string;
+    handle: string;
+    username: string | null;
+    alliance: 'red' | 'blue';
+    drivetrain: string;
+    score: number;
+    won: boolean | null;
+    ratingBefore: number | null;
+    ratingAfter: number | null;
+  }[];
+  /** every correction ever applied to this match, newest first */
+  corrections: MatchScoreCorrectionRow[];
+}
+
+export interface MatchScoreCorrectionRow {
+  id: string;
+  adminId: string;
+  redBefore: number;
+  blueBefore: number;
+  redAfter: number;
+  blueAfter: number;
+  note: string | null;
+  at: string;
+}
+
+/** everything the score editor needs about one match: who played, what it says now, and what
+ *  has already been done to it. Null when the id is not a match. */
+export async function matchScoreDetail(matchId: string): Promise<MatchScoreRow | null> {
+  const head = await q<{
+    id: string; replay_id: string | null; game: string; mode: string;
+    ranked: boolean | null; created_at: string;
+  }>(
+    `select m.id::text as id, m.replay_id::text as replay_id, m.game, m.mode, m.ranked, m.created_at
+       from matches m where m.id = $1::uuid`,
+    [matchId],
+  );
+  const m = head[0];
+  if (!m) return null;
+  const parts = await q<{
+    user_id: string; handle: string; username: string | null; alliance: 'red' | 'blue';
+    drivetrain: string; score: number; won: boolean | null;
+    rating_before: number | null; rating_after: number | null;
+  }>(
+    `select mp.user_id, p.handle, p.username, mp.alliance, mp.drivetrain, mp.score, mp.won,
+            mp.rating_before, mp.rating_after
+       from match_participants mp
+       join profiles p on p.user_id = mp.user_id
+      where mp.match_id = $1::uuid
+      order by mp.alliance, p.handle`,
+    [matchId],
+  );
+  const corrections = await listScoreCorrections(matchId);
+  const sideOf = (a: 'red' | 'blue'): number => parts.find((x) => x.alliance === a)?.score ?? 0;
+  return {
+    matchId: m.id,
+    replayId: m.replay_id,
+    game: m.game,
+    mode: m.mode,
+    ranked: m.ranked,
+    createdAt: m.created_at,
+    red: sideOf('red'),
+    blue: sideOf('blue'),
+    participants: parts.map((x) => ({
+      userId: x.user_id,
+      handle: x.handle,
+      username: x.username,
+      alliance: x.alliance,
+      drivetrain: x.drivetrain,
+      score: Number(x.score),
+      won: x.won,
+      ratingBefore: x.rating_before === null ? null : Number(x.rating_before),
+      ratingAfter: x.rating_after === null ? null : Number(x.rating_after),
+    })),
+    corrections,
+  };
+}
+
+export async function listScoreCorrections(matchId: string): Promise<MatchScoreCorrectionRow[]> {
+  const rows = await q<{
+    id: string; admin_id: string; red_before: number; blue_before: number;
+    red_after: number; blue_after: number; note: string | null; at: string;
+  }>(
+    `select id::text as id, admin_id, red_before, blue_before, red_after, blue_after, note, at
+       from match_score_corrections where match_id = $1::uuid order by at desc`,
+    [matchId],
+  );
+  return rows.map((r) => ({
+    id: r.id,
+    adminId: r.admin_id,
+    redBefore: Number(r.red_before),
+    blueBefore: Number(r.blue_before),
+    redAfter: Number(r.red_after),
+    blueAfter: Number(r.blue_after),
+    note: r.note,
+    at: r.at,
+  }));
+}
+
+/**
+ * Correct a finished match's score.
+ *
+ * WHAT MOVES: every participant's `score` (to their alliance's new total) and their `won`
+ * flag, which is re-derived rather than passed in — a correction that left a player recorded
+ * as the winner of a match they are now shown losing would be a worse record than the wrong
+ * number it replaced. A TIE sets `won` false on both sides, which is what the sim does too.
+ *
+ * WHAT DOES NOT MOVE: the RATING. Glicko-2 is sequential — every match since this one was
+ * rated against the numbers it produced — so re-rating one match in the middle means
+ * re-rating every match after it for everyone involved, and a moderation panel is not where
+ * that decision belongs. `rating_before`/`rating_after` therefore stay exactly as they were
+ * and the console says so out loud.
+ *
+ * Returns the before/after pair, or null when the id names no match.
+ */
+export async function correctMatchScore(
+  matchId: string,
+  next: { red: number; blue: number },
+  adminId: string,
+  note?: string,
+): Promise<{ redBefore: number; blueBefore: number; redAfter: number; blueAfter: number } | null> {
+  const red = Math.max(0, Math.round(next.red));
+  const blue = Math.max(0, Math.round(next.blue));
+  return tx(async (query) => {
+    const rows = await query<{ alliance: 'red' | 'blue'; score: number }>(
+      `select mp.alliance, mp.score from match_participants mp
+         join matches m on m.id = mp.match_id
+        where mp.match_id = $1::uuid for update of mp`,
+      [matchId],
+    );
+    if (!rows.length) return null;
+    const redBefore = rows.find((r) => r.alliance === 'red')?.score ?? 0;
+    const blueBefore = rows.find((r) => r.alliance === 'blue')?.score ?? 0;
+
+    await query(
+      `update match_participants
+          set score = case when alliance = 'red' then $2::int else $3::int end,
+              won   = case when alliance = 'red' then $2::int > $3::int else $3::int > $2::int end
+        where match_id = $1::uuid`,
+      [matchId, red, blue],
+    );
+    await query(
+      `insert into match_score_corrections
+         (match_id, admin_id, red_before, blue_before, red_after, blue_after, note)
+       values ($1::uuid, $2, $3, $4, $5, $6, $7)`,
+      [matchId, adminId, redBefore, blueBefore, red, blue, (note ?? '').slice(0, 300) || null],
+    );
+    return { redBefore: Number(redBefore), blueBefore: Number(blueBefore), redAfter: red, blueAfter: blue };
+  });
 }
 
 // ------------------------------------------------------- player reports ------

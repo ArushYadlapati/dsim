@@ -1147,6 +1147,228 @@ async function main(): Promise<void> {
     check('lan: ...and its matches', (rows.rows[0] as { n: number }).n === 0);
   }
 
+  /* ========================================================================
+     THE MISSCORE PATH, END TO END: open the replay, correct the score.
+     ========================================================================
+
+     Two halves, and the first one is a bug this suite would have caught the day it shipped.
+     `listScoreReports` handed the queue a MATCH id and the WATCH button passed it to
+     `/api/replay/<id>`, which serves `replays.id` — so every misscore claim's replay 404'd,
+     which is the one thing the queue exists to let a moderator do. The row carries the replay
+     now, joined through `matches.replay_id`, and a claim with no match still has to appear.
+  */
+  {
+    await repo.ensureProfile('mis-red', 'Red Driver');
+    await repo.ensureProfile('mis-blue', 'Blue Driver');
+    await repo.ensureProfile('mis-filer', 'Filer Two');
+
+    const replayId = await repo.saveReplay(
+      { format: 2, balanceVersion: SEASON, sim: 3, game: 'decode', mode: 'match', seed: 7, ticks: 10, setups: [], tracks: {} },
+      SEASON,
+      'decode',
+    );
+    const mid = await repo.saveMatch('1v1', SEASON, replayId, true, 'decode');
+    await repo.addMatchParticipant({
+      matchId: mid, userId: 'mis-red', alliance: 'red', drivetrain: 'tank',
+      score: 40, won: false, ratingBefore: 1000, ratingAfter: 980,
+    });
+    await repo.addMatchParticipant({
+      matchId: mid, userId: 'mis-blue', alliance: 'blue', drivetrain: 'mecanum',
+      score: 55, won: true, ratingBefore: 1000, ratingAfter: 1020,
+    });
+
+    await repo.submitScoreReport({ reporterId: 'mis-filer', matchId: mid, roomCode: 'MIS1', detail: 'red scored 48' });
+    const q = await repo.listScoreReports({ status: 'open' });
+    const row = q.find((r) => r.matchId === String(mid));
+    check(
+      'misscore: the queue row carries the REPLAY id, not just the match id',
+      row?.replayId === String(replayId) && row?.matchId === String(mid),
+      `replay=${row?.replayId} match=${row?.matchId}`,
+    );
+    check(
+      'misscore: ...and that id is the one /api/replay actually serves',
+      (await repo.getReplay(row!.replayId as string)) !== null,
+    );
+    // a claim about a result that never finished writing has no match and no replay, and must
+    // still reach the queue rather than being joined away
+    await repo.submitScoreReport({ reporterId: 'mis-filer', roomCode: 'MIS2', detail: 'the room crashed at the buzzer' });
+    const q2 = await repo.listScoreReports({ status: 'open' });
+    check(
+      'misscore: a claim with no stored match still appears, with a null replay',
+      q2.some((r) => r.roomCode === 'MIS2' && r.matchId === null && r.replayId === null),
+    );
+
+    // ---- the correction itself -------------------------------------------------
+    const detail = await repo.matchScoreDetail(String(mid));
+    check(
+      'score edit: the editor reads the alliance totals off the participants',
+      detail?.red === 40 && detail?.blue === 55 && detail?.participants.length === 2,
+      `${detail?.red}-${detail?.blue}`,
+    );
+    check('score edit: ...and no corrections yet', detail?.corrections.length === 0);
+
+    const done = await repo.correctMatchScore(String(mid), { red: 62, blue: 55 }, 'admin-1', 'two artifacts uncounted');
+    check(
+      'score edit: the correction reports both sides of the change',
+      done?.redBefore === 40 && done?.redAfter === 62 && done?.blueBefore === 55 && done?.blueAfter === 55,
+      JSON.stringify(done),
+    );
+    const after = await repo.matchScoreDetail(String(mid));
+    check('score edit: every participant on the alliance carries the new total', after?.red === 62);
+    check(
+      'score edit: the WIN is re-derived, so the record cannot say someone won a match they lost',
+      after?.participants.find((x) => x.userId === 'mis-red')?.won === true &&
+        after?.participants.find((x) => x.userId === 'mis-blue')?.won === false,
+    );
+    // RATINGS DO NOT MOVE. Glicko-2 is sequential; re-rating one match in the middle means
+    // re-rating every match since, for everyone in it. The console says so and this pins it.
+    check(
+      'score edit: the ratings the players left the match with are untouched',
+      after?.participants.find((x) => x.userId === 'mis-blue')?.ratingAfter === 1020 &&
+        after?.participants.find((x) => x.userId === 'mis-red')?.ratingAfter === 980,
+    );
+    check(
+      'score edit: the change is audited with both scores and the reason',
+      after?.corrections.length === 1 &&
+        after.corrections[0].redBefore === 40 &&
+        after.corrections[0].redAfter === 62 &&
+        after.corrections[0].note === 'two artifacts uncounted' &&
+        after.corrections[0].adminId === 'admin-1',
+      JSON.stringify(after?.corrections[0]),
+    );
+    // a TIE is `won = false` on both sides, which is what the sim records too
+    await repo.correctMatchScore(String(mid), { red: 55, blue: 55 }, 'admin-1');
+    const tied = await repo.matchScoreDetail(String(mid));
+    check(
+      'score edit: a tie leaves nobody marked as the winner',
+      tied?.participants.every((x) => x.won === false) === true,
+    );
+    check('score edit: ...and both corrections are on the record', tied?.corrections.length === 2);
+    check(
+      'score edit: an id that names no match is refused rather than writing nothing quietly',
+      (await repo.correctMatchScore('00000000-0000-0000-0000-000000000000', { red: 1, blue: 1 }, 'admin-1')) === null &&
+        (await repo.matchScoreDetail('00000000-0000-0000-0000-000000000000')) === null,
+    );
+  }
+
+  /* ========================================================================
+     STANDING, EDITED BY A MODERATOR — the pardon and what it does to escalation.
+     ========================================================================
+
+     The point of voiding rather than deleting is that BOTH things have to be true afterwards:
+     the offence stops counting toward the next penalty's rung, and it is still on the record.
+     `recentStandingCount` is the function escalation reads, so it is the one that has to
+     forget — a pardon that only gave the points back would leave the player's next dodge
+     priced as their third.
+  */
+  {
+    await repo.ensureProfile('st-user', 'Penalised');
+
+    const charge = async (kind: string, points: number, cooldownMin = 0): Promise<void> => {
+      const before = (await repo.getStanding('st-user')).score;
+      await repo.writeStandingEvent('st-user', {
+        kind: kind as never,
+        points,
+        scoreBefore: before,
+        scoreAfter: Math.max(0, before - points),
+        tierBefore: 'good',
+        tierAfter: 'good',
+        rung: 0,
+        cooldownMin,
+        restrictedUntil: cooldownMin ? Date.now() + cooldownMin * 60_000 : null,
+        ratingCharge: 0,
+        nextCooldownMin: 0,
+      });
+    };
+    await charge('dodge', 5);
+    await charge('dodge', 8);
+    await charge('leave', 8, 30);
+
+    check(
+      'standing: the ledger counts what the server saw',
+      (await repo.recentStandingCount('st-user', 'dodge', 24)) === 2,
+    );
+    const locked = await repo.getStanding('st-user');
+    check('standing: ...and the walk-out locked the queue', locked.restrictedUntil !== null);
+
+    // ONE OFFENCE pardoned: the points are a separate decision, so the score is untouched
+    const events = await repo.listStandingEvents('st-user', 20);
+    const oneDodge = events.find((e) => e.kind === 'dodge');
+    const one = await repo.adminEditStanding('st-user', 'admin-1', { pardonIds: [oneDodge!.id] });
+    check('standing: pardoning one offence voids exactly one row', one.pardoned === 1);
+    check(
+      'standing: ...and escalation immediately stops counting it',
+      (await repo.recentStandingCount('st-user', 'dodge', 24)) === 1,
+    );
+    const stillThere = await repo.listStandingEvents('st-user', 20);
+    check(
+      'standing: ...while the row itself stays on the record, marked',
+      stillThere.some((e) => e.id === oneDodge!.id && !!e.voidedAt),
+    );
+    check(
+      'standing: the edit writes ONE adjustment row, so the player sees why the number moved',
+      stillThere.filter((e) => e.kind === 'adjustment').length === 1,
+    );
+
+    // CLEAR EVERYTHING — the one-press pardon the console leads with
+    const cleared = await repo.adminEditStanding('st-user', 'admin-1', {
+      pardonAll: true,
+      score: 100,
+      lock: false,
+      note: 'room crashed, not their fault',
+    });
+    check(
+      'standing: clearing voids every offence still counting',
+      cleared.pardoned === 3,
+      `${cleared.pardoned}`,
+    );
+    const open = await repo.getStanding('st-user');
+    check('standing: ...puts the score back', open.score === 100, `${open.score}`);
+    check('standing: ...and lifts the ranked lock', open.restrictedUntil === null);
+    check(
+      'standing: ...and nothing escalates any more',
+      (await repo.recentStandingCount('st-user', 'dodge', 24)) === 0 &&
+        (await repo.recentStandingCount('st-user', 'leave', 168)) === 0,
+    );
+    const ledger = await repo.listStandingEvents('st-user', 20);
+    const credit = ledger.find((e) => e.kind === 'adjustment' && e.points < 0);
+    check(
+      'standing: a restoration is a NEGATIVE cost, which is how the player is shown a credit',
+      credit !== undefined && credit.points < 0,
+      `${credit?.points}`,
+    );
+    check(
+      'standing: the moderator\'s reason comes back on the row the player reads',
+      ledger.some((e) => e.kind === 'adjustment' && e.note === 'room crashed, not their fault'),
+      JSON.stringify(ledger.find((e) => e.kind === 'adjustment' && e.points < 0)),
+    );
+
+    // AN UNRELATED EDIT MUST NOT UNLOCK THE QUEUE. `lock` is three-valued on purpose: absent
+    // leaves a cooldown somebody is legitimately serving exactly where it is.
+    await charge('leave', 8, 30);
+    const relocked = await repo.getStanding('st-user');
+    check('standing: a fresh walk-out locks the queue again', relocked.restrictedUntil !== null);
+    await repo.adminEditStanding('st-user', 'admin-1', { score: 90 });
+    const after = await repo.getStanding('st-user');
+    check(
+      'standing: setting the SCORE alone leaves the lock alone',
+      after.restrictedUntil !== null && after.score === 90,
+      `score=${after.score} lock=${after.restrictedUntil}`,
+    );
+    check(
+      'standing: ...and setting a score is not a pardon — the offence still escalates',
+      (await repo.recentStandingCount('st-user', 'leave', 168)) === 1,
+    );
+    // an account with no standing row at all is still editable — a moderator can be looking at
+    // somebody who has simply never offended
+    await repo.ensureProfile('st-clean', 'Spotless');
+    const fresh = await repo.adminEditStanding('st-clean', 'admin-1', { score: 100, pardonAll: true });
+    check(
+      'standing: an account with no row yet is created rather than failing',
+      fresh.scoreAfter === 100 && fresh.pardoned === 0,
+    );
+  }
+
   await db.close();
   console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILURES`);
   process.exit(failures === 0 ? 0 : 1);

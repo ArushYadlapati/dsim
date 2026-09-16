@@ -2690,7 +2690,11 @@ tr.lb-detail td {
 }
 .ds-replay-canvas {
   flex: 1;
-  width: 100%;
+  /* BOTH minimums, because the canvas is now a flex item in a ROW (`.ds-replay-stage`) as well
+     as filling a column. Without `min-width: 0` a flex item refuses to shrink below its
+     intrinsic width, so opening the rail would push the field off the side instead of
+     narrowing it. */
+  min-width: 0;
   min-height: 0;
 }
 .ds-replay-controls {
@@ -2722,6 +2726,485 @@ tr.lb-detail td {
   color: var(--ds-mut);
   width: 44px;
   text-align: right;
+}
+
+/* ---- admin: account standing ------------------------------------------
+   The one panel in the console that UNDOES something the server decided, so it leads with
+   the state it is undoing (tier, score, lock) and puts the one-press pardon above the fiddly
+   controls — almost every time this is opened the decision is already made.              */
+.adm-standing {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin: 12px 0;
+  padding: 16px;
+  border: 1px solid var(--ds-line);
+  border-radius: var(--ds-round);
+  background: var(--ds-tile);
+}
+.as-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 8px;
+}
+.as-name {
+  font-weight: 700;
+  font-size: var(--ds-t-lg);
+  color: var(--ds-ink);
+}
+.as-tier {
+  padding: 2px 8px;
+  border-radius: var(--ds-round-full);
+  background: var(--ds-tile);
+  border: 1px solid var(--ds-line);
+  font-size: var(--ds-t-xs);
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--ds-mut);
+}
+/* the two tiers that actually restrict something read as warnings; the rest stay quiet,
+   because colouring "Good standing" is colouring the absence of a problem */
+.as-tier.probation,
+.as-tier.suspended {
+  color: var(--ds-danger);
+  border-color: var(--ds-danger);
+}
+.as-tier.restricted {
+  color: var(--ds-warn);
+  border-color: var(--ds-warn);
+}
+.as-score {
+  font-family: var(--ds-font-mono);
+  font-variant-numeric: tabular-nums;
+  font-size: var(--ds-t-xl);
+  font-weight: 700;
+  color: var(--ds-ink);
+}
+.as-score em {
+  font-style: normal;
+  font-size: var(--ds-t-sm);
+  font-weight: 400;
+  color: var(--ds-mut);
+}
+.as-lock {
+  font-size: var(--ds-t-xs);
+  font-weight: 600;
+  color: var(--ds-danger);
+}
+.as-blurb {
+  margin: 0;
+  font-size: var(--ds-t-sm);
+  color: var(--ds-mut);
+}
+.as-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+.as-cap {
+  font-size: var(--ds-t-xs);
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--ds-mut);
+}
+.as-field input {
+  padding: 8px;
+  border: 1px solid var(--ds-line);
+  border-radius: var(--ds-round-sm);
+  background: var(--ds-panel);
+  color: var(--ds-ink);
+  font: 400 var(--ds-t-md) / 1.4 var(--ds-font-ui);
+}
+.as-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.as-set {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: end;
+  gap: 8px;
+}
+.as-set input {
+  width: 100%;
+  font-family: var(--ds-font-mono);
+  font-variant-numeric: tabular-nums;
+}
+.as-hint {
+  grid-column: 1 / -1;
+  margin: 0;
+  font-size: var(--ds-t-xs);
+  line-height: 1.5;
+  color: var(--ds-mut);
+}
+.as-status {
+  margin: 0;
+  font-size: var(--ds-t-sm);
+  color: var(--ds-ok-ink);
+}
+.as-h4 {
+  margin: 4px 0 0;
+  font-size: var(--ds-t-xs);
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--ds-mut);
+}
+.as-log {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.as-log li {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 2px 8px;
+  align-items: center;
+  font-size: var(--ds-t-sm);
+}
+.as-what {
+  color: var(--ds-ink);
+}
+.as-cost {
+  grid-column: 1 / -1;
+  grid-row: 2;
+  font-size: var(--ds-t-xs);
+  font-variant-numeric: tabular-nums;
+}
+/* PARDONED, not deleted: struck through and dimmed, because the next moderator needs to see
+   that this account has been forgiven three times as much as the player needs to see it was. */
+.as-log li.voided .as-what {
+  text-decoration: line-through;
+  color: var(--ds-mut);
+}
+.as-note {
+  grid-column: 1 / -1;
+  grid-row: 3;
+  font-size: var(--ds-t-xs);
+  color: var(--ds-ink-dim);
+}
+
+/* ---- replay: penalties + the rail -------------------------------------
+   PENALTIES ARE NOT AN ADMIN FEATURE. The viewer drew fouls on the field and named none of
+   them, so a score that moved nine points in one second had no explanation anywhere on the
+   screen. The summary row is always on for everybody; the timeline sits in the rail beside
+   the field, which narrows the canvas rather than shortening it — the camera fits the field
+   to the shorter of its two spans and height is what the HUD bands already eat.            */
+.ds-replay-pen {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 4px 16px;
+  border-bottom: 1px solid var(--ds-line);
+  background: var(--ds-bar);
+  font-size: var(--ds-t-xs);
+}
+.pen-chip {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.pen-side {
+  font-weight: 700;
+  letter-spacing: 0.06em;
+}
+/* -ink siblings: these are TYPE on a bar surface, and the raw fills fail AA as text */
+.pen-side.red {
+  color: var(--ds-red-ink);
+}
+.pen-side.blue {
+  color: var(--ds-blue-ink);
+}
+.pen-count,
+.pen-awarded,
+.pen-clean {
+  color: var(--ds-mut);
+  font-variant-numeric: tabular-nums;
+}
+.pen-card {
+  font-weight: 700;
+}
+.pen-card.yellow {
+  color: var(--ds-warn);
+}
+.pen-card.red {
+  color: var(--ds-danger);
+}
+
+.ds-replay-stage {
+  flex: 1;
+  display: flex;
+  min-height: 0;
+  min-width: 0;
+}
+.ds-replay-rail {
+  flex: 0 0 340px;
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+  overflow-y: auto;
+  padding: 16px;
+  border-left: 1px solid var(--ds-line);
+  background: var(--ds-bar);
+}
+
+.rr-sec {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+.rr-h {
+  margin: 0;
+  font-size: var(--ds-t-md);
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--ds-ink);
+}
+.rr-h4 {
+  margin: 8px 0 0;
+  font-size: var(--ds-t-xs);
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--ds-mut);
+}
+.rr-none {
+  margin: 0;
+  font-size: var(--ds-t-sm);
+  color: var(--ds-mut);
+}
+.rr-cap {
+  font-size: var(--ds-t-xs);
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--ds-mut);
+}
+
+/* the timeline. Each row is a BUTTON: a call has a tick, so the obvious thing to do with one
+   is jump to it, and a list you can only read is a list a moderator re-scrubs for by hand. */
+.rr-pen {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.rr-pen-row {
+  width: 100%;
+  display: grid;
+  grid-template-columns: auto auto 1fr auto;
+  gap: 2px 8px;
+  align-items: baseline;
+  padding: 8px;
+  border: 1px solid var(--ds-line);
+  border-radius: var(--ds-round-sm);
+  background: var(--ds-panel);
+  color: var(--ds-ink);
+  font: 500 var(--ds-t-xs) / 1.4 var(--ds-font-ui);
+  text-align: left;
+  cursor: pointer;
+}
+.rr-pen-row:hover {
+  border-color: var(--ds-line-strong);
+}
+.rr-when {
+  grid-column: 1 / -1;
+  font-family: var(--ds-font-mono);
+  font-variant-numeric: tabular-nums;
+  color: var(--ds-mut);
+}
+.rr-side {
+  font-weight: 700;
+  letter-spacing: 0.06em;
+}
+.rr-side.red {
+  color: var(--ds-red-ink);
+}
+.rr-side.blue {
+  color: var(--ds-blue-ink);
+}
+.rr-sev {
+  font-weight: 700;
+  letter-spacing: 0.04em;
+}
+.rr-sev.minor {
+  color: var(--ds-warn);
+}
+.rr-sev.major,
+.rr-sev.card-red {
+  color: var(--ds-danger);
+}
+.rr-sev.card-yellow {
+  color: var(--ds-warn);
+}
+.rr-sev.warning {
+  color: var(--ds-mut);
+}
+.rr-rule {
+  color: var(--ds-ink-dim);
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.rr-pts {
+  color: var(--ds-mut);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+/* the score editor. The two numbers side by side ARE the judgement, so they get equal weight
+   and equal width — a stored figure with the live one tucked under a label would make the
+   comparison something you do rather than something you see. */
+.rr-cmp {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+.rr-cmp-col {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+  padding: 8px;
+  border: 1px solid var(--ds-line);
+  border-radius: var(--ds-round-sm);
+  background: var(--ds-panel);
+}
+.rr-cmp-num {
+  font-size: var(--ds-t-lg);
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  color: var(--ds-mut);
+}
+.rr-cmp-num .red {
+  color: var(--ds-red-ink);
+}
+.rr-cmp-num .blue {
+  color: var(--ds-blue-ink);
+}
+.rr-cmp-sub {
+  font-size: var(--ds-t-xs);
+  color: var(--ds-mut);
+}
+.rr-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.rr-edit {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+.rr-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+.rr-field input {
+  width: 100%;
+  padding: 8px;
+  border: 1px solid var(--ds-line);
+  border-radius: var(--ds-round-sm);
+  background: var(--ds-panel);
+  color: var(--ds-ink);
+  font: 600 var(--ds-t-md) / 1.2 var(--ds-font-mono);
+}
+.rr-field.wide {
+  grid-column: 1 / -1;
+}
+.rr-field.wide input {
+  font: 400 var(--ds-t-sm) / 1.4 var(--ds-font-ui);
+}
+.rr-field.red input:focus-visible {
+  outline: 2px solid var(--ds-red-ink);
+}
+.rr-field.blue input:focus-visible {
+  outline: 2px solid var(--ds-blue-ink);
+}
+.rr-outcome {
+  margin: 0;
+  font-size: var(--ds-t-sm);
+  color: var(--ds-mut);
+}
+.rr-outcome.changed {
+  color: var(--ds-ink);
+  font-weight: 600;
+}
+.rr-note {
+  margin: 0;
+  font-size: var(--ds-t-xs);
+  line-height: 1.5;
+  color: var(--ds-mut);
+}
+.rr-status {
+  margin: 0;
+  font-size: var(--ds-t-sm);
+  color: var(--ds-ok-ink);
+}
+.rr-players,
+.rr-hist {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: var(--ds-t-xs);
+}
+.rr-players li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 8px;
+}
+.rr-name {
+  font-weight: 600;
+  color: var(--ds-ink);
+}
+.rr-dt,
+.rr-elo {
+  font-variant-numeric: tabular-nums;
+}
+.rr-hist li {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.rr-hist-note {
+  color: var(--ds-ink-dim);
+}
+
+/* NARROW: the rail goes UNDER the field rather than beside it, capped so the match keeps most
+   of the screen. A 340px column on a 400px viewport is not a rail, it is a takeover. */
+@media (max-width: 860px) {
+  .ds-replay-stage {
+    flex-direction: column;
+  }
+  .ds-replay-rail {
+    flex: 0 0 auto;
+    max-height: 40vh;
+    border-left: none;
+    border-top: 1px solid var(--ds-line);
+  }
+  .ds-replay-pen {
+    flex-wrap: wrap;
+    justify-content: center;
+  }
 }
 
 /* ---- replay export menu (ReplayView's ↓ Download) ---------------------
@@ -4997,6 +5480,18 @@ button.ds-key:active {
   align-items: baseline;
 }
 .ds-standing-what { font: 600 12px/1.4 var(--ds-font-ui); color: var(--ds-ink); }
+/* a PARDONED offence keeps its place and is struck through: a penalty that simply vanished
+   would leave the player's score having moved with nothing on the card to explain why */
+.ds-standing-log li.voided .ds-standing-what {
+  text-decoration: line-through;
+  color: var(--ds-mut);
+}
+/* the moderator's reason, on its own line under the row it explains */
+.ds-standing-note {
+  flex-basis: 100%;
+  font: 400 12px/1.5 var(--ds-font-ui);
+  color: var(--ds-ink-dim);
+}
 .ds-standing-cost { font: 600 11px/1.4 var(--ds-font-mono); }
 
 /* the standing pill in the moderation queue — the server's own read on a reported player,
