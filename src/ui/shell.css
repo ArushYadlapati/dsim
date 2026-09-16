@@ -2470,7 +2470,7 @@ button.ds-chip {
   margin: 2px 0 12px;
   padding: 10px 14px;
   border: 1px solid var(--ds-line);
-  border-radius: 10px;
+  border-radius: var(--ds-round-md);
   background: color-mix(in srgb, var(--ds-accent) 8%, var(--ds-panel));
 }
 .lb-standing.placed {
@@ -2629,7 +2629,7 @@ tr.lb-detail td {
   max-width: 640px;
   padding: 8px 12px;
   border: 1px solid var(--ds-line);
-  border-radius: 8px;
+  border-radius: var(--ds-round);
   background: var(--ds-tile);
   color: var(--ds-mut);
   font-size: 13px;
@@ -4885,7 +4885,7 @@ button.ds-key:active {
   line-height: 0;
 }
 .ds-startpos-canvas {
-  border-radius: 10px;
+  border-radius: var(--ds-round-md);
   background: var(--ds-bg);
   border: 1px solid var(--ds-line);
   touch-action: none; /* pointer drag, not scroll */
