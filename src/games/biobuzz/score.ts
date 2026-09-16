@@ -10,6 +10,7 @@ import {
   BB_RP,
 } from './config';
 import { bbElementRadius, flowerScore, type BbElementKind } from './flower';
+import { hiveLoad, hiveWillTip } from './hive';
 import type { BiobuzzState } from './state';
 
 /**
@@ -345,8 +346,34 @@ export function bbScoreWorld(world: World): BbScore {
      * cell only ever adds.
      */
     const swinging = hive.tipping > 0;
-    out[a].tips = hive.tips + (matchOver && swinging ? 1 : 0);
-    out[a].cellCount = matchOver && swinging && !hive.released ? 0 : hive.contents.length;
+    /**
+     * ⚠️ A CELL OVER ITS CALIBRATED LOAD OWES A TIP, AND AT THE END OF THE MATCH IT IS ONE.
+     *
+     * Reported as "last tips are not counted": the balls settle in the HIVE, the field goes
+     * still, the score is taken — and the 20 for the TIP that follows is not in it.
+     *
+     * `hiveStep` starts the swing on the tick AFTER the load crosses `BB_TIP_POLLEN`, and
+     * `bbSettled` holds the settle clock open for BOTH states, so in the ordinary case the
+     * clock waits and the swing completes into `hive.tips`. What it cannot wait through is
+     * the CAP: `MATCH_SETTLE_MAX_S` finalizes whatever the field looks like at 10 s, and a
+     * capture that lands on a loaded-but-not-yet-swinging tray used to pay NOTHING for it —
+     * and then pay its load a second time as elements remaining in the CELL, which is worth a
+     * few points against the tip's 20.
+     *
+     * §10.5 A assesses TIPS "until all SCORING ELEMENTS and ROBOTS have come to rest at the
+     * conclusion of the MATCH". A tray sitting over its tip load has come to rest in the only
+     * state it has: the swing is the animation, not the event, and the calibrated load is what
+     * decides. So a pending tip is paid exactly like one already in motion.
+     *
+     * `!swinging` guards the double count — `contents` still holds the load until the tray
+     * releases at LEVEL, so mid-swing both predicates are true and the tip is owed ONCE.
+     */
+    const pending = !swinging && hiveWillTip(hiveLoad(hive.contents, kindOf));
+    out[a].tips = hive.tips + (matchOver && (swinging || pending) ? 1 : 0);
+    // ...and a load being paid as a TIP is NOT ALSO remaining in the CELL (§10.5 C) — the same
+    // split the swinging case already made, now made for the pending one too.
+    out[a].cellCount =
+      matchOver && (pending || (swinging && !hive.released)) ? 0 : hive.contents.length;
   }
 
   // ── FLOWERS: 2 per element to the OWNER, 5 to the bottom NECTAR's alliance ─
