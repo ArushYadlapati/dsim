@@ -300,6 +300,28 @@ const activeElsewhere = (userId: string, code: string): boolean => {
 };
 
 /**
+ * Is this user supposed to be LOADING INTO a ranked match right now?
+ *
+ * A pairing the matchmaker staged holds the same single-game lock a live match does
+ * (`Room.applyPending`), so this reads the same map — but it answers the narrower
+ * question the ranked queue needs: not "is there a game somewhere" but "is the server
+ * already counting down `RANKED_JOIN_GRACE_MS` on this account". That window is the one
+ * a player can walk back into the queue during — a refresh loses the room client-side
+ * while the room keeps its clock — and the one where being let back in earns them a
+ * no-show charge for the match they were re-queueing away from.
+ */
+const stagedElsewhere = (userId: string): boolean => {
+  const code = userRoom.get(userId);
+  if (!code) return false;
+  const r = rooms.get(code);
+  if (!r) {
+    userRoom.delete(userId);
+    return false;
+  }
+  return r.staging() && r.stagedFor(userId);
+};
+
+/**
  * "Play a friend", rated: turn the party token off the wire into a token the
  * matchmaker is allowed to trust — or refuse it.
  *
@@ -2571,6 +2593,25 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
           }
           if (lockedOut(u.userId)) {
             send({ t: 'error', message: lockoutMessage() });
+            return;
+          }
+          /**
+           * ALREADY IN A RANKED MATCH THAT IS LOADING IN — its own refusal, and its own
+           * sentence.
+           *
+           * `Room.applyPending` takes the single-game lock the moment a pairing is staged,
+           * so the generic guard below would already catch this. It is called out first
+           * because the two states are not the same thing to the person reading the
+           * message: "rejoin or leave it first" describes a game they can go back to, and
+           * a staged match that has not started is not that — there is nothing to rejoin
+           * and leaving it costs standing. Saying so plainly is the difference between a
+           * player waiting out the twenty seconds and a player pressing FIND MATCH again.
+           *
+           * It is also the backstop that does not depend on the lock: a room is staged
+           * for this user, and that is checked directly.
+           */
+          if (stagedElsewhere(u.userId)) {
+            send({ t: 'error', message: 'You are already in a ranked match - go back and load into it.' });
             return;
           }
           // one live game per user: can't queue ranked while another game is live

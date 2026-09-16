@@ -520,7 +520,9 @@ export class Room {
   private readonly awayTicks = new Map<number, number>();
 
   /** authed users whose match is currently live in THIS room (holds their single-
-   * game lock). Registered at match begin, released at finalize / drop / stop. */
+   * game lock). Registered at match begin — and, for a ranked pairing, from the
+   * moment it is STAGED (`applyPending`), because a staged match is one the server
+   * has already committed them to. Released at finalize / drop / stop. */
   private readonly activeUserIds = new Set<string>();
 
   /** release every held single-game lock this room owns (idempotent) */
@@ -1357,6 +1359,27 @@ export class Room {
     // is segregated + unpersisted just like custom/record alpha rooms
     if (p.channel) this.channel = p.channel;
     this.intros = p.roster.map((r, i) => ({ id: i, elo: r.introElo }));
+    /**
+     * THE LOCK IS TAKEN HERE, NOT AT `startMatch` — a staged match is a commitment.
+     *
+     * The single-game lock used to be registered only when the world was built, so
+     * between the assignment and the first tick a paired player held no lock at all:
+     * `activeElsewhere` answered false and the ranked queue let them straight back in
+     * (`server/index.ts`, the `queue` handler). Refresh the tab while "Match found" is
+     * up and that is exactly what happens — the reload loses the room (the queue keeper
+     * is in memory), FIND MATCH re-enters the pool, and the room they abandoned still
+     * bills them a no-show when the grace lapses. Reported as "you should not be able
+     * to re-enter queue if you're entering a match".
+     *
+     * Registered from the ROSTER rather than from `this.clients`: the whole point is
+     * that it must hold for a player who has not connected here yet. `stop()` releases
+     * it, and `cancelPending` stops the room, so a cancelled staging frees it too.
+     */
+    for (const r of p.roster) {
+      if (!r.userId) continue;
+      this.activeUserIds.add(r.userId);
+      this.onUserActive?.(r.userId);
+    }
     if (this.pendingTimer) clearTimeout(this.pendingTimer);
     // NO-SHOW: whoever is still missing when the grace lapses is the one who dodged. The
     // players who DID connect are innocent and are charged nothing.
@@ -1375,6 +1398,19 @@ export class Room {
   /** the room code this room was staged under (null if not a staged ranked room) */
   pendingCode(): string | null {
     return this.pendingMatch?.code ?? null;
+  }
+
+  /**
+   * A STAGED PAIRING THAT HAS NOT BEGUN — the window between the matchmaker assigning
+   * this room and `startMatch` building its world (`connecting`, then `strategy`).
+   *
+   * `pendingMatch` is never cleared, so it alone cannot answer this: it stays set for
+   * the life of the room and reads true for a match that has been running for a minute.
+   * The world is what separates "loading in" from "playing", and the queue guard needs
+   * the difference to say the right sentence.
+   */
+  staging(): boolean {
+    return this.pendingMatch !== null && this.world === null && !this.cancelled;
   }
 
   /**
@@ -1646,7 +1682,7 @@ export class Room {
   }
 
   private startLoop(): void {
-    this.stop();
+    this.stopLoop(); // NOT `stop()` — the locks `startMatch` just took must survive this
     let last = Date.now();
     let acc = 0;
     this.loop = setInterval(() => {
@@ -2258,7 +2294,7 @@ export class Room {
    * timers, up to `maxTicks` or match end. Production drives `stepOnce` from the
    * setInterval loop; this lets smoke/tools run a full room match reproducibly. */
   advanceForTest(maxTicks: number): void {
-    this.stop(); // drop the real-time timer — the test pumps synchronously
+    this.stopLoop(); // drop the real-time timer — the test pumps synchronously
     for (let i = 0; i < maxTicks && this.world && !this.finalized; i++) {
       if (this.stepOnce()) this.broadcastSnapshot();
     }
@@ -2268,7 +2304,7 @@ export class Room {
    *  included. `advanceForTest` steps unconditionally, so it cannot see a room that the live
    *  loop would have frozen, which is exactly how an unsaved buzzer restart went unnoticed. */
   pumpForTest(maxTicks: number): void {
-    this.stop();
+    this.stopLoop();
     for (let i = 0; i < maxTicks && this.world && !this.finalized; i++) {
       this.checkGrace();
       if (this.clients.size === 0 || this.frozenForNobody()) return;
@@ -2338,11 +2374,30 @@ export class Room {
     return frame;
   }
 
-  private stop(): void {
+  /**
+   * DROP THE TICK TIMER AND NOTHING ELSE.
+   *
+   * Split out of `stop()` because the two callers want different things and conflating
+   * them made the single-game lock inert for every match ever played. `startMatch`
+   * registers each driver's lock and then calls `startLoop`, which opens with a `stop()`
+   * to clear any previous timer — and `stop()` releases the locks. So the lock was taken
+   * and given back in the same call, and "one live game per user" never held for longer
+   * than a few statements. The test seams (`advanceForTest`, `pumpForTest`) did the same
+   * thing and hid it: the smoke check for "released at finalize" was already true before
+   * the match ran a tick.
+   *
+   * Anything that means "this match is over / this room is going away" still wants
+   * `stop()`. Anything that means "I am about to drive the ticks myself" wants this.
+   */
+  private stopLoop(): void {
     if (this.loop) {
       clearInterval(this.loop);
       this.loop = null;
     }
+  }
+
+  private stop(): void {
+    this.stopLoop();
     // room is going away — free any single-game locks it still holds (e.g. a match
     // abandoned before finalize) so those users aren't stuck unable to start again
     this.releaseActiveUsers();
