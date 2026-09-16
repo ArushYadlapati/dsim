@@ -28,6 +28,12 @@ UI copy — DECODE/Chain Reaction are what is currently loaded, not the product 
 state (is the build green?), what was finished, exact next steps, and gotchas. Read it at
 session start if it exists — it may describe uncommitted mid-refactor state. HANDOFF is a
 reverse-chronological log; prepend a new dated section and demote the old "READ FIRST".
+**Read the TOP section, not the file.** Sessions before 2026-09-12g live in
+`docs/handoff-archive.md`, moved there unedited on 2026-09-16 — the log had reached 5,888
+lines (~97k tokens), which is a large fixed cost to pay before any work starts, and the rules
+that outlived a session were promoted into this file long ago. Keep the archive fed the same
+way: when HANDOFF.md gets long again, cut the old tail into it rather than letting every
+future session read it.
 
 ## Parallel sessions — the coordination board
 
@@ -68,10 +74,30 @@ re-run `coord:setup` to "fix" it; that is the owner's call, not a fault to repai
 ## Commands
 
 - `npm run dev` — dev server (localhost:5173)
-- `npm test` — **headless sim verification** (`scripts/smoke.ts`, ~1240 checks, BOTH games).
-  Run this after ANY change to `src/sim/`, `src/config.ts`, or `src/games/`. It is fast and
-  catches almost everything. **Add a check per behavior change.**
-- `npm run test:mm` — **matchmaker verification** (`scripts/mmsmoke.ts`, 36 checks, no DB or
+- `npm test` — **headless sim verification** (1765 checks in `scripts/smoke.ts` + 1321 in
+  `scripts/smoke-biobuzz/`, BOTH games, **~39s**). Run this after ANY change to `src/sim/`,
+  `src/config.ts`, or `src/games/`. It catches almost everything. **Add a check per behavior
+  change.**
+  It is fast because `smoke.ts` is SHARDED ACROSS CORES by `scripts/smokeshard.mjs`, not
+  because it is small: serially it is 3m40s, and that is what it cost until 2026-09-16. It
+  parses smoke.ts with the TypeScript parser, keeps the 103-statement preamble verbatim in
+  every shard, deals its 257 top-level blocks out across 12 processes and bin-packs them
+  longest-first from a measured cost table. **smoke.ts itself is untouched — write checks
+  exactly as before.** A serial and a sharded run produce the same 1765 check names with the
+  same outcomes.
+  ⚠️ **The sharding rests on one property: no state crosses a block boundary.** A block is a
+  closed scope and the only top-level mutable is `failures`, which every block writes and none
+  reads. The runner ASSERTS that rather than assuming it — add a top-level `let`, or a
+  top-level side effect other than `await initPhysics()`, and it refuses to run and tells you
+  where. Keep new checks inside a `{ … }` block and this never comes up.
+  - `npm run test:serial` — the old single-process run. The escape hatch when the runner
+    refuses, and the tie-breaker if you ever doubt a sharded result.
+  - `npm run test:calibrate` — re-measure per-block cost (~60s). Worth doing after adding or
+    deleting an expensive block; the table is keyed by block CONTENT, so ordinary edits
+    invalidate one entry rather than all of them, and a stale table only packs worse.
+  - **~22s is the FLOOR** at any width: one block costs 22.4s on its own and a block cannot be
+    split across processes. More shards past 12 buy nothing.
+- `npm run test:mm` — **matchmaker verification** (`scripts/mmsmoke.ts`, 186 checks, no DB or
   sockets — injected clock + `stage`). Run after ANY change to `server/matchmaking.ts`. Kept
   out of `npm test` on purpose, same reasoning as `contrast`: a red `npm test` must keep
   meaning "physics broke".
@@ -91,7 +117,7 @@ re-run `coord:setup` to "fix" it; that is the owner's call, not a fault to repai
 - `npm run contrast` — WCAG audit of the palette (`scripts/contrast.mjs`, 175 pairs, light +
   dark, no deps). Run after ANY colour/token edit. Not wired into `npm test` on purpose: a red
   `npm test` must keep meaning "physics broke".
-- `npm run dbtest` — **database + payments verification** (`scripts/dbtest.ts`, ~61 checks).
+- `npm run dbtest` — **database + payments verification** (`scripts/dbtest.ts`).
   Boots **PGlite** (Postgres 17 in WASM, a devDependency — there is no Postgres on a dev box),
   runs the REAL migrations and the REAL `server/db/repo.ts` against it, and asserts the Ko-fi
   webhook's idempotency, the claim race, the auto-renewal path, the tier policy, admin
@@ -99,6 +125,13 @@ re-run `coord:setup` to "fix" it; that is the owner's call, not a fault to repai
   `server/kofi.ts`, or a migration. Same rule as `contrast`: deliberately NOT in `npm test`.
   `server/db/pool.ts` exposes a structural `DbPool` + `setPoolForTests` so the swap is possible;
   production still builds a real `pg.Pool`.
+  It also asserts two SCHEMA invariants against the live schema, after every migration has run,
+  as RULES rather than as a list of columns: **every foreign key has an index leading with its
+  own columns** (without one, each parent delete scans the whole child table to apply
+  `ON DELETE` — migration 0037 fixed five of these, and the rule found the fifth itself), and
+  **no index is a dead prefix of another** (it can never be chosen, and costs a write on every
+  insert). Both failures are silent by nature: nothing errors, the database just does more work
+  as the tables grow. A new migration that reintroduces either is caught here.
 - `npm run shiftaudit` — layout-shift audit (`scripts/shiftaudit.cjs`, Electron). Needs a
   build + `npx vite preview --port 4173` in another shell. Forces `:hover`/`:active` and the
   `on`/`primary` state classes on every interactive element across 10 routes + the live HUD,
@@ -1046,7 +1079,9 @@ not beside the same person in your friends list reads as a bug.
 name element, because the name carries the hover underline (`.lb-name-h`, `.mh-player.link`)
 and the ellipsis (`.fr-name`) — nested inside, it gets underlined with the name or
 truncated with it. `.fr-nameline` exists for the stacked name-over-subline rows.
-Tests: 36 checks in `npm run dbtest`.
+Tests: covered in `npm run dbtest` (which prints its own count — an exact number written
+into this file goes stale the first time anyone adds a check, as the three that said 36 and
+~61 had).
 
 **BACKGROUND RANKED QUEUE, LIVE (no flag).** The queue used to die when you left the
 matchmaking screen — that screen owned the socket (`useEffect(() => teardown, [])`),
@@ -1097,7 +1132,7 @@ cancels the row; dismiss stays a silent clear), the sender SEES their outgoing c
 (`listFriends`'s `snt` CTE → `sent`) and can cancel it, and one live challenge per direction
 (`inviteToRoom` replaces — stacked rated rows would let someone accept an abandoned token).
 `src/ui/challenge.ts` `challengeOf` is the ONE place deciding lobby-vs-queue. Tests:
-**`npm run test:mm`** (`scripts/mmsmoke.ts`, 36 checks, injected clock + `stage`, no DB) —
+**`npm run test:mm`** (`scripts/mmsmoke.ts`, 186 checks, injected clock + `stage`, no DB) —
 party pairing fails SILENTLY, so it is covered there rather than by a live two-account run.
 NOTE `enqueue` matches synchronously but STAGES asynchronously; assertions must await a
 microtask flush. Rated friend games are farmable by a colluding pair and deliberately
