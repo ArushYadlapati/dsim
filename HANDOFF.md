@@ -1,8 +1,8 @@
 # HANDOFF — 2026-09-16, later (efficiency audit: the test loop, the indexes, the render path)
 
-**READ FIRST.** Branch **`efficiency-audit`** off `alpha`, 5 commits, **not merged and not
+**READ FIRST.** Branch **`efficiency-audit`** off `alpha`, 8 commits, **not merged and not
 deployed**. Every gate green: `npm test` ALL PASS ×2 (1765 + 1321) · `test:mm` 186 · `dbtest`
-ALL PASS · `build` · `server:check` · `uiaudit` · `contrast`.
+ALL PASS · `build` · `server:check` · `uiaudit` · `contrast` · **`docaudit`** (new).
 
 ⚠️ **The DB migration (0037) is a SERVER change and needs a deploy** to take effect, like
 0035/0036 before it. Until then the indexes do not exist in production.
@@ -16,6 +16,34 @@ ALL PASS · `build` · `server:check` · `uiaudit` · `contrast`.
 | 3 | `render:` | held-artifact grouping, the per-ball highlight hoisted, `useCoarsePointer`. |
 | 4 | `docs:` | HANDOFF archived, and the check counts in CLAUDE.md corrected. |
 | 5 | `server:` | LAN roster moderation parallelised, `/api/stats` memoized. |
+| 6 | `docs:` | HANDOFF entry for the session. |
+| 7 | `docs:` | search with `rg`, not `grep -r` — `.claude/worktrees/` is 810 MB of repo copies. |
+| 8 | `docs:` | **CLAUDE.md split: 43.7k tokens → 6.6k**, plus `docaudit` and the area hook. |
+
+### 0. CLAUDE.md is now a routed core, and the routing is enforced
+
+It was 2,206 lines (~43,700 tokens) and it is loaded into EVERY session, so a session fixing a
+button paid in full for DECODE's gate-lever geometry and the Ko-fi webhook policy. It is now
+~6,600 tokens: what is true everywhere, plus a routing table to ten guides in `docs/area/`
+read on demand.
+
+**Nothing was rewritten.** 2,035 of the original 2,042 non-trivial lines are byte-identical in
+their new homes; the 7 that differ are the reworded opening blockquote and five
+cross-references that pointed at sections now in another file. Verified by a line-level diff
+against git HEAD, not by assertion.
+
+⚠️ **The risk here is not size, it is SILENCE** — a rule in a guide nobody opens has been
+deleted, not relocated. Two defences:
+- **`npm run docaudit`** — every guide routed, every link resolving, every `governs:` glob
+  still matching real files (catches a RENAME, which otherwise leaves a guide governing
+  nothing), every source file owned, and CLAUDE.md inside a token budget that is a **RATCHET**
+  (only ever lowered, so the file cannot grow back). All five rules were tested by breaking
+  them. Writing it found a `governs:` line already wrong and sixteen unowned top-level modules.
+- **`scripts/areahook.mjs`** — a PostToolUse hook naming the guide for the file just edited,
+  once per area per session. Reminder, never a block; always exit 0.
+
+**If you add a rule to CLAUDE.md, the test is whether a session working somewhere else needs
+it.** If not, it belongs in the guide for the path it governs.
 
 ### 1. The test loop was the single biggest thing wrong with this repo to work in
 
