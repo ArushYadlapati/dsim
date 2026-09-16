@@ -1369,6 +1369,67 @@ async function main(): Promise<void> {
     );
   }
 
+  /* ---- SCHEMA HYGIENE, asked of the live schema rather than of the migration files -------
+     Two invariants that fail SILENTLY — nothing errors, nothing returns a wrong answer, the
+     database just does progressively more work as the tables grow — so neither shows up in any
+     other check here. Both are asked of `pg_index`/`pg_constraint` AFTER every migration has
+     run, so a later migration that reintroduces the problem is caught by the same assertion.  */
+  {
+    /* EVERY FOREIGN KEY NEEDS AN INDEX ON ITS REFERENCING COLUMNS. Without one, each delete of
+       a parent row scans the whole child table to apply ON DELETE. This is what migration 0037
+       fixed on `records.replay_id`, `matches.replay_id`, `records.partner_id` and
+       `kofi_payments.claimed_by` — all four unindexed since 0001, and the replay prunes that
+       walk them run on every practice and LAN upload. The RULE is stated here rather than the
+       four columns, so the next unindexed foreign key is caught by the migration that adds it. */
+    const unindexed = await db.query<{ tbl: string; col: string }>(`
+      select c.conrelid::regclass::text as tbl,
+             (select string_agg(a.attname, ',' order by k.ord)
+                from unnest(c.conkey) with ordinality as k(attnum, ord)
+                join pg_attribute a on a.attrelid = c.conrelid and a.attnum = k.attnum) as col
+        from pg_constraint c
+       where c.contype = 'f'
+         and not exists (
+           select 1 from pg_index i
+            where i.indrelid = c.conrelid
+              and (i.indkey::int2[])[0:array_length(c.conkey,1)-1] = c.conkey
+         )
+       order by 1, 2`);
+    check(
+      'schema: every foreign key has an index leading with its own columns',
+      unindexed.rows.length === 0,
+      unindexed.rows.map((r) => `${r.tbl}(${r.col})`).join(' | ') || 'none',
+    );
+
+    /* NO INDEX IS A STRICT PREFIX OF ANOTHER ON THE SAME TABLE. Such an index can never be
+       chosen — the longer one serves everything it could — and it costs a write on every insert
+       and update. 0037 dropped the two that existed (`user_activity(user_id)`, already the PK's
+       leading column; `friend_requests(from_user_id)`, already the unique constraint's).
+       Redundancy is easy to add back by hand and impossible to notice. */
+    const redundant = await db.query<{ tbl: string; dup: string; covered_by: string }>(`
+      with ix as (
+        select i.indrelid::regclass::text as tbl, i.indexrelid::regclass::text as name,
+               i.indkey::int2[] as cols, i.indisunique as uniq, i.indpred is not null as partial
+          from pg_index i
+          join pg_class c on c.oid = i.indrelid
+          join pg_namespace n on n.oid = c.relnamespace
+         where n.nspname = 'public'
+      )
+      select a.tbl, a.name as dup, b.name as covered_by
+        from ix a join ix b
+          on a.tbl = b.tbl and a.name <> b.name
+         and array_length(b.cols,1) > array_length(a.cols,1)
+         and b.cols[0:array_length(a.cols,1)-1] = a.cols
+       -- a UNIQUE or PARTIAL index is not redundant even as a prefix: it carries a constraint,
+       -- or covers a different subset of rows, that the longer one does not.
+       where not a.uniq and not a.partial
+       order by 1, 2`);
+    check(
+      'schema: no index is a dead prefix of another on the same table',
+      redundant.rows.length === 0,
+      redundant.rows.map((r) => `${r.dup} < ${r.covered_by}`).join(' | ') || 'none',
+    );
+  }
+
   await db.close();
   console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILURES`);
   process.exit(failures === 0 ? 0 : 1);
