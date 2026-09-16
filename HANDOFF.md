@@ -1,6 +1,159 @@
+# HANDOFF — 2026-09-16, later (efficiency audit: the test loop, the indexes, the render path)
+
+**READ FIRST.** Branch **`efficiency-audit`** off `alpha`, 5 commits, **not merged and not
+deployed**. Every gate green: `npm test` ALL PASS ×2 (1765 + 1321) · `test:mm` 186 · `dbtest`
+ALL PASS · `build` · `server:check` · `uiaudit` · `contrast`.
+
+⚠️ **The DB migration (0037) is a SERVER change and needs a deploy** to take effect, like
+0035/0036 before it. Until then the indexes do not exist in production.
+
+## What landed
+
+| # | commit | what |
+|---|---|---|
+| 1 | `test:` | **`npm test` 237s → 39s.** `smoke.ts` sharded across 12 processes by `scripts/smokeshard.mjs`. |
+| 2 | `db:` | migration **0037**: six missing indexes, two dead ones dropped, and the two RULES asserted in `dbtest`. |
+| 3 | `render:` | held-artifact grouping, the per-ball highlight hoisted, `useCoarsePointer`. |
+| 4 | `docs:` | HANDOFF archived, and the check counts in CLAUDE.md corrected. |
+| 5 | `server:` | LAN roster moderation parallelised, `/api/stats` memoized. |
+
+### 1. The test loop was the single biggest thing wrong with this repo to work in
+
+`scripts/smoke.ts` was **220s** of the 237s `npm test` took, and CLAUDE.md called it "fast".
+Everything else combined is 12.5s (`tsc` 6.3 · `vite build` 3.8 · `server:check` 2.3 ·
+`uiaudit` 0.1 · `contrast` 0.07). The memory note "don't run full npm test" is what that had
+already cost.
+
+It turned out to be trivially parallel. `smoke.ts`'s top level is 360 statements, **257 of them
+bare blocks** — closed scopes declaring nothing anyone else sees — over a 103-statement
+preamble whose only mutable is `failures`, which every block writes and none reads.
+`smokeshard.mjs` parses it with the TypeScript parser, copies the preamble verbatim into each
+shard, deals the blocks out, and bin-packs them longest-first from a measured cost table keyed
+by block CONTENT. **smoke.ts is untouched.**
+
+Proved rather than assumed: serial and sharded produce **the same 1765 check names with the
+same outcomes**. The only three textual differences are a UUID and two world hashes that
+`Room` seeds from `Date.now() ^ Math.random()` (room.ts:1281) — different on every run either
+way.
+
+⚠️ **The guard matters more than the speed.** A shard runner that loses a block still prints
+ALL PASS. So: the assignment is asserted to be a partition (set equality, not a count), a shard
+that dies without a verdict fails the run, and an **independence guard** refuses to shard at
+all if smoke.ts grows a top-level `let` or a stray side effect. `npm run test:serial` is the
+way out; `npm run test:calibrate` re-measures.
+
+**~22s is the floor at any width** — one block costs 22.4s alone and a block cannot be split.
+4 shards 54.6s · 8 28.6s · 12 23.4s · 16 24.5s.
+
+### 2. The indexes, and the rule that found one the sweep had missed
+
+`records.replay_id` and `matches.replay_id` are `references replays(id) on delete set null`
+and **neither was indexed since 0001**, so every replay delete scanned both tables in full —
+and the practice/LAN prunes that delete replays run on **every upload**. Same for
+`records.partner_id` and `kofi_payments.claimed_by`. The pattern was already understood here:
+`practice_replay_idx` (0032) and `lan_replay_idx` (0033) exist for exactly this reason. The two
+oldest tables missed out.
+
+Also: `recentMatches` unions all of `matches` and all of `records` and orders by `created_at`
+with nothing indexed on it; `challengeParty` filters `room_invites` on an unindexed `room`,
+and that gates every rated friend match. Dropped two indexes that can never be chosen
+(`user_activity(user_id)` and `friend_requests(from_user_id)`, each already a prefix of a
+constraint's index).
+
+**`dbtest` now asserts the RULES, not the columns** — every FK indexed, no index a dead prefix
+of another — against the live schema after every migration. That is not decoration: **the FK
+rule found a fifth unindexed key on its first run** (`score_reports.match_id`) that the manual
+sweep had missed.
+
+### 3. Render, server, docs
+
+`renderer.ts` filtered `world.balls` for held artifacts **inside** the per-robot loop —
+O(robots × balls) per frame, ~173,000 predicate calls/s in a 2v2 CR room at 144 Hz. Grouped
+once. `drawBalls` rebuilt an `rgb(...)` string per artifact per frame for one of two possible
+colours. `GameView` called `matchMedia('(pointer: coarse)')` five times per render at the 10 Hz
+poll — and reading a media query during render is **not subscribing to it**, so a 2-in-1 that
+changed pointer kept whichever controls it booted with. `useCoarsePointer` fixes both; verified
+live in both layouts.
+
+Server: the LAN roster moderated names **one at a time** against a hosted API with a 4s timeout
+— up to 16 sequential calls per upload. `/api/stats` is public and ran three unbounded
+aggregates per homepage load; memoized 60s, with dbtest asserting it is a memo and not a
+freeze.
+
+Docs: HANDOFF.md was **5,888 lines (~97k tokens)** with "read at session start" beside it. The
+29 oldest sections moved **unedited** to `docs/handoff-archive.md`; all 37 survive. CLAUDE.md
+said smoke was "~1240 checks" (1765), `test:mm` 36 (186), `dbtest` ~61 and elsewhere 36 (232).
+
+## Next steps
+
+1. **Merge to `alpha`**, then promote + deploy from a `main` worktree — 0037 applies at boot.
+2. `npm run test:calibrate` after adding or deleting an expensive block.
+
+## Found and NOT fixed — ranked, all verified, none started
+
+1. **The client bundle is 2.54 MB and 1.57 MB of it is base64-inlined WASM** (62%), duplicated
+   again in `hostWorker` (1.89 MB). `@dimforge/rapier2d-compat` inlines its wasm, and base64
+   costs 33% over the raw binary. The non-compat `@dimforge/rapier2d` loads a separate,
+   cacheable `.wasm`. ⚠️ **But Rapier is pinned EXACTLY on purpose** — a different physics
+   build changes `step()` with no version bump, making every replay stamp a lie — so this is a
+   SIM_VERSION-bump decision, not a dependency swap. And note `main.tsx` awaits `initPhysics()`
+   before the first render, so code-splitting alone buys nothing without reordering boot.
+2. **`persistVersusMatch` (ranked.ts:205-236) is 16 sequential round trips for a 2v2** —
+   `getRatingFull` per player, then `upsertRating` + `upsertEloHistory` per update, then
+   `addMatchParticipant` per player. The reads are independent and batchable; the participant
+   inserts are one multi-row insert. Ratings must stay sequential (Glicko-2), the rest need not.
+3. **Standing charges are ~7 round trips per offender**, serialized across offenders, and
+   `getStanding` opens a **write transaction on a read path** (also hit by `rankedLock` on every
+   ranked queue attempt). `DB_POOL_MAX` defaults to 5; four offenders is the whole pool.
+4. **`broadcastSnapshot` stringifies every ball individually just to detect change** (30×/s per
+   room, 300 balls in CR), then stringifies the changed ones again into the body. A dirty
+   epoch stamped by the sim would remove the first pass. The broadcast itself is already well
+   optimized — this is the remaining hot allocation.
+5. **`matchStart` and `strategyStart` are encoded per recipient** though they vary only in
+   `yourRobotId` — the shared-prefix trick `broadcastSnapshot` already uses.
+6. **`MobileControls` re-renders at touch-event rate** (60–120 Hz while a thumb is on a stick,
+   on the device class with the least headroom) and has no `memo`/`useCallback` anywhere:
+   every render rebuilds the button array and 4 fresh closures per button.
+7. **`useCountUp` drives React state at rAF** for ~1s after every match, three concurrently,
+   each re-render rebuilding the whole `sections` structure in `Results`.
+8. **`GameView.tsx:259` builds a full `HudSnapshot` 4×/s to read two booleans**, and the timer
+   is created even in solo where its body can never do anything.
+9. **`App.tsx:740` creates a 400ms interval outside an effect** — the only timer in `src/ui/`
+   or `src/net/` with no unmount cleanup. Self-limiting at 30s.
+10. **`profileEnsured` (repo.ts:288) is never pruned** — bounded only by Fly's scale-to-zero
+    restarting the process, which is not a bound on a machine that stays warm.
+11. **Correlated per-row subqueries in both moderation queues** (repo.ts:2138, :2421); the
+    second aggregates the entire `player_reports` table with no `WHERE` at all.
+12. **47 exports with zero importers and zero string references**, incl. `simGameOf`,
+    `adminRefundPayment` (a whole HTTP client call), `useAnyoneQueued` (a whole React hook),
+    and the `listPresets`/`savePreset`/`deletePreset` trio with no route. `chain/config.ts:633`
+    says outright "Nothing reads these at runtime any more".
+13. **Large duplication between `chain/` and `biobuzz/`**: `parts.ts` (120 identical lines, doc
+    comments included), `mounts.ts` (9 same-named functions), `drawRobot.ts`,
+    `RobotPreview.tsx`. Three near-identical start editors; `specKey` defined 4 times with 4
+    different field sets.
+14. ⚠️ **Four m:ss formatters, and two disagree** — `replayOverlay.ts:67` uses `Math.ceil`,
+    `ReplayView.tsx:52` uses `Math.round`. The clock burned into an exported video and the one
+    in the viewer header can therefore read a second apart for the same frame. Smallest real
+    bug in this list.
+15. **`ago()` is byte-identical in three files** (`AdminLive`, `AdminReports`, `StandingCard`)
+    while `src/ui/fmtDate.ts` exists and is the obvious owner.
+16. **`scripts/zz-accept.ts` is superseded by `zz-accept-clean.ts`** by its own header — the
+    original measures against artifacts it thinks it removed. Both say "throwaway".
+    `zz-mm-quality.ts:4` references a `zz-mm-marginal.ts` that does not exist.
+
+Measured for reference, per-tick `step()` cost (32-thread box, 2v2): DECODE 0.50ms
+(cores/room 0.030) · CR 0.28ms (0.017) · BIOBUZZ 0.37ms (0.022). Inside `step`, Rapier's
+rebuild-per-tick is ~23% of CPU, `separateParticles` (CR only) 7.6%, the possession/control
+penalty passes ~4.4%.
+
+---
+
 # HANDOFF — 2026-09-16 (alpha: the admin panel merged, five PRs merged, main backported)
 
-**READ FIRST.** `alpha` and `main` are both green and both pushed. **NOTHING IS DEPLOYED.**
+**(Superseded as READ FIRST by the efficiency-audit session above; still the state of
+`alpha` itself, which that branch has not been merged into.)** `alpha` and `main` are both
+green and both pushed. **NOTHING IS DEPLOYED.**
 
 `npm test` prints **ALL PASS twice** for the first time in a while — PR #69 fixed the stale
 lan-gate asserts that had been failing on a clean tree since LAN went on in production on
