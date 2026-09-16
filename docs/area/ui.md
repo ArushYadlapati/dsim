@@ -7,6 +7,20 @@ Rebindable controls, assists, persisted settings, HUD product rules, and the UI 
 session and this is not needed by most of them. The `governs:` line above is read by
 `scripts/docaudit.mjs` and by the editor hook, so keep it accurate when paths move.*
 
+## Before you add a class, look it up
+
+`docs/ui-components.md` is the generated inventory of every `ds-` class: where it is declared
+and how many times `src/**` uses it, grouped by family. There are 233 of them across 8,700
+lines of CSS, which is not greppable in practice — and a new class written because the grep
+was inconclusive is the mechanism by which this design system drifts.
+
+`npm run uiindex` regenerates it; `npm run uiaudit` fails if the committed copy is stale.
+
+The other three are not interchangeable: **`DESIGN.md`** (repo root) is the look — the
+driver-station keycap language, the palette, the ONE depth model. **`docs/ui-standard.md`** is
+the geometry and the scales, and it is STRICT: if a rule there is wrong, change the rule first
+and then the code. **`uiaudit`** is what actually enforces both, as ratchets.
+
 ---
 
 ## Controls, settings, audio
