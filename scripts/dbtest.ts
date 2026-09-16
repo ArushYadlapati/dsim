@@ -1369,6 +1369,33 @@ async function main(): Promise<void> {
     );
   }
 
+  /* ---- the homepage stats memo ---------------------------------------------------------
+     `/api/stats` is public and unauthenticated, and `getGlobalStats` is three unbounded
+     aggregates — so the memo is the only thing standing between a homepage and one full scan
+     of `profiles`, `records` and `matches` per visitor. Both halves are asserted: that it
+     actually serves a second call from cache, and that it is not a permanent cache. */
+  {
+    await repo.ensureProfile('stats-a', 'StatsA');
+    const t0 = 1_000_000;
+    const first = await repo.getGlobalStats(t0);
+    const usersAtFirst = first.users;
+
+    // a new account inside the TTL must NOT change the answer — that IS the cache working
+    await repo.ensureProfile('stats-b', 'StatsB');
+    const cached = await repo.getGlobalStats(t0 + 30_000);
+    check('stats: a second call inside the TTL is served from the memo', cached.users === usersAtFirst);
+
+    // ...and the memo is a memo, not a freeze: past the TTL the new account appears
+    const later = await repo.getGlobalStats(t0 + 120_000);
+    check('stats: past the TTL it re-queries, so the memo cannot go permanently stale', later.users === usersAtFirst + 1, `${usersAtFirst} then ${later.users}`);
+
+    // and an explicit drop is honoured, which is what an admin wanting the real number uses
+    await repo.ensureProfile('stats-c', 'StatsC');
+    repo.clearStatsCache();
+    const cleared = await repo.getGlobalStats(t0 + 120_000);
+    check('stats: clearStatsCache drops it regardless of the clock', cleared.users === usersAtFirst + 2);
+  }
+
   /* ---- SCHEMA HYGIENE, asked of the live schema rather than of the migration files -------
      Two invariants that fail SILENTLY — nothing errors, nothing returns a wrong answer, the
      database just does progressively more work as the tables grow — so neither shows up in any

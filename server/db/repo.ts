@@ -2699,7 +2699,30 @@ export interface GlobalStats {
  * by category (solo/duo record runs + 1v1/2v2 PvP matches — the server-tracked
  * games) AND by game (DECODE vs Chain Reaction, recorded separately). The
  * headline `games` COMBINES every game. Cheap COUNT/GROUP BY over indexed tables. */
-export async function getGlobalStats(): Promise<GlobalStats> {
+/**
+ * MEMOIZED, because this is a PUBLIC, UNAUTHENTICATED endpoint (`/api/stats`, api.ts) that
+ * every homepage load hits, and the three queries below are unbounded aggregates: a
+ * `count(*)` over all of `profiles`, and a `group by` over the whole of `records` and the
+ * whole of `matches`. The group-bys can index-only-scan, but they still read every entry,
+ * so the cost grows with total site history forever while the ANSWER moves by a handful of
+ * rows a minute — a number rendered as "12,431 games played" does not need to be current to
+ * the second.
+ *
+ * Same shape as `actCache` above and `userRoomCache` below: a module-level `{at, val}` with
+ * a millisecond constant. 60s rather than something longer because this is what the
+ * homepage's liveness reads as; the point is to stop N concurrent visitors becoming N full
+ * scans, and that is already won at one second.
+ */
+const STATS_TTL_MS = 60_000;
+let statsCache: { at: number; val: GlobalStats } | null = null;
+
+/** drop the memo — for tests, and for an admin who wants the real number now */
+export function clearStatsCache(): void {
+  statsCache = null;
+}
+
+export async function getGlobalStats(now = Date.now()): Promise<GlobalStats> {
+  if (statsCache && now - statsCache.at < STATS_TTL_MS) return statsCache.val;
   const [users, recRows, matchRows] = await Promise.all([
     q<{ n: string }>(`select count(*) as n from profiles`),
     q<{ game: Game; mode: string; n: string }>(`select game, mode, count(*) as n from records group by game, mode`),
@@ -2718,7 +2741,9 @@ export async function getGlobalStats(): Promise<GlobalStats> {
     if (gk in byGame) byGame[gk] += n;
   }
   const games = byCategory.solo + byCategory.duo + byCategory['1v1'] + byCategory['2v2'];
-  return { users: Number(users[0]?.n ?? 0), games, byCategory, byGame };
+  const val: GlobalStats = { users: Number(users[0]?.n ?? 0), games, byCategory, byGame };
+  statsCache = { at: now, val };
+  return val;
 }
 
 // ---------------------------------------------------------- per-user stats --
