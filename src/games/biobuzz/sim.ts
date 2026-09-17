@@ -1,3 +1,5 @@
+import type { GameMode, GameSettings, World } from '../../types';
+import type { RobotSetup } from '../../sim/spawn';
 import type { GameSimModule } from '../types';
 import {
   BB_HALF_X,
@@ -53,6 +55,35 @@ import { biobuzzStep } from './step';
  * game + act), so the number does not have to differ from another game's: DECODE and Chain
  * Reaction already share an act number in production without touching each other's boards.
  */
+
+/**
+ * THE `createWorld` ROUTE FOR PHYSICS (Day 1 seam, `docs/biobuzz/plan-3d.md` §2.1).
+ *
+ * `GameSimModule.createWorld(mode, seed, setups, settings?)` is the shared seam every game's
+ * world-builder is called through — `src/game.ts`'s `makeWorld()` already hands it the FULL
+ * `GameSettings` for both a solo build and a multiplayer one, so no signature change was
+ * needed to reach `settings.practicePhysics`. `createBiobuzzWorld` itself grew a fifth,
+ * trailing, OPTIONAL `physics` argument (defaulting `'2d'`) that the shared interface type
+ * does not know about — legal, because a function with an extra optional parameter is still
+ * assignable to a shorter function type, so registering this wrapper does not touch
+ * `GameSimModule.createWorld`'s signature at all. This wrapper is the one place that reads
+ * `settings?.practicePhysics` and forwards it; everything else keeps calling
+ * `createBiobuzzWorld` directly (the smoke suite, `scenes.ts`) and keeps getting `'2d'`.
+ *
+ * Only SOLO PRACTICE is wired here today. Ranked/matchmade/record rooms are meant to always
+ * stage `'3d'` (plan §2.1) and a custom lobby's `'3d'` default is a HOST option — neither has
+ * a settled route yet (`RoomConfig.physics` does not exist), so this wrapper is deliberately
+ * the least invasive thing that makes the seam usable now: it reads a settings field that is
+ * always present when `game.ts` calls it, and does nothing new when it is not.
+ */
+function createBiobuzzSimWorld(
+  mode: GameMode,
+  seed: number,
+  setups: RobotSetup[],
+  settings?: GameSettings,
+): World {
+  return createBiobuzzWorld(mode, seed, setups, settings, settings?.practicePhysics ?? '2d');
+}
 export const BIOBUZZ_SIM: GameSimModule = {
   id: 'biobuzz',
   scored: true,
@@ -77,8 +108,11 @@ export const BIOBUZZ_SIM: GameSimModule = {
   autoPaths: false,
   bounds: { halfX: BB_HALF_X, halfY: BB_HALF_Y, viewMargin: BB_VIEW_MARGIN },
   colliders: biobuzzColliders,
-  createWorld: createBiobuzzWorld,
+  createWorld: createBiobuzzSimWorld,
   step: biobuzzStep,
+  // this game's UI may offer either physics (Day 1 seam) — DECODE and Chain Reaction leave
+  // this absent, which reads as '2d' only.
+  physicsOptions: ['2d', '3d'],
   // `{ field: { scored }, robot: { hopper, cap, mode } | null }` — the contract's §5 slice.
   // DOM-free, because the authoritative server computes it for its clients too.
   hud: biobuzzHud,

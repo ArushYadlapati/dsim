@@ -9,6 +9,8 @@ import { biobuzzColliders } from './colliders';
 import { bbAimAssist, updateBiobuzz } from './play';
 import { updateBiobuzzPenalties } from './penalties';
 import { BB_WALL, bbApplyScore, bbLeftNow, bbParkedNow, bbScoreWorld, bbWallsTouched } from './score';
+import { biobuzzPhysics } from './state';
+import { step3d } from './sim3d/step3d';
 
 /**
  * BIOBUZZ step — a playable, unscored match.
@@ -83,7 +85,14 @@ const ZERO_CMD: RobotCommand = {
   fire: false,
 };
 
-export function biobuzzStep(world: World, dt: number, commands: Map<number, RobotCommand>): void {
+/**
+ * THE 2D PIPELINE — everything above this function's header describes it, and it is
+ * UNTOUCHED (Day 1 seam, `docs/biobuzz/plan-3d.md`). `biobuzzStep` below is now the exported
+ * entry point every caller uses; it dispatches here for a `'2d'`-physics world (absent physics
+ * included, which is every world before this seam existed) and to `sim3d/step3d.ts`'s `step3d`
+ * for a `'3d'` one.
+ */
+function step2d(world: World, dt: number, commands: Map<number, RobotCommand>): void {
   world.time += dt;
   world.tick++;
 
@@ -141,6 +150,21 @@ export function biobuzzStep(world: World, dt: number, commands: Map<number, Robo
   // 10. THE SCORE, from scratch, every tick. See `score.ts` for why it is recomputed rather
   // than accumulated, and why it runs after the phase machine rather than before it.
   if (world.biobuzz) bbApplyScore(world, bbScoreWorld(world));
+}
+
+/**
+ * THE BIOBUZZ TICK — the dispatch seam (Day 1, `docs/biobuzz/plan-3d.md`). Every existing
+ * caller (the client, the server, the smoke suite) imports THIS name unchanged; it reads the
+ * world's own physics tag once and hands the tick to the pipeline that actually understands
+ * it. A `'2d'` world (including every world from before this seam existed, which carries no
+ * tag at all) is byte-identical to what `biobuzzStep` always did.
+ */
+export function biobuzzStep(world: World, dt: number, commands: Map<number, RobotCommand>): void {
+  if (biobuzzPhysics(world) === '3d') {
+    step3d(world, dt, commands);
+  } else {
+    step2d(world, dt, commands);
+  }
 }
 
 /**

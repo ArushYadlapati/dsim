@@ -1,4 +1,4 @@
-import type { Alliance, GameId, GameMode, MatchPhase, RobotCommand, RobotSpec, World, AutoPathData, StartPose } from '../types';
+import type { Alliance, GameId, GameMode, MatchPhase, Physics, RobotCommand, RobotSpec, World, AutoPathData, StartPose } from '../types';
 import * as C from '../config';
 import { DEFAULT_ASSISTS, type RobotSetup } from './spawn';
 import { simModuleFor } from '../games/sim';
@@ -73,6 +73,14 @@ export interface Replay {
   /** which game this replay is of — picks the sim module to re-simulate it (createWorld
    * + step). Absent on old replays ⇒ DECODE. */
   game?: GameId;
+  /**
+   * WHICH PHYSICS BACKEND THIS REPLAY WAS RECORDED UNDER (Day 1 seam,
+   * `docs/biobuzz/plan-3d.md`). Re-simulating a replay must step the SAME physics it was
+   * recorded with, or a re-sim of a `'3d'` match against `step2d` produces a different game
+   * from the one that was played. Absent ⇒ `'2d'` — every replay recorded before the 3D solve
+   * existed, which is the only physics any of them could have run.
+   */
+  physics?: Physics;
   mode: GameMode;
   seed: number;
   setups: RobotSetup[];

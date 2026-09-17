@@ -1,4 +1,5 @@
 import { initPhysics } from '../../src/sim/physicsEngine';
+import { initPhysics3d } from '../../src/games/biobuzz/sim3d/engine';
 import { fieldChecks, roomChecks } from './field';
 import { rulesChecks } from './rules';
 import { robotChecks } from './robot';
@@ -113,6 +114,10 @@ const grep = args.grep ? args.grep.toLowerCase() : '';
 
 const bootStart = Date.now();
 await initPhysics();
+// Day 1 seam (`docs/biobuzz/plan-3d.md`): awaited right after the 2D module, same reasoning,
+// so a lane can build a `'3d'`-physics world without adding its own boot step. `step3d` still
+// throws (Day 1 lane A has not landed), so no lane below steps a `'3d'` world yet.
+await initPhysics3d();
 const bootMs = Date.now() - bootStart;
 
 let failures = 0;

@@ -54,6 +54,9 @@ export function defaultSettings(): GameSettings {
     // GATE (index 0, close) + AUDIENCE (index 1, far) are the default per-category picks
     startMemory: { close: { index: 0, pose: null }, far: { index: 1, pose: null } },
     practiceDummies: false,
+    // solo practice defaults to the 3D physics (Day 1 seam, `docs/biobuzz/plan-3d.md` §2.1);
+    // the player picks '2d' for a casual or low-end run.
+    practicePhysics: '3d',
     audio: {
       volume: { master: 1, game: 1, shoot: 1, intake: 1, gate: 1, beep: 1, alert: 1, voice: 1 },
       sounds: true,
@@ -285,6 +288,7 @@ export function coerceSettings(raw: unknown): GameSettings {
       out.loadouts = archive;
     }
     if (typeof s.practiceDummies === 'boolean') out.practiceDummies = s.practiceDummies;
+    if (s.practicePhysics === '2d' || s.practicePhysics === '3d') out.practicePhysics = s.practicePhysics;
     if (typeof s.audio === 'object' && s.audio !== null) {
       const au = s.audio as Record<string, unknown>;
       const vol = au.volume;

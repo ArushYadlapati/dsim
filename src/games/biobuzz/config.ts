@@ -1180,3 +1180,22 @@ export const BB_PRESETS: readonly RobotSpec[] = BB_PRESET_BUILDS.map((s) => ({
 /** the default mount for a build that arrives without one (re-exported so the builder and the
  * coercer read the same constant the leaf module defines). */
 export { BB_DEFAULT_INTAKE_MOUNT };
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 3D PHYSICS (Day 1 seam, `docs/biobuzz/plan-3d.md`) — everything below is new for the 3D
+// physics port and is not read by the 2D pipeline at all. NOT APPROX: R102/R105.A already
+// print all three chassis dimensions (see `BB_PRISM`'s header above for the two horizontal
+// ones); this is the first place BIOBUZZ names the VERTICAL one.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** `RobotSpec.heightIn` floor (in) — well under any real build; a robot has to be tall enough
+ * to hold a drivetrain and a hopper at all. */
+export const BB3_HEIGHT_MIN = 12;
+/** `RobotSpec.heightIn` default (in) when absent — a plausible mid-size chassis, and the
+ * height the 2D pipeline has always implicitly assumed by never asking. */
+export const BB3_HEIGHT_DEFAULT = 18;
+/** `RobotSpec.heightIn` ceiling (in) — R105.A's 29-in EXPANDED sizing volume: "a 18 in. by 24
+ * in. by 29 in. tall sizing volume when fully expanded", where the manual fixes the 29 as the
+ * vertical dimension (see `BB_PRISM`'s header for why the other two are not fixed to an axis
+ * the same way). */
+export const BB3_HEIGHT_MAX = 29;

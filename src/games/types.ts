@@ -69,6 +69,17 @@ export function coerceGameId(x: unknown, fallback: GameId = 'decode'): GameId {
   return isGameId(x) ? x : fallback;
 }
 
+/**
+ * WHICH PHYSICS BACKEND A WORLD STEPS ON — the shared Rapier 2D solve every game runs today
+ * (`'2d'`), or the deterministic Rapier 3D solve BIOBUZZ's Day 1 seam adds (`'3d'`,
+ * `docs/biobuzz/plan-3d.md`). Declared here — the DOM-free seam file the server imports —
+ * because a room's physics choice is a server/matchmaking fact, not a rendering one.
+ *
+ * Absent everywhere (a world, a spec, a setting) reads as `'2d'`: the 2D pipeline is
+ * PERMANENT and every stored world/snapshot/replay predates this field.
+ */
+export type Physics = '2d' | '3d';
+
 /** one static cuboid collider, as plain numbers (Rapier-independent). Moved out
  * of physicsEngine.ts so any game module can produce field geometry. */
 export interface StaticSpec {
@@ -276,4 +287,33 @@ export interface GameSimModule {
    * solve collides on, what its pin test would measure against, and what its sprite must draw.
    */
   artifactSolids?(r: RobotState, heldBalls: readonly Artifact[], radius: number): RobotSolids;
+  /**
+   * WHICH PHYSICS BACKENDS THIS GAME'S UI MAY OFFER, for a room or practice setup — absent ⇒
+   * only `'2d'`, which is every game before BIOBUZZ's Day 1 seam. BIOBUZZ fills
+   * `['2d', '3d']` once `sim3d/` exists to step the second one; DECODE and Chain Reaction leave
+   * this empty rather than advertise a physics their `step` cannot run.
+   */
+  physicsOptions?: readonly Physics[];
+  /**
+   * A DETERMINISTIC, SCRIPTED DRIVER this game offers as an AI seat — absent ⇒ none. See
+   * `BotDriver` below. Nothing implements this yet; the slot exists so the three Day 1 lanes
+   * can build toward it without a later type edit.
+   */
+  bot?: BotDriver;
+}
+
+/**
+ * A DETERMINISTIC, SCRIPTED DRIVER — an AI seat a room or solo practice can fill instead of a
+ * human player.
+ *
+ * DOM-free and on the SIM module for the same reason `hud` is: the authoritative server needs
+ * to run it too, for a room with an empty seat. `tiers` names the DIFFICULTY LEVELS this
+ * game's bot offers (e.g. `'rookie'` | `'veteran'`) as opaque strings, so a game can add or
+ * rename one without a shared type edit. `drive` returns the command for ONE robot on ONE
+ * tick, and must read only `world` (including its seeded `rngState`) — the same determinism
+ * contract as the rest of `src/sim/` and `src/games/<id>/`: no DOM, no clock, no `Math.random`.
+ */
+export interface BotDriver {
+  readonly tiers: readonly string[];
+  drive(world: World, robotId: number, tier: string): RobotCommand;
 }

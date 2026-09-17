@@ -1,4 +1,5 @@
 import type { Alliance, World } from '../types';
+import { biobuzzPhysics } from '../games/biobuzz/state';
 
 /**
  * Deterministic production checksum of a World, for detecting lockstep DESYNC.
@@ -25,12 +26,16 @@ export function worldHash(world: World): number {
 
   mix(world.tick);
   mix(world.rngState);
+  // `r.z` is written ONLY by the 3D BIOBUZZ solve (Day 1 seam, `docs/biobuzz/plan-3d.md`) —
+  // mixing it unconditionally would change every stored 2D hash the moment `z` existed at all.
+  const mixZ = biobuzzPhysics(world) === '3d';
   for (const r of world.robots) {
     mix(r.id);
     mix(q(r.pos.x));
     mix(q(r.pos.y));
     mix(q(r.heading));
     mix(q(r.turretHeading));
+    if (mixZ) mix(q(r.z ?? 0));
   }
   for (const b of world.balls) {
     mix(b.id);

@@ -3,6 +3,8 @@ import { clamp } from '../../math';
 import { massLimits } from '../../sim/drivetrain';
 import { DEFAULT_SPEC } from '../../sim/specDefaults';
 import {
+  BB3_HEIGHT_MAX,
+  BB3_HEIGHT_MIN,
   BB_HOOD_DEFAULT_DEG,
   BB_HOOD_MAX_DEG,
   BB_HOOD_MIN_DEG,
@@ -150,6 +152,17 @@ export function coerceBiobuzzSpec(raw: RobotSpec, base: RobotSpec = BB_DEFAULT_S
   out.ballStorage = Math.round(
     clampFinite(out.ballStorage, BB_STORAGE_MIN, bbStorageMax(out), base.ballStorage ?? BB_STORAGE_DEFAULT),
   );
+
+  // 5) HEIGHT (3D physics, Day 1 seam — `docs/biobuzz/plan-3d.md`). Independent of every field
+  // above it, so it can run last without affecting their order. Present and finite ⇒ clamped to
+  // R105.A's vertical envelope; anything else (absent, a string, NaN, Infinity off a spoofed
+  // wire spec) is DROPPED rather than clamped to a boundary that would look like a deliberate
+  // choice nobody made. The 2D pipeline never reads this field either way.
+  if (typeof raw.heightIn === 'number' && Number.isFinite(raw.heightIn)) {
+    out.heightIn = clamp(raw.heightIn, BB3_HEIGHT_MIN, BB3_HEIGHT_MAX);
+  } else {
+    delete out.heightIn;
+  }
 
   // CR-ONLY FIELDS ARE STRIPPED, not carried. A spec that was a Chain Reaction build before
   // the player switched game arrives here with a catalyst mechanism and a ground clearance

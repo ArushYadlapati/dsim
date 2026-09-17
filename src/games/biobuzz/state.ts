@@ -1,4 +1,4 @@
-import type { Alliance, Vec2 } from '../../types';
+import type { Alliance, Physics, Vec2, World } from '../../types';
 import type { BbEdge } from './mounts';
 
 /**
@@ -341,6 +341,26 @@ export interface BiobuzzState {
    * an absent key is the honest way to say "no scene asked for this".
    */
   labels?: boolean;
+  /**
+   * WHICH PHYSICS BACKEND THIS WORLD STEPS ON (Day 1 seam, `docs/biobuzz/plan-3d.md` §2.1) —
+   * set ONLY when `'3d'`. A 2D world always OMITS this field rather than writing `'2d'`, so
+   * `createBiobuzzWorld`'s output for the pipeline that has always run is byte-identical to
+   * before this field existed, which is what keeps every stored 2D hash, snapshot and replay
+   * unchanged. Read through `biobuzzPhysics(world)` below — never this field directly.
+   */
+  physics?: Physics;
+}
+
+/**
+ * THE ONE READ OF `world.biobuzz.physics` — every caller asks this, never the raw field.
+ *
+ * Absent reads `'2d'`: the pipeline that predates the 3D port, and the only one a DECODE/Chain
+ * Reaction world (which has no `world.biobuzz` at all) or an old BIOBUZZ snapshot could ever
+ * have run. A second call site spelling `world.biobuzz?.physics ?? '2d'` by hand is exactly how
+ * that default would drift the day this one changes and the other is forgotten.
+ */
+export function biobuzzPhysics(world: World): Physics {
+  return world.biobuzz?.physics ?? '2d';
 }
 
 /**

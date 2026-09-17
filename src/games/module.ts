@@ -61,6 +61,14 @@ export interface GameModule extends GameSimModule {
    * + catalysts + endgame badges). `screenUp` is world-space "up" for z-lift. */
   drawBalls(ctx: CanvasRenderingContext2D, world: World, screenUp: Vec2): void;
   ui: GameUiSpec;
+  /**
+   * THE LAZY 3D SCENE (Day 1 seam, `docs/biobuzz/plan-3d.md` §2.3/§2.5) — absent ⇒ this game
+   * has no 3D renderer, which is DECODE and Chain Reaction today. A FUNCTION rather than the
+   * factory itself, so the Three.js chunk is only ever `import()`-ed the moment a 3D view is
+   * actually mounted: a player who never opens a 3D BIOBUZZ view never downloads it, exactly
+   * like `sim3d/engine.ts`'s `initPhysics3d()` on the physics side.
+   */
+  scene?: () => Promise<GameSceneFactory>;
 
   // ---------------------------------------------------------------- UI slots --
 
@@ -291,3 +299,45 @@ export interface GameDevRoute {
   path: string;
   Component: ComponentType;
 }
+
+// ---------------------------------------------------------------- 3D scene contract --
+//
+// The CLIENT-SIDE half of the 3D renderer seam (Day 1, `docs/biobuzz/plan-3d.md` §2.3):
+// declared additively here so a later renderer lane can fill `GameModule.scene` and a
+// later controller lane can drive it, without either waiting on the other. DECODE and
+// Chain Reaction register no `scene` and are untouched by any of this.
+
+/** which camera a 3D scene renders for — the driver's own view, or a fixed overhead shot
+ * (a spectator, the results screen). */
+export type SceneCamera = 'driver' | 'overhead';
+
+/**
+ * One frame's render inputs — everything a `GameScene` needs that is not already on `world`.
+ * `alpha` is the interpolation fraction between the last two authoritative ticks (the same
+ * fixed-timestep smoothing the 2D renderer does); `localRobotId` is absent for a spectator.
+ */
+export interface SceneFrame {
+  alpha: number;
+  viewAngle: number;
+  camera: SceneCamera;
+  localRobotId?: number;
+  width: number;
+  height: number;
+  dpr: number;
+}
+
+/**
+ * A persistent 3D scene over one canvas, owned by the controller for as long as a 3D view is
+ * mounted. The renderer lane fills an implementation (Three.js); the controller lane calls
+ * `render`/`resize`/`dispose` from its own loop. It reads `World`, it never writes it.
+ */
+export interface GameScene {
+  readonly element: HTMLCanvasElement;
+  render(world: World, frame: SceneFrame): void;
+  resize(width: number, height: number, dpr: number): void;
+  dispose(): void;
+}
+
+/** builds a `GameScene` inside `host` (the DOM node the controller mounts it in). May be
+ * async because a real implementation loads the Three.js chunk + HDRI on first use. */
+export type GameSceneFactory = (host: HTMLElement) => GameScene | Promise<GameScene>;
