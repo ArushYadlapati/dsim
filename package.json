@@ -43,7 +43,8 @@
     "uiaudit": "node scripts/uiaudit.mjs",
     "uiindex": "node scripts/uiindex.mjs",
     "docaudit": "node scripts/docaudit.mjs",
-    "costprobe": "tsx scripts/costprobe.ts"
+    "costprobe": "tsx scripts/costprobe.ts",
+    "bundleaudit": "node scripts/bundleaudit.mjs"
   },
   "build": {
     "appId": "com.decodesim.app",
