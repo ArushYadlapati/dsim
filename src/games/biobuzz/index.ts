@@ -121,4 +121,13 @@ export const BIOBUZZ_MODULE: GameModule = {
   // SHARED preset list, which is what the shared builder would offer; BIOBUZZ's own sweeper
   // dials live in `Builder` and the slot above is what actually renders.
   ui: { showScoreHud: false, startEditor: false, intakes: ['sloped', 'vector'] },
+  /**
+   * THE LAZY 3D SCENE (Day 1 seam, `docs/biobuzz/plan-3d.md` §2.3/§2.5/§10). A FUNCTION that
+   * resolves to the factory — never the factory itself — so `scene/renderScene.ts` (and the
+   * `three` it imports) is only ever pulled into a chunk the moment a player actually mounts a
+   * 3D BIOBUZZ view; a player who stays on the 2D view, or plays DECODE/Chain Reaction, never
+   * downloads it. `scene/` is reachable ONLY through this one dynamic `import()` — see
+   * `scripts/smoke-biobuzz/render.ts`'s import-boundary checks.
+   */
+  scene: () => import('./scene/renderScene').then((m) => m.createBiobuzzScene),
 };
