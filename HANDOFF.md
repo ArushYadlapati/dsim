@@ -1,6 +1,46 @@
+# HANDOFF — 2026-09-17b (main: the record-restart regression, fixed and deployed)
+
+**READ FIRST.** The alpha merge (below) shipped a regression: **restarting a record run was
+refused** with "You already have a game in progress - rejoin or leave it first". Fixed,
+deployed, `/health` ok, one image across all 8 machines.
+
+**The cause is worth knowing, because it was latent for months.** `startLoop` used to open
+with `stop()`, which releases every single-game lock `startMatch` had just taken — so the
+one-game-per-user guard bound NOTHING. `0857745` split `stopLoop()` out and made the guard
+real, and the restart path had always quietly depended on it being inert: restarting is a
+full teardown (dispose the session, join a BRAND-NEW `rec-` room), so the new run arrives
+while the old room still holds the account's lock.
+
+**⚠️ IT ONLY APPEARS ON AN AUTHENTICATED JOIN** (`if (user && activeElsewhere(...))`), which
+is why nothing caught it. Every ad-hoc socket test run against it was anonymous — the join
+field is `authToken`, not `token`, and a wrong field name reads as a signed-out player and
+passes vacuously. If you are testing a lock, assert the lock was TAKEN first.
+
+**The fix**: a solo record run yields at the door and is the only room kind that does — no
+opponent, no alliance, no rating, so the only person it can be in the way of is its owner.
+Versus, duo and ranked still refuse. Only the LOCK is released (`releaseSeatLock`), never the
+room, because a run decided at the buzzer is kept alive by `finishing` until the field settles
+and its score is written. Client half: `restartRun` sends `abandon` on the live socket before
+disposing, and clears `activeGame` (which still named the abandoned run, so Home went on
+offering to rejoin a match that no longer existed). 8 checks in `npm test`.
+
+## Still open
+
+- **A REJOIN COMPLAINT I COULD NOT REPRODUCE** ("can't move, can't see anyone else move").
+  Driven end to end against the real server — 2-player versus, one player dropped with a 1006,
+  rejoined, both drove: the rejoined player moved exactly as far as the one who never dropped,
+  both saw the same positions, snapshots kept flowing. `reattach` is fine on this evidence.
+  Needs specifics before it can be chased: which mode (ranked / custom / record duo), and which
+  "rejoin" — the Home card, a page refresh, or a network drop that recovered by itself.
+- **A PRE-EXISTING GAP, found while testing and NOT fixed**: an account in a LIVE VERSUS match
+  is admitted into a new solo record room. It reproduces with the fix reverted, so it predates
+  all of this — the guard simply does not fire on that path. Worth a look; it is the same guard
+  the record restart was tripping over, pointed the other way.
+- The season-4 drift from the merge below is unchanged and still the owner's call.
+
 # HANDOFF — 2026-09-17 (main: alpha merged whole and deployed, season HELD at 4)
 
-**READ FIRST.** `alpha` is merged into `main` as a single merge commit and deployed to Fly.
+**Superseded by the section above.** `alpha` is merged into `main` as a single merge commit and deployed to Fly.
 The branches are level: everything that was on alpha is on main, and main's two spectator
 fixes (`applyBallDelta` COPIES, a reconnecting spectator re-spectating) survived the merge —
 their four smoke checks are asserted present in the merged tree.
