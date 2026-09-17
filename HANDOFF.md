@@ -1,62 +1,54 @@
-# HANDOFF — 2026-09-17 (biobuzz-3d: the full spec for a 3D BIOBUZZ, no code yet)
+# HANDOFF — 2026-09-17, later (biobuzz-3d: draft 2 of the spec, a 3D AUTHORITATIVE simulation)
 
 **READ FIRST.** Branch **`biobuzz-3d`**, a worktree at `.claude/worktrees/biobuzz-3d`, based on
-`alpha` (27dd2c9). It carries ONE change: **`docs/biobuzz/plan-3d.md`**, the specification for a
-3D BIOBUZZ view in DSIM. No code has been written against it. Every gate is alpha's, unchanged.
+`alpha` (27dd2c9). The branch carries only **`docs/biobuzz/plan-3d.md`** and this HANDOFF. No
+code has been written. Every gate is alpha's, unchanged.
 
-## What the spec decides
+⚠️ **Draft 1 (commit 0a3514c) was REJECTED by the owner.** It kept the 2D sim authoritative and
+added a 3D renderer, with a thirteen-week plan. The owner wants a **proper 3D authoritative
+simulation, built in days**. Draft 2 replaces it wholesale; read draft 2, not the commit history.
 
-Read the file; the ten-line summary at its top is the short version. The load-bearing calls:
+## What draft 2 decides
 
-- **A render mode of the existing `biobuzz` GameId**, not a fourth game: same `step()`, boards,
-  ranked pool and replays. **Rapier 2D stays authoritative**; nothing 3D enters the physics
-  engine except one height-banded collision group, delivered through a generic seam.
-- **Three.js r186 (WebGL2 only) as a lazily loaded chunk**: engine measured 139 KB gz tree-shaken,
-  budget 250 KB, main chunk may grow at most 10 KB, enforced by a new `bundleaudit` ratchet.
-  Zero model bytes in v1; the field is procedural from `config.ts`.
-- **Zero new per-tick wire fields.** Height is spec, tray angle derives from `tipping`, element
-  height is `Artifact.z`. `costprobe` gains a primed-tip scenario to prove it.
-- **The rule changes** (a 29-in robot cannot pass under the 25.5-in down cell; spill falls from
-  the level tray's lip at about 42.6 in; the tray is tested in its tilted frame; real muzzle
-  heights) land behind a `world.biobuzz.rules` key so mixed client/server versions never fight.
-- **SIM_VERSION is HELD at 2 by default**, per the owner's rule against season resets; a `rules`
-  stamp in the replay header plus a rules-0 golden hash is the protection. A bump is an optional
-  owner decision with its cost stated (§8.3).
-- **AI drivers** behind a `GameSimModule.bot` slot (memory never in `World`, 0 B/snap, recorded in
-  replays, never rated) and a **batch simulator** inside the LAN `hostWorker`.
-- **The public FIRST field CAD is the dimension authority**: a scripted STEP-to-glTF pipeline
-  emits `field-measurements.json` to settle the APPROX constants. The derived MESH is not shipped
-  (FIRST's terms of use forbid redistribution without permission; §4.12, Q15).
-- **Thirteen weeks, alpha-playable at week 5**, five lanes with one owner for shared files (§12).
-
-## How it was produced
-
-Nine subsystem maps → five independent architecture proposals (renderer-first, full 3D sim,
-hybrid 2.5D, product-first, operations-first) → three judges (hybrid and ops-first tied at
-140/180; the full 3D engine scored 102 and is the named kill criterion) → synthesis → seven
-adversarial critique lenses → revision → completeness check → final edit against the
-integrator's own verified notes. Scratch outputs live in the session scratchpad, not the repo.
-The spec compares against a comparable third-party 3D sim only generically; keep it that way.
+- **A fourth game, `biobuzz3d`**, in `src/games/biobuzz3d/`, alpha channel; the 2D BIOBUZZ is
+  untouched. Own boards, replays, queue; one `lan_runs` CHECK migration.
+- **Rapier 3D is authoritative** (`@dimforge/rapier3d-deterministic-compat` 0.20, server and
+  replays). Robots, all 56 elements, the tray, flowers and frame are real bodies in ONE world.
+- **The world persists on the server** (sleeping and warm-start on), serialised to plain JSON each
+  tick. The client predicts its own chassis in a small world rebuilt per reconcile; elements and
+  remotes are interpolated from snapshots.
+- **Spill, stacking and blocked shots are physics.** The tray is kinematic, swung by the existing
+  timer; contents fall out because it tilts. Flower contents stack as spheres in a tube. Scoring
+  is a pure read of positions. The tip decision stays the manual's table.
+- **The field is imported from FIRST's public CAD**: `scripts/field-cad.mjs` (STEP → CadQuery →
+  glTF + collider meshes + measurements). Constants-built geometry is the fallback. The licence
+  is unresolved (owner Q10): ask FIRST Day 0; local-only until answered.
+- **Three.js r186 lazy chunk**, driver-station camera default; the 2D renderer over the 3D world
+  is the phone path and the WebGL fallback.
+- **Shared-core changes**: `RobotState.z/vz`, a `scene` slot, the registrations, `worldHash` z
+  for this game, ball interpolation for this game. Nothing BIOBUZZ enters `src/sim`.
+- **Build plan in days**: Day 0 spike gate (hash equal across runtimes, 2v2 step ≤ 1.5 ms),
+  Day 1 solo free drive, Day 2 scored 2v2 online on `dsim-alpha`, Day 3 ship to alpha, then two
+  weeks of daily play-testing. Three lanes (sim, renderer, integration) as three sessions.
 
 ## Next steps
 
-1. **Owner reads §14**: sixteen questions, each tagged with the phase it gates. Q0 (merge
-   `efficiency-audit` into `alpha`), Q1 (CLAUDE.md sentence swap + `three`/`@types/three` in
-   devDependencies) and Q13 (baseline machines) block Phase 0.
-2. Merge `efficiency-audit` into `alpha` (a real merge: +14 / +6), then rebase `biobuzz-3d`.
-3. Phase 0 per §12: the seam commit, the empty lazy chunk, `bundleaudit`, the CAD measurement
-   pipeline, costprobe scenarios, the promotion checklist in `docs/deploy.md`.
+1. Owner answers §10 (ten questions; Q1, Q2, Q9, Q10 gate Day 0).
+2. Merge `efficiency-audit` into `alpha` (a real merge), rebase `biobuzz-3d`.
+3. Day 0 spike per §8: install the deterministic 3D package, dynamic-import init in browser /
+   worker / Node / tsx, 4 boxes + 56 spheres + statics + one kinematic tray, two-run hash, step
+   time. Run the CAD pipeline the same evening.
 
 ## Gotchas
 
-- **This branch's base predates the CLAUDE.md split.** On `alpha` CLAUDE.md is still the
-  2,165-line file, there is no `docs/area/` and no `npm run docaudit`; those are on
-  `efficiency-audit`. Do NOT edit CLAUDE.md on this branch (it would conflict with the split);
-  the spec's line references are as of `efficiency-audit` e0ce598.
-- The field CAD licence is unresolved: never commit a mesh derived from it. Numbers, yes.
-- `V` is Chain Reaction's `fling` in the shared binding table; the spec's view-cycle key is `t`.
-- The spec's release height (42.6 in at level) corrects the 2D code's 25.5 in, which is the
-  down cell's settled bottom; Q5 asks the owner which is intended before Phase 3 builds it.
+- This branch's base predates the CLAUDE.md split: no `docs/area/`, no `docaudit`, the 2,165-line
+  CLAUDE.md. Do NOT edit CLAUDE.md here (conflicts with the split). Spec line refs are as of
+  `efficiency-audit` e0ce598.
+- The spec compares against a comparable third-party 3D sim only generically; keep it that way.
+- Never commit or serve a CAD-derived mesh before the owner decides Q10. Numbers, yes.
+- `V` is Chain Reaction's `fling`; the view-cycle key is `t`.
+- The 2D game's `BB_LAUNCH_Z0 = 10` and `spillPoses` z = 25.5 are approximations the 3D game does
+  not inherit: muzzle height comes from the mount, spill height from the tilting tray.
 
 ---
 
