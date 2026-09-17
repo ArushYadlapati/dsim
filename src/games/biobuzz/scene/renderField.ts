@@ -278,8 +278,9 @@ function buildTray(alliance: Alliance): THREE.Group {
   const accent = alliance === 'blue' ? C.COLORS.blue : C.COLORS.red;
   tray.add(buildCell(1, accent));
   tray.add(buildCell(-1, accent));
+  // CylinderGeometry's axis is local Y by default — exactly the arm direction the two cells
+  // sit along (`cellY = s * HIVE_ARM` in `buildCell`), so no rotation is needed here at all.
   const bar = new THREE.Mesh(new THREE.CylinderGeometry(1, 1, HIVE_BAR_LEN, 8), mat(accent));
-  bar.rotation.x = Math.PI / 2; // CylinderGeometry's axis is local Y; the bar runs along local Y too — align it
   tray.add(bar);
   return tray;
 }
