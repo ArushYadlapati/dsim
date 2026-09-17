@@ -15645,6 +15645,8 @@ for (const game of ['decode', 'chain', 'biobuzz'] as const) {
 {
   const active: string[] = [];
   const inactive: string[] = [];
+  /** the NET of the two callbacks — i.e. what `server/index.ts`'s `userRoom` would hold */
+  const held = new Set<string>();
   const msgs: ServerMsg[] = [];
   const client: Client = {
     id: 'c1',
@@ -15669,12 +15671,27 @@ for (const game of ['decode', 'chain', 'biobuzz'] as const) {
     () => {},
     { kind: 'versus' },
     undefined,
-    (uid) => active.push(uid),
-    (uid) => inactive.push(uid),
+    (uid) => {
+      active.push(uid);
+      held.add(uid);
+    },
+    (uid) => {
+      inactive.push(uid);
+      held.delete(uid);
+    },
   );
   room.add(client);
   room.onMessage('c1', { t: 'start' });
   check('single-game lock registered for an authed driver at match begin', active.includes('user-1'));
+  /**
+   * AND STILL HELD A STATEMENT LATER — the assertion above cannot see the bug it was
+   * written to catch. It reads a CALL LOG, so it passes as long as `onUserActive` fired
+   * at some point, and for the life of this suite `startMatch` fired it and then called
+   * `startLoop`, which opened with a `stop()` that released every lock it had just taken.
+   * The lock existed for the handful of statements in between. `held` is the net of the
+   * two callbacks, which is what the server actually consults (`userRoom`).
+   */
+  check('single-game lock is still HELD once the match is running', held.has('user-1'));
 
   // restart is DISABLED in multiplayer — it must NOT re-author the live match
   const startsBefore = msgs.filter((m) => m.t === 'matchStart').length;
@@ -15685,6 +15702,65 @@ for (const game of ['decode', 'chain', 'biobuzz'] as const) {
   // run to the end → the lock is released at finalize so the user can start again
   room.advanceForTest(maxMatchTicks() + 5);
   check('single-game lock released when the match finalizes', inactive.includes('user-1'));
+  check('single-game lock is actually clear after finalize', !held.has('user-1'));
+}
+
+/**
+ * ---- A STAGED RANKED MATCH HOLDS THE LOCK BEFORE IT STARTS -----------------------
+ *
+ * Reported as "you should also not be able to re-enter queue if you're entering a match".
+ * The lock used to be taken at `startMatch`, so between the matchmaker assigning a room
+ * and the world being built a paired player held nothing: `activeElsewhere` answered
+ * false and the ranked queue took them back. That is reachable by refreshing the tab on
+ * "Match found" — the reload loses the room client-side, FIND MATCH re-enters the pool,
+ * and the abandoned room still charges a no-show when its grace lapses.
+ */
+{
+  const held = new Set<string>();
+  const room = new Room(
+    'smoke-staged-lock',
+    () => {},
+    { kind: 'versus' },
+    undefined,
+    (uid) => held.add(uid),
+    (uid) => held.delete(uid),
+  );
+  const roster = [
+    { userId: 'u-red', name: 'red', teamName: 'T', teamNumber: 111, spec: { ...DEFAULT_SPEC }, assists: { ...DEFAULT_ASSISTS }, startIndex: 0, alliance: 'red' as const, introElo: 1200 },
+    { userId: 'u-blue', name: 'blue', teamName: 'T', teamNumber: 222, spec: { ...DEFAULT_SPEC }, assists: { ...DEFAULT_ASSISTS }, startIndex: 0, alliance: 'blue' as const, introElo: 1300 },
+  ];
+  check('staged lock: nothing held before the pairing is staged', held.size === 0);
+  room.applyPending({ code: 'iad-lock', hostRegion: 'iad', mode: '1v1', seed: 3, ranked: true, roster });
+  // NOBODY HAS CONNECTED YET, and that is the entire point: the server has committed
+  // these two accounts to this match, so the queue must already refuse them.
+  check('staged lock: both roster members are locked the moment the match is staged', held.has('u-red') && held.has('u-blue'));
+  check('staged lock: the room reports itself as staging (pre-world)', room.staging());
+  check('staged lock: stagedFor names the roster', room.stagedFor('u-red') && !room.stagedFor('u-other'));
+}
+
+/** and a staging that is CANCELLED gives the locks back — or a no-show would leave both
+ *  accounts unable to queue again for as long as the process lives. */
+{
+  const held = new Set<string>();
+  const room = new Room(
+    'smoke-staged-cancel',
+    () => {},
+    { kind: 'versus' },
+    undefined,
+    (uid) => held.add(uid),
+    (uid) => held.delete(uid),
+  );
+  room.applyPending({
+    code: 'iad-cancel', hostRegion: 'iad', mode: '1v1', seed: 4, ranked: true,
+    roster: [
+      { userId: 'u-a', name: 'a', teamName: 'T', teamNumber: 1, spec: { ...DEFAULT_SPEC }, assists: { ...DEFAULT_ASSISTS }, startIndex: 0, alliance: 'red', introElo: 1200 },
+      { userId: 'u-b', name: 'b', teamName: 'T', teamNumber: 2, spec: { ...DEFAULT_SPEC }, assists: { ...DEFAULT_ASSISTS }, startIndex: 0, alliance: 'blue', introElo: 1200 },
+    ],
+  });
+  check('staged lock: held while the grace runs', held.has('u-a') && held.has('u-b'));
+  room.forceJoinGraceForTest();
+  check('staged lock: released when the staging is cancelled', held.size === 0);
+  check('staged lock: the room is no longer staging after a cancel', !room.staging());
 }
 
 // ---- a driver who leaves a FINISHED match is reaped, and the room with them -----
