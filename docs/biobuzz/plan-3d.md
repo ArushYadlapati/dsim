@@ -1,564 +1,598 @@
-# BIOBUZZ 3D: an authoritative 3D simulation
+# BIOBUZZ 3D: one game, a 3D deterministic authority, 2D or 3D on screen
 
 ## 0. Status
 
-**DRAFT 2, 2026-09-17, branch `biobuzz-3d`, `docs/biobuzz/plan-3d.md`.** Replaces draft 1, which
-kept the 2D sim authoritative and added a 3D view. The owner rejected that: the game is to be a
-proper 3D authoritative simulation, built fast. Line references are as of `efficiency-audit`
-`e0ce598`; `alpha` (this branch's base) predates the CLAUDE.md split and `docaudit`.
+**DRAFT 3, 2026-09-17, branch `biobuzz-3d`, `docs/biobuzz/plan-3d.md`.** Draft 1 (a 3D view over
+the 2D sim) and draft 2 (a separate `biobuzz3d` game) were both rejected by the owner. This draft
+follows the owner's direction of 2026-09-17: BIOBUZZ stays ONE game; every ranked or record match
+runs on a 3D deterministic server; players render in 2D or 3D and the 2D path must stay very
+fast; practice offers the old 2D physics, the 3D physics with a 2D view, or the 3D physics with
+3D rendering, each with or without AI; prediction is a player option; graphics have presets and
+detailed settings; GPU acceleration is on automatically. Line references are as of
+`efficiency-audit` `e0ce598`; `alpha` (this branch's base) predates the CLAUDE.md split.
 
 Decisions, one line each:
 
-1. **A fourth game, `biobuzz3d`**, in `src/games/biobuzz3d/`, alpha channel first. The 2D BIOBUZZ
-   is untouched. Own boards, replays, queue; one `lan_runs` CHECK migration.
-2. **Rapier 3D is the authoritative physics**, `@dimforge/rapier3d-deterministic-compat` 0.20, on
-   the server and in every replay. Robots, all 56 elements, the tray, the flowers and the frame
-   are real bodies in one world.
-3. **The world persists on the server** (sleeping and warm-starting on), serialised to plain JSON
-   every tick. The client predicts only its own chassis in a small world rebuilt per reconcile;
-   everything else is interpolated from 30 Hz snapshots.
-4. **Spill, stacking and blocked shots are physics, not scripts.** The tray is a kinematic body
-   swung by the existing timer; its contents fall out because it tilts. Flower contents stack
-   because they are spheres in a tube. Scoring is a pure read of positions.
-5. **The tip decision stays the manual's table.** No mass model exists to replace it.
-6. **Three.js r186, WebGL2, lazily loaded**, with a driver-station camera by default. Physics and
-   renderer are two lazy chunks only this game's route pays for.
-   **The field comes from FIRST's public CAD**: a scripted STEP-to-glTF pipeline produces the
-   visual mesh, the static and tray collider meshes, and a measurements file; the constants-built
-   field is the fallback when the GLB is absent (8, "Field CAD").
-7. **Shared-core changes are four optional fields and one slot**: `RobotState.z/vz`, a
-   `scene` slot on `GameModule`, and the game id registrations. Nothing BIOBUZZ enters `src/sim`.
-8. **Playable in three days, complete in two weeks.** Three parallel lanes. A comparable 3D sim
-   was built in a day from nothing; DSIM starts with the netcode, accounts, ranked, replays,
-   drivetrain model and the BIOBUZZ rules already written.
+1. **One game id, `biobuzz`.** Boards, queue, replays, records stay one population. Rows gain a
+   `physics` tag so a board can show or filter 2D-era and 3D-era results.
+2. **Two physics under one step.** `World.biobuzz.physics` is `'2d'` (today's pipeline, unchanged)
+   or `'3d'` (new, `src/games/biobuzz/sim3d/`). `biobuzzStep` dispatches on it. Deleting the 2D
+   pipeline later is one branch of one function.
+3. **The 3D physics is Rapier 3D, deterministic build**, `@dimforge/rapier3d-deterministic-compat`
+   0.20, authoritative on the server for every ranked, record and matchmade room and in every
+   replay of one. Robots, all 56 elements, the tray, flowers and frame are real bodies in one
+   persistent world serialised to plain JSON each tick.
+4. **The wire is the same for 2D and 3D clients.** Snapshots already carry element `z/vz`;
+   robots gain `z/vz`. A 2D client ignores what it does not draw. No per-view packets.
+5. **Two renderers over one world.** The existing canvas renderer (2D view, any device, no wasm,
+   no WebGL) and a lazily loaded Three.js r186 renderer (3D view). Both read the same `World`.
+6. **Prediction is a setting: Off, Light, Full.** Light (drive model plus walls, no 3D wasm) is
+   the 2D default; Full (a small 3D prediction world) the 3D default; Off is pure interpolation.
+7. **Graphics: presets Auto / Low / Medium / High / Ultra / Custom** over sixteen detailed
+   settings, per device. Auto detects the GPU, benchmarks two seconds, and picks; software GL
+   falls back to the 2D view. `powerPreference: 'high-performance'`, hardware acceleration never
+   disabled in the app.
+8. **Practice is local**: physics 2D or 3D, view 2D or 3D, AI opponents off or a tier. Practice
+   runs upload with `physics` and `view` tags; only 3D-physics runs are comparable to ranked.
+9. **The field is imported from FIRST's public CAD** through a scripted STEP-to-glTF pipeline
+   (visual mesh, collider meshes, measurements); constants-built geometry is the fallback while
+   the licence question is open.
+10. **Days, not weeks.** Day 1 plays the whole game on 3D physics in the 2D view; Day 2 has 3D
+    rooms online; Day 3 ships the 3D renderer and graphics settings to alpha. Three lanes.
 
 ---
 
 ## 1. Goals and non-goals
 
-**Goals.** A 3D FTC BIOBUZZ match where every outcome comes from a 3D rigid-body solve: a 29-in
-robot stops under the 25.5-in down cell, a tipped tray dumps its load onto the tiles and it
-rolls, a shot through the closed back of a cell bounces off steel, a nectar dropped into a
-flower lands on the pollen below it. Reuse everything DSIM already has: server authority,
-prediction, snapshots, replays, accounts, Glicko-2, matchmaking, LAN, Electron, mobile touch,
-the drivetrain model, the BIOBUZZ rules layer (tip table, points, fouls, HUD, mechanism
-vocabulary, presets, start legality). Ship to alpha in days.
+**Goals.** A BIOBUZZ match whose competitive outcomes come from a 3D rigid-body solve: a 29-in
+robot stops under the 25.5-in down cell; a tipped tray dumps its load and it rolls; a shot
+through a cell's closed back bounces off steel; a nectar dropped into a flower lands on the pollen
+below it. A 2D player and a 3D player in the same match see the same truth at their own cost:
+the 2D canvas path stays as light as today. Practice on any device, 2D or 3D physics, with or
+without AI. Graphics that scale from a Chromebook to a desktop GPU without the player touching
+anything, and every setting exposed for those who want to. Reuse the netcode, accounts,
+Glicko-2, replays, LAN, Electron, mobile, the drivetrain model and the BIOBUZZ rules layer.
 
-**Non-goals for the first ship.** No hive mass model (table stays). No launched element enters a
-flower (standing ruling; placement only). No new command bits (the `buttons` byte is full;
-deployment is a phase read). No mobile 3D rendering on day one (the 2D renderer over the 3D
-world is the fallback, see 4.6). No cosmetics, no robot model files, no WebGPU.
-
-**Ranked is on from the first alpha ship.** `scored: true`, `initialAct: 1`; Glicko-2, boards and
-matchmaking are already game-keyed and the alpha app persists into its own database, so a
-solve that still needs tuning costs nothing public. The season goes public when the owner
-removes `channels: ['alpha']` (question 7).
+**Non-goals for the first ship.** No hive mass model (the manual's tip table stays). No launched
+element enters a flower (standing ruling). No new command bits (the `buttons` byte is full;
+deployment is a phase read). No robot model imports, no WebGPU (an Ultra option later), no
+season reset (`BALANCE_VERSION`/`SIM_VERSION` held, per the owner's standing rule).
 
 ---
 
 ## 2. Architecture
 
-### 2.1 A fourth game
+### 2.1 One game, two physics
 
-Four registrations per `docs/area/adding-a-game.md`: `GameId` + `GAME_IDS` in `src/games/types.ts`;
-`GAMES` in `index.ts` (module static, renderer lazy); a **getter** in `sim.ts` (import cycle);
-a `SEASONS` row (`key: 'biobuzz3d'`, name `BIOBUZZ 3D`, presenter RTX, `channels: ['alpha']`,
-`initialAct: 1`). Plus `World.biobuzz3d?: Biobuzz3dState`, the `coerceSpec` arm in
-`src/sim/spawn.ts` (reuse `coerceBiobuzzSpec` plus `heightIn`), migration `NNNN_lan_runs_biobuzz3d.sql`
-widening the CHECK (the `0034` pattern; `records_drivetrain_check` gains `butterfly` in the same
-file), and `server/api.ts:578`'s two-valued literal replaced with `coerceGameId`.
+`World.biobuzz.physics: '2d' | '3d'` (absent reads `'2d'`, so every stored world, snapshot and
+replay is unchanged). `createBiobuzzWorld(mode, seed, setups, settings, physics)` builds the same
+staging (positions, preloads, stock, hives, flowers) and then either leaves the 2D pipeline to run
+or seats every element and robot as a body in the 3D world. `biobuzzStep` reads the tag once per
+tick and calls `step2d` (today's `step.ts` body, moved) or `step3d`.
 
-Why a new id and not a mode: a different `step()` under `biobuzz` would share one board, one
-matchmaking bucket and one replay lineage with the 2D game. A new id separates all three by
-construction (every table is keyed by `game`), and the live 2D game is never at risk.
+Who picks the physics:
 
-### 2.2 Module layout
+| context | physics | who decides |
+|---|---|---|
+| ranked, matchmade, record rooms | `3d` | the server, always |
+| custom lobby (code room) | `3d` default | the host, a lobby option (`2d` for a casual or low-end room) |
+| LAN room | `3d` default | the host |
+| solo practice | `3d` default | the player, in Practice setup |
+| replay playback | the replay's header | recorded |
+
+A room's physics is fixed at creation and rides `RoomConfig.physics`, the `matchStart` message and
+the world bag. Matchmaking stages rooms with `physics: '3d'` only.
+
+### 2.2 Mode matrix
+
+| | 2D view (canvas) | 3D view (Three.js) |
+|---|---|---|
+| 2D physics (practice, casual rooms) | today's game, unchanged | the scene draws the 2D world: elements at their `z`, hive from `tipping`, robots at height 18 |
+| 3D physics (competitive, practice) | canvas renderer over the 3D world: derived cell and flower lists, elements z-lifted as today | the full picture |
+
+The 2D renderers need one adapter: cell and flower contents come from a helper that reads the
+stack arrays for `2d` worlds and the derived lists (3.5) for `3d` worlds. Nothing else changes in
+`drawField.ts`, `drawRobot.ts` or `draw.ts`.
+
+### 2.3 Module layout
 
 ```
-src/games/biobuzz3d/
-  sim.ts, index.ts          registrations (GameSimModule / GameModule)
-  config.ts                 3D constants: true hive lengths, cell prism, flower rings, robot heights,
-                            physics tuning; imports the 2D game's manual constants, never copies them
-  state.ts                  Biobuzz3dState (plain JSON): hives, human stock, deploy latch, spill tags
-  physics/
-    engine.ts               initPhysics3d() (dynamic import of the wasm), world build/sync/step/readback
-    bodies.ts               body + collider specs from World: robots, elements, tray, flowers, frame, walls
-    math3.ts                vec3 / quaternion helpers built on dsin/dcos/datan2/hyp
-  step.ts                   the tick pipeline (see 3.1)
-  robot.ts                  drive wrench → 3D body; intake sensor; muzzle; place point; deploy
-  elements.ts               capture / launch / place / spill-tag; hopper (imports the 2D mechs vocabulary)
-  hive.ts                   swing timer, tip table, tray angle (imports the 2D hive.ts table and timer)
-  flower.ts                 tube geometry, scoring reads (owner = top-most nectar by z)
-  score.ts                  Table 10-2 as pure reads of the 3D world
-  penalties.ts              G402/G407/G410/G421 ported; G409 first-contact tag
-  spawn.ts                  createWorld: staging positions from the 2D spawn, robots seated on the tiles
-  settle.ts                 nothing in flight, nothing awake above rest speed, no swing running
-  hud.ts                    HUD slice (reuses the 2D HudSlots where the shape matches)
-  scene/                    Three.js renderer, every file render*.ts (renderer chunk)
-  scenes.ts, Gallery.tsx    deterministic scenes + alpha-only gallery, the BIOBUZZ pattern
-scripts/smoke-biobuzz3d/    own suite, third `&&` in `npm test`
-scripts/field-cad.mjs       CAD pipeline orchestrator (download, verify, convert, decimate, budget)
-scripts/field-cad/convert.py  CadQuery: STEP in; visual mesh, collider meshes, measurements out
-public/models/biobuzz3d/    field.glb + field-colliders.json + field-measurements.json (see 8)
+src/games/biobuzz/
+  step.ts                dispatch on world.biobuzz.physics; step2d is today's pipeline
+  sim3d/
+    engine.ts            initPhysics3d() (dynamic import of the wasm), world build/sync/step/readback
+    bodies.ts            body + collider specs: robots, elements, tray, flowers, frame, walls
+    math3.ts             vec3 / quaternion on dsin/dcos/datan2/hyp
+    step3d.ts            the 3D tick (3.1)
+    robot3d.ts           drive wrench → body; intake sensor; muzzle; place point; deploy
+    elements3d.ts        capture / launch / place / spill tags / human player
+    hive3d.ts            tray kinematics from the shared swing timer; table trigger; spill tags
+    flower3d.ts          tube membership reads
+    derive.ts            contents / stack lists + membership tags for the shared score, HUD, renderers
+    predict.ts           the Light and Full prediction worlds (client only)
+    settle3d.ts, spawn3d.ts
+  ai/policy.ts, tiers.ts deterministic drivers (any physics)
+  scene/render*.ts       Three.js renderer chunk
+  graphics/              presets, detection, benchmark, settings store (client)
+scripts/smoke-biobuzz/   new lanes SIM3D, HIVE3D, FLOWER3D, PREDICT, AI (same suite)
+scripts/field-cad.mjs, scripts/field-cad/convert.py, public/models/biobuzz/   the CAD pipeline (8)
 ```
 
-The 2D game's `mechs.ts`, `mounts.ts`, `presets.ts`, `labels.ts`, `start.ts`, `Builder.tsx`,
-`RobotPreview.tsx`, `StartEditor.tsx`, `hive.ts` (table and timer) and `config.ts` (manual numbers)
-are **imported**, not copied. Anything that reads `world.balls` positions or the 2D colliders is
-reimplemented here against the 3D world.
+`config.ts`, `state.ts`, `hive.ts` (table, timer), `flower.ts` (scoring rules), `score.ts`,
+`penalties.ts`, `hud.ts`, `mechs.ts`, `mounts.ts`, `presets.ts`, `start.ts`, the builder, the
+start editor and the HUD slots are shared by both physics. Anything that writes a position is
+physics-specific.
 
-### 2.3 Shared-core changes
+### 2.4 Shared-core changes
 
-- `src/types.ts`: `RobotState.z?: number` and `vz?: number` (absent reads 0). `pos`/`heading`/`vel`
-  stay the 2D projection of the chassis, so every shared consumer (HUD, camera, labels,
-  penalties helpers, `worldHash`, the protocol) works unchanged. `Artifact` already carries
-  `pos`, `vel`, `z`, `vz`, `r`.
-- `src/games/module.ts`: `scene?: () => Promise<GameSceneFactory>` (lazy renderer). Consumed in
-  `src/game.ts` as `mod.scene ? <3D renderer> : <2D canvas>`; the 2D path is byte-identical.
-- `src/games/types.ts`: the id. `GameSimModule.step` is already the game's own function; the 3D
-  step never calls `solveRobots`/`solveArtifacts`.
-- `src/net/checksum.ts`: `worldHash` mixes `r.z` when `world.game === 'biobuzz3d'` (stored hashes
-  for other games unchanged).
-- `src/game.ts`: ball interpolation for this game only (4.4); renderer choice; the physics init
-  await before the first 3D step.
-- `server/index.ts` and `src/lan/hostWorker.ts`: `await initPhysics3d()` when a `biobuzz3d` room
-  is created (lazy, not at boot for the worker).
+| file | change | why |
+|---|---|---|
+| `src/types.ts` | `RobotState.z?`, `vz?` (absent 0); `BiobuzzState.physics?`; `GameSettings.practicePhysics?: '2d'|'3d'`, `practiceBots?: 'off'|BotTier`; `Replay.physics?` | the only new per-tick robot fields; the practice picks sync per account like `practiceDummies` |
+| `src/games/module.ts` | `scene?: () => Promise<GameSceneFactory>` | the lazy 3D renderer slot; DECODE/CR fill nothing |
+| `src/games/types.ts` | `GameSimModule.bot?`, `GameSimModule.physicsOptions?: readonly Physics[]` | AI seats; which physics the UI may offer for this game |
+| `src/net/protocol.ts` | `CLIENT_CAPS` gains `'bb3d'`; `RoomConfig.physics?`; `matchStart.physics?` | an older client cannot predict a 3D room; the server refuses it with an update message |
+| `src/net/checksum.ts` | `worldHash` mixes `r.z` when `physics === '3d'` | stored hashes for 2D worlds unchanged |
+| `src/game.ts` | renderer choice; prediction mode; ball and robot-z interpolation for 3D worlds; `initPhysics3d()` before a 3D practice or room; bot seats in solo | the client side of every decision above |
+| `server/index.ts`, `server/room.ts`, `server/matchmaking.ts` | `await initPhysics3d()` at boot; room physics; cap gate; staged rooms `3d` | server authority |
+| `server/persist.ts`, `server/db/` | migration: `physics text` on `records`, `matches`, `replays`, `practice_runs` (default `'2d'` for old rows) plus `view text` on `practice_runs`; `records_drivetrain_check` gains `butterfly` | boards can show or filter; nothing is reset |
+| `src/lan/hostWorker.ts` | lazy 3D init when hosting a 3D room | the worker chunk stays wasm-light |
+| `src/ui/*` | Graphics section; view toggle; prediction option; Practice setup (physics, AI); lobby physics option; leaderboard `physics` badge and filter | player-facing |
+| `package.json` | `@dimforge/rapier3d-deterministic-compat` in `dependencies`; `three`, `@types/three` in `devDependencies` | server needs the physics; the renderer is client-only |
+| `CLAUDE.md` | the client-bundle sentence allows per-game lazy chunks budgeted by `bundleaudit`; the game table row says 3D | one sentence each, on the split base |
 
-### 2.4 The physics package and its lifecycle
+Nothing BIOBUZZ enters `src/sim/`. The 2D pipeline keeps calling the shared `solveRobots` and
+`solveArtifacts` exactly as today.
 
-`@dimforge/rapier3d-deterministic-compat` 0.20.0 in `dependencies` (the server needs it). Wasm
-2,048,139 B, about 767 KB gzipped; inlined as base64 in the compat module, about 1.08 MB gzipped.
-The deterministic build is chosen up front: replays re-simulate on any machine, the server verifies
-practice runs, and client prediction agrees with the server to the bit for the same inputs. Its
-cost is speed (a less optimised build); the budget in 3.9 allows for it. The 2D games stay on
-`rapier2d-compat` 0.19.3; the two packages coexist.
+### 2.5 Packages, lifecycle, bundle
 
-`physics/engine.ts` loads the module through a **dynamic `import()`** inside `initPhysics3d()` and
-keeps it in a module variable; `step()` is synchronous against it. Vite emits the wasm chunk once,
-loaded only when a 3D screen mounts (after the 2D physics init), never in the main chunk or the
-LAN worker chunk unless a 3D room is hosted. The server awaits it at boot beside `initPhysics()`;
-the smoke suite awaits it at the top. If the non-compat package plus a Vite `?url` wasm works in
-browser, worker, Node and `tsx` alike, it saves about 300 KB gzipped; try it in the Day 0 spike,
-fall back to compat.
+`sim3d/engine.ts` loads the compat module through a **dynamic `import()`** inside
+`initPhysics3d()` and keeps it in a module variable; `step3d` is synchronous against it. Vite
+emits the wasm chunk once, loaded only when a 3D-physics world is about to be stepped locally
+(practice, Full prediction, LAN hosting). A 2D-view client with Light or Off prediction in an
+online 3D room **never loads it**. The server awaits it at boot beside `initPhysics()`; the smoke
+suite awaits it at the top. The 2D games stay on `rapier2d-compat` 0.19.3; the packages coexist.
+If the non-compat package plus a Vite `?url` wasm works in browser, worker, Node and `tsx` alike,
+it saves about 300 KB gzipped; try it on Day 0, fall back to compat.
 
-Bundle for the `biobuzz3d` route, gzipped: main chunk 903 KB (unchanged, at most +10 KB), physics
-chunk about 1.1 MB, renderer chunk at most 250 KB (engine measured 139 KB tree-shaken), game code
-about 60 KB. About 2.3 MB total, against a comparable sim's 13 MB. A new `scripts/bundleaudit.mjs`
-ratchets per-chunk gzip size like `uiaudit`.
+Route weights, gzipped: main chunk 903 KB today (at most +10 KB); 3D physics chunk about 1.1 MB
+(compat) or 0.77 MB (raw wasm), loaded only as described; renderer chunk at most 250 KB (engine
+measured 139 KB tree-shaken); HDRI sets on demand. A 2D-view player pays the main chunk only.
+`scripts/bundleaudit.mjs` (new, a `uiaudit`-shaped ratchet) fails on growth per chunk.
 
 ---
 
-## 3. Simulation model
+## 3. The 3D simulation
 
-### 3.1 The tick
+### 3.1 The tick (`step3d`)
 
-`step(world, dt, commands)`:
-
-1. Phase machine (shared `src/sim/match.ts`), disabled robots get the zero command.
-2. Drivetrain: shared `updateRobot` produces a `DriveWrench` (force, torque) per robot from the
-   2D projection; unchanged model, unchanged feel.
+1. Phase machine (shared `src/sim/match.ts`); disabled robots get the zero command.
+2. Drivetrain: shared `updateRobot` produces a `DriveWrench` per robot from the 2D projection;
+   unchanged model, unchanged feel.
 3. **Sync**: the persistent Rapier world is reconciled to `world` (3.2).
-4. Apply wrenches as 3D forces in the floor plane and torque about the vertical; set the tray's
-   next kinematic rotation from the swing timer.
+4. Apply wrenches as forces in the floor plane and yaw torques; set the tray's next kinematic
+   rotation from the shared swing timer.
 5. `world3d.step()`.
-6. **Readback**: every dynamic body writes `pos/z/vel/vz/heading/angVel` back into `world` (plain
-   numbers, rounded to 1e-4 in and 1e-4 rad so the JSON is the truth and the readback is stable).
-7. Gameplay reads: intake capture, launch, place, hive capture/tip/spill tags, human player nectar,
-   flower and garden and cell membership, fouls, score.
-8. Containment invariant: any element outside the perimeter or below the tiles is placed back
-   inside at rest and logged (a physics escape is a bug; the clamp is the safety net, never the
-   design).
+6. **Readback**: every dynamic body writes `pos/z/vel/vz/heading/angVel` into `world`, rounded to
+   1e-4 in and rad, so the JSON is the truth and stable.
+7. **Derive** (3.5): cell contents, flower stacks bottom to top, membership tags.
+8. Gameplay reads: intake capture, launch, place, tip trigger, spill tags, human player nectar,
+   gardens, park, leave, fouls, score (the shared `score.ts` over the derived lists).
+9. Containment invariant: an element outside the perimeter or below the tiles is placed back
+   inside at rest and logged. A safety net, never the design.
 
-Everything in 7 is a pure read of positions plus the existing counters; nothing writes a position
-except the solve and the containment clamp (one position authority per body, the repo's rule).
+One position authority per body: the solve, and the clamp when the solve failed.
 
-### 3.2 Persistent world and the sync
+### 3.2 Persistent world and sync
 
-The server keeps one Rapier world per room for the whole match. Sleeping and warm-starting stay on:
-resting spheres cost nearly nothing and do not jitter. Each tick the engine **syncs** world JSON to
-bodies: bodies whose JSON changed outside the solve (a capture removed a sphere, a launch added
-one, a spill re-emitted one, a reconcile snapped a chassis) are created, removed or teleported; the
-rest are left alone. Body handles are keyed by stable ids (`robot.id`, `artifact.id`, named
-statics), so creation order is deterministic and the same on every machine.
-
-A fresh world built from the same JSON is not bit-identical to a persisted one (no warm-start
-history), so **the persisted world is the authority and JSON is its faithful serialisation**, not
-the other way round. Determinism holds where it matters: the server and a replay both start at
-tick 0 from the seed and step the same inputs, so they agree bit for bit (deterministic build).
-The client's prediction world (3.8) is rebuilt per reconcile and is allowed to differ; server
+The server keeps one Rapier world per room for the match; sleeping and warm-starting stay on, so
+resting spheres cost nearly nothing and do not jitter. Each tick the engine syncs JSON to bodies:
+bodies whose JSON changed outside the solve (a capture removed a sphere, a launch added one, a
+reconcile snapped a chassis) are created, removed or teleported; the rest are left alone. Handles
+are keyed by stable ids (`robot.id`, `artifact.id`, named statics); creation order is
+deterministic. The persisted world is the authority and JSON its serialisation. Server and replay
+both start at tick 0 from the seed and step the same inputs, so they agree bit for bit under the
+deterministic build. A client's prediction world (5) is rebuilt per reconcile and may differ;
 authority corrects it.
 
 ### 3.3 Robots
 
-Dynamic cuboid `length × width × heightIn`, mass `shoveMass`, gravity on, resting on the tile
-plane. **Yaw free; pitch and roll locked** (`setEnabledRotations(false, false, true)` in z-up
-terms). A driven chassis on a flat floor does not tip in this game, and a robot on its side is
-not a BIOBUZZ outcome anyone wants to simulate; locking removes the one contact that jitters
-(owner question 3 can unlock it). z translation is free: a robot pressed under a descending tray
-is pushed down onto the tiles, not clipped. Drive: `DriveWrench` from the shared model applied as
-a force and a yaw torque, plus a strong yaw damping that mirrors the 2D wheel-brake behaviour.
-Contact: friction `PHYS_FRICTION` against robots, `PHYS_WALL_FRICTION` against statics, restitution
-0. The robot's own solids (chassis, sweeper plates, held elements) come from `bbRobotSolids`
-extruded to `heightIn`, the one geometry authority.
+Dynamic cuboid `length × width × heightIn`, mass `shoveMass`, gravity on, on the tile plane.
+Yaw free; pitch and roll locked (owner question 3 can unlock); z translation free so a robot
+pressed under a descending tray slides out rather than clipping. Drive: the shared `DriveWrench`
+as a force and yaw torque plus a yaw damping mirroring the 2D wheel brake. Friction
+`PHYS_FRICTION` against robots, `PHYS_WALL_FRICTION` against statics, restitution 0. Solids from
+`bbRobotSolids` extruded to `heightIn` (chassis, sweeper plates, held elements): one geometry
+authority for physics, sprite and mesh.
 
 `RobotSpec.heightIn` (12 to 29, absent 18) is clamped in `coerceBiobuzzSpec`; `stowHeightIn` (at
-most 18) is a builder check. Deployment: a robot is deployed once the match leaves pre-match
-(a pure read of `world.match`); the collider is rebuilt at the phase edge. A 29-in build cannot
-choose to stay stowed in v1; a toggle needs a wider command field (Phase 2 option).
+most 18) is a builder check. Deployment is a read of `world.match` (deployed once pre-match ends;
+collider rebuilt at the edge). The 2D pipeline ignores height entirely, as today.
 
 ### 3.4 Elements
 
-56 dynamic spheres (40 pollen r 1.4, 8 + 8 nectar r 1.8), mass `BB_ELEMENT_MASS` (APPROX 0.2 lb
-until a set is weighed), gravity 386 in/s², rolling friction and restitution from `BALL_*` as the
-starting point, CCD on while `|v| > 60 in/s` so a 260 in/s shot never tunnels through a 1-in
-plate. Rotation unlocked (they roll; the renderer spins them from the solver's angular velocity,
-which is not serialised: the readback keeps only `pos/z/vel/vz`, and the next sync leaves a
-resting body's rotation alone). An element inside a hopper is `held` and removed from the world;
-inside the human player's stock, `stock`; everything else, including elements sitting in a cell
-or a flower, is a **body** with `state.kind: 'ground'` and a position. The 2D game's
-`'element'` (parked in a structure) state is gone: membership in a cell or flower is a read.
+56 dynamic spheres (40 pollen r 1.4, 8 + 8 nectar r 1.8), mass `BB3_ELEMENT_MASS` (APPROX 0.2 lb
+until a set is weighed), gravity 386 in/s², friction, restitution and rolling damping from
+`BALL_*` as the start, CCD while `|v| > 60 in/s` so a 260 in/s shot never tunnels a plate. Rotation
+unlocked (they roll; the renderer spins them from velocity; rotation is not serialised, the next
+sync leaves a resting body's rotation alone). In a hopper: `held`, removed from the world. In the
+human player's hand: `stock`. Everything else is a body with a position, including elements
+sitting in a cell or a flower.
 
-### 3.5 Hive
+### 3.5 Derived lists: one scoring, one HUD, two physics
 
-Frame: the two triangular members and the crossbar as **static trimesh colliders from the CAD
-pipeline** (8), falling back to compound boxes from the manual's dimensions (base bars x in
-[24,25] and [-25,-24], y ±19.4, apex at z 43.95, crossbar along x) when the GLB is absent.
-Tray: **one kinematic position-based body per hive**, a compound of **convex hulls per cell part**
-from the CAD (floor, back, two sides, roof, open at the outer face; fallback: five 0.25-in APPROX
-boxes per cell, 20 × 14 × 12.04) on a 42.91-in bar, pivoted at (±12.75, 0, 43.95) about the
-x axis. Convex hulls, not a trimesh, because a kinematic trimesh against 56 dynamic spheres is
-the expensive contact case and a cell wall is a slab. Its rotation each tick is
-`hiveTiltAngle(tipping)` from the swing timer (+30° settled up, 0 at half swing, -30° settled
-down); the solver moves whatever is inside it.
+The 2D `score.ts`, `hud.ts`, `HudSlots.tsx`, `resultsRows` and the 2D renderers read
+`hives[a].contents` (id lists) and `flowers[i].stack` (ids bottom to top). `derive.ts` fills the
+same fields every tick from body positions: an element is in a cell when its centre is inside that
+cell's interior volume (tray frame) and at rest (`|v| < BB3_REST_SPEED` for `BB3_REST_TICKS`); in a
+flower when its centre is inside the tube; the stack is ordered by z. It also stamps
+`state: { kind: 'element', el, slot }` on those artifacts, a tag the shared readers understand,
+while the body stays in the solve (the 3D pipeline treats `'element'` as "a body in a structure",
+never as "not solved"). Every shared rule then works unchanged: owner is the alliance of the top
+nectar, bottom bonus the bottom nectar, tip load is the up cell's contents, cell points are the
+contents at rest.
 
-**Tip.** Each tick, count the elements whose centre is inside the up cell's interior volume and at
-rest (`|v| < BB_REST_SPEED` for `BB_REST_TICKS`); the table `BB_TIP_POLLEN[min(nectar, 5)]` decides
-(`pollen >= needed`). When it fires, the timer starts and the tray swings over 4.0 s (faster with
-surplus, as today). **Spill is physics**: as the tray passes level its floor becomes a ramp and
-the contents roll out of the open face and fall from about 42 in. No `spillPoses`, no RNG draws,
-no re-emission; the spilled elements were bodies the whole time. The TIP scores when the swing
-settles (damper contact), as today. Elements that leave the tray during a swing carry a `spilled`
-tag (`Biobuzz3dState.spilled: Record<id, robotId | 0>`) until their first non-tray contact; a
-robot as first contact writes a G409 verbal event line. Contact detection uses the solver's
-contact events for spilled ids only.
+### 3.6 Hive
 
-**Shots** are real bodies: an element launched at the taking cell enters through the open face at
-the true angle or bounces off the roof, back, sides or the frame. A shot from the other alliance
-that lands in a cell is inside that cell's volume and counts toward its load: the manual counts
-what is in the cell, so the 2D ruling that "the up cell takes only its own alliance's element" is
-dropped for 3D (owner question 5 confirms).
+Frame: static trimesh colliders from the CAD pipeline (constants boxes as fallback: base bars
+x in [24,25] and [-25,-24], y ±19.4, apex z 43.95, crossbar along x). Tray: one kinematic
+position-based body per hive, convex hulls per cell part from the CAD (fallback: five 0.25-in
+APPROX boxes per cell, 20 × 14 × 12.04, open at the outer face) on the 42.91-in bar, pivoted at
+(±12.75, 0, 43.95) about the x axis, rotated each tick by `hiveTiltAngle(tipping)` (+30° settled
+up, 0 at half swing, -30° settled down; moved from `drawField.ts` into `hive.ts` so both physics
+and both renderers read one definition).
 
-### 3.6 Flowers
+Tip: the shared table over the derived contents (`pollen >= BB_TIP_POLLEN[min(nectar, 5)]`). The
+timer starts, the tray swings 4.0 s (faster with surplus, as today). **Spill is physics**: past
+level the floor is a ramp and the contents roll out of the open face and fall from about 42 in.
+No fan, no RNG draws. Spilled ids carry a tag until their first non-tray contact; a robot as first
+contact writes a G409 verbal line. Shots are bodies: through the open face at the true angle they
+are taken; off the roof, back, sides or frame they bounce. An opponent's element landing in your
+up cell counts toward its load (question 5).
 
-Four static bodies flush to their walls, **trimesh colliders from the CAD** (the rings' holes and
-the retrieval opening come out exact), falling back to a compound of a top ring (4.0-in hole at
-21.5), four pipes, a middle ring (hole diameter `BB_FLOWER_MID_HOLE` between 2.8 and 3.6, APPROX
-3.2, top face at `BB_FLOWER_MID_Z` APPROX 3.98), a square extrusion with the retrieval opening
-(3.55 tall × 3.57 deep) and a lower ring (2.79 hole). A nectar seats on the middle ring; a pollen falls through to
-the lower ring, because of the diameters and nothing else. **Scoring reads positions**: elements
-with centre inside the cylinder between the middle ring top and the top ring; owner is the
-alliance of the top-most nectar by z; bottom nectar bonus to the bottom-most nectar by z. Retrieval
-is a robot's intake sensor overlapping the bottom opening: the lowest pollen is captured; nectar
-cannot fit (it is seated above the opening). No stack arrays.
+### 3.7 Flowers
 
-Placement: the Box Tube's place action drops a held element at the tube's top with zero velocity
-when the place point is within reach of the top ring; it falls and stacks. G410 (nectar into a
-flower before 1:00) fires on entry into the scoring cylinder.
+Static trimesh colliders from the CAD (fallback compound: top ring 4.0 hole at 21.5, four pipes,
+middle ring with `BB_FLOWER_MID_HOLE` APPROX 3.2 at `BB_FLOWER_MID_Z` APPROX 3.98, extrusion with
+the 3.55 × 3.57 retrieval opening, lower ring 2.79 hole). A nectar seats on the middle ring; a
+pollen falls through; diameters decide. Placement drops a held element at the top with zero
+velocity when the place point is in reach. Retrieval is the intake sensor overlapping the bottom
+opening; the lowest pollen is captured. G410 fires on entry into the scoring cylinder.
 
-### 3.7 Intake, launch, human player, gardens, park, leave
+### 3.8 Intake, launch, human player, gardens, park, leave
 
-Intake: a sensor collider at each sweeper mouth (`bbMouths` extruded to the roller height);
-while `intake` is held and the hopper has room, an element overlapping the sensor for
-`BB_CAPTURE_TICKS` (APPROX 3) becomes `held` (G407 hopper cap 4). Launch: `bbTurretSolution` /
-`bbDumpSolution` give speed and pitch; the body is spawned at the muzzle (mount cell height plus
-mechanism rise, `zIn`) with that velocity and CCD on. Human player: `bbNectar` drops a stock nectar
-at the loading-zone spot from 6 in. Gardens, PARK and LEAVE are position reads as today, with the
-robot's footprint from its 3D pose.
+Intake: a sensor at each sweeper mouth (`bbMouths` extruded to roller height); an element
+overlapping it for `BB3_CAPTURE_TICKS` (APPROX 3) while intake is held and the hopper has room
+becomes `held` (cap 4). Launch: the shared turret and dumper solutions give speed and pitch; the
+body spawns at the muzzle (`zIn`, APPROX per kind) with that velocity and CCD on. Human player:
+`bbNectar` drops a stock nectar at the loading-zone spot from 6 in. Gardens, PARK and LEAVE are
+position reads on the robot's footprint.
 
-### 3.8 Prediction and interpolation on the client
+### 3.9 Determinism
 
-The full world is not predicted. On each snapshot the client adopts the server world, then
-rebuilds a **prediction world**: statics, the tray at its snapshot angle, every other robot as a
-kinematic body at its snapshot pose, the local robot dynamic, and elements within
-`PREDICT_ELEMENT_RADIUS` (APPROX 36 in) of the local robot as dynamic bodies. It re-steps the
-buffered local inputs (at most 40) in that world. The local chassis feels instant; a push against
-an element or a robot is predicted approximately and corrected by the next snapshot; everything
-farther away renders from interpolated snapshots. Cost per reconcile: a world of about 15 bodies,
-a fraction of the 2D game's full-world re-step.
+Deterministic build, same version on server and client, bodies created in id order, math via
+`dsin/dcos/datan2/hyp` and the seeded PRNG (the source guard scans `src/games/biobuzz/sim3d/`;
+renderer files are named `render*`). A replay is `{seed, setups, commands, physics}` and
+re-simulates from a fresh world at tick 0, bit-identical to the server's run. Two-run hash checks
+on every 3D scene; a Node-versus-worker hash on one.
 
-Elements and remote robots **are interpolated** in this game (the 2D game does not lerp balls):
-ids are stable, count is conserved, and a sphere lerped between two 30 Hz poses reads smoothly at
-any frame rate. A kind change (captured, launched, spilled) snaps. `snapBuf` gains per-ball
-`x, y, z` and per-robot `z` for this game only.
+### 3.10 Budgets
 
-### 3.9 Budgets
-
-| quantity | budget | today (2D BIOBUZZ) |
+| quantity | budget | today (2D) |
 |---|---|---|
-| server 2v2 `step()` | ≤ 1.5 ms on the dev box, persistent world | 0.37 ms |
-| cores per driven room | ≤ 0.10 | 0.032 (2v2), 0.075 DECODE planning figure |
-| bytes per snapshot, 2v2 | ≤ 10,000 raw (elements already carry z/vz; robots add z/vz) | 7,670 |
-| client reconcile, 40 ticks, prediction world | ≤ 8 ms on a 2023 mid-range phone | n/a |
+| server 2v2 `step3d` | ≤ 1.5 ms, dev box, persistent world | 0.37 ms |
+| cores per driven room | ≤ 0.10 | 0.032 |
+| bytes per 2v2 snapshot | ≤ 10,000 raw | 7,670 |
+| Full-prediction reconcile, 40 ticks | ≤ 8 ms on a 2023 mid-range phone | n/a |
+| Light-prediction reconcile, 40 ticks | ≤ 1 ms anywhere | n/a |
 | elements at rest after a spill | within `MATCH_SETTLE_S` 2.8 s | n/a |
 
-All measured by `costprobe` (new scenarios with a primed tip), the smoke perf lane (paired ratio
-against a CR 2v2), and `?perf=1`. If cores per room exceed 0.10 the lever is `worker_threads`
-(`docs/scaling-multicore.md`), never a bigger VM.
-
-### 3.10 Determinism
-
-Deterministic wasm build, same version on server and client, bodies created in id order, all
-math through `dsin/dcos/datan2/hyp` and the seeded PRNG (the source guard in `scripts/smoke.ts`
-scans `src/games/biobuzz3d/` automatically; renderer files are named `render*`). A replay is
-`{seed, setups, commands}` and re-simulates from a fresh world at tick 0, bit-identical to the
-server's run. Two-run hash checks on every scene, plus a Node-versus-Chromium hash of one scene
-in the gallery (the LAN host runs the same wasm in a worker).
+Measured by `costprobe` (new `biobuzz3d-*` scenarios with a primed tip), the smoke perf lane
+(paired ratio against a CR 2v2), and `?perf=1`. Over 0.10 cores/room the lever is
+`worker_threads`, never a bigger VM.
 
 ---
 
 ## 4. Rendering
 
-### 4.1 Engine and chunk
+### 4.1 Two renderers, one world
 
-Three.js 0.186.0, `WebGLRenderer`, WebGL2 only, `three` and `@types/three` in `devDependencies`,
-imported by exactly one file (`scene/renderLoad.ts`) behind the `scene` slot's dynamic import.
-No post-processing; HDRIs only as on-demand environments (4.2b). **The field, frame, tray and
-flowers are the CAD-derived GLB**
-(decimated, instanced, meshopt-compressed, budget 600 KB brotli; loaded with `GLTFLoader` and the
-7.7 KB meshopt decoder), the same source the colliders come from, so the picture and the physics
-agree by construction. Robots and elements are generated from the spec and the constants. When
-the GLB is absent (fallback build, or before permission to serve it), the field is generated from
-the constants too. Budget 250 KB gzipped for the renderer chunk, excluding the GLB.
+**2D view**: the existing canvas renderers, unchanged but for the contents adapter (2.2). No
+WebGL, no wasm, no new bytes. This is the path a Chromebook, a phone, or a player who prefers
+top-down uses, in practice and in ranked. **3D view**: Three.js 0.186.0, `WebGLRenderer`, WebGL2,
+`three` imported by exactly one file behind the `scene` slot's dynamic import. Cycle with `t` in
+match; pick in Graphics; the choice is per device (`localStorage['decodesim.view']`).
 
 ### 4.2 Scene
 
-Tiles and tape (unlit, the on-field tokens), walls, frame and crossbar, two tray groups rotated
-by `hiveTiltAngle`, four flower cages, 56 instanced spheres (two `InstancedMesh`) posed from the
-interpolated world and spun from velocity, robots as generated meshes (chassis box at
-`heightIn`, drivetrain from `moduleAngles` and velocity, mechanisms from `bbMech`/mounts, alliance
-sign panels), a reticle at the solved landing point. One directional light with a 1024 shadow map
-on the high tier, hemisphere fill, a themed surround (`COLORS.backdrop`/`backdropDark`). Draw calls
-under 120.
-
-### 4.2b Environments (scene changer)
-
-A per-device pick in `localStorage['decodesim.env']`: the default **procedural room** (0 bytes,
-themed surround, three lights) plus a short list of **CC0 HDRIs from a public library** (a gym,
-a hall, an outdoor field, a night set), each fetched on demand as a 1k `.hdr` (about 1 to 2 MB),
-run once through `PMREMGenerator`, cached by the browser, never in any chunk. Attribution on the
-Contributors page, per the CC0 courtesy line. The HDRI lights the robots and the field mesh; the
-tiles and tape keep their fixed on-field colours so the HUD contrast pairs hold. Selectable from
-the in-match VIEW menu and Audio and Visual. Day 3 for the picker with two sets; more sets are a
-data change. Low tier keeps the procedural room.
+Tiles and tape (unlit, on-field tokens), walls, frame, tray groups rotated by `hiveTiltAngle`,
+flower cages, 56 instanced spheres posed from the interpolated world, robots generated from spec
+(chassis at `heightIn`, drivetrain from `moduleAngles` and velocity, mechanisms from
+`bbMech`/mounts, alliance sign panels), a reticle at the solved landing. The field, frame, tray
+and flowers are the CAD-derived GLB when present (8), constants-built otherwise. Lights and effects
+follow the graphics settings (4.4).
 
 ### 4.3 Cameras
 
-Client-only, in `localStorage['decodesim.view']`. **Driver station** (default): eye 12 in behind
-the alliance wall centre, height 62 in (44 to 72), FOV 70, yaw fixed to `viewAngleOf(alliance)`
-so field-centric sticks match the view, optional soft look-at-robot. **Overhead** (orthographic,
-the 2D fit; phone default). **Chase** (60 in back, 40 up, robot-centric). **Orbit** (spectators,
-replays, gallery). Cycle key `t`, eye height `i`/`o`, pad R3; a `view` key in `MobileLayout`.
+Per device. **Driver station** (desktop default): eye 12 in behind the alliance wall centre,
+height 62 in (44 to 72), FOV 70 (60 to 90), yaw fixed to `viewAngleOf(alliance)` so field-centric
+sticks match the view, optional soft look-at-robot. **Overhead** (orthographic, the 2D fit; the
+phone default in 3D view). **Chase** (60 in back, 40 up; robot-centric). **Orbit** (spectators,
+replays, gallery). Keys `t` (view), `i`/`o` (eye height), pad R3; a `view` key in `MobileLayout`.
 
-### 4.4 Frame composition
+### 4.4 Graphics settings
 
-WebGL canvas under the existing 2D canvas, which becomes a transparent overlay drawing labels
-(projected through the scene camera), auto paths and the replay burn-in. The HUD stays React at
-10 Hz through the existing slots with a fixed dark scrim behind the bands. Video export draws the
-WebGL frame onto the offscreen export canvas before the burn-in; the `MediaRecorder` fallback
-captures a composited canvas.
+A **Graphics** section in Configure (beside Audio and Visual), stored per device in
+`localStorage['decodesim.graphics']`, never in `GameSettings` (a GPU is a property of the machine).
+One preset picker and every setting under it; changing a setting switches the preset to Custom.
 
-### 4.5 Renderer chunk failure
+| setting | values | Low | Medium | High | Ultra |
+|---|---|---|---|---|---|
+| Render scale | 50 to 200 % of CSS pixels (backbuffer capped by a pixel budget: 0.6 / 1.2 / 2.2 / 4.0 MP) | 75 | 100 | 100 | 100 |
+| Max frame rate | 30 / 60 / 120 / display | 60 | display | display | display |
+| Anti-aliasing | off / MSAA 2x / MSAA 4x / SMAA | off | MSAA 2x | MSAA 4x | MSAA 4x + SMAA |
+| Shadows | off / low 1024 / high 2048 / soft | off | low | high | soft |
+| Element shadows | none / blob / real | none | blob | real | real |
+| Ambient occlusion | off / SSAO | off | off | off | on |
+| Anisotropic filtering | 1 / 4 / 8 / 16 | 1 | 4 | 8 | 16 |
+| Mesh detail | low / high (two GLB decimation levels) | low | high | high | high |
+| Environment | procedural room / HDRI set (on demand, 4.5) | procedural | procedural | HDRI | HDRI |
+| Environment lighting | off / on | off | off | on | on |
+| Reflections | off / on (env map on metals) | off | off | on | on |
+| Effects | tracers, tint pulse, wheel spin, dust off | minimal | standard | standard | full |
+| Field of view | 60 to 90 | 70 | 70 | 70 | 70 |
+| Camera motion | full / reduced (also from `prefers-reduced-motion`) | reduced | full | full | full |
+| PiP minimap | off / on | on | on | off | off |
+| Performance overlay | off / fps / fps + p95 + draw calls | off | off | off | off |
 
-WebGL2 probe on a throwaway canvas; on failure, on context loss without restore, or on a rejected
-`import()` (a stale build after a redeploy), the client uses the 2D renderer over the 3D world
-(4.6) and writes one event-log line. A rejected import also triggers the stale-build reload prompt.
+Motion blur is not offered. Every value is applied live; a change never reloads. A `Reset to Auto`
+button re-runs detection.
 
-### 4.6 The 2D renderer over the 3D world
+### 4.5 Environments
 
-The 2D BIOBUZZ renderers read `world.balls` and robot poses; a `biobuzz3d` world has both. The
-game's `drawField`/`drawRobot`/`drawBalls` slots point at the 2D renderers with a thin adapter
-(cell contents drawn from the membership read instead of a stack). This is the phone path on day
-one and the fallback everywhere: the same authoritative match, top-down.
+The default **procedural room** (0 bytes, themed surround, three lights) plus a short list of
+**CC0 HDRIs from a public library** (a gym, a hall, an outdoor field, a night set), each fetched
+on demand as a 1k `.hdr` (about 1 to 2 MB), run once through `PMREMGenerator`, browser-cached,
+never in any chunk; attribution on the Contributors page. Tiles and tape keep their fixed on-field
+colours so the HUD contrast pairs hold. Two sets on Day 3; more is a data change.
 
----
+### 4.6 GPU acceleration and Auto
 
-## 5. Controls, HUD, workshop
+Auto is the default preset. On the first 3D launch: read the WebGL renderer string
+(`WEBGL_debug_renderer_info`) and, where present, the WebGPU adapter info; combine with device
+memory, core count and DPR into a first guess (integrated GPU → Medium, discrete → High, phone →
+Low); then a **two-second warm-up** on the real scene measures frame-time p95 and moves the preset
+one step down if p95 exceeds 16.7 ms, one step up if it is under 6 ms with headroom. The result is
+stored; a persistent slip of p95 above 25 ms in a match lowers the preset once and writes one
+event-log line. `WebGLRenderer` is created with `powerPreference: 'high-performance'` so dual-GPU
+laptops pick the discrete GPU. A software renderer string (SwiftShader, llvmpipe, Basic Render
+Driver) or a failed WebGL2 probe selects the 2D view with an event-log line; the 3D view stays
+one click away for retry. Electron keeps hardware acceleration on (the app never calls
+`disableHardwareAcceleration`; only the shot runner does) and logs `app.getGPUFeatureStatus()`; a
+"Force GPU on blocklisted drivers" toggle (adds `ignore-gpu-blocklist` on next launch) is offered
+off by default (question 8).
 
-**Controls:** unchanged bindings; `bbPlace`/`bbPlaceNectar`/`bbNectar` keep their bits; view keys
-are client-only and never reach the sim. **HUD:** the 2D game's chips (controlled n/4, mechanism,
-alliance hive card, feed nectar) plus, behind a Telemetry toggle, speed, turret yaw/pitch, shot
-solution, fired/landed. **Workshop:** the 2D `Builder` and `Preview` slots plus a height dial
-(`heightIn`), a stowed height, per-mechanism `zIn`, the 18-in cube check in the stowed pose and
-the 18 × 24 × 29 check deployed, with the offending part named. The three presets carry heights.
-`MAX_SAVED_ROBOTS` rises 3 to 4. The 3D `Preview` (orbiting generated robot through one shared
-offscreen renderer) is Phase 2.
+### 4.7 Frame composition and fallback
 
----
-
-## 6. Netcode, replay, server
-
-- **Wire:** `RobotState.z/vz` are the only new per-tick robot fields (about 36 B raw per field per
-  robot per snapshot by `costprobe`'s method). Elements already ship `z/vz`. `Biobuzz3dState` is
-  small (hive timers, stock, spill tags, deploy latch). Priced by new `costprobe` scenarios.
-- **Caps:** none needed. An older client cannot select a game it does not know; an unknown id falls
-  back to DECODE in both registries, and the season row is alpha-only.
-- **Replays:** `game: 'biobuzz3d'`, `REPLAY_FORMAT` unchanged (no new command bits). The container
-  is exact under the deterministic build.
-- **Server:** `simModuleFor('biobuzz3d')` in the room, `await initPhysics3d()` at boot,
-  `persistMatch` keyed by game, `ensureSeason` at Act 1, `records_drivetrain_check` widened. Deploy
-  the alpha app after each server change; production from a `main` worktree only, via the wrapper.
-- **LAN:** the host worker imports the 3D physics lazily when it hosts a 3D room.
-
----
-
-## 7. Verification
-
-`scripts/smoke-biobuzz3d/` (own process, `check()` contract, lanes CORE/PHYSICS/HIVE/FLOWER/ROBOT/
-RULES/SERVER/PERF), chained as the third `&&` in `npm test`; whole `npm test` at most 55 s.
-
-| lane | checks |
-|---|---|
-| CORE | four registrations; `import` of the 3D wasm only in `physics/engine.ts`; `three` only in `renderLoad.ts`; renderer files named `render*`; no `Math.random`/clock |
-| PHYSICS | two-run hash on every scene; Node-vs-worker hash on one scene; 56 conserved every tick; no element outside the perimeter or below the tiles; a sphere at rest stays at rest 600 ticks (no jitter); a 260 in/s shot does not tunnel a 0.25-in plate |
-| HIVE | tray angle matches manual heights at ±30°; a shot through the open face is captured, through each closed face bounces; table rows tip at 8/0 and 3/3 and not at 7/0; a swing empties the tray and every element lands within 1.0 s; G409 tag correct with and without a robot under |
-| FLOWER | pollen falls through the middle ring, nectar seats; owner and bottom bonus by z; retrieval pops the lowest pollen only; G410 fires on entry |
-| ROBOT | 18-in passes under the down cell, 29-in stops; drive feel ratio against the 2D game within 5 percent (top speed, 0-to-95 time); muzzle height per preset; every preset renders from spec |
-| RULES | Table 10-2 totals on hand-built worlds; LEAVE/PARK latches; G402/G407/G410/G421 |
-| SERVER | a real `Room` hosts a 2v2 with a primed tip; snapshot round-trip; replay re-simulates hash-equal |
-| PERF | paired ratio against a CR 2v2; step ≤ 1.5 ms; prediction-world reconcile time |
-
-Gallery: `/biobuzz3d/gallery/*` (alpha-only) draws every scene through one WebGL context; the shot
-runner gets a software-GL flag; pixels are read by a human. `bundleaudit`, `costprobe`, `contrast`
-stay outside `npm test`.
+WebGL canvas under the existing 2D canvas, which becomes a transparent overlay for labels
+(projected through the scene camera), auto paths and the replay burn-in. HUD stays React at 10 Hz
+with a fixed dark scrim in 3D. Video export draws the WebGL frame onto the export canvas before
+the burn-in; the `MediaRecorder` fallback captures a composited canvas. A rejected renderer
+`import()` (a stale build after a redeploy) falls back to the 2D view and triggers the stale-build
+reload prompt.
 
 ---
 
-## 8. Build plan: days, three lanes
+## 5. Prediction and interpolation
 
-Lanes run as three Claude sessions from three worktrees off `biobuzz-3d`, merging into it daily.
-**Lane A sim** owns `physics/`, `step.ts`, `robot.ts`, `elements.ts`, `hive.ts`, `flower.ts`,
-`score.ts`, `penalties.ts`, `spawn.ts`, `settle.ts`, `config.ts`, `state.ts`. **Lane B renderer**
-owns `scene/`, cameras, the canvas stack, `GameView`/`ReplayView` wiring, the gallery. **Lane C
-integration** owns the four registrations, `src/types.ts`, `src/game.ts`, server and worker init,
-the migration, `bundleaudit`, `costprobe`, the smoke suite skeleton, HANDOFF.
+A **Prediction** setting beside the view, per device:
 
-**Day 0 (half a day, lane A + C).** Install the deterministic 3D package; `initPhysics3d()` via
-dynamic import works in browser, worker, Node and `tsx`; a throwaway scene of 4 boxes, 56 spheres,
-statics and one kinematic tray steps 3,600 ticks with a two-run hash match and a measured step
-time. Try the non-compat package with a `?url` wasm. *Gate:* hash equal; step under 1.5 ms 2v2.
-If the step is over budget, sleeping and CCD settings are tuned before anything else is built.
+| mode | what the client does with its own robot | latency felt | cost |
+|---|---|---|---|
+| **Off** | renders the local robot from interpolated snapshots like a remote | about 5 ticks (83 ms) plus RTT/2 on every stick input | none |
+| **Light** (2D-view default) | re-steps buffered inputs with the shared drive model and wall containment only (no robots, no elements); the server corrects contacts | none on open floor; a brief correction when pushing | under 1 ms per reconcile, no wasm |
+| **Full** (3D-view default on desktop) | rebuilds a small 3D world per reconcile: statics, tray at its snapshot angle, other robots kinematic at snapshot pose, elements within `PREDICT_ELEMENT_RADIUS` (APPROX 36 in) dynamic, the local robot dynamic; re-steps up to 40 inputs | none, including light pushes | about 15 bodies per reconcile; needs the 3D physics chunk |
 
-**Day 1 (all lanes).** A: field statics from the CAD collider file (constants fallback), robots
-driving with the shared drivetrain wrench, elements staged from the 2D spawn, intake and launch,
-containment clamp, readback. B: renderer chunk, the CAD field GLB (constants fallback), elements
-and robots generated, driver-station and overhead cameras, the 2D-over-3D fallback. C: the CAD
-pipeline run end to end (Day 0 evening if the Python toolchain installs cleanly), registrations,
-`World.biobuzz3d`, `RobotState.z/vz`, `scene` slot, `game.ts` renderer choice, smoke skeleton,
-`bundleaudit`, and the permission request to FIRST. *End of day:* solo free drive in 3D on `alpha`'s dev server,
-robots push elements around, shots fly and bounce.
+Corrections use the existing `localSmooth` offset (`SMOOTH_HALFLIFE`, `SMOOTH_MAX_DIST`). The
+setting is offered in the Controls section and the in-match menu; an event-log line explains Off's
+latency the first time. Elements and remote robots are **interpolated** in 3D-physics worlds
+(ids stable, count conserved; a kind change snaps); `snapBuf` gains per-ball `x, y, z` and
+per-robot `z` when `physics === '3d'`. In 2D-physics rooms everything is as today.
 
-**Day 2.** A: tray kinematics with the swing timer, tip table read, spill from physics, flower
-cages with ring sorting, scoring reads, gardens/park/leave, human player, settle. B: tray and flower
-meshes, reticle, HUD scrim, chase and orbit, interpolation of balls and remotes. C: server init,
-room hosting a 2v2, `costprobe` scenarios, migration, replay re-sim check. *End of day:* a full
-scored 2v2 online on `dsim-alpha`, replays play back.
+---
 
-**Day 3.** A: penalties, G409 tags, deploy read, heights in coercion, perf tuning. B: labels,
-export compositing, gallery, mobile overhead default, the environment picker with two HDRI sets.
-C: smoke lanes filled, `npm test` green, ranked queue live on the alpha app, HANDOFF, docs
-sections. *Ship to alpha:* playable, scored, ranked, replayable 3D BIOBUZZ.
+## 6. Practice and AI
 
-**Days 4 to 14.** Play-test with the owner daily; tune friction, restitution, element mass,
-capture ticks, camera; workshop heights and 3D preview; weigh a real element set and run the field
-CAD measurement script (below); decide ranked and the public channel. Every tuning change goes
-through a gallery scene and a smoke check the same day.
+**Practice setup** gains two controls beside `practiceDummies`: **Physics** (2D / 3D; 3D default;
+choosing 3D loads the physics chunk once) and **Opponents** (Off / Easy / Medium / Hard, filling
+the empty seats of the chosen format). The view is the device's; a phone plays 3D physics in the
+2D view by default. Practice runs upload with `physics` and `view` tags; the career panel shows
+both; only 3D-physics runs are comparable with ranked and the board says so.
 
-**Field CAD: direct import.** FIRST publishes the field as a STEP zip and an Onshape document
-(`ftc-resources.firstinspires.org/ftc/archive/2027/field`, STEP v26-27.2 of 2026-09-15, plus a
-separate FLOWER scoring-volume document). The manual calls this CAD the official representation
-of the field. It is imported directly, offline, by `scripts/field-cad.mjs`:
+**AI drivers** (`ai/policy.ts`): DOM-free, `GameSimModule.bot`, memory owned by the caller
+(`GameController` in practice, `Room` online and in the LAN worker), never the `World`, own
+mulberry32 seeded `(matchSeed, seat)`. The policy reads only positions and the derived lists, so it
+drives under either physics. State machine: collect, route (steer plus wall square-up), fire when
+the shared shot verdict says the arc lands, place nectar when the window allows, defend on Hard,
+stay clear of the hive footprint when tall, no AUTO target past the field's own half. Re-decides
+every 6 ticks so replay tracks stay hold-last friendly. Bots may fill seats in custom lobbies and
+LAN rooms ("Add a bot" with a tier), never matchmade rooms in v1; a room with a bot seat is
+unrated. Recorded in replays like any seat (the recorder records every setup's command).
 
-1. Download the pinned zip and verify a committed sha256 (a silent FIRST revision fails loudly).
-2. `scripts/field-cad/convert.py` (CadQuery/OCP, headless Python with Windows wheels) reads the
-   STEP, walks the named bodies, and writes three things in inches, field frame: a visual mesh per
-   part, a collider mesh per part (a trimesh for every static part; one convex hull per tray cell
-   wall and per bar), and `field-measurements.json` (bounding boxes and the derived numbers: cell
-   section, middle-ring height and hole, wall height, frame profile, pivot height).
-3. `gltf-transform` welds, quantizes, simplifies and instances the repeats (four flowers, two
-   hives, six by six tiles); `gltfpack` applies meshopt. Output `field.glb` under 600 KB brotli,
-   `field-colliders.json` under 200 KB (indexed triangles, decimated harder than the visual mesh),
-   the measurements file. Over budget, the script fails and names the heaviest part.
+---
 
-At runtime the physics bridge builds static `trimesh` colliders and the tray's convex hulls from
-`field-colliders.json`, and the renderer loads `field.glb`; when either file is absent, both fall
-back to the constants-built geometry, so the game runs either way and a smoke check asserts the
-two collider sets agree within 0.5 in at twelve probe points. The measurements file settles the
-APPROX constants and is asserted against `config.ts`. An in-browser STEP importer (about 10 MB of
-wasm) is excluded; the import happens in the pipeline, once per CAD version.
+## 7. Netcode, replay, server, DB
+
+- **Wire**: `RobotState.z/vz` are the only new per-tick robot fields. Elements already carry
+  `z/vz`. `BiobuzzState` grows by `physics`, spill tags and the deploy latch. Priced by
+  `costprobe`.
+- **Caps**: `CLIENT_CAPS` gains `'bb3d'`. A join to a 3D room from a client without it is refused
+  with "Update DSIM to play this room." Old clients keep playing 2D-physics rooms and 2D-era
+  replays untouched.
+- **Replays**: header gains `physics` (absent `'2d'`); playback dispatches on it. `REPLAY_FORMAT`
+  unchanged (no new command bits). 3D replays are exact under the deterministic build.
+- **Versions**: `SIM_VERSION` and `BALANCE_VERSION` held (owner rule). The `physics` tag is what
+  tells a 2D-era result from a 3D-era one; the leaderboard badges rows and can filter.
+- **Server**: `await initPhysics3d()` at boot; rooms carry `physics`; matchmaking stages `3d`;
+  `persistMatch` writes `physics`. Deploy the alpha app after each server change; production from a
+  `main` worktree via the wrapper only. The ranked cutover to 3D physics happens per server: alpha
+  on Day 3, production at promotion (question 7).
+- **Migration** (one file): `physics text not null default '2d'` on `records`, `matches`,
+  `replays`, `practice_runs`; `view text` on `practice_runs`; `records_drivetrain_check` gains
+  `butterfly`; `dbtest` asserts the round-trips. `server/api.ts:578`'s two-valued literal becomes
+  `coerceGameId` in the same deploy.
+- **LAN**: the host worker imports the 3D physics lazily for a 3D room.
+
+---
+
+## 8. Field CAD import
+
+FIRST publishes the field as a STEP zip and an Onshape document
+(`ftc-resources.firstinspires.org/ftc/archive/2027/field`, STEP v26-27.2 of 2026-09-15, plus the
+FLOWER scoring-volume document); the manual calls this CAD the official representation of the
+field. `scripts/field-cad.mjs`: download the pinned zip and verify a committed sha256; run
+`scripts/field-cad/convert.py` (CadQuery/OCP, headless Python) to read the STEP, walk the named
+bodies and write, in inches and the field frame, a visual mesh per part, a collider mesh per part
+(trimesh for statics, one convex hull per tray cell wall and bar) and `field-measurements.json`
+(cell section, middle-ring height and hole, wall height, frame profile, pivot height); then
+`gltf-transform` (weld, quantize, simplify, instance the four flowers, two hives and tiles) and
+`gltfpack` meshopt. Outputs under `public/models/biobuzz/`: `field.glb` at two detail levels
+(≤ 600 KB brotli high, ≤ 250 KB low), `field-colliders.json` (≤ 200 KB), the measurements file.
+Over budget, the script fails and names the heaviest part.
+
+At runtime the 3D physics builds its statics and tray hulls from the collider file and the scene
+loads the GLB; when either is absent both fall back to constants-built geometry, and a smoke check
+asserts the two collider sets agree within 0.5 in at twelve probe points. The measurements file
+settles the APPROX constants and is asserted against `config.ts`. An in-browser STEP importer
+(about 10 MB of wasm) is excluded; the import runs once per CAD version.
 
 **Licence.** FIRST's website terms of use grant the content for personal, non-commercial use and
 forbid redistribution without written permission; whether a decimated derived mesh in a public
-repo and on the site is covered is unresolved. Owner question 10: the default is to ask FIRST on
-Day 0 and keep the GLB and collider file local (gitignored under `public/models/biobuzz3d/`,
-loaded from disk in dev) until they answer; the constants-built fallback is what ships to alpha in
-the meantime. The owner may decide to commit and serve them earlier; the pipeline and the loader
-are the same either way.
+repo and on the site is covered is unresolved. Default: ask FIRST on Day 0, keep `field.glb` and
+the collider file local (gitignored) until they answer, ship the constants-built fallback
+meanwhile; the numbers file is ours to commit. The owner may choose to ship the files regardless
+(question 9); the pipeline and loader are the same either way.
 
 ---
 
-## 9. Risks and kill criteria
+## 9. Verification
+
+New lanes in `scripts/smoke-biobuzz/` (same process, `check()` contract; `--lane` for fast
+loops); whole `npm test` at most 55 s.
+
+| lane | checks |
+|---|---|
+| CORE | the 3D wasm imported only in `sim3d/engine.ts`; `three` only in the render loader; render files named `render*`; no `Math.random`/clock; `physics` absent reads `'2d'` and every existing 2D check still passes byte-identically |
+| SIM3D | two-run hash on every 3D scene; Node-vs-worker hash on one; 56 conserved every tick; nothing outside the perimeter or below the tiles; a resting sphere stays at rest 600 ticks; a 260 in/s shot does not tunnel a 0.25-in plate; readback rounding stable |
+| HIVE3D | tray angle matches manual heights at ±30°; open-face shot taken, each closed face bounces; table rows 8/0 and 3/3 tip, 7/0 does not; a swing empties the tray and every element lands within 1.0 s; G409 tag with and without a robot under |
+| FLOWER3D | pollen through the middle ring, nectar seats; owner and bottom bonus by z equal the shared `flowerScore` over the derived stack; retrieval pops the lowest pollen; G410 on entry |
+| ROBOT | 18-in passes under the down cell, 29-in stops; drive feel ratio against the 2D pipeline within 5 percent (top speed, 0-to-95 time); muzzle height per preset |
+| PREDICT | Light and Full prediction worlds converge to the authoritative pose within `SMOOTH_MAX_DIST` after 40 re-stepped ticks on a scripted push; Off renders at the interpolation delay |
+| AI | seed determinism over 3,600 ticks under both physics; no forbidden reads; Hard beats Easy 90/100 (`npm run test:ai`, outside `npm test`) |
+| RULES | Table 10-2 totals on hand-built 3D worlds equal the same worlds' derived lists through the shared `score.ts` |
+| SERVER | a real `Room` hosts a 3D 2v2 with a primed tip; a cap-less join is refused; snapshot and replay round-trip `physics`; replay re-simulates hash-equal |
+| PERF | paired ratio against a CR 2v2; `step3d` ≤ 1.5 ms; reconcile costs for Light and Full |
+
+Gallery: 3D scenes on the existing `Scene` type with a per-still camera; the shot runner gains a
+software-GL flag (only there). `bundleaudit`, `costprobe`, `contrast`, `test:ai` stay outside
+`npm test`.
+
+---
+
+## 10. Build plan: days, three lanes
+
+Three sessions from three worktrees off `biobuzz-3d`, merging daily. **Lane A sim**: `sim3d/`,
+`step.ts` dispatch, `ai/`, `spawn` changes. **Lane B render**: `scene/`, `graphics/`, cameras,
+the canvas stack, `GameView`/`ReplayView` wiring, the Graphics section, the gallery. **Lane C
+integration**: shared-core changes, server, worker, protocol, migration, `bundleaudit`,
+`costprobe`, smoke skeleton, HANDOFF.
+
+**Day 0 (half a day, A + C).** Install the deterministic 3D package; `initPhysics3d()` via dynamic
+import in browser, worker, Node and `tsx`; a throwaway world of 4 boxes, 56 spheres, statics and
+one kinematic tray steps 3,600 ticks with a two-run hash match and a measured step time; try the
+non-compat wasm. Run the CAD pipeline in the evening. Send the permission request to FIRST.
+*Gate:* hash equal; step under 1.5 ms 2v2.
+
+**Day 1.** A: `physics` tag and dispatch; `step3d` with robots driving on the shared wrench,
+elements staged from the shared spawn, statics from the CAD colliders (fallback boxes), intake,
+launch, readback, containment, `derive.ts`. B: the contents adapter for the 2D renderers; the
+renderer chunk skeleton with field GLB and generated robots and elements, driver-station and
+overhead cameras. C: `RobotState.z/vz`, `scene` and `bot` slots, `practicePhysics`, Practice setup
+controls, `game.ts` physics init and renderer choice, smoke skeleton, `bundleaudit`.
+*End of day:* **the whole BIOBUZZ game plays on 3D physics in the 2D view** in solo practice, and
+the 3D view shows robots pushing elements.
+
+**Day 2.** A: tray kinematics and table trigger, spill from physics, flower tubes, derived
+stacks, gardens/park/leave, human player, settle, penalties, G409 tags, Light and Full prediction
+worlds. B: tray and flower meshes, reticle, HUD scrim, chase and orbit, interpolation of balls and
+remotes, labels through the scene camera. C: server init, `RoomConfig.physics`, cap gate,
+matchmaking `3d`, migration, `costprobe` scenarios, replay header and re-sim check, LAN lazy init.
+*End of day:* a scored 3D 2v2 online on `dsim-alpha`; a 2D-view client and a 3D-view client in the
+same match; replays play back.
+
+**Day 3.** A: perf tuning, heights in coercion, AI policy and tiers, bots in practice and
+lobbies. B: Graphics section with presets and Auto detection, environment picker with two HDRI
+sets, export compositing, gallery, mobile overhead default. C: smoke lanes filled, `npm test`
+green, leaderboard `physics` badge, ranked cutover on the alpha server, HANDOFF, docs sections.
+*Ship to alpha:* one BIOBUZZ, 3D deterministic ranked, 2D or 3D on screen, practice in three
+modes with or without AI, graphics presets.
+
+**Days 4 to 14.** Daily play-testing with the owner; tune friction, restitution, element mass,
+capture ticks, cameras, presets; weigh a real element set; a 3D robot preview in the builder;
+`MAX_SAVED_ROBOTS` 3 to 4; promotion to production with the ranked cutover (question 7). Every
+tuning change lands with a gallery scene and a smoke check the same day.
+
+---
+
+## 11. Risks and kill criteria
 
 | risk | mitigation | kill |
 |---|---|---|
-| Step cost over budget with 56 live spheres | persistent world with sleeping; hopper/stock bodies removed; CCD only when fast | Day 0 step over 3 ms after tuning: reduce to elements-near-robots dynamic, far elements frozen kinematic between contacts |
-| Deterministic build too slow | it is the same solver with pinned math; measured Day 0 | over 2× the default build: default build on the server and client with drift accepted for prediction, deterministic only for replay verification |
-| Prediction corrections feel like rubber-banding when pushing elements | prediction world includes nearby elements; smoothing offset as today | visible snaps in play-testing: widen `PREDICT_ELEMENT_RADIUS`, then predict remote robots' held inputs |
-| Elements escape the field or settle outside 2.8 s | containment clamp; rest-speed park; settle reads awake bodies | a settle over 6 s in a scene: raise damping, mark the constant APPROX |
-| Tray pushes a robot into the floor | z free, robot slides out; eviction if wedged 0.5 s | a robot stuck under the tray in play-testing: kinematic tray gets a robot-exclusion collision group and the robot is evicted outboard |
-| Bundle route 2.3 MB gz | lazy chunks; non-compat wasm if it works | none; 6× under the comparable sim |
-| Two Rapier versions in one repo | different packages, different import paths | none |
-| CAD trimesh colliders make sphere contacts expensive or noisy | statics only as trimesh; the tray as convex hulls; colliders decimated harder than the visual mesh; measured Day 1 | step over budget with the CAD colliders: constants-built boxes for physics, CAD for the picture only |
-| CAD licence | ask FIRST Day 0; local-only until answered; constants fallback ships | none; the fallback is complete |
-| Determinism across Node/Chromium | deterministic build; hash check in the suite | a mismatch: the vendor's claim is wrong for this build; server authority still holds, replays verify server-side only |
+| `step3d` over budget with 56 live spheres | persistent world, sleeping, hopper bodies removed, CCD only when fast, decimated colliders | over 3 ms after tuning on Day 0: freeze far elements kinematic between contacts |
+| Deterministic build too slow | it is the same solver with pinned math; measured Day 0 | over 2× the default build: default build for the live solve, deterministic for replay verification only |
+| Two physics drift apart in feel | the drivetrain model is shared; ROBOT lane pins the ratio within 5 percent | a felt difference the ratio does not catch: tune the 3D damping, never the shared model |
+| Light prediction rubber-bands when pushing | corrections through `localSmooth`; Full one click away | visible snaps: make Full the 3D default on phones too, behind the pixel budget |
+| Old clients in 3D rooms | `'bb3d'` cap gate with an update message | none |
+| 2D-era and 3D-era results on one board without a season reset | `physics` badge and filter; owner rule against resets honoured | the owner asks for a split: an act bump is available but wipes ratings, so a `physics`-scoped board view is preferred |
+| Graphics Auto picks wrong | one-step adjust from a 2 s warm-up; in-match slip lowers once; Reset to Auto | none; presets are one click |
+| GPU blocklisted or software GL | detected; 2D view; optional Force GPU on desktop | none; the 2D view is the whole game |
+| CAD colliders costly or noisy | trimesh statics only, hulls for the tray, harder decimation for colliders | constants boxes for physics, CAD for the picture |
+| CAD licence | ask FIRST Day 0; local until answered; fallback ships | none |
+| Two Rapier packages in one repo | different import paths; both pinned exactly | none |
 
-**What kills this design:** nothing short of the solver failing its own promise (a resting sphere
-that will not rest, or a hash that differs across runtimes on the deterministic build). Both are
-measured on Day 0 before anything else is written.
+**What kills this design:** only the solver failing its own promise on Day 0 (a resting sphere that
+will not rest, or a hash that differs across runtimes on the deterministic build). Both are
+measured before anything else is written.
 
 ---
 
-## 10. Owner questions
+## 12. Owner questions
 
 | # | question | needed by |
 |---|---|---|
-| 1 | New game id `biobuzz3d` alongside the 2D game (assumed), or replace the 2D BIOBUZZ outright? | Day 0 |
-| 2 | Deterministic build on the server and client (assumed), accepting its speed cost, or default build with replay verification server-side only? | Day 0 |
+| 1 | Custom lobbies and LAN default to 3D physics with a host option for 2D (assumed)? | Day 2 |
+| 2 | Deterministic build on server and client (assumed), accepting its speed cost, or default build with replay verification server-side only? | Day 0 |
 | 3 | Robots yaw-only (assumed) or free to pitch and roll? | Day 1 |
 | 4 | Tray kinematic with the table trigger (assumed) or a dynamic see-saw with calibrated ballast (needs a weighed element set)? | Day 2 |
-| 5 | An opponent's shot landing in your up cell counts toward its load (physical reading, assumed), or is rejected as the 2D game rules? | Day 2 |
-| 6 | Mobile: 2D renderer over the 3D world on phones for the first ship (assumed), 3D later? | Day 3 |
-| 7 | Ranked is on from the first alpha ship (assumed; alpha persists to its own database). When does the season go public: after the two play-test weeks, or earlier? | Day 14 |
-| 8 | Weigh an element set and run the CAD measurement script; otherwise mass and the cell section stay APPROX. | Day 4 |
-| 9 | Merge `efficiency-audit` into `alpha` before Day 1, so the guides, `docaudit` and the sharded suite exist on the working base (assumed yes). | Day 0 |
-| 10 | Commit and serve the CAD-derived `field.glb` and collider file now, or keep them local until FIRST grants permission (assumed: ask FIRST Day 0, local until then, constants fallback ships)? | Day 0 |
+| 5 | An opponent's shot landing in your up cell counts toward its load (physical reading, assumed), or is rejected as the 2D pipeline rules? | Day 2 |
+| 6 | Prediction defaults: Light for 2D view, Full for 3D view on desktop, Light on phones (assumed)? | Day 2 |
+| 7 | Ranked cutover to 3D physics: alpha on Day 3 (assumed); production at the next promotion, or on a date you set? | Day 3 |
+| 8 | Offer "Force GPU on blocklisted drivers" in the desktop app, off by default (assumed), or not at all? | Day 3 |
+| 9 | Commit and serve the CAD-derived field files now, or local until FIRST grants permission (assumed: ask Day 0, local until then)? | Day 0 |
+| 10 | Merge `efficiency-audit` into `alpha` before Day 1 (assumed yes)? | Day 0 |
+| 11 | Delete the 2D physics pipeline after the play-test weeks, or keep it as the light practice option? | Day 14 |
 
 ---
 
-## 11. Appendix
+## 13. Appendix
 
-### 11.1 New constants (APPROX unless a manual cite is given)
+### 13.1 New constants (APPROX unless a manual cite is given)
 
 | constant | value | source |
 |---|---|---|
-| `BB3_HIVE_PIVOT_Z` | 43.95 in | manual |
-| `BB3_HIVE_ARM`, `BB3_HIVE_CELL_LEN`, `BB3_HIVE_LEN` | 15.44, 12.04, 42.91 in | manual (true lengths) |
+| `BB3_HIVE_PIVOT_Z`, `BB3_HIVE_ARM`, `BB3_HIVE_CELL_LEN`, `BB3_HIVE_LEN` | 43.95, 15.44, 12.04, 42.91 in | manual (true lengths) |
 | `BB3_HIVE_CELL` | 20 × 14 × 12.04 in, open outer face | manual + owner ruling |
 | `BB3_HIVE_CELL_WALL` | 0.25 in | APPROX, CAD settles |
-| `BB3_HIVE_TILT` | 30° | manual |
-| `BB3_FRAME_APEX_Z`, base bars, crossbar | 43.95; x in [24,25]; along x | manual |
-| `BB3_FLOWER_TOP_Z`, top hole | 21.5 in, 4.0 in | manual |
-| `BB3_FLOWER_MID_Z`, mid hole | 3.98 in, 3.2 in | APPROX, CAD settles |
-| `BB3_FLOWER_LOW_HOLE`, retrieval opening | 2.79 in; 3.55 × 3.57 in | manual |
+| `BB3_FLOWER_MID_HOLE`, `BB_FLOWER_MID_Z` | 3.2 in, 3.98 in | APPROX, CAD settles |
 | `BB3_ELEMENT_MASS` | 0.2 lb | APPROX, weigh a set |
 | `BB3_ELEMENT_FRICTION`, `_RESTITUTION`, `_ROLL_DAMP` | 0.6, 0.45, 0.4 | APPROX, tuned Day 4+ |
 | `BB3_CCD_SPEED` | 60 in/s | APPROX |
@@ -567,16 +601,18 @@ measured on Day 0 before anything else is written.
 | `BB3_HEIGHT_MIN/DEFAULT/MAX` | 12 / 18 / 29 in | rules |
 | `BB3_MECH_Z` turret/dumper/tube | 14 / 12 / 10 in | APPROX |
 | `PREDICT_ELEMENT_RADIUS` | 36 in | APPROX |
+| `GFX_PIXEL_BUDGET` Low/Medium/High/Ultra | 0.6 / 1.2 / 2.2 / 4.0 MP | budget |
+| `GFX_WARMUP_S`, `GFX_STEP_DOWN_P95_MS`, `GFX_STEP_UP_P95_MS`, `GFX_SLIP_P95_MS` | 2 s, 16.7, 6, 25 | APPROX |
 | `BB3_EYE_DEFAULT/MIN/MAX`, `BB3_DRIVER_SETBACK`, `BB3_CAM_FOV` | 62/44/72 in, 12 in, 70° | APPROX |
-| budgets | step 1.5 ms; cores/room 0.10; snapshot 10,000 B; reconcile 8 ms; renderer 250 KB gz; main +10 KB gz | this document |
+| budgets | step 1.5 ms; cores/room 0.10; snapshot 10,000 B; Full reconcile 8 ms; Light 1 ms; renderer 250 KB gz; main +10 KB gz; field GLB 600 / 250 KB br | this document |
 
-### 11.2 Shared files touched
+### 13.2 Shared files touched
 
-`src/games/types.ts` (id), `index.ts`, `sim.ts`, `module.ts` (`scene`), `src/seasons.ts`,
-`src/types.ts` (`World.biobuzz3d`, `RobotState.z/vz`), `src/sim/spawn.ts` (coerce arm),
-`src/net/checksum.ts` (z for this game), `src/game.ts` (renderer choice, ball interpolation for
-this game, physics init), `src/ui/GameView.tsx` (canvas stack), `src/ui/ReplayView.tsx`,
-`server/index.ts`, `server/api.ts:578`, `src/lan/hostWorker.ts`, `scripts/costprobe.ts`,
-`package.json`, one migration, `CLAUDE.md` game table row and the client-bundle sentence
-(amended to allow per-game lazy chunks budgeted by `bundleaudit`), `docs/area/biobuzz.md` or a
-new `docs/area/biobuzz3d.md` once the split is on the base.
+`src/types.ts`, `src/games/module.ts`, `src/games/types.ts`, `src/net/protocol.ts`,
+`src/net/checksum.ts`, `src/game.ts`, `src/settings.ts` (new practice fields), `src/sim/spawn.ts`
+(the `biobuzz` coerce arm gains `heightIn`), `src/ui/GameView.tsx`, `src/ui/ReplayView.tsx`,
+`src/ui/Configure.tsx` (Graphics section), `src/ui/MatchSetup.tsx`/`Lobby.tsx` (physics and AI
+controls), `src/ui/Leaderboard.tsx` (physics badge), `server/index.ts`, `server/room.ts`,
+`server/matchmaking.ts`, `server/persist.ts`, `server/api.ts:578`, `server/db/` (one migration),
+`src/lan/hostWorker.ts`, `scripts/costprobe.ts`, `package.json`, `CLAUDE.md` (two sentences, on the
+split base), `docs/area/biobuzz.md`.

@@ -1,54 +1,58 @@
-# HANDOFF — 2026-09-17, later (biobuzz-3d: draft 2 of the spec, a 3D AUTHORITATIVE simulation)
+# HANDOFF — 2026-09-17, night (biobuzz-3d: draft 3 of the spec, ONE game with a 3D deterministic authority)
 
 **READ FIRST.** Branch **`biobuzz-3d`**, a worktree at `.claude/worktrees/biobuzz-3d`, based on
 `alpha` (27dd2c9). The branch carries only **`docs/biobuzz/plan-3d.md`** and this HANDOFF. No
 code has been written. Every gate is alpha's, unchanged.
 
-⚠️ **Draft 1 (commit 0a3514c) was REJECTED by the owner.** It kept the 2D sim authoritative and
-added a 3D renderer, with a thirteen-week plan. The owner wants a **proper 3D authoritative
-simulation, built in days**. Draft 2 replaces it wholesale; read draft 2, not the commit history.
+⚠️ **Drafts 1 and 2 were REJECTED by the owner.** Draft 1 kept the 2D sim authoritative under a
+3D view; draft 2 made 3D a separate `biobuzz3d` game. The owner's direction (2026-09-17, verbatim
+in spirit): BIOBUZZ stays ONE game; every ranked or record match runs on a 3D deterministic
+server; players render in 2D or 3D and the 2D path stays very fast; practice offers the old 2D
+physics, 3D physics with a 2D view, or 3D physics with 3D rendering, each with or without AI;
+prediction is a player option; graphics have presets and detailed settings; GPU acceleration is
+on automatically. Draft 3 is that. Read it, not the commit history.
 
-## What draft 2 decides
+## What draft 3 decides
 
-- **A fourth game, `biobuzz3d`**, in `src/games/biobuzz3d/`, alpha channel; the 2D BIOBUZZ is
-  untouched. Own boards, replays, queue; one `lan_runs` CHECK migration.
-- **Rapier 3D is authoritative** (`@dimforge/rapier3d-deterministic-compat` 0.20, server and
-  replays). Robots, all 56 elements, the tray, flowers and frame are real bodies in ONE world.
-- **The world persists on the server** (sleeping and warm-start on), serialised to plain JSON each
-  tick. The client predicts its own chassis in a small world rebuilt per reconcile; elements and
-  remotes are interpolated from snapshots.
-- **Spill, stacking and blocked shots are physics.** The tray is kinematic, swung by the existing
-  timer; contents fall out because it tilts. Flower contents stack as spheres in a tube. Scoring
-  is a pure read of positions. The tip decision stays the manual's table.
-- **The field is imported from FIRST's public CAD**: `scripts/field-cad.mjs` (STEP → CadQuery →
-  glTF + collider meshes + measurements). Constants-built geometry is the fallback. The licence
-  is unresolved (owner Q10): ask FIRST Day 0; local-only until answered.
-- **Three.js r186 lazy chunk**, driver-station camera default; the 2D renderer over the 3D world
-  is the phone path and the WebGL fallback.
-- **Shared-core changes**: `RobotState.z/vz`, a `scene` slot, the registrations, `worldHash` z
-  for this game, ball interpolation for this game. Nothing BIOBUZZ enters `src/sim`.
-- **Build plan in days**: Day 0 spike gate (hash equal across runtimes, 2v2 step ≤ 1.5 ms),
-  Day 1 solo free drive, Day 2 scored 2v2 online on `dsim-alpha`, Day 3 ship to alpha, then two
-  weeks of daily play-testing. Three lanes (sim, renderer, integration) as three sessions.
+- **One game id.** `World.biobuzz.physics: '2d' | '3d'` (absent `'2d'`); `biobuzzStep` dispatches.
+  The 2D pipeline is untouched and stays selectable for practice and casual rooms; deleting it
+  later is one branch of one function (owner Q11).
+- **Rapier 3D, deterministic build** (`@dimforge/rapier3d-deterministic-compat` 0.20) in
+  `src/games/biobuzz/sim3d/`, authoritative for ranked, record and matchmade rooms and their
+  replays. Persistent server world, JSON readback each tick, spill and flower stacking from
+  physics, the manual's tip table kept.
+- **Derived lists** (`sim3d/derive.ts`) fill `hives[a].contents` and `flowers[i].stack` from body
+  positions, so the shared `score.ts`, HUD, results and the 2D renderers work under both physics.
+- **Same wire for 2D and 3D clients** (robots gain `z/vz`; elements already carry them). Two
+  renderers over one world: the canvas (no WebGL, no wasm) and a lazy Three.js chunk.
+- **Prediction: Off / Light / Full** (Light = drive model + walls, no wasm, the 2D default).
+- **Graphics: Auto / Low / Medium / High / Ultra / Custom** over sixteen settings, per device;
+  Auto = GPU detection + a 2 s warm-up; software GL → 2D view; `high-performance` power
+  preference; hardware acceleration never disabled in the app.
+- **Practice**: physics 2D/3D, view 2D/3D, AI opponents off or a tier. Runs upload with
+  `physics` + `view` tags. One migration adds `physics` to records/matches/replays/practice_runs
+  (default `'2d'`), no season reset (owner rule).
+- **CAD import**: `scripts/field-cad.mjs` (STEP → CadQuery → glTF + collider meshes +
+  measurements); constants fallback; licence unresolved (ask FIRST, owner Q9).
+- **Build plan in days**: Day 0 spike gate (hash equal across runtimes, 2v2 step ≤ 1.5 ms);
+  Day 1 the whole game on 3D physics in the 2D view; Day 2 3D rooms online; Day 3 the 3D
+  renderer, graphics settings and the alpha ranked cutover. Three lanes.
 
 ## Next steps
 
-1. Owner answers §10 (ten questions; Q1, Q2, Q9, Q10 gate Day 0).
+1. Owner answers §12 (eleven questions; Q2, Q9, Q10 gate Day 0).
 2. Merge `efficiency-audit` into `alpha` (a real merge), rebase `biobuzz-3d`.
-3. Day 0 spike per §8: install the deterministic 3D package, dynamic-import init in browser /
-   worker / Node / tsx, 4 boxes + 56 spheres + statics + one kinematic tray, two-run hash, step
-   time. Run the CAD pipeline the same evening.
+3. Day 0 per §10.
 
 ## Gotchas
 
 - This branch's base predates the CLAUDE.md split: no `docs/area/`, no `docaudit`, the 2,165-line
-  CLAUDE.md. Do NOT edit CLAUDE.md here (conflicts with the split). Spec line refs are as of
-  `efficiency-audit` e0ce598.
+  CLAUDE.md. Do NOT edit CLAUDE.md here. Spec line refs are as of `efficiency-audit` e0ce598.
 - The spec compares against a comparable third-party 3D sim only generically; keep it that way.
-- Never commit or serve a CAD-derived mesh before the owner decides Q10. Numbers, yes.
+- Never commit or serve a CAD-derived mesh before the owner decides Q9. Numbers, yes.
 - `V` is Chain Reaction's `fling`; the view-cycle key is `t`.
-- The 2D game's `BB_LAUNCH_Z0 = 10` and `spillPoses` z = 25.5 are approximations the 3D game does
-  not inherit: muzzle height comes from the mount, spill height from the tilting tray.
+- Under 3D physics, `state.kind === 'element'` means "a body inside a structure", not "not
+  solved": the 2D readers only read the tag; do not port the 2D assumption into `sim3d/`.
 
 ---
 
