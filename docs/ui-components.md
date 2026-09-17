@@ -322,8 +322,8 @@ The look and the depth model are `DESIGN.md`. This file is only the inventory.
 
 | class | declared | used |
 |---|---|---|
-| `.ds-field` | src/ui/shell.css:1864 | 33 |
-| `.ds-field-row` | src/ui/shell.css:1807 | 3 |
+| `.ds-field` | src/ui/shell.css:1864 | 34 |
+| `.ds-field-row` | src/ui/shell.css:1807 | 4 |
 
 ## `ds-head` — 2
 
@@ -421,7 +421,7 @@ The look and the depth model are `DESIGN.md`. This file is only the inventory.
 
 | class | declared | used |
 |---|---|---|
-| `.ds-btn` | src/ui/shell.css:564 | 133 |
+| `.ds-btn` | src/ui/shell.css:564 | 134 |
 
 ## `ds-chip` — 1
 
