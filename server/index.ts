@@ -2322,6 +2322,52 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
       abandon();
       return;
     }
+    /**
+     * ONE ACCOUNT, ONE SEAT IN THIS ROOM — ASKED BEFORE `canJoin`, because the answer is
+     * sometimes "you already have a seat here" and that outranks "the room is full".
+     *
+     * The single-game guard below compares room CODES, so it has never had an opinion about
+     * the same person arriving at the SAME code twice (`other === code` reads as "this is
+     * your room", which it is). Two tabs on one account therefore took two seats, and in a
+     * 1v1 ranked room that is the entire room: capacity 2, both seats spent on one person,
+     * and the real opponent refused at the door and charged a no-show for a match they were
+     * standing outside of.
+     *
+     * THE SEAT IS TAKEN OVER RATHER THAN THE JOINER REFUSED, which is the same rule
+     * `reattach` already applies to `rejoin` and for the same reason: the three ways to get
+     * here are indistinguishable from the outside. A reload (the client id is gone with the
+     * page, so `rejoin` is not available to them), a reconnect (`join` is re-sent on every
+     * `onReopen`, and a partitioned socket outlives the client that gave up on it, so the
+     * old seat can still read as connected), and a genuine second tab all arrive as one
+     * authenticated `join` from an account that already holds a seat. Handing the seat to
+     * the newest socket serves all three: the first two get their own seat back, and the
+     * third gets the match while the tab it displaced is told so instead of being left on a
+     * session that has been silently unplugged.
+     *
+     * Reclaiming keeps the HELD CLIENT ID, which is what `slotOf` and `robotOf` are keyed
+     * by — so the returning player lands on their own roster slot and their own robot. That
+     * is what makes refreshing during the ranked strategy window survivable; see the
+     * matching seat-hold in `Room.detach`.
+     */
+    if (user) {
+      const seat = r.seatFor(user.userId);
+      if (seat) {
+        const nc = r.reattach(seat, send, sendRaw, backlog);
+        if (nc !== null) {
+          liveSockets.delete(id);
+          id = seat; // adopt the reclaimed identity on this socket
+          liveSockets.set(id, { authed: true });
+          room = r;
+          conn = nc;
+          markAuthed(user.userId);
+          // the lock follows the seat: this room owns it again (registration is by user
+          // id, so re-asserting it here is idempotent)
+          userRoom.set(user.userId, code);
+          r.maybeStartRanked(); // they may have been the last one missing
+          return;
+        }
+      }
+    }
     if (!r.canJoin()) {
       send({ t: 'error', message: 'Room is full or a match is already in progress.' });
       abandon(); // don't leave an empty just-created room behind
@@ -2512,6 +2558,18 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
         } else {
           send({ t: 'rejoined', ok: false });
         }
+      } else if (msg.t === 'abandon') {
+        /**
+         * ABANDON A HELD SLOT FROM OUTSIDE THE ROOM. One frame, no reply: the client has
+         * already left as far as it is concerned, and the only thing left is to stop the
+         * server holding a lock on its behalf for the rest of the reconnect grace.
+         *
+         * Not gated on `room` being null, and not on an auth token: the client id is the
+         * secret, the same one `rejoin` accepts as proof, and a wrong one simply finds no
+         * slot. Answering nothing at all is what keeps it from being a probe for which
+         * rooms and which client ids exist.
+         */
+        rooms.get(msg.room.toLowerCase())?.abandonSlot(msg.clientId);
       } else if (msg.t === 'reportScore') {
         /**
          * A MISSCORE claim from this room. No target to resolve — see the protocol note —

@@ -359,6 +359,20 @@ export type ClientMsg =
   // reclaim an in-match slot after a transient socket drop (within the grace
   // window) — the server rebinds the robot to the new connection and resyncs
   | { t: 'rejoin'; room: string; clientId: string }
+  /**
+   * GIVE UP A HELD SLOT ON PURPOSE — the "Abandon" on the game-in-progress card.
+   *
+   * Sent on a throwaway socket by a client that is NOT in the room: the point is to be
+   * usable from the menu, after a reload, by a browser whose only memory of the match is
+   * the `activeGame` record. Owning the client id is the proof, exactly as it is for
+   * `rejoin` — the server minted it and told nobody else.
+   *
+   * Without it, Abandon cleared the browser's record and nothing else, so the server's
+   * single-game lock outlived the button by the length of the reconnect grace and the
+   * next thing the player started was refused by advice about a game the UI had just
+   * told them was gone.
+   */
+  | { t: 'abandon'; room: string; clientId: string }
   // SPECTATE a live match: join a room read-only. The server adds a spectator (no
   // robot slot, never counted toward capacity/roster/persistence), sends the current
   // `matchStart`, and streams the same `snapshot`s the drivers get. Input is ignored.
