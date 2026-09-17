@@ -5,6 +5,7 @@ import { rulesChecks } from './rules';
 import { robotChecks } from './robot';
 import { coreChecks } from './core';
 import { sponsorChecks } from './sponsor';
+import { renderChecks } from './render';
 import type { Check } from './harness';
 
 /**
@@ -64,6 +65,8 @@ const LANES: { name: string; fn: (c: Check) => void }[] = [
   { name: 'ROBOT', fn: robotChecks },
   // app-level, not a game lane — see the header of sponsor.ts for why it rides this suite
   { name: 'SPONSOR', fn: sponsorChecks },
+  // the 3D scene chunk's import-boundary rules (Day 1 lane B) — pure source checks, no DOM
+  { name: 'RENDER', fn: renderChecks },
 ];
 
 const KNOWN_FLAGS = ['--lane', '--grep', '--list', '--help'];
