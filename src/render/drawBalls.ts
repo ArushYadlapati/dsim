@@ -34,9 +34,13 @@ export function drawBalls(
       y += screenUp.y * b.z * 0.5;
       rad *= 1 + b.z / 140;
     }
-    const base = b.color === 'purple' ? C.COLORS.purple : C.COLORS.green;
+    const purple = b.color === 'purple';
+    const base = purple ? C.COLORS.purple : C.COLORS.green;
     const grad = ctx.createRadialGradient(x - rad * 0.35, y + rad * 0.35, rad * 0.15, x, y, rad);
-    grad.addColorStop(0, lighten(base));
+    // the highlight is a pure function of `base`, and `base` is one of exactly two colours —
+    // so it is resolved once at module load rather than parsed out of a hex string and
+    // rebuilt into a new `rgb(...)` string for every artifact on every frame
+    grad.addColorStop(0, purple ? HILITE_PURPLE : HILITE_GREEN);
     grad.addColorStop(1, base);
     ctx.fillStyle = grad;
     ctx.beginPath();
@@ -47,6 +51,9 @@ export function drawBalls(
     ctx.stroke();
   }
 }
+
+const HILITE_PURPLE = /* @__PURE__ */ lighten(C.COLORS.purple);
+const HILITE_GREEN = /* @__PURE__ */ lighten(C.COLORS.green);
 
 function lighten(hex: string): string {
   const n = parseInt(hex.slice(1), 16);

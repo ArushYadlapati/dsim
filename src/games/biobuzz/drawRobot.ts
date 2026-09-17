@@ -124,7 +124,7 @@ export function drawBiobuzzRobot(
   ctx: CanvasRenderingContext2D,
   r: RobotState,
   intakeOn: boolean,
-  _held: Artifact[] = [],
+  _held: readonly Artifact[] = [],
   screenUp: Vec2 = { x: 0, y: 1 },
   world?: World,
 ): void {
