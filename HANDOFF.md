@@ -38,18 +38,29 @@ on automatically. Draft 3 is that. Read it, not the commit history.
   Day 1 the whole game on 3D physics in the 2D view; Day 2 3D rooms online; Day 3 the 3D
   renderer, graphics settings and the alpha ranked cutover. Three lanes.
 
+## Owner decisions (2026-09-17, recorded in §12)
+
+Lobbies/LAN default 3D with a host 2D option · deterministic build everywhere (Day 0 speed gate) ·
+robots yaw-only now, pitch/roll designed for later (3.3) · **dynamic see-saw calibrated to the
+field-guide rows** (3.6; kinematic fallback) · realism then rulebook for opponent shots · prediction
+Auto-calibrated (5) · ranked cutover on alpha Day 3, production when the owner says · Force-GPU
+toggle offered, off by default, auto-cleared after a GPU crash · **ship the CAD-derived field files**
+(owner accepts the licence risk; courtesy note to FIRST) · merge `efficiency-audit` first · **the 2D
+physics is a permanent light practice option, never deleted**.
+
 ## Next steps
 
-1. Owner answers §12 (eleven questions; Q2, Q9, Q10 gate Day 0).
-2. Merge `efficiency-audit` into `alpha` (a real merge), rebase `biobuzz-3d`.
-3. Day 0 per §10.
+1. Merge `efficiency-audit` into `alpha` (a real merge, +14/+6), rebase `biobuzz-3d`.
+2. Day 0 per §10: deterministic 3D package spike (hash across runtimes, 2v2 step ≤ 1.5 ms),
+   CAD pipeline run, courtesy note to FIRST.
+3. Weigh a real element set when possible; mass and the nectar ratio are APPROX until then.
 
 ## Gotchas
 
 - This branch's base predates the CLAUDE.md split: no `docs/area/`, no `docaudit`, the 2,165-line
   CLAUDE.md. Do NOT edit CLAUDE.md here. Spec line refs are as of `efficiency-audit` e0ce598.
 - The spec compares against a comparable third-party 3D sim only generically; keep it that way.
-- Never commit or serve a CAD-derived mesh before the owner decides Q9. Numbers, yes.
+- The CAD-derived field files SHIP by owner decision (Q9); keep the constants fallback complete so they can be pulled in one commit.
 - `V` is Chain Reaction's `fling`; the view-cycle key is `t`.
 - Under 3D physics, `state.kind === 'element'` means "a body inside a structure", not "not
   solved": the 2D readers only read the tag; do not port the 2D assumption into `sim3d/`.

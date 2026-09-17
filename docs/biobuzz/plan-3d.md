@@ -16,12 +16,14 @@ Decisions, one line each:
 1. **One game id, `biobuzz`.** Boards, queue, replays, records stay one population. Rows gain a
    `physics` tag so a board can show or filter 2D-era and 3D-era results.
 2. **Two physics under one step.** `World.biobuzz.physics` is `'2d'` (today's pipeline, unchanged)
-   or `'3d'` (new, `src/games/biobuzz/sim3d/`). `biobuzzStep` dispatches on it. Deleting the 2D
-   pipeline later is one branch of one function.
+   or `'3d'` (new, `src/games/biobuzz/sim3d/`). `biobuzzStep` dispatches on it. **The 2D pipeline
+   is permanent**: it is the light practice option (owner decision 2026-09-17), never deleted.
 3. **The 3D physics is Rapier 3D, deterministic build**, `@dimforge/rapier3d-deterministic-compat`
    0.20, authoritative on the server for every ranked, record and matchmade room and in every
-   replay of one. Robots, all 56 elements, the tray, flowers and frame are real bodies in one
-   persistent world serialised to plain JSON each tick.
+   replay of one. Robots, all 56 elements, the flowers and the frame are real bodies in one
+   persistent world serialised to plain JSON each tick. **The hive is a dynamic see-saw** on a
+   revolute joint with a calibrated ballast and detent, so the tip and the spill are emergent
+   (owner decision; the table rows become the calibration targets, 3.6).
 4. **The wire is the same for 2D and 3D clients.** Snapshots already carry element `z/vz`;
    robots gain `z/vz`. A 2D client ignores what it does not draw. No per-view packets.
 5. **Two renderers over one world.** The existing canvas renderer (2D view, any device, no wasm,
@@ -35,8 +37,8 @@ Decisions, one line each:
 8. **Practice is local**: physics 2D or 3D, view 2D or 3D, AI opponents off or a tier. Practice
    runs upload with `physics` and `view` tags; only 3D-physics runs are comparable to ranked.
 9. **The field is imported from FIRST's public CAD** through a scripted STEP-to-glTF pipeline
-   (visual mesh, collider meshes, measurements); constants-built geometry is the fallback while
-   the licence question is open.
+   (visual mesh, collider meshes, measurements), and **the derived files ship** (owner decision
+   2026-09-17, accepting the licence risk); constants-built geometry stays as the fallback.
 10. **Days, not weeks.** Day 1 plays the whole game on 3D physics in the 2D view; Day 2 has 3D
     rooms online; Day 3 ships the 3D renderer and graphics settings to alpha. Three lanes.
 
@@ -53,10 +55,13 @@ without AI. Graphics that scale from a Chromebook to a desktop GPU without the p
 anything, and every setting exposed for those who want to. Reuse the netcode, accounts,
 Glicko-2, replays, LAN, Electron, mobile, the drivetrain model and the BIOBUZZ rules layer.
 
-**Non-goals for the first ship.** No hive mass model (the manual's tip table stays). No launched
-element enters a flower (standing ruling). No new command bits (the `buttons` byte is full;
-deployment is a phase read). No robot model imports, no WebGPU (an Ultra option later), no
-season reset (`BALANCE_VERSION`/`SIM_VERSION` held, per the owner's standing rule).
+**Non-goals for the first ship.** No launched element enters a flower (standing ruling). No new
+command bits (the `buttons` byte is full; deployment is a phase read). No robot pitch and roll
+yet (designed for, 3.3). No robot model imports, no WebGPU (an Ultra option later), no season
+reset (`BALANCE_VERSION`/`SIM_VERSION` held, per the owner's standing rule).
+
+**Realism is the tie-breaker.** Where the manual describes a physical thing, the sim builds the
+thing and lets the rulebook score whatever happens (owner direction 2026-09-17).
 
 ---
 
@@ -145,6 +150,22 @@ Nothing BIOBUZZ enters `src/sim/`. The 2D pipeline keeps calling the shared `sol
 
 ### 2.5 Packages, lifecycle, bundle
 
+**Deterministic build, decided with its costs stated.** The default Rapier build is deterministic
+on one machine but the vendor does not guarantee bit-identical results across platforms; the
+`-deterministic` build pins the transcendental functions and disables SIMD so the same inputs give
+the same bits everywhere. What that buys: replays re-simulate exactly on any client, the LAN host
+in a browser and the server; the server can verify a client-reported run bit for bit; a Full
+prediction of the local robot matches the server for uncontested motion, so corrections come only
+from contacts the client did not know about; a two-run hash across Node and Chromium is a real
+check rather than a hope. What it costs: speed (the vendor calls it "less optimized"; the penalty
+is measured on Day 0, expected 1.2 to 2×), and the guarantee holds only with one exact version
+and one construction order on every machine, which the id-ordered sync gives. The default build
+would be faster and is probably deterministic in wasm in practice, since wasm floats are IEEE and
+the libm is compiled in, but "probably" is not a property a replay verifier can stand on. Rule:
+deterministic build everywhere; if Day 0 measures over 2× and the default build passes the
+cross-runtime hash on Node, Chromium, Firefox and Safari, the owner may switch the live solve to
+the default build and keep the deterministic one for server-side replay verification only.
+
 `sim3d/engine.ts` loads the compat module through a **dynamic `import()`** inside
 `initPhysics3d()` and keeps it in a module variable; `step3d` is synchronous against it. Vite
 emits the wasm chunk once, loaded only when a 3D-physics world is about to be stepped locally
@@ -169,8 +190,8 @@ measured 139 KB tree-shaken); HDRI sets on demand. A 2D-view player pays the mai
 2. Drivetrain: shared `updateRobot` produces a `DriveWrench` per robot from the 2D projection;
    unchanged model, unchanged feel.
 3. **Sync**: the persistent Rapier world is reconciled to `world` (3.2).
-4. Apply wrenches as forces in the floor plane and yaw torques; set the tray's next kinematic
-   rotation from the shared swing timer.
+4. Apply wrenches as forces in the floor plane and yaw torques. The tray is dynamic (3.6);
+   nothing is set on it.
 5. `world3d.step()`.
 6. **Readback**: every dynamic body writes `pos/z/vel/vz/heading/angVel` into `world`, rounded to
    1e-4 in and rad, so the JSON is the truth and stable.
@@ -197,8 +218,21 @@ authority corrects it.
 ### 3.3 Robots
 
 Dynamic cuboid `length × width × heightIn`, mass `shoveMass`, gravity on, on the tile plane.
-Yaw free; pitch and roll locked (owner question 3 can unlock); z translation free so a robot
-pressed under a descending tray slides out rather than clipping. Drive: the shared `DriveWrench`
+Yaw free; pitch and roll locked for now (owner decision 2026-09-17); z translation free so a
+robot pressed under a descending tray slides out rather than clipping.
+
+**Designed so pitch and roll can be unlocked later.** The physics half is a flag
+(`setEnabledRotations(true, true, true)`) plus `RobotState.q?: [x, y, z, w]` on the wire (four
+numbers per robot, about 145 B raw per 2v2 snapshot) and the renderer applying it. Every reader
+of a robot's pose in `sim3d/` goes through `robotPose3(r)` from day one, so nothing else changes
+there. The hard parts are gameplay, not physics, and they are the reason to wait: the drivetrain
+model assumes four wheels on the floor (traction must scale with how many wheels touch, which
+needs per-wheel contact probes or a simplified suspension); a tipped robot needs a rule (the
+manual leaves it stranded unless it self-rights, so the sim must stop its drive and offer nothing);
+aim solutions assume a level muzzle; the shared footprint helpers (`robotCorners`) assume an
+upright box and become the projection of an oriented one for penalties and zones. Estimate: two
+to three days after the yaw-only game is stable, no schema break, since `q` is optional and
+absent reads upright. Drive: the shared `DriveWrench`
 as a force and yaw torque plus a yaw damping mirroring the 2D wheel brake. Friction
 `PHYS_FRICTION` against robots, `PHYS_WALL_FRICTION` against statics, restitution 0. Solids from
 `bbRobotSolids` extruded to `heightIn` (chassis, sweeper plates, held elements): one geometry
@@ -231,23 +265,56 @@ never as "not solved"). Every shared rule then works unchanged: owner is the all
 nectar, bottom bonus the bottom nectar, tip load is the up cell's contents, cell points are the
 contents at rest.
 
-### 3.6 Hive
+### 3.6 Hive: a dynamic see-saw calibrated to the table
 
 Frame: static trimesh colliders from the CAD pipeline (constants boxes as fallback: base bars
-x in [24,25] and [-25,-24], y ±19.4, apex z 43.95, crossbar along x). Tray: one kinematic
-position-based body per hive, convex hulls per cell part from the CAD (fallback: five 0.25-in
-APPROX boxes per cell, 20 × 14 × 12.04, open at the outer face) on the 42.91-in bar, pivoted at
-(±12.75, 0, 43.95) about the x axis, rotated each tick by `hiveTiltAngle(tipping)` (+30° settled
-up, 0 at half swing, -30° settled down; moved from `drawField.ts` into `hive.ts` so both physics
-and both renderers read one definition).
+x in [24,25] and [-25,-24], y ±19.4, apex z 43.95, crossbar along x). Tray: **one dynamic body
+per hive** (the 42.91-in bar with two cells as convex hulls per cell part from the CAD; fallback
+five 0.25-in APPROX boxes per cell, 20 × 14 × 12.04, open at the outer face) on a **revolute
+joint** about the x axis at (±12.75, 0, 43.95) with **angular limits ±30°** (the damper stops).
+The joint's motor is off; three calibrated terms make it behave like the real hive:
 
-Tip: the shared table over the derived contents (`pollen >= BB_TIP_POLLEN[min(nectar, 5)]`). The
-timer starts, the tray swings 4.0 s (faster with surplus, as today). **Spill is physics**: past
-level the floor is a ramp and the contents roll out of the open face and fall from about 42 in.
-No fan, no RNG draws. Spilled ids carry a tag until their first non-tray contact; a robot as first
-contact writes a G409 verbal line. Shots are bodies: through the open face at the true angle they
-are taken; off the roof, back, sides or frame they bounce. An opponent's element landing in your
-up cell counts toward its load (question 5).
+- **Ballast** `BB3_HIVE_BALLAST` (a mass at a point on the bar, below the pivot on the down side)
+  makes the empty tray bi-stable: it rests against either stop and stays there.
+- **Detent** `BB3_HIVE_DETENT` (a breakaway torque, modelled as joint friction that releases once
+  the net torque exceeds it) is what the load must overcome. Without it a single element would
+  start the swing.
+- **Damping** `BB3_HIVE_DAMPING` (joint angular damping) sets the swing time; the owner's 4.0 s
+  ruling is the target, measured stop to stop.
+
+**Calibration from the available data.** Element mass is unpublished; `BB3_ELEMENT_MASS` is the
+weighed value once a set is weighed (owner action) and 0.2 lb APPROX until then, with nectar mass
+`BB3_NECTAR_MASS_RATIO` × pollen (APPROX 1.6: bigger, and lighter than volume scaling, because
+the field guide says three pollen plus three nectar mass less than eight pollen). The two
+published rows (8 pollen tips, 7 does not; 3 pollen + 3 nectar tips, 3 + 2 does not, Event Field
+Setup Guide §12.3) are the calibration targets; the owner-measured rows (1n+7p, 2n+6p, 4n+1p,
+5n+0p) are validation. `scripts/hive-calibrate.ts` (headless, deterministic) stages elements in
+the up cell as the guide describes (against the back wall, in a line), lets them settle, and
+sweeps detent and ballast until every target row holds with the smallest margin above 0.5
+element-weights; it prints the validation rows and writes the constants with their derivation.
+Re-run when a set is weighed. If no pair of values satisfies every target (the rows are known to
+be non-linear), the detent is kept and a **position-dependent** term is allowed (the ballast's
+lever arm), then the table itself becomes the last-resort trigger for the rows that still fail,
+recorded as APPROX.
+
+**Tip and spill are emergent.** The TIP scores when the joint reaches the opposite stop
+(`|angle| ≥ 29°` and angular speed under `BB3_HIVE_REST_W`): that is the damper contact §10.5.1
+names. Contents slide down the tilting floor and out of the open face as the bar passes level; no
+timer, no fan, no RNG. `hiveTiltAngle` is read from the joint, not computed; both renderers read
+it. Spilled ids carry a tag until their first non-tray contact; a robot as first contact writes a
+G409 verbal line. Shots are bodies: through the open face at the true angle they are taken; off
+the roof, back, sides or frame they bounce.
+
+**Rulebook, not a filter.** The cell takes whatever lands in it. An opponent's shot landing in
+your up cell counts toward your load and your cell points, as the manual scores contents by hive,
+and no rule forbids launching into the other alliance's hive; it only helps them. G417 does apply
+to contact: a robot that touches the tray or the frame is billed by the existing frame-ram detector
+(exterior contact at speed, MAJOR once per match per robot) because the tray is now a body a
+29-in robot can reach and move. The 2D pipeline's owner-alliance filter stays where it is.
+
+**Fallback.** If calibration cannot hold the two published rows on Day 2, the tray reverts to the
+kinematic body swung by the shared timer with the table as trigger (draft 2's model), behind
+`BB3_HIVE_DYNAMIC = false`, and the calibration script stays for the next attempt.
 
 ### 3.7 Flowers
 
@@ -367,9 +434,14 @@ event-log line. `WebGLRenderer` is created with `powerPreference: 'high-performa
 laptops pick the discrete GPU. A software renderer string (SwiftShader, llvmpipe, Basic Render
 Driver) or a failed WebGL2 probe selects the 2D view with an event-log line; the 3D view stays
 one click away for retry. Electron keeps hardware acceleration on (the app never calls
-`disableHardwareAcceleration`; only the shot runner does) and logs `app.getGPUFeatureStatus()`; a
-"Force GPU on blocklisted drivers" toggle (adds `ignore-gpu-blocklist` on next launch) is offered
-off by default (question 8).
+`disableHardwareAcceleration`; only the shot runner does) and logs `app.getGPUFeatureStatus()`.
+**Decision (delegated, 2026-09-17): the desktop app offers "Force GPU on blocklisted drivers"**,
+off by default, in the Graphics section, with the label saying it can crash the renderer. It adds
+`ignore-gpu-blocklist` on the next launch, and the main process clears it automatically after a
+`child-process-gone` with type `GPU` or a `render-process-gone`, so a bad driver costs one relaunch
+and never a stuck app. Offered because the blocklist is written for driver crashes across the
+whole browser population, and a student with a known-good but blocklisted laptop GPU is exactly
+who loses 3D otherwise.
 
 ### 4.7 Frame composition and fallback
 
@@ -394,7 +466,15 @@ A **Prediction** setting beside the view, per device:
 
 Corrections use the existing `localSmooth` offset (`SMOOTH_HALFLIFE`, `SMOOTH_MAX_DIST`). The
 setting is offered in the Controls section and the in-match menu; an event-log line explains Off's
-latency the first time. Elements and remote robots are **interpolated** in 3D-physics worlds
+latency the first time.
+
+**Auto (default).** Defaults are Light for the 2D view and phones, Full for the 3D view on
+desktop, but the shipped default is **Auto**: during the pre-match countdown the client times one
+Full reconcile of 40 ticks in the real prediction world and reads the connection's RTT and
+jitter. Full is chosen when that reconcile is under `PREDICT_FULL_BUDGET_MS` (8) and the physics
+chunk is loaded or loadable within the countdown; otherwise Light. Off is never chosen by Auto.
+If Full's reconcile p95 slips above the budget in a match, Auto drops to Light once and writes an
+event-log line; the player's explicit choice is never overridden. Elements and remote robots are **interpolated** in 3D-physics worlds
 (ids stable, count conserved; a kind change snaps); `snapBuf` gains per-ball `x, y, z` and
 per-robot `z` when `physics === '3d'`. In 2D-physics rooms everything is as today.
 
@@ -465,12 +545,13 @@ asserts the two collider sets agree within 0.5 in at twelve probe points. The me
 settles the APPROX constants and is asserted against `config.ts`. An in-browser STEP importer
 (about 10 MB of wasm) is excluded; the import runs once per CAD version.
 
-**Licence.** FIRST's website terms of use grant the content for personal, non-commercial use and
-forbid redistribution without written permission; whether a decimated derived mesh in a public
-repo and on the site is covered is unresolved. Default: ask FIRST on Day 0, keep `field.glb` and
-the collider file local (gitignored) until they answer, ship the constants-built fallback
-meanwhile; the numbers file is ours to commit. The owner may choose to ship the files regardless
-(question 9); the pipeline and loader are the same either way.
+**Licence, decided.** FIRST's website terms of use grant the content for personal, non-commercial
+use and forbid redistribution without written permission; whether a decimated derived mesh in a
+public repo and on the site is covered is unresolved. **The owner decided on 2026-09-17 to ship the
+derived files** (`field.glb`, `field-colliders.json`, the measurements) committed under
+`public/models/biobuzz/` and served from the site, accepting that risk. A courtesy note to FIRST
+describing the use is still sent on Day 0, and the constants-built fallback stays complete so the
+files can be pulled in one commit if FIRST objects.
 
 ---
 
@@ -521,9 +602,10 @@ controls, `game.ts` physics init and renderer choice, smoke skeleton, `bundleaud
 *End of day:* **the whole BIOBUZZ game plays on 3D physics in the 2D view** in solo practice, and
 the 3D view shows robots pushing elements.
 
-**Day 2.** A: tray kinematics and table trigger, spill from physics, flower tubes, derived
-stacks, gardens/park/leave, human player, settle, penalties, G409 tags, Light and Full prediction
-worlds. B: tray and flower meshes, reticle, HUD scrim, chase and orbit, interpolation of balls and
+**Day 2.** A: the dynamic tray on its joint, `scripts/hive-calibrate.ts` and the calibrated
+constants (kinematic fallback if the two published rows cannot both hold), spill from physics,
+flower tubes, derived stacks, gardens/park/leave, human player, settle, penalties, G409 and G417
+tags, Light and Full prediction worlds and the prediction Auto probe. B: tray and flower meshes, reticle, HUD scrim, chase and orbit, interpolation of balls and
 remotes, labels through the scene camera. C: server init, `RoomConfig.physics`, cap gate,
 matchmaking `3d`, migration, `costprobe` scenarios, replay header and re-sim check, LAN lazy init.
 *End of day:* a scored 3D 2v2 online on `dsim-alpha`; a 2D-view client and a 3D-view client in the
@@ -550,6 +632,7 @@ tuning change lands with a gallery scene and a smoke check the same day.
 | `step3d` over budget with 56 live spheres | persistent world, sleeping, hopper bodies removed, CCD only when fast, decimated colliders | over 3 ms after tuning on Day 0: freeze far elements kinematic between contacts |
 | Deterministic build too slow | it is the same solver with pinned math; measured Day 0 | over 2× the default build: default build for the live solve, deterministic for replay verification only |
 | Two physics drift apart in feel | the drivetrain model is shared; ROBOT lane pins the ratio within 5 percent | a felt difference the ratio does not catch: tune the 3D damping, never the shared model |
+| The dynamic see-saw cannot be calibrated to the published rows, or jitters at a stop | ballast + detent + damping swept by `hive-calibrate.ts`; joint limits with a small restitution; validation rows printed | both published rows cannot hold on Day 2: `BB3_HIVE_DYNAMIC = false`, kinematic tray with the table trigger, calibration retried once a set is weighed |
 | Light prediction rubber-bands when pushing | corrections through `localSmooth`; Full one click away | visible snaps: make Full the 3D default on phones too, behind the pixel budget |
 | Old clients in 3D rooms | `'bb3d'` cap gate with an update message | none |
 | 2D-era and 3D-era results on one board without a season reset | `physics` badge and filter; owner rule against resets honoured | the owner asks for a split: an act bump is available but wipes ratings, so a `physics`-scoped board view is preferred |
@@ -565,21 +648,24 @@ measured before anything else is written.
 
 ---
 
-## 12. Owner questions
+## 12. Owner decisions (2026-09-17)
 
-| # | question | needed by |
+| # | question | decision |
 |---|---|---|
-| 1 | Custom lobbies and LAN default to 3D physics with a host option for 2D (assumed)? | Day 2 |
-| 2 | Deterministic build on server and client (assumed), accepting its speed cost, or default build with replay verification server-side only? | Day 0 |
-| 3 | Robots yaw-only (assumed) or free to pitch and roll? | Day 1 |
-| 4 | Tray kinematic with the table trigger (assumed) or a dynamic see-saw with calibrated ballast (needs a weighed element set)? | Day 2 |
-| 5 | An opponent's shot landing in your up cell counts toward its load (physical reading, assumed), or is rejected as the 2D pipeline rules? | Day 2 |
-| 6 | Prediction defaults: Light for 2D view, Full for 3D view on desktop, Light on phones (assumed)? | Day 2 |
-| 7 | Ranked cutover to 3D physics: alpha on Day 3 (assumed); production at the next promotion, or on a date you set? | Day 3 |
-| 8 | Offer "Force GPU on blocklisted drivers" in the desktop app, off by default (assumed), or not at all? | Day 3 |
-| 9 | Commit and serve the CAD-derived field files now, or local until FIRST grants permission (assumed: ask Day 0, local until then)? | Day 0 |
-| 10 | Merge `efficiency-audit` into `alpha` before Day 1 (assumed yes)? | Day 0 |
-| 11 | Delete the 2D physics pipeline after the play-test weeks, or keep it as the light practice option? | Day 14 |
+| 1 | Custom lobbies and LAN default to 3D physics with a host option for 2D? | **Yes.** |
+| 2 | Deterministic build everywhere, or default build with server-side verification only? | **Deterministic everywhere**, with the Day 0 speed gate and the switch rule in 2.5. |
+| 3 | Robots yaw-only, or free to pitch and roll? | **Yaw-only for now**; pitch and roll later, designed for in 3.3. |
+| 4 | Tray kinematic with the table trigger, or a dynamic see-saw calibrated to the data? | **Dynamic see-saw**, calibrated to the published rows (3.6); kinematic is the fallback. |
+| 5 | An opponent's shot landing in your up cell? | **Realism, then the rulebook**: it counts for the hive's alliance (3.6). |
+| 6 | Prediction defaults? | **Light for 2D and phones, Full for 3D desktop, with Auto calibration** (5). |
+| 7 | Ranked cutover to 3D physics? | **Alpha on Day 3.** Production when the owner says so. |
+| 8 | "Force GPU on blocklisted drivers" toggle? | **Delegated; decided: offered, off by default, auto-cleared after a GPU crash** (4.6). |
+| 9 | Ship the CAD-derived field files? | **Yes, ship them** (8). Courtesy note to FIRST still sent. |
+| 10 | Merge `efficiency-audit` into `alpha` before Day 1? | **Yes.** First action of Day 0. |
+| 11 | Delete the 2D physics later? | **Never.** It is the permanent light practice option. |
+
+Still open, none blocking Day 0: weigh a real element set (mass and the nectar ratio are APPROX
+until then); confirm the pitch-and-roll upgrade date after the yaw-only game is stable.
 
 ---
 
@@ -593,7 +679,10 @@ measured before anything else is written.
 | `BB3_HIVE_CELL` | 20 × 14 × 12.04 in, open outer face | manual + owner ruling |
 | `BB3_HIVE_CELL_WALL` | 0.25 in | APPROX, CAD settles |
 | `BB3_FLOWER_MID_HOLE`, `BB_FLOWER_MID_Z` | 3.2 in, 3.98 in | APPROX, CAD settles |
-| `BB3_ELEMENT_MASS` | 0.2 lb | APPROX, weigh a set |
+| `BB3_ELEMENT_MASS`, `BB3_NECTAR_MASS_RATIO` | 0.2 lb, 1.6 | APPROX, weigh a set |
+| `BB3_HIVE_BALLAST`, `BB3_HIVE_DETENT`, `BB3_HIVE_DAMPING`, `BB3_HIVE_REST_W` | from `hive-calibrate.ts` | calibrated to the field guide rows; validated on the owner-measured rows |
+| `BB3_HIVE_DYNAMIC` | true | kinematic fallback switch |
+| `PREDICT_FULL_BUDGET_MS` | 8 | budget, Auto probe |
 | `BB3_ELEMENT_FRICTION`, `_RESTITUTION`, `_ROLL_DAMP` | 0.6, 0.45, 0.4 | APPROX, tuned Day 4+ |
 | `BB3_CCD_SPEED` | 60 in/s | APPROX |
 | `BB3_REST_SPEED`, `BB3_REST_TICKS` | 2 in/s, 6 | APPROX |
