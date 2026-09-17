@@ -332,6 +332,17 @@ export class ServerSession implements NetSession {
     return this.transport;
   }
 
+  /**
+   * Give up this seat without waiting for anything back (`abandon` is answered with
+   * nothing by design). Sent on the socket the session already owns, so it is ordered
+   * ahead of anything the next connection does — which is the whole point, since the
+   * caller is usually about to `dispose()` and open a new room immediately.
+   */
+  abandonSlot(): void {
+    if (!this.room || !this.clientId) return;
+    this.transport.send(encodeMsg({ t: 'abandon', room: this.room, clientId: this.clientId }));
+  }
+
   /** host only: ask the server to send this finished room back to its lobby. */
   requestLobby(): void {
     this.transport.send(encodeMsg({ t: 'lobby' }));
