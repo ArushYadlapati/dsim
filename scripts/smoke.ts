@@ -7339,18 +7339,45 @@ function pushContest(A: Partial<RobotSpec>, B: Partial<RobotSpec>, seconds = 3):
         launcher.includes('Number(y.private) - Number(x.private)'),
     );
 
-    // ---- the clipboard fallback
+    /**
+     * ---- THE CLIPBOARD FALLBACK, WHEREVER A COPY BUTTON IS
+     *
+     * The Clipboard API is gated on a secure context and a LAN guest is served over plain
+     * http, so `navigator.clipboard` is `undefined` there and a bare optional chain makes
+     * the button a no-op that reports success. That bug shipped on this screen once and
+     * then shipped AGAIN on the account-id button (PR #71), which is what moved the
+     * fallback into `copyText` — so these check the shared helper and then check that no
+     * call site has quietly grown its own copy path back.
+     */
+    const copyMod = readFileSync('src/ui/copyText.ts', 'utf8');
     check(
-      'lan copy: there is an execCommand fallback for the non-secure LAN origin',
-      lan.includes("document.execCommand('copy')"),
+      'copy: there is an execCommand fallback for the non-secure LAN origin',
+      copyMod.includes("document.execCommand('copy')"),
     );
     check(
-      'lan copy: the old unguarded `navigator.clipboard?.writeText(` no-op is gone',
-      !/void navigator\.clipboard\?\.writeText/.test(lan),
+      'copy: a rejected clipboard promise still tries the fallback',
+      /\.then\([\s\S]{0,300}?\(\) => done\(copyFallback\(text\)\)/.test(copyMod),
     );
     check(
-      'lan copy: a rejected clipboard promise still tries the fallback',
-      /\.then\([\s\S]{0,400}?copyFallback\(text\)/.test(lan),
+      'copy: the flash is driven by whether the text LANDED, not by the click',
+      /onDone\?\.\(ok\)/.test(copyMod) && /done\(copyFallback\(text\)\)/.test(copyMod),
+    );
+    /**
+     * NO CALL SITE MAY REINVENT IT. `void navigator.clipboard?.writeText(x)` is the exact
+     * shape of both bugs: on a non-secure origin the whole expression evaporates and
+     * nothing throws. Every screen with a copy button goes through `copyText`.
+     */
+    for (const f of ['src/ui/LanPanel.tsx', 'src/ui/Account.tsx', 'src/ui/Lobby.tsx']) {
+      const src = readFileSync(f, 'utf8');
+      check(
+        `copy: ${f.split('/').pop()} has no unguarded navigator.clipboard no-op`,
+        !/void navigator\.clipboard\?\.writeText/.test(src),
+      );
+    }
+    check('copy: LanPanel copies through the shared helper', /copyText\(/.test(lan));
+    check(
+      'copy: the account id copies through the shared helper',
+      /copyText\(/.test(readFileSync('src/ui/Account.tsx', 'utf8')),
     );
   }
 

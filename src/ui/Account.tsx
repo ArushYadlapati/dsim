@@ -12,6 +12,7 @@ import {
   type Entitlements,
 } from '../net/api';
 import { AuthPanel } from './AuthPanel';
+import { copyText } from './copyText';
 import { DesktopUpdate } from './DesktopUpdate';
 import { fmtDay } from './fmtDate';
 import { ServerMenu } from './ServerMenu';
@@ -260,9 +261,13 @@ function Identity({ onHandleSaved }: { onHandleSaved?: (handle: string) => void 
   const [copied, setCopied] = useState(false);
   const user = session.data?.user;
 
+  /** the flash is driven by whether the text ACTUALLY landed — see `copyText`: the
+   *  clipboard API is absent on a plain-http LAN page, and "Copied" over a copy that
+   *  never happened is worse than no button. */
   const copyId = (): void => {
     if (!user?.id) return;
-    void navigator.clipboard?.writeText(user.id).then(() => {
+    copyText(user.id, (ok) => {
+      if (!ok) return;
       setCopied(true);
       setTimeout(() => setCopied(false), 1600);
     });
@@ -474,6 +479,9 @@ function Username({ userId }: { userId: string }) {
         ) : status === 'ok' && !dirty ? (
           <span className="ok">Saved.</span>
         ) : (
+          // the format rule comes from `useUsernameCheck` and ONLY from there —
+          // it used to be spelled out a second time here, one edit away from
+          // disagreeing with the rule the checker actually enforces
           (dirty || !current) && (
             <span style={{ color: usernameHintColor(check.status) }}>{check.message}</span>
           )

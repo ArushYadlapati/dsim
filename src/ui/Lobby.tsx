@@ -30,6 +30,7 @@ import { Logo } from './Logo';
 import { useEscape } from './useEscape';
 import type { RoomInvite } from '../net/api';
 import { FriendsPanel, type RoomInviteTarget } from './FriendsPanel';
+import { copyText } from './copyText';
 
 interface Props {
   settings: GameSettings;
@@ -711,11 +712,17 @@ export function Lobby({
           </span>
           <button
             className="ds-chip"
-            onClick={() => {
-              void navigator.clipboard?.writeText(code);
-              setCopied(true);
-              window.setTimeout(() => setCopied(false), 1500);
-            }}
+            // through `copyText`, and the tick only on a copy that actually happened:
+            // this lobby is reachable over a plain-http LAN origin, where the Clipboard
+            // API does not exist and the optional chain used to make this a no-op that
+            // still said '✓ Copied'.
+            onClick={() =>
+              copyText(code, (ok) => {
+                if (!ok) return;
+                setCopied(true);
+                window.setTimeout(() => setCopied(false), 1500);
+              })
+            }
           >
             {copied ? '✓ Copied' : '⧉ Copy code'}
           </button>
