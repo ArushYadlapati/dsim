@@ -1690,6 +1690,37 @@ export async function getRating(
 
 /** the full Glicko-2 state (rating + deviation + volatility). Defaults are a
  * fresh, maximally-uncertain player: 1000 / RD 350 / vol 0.06. */
+/**
+ * Every named player's rating on one board, in ONE query.
+ *
+ * `getRatingFull` is per-user, and `persistVersusMatch` called it in a loop — four sequential
+ * round trips at the end of a 2v2 before anything else could happen. The reads are completely
+ * independent of each other (Glicko-2's sequencing is in the COMPUTE, which takes the whole
+ * set at once and runs after this), so there was never a reason for them to be serial.
+ *
+ * Returns the same defaults `getRatingFull` does for a player with no row yet — a placement
+ * player and an absent row are the same thing here, and the caller cannot tell them apart in
+ * the per-user version either.
+ */
+export async function getRatingsFull(
+  userIds: string[],
+  mode: '1v1' | '2v2',
+  act: number,
+  game?: Game,
+): Promise<Map<string, { rating: number; rd: number; vol: number }>> {
+  const out = new Map<string, { rating: number; rd: number; vol: number }>();
+  const ids = [...new Set(userIds.filter(Boolean))];
+  for (const id of ids) out.set(id, { rating: 1000, rd: 350, vol: 0.06 });
+  if (!ids.length) return out;
+  const rows = await q<{ user_id: string; rating: number; rd: number; vol: number }>(
+    `select user_id, rating, rd, vol from elo_ratings
+      where user_id = any($1::text[]) and mode = $2 and act = $3 and game = $4`,
+    [ids, mode, act, g(game)],
+  );
+  for (const r of rows) out.set(r.user_id, { rating: r.rating, rd: r.rd, vol: r.vol });
+  return out;
+}
+
 export async function getRatingFull(
   userId: string,
   mode: '1v1' | '2v2',
@@ -1821,6 +1852,31 @@ const snap = (r: { score: number; restricted_until: string | null } | undefined)
  * a full score, and seeding it here means every later write is a plain update.
  */
 export async function getStanding(userId: string): Promise<StandingSnapshot> {
+  /**
+   * READ-ONLY FAST PATH, because this is not really a write.
+   *
+   * The transaction below exists for two rare cases: an account with no row yet, and one
+   * whose healing is actually due. In the ordinary case — a row that exists, at full score or
+   * healed within the day — the INSERT and the UPDATE are both no-ops and the whole thing
+   * collapses to the SELECT at the end. Paying `BEGIN` + three statements + `COMMIT` for that
+   * is five round trips holding a pooled connection, and `DB_POOL_MAX` defaults to 5.
+   *
+   * It matters because this is on a READ path in two places: `GET /api/standing`, and
+   * `rankedLock` — which runs on every ranked queue attempt, i.e. the moment a burst of
+   * players all press the same button.
+   *
+   * `heal_due` is computed by the same predicate the UPDATE uses, so the fast path is taken
+   * only when that UPDATE would have changed nothing. It is no more raceable than the
+   * transaction was: a concurrent charge could always land between the read and its caller.
+   */
+  const fast = await q<{ score: number; restricted_until: string | null; heal_due: boolean }>(
+    `select score, restricted_until,
+            (score < $2::int and now() - healed_at >= interval '1 day') as heal_due
+       from account_standing where user_id = $1`,
+    [userId, STANDING_MAX],
+  );
+  if (fast.length && !fast[0].heal_due) return snap(fast[0]);
+
   return tx(async (query) => {
     await query(
       `insert into account_standing (user_id) values ($1) on conflict (user_id) do nothing`,
@@ -2993,6 +3049,47 @@ export async function addMatchParticipant(p: {
      values ($1, $2, $3, $4, $5, $6, $7, $8)
      on conflict (match_id, user_id) do nothing`,
     [p.matchId, p.userId, p.alliance, p.drivetrain, p.score, p.won, p.ratingBefore, p.ratingAfter],
+  );
+}
+
+/**
+ * Every participant of one match in ONE insert, the same `unnest` shape `addActivity` uses.
+ *
+ * The per-row version above stays: it is the readable one and nothing else calls it in a
+ * loop. This exists because `persistVersusMatch` did, and four inserts issued one after
+ * another at the end of every match is three round trips of pure latency on the path a
+ * player is watching for their rating change.
+ */
+export async function addMatchParticipants(
+  matchId: string,
+  ps: readonly {
+    userId: string;
+    alliance: 'red' | 'blue';
+    drivetrain: string;
+    score: number;
+    won: boolean;
+    ratingBefore: number | null;
+    ratingAfter: number | null;
+  }[],
+): Promise<void> {
+  if (!ps.length) return;
+  await q(
+    `insert into match_participants
+       (match_id, user_id, alliance, drivetrain, score, won, rating_before, rating_after)
+     select $1, u, a, d, s, w, rb, ra
+       from unnest($2::text[], $3::text[], $4::text[], $5::int[], $6::bool[], $7::real[], $8::real[])
+            as t(u, a, d, s, w, rb, ra)
+     on conflict (match_id, user_id) do nothing`,
+    [
+      matchId,
+      ps.map((p) => p.userId),
+      ps.map((p) => p.alliance),
+      ps.map((p) => p.drivetrain),
+      ps.map((p) => p.score),
+      ps.map((p) => p.won),
+      ps.map((p) => p.ratingBefore),
+      ps.map((p) => p.ratingAfter),
+    ],
   );
 }
 
