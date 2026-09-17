@@ -1048,6 +1048,56 @@ and the ellipsis (`.fr-name`) — nested inside, it gets underlined with the nam
 truncated with it. `.fr-nameline` exists for the stacked name-over-subline rows.
 Tests: 36 checks in `npm run dbtest`.
 
+**MATCH REPLAYS ARE PRIVATE BY DEFAULT, AND THE RELEASE IS UNANIMOUS** (`profiles.replays_public`,
+migration `0037`). A replay is an input log re-simulated at full fidelity, so it does not show a
+score, it shows the GAME PLAN — where you start, what you go for first, when you leave for the
+endgame. `/api/replay/<id>` used to serve any of them to anyone and the public profile hands out
+the ids, so every leaderboard row was one click from a stranger's scouting feed.
+**`replayAccess(replayId, viewerId)` in repo.ts is the ONE decision**, and the api route calls it
+BEFORE `getReplay` — a refused viewer must not cost two jsonb blobs the size of a match. Per owner:
+a VERSUS replay goes to its participants always, to staff always, and to anyone else only when
+EVERY participant has opted in; a RECORD run stays public (its replay is the board's PROOF, which
+is what makes a score checkable by the people it ranks, and score-attack has no opponent in it);
+a PRACTICE run is owner-only, matching `/api/practice`, which was already self-scoped on both
+verbs and had only an unguessable uuid protecting the replay itself; a LAN run stays public,
+because its drivers are NAMES and deliberately not accounts (0033), so there is nobody holding a
+flag to ask. **UNANIMITY is the load-bearing choice** — the log shows both alliances, so a
+unilateral opt-in publishes the opponent's strategy as surely as the opter's own, and an opt-out
+your opponent can defeat is not one. The consequence is real and intended: almost nothing is
+public at first, and the account toggle says so in its own copy rather than letting somebody
+infer it from a switch.
+**DEFAULT DENY**: a replay nothing points at is refused. Every table with a `replay_id` is named
+in `replayAccess` (`grep replay_id server/db/migrations/`), so an unrecognised owner is an orphan
+— a gate whose unknown case is "allow" is one a later migration opens by accident. A MISSING
+replay is still a 404, though, because a season purge deletes replays and telling somebody their
+dead bookmark is *private* sends them asking a player to publish something that no longer exists.
+**STAFF ARE EXEMPT AND THAT IS NOT OPTIONAL** — `AdminReports` reaches a match through this same
+route (`watchReplay` → `/replay/<id>`), and moderation that cannot see the match is not
+moderation. It reads `profiles.role`, the projection of `ADMIN_USER_IDS` that exists so exactly
+this kind of question can be answered in SQL; the lookup runs only for a signed-in caller who has
+already been refused, never on the happy path.
+**THE MATCH HISTORY LIST STAYS PUBLIC** — results, scores, W/L and rating deltas are the
+leaderboard's substance. What comes off the page is the WATCH BUTTON: `userMatchHistory` takes a
+`viewerId` and nulls `replayId` on a row that reader may not watch, so the button is absent rather
+than present and answering 403. The flag rides along on the participant fan-out's existing
+`profiles` join, so the gate costs no extra query there.
+⚠️ **THE FLAG COULD NOT LIVE IN `profiles.settings`.** That blob is client-shaped,
+client-validated and opaque to the server — nothing in SQL reads it — so a privacy bit stored
+there would be enforced only by asking the client, which is not enforcement. It is a real column,
+and it is on `profiles` rather than in a skinny table like `user_presence` (0016) because it is
+written when somebody changes their mind, not on every heartbeat, and because the bit is not
+itself a secret. Every public read of `profiles` projects an explicit allowlist (`ProfileCols`),
+so it cannot join a payload by accident.
+⚠️ **`/api/replay/<id>` AND THE TWO HISTORY ROUTES ARE NOW OPTIONALLY AUTHED** (`viewerId(req)`
+server-side, `maybeAuthedJson` client-side): the token rides along when there is one and its
+absence is anonymous rather than a 401. The server helper short-circuits on a missing header
+instead of letting `verifyAuthToken(undefined)` answer null, because that function LOGS on the
+way out and these are the routes a signed-out visitor hits. **A replay change is a SERVER change
+— deploy it**, and this one is also a CLIENT change: the server half closes the hole for every
+client version including stale tabs, the account toggle and the viewer's refusal copy need
+Vercel. Tests: 22 checks in `npm run dbtest`, mutation-checked (reverting the gate turns six of
+them red while participant access, staff access, the record proof and the 404 stay green).
+
 **BACKGROUND RANKED QUEUE, LIVE (no flag).** The queue used to die when you left the
 matchmaking screen — that screen owned the socket (`useEffect(() => teardown, [])`),
 so queueing locked you out of the rest of the app, which is what stopped people

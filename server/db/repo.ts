@@ -962,6 +962,112 @@ export async function getReplay(id: string): Promise<Replay | null> {
   };
 }
 
+// ---------------------------------------------------- replay privacy --------
+/**
+ * WHO MAY WATCH A STORED REPLAY (migration 0037).
+ *
+ * A replay is an input log re-simulated at full fidelity, so it does not show a score — it
+ * shows the whole game plan. `/api/replay/<id>` used to serve any of them to anyone, and the
+ * public profile hands out the ids, so every stranger's match history was a scouting feed.
+ *
+ * The rule, per owner:
+ *   versus   — the PARTICIPANTS always; anyone else only when EVERY participant has opted in.
+ *              Unanimity, because the replay shows both alliances: a unilateral opt-in would
+ *              publish the opponent's strategy as surely as the opter's own, and an opt-out
+ *              that your opponent can defeat is not one.
+ *   record   — public. A record run is a leaderboard submission and its replay is the PROOF;
+ *              the board is self-policing precisely because anyone can re-simulate the log
+ *              behind a number, and a score-attack run has no opponent in it to expose.
+ *   practice — its owner only, matching `/api/practice`, which is self-scoped on both verbs.
+ *              Unverified offline runs were never meant to be readable by anyone else; the
+ *              unguessable uuid was the only thing that made that true.
+ *   lan      — public, unchanged. A self-hosted server's drivers are NAMES, deliberately not
+ *              accounts (migration 0033), so there is nobody holding a flag to ask.
+ *
+ * STAFF may watch anything. Score corrections and report adjudication reach a replay through
+ * this same route (`AdminReports` → `watchReplay` → `/replay/<id>`), and moderation that
+ * cannot see the match is not moderation. `profiles.role` is the projection of
+ * `ADMIN_USER_IDS` that exists so exactly this kind of question can be answered in SQL.
+ *
+ * DEFAULT DENY. A replay nothing points at is refused: every table with a `replay_id` is
+ * named above (`grep replay_id server/db/migrations/`), so an unrecognised owner means an
+ * orphan — and a privacy gate whose unknown case is "allow" is one a later migration opens
+ * by accident.
+ */
+export type ReplayAccess = 'ok' | 'private' | 'missing';
+
+export async function replayAccess(
+  replayId: string,
+  viewerId: string | null,
+): Promise<ReplayAccess> {
+  // the owner fan-out and "does this id exist at all" are separate questions, and both are
+  // primary-key lookups. Asking them together lets a MISSING replay come back as 404 rather
+  // than as a privacy refusal — a purged season's dead link is not somebody keeping a secret.
+  const [present, owners] = await Promise.all([
+    q<{ ok: number }>(`select 1 as ok from replays where id = $1`, [replayId]),
+    q<{ kind: string; user_id: string | null; is_public: boolean }>(
+      `with owners as (
+         select mp.user_id as user_id, 'versus' as kind
+           from matches m join match_participants mp on mp.match_id = m.id
+          where m.replay_id = $1
+         union all
+         select r.user_id, 'record' from records r where r.replay_id = $1
+         union all
+         select r.partner_id, 'record' from records r
+          where r.replay_id = $1 and r.partner_id is not null
+         union all
+         select p.user_id, 'practice' from practice_runs p where p.replay_id = $1
+         union all
+         select l.host_user_id, 'lan' from lan_runs l where l.replay_id = $1
+       )
+       select o.kind, o.user_id, coalesce(p.replays_public, false) as is_public
+         from owners o left join profiles p on p.user_id = o.user_id`,
+      [replayId],
+    ),
+  ]);
+  if (!present.length) return 'missing';
+  if (!owners.length) return 'private'; // an orphan — see DEFAULT DENY above
+
+  if (viewerId && owners.some((o) => o.user_id === viewerId)) return 'ok';
+
+  const kind = owners[0].kind;
+  if (kind === 'record' || kind === 'lan') return 'ok';
+  if (kind === 'versus' && owners.every((o) => o.is_public)) return 'ok';
+
+  // Everything below here is a refusal for an ordinary viewer, so the staff lookup is the
+  // only branch that costs a second round trip — and it runs for a signed-in caller who has
+  // just been told no, not for every replay anybody watches.
+  if (viewerId && (await isStaffUser(viewerId))) return 'ok';
+  return 'private';
+}
+
+/** `profiles.role` is a projection of `ADMIN_USER_IDS` (0020) — the env is still the source
+ * of truth, this is just the copy a query can join against. */
+export async function isStaffUser(userId: string): Promise<boolean> {
+  const rows = await q<{ role: string | null }>(
+    `select role from profiles where user_id = $1 and role in ('owner', 'admin')`,
+    [userId],
+  );
+  return rows.length > 0;
+}
+
+/** does this account let anyone watch its versus replays? (false for an unknown account) */
+export async function getReplaysPublic(userId: string): Promise<boolean> {
+  const rows = await q<{ replays_public: boolean }>(
+    `select replays_public from profiles where user_id = $1`,
+    [userId],
+  );
+  return !!rows[0]?.replays_public;
+}
+
+/** set it. The profile row is ensured by the caller, as with every other settings write. */
+export async function setReplaysPublic(userId: string, value: boolean): Promise<void> {
+  await q(`update profiles set replays_public = $2, updated_at = now() where user_id = $1`, [
+    userId,
+    value,
+  ]);
+}
+
 // ------------------------------------------------- solo practice runs -------
 /**
  * How many practice runs an account keeps. Oldest are pruned on insert.
@@ -3024,6 +3130,12 @@ export async function userMatchHistory(
     type?: string;
     result?: string;
     game?: Game;
+    /** WHO IS READING — not who is being read. A versus row's `replayId` is nulled for a
+     * viewer who may not watch it (migration 0037), so the Watch button is simply absent
+     * rather than present and answering 403. Anonymous when omitted. */
+    viewerId?: string | null;
+    /** staff see every Watch button, because the report queue is how they reach a match */
+    viewerIsStaff?: boolean;
   },
 ): Promise<MatchHistoryPage> {
   const limit = Math.min(100, Math.max(1, opts.limit ?? 25));
@@ -3093,6 +3205,10 @@ export async function userMatchHistory(
   // both alliances' final totals per match (score is the alliance total, so any
   // participant on a side carries it — see room.ts scores[alliance].total)
   const scoreByMatch = new Map<string, { red: number | null; blue: number | null }>();
+  // the replay gate, per versus match: did EVERY participant opt in, and is the reader one
+  // of them? (0037 — unanimity, because the log shows both alliances.)
+  const publicByMatch = new Map<string, boolean>();
+  const mineByMatch = new Set<string>();
   if (versusIds.length) {
     const parts = await q<{
       id: string;
@@ -3103,14 +3219,20 @@ export async function userMatchHistory(
       username: string | null;
       role: string | null;
       supporter: boolean;
+      replays_public: boolean;
     }>(
+      // `replays_public` rides along on a profile row this query already joins, so the
+      // replay gate costs nothing here — see `watchable` below.
       `select mp.match_id::text as id, mp.user_id, mp.alliance, mp.score, p.handle, p.username,
+              coalesce(p.replays_public, false) as replays_public,
               ${badgeCols('p.')}
        from match_participants mp join profiles p on p.user_id = mp.user_id
        where mp.match_id = any($1::uuid[])`,
       [versusIds],
     );
     for (const p of parts) {
+      publicByMatch.set(p.id, (publicByMatch.get(p.id) ?? true) && p.replays_public);
+      if (p.user_id === opts.viewerId) mineByMatch.add(p.id);
       const list = byMatch.get(p.id) ?? [];
       list.push({
         userId: p.user_id,
@@ -3166,6 +3288,16 @@ export async function userMatchHistory(
     }
   }
 
+  /** may THIS reader open this row's replay? Mirrors `replayAccess`, which is what the fetch
+   * itself enforces — this half only decides whether the button is drawn. A record run's
+   * replay stays public (it is the leaderboard's proof); a versus one needs the reader to
+   * have played in it, or every participant to have opted in. */
+  const watchable = (r: { kind: string; id: string }): boolean =>
+    r.kind !== 'versus' ||
+    !!opts.viewerIsStaff ||
+    mineByMatch.has(r.id) ||
+    (publicByMatch.get(r.id) ?? false);
+
   return {
     rows: rows.map((r) => ({
       kind: r.kind,
@@ -3174,7 +3306,7 @@ export async function userMatchHistory(
       ranked: r.ranked,
       drivetrain: r.drivetrain,
       createdAt: r.created_at,
-      replayId: r.replay_id,
+      replayId: watchable(r) ? r.replay_id : null,
       score: r.score,
       redScore: r.kind === 'versus' ? scoreByMatch.get(r.id)?.red ?? null : null,
       blueScore: r.kind === 'versus' ? scoreByMatch.get(r.id)?.blue ?? null : null,

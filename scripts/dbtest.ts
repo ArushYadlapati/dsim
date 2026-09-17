@@ -1369,6 +1369,172 @@ async function main(): Promise<void> {
     );
   }
 
+  /* ---- REPLAY PRIVACY (migration 0037) -------------------------------------
+     Match replays are private by default and released only when EVERY participant opts in.
+     Every assertion below was written to FAIL on the code before the migration, where
+     `/api/replay/<id>` served any row to anyone — so this block is also the regression test
+     for the default itself, which is the part a later refactor can silently flip.
+  */
+  {
+    const SEA = 1037;
+    await repo.ensureSeason(SEA, 'decode', 7);
+    await repo.ensureProfile('rp-red', 'Red');
+    await repo.ensureProfile('rp-blue', 'Blue');
+    await repo.ensureProfile('rp-nosy', 'Nosy');
+    await repo.ensureProfile('rp-mod', 'Mod');
+    await repo.syncStaffRoles('rp-mod', ['rp-mod']);
+
+    const mkReplay = (seed: number): Promise<string> =>
+      repo.saveReplay(
+        { format: 2, balanceVersion: SEA, sim: 3, game: 'decode', mode: 'match', seed, ticks: 10, setups: [], tracks: {} },
+        SEA,
+        'decode',
+      );
+
+    const vsReplay = await mkReplay(1);
+    const mid = await repo.saveMatch('1v1', SEA, vsReplay, true, 'decode');
+    await repo.addMatchParticipant({
+      matchId: mid, userId: 'rp-red', alliance: 'red', drivetrain: 'tank',
+      score: 40, won: false, ratingBefore: 1000, ratingAfter: 980,
+    });
+    await repo.addMatchParticipant({
+      matchId: mid, userId: 'rp-blue', alliance: 'blue', drivetrain: 'mecanum',
+      score: 55, won: true, ratingBefore: 1000, ratingAfter: 1020,
+    });
+
+    // THE DEFAULT. A fresh profile publishes nothing, and that is a column default rather
+    // than a code path, so it survives an account created by any of the `ensureProfile`
+    // callers without each of them remembering to pass it.
+    check(
+      'privacy: a new account does not publish its replays',
+      (await repo.getReplaysPublic('rp-red')) === false,
+    );
+    check(
+      'privacy: a stranger cannot watch a versus replay',
+      (await repo.replayAccess(vsReplay, 'rp-nosy')) === 'private',
+    );
+    check(
+      'privacy: ...nor can a signed-out visitor',
+      (await repo.replayAccess(vsReplay, null)) === 'private',
+    );
+    check(
+      'privacy: but a PARTICIPANT always can — it is their own match',
+      (await repo.replayAccess(vsReplay, 'rp-red')) === 'ok',
+    );
+    check(
+      'privacy: ...both of them, not just the one who won',
+      (await repo.replayAccess(vsReplay, 'rp-blue')) === 'ok',
+    );
+    // MODERATION MUST NOT BE LOCKED OUT. The report queue reaches a match through this exact
+    // call, so a gate that refuses staff quietly breaks score corrections and misscore claims.
+    check(
+      'privacy: staff can watch anything — the report queue depends on it',
+      (await repo.replayAccess(vsReplay, 'rp-mod')) === 'ok',
+    );
+
+    // UNANIMITY. One player opting in must NOT publish the match, because the log shows the
+    // other alliance's strategy too. This is the assertion that makes the setting honest.
+    await repo.setReplaysPublic('rp-red', true);
+    check(
+      'privacy: ONE participant opting in does not publish the match',
+      (await repo.replayAccess(vsReplay, 'rp-nosy')) === 'private',
+    );
+    await repo.setReplaysPublic('rp-blue', true);
+    check(
+      'privacy: ...and once everyone has, anyone may watch it',
+      (await repo.replayAccess(vsReplay, 'rp-nosy')) === 'ok',
+    );
+    check(
+      'privacy: ...including a signed-out visitor, so a shared link works',
+      (await repo.replayAccess(vsReplay, null)) === 'ok',
+    );
+    // and it is REVOCABLE, or the setting is a one-way publish button
+    await repo.setReplaysPublic('rp-blue', false);
+    check(
+      'privacy: turning it back off hides the match again',
+      (await repo.replayAccess(vsReplay, 'rp-nosy')) === 'private',
+    );
+
+    // A RECORD RUN IS PROOF, NOT STRATEGY — it stays public whatever the flag says, or the
+    // leaderboard stops being checkable by the people it ranks.
+    const recReplay = await mkReplay(2);
+    await repo.submitRecord({
+      userId: 'rp-blue', mode: 'solo', drivetrain: 'tank', score: 120,
+      balanceVersion: SEA, replayId: recReplay, game: 'decode',
+    });
+    check(
+      'privacy: a RECORD run replay stays public — it is the board proof',
+      (await repo.replayAccess(recReplay, 'rp-nosy')) === 'ok',
+      'rp-blue has replays_public = false at this point',
+    );
+
+    // A PRACTICE run is an unverified offline log its own list endpoint never shows anyone
+    // else. Only the unguessable uuid was protecting it.
+    const prac = await repo.savePracticeRun(
+      'rp-red',
+      { format: 2, balanceVersion: SEA, sim: 3, game: 'decode', mode: 'match', seed: 3, ticks: 10, setups: [], tracks: {} },
+      50,
+      SEA,
+      'decode',
+    );
+    const pracReplay = String(prac.replayId);
+    check(
+      'privacy: a PRACTICE replay is owner-only',
+      (await repo.replayAccess(pracReplay, 'rp-red')) === 'ok' &&
+        (await repo.replayAccess(pracReplay, 'rp-nosy')) === 'private',
+    );
+
+    // A DEAD LINK IS NOT A SECRET. A season purge deletes replays, and telling somebody their
+    // bookmark is private would send them asking a player to publish something that is gone.
+    check(
+      'privacy: an unknown replay id reads MISSING, not private',
+      (await repo.replayAccess('00000000-0000-0000-0000-000000000000', 'rp-red')) === 'missing',
+    );
+
+    // THE MATCH HISTORY HALF. The list stays public — results, scores and rating deltas are
+    // the leaderboard's substance — but a row a reader may not watch must not hand out a
+    // replay id, or the Watch button is drawn and answers 403 when pressed.
+    const asStranger = await repo.userMatchHistory('rp-red', {
+      balanceVersion: SEA, game: 'decode', viewerId: 'rp-nosy',
+    });
+    const strangerRow = asStranger.rows.find((r) => r.id === String(mid));
+    check(
+      'privacy/history: a stranger still SEES the match',
+      !!strangerRow && strangerRow.score === 40,
+    );
+    check(
+      'privacy/history: ...with no replay id on it, so no Watch button is drawn',
+      strangerRow?.replayId === null,
+    );
+    const asSelf = await repo.userMatchHistory('rp-red', {
+      balanceVersion: SEA, game: 'decode', viewerId: 'rp-red',
+    });
+    check(
+      'privacy/history: a participant keeps the replay id on their own row',
+      asSelf.rows.find((r) => r.id === String(mid))?.replayId === String(vsReplay),
+    );
+    const asStaff = await repo.userMatchHistory('rp-red', {
+      balanceVersion: SEA, game: 'decode', viewerId: 'rp-mod', viewerIsStaff: true,
+    });
+    check(
+      'privacy/history: staff keep it too',
+      asStaff.rows.find((r) => r.id === String(mid))?.replayId === String(vsReplay),
+    );
+    const anon = await repo.userMatchHistory('rp-red', { balanceVersion: SEA, game: 'decode' });
+    check(
+      'privacy/history: an anonymous read is treated as a stranger, not as the subject',
+      anon.rows.find((r) => r.id === String(mid))?.replayId === null,
+    );
+    // a RECORD row in the same feed keeps its replay for everyone, matching `replayAccess`
+    const recFeed = await repo.userMatchHistory('rp-blue', {
+      balanceVersion: SEA, game: 'decode', viewerId: 'rp-nosy',
+    });
+    check(
+      'privacy/history: a record run keeps its replay id for a stranger',
+      recFeed.rows.find((r) => r.kind === 'record')?.replayId === String(recReplay),
+    );
+  }
+
   await db.close();
   console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILURES`);
   process.exit(failures === 0 ? 0 : 1);
