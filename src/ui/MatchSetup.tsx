@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import type {
   GameSettings,
   AutoPathData,
@@ -15,6 +15,7 @@ import { useAds } from '../ads/AdsProvider';
 import { selectStart, switchCategory, saveStart, deleteSavedStart } from './startPositions';
 import { ChainStartEditor } from './ChainStartEditor';
 import { moduleFor } from '../games';
+import { getViewPref, setViewPref, subscribeViewPref } from '../games/biobuzz/graphics/store';
 
 /**
  * Match configuration — the pre-game options that belong to the MATCH, not the
@@ -37,6 +38,15 @@ export function MatchSetup({
   const set = (patch: Partial<GameSettings>) => onChange({ ...settings, ...patch });
   /** the outcome of the last .pp import, shown in the auto-path section */
   const [notice, setNotice] = useState<{ bad: boolean; text: string } | null>(null);
+  /**
+   * BIOBUZZ 3D SEAM (Day 1, `docs/biobuzz/plan-3d.md` §2.2/§6): the VIEW is per DEVICE, not
+   * a synced `GameSettings` field (`getViewPref`'s own header — a GPU is a property of the
+   * machine, not the account), so it needs its own subscription rather than living in
+   * `settings`. Only read when the active game actually has a `scene` (below); the
+   * subscription is cheap to keep either way.
+   */
+  const [viewPref, setViewPrefState] = useState(() => getViewPref());
+  useEffect(() => subscribeViewPref(setViewPrefState), []);
 
   function getErrorMessage(error: unknown): string {
     return error instanceof Error ? error.message : String(error);
@@ -172,6 +182,13 @@ export function MatchSetup({
   // CR/BIOBUZZ player could import a `.pp`, see "Auto path ON", and then watch their robot
   // do nothing for the whole autonomous period. `coerceSetup` drops the path at spawn.
   const runsAutoPaths = moduleFor(settings.game).autoPaths;
+  // BIOBUZZ 3D SEAM (Day 1, `docs/biobuzz/plan-3d.md` §2.1/§6): only a game whose sim can
+  // actually step the second physics offers the picker — absent `physicsOptions` (DECODE,
+  // Chain Reaction) reads as `['2d']` only, so this never shows for them.
+  const physicsOptions = moduleFor(settings.game).physicsOptions;
+  // the VIEW picker needs a 3D renderer to switch to at all — absent on every game/build
+  // until Lane B fills `scene` (Day 1 lands the seam, not the renderer).
+  const hasScene = !!moduleFor(settings.game).scene;
 
   return (
     <section className="ds-panel">
@@ -252,6 +269,46 @@ export function MatchSetup({
               <span className="ot">Practice dummies {settings.practiceDummies ? 'ON' : 'OFF'}</span>
             </button>
           </div>
+          {/* BIOBUZZ 3D SEAM: which physics a SOLO practice steps on — absent reads '3d',
+              the seam's default (`settings.ts`). Ranked/matchmade/record rooms always run
+              3D; this picker only ever applies here. */}
+          {physicsOptions?.includes('3d') && (
+            <div className="ds-opts two">
+              <button
+                className={`ds-opt mini ${(settings.practicePhysics ?? '3d') === '2d' ? 'on' : ''}`}
+                onClick={() => set({ practicePhysics: '2d' })}
+              >
+                <span className="ot">Physics 2D</span>
+              </button>
+              <button
+                className={`ds-opt mini ${(settings.practicePhysics ?? '3d') === '3d' ? 'on' : ''}`}
+                onClick={() => set({ practicePhysics: '3d' })}
+              >
+                <span className="ot">Physics 3D</span>
+              </button>
+            </div>
+          )}
+          {/* the VIEW is per DEVICE (`getViewPref`), never synced — a Graphics section in
+              Configure replaces this control on Day 3. */}
+          {hasScene && (
+            <>
+              <div className="ds-opts two">
+                <button
+                  className={`ds-opt mini ${viewPref === '2d' ? 'on' : ''}`}
+                  onClick={() => setViewPref('2d')}
+                >
+                  <span className="ot">View 2D</span>
+                </button>
+                <button
+                  className={`ds-opt mini ${viewPref === '3d' ? 'on' : ''}`}
+                  onClick={() => setViewPref('3d')}
+                >
+                  <span className="ot">View 3D</span>
+                </button>
+              </div>
+              <p className="ds-hint">Saved on this device.</p>
+            </>
+          )}
         </section>
 
         {runsAutoPaths && (
