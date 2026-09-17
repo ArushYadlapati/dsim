@@ -1,6 +1,95 @@
+# HANDOFF — 2026-09-17, later (biobuzz-3d: Day 0 physics spike results)
+
+**READ FIRST.** Branch **`biobuzz-3d`**, worktree `.claude/worktrees/biobuzz-3d`. Tree is clean
+except for the files this session adds/commits: `scripts/spike3d.ts` (new, throwaway CLI),
+`scripts/spike3d-browser/` (new, throwaway browser+Electron harness), `docs/biobuzz/spike3d-
+results.md` (new), this HANDOFF section, and `package.json`/`package-lock.json` (three new
+pinned installs, `src/` and `docs/area/` untouched). `npm ci` ran clean (560 packages). `npm run
+docaudit` passes (CLAUDE.md 26,670 / 27,000 bytes, unchanged).
+
+## Installed this session (all pinned `-E`, `@dimforge/rapier2d-compat` untouched at 0.19.3)
+
+`@dimforge/rapier3d-deterministic-compat@0.20.0` (dependencies), `three@0.186.0` +
+`@types/three@0.186.0` (devDependencies). `@dimforge/rapier3d-deterministic@0.20.0` (the
+non-compat build) was installed once with `--no-save` to probe it and is **not** in
+`package.json`/`package-lock.json` — confirmed by grep after the probe.
+
+## Results: the Day 0 spike PASSED the gate
+
+Full numbers, the runtime matrix, and the tray/joint gotcha are in
+`docs/biobuzz/spike3d-results.md`. Summary:
+
+- **Hashes equal across two Node runs** (`1971098706` both times) — the mandatory check.
+  **Also equal in Chromium (Electron)** — `1971098706` there too, which the gate did not
+  require but the plan hoped for. The deterministic build's cross-platform promise held on
+  this scene, this machine.
+- **Step time far under budget**: 0.020 ms median, 0.046 ms p95 against a ≤ 1.5 ms target — but
+  this scene (4 robots, 56 elements, 2 tray bodies, no CAD trimesh, no real gameplay reads) is
+  smaller than a real 2v2 room will be, so treat this as a floor, not a prediction; re-run with
+  `costprobe`'s `biobuzz3d-*` scenarios once `step3d` is real.
+- **Runtime matrix**: `-deterministic-compat` initialises and matches hashes in both Node/tsx
+  and browser (Vite dev + Electron). The non-compat `-deterministic` package **fails in both**
+  Node/tsx and Vite/browser as published on this Vite version (6.4.3) — it has no `init()` and
+  its glue does a bare `import * as wasm from "*.wasm"`, which Vite explicitly rejects without
+  `vite-plugin-wasm` and Node's ESM resolver rejects on the extensionless imports before it even
+  gets that far. **Stay on compat, as the plan already defaults to** — do not spend Day 1/2 time
+  trying to swap packages without adding a wasm plugin, which is a separate decision.
+- **Tray/joint gotcha, worth remembering for the real `sim3d/`**: `JointData.limitsEnabled` /
+  `.limits` set before `createImpulseJoint` were **not enough** — the tray span past the
+  intended ±30° to ~177° before something else stopped it. Fix: call `.setLimits(min, max)` on
+  the `ImpulseJoint` **instance** `createImpulseJoint` returns. With that, both trays sat
+  exactly at `30.0000448913582°` for the full run (the ballast pins the empty/lightly-loaded
+  tray at one stop, matching the intended start condition) — not a calibrated see-saw yet,
+  which is `hive-calibrate.ts`'s job on a later day per plan §3.6.
+- **Chunk size**: the physics chunk is 2,891,032 B raw / 1,089,268 B gzip-9 (matches the plan's
+  ~1.1 MB gzip estimate); the main chunk grows by a noise-level 110 B raw when the loader is
+  merely reachable. **Methodology gotcha**: an exported-but-never-referenced function is
+  tree-shaken away entirely before Rollup code-splits it — the first attempt (exactly what the
+  spec asked for) produced a byte-identical build and no new chunk at all. Had to add one
+  module-scope side-effecting reference (`globalThis.__x = theFn`) to keep the declaration alive
+  for the measurement, then revert everything (`git checkout --`) and rebuild to confirm the
+  tree was clean again (it was — byte-identical to the pre-spike baseline). Worth remembering
+  for whoever writes `bundleaudit` (spec §2.5/§7): it needs the same trick, or a real call site,
+  to measure an as-yet-unused dynamic import honestly.
+
+## Next: Day 1 (spec §10) — the whole game on 3D physics in the 2D view
+
+Not started. Per the spec: `sim3d/engine.ts` (persistent Rapier world, `initPhysics3d()` behind
+a dynamic import), `step3d` (§3.1's nine-step tick), `derive.ts` (§3.5, fills
+`hives[a].contents`/`flowers[i].stack` from body positions so `score.ts`/`hud.ts`/the 2D
+renderers work unchanged), the real hive frame + tray (§3.6, starting from this spike's geometry
+but calibrated against the manual's two published tip rows via `hive-calibrate.ts`), flowers
+(§3.7), and the `World.biobuzz.physics: '2d' | '3d'` dispatch in `biobuzzStep`. Also queued at
+Day 0 but not run by this session: the CAD pipeline (`scripts/field-cad.mjs` +
+`scripts/field-cad/convert.py`) and the courtesy note to FIRST (owner sends it; draft is in the
+demoted section below).
+
+## Gotchas (carried forward + new)
+
+- **`JointData`'s `limitsEnabled`/`limits` fields alone did not clamp a revolute joint** in
+  `@dimforge/rapier3d-deterministic-compat` 0.20.0 — call `.setLimits(min, max)` on the created
+  `ImpulseJoint` instance too. Untested whether this is a compat-wrapper quirk or true of raw
+  Rapier 0.35; did not have time to check upstream, and it does not block Day 1 since the
+  workaround is one line.
+- **An exported function with no call site or reference is dead-code-eliminated**, `import()`
+  inside it and all — do not trust "add an unused export, build, measure" for a chunk-size
+  check without also keeping the declaration reachable (see above).
+- Two Rapier packages coexist on purpose: 2D on `rapier2d-compat` 0.19.3, 3D on
+  `rapier3d-deterministic-compat` 0.20.0. Never upgrade the 2D package as a side effect.
+- The 3D wasm must load through a **dynamic import** inside `initPhysics3d()`, same reasoning
+  as before — this spike's own chunk-size measurement is the number that makes that concrete
+  (≈1.09 MB gzip if it ever leaked into a chunk every player loads).
+- Other sessions have worktrees here (`main-merge`, `alpha-ui`, `nice-morse-…`, a
+  `claude/biobuzz-3d-worktree-…` that is unrelated). Do not `cd` into them; the stash stack is
+  shared.
+- CLAUDE.md still has headroom (26,670 / 27,000 bytes) — unchanged this session, nothing here
+  touched it.
+
+---
+
 # HANDOFF — 2026-09-17, late (biobuzz-3d: Day 0 begun, alpha carries the split, PAUSED before the physics spike)
 
-**READ FIRST.** Branch **`biobuzz-3d`**, worktree `.claude/worktrees/biobuzz-3d`, now based on
+**(Previously READ FIRST.)** Branch **`biobuzz-3d`**, worktree `.claude/worktrees/biobuzz-3d`, now based on
 **`alpha` 7e268dd**. The branch carries `docs/biobuzz/plan-3d.md` (draft 3 with the owner's eleven
 decisions, §12) and this HANDOFF. **No code has been written.** The owner asked for cheap
 subagents and a pause with a detailed handoff before any step that could use a whole session;
