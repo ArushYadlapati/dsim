@@ -8,7 +8,7 @@ export function drawRobot(
   ctx: CanvasRenderingContext2D,
   r: RobotState,
   intakeOn: boolean,
-  held: Artifact[] = [],
+  held: readonly Artifact[] = [],
   // INTERFACE PARITY ONLY, both ignored. The shared renderer calls whichever game's sprite
   // is registered and passes the raised-terrain context Chain Reaction needs; DECODE has no
   // raised terrain and its sprite is frozen to what `main` draws, so these are accepted and

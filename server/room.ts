@@ -564,6 +564,81 @@ export class Room {
     return !hostPending || this.clients.size + 1 < roomCapacity(this.config);
   }
 
+  /**
+   * THE SEAT THIS ACCOUNT ALREADY HOLDS HERE, if any — the room's answer to "is this
+   * the same person arriving twice?".
+   *
+   * One account is one driver. Nothing used to ask: the single-game guard in
+   * `server/index.ts` compares room CODES, so it passes a second tab joining THE SAME
+   * code (`other === code`), and a duplicate userId then took a second seat. In a 1v1
+   * ranked room that is the whole room — capacity 2, both seats spent on one person,
+   * and the actual opponent refused at the door and no-showed for a match they were
+   * standing outside of. In a duo record room it is two robots on one leaderboard row.
+   *
+   * WHETHER THE HELD SEAT LOOKS CONNECTED IS NOT ASKED, and that is deliberate. It cannot
+   * tell a second tab from a fast reconnect: a partitioned TCP connection outlives the
+   * client that gave up on it, so a player whose network blipped arrives on a new socket
+   * while their old seat still reads `connected` and the server has not heard the close
+   * yet. Refusing that player would strand them in a room they are seated in.
+   *
+   * So the caller takes the seat over either way — the rule `reattach` already settles this
+   * conflict by, last socket in wins and the one it displaces is told so. A reconnect gets
+   * its seat back, a second tab gets the match and the first tab gets a sentence instead of
+   * a silently unplugged session, and neither ends up with two robots.
+   */
+  seatFor(userId: string): string | null {
+    for (const c of this.clients.values()) {
+      if (c.userId === userId) return c.id;
+    }
+    return null;
+  }
+
+  /**
+   * GIVE UP A HELD SLOT ON PURPOSE — "Abandon" on the you-have-a-game-in-progress card.
+   *
+   * That button only ever cleared the browser's own record of the match, which was
+   * harmless for exactly as long as the server's single-game lock was inert. It is not
+   * inert any more (see `stopLoop`), so abandoning and starting something new met a
+   * refusal from the server for the rest of the reconnect grace, phrased as advice —
+   * "rejoin or leave it first" — about a game the UI had just said was gone. The button
+   * has to mean it: this frees the slot and the lock now.
+   *
+   * Idempotent, and deliberately not fussy about WHERE the caller is: the id is a
+   * per-client secret the server minted, and holding it is the same proof of ownership
+   * `rejoin` already accepts.
+   */
+  abandonSlot(clientId: string): boolean {
+    const c = this.clients.get(clientId);
+    if (!c) return false;
+    if (c.userId) {
+      this.activeUserIds.delete(c.userId);
+      this.onUserInactive?.(c.userId);
+    }
+    // mid-match this is a departure like any other: the match stays rated and the
+    // leaver takes the loss (`departed` is what keeps their result on the board).
+    const rid = this.robotOf.get(c.id);
+    if (this.world !== null && c.userId && rid !== undefined) {
+      this.departed.set(rid, { userId: c.userId, handle: c.player.name, assists: c.player.assists });
+    }
+    if (rid !== undefined && !this.dropped.has(rid) && this.world) {
+      this.dropped.add(rid);
+      this.broadcast({ t: 'drop', robotId: rid, tick: this.world.tick });
+    }
+    this.clients.delete(c.id);
+    this.snapPrimed.delete(c.id);
+    this.snapAck.delete(c.id);
+    this.robotOf.delete(c.id);
+    this.ackTick.delete(c.id);
+    this.passCrown(c.id);
+    this.broadcastRoster();
+    this.refreshRematch();
+    if (this.clients.size === 0) {
+      this.stop();
+      this.onEmpty();
+    }
+    return true;
+  }
+
   /** authoritative sim tick (0 before the match starts) */
   get tick(): number {
     return this.world?.tick ?? 0;
@@ -820,13 +895,48 @@ export class Room {
       // pre-match departure CANCELS the staged match (both drivers requeue). Full
       // strategy-phase reconnection is deferred (see docs/netcodeplan.md).
       if (this.pendingMatch && this.phase === 'strategy') {
-        // STRATEGY BAIL: this socket's user is the one who left. Charged cause-blind — from
-        // here a closed tab and a pulled cable are the same event, and pretending otherwise
-        // would just advertise which one is cheaper (see src/dodge.ts).
-        this.cancelPending(
-          'Match cancelled - a player disconnected.',
-          c.userId ? [{ userId: c.userId, kind: 'bail' as DodgeKind }] : [],
-        );
+        /**
+         * ⚠️ A RELOAD IS NOT A BAIL — IT IS THE COMMONEST WAY TO REACH THIS LINE.
+         *
+         * This used to cancel the match on the first closed socket, full stop, which made
+         * refreshing the tab during the strategy window an instant, unrecoverable charge:
+         * the match died, the player was billed a bail, and the three people who did
+         * nothing wrong lost their queue time. Reported as "all I did was wait ... you
+         * should probably tell the user to Not refresh" — and telling them is the smaller
+         * half of the answer, because a reload is also what a phone does when it reclaims
+         * a backgrounded tab, and no copy prevents that.
+         *
+         * So the SEAT IS HELD instead. The staged roster is the server's record of who
+         * belongs here, `reattach` hands the slot back on the same client id (which is
+         * what `slotOf` is keyed by), and a player who gets back inside the window plays
+         * the match they were assigned. Nothing is charged for a trip they completed.
+         *
+         * THE WAIT IS ALREADY BOUNDED and needs no timer of its own: `onStrategyDeadline`
+         * fires at `strategyDeadline` regardless, `maybeBeginRanked` will not start a
+         * match with an empty seat, and `absentRoster` counts a held-but-disconnected
+         * client as absent — so somebody who never comes back is charged at the deadline
+         * exactly as a no-show, which is what they are.
+         *
+         * A CLEAN close (1000/1005) is still an immediate bail, and that distinction is
+         * the whole point: `transport.close()` is the player pressing Back, i.e. a person
+         * who has decided to leave. Making the others wait out the deadline for someone
+         * who told us they are gone would be the same unfairness pointed the other way.
+         * A reload is 1001 and a dropped network 1006 — neither is a decision.
+         */
+        if (clean) {
+          // STRATEGY BAIL: this socket's user is the one who left. Charged cause-blind — from
+          // here a closed tab and a pulled cable are the same event, and pretending otherwise
+          // would just advertise which one is cheaper (see src/dodge.ts).
+          this.cancelPending(
+            'Match cancelled - a player disconnected.',
+            c.userId ? [{ userId: c.userId, kind: 'bail' as DodgeKind }] : [],
+          );
+          return;
+        }
+        c.connected = false;
+        c.disconnectAt = Date.now();
+        c.player.ready = false; // a seat nobody is sitting in has not readied
+        this.broadcastRoster();
         return;
       }
       this.clients.delete(id);
@@ -935,6 +1045,23 @@ export class Room {
   ): number | null {
     const c = this.clients.get(id);
     if (!c) return null;
+    /**
+     * TELL THE SOCKET THIS ONE IS REPLACING, while it still has a sender.
+     *
+     * The usual loser here is a dead TCP connection and hears nothing, which is fine. The
+     * one that matters is a LIVE one: the same match open in a second tab, both tabs
+     * holding the same client id out of localStorage, both offering Rejoin. The second to
+     * press it takes the slot — `conn` makes sure of that — and the first was then left on
+     * a session that had been silently unplugged: it had already been told `rejoined: true`,
+     * it never receives another frame, and it renders a match frozen at the last snapshot
+     * with no way to tell that anything happened. One frame on the way out is the whole fix.
+     */
+    if (c.connected) {
+      c.send({
+        t: 'error',
+        message: 'This match was opened in another tab - that tab has it now.',
+      });
+    }
     c.send = send;
     /**
      * ⚠️ EVERY SENDER ON THIS CLIENT BELONGS TO THE NEW SOCKET, NOT JUST `send`.
@@ -959,6 +1086,26 @@ export class Room {
     send({ t: 'welcome', clientId: id });
     send({ t: 'rejoined', ok: true });
     if (this.world) this.sendSnapshotTo(c); // immediate full resync (re-primes)
+    /**
+     * A SEAT RECLAIMED INSIDE THE STRATEGY WINDOW HAS TO BE TOLD WHAT IT CAME BACK TO.
+     *
+     * There is no world yet, so the snapshot above is not the resync — `strategyStart` is.
+     * It carries the robot id (`slotOf`, keyed by CLIENT id, which is exactly why the
+     * reclaim reuses the held client rather than seating a fresh one) and the DEADLINE,
+     * which is the number the returning player most needs: it did not pause while they
+     * were away, and a client that had to guess would show them a full window and let
+     * them run out of a clock that was already half gone.
+     */
+    if (!this.world && this.pendingMatch && this.phase === 'strategy') {
+      send({
+        t: 'strategyStart',
+        deadline: this.strategyDeadline,
+        yourRobotId: this.slotOf.get(c.id) ?? 0,
+        mode: this.pendingMatch.mode,
+        intros: this.intros,
+        game: this.game,
+      });
+    }
     this.broadcastRoster();
     this.refreshRematch(); // they are required again, and get the current tally
     return c.conn;

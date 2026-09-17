@@ -58,6 +58,7 @@ import { ServerSession } from '../net/serverSession';
 import { WebSocketTransport } from '../net/transport';
 import { encodeMsg } from '../net/protocol';
 import { loadActiveGame, saveActiveGame, clearActiveGame, type ActiveGameRef } from '../net/activeGame';
+import { loadStagedMatch } from '../net/stagedMatch';
 import type { ResumedRoom } from './roomReturn';
 import { recordScore, type Replay, type ReplayResult } from '../sim/replay';
 import {
@@ -382,7 +383,21 @@ export function App() {
   const start = isWebHistory
     ? parsePath(window.location.pathname, settings.game)
     : { screen: 'home' as Screen, game: settings.game, ...NO_ARGS };
-  const [screen, setScreen] = useState<Screen>(start.screen);
+  /**
+   * A PAGE LOAD WITH A RANKED MATCH STILL WAITING GOES STRAIGHT TO IT.
+   *
+   * `stagedMatch` is only ever written between the assignment and the first tick, and it
+   * expires with the server clocks that bound that window — so if it is here and fresh,
+   * there is a room holding this account's seat right now and the alternative to going
+   * back to it is a dodge. The matchmaking screen adopts it on mount.
+   *
+   * It overrides the URL rather than deferring to it, and that is the point: the URL a
+   * reload restores is whatever screen the player was on, and none of them is the one
+   * with twenty seconds left on it. The path is rewritten to match below (the canonical
+   * -path effect reads `screen`), so the address bar does not lie about where they are.
+   */
+  const startScreen: Screen = loadStagedMatch() ? 'matchmaking' : start.screen;
+  const [screen, setScreen] = useState<Screen>(startScreen);
   const [route, setRoute] = useState<RouteArgs>(start);
   const [session, setSession] = useState<NetSession | null>(null);
   // read by the match-found takeover, which must fire on `found` alone — depending on
@@ -434,7 +449,9 @@ export function App() {
   useEffect(() => {
     if (!isWebHistory) return;
     saveSettings(settingsRef.current);
-    const canonical = pathFor(start.screen, start, settingsRef.current.game);
+    // `startScreen`, not `start.screen` — a staged ranked match overrides the restored
+    // URL (see above), and the address bar has to say where the player actually is
+    const canonical = pathFor(startScreen, start, settingsRef.current.game);
     if (window.location.pathname !== canonical) window.history.replaceState(null, '', canonical);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -1130,9 +1147,41 @@ export function App() {
     else go();
   };
 
-  /** abandon the in-progress game: forget it locally (its server slot then coasts +
-   * drops after the grace) so the player is free to start something new. */
+  /**
+   * ABANDON THE IN-PROGRESS GAME — and say so to the server, which is the half that
+   * used to be missing.
+   *
+   * This only ever cleared the BROWSER's record. That was harmless for as long as the
+   * server's single-game lock was inert, and it is not inert any more: the lock is
+   * registered when a match begins and released at finalize, drop or stop, so a slot
+   * abandoned from the menu went on holding it for the rest of the reconnect grace.
+   * The player pressed a button that said the game was gone and the next thing they
+   * started was refused — "you already have a game in progress, rejoin or leave it
+   * first" — advice about a game the UI had just told them did not exist.
+   *
+   * One frame on a throwaway socket, and nothing waited on: the local record is
+   * dropped either way, because a player who cannot reach the server is not helped by
+   * being kept in a room they have left. The socket closes as soon as the frame is out
+   * (`abandon` is answered with nothing by design — see the protocol note).
+   */
   const abandonActiveGame = (): void => {
+    const ref = loadActiveGame();
+    if (ref) {
+      const params: Record<string, string> = { room: ref.room };
+      if (ref.region) params.region = ref.region;
+      try {
+        const t = new WebSocketTransport(gameServerUrlWith(params));
+        t.onOpen(() => {
+          t.send(encodeMsg({ t: 'abandon', room: ref.room, clientId: ref.clientId }));
+          // let the frame leave before the socket does
+          window.setTimeout(() => t.close(), 250);
+        });
+        // never leave a socket dialling forever on a server that is not answering
+        window.setTimeout(() => t.close(), 5000);
+      } catch {
+        /* no reachable server — the local record still goes */
+      }
+    }
     clearActiveGame();
     setActiveGame(null);
     setBlockedByActive(false);

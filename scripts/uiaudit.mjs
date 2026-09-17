@@ -26,7 +26,8 @@
  *     later block won and laid the replay export menu out as a column. Both files are one
  *     cascade; source order is the only tiebreak, and nothing warns you.
  */
-import { readFileSync, readdirSync } from 'node:fs';
+import { readFileSync, readdirSync, writeFileSync, existsSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
 
 const UI = 'src/ui';
@@ -52,7 +53,16 @@ const BASELINE = {
   'inline-spacing': 29,
   'fractional-font-size': 0,
   'banned-font-weight': 0,
-  'off-grid-gap': 164,
+  'off-grid-gap': 163,
+  // measured 2026-09-16, when these three rules were written. §4's own ruling ("10px … rounds
+  // to --ds-round-md") was executed in the same commit, which is why radius starts at 17 and
+  // not the 31 first measured. The other two start where they stand: paying them down needs a
+  // visual decision per site, and a baseline is how that gets paid off in any order without
+  // being able to grow back.
+  'off-scale-font-size': 46,
+  'literal-radius': 16,
+  'shadow-sprawl': 14,
+  'stale-component-index': 0,
 };
 
 // ── 1. undefined custom properties ───────────────────────────────────────────
@@ -158,6 +168,63 @@ for (const f of css) {
   });
 }
 
+// ── 5b. the type SCALE, not just its fractions ───────────────────────────────
+// §3 declares six sizes and the audit only ever checked that a size was not FRACTIONAL, so
+// 23 whole-pixel sizes accumulated against a six-step scale — 17px, 19px, 26px, 34px, 58px
+// and the rest, each one invisible on its own. A live-DOM audit across five routes measured
+// 12 distinct sizes actually rendering, with 19/64/10px each appearing on exactly one page.
+// That is the drift the scale exists to prevent, and the reason it went unnoticed is that
+// the rule enforcing it was never written.
+const TYPE_SCALE = new Set([11, 12, 13, 15, 20, 28]);
+/**
+ * SCOPED TO THE CHROME. `styles.css` is the in-match overlay drawn over the dark field
+ * canvas, and it is a different surface with different needs — its 160px countdown digits
+ * are display type doing exactly their job, not drift. §3's six steps were written about the
+ * `ds-` chrome. Blessing the overlay's sizes to make one rule cover both would make the rule
+ * vacuous; condemning them would make it wrong. It needs a display tier of its own, decided
+ * on its own terms, and until §3 has one this rule does not reach it.
+ */
+for (const f of css.filter((x) => x.endsWith('shell.css'))) {
+  read(f).forEach((l, i) => {
+    const m = l.match(/font-size:\s*([0-9]+)px/) ?? l.match(/font:\s*[0-9]{3}\s+([0-9]+)px/);
+    if (m && !TYPE_SCALE.has(Number(m[1]))) hit('off-scale-font-size', f, i + 1, l);
+  });
+}
+
+// ── 5c. literal radii ────────────────────────────────────────────────────────
+// §4 says "No literal radius" in those words. Eight distinct literals are in use (3, 5, 6,
+// 7, 8, 9, 10, 14) and only 8px coincides with a token, so seven of them are values nobody
+// chose twice. 7px reaches the live DOM on exactly one route.
+for (const f of css) {
+  read(f).forEach((l, i) => {
+    if (/border-radius:\s*[0-9]+px/.test(l) && !/var\(--ds-round/.test(l)) hit('literal-radius', f, i + 1, l);
+  });
+}
+
+// ── 5d. one depth model ──────────────────────────────────────────────────────
+// DESIGN.md commits to ONE: a hard offset "block" shadow with a keycap edge, explicitly not
+// blurry realistic elevation. 45 distinct box-shadow declarations is not one model, and the
+// live audit sees 9 of them rendering at once. Counted per DISTINCT declaration rather than
+// per occurrence — reusing the same shadow is the point.
+{
+  // same scoping, and the same reason: the overlay's depth is drawn over a canvas.
+  const seen = new Map();
+  for (const f of css.filter((x) => x.endsWith('shell.css'))) {
+    read(f).forEach((l, i) => {
+      const m = l.match(/box-shadow:\s*([^;]+);/);
+      if (!m) return;
+      const decl = m[1].trim().replace(/\s+/g, ' ');
+      if (decl === 'none' || decl.startsWith('var(')) return;
+      // a focus/selection RING (`0 0 0 Npx …`, no offset, no blur) is not an elevation
+      // model, and neither is an `inset` highlight — counting them as depth would flag
+      // exactly the code that is doing the right thing
+      if (/^(inset\s+)?0 0 0 /.test(decl) || decl.startsWith('inset ')) return;
+      if (!seen.has(decl)) seen.set(decl, { f, i });
+    });
+  }
+  for (const [decl, at] of seen) hit('shadow-sprawl', at.f, at.i + 1, decl);
+}
+
 // ── 6. the 4px grid ──────────────────────────────────────────────────────────
 // 2px is allowed inside chips/badges only; every other off-grid value is a finding.
 const ON_GRID = new Set([0, 2, 4, 8, 12, 16, 24, 32, 48]);
@@ -174,6 +241,25 @@ for (const f of css) {
   });
 }
 
+// ── 7. the component index is current ────────────────────────────────────────
+// `docs/ui-components.md` is generated from the CSS by `scripts/uiindex.mjs`, and its whole
+// value is answering "does a class for this already exist?". A STALE index answers that with
+// a confident no, which is worse than having none — so it is regenerated here and compared.
+{
+  const OUT = 'docs/ui-components.md';
+  const before = existsSync(OUT) ? readFileSync(OUT, 'utf8') : '';
+  try {
+    execFileSync(process.execPath, ['scripts/uiindex.mjs'], { stdio: 'pipe' });
+    const after = readFileSync(OUT, 'utf8');
+    if (before !== after) {
+      writeFileSync(OUT, before); // leave the tree as we found it; the run is the report
+      hit('stale-component-index', OUT, 1, 'run `npm run uiindex` and commit the result');
+    }
+  } catch (e) {
+    hit('stale-component-index', OUT, 1, `uiindex failed: ${String(e).slice(0, 80)}`);
+  }
+}
+
 // ── report ───────────────────────────────────────────────────────────────────
 const DESC = {
   'undefined-token': 'var() names a custom property that is defined nowhere',
@@ -184,6 +270,10 @@ const DESC = {
   'fractional-font-size': 'fractional font-size; the scale has six whole steps',
   'banned-font-weight': 'weight outside the seven the variable cuts actually use',
   'off-grid-gap': 'gap/padding off the 4px grid',
+  'off-scale-font-size': 'font-size outside the six-step scale (§3)',
+  'literal-radius': 'literal border-radius; §4 says use a --ds-round token',
+  'shadow-sprawl': 'distinct box-shadow declarations; DESIGN.md commits to ONE depth model',
+  'stale-component-index': 'docs/ui-components.md is out of date with the CSS',
 };
 
 let failed = 0;

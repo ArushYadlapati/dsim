@@ -1,5 +1,5 @@
 {
-  "description": "Impeccable design detector: immediate-tier checks after Edit/Write/MultiEdit on UI files, full-rule deep pass on Stop. Plus the coordination board's per-turn publisher (Stop) — a no-op unless .coord.json exists, and it hands the network work to a detached child so a turn never waits on it.",
+  "description": "Impeccable design detector: immediate-tier checks after Edit/Write/MultiEdit on UI files, full-rule deep pass on Stop. Plus the coordination board's per-turn publisher (Stop) — a no-op unless .coord.json exists, and it hands the network work to a detached child so a turn never waits on it. Plus the area-guide router (PostToolUse): names the docs/area/ guide governing the file just edited, once per area per session, so the CLAUDE.md split does not quietly turn rules into archaeology.",
   "hooks": {
     "PostToolUse": [
       {
@@ -10,6 +10,12 @@
             "command": "[ ! -f \"${CLAUDE_PROJECT_DIR}/.claude/skills/impeccable/scripts/hook.mjs\" ] || node \"${CLAUDE_PROJECT_DIR}/.claude/skills/impeccable/scripts/hook.mjs\"",
             "timeout": 5,
             "statusMessage": "Checking UI changes"
+          },
+          {
+            "type": "command",
+            "command": "[ ! -f \"${CLAUDE_PROJECT_DIR}/scripts/areahook.mjs\" ] || node \"${CLAUDE_PROJECT_DIR}/scripts/areahook.mjs\"",
+            "timeout": 5,
+            "statusMessage": "Checking area guide"
           }
         ]
       }

@@ -379,13 +379,37 @@ export class Matchmaker {
     }
   }
 
-  /** drop every queue entry belonging to `userId` EXCEPT connection `keepId`
-   * (the fresh entry). Prevents one account from holding two queue slots. */
+  /**
+   * Drop every queue entry belonging to `userId` EXCEPT connection `keepId` (the fresh
+   * entry), so one account never holds two queue slots.
+   *
+   * ⚠️ AND TELL THE ONE BEING DROPPED. The eviction itself is right and has to stay —
+   * two entries for one identity can be paired with each OTHER, staging a roster with
+   * two slots for one person — but it used to happen in silence, on a socket that was
+   * still open and still watching. The first tab went on printing "Finding a match…"
+   * and counting its stopwatch up, for a search the server had already forgotten, until
+   * the player gave up on a queue they were not in. A second tab is not an exotic
+   * setup: it is what you get by opening the game again to check something.
+   *
+   * The sentence names the cause, because the state is otherwise unexplainable from
+   * that tab — nothing happened in it.
+   */
   private removeUser(userId: string, keepId: string): void {
     for (const mode of Object.keys(this.queues) as QueueMode[]) {
       const q = this.queues[mode];
       const before = q.length;
+      const evicted = q.filter((e) => e.userId === userId && e.id !== keepId);
       this.queues[mode] = q.filter((e) => e.userId !== userId || e.id === keepId);
+      for (const e of evicted) {
+        try {
+          e.send({
+            t: 'error',
+            message: 'You started a new search in another tab - this one was cancelled.',
+          });
+        } catch {
+          /* the socket went away; the entry is gone either way */
+        }
+      }
       if (this.queues[mode].length !== before) this.broadcastStatus(mode);
     }
   }

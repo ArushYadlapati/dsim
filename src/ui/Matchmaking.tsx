@@ -24,6 +24,7 @@ import { APP_NAME } from '../seasons';
 import { Logo } from './Logo';
 import { useEscape } from './useEscape';
 import { formatLabel, type PendingChallenge } from './challenge';
+import { clearStagedMatch, loadStagedMatch, saveStagedMatch } from '../net/stagedMatch';
 
 /**
  * ONE string for the one fact, on both waiting screens.
@@ -390,6 +391,7 @@ export function Matchmaking({
       wireStrategy(lobby);
       lobby.on('matchStart', (m: MatchStart) => {
         startedRef.current = true;
+        clearStagedMatch();
         matchFound();
         onStart(new ServerSession(lobby.transport, lobby.isHost(), m, lobby.clientId, 'ranked'));
       });
@@ -412,6 +414,7 @@ export function Matchmaking({
     // the strategy window that preceded it, which supersedes a bare assignment.
     if (p.start) {
       startedRef.current = true;
+      clearStagedMatch();
       // the room code when the match is running in one, `'ranked'` on the single-region path
       onStart(
         new ServerSession(lobby.transport, lobby.isHost(), p.start, lobby.clientId, p.assignedRoom ?? 'ranked'),
@@ -439,6 +442,28 @@ export function Matchmaking({
   // button they'd have to press to start waiting.
   useEffect(() => {
     if (adoptParked()) return; // already in the queue — do not enter it twice
+    /**
+     * THE WAY BACK FROM A RELOAD. Nothing is parked — a page load takes the keeper with
+     * it — but `stagedMatch` survives in storage, and the server is still holding this
+     * account's seat in that room (`Room.detach` holds it, `seatFor` hands it back on
+     * the account rather than on a client id the reload destroyed).
+     *
+     * Rejoining, not offering to: the clocks did not pause while the page was loading,
+     * and a card the player has to find costs them the seconds this exists to save. It
+     * is the same call the assignment itself makes, so the screen that comes up is the
+     * one they were looking at.
+     *
+     * Signed-out is a dead end by construction — the seat is keyed to the account — so
+     * a stale record is dropped rather than acted on.
+     */
+    const staged = loadStagedMatch();
+    if (staged) {
+      if (signedIn) {
+        joinAssignedMatch(staged.room);
+        return;
+      }
+      clearStagedMatch();
+    }
     if (!challengeRef.current || !signedIn) return;
     onChallengeConsumed?.();
     void find();
@@ -538,6 +563,7 @@ export function Matchmaking({
       wireStrategy(lobby);
       lobby.on('matchStart', (m: MatchStart) => {
         startedRef.current = true;
+        clearStagedMatch();
         onStart(new ServerSession(lobby.transport, lobby.isHost(), m, lobby.clientId, room));
       });
       lobby.on('dodgeVerdict', (yours, others) => setDodge({ yours, others }));
@@ -588,6 +614,14 @@ export function Matchmaking({
     } catch {
       return null;
     }
+    /**
+     * WRITE THE WAY BACK BEFORE ANYTHING CAN GO WRONG, not after the join succeeds. From
+     * here until the match starts there is a server clock running on this account and no
+     * other record of which room it belongs to — so this is the one line that makes a
+     * reload recoverable rather than a dodge. Both callers (the live screen and the
+     * parked handler) come through here, which is why it is here and not in either.
+     */
+    saveStagedMatch(room);
     const lobby = new LobbyClient(transport);
     wireRoomLobby(lobby, room, live);
     lobby.join(room, playerInfoRef.current());
@@ -615,6 +649,7 @@ export function Matchmaking({
   /** a cancel/close arrived (deadline lapsed, opponent left): drop the strategy
    * screen back to the queue with the reason shown. */
   const strategyCancelled = (msg: string): void => {
+    clearStagedMatch(); // there is no room to go back to
     // THE MATCH IS OVER — forget it. A socket still marked as a seat in a staged room would be
     // parked on the way out (`teardown`) and the takeover would drag the player back into a
     // room that no longer wants them.
@@ -626,6 +661,7 @@ export function Matchmaking({
 
   /** forget a found match: nothing left to hand back, nothing left to come back to. */
   const clearFound = (): void => {
+    clearStagedMatch();
     foundRef.current = false;
     joinedRef.current = false;
     assigningRef.current = false;
@@ -751,6 +787,7 @@ export function Matchmaking({
     wireStrategy(lobby);
     lobby.on('matchStart', (m: MatchStart) => {
       startedRef.current = true;
+      clearStagedMatch();
       matchFound();
       onStart(new ServerSession(transport, lobby.isHost(), m, lobby.clientId, 'ranked'));
     });

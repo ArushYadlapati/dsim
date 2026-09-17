@@ -1408,18 +1408,6 @@ button.ds-chip {
    high-action buttons; a status badge is neither, and a pill dropped into a row of
    rectangular action buttons reads as a mismatched shape, not a deliberate accent.
    Same footprint as `.ds-btn.small` so it sits flush with its row-mates. */
-.ds-status {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  font-size: 12px;
-  font-weight: 700;
-  padding: 4px 12px;
-  border-radius: var(--ds-round-sm);
-  border: 1px solid color-mix(in srgb, var(--ds-ok) 55%, var(--ds-line));
-  color: var(--ds-ok-ink);
-  background: var(--ds-panel);
-}
 
 /* KEYCAP: a solid cap sitting 3px above its own darker edge. Hover sinks 1px,
    press sinks the full 3px so the cap meets the edge — a physical click. The
@@ -2470,7 +2458,7 @@ button.ds-chip {
   margin: 2px 0 12px;
   padding: 10px 14px;
   border: 1px solid var(--ds-line);
-  border-radius: 10px;
+  border-radius: var(--ds-round-md);
   background: color-mix(in srgb, var(--ds-accent) 8%, var(--ds-panel));
 }
 .lb-standing.placed {
@@ -2629,7 +2617,7 @@ tr.lb-detail td {
   max-width: 640px;
   padding: 8px 12px;
   border: 1px solid var(--ds-line);
-  border-radius: 8px;
+  border-radius: var(--ds-round);
   background: var(--ds-tile);
   color: var(--ds-mut);
   font-size: 13px;
@@ -3596,32 +3584,6 @@ tr.lb-detail td {
 }
 
 /* ---- season badge ---------------------------------------------------- */
-.ds-season {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  padding: 6px 12px;
-  border-radius: var(--ds-round-full);
-  border: 1px solid var(--ds-line);
-  background: var(--ds-panel);
-  font-family: var(--ds-font-mono);
-  font-size: 12px;
-}
-.ds-season .dot {
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-  background: var(--ds-ok);
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--ds-ok) 24%, transparent);
-}
-.ds-season .nm {
-  font-weight: 700;
-  letter-spacing: 0.08em;
-  color: var(--ds-ink);
-}
-.ds-season .yr {
-  color: var(--ds-mut);
-}
 
 /* ---- page title ------------------------------------------------------ */
 .ds-title h1 {
@@ -4777,21 +4739,6 @@ button.ds-key:active {
   color: var(--ds-mut);
   font-size: 13px;
 }
-.ds-kick {
-  background: transparent;
-  border: 1px solid var(--ds-line);
-  color: var(--ds-mut);
-  border-radius: 6px;
-  width: 24px;
-  height: 24px;
-  cursor: pointer;
-  line-height: 1;
-  flex: none;
-}
-.ds-kick:hover {
-  color: var(--ds-danger);
-  border-color: var(--ds-danger);
-}
 .ds-actions {
   display: flex;
   gap: 10px;
@@ -4885,7 +4832,7 @@ button.ds-key:active {
   line-height: 0;
 }
 .ds-startpos-canvas {
-  border-radius: 10px;
+  border-radius: var(--ds-round-md);
   background: var(--ds-bg);
   border: 1px solid var(--ds-line);
   touch-action: none; /* pointer drag, not scroll */
@@ -5443,11 +5390,6 @@ button.ds-key:active {
   color: var(--ds-ink);
 }
 .ds-standing-line { font: 600 13px/1.45 var(--ds-font-ui); color: var(--ds-ink); }
-.ds-standing-blurb {
-  margin: 0;
-  font: 600 12px/1.45 var(--ds-font-ui);
-  color: var(--ds-mut);
-}
 .ds-standing-lock {
   margin: 0;
   padding: 8px 12px;

@@ -9,7 +9,8 @@ runs on a 3D deterministic server; players render in 2D or 3D and the 2D path mu
 fast; practice offers the old 2D physics, the 3D physics with a 2D view, or the 3D physics with
 3D rendering, each with or without AI; prediction is a player option; graphics have presets and
 detailed settings; GPU acceleration is on automatically. Line references are as of
-`efficiency-audit` `e0ce598`; `alpha` (this branch's base) predates the CLAUDE.md split.
+`efficiency-audit` `e0ce598`, which was merged into `alpha` on 2026-09-17 (1ecc3f2), so this branch's
+base carries the CLAUDE.md split, `docaudit` and the sharded suite.
 
 Decisions, one line each:
 
@@ -661,7 +662,7 @@ measured before anything else is written.
 | 7 | Ranked cutover to 3D physics? | **Alpha on Day 3.** Production when the owner says so. |
 | 8 | "Force GPU on blocklisted drivers" toggle? | **Delegated; decided: offered, off by default, auto-cleared after a GPU crash** (4.6). |
 | 9 | Ship the CAD-derived field files? | **Yes, ship them** (8). Courtesy note to FIRST still sent. |
-| 10 | Merge `efficiency-audit` into `alpha` before Day 1? | **Yes.** First action of Day 0. |
+| 10 | Merge `efficiency-audit` into `alpha` before Day 1? | **Yes.** Done 2026-09-17 (alpha 1ecc3f2). |
 | 11 | Delete the 2D physics later? | **Never.** It is the permanent light practice option. |
 
 Still open, none blocking Day 0: weigh a real element set (mass and the nectar ratio are APPROX
