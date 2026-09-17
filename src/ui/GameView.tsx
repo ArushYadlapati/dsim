@@ -25,6 +25,7 @@ import { moduleFor } from '../games';
 import { seasonFor } from '../seasons';
 import { useCoarsePointer } from './useCoarsePointer';
 import type { Alliance, DrivetrainType, ScoreBreakdown } from '../types';
+import { initPhysics3d, physics3dReady } from '../games/biobuzz/sim3d/engine';
 
 /** top-right connection-quality readout (multiplayer only): a coloured signal dot
  * + live RTT / snapshot-rate / jitter, so a laggy player can see AT A GLANCE whether
@@ -224,6 +225,10 @@ export function GameView({
   onBackToLobby,
 }: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  // BIOBUZZ 3D SEAM: the box a 3D scene mounts its own canvas into, UNDER the 2D one
+  // (`docs/biobuzz/plan-3d.md` §4.1/§4.7) — see `.game-viewport` in styles.css. Handed to
+  // `GameController` as `sceneHost`; unused by every game/session with no `scene` module.
+  const viewportRef = useRef<HTMLDivElement>(null);
   const controllerRef = useRef<GameController | null>(null);
   const [hud, setHud] = useState<HudSnapshot | null>(null);
   const [intro, setIntro] = useState<IntroPlayer[] | null>(null);
@@ -244,47 +249,109 @@ export function GameView({
     () => typeof location !== 'undefined' && new URLSearchParams(location.search).has('perf'),
   );
   const [frames, setFrames] = useState<{ p50: number; p95: number; fps: number } | null>(null);
+  /**
+   * BIOBUZZ 3D SEAM: does STARTING this practice need the 3D physics chunk loaded first?
+   * Solo only — an online room's physics is a server decision and Day 2 scope (leave it
+   * exactly as it runs today); `practicePhysics` absent reads `'3d'`, the seam's default.
+   * A lazy initializer so the FIRST render already knows, same pattern as `perf`/`editingLayout`
+   * below — this effect is mount-only (see the trailing eslint-disable), so the decision is
+   * frozen at mount like every other setting it reads.
+   */
+  const [physicsLoading, setPhysicsLoading] = useState(() => {
+    const need3d =
+      !session &&
+      (settings.practicePhysics ?? '3d') === '3d' &&
+      !!moduleFor(settings.game).physicsOptions?.includes('3d');
+    return need3d && !physics3dReady();
+  });
 
   useEffect(() => {
+    let cancelled = false;
     const canvas = canvasRef.current!;
-    const controller = new GameController(canvas, settings, session);
-    controllerRef.current = controller;
-    setIntro(controller.getIntro()); // ranked matches only; null otherwise
-    const hudTimer = window.setInterval(() => setHud(controller.getHud()), 100);
-    const onKey = (e: KeyboardEvent) => {
-      // Escape is reserved (never rebindable); restart is handled by the
-      // InputManager through the user's bindings
-      if (e.key === 'Escape') onExit();
-    };
-    window.addEventListener('keydown', onKey);
-    // once a networked match is DECIDED (phase 'post') or its slot is gone (failed),
-    // there's nothing to rejoin — forget the saved active-game record so Home stops
-    // offering "rejoin your match" for a finished/dead game.
-    const clearTimer = window.setInterval(() => {
-      if (!session) return;
-      const h = controller.getHud();
-      if (h && (h.phase === 'post' || h.net?.failed)) clearActiveGame();
-    }, 250);
-    // sampled at 2 Hz, and ONLY when the flag is on — a per-frame React state
-    // update to display a frame-time number would itself be the slowest thing on
-    // the page, which is a memorably useless way to measure performance.
-    const perfTimer = perf
-      ? window.setInterval(() => setFrames(controller.getFrameStats()), 500)
-      : 0;
+    const sceneHost = viewportRef.current!;
+    const need3d =
+      !session &&
+      (settings.practicePhysics ?? '3d') === '3d' &&
+      !!moduleFor(settings.game).physicsOptions?.includes('3d');
+
+    let hudTimer = 0;
+    let clearTimer = 0;
+    let perfTimer = 0;
+    let onKey: ((e: KeyboardEvent) => void) | null = null;
+
+    async function boot(): Promise<void> {
+      // GameView.tsx: load the 3D physics chunk BEFORE the world exists, never after — a
+      // world built with `practicePhysics: '3d'` steps into `step3d` on its very first
+      // tick, and stepping one before `initPhysics3d()` resolves is the bug this await
+      // exists to rule out. Idempotent: a second solo practice in the same tab resolves
+      // immediately (`physicsLoading` never went true above), so this never re-shows the
+      // loading panel or re-fetches the chunk.
+      let effectiveSettings = settings;
+      let physicsFallbackNotice: string | undefined;
+      if (need3d && !physics3dReady()) {
+        try {
+          await initPhysics3d();
+        } catch (err) {
+          if (cancelled) return;
+          // OFFLINE, or a stale build whose physics chunk 404s — fall back to 2D physics
+          // for this session only (never persisted): `settings.practicePhysics` on disk is
+          // untouched, so the player's next practice tries 3D again.
+          // eslint-disable-next-line no-console
+          console.warn('BIOBUZZ 3D physics failed to load; playing this practice on 2D physics.', err);
+          effectiveSettings = { ...settings, practicePhysics: '2d' };
+          physicsFallbackNotice = 'Couldn’t load 3D physics — playing this practice on 2D physics.';
+        }
+      }
+      if (cancelled) return;
+      setPhysicsLoading(false);
+
+      const controller = new GameController(canvas, effectiveSettings, session, {
+        sceneHost,
+        physicsFallbackNotice,
+      });
+      controllerRef.current = controller;
+      setIntro(controller.getIntro()); // ranked matches only; null otherwise
+      hudTimer = window.setInterval(() => setHud(controller.getHud()), 100);
+      onKey = (e: KeyboardEvent) => {
+        // Escape is reserved (never rebindable); restart is handled by the
+        // InputManager through the user's bindings
+        if (e.key === 'Escape') onExit();
+      };
+      window.addEventListener('keydown', onKey);
+      // once a networked match is DECIDED (phase 'post') or its slot is gone (failed),
+      // there's nothing to rejoin — forget the saved active-game record so Home stops
+      // offering "rejoin your match" for a finished/dead game.
+      clearTimer = window.setInterval(() => {
+        if (!session) return;
+        const h = controller.getHud();
+        if (h && (h.phase === 'post' || h.net?.failed)) clearActiveGame();
+      }, 250);
+      // sampled at 2 Hz, and ONLY when the flag is on — a per-frame React state
+      // update to display a frame-time number would itself be the slowest thing on
+      // the page, which is a memorably useless way to measure performance.
+      perfTimer = perf ? window.setInterval(() => setFrames(controller.getFrameStats()), 500) : 0;
+    }
+
+    void boot();
+
     return () => {
+      cancelled = true;
       window.clearInterval(hudTimer);
       window.clearInterval(clearTimer);
       if (perfTimer) window.clearInterval(perfTimer);
-      window.removeEventListener('keydown', onKey);
-      // Check ONCE MORE on the way out. The poll above runs every 250ms, so leaving
-      // promptly after the final buzzer could beat it — and the cost of losing that race
-      // is Home still offering to rejoin a match that has already been decided.
-      if (session) {
-        const h = controller.getHud();
-        if (h && (h.phase === 'post' || h.net?.failed)) clearActiveGame();
+      if (onKey) window.removeEventListener('keydown', onKey);
+      const controller = controllerRef.current;
+      if (controller) {
+        // Check ONCE MORE on the way out. The poll above runs every 250ms, so leaving
+        // promptly after the final buzzer could beat it — and the cost of losing that race
+        // is Home still offering to rejoin a match that has already been decided.
+        if (session) {
+          const h = controller.getHud();
+          if (h && (h.phase === 'post' || h.net?.failed)) clearActiveGame();
+        }
+        controller.dispose();
+        controllerRef.current = null;
       }
-      controller.dispose();
-      controllerRef.current = null;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -375,15 +442,28 @@ export function GameView({
           {frames.p95.toFixed(1)}ms · ads {ads ? 'ON' : 'off'}
         </div>
       )}
-      {/* A screen-reader-playable driving sim is out of scope (see the Phase 6 audit,
-          F7). The label at least stops this being an unlabelled interactive region;
-          score/timer/gate state is announced by the live regions below. */}
-      <canvas
-        ref={canvasRef}
-        className="game-canvas"
-        role="img"
-        aria-label={`${seasonFor(hud?.game ?? 'decode').name} field, top-down view. Match state is announced in the event log.`}
-      />
+      {/* BIOBUZZ 3D SEAM: the box a live scene mounts its own canvas into, UNDER this one
+          (`docs/biobuzz/plan-3d.md` §4.1/§4.7) — see `.game-viewport` in styles.css. Every
+          game/session with no `scene` module renders exactly the plain `.game-canvas` this
+          always was; `GameController` is what decides whether anything else ever occupies it. */}
+      <div className="game-viewport" ref={viewportRef}>
+        {/* A screen-reader-playable driving sim is out of scope (see the Phase 6 audit,
+            F7). The label at least stops this being an unlabelled interactive region;
+            score/timer/gate state is announced by the live regions below. */}
+        <canvas
+          ref={canvasRef}
+          className="game-canvas"
+          role="img"
+          aria-label={`${seasonFor(hud?.game ?? 'decode').name} field, top-down view. Match state is announced in the event log.`}
+        />
+      </div>
+      {physicsLoading && (
+        <div className="overlay">
+          <div className="overlay-panel">
+            <p className="ds-loading">Loading 3D physics…</p>
+          </div>
+        </div>
+      )}
       {coarsePointer && controllerRef.current && (
         <MobileControls
           inputManager={controllerRef.current.getInputManager()}
