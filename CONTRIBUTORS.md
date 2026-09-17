@@ -13,6 +13,7 @@ Format:
 - Dohun Kim (Project Owner) <genius0412.tech@gmail.com> — GitHub @genius0412 — Owner
 - Felix D <eslbrine@gmail.com> — GitHub @crescent
 - Shlok Khandelwal <shlokkhandelwal2013@gmail.com> — GitHub @shlok-k720 — signed CLA 2026-07-24
+- Aadvik Gupta <aadvikgupta007@gmail.com> - Github @alarmclock011 - signed CLA 2026-09-16
 
 <!--
   New contributors: add your line above this comment in the same PR as your first
