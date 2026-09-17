@@ -1,6 +1,6 @@
 # HANDOFF — 2026-09-16, later (efficiency audit: the test loop, the indexes, the render path)
 
-**READ FIRST.** Branch **`efficiency-audit`** off `alpha`, 8 commits, **not merged and not
+**READ FIRST.** Branch **`efficiency-audit`** off `alpha`, 12 commits, **not merged and not
 deployed**. Every gate green: `npm test` ALL PASS ×2 (1765 + 1321) · `test:mm` 186 · `dbtest`
 ALL PASS · `build` · `server:check` · `uiaudit` · `contrast` · **`docaudit`** (new).
 
@@ -126,13 +126,10 @@ said smoke was "~1240 checks" (1765), `test:mm` 36 (186), `dbtest` ~61 and elsew
    build changes `step()` with no version bump, making every replay stamp a lie — so this is a
    SIM_VERSION-bump decision, not a dependency swap. And note `main.tsx` awaits `initPhysics()`
    before the first render, so code-splitting alone buys nothing without reordering boot.
-2. **`persistVersusMatch` (ranked.ts:205-236) is 16 sequential round trips for a 2v2** —
-   `getRatingFull` per player, then `upsertRating` + `upsertEloHistory` per update, then
-   `addMatchParticipant` per player. The reads are independent and batchable; the participant
-   inserts are one multi-row insert. Ratings must stay sequential (Glicko-2), the rest need not.
-3. **Standing charges are ~7 round trips per offender**, serialized across offenders, and
-   `getStanding` opens a **write transaction on a read path** (also hit by `rankedLock` on every
-   ranked queue attempt). `DB_POOL_MAX` defaults to 5; four offenders is the whole pool.
+2. ~~`persistVersusMatch` is 16 sequential round trips~~ — **FIXED.** Batched to about four.
+3. ~~`getStanding` is a write transaction on a read path~~ — **FIXED** with a read-only fast
+   path. Note the SURROUNDING item is still open: `chargeStanding` is still ~7 round trips per
+   offender and still serialized ACROSS offenders in `persist.ts:220`.
 4. **`broadcastSnapshot` stringifies every ball individually just to detect change** (30×/s per
    room, 300 balls in CR), then stringifies the changed ones again into the body. A dirty
    epoch stamped by the sim would remove the first pass. The broadcast itself is already well
@@ -169,6 +166,31 @@ said smoke was "~1240 checks" (1765), `test:mm` 36 (186), `dbtest` ~61 and elsew
 16. **`scripts/zz-accept.ts` is superseded by `zz-accept-clean.ts`** by its own header — the
     original measures against artifacts it thinks it removed. Both say "throwaway".
     `zz-mm-quality.ts:4` references a `zz-mm-marginal.ts` that does not exist.
+
+### The game engine: measured, and deliberately left alone
+
+Profiled per game and then actually tried an optimization, which is how I know not to ship
+one. Inside `step()`: Rapier's rebuild-per-tick is ~23% of CPU, `separateParticles` (CR only)
+7.6%, the possession/control penalty passes ~4.4%, everything else diffuse.
+
+The 23% is the stateless Rapier world, which is a deliberate architecture choice — rebuilt
+every tick so reconcile and determinism hold — so it is not available without the port CLAUDE.md
+already has on the roadmap.
+
+`separateParticles` rebuilds its whole spatial grid (a `Map` plus one array per occupied cell)
+twice a tick for 300 particles, so pooling the memory looked free. **It was bit-identical and
+21% SLOWER** — 0.222 → 0.267 ms/tick for CR, three runs each, low variance, verified
+bit-identical by `worldHash` over 3,000 ticks across all three games before the timing was
+even taken. V8's nursery beats manual pooling for short-lived small objects. Reverted.
+
+The conclusion to carry forward: **the sim has no cheap safe win left.** Its allocation
+pattern is not the bottleneck, and the thing that is, is deliberate.
+
+⚠️ **Snapshot change detection was measured and deliberately NOT changed.** The per-ball
+`JSON.stringify` in `broadcastSnapshot` is 45% of a Chain Reaction snapshot's cost (0.093 of
+0.208 ms), but that is only ~0.28% of a core per room, and the alternative — a hand-written
+field comparator — fails by MISSING a change, which is a silent client desync. The payoff does
+not cover that failure mode.
 
 Measured for reference, per-tick `step()` cost (32-thread box, 2v2): DECODE 0.50ms
 (cores/room 0.030) · CR 0.28ms (0.017) · BIOBUZZ 0.37ms (0.022). Inside `step`, Rapier's
