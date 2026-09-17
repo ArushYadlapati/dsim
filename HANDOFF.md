@@ -1,6 +1,99 @@
+# HANDOFF — 2026-09-17, late (biobuzz-3d: Day 0 begun, alpha carries the split, PAUSED before the physics spike)
+
+**READ FIRST.** Branch **`biobuzz-3d`**, worktree `.claude/worktrees/biobuzz-3d`, now based on
+**`alpha` 7e268dd**. The branch carries `docs/biobuzz/plan-3d.md` (draft 3 with the owner's eleven
+decisions, §12) and this HANDOFF. **No code has been written.** The owner asked for cheap
+subagents and a pause with a detailed handoff before any step that could use a whole session;
+this is that pause.
+
+## Done this session (Day 0, part 1)
+
+- **`efficiency-audit` merged into `alpha`** (1ecc3f2; the owner's Q10). No conflicts: the two
+  branches touched disjoint files (`git merge-tree` preview, then the merge). `npm run uiindex`
+  regenerated the component index alpha's six UI commits had outdated (7e268dd). **Every gate on
+  the merged alpha is green**: `build` · `docaudit` (CLAUDE.md 26,670 / 27,000 bytes) · `uiaudit`
+  · `npm test` **1765 + 1321 ALL PASS**. Pushed to `origin/alpha`.
+  ⚠️ **Migration 0037 is a SERVER change**: until the alpha app is redeployed (owner's wrapper,
+  `fly-deploy.sh --alpha`), its six indexes do not exist in production. Same for main later.
+- `biobuzz-3d` merged with the new alpha. HANDOFF conflict resolved by keeping the biobuzz-3d
+  sections on top of alpha's log. The spec's status line records the base.
+- `npm ci` ran in `.claude/worktrees/pr-alpha` (it has `node_modules` now); **the biobuzz-3d
+  worktree still has none**, and neither do the other worktrees.
+
+## PAUSED HERE: the next step is the Day 0 physics spike (spec §10)
+
+Run it as **one sonnet subagent** in the biobuzz-3d worktree. Estimated: 30 to 60 minutes wall,
+moderate tokens, no shared-file edits. The plan, in order, with the acceptance it must report:
+
+1. `npm ci` in the worktree (a few minutes; Electron is a dependency).
+2. Install, pinned exactly like the 2D physics: `npm i -E @dimforge/rapier3d-deterministic-compat@0.20.0`
+   (in `dependencies`: the server needs it) and `npm i -D -E three@0.186.0 @types/three@0.186.0`.
+   Nothing imports them yet except the spike. (Registry checked 2026-09-17: all three at those
+   versions; the compat package unpacks to 10.3 MB, wasm about 2.05 MB / 767 KB gz.)
+3. `scripts/spike3d.ts` (throwaway, run with `tsx`, never in `npm test`): `await import(...)` the
+   compat module and `init()`; build a z-up world (gravity `{x:0, y:0, z:-386}` in inches);
+   statics: floor, four walls at ±72, two frame base bars (x in [24,25] and [-25,-24], y ±19.4);
+   four dynamic 18-in boxes with yaw-only rotation (`setEnabledRotations(false,false,true)`),
+   z free; 56 dynamic spheres (40 × r 1.4, 16 × r 1.8, mass 0.2 lb, CCD on); one dynamic tray per
+   hive on a revolute joint about x at (±12.75, 0, 43.95) with limits ±30° and a trial ballast
+   (or kinematic first if the joint fights); a scripted push on one box for 600 ticks; step 3,600
+   ticks at 1/60. Every 60 ticks hash all positions rounded to 1e-4 (FNV-1a, the `worldHash`
+   shape). Print: median and p95 ms/step, body count, sleeping count, the final hash.
+4. **Run it twice in Node**: the two final hashes must be equal (the deterministic build's whole
+   promise). If they differ, stop and report; do not tune.
+5. Cross-runtime: run the same spike in Chromium (a throwaway Vite page or the Electron shot
+   runner) and compare the final hash with Node's. Report equal / not equal.
+6. Try the non-compat `@dimforge/rapier3d-deterministic@0.20.0` with the raw `.wasm` (Vite `?url`
+   in browser and worker; `fs.readFileSync` in Node and `tsx`). Record which of the four runtimes
+   initialise; if all four, it saves about 300 KB gzipped per §2.5. Do not switch packages in
+   this spike; just report.
+7. Add a dynamic `import()` of the compat module behind an unused function, `npm run build`, and
+   record the emitted chunk sizes (`dist/assets`), then remove it. `bundleaudit` does not exist
+   yet; this is the baseline number for it.
+8. Commit the spike script and a `docs/biobuzz/spike3d-results.md` (numbers only, the runtime
+   matrix, the hash outcome) on `biobuzz-3d`; prepend a HANDOFF section.
+
+**Gate (spec §10 Day 0):** hashes equal across two runs; median step at or under 1.5 ms for the
+2v2-equivalent world. **Kill/adjust:** step over 3 ms after enabling sleeping and limiting CCD to
+fast bodies → the "freeze far elements" fallback in spec §11; hashes unequal on the deterministic
+build → stop, the vendor's promise failed, report before anything else is written.
+
+Also on Day 0, as separate cheap agents once the spike passes: **the CAD pipeline**
+(`scripts/field-cad.mjs` + `scripts/field-cad/convert.py`; needs Python and `pip install cadquery`,
+a heavy install: run it in its own agent and report the measurements file first, the GLB second),
+and the **courtesy note to FIRST** (the owner sends it; draft below).
+
+## Draft note to FIRST (for the owner to send)
+
+> Hello. I run DSIM (playdsim.com), a free driver-practice simulator for FTC teams. For the
+> BIOBUZZ season I am building a 3D mode and would like to use the published field CAD (the STEP
+> release on ftc-resources) as the source for a simplified, decimated field mesh and collision
+> geometry, served from the site and committed to the project's public repository, with
+> attribution to FIRST and the manual's CAD credit. Your terms of use grant personal use; could
+> you confirm this use is acceptable, or tell me what attribution or limits you would want?
+> Thank you for publishing the CAD; it is what makes an accurate simulator possible.
+
+## Gotchas
+
+- **Two Rapier packages coexist**: 2D on `rapier2d-compat` 0.19.3, 3D on
+  `rapier3d-deterministic-compat` 0.20.0 (Rapier 0.35: new sleeping, sweep CCD on for fixed
+  colliders, changed contact defaults). Never upgrade the 2D package as a side effect.
+- The 3D wasm must load through a **dynamic import** inside `initPhysics3d()`; a static import
+  anywhere reachable from `src/games/index.ts` or the LAN `hostWorker` puts about 1.1 MB gzipped
+  into chunks every player pays for. `bundleaudit` (to write) is the ratchet.
+- CLAUDE.md has **330 bytes of headroom**: the spec's two sentences (game table row, the
+  client-bundle rule) must fit or the rule moves to `docs/area/biobuzz.md` with a pointer.
+- Other sessions have worktrees here (`main-merge`, `alpha-ui`, `nice-morse-…`, a
+  `claude/biobuzz-3d-worktree-…` that is a main-merge branch unrelated to this work). Do not
+  `cd` into them; the stash stack is shared.
+- The spec compares against a comparable third-party 3D sim only generically; keep it that way.
+- The CAD-derived field files SHIP by owner decision (Q9); keep the constants fallback complete.
+
+---
+
 # HANDOFF — 2026-09-17, night (biobuzz-3d: draft 3 of the spec, ONE game with a 3D deterministic authority)
 
-**READ FIRST.** Branch **`biobuzz-3d`**, a worktree at `.claude/worktrees/biobuzz-3d`, based on
+**(Previously READ FIRST.)** Branch **`biobuzz-3d`**, a worktree at `.claude/worktrees/biobuzz-3d`, based on
 `alpha` **1ecc3f2** (`efficiency-audit` merged into alpha on 2026-09-17, the first Day 0 step). The branch carries only **`docs/biobuzz/plan-3d.md`** and this HANDOFF. No
 code has been written. Every gate is alpha's, unchanged.
 

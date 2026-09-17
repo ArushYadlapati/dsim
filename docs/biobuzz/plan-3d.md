@@ -112,7 +112,7 @@ src/games/biobuzz/
     step3d.ts            the 3D tick (3.1)
     robot3d.ts           drive wrench → body; intake sensor; muzzle; place point; deploy
     elements3d.ts        capture / launch / place / spill tags / human player
-    hive3d.ts            tray kinematics from the shared swing timer; table trigger; spill tags
+    hive3d.ts            the see-saw joint (ballast, detent, damping), tip event at the stop, spill tags
     flower3d.ts          tube membership reads
     derive.ts            contents / stack lists + membership tags for the shared score, HUD, renderers
     predict.ts           the Light and Full prediction worlds (client only)
