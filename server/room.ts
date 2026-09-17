@@ -45,7 +45,7 @@ import {
 } from '../src/net/protocol';
 import { sanitizePlayerPatch } from '../src/net/sanitize';
 import type { DodgeKind, DodgeVerdict } from '../src/dodge';
-import { judgeParticipation } from '../src/standing';
+import { chargedForParticipation, judgeParticipation } from '../src/standing';
 import { roomPersists } from './channel';
 import { eloMode } from './eloMode';
 /* TYPE-ONLY, and it has to stay that way: `./ranked` imports `./db/repo`, which imports `pg`.
@@ -342,6 +342,8 @@ export class Room {
   // but hold no robot slot and never count toward capacity/roster/persistence.
   private readonly spectators = new Map<string, Client>();
   private hostId = '';
+  /** the seat `reserveHost` named, or '' for every room the cloud runs — see `detach` */
+  private reservedHost = '';
   // monotonic connection counter: every add/reattach stamps the owning socket with
   // the next value so a stale old socket's close can be recognised and ignored.
   private connSeq = 0;
@@ -518,7 +520,9 @@ export class Room {
   private readonly awayTicks = new Map<number, number>();
 
   /** authed users whose match is currently live in THIS room (holds their single-
-   * game lock). Registered at match begin, released at finalize / drop / stop. */
+   * game lock). Registered at match begin — and, for a ranked pairing, from the
+   * moment it is STAGED (`applyPending`), because a staged match is one the server
+   * has already committed them to. Released at finalize / drop / stop. */
   private readonly activeUserIds = new Set<string>();
 
   /** release every held single-game lock this room owns (idempotent) */
@@ -560,6 +564,81 @@ export class Room {
     return !hostPending || this.clients.size + 1 < roomCapacity(this.config);
   }
 
+  /**
+   * THE SEAT THIS ACCOUNT ALREADY HOLDS HERE, if any — the room's answer to "is this
+   * the same person arriving twice?".
+   *
+   * One account is one driver. Nothing used to ask: the single-game guard in
+   * `server/index.ts` compares room CODES, so it passes a second tab joining THE SAME
+   * code (`other === code`), and a duplicate userId then took a second seat. In a 1v1
+   * ranked room that is the whole room — capacity 2, both seats spent on one person,
+   * and the actual opponent refused at the door and no-showed for a match they were
+   * standing outside of. In a duo record room it is two robots on one leaderboard row.
+   *
+   * WHETHER THE HELD SEAT LOOKS CONNECTED IS NOT ASKED, and that is deliberate. It cannot
+   * tell a second tab from a fast reconnect: a partitioned TCP connection outlives the
+   * client that gave up on it, so a player whose network blipped arrives on a new socket
+   * while their old seat still reads `connected` and the server has not heard the close
+   * yet. Refusing that player would strand them in a room they are seated in.
+   *
+   * So the caller takes the seat over either way — the rule `reattach` already settles this
+   * conflict by, last socket in wins and the one it displaces is told so. A reconnect gets
+   * its seat back, a second tab gets the match and the first tab gets a sentence instead of
+   * a silently unplugged session, and neither ends up with two robots.
+   */
+  seatFor(userId: string): string | null {
+    for (const c of this.clients.values()) {
+      if (c.userId === userId) return c.id;
+    }
+    return null;
+  }
+
+  /**
+   * GIVE UP A HELD SLOT ON PURPOSE — "Abandon" on the you-have-a-game-in-progress card.
+   *
+   * That button only ever cleared the browser's own record of the match, which was
+   * harmless for exactly as long as the server's single-game lock was inert. It is not
+   * inert any more (see `stopLoop`), so abandoning and starting something new met a
+   * refusal from the server for the rest of the reconnect grace, phrased as advice —
+   * "rejoin or leave it first" — about a game the UI had just said was gone. The button
+   * has to mean it: this frees the slot and the lock now.
+   *
+   * Idempotent, and deliberately not fussy about WHERE the caller is: the id is a
+   * per-client secret the server minted, and holding it is the same proof of ownership
+   * `rejoin` already accepts.
+   */
+  abandonSlot(clientId: string): boolean {
+    const c = this.clients.get(clientId);
+    if (!c) return false;
+    if (c.userId) {
+      this.activeUserIds.delete(c.userId);
+      this.onUserInactive?.(c.userId);
+    }
+    // mid-match this is a departure like any other: the match stays rated and the
+    // leaver takes the loss (`departed` is what keeps their result on the board).
+    const rid = this.robotOf.get(c.id);
+    if (this.world !== null && c.userId && rid !== undefined) {
+      this.departed.set(rid, { userId: c.userId, handle: c.player.name, assists: c.player.assists });
+    }
+    if (rid !== undefined && !this.dropped.has(rid) && this.world) {
+      this.dropped.add(rid);
+      this.broadcast({ t: 'drop', robotId: rid, tick: this.world.tick });
+    }
+    this.clients.delete(c.id);
+    this.snapPrimed.delete(c.id);
+    this.snapAck.delete(c.id);
+    this.robotOf.delete(c.id);
+    this.ackTick.delete(c.id);
+    this.passCrown(c.id);
+    this.broadcastRoster();
+    this.refreshRematch();
+    if (this.clients.size === 0) {
+      this.stop();
+      this.onEmpty();
+    }
+    return true;
+  }
+
   /** authoritative sim tick (0 before the match starts) */
   get tick(): number {
     return this.world?.tick ?? 0;
@@ -579,6 +658,8 @@ export class Room {
    */
   reserveHost(id: string): void {
     if (!this.hostId) this.hostId = id;
+    // remembered so `detach` can tell a reserved host stepping out from a cloud host leaving
+    if (this.hostId === id) this.reservedHost = id;
   }
 
   add(client: Client): void {
@@ -814,19 +895,54 @@ export class Room {
       // pre-match departure CANCELS the staged match (both drivers requeue). Full
       // strategy-phase reconnection is deferred (see docs/netcodeplan.md).
       if (this.pendingMatch && this.phase === 'strategy') {
-        // STRATEGY BAIL: this socket's user is the one who left. Charged cause-blind — from
-        // here a closed tab and a pulled cable are the same event, and pretending otherwise
-        // would just advertise which one is cheaper (see src/dodge.ts).
-        this.cancelPending(
-          'Match cancelled - a player disconnected.',
-          c.userId ? [{ userId: c.userId, kind: 'bail' as DodgeKind }] : [],
-        );
+        /**
+         * ⚠️ A RELOAD IS NOT A BAIL — IT IS THE COMMONEST WAY TO REACH THIS LINE.
+         *
+         * This used to cancel the match on the first closed socket, full stop, which made
+         * refreshing the tab during the strategy window an instant, unrecoverable charge:
+         * the match died, the player was billed a bail, and the three people who did
+         * nothing wrong lost their queue time. Reported as "all I did was wait ... you
+         * should probably tell the user to Not refresh" — and telling them is the smaller
+         * half of the answer, because a reload is also what a phone does when it reclaims
+         * a backgrounded tab, and no copy prevents that.
+         *
+         * So the SEAT IS HELD instead. The staged roster is the server's record of who
+         * belongs here, `reattach` hands the slot back on the same client id (which is
+         * what `slotOf` is keyed by), and a player who gets back inside the window plays
+         * the match they were assigned. Nothing is charged for a trip they completed.
+         *
+         * THE WAIT IS ALREADY BOUNDED and needs no timer of its own: `onStrategyDeadline`
+         * fires at `strategyDeadline` regardless, `maybeBeginRanked` will not start a
+         * match with an empty seat, and `absentRoster` counts a held-but-disconnected
+         * client as absent — so somebody who never comes back is charged at the deadline
+         * exactly as a no-show, which is what they are.
+         *
+         * A CLEAN close (1000/1005) is still an immediate bail, and that distinction is
+         * the whole point: `transport.close()` is the player pressing Back, i.e. a person
+         * who has decided to leave. Making the others wait out the deadline for someone
+         * who told us they are gone would be the same unfairness pointed the other way.
+         * A reload is 1001 and a dropped network 1006 — neither is a decision.
+         */
+        if (clean) {
+          // STRATEGY BAIL: this socket's user is the one who left. Charged cause-blind — from
+          // here a closed tab and a pulled cable are the same event, and pretending otherwise
+          // would just advertise which one is cheaper (see src/dodge.ts).
+          this.cancelPending(
+            'Match cancelled - a player disconnected.',
+            c.userId ? [{ userId: c.userId, kind: 'bail' as DodgeKind }] : [],
+          );
+          return;
+        }
+        c.connected = false;
+        c.disconnectAt = Date.now();
+        c.player.ready = false; // a seat nobody is sitting in has not readied
+        this.broadcastRoster();
         return;
       }
       this.clients.delete(id);
       this.snapPrimed.delete(id);
       this.snapAck.delete(id);
-      if (this.hostId === id) this.hostId = this.clients.keys().next().value ?? '';
+      this.passCrown(id);
       this.robotOf.delete(id);
       this.broadcastRoster();
       this.refreshRematch(); // the tally is against CONNECTED drivers
@@ -862,6 +978,17 @@ export class Room {
         this.checkGrace();
         return;
       }
+      /**
+       * A HOST WHO LEAVES A FINISHED MATCH TAKES THE ROOM WITH THEM UNLESS THE CROWN MOVES.
+       *
+       * Their slot is still HELD — the match is over but they may well reconnect to read the
+       * results, and reattaching is keyed to the client id, not to who is host. The CROWN is
+       * a different question: `start` and `lobby` are host-only, so while `hostId` names a
+       * disconnected client nobody left in the room can do either, and they wait out a
+       * 45-second grace before the reaper frees them. Only once the score is final, because
+       * before that the host is a driver who may be coming straight back mid-match.
+       */
+      if (this.finalized) this.passCrown(id);
       this.broadcastRoster();
       /**
        * A partner who drops must not leave the run un-restartable: their vote is no longer
@@ -918,6 +1045,23 @@ export class Room {
   ): number | null {
     const c = this.clients.get(id);
     if (!c) return null;
+    /**
+     * TELL THE SOCKET THIS ONE IS REPLACING, while it still has a sender.
+     *
+     * The usual loser here is a dead TCP connection and hears nothing, which is fine. The
+     * one that matters is a LIVE one: the same match open in a second tab, both tabs
+     * holding the same client id out of localStorage, both offering Rejoin. The second to
+     * press it takes the slot — `conn` makes sure of that — and the first was then left on
+     * a session that had been silently unplugged: it had already been told `rejoined: true`,
+     * it never receives another frame, and it renders a match frozen at the last snapshot
+     * with no way to tell that anything happened. One frame on the way out is the whole fix.
+     */
+    if (c.connected) {
+      c.send({
+        t: 'error',
+        message: 'This match was opened in another tab - that tab has it now.',
+      });
+    }
     c.send = send;
     /**
      * ⚠️ EVERY SENDER ON THIS CLIENT BELONGS TO THE NEW SOCKET, NOT JUST `send`.
@@ -942,6 +1086,26 @@ export class Room {
     send({ t: 'welcome', clientId: id });
     send({ t: 'rejoined', ok: true });
     if (this.world) this.sendSnapshotTo(c); // immediate full resync (re-primes)
+    /**
+     * A SEAT RECLAIMED INSIDE THE STRATEGY WINDOW HAS TO BE TOLD WHAT IT CAME BACK TO.
+     *
+     * There is no world yet, so the snapshot above is not the resync — `strategyStart` is.
+     * It carries the robot id (`slotOf`, keyed by CLIENT id, which is exactly why the
+     * reclaim reuses the held client rather than seating a fresh one) and the DEADLINE,
+     * which is the number the returning player most needs: it did not pause while they
+     * were away, and a client that had to guess would show them a full window and let
+     * them run out of a clock that was already half gone.
+     */
+    if (!this.world && this.pendingMatch && this.phase === 'strategy') {
+      send({
+        t: 'strategyStart',
+        deadline: this.strategyDeadline,
+        yourRobotId: this.slotOf.get(c.id) ?? 0,
+        mode: this.pendingMatch.mode,
+        intros: this.intros,
+        game: this.game,
+      });
+    }
     this.broadcastRoster();
     this.refreshRematch(); // they are required again, and get the current tally
     return c.conn;
@@ -954,6 +1118,30 @@ export class Room {
   private anyConnected(): boolean {
     for (const c of this.clients.values()) if (c.connected) return true;
     return false;
+  }
+
+  /**
+   * THE CROWN PASSES TO WHOEVER IS LEFT — unless it was RESERVED. A cloud host who leaves is
+   * gone; whoever is still here should be able to start. A tab-hosted room's host
+   * (`reserveHost`) is different: the room lives in THEIR tab, and stepping out to the LAN
+   * screen and back is an ordinary thing for them to do. Handing the crown to a guest
+   * meanwhile meant the host came back to their own room as a guest of it, and `canSeat`
+   * stopped holding their seat. The reservation outlives the visit.
+   *
+   * ⚠️ THIS ALSO RUNS FROM `checkGrace`, and that is a fix, not a tidy-up. Migration used to
+   * live in `detach`'s LOBBY branch alone, so a host who left DURING or AFTER a match was
+   * never replaced: their slot is held, then reaped by the grace, and `hostId` went on
+   * naming a client that is no longer in the map. Every host-only control — `start`, and now
+   * `lobby` — was dead for everyone left in the room, which is exactly the "we had to make a
+   * new room" case. Prefer a CONNECTED successor: after a reap the map can still hold other
+   * slots whose own grace has not lapsed, and handing the crown to one of those would just
+   * move the dead end.
+   */
+  private passCrown(id: string): void {
+    if (this.hostId === id && this.reservedHost !== id) {
+      const rest = [...this.clients.values()];
+      this.hostId = (rest.find((c) => c.connected) ?? rest[0])?.id ?? '';
+    }
   }
 
   private checkGrace(): void {
@@ -990,6 +1178,7 @@ export class Room {
       this.snapAck.delete(c.id);
       this.robotOf.delete(c.id);
       this.ackTick.delete(c.id);
+      this.passCrown(c.id);
     }
     if (this.clients.size === 0) {
       this.stop();
@@ -1061,6 +1250,11 @@ export class Room {
         break;
       case 'rematch':
         this.voteRematch(id, msg.on === true);
+        break;
+      case 'lobby':
+        // host only, exactly like `start` — the room is shared state and one player must
+        // not tear the results screen out from under the rest of it.
+        if (id === this.hostId) this.returnToLobby();
         break;
       case 'restart':
         // Rematch/restart is DISABLED for multiplayer: re-authoring a live match for
@@ -1312,6 +1506,27 @@ export class Room {
     // is segregated + unpersisted just like custom/record alpha rooms
     if (p.channel) this.channel = p.channel;
     this.intros = p.roster.map((r, i) => ({ id: i, elo: r.introElo }));
+    /**
+     * THE LOCK IS TAKEN HERE, NOT AT `startMatch` — a staged match is a commitment.
+     *
+     * The single-game lock used to be registered only when the world was built, so
+     * between the assignment and the first tick a paired player held no lock at all:
+     * `activeElsewhere` answered false and the ranked queue let them straight back in
+     * (`server/index.ts`, the `queue` handler). Refresh the tab while "Match found" is
+     * up and that is exactly what happens — the reload loses the room (the queue keeper
+     * is in memory), FIND MATCH re-enters the pool, and the room they abandoned still
+     * bills them a no-show when the grace lapses. Reported as "you should not be able
+     * to re-enter queue if you're entering a match".
+     *
+     * Registered from the ROSTER rather than from `this.clients`: the whole point is
+     * that it must hold for a player who has not connected here yet. `stop()` releases
+     * it, and `cancelPending` stops the room, so a cancelled staging frees it too.
+     */
+    for (const r of p.roster) {
+      if (!r.userId) continue;
+      this.activeUserIds.add(r.userId);
+      this.onUserActive?.(r.userId);
+    }
     if (this.pendingTimer) clearTimeout(this.pendingTimer);
     // NO-SHOW: whoever is still missing when the grace lapses is the one who dodged. The
     // players who DID connect are innocent and are charged nothing.
@@ -1330,6 +1545,19 @@ export class Room {
   /** the room code this room was staged under (null if not a staged ranked room) */
   pendingCode(): string | null {
     return this.pendingMatch?.code ?? null;
+  }
+
+  /**
+   * A STAGED PAIRING THAT HAS NOT BEGUN — the window between the matchmaker assigning
+   * this room and `startMatch` building its world (`connecting`, then `strategy`).
+   *
+   * `pendingMatch` is never cleared, so it alone cannot answer this: it stays set for
+   * the life of the room and reads true for a match that has been running for a minute.
+   * The world is what separates "loading in" from "playing", and the queue guard needs
+   * the difference to say the right sentence.
+   */
+  staging(): boolean {
+    return this.pendingMatch !== null && this.world === null && !this.cancelled;
   }
 
   /**
@@ -1601,7 +1829,7 @@ export class Room {
   }
 
   private startLoop(): void {
-    this.stop();
+    this.stopLoop(); // NOT `stop()` — the locks `startMatch` just took must survive this
     let last = Date.now();
     let acc = 0;
     this.loop = setInterval(() => {
@@ -1907,6 +2135,7 @@ export class Room {
    */
   private reportBehaviour(participants: MatchParticipant[]): void {
     if (!this.onBehaviour || !this.ranked || this.unpersisted) return;
+    const mode: '1v1' | '2v2' = participants.length > 2 ? '2v2' : '1v1';
     const offenders: { userId: string; kind: 'afk' | 'leave' }[] = [];
     const cleanUserIds: string[] = [];
     for (const p of participants) {
@@ -1918,8 +2147,9 @@ export class Room {
         driveTicks: this.driveTicks.get(rid) ?? 0,
         awayTicks: this.awayTicks.get(rid) ?? 0,
       });
-      if (kind) offenders.push({ userId: p.userId, kind });
-      else cleanUserIds.push(p.userId);
+      if (!kind) cleanUserIds.push(p.userId);
+      else if (chargedForParticipation(kind, mode)) offenders.push({ userId: p.userId, kind });
+      // else: an EXCUSED 1v1 leaver — neither charged nor credited as clean
     }
     /**
      * CARDS travel with the behaviour report, from the world the match was played in.
@@ -1943,7 +2173,7 @@ export class Room {
       offenders,
       carded,
       cleanUserIds,
-      mode: participants.length > 2 ? '2v2' : '1v1',
+      mode,
       game: this.game,
       roomCode: this.code,
     });
@@ -2074,6 +2304,133 @@ export class Room {
     this.maybeRematch();
   }
 
+  /**
+   * ---- RECYCLING A FINISHED ROOM ------------------------------------------------------
+   *
+   * A room used to be single-use. `this.world` was set once and never cleared, so
+   * `canJoin` (which requires `world === null`) refused every later joiner and the `start`
+   * gate refused every later match — the room lived on as a husk that admitted nobody and
+   * started nothing until its last socket closed. The only way on to a second game was
+   * `maybeRematch`, and a rematch REPLAYS `matchSetups` frozen at the first start: it cannot
+   * take a new player, cannot drop one who left (their robot respawns driverless, because
+   * `robotOf` was deleted with them), and cannot see an alliance anyone changed afterwards.
+   * So "someone left, we want to re-pick sides and play a full game" meant minting a new
+   * code and everybody re-joining it. `case 'restart'` even says players "return to the
+   * lobby to start a fresh match instead" — this is that lobby.
+   *
+   * Recycling clears the world and puts the room back in `'connecting'`, which is the
+   * ordinary pre-match lobby state. Nothing downstream needs a new mode: `canJoin` opens
+   * again on its own, and `startMatch` ALREADY rebuilds setups and `robotOf` from whoever is
+   * in `clients` at the moment it runs. Re-picking sides, seats, robots and the roster all
+   * fall out of that one reset.
+   */
+
+  /**
+   * May this room go back to its lobby at all?
+   *
+   * - RANKED / STAGED rooms never recycle. A matchmaker-staged room's roster is the pairing;
+   *   recycling it would hand a rated room a roster nobody was matched into. Those players
+   *   re-queue. (`ranked` also covers a rematch inside a staged room.)
+   * - A SOLO RECORD run already has its own teardown — the client disposes the session and
+   *   opens a fresh `rec-` room — and `finishing` exists to keep a decided run alive with
+   *   nobody connected. Leave that path alone.
+   * - EVERY MEMBER must advertise the 'recycle' capability, the same discipline the strategy
+   *   window uses. One Fly app serves every client build, and a client that ignores
+   *   `t: 'lobby'` would sit on a results screen for a match the room no longer has.
+   */
+  private canRecycle(): boolean {
+    if (this.ranked || this.pendingMatch) return false;
+    // VERSUS ONLY. A record run is a co-op score attempt against a leaderboard, and its
+    // restart is already a full teardown into a fresh `rec-` room; there is no side to
+    // re-pick and nothing here it is short of. Keeping the door shut means no client
+    // surface exists for it either.
+    if (this.config.kind !== 'versus') return false;
+    return [...this.clients.values()].every((c) => c.caps?.includes('recycle'));
+  }
+
+  /**
+   * Host asked to go back to the lobby. Refused while the match is still being played or
+   * still being WRITTEN: `finalized` is the score being final, and `resultPending` is the
+   * ELO/leaderboard write still in flight — tearing the world down under either would lose
+   * the result that was the point of playing.
+   */
+  private returnToLobby(): void {
+    if (this.world === null) return; // already a lobby
+    if (!this.finalized || this.resultPending) return;
+    if (!this.canRecycle()) return;
+
+    this.stop(); // kills the tick loop AND releases every single-game lock
+    if (this.graceReap) {
+      clearTimeout(this.graceReap);
+      this.graceReap = null;
+    }
+
+    /**
+     * A HELD SLOT IS NOT WORTH HOLDING FOR A MATCH THAT IS OVER. `detach` keeps a
+     * disconnected driver's seat for the reconnect grace so they can rejoin the run they
+     * dropped out of; that run has finished. Keeping them would spend a slot on somebody
+     * with nothing to come back to, and `startMatch` builds its setups from `clients` — so
+     * the next match would spawn a robot with no driver, which is the exact failure a
+     * rematch has today.
+     */
+    for (const c of [...this.clients.values()]) {
+      if (c.connected) continue;
+      this.clients.delete(c.id);
+      this.snapPrimed.delete(c.id);
+      this.snapAck.delete(c.id);
+      this.ackTick.delete(c.id);
+      this.passCrown(c.id);
+    }
+
+    this.world = null;
+    this.phase = 'connecting';
+    this.matchSeed = 0;
+    this.matchSetups = [];
+    this.robotOf.clear();
+    this.rematchVotes.clear();
+    this.recorder = null;
+    this.finalized = false;
+    this.matchId = null; // `lastMatchId` is kept: a misscore claim still points at the game just played
+    this.settle = newSettleClock();
+    this.departed.clear();
+    this.finishing = null;
+    this.dropped.clear();
+    this.pending.clear();
+    this.held.clear();
+    this.latest.clear();
+    this.latestTick.clear();
+    this.lastRecvTick.clear();
+    this.ackTick.clear();
+    this.prevBalls = new Map();
+    this.snapPrimed.clear();
+    this.snapAck.clear();
+    this.lastFrame = new Map();
+    this.liveTicks = 0;
+    this.driveTicks.clear();
+    this.awayTicks.clear();
+    // `matchGen` is deliberately NOT reset — it must stay monotonic, or an input still in
+    // flight from the match just finished would be accepted by the next one as fresh.
+
+    /**
+     * NOBODY CARRIES A READY INTO THE NEXT GAME. Ready is an agreement to start THIS match
+     * with THIS roster; the roster is about to change (that is the whole feature), and a
+     * player who walked away from their keyboard after the buzzer must not be counted as
+     * having agreed to the next one.
+     */
+    for (const c of this.clients.values()) c.player.ready = false;
+
+    // `clientId` rides along because the client that adopts this socket back into a lobby
+    // never sends a `join`, and so never gets a `welcome` of its own.
+    for (const c of this.clients.values()) c.send({ t: 'lobby', clientId: c.id });
+    for (const c of this.spectators.values()) c.send({ t: 'lobby', clientId: c.id });
+    this.broadcastRoster();
+    this.broadcastRematch();
+
+    // the last driver may have closed their tab on the results screen; with the world gone
+    // there is no loop and no grace reaper left to notice an empty room.
+    if (this.clients.size === 0) this.onEmpty();
+  }
+
   /** TEST SEAM: the live world, read-only. Lets a test assert what an input
    *  actually DID rather than only that the server accepted the frame. */
   worldForTest(): World | null {
@@ -2084,7 +2441,7 @@ export class Room {
    * timers, up to `maxTicks` or match end. Production drives `stepOnce` from the
    * setInterval loop; this lets smoke/tools run a full room match reproducibly. */
   advanceForTest(maxTicks: number): void {
-    this.stop(); // drop the real-time timer — the test pumps synchronously
+    this.stopLoop(); // drop the real-time timer — the test pumps synchronously
     for (let i = 0; i < maxTicks && this.world && !this.finalized; i++) {
       if (this.stepOnce()) this.broadcastSnapshot();
     }
@@ -2094,7 +2451,7 @@ export class Room {
    *  included. `advanceForTest` steps unconditionally, so it cannot see a room that the live
    *  loop would have frozen, which is exactly how an unsaved buzzer restart went unnoticed. */
   pumpForTest(maxTicks: number): void {
-    this.stop();
+    this.stopLoop();
     for (let i = 0; i < maxTicks && this.world && !this.finalized; i++) {
       this.checkGrace();
       if (this.clients.size === 0 || this.frozenForNobody()) return;
@@ -2164,11 +2521,30 @@ export class Room {
     return frame;
   }
 
-  private stop(): void {
+  /**
+   * DROP THE TICK TIMER AND NOTHING ELSE.
+   *
+   * Split out of `stop()` because the two callers want different things and conflating
+   * them made the single-game lock inert for every match ever played. `startMatch`
+   * registers each driver's lock and then calls `startLoop`, which opens with a `stop()`
+   * to clear any previous timer — and `stop()` releases the locks. So the lock was taken
+   * and given back in the same call, and "one live game per user" never held for longer
+   * than a few statements. The test seams (`advanceForTest`, `pumpForTest`) did the same
+   * thing and hid it: the smoke check for "released at finalize" was already true before
+   * the match ran a tick.
+   *
+   * Anything that means "this match is over / this room is going away" still wants
+   * `stop()`. Anything that means "I am about to drive the ticks myself" wants this.
+   */
+  private stopLoop(): void {
     if (this.loop) {
       clearInterval(this.loop);
       this.loop = null;
     }
+  }
+
+  private stop(): void {
+    this.stopLoop();
     // room is going away — free any single-game locks it still holds (e.g. a match
     // abandoned before finalize) so those users aren't stuck unable to start again
     this.releaseActiveUsers();

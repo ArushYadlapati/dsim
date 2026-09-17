@@ -1,42 +1,314 @@
-# HANDOFF — 2026-09-16 (main: the admin panel + five fixes backported, NOT deployed)
+# HANDOFF — 2026-09-17 (main: alpha merged whole and deployed, season HELD at 4)
 
-**READ FIRST.** `main` now carries the admin-panel work and PRs **#58, #61, #67, #68, #69**,
-cherry-picked rather than taken with the rest of `alpha` — main is still ~28 commits behind it
-(settle-based finalize, the standing repricing, room recycle, the LAN tab host, the BIOBUZZ hive
-work). **Nothing here is deployed.** Two of the six are SERVER changes and two are MIGRATIONS.
+**READ FIRST.** `alpha` is merged into `main` as a single merge commit and deployed to Fly.
+The branches are level: everything that was on alpha is on main, and main's two spectator
+fixes (`applyBallDelta` COPIES, a reconnecting spectator re-spectating) survived the merge —
+their four smoke checks are asserted present in the merged tree.
 
-All gates green on this branch: `npm test` **ALL PASS twice** (shared + BIOBUZZ 1299),
-`npm run test:mm` 186, `npm run dbtest` ALL PASS, `build`, `server:check`, `uiaudit`, `contrast`.
+**⚠️ NO VERSION BUMP WAS TAKEN.** `BALANCE_VERSION` stays **4** and `SIM_VERSION` stays **2**
+(both were already equal on the two branches, so the merge moved neither). The owner declined
+the owed bump to 5 on 2026-09-17: the batch does move scores — settle-based finalize, and the
+BIOBUZZ buzzer-TIP — but bumping archives the standings for everyone on the one Fly app, and
+holding the season was the call. The consequence is on the record in `src/config.ts`: records
+set before and after this deploy share a board although the scoring moved under them. That is
+accepted, not an oversight. Do not "fix" it by bumping later without asking.
 
-## What was backported
+## The five conflicts and how they went
 
-| | what | where it bites |
+| file | hunks | resolution |
 |---|---|---|
-| admin panel | misscore replays open (they 404'd on every claim), the score is editable from the replay, penalties show on EVERY replay for everyone, standing is pardonable | client + **server** + **migrations 0035/0036** |
-| #69 | the lan-gate asserts follow the config that moved under them | test only |
-| #58 | `stageBiobuzz` is idempotent — the hopper is cleared with the ball array | sim |
-| #61 | a lossy LAN guest's snapshot delta is keyed to its ACK, not the last broadcast | **server** |
-| #68 | a rematch cannot field a seat nobody is in (the "match I never played" ghosts) | **server** |
-| #67 | a backgrounded ranked queue cannot lose the match it was given | client only |
+| `src/standing.ts` | 1 | **alpha's `card: 5`** — main's `20` contradicted the docstring directly above it, and the 2026-09-16 backport HANDOFF had already written down that alpha's side wins here next time |
+| `server/room.ts` | 2 | alpha's — `passCrown` on a host leaving a finished match, and `stopLoop()`, which alpha split out of `stop()` and main never had |
+| `scripts/smoke.ts` | 1 | alpha's — the HEAD side was empty; purely additive room-recycle tests |
+| `src/ui/Matchmaking.tsx` | 6 | alpha's — all six HEAD sides empty (`saveStagedMatch`/`clearStagedMatch` calls) |
+| `HANDOFF.md` | 1 | alpha's, then this section prepended |
 
-## ⚠️ The one resolution that needed a decision
+None of the five needed a judgement the repo had not already recorded.
 
-`src/standing.ts` conflicted on `STANDING_COST`. **main keeps its own prices** — `afk: 12`,
-`leave: 15`, `card: 20` — because the repricing (`afk`/`leave` to 8, yellow 5 / red 15 via
-`RED_CARD_MULT`) is a separate alpha decision that was not part of this backport. Only the new
-`adjustment` kind was added. So the two branches now price behaviour differently ON PURPOSE;
-whoever promotes alpha next should expect this file to conflict again and should take ALPHA's
-side then, since the repricing is the later decision.
+## Gates, all green on the merge commit
+
+`npm test` **ALL PASS twice** (shared + BIOBUZZ 1321) · `npm run test:mm` 186 ·
+`npm run dbtest` ALL PASS · `build` · `server:check` · `uiaudit` at/under baseline ·
+`contrast` 223.
+
+No new migrations — the admin-panel pair (0035/0036) was already on main from the backport,
+so this deploy needed no schema step.
+
+## Next
+
+- `alpha` is now behind `main` by this merge commit. Fast-forward it before doing more work
+  there, or the branches re-diverge immediately.
+- The season-4 drift above is the open question, not a task. It gets settled the next time
+  someone is willing to reset standings.
+
+# HANDOFF — 2026-09-16 (alpha: the admin panel merged, five PRs merged, main backported)
+
+`alpha` and `main` were both green and both pushed. Superseded by the section above.
+
+`npm test` prints **ALL PASS twice** for the first time in a while — PR #69 fixed the stale
+lan-gate asserts that had been failing on a clean tree since LAN went on in production on
+2026-09-13, which (because the suites chain with `&&`) meant the BIOBUZZ suite had not been
+running at all.
+
+## Merged into alpha
+
+| PR | what |
+|---|---|
+| #69 | the lan-gate asserts follow the config that moved under them — **this is what unblocked the second suite** |
+| #58 | `stageBiobuzz` is idempotent: the hopper is cleared with the ball array, so a re-stage stops refusing its own preloads |
+| #61 | a lossy LAN guest's snapshot delta is keyed to its **ACK**, not the last broadcast — **server** |
+| #68 | a rematch cannot field a seat nobody is in; the format comes from the room, not a head count — **server** |
+| #67 | a backgrounded ranked queue cannot lose the match it was given — client only |
+
+Plus the **admin-panel** batch (its own section below).
+
+Gates on alpha: `npm test` ALL PASS ×2 (BIOBUZZ 1317) · `test:mm` 186 · `dbtest` ALL PASS ·
+`build` · `server:check` · `uiaudit` · `contrast`.
+
+## main was CHERRY-PICKED, not promoted
+
+`main` took those six changes only and is still **~28 commits behind alpha** (settle-based
+finalize, the standing repricing, room recycle, the LAN tab host, the BIOBUZZ hive work). Same
+gates, all green there (BIOBUZZ 1299 — fewer checks because main lacks the alpha-only features
+those checks cover).
+
+⚠️ **`src/standing.ts` conflicted and the two branches now price behaviour DIFFERENTLY ON
+PURPOSE.** main keeps `afk: 12` / `leave: 15` / `card: 20`; alpha has the repricing (8 / 8,
+yellow 5 with `RED_CARD_MULT` for red). Only the new `adjustment` kind was backported. **On the
+next promotion this file will conflict again and ALPHA should win** — the repricing is the later
+decision.
 
 ## Next steps
 
-1. **Deploy the game server** (`./scripts/fly-deploy.sh` from a main worktree — never a bare
-   `flyctl deploy`). Migrations 0035/0036 apply at boot. Until then the admin panel's two new
+1. **Deploy the game server** from a **main** worktree (`./scripts/fly-deploy.sh`, never a bare
+   `flyctl deploy`). Migrations 0035/0036 apply at boot; until then the admin panel's two new
    endpoints 404 and #61/#68 are inert.
-2. **Vercel picks up the client half on push** — #67 and the replay penalties need nothing else.
-3. Still outstanding from the admin-panel session: clear every infraction on
-   `018fdc59-4e80-4a16-908c-682be86bfee8`. After the deploy it is one press of CLEAR ALL
-   INFRACTIONS in Admin → Moderation.
+2. Vercel picks up the client half on push (#67, the replay penalties).
+3. Still outstanding: clear every infraction on `018fdc59-4e80-4a16-908c-682be86bfee8` —
+   after the deploy, one press of CLEAR ALL INFRACTIONS in Admin → Moderation.
+4. Neither #61's LAN path nor #68's rematch gate has been exercised against a live server; both
+   are covered by driven smoke checks only.
+
+---
+
+# HANDOFF — 2026-09-15 (the admin-panel batch: misscore replays, score editing, replay penalties, standing edits)
+
+**(MERGED into `alpha` and cherry-picked onto `main` on 2026-09-16 — see the section above.
+Still NOT deployed.)** It is a SERVER change AND a MIGRATION change — two new migrations
+(0035, 0036) that apply at game-server boot, so nothing here works until the Fly server is
+redeployed.
+
+Build green: `npm run build`, `npm run server:check`, `npm run contrast`, `npm run uiaudit`,
+`npm run dbtest` (ALL PASS, +29 checks). `scripts/smoke.ts` passes +23 new checks.
+
+⚠️ ~~**`npm test` is RED on alpha already, and not from this work.**~~ **FIXED by PR #69**,
+merged 2026-09-16. Left below because the reasoning is why it mattered. Two stale checks —
+`lan gate: alpha opens it; production does not mention it at all` and `lan gate: and
+production still opens neither door` — assert that production's `fly.toml` mentions neither
+`LAN_UPLOADS` nor `LAN_SIGNALLING`. Both were deliberately turned ON in production on
+2026-09-13 (see that section below), and nobody updated the checks. They fail on `alpha` with
+no changes at all. **The consequence is the one CLAUDE.md warns about: while the first suite
+is red the BIOBUZZ suite never runs.** Either update the two checks to the fleet as deployed
+or revert the config; it is a policy call, not a bug fix, so it was left alone here.
+
+## What landed
+
+1. **The misscore queue's WATCH button 404'd on every claim.** `listScoreReports` returned a
+   MATCH id and the button passed it to `/api/replay/<id>`, which serves `replays.id`. It now
+   carries `replayId`, joined through `matches.replay_id`; a claim with no stored match says
+   "no replay" rather than offering a dead button. `onWatchReplay` is
+   `(replayId, matchId?) => void` everywhere (`WatchReplay` in `AdminReports.tsx`).
+2. **Score correction** — `GET/POST /api/admin/match`, `correctMatchScore`, migration
+   **0035** (`match_score_corrections`). `won` is re-derived; **ratings are deliberately not**
+   (Glicko-2 is sequential). The editor is `ScoreEditor` in `src/ui/ReplayRail.tsx`, offered
+   only when `ReplayView` gets an `adminMatchId`, which only ever comes from the admin panel
+   via in-memory state in `App.tsx` — never from the URL, which is shareable.
+3. **Penalties on every replay, for everyone.** `src/sim/penaltyLog.ts` is the ONE place a
+   sanction line is written and read (`awardFoul`/`awardCard` and BIOBUZZ's tariff wrapper
+   both format through it); `ReplayPlayer.log` stamps each line with its tick and phase clock.
+   The viewer has an always-on summary row and a seekable timeline in the rail. A solo record
+   run shows one chip and reads its fouls as a deduction.
+4. **Standing editing** — `GET/POST /api/admin/standing`, `adminEditStanding`, migration
+   **0036** (`voided_at`/`voided_by`/`admin_id`/`note` on `standing_events`). A pardon VOIDS:
+   `recentStandingCount` filters voided rows so escalation forgets them, and the row stays on
+   the record. `src/standing.ts` gained an `adjustment` kind with a SIGNED cost — render every
+   ledger row through `standingDelta`, never a hard-coded minus.
+
+## Next steps
+
+- **Nothing is deployed.** Merge to `alpha`, then promote and deploy the Fly server from a
+  **main** worktree (see the 2026-09-13 note). The migrations run at boot.
+- **Not yet exercised against a live server**: the two new admin endpoints have unit coverage
+  in `dbtest` and typecheck against the server, but no request has been made to a running
+  instance. First deploy, then open `/admin` → Moderation → search a player → STANDING.
+- The owner asked to clear every infraction on `018fdc59-4e80-4a16-908c-682be86bfee8`. **Not
+  done** — production DB and production HTTP reads are blocked in this environment, and the
+  admin endpoint that would do it is on this undeployed branch. Once deployed it is one press
+  of CLEAR ALL INFRACTIONS on that uuid.
+
+## Gotchas found on the way
+
+- **`ghost` + `primary` on one `.ds-btn` makes the label white on the page's own surface.**
+  `.ds-btn.ghost` is declared after `.ds-btn.primary`, so it wins on `background: none` while
+  primary's `color: var(--ds-accent-ink)` survives. It reads as a missing control. There is a
+  `uiaudit` rule for it now at baseline 0.
+- A replay's penalty list is built from `world.events`, so **the foul strings are now parsed,
+  not just displayed** — changing one is still a server change, and now also breaks a reader.
+  `npm test` round-trips the formatter against the parser.
+- The default robot's start anchor faces its own goal: a full-throttle `driveX: 1` holds it
+  flush against the goal for the whole match. Crossing the field from anchor 0 is `driveX: -1`.
+  Cost several throwaway scenes before it was noticed; worth knowing when writing any headless
+  scene that needs the robot to actually go somewhere.
+
+---
+
+# HANDOFF — 2026-09-14, later (account standing: behaviour charges WIRED, repriced — alpha only)
+
+**(superseded as READ FIRST by the 2026-09-15 section above; still current for its own subject.)** On `alpha`, NOT deployed, NOT on `main`. It is a SERVER change: it does nothing
+until the Fly game server is redeployed (from a main worktree — see below).
+
+- **`persistBehaviour` was never wired into production rooms** (`server/index.ts` passed 7 of
+  `Room`'s 8 args; `docs/multiplayer-architecture.md` §17.1 had flagged it). So in production
+  the clean-match heal (+2), AFK, leave and card standing charges had NEVER fired — only dodges
+  did. Now wired. ⚠️ Deploying it turns ALL of those on at once, for the first time against real
+  matches.
+- **Repriced (owner):** AFK 8 (was 12), leave 8 (was 15), yellow card 5 (was 20), red card 15
+  (was a flat 40 override). A red is now `severity: RED_CARD_MULT` (3) through the ladder, so it
+  rides the repeat multiplier like every other kind (a 2nd red in the week costs 23, a 2nd
+  yellow 8). Cooldown/rating ladders unchanged.
+- **Leaving a 1v1 is not charged** (`chargedForParticipation`, `src/standing.ts`); leaving a 2v2
+  is. AFK is charged in both. An excused 1v1 leaver is NOT credited clean either. The 1v1 match
+  is still rated, so the leaver still takes the loss.
+- Verified: `server:check` and client `tsc` clean; the changed standing checks run green through
+  the real functions in a scratch script. Full `npm test` NOT run (owner preference); the smoke
+  checks in `scripts/smoke.ts` were updated to the new values.
+
+---
+
+# HANDOFF — 2026-09-14, early (settle-based finalize LIVE, PR 65 landed, all night fixes shipped)
+
+**What production is running.** Fly release **v111** = `main` @ `b09f12e`, deployed
+from a main WORKTREE (never this alpha tree — `fly-deploy.sh` builds whatever tree it runs in).
+Everything below the line is on BOTH `main` and `alpha`.
+
+- **LIVE: a match is finalized when the field comes to rest, and the score is shown only then**
+  (`34bf3a2` main / `6326a6b` alpha). New `src/sim/settle.ts`: `settleStep` finalizes once the
+  game's `GameSimModule.settled` has held for `MATCH_SETTLE_HOLD_S` 0.5 s, capped at
+  `MATCH_SETTLE_MAX_S` **10 s — the owner's absolute maximum, do not raise it**. DECODE
+  (`decodeSettled`): nothing in flight, nothing pending or moving on a rail, ground/basin
+  artifacts and robots at rest. CR (`chainSettled`): no non-staged particle in flight, ground
+  particles and robots at rest. BIOBUZZ (`bbSettled`, `src/games/biobuzz/settle.ts`): nothing in
+  flight, no hive swinging or loaded past its tip, ground elements and robots at rest. The server
+  (`room.ts` `stepOnce`) and solo practice (`game.ts`) share the clock, in ticks.
+  `MATCH_SETTLE_S` / `MATCH_RESULT_REVEAL_MS` are DELETED. Client: the results screen reveals only
+  on `HudSnapshot.resultFinal` (online = the server's `matchResult` arrived; practice = its own
+  settle) and shows the SERVER's totals; the live HUD, replay viewer and burned-in video say
+  MATCH OVER until then and FINAL only on the finalized score; `resultLost` says so if the result
+  never comes. `maxMatchTicks` carries the 10 s cap. Measured: an idle DECODE or CR run finalizes
+  on the 0.5 s hold (no jitter); a rolling artifact held it to 116 ticks.
+  ⚠️ **Known to bind:** a BIOBUZZ tip that sets off a SECOND tip can outlast 10 s; PR 65's rule
+  (below) still pays a swing the cap cuts off.
+- **LIVE: PR 65, a BIOBUZZ tip caught by the buzzer scores and its load is not deducted**
+  (`7d0331c` main / `04ce456` alpha; its check moved onto the settle clock in `b09f12e` /
+  `41865e7`). Landed as CLEAN commits and the PR CLOSED, not merged: its own commits were
+  authored `Claude <noreply@anthropic.com>` with `Co-Authored-By`/`Claude-Session` trailers, and
+  the owner wants no attribution anywhere. No `BALANCE_VERSION` bump (owner's call).
+- **LIVE (since v110): a cancelled ranked match cannot be cancelled again** — no longer held; see
+  the section below. **LIVE: a solo record run left after the buzzer is still saved** (the room
+  keeps stepping with nobody connected until it finalizes).
+- ⚠️ **A gated shell chain lied once tonight:** `grep -c` exits 1 on a count of 0, so
+  `X=$(… | grep -c …) && cd worktree && …` stopped before the `cd` and the "main" tests ran on
+  alpha. The push gate caught it. Use `|| true` on counts and guard every `cd`.
+- `npm test`'s shared suite still ends at the 2 pre-existing `lan gate` failures. Alpha still
+  carries unreviewed BIOBUZZ commits that are not on main (see the review note below).
+
+# HANDOFF — 2026-09-13, night (production hotfixes: record-room reap LIVE, dodge double-cancel shipped in v110)
+
+Superseded by the section above. Deploys go from a MAIN worktree, never this alpha tree; killing
+a background deploy does NOT kill its `flyctl` child, so run deploys in the foreground. (v108,
+built from alpha by mistake, was live for about 5 minutes around 01:19Z and was replaced.)
+
+- **LIVE: a solo record run closed on purpose frees its room at once** (`f0e0430` main /
+  `df5872d` alpha, `server/room.ts` `detach(id, conn, clean)`, `server/index.ts` close code).
+  Record-run restarts used to hold the old `rec-` room for the 45 s reconnect grace, still
+  simulating. At the BIOBUZZ launch spike iad sat at 24/24 with 8-12 real runs and refused new
+  ones as `region_full`, which the Record Run screen shows as "Couldn’t start". A close with
+  code 1000/1005 on a solo record room now reaps immediately. 1006 (network) and 1001 (tab)
+  keep the grace, and so does every room with a second driver.
+- **SHIPPED in v110 (was held earlier that night): a cancelled ranked match can no longer be
+  cancelled a second time** (`28575be` on alpha, `406f506` on main).
+  `cancelPending` left `pendingMatch`/`phase` set, and a socket's `room` is never cleared. So
+  the first player to leave the cancelled screen re-ran the cancel from `detach` and was billed
+  a STRATEGY BAIL. The innocent driver was shown "Nothing was charged to you" and then lost
+  standing anyway; the player who never readied was billed twice. Smoke reproduces it: 3
+  charges without the fix, 1 with it. **Standing already lost this way is not refunded:** the
+  false rows are `standing_events` kind `dodge` whose `room_code` also carries a legitimate
+  charge to the other player.
+- `npm test`'s shared suite still ends at the 2 pre-existing `lan gate` failures (below).
+- Unreviewed alpha content not on main (review summary): BIOBUZZ hive tip rate / spill / miss
+  bounce and LEAVE-from-start-wall change scoring and RNG draw counts with no `SIM_VERSION`
+  bump; `startWalls` is read without a guard, so an alpha client against a main server throws in
+  online BIOBUZZ. Deploy the server before clients, or guard it, before promoting.
+
+# HANDOFF — 2026-09-13, later (BIOBUZZ hive feel: tip rate, spill scatter, miss bounce, canopy)
+
+Branch **`claude/hive-physics-rendering-tjz7mj`**. Four owner-reported HIVE items, all inside
+`src/games/biobuzz/` (nothing shared touched). Gates: `npx tsc --noEmit -p .` clean,
+`server:check` clean, `test:bb` **1289 ALL PASS**, `npm run build` ok. Full `npm test` run to the
+end: the shared suite reports **2 FAILURES, both PRE-EXISTING and not this branch's** — `lan gate:
+alpha opens it; production does not mention it at all` and `lan gate: and production still opens
+neither door`. They assert `fly.toml` carries no `LAN_UPLOADS` / `LAN_SIGNALLING`, and the
+2026-09-13 promotion (below) deliberately put both in `fly.toml [env]` to turn LAN on for
+production. The check is stale against that owner decision; the files it reads are untouched by
+this commit. Whoever owns the LAN policy should either retire those two checks or drop the flags.
+
+**MERGED INTO `alpha`** (`f3f74dc`), no conflicts: alpha's own `state.ts` change adds `startWalls`
+to `BiobuzzState` while this one adds `swingRate` to `BbHiveState`, and alpha's HUD change only
+moves the `tipping > 0` readout from a chip to the score bar's `cellLine`, which this preserves.
+Gates on the MERGED tree: `tsc` / `server:check` / `build` / `uiaudit` clean, `test:bb` **1294 ALL
+PASS**.
+
+⚠️ **A SEPARATE ALPHA BUG WAS FIXED TO GET A GATE AT ALL** (`scripts/smoke.ts`, own commit). Alpha's
+LAN commit `d14895b` added a check reading `roomSrc` ~126 lines ABOVE the `const roomSrc` in the same
+block, so it threw `ReferenceError: Cannot access 'roomSrc' before initialization` and **aborted the
+whole shared suite** — which, being `&&`-chained, also meant the BIOBUZZ suite never ran under
+`npm test` at all. The read is hoisted to its first use. The two checks involved now run and pass,
+and the shared suite completes at its 2 pre-existing LAN gate failures. Nothing else moved.
+
+- **A heavier tray tips faster** (`hive.ts` `hiveSwingRate`, `hiveSurplus`). The 4 s swing is
+  the swing of a tray at EXACTLY its tip-table threshold; each element over the threshold adds
+  `BB_TIP_RATE_PER_EXTRA` 0.35 to the rate, capped at `BB_TIP_RATE_MAX` 3. The surplus is
+  measured against `BB_TIP_POLLEN`, so every row's threshold load still takes 4.0 s and every
+  existing timing check is untouched. Pre-release the rate reads the live contents (the cell
+  keeps taking, so feeding a swinging tray speeds it up — measured: 2 pollen dropped in at
+  0.5 s settle it at 2.57 s instead of 4.0); post-release the rate is carried in the NEW
+  optional `BbHiveState.swingRate` (absent when settled and on old snapshots = nominal).
+  `tipping` stays in nominal seconds, so `tipProjection` / `tipProgress` are unchanged.
+- **Spill scatter** (`hive.ts`): `BB_SPILL_SPEED` [35,62] → **[30,62]**, `BB_SPILL_FAN` 18° →
+  **40°**, plus a new all-directions **`BB_SPILL_KICK`** 12 in/s. Every pose still leaves
+  outboard by construction (23 in/s outboard minimum vs a 12 kick). `spillPoses` now draws SIX
+  rng values per pose. `docs/biobuzz/feedback/001-spill-kinematics.md` has the addendum.
+- **A miss bounces off the structure** (`hive.ts` `hiveDeflect`, called from `play.ts` after
+  the capture loop for BOTH hives). The assembly is an APPROX box (`BB_HIVE_W` × `BB_HIVE_LEN`,
+  `BB_HIVE_BOTTOM_Z`..`BB_HIVE_OPEN_Z[1]`) with: the two long sides, the DOWN cell's outer end
+  and the underside solid; an interior PIVOT PLANE (y = 0) solid; **no top** (a descent from
+  above is the capture test's business, and a top is a shelf a ball could rest on); and the
+  **TAKING cell's outer end OPEN at every height** (`hiveTakingSide`, so it follows the
+  release). ⚠️ That mouth exemption is load-bearing: with the face solid, the dumper parked at
+  the lip and Aim Assist's flat lobs (which cross the lip a hair before apex, still climbing)
+  were ALL refused — 8 checks red. Bounce is `BB_HIVE_MISS_REST` 0.3 on the normal,
+  `BB_HIVE_MISS_TANGENT` 0.5 on the rest, vz kept on a side hit. Measured: a 150 in/s shot into
+  the red hive's flank lands 18.8 in short of the face on the side it came from; the same shot
+  at 70 in clears the top and lands downrange.
+- **Translucent canopy** (`drawField.ts` `drawHiveCanopy`, called from `draw.ts` between the
+  low and high element passes). The renderer draws field → robots → elements, so a robot under
+  the hive was painted OVER it. The canopy repaints the body, the up cell's fill and its
+  contents row at `CANOPY_A` 0.42 over the assembly's own footprint, after the robots and the
+  ground/low-flight elements and before the airborne ones (split at `BB_HIVE_BOTTOM_Z`). The
+  contents row is now `drawCellContents`, shared by the field pass and the canopy. Not a
+  `globalAlpha` on the sprite — the ruling is the PORTION under the hive, not the robot.
+- No `SIM_VERSION` bump was made (owner's standing call on this branch); spill RNG draw count
+  and the miss bounce both change sim output for the same inputs.
 
 ---
 
@@ -68,7 +340,7 @@ Branch **alpha**, pushed. `npm run server:check` clean; the new room-leak smoke 
 isolation and mutation-checked (fails without the fix). The full `npm test` was NOT run (owner).
 **Nothing deployed to production — the owner said not to until the promotion is ready.**
 
-## READ FIRST — production `iad` was refusing every new room
+## (was READ FIRST) — production `iad` was refusing every new room
 
 `/api/perf` on the always-warm primary read `rooms: 0, admitting: false`, and its log was a wall
 of `[admit] refused room rec-…: at cap (24/24)` from at least 04:53 UTC. US-East players could not

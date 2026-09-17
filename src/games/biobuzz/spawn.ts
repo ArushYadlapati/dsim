@@ -40,6 +40,7 @@ import { flowerStackZ } from './flower';
 import { bbCoerceSpec } from './robotConfig';
 import { bbFootprint } from './robot';
 import { bbSnapStart } from './start';
+import { bbWallsTouched } from './score';
 import { emptyBiobuzzState, type BiobuzzState } from './state';
 import { BB_HOOD_DEFAULT_DEG } from './config';
 import { bbIsTurreted, bbLauncherOf } from './mechs';
@@ -699,6 +700,10 @@ export function createBiobuzzWorld(
   }
 
   const biobuzz = emptyBiobuzzState();
+  // THE WALLS EACH ROBOT STARTS AGAINST — what LEAVE is measured against (`bbLeftNow`). Seeded
+  // here as well as on every `pre` tick (`step.ts`) so a world that never runs one — a headless
+  // run that calls `startMatch` straight off this function — still has the masks.
+  for (const r of robots) biobuzz.startWalls[r.id] = bbWallsTouched(r);
 
   const world: World = {
     game: 'biobuzz',

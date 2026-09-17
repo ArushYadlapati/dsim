@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { APP_NAME, LINKS } from '../seasons';
+import type { GameId } from '../games/types';
 import { desktop, type LanHostStatus } from '../desktop';
 import { LanHost, type HostHealth } from '../lan/hostRuntime';
 import { joinLanRoom } from '../lan/joinLan';
@@ -11,6 +12,7 @@ import { serverCaps } from '../net/api';
 import { useEscape } from './useEscape';
 import { appBuild, clearLanServer, lanActive, lanServerUrl, setLanServer } from '../net/env';
 import { LAN_DEFAULT_PORT, mixedContentBlock, parseLanAddress } from '../net/lanAddress';
+import { copyText } from './copyText';
 
 /**
  * LAN PLAY — host a game on this machine, or join one on this network.
@@ -52,11 +54,21 @@ const HOST_STEPS = [
 ] as const;
 export function LanPanel({
   signedIn,
+  game,
   onConnected,
   onBack,
 }: {
   /** hosting requires an account: the match data has to land somewhere */
   signedIn: boolean;
+  /**
+   * The game a room hosted from this tab is built for — the player's current pick.
+   *
+   * ⚠️ It has to be THIS, not the protocol default. A room built with no game is a DECODE
+   * room, and the host's own lobby then joins it as whatever game their settings say. With
+   * BIOBUZZ selected that put a BIOBUZZ lobby in front of a DECODE room: every READY UP was
+   * judged against DECODE's start rules, cleared by the room, and nothing on screen said why.
+   */
+  game: GameId;
   /** connected to a LAN server — take the player to the room screen */
   /**
    * Go to the room screen. The CODE is passed when this navigation already knows which room
@@ -64,8 +76,12 @@ export function LanPanel({
    * code, and making somebody type it again on the next screen (having just typed it here)
    * is a second chance to get it wrong for no information gained. The two ADDRESS paths pass
    * nothing: reaching a LAN server is not choosing a room on it.
+   *
+   * `game` rides along for the tab-hosted HOST, because it is the room's game and not
+   * necessarily the setting any more: a host who parks the room, changes game and comes back
+   * must still re-enter the room they are running, as the game it runs.
    */
-  onConnected: (code?: string) => void;
+  onConnected: (code?: string, game?: GameId) => void;
   /** leave the LAN screen without connecting to anything — see the note on `.ds-back` below */
   onBack: () => void;
 }) {
@@ -172,7 +188,7 @@ export function LanPanel({
       },
     });
     void host
-      .start(code)
+      .start(code, { kind: 'versus', game })
       .then((live) => {
         /* ⚠️ RAISED HERE, NOT WHERE THE ROOM IS ADOPTED. The match has to be kept by this tab
            and by no other (`src/lan/hosting.ts`), and the only tab that can know that is the
@@ -196,8 +212,9 @@ export function LanPanel({
        a hand-off rather than an abandonment. */
     handedOff.current = true;
     keepHostedRoom(tabHost);
+    // `transport` is a fresh loopback if the last visit's was disposed — see `LanHost.transport`
     setPendingLanRoom({ transport: tabHost.transport, code: tabCode, hosting: true });
-    onConnected(tabCode);
+    onConnected(tabCode, tabHost.game);
   };
 
   const joinByCode = (): void => {
@@ -302,57 +319,22 @@ export function LanPanel({
   };
 
   /**
-   * ⚠️ `navigator.clipboard` DOES NOT EXIST ON THE PAGE THIS SCREEN MATTERS MOST ON.
+   * ⚠️ THIS IS THE PAGE WHERE THE CLIPBOARD API IS NOT THERE.
    *
-   * The Clipboard API is gated on a SECURE CONTEXT. A LAN guest is served from
-   * `http://192.168.x.x:8787`, which is plain http and not `localhost`, so it is not secure and
-   * `navigator.clipboard` is `undefined` there — measured, not assumed. The optional chain meant
-   * the whole call evaporated and every copy button on this page was a button that did nothing,
-   * silently, with no error to notice. It is exactly the wrong page for that: the join URL and
-   * the host commands are the two things anyone comes here to copy.
+   * A LAN guest is served from `http://192.168.x.x:8787` — plain http, not `localhost`, so not
+   * a secure context and `navigator.clipboard` is `undefined`. The join URL and the host
+   * commands are the two things anyone comes to this screen to copy, so the fallback matters
+   * here more than anywhere else. It lives in `copyText` now, which every copy button shares;
+   * the host's own window is on `localhost`, which IS exempt, so it takes the modern path.
    *
-   * So there is a fallback, and it is the old `execCommand('copy')` one. It is deprecated and it
-   * is also the only thing that works without a secure context, which is the situation. The
-   * textarea is off-screen rather than `display:none` because a hidden element cannot be
-   * selected, and `readOnly` keeps a mobile keyboard from opening over the page.
-   *
-   * The host's own window is on `localhost`, which IS exempt and secure, so the modern path is
-   * the normal one and this is the guest's path.
+   * The flash is keyed to whether the text ACTUALLY landed, not to the click.
    */
   const flash = (text: string): void => {
     setCopied(text);
     window.setTimeout(() => alive.current && setCopied(''), 1600);
   };
-  const copyFallback = (text: string): boolean => {
-    try {
-      const ta = document.createElement('textarea');
-      ta.value = text;
-      ta.setAttribute('readonly', '');
-      ta.style.position = 'fixed';
-      ta.style.top = '-1000px';
-      document.body.appendChild(ta);
-      ta.select();
-      const ok = document.execCommand('copy');
-      document.body.removeChild(ta);
-      return ok;
-    } catch {
-      return false;
-    }
-  };
   const copy = (text: string): void => {
-    if (navigator.clipboard?.writeText) {
-      void navigator.clipboard.writeText(text).then(
-        () => flash(text),
-        // a rejection here is usually "the document is not focused" rather than "not allowed",
-        // and the fallback copes with both — so try it before giving up.
-        () => {
-          if (copyFallback(text)) flash(text);
-          else setCopied('');
-        },
-      );
-      return;
-    }
-    if (copyFallback(text)) flash(text);
+    copyText(text, (ok) => (ok ? flash(text) : setCopied('')));
   };
 
   /**

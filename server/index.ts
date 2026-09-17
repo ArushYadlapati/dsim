@@ -9,7 +9,7 @@ import { sanitizePlayer } from '../src/net/sanitize';
 import { authConfigured, verifyAuthToken } from './auth';
 import { initPhysics } from '../src/sim/physicsEngine';
 import { migrate } from './db/migrate';
-import { persistMatch, persistDodges } from './persist';
+import { persistMatch, persistDodges, persistBehaviour } from './persist';
 import { routeTarget } from './routing';
 import { SERVER_CHANNEL, isAlphaServer } from './channel';
 import { LAN_MODE, enforceLanPolicy } from './lanMode';
@@ -297,6 +297,28 @@ const activeElsewhere = (userId: string, code: string): boolean => {
     return false;
   }
   return true;
+};
+
+/**
+ * Is this user supposed to be LOADING INTO a ranked match right now?
+ *
+ * A pairing the matchmaker staged holds the same single-game lock a live match does
+ * (`Room.applyPending`), so this reads the same map — but it answers the narrower
+ * question the ranked queue needs: not "is there a game somewhere" but "is the server
+ * already counting down `RANKED_JOIN_GRACE_MS` on this account". That window is the one
+ * a player can walk back into the queue during — a refresh loses the room client-side
+ * while the room keeps its clock — and the one where being let back in earns them a
+ * no-show charge for the match they were re-queueing away from.
+ */
+const stagedElsewhere = (userId: string): boolean => {
+  const code = userRoom.get(userId);
+  if (!code) return false;
+  const r = rooms.get(code);
+  if (!r) {
+    userRoom.delete(userId);
+    return false;
+  }
+  return r.staging() && r.stagedFor(userId);
 };
 
 /**
@@ -2230,6 +2252,9 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
           if (userRoom.get(uid) === code) userRoom.delete(uid);
         },
         persistDodges,
+        // AFK / leave / card charges and the clean-match heal. Omitted here for months, so
+        // every one of them was dead in production while the DB-off dev path ran them fine.
+        (b) => void persistBehaviour(b),
       );
       rooms.set(code, r);
       created = true;
@@ -2296,6 +2321,52 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
       send({ t: 'error', message: lockoutMessage() });
       abandon();
       return;
+    }
+    /**
+     * ONE ACCOUNT, ONE SEAT IN THIS ROOM — ASKED BEFORE `canJoin`, because the answer is
+     * sometimes "you already have a seat here" and that outranks "the room is full".
+     *
+     * The single-game guard below compares room CODES, so it has never had an opinion about
+     * the same person arriving at the SAME code twice (`other === code` reads as "this is
+     * your room", which it is). Two tabs on one account therefore took two seats, and in a
+     * 1v1 ranked room that is the entire room: capacity 2, both seats spent on one person,
+     * and the real opponent refused at the door and charged a no-show for a match they were
+     * standing outside of.
+     *
+     * THE SEAT IS TAKEN OVER RATHER THAN THE JOINER REFUSED, which is the same rule
+     * `reattach` already applies to `rejoin` and for the same reason: the three ways to get
+     * here are indistinguishable from the outside. A reload (the client id is gone with the
+     * page, so `rejoin` is not available to them), a reconnect (`join` is re-sent on every
+     * `onReopen`, and a partitioned socket outlives the client that gave up on it, so the
+     * old seat can still read as connected), and a genuine second tab all arrive as one
+     * authenticated `join` from an account that already holds a seat. Handing the seat to
+     * the newest socket serves all three: the first two get their own seat back, and the
+     * third gets the match while the tab it displaced is told so instead of being left on a
+     * session that has been silently unplugged.
+     *
+     * Reclaiming keeps the HELD CLIENT ID, which is what `slotOf` and `robotOf` are keyed
+     * by — so the returning player lands on their own roster slot and their own robot. That
+     * is what makes refreshing during the ranked strategy window survivable; see the
+     * matching seat-hold in `Room.detach`.
+     */
+    if (user) {
+      const seat = r.seatFor(user.userId);
+      if (seat) {
+        const nc = r.reattach(seat, send, sendRaw, backlog);
+        if (nc !== null) {
+          liveSockets.delete(id);
+          id = seat; // adopt the reclaimed identity on this socket
+          liveSockets.set(id, { authed: true });
+          room = r;
+          conn = nc;
+          markAuthed(user.userId);
+          // the lock follows the seat: this room owns it again (registration is by user
+          // id, so re-asserting it here is idempotent)
+          userRoom.set(user.userId, code);
+          r.maybeStartRanked(); // they may have been the last one missing
+          return;
+        }
+      }
     }
     if (!r.canJoin()) {
       send({ t: 'error', message: 'Room is full or a match is already in progress.' });
@@ -2487,6 +2558,18 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
         } else {
           send({ t: 'rejoined', ok: false });
         }
+      } else if (msg.t === 'abandon') {
+        /**
+         * ABANDON A HELD SLOT FROM OUTSIDE THE ROOM. One frame, no reply: the client has
+         * already left as far as it is concerned, and the only thing left is to stop the
+         * server holding a lock on its behalf for the rest of the reconnect grace.
+         *
+         * Not gated on `room` being null, and not on an auth token: the client id is the
+         * secret, the same one `rejoin` accepts as proof, and a wrong one simply finds no
+         * slot. Answering nothing at all is what keeps it from being a probe for which
+         * rooms and which client ids exist.
+         */
+        rooms.get(msg.room.toLowerCase())?.abandonSlot(msg.clientId);
       } else if (msg.t === 'reportScore') {
         /**
          * A MISSCORE claim from this room. No target to resolve — see the protocol note —
@@ -2568,6 +2651,25 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
           }
           if (lockedOut(u.userId)) {
             send({ t: 'error', message: lockoutMessage() });
+            return;
+          }
+          /**
+           * ALREADY IN A RANKED MATCH THAT IS LOADING IN — its own refusal, and its own
+           * sentence.
+           *
+           * `Room.applyPending` takes the single-game lock the moment a pairing is staged,
+           * so the generic guard below would already catch this. It is called out first
+           * because the two states are not the same thing to the person reading the
+           * message: "rejoin or leave it first" describes a game they can go back to, and
+           * a staged match that has not started is not that — there is nothing to rejoin
+           * and leaving it costs standing. Saying so plainly is the difference between a
+           * player waiting out the twenty seconds and a player pressing FIND MATCH again.
+           *
+           * It is also the backstop that does not depend on the lock: a room is staged
+           * for this user, and that is checked directly.
+           */
+          if (stagedElsewhere(u.userId)) {
+            send({ t: 'error', message: 'You are already in a ranked match - go back and load into it.' });
             return;
           }
           // one live game per user: can't queue ranked while another game is live

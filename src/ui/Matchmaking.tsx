@@ -24,6 +24,7 @@ import { APP_NAME } from '../seasons';
 import { Logo } from './Logo';
 import { useEscape } from './useEscape';
 import { formatLabel, type PendingChallenge } from './challenge';
+import { clearStagedMatch, loadStagedMatch, saveStagedMatch } from '../net/stagedMatch';
 
 /**
  * ONE string for the one fact, on both waiting screens.
@@ -53,13 +54,22 @@ const BACKGROUND_QUEUE_TIP = (
  * The numbers are READ from the same constants the server counts on, so the sentence cannot
  * go stale if either window is tuned. It is shown on the queue screen and again while
  * searching, because the second one is where people walk away.
+ *
+ * AND IT NAMES THE RELOAD. "Stay at your keyboard" does not cover the one action that
+ * turns a twenty-second grace into an instant charge: a queue lives in memory
+ * (`queueKeeper` is a module singleton) and a staged match has no rejoin record — that is
+ * only written once a match actually starts (`App.beginSession`) — so a refresh between
+ * "match found" and "match playing" cannot be recovered from on either side. The server
+ * reads the closed socket as a player who left and bills it cause-blind, by design
+ * (`server/room.ts`: "a closed tab and a pulled cable are the same event"). A rule with
+ * no way back has to be said out loud.
  */
 const READY_WINDOW_NOTE = (
   <>
-    Stay at your keyboard once you queue. When a match is found you have{' '}
-    <b>{Math.round(RANKED_JOIN_GRACE_MS / 1000)}s</b> to load in and{' '}
-    <b>{Math.round(STRATEGY_DURATION_MS / 1000)}s</b> on the strategy screen to ready up. Miss
-    either and the match is cancelled for everyone and your account standing drops.
+    Once a match is found: <b>{Math.round(RANKED_JOIN_GRACE_MS / 1000)}s</b> to load in, then{' '}
+    <b>{Math.round(STRATEGY_DURATION_MS / 1000)}s</b> to ready up. Miss either and the match is
+    cancelled and your standing drops. <b>Don’t refresh or close the tab</b> — that counts as
+    leaving.
   </>
 );
 
@@ -281,6 +291,35 @@ export function Matchmaking({
   };
   useEffect(() => teardown, []); // cleanup on unmount
 
+  /**
+   * ASK BEFORE A RELOAD THAT WOULD COST A DODGE.
+   *
+   * Armed only between "match found" and "match playing", which is the one stretch with
+   * no way back. A queue survives a screen change (it parks) but nothing survives a page
+   * load: the keeper is a module singleton, and a staged room has no rejoin record — that
+   * is written at `beginSession`, i.e. once the match has actually started. So a refresh
+   * here loses the seat with the server's clock still running, and the server charges the
+   * closed socket cause-blind.
+   *
+   * The browser shows its own generic wording — `preventDefault` is the whole API, and
+   * custom text has been ignored for a decade — so the sentence that actually explains
+   * this lives in `READY_WINDOW_NOTE`, on screen at the same moment. This is the seatbelt,
+   * not the explanation.
+   *
+   * NOT armed while merely searching. A search is genuinely abandonable, costs nothing to
+   * lose, and a prompt on every idle queue is how people learn to dismiss the prompt.
+   */
+  useEffect(() => {
+    if (!found && !strategy) return;
+    const warn = (e: BeforeUnloadEvent): void => {
+      e.preventDefault();
+      // legacy form, still required by some engines to trigger the dialog at all
+      e.returnValue = '';
+    };
+    window.addEventListener('beforeunload', warn);
+    return () => window.removeEventListener('beforeunload', warn);
+  }, [found, strategy]);
+
   useEffect(() => {
     searchingRef.current = searching;
   }, [searching]);
@@ -352,6 +391,7 @@ export function Matchmaking({
       wireStrategy(lobby);
       lobby.on('matchStart', (m: MatchStart) => {
         startedRef.current = true;
+        clearStagedMatch();
         matchFound();
         onStart(new ServerSession(lobby.transport, lobby.isHost(), m, lobby.clientId, 'ranked'));
       });
@@ -374,6 +414,7 @@ export function Matchmaking({
     // the strategy window that preceded it, which supersedes a bare assignment.
     if (p.start) {
       startedRef.current = true;
+      clearStagedMatch();
       // the room code when the match is running in one, `'ranked'` on the single-region path
       onStart(
         new ServerSession(lobby.transport, lobby.isHost(), p.start, lobby.clientId, p.assignedRoom ?? 'ranked'),
@@ -401,6 +442,28 @@ export function Matchmaking({
   // button they'd have to press to start waiting.
   useEffect(() => {
     if (adoptParked()) return; // already in the queue — do not enter it twice
+    /**
+     * THE WAY BACK FROM A RELOAD. Nothing is parked — a page load takes the keeper with
+     * it — but `stagedMatch` survives in storage, and the server is still holding this
+     * account's seat in that room (`Room.detach` holds it, `seatFor` hands it back on
+     * the account rather than on a client id the reload destroyed).
+     *
+     * Rejoining, not offering to: the clocks did not pause while the page was loading,
+     * and a card the player has to find costs them the seconds this exists to save. It
+     * is the same call the assignment itself makes, so the screen that comes up is the
+     * one they were looking at.
+     *
+     * Signed-out is a dead end by construction — the seat is keyed to the account — so
+     * a stale record is dropped rather than acted on.
+     */
+    const staged = loadStagedMatch();
+    if (staged) {
+      if (signedIn) {
+        joinAssignedMatch(staged.room);
+        return;
+      }
+      clearStagedMatch();
+    }
     if (!challengeRef.current || !signedIn) return;
     onChallengeConsumed?.();
     void find();
@@ -500,6 +563,7 @@ export function Matchmaking({
       wireStrategy(lobby);
       lobby.on('matchStart', (m: MatchStart) => {
         startedRef.current = true;
+        clearStagedMatch();
         onStart(new ServerSession(lobby.transport, lobby.isHost(), m, lobby.clientId, room));
       });
       lobby.on('dodgeVerdict', (yours, others) => setDodge({ yours, others }));
@@ -550,6 +614,14 @@ export function Matchmaking({
     } catch {
       return null;
     }
+    /**
+     * WRITE THE WAY BACK BEFORE ANYTHING CAN GO WRONG, not after the join succeeds. From
+     * here until the match starts there is a server clock running on this account and no
+     * other record of which room it belongs to — so this is the one line that makes a
+     * reload recoverable rather than a dodge. Both callers (the live screen and the
+     * parked handler) come through here, which is why it is here and not in either.
+     */
+    saveStagedMatch(room);
     const lobby = new LobbyClient(transport);
     wireRoomLobby(lobby, room, live);
     lobby.join(room, playerInfoRef.current());
@@ -577,6 +649,7 @@ export function Matchmaking({
   /** a cancel/close arrived (deadline lapsed, opponent left): drop the strategy
    * screen back to the queue with the reason shown. */
   const strategyCancelled = (msg: string): void => {
+    clearStagedMatch(); // there is no room to go back to
     // THE MATCH IS OVER — forget it. A socket still marked as a seat in a staged room would be
     // parked on the way out (`teardown`) and the takeover would drag the player back into a
     // room that no longer wants them.
@@ -588,6 +661,7 @@ export function Matchmaking({
 
   /** forget a found match: nothing left to hand back, nothing left to come back to. */
   const clearFound = (): void => {
+    clearStagedMatch();
     foundRef.current = false;
     joinedRef.current = false;
     assigningRef.current = false;
@@ -713,6 +787,7 @@ export function Matchmaking({
     wireStrategy(lobby);
     lobby.on('matchStart', (m: MatchStart) => {
       startedRef.current = true;
+      clearStagedMatch();
       matchFound();
       onStart(new ServerSession(transport, lobby.isHost(), m, lobby.clientId, 'ranked'));
     });

@@ -83,6 +83,8 @@ export class ServerSession implements NetSession {
   /** record run's leaderboard standing, arrives shortly after matchResult */
   private recordResult: RecordRankInfo | null = null;
   private restartCb: (() => void) | null = null;
+  /** the room went back to its lobby — see `onLobby` */
+  private lobbyCb: ((clientId: string) => void) | null = null;
   /** fired once per `matchResult` — see `onMatchResult` */
   private resultCb: ((info: MatchResultInfo) => void) | null = null;
   private connected = true;
@@ -122,7 +124,12 @@ export class ServerSession implements NetSession {
 
   constructor(
     private readonly transport: Transport,
-    private readonly host: boolean,
+    /**
+     * ⚠️ NOT readonly — see the `roster` case in `onMessage`. The crown migrates when the
+     * host leaves, and a session that answered its construction-time value for the rest of
+     * the room's life would hide the host-only controls from the player who is now host.
+     */
+    private host: boolean,
     start: {
       seed: number;
       setups: RobotSetup[];
@@ -300,6 +307,33 @@ export class ServerSession implements NetSession {
     this.transport.close();
   }
 
+  /**
+   * GIVE THE SOCKET UP WITHOUT CLOSING IT — the way out of a recycled room.
+   *
+   * `dispose` ends the connection because every other exit from a match really is an
+   * exit. Going back to the room's own lobby is not: the server still holds this seat,
+   * and dropping the socket would make the player re-join the room they never left (and
+   * lose it outright if the room filled in between). So this stops everything the session
+   * owns — the ping probe, and it is the caller's job to re-point `transport.onMessage`
+   * at a `LobbyClient` immediately — and leaves the connection standing.
+   */
+  release(): Transport {
+    if (this.pingTimer) clearInterval(this.pingTimer);
+    this.pingTimer = null;
+    return this.transport;
+  }
+
+  /** host only: ask the server to send this finished room back to its lobby. */
+  requestLobby(): void {
+    this.transport.send(encodeMsg({ t: 'lobby' }));
+  }
+
+  /** the room went back to its lobby; `clientId` is ours, re-sent because the lobby that
+   *  adopts this socket never sends a `join` and so never gets a `welcome`. */
+  onLobby(cb: (clientId: string) => void): void {
+    this.lobbyCb = cb;
+  }
+
   /** a robot's static spec, re-injected into slimmed snapshots (from setups) */
   private specById = (id: number): RobotSpec =>
     this.setups.find((s) => s.id === id)?.spec ?? this.setups[0].spec;
@@ -391,6 +425,22 @@ export class ServerSession implements NetSession {
       this.baseBalls.clear();
       this.appliedTick = -1; // fresh world starts at tick 0; don't reject its snapshots
       this.restartCb?.();
+    } else if (m.t === 'roster') {
+      // THE ONLY THING THIS SESSION WANTS FROM A ROSTER: who holds the crown. The room
+      // broadcasts one whenever somebody leaves, and a host who leaves passes it on
+      // (`Room.passCrown`) — so without this the player who INHERITED the room would be
+      // shown no host controls and the room would look stuck to everyone in it.
+      this.host = m.hostId !== '' && m.hostId === this.clientId;
+    } else if (m.t === 'lobby') {
+      /**
+       * THE ROOM IS A LOBBY AGAIN. The match this session was built around no longer
+       * exists server-side, so there is nothing left here to reconcile, predict or render
+       * — the App hands the socket to a `LobbyClient` and shows the room. Marked
+       * disconnected first so anything still reading this session in the same frame sees
+       * a session that is over rather than one that is merely quiet.
+       */
+      this.connected = false;
+      this.lobbyCb?.(m.clientId);
     } else if (m.t === 'rejoined' && !m.ok) {
       // the grace window lapsed / the match is gone — the held slot can't be
       // reclaimed. Surface it as a hard failure so the HUD shows the "connection

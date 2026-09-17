@@ -12,6 +12,7 @@ import {
   type Entitlements,
 } from '../net/api';
 import { AuthPanel } from './AuthPanel';
+import { copyText } from './copyText';
 import { DesktopUpdate } from './DesktopUpdate';
 import { fmtDay } from './fmtDate';
 import { ServerMenu } from './ServerMenu';
@@ -78,10 +79,12 @@ export function Account({
           <button
             className="ds-btn"
             onClick={() => {
-              if (confirm(
+              if (
+                confirm(
                   'Reset every setting? This clears your robot build, saved robots, imported autos, ' +
                     'saved start positions, key bindings, audio and mobile layout. It cannot be undone.',
-                )) {
+                )
+              ) {
                 onChange(defaultSettings());
               }
             }}
@@ -255,7 +258,20 @@ function Identity({ onHandleSaved }: { onHandleSaved?: (handle: string) => void 
   const client = authClient!;
   const session = client.useSession();
   const [open, setOpen] = useState(false);
+  const [copied, setCopied] = useState(false);
   const user = session.data?.user;
+
+  /** the flash is driven by whether the text ACTUALLY landed — see `copyText`: the
+   *  clipboard API is absent on a plain-http LAN page, and "Copied" over a copy that
+   *  never happened is worse than no button. */
+  const copyId = (): void => {
+    if (!user?.id) return;
+    copyText(user.id, (ok) => {
+      if (!ok) return;
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1600);
+    });
+  };
 
   return (
     <div className="ds-panel">
@@ -276,14 +292,24 @@ function Identity({ onHandleSaved }: { onHandleSaved?: (handle: string) => void 
           <Username userId={user.id} />
           <div className="ds-acct-id">
             <p className="ds-hint">Account ID</p>
-            {/* --ds-mut, not the --muted bridge: that one belongs to the in-match HUD */}
-            <code
-              className="ds-acct-uuid"
-              title="Click to copy"
-              onClick={() => void navigator.clipboard?.writeText(user.id)}
-            >
-              {user.id}
-            </code>
+            <div className="ds-field-row">
+              <code
+                className="ds-acct-uuid"
+                title="Click to copy"
+                onClick={copyId}
+              >
+                {user.id}
+              </code>
+              <button
+                type="button"
+                className="ds-btn ghost small"
+                onClick={copyId}
+                title="Copy Account ID"
+                aria-label="Copy Account ID"
+              >
+                {copied ? 'Copied' : 'Copy'}
+              </button>
+            </div>
           </div>
         </div>
       ) : (

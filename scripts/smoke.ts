@@ -225,6 +225,7 @@ import {
   COOLDOWN_LADDER, RATING_LADDER, WINDOW_HOURS, ladderRung,
   tierOf, healed, clampScore, repeatMult, applyStandingEvent, queueLocked, lockRemaining,
   judgeParticipation, MIN_JUDGED_TICKS, AFK_DRIVE_FRACTION, LEAVE_AWAY_FRACTION,
+  RED_CARD_MULT, chargedForParticipation,
   type StandingEventKind, type StandingState,
 } from '../src/standing';
 import type { ServerMsg, QueueMode } from '../src/net/protocol';
@@ -3450,10 +3451,9 @@ function queueTenth(w: World): void {
  * sanctioned for it, which is a behaviour finding with the evidence already attached: it is
  * in the match record, on the results screen and in the replay.
  *
- * Priced between a walk-out (15) and a moderator's upheld verdict (25): worse than wasting
- * one match's worth of other people's time, lighter than a human's judgement, because no
- * human has looked at it. A RED is charged double — it is the second card, and it voids the
- * alliance's score on top.
+ * Owner, 2026-09-14: "Yellow card should only take away 5. Red card take away 15." The card
+ * has already cost the alliance points (a red voids the score), so the standing charge is
+ * the lesser half. A red still rides the repeat multiplier — `severity`, not a flat override.
  *
  * No cooldown for a first one, deliberately: the card already cost the alliance the match, so
  * locking the driver out of the queue for it is a second punishment for one act.
@@ -3461,10 +3461,15 @@ function queueTenth(w: World): void {
 {
   const clean = { score: STANDING_MAX, restrictedUntil: null };
   const yellow = applyStandingEvent(clean, 'card', { now: 0, priorSameKind: 0 });
+  const red = applyStandingEvent(clean, 'card', { now: 0, priorSameKind: 0, severity: RED_CARD_MULT });
   check(
-    'a card costs standing, between a walk-out and an upheld report',
-    yellow.points > STANDING_COST.leave && yellow.points < STANDING_COST.reportUpheld,
-    `${yellow.points} points (leave ${STANDING_COST.leave}, upheld ${STANDING_COST.reportUpheld})`,
+    'a yellow card costs 5 standing and a red 15',
+    yellow.points === 5 && red.points === 15,
+    `yellow ${yellow.points}, red ${red.points}`,
+  );
+  check(
+    '...and a red is still escalated by a repeat inside the window',
+    applyStandingEvent(clean, 'card', { now: 0, priorSameKind: 1, severity: RED_CARD_MULT }).points > red.points,
   );
   check(
     '...and a FIRST card does not lock the queue — the match already paid for it',
@@ -7334,18 +7339,45 @@ function pushContest(A: Partial<RobotSpec>, B: Partial<RobotSpec>, seconds = 3):
         launcher.includes('Number(y.private) - Number(x.private)'),
     );
 
-    // ---- the clipboard fallback
+    /**
+     * ---- THE CLIPBOARD FALLBACK, WHEREVER A COPY BUTTON IS
+     *
+     * The Clipboard API is gated on a secure context and a LAN guest is served over plain
+     * http, so `navigator.clipboard` is `undefined` there and a bare optional chain makes
+     * the button a no-op that reports success. That bug shipped on this screen once and
+     * then shipped AGAIN on the account-id button (PR #71), which is what moved the
+     * fallback into `copyText` — so these check the shared helper and then check that no
+     * call site has quietly grown its own copy path back.
+     */
+    const copyMod = readFileSync('src/ui/copyText.ts', 'utf8');
     check(
-      'lan copy: there is an execCommand fallback for the non-secure LAN origin',
-      lan.includes("document.execCommand('copy')"),
+      'copy: there is an execCommand fallback for the non-secure LAN origin',
+      copyMod.includes("document.execCommand('copy')"),
     );
     check(
-      'lan copy: the old unguarded `navigator.clipboard?.writeText(` no-op is gone',
-      !/void navigator\.clipboard\?\.writeText/.test(lan),
+      'copy: a rejected clipboard promise still tries the fallback',
+      /\.then\([\s\S]{0,300}?\(\) => done\(copyFallback\(text\)\)/.test(copyMod),
     );
     check(
-      'lan copy: a rejected clipboard promise still tries the fallback',
-      /\.then\([\s\S]{0,400}?copyFallback\(text\)/.test(lan),
+      'copy: the flash is driven by whether the text LANDED, not by the click',
+      /onDone\?\.\(ok\)/.test(copyMod) && /done\(copyFallback\(text\)\)/.test(copyMod),
+    );
+    /**
+     * NO CALL SITE MAY REINVENT IT. `void navigator.clipboard?.writeText(x)` is the exact
+     * shape of both bugs: on a non-secure origin the whole expression evaporates and
+     * nothing throws. Every screen with a copy button goes through `copyText`.
+     */
+    for (const f of ['src/ui/LanPanel.tsx', 'src/ui/Account.tsx', 'src/ui/Lobby.tsx']) {
+      const src = readFileSync(f, 'utf8');
+      check(
+        `copy: ${f.split('/').pop()} has no unguarded navigator.clipboard no-op`,
+        !/void navigator\.clipboard\?\.writeText/.test(src),
+      );
+    }
+    check('copy: LanPanel copies through the shared helper', /copyText\(/.test(lan));
+    check(
+      'copy: the account id copies through the shared helper',
+      /copyText\(/.test(readFileSync('src/ui/Account.tsx', 'utf8')),
     );
   }
 
@@ -8030,9 +8062,21 @@ function pushContest(A: Partial<RobotSpec>, B: Partial<RobotSpec>, seconds = 3):
       'lan tab: the host letting go of its loopback drops its seat from the room',
       /toWorker\(\{ k: 'drop', id: HOST_SEAT \}\)/.test(hr),
     );
+    /* …but an EMPTY room is an idle one, not a stepping one — the room's loop runs only during
+       a match and the room stops it itself — so emptying no longer ends hosting. It did, and a
+       host who went to the lobby alone and pressed Back killed their own room. */
     check(
-      'lan tab: and a room that empties stops hosting rather than stepping forever',
-      /if \(m\.k === 'empty'\) \{\s*\n\s*this\.stop\(/.test(hr),
+      'lan tab: a room that empties stays hosted, so a host stepping out does not kill it',
+      /if \(m\.k === 'empty'\) return;/.test(hr) && !/this\.stop\('Everyone left the room\.'\)/.test(hr),
+    );
+    /* `server/room.ts` is read HERE, at its first use, and not beside the room-game check
+       further down: both sites are one block, so a `const` declared there is in the temporal
+       dead zone up here and this check threw `Cannot access 'roomSrc' before initialization` —
+       which aborts the WHOLE shared suite, and with it the `&&`-chained BIOBUZZ one. */
+    const roomSrc = readFileSync('server/room.ts', 'utf8');
+    check(
+      'lan tab: the room itself stops its loop when it empties, so nothing steps an empty room',
+      /if \(this\.clients\.size === 0\) \{\s*\n\s*this\.stop\(\);\s*\n\s*this\.onEmpty\(\);/.test(roomSrc),
     );
 
     /**
@@ -8143,11 +8187,69 @@ function pushContest(A: Partial<RobotSpec>, B: Partial<RobotSpec>, seconds = 3):
        paths deliberately do not, because reaching a LAN server is not picking a room on it. */
     check(
       'lan tab: arriving at the room screen JOINS the code, rather than asking for it again',
-      /onConnected\(tabCode\)/.test(lp) && /onConnected\(r\.code\)/.test(lp),
+      /onConnected\(tabCode, tabHost\.game\)/.test(lp) && /onConnected\(r\.code\)/.test(lp),
     );
     check(
       'lan tab: and the app turns that into the same one-shot auto-join an invite uses',
       /setPendingAutoJoin\(\{ room: code, config: \{ kind: 'versus'/.test(app),
+    );
+
+    /**
+     * ⚠️ **THE ROOM A TAB HOSTS RUNS THE PLAYER'S GAME, AND SEATS ONLY THAT GAME.** It was
+     * built with the protocol default — no game, so DECODE — while the host's own lobby joined
+     * it as whatever their settings said. With BIOBUZZ selected, every READY UP was judged
+     * against DECODE's start rules by the room, cleared, and nothing on screen said why. The
+     * cloud refuses a mismatched joiner ("That code is for a different game mode."); the Worker
+     * now does the same, and the host re-enters as the game the room runs, not the setting.
+     */
+    check(
+      "lan tab: the room a tab hosts is built for the PLAYER'S game, not the protocol default",
+      /\.start\(code, \{ kind: 'versus', game \}\)/.test(lp),
+    );
+    check(
+      "lan tab: the Worker refuses a joiner set to a DIFFERENT game, with the cloud's sentence",
+      /coerceGameId\(m\.config\.game\) !== room\.gameId/.test(hw) &&
+        /That code is for a different game mode\./.test(hw),
+    );
+    check(
+      'lan tab: the join frame carries its config to the Worker, so there is something to refuse on',
+      /config: intro\.config/.test(hr),
+    );
+    check(
+      'lan tab: the host re-enters its room as the game the ROOM runs, not the current setting',
+      /game: game \?\? settings\.game/.test(app) && /get game\(\): GameId/.test(hr),
+    );
+
+    /**
+     * ⚠️ **BACK OUT OF THE LOBBY, BACK INTO THE LAN SCREEN, AND NOTHING WORKED.** The lobby
+     * disposes its transport on unmount, which drops the host's seat; alone, the room empties
+     * and stops itself. The keeper still handed the dead `LanHost` back: a code for a room that
+     * was over, a Stop that returned early, a GO TO THE ROOM that threw on a null transport.
+     * With guests present the room lived on, but the crown had passed to a guest and the
+     * loopback was closed for good, so the host could never sit in their own room again.
+     */
+    check(
+      'lan tab: a room that ENDED while parked is not handed back to the LAN screen',
+      /return h\?\.live \? h : null;/.test(keeper) && /get live\(\): boolean/.test(hr),
+    );
+    check(
+      'lan tab: the host gets a FRESH loopback after the lobby disposed the last one',
+      /if \(!this\.local \|\| !this\.local\.isOpen\)/.test(hr) && /this\.makeLocal\(this\.toWorker\)/.test(hr),
+    );
+    check(
+      'lan tab: a RESERVED host keeps the crown when they step out of the lobby',
+      /this\.hostId === id && this\.reservedHost !== id/.test(roomSrc) &&
+        /if \(this\.hostId === id\) this\.reservedHost = id;/.test(roomSrc),
+    );
+    check(
+      'lan tab: but a cloud room still hands the crown on — nothing there reserves one',
+      !/reserveHost\(/.test(readFileSync('server/index.ts', 'utf8')),
+    );
+    check(
+      'lan rtc: a failed handshake says WHICH leg failed, on both ends, not just that it did',
+      /explainNoConnect\(pc, diag, 'host'\)/.test(peerSrc) &&
+        /explainNoConnect\(pc, diag, 'player'\)/.test(peerSrc) &&
+        /remoteMdns/.test(peerSrc),
     );
 
     check(
@@ -14199,6 +14301,167 @@ function pinScene(
   );
 }
 
+// ---- RECYCLING A FINISHED ROOM ---------------------------------------------
+// A room used to be single-use: `world` was set once and never cleared, so after one
+// match `canJoin` refused every later joiner and the `start` gate refused every later
+// match. The only way on was a rematch, which REPLAYS the roster frozen at the first
+// start — so a group that lost a player, or wanted to re-pick sides, had to mint a new
+// code and all re-join it. These checks are that whole loop: play, leave, recycle,
+// re-pick, play again.
+{
+  const sink: Record<string, ServerMsg[]> = { a: [], b: [], c: [] };
+  const lastRoster = (ms: ServerMsg[]) =>
+    [...ms].reverse().find((m) => m.t === 'roster') as Extract<ServerMsg, { t: 'roster' }> | undefined;
+  const mkR = (id: string, alliance: Alliance): Client => ({
+    id,
+    send: (m) => sink[id].push(m),
+    player: { clientId: id, name: id, teamName: 'T', teamNumber: 1, alliance, startIndex: 0, ready: true, spec: { ...DEFAULT_SPEC }, assists: { ...DEFAULT_ASSISTS } },
+    connected: true,
+    disconnectAt: 0,
+    caps: ['recycle'],
+    userId: 'u-' + id,
+  });
+  const room = new Room('smoke-recycle', () => {}, { kind: 'versus' });
+  room.add(mkR('a', 'red'));
+  room.add(mkR('b', 'blue'));
+  room.add(mkR('c', 'blue'));
+  room.onMessage('a', { t: 'start' });
+  room.advanceForTest(maxMatchTicks() + 5);
+  check('recycle: the match actually finished (everything below is about a FINISHED room)',
+    room.worldForTest()?.match.phase === 'post', String(room.worldForTest()?.match.phase));
+
+  // THE OLD BEHAVIOUR, asserted so the reason for the feature stays on the record:
+  // a room that has played is shut to everyone until its world is cleared.
+  check('recycle: a played room admits nobody while its world stands', !room.canJoin());
+
+  // one player leaves from the results screen — their slot is HELD, because a finished
+  // match is still something you can reconnect to and read
+  room.detach('c');
+  check('recycle: a player who leaves a finished match still holds their slot',
+    (lastRoster(sink.a)?.players.length ?? 0) === 3);
+
+  // a non-host may not tear the results screen out from under everyone else
+  room.onMessage('b', { t: 'lobby' });
+  check('recycle: a NON-host asking for the lobby is ignored', room.worldForTest() !== null);
+
+  room.onMessage('a', { t: 'lobby' });
+  check('recycle: the host sends the room back to its lobby', room.worldForTest() === null);
+  check('recycle: ...and every member is TOLD, with their own id (no `join`, so no `welcome`)',
+    sink.a.some((m) => m.t === 'lobby' && m.clientId === 'a') &&
+    sink.b.some((m) => m.t === 'lobby' && m.clientId === 'b'));
+  check('recycle: the held slot of the player who left is released',
+    (lastRoster(sink.a)?.players.length ?? 0) === 2);
+  check('recycle: ...so the room takes new players again', room.canJoin());
+  check('recycle: nobody carries a READY into the next game',
+    (lastRoster(sink.a)?.players ?? []).every((p) => !p.ready));
+
+  // THE POINT OF ALL OF IT: re-pick sides, and play a full game the new roster authored.
+  room.onMessage('b', { t: 'update', patch: { alliance: 'red' } });
+  room.onMessage('a', { t: 'start' });
+  const start2 = [...sink.b].reverse().find((m) => m.t === 'matchStart') as Extract<ServerMsg, { t: 'matchStart' }> | undefined;
+  check('recycle: the second match is built from the roster that is here NOW, not the frozen one',
+    start2?.setups.length === 2, String(start2?.setups.length));
+  check('recycle: ...and it honours the alliance somebody switched to after the first game',
+    start2?.setups.every((s) => s.alliance === 'red') === true,
+    JSON.stringify(start2?.setups.map((s) => s.alliance)));
+
+  // the generation must keep climbing, or an input still in flight from match 1 would be
+  // accepted by match 2 as fresh (a rebuild starts at tick 0)
+  const gens = sink.b
+    .filter((m) => m.t === 'matchStart')
+    .map((m) => (m as Extract<ServerMsg, { t: 'matchStart' }>).gen ?? 0);
+  check('recycle: the match generation never rewinds across a recycle',
+    gens.length >= 2 && gens[gens.length - 1] > gens[0], JSON.stringify(gens));
+}
+
+// ...AND IT IS THE SAME LOOP IN EVERY GAME. Nothing in the recycle is game-shaped — the
+// room's `config.game` is readonly and untouched, and `startMatch`/`beginMatch` resolve
+// `simModuleFor(this.game)` on each call — but "should be game-agnostic" is exactly the
+// claim that goes stale, and BIOBUZZ has FEWER start anchors than DECODE, which is the one
+// place a rebuilt roster could pick an index its game cannot resolve.
+for (const game of ['decode', 'chain', 'biobuzz'] as const) {
+  const sink: Record<string, ServerMsg[]> = { p1: [], p2: [] };
+  const mk = (id: string, alliance: Alliance): Client => ({
+    id,
+    send: (m) => sink[id].push(m),
+    player: { clientId: id, name: id, teamName: 'T', teamNumber: 1, alliance, startIndex: 0, ready: true, spec: { ...DEFAULT_SPEC }, assists: { ...DEFAULT_ASSISTS } },
+    connected: true, disconnectAt: 0, caps: ['recycle'], userId: 'u-' + id + '-' + game,
+  });
+  const room = new Room('smoke-recycle-' + game, () => {}, { kind: 'versus', game });
+  room.add(mk('p1', 'red'));
+  room.add(mk('p2', 'blue'));
+  room.onMessage('p1', { t: 'start' });
+  room.advanceForTest(maxMatchTicks() + 5);
+  check(`recycle/${game}: the match finished`, room.worldForTest()?.match.phase === 'post');
+  // ⚠️ A DECODE WORLD CARRIES NO `game` AT ALL — that absence IS how an old world reads as
+  // DECODE (`simModuleFor` falls back), so the expectation has to be written the way every
+  // reader of the field writes it, or this check fails on the one game it cannot fail for.
+  check(`recycle/${game}: ...in THIS game, not DECODE by fallback`,
+    (room.worldForTest()?.game ?? 'decode') === game, String(room.worldForTest()?.game));
+
+  room.detach('p2'); // somebody leaves from the results screen
+  room.onMessage('p1', { t: 'lobby' });
+  check(`recycle/${game}: the room goes back to its lobby`, room.worldForTest() === null);
+  check(`recycle/${game}: ...and admits players again`, room.canJoin());
+
+  room.onMessage('p1', { t: 'start' });
+  const w = room.worldForTest();
+  check(`recycle/${game}: the second match is built, and still in this game`,
+    w !== null && (w.game ?? 'decode') === game, String(w?.game));
+  check(`recycle/${game}: ...from the roster that is left, not the frozen one`,
+    w?.robots.length === 1, String(w?.robots.length));
+}
+
+// A MIXED-VERSION ROOM MUST NOT RECYCLE. One Fly app serves every client build, so a
+// client that predates `t: 'lobby'` would ignore it and sit on a results screen for a
+// match the room no longer has — the same discipline the strategy window uses.
+{
+  const sink: Record<string, ServerMsg[]> = { h: [], old: [] };
+  const mk = (id: string, caps: string[]): Client => ({
+    id,
+    send: (m) => sink[id].push(m),
+    player: { clientId: id, name: id, teamName: 'T', teamNumber: 1, alliance: id === 'h' ? 'red' : 'blue', startIndex: 0, ready: true, spec: { ...DEFAULT_SPEC }, assists: { ...DEFAULT_ASSISTS } },
+    connected: true, disconnectAt: 0, caps, userId: 'u-' + id,
+  });
+  const room = new Room('smoke-recycle-mixed', () => {}, { kind: 'versus' });
+  room.add(mk('h', ['recycle']));
+  room.add(mk('old', [])); // a build from before this feature
+  room.onMessage('h', { t: 'start' });
+  room.advanceForTest(maxMatchTicks() + 5);
+  room.onMessage('h', { t: 'lobby' });
+  check('recycle: a room holding ONE old client stays put rather than stranding it',
+    room.worldForTest() !== null);
+}
+
+// THE CROWN HAS TO MOVE, or the feature is unreachable in the case that motivates it.
+// Host migration used to live in `detach`'s LOBBY branch alone, so a host who left during
+// or after a match was never replaced: `hostId` went on naming a client no longer in the
+// room, and every host-only control — `start`, and now `lobby` — was dead for everyone left.
+{
+  const sink: Record<string, ServerMsg[]> = { h: [], g: [] };
+  const lastRoster = (ms: ServerMsg[]) =>
+    [...ms].reverse().find((m) => m.t === 'roster') as Extract<ServerMsg, { t: 'roster' }> | undefined;
+  const mk = (id: string): Client => ({
+    id,
+    send: (m) => sink[id].push(m),
+    player: { clientId: id, name: id, teamName: 'T', teamNumber: 1, alliance: id === 'h' ? 'red' : 'blue', startIndex: 0, ready: true, spec: { ...DEFAULT_SPEC }, assists: { ...DEFAULT_ASSISTS } },
+    connected: true, disconnectAt: 0, caps: ['recycle'], userId: 'u-' + id,
+  });
+  const room = new Room('smoke-recycle-crown', () => {}, { kind: 'versus' });
+  room.add(mk('h'));
+  room.add(mk('g'));
+  check('recycle: the first player through the door is host', lastRoster(sink.g)?.hostId === 'h');
+  room.onMessage('h', { t: 'start' });
+  room.advanceForTest(maxMatchTicks() + 5);
+  room.detach('h'); // the host closes the tab on the results screen
+  check('recycle: the crown passes when the host leaves a FINISHED match',
+    lastRoster(sink.g)?.hostId === 'g', String(lastRoster(sink.g)?.hostId));
+  room.onMessage('g', { t: 'lobby' });
+  check('recycle: ...so whoever is left can actually take the room back to its lobby',
+    room.worldForTest() === null);
+  check('recycle: ...and start a game of their own', room.canJoin());
+}
+
 // ---- MAINTENANCE LOCKDOWN: when the window actually bites -------------------
 // The scheduling semantics are the whole feature: an armed window with a FUTURE
 // start must announce itself WITHOUT locking anyone out (otherwise it is just an
@@ -15459,6 +15722,8 @@ function pinScene(
 {
   const active: string[] = [];
   const inactive: string[] = [];
+  /** the NET of the two callbacks — i.e. what `server/index.ts`'s `userRoom` would hold */
+  const held = new Set<string>();
   const msgs: ServerMsg[] = [];
   const client: Client = {
     id: 'c1',
@@ -15483,12 +15748,27 @@ function pinScene(
     () => {},
     { kind: 'versus' },
     undefined,
-    (uid) => active.push(uid),
-    (uid) => inactive.push(uid),
+    (uid) => {
+      active.push(uid);
+      held.add(uid);
+    },
+    (uid) => {
+      inactive.push(uid);
+      held.delete(uid);
+    },
   );
   room.add(client);
   room.onMessage('c1', { t: 'start' });
   check('single-game lock registered for an authed driver at match begin', active.includes('user-1'));
+  /**
+   * AND STILL HELD A STATEMENT LATER — the assertion above cannot see the bug it was
+   * written to catch. It reads a CALL LOG, so it passes as long as `onUserActive` fired
+   * at some point, and for the life of this suite `startMatch` fired it and then called
+   * `startLoop`, which opened with a `stop()` that released every lock it had just taken.
+   * The lock existed for the handful of statements in between. `held` is the net of the
+   * two callbacks, which is what the server actually consults (`userRoom`).
+   */
+  check('single-game lock is still HELD once the match is running', held.has('user-1'));
 
   // restart is DISABLED in multiplayer — it must NOT re-author the live match
   const startsBefore = msgs.filter((m) => m.t === 'matchStart').length;
@@ -15499,6 +15779,65 @@ function pinScene(
   // run to the end → the lock is released at finalize so the user can start again
   room.advanceForTest(maxMatchTicks() + 5);
   check('single-game lock released when the match finalizes', inactive.includes('user-1'));
+  check('single-game lock is actually clear after finalize', !held.has('user-1'));
+}
+
+/**
+ * ---- A STAGED RANKED MATCH HOLDS THE LOCK BEFORE IT STARTS -----------------------
+ *
+ * Reported as "you should also not be able to re-enter queue if you're entering a match".
+ * The lock used to be taken at `startMatch`, so between the matchmaker assigning a room
+ * and the world being built a paired player held nothing: `activeElsewhere` answered
+ * false and the ranked queue took them back. That is reachable by refreshing the tab on
+ * "Match found" — the reload loses the room client-side, FIND MATCH re-enters the pool,
+ * and the abandoned room still charges a no-show when its grace lapses.
+ */
+{
+  const held = new Set<string>();
+  const room = new Room(
+    'smoke-staged-lock',
+    () => {},
+    { kind: 'versus' },
+    undefined,
+    (uid) => held.add(uid),
+    (uid) => held.delete(uid),
+  );
+  const roster = [
+    { userId: 'u-red', name: 'red', teamName: 'T', teamNumber: 111, spec: { ...DEFAULT_SPEC }, assists: { ...DEFAULT_ASSISTS }, startIndex: 0, alliance: 'red' as const, introElo: 1200 },
+    { userId: 'u-blue', name: 'blue', teamName: 'T', teamNumber: 222, spec: { ...DEFAULT_SPEC }, assists: { ...DEFAULT_ASSISTS }, startIndex: 0, alliance: 'blue' as const, introElo: 1300 },
+  ];
+  check('staged lock: nothing held before the pairing is staged', held.size === 0);
+  room.applyPending({ code: 'iad-lock', hostRegion: 'iad', mode: '1v1', seed: 3, ranked: true, roster });
+  // NOBODY HAS CONNECTED YET, and that is the entire point: the server has committed
+  // these two accounts to this match, so the queue must already refuse them.
+  check('staged lock: both roster members are locked the moment the match is staged', held.has('u-red') && held.has('u-blue'));
+  check('staged lock: the room reports itself as staging (pre-world)', room.staging());
+  check('staged lock: stagedFor names the roster', room.stagedFor('u-red') && !room.stagedFor('u-other'));
+}
+
+/** and a staging that is CANCELLED gives the locks back — or a no-show would leave both
+ *  accounts unable to queue again for as long as the process lives. */
+{
+  const held = new Set<string>();
+  const room = new Room(
+    'smoke-staged-cancel',
+    () => {},
+    { kind: 'versus' },
+    undefined,
+    (uid) => held.add(uid),
+    (uid) => held.delete(uid),
+  );
+  room.applyPending({
+    code: 'iad-cancel', hostRegion: 'iad', mode: '1v1', seed: 4, ranked: true,
+    roster: [
+      { userId: 'u-a', name: 'a', teamName: 'T', teamNumber: 1, spec: { ...DEFAULT_SPEC }, assists: { ...DEFAULT_ASSISTS }, startIndex: 0, alliance: 'red', introElo: 1200 },
+      { userId: 'u-b', name: 'b', teamName: 'T', teamNumber: 2, spec: { ...DEFAULT_SPEC }, assists: { ...DEFAULT_ASSISTS }, startIndex: 0, alliance: 'blue', introElo: 1200 },
+    ],
+  });
+  check('staged lock: held while the grace runs', held.has('u-a') && held.has('u-b'));
+  room.forceJoinGraceForTest();
+  check('staged lock: released when the staging is cancelled', held.size === 0);
+  check('staged lock: the room is no longer staging after a cancel', !room.staging());
 }
 
 // ---- a driver who leaves a FINISHED match is reaped, and the room with them -----
@@ -15634,11 +15973,13 @@ function pinScene(
   // 2. SEVERITY ORDER, in points. These events are not comparable and must not cost the
   //    same: a dodge postpones a match, an AFK destroys one, and a moderator upholding a
   //    report is the only event backed by a human looking at the evidence.
+  //    AFK and LEAVE cost the same 8 (owner, 2026-09-14): to the partner left alone they are
+  //    the same match.
   check(
-    'standing: severity is ordered report < dodge < afk < leave < upheld',
+    'standing: severity is ordered report < dodge < afk = leave (8) < upheld',
     STANDING_COST.report < STANDING_COST.dodge &&
       STANDING_COST.dodge < STANDING_COST.afk &&
-      STANDING_COST.afk < STANDING_COST.leave &&
+      STANDING_COST.afk === 8 && STANDING_COST.leave === 8 &&
       STANDING_COST.leave < STANDING_COST.reportUpheld,
     kinds.map((k) => `${k} ${STANDING_COST[k]}`).join(' · '),
   );
@@ -15918,6 +16259,15 @@ function pinScene(
       judgeParticipation({ liveTicks: NaN, driveTicks: 0, awayTicks: 0 }) === null &&
         judgeParticipation({ liveTicks: -5, driveTicks: 0, awayTicks: 0 }) === null,
     );
+    // LEAVING A 1v1 IS ALLOWED; leaving a partner in a 2v2 is not. AFK is charged in both.
+    check(
+      'standing: walking out of a 1v1 is not charged, walking out on a 2v2 partner is',
+      !chargedForParticipation('leave', '1v1') && chargedForParticipation('leave', '2v2'),
+    );
+    check(
+      'standing: AFK is charged in a 1v1 and a 2v2 alike',
+      chargedForParticipation('afk', '1v1') && chargedForParticipation('afk', '2v2'),
+    );
   }
 }
 
@@ -16130,6 +16480,153 @@ function pinScene(
   }
 }
 
+/**
+ * ---- A RELOAD DURING THE STRATEGY WINDOW IS RECOVERABLE ---------------------------
+ *
+ * The window used to die on the first closed socket: refresh the tab and the match was
+ * cancelled, you were billed a bail, and the other players lost their queue time. A page
+ * load is not a decision — it is also what a phone does to a backgrounded tab — so the
+ * seat is HELD, and the ACCOUNT is what it is handed back on, because a reload destroys
+ * the client id `rejoin` would have needed.
+ */
+{
+  const rec: Record<string, ServerMsg[]> = { red: [], blue: [], back: [] };
+  const mkC = (id: string, userId: string): Client => ({
+    id,
+    send: (m) => rec[id].push(m),
+    player: { clientId: id, name: id, teamName: 'T', teamNumber: 1, alliance: 'red', startIndex: 0, ready: false, spec: { ...DEFAULT_SPEC }, assists: { ...DEFAULT_ASSISTS } },
+    connected: true,
+    disconnectAt: 0,
+    userId,
+    caps: ['strategy'],
+  });
+  const room = new Room('smoke-strat-reload', () => {}, { kind: 'versus' });
+  room.applyPending({ code: 'iad-rl', hostRegion: 'iad', mode: '1v1', seed: 9, ranked: true, roster: [
+    { userId: 'u-red', name: 'red', teamName: 'T', teamNumber: 1, spec: { ...DEFAULT_SPEC }, assists: { ...DEFAULT_ASSISTS }, startIndex: 0, alliance: 'red', introElo: null },
+    { userId: 'u-blue', name: 'blue', teamName: 'T', teamNumber: 2, spec: { ...DEFAULT_SPEC }, assists: { ...DEFAULT_ASSISTS }, startIndex: 0, alliance: 'blue', introElo: null },
+  ] });
+  room.add(mkC('red', 'u-red'));
+  room.add(mkC('blue', 'u-blue'));
+  room.maybeStartRanked();
+  const ss0 = rec.blue.find((m) => m.t === 'strategyStart');
+  check('strategy reload: the window opened (else the checks below prove nothing)', ss0?.t === 'strategyStart');
+  const deadline0 = ss0?.t === 'strategyStart' ? ss0.deadline : 0;
+  const slot0 = ss0?.t === 'strategyStart' ? ss0.yourRobotId : -1;
+
+  // BLUE RELOADS. A reload is 1001 and a dropped network 1006 — both reach `detach` as
+  // clean=false, because neither is a decision.
+  room.detach('blue', undefined, false);
+  check('strategy reload: the match is NOT cancelled', !rec.red.some((m) => m.t === 'error'));
+  check('strategy reload: the seat is still held for them', room.seatFor('u-blue') === 'blue');
+  room.onMessage('red', { t: 'update', patch: { ready: true } });
+  check('strategy reload: …and no match starts with a seat nobody is in', !rec.red.some((m) => m.t === 'matchStart'));
+
+  // THEY COME BACK — on the ACCOUNT, which is all a reloaded page still knows.
+  const seat = room.seatFor('u-blue');
+  const nc = seat ? room.reattach(seat, (m) => rec.back.push(m)) : null;
+  check('strategy reload: the seat is handed back on a fresh socket', nc !== null);
+  const ss1 = rec.back.find((m) => m.t === 'strategyStart');
+  check('strategy reload: the returning socket is re-sent strategyStart', ss1?.t === 'strategyStart');
+  check(
+    'strategy reload: …with the SAME robot id (the held client id is what slotOf is keyed by)',
+    ss1?.t === 'strategyStart' && ss1.yourRobotId === slot0,
+  );
+  check(
+    'strategy reload: …and the ORIGINAL deadline, which did not pause while the page loaded',
+    ss1?.t === 'strategyStart' && ss1.deadline === deadline0,
+  );
+  room.onMessage('blue', { t: 'update', patch: { ready: true } });
+  check('strategy reload: the match then starts, and nothing was charged', rec.red.some((m) => m.t === 'matchStart'));
+  room.advanceForTest(1); // stop the real-time loop this started
+}
+
+/** …but a CLEAN close is a player who DECIDED to leave (`transport.close()` — Back), and
+ *  making the others wait out the deadline for them would be the same unfairness pointed
+ *  the other way. That one still bails on the spot. */
+{
+  const rec: Record<string, ServerMsg[]> = { red: [], blue: [] };
+  const mkC = (id: string, userId: string): Client => ({
+    id,
+    send: (m) => rec[id].push(m),
+    player: { clientId: id, name: id, teamName: 'T', teamNumber: 1, alliance: 'red', startIndex: 0, ready: false, spec: { ...DEFAULT_SPEC }, assists: { ...DEFAULT_ASSISTS } },
+    connected: true,
+    disconnectAt: 0,
+    userId,
+    caps: ['strategy'],
+  });
+  const room = new Room('smoke-strat-bail', () => {}, { kind: 'versus' });
+  room.applyPending({ code: 'iad-bl', hostRegion: 'iad', mode: '1v1', seed: 9, ranked: true, roster: [
+    { userId: 'u-red', name: 'red', teamName: 'T', teamNumber: 1, spec: { ...DEFAULT_SPEC }, assists: { ...DEFAULT_ASSISTS }, startIndex: 0, alliance: 'red', introElo: null },
+    { userId: 'u-blue', name: 'blue', teamName: 'T', teamNumber: 2, spec: { ...DEFAULT_SPEC }, assists: { ...DEFAULT_ASSISTS }, startIndex: 0, alliance: 'blue', introElo: null },
+  ] });
+  room.add(mkC('red', 'u-red'));
+  room.add(mkC('blue', 'u-blue'));
+  room.maybeStartRanked();
+  room.detach('blue', undefined, true); // clean = the player pressed Back
+  check('strategy bail: a deliberate leave still cancels the match immediately', rec.red.some((m) => m.t === 'error'));
+}
+
+/**
+ * ---- ONE ACCOUNT, ONE SEAT, AND THE TAB IT DISPLACES IS TOLD ----------------------
+ *
+ * `seatFor` is what the join path asks BEFORE `canJoin`, because two tabs on one account
+ * used to take two seats at the same room code — the single-game guard compares room
+ * CODES and reads that as "this is your room". In a 1v1 that is the whole room, and the
+ * real opponent was refused at the door and charged a no-show for a match they were
+ * standing outside of. The seat is taken OVER rather than the joiner refused: a
+ * reconnect, a reload and a second tab are one indistinguishable frame from here.
+ */
+{
+  const rec: Record<string, ServerMsg[]> = { a: [], b: [] };
+  const room = new Room('smoke-two-tabs', () => {}, { kind: 'versus' });
+  room.add({
+    id: 'tab-a',
+    send: (m) => rec.a.push(m),
+    player: { clientId: 'tab-a', name: 'a', teamName: 'T', teamNumber: 1, alliance: 'red', startIndex: 0, ready: false, spec: { ...DEFAULT_SPEC }, assists: { ...DEFAULT_ASSISTS } },
+    connected: true,
+    disconnectAt: 0,
+    userId: 'u-1',
+  });
+  check('two tabs: the room can name the seat this account holds', room.seatFor('u-1') === 'tab-a');
+  check('two tabs: and has no opinion about an account with no seat', room.seatFor('u-2') === null);
+  const nc = room.reattach('tab-a', (m) => rec.b.push(m));
+  check('two tabs: the second tab takes the seat over', nc !== null);
+  check(
+    'two tabs: …and the first is TOLD, rather than left on a silently unplugged session',
+    rec.a.some((m) => m.t === 'error' && /another tab/i.test(m.message)),
+  );
+  check('two tabs: one account is still exactly one seat', room.seatFor('u-1') === 'tab-a');
+}
+
+/**
+ * ---- ABANDON MEANS IT ------------------------------------------------------------
+ *
+ * The button only ever cleared the browser's own record, which was harmless for exactly
+ * as long as the single-game lock was inert. It is not inert any more, so abandoning and
+ * starting something else met a refusal about a game the UI had just said was gone.
+ */
+{
+  const held = new Set<string>();
+  const room = new Room(
+    'smoke-abandon', () => {}, { kind: 'versus' }, undefined,
+    (uid) => held.add(uid),
+    (uid) => held.delete(uid),
+  );
+  room.add({
+    id: 'c1',
+    send: () => {},
+    player: { clientId: 'c1', name: 'a', teamName: 'T', teamNumber: 1, alliance: 'red', startIndex: 0, ready: false, spec: { ...DEFAULT_SPEC }, assists: { ...DEFAULT_ASSISTS } },
+    connected: true,
+    disconnectAt: 0,
+    userId: 'u-1',
+  });
+  room.onMessage('c1', { t: 'start' });
+  check('abandon: the lock is held while the match runs', held.has('u-1'));
+  check('abandon: the slot is given up on request', room.abandonSlot('c1'));
+  check('abandon: …and the single-game lock goes with it, now, not after the grace', !held.has('u-1'));
+  check('abandon: an unknown client id is a no-op, not an error', !room.abandonSlot('nobody'));
+}
+
 // strict deadline: if not everyone readies in time, the match CANCELS
 {
   const rec: Record<string, ServerMsg[]> = { red: [], blue: [] };
@@ -16275,10 +16772,13 @@ function pinScene(
     );
   }
 
-  // 2. STRATEGY BAIL — both connect, then blue's socket goes during the window.
+  // 2. STRATEGY BAIL — both connect, then blue LEAVES during the window. Clean, i.e.
+  //    `transport.close()`: a player who pressed Back, not a reload. An unclean close is
+  //    a held seat now and is charged at the deadline instead, as a no-show (see
+  //    "strategy reload").
   {
     const { room, reports } = staged('smoke-dodge-bail', ['red', 'blue']);
-    room.detach('blue');
+    room.detach('blue', undefined, true);
     check(
       'dodge: a drop during the strategy window is billed to the player who left',
       culpritsOf(reports) === 'u-blue:bail',
@@ -16358,8 +16858,8 @@ function pinScene(
     { userId: 'u-red', name: 'red', teamName: 'T', teamNumber: 1, spec: { ...DEFAULT_SPEC }, assists: { ...DEFAULT_ASSISTS }, startIndex: 0, alliance: 'red', introElo: null },
     { userId: 'u-blue', name: 'blue', teamName: 'T', teamNumber: 1, spec: { ...DEFAULT_SPEC }, assists: { ...DEFAULT_ASSISTS }, startIndex: 0, alliance: 'blue', introElo: null },
   ] });
-  room.detach('blue');
-  check('strategy drop: cancels the match (error to the remaining driver)', rec.red.some((m) => m.t === 'error'));
+  room.detach('blue', undefined, true); // clean: they left on purpose (a reload holds the seat)
+  check('strategy drop: a deliberate leave cancels the match (error to the remaining driver)', rec.red.some((m) => m.t === 'error'));
   check('strategy drop: no match started', !rec.red.some((m) => m.t === 'matchStart'));
 }
 

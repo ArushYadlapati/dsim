@@ -17,6 +17,7 @@ import { DRIVETRAIN_LABELS, buildSummary } from './robotLabels';
 import { gameServers, lanActive, multiServer, roomServerUrl, roomServerUrlWith, selectedServer } from '../net/env';
 import { roomJoinRegion } from '../net/roomRegion';
 import { takePendingLanRoom } from '../lan/pending';
+import type { ResumedRoom } from './roomReturn';
 import { WebSocketTransport, type Transport } from '../net/transport';
 import { LobbyClient, type MatchStart } from '../net/lobbyClient';
 import { ServerSession } from '../net/serverSession';
@@ -29,6 +30,7 @@ import { Logo } from './Logo';
 import { useEscape } from './useEscape';
 import type { RoomInvite } from '../net/api';
 import { FriendsPanel, type RoomInviteTarget } from './FriendsPanel';
+import { copyText } from './copyText';
 
 interface Props {
   settings: GameSettings;
@@ -47,6 +49,14 @@ interface Props {
   onOpenProfile: (username: string) => void;
   onJoinInvite: (invite: RoomInvite) => void;
   onSpectate: (room: string, region?: string) => void;
+  /**
+   * A LIVE SOCKET COMING BACK FROM A FINISHED MATCH, rather than a code to dial.
+   *
+   * The host recycled the room: the server cleared its world, kept everyone's seat, and
+   * told each client so. This screen adopts that connection instead of joining — see
+   * `ResumedRoom`. Consumed once, on mount.
+   */
+  resume?: ResumedRoom;
   /** a room code to join automatically on mount (a friend's invite, clicked
    * from elsewhere in the app) — calls the exact same `join()` a manual code
    * entry does, just triggered once at mount instead of by a button click. */
@@ -123,6 +133,7 @@ export function Lobby({
   onOpenProfile,
   onJoinInvite,
   onSpectate,
+  resume,
   autoJoin,
   autoJoinRegion,
   onAutoJoinConsumed,
@@ -165,6 +176,8 @@ export function Lobby({
 
   const lobbyRef = useRef<LobbyClient | null>(null);
   const startedRef = useRef(false);
+  /** the room said no (an `error` frame) — a close that follows is the same event, not a new one */
+  const refusedRef = useRef(false);
   const nameEditedRef = useRef(false);
 
   // tear down on unmount unless a match started (which hands the socket onward)
@@ -197,12 +210,23 @@ export function Lobby({
   const enoughPlayers = !isRecord || players.length >= capacity;
   const canStart = allReady && enoughPlayers && !restartPending;
 
-  function handleStart(m: MatchStart): void {
+  /**
+   * ⚠️ THE ROOM CODE IS AN ARGUMENT, NEVER THE `code` STATE.
+   *
+   * This handler is registered ONCE, inside `wire`, so it closes over the render that
+   * connected — and for a room we CREATED that render had not seen `setCode` yet, because
+   * `createRoom` mints the code and joins in the same tick. So `code` read '' and the
+   * session was built with no room at all: silently, since everything that needs it is a
+   * capability rather than a step. The rejoin record (`beginSession` skips a session with
+   * no `room`) and the way back to the room's own lobby both went missing for exactly the
+   * player who made the room. Same discipline as `Lobby.join`'s region argument.
+   */
+  function handleStart(m: MatchStart, roomCode: string): void {
     const lobby = lobbyRef.current;
     if (!lobby) return;
     startedRef.current = true;
     // pass the identity + room so the session can reclaim its slot on a reconnect
-    onStart(new ServerSession(lobby.transport, lobby.isHost(), m, lobby.clientId, code.trim()));
+    onStart(new ServerSession(lobby.transport, lobby.isHost(), m, lobby.clientId, roomCode));
   }
 
   /** create a brand-new room with a freshly generated code (you host it) */
@@ -239,6 +263,7 @@ export function Lobby({
   function join(roomCode: string, hostRegion?: string | null): void {
     if (!roomCode) return;
     setCode(roomCode);
+    refusedRef.current = false;
     /**
      * A TAB-HOSTED LAN ROOM ARRIVES ALREADY CONNECTED.
      *
@@ -279,6 +304,38 @@ export function Lobby({
         return;
       }
     }
+    wire(transport, roomCode).join(roomCode, myPlayer(), roomConfig());
+  }
+
+  /** the player fields this client advertises — the same on a fresh join and on a resume */
+  function myPlayer(): Omit<LobbyPlayer, 'clientId'> {
+    return {
+      name,
+      teamName: settings.spec.teamName,
+      teamNumber: settings.spec.teamNumber,
+      // record runs are opponent-free (one alliance) — force blue, matching the server
+      alliance: isRecord ? 'blue' : settings.alliance,
+      startIndex: settings.startIndex,
+      startPose: settings.startPose ?? null,
+      ready: false,
+      spec: settings.spec,
+      assists: settings.assists,
+    };
+  }
+
+  /** carry the selected game so the room builds the right world (defaults to the caller's
+   *  config game if it pinned one, else the player's setting) */
+  function roomConfig(): RoomConfig {
+    return { ...config, game: config.game ?? settings.game };
+  }
+
+  /**
+   * Attach this screen to a transport. Split out of `join` so the two ways INTO a room —
+   * dialling a code, and adopting the socket a recycled room handed back — share one set of
+   * handlers rather than drifting apart. The difference between them is only the frame sent
+   * afterwards: `join` for a seat we do not have, `resume` for one we already do.
+   */
+  function wire(transport: Transport, roomCode: string): LobbyClient {
     const lobby = new LobbyClient(transport);
     lobbyRef.current = lobby;
 
@@ -288,8 +345,9 @@ export function Lobby({
       setMyId(lobby.clientId);
       setPhase((p) => (p === 'connecting' ? 'room' : p));
     });
-    lobby.on('matchStart', handleStart);
+    lobby.on('matchStart', (m) => handleStart(m, roomCode));
     lobby.on('error', (msg, code) => {
+      refusedRef.current = true;
       setError(msg);
       setErrorCode(code);
       setPhase('error');
@@ -301,31 +359,54 @@ export function Lobby({
       if (code === 'region_full') setRegionLocked(false);
     });
     lobby.on('closed', () => {
-      if (!startedRef.current) {
+      /* A REFUSAL IS NOT A LOST CONNECTION. A tab-hosted LAN room sends its `error` frame
+         ("Room is full…", "That code is for a different game mode.") and then closes the
+         link a beat later — there is nothing else to keep it open for — and this handler
+         used to overwrite the sentence that explained the refusal with one that blamed the
+         network. The cloud keeps its socket open after a refusal, which is why it never
+         showed. The first thing said stands. */
+      if (!startedRef.current && !refusedRef.current) {
         setError('Lost connection to the game server.');
         setPhase('error');
       }
     });
 
-    lobby.join(
-      roomCode,
-      {
-        name,
-        teamName: settings.spec.teamName,
-        teamNumber: settings.spec.teamNumber,
-        // record runs are opponent-free (one alliance) — force blue, matching the server
-        alliance: isRecord ? 'blue' : settings.alliance,
-        startIndex: settings.startIndex,
-        startPose: settings.startPose ?? null,
-        ready: false,
-        spec: settings.spec,
-        assists: settings.assists,
-      },
-      // carry the selected game so the room builds the right world (defaults to
-      // the caller's config game if it pinned one, else the player's setting)
-      { ...config, game: config.game ?? settings.game },
-    );
+    return lobby;
   }
+
+  /**
+   * COME BACK FROM A FINISHED MATCH INTO THE ROOM WE NEVER LEFT.
+   *
+   * Straight to `'room'` when the handed-over socket is still open: there is nothing to
+   * connect, because it is the one that just played the match. The region is the host's by
+   * definition — it is where the room IS — so the picker locks as it does for an invite.
+   *
+   * ⚠️ AND A PLAIN JOIN WHEN IT IS NOT. The socket can be gone by the time this runs: it is
+   * closed on the way out of any lobby that did not start a match, and React's development
+   * StrictMode exercises exactly that (mount → cleanup → mount) on this screen's own
+   * teardown effect. Re-joining BY CODE is the honest recovery and not a workaround — the
+   * room is a lobby again, so `canJoin` is true again, which is the whole point of the
+   * recycle. It costs one reconnect and lands in the same place.
+   *
+   * Deliberately NOT guarded by a ref: a ref survives that simulated unmount, so a guarded
+   * effect would skip the second pass and leave the screen holding a closed socket.
+   */
+  useEffect(() => {
+    if (!resume) return;
+    setCode(resume.code);
+    if (resume.region) {
+      setRegion(resume.region);
+      setRegionLocked(true);
+    }
+    if (!resume.transport.isOpen) {
+      join(resume.code, resume.region);
+      return;
+    }
+    setPhase('room');
+    setMyId(resume.clientId);
+    wire(resume.transport, resume.code).resume(resume.code, myPlayer(), resume.clientId, roomConfig());
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [resume]);
 
   // Auto-join when a friend's invite carried a room code — the same `join()` a manual code
   // entry calls, just triggered without a button click, and carrying the host's region.
@@ -631,11 +712,17 @@ export function Lobby({
           </span>
           <button
             className="ds-chip"
-            onClick={() => {
-              void navigator.clipboard?.writeText(code);
-              setCopied(true);
-              window.setTimeout(() => setCopied(false), 1500);
-            }}
+            // through `copyText`, and the tick only on a copy that actually happened:
+            // this lobby is reachable over a plain-http LAN origin, where the Clipboard
+            // API does not exist and the optional chain used to make this a no-op that
+            // still said '✓ Copied'.
+            onClick={() =>
+              copyText(code, (ok) => {
+                if (!ok) return;
+                setCopied(true);
+                window.setTimeout(() => setCopied(false), 1500);
+              })
+            }
           >
             {copied ? '✓ Copied' : '⧉ Copy code'}
           </button>

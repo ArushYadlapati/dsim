@@ -7,7 +7,6 @@ import { BiobuzzBuilder } from './Builder';
 import { BB_PTS, BB_RP } from './config';
 import type { BbCellHud, BbPinHud, BiobuzzFieldHud } from './hud';
 import type { BiobuzzHud } from './hudRobot';
-import { BB_MODE_LABELS } from './labels';
 import type { BbAllianceScore, BbRankPoints } from './score';
 import type { BbNectarWhy } from './state';
 
@@ -132,7 +131,7 @@ const pinLine = (p: BbPinHud): string =>
  *
  * `locked` HERE IS THE FROZEN FIELD — pre-match, the auto→teleop transition, after the
  * buzzer — and NOT G410. G410 is `nectarLocked`, it is about a NECTAR entering a FLOWER, and
- * it has its own chip below; the two are different rules about different acts and folding
+ * it is stated on the score bar; the two are different rules about different acts and folding
  * them into one line would tell a driver the wrong thing about both.
  *
  * `ok` HAS TWO WORDINGS, BECAUSE IT ARRIVES BY TWO ROUTES. A banked TIP grants ONE entry and
@@ -211,17 +210,16 @@ function useHeldBump(count: number, timeLeft: number, phase: string, hold: numbe
  *  • FLOWER IN REACH — the Box Tube's placement point is on a FLOWER, so a place button will do
  *    something. Proximity is hard to judge top-down.
  *
- * G410 IS DELIBERATELY IN BOTH this row and the bar. `GameView` suppresses this whole row on a
- * coarse pointer, so on a phone the bar's chip is the only NECTAR LOCKED there is — and a MAJOR
- * 20 per NECTAR entered one second early is not a rule to leave to a cue the device does not
- * render. The bar's chip carries the countdown, because it is the field-wide cue; this one is
- * the driver's own state.
+ * G410 LIVES ON THE BAR, NOT HERE. `GameView` suppresses this whole row on a coarse pointer,
+ * so a chip on it is not a place a phone can read a rule from — and a MAJOR 20 per NECTAR
+ * entered one second early is not a rule to leave to a cue the device does not render. The
+ * bar's row states the lock and carries the countdown; this row keeps only the CROSSING, the
+ * one instant of it that is news.
  */
 export function BiobuzzHudChips({ hud }: GameHudProps) {
   const s = sliceOf(hud);
   const f = s?.field;
   const r = s?.robot;
-  const cell = f?.cells[hud.alliance];
   const due = f?.nectarDue[hud.alliance] ?? 0;
   const pin = soonestPin(f?.pins);
   // G407. The hook runs on every sample, including the ones where an absent slice reads 0, so
@@ -235,17 +233,17 @@ export function BiobuzzHudChips({ hud }: GameHudProps) {
   /**
    * G410, FROM THE OTHER SIDE: the moment the FLOWERS OPEN.
    *
-   * Today NECTAR LOCKED simply stops being drawn at the 1:00 cue, and a chip that vanishes is
-   * not a cue — a driver watching the field rather than the strip has nothing that says the
-   * rule just changed. `step.ts` already pushes `FLOWER OWNERSHIP UNLOCKED` on the crossing
+   * The bar's NECTAR LOCKED line simply stops being drawn at the 1:00 cue, and a line that
+   * vanishes is not a cue — a driver watching the field rather than the strip has nothing that
+   * says the rule just changed. `step.ts` already pushes `FLOWER OWNERSHIP UNLOCKED` on the crossing
    * tick, but the event log is the muted left edge and this is a fact worth a beat in the
    * driver's own row.
    *
    * HELD, NOT PERMANENT, and that is the whole design: FLOWERS OPEN is true for the last
    * minute of every match, so a chip bound to the state itself would sit there as noise for
-   * exactly as long as it was useless. It reuses `useHeldBump` off the match clock, like the
-   * G407 warning, which also makes it a SWAP for the NECTAR LOCKED chip it replaces — the two
-   * can never be on screen together, so the row costs no extra width.
+   * exactly as long as it was useless — which is the same objection that took the standing
+   * NECTAR LOCKED chip off this row. It reuses `useHeldBump` off the match clock, like the
+   * G407 warning, so it costs the row width for `BB_WARN_HOLD_S` and then gives it back.
    *
    * `nectarLocked` IS A STATE, so it is turned into the monotonic count the hook wants: 0 while
    * the FLOWERS are shut, 1 once they open. Inside TELEOP the cue is one-way, so it only ever
@@ -258,7 +256,11 @@ export function BiobuzzHudChips({ hud }: GameHudProps) {
   const said = heldPhrase(held);
   return (
     <>
-      {r && <span className="chip">{BB_MODE_LABELS[r.mode].toUpperCase()}</span>}
+      {/* NO ARCHETYPE CHIP. The launcher's name is a thing the driver CHOSE in the builder and
+          cannot change mid-match, so it told them nothing they did not already know while
+          costing the width of the longest label in `BB_MODE_LABELS` ("DOUBLE TURRET") on a
+          `nowrap` row. What the launcher's rules actually DO to the controls is already in the
+          controls themselves; the hopper row beside it is the part that changes. */}
       {r && (
         <div className="hopper" role="img" aria-label={said} title={said}>
           {[...held].reverse().map((c, i) => (
@@ -270,12 +272,11 @@ export function BiobuzzHudChips({ hud }: GameHudProps) {
         </div>
       )}
       {r?.flowerInReach && <span className="chip on">FLOWER IN REACH</span>}
-      {cell &&
-        (cell.tipping > 0 ? (
-          <span className="chip prompt">CELL TIPPING</span>
-        ) : (
-          <span className="chip">CELL {cell.needed} MORE</span>
-        ))}
+      {/* NO CELL CHIP. `BiobuzzScoreBar` already prints this alliance's up-CELL line under its
+          own score panel — `cellLine`, the same two states ("n MORE TO TIP" / "TIPPING") the
+          chips carried, in the place a driver already watches for the score. Two readouts of
+          one number is one readout too many on a row that grows leftward into the sponsor
+          mark. */}
       {/* STOCK AND WHY ON ONE CHIP, because they are one fact: what the human player can
           still enter. Two chips cost ~130px on a row that is `nowrap`, right-anchored and
           grows LEFTWARD into the sponsor mark — measured at 1440px with the alpha pose
@@ -287,8 +288,13 @@ export function BiobuzzHudChips({ hud }: GameHudProps) {
           {NECTAR_CHIP[f.nectarWhy[hud.alliance]](f.nectarStock[hud.alliance], due)}
         </span>
       )}
-      {f?.nectarLocked && <span className="chip warn">NECTAR LOCKED</span>}
-      {/* ...and the swap for it at the cue — see `opened` above. `on` rather than a colour of
+      {/* NO NECTAR LOCKED CHIP HERE. The lock is TRUE for all of AUTO and the first minute of
+          TELEOP — most of a match — so as a chip it was a permanent fixture rather than a cue,
+          and a chip that is always on is read as furniture. The bar's row above the score
+          panels still states it AND carries the countdown (`BiobuzzScoreBar`), which is the
+          version that survives a coarse pointer anyway; the cue worth a beat on this row is
+          the CROSSING, below. */}
+      {/* ...the moment the lock lifts — see `opened` above. `on` rather than a colour of
           its own: `npm run contrast` audits the palette pair by pair, so a token invented for
           one chip is a new pair to justify, and the meaning here is the same one `FLOWER IN
           REACH` already uses — a thing you may now do. */}

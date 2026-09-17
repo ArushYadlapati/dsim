@@ -207,3 +207,37 @@ The two questions in §6 are answered or parked by the above. One new one:
    energy halved the reach. If a real tip puts elements further out than this while still
    looking like a dump rather than a throw, the missing term is the 25-inch DROP, which the
    model currently spends as roll (§5).
+
+---
+
+## Addendum, 2026-09-13 — the fan opens again, and a KICK lands
+
+Owner, from playing it: **"the cells when they are released should scatter ball slightly more
+randomly in all directions."** Two changes in `hive.ts`, both APPROX like the pair they move:
+
+| constant | 2026-09-12 | 2026-09-13 |
+|---|---|---|
+| `BB_SPILL_SPEED` | [35, 62] | **[30, 62]** |
+| `BB_SPILL_FAN` | ±18° | **±40°** |
+| `BB_SPILL_KICK` (new) | — | **12 in/s**, any direction on the circle |
+
+- The fan is not going back to 55°. 40° is a pile leaving a lip, not a ramp firing a shell;
+  the ±30% energy ruling stands and the chord case of §3 does not come back at this angle.
+- The kick is the part a fan cannot express: a fan is symmetric about outboard and every
+  element in it leaves at its full drawn speed in its drawn direction, so nothing ever
+  dribbles out short or drifts a little inboard of its neighbour. Up to 12 in/s in a direction
+  drawn from the whole circle, added on top of the throw, is the tumble of a ball falling 25 in
+  onto a pile.
+- **Every element STILL leaves outboard**, and the constants were chosen against that bound:
+  the slowest, widest throw has `30 · cos 40° ≈ 23` in/s outboard and the kick is at most 12.
+  The smoke lane still asserts the sign of `vel.y` for every pose; its speed band is now the
+  draw ± the kick and its fan bound is `40° + asin(12/30) ≈ 63.6°`. `spillPoses` draws SIX
+  numbers per pose now (x, y, speed, angle, kick direction, kick magnitude), so a replay of a
+  spill recorded before this lands differently — no `SIM_VERSION` bump was made for it.
+- Measured on the two seeded six-element spills the pure check runs: speeds 30.7–60.8 and
+  34.1–47.2 in/s, widest fan 34.2° / 36.9°.
+
+Two other HIVE changes landed the same day and are documented at their constants: the swing
+runs faster the further the load is over its threshold (`hiveSwingRate`, `BB_TIP_RATE_PER_EXTRA`
+0.35 per surplus element, cap 3×), and a shot that meets the assembly anywhere but the taking
+cell's mouth now bounces off it and drops beside it (`hiveDeflect`, `BB_HIVE_MISS_REST` 0.3).

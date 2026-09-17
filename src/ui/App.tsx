@@ -58,6 +58,8 @@ import { ServerSession } from '../net/serverSession';
 import { WebSocketTransport } from '../net/transport';
 import { encodeMsg } from '../net/protocol';
 import { loadActiveGame, saveActiveGame, clearActiveGame, type ActiveGameRef } from '../net/activeGame';
+import { loadStagedMatch } from '../net/stagedMatch';
+import type { ResumedRoom } from './roomReturn';
 import { recordScore, type Replay, type ReplayResult } from '../sim/replay';
 import {
   savePracticeRun,
@@ -381,7 +383,21 @@ export function App() {
   const start = isWebHistory
     ? parsePath(window.location.pathname, settings.game)
     : { screen: 'home' as Screen, game: settings.game, ...NO_ARGS };
-  const [screen, setScreen] = useState<Screen>(start.screen);
+  /**
+   * A PAGE LOAD WITH A RANKED MATCH STILL WAITING GOES STRAIGHT TO IT.
+   *
+   * `stagedMatch` is only ever written between the assignment and the first tick, and it
+   * expires with the server clocks that bound that window — so if it is here and fresh,
+   * there is a room holding this account's seat right now and the alternative to going
+   * back to it is a dodge. The matchmaking screen adopts it on mount.
+   *
+   * It overrides the URL rather than deferring to it, and that is the point: the URL a
+   * reload restores is whatever screen the player was on, and none of them is the one
+   * with twenty seconds left on it. The path is rewritten to match below (the canonical
+   * -path effect reads `screen`), so the address bar does not lie about where they are.
+   */
+  const startScreen: Screen = loadStagedMatch() ? 'matchmaking' : start.screen;
+  const [screen, setScreen] = useState<Screen>(startScreen);
   const [route, setRoute] = useState<RouteArgs>(start);
   const [session, setSession] = useState<NetSession | null>(null);
   // read by the match-found takeover, which must fire on `found` alone — depending on
@@ -433,7 +449,9 @@ export function App() {
   useEffect(() => {
     if (!isWebHistory) return;
     saveSettings(settingsRef.current);
-    const canonical = pathFor(start.screen, start, settingsRef.current.game);
+    // `startScreen`, not `start.screen` — a staged ranked match overrides the restored
+    // URL (see above), and the address bar has to say where the player actually is
+    const canonical = pathFor(startScreen, start, settingsRef.current.game);
     if (window.location.pathname !== canonical) window.history.replaceState(null, '', canonical);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -1006,6 +1024,57 @@ export function App() {
     screenRef.current = screen;
   }, [screen]);
 
+  /**
+   * ---- BACK TO THE ROOM'S OWN LOBBY ----------------------------------------------
+   *
+   * A custom room used to be worth exactly one game. Everything about the ROOM was frozen
+   * at the first start: a rematch replays that roster, so a group that lost a player, or
+   * wanted to swap sides, had to mint a new code and all re-join it. The room is now
+   * recycled in place instead — the server clears its world and puts it back in the lobby
+   * state, keeping every seat.
+   *
+   * WHICH MEANS THE SOCKET MUST SURVIVE THE SCREEN CHANGE. We hold a seat the server is
+   * still counting; closing the connection would give it up and make everyone re-join the
+   * room they never left (and lose it outright if it filled in between). So the session
+   * `release()`s the transport rather than disposing it, and the Lobby adopts the same
+   * connection — the mirror image of the handover `Lobby.handleStart` makes on the way in.
+   */
+  const [resumedRoom, setResumedRoom] = useState<ResumedRoom | null>(null);
+
+  const backToRoomLobby = (): void => {
+    const s = session;
+    if (!s?.release || !s.room || !s.clientId) return;
+    const transport = s.release();
+    setEditMobileLayout(false);
+    setSession(null);
+    setSessionKind(null);
+    setSessionCoop(false);
+    // the match is over and the room no longer holds one: there is nothing to rejoin, and
+    // leaving the record behind would offer Home a "rejoin your match" that cannot work.
+    clearActiveGame();
+    setActiveGame(null);
+    setResumedRoom({ transport, code: s.room, region: s.region, clientId: s.clientId });
+    navigate('lobby');
+  };
+
+  /**
+   * EVERY MEMBER FOLLOWS THE ROOM, not just whoever pressed the button.
+   *
+   * `requestLobby` only ASKS; the room answers all of its clients at once (`t: 'lobby'`), and
+   * that answer is what moves each of them. Driving the screen change off the press instead
+   * would leave the rest of the room staring at a results screen for a match the server no
+   * longer has — and would move the host even on a request the server refused (a rated room,
+   * a result still being written, a member too old to understand the recycle).
+   *
+   * ⚠️ RE-REGISTERED ON EVERY SESSION, never mount-only: `onLobby` REPLACES, and a callback
+   * captured on the first render reads the session that render had. That is the same trap
+   * `onPracticeRun` fell into.
+   */
+  useEffect(() => {
+    session?.onLobby?.(() => backToRoomLobby());
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [session]);
+
   /** tear the session down without deciding where to go next */
   const leaveSession = (): void => {
     setEditMobileLayout(false);
@@ -1078,9 +1147,41 @@ export function App() {
     else go();
   };
 
-  /** abandon the in-progress game: forget it locally (its server slot then coasts +
-   * drops after the grace) so the player is free to start something new. */
+  /**
+   * ABANDON THE IN-PROGRESS GAME — and say so to the server, which is the half that
+   * used to be missing.
+   *
+   * This only ever cleared the BROWSER's record. That was harmless for as long as the
+   * server's single-game lock was inert, and it is not inert any more: the lock is
+   * registered when a match begins and released at finalize, drop or stop, so a slot
+   * abandoned from the menu went on holding it for the rest of the reconnect grace.
+   * The player pressed a button that said the game was gone and the next thing they
+   * started was refused — "you already have a game in progress, rejoin or leave it
+   * first" — advice about a game the UI had just told them did not exist.
+   *
+   * One frame on a throwaway socket, and nothing waited on: the local record is
+   * dropped either way, because a player who cannot reach the server is not helped by
+   * being kept in a room they have left. The socket closes as soon as the frame is out
+   * (`abandon` is answered with nothing by design — see the protocol note).
+   */
   const abandonActiveGame = (): void => {
+    const ref = loadActiveGame();
+    if (ref) {
+      const params: Record<string, string> = { room: ref.room };
+      if (ref.region) params.region = ref.region;
+      try {
+        const t = new WebSocketTransport(gameServerUrlWith(params));
+        t.onOpen(() => {
+          t.send(encodeMsg({ t: 'abandon', room: ref.room, clientId: ref.clientId }));
+          // let the frame leave before the socket does
+          window.setTimeout(() => t.close(), 250);
+        });
+        // never leave a socket dialling forever on a server that is not answering
+        window.setTimeout(() => t.close(), 5000);
+      } catch {
+        /* no reachable server — the local record still goes */
+      }
+    }
     clearActiveGame();
     setActiveGame(null);
     setBlockedByActive(false);
@@ -1203,6 +1304,15 @@ export function App() {
         }}
         onPracticeRun={keepPracticeRun}
         onQueueAgain={queueAgain}
+        /* CUSTOM ROOMS ONLY. A ranked room is the matchmaker's pairing and re-opening it
+           would hand a rated match a roster nobody was matched into; a record run already
+           restarts into a fresh room of its own. `requestLobby` is also absent on an older
+           session, so this is undefined rather than a button that does nothing. */
+        onBackToLobby={
+          sessionKind === 'custom' && session?.requestLobby
+            ? () => session.requestLobby?.()
+            : undefined
+        }
       />
     );
   }
@@ -1212,8 +1322,16 @@ export function App() {
       <Lobby
         settings={settings}
         onSettingsChange={update}
-        onStart={(s) => beginSession(s, 'custom')}
-        onCancel={() => navigate('modes')}
+        /* Both exits from the lobby drop the handed-over socket reference, so a later,
+           ordinary visit to this screen cannot re-adopt a room the player has left. */
+        onStart={(s) => {
+          setResumedRoom(null);
+          beginSession(s, 'custom');
+        }}
+        onCancel={() => {
+          setResumedRoom(null);
+          navigate('modes');
+        }}
         config={auto?.config}
         signedIn={signedIn}
         displayName={handle}
@@ -1224,6 +1342,7 @@ export function App() {
         autoJoin={auto?.room}
         autoJoinRegion={auto?.region}
         onAutoJoinConsumed={() => setPendingAutoJoin(null)}
+        resume={resumedRoom ?? undefined}
       />
     );
   }
@@ -1551,7 +1670,8 @@ export function App() {
       {lanOn && screen === 'lan' && (
         <LanPanel
           signedIn={signedIn}
-          onConnected={(code) =>
+          game={settings.game}
+          onConnected={(code, game) =>
             guardStart(() => {
               /* A WEBRTC ROOM IS ALREADY OPEN BY THE TIME WE GET HERE, so the lobby must
                  JOIN it rather than offer a create/join form. Without this the player lands
@@ -1559,7 +1679,7 @@ export function App() {
                  transport waiting in `pending.ts` would then be adopted by whatever they
                  typed, which need not be the room it is connected to. Same one-shot
                  `pendingAutoJoin` an accepted invite uses; the Lobby clears it on consume. */
-              if (code) setPendingAutoJoin({ room: code, config: { kind: 'versus', game: settings.game } });
+              if (code) setPendingAutoJoin({ room: code, config: { kind: 'versus', game: game ?? settings.game } });
               navigate('lobby');
             })
           }

@@ -10,7 +10,7 @@ import {
   saveReplay,
   submitRecord,
 } from './db/repo';
-import { STANDING_COST } from '../src/standing';
+import { RED_CARD_MULT } from '../src/standing';
 import { chargeStanding, creditCleanMatch } from './standing';
 import { persistVersusMatch } from './ranked';
 import { scrubName } from './moderation';
@@ -225,15 +225,15 @@ export async function persistBehaviour(b: BehaviourReport): Promise<void> {
      *
      * The referee in the sim issues it for a rule broken hard enough to be sanctioned —
      * excessive over-possession, or a second offence escalating to red — and it is already in
-     * the match record, on the results screen and in the replay. A RED costs more than a
-     * yellow because it is the second one, and because it voids the alliance's score.
+     * the match record, on the results screen and in the replay. A yellow costs 5 and a RED
+     * three times that (15), because it is the second card and it voids the alliance's score.
      */
     for (const c of b.carded ?? []) {
       await chargeStanding(c.userId, 'card', {
         game: b.game,
         mode: b.mode,
         roomCode: b.roomCode,
-        points: c.colour === 'red' ? STANDING_COST.card * 2 : undefined,
+        severity: c.colour === 'red' ? RED_CARD_MULT : undefined,
       });
     }
     // ...and a carded driver did NOT play it clean, whatever else the participation test

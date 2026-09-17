@@ -36,6 +36,7 @@ import {
   bbInGarden,
   bbKindIndex,
   bbLeftNow,
+  bbWallsTouched,
   bbParkedNow,
   bbScoreWorld,
 } from '../../src/games/biobuzz/score';
@@ -119,6 +120,22 @@ function place(world: World, id: number, x: number, y: number, headingDeg = 0): 
   r.vel = { x: 0, y: 0 };
 }
 
+/**
+ * TREAT WHERE THE ROBOTS ARE NOW AS WHERE THEY STARTED — the `pre`-tick bookkeeping, for a
+ * fixture that teleports instead of driving.
+ *
+ * LEAVE is measured against the walls a ROBOT STARTED AGAINST (`BiobuzzState.startWalls`,
+ * written on every `pre` tick and seeded at spawn), and a check that `place`s a robot onto a
+ * wall and then runs AUTO out has skipped both. Without this the robot is judged against the
+ * anchor it spawned on, which is a DIFFERENT wall, and it reads as having LEFT while sitting
+ * flat against the perimeter.
+ */
+function markStarts(world: World): void {
+  const bb = world.biobuzz;
+  if (!bb) return;
+  for (const r of world.robots) bb.startWalls[r.id] = bbWallsTouched(r);
+}
+
 let nextId = 500;
 /** one element, in whatever state the check needs. Ids are unique across the whole lane so a
  * stale reference in one fixture can never resolve inside another. */
@@ -171,6 +188,35 @@ function scoringChecks(check: Check): void {
     check('LEAVE: a robot against the perimeter has not LEFT', !bbLeftNow(w.robots[0]));
     place(w, 0, -40, 0);
     check('LEAVE: a robot in open field has LEFT', bbLeftNow(w.robots[0]));
+
+    /**
+     * ⚠️ THE WALL IT STARTED ON, not any of the four.
+     *
+     * §10.5.4 says "no longer contacting THE perimeter wall", and read as all four the
+     * achievement is unreachable in ordinary play: the HIVE, the FLOWERS and both GARDENS are
+     * at the perimeter, so a robot that crosses the field and ends AUTO somewhere useful is
+     * still touching A wall. Measured in a solo practice match before the fix — 3 points live
+     * for the whole of AUTO and 0 from the buzzer on, which is what "the LEAVE points aren't
+     * given" looks like from the driver's seat.
+     */
+    place(w, 0, -72 + 9, 0); // flat on the RED side wall, where it started
+    const startedOn = bbWallsTouched(w.robots[0]);
+    check('LEAVE: the start mask names the wall it is on', startedOn !== 0, String(startedOn));
+    check('LEAVE: still on its own start wall — not LEFT', !bbLeftNow(w.robots[0], startedOn));
+    place(w, 0, BB_HALF_X - 9, 0); // drove the width of the field, onto the OPPOSITE wall
+    check(
+      'LEAVE: parked on the FAR wall has LEFT — it is clear of the wall it started on',
+      bbLeftNow(w.robots[0], startedOn),
+    );
+    check(
+      'LEAVE: ...and the all-four reading is what would refuse it',
+      !bbLeftNow(w.robots[0]),
+    );
+    place(w, 0, -40, 0);
+    check(
+      'LEAVE: a robot that started clear of the perimeter has nothing to leave',
+      bbLeftNow(w.robots[0], 0),
+    );
 
     // PARK is the OWN LOADING ZONE (owner ruling, field-plan §8), "at least partially".
     const lz = BB_LZ.red;
@@ -1670,6 +1716,7 @@ function cueChecks(check: Check): void {
     // −73.5, i.e. THROUGH the wall, and a robot that is not inside the field has not left it.
     place(m, 0, -59, 45);
     place(m, 1, BB_HALF_X - 10.5, 0);
+    markStarts(m);
     const none = new Map();
     check('ASSESS: nothing is latched before the instant', Object.keys(bb.leave).length === 0);
     biobuzzStep(m, SIM_DT, none);
