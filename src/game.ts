@@ -18,6 +18,8 @@ import * as C from './config';
 import { DEFAULT_ASSISTS, DEFAULT_SPEC, type RobotSetup } from './sim/spawn';
 import { moduleFor, gameOf } from './games';
 import type { GameModule } from './games';
+import type { GameScene, SceneCamera, SceneFrame } from './games/module';
+import { getViewPref, subscribeViewPref } from './games/biobuzz/graphics/store';
 import { accelMultiplier as chainAccelMultiplier, type EndgameState } from './games/chain/state';
 import { chainCatalystGeom, chainHopperCap } from './games/chain/config';
 import { chainCatalystPrompt } from './games/chain/play';
@@ -363,13 +365,52 @@ export class GameController {
    * (before it, the sim-driven pre-match countdown must predict freely from tick 0) */
   private gotSnapshot = false;
 
+  // ---------------------------------------------------------------- 3D scene (Day 1 seam) --
+  //
+  // `docs/biobuzz/plan-3d.md` §4.1/§4.7. A game with no `scene` (DECODE, Chain Reaction, and
+  // BIOBUZZ until Lane B lands one) or a controller built with no `sceneHost` never loads
+  // anything past these fields staying null — see `syncScene`.
+
+  /** the element the 3D scene mounts its own canvas into — one box shared with the 2D
+   * canvas (GameView's `.game-viewport`). Null for every caller that hasn't been wired
+   * for one (every call site before this seam, and a replay/spectate screen today). */
+  private readonly sceneHost: HTMLElement | null;
+  /** the live 3D scene, or null on the 2D view / no scene module / a failed load. Owned
+   * entirely by this controller — created and disposed here, never by GameView. */
+  private scene: GameScene | null = null;
+  /** bumped on every teardown so a `factory()`/`render()` that resolves AFTER the view
+   * has switched away, or after a second load started (rapid toggling), is dropped
+   * instead of replacing the scene the current state actually wants. */
+  private sceneEpoch = 0;
+  private unsubscribeViewPref: () => void = () => {};
+  /** read every render frame — cached so a 3D scene's camera pick doesn't construct a
+   * fresh `MediaQueryList` up to 144 times a second (`useCoarsePointer`'s complaint about
+   * the old per-render `matchMedia()` calls, at render-loop frequency instead of 10 Hz). */
+  private mqCoarse: MediaQueryList | null = null;
+
   constructor(
     private readonly canvas: HTMLCanvasElement,
     private settings: GameSettings,
     session: NetSession | null = null,
+    opts?: {
+      /** the element the 3D scene mounts into — GameView's `.game-viewport`, which
+       * already contains the 2D canvas at the same box. Absent ⇒ never load a scene,
+       * whatever the view preference says. */
+      sceneHost?: HTMLElement;
+      /**
+       * A ONE-LINE EVENT pushed into the freshly built world (Day 1 seam): GameView
+       * awaits `initPhysics3d()` before constructing a 3D solo practice and passes this
+       * when that load REJECTED, so the run falls back to 2D physics for the session —
+       * announced through the existing toast/event-log path (`world.events` →
+       * `HudSnapshot.toasts`), the one `docs/area/ui.md` allows ("no popup toasts over
+       * the field" — the muted left-edge log is exactly that path, not a new surface).
+       */
+      physicsFallbackNotice?: string;
+    },
   ) {
     this.ctx = canvas.getContext('2d')!;
     this.session = session;
+    this.sceneHost = opts?.sceneHost ?? null;
     // which game this controller builds its INITIAL world for. A networked
     // session's game is authoritative (from matchStart); solo uses the setting.
     // Once running, STEP/DRAW/HUD resolve from this.world.game (this.mod).
@@ -395,6 +436,9 @@ export class GameController {
     // Mobile still STARTS with the assists on, because everyone does (`PLAYER_ASSISTS`).
 
     this.world = this.makeWorld();
+    // the physics-3d fallback notice (see the constructor's `opts` doc) rides the same
+    // path as every other match event — the first `frameLogic()` drains it into a toast.
+    if (opts?.physicsFallbackNotice) this.world.events.push(opts.physicsFallbackNotice);
     this.prevPhase = this.world.match.phase;
     this.seedActionAudio();
     session?.onRestart(() => this.rebuildFromNet());
@@ -410,7 +454,13 @@ export class GameController {
       this.canvasObserver = new ResizeObserver(() => this.onResize());
       this.canvasObserver.observe(this.canvas);
     }
+    this.mqCoarse = typeof matchMedia === 'function' ? matchMedia('(pointer: coarse)') : null;
     this.onResize();
+    // BIOBUZZ 3D SEAM: pick up the device's current view preference now, and again on
+    // every change (a live switch from Configure or a future in-match toggle) — see
+    // `syncScene`. A no-op whenever `this.mod.scene` or `sceneHost` is absent.
+    this.unsubscribeViewPref = subscribeViewPref(() => this.syncScene());
+    this.syncScene();
     // Multiplayer must keep simulating + producing inputs even when the tab is
     // unfocused (else every peer stalls waiting on it), so drive the sim from a
     // timer (+ audio keepalive to defeat background throttling) and use rAF for
@@ -497,7 +547,79 @@ export class GameController {
 
   private onResize = (): void => {
     this.renderer.camera.configure(this.canvas, this.viewAlliance(), this.mod.bounds);
+    this.scene?.resize(this.canvas.clientWidth, this.canvas.clientHeight, window.devicePixelRatio || 1);
   };
+
+  /**
+   * RECONCILE the live 3D scene to (a) whether this game HAS one and (b) the device's
+   * current view preference — called once at construction and again every time
+   * `setViewPref` fires (Day 1 seam, `docs/biobuzz/plan-3d.md` §4.1/§4.7). A game with no
+   * `scene` (DECODE, Chain Reaction, BIOBUZZ until Lane B lands one) or a controller built
+   * with no `sceneHost` (GameView only supplies one when `mod.scene` exists) never loads
+   * anything.
+   */
+  private syncScene(): void {
+    const sceneFn = this.mod.scene;
+    const want = !!sceneFn && !!this.sceneHost && getViewPref() === '3d';
+    if (!want || !sceneFn) {
+      this.teardownScene();
+      return;
+    }
+    if (this.scene) return; // already showing one
+    const host = this.sceneHost!;
+    const epoch = ++this.sceneEpoch;
+    (async () => {
+      const factory = await sceneFn();
+      const scene = await factory(host);
+      // the view may have switched away, the controller may have been disposed, or a
+      // second load may have started (rapid toggling) WHILE this one was in flight —
+      // whichever result loses the race is disposed unused rather than replacing the
+      // scene the current state actually wants.
+      if (this.disposed || epoch !== this.sceneEpoch) {
+        scene.dispose();
+        return;
+      }
+      // UNDER the 2D canvas: inserted FIRST, so DOM order decides the stack (both
+      // position:absolute, z-index:auto — see `.game-viewport > canvas` in styles.css).
+      // Sized before its first `render()`, never after.
+      host.insertBefore(scene.element, host.firstChild);
+      scene.resize(this.canvas.clientWidth, this.canvas.clientHeight, window.devicePixelRatio || 1);
+      this.scene = scene;
+    })().catch((err: unknown) => {
+      if (epoch !== this.sceneEpoch) return;
+      // ONE console warning, per plan §4.7 ("a rejected renderer import() falls back to the
+      // 2D view") — never a blank canvas, and never anything the 2D game screen shows.
+      // eslint-disable-next-line no-console
+      console.warn('BIOBUZZ 3D scene failed to load; staying on the 2D view.', err);
+    });
+  }
+
+  /** drop the live scene (view switched to 2D, the controller is disposing, or a render
+   * threw). Bumps the epoch FIRST so an in-flight `syncScene()` load cannot land after. */
+  private teardownScene(): void {
+    this.sceneEpoch++;
+    if (!this.scene) return;
+    const scene = this.scene;
+    this.scene = null;
+    try {
+      scene.element.remove();
+    } catch {
+      /* not attached, or already gone — either way there is nothing left to remove */
+    }
+    try {
+      scene.dispose();
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.warn('BIOBUZZ 3D scene threw disposing; continuing on the 2D view.', err);
+    }
+  }
+
+  /** which camera a 3D scene renders for — the touch/phone layout gets the overhead shot
+   * (the 2D fit), everyone else the driver's-eye view (plan §4.3), mirroring the same
+   * `(pointer: coarse)` query `useCoarsePointer` uses to pick `MobileControls`. */
+  private sceneCameraFor(): SceneCamera {
+    return this.mqCoarse?.matches ? 'overhead' : 'driver';
+  }
 
   private handlePhaseAudio(): void {
     const phase = this.world.match.phase;
@@ -742,7 +864,32 @@ export class GameController {
     // solo renders the predicted world directly; the networked path renders remote
     // robots + balls INTERPOLATED (smooth) with the local robot predicted
     const world = this.session ? this.displayWorld(dtMs) : this.world;
-    this.renderer.render(this.ctx, world, this.lastCmd, this.localRobotId);
+    if (this.scene) {
+      try {
+        const frame: SceneFrame = {
+          // the fixed-timestep accumulator's leftover fraction — the same interpolation
+          // alpha a fixed-timestep renderer uses between authoritative steps. The 2D
+          // renderer does not need it (solo renders `this.world` as last stepped; the
+          // networked path already interpolates remotes its own way), so the 3D scene is
+          // its first reader.
+          alpha: clamp(this.acc / C.SIM_DT, 0, 1),
+          viewAngle: this.renderer.camera.viewAngle,
+          camera: this.sceneCameraFor(),
+          localRobotId: this.spectator ? undefined : this.localRobotId,
+          width: this.canvas.clientWidth,
+          height: this.canvas.clientHeight,
+          dpr: window.devicePixelRatio || 1,
+        };
+        this.scene.render(world, frame);
+      } catch (err) {
+        // eslint-disable-next-line no-console
+        console.warn('BIOBUZZ 3D scene failed to render; falling back to the 2D view.', err);
+        this.teardownScene();
+      }
+    }
+    // a live scene draws the field/robots/balls beneath this canvas — the 2D pass then
+    // stays transparent and draws only its cheap overlay (name labels), never the field.
+    this.renderer.render(this.ctx, world, this.lastCmd, this.localRobotId, !!this.scene);
     this.sampleFrame(dtMs);
     this.raf = requestAnimationFrame(this.loop);
   };
@@ -1390,5 +1537,7 @@ export class GameController {
     this.input.detach();
     window.removeEventListener('resize', this.onResize);
     this.canvasObserver?.disconnect();
+    this.unsubscribeViewPref();
+    this.teardownScene();
   }
 }

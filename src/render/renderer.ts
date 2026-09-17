@@ -27,47 +27,64 @@ export class Renderer {
     world: World,
     lastCommand: RobotCommand | null,
     localRobotId = 0,
+    /**
+     * BIOBUZZ 3D SEAM (Day 1, `docs/biobuzz/plan-3d.md` §4.1/§4.7): true while a live 3D
+     * scene is drawing the field/robots/balls on the canvas BENEATH this one. This 2D pass
+     * then stays TRANSPARENT (no backdrop fill, so the scene shows through) and skips
+     * `drawField`/the robot loop/`drawBalls` — the scene owns all of that — but still draws
+     * the cheap overlay below (name/team labels): it is camera-space text, not a game
+     * drawing, and keeping it means a remote driver's name still reads in the 3D view.
+     * False for every game/view before this seam, unchanged.
+     */
+    overlayOnly = false,
   ): void {
     const canvas = ctx.canvas;
     ctx.setTransform(1, 0, 0, 1, 0, 0);
-    ctx.fillStyle = backdropColor();
-    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    if (overlayOnly) {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+    } else {
+      ctx.fillStyle = backdropColor();
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+    }
 
     this.camera.apply(ctx);
     const screenUp = this.camera.screenUpWorld(); // world-space "up" for z-lift (raised beams, robot bob)
     // the active game draws its own field + overlays (DECODE: field + ramp strips)
     const mod = gameOf(world);
-    mod.drawField(ctx, world, screenUp);
-    mod.drawOverlays?.(ctx, world);
 
-    /* Held artifacts grouped in ONE pass, not re-filtered per robot. This used to be a
-       `world.balls.filter(...)` inside the loop below, i.e. O(robots × balls) every frame —
-       in a 2v2 Chain Reaction room that is 4 arrays and 1,200 predicate calls per frame, and
-       the render loop is rAF, so on a 144 Hz display it was ~173,000 predicate calls a second
-       to answer a question one pass over the balls answers. Order is preserved exactly: a
-       forward pass appends in `world.balls` order, which is what `filter` returned. */
-    const heldBy = new Map<number, Artifact[]>();
-    for (const b of world.balls) {
-      if (b.state.kind !== 'held') continue;
-      const list = heldBy.get(b.state.robot);
-      if (list) list.push(b);
-      else heldBy.set(b.state.robot, [b]);
-    }
+    if (!overlayOnly) {
+      mod.drawField(ctx, world, screenUp);
+      mod.drawOverlays?.(ctx, world);
 
-    for (const r of world.robots) {
-      // Draw auto paths if active for this robot
-      if (r.autoPathActive && r.autoPath) {
-        this.drawAutoPath(ctx, r);
+      /* Held artifacts grouped in ONE pass, not re-filtered per robot. This used to be a
+         `world.balls.filter(...)` inside the loop below, i.e. O(robots × balls) every frame —
+         in a 2v2 Chain Reaction room that is 4 arrays and 1,200 predicate calls per frame, and
+         the render loop is rAF, so on a 144 Hz display it was ~173,000 predicate calls a second
+         to answer a question one pass over the balls answers. Order is preserved exactly: a
+         forward pass appends in `world.balls` order, which is what `filter` returned. */
+      const heldBy = new Map<number, Artifact[]>();
+      for (const b of world.balls) {
+        if (b.state.kind !== 'held') continue;
+        const list = heldBy.get(b.state.robot);
+        if (list) list.push(b);
+        else heldBy.set(b.state.robot, [b]);
       }
 
-      const intakeOn =
-        (r.id === localRobotId && (lastCommand?.intake ?? false)) ||
-        (r.autoIntake && r.hopper.length < 3);
-      // NO_HELD is shared and never written to — every `drawRobot` treats `held` as read-only.
-      const held = heldBy.get(r.id) ?? NO_HELD;
-      (mod.drawRobot ?? drawRobot)(ctx, r, intakeOn, held, screenUp, world);
+      for (const r of world.robots) {
+        // Draw auto paths if active for this robot
+        if (r.autoPathActive && r.autoPath) {
+          this.drawAutoPath(ctx, r);
+        }
+
+        const intakeOn =
+          (r.id === localRobotId && (lastCommand?.intake ?? false)) ||
+          (r.autoIntake && r.hopper.length < 3);
+        // NO_HELD is shared and never written to — every `drawRobot` treats `held` as read-only.
+        const held = heldBy.get(r.id) ?? NO_HELD;
+        (mod.drawRobot ?? drawRobot)(ctx, r, intakeOn, held, screenUp, world);
+      }
+      mod.drawBalls(ctx, world, screenUp);
     }
-    mod.drawBalls(ctx, world, screenUp);
 
     // name/team labels above the OTHER robots (the local driver knows theirs)
     if (world.robots.length > 1) {
