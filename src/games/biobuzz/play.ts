@@ -816,84 +816,7 @@ export function updateBiobuzz(
    * cannot even be pressed — the explicit gate below is for the smoke lane and any other
    * direct caller of this function, which pass their own command map.
    */
-  {
-    const teleop = world.match.phase === 'teleop';
-    // THE 1:00 CUE. Past it the alliance may enter everything it still holds — it is a larger
-    // ENTITLEMENT, not a faster one, which is why it sits beside `nectarDue` in the test rather
-    // than replacing it. `BB_FLOWER_UNLOCK_S` is the same 60 s G410 unlocks the FLOWERS at; one
-    // cue, read in one place.
-    const dumping = teleop && world.match.phaseTimeLeft <= BB_FLOWER_UNLOCK_S;
-    // ONE ENTRY PER ALLIANCE PER TICK. A second robot's rising edge on the same tick is still
-    // CONSUMED (its latch is written above the test) rather than ignored, so a partner holding
-    // the button does not fire on the tick after.
-    const entered: Record<Alliance, boolean> = { red: false, blue: false };
-
-    for (const rob of world.robots) {
-      if (rob.passive) continue; // a practice dummy has no drive team
-      const a = rob.alliance;
-      const latch = (bb.held[rob.id] ??= {});
-      const now = enabled && (cmds.get(rob.id)?.bbNectar ?? false);
-      const rising = now && !latch[NECTAR_PRESS_KEY];
-      // A TRUE key, or NO key — the convention `placeLatch` sets for this same per-robot bag,
-      // and what the lane's smoke asserts about it. `bb.held` is plain JSON on `world.biobuzz`,
-      // so it rides every 30 Hz snapshot and every replay: a `false` parked under a robot id
-      // for the rest of the match is bytes on the wire that say nothing.
-      if (now) latch[NECTAR_PRESS_KEY] = true;
-      else delete latch[NECTAR_PRESS_KEY];
-      if (!rising || entered[a]) continue;
-      if (bb.nectarStock[a] <= 0) continue;
-      if (!(bb.nectarDue[a] > 0 || dumping)) continue;
-
-      // OLDEST FIRST, by id. `world.balls` order is stable but is not a promise; the id is,
-      // and the human player's five are staged consecutively (`spawn.ts`), so the lowest id
-      // still in hand is the one that has been waiting longest.
-      let next: Artifact | null = null;
-      for (const ball of world.balls) {
-        if (ball.state.kind !== 'stock' || ball.state.alliance !== a) continue;
-        if (!next || ball.id < next.id) next = ball;
-      }
-      if (!next) {
-        // the counter and the array disagree — trust the ARRAY, which is the conservation
-        // authority, and stop claiming a stock that is not there.
-        bb.nectarStock[a] = 0;
-        bb.nectarDue[a] = 0;
-        continue;
-      }
-      // The jitter is the world's seeded chain, drawn twice per entry, so five NECTAR entering
-      // one LOADING ZONE make a small scatter rather than a stack of five discs on one tile —
-      // and the same scatter on every peer. Drawn ONLY on an entry that actually happens: a
-      // refused press must not advance the chain, or a client that predicted a refusal and a
-      // server that granted it would disagree about every later draw in the match.
-      const spot = bbLoadingZoneSpot(a, BB_NECTAR_R);
-      const jx = (nextRandomValue(world) * 2 - 1) * NECTAR_ENTRY_JITTER;
-      const jy = (nextRandomValue(world) * 2 - 1) * NECTAR_ENTRY_JITTER;
-      land(next, spot.x + jx, spot.y + jy);
-      bb.nectarStock[a] -= 1;
-      // `max(0, …)`: in the dump window an alliance may enter stock it was never OWED, and a
-      // negative debt would make the next TIP's entitlement free.
-      bb.nectarDue[a] = Math.max(0, bb.nectarDue[a] - 1);
-      entered[a] = true;
-      world.events.push(`${a.toUpperCase()} NECTAR ENTERS`);
-    }
-
-    // WHY THE BUTTON WOULD REFUSE, recomputed for BOTH alliances every tick — AFTER the
-    // entries above, so the HUD reads the situation the driver is now in rather than the one
-    // they were in before their own press. Most permanent answer first: an empty stock never
-    // becomes anything else, so it outranks a frozen field and a missing entitlement.
-    for (const a of ALLIANCES) {
-      if (bb.nectarStock[a] <= 0) {
-        // owed an entry with nothing left to enter: the debt is void, not banked
-        bb.nectarDue[a] = 0;
-        bb.nectarWhy[a] = 'none-left';
-      } else if (!enabled) {
-        bb.nectarWhy[a] = 'locked';
-      } else if (bb.nectarDue[a] > 0 || dumping) {
-        bb.nectarWhy[a] = 'ok';
-      } else {
-        bb.nectarWhy[a] = 'none-owed';
-      }
-    }
-  }
+  bbHumanPlayerTick(world, bb, cmds, enabled);
 
   // ── 8. SCORE + ENDGAME ────────────────────────────────────────────────────
   /**
@@ -960,7 +883,7 @@ function placeLatch(
  * (`flowerStackZ`). A NECTAR placed makes its alliance the FLOWER's owner by the ordinary stack
  * rule (`flowerScore`), whoever placed it.
  */
-function placeInFlower(
+export function placeInFlower(
   world: World,
   bb: BiobuzzState,
   rob: RobotState,
@@ -1029,7 +952,7 @@ export function bbFlowerAtIntake(r: RobotState): number | null {
  * by the element removed — except above a NECTAR seated on the middle ring, which the geometry
  * already holds up.
  */
-function retrieveFromFlower(
+export function retrieveFromFlower(
   world: World,
   bb: BiobuzzState,
   rob: RobotState,
@@ -1181,3 +1104,105 @@ const ZERO_CMD: RobotCommand = Object.freeze({
   intake: false,
   fire: false,
 });
+
+/**
+ * THE HUMAN PLAYER, stage 7 of `updateBiobuzz` -- pulled out into its own exported function
+ * (Day 1 3D seam, `docs/biobuzz/plan-3d.md` section 3.8) so `sim3d/elements3d.ts` can call the
+ * SAME bookkeeping the 2D pipeline does, rather than a second copy of it. A PURE EXTRACTION:
+ * the body below is byte-for-byte what stage 7 always did, called from exactly the point it
+ * used to sit inline -- see `updateBiobuzz`'s stage 7 for why it runs where it does.
+ *
+ * Returns the NECTAR that entered this tick, per alliance (`null` when none did) -- the one
+ * thing 2D never needed to know and 3D does: `land()` puts an entered element on the tiles at
+ * `z = 0`, vel zero, which is correct for the 2D pipeline (nothing there simulates the drop)
+ * and WRONG for 3D, where a NECTAR is meant to fall a short drop in from the human player's
+ * hand (plan section 3.8) rather than appear already resting. `sim3d/elements3d.ts` uses the
+ * return value to bump `z` on whichever ball actually entered, right after calling this; the
+ * 2D call site in `updateBiobuzz` simply ignores it.
+ */
+export function bbHumanPlayerTick(
+  world: World,
+  bb: BiobuzzState,
+  cmds: Map<number, RobotCommand>,
+  enabled: boolean,
+): Record<Alliance, Artifact | null> {
+  const entered: Record<Alliance, Artifact | null> = { red: null, blue: null };
+  const teleop = world.match.phase === 'teleop';
+  // THE 1:00 CUE. Past it the alliance may enter everything it still holds — it is a larger
+  // ENTITLEMENT, not a faster one, which is why it sits beside `nectarDue` in the test rather
+  // than replacing it. `BB_FLOWER_UNLOCK_S` is the same 60 s G410 unlocks the FLOWERS at; one
+  // cue, read in one place.
+  const dumping = teleop && world.match.phaseTimeLeft <= BB_FLOWER_UNLOCK_S;
+  // ONE ENTRY PER ALLIANCE PER TICK. A second robot's rising edge on the same tick is still
+  // CONSUMED (its latch is written above the test) rather than ignored, so a partner holding
+  // the button does not fire on the tick after.
+  const enteredOnce: Record<Alliance, boolean> = { red: false, blue: false };
+
+  for (const rob of world.robots) {
+    if (rob.passive) continue; // a practice dummy has no drive team
+    const a = rob.alliance;
+    const latch = (bb.held[rob.id] ??= {});
+    const now = enabled && (cmds.get(rob.id)?.bbNectar ?? false);
+    const rising = now && !latch[NECTAR_PRESS_KEY];
+    // A TRUE key, or NO key — the convention `placeLatch` sets for this same per-robot bag,
+    // and what the lane's smoke asserts about it. `bb.held` is plain JSON on `world.biobuzz`,
+    // so it rides every 30 Hz snapshot and every replay: a `false` parked under a robot id
+    // for the rest of the match is bytes on the wire that say nothing.
+    if (now) latch[NECTAR_PRESS_KEY] = true;
+    else delete latch[NECTAR_PRESS_KEY];
+    if (!rising || enteredOnce[a]) continue;
+    if (bb.nectarStock[a] <= 0) continue;
+    if (!(bb.nectarDue[a] > 0 || dumping)) continue;
+
+    // OLDEST FIRST, by id. `world.balls` order is stable but is not a promise; the id is,
+    // and the human player's five are staged consecutively (`spawn.ts`), so the lowest id
+    // still in hand is the one that has been waiting longest.
+    let next: Artifact | null = null;
+    for (const ball of world.balls) {
+      if (ball.state.kind !== 'stock' || ball.state.alliance !== a) continue;
+      if (!next || ball.id < next.id) next = ball;
+    }
+    if (!next) {
+      // the counter and the array disagree — trust the ARRAY, which is the conservation
+      // authority, and stop claiming a stock that is not there.
+      bb.nectarStock[a] = 0;
+      bb.nectarDue[a] = 0;
+      continue;
+    }
+    // The jitter is the world's seeded chain, drawn twice per entry, so five NECTAR entering
+    // one LOADING ZONE make a small scatter rather than a stack of five discs on one tile —
+    // and the same scatter on every peer. Drawn ONLY on an entry that actually happens: a
+    // refused press must not advance the chain, or a client that predicted a refusal and a
+    // server that granted it would disagree about every later draw in the match.
+    const spot = bbLoadingZoneSpot(a, BB_NECTAR_R);
+    const jx = (nextRandomValue(world) * 2 - 1) * NECTAR_ENTRY_JITTER;
+    const jy = (nextRandomValue(world) * 2 - 1) * NECTAR_ENTRY_JITTER;
+    land(next, spot.x + jx, spot.y + jy);
+    entered[a] = next; // reported to the caller (sim3d/elements3d.ts sets the 3D fall height)
+    bb.nectarStock[a] -= 1;
+    // `max(0, …)`: in the dump window an alliance may enter stock it was never OWED, and a
+    // negative debt would make the next TIP's entitlement free.
+    bb.nectarDue[a] = Math.max(0, bb.nectarDue[a] - 1);
+    enteredOnce[a] = true;
+    world.events.push(`${a.toUpperCase()} NECTAR ENTERS`);
+  }
+
+  // WHY THE BUTTON WOULD REFUSE, recomputed for BOTH alliances every tick — AFTER the
+  // entries above, so the HUD reads the situation the driver is now in rather than the one
+  // they were in before their own press. Most permanent answer first: an empty stock never
+  // becomes anything else, so it outranks a frozen field and a missing entitlement.
+  for (const a of ALLIANCES) {
+    if (bb.nectarStock[a] <= 0) {
+      // owed an entry with nothing left to enter: the debt is void, not banked
+      bb.nectarDue[a] = 0;
+      bb.nectarWhy[a] = 'none-left';
+    } else if (!enabled) {
+      bb.nectarWhy[a] = 'locked';
+    } else if (bb.nectarDue[a] > 0 || dumping) {
+      bb.nectarWhy[a] = 'ok';
+    } else {
+      bb.nectarWhy[a] = 'none-owed';
+    }
+  }
+  return entered;
+}

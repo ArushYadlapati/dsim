@@ -225,86 +225,81 @@ export interface HiveStepResult {
 }
 
 /**
- * One tick of HIVE mechanics. Three distinct moments, and keeping them apart is the point:
+ * THE TIMER/TRIGGER CORE, physics-agnostic (Day 1 3D seam, `docs/biobuzz/plan-3d.md` section
+ * 3.6) -- everything `hiveStep` does EXCEPT the CONTENTS/spill writes, which are 2D-only (the
+ * 3D pipeline derives `contents` from body positions instead -- see `sim3d/derive.ts` and
+ * `sim3d/hive3d.ts`). A PURE EXTRACTION: `hiveStep` below is now a thin wrapper over this that
+ * reproduces its old return value exactly, so the 2D pipeline is byte-for-byte unchanged.
  *
- * 1. **Settled and loaded** (`hiveWillTip`) ⇒ the swing STARTS. No points: §10.5.1 scores a
- *    TIP when the damper makes contact, which is the END of the swing.
- * 2. **Mid-swing, passing LEVEL** (`BB_TIP_RELEASE_S` left) ⇒ the contents fall out, returned
- *    as `spilled` for the caller to put back on the tiles (`spillPoses`). `released` latches so
- *    a tray cannot empty twice, and the fallback at settle covers a `dt` longer than half a
- *    swing.
- * 3. **The swing reaching zero** ⇒ the cells swap, `tips` increments, `tipped` is true.
- *
- * ⚠️ `contents` SURVIVES THE SETTLE ONCE THE TRAY HAS RELEASED. The cell goes on taking
- * elements through the swing (`hiveTakingSide`), and after the release the tray filling is the
- * one coming UP — the one that `up` names a tick later. Emptying `contents` unconditionally at
- * the settle threw those away, silently, a second or two after they were captured. So the
- * settle keeps them when `released` is set, and only clears (and spills) when it is not, which
- * is the `dt`-longer-than-half-a-swing fallback and nothing else.
- *
- * The spill therefore lands while the bar is still moving, a couple of seconds before the
- * points — which is what a real HIVE does, and what makes the elements available to a robot
- * under the structure before the score changes. Never mutates `hive`.
+ * Returns the hive with `contents` carried through UNTOUCHED (the caller decides what belongs
+ * there) plus `releasing` -- true on the ONE call where the load should leave the tray (2D
+ * calls this `spilled`; 3D reads it only for an event message, since physics does the actual
+ * spilling).
  */
-export function hiveStep(hive: HiveState, dt: number, kindOf: (id: number) => BbElementKind): HiveStepResult {
+export interface HiveTimerResult {
+  hive: HiveState;
+  tipped: boolean;
+  releasing: boolean;
+}
+
+export function hiveTimerStep(hive: HiveState, dt: number, kindOf: (id: number) => BbElementKind): HiveTimerResult {
   if (hive.tipping > 0) {
     const released = hive.released;
-    /**
-     * THE RATE (`hiveSwingRate`). BEFORE the release the tray is still loaded and still
-     * taking, so the rate is read off what is in it RIGHT NOW — it can only rise, because
-     * nothing leaves a tray until level. AFTER the release the load is on the tiles and the
-     * bar is coasting on what it was given, so the rate the swing HAD is carried
-     * (`swingRate`). A swing from a snapshot that predates the field runs at the nominal rate.
-     */
     const rate = released ? (hive.swingRate ?? 1) : hiveSwingRate(hiveLoad(hive.contents, kindOf));
     const left = hive.tipping - dt * rate;
     if (left > 0) {
       const releasing = !released && left <= BB_TIP_RELEASE_S;
       return {
-        hive: {
-          ...hive,
-          contents: releasing ? [] : [...hive.contents],
-          tipping: left,
-          released: released || releasing,
-          swingRate: rate,
-        },
+        hive: { ...hive, tipping: left, released: released || releasing, swingRate: rate },
         tipped: false,
-        spilled: releasing ? [...hive.contents] : [],
+        releasing,
       };
     }
     return {
-      hive: {
-        up: otherSide(hive.up),
-        // the load the INCOMING tray took after the release — see the note above. Empty in the
-        // ordinary case, because nothing was launched during the second half of the swing.
-        contents: released ? [...hive.contents] : [],
-        tips: hive.tips + 1,
-        tipping: 0,
-        released: false,
-        // settled: no swing, no rate. Dropped rather than written as 1 so a settled hive is
-        // the same JSON it was before the field existed.
-      },
+      hive: { up: otherSide(hive.up), contents: hive.contents, tips: hive.tips + 1, tipping: 0, released: false },
       tipped: true,
-      // normally empty — the tray emptied at level. Non-empty only when one `dt` spanned the
-      // whole second half of the swing, and then the elements still have to go somewhere.
-      spilled: released ? [] : [...hive.contents],
+      releasing: !released,
     };
   }
   const load = hiveLoad(hive.contents, kindOf);
   if (hiveWillTip(load)) {
     return {
-      hive: {
-        ...hive,
-        contents: [...hive.contents],
-        tipping: BB_TIP_SWING_S,
-        released: false,
-        swingRate: hiveSwingRate(load),
-      },
+      hive: { ...hive, tipping: BB_TIP_SWING_S, released: false, swingRate: hiveSwingRate(load) },
       tipped: false,
-      spilled: [],
+      releasing: false,
     };
   }
-  return { hive: { ...hive, contents: [...hive.contents] }, tipped: false, spilled: [] };
+  return { hive: { ...hive }, tipped: false, releasing: false };
+}
+
+/**
+ * One tick of HIVE mechanics -- now a thin wrapper over `hiveTimerStep` (see that function's
+ * header for the split). Three distinct moments, and keeping them apart is the point:
+ *
+ * 1. **Settled and loaded** (`hiveWillTip`) => the swing STARTS. No points: section 10.5.1 scores a
+ *    TIP when the damper makes contact, which is the END of the swing.
+ * 2. **Mid-swing, passing LEVEL** (`BB_TIP_RELEASE_S` left) => the contents fall out, returned
+ *    as `spilled` for the caller to put back on the tiles (`spillPoses`). `released` latches so
+ *    a tray cannot empty twice, and the fallback at settle covers a `dt` longer than half a
+ *    swing.
+ * 3. **The swing reaching zero** => the cells swap, `tips` increments, `tipped` is true.
+ *
+ * CONTENTS SURVIVES THE SETTLE ONCE THE TRAY HAS RELEASED. The cell goes on taking
+ * elements through the swing (`hiveTakingSide`), and after the release the tray filling is the
+ * one coming UP -- the one that `up` names a tick later. Emptying `contents` unconditionally at
+ * the settle threw those away, silently, a second or two after they were captured. So the
+ * settle keeps them when `released` is set, and only clears (and spills) when it is not, which
+ * is the `dt`-longer-than-half-a-swing fallback and nothing else.
+ *
+ * The spill therefore lands while the bar is still moving, a couple of seconds before the
+ * points -- which is what a real HIVE does, and what makes the elements available to a robot
+ * under the structure before the score changes. Never mutates `hive`.
+ */
+export function hiveStep(hive: HiveState, dt: number, kindOf: (id: number) => BbElementKind): HiveStepResult {
+  const r = hiveTimerStep(hive, dt, kindOf);
+  const contents = r.releasing ? [] : [...hive.contents];
+  const spilled = r.releasing ? [...hive.contents] : [];
+  return { hive: { ...r.hive, contents }, tipped: r.tipped, spilled };
 }
 
 /**
