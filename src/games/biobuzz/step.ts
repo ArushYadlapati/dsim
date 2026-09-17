@@ -219,7 +219,7 @@ function bbAssess(world: World, at: 'auto' | 'match'): void {
  * can disagree with the clock, and the clock is already authoritative for the rule itself
  * (`bbNectarLocked` reads `phaseTimeLeft`, not the flag).
  */
-function biobuzzStepMatch(world: World, dt: number): void {
+export function biobuzzStepMatch(world: World, dt: number): void {
   const m = world.match;
   if (m.phase === 'pre') {
     // WHICH WALLS EACH ROBOT IS STARTING AGAINST, re-read every tick until the match begins.

@@ -4,6 +4,7 @@ import { fieldChecks, roomChecks } from './field';
 import { rulesChecks } from './rules';
 import { robotChecks } from './robot';
 import { coreChecks } from './core';
+import { sim3dChecks } from './sim3d';
 import { sponsorChecks } from './sponsor';
 import { renderChecks } from './render';
 import type { Check } from './harness';
@@ -56,6 +57,7 @@ import type { Check } from './harness';
 
 const LANES: { name: string; fn: (c: Check) => void }[] = [
   { name: 'CORE', fn: coreChecks },
+  { name: 'SIM3D', fn: sim3dChecks },
   { name: 'FIELD', fn: fieldChecks },
   // Table 10-2 scoring, the Section 11 fouls, the 1:00 cue, the HUD slice. Its own lane
   // because a RULES failure and a PHYSICS failure are different mornings, and because two
