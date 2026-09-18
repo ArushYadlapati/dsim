@@ -312,6 +312,32 @@ export interface GameDevRoute {
 export type SceneCamera = 'driver' | 'overhead';
 
 /**
+ * The HUD's OCCUPIED BANDS over the render surface, in CSS pixels, measured off the live DOM
+ * (`GameController.refreshHudInsets`).
+ *
+ * The 3D canvas fills the whole `.game-viewport`, but the score bar, the breakdown chips, the
+ * status chips and the MENU/RESET buttons are absolutely positioned ON TOP of it — so "fit the
+ * field to the canvas" frames part of the field underneath chrome that hides it. That is the
+ * owner's report of 2026-09-18 ("the scoreboard overlaps the field"). These four numbers are how
+ * much of each edge is spoken for; the SAFE RECT the field must fit into is
+ * `[left, width − right] × [top, height − bottom]`.
+ *
+ * ABSENT (or all-zero) READS AS NO CHROME, which is what keeps this additive: a scene written
+ * before this existed, or a host that does not measure (the scene gallery, a preview harness),
+ * fits to the full canvas exactly as it did.
+ *
+ * ⚠️ These are bands, NOT a per-element occlusion map. An element in a CORNER reserves a band
+ * across the whole edge it is nearest — cheap, stable, and it cannot leave a gap the way a
+ * per-element solve would when the HUD relayouts mid-frame.
+ */
+export interface SceneInsets {
+  top: number;
+  right: number;
+  bottom: number;
+  left: number;
+}
+
+/**
  * One frame's render inputs — everything a `GameScene` needs that is not already on `world`.
  * `alpha` is the interpolation fraction between the last two authoritative ticks (the same
  * fixed-timestep smoothing the 2D renderer does); `localRobotId` is absent for a spectator.
@@ -324,6 +350,13 @@ export interface SceneFrame {
   width: number;
   height: number;
   dpr: number;
+  /**
+   * The HUD's occupied bands (see `SceneInsets`) — absent ⇒ none, fit to the whole canvas.
+   *
+   * The OBJECT IS REUSED across frames by the controller (zero per-frame allocation at 144 Hz),
+   * so a scene must read the four numbers during `render` and never retain the reference.
+   */
+  insets?: SceneInsets;
 }
 
 /**
