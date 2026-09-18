@@ -3,52 +3,453 @@
   "units": "in",
   "frame": "sim",
   "hive": {
-    "pivot_x": {
-      "red": -12.75,
-      "blue": 12.75,
-      "config_BB_HIVE_X": 12.75
+    "pivotZ": 43.9497,
+    "config_BB3_HIVE_PIVOT_Z": 43.95,
+    "trays": {
+      "red": {
+        "pivot": [
+          -12.75,
+          0.0,
+          43.9497
+        ],
+        "captureThetaRad": -0.523599,
+        "captureThetaDeg": -30.0,
+        "upStaged": "south",
+        "backSkinThicknessIn": 0.02,
+        "cells": {
+          "north": {
+            "xHalf": 10.0706,
+            "vMin": 9.644,
+            "vMax": 21.3941,
+            "wMin": -1.4682,
+            "wMax": 12.5287
+          },
+          "south": {
+            "xHalf": 10.0706,
+            "vMin": -21.3941,
+            "vMax": -9.6441,
+            "wMin": -1.4682,
+            "wMax": 12.5287
+          }
+        },
+        "facets": [
+          [
+            "cell_south_floor",
+            422.2,
+            [
+              -0.0001,
+              -0.0001,
+              1.0
+            ],
+            -1.4861
+          ],
+          [
+            "cell_south_side_neg",
+            146.8,
+            [
+              1.0,
+              -0.0,
+              0.0
+            ],
+            -10.0906
+          ],
+          [
+            "cell_south_side_pos",
+            146.8,
+            [
+              -1.0,
+              0.0,
+              0.0
+            ],
+            -10.1074
+          ],
+          [
+            "cell_south_back",
+            491.4,
+            [
+              0.0003,
+              -1.0,
+              -0.0
+            ],
+            9.4359
+          ],
+          [
+            "cell_south_roof_neg",
+            250.4,
+            [
+              0.5387,
+              -0.0,
+              -0.8425
+            ],
+            -10.8538
+          ],
+          [
+            "cell_south_roof_pos",
+            250.6,
+            [
+              -0.5384,
+              0.0,
+              -0.8427
+            ],
+            -10.8779
+          ],
+          [
+            "cell_north_back",
+            491.2,
+            [
+              0.0002,
+              1.0,
+              0.0001
+            ],
+            9.4408
+          ],
+          [
+            "cell_north_floor",
+            422.2,
+            [
+              0.0001,
+              0.0001,
+              1.0
+            ],
+            -1.4864
+          ],
+          [
+            "cell_north_side_pos",
+            146.8,
+            [
+              -1.0,
+              -0.0,
+              0.0
+            ],
+            -10.1074
+          ],
+          [
+            "cell_north_side_neg",
+            146.8,
+            [
+              1.0,
+              0.0,
+              0.0
+            ],
+            -10.0906
+          ],
+          [
+            "cell_north_roof_pos",
+            250.6,
+            [
+              -0.5379,
+              -0.0,
+              -0.843
+            ],
+            -10.8587
+          ],
+          [
+            "cell_north_roof_neg",
+            250.5,
+            [
+              0.5384,
+              0.0,
+              -0.8427
+            ],
+            -10.8689
+          ]
+        ]
+      },
+      "blue": {
+        "pivot": [
+          12.75,
+          0.0,
+          43.9497
+        ],
+        "captureThetaRad": 0.523599,
+        "captureThetaDeg": 30.0,
+        "upStaged": "north",
+        "backSkinThicknessIn": 0.02,
+        "cells": {
+          "north": {
+            "xHalf": 10.0706,
+            "vMin": 9.6441,
+            "vMax": 21.3941,
+            "wMin": -1.4682,
+            "wMax": 12.5287
+          },
+          "south": {
+            "xHalf": 10.0706,
+            "vMin": -21.3941,
+            "vMax": -9.644,
+            "wMin": -1.4682,
+            "wMax": 12.5287
+          }
+        },
+        "facets": [
+          [
+            "cell_south_roof_neg",
+            250.6,
+            [
+              0.5379,
+              0.0,
+              -0.843
+            ],
+            -10.8498
+          ],
+          [
+            "cell_south_roof_pos",
+            250.5,
+            [
+              -0.5384,
+              -0.0,
+              -0.8427
+            ],
+            -10.8779
+          ],
+          [
+            "cell_south_back",
+            491.2,
+            [
+              -0.0002,
+              -1.0,
+              0.0001
+            ],
+            9.4408
+          ],
+          [
+            "cell_south_floor",
+            422.2,
+            [
+              -0.0001,
+              -0.0001,
+              1.0
+            ],
+            -1.4864
+          ],
+          [
+            "cell_south_side_neg",
+            146.8,
+            [
+              1.0,
+              -0.0,
+              0.0
+            ],
+            -10.0906
+          ],
+          [
+            "cell_south_side_pos",
+            146.8,
+            [
+              -1.0,
+              0.0,
+              0.0
+            ],
+            -10.1074
+          ],
+          [
+            "cell_north_floor",
+            422.2,
+            [
+              0.0001,
+              0.0001,
+              1.0
+            ],
+            -1.4861
+          ],
+          [
+            "cell_north_side_pos",
+            146.8,
+            [
+              -1.0,
+              -0.0,
+              0.0
+            ],
+            -10.1074
+          ],
+          [
+            "cell_north_side_neg",
+            146.8,
+            [
+              1.0,
+              0.0,
+              0.0
+            ],
+            -10.0906
+          ],
+          [
+            "cell_north_back",
+            491.4,
+            [
+              -0.0003,
+              1.0,
+              -0.0
+            ],
+            9.4359
+          ],
+          [
+            "cell_north_roof_pos",
+            250.4,
+            [
+              -0.5387,
+              0.0,
+              -0.8425
+            ],
+            -10.8628
+          ],
+          [
+            "cell_north_roof_neg",
+            250.6,
+            [
+              0.5384,
+              -0.0,
+              -0.8427
+            ],
+            -10.8689
+          ]
+        ]
+      }
     },
-    "pivot_z": {
-      "red": 43.949699995904304,
-      "blue": 43.949699995904304,
-      "config_BB3_HIVE_PIVOT_Z": 43.95
-    },
-    "cell_open_z_red": [
-      38.28598733574138,
-      44.47470058483151
-    ],
-    "cell_open_z_blue": [
-      53.80504681605398,
-      59.99376006514534
-    ],
-    "frame_extent_red_in": {
-      "x": [
-        -22.399419047786683,
-        -3.0838629156740267
+    "openingZ": {
+      "red": [
+        53.3753,
+        65.4969
       ],
-      "y": [
-        -10.275198811531363,
-        16.496347518580414
-      ],
-      "z": [
-        20.80815546456012,
-        57.0656525572035
+      "blue": [
+        53.3753,
+        65.4969
       ]
     },
-    "frame_extent_blue_in": {
-      "x": [
-        3.100580952213096,
-        22.41613708432606
-      ],
-      "y": [
-        -16.496347518717112,
-        10.275198811396363
-      ],
-      "z": [
-        20.808155464559412,
-        57.065652557204565
-      ]
-    }
+    "downCellFloorZ": {
+      "red": 31.9812,
+      "blue": 31.9812
+    },
+    "lowestStructureZAtRest": {
+      "part": "am-5866-blue: Blue Goal Rib",
+      "z": 30.6515
+    },
+    "config_BB_HIVE_OPEN_Z": [
+      53.5,
+      65.6
+    ],
+    "config_BB_HIVE_BOTTOM_Z": 25.5,
+    "frameLegFootprints": [
+      {
+        "part": "am-5878: Sheet Metal Foot Bar",
+        "x": [
+          22.75,
+          24.733
+        ],
+        "y": [
+          -19.4723,
+          19.4723
+        ],
+        "zTop": 2.1478
+      },
+      {
+        "part": "am-5876: A-Frame Leg",
+        "x": [
+          22.9993,
+          24.2956
+        ],
+        "y": [
+          17.919,
+          19.0674
+        ],
+        "zTop": 1.8463
+      },
+      {
+        "part": "am-5879-B: Frame Foot B",
+        "x": [
+          22.7893,
+          24.6511
+        ],
+        "y": [
+          -19.476,
+          -17.1953
+        ],
+        "zTop": 2.1271
+      },
+      {
+        "part": "am-5879-A: Frame Foot A",
+        "x": [
+          22.7893,
+          24.6511
+        ],
+        "y": [
+          17.1953,
+          19.476
+        ],
+        "zTop": 2.1271
+      },
+      {
+        "part": "am-5878: Sheet Metal Foot Bar",
+        "x": [
+          -24.733,
+          -22.75
+        ],
+        "y": [
+          -19.4723,
+          19.4723
+        ],
+        "zTop": 2.1478
+      },
+      {
+        "part": "am-5879-A: Frame Foot A",
+        "x": [
+          -24.6362,
+          -22.7745
+        ],
+        "y": [
+          -19.476,
+          -17.1953
+        ],
+        "zTop": 2.1271
+      },
+      {
+        "part": "am-5876: A-Frame Leg",
+        "x": [
+          22.9993,
+          24.2956
+        ],
+        "y": [
+          -19.0674,
+          -17.919
+        ],
+        "zTop": 1.8463
+      },
+      {
+        "part": "am-5879-B: Frame Foot B",
+        "x": [
+          -24.6362,
+          -22.7745
+        ],
+        "y": [
+          17.1953,
+          19.476
+        ],
+        "zTop": 2.1271
+      },
+      {
+        "part": "am-5876: A-Frame Leg",
+        "x": [
+          -24.2808,
+          -22.9845
+        ],
+        "y": [
+          17.919,
+          19.0674
+        ],
+        "zTop": 1.8463
+      },
+      {
+        "part": "am-5876: A-Frame Leg",
+        "x": [
+          -24.2808,
+          -22.9845
+        ],
+        "y": [
+          -19.0674,
+          -17.919
+        ],
+        "zTop": 1.8463
+      }
+    ]
   },
   "flowers": [
     {
@@ -57,26 +458,58 @@
         -69.46,
         -24
       ],
-      "measured_ring_center": [
-        -68.04155073230083,
-        -23.39255768257451
+      "bore": {
+        "lower": {
+          "centre": [
+            -68.0444,
+            -23.3924
+          ],
+          "radius": 1.6108,
+          "diameter": 3.2216,
+          "rms": 0.0384,
+          "n": 5264
+        },
+        "mid": {
+          "centre": [
+            -68.034,
+            -23.3906
+          ],
+          "radius": 1.9481,
+          "diameter": 3.8962,
+          "rms": 0.0516,
+          "n": 12508
+        },
+        "top": {
+          "centre": [
+            -68.0447,
+            -23.3924
+          ],
+          "radius": 2.0854,
+          "diameter": 4.1709,
+          "rms": 0.0491,
+          "n": 16458
+        }
+      },
+      "pipeCentroid": [
+        -68.0416,
+        -23.3926
       ],
-      "measured_extent": {
+      "extent": {
         "x": [
-          -70.4699999999866,
-          -66.31655073230084
+          -71.8027,
+          -65.5261
         ],
         "y": [
-          -25.11755768257451,
-          -21.667557682574508
+          -26.7294,
+          -20.0557
         ],
         "z": [
-          -0.20653695137011008,
-          22.5290732848505
+          -0.649,
+          22.6541
         ]
       },
-      "measured_top_ring_z": 20.829072270740063,
-      "config_BB_FLOWER_TOP_Z": 21.5
+      "config_BB_FLOWER_TOP_Z": 21.5,
+      "config_BB_FLOWER_D": 2.54
     },
     {
       "id": "F2",
@@ -84,26 +517,58 @@
         -24,
         69.46
       ],
-      "measured_ring_center": [
-        -23.392557682535752,
-        68.04155073231334
+      "bore": {
+        "lower": {
+          "centre": [
+            -23.3924,
+            68.0444
+          ],
+          "radius": 1.6108,
+          "diameter": 3.2216,
+          "rms": 0.0384,
+          "n": 5264
+        },
+        "mid": {
+          "centre": [
+            -23.3906,
+            68.034
+          ],
+          "radius": 1.9481,
+          "diameter": 3.8963,
+          "rms": 0.0516,
+          "n": 12508
+        },
+        "top": {
+          "centre": [
+            -23.3925,
+            68.0447
+          ],
+          "radius": 2.0855,
+          "diameter": 4.1709,
+          "rms": 0.0491,
+          "n": 16456
+        }
+      },
+      "pipeCentroid": [
+        -23.3926,
+        68.0416
       ],
-      "measured_extent": {
+      "extent": {
         "x": [
-          -25.117557682535754,
-          -21.667557682535755
+          -26.7294,
+          -20.0557
         ],
         "y": [
-          66.31655073231353,
-          70.47000000000016
+          65.5261,
+          71.8027
         ],
         "z": [
-          -0.20653695124450794,
-          22.529073284975993
+          -0.649,
+          22.6541
         ]
       },
-      "measured_top_ring_z": 20.82907227086545,
-      "config_BB_FLOWER_TOP_Z": 21.5
+      "config_BB_FLOWER_TOP_Z": 21.5,
+      "config_BB_FLOWER_D": 2.54
     },
     {
       "id": "F3",
@@ -111,26 +576,58 @@
         69.46,
         24
       ],
-      "measured_ring_center": [
-        68.04155073231342,
-        23.392557682535532
+      "bore": {
+        "lower": {
+          "centre": [
+            68.0444,
+            23.3924
+          ],
+          "radius": 1.6108,
+          "diameter": 3.2216,
+          "rms": 0.0384,
+          "n": 5264
+        },
+        "mid": {
+          "centre": [
+            68.0341,
+            23.3906
+          ],
+          "radius": 1.9481,
+          "diameter": 3.8962,
+          "rms": 0.0516,
+          "n": 12508
+        },
+        "top": {
+          "centre": [
+            68.0448,
+            23.3925
+          ],
+          "radius": 2.0854,
+          "diameter": 4.1707,
+          "rms": 0.049,
+          "n": 16462
+        }
+      },
+      "pipeCentroid": [
+        68.0416,
+        23.3926
       ],
-      "measured_extent": {
+      "extent": {
         "x": [
-          66.31655073231342,
-          70.47000000000001
+          65.5261,
+          71.8027
         ],
         "y": [
-          21.66755768253553,
-          25.117557682535537
+          20.0557,
+          26.7294
         ],
         "z": [
-          -0.20653695125653157,
-          22.529073284963985
+          -0.649,
+          22.6541
         ]
       },
-      "measured_top_ring_z": 20.82907227085344,
-      "config_BB_FLOWER_TOP_Z": 21.5
+      "config_BB_FLOWER_TOP_Z": 21.5,
+      "config_BB_FLOWER_D": 2.54
     },
     {
       "id": "F4",
@@ -138,55 +635,502 @@
         24,
         -69.46
       ],
-      "measured_ring_center": [
-        23.39255768253433,
-        -68.0415507323147
+      "bore": {
+        "lower": {
+          "centre": [
+            23.3924,
+            -68.0444
+          ],
+          "radius": 1.6108,
+          "diameter": 3.2216,
+          "rms": 0.0384,
+          "n": 5264
+        },
+        "mid": {
+          "centre": [
+            23.3906,
+            -68.0341
+          ],
+          "radius": 1.9481,
+          "diameter": 3.8962,
+          "rms": 0.0516,
+          "n": 12507
+        },
+        "top": {
+          "centre": [
+            23.3925,
+            -68.0447
+          ],
+          "radius": 2.0855,
+          "diameter": 4.1709,
+          "rms": 0.0491,
+          "n": 16456
+        }
+      },
+      "pipeCentroid": [
+        23.3926,
+        -68.0416
       ],
-      "measured_extent": {
+      "extent": {
         "x": [
-          21.66755768253431,
-          25.11755768253435
+          20.0557,
+          26.7294
         ],
         "y": [
-          -70.46999999999991,
-          -66.31655073231491
+          -71.8027,
+          -65.5261
         ],
         "z": [
-          -0.2065369512624292,
-          22.529073284958276
+          -0.649,
+          22.6541
         ]
       },
-      "measured_top_ring_z": 20.829072270847814,
-      "config_BB_FLOWER_TOP_Z": 21.5
+      "config_BB_FLOWER_TOP_Z": 21.5,
+      "config_BB_FLOWER_D": 2.54
     }
   ],
-  "tiles_extent_in": {
-    "x": [
-      -58.5918782015868,
-      58.59187820158684
+  "tiles": {
+    "extent": {
+      "x": [
+        -70.5848,
+        70.5848
+      ],
+      "y": [
+        -70.5848,
+        70.5848
+      ],
+      "z": [
+        -0.589,
+        0.0
+      ]
+    },
+    "pitch": 23.5283,
+    "x0Seams": [
+      -70.585,
+      -47.409,
+      -23.907,
+      -0.405,
+      23.097,
+      46.599
     ],
-    "y": [
-      -58.59187820158667,
-      58.59187820158656
+    "config_TILE": 24
+  },
+  "walls": {
+    "innerFace": {
+      "left": -70.674,
+      "right": 70.674,
+      "rear": 70.674,
+      "audience": -70.674
+    },
+    "glassZ": [
+      0.09,
+      10.965
     ],
-    "z": [
-      -0.29451847761068606,
-      -0.29451847758947974
+    "assemblyZ": [
+      -0.589,
+      11.644
+    ],
+    "config_BB_HALF": [
+      72,
+      72
     ]
   },
-  "walls_extent_in": {
-    "x": [
-      -71.27499999999999,
-      71.275
+  "tape": {
+    "widthsIn": [
+      1.0
     ],
-    "y": [
-      -71.27499999999986,
-      71.27500000000013
-    ],
-    "z": [
-      -0.2590369512454262,
-      11.303963048755682
+    "parts": [
+      {
+        "part": "Gaffer Tape, Blue, 1in Wide, 94.82in Long",
+        "colour": "0000ff",
+        "widthIn": 1.0,
+        "lengthIn": 94.82,
+        "nominalWidthIn": 1.0,
+        "nominalLengthIn": 94.82,
+        "x": [
+          124.65,
+          125.65
+        ],
+        "y": [
+          -47.41,
+          47.41
+        ],
+        "z": [
+          -0.589,
+          -0.579
+        ],
+        "plane": "floor"
+      },
+      {
+        "part": "Gaffer Tape, Blue, 1in Wide, 54in Long",
+        "colour": "0000ff",
+        "widthIn": 1.0,
+        "lengthIn": 54.0,
+        "nominalWidthIn": 1.0,
+        "nominalLengthIn": 54.0,
+        "x": [
+          71.65,
+          125.65
+        ],
+        "y": [
+          -48.41,
+          -47.41
+        ],
+        "z": [
+          -0.589,
+          -0.579
+        ],
+        "plane": "floor"
+      },
+      {
+        "part": "Gaffer Tape, Blue, 1in Wide, 54in Long",
+        "colour": "0000ff",
+        "widthIn": 1.0,
+        "lengthIn": 54.0,
+        "nominalWidthIn": 1.0,
+        "nominalLengthIn": 54.0,
+        "x": [
+          71.65,
+          125.65
+        ],
+        "y": [
+          47.41,
+          48.41
+        ],
+        "z": [
+          -0.589,
+          -0.579
+        ],
+        "plane": "floor"
+      },
+      {
+        "part": "Gaffer Tape, Red, 1in Wide, 94.82in Long",
+        "colour": "ff0000",
+        "widthIn": 1.0,
+        "lengthIn": 94.82,
+        "nominalWidthIn": 1.0,
+        "nominalLengthIn": 94.82,
+        "x": [
+          -125.65,
+          -124.65
+        ],
+        "y": [
+          -47.41,
+          47.41
+        ],
+        "z": [
+          -0.589,
+          -0.579
+        ],
+        "plane": "floor"
+      },
+      {
+        "part": "Gaffer Tape, Red, 1in Wide, 54in Long",
+        "colour": "ff0000",
+        "widthIn": 1.0,
+        "lengthIn": 54.0,
+        "nominalWidthIn": 1.0,
+        "nominalLengthIn": 54.0,
+        "x": [
+          -125.65,
+          -71.65
+        ],
+        "y": [
+          -48.41,
+          -47.41
+        ],
+        "z": [
+          -0.589,
+          -0.579
+        ],
+        "plane": "floor"
+      },
+      {
+        "part": "Gaffer Tape, Red, 1in Wide, 54in Long",
+        "colour": "ff0000",
+        "widthIn": 1.0,
+        "lengthIn": 54.0,
+        "nominalWidthIn": 1.0,
+        "nominalLengthIn": 54.0,
+        "x": [
+          -125.65,
+          -71.65
+        ],
+        "y": [
+          47.41,
+          48.41
+        ],
+        "z": [
+          -0.589,
+          -0.579
+        ],
+        "plane": "floor"
+      },
+      {
+        "part": "Gaffer Tape, Blue, 1in Wide, 22.69in Long",
+        "colour": "0000ff",
+        "widthIn": 1.0,
+        "lengthIn": 22.692,
+        "nominalWidthIn": 1.0,
+        "nominalLengthIn": 22.69,
+        "x": [
+          47.409,
+          70.101
+        ],
+        "y": [
+          68.101,
+          69.101
+        ],
+        "z": [
+          -0.0,
+          0.01
+        ],
+        "plane": "tiles"
+      },
+      {
+        "part": "Gaffer Tape, Blue, 1in Wide, 22.69in Long",
+        "colour": "0000ff",
+        "widthIn": 1.0,
+        "lengthIn": 22.692,
+        "nominalWidthIn": 1.0,
+        "nominalLengthIn": 22.69,
+        "x": [
+          47.409,
+          70.101
+        ],
+        "y": [
+          69.101,
+          70.101
+        ],
+        "z": [
+          -0.0,
+          0.01
+        ],
+        "plane": "tiles"
+      },
+      {
+        "part": "Gaffer Tape, Blue, 1in Wide, 20.69in Long",
+        "colour": "0000ff",
+        "widthIn": 1.0,
+        "lengthIn": 20.692,
+        "nominalWidthIn": 1.0,
+        "nominalLengthIn": 20.69,
+        "x": [
+          59.101,
+          60.101
+        ],
+        "y": [
+          -45.599,
+          -24.907
+        ],
+        "z": [
+          -0.0,
+          0.01
+        ],
+        "plane": "tiles"
+      },
+      {
+        "part": "Gaffer Tape, Blue, 1in Wide, 11in Long",
+        "colour": "0000ff",
+        "widthIn": 1.0,
+        "lengthIn": 11.0,
+        "nominalWidthIn": 1.0,
+        "nominalLengthIn": 11.0,
+        "x": [
+          59.101,
+          70.101
+        ],
+        "y": [
+          -46.599,
+          -45.599
+        ],
+        "z": [
+          -0.0,
+          0.01
+        ],
+        "plane": "tiles"
+      },
+      {
+        "part": "Gaffer Tape, Blue, 1in Wide, 11in Long",
+        "colour": "0000ff",
+        "widthIn": 1.0,
+        "lengthIn": 11.0,
+        "nominalWidthIn": 1.0,
+        "nominalLengthIn": 11.0,
+        "x": [
+          59.101,
+          70.101
+        ],
+        "y": [
+          -24.907,
+          -23.907
+        ],
+        "z": [
+          -0.0,
+          0.01
+        ],
+        "plane": "tiles"
+      },
+      {
+        "part": "Gaffer Tape, Red, 1in Wide, 22.69in Long",
+        "colour": "ff0000",
+        "widthIn": 1.0,
+        "lengthIn": 22.692,
+        "nominalWidthIn": 1.0,
+        "nominalLengthIn": 22.69,
+        "x": [
+          -70.101,
+          -47.409
+        ],
+        "y": [
+          -70.101,
+          -69.101
+        ],
+        "z": [
+          -0.0,
+          0.01
+        ],
+        "plane": "tiles"
+      },
+      {
+        "part": "Gaffer Tape, Red, 1in Wide, 22.69in Long",
+        "colour": "ff0000",
+        "widthIn": 1.0,
+        "lengthIn": 22.692,
+        "nominalWidthIn": 1.0,
+        "nominalLengthIn": 22.69,
+        "x": [
+          -70.101,
+          -47.409
+        ],
+        "y": [
+          -69.101,
+          -68.101
+        ],
+        "z": [
+          -0.0,
+          0.01
+        ],
+        "plane": "tiles"
+      },
+      {
+        "part": "Gaffer Tape, Red, 1in Wide, 20.69in Long",
+        "colour": "ff0000",
+        "widthIn": 1.0,
+        "lengthIn": 20.692,
+        "nominalWidthIn": 1.0,
+        "nominalLengthIn": 20.69,
+        "x": [
+          -60.101,
+          -59.101
+        ],
+        "y": [
+          24.907,
+          45.599
+        ],
+        "z": [
+          -0.0,
+          0.01
+        ],
+        "plane": "tiles"
+      },
+      {
+        "part": "Gaffer Tape, Red, 1in Wide, 11in Long",
+        "colour": "ff0000",
+        "widthIn": 1.0,
+        "lengthIn": 11.0,
+        "nominalWidthIn": 1.0,
+        "nominalLengthIn": 11.0,
+        "x": [
+          -70.101,
+          -59.101
+        ],
+        "y": [
+          23.907,
+          24.907
+        ],
+        "z": [
+          -0.0,
+          0.01
+        ],
+        "plane": "tiles"
+      },
+      {
+        "part": "Gaffer Tape, Red, 1in Wide, 11in Long",
+        "colour": "ff0000",
+        "widthIn": 1.0,
+        "lengthIn": 11.0,
+        "nominalWidthIn": 1.0,
+        "nominalLengthIn": 11.0,
+        "x": [
+          -70.101,
+          -59.101
+        ],
+        "y": [
+          45.599,
+          46.599
+        ],
+        "z": [
+          -0.0,
+          0.01
+        ],
+        "plane": "tiles"
+      }
     ]
+  },
+  "colours": {
+    "Corner Hinge Rivet Field": "b3b3b3",
+    "Corner Hinge Rivet Field FLAT": "b3b3b3",
+    "FTC Field Side Glass 11in": "e6e6e6",
+    "Gaffer Tape, Blue, 1in Wide, 11in Long": "0000ff",
+    "Gaffer Tape, Blue, 1in Wide, 20.69in Long": "0000ff",
+    "Gaffer Tape, Blue, 1in Wide, 22.69in Long": "0000ff",
+    "Gaffer Tape, Blue, 1in Wide, 54in Long": "0000ff",
+    "Gaffer Tape, Blue, 1in Wide, 94.82in Long": "0000ff",
+    "Gaffer Tape, Red, 1in Wide, 11in Long": "ff0000",
+    "Gaffer Tape, Red, 1in Wide, 20.69in Long": "ff0000",
+    "Gaffer Tape, Red, 1in Wide, 22.69in Long": "ff0000",
+    "Gaffer Tape, Red, 1in Wide, 54in Long": "ff0000",
+    "Gaffer Tape, Red, 1in Wide, 94.82in Long": "ff0000",
+    "Perimeter Mid-Section Strap": "303030",
+    "am-2499-Center: FIRST Tech Challenge Field Soft Tiles": "808080",
+    "am-2499-Corner: FIRST Tech Challenge Field Soft Tiles": "808080",
+    "am-2499-Side: FIRST Tech Challenge Field Soft Tiles": "808080",
+    "am-2556a: FTC Rail with Rivet Holes": "303030",
+    "am-2580a: FIRST Tech Challenge Panel Link": "e6e6e6",
+    "am-5706 Artifact Tray__Fillet1": "666666",
+    "am-5857: Flower Layer C": "ffba52",
+    "am-5858: Flower Layer B": "303030",
+    "am-5859: Flower Layer X": "303030",
+    "am-5860: Flower Field Bracket": "303030",
+    "am-5861: Flower Under Field Bracket": "e6e6e6",
+    "am-5862: Flower HIPS Pipe": "5fa73d",
+    "am-5863: Axle Holder": "303030",
+    "am-5864: Pivot Damper Holder": "303030",
+    "am-5865: Blumotion 970A Damper": "4d4d4d",
+    "am-5866-blue: Blue Goal Rib": "0000ff",
+    "am-5866-red: Red Goal Rib": "ff0000",
+    "am-5867: 10.5in Churro Lite": "e6e6e6",
+    "am-5868: Basket Base Tube": "e6e6e6",
+    "am-5869: Hive Goal Top Skin": "e6e6e6",
+    "am-5871: Hive Goal Back Skin": "e6e6e6",
+    "am-5873: Goal Pivot Bracket": "e6e6e6",
+    "am-5874: A-Frame Top Corner": "303030",
+    "am-5875: A-Frame Top Bar": "e6e6e6",
+    "am-5876: A-Frame Leg": "e6e6e6",
+    "am-5877: ACM Panel": "e6e6e6",
+    "am-5878: Sheet Metal Foot Bar": "e6e6e6",
+    "am-5879-A: Frame Foot A": "303030",
+    "am-5879-B: Frame Foot B": "303030",
+    "am-5880: 47.5in CC Under Tile Bar": "e6e6e6",
+    "am-5883: Panel Sticker": "ffffff",
+    "am-5884: Flower Backstop": "641c65",
+    "am-5888-blue1: Blue Goal April Tag (Audience)": "ffffff",
+    "am-5888-blue2: Blue Goal April Tag (Scoring)": "ffffff",
+    "am-5888-red1: Red Goal April Tag (Audience)": "ffffff",
+    "am-5888-red2: Red Goal April Tag (Scoring)": "ffffff",
+    "am-5888: Hive Goal Bottom Skin": "e6e6e6",
+    "am-5892: Flower Peanut Support": "e6e6e6"
   },
   "axisFit": {
     "horiz_a": "x",
@@ -196,6 +1140,6 @@
     "origin_a_mm": -8.114034244499635e-08,
     "origin_b_mm": 3.524291969370097e-12,
     "vert_origin_mm": 1.0015069401035777e-07,
-    "residual": 22.44058831797951
+    "residual": 43.57414027690839
   }
 }
