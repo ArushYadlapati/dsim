@@ -1,6 +1,70 @@
-# HANDOFF — 2026-09-18 (biobuzz-3d: owner's first 3D play-test fixes — hive tilt/spill, visuals, driver POV)
+# HANDOFF — 2026-09-18, later (biobuzz-3d: play-test round 2 — true CAD geometry, CAD colours and tape, HUD-safe framing)
 
 **READ FIRST.** Branch **`biobuzz-3d`**, worktree `.claude/worktrees/biobuzz-3d`, clean at the merge
+commit named in the log; all gates green there (`npm test` 1798 + the BIOBUZZ suite with a 105-check
+SIM3D lane). This round was done by OPUS agents with an analysis phase first, at the owner's request;
+the audit is `docs/biobuzz/field-cad-audit.md` — read it before touching the field pipeline.
+
+## The owner's five sentences → root cause → fix (all verified)
+1. *Balls on a different plane than the hive bottom* — `convert.py` exported tray hulls as WORLD-frame
+   bounding boxes at the 30° tilt and the sim read them as tray-LOCAL; the collider floor sat 3.26 in
+   above the mesh floor. Now every tray point is un-tilted about the pivot before export
+   (`captureTheta` ±30.000° exactly), `hiveTrayRefTheta` is 0, the body rotation is plain
+   `hiveTiltAngle`, and a headless check plus a dev-only raycast at GLB load assert the mesh and
+   collider floors coincide (Δ ≤ 0.017 in) with a resting element 1.275 in above the plane.
+2. *Hive back gone* — `convert.py`'s `other` group (25 parts: ACM logo panel, A-frame top bar, top
+   corners, axle holders, feet, AprilTag plates) was never emitted. Unknown parts now go to a `misc`
+   node and are printed; `assemble-gltf.mjs` refuses to finish with an unclaimed STL.
+3. *Support structures missing* — the fastener regex matched the word "rivet" and dropped the 24
+   perimeter rails and 16 corner hinges. `RE_FASTENER` is an explicit list of fastener families.
+4. *Flowers wrong colour* — `XCAFDoc_ColorTool` returns nothing on this STEP; the colours live in the
+   styled-item chain, now parsed from the STEP text and carried in the glTF material name
+   `<finish>#<rrggbb>` (flowers: amber top ring, green HIPS pipes, purple backstop; the hive's
+   alliance colour is the RIBS, not the white skins). Runtime overrides only surface params, forces
+   `glass` transparent, and forces `tile` to `COLORS.mat` (the CAD tile grey is a placeholder).
+5. *Tape wrong* — the GLB's 16 real tape strips were hidden behind procedural `strokeRect` outlines.
+   The CAD tape is shown: all strips 1.000 in wide; loading zones taped on three edges (wall edge
+   bare), gardens are two side-by-side 1-in strips, alliance areas on the gym floor; every on-tile
+   strip stops 0.573 in clear of the wall face (asserted).
+Also: the scoreboard/field overlap — `GameController.refreshHudInsets()` measures every
+`data-hud-band` element (score bar, breakdown, status, buttons, BIOBUZZ's own score bar) into
+`SceneFrame.insets`; both 3D cameras fit the field into the safe rect via `setViewOffset`; the 2D
+camera already reserved matching bands (unchanged). A game that fills the `scoreBar` slot must mark
+it `data-hud-band` or it gets the old overlapping fit.
+
+## Physics now
+Statics are true per-part convex hulls incl. the frame's diagonal legs, uprights, dampers and
+crossbar (73 hulls); tray colliders are planar-facet oriented boxes (a hull of an open shell fills
+the cell; the perforated Goal Rib gets none). 18-in AND 29-in robots pass under the down cell (CAD
+floor 31.98; a 34.98-in robot is stopped); retention 20/20 at 24/48/72 in; the load table matches;
+containment 0; two-run hash equal; perf median 0 ms / p95 1 ms. Sizes: `field.glb` 474 KB br,
+`field-low.glb` 137 KB, colliders 31 KB; scene chunk 184 KB gz.
+
+## OPEN findings (owner ruling pending; in the coordinator's memory) — now TWO facts, not four
+- The real field is **141.35 in inside the walls** (tiles 23.528 in on centre): that one fact is the
+  wall delta (±70.67 vs 72) AND the flower delta (~1.54 in vs `BB_FLOWERS`; `BB_FLOWER_D` itself is
+  right to 0.09 in). Deciding the sim's field size is a 2D gameplay change — the owner's call.
+- `BB_HIVE_BOTTOM_Z` 25.5 vs the CAD's 31.98.
+- CLOSED: the up-cell opening matches the manual within 0.13 in (the old delta was the bbox artifact).
+
+## Gotchas (new)
+- **Never `Remove-Item -Recurse` a directory that contains a junction** — it follows the junction; an
+  agent deleted 12 entries of this worktree's `node_modules` that way and restored them by copy;
+  `npm ci` was re-run afterwards.
+- A flat CAD face tessellates to its corners only: measure meshes by triangle/raycast, never by
+  vertex scan. `MeshoptSimplifier.compactMesh` rewrites indices in place and returns `[remap, n]`.
+  The LOW LOD needs `simplifySloppy` (honeycomb plates plateau). The determinism guard greps
+  `sim3d/` by TEXT — do not name a trig function even in a comment.
+- The scene preview's `scene.render` is what rotates the trays; a frozen frame loop draws them
+  level, which looks exactly like the tilt bug.
+- The near wall-top corners pin the driver FOV at 95° below ~21:9; the field fills the safe rect
+  horizontally and leaves vertical slack at 16:9 (inherent).
+
+---
+
+# HANDOFF — 2026-09-18 (biobuzz-3d: owner's first 3D play-test fixes — hive tilt/spill, visuals, driver POV)
+
+**(Previously READ FIRST.)** Branch **`biobuzz-3d`**, worktree `.claude/worktrees/biobuzz-3d`, clean at the merge
 commit named in the log; all gates green there (`npm test` 1798 + 1413, SIM3D lane 83). The owner
 reported four things after playing the Day 1 build; all four are fixed and verified:
 
