@@ -16,7 +16,7 @@ import { chassisInertia } from '../../../sim/robot';
 import { shoveMass } from '../../../sim/drivetrain';
 import { robotExtents } from '../../../sim/physics';
 import { PHYS_FRICTION, PHYS_WALL_FRICTION, GRAVITY, PHYS_SOLVER_ITERS, PHYS_CONTACT_FREQ, PHYS_ALLOWED_ERROR } from '../../../config';
-import { BB3_CCD_SPEED, BB_POLLEN_R } from '../config';
+import { BB3_CCD_SPEED, BB_POLLEN_R, bbHeightNow } from '../config';
 import {
   buildHiveTray3d,
   buildStatics3d,
@@ -82,6 +82,20 @@ export interface Engine3d {
   captureTicks: Map<number, number>;
   lastRobot: Map<number, LastRobot>;
   lastElement: Map<number, LastElement>;
+  /**
+   * The HEIGHT each robot's chassis collider was actually BUILT to (in) — which is not always
+   * `robotHeightIn(spec)`, because of R102's DEPLOY LATCH (plan §3.3).
+   *
+   * A build taller than R102's 18-in starting cube STOWS to get under it and DEPLOYS when the
+   * MATCH begins, so its collider is one box before the `pre` edge and a taller one after, and
+   * `bbHeightNow` is the single reader of the phase that decides which. It has to be RECORDED
+   * rather than recomputed at each use, because READBACK converts the body's centre z into
+   * `RobotState.z` (the chassis BOTTOM) by subtracting half the height: read back against a
+   * height the collider was NOT built to and the robot's z jumps by the difference on the deploy
+   * tick, which is a robot that visibly sinks into the tiles for one frame and a `worldHash`
+   * that moves for no gameplay reason.
+   */
+  robotHeights: Map<number, number>;
   /** `world.tick` as of the last `engineFor` call -- a SMALLER tick next time means a restart
    * or a reseed (a fresh world reusing the same JS object is not a case that arises here, but a
    * scene or a smoke fixture rebuilding `world.tick` back to 0 on the SAME `World` object is),
@@ -139,12 +153,15 @@ function buildEngine(world: World): Engine3d {
     captureTicks: new Map(),
     lastRobot: new Map(),
     lastElement: new Map(),
+    robotHeights: new Map(),
     lastTick: world.tick,
     containmentFixes: 0,
   };
   // DETERMINISTIC BUILD ORDER: statics, the two trays (above), robots by ascending id, elements
   // by ascending id (plan section 3.2 / this lane's binding design point 1).
-  for (const r of [...world.robots].sort((a, b) => a.id - b.id)) syncRobot(RAPIER, engine, r);
+  for (const r of [...world.robots].sort((a, b) => a.id - b.id)) {
+    syncRobot(RAPIER, engine, r, bbHeightNow(world, r.spec));
+  }
   for (const b of [...world.balls].sort((a, b) => a.id - b.id)) syncElement(RAPIER, engine, b);
   return engine;
 }
@@ -176,6 +193,37 @@ export function engineFor(world: World): Engine3d {
 const POSE_EPS = 1e-4;
 
 /**
+ * THE CHASSIS COLLIDER, at `heightIn`. Extracted because it is built twice: once when the body
+ * is created, and again at the R102 DEPLOY EDGE when a stowed robot stands up (see
+ * `Engine3d.robotHeights`). Two copies of this would be two chances for the footprint rule below
+ * to drift.
+ */
+function addChassisCollider(
+  RAPIER: Rapier3d,
+  engine: Engine3d,
+  body: InstanceType<Rapier3d['RigidBody']>,
+  r: RobotState,
+  heightIn: number,
+): void {
+  const fe = robotExtents(r);
+  const hx = (fe.front + fe.rear) / 2;
+  const forward = (fe.front - fe.rear) / 2;
+  const collider = RAPIER.ColliderDesc.cuboid(hx, fe.half, heightIn / 2)
+    .setTranslation(forward, 0, 0)
+    .setDensity(0) // mass comes ENTIRELY from `setAdditionalMassProperties`, every tick
+    .setFriction(PHYS_FRICTION)
+    .setRestitution(0);
+  engine.world3d.createCollider(collider, body);
+}
+
+/** the height a robot's collider is CURRENTLY built to — the recorded one, falling back to the
+ * build's deployed height for a body this engine has not seen yet. Readback and the containment
+ * net both have to use it; see `Engine3d.robotHeights`. */
+function builtHeight(engine: Engine3d, r: RobotState): number {
+  return engine.robotHeights.get(r.id) ?? robotHeightIn(r.spec);
+}
+
+/**
  * Reconcile one robot's body to its current `RobotState` JSON. Creates the body on first use;
  * afterwards, TELEPORTS it (position, rotation, both velocities) only when the JSON has moved
  * by more than `POSE_EPS` since the last sync -- a reconcile snap, a scene edit, a restart --
@@ -186,9 +234,9 @@ const POSE_EPS = 1e-4;
  * `solveRobots` picks it up fresh every rebuild. Setting mass properties does not move the body,
  * so it cannot fight the "leave a resting body alone" rule above.
  */
-function syncRobot(RAPIER: Rapier3d, engine: Engine3d, r: RobotState): void {
+function syncRobot(RAPIER: Rapier3d, engine: Engine3d, r: RobotState, wantHeight: number): void {
   const z = r.z ?? 0;
-  const heightIn = robotHeightIn(r.spec);
+  const heightIn = wantHeight;
   const centreZ = z + heightIn / 2;
   const vz = r.vz ?? 0;
 
@@ -226,16 +274,26 @@ function syncRobot(RAPIER: Rapier3d, engine: Engine3d, r: RobotState): void {
      * end -- `hx`/`half` collapse to `spec.length/2`/`spec.width/2` for a mount with no reach,
      * so this is a strict generalization, not a behavior change, for a robot that has none.
      */
-    const fe = robotExtents(r);
-    const hx = (fe.front + fe.rear) / 2;
-    const forward = (fe.front - fe.rear) / 2;
-    const collider = RAPIER.ColliderDesc.cuboid(hx, fe.half, heightIn / 2)
-      .setTranslation(forward, 0, 0)
-      .setDensity(0) // mass comes ENTIRELY from `setAdditionalMassProperties` below, every tick
-      .setFriction(PHYS_FRICTION)
-      .setRestitution(0);
-    engine.world3d.createCollider(collider, body);
+    addChassisCollider(RAPIER, engine, body, r, heightIn);
     engine.robots.set(r.id, body);
+    engine.robotHeights.set(r.id, heightIn);
+  } else if (Math.abs((engine.robotHeights.get(r.id) ?? heightIn) - heightIn) > 1e-9) {
+    /**
+     * THE DEPLOY EDGE (plan §3.3): the robot has just stood up (or, on a rewind, sat back down),
+     * so the chassis collider is REBUILT at the new height and the body re-seated so its BOTTOM
+     * stays where `RobotState.z` says it is. A collider cannot be resized in place, and scaling
+     * the body would scale the intake-reach footprint with it.
+     *
+     * It happens ONCE per robot per match, at the `pre` boundary, and only for a build over
+     * R102's cube — every 18-in-and-under robot takes the `!body` path above and never comes
+     * back here.
+     */
+    for (let i = body.numColliders() - 1; i >= 0; i--) {
+      engine.world3d.removeCollider(body.collider(i), false);
+    }
+    addChassisCollider(RAPIER, engine, body, r, heightIn);
+    engine.robotHeights.set(r.id, heightIn);
+    body.setTranslation({ x: r.pos.x, y: r.pos.y, z: centreZ }, true);
   }
 
   // the SAME mass `updateRobot`'s wrench was computed against -- see `robot3d.ts`'s header for
@@ -277,7 +335,7 @@ function syncRobot(RAPIER: Rapier3d, engine: Engine3d, r: RobotState): void {
  * into this module's internals for a per-robot loop it would otherwise have to duplicate. */
 export function syncRobots(world: World, engine: Engine3d): void {
   const RAPIER = rapier3d();
-  for (const r of world.robots) syncRobot(RAPIER, engine, r);
+  for (const r of world.robots) syncRobot(RAPIER, engine, r, bbHeightNow(world, r.spec));
 }
 
 /** the robot a chassis-body TRANSLATION corresponds to, for `readback` and `robot3d.ts`'s yaw
@@ -459,8 +517,7 @@ export function readback(world: World, engine: Engine3d): void {
     const t = body.translation();
     const v = body.linvel();
     const av = body.angvel();
-    const heightIn = robotHeightIn(r.spec);
-    const z = round4(t.z - heightIn / 2);
+    const z = round4(t.z - builtHeight(engine, r) / 2);
     const heading = round4(yawOfQuat(body.rotation()));
     r.pos.x = round4(t.x);
     r.pos.y = round4(t.y);
@@ -545,8 +602,7 @@ export function containmentPass(world: World, engine: Engine3d): void {
     r.vel.y = 0;
     const body = engine.robots.get(r.id);
     if (body) {
-      const heightIn = robotHeightIn(r.spec);
-      body.setTranslation({ x: p.x, y: p.y, z: (r.z ?? 0) + heightIn / 2 }, true);
+      body.setTranslation({ x: p.x, y: p.y, z: (r.z ?? 0) + builtHeight(engine, r) / 2 }, true);
       body.setLinvel({ x: 0, y: 0, z: 0 }, true);
     }
     engine.containmentFixes++;

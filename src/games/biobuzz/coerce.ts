@@ -5,6 +5,7 @@ import { DEFAULT_SPEC } from '../../sim/specDefaults';
 import {
   BB3_HEIGHT_MAX,
   BB3_HEIGHT_MIN,
+  bbDeployedHeightIn,
   BB_HOOD_DEFAULT_DEG,
   BB_HOOD_MAX_DEG,
   BB_HOOD_MIN_DEG,
@@ -162,6 +163,28 @@ export function coerceBiobuzzSpec(raw: RobotSpec, base: RobotSpec = BB_DEFAULT_S
     out.heightIn = clamp(raw.heightIn, BB3_HEIGHT_MIN, BB3_HEIGHT_MAX);
   } else {
     delete out.heightIn;
+  }
+
+  // 6) THE DECLARED STOW (R102, Day 3 — `docs/biobuzz/plan-3d.md` §3.3). A build taller than
+  // R102's 18-in cube has to fold to start, and a spec MAY say what it folds to.
+  //
+  // ⚠️ **STRUCTURAL, BECAUSE `RobotSpec` HAS NO SUCH FIELD YET.** Declaring it is a
+  // `src/types.ts` edit plus a carry-across in the shared `coerceSpec` (`src/sim/spawn.ts`) —
+  // both outside this game's tree, so neither is done here. What IS done is the normalization,
+  // so the field is already safe on the day it lands and so a value that reaches this coercer by
+  // any other route (a hand-written spec, a smoke fixture, a scene) is normalized the same way:
+  // clamped to `[BB3_HEIGHT_MIN, the DEPLOYED height]` — a robot cannot stow taller than it
+  // stands — and DROPPED when it is absent or not a finite number.
+  //
+  // ⚠️ **IT IS NOT CLAMPED TO 18.** That would make `bbStowLegal` true by construction, i.e. a
+  // rule that can never refuse anything. The coercer normalizes STRUCTURE; the RULE refuses, at
+  // `GameSimModule.startLegal` (`sim.ts`), and the builder says so before a player ever readies
+  // up. Clamping here is how a legality check quietly becomes a decoration.
+  const stow = (out as { stowHeightIn?: unknown }).stowHeightIn;
+  if (typeof stow === 'number' && Number.isFinite(stow)) {
+    (out as { stowHeightIn?: number }).stowHeightIn = clamp(stow, BB3_HEIGHT_MIN, bbDeployedHeightIn(out));
+  } else {
+    delete (out as { stowHeightIn?: number }).stowHeightIn;
   }
 
   // CR-ONLY FIELDS ARE STRIPPED, not carried. A spec that was a Chain Reaction build before
