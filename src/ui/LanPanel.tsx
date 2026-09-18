@@ -237,7 +237,7 @@ export function LanPanel({
   const [host, setHost] = useState<LanHostStatus | null>(null);
   const [hostBusy, setHostBusy] = useState(false);
   const [hostErr, setHostErr] = useState('');
-  const [addr, setAddr] = useState(() => lanServerUrl().replace(/^ws:\/\//, ''));
+  const [addr, setAddr] = useState(() => lanServerUrl().replace(/^wss?:\/\//, ''));
   const [joinErr, setJoinErr] = useState('');
   /** the URL a blocked guest must open in a browser instead — see constraint 2 above */
   const [openInstead, setOpenInstead] = useState('');
@@ -406,7 +406,7 @@ export function LanPanel({
       {active && (
         <div className="ds-panelbox">
           <p className="ds-lan-state">
-            Connected to <b>{lanServerUrl().replace(/^ws:\/\//, '')}</b>
+            Connected to <b>{lanServerUrl().replace(/^wss?:\/\//, '')}</b>
           </p>
           <div className="ds-actions">
             <button className="ds-btn" onClick={leave}>
