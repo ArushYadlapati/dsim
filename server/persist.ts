@@ -125,7 +125,7 @@ export async function persistMatch(o: MatchOutcome): Promise<PersistOutcome> {
         balanceVersion: bv,
         replayId,
         game,
-        // WHICH SOLVE produced this score (0038), taken off the replay the room recorded so
+        // WHICH SOLVE produced this score (0039), taken off the replay the room recorded so
         // the row and its own log can never disagree. Every record room is `'3d'` for a game
         // that offers it, which is the point: a board fed by two different solves is two
         // boards, and this is what lets one be told from the other without a season reset.

@@ -919,7 +919,7 @@ export async function saveReplay(replay: Replay, season: number, game?: Game): P
       JSON.stringify(replay.setups),
       JSON.stringify(replay.tracks),
       g(game),
-      // ...and WHICH PHYSICS recorded it (0038). The column is `not null default '2d'`, so an
+      // ...and WHICH PHYSICS recorded it (0039). The column is `not null default '2d'`, so an
       // absent tag is written as the string that default already means rather than as null —
       // playback DISPATCHES on this, and one nullable spelling of '2d' is one too many.
       replay.physics ?? '2d',
@@ -960,7 +960,7 @@ export async function getReplay(id: string): Promise<Replay | null> {
     sim: r.behaviour_version ?? undefined,
     game: r.game ?? 'decode', // picks the sim module to re-simulate (CR vs DECODE)
     // WHICH SOLVE to re-simulate it on. Left UNDEFINED for anything that is not the one known
-    // non-default value — a pre-0038 row, a null, or a string this build does not know — every
+    // non-default value — a pre-0039 row, a null, or a string this build does not know — every
     // one of which reads '2d' downstream, which is what such a row actually ran.
     physics: r.physics === '3d' ? '3d' : undefined,
     mode: 'match',
@@ -1297,7 +1297,7 @@ export interface RecordSubmit {
   replayId: string;
   config?: RecordConfig;
   game?: Game;
-  /** which physics solve produced this run (0038). Absent ⇒ '2d'. */
+  /** which physics solve produced this run (0039). Absent ⇒ '2d'. */
   physics?: string;
 }
 
@@ -3054,7 +3054,7 @@ export async function saveMatch(
   replayId: string,
   ranked: boolean,
   game?: Game,
-  /** which physics solve the authoritative loop ran (0038). Absent ⇒ '2d'. */
+  /** which physics solve the authoritative loop ran (0039). Absent ⇒ '2d'. */
   physics?: string,
 ): Promise<string> {
   const rows = await q<{ id: string }>(
@@ -3500,7 +3500,7 @@ export async function takePendingMatch(code: string): Promise<PendingMatch | nul
     // entries share one, so read them off the first
     channel: r.roster[0]?.channel,
     game: r.roster[0]?.game,
-    // ...and the physics, stashed the same way (0038 added no column for it: a staged row
+    // ...and the physics, stashed the same way (0039 added no column for it: a staged row
     // lives for seconds, so a jsonb field that older rows simply lack is the whole migration)
     physics: r.roster[0]?.physics,
   };

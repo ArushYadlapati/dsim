@@ -996,16 +996,16 @@ async function main(): Promise<void> {
   }
 
   /**
-   * ------------------------------------------- THE PHYSICS TAG (0038) -------
+   * ------------------------------------------- THE PHYSICS TAG (0039) -------
    *
    * BIOBUZZ gains a second deterministic solve and stays ONE game on ONE board (the owner's
    * rule: never reset a season). So a 2D-era row and a 3D-era row are told apart by a column,
    * and everything below is the round-trip of that column through the REAL repo functions.
    *
-   * The pre-0038 half is the one worth having. `physics` is `not null default '2d'`, and a row
+   * The pre-0039 half is the one worth having. `physics` is `not null default '2d'`, and a row
    * written before the column existed IS a 2D-solve row — so it has to read back as one rather
    * than as null, or every consumer grows a `?? '2d'` and one of them eventually forgets.
-   * There is no way to write a genuinely pre-0038 row here (the migration has already run), so
+   * There is no way to write a genuinely pre-0039 row here (the migration has already run), so
    * the closest honest thing is asserted instead: an insert that names no `physics` at all, i.e.
    * exactly the statement an older server build would send against the new schema.
    */
@@ -1040,7 +1040,7 @@ async function main(): Promise<void> {
       'physics: an UNTAGGED container is stored as 2d (the column is not null)',
       ((await db.query(`select physics from replays where id = $1`, [idNone])).rows[0] as { physics: string }).physics === '2d',
     );
-    // the pre-0038 row: an insert naming no `physics`, which is the statement an OLDER SERVER
+    // the pre-0039 row: an insert naming no `physics`, which is the statement an OLDER SERVER
     // BUILD sends against this schema — one Fly app serves every client, and a rollback is a
     // deploy away, so this is a live case and not a historical one.
     const legacy = await db.query(
@@ -1084,7 +1084,7 @@ async function main(): Promise<void> {
     } catch (e) {
       butterfly = e instanceof Error ? e.message : String(e);
     }
-    check('physics: a BUTTERFLY record run is accepted (0038 widened records_drivetrain_check)',
+    check('physics: a BUTTERFLY record run is accepted (0039 widened records_drivetrain_check)',
       butterfly === '', butterfly);
     // ...and the constraint still REFUSES a name that is not a drivetrain, or it would have
     // been widened into nothing at all

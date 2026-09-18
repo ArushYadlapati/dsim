@@ -480,7 +480,7 @@ export interface PracticeRun {
   ticks: number;
   replayId: string | null;
   createdAt: string;
-  /** which solve ran it ('2d' | '3d'; migration 0038). Older servers omit it. */
+  /** which solve ran it ('2d' | '3d'; migration 0039). Older servers omit it. */
   physics?: string;
   /** which renderer it was watched in, or null/absent when unknown */
   view?: string | null;

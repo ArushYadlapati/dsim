@@ -1,4 +1,4 @@
--- WHICH PHYSICS A STORED RESULT WAS PRODUCED BY — a tag on every table that holds one.
+-- 0039 — WHICH PHYSICS A STORED RESULT WAS PRODUCED BY — a tag on every table that holds one.
 --
 -- BIOBUZZ gains a second deterministic solve (Rapier 3D, `src/games/biobuzz/sim3d/`, see
 -- `docs/biobuzz/plan-3d.md`). It is the SAME GAME and the SAME leaderboard population — the
@@ -7,10 +7,21 @@
 -- So the eras are told apart by a COLUMN instead: a board can badge a row, or filter to one
 -- era, without anything being wiped.
 --
+-- ⚠️ RENUMBERED FROM 0038 (2026-09-18). `alpha` took `0038_replay_privacy.sql` from PR #74 while
+-- this branch was being written, and `migrate()` keys `schema_migrations` by FILE NAME and runs
+-- the directory in sorted order — so two files numbered 0038 is not a conflict the runner can
+-- detect, it is two migrations that both apply in an order nobody chose. This one moved, because
+-- the other one is already on alpha. The rename means a dev database that applied `0038_physics`
+-- will run `0039_physics` again under its new name, which is why EVERY statement below is
+-- idempotent on purpose (`add column if not exists`, `drop constraint if exists` before the
+-- `add constraint`, and `comment on`, which simply overwrites). The two migrations touch
+-- disjoint columns — 0038 adds `profiles.replays_public` and nothing else — so the order they
+-- end up in cannot matter either.
+--
 -- Purely ADDITIVE (`add column if not exists`, with a DEFAULT), so rolling the server back is
 -- safe: an older build never selects these columns and writes rows that take the default.
 -- The default is '2d' because that is what every existing row IS — there was one solve when
--- they were written, and it was that one. A pre-0038 row therefore reads '2d' rather than
+-- they were written, and it was that one. A pre-0039 row therefore reads '2d' rather than
 -- null, which is the property `npm run dbtest` asserts.
 
 -- ---- 1. the four tables that hold a result ---------------------------------------------
@@ -64,6 +75,6 @@ alter table records add constraint records_drivetrain_check
 --    predicate on rows an existing index already found. Add one when a plan says to.
 
 comment on column records.physics is
-  'Which physics backend produced this run: ''2d'' (the shared Rapier 2D solve every game runs) or ''3d'' (BIOBUZZ''s deterministic Rapier 3D solve). Pre-0038 rows read ''2d'' because that is what they were. Not a season: BALANCE_VERSION is held.';
+  'Which physics backend produced this run: ''2d'' (the shared Rapier 2D solve every game runs) or ''3d'' (BIOBUZZ''s deterministic Rapier 3D solve). Pre-0039 rows read ''2d'' because that is what they were. Not a season: BALANCE_VERSION is held.';
 comment on column practice_runs.view is
   'Which renderer the player watched this offline run in: ''2d'' (canvas) or ''3d'' (Three.js scene), or null for a run recorded before the column existed. Cosmetic — it says nothing about what was simulated (see practice_runs.physics).';
