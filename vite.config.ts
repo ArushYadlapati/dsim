@@ -139,6 +139,23 @@ export default defineConfig({
     },
   ],
   define: { __BUILD_ID__: JSON.stringify(BUILD_ID) },
+  /**
+   * WORKERS ARE BUILT AS ES MODULES, because the LAN host worker code-splits.
+   *
+   * Vite's default is `'iife'`, and an IIFE bundle cannot be code-split — the first dynamic
+   * `import()` anywhere in a worker's graph fails the build outright with
+   * `Invalid value "iife" for option "worker.format"`. `src/lan/hostWorker.ts` hosts the
+   * authoritative room in a tab and calls `initPhysics3d()` for a 3D BIOBUZZ room, which
+   * reaches the ~1.1 MB rapier3d wasm through exactly such an import. The alternative —
+   * importing the package statically — would put that megabyte in the worker chunk for every
+   * host, including the 2D ones, which is the cost the lazy load exists to avoid.
+   *
+   * This is not a new runtime requirement: `hostRuntime.ts` already constructs the worker with
+   * `{ type: 'module' }`, so the only thing that was out of step was the BUILD format. Module
+   * workers are supported everywhere DSIM hosts from (Chromium — and therefore Electron —
+   * since 80, Safari 15, Firefox 114).
+   */
+  worker: { format: 'es' },
   // Absolute base for the WEB build so path-based routes (/leaderboard, /replay/…)
   // still resolve assets on a deep load / refresh (paired with the vercel.json SPA
   // rewrite). The Electron desktop build sets ELECTRON=1 (see the `dist` script) to
