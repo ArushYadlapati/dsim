@@ -848,6 +848,8 @@ export class GameController {
       // to be stale (the chip row grew, an ad column collapsed).
       this.hudInsetsDirty = true;
       this.scene = scene;
+      // the 2D overlay projects labels and auto paths through the scene's camera from here on
+      this.renderer.setScene(scene);
     })().catch((err: unknown) => {
       if (epoch !== this.sceneEpoch) return;
       // ONE console warning, per plan §4.7 ("a rejected renderer import() falls back to the
@@ -864,6 +866,7 @@ export class GameController {
     if (!this.scene) return;
     const scene = this.scene;
     this.scene = null;
+    this.renderer.setScene(null);
     try {
       scene.element.remove();
     } catch {
