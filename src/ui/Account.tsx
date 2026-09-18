@@ -7,6 +7,8 @@ import {
   deleteMyAccount,
   fetchEntitlements,
   fetchProfile,
+  fetchReplaysPublic,
+  saveReplaysPublic,
   updateHandle,
   updateUsername,
   type Entitlements,
@@ -69,6 +71,8 @@ export function Account({
 
       <DesktopUpdate />
 
+      {authEnabled && <ReplayPrivacy />}
+
       {authEnabled && SUPPORT_ENABLED && <Membership onDonate={onDonate} />}
 
       <div className="ds-panel">
@@ -96,6 +100,100 @@ export function Account({
 
       {authEnabled && <DeleteAccount />}
     </>
+  );
+}
+
+/**
+ * REPLAY PRIVACY — the one account setting that changes what STRANGERS can see.
+ *
+ * Match replays are private by default (migration 0037). A replay is an input log
+ * re-simulated at full fidelity, so it is not a highlight, it is the game plan: where you
+ * start, what you go for first, when you leave for the endgame. That is scouting material,
+ * and it used to be one click from any leaderboard row.
+ *
+ * ⚠️ THE COPY MUST SAY THAT ONE PLAYER CANNOT PUBLISH A MATCH. A toggle labelled "make my
+ * replays public" that quietly does nothing for most matches is worse than no toggle — the
+ * release rule is unanimous consent, because the log shows the opponent's half too. Nobody
+ * will infer that from a switch, so the panel states it.
+ *
+ * It does NOT cover record runs. Those are leaderboard submissions whose replay is the proof
+ * behind the number, so they stay watchable and this setting never claims otherwise.
+ */
+function ReplayPrivacy() {
+  const session = authClient!.useSession();
+  const userId = session.data?.user?.id ?? null;
+  const [value, setValue] = useState<boolean | null>(null);
+  const [status, setStatus] = useState<'idle' | 'saving' | 'error'>('idle');
+
+  useEffect(() => {
+    if (!userId) {
+      setValue(null);
+      return;
+    }
+    let cancelled = false;
+    void fetchReplaysPublic()
+      .then((r) => {
+        if (!cancelled) setValue(r.replaysPublic);
+      })
+      .catch(() => {
+        if (!cancelled) setValue(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [userId]);
+
+  if (!userId) return null;
+
+  const toggle = (next: boolean): void => {
+    // OPTIMISTIC, and it rolls back on failure. The alternative is a switch that does not
+    // move until a round trip lands, which reads as a dead control.
+    const prev = value;
+    setValue(next);
+    setStatus('saving');
+    void saveReplaysPublic(next)
+      .then(() => setStatus('idle'))
+      .catch(() => {
+        setValue(prev);
+        setStatus('error');
+      });
+  };
+
+  return (
+    <div className="ds-panel">
+      <div className="ds-panel-h">
+        <span className="ds-panel-title">Privacy</span>
+      </div>
+      <div className="ds-panel-body stack start">
+        <p className="ds-hint">
+          Your match replays are private. Only the people who played in a match can watch it
+          back — your results, scores and rating stay on your public profile either way.
+        </p>
+        {value === null ? (
+          <p className="ds-hint">Checking…</p>
+        ) : (
+          <>
+            <label className="ds-checkline">
+              <input
+                type="checkbox"
+                checked={value}
+                disabled={status === 'saving'}
+                onChange={(e) => toggle(e.target.checked)}
+              />
+              <span>Let anyone watch my match replays</span>
+            </label>
+            <p className="ds-hint">
+              A replay shows both alliances, so a match only becomes public when everyone who
+              played in it has turned this on. Turning it off again hides every match of yours
+              that was shared this way.
+            </p>
+          </>
+        )}
+        {status === 'error' && (
+          <p className="ds-hint warn">Couldn’t save that. Check your connection and try again.</p>
+        )}
+      </div>
+    </div>
   );
 }
 

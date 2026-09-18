@@ -1837,6 +1837,22 @@ button.ds-chip {
 .ds-hint.warn {
   color: var(--ds-warn);
 }
+/* A CHECKBOX AND ITS LABEL, ON ONE LINE, inside an ordinary panel body — the general form
+   of the editor-local `.ds-startpos-toggle`, which is scoped to its own toolbar and carries
+   that toolbar's 12px type. This one inherits the body's, because it is a setting somebody
+   reads rather than a tool tucked beside a canvas. The whole row is the hit target. */
+.ds-checkline {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--ds-s-2);
+  cursor: pointer;
+  user-select: none;
+}
+.ds-checkline input {
+  accent-color: var(--ds-accent);
+  width: 16px;
+  height: 16px;
+}
 /* a paragraph that introduces the first panel below it */
 .ds-page-note {
   margin-bottom: var(--ds-s-4);

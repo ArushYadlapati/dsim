@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { fetchReplay } from '../net/api';
+import { fetchReplay, ReplayPrivateError } from '../net/api';
 import {
   ReplayPlayer,
   replayFidelity,
@@ -132,7 +132,9 @@ export function ReplayView({
   onClose: () => void;
 }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const [status, setStatus] = useState<'loading' | 'ready' | 'error' | 'stale'>('loading');
+  const [status, setStatus] = useState<'loading' | 'ready' | 'error' | 'stale' | 'private'>(
+    'loading',
+  );
   const [error, setError] = useState('');
   // WHICH refusal, so the stale screen can give the real reason instead of one guess
   const [refusal, setRefusal] = useState<ReplayRefusal | null>(null);
@@ -237,6 +239,16 @@ export function ReplayView({
       })
       .catch((e: unknown) => {
         if (dead) return;
+        // A REFUSAL IS NOT A FAILURE. "Couldn't load the replay - Server returned 403" says
+        // the link is broken, which is the one thing it is not; the replay is fine and the
+        // people in it have not published it.
+        if (e instanceof ReplayPrivateError) {
+          // the SERVER says which refusal it is (`replayRefusalMessage`) — a private match,
+          // somebody else's practice run and a self-hosted event are three different answers
+          setError(e.message);
+          setStatus('private');
+          return;
+        }
         setError(e instanceof Error ? e.message : String(e));
         setStatus('error');
       });
@@ -852,6 +864,16 @@ export function ReplayView({
         <div className="ds-empty">
           <div className="big">Couldn’t load the replay</div>
           {error}
+        </div>
+      )}
+      {status === 'private' && (
+        <div className="ds-empty">
+          <div className="big">This replay is private</div>
+          {error}
+          {/* only the MATCH case has a setting behind it, so only that one points at it */}
+          {error.includes('played in the match') &&
+            ' A replay shows both alliances’ strategy, so it stays with the people who played' +
+              ' it. You can publish your own from Profile › Privacy.'}
         </div>
       )}
       {status === 'stale' && (

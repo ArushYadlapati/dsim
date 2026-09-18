@@ -47,6 +47,11 @@ import {
   getProfile,
   getProfileByUsername,
   getReplay,
+  getReplaysPublic,
+  isStaffUser,
+  replayAccess,
+  replayRefusalMessage,
+  setReplaysPublic,
   getUserSettings,
   getUserStats,
   getSupporter,
@@ -85,7 +90,9 @@ import { DEPLOY_REGIONS, interRegionMs } from './regions';
  *   GET  /api/profile/<username>/stats?season=<n> — one user's stats, by username
  *   GET  /api/user/settings                  — your synced settings (Bearer JWT)
  *   POST /api/user/settings {settings}       — save your settings (Bearer JWT)
- *   GET  /api/replay/<id>
+ *   GET  /api/user/privacy                   — your replay-visibility setting (Bearer JWT)
+ *   POST /api/user/privacy {replaysPublic}   — set it (Bearer JWT)
+ *   GET  /api/replay/<id>                    — 403 when the people in it have not published it
  *
  *   GET  /api/friends                        — friends + requests + presence (Bearer JWT)
  *   POST /api/friends/request  {username}    — send (or auto-accept a reciprocal) request
@@ -233,6 +240,22 @@ function lanRateOk(userId: string): boolean {
 function bearer(req: IncomingMessage): string | undefined {
   const auth = req.headers['authorization'];
   return typeof auth === 'string' && auth.startsWith('Bearer ') ? auth.slice(7) : undefined;
+}
+
+/**
+ * OPTIONAL auth, for a PUBLIC route whose answer narrows when it knows who is asking — the
+ * replay gate and the match history it feeds (migration 0038). A token that is absent,
+ * expired or bogus is anonymous, exactly as if none had been sent; nothing 401s.
+ *
+ * ⚠️ It short-circuits on a missing header rather than letting `verifyAuthToken(undefined)`
+ * answer null, because that function LOGS on the way out. These are the routes a signed-out
+ * leaderboard visitor hits, and a line per replay view is the log bill the friends-poll
+ * silence was won back from.
+ */
+async function viewerId(req: IncomingMessage): Promise<string | null> {
+  const token = bearer(req);
+  if (!token) return null;
+  return (await verifyAuthToken(token))?.userId ?? null;
 }
 
 /**
@@ -429,6 +452,38 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse): Prom
       }
       const available = dbEnabled ? await usernameAvailable(username) : true;
       return json(200, { valid: true, available, username }), true;
+    }
+
+    /**
+     * ---- per-account PRIVACY (read + write your own) ------------------------
+     *
+     * Its own route rather than a field in `/api/user/settings`, and that is the point of it.
+     * That blob is client-shaped, client-validated and opaque to the server — nothing in SQL
+     * reads it — so a privacy bit living there could be enforced only by the client being
+     * asked about it, which is not enforcement. This is a real column
+     * (`profiles.replays_public`, 0038) that `replayAccess` and `userMatchHistory` join
+     * against, and it is written here from the token's own subject and never from the body.
+     */
+    if (url.pathname === '/api/user/privacy' && (req.method === 'GET' || req.method === 'POST')) {
+      const user = await verifyAuthToken(bearer(req));
+      if (!user) return json(401, { error: 'sign in required' }), true;
+      if (!dbEnabled) return json(200, { replaysPublic: false }), true;
+
+      if (req.method === 'GET') {
+        return json(200, { replaysPublic: await getReplaysPublic(user.userId) }), true;
+      }
+      let body: Record<string, unknown>;
+      try {
+        body = JSON.parse(await readBody(req)) as Record<string, unknown>;
+      } catch {
+        return json(400, { error: 'bad json' }), true;
+      }
+      if (typeof body.replaysPublic !== 'boolean') {
+        return json(400, { error: 'replaysPublic must be true or false' }), true;
+      }
+      await ensureProfile(user.userId, user.handle);
+      await setReplaysPublic(user.userId, body.replaysPublic);
+      return json(200, { replaysPublic: body.replaysPublic }), true;
     }
 
     // ---- per-account settings (read + write your own) ----------------------
@@ -1006,6 +1061,20 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse): Prom
       result: url.searchParams.get('result') ?? undefined,
     };
     const emptyHistory = { rows: [], total: 0, offset: historyOpts.offset, limit: historyOpts.limit ?? 25 };
+    /** the same opts plus WHO IS READING, which decides whether each versus row carries its
+     * `replayId` (migration 0038). Resolved per route rather than folded into `historyOpts`
+     * above: that object is built for every `/api/*` GET, and verifying a JWT for a
+     * leaderboard poll that will never look at a replay is work for nothing. */
+    const historyOptsFor = async (
+      r: IncomingMessage,
+    ): Promise<typeof historyOpts & { viewerId: string | null; viewerIsStaff: boolean }> => {
+      const vid = await viewerId(r);
+      return {
+        ...historyOpts,
+        viewerId: vid,
+        viewerIsStaff: !!vid && dbEnabled && (await isStaffUser(vid)),
+      };
+    };
 
     // recent announcements (patch notes / new season / new act) — public, cheap;
     // the client fetches this on load and shows any it hasn't marked seen locally.
@@ -1083,7 +1152,7 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse): Prom
       const username = decodeURIComponent(profMatchesMatch[1]).toLowerCase();
       const profile = dbEnabled ? await getProfileByUsername(username) : null;
       if (!profile) return json(404, { error: 'no such user' }), true;
-      const page = await userMatchHistory(profile.userId, historyOpts);
+      const page = await userMatchHistory(profile.userId, await historyOptsFor(req));
       return json(200, page), true;
     }
 
@@ -1107,7 +1176,9 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse): Prom
     const matchesMatch = url.pathname.match(/^\/api\/user\/([^/]+)\/matches$/);
     if (matchesMatch) {
       const userId = decodeURIComponent(matchesMatch[1]);
-      const page = dbEnabled ? await userMatchHistory(userId, historyOpts) : emptyHistory;
+      const page = dbEnabled
+        ? await userMatchHistory(userId, await historyOptsFor(req))
+        : emptyHistory;
       return json(200, page), true;
     }
 
@@ -1128,7 +1199,26 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse): Prom
 
     const replayMatch = url.pathname.match(/^\/api\/replay\/([\w-]+)$/);
     if (replayMatch) {
-      const replay = dbEnabled ? await getReplay(replayMatch[1]) : null;
+      if (!dbEnabled) return json(404, { error: 'not found' }), true;
+      // THE GATE RUNS BEFORE THE READ (migration 0038). `getReplay` pulls two jsonb blobs
+      // the size of a whole match, and a refused viewer should never cost that — nor should
+      // a private replay be loaded into this process to be thrown away.
+      const access = await replayAccess(replayMatch[1], await viewerId(req));
+      if (access.access === 'missing') return json(404, { error: 'not found' }), true;
+      if (access.access === 'private') {
+        return (
+          json(403, {
+            error: 'private',
+            // WHICH refusal it is, in words — the same discipline `replayRefusal` follows for
+            // a version mismatch. A private match, somebody else's practice run and a
+            // self-hosted event are three different answers, and a client that printed one
+            // sentence for all of them would be wrong about two.
+            message: replayRefusalMessage(access.kind),
+          }),
+          true
+        );
+      }
+      const replay = await getReplay(replayMatch[1]);
       if (!replay) return json(404, { error: 'not found' }), true;
       return json(200, replay), true;
     }

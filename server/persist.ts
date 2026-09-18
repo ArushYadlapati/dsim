@@ -41,7 +41,9 @@ async function scrubSpecNames(spec: RobotSpec): Promise<RobotSpec> {
  *
  * - RECORD room → leaderboard row (solo = 1 player, duo = primary + partner).
  * - VERSUS room → ranked ELO + match history.
- * Both save the recorded replay first (public, watchable, re-simulatable).
+ * Both save the recorded replay first. It is re-simulatable but NOT public: a versus replay
+ * is watchable by the people in it (and by staff) unless every one of them has opted in, while
+ * a record run's stays public as the board's proof. See `replayAccess` (migration 0038).
  */
 export async function persistMatch(o: MatchOutcome): Promise<PersistOutcome> {
   const authed = o.participants.filter((p) => p.userId);

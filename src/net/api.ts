@@ -97,6 +97,46 @@ async function getJson<T>(path: string): Promise<T> {
   return (await res.json()) as T;
 }
 
+/** thrown when the server has the replay but will not serve it to this viewer — everyone who
+ * played in it has to opt in (migration 0037). Its own type because the viewer shows a real
+ * explanation for it rather than an HTTP status, and because a 403 here is not a failure. */
+export class ReplayPrivateError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'ReplayPrivateError';
+  }
+}
+
+/**
+ * A PUBLIC read that answers differently once it knows who is asking.
+ *
+ * `getJson` sends no Authorization header and `authedJson` throws without a token, and a
+ * replay needs neither: signed out you may still watch a public one, and signed in you may
+ * also watch your own. So the token rides along WHEN THERE IS ONE and its absence is not an
+ * error. Nothing here retries on 401 — anonymous is a valid answer, not a stale session.
+ *
+ * ⚠️ COST, accepted knowingly: `getAuthToken` caches a token it HAS but does not remember a
+ * miss, so a signed-out visitor pays one `/token` round trip per call — on the public profile
+ * and career pages, and again on each page of history. It is small and it is off the
+ * leaderboard path (that still uses `getJson`), so it is not worth a negative cache in shared
+ * auth, where a stale "no session" would delay a real sign-in. Fix it THERE, with a few
+ * seconds' TTL that `force` bypasses, if the profile page ever gets heavy anonymous traffic.
+ */
+async function maybeAuthedJson<T>(path: string): Promise<T> {
+  const base = gameServerHttpUrl();
+  if (!base) throw new Error('Leaderboards need the game server (VITE_GAME_SERVER_URL).');
+  const token = await getAuthToken().catch(() => null);
+  const res = await fetch(base + path, {
+    headers: token ? { authorization: `Bearer ${token}` } : {},
+  });
+  if (res.status === 403) {
+    const body = (await res.json().catch(() => ({}))) as { error?: string; message?: string };
+    throw new ReplayPrivateError(body.message ?? 'This replay is private.');
+  }
+  if (!res.ok) throw new Error(`Server returned ${res.status}`);
+  return (await res.json()) as T;
+}
+
 export function fetchRecords(
   mode: RecordMode,
   drivetrain: Board,
@@ -362,20 +402,25 @@ function historyQuery(o: MatchHistoryOpts): string {
   return s ? `?${s}` : '';
 }
 
-/** a signed-in user's paginated match history (by user id — "my Career") */
+/** a signed-in user's paginated match history (by user id — "my Career").
+ * OPTIONALLY AUTHED: a row's `replayId` is null unless the reader may watch it, so the
+ * Watch button on your own matches depends on the server knowing they are yours. */
 export function fetchUserMatches(
   userId: string,
   opts: MatchHistoryOpts = {},
 ): Promise<MatchHistoryPage> {
-  return getJson(`/api/user/${encodeURIComponent(userId)}/matches${historyQuery(opts)}`);
+  return maybeAuthedJson(`/api/user/${encodeURIComponent(userId)}/matches${historyQuery(opts)}`);
 }
 
-/** a public player's paginated match history (by username — profile page) */
+/** a public player's paginated match history (by username — profile page). Same reason for
+ * the optional token: a stranger's page still shows YOUR shared matches as watchable. */
 export function fetchUserMatchesByUsername(
   username: string,
   opts: MatchHistoryOpts = {},
 ): Promise<MatchHistoryPage> {
-  return getJson(`/api/profile/${encodeURIComponent(username)}/matches${historyQuery(opts)}`);
+  return maybeAuthedJson(
+    `/api/profile/${encodeURIComponent(username)}/matches${historyQuery(opts)}`,
+  );
 }
 
 /** Public username format: 4–20 lowercase letters/digits. Mirrors the server
@@ -463,7 +508,24 @@ export async function updateHandle(handle: string): Promise<{ userId: string; ha
 }
 
 export function fetchReplay(id: string): Promise<Replay> {
-  return getJson(`/api/replay/${id}`);
+  // sends the token when there is one: a participant may watch their own match whatever
+  // anybody has opted into, and signed out you may still watch a public one
+  return maybeAuthedJson(`/api/replay/${id}`);
+}
+
+// ---- replay privacy (your own account setting) ------------------------------
+
+/** may anyone watch your versus match replays? Default FALSE, and retroactively so — see
+ * migration 0037. A match is released only when EVERY player in it has this on. */
+export function fetchReplaysPublic(): Promise<{ replaysPublic: boolean }> {
+  return authedJson('/api/user/privacy');
+}
+
+export function saveReplaysPublic(replaysPublic: boolean): Promise<{ replaysPublic: boolean }> {
+  return authedJson('/api/user/privacy', {
+    method: 'POST',
+    body: JSON.stringify({ replaysPublic }),
+  });
 }
 
 // ---- solo practice replays (own account only) ------------------------------
