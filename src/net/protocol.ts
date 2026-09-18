@@ -266,6 +266,21 @@ export interface LobbyPlayer {
    * driver's name in a lobby is an impersonation primitive, not a cosmetic.
    */
   role?: StaffRole;
+  /**
+   * THIS SEAT IS A BOT, and the string is its TIER (plan §6).
+   *
+   * Server-authored on exactly the same terms as `supporter` and `role` — `sanitizePlayerPatch`
+   * builds an allowlisted object and `PlayerPatch` is a `Pick` that does not name it, so a
+   * client cannot put it on the wire. That matters here for a reason the badges do not have: a
+   * bot seat makes a room UNRATED, so a self-declared one would be a way to ask for that, and a
+   * self-declared ABSENCE would be a way to hide it.
+   *
+   * Optional, and an OLD CLIENT IS UNHARMED BY IT: it renders the roster row as an ordinary
+   * driver named "Medium bot", ready, on an alliance — which is exactly what the seat is. The
+   * only thing it cannot do is remove one, and removing one is a host action an old client has
+   * no button for anyway.
+   */
+  bot?: string;
 }
 
 /** a driver's pre-match ranked intro data (ELO, keyed by the robot id the server
@@ -351,7 +366,30 @@ export function physicsAllowed(physics: Physics | undefined, caps: readonly stri
  * So the rated challenge formats stay hidden until the server says it can honour
  * them. No `caps` in the response at all (an older deploy) ⇒ no capabilities.
  */
-export const SERVER_CAPS: string[] = ['party'];
+export const SERVER_CAPS: string[] = [
+  'party',
+  /**
+   * `'bb3d'` — THIS DEPLOY RUNS BIOBUZZ RANKED AND RECORD ROOMS ON THE 3D SOLVE.
+   *
+   * The mirror of the client capability of the same name, and it exists because the cutover is
+   * PER SERVER (plan §7: alpha on Day 3, production when the owner says so). A client build that
+   * can play 3D rooms says so on `join`; a SERVER that will stage them says so here. Without it
+   * the client cannot tell a server that has not been deployed yet from one that has, and the
+   * two answers matter in opposite directions: a BIOBUZZ ranked queue against an old server
+   * stages a 2D match whose result lands on the same board as everybody's 3D ones, silently.
+   * So the client refuses to queue BIOBUZZ ranked on a server that does not advertise this, and
+   * says why. Nothing else is gated on it — 2D rooms, custom rooms and practice are untouched.
+   */
+  'bb3d',
+  /**
+   * `'bots'` — THIS DEPLOY UNDERSTANDS `addBot` / `removeBot`.
+   *
+   * An older server ignores an unknown client message rather than refusing it, so "Add a bot"
+   * would be a button that does nothing at all. Same reasoning as `party` directly above, and
+   * the same remedy: the control is not offered until the server says it can honour it.
+   */
+  'bots',
+];
 
 /** the formats a "play a friend" challenge can be issued in. Shared so the API's
  * allowlist, the matchmaker's gate, and the picker's tiles can't drift apart. */
@@ -442,6 +480,24 @@ export type ClientMsg =
    */
   | { t: 'reportScore'; detail: string }
   | { t: 'update'; patch: PlayerPatch }
+  /**
+   * HOST ONLY: seat an AI driver on an empty slot, or give one back (plan §6).
+   *
+   * ⚠️ **CAP-GATED ON `SERVER_CAPS` `'bots'`, AND THAT GATE IS NOT OPTIONAL** — it is the same
+   * failure shape as `party`. One Fly app serves every client build, so a new client can be
+   * talking to a server that predates this message; an older server's `onMessage` falls through
+   * its switch and IGNORES it. The button would then appear, be pressed, and do nothing, with
+   * no error anywhere. So the client only offers "Add a bot" when the server says it can seat
+   * one (`serverCaps()`), exactly as the rated challenge formats stay hidden without `party`.
+   *
+   * `tier` is the game's own opaque difficulty string (`GameSimModule.bot.tiers`); absent or
+   * unknown folds to that driver's `defaultTier`, server-side, because a tier list is a
+   * property of the game module and not of the client that names one.
+   */
+  | { t: 'addBot'; tier?: string }
+  /** HOST ONLY: remove the bot seat with this roster `clientId` (the synthetic id the server
+   *  minted for it and put in the roster). */
+  | { t: 'removeBot'; seat: string }
   | { t: 'start' } // host only: build + broadcast the match world
   | { t: 'restart' } // host only: re-author the match with a fresh seed
   /**

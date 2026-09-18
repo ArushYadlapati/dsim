@@ -17,6 +17,10 @@ import '@fontsource-variable/plus-jakarta-sans';
 import '@fontsource-variable/space-grotesk';
 import './ui/styles.css';
 import './ui/shell.css';
+// the in-match prediction control (`docs/biobuzz/plan-3d.md` §5). Its own file, LAST, so its
+// additive `.pred-*` rules sit at the end of one cascade — see its header for why it is not in
+// styles.css.
+import './ui/predict.css';
 
 // The inline script in index.html already stamped data-theme for the first paint.
 // This re-stamps from the same key and, when the pref is 'system', arms the

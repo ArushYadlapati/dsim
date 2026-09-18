@@ -28,6 +28,8 @@ import { generateRoomCode, normalizeRoomCode, isValidRoomCode, ROOM_CODE_LENGTH 
 import { APP_NAME } from '../seasons';
 import { Logo } from './Logo';
 import { useEscape } from './useEscape';
+import { serverCaps } from '../net/api';
+import { botLabel } from './MatchSetup';
 import type { RoomInvite } from '../net/api';
 import { FriendsPanel, type RoomInviteTarget } from './FriendsPanel';
 import { copyText } from './copyText';
@@ -178,6 +180,31 @@ export function Lobby({
   const [name, setName] = useState((displayName ?? settings.spec.teamName) || 'Player');
   const [players, setPlayers] = useState<LobbyPlayer[]>([]);
   const [hostId, setHostId] = useState('');
+  /**
+   * BOT SEATS (plan §6). Two independent conditions, and the control needs both:
+   *  · the GAME has an AI driver at all (`GameSimModule.bot`), which is a fact about the build;
+   *  · the SERVER understands `addBot` (`SERVER_CAPS` `'bots'`), which is a fact about the
+   *    deploy. One Fly app serves every client version, so a new client can be talking to a
+   *    server that predates the message — and that server IGNORES it rather than refusing, so
+   *    an ungated button would be pressed and do nothing at all. Same shape, same reason, as
+   *    the rated challenge formats' `'party'` gate.
+   * Until the capability read lands this is false, so the button appears a beat late rather
+   * than under a cursor already moving toward it.
+   */
+  const botTiers = moduleFor(roomGame).bot?.tiers;
+  const [serverBots, setServerBots] = useState(false);
+  useEffect(() => {
+    let alive = true;
+    void serverCaps().then((c) => {
+      if (alive) setServerBots(c.includes('bots'));
+    });
+    return () => {
+      alive = false;
+    };
+  }, []);
+  /** the tier the host's next "Add a bot" seats. Remembered for the session only: it is a
+   *  property of the room being set up, not of the account. */
+  const [botTier, setBotTier] = useState<string>(() => moduleFor(roomGame).bot?.defaultTier ?? '');
   const [myId, setMyId] = useState('');
   // block starting a custom match while a server restart is scheduled
   const notice = useServerNotice();
@@ -798,6 +825,11 @@ export function Lobby({
                   <span className="ptm">
                     {p.spec.name} · {p.teamNumber || '-'}
                   </span>
+                  {/* A BOT SEAT IS NAMED AS ONE, beside the name and not inside it — the same
+                      rule the supporter badge follows. Without it a roster row reading
+                      "Medium bot · READY" is indistinguishable from a driver who picked that
+                      name, and the difference is whether the match rates. */}
+                  {p.bot && <span className="ds-chip">🤖 BOT</span>}
                   {p.clientId === hostId && (
                     <span className="ds-chip on">★ HOST</span>
                   )}
@@ -818,6 +850,47 @@ export function Lobby({
               );
             })}
           </div>
+          {/* ADD A BOT (plan §6) — host only, versus only, and only when both the game and the
+              deploy can do it. A record run is excluded on purpose: its replay is leaderboard
+              PROOF, and a bot partner in a duo record would be a submission nobody drove. */}
+          {isHost && !isRecord && botTiers && botTiers.length > 0 && serverBots && (
+            <>
+              <div className="ds-opts fill">
+                {botTiers.map((t) => (
+                  <button
+                    key={t}
+                    className={`ds-opt mini ${botTier === t ? 'on' : ''}`}
+                    onClick={() => setBotTier(t)}
+                  >
+                    <span className="ot">{botLabel(t)}</span>
+                  </button>
+                ))}
+                <button
+                  className="ds-opt mini"
+                  disabled={players.length >= capacity}
+                  onClick={() => lobbyRef.current?.addBot(botTier)}
+                >
+                  <span className="ot">＋ Add a bot</span>
+                </button>
+                {players.some((p) => p.bot) && (
+                  <button
+                    className="ds-opt mini"
+                    onClick={() => {
+                      // the LAST one, which is the one the button just added — removing from the
+                      // end is what makes pressing add and remove alternately a no-op
+                      const last = [...players].reverse().find((p) => p.bot);
+                      if (last) lobbyRef.current?.removeBot(last.clientId);
+                    }}
+                  >
+                    <span className="ot">－ Remove a bot</span>
+                  </button>
+                )}
+              </div>
+              <p className="ds-hint">
+                A room with a bot in it is unrated and its result is not saved.
+              </p>
+            </>
+          )}
         </section>
 
         {!isRecord && (

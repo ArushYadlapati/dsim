@@ -1,5 +1,5 @@
 import type { DodgeVerdict } from '../dodge';
-import type { GameId } from '../types';
+import type { GameId, Physics } from '../types';
 import type { RobotSetup } from '../sim/spawn';
 import type { Transport } from './transport';
 import { getAuthToken } from '../lib/authClient';
@@ -23,6 +23,17 @@ export interface MatchStart {
   yourRobotId: number;
   /** which game the match plays (DECODE by default) — passed to the ServerSession */
   game?: GameId;
+  /**
+   * WHICH PHYSICS THE ROOM RUNS ON (`matchStart.physics`; absent ⇒ `'2d'`).
+   *
+   * ⚠️ **IT WAS ALWAYS ON THE WIRE AND MISSING FROM THIS TYPE, AND THAT COST A BUG.** The
+   * handler forwards the whole server message, so the value was there at runtime — but
+   * `App.beginSession` rebuilds this object FIELD BY FIELD for the rejoin record, and a field
+   * the type does not name is a field nobody thinks to copy. A rejoin into a 3D room therefore
+   * built a 2D world, predicted a different game from the one the server was scoring, and never
+   * latched `physicsPending`. Measured in a browser on 2026-09-18.
+   */
+  physics?: Physics;
   /** ranked rooms only: drives the pre-match ELO intro overlay */
   ranked?: boolean;
   intros?: PlayerIntro[];
@@ -165,6 +176,24 @@ export class LobbyClient {
   /** host only: begin the match */
   start(): void {
     this.transport.send(encodeMsg({ t: 'start' }));
+  }
+
+  /**
+   * HOST ONLY: seat an AI driver on an empty slot, or give one back (plan §6).
+   *
+   * Fire-and-forget, like `update` and `start`: the server answers with a fresh `roster`, so the
+   * caller never tracks this optimistically. A refusal (a full room, a ranked room, a game with
+   * no driver) arrives as an ordinary `error`.
+   *
+   * ⚠️ The CALLER gates on `serverCaps()` containing `'bots'` — an older server ignores an
+   * unknown message rather than refusing it, so an ungated button would silently do nothing.
+   */
+  addBot(tier?: string): void {
+    this.transport.send(encodeMsg({ t: 'addBot', tier }));
+  }
+
+  removeBot(seat: string): void {
+    this.transport.send(encodeMsg({ t: 'removeBot', seat }));
   }
 
   /** enter the ranked queue on this `?mm=1` connection. On a match the server sends

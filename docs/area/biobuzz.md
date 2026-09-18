@@ -128,6 +128,36 @@ The 2D pipeline is PERMANENT (owner rule): every existing check must stay byte-i
   an outline of a zone rectangle. A `fieldDims.gen.ts` that drifts from the measurements JSON
   fails the SIM3D lane, which re-renders it and diffs byte for byte. `docs/biobuzz-reference.md`
   carries the ruling and the full before/after table.
+- **GRAPHICS SETTINGS ARE PER DEVICE, AND THE SCENE SUBSCRIBES TO THEM** (Day 3, plan §4.4–§4.6).
+  `graphics/settings.ts` is the model — the sixteen dials, the four preset columns, the
+  0.6/1.2/2.2/4.0 MP pixel budgets, `localStorage['decodesim.graphics']` with field-by-field
+  coercion. `graphics/auto.ts` is the POLICY (first guess → two-second warm-up → the in-match
+  slip rule) and takes its clock as a PARAMETER, because `smoke.ts`'s determinism guard greps
+  this whole directory for `performance.now()`. Nothing under `graphics/` may import `three` or
+  `scene/` — it is read by `src/ui/GraphicsSection.tsx` and `src/contributors.ts`, both ordinary
+  main-bundle files, and the RENDER lane asserts it. Fourteen settings apply LIVE; mesh detail
+  needs the next 3D view (it picks the GLB) and SSAO/SMAA are **not offered on this build**
+  (`GFX_NOT_OFFERED` carries the reason, and the UI prints it).
+  - ⚠️ **MSAA is a render target this scene owns, not the canvas's `antialias`.** The context is
+    created with `antialias: false` always: WebGL cannot be asked for a particular sample count
+    on the default framebuffer and the attribute is fixed for the life of the context, so that
+    is the only way "2x" and a live change are both possible. The target is half-float, and the
+    BLIT is where tone mapping and the sRGB conversion happen.
+  - ⚠️ `WebGLRenderer.setViewport`/`setScissor` take CSS pixels and multiply by the pixel ratio
+    THEMSELVES. The PiP minimap passed drawing-buffer pixels once and squared the ratio — at 75 %
+    render scale the whole scene drew into 56 % of the canvas, which reads as a camera bug.
+  - **Environments** (plan §4.5) are two CC0 Poly Haven HDRIs fetched on demand as 1k `.hdr`,
+    never bundled, listed in `graphics/environments.ts` — which `src/contributors.ts` DERIVES its
+    Third-party credits from, so a new one cannot ship uncredited. Use `HDRLoader`, not
+    `RGBELoader` (renamed in three 0.186; the old name warns on every load).
+  - **The view key `t` is armed by `InputManager.attach`/`detach`** (`graphics/viewKey.ts`,
+    reference-counted). It CANNOT live in the scene: the listener dies with the scene, so from
+    the 2D map there is nothing left to press. It is not a `KeyAction` — it changes which
+    renderer is mounted, not the robot.
+  - ⚠️ **`Renderer.render(…, overlayOnly)` CLEARS the whole canvas.** Right for the live view
+    (the 2D canvas is a separate sheet above the WebGL one); fatal anywhere both passes share a
+    canvas. The replay export draws the overlay onto a sheet of its own and composites — without
+    that, every exported 3D frame is black. Measured 1920×1080: 2D 0.44 ms/frame, 3D 0.85 ms.
 - **Client:** `graphics/store.ts` holds the per-device view pref (`localStorage['decodesim.view']`);
   `GameView`/`game.ts` await `initPhysics3d()` before a 3D practice (fallback to 2D with an
   event-log line) and mount the lazily imported `scene` under the 2D canvas (`overlayOnly`).
@@ -151,3 +181,62 @@ The 2D pipeline is PERMANENT (owner rule): every existing check must stay byte-i
   `scripts/field-cad/preview` (GLB viewer). In an automated browser, drive the game through the
   live `GameController` (React fiber from the canvas) and judge progress by `world.tick`, since
   `requestAnimationFrame` only advances when a paint is forced.
+
+---
+
+# AI DRIVERS (`src/games/biobuzz/ai/`) — Day 3, plan §6
+
+`GameSimModule.bot` is filled for BIOBUZZ and absent for DECODE and Chain Reaction. Three tiers
+(`easy` / `medium` / `hard`), ONE policy: `tiers.ts` is a table of numbers the single state machine
+in `policy.ts` multiplies or branches on, so "Easy is a worse driver" never becomes "Easy is a
+different program". **No tier may read anything a lower tier cannot** — difficulty is execution
+(speed, hesitation, patience, how strict it is about taking a shot), never information.
+
+- **The memory is the CALLER's.** `bot.create(world, robotId, tier, seed)` returns a `BotSeat`; the
+  caller (the controller in practice, `Room` on the server, the LAN host worker) calls
+  `seat.step(world)` ONCE per tick before `biobuzzStep`, puts the result in the command map, and
+  **records it exactly like a driver's** — so a replay of a match with a bot in it re-simulates with
+  no bot at all. Nothing about the bot is written to the `World`. There is deliberately **no
+  memoryless `drive`**: a policy with hysteresis cannot answer one honestly, and a server calling it
+  while a client predicted with `create` would disagree about what the bot did.
+- ⚠️ **`ai/` IS SIM CODE AND IT IS IN THE MAIN CHUNK.** No DOM, no clock, no `Math.random`, no
+  `process` (a `process.env` debug hook threw on the first decision in a browser and took the render
+  loop down — green in Node, fatal on the page), no `import.meta`, and nothing from `sim3d/` but
+  `tilt`. The AI lane greps for all of it.
+- ⚠️ **It never reads `world.rngState`.** Its randomness is its own mulberry32 chain seeded
+  `(matchSeed, seat)`. The world's chain is CONSUMED, so a bot drawing from it would move every
+  later draw in the match and a client predicting a tick without the bot would diverge. The lane
+  proves the absence with a `Proxy` that records any access.
+- Commands leave through `localizeCommand` (the wire round-trip), so what is recorded and what is
+  simulated are the same bytes. The bot re-decides every `BB_AI_DECIDE_TICKS` (6) and holds in
+  between, which is what keeps a recorded bot track hold-last friendly.
+- **Tuning lives in `config.ts` under `BB_AI_*`**, all `APPROX`, and each constant's header carries
+  the measurement that fixed it. Four of them are bugs that shipped in a morning's tuning and are
+  worth knowing before touching the policy: a bot that drives at full stick right up to its goal
+  OVERSHOOTS it every decision window (`BB_AI_SLOW_RADIUS`); a purely radial obstacle push parks the
+  robot at the balance point instead of going round (the tangential term in `route`); patience
+  counted against an element ID never fires, because two elements in a corner take turns being the
+  nearest one (`BbBotMemory.noProgress` counts against the HOPPER); and giving up on one unreachable
+  element without its neighbours is giving up on nothing (`BB_AI_GIVEUP_RADIUS`).
+- **Fouls are the tier table's real constraint.** A faster bot that drives through an opponent
+  collects G421 PINNING majors and hands them 20 points each; the first tuning that made HARD
+  genuinely faster also made it LOSE to EASY. `BB_AI_PIN_DECISIONS` backs a bot off an opponent it
+  has been leaning on, `BB_AI_HIVE_CREEP` slows it under the HIVE so a legal drive-under is not a
+  G417 ram, and `BB_AI_ROBOT_CLEAR` keeps it out of contact it does not need.
+- **Verification:** the `AI` lane in `npm test` (the seam, determinism over 3,600 ticks under BOTH
+  physics, the read list, quantization, R102's stow/deploy, `step3d` perf with bots driving, and
+  that a bot can actually score) and `npm run test:ai` (`scripts/aismoke.ts`, ~9 min, OUTSIDE
+  `npm test`) for the statistical claim. The head-to-head win rate is a **RATCHET**, currently
+  under plan §6's 90% target — read the comment on `BB_AI_WIN_RATE_FLOOR` before changing it.
+
+**R102, the STOW HEIGHT and the DEPLOY LATCH** (plan §3.3). R105.A's 29 in is the EXPANDED height
+(`BB3_HEIGHT_MAX`); R102 limits the STARTING CONFIGURATION to an 18-in cube (`BB3_STOW_MAX`). A
+build over the cube is modelled as folding to exactly it (`bbStowHeightIn`), because `RobotSpec`
+carries no `stowHeightIn` field yet — adding one is a `src/types.ts` edit plus a carry-across in the
+shared `coerceSpec`, and until then a DECLARED value is read structurally so the rule binds the day
+the field lands. `coerceBiobuzzSpec` normalizes a declared stow to `[BB3_HEIGHT_MIN, heightIn]` and
+**deliberately does not clamp it to 18** — that would make `bbStowLegal` true by construction.
+The RULE refuses, at `GameSimModule.startLegal`; the builder says so first. Deployment is a READ of
+`world.match` (`bbDeployed`), never a stored latch, and `sim3d/engineImpl.ts` rebuilds the chassis
+collider at that edge, recording the height it built (`Engine3d.robotHeights`) so READBACK subtracts
+the same half-height it added — get that wrong and the robot's `z` jumps on the deploy tick.

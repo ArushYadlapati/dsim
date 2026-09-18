@@ -205,6 +205,13 @@ export interface RobotSpec {
    * Clamped (and dropped when not a finite number) in `coerceBiobuzzSpec`.
    */
   heightIn?: number;
+  /**
+   * BIOBUZZ 3D ONLY (Day 3, R102): the height the robot STOWS to at the start, when it is built
+   * taller than the 18-in cube. Optional and DECLARED — `bbStowHeightIn` reads it structurally,
+   * `coerceBiobuzzSpec` normalises it to [BB3_HEIGHT_MIN, heightIn] and deliberately does not
+   * clamp it to 18 (the RULE refuses at `startLegal`; clamping would make it true by construction).
+   */
+  stowHeightIn?: number;
 }
 
 /** Chain Reaction scoring archetype (see `RobotSpec.scoreMode`).
@@ -776,6 +783,22 @@ export interface GameSettings {
    * blob, so this rides along with no protocol change).
    */
   practicePhysics?: Physics;
+  /**
+   * SOLO PRACTICE OPPONENTS (plan §6): `'off'`, or a TIER from the active game's own
+   * `GameSimModule.bot.tiers`. Absent reads `'off'`, which is every settings blob that predates
+   * this field and every game that has no AI driver.
+   *
+   * ⚠️ **THE TIER IS AN OPAQUE STRING, DELIBERATELY.** The seam declares `tiers` as
+   * `readonly string[]` so a game can add or rename a difficulty without a shared type edit, and
+   * typing this field as a union of BIOBUZZ's three would be the shared type edit that rule
+   * exists to avoid. It is validated the only way it honestly can be — against the live module's
+   * own `coerceTier` — in `coerceSettings`, which is the same chokepoint every other untrusted
+   * settings field goes through.
+   *
+   * Practice only. A ROOM's bots are the host's choice, seated server-side (`addBot`), and a
+   * ranked or record room refuses them outright.
+   */
+  practiceBots?: string;
   /** the ACTIVE resolved driver assists (what spawns + goes on the wire).
    * MIRRORED from `spec.assists`, which is where the preference is actually STORED — the
    * robot owns its assists, so loading a saved robot / preset / the other game's loadout

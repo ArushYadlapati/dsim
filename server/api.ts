@@ -1064,10 +1064,19 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse): Prom
     if (url.pathname === '/api/records') {
       const mode = url.searchParams.get('mode') === 'duo' ? 'duo' : 'solo';
       const drivetrain = url.searchParams.get('drivetrain') ?? 'overall';
+      /**
+       * THE ERA FILTER (0039). An ALLOWLIST rather than a cast: this string reaches a SQL
+       * parameter, and while `q()` parameterises it, a value that is neither of the two would
+       * silently return an empty board rather than the "all" the caller meant. Anything that
+       * is not exactly `'2d'` or `'3d'` — absent, empty, `all`, nonsense — means no filter,
+       * which is what every client before Day 3 asks for.
+       */
+      const p = url.searchParams.get('physics');
+      const physics = p === '2d' || p === '3d' ? p : undefined;
       const rows = dbEnabled
-        ? await recordLeaderboard({ mode, drivetrain, balanceVersion: season, limit, game })
+        ? await recordLeaderboard({ mode, drivetrain, balanceVersion: season, limit, game, physics })
         : [];
-      return json(200, { season, mode, drivetrain, rows, game }), true;
+      return json(200, { season, mode, drivetrain, physics, rows, game }), true;
     }
 
     if (url.pathname === '/api/elo') {

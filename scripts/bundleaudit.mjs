@@ -37,6 +37,14 @@
  *                the sim3d markers, not after: the scene legitimately reads the tray angle and
  *                the CAD geometry, so if a future chunking ever merges some of that INTO the
  *                renderer chunk, "it has three.js in it" is the answer that stays right.
+ *   graphics   — the GRAPHICS SETTINGS UI and the Auto detector (Day 3, plan §4.4/§4.6):
+ *                `GraphicsSection-*.js`, the shared `settings-*.js` it and the detector both
+ *                read, and `auto-*.js` (`Reset to Auto`'s GPU probe). Lazy for the same reason
+ *                the two above are: sixteen 3D graphics settings are of no use to somebody
+ *                playing 2D DECODE, and `Configure.tsx` `React.lazy`s the section so they are
+ *                not in the bundle that player downloads. ⚠️ TESTED AFTER `scene`, because the
+ *                renderer chunk carries its own inlined copy of the settings model and
+ *                "it has three.js in it" has to keep winning for that one.
  *   other      — everything else. In practice this is empty: `@dimforge/rapier2d-compat` is a
  *                STATIC import (`src/sim/physicsEngine.ts`), so the 2D physics engine lives
  *                inside `main` already and always has (that is existing, unchanged behavior,
@@ -85,6 +93,16 @@ const MARKERS = {
    * absent from `index-*`, `hostWorker-*` and `renderScene-*`.
    */
   sim3d: ['containmentFixes', 'hiveTrays', 'refTheta'],
+  /**
+   * The graphics-settings chunks. STRING LITERALS, not identifiers: these chunks are minified
+   * and every name in them is mangled, but a string constant is not.
+   *   `decodesim.graphics` — the localStorage key (`graphics/settings.ts`)
+   *   `Reset to Auto`      — the button (`ui/GraphicsSection.tsx`)
+   *   `swiftshader`        — the software-renderer pattern (`graphics/auto.ts`)
+   * Measured against the build that introduced the split: one of the three is present in each
+   * of the three chunks, and none of them is in `index-*` or `hostWorker-*`.
+   */
+  graphics: ['decodesim.graphics', 'Reset to Auto', 'swiftshader'],
 };
 
 /** does `buf` contain any of `needles`, scanned as raw bytes (works for text OR wasm)? */
@@ -106,9 +124,10 @@ function routeFor(file, buf) {
   // "rapier3d" filename at all).
   if (/rapier/i.test(base) && base.endsWith('.wasm')) return 'physics3d';
   if (containsAny(buf, MARKERS.physics3d)) return 'physics3d';
-  // THREE.JS FIRST, then sim3d — see the route table's note on `scene`.
+  // THREE.JS FIRST, then sim3d, then the graphics UI — see the route table's notes on both.
   if (containsAny(buf, MARKERS.scene)) return 'scene';
   if (containsAny(buf, MARKERS.sim3d)) return 'physics3d';
+  if (containsAny(buf, MARKERS.graphics)) return 'graphics';
   return 'other';
 }
 
@@ -162,15 +181,27 @@ const fmtKB = (bytes) => `${(bytes / 1000).toFixed(2)} KB`;
  *               collider set plus `sim3d/tilt.ts`, hoisted because the scene chunk and the
  *               implementation chunk both import it). +33.87 KB on a route nobody loads without
  *               choosing 3D physics — that is the whole trade, and it is the right way round.
- *   scene       187.27 KB — `dist/assets/renderScene-*.js`. UNCHANGED (+0.03, noise): the two
+ *   graphics      5.60 KB — NEW on Day 3, three lazy chunks: `GraphicsSection-*.js` (2.29, the
+ *               section itself), `settings-*.js` (1.64, the sixteen-setting model, hoisted
+ *               because the section and the detector both import it) and `auto-*.js` (1.68, the
+ *               GPU probe behind `Reset to Auto`). MEASURED, and it is what the §10 budget
+ *               ("main +≤ 2 KB for the settings UI") is kept to: statically imported, the
+ *               section cost the MAIN chunk 2.82 KB gz (921.26 → 918.44 when `Configure.tsx`
+ *               was switched to `React.lazy`); lazy, it costs it nothing.
+ *   scene       192.28 KB — `dist/assets/renderScene-*.js`. UNCHANGED (+0.03, noise): the two
  *               helpers it used to reach through `hive3d.ts`/`bodies.ts` are the same two
  *               functions, now in the light `sim3d/tilt.ts`, and the CAD geometry it reads did
  *               not move — it is simply no longer a free ride on the main chunk. RAISED to
  *               187.24 on Day 2 by the reticle (`renderLanding.ts` + `renderReticle.ts`), the
  *               chase and orbit cameras and the `project` hook; the heavy part of this chunk is
- *               three.js itself and everything added since is arithmetic. Still ~63 KB inside
- *               the §2.5 spec ceiling, kept below as `budgetCeiling` for context — the RATCHET
- *               binds to the measurement, because a budget is not a target.
+ *               three.js itself and everything added since is arithmetic. RAISED AGAIN on Day 3,
+ *               187.27 → 192.28 (+5.01), by the graphics lane: `RGBELoader` and the PMREM
+ *               environment loader (§4.5), the MSAA render target and its blit, the PiP
+ *               minimap, the performance overlay, the quality governor and the settings model
+ *               this chunk inlines its own copy of. SMAA and SSAO were NOT taken (see
+ *               `GFX_NOT_OFFERED`) and that is most of why this is +5.6 and not +30. Still
+ *               57 KB inside the §2.5 spec ceiling, kept below as `budgetCeiling` for context —
+ *               the RATCHET binds to the measurement, because a budget is not a target.
  * `other` has no route in a healthy build (every `.js`/`.wasm` file lands in one of the four
  * above) — baseline near zero, so anything landing here at all is worth a look.
  *
@@ -181,7 +212,8 @@ const BASELINE = {
   main: { gzip: 907.88 * 1000 },
   hostWorker: { gzip: 700.84 * 1000 },
   physics3d: { gzip: 1123.14 * 1000 },
-  scene: { gzip: 187.27 * 1000, budgetCeiling: 250 * 1000 },
+  scene: { gzip: 192.28 * 1000, budgetCeiling: 250 * 1000 },
+  graphics: { gzip: 5.60 * 1000 },
   other: { gzip: 1 * 1000 },
 };
 

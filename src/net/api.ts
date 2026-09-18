@@ -69,6 +69,13 @@ export interface RecordRow extends BadgeFields {
   replayId: string | null;
   createdAt: string;
   config: RecordConfig | null;
+  /**
+   * WHICH SOLVE PRODUCED THIS RUN — `'2d'` | `'3d'` (migration 0039). Absent from an older
+   * server's response, and a pre-0039 row reads `'2d'`, so the chip is drawn only where the
+   * value is actually known to be `'3d'` — a board that claimed "2D" for every row an old
+   * deploy served would be stating something it was never told.
+   */
+  physics?: string;
 }
 
 export interface EloRow extends BadgeFields {
@@ -106,9 +113,14 @@ export function fetchRecords(
   drivetrain: Board,
   season?: number,
   game?: GameId,
+  /** the ERA filter (0039): `'2d'` or `'3d'`, or omitted for every row. An older server
+   *  ignores the parameter and answers with the whole board, which is the right degradation —
+   *  the filter narrows a board, so failing open shows MORE rather than an empty page. */
+  physics?: '2d' | '3d',
 ): Promise<{ rows: RecordRow[] }> {
   const s = season != null ? `&season=${season}` : '';
-  return getJson(`/api/records?mode=${mode}&drivetrain=${drivetrain}${s}${gameParam(game)}`);
+  const ph = physics ? `&physics=${physics}` : '';
+  return getJson(`/api/records?mode=${mode}&drivetrain=${drivetrain}${s}${ph}${gameParam(game)}`);
 }
 
 export function fetchElo(
@@ -480,7 +492,7 @@ export interface PracticeRun {
   ticks: number;
   replayId: string | null;
   createdAt: string;
-  /** which solve ran it ('2d' | '3d'; migration 0038). Older servers omit it. */
+  /** which solve ran it ('2d' | '3d'; migration 0039). Older servers omit it. */
   physics?: string;
   /** which renderer it was watched in, or null/absent when unknown */
   view?: string | null;

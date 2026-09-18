@@ -996,16 +996,16 @@ async function main(): Promise<void> {
   }
 
   /**
-   * ------------------------------------------- THE PHYSICS TAG (0038) -------
+   * ------------------------------------------- THE PHYSICS TAG (0039) -------
    *
    * BIOBUZZ gains a second deterministic solve and stays ONE game on ONE board (the owner's
    * rule: never reset a season). So a 2D-era row and a 3D-era row are told apart by a column,
    * and everything below is the round-trip of that column through the REAL repo functions.
    *
-   * The pre-0038 half is the one worth having. `physics` is `not null default '2d'`, and a row
+   * The pre-0039 half is the one worth having. `physics` is `not null default '2d'`, and a row
    * written before the column existed IS a 2D-solve row — so it has to read back as one rather
    * than as null, or every consumer grows a `?? '2d'` and one of them eventually forgets.
-   * There is no way to write a genuinely pre-0038 row here (the migration has already run), so
+   * There is no way to write a genuinely pre-0039 row here (the migration has already run), so
    * the closest honest thing is asserted instead: an insert that names no `physics` at all, i.e.
    * exactly the statement an older server build would send against the new schema.
    */
@@ -1040,7 +1040,7 @@ async function main(): Promise<void> {
       'physics: an UNTAGGED container is stored as 2d (the column is not null)',
       ((await db.query(`select physics from replays where id = $1`, [idNone])).rows[0] as { physics: string }).physics === '2d',
     );
-    // the pre-0038 row: an insert naming no `physics`, which is the statement an OLDER SERVER
+    // the pre-0039 row: an insert naming no `physics`, which is the statement an OLDER SERVER
     // BUILD sends against this schema — one Fly app serves every client, and a rollback is a
     // deploy away, so this is a live case and not a historical one.
     const legacy = await db.query(
@@ -1084,7 +1084,7 @@ async function main(): Promise<void> {
     } catch (e) {
       butterfly = e instanceof Error ? e.message : String(e);
     }
-    check('physics: a BUTTERFLY record run is accepted (0038 widened records_drivetrain_check)',
+    check('physics: a BUTTERFLY record run is accepted (0039 widened records_drivetrain_check)',
       butterfly === '', butterfly);
     // ...and the constraint still REFUSES a name that is not a drivetrain, or it would have
     // been widened into nothing at all
@@ -1098,6 +1098,37 @@ async function main(): Promise<void> {
       bogus = e instanceof Error ? e.message : String(e);
     }
     check('physics: ...and the constraint still refuses a drivetrain that does not exist', bogus !== '');
+
+    /**
+     * ---- the BOARD read path: the badge and the era filter (Day 3) --------------------
+     *
+     * The column existing and the board SHOWING it are different facts, and the gap between
+     * them is the kind that ships: a `select` that simply does not project two columns still
+     * compiles and still renders, only bare — which is how the ranked board once sat badge-less
+     * (`docs/area/accounts.md`). So the projection is asserted, and so is the filter.
+     *
+     * ⚠️ **THE FILTER IS INSIDE `best`, AND THIS IS THE CHECK THAT SAYS SO.** `best` is one row
+     * per player. `phys-a` above has a 3D run of 123 and a 2D run of 45, so their overall best
+     * is the 3D one — and a filter applied AFTER `best` would find that row, reject it, and
+     * leave the player off a 2D board they demonstrably have a 2D score on. Filtering first is
+     * what makes "3D" mean "each player's best 3D run" instead of "players whose best run
+     * happens to be 3D".
+     */
+    {
+      const all = await repo.recordLeaderboard({ mode: 'solo', balanceVersion: SEASON, game: 'biobuzz' });
+      const mine = all.find((r) => r.userId === 'phys-a');
+      check('physics/board: an unfiltered board projects the era of each row', mine?.physics === '3d', String(mine?.physics));
+      const only3d = await repo.recordLeaderboard({ mode: 'solo', balanceVersion: SEASON, game: 'biobuzz', physics: '3d' });
+      check('physics/board: the 3D filter keeps the 3D run', only3d.find((r) => r.userId === 'phys-a')?.score === 123,
+        String(only3d.find((r) => r.userId === 'phys-a')?.score));
+      const only2d = await repo.recordLeaderboard({ mode: 'solo', balanceVersion: SEASON, game: 'biobuzz', physics: '2d' });
+      const mine2d = only2d.find((r) => r.userId === 'phys-a');
+      check(
+        'physics/board: ...and the 2D filter finds the player’s best 2D run, not nothing',
+        mine2d?.score === 45 && mine2d?.physics === '2d',
+        `${String(mine2d?.score)}/${String(mine2d?.physics)}`,
+      );
+    }
 
     // ---- matches: the history row ----------------------------------------------------
     const m3d = await repo.saveMatch('2v2', SEASON, id3d, true, 'biobuzz', '3d');

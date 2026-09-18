@@ -11,7 +11,9 @@ import { MatchStrategy } from './MatchStrategy';
 import { MatchAudio } from '../audio';
 import { DODGE_REASON, type DodgeVerdict } from '../dodge';
 import { STANDING_MAX, WINDOW_HOURS, lockRemaining, tierOf } from '../standing';
-import { RANKED_JOIN_GRACE_MS, STRATEGY_DURATION_MS } from '../net/protocol';
+import { BB3D_CAP, RANKED_JOIN_GRACE_MS, STRATEGY_DURATION_MS } from '../net/protocol';
+import { serverCaps } from '../net/api';
+import { moduleFor } from '../games';
 import { widenHint, queuesFor } from './queueDepth';
 import {
   parkQueue, takeQueue, updateQueue, dropQueue, elapsedSeconds,
@@ -142,6 +144,34 @@ export function Matchmaking({
    *  a rating drop the player is not told about is the thing that makes a penalty feel
    *  arbitrary. `null` for a player who was NOT at fault, which is worth saying out loud. */
   const [dodge, setDodge] = useState<{ yours: DodgeVerdict | null; others: DodgeVerdict[] } | null>(null);
+  /**
+   * DOES THIS SERVER STAGE 3D RANKED ROOMS? (plan §7, the per-server cutover.)
+   *
+   * `null` until the one-shot capability read lands, so nothing flickers between two sentences
+   * on a screen somebody is about to commit ELO on. Only read for a game that HAS two solves;
+   * for DECODE and Chain Reaction there is no cutover and no line.
+   */
+  const [ranked3d, setRanked3d] = useState<boolean | null>(null);
+  const twoPhysics = !!moduleFor(settings.game).physicsOptions?.includes('3d');
+  useEffect(() => {
+    if (!twoPhysics) return;
+    let alive = true;
+    void serverCaps().then((c) => {
+      if (alive) setRanked3d(c.includes(BB3D_CAP));
+    });
+    return () => {
+      alive = false;
+    };
+  }, [twoPhysics]);
+  const rankedPhysicsNote =
+    !twoPhysics || ranked3d === null ? null : ranked3d ? (
+      <p className="ds-hint">Ranked matches run on the 3D physics.</p>
+    ) : (
+      <p className="ds-form-err">
+        ⚠ This server hasn’t been updated for 3D ranked matches yet. Custom rooms and practice
+        still work.
+      </p>
+    );
   // the ranked queue refused us on ACCOUNT STANDING (a live clock, so `tick` re-renders it)
   const [lock, setLock] = useState<{ until: number; score: number } | null>(null);
   const [tick, setTick] = useState(() => Date.now());
@@ -761,6 +791,27 @@ export function Matchmaking({
       setError('Server is restarting shortly - try again in a minute.');
       return;
     }
+    /**
+     * THE RANKED CUTOVER GATE (plan §7). A BIOBUZZ ranked room is a 3D-physics room — the server
+     * decides that, in `Room.physics` — but only on a server that has been DEPLOYED with that
+     * code. This app is served to every client version from one Fly app and the cutover is per
+     * server, so a client can be newer than the machine it is queueing on, and the failure is
+     * SILENT in the worst direction: the old server stages an ordinary 2D room, the match plays,
+     * and its result lands on the same board and moves the same ELO as everybody's 3D ones.
+     *
+     * So the client asks first. `serverCaps()` is a one-shot, page-lifetime-cached read, and it
+     * is checked HERE rather than on render because it is about the moment a rated match is
+     * committed to. Nothing else is gated: custom rooms, practice, records against this game's
+     * own board and every other game's queue are untouched.
+     */
+    const queueGame = challengeRef.current?.game ?? gameRef.current;
+    if (moduleFor(queueGame).physicsOptions?.includes('3d')) {
+      const caps = await serverCaps().catch(() => [] as string[]);
+      if (!caps.includes(BB3D_CAP)) {
+        setError('This server hasn’t been updated for 3D ranked matches yet. Try again later, or play a custom room.');
+        return;
+      }
+    }
     setError('');
     setElapsed(0);
     setBumps(0);
@@ -1088,6 +1139,11 @@ export function Matchmaking({
           </button>
         </div>
       )}
+      {/* THE CUTOVER, STATED BEFORE IT IS ENFORCED (plan §7). `find()` refuses a BIOBUZZ ranked
+          queue on a server that has not been deployed with the 3D code; saying so here means the
+          player reads it while they are deciding rather than after they have pressed the button.
+          Null while the capability read is in flight, so neither sentence flickers. */}
+      {rankedPhysicsNote}
       <p className="ds-hint">{READY_WINDOW_NOTE}</p>
       {error && <p className="ds-form-err">⚠ {error}</p>}
       {dodgeNote()}

@@ -1,6 +1,92 @@
+# HANDOFF — 2026-09-18/19 (biobuzz-3d: DAY 3 LANDED — bots, graphics settings, HDRI, 3D export, prediction modes, cutover; merged to ALPHA and the alpha server deployed)
+
+**READ FIRST.** Branch **`biobuzz-3d`** was merged into **`alpha`** at the merge commit named in the
+log and the ALPHA game server (`dsim-alpha`, `fly.alpha.toml`, one machine) was deployed from the
+alpha worktree with `./scripts/fly-deploy.sh --alpha` for proper testing (owner instruction). Every
+gate green on the merged tree: `build` · `bundleaudit` · `server:check` · `docaudit` · `uiaudit` ·
+`test:mm` (197) · `dbtest` (266) · `npm test` (1798 shared + the BIOBUZZ suite, count in the log).
+Production (`main`, `dohun-sim-decode`) is untouched; promotion is the owner's call (spec §12 q7).
+
+## Day 3 (spec §10) — landed, three OPUS lanes
+- **Lane A, bots** (`src/games/biobuzz/ai/`): `GameSimModule.bot = { tiers, defaultTier, coerceTier,
+  create(world, robotId, tier, seed) → { step(world): RobotCommand; dispose?() } }` — the caller owns
+  the memory, steps a seat once per tick BEFORE the sim step, records the (already quantized) command
+  like a driver's; nothing is written to `World`; reads positions and the derived lists only (a Proxy
+  check forbids `rngState`; source greps forbid DOM, clocks, `process.`, `import.meta`, `sim3d/` except
+  `tilt`). Tiers easy/medium/hard differ in execution only (hesitation, speed cap, aim tolerance, verdict
+  strictness, placing, defending, patience, park time). AI lane 47 checks in `npm test` (determinism
+  over 3,600 ticks under both physics with equal hashes AND command logs). `npm run test:ai` (150
+  matches, ~8 min, outside `npm test`): hard vs idle 102 pts mean (1.93× easy); **hard beats easy 59/100
+  head-to-head, NOT the plan's 90** — a BIOBUZZ 1v1 is decided in 20-point tip lumps from one shared
+  element pool; the check is a ratchet at the measured rate (`BB_AI_WIN_RATE_FLOOR` 0.55) with the target
+  named; levers: fouls (~6 pts/match), element denial, the 99-in drive after a hive flip. Perf with four
+  bots: `step3d` 2v2 median 0.345 ms, p95 0.498 — no tuning needed; bots cost 0.004 ms. R102: `bbStowHeightIn`
+  (declared `stowHeightIn` or `min(heightIn, 18)`), refused at `startLegal`, deploy = a read of
+  `world.match`, the collider rebuilt at the edge with `z` continuous.
+- **Lane B, graphics** (`graphics/{settings,auto,environments,viewKey}.ts`, `scene/renderEnvironment.ts`,
+  `renderStats.ts`, Configure's Graphics section): presets Auto/Low/Medium/High/Ultra/Custom over the
+  sixteen settings, per device (`decodesim.graphics`), 14 live, mesh detail needs a rebuild, SMAA and
+  SSAO NOT offered (chunk cost; the UI says why). AA is a scene-owned MSAA target (the renderer is created
+  `antialias:false`). Auto: GPU string + cores/memory/DPR → first guess, 2 s warm-up p95 (down > 16.7,
+  up < 6), slip ≥ 25 ms sustained 3 s lowers once with one event line; `STALL_MS` 500 discards samples
+  after a throttled gap (an alt-tabbed player must not come back to Low). This machine: Ultra. Two CC0
+  Poly Haven HDRIs (School Hall; Monochrome Studio 02), 1k `.hdr` on demand via `HDRLoader` + PMREM,
+  never bundled; `src/contributors.ts` DERIVES the credits from `BB_ENVIRONMENTS` (a check pins the
+  count). Replay export View 2D/3D + camera (roadmap item 2): scene → its own overlay sheet → export
+  canvas → burn-in; 3D costs 1.96× the 2D export at 1920; insets = the bottom band. Gallery draws 2D | 3D
+  per cell with ONE shared scene (Chrome caps contexts). Phone: overhead default, a 2D/3D button; the
+  view key `t` is armed by `InputManager.attach/detach` (`installViewKey`). Scene chunk 192 KB gz; a
+  `graphics` route (5.6 KB) in bundleaudit.
+- **Lane C, integration**: prediction Off/Light/Full/Auto (`src/net/predictionPref.ts`, Controls
+  section + in-match panel): in a 3D online room the client no longer steps the world — the local robot
+  advances through the predictor and the reconcile replays through it; measured Light 0.9 in / Full 0.16 in
+  headless, Full reconcile p95 0.3–0.4 ms live; Auto picked LIGHT on the dev build (a 45.8 ms cold probe
+  vs 0.3 ms steady — re-measure on a production build before tuning `PREDICT_FULL_BUDGET_MS`). Bot seats:
+  solo practice (`GameSettings.practiceBots`, "Opponents"), custom lobbies (host `addBot`/`removeBot`,
+  roster rows with `bot: tier`, refused in staged/ranked/record rooms, `unrated` latched), LAN via the
+  same `Room`; `SERVER_CAPS` `bb3d` + `bots`; the online "Loading 3D physics" panel via
+  `onPhysicsPending`; leaderboard era chip + All/3D/2D filter (`/api/records?physics=`), practice runs
+  carry `physics`/`view` with the comparability note; the client refuses BIOBUZZ ranked on a server
+  without `bb3d`. Migration renumbered **`0039_physics.sql`** (alpha took 0038 for replay privacy;
+  idempotent, disjoint). Two Day 2 rejoin bugs fixed (caps and `physics` on `rejoin`). costprobe 2v2 with
+  bots: 0.047 cores/room, 7,556 B/snapshot.
+- Coordinator: `game.ts` routes `SceneOptions.onQualityEvent` into `world.events`; `RobotSpec.stowHeightIn`
+  + its `coerceSpec` carry-across; the main-chunk bundleaudit baseline re-measured (the `ai/` policy is
+  in the main chunk by design — a tier is offered before any physics loads).
+
+## Owner actions and rulings pending
+- Test on alpha: online 3D rooms (custom lobby, physics 3D, both views), bots in a lobby and in practice,
+  prediction modes, the Graphics section, a 3D replay export (one human MP4 export closes the only
+  unexercised path), ranked BIOBUZZ (3D) on the alpha server.
+- Rulings: the lone-nectar flower score (CAD 3.597 vs floor 3.904); the CAD lower bore 3.222 vs the
+  manual's 2.79; weigh a real element set; the AI head-to-head target (59/100 measured vs 90).
+- Production promotion when satisfied (`main` from a main worktree; `./scripts/fly-deploy.sh`).
+
+## Next (roadmap) — `docs/roadmap.md`
+Own branches off `alpha`: `feat/auth-flows` (password reset, email verification, terms acceptance —
+the SDK already exposes the calls), `feat/privacy-cookies`, `feat/contributors`, `feat/tutorial`; on
+`biobuzz-3d`: the 3D robot creator (item 1); plans for cosmetics and rewards (items 3–4) for approval.
+BIOBUZZ 3D days 4–14: play-testing, tuning, weighing a set, `MAX_SAVED_ROBOTS` 3 → 4, promotion.
+
+## Gotchas (new)
+- `setViewport`/`setScissor` take CSS pixels (they multiply by the pixel ratio); `shadow.map` must be
+  disposed and nulled for a live map-size change; `renderer.info.render` resets at the START of `render()`.
+- A `process.env` read in `ai/` is green in Node and fatal in a browser (the first bot decision unmounts
+  the game screen) — the AI lane now greps for it.
+- `coerceSettings` must not fold `practiceBots` to `'off'` for a game with no driver (a DECODE visit
+  erased a BIOBUZZ tier); coerce at the point of use.
+- `Renderer.render(overlayOnly)` clears the whole canvas — right for the live view, fatal for a
+  composite export (every frame black); the export draws the overlay on its own sheet.
+- A perf watch pinned at 0.75 ms failed at 0.778 the moment the suite ran beside anything else —
+  thresholds that close to the measurement report the machine's load, not the code (gate at 1.5 ms).
+- `git merge-tree --write-tree` previews conflicts read-only; alpha and a feature branch both prepending
+  HANDOFF always conflict there — keep the feature sections on top; regenerate `docs/ui-components.md`.
+
+---
+
 # HANDOFF — 2026-09-18, night (biobuzz-3d: CAD-authoritative dimensions + DAY 2 LANDED — 3D rooms online, dynamic hive, flower tubes, prediction, cameras)
 
-**READ FIRST.** Branch **`biobuzz-3d`**, worktree `.claude/worktrees/biobuzz-3d`, clean at the merge
+**(Previously READ FIRST.)** Branch **`biobuzz-3d`**, worktree `.claude/worktrees/biobuzz-3d`, clean at the merge
 commit named in the log; every gate green there: `build` · `bundleaudit` · `server:check` ·
 `docaudit` · `uiaudit` · `test:mm` (197) · `dbtest` (263) · `npm test` (1798 shared + 1615 BIOBUZZ;
 lanes CORE/SIM3D/HIVE3D/FLOWER3D/PREDICT/NET3D/RENDER + the 2D lanes).

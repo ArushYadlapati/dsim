@@ -406,6 +406,44 @@ export interface GameScene {
   project?(x: number, y: number, z: number, out: { x: number; y: number; visible: boolean }): void;
 }
 
+/**
+ * What a HOST can tell a scene at construction (Day 3, additive — every field is optional and a
+ * factory called with no options behaves exactly as it did before this existed).
+ *
+ * There are three hosts and they want different things: the live game view wants a scene that
+ * takes the keyboard and reports quality changes into the match's event log; a replay export
+ * wants a fixed quality and no input at all; the gallery wants a still.
+ */
+export interface SceneOptions {
+  /**
+   * ONE LINE for the player, from the renderer.
+   *
+   * The scene has no access to `world.events` — it takes a `World` and never writes it, which
+   * is the contract that keeps a renderer out of the simulation — but §4.6 asks for an
+   * event-log line in three situations it is the only thing that can detect: Auto picking a
+   * preset, the in-match slip rule lowering one, and a software renderer or a failed HDRI
+   * sending the view back to 2D. So it hands the line OUT and the host decides where a line
+   * goes. Absent ⇒ the scene stays silent (and still logs a real failure to the console).
+   */
+  onQualityEvent?(line: string): void;
+  /**
+   * FIX the quality tier, ignoring (and not subscribing to) the device's own graphics
+   * preference. A video export is the case this exists for: §4.7 fixes exports at High so the
+   * file does not come out at whatever the machine that made it happened to be set to, and so
+   * that a settings change mid-encode cannot change the resolution of a video halfway through.
+   */
+  quality?: 'low' | 'medium' | 'high' | 'ultra';
+  /**
+   * `false` for a scene nobody is driving — an export, a still, a thumbnail. It binds no keys
+   * and no pointer handlers, which matters because those are WINDOW-level: an off-screen export
+   * scene that installed the view key would have the player's `t` press swap a view they cannot
+   * see while their video encoded.
+   */
+  interactive?: boolean;
+}
+
 /** builds a `GameScene` inside `host` (the DOM node the controller mounts it in). May be
- * async because a real implementation loads the Three.js chunk + HDRI on first use. */
-export type GameSceneFactory = (host: HTMLElement) => GameScene | Promise<GameScene>;
+ * async because a real implementation loads the Three.js chunk + HDRI on first use.
+ *
+ * `options` is ADDITIVE (Day 3): an existing caller passing only `host` is unchanged. */
+export type GameSceneFactory = (host: HTMLElement, options?: SceneOptions) => GameScene | Promise<GameScene>;

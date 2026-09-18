@@ -27,6 +27,13 @@ import { useCoarsePointer } from './useCoarsePointer';
 import type { Alliance, DrivetrainType, ScoreBreakdown } from '../types';
 import { initPhysics3d, physics3dReady } from '../games/biobuzz/sim3d/engine';
 import { subscribeViewPref } from '../games/biobuzz/graphics/store';
+import {
+  PREDICTION_BLURBS,
+  PREDICTION_LABELS,
+  PREDICTION_PREFS,
+  setPredictionPref,
+  type PredictionPref,
+} from '../net/predictionPref';
 
 /** top-right connection-quality readout (multiplayer only): a coloured signal dot
  * + live RTT / snapshot-rate / jitter, so a laggy player can see AT A GLANCE whether
@@ -111,6 +118,61 @@ function PingGraph({ net }: { net: NetStatus }) {
       <div className="ping-graph-foot">
         last {data.length} samples · newest → right
       </div>
+    </div>
+  );
+}
+
+/**
+ * THE IN-MATCH PREDICTION CONTROL (`docs/biobuzz/plan-3d.md` §5).
+ *
+ * ── WHY IT LIVES IN THE CONNECTION PANEL ──────────────────────────────────────────────────
+ * The plan asks for the setting "in the Controls section and the in-match menu". This game has
+ * no pause menu — MENU leaves the match — and the one in-match surface that already OPENS, is
+ * already about the netcode, and is already only shown online is the panel behind the
+ * connection chip. Prediction is what the client does about the latency that panel is measuring,
+ * so the ping graph and this are two halves of one answer: the graph says how bad the link is,
+ * this says what to do about it, and the foot line says what the last reconcile actually cost.
+ *
+ * It renders only for a 3D-physics room, because that is the only place the setting changes
+ * anything (`hud.prediction` is null everywhere else, which is the single fact that decides it).
+ */
+function PredictionPanel({
+  stats,
+  onPick,
+}: {
+  stats: NonNullable<HudSnapshot['prediction']>;
+  onPick: (p: PredictionPref) => void;
+}) {
+  // WHAT IS RUNNING, not what was asked for. `auto` resolves at the countdown probe and the
+  // slip rule can step Full down mid-match, so a player on Auto who reads only the pressed
+  // button would have no way to know which of the two they actually got.
+  const running = stats.pref === 'auto' ? `Auto · ${PREDICTION_LABELS[stats.mode]}` : PREDICTION_LABELS[stats.mode];
+  const cost = stats.reconcileP95 !== null ? `${stats.reconcileP95.toFixed(1)}ms p95` : `${stats.reconcileMs.toFixed(1)}ms`;
+  const foot =
+    stats.mode === 'off'
+      ? 'Drawn from the server. Nothing is guessed.'
+      : `Correction ${stats.correctionIn.toFixed(2)}in · reconcile ${cost}` +
+        (stats.probeMs !== null ? ` · probe ${stats.probeMs.toFixed(1)}ms` : '') +
+        (stats.stepped ? ' · stepped down' : '');
+  return (
+    <div className="pred-panel">
+      <div className="pred-head">
+        <span>PREDICTION</span>
+        <span className="pred-mode">{running}</span>
+      </div>
+      <div className="pred-opts">
+        {PREDICTION_PREFS.map((p) => (
+          <button
+            key={p}
+            className={`pred-opt ${stats.pref === p ? 'on' : ''}`}
+            title={PREDICTION_BLURBS[p]}
+            onClick={() => onPick(p)}
+          >
+            {PREDICTION_LABELS[p]}
+          </button>
+        ))}
+      </div>
+      <div className="pred-foot">{foot}</div>
     </div>
   );
 }
@@ -270,6 +332,19 @@ export function GameView({
       !!moduleFor(settings.game).physicsOptions?.includes('3d');
     return need3d && !physics3dReady();
   });
+  /**
+   * THE ONLINE HALF OF THE SAME PANEL (Day 3).
+   *
+   * `physicsLoading` above is the SOLO answer and it is a decision this screen can make for
+   * itself: it awaits `initPhysics3d()` before it constructs anything, so it knows. A ROOM is
+   * the opposite — `session` arrives already built from a `matchStart` that landed on a socket,
+   * and whether that room is a 3D one is a fact only the controller reads (off the world, so it
+   * also covers a spectator and a mid-match joiner). So the CONTROLLER tells this screen, and
+   * this is the second flag it sets. Two flags rather than one because they are set from
+   * different places at different times and `||`ing them at the render site is clearer than a
+   * single flag two owners write.
+   */
+  const [roomPhysicsLoading, setRoomPhysicsLoading] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -316,6 +391,11 @@ export function GameView({
         sceneHost,
         hudHost,
         physicsFallbackNotice,
+        // the controller's own chunk latch, for the room case this screen cannot answer.
+        // `cancelled` guards the unmount race: the load can settle after the effect tore down.
+        onPhysicsPending: (pending) => {
+          if (!cancelled) setRoomPhysicsLoading(pending);
+        },
       });
       controllerRef.current = controller;
       setIntro(controller.getIntro()); // ranked matches only; null otherwise
@@ -500,7 +580,10 @@ export function GameView({
           aria-label={`${seasonFor(hud?.game ?? 'decode').name} field, top-down view. Match state is announced in the event log.`}
         />
       </div>
-      {physicsLoading && (
+      {/* ONE PANEL, TWO OWNERS. Solo decides for itself before the controller exists; a room's
+          answer comes back from the controller (see `roomPhysicsLoading`). The words are the
+          same either way, because it is the same wait for the same chunk. */}
+      {(physicsLoading || roomPhysicsLoading) && (
         <div className="overlay">
           <div className="overlay-panel">
             <p className="ds-loading">Loading 3D physics…</p>
@@ -933,6 +1016,9 @@ function Hud({ hud, showEventLog }: { hud: HudSnapshot; showEventLog: boolean })
             </div>
           </div>
           {hud.net && pingGraph && <PingGraph net={hud.net} />}
+          {hud.prediction && pingGraph && (
+            <PredictionPanel stats={hud.prediction} onPick={setPredictionPref} />
+          )}
         </div>
       )}
 
