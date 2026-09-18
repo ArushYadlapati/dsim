@@ -1199,3 +1199,89 @@ export const BB3_HEIGHT_DEFAULT = 18;
  * vertical dimension (see `BB_PRISM`'s header for why the other two are not fixed to an axis
  * the same way). */
 export const BB3_HEIGHT_MAX = 29;
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 3D PHYSICS — DAY 1 SIM CONSTANTS (`docs/biobuzz/plan-3d.md` §10/§13.1), appended below the
+// height section above. Every value not cited to the manual is `APPROX` — CAD colliders and a
+// weighed element set replace these on a later day; nothing here is read by the 2D pipeline.
+//
+// NOTE: this file does NOT redeclare `BB_HIVE_TILT_DEG` (30°, already above, under HIVE
+// STRUCTURE) for the tray's rest tilt — `sim3d/hive3d.ts` imports that one constant rather than
+// carrying a second copy of the same number under a `BB3_` name.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** Day 1 kinematic tray vs. a Day 2 dynamic see-saw on a revolute joint (plan §3.6, §11) — the
+ * plan's OWN fallback switch, landed early because Lane A's Day 1 scope is the kinematic tray
+ * outright (a calibrated dynamic see-saw is explicitly a later day's work). `false` here is not
+ * a fallback that fired; it is what Day 1 was scoped to build. */
+export const BB3_HIVE_DYNAMIC = false;
+
+/** the HIVE pivot's height above the tiles (in) — manual (true length), reference §2.2. */
+export const BB3_HIVE_PIVOT_Z = 43.95;
+
+/** distance from the pivot to a CELL's centre, ALONG THE BAR (in, true length, not the plan
+ * projection `BB_HIVE_CELL_DY` already carries) — manual, reference §2.2. `BB3_HIVE_ARM ·
+ * cos(BB_HIVE_TILT_DEG)` reproduces `BB_HIVE_CELL_DY` (15.44 · cos 30° = 13.37), which is the
+ * cross-check that the true and the projected numbers agree. */
+export const BB3_HIVE_ARM = 15.44;
+
+/** a CELL's TRUE depth along the bar (in) — manual (true length); `BB_HIVE_CELL_LEN` (10.43) is
+ * this number's plan projection at 30°, and `BB3_HIVE_CELL_LEN · cos(BB_HIVE_TILT_DEG)`
+ * reproduces it. */
+export const BB3_HIVE_CELL_LEN = 12.04;
+
+/** the CELL assembly end to end, TRUE length along the bar (in) — manual; `BB_HIVE_LEN`
+ * (37.16) is this number's plan projection at 30°. */
+export const BB3_HIVE_LEN = 42.91;
+
+/** one CELL's interior box, in the tray-local frame `sim3d/bodies.ts` defines (`w` across the
+ * bar / world x, `d` along the bar, `h` floor to open top). APPROX (CAD settles it): built from
+ * `BB3_HIVE_CELL_LEN` (the true depth) rounded up to a plausible box depth and the manual's
+ * 20-in opening WIDTH (`BB_CELL_OPEN.w`), which is not foreshortened by the tilt. */
+export const BB3_HIVE_CELL = { w: 20, d: 14, h: 12.04 };
+
+/** cell wall thickness (in) — APPROX, CAD settles it; used for the five-box kinematic tray
+ * (floor, back, two sides, divider). */
+export const BB3_HIVE_CELL_WALL = 0.25;
+
+/** perimeter wall collider height (in) — APPROX, tall enough that nothing legal on this field
+ * clears it (a robot tops out at `BB3_HEIGHT_MAX` 29 in). */
+export const BB3_WALL_H = 40;
+
+/** one element's mass (lb) — APPROX until a set is weighed (owner action; plan §3.6). */
+export const BB3_ELEMENT_MASS = 0.2;
+
+/** NECTAR's mass as a multiple of POLLEN's — APPROX (plan §3.6: "the field guide says three
+ * pollen plus three nectar mass less than eight pollen", which rules out volume scaling). */
+export const BB3_NECTAR_MASS_RATIO = 1.6;
+
+/** ground element friction / restitution / angular (roll) damping — APPROX, tuned Day 4+.
+ * `_ROLL_DAMP` is `setAngularDamping` on the sphere body: a free rolling sphere has no analogue
+ * of the 2D artifact world's `BALL_ROLL_FRICTION` velocity-pass (Rapier's own rolling contact
+ * would otherwise let a struck element roll forever), so this is what brings one to rest. */
+export const BB3_ELEMENT_FRICTION = 0.6;
+export const BB3_ELEMENT_RESTITUTION = 0.45;
+export const BB3_ELEMENT_ROLL_DAMP = 0.4;
+
+/** CCD switches on above this speed (in/s) — APPROX, sized so a full-speed launch
+ * (`BB_LAUNCH_SPEED_MAX` 260) never tunnels a 0.25-in cell wall. */
+export const BB3_CCD_SPEED = 60;
+
+/** an element counts as AT REST below this speed (in/s), for `BB3_REST_TICKS` consecutive
+ * ticks — `sim3d/derive.ts`'s cell-membership test. APPROX. */
+export const BB3_REST_SPEED = 2;
+export const BB3_REST_TICKS = 6;
+
+/** ticks an element must sit inside an intake mouth before it is captured (`sim3d/
+ * elements3d.ts`) — APPROX, long enough that a fast pass-through does not get swallowed by a
+ * single-tick overlap. */
+export const BB3_CAPTURE_TICKS = 3;
+
+/** the intake's reach above the tiles (in) — an element whose BOTTOM is below this height,
+ * inside a mouth rect, is eligible for capture. APPROX: a sweeper roller sits low enough to
+ * catch a resting element and a shallow bounce, not a lobbed one passing overhead. */
+export const BB3_INTAKE_Z = 5;
+
+/** the readback rounding (in / rad) every dynamic body's JSON is written at (plan §3.1 step 6)
+ * — see `sim3d/math3.ts`'s `round4`. */
+export const BB3_ROUND = 1e-4;
