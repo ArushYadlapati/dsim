@@ -262,9 +262,71 @@ async function main(): Promise<void> {
     ctx2d.restore();
   }
 
+  // ── FREE CAMERA (2026-09-18 CAD round 2 verification) ────────────────────────────────────
+  // The scene owns its two cameras (`renderCameras.ts`, another lane's file), and neither of
+  // them can look at a hive from the SIDE — which is the one view that shows whether an element
+  // is resting on the tray floor or floating above it. So this page gets its own: `__bbFreeze`
+  // stops the world stepping AND the scene's own render, and `__bbFreeCam` draws the live
+  // `THREE.Scene` through a camera the caller places. Preview-only, additive, and it touches
+  // nothing the app ships.
+  const freeCam = new THREE.PerspectiveCamera(35, 1, 1, 2000);
+  freeCam.up.set(0, 0, 1); // this scene is z-up
+  const w = window as unknown as {
+    __bbFreeze: boolean;
+    __bbFreeCam: (eye: [number, number, number], target: [number, number, number], fov?: number) => void;
+    __bbStep: (n: number) => number;
+  };
+  w.__bbFreeze = false;
+  // `requestAnimationFrame` only advances when a paint is forced (CLAUDE.md's own note about
+  // driving this in an automated browser), so a verification session that needs 200 settled ticks
+  // would need 200 screenshots. This steps the world directly instead.
+  w.__bbStep = (n) => {
+    for (let i = 0; i < n; i++) biobuzzStep(world, SIM_DT, commands);
+    return world.tick;
+  };
+  // ⚠️ RE-RENDERED EVERY FRAME, not once. A WebGL canvas is created with
+  // `preserveDrawingBuffer: false`, so the buffer is thrown away after each composite — a
+  // one-shot render followed by a screenshot (which itself forces the NEXT paint) shows black.
+  // So the free view is STATE, and the frame loop draws it.
+  let freeView: { eye: [number, number, number]; target: [number, number, number]; fov: number } | null = null;
+  w.__bbFreeCam = (eye, target, fov = 35) => {
+    freeView = { eye, target, fov };
+    w.__bbFreeze = true;
+  };
+  function renderFree(): void {
+    if (!freeView) return;
+    // ⚠️ LET THE SCENE UPDATE ITSELF FIRST. `updateBiobuzzField` — the one place that rotates each
+    // tray to `hiveTiltAngle` — runs inside `scene.render`, so a frozen loop that only draws
+    // through the free camera shows both trays at rotation 0, i.e. LEVEL, which reads exactly like
+    // the tilt bug this pass fixed. (In an automated browser `requestAnimationFrame` only advances
+    // when a screenshot forces a paint, so "it ran a moment ago" is not a safe assumption either.)
+    scene.render(world, {
+      alpha: 1,
+      viewAngle: viewAngleOf(alliance),
+      camera,
+      localRobotId: alliance === 'red' ? 0 : 2,
+      width: host.clientWidth,
+      height: host.clientHeight,
+      dpr: window.devicePixelRatio || 1,
+    });
+    const renderer = (scene as unknown as { renderer: THREE.WebGLRenderer }).renderer;
+    const three = (scene as unknown as { scene: THREE.Scene }).scene;
+    freeCam.fov = freeView.fov;
+    freeCam.aspect = host.clientWidth / host.clientHeight;
+    freeCam.position.set(freeView.eye[0], freeView.eye[1], freeView.eye[2]);
+    freeCam.lookAt(freeView.target[0], freeView.target[1], freeView.target[2]);
+    freeCam.updateProjectionMatrix();
+    renderer.render(three, freeCam);
+  }
+
   status('rendering (stepping the world live)...');
   let tick = 0;
   function frame(): void {
+    if (w.__bbFreeze) {
+      renderFree();
+      requestAnimationFrame(frame);
+      return;
+    }
     if (!probing) biobuzzStep(world, SIM_DT, commands);
     tick++;
     const localRobotId = alliance === 'red' ? 0 : 2;
@@ -287,6 +349,16 @@ async function main(): Promise<void> {
     requestAnimationFrame(frame);
   }
   requestAnimationFrame(frame);
+
+  /** GLTFLoader keeps a node's true name on `userData.name` (it strips `/` from `.name`) — see
+   * `renderFieldGlb.ts`'s own `findByOriginalName` header. */
+  function findOriginal(root: THREE.Object3D, name: string): THREE.Object3D | null {
+    let hit: THREE.Object3D | null = null;
+    root.traverse((o) => {
+      if (!hit && ((o.userData as { name?: string } | undefined)?.name === name || o.name === name)) hit = o;
+    });
+    return hit;
+  }
 
   // ── NUMERIC VERIFICATION — named object vs. expected world position, 0.25in tolerance ──────
   function runChecks(): void {
@@ -504,38 +576,64 @@ async function main(): Promise<void> {
       }
     });
 
-    // LZ/GARDEN — sampled from the floor texture's own source canvas (there is no separate
-    // mesh for tape; it is baked into `floor`'s CanvasTexture), not a Box3 measurement.
-    const floorMesh = bbScene.getObjectByName('floor') as THREE.Mesh | undefined;
-    const map = (floorMesh?.material as THREE.MeshStandardMaterial | undefined)?.map as THREE.CanvasTexture | undefined;
-    const srcCanvas = map?.image as HTMLCanvasElement | undefined;
-    if (srcCanvas) {
-      const texCtx = srcCanvas.getContext('2d')!;
-      const scale = srcCanvas.width / (2 * BB_HALF_X);
-      const toPx = (x: number, y: number): [number, number] => [Math.round((x + BB_HALF_X) * scale), Math.round((BB_HALF_Y - y) * scale)];
-      function sampleIsRed(x: number, y: number): boolean {
-        const [px, py] = toPx(x, y);
-        const [r, g, b] = texCtx.getImageData(Math.max(0, Math.min(srcCanvas.width - 1, px)), Math.max(0, Math.min(srcCanvas.height - 1, py)), 1, 1).data;
-        return r > 150 && g < 100 && b < 100;
-      }
-      function sampleIsBlue(x: number, y: number): boolean {
-        const [px, py] = toPx(x, y);
-        const [r, g, b] = texCtx.getImageData(Math.max(0, Math.min(srcCanvas.width - 1, px)), Math.max(0, Math.min(srcCanvas.height - 1, py)), 1, 1).data;
-        return b > 150 && r < 100;
-      }
-      const redLzMidX = (BB_LZ.red.x0 + BB_LZ.red.x1) / 2;
-      const redLzTapeY = BB_LZ.red.y1; // top edge of the rect — tape line
-      const okRedLz = sampleIsRed(redLzMidX, redLzTapeY);
-      rows.push({ name: 'tape:lz:red', expected: 'red pixel at LZ tape edge', actual: okRedLz ? 'red' : 'not red', pass: okRedLz });
-      const blueLzMidX = (BB_LZ.blue.x0 + BB_LZ.blue.x1) / 2;
-      const blueLzTapeY = BB_LZ.blue.y0;
-      const okBlueLz = sampleIsBlue(blueLzMidX, blueLzTapeY);
-      rows.push({ name: 'tape:lz:blue', expected: 'blue pixel at LZ tape edge', actual: okBlueLz ? 'blue' : 'not blue', pass: okBlueLz });
-      const redGardenMidX = (BB_GARDEN.red.x0 + BB_GARDEN.red.x1) / 2;
-      const okRedGarden = sampleIsRed(redGardenMidX, BB_GARDEN.red.y0);
-      rows.push({ name: 'tape:garden:red', expected: 'red pixel at garden edge', actual: okRedGarden ? 'red' : 'not red', pass: okRedGarden });
+    // TAPE — MEASURED OFF THE GLB's OWN `tape` NODE, not off the floor texture.
+    //
+    // This used to sample the procedural floor `CanvasTexture` for a red/blue pixel at each zone
+    // rectangle's edge, which is exactly the thing the owner reported as wrong: the texture
+    // outlined all four sides of `BB_LZ`/`BB_GARDEN`, wall side included, at whatever width the
+    // caller passed. The tape is now real CAD geometry — 16 strips, all 1.000 in wide — so the
+    // check is now about the GEOMETRY and about the rule that sent it here: a zone edge that is a
+    // WALL carries no tape. See `docs/biobuzz/field-cad-audit.md` §5.
+    const tapeNode = bbScene.getObjectByName('tape') ?? findOriginal(bbScene, 'tape');
+    if (tapeNode) {
+      const tapeBox = new THREE.Box3().setFromObject(tapeNode);
+      rows.push({
+        name: 'tape:present',
+        expected: 'the GLB carries a `tape` node',
+        actual: `bbox x ${tapeBox.min.x.toFixed(1)}..${tapeBox.max.x.toFixed(1)}`,
+        pass: true,
+      });
+      // the ALLIANCE AREA strips live OUTSIDE the perimeter on the gym floor, so the tape's own
+      // bbox reaching past the wall is the proof they are there (and were not clipped away).
+      const reachesAllianceArea = tapeBox.min.x < -100 && tapeBox.max.x > 100;
+      rows.push({
+        name: 'tape:alliance-area',
+        expected: 'strips outside the perimeter (|x| > 100)',
+        actual: `${tapeBox.min.x.toFixed(1)} .. ${tapeBox.max.x.toFixed(1)}`,
+        pass: reachesAllianceArea,
+      });
+      // NO ON-TILE STRIP TOUCHES A WALL — measured PER VERTEX, not per mesh. All 16 strips share
+      // two meshes (one per colour), and each of those spans both the on-tile marks (z 0..0.010)
+      // and the ALLIANCE AREA outlines on the gym floor (z -0.589), which are outside the
+      // perimeter by design — so a bounding box cannot tell the two apart and a per-mesh test
+      // silently examines nothing.
+      const WALL_FACE = 70.674;
+      let worstName = '';
+      let worst = 0;
+      const v = new THREE.Vector3();
+      tapeNode.traverse((o) => {
+        if (!(o instanceof THREE.Mesh) || !o.geometry) return;
+        const pos = o.geometry.getAttribute('position');
+        if (!pos) return;
+        o.updateWorldMatrix(true, false);
+        for (let i = 0; i < pos.count; i++) {
+          v.fromBufferAttribute(pos, i).applyMatrix4(o.matrixWorld);
+          if (v.z < -0.05) continue; // a gym-floor strip
+          const reach = Math.max(Math.abs(v.x), Math.abs(v.y));
+          if (reach > worst) {
+            worst = reach;
+            worstName = o.name || '(unnamed tape mesh)';
+          }
+        }
+      });
+      rows.push({
+        name: 'tape:no-tape-on-a-wall',
+        expected: `every on-tile strip stays inside the wall face (${WALL_FACE})`,
+        actual: `furthest reach ${worst.toFixed(3)} on ${worstName}`,
+        pass: worst > 0 && worst <= WALL_FACE,
+      });
     } else {
-      rows.push({ name: 'floor-texture', expected: 'CanvasTexture source readable', actual: 'unavailable', pass: false });
+      rows.push({ name: 'tape:present', expected: 'the GLB carries a `tape` node', actual: 'absent', pass: false });
     }
 
     // ROBOT HEADING CONVENTION — the probe robot's chassis bounding box must extend FURTHER
