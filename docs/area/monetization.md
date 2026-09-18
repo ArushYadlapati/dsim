@@ -54,6 +54,12 @@ Not yet deployed. `HANDOFF.md` has the full write-up; the load-bearing rules:
   string on the wire, and it recolours only the FILL — alliance identity is the OUTLINE.
 - **`LobbyPlayer.supporter` is SERVER-AUTHORED** (set at join). `sanitizePlayer` is an
   allowlist and `PlayerPatch` is a `Pick`, so a client cannot self-declare a paid badge.
+- **`LEGAL_VERSION` is DERIVED from `LEGAL_UPDATED`** (`legalVersionOf`), not written beside it:
+  two hand-kept spellings of one date is how the version everybody re-accepts ends up disagreeing
+  with the date on the page they are accepting. ⚠️ **Moving `LEGAL_UPDATED` prompts EVERY
+  signed-in account to accept again, once** (`termsGateState`, `src/ui/TermsGate.tsx`) — that is
+  the point of it, so move it for a material change and not for a typo. It is a CLIENT change AND
+  a SERVER change (the accept route records the server’s own constant), so deploy both.
 - ⚠️ **`LEGAL_OPERATOR`/`LEGAL_JURISDICTION` in `src/legalText.ts` are PLACEHOLDERS.**
   Until filled, the Terms page shows a visible warning to every visitor. Fill them
   before taking a payment; do not guess them from a timezone or an email domain.

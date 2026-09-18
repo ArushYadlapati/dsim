@@ -1,6 +1,91 @@
+# HANDOFF — 2026-09-18 (`feat/auth-flows`: password reset, email verification, terms acceptance — roadmap item 5, BUILT, NOT PUSHED)
+
+**READ FIRST.** Branch **`feat/auth-flows`**, off `alpha` at `76034a9`. Seven commits, not pushed
+and not merged. Gates green on the branch: `build` · `server:check` · `npm test` (1840 shared +
+1780 BIOBUZZ) · `dbtest` (ALL PASS, +12 for migration 0040) · `uiindex` then `uiaudit` (all rules
+at baseline) · `docaudit` · `contrast` (223, unchanged — no new colour, the banner's tint is
+`color-mix` over `--ds-warn`) · `bundleaudit` (main +0.9 KB gz, hostWorker unchanged).
+
+⚠️ **NOTHING IS LIVE UNTIL THE OWNER DOES THE NEON DASHBOARD WORK.** `docs/deploy.md` §4 is the
+checklist. The terms half works the moment the game server is deployed (migration 0040 applies at
+boot); the two email flows send nothing until a sender domain is configured, and that failure is
+SILENT — the forms answer 200 and no mail leaves. Send yourself one before believing it works.
+
+## What is on the branch
+
+- **`src/lib/authFlows.ts`** — the ONE module that calls the SDK. Four functions, each returning a
+  discriminated `AuthFlowResult` and never throwing at a component:
+  `requestPasswordReset(email)`, `completePasswordReset(token, pw)`,
+  `requestEmailVerification(email)`, `completeEmailVerification(token)`. `@neondatabase/auth` is
+  pinned to the exact installed `0.4.2-beta` (no `^`).
+- **Forgot password** — a `.ds-linkbtn` under the sign-in password field opens a third form in the
+  same modal; `/account/reset` handles the emailed link (and offers the request form when it
+  arrives without a token).
+- **Email verification** — sign-up asks for the email; a per-session banner on Profile with Resend;
+  `/account/verify` spends the token on mount, exactly once, and clears the cached JWT.
+- **Terms** — `LEGAL_VERSION` derived from `LEGAL_UPDATED`, migration `0040_terms_acceptance.sql`,
+  `POST /api/user/accept-terms`, a required checkbox on sign-up and a blocking `TermsGate` that
+  WRAPS `UsernameGate`.
+- **`REQUIRE_VERIFIED_EMAIL`** gates ranked queueing, joining a record room, and `POST /api/practice`.
+
+## The five things worth knowing before touching any of it
+
+1. ⚠️ **THE SDK THROWS ITS FAILURES.** The Neon adapter installs its own `customFetchImpl` which
+   throws a normalized `AuthApiError` on any non-2xx, so the `{data, error}` union the `.d.mts`
+   advertises is real but `error` is essentially never populated. The first cut classified every
+   throw as `network` and told somebody with an expired reset link to check their connection. The
+   throw carries `status` and a lower_snake `code` (`bad_jwt`, `weak_password`,
+   `over_email_send_rate_limit` — the adapter's own vocabulary, NOT Better Auth's SCREAMING_SNAKE),
+   and `classifySdkError` now speaks both. Rate limiting is tested before the address, because
+   EMAIL is a substring of that last code.
+2. ⚠️ **`forgetPassword` IS NOT A TOP-LEVEL METHOD** on this build — only `forgetPassword.emailOtp`
+   is, and that is a different flow. The top-level request is `requestPasswordReset`. The roadmap
+   named the old one; the wrapper's header cites all four real `.d.mts` signatures with line
+   numbers.
+3. ⚠️ **THE EMAILED TOKEN IS READ AT MODULE LOAD** (`src/ui/entryToken.ts`). `App`'s mount effect
+   canonicalizes the address bar with `history.replaceState(pathFor(...))`, and `pathFor` builds a
+   path with NO query string on it — so `?token=` is gone before any screen component renders.
+4. ⚠️ **THE RECORD-RUN GATE IS AT THE JOIN DOOR IN `server/index.ts`**, not in `Room.startMatch`
+   beside the duo-record "both drivers must be signed in" guard it otherwise belongs with.
+   `server/room.ts` is bundled into the LAN host worker (`src/lan/hostWorker`) and must not import
+   `jose` or read `process.env` — that is why it goes through `./runtimeEnv` for everything.
+5. ⚠️ **`REQUIRE_VERIFIED_EMAIL` IS OFF BY DEFAULT AND MUST STAY OFF UNTIL MAIL WORKS.** Every
+   email/password account on the live site is unverified today, and the Resend button cannot help
+   until the sender domain exists. Deploy → mail works → let people verify → set the secret.
+   `emailGateRefusal` is the single predicate; extend it rather than adding a second check.
+   `null` (nobody told us) counts as VERIFIED, deliberately — a gate whose unknown case refuses
+   would take ranked down silently the first time an upstream stopped sending a field.
+
+## Open, for the owner
+
+- **The dashboard steps are `docs/deploy.md` §4**: sender domain + DNS, the redirect allow-list
+  (every origin: prod, alpha, beta, `localhost:5173`), the provider's "require email verification"
+  switch, then the Fly secret LAST.
+- **Confirm the JWT carries `email_verified` before trusting the gate.** The server reads that
+  claim (or `emailVerified`) off the verified token and falls back to ONE cached
+  `GET /get-session` per token; if neither answers, the state is `null` and the gate PASSES. Sign
+  in as a test account and read `/token`'s payload once.
+- **The legal wording is the owner's to review.** One line was added to the Terms' `## Changes`
+  section, because continued use after a change now genuinely does require re-acceptance and the
+  document did not say so.
+- **The three email flows are NOT end-to-end tested** — no mail can be sent from here. What was
+  driven in a browser against a stub auth endpoint: the link and the checkbox, the refusal copy,
+  the neutral confirmation, `/account/reset?token=fake` and `/account/verify?token=fake` on their
+  error paths, the banner and both variants of the terms dialog (forced locally, reverted), light
+  and dark, 375px.
+
+## Next
+
+Roadmap item 8 (`feat/privacy-cookies`) shares `LEGAL_VERSION` and should pick it up from here
+rather than re-deriving it. If the terms text moves, `LEGAL_UPDATED` is the only line to change —
+and moving it prompts every signed-in account once, so it is a deploy of BOTH halves (Vercel for
+the dialog, Fly for the route that records the server's own constant).
+
+---
+
 # HANDOFF — 2026-09-18/19 (biobuzz-3d: DAY 3 LANDED — bots, graphics settings, HDRI, 3D export, prediction modes, cutover; merged to ALPHA and the alpha server deployed)
 
-**READ FIRST.** Branch **`biobuzz-3d`** was merged into **`alpha`** at the merge commit named in the
+Branch **`biobuzz-3d`** was merged into **`alpha`** at the merge commit named in the
 log and the ALPHA game server (`dsim-alpha`, `fly.alpha.toml`, one machine) was deployed from the
 alpha worktree with `./scripts/fly-deploy.sh --alpha` for proper testing (owner instruction). Every
 gate green on the merged tree: `build` · `bundleaudit` · `server:check` · `docaudit` · `uiaudit` ·
