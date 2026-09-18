@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import type { Artifact, ArtifactColor, World } from '../../../types';
+import { SIM_DT } from '../../../config';
 import { BB_HIVE_W, BB_NECTAR_R, BB_POLLEN_R } from '../config';
 
 /**
@@ -43,13 +44,22 @@ export interface BbElements {
   pollen: THREE.InstancedMesh;
   nectar: THREE.InstancedMesh;
   group: THREE.Group;
+  /** per-ball-id accumulated rolling-spin orientation (Phase 2 fidelity) — persists across
+   * frames so a rolling pollen keeps turning rather than resetting every tick; keyed by the
+   * ball's stable `id`, not its per-frame instance index (`ground`/`flight` reassign indices
+   * every frame as balls come and go). Pruned of ids no longer on the field once a frame's
+   * bookkeeping is done, so a long match does not grow this map without bound. */
+  spin: Map<number, THREE.Quaternion>;
 }
 
 export function buildBiobuzzElements(): BbElements {
   const pollenGeo = new THREE.SphereGeometry(BB_POLLEN_R, 12, 8);
   const nectarGeo = new THREE.SphereGeometry(BB_NECTAR_R, 12, 8);
-  const pollenMat = new THREE.MeshStandardMaterial({ color: POLLEN_COLOR });
-  const nectarMat = new THREE.MeshStandardMaterial({ color: 0xffffff }); // per-instance colour below
+  // POLLEN/NECTAR MATERIAL (Phase 2 fidelity): a little roughness so the key light's specular
+  // highlight reads as a physical bead rather than a flat-shaded disc; still bright at the
+  // saturated hues `draw.ts`'s 2D `ELEMENT_FILL`/`POLLEN_FILL` use, so the two views agree.
+  const pollenMat = new THREE.MeshStandardMaterial({ color: POLLEN_COLOR, roughness: 0.55, metalness: 0.05 });
+  const nectarMat = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.4, metalness: 0.05 }); // per-instance colour below
 
   const pollen = new THREE.InstancedMesh(pollenGeo, pollenMat, CAP);
   const nectar = new THREE.InstancedMesh(nectarGeo, nectarMat, CAP);
@@ -64,7 +74,7 @@ export function buildBiobuzzElements(): BbElements {
   }
   const group = new THREE.Group();
   group.add(pollen, nectar);
-  return { pollen, nectar, group };
+  return { pollen, nectar, group, spin: new Map() };
 }
 
 /** how far a hive-cell row can fan out before it would clear the cell's own width — same idea as
@@ -84,9 +94,44 @@ function poseAt(mesh: THREE.InstancedMesh, index: number, x: number, y: number, 
   mesh.setMatrixAt(index, scratchMatrix);
 }
 
+function poseAtQuat(mesh: THREE.InstancedMesh, index: number, x: number, y: number, z: number, quat: THREE.Quaternion): void {
+  scratchPos.set(x, y, z);
+  scratchMatrix.compose(scratchPos, quat, scratchScale);
+  mesh.setMatrixAt(index, scratchMatrix);
+}
+
+const spinAxis = new THREE.Vector3();
+const spinDelta = new THREE.Quaternion();
+
+/**
+ * A ROLLING SPIN (Phase 2 fidelity brief): `spin ≈ v / r` about the axis `up × v` — a ball
+ * moving on the tiles turns as if its surface speed matched its travel, which is what actually
+ * rolling (rather than sliding) looks like. Integrated over one `SIM_DT` per render call: this
+ * runs once per RENDERED frame, not once per physics tick, so at a free-running frame rate the
+ * spin is a hair off true rate — a cosmetic flourish, not a physical claim, so that slop is
+ * fine. Orientation persists per ball id in `els.spin` (see that map's own comment) so a rolling
+ * pollen keeps turning between frames instead of resetting.
+ */
+function rollSpin(spin: Map<number, THREE.Quaternion>, id: number, vx: number, vy: number, r: number): THREE.Quaternion {
+  let q = spin.get(id);
+  if (!q) {
+    q = new THREE.Quaternion();
+    spin.set(id, q);
+  }
+  const speed = Math.hypot(vx, vy);
+  if (speed > 0.5 && r > 0.01) {
+    // up × v, up = (0,0,1): (0,0,1) × (vx,vy,0) = (-vy, vx, 0)
+    spinAxis.set(-vy, vx, 0).normalize();
+    spinDelta.setFromAxisAngle(spinAxis, (speed / r) * SIM_DT);
+    q.premultiply(spinDelta);
+  }
+  return q;
+}
+
 export function updateBiobuzzElements(els: BbElements, world: World): void {
   let pollenN = 0;
   let nectarN = 0;
+  const seenSpin = new Set<number>();
 
   // group hive-parked elements by `el` so a shared cell position can be fanned into a row —
   // small (a hive holds at most a handful of elements), so a per-frame Map here is not the
@@ -131,9 +176,22 @@ export function updateBiobuzzElements(els: BbElements, world: World): void {
       const span = row && row.n > 1 ? Math.min(HIVE_CELL_ROW_SPAN, (row.n - 1) * HIVE_ROW_PAD) : 0;
       const t = row && row.n > 1 ? row.i / (row.n - 1) - 0.5 : 0;
       poseAt(mesh, idx, b.pos.x + t * span, b.pos.y, b.z);
+    } else if (b.state.kind === 'element') {
+      // FLOWER stack (`el` is `flower:<index>`, not `hive:...`). `flowerStackZ` (`flower.ts`)
+      // already returns a CENTRE height ("Centre heights (in) of every element in the stack"),
+      // the same convention the hive branch above reads `b.z` at directly.
+      //
+      // ⚠️ BUG FOUND AND FIXED HERE: this used to fall into the `ground`/`flight` branch below
+      // and get `+ r` added on top of that already-a-centre height, so every pollen and nectar
+      // parked in a FLOWER rendered floating high by its own radius (1.4–1.8 in) — never
+      // touching the stack it was visually sitting in.
+      poseAt(mesh, idx, b.pos.x, b.pos.y, b.z);
     } else {
-      // 'ground' | 'flight' | 'element' (flower — already unique per `flowerStackZ`)
-      poseAt(mesh, idx, b.pos.x, b.pos.y, b.z + r);
+      // 'ground' | 'flight' — `z` is the height of the ball's BOTTOM above the tile (a resting
+      // ball reads z === 0), so the centre is lifted by its own radius. Spins as it moves.
+      seenSpin.add(b.id);
+      const q = rollSpin(els.spin, b.id, b.vel.x, b.vel.y, r);
+      poseAtQuat(mesh, idx, b.pos.x, b.pos.y, b.z + r, q);
     }
 
     if (nectar) els.nectar.setColorAt(idx, new THREE.Color(NECTAR_COLORS[b.color as 'red' | 'blue']));
@@ -142,6 +200,10 @@ export function updateBiobuzzElements(els: BbElements, world: World): void {
   // whatever is left over from a previous, larger frame must be hidden, not left stale
   for (let i = pollenN; i < CAP; i++) els.pollen.setMatrixAt(i, HIDE);
   for (let i = nectarN; i < CAP; i++) els.nectar.setMatrixAt(i, HIDE);
+
+  // drop spin state for ids that are no longer ground/flight (parked, captured, or off-field)
+  // so a long match does not grow this map without bound.
+  for (const id of els.spin.keys()) if (!seenSpin.has(id)) els.spin.delete(id);
 
   els.pollen.instanceMatrix.needsUpdate = true;
   els.nectar.instanceMatrix.needsUpdate = true;
