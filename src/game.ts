@@ -834,8 +834,13 @@ export class GameController {
      * a different thing on purpose — those are inert obstacles (`passive: true`), and the whole
      * point of them is that they do nothing.
      */
-    const botTier = s.mode === 'match' ? (s.practiceBots ?? 'off') : 'off';
     const botDriver = moduleFor(this.gameId).bot;
+    // COERCED AT THE POINT OF USE, by the driver that owns the tier list. `coerceSettings` keeps
+    // a stored tier verbatim while the active game has no driver (see its note), so the string
+    // reaching here may be another game's word for a difficulty — or one this game has since
+    // renamed. This is the place that can answer.
+    const stored = s.mode === 'match' ? (s.practiceBots ?? 'off') : 'off';
+    const botTier = stored === 'off' || !botDriver ? 'off' : botDriver.coerceTier(stored);
     if (botTier !== 'off' && botDriver) {
       const opp: Alliance = s.alliance === 'blue' ? 'red' : 'blue';
       const anchors = moduleFor(this.gameId).startPoseCount;

@@ -311,6 +311,44 @@ export function net3dChecks(check: Check): void {
       sends === 4,
       `${sends} sends`,
     );
+
+    /**
+     * ⚠️ THE CLIENT'S SIDE OF THE SAME DOORS, added Day 3 after a browser run found it open.
+     *
+     * A gate has two halves and only one of them was tested. `rejoin` declares `caps` on the
+     * message type and `App.rejoinGame` sent the frame WITHOUT it, so a current client returning
+     * to its own live 3D match was refused with "Update DSIM to play this room." — the server
+     * behaving exactly as designed, against a client that had simply not said what it could do.
+     * Every frame the server gates must ADVERTISE, and these are the three that send one.
+     */
+    const app = readFileSync('src/ui/App.tsx', 'utf8');
+    check(
+      'caps: the client advertises them when it REJOINS, not only when it joins',
+      /t: 'rejoin'[^}]*caps: CLIENT_CAPS/.test(app),
+      'App.rejoinGame sends no caps — a 3D room will refuse it',
+    );
+    const lobby = readFileSync('src/net/lobbyClient.ts', 'utf8');
+    check('caps: ...and when it joins', /t: 'join'[\s\S]{0,160}caps: CLIENT_CAPS/.test(lobby));
+    check('caps: ...and when it spectates', /t: 'spectate'[\s\S]{0,120}caps: CLIENT_CAPS/.test(lobby));
+
+    /**
+     * AND THE ROOM'S PHYSICS SURVIVES THE ROUND TRIP THROUGH THE REJOIN RECORD.
+     *
+     * `App.beginSession` rebuilds the handshake FIELD BY FIELD into `ActiveGameRef.start`, and
+     * `physics` was not one of the fields — so a rejoin built a 2D world for a 3D room, predicted
+     * a different game from the one the server was scoring, and never latched `physicsPending`.
+     * Both halves are pinned: the field is copied, and the TYPE names it (a field the type does
+     * not name is a field nobody thinks to copy, which is how it went missing).
+     */
+    check(
+      'caps: the rejoin record carries the room’s physics',
+      /start: \{[\s\S]{0,900}physics: s\.physics,/.test(app),
+      'ActiveGameRef.start drops physics',
+    );
+    check(
+      'caps: ...and `MatchStart` declares it, so the next field-by-field copy cannot miss it',
+      /export interface MatchStart \{[\s\S]{0,1400}physics\?: Physics;/.test(lobby),
+    );
   }
 
   // ═══ 6. THE WIRE CARRIES z, AND THE CLIENT'S DECODER REBUILDS IT ═══════════

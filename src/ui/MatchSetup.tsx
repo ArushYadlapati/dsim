@@ -200,7 +200,16 @@ export function MatchSetup({
   // OPPONENTS (plan §6). The tier list is the GAME's (`GameSimModule.bot.tiers`) — opaque
   // strings, so a game can add or rename a difficulty without this file changing — and its
   // absence is what hides the control for DECODE and Chain Reaction.
-  const botTiers = moduleFor(settings.game).bot?.tiers;
+  const botDriver = moduleFor(settings.game).bot;
+  const botTiers = botDriver?.tiers;
+  // WHICH BUTTON IS PRESSED, resolved through this game's own `coerceTier`: the stored string
+  // may be another game's word for a difficulty (it is kept verbatim across a game that has no
+  // driver — see `coerceSettings`), and an unrecognised one must light the tier that would
+  // actually be played rather than none at all.
+  const activeBotTier =
+    !botDriver || (settings.practiceBots ?? 'off') === 'off'
+      ? 'off'
+      : botDriver.coerceTier(settings.practiceBots);
 
   return (
     <section className="ds-panel">
@@ -308,7 +317,7 @@ export function MatchSetup({
           {botTiers && settings.mode === 'match' && (
             <div className="ds-opts fill">
               <button
-                className={`ds-opt mini ${(settings.practiceBots ?? 'off') === 'off' ? 'on' : ''}`}
+                className={`ds-opt mini ${activeBotTier === 'off' ? 'on' : ''}`}
                 onClick={() => set({ practiceBots: 'off' })}
               >
                 <span className="ot">Opponents off</span>
@@ -316,7 +325,7 @@ export function MatchSetup({
               {botTiers.map((t) => (
                 <button
                   key={t}
-                  className={`ds-opt mini ${settings.practiceBots === t ? 'on' : ''}`}
+                  className={`ds-opt mini ${activeBotTier === t ? 'on' : ''}`}
                   onClick={() => set({ practiceBots: t })}
                 >
                   <span className="ot">{botLabel(t)}</span>

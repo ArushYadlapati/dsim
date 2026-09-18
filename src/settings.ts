@@ -294,18 +294,28 @@ export function coerceSettings(raw: unknown): GameSettings {
     if (typeof s.practiceDummies === 'boolean') out.practiceDummies = s.practiceDummies;
     if (s.practicePhysics === '2d' || s.practicePhysics === '3d') out.practicePhysics = s.practicePhysics;
     /**
-     * THE BOT TIER IS COERCED BY THE GAME, not by a list written here.
+     * THE BOT TIER IS COERCED BY THE GAME THAT HAS ONE — and PRESERVED by the game that does not.
      *
      * `tiers` is opaque on the seam so a game can rename a difficulty without a shared edit, so
-     * the only honest validation is the module's own `coerceTier` — which also answers for a
-     * tier that was legal when it was saved and is not any more. A game with no AI driver folds
-     * everything to `'off'`, which is what makes a stored `'hard'` harmless after switching to
-     * DECODE (`switchGame` does not archive this field: it is a practice preference, not part of
-     * a per-game loadout, and a player who wants opponents wants them in whatever they play).
+     * the only honest validation is the active module's own `coerceTier`, which also answers for
+     * a tier that was legal when it was saved and is not any more.
+     *
+     * ⚠️ **A GAME WITH NO DRIVER MUST NOT FOLD IT TO `'off'`.** Measured in a browser: set
+     * Opponents to Hard in BIOBUZZ, visit DECODE (which has no AI), come back — and the setting
+     * was gone, because every load coerces against the ACTIVE game and DECODE's answer for any
+     * tier is "there is no such thing". `switchGame` deliberately does not archive this field
+     * per game (it is a practice preference, not part of a loadout), so the round trip has to be
+     * lossless. Keeping the string costs nothing: it is unreachable while the active game has no
+     * driver, and the two places that USE it — `GameController.makeWorld` and the Practice
+     * control — resolve it through that game's own `coerceTier` at the point of use, which is
+     * where the question can actually be answered.
+     *
+     * Bounded rather than trusted: this is localStorage and a synced account blob, so a
+     * megabyte of junk must not ride in a field nothing will ever read.
      */
-    if (typeof s.practiceBots === 'string') {
+    if (typeof s.practiceBots === 'string' && s.practiceBots.length <= 32) {
       const bot = simModuleFor(out.game).bot;
-      out.practiceBots = s.practiceBots === 'off' || !bot ? 'off' : bot.coerceTier(s.practiceBots);
+      out.practiceBots = s.practiceBots === 'off' || !bot ? s.practiceBots : bot.coerceTier(s.practiceBots);
     }
     if (typeof s.audio === 'object' && s.audio !== null) {
       const au = s.audio as Record<string, unknown>;
