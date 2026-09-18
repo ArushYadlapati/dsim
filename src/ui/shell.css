@@ -3574,6 +3574,22 @@ tr.lb-detail td {
   display: flex;
   justify-content: flex-end;
 }
+/* ⚠️ `.ds-form label` is a COLUMN (label over field), and it out-specifies
+   `.ds-checkline` — so the sign-up consent box rendered with the checkbox stacked
+   above its own sentence, centred, looking like a stray tick mark. A checkbox row is
+   the one label in a form that is not a column, so say it here rather than inventing a
+   second checkbox class. `align-items: start` because the sentence wraps to two lines
+   on a phone and a centred box then floats beside the middle of the text. */
+.ds-form label.ds-checkline {
+  flex-direction: row;
+  align-items: start;
+  gap: var(--ds-s-2);
+}
+.ds-form label.ds-checkline input {
+  /* nudge the box onto the first line’s cap height rather than its box top */
+  margin-top: var(--ds-s-0);
+  flex: none;
+}
 /* ---- "verify your email" ---------------------------------------------
    An in-page notice above the first panel, not a toast: it is a STATE of the
    account rather than an event, and it has to stay put while somebody reads it and

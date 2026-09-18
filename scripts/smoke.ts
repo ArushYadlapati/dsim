@@ -21268,6 +21268,103 @@ const mkMM = () => {
     (await F.completeVerification(stub({ data: undefined }), 'tok')).ok,
   );
 
+  /* ---- the SDK THROWS its failures, and that is the whole bug ---------------
+     The Neon adapter's `customFetchImpl` throws a normalized `AuthApiError` on any non-2xx
+     instead of letting `{data, error}` carry it, so on this build `error` is essentially
+     never populated. The first cut of `authFlows` classified every throw as `network` and
+     duly told somebody holding an expired reset link to check their connection — caught in
+     the browser, pinned here. The codes below are the adapter's own lower_snake vocabulary
+     (`BETTER_AUTH_ERROR_MAP`), not Better Auth's. */
+  {
+    const thrower = (err: unknown): AuthFlowsClient => {
+      const reply = async (): Promise<unknown> => {
+        throw err;
+      };
+      return {
+        requestPasswordReset: reply,
+        resetPassword: reply,
+        sendVerificationEmail: reply,
+        verifyEmail: reply,
+      } as unknown as AuthFlowsClient;
+    };
+    /** what the adapter throws: an Error carrying `status` and its normalized `code` */
+    const apiError = (status: number, code: string): Error =>
+      Object.assign(new Error('nope'), { status, code });
+
+    check(
+      "⚠️ authFlows: a THROWN bad_jwt is the expired-link answer, not 'network'",
+      await (async () => {
+        const r = await F.completeReset(thrower(apiError(400, 'bad_jwt')), 'tok', 'longenough123');
+        return !r.ok && r.reason === 'invalid-token';
+      })(),
+    );
+    check(
+      'authFlows: a thrown weak_password is a password complaint',
+      await (async () => {
+        const r = await F.completeReset(
+          thrower(apiError(400, 'weak_password')),
+          'tok',
+          'longenough123',
+        );
+        return !r.ok && r.reason === 'weak-password';
+      })(),
+    );
+    check(
+      'authFlows: a thrown over_email_send_rate_limit is rate limiting, not a bad address',
+      await (async () => {
+        const r = await F.sendVerification(
+          thrower(apiError(429, 'over_email_send_rate_limit')),
+          'a@b.co',
+        );
+        return !r.ok && r.reason === 'rate-limited';
+      })(),
+      'EMAIL is a substring of that code — order matters in classifySdkError',
+    );
+    check(
+      'authFlows: a thrown email_address_invalid is a bad address',
+      await (async () => {
+        const r = await F.sendVerification(thrower(apiError(400, 'email_address_invalid')), 'a@b.co');
+        return !r.ok && r.reason === 'invalid-email';
+      })(),
+    );
+    check(
+      'authFlows: a throw with neither status nor code is the transport, i.e. network',
+      await (async () => {
+        const r = await F.completeVerification(thrower(new Error('Failed to fetch')), 'tok');
+        return !r.ok && r.reason === 'network';
+      })(),
+    );
+    check(
+      'authFlows: thrownAsSdkError keeps a status/code pair and drops a bare Error',
+      F.thrownAsSdkError(apiError(429, 'x'))?.status === 429 &&
+        F.thrownAsSdkError(new Error('x')) === null &&
+        F.thrownAsSdkError(undefined) === null,
+    );
+
+    // ⚠️ THE ENUMERATION GUARD. Better Auth answers the reset request with success for an
+    // unknown address, but a deployment or a later version could answer USER_NOT_FOUND —
+    // and surfacing that turns this form into "tell me whether this person has an account".
+    check(
+      '⚠️ authFlows: a reset request for an unknown address still reports SUCCESS',
+      await (async () => {
+        const r = await F.passwordReset(thrower(apiError(404, 'user_not_found')), 'a@b.co');
+        return r.ok;
+      })(),
+    );
+    check(
+      'authFlows: ...but the same code on a DIFFERENT flow is still a failure',
+      await (async () => {
+        const r = await F.completeReset(
+          thrower(apiError(404, 'user_not_found')),
+          'tok',
+          'longenough123',
+        );
+        return !r.ok;
+      })(),
+      'only the bare-email flow swallows it',
+    );
+  }
+
   /* ---- the two emailed links point at routes that exist -------------------- */
   {
     const app = readFileSync('src/ui/App.tsx', 'utf8');

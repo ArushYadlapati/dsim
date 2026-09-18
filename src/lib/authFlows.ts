@@ -131,17 +131,26 @@ const fail = (reason: AuthFlowFailure): AuthFlowResult => ({
 /**
  * An SDK error → one of ours.
  *
- * Better Auth answers with a `code` (`INVALID_TOKEN`, `PASSWORD_TOO_SHORT`, …)
- * on the routes that have one and only an HTTP status on the rest, and the beta
- * SDK passes both through untouched. So the code is read first and the status is
- * the fallback — matching on the MESSAGE would break the first time the upstream
- * reworded one of its own sentences.
+ * ⚠️ TWO CODE VOCABULARIES REACH THIS, and it has to speak both. Better Auth
+ * answers with SCREAMING_SNAKE (`INVALID_TOKEN`, `PASSWORD_TOO_SHORT`), and the
+ * Neon adapter re-labels what it THROWS with its own lower_snake set (`bad_jwt`,
+ * `weak_password`, `email_address_invalid`, `over_request_rate_limit` — see
+ * `BETTER_AUTH_ERROR_MAP` in the SDK's `better-auth-helpers`). Upper-casing first
+ * makes one set of substring tests cover both; the HTTP status is the fallback for
+ * a failure carrying no code at all. Matching on the MESSAGE would break the first
+ * time either upstream reworded one of its own sentences.
+ *
+ * ORDER MATTERS: `over_email_send_rate_limit` contains EMAIL, so rate limiting is
+ * tested before the address.
  */
 export function classifySdkError(error: SdkError | null | undefined): AuthFlowFailure {
   if (!error) return 'unknown';
   const code = (error.code ?? '').toUpperCase();
-  if (code.includes('TOKEN') || code.includes('EXPIRED')) return 'invalid-token';
+  if (code.includes('TOKEN') || code.includes('JWT') || code.includes('EXPIRED')) {
+    return 'invalid-token';
+  }
   if (code.includes('PASSWORD')) return 'weak-password';
+  if (code.includes('RATE_LIMIT')) return 'rate-limited';
   if (code.includes('EMAIL') && !code.includes('VERIF')) return 'invalid-email';
   const status = error.status ?? 0;
   if (status === 429) return 'rate-limited';
@@ -153,17 +162,62 @@ export function classifySdkError(error: SdkError | null | undefined): AuthFlowFa
   return 'unknown';
 }
 
-/** call an SDK method, turning a rejection into a `network` failure rather than
- *  letting it reach a component */
-async function run<T>(call: () => Promise<SdkResponse<T>>): Promise<AuthFlowResult> {
-  let res: SdkResponse<T>;
+/**
+ * ⚠️ A FAILED CALL ARRIVES AS A THROW, NOT AS `{ error }` — which is why this
+ * exists, and it is not a formality.
+ *
+ * The Neon adapter installs its own `customFetchImpl`, and that function THROWS a
+ * normalized `AuthApiError` on any non-2xx response rather than letting Better
+ * Fetch's `throw: false` hand the error back on the result. So the `{data, error}`
+ * union the .d.mts advertises is real but, on this build, `error` is essentially
+ * never populated: every expired token and every weak password comes out of a
+ * `catch`. Treating a throw as "the network failed" — which the first cut of this
+ * file did, and which the browser pass caught — told somebody holding an expired
+ * reset link to check their connection.
+ *
+ * Returns the error in the shape `classifySdkError` reads, or null when the throw
+ * carries no status and no code, which is what a genuine transport failure looks
+ * like.
+ */
+export function thrownAsSdkError(e: unknown): SdkError | null {
+  if (!e || typeof e !== 'object') return null;
+  const o = e as { status?: unknown; code?: unknown; message?: unknown };
+  const status = typeof o.status === 'number' ? o.status : undefined;
+  const code = typeof o.code === 'string' ? o.code : undefined;
+  if (status === undefined && code === undefined) return null;
+  return { status, code, message: typeof o.message === 'string' ? o.message : undefined };
+}
+
+/**
+ * ⚠️ "THERE IS NO ACCOUNT WITH THAT ADDRESS" IS NOT SOMETHING WE MAY SAY.
+ *
+ * Better Auth answers the reset request with success whether or not the address is
+ * known, which is the correct behaviour — but a deployment, a plugin or a later
+ * version could answer `USER_NOT_FOUND` instead, and that turns an unauthenticated
+ * form into an account-enumeration oracle: feed it a list, read which addresses
+ * error, and you know who has an account here. So the one flow that takes a bare
+ * email swallows exactly that answer and reports success.
+ */
+const ACCOUNT_EXISTENCE = (e: SdkError): boolean =>
+  /USER_NOT_FOUND|USER_EMAIL_NOT_FOUND|ACCOUNT_NOT_FOUND/.test((e.code ?? '').toUpperCase());
+
+/** call an SDK method and answer a result — never a throw, never a rejection.
+ *  `okDespite` names the failures this particular flow must report as success. */
+async function run<T>(
+  call: () => Promise<SdkResponse<T>>,
+  okDespite?: (e: SdkError) => boolean,
+): Promise<AuthFlowResult> {
+  let err: SdkError | null;
   try {
-    res = await call();
-  } catch {
-    return fail('network');
+    const res = await call();
+    err = res?.error ?? null;
+    if (!err) return { ok: true };
+  } catch (e) {
+    err = thrownAsSdkError(e);
+    if (!err) return fail('network'); // no status, no code ⇒ the transport failed
   }
-  if (res?.error) return fail(classifySdkError(res.error));
-  return { ok: true };
+  if (okDespite?.(err)) return { ok: true };
+  return fail(classifySdkError(err));
 }
 
 // ------------------------------------------------------------- the URLs -----
@@ -208,11 +262,13 @@ export async function requestPasswordReset(email: string): Promise<AuthFlowResul
   if (!looksLikeEmail(email)) return fail('invalid-email');
   const client = await liveClient();
   if (!client) return fail('unavailable');
-  return run(() =>
-    client.requestPasswordReset({
-      email: email.trim(),
-      redirectTo: appUrl(RESET_PATH),
-    }),
+  return run(
+    () =>
+      client.requestPasswordReset({
+        email: email.trim(),
+        redirectTo: appUrl(RESET_PATH),
+      }),
+    ACCOUNT_EXISTENCE,
   );
 }
 
@@ -270,9 +326,13 @@ export async function completeEmailVerification(token: string): Promise<AuthFlow
  */
 export const authFlowsForTesting = {
   classifySdkError,
+  thrownAsSdkError,
   async passwordReset(client: AuthFlowsClient, email: string): Promise<AuthFlowResult> {
     if (!looksLikeEmail(email)) return fail('invalid-email');
-    return run(() => client.requestPasswordReset({ email, redirectTo: RESET_PATH }));
+    return run(
+      () => client.requestPasswordReset({ email, redirectTo: RESET_PATH }),
+      ACCOUNT_EXISTENCE,
+    );
   },
   async completeReset(client: AuthFlowsClient, token: string, pw: string): Promise<AuthFlowResult> {
     if (!token.trim()) return fail('invalid-token');
