@@ -149,7 +149,10 @@ const BASELINE = {
   main: { gzip: 904.4 * 1000 },
   hostWorker: { gzip: 699.38 * 1000 },
   physics3d: { gzip: 1089.27 * 1000 },
-  scene: { gzip: 182.01 * 1000, budgetCeiling: 250 * 1000 },
+  // RAISED to 183.84 KB (from 182.01, 2026-09-18): the lighting/materials fidelity pass adds a
+  // `RoomEnvironment` + `PMREMGenerator` import and a bigger per-part-class `MaterialSet` in
+  // `renderFieldGlb.ts` — still well inside the §2.5 spec ceiling below.
+  scene: { gzip: 183.84 * 1000, budgetCeiling: 250 * 1000 },
   other: { gzip: 1 * 1000 },
 };
 

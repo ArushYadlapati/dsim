@@ -714,19 +714,77 @@ def main() -> None:
             parts.append((pos_in, idx))
         return merge_meshes(parts) if parts else ([], [])
 
-    visual_groups: dict[str, list[Instance]] = {
-        "walls": groups["walls"],
-        "tiles": groups["tiles"],
-        "tape": groups["tape"],
-        "hive_red_frame": hive_red_frame,
-        "hive_blue_frame": hive_blue_frame,
-        "hive_red_tray": [x for lst in tray_red.values() for x in lst],
-        "hive_blue_tray": [x for lst in tray_blue.values() for x in lst],
-    }
+    # ---- PART-CLASS SPLIT (2026-09-18 fidelity pass, owner playtest: "the flower has lost its
+    # colour"). Each output NODE used to be one merged STL with one flat placeholder material
+    # (`assemble-gltf.mjs`'s old per-GROUP `MAT.*`), which is exactly why a flower — four rings,
+    # four HIPS pipes and a base/backstop, all genuinely different materials on the real part —
+    # rendered as one uniform grey lump: merging erases the one thing a material split needs,
+    # which part a triangle came from. `visual_groups` is now `node -> {class -> [Instance]}`, so
+    # the STL-writing loop below emits ONE FILE PER (node, class) PAIR
+    # (`"<node>__<class>.stl"`), and `assemble-gltf.mjs` turns each node's class files into
+    # several PRIMITIVES of one mesh, each carrying its own NAMED glTF material —
+    # `renderFieldGlb.ts` assigns the runtime PBR material BY THAT NAME, not by walking parent
+    # node names. The class vocabulary matches the report's contract exactly: `flower_ring`,
+    # `flower_pipe`, `flower_base`, `hive_frame_metal`, `tray_panel_red`, `tray_panel_blue`,
+    # `tray_metal`, `wall_panel`, `wall_extrusion`, `tile`, `tape_red`, `tape_blue`, `tape_white`.
+    def wall_part_class(name: str) -> str:
+        # "am-2580a: FIRST Tech Challenge Panel Link" is the aluminium extrusion joining panels;
+        # everything else in this class is the glass/polycarbonate panel itself.
+        if re.search(r"panel link", name, re.IGNORECASE):
+            return "wall_extrusion"
+        return "wall_panel"
+
+    def flower_part_class(name: str) -> str:
+        # "am-5857/58/59: Flower Layer C/B/X" are the three ring plates (top/mid/lower);
+        # "am-5862: Flower HIPS Pipe" is the vertical support; everything else (Field Bracket,
+        # Under Field Bracket, Backstop) is the solid base/backstop hardware.
+        if RE_FLOWER_RING.search(name):
+            return "flower_ring"
+        if re.search(r"hips pipe", name, re.IGNORECASE):
+            return "flower_pipe"
+        return "flower_base"
+
+    def tape_part_class(name: str) -> str:
+        if re.search(r"blue", name, re.IGNORECASE):
+            return "tape_blue"
+        if re.search(r"red", name, re.IGNORECASE):
+            return "tape_red"
+        return "tape_white"
+
+    def tray_material_class(key_prefix: str, alliance: str) -> str:
+        # the skins (floor/back/ceiling) are the alliance-coloured sheet paneling a cell is
+        # built from; the bar and the side ribs are the bare structural metal underneath it.
+        if any(k in key_prefix for k in ("floor", "back", "ceiling")):
+            return f"tray_panel_{alliance}"
+        return "tray_metal"
+
+    visual_groups: dict[str, dict[str, list[Instance]]] = {}
+
+    def add_visual(node: str, cls: str, insts: list[Instance]) -> None:
+        if not insts:
+            return
+        visual_groups.setdefault(node, {}).setdefault(cls, []).extend(insts)
+
+    for inst in groups["walls"]:
+        add_visual("walls", wall_part_class(inst.name), [inst])
+    for inst in groups["tiles"]:
+        add_visual("tiles", "tile", [inst])
+    for inst in groups["tape"]:
+        add_visual("tape", tape_part_class(inst.name), [inst])
+    add_visual("hive_red_frame", "hive_frame_metal", hive_red_frame)
+    add_visual("hive_blue_frame", "hive_frame_metal", hive_blue_frame)
+    for key_prefix, insts in tray_red.items():
+        add_visual("hive_red_tray", tray_material_class(key_prefix, "red"), insts)
+    for key_prefix, insts in tray_blue.items():
+        add_visual("hive_blue_tray", tray_material_class(key_prefix, "blue"), insts)
     for k in range(4):
-        visual_groups[f"flower_{k}"] = flower_groups[k]
+        for inst in flower_groups[k]:
+            add_visual(f"flower_{k}", flower_part_class(inst.name), [inst])
     if groups["stations"]:
-        visual_groups["stations"] = groups["stations"]
+        # no driver-station geometry in this STEP revision (README) — panel-like fallback class
+        # so a future revision that DOES carry one renders with a sensible material immediately.
+        for inst in groups["stations"]:
+            add_visual("stations", "wall_panel", [inst])
 
     def box_mesh_in(xr, yr, zr):
         """axis-aligned box, positions in inches, as a simple 8-vert/12-tri mesh."""
@@ -746,40 +804,42 @@ def main() -> None:
         return pos, faces
 
     size_report = []
-    for name, insts in visual_groups.items():
-        if not insts:
-            continue
-        if name == "tiles":
-            # A DELIBERATE SIMPLIFICATION, both LOD levels: the real tile geometry is a ribbed,
-            # perforated foam plate whose detail reads only as noise at this sim's camera
-            # distance (overhead or driver-eye, never a close-up), and it dominated every early
-            # size pass (10+ MB for 36 plates) for zero visible benefit. The floor's actual
-            # on-screen texture (tile grid lines, tape) is a canvas texture already
-            # (`renderField.ts`'s `buildFloorTexture`) painted over a flat plane — this box is
-            # that plane's CAD-accurate replacement (real thickness, real footprint), not a
-            # tessellation of the true underside.
-            corners = []
-            for inst in insts:
-                xmin, ymin, zmin, xmax, ymax, zmax = inst.bbox_mm
-                corners.extend(transform_point_mm(fit, (x, y, z)) for x in (xmin, xmax) for y in (ymin, ymax) for z in (zmin, zmax))
-            xr = (min(p[0] for p in corners), max(p[0] for p in corners))
-            yr = (min(p[1] for p in corners), max(p[1] for p in corners))
-            zr = (min(p[2] for p in corners), max(p[2] for p in corners))
-            pos, idx = box_mesh_in(xr, yr, zr)
-            for level in ("high", "low"):
-                out = cache / "stl" / level / f"{name}.stl"
-                write_binary_stl(out, pos, idx)
-                size_report.append((name, level, len(insts), len(pos), len(idx), out.stat().st_size))
-            continue
+    for node, by_class in visual_groups.items():
         tray_origin = (
-            tuple(pivot_red_in) if name == "hive_red_tray" else tuple(pivot_blue_in) if name == "hive_blue_tray" else (0.0, 0.0, 0.0)
+            tuple(pivot_red_in) if node == "hive_red_tray" else tuple(pivot_blue_in) if node == "hive_blue_tray" else (0.0, 0.0, 0.0)
         )
-        for level, lin_mm, ang in (("high", LIN_HIGH_MM, ANG_HIGH), ("low", LIN_LOW_MM, ANG_LOW)):
-            pos, idx = mesh_group_sim(insts, lin_mm, ang, tray_origin)
-            out = cache / "stl" / level / f"{name}.stl"
-            write_binary_stl(out, pos, idx)
-            size_report.append((name, level, len(insts), len(pos), len(idx), out.stat().st_size))
-    print("[convert] STL groups (name, level, parts, verts, tris, bytes):", file=sys.stderr)
+        for cls, insts in by_class.items():
+            file_stem = f"{node}__{cls}"
+            if node == "tiles":
+                # A DELIBERATE SIMPLIFICATION, both LOD levels: the real tile geometry is a
+                # ribbed, perforated foam plate whose detail reads only as noise at this sim's
+                # camera distance (overhead or driver-eye, never a close-up), and it dominated
+                # every early size pass (10+ MB for 36 plates) for zero visible benefit. The
+                # floor's actual on-screen texture (tile grid lines, tape) is a canvas texture
+                # already (`renderField.ts`'s `buildFloorTexture`) painted over a flat plane —
+                # this box is that plane's CAD-accurate replacement (real thickness, real
+                # footprint), not a tessellation of the true underside.
+                corners = []
+                for inst in insts:
+                    xmin, ymin, zmin, xmax, ymax, zmax = inst.bbox_mm
+                    corners.extend(
+                        transform_point_mm(fit, (x, y, z)) for x in (xmin, xmax) for y in (ymin, ymax) for z in (zmin, zmax)
+                    )
+                xr = (min(p[0] for p in corners), max(p[0] for p in corners))
+                yr = (min(p[1] for p in corners), max(p[1] for p in corners))
+                zr = (min(p[2] for p in corners), max(p[2] for p in corners))
+                pos, idx = box_mesh_in(xr, yr, zr)
+                for level in ("high", "low"):
+                    out = cache / "stl" / level / f"{file_stem}.stl"
+                    write_binary_stl(out, pos, idx)
+                    size_report.append((file_stem, level, len(insts), len(pos), len(idx), out.stat().st_size))
+                continue
+            for level, lin_mm, ang in (("high", LIN_HIGH_MM, ANG_HIGH), ("low", LIN_LOW_MM, ANG_LOW)):
+                pos, idx = mesh_group_sim(insts, lin_mm, ang, tray_origin)
+                out = cache / "stl" / level / f"{file_stem}.stl"
+                write_binary_stl(out, pos, idx)
+                size_report.append((file_stem, level, len(insts), len(pos), len(idx), out.stat().st_size))
+    print("[convert] STL groups (node__class, level, parts, verts, tris, bytes):", file=sys.stderr)
     for row in size_report:
         print("   ", row, file=sys.stderr)
 

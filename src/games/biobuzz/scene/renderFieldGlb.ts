@@ -99,40 +99,88 @@ function findOptional(root: THREE.Object3D, name: string): THREE.Object3D | null
   return findByOriginalName(root, name);
 }
 
-interface MaterialSet {
-  metal: THREE.Material;
-  polycarbonate: THREE.Material;
-  plastic: THREE.Material;
-  plasticRed: THREE.Material;
-  plasticBlue: THREE.Material;
-  tile: THREE.Material;
-}
+/**
+ * PART-CLASS MATERIALS — one entry PER NAMED glTF MATERIAL `convert.py`/`assemble-gltf.mjs` can
+ * write (2026-09-18 fidelity pass, owner playtest: "the flower has lost its colour", "the field
+ * wall should be transparent"). The Day 1 version of this file assigned materials by WALKING UP
+ * each mesh's ancestor chain looking for a node name it recognised (`/^flower_/` → one flat
+ * "plastic" for the WHOLE flower) — that was fine as long as a flower was one merged STL with one
+ * material, which is exactly the bug: a flower's ring, its HIPS pipe and its backstop are three
+ * different real materials, and merging them into one node made "assign by node" and "assign by
+ * part" the same operation. `convert.py` now writes one glTF PRIMITIVE per part class inside each
+ * node (`flower_0` is a ring + a pipe + a base primitive, not one blob), so the loader can and
+ * does assign BY THE PRIMITIVE'S OWN MATERIAL NAME — the name `assemble-gltf.mjs`'s `MAT` table
+ * gave it, preserved by GLTFLoader on `Material.name` — which is a strictly finer-grained (and
+ * simpler: no ancestor walk) lookup than the old node-name heuristic.
+ */
+const MATERIAL_CLASSES = [
+  'tile',
+  'wall_panel',
+  'wall_extrusion',
+  'hive_frame_metal',
+  'tray_panel_red',
+  'tray_panel_blue',
+  'tray_metal',
+  'flower_ring',
+  'flower_pipe',
+  'flower_base',
+  'tape_red',
+  'tape_blue',
+  'tape_white',
+] as const;
+type MaterialClass = (typeof MATERIAL_CLASSES)[number];
+type MaterialSet = Record<MaterialClass, THREE.Material>;
+
+/**
+ * TRANSPARENT POLYCARBONATE WALL — the SAME optical policy as `renderField.ts`'s `wallMaterial()`
+ * (the constants-built fallback), duplicated rather than imported: importing it here would make
+ * this file depend on `renderField.ts`, which already depends on THIS file (`loadFieldGlb`) —
+ * a cycle. Keep the two numbers in step by hand if the policy changes; the report calls out the
+ * exact values (opacity 0.22, roughness 0.1) so a future edit greps for them in both files.
+ */
+const WALL_PANEL_OPACITY = 0.22;
+/** matches `renderField.ts`'s `WALL_RENDER_ORDER` — drawn after every opaque object so two
+ * transparent walls (or a wall and a robot) never fight over which one occludes the other. */
+const WALL_RENDER_ORDER = 10;
 
 function buildMaterials(): MaterialSet {
+  const metal = (color: number): THREE.Material => new THREE.MeshStandardMaterial({ color, metalness: 0.7, roughness: 0.35 });
   return {
-    metal: new THREE.MeshStandardMaterial({ color: 0x9aa1ab, metalness: 0.75, roughness: 0.35 }),
-    polycarbonate: new THREE.MeshPhysicalMaterial({
+    tile: new THREE.MeshStandardMaterial({ color: 0x2a2e33, metalness: 0, roughness: 0.9 }),
+    wall_panel: new THREE.MeshPhysicalMaterial({
       color: 0xdfe6ea,
       metalness: 0,
-      roughness: 0.15,
-      transmission: 0.55,
+      roughness: 0.1,
       transparent: true,
-      opacity: 0.85,
+      opacity: WALL_PANEL_OPACITY,
+      depthWrite: false,
+      side: THREE.DoubleSide,
     }),
-    plastic: new THREE.MeshStandardMaterial({ color: 0xc2c4c8, metalness: 0.05, roughness: 0.55 }),
-    plasticRed: new THREE.MeshStandardMaterial({ color: 0xbf1f1a, metalness: 0.05, roughness: 0.5 }),
-    plasticBlue: new THREE.MeshStandardMaterial({ color: 0x0f4bd6, metalness: 0.05, roughness: 0.5 }),
-    tile: new THREE.MeshStandardMaterial({ color: 0x2a2e33, metalness: 0, roughness: 0.9 }),
+    wall_extrusion: metal(0x9aa1ab),
+    hive_frame_metal: metal(0x9aa1ab),
+    tray_panel_red: new THREE.MeshStandardMaterial({ color: 0xbf1f1a, metalness: 0.05, roughness: 0.5 }),
+    tray_panel_blue: new THREE.MeshStandardMaterial({ color: 0x0f4bd6, metalness: 0.05, roughness: 0.5 }),
+    tray_metal: metal(0x8b929c),
+    // the ring plates — the 2D renderer's own flower-ring token (`C.COLORS.white`, `drawField.ts`'s
+    // `buildFlower`'s `ringMat`), so the two views agree on what a flower's ring looks like.
+    flower_ring: new THREE.MeshStandardMaterial({ color: 0xe5e7eb, metalness: 0, roughness: 0.4 }),
+    // the HIPS support pipes — light grey, undecorated hardware.
+    flower_pipe: new THREE.MeshStandardMaterial({ color: 0xc2c4c8, metalness: 0.05, roughness: 0.55 }),
+    // backstop / field bracket / under-field bracket — the flower's solid structural hardware.
+    flower_base: new THREE.MeshStandardMaterial({ color: 0x8c929c, metalness: 0.3, roughness: 0.5 }),
+    tape_red: new THREE.MeshStandardMaterial({ color: 0xe02020, metalness: 0, roughness: 0.8 }),
+    tape_blue: new THREE.MeshStandardMaterial({ color: 0x0a5cff, metalness: 0, roughness: 0.8 }),
+    tape_white: new THREE.MeshStandardMaterial({ color: 0xe5e7eb, metalness: 0, roughness: 0.8 }),
   };
 }
 
 /**
- * Assigns a material by the OWNING NAMED NODE (walking up from each mesh to the nearest
- * ancestor whose name convert.py/assemble-gltf.mjs gave meaning to) and turns on shadows.
- * The assembled glb ships NO vertex normals (see `assemble-gltf.mjs`'s header — meshoptimizer's
- * simplifier cannot collapse a flat-shaded mesh's edges, since every triangle boundary then
- * looks like a hard attribute seam), so this also computes smooth vertex normals once here —
- * the standard, cheap way to shade a decimated background asset.
+ * Assigns each mesh's runtime PBR material BY ITS OWN GLTF MATERIAL NAME (`obj.material.name`,
+ * preserved by GLTFLoader from `assemble-gltf.mjs`'s `doc.createMaterial(key)`) and turns on
+ * shadows. The assembled glb ships NO vertex normals (see `assemble-gltf.mjs`'s header —
+ * meshoptimizer's simplifier cannot collapse a flat-shaded mesh's edges, since every triangle
+ * boundary then looks like a hard attribute seam), so this also computes smooth vertex normals
+ * once here — the standard, cheap way to shade a decimated background asset.
  */
 function styleScene(root: THREE.Object3D, materials: MaterialSet): void {
   root.traverse((obj) => {
@@ -142,41 +190,16 @@ function styleScene(root: THREE.Object3D, materials: MaterialSet): void {
     if (obj.geometry && !obj.geometry.getAttribute('normal')) {
       obj.geometry.computeVertexNormals();
     }
-    let n: THREE.Object3D | null = obj;
-    let material: THREE.Material = materials.plastic;
-    while (n) {
-      // `userData.name` first — see `findByOriginalName`'s header: `.name` has had every `/`
-      // silently dropped by THREE's sanitizer, which would otherwise still coincidentally
-      // substring-match "frame" but silently BREAK the "hive_red/tray" / "hive_blue/tray" match.
-      const name = (n.userData?.name as string | undefined) ?? n.name;
-      if (name === 'tiles') {
-        material = materials.tile;
-        obj.castShadow = false; // the floor never casts, only receives
-        break;
-      }
-      if (name === 'walls' || name === 'stations') {
-        material = materials.polycarbonate;
-        break;
-      }
-      if (/frame/.test(name) || name === 'tape') {
-        material = materials.metal;
-        break;
-      }
-      if (/hive_red\/tray/.test(name)) {
-        material = materials.plasticRed;
-        break;
-      }
-      if (/hive_blue\/tray/.test(name)) {
-        material = materials.plasticBlue;
-        break;
-      }
-      if (/^flower_/.test(name)) {
-        material = materials.plastic;
-        break;
-      }
-      n = n.parent;
+    const srcMaterial = Array.isArray(obj.material) ? obj.material[0] : obj.material;
+    const cls = srcMaterial?.name as MaterialClass | undefined;
+    const resolved = cls && materials[cls] ? materials[cls] : materials.flower_base; // safe grey default
+    if (!cls || !materials[cls]) {
+      // eslint-disable-next-line no-console
+      console.warn(`renderFieldGlb: mesh "${obj.name}" has no recognised material class ("${cls}") — using a default grey.`);
     }
-    obj.material = material;
+    obj.material = resolved;
+    if (cls === 'tile') obj.castShadow = false; // the floor never casts, only receives
+    if (cls === 'wall_panel') obj.renderOrder = WALL_RENDER_ORDER;
   });
 }
 
