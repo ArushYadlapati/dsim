@@ -9,6 +9,8 @@ import {
   type ReplayRefusal,
 } from '../sim/replay';
 import { moduleFor } from '../games';
+// the lazy 3D physics chunk — fetched only for a `'3d'` container (see `ensurePhysics`)
+import { initPhysics3d, physics3dReady } from '../games/biobuzz/sim3d/engine';
 import { Renderer } from '../render/renderer';
 import { rangeFill } from './rangeFill';
 import { drawReplayHud, fieldScreenBottom, HUD_RESERVE, loadSponsorMark } from './replayOverlay';
@@ -199,6 +201,24 @@ export function ReplayView({
     let dead = false;
     setStatus('loading');
     setError('');
+    /**
+     * A `'3d'` CONTAINER NEEDS ITS PHYSICS BEFORE THE PLAYER IS CONSTRUCTED, not before the
+     * first frame is drawn.
+     *
+     * `ReplayPlayer`'s constructor builds the world and the render loop steps it on the very
+     * next tick, so the await has to sit between the container arriving and the player being
+     * made — which is what this wrapper is. The header above says "physics WASM is already
+     * inited (main.tsx)", and that is still true of the 2D module; the 3D one is a lazy chunk
+     * by design (a viewer watching a DECODE replay must never pay for it), so it is fetched
+     * here, once, on the one kind of container that needs it.
+     *
+     * A FAILED load becomes the `error` state rather than a silent 2D re-simulation: re-running
+     * a 3D log against the 2D pipeline would produce a different match from the same inputs and
+     * show something that never happened, which is the exact failure `replayRefusal` exists to
+     * prevent for a version mismatch.
+     */
+    const ensurePhysics = (r: Replay): Promise<void> =>
+      (r.physics ?? '2d') !== '3d' || physics3dReady() ? Promise.resolve() : initPhysics3d();
     const use = (r: Replay): void => {
       replay.current = r;
       // A replay is a deterministic INPUT log, and whether this build can re-run it —
@@ -216,11 +236,25 @@ export function ReplayView({
         return;
       }
       setDrift(why === 'behaviour' || why === 'unstamped' ? why : null);
-      player.current = new ReplayPlayer(r);
-      renderer.current = new Renderer();
-      setTotal(Math.max(1, r.ticks));
-      setTick(0);
-      setStatus('ready');
+      ensurePhysics(r).then(
+        () => {
+          if (dead) return;
+          player.current = new ReplayPlayer(r);
+          renderer.current = new Renderer();
+          setTotal(Math.max(1, r.ticks));
+          setTick(0);
+          setStatus('ready');
+        },
+        (e: unknown) => {
+          if (dead) return;
+          setError(
+            e instanceof Error
+              ? `Couldn’t load the 3D physics this replay needs. ${e.message}`
+              : 'Couldn’t load the 3D physics this replay needs. Check your connection and try again.',
+          );
+          setStatus('error');
+        },
+      );
     };
     if (preloadReplay) {
       use(preloadReplay);

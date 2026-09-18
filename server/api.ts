@@ -520,9 +520,20 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse): Prom
       // render as anything but a plausible score
       const raw = typeof body.score === 'number' && Number.isFinite(body.score) ? body.score : 0;
       const score = Math.max(0, Math.min(9999, Math.round(raw)));
+      /**
+       * THE VIEW IS SANITIZED TO THE ENUM; THE PHYSICS IS NOT TAKEN FROM THE BODY AT ALL.
+       *
+       * `view` is a cosmetic fact only the client can know (which renderer was on this
+       * screen), so it is accepted — forced to '2d' | '3d', absent otherwise, because it is a
+       * column and not free text. `physics` is NOT read from `body`: `sanitizeReplay` already
+       * carried it off the container, and the container is what a re-simulation will actually
+       * run. Taking it from a second place would let a client file a 2D run tagged as a 3D
+       * one, which is the only tag here anybody would have a reason to lie about.
+       */
+      const view = body.view === '2d' || body.view === '3d' ? body.view : undefined;
       await ensureProfile(user.userId, user.handle);
       const season = await currentSeasonNumber(BALANCE_VERSION, replay.game as GameId);
-      const run = await savePracticeRun(user.userId, replay, score, season, replay.game as GameId);
+      const run = await savePracticeRun(user.userId, replay, score, season, replay.game as GameId, view);
       /**
        * PLAYTIME + GAMES PLAYED. Practice is playing the game — it is the mode most people
        * spend most of their time in — and a "games played" that ignored it read as broken
@@ -575,7 +586,10 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse): Prom
       if (!lanRateOk(user.userId)) {
         return json(429, { error: 'too many LAN uploads — try again in a minute' }), true;
       }
-      const game: GameId = url.searchParams.get('game') === 'chain' ? 'chain' : 'decode';
+      // THE ALLOWLIST, not a two-valued ternary. This read `=== 'chain' ? 'chain' : 'decode'`,
+      // which is the exact shape `coerceGameId` exists to replace: a THIRD id degraded to
+      // DECODE silently, so a BIOBUZZ host's LAN match was listed and filed under DECODE.
+      const game: GameId = coerceGameId(url.searchParams.get('game'));
 
       if (req.method === 'GET') {
         return json(200, { runs: await listLanRuns(user.userId, game) }), true;

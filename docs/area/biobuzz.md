@@ -109,17 +109,41 @@ The 2D pipeline is PERMANENT (owner rule): every existing check must stay byte-i
   in `renderField.ts`, kept geometrically right against `drawField.ts`); the physics takes the
   collider hulls/trimeshes with the floor and walls analytic. GLTFLoader strips `/` from node
   names — look them up by `userData.name`. Read `docs/biobuzz/field-cad-audit.md` before touching
-  the pipeline. ⚠️ **OPEN (owner ruling pending, move nothing):** the real field is 141.35 in inside
-  the walls (tiles 23.528 in on centre), which is both the wall delta (±70.67 vs 72; the 3D walls
-  stay at 72 for parity with the 2D pipeline and the staging) and the flower delta (~1.5 in vs
-  `BB_FLOWERS`; `BB_FLOWER_D` is right); and `BB_HIVE_BOTTOM_Z` 25.5 vs the CAD's 31.98. The
-  measurements check prints them under wide tolerances.
+  the pipeline.
+- ✅ **RESOLVED 2026-09-18 — THE CAD IS AUTHORITATIVE FOR DIMENSIONS (owner ruling).** The two
+  OPEN findings are closed by moving the CONSTANTS, not by widening a tolerance. **Nothing types a
+  BIOBUZZ field dimension any more:** `scripts/field-cad/emit-dims.mjs` turns
+  `field-measurements.json` into `src/games/biobuzz/fieldDims.gen.ts` (`FIELD_HALF`, `TILE_PITCH`,
+  `TILE_SEAMS`, `FLOWERS`, `FLOWER_D`, `HIVE`, `TAPE`, `LZ`, `GARDEN`, `ALLIANCE_AREA`), with the
+  derivation and the four-instance residual of every value in its header, and `config.ts` reads
+  it. The field is **±70.674** (141.35 inside, not 144), the tile pitch is **23.528** (`C.TILE`'s
+  24 is DECODE's and CR's; BIOBUZZ draws `BB_TILE_SEAMS`, the seven measured seam lines), the four
+  flower positions are the CAD's own least-squares ring-bore centres, and `BB_HIVE_BOTTOM_Z` is
+  **31.981** — the one figure where the CAD and Fig 9-10 genuinely disagree. A legal 29-in robot
+  still clears the lowest structure (30.652), so G409's drive-under survives; a dumper standing 6
+  in off its own cell no longer does, because its lob clips the higher underside. The 3D walls'
+  "stay at 72 for parity" exception is GONE — the constants ARE the CAD — and the SIM3D lane's
+  `one field` check asserts the 2D collider faces, the 3D collider faces and the CAD/GLB faces
+  agree within 0.05 in. Tape is the CAD's 16 measured strips in BOTH renderers (`BB_TAPE`), never
+  an outline of a zone rectangle. A `fieldDims.gen.ts` that drifts from the measurements JSON
+  fails the SIM3D lane, which re-renders it and diffs byte for byte. `docs/biobuzz-reference.md`
+  carries the ruling and the full before/after table.
 - **Client:** `graphics/store.ts` holds the per-device view pref (`localStorage['decodesim.view']`);
   `GameView`/`game.ts` await `initPhysics3d()` before a 3D practice (fallback to 2D with an
   event-log line) and mount the lazily imported `scene` under the 2D canvas (`overlayOnly`).
-  Two LAZY chunks — physics ≈ 1.09 MB gz, scene ≤ 250 KB gz — ratcheted by `npm run bundleaudit`
-  (needs a build; not in `npm test`). `sim3d/` is still statically imported by `step.ts`, so its
-  logic sits in the main chunk (+≈4.5 KB gz): moving it behind `initPhysics3d()` is pending.
+  LAZY chunks — physics ≈ 1.12 MB gz (the wasm glue plus the implementation), scene ≤ 250 KB gz —
+  ratcheted by `npm run bundleaudit` (needs a build; not in `npm test`).
+- ⚠️ **`sim3d/` IS LAZY, AND ONLY TWO OF ITS MODULES MAY BE IMPORTED FROM OUTSIDE IT** (done
+  2026-09-18; it used to be otherwise, and the implementation sat in the main chunk). `engine.ts`
+  is the LOADER — `initPhysics3d` / `physics3dReady` / `rapier3d` / `physics3dImpl` — and
+  `tilt.ts` is `hiveTiltAngle` + `hiveTrayRefTheta`, pure JSON, because the 3D SCENE reads the
+  tray angle on a frame where no 3D physics is loaded (a 2D-physics match in the 3D view).
+  Everything else hangs off `sim3d/impl.ts`, a re-export barrel that `initPhysics3d()` alone
+  imports, dynamically, beside the wasm; reach it with `physics3dImpl().<name>` after the await,
+  which is how the PREDICTORS (`predict.ts`) will be wired. `sim3d/step3d.ts` is a one-line gate
+  doing exactly that, so `step.ts` can dispatch without pulling a byte of physics in. Node callers
+  (smoke lanes, `hive-calibrate`, `costprobe`) still import the modules directly — there is no
+  bundle to protect there. The RENDER lane fails on a static import of anything else.
 - **Verification:** `scripts/smoke-biobuzz/sim3d.ts` (SIM3D lane: seam, drive parity, two-run
   hash, conservation, containment with `containmentFixes === 0`, CCD, capture, launch into either
   up cell, 18/29-in clearance, tip/spill, perf ≤ 1.5 ms, CAD probe agreement) and `render.ts`

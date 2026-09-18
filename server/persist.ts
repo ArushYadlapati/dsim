@@ -125,6 +125,11 @@ export async function persistMatch(o: MatchOutcome): Promise<PersistOutcome> {
         balanceVersion: bv,
         replayId,
         game,
+        // WHICH SOLVE produced this score (0038), taken off the replay the room recorded so
+        // the row and its own log can never disagree. Every record room is `'3d'` for a game
+        // that offers it, which is the point: a board fed by two different solves is two
+        // boards, and this is what lets one be told from the other without a season reset.
+        physics: o.replay.physics,
         // each driver brings their OWN robot; a duo stores both so the board can
         // show both drivetrains (partner absent ⇒ solo run)
         config: { spec: primarySpec, assists: primary.assists, partnerSpec },

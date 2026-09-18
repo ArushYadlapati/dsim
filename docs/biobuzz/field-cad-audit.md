@@ -476,3 +476,125 @@ statically — every byte of it lands in the MAIN client bundle. That is why the
 are searched rather than assigned, why the points are 2 dp, and why the (never-built, never-read)
 perimeter wall hulls are not exported at all. Net effect on `npm run bundleaudit` versus the
 pre-pass build: main +2.01 KB gzip, hostWorker +2.09 KB gzip, both inside baseline + tolerance.
+
+---
+
+# 11. The FLOWER, measured plate by plate — Day 2 lane A, 2026-09-18
+
+§6 measured the bores and left a flag: "the measurements file does NOT separate the three ring
+plates", so `BB_FLOWER_TOP_Z`, `BB_FLOWER_MID_Z`, `BB_FLOWER_FLOOR_Z` and `BB_FLOWER_FOOT` stayed
+hand-typed while everything around them was generated. `convert.py` separates them now
+(`measure_flower_rings`), and the four figures are `FLOWER_RING_Z` / `FLOWER_FOOT` in
+`fieldDims.gen.ts` with `config.ts` reading them. **The GLBs are byte-identical across the
+change** — the plates were always in the visual export; only the measurement is new.
+
+## 11.1 The three plates
+
+| plate | STEP part | z band (in) | bore Ø (in) | residual over 4 flowers |
+|---|---|---|---|---|
+| lower | `Flower Layer X` | **−0.199 … 0.354** | **3.222** | 0 |
+| mid | `Flower Layer B` | **3.904 … 5.254** | **3.896** | 0 |
+| top | `Flower Layer C` | **20.254 … 21.404** | **4.171** | 0 |
+
+Derived, and the sharpest confirmation in this whole audit: the clear gap between the lower
+plate's TOP face and the mid plate's UNDERSIDE is **3.550 in**, and Fig 9-12 prints the retrieval
+opening at **3.55**. Two independently measured plate bands reproducing a printed figure to three
+decimals is what says the flower export is in the frame it claims to be.
+
+Footprint: the union of the three plates is **5.951 along the wall × 5.013 into the field**,
+against the hand-typed 6 × 4.9 — 0.05 and 0.11 out. It could not be read off `flowers[].extent`,
+which carries the backstop above the top plate and the under-field bracket behind the wall plane;
+that is why it survived as a typed figure this long.
+
+Also measured: HIPS pipes span z 4.254 … 21.254; `Flower Backstop` is a 0.25-in plate at
+z 22.404 … 22.654.
+
+## 11.2 What the bores actually do — a third manual/CAD disagreement
+
+| | POLLEN 2.8 | NECTAR 3.6 |
+|---|---|---|
+| top 4.171 | passes | passes |
+| mid 3.896 | passes | **passes** |
+| lower 3.222 | **passes** | stopped |
+
+Two rows are not what the sim assumed.
+
+**The middle ring does not sort.** `flower.ts`'s sorter ruling (owner, 2026-09-12) is "a NECTAR
+cannot pass the middle ring and SEATS on it", taken from a section drawing before anyone had
+measured the plate. The real bore is 3.896 against a 3.6-in nectar: 0.296 in of diametral
+clearance, which is a sliding fit for a part meant to pass.
+
+**And the lower bore is 3.222, not Fig 9-12's 2.79.** That is the third place this CAD and the V1
+manual genuinely disagree, after the field size and `BB_HIVE_BOTTOM_Z`. It matters because the
+lower plate sits AT tile level (its top face is 0.354), so its bore is not a floor for anything: a
+2.8-in pollen drops through it and rests on the tiles, and a 3.6-in nectar's lower cap fits inside
+the bore far enough that it rests on the tiles too, 0.354 in lower than the plate would have held
+it.
+
+**So in the real tube both kinds fall all the way to the floor**, measured: a dropped POLLEN
+settles with its centre at 1.397 and a NECTAR at 1.797, both on the axis.
+
+**The manual's INTENT survives.** G418's "POLLEN out of the bottom and nothing else" holds — a
+3.6-in nectar clears neither the 3.222 bore nor the 3.550-in retrieval opening — and the sim's
+retrieval and its nectar-lock are unchanged. What moves is WHICH ring delivers it: the bottom one,
+not the middle one.
+
+## 11.3 The one gameplay consequence, and why nothing was changed to hide it
+
+A LONE NECTAR tops out at 3.597 in the real tube, against a scoring-volume floor of 3.904. By the
+geometry it does not score. By the 2D model — seated on the middle ring, spanning 3.904 … 7.504 —
+it always does. The difference is **0.30 in**, and it is worth 2 points, the 5-point Bottom Nectar
+Bonus and an ownership.
+
+Nothing is fudged at either end. The tube is built with the measured bores; the 2D sorter ruling
+stands for the 2D model, which is the permanent light-practice pipeline; and `score.ts` reads the
+shared `flowerScore` for BOTH pipelines, so a 2D match and a 3D match are worth the same — plan
+§3.5's "one scoring, one HUD, two physics". `flowerScoreZ` (a pure extraction of `flowerScore`
+over heights somebody else measured) is what the FLOWER3D lane compares the two with, and the
+divergence is a named, printed check rather than a tolerance.
+
+Every other case measured agrees: four staged POLLEN read 3 in volume under both, and four POLLEN
+plus a nectar read owner blue / bonus blue / 4 in volume under both. **It is the lone-nectar case
+alone**, and resolving it is an owner ruling (the 2026-09-12 sorter ruling is what would be
+overturned), not a lane decision.
+
+## 11.4 Two parts whose convex hull was the bug
+
+`Flower Field Bracket` is now VISUAL-ONLY, for the annulus rule in its third costume. It is a
+C-shaped plate at z 11.45 … 11.84 that hugs the tube from the wall side; its own material stops
+2.07 in from the tube's axis, and a convex hull of a C fills the C, so the hull's field-side face
+sat **0.975 in from that axis** — a lid across the middle of the flower. Measured before the
+exclusion: a dropped NECTAR came to rest on it at z 13.03, eight inches up a tube it should have
+fallen straight down. Nothing is lost: the 1.65 in of it in front of the perimeter wall is already
+occupied by the HIPS pipes and the peanut supports, which are real hulls.
+
+`Flower Backstop` stays a collider and is REAL, but its hull's field-side face passes 0.375 in
+from the axis, so an element created resting ON the top plate starts interpenetrating it and is
+shoved sideways — measured at 0.94 in for a POLLEN and 1.36 in for a NECTAR, enough to wedge it on
+the rim instead of dropping it. `sim3d/flower3d.ts` therefore drops a placed element with its
+centre at the top plate's UNDERSIDE, which is inside the bore and clear of everything, and is also
+what a Box Tube depositing into a tube does.
+
+## 11.5 The ring colliders
+
+The plates ride `field-colliders.json` as ELEVEN NUMBERS each (z band, bore radius, bore centre,
+plate rectangle) rather than as baked vertices, and `sim3d/flowerTube.ts` tessellates a
+rectangle-minus-disc TRIMESH from them at engine-build time. The reason is this file's own
+recurring one: `field-colliders.json` is compiled into `fieldColliders.gen.ts` and imported
+statically by `step.ts`, so baked vertices would ship in the main client bundle — ~100 KB of JSON
+against 1.4 KB of parameters.
+
+`BB3_FLOWER_RING_SEGMENTS` is 32, plus the four rectangle corners inserted as extra rays, giving
+36 rays and 288 triangles per plate. The bore polygon is INSCRIBED, so the hole is 0.010 in small
+on the 2.086-in top bore — the safe direction, against clearances of 0.148 in (a nectar through
+the mid bore) and 0.211 in (a pollen through the lower one).
+
+⚠️ **The corner rays must be wrapped into [0, 2π) before the rays are sorted.** `atan2` answers in
+(−π, π] while the even steps are in [0, 2π), so a third-quadrant corner sorts before every even
+step and the ring closes from ~350° back to ~−126°: the two triangles bridging that gap sweep
+straight across the bore. Measured, they put geometry 1.08 in from the tube's axis where the
+nearest real surface is 2.09 — a POLLEN bounced off the middle of the hole and a NECTAR jammed in
+the top one, and both looked exactly like "the bore is too small".
+
+No tunnelling: a POLLEN fired straight down onto the solid part of the top plate at 120 and at
+260 in/s is deflected and ends 42 in away across the tiles, at both speeds.

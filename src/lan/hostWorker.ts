@@ -37,6 +37,7 @@
 import { Room, type Client } from '../../server/room';
 import { decodeClientMsg, encodeMsg, type ClientMsg, type ServerMsg } from '../net/protocol';
 import { initPhysics } from '../sim/physicsEngine';
+import { initPhysics3d } from '../games/biobuzz/sim3d/engine';
 import { coerceGameId } from '../games/types';
 import { HEALTH_INTERVAL_MS, HOST_SEAT, type HostIn, type HostOut } from './hostProtocol';
 
@@ -111,7 +112,26 @@ self.addEventListener('message', (e: MessageEvent) => {
        hits the `if (!room) return` below. The host still gets a room code (the rendezvous
        claim succeeded) and every guest that connects then waits on a `welcome` nothing will
        ever send. Measured once, diagnosed slowly; it must never be silent again. */
-    void initPhysics().then(
+    /* THE 3D PHYSICS IS FETCHED ONLY FOR A 3D ROOM. A tab-hosted room is the one place `Room`
+       runs inside a browser and the host is on a laptop at a venue, so a 2D room must never
+       pull the ~1.1 MB rapier3d chunk across the venue's Wi-Fi.
+
+       The laziness lives INSIDE `initPhysics3d`, which reaches the package through a dynamic
+       `import()`; this branch is simply the only thing in the worker that ever calls it. That
+       matters more than it looks: `engine.ts` is already in this worker's module graph
+       (`Room` → `simModuleFor` → the BIOBUZZ module → `step.ts` → `step3d` → `engineFor`),
+       but `initPhysics3d` itself was TREE-SHAKEN out of it, because nothing on that path
+       referenced the one function that contains the `import()`. Naming it here is what puts
+       the physics chunk on the worker's map at all — and it is why `worker.format` had to
+       become `'es'` (see vite.config.ts): an IIFE worker bundle cannot be code-split, so the
+       first dynamic import inside a worker fails the build outright.
+
+       Awaited BESIDE the 2D module rather than after it, inside one promise, because `room`
+       must not exist until BOTH are in hand: the host reads the code out and guests start
+       arriving the moment `ready` is posted, and a room that can be joined but not stepped is
+       the failure this whole `then` was written around. */
+    const needs3d = m.config?.physics === '3d';
+    void Promise.all([initPhysics(), needs3d ? initPhysics3d() : null]).then(
       () => {
         /* No persistence callbacks — see the header. The room empties itself when the last
            member leaves, and the page decides whether that ends the session. */

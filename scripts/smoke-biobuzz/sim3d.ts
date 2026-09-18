@@ -4,8 +4,8 @@ import { createBiobuzzWorld } from '../../src/games/biobuzz/spawn';
 import { biobuzzPhysics } from '../../src/games/biobuzz/state';
 import { biobuzzStep } from '../../src/games/biobuzz/step';
 import { step3d } from '../../src/games/biobuzz/sim3d/step3d';
-import { engineFor } from '../../src/games/biobuzz/sim3d/engine';
-import { fieldColliders3d } from '../../src/games/biobuzz/sim3d/fieldColliders';
+import { engineFor } from '../../src/games/biobuzz/sim3d/engineImpl';
+import { cadTrayRefTheta, fieldColliders3d } from '../../src/games/biobuzz/sim3d/fieldColliders';
 import { hiveCellLocalBox, hivePivotX, hiveTrayRefTheta, __setFieldCollidersOverrideForTests } from '../../src/games/biobuzz/sim3d/bodies';
 import { hiveTiltAngle } from '../../src/games/biobuzz/sim3d/hive3d';
 import { rotate2 } from '../../src/games/biobuzz/sim3d/math3';
@@ -13,10 +13,13 @@ import { worldHash } from '../../src/net/checksum';
 import { bbScoreWorld } from '../../src/games/biobuzz/score';
 import { bbSolveShot } from '../../src/games/biobuzz/robot';
 import {
+  BB3_HEIGHT_MAX,
+  BB3_ROUND,
   BB3_HIVE_PIVOT_Z,
   BB3_CAPTURE_TICKS,
   BB_FLOWERS,
   BB_FLOWER_D,
+  BB_FLOWER_OPEN_R,
   BB_FLOWER_TOP_Z,
   BB_FRAME_BAR_IN,
   BB_FRAME_BAR_OUT,
@@ -24,11 +27,18 @@ import {
   BB_HALF_X,
   BB_HALF_Y,
   BB_HIVE_BOTTOM_Z,
+  BB_HIVE_LOWEST_Z,
   BB_HIVE_OPEN_Z,
   BB_HIVE_X,
   BB_POLLEN_R,
+  BB_TAPE,
+  BB_TILE_PITCH,
   BB_TIP_POLLEN,
 } from '../../src/games/biobuzz/config';
+import * as C from '../../src/config';
+import { biobuzzColliders, BB_WALL_COUNT } from '../../src/games/biobuzz/colliders';
+import { renderDims } from '../field-cad/emit-dims.mjs';
+import { readFileSync } from 'node:fs';
 import type { Artifact, RobotCommand, World } from '../../src/types';
 // eslint-disable-next-line @typescript-eslint/no-var-requires -- tsx (not tsc) runs this suite;
 // `scripts/` is outside tsconfig.json's `include`, so a JSON import here never reaches `tsc`.
@@ -556,22 +566,23 @@ export function sim3dChecks(check: Check): void {
     //
     // THE WORST-CASE (LOWEST) CORNER ALONG THE DOWN CELL'S OWN v-SPAN, not its midpoint -- a
     // robot driving THROUGH the down cell crosses the whole span, so the binding obstruction is
-    // whichever end sits lower, found by measurement once the hive-tilt fix below landed: the
-    // down box's own v-extremes read world z 22.7 (outer) and 29.8 (inner), so a robot's actual
-    // headroom is set by the LOWER of the two, not their average.
+    // whichever end sits lower, and a robot's actual headroom is set by the LOWER of the two,
+    // not their average. It measures 31.98, which is `BB_HIVE_BOTTOM_Z` itself: since the
+    // 2026-09-18 ruling that constant IS the CAD's own down-cell floor, so the landmark and the
+    // constant are the same number by construction rather than by coincidence.
     const downBox = hiveCellLocalBox(-1, 'blue');
     const cornerOuter = hiveWorldPoint('blue', -1, theta, 0, downBox.vMin, downBox.wMin);
     const cornerInner = hiveWorldPoint('blue', -1, theta, 0, downBox.vMax, downBox.wMin);
     const bracket = cornerOuter.z <= cornerInner.z ? cornerOuter : cornerInner;
-    // ⚠️ THE CAD'S OWN DOWN-CELL CLEARANCE (bracket.z, ~22.7in) DOES NOT MATCH THE MANUAL'S
-    // BB_HIVE_BOTTOM_Z (25.5in) either, though it is now MUCH closer (delta ~2.8in, was ~6.5in
-    // before the hive-tilt fix below) -- printed and asserted against in the MEASUREMENTS check
-    // below, where the gap is the story: one rigid tilting bar cannot put the up-cell opening at
-    // BB_HIVE_OPEN_Z AND the down-cell floor at BB_HIVE_BOTTOM_Z at the same time, on this hive's
-    // own measured dimensions, matching the field lane's own flagged concern. This test therefore
-    // asserts what the BUILT COLLIDER actually does, not the manual figure it cannot reach.
+    // ⚠️ THIS USED TO BE A DISAGREEMENT AND IS NOT ANY MORE. The CAD's down-cell clearance
+    // (bracket.z) did not match the manual's BB_HIVE_BOTTOM_Z of 25.5, and the gap was the story:
+    // one rigid tilting bar cannot put the up-cell opening at BB_HIVE_OPEN_Z and the down-cell
+    // floor at 25.5 at the same time on this hive's own measured dimensions. The owner ruled the
+    // CAD authoritative on 2026-09-18, so BB_HIVE_BOTTOM_Z IS 31.981 and the two agree. The
+    // MEASUREMENTS check below asserts that strictly; this test asserts what the built collider
+    // does about robots.
     //
-    // ⚠️ THIS NUMBER MOVED, ~32in -> ~22.7in, WHEN `obliqueBoxCollider` (`sim3d/bodies.ts`) FIXED
+    // ⚠️ THIS NUMBER HAS MOVED BEFORE, WHEN `obliqueBoxCollider` (`sim3d/bodies.ts`) FIXED
     // THE HIVE-TILT BUG THE OWNER PLAYTEST REPORTED ("visually tilted more than where the balls
     // end up", "spill out too easily"): the CAD box's `vMin..wMax` are captured AT the tray's
     // OWN tilt, and the PRE-FIX code built an axis-aligned collider straight from them with NO
@@ -581,12 +592,11 @@ export function sim3dChecks(check: Check): void {
     // edge (no slope to hold a landed element against the divider -- the actual GAMEPLAY bug),
     // and the down cell's clearance came out ~32in, comfortably over `BB3_HEIGHT_MAX` (29),
     // purely because the true CAD tilt was never applied to it either. The fix makes BOTH cells
-    // genuinely tilted at rest, and 22.7in -- BELOW 29 -- is what the down cell's real geometry
-    // (as CAD-measured) turns out to be once it or actually gets the correct tilt: a legal
-    // 29-in robot no longer clears it, which the checks below now assert directly, and which is
-    // arguably the more game-realistic reading of BB_HIVE_BOTTOM_Z (25.5) sitting BELOW
-    // BB3_HEIGHT_MAX (29) in the first place -- a max-height build was never obviously meant to
-    // duck under the down cell for free.
+    // genuinely tilted at rest. What the correctly-tilted CAD tray then says is 31.98 -- ABOVE
+    // BB3_HEIGHT_MAX (29) -- so a legal max-height robot DOES clear the down cell, which is what
+    // G409's drive-under assumes and what the measurements check asserts against the lowest hive
+    // structure of any kind (the Goal Rib, 30.65). The third check below is the non-vacuity
+    // proof: at 34.98in the same robot IS stopped, so the collider is real and not a no-op.
     function driveAtBracket(heightIn: number): number {
       const w = mkWorld3d('free', 28);
       const r = w.robots[0];
@@ -595,7 +605,18 @@ export function sim3dChecks(check: Check): void {
       // own heightIn carry-across (the fix for the `heightIn` seam bug this lane's final
       // report describes) is exercised separately by the `heightIn:` checks above.
       r.spec = { ...r.spec, heightIn };
-      const startY = bracket.y - 40;
+      // ⚠️ 30, NOT 40, AND THE FLOWER IS WHY (Day 2 lane A). `bracket.y` is −17.79, so a 40-in
+      // run-up starts the robot at y = −57.79 — and its collider is `robotExtents` (the 2D
+      // solve's footprint, intake reach included, 12 in behind the centre), so its rear corner
+      // sat at y = −69.79, INSIDE flower F4's own on-tile footprint (x 20.42…26.37,
+      // y −70.64…−65.63). It always did: the pipes' hulls were already touching it at tick 0,
+      // and this check passed anyway because a vertical hull is something a robot slides along.
+      // The ring PLATES are horizontal, so the same overlap became a 0.354-in step the robot
+      // CLIMBED — measured, z rose to 0.337 in ten ticks and the run never recovered, stopping
+      // 5.5 in short of the hive. The obstacle is real and correctly placed (the plate rect IS
+      // `BB_FLOWER_FOOT`, the same box the 2D collider set uses); the START POSE was the bug.
+      // 30 in of run-up clears F4 by 3.8 in and still reaches 80 in/s well before the hive.
+      const startY = bracket.y - 30;
       r.pos.x = bracket.x;
       r.pos.y = startY;
       r.heading = Math.atan2(bracket.y - startY, bracket.x - r.pos.x);
@@ -618,9 +639,8 @@ export function sim3dChecks(check: Check): void {
       `18in final y=${y18.toFixed(2)}, bracket y=${bracket.y.toFixed(2)}`,
     );
     check(
-      'height: a 29-in (legal max) robot CLEARS the down cell -- what the CAD says, not what the ' +
-        `manual's BB_HIVE_BOTTOM_Z (${BB_HIVE_BOTTOM_Z}) says: the true tray geometry puts the ` +
-        `down-cell floor at ${bracket.z.toFixed(2)}in, above BB3_HEIGHT_MAX (29)`,
+      'height: a 29-in (legal max) robot CLEARS the down cell -- the CAD tray puts its floor at ' +
+        `BB_HIVE_BOTTOM_Z ${BB_HIVE_BOTTOM_Z}, above BB3_HEIGHT_MAX (${BB3_HEIGHT_MAX})`,
       y29 > bracket.y + 5,
       `29in final y=${y29.toFixed(2)}, bracket y=${bracket.y.toFixed(2)}, clearance z=${bracket.z.toFixed(2)}`,
     );
@@ -695,15 +715,29 @@ export function sim3dChecks(check: Check): void {
     const theta = hiveTiltAngle(w, a);
     const refTheta = hiveTrayRefTheta(a);
     const rest = (a === 'red' ? -1 : 1) * (Math.PI / 6); // BB_HIVE_UP_STAGED: red south up, blue north up
+    // ⚠️ AND THE CAD'S OWN `refTheta` IS READ HERE, not only the constant. `hiveTrayRefTheta`
+    // lives in the LIGHT `sim3d/tilt.ts` now (the 3D scene subtracts it on a frame where no 3D
+    // physics is loaded, so it may not touch the CAD collider set) and returns a plain 0. That is
+    // only true as long as the export really is un-tilted, which is what `cadTrayRefTheta` says —
+    // so this check is what keeps the two in step. A future field revision exported at some other
+    // pose fails HERE, loudly, instead of silently drawing the tray at double its tilt.
     check(
       `rest-pose: ${a}'s exported tray needs NO reference-angle correction (refTheta === 0)`,
-      refTheta === 0,
-      `refTheta=${refTheta}`,
+      refTheta === 0 && cadTrayRefTheta(a) === refTheta,
+      `refTheta=${refTheta} cad=${cadTrayRefTheta(a)}`,
     );
     check(
       `rest-pose: ${a}'s hive body rotation IS the absolute tilt at rest (CAD colliders on; up='${w.biobuzz!.hives[a].up}')`,
-      Math.abs(theta - refTheta - rest) < 1e-9,
-      `theta - refTheta=${(theta - refTheta).toFixed(4)} expected=${rest.toFixed(4)}`,
+      // 1e-4, NOT 1e-9, SINCE DAY 2, AND THE TOLERANCE IS THE POINT RATHER THAN A CONCESSION.
+      // Under the DYNAMIC tray `hiveTiltAngle` no longer computes an angle, it READS ONE BACK:
+      // `hives[a].angle`, written by the readback at `BB3_ROUND` like every other solved number,
+      // because "the JSON is the truth" is what makes a snapshot, a replay and a prediction world
+      // seat the tray identically. A rounded number cannot agree to 1e-9 with an exact one, and
+      // demanding that it does would be demanding that the tray's pose NOT be serialised.
+      // (On the kinematic path the value is still the timer's own exact formula and the residual
+      // is 0, so this tolerance costs that path nothing.)
+      Math.abs(theta - refTheta - rest) <= BB3_ROUND,
+      `theta - refTheta=${(theta - refTheta).toFixed(6)} expected=${rest.toFixed(6)}`,
     );
     const upSide: 1 | -1 = w.biobuzz!.hives[a].up === 'north' ? 1 : -1;
     const box = hiveCellLocalBox(upSide, a);
@@ -990,18 +1024,31 @@ export function sim3dChecks(check: Check): void {
 
   // ---- measurements vs config, and the ONE-GEOMETRY check ----------------------------------
   //
-  // Two different jobs in one block. (1) Print what the CAD actually measures against the config
-  // constants and the manual figures it either confirms or unsettles. (2) Assert that the
-  // PICTURE and the PHYSICS are the same geometry -- the owner's "the balls are on a different
-  // plane than the actual bottom of the hive", turned into a check.
+  // Two different jobs in one block. (1) Assert that every geometry constant IS what the CAD
+  // measures -- owner ruling, 2026-09-18: "the CAD is authoritative for dimensions". (2) Assert
+  // that the PICTURE and the PHYSICS are the same geometry -- the owner's "the balls are on a
+  // different plane than the actual bottom of the hive", turned into a check.
+  //
+  // WARNING: THESE ROWS WERE WIDE, PRINT-ONLY AND LABELLED "OPEN FINDING", AND ARE NOT ANY MORE.
+  // The field size (+-70.674, not 72), the tile pitch (23.528, not 24), the four flower bores and
+  // the down-cell floor (31.981, not 25.5) were all reported under tolerances between 0.6 and 7
+  // inches while the owner decided what to do about them. The ruling moved the constants, so the
+  // tolerance is `TOL` below -- tight enough that a re-run of `npm run field-cad` which moves any
+  // of them and does NOT regenerate `fieldDims.gen.ts` fails here.
+  //
+  // Nothing was loosened to make this pass: the deltas these rows measure went to 0.000, because
+  // `config.ts` now reads the generated file the measurements themselves produce.
   {
     const m = fieldMeasurements;
+    /** the one tolerance every CAD-vs-config row is held to now (in). Not zero, because the
+     * generated file rounds to 1e-3 and `config.ts` projects some of it through a cosine. */
+    const TOL = 0.25;
     function checkClose(name: string, actual: number, expected: number, tol: number): void {
       const delta = Math.abs(actual - expected);
       check(`measurements: ${name}`, delta <= tol, `CAD=${actual.toFixed(3)} config=${expected.toFixed(3)} delta=${delta.toFixed(3)} (tol ${tol})`);
     }
 
-    checkClose('hive pivot z', m.hive.pivotZ, m.hive.config_BB3_HIVE_PIVOT_Z, 0.05);
+    checkClose('hive pivot z', m.hive.pivotZ, BB3_HIVE_PIVOT_Z, TOL);
     for (const a of ['red', 'blue'] as const) {
       const t = m.hive.trays[a];
       checkClose(`${a} tray capture tilt is exactly the manual's 30deg`, Math.abs(t.captureThetaDeg), 30, 0.01);
@@ -1014,61 +1061,86 @@ export function sim3dChecks(check: Check): void {
         t.backSkinThicknessIn !== null && t.backSkinThicknessIn <= 0.1,
         `thickness=${t.backSkinThicknessIn}in`,
       );
-      checkClose(`${a} pivot x`, Math.abs(t.pivot[0]), BB_HIVE_X, 0.05);
+      checkClose(`${a} pivot x`, Math.abs(t.pivot[0]), BB_HIVE_X, TOL);
     }
 
-    // THE UP-CELL OPENING -- the CAD and the manual AGREE to about a tenth of an inch, and this
-    // is a real result, not a loosened tolerance: [53.375, 65.627] against Fig 9-10's [53.5,
-    // 65.6]. The earlier "[47.05, 68.85], OPEN FINDING" reading was an artifact of the collider
-    // export treating a WORLD-frame AABB as a tray-LOCAL extent (`docs/biobuzz/field-cad-audit.md`
-    // section 4.4), and it is CLOSED.
+    // THE UP-CELL OPENING -- the CAD and the MANUAL agree here to 0.13 in ([53.375, 65.497]
+    // against Fig 9-10's [53.5, 65.6]), so the ruling moved this constant by a tenth of an inch
+    // and CONFIRMED the figure rather than overturning it. The earlier "[47.05, 68.85], OPEN
+    // FINDING" reading was an artifact of the collider export treating a WORLD-frame AABB as a
+    // tray-LOCAL extent (`docs/biobuzz/field-cad-audit.md` section 4.4) and is long closed.
     for (const a of ['red', 'blue'] as const) {
       const open = m.hive.openingZ[a];
-      console.log(`[smoke-bb sim3d] measurements: ${a} up-cell opening z=[${open[0].toFixed(3)}, ${open[1].toFixed(3)}] vs BB_HIVE_OPEN_Z ${JSON.stringify(BB_HIVE_OPEN_Z)}`);
-      checkClose(`${a} up-cell opening BOTTOM vs BB_HIVE_OPEN_Z[0]`, open[0], BB_HIVE_OPEN_Z[0], 0.4);
-      checkClose(`${a} up-cell opening TOP vs BB_HIVE_OPEN_Z[1]`, open[1], BB_HIVE_OPEN_Z[1], 0.4);
+      checkClose(`${a} up-cell opening BOTTOM vs BB_HIVE_OPEN_Z[0]`, open[0], BB_HIVE_OPEN_Z[0], TOL);
+      checkClose(`${a} up-cell opening TOP vs BB_HIVE_OPEN_Z[1]`, open[1], BB_HIVE_OPEN_Z[1], TOL);
     }
 
-    // OPEN FINDING, owner ruling pending, nothing moved: the DOWN-cell clearance. The CAD puts
-    // the down cell's floor at ~31.98 in and the lowest hive structure of any kind (the Goal Rib's
-    // own lower corner, visual-only for physics) at ~30.65, against the manual's
-    // BB_HIVE_BOTTOM_Z 25.5. Printed, and asserted under a wide NAMED tolerance so a future CAD
-    // revision that moves it a long way still fails loudly.
+    // THE DOWN-CELL CLEARANCE -- the one figure where the CAD and the manual genuinely disagree,
+    // and the one the owner ruled on. `BB_HIVE_BOTTOM_Z` IS the CAD's 31.981 now; Fig 9-10's 25.5
+    // is 6.48 in low, and it has to be, because one rigid bar at 30 degrees cannot put the up
+    // mouth where the manual says AND the down floor where the manual says on this tray's own
+    // measured dimensions. Strict from here: a CAD revision that moves it fails loudly.
     for (const a of ['red', 'blue'] as const) {
-      const z = m.hive.downCellFloorZ[a];
-      console.log(`[smoke-bb sim3d] measurements: ${a} down-cell floor z=${z.toFixed(3)} vs BB_HIVE_BOTTOM_Z ${BB_HIVE_BOTTOM_Z} (OPEN FINDING)`);
-      checkClose(`${a} down-cell clearance vs BB_HIVE_BOTTOM_Z (OPEN FINDING, owner ruling pending)`, z, BB_HIVE_BOTTOM_Z, 7.0);
+      checkClose(`${a} down-cell clearance vs BB_HIVE_BOTTOM_Z`, m.hive.downCellFloorZ[a], BB_HIVE_BOTTOM_Z, TOL);
     }
+    // ...and the LOWEST structure of any kind, which is what G409's drive-under actually needs.
+    // ASSERTED, not merely printed: the whole reason the 25.5 could be let go is that a legal
+    // 29-in robot still clears the real assembly, and that is a claim, so it is a check.
     const lowest = m.hive.lowestStructureZAtRest;
-    console.log(
-      `[smoke-bb sim3d] measurements: lowest hive structure at rest = ${lowest.z.toFixed(3)}in ("${lowest.part}") -- a 29in robot ${lowest.z > 29 ? 'CLEARS' : 'does NOT clear'} it`,
+    checkClose('lowest hive structure at rest vs BB_HIVE_LOWEST_Z', lowest.z, BB_HIVE_LOWEST_Z, TOL);
+    check(
+      'measurements: a legal 29-in robot clears the LOWEST hive structure at rest (G409 drive-under survives the taller hive)',
+      lowest.z > BB3_HEIGHT_MAX,
+      `lowest=${lowest.z.toFixed(3)}in ("${lowest.part}") vs BB3_HEIGHT_MAX ${BB3_HEIGHT_MAX}`,
     );
 
-    // OPEN FINDING, owner ruling pending: THE FIELD IS SMALLER THAN THE CONSTANTS. The three
-    // deltas previously logged separately (wall inner face, flower ring centres, tile pitch) are
-    // one fact -- real FTC soft tiles are 23.53 in on centre, not 24, so the perimeter closes on
-    // 141.35 in inside the walls, not 144. Everything else follows: the wall reads +-70.674
-    // against BB_HALF_X 72, and a flower sitting on the real seam at +-23.53 and 2.595 in off the
-    // real wall reads ~1.4 in from `BB_FLOWERS` while agreeing with `BB_FLOWER_D` (2.54) to
-    // 0.055 in. Nothing moves for this: the 3D physics wall and floor stay analytic at the
-    // constants (owner rule) and the CAD numbers are not nudged either.
-    checkClose('wall inner face vs BB_HALF_X (OPEN FINDING: the real field is 141.35in inside, not 144)', m.walls.innerFace.right, BB_HALF_X, 1.5);
-    checkClose('tile pitch vs C.TILE 24 (OPEN FINDING, same one)', m.tiles.pitch, 24, 0.6);
+    // THE FIELD SIZE. Real FTC soft tiles are 23.528 in on centre, not 24, so the perimeter closes
+    // on 141.35 in inside the walls and not 144, and a flower on the real seam sits 1.5 in from
+    // where a 24-in tile would put it. That was three "OPEN FINDING" rows under 0.6-to-2-inch
+    // tolerances; it is one ruling and a set of strict rows now. All FOUR faces, not just the
+    // right one: the generated `FIELD_HALF` is their mean, so checking one face would not catch
+    // a future field that is no longer square.
+    for (const [name, cad] of [
+      ['left', m.walls.innerFace.left],
+      ['right', m.walls.innerFace.right],
+      ['rear', m.walls.innerFace.rear],
+      ['audience', m.walls.innerFace.audience],
+    ] as const) {
+      const cfg = name === 'left' || name === 'right' ? BB_HALF_X : BB_HALF_Y;
+      checkClose(`${name} wall inner face vs BB_HALF_*`, Math.abs(cad), cfg, TOL);
+    }
+    checkClose('tile pitch vs BB_TILE_PITCH', m.tiles.pitch, BB_TILE_PITCH, TOL);
+    check(
+      'measurements: BIOBUZZ does NOT draw the shared C.TILE -- 24 is DECODE and CR nominal tile, and this field is not built on it',
+      Math.abs(BB_TILE_PITCH - C.TILE) > 0.4,
+      `BB_TILE_PITCH=${BB_TILE_PITCH} C.TILE=${C.TILE}`,
+    );
     for (const f of m.flowers) {
       const cfg = BB_FLOWERS.find((x) => x.id === f.id)!;
       const c = f.bore.top.centre;
       const dist = Math.hypot(c[0] - cfg.x, c[1] - cfg.y);
       check(
-        `measurements: flower ${f.id} TOP-RING BORE centre vs BB_FLOWERS (OPEN FINDING: ~1.5in, the field-size delta)`,
-        dist <= 2.0,
+        `measurements: flower ${f.id} TOP-RING BORE centre IS its BB_FLOWERS position`,
+        dist <= TOL,
         `CAD bore=(${c[0].toFixed(3)},${c[1].toFixed(3)}) d=${f.bore.top.diameter.toFixed(3)} rms=${f.bore.top.rms.toFixed(4)} config=(${cfg.x},${cfg.y}) dist=${dist.toFixed(3)}`,
       );
-      // the stand-off from the flower's OWN wall is the figure `BB_FLOWER_D` actually names, and
-      // it agrees -- which is what proves the ~1.5in above is the field size, not the flower.
+      // the stand-off from the flower's OWN wall is the figure `BB_FLOWER_D` actually names.
       const wallFaceAbs = Math.abs(m.walls.innerFace.right);
       const standoff = Math.min(Math.abs(wallFaceAbs - Math.abs(c[0])), Math.abs(wallFaceAbs - Math.abs(c[1])));
-      checkClose(`flower ${f.id} bore stand-off from the CAD wall vs BB_FLOWER_D`, standoff, BB_FLOWER_D, 0.2);
-      checkClose(`flower ${f.id} top ring z vs BB_FLOWER_TOP_Z`, f.extent.z[1], BB_FLOWER_TOP_Z, 1.5);
+      checkClose(`flower ${f.id} bore stand-off from the CAD wall vs BB_FLOWER_D`, standoff, BB_FLOWER_D, TOL);
+      checkClose(`flower ${f.id} top-ring bore RADIUS vs BB_FLOWER_OPEN_R`, f.bore.top.diameter / 2, BB_FLOWER_OPEN_R, TOL);
+      // WARNING: THE ONE ROW STILL WIDE, AND NAMED FOR IT. `extent.z[1]` is the flower's HIGHEST
+      // point, which is the purple BACKSTOP at 22.654 -- not the top RING plate, whose own z band
+      // the measurements file does not carry (the audit measures it by hand at 20.254...21.404,
+      // section 6). `BB_FLOWER_TOP_Z` is therefore still the manual's 21.5, flagged in
+      // `config.ts`, and this row asserts only that the two stay consistent with a ~1.2-in
+      // backstop standing over the ring. Emitting the per-ring bands is a `convert.py` change.
+      checkClose(
+        `flower ${f.id} assembly top (the BACKSTOP) stands over BB_FLOWER_TOP_Z -- NOT a ring measurement, see the note`,
+        f.extent.z[1],
+        BB_FLOWER_TOP_Z,
+        1.5,
+      );
     }
 
     // TAPE: every strip is 1.000 in wide, and there is no other width on this field.
@@ -1090,6 +1162,164 @@ export function sim3dChecks(check: Check): void {
       'measurements: no on-tile tape strip runs onto a perimeter wall (the wall-bounded edge carries none)',
       touching.length === 0,
       `${touching.length} of ${onTile.length} strips reach x/y ${wallFace.toFixed(3)}: ${touching.map((t) => t.part).join(', ')}`,
+    );
+  }
+
+  // ---- ONE FIELD: the 2D wall colliders, the 3D wall colliders and the CAD all coincide ------
+  //
+  // The 2D and the 3D pipelines are two independent solvers over one field, and until the
+  // 2026-09-18 ruling they DISAGREED about where that field's edge was on purpose -- the 3D walls
+  // were pinned to the constants' 72 "for parity with the 2D pipeline and the staging" while the
+  // CAD measured 70.674, and the gap was reported rather than fixed. It is fixed, and this is the
+  // check that says so: three independently-reached numbers per side, 0.05 in apart.
+  //
+  //   1. the 2D collider set (`biobuzzColliders.statics`, the first `BB_WALL_COUNT` boxes), read
+  //      as `|tx| - hx` -- the inner face of the cuboid the 2D solve actually pushes against;
+  //   2. the 3D collider set, read by PROJECTING a point 2 in inside each wall onto the nearest
+  //      surface in a REAL built engine -- not by re-reading the constant the builder read, which
+  //      would prove nothing about the builder;
+  //   3. `field-measurements.json`'s `walls.innerFace`, which is the CAD, and therefore the GLB:
+  //      the `walls` node the scene draws is the tessellation of these same faces.
+  {
+    const wallEngine = (() => {
+      const w = mkWorld3d('free', 71);
+      step3d(w, 1 / 60, new Map());
+      return engineFor(w);
+    })();
+    const faces = [
+      { name: 'right', axis: 'x' as const, sign: 1, cad: fieldMeasurements.walls.innerFace.right, cfg: BB_HALF_X },
+      { name: 'left', axis: 'x' as const, sign: -1, cad: fieldMeasurements.walls.innerFace.left, cfg: -BB_HALF_X },
+      { name: 'rear', axis: 'y' as const, sign: 1, cad: fieldMeasurements.walls.innerFace.rear, cfg: BB_HALF_Y },
+      { name: 'audience', axis: 'y' as const, sign: -1, cad: fieldMeasurements.walls.innerFace.audience, cfg: -BB_HALF_Y },
+    ];
+    const TOL_FIELD = 0.05;
+    for (const f of faces) {
+      // (1) the 2D box whose inner face is nearest this side
+      const boxes = biobuzzColliders.statics.slice(0, BB_WALL_COUNT);
+      let face2d = NaN;
+      for (const b of boxes) {
+        const centre = f.axis === 'x' ? b.tx : b.ty;
+        const half = f.axis === 'x' ? b.hx : b.hy;
+        if (Math.sign(centre) !== f.sign || centre === 0) continue;
+        const inner = centre - f.sign * half;
+        if (Number.isNaN(face2d) || Math.abs(inner - f.cfg) < Math.abs(face2d - f.cfg)) face2d = inner;
+      }
+      // (2) the 3D collider, measured rather than assumed
+      const probe = {
+        x: f.axis === 'x' ? f.cfg - f.sign * 2 : 0,
+        y: f.axis === 'y' ? f.cfg - f.sign * 2 : 0,
+        z: 6,
+      };
+      const proj = wallEngine.world3d.projectPoint(probe, false);
+      const face3d = proj ? (f.axis === 'x' ? proj.point.x : proj.point.y) : NaN;
+      const spread = Math.max(
+        Math.abs(face2d - f.cad),
+        Math.abs(face3d - f.cad),
+        Math.abs(face2d - face3d),
+      );
+      check(
+        `one field: the ${f.name} wall is the same plane in the 2D colliders, the 3D colliders and the CAD (within ${TOL_FIELD}in)`,
+        spread <= TOL_FIELD,
+        `2D=${face2d.toFixed(3)} 3D=${face3d.toFixed(3)} CAD/GLB=${f.cad.toFixed(3)} spread=${spread.toFixed(4)}`,
+      );
+    }
+  }
+
+  // ---- ONE FIELD, PART TWO: the tape the renderers draw IS the CAD's own 16 strips -----------
+  //
+  // `BB_TAPE` is generated from `field-measurements.json`, so this is not a re-derivation -- it
+  // is a check that the generated table still describes the SAME rectangles the measurements do,
+  // which is what catches a hand-edit of the gen file or a mis-classification in the emitter (the
+  // strips are grouped by the nominal length in their STEP part names, and a future field that
+  // renames a part would silently drop one into the wrong zone).
+  //
+  // The renderers are covered separately, by source: both of them draw `BB_TAPE` rather than an
+  // outline of `BB_LZ`/`BB_GARDEN`, which is what the owner's "zones bounded with the wall don't
+  // have tape on the wall" actually required.
+  {
+    const onTile = fieldMeasurements.tape.parts.filter((t) => t.plane === 'tiles');
+    const drawn = [
+      ...BB_TAPE.loadingZone.red,
+      ...BB_TAPE.loadingZone.blue,
+      ...BB_TAPE.garden.red,
+      ...BB_TAPE.garden.blue,
+    ];
+    check(
+      'one field: the drawn tape is exactly the CAD\'s on-tile strip count',
+      drawn.length === onTile.length,
+      `drawn=${drawn.length} cad=${onTile.length}`,
+    );
+    let worst = 0;
+    let worstName = '';
+    for (const t of onTile) {
+      let best = Infinity;
+      for (const d of drawn) {
+        const e = Math.max(
+          Math.abs(d.x0 - t.x[0]),
+          Math.abs(d.x1 - t.x[1]),
+          Math.abs(d.y0 - t.y[0]),
+          Math.abs(d.y1 - t.y[1]),
+        );
+        if (e < best) best = e;
+      }
+      if (best > worst) {
+        worst = best;
+        worstName = t.part;
+      }
+    }
+    check(
+      'one field: every CAD on-tile tape strip has a drawn rectangle at the same place (within 0.002in, the gen file\'s own rounding)',
+      worst <= 0.002,
+      `worst ${worst.toFixed(4)}in on "${worstName}"`,
+    );
+    // ...and the strips stop clear of the wall, which is the rule the whole tape fix is about.
+    const wallFaceAbs = Math.abs(fieldMeasurements.walls.innerFace.right);
+    const touching = drawn.filter(
+      (d) => Math.max(Math.abs(d.x0), Math.abs(d.x1), Math.abs(d.y0), Math.abs(d.y1)) >= wallFaceAbs - 1e-3,
+    );
+    check(
+      'one field: no DRAWN tape strip runs onto a perimeter wall',
+      touching.length === 0,
+      `${touching.length} of ${drawn.length} reach ${wallFaceAbs.toFixed(3)}`,
+    );
+  }
+
+  // ---- THE GENERATED FILE IS THE MEASUREMENTS, still --------------------------------------
+  //
+  // `src/games/biobuzz/fieldDims.gen.ts` is what `config.ts` reads, and it is written by
+  // `npm run field-cad`, which is a heavyweight pipeline nobody runs on a whim: a STEP download,
+  // a CadQuery venv and a glTF toolchain. So the file in the repo could drift from the JSON in
+  // the repo in either direction -- a measurements re-run committed without the emitter, or a
+  // hand-edit of the generated constants -- and NOTHING else would notice, because every other
+  // check in this file reads the generated file for both sides of its comparison.
+  //
+  // RE-RENDER AND DIFF, character for character. The emitter is deterministic (its header stamps
+  // the pinned STEP's identity and the sha256 of the measurements file, never a clock), so this
+  // is exact.
+  //
+  // LINE ENDINGS ARE NORMALISED FIRST, and that is not a loosened comparison. This repo has no
+  // `.gitattributes` and `core.autocrlf` is true on Windows, so a FRESH CLONE gets the committed
+  // file back with CRLF while `emit-dims.mjs` writes LF -- the file is identical and every line
+  // would differ. The check is about the CONTENT the emitter produced; the checkout's EOL policy
+  // is git's business.
+  {
+    const genPath = 'src/games/biobuzz/fieldDims.gen.ts';
+    const lf = (t: string): string => t.split('\r\n').join('\n');
+    const onDisk = lf(readFileSync(genPath, 'utf8'));
+    const rendered = lf(renderDims(readFileSync('public/models/biobuzz/field-measurements.json', 'utf8')));
+    let firstDiff = -1;
+    for (let i = 0; i < Math.max(onDisk.length, rendered.length); i++) {
+      if (onDisk[i] !== rendered[i]) {
+        firstDiff = i;
+        break;
+      }
+    }
+    check(
+      'fieldDims.gen.ts is exactly what emit-dims.mjs renders from field-measurements.json (run `npm run field-cad` if this fails)',
+      firstDiff === -1,
+      firstDiff === -1
+        ? `${onDisk.length} bytes`
+        : `first difference at byte ${firstDiff}: disk ${JSON.stringify(onDisk.slice(firstDiff, firstDiff + 60))} vs rendered ${JSON.stringify(rendered.slice(firstDiff, firstDiff + 60))}`,
     );
   }
 

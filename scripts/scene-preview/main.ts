@@ -27,6 +27,7 @@ import { SIM_DT } from '../../src/config';
 import { viewAngleOf } from '../../src/sim/field';
 import type { Alliance, RobotCommand, World } from '../../src/types';
 import type { SceneCamera } from '../../src/games/module';
+import { setCameraPref } from '../../src/games/biobuzz/graphics/store';
 import { Camera } from '../../src/render/camera';
 import { drawBiobuzzField, drawHiveCanopy } from '../../src/games/biobuzz/drawField';
 import { drawBiobuzzBalls } from '../../src/games/biobuzz/draw';
@@ -199,9 +200,16 @@ async function main(): Promise<void> {
   let camera: SceneCamera = 'driver';
   let alliance: Alliance = 'red';
   let probing = false;
+  /** RETICLE DEMO (Day 2): park robot 0 at a firing distance from its own HIVE, facing it, and
+   * KEEP STEPPING — the turret only slews onto Aim Assist's target inside `biobuzzStep` stage
+   * 5b, so freezing the world (what `probing` does) would show the reticle wherever the barrel
+   * happened to be pointing. Re-pinned every frame after the step, so drive/shove cannot move it
+   * off the mark while you are looking at the ring. */
+  let reticleDemo = false;
   const headings = [0, Math.PI / 2, Math.PI, -Math.PI / 2];
   let headingIdx = 0;
   const camBtn = document.getElementById('camBtn')!;
+  const reticleBtn = document.getElementById('reticleBtn')!;
   const allianceBtn = document.getElementById('allianceBtn')!;
   const probeBtn = document.getElementById('probeBtn')!;
   const headingBtn = document.getElementById('headingBtn')!;
@@ -214,9 +222,20 @@ async function main(): Promise<void> {
   window.addEventListener('resize', resize);
   resize();
 
+  // all FOUR cameras (`SceneCamera`, Day 2): driver → overhead → chase → orbit. The scene
+  // resolves the DEVICE preference over whatever is passed here, so this page also has to be
+  // able to say "leave it alone": `setCameraPref('auto')` below, once, does that — otherwise a
+  // preference left behind by the app in the same browser profile would quietly win over every
+  // click of this button and make the page look broken.
+  const CAMERAS: SceneCamera[] = ['driver', 'overhead', 'chase', 'orbit'];
+  setCameraPref('auto');
   camBtn.addEventListener('click', () => {
-    camera = camera === 'driver' ? 'overhead' : 'driver';
+    camera = CAMERAS[(CAMERAS.indexOf(camera) + 1) % CAMERAS.length];
     camBtn.textContent = `Camera: ${camera}`;
+  });
+  reticleBtn.addEventListener('click', () => {
+    reticleDemo = !reticleDemo;
+    reticleBtn.textContent = `Reticle demo: ${reticleDemo ? 'on' : 'off'}`;
   });
   allianceBtn.addEventListener('click', () => {
     alliance = alliance === 'red' ? 'blue' : 'red';
@@ -238,6 +257,19 @@ async function main(): Promise<void> {
     if (probing) world.robots[0].heading = headings[headingIdx];
   });
   checkBtn.addEventListener('click', () => runChecks());
+
+  /** park robot 0 in front of its own HIVE, aimed at it, with a full hopper — the pose the
+   * reticle is easiest to read at (a turret at ~55 in from the pivot clears the frame's top bar
+   * and the ring lands in the up CELL rather than on the tray's back wall). */
+  function pinReticleDemoRobot(): void {
+    const r = world.robots[0];
+    // the red HIVE sits at −BB_HIVE_X; stand off it along +x and face back down the axis
+    r.pos = { x: -BB_HIVE_X + 55, y: 6 };
+    r.vel = { x: 0, y: 0 };
+    r.angVel = 0;
+    r.heading = Math.PI;
+    if (r.hopper.length === 0) r.hopper.push('yellow');
+  }
 
   // ── SIDE-BY-SIDE 2D CANVAS ─────────────────────────────────────────────────────────────────
   const canvas2d = document.getElementById('host2d') as HTMLCanvasElement;
@@ -328,6 +360,7 @@ async function main(): Promise<void> {
       return;
     }
     if (!probing) biobuzzStep(world, SIM_DT, commands);
+    if (reticleDemo) pinReticleDemoRobot();
     tick++;
     const localRobotId = alliance === 'red' ? 0 : 2;
     scene.render(world, {
@@ -343,7 +376,8 @@ async function main(): Promise<void> {
     if (tick % 30 === 0) {
       status(
         `tick ${tick} · camera ${camera} · viewpoint ${alliance} · probing ${probing} · ` +
-          `balls in flight: ${world.balls.filter((b) => b.state.kind === 'flight').length}`,
+          `balls in flight: ${world.balls.filter((b) => b.state.kind === 'flight').length} · ` +
+          `reticle demo ${reticleDemo ? 'on' : 'off'}`,
       );
     }
     requestAnimationFrame(frame);
@@ -426,12 +460,13 @@ async function main(): Promise<void> {
         // PER-SIDE named node to measure an inner face off of the way the constants-built
         // field's four separate `wall:<side>` meshes allow — a row testing a constants-only
         // shape, adapted per item 12: the real inner-face figure is asserted from the CAD's
-        // OWN trimesh vertices (`cadWallExtents`) in the SIM3D smoke lane's measurements check,
-        // not re-derived here from a scene-graph lookup that cannot exist on this path.
+        // OWN measured faces in the SIM3D lane's `one field` check (2D colliders vs 3D colliders
+        // vs the CAD, 0.05in), not re-derived here from a scene-graph lookup that cannot exist
+        // on this path.
         const wholeWalls = bbScene.getObjectByName('walls');
         rows.push({
           name: n,
-          expected: 'inner face at ±72 (constants path) — see the SIM3D measurements check on the CAD path',
+          expected: `inner face at ±${BB_HALF_X} (constants path, which IS the CAD) — see the SIM3D \`one field\` check on the CAD path`,
           actual: wholeWalls ? 'skipped — CAD walls are one merged mesh, no per-side node' : 'MISSING',
           pass: !!wholeWalls,
         });
@@ -507,13 +542,12 @@ async function main(): Promise<void> {
       }
     }
 
-    // FLOWERS — the ring position row STAYS ON THE CONSTANTS (`f.x, f.y` from `BB_FLOWERS`), per
-    // item 12, but with the OPEN FINDING's tolerance rather than the default 0.25in: a memory
-    // note from the owner found the CAD's own ring centres sit ~1.4-1.5in from `BB_FLOWERS` (e.g.
-    // F1 config (-69.46,-24.00) vs CAD (-68.04,-23.39), confirmed again by the SIM3D smoke lane's
-    // measurements check) — do NOT move the constants, do NOT nudge the GLB; this wider,
-    // documented tolerance is the whole adaptation.
-    const FLOWER_OPEN_FINDING_TOL = 2.0;
+    // FLOWERS — the ring row compares the drawn ring against `BB_FLOWERS`, at the DEFAULT 0.25in.
+    //
+    // It ran at 2.0in until 2026-09-18, because the CAD's own ring centres sat ~1.5in from
+    // `BB_FLOWERS` and the owner had not yet ruled on which was right. The ruling is that the CAD
+    // is, `BB_FLOWERS` IS the measured bore centre now, and the wide tolerance has no reason to
+    // exist — it would only hide the GLB and the constants parting company again.
     BB_FLOWERS.forEach((f, idx) => {
       const ringBox = box(`flower:${idx}:ring`);
       if (ringBox) {
@@ -521,9 +555,9 @@ async function main(): Promise<void> {
         const dx = Math.abs(c.x - f.x);
         const dy = Math.abs(c.y - f.y);
         const dz = Math.abs(c.z - BB_FLOWER_TOP_Z);
-        const pass = dx <= FLOWER_OPEN_FINDING_TOL && dy <= FLOWER_OPEN_FINDING_TOL && dz <= FLOWER_OPEN_FINDING_TOL;
+        const pass = dx <= TOL && dy <= TOL && dz <= TOL;
         rows.push({
-          name: `flower:${idx}:ring (open finding, ${FLOWER_OPEN_FINDING_TOL}in tolerance)`,
+          name: `flower:${idx}:ring`,
           expected: `(${f.x.toFixed(2)},${f.y.toFixed(2)},${BB_FLOWER_TOP_Z.toFixed(2)})`,
           actual: `(${c.x.toFixed(2)},${c.y.toFixed(2)},${c.z.toFixed(2)})`,
           pass,
@@ -531,18 +565,33 @@ async function main(): Promise<void> {
       } else {
         // the CAD field's flower is ONE mesh (`flower_<idx>`), not decomposed into named
         // ring/foot/pipe children the way the constants-built flower's own group is — fall back
-        // to the WHOLE flower node's own position, same tolerance, same reasoning.
+        // to the WHOLE flower node.
+        //
+        // ⚠️ AND MEASURE IT PER AXIS, because a flower ASSEMBLY is not symmetric about its own
+        // bore in DEPTH: the under-field bracket reaches behind the wall plane and the ring
+        // plates protrude into the field, so the node's bounding-box centre sits ~0.62 in behind
+        // the bore on the wall-NORMAL axis. That is geometry, not misplacement — comparing a
+        // bbox centre to a bore centre and calling the difference an error is what the old 2-in
+        // "open finding" tolerance was quietly absorbing.
+        //   • ALONG the wall the assembly IS symmetric, and that axis carries the fact worth
+        //     checking here (the flower sits on its tile seam), so it is held to the default TOL.
+        //   • ACROSS the wall the bore must simply lie INSIDE the node, and the real stand-off is
+        //     asserted at 0.25 in against the CAD in the SIM3D lane's measurements check, off the
+        //     least-squares bore fit rather than a bounding box.
         const whole = box(`flower:${idx}`);
         if (!whole) {
           rows.push({ name: `flower:${idx}`, expected: 'present', actual: 'MISSING', pass: false });
         } else {
           const c = whole.getCenter(new THREE.Vector3());
-          const pass = Math.hypot(c.x - f.x, c.y - f.y) <= FLOWER_OPEN_FINDING_TOL;
+          const n = FLOWER_MOUTH[f.wall];
+          const alongErr = n.x !== 0 ? Math.abs(c.y - f.y) : Math.abs(c.x - f.x);
+          const boreInside =
+            f.x >= whole.min.x - TOL && f.x <= whole.max.x + TOL && f.y >= whole.min.y - TOL && f.y <= whole.max.y + TOL;
           rows.push({
-            name: `flower:${idx} (whole node, CAD is one mesh; open finding, ${FLOWER_OPEN_FINDING_TOL}in tolerance)`,
-            expected: `(${f.x.toFixed(2)},${f.y.toFixed(2)})`,
-            actual: `(${c.x.toFixed(2)},${c.y.toFixed(2)})`,
-            pass,
+            name: `flower:${idx} (whole node — the CAD flower is one mesh)`,
+            expected: `centred on the seam at ${(n.x !== 0 ? f.y : f.x).toFixed(2)} along its wall, bore inside the node`,
+            actual: `along-wall off by ${alongErr.toFixed(2)}, bore ${boreInside ? 'inside' : 'OUTSIDE'} bbox (centre ${c.x.toFixed(2)},${c.y.toFixed(2)})`,
+            pass: alongErr <= TOL && boreInside,
           });
         }
       }

@@ -4,10 +4,11 @@ import { randomUUID } from 'node:crypto';
 import { monitorEventLoopDelay } from 'node:perf_hooks';
 import v8 from 'node:v8';
 import { Room, type Client } from './room';
-import { decodeClientMsg, encodeMsg, DEFAULT_ROOM_CONFIG, RATED_FORMATS, SERVER_CAPS, type ClientMsg, type LiveRoom, type RoomConfig, type ServerMsg } from '../src/net/protocol';
+import { decodeClientMsg, encodeMsg, BB3D_REFUSAL, DEFAULT_ROOM_CONFIG, physicsAllowed, RATED_FORMATS, SERVER_CAPS, type ClientMsg, type LiveRoom, type RoomConfig, type ServerMsg } from '../src/net/protocol';
 import { sanitizePlayer } from '../src/net/sanitize';
 import { authConfigured, verifyAuthToken } from './auth';
 import { initPhysics } from '../src/sim/physicsEngine';
+import { initPhysics3d } from '../src/games/biobuzz/sim3d/engine';
 import { migrate } from './db/migrate';
 import { persistMatch, persistDodges, persistBehaviour } from './persist';
 import { routeTarget } from './routing';
@@ -2224,6 +2225,10 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
     const cfg: RoomConfig = {
       ...(msg.config ?? DEFAULT_ROOM_CONFIG),
       game: coerceGameId(msg.config?.game),
+      // the untrusted physics, forced to the enum. Anything that is not the one known
+      // non-default value becomes ABSENT, i.e. `'2d'` — a room is a thing the server has to
+      // be able to step, so an unrecognised string must not reach `createWorld`.
+      physics: msg.config?.physics === '3d' ? '3d' : undefined,
     };
     if (!r && MAX_ROOMS > 0 && rooms.size >= MAX_ROOMS) {
       // AT CAPACITY. Refuse to HOST anything new; joining a room that already exists
@@ -2302,6 +2307,23 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
     if (created && dbEnabled) {
       const pending = await takePendingMatch(code).catch(() => null);
       if (pending) r.applyPending(pending);
+    }
+    /**
+     * THE `'bb3d'` GATE — asked here, after the room's physics is knowable and before a seat
+     * is spent on a client that cannot simulate it.
+     *
+     * After `applyPending`, because a matchmaker-staged room is `'3d'` by virtue of its
+     * staged roster and reads `'2d'` until that roster has been claimed — gating before it
+     * would let an old client into the one kind of room that must never contain one.
+     *
+     * `abandon()` on the way out for the same reason every other early return here calls it:
+     * this attempt may have created the room, and a room nobody ever joined would otherwise
+     * be counted against `MAX_ROOMS` for the life of the process.
+     */
+    if (!physicsAllowed(r.physics, Array.isArray(msg.caps) ? msg.caps : [])) {
+      send({ t: 'error', message: BB3D_REFUSAL });
+      abandon();
+      return;
     }
     let user: Awaited<ReturnType<typeof verifyAuthToken>> = null;
     if (msg.authToken) user = await verifyAuthToken(msg.authToken).catch(() => null);
@@ -2517,6 +2539,14 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
           send({ t: 'error', message: 'This match already has as many spectators as it can carry. Try again in a moment.' });
           return;
         }
+        // A WATCHER STEPS THE WORLD TOO. A spectator session has no robot to predict, but it
+        // still advances the world between snapshots off the authoritative commands (see
+        // `stepServer`'s spectator arm), so a build that cannot run this room's physics cannot
+        // watch it either — and the honest answer is the same sentence a driver gets.
+        if (!physicsAllowed(r.physics, Array.isArray(msg.caps) ? msg.caps : [])) {
+          send({ t: 'error', message: BB3D_REFUSAL });
+          return;
+        }
         const spec = {
           id,
           send,
@@ -2547,6 +2577,14 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
       } else if (msg.t === 'rejoin') {
         if (room) return;
         const r = rooms.get(msg.room.toLowerCase());
+        // THE THIRD DOOR. A seat in a `'3d'` room can only have been taken by a client that
+        // passed the gate on `join`, so this refuses almost nothing — but it refuses it with
+        // the sentence that explains it, instead of a bare `rejoined: ok=false` that reads as
+        // "your slot expired".
+        if (r && !physicsAllowed(r.physics, Array.isArray(msg.caps) ? msg.caps : [])) {
+          send({ t: 'error', message: BB3D_REFUSAL });
+          return;
+        }
         // hand over EVERY sender, not just `send` — see the note in `Room.reattach`
         const nc = r ? r.reattach(msg.clientId, send, sendRaw, backlog) : null;
         if (r && nc !== null) {
@@ -2635,6 +2673,25 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
         send({ t: 'reported', ok: true });
       } else if (msg.t === 'queue') {
         if (room) return; // already in a room/match
+        /**
+         * THE FOURTH DOOR, and the only one that refuses before a room exists.
+         *
+         * Every matchmade BIOBUZZ room is staged `'3d'` (the server decides — see
+         * `stagedPhysics` in matchmaking.ts and `Room.physics`), so a client that cannot step
+         * it must be turned away HERE rather than at the door of the room it is about to be
+         * paired into. Refusing at the door instead would cancel a staged pairing and charge
+         * three other people for a dodge that was a version skew.
+         *
+         * BIOBUZZ is alpha-only, so no old client legitimately queues for it: the message is
+         * for the one case that can happen, a stale tab left open across a deploy.
+         */
+        if (
+          coerceGameId(msg.game) === 'biobuzz' &&
+          !physicsAllowed('3d', Array.isArray(msg.caps) ? msg.caps : [])
+        ) {
+          send({ t: 'error', message: BB3D_REFUSAL });
+          return;
+        }
         const gen = ++queueGen;
         /** has this queue attempt been overtaken — cancelled, closed, re-issued, or already
          *  seated in a room — while one of its awaits was outstanding? */
@@ -2831,8 +2888,23 @@ console.log(
   }`,
 );
 });
-initPhysics()
-  .then(() => console.log('[server] Rapier physics ready - matches enabled'))
+/**
+ * BOTH physics backends, resolved before any room can be started.
+ *
+ * `initPhysics()` is the shared Rapier 2D solve every game runs; `initPhysics3d()` is
+ * BIOBUZZ's deterministic Rapier 3D one, which a ranked/matchmade/record BIOBUZZ room steps on
+ * its very first tick. Awaited TOGETHER and treated as one gate, for the reason the 2D one has
+ * always exited on failure: a server that accepts joins it cannot simulate is worse than a
+ * server that is not there — the room opens, four people are seated, and the first tick throws
+ * into a loop nobody is watching.
+ *
+ * It costs a wasm compile at boot on a deploy where no 3D room may ever be opened. That is
+ * accepted deliberately: the alternative is loading it lazily on the first 3D room, i.e. an
+ * await on the path that stages a ranked match, where a slow or failed load becomes a
+ * cancelled pairing and a dodge charge for four people who did nothing.
+ */
+Promise.all([initPhysics(), initPhysics3d()])
+  .then(() => console.log('[server] Rapier physics ready (2D + BIOBUZZ 3D) - matches enabled'))
   .catch((e) => {
     console.error('[server] failed to init physics:', e);
     process.exit(1);

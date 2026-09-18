@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { Alliance, Artifact, ArtifactColor, RobotCommand, World } from '../../src/types';
-import { PIN_WALL_SLOP, SIM_DT } from '../../src/config';
+import { PIN_WALL_SLOP, SIM_DT, START_TOUCH_TOL } from '../../src/config';
 import { MATCH_SETTLE_MAX_S, newSettleClock, settleStep } from '../../src/sim/settle';
 import { bbPinSolid } from '../../src/games/biobuzz/colliders';
 import { createBiobuzzWorld } from '../../src/games/biobuzz/spawn';
@@ -1712,9 +1712,17 @@ function cueChecks(check: Check): void {
     // Robot 1 is still flat against the far wall, so it does neither.
     //
     // ⚠️ BOTH POSES ARE MEASURED OFF THE FOOTPRINT, WHICH IS 21 × 17, NOT THE 15 × 17 CHASSIS:
-    // `robotExtents` adds the sweeper's reach to each end. At x = −63 robot 0's corner is at
-    // −73.5, i.e. THROUGH the wall, and a robot that is not inside the field has not left it.
-    place(m, 0, -59, 45);
+    // `robotExtents` adds the sweeper's reach to each end, so robot 0's corner is 10.5 in from
+    // its centre and a pose that looks clear by an inch is not.
+    //
+    // ⚠️ AND IT IS DERIVED FROM THE WALL, NOT TYPED. It used to be the literal x = −59, which
+    // put that corner at −69.5 — a comfortable 2.5 in inside the old ±72 wall, and 1.17 in
+    // inside the CAD wall at −70.674, i.e. WITHIN `START_TOUCH_TOL`. The robot therefore still
+    // counted as against the wall it started on and never LEFT. `CLEAR_MARGIN` is the slack past
+    // the tolerance; the pose still overlaps `BB_LZ.red` (whose inner edge is at −59.101) by
+    // more than four inches, which is what PARK needs.
+    const CLEAR_MARGIN = 2;
+    place(m, 0, -BB_HALF_X + 10.5 + START_TOUCH_TOL + CLEAR_MARGIN, (BB_LZ.red.y0 + BB_LZ.red.y1) / 2);
     place(m, 1, BB_HALF_X - 10.5, 0);
     markStarts(m);
     const none = new Map();

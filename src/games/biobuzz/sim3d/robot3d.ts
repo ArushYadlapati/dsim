@@ -1,7 +1,7 @@
 import type { RobotState } from '../../../types';
 import type { DriveWrench } from '../../../sim/robot';
-import type { Engine3d } from './engine';
-import { robotBodyOf } from './engine';
+import type { Engine3d } from './engineImpl';
+import { robotBodyOf } from './engineImpl';
 
 /**
  * BIOBUZZ 3D PHYSICS -- robot pose + wrench application (Day 1, `docs/biobuzz/plan-3d.md`

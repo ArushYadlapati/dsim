@@ -222,7 +222,17 @@ PART_RULES: tuple[PartRule, ...] = (
     PartRule(r"flower backstop", "flowers", "flower_support", "plastic", True),
     PartRule(r"flower peanut support", "flowers", "flower_support", "metal", True),
     PartRule(r"flower under field bracket", "flowers", "flower_support", "metal", True),
-    PartRule(r"flower field bracket", "flowers", "flower_support", "metal", True),
+    # ⚠️ VISUAL ONLY, and it is the ANNULUS RULE again in its third costume. `Flower Field
+    # Bracket` is a C-shaped plate at z 11.45…11.84 that hugs the tube from the WALL side and
+    # bolts to the perimeter; its own material stops 2.07 in from the tube's axis. A CONVEX HULL
+    # of a C fills the C, so the hull's field-side face sits 0.975 in from that axis — a lid
+    # across the middle of the flower. Measured before it was excluded: a dropped NECTAR came to
+    # rest on it at z 13.03, eight inches up a tube it should have fallen straight down, which
+    # read exactly like "the middle bore is too small".
+    # Nothing is lost by dropping it: the 1.65 in of it that is in front of the perimeter wall is
+    # already occupied by the HIPS pipes and the peanut supports, which are real hulls, and the
+    # rest of it is inside the analytic wall.
+    PartRule(r"flower field bracket", "flowers", "flower_ring", "metal", False),
 )
 _COMPILED_RULES = tuple((re.compile(r.pat, re.IGNORECASE), r) for r in PART_RULES)
 MISC_RULE = PartRule(r"", "misc", "misc", "misc", False)
@@ -972,6 +982,107 @@ LIN_LOW_MM, ANG_LOW = 20.0, 1.1
 # would otherwise have to decimate away.
 LIN_COL_MM, ANG_COL = 4.0, 1.0
 
+# ─────────────────────────────────────────────────────────────────────────────────────────
+# 7b. THE FLOWER RING PLATES — the one feature the pipeline measured but never EXPORTED
+# ─────────────────────────────────────────────────────────────────────────────────────────
+#
+# A FLOWER is a vertical tube: three horizontal plates (`Flower Layer X` lower, `B` mid, `C`
+# top), each with a circular bore, held apart by four HIPS pipes and closed on the wall side by
+# the backstop extrusion. The plates are the whole mechanism — what an element passes, what it
+# seats on, and what the 3.55-in retrieval opening is the gap between — and until now they were
+# `collide: False` with the reason written next to the rule: a CONVEX HULL of an annulus fills
+# its own centre hole, which is exactly the opening a POLLEN must pass through.
+#
+# That reason is a fact about HULLS, not about the plate, so the fix is to stop asking for one.
+# Each plate is exported PARAMETRICALLY — its z band, its measured bore, and its own rectangular
+# footprint — and `sim3d/flowerTube.ts` tessellates "rectangle minus disc" into a TRIMESH at
+# runtime. Parametric rather than baked vertices for one measured reason: `field-colliders.json`
+# is compiled into `fieldColliders.gen.ts` and imported STATICALLY by `step.ts`, so every vertex
+# here would ship in the MAIN client bundle; eleven numbers per plate do not.
+FLOWER_RING_ORDER = (("lower", r"flower layer x"), ("mid", r"flower layer b"), ("top", r"flower layer c"))
+
+
+def fit_bore(pts):
+    """Least-squares circle through a ring plate's own inner cylindrical surface.
+
+    A bbox midpoint is skewed off-axis by the backstop and the wall-side bracket; the four HIPS
+    pipes' centroid is better but still assumes they ring the bore symmetrically. This fits the
+    BORE: take the plate's own side-wall band (trimming 12 % off each end in z so the chamfers
+    at the faces do not pull the radius), keep the inner 35 % by radius, and least-squares a
+    circle, re-centring 8 times. `None` for a point set too small to fit."""
+    import numpy as np
+
+    A = np.asarray(pts, dtype=float)
+    if len(A) < 24:
+        return None
+    zmin, zmax = A[:, 2].min(), A[:, 2].max()
+    band = A[(A[:, 2] > zmin + 0.12 * (zmax - zmin)) & (A[:, 2] < zmax - 0.12 * (zmax - zmin))]
+    if len(band) < 24:
+        band = A
+    c = np.array([band[:, 0].mean(), band[:, 1].mean()])
+    r = 0.0
+    inner = band
+    for _ in range(8):
+        rad = np.linalg.norm(band[:, :2] - c, axis=1)
+        inner = band[rad <= np.percentile(rad, 35)]
+        if len(inner) < 8:
+            break
+        x, y = inner[:, 0], inner[:, 1]
+        M = np.stack([x, y, np.ones_like(x)], 1)
+        sol, *_ = np.linalg.lstsq(M, x * x + y * y, rcond=None)
+        c = np.array([sol[0] / 2, sol[1] / 2])
+        r = math.sqrt(max(0.0, sol[2] + c[0] * c[0] + c[1] * c[1]))
+    rad = np.linalg.norm(inner[:, :2] - c, axis=1)
+    return {
+        "centre": [round(float(c[0]), 4), round(float(c[1]), 4)],
+        "radius": round(float(r), 4),
+        "diameter": round(float(2 * r), 4),
+        "rms": round(float(np.std(rad)), 4),
+        "n": int(len(inner)),
+    }
+
+
+def measure_flower_rings(placed, to_sim):
+    """`[{label: {bore, z, rect}}]`, one dict per FLOWER, in `BB_FLOWERS` order.
+
+    ONE tessellation, TWO consumers: the collider file (which turns each entry into a trimesh at
+    runtime) and the measurements file (which reports the bores and the bands). Fitting the bore
+    twice from two call sites is how the two files drift apart.
+
+    `rect` is the plate's OWN footprint, not the flower assembly's: the assembly extent includes
+    the backstop reaching above the top plate and the under-field bracket reaching behind the
+    wall plane, which is why `BB_FLOWER_FOOT` could not be read off `flowers[].extent` and stayed
+    a hand-typed manual figure until now."""
+    import numpy as np
+
+    out = []
+    for k in range(len(BB_FLOWERS)):
+        mine = [p for p in placed if p.node == f"flower_{k}"]
+        rings = {}
+        for label, pat in FLOWER_RING_ORDER:
+            pts = []
+            for p in mine:
+                if not re.search(pat, p.inst.name, re.I):
+                    continue
+                pos_mm, _ = mesh_shape_mm(p.inst.shape, 0.3, 0.2)
+                pts.extend(to_sim(q) for q in pos_mm)
+            if not pts:
+                continue
+            bore = fit_bore(pts)
+            if not bore:
+                continue
+            A = np.asarray(pts, dtype=float)
+            rings[label] = {
+                "bore": bore,
+                "z": [round(float(A[:, 2].min()), 4), round(float(A[:, 2].max()), 4)],
+                "rect": {
+                    "x": [round(float(A[:, 0].min()), 4), round(float(A[:, 0].max()), 4)],
+                    "y": [round(float(A[:, 1].min()), 4), round(float(A[:, 1].max()), 4)],
+                },
+            }
+        out.append(rings)
+    return out
+
 
 def main() -> None:
     import argparse
@@ -1385,17 +1496,38 @@ def main() -> None:
         )
 
     # ---- flowers -------------------------------------------------------------------------
+    # ONE measurement of the three ring plates, shared with the measurements file below.
+    flower_rings = measure_flower_rings(placed, to_sim)
     flowers_json = []
     for k, f in enumerate(BB_FLOWERS):
         prefix = f"flower_{k}_"
+        rings = []
+        for label, _pat in FLOWER_RING_ORDER:
+            r = flower_rings[k].get(label)
+            if not r:
+                print(f"[convert] WARNING: flower_{k} has no `{label}` ring plate", file=sys.stderr)
+                continue
+            rings.append(
+                {
+                    "id": label,
+                    "z": r["z"],
+                    "hole": r["bore"]["radius"],
+                    "bore": r["bore"]["centre"],
+                    "rect": r["rect"],
+                }
+            )
         flowers_json.append(
             {
                 "id": f["id"],
                 "wall": f["wall"],
                 "pos": [f["x"], f["y"]],
                 # the SOLID support statics for this flower (backstop/pipes/brackets/base) — the
-                # ring plates are visual-only, see PART_RULES.
+                # ring plates are NOT among them, and that is still the annulus rule: a convex
+                # hull of a ring fills its own bore. They ride `rings` below instead, as the
+                # PARAMETERS `sim3d/flowerTube.ts` tessellates a rectangle-minus-disc TRIMESH
+                # from — a shape a hull cannot express and a trimesh can.
                 "staticNames": [s["name"] for s in statics if s["name"].startswith(prefix)],
+                "rings": rings,
                 "visualNode": f"flower_{k}",
             }
         )
@@ -1541,57 +1673,17 @@ def main() -> None:
     tape_rows.sort(key=lambda r: (r["plane"], r["colour"], -r["lengthIn"], r["x"][0], r["y"][0]))
     tape_widths = sorted({r["widthIn"] for r in tape_rows})
 
-    # FLOWER BORE CENTRES BY CIRCLE FIT — the ring plates are the parts a POLLEN passes through,
-    # and their bore is the feature `BB_FLOWERS`/`BB_FLOWER_D` are trying to name. A bbox
-    # midpoint is skewed off-axis by the backstop and the wall-side bracket; the 4 HIPS pipes'
-    # centroid is better but still assumes they ring the bore symmetrically. This fits the bore
-    # itself: take each ring plate's own side-wall band, keep the inner 35 % by radius, and
-    # least-squares a circle, re-centring 8 times.
-    def fit_bore(pts):
-        A = np.asarray(pts, dtype=float)
-        if len(A) < 24:
-            return None
-        zmin, zmax = A[:, 2].min(), A[:, 2].max()
-        band = A[(A[:, 2] > zmin + 0.12 * (zmax - zmin)) & (A[:, 2] < zmax - 0.12 * (zmax - zmin))]
-        if len(band) < 24:
-            band = A
-        c = np.array([band[:, 0].mean(), band[:, 1].mean()])
-        r = 0.0
-        inner = band
-        for _ in range(8):
-            rad = np.linalg.norm(band[:, :2] - c, axis=1)
-            inner = band[rad <= np.percentile(rad, 35)]
-            if len(inner) < 8:
-                break
-            x, y = inner[:, 0], inner[:, 1]
-            M = np.stack([x, y, np.ones_like(x)], 1)
-            sol, *_ = np.linalg.lstsq(M, x * x + y * y, rcond=None)
-            c = np.array([sol[0] / 2, sol[1] / 2])
-            r = math.sqrt(max(0.0, sol[2] + c[0] * c[0] + c[1] * c[1]))
-        rad = np.linalg.norm(inner[:, :2] - c, axis=1)
-        return {
-            "centre": [round(float(c[0]), 4), round(float(c[1]), 4)],
-            "radius": round(float(r), 4),
-            "diameter": round(float(2 * r), 4),
-            "rms": round(float(np.std(rad)), 4),
-            "n": int(len(inner)),
-        }
-
-    RING_ORDER = (("lower", r"flower layer x"), ("mid", r"flower layer b"), ("top", r"flower layer c"))
+    # FLOWER RING PLATES — the bores, the z bands and each plate's own footprint, taken from
+    # the ONE measurement `measure_flower_rings` made above for the collider file. The bore is
+    # the feature `BB_FLOWERS`/`BB_FLOWER_D` are trying to name; the bands are what
+    # `BB_FLOWER_TOP_Z` / `BB_FLOWER_MID_Z` / `BB_FLOWER_LOW_Z` read, and the footprint is
+    # `BB_FLOWER_FOOT` — all four of which were hand-typed manual figures until this pass
+    # because nothing in this file separated the plates from the assembly's own extent.
     flowers_measure = []
     for k, f in enumerate(BB_FLOWERS):
         mine = [p for p in placed if p.node == f"flower_{k}"]
-        bores = {}
-        for label, pat in RING_ORDER:
-            pts = []
-            for p in mine:
-                if not re.search(pat, p.inst.name, re.I):
-                    continue
-                pos_mm, _ = mesh_shape_mm(p.inst.shape, 0.3, 0.2)
-                pts.extend(to_sim(q) for q in pos_mm)
-            got = fit_bore(pts) if pts else None
-            if got:
-                bores[label] = got
+        rings = flower_rings[k]
+        bores = {label: r["bore"] for label, r in rings.items()}
         pipe_centres = []
         for p in mine:
             if not re.search(r"hips pipe", p.inst.name, re.I):
@@ -1599,11 +1691,59 @@ def main() -> None:
             xmin, ymin, zmin, xmax, ymax, zmax = p.inst.bbox_mm
             q = [to_sim((x, y, z)) for x in (xmin, xmax) for y in (ymin, ymax) for z in (zmin, zmax)]
             pipe_centres.append(((min(r[0] for r in q) + max(r[0] for r in q)) / 2, (min(r[1] for r in q) + max(r[1] for r in q)) / 2))
+        pipe_z = None
+        for p in mine:
+            if not re.search(r"hips pipe", p.inst.name, re.I):
+                continue
+            q = [to_sim((x, y, z)) for x in (p.inst.bbox_mm[0], p.inst.bbox_mm[3]) for y in (p.inst.bbox_mm[1], p.inst.bbox_mm[4]) for z in (p.inst.bbox_mm[2], p.inst.bbox_mm[5])]
+            lo, hi = min(r[2] for r in q), max(r[2] for r in q)
+            pipe_z = [lo, hi] if pipe_z is None else [min(pipe_z[0], lo), max(pipe_z[1], hi)]
+        backstop_z = None
+        for p in mine:
+            if not re.search(r"flower backstop", p.inst.name, re.I):
+                continue
+            q = [to_sim((x, y, z)) for x in (p.inst.bbox_mm[0], p.inst.bbox_mm[3]) for y in (p.inst.bbox_mm[1], p.inst.bbox_mm[4]) for z in (p.inst.bbox_mm[2], p.inst.bbox_mm[5])]
+            lo, hi = min(r[2] for r in q), max(r[2] for r in q)
+            backstop_z = [lo, hi] if backstop_z is None else [min(backstop_z[0], lo), max(backstop_z[1], hi)]
+        # THE RETRIEVAL OPENING IS A GAP, NOT A PART (§9.7, Fig 9-12's "3.55 tall x 3.57 deep"):
+        # the clear span between the LOWER plate's top face and the MID plate's underside, on the
+        # field side, where the backstop extrusion is not. Derived here rather than measured
+        # because there is no part in the STEP whose extent is the hole.
+        retrieval = None
+        if "lower" in rings and "mid" in rings:
+            retrieval = {
+                "z": [rings["lower"]["z"][1], rings["mid"]["z"][0]],
+                "heightIn": round(rings["mid"]["z"][0] - rings["lower"]["z"][1], 4),
+                "config_manualHeightIn": 3.55,
+            }
+        # the PLATE footprint — the union of the three plates' own rectangles, which is what a
+        # robot's bumper meets on the tiles. `along` is the wall-parallel span, `deep` the
+        # wall-normal one, matching `BB_FLOWER_FOOT`'s own two fields.
+        foot = None
+        if rings:
+            xs = [r["rect"]["x"] for r in rings.values()]
+            ys = [r["rect"]["y"] for r in rings.values()]
+            span_x = round(max(b[1] for b in xs) - min(b[0] for b in xs), 4)
+            span_y = round(max(b[1] for b in ys) - min(b[0] for b in ys), 4)
+            wall_normal_is_x = f["wall"] in ("left", "right")
+            foot = {
+                "along": span_y if wall_normal_is_x else span_x,
+                "deep": span_x if wall_normal_is_x else span_y,
+                "config_BB_FLOWER_FOOT": [6, 4.9],
+            }
         flowers_measure.append(
             {
                 "id": f["id"],
                 "config_pos": [f["x"], f["y"]],
                 "bore": bores,
+                "rings": {
+                    label: {"z": r["z"], "holeDiameter": r["bore"]["diameter"], "rect": r["rect"]}
+                    for label, r in rings.items()
+                },
+                "retrievalOpening": retrieval,
+                "foot": foot,
+                "pipeZ": None if pipe_z is None else [round(pipe_z[0], 4), round(pipe_z[1], 4)],
+                "backstopZ": None if backstop_z is None else [round(backstop_z[0], 4), round(backstop_z[1], 4)],
                 "pipeCentroid": (
                     [round(sum(c[0] for c in pipe_centres) / len(pipe_centres), 4), round(sum(c[1] for c in pipe_centres) / len(pipe_centres), 4)]
                     if pipe_centres

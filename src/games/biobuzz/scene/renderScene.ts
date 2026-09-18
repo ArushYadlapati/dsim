@@ -1,11 +1,13 @@
 import * as THREE from 'three';
 import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js';
-import type { GameScene, GameSceneFactory, SceneFrame } from '../../module';
+import type { GameScene, GameSceneFactory, SceneCamera, SceneFrame } from '../../module';
 import type { World } from '../../../types';
 import { BB_HALF_X } from '../config';
+import { CAMERA_PREFS, getCameraPref, setCameraPref, setViewPref, subscribeCameraPref, type CameraPref } from '../graphics/store';
 import { buildBiobuzzField, updateBiobuzzField, type BbFieldHandles } from './renderField';
 import { buildBiobuzzElements, updateBiobuzzElements, type BbElements } from './renderElements';
 import { buildBiobuzzRobots, updateBiobuzzRobots, type BbRobots } from './renderRobots';
+import { buildBiobuzzReticle, updateBiobuzzReticle, type BbReticle } from './renderReticle';
 import { createCameras, type BbCameras } from './renderCameras';
 
 /**
@@ -97,12 +99,18 @@ export class SceneUnsupportedError extends Error {
  * and the shared `World` shape; the CSS token is read at creation instead (see below). */
 const BACKDROP_FALLBACK = 0x20262c;
 
-/** the letterbox backdrop's current CSS value, read ONCE at scene creation via `--ds-bg` (the
- * token `COLORS.backdrop`/`backdropDark` tracks — `src/config.ts`'s own comment on `backdrop`).
- * A theme change mid-scene is NOT handled on Day 1: this scene does not watch
- * `documentElement.dataset.theme`, so a light/dark toggle while a 3D view is mounted leaves the
- * old background until the scene is torn down and rebuilt (a route change, a settings reopen).
- * Flagged as a gotcha for the graphics-settings pass (plan-3d.md §4.4) to close. */
+/** the letterbox backdrop's current CSS value, read via `--ds-bg` (the token
+ * `COLORS.backdrop`/`backdropDark` tracks — `src/config.ts`'s own comment on `backdrop`).
+ *
+ * ⚠️ READ ON EVERY THEME CHANGE, not once (Day 2 fix). It used to be read once at construction,
+ * so toggling light/dark while a 3D view was mounted left the old letterbox behind the field
+ * until the scene was torn down and rebuilt — and on the CAD field path the backdrop is not a
+ * letterbox at all but the whole surround (`glbFieldToHandles` adds no procedural room), so the
+ * stale colour was most of the picture. `BiobuzzScene` now watches `documentElement`'s
+ * `data-theme` attribute — the attribute `src/theme.ts`'s `applyTheme` stamps, and the same
+ * signal `docs/area/ui.md` tells JS to read instead of `getComputedStyle` — and re-reads this.
+ * The ROOM's own greys (`bb-room:floor`/`:backdrop`) stay fixed: they are a gym, their ground is
+ * the canvas, category 3 in the theming note. */
 function readBackdropColor(): number {
   try {
     const raw = getComputedStyle(document.documentElement).getPropertyValue('--ds-bg').trim();
@@ -135,9 +143,37 @@ class BiobuzzScene implements GameScene {
   private readonly field: BbFieldHandles;
   private readonly elements: BbElements;
   private readonly robots: BbRobots;
+  private readonly reticle: BbReticle;
+  /** the element this scene's canvas was mounted in (`.game-viewport` in the app, `#host` in the
+   * preview). The ORBIT pointer listeners live here, not on the canvas: the 2D overlay canvas
+   * sits ON TOP of the WebGL one (`game.ts` inserts the scene canvas as `firstChild`), so a
+   * mouse press lands on THAT canvas and would never reach this one — but it bubbles to their
+   * shared parent, which is this. No `pointer-events` juggling, and no coupling to which canvas
+   * happens to be on top. */
+  private readonly host: HTMLElement;
+  /** the device's camera preference, kept live by `subscribeCameraPref` — read per frame, so it
+   * must not be a `localStorage` hit. */
+  private cameraPref: CameraPref = getCameraPref();
+  private readonly teardown: (() => void)[] = [];
+  /** the canvas size the LAST frame was rendered at, for `project` (which reports CSS pixels on
+   * the overlay canvas above this one). */
+  private lastW = 1;
+  private lastH = 1;
+  /** scratch for `project`, so a projection allocates nothing per label per frame. */
+  private readonly projScratch = new THREE.Vector3();
+  /** the camera the LAST frame actually rendered — what the orbit pointer handlers gate on.
+   * They cannot re-derive it: the DEVICE preference is only half the answer, the other half is
+   * the `camera` the host asked for in the frame, which arrives per frame and nowhere else. A
+   * handler that guessed the host's half swallowed every drag whenever the two disagreed. */
+  private lastCamera: SceneCamera = 'driver';
+  /** orbit drag state (mouse only — a touch drag belongs to the driving controls). */
+  private dragging = false;
+  private dragX = 0;
+  private dragY = 0;
 
-  constructor(canvas: HTMLCanvasElement, field: BbFieldHandles) {
+  constructor(canvas: HTMLCanvasElement, field: BbFieldHandles, host: HTMLElement) {
     this.element = canvas;
+    this.host = host;
     this.renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: false, powerPreference: 'high-performance' });
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
     // FIDELITY PASS (plan-3d.md §4.4): filmic tone mapping so the key light's highlights roll
@@ -217,18 +253,172 @@ class BiobuzzScene implements GameScene {
     this.scene.add(this.elements.group);
     this.robots = buildBiobuzzRobots();
     this.scene.add(this.robots.group);
+    this.reticle = buildBiobuzzReticle();
+    this.scene.add(this.reticle.group);
 
     applyShadowFlags(this.field, this.elements, this.robots);
 
     this.cameras = createCameras();
+    this.bindTheme();
+    this.bindPrefs();
+    this.bindPointer();
+    this.bindKeys();
+  }
+
+  // ─────────────────────────────────────────────────────────────────── live inputs (Day 2) ──
+
+  /** THE THEME. `applyTheme` stamps `data-theme` on `<html>`, so one `MutationObserver` on that
+   * one attribute is the whole subscription — and it catches an OS-driven change too, which
+   * `theme.ts` resolves in JS before stamping (CSS never sees `system`). */
+  private bindTheme(): void {
+    if (typeof MutationObserver !== 'function' || typeof document === 'undefined') return;
+    const obs = new MutationObserver(() => {
+      (this.scene.background as THREE.Color | null)?.setHex(readBackdropColor());
+    });
+    obs.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+    this.teardown.push(() => obs.disconnect());
+  }
+
+  private bindPrefs(): void {
+    this.teardown.push(
+      subscribeCameraPref((pref) => {
+        this.cameraPref = pref;
+      }),
+    );
+  }
+
+  /**
+   * ORBIT INPUT — drag to swing the turntable, wheel to zoom. MOUSE ONLY, and only while the
+   * orbit camera is the one on screen: a touch drag over the field is the driving control on a
+   * phone, and a wheel that swallowed the page's scroll on every other camera would be a
+   * regression for a view that has no zoom to give.
+   */
+  private bindPointer(): void {
+    const host = this.host;
+    const onMove = (e: PointerEvent): void => {
+      if (!this.dragging) return;
+      this.cameras.orbitDrag(e.clientX - this.dragX, e.clientY - this.dragY);
+      this.dragX = e.clientX;
+      this.dragY = e.clientY;
+    };
+    const endDrag = (): void => {
+      this.dragging = false;
+    };
+    const onDown = (e: PointerEvent): void => {
+      if (e.pointerType !== 'mouse' || e.button !== 0 || this.lastCamera !== 'orbit') return;
+      this.dragging = true;
+      this.dragX = e.clientX;
+      this.dragY = e.clientY;
+    };
+    const onWheel = (e: WheelEvent): void => {
+      if (this.lastCamera !== 'orbit') return;
+      e.preventDefault();
+      this.cameras.orbitZoom(e.deltaY);
+    };
+    host.addEventListener('pointerdown', onDown);
+    window.addEventListener('pointermove', onMove);
+    window.addEventListener('pointerup', endDrag);
+    window.addEventListener('pointercancel', endDrag);
+    // `passive: false` or `preventDefault()` is ignored and the page scrolls under the zoom
+    host.addEventListener('wheel', onWheel, { passive: false });
+    this.teardown.push(() => {
+      host.removeEventListener('pointerdown', onDown);
+      window.removeEventListener('pointermove', onMove);
+      window.removeEventListener('pointerup', endDrag);
+      window.removeEventListener('pointercancel', endDrag);
+      host.removeEventListener('wheel', onWheel);
+    });
+  }
+
+  /**
+   * THE CAMERA KEYS (plan §4.3: `t` view, `i`/`o` eye height, plus `c` for the camera itself).
+   *
+   * ⚠️ HANDLED HERE, ON `window`, RATHER THAN THROUGH `src/input/bindings.ts` — on purpose, and
+   * it is the one thing in this lane that should move later. A `KeyAction` there is read by
+   * `InputManager` into a `RobotCommand` and acted on by `GameController`, which is another
+   * lane's file this pass may not touch; adding one would also mean a `ControlsSection` row and
+   * a settings migration for a key whose only effect is on a renderer that may not even be
+   * mounted. So the scene owns them while it is mounted and nothing else changes. `t`, `i` and
+   * `o` are unbound in `DEFAULT_BINDINGS`; `c` is Chain Reaction's CATALYST, which BIOBUZZ has
+   * no mechanism for, so it is free here too — a player who has rebound `c` onto a BIOBUZZ
+   * action will cycle the camera as well, which is the cost of not owning the binding table and
+   * is why the Day 3 Graphics section should adopt these.
+   *
+   * `t` only goes 3D → 2D: the listener exists only while a scene is mounted, so nothing here
+   * can bring one back. The 2D → 3D half belongs to whoever owns the view toggle (the Day 3
+   * Graphics section / the practice setup).
+   */
+  private bindKeys(): void {
+    if (typeof window === 'undefined') return;
+    const onKey = (e: KeyboardEvent): void => {
+      if (e.ctrlKey || e.metaKey || e.altKey) return;
+      const t = e.target as HTMLElement | null;
+      // typing in a chat box, a team-name field or a rebind capture is never a camera command
+      if (t && (t.isContentEditable || /^(input|textarea|select)$/i.test(t.tagName))) return;
+      switch (e.key.toLowerCase()) {
+        case 't':
+          setViewPref('2d');
+          break;
+        case 'c': {
+          const i = CAMERA_PREFS.indexOf(this.cameraPref);
+          setCameraPref(CAMERA_PREFS[(i + 1) % CAMERA_PREFS.length]);
+          break;
+        }
+        case 'i':
+          this.cameras.nudgeEye(1);
+          break;
+        case 'o':
+          this.cameras.nudgeEye(-1);
+          break;
+        default:
+          return;
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    this.teardown.push(() => window.removeEventListener('keydown', onKey));
+  }
+
+  /** the camera actually rendered this frame: the device preference WINS over the one the host
+   * asked for, and `'auto'` (the default) is "whatever the host asked for". */
+  private resolvedCamera(hostPick: SceneCamera): SceneCamera {
+    return this.cameraPref === 'auto' ? hostPick : this.cameraPref;
   }
 
   render(world: World, frame: SceneFrame): void {
     updateBiobuzzField(this.field, world);
     updateBiobuzzElements(this.elements, world);
     updateBiobuzzRobots(this.robots, world);
-    const camera = this.cameras.update(frame);
+    updateBiobuzzReticle(this.reticle, world, frame.localRobotId);
+    this.lastW = Math.max(1, frame.width);
+    this.lastH = Math.max(1, frame.height);
+    this.lastCamera = this.resolvedCamera(frame.camera);
+    const camera = this.cameras.update(frame, world, this.lastCamera);
     this.renderer.render(this.scene, camera);
+  }
+
+  /**
+   * FIELD POINT → CSS PIXELS on the overlay canvas, through the camera this scene last
+   * rendered (`GameScene.project`, `games/module.ts` — read its contract first).
+   *
+   * Projects manually rather than through `Vector3.project()` so a point BEHIND the camera can
+   * be rejected: the perspective divide flips the sign of x and y behind the eye, so a robot
+   * two feet behind a driver's shoulder projects to a perfectly plausible on-screen position,
+   * mirrored. Camera space is checked first (`z > 0` is behind, three.js cameras look down
+   * their own −z), then the projection matrix — WHICH ALREADY CARRIES `setViewOffset`, so the
+   * NDC that comes out maps to the WHOLE canvas, exactly the pixels the overlay draws in.
+   */
+  project(x: number, y: number, z: number, out: { x: number; y: number; visible: boolean }): void {
+    const cam = this.cameras.active;
+    const v = this.projScratch.set(x, y, z);
+    v.applyMatrix4(cam.matrixWorldInverse);
+    if (v.z > -1e-3) {
+      out.visible = false;
+      return;
+    }
+    v.applyMatrix4((cam as THREE.PerspectiveCamera).projectionMatrix);
+    out.x = (v.x * 0.5 + 0.5) * this.lastW;
+    out.y = (-v.y * 0.5 + 0.5) * this.lastH;
+    out.visible = v.x >= -1 && v.x <= 1 && v.y >= -1 && v.y <= 1 && v.z <= 1;
   }
 
   resize(width: number, height: number, dpr: number): void {
@@ -237,6 +427,9 @@ class BiobuzzScene implements GameScene {
   }
 
   dispose(): void {
+    for (const off of this.teardown) off();
+    this.teardown.length = 0;
+    this.reticle.dispose();
     this.scene.environment?.dispose();
     disposeObject3D(this.scene);
     this.renderer.dispose();
@@ -266,5 +459,7 @@ export const createBiobuzzScene: GameSceneFactory = async (host: HTMLElement): P
   if (!gl2) throw new SceneUnsupportedError('WebGL2 unavailable');
   const field = await buildBiobuzzField(QUALITY.meshDetail);
   host.appendChild(canvas);
-  return new BiobuzzScene(canvas, field);
+  // `host` is handed on: the orbit camera's pointer listeners live on it (see the class's own
+  // note — the 2D overlay canvas is above this one and would otherwise swallow every press).
+  return new BiobuzzScene(canvas, field, host);
 };

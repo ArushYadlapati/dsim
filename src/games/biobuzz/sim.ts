@@ -1,6 +1,6 @@
 import type { GameMode, GameSettings, World } from '../../types';
 import type { RobotSetup } from '../../sim/spawn';
-import type { GameSimModule } from '../types';
+import type { GameSimModule, Physics } from '../types';
 import {
   BB_HALF_X,
   BB_HALF_Y,
@@ -70,19 +70,31 @@ import { biobuzzStep } from './step';
  * `settings?.practicePhysics` and forwards it; everything else keeps calling
  * `createBiobuzzWorld` directly (the smoke suite, `scenes.ts`) and keeps getting `'2d'`.
  *
- * Only SOLO PRACTICE is wired here today. Ranked/matchmade/record rooms are meant to always
- * stage `'3d'` (plan §2.1) and a custom lobby's `'3d'` default is a HOST option — neither has
- * a settled route yet (`RoomConfig.physics` does not exist), so this wrapper is deliberately
- * the least invasive thing that makes the seam usable now: it reads a settings field that is
- * always present when `game.ts` calls it, and does nothing new when it is not.
+ * Day 2 added the ROOM's route beside it: an explicit fifth `physics` argument on the shared
+ * seam (`GameSimModule.createWorld`), sourced from `RoomConfig.physics` on the server and from
+ * `matchStart.physics` on every client in the room. It WINS over the settings field, because a
+ * room's physics is the room's fact and the settings bag is the player's — a driver whose
+ * Practice pick says `'2d'` must still build the `'3d'` world the room they joined is running,
+ * or their prediction steps a different game from the server's.
+ *
+ * So the precedence is: the room's explicit choice, then solo practice's setting, then `'2d'`
+ * — which is also what every caller that passes neither (the smoke suite, `scenes.ts`) gets,
+ * unchanged.
  */
 function createBiobuzzSimWorld(
   mode: GameMode,
   seed: number,
   setups: RobotSetup[],
   settings?: GameSettings,
+  physics?: Physics,
 ): World {
-  return createBiobuzzWorld(mode, seed, setups, settings, settings?.practicePhysics ?? '2d');
+  return createBiobuzzWorld(
+    mode,
+    seed,
+    setups,
+    settings,
+    physics ?? settings?.practicePhysics ?? '2d',
+  );
 }
 export const BIOBUZZ_SIM: GameSimModule = {
   id: 'biobuzz',

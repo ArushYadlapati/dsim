@@ -20,6 +20,7 @@ import { moduleFor, gameOf } from './games';
 import type { GameModule } from './games';
 import type { GameScene, SceneCamera, SceneFrame, SceneInsets } from './games/module';
 import { getViewPref, subscribeViewPref } from './games/biobuzz/graphics/store';
+import { initPhysics3d, physics3dReady } from './games/biobuzz/sim3d/engine';
 import { accelMultiplier as chainAccelMultiplier, type EndgameState } from './games/chain/state';
 import { chainCatalystGeom, chainHopperCap } from './games/chain/config';
 import { chainCatalystPrompt } from './games/chain/play';
@@ -335,12 +336,39 @@ export class GameController {
   /** last vote count we played a cue for — a vote landing is the thing worth
    *  hearing, and only when the number actually moved */
   private lastRematchVotes = 0;
-  /** authoritative REMOTE-robot poses per received snapshot, for interpolating them
-   * between snapshots. Captured BEFORE reconcile mutates the snapshot world. (Balls
-   * are NOT interpolated — see displayWorld.) */
+  /**
+   * Authoritative poses per received snapshot, for interpolating between snapshots. Captured
+   * BEFORE reconcile mutates the snapshot world.
+   *
+   * ── WHY `balls` IS HERE FOR 3D-PHYSICS WORLDS AND NOT FOR 2D ONES ─────────
+   * The 2D rule stands and is written down in `docs/area/netcode.md`: DECODE's and Chain
+   * Reaction's artifacts SPAWN AND DESPAWN (a launch mints one, a capture removes one), so
+   * lerping them ghost-clones a fresh ball between its predicted position and a past one it
+   * never occupied, and blends two colliding balls through each other. Predicted balls are
+   * more accurate than interpolated ones there, so they are rendered straight from the sim.
+   *
+   * A BIOBUZZ 3D-physics world has neither property. Its 56 elements are created once at
+   * spawn and never destroyed — a captured element becomes `held` and a stocked one becomes
+   * `stock`, both of which keep the id and only change `state.kind` — so the id set is stable
+   * and the count is conserved BY CONSTRUCTION, not by luck. What is left is a body whose
+   * position moves continuously between two snapshots, which is exactly the thing
+   * interpolation is for, and at 30 Hz the difference is visible: an element rolling across
+   * the tiles steps twice as coarsely as the robot pushing it.
+   *
+   * A `kind` change still SNAPS rather than lerps (see `displayWorld`): an element going into
+   * or out of a hopper teleports in the sim, and easing it there would draw it travelling
+   * through the chassis.
+   *
+   * `z` rides both halves for the same reason the wire carries it: in a 3D world the height
+   * is a real degree of freedom, and interpolating x and y while snapping z produces a body
+   * that glides horizontally and stutters vertically.
+   */
   private snapBuf: {
     tick: number;
-    robots: { id: number; x: number; y: number; heading: number }[];
+    robots: { id: number; x: number; y: number; z: number; heading: number }[];
+    /** element poses + their `state.kind`, only for a 3D-physics world (empty otherwise, so
+     *  a 2D room allocates nothing it did not allocate before) */
+    balls: { id: number; x: number; y: number; z: number; kind: string }[];
   }[] = [];
   /** the interpolation render clock (in server ticks), lagging the latest snapshot
    * by ~INTERP_DELAY_TICKS; eased forward each frame for smooth playback */
@@ -364,6 +392,29 @@ export class GameController {
   /** true once the first snapshot has arrived — the lead cap only applies after that
    * (before it, the sim-driven pre-match countdown must predict freely from tick 0) */
   private gotSnapshot = false;
+
+  /**
+   * THE 3D PHYSICS CHUNK IS STILL LOADING, SO NOTHING MAY BE STEPPED YET.
+   *
+   * A `'3d'`-physics world routes into `step3d` on its very first tick, and `physics3d()`
+   * THROWS if `initPhysics3d()` has not resolved — so a controller built for a 3D room before
+   * the wasm lands would take the whole render loop down on frame one.
+   *
+   * ── WHY THE LATCH IS HERE AND NOT AT THE SCREEN THAT OPENS THE MATCH ──────
+   * Solo practice can await the load before constructing anything, and `GameView` does
+   * exactly that (Day 1). A ROOM cannot: `matchStart` arrives on a socket, a `ServerSession`
+   * is built from it synchronously, and there are six places in the UI that do so — a lobby,
+   * three matchmaking paths, a record run, a spectate, and the rejoin that resumes a match
+   * after a reload. Gating each of them is six chances to miss one, and the one that would be
+   * missed is the rejoin, because it is the only path where the player is already mid-match.
+   *
+   * So the controller gates ITSELF. While this is true `stepServer` and `stepSolo` return
+   * without stepping and without reconciling, the accumulator is drained so nothing
+   * burst-catches-up when it clears, and the first snapshot after the load simply snaps the
+   * world to the server's. The cost is that the local view holds at tick 0 for the length of
+   * the load, which against a warm cache is a frame or two.
+   */
+  private physicsPending = false;
 
   // ---------------------------------------------------------------- 3D scene (Day 1 seam) --
   //
@@ -484,6 +535,33 @@ export class GameController {
     // the physics-3d fallback notice (see the constructor's `opts` doc) rides the same
     // path as every other match event — the first `frameLogic()` drains it into a toast.
     if (opts?.physicsFallbackNotice) this.world.events.push(opts.physicsFallbackNotice);
+    /**
+     * A 3D ROOM WHOSE PHYSICS IS NOT LOADED YET: latch, load, and step nothing meanwhile.
+     *
+     * `interp3d()` reads the world that was just built, so this covers every route a 3D world
+     * can arrive by — `matchStart.physics`, a rejoin's stored handshake, and a solo practice
+     * whose `GameView` await was skipped or failed. Idempotent: a second match in the same tab
+     * finds `physics3dReady()` already true and never enters the branch at all.
+     *
+     * A REJECTED load is not retried. It means the chunk is unreachable (offline, or a stale
+     * build whose asset 404s), and retrying on a timer would spin while the player watches a
+     * frozen field; the event-log line says what happened, and the connection HUD already says
+     * the rest.
+     */
+    if (this.interp3d() && !physics3dReady()) {
+      this.physicsPending = true;
+      void initPhysics3d().then(
+        () => {
+          this.physicsPending = false;
+        },
+        (err: unknown) => {
+          this.physicsPending = false;
+          // eslint-disable-next-line no-console
+          console.warn('BIOBUZZ 3D physics failed to load for this match.', err);
+          this.world.events.push('Couldn’t load 3D physics — reload the page to rejoin this match.');
+        },
+      );
+    }
     this.prevPhase = this.world.match.phase;
     this.seedActionAudio();
     session?.onRestart(() => this.rebuildFromNet());
@@ -564,7 +642,12 @@ export class GameController {
     // on the same tick for every peer — no controller-local start/seed)
     const build = moduleFor(this.gameId).createWorld;
     if (this.session) {
-      const w = build('match', this.session.seed, this.session.setups, this.settings);
+      // THE ROOM'S physics, from `matchStart` — never `settings.practicePhysics`. The room is
+      // authoritative over which pipeline is being stepped, and a client that built its
+      // predicted world from its own Practice pick would be corrected on every snapshot by a
+      // server running a different game. Absent on the session ⇒ '2d', which is every room an
+      // older server hosts.
+      const w = build('match', this.session.seed, this.session.setups, this.settings, this.session.physics);
       w.match.preCountdown = C.PRE_COUNTDOWN;
       return w;
     }
@@ -765,6 +848,8 @@ export class GameController {
       // to be stale (the chip row grew, an ad column collapsed).
       this.hudInsetsDirty = true;
       this.scene = scene;
+      // the 2D overlay projects labels and auto paths through the scene's camera from here on
+      this.renderer.setScene(scene);
     })().catch((err: unknown) => {
       if (epoch !== this.sceneEpoch) return;
       // ONE console warning, per plan §4.7 ("a rejected renderer import() falls back to the
@@ -781,6 +866,7 @@ export class GameController {
     if (!this.scene) return;
     const scene = this.scene;
     this.scene = null;
+    this.renderer.setScene(null);
     try {
       scene.element.remove();
     } catch {
@@ -1125,6 +1211,11 @@ export class GameController {
 
   /** solo stepping: local keypress start/restart, one local command per tick */
   private stepSolo(cmd: RobotCommand): void {
+    // nothing may be stepped until the 3D wasm is in hand — see `physicsPending`
+    if (this.physicsPending) {
+      this.acc = 0;
+      return;
+    }
     if (this.input.startPressed) this.startMatch();
     if (this.input.restartPressed) this.restart();
 
@@ -1164,6 +1255,17 @@ export class GameController {
    * only our own robot is predicted, remote robots are corrected by snapshots. */
   private stepServer(cmd: RobotCommand): void {
     const s = this.session!;
+    /**
+     * Held BEFORE the snapshot is taken, deliberately. Reconcile REPLAYS buffered inputs
+     * through `mod.step`, so consuming a snapshot while the physics is missing would throw on
+     * exactly the path that is meant to be safe. Leaving the snapshot unconsumed costs
+     * nothing: the session keeps only the freshest one, and the first reconcile after the
+     * load snaps straight to the server's authoritative world.
+     */
+    if (this.physicsPending) {
+      this.acc = 0;
+      return;
+    }
     // NOTE: no IN-PLACE restart in multiplayer — a local or host-authored rebuild
     // desynced everyone (post-restart stuck/jitter). Players return to the lobby to
     // start a fresh match instead.
@@ -1272,9 +1374,40 @@ export class GameController {
     const w = snap.world;
     this.snapBuf.push({
       tick: snap.serverTick,
-      robots: w.robots.map((r) => ({ id: r.id, x: r.pos.x, y: r.pos.y, heading: r.heading })),
+      robots: w.robots.map((r) => ({
+        id: r.id,
+        x: r.pos.x,
+        y: r.pos.y,
+        z: r.z ?? 0,
+        heading: r.heading,
+      })),
+      // ONLY for a 3D-physics world — see the field's own header. `interp3d()` is a read of
+      // `this.world`, which is the world this snapshot was reconciled into, so the two can
+      // never disagree about which pipeline is running.
+      balls: this.interp3d()
+        ? w.balls.map((b) => ({
+            id: b.id,
+            x: b.pos.x,
+            y: b.pos.y,
+            z: b.z,
+            kind: b.state.kind,
+          }))
+        : [],
     });
     if (this.snapBuf.length > INTERP_BUFFER) this.snapBuf.shift();
+  }
+
+  /**
+   * DOES THIS WORLD'S ELEMENTS GET INTERPOLATED? Only a 3D-physics BIOBUZZ world does.
+   *
+   * Read off `world.biobuzz.physics` rather than off the session, because it has to answer
+   * for a spectator and a mid-match joiner too — both of which learn the room's physics from
+   * the keyframe rather than from a `matchStart` they were not sent. One read, used by the
+   * buffer and by `displayWorld`, so the two halves cannot disagree about a frame.
+   */
+  private interp3d(): boolean {
+    const bb = (this.world as { biobuzz?: { physics?: string } }).biobuzz;
+    return bb?.physics === '3d';
   }
 
   /** the world to RENDER (networked path): the local robot stays predicted (+ eased
@@ -1288,6 +1421,9 @@ export class GameController {
         pos: { x: r.pos.x + this.localSmooth.x, y: r.pos.y + this.localSmooth.y },
         heading: r.heading + this.localSmooth.heading,
       });
+    // `z` is NOT smoothed: `localSmooth` is a 2D correction offset and a height error is not
+    // a rubberbanding artifact — a robot pressed under a descending tray is where the server
+    // says it is, and easing that would draw it inside the geometry.
 
     const buf = this.snapBuf;
     if (buf.length < 2) {
@@ -1324,10 +1460,11 @@ export class GameController {
     const r0 = new Map(s0.robots.map((r) => [r.id, r] as const));
     const r1 = new Map(s1.robots.map((r) => [r.id, r] as const));
 
-    // ONLY remote robots interpolate. Balls are rendered straight from the predicted
-    // sim: they're fast, spawn/despawn (launches), and collide — interpolating them
-    // ghosts a freshly-spawned ball between its predicted and past positions and lerps
-    // colliding balls THROUGH each other (the "blend"). Predicted balls stay accurate.
+    // ONLY remote robots interpolate in a 2D-physics world. Balls there are rendered
+    // straight from the predicted sim: they're fast, spawn/despawn (launches), and collide —
+    // interpolating them ghosts a freshly-spawned ball between its predicted and past
+    // positions and lerps colliding balls THROUGH each other (the "blend"). Predicted balls
+    // stay accurate. A 3D-physics world is the exception, and `snapBuf`'s header says why.
     const robots = this.world.robots.map((r) => {
       if (r.id === this.localRobotId) return local(r); // predicted, responsive
       const p = r0.get(r.id);
@@ -1336,10 +1473,44 @@ export class GameController {
       return {
         ...r,
         pos: { x: lerp(p.x, q.x, a), y: lerp(p.y, q.y, a) },
+        // `z` only where the world HAS one. Writing `z: 0` into a 2D world's robots would put
+        // a key on every rendered robot that the 2D path never carried, which is a change to
+        // what `drawRobot` sees for a game that has nothing to do with this.
+        ...(this.interp3d() ? { z: lerp(p.z, q.z, a) } : null),
         heading: lerpAngle(p.heading, q.heading, a),
       };
     });
-    return { ...this.world, robots };
+    if (!this.interp3d()) return { ...this.world, robots };
+
+    /**
+     * ELEMENTS, in a 3D-physics world only.
+     *
+     * Three guards, each of which is a bug if it is missing:
+     *  · an id absent from either bracketing snapshot falls back to the predicted ball. It
+     *    cannot happen while the count is conserved, which is exactly why it must not be
+     *    ASSUMED — a future rule that spawns one would otherwise draw it at the origin.
+     *  · a `state.kind` CHANGE SNAPS to the newer pose. An element entering a hopper or
+     *    leaving a human player's hand teleports in the sim, and easing it there draws it
+     *    travelling through a chassis.
+     *  · `held` and `stock` elements are left ALONE. Their position is written every tick by
+     *    the thing carrying them, not by the solve, so the predicted value is the correct one
+     *    and a stale snapshot pose would drag them behind their own robot.
+     */
+    const b0 = new Map(s0.balls.map((b) => [b.id, b] as const));
+    const b1 = new Map(s1.balls.map((b) => [b.id, b] as const));
+    const balls = this.world.balls.map((ball) => {
+      if (ball.state.kind === 'held' || ball.state.kind === 'stock') return ball;
+      const p = b0.get(ball.id);
+      const q = b1.get(ball.id);
+      if (!p || !q) return ball;
+      if (p.kind !== q.kind) return { ...ball, pos: { x: q.x, y: q.y }, z: q.z };
+      return {
+        ...ball,
+        pos: { x: lerp(p.x, q.x, a), y: lerp(p.y, q.y, a) },
+        z: lerp(p.z, q.z, a),
+      };
+    });
+    return { ...this.world, robots, balls };
   }
 
   /** adopt the authoritative world, discard inputs it already reflects, and
@@ -1478,7 +1649,18 @@ export class GameController {
     this.prevPhase = this.world.match.phase;
     this.practice = null;
     // free drive never reaches `pre`, so this is a solo PRACTICE match by construction
-    this.recorder = new ReplayRecorder(this.soloSeed, this.soloSetups, 'match', this.gameId);
+    // STAMPED WITH WHAT THE REBUILT WORLD ACTUALLY RUNS ON, read off the world rather than
+    // off `settings.practicePhysics`: the two can differ for one whole run, because a failed
+    // 3D chunk load falls the session back to 2D without touching the stored setting (see
+    // `physicsFallbackNotice`). Stamping the setting would file that run as a 3D one and it
+    // would re-simulate into a different match than the player played.
+    this.recorder = new ReplayRecorder(
+      this.soloSeed,
+      this.soloSetups,
+      'match',
+      this.gameId,
+      this.interp3d() ? '3d' : '2d',
+    );
     this.drivenTicks = 0;
     this.settle = newSettleClock();
     this.settleDone = false;

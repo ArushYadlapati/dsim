@@ -58,3 +58,63 @@ export function subscribeViewPref(fn: ViewListener): () => void {
     listeners.delete(fn);
   };
 }
+
+// ────────────────────────────────────────────────────────────── camera preference (Day 2) ──
+
+/**
+ * WHICH 3D CAMERA this device prefers (`docs/biobuzz/plan-3d.md` §4.3) — same storage rules as
+ * the view above, and per device for the same reason: "I want the chase camera" is a fact about
+ * the screen you are driving in front of, not about your account.
+ *
+ * `'auto'` is the default and means *whatever the host asks for*: the controller already picks
+ * `driver` on a mouse and `overhead` on a touch layout (`GameController.sceneCameraFor`), which
+ * is the right answer for someone who has never opened this setting. Any other value OVERRIDES
+ * the frame's camera, so a player who has chosen `orbit` keeps it across matches, rooms and
+ * reloads until they choose something else.
+ */
+const CAMERA_KEY = 'decodesim.camera';
+
+export type CameraPref = 'auto' | 'driver' | 'overhead' | 'chase' | 'orbit';
+
+/** the cycle order the in-scene `c` key walks, starting from whatever is stored. `auto` is in
+ * the ring on purpose: a player who cycled away from it must be able to get back to "let the
+ * game decide" without opening a settings screen. */
+export const CAMERA_PREFS: readonly CameraPref[] = ['auto', 'driver', 'overhead', 'chase', 'orbit'];
+
+const isCameraPref = (v: unknown): v is CameraPref =>
+  typeof v === 'string' && (CAMERA_PREFS as readonly string[]).includes(v);
+
+/** the stored camera preference, or `'auto'` when absent, corrupt, or storage is unavailable.
+ * Never throws. */
+export function getCameraPref(): CameraPref {
+  try {
+    const v = localStorage.getItem(CAMERA_KEY);
+    return isCameraPref(v) ? v : 'auto';
+  } catch {
+    return 'auto';
+  }
+}
+
+type CameraListener = (pref: CameraPref) => void;
+
+const cameraListeners = new Set<CameraListener>();
+
+/** persist a camera preference and notify this tab's subscribers. Best-effort, exactly like
+ * `setViewPref`: a storage failure still notifies, so the pick applies for this session. */
+export function setCameraPref(pref: CameraPref): void {
+  try {
+    localStorage.setItem(CAMERA_KEY, pref);
+  } catch {
+    /* non-fatal: the pick still applies for this session */
+  }
+  for (const fn of cameraListeners) fn(pref);
+}
+
+/** subscribe to `setCameraPref` calls made anywhere in this tab (the scene's own `c` key, a
+ * later Graphics section). Returns an unsubscribe function — call it on unmount/dispose. */
+export function subscribeCameraPref(fn: CameraListener): () => void {
+  cameraListeners.add(fn);
+  return () => {
+    cameraListeners.delete(fn);
+  };
+}

@@ -123,12 +123,12 @@ The look and the depth model are `DESIGN.md`. This file is only the inventory.
 
 | class | declared | used |
 |---|---|---|
-| `.ds-lan-banner` | src/ui/styles.css:2811 | 1 |
-| `.ds-lan-leave` | src/ui/styles.css:2824 | 1 |
-| `.ds-lan-state` | src/ui/styles.css:2734 | 4 |
-| `.ds-lan-steps` | src/ui/styles.css:2787 | 1 |
-| `.ds-lan-url` | src/ui/styles.css:2750 | 3 |
-| `.ds-lan-urls` | src/ui/styles.css:2740 | 1 |
+| `.ds-lan-banner` | src/ui/styles.css:2847 | 1 |
+| `.ds-lan-leave` | src/ui/styles.css:2860 | 1 |
+| `.ds-lan-state` | src/ui/styles.css:2770 | 4 |
+| `.ds-lan-steps` | src/ui/styles.css:2823 | 1 |
+| `.ds-lan-url` | src/ui/styles.css:2786 | 3 |
+| `.ds-lan-urls` | src/ui/styles.css:2776 | 1 |
 
 ## `ds-panel` — 6
 
@@ -262,7 +262,7 @@ The look and the depth model are `DESIGN.md`. This file is only the inventory.
 
 | class | declared | used |
 |---|---|---|
-| `.ds-opt` | src/ui/shell.css:1489 | 80 |
+| `.ds-opt` | src/ui/shell.css:1489 | 82 |
 | `.ds-opt-add` | src/ui/shell.css:3753 | 2 |
 | `.ds-opt-del` | src/ui/shell.css:3730 | 2 |
 
@@ -350,8 +350,8 @@ The look and the depth model are `DESIGN.md`. This file is only the inventory.
 
 | class | declared | used |
 |---|---|---|
-| `.ds-maint` | src/ui/styles.css:2028 | 3 |
-| `.ds-maint-wrap` | src/ui/styles.css:2025 | 2 |
+| `.ds-maint` | src/ui/styles.css:2064 | 3 |
+| `.ds-maint-wrap` | src/ui/styles.css:2061 | 2 |
 
 ## `ds-menu` — 2
 
@@ -451,7 +451,7 @@ The look and the depth model are `DESIGN.md`. This file is only the inventory.
 
 | class | declared | used |
 |---|---|---|
-| `.ds-dialog-actions` | src/ui/styles.css:902 | 6 |
+| `.ds-dialog-actions` | src/ui/styles.css:938 | 6 |
 
 ## `ds-dlpage` — 1
 
@@ -511,7 +511,7 @@ The look and the depth model are `DESIGN.md`. This file is only the inventory.
 
 | class | declared | used |
 |---|---|---|
-| `.ds-hint` | src/ui/shell.css:1826 | 112 |
+| `.ds-hint` | src/ui/shell.css:1826 | 113 |
 
 ## `ds-input` — 1
 
@@ -565,7 +565,7 @@ The look and the depth model are `DESIGN.md`. This file is only the inventory.
 
 | class | declared | used |
 |---|---|---|
-| `.ds-opts` | src/ui/shell.css:3635 | 48 |
+| `.ds-opts` | src/ui/shell.css:3635 | 49 |
 
 ## `ds-page` — 1
 
@@ -727,7 +727,7 @@ The look and the depth model are `DESIGN.md`. This file is only the inventory.
 
 | class | declared | used |
 |---|---|---|
-| `.ds-tip` | src/ui/styles.css:2006 | 2 |
+| `.ds-tip` | src/ui/styles.css:2042 | 2 |
 
 ## `ds-title` — 1
 

@@ -7,7 +7,7 @@ import { bbLaunch, bbMouths, bbSlewTurret, bbTurretSolution, type BbShot } from 
 import { bbIsTurreted, bbLauncherOf } from '../mechs';
 import { rectContains, type BiobuzzState } from '../state';
 import { flowerPlace3d, flowerRetrieve3d } from './flower3d';
-import type { Engine3d } from './engine';
+import type { Engine3d } from './engineImpl';
 import { bbKindIndex } from '../score';
 
 /**

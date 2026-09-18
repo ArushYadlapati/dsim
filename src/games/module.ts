@@ -307,9 +307,22 @@ export interface GameDevRoute {
 // later controller lane can drive it, without either waiting on the other. DECODE and
 // Chain Reaction register no `scene` and are untouched by any of this.
 
-/** which camera a 3D scene renders for — the driver's own view, or a fixed overhead shot
- * (a spectator, the results screen). */
-export type SceneCamera = 'driver' | 'overhead';
+/**
+ * Which camera a 3D scene renders for (`docs/biobuzz/plan-3d.md` §4.3).
+ *
+ * `driver` is the driver's own station view and `overhead` the fixed orthographic shot (the 2D
+ * fit) — the two the controller itself picks between. `chase` and `orbit` are DAY 2 additions
+ * and the controller never names them: they are reached through the device's own camera
+ * preference (`src/games/biobuzz/graphics/store.ts`), which the scene resolves against the
+ * `camera` the frame carries. Adding them here rather than keeping them scene-private is what
+ * lets a host (the scene gallery, a replay screen, a later Graphics section) ask for one
+ * directly without a second vocabulary for the same four cameras.
+ *
+ * A scene that cannot honour one falls back rather than throwing — `chase` with no
+ * `localRobotId` (a spectator, a replay of someone else's match) has nothing to chase, and
+ * BIOBUZZ's scene renders `overhead` instead.
+ */
+export type SceneCamera = 'driver' | 'overhead' | 'chase' | 'orbit';
 
 /**
  * The HUD's OCCUPIED BANDS over the render surface, in CSS pixels, measured off the live DOM
@@ -369,6 +382,28 @@ export interface GameScene {
   render(world: World, frame: SceneFrame): void;
   resize(width: number, height: number, dpr: number): void;
   dispose(): void;
+  /**
+   * PROJECT a field point through the scene's ACTIVE camera, into CSS pixels on the 2D overlay
+   * canvas above it (Day 2, `docs/biobuzz/plan-3d.md` §4.7).
+   *
+   * The 2D canvas stays mounted over a live scene and keeps drawing the cheap overlays — the
+   * name/team labels, an auto path, the replay burn-in — but its own `Camera` is the TOP-DOWN
+   * one, so in a 3D view every one of those lands where the robot would have been on the flat
+   * map: metres away from the robot on screen, and with no notion of "behind the camera" at
+   * all. This is the one number the overlay pass cannot work out for itself, because only the
+   * scene knows the live camera, its `setViewOffset` window and which of its four cameras is
+   * currently active.
+   *
+   * `x`/`y` are field inches, `z` is height above the tiles (the same frame `World` uses).
+   * `out` is written IN PLACE and is the caller's own object, reused across every label in a
+   * frame — a projection that allocated a vector per call would allocate one per robot per
+   * frame at up to 144 Hz. `visible` is false when the point is behind the camera or outside
+   * the frustum, and `x`/`y` are then meaningless (the caller skips the draw).
+   *
+   * OPTIONAL, so this stays additive: a scene that does not implement it leaves the overlay
+   * drawing exactly what it drew before, through the 2D camera.
+   */
+  project?(x: number, y: number, z: number, out: { x: number; y: number; visible: boolean }): void;
 }
 
 /** builds a `GameScene` inside `host` (the DOM node the controller mounts it in). May be

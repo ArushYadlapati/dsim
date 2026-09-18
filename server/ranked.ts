@@ -226,7 +226,10 @@ export async function persistVersusMatch(
     );
   }
 
-  const matchId = await saveMatch(mode, balanceVersion, replayId, ranked, game);
+  // TAGGED WITH THE SOLVE THAT PRODUCED IT (0038), read off the replay the room just recorded
+  // rather than from a room flag: the container is what a later re-simulation will run, so
+  // taking both facts from one place means the row can never disagree with its own replay.
+  const matchId = await saveMatch(mode, balanceVersion, replayId, ranked, game, outcome.replay.physics);
   if (out) out.matchId = String(matchId);
   // one multi-row insert rather than one per player — same rows, same conflict handling
   await addMatchParticipants(

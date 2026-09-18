@@ -10,21 +10,18 @@ import {
   BB_FRAME_BAR_IN,
   BB_FRAME_BAR_OUT,
   BB_FRAME_Y,
-  BB_GARDEN,
   BB_HALF_X,
   BB_HALF_Y,
   BB_HIVE_OPEN_Z,
   BB_HIVE_TILT_DEG,
   BB_HIVE_X,
-  BB_LZ,
   BB_WALL_T,
-  BB_TAPE_1,
+  BB_TAPE,
+  BB_TILE_SEAMS,
   FLOWER_MOUTH,
 } from '../config';
 import { BB_FLOWER_FLOOR_Z, BB_FLOWER_MID_Z } from '../flower';
-import { hiveTiltAngle } from '../sim3d/hive3d';
-import { hiveTrayRefTheta } from '../sim3d/bodies';
-import { cadFloor } from '../sim3d/fieldColliders';
+import { hiveTiltAngle, hiveTrayRefTheta } from '../sim3d/tilt';
 import { loadFieldGlb, type FieldGroups } from './renderFieldGlb';
 
 /**
@@ -161,34 +158,23 @@ function fillStripTex(ctx: CanvasRenderingContext2D, x0: number, y0: number, x1:
 }
 
 /**
- * THE FALLBACK PATH'S TAPE — the CAD layout, drawn from the 2D zone rectangles.
+ * THE FALLBACK PATH'S TAPE — the CAD's own 16 strips, at the rectangles the CAD puts them at.
  *
  * The rule the owner named, and the one the CAD confirms part for part: **a zone edge that is a
  * WALL carries no tape.** A LOADING ZONE is bounded by the side wall and three 1-in tapes (its
  * two depth edges and its inner, field-side edge). A GARDEN is not outlined at all — it IS a
  * 2-in band of two 1-in tapes laid side by side, with nothing across its ends and nothing on the
  * two walls it sits in the corner of. `docs/biobuzz/field-cad-audit.md` §5.
+ *
+ * It used to RECONSTRUCT those strips from `BB_LZ`/`BB_GARDEN` by inset arithmetic, which was
+ * right in shape and ~1.9 in out in position because the zone rectangles themselves were figure
+ * reads. Both renderers now draw `BB_TAPE` — the measured rectangles — so the 2D panel, this
+ * fallback and the GLB's own tape geometry are one layout by construction.
  */
 function drawZoneTape(ctx: CanvasRenderingContext2D, a: Alliance): void {
   const colour = TAPE_GAFFER[a];
-  const lz = BB_LZ[a];
-  // which x edge is the WALL — red's zone backs onto the left wall, blue's onto the right.
-  const wallX = a === 'red' ? lz.x0 : lz.x1;
-  const innerX = a === 'red' ? lz.x1 : lz.x0;
-  const inward = a === 'red' ? -1 : 1; // from the inner edge back toward the wall
-  // inner (field-side) edge, its full 1-in width inside the zone
-  fillStripTex(ctx, innerX, lz.y0, innerX + inward * BB_TAPE_1, lz.y1, colour);
-  // the two depth edges, running from the wall to the outer face of the inner tape
-  for (const y of [lz.y0, lz.y1]) {
-    const inY = y === lz.y0 ? BB_TAPE_1 : -BB_TAPE_1;
-    fillStripTex(ctx, wallX, y, innerX, y + inY, colour);
-  }
-
-  // the GARDEN: the band itself, two 1-in tapes side by side. `BB_GARDEN` is already that 2-in
-  // strip, so it is FILLED, not stroked — a 1-in outline of a 2-in rectangle is two thin lines
-  // with mat showing between them, which is not what is on the floor.
-  const g = BB_GARDEN[a];
-  fillStripTex(ctx, g.x0, g.y0, g.x1, g.y1, colour);
+  for (const strip of BB_TAPE.loadingZone[a]) fillStripTex(ctx, strip.x0, strip.y0, strip.x1, strip.y1, colour);
+  for (const strip of BB_TAPE.garden[a]) fillStripTex(ctx, strip.x0, strip.y0, strip.x1, strip.y1, colour);
 }
 
 function buildFloorTexture(withTape: boolean): THREE.CanvasTexture {
@@ -201,25 +187,20 @@ function buildFloorTexture(withTape: boolean): THREE.CanvasTexture {
   ctx.fillStyle = C.COLORS.mat;
   ctx.fillRect(0, 0, TEX_SIZE, TEX_SIZE);
 
-  // tile SEAM GRID — at the CAD's own measured footprint and pitch when the collider set carries
-  // them (real FTC soft tiles are 23.53 in on centre, not 24), so the painted seams agree with
-  // the CAD tape drawn on top of them; the constants' 24-in grid otherwise.
-  const floor = cadFloor();
-  const x0 = floor ? floor.x[0] : -BB_HALF_X;
-  const x1 = floor ? floor.x[1] : BB_HALF_X;
-  const y0 = floor ? floor.y[0] : -BB_HALF_Y;
-  const y1 = floor ? floor.y[1] : BB_HALF_Y;
-  const pitch = floor ? floor.pitch : C.TILE;
+  // tile SEAM GRID — the CAD's own seven measured seam lines per axis (`BB_TILE_SEAMS`), which is
+  // exactly what the 2D renderer draws, so the painted seams agree with the CAD tape lying on top
+  // of them and with the other panel. It used to step by `cadFloor()`'s pitch from the collider
+  // set's own floor extent, falling back to `C.TILE` — the same grid to about a hundredth, but
+  // reached two different ways in two files, and the fallback branch drew the 24-in grid the
+  // whole field-size finding is about.
   ctx.strokeStyle = C.COLORS.tile;
   ctx.lineWidth = 2;
   ctx.beginPath();
-  for (let x = x0; x <= x1 + 0.01; x += pitch) {
-    const [px] = toTex(x, 0);
+  for (const seam of BB_TILE_SEAMS) {
+    const [px] = toTex(seam, 0);
     ctx.moveTo(px, 0);
     ctx.lineTo(px, TEX_SIZE);
-  }
-  for (let y = y0; y <= y1 + 0.01; y += pitch) {
-    const [, py] = toTex(0, y);
+    const [, py] = toTex(0, seam);
     ctx.moveTo(0, py);
     ctx.lineTo(TEX_SIZE, py);
   }

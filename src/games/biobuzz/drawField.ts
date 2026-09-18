@@ -23,7 +23,8 @@ import {
   BB_HIVE_X,
   BB_LZ,
   BB_POLLEN_R,
-  BB_TAPE_1,
+  BB_TAPE,
+  BB_TILE_SEAMS,
   FLOWER_MOUTH,
   type BbRect,
 } from './config';
@@ -269,11 +270,19 @@ function elementR(b: Artifact): number {
   return b.r ?? BB_POLLEN_R;
 }
 
-function strokeRect(ctx: CanvasRenderingContext2D, r: BbRect, stroke: string, w: number): void {
+/**
+ * A TAPE STRIP — a FILLED rectangle of the width and position the CAD puts it at.
+ *
+ * It replaced a `strokeRect` of the ZONE, and that is the whole tape fix (owner, 2026-09-18):
+ * outlining a zone paints all four of its edges, including the one that is a WALL and carries no
+ * tape on the real field, and it turns the GARDEN's solid 2-in band into a 1-in outline of a 2-in
+ * rectangle — two thin lines with mat showing between them. `BB_TAPE` carries the 16 measured
+ * strips; this draws them.
+ */
+function fillStrip(ctx: CanvasRenderingContext2D, r: BbRect, fill: string): void {
   ctx.save();
-  ctx.strokeStyle = stroke;
-  ctx.lineWidth = w;
-  ctx.strokeRect(r.x0, r.y0, r.x1 - r.x0, r.y1 - r.y0);
+  ctx.fillStyle = fill;
+  ctx.fillRect(r.x0, r.y0, r.x1 - r.x0, r.y1 - r.y0);
   ctx.restore();
 }
 
@@ -345,10 +354,11 @@ function text(
   ctx.restore();
 }
 
-/** tile-centre coordinate of column/row `i` (0..5) — derived from `C.TILE` so a 24-in tile
- * stays the only place the field's module is written down. */
+/** tile-centre coordinate of column/row `i` (0..5) — the midpoint of the two CAD seams that
+ * bound it, because real tiles are not evenly spaced (`BB_TILE_SEAMS`, and see `BB_TILE_PITCH`).
+ * `C.TILE`'s even 24 would put the F column's letter 0.6 in off its own tile. */
 function tileCentre(i: number): number {
-  return (i - 2.5) * C.TILE;
+  return (BB_TILE_SEAMS[i] + BB_TILE_SEAMS[i + 1]) / 2;
 }
 
 /**
@@ -848,20 +858,25 @@ export function drawBiobuzzField(
   ctx.fillStyle = C.COLORS.mat;
   ctx.fillRect(-hx, -hy, 2 * hx, 2 * hy);
 
-  // TILE GRID — every 24" tile. Not decoration: the tile grid is how a driver judges distance
-  // on an FTC field, and §9.3 says every tape line stays inside one tile, so the seams are
-  // also what the zone rectangles below were measured against.
+  // TILE GRID — the six real soft tiles per axis, at the CAD's own measured SEAM POSITIONS
+  // (`BB_TILE_SEAMS`). Not decoration: the tile grid is how a driver judges distance on an FTC
+  // field, and §9.3 says every tape line stays inside one tile, so the seams are also what the
+  // zone rectangles below are measured against — which only works if they are the same seams.
+  //
+  // ⚠️ NOT `C.TILE`. That is 24, DECODE's nominal tile; a real FTC soft tile is `BB_TILE_PITCH`
+  // 23.528 on centre and the six of them close on 141.17, not 144. Stepping by 24 from the wall
+  // drew a grid that drifted almost half an inch per tile away from the tape, the flowers and the
+  // GLB, and the seven lines here are the measured positions rather than a pitch multiplied out,
+  // because the tabbed tile bodies make the real gaps uneven (23.176 … 23.986).
   ctx.save();
   ctx.strokeStyle = C.COLORS.tile;
   ctx.lineWidth = 0.6;
   ctx.beginPath();
-  for (let x = -hx; x <= hx + 0.01; x += C.TILE) {
-    ctx.moveTo(x, -hy);
-    ctx.lineTo(x, hy);
-  }
-  for (let y = -hy; y <= hy + 0.01; y += C.TILE) {
-    ctx.moveTo(-hx, y);
-    ctx.lineTo(hx, y);
+  for (const s of BB_TILE_SEAMS) {
+    ctx.moveTo(s, -hy);
+    ctx.lineTo(s, hy);
+    ctx.moveTo(-hx, s);
+    ctx.lineTo(hx, s);
   }
   ctx.stroke();
   ctx.restore();
@@ -891,22 +906,21 @@ export function drawBiobuzzField(
   //
   // ⚠️ TAPE, NOT STRUCTURE (owner ruling, 2026-09-12). Nothing collides with a zone — robots
   // drive over it and elements roll across it, and `colliders.ts` has never had an entry for
-  // one. So it is drawn as the 1-in tape line it is, with the MAT showing through. A filled
-  // bar reads as a wall, which is a drawing that tells a driver something false about what
-  // they can drive on.
-  for (const a of ALLIANCES) strokeRect(ctx, BB_LZ[a], TAPE_GAFFER[a], BB_TAPE_1);
-
-  // GARDENS (§9.3, §10.5.3) — a 23 × 2 strip in the alliance's own corner, "defined by the
-  // outside edge of tape", TWO 1-IN TAPES. Same ruling as the LOADING ZONE above: TAPE, never
-  // a filled bar.
+  // one. So it is drawn as the 1-in tape it is, with the MAT showing through. A filled bar
+  // reads as a wall, which is a drawing that tells a driver something false about what they
+  // can drive on.
   //
-  // Stroked at BB_TAPE_1, not at the 2-in strip depth. The depth is `BB_GARDEN`'s own — the
-  // rect IS the strip — so stroking it at 2 paints the whole thing solid and puts back
-  // exactly the filled bar the ruling removed. At the tape's own width the two long edges
-  // come out as the two 1-in tapes they are, with the mat between them, which is what a
-  // driver sees. The wall-side edge is overdrawn by the perimeter at the end of this
-  // function, and that is correct: that edge IS the wall.
-  for (const a of ALLIANCES) strokeRect(ctx, BB_GARDEN[a], TAPE_GAFFER[a], BB_TAPE_1);
+  // ⚠️ AND IT IS THE STRIPS, NOT AN OUTLINE OF THE ZONE (owner, 2026-09-18; audit §5). A LOADING
+  // ZONE has THREE tapes — two depth edges and the inner, field-side edge — because its fourth
+  // side is the perimeter wall, and a wall-bounded edge carries no tape. A GARDEN has TWO, laid
+  // side by side, which IS its 2-in band: nothing across its ends, nothing on the two walls it
+  // sits in the corner of. Stroking `BB_LZ`/`BB_GARDEN` instead drew tape on the wall and turned
+  // the garden's solid band into a 1-in outline of a 2-in rectangle. `BB_TAPE` is the CAD's own
+  // 16 strips and the 3D renderer draws exactly the same rectangles.
+  for (const a of ALLIANCES) {
+    for (const strip of BB_TAPE.loadingZone[a]) fillStrip(ctx, strip, TAPE_GAFFER[a]);
+    for (const strip of BB_TAPE.garden[a]) fillStrip(ctx, strip, TAPE_GAFFER[a]);
+  }
 
   // HIVE FRAME (§9.6.1, Fig 9-8) — two triangular structures joined at the apex. Top-down,
   // each triangle is its BASE BAR, the only part of it a robot can actually hit, so it is the

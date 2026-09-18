@@ -1,6 +1,119 @@
-# HANDOFF — 2026-09-18, later (biobuzz-3d: play-test round 2 — true CAD geometry, CAD colours and tape, HUD-safe framing)
+# HANDOFF — 2026-09-18, night (biobuzz-3d: CAD-authoritative dimensions + DAY 2 LANDED — 3D rooms online, dynamic hive, flower tubes, prediction, cameras)
 
 **READ FIRST.** Branch **`biobuzz-3d`**, worktree `.claude/worktrees/biobuzz-3d`, clean at the merge
+commit named in the log; every gate green there: `build` · `bundleaudit` · `server:check` ·
+`docaudit` · `uiaudit` · `test:mm` (197) · `dbtest` (263) · `npm test` (1798 shared + 1615 BIOBUZZ;
+lanes CORE/SIM3D/HIVE3D/FLOWER3D/PREDICT/NET3D/RENDER + the 2D lanes).
+
+⚠️ **THE OWNER MUST DEPLOY THE ALPHA APP before anyone joins a 3D room online**: this day adds a
+migration (`0038_physics.sql`), a protocol field (`RoomConfig.physics`, `matchStart.physics`, the
+`'bb3d'` cap) and a replay header field — three server changes. `./scripts/fly-deploy.sh` (the
+owner's wrapper; NEVER a bare `flyctl deploy`), then verify `/health` and `fly machine list`.
+Production later from a `main` worktree. Backward compatibility held: `physics` is omitted (never
+written as `'2d'`) on the wire and in containers; old clients still join 2D rooms; pre-0038 rows
+read `'2d'`; no version bumped.
+
+## Owner rulings this day
+- **"The CAD is authoritative for dimensions."** `BB_*` geometry is GENERATED: `npm run field-cad` →
+  `scripts/field-cad/emit-dims.mjs` → `src/games/biobuzz/fieldDims.gen.ts` (STEP version + sha, the
+  derivation and residual of every value); `config.ts` imports it under the old names. The field is
+  141.35 in inside the walls (`BB_HALF_X` 70.674), tiles 23.528 in on centre (`BB_TILE_PITCH`,
+  `BB_TILE_SEAMS`), flowers at their bore-fit centres, hive `BB_HIVE_BOTTOM_Z` 31.981, opening
+  [53.375, 65.497], tape as 16 CAD strips (`BB_TAPE`). 2D collider = 3D collider = GLB wall to
+  0.0000 in (asserted). The manual's figures are history where they differ
+  (`docs/biobuzz-reference.md` carries the dated note). `C.TILE`/`src/config.ts` untouched.
+  Pre-2026-09-18 BIOBUZZ replays diverge on re-sim (alpha-only, unranked; no version bump).
+- Better agents: rounds after the first play-test ran on OPUS with an analysis phase first.
+
+## Day 2 (spec §10) — landed
+- **Lane C, online** (`6ac687c`…`4ae3663`): `await initPhysics3d()` at server boot and lazily in
+  the LAN host worker (`vite.config.ts` `worker.format = 'es'` was REQUIRED — an IIFE worker cannot
+  code-split, and `initPhysics3d` had been tree-shaken out of the worker); `createWorld` gains a
+  FIFTH optional `physics` parameter (a room is not a practice); `Room.physics` decided once
+  (ranked/record/staged → `'3d'`, host option in the lobby, absent → `'2d'`); `'bb3d'` cap refused
+  at `join`/`spectate`/`rejoin`/BIOBUZZ `queue` with "Update DSIM to play this room."; matchmaking
+  stages BIOBUZZ `'3d'`; migration 0038 (`physics` on records/matches/replays/practice_runs, `view`
+  on practice_runs, `butterfly` in the drivetrain check); recorder/player stamp and honour `physics`
+  (`ReplayView` awaits the wasm); `displayWorld` interpolates elements and remote `z` in 3D worlds
+  only; `costprobe` `biobuzz3d-*`: 2v2 0.026 cores/room, 7,231 B/snapshot (72 % of budget; 3D is
+  cheaper than 2D). Verified locally: two clients, one 2D-view one 3D-view, same room, identical
+  scores/positions at the same tick, the replay re-simulated to the server's score exactly.
+- **Lane A, sim** (`366e3ce`…`506a890`): **dynamic see-saw ON** (`BB3_HIVE_DYNAMIC = true`): CAD
+  tray hulls on a revolute joint (limits via `.setLimits` on the instance), mass 13 lb APPROX with
+  the CoM 5.53 in above the pivot (that is the bi-stability), the detent is a HOLD at the stop
+  released when the contents' torque beats `restoring + BB3_HIVE_DETENT` (Rapier has no joint
+  friction; a capped motor keeps pulling), `npm run hive-calibrate` swept it: detent 3041, ballast
+  6 lb at w −9.5, damping 4.466 → 4.00 s swing; all four §12.3 target rows hold with ±0.31
+  element-weights of margin (the whole window is 0.60 wide at nectar ratio 1.6 — weighing a real
+  set is what widens it); validation 4/7 (no linear weighting fits the owner-measured rows, as the
+  reference already says). `hives[a].angle`/`angVel` ride the JSON; `hiveTiltAngle` reads them.
+  **Flower tubes** from the CAD plates (lower bore 3.222 at z −0.2…0.35, mid 3.896 at 3.90…5.25,
+  top 4.171 at 20.25…21.40; retrieval opening derives to 3.550 = Fig 9-12); elements fall to the
+  tiles inside the bottom bore (nothing seats on a ring); G418's intent holds (only pollen exits
+  the bottom). G409 (`bb.spill`) and G417 (`bb.hiveRam`, 3D only; the 2D "no robot can move the
+  hive" ruling stands) bill from real contacts. **Predictors** in `sim3d/predict.ts`:
+  `createLightPredictor(world, localId)` / `createFullPredictor(world, localId)` with
+  `reset/step/dispose`, `probeFullReconcileMs(world, id, now)`; convergence 0.57/0.22 in open
+  floor, 2.12/0.19 in on a push; Light < 1 ms, Full 2 ms (budget 8). `step3d` 2v2 median 0.255 ms.
+- **Lane B, render** (`a0557e1`…`5ec9d40`): reticle at the sim's own landing (`renderLanding.ts`
+  duplicates `bbFlightEnters`'s integrator on purpose — matching the sim beats being "accurate");
+  fixed dark HUD scrim in 3D (`.game-root.view-3d`, tracks a LIVE scene via a MutationObserver);
+  chase and orbit cameras (drag/wheel on the host; pref `decodesim.camera`, keys `c`/`i`/`o`/`t`
+  handled inside the scene while mounted); `GameScene.project` + `Renderer.setScene` so labels and
+  auto paths project through the scene camera (wired in `game.ts` by the coordinator, `8f7300b`);
+  theme change followed live. Scene chunk 187 KB gz.
+- Roadmap: `docs/roadmap.md` now leads with the owner's eight priorities (auth, privacy, contributors,
+  tutorial, replay 2D/3D export, 3D builder, cosmetics plan, rewards plan) with branches and order.
+
+## Owner rulings PENDING (raised by this day's measurements; nothing moved)
+1. **A lone NECTAR in a flower does not reach the scoring floor by the CAD geometry** (tops out at
+   3.597 vs `BB_FLOWER_VOL_Z` floor 3.904): by the 2D model it always scored. 0.30 in, worth 7
+   points and an ownership. `flowerScoreZ` is the extraction that measures it. The 2026-09-12
+   sorter ruling is what a change would overturn.
+2. The CAD lower bore is 3.222, the manual's Fig 9-12 says 2.79 — CAD wins by the standing ruling;
+   noted because the manual's sorting story (nectar seats on the middle ring) is not what the CAD
+   does.
+3. Weigh a real element set: `BB3_ELEMENT_MASS` 0.2 and the nectar ratio 1.6 are APPROX and the
+   tip margin depends on them.
+
+## Next: Day 3 (spec §10) — not started
+A: perf tuning, heights in coercion, AI policy and tiers (`GameSimModule.bot`), bots in practice and
+lobbies. B: Graphics section with presets and Auto detection (`SceneQuality` is ready), HDRI
+environments, export compositing (roadmap item 2), gallery 3D stills, the mobile overhead default,
+the 2D→3D key. C: wire the predictors into `game.ts`'s reconcile with the Off/Light/Full/Auto
+setting (Lane A's API above), the online-room "Loading 3D physics" panel (`GameView` `need3d` is
+`!session && …`; the controller latches `physicsPending` meanwhile), leaderboard `physics` badge and
+filter, ranked cutover on the alpha server, smoke lanes filled, docs. Then the alpha ship.
+DONE at the end of Day 2 (`20d0194`, `634d749`): `sim3d/` loads ONLY through `initPhysics3d()` —
+`sim3d/engine.ts` is the light loader, `sim3d/tilt.ts` the light `hiveTiltAngle`/`hiveTrayRefTheta`
+seam the scene imports, `sim3d/step3d.ts` a thin gate over `step3dImpl`, and `sim3d/impl.ts` the
+heavy re-export the loader `import()`s (predictors included: `physics3dImpl().createFullPredictor`
+after init). Main chunk 917 → 907.88 KB gz (seam 904.17 + the loader/tilt), hostWorker 700.84,
+physics3d 1123 (the impl rides with the wasm), scene 187.27; bundleaudit baselines re-measured; a
+CORE check forbids static imports of heavy sim3d modules outside `sim3d/` (only `engine` and `tilt`).
+
+## Gotchas (new)
+- `setAdditionalMassProperties` on a BODY is discarded by the collider mass recompute — set it on
+  the desc; `body.mass()` is stale until the first step. A pinned tray SLEEPS and gravity does not
+  wake it: `wakeUp()` at breakaway. The tray and its frame overlap at the bearing: separate
+  collision groups; the joint limits are the damper.
+- `atan2` is (−π, π]: wrap corner rays into [0, 2π) before sorting an annulus, or the ring closes
+  across its bore. A convex hull of a C-bracket fills the C (visual-only parts stay visual-only).
+- A `Date.now` DEFAULT PARAMETER trips the sim source guard, and should.
+- `Client.send` hands out a live view of the world (`slimWorld` spreads one level): a test sink
+  must encode/decode as the transport does. `physics: cond ? '3d' : undefined` CREATES the key:
+  test "absent" on `JSON.stringify`, not `in`.
+- `w.balls.length = 0` does not clear `rob.hopper`; a fired-out robot ends with an EMPTY hopper
+  (measure the peak).
+- `npm run dev` was broken by a Day 0 spike file importing an uninstalled package (`scripts/
+  spike3d-browser/noncompat.*`, deleted). Orphaned `esbuild.exe`/`node.exe` from a dead Vite lock
+  `npm ci` (taskkill first). Never `Remove-Item -Recurse` a directory containing a junction.
+
+---
+
+# HANDOFF — 2026-09-18, later (biobuzz-3d: play-test round 2 — true CAD geometry, CAD colours and tape, HUD-safe framing)
+
+**(Previously READ FIRST.)** Branch **`biobuzz-3d`**, worktree `.claude/worktrees/biobuzz-3d`, clean at the merge
 commit named in the log; all gates green there (`npm test` 1798 + the BIOBUZZ suite with a 105-check
 SIM3D lane). This round was done by OPUS agents with an analysis phase first, at the owner's request;
 the audit is `docs/biobuzz/field-cad-audit.md` — read it before touching the field pipeline.

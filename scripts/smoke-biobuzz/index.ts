@@ -5,8 +5,12 @@ import { rulesChecks } from './rules';
 import { robotChecks } from './robot';
 import { coreChecks } from './core';
 import { sim3dChecks } from './sim3d';
+import { hive3dChecks } from './hive3d';
+import { flower3dChecks } from './flower3d';
+import { predictChecks } from './predict';
 import { sponsorChecks } from './sponsor';
 import { renderChecks } from './render';
+import { net3dChecks } from './net3d';
 import type { Check } from './harness';
 
 /**
@@ -58,6 +62,10 @@ import type { Check } from './harness';
 const LANES: { name: string; fn: (c: Check) => void }[] = [
   { name: 'CORE', fn: coreChecks },
   { name: 'SIM3D', fn: sim3dChecks },
+  // Day 2 lane A: the DYNAMIC see-saw, the real FLOWER tube, and the two prediction worlds.
+  { name: 'HIVE3D', fn: hive3dChecks },
+  { name: 'FLOWER3D', fn: flower3dChecks },
+  { name: 'PREDICT', fn: predictChecks },
   { name: 'FIELD', fn: fieldChecks },
   // Table 10-2 scoring, the Section 11 fouls, the 1:00 cue, the HUD slice. Its own lane
   // because a RULES failure and a PHYSICS failure are different mornings, and because two
@@ -69,6 +77,10 @@ const LANES: { name: string; fn: (c: Check) => void }[] = [
   { name: 'SPONSOR', fn: sponsorChecks },
   // the 3D scene chunk's import-boundary rules (Day 1 lane B) — pure source checks, no DOM
   { name: 'RENDER', fn: renderChecks },
+  // the SEAM between the 3D solve and everything that carries it: room physics, the cap gate,
+  // the wire codec, and the replay container (Day 2 lane C). See net3d.ts's header for why it
+  // is its own lane and not more checks in SERVER.
+  { name: 'NET3D', fn: net3dChecks },
 ];
 
 const KNOWN_FLAGS = ['--lane', '--grep', '--list', '--help'];
