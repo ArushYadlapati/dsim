@@ -1,6 +1,67 @@
+# HANDOFF — 2026-09-19 (alpha: ROADMAP ROUND 1 LANDED — auth flows, tutorial, contributors, cosmetics/rewards plans, Vercel policy; alpha server redeployed)
+
+**READ FIRST.** Branch **`alpha`** (worktree `.claude/worktrees/pr-alpha`), pushed, every gate green on
+the merged tree: `build` · `bundleaudit` · `server:check` · `docaudit` · `uiaudit` · `contrast` ·
+`test:mm` · `dbtest` · `npm test` (counts in the log). The ALPHA game server (`dsim-alpha`) was redeployed
+from this tree (`./scripts/fly-deploy.sh --alpha`) because auth adds migration `0040` and server routes.
+The four sections below this one are each branch's own handoff, written by the agent that built it;
+their "NOT merged / NOT pushed" lines are stale — all four ARE merged here. Production is untouched.
+
+## What landed on alpha (each on its own branch, merged in this order)
+- `feat/plans-cosmetics-rewards` → `docs/cosmetics-plan.md`, `docs/rewards-plan.md` (roadmap items 3–4;
+  the owner approves before code). Two code facts they surfaced: the 3D chassis ignores `chassisColor`
+  (paints alliance fill), and `coerceSpec` checks only that a colour KEY is legal, never that the account
+  is entitled — enforcement is UI-only today.
+- `feat/contributors` → real sections (core team, contributors from `CONTRIBUTORS.md` incl. a missing
+  signer, presented-by via `sponsorLink`, third-party credits with versions baked from `package.json`
+  at build time, get involved). Owner still fills the `TODO(fill in)` handles/avatars.
+- `feat/tutorial` → `src/tutorial/` engine (DOM-free runner, `GameModule.tutorial` slot), BIOBUZZ six
+  steps + DECODE four, the step card in the HUD band, a first-run offer on Modes and a Controls entry,
+  per-device flag `decodesim.tutorial.v1`; TUTORIAL lane 318 checks (non-vacuous AND completable, both
+  physics, both alliances). Runs as FREE DRIVE so nothing is recorded (a staged world is not
+  reconstructible from `{seed, setups}`); `startMatch` refuses while a tutorial is live.
+- `feat/auth-flows` → `src/lib/authFlows.ts` (one wrapper over the Neon/Better-Auth SDK, pinned exactly
+  at 0.4.2-beta): forgot password (`/account/reset`), email verification (banner, resend,
+  `/account/verify`), terms acceptance (`LEGAL_VERSION`, migration `0040_terms_acceptance.sql`,
+  `POST /api/user/accept-terms`, a blocking `TermsGate` on version mismatch incl. OAuth first sessions).
+  ⚠️ The email-verification SERVER GATE (ranked queue, record-room join, `/api/practice`) is OFF until
+  `REQUIRE_VERIFIED_EMAIL=1` — every existing password account is unverified and no sender domain is
+  configured; the owner's Neon dashboard steps are in `docs/deploy.md` §4. Also fixed in passing:
+  `uiaudit`'s component-index staleness check compared CRLF against LF (failed on every fresh Windows
+  checkout).
+- Vercel: `vercel.json` builds ONLY `main` and `alpha` (`ignoreCommand`) and disables auto-deploy for the
+  feature branches; `scripts/vercel-prune.mjs` (owner-run, token via env, dry run by default, waits out
+  the 200-deletions-per-10-minutes limit) took the project from 501 to 113 deployments on 2026-09-18.
+  Feature-branch pushes had been queueing previews ahead of the alpha build.
+
+## Owner actions
+- Neon Auth: sender domain + "require email verification", then `REQUIRE_VERIFIED_EMAIL=1` on the alpha
+  app (`docs/deploy.md` §4). Review the terms/privacy copy touched by the acceptance flow.
+- Fill the contributors' handles; decide the cosmetics and rewards plans' numbered decisions.
+- Test on alpha: sign-up with the terms box, forgot-password screen, the tutorial from Modes, Contributors.
+
+## Next (roadmap)
+`feat/privacy-cookies` (item 8; shares `LEGAL_VERSION`), the 3D robot creator (item 1, on
+`biobuzz-3d`), replay 2D/3D export is DONE (Day 3), cosmetics/rewards builds after approval. BIOBUZZ 3D
+follow-ups are in the Day 3 section: nectar-in-flower scoring ruling, weigh an element set, AI 59/100.
+
+## Gotchas (new)
+- The Neon adapter THROWS on any non-2xx (`AuthApiError` with lower_snake codes); the `{data,error}`
+  union's `error` is essentially never populated — classify the throw.
+- Read the emailed `?token=` at module load (`src/ui/entryToken.ts`): App canonicalises the address bar
+  before any screen renders. Spend a verification token once (a ref, not state — StrictMode).
+- A tutorial predicate that is already true on the staged world is invisible; the lane's non-vacuity
+  check is the only guard. A hand-written `held` ball state without `lx/ly/side` is a NaN into Rapier —
+  stage through `capturePollen`. `TutorialRunner.abandon()` is not `finish()` (the recorder check counts
+  `.finish()` calls in `game.ts`).
+- Vite's dev server refuses to serve files whose real path is outside the worktree (junctioned
+  `node_modules` → font 403s in dev only); builds are fine.
+
+---
+
 # HANDOFF — 2026-09-18 (`feat/auth-flows`: password reset, email verification, terms acceptance — roadmap item 5, BUILT, NOT PUSHED)
 
-**READ FIRST.** Branch **`feat/auth-flows`**, off `alpha` at `76034a9`. Seven commits, not pushed
+**(Previously READ FIRST.)** Branch **`feat/auth-flows`**, off `alpha` at `76034a9`. Seven commits, not pushed
 and not merged. Gates green on the branch: `build` · `server:check` · `npm test` (1840 shared +
 1780 BIOBUZZ) · `dbtest` (ALL PASS, +12 for migration 0040) · `uiindex` then `uiaudit` (all rules
 at baseline) · `docaudit` · `contrast` (223, unchanged — no new colour, the banner's tint is
