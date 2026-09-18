@@ -1,3 +1,5 @@
+import { hdriEnvironments } from './games/biobuzz/graphics/environments';
+
 /**
  * The Contributors page's roster.
  *
@@ -69,3 +71,42 @@ export const CONTRIBUTORS: Contributor[] = [
     githubUrl: 'https://github.com/alarmclock011',
   },
 ];
+
+/**
+ * THIRD-PARTY ASSETS the app ships or fetches — credited on the same page, in their own
+ * section.
+ *
+ * ── WHY IT IS DERIVED AND NOT TYPED OUT ────────────────────────────────────────────────────
+ * The entries are built from `BB_ENVIRONMENTS` (`src/games/biobuzz/graphics/environments.ts`),
+ * which is the list the Graphics section's environment picker renders from. So adding a third
+ * HDRI credits it by CONSTRUCTION: there is no second list to remember to update, and the
+ * failure this prevents — a shipped asset with no credit on the credits page — is the kind
+ * nobody notices until somebody outside the project does.
+ *
+ * Poly Haven's assets are CC0, which requires no attribution at all. It is given anyway, with
+ * the author roles the API reports, because "we did not have to" is not a reason not to.
+ */
+export interface ThirdPartyAsset {
+  /** the asset's own name, as its source calls it. */
+  name: string;
+  /** who made it, and at what — photography and processing are often different people. */
+  credits: readonly { name: string; role: string }[];
+  license: string;
+  licenseUrl: string;
+  /** the asset's page, for anyone who wants the original. */
+  page: string;
+  /** where it is used in DSIM, in one clause. */
+  use: string;
+  /** the library it came from. */
+  source: string;
+}
+
+export const THIRD_PARTY: ThirdPartyAsset[] = hdriEnvironments().map((e) => ({
+  name: e.name,
+  credits: e.hdri!.authors,
+  license: e.hdri!.license,
+  licenseUrl: e.hdri!.licenseUrl,
+  page: e.hdri!.page,
+  use: 'BIOBUZZ 3D environment lighting',
+  source: 'Poly Haven',
+}));

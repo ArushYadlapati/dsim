@@ -1,11 +1,26 @@
+import { Suspense, lazy } from 'react';
 import type { GameSettings } from '../game';
 import { APP_NAME } from '../seasons';
 import { Menu } from './Menu';
 import { MatchSetup } from './MatchSetup';
 import { ControlsSection } from './ControlsSection';
 import { AudioSection } from './AudioSection';
+/**
+ * LAZY, unlike its four siblings — and the reason is the bundle, not the screen.
+ *
+ * `GraphicsSection` carries the whole sixteen-setting model (`graphics/settings.ts`: the preset
+ * table, the coercion, the store), which nothing else in the MAIN chunk reads — the renderer
+ * reads it from the scene chunk, and the scene chunk is already lazy. Statically importing it
+ * here put ~5 KB gzipped of 3D graphics settings into the bundle every player of every game
+ * downloads, including the ones on DECODE who will never open a 3D view. `scripts/bundleaudit.mjs`
+ * is the thing that would have caught it a week later; this is catching it now.
+ *
+ * The cost is one extra request the first time somebody opens `/configure/graphics`, behind a
+ * `.ds-loading` line — the same state every list on the site already has.
+ */
+const GraphicsSection = lazy(() => import('./GraphicsSection').then((m) => ({ default: m.GraphicsSection })));
 
-export const CONFIGURE_SECTIONS = ['robot', 'match', 'controls', 'audio'] as const;
+export const CONFIGURE_SECTIONS = ['robot', 'match', 'controls', 'audio', 'graphics'] as const;
 export type ConfigureSection = (typeof CONFIGURE_SECTIONS)[number];
 
 export function isConfigureSection(s: string | null): s is ConfigureSection {
@@ -18,6 +33,10 @@ const LABELS: Record<ConfigureSection, { label: string; hint: string }> = {
   controls: { label: 'Controls', hint: 'Keyboard & gamepad' },
   // route key stays 'audio' — /configure/audio is deep-linkable and already shipped
   audio: { label: 'Audio and Visual', hint: 'Sounds, voice & theme' },
+  // The one section that is NOT `GameSettings`: everything under it is per device
+  // (`localStorage['decodesim.graphics']`), because a GPU is a property of the machine —
+  // `docs/biobuzz/plan-3d.md` §4.4, and `GraphicsSection`'s own header.
+  graphics: { label: 'Graphics', hint: '3D view, quality, camera' },
 };
 
 /**
@@ -75,6 +94,11 @@ export function Configure({
             />
           )}
           {section === 'audio' && <AudioSection settings={settings} onChange={onChange} />}
+          {section === 'graphics' && (
+            <Suspense fallback={<div className="ds-loading">Loading graphics settings…</div>}>
+              <GraphicsSection />
+            </Suspense>
+          )}
         </div>
       </div>
     </>
