@@ -7,6 +7,7 @@ import { coreChecks } from './core';
 import { sim3dChecks } from './sim3d';
 import { sponsorChecks } from './sponsor';
 import { renderChecks } from './render';
+import { net3dChecks } from './net3d';
 import type { Check } from './harness';
 
 /**
@@ -69,6 +70,10 @@ const LANES: { name: string; fn: (c: Check) => void }[] = [
   { name: 'SPONSOR', fn: sponsorChecks },
   // the 3D scene chunk's import-boundary rules (Day 1 lane B) — pure source checks, no DOM
   { name: 'RENDER', fn: renderChecks },
+  // the SEAM between the 3D solve and everything that carries it: room physics, the cap gate,
+  // the wire codec, and the replay container (Day 2 lane C). See net3d.ts's header for why it
+  // is its own lane and not more checks in SERVER.
+  { name: 'NET3D', fn: net3dChecks },
 ];
 
 const KNOWN_FLAGS = ['--lane', '--grep', '--list', '--help'];
