@@ -12,6 +12,12 @@
       "runtimeExecutable": "npx",
       "runtimeArgs": ["vite", "scripts/scene-preview", "--port", "5178"],
       "port": 5178
+    },
+    {
+      "name": "field-cad-preview",
+      "runtimeExecutable": "npx",
+      "runtimeArgs": ["vite", "scripts/field-cad/preview", "--port", "5179"],
+      "port": 5179
     }
   ]
 }
