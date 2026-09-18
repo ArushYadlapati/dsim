@@ -128,6 +128,36 @@ The 2D pipeline is PERMANENT (owner rule): every existing check must stay byte-i
   an outline of a zone rectangle. A `fieldDims.gen.ts` that drifts from the measurements JSON
   fails the SIM3D lane, which re-renders it and diffs byte for byte. `docs/biobuzz-reference.md`
   carries the ruling and the full before/after table.
+- **GRAPHICS SETTINGS ARE PER DEVICE, AND THE SCENE SUBSCRIBES TO THEM** (Day 3, plan §4.4–§4.6).
+  `graphics/settings.ts` is the model — the sixteen dials, the four preset columns, the
+  0.6/1.2/2.2/4.0 MP pixel budgets, `localStorage['decodesim.graphics']` with field-by-field
+  coercion. `graphics/auto.ts` is the POLICY (first guess → two-second warm-up → the in-match
+  slip rule) and takes its clock as a PARAMETER, because `smoke.ts`'s determinism guard greps
+  this whole directory for `performance.now()`. Nothing under `graphics/` may import `three` or
+  `scene/` — it is read by `src/ui/GraphicsSection.tsx` and `src/contributors.ts`, both ordinary
+  main-bundle files, and the RENDER lane asserts it. Fourteen settings apply LIVE; mesh detail
+  needs the next 3D view (it picks the GLB) and SSAO/SMAA are **not offered on this build**
+  (`GFX_NOT_OFFERED` carries the reason, and the UI prints it).
+  - ⚠️ **MSAA is a render target this scene owns, not the canvas's `antialias`.** The context is
+    created with `antialias: false` always: WebGL cannot be asked for a particular sample count
+    on the default framebuffer and the attribute is fixed for the life of the context, so that
+    is the only way "2x" and a live change are both possible. The target is half-float, and the
+    BLIT is where tone mapping and the sRGB conversion happen.
+  - ⚠️ `WebGLRenderer.setViewport`/`setScissor` take CSS pixels and multiply by the pixel ratio
+    THEMSELVES. The PiP minimap passed drawing-buffer pixels once and squared the ratio — at 75 %
+    render scale the whole scene drew into 56 % of the canvas, which reads as a camera bug.
+  - **Environments** (plan §4.5) are two CC0 Poly Haven HDRIs fetched on demand as 1k `.hdr`,
+    never bundled, listed in `graphics/environments.ts` — which `src/contributors.ts` DERIVES its
+    Third-party credits from, so a new one cannot ship uncredited. Use `HDRLoader`, not
+    `RGBELoader` (renamed in three 0.186; the old name warns on every load).
+  - **The view key `t` is armed by `InputManager.attach`/`detach`** (`graphics/viewKey.ts`,
+    reference-counted). It CANNOT live in the scene: the listener dies with the scene, so from
+    the 2D map there is nothing left to press. It is not a `KeyAction` — it changes which
+    renderer is mounted, not the robot.
+  - ⚠️ **`Renderer.render(…, overlayOnly)` CLEARS the whole canvas.** Right for the live view
+    (the 2D canvas is a separate sheet above the WebGL one); fatal anywhere both passes share a
+    canvas. The replay export draws the overlay onto a sheet of its own and composites — without
+    that, every exported 3D frame is black. Measured 1920×1080: 2D 0.44 ms/frame, 3D 0.85 ms.
 - **Client:** `graphics/store.ts` holds the per-device view pref (`localStorage['decodesim.view']`);
   `GameView`/`game.ts` await `initPhysics3d()` before a 3D practice (fallback to 2D with an
   event-log line) and mount the lazily imported `scene` under the 2D canvas (`overlayOnly`).
