@@ -1,10 +1,11 @@
-import type { Artifact, GameId, RobotCommand, RobotSpec } from '../types';
+import type { Artifact, GameId, Physics, RobotCommand, RobotSpec } from '../types';
 import type { RobotSetup } from '../sim/spawn';
 import type { MatchResultInfo, NetSession, NetStatus, RematchVote, Snapshot } from './session';
 import type { Transport } from './transport';
 import { setServerNotice } from './notice';
 import { regionLabel, isKnownRegion, selectedServer } from './env';
 import {
+  CLIENT_CAPS,
   encodeMsg,
   decodeServerMsg,
   quantizeCommand,
@@ -56,6 +57,9 @@ export class ServerSession implements NetSession {
   /** which game the match plays (from matchStart; DECODE by default). Mutable so a
    * host restart can carry a new game, but never written by consumers. */
   game: GameId;
+  /** which physics the ROOM runs on (`matchStart.physics`; absent ⇒ '2d'). Mutable for the
+   *  same reason `game` is: a host restart re-authors the match. */
+  physics: Physics;
   readonly localRobotId: number;
   /** read-only spectator session (no local robot; input suppressed) */
   readonly spectator: boolean;
@@ -135,6 +139,7 @@ export class ServerSession implements NetSession {
       setups: RobotSetup[];
       yourRobotId: number;
       game?: GameId;
+      physics?: Physics;
       ranked?: boolean;
       intros?: PlayerIntro[];
       region?: string;
@@ -145,6 +150,7 @@ export class ServerSession implements NetSession {
   ) {
     this.spectator = spectator;
     this.game = start.game ?? 'decode';
+    this.physics = start.physics ?? '2d';
     this.seed = start.seed;
     this.setups = start.setups;
     this.ranked = start.ranked ?? false;
@@ -162,7 +168,9 @@ export class ServerSession implements NetSession {
     transport.onReopen(() => {
       // reclaim our in-match slot on the fresh socket; a snapshot resyncs us
       this.failed = false;
-      transport.send(encodeMsg({ t: 'rejoin', room: this.room, clientId: this.clientId }));
+      // re-advertise this build's capabilities: a reclaim arrives on a FRESH socket, and the
+      // server gates a `'3d'`-physics room at every door it has.
+      transport.send(encodeMsg({ t: 'rejoin', room: this.room, clientId: this.clientId, caps: CLIENT_CAPS }));
     });
     transport.onFail(() => {
       this.connected = false; // retries exhausted (the server likely restarted)
@@ -393,6 +401,10 @@ export class ServerSession implements NetSession {
       this.seed = m.seed;
       this.setups = m.setups;
       if (m.game) this.game = m.game;
+      // ALWAYS re-read, never `if (m.physics)`: a restart may take a room from '3d' back to
+      // absent, and a stale '3d' here would have the client predict a pipeline the server is
+      // no longer running. Absent means '2d', so read it as such.
+      this.physics = m.physics ?? '2d';
       this.gen = m.gen ?? 0;
       this.rematch = { votes: 0, need: 0, mine: false }; // a new match, a clean tally
       this.ranked = m.ranked ?? false;

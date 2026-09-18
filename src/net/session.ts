@@ -1,5 +1,5 @@
 import type { Transport } from './transport';
-import type { GameId, RobotCommand, World } from '../types';
+import type { Physics, GameId, RobotCommand, World } from '../types';
 import type { RobotSetup } from '../sim/spawn';
 import type { Replay, ReplayResult } from '../sim/replay';
 import type { EloDelta, PlayerIntro, RecordKind, RecordRankInfo, RoomKind } from './protocol';
@@ -88,6 +88,15 @@ export interface NetSession {
   /** which game the match plays (from matchStart / the first snapshot; DECODE by
    * default). The GameController builds its initial predicted world for this game. */
   readonly game: GameId;
+  /**
+   * WHICH PHYSICS THE ROOM RUNS ON (`matchStart.physics`; absent ⇒ '2d').
+   *
+   * The controller builds its predicted world with THIS and not with the player's own
+   * settings: a client whose Practice pick says '2d' still has to predict the '3d' world the
+   * room is authoritative over, or every snapshot is a correction against a different game.
+   * Mutable for the same reason `game` is — a host restart re-authors the match.
+   */
+  physics: Physics;
   /** the local player's robot id (assigned by the server at match start; -1 when
    * spectating — there is no local robot) */
   readonly localRobotId: number;
