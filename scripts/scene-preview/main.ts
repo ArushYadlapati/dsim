@@ -27,6 +27,7 @@ import { SIM_DT } from '../../src/config';
 import { viewAngleOf } from '../../src/sim/field';
 import type { Alliance, RobotCommand, World } from '../../src/types';
 import type { SceneCamera } from '../../src/games/module';
+import { setCameraPref } from '../../src/games/biobuzz/graphics/store';
 import { Camera } from '../../src/render/camera';
 import { drawBiobuzzField, drawHiveCanopy } from '../../src/games/biobuzz/drawField';
 import { drawBiobuzzBalls } from '../../src/games/biobuzz/draw';
@@ -199,9 +200,16 @@ async function main(): Promise<void> {
   let camera: SceneCamera = 'driver';
   let alliance: Alliance = 'red';
   let probing = false;
+  /** RETICLE DEMO (Day 2): park robot 0 at a firing distance from its own HIVE, facing it, and
+   * KEEP STEPPING — the turret only slews onto Aim Assist's target inside `biobuzzStep` stage
+   * 5b, so freezing the world (what `probing` does) would show the reticle wherever the barrel
+   * happened to be pointing. Re-pinned every frame after the step, so drive/shove cannot move it
+   * off the mark while you are looking at the ring. */
+  let reticleDemo = false;
   const headings = [0, Math.PI / 2, Math.PI, -Math.PI / 2];
   let headingIdx = 0;
   const camBtn = document.getElementById('camBtn')!;
+  const reticleBtn = document.getElementById('reticleBtn')!;
   const allianceBtn = document.getElementById('allianceBtn')!;
   const probeBtn = document.getElementById('probeBtn')!;
   const headingBtn = document.getElementById('headingBtn')!;
@@ -214,9 +222,20 @@ async function main(): Promise<void> {
   window.addEventListener('resize', resize);
   resize();
 
+  // all FOUR cameras (`SceneCamera`, Day 2): driver → overhead → chase → orbit. The scene
+  // resolves the DEVICE preference over whatever is passed here, so this page also has to be
+  // able to say "leave it alone": `setCameraPref('auto')` below, once, does that — otherwise a
+  // preference left behind by the app in the same browser profile would quietly win over every
+  // click of this button and make the page look broken.
+  const CAMERAS: SceneCamera[] = ['driver', 'overhead', 'chase', 'orbit'];
+  setCameraPref('auto');
   camBtn.addEventListener('click', () => {
-    camera = camera === 'driver' ? 'overhead' : 'driver';
+    camera = CAMERAS[(CAMERAS.indexOf(camera) + 1) % CAMERAS.length];
     camBtn.textContent = `Camera: ${camera}`;
+  });
+  reticleBtn.addEventListener('click', () => {
+    reticleDemo = !reticleDemo;
+    reticleBtn.textContent = `Reticle demo: ${reticleDemo ? 'on' : 'off'}`;
   });
   allianceBtn.addEventListener('click', () => {
     alliance = alliance === 'red' ? 'blue' : 'red';
@@ -238,6 +257,19 @@ async function main(): Promise<void> {
     if (probing) world.robots[0].heading = headings[headingIdx];
   });
   checkBtn.addEventListener('click', () => runChecks());
+
+  /** park robot 0 in front of its own HIVE, aimed at it, with a full hopper — the pose the
+   * reticle is easiest to read at (a turret at ~55 in from the pivot clears the frame's top bar
+   * and the ring lands in the up CELL rather than on the tray's back wall). */
+  function pinReticleDemoRobot(): void {
+    const r = world.robots[0];
+    // the red HIVE sits at −BB_HIVE_X; stand off it along +x and face back down the axis
+    r.pos = { x: -BB_HIVE_X + 55, y: 6 };
+    r.vel = { x: 0, y: 0 };
+    r.angVel = 0;
+    r.heading = Math.PI;
+    if (r.hopper.length === 0) r.hopper.push('yellow');
+  }
 
   // ── SIDE-BY-SIDE 2D CANVAS ─────────────────────────────────────────────────────────────────
   const canvas2d = document.getElementById('host2d') as HTMLCanvasElement;
@@ -328,6 +360,7 @@ async function main(): Promise<void> {
       return;
     }
     if (!probing) biobuzzStep(world, SIM_DT, commands);
+    if (reticleDemo) pinReticleDemoRobot();
     tick++;
     const localRobotId = alliance === 'red' ? 0 : 2;
     scene.render(world, {
@@ -343,7 +376,8 @@ async function main(): Promise<void> {
     if (tick % 30 === 0) {
       status(
         `tick ${tick} · camera ${camera} · viewpoint ${alliance} · probing ${probing} · ` +
-          `balls in flight: ${world.balls.filter((b) => b.state.kind === 'flight').length}`,
+          `balls in flight: ${world.balls.filter((b) => b.state.kind === 'flight').length} · ` +
+          `reticle demo ${reticleDemo ? 'on' : 'off'}`,
       );
     }
     requestAnimationFrame(frame);

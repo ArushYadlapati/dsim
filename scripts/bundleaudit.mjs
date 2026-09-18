@@ -149,10 +149,13 @@ const BASELINE = {
   main: { gzip: 904.4 * 1000 },
   hostWorker: { gzip: 699.38 * 1000 },
   physics3d: { gzip: 1089.27 * 1000 },
-  // RAISED to 183.84 KB (from 182.01, 2026-09-18): the lighting/materials fidelity pass adds a
-  // `RoomEnvironment` + `PMREMGenerator` import and a bigger per-part-class `MaterialSet` in
-  // `renderFieldGlb.ts` — still well inside the §2.5 spec ceiling below.
-  scene: { gzip: 183.84 * 1000, budgetCeiling: 250 * 1000 },
+  // RAISED to 187.24 KB (from 183.84, Day 2 2026-09-18) — the MEASURED total, not a rounded-up
+  // allowance: the reticle (`renderReticle.ts` + `renderLanding.ts`, which pulls the sim's own
+  // `bbTurretSolution`/`bbDumpSolution`/`bbAimTarget` into the scene chunk's graph), the chase
+  // and orbit cameras, and the `project` hook. +3.40 KB for all of it, because the heavy part of
+  // this chunk is three.js itself and everything added here is arithmetic. No new dependency;
+  // still ~63 KB inside the §2.5 spec ceiling below.
+  scene: { gzip: 187.24 * 1000, budgetCeiling: 250 * 1000 },
   other: { gzip: 1 * 1000 },
 };
 
