@@ -1369,6 +1369,204 @@ async function main(): Promise<void> {
     );
   }
 
+  /* ---- standing HEALING, and the read-only fast path in front of it ---------------------
+     `getStanding` was a write transaction on a read path — `BEGIN`, an ensure-row INSERT, a
+     healing UPDATE, a SELECT, `COMMIT` — and it is called by `GET /api/standing` and by
+     `rankedLock` on every ranked queue attempt. A fast path now answers from one SELECT when
+     the UPDATE would have changed nothing.
+
+     That is only safe if healing still happens when it IS due, and healing had NO coverage at
+     all, so the fast path would have been an untested behaviour change to the one case that
+     matters. Both sides are pinned here. */
+  {
+    await repo.ensureProfile('heal-me', 'HealMe');
+    // an account that has lost standing and last healed two days ago
+    await repo.getStanding('heal-me'); // creates the row
+    await db.query(
+      `update account_standing set score = 80, healed_at = now() - interval '2 days' where user_id = 'heal-me'`,
+    );
+    const healed = await repo.getStanding('heal-me');
+    check(
+      'standing/heal: a heal that is DUE still happens through the fast path check',
+      healed.score > 80,
+      `80 -> ${healed.score}`,
+    );
+
+    // ...and the clock advanced with it, so asking again does not heal a second time
+    const twice = await repo.getStanding('heal-me');
+    check('standing/heal: ...and asking again does not heal twice', twice.score === healed.score);
+
+    // a full-score account is the FAST path: the UPDATE would be a no-op, so the answer must
+    // match and nothing must move
+    await repo.ensureProfile('heal-full', 'HealFull');
+    await repo.getStanding('heal-full');
+    const beforeAt = (await db.query<{ healed_at: string }>(
+      `select healed_at from account_standing where user_id = 'heal-full'`,
+    )).rows[0].healed_at;
+    const full = await repo.getStanding('heal-full');
+    const afterAt = (await db.query<{ healed_at: string }>(
+      `select healed_at from account_standing where user_id = 'heal-full'`,
+    )).rows[0].healed_at;
+    check('standing/heal: a full-score account reads clean and is not touched',
+      full.score === 100 && String(beforeAt) === String(afterAt));
+
+    // a row that does not exist yet must still be created — that is the other case the
+    // transaction is for, and the fast path has to fall through to it
+    await repo.ensureProfile('heal-never-seen', 'NeverSeen');
+    const fresh = await repo.getStanding('heal-never-seen');
+    check('standing/heal: an account with no row is still created by the slow path',
+      fresh.score === 100);
+    const exists = await db.query<{ n: string }>(
+      `select count(*) as n from account_standing where user_id = 'heal-never-seen'`,
+    );
+    check('standing/heal: ...and the row is really there afterwards', Number(exists.rows[0].n) === 1);
+  }
+
+  /* ---- the batched writes on the ranked match-end path ----------------------------------
+     `persistVersusMatch` used to issue 16 sequential round trips for a 2v2: a rating read per
+     player, two writes per update, and an insert per participant. The reads and the inserts
+     are now batched. Both new functions are the kind that fail at RUNTIME rather than at
+     typecheck — an `unnest` with a wrong column cast, or a default that silently differs from
+     the per-row version — and they sit on the path a player is watching for their rating, so
+     they are exercised against the real schema here. */
+  {
+    const mid = await repo.saveMatch('2v2', SEASON, null as unknown as string, true, 'decode');
+    for (const id of ['batch-a', 'batch-b', 'batch-c', 'batch-d']) await repo.ensureProfile(id, id);
+    await repo.addMatchParticipants(mid, [
+      { userId: 'batch-a', alliance: 'red', drivetrain: 'tank', score: 90, won: true, ratingBefore: 1000, ratingAfter: 1012 },
+      { userId: 'batch-b', alliance: 'red', drivetrain: 'mecanum', score: 90, won: true, ratingBefore: 980, ratingAfter: 991 },
+      // an UNRANKED participant carries nulls — the array cast has to survive them
+      { userId: 'batch-c', alliance: 'blue', drivetrain: 'swerve', score: 40, won: false, ratingBefore: null, ratingAfter: null },
+      { userId: 'batch-d', alliance: 'blue', drivetrain: 'xdrive', score: 40, won: false, ratingBefore: 1100, ratingAfter: 1088 },
+    ]);
+    const rows = await db.query<{ n: string }>(`select count(*) as n from match_participants where match_id = $1`, [mid]);
+    check('batch: addMatchParticipants writes every row in one insert', Number(rows.rows[0].n) === 4, `${rows.rows[0].n} rows`);
+
+    const one = await db.query<{ drivetrain: string; score: number; won: boolean; rating_after: number | null }>(
+      `select drivetrain, score, won, rating_after from match_participants where match_id = $1 and user_id = 'batch-c'`,
+      [mid],
+    );
+    const c = one.rows[0];
+    check(
+      'batch: ...with each column landing on the right row, nulls included',
+      c.drivetrain === 'swerve' && Number(c.score) === 40 && c.won === false && c.rating_after === null,
+      JSON.stringify(c),
+    );
+
+    // the per-row version is `on conflict do nothing`; the batch must be too, or a retried
+    // persist after a partial failure would throw instead of being a no-op
+    await repo.addMatchParticipants(mid, [
+      { userId: 'batch-a', alliance: 'red', drivetrain: 'tank', score: 999, won: false, ratingBefore: 1, ratingAfter: 2 },
+    ]);
+    const again = await db.query<{ score: number }>(
+      `select score from match_participants where match_id = $1 and user_id = 'batch-a'`, [mid],
+    );
+    check('batch: ...and a repeat is a no-op, not a throw or an overwrite', Number(again.rows[0].score) === 90);
+
+    check('batch: an empty participant list writes nothing and does not throw',
+      await repo.addMatchParticipants(mid, []).then(() => true).catch(() => false));
+
+    // getRatingsFull must agree with getRatingFull for a player WITH a row and for one
+    // without — a default that drifted between them would silently re-place a rated player
+    await repo.upsertRating('batch-a', '2v2', 1, 1234, 40, 0.05, 'decode');
+    const many = await repo.getRatingsFull(['batch-a', 'batch-nobody'], '2v2', 1, 'decode');
+    const single = await repo.getRatingFull('batch-a', '2v2', 1, 'decode');
+    const singleMissing = await repo.getRatingFull('batch-nobody', '2v2', 1, 'decode');
+    check('batch: getRatingsFull matches getRatingFull for a rated player',
+      many.get('batch-a')?.rating === single.rating && many.get('batch-a')?.rd === single.rd);
+    check('batch: ...and uses the SAME defaults for a player with no row',
+      many.get('batch-nobody')?.rating === singleMissing.rating && many.get('batch-nobody')?.rd === singleMissing.rd,
+      `${many.get('batch-nobody')?.rating} vs ${singleMissing.rating}`);
+  }
+
+  /* ---- the homepage stats memo ---------------------------------------------------------
+     `/api/stats` is public and unauthenticated, and `getGlobalStats` is three unbounded
+     aggregates — so the memo is the only thing standing between a homepage and one full scan
+     of `profiles`, `records` and `matches` per visitor. Both halves are asserted: that it
+     actually serves a second call from cache, and that it is not a permanent cache. */
+  {
+    await repo.ensureProfile('stats-a', 'StatsA');
+    const t0 = 1_000_000;
+    const first = await repo.getGlobalStats(t0);
+    const usersAtFirst = first.users;
+
+    // a new account inside the TTL must NOT change the answer — that IS the cache working
+    await repo.ensureProfile('stats-b', 'StatsB');
+    const cached = await repo.getGlobalStats(t0 + 30_000);
+    check('stats: a second call inside the TTL is served from the memo', cached.users === usersAtFirst);
+
+    // ...and the memo is a memo, not a freeze: past the TTL the new account appears
+    const later = await repo.getGlobalStats(t0 + 120_000);
+    check('stats: past the TTL it re-queries, so the memo cannot go permanently stale', later.users === usersAtFirst + 1, `${usersAtFirst} then ${later.users}`);
+
+    // and an explicit drop is honoured, which is what an admin wanting the real number uses
+    await repo.ensureProfile('stats-c', 'StatsC');
+    repo.clearStatsCache();
+    const cleared = await repo.getGlobalStats(t0 + 120_000);
+    check('stats: clearStatsCache drops it regardless of the clock', cleared.users === usersAtFirst + 2);
+  }
+
+  /* ---- SCHEMA HYGIENE, asked of the live schema rather than of the migration files -------
+     Two invariants that fail SILENTLY — nothing errors, nothing returns a wrong answer, the
+     database just does progressively more work as the tables grow — so neither shows up in any
+     other check here. Both are asked of `pg_index`/`pg_constraint` AFTER every migration has
+     run, so a later migration that reintroduces the problem is caught by the same assertion.  */
+  {
+    /* EVERY FOREIGN KEY NEEDS AN INDEX ON ITS REFERENCING COLUMNS. Without one, each delete of
+       a parent row scans the whole child table to apply ON DELETE. This is what migration 0037
+       fixed on `records.replay_id`, `matches.replay_id`, `records.partner_id` and
+       `kofi_payments.claimed_by` — all four unindexed since 0001, and the replay prunes that
+       walk them run on every practice and LAN upload. The RULE is stated here rather than the
+       four columns, so the next unindexed foreign key is caught by the migration that adds it. */
+    const unindexed = await db.query<{ tbl: string; col: string }>(`
+      select c.conrelid::regclass::text as tbl,
+             (select string_agg(a.attname, ',' order by k.ord)
+                from unnest(c.conkey) with ordinality as k(attnum, ord)
+                join pg_attribute a on a.attrelid = c.conrelid and a.attnum = k.attnum) as col
+        from pg_constraint c
+       where c.contype = 'f'
+         and not exists (
+           select 1 from pg_index i
+            where i.indrelid = c.conrelid
+              and (i.indkey::int2[])[0:array_length(c.conkey,1)-1] = c.conkey
+         )
+       order by 1, 2`);
+    check(
+      'schema: every foreign key has an index leading with its own columns',
+      unindexed.rows.length === 0,
+      unindexed.rows.map((r) => `${r.tbl}(${r.col})`).join(' | ') || 'none',
+    );
+
+    /* NO INDEX IS A STRICT PREFIX OF ANOTHER ON THE SAME TABLE. Such an index can never be
+       chosen — the longer one serves everything it could — and it costs a write on every insert
+       and update. 0037 dropped the two that existed (`user_activity(user_id)`, already the PK's
+       leading column; `friend_requests(from_user_id)`, already the unique constraint's).
+       Redundancy is easy to add back by hand and impossible to notice. */
+    const redundant = await db.query<{ tbl: string; dup: string; covered_by: string }>(`
+      with ix as (
+        select i.indrelid::regclass::text as tbl, i.indexrelid::regclass::text as name,
+               i.indkey::int2[] as cols, i.indisunique as uniq, i.indpred is not null as partial
+          from pg_index i
+          join pg_class c on c.oid = i.indrelid
+          join pg_namespace n on n.oid = c.relnamespace
+         where n.nspname = 'public'
+      )
+      select a.tbl, a.name as dup, b.name as covered_by
+        from ix a join ix b
+          on a.tbl = b.tbl and a.name <> b.name
+         and array_length(b.cols,1) > array_length(a.cols,1)
+         and b.cols[0:array_length(a.cols,1)-1] = a.cols
+       -- a UNIQUE or PARTIAL index is not redundant even as a prefix: it carries a constraint,
+       -- or covers a different subset of rows, that the longer one does not.
+       where not a.uniq and not a.partial
+       order by 1, 2`);
+    check(
+      'schema: no index is a dead prefix of another on the same table',
+      redundant.rows.length === 0,
+      redundant.rows.map((r) => `${r.dup} < ${r.covered_by}`).join(' | ') || 'none',
+    );
+  }
+
   /* ---- REPLAY PRIVACY (migration 0038) -------------------------------------
      Match replays are private by default: watchable by everyone who PLAYED in the match, and
      by nobody else unless every one of them opts in. Every assertion below was written to

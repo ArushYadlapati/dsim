@@ -299,23 +299,37 @@ async function saveLanUpload(
   // user-supplied name does, and it carries no user ids — see the migration for why
   // attributing a LAN match to an account on this server's say-so is not on the table.
   const rawRoster = Array.isArray(body.participants) ? body.participants.slice(0, 8) : [];
-  const participants: LanParticipant[] = [];
-  for (const raw of rawRoster) {
-    if (!raw || typeof raw !== 'object') continue;
-    const p = raw as Record<string, unknown>;
-    const teamNumber = typeof p.teamNumber === 'number' && Number.isFinite(p.teamNumber)
-      ? Math.max(0, Math.min(999999, Math.round(p.teamNumber)))
-      : undefined;
-    participants.push({
-      name: await scrubName(typeof p.name === 'string' ? p.name : '', 'Player'),
-      teamName: typeof p.teamName === 'string'
-        ? await scrubName(p.teamName, 'Team')
-        : undefined,
-      teamNumber,
-      alliance: p.alliance === 'blue' ? 'blue' : 'red',
-      drivetrain: typeof p.drivetrain === 'string' ? p.drivetrain.slice(0, 24) : undefined,
-    });
-  }
+  /**
+   * CONCURRENTLY, because `scrubName` is a round trip to a hosted moderation API with its own
+   * timeout (`MODERATION_TIMEOUT_MS`, 4s). Awaited one at a time inside the loop this used to
+   * be, a full roster was up to 16 sequential calls — eight players, a name and a team name
+   * each — so one upload's worst case was the timeout SIXTEEN times over while the request sat
+   * open. The names are independent of each other and the service is the same one either way;
+   * nothing here needed to be sequential. `Promise.all` preserves roster order, and the
+   * in-process decision cache still short-circuits repeats.
+   */
+  const participants: LanParticipant[] = (
+    await Promise.all(
+      rawRoster.map(async (raw): Promise<LanParticipant | null> => {
+        if (!raw || typeof raw !== 'object') return null;
+        const p = raw as Record<string, unknown>;
+        const teamNumber = typeof p.teamNumber === 'number' && Number.isFinite(p.teamNumber)
+          ? Math.max(0, Math.min(999999, Math.round(p.teamNumber)))
+          : undefined;
+        const [name, teamName] = await Promise.all([
+          scrubName(typeof p.name === 'string' ? p.name : '', 'Player'),
+          typeof p.teamName === 'string' ? scrubName(p.teamName, 'Team') : Promise.resolve(undefined),
+        ]);
+        return {
+          name,
+          teamName,
+          teamNumber,
+          alliance: p.alliance === 'blue' ? 'blue' : 'red',
+          drivetrain: typeof p.drivetrain === 'string' ? p.drivetrain.slice(0, 24) : undefined,
+        };
+      }),
+    )
+  ).filter((p): p is LanParticipant => p !== null);
 
   await ensureProfile(user.userId, user.handle);
   const season = await currentSeasonNumber(BALANCE_VERSION, replay.game as GameId);

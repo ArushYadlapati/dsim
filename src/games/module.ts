@@ -53,7 +53,7 @@ export interface GameModule extends GameSimModule {
     ctx: CanvasRenderingContext2D,
     r: RobotState,
     intakeOn: boolean,
-    held: Artifact[],
+    held: readonly Artifact[],
     screenUp?: Vec2,
     world?: World,
   ): void;
