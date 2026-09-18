@@ -177,6 +177,21 @@ import {
 import { beamBlock, beamDrag, beamDragFactor, beamStrafeBlock, beamForwardness, beamRide, canCrossBeams, cogFactor, wheelsOnBeam, CHAIN_BEAMS } from '../src/games/chain/beams';
 import { butterflyTankRpmLimits, driveParams, massLimits, rpmLimits, motorStep, driveSummary, widthLimits, pushForce, shoveMass } from '../src/sim/drivetrain';
 import { coerceSettings, defaultSettings, switchGame, syncAudioMirrors } from '../src/settings';
+import {
+  authFlowsForTesting,
+  classifySdkError,
+  PASSWORD_MIN,
+  RESET_PATH,
+  VERIFY_PATH,
+  type AuthFlowsClient,
+} from '../src/lib/authFlows';
+import {
+  LEGAL_UPDATED,
+  LEGAL_VERSION,
+  legalVersionOf,
+  termsGateBlocks,
+  termsGateState,
+} from '../src/legalText';
 import type { RobotSetup } from '../src/sim/spawn';
 import { DEFAULT_BINDINGS, KEY_ACTIONS, PAD_ACTIONS, mergeBindings } from '../src/input/bindings';
 import { quantizeCommand, dequantizeCommand, localizeCommand, sanitizeQCommand, slimWorld, unslimWorld, encodeBallDelta, applyBallDelta } from '../src/net/protocol';
@@ -21091,6 +21106,186 @@ const mkMM = () => {
     'replay penalties: the timeline component itself knows nothing about admin',
     !/admin/i.test(rail.slice(rail.indexOf('export function PenaltyLog'), rail.indexOf('THE SCORE EDITOR'))),
   );
+}
+
+/* ---- AUTH FLOWS: the terms gate's rule, and the four wrappers' result shapes --------------
+   Two things pure enough to test here and expensive enough to get wrong in a browser.
+
+   THE GATE puts an un-dismissable dialog in front of a signed-in player, so the case that
+   matters most is the one where NOTHING blocks: `undefined` means the server did not say,
+   which is what a build older than `/api/user/accept-terms` answers and what
+   `fetchEntitlements` falls back to when it swallows a failure. If that blocked, one
+   hiccuping route would lock every account out of the whole app.
+
+   THE WRAPPERS talk to a BETA SDK and promise never to throw at a component. So they run
+   against a stub client here — no network, no bundler, no `import.meta.env`, which is exactly
+   why `authFlows.ts` resolves the real client through a dynamic import and this file can
+   import it at all. What is asserted is the CLASSIFICATION, not the copy. */
+{
+  type StubAnswer = { data?: unknown; error?: { code?: string; status?: number } | null } | 'throw';
+  const stub = (answer: StubAnswer): AuthFlowsClient => {
+    const reply = async (): Promise<unknown> => {
+      if (answer === 'throw') throw new Error('offline');
+      return { data: answer.data ?? null, error: answer.error ?? null };
+    };
+    return {
+      requestPasswordReset: reply,
+      resetPassword: reply,
+      sendVerificationEmail: reply,
+      verifyEmail: reply,
+    } as unknown as AuthFlowsClient;
+  };
+  const ok = stub({ data: { status: true } });
+  const F = authFlowsForTesting;
+
+  /* ---- the terms gate ------------------------------------------------------ */
+  check(
+    'terms gate: LEGAL_VERSION is the ISO form of LEGAL_UPDATED',
+    LEGAL_VERSION === '2026-08-04',
+    LEGAL_UPDATED + ' -> ' + LEGAL_VERSION,
+  );
+  check(
+    'terms gate: the key is DERIVED, so a reworded date cannot drift from what was accepted',
+    legalVersionOf('January 1, 2027') === '2027-01-01' &&
+      legalVersionOf('December 31, 2026') === '2026-12-31',
+  );
+  check(
+    'terms gate: an unparseable date still yields a stable key rather than throwing',
+    legalVersionOf('sometime soon') === 'sometime-soon',
+  );
+  check("terms gate: the current version accepted is 'ok'", termsGateState(LEGAL_VERSION) === 'ok');
+  check("terms gate: never accepted is 'never'", termsGateState(null) === 'never');
+  check('terms gate: an empty string is never, not a version', termsGateState('') === 'never');
+  check("terms gate: an older accepted version is 'stale'", termsGateState('2025-01-01') === 'stale');
+  check(
+    "terms gate: a version NEWER than this build's is stale too (ask, don't guess which way time ran)",
+    termsGateState('2099-01-01') === 'stale',
+  );
+  check(
+    "⚠️ terms gate: 'the server did not say' is UNKNOWN, and must never block",
+    termsGateState(undefined) === 'unknown' && !termsGateBlocks(termsGateState(undefined)),
+  );
+  check(
+    'terms gate: exactly the two answers that block, block',
+    [null, '2025-01-01'].every((v) => termsGateBlocks(termsGateState(v))) &&
+      [undefined, LEGAL_VERSION].every((v) => !termsGateBlocks(termsGateState(v))),
+  );
+
+  /* ---- the wrappers -------------------------------------------------------- */
+  check(
+    'authFlows: a well-formed address gets ok, whether or not an account exists for it',
+    (await F.passwordReset(ok, 'someone@example.com')).ok,
+  );
+  {
+    const r = await F.passwordReset(stub({ data: null }), 'not-an-email');
+    check(
+      'authFlows: a malformed address is refused locally, with no round trip',
+      !r.ok && r.reason === 'invalid-email',
+      r.ok ? 'ok' : r.reason,
+    );
+  }
+  {
+    const r = await F.completeReset(ok, '', 'longenough123');
+    check(
+      "authFlows: an empty reset token is 'invalid-token' before the call",
+      !r.ok && r.reason === 'invalid-token',
+    );
+  }
+  {
+    const r = await F.completeReset(ok, 'tok', 'short');
+    check(
+      "authFlows: a password under PASSWORD_MIN is 'weak-password' before the call",
+      !r.ok && r.reason === 'weak-password' && PASSWORD_MIN === 8,
+    );
+  }
+  check('authFlows: a good reset returns ok', (await F.completeReset(ok, 'tok', 'longenough123')).ok);
+  {
+    const r = await F.completeReset(
+      stub({ error: { code: 'INVALID_TOKEN', status: 400 } }),
+      'tok',
+      'longenough123',
+    );
+    check(
+      "authFlows: the SDK's INVALID_TOKEN maps to invalid-token, with copy attached",
+      !r.ok && r.reason === 'invalid-token' && r.message.length > 0,
+    );
+  }
+  {
+    const r = await F.completeReset(
+      stub({ error: { code: 'PASSWORD_TOO_SHORT', status: 400 } }),
+      'tok',
+      'longenough123',
+    );
+    check(
+      'authFlows: a server-side password complaint maps to weak-password, not to the token',
+      !r.ok && r.reason === 'weak-password',
+      r.ok ? 'ok' : r.reason,
+    );
+  }
+  {
+    const r = await F.sendVerification(stub({ error: { status: 429 } }), 'a@b.co');
+    check('authFlows: a 429 with no code maps to rate-limited', !r.ok && r.reason === 'rate-limited');
+  }
+  {
+    const r = await F.completeVerification(stub({ error: { status: 503 } }), 'tok');
+    check('authFlows: a 5xx maps to network', !r.ok && r.reason === 'network', r.ok ? 'ok' : r.reason);
+  }
+  {
+    const r = await F.completeVerification(stub({ error: { status: 400 } }), 'tok');
+    check(
+      'authFlows: a bare 400 on these four routes means the TOKEN was rejected',
+      !r.ok && r.reason === 'invalid-token',
+    );
+  }
+  {
+    const r = await F.completeReset(stub({ error: { status: 418 } }), 'tok', 'longenough123');
+    check(
+      'authFlows: an unrecognised status is a failure WITH copy, never a silent success',
+      !r.ok && r.reason === 'unknown' && r.message.length > 0,
+      r.ok ? 'ok' : r.reason,
+    );
+  }
+  check(
+    'authFlows: no error object at all classifies as unknown; a status of 0 is network',
+    classifySdkError(null) === 'unknown' && classifySdkError({ status: 0 }) === 'network',
+  );
+  {
+    // ⚠️ THE ONE PROMISE THE UI IS WRITTEN AGAINST: a thrown fetch must not reach a component.
+    const results = await Promise.all([
+      F.passwordReset(stub('throw'), 'a@b.co'),
+      F.completeReset(stub('throw'), 'tok', 'longenough123'),
+      F.sendVerification(stub('throw'), 'a@b.co'),
+      F.completeVerification(stub('throw'), 'tok'),
+    ]);
+    check(
+      '⚠️ authFlows: a THROWN SDK call becomes a network result — none of the four ever throws',
+      results.every((r) => !r.ok && r.reason === 'network'),
+      results.map((r) => (r.ok ? 'ok' : r.reason)).join(','),
+    );
+  }
+  check(
+    'authFlows: verifyEmail answering void (no body) still reads as success',
+    (await F.completeVerification(stub({ data: undefined }), 'tok')).ok,
+  );
+
+  /* ---- the two emailed links point at routes that exist -------------------- */
+  {
+    const app = readFileSync('src/ui/App.tsx', 'utf8');
+    const reset = app.indexOf("rest.startsWith('/account/reset')");
+    const verify = app.indexOf("rest.startsWith('/account/verify')");
+    const bare = app.indexOf("rest.startsWith('/account')) return at('account')");
+    check(
+      'authFlows: RESET_PATH and VERIFY_PATH are routes App actually parses',
+      RESET_PATH === '/account/reset' && VERIFY_PATH === '/account/verify' && reset > 0 && verify > 0,
+    );
+    // ⚠️ ORDER IS LOAD-BEARING: '/account' is a prefix of both, so the bare test placed first
+    // would swallow them, render the Profile page, and throw the emailed token away.
+    check(
+      '⚠️ authFlows: both sub-routes are matched BEFORE the bare /account that prefixes them',
+      bare > 0 && reset < bare && verify < bare,
+      reset + ',' + verify + ' < ' + bare,
+    );
+  }
 }
 
 console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILURES`);

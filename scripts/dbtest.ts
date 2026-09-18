@@ -1758,6 +1758,111 @@ async function main(): Promise<void> {
     );
   }
 
+  /* ---- TERMS ACCEPTANCE (migration 0040) -----------------------------------
+     Two nullable columns and one write, and the part worth testing is the NULLS: a profile
+     that predates the migration must read "never accepted" rather than being silently
+     back-filled with whatever revision is current, because that is the difference between
+     a consent record and a fabricated one. The version is the SERVER’S constant at every
+     call site, so the round trip here is also what proves `acceptTerms` writes what it was
+     given and a timestamp Postgres produced.
+  */
+  {
+    /** timestamptz comes back from the driver as a Date (the same shape`supporter_until`
+     *  already has here) and JSON-serializes to an ISO string on the wire. Compare the
+     *  INSTANT, never the object. */
+    const ms = (v: string | null): number => (v ? new Date(v).getTime() : 0);
+    const cols0040 = (
+      await db.query<{ column_name: string; is_nullable: string }>(
+        `select column_name, is_nullable from information_schema.columns
+           where table_name = 'profiles' and column_name like 'terms%'`,
+      )
+    ).rows;
+    const col = (n: string) => cols0040.find((c) => c.column_name === n);
+    check(
+      'terms: 0040 added profiles.terms_version and terms_accepted_at',
+      !!col('terms_version') && !!col('terms_accepted_at'),
+      cols0040.map((c) => c.column_name).join(', ') || 'neither',
+    );
+    check(
+      'terms: both are NULLABLE, so "never asked" is representable',
+      col('terms_version')?.is_nullable === 'YES' && col('terms_accepted_at')?.is_nullable === 'YES',
+    );
+
+    // A PROFILE THAT NEVER ACCEPTED reads null on both — no default, no backfill. This is
+    // every account that exists today and every OAuth sign-up, and it is what turns into a
+    // dialog client-side (`termsGateState(null) === 'never'`).
+    await repo.ensureProfile('terms-a', 'TermsA');
+    const fresh = await repo.getTermsAcceptance('terms-a');
+    check(
+      'terms: a profile created without accepting reads null, not the current version',
+      fresh.version === null && fresh.acceptedAt === null,
+      JSON.stringify(fresh),
+    );
+    check(
+      'terms: and so does an account with no profile row at all',
+      (await repo.getTermsAcceptance('terms-nobody')).version === null,
+    );
+
+    // ACCEPT, THEN READ IT BACK.
+    const v1 = '2026-08-04';
+    const wrote = await repo.acceptTerms('terms-a', v1);
+    check(
+      'terms: accepting returns the version it wrote',
+      wrote.version === v1,
+      wrote.version ?? 'null',
+    );
+    check(
+      'terms: ...with a timestamp Postgres produced, not a client clock',
+      !!wrote.acceptedAt && Math.abs(Date.now() - new Date(wrote.acceptedAt).getTime()) < 60_000,
+      wrote.acceptedAt ?? 'null',
+    );
+    const readBack = await repo.getTermsAcceptance('terms-a');
+    check(
+      'terms: a separate read sees the same row',
+      readBack.version === v1 && ms(readBack.acceptedAt) === ms(wrote.acceptedAt),
+      JSON.stringify(readBack),
+    );
+
+    // A LATER REVISION OVERWRITES, and moves the instant with it — the gate compares one
+    // value, so a stale version left behind beside a new one would be the bug.
+    const v2 = '2027-01-01';
+    const again = await repo.acceptTerms('terms-a', v2);
+    check(
+      'terms: a new revision overwrites the old one rather than accumulating',
+      again.version === v2 &&
+        (await repo.getTermsAcceptance('terms-a')).version === v2,
+    );
+    check(
+      'terms: the recorded instant moved with it',
+      !!again.acceptedAt && !!wrote.acceptedAt && ms(again.acceptedAt) >= ms(wrote.acceptedAt),
+    );
+
+    // ACCEPTING FOR AN ACCOUNT WITH NO PROFILE WRITES NOTHING. The route calls
+    // `ensureProfile` first for exactly this reason; the repo function must not invent a
+    // row, or an unauthenticated id could seed `profiles` one UPDATE at a time.
+    const ghost = await repo.acceptTerms('terms-ghost', v1);
+    check(
+      'terms: accepting for a non-existent profile records nothing',
+      ghost.version === null &&
+        (
+          await db.query<{ n: string }>(
+            `select count(*)::text as n from profiles where user_id = 'terms-ghost'`,
+          )
+        ).rows[0].n === '0',
+    );
+
+    // ⚠️ AND NOTHING ELSE ON THE ROW MOVED. `acceptTerms` writes `updated_at` too, so the
+    // check that matters is that it did not touch the one column on this table that costs
+    // money to get wrong.
+    await repo.grantSupporter('terms-a', 1, 'admin', 'dbtest: terms block');
+    const untilBefore = (await repo.getSupporter('terms-a')).supporterUntil;
+    await repo.acceptTerms('terms-a', v1);
+    check(
+      'terms: accepting does not disturb the supporter expiry on the same row',
+      ms((await repo.getSupporter('terms-a')).supporterUntil) === ms(untilBefore),
+    );
+  }
+
   /* ---- REPLAY PRIVACY (migration 0038) -------------------------------------
      Match replays are private by default: watchable by everyone who PLAYED in the match, and
      by nobody else unless every one of them opts in. Every assertion below was written to

@@ -1137,7 +1137,14 @@ export async function isStaffUser(userId: string): Promise<boolean> {
 export interface TermsAcceptance {
   /** the `LEGAL_VERSION` key that was accepted, or null if never */
   version: string | null;
-  /** the instant it was recorded, ISO, or null if never */
+  /**
+   * The instant it was recorded, or null if never.
+   *
+   * TYPED AS THE WIRE SHAPE, like `SupporterState.supporterUntil` beside it: the driver
+   * hands a `timestamptz` back as a Date, and `JSON.stringify` on the route turns that
+   * into an ISO string, which is the only form any caller of this ever sees. Anything
+   * comparing it in-process has to compare the INSTANT, not the object.
+   */
   acceptedAt: string | null;
 }
 
