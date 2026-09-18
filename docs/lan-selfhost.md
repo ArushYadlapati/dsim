@@ -44,6 +44,17 @@ console message — no error the app can catch and nothing the player can act on
 A LAN server cannot realistically hold a TLS certificate for `192.168.1.5`, so "just use wss"
 is not available.
 
+**The one exception, added later: a Tailscale MagicDNS name.** `tailscale serve` terminates TLS
+on 443 with a real certificate for `machine.tailnet-name.ts.net` and proxies to the game
+server's plain-HTTP port, so `wss://machine.tailnet-name.ts.net` from the live https site is an
+ordinary secure socket with no mixed content to block. `parseLanAddress` therefore answers
+`wss://` for a BARE `.ts.net` name and `ws://` for the same name with a port typed — the port is
+the raw server behind the proxy, which has no certificate. This does not change the paragraph
+above; it is one host that can do what `192.168.1.5` cannot, not a way to get a certificate for
+a LAN IP. The 100.64.0.0/10 range a tailnet uses is accepted on the same grounds as RFC1918:
+RFC 6598 shared address space is not publicly routable. See `src/net/lanAddress.ts`, which
+carries the `tailscale funnel` caveat.
+
 ### What follows: the LAN host serves the client too
 
 **The host's server serves the game to the LAN over plain HTTP, on the same origin as the

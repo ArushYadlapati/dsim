@@ -46,7 +46,36 @@ export interface LanAddress {
   port: number;
   /** loopback is exempt from the mixed-content rule, so it is worth knowing separately */
   loopback: boolean;
+  /**
+   * This host holds a REAL CERTIFICATE, so `url` is `wss://` and the mixed-content rule does
+   * not apply to it. True for exactly one thing today: a Tailscale MagicDNS name typed with no
+   * port — see `isTailnetName` and the scheme choice in `parseLanAddress`.
+   */
+  tls: boolean;
 }
+
+/**
+ * A TAILSCALE MAGICDNS NAME — `machine.tailnet-name.ts.net`.
+ *
+ * The ONE LAN host that can hold a real certificate, which is why it gets its own predicate
+ * rather than joining the mDNS suffixes above. `docs/lan-selfhost.md` opens by ruling `wss://`
+ * out — "a LAN server cannot realistically hold a TLS certificate for 192.168.1.5" — and that
+ * is still true of every other address here. Tailscale issues one for this name, so it is the
+ * exception rather than a hole in the reasoning.
+ *
+ * The leading dot is load-bearing: `evilts.net` is not a tailnet and neither is the bare
+ * `ts.net`. Only Tailscale hands out a label under it.
+ *
+ * ⚠️ THE CAVEAT, and it is the honest one: `tailscale funnel` can publish a `.ts.net` name to
+ * the public internet, and serve-vs-funnel is INDISTINGUISHABLE from here — the client sees a
+ * name and a certificate either way. So this suffix is the one address in this module that a
+ * determined person could aim at the open internet. It stays in scope because the rest of the
+ * design is what actually bounds LAN hosting: a funnelled server is still a LAN server, its
+ * matches still upload from the HOST's own client (`lanRuns.ts`), and it is still untrusted by
+ * `trustedFor` so it never sees an account token. What it is not is a way to run a public
+ * server the app treats as a peer of the cloud one.
+ */
+const isTailnetName = (h: string): boolean => h.endsWith('.ts.net');
 
 const isLoopbackHost = (h: string): boolean =>
   h === 'localhost' || h === '127.0.0.1' || h === '[::1]' || h === '::1' || h.endsWith('.localhost');
@@ -63,6 +92,8 @@ export function isPrivateHost(hostRaw: string): boolean {
   if (isLoopbackHost(host)) return true;
   // mDNS / local DNS suffixes handed out by home and venue routers
   if (host.endsWith('.local') || host.endsWith('.lan') || host.endsWith('.home')) return true;
+  // a MagicDNS name resolves to the 100.64/10 address below; it is the same host by its name
+  if (isTailnetName(host)) return true;
   // IPv6 unique-local (fc00::/7) and link-local (fe80::/10), with or without brackets
   const v6 = host.replace(/^\[|\]$/g, '');
   if (/^f[cd][0-9a-f]{2}:/.test(v6) || /^fe[89ab][0-9a-f]:/.test(v6)) return true;
@@ -112,9 +143,12 @@ export function isPrivateHost(hostRaw: string): boolean {
 /**
  * Turn whatever was typed into a LAN address, or say why not.
  *
- * Accepts a bare `host`, `host:port`, or a full `http://`/`https://`/`ws://`/`wss://` URL, and
- * always answers in `ws://` + `http://` form: a LAN box has no certificate, so there is no
- * secure variant to preserve and pretending otherwise would produce a URL that cannot connect.
+ * Accepts a bare `host`, `host:port`, or a full `http://`/`https://`/`ws://`/`wss://` URL.
+ *
+ * THE SCHEME IS DERIVED, NEVER PRESERVED. A LAN box has no certificate, so echoing back a
+ * `wss://` somebody typed at `192.168.1.5` would produce a URL that cannot connect — the answer
+ * is `ws://` + `http://` for every address here except a bare tailnet name, which is the one
+ * host that really does hold a certificate. See the `tls` branch below.
  */
 export function parseLanAddress(raw: string): { ok: true; value: LanAddress } | { ok: false; error: LanAddressError } {
   const text = (raw ?? '').trim();
@@ -127,16 +161,22 @@ export function parseLanAddress(raw: string): { ok: true; value: LanAddress } | 
 
   let host = hostPort;
   let port = LAN_DEFAULT_PORT;
+  // whether the person NAMED a port, which is not the same question as `port === 8787`
+  let typedPort = false;
   // IPv6 literals are bracketed, so only split on the LAST colon and only outside brackets
   const bracket = /^\[([^\]]+)\](?::(\d+))?$/.exec(hostPort);
   if (bracket) {
     host = `[${bracket[1]}]`;
-    if (bracket[2]) port = Number(bracket[2]);
+    if (bracket[2]) {
+      port = Number(bracket[2]);
+      typedPort = true;
+    }
   } else {
     const i = hostPort.lastIndexOf(':');
     if (i > 0 && /^\d+$/.test(hostPort.slice(i + 1))) {
       host = hostPort.slice(0, i);
       port = Number(hostPort.slice(i + 1));
+      typedPort = true;
     }
   }
   // SHAPE BEFORE POLICY. `isPrivateHost` answers false for a public address AND for a
@@ -150,14 +190,27 @@ export function parseLanAddress(raw: string): { ok: true; value: LanAddress } | 
   if (!Number.isInteger(port) || port < 1 || port > 65535) return { ok: false, error: 'malformed' };
   if (!isPrivateHost(host)) return { ok: false, error: 'not-private' };
 
+  /**
+   * A BARE TAILNET NAME IS THE ONE `wss://` CASE, and the bareness is the whole test.
+   *
+   * `tailscale serve` terminates TLS on 443 and proxies to the game server's own plain-HTTP
+   * port. So the name ALONE is the certificate-backed front door, and `host:8787` is the raw
+   * server behind it — which has no certificate, exactly like every other address here. Typing
+   * a port therefore has to keep producing `ws://`: answering `wss://host:8787` would hand back
+   * a URL that cannot connect, which is the failure this module exists to stop.
+   */
+  const tls = isTailnetName(host.toLowerCase()) && !typedPort;
+  if (tls) port = 443;
+
   return {
     ok: true,
     value: {
-      url: `ws://${host}:${port}`,
-      httpUrl: `http://${host}:${port}`,
+      url: tls ? `wss://${host}` : `ws://${host}:${port}`,
+      httpUrl: tls ? `https://${host}` : `http://${host}:${port}`,
       host,
       port,
       loopback: isLoopbackHost(host.toLowerCase()),
+      tls,
     },
   };
 }
@@ -171,6 +224,7 @@ export function parseLanAddress(raw: string): { ok: true; value: LanAddress } | 
  */
 export function mixedContentBlock(addr: LanAddress, pageProtocol: string): string | null {
   if (pageProtocol !== 'https:') return null; // http: and file: may open ws:// freely
+  if (addr.tls) return null; // `wss://` is not mixed content — there is nothing to block
   if (addr.loopback) return null; // localhost is a potentially-trustworthy origin, exempt
   return addr.httpUrl;
 }
