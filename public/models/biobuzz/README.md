@@ -33,7 +33,12 @@ deleted in one commit if FIRST objects — nothing else in the game depends on t
 | `field.glb` | ≤ 600 KB brotli | high-detail visual mesh |
 | `field-low.glb` | ≤ 250 KB brotli | low-detail visual mesh (same node names/hierarchy) |
 | `field-colliders.json` | ≤ 200 KB raw | statics + tray hulls + flower descriptors, for `src/games/biobuzz/sim3d/fieldColliders.ts` |
-| `field-measurements.json` | — | CAD-measured dimensions vs. the `config.ts` constants they settle |
+| `field-measurements.json` | — | CAD-measured dimensions — the SOURCE the game's geometry constants are generated from |
+
+Two files are GENERATED OUT OF THIS DIRECTORY and live in `src/`, because the client must not
+fetch them at runtime: `src/games/biobuzz/sim3d/fieldColliders.gen.ts` (the collider set) and
+`src/games/biobuzz/fieldDims.gen.ts` (the DIMENSIONS — see below). Both are written by
+`npm run field-cad`; neither is hand-editable.
 
 Both GLBs share one node/mesh naming convention (only the tessellation and decimation level
 differ): `tiles`, `walls`, `tape`, `stations`, `misc` (only if `convert.py` met a part it could
@@ -155,18 +160,48 @@ authoritative for the ring passage until a proper annulus collider is worth buil
 
 ## `field-measurements.json`
 
-Everything the CAD settles, printed against the constant or manual figure it confirms or
-unsettles, and asserted (under named tolerances) by `scripts/smoke-biobuzz/sim3d.ts`. Notable
-blocks: `hive.trays[a]` (capture tilt, the back-skin residual thickness that PROVES the un-tilt,
-the cell interiors, the facet list), `hive.openingZ` / `hive.downCellFloorZ` /
+Everything the CAD settles, and — since the owner's 2026-09-18 ruling that **the CAD is
+authoritative for dimensions** — the SOURCE OF THE GAME'S GEOMETRY CONSTANTS rather than a report
+about them. Notable blocks: `hive.trays[a]` (capture tilt, the back-skin residual thickness that
+PROVES the un-tilt, the cell interiors, the facet list), `hive.openingZ` / `hive.downCellFloorZ` /
 `hive.lowestStructureZAtRest`, `hive.frameLegFootprints`, `flowers[].bore` (least-squares circle
-fits of all three ring plates), `tiles.pitch`, `walls.innerFace`, `tape.parts` (every strip's
-width, length, colour, position and plane) and `colours` (the CAD hex per part).
+fits of all three ring plates), `tiles.pitch` and `tiles.x0Seams`, `walls.innerFace`, `tape.parts`
+(every strip's width, length, colour, position and plane) and `colours` (the CAD hex per part).
+
+The `config_*` fields in it are HISTORY — the constant each measurement was compared against
+while the findings were open. They are not read by anything.
+
+## `src/games/biobuzz/fieldDims.gen.ts` — the generated DIMENSIONS
+
+`scripts/field-cad/emit-dims.mjs` reads `field-measurements.json` and writes a DOM-free, plain-
+number TypeScript module that `src/games/biobuzz/config.ts` imports: `FIELD_HALF` (70.674, the
+wall's inner face), `WALL_FACE`, `WALL_H`, `TILE_PITCH` (23.528) and `TILE_SEAMS`, `FLOWER_D`,
+`FLOWER_ALONG`, `FLOWERS`, `FLOWER_RING_D`, `HIVE` (pivot, tilt, arm, cell interior, opening z,
+down-cell floor, lowest structure), `TAPE` (all 16 measured strips, grouped by zone) and the
+`LZ` / `GARDEN` / `ALLIANCE_AREA` rectangles those strips define.
+
+Three things make it trustworthy rather than merely convenient:
+
+- **Every value states its derivation and its residual in the file's own header** — anything the
+  CAD measures four times (wall faces, flower bores, hive cells) is emitted as the MEAN with the
+  worst deviation printed, so "these four agree" is a number and not an assumption.
+- **The header stamps the pinned STEP's version and sha256 and the sha256 of the measurements
+  file**, and nothing in the emitter reads a clock — so the render is deterministic.
+- **`scripts/smoke-biobuzz/sim3d.ts` re-renders it and diffs it byte for byte.** A measurements
+  file committed without re-running the emitter, or a hand-edit of the generated constants, is a
+  red test rather than a silent divergence.
+
+A dimension the measurements file does NOT carry is left in `config.ts` and flagged there; today
+that is `BB_FLOWER_TOP_Z` and `BB_FLOWER_FOOT`, both of which need `convert.py` to emit the
+flower's per-ring z bands and its on-tile plate footprint. `docs/biobuzz/field-cad-audit.md` §6
+measures both by hand in the meantime.
 
 ## Regenerating
 
 `npm run field-cad` re-downloads only if the cached zip's sha256 no longer matches the pinned
-value in `scripts/field-cad.mjs`'s `SOURCE` constant. To pick up a real field revision: update
+value in `SOURCE` (`scripts/field-cad/source.mjs`, imported by the driver and by the dims emitter
+so the identity string exists once). It rewrites both GLBs, `field-colliders.json`,
+`field-measurements.json`, `fieldColliders.gen.ts` and `fieldDims.gen.ts`. To pick up a real field revision: update
 `SOURCE.url`/`version`/`sha256` in that file (the script tells you the actual hash it downloaded
 if the check fails), delete `C:/Users/<you>/AppData/Local/dsim/field-cad/field-cad-step.zip`,
 and re-run.
