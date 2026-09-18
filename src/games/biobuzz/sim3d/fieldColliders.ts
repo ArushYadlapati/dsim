@@ -317,42 +317,15 @@ export function cadCellBox(alliance: Alliance, sideSign: 1 | -1): CadHiveBox | n
   return { ...cell, refTheta: cadTrayRefTheta(alliance) };
 }
 
-export interface CadWallExtents {
-  /** inner-face (field-facing) coordinate of each wall, world/sim frame, inches. */
-  readonly left: number;
-  readonly right: number;
-  readonly rear: number;
-  readonly audience: number;
-  /** wall height (in), averaged over the four walls' own hull extent. */
-  readonly height: number;
-  /** the lowest z of any wall's own geometry (in) — not exactly 0 in the raw CAD data (the
-   * perimeter's bottom rail sits slightly below the tile top). */
-  readonly z0: number;
-}
-
-function staticAabb(name: string): Aabb | null {
-  const s = fieldColliders3d().statics.find((x) => x.name === name);
-  return s ? aabbOfFlat(s.points) : null;
-}
-
-/** the four perimeter walls' inner faces and height, straight off their own hull points. `null`
- * when any of the four is missing from the collider set (`sim3d/bodies.ts` falls back to
- * `BB_HALF_X`/`BB_HALF_Y`/`BB3_WALL_H` in that case — which it does unconditionally anyway, by
- * owner rule; this is a MEASUREMENT for the smoke lane to report, never a collider input). */
-export function cadWallExtents(): CadWallExtents | null {
-  const l = staticAabb('wall_left');
-  const r = staticAabb('wall_right');
-  const rear = staticAabb('wall_rear');
-  const aud = staticAabb('wall_audience');
-  if (!l || !r || !rear || !aud) return null;
-  const heights = [l, r, rear, aud].map((b) => b.max[2] - b.min[2]);
-  const z0s = [l, r, rear, aud].map((b) => b.min[2]);
-  return {
-    left: l.max[0], // the face closer to x = 0 (the field side)
-    right: r.min[0],
-    rear: rear.min[1],
-    audience: aud.max[1],
-    height: heights.reduce((a, b) => a + b, 0) / heights.length,
-    z0: z0s.reduce((a, b) => a + b, 0) / z0s.length,
-  };
-}
+// THE PERIMETER WALL IS NOT IN THIS FILE AT ALL ANY MORE.
+//
+// It never was a collider — the 3D walls are analytic cuboids at `BB_HALF_X`/`BB_HALF_Y`/
+// `BB3_WALL_H` (owner rule; the CAD's own inner face is ±70.674 against the constants' 72, and
+// every other system — the 2D pipeline, the staging, the start poses flush to the wall — is keyed
+// to 72, so a 3D wall at the CAD figure would be cross-physics drift rather than a correction).
+// It was exported anyway so a `cadWallExtents()` reader could REPORT the gap, and nothing at
+// runtime ever called it: `field-colliders.json` is compiled into `fieldColliders.gen.ts` and
+// imported STATICALLY by `step.ts`, so those four hulls were shipping in the MAIN client bundle to
+// be read by a smoke check. The measurement now lives in `field-measurements.json`'s
+// `walls.innerFace`, which the SIM3D lane reads directly — see `docs/biobuzz/field-cad-audit.md`
+// §7 for the finding itself.
