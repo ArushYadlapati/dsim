@@ -79,8 +79,7 @@ function relPosix(p: string): string {
  * grep whose false positives would only be inside a comment describing the very string. */
 function codeLines(path: string): string[] {
   return readFileSync(path, 'utf8')
-    .split(/?
-/)
+    .split(/\r?\n/)
     .map((line) => line.replace(/\/\/.*$/, '').replace(/^\s*\*.*$/, ''));
 }
 
