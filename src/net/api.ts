@@ -1774,6 +1774,17 @@ export interface Entitlements {
   autoRenews: boolean;
   /** absent when talking to a server older than the pricing route */
   price?: TierPrice;
+  /**
+   * The revision of the Terms of Use this account has accepted — the key
+   * `src/legalText.ts` derives from `LEGAL_UPDATED` (migration 0040).
+   *
+   * THREE-VALUED, and every value means something different to `termsGateState`:
+   * a STRING is what was accepted, `null` is "never asked", and `undefined` is "this
+   * server did not say" — which is what a server older than the route answers, and
+   * what `fetchEntitlements` falls back to when it swallows a failure. Only the
+   * first two may put a dialog in front of anybody.
+   */
+  termsVersion?: string | null;
 }
 
 const NO_ENTITLEMENTS: Entitlements = {
@@ -1798,10 +1809,32 @@ export async function fetchEntitlements(): Promise<Entitlements> {
       role: r.role === 'owner' || r.role === 'admin' ? r.role : undefined,
       autoRenews: !!r.autoRenews,
       price: r.price,
+      // PASSED THROUGH UNTOUCHED, including `undefined`. Coercing it to null here
+      // would turn "this server never told us" into "never accepted" and show a
+      // blocking dialog to everybody on a stale server.
+      termsVersion: r.termsVersion,
     };
   } catch {
     return NO_ENTITLEMENTS;
   }
+}
+
+/**
+ * Accept the current Terms of Use, for the signed-in account.
+ *
+ * ⚠️ IT SENDS NO VERSION. The server records its OWN `LEGAL_VERSION`, so a client
+ * cannot accept a revision that does not exist or pre-accept the next one to escape
+ * the gate for good. The answer is the version that was actually written, which is
+ * what the gate then compares.
+ *
+ * Unlike `fetchEntitlements` this DOES throw: somebody is waiting on a button, and a
+ * silent failure would leave a dialog that closes and comes straight back.
+ */
+export async function acceptTerms(): Promise<{ termsVersion: string | null }> {
+  const r = await authedJson<{ termsVersion?: string | null }>('/api/user/accept-terms', {
+    method: 'POST',
+  });
+  return { termsVersion: r.termsVersion ?? null };
 }
 
 /** the tier price for a SIGNED-OUT visitor. Same never-throws contract: the

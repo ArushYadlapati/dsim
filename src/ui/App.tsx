@@ -22,7 +22,9 @@ import { useNewVersion } from '../net/version';
 import { useServerNotice } from '../net/notice';
 import { Admin } from './Admin';
 import { Announcements } from './Announcements';
+import { AccountReset } from './AccountReset';
 import { AccountSync } from './AccountSync';
+import { AccountVerify } from './AccountVerify';
 import { GameView } from './GameView';
 import { Lobby } from './Lobby';
 import { WatchLive } from './WatchLive';
@@ -47,6 +49,7 @@ import { Privacy, Terms } from './Legal';
 import { Donate } from './Donate';
 import { Changelog } from './Changelog';
 import { Profile } from './Profile';
+import { TermsGate } from './TermsGate';
 import { UsernameGate } from './UsernameGate';
 import { Account } from './Account';
 import { authEnabled } from '../lib/authClient';
@@ -100,6 +103,12 @@ type Screen =
   | 'changelogs'
   | 'profile'
   | 'account'
+  /** `/account/reset` and `/account/verify` — the two screens an auth email lands
+   *  on. Separate screens rather than a `sub` of `account`, because neither is a tab
+   *  of the Profile page: they are reached once, from a link, by someone who may not
+   *  be signed in at all. */
+  | 'accountreset'
+  | 'accountverify'
   | 'admin'
   /** a game's own alpha-only dev route (`GameModule.devRoutes`) */
   | 'dev';
@@ -201,6 +210,10 @@ function screenSuffix(screen: Screen, a: RouteArgs): string {
       return '/changelogs';
     case 'account':
       return '/account';
+    case 'accountreset':
+      return '/account/reset';
+    case 'accountverify':
+      return '/account/verify';
     case 'admin':
       return '/admin';
     case 'dev':
@@ -253,6 +266,9 @@ function parseScreen(rest: string): { screen: Screen } & RouteArgs {
   if (rest.startsWith('/terms')) return at('terms');
   if (rest.startsWith('/donate')) return at('donate');
   if (rest.startsWith('/changelogs')) return at('changelogs');
+  // BEFORE the bare `/account`, which is a prefix of both
+  if (rest.startsWith('/account/reset')) return at('accountreset');
+  if (rest.startsWith('/account/verify')) return at('accountverify');
   if (rest.startsWith('/account')) return at('account');
   if (rest.startsWith('/admin')) return at('admin');
   // /play (a live game) can't be restored without a session ⇒ home
@@ -329,6 +345,8 @@ function navFor(screen: Screen): ShellNav {
     case 'records':
       return 'records';
     case 'account':
+    case 'accountreset':
+    case 'accountverify':
       return 'profile';
     case 'admin':
       return 'admin';
@@ -1501,7 +1519,16 @@ export function App() {
         game={settings.game}
       >
       {authEnabled && <AccountSync onUser={onSyncUser} onLoad={onSyncLoad} seed={onSyncSeed} />}
-      {authEnabled && <UsernameGate />}
+      {/* THE BLOCKING GATES, NESTED RATHER THAN STACKED. A brand-new account trips both
+          (an OAuth sign-up has no username AND no acceptance), and two
+          `.ds-modal-backdrop`s at once double-darken the page and show one dialog dimmed
+          behind the other. `TermsGate` renders its children only once it is satisfied, so
+          the order is structural: agree to the service, then pick a name inside it. */}
+      {authEnabled && (
+        <TermsGate>
+          <UsernameGate />
+        </TermsGate>
+      )}
 
       {screen === 'home' && (
         <HomeMenu
@@ -1746,6 +1773,8 @@ export function App() {
           onDonate={() => navigate('donate')}
         />
       )}
+      {screen === 'accountreset' && <AccountReset onAccount={() => navigate('account')} />}
+      {screen === 'accountverify' && <AccountVerify onAccount={() => navigate('account')} />}
       {screen === 'admin' && isAdmin && <Admin onWatch={spectateRoom} onWatchReplay={watchReplay} />}
       {screen === 'dev' &&
         (() => {

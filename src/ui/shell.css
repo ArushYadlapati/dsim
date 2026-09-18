@@ -3557,6 +3557,78 @@ tr.lb-detail td {
 .ds-form-switch .ds-btn {
   margin-left: 8px;
 }
+/* the reserved status line under a field, in its failure colour. `.ds-form-hint`
+   already holds 1em whether or not it has text, which is what keeps a form from
+   changing height when a message lands (ui-standard §1.4); `.ds-form-err` does not,
+   and is for the one-off line appended at the end of a form. */
+.ds-form-hint.err {
+  color: var(--ds-danger);
+}
+/* A QUIET TEXT ACTION ON ITS OWN ROW INSIDE `.ds-form` — today the "Forgot
+   password?" link under the sign-in password field. It needs a row rather than a
+   corner of the label above it: `.ds-form label` is a full-width column, so an
+   action tucked inside one would sit under the input it belongs beside. The row is
+   a flex child of `.ds-form`, so the 12px gap is the parent's, not a margin here
+   (ui-standard §2, "one owner per gap"). */
+.ds-form-aside {
+  display: flex;
+  justify-content: flex-end;
+}
+/* ⚠️ `.ds-form label` is a COLUMN (label over field), and it out-specifies
+   `.ds-checkline` — so the sign-up consent box rendered with the checkbox stacked
+   above its own sentence, centred, looking like a stray tick mark. A checkbox row is
+   the one label in a form that is not a column, so say it here rather than inventing a
+   second checkbox class. `align-items: start` because the sentence wraps to two lines
+   on a phone and a centred box then floats beside the middle of the text. */
+.ds-form label.ds-checkline {
+  flex-direction: row;
+  align-items: start;
+  gap: var(--ds-s-2);
+}
+.ds-form label.ds-checkline input {
+  /* nudge the box onto the first line’s cap height rather than its box top */
+  margin-top: var(--ds-s-0);
+  flex: none;
+}
+/* ---- "verify your email" ---------------------------------------------
+   An in-page notice above the first panel, not a toast: it is a STATE of the
+   account rather than an event, and it has to stay put while somebody reads it and
+   presses Resend.
+
+   --ds-warn is CATEGORY 1 (readable against the surface, inverts with the theme),
+   which is what this needs — the bar sits on the page, not on the field canvas. The
+   tint is mixed from it rather than being a seventh palette entry, so it follows the
+   token in both themes and adds no pair to scripts/contrast.mjs. */
+.ds-verifybar {
+  display: flex;
+  align-items: center;
+  gap: var(--ds-s-3);
+  padding: var(--ds-s-3) var(--ds-s-4);
+  margin-bottom: var(--ds-s-5);
+  border: 1px solid var(--ds-warn);
+  border-radius: var(--ds-round);
+  background: color-mix(in srgb, var(--ds-warn) 10%, var(--ds-panel));
+  color: var(--ds-ink);
+  font-size: var(--ds-t-md);
+  line-height: 1.45;
+}
+/* the sentence takes the slack so both buttons stay hard right at any width */
+.ds-verifybar-text {
+  flex: 1;
+}
+.ds-verifybar-text .err {
+  color: var(--ds-danger);
+}
+/* PHONE: the buttons drop under the sentence rather than squeezing it to one word
+   per line. Same rule as the rest of the shell at this breakpoint. */
+@media (max-width: 560px) {
+  .ds-verifybar {
+    flex-wrap: wrap;
+  }
+  .ds-verifybar-text {
+    flex: 1 1 100%;
+  }
+}
 
 /* =====================================================================
    CONSOLE LAYER — full-screen setup surfaces (Lobby, Record Run, Ranked)

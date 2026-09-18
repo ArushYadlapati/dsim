@@ -148,6 +148,44 @@ access being GRANTED (participants, the opponent, staff, the record proof, the 4
 wording) stay green, which is the point of having both halves; and dropping the roster term
 from `versusReleased` reds exactly the history row whose roster is short.
 
+**AUTHENTICATION FLOWS — password reset, email verification, terms acceptance, BUILT.**
+`src/lib/authFlows.ts` is the ONE module that calls Neon Auth for any of them, because
+`@neondatabase/auth` is a BETA SDK whose client surface is generated from Better Auth’s route
+table — a dependency bump can rename a method nobody here touched, and this way that is a
+one-file fix. It is pinned to the EXACT installed version for the same reason. Every function
+returns a discriminated result and NEVER throws at a component.
+⚠️ **THE SDK THROWS ITS FAILURES RATHER THAN RETURNING THEM.** The Neon adapter installs its own
+`customFetchImpl` which throws a normalized `AuthApiError` on any non-2xx, so the `{data, error}`
+union the `.d.mts` advertises is real but `error` is essentially never populated — everything
+arrives in a `catch`. Classifying a throw as "the network failed" told somebody holding an
+expired reset link to check their connection. The throw carries `status` and a lower_snake
+`code` (`bad_jwt`, `weak_password`, `over_email_send_rate_limit`), which is the ADAPTER’s
+vocabulary and not Better Auth’s SCREAMING_SNAKE one; `classifySdkError` speaks both, and tests
+rate limiting BEFORE the address because EMAIL is a substring of that last code.
+⚠️ **`forgetPassword` IS NOT A TOP-LEVEL METHOD** on this build — only `forgetPassword.emailOtp`,
+a different flow. The top-level request is `requestPasswordReset`.
+⚠️ **THE EMAILED TOKEN IS CAPTURED AT MODULE LOAD** (`src/ui/entryToken.ts`): App’s mount effect
+canonicalizes the address bar with a path that has no query string, so `?token=` is gone before
+a screen renders.
+**THE VERIFIED-EMAIL GATE IS ONE PREDICATE** — `emailGateRefusal` (`server/auth.ts`), read by the
+ranked queue door, the record-room join door and `POST /api/practice`. Extend it; never add a
+second "is this account allowed" check. It is OFF unless `REQUIRE_VERIFIED_EMAIL=1`, because every
+email/password account that exists today is unverified and the sender domain is an owner dashboard
+action (`docs/deploy.md` §4) — default-on would refuse ranked to everybody with no way to fix it.
+`null` (nobody told us) counts as VERIFIED: a gate whose unknown case refuses goes dark silently.
+⚠️ **THE RECORD GATE LIVES IN `server/index.ts`, NOT `Room.startMatch`** beside the duo-record
+guard it belongs with — `server/room.ts` is bundled into the LAN host worker and may not import
+`jose` or read `process.env`.
+**TERMS ACCEPTANCE** is `profiles.terms_version` + `terms_accepted_at` (0040, both nullable and
+deliberately NOT back-filled: recording an acceptance that never happened is the thing the columns
+exist to prevent). `POST /api/user/accept-terms` takes NO body — the version is the server’s own
+`LEGAL_VERSION`, so a client cannot accept a revision that does not exist or pre-accept the next
+one. `termsGateState` (`src/legalText.ts`) is the pure rule and `undefined` — a server older than
+the route — must never block. `TermsGate` WRAPS `UsernameGate` rather than sitting beside it: an
+OAuth sign-up trips both, and two modal backdrops show one dialog dimmed behind the other.
+Tests: `npm run dbtest` for the migration and the round trip; `npm test` for `termsGateState` and
+the wrapper’s result shapes against a stub client.
+
 **BACKGROUND RANKED QUEUE, LIVE (no flag).** The queue used to die when you left the
 matchmaking screen — that screen owned the socket (`useEffect(() => teardown, [])`),
 so queueing locked you out of the rest of the app, which is what stopped people

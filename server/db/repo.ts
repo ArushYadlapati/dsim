@@ -1126,6 +1126,69 @@ export async function isStaffUser(userId: string): Promise<boolean> {
   return rows.length > 0;
 }
 
+// ------------------------------------------------- terms acceptance ---------
+/**
+ * WHICH REVISION OF THE TERMS THIS ACCOUNT ACCEPTED (migration 0040).
+ *
+ * Two nullable columns on `profiles`, read and written by primary key only — see the
+ * migration for why there is no index and why null means "never asked" rather than
+ * being back-filled with the current revision.
+ */
+export interface TermsAcceptance {
+  /** the `LEGAL_VERSION` key that was accepted, or null if never */
+  version: string | null;
+  /**
+   * The instant it was recorded, or null if never.
+   *
+   * TYPED AS THE WIRE SHAPE, like `SupporterState.supporterUntil` beside it: the driver
+   * hands a `timestamptz` back as a Date, and `JSON.stringify` on the route turns that
+   * into an ISO string, which is the only form any caller of this ever sees. Anything
+   * comparing it in-process has to compare the INSTANT, not the object.
+   */
+  acceptedAt: string | null;
+}
+
+const NEVER_ACCEPTED: TermsAcceptance = { version: null, acceptedAt: null };
+
+/** what this account has accepted (never-accepted for an unknown account, which is
+ *  the same answer and the same consequence: the client's gate asks). */
+export async function getTermsAcceptance(userId: string): Promise<TermsAcceptance> {
+  const rows = await q<{ terms_version: string | null; terms_accepted_at: string | null }>(
+    `select terms_version, terms_accepted_at from profiles where user_id = $1`,
+    [userId],
+  );
+  if (!rows[0]) return NEVER_ACCEPTED;
+  return { version: rows[0].terms_version, acceptedAt: rows[0].terms_accepted_at };
+}
+
+/**
+ * Record an acceptance of `version`.
+ *
+ * ⚠️ THE TIMESTAMP IS `now()` IN POSTGRES, never a client clock and never a Node one:
+ * the five regional machines do not share a clock, and a consent record whose date came
+ * off the accepting browser is evidence of nothing. Same rule the supporter expiry reads
+ * by.
+ *
+ * ⚠️ THE VERSION IS THE SERVER’S OWN CONSTANT, not a string off the wire — the route
+ * passes `LEGAL_VERSION`, so a client cannot claim to have accepted a revision that does
+ * not exist (or the NEXT one, pre-emptively, to skip the gate forever).
+ *
+ * OVERWRITES rather than appending. A history of every revision somebody accepted would
+ * be a second table and its own retention question; what the gate needs is the latest,
+ * and what a dispute needs is that the latest was accepted and when.
+ */
+export async function acceptTerms(userId: string, version: string): Promise<TermsAcceptance> {
+  const rows = await q<{ terms_version: string | null; terms_accepted_at: string | null }>(
+    `update profiles
+        set terms_version = $2, terms_accepted_at = now(), updated_at = now()
+      where user_id = $1
+      returning terms_version, terms_accepted_at`,
+    [userId, version],
+  );
+  if (!rows[0]) return NEVER_ACCEPTED; // no such profile ⇒ nothing was recorded
+  return { version: rows[0].terms_version, acceptedAt: rows[0].terms_accepted_at };
+}
+
 /** does this account let anyone watch its versus replays? (false for an unknown account) */
 export async function getReplaysPublic(userId: string): Promise<boolean> {
   const rows = await q<{ replays_public: boolean }>(

@@ -55,9 +55,109 @@ console.log(
 export interface AuthedUser {
   userId: string;
   handle: string;
+  /**
+   * Has this account confirmed its email address?
+   *
+   * THREE-VALUED ON PURPOSE. `true`/`false` are what the token (or the session
+   * endpoint) said; `null` means nobody told us, which is a different thing from
+   * "no" and is treated as a pass — see `emailGateRefusal`.
+   */
+  emailVerified: boolean | null;
 }
 
-/** verify a client-supplied JWT → {userId, handle}, or null if absent/invalid */
+/**
+ * ---- THE VERIFIED-EMAIL GATE -------------------------------------------------
+ *
+ * OFF BY DEFAULT, and that is a deploy-order decision rather than timidity.
+ * Verification has never existed here, so EVERY email/password account on the
+ * live site is currently unverified — turning the gate on in the same push that
+ * introduces it would refuse ranked to all of them at once, and the "resend"
+ * button they would be sent to cannot help until the sender domain is configured
+ * in the Neon Auth dashboard (an owner action; docs/deploy.md §4 has the steps).
+ * So: ship the flows, let people verify, then set the secret.
+ *
+ *   REQUIRE_VERIFIED_EMAIL=1   refuse ranked + record/practice persistence to an
+ *                              account whose address is not verified.
+ *
+ * Google sign-ins arrive verified — the provider vouched for the address — so the
+ * gate only ever bites email/password accounts.
+ */
+const REQUIRE_VERIFIED = process.env.REQUIRE_VERIFIED_EMAIL === '1';
+
+/** the one sentence, so the four refusal sites cannot drift apart */
+export const VERIFY_EMAIL_REFUSAL =
+  'Verify your email to play ranked. Open the link we sent you, or resend it from your Profile page.';
+
+/**
+ * May this user do the things that need a verified address? The ONE predicate —
+ * extend it rather than adding a second "is this account allowed" check anywhere.
+ *
+ * ⚠️ `null` (we were not told) COUNTS AS VERIFIED. The claim is optional on a beta
+ * SDK's token, and the session fallback below can fail for reasons that have
+ * nothing to do with the account. A gate whose unknown case is "refuse" would lock
+ * every player out of ranked the first time an upstream stopped sending a field —
+ * silently, and with no way for anyone to fix it from the client. The failure this
+ * direction is one unverified account playing ranked; the other direction is the
+ * whole feature going dark.
+ */
+export function emailGateRefusal(user: AuthedUser): string | null {
+  if (!REQUIRE_VERIFIED) return null;
+  return user.emailVerified === false ? VERIFY_EMAIL_REFUSAL : null;
+}
+
+/**
+ * IS THE ADDRESS VERIFIED, WHEN THE TOKEN DID NOT SAY?
+ *
+ * Better Auth's JWT plugin signs whatever its `definePayload` returns, so whether
+ * `email_verified` is on the token is a property of the Neon Auth project's
+ * configuration rather than of this code. Both spellings are read off the payload
+ * first (`email_verified` is the OIDC one, `emailVerified` the Better Auth field
+ * name) and this is the fallback for a deployment whose tokens carry neither.
+ *
+ * ONE FETCH PER TOKEN, EVER. A token is a bearer credential with an hour of life
+ * and the friends poll re-verifies it roughly twice a minute per open tab, so an
+ * un-cached lookup here would put a second round trip in front of every
+ * authenticated request — the exact cost `getAuthToken`'s cache exists to remove
+ * on the client. The answer is memoized against the token STRING, including the
+ * "could not tell" answer, so a failing endpoint is asked once and not once a
+ * second. Entries die with the token; the map is bounded so a long-lived machine
+ * cannot accumulate them.
+ */
+const verifiedByToken = new Map<string, boolean | null>();
+const VERIFIED_CACHE_MAX = 2000;
+
+async function verifiedFromSession(token: string): Promise<boolean | null> {
+  const hit = verifiedByToken.get(token);
+  if (hit !== undefined) return hit;
+  let answer: boolean | null = null;
+  if (AUTH_URL) {
+    try {
+      const res = await fetch(`${AUTH_URL.replace(/\/$/, '')}/get-session`, {
+        headers: { authorization: `Bearer ${token}` },
+      });
+      if (res.ok) {
+        const body = (await res.json()) as { user?: { emailVerified?: unknown } } | null;
+        const v = body?.user?.emailVerified;
+        if (typeof v === 'boolean') answer = v;
+      }
+    } catch {
+      // network, CORS, a route that does not exist on this build — all of them mean
+      // "not told", which the gate reads as verified. Never fatal.
+    }
+  }
+  // FIFO eviction: a Map iterates in insertion order, so the oldest key is first.
+  if (verifiedByToken.size >= VERIFIED_CACHE_MAX) {
+    const oldest = verifiedByToken.keys().next().value;
+    if (oldest !== undefined) verifiedByToken.delete(oldest);
+  }
+  verifiedByToken.set(token, answer);
+  return answer;
+}
+
+
+/** verify a client-supplied JWT → {userId, handle, emailVerified}, or null if
+ *  absent/invalid. `emailVerified` is null when neither the token nor the session
+ *  endpoint would say (see `verifiedFromSession`). */
 export async function verifyAuthToken(token: string | undefined): Promise<AuthedUser | null> {
   if (!token) {
     console.log('[auth] verify: no token on join ⇒ anonymous');
@@ -75,6 +175,12 @@ export async function verifyAuthToken(token: string | undefined): Promise<Authed
       return null;
     }
     const name = payload.name ?? payload.email ?? undefined;
+    // BOTH SPELLINGS: `email_verified` is the OIDC claim name, `emailVerified` is
+    // Better Auth’s own field, and which one a Neon Auth project signs is its
+    // configuration rather than ours. Anything that is not a boolean is "not told".
+    const claim = payload.email_verified ?? payload.emailVerified;
+    const emailVerified =
+      typeof claim === 'boolean' ? claim : await verifiedFromSession(token);
     // Deliberately NOT logged. The friends read doubles as the presence heartbeat, so
     // every signed-in browser tab re-verifies roughly twice a minute for as long as it
     // is open — a success line here meant an idle server with two users online emitted
@@ -82,7 +188,11 @@ export async function verifyAuthToken(token: string | undefined): Promise<Authed
     // noise that buries the failures below (the ones that actually explain a player being
     // silently signed out). Failures and misconfiguration still log; success is the
     // uninteresting case and is now silent.
-    return { userId, handle: typeof name === 'string' && name ? name : 'Player' };
+    return {
+      userId,
+      handle: typeof name === 'string' && name ? name : 'Player',
+      emailVerified,
+    };
   } catch (e) {
     // expired / bad signature / unreachable-or-wrong JWKS ⇒ anonymous. Log why.
     console.log('[auth] verify FAILED:', e instanceof Error ? e.message : e);

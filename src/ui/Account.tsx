@@ -13,12 +13,14 @@ import {
   updateUsername,
   type Entitlements,
 } from '../net/api';
+import { AuthDisabled } from './AuthDisabled';
 import { AuthPanel } from './AuthPanel';
 import { copyText } from './copyText';
 import { DesktopUpdate } from './DesktopUpdate';
 import { fmtDay } from './fmtDate';
 import { ServerMenu } from './ServerMenu';
 import { UsernameInput, useUsernameCheck, usernameHintColor } from './UsernameField';
+import { VerifyEmailBanner } from './VerifyEmailBanner';
 import { APP_NAME } from '../seasons';
 import { SUPPORT_ENABLED } from '../net/env';
 import { LEGAL_CONTACT } from '../legalText';
@@ -50,6 +52,10 @@ export function Account({
     <>
       <p className="ds-eyebrow">{APP_NAME} · Profile</p>
       <h1 className="ds-h1">Profile</h1>
+
+      {/* ABOVE the identity panel, because it is about the address that panel shows,
+          and because this is the page the ranked refusal sends people to. */}
+      {authEnabled && <VerifyEmailBanner />}
 
       {authEnabled ? <Identity onHandleSaved={onHandleSaved} /> : <IdentityDisabled />}
 
@@ -589,16 +595,7 @@ function Username({ userId }: { userId: string }) {
   );
 }
 
+/** the same panel the reset and verify screens show — see `AuthDisabled`. */
 function IdentityDisabled() {
-  return (
-    <div className="ds-panel">
-      <div className="ds-panel-h">
-        <span className="ds-panel-title">Account</span>
-      </div>
-      <div className="ds-empty">
-        <div className="big">Accounts are off in this build</div>
-        Set <code>VITE_NEON_AUTH_URL</code> to enable sign-in, saved records, and ranked ELO.
-      </div>
-    </div>
-  );
+  return <AuthDisabled />;
 }
