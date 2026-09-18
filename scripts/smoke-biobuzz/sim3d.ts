@@ -14,6 +14,7 @@ import { bbScoreWorld } from '../../src/games/biobuzz/score';
 import { bbSolveShot } from '../../src/games/biobuzz/robot';
 import {
   BB3_HEIGHT_MAX,
+  BB3_ROUND,
   BB3_HIVE_PIVOT_Z,
   BB3_CAPTURE_TICKS,
   BB_FLOWERS,
@@ -721,8 +722,16 @@ export function sim3dChecks(check: Check): void {
     );
     check(
       `rest-pose: ${a}'s hive body rotation IS the absolute tilt at rest (CAD colliders on; up='${w.biobuzz!.hives[a].up}')`,
-      Math.abs(theta - refTheta - rest) < 1e-9,
-      `theta - refTheta=${(theta - refTheta).toFixed(4)} expected=${rest.toFixed(4)}`,
+      // 1e-4, NOT 1e-9, SINCE DAY 2, AND THE TOLERANCE IS THE POINT RATHER THAN A CONCESSION.
+      // Under the DYNAMIC tray `hiveTiltAngle` no longer computes an angle, it READS ONE BACK:
+      // `hives[a].angle`, written by the readback at `BB3_ROUND` like every other solved number,
+      // because "the JSON is the truth" is what makes a snapshot, a replay and a prediction world
+      // seat the tray identically. A rounded number cannot agree to 1e-9 with an exact one, and
+      // demanding that it does would be demanding that the tray's pose NOT be serialised.
+      // (On the kinematic path the value is still the timer's own exact formula and the residual
+      // is 0, so this tolerance costs that path nothing.)
+      Math.abs(theta - refTheta - rest) <= BB3_ROUND,
+      `theta - refTheta=${(theta - refTheta).toFixed(6)} expected=${rest.toFixed(6)}`,
     );
     const upSide: 1 | -1 = w.biobuzz!.hives[a].up === 'north' ? 1 : -1;
     const box = hiveCellLocalBox(upSide, a);

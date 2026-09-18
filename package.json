@@ -45,7 +45,8 @@
     "docaudit": "node scripts/docaudit.mjs",
     "costprobe": "tsx scripts/costprobe.ts",
     "bundleaudit": "node scripts/bundleaudit.mjs",
-    "field-cad": "node scripts/field-cad.mjs"
+    "field-cad": "node scripts/field-cad.mjs",
+    "hive-calibrate": "tsx scripts/hive-calibrate.ts"
   },
   "build": {
     "appId": "com.decodesim.app",

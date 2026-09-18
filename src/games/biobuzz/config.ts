@@ -1395,11 +1395,28 @@ export const BB3_HEIGHT_MAX = 29;
 // carrying a second copy of the same number under a `BB3_` name.
 // ─────────────────────────────────────────────────────────────────────────────
 
-/** Day 1 kinematic tray vs. a Day 2 dynamic see-saw on a revolute joint (plan §3.6, §11) — the
- * plan's OWN fallback switch, landed early because Lane A's Day 1 scope is the kinematic tray
- * outright (a calibrated dynamic see-saw is explicitly a later day's work). `false` here is not
- * a fallback that fired; it is what Day 1 was scoped to build. */
-export const BB3_HIVE_DYNAMIC = false;
+/**
+ * Day 1's kinematic tray vs. Day 2's DYNAMIC SEE-SAW on a revolute joint (plan §3.6, §11).
+ *
+ * ✅ **TRUE SINCE 2026-09-18**, and the plan's own condition for that is met: `npm run
+ * hive-calibrate` fits all FOUR of the Event Field Setup Guide's §12.3 acceptance rows — 8 POLLEN
+ * tips, 7 does not, 3 POLLEN + 3 NECTAR tips, 2 + 3 does not — with ±0.31 element-weights of
+ * margin, and the calibrated tray's measured stop-to-stop swing lands on `BB_TIP_SWING_S` (4.00 s
+ * against the owner's 4.0). The generated block at the end of this file carries the derivation
+ * and the row-by-row result.
+ *
+ * ⚠️ **THE MARGIN IS 0.31, NOT THE PLAN'S 0.5, AND THAT IS NOT A TUNING FAILURE.** The whole
+ * window between "7 POLLEN must not tip" (5648 of torque) and "3 + 3 must" (6198) is 0.60
+ * element-weights wide at `BB3_NECTAR_MASS_RATIO` 1.6, so half of it is the most any threshold
+ * can have. Weighing a real element set is what moves it, and re-running the calibration is what
+ * picks the number up.
+ *
+ * Setting it back to `false` reverts to the kinematic tray and the shared TIMER over the measured
+ * `BB_TIP_POLLEN` table, with no other edit: `hiveTiltAngle` falls back to the timer's formula,
+ * `hive3dTick` runs instead of `hive3dJointTick`, and the HIVE3D lane proves the table under BOTH
+ * trays so the fallback stays live rather than rotting.
+ */
+export const BB3_HIVE_DYNAMIC = true;
 
 /**
  * CAD-DERIVED FIELD COLLIDERS (`docs/biobuzz/plan-3d.md` §8) vs. the Day 1 constants-built
@@ -1546,11 +1563,34 @@ export const BB3_HIVE_STOP_DEG = 29;
 export const BB3_HIVE_REST_W = 0.15;
 
 // ── BEGIN GENERATED: hive-calibrate ─────────────────────────────────────────────────────────
-// Written by `npm run hive-calibrate`. DO NOT HAND-EDIT the three values below — edit the
+// Written by `npm run hive-calibrate`. DO NOT HAND-EDIT the four values below — edit the
 // sweep, or the targets, and re-run. Everything outside these two markers is hand-written.
-// derivation: pending — `BB3_HIVE_DYNAMIC` is false until a sweep lands every target row.
+//
+// DERIVATION. Every row was WEIGHED on the real tray — staged against the back wall in a line
+//   per the field guide, four seconds to settle, the tray pinned at its stop so nothing tipped
+//   while it was being weighed — and its settled contents' torque about the pivot read off the
+//   bodies. One POLLEN is worth 909 of torque at the arm those rows settle at (8p minus 7p).
+//   The rows that must NOT tip topped out at 5635; the rows that MUST tip bottomed out at 6197;
+//   the threshold is that window's midpoint, 5916, i.e. ±0.31 element-weights of margin.
+//   At a stop the ballast and the detent are DEGENERATE (both are terms in that one threshold),
+//   so the lever arm was swept over w ∈ [-24, 0] and a 49/51 split taken: restoring
+//   2874, detent 3041. The damping was fitted by bisection against a REAL 8-POLLEN
+//   tip, stop to stop, at 4.00s against BB_TIP_SWING_S 4s.
+//   Rows, through the real step3d pipeline (MISS = an owner-measured row a torque model cannot
+//   reach at one nectar mass; see VALIDATION in the script for why that is expected):
+//     OK   7p+0n   expect NO TIP got NO TIP margin +0.31 element-weights  [field guide §12.3]
+//     OK   8p+0n   expect TIP    got TIP    margin +0.69 element-weights  [field guide §12.3]
+//     OK   2p+3n   expect NO TIP got NO TIP margin +0.75 element-weights  [field guide §12.3]
+//     OK   3p+3n   expect TIP    got TIP    margin +0.31 element-weights  [field guide §12.3]
+//     MISS 6p+1n   expect NO TIP got TIP    margin -0.24 element-weights  [owner 2026-09-12 (1n needs 7p)]
+//     OK   7p+1n   expect TIP    got TIP    margin +1.24 element-weights  [owner 2026-09-12]
+//     MISS 5p+2n   expect NO TIP got TIP    margin -0.79 element-weights  [owner 2026-09-12 (2n needs 6p)]
+//     OK   6p+2n   expect TIP    got TIP    margin +1.79 element-weights  [owner 2026-09-12]
+//     OK   0p+4n   expect NO TIP got NO TIP margin +1.30 element-weights  [owner 2026-09-12 (4n needs 1p)]
+//     MISS 1p+4n   expect TIP    got NO TIP margin -0.24 element-weights  [owner 2026-09-12]
+//     OK   0p+5n   expect TIP    got TIP    margin +0.41 element-weights  [owner 2026-09-12 (5n tips alone)]
 export const BB3_HIVE_BALLAST = 6;
-export const BB3_HIVE_BALLAST_AT: readonly [number, number] = [8, -6];
-export const BB3_HIVE_DETENT = 900;
-export const BB3_HIVE_DAMPING = 1.7;
+export const BB3_HIVE_BALLAST_AT: readonly [number, number] = [0, -9.5];
+export const BB3_HIVE_DETENT = 3041;
+export const BB3_HIVE_DAMPING = 4.466;
 // ── END GENERATED: hive-calibrate ───────────────────────────────────────────────────────────

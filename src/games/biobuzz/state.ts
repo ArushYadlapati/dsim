@@ -159,6 +159,25 @@ export interface BbHiveState {
    * recorded before it existed, which reads as the nominal rate.
    */
   swingRate?: number;
+  /**
+   * THE TRAY'S LIVE TILT, radians about the world x axis — written ONLY by the 3D pipeline's
+   * readback when `BB3_HIVE_DYNAMIC` is on, and ABSENT everywhere else.
+   *
+   * Under the dynamic see-saw the tray's pose is a REVOLUTE JOINT's, not a timer's: nothing in
+   * the JSON can reproduce it, because it is the result of a solve over whatever is sitting in
+   * the cell. So it is serialised, rounded to 1e-4 like every other readback number, and
+   * `sim3d/hive3d.ts`'s `hiveTiltAngle` — the ONE authority both renderers read — returns it
+   * when it is there and computes the timer's own angle when it is not. A 2D world, a 2D-era
+   * replay and a kinematic-tray 3D world all fall into that second case unchanged.
+   *
+   * It is also what lets a CLIENT rebuild a prediction world with the tray seated where the
+   * server has it (`sim3d/predict.ts`), which a `tipping` countdown alone cannot do.
+   */
+  angle?: number;
+  /** the tray's live ANGULAR VELOCITY about the same axis (rad/s) — same rule as `angle`: the
+   * dynamic path writes it, everything else leaves it absent. A prediction world needs both to
+   * seat a tray that is mid-swing rather than at a stop. */
+  angVel?: number;
 }
 
 /**
@@ -274,6 +293,37 @@ export interface BiobuzzState {
    * staging, so `contents` is empty here and `spawn.ts` fills it.
    */
   hives: Record<Alliance, BbHiveState>;
+  /**
+   * **G409's TAG**: element id → the alliance whose HIVE spilled it, for as long as it is still
+   * falling out of a tipping CELL and has touched nothing but that tray.
+   *
+   * "A ROBOT may not catch SCORING ELEMENTS spilling from a TIPPED HIVE" (Table 10-4) — so the
+   * rule is about ONE MOMENT in one element's life, between leaving the cell and reaching
+   * whatever it reaches first, and nothing in the rest of the state records that moment.
+   * `sim3d/hive3d.ts` writes the tag the tick an element leaves the tipping cell, and
+   * `sim3d/step3d.ts` clears it on that element's FIRST non-tray contact, billing G409 if that
+   * contact was a ROBOT.
+   *
+   * ⚠️ **3D ONLY, AND ABSENT IN 2D, WHICH IS NOT AN OVERSIGHT.** The 2D pipeline's spill is
+   * `spillPoses` — a scatter of positions and velocities the tray HANDS to the tiles, with no
+   * flight against the structure and therefore no "first contact" to catch. Nothing there can
+   * answer the rule's question. `penalties.ts` reads this map and finds it absent under 2D, so
+   * the 2D pipeline is byte-identical, exactly as it is for `physics` itself.
+   */
+  spill?: Record<number, Alliance>;
+  /**
+   * **G417's CONTACT LIST**: robot ids that touched a HIVE's tray or frame HARD this tick, with
+   * the closing speed that made it count. Rebuilt from the 3D solve's own contact pairs every
+   * tick, so it is a transient read rather than a latch — the "once per MATCH per ROBOT" half of
+   * the rule lives in `bb.held[robot].g417billed`, where it always has.
+   *
+   * ⚠️ **3D ONLY, same rule as `spill`.** G417 has been OFF since 2026-09-13 because no robot in
+   * the 2D sim can move the HIVE, and a penalty that can only be suffered is worse than an
+   * unmodelled one (`penalties.ts`'s own comment). Under the DYNAMIC see-saw a robot CAN move
+   * it — the tray is a body a 29-in chassis reaches — so the rule comes back, for that pipeline
+   * only, driven by this list. A 2D world never writes it and never bills it.
+   */
+  hiveRam?: Record<number, number>;
   /** the four FLOWERS, in `BB_FLOWERS` order (F1…F4). A fixed-length tuple because there are
    * exactly four and the index IS the id everywhere else — a variable-length array would let
    * a bug produce a fifth flower that renders and scores. DRAFT. */

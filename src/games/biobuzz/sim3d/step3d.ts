@@ -10,7 +10,7 @@ import { BB_HALF_X, BB_HALF_Y } from '../config';
 import { engineFor, syncElements, syncRobots, applyHiveTilt, stepWorld3d, readback, containmentPass } from './engine';
 import { applyRobotWrench } from './robot3d';
 import { deriveTick } from './derive';
-import { hive3dTick } from './hive3d';
+import { hive3dJointTick, hive3dTick } from './hive3d';
 import { elements3dAimAndLaunch, elements3dCapture, elements3dHumanPlayer, elements3dPlaceAndRetrieve } from './elements3d';
 
 /**
@@ -125,6 +125,7 @@ export function step3d(world: World, dt: number, commands: Map<number, RobotComm
     elements3dPlaceAndRetrieve(world, actual, enabled);
     elements3dHumanPlayer(world, actual, enabled);
     hive3dTick(world, dt);
+    hive3dJointTick(world, engine);
   }
 
   // 12. penalties.

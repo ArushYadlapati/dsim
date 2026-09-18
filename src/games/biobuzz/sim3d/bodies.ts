@@ -9,8 +9,13 @@ import {
   BB3_FIELD_COLLIDERS,
   BB3_HIVE_ARM,
   BB3_HIVE_CELL,
+  BB3_HIVE_BALLAST,
+  BB3_HIVE_BALLAST_AT,
   BB3_HIVE_CELL_WALL,
+  BB3_HIVE_DAMPING,
+  BB3_HIVE_DYNAMIC,
   BB3_HIVE_PIVOT_Z,
+  BB3_HIVE_TRAY_MASS,
   BB3_NECTAR_MASS_RATIO,
   BB3_WALL_H,
   BB_FLOWER_TOP_Z,
@@ -24,7 +29,7 @@ import {
 import { biobuzzColliders, BB_WALL_COUNT } from '../colliders';
 import { cadCellBox, cadStatics, cadTrayHulls, cadTrayRefTheta } from './fieldColliders';
 import { buildFlowerTubes3d } from './flowerTube';
-import { yawQuat } from './math3';
+import { tiltQuatX, yawQuat } from './math3';
 
 /**
  * TEST-ONLY OVERRIDE for `BB3_FIELD_COLLIDERS`, read by every CAD-vs-fallback branch in this
@@ -45,6 +50,42 @@ export function __setFieldCollidersOverrideForTests(value: boolean | null): void
 
 function useFieldColliders(): boolean {
   return fieldCollidersOverride ?? BB3_FIELD_COLLIDERS;
+}
+
+/**
+ * THE SAME SHAPE OF OVERRIDE FOR `BB3_HIVE_DYNAMIC`, and it exists for two callers that are not
+ * production: `scripts/hive-calibrate.ts`, which has to build a DYNAMIC tray in order to measure
+ * the thing that decides whether the constant may be true at all, and the HIVE3D smoke lane,
+ * which runs the load table under BOTH trays so the kinematic fallback stays proven whatever the
+ * constant says. `null` (the default) means "use the constant, as production does".
+ *
+ * ⚠️ AN ENGINE BUILT BEFORE THE SWITCH KEEPS THE TRAY IT WAS BUILT WITH — a Rapier body's type is
+ * fixed at creation. Set it BEFORE the world's first step, and reset it after; a caller that
+ * flips it mid-match gets the tray it started with and no error.
+ */
+let hiveDynamicOverride: boolean | null = null;
+
+export function __setHiveDynamicOverrideForTests(value: boolean | null): void {
+  hiveDynamicOverride = value;
+}
+
+/** is the DYNAMIC see-saw in force? The ONE reader — `bodies.ts` builds on it, `engine.ts`
+ * branches `applyHiveTilt` on it, `hive3d.ts` picks its bookkeeping pass with it. */
+export function useHiveDynamic(): boolean {
+  return hiveDynamicOverride ?? BB3_HIVE_DYNAMIC;
+}
+
+/**
+ * CALIBRATION-ONLY BALLAST OVERRIDE, the third and last of these.
+ * `scripts/hive-calibrate.ts` sweeps the ballast's LEVER ARM — how far below the pivot the mass
+ * sits — because that is what sets the tray's restoring torque, and the restoring torque is one
+ * of the two terms in the threshold the load table has to land between. It cannot do that by
+ * rewriting `config.ts` between candidates: the module is already loaded. `null` is production.
+ */
+let ballastOverride: { mass: number; w: number } | null = null;
+
+export function __setBallastForCalibration(value: { mass: number; w: number } | null): void {
+  ballastOverride = value;
 }
 
 /**
@@ -114,6 +155,33 @@ const FRAME_COUNT = 2;
  * are: a thin static under a fast-falling sphere can tunnel through in one 1/60s step without
  * CCD, and the floor is the one static every dynamic body rests against every tick. */
 const FLOOR_HALF_T = 10;
+
+/**
+ * ⚠️ **THE TRAY AND ITS OWN FRAME DO NOT COLLIDE**, and under the DYNAMIC see-saw that is the
+ * difference between a hive that tips and one that does not.
+ *
+ * The CAD tray's `bar_<side>` hull IS the Basket Base Tube, which runs THROUGH the pivot, and the
+ * frame's own pivot brackets, axle holders, dampers and Blumotion units are wrapped around that
+ * same shaft. Their hulls necessarily overlap: that is what a bearing looks like to a convex
+ * hull. A KINEMATIC tray does not care — it is not solved — so this cost nothing until Day 2.
+ * A DYNAMIC tray is WEDGED: measured, a tray with 8 POLLEN in the up cell and the load beating
+ * the hold by 16 % rotated 1.14° and stopped dead, for four hundred ticks, with the detent
+ * correctly released the whole time.
+ *
+ * The physical contact the exclusion removes is not lost: the damper meeting the frame at each
+ * end of the swing is exactly what the revolute joint's ±30° LIMITS are, and §10.5.1 B scores
+ * the TIP on it. Everything else — robots, elements, the flowers — still meets both.
+ *
+ * Rapier's rule: two colliders interact iff `(A.memberships & B.filter)` and
+ * `(B.memberships & A.filter)` are both non-zero, packed as `(memberships << 16) | filter`.
+ * Everything not named here keeps the default `0xFFFF / 0xFFFF` and therefore meets both.
+ */
+const GROUP_TRAY_BIT = 0x0001;
+const GROUP_FRAME_BIT = 0x0002;
+/** the hive TRAY's colliders: they meet everything EXCEPT the frame. */
+export const GROUP_TRAY = (GROUP_TRAY_BIT << 16) | (0xffff & ~GROUP_FRAME_BIT);
+/** the hive FRAME's colliders: they meet everything EXCEPT the tray. */
+export const GROUP_FRAME = (GROUP_FRAME_BIT << 16) | (0xffff & ~GROUP_TRAY_BIT);
 
 /**
  * THE HIVE FRAME IS A REAL COLLIDER AGAIN (2026-09-18 CAD round 2).
@@ -222,7 +290,9 @@ export function buildStatics3d(
       const desc = RAPIER.ColliderDesc.convexHull(new Float32Array(s.points));
       if (!desc) continue; // a degenerate point set -- Rapier returns null rather than throwing
       const body = world3d.createRigidBody(RAPIER.RigidBodyDesc.fixed());
-      world3d.createCollider(desc.setFriction(wallFriction).setRestitution(0), body);
+      const built = desc.setFriction(wallFriction).setRestitution(0);
+      if (s.class === 'hive_frame') built.setCollisionGroups(GROUP_FRAME);
+      world3d.createCollider(built, body);
     }
   } else {
     // legacy Day 1 fallback, used only when `BB3_FIELD_COLLIDERS` is off or the collider file is
@@ -234,7 +304,10 @@ export function buildStatics3d(
         RAPIER.RigidBodyDesc.fixed().setTranslation(s.tx, s.ty, half).setRotation(yawQuat(s.rot)),
       );
       world3d.createCollider(
-        RAPIER.ColliderDesc.cuboid(s.hx, s.hy, half).setFriction(wallFriction).setRestitution(0),
+        RAPIER.ColliderDesc.cuboid(s.hx, s.hy, half)
+          .setFriction(wallFriction)
+          .setRestitution(0)
+          .setCollisionGroups(GROUP_FRAME),
         body,
       );
     }
@@ -396,17 +469,116 @@ export const HIVE_BRACKET_T = 1.5;
  * agrees with the manual to 0.13 in and its down-cell floor is 31.981, so `BB_HIVE_BOTTOM_Z` is
  * the CAD figure and the fallback's bracket lands where the CAD tray's own floor does.
  */
+/**
+ * THE TRAY'S OWN CENTRE OF MASS, in its local (v, w) frame — `v = 0` by symmetry (two identical
+ * cells at ±`BB3_HIVE_ARM`), `w` the mid-height of a cell's own interior.
+ *
+ * ⚠️ **IT IS ABOVE THE PIVOT, AND THAT IS THE WHOLE OF THE BI-STABILITY.** A see-saw whose mass
+ * sits above its hinge has an UNSTABLE equilibrium at level and a stable one at each stop: tip
+ * it either way and its own weight carries it the rest of the way. That is what "bi-stable …
+ * holds its position until enough POLLEN or NECTAR are LAUNCHED into the upwards-facing CELL"
+ * (§9.6) describes, and it is a property of the real tray's shape rather than a term anyone
+ * added — the cells are two big boxes standing on a bar. `BB3_HIVE_BALLAST` then TUNES it,
+ * exactly as the field guide's ballast washers tune the real one.
+ */
+export function hiveTrayComW(alliance: Alliance): number {
+  const north = hiveCellLocalBox(1, alliance);
+  const south = hiveCellLocalBox(-1, alliance);
+  return (north.wMin + north.wMax + south.wMin + south.wMax) / 4;
+}
+
+/** the tray's total mass and the combined centre of mass of tray + ballast, in the local frame.
+ * ONE pair, because Rapier takes one mass and one CoM per body: the ballast is not a second body
+ * a joint has to carry, it is a term in this average. */
+export function hiveTrayMassProps(alliance: Alliance): { mass: number; comW: number; inertia: number } {
+  const ballast = ballastOverride ?? { mass: BB3_HIVE_BALLAST, w: BB3_HIVE_BALLAST_AT[1] };
+  const mass = BB3_HIVE_TRAY_MASS + ballast.mass;
+  const comW = (BB3_HIVE_TRAY_MASS * hiveTrayComW(alliance) + ballast.mass * ballast.w) / mass;
+  // APPROX, and a point-mass model on purpose: the two cells are what the tray's inertia is, and
+  // they sit at ±ARM from the axis. `setAdditionalMassProperties` wants the inertia about the
+  // CENTRE OF MASS, which is on the axis, so the arm is the whole of it. The y and z entries are
+  // the same number and are never exercised — the revolute joint removes both of those freedoms.
+  const inertia = mass * BB3_HIVE_ARM * BB3_HIVE_ARM;
+  return { mass, comW, inertia };
+}
+
 export function buildHiveTray3d(
   RAPIER: Rapier3d,
   world3d: InstanceType<Rapier3d['World']>,
   alliance: Alliance,
-): InstanceType<Rapier3d['RigidBody']> {
+  startTheta: number,
+): { body: InstanceType<Rapier3d['RigidBody']>; joint: InstanceType<Rapier3d['ImpulseJoint']> | null } {
   const px = hivePivotX(alliance);
+  /**
+   * ── THE DYNAMIC SEE-SAW (plan §3.6), behind `BB3_HIVE_DYNAMIC` ────────────────────────────
+   * One DYNAMIC body at the pivot on a REVOLUTE JOINT about the tray's own x axis, limited to
+   * ±`BB_HIVE_TILT_DEG` (the damper stops, §9.6 / Fig 9-9). The second body the joint needs is a
+   * FIXED anchor at the same point — Rapier has no "joint to the world", and an anchor body with
+   * no collider costs nothing.
+   *
+   * ⚠️ `JointData.limits` DOES NOT CLAMP — the limits have to be set on the JOINT INSTANCE that
+   * `createImpulseJoint` hands back (`setLimits`, documented in `docs/area/biobuzz.md` as a
+   * shipped bug and re-confirmed by the Day 0 spike). Nothing else in this file can express the
+   * stops, so a silently-unlimited joint is a tray that spins.
+   *
+   * With `BB3_HIVE_DYNAMIC` off this is the Day 1 KINEMATIC body, swung by the shared timer, and
+   * the joint is `null`.
+   */
+  if (useHiveDynamic()) {
+    /**
+     * ⚠️ **THE MASS GOES ON THE DESC, NOT ON THE BODY**, and this is a shipped-once bug with a
+     * very quiet signature. `RigidBody.setAdditionalMassProperties` called BEFORE the colliders
+     * exist is discarded by the mass recomputation `createCollider` triggers, so the tray came
+     * out with `body.mass() === 0` — a massless dynamic body, which gravity cannot accelerate
+     * and a joint simply drags. Measured: with 8 POLLEN in the up cell and the load out-torquing
+     * the hold by 16 %, the tray moved 1.14° and stopped, every row of the load table read NO
+     * TIP, and the damping bisection reported "never reached the far stop" at every value from 0
+     * to 60. Everything looked like a detent that would not release, and the detent was fine.
+     *
+     * `RigidBodyDesc.setAdditionalMassProperties` is carried into the body at creation and
+     * survives every later collider, which is why the desc is the documented place for it.
+     */
+    const props = hiveTrayMassProps(alliance);
+    const body = world3d.createRigidBody(
+      RAPIER.RigidBodyDesc.dynamic()
+        .setTranslation(px, 0, BB3_HIVE_PIVOT_Z)
+        .setRotation(tiltQuatX(startTheta))
+        .setAngularDamping(BB3_HIVE_DAMPING)
+        .setCcdEnabled(false)
+        .setAdditionalMassProperties(
+          props.mass,
+          { x: 0, y: 0, z: props.comW },
+          { x: props.inertia, y: props.inertia, z: props.inertia },
+          { x: 0, y: 0, z: 0, w: 1 },
+        ),
+    );
+    buildTrayColliders(RAPIER, world3d, body, alliance);
+    const anchor = world3d.createRigidBody(
+      RAPIER.RigidBodyDesc.fixed().setTranslation(px, 0, BB3_HIVE_PIVOT_Z),
+    );
+    const data = RAPIER.JointData.revolute({ x: 0, y: 0, z: 0 }, { x: 0, y: 0, z: 0 }, { x: 1, y: 0, z: 0 });
+    const joint = world3d.createImpulseJoint(data, anchor, body, true);
+    const lim = (BB_HIVE_TILT_DEG * Math.PI) / 180;
+    const unit = joint as unknown as { setLimits?: (min: number, max: number) => void };
+    if (typeof unit.setLimits === 'function') unit.setLimits(-lim, lim);
+    return { body, joint };
+  }
+
   const body = world3d.createRigidBody(
     RAPIER.RigidBodyDesc.kinematicPositionBased()
       .setTranslation(px, 0, BB3_HIVE_PIVOT_Z)
       .setRotation({ x: 0, y: 0, z: 0, w: 1 }),
   );
+  buildTrayColliders(RAPIER, world3d, body, alliance);
+  return { body, joint: null };
+}
+
+function buildTrayColliders(
+  RAPIER: Rapier3d,
+  world3d: InstanceType<Rapier3d['World']>,
+  body: InstanceType<Rapier3d['RigidBody']>,
+  alliance: Alliance,
+): void {
   // rotation is set through `setNextKinematicRotation` immediately after creation (engine.ts),
   // not baked into the desc, so the very first sync's "did the pose change outside the solve"
   // check has a real previous value to compare against.
@@ -432,6 +604,17 @@ export function buildHiveTray3d(
   // wander back out the always-open mouth.
   const TRAY_RESTITUTION_COMBINE = RAPIER.CoefficientCombineRule.Min;
 
+  /**
+   * ⚠️ EVERY TRAY COLLIDER CARRIES **ZERO DENSITY**, and that matters only under the DYNAMIC
+   * tray -- where it matters completely. A Rapier collider's default density is 1, so twelve
+   * facet slabs and a bar would hand this body several hundred pounds of mass on top of the
+   * `BB3_HIVE_TRAY_MASS` the calibration was run against, from a number nobody chose. The mass
+   * comes ENTIRELY from `setAdditionalMassProperties` (`hiveTrayMassProps`), the same discipline
+   * `syncRobot` follows for a chassis. Harmless on the kinematic path, where mass is ignored.
+   */
+  const zeroDensity = <T extends { setDensity(d: number): T; setCollisionGroups(g: number): T }>(d: T): T =>
+    d.setDensity(0).setCollisionGroups(GROUP_TRAY);
+
   /** per-hull surface, by the class `convert.py` stamped on it. The FLOOR is the one an element
    * rests on and rolls along, so it keeps the higher friction; the BACK is a dead stop (a POLLEN
    * meeting a padded cell wall, not a superball -- measured: at 0.2 restitution a shot that
@@ -450,14 +633,14 @@ export function buildHiveTray3d(
       const desc = RAPIER.ColliderDesc.convexHull(new Float32Array(h.points));
       if (!desc) continue; // degenerate point set -- Rapier returns null rather than throwing
       world3d.createCollider(
-        desc
+        zeroDensity(desc)
           .setFriction(trayFriction(h.name))
           .setRestitution(trayRestitution(h.name))
           .setRestitutionCombineRule(TRAY_RESTITUTION_COMBINE),
         body,
       );
     }
-    return body;
+    return;
   }
 
   // THE FALLBACK PATH (CAD off, or an empty collider file): the Day 1 thin-walled box per cell --
@@ -465,10 +648,12 @@ export function buildHiveTray3d(
   for (const sideSign of [1, -1] as const) {
     const box = hiveCellLocalBox(sideSign, alliance);
     const cuboid = (xLo: number, xHi: number, vLo: number, vHi: number, wLo: number, wHi: number) =>
-      RAPIER.ColliderDesc.cuboid((xHi - xLo) / 2, (vHi - vLo) / 2, (wHi - wLo) / 2).setTranslation(
-        (xLo + xHi) / 2,
-        (vLo + vHi) / 2,
-        (wLo + wHi) / 2,
+      zeroDensity(
+        RAPIER.ColliderDesc.cuboid((xHi - xLo) / 2, (vHi - vLo) / 2, (wHi - wLo) / 2).setTranslation(
+          (xLo + xHi) / 2,
+          (vLo + vHi) / 2,
+          (wLo + wHi) / 2,
+        ),
       );
     world3d.createCollider(
       cuboid(-box.xHalf, box.xHalf, box.vMin, box.vMax, box.wMin, box.wMin + 2 * wallHalf)
@@ -499,7 +684,6 @@ export function buildHiveTray3d(
       );
     }
   }
-  return body;
 }
 
 // ---- ROBOTS -----------------------------------------------------------------

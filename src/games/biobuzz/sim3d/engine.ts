@@ -78,11 +78,13 @@ import {
   elementMass,
   hiveTrayRefTheta,
   robotHeightIn,
+  useHiveDynamic,
   ELEMENT_FRICTION,
   ELEMENT_RESTITUTION,
   ELEMENT_ROLL_DAMP,
 } from './bodies';
 import { hyp3, QUAT_IDENTITY, round4, yawQuat, yawOfQuat } from './math3';
+import { datan2 } from '../../../math';
 
 /** the LAST JSON a robot body was synced to -- what `syncRobot` diffs the CURRENT `RobotState`
  * against to decide "did something outside the solve move this" (see plan section 3.2). */
@@ -116,6 +118,15 @@ export interface Engine3d {
   robots: Map<number, InstanceType<Rapier3d['RigidBody']>>;
   elements: Map<number, InstanceType<Rapier3d['RigidBody']>>;
   hiveTrays: Record<Alliance, InstanceType<Rapier3d['RigidBody']>>;
+  /** each tray's REVOLUTE JOINT to its fixed anchor, or `null` on the Day 1 kinematic path
+   * (`BB3_HIVE_DYNAMIC` off). Held so the limits can be re-read and so a future motor-based
+   * brake has somewhere to live; the detent itself does not need it (see `applyHiveTilt`). */
+  hiveJoints: Record<Alliance, InstanceType<Rapier3d['ImpulseJoint']> | null>;
+  /** is each tray currently HELD at a stop by the detent? A per-engine cache, not state: it is
+   * recomputed from the torque balance every tick and read only for the "do not re-pin a body
+   * that is already exactly pinned" guard, which is what keeps a resting element from being
+   * re-woken 60 times a second. */
+  hiveHeld: Record<Alliance, boolean>;
   /** element id -> consecutive ticks under `BB3_REST_SPEED` (`derive.ts`'s cell-membership
    * timer). Reset to 0 the instant an element is faster than that, off by any writer. */
   restTicks: Map<number, number>;
@@ -159,15 +170,26 @@ function buildEngine(world: World): Engine3d {
   world3d.integrationParameters.contact_natural_frequency = PHYS_CONTACT_FREQ;
   world3d.integrationParameters.normalizedAllowedLinearError = PHYS_ALLOWED_ERROR;
   buildStatics3d(RAPIER, world3d, PHYS_WALL_FRICTION);
+  // THE TRAY IS BUILT AT THE POSE THE WORLD SAYS IT IS IN, not at level: a dynamic body created
+  // upright and then rotated into place is a body that falls for one tick, and an engine rebuilt
+  // mid-swing (a reconcile, a scene restart) has to resume the swing, not restart it.
+  const trayRed = buildHiveTray3d(RAPIER, world3d, 'red', hiveTiltAngle(world, 'red'));
+  const trayBlue = buildHiveTray3d(RAPIER, world3d, 'blue', hiveTiltAngle(world, 'blue'));
   const hiveTrays: Record<Alliance, InstanceType<Rapier3d['RigidBody']>> = {
-    red: buildHiveTray3d(RAPIER, world3d, 'red'),
-    blue: buildHiveTray3d(RAPIER, world3d, 'blue'),
+    red: trayRed.body,
+    blue: trayBlue.body,
+  };
+  const hiveJoints: Record<Alliance, InstanceType<Rapier3d['ImpulseJoint']> | null> = {
+    red: trayRed.joint,
+    blue: trayBlue.joint,
   };
   const engine: Engine3d = {
     world3d,
     robots: new Map(),
     elements: new Map(),
     hiveTrays,
+    hiveJoints,
+    hiveHeld: { red: true, blue: true },
     restTicks: new Map(),
     captureTicks: new Map(),
     lastRobot: new Map(),
@@ -427,7 +449,7 @@ export function syncElements(world: World, engine: Engine3d): void {
 }
 
 import { BB_HALF_X, BB_HALF_Y } from '../config';
-import { hiveTiltAngle } from './hive3d';
+import { hiveDetentHold, hiveTiltAngle } from './hive3d';
 import { tiltQuatX } from './math3';
 
 /**
@@ -449,10 +471,21 @@ import { tiltQuatX } from './math3';
  * comment for how the collider side of this was simplified to match.
  */
 export function applyHiveTilt(world: World, engine: Engine3d): void {
+  if (useHiveDynamic()) {
+    hiveDetentHold(world, engine);
+    return;
+  }
   for (const a of ['red', 'blue'] as const) {
     const theta = hiveTiltAngle(world, a) - hiveTrayRefTheta(a);
     engine.hiveTrays[a].setNextKinematicRotation(tiltQuatX(theta));
   }
+}
+
+/** the tray body's live tilt (rad) -- a pure x-axis rotation, since the revolute joint removes
+ * every other freedom, so the same one-term read `yawOfQuat` does for a chassis about z. */
+export function trayTilt(body: InstanceType<Rapier3d['RigidBody']>): number {
+  const q = body.rotation();
+  return 2 * datan2(q.x, q.w);
 }
 
 /** advance the persistent world one tick. A thin wrapper so `step3d.ts` never touches
@@ -502,6 +535,23 @@ export function readback(world: World, engine: Engine3d): void {
       vz: r.vz,
       angVel: r.angVel,
     });
+  }
+  /**
+   * THE TRAY'S OWN READBACK (Day 2). Under the DYNAMIC see-saw the tray is a solved body like any
+   * other, so its pose is JSON: `hives[a].angle` and `angVel`, rounded to 1e-4 like everything
+   * else. `hiveTiltAngle` reads that field back and is therefore reading the joint.
+   *
+   * Absent on the kinematic path -- deliberately, and it is what makes `hiveTiltAngle`'s fallback
+   * exact rather than approximate: a kinematic tray's angle is EXACTLY what the timer says, so
+   * serialising a rounded copy of it would only introduce a discrepancy with the 2D renderer,
+   * which computes the same formula from `tipping`.
+   */
+  if (useHiveDynamic() && world.biobuzz) {
+    for (const a of ['red', 'blue'] as const) {
+      const body = engine.hiveTrays[a];
+      world.biobuzz.hives[a].angle = round4(trayTilt(body));
+      world.biobuzz.hives[a].angVel = round4(body.angvel().x);
+    }
   }
   for (const b of world.balls) {
     const body = engine.elements.get(b.id);
