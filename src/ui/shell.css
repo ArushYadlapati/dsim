@@ -3285,6 +3285,64 @@ tr.lb-detail td {
   line-height: 1.45;
   color: var(--ds-mut);
 }
+/* ---- the export menu's two PICKERS (view, camera) ---------------------
+   `docs/roadmap.md` item 2: the menu now chooses what the video is OF (2D map or the 3D
+   scene, and from which camera) before it chooses what FILE to write it to. A compact
+   segmented row rather than `.ds-opts` tiles: the popup is 340px wide and an option tile is
+   a card — three of them would push the format list, which is the thing you came here for,
+   off the bottom of the menu. */
+.ds-dl-row {
+  display: flex;
+  align-items: center;
+  gap: var(--ds-s-2);
+}
+.ds-dl-row > .rl {
+  flex: 0 0 auto;
+  font-family: var(--ds-font-mono);
+  font-size: var(--ds-t-xs);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--ds-mut);
+}
+.ds-dl-seg {
+  display: flex;
+  flex: 1 1 auto;
+  gap: var(--ds-s-1);
+  justify-content: flex-end;
+}
+.ds-dl-seg button {
+  font: inherit;
+  font-size: var(--ds-t-sm);
+  font-weight: 600;
+  padding: var(--ds-s-1) var(--ds-s-2);
+  border: 1px solid var(--ds-line);
+  border-radius: var(--ds-round-sm);
+  background: var(--ds-panel);
+  color: var(--ds-mut);
+  cursor: pointer;
+  transition: transform 0.06s ease, color 0.15s, border-color 0.15s, background 0.15s;
+}
+.ds-dl-seg button:hover {
+  color: var(--ds-ink);
+  border-color: color-mix(in srgb, var(--ds-accent) 50%, var(--ds-line));
+}
+.ds-dl-seg button:active {
+  transform: translateY(1px);
+}
+.ds-dl-seg button:focus-visible {
+  outline: 2px solid var(--ds-accent);
+  outline-offset: 2px;
+}
+.ds-dl-seg button.on {
+  color: var(--ds-accent-ink);
+  background: var(--ds-accent);
+  border-color: var(--ds-accent);
+}
+.ds-dl-seg button:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
 .ds-dl-note {
   margin: 0;
   padding-top: 8px;
