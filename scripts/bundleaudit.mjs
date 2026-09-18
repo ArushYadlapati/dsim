@@ -128,10 +128,17 @@ const fmtKB = (bytes) => `${(bytes / 1000).toFixed(2)} KB`;
  *              compat` chunk). Present in this build BECAUSE this lane's `GameView`/`game.ts`
  *              wiring is what makes `initPhysics3d()` reachable at all — before it, nothing
  *              called it and the chunk did not exist. ≈ 1.09 MB, exactly the plan's estimate.
- *   scene      135.77 KB — `dist/assets/renderScene-*.js` (Lane B's Three.js renderer). Well
- *              under the §2.5 spec ceiling of 250 KB; the ceiling is kept as `budgetCeiling`
- *              below for context, but the RATCHET binds to the measurement, same as every
- *              other route — a budget is not a target.
+ *   scene      182.01 KB — `dist/assets/renderScene-*.js` (Lane B's Three.js renderer). RAISED
+ *              from 147.92 KB (2026-09-17 fidelity pass) by the CAD field switch-over
+ *              (`docs/biobuzz/plan-3d.md` §8): `scene/renderField.ts` now imports
+ *              `renderFieldGlb.ts`, which pulls in three's `GLTFLoader` and the meshopt
+ *              `MeshoptDecoder` to read `field.glb`/`field-low.glb` (`EXT_meshopt_compression`,
+ *              `public/models/biobuzz/README.md`) — both are still inside the SAME lazily-
+ *              loaded `scene` chunk, never the main bundle (this file's whole reason to exist:
+ *              a 2D-view player must not pay for them). Still well under the §2.5 spec ceiling
+ *              of 250 KB; the ceiling is kept as `budgetCeiling` below for context, but the
+ *              RATCHET binds to the measurement, same as every other route — a budget is not a
+ *              target.
  * `other` has no route in a healthy build (all four chunks above account for every `.js`/
  * `.wasm` file) — baseline near zero, so anything landing here at all is worth a look.
  *
@@ -142,7 +149,7 @@ const BASELINE = {
   main: { gzip: 904.4 * 1000 },
   hostWorker: { gzip: 699.38 * 1000 },
   physics3d: { gzip: 1089.27 * 1000 },
-  scene: { gzip: 135.77 * 1000, budgetCeiling: 250 * 1000 },
+  scene: { gzip: 182.01 * 1000, budgetCeiling: 250 * 1000 },
   other: { gzip: 1 * 1000 },
 };
 

@@ -1,10 +1,65 @@
 import * as THREE from 'three';
 import type { GameScene, GameSceneFactory, SceneFrame } from '../../module';
 import type { World } from '../../../types';
+import { BB_HALF_X } from '../config';
 import { buildBiobuzzField, updateBiobuzzField, type BbFieldHandles } from './renderField';
 import { buildBiobuzzElements, updateBiobuzzElements, type BbElements } from './renderElements';
 import { buildBiobuzzRobots, updateBiobuzzRobots, type BbRobots } from './renderRobots';
 import { createCameras, type BbCameras } from './renderCameras';
+
+/**
+ * GRAPHICS SETTINGS — the one object every quality-dependent feature reads (Phase 2 brief).
+ * Day 1/2 has no settings UI yet, so this is a plain module constant at sensible defaults (the
+ * plan doc's "Medium" tier); the Day 3 Graphics section replaces the literal with a value read
+ * from `localStorage`/`GameSettings` without touching any of this file's call sites.
+ */
+export interface SceneQuality {
+  /** shadow map on/off — the single most expensive toggle (an extra depth pass). */
+  shadows: boolean;
+  /** the `DirectionalLight` shadow map's square resolution. */
+  shadowMapSize: number;
+  /** which GLB LOD `buildBiobuzzField` requests (`docs/biobuzz/plan-3d.md` §8's two detail
+   * levels, `field.glb` / `field-low.glb`) — 'low' when `frame.camera === 'overhead'` on a
+   * phone-sized viewport is a reasonable Day 3 wiring, left for that pass; this field just makes
+   * the choice selectable today. Has no effect on the constants-built fallback. */
+  meshDetail: 'high' | 'low';
+}
+export const QUALITY: SceneQuality = { shadows: true, shadowMapSize: 2048, meshDetail: 'high' };
+
+/** `castShadow`/`receiveShadow`, set ONCE after the static field/element/robot meshes exist —
+ * not per-object at construction, because a GLB-backed field builder (plan-3d.md §8) returns the
+ * same `BbFieldHandles` shape but should not have to know this scene's shadow policy itself. The
+ * floor and the hive trays/frames RECEIVE (things sit and drive on them); robots, the hive
+ * frames/trays and the flowers CAST (the shapes plan-3d.md's Phase-2 brief lists) — the ground
+ * pollen/nectar `InstancedMesh`es also cast, since `InstancedMesh` supports it directly. */
+function applyShadowFlags(field: BbFieldHandles, elements: BbElements, robots: BbRobots): void {
+  field.floor.receiveShadow = true;
+  field.walls.traverse((o) => {
+    if ((o as THREE.Mesh).isMesh) {
+      o.castShadow = true;
+      o.receiveShadow = true;
+    }
+  });
+  for (const a of ['red', 'blue'] as const) {
+    field.hives[a].traverse((o) => {
+      if ((o as THREE.Mesh).isMesh) {
+        o.castShadow = true;
+        o.receiveShadow = true;
+      }
+    });
+  }
+  for (const f of field.flowers) {
+    f.traverse((o) => {
+      if ((o as THREE.Mesh).isMesh) o.castShadow = true;
+    });
+  }
+  elements.pollen.castShadow = true;
+  elements.nectar.castShadow = true;
+  // robots are built/rebuilt lazily, one group per spec (`renderRobots.ts`'s `specKey`), on a
+  // world that has not necessarily spawned any yet at scene construction — `buildRobotGroup`
+  // itself sets `castShadow` on every mesh it creates, so there is nothing to do here.
+  void robots;
+}
 
 /**
  * BIOBUZZ 3D SCENE — the lazily loaded renderer chunk (Day 1, `docs/biobuzz/plan-3d.md` §2.3,
@@ -80,24 +135,50 @@ class BiobuzzScene implements GameScene {
   private readonly elements: BbElements;
   private readonly robots: BbRobots;
 
-  constructor(canvas: HTMLCanvasElement) {
+  constructor(canvas: HTMLCanvasElement, field: BbFieldHandles) {
     this.element = canvas;
     this.renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: false, powerPreference: 'high-performance' });
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
+    // FIDELITY PASS (plan-3d.md §4.4): filmic tone mapping so the key light's highlights roll
+    // off instead of clipping, and a shadow map so the field reads as one lit scene rather than
+    // flat-shaded shapes. `SceneQuality` (below) is the one place a future graphics-settings
+    // panel toggles these — defaults are the "Medium" tier the plan doc's Day 3 section expects.
+    this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
+    this.renderer.toneMappingExposure = 1.0;
+    this.renderer.shadowMap.enabled = QUALITY.shadows;
+    this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
     this.scene.background = new THREE.Color(readBackdropColor());
 
     const hemi = new THREE.HemisphereLight(0xffffff, 0x404048, 1.1);
-    const sun = new THREE.DirectionalLight(0xffffff, 1.4);
+    const sun = new THREE.DirectionalLight(0xffffff, 1.6);
     sun.position.set(60, -80, 140);
-    sun.castShadow = false;
+    sun.castShadow = QUALITY.shadows;
+    if (QUALITY.shadows) {
+      sun.shadow.mapSize.set(QUALITY.shadowMapSize, QUALITY.shadowMapSize);
+      // the shadow camera is an orthographic frustum sized to cover the field plus the hive's
+      // height (43.95 pivot + a cell's own reach) — a frustum sized to the whole 260-in room
+      // would waste most of its depth/texel budget on backdrop that never casts anything.
+      const cam = sun.shadow.camera;
+      const half = BB_HALF_X + 20;
+      cam.left = -half;
+      cam.right = half;
+      cam.top = half;
+      cam.bottom = -half;
+      cam.near = 1;
+      cam.far = 260;
+      cam.updateProjectionMatrix();
+      sun.shadow.bias = -0.0015;
+    }
     this.scene.add(hemi, sun);
 
-    this.field = buildBiobuzzField();
+    this.field = field;
     this.scene.add(this.field.group);
     this.elements = buildBiobuzzElements();
     this.scene.add(this.elements.group);
     this.robots = buildBiobuzzRobots();
     this.scene.add(this.robots.group);
+
+    applyShadowFlags(this.field, this.elements, this.robots);
 
     this.cameras = createCameras();
   }
@@ -127,14 +208,22 @@ class BiobuzzScene implements GameScene {
  * appends it. Requires WebGL2 — probed before anything else touches the canvas — so the caller
  * can fall back to the 2D view on a software renderer or an old browser without this module
  * having thrown mid-construction.
+ *
+ * ASYNC (the CAD switch-over, `docs/biobuzz/plan-3d.md` §8): `buildBiobuzzField` awaits the GLB
+ * (or falls back to the constants field on any failure, logging its own warning) BEFORE the
+ * `BiobuzzScene` is constructed, so the scene never exists half-built. `GameSceneFactory`'s
+ * return type already allows a `Promise<GameScene>` for exactly this; `game.ts`'s `syncScene`
+ * awaits the factory and calls `resize` before the first `render` (its own comment says so),
+ * so nothing on the controller side needed to change.
  */
-export const createBiobuzzScene: GameSceneFactory = (host: HTMLElement): GameScene => {
+export const createBiobuzzScene: GameSceneFactory = async (host: HTMLElement): Promise<GameScene> => {
   const canvas = document.createElement('canvas');
   canvas.style.display = 'block';
   canvas.style.width = '100%';
   canvas.style.height = '100%';
   const gl2 = canvas.getContext('webgl2');
   if (!gl2) throw new SceneUnsupportedError('WebGL2 unavailable');
+  const field = await buildBiobuzzField(QUALITY.meshDetail);
   host.appendChild(canvas);
-  return new BiobuzzScene(canvas);
+  return new BiobuzzScene(canvas, field);
 };

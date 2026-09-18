@@ -76,6 +76,7 @@ import {
   buildHiveTray3d,
   buildStatics3d,
   elementMass,
+  hiveTrayRefTheta,
   robotHeightIn,
   ELEMENT_FRICTION,
   ELEMENT_RESTITUTION,
@@ -456,10 +457,22 @@ import { tiltQuatX } from './math3';
  * (`BB3_HIVE_DYNAMIC = false`). Called every tick, unconditionally, before `world3d.step()`:
  * a position-based kinematic body only moves when told where to go NEXT, so this is not a
  * diffed sync like `syncRobot`/`syncElement`, it is the tray's whole reason for moving at all.
+ *
+ * SUBTRACTS `hiveTrayRefTheta(a)` FROM THE ABSOLUTE TILT -- 0 on the Day 1 fallback (a no-op),
+ * the CAD's own capture angle when `BB3_FIELD_COLLIDERS` is on: `bodies.ts`'s tray colliders are
+ * built at IDENTITY rotation with their RAW (as-captured) `(v, w)` as translation, so the BODY's
+ * own rotation is the ONLY place either the CAD's capture-tilt correction or the live swing
+ * happens. An earlier version left colliders at identity here and instead gave EACH one its own
+ * extra local rotation (undone on top by this same body rotation) -- that composition checked
+ * out by hand and against every geometry check, but measurably destabilized a KINEMATIC body:
+ * an element resting inches clear of every collider (confirmed by a direct point-containment
+ * query) got a several-hundred-in/s velocity on the very first tick, and it went away completely
+ * once no collider carried its own non-identity local rotation. See `buildHiveTray3d`'s own
+ * comment for how the collider side of this was simplified to match.
  */
 export function applyHiveTilt(world: World, engine: Engine3d): void {
   for (const a of ['red', 'blue'] as const) {
-    const theta = hiveTiltAngle(world, a);
+    const theta = hiveTiltAngle(world, a) - hiveTrayRefTheta(a);
     engine.hiveTrays[a].setNextKinematicRotation(tiltQuatX(theta));
   }
 }

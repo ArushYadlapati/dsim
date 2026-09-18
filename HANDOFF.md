@@ -1,6 +1,101 @@
+# HANDOFF — 2026-09-17, night (biobuzz-3d: Day 1 LANDED — 3D physics, 3D renderer, CAD field)
+
+**READ FIRST.** Branch **`biobuzz-3d`**, worktree `.claude/worktrees/biobuzz-3d`. Tree clean at the
+merge commit named in the log; every gate green at that commit: `build` · `server:check` · `docaudit`
+(CLAUDE.md 26,850 / 27,000 bytes) · `uiaudit` · `bundleaudit` · `npm test` (1798 shared + the
+BIOBUZZ suite incl. the SIM3D and RENDER lanes, count in the log). The owner play-tested the first
+3D view mid-day, found field parts misplaced and the graphics too plain, and ruled "the field should be
+CAD derived" — both are addressed below. Day 2 (spec §10) is next; nothing of it is started.
+
+## What Day 1 delivered (spec `docs/biobuzz/plan-3d.md` §10, all three lanes, merged)
+
+- **Seam** (`941a598`): `Physics` type; `World.biobuzz.physics` + `biobuzzPhysics()`; `step2d`/`step3d`
+  dispatch; `RobotState.z/vz`; `RobotSpec.heightIn` (+ the `coerceSpec` carry-across fix in
+  `src/sim/spawn.ts`); `GameSettings.practicePhysics` (default `'3d'`); `GameModule.scene` and the
+  `GameScene`/`SceneFrame` contract; `GameSimModule.bot?`/`physicsOptions`; `sim3d/engine.ts` loader
+  (`initPhysics3d()`, dynamic import of the wasm); `graphics/store.ts` view pref; `worldHash` mixes `r.z`.
+- **Lane A, sim** (`src/games/biobuzz/sim3d/`): persistent Rapier 3D world per `World` (WeakMap),
+  id-ordered bodies, sync-before/readback-after, robots on the SHARED wrench (parity 1.000 in open
+  field), elements with CCD, capture/launch/place/human player reusing the 2D bookkeeping (pure
+  extractions: `hiveTimerStep`, `bbHumanPlayerTick`, exported `placeInFlower`/`biobuzzStepMatch`),
+  KINEMATIC tray on the shared timer with PHYSICAL spill, `derive.ts` (contents/stacks/tags), containment
+  net with `containmentFixes === 0` asserted. SIM3D lane: 34+ checks incl. two-run hash and perf
+  (`step3d` 2v2 median ≈ 0 ms, p95 1 ms vs the 1.5 ms gate).
+- **Lane B, renderer** (`scene/render*.ts`, lazy chunk 182 KB gz of 250): field, robots generated from
+  spec (chamfered chassis, drivetrain wheels, sweepers, mechanisms, team sign), 56 instanced spheres
+  with rolling spin, driver-station + overhead cameras, ACES + sRGB, PCF-soft 2048 shadows, procedural
+  room. Geometry proven against `drawField.ts` with a side-by-side page (`scripts/scene-preview`, in-page
+  named-object check) — four real errors fixed (flower pipes sideways, up-cell 3 in high, wall
+  thickness, flower-parked element height); conventions (y direction, heading, alliance walls) were right.
+- **Lane C, client**: Practice setup gains **Physics 2D/3D** (`practicePhysics`) and **View 2D/3D**
+  (per device); `GameView` awaits `initPhysics3d()` before a 3D practice (fallback to 2D with an
+  event-log line); the scene mounts UNDER the 2D canvas (`renderer.ts` `overlayOnly`), created/disposed
+  live on view switch; `scripts/bundleaudit.mjs` ratchet (main, hostWorker, physics3d, scene).
+- **CAD field** (owner decision): `npm run field-cad` → `public/models/biobuzz/` (`field.glb` 359 KB br,
+  `field-low.glb` 242 KB, `field-colliders.json` 23 KB, `field-measurements.json`, README with source,
+  sha256 and node names). Scene draws the CAD walls, hive frames, trays and flowers over the procedural
+  tile/tape floor (constants fallback on any load failure). Physics: floor and walls analytic at the
+  CONSTANTS; tray cells sized from the CAD cell; flower supports CAD trimesh (`FIX_INTERNAL_EDGES`);
+  hive-frame legs/uprights EXCLUDED (their hulls are loose AABBs that sealed the drive-under). Twelve
+  probe points agree between the CAD and constants engines.
+- **Verified in the real app** (Physics 3D): drive, capture (HUD pips), a real parabolic shot, tray tip
+  with physical spill, View 2D↔3D mid-match, resize; console clean.
+
+## OPEN findings — owner ruling pending; MOVE NOTHING (also in the coordinator's memory)
+
+CAD vs constants: flower ring centres ~1.4 in off `BB_FLOWERS`/`BB_FLOWER_D` (pipe-centroid proxy;
+a bore fit would settle it); wall inner faces ±70.67 vs `BB_HALF_X` 72 (3D walls kept at 72 for
+parity with the 2D pipeline and the staging); hive up-cell opening [47.05, 65.65] vs `BB_HIVE_OPEN_Z`
+[53.5, 65.6] and down-cell lowest point 31.96 vs `BB_HIVE_BOTTOM_Z` 25.5 (one rigid bar cannot meet
+both manual figures; the CAD says 25.5 is not the tray floor). The measurements check prints all of
+them under wide, commented tolerances.
+
+## Next: Day 2 (spec §10)
+
+A: dynamic see-saw on a revolute joint + `scripts/hive-calibrate.ts` against the field-guide rows
+(`BB3_HIVE_DYNAMIC` flips to true; kinematic stays the fallback); flower TUBES (the CAD rings are
+excluded from the collider file because a hull of an annulus fills its hole — export ring trimeshes
+from `convert.py`); derived flower stacks by z; G409/G417 tags; Light/Full prediction worlds + Auto
+probe. B: reticle, HUD scrim, chase/orbit cameras, interpolation of balls and remotes (the scene
+ignores `frame.alpha` today), labels through the scene camera, theme change mid-scene (backdrop read
+once). C: `await initPhysics3d()` at server boot, `RoomConfig.physics`, `'bb3d'` cap gate, matchmaking
+`3d`, the `physics` migration, `costprobe` scenarios, replay header + re-sim check, LAN lazy init.
+Cleanups queued: move `sim3d/` behind `initPhysics3d()` (it is statically imported by `step.ts`, so
+the main chunk carries ≈ +4.5 KB gz); tight per-part hulls for the hive frame in `convert.py`; Aim
+Assist's landing prediction is an alignment gate under 3D; elements can marginally perturb a robot
+(collision groups); the GLB's tiles/tape node is unused (no per-region colour); courtesy note to FIRST
+(owner sends). Days 4-14: weigh a real element set (`BB3_ELEMENT_MASS` is APPROX).
+
+## Gotchas (new this day)
+
+- **Sonnet subagents obey the session's cwd over the prompt** when the Edit/Write tools refuse
+  cross-worktree paths: two of six lanes worked in the session's own worktree. State the path in every
+  command and check `git log` for where a commit landed. Lane worktrees shared ONE `node_modules`
+  through junctions (`New-Item -ItemType Junction`; remove with `cmd /c rmdir`, never `rm -rf`).
+- **Never route base64 image data through a tool call** (a `toDataURL` write blew the 64k output
+  limit twice). Describe screenshots; the browser pane is visible to the owner anyway.
+- **The in-app browser pane**: `requestAnimationFrame` only advances when a paint is forced
+  (alternate `wait` and `screenshot`); the pane is shared between concurrent agents (always
+  `tabs_create` and pass `tabId`); Enter does advance the countdown. Fastest way to drive the game
+  from a script: walk the React fiber from the canvas to `GameView`'s third ref (the `GameController`)
+  and edit `world` JSON directly — the next tick reconciles the bodies.
+- **Rapier 3D**: forces persist across steps (`resetForces`/`resetTorques` per tick); a collider's
+  `setTranslation` offset rotates with the BODY, so a per-collider rotation offset needs its
+  translation rotated too; `RigidBodyDesc.enabledRotations`; `TriMeshFlags.FIX_INTERNAL_EDGES`.
+- **CAD pipeline**: `BRepMesh_IncrementalMesh` caches on the shape (call `BRepTools.Clean_s`
+  first); flat STL normals block meshoptimizer's simplifier (drop normals, recompute in the loader);
+  GLTFLoader strips `/` from node names (use `userData.name`); `.cmd` shims cannot be `execFileSync`'d
+  on Windows (call `node <cli.js>`); the standalone `scene-preview` needed its own `vite.config.ts`
+  (`publicDir`) to serve `/models/biobuzz/*`.
+- Pre-existing: `uiaudit` `stale-component-index` after a merge — `npm run uiindex`; `smoke.ts` is 1798
+  checks, not the 1765 CLAUDE.md still says; a dev-only "Invalid hook call" cascade in `AdsProvider`
+  on cold loads (both physics; not investigated).
+
+---
+
 # HANDOFF — 2026-09-17, later (biobuzz-3d: Day 0 physics spike results)
 
-**READ FIRST.** Branch **`biobuzz-3d`**, worktree `.claude/worktrees/biobuzz-3d`. Tree is clean
+**(Previously READ FIRST.)** Branch **`biobuzz-3d`**, worktree `.claude/worktrees/biobuzz-3d`. Tree is clean
 except for the files this session adds/commits: `scripts/spike3d.ts` (new, throwaway CLI),
 `scripts/spike3d-browser/` (new, throwaway browser+Electron harness), `docs/biobuzz/spike3d-
 results.md` (new), this HANDOFF section, and `package.json`/`package-lock.json` (three new
