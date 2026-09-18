@@ -82,7 +82,7 @@ const ROUTE_META: Record<string, RouteMeta> = {
   },
   contributors: {
     title: 'Contributors',
-    description: 'The people who build DSIM.',
+    description: 'The people, sponsor and open-source projects behind DSIM.',
   },
   changelogs: {
     title: 'Changelog',

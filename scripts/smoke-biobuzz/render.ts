@@ -649,10 +649,14 @@ function graphicsChecks(check: Check, allFiles: string[]): void {
       check(`${e.id}: the picker states what the download costs`, h.bytes > 1e6 && h.bytes < 4e6 && /MB/.test(e.note), e.note);
     }
     check('an unknown environment id falls back to the room rather than throwing', environmentDef('nope' as never).id === 'room');
-    // THE CREDIT IS DERIVED, so a third HDRI cannot ship uncredited
+    // THE CREDIT IS DERIVED, so a third HDRI cannot ship uncredited. THIRD_PARTY now also
+    // carries code/font/CAD credits (Contributors page, "Third-party" section), so this
+    // checks that every HDRI has ITS row rather than that the two lists are the same length.
     check(
       'every fetched environment is on the Contributors page',
-      THIRD_PARTY.length === hdriEnvironments().length && THIRD_PARTY.every((t) => t.license === 'CC0 1.0' && t.credits.length > 0),
+      hdriEnvironments().every((e) =>
+        THIRD_PARTY.some((t) => t.name === e.name && t.license === 'CC0 1.0' && t.credits.length > 0),
+      ),
     );
   }
 
