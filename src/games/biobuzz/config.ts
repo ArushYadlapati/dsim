@@ -1762,16 +1762,13 @@ export const BB_AI_SLOW_FLOOR = 0.3;
 export const BB_AI_GRAB_TOL = 0.5;
 
 /**
- * How many DECISIONS a bot spends on one element before giving up on it, and how many it then
- * ignores it for.
+ * How many DECISIONS a bot ignores an element it has given up on.
  *
- * Some elements are genuinely unreachable — wedged in a corner behind the FLOWER foot, pinned
- * under the HIVE frame bar, resting against a chassis. Nothing in a position read says which, so
- * the bot finds out the only way it can: it tries, and if the hopper has not grown by the time
- * the patience runs out it goes and does something else. Without this the nearest-element rule is
- * a trap — the unreachable element stays the nearest one forever. APPROX.
+ * A COOLDOWN rather than a permanent ban, because the field moves: a spill, a shove or the
+ * opponent driving through can free what was wedged. How LONG a bot tries before giving up is a
+ * TIER knob (`BbAiTierSpec.patience`) — it is the most expensive habit a weak driver has — but
+ * how long it then stays away is the same for everyone. APPROX.
  */
-export const BB_AI_TARGET_PATIENCE = 40;
 export const BB_AI_TARGET_COOLDOWN = 120;
 
 /**

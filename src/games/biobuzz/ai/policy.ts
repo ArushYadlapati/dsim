@@ -111,8 +111,9 @@ import { bbTierSpec, type BbAiTierSpec } from './tiers';
  * equals `c`.
  */
 
-/** the modes, in the order the decision considers them. */
-type BbAiMode = 'escape' | 'park' | 'place' | 'score' | 'defend' | 'collect';
+/** the modes, in the order the decision considers them. (ESCAPE is not one: it returns before
+ * the mode is chosen, because a bot backing out of something is not doing a job.) */
+type BbAiMode = 'park' | 'place' | 'score' | 'defend' | 'collect';
 
 /** one bot's private memory — the thing that must never be on the `World`. */
 interface BbBotMemory {
@@ -122,7 +123,6 @@ interface BbBotMemory {
   /** stagger, so two seats do not decide on the same tick. */
   phase: number;
   first: boolean;
-  mode: BbAiMode;
   /** consecutive decisions spent commanding drive while barely moving. */
   stuck: number;
   /** decisions of reverse-and-turn left to spend. */
@@ -206,7 +206,6 @@ export function createBiobuzzBot(world: World, robotId: number, tier: string, se
     last: ZERO,
     phase: ((robotId % BB_AI_DECIDE_TICKS) + BB_AI_DECIDE_TICKS) % BB_AI_DECIDE_TICKS,
     first: true,
-    mode: 'collect',
     stuck: 0,
     escape: 0,
     leaning: 0,
@@ -344,7 +343,6 @@ function decideCommand(world: World, r: RobotState, t: BbAiTierSpec, mem: BbBotM
   else if (ball !== null) mode = 'collect';
   else if (t.defends && r.hopper.length === 0) mode = 'defend';
   else mode = 'collect';
-  mem.mode = mode;
   // the patience clock, which only runs while the bot is actually trying to pick something up
   trackTarget(world, mem, t, r, ball, mode === 'collect');
 
@@ -946,12 +944,12 @@ function nearestFlower(world: World, bb: BiobuzzState, r: RobotState, auto: bool
  * bug: `collectRoute` drives to it, and `nearestElement` asks whether it is somewhere a chassis
  * can legally be before it picks the element at all.
  */
-function approach(r: RobotState, at: Vec2): { edge: BbEdge; heading: number; goal: Vec2 } {
+function approach(r: RobotState, at: Vec2): { heading: number; goal: Vec2 } {
   const edge = bestMouthEdge(r, at);
   const bearing = datan2(at.y - r.pos.y, at.x - r.pos.x);
   const heading = wrapAngle(bearing - EDGE_ANGLE[edge]);
   const off = rot(mouthCentre(r, edge), heading);
-  return { edge, heading, goal: { x: at.x - off.x, y: at.y - off.y } };
+  return { heading, goal: { x: at.x - off.x, y: at.y - off.y } };
 }
 
 /** which mounted intake edge is the cheapest to bring onto `at` — the one whose required heading

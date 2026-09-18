@@ -78,8 +78,8 @@ export interface BbAiTierSpec {
    * when it has nothing of its own to do? */
   defends: boolean;
   /**
-   * How many DECISIONS the bot spends on one element before giving up on it and looking
-   * elsewhere (`BB_AI_TARGET_PATIENCE` is the shape; this is the per-tier number).
+   * How many DECISIONS the bot spends trying to collect, with the HOPPER not growing, before it
+   * writes the element it is going for (and its neighbours) off for `BB_AI_TARGET_COOLDOWN`.
    *
    * The single most EXPENSIVE habit a weak driver has, and the reason it is a tier knob rather
    * than one constant: some elements are unreachable, nothing a position read says which, and a
