@@ -4,8 +4,8 @@ import { createBiobuzzWorld } from '../../src/games/biobuzz/spawn';
 import { biobuzzPhysics } from '../../src/games/biobuzz/state';
 import { biobuzzStep } from '../../src/games/biobuzz/step';
 import { step3d } from '../../src/games/biobuzz/sim3d/step3d';
-import { engineFor } from '../../src/games/biobuzz/sim3d/engine';
-import { fieldColliders3d } from '../../src/games/biobuzz/sim3d/fieldColliders';
+import { engineFor } from '../../src/games/biobuzz/sim3d/engineImpl';
+import { cadTrayRefTheta, fieldColliders3d } from '../../src/games/biobuzz/sim3d/fieldColliders';
 import { hiveCellLocalBox, hivePivotX, hiveTrayRefTheta, __setFieldCollidersOverrideForTests } from '../../src/games/biobuzz/sim3d/bodies';
 import { hiveTiltAngle } from '../../src/games/biobuzz/sim3d/hive3d';
 import { rotate2 } from '../../src/games/biobuzz/sim3d/math3';
@@ -715,10 +715,16 @@ export function sim3dChecks(check: Check): void {
     const theta = hiveTiltAngle(w, a);
     const refTheta = hiveTrayRefTheta(a);
     const rest = (a === 'red' ? -1 : 1) * (Math.PI / 6); // BB_HIVE_UP_STAGED: red south up, blue north up
+    // ⚠️ AND THE CAD'S OWN `refTheta` IS READ HERE, not only the constant. `hiveTrayRefTheta`
+    // lives in the LIGHT `sim3d/tilt.ts` now (the 3D scene subtracts it on a frame where no 3D
+    // physics is loaded, so it may not touch the CAD collider set) and returns a plain 0. That is
+    // only true as long as the export really is un-tilted, which is what `cadTrayRefTheta` says —
+    // so this check is what keeps the two in step. A future field revision exported at some other
+    // pose fails HERE, loudly, instead of silently drawing the tray at double its tilt.
     check(
       `rest-pose: ${a}'s exported tray needs NO reference-angle correction (refTheta === 0)`,
-      refTheta === 0,
-      `refTheta=${refTheta}`,
+      refTheta === 0 && cadTrayRefTheta(a) === refTheta,
+      `refTheta=${refTheta} cad=${cadTrayRefTheta(a)}`,
     );
     check(
       `rest-pose: ${a}'s hive body rotation IS the absolute tilt at rest (CAD colliders on; up='${w.biobuzz!.hives[a].up}')`,

@@ -2,7 +2,7 @@ import type { Alliance, World } from '../../../types';
 import { BB3_REST_SPEED, BB3_REST_TICKS, BB_POLLEN_R } from '../config';
 import { hiveTiltAngle, insideCell } from './hive3d';
 import { flowerTubeOf } from './flowerTube';
-import type { Engine3d } from './engine';
+import type { Engine3d } from './engineImpl';
 
 /**
  * BIOBUZZ 3D PHYSICS -- DERIVE (Day 1, `docs/biobuzz/plan-3d.md` section 3.5), run every tick

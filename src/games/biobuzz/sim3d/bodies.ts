@@ -27,7 +27,7 @@ import {
   BB_WALL_T,
 } from '../config';
 import { biobuzzColliders, BB_WALL_COUNT } from '../colliders';
-import { cadCellBox, cadStatics, cadTrayHulls, cadTrayRefTheta } from './fieldColliders';
+import { cadCellBox, cadStatics, cadTrayHulls } from './fieldColliders';
 import { buildFlowerTubes3d } from './flowerTube';
 import { tiltQuatX, yawQuat } from './math3';
 
@@ -393,21 +393,16 @@ export function hiveCellLocalBox(sideSign: 1 | -1, alliance: Alliance): HiveLoca
 }
 
 /**
- * The reference angle `applyHiveTilt` (`engine.ts`) and `scene/renderField.ts`'s
- * `updateBiobuzzField` subtract from `hiveTiltAngle`'s absolute tilt before driving the tray
- * body's kinematic rotation and the GLB tray node's rotation respectively.
+ * THE TRAY'S REFERENCE ANGLE lives in `./tilt.ts` now and is re-exported here, unchanged, so
+ * every caller that reached it through "the bodies module" still does. It moved for the same
+ * reason `hiveTiltAngle` did (see `tilt.ts`'s header): `scene/renderField.ts` subtracts it on a
+ * frame where no 3D physics is loaded, and importing it from HERE put the CAD collider set and
+ * every body builder in the main chunk.
  *
- * **0 ON BOTH PATHS NOW** — the CAD tray is exported in its UN-TILTED pivot-local frame, so the
- * physics body, the GLB node and the cell box all take the plain absolute `hiveTiltAngle`. The
- * function stays because it is the ONE place that answers "what pose is the exported tray true
- * at", and because both the collider and the renderer read it: if a future field revision is
- * exported at some other pose, this is the only number that changes and both stay in step.
- * Reads the CAD path's own `refTheta` when the collider set is on, so a nonzero value in the
- * data is honoured rather than assumed away.
+ * It is a constant 0 there rather than a read of `fieldColliders.ts`'s `cadTrayRefTheta`, which
+ * is the value the CAD actually carries on both trays; the SIM3D lane asserts the two agree.
  */
-export function hiveTrayRefTheta(alliance: Alliance): number {
-  return useFieldColliders() ? cadTrayRefTheta(alliance) : 0;
-}
+export { hiveTrayRefTheta } from './tilt';
 
 /**
  * The DOWN-CLEARANCE bracket for one cell -- a local point `(v, w)` calibrated so that, WHEN

@@ -9,7 +9,7 @@
  * never boots physics or steps a world.
  */
 import { readdirSync, readFileSync } from 'node:fs';
-import { dirname, join, relative } from 'node:path';
+import { dirname, join, relative, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { moduleFor } from '../../src/games';
 import { hiveCellTarget } from '../../src/games/biobuzz/elements';
@@ -105,6 +105,94 @@ export function renderChecks(check: Check): void {
     dynamicSceneImports.length === 1 && dynamicSceneImports[0].startsWith('src/games/biobuzz/index.ts:'),
     dynamicSceneImports.join(', '),
   );
+
+  // ---- THE 3D PHYSICS IMPORT BOUNDARY — the other half of the same rule ------------------
+  //
+  // `three` is kept out of the main chunk by the checks above. THIS is the same statement about
+  // `sim3d/`, and it is here because it shipped broken: `step.ts` imported `step3d` directly and
+  // `scene/renderField.ts` imported two helpers out of `hive3d.ts`/`bodies.ts`, so the whole 3D
+  // implementation — bodies, the CAD collider set, derive, the gameplay passes, the predictors,
+  // ~225 KB of source — was statically reachable from the entry and landed in the MAIN chunk,
+  // which every player of every game downloads to play a 2D match. `npm run bundleaudit` is what
+  // MEASURES that (it reads a real build); this is what NAMES the file, in `npm test`, before a
+  // build is run at all.
+  //
+  // THE RULE: only the LIGHT seam may be imported from outside `sim3d/`.
+  //   engine.ts  — the loader (`initPhysics3d`/`physics3dReady`/`rapier3d`/`physics3dImpl`)
+  //   tilt.ts    — `hiveTiltAngle`/`hiveTrayRefTheta`, pure JSON, for a 3D VIEW of a 2D match
+  //   step3d.ts  — the one-line gate `step.ts` dispatches through
+  // `scene/` gets ONE extra: `fieldColliders.ts`, the CAD geometry the GLB loader reads. That is
+  // a real shared dependency of two LAZY chunks (the scene and the physics implementation), so it
+  // costs the main chunk nothing — see `scripts/bundleaudit.mjs`, which routes it.
+  {
+    const SIM3D_DIR = join(BIOBUZZ_DIR, 'sim3d');
+    const inDir = (p: string, dir: string): boolean => p.startsWith(dir + sep) || p.startsWith(dir + '/');
+    const LIGHT = new Set(['engine', 'tilt', 'step3d']);
+    const SCENE_EXTRA = new Set(['fieldColliders']);
+    const srcFiles = walkTs(join(root, 'src'));
+    const heavyImports: string[] = [];
+    let lightImports = 0;
+    for (const p of srcFiles) {
+      if (inDir(p, SIM3D_DIR)) continue; // sim3d/ importing itself is the whole point of sim3d/
+      const inScene = inDir(p, SCENE_DIR);
+      codeLines(p).forEach((line, i) => {
+        for (const m of line.matchAll(/(?:from|import)\s*\(?\s*['"]([^'"]*sim3d\/[A-Za-z0-9_.]+)['"]/g)) {
+          const name = m[1].slice(m[1].lastIndexOf('sim3d/') + 'sim3d/'.length);
+          if (LIGHT.has(name) || (inScene && SCENE_EXTRA.has(name))) {
+            lightImports++;
+            continue;
+          }
+          heavyImports.push(`${relPosix(p)}:${i + 1} (sim3d/${name})`);
+        }
+      });
+    }
+    check('the import-boundary scan sees sim3d imports at all (else the next check is vacuous)', lightImports > 0, String(lightImports));
+    check(
+      'nothing under src/ outside sim3d/ imports a HEAVY sim3d module (engine, tilt, step3d only)',
+      heavyImports.length === 0,
+      heavyImports.join(', '),
+    );
+
+    // and the seam is only light because its OWN imports are: a `from './bodies'` added to any of
+    // the three would put the implementation straight back where it was, and pass the check above.
+    const seamLeaks: string[] = [];
+    for (const name of LIGHT) {
+      codeLines(join(SIM3D_DIR, `${name}.ts`)).forEach((line, i) => {
+        for (const m of line.matchAll(/from\s*['"]\.\/([A-Za-z0-9_.]+)['"]/g)) {
+          if (!LIGHT.has(m[1])) seamLeaks.push(`sim3d/${name}.ts:${i + 1} -> ./${m[1]}`);
+        }
+      });
+    }
+    check('the LIGHT seam itself statically imports no other sim3d module', seamLeaks.length === 0, seamLeaks.join(', '));
+
+    // the barrel: reached ONLY by the loader, and only through `import()`.
+    const implRefs: string[] = [];
+    let allDynamicInLoader = true;
+    for (const p of srcFiles) {
+      codeLines(p).forEach((line, i) => {
+        if (!/(?:from|import)\s*\(?\s*['"](?:[^'"]*sim3d\/impl|\.\/impl)['"]/.test(line)) return;
+        const loc = `${relPosix(p)}:${i + 1}`;
+        implRefs.push(loc);
+        if (!/import\s*\(/.test(line) || !loc.startsWith('src/games/biobuzz/sim3d/engine.ts:')) allDynamicInLoader = false;
+      });
+    }
+    check(
+      "sim3d/impl.ts is reached ONLY by engine.ts, and only through import()",
+      implRefs.length > 0 && allDynamicInLoader,
+      implRefs.join(', '),
+    );
+
+    // …and every heavy module is IN the barrel, so a new one cannot be orphaned outside the
+    // lazy chunk (or, worse, pulled in by whoever happens to import it first).
+    const starred = new Set(
+      [...readFileSync(join(SIM3D_DIR, 'impl.ts'), 'utf8').matchAll(/export \* from '\.\/([A-Za-z0-9_.]+)'/g)].map((m) => m[1]),
+    );
+    const missing = readdirSync(SIM3D_DIR)
+      .filter((f) => f.endsWith('.ts'))
+      .map((f) => f.slice(0, -3))
+      .filter((n) => !LIGHT.has(n) && n !== 'impl' && n !== 'fieldColliders.gen' && !starred.has(n));
+    check('sim3d/impl.ts re-exports every heavy sim3d module (a new one has to join the barrel)', missing.length === 0, missing.join(', '));
+  }
 
   // ---- BOTH RENDERERS DRAW THE CAD'S OWN TAPE AND THE CAD'S OWN TILE SEAMS ----------------
   //

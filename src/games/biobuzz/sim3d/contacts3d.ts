@@ -2,7 +2,7 @@ import type { Alliance, World } from '../../../types';
 import { BB3_REST_SPEED } from '../config';
 import { BB_FRAME_RAM_SPEED, bbBillG409 } from '../penalties';
 import { GROUP_FRAME, GROUP_TRAY } from './bodies';
-import type { Engine3d } from './engine';
+import type { Engine3d } from './engineImpl';
 import type { Rapier3d } from './engine';
 
 /**

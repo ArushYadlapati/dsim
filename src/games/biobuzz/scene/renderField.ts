@@ -21,8 +21,7 @@ import {
   FLOWER_MOUTH,
 } from '../config';
 import { BB_FLOWER_FLOOR_Z, BB_FLOWER_MID_Z } from '../flower';
-import { hiveTiltAngle } from '../sim3d/hive3d';
-import { hiveTrayRefTheta } from '../sim3d/bodies';
+import { hiveTiltAngle, hiveTrayRefTheta } from '../sim3d/tilt';
 import { loadFieldGlb, type FieldGroups } from './renderFieldGlb';
 
 /**

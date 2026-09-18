@@ -1,7 +1,7 @@
 import type { Check } from './harness';
 import { mkWorld3d } from './harness';
 import { step3d } from '../../src/games/biobuzz/sim3d/step3d';
-import { engineFor, trayTilt } from '../../src/games/biobuzz/sim3d/engine';
+import { engineFor, trayTilt } from '../../src/games/biobuzz/sim3d/engineImpl';
 import {
   __setHiveDynamicOverrideForTests,
   hiveCellLocalBox,

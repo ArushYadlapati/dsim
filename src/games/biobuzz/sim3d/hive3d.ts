@@ -12,8 +12,8 @@ import {
 import { BB_TIP_SWING_S, hiveTimerStep, otherSide } from '../hive';
 import { bbKindIndex } from '../score';
 import { elementMass, hiveCellLocalBox, hivePivotX, hiveTrayMassProps, useHiveDynamic } from './bodies';
-import type { Engine3d } from './engine';
-import { trayTilt } from './engine';
+import type { Engine3d } from './engineImpl';
+import { trayTilt } from './engineImpl';
 import { rotate2, tiltQuatX } from './math3';
 
 /**
@@ -102,30 +102,13 @@ export function insideCell(
 }
 
 /**
- * The hive's tilt, in RADIANS about the world X axis, RIGHT NOW. THE ONE AUTHORITY: the 3D scene
- * rotates the GLB tray by this (minus `hiveTrayRefTheta`), `derive.ts` tests cell membership in
- * it, and the 2D renderer's `tipProjection` draws the same swing from above.
- *
- * Under the DYNAMIC tray it is the joint's own live angle, serialised into `hives[a].angle` by
- * the readback -- nothing in the JSON could recompute it, because it is the result of a solve.
- * Under the kinematic tray (and in every 2D world, every 2D-era replay and every snapshot
- * recorded before the field existed) `angle` is absent and this falls back to the TIMER's own
- * formula, which is the function this used to be in its entirety.
- *
- * `sign` is `+1` when `hive.up === 'north'`, `-1` when `'south'` -- the convention `bodies.ts`'s
- * local (v, w) frame is built against. Before the swing starts and after it completes, `hive.up`
- * already names whichever side IS up, so `sign * rest` is correct at both ends.
+ * THE TRAY ANGLE lives in `./tilt.ts` now and is re-exported here, unchanged, so every caller
+ * that reached it through "the hive module" still does. It moved because the 3D SCENE reads it
+ * on a frame where no 3D physics is loaded (a 2D-physics match in the 3D view), and importing
+ * it from here dragged the whole 3D implementation — bodies, the CAD collider set, Rapier —
+ * into the main chunk. See `tilt.ts`'s header and `engine.ts`'s.
  */
-export function hiveTiltAngle(world: World, alliance: Alliance): number {
-  const hive = world.biobuzz?.hives[alliance];
-  if (!hive) return REST_RAD;
-  if (typeof hive.angle === 'number' && Number.isFinite(hive.angle)) return hive.angle;
-  const sign = hive.up === 'north' ? 1 : -1;
-  if (!(hive.tipping > 0)) return sign * REST_RAD;
-  // identical to `drawField.ts`'s `tipProjection` -- see that function for the derivation.
-  const p = Math.min(1, Math.max(0, 1 - hive.tipping / BB_TIP_SWING_S));
-  return sign * REST_RAD * (1 - 2 * p);
-}
+export { hiveTiltAngle } from './tilt';
 
 // ---------------------------------------------------------------------------------------------
 // THE DYNAMIC SEE-SAW
