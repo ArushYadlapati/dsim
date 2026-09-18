@@ -721,8 +721,22 @@ def write_binary_stl(path: Path, positions: list[tuple], indices: list[tuple]) -
 # point to the decimated hull's own surface — is MEASURED and printed, and the whole run fails
 # if it exceeds `HULL_MAX_RESIDUAL_IN`. A decimated hull is strictly INSIDE the true one, so
 # the residual is exactly how much of the part a collider could let something sink into.
-HULL_MAX_VERTS = 20
+HULL_MAX_VERTS = 24
 HULL_MAX_RESIDUAL_IN = 0.2
+# A SECOND, TIGHTER TIER FOR PARTS NOTHING ON THE FIELD CAN DRIVE INTO. A robot tops out at
+# `BB3_HEIGHT_MAX` (29 in), so a part whose lowest point is above `HULL_HIGH_Z` is only ever met
+# by an ELEMENT IN FLIGHT — a 1.4-in sphere passing at speed, for which a third of an inch of hull
+# inset is not a distinguishable outcome. That is most of the hive's upper hardware (the Churro
+# braces, the dampers and their holders, the pivot brackets, the A-frame top corners and top bar,
+# the axle holders, the ACM logo panel: 27 of the 37 frame parts), and halving their vertex budget
+# is what keeps this file — which ships in the MAIN client bundle — inside `npm run bundleaudit`.
+HULL_HIGH_Z = 32.0
+HULL_HIGH_MAX_VERTS = 32
+HULL_HIGH_MAX_RESIDUAL_IN = 0.4
+# the vertex budgets `hull_of` tries, smallest first, stopping at the first that meets the part's
+# own residual limit. A cube needs 8; a short tube needs 10-12; only a genuinely lumpy casting
+# reaches the top of the ladder.
+HULL_BUDGET_LADDER = (8, 10, 12, 16, 20, 24, 32)
 
 
 def _convex_hull_points(pts):
@@ -773,19 +787,34 @@ def _hull_residual(all_pts, hull_verts) -> float:
     return float(max(0.0, dist.max()))
 
 
-def hull_of(points, name: str, residuals: list[tuple[str, float]]):
-    """A decimated true convex hull of `points` (already in the output frame, inches), as a flat
-    rounded coordinate list. Returns `None` when the point set cannot make a hull at all."""
+def hull_of(points, name: str, residuals: list[tuple[str, float, float]], cap: int = HULL_MAX_VERTS, limit: float = HULL_MAX_RESIDUAL_IN):
+    """A true convex hull of `points` (already in the output frame, inches), decimated to the
+    SMALLEST vertex budget that still meets `limit`, as a flat rounded coordinate list.
+
+    The budget is searched, not assigned: a 1.05-in HIPS pipe reaches 0.07 in of residual at 12
+    vertices and a chunky A-frame top corner needs 16, and hand-picking one number for both either
+    wastes bytes on the pipe or bites half an inch out of the corner. `limit` is the only knob, and
+    it is the thing that actually matters. Returns `None` when the point set cannot make a hull.
+    """
     verts, err = _convex_hull_points(points)
     if err is not None:
         print(f"[convert]   hull({name}): degenerate ({err}); keeping the raw point set", file=sys.stderr)
     if len(verts) == 0:
         return None
-    if len(verts) > HULL_MAX_VERTS:
-        kept = _farthest_point_sample(verts, HULL_MAX_VERTS)
-        res = _hull_residual(verts, kept)
-        residuals.append((name, res))
-        verts = kept
+    if len(verts) > cap:
+        best = None
+        for budget in HULL_BUDGET_LADDER:
+            if budget > cap:
+                break
+            kept = _farthest_point_sample(verts, budget)
+            res = _hull_residual(verts, kept)
+            best = (kept, res)
+            if res <= limit:
+                break
+        if best is None:
+            best = (_farthest_point_sample(verts, cap), 0.0)
+        residuals.append((name, best[1], limit))
+        verts = best[0]
     # 2 dp = 0.01 in. Four was a habit, not a requirement: no collider in this sim resolves a
     # hundredth of an inch (the contact slop alone is larger), and the extra digits are ~20% of a
     # file that ships in the MAIN client bundle whether a player opens a 3D practice or not.
@@ -1171,7 +1200,7 @@ def main() -> None:
             pos = [tray_local(q, p.alliance) for q in pos]
         col_pts[k] = (pos, idx)
 
-    residuals: list[tuple[str, float]] = []
+    residuals: list[tuple[str, float, float]] = []
 
     # ---- STATICS: one true convex hull per PART INSTANCE ----------------------------------
     # Per INSTANCE, not per part-type bucket: two A-frame legs merged into one hull is a solid
@@ -1195,8 +1224,19 @@ def main() -> None:
         if p.inst.rule.phys == "wall":
             wall_buckets[p.bucket.replace("wall_", "")].extend(pos)
             continue
-        nm = static_name(f"{p.bucket}_{re.sub(r'[^a-z0-9]+', '_', p.inst.name.lower()).strip('_')}")
-        pts = hull_of(pos, nm, residuals)
+        # the part's own name, minus its `am-XXXX:` SKU prefix — the SKU is in the inventory JSON
+        # and in the audit, and 73 copies of it in a file that ships in the main bundle is not.
+        slug = re.sub(r"^am[-_ ]?[0-9a-z]+[-_ ]?[a-z]*[:_ ]+", "", p.inst.name.lower())
+        nm = static_name(f"{p.bucket}_{re.sub(r'[^a-z0-9]+', '_', slug).strip('_')}")
+        low = min(q[2] for q in pos)
+        high = low >= HULL_HIGH_Z
+        pts = hull_of(
+            pos,
+            nm,
+            residuals,
+            HULL_HIGH_MAX_VERTS if high else HULL_MAX_VERTS,
+            HULL_HIGH_MAX_RESIDUAL_IN if high else HULL_MAX_RESIDUAL_IN,
+        )
         if pts:
             statics.append({"name": nm, "class": p.inst.rule.phys, "points": pts})
     # ⚠️ THE FOUR WALL SIDES ARE NOT EXPORTED AS COLLIDERS AT ALL. They are never built
@@ -1666,15 +1706,15 @@ def main() -> None:
 
     # ---- hull decimation report -----------------------------------------------------------
     if residuals:
-        residuals.sort(key=lambda r: -r[1])
-        print(f"[convert] hull decimation ({len(residuals)} hull(s) over {HULL_MAX_VERTS} verts), worst first:", file=sys.stderr)
-        for nm, res in residuals[:10]:
-            print(f"    {nm}: residual {res:.4f}in", file=sys.stderr)
-        worst = residuals[0][1]
-        if worst > HULL_MAX_RESIDUAL_IN:
+        residuals.sort(key=lambda r: -(r[1] / r[2]))
+        print(f"[convert] hull decimation ({len(residuals)} hull(s) decimated), worst first (residual / its own limit):", file=sys.stderr)
+        for nm, res, lim in residuals[:10]:
+            print(f"    {nm}: residual {res:.4f}in (limit {lim}in)", file=sys.stderr)
+        worst_name, worst, worst_limit = residuals[0]
+        if worst > worst_limit:
             raise RuntimeError(
-                f"hull decimation residual {worst:.4f}in on '{residuals[0][0]}' exceeds "
-                f"HULL_MAX_RESIDUAL_IN {HULL_MAX_RESIDUAL_IN}in — raise HULL_MAX_VERTS or coarsen "
+                f"hull decimation residual {worst:.4f}in on '{worst_name}' exceeds its limit "
+                f"{worst_limit}in — raise HULL_MAX_VERTS/HULL_HIGH_MAX_VERTS or coarsen "
                 f"LIN_COL_MM/ANG_COL, do not widen the tolerance silently."
             )
     else:

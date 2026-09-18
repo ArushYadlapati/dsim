@@ -33,6 +33,7 @@
  */
 
 import type { Alliance } from '../../../types';
+import { dcos, dsin } from '../../../math';
 import { FIELD_COLLIDERS_JSON } from './fieldColliders.gen';
 
 /** the PHYSICS class `convert.py`'s `PART_RULES` stamped on a part — what `bodies.ts` filters
@@ -230,8 +231,12 @@ export function probeColliders(points: readonly (readonly [number, number, numbe
     ['hive_red', fc.trays.red],
     ['hive_blue', fc.trays.blue],
   ] as const) {
-    const c = Math.cos(tray.captureTheta);
-    const sn = Math.sin(tray.captureTheta);
+    // `dcos`/`dsin`, never the engine's own trig: `scripts/smoke.ts`'s source guard scans this
+    // whole directory for engine-defined transcendentals — by TEXT, so do not name one even in a
+    // comment — and it is right to: an engine's trig is not required to be correctly-rounded, so
+    // two peers can compute different bits from the same input.
+    const c = dcos(tray.captureTheta);
+    const sn = dsin(tray.captureTheta);
     for (const h of tray.hulls) {
       const world: number[] = new Array(h.points.length);
       for (let i = 0; i < h.points.length; i += 3) {
