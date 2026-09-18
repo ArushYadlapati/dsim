@@ -21,8 +21,8 @@ import {
   BB_WALL_T,
 } from '../config';
 import { biobuzzColliders, BB_WALL_COUNT } from '../colliders';
-import { cadCellBox, cadWallExtents, fieldColliders3d } from './fieldColliders';
-import { rotate2, tiltQuatX, yawQuat } from './math3';
+import { cadCellBox, fieldColliders3d } from './fieldColliders';
+import { yawQuat } from './math3';
 
 /**
  * TEST-ONLY OVERRIDE for `BB3_FIELD_COLLIDERS`, read by every CAD-vs-fallback branch in this
@@ -96,10 +96,12 @@ function useFieldColliders(): boolean {
  */
 
 // ---- STATICS -----------------------------------------------------------------
-// floor (always analytic), walls (analytic cuboids, inner face + height from the CAD field when
-// `BB3_FIELD_COLLIDERS` is on), and everything else (hive frame legs, flower supports) as CAD
-// trimesh statics -- falling back to the 2D field's own frame-bar/flower-foot boxes
-// (`biobuzzColliders`, extruded) when the CAD set is off or empty.
+// floor (always analytic) and walls (always analytic cuboids at the shared BB_HALF_X/Y/
+// BB3_WALL_H constants -- owner correction, see buildStatics3d's own comment: the CAD's own
+// wall measurement is a few percent off the constants every OTHER system is keyed to, so using
+// it for the 3D collider would just be cross-physics drift by another name), and everything
+// else (flower supports) as CAD trimesh statics -- falling back to the 2D field's own
+// frame-bar/flower-foot boxes (`biobuzzColliders`, extruded) when the CAD set is off or empty.
 
 /** the 2D field's static count breakdown -- `biobuzzColliders.statics` is built as
  * `[...walls, ...frameBars, ...flowerFeet]` (see `colliders.ts`), and `BB_WALL_COUNT` (4) is
@@ -188,20 +190,25 @@ export function buildStatics3d(
     ground,
   );
 
-  // ---- WALLS: four thick cuboids, inner face + height from the CAD field's own wall trimesh
-  // vertices (`cadWallExtents`, more precise than `field-measurements.json`'s centroid-based
-  // `walls_extent_in` -- see that function's own comment), constants when the CAD set is off or
-  // any of the four is missing.
-  const cadWalls = useFieldColliders() ? cadWallExtents() : null;
-  const wallHeight = cadWalls?.height ?? BB3_WALL_H;
+  // ---- WALLS: four thick cuboids, ALWAYS at the shared constants (BB_HALF_X/Y inner face,
+  // BB3_WALL_H height) -- NOT the CAD's own wall trimesh, on owner correction. The CAD's own
+  // measured inner face (~70.674) reads ~1.33in inside the constants' 72, and the constants are
+  // what the 2D pipeline, the shared staging (loading-zone/garden pollen, start poses flush to
+  // the wall) and every gameplay rule are already keyed to -- a 3D wall at the CAD's own figure
+  // is exactly the cross-physics drift the plan forbids, not a correction: it embedded several
+  // staged loading-zone pollen who were placed 1.4in clear of the CONSTANTS' wall (found as 6
+  // `containmentPass` fixes at tick 7, see that check's own comment). `cadWallExtents` stays as
+  // a MEASUREMENT (the measurements-vs-config check below reports the gap as an open finding,
+  // owner ruling pending), never as a collider input.
+  const wallHeight = BB3_WALL_H;
   const wallHalf = wallHeight / 2;
-  const wallCentreZ = (cadWalls?.z0 ?? 0) + wallHalf;
+  const wallCentreZ = wallHalf;
   const span = 2 * Math.max(BB_HALF_X, BB_HALF_Y) + 4 * BB_WALL_T; // long enough the four overlap at the corners
   const faces: readonly { readonly inner: number; readonly axis: 'x' | 'y'; readonly sign: 1 | -1 }[] = [
-    { inner: cadWalls?.right ?? BB_HALF_X, axis: 'x', sign: 1 },
-    { inner: cadWalls?.left ?? -BB_HALF_X, axis: 'x', sign: -1 },
-    { inner: cadWalls?.rear ?? BB_HALF_Y, axis: 'y', sign: 1 },
-    { inner: cadWalls?.audience ?? -BB_HALF_Y, axis: 'y', sign: -1 },
+    { inner: BB_HALF_X, axis: 'x', sign: 1 },
+    { inner: -BB_HALF_X, axis: 'x', sign: -1 },
+    { inner: BB_HALF_Y, axis: 'y', sign: 1 },
+    { inner: -BB_HALF_Y, axis: 'y', sign: -1 },
   ];
   for (const f of faces) {
     const centre = f.inner + f.sign * BB_WALL_T;
@@ -323,6 +330,18 @@ export function hiveCellLocalBox(sideSign: 1 | -1, alliance: Alliance): HiveLoca
 }
 
 /**
+ * The reference angle `applyHiveTilt` (`engine.ts`) subtracts from `hiveTiltAngle`'s absolute
+ * tilt before driving the tray body's kinematic rotation -- 0 for the Day 1 fallback box (whose
+ * numbers are already theta-independent) or the CAD's `cadCaptureTheta(alliance)` (the tray's
+ * hulls are AS CAPTURED at that specific tilt, `fieldColliders.ts`'s own comment). Both of this
+ * alliance's cells share one rigid body and therefore one rotation, so either side's box gives
+ * the same answer; `sideSign` here is arbitrary.
+ */
+export function hiveTrayRefTheta(alliance: Alliance): number {
+  return hiveCellLocalBox(1, alliance).refTheta;
+}
+
+/**
  * The DOWN-CLEARANCE bracket for one cell -- a local point `(v, w)` calibrated so that, WHEN
  * THIS CELL IS DOWN (its own rest tilt), the bracket's world z is exactly `BB_HIVE_BOTTOM_Z`
  * (25.5). Solved once, algebraically, from the rest-tilt geometry (see the file header): at
@@ -411,35 +430,31 @@ export function buildHiveTray3d(
   const wallHalf = Math.max(BB3_HIVE_CELL_WALL / 2, 0.75);
   for (const sideSign of [1, -1] as const) {
     const box = hiveCellLocalBox(sideSign, alliance);
-    // the per-collider rotation offset that makes the composed (body * this) rotation
-    // reproduce `box`'s own reference pose -- identity when `box.refTheta` is 0 (the fallback
-    // box's numbers are already theta-independent), the CAD's capture-tilt undo otherwise. See
-    // this function's own header and `HiveLocalBox.refTheta`'s comment (`fieldColliders.ts`).
-    const offset = tiltQuatX(-box.refTheta);
-    // ⚠️ THE TRANSLATION OFFSET NEEDS THE SAME ROTATION, SEPARATELY -- a collider's own
-    // `setRotation` only orients its SHAPE (which face points which way); its `setTranslation`
-    // is an offset in the BODY's frame and is carried by the BODY's rotation alone, not by the
-    // collider's own additional one. A `(v, w)` centre meant to read as "this box's true extent
-    // AT `refTheta`" therefore has to be rotated into the body's frame by hand here, by the same
-    // `-refTheta`, or the composed pose is only right for the SHAPE's axes and wrong for where
-    // it sits -- found by measurement: an element staged to rest on the CAD floor's own surface
-    // fell straight through it, because the floor collider's centre was placed as if `refTheta`
-    // were 0 while its face normal was correctly tilted by `-refTheta`, splitting the two.
-    const at = (v: number, w: number): { y: number; z: number } => {
-      const p = rotate2(v, w, -box.refTheta);
-      return { y: p.a, z: p.b };
-    };
+    // ⚠️ NO PER-COLLIDER ROTATION HERE -- an earlier version rotated each collider by
+    // `tiltQuatX(-box.refTheta)` and pre-rotated its translation to match, expecting the body's
+    // own rotation to cancel it back out to identity at the reference pose. That composition
+    // measured correct (translation and shape orientation both checked out by hand against the
+    // live collider, and the twelve-probe/launch/height checks all agreed) -- but a KINEMATIC
+    // body with a collider carrying its own non-identity local rotation produced a real, measured
+    // instability regardless: a resting element several inches clear of every collider (confirmed
+    // via `intersectionsWithPoint`, zero hits) got a several-hundred-in/s velocity kick on the
+    // very first tick, and it went away completely and only when the per-collider rotation was
+    // removed (isolated by disabling the floor/back/side colliders one at a time). The fix moves
+    // the SAME net rotation onto the BODY instead: `engine.ts`'s `applyHiveTilt` sets the tray
+    // body's kinematic rotation to `hiveTiltAngle(...) - hiveTrayRefTheta(alliance)` (0 for the
+    // fallback box, so this is a no-op there), and every collider below is built at IDENTITY
+    // rotation with its RAW (unrotated) `(v, w)` as its translation -- the body's own rotation
+    // alone reproduces `world = pivot + Rotate(theta - refTheta) * (v, w)`, with nothing left for
+    // an individual collider's own local pose to get wrong.
     const vCentre = (box.vMin + box.vMax) / 2;
     const vHalf = (box.vMax - box.vMin) / 2;
     const wCentre = (box.wMin + box.wMax) / 2;
     const wHalf = (box.wMax - box.wMin) / 2;
     // FLOOR (w = wMin): the surface a resting element sits on -- on the CAD path, THIS is the
     // one shape's own answer for the down-cell clearance (see this function's header).
-    const floorAt = at(vCentre, box.wMin + wallHalf);
     world3d.createCollider(
       RAPIER.ColliderDesc.cuboid(box.xHalf, vHalf, wallHalf)
-        .setTranslation(0, floorAt.y, floorAt.z)
-        .setRotation(offset)
+        .setTranslation(0, vCentre, box.wMin + wallHalf)
         .setFriction(0.6)
         .setRestitution(0.2),
       body,
@@ -456,23 +471,19 @@ export function buildHiveTray3d(
     // A dead-stop back wall is the more physically honest choice anyway (a POLLEN meeting a
     // padded cell wall, not a superball).
     const innerV = sideSign > 0 ? box.vMin : box.vMax;
-    const backAt = at(innerV - sideSign * wallHalf, wCentre);
     world3d.createCollider(
       RAPIER.ColliderDesc.cuboid(box.xHalf, wallHalf, wHalf)
-        .setTranslation(0, backAt.y, backAt.z)
-        .setRotation(offset)
+        .setTranslation(0, innerV - sideSign * wallHalf, wCentre)
         .setFriction(0.5)
         .setRestitution(0),
       body,
     );
     // TWO SIDE WALLS (along x = +-xHalf). Top is left open (plan section 3.6's "two open-top
     // cells") -- nothing above a cell but air.
-    const sideAt = at(vCentre, wCentre);
     for (const s of [1, -1] as const) {
       world3d.createCollider(
         RAPIER.ColliderDesc.cuboid(wallHalf, vHalf, wHalf)
-          .setTranslation(s * (box.xHalf - wallHalf), sideAt.y, sideAt.z)
-          .setRotation(offset)
+          .setTranslation(s * (box.xHalf - wallHalf), vCentre, wCentre)
           .setFriction(0.5)
           .setRestitution(0.2),
         body,
