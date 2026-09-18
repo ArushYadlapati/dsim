@@ -309,48 +309,56 @@ const TRAY_FLOOR_TOLERANCE_IN = 0.25;
  * are on a different plane than the actual bottom of the hive", turned into something that
  * complains on its own the next time it drifts.
  *
- * It measures the MESH: the lowest vertex of the tray node inside a window that isolates the
- * cell floor — |x| between 2 and 8 in (outboard of the `Basket Base Tube`, which hangs BELOW the
- * floor at |x| < 0.51, and inboard of the side walls and the Goal Rib's rim) and v inside the
- * cell's own depth — and compares it to `cadCellBox(...).wMin`, the plane the collider's floor
- * slab presents. Both are in the tray's un-tilted pivot-local frame, so no tilt arithmetic is
- * involved and a frame mistake shows up as a large number rather than cancelling out.
+ * It RAYCASTS the mesh: a ray dropped down the tray's own local -w axis from inside the cell,
+ * and the first surface it meets is compared to `cadCellBox(...).wMin`, the plane the collider's
+ * floor slab presents.
+ *
+ * ⚠️ IT HAS TO BE A RAYCAST, NOT A VERTEX SCAN. A flat CAD face tessellates to its CORNER
+ * vertices only — there is not one vertex in the middle of a cell's floor plate — so a "lowest
+ * vertex in a window" probe finds the Goal Ribs standing at each END of the cell (they hang
+ * 1.5 in below the floor) and reports a ~1-in disagreement that is entirely its own sampling.
+ * That is measured, not hypothetical: this check's first version did exactly that, in the app,
+ * four times over.
  *
  * `console.warn` only, and only in dev: a wrong floor is a fidelity bug, not a crash, and a
  * player mid-match is not helped by a thrown error.
  */
 function checkTrayFloorAgreement(hives: { red: FieldHiveGroup; blue: FieldHiveGroup }): void {
   if (!import.meta.env?.DEV) return;
+  const ray = new THREE.Raycaster();
   for (const alliance of ['red', 'blue'] as const) {
+    const pivotGroup = hives[alliance].tray;
+    pivotGroup.updateWorldMatrix(true, true);
+    const toLocal = pivotGroup.matrixWorld.clone().invert();
     for (const sideSign of [1, -1] as const) {
       const box = cadCellBox(alliance, sideSign);
       if (!box) continue;
-      const pivotGroup = hives[alliance].tray;
-      let meshFloorW = Infinity;
-      const v = new THREE.Vector3();
-      pivotGroup.traverse((obj) => {
-        if (!(obj instanceof THREE.Mesh) || !obj.geometry) return;
-        const pos = obj.geometry.getAttribute('position');
-        if (!pos) return;
-        for (let i = 0; i < pos.count; i++) {
-          v.fromBufferAttribute(pos, i);
-          obj.updateWorldMatrix(true, false);
-          v.applyMatrix4(obj.matrixWorld).sub(pivotGroup.position);
-          const ax = Math.abs(v.x);
-          if (ax < 2 || ax > 8) continue;
-          if (v.y < box.vMin || v.y > box.vMax) continue;
-          if (v.z < meshFloorW) meshFloorW = v.z;
-        }
-      });
-      if (!Number.isFinite(meshFloorW)) continue;
+      const vMid = (box.vMin + box.vMax) / 2;
+      // start well inside the cell, off the centreline so the `Basket Base Tube` (a solid rod
+      // under the floor at |x| < 0.51) is not what the ray finds first, and drop along local -w.
+      const origin = new THREE.Vector3(4, vMid, box.wMin + 6).applyMatrix4(pivotGroup.matrixWorld);
+      const down = new THREE.Vector3(0, 0, -1).transformDirection(pivotGroup.matrixWorld).normalize();
+      ray.set(origin, down);
+      ray.far = 12;
+      const hit = ray.intersectObject(pivotGroup, true)[0];
+      const side = sideSign > 0 ? 'north' : 'south';
+      if (!hit) {
+        // eslint-disable-next-line no-console
+        console.warn(
+          `renderFieldGlb: ${alliance} ${side} cell — nothing under the ray at local (4, ${vMid.toFixed(2)}); ` +
+            `the tray mesh may be missing its floor skin.`,
+        );
+        continue;
+      }
+      const meshFloorW = hit.point.clone().applyMatrix4(toLocal).z;
       const delta = Math.abs(meshFloorW - box.wMin);
       if (delta > TRAY_FLOOR_TOLERANCE_IN) {
         // eslint-disable-next-line no-console
         console.warn(
-          `renderFieldGlb: ${alliance} ${sideSign > 0 ? 'north' : 'south'} cell — the DRAWN floor (local w ` +
-            `${meshFloorW.toFixed(3)}) and the COLLIDER floor (w ${box.wMin.toFixed(3)}) differ by ` +
-            `${delta.toFixed(3)} in, past the ${TRAY_FLOOR_TOLERANCE_IN} in tolerance. An element will look like it is ` +
-            `floating or sunk. Regenerate with \`npm run field-cad\`; see docs/biobuzz/field-cad-audit.md §4.`,
+          `renderFieldGlb: ${alliance} ${side} cell — the DRAWN floor (local w ${meshFloorW.toFixed(3)}) and the ` +
+            `COLLIDER floor (w ${box.wMin.toFixed(3)}) differ by ${delta.toFixed(3)} in, past the ` +
+            `${TRAY_FLOOR_TOLERANCE_IN} in tolerance. An element will look like it is floating or sunk. ` +
+            `Regenerate with \`npm run field-cad\`; see docs/biobuzz/field-cad-audit.md section 4.`,
         );
       }
     }
