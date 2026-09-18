@@ -11,6 +11,15 @@ import {
   type PadAction,
 } from '../input/bindings';
 import { rangeFill } from './rangeFill';
+import {
+  PREDICTION_BLURBS,
+  PREDICTION_LABELS,
+  PREDICTION_PREFS,
+  getPredictionPref,
+  setPredictionPref,
+  subscribePredictionPref,
+  type PredictionPref,
+} from '../net/predictionPref';
 
 const KEY_LABELS: Record<KeyAction, string> = {
   driveUp: 'Drive forward (Tank: left side)',
@@ -82,6 +91,19 @@ interface Props {
 
 export function ControlsSection({ bindings, onChange, onEditTouchControls }: Props) {
   const [capture, setCapture] = useState<Capture | null>(null);
+  /**
+   * CLIENT PREDICTION (`docs/biobuzz/plan-3d.md` §5). Per DEVICE, so it is NOT a `GameSettings`
+   * field and does not arrive through `props` — it has its own store and its own subscription,
+   * the same shape the view preference uses, because a machine's speed is not a property of an
+   * account (`src/net/predictionPref.ts`).
+   *
+   * Shown unconditionally rather than gated on the active game. It is a NETCODE setting, and
+   * the screen it lives on is not in a match: the room whose physics decides whether it does
+   * anything has not been joined yet, and hiding a control that will matter in five minutes is
+   * how a player never finds it. The blurbs say where it applies.
+   */
+  const [prediction, setPrediction] = useState<PredictionPref>(() => getPredictionPref());
+  useEffect(() => subscribePredictionPref(setPrediction), []);
 
   // keyboard capture: next keydown becomes the binding; Escape cancels
   useEffect(() => {
@@ -156,6 +178,25 @@ export function ControlsSection({ bindings, onChange, onEditTouchControls }: Pro
         <button className="ds-btn" onClick={onEditTouchControls}>
           Customize touch controls
         </button>
+      </div>
+      <div className="ds-bind-block">
+        <h3>Prediction</h3>
+        <div className="ds-opts">
+          {PREDICTION_PREFS.map((p) => (
+            <button
+              key={p}
+              className={`ds-opt mini ${prediction === p ? 'on' : ''}`}
+              onClick={() => setPredictionPref(p)}
+            >
+              <span className="ot">{PREDICTION_LABELS[p]}</span>
+              <span className="od">{PREDICTION_BLURBS[p]}</span>
+            </button>
+          ))}
+        </div>
+        <p className="ds-hint">
+          How much your machine works out for itself while it waits for the server. Saved on this
+          device, and used only in 3D-physics rooms.
+        </p>
       </div>
       <div className="ds-binds">
         <div className="ds-bind-block">

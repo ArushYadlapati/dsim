@@ -1,0 +1,110 @@
+/*
+ * THE IN-MATCH PREDICTION CONTROL — the panel under the connection graph
+ * (`docs/biobuzz/plan-3d.md` §5; `PredictionPanel` in GameView.tsx).
+ *
+ * ── WHY ITS OWN FILE ──────────────────────────────────────────────────────────────────────
+ * `styles.css` and `shell.css` are ONE cascade and are being edited by another lane in the
+ * same tree this week. A handful of additive `.pred-*` rules in a file of their own merge
+ * without a conflict and are exactly as scoped — the two stylesheets are concatenated by the
+ * bundler in import order, and nothing here re-declares a selector either of them owns
+ * (`npm run uiaudit`'s duplicate-selector rule is what proves that, across every file in
+ * `src/ui`, and it sits at a hard baseline of 0).
+ *
+ * ── WHICH SURFACE THIS IS ─────────────────────────────────────────────────────────────────
+ * The DARK HUD over the field, not the page chrome — so it follows `styles.css`'s rules and
+ * CLAUDE.md's third token category: its ground is the CANVAS, so it takes `--ds-hud` /
+ * `--ds-hud-line` / `--ds-on-field*`, which do not invert with the theme, rather than
+ * `--ds-panel` / `--ds-ink`, which do. A dark card is only ~1.4:1 on the dark field by FILL,
+ * so the EDGE is what identifies it: `--ds-hud-line`, never `--ds-line`.
+ */
+
+/*
+ * THE INK FOR TEXT SITTING ON `--ds-on-field-accent`.
+ *
+ * CLAUDE.md's rule: a colour that is both a fill and a text colour will fail one of the two, so
+ * it gets split into a `-ink` sibling. `--ds-on-field-accent` had no sibling, and the one place
+ * that fills with it (`.mobile-edit-bar button.primary`) hardcodes this exact value inline. Same
+ * value, named — it does NOT invert with the theme, because its ground is the field, which is
+ * hardcoded dark (CLAUDE.md's third token category). Declared here rather than in `shell.css`
+ * only because another lane is editing that file this week; it belongs beside the other `-ink`
+ * tokens the next time someone is in there, and `.mobile-edit-bar` can then stop repeating it.
+ */
+:root {
+  --ds-on-field-accent-ink: #10241b;
+}
+
+.pred-panel {
+  background: var(--ds-hud);
+  border: 1px solid var(--ds-hud-line);
+  border-radius: var(--ds-round-md);
+  padding: 8px;
+  width: 260px;
+  margin-top: 4px;
+  font-variant-numeric: tabular-nums;
+}
+
+.pred-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  font-size: 10px;
+  letter-spacing: 0.6px;
+  color: var(--muted);
+  margin-bottom: 4px;
+}
+
+/* what is ACTUALLY running, which is not always what the pref says (`auto` resolves, and the
+   slip rule can step Full down mid-match) — so it is stated, not implied by a pressed button */
+.pred-mode {
+  color: var(--ds-on-field);
+  font-weight: 600;
+}
+
+.pred-opts {
+  display: flex;
+  gap: 4px;
+}
+
+.pred-opt {
+  flex: 1;
+  background: transparent;
+  color: var(--ds-on-field-dim);
+  border: 1px solid var(--ds-hud-line);
+  border-radius: var(--ds-round-sm);
+  padding: 4px;
+  font-family: var(--ds-font-ui);
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  /* a PRESSABLE moves by transform, never by a border or a margin that appears on hover —
+     `npm run shiftaudit` asserts that nothing outside the element's own subtree moves */
+  transition: transform 0.08s ease, color 0.08s ease, background 0.08s ease;
+}
+
+.pred-opt:hover {
+  color: var(--ds-on-field);
+  transform: translateY(-1px);
+}
+
+.pred-opt.on {
+  background: var(--ds-on-field-accent);
+  border-color: var(--ds-on-field-accent);
+  /* the accent is a FILL here, so its ink is the dark field behind everything else — a
+     colour that is both a fill and a text colour fails one of the two (CLAUDE.md) */
+  color: var(--ds-on-field-accent-ink);
+}
+
+.pred-foot {
+  font-size: 10px;
+  color: var(--muted);
+  margin-top: 4px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pred-opt {
+    transition: none;
+  }
+  .pred-opt:hover {
+    transform: none;
+  }
+}
