@@ -1,6 +1,10 @@
 <!-- governs: src/games/biobuzz/**, scripts/smoke-biobuzz/** -->
 # GAME: BIOBUZZ
 
+> **Status 2026-09-17:** the placeholder wording below predates kickoff; the 2D game is a full scored
+> match, and the 3D physics + renderer are described in the last section, "BIOBUZZ 3D".
+
+
 Read `docs/biobuzz-contract.md` FIRST — it is the lane contract. ⚠️ BIOBUZZ owns no ground-pollen physics: that is the shared solver, so a pollen that looks wrong is a question about `src/sim/`, not a fix to make here.
 
 *Split out of `CLAUDE.md` on 2026-09-16, **verbatim** — CLAUDE.md is loaded into every
@@ -60,3 +64,62 @@ BIOBUZZ, a persistent 2.1" overlap under a pressing chassis, a struck pollen rea
 
 ---
 
+
+# BIOBUZZ 3D (`sim3d/`, `scene/`, `graphics/`, `public/models/biobuzz/`) — Day 1 landed 2026-09-17
+
+Spec: `docs/biobuzz/plan-3d.md` (owner decisions in §12). **One game, two physics.**
+`World.biobuzz.physics` is `'2d' | '3d'` (absent reads `'2d'`; read it ONLY through
+`biobuzzPhysics(world)`); `biobuzzStep` dispatches to `step2d` (the untouched pipeline above) or
+`step3d`. Solo practice picks via `GameSettings.practicePhysics` (default `'3d'`; Practice setup
+has the control); online rooms, LAN and replays are still 2D until Day 2 (`RoomConfig.physics`).
+The 2D pipeline is PERMANENT (owner rule): every existing check must stay byte-identical.
+
+- ⚠️ **The "BIOBUZZ owns no ground-pollen physics" rule above is the 2D pipeline's.** `sim3d/`
+  OWNS its own solve: one persistent Rapier 3D world per `World` object (`WeakMap` in
+  `engine.ts`, rebuilt when `tick` goes backwards or the robot set changes), bodies created in id
+  order, JSON→body SYNC before each step (a body is teleported only when its JSON differs from
+  what the last readback wrote — no thresholds), READBACK rounded to 1e-4 after. Robots are
+  cuboids `length × width × heightIn` (yaw-only, z free; `RobotState.z` = chassis BOTTOM height,
+  0 while driving); elements are spheres with CCD when fast; `held`/`stock` have no body; an
+  `element` in a flower is a fixed body at its 2D-parked position (tubes are Day 2). The hive
+  tray is a KINEMATIC body swung by the shared timer (`hiveTimerStep`, split out of `hiveStep`
+  with no 2D change; `BB3_HIVE_DYNAMIC = false` until Day 2 calibrates the see-saw) and the spill
+  is PHYSICAL. `derive.ts` fills `hives[a].contents` / `flowers[i].stack` and the `element` tags
+  from body positions every tick, so `score.ts`, `hud.ts` and the 2D renderers run unchanged.
+- **Determinism:** the source guard in `scripts/smoke.ts` scans `sim3d/`; `dsin/dcos/datan2/hyp`
+  only; the SIM3D lane hashes two runs. Renderer files MUST be `scene/render*.ts` (the guard
+  exempts `draw*`/`render*`, and the RENDER lane asserts `three` is imported nowhere else).
+- **Rapier 3D gotchas, each shipped as a bug once:** forces and torques PERSIST across steps —
+  `resetForces`/`resetTorques` every tick before applying the wrench (the 2D world is rebuilt per
+  step, so it never had to); the robot collider footprint is `robotExtents` (intake reach), not
+  the bare chassis (a wall-flush start position touched the wall in 2D only, which read as a 30×
+  yaw gap); wall friction `PHYS_WALL_FRICTION` and the solver iteration parameters must be SET
+  (the 3D defaults differ from the 2D solve); `RigidBodyDesc` uses `enabledRotations`;
+  `JointData.limits` do not clamp — call `setLimits` on the joint; a 0.25-in kinematic plate needs
+  a 0.75-in collision skin or a 260 in/s shot tunnels; `src/sim/spawn.ts` `coerceSpec` must carry
+  `heightIn` across the way it carries `bbMech`; the rest-speed snap must run EVERY tick under
+  the threshold (a one-shot edge let contact bias walk a settled line 2 in).
+- **Drive feel is the shared wrench.** Parity checks measure in OPEN FIELD: two solvers' wall
+  contact legitimately differs; the drive model itself matches 2D to four decimals.
+- **Field geometry is CAD-derived** (owner decision 2026-09-17, licence risk accepted).
+  `npm run field-cad` (cache OUTSIDE the repo at `%LOCALAPPDATA%/dsim/field-cad/`: the sha-pinned
+  STEP v26-27.2 zip, a CadQuery venv) writes `public/models/biobuzz/{field.glb, field-low.glb,
+  field-colliders.json, field-measurements.json}` and `sim3d/fieldColliders.gen.ts`; the README
+  there has the source, node names and schema. The scene loads the GLB (constants-built fallback
+  in `renderField.ts`, kept geometrically right against `drawField.ts`); the physics takes the
+  collider hulls/trimeshes with the floor and walls analytic. GLTFLoader strips `/` from node
+  names — look them up by `userData.name`. ⚠️ **OPEN:** the CAD puts the flower ring centres
+  ~1.4 in from `BB_FLOWERS`/`BB_FLOWER_D`; owner ruling pending — move neither.
+- **Client:** `graphics/store.ts` holds the per-device view pref (`localStorage['decodesim.view']`);
+  `GameView`/`game.ts` await `initPhysics3d()` before a 3D practice (fallback to 2D with an
+  event-log line) and mount the lazily imported `scene` under the 2D canvas (`overlayOnly`).
+  Two LAZY chunks — physics ≈ 1.09 MB gz, scene ≤ 250 KB gz — ratcheted by `npm run bundleaudit`
+  (needs a build; not in `npm test`). `sim3d/` is still statically imported by `step.ts`, so its
+  logic sits in the main chunk (+≈4.5 KB gz): moving it behind `initPhysics3d()` is pending.
+- **Verification:** `scripts/smoke-biobuzz/sim3d.ts` (SIM3D lane: seam, drive parity, two-run
+  hash, conservation, containment with `containmentFixes === 0`, CCD, capture, launch into either
+  up cell, 18/29-in clearance, tip/spill, perf ≤ 1.5 ms, CAD probe agreement) and `render.ts`
+  (RENDER lane); `scripts/scene-preview` (side-by-side 2D/3D page with a named-object check);
+  `scripts/field-cad/preview` (GLB viewer). In an automated browser, drive the game through the
+  live `GameController` (React fiber from the canvas) and judge progress by `world.tick`, since
+  `requestAnimationFrame` only advances when a paint is forced.
