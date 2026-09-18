@@ -826,6 +826,23 @@ export function App() {
   };
 
   /**
+   * START THE TUTORIAL (roadmap item 6) — from the Modes page's first-run card, or from Controls.
+   *
+   * `settings` is NOT touched: `GameView` forces free drive for the run itself and leaves the
+   * player's Practice setup exactly as they left it. The flag lives in React state rather than in
+   * settings, so it does not persist, does not sync to the account, and does not survive a reload
+   * onto a screen that has no idea which step was staged.
+   *
+   * GUARDED like every other way into a run (`guardStart`): a stale build or a scheduled restart
+   * blocks a tutorial the same as it blocks a ranked match.
+   */
+  const startTutorial = (): void =>
+    guardStart(() => {
+      setTutorialRun(true);
+      navigate('game');
+    });
+
+  /**
    * A SOLO PRACTICE run finished — keep it.
    *
    * DEVICE FIRST, account second, and the order is the point: solo practice is the primary
@@ -1107,6 +1124,7 @@ export function App() {
 
   const exitGame = (): void => {
     leaveSession();
+    setTutorialRun(false);
     navigate('home');
   };
 
@@ -1132,6 +1150,8 @@ export function App() {
   // the player STARTS a run (never mid-run), so they aren't stuck on a stale version
   const newVersion = useNewVersion();
   const [pendingStart, setPendingStart] = useState<(() => void) | null>(null);
+  /** the next `/game` mount runs the TUTORIAL (see `startTutorial`), cleared on the way out. */
+  const [tutorialRun, setTutorialRun] = useState(false);
   // a scheduled server restart is live (admin notice): don't let anyone START a new
   // game / queue — they'd just get dropped by the restart. People already in a game
   // are untouched (this only guards the start actions). Info notices don't block.
@@ -1313,6 +1333,7 @@ export function App() {
         onExit={exitGame}
         onSettingsChange={update}
         editLayout={editMobileLayout}
+        tutorial={tutorialRun}
         onRestartRun={sessionKind === 'record' && !sessionCoop ? restartRun : undefined}
         onWatchReplay={(r) => {
           setReplayObj(r);
@@ -1525,6 +1546,10 @@ export function App() {
           onCustomRoom={() => guardStart(() => navigate('lobby'))}
           onWatch={() => navigate('watch')}
           onLan={() => navigate('lan')}
+          /* THE FIRST-RUN OFFER. Absent once the device flag is set, and absent for a game with
+             no tutorial — `ModeSelect` renders nothing for it either way, so the page loses a
+             section rather than gaining a disabled tile. */
+          onTutorial={moduleFor(settings.game).tutorial ? startTutorial : undefined}
         />
       )}
       {/* one-time "this sim isn't realistic" disclaimer for Chain Reaction */}
@@ -1648,6 +1673,7 @@ export function App() {
           section={configureSection}
           onSection={(s) => navigate('configure', { sub: s })}
           onEditTouchControls={editTouchControls}
+          onTutorial={moduleFor(settings.game).tutorial ? startTutorial : undefined}
         />
       )}
 

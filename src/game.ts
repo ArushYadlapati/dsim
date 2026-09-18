@@ -18,6 +18,9 @@ import type {
 import * as C from './config';
 import { DEFAULT_ASSISTS, DEFAULT_SPEC, type RobotSetup } from './sim/spawn';
 import { moduleFor, gameOf } from './games';
+import { TutorialRunner } from './tutorial/runner';
+import { markTutorialSeen } from './tutorial/flag';
+import type { TutorialHintCtx, TutorialSpec, TutorialView } from './tutorial/types';
 import type { GameModule } from './games';
 import type { GameScene, SceneCamera, SceneFrame, SceneInsets } from './games/module';
 import { getViewPref, subscribeViewPref } from './games/biobuzz/graphics/store';
@@ -263,6 +266,16 @@ export interface HudSnapshot {
   /** DUO RECORD rematch tally, or null when this run has no vote (solo, versus).
    *  `need > 1` is what tells the UI a vote is even in play. */
   rematch: { votes: number; need: number; mine: boolean } | null;
+  /**
+   * THE TUTORIAL'S CURRENT STEP CARD, or null when this run is not a tutorial.
+   *
+   * It rides the HUD snapshot rather than being read off the controller directly for the reason
+   * every other HUD value does: `GameView` polls `getHud()` at 10 Hz and re-renders from ONE
+   * object, so a card read separately would be a second source of truth that updates on a
+   * different beat. The hint string is composed here, against the live bindings and the live
+   * gamepad state, so a pad plugged in mid-step changes the line within 100 ms.
+   */
+  tutorial: TutorialView | null;
 }
 
 export class GameController {
@@ -501,6 +514,20 @@ export class GameController {
   /** live AI drivers for the solo world, keyed by robot id. Empty online, in free drive, and
    *  whenever `practiceBots` is `'off'` — which is the default. */
   private readonly bots = new Map<number, { step(w: World): RobotCommand; dispose?(): void }>();
+  /**
+   * THE TUTORIAL IN FLIGHT, or null — which is every other run this controller has ever done.
+   *
+   * Set from the constructor's `tutorial` option, and it is the ONE thing that makes this a
+   * tutorial: there is no `GameSettings.tutorial` flag. That was the alternative, and it is
+   * wrong for a reason the settings file states about itself — `GameSettings` persists to
+   * localStorage and SYNCS TO POSTGRES per account, so a transient "I am in the tutorial right
+   * now" bit would follow the account to another machine and survive a reload into a screen that
+   * has no idea what step it was on. A run is not a preference.
+   *
+   * It is also why the tutorial does not survive a refresh, which is the honest behaviour: the
+   * staged world it was on cannot be rebuilt from a URL.
+   */
+  private tutorial: TutorialRunner | null = null;
   /** told to the view (GameView's loading panel) whenever `physicsPending` flips. */
   private readonly onPhysicsPending: ((pending: boolean) => void) | null;
 
@@ -626,6 +653,16 @@ export class GameController {
        * `GameView` builds the controller inside an async `boot()`, never during a render.
        */
       onPhysicsPending?: (pending: boolean) => void;
+      /**
+       * RUN THE TUTORIAL (roadmap item 6) — this game's `GameModule.tutorial`, handed in by
+       * `GameView` so the controller never has to decide whether a run is a lesson.
+       *
+       * The caller is expected to have put `settings` into FREE DRIVE with no dummies and no
+       * bots; `src/games/biobuzz/tutorial.ts` explains why free drive is the right mode (no
+       * countdown, no fouls outside the played periods, and no recorder — so a staged world
+       * cannot be filed as a replay that would play back something else).
+       */
+      tutorial?: TutorialSpec;
     },
   ) {
     this.ctx = canvas.getContext('2d')!;
@@ -657,6 +694,13 @@ export class GameController {
     // robot is doing that job itself: a mobile player could never get either button back.
     // Mobile still STARTS with the assists on, because everyone does (`PLAYER_ASSISTS`).
 
+    // BEFORE the first `makeWorld`, which is what stages step 1: the runner resolves its step
+    // list against THIS robot's spec (`TutorialStep.applies`), so a build that cannot do a step
+    // is never asked to. A networked session is never a tutorial — there is nothing to stage a
+    // step onto but an authoritative world somebody else owns.
+    if (opts?.tutorial && !session) {
+      this.tutorial = new TutorialRunner(opts.tutorial, settings.spec);
+    }
     this.world = this.makeWorld();
     // the physics-3d fallback notice (see the constructor's `opts` doc) rides the same
     // path as every other match event — the first `frameLogic()` drains it into a toast.
@@ -861,6 +905,17 @@ export class GameController {
     this.soloSetups = setups;
     const world = build(s.mode, seed, setups, this.settings);
     this.seatBots(world, seed, botTier);
+    /**
+     * THE TUTORIAL STAGES ITS STEP HERE, AND NOWHERE ELSE — tick 0, on a world nothing has
+     * stepped, before the recorder could exist.
+     *
+     * That placement IS the replay invariant (`docs/area/netcode.md`, and
+     * `src/tutorial/types.ts` restates it): a run has to be reproducible from
+     * `{seed, setups, commands}`, so a step cannot reach into a world that is already running.
+     * Every step change goes back through this function, which is the same rebuild
+     * `startMatch` and `restart` do.
+     */
+    this.tutorial?.stage(world, this.localRobotId);
     return world;
   }
 
@@ -1445,8 +1500,118 @@ export class GameController {
       if (this.recorder && robotsEnabled(this.world)) this.drivenTicks++;
       this.acc -= C.SIM_DT;
       steps++;
+      /**
+       * THE TUTORIAL'S PREDICATE, EVERY TICK, RIGHT AFTER THE STEP THAT COULD HAVE SATISFIED IT.
+       *
+       * Per tick rather than at the 10 Hz HUD poll, because several of the things a step asks for
+       * are CLEANED UP by the ticks that follow them: an up CELL is emptied by the tip it caused
+       * (`hiveStep`), and a spill tag clears on its element's first contact. A predicate read six
+       * ticks late can look at a field where the thing it was watching for has already been tidied
+       * away, and the symptom is a step that never completes however well it was played.
+       *
+       * Advancing REPLACES the world, so the loop has to stop here — `advanceTutorial` zeroes the
+       * accumulator, and the next frame steps the newly staged world from its own tick 0.
+       */
+      if (this.tutorial && this.tutorial.tick(this.world, this.localRobotId)) {
+        this.advanceTutorial(true);
+        return;
+      }
     }
     if (steps === C.MAX_STEPS_PER_FRAME) this.acc = 0;
+  }
+
+  /**
+   * MOVE THE TUTORIAL ON — from a completed step (`completed`) or from Skip.
+   *
+   * One path for both, because the world is rebuilt either way and a skipped step is not a failed
+   * one. The event line goes onto the NEW world, so it drains through the ordinary
+   * `world.events` → toast path (`docs/area/ui.md`: the muted left-edge log, never a popup over
+   * the field).
+   */
+  private advanceTutorial(completed: boolean): void {
+    const t = this.tutorial;
+    if (!t) return;
+    const was = t.step?.title ?? '';
+    const more = t.advance();
+    this.rebuildForTutorial();
+    if (completed && was) this.world.events.push(`STEP DONE — ${was.toUpperCase()}`);
+    if (!more) {
+      // FINISHED: the device flag is set here rather than on the way out of the screen, because
+      // this is the moment it becomes true, and a player who closes the tab on the sign-off card
+      // has still been through it.
+      markTutorialSeen();
+      this.world.events.push('TUTORIAL COMPLETE');
+    }
+  }
+
+  /**
+   * A QUIET REBUILD, for a step change / replay / exit.
+   *
+   * Everything `restart()` does except the two things that would be wrong here: it does not play
+   * the ABORT cue (nothing was aborted), and it does not harvest a practice run (a tutorial is
+   * free drive, so there is no recorder — see `startMatch`).
+   */
+  private rebuildForTutorial(): void {
+    this.world = this.makeWorld();
+    this.prevPhase = this.world.match.phase;
+    this.acc = 0;
+    this.warningPlayed = false;
+    this.matchOverAt = null;
+    this.settle = newSettleClock();
+    this.settleDone = false;
+    this.hudCountdown = null;
+    this.frontFlipped = false;
+    this.parked = false;
+    this.seedActionAudio();
+    this.toasts = [];
+  }
+
+  /**
+   * The live binding / device context every hint is composed against.
+   *
+   * `mqCoarse` is the media query this controller already keeps for the mobile layout, read
+   * LIVE rather than latched: a tablet that has a keyboard folded behind it can go either way
+   * mid-session, and the card re-renders at 10 Hz anyway.
+   */
+  private hintCtx(): TutorialHintCtx {
+    return {
+      bindings: this.settings.bindings,
+      gamepad: this.input.gamepadConnected,
+      touch: this.mqCoarse?.matches ?? false,
+    };
+  }
+
+  /** the tutorial's current card, or null when this run is not a tutorial. */
+  getTutorial(): TutorialView | null {
+    return this.tutorial ? this.tutorial.view(this.hintCtx()) : null;
+  }
+
+  /** SKIP this step — the next one is staged on a fresh world, exactly as a completed one is. */
+  tutorialSkip(): void {
+    if (this.tutorial && !this.tutorial.isFinished) this.advanceTutorial(false);
+  }
+
+  /** REPLAY this step — rebuild and re-stage it, with the nudge clock back at zero. */
+  tutorialReplay(): void {
+    if (!this.tutorial) return;
+    this.tutorial.replay();
+    this.rebuildForTutorial();
+  }
+
+  /**
+   * EXIT the tutorial: drop the runner, set the device flag, and rebuild into an ordinary free
+   * drive on the same screen.
+   *
+   * The flag is set on the way out as well as on completion, and that is deliberate: somebody who
+   * has decided they do not want the tutorial should not be offered it again on every Practice.
+   * Controls keeps an entry that runs it, which is where they get it back.
+   */
+  tutorialExit(): void {
+    if (!this.tutorial) return;
+    this.tutorial.abandon();
+    this.tutorial = null;
+    markTutorialSeen();
+    this.rebuildForTutorial();
   }
 
   /** server-authoritative stepping (predict + reconcile): every tick we apply
@@ -2163,6 +2328,16 @@ export class GameController {
    */
   startMatch(): void {
     if (this.session) return; // the room's host owns the start
+    /**
+     * A TUTORIAL IS NEVER RECORDED, and this is the belt to the braces.
+     *
+     * It runs in free drive, whose phase is `freeplay`, so the guard below already returns — but
+     * the reason matters enough to be stated where somebody would change it: a step's situation is
+     * STAGED onto the world, and a replay rebuilds a run from `{seed, setups, commands}` alone.
+     * Recording a staged world would produce a replay that plays back a different situation from
+     * the one the player drove, which is worse than keeping nothing.
+     */
+    if (this.tutorial) return;
     if (this.world.match.phase !== 'pre') return;
     if (this.world.match.preCountdown != null) return; // already counting down
     this.world = this.makeWorld(false);
@@ -2380,6 +2555,7 @@ export class GameController {
       net: this.session ? this.session.status() : null,
       spectators: this.session?.spectatorCount?.() ?? 0,
       rematch: this.rematchTally(),
+      tutorial: this.getTutorial(),
     };
   }
 
