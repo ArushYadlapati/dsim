@@ -40,8 +40,13 @@ import { trackEvent } from '../analytics';
  *  light theme, exactly like every other HUD chip). Pinning the light-ink cut there
  *  "because the field is dark" puts a white wordmark on a white card. The one
  *  surface that genuinely does not theme is the burned-in replay mark, whose plate
- *  is painted dark by `replayOverlay.ts` — and that one is canvas, not this. */
-function SponsorLogo({ h }: { h: number }) {
+ *  is painted dark by `replayOverlay.ts` — and that one is canvas, not this.
+ *
+ *  EXPORTED for `Contributors.tsx`'s "Presented by" credit: that page is not one of
+ *  `SPONSOR_PLACEMENTS`, so it renders the artwork through this pure component
+ *  rather than through `SponsorMark`, which is the ONE thing allowed to fire the
+ *  impression/click events for a contracted placement — see the note there. */
+export function SponsorLogo({ h }: { h: number }) {
   const w = sponsorLogoWidth(h);
   const alt = `${SPONSOR.name} logo`;
   return (

@@ -1,6 +1,7 @@
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 import { execSync } from 'node:child_process';
+import { readFileSync } from 'node:fs';
 
 // a stable build id (git sha, timestamp fallback) baked into the client AND emitted
 // to /version.json, so a running client can detect that a newer build has deployed.
@@ -10,6 +11,32 @@ const BUILD_ID = (() => {
   } catch {
     return String(Date.now());
   }
+})();
+
+/**
+ * The Contributors page's third-party credit table cites a package VERSION next to its
+ * name, and a hand-typed one drifts the first time `package.json` bumps without anyone
+ * remembering the credits page. Read once here (the same `readFileSync` + `JSON.parse`
+ * `scripts/smoke.ts` already uses for a package.json check) and baked in as a build-time
+ * constant, the same technique as `__BUILD_ID__` above: `src/contributors.ts` never touches
+ * the filesystem itself, and its `declare const` falls back to a literal if this is ever
+ * absent (a non-Vite consumer), matching `net/version.ts`'s `__BUILD_ID__` guard.
+ */
+const THIRD_PARTY_VERSIONS = (() => {
+  const pkg = JSON.parse(readFileSync('package.json', 'utf8')) as {
+    dependencies: Record<string, string>;
+    devDependencies: Record<string, string>;
+  };
+  const versionOf = (name: string): string =>
+    (pkg.dependencies[name] ?? pkg.devDependencies[name] ?? '').replace(/^[\^~]/, '');
+  return {
+    rapier2d: versionOf('@dimforge/rapier2d-compat'),
+    rapier3d: versionOf('@dimforge/rapier3d-deterministic-compat'),
+    three: versionOf('three'),
+    react: versionOf('react'),
+    plusJakartaSans: versionOf('@fontsource-variable/plus-jakarta-sans'),
+    spaceGrotesk: versionOf('@fontsource-variable/space-grotesk'),
+  };
 })();
 
 // The desktop (Electron) build gets NO Vercel env injection, so without this the
@@ -138,7 +165,10 @@ export default defineConfig({
       },
     },
   ],
-  define: { __BUILD_ID__: JSON.stringify(BUILD_ID) },
+  define: {
+    __BUILD_ID__: JSON.stringify(BUILD_ID),
+    __THIRD_PARTY_VERSIONS__: JSON.stringify(THIRD_PARTY_VERSIONS),
+  },
   /**
    * WORKERS ARE BUILT AS ES MODULES, because the LAN host worker code-splits.
    *
