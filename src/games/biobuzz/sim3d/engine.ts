@@ -69,7 +69,8 @@ export function rapier3d(): Rapier3d {
 import type { Alliance, Artifact, BallState, RobotState, World } from '../../../types';
 import { chassisInertia } from '../../../sim/robot';
 import { shoveMass } from '../../../sim/drivetrain';
-import { PHYS_FRICTION, PHYS_WALL_FRICTION, GRAVITY } from '../../../config';
+import { robotExtents } from '../../../sim/physics';
+import { PHYS_FRICTION, PHYS_WALL_FRICTION, GRAVITY, PHYS_SOLVER_ITERS, PHYS_CONTACT_FREQ, PHYS_ALLOWED_ERROR } from '../../../config';
 import { BB3_CCD_SPEED, BB_POLLEN_R } from '../config';
 import {
   buildHiveTray3d,
@@ -81,8 +82,6 @@ import {
   ELEMENT_ROLL_DAMP,
 } from './bodies';
 import { hyp3, QUAT_IDENTITY, round4, yawQuat, yawOfQuat } from './math3';
-
-void PHYS_WALL_FRICTION; // used by buildStatics3d, re-exported here only for readers grepping this file
 
 /** the LAST JSON a robot body was synced to -- what `syncRobot` diffs the CURRENT `RobotState`
  * against to decide "did something outside the solve move this" (see plan section 3.2). */
@@ -116,8 +115,6 @@ export interface Engine3d {
   robots: Map<number, InstanceType<Rapier3d['RigidBody']>>;
   elements: Map<number, InstanceType<Rapier3d['RigidBody']>>;
   hiveTrays: Record<Alliance, InstanceType<Rapier3d['RigidBody']>>;
-  /** collider handle -> robot id, for `robot3d.ts`'s `contactPairsWith` walk. */
-  robotColliderByHandle: Map<number, number>;
   /** element id -> consecutive ticks under `BB3_REST_SPEED` (`derive.ts`'s cell-membership
    * timer). Reset to 0 the instant an element is faster than that, off by any writer. */
   restTicks: Map<number, number>;
@@ -148,7 +145,19 @@ function buildEngine(world: World): Engine3d {
   const RAPIER = rapier3d();
   const world3d = new RAPIER.World({ x: 0, y: 0, z: -GRAVITY });
   world3d.integrationParameters.lengthUnit = 10; // matches the Day 0 spike's inches convention
-  buildStatics3d(RAPIER, world3d);
+  // THE SAME SOLVER TUNING AS THE 2D ROBOT SOLVE (`physicsEngine.ts`'s `makeWorld`), not
+  // Rapier3D's own defaults (4 solver iterations, unset contact frequency/allowed error).
+  // Parity gap found by measurement (this lane's final report): a robot staged flush against
+  // a wall (a real BIOBUZZ start position) spinning on `rotate: 1` for one second gave 2D
+  // 0.298 rad/s against 3D 0.691 (ratio 2.317) even after the collider-footprint and
+  // wall-friction fixes below; matching these three parameters brought it to 1.458, and the
+  // remaining gap turned out to be the check comparing wall-contact friction between two
+  // DIFFERENT Rapier solvers rather than the shared drivetrain model -- see the SIM3D lane's
+  // drive-feel checks, which now measure in the open field instead.
+  world3d.integrationParameters.numSolverIterations = PHYS_SOLVER_ITERS;
+  world3d.integrationParameters.contact_natural_frequency = PHYS_CONTACT_FREQ;
+  world3d.integrationParameters.normalizedAllowedLinearError = PHYS_ALLOWED_ERROR;
+  buildStatics3d(RAPIER, world3d, PHYS_WALL_FRICTION);
   const hiveTrays: Record<Alliance, InstanceType<Rapier3d['RigidBody']>> = {
     red: buildHiveTray3d(RAPIER, world3d, 'red'),
     blue: buildHiveTray3d(RAPIER, world3d, 'blue'),
@@ -158,7 +167,6 @@ function buildEngine(world: World): Engine3d {
     robots: new Map(),
     elements: new Map(),
     hiveTrays,
-    robotColliderByHandle: new Map(),
     restTicks: new Map(),
     captureTicks: new Map(),
     lastRobot: new Map(),
@@ -226,12 +234,39 @@ function syncRobot(RAPIER: Rapier3d, engine: Engine3d, r: RobotState): void {
         .setAngvel({ x: 0, y: 0, z: r.angVel })
         .enabledRotations(false, false, true),
     );
-    const collider = RAPIER.ColliderDesc.cuboid(r.spec.length / 2, r.spec.width / 2, heightIn / 2)
+    /**
+     * THE COLLIDER IS THE 2D SOLVE'S FOOTPRINT, NOT THE BARE CHASSIS BOX -- parity bug found by
+     * measurement (this lane's final report). `solveRobots` (`src/sim/physicsEngine.ts`) builds
+     * its robot-vs-wall/robot-vs-robot collider from `robotExtents` (`front`/`rear`/`half`),
+     * which GROWS the box by the intake reach on whichever edge(s) it is mounted (a `frontback`
+     * sweeper on both fore-and-aft ends) -- the same shared helper DECODE uses. A body built
+     * from `spec.length`/`spec.width` alone is SMALLER on that edge, so a robot staged flush
+     * against a wall (a BIOBUZZ start position sits exactly where `robotExtents`' footprint
+     * touches it) reads NO wall contact in 3D where 2D has one: measured on the default spec
+     * (frontback mount, reach 3) at a wall-flush spawn, one second of `rotate: 1` gave 2D
+     * 0.298 rad/s against 3D's 9.011 rad/s (ratio 30.2) -- not an inertia gap (mass 22.657 and
+     * inertia 970.49 matched to the last digit in both engines, confirmed by probe) but a
+     * MISSING contact: 2D's footprint rear corner sits exactly on the wall's inner face while
+     * the undersized 3D box sat 3in clear of it, so the wall's friction never resisted the spin
+     * the way it does in 2D. The forward drive-feel case is the same root cause seen from the
+     * other side: the same wall-flush spawn has 2D's footprint DRAGGING off the wall for the
+     * first few ticks of a forward command, and the undersized 3D box has nothing to drag
+     * against, reaching 95% of top speed sooner (2D 1.10s vs 3D 0.95s before this fix).
+     *
+     * `forward` OFFSETS the box exactly as `physicsEngine.ts` does (`setTranslation(forward, 0)`
+     * on the collider) so an asymmetric mount (front-only or back-only reach) grows the correct
+     * end -- `hx`/`half` collapse to `spec.length/2`/`spec.width/2` for a mount with no reach,
+     * so this is a strict generalization, not a behavior change, for a robot that has none.
+     */
+    const fe = robotExtents(r);
+    const hx = (fe.front + fe.rear) / 2;
+    const forward = (fe.front - fe.rear) / 2;
+    const collider = RAPIER.ColliderDesc.cuboid(hx, fe.half, heightIn / 2)
+      .setTranslation(forward, 0, 0)
       .setDensity(0) // mass comes ENTIRELY from `setAdditionalMassProperties` below, every tick
       .setFriction(PHYS_FRICTION)
       .setRestitution(0);
-    const c = engine.world3d.createCollider(collider, body);
-    engine.robotColliderByHandle.set(c.handle, r.id);
+    engine.world3d.createCollider(collider, body);
     engine.robots.set(r.id, body);
   }
 

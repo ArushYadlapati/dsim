@@ -69,15 +69,22 @@ export function deriveTick(world: World, engine: Engine3d): void {
     const ticks = atRest ? prevTicks + 1 : 0;
     engine.restTicks.set(b.id, ticks);
     // THE REST SNAP -- the 3D twin of the 2D artifact world's `BALL_REST_SPEED` clamp
-    // (`stepGroundBall`). Angular damping alone (`BB3_ELEMENT_ROLL_DAMP`) asymptotically
-    // approaches zero without ever quite reaching it, so a 'settled' element measurably crept
-    // (~0.1in over 600 further ticks) under sub-threshold residual velocity that never tripped
-    // Rapier's own sleep. Once an element has read AT REST for `BB3_REST_TICKS`, its velocity
-    // is snapped to exactly zero -- on the ONE tick this fires, the JSON changes, so the next
-    // sync teleports the body to zero velocity (leaving position untouched); every tick after
-    // that the JSON already reads zero and the body is left alone, same as any other settled
-    // body.
-    if (ticks === BB3_REST_TICKS && b.state.kind !== 'flight') {
+    // (`stepGroundBall`), and it must fire EVERY tick at rest, not once. `stepGroundBall`
+    // clamps sub-threshold speed to zero on EVERY tick it sees one (`if (ns <= 0 || ns <
+    // BALL_REST_SPEED) { b.vel.x = 0; ... }`, unconditionally, no edge trigger) -- a one-shot
+    // `ticks === BB3_REST_TICKS` fired the clamp ONCE and then left the body alone, so any
+    // velocity Rapier's OWN solver re-introduced on a later tick (a persistently-touching
+    // neighbor's contact bias correction, in a crowded garden line, nudges an overlapping pair
+    // apart a fraction every step) was never clamped again: measured, a garden-line element
+    // drifted 2.3in over 600 further ticks, sliding along a wall it was resting against, well
+    // past the ~0.1in of harmless damping creep this snap was written to catch. `>=` re-snaps
+    // every qualifying tick, matching `stepGroundBall`'s own continuous clamp: once an element
+    // has read AT REST for `BB3_REST_TICKS`, its velocity is held at exactly zero for as long as
+    // it keeps reading at rest, so the next sync teleports the body to zero velocity (position
+    // untouched) the FIRST time, and every tick after that the JSON already reads zero -- but
+    // if the solver hands the body a nonzero velocity again, this clamps it right back down
+    // before it can accumulate into a slide.
+    if (ticks >= BB3_REST_TICKS && b.state.kind !== 'flight') {
       b.vel.x = 0;
       b.vel.y = 0;
       b.vz = 0;

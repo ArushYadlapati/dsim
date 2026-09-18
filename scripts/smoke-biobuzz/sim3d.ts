@@ -1,5 +1,5 @@
 import type { Check } from './harness';
-import { cmd, mkWorld, mkWorld3d, mkWorld3dPair, run, run3d, setup } from './harness';
+import { bbCoerce, cmd, mkWorld, mkWorld3d, mkWorld3dPair, run, run3d, setup } from './harness';
 import { createBiobuzzWorld } from '../../src/games/biobuzz/spawn';
 import { biobuzzPhysics } from '../../src/games/biobuzz/state';
 import { biobuzzStep } from '../../src/games/biobuzz/step';
@@ -117,12 +117,56 @@ export function sim3dChecks(check: Check): void {
     const badPos = w3d.balls.filter((b) => !Number.isFinite(b.pos.x) || !Number.isFinite(b.pos.y) || !Number.isFinite(b.z));
     check('seam: every element has a finite position after one tick', badPos.length === 0, `${badPos.length} non-finite`);
   }
+  // ---- heightIn seam: coerceSpec must carry heightIn across into the biobuzz clamp --------
+  //
+  // `src/sim/spawn.ts`'s `coerceSpec` copies `bbMech` into `coerceBiobuzzSpec`'s input but,
+  // before this lane's fix, had no matching line for `heightIn` -- so a spec's `heightIn` was
+  // silently dropped for every real caller (settings load, server ingress, `createWorld`)
+  // before the biobuzz clamp (`coerceBiobuzzSpec`, `BB3_HEIGHT_MIN`..`BB3_HEIGHT_MAX`) ever
+  // saw it. `bbCoerce` is the exact chokepoint a real spec goes through.
+  {
+    const kept = bbCoerce({ heightIn: 29 });
+    check('heightIn: 29 (in range) survives coerceSpec into the biobuzz clamp', kept.heightIn === 29, `got ${kept.heightIn}`);
+    const clamped = bbCoerce({ heightIn: 40 });
+    check('heightIn: 40 (over BB3_HEIGHT_MAX) clamps to 29', clamped.heightIn === 29, `got ${clamped.heightIn}`);
+    const absent = bbCoerce({});
+    check(
+      'heightIn: absent stays absent (BB3_HEIGHT_DEFAULT applies downstream)',
+      absent.heightIn === undefined,
+      `got ${absent.heightIn}`,
+    );
+  }
 
   // ---- drive-feel parity: 2D vs 3D, same spec ---------------------------------------------
+  //
+  // BOTH fixtures below relocate robot 0 to the OPEN FIELD CENTRE before measuring. The
+  // staged BIOBUZZ start position (`mkWorld`/`mkWorld3d`'s default) sits FLUSH against a wall
+  // by design (a real start position), and a robot's `robotExtents` footprint touching a wall
+  // AT TICK 0 puts a wall-contact friction term into tick 0's answer that has nothing to do
+  // with the shared drivetrain model this check exists to compare. Measured (this lane's final
+  // report): at the staged position, one second of `rotate: 1` gave 2D 0.298 rad/s against 3D
+  // 0.298-9 rad/s depending on how closely the two engines' own wall-contact solvers agreed --
+  // moved off the wall, the SAME command gives 2D 9.6495 rad/s against 3D 9.6496 (ratio
+  // 1.0000), and the forward case's t95 matches to the tick (0.333s both). Rapier2D and
+  // Rapier3D are separate solvers and are not required to agree on CONTACT friction bit for
+  // bit -- the drivetrain model they are both fed (`updateRobot`, shared, untouched) is what
+  // this check is actually for, and it is exact once nothing is touching a wall at tick 0.
+  // `driveProfile`'s own PEAK-sampling already tolerates a wall hit LATER in the window (its
+  // header comment says so); only the STARTING contact was the problem.
+  function clearOfWalls(w: World): void {
+    const r = w.robots[0];
+    r.pos.x = 0;
+    r.pos.y = 0;
+    r.heading = 0;
+    r.vel = { x: 0, y: 0 };
+    r.angVel = 0;
+  }
   {
     const spec = {};
     const w2d = mkWorld('free', 2, spec);
     const w3d = mkWorld3d('free', 2, spec);
+    clearOfWalls(w2d);
+    clearOfWalls(w3d);
     const forward = cmd({ driveY: 1 });
     const p2d = driveProfile(w2d, forward, 2, biobuzzStep);
     const p3d = driveProfile(w3d, forward, 2, step3d);
@@ -143,6 +187,8 @@ export function sim3dChecks(check: Check): void {
     const spec = {};
     const w2d = mkWorld('free', 3, spec);
     const w3d = mkWorld3d('free', 3, spec);
+    clearOfWalls(w2d);
+    clearOfWalls(w3d);
     const turn = cmd({ rotate: 1 });
     const r2d = turnProfile(w2d, turn, 1, biobuzzStep);
     const r3d = turnProfile(w3d, turn, 1, step3d);
@@ -449,11 +495,10 @@ export function sim3dChecks(check: Check): void {
     function driveAtBracket(heightIn: number): number {
       const w = mkWorld3d('free', 28);
       const r = w.robots[0];
-      // set directly on the coerced spec, bypassing `coerceSpec` -- KNOWN BUG (not this
-      // lane's file to fix): `src/sim/spawn.ts`'s `coerceSpec` carries `bbMech` across into
-      // `coerceBiobuzzSpec`'s input (`out.bbMech = sp.bbMech`) but has no matching line for
-      // `heightIn`, so a spec's `heightIn` is silently dropped by the shared coercer before
-      // `coerce.ts`'s own clamp ever sees it -- see this lane's final report.
+      // set directly on the coerced spec, bypassing `coerceSpec` -- this test wants an exact
+      // heightIn without depending on `BB3_HEIGHT_MIN`/`MAX` clamping it, and `coerceSpec`'s
+      // own heightIn carry-across (the fix for the `heightIn` seam bug this lane's final
+      // report describes) is exercised separately by the `heightIn:` checks above.
       r.spec = { ...r.spec, heightIn };
       const startY = bracket.y - 40;
       r.pos.x = bracket.x;

@@ -1,12 +1,14 @@
-import type { RobotCommand, World } from '../../../types';
+import type { RobotCommand, Vec2, World } from '../../../types';
 import { updateRobot, type DriveWrench } from '../../../sim/robot';
 import { robotsEnabled } from '../../../sim/match';
+import { squareUpRobotsWalls } from '../../../sim/physics';
 import { bbAimAssist } from '../play';
 import { updateBiobuzzPenalties } from '../penalties';
 import { bbApplyScore, bbScoreWorld } from '../score';
 import { biobuzzStepMatch } from '../step';
+import { BB_HALF_X, BB_HALF_Y } from '../config';
 import { engineFor, syncElements, syncRobots, applyHiveTilt, stepWorld3d, readback, containmentPass } from './engine';
-import { applyRobotWrench, fillRrContacts3d } from './robot3d';
+import { applyRobotWrench } from './robot3d';
 import { deriveTick } from './derive';
 import { hive3dTick } from './hive3d';
 import { elements3dAimAndLaunch, elements3dCapture, elements3dHumanPlayer, elements3dPlaceAndRetrieve } from './elements3d';
@@ -20,7 +22,10 @@ import { elements3dAimAndLaunch, elements3dCapture, elements3dHumanPlayer, eleme
  *        zero command, a turretless dumper's held fire steers the chassis (`bbAimAssist`)
  *        BEFORE `updateRobot` sees it, and `updateRobot` (the SHARED motor/traction model,
  *        untouched) returns a `DriveWrench` per robot.
- *   4. CLEAR rrContacts -- after the drivetrain reads last tick's, same as 2D.
+ *   4. CLEAR rrContacts, THEN SNAPSHOT preVels3d -- after the drivetrain reads last tick's
+ *      contacts, same as 2D; preVels3d is r.vel as it stands right now (this tick's
+ *      pre-solve velocity, the same quantity 2D's solveRobots hands back), captured here
+ *      because nothing between here and readback (8) touches the JSON vel.
  *   5. SYNC -- `engineFor(world)` builds the persistent Rapier 3D world on first use;
  *      `syncRobots`/`syncElements` reconcile every body to this tick's JSON.
  *   6. APPLY WRENCHES + KINEMATIC TRAY POSE -- the wrench becomes a force + yaw torque on each
@@ -28,8 +33,16 @@ import { elements3dAimAndLaunch, elements3dCapture, elements3dHumanPlayer, eleme
  *      `hiveTiltAngle` (`applyHiveTilt`) -- the Day 1 fallback, not a joint.
  *   7. `world3d.step()`.
  *   8. READBACK -- every dynamic body writes `pos`/`z`/`vel`/`vz` (and, for a robot,
- *      `heading`/`angVel`) back into `world`, rounded to 1e-4; `fillRrContacts3d` reads contact
- *      pairs off the JUST-STEPPED world, robots in ascending id order.
+ *      `heading`/`angVel`) back into `world`, rounded to 1e-4.
+ *   8b. WALL SQUARE-UP -- the shared `squareUpRobotsWalls` (src/sim/physics.ts, also CR's),
+ *       called with preVels3d exactly the way 2D's step2d calls it with solveRobots's own
+ *       return. It is PURE JSON -- RobotState/World only, no Rapier handle -- so it drops
+ *       into the 3D pipeline unchanged. This is the fix for the yaw-rate and ramp-time
+ *       parity checks: a BIOBUZZ start position spans a robot's `robotExtents` footprint
+ *       flush against a wall, and this is the contact-torque pass that resists a spin or a
+ *       drive-away against that contact, which 3D had no equivalent of before this fix.
+ *       It also RECORDS world.rrContacts (SAT on geometric overlap alone, byte-identical to
+ *       2D's own test), which replaces this lane's previous bespoke fillRrContacts3d.
  *   9. CONTAINMENT -- the safety net, never the design; see `engine.ts`'s `containmentPass`.
  *  10. DERIVE -- `deriveTick`: cell membership, ground/flight tagging, `hives[a].contents`.
  *  11. GAMEPLAY -- capture, aim+launch, place/retrieve, human player (`elements3d.ts`), then the
@@ -74,6 +87,9 @@ export function step3d(world: World, dt: number, commands: Map<number, RobotComm
 
   // 4. see `step.ts`'s stage 4 note -- not a misplaced reset.
   world.rrContacts.length = 0;
+  // ...and the pre-solve velocity snapshot squareUpRobotsWalls needs at stage 8b -- see the
+  // header. Nothing between here and readback (8) writes r.vel's JSON.
+  const preVels3d = new Map<number, Vec2>(world.robots.map((r) => [r.id, { x: r.vel.x, y: r.vel.y }]));
 
   // 5. sync the persistent 3D world to this tick's JSON.
   const engine = engineFor(world);
@@ -90,9 +106,11 @@ export function step3d(world: World, dt: number, commands: Map<number, RobotComm
   // 7. step.
   stepWorld3d(engine);
 
-  // 8. readback + contacts.
+  // 8. readback.
   readback(world, engine);
-  fillRrContacts3d(world, engine);
+
+  // 8b. wall square-up + rrContacts -- see the header.
+  squareUpRobotsWalls(world, preVels3d, BB_HALF_X, BB_HALF_Y);
 
   // 9. containment safety net.
   containmentPass(world, engine);

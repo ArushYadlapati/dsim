@@ -1,4 +1,4 @@
-import type { RobotState, World } from '../../../types';
+import type { RobotState } from '../../../types';
 import type { DriveWrench } from '../../../sim/robot';
 import type { Engine3d } from './engine';
 import { robotBodyOf } from './engine';
@@ -50,38 +50,10 @@ export function applyRobotWrench(engine: Engine3d, robotId: number, w: DriveWren
 }
 
 /**
- * FILL `world.rrContacts` FROM THE 3D SOLVE -- the twin of the 2D `physics.ts`'s
- * `squareUpPair`, which records a pair "on geometric overlap alone" (see `docs/area/physics.md`)
- * so `updateRobot`'s shoved/leaning read of LAST tick's contacts works the same way in 3D.
- *
- * DETERMINISTIC ITERATION: robots by ascending id, then `contactPairsWith` on that robot's own
- * chassis collider -- matching every OTHER robot collider it is actually touching, filtered
- * through `robotColliderByHandle` so a contact with a STATIC (a wall, the hive frame, a flower
- * foot) or with an ELEMENT never becomes an `rrContacts` entry. `a < b` (by id), the same
- * ordering convention `rrContacts` has always carried, so a set built here reads identically to
- * one the 2D pass built.
+ * `world.rrContacts` is no longer filled from here. It used to walk the 3D solve's own
+ * contact pairs (`contactPairsWith` on each robot's chassis collider), but the shared
+ * `squareUpRobotsWalls` (`src/sim/physics.ts`, called from `step3d.ts` stage 8b) already
+ * records the SAME set from a SAT test on `RobotState`/`World` JSON alone -- the identical
+ * test 2D runs, so a set built there is byte-parity with 2D by construction, where a 3D-solve
+ * contact set was merely close to it. Keeping both would double-record every touching pair.
  */
-export function fillRrContacts3d(world: World, engine: Engine3d): void {
-  const ids = [...world.robots.map((r) => r.id)].sort((x, y) => x - y);
-  const seen = new Set<string>();
-  for (const id of ids) {
-    const body = engine.robots.get(id);
-    if (!body) continue;
-    const n = body.numColliders();
-    for (let i = 0; i < n; i++) {
-      const collider = body.collider(i);
-      engine.world3d.contactPairsWith(collider, (other) => {
-        const otherBody = other.parent();
-        if (!otherBody) return;
-        const otherId = engine.robotColliderByHandle.get(other.handle);
-        if (otherId === undefined || otherId === id) return;
-        const a = Math.min(id, otherId);
-        const b = Math.max(id, otherId);
-        const key = `${a}-${b}`;
-        if (seen.has(key)) return;
-        seen.add(key);
-        world.rrContacts.push({ a, b });
-      });
-    }
-  }
-}

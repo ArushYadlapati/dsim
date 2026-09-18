@@ -85,7 +85,11 @@ const FLOOR_HALF_T = 10;
  * two hive frame legs, and the four flower feet -- named order, fixed every call (determinism:
  * plan section 2.1's "statics (named, fixed order)").
  */
-export function buildStatics3d(RAPIER: Rapier3d, world3d: InstanceType<Rapier3d['World']>): void {
+export function buildStatics3d(
+  RAPIER: Rapier3d,
+  world3d: InstanceType<Rapier3d['World']>,
+  wallFriction: number,
+): void {
   const ground = world3d.createRigidBody(RAPIER.RigidBodyDesc.fixed().setTranslation(0, 0, -FLOOR_HALF_T));
   // FRICTION 0, DELIBERATELY. The shared `updateRobot` wrench is already the traction-limited,
   // motor-modelled FINAL force (`docs/area/physics.md`) -- the 2D solve has no floor at all, so
@@ -122,8 +126,17 @@ export function buildStatics3d(RAPIER: Rapier3d, world3d: InstanceType<Rapier3d[
     const body = world3d.createRigidBody(
       RAPIER.RigidBodyDesc.fixed().setTranslation(s.tx, s.ty, half).setRotation(yawQuat(s.rot)),
     );
+    // WALL/FRAME/FLOWER FRICTION MATCHES THE 2D SOLVE'S -- `physicsEngine.ts`'s `buildStatics`
+    // applies ONE friction (`PHYS_WALL_FRICTION`) to every entry of `colliders.statics`
+    // (walls, frame bars, flower feet alike), and a hardcoded 0.5 here was a real parity gap:
+    // measured on a robot staged flush against a wall (a BIOBUZZ start position), a
+    // `rotate: 1` for one second gave 2D 0.298 rad/s against 3D 0.691 (ratio 2.317) even after
+    // the collider-footprint fix below, because the ROBOT-WALL pair combines by the default
+    // Average rule and 0.5 (here) undershoots PHYS_WALL_FRICTION (0.65) enough to matter --
+    // effective 2D pair 0.40 (avg of `PHYS_FRICTION` 0.15 and 0.65) against 3D's 0.325 (avg of
+    // 0.15 and 0.5).
     world3d.createCollider(
-      RAPIER.ColliderDesc.cuboid(s.hx, s.hy, half).setFriction(0.5).setRestitution(0),
+      RAPIER.ColliderDesc.cuboid(s.hx, s.hy, half).setFriction(wallFriction).setRestitution(0),
       body,
     );
   });
