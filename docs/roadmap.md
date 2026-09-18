@@ -68,7 +68,7 @@ Sizes are working days for one agent; "exists" cites what the survey found so no
 - **Risk.** WebGL readback cost per frame at 1920 (measure; the fast path re-simulates as fast as it
   can, so a 2× slower frame is acceptable, a 10× one is not).
 
-### 3. Robot customization (cosmetics) — plan first (`docs/cosmetics-plan.md` → `feat/cosmetics`)
+### 3. Robot customization (cosmetics) — plan first ([docs/cosmetics-plan.md](cosmetics-plan.md) → `feat/cosmetics`)
 
 - **Exists.** `RobotSpec.chassisColor` on a 7-key allowlist (`CHASSIS_COLORS`, `chassisFill`),
   validated in `coerceSpec` (never a free hex on the wire), supporter-gated in the menu, rendered by
