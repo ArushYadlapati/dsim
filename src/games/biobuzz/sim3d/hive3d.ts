@@ -306,12 +306,27 @@ function hiveDynamicTick(world: World, engine: Engine3d): void {
 
     // settled. Has the detent broken? The tray leaving its stop is the only evidence there is.
     if (Math.abs(theta) < STOP_RAD) {
-      // every element in the cell is tagged NOW, at the top of the swing, rather than on the
-      // tick each one crosses the lip: while it is still in the tray the only thing it touches
-      // IS the tray, so `step3d.ts`'s "first non-tray contact" rule gives the identical answer
-      // from a rule that does not need a per-element lip test. See `BiobuzzState.spill`.
+      /**
+       * Every element in the cell is tagged NOW, at the top of the swing, rather than on the
+       * tick each one crosses the lip: while it is still in the tray the only thing it touches
+       * IS the tray, so `contacts3d.ts`'s "first NON-TRAY contact" rule gives the identical
+       * answer from a rule that needs no per-element lip test. See `BiobuzzState.spill`.
+       *
+       * ⚠️ IT IS THE POSITION TEST, NOT `hive.contents`. Membership needs `BB3_REST_TICKS` of
+       * stillness before it will call an element part of the cell, which is right for SCORING —
+       * a shot crossing the mouth is not yet in it — and wrong here: a tray loaded past its
+       * threshold in one volley starts swinging before anything has settled, and reading
+       * `contents` then tags an empty set. Measured on a staged 8-POLLEN tip, which broke away
+       * on tick 2 with `contents` still reading 0.
+       */
       const spill = (bb.spill ??= {});
-      for (const id of hive.contents) spill[id] = a;
+      for (const b of world.balls) {
+        if (b.state.kind === 'held' || b.state.kind === 'stock') continue;
+        const z = b.z + (b.r ?? BB_POLLEN_R);
+        if (insideCell(b.pos.x, b.pos.y, z, a, 1, theta) || insideCell(b.pos.x, b.pos.y, z, a, -1, theta)) {
+          spill[b.id] = a;
+        }
+      }
       bb.hives[a] = { ...hive, tipping: tippingFromAngle(theta, upSign), released: false };
     }
   }

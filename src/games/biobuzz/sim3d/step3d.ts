@@ -10,6 +10,7 @@ import { BB_HALF_X, BB_HALF_Y } from '../config';
 import { engineFor, syncElements, syncRobots, applyHiveTilt, stepWorld3d, readback, containmentPass } from './engine';
 import { applyRobotWrench } from './robot3d';
 import { deriveTick } from './derive';
+import { hiveContactPass } from './contacts3d';
 import { hive3dJointTick, hive3dTick } from './hive3d';
 import { elements3dAimAndLaunch, elements3dCapture, elements3dHumanPlayer, elements3dPlaceAndRetrieve } from './elements3d';
 
@@ -44,6 +45,9 @@ import { elements3dAimAndLaunch, elements3dCapture, elements3dHumanPlayer, eleme
  *       It also RECORDS world.rrContacts (SAT on geometric overlap alone, byte-identical to
  *       2D's own test), which replaces this lane's previous bespoke fillRrContacts3d.
  *   9. CONTAINMENT -- the safety net, never the design; see `engine.ts`'s `containmentPass`.
+ *  9b. CONTACT RULES -- G409 (a robot catching a spilling element) and G417 (ramming the HIVE),
+ *      the only two BIOBUZZ rules whose subject is a contact rather than a position, and both
+ *      3D-only for that reason (`contacts3d.ts`).
  *  10. DERIVE -- `deriveTick`: cell membership, ground/flight tagging, `hives[a].contents`.
  *  11. GAMEPLAY -- capture, aim+launch, place/retrieve, human player (`elements3d.ts`), then the
  *      hive TIMER over what derive just wrote (`hive3dTick`) -- in that order, so a tip
@@ -114,6 +118,12 @@ export function step3d(world: World, dt: number, commands: Map<number, RobotComm
 
   // 9. containment safety net.
   containmentPass(world, engine);
+
+  // 9b. THE CONTACT RULES -- G409's spill tag and G417's hive ram, read off the pairs the step
+  //     just resolved (`contacts3d.ts`). BEFORE derive, because `derive.ts` is about to re-tag
+  //     every element and a spilled one has to be judged against the contact that actually
+  //     happened rather than against the state it ends the tick in.
+  if (world.biobuzz) hiveContactPass(world, engine);
 
   // 10. derive.
   deriveTick(world, engine);

@@ -110,6 +110,32 @@ export function bbAwardFoul(
 }
 
 /**
+ * **G409** — "ROBOTS may not catch SCORING ELEMENTS spilling from a TIPPED HIVE" (Table 10-4:
+ * VERBAL WARNING; YELLOW CARD if STRATEGIC). Called by `sim3d/contacts3d.ts` on the tick a
+ * spilling element's FIRST non-tray contact turns out to be a robot.
+ *
+ * ── A WARNING, AND ONLY A WARNING ───────────────────────────────────────────
+ * The base sanction in Table 10-4 is verbal, and the escalation is a CARD rather than a FOUL —
+ * and BIOBUZZ has no card machinery at all (`bbAwardFoul`'s own note). So there is no points
+ * branch here to get wrong: a caught spill costs nothing and says so, which is exactly what a
+ * referee saying "blue, don't catch that" across the field is worth.
+ *
+ * `offender` is the alliance whose HIVE spilled the element, and the ROBOT is what the line
+ * names — a robot may perfectly well catch the OPPONENT's spill, and the rule does not care
+ * whose hive it fell out of. Billed once PER ELEMENT, by construction: `contacts3d.ts` deletes
+ * the tag in the same breath, and an element has exactly one first contact.
+ *
+ * ⚠️ 3D ONLY. The 2D pipeline hands a spill straight to the tiles (`spillPoses`), so there is no
+ * flight and no first contact to catch — `penalties.ts` has always recorded G409 as "not
+ * modelled (spill lands on tiles)" and that stays true for that pipeline.
+ */
+export function bbBillG409(world: World, spilledBy: Alliance, robotId: number): void {
+  const robot = world.robots.find((r) => r.id === robotId);
+  if (!robot) return;
+  bbAwardFoul(world, robot.alliance, 'warning', `G409 caught ${spilledBy.toUpperCase()}'s spilling SCORING ELEMENT`);
+}
+
+/**
  * G407's OWN NUMBER: "A ROBOT may not CONTROL more than 4 SCORING ELEMENTS."
  *
  * It lives here rather than in `config.ts` because it is a RULE and this is the rules file —
@@ -416,7 +442,35 @@ export function updateBiobuzzPenalties(
      * is the expensive half to lose. The `bb.foulEdge` / `flags.g417billed` keys simply stop
      * being written, which is inert: nothing else reads them.
      */
-    if (!BB_G417_ENABLED) break;
+    /**
+     * ✅ **AND IT IS BACK ON IN 3D, FOR THE REASON IT WAS TURNED OFF.** The ruling above is not
+     * "G417 is unfair", it is "no robot in this sim can move the HIVE". Under the DYNAMIC
+     * see-saw (`BB3_HIVE_DYNAMIC`, plan §3.6) the tray IS a body a 29-in chassis reaches and
+     * shoves, so the outcome the rule exists to prevent is one a driver can now produce — and a
+     * rule that can be earned is a rule that may be billed.
+     *
+     * The evidence is `bb.hiveRam`, written by `sim3d/contacts3d.ts` from the 3D solve's own
+     * contact pairs: robot id → the closing speed along the contact normal, already filtered at
+     * `BB_FRAME_RAM_SPEED`. That is the SAME test `frameRam` makes below, asked of a real
+     * contact instead of of a guess at which bar face the robot is against.
+     *
+     * A 2D world never writes the field, so this branch is absent there and the 2D pipeline is
+     * byte-identical — which is why the rule comes back as a READ of physics rather than as a
+     * flag flip on `BB_G417_ENABLED`, whose ruling still stands for the pipeline it was made for.
+     */
+    if (!r.passive && bb.hiveRam && bb.hiveRam[r.id] !== undefined) {
+      const key3d = `g417-${r.id}`;
+      if (!bb.foulEdge[key3d]) {
+        const flags = (bb.held[r.id] ??= {});
+        if (!flags.g417billed) {
+          flags.g417billed = true;
+          bbAwardFoul(world, r.alliance, 'major', 'G417 STRATEGIC ramming of the HIVE');
+        }
+      }
+      seen[key3d] = true;
+      continue;
+    }
+    if (!BB_G417_ENABLED) continue;
     if (r.passive) continue;
     const ram = frameRam(r);
     if (ram === null) continue;
