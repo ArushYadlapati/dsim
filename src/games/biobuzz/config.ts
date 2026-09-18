@@ -38,7 +38,7 @@
  * empty field, because it would look finished.
  */
 
-import type { Alliance, AssistConfig, RobotSpec, StartCat, Vec2 } from '../../types';
+import type { Alliance, AssistConfig, RobotSpec, StartCat, Vec2, World } from '../../types';
 import { INTAKE_PRESETS, ROBOT_MAX_SIZE } from '../../config';
 import { dcos, wrapAngle } from '../../math';
 import { lengthLimits, massLimits, widthLimits } from '../../sim/drivetrain';
@@ -1627,3 +1627,252 @@ export const PREDICT_LIGHT_BUDGET_MS = 1;
  * because both predictors and the Auto probe are sized against it and neither may import the
  * controller (it is DOM-adjacent and Lane C's). */
 export const PREDICT_MAX_TICKS = 40;
+
+// ─────────────────────────────────────────────────────────────────────────────
+// R102: THE STARTING CUBE, AND THE DEPLOY LATCH (Day 3, `docs/biobuzz/plan-3d.md` §3.3)
+//
+// `BB3_HEIGHT_MAX` above is R105.A's EXPANDED 29 in. R102 is the other half of the same pair:
+// the STARTING CONFIGURATION is an 18-inch cube, so a build that stands taller than 18 in has
+// to fold to get under it and unfold once the match starts. Nothing in the 2D pipeline has ever
+// asked; the 3D robot is a cuboid `length × width × heightIn`, so the day the height became
+// real the start height became real with it.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * R102's starting cube, vertical dimension (in) — the height a ROBOT must be inside at the
+ * start of the MATCH. `ROBOT_MAX_SIZE` is the same 18 the two horizontal dimensions are capped
+ * at (`BB_EXPANSION` is written against it), so this NAMES the vertical one rather than
+ * declaring a second 18 that could drift from it.
+ */
+export const BB3_STOW_MAX = ROBOT_MAX_SIZE;
+
+/** the height this build stands at once it has DEPLOYED (in) — `heightIn`, with the absent
+ * default spelled once. */
+export function bbDeployedHeightIn(spec: RobotSpec): number {
+  return spec.heightIn ?? BB3_HEIGHT_DEFAULT;
+}
+
+/**
+ * THE HEIGHT THIS BUILD STARTS THE MATCH AT (in) — its STOWED height.
+ *
+ * ⚠️ **IT IS DERIVED, AND THAT IS A DECISION WITH A DATE ON IT.** `RobotSpec` carries no
+ * `stowHeightIn` field: adding one is a `src/types.ts` edit plus a carry-across in the shared
+ * `coerceSpec` (`src/sim/spawn.ts`), both of which are outside this game's tree. So until that
+ * field lands, a build is MODELLED as folding to exactly R102's cube — which is the honest
+ * default for this game, because every BIOBUZZ build carries a DEPLOYING sweeper (see
+ * `bbSizeLimits`' header: the sweeper is the reason chassis + reach is judged against R105's
+ * prism and not against R102's cube) and a tall mechanism folds onto the deck the same way.
+ *
+ * A DECLARED stow WINS, and it is read STRUCTURALLY — `spec.stowHeightIn` if it is a finite
+ * number — so the rule binds the day the field exists without a second edit here. That is also
+ * what makes `bbStowLegal` REFUSABLE today rather than true by construction: a spec off the
+ * wire that declares a 22-in stow on a 29-in robot is refused, and the smoke lane pins it.
+ *
+ * Never above the deployed height: a robot cannot stow TALLER than it stands.
+ */
+export function bbStowHeightIn(spec: RobotSpec): number {
+  const deployed = bbDeployedHeightIn(spec);
+  const declared = (spec as { stowHeightIn?: unknown }).stowHeightIn;
+  if (typeof declared === 'number' && Number.isFinite(declared)) return Math.min(declared, deployed);
+  return Math.min(deployed, BB3_STOW_MAX);
+}
+
+/** R102: does this build start inside the 18-in cube? The BUILD half of start legality — it is
+ * a property of the robot, not of the pose, which is why `startLegal` answers it for an absent
+ * pose too (a named anchor seats a legal POSE; it cannot seat a legal HEIGHT). */
+export function bbStowLegal(spec: RobotSpec): boolean {
+  return bbStowHeightIn(spec) <= BB3_STOW_MAX + 1e-9;
+}
+
+/**
+ * IS THE ROBOT DEPLOYED RIGHT NOW — a READ of `world.match`, not a latch (plan §3.3).
+ *
+ * A latch would be a fourth thing that can disagree with the phase clock, and it would have to
+ * ride `BiobuzzState` onto the wire, into every snapshot and into every replay to say something
+ * the phase already says. Deployment happens once, at the edge out of `pre`, and never comes
+ * back — so "has the match started" IS "is the robot deployed", and `freeplay` (free drive,
+ * which never has a `pre`) is deployed by the same reading.
+ */
+export function bbDeployed(world: World): boolean {
+  return world.match.phase !== 'pre';
+}
+
+/** the height the 3D chassis collider is built to RIGHT NOW: stowed before the match, deployed
+ * after. The one reader is `sim3d/`, which rebuilds the collider at the edge. */
+export function bbHeightNow(world: World, spec: RobotSpec): number {
+  return bbDeployed(world) ? bbDeployedHeightIn(spec) : bbStowHeightIn(spec);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// AI DRIVERS (Day 3, `docs/biobuzz/plan-3d.md` §6) — the tuning `src/games/biobuzz/ai/` reads.
+//
+// EVERY NUMBER HERE IS `APPROX` AND NONE OF IT IS A RULE. These are a scripted driver's habits:
+// how often it re-decides, how far off a wall it squares up, where it stands to shoot. Nothing
+// in the manual constrains any of them, nothing else in the sim reads them, and changing one
+// changes how well a bot plays and NOTHING ELSE — no score, no foul, no geometry. They live in
+// this file rather than in `ai/` so the whole game's tuning is greppable in one place.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * How often a bot RE-DECIDES, in ticks (plan §6: "re-decides every 6 ticks").
+ *
+ * Between decisions it HOLDS the command it last returned, which is what makes a bot seat's
+ * recorded track hold-last friendly: a replay's command array compresses runs, and a driver
+ * that emitted a fresh float every tick would be many times the bytes of a human's for no
+ * benefit. It is also the right time constant for the job — 100 ms is about a human driver's
+ * reaction, and a policy that re-solved a ballistic arc 60 times a second would chatter its
+ * own aim.
+ */
+export const BB_AI_DECIDE_TICKS = 6;
+
+/** how close to a perimeter wall (in) a bot squares its chassis up to it instead of steering
+ * freely. Inside this band a diagonal approach catches a corner and wedges; square to the wall
+ * it slides. APPROX. */
+export const BB_AI_WALL_NEAR = 10;
+
+/** how near the goal (in) counts as arrived — the bot stops translating and works the
+ * mechanism. APPROX. */
+export const BB_AI_ARRIVE_TOL = 2.5;
+
+/**
+ * ARRIVAL: inside this radius (in) a bot eases off the stick, down to `BB_AI_SLOW_FLOOR` of its
+ * tier's cap at the goal itself.
+ *
+ * ⚠️ **WITHOUT IT, THE FASTEST TIER IS THE WORST ONE.** A bot holds one command for
+ * `BB_AI_DECIDE_TICKS`, which at a legal top speed is about 8 in of travel — more than the 2.5-in
+ * arrival tolerance — so a bot that drives at full stick right up to its firing spot sails past
+ * it, turns around, and sails past it again, and never spends a decision window lined up. It was
+ * measured: HARD (cap 1.0) scored 50.8 mean against an idle opponent while MEDIUM (cap 0.8)
+ * scored 68.7, purely on overshoot. APPROX.
+ */
+export const BB_AI_SLOW_RADIUS = 12;
+export const BB_AI_SLOW_FLOOR = 0.3;
+
+/**
+ * How near the COLLECT goal (in) counts as arrived — far tighter than `BB_AI_ARRIVE_TOL`,
+ * because the collect goal is not a place, it is an ALIGNMENT.
+ *
+ * ⚠️ **THE ORDINARY TOLERANCE DEADLOCKS THE INTAKE.** The goal is the pose that puts the mouth
+ * RECT's centre on the element, and the rect is only a few inches deep (`bbMouths`: `depth`
+ * inside the frame, `reach` outside it). Stop 2.5 in short of that and the element is outside
+ * the rect, `rectContains` says no, the bot reports "arrived", stops driving, and both sit there
+ * — measured, for 140 seconds of one match, with the hopper at 2 and an element 2.5 in from the
+ * roller. APPROX.
+ */
+export const BB_AI_GRAB_TOL = 0.5;
+
+/**
+ * How many DECISIONS a bot spends on one element before giving up on it, and how many it then
+ * ignores it for.
+ *
+ * Some elements are genuinely unreachable — wedged in a corner behind the FLOWER foot, pinned
+ * under the HIVE frame bar, resting against a chassis. Nothing in a position read says which, so
+ * the bot finds out the only way it can: it tries, and if the hopper has not grown by the time
+ * the patience runs out it goes and does something else. Without this the nearest-element rule is
+ * a trap — the unreachable element stays the nearest one forever. APPROX.
+ */
+export const BB_AI_TARGET_PATIENCE = 40;
+export const BB_AI_TARGET_COOLDOWN = 120;
+
+/**
+ * How far around a given-up element (in) the bot writes off its NEIGHBOURS too.
+ *
+ * ⚠️ **WITHOUT IT, GIVING UP ON ONE ELEMENT IS GIVING UP ON NOTHING.** Elements that cannot be
+ * reached are almost never alone — they are a PILE, in a corner, behind a FLOWER foot, against
+ * the perimeter, because whatever put one there put its neighbours there too. A bot that writes
+ * off exactly one then picks the element six inches to its left and spends the same patience on
+ * it, and the one after that. Measured: a HARD bot ground through a corner pile for 90 seconds
+ * of a 150-second match — pressed against the wall the whole time, never captured anything,
+ * finished on 34 points against its own 110-point solo average. APPROX.
+ */
+export const BB_AI_GIVEUP_RADIUS = 8;
+
+/**
+ * COMMITMENT: how much closer a NEW element has to be, as a fraction of the distance to the one
+ * the bot is already going for, before it is worth switching.
+ *
+ * ⚠️ **A GREEDY NEAREST-ELEMENT RULE RE-EVALUATED EVERY DECISION DOES NOT CONVERGE.** Halfway to
+ * an element, the nearest one is usually a DIFFERENT element — the bot has moved, the field has
+ * moved, and whichever it now turns toward will be beaten by a third a moment later. The bot
+ * arrives nowhere, and the effect is WORST for the tier that re-decides most, which is the tier
+ * that is meant to be best: the same policy with hesitation (a tier that skips most decisions and
+ * therefore keeps last window's plan) out-collected the one without it. Hysteresis is the fix,
+ * and it belongs in the policy rather than in a tier's hands. APPROX.
+ */
+export const BB_AI_SWITCH_FRAC = 0.6;
+
+/** P gain on a bot's heading error, per radian, before the ±1 clamp. 2.2 settles a chassis
+ * inside a decision window without overshooting into a hunt. APPROX. */
+export const BB_AI_TURN_GAIN = 2.2;
+
+/**
+ * VERTICAL CLEARANCE a bot keeps under the HIVE (in), on top of its own height.
+ *
+ * `BB_HIVE_LOWEST_Z` (30.652, CAD) is the lowest structure on the assembly, so a 29-in robot
+ * clears it by 1.65 in on paper and by nothing at all once its mechanism, its held elements or
+ * a tilted tray are in the way. A bot that is `heightIn + this` or taller stays out of the
+ * footprint entirely — plan §6's "stay clear of the hive footprint when tall". APPROX.
+ */
+export const BB_AI_HIVE_CLEARANCE = 2;
+
+/** how far outside the HIVE's own footprint (in) the keep-out reaches for a tall bot. APPROX. */
+export const BB_AI_HIVE_KEEPOUT_PAD = 6;
+
+/**
+ * Where a bot STANDS to shoot, measured OUTBOARD of the up CELL's mouth (in).
+ *
+ * Outboard, not anywhere: `hiveAccepts` takes an element only over the cell's open outer lip
+ * (`hiveApproachSign`), so a stand-off on the pivot side is a shot that bounces off the closed
+ * back. Two numbers because the two launchers have opposite failure modes — a TURRET too CLOSE
+ * runs out of elevation (the arc to a 59-in cell from 15 in away wants 81°, past
+ * `BB_TURRET_PITCH_MAX`), a DUMPER too FAR runs out of `BB_DUMP_MAX_DIST`. Both APPROX.
+ */
+export const BB_AI_TURRET_STANDOFF = 36;
+export const BB_AI_DUMP_STANDOFF = 20;
+
+/** how close to its own LOADING ZONE (in) a bot has to be before it spends a NECTAR entry
+ * (`bbNectar`). A NECTAR sitting in the zone is one the opponent can drive to, so the entry is
+ * spent when the robot is there to collect it — the same thing a drive team does. APPROX. */
+export const BB_AI_LZ_GUARD = 42;
+
+/**
+ * How much room (in) a bot keeps around ANOTHER ROBOT, on top of the two half-diagonals.
+ *
+ * ⚠️ **THIS IS A FOUL AVOIDANCE NUMBER, NOT A DRIVING STYLE.** Measured before it existed: a
+ * full-speed bot routing straight through an opponent parked on the same line collected G421
+ * PINNING majors four times in one match (80 points, handed to the opponent) plus a G417 for
+ * shouldering the HIVE, and LOST head-to-head to a tier that drove at half speed and therefore
+ * never reached anybody. The faster tier has to be the cleaner one or "harder" just means "gives
+ * away more points". APPROX.
+ */
+export const BB_AI_ROBOT_CLEAR = 6;
+
+/**
+ * How many DECISIONS of sustained contact with another ROBOT before a bot backs off — the
+ * G421 clock, read from the bot's side.
+ *
+ * ⚠️ **A FAST BOT THAT DOES NOT DO THIS LOSES TO A SLOW ONE.** G421 bills a MAJOR (20 points, to
+ * the robot being leaned on) for PINNING an opponent for more than 3 seconds, and it re-bills
+ * every three seconds after that. Measured before this existed: the HARD tier — 2.5x the EASY
+ * tier's solo score — LOST 12 of 20 head-to-heads, because the matches it lost were the ones
+ * where EASY's total ran to 83, 88, 112 and 123 points, almost all of it fouls HARD had handed
+ * it. 12 decisions is 1.2 s, comfortably inside the rule's 3. APPROX.
+ */
+export const BB_AI_PIN_DECISIONS = 12;
+
+/**
+ * The speed cap (fraction of stick) a bot uses inside the HIVE footprint.
+ *
+ * G417 bills a MAJOR for STRATEGIC ramming of the HIVE, and the 3D rule reads the CLOSING SPEED
+ * of the contact — so the fix for a bot that drives under the assembly is not to keep it out (the
+ * space under the trays is the shortest path across the field, and G409's drive-under is legal)
+ * but to make it arrive slowly enough that brushing the frame is not a ram. APPROX.
+ */
+export const BB_AI_HIVE_CREEP = 0.45;
+
+/** speed (in/s) under which a bot that is COMMANDING full drive counts as stuck, and how many
+ * consecutive decisions of it before the bot backs out. APPROX. */
+export const BB_AI_STUCK_SPEED = 4;
+export const BB_AI_STUCK_DECISIONS = 5;
+/** how many decisions a stuck bot spends reversing and turning before it re-plans. APPROX. */
+export const BB_AI_ESCAPE_DECISIONS = 3;

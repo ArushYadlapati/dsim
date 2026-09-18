@@ -11,7 +11,9 @@ import {
   bbAnchorName,
   bbDefaultIndex,
   bbRoleLabel,
+  bbStowLegal,
 } from './config';
+import { BIOBUZZ_BOT } from './ai';
 import { biobuzzColliders } from './colliders';
 import { biobuzzHud } from './hudRobot';
 import { bbRobotSolids } from './robot';
@@ -105,10 +107,18 @@ export const BIOBUZZ_SIM: GameSimModule = {
   // `coerceSettings` and the server's per-alliance de-conflict loop, none of which may use
   // DECODE's five anchors for a game that has two
   startPoseCount: BB_START_POSE_COUNT,
-  // G304, off `bbEvalStart`. It MIRRORS the canonical pose onto the alliance first — this
-  // field is point-symmetric, so red's version of a stored pose is a 180° rotation of it and
-  // not an x-reflection; see `bbActiveStartLegal`.
-  startLegal: bbActiveStartLegal,
+  // G304 off `bbEvalStart`, AND R102 off `bbStowLegal`. It MIRRORS the canonical pose onto the
+  // alliance first — this field is point-symmetric, so red's version of a stored pose is a 180°
+  // rotation of it and not an x-reflection; see `bbActiveStartLegal`.
+  //
+  // ── WHY THE HEIGHT CLAUSE IS HERE AND NOT IN `bbEvalStart` ──────────────────
+  // G304 is five clauses about a POSE and `start.ts` assesses exactly those. R102 is a clause
+  // about the BUILD — "STARTING CONFIGURATION is limited to an 18-inch cube" — and it is true or
+  // false before a pose exists at all, which is why it is ANDed at the registration rather than
+  // smuggled into a pose evaluator that would then have to return it for `startPose === null`
+  // too. Both readers of this slot (the server's ready-up gate, `startSelectionLegal`) get one
+  // answer to "may this robot start", which is what they actually ask.
+  startLegal: (spec, a, startPose) => bbStowLegal(spec) && bbActiveStartLegal(spec, a, startPose),
   // start ROLES are TOP / BOTTOM (which end of the field a robot starts at), like Chain
   // Reaction's, not DECODE's CLOSE / FAR — read by the shared start-position helpers, the
   // role-swap bar and the lobby/strategy start chips
@@ -135,4 +145,8 @@ export const BIOBUZZ_SIM: GameSimModule = {
   // the match is finalized only once nothing left on the field can score (§10.5 A/C) — a tip
   // swing that the buzzer caught finishes and pays before anything is saved. See `bbSettled`.
   settled: bbSettled,
+  // THE AI SEAT (Day 3, plan §6). DECODE and Chain Reaction leave this absent, which is what
+  // "this game offers no bot" means at every reader. See `src/games/biobuzz/ai/index.ts` for the
+  // driving contract, and `BotDriver` for why there is a `create` and no `drive`.
+  bot: BIOBUZZ_BOT,
 };
