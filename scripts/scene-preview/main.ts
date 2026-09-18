@@ -531,18 +531,33 @@ async function main(): Promise<void> {
       } else {
         // the CAD field's flower is ONE mesh (`flower_<idx>`), not decomposed into named
         // ring/foot/pipe children the way the constants-built flower's own group is — fall back
-        // to the WHOLE flower node's own position, same tolerance, same reasoning.
+        // to the WHOLE flower node.
+        //
+        // ⚠️ AND MEASURE IT PER AXIS, because a flower ASSEMBLY is not symmetric about its own
+        // bore in DEPTH: the under-field bracket reaches behind the wall plane and the ring
+        // plates protrude into the field, so the node's bounding-box centre sits ~0.62 in behind
+        // the bore on the wall-NORMAL axis. That is geometry, not misplacement — comparing a
+        // bbox centre to a bore centre and calling the difference an error is what the old 2-in
+        // "open finding" tolerance was quietly absorbing.
+        //   • ALONG the wall the assembly IS symmetric, and that axis carries the fact worth
+        //     checking here (the flower sits on its tile seam), so it is held to the default TOL.
+        //   • ACROSS the wall the bore must simply lie INSIDE the node, and the real stand-off is
+        //     asserted at 0.25 in against the CAD in the SIM3D lane's measurements check, off the
+        //     least-squares bore fit rather than a bounding box.
         const whole = box(`flower:${idx}`);
         if (!whole) {
           rows.push({ name: `flower:${idx}`, expected: 'present', actual: 'MISSING', pass: false });
         } else {
           const c = whole.getCenter(new THREE.Vector3());
-          const pass = Math.hypot(c.x - f.x, c.y - f.y) <= TOL;
+          const n = FLOWER_MOUTH[f.wall];
+          const alongErr = n.x !== 0 ? Math.abs(c.y - f.y) : Math.abs(c.x - f.x);
+          const boreInside =
+            f.x >= whole.min.x - TOL && f.x <= whole.max.x + TOL && f.y >= whole.min.y - TOL && f.y <= whole.max.y + TOL;
           rows.push({
             name: `flower:${idx} (whole node — the CAD flower is one mesh)`,
-            expected: `(${f.x.toFixed(2)},${f.y.toFixed(2)})`,
-            actual: `(${c.x.toFixed(2)},${c.y.toFixed(2)})`,
-            pass,
+            expected: `centred on the seam at ${(n.x !== 0 ? f.y : f.x).toFixed(2)} along its wall, bore inside the node`,
+            actual: `along-wall off by ${alongErr.toFixed(2)}, bore ${boreInside ? 'inside' : 'OUTSIDE'} bbox (centre ${c.x.toFixed(2)},${c.y.toFixed(2)})`,
+            pass: alongErr <= TOL && boreInside,
           });
         }
       }
