@@ -21,6 +21,9 @@ import './ui/shell.css';
 // additive `.pred-*` rules sit at the end of one cascade — see its header for why it is not in
 // styles.css.
 import './ui/predict.css';
+// the tutorial step card (roadmap item 6). Its own file for the same reason `predict.css` is:
+// `styles.css`/`shell.css` are one large, actively-edited cascade and these rules are additive.
+import './ui/tutorial.css';
 
 // The inline script in index.html already stamped data-theme for the first paint.
 // This re-stamps from the same key and, when the pref is 'system', arms the

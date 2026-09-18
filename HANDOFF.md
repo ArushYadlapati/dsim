@@ -1,6 +1,96 @@
+# HANDOFF — 2026-09-18 (feat/tutorial: ROADMAP ITEM 6 LANDED — the game tutorial, engine + BIOBUZZ + DECODE)
+
+**READ FIRST.** Branch **`feat/tutorial`**, off `origin/alpha` at 76034a9. NOT pushed, NOT merged.
+Every gate green: `build` · `npm test` (1806 shared across 12 shards + 2098 in the BIOBUZZ suite,
+which now includes the new `TUTORIAL` lane) · `uiindex` then `uiaudit` (all rules at or under
+baseline) · `docaudit` (CLAUDE.md 26,855 / 27,000 bytes) · `server:check`. `shiftaudit` was NOT run
+(it needs Electron + a `vite preview` in another shell) — the card's pressables move by
+`transform` / `box-shadow` only, which is the rule it enforces.
+
+## What a tutorial IS here
+
+A scripted SOLO PRACTICE. `src/tutorial/` is the shared, DOM-free engine; the CONTENT is per game
+on the new `GameModule.tutorial` slot (`src/games/biobuzz/tutorial.ts`, `src/games/decode/tutorial.ts`).
+`docs/area/ui.md` carries the rules — read that section before touching any of it. The one that
+shapes everything:
+
+⚠️ **A STEP'S SITUATION IS STAGED AT WORLD CONSTRUCTION, NEVER INTO A RUNNING WORLD.** Solo practice
+is recorded and a replay rebuilds from `{seed, setups, commands}` alone (`docs/area/netcode.md`), so
+`TutorialStep.stage(world)` runs at tick 0 on a freshly built world and moving to the next step
+REBUILDS it (`GameController.rebuildForTutorial`, which is `restart()` minus the abort cue and the
+harvest). The tutorial runs as FREE DRIVE, which is drivable from tick 0, bills no BIOBUZZ fouls,
+and is **never recorded** — the honest answer to "could a replay reproduce a staged world": it
+could not, so none is kept.
+
+## Files
+
+- `src/tutorial/{types,runner,hints,flag,index}.ts` — the engine. `TutorialRunner` is a state
+  machine the caller drives: `stage` → `tick` per sim tick → `advance` (the caller rebuilds).
+  `hints.ts` composes every hint from the player's LIVE `ControlBindings`, naming a pad button when
+  a pad is connected and an on-screen button on a coarse pointer. `flag.ts` is
+  `decodesim.tutorial.v1`, per device, fail-open both ways (the `chainDisclaimer.ts` pattern).
+- `src/ui/TutorialCard.tsx` + `src/ui/tutorial.css` (imported from `main.tsx`, its own file for the
+  reason `predict.css` is) — the step card. A `data-hud-band` element at bottom centre, so the 3D
+  camera reframes the field above it and it gets the 3D view's dark scrim.
+- `src/game.ts` — `tutorial` constructor option, `getTutorial()` on the HUD snapshot, `tutorialSkip`
+  / `tutorialReplay` / `tutorialExit`, the per-tick predicate inside `stepSolo`, and the `startMatch`
+  guard.
+- Surfaces: the first-run card on `/modes` (hidden once the flag is set), a permanent
+  "Run the tutorial" block at the top of Controls, and `GameView`'s `tutorial` prop.
+- `scripts/smoke-biobuzz/tutorial.ts` — the `TUTORIAL` lane, 318 checks, 1.4 s.
+
+## The content
+
+**BIOBUZZ, six steps** (five for a build without the hardware for the NECTAR one): drive to your
+garden · pick up a pollen · shoot into your hive · tip the hive (the cell is staged with the three
+NECTAR the field gives it plus two POLLEN, so the measured table's third POLLEN is the shot the
+player takes) · place a nectar in a flower **or** take a pollen from a flower · park in your loading
+zone. **DECODE, four steps**: drive into your launch zone · pick up an artifact · score in your goal
+· return to your base.
+
+⚠️ **THE TWO FLOWER STEPS ARE A PARTITION, and the lane asserts it.** `TutorialStep.applies(spec)`
+is resolved once when the runner is built. Placing a NECTAR needs a Box Tube **and** a launcher that
+carries NECTAR (`bbCarriesNectar` — a single turret feeds POLLEN only, so **no shipped preset can do
+it**); every other build is asked to retrieve a POLLEN instead. Every build is offered exactly one.
+
+## Gotchas this shipped against
+
+- ⚠️ **A PREDICATE THAT IS TRUE ON THE STAGED WORLD TEACHES NOTHING, AND IT IS INVISIBLE** — the card
+  flashes past. The SHOOT step shipped as `contents.length > 0`; the field stages three NECTAR in
+  every up CELL, so it was true at tick 0 for both alliances. It is `cellPollen(...) > 0` now, and
+  the lane asserts non-vacuity for every step of both games under both physics and both alliances.
+- ⚠️ **A hand-written `held` ball state is a NaN that reaches Rapier.** `{ kind:'held', robot, slot }`
+  omits `lx/ly/side`, `positionHeldBalls` puts `undefined` through `rot()`, and the collider
+  translation throws out of the solve. Staging goes through `capturePollen`, which is also what
+  enforces the hopper cap, G408 and the NECTAR-capacity rule.
+- ⚠️ **A staged pose derived from the CHASSIS is wrong for half the builds.** Both FLOWER steps act
+  through a mechanism whose edge is a builder choice, so the pose is derived from
+  `bbPlacePointLocal` / `bbMouths` and the robot is turned until that offset points along the wall.
+  A front-assumed pose put a relocated Box Tube 10 in off the ring, pointing at open floor.
+- ⚠️ **`TutorialRunner.abandon()` is not called `finish()`** — `npm test` counts `.finish()` calls in
+  `src/game.ts` and requires exactly one, because the replay RECORDER may only be closed inside
+  `harvestPracticeRun`. A second `.finish()` in that file reads as a second save policy to the grep,
+  and the grep is the check.
+- **Hive frame bars are at x = ±24…25, y = ±19.4.** Three staged poses had to move off them; a pose
+  overlapping a static does not throw, it explodes the solve and reads as a position in the hundreds.
+- **DECODE's penalty engine runs in `freeplay`** (BIOBUZZ's does not), so a DECODE step staged near
+  the gate can bill the player in the one mode where nothing is meant to count against them. The lane
+  asserts every scripted DECODE run ends with zero fouls.
+
+## Next steps
+
+- Push and merge to `alpha` (not done — the branch is local).
+- Chain Reaction has no tutorial and registers none; the slot is there when somebody wants one.
+- `shiftaudit` on the card, from an Electron shell with `npx vite preview --port 4173` running.
+- Worth considering: an in-match entry point (the tutorial is currently only reachable before a run),
+  and a step that teaches the human-player NECTAR entry, which free drive cannot host (`bbHumanPlayerTick`
+  is gated to TELEOP).
+
+---
+
 # HANDOFF — 2026-09-18/19 (biobuzz-3d: DAY 3 LANDED — bots, graphics settings, HDRI, 3D export, prediction modes, cutover; merged to ALPHA and the alpha server deployed)
 
-**READ FIRST.** Branch **`biobuzz-3d`** was merged into **`alpha`** at the merge commit named in the
+**(Previously READ FIRST.)** Branch **`biobuzz-3d`** was merged into **`alpha`** at the merge commit named in the
 log and the ALPHA game server (`dsim-alpha`, `fly.alpha.toml`, one machine) was deployed from the
 alpha worktree with `./scripts/fly-deploy.sh --alpha` for proper testing (owner instruction). Every
 gate green on the merged tree: `build` · `bundleaudit` · `server:check` · `docaudit` · `uiaudit` ·

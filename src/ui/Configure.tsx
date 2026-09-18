@@ -55,6 +55,7 @@ export function Configure({
   section,
   onSection,
   onEditTouchControls,
+  onTutorial,
 }: {
   settings: GameSettings;
   onChange: (s: GameSettings) => void;
@@ -62,6 +63,8 @@ export function Configure({
   onSection: (s: ConfigureSection) => void;
   /** launch Free Drive with the on-screen touch-control layout editor open */
   onEditTouchControls: () => void;
+  /** run the tutorial (roadmap item 6); absent when the active game has no tutorial. */
+  onTutorial?: () => void;
 }) {
   return (
     <>
@@ -91,6 +94,7 @@ export function Configure({
               bindings={settings.bindings}
               onChange={(bindings) => onChange({ ...settings, bindings })}
               onEditTouchControls={onEditTouchControls}
+              onTutorial={onTutorial}
             />
           )}
           {section === 'audio' && <AudioSection settings={settings} onChange={onChange} />}

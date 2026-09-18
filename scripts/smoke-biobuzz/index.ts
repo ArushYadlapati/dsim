@@ -11,6 +11,7 @@ import { predictChecks } from './predict';
 import { aiChecks } from './ai';
 import { sponsorChecks } from './sponsor';
 import { renderChecks } from './render';
+import { tutorialChecks } from './tutorial';
 import { net3dChecks } from './net3d';
 import type { Check } from './harness';
 
@@ -86,6 +87,10 @@ const LANES: { name: string; fn: (c: Check) => void }[] = [
   // the wire codec, and the replay container (Day 2 lane C). See net3d.ts's header for why it
   // is its own lane and not more checks in SERVER.
   { name: 'NET3D', fn: net3dChecks },
+  // roadmap item 6: the tutorial engine (`src/tutorial/`) and BIOBUZZ's step content. Its own
+  // lane because a TUTORIAL failure and a PHYSICS failure are different mornings, and because it
+  // is the only lane that drives a staged world to a goal rather than asserting a number.
+  { name: 'TUTORIAL', fn: tutorialChecks },
 ];
 
 const KNOWN_FLAGS = ['--lane', '--grep', '--list', '--help'];

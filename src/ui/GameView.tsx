@@ -17,6 +17,7 @@ import { DEFAULT_MOBILE_LAYOUT } from '../settings';
 import type { MatchResultInfo, NetSession, NetStatus } from '../net/session';
 import { clearActiveGame } from '../net/activeGame';
 import { ReportDialog } from './ReportDialog';
+import { TutorialCard } from './TutorialCard';
 import { ScoreReportDialog } from './ScoreReportDialog';
 import type { RecordRankInfo } from '../net/protocol';
 import type { Replay, ReplayResult } from '../sim/replay';
@@ -272,6 +273,20 @@ interface Props {
    * session's own `isHost`, which tracks the crown as it migrates.
    */
   onBackToLobby?: () => void;
+  /**
+   * RUN THE TUTORIAL (roadmap item 6) — a scripted solo practice, offered from the Modes page
+   * and from Controls.
+   *
+   * A PROP rather than a `GameSettings` field, and `GameController` says why: settings persist
+   * and sync to the account, so "I am in the tutorial right now" does not belong in them. It also
+   * means the tutorial does not survive a reload, which is the honest behaviour — the staged world
+   * it was on cannot be rebuilt from a URL.
+   *
+   * This screen forces FREE DRIVE with no dummies and no bots for the run; see
+   * `src/games/biobuzz/tutorial.ts` for why free drive is the right mode. A game with no
+   * `GameModule.tutorial` ignores the flag entirely and plays an ordinary practice.
+   */
+  tutorial?: boolean;
 }
 
 export function GameView({
@@ -286,6 +301,7 @@ export function GameView({
   onRestartRun,
   onQueueAgain,
   onBackToLobby,
+  tutorial = false,
 }: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   // BIOBUZZ 3D SEAM: the box a 3D scene mounts its own canvas into, UNDER the 2D one
@@ -346,6 +362,13 @@ export function GameView({
    */
   const [roomPhysicsLoading, setRoomPhysicsLoading] = useState(false);
 
+  /**
+   * WAS THIS SCREEN OPENED TO RUN THE TUTORIAL? Frozen at mount, like `perf` and `editingLayout`
+   * above and for the same reason: the boot effect runs once, and a prop that changed afterwards
+   * would describe a run that is already going.
+   */
+  const [runTutorial] = useState(() => tutorial && !session);
+
   useEffect(() => {
     let cancelled = false;
     const canvas = canvasRef.current!;
@@ -368,7 +391,21 @@ export function GameView({
       // exists to rule out. Idempotent: a second solo practice in the same tab resolves
       // immediately (`physicsLoading` never went true above), so this never re-shows the
       // loading panel or re-fetches the chunk.
-      let effectiveSettings = settings;
+      /**
+       * THE TUTORIAL'S RUN SETTINGS, applied to this run only and never persisted.
+       *
+       * FREE DRIVE, no dummies, no bots — three separate things, each of them needed:
+       *  · free drive is drivable from tick 0 (no countdown, no AUTO to sit through six times),
+       *    bills no fouls (so the NECTAR step cannot hand out a G410 MAJOR for doing as it says),
+       *    and is never recorded — which is what keeps a STAGED world out of the replay store;
+       *  · a step that says "drive to your garden" must not have three strangers in the way.
+       *
+       * `settings` on disk is untouched, so the player's own Practice setup is exactly as they
+       * left it when the tutorial finishes.
+       */
+      let effectiveSettings = runTutorial
+        ? { ...settings, mode: 'free' as const, practiceDummies: false, practiceBots: 'off' }
+        : settings;
       let physicsFallbackNotice: string | undefined;
       if (need3d && !physics3dReady()) {
         try {
@@ -396,6 +433,10 @@ export function GameView({
         onPhysicsPending: (pending) => {
           if (!cancelled) setRoomPhysicsLoading(pending);
         },
+        // THE TUTORIAL, when this screen was opened to run one and the game HAS one. A game with
+        // no `tutorial` slot gets `undefined` and plays an ordinary free drive, which is the
+        // right outcome for DECODE and Chain Reaction today.
+        tutorial: runTutorial ? moduleFor(settings.game).tutorial : undefined,
       });
       controllerRef.current = controller;
       setIntro(controller.getIntro()); // ranked matches only; null otherwise
@@ -639,6 +680,18 @@ export function GameView({
         </div>
       )}
       {hud && <Hud hud={hud} showEventLog={settings.showEventLog} />}
+      {/* THE TUTORIAL STEP CARD — a HUD band, never an overlay over the field
+          (`docs/area/ui.md`). It is a sibling of `<Hud>` rather than a child because `.hud` is
+          `pointer-events: none` and this card has buttons; see `TutorialCard.tsx` for why
+          `data-hud-band` on it is load-bearing for the 3D camera fit. */}
+      {hud?.tutorial && (
+        <TutorialCard
+          view={hud.tutorial}
+          onSkip={() => controllerRef.current?.tutorialSkip()}
+          onReplay={() => controllerRef.current?.tutorialReplay()}
+          onExit={() => controllerRef.current?.tutorialExit()}
+        />
+      )}
       {/* `data-hud-band` — a HUD cluster that covers part of the field. The 3D camera keeps the
           field out from under every one of them (`SceneInsets`, `games/module.ts`); nothing
           visual reads it. See `GameController.refreshHudInsets` for what is NOT marked and why. */}

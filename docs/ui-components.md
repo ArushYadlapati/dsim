@@ -10,7 +10,7 @@ new class is what gets written when the grep is inconclusive.
 `used 0` means the CSS is dead, or the class is composed at runtime from string pieces
 this scan cannot see. Both are worth a look.
 
-236 classes · 102 families · 0 with no reference found.
+246 classes · 103 families · 0 with no reference found.
 
 Composition rules — page/panel/row/dialog/list skeletons — are `docs/ui-standard.md` §6.
 The look and the depth model are `DESIGN.md`. This file is only the inventory.
@@ -82,6 +82,21 @@ The look and the depth model are `DESIGN.md`. This file is only the inventory.
 | `.ds-dl-row` | src/ui/shell.css:3310 | 2 |
 | `.ds-dl-seg` | src/ui/shell.css:3323 | 2 |
 | `.ds-dl-sponsor` | src/ui/shell.css:5820 | 1 |
+
+## `ds-tut` — 10
+
+| class | declared | used |
+|---|---|---|
+| `.ds-tut` | src/ui/tutorial.css:6 | 19 |
+| `.ds-tut-acts` | src/ui/tutorial.css:98 | 2 |
+| `.ds-tut-body` | src/ui/tutorial.css:52 | 2 |
+| `.ds-tut-btn` | src/ui/tutorial.css:105 | 4 |
+| `.ds-tut-hint` | src/ui/tutorial.css:80 | 2 |
+| `.ds-tut-nudge` | src/ui/tutorial.css:90 | 1 |
+| `.ds-tut-offer` | src/ui/tutorial.css:157 | 2 |
+| `.ds-tut-offer-sub` | src/ui/tutorial.css:165 | 1 |
+| `.ds-tut-step` | src/ui/tutorial.css:61 | 2 |
+| `.ds-tut-title` | src/ui/tutorial.css:71 | 2 |
 
 ## `ds-standing` — 9
 
@@ -177,7 +192,7 @@ The look and the depth model are `DESIGN.md`. This file is only the inventory.
 
 | class | declared | used |
 |---|---|---|
-| `.ds-bind-block` | src/ui/shell.css:4632 | 4 |
+| `.ds-bind-block` | src/ui/shell.css:4632 | 5 |
 | `.ds-bind-grid` | src/ui/shell.css:4647 | 2 |
 | `.ds-bind-label` | src/ui/shell.css:4659 | 8 |
 | `.ds-bind-row` | src/ui/shell.css:4145 | 8 |
@@ -423,7 +438,7 @@ The look and the depth model are `DESIGN.md`. This file is only the inventory.
 
 | class | declared | used |
 |---|---|---|
-| `.ds-btn` | src/ui/shell.css:564 | 135 |
+| `.ds-btn` | src/ui/shell.css:564 | 137 |
 
 ## `ds-checkline` — 1
 
@@ -519,7 +534,7 @@ The look and the depth model are `DESIGN.md`. This file is only the inventory.
 
 | class | declared | used |
 |---|---|---|
-| `.ds-hint` | src/ui/shell.css:1826 | 131 |
+| `.ds-hint` | src/ui/shell.css:1826 | 132 |
 
 ## `ds-input` — 1
 
@@ -633,7 +648,7 @@ The look and the depth model are `DESIGN.md`. This file is only the inventory.
 
 | class | declared | used |
 |---|---|---|
-| `.ds-rejoin` | src/ui/shell.css:1622 | 1 |
+| `.ds-rejoin` | src/ui/shell.css:1622 | 2 |
 
 ## `ds-req` — 1
 

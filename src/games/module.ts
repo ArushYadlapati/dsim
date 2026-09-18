@@ -12,6 +12,7 @@ import type {
 } from '../types';
 import type { HudSnapshot } from '../game';
 import type { GameId, GameSimModule, GameUiSpec } from './types';
+import type { TutorialSpec } from '../tutorial/types';
 
 /**
  * The FULL (client) game module: the DOM-free `GameSimModule` plus the browser
@@ -182,6 +183,20 @@ export interface GameModule extends GameSimModule {
    * build must not carry a URL that opens one.
    */
   devRoutes?: readonly GameDevRoute[];
+  /**
+   * THIS GAME'S TUTORIAL — a scripted solo practice; absent means the game offers none, and
+   * every tutorial surface (the Modes card, the Controls entry) hides itself for it.
+   *
+   * On `GameModule` and not on `GameSimModule`, deliberately. The sim module is defined as
+   * "everything the authoritative server and the headless sim need", and a tutorial is neither:
+   * no room runs one, no replay contains one, and the server would never read it. What it DOES
+   * need is the player's `ControlBindings`, so that every hint names the keys they actually
+   * bound — and that is a client fact.
+   *
+   * `TutorialSpec` is itself DOM-free (`src/tutorial/types.ts`), so the headless TUTORIAL lane
+   * imports a game's tutorial module directly and drives the same steps the browser does.
+   */
+  tutorial?: TutorialSpec;
 }
 
 /** props for `GameModule.Builder` */

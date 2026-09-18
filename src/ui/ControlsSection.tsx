@@ -87,9 +87,12 @@ interface Props {
   onChange: (b: ControlBindings) => void;
   /** launch Free Drive with the on-screen touch-control layout editor open */
   onEditTouchControls: () => void;
+  /** run the tutorial (roadmap item 6) — absent when the active game has no tutorial, and the
+   *  block below is then not rendered at all rather than shown disabled. */
+  onTutorial?: () => void;
 }
 
-export function ControlsSection({ bindings, onChange, onEditTouchControls }: Props) {
+export function ControlsSection({ bindings, onChange, onEditTouchControls, onTutorial }: Props) {
   const [capture, setCapture] = useState<Capture | null>(null);
   /**
    * CLIENT PREDICTION (`docs/biobuzz/plan-3d.md` §5). Per DEVICE, so it is NOT a `GameSettings`
@@ -173,6 +176,22 @@ export function ControlsSection({ bindings, onChange, onEditTouchControls }: Pro
   return (
     <section className="ds-sec">
       <h2>Controls</h2>
+      {/* FIRST, above the bindings: this is the screen somebody lands on when the controls are
+          the thing they do not understand, and the tutorial is the answer to that. It stays here
+          for EVERYONE, unlike the Modes page's first-run card — a player who skipped it, or who
+          rebound half their keys and wants to practise the new map, has no other way back in. */}
+      {onTutorial && (
+        <div className="ds-bind-block">
+          <h3>Tutorial</h3>
+          <button className="ds-btn" onClick={onTutorial}>
+            Run the tutorial
+          </button>
+          {/* same reason the Modes card prints no count: it is per game and per robot. */}
+          <p className="ds-hint">
+            A few steps on the real field. The hints name whichever keys and buttons you have bound.
+          </p>
+        </div>
+      )}
       <div className="ds-bind-block">
         <h3>Touch controls</h3>
         <button className="ds-btn" onClick={onEditTouchControls}>
