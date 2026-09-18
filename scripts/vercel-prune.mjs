@@ -31,9 +31,20 @@ const team = TEAM ? `&teamId=${encodeURIComponent(TEAM)}` : '';
 const headers = { Authorization: `Bearer ${TOKEN}` };
 
 async function api(path, init) {
-  const res = await fetch(`${API}${path}`, { ...init, headers: { ...headers, ...(init?.headers ?? {}) } });
-  if (!res.ok) throw new Error(`${init?.method ?? 'GET'} ${path} → ${res.status} ${await res.text()}`);
-  return res.status === 204 ? null : res.json();
+  for (;;) {
+    const res = await fetch(`${API}${path}`, { ...init, headers: { ...headers, ...(init?.headers ?? {}) } });
+    if (res.status === 429) {
+      // Vercel allows ~200 deletions per 10 minutes; the response says when the window resets.
+      const body = await res.json().catch(() => ({}));
+      const resetMs = Number(body?.error?.limit?.reset ?? 0);
+      const waitMs = Math.max(15_000, resetMs - Date.now() + 5_000);
+      console.log(`  rate limited — waiting ${Math.ceil(waitMs / 1000)}s for the window to reset`);
+      await new Promise((r) => setTimeout(r, waitMs));
+      continue;
+    }
+    if (!res.ok) throw new Error(`${init?.method ?? 'GET'} ${path} → ${res.status} ${await res.text()}`);
+    return res.status === 204 ? null : res.json();
+  }
 }
 
 const cutoff = Date.now() - DAYS * 86_400_000;
