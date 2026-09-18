@@ -498,6 +498,8 @@ export function coerceSpec(raw: unknown, base: RobotSpec = DEFAULT_SPEC, game?: 
     // line every real caller (settings load, server ingress, createWorld) silently dropped a
     // spec's heightIn before the biobuzz clamp ever saw it -- see this lane's final report.
     out.heightIn = sp.heightIn as RobotSpec['heightIn'];
+    // and the declared stow height (R102), read structurally downstream -- same reason
+    out.stowHeightIn = sp.stowHeightIn as RobotSpec['stowHeightIn'];
     return coerceBiobuzzSpec(out, base);
   }
   return out;

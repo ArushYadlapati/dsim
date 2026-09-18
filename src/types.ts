@@ -205,6 +205,13 @@ export interface RobotSpec {
    * Clamped (and dropped when not a finite number) in `coerceBiobuzzSpec`.
    */
   heightIn?: number;
+  /**
+   * BIOBUZZ 3D ONLY (Day 3, R102): the height the robot STOWS to at the start, when it is built
+   * taller than the 18-in cube. Optional and DECLARED — `bbStowHeightIn` reads it structurally,
+   * `coerceBiobuzzSpec` normalises it to [BB3_HEIGHT_MIN, heightIn] and deliberately does not
+   * clamp it to 18 (the RULE refuses at `startLegal`; clamping would make it true by construction).
+   */
+  stowHeightIn?: number;
 }
 
 /** Chain Reaction scoring archetype (see `RobotSpec.scoreMode`).
