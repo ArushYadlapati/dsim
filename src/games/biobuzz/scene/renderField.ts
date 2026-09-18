@@ -15,7 +15,6 @@ import {
   BB_HALF_Y,
   BB_HIVE_OPEN_Z,
   BB_HIVE_TILT_DEG,
-  BB_HIVE_UP_STAGED,
   BB_HIVE_X,
   BB_LZ,
   BB_WALL_T,
@@ -24,8 +23,8 @@ import {
   type BbRect,
 } from '../config';
 import { BB_FLOWER_FLOOR_Z, BB_FLOWER_MID_Z } from '../flower';
-import { BB_TIP_SWING_S } from '../hive';
-import type { BbCellSide, BbHiveState } from '../state';
+import { hiveTiltAngle } from '../sim3d/hive3d';
+import { hiveTrayRefTheta } from '../sim3d/bodies';
 import { loadFieldGlb, type FieldGroups } from './renderFieldGlb';
 
 /**
@@ -207,10 +206,39 @@ function buildFloor(): THREE.Mesh {
   return mesh;
 }
 
+/**
+ * TRANSPARENT POLYCARBONATE WALLS (2026-09-18 playtest, issue 3: "the field wall should be
+ * transparent"). The Day 1 wall was `mat(C.COLORS.wall, 0.35)` — a `FrontSide` material at 35%
+ * opacity, which is nowhere near see-through and (being `FrontSide`) does not even show its own
+ * far face, so a wall between the camera and the field read as a solid, faintly-tinted slab
+ * rather than the polycarbonate panel it is. This matches the real material's actual optical
+ * behaviour more closely: low opacity (0.22, inside the 0.18–0.28 the brief asks for), low
+ * roughness (a clear plastic panel is glossy), `DoubleSide` (both faces visible, since the camera
+ * can end up on either side of a near wall), and `depthWrite: false` + a `renderOrder` past every
+ * opaque object — a transparent object that WRITES depth can incorrectly occlude something drawn
+ * after it at a similar distance (here, another transparent wall on the far side of the field),
+ * and Three.js does not sort transparent objects by triangle depth, only by render order.
+ */
+const WALL_OPACITY = 0.22;
+function wallMaterial(): THREE.MeshStandardMaterial {
+  return new THREE.MeshStandardMaterial({
+    color: C.COLORS.wall,
+    transparent: true,
+    opacity: WALL_OPACITY,
+    roughness: 0.1,
+    metalness: 0,
+    depthWrite: false,
+    side: THREE.DoubleSide,
+  });
+}
+/** drawn well after the field/robots/elements (all at the default `renderOrder` 0) so a
+ * transparent wall never fights another transparent wall or a robot for a pixel. */
+const WALL_RENDER_ORDER = 10;
+
 function buildWalls(): THREE.Group {
   const group = new THREE.Group();
   group.name = 'walls';
-  const material = mat(C.COLORS.wall, 0.35);
+  const material = wallMaterial();
   const span = 2 * BB_HALF_X + 2 * WALL_VIS_T;
   const specs: { x: number; y: number; w: number; d: number }[] = [
     { x: 0, y: BB_HALF_Y + WALL_VIS_T / 2, w: span, d: WALL_VIS_T },
@@ -224,6 +252,7 @@ function buildWalls(): THREE.Group {
     const mesh = new THREE.Mesh(geo, material);
     mesh.name = names[i];
     mesh.position.set(s.x, s.y, WALL_VIS_H / 2);
+    mesh.renderOrder = WALL_RENDER_ORDER;
     group.add(mesh);
   });
   void BB_WALL_T; // physics-only constant; visual thickness is its own, smaller, number
@@ -408,24 +437,33 @@ function buildFlower(f: (typeof BB_FLOWERS)[number], idx: number): THREE.Group {
 }
 
 /**
- * A PROCEDURAL ROOM around the field — a wide dark floor beyond the perimeter and a backdrop
- * cylinder, so the driver camera (`BB3_DRIVER_SETBACK` = 12 in outside the wall) does not look
- * into the WebGL clear colour when it pans off the field. APPROX, no CAD reference: this is
- * stagecraft, not a measured space, and is deliberately cheap (two meshes, one shared material).
+ * A PROCEDURAL ROOM around the field — a wide floor beyond the perimeter and a backdrop
+ * cylinder, so the driver camera (a 12-in-or-more setback outside the wall, `renderCameras.ts`'s
+ * `fitDriverCamera`) does not look into the WebGL clear colour when it pans off the field.
+ * APPROX, no CAD reference: this is stagecraft, not a measured space, and is deliberately cheap
+ * (two meshes, one shared-per-mesh material).
+ *
+ * ⚠️ LIGHTENED HERE (2026-09-18 playtest, issue 3: "very dark"). The Day 1 colours (`0x14171c`
+ * floor, `0x20262c` backdrop) were near-black — closer to a blacked-out soundstage than the gym
+ * a real FTC event is held in — so the transparent walls (see `wallMaterial`) looked into a void
+ * past them instead of a room, and the field itself had nothing bright nearby to bounce light off
+ * of. A lighter, neutral grey (still darker than the field mat, so the field itself stays the
+ * thing your eye lands on) reads as a gym floor/wall instead of a black box, and gives the
+ * hemisphere fill and the IBL environment (`renderScene.ts`) something to actually reflect.
  */
 const ROOM_R = BB_HALF_X * 6;
 
 function buildRoom(): THREE.Group {
   const group = new THREE.Group();
   group.name = 'bb-room';
-  const floorMat = new THREE.MeshStandardMaterial({ color: 0x14171c, roughness: 1 });
+  const floorMat = new THREE.MeshStandardMaterial({ color: 0x4a4f57, roughness: 0.95 });
   const floor = new THREE.Mesh(new THREE.CircleGeometry(ROOM_R, 32), floorMat);
   floor.name = 'bb-room:floor';
   floor.position.z = -0.5; // just under the field floor so it never z-fights
   floor.receiveShadow = true;
   group.add(floor);
 
-  const backdropMat = new THREE.MeshStandardMaterial({ color: 0x20262c, side: THREE.BackSide, roughness: 1 });
+  const backdropMat = new THREE.MeshStandardMaterial({ color: 0x5b616a, side: THREE.BackSide, roughness: 0.95 });
   const backdrop = new THREE.Mesh(new THREE.CylinderGeometry(ROOM_R, ROOM_R, 260, 24, 1, true), backdropMat);
   backdrop.name = 'bb-room:backdrop';
   backdrop.position.z = 130;
@@ -597,29 +635,30 @@ export async function buildBiobuzzField(quality: 'high' | 'low' = 'high'): Promi
   }
 }
 
-/** the tray's tilt angle, RIGHT-HAND rule about the shared local x axis: positive raises the
- * NORTH cell (local/world +y), negative raises south. Same `tipping`/`up` reading as
- * `drawField.ts`'s `tipProjection`, reproduced here rather than imported because that function
- * returns a foreshortening FACTOR for a plan-view drawing, not the angle a 3D tilt needs — see
- * that function's own header for the swing's shape (reaches out, brightness swaps hardest at
- * level). At rest (`tipping` 0) this is exactly ±`HIVE_TILT_REST`. */
-function hiveTiltAngle(up: BbCellSide, tipping: number): number {
-  let rel = HIVE_TILT_REST; // steady state: the `up` cell is fully high
-  if (tipping > 0) {
-    const p = Math.min(1, Math.max(0, 1 - tipping / BB_TIP_SWING_S));
-    rel = HIVE_TILT_REST * (1 - 2 * p); // +REST (still up) → 0 (level) → −REST (now down)
-  }
-  return up === 'north' ? rel : -rel;
-}
-
-/** per-frame update: only the two trays' rotations change (everything else in the field group
- * is static geometry built once at scene creation). */
+/**
+ * per-frame update: only the two trays' rotations change (everything else in the field group is
+ * static geometry built once at scene creation).
+ *
+ * THE TRAY-ANGLE CONTRACT (owned by the hive lane, `sim3d/hive3d.ts` + `sim3d/bodies.ts` —
+ * imported, never copied). `hiveTiltAngle(world, alliance)` is the tray's ABSOLUTE tilt, right-
+ * hand about the shared local x axis at the pivot — the SAME number `engine.ts`'s
+ * `applyHiveTilt` drives the physics tray body's kinematic rotation with. `hiveTrayRefTheta`
+ * (`bodies.ts`) is the angle the CAD tray NODE was captured at (`cadCaptureTheta`, 0 for the
+ * constants-built fallback, whose geometry is theta-independent by construction).
+ *
+ * ⚠️ BUG FIXED HERE: this used to recompute the tilt LOCALLY from `world.biobuzz.hives[a].up`/
+ * `.tipping` (the 2D hive-timer state) and apply that ABSOLUTE angle directly to the tray group
+ * — correct for the constants-built fallback (whose geometry sits at local zero), but WRONG for
+ * the CAD-loaded tray: that node is captured already tilted to its own rest pose
+ * (`hiveTrayRefTheta`), so applying the absolute angle on TOP of it drew roughly DOUBLE the real
+ * physics tilt. Rotating by the DIFFERENCE (`hiveTiltAngle − hiveTrayRefTheta`) is exactly what
+ * `engine.ts` already does for the physics body, so the visual and the collider agree at every
+ * instant, on both the CAD path (nonzero `refTheta`) and the fallback (zero, so this is the same
+ * absolute angle as before).
+ */
 export function updateBiobuzzField(handles: BbFieldHandles, world: World): void {
-  const bb = world.biobuzz;
   for (const a of ALLIANCES) {
-    const h: BbHiveState | undefined = bb?.hives?.[a];
-    const up = h?.up ?? BB_HIVE_UP_STAGED[a];
-    const angle = hiveTiltAngle(up, h?.tipping ?? 0);
+    const angle = hiveTiltAngle(world, a) - hiveTrayRefTheta(a);
     handles.trays[a].rotation.set(angle, 0, 0);
   }
 }

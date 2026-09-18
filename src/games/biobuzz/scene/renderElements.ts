@@ -58,8 +58,29 @@ export function buildBiobuzzElements(): BbElements {
   // POLLEN/NECTAR MATERIAL (Phase 2 fidelity): a little roughness so the key light's specular
   // highlight reads as a physical bead rather than a flat-shaded disc; still bright at the
   // saturated hues `draw.ts`'s 2D `ELEMENT_FILL`/`POLLEN_FILL` use, so the two views agree.
-  const pollenMat = new THREE.MeshStandardMaterial({ color: POLLEN_COLOR, roughness: 0.55, metalness: 0.05 });
-  const nectarMat = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.4, metalness: 0.05 }); // per-instance colour below
+  //
+  // A SMALL EMISSIVE (2026-09-18 lighting pass): a scoring element is the one thing on the field
+  // a driver must always be able to pick out at a glance, including when it is sitting in a
+  // hive's own shadow or against the darker tile mat — `emissiveIntensity` this low (0.08–0.12)
+  // does not read as "glowing", it reads as "never quite goes fully dark", which is the effect an
+  // AO pass would otherwise fight (AO darkens exactly the crevices/contacts a resting element
+  // sits in). Nectar's emissive stays a flat white at a lower intensity, since its actual hue is
+  // set per-instance via `setColorAt` below and emissive is a per-MATERIAL (not per-instance)
+  // property — a coloured emissive here would tint every nectar the same regardless of alliance.
+  const pollenMat = new THREE.MeshStandardMaterial({
+    color: POLLEN_COLOR,
+    roughness: 0.55,
+    metalness: 0.05,
+    emissive: POLLEN_COLOR,
+    emissiveIntensity: 0.12,
+  });
+  const nectarMat = new THREE.MeshStandardMaterial({
+    color: 0xffffff,
+    roughness: 0.4,
+    metalness: 0.05,
+    emissive: 0xffffff,
+    emissiveIntensity: 0.05,
+  }); // per-instance colour below
 
   const pollen = new THREE.InstancedMesh(pollenGeo, pollenMat, CAP);
   const nectar = new THREE.InstancedMesh(nectarGeo, nectarMat, CAP);
