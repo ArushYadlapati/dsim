@@ -325,17 +325,66 @@ export interface GameSimModule {
 }
 
 /**
+ * ONE SEATED BOT — the object a caller holds for one robot for one match.
+ *
+ * ⚠️ **THE MEMORY LIVES HERE, AND NEVER ON THE `World`** (`docs/biobuzz/plan-3d.md` §6). A bot
+ * has hysteresis: it re-decides on a cadence, holds the decision in between, and remembers
+ * what it was doing so it does not oscillate between two equally good targets every tick. All
+ * of that is STATE, and the one place it must not be is `world` — a world is snapshotted,
+ * delta-encoded to every client 30 times a second, reconciled, and replayed, so a bot field on
+ * it would be wire cost on every tick, a thing a reconcile could rewind, and a thing a replay
+ * would have to carry to play back. The caller owns the bot; the world stays exactly as wide as
+ * it was.
+ *
+ * `step` returns the command for ONE tick and is called ONCE per tick per seat, by whoever owns
+ * the seat: `GameController` in solo practice, `Room` on the server, the host worker on LAN.
+ * **The command is RECORDED like a human driver's** — the replay recorder records every setup's
+ * command per tick (`docs/area/netcode.md`), so a bot seat's command rides the same array and a
+ * replay of a match with a bot in it re-simulates without needing the bot at all.
+ *
+ * `dispose` releases anything the bot allocated. Optional, because a policy that is pure state
+ * has nothing to release; a caller must still call it when the match ends.
+ */
+export interface BotSeat {
+  step(world: World): RobotCommand;
+  dispose?(): void;
+}
+
+/**
  * A DETERMINISTIC, SCRIPTED DRIVER — an AI seat a room or solo practice can fill instead of a
  * human player.
  *
  * DOM-free and on the SIM module for the same reason `hud` is: the authoritative server needs
  * to run it too, for a room with an empty seat. `tiers` names the DIFFICULTY LEVELS this
- * game's bot offers (e.g. `'rookie'` | `'veteran'`) as opaque strings, so a game can add or
- * rename one without a shared type edit. `drive` returns the command for ONE robot on ONE
- * tick, and must read only `world` (including its seeded `rngState`) — the same determinism
- * contract as the rest of `src/sim/` and `src/games/<id>/`: no DOM, no clock, no `Math.random`.
+ * game's bot offers as opaque strings, so a game can add or rename one without a shared type
+ * edit. A driver must read only `world` — the same determinism contract as the rest of
+ * `src/sim/` and `src/games/<id>/`: no DOM, no clock, no `Math.random` — and it must NOT read
+ * `world.rngState` either, because a bot drawing from the world's own seeded chain would move
+ * every later draw in the match (a spill's scatter, a human player's jitter) and a client
+ * predicting a tick without the bot would diverge from the server that ran it.
+ *
+ * ── `create`, NOT `drive` ──────────────────────────────────────────────────
+ * `drive(world, id, tier)` — one-shot, memoryless — is still declared, and it is OPTIONAL and
+ * deprecated. A driver with hysteresis cannot answer it honestly: it would have to re-decide
+ * every tick, which is a different policy from the one `create` runs, so a server calling one
+ * and a client predicting with the other would disagree about what the bot did. BIOBUZZ does
+ * not implement it; a caller that reaches for it gets a compile error pointing here.
  */
 export interface BotDriver {
   readonly tiers: readonly string[];
-  drive(world: World, robotId: number, tier: string): RobotCommand;
+  /** the tier a UI should preselect and an absent/unknown wire value folds to. */
+  readonly defaultTier: string;
+  /** force an untrusted tier (localStorage, the wire, a URL) onto `tiers`. */
+  coerceTier(x: unknown): string;
+  /**
+   * SEAT a bot on `robotId`. `seed` is the caller's: the plan's §6 rule is `(matchSeed, seat)`,
+   * so every peer that seats the same bot on the same robot of the same match gets the same
+   * driver, and two seats of one match get different ones.
+   *
+   * `world` is the world at seat time — a policy may read the field it is about to play on
+   * (which alliance, which spec) but must not keep a reference that outlives the match.
+   */
+  create(world: World, robotId: number, tier: string, seed: number): BotSeat;
+  /** @deprecated memoryless one-shot — see above. Prefer `create`. */
+  drive?(world: World, robotId: number, tier: string): RobotCommand;
 }
