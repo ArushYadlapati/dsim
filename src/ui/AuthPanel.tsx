@@ -2,7 +2,8 @@ import { useMemo, useState, type FormEvent } from 'react';
 import { authClient } from '../lib/authClient';
 import { requestEmailVerification, requestPasswordReset } from '../lib/authFlows';
 import { isEmbeddedBrowser } from '../lib/browserEnv';
-import { updateUsername } from '../net/api';
+import { acceptTerms, updateUsername } from '../net/api';
+import { TermsAgreement } from './TermsGate';
 import { UsernameInput, useUsernameCheck, usernameHintColor } from './UsernameField';
 
 /** which of the three forms the modal is showing */
@@ -28,6 +29,8 @@ export function AuthPanel({ onClose }: { onClose: () => void }) {
   const [copied, setCopied] = useState(false);
   /** the reset email has been asked for — the neutral confirmation replaces the form */
   const [resetSent, setResetSent] = useState(false);
+  /** the required Terms + Privacy box on the sign-up form */
+  const [agreed, setAgreed] = useState(false);
   const uname = useUsernameCheck(username);
   // In-app webviews (LinkedIn/Instagram/… browsers) get Google's
   // `disallowed_useragent` 403 — steer them to a real browser instead.
@@ -53,6 +56,20 @@ export function AuthPanel({ onClose }: { onClose: () => void }) {
   const submit = async (e: FormEvent) => {
     e.preventDefault();
     if (mode === 'up' && !uname.ok) return; // username must be valid + free
+    /**
+     * THE BOX IS REQUIRED, AND THE BUTTON STAYS LIVE.
+     *
+     * A disabled submit would leave somebody pressing a dead button with nothing
+     * saying why, and the native `required` attribute answers with a browser tooltip
+     * in the browser’s own words rather than ours. So the form submits, and this
+     * says what is missing.
+     */
+    if (mode === 'up' && !agreed) {
+      setError(
+        'Accept the Terms of Use and Privacy Policy to create an account.',
+      );
+      return;
+    }
     setBusy(true);
     setError('');
     try {
@@ -78,6 +95,17 @@ export function AuthPanel({ onClose }: { onClose: () => void }) {
          * before then; it just has nothing to send with.
          */
         void requestEmailVerification(email);
+        /**
+         * RECORD THE ACCEPTANCE the box above just made. Same shape as the username
+         * write beside it, and the same fallback: if the token is not ready yet, or
+         * this server predates the route, `TermsGate` asks on the next load. What it
+         * must not do is fail the sign-up — the account exists and the box was ticked.
+         */
+        try {
+          await acceptTerms();
+        } catch {
+          /* TermsGate is the fallback */
+        }
       } else {
         await client.signIn.email({ email, password });
       }
@@ -196,6 +224,26 @@ export function AuthPanel({ onClose }: { onClose: () => void }) {
                     Forgot password?
                   </button>
                 </div>
+              )}
+              {/* REQUIRED. The same sentence the blocking gate shows, from the same
+                  component, so the two places that ask cannot ask different things.
+                  `aria-required` rather than `required`: the refusal is ours, above. */}
+              {mode === 'up' && (
+                <label className="ds-checkline">
+                  <input
+                    type="checkbox"
+                    checked={agreed}
+                    aria-required="true"
+                    aria-invalid={!agreed && !!error}
+                    onChange={(e) => {
+                      setAgreed(e.target.checked);
+                      if (e.target.checked) setError('');
+                    }}
+                  />
+                  <span>
+                    <TermsAgreement />
+                  </span>
+                </label>
               )}
               {error && <div className="ds-form-err">{error}</div>}
               <button

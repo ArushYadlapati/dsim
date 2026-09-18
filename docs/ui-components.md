@@ -136,12 +136,12 @@ The look and the depth model are `DESIGN.md`. This file is only the inventory.
 
 | class | declared | used |
 |---|---|---|
-| `.ds-panel` | src/ui/shell.css:1736 | 187 |
+| `.ds-panel` | src/ui/shell.css:1736 | 188 |
 | `.ds-panel-body` | src/ui/shell.css:1779 | 41 |
 | `.ds-panel-foot` | src/ui/shell.css:1820 | 3 |
 | `.ds-panel-h` | src/ui/shell.css:1954 | 40 |
 | `.ds-panel-open` | src/ui/shell.css:1951 | 2 |
-| `.ds-panel-title` | src/ui/shell.css:1963 | 43 |
+| `.ds-panel-title` | src/ui/shell.css:1963 | 44 |
 
 ## `ds-foot` — 5
 
@@ -157,10 +157,10 @@ The look and the depth model are `DESIGN.md`. This file is only the inventory.
 
 | class | declared | used |
 |---|---|---|
-| `.ds-form` | src/ui/shell.css:3480 | 30 |
+| `.ds-form` | src/ui/shell.css:3480 | 31 |
 | `.ds-form-aside` | src/ui/shell.css:3573 | 1 |
 | `.ds-form-err` | src/ui/shell.css:3509 | 16 |
-| `.ds-form-hint` | src/ui/shell.css:3513 | 6 |
+| `.ds-form-hint` | src/ui/shell.css:3513 | 7 |
 | `.ds-form-switch` | src/ui/shell.css:3551 | 2 |
 
 ## `ds-hero` — 5
@@ -257,9 +257,9 @@ The look and the depth model are `DESIGN.md`. This file is only the inventory.
 
 | class | declared | used |
 |---|---|---|
-| `.ds-modal` | src/ui/shell.css:3462 | 9 |
-| `.ds-modal-backdrop` | src/ui/shell.css:3453 | 3 |
-| `.ds-modal-h` | src/ui/shell.css:3474 | 3 |
+| `.ds-modal` | src/ui/shell.css:3462 | 14 |
+| `.ds-modal-backdrop` | src/ui/shell.css:3453 | 6 |
+| `.ds-modal-h` | src/ui/shell.css:3474 | 4 |
 
 ## `ds-opt` — 3
 
@@ -395,7 +395,7 @@ The look and the depth model are `DESIGN.md`. This file is only the inventory.
 
 | class | declared | used |
 |---|---|---|
-| `.ds-actions` | src/ui/shell.css:4872 | 20 |
+| `.ds-actions` | src/ui/shell.css:4872 | 21 |
 
 ## `ds-app` — 1
 
@@ -431,13 +431,13 @@ The look and the depth model are `DESIGN.md`. This file is only the inventory.
 
 | class | declared | used |
 |---|---|---|
-| `.ds-btn` | src/ui/shell.css:564 | 146 |
+| `.ds-btn` | src/ui/shell.css:564 | 148 |
 
 ## `ds-checkline` — 1
 
 | class | declared | used |
 |---|---|---|
-| `.ds-checkline` | src/ui/shell.css:1844 | 1 |
+| `.ds-checkline` | src/ui/shell.css:1844 | 2 |
 
 ## `ds-chip` — 1
 
@@ -527,7 +527,7 @@ The look and the depth model are `DESIGN.md`. This file is only the inventory.
 
 | class | declared | used |
 |---|---|---|
-| `.ds-hint` | src/ui/shell.css:1826 | 140 |
+| `.ds-hint` | src/ui/shell.css:1826 | 142 |
 
 ## `ds-input` — 1
 

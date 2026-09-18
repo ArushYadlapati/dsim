@@ -55,6 +55,8 @@ import {
   getUserSettings,
   getUserStats,
   getSupporter,
+  getTermsAcceptance,
+  acceptTerms,
   claimKofiPayment,
   recordKofiPayment,
   deleteAccount,
@@ -68,6 +70,7 @@ import {
   UsernameTakenError,
 } from './db/repo';
 import { emailGateRefusal, verifyAuthToken } from './auth';
+import { LEGAL_VERSION } from '../src/legalText';
 import { DEPLOY_REGIONS, interRegionMs } from './regions';
 
 /**
@@ -514,6 +517,31 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse): Prom
       return json(200, { ok: true }), true;
     }
 
+    /**
+     * ---- TERMS ACCEPTANCE (write your own) ---------------------------------
+     *
+     * ⚠️ THE VERSION IS NOT IN THE BODY. It is the server's own `LEGAL_VERSION`,
+     * derived from the legal text this deployment is serving — so a client cannot
+     * claim to have accepted a revision that does not exist, and cannot pre-accept
+     * the NEXT one to opt out of the gate forever. There is nothing for the caller
+     * to send, which is why the route takes no body at all.
+     *
+     * The account is identified from the token's own subject, like every other write
+     * here. `ensureProfile` first, because an OAuth account can reach this before
+     * anything else has created its row — accepting the terms is plausibly the very
+     * first authenticated thing a new sign-up does.
+     */
+    if (url.pathname === '/api/user/accept-terms' && req.method === 'POST') {
+      const user = await verifyAuthToken(bearer(req));
+      if (!user) return json(401, { error: 'sign in required' }), true;
+      if (!dbEnabled) {
+        return json(503, { error: 'recording an acceptance needs the database' }), true;
+      }
+      await ensureProfile(user.userId, user.handle);
+      const a = await acceptTerms(user.userId, LEGAL_VERSION);
+      return json(200, { termsVersion: a.version, termsAcceptedAt: a.acceptedAt }), true;
+    }
+
     // ---- supporter entitlements --------------------------------------------
     // Read your OWN entitlement. The client uses this only to decide whether to
     // draw ads and perk UI; every perk that actually matters is enforced
@@ -522,7 +550,19 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse): Prom
       const user = await verifyAuthToken(bearer(req));
       if (!user) return json(401, { error: 'sign in required' }), true;
       if (!dbEnabled) {
-        return json(200, { supporter: false, supporterUntil: null, autoRenews: false }), true;
+        return (
+          json(200, {
+            supporter: false,
+            supporterUntil: null,
+            autoRenews: false,
+            // NULL, not the current version: with no database nothing was recorded, and
+            // saying otherwise would tell the gate an acceptance exists that does not.
+            // (A local dev server without Postgres therefore shows the dialog, and its
+            // Accept answers 503 — correct, and visible, rather than quietly fine.)
+            termsVersion: null,
+          }),
+          true
+        );
       }
       // the price is served alongside the entitlement so the Donate page can state
       // it without a second round trip, and so it can never drift from the number
@@ -532,6 +572,20 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse): Prom
         json(200, {
           ...(await getSupporter(user.userId)),
           price: { amount: policy.monthlyPrice, currency: policy.currency },
+          /**
+           * THE ACCEPTED TERMS RIDE ALONG HERE rather than on a route of their own.
+           * This is the one call the client already makes once per signed-in session
+           * for its own account, and the gate needs the answer at exactly that moment;
+           * a second route would be a second round trip on every load to learn one
+           * string. A second single-row lookup by primary key on the same table is the
+           * cheaper half of that trade.
+           *
+           * It is kept OUT of `getSupporter`'s own return: that function is the
+           * supporter predicate the ad gate, the cosmetics and the badge all read, and
+           * an unrelated legal field inside it would invite somebody to fold a terms
+           * check into a paid-perk decision.
+           */
+          termsVersion: (await getTermsAcceptance(user.userId)).version,
         }),
         true
       );

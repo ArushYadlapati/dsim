@@ -173,7 +173,8 @@ export const RESET_PATH = '/account/reset';
 export const VERIFY_PATH = '/account/verify';
 
 /**
- * An absolute URL for one of this app's routes, for the link inside an email.
+ * An absolute URL for one of this app's routes — the link inside an email, and the
+ * two legal documents the terms gate links out to.
  *
  * ORIGIN-RELATIVE where there is an origin, so a Vercel preview deployment sends
  * people back to that preview rather than to production. Under Electron the
@@ -181,7 +182,7 @@ export const VERIFY_PATH = '/account/verify';
  * desktop app points at the live site, which is where the desktop shell loads
  * from anyway whenever it is online.
  */
-export function appCallbackUrl(path: string): string {
+export function appUrl(path: string): string {
   const loc = typeof window === 'undefined' ? null : window.location;
   const origin = loc && /^https?:$/.test(loc.protocol) ? loc.origin : SITE_URL;
   return origin + path;
@@ -210,7 +211,7 @@ export async function requestPasswordReset(email: string): Promise<AuthFlowResul
   return run(() =>
     client.requestPasswordReset({
       email: email.trim(),
-      redirectTo: appCallbackUrl(RESET_PATH),
+      redirectTo: appUrl(RESET_PATH),
     }),
   );
 }
@@ -243,7 +244,7 @@ export async function requestEmailVerification(email: string): Promise<AuthFlowR
   return run(() =>
     client.sendVerificationEmail({
       email: email.trim(),
-      callbackURL: appCallbackUrl(VERIFY_PATH),
+      callbackURL: appUrl(VERIFY_PATH),
     }),
   );
 }

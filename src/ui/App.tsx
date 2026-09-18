@@ -49,6 +49,7 @@ import { Privacy, Terms } from './Legal';
 import { Donate } from './Donate';
 import { Changelog } from './Changelog';
 import { Profile } from './Profile';
+import { TermsGate } from './TermsGate';
 import { UsernameGate } from './UsernameGate';
 import { Account } from './Account';
 import { authEnabled } from '../lib/authClient';
@@ -1497,7 +1498,16 @@ export function App() {
         game={settings.game}
       >
       {authEnabled && <AccountSync onUser={onSyncUser} onLoad={onSyncLoad} seed={onSyncSeed} />}
-      {authEnabled && <UsernameGate />}
+      {/* THE BLOCKING GATES, NESTED RATHER THAN STACKED. A brand-new account trips both
+          (an OAuth sign-up has no username AND no acceptance), and two
+          `.ds-modal-backdrop`s at once double-darken the page and show one dialog dimmed
+          behind the other. `TermsGate` renders its children only once it is satisfied, so
+          the order is structural: agree to the service, then pick a name inside it. */}
+      {authEnabled && (
+        <TermsGate>
+          <UsernameGate />
+        </TermsGate>
+      )}
 
       {screen === 'home' && (
         <HomeMenu
