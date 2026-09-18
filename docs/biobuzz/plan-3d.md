@@ -168,7 +168,12 @@ cross-runtime hash on Node, Chromium, Firefox and Safari, the owner may switch t
 the default build and keep the deterministic one for server-side replay verification only.
 
 `sim3d/engine.ts` loads the compat module through a **dynamic `import()`** inside
-`initPhysics3d()` and keeps it in a module variable; `step3d` is synchronous against it. Vite
+`initPhysics3d()` and keeps it in a module variable; `step3d` is synchronous against it.
+Since 2026-09-18 the same call also loads `sim3d/impl.ts`, the barrel every heavy `sim3d/` module
+hangs off, so the IMPLEMENTATION is lazy too and not just the wasm: `step.ts` dispatches through a
+one-line gate (`sim3d/step3d.ts`) and the scene takes the tray angle from the light `sim3d/tilt.ts`.
+Before that, a static import chain put ~14 KB gz of physics logic in the main chunk and the same
+again in the LAN host worker. Vite
 emits the wasm chunk once, loaded only when a 3D-physics world is about to be stepped locally
 (practice, Full prediction, LAN hosting). A 2D-view client with Light or Off prediction in an
 online 3D room **never loads it**. The server awaits it at boot beside `initPhysics()`; the smoke
@@ -176,7 +181,8 @@ suite awaits it at the top. The 2D games stay on `rapier2d-compat` 0.19.3; the p
 If the non-compat package plus a Vite `?url` wasm works in browser, worker, Node and `tsx` alike,
 it saves about 300 KB gzipped; try it on Day 0, fall back to compat.
 
-Route weights, gzipped: main chunk 903 KB today (at most +10 KB); 3D physics chunk about 1.1 MB
+Route weights, gzipped: main chunk 903 KB today (at most +10 KB; measured 907.88 after the
+implementation moved out of it); 3D physics chunk about 1.1 MB
 (compat) or 0.77 MB (raw wasm), loaded only as described; renderer chunk at most 250 KB (engine
 measured 139 KB tree-shaken); HDRI sets on demand. A 2D-view player pays the main chunk only.
 `scripts/bundleaudit.mjs` (new, a `uiaudit`-shaped ratchet) fails on growth per chunk.

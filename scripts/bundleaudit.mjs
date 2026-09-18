@@ -23,8 +23,20 @@
  * breaks the day after it is written. Route by what a chunk actually contains instead:
  *   main       — the entry chunk (`index-*.js` at the top of `dist/assets`)
  *   hostWorker — the LAN host worker (`hostWorker-*.js`, its own Vite worker entry)
- *   physics3d  — a chunk (or wasm asset) whose bytes carry a rapier3d marker
- *   scene      — a chunk whose bytes carry a Three.js marker (`WebGLRenderer`)
+ *   physics3d  — a chunk (or wasm asset) whose bytes carry a rapier3d marker, OR one carrying a
+ *                BIOBUZZ `sim3d/` marker: since the implementation moved behind
+ *                `initPhysics3d()` (`sim3d/impl.ts`), the 3D physics arrives as THREE lazy
+ *                chunks rather than one — the wasm glue (`rapier-*.js`), the client's
+ *                implementation barrel (`impl-*.js`), and a shared chunk (`tilt-*.js`: the CAD
+ *                collider set + `sim3d/tilt.ts`) that the SCENE and the implementation both
+ *                import, so Rollup hoists it out of each. The LAN host worker code-splits the
+ *                same way and gets its own `impl-*.js`. All of it is 3D physics the player pays
+ *                for only on a 3D world, which is the one thing this route means; bucketing it
+ *                as `other` would say the opposite.
+ *   scene      — a chunk whose bytes carry a Three.js marker (`WebGLRenderer`). ⚠️ TESTED BEFORE
+ *                the sim3d markers, not after: the scene legitimately reads the tray angle and
+ *                the CAD geometry, so if a future chunking ever merges some of that INTO the
+ *                renderer chunk, "it has three.js in it" is the answer that stays right.
  *   other      — everything else. In practice this is empty: `@dimforge/rapier2d-compat` is a
  *                STATIC import (`src/sim/physicsEngine.ts`), so the 2D physics engine lives
  *                inside `main` already and always has (that is existing, unchanged behavior,
@@ -62,6 +74,17 @@ if (!existsSync(ASSETS)) {
 const MARKERS = {
   physics3d: ['rapier_wasm3d', 'rapier3d', 'RAPIER3D', 'dimforge'],
   scene: ['WebGLRenderer', 'THREE.Scene', 'three.module'],
+  /**
+   * BIOBUZZ's own 3D chunks, which carry no `rapier` string of their own — they IMPORT the wasm
+   * facade rather than containing it. All three are object PROPERTY names, which esbuild does not
+   * mangle, so they survive minification the way a string literal does:
+   *   `containmentFixes` / `hiveTrays` — fields of `Engine3d` (`sim3d/engineImpl.ts`)
+   *   `refTheta`                        — the tray's reference angle, in `sim3d/fieldColliders.ts`
+   *                                       AND in the CAD JSON it reads (`fieldColliders.gen.ts`)
+   * Measured against the build that introduced the split: present in all three sim3d chunks,
+   * absent from `index-*`, `hostWorker-*` and `renderScene-*`.
+   */
+  sim3d: ['containmentFixes', 'hiveTrays', 'refTheta'],
 };
 
 /** does `buf` contain any of `needles`, scanned as raw bytes (works for text OR wasm)? */
@@ -83,7 +106,9 @@ function routeFor(file, buf) {
   // "rapier3d" filename at all).
   if (/rapier/i.test(base) && base.endsWith('.wasm')) return 'physics3d';
   if (containsAny(buf, MARKERS.physics3d)) return 'physics3d';
+  // THREE.JS FIRST, then sim3d — see the route table's note on `scene`.
   if (containsAny(buf, MARKERS.scene)) return 'scene';
+  if (containsAny(buf, MARKERS.sim3d)) return 'physics3d';
   return 'other';
 }
 
@@ -117,45 +142,46 @@ const fmtKB = (bytes) => `${(bytes / 1000).toFixed(2)} KB`;
  * more than 5%.
  *
  * MEASURED on the build this Day 1 seam produces with Lane A's `sim3d/`, Lane B's `scene/`
- * (merged `a6cb4d4`) and this lane's wiring all present — `npm run build && npm run
- * bundleaudit`, 2026-09-17:
- *   main       904.40 KB — `dist/assets/index-*.js`. Matches the ~904.17 KB this lane's brief
- *              was measured against (the ~0.2 KB gap is noise between two builds of the same
- *              tree, not a regression to chase).
- *   hostWorker 699.38 KB — `dist/assets/hostWorker-*.js`. Untouched by this lane; measured
- *              here for the first time (no prior bundleaudit existed to carry a baseline).
- *   physics3d 1089.27 KB — `dist/assets/rapier-*.js` (the `@dimforge/rapier3d-deterministic-
- *              compat` chunk). Present in this build BECAUSE this lane's `GameView`/`game.ts`
- *              wiring is what makes `initPhysics3d()` reachable at all — before it, nothing
- *              called it and the chunk did not exist. ≈ 1.09 MB, exactly the plan's estimate.
- *   scene      182.01 KB — `dist/assets/renderScene-*.js` (Lane B's Three.js renderer). RAISED
- *              from 147.92 KB (2026-09-17 fidelity pass) by the CAD field switch-over
- *              (`docs/biobuzz/plan-3d.md` §8): `scene/renderField.ts` now imports
- *              `renderFieldGlb.ts`, which pulls in three's `GLTFLoader` and the meshopt
- *              `MeshoptDecoder` to read `field.glb`/`field-low.glb` (`EXT_meshopt_compression`,
- *              `public/models/biobuzz/README.md`) — both are still inside the SAME lazily-
- *              loaded `scene` chunk, never the main bundle (this file's whole reason to exist:
- *              a 2D-view player must not pay for them). Still well under the §2.5 spec ceiling
- *              of 250 KB; the ceiling is kept as `budgetCeiling` below for context, but the
- *              RATCHET binds to the measurement, same as every other route — a budget is not a
- *              target.
- * `other` has no route in a healthy build (all four chunks above account for every `.js`/
- * `.wasm` file) — baseline near zero, so anything landing here at all is worth a look.
+ * and the wiring all present — `npm run build && npm run bundleaudit`.
+ *
+ * ── RE-MEASURED 2026-09-18, when `sim3d/` moved behind `initPhysics3d()` ────────────────────
+ * Until then `src/games/biobuzz/step.ts` imported `step3d` STATICALLY and `scene/renderField.ts`
+ * imported two helpers out of `hive3d.ts`/`bodies.ts`, so the whole 3D implementation was
+ * reachable from the entry and sat in the MAIN chunk — every player of every game downloading
+ * BIOBUZZ's 3D physics to play a 2D DECODE match, which is precisely the thing this file exists
+ * to notice. `sim3d/impl.ts` is the lazy barrel now and `initPhysics3d()` is its only importer.
+ *   main        907.88 KB — `dist/assets/index-*.js`. WAS 921.71 against a 904.40 baseline (a
+ *               17.3 KB overhang that had crept in under the tolerance); −13.83 KB gz.
+ *   hostWorker  700.84 KB — `dist/assets/hostWorker-*.js`. WAS 714.66 and FAILING this audit by
+ *               1.29 KB, which is the regression that started this. The worker code-splits too
+ *               (`worker.format = 'es'`), so it gets its own lazy `impl-*.js`; −13.82 KB gz.
+ *   physics3d  1123.14 KB — now FOUR files, not one: `rapier-*.js` (1089.27, the
+ *               `@dimforge/rapier3d-deterministic-compat` wasm glue, UNCHANGED), the client's
+ *               `impl-*.js` (10.03), the LAN worker's own `impl-*.js` (16.83, which also carries
+ *               its copy of the two below), and the `tilt-*.js` shared chunk (7.01: the CAD
+ *               collider set plus `sim3d/tilt.ts`, hoisted because the scene chunk and the
+ *               implementation chunk both import it). +33.87 KB on a route nobody loads without
+ *               choosing 3D physics — that is the whole trade, and it is the right way round.
+ *   scene       187.27 KB — `dist/assets/renderScene-*.js`. UNCHANGED (+0.03, noise): the two
+ *               helpers it used to reach through `hive3d.ts`/`bodies.ts` are the same two
+ *               functions, now in the light `sim3d/tilt.ts`, and the CAD geometry it reads did
+ *               not move — it is simply no longer a free ride on the main chunk. RAISED to
+ *               187.24 on Day 2 by the reticle (`renderLanding.ts` + `renderReticle.ts`), the
+ *               chase and orbit cameras and the `project` hook; the heavy part of this chunk is
+ *               three.js itself and everything added since is arithmetic. Still ~63 KB inside
+ *               the §2.5 spec ceiling, kept below as `budgetCeiling` for context — the RATCHET
+ *               binds to the measurement, because a budget is not a target.
+ * `other` has no route in a healthy build (every `.js`/`.wasm` file lands in one of the four
+ * above) — baseline near zero, so anything landing here at all is worth a look.
  *
  * RECALIBRATE by running `npm run build && npm run bundleaudit` and copying the printed gzip
  * totals in here, the same way `uiaudit.mjs`'s header describes lowering ITS baseline.
  */
 const BASELINE = {
-  main: { gzip: 904.4 * 1000 },
-  hostWorker: { gzip: 699.38 * 1000 },
-  physics3d: { gzip: 1089.27 * 1000 },
-  // RAISED to 187.24 KB (from 183.84, Day 2 2026-09-18) — the MEASURED total, not a rounded-up
-  // allowance: the reticle (`renderReticle.ts` + `renderLanding.ts`, which pulls the sim's own
-  // `bbTurretSolution`/`bbDumpSolution`/`bbAimTarget` into the scene chunk's graph), the chase
-  // and orbit cameras, and the `project` hook. +3.40 KB for all of it, because the heavy part of
-  // this chunk is three.js itself and everything added here is arithmetic. No new dependency;
-  // still ~63 KB inside the §2.5 spec ceiling below.
-  scene: { gzip: 187.24 * 1000, budgetCeiling: 250 * 1000 },
+  main: { gzip: 907.88 * 1000 },
+  hostWorker: { gzip: 700.84 * 1000 },
+  physics3d: { gzip: 1123.14 * 1000 },
+  scene: { gzip: 187.27 * 1000, budgetCeiling: 250 * 1000 },
   other: { gzip: 1 * 1000 },
 };
 

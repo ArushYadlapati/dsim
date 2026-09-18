@@ -131,9 +131,19 @@ The 2D pipeline is PERMANENT (owner rule): every existing check must stay byte-i
 - **Client:** `graphics/store.ts` holds the per-device view pref (`localStorage['decodesim.view']`);
   `GameView`/`game.ts` await `initPhysics3d()` before a 3D practice (fallback to 2D with an
   event-log line) and mount the lazily imported `scene` under the 2D canvas (`overlayOnly`).
-  Two LAZY chunks — physics ≈ 1.09 MB gz, scene ≤ 250 KB gz — ratcheted by `npm run bundleaudit`
-  (needs a build; not in `npm test`). `sim3d/` is still statically imported by `step.ts`, so its
-  logic sits in the main chunk (+≈4.5 KB gz): moving it behind `initPhysics3d()` is pending.
+  LAZY chunks — physics ≈ 1.12 MB gz (the wasm glue plus the implementation), scene ≤ 250 KB gz —
+  ratcheted by `npm run bundleaudit` (needs a build; not in `npm test`).
+- ⚠️ **`sim3d/` IS LAZY, AND ONLY TWO OF ITS MODULES MAY BE IMPORTED FROM OUTSIDE IT** (done
+  2026-09-18; it used to be otherwise, and the implementation sat in the main chunk). `engine.ts`
+  is the LOADER — `initPhysics3d` / `physics3dReady` / `rapier3d` / `physics3dImpl` — and
+  `tilt.ts` is `hiveTiltAngle` + `hiveTrayRefTheta`, pure JSON, because the 3D SCENE reads the
+  tray angle on a frame where no 3D physics is loaded (a 2D-physics match in the 3D view).
+  Everything else hangs off `sim3d/impl.ts`, a re-export barrel that `initPhysics3d()` alone
+  imports, dynamically, beside the wasm; reach it with `physics3dImpl().<name>` after the await,
+  which is how the PREDICTORS (`predict.ts`) will be wired. `sim3d/step3d.ts` is a one-line gate
+  doing exactly that, so `step.ts` can dispatch without pulling a byte of physics in. Node callers
+  (smoke lanes, `hive-calibrate`, `costprobe`) still import the modules directly — there is no
+  bundle to protect there. The RENDER lane fails on a static import of anything else.
 - **Verification:** `scripts/smoke-biobuzz/sim3d.ts` (SIM3D lane: seam, drive parity, two-run
   hash, conservation, containment with `containmentFixes === 0`, CCD, capture, launch into either
   up cell, 18/29-in clearance, tip/spill, perf ≤ 1.5 ms, CAD probe agreement) and `render.ts`
