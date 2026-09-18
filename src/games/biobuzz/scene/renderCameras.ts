@@ -1,6 +1,6 @@
 import * as THREE from 'three';
-import type { SceneFrame } from '../../module';
-import type { Alliance } from '../../../types';
+import type { SceneCamera, SceneFrame } from '../../module';
+import type { Alliance, RobotState, World } from '../../../types';
 import { BB3_WALL_H, BB_HALF_X, BB_HALF_Y, BB_HIVE_X, BB_VIEW_MARGIN } from '../config';
 
 /**
@@ -50,9 +50,13 @@ const DRIVER_EYE_H_DEFAULT = 62;
 /** plan-3d.md §4.3's own range for the eye-height key (`i`/`o`) — the search never leaves it. */
 const DRIVER_EYE_H_MIN = 44;
 const DRIVER_EYE_H_MAX = 72;
-void DRIVER_EYE_H_MIN; // the search's lower bound never comes up (it only ever raises the eye
-// above `DRIVER_EYE_H_DEFAULT`) — kept as a named constant documenting plan-3d.md §4.3's full
-// `i`/`o` eye-height range this camera can be manually driven to, not a value this fit ever picks.
+// The FIT itself never reaches the lower bound (it only ever raises the eye above
+// `DRIVER_EYE_H_DEFAULT`); the `i`/`o` NUDGE does, which is what the range was always documenting
+// — `clampEye` is where both ends of it now bind.
+/** clamp a driver eye height into plan §4.3's own 44–72 envelope. */
+function clampEye(h: number): number {
+  return Math.max(DRIVER_EYE_H_MIN, Math.min(DRIVER_EYE_H_MAX, h));
+}
 /** how far outside the field wall the driver's eye starts, in — the plan doc's original figure.
  * Kept as the default for a wide-enough aspect (16:9 and wider commonly fit here once the eye is
  * raised); a narrower aspect (4:3, portrait, a phone) needs more room and the search grows this,
@@ -323,11 +327,118 @@ function applyViewOffset(cam: THREE.PerspectiveCamera | THREE.OrthographicCamera
   else if (cam.view?.enabled) cam.clearViewOffset();
 }
 
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+// CHASE AND ORBIT (Day 2, `docs/biobuzz/plan-3d.md` §4.3: "Chase (60 in back, 40 up;
+// robot-centric). Orbit (spectators, replays, gallery).")
+//
+// Neither is ever named by the controller — `GameController.sceneCameraFor()` still picks
+// `driver` or `overhead`. They are reached through the DEVICE's camera preference
+// (`graphics/store.ts`), which `renderScene.ts` resolves against the frame's camera before
+// calling `update`. Both fit into `frame.insets`' safe rect through the same `setViewOffset`
+// window the driver camera uses, so a chase shot is not framed under the score bar either.
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+
+/** plan §4.3's own two numbers: the chase eye sits 60 in BEHIND the robot along its heading and
+ * 40 in ABOVE it. */
+const CHASE_BACK = 60;
+const CHASE_UP = 40;
+/** how far AHEAD of the robot the chase camera looks, and how high — aiming at the chassis
+ * itself puts the robot dead centre with the field it is driving into squeezed into the top
+ * third; a target ahead of it gives the drive direction the middle of the frame. */
+const CHASE_LOOK_AHEAD = 36;
+const CHASE_LOOK_Z = 14;
+const CHASE_FOV = 68;
+
+/**
+ * FOLLOW SMOOTHING HALF-LIFE, seconds — the time the camera takes to close HALF the distance to
+ * where it should be. Frame-rate independent by construction: the per-frame blend is
+ * `1 − 2^(−dt/halfLife)`, so 144 Hz and 30 Hz converge along the same curve in WALL-CLOCK time
+ * (a plain `lerp(…, 0.1)` per frame does not — it follows nearly five times faster at 144 Hz,
+ * which is exactly how a camera ends up feeling different on two machines). Same trick, same
+ * constant shape as `GameController`'s own `SMOOTH_HALFLIFE` error decay.
+ *
+ * Position lags slightly more than the aim point: a camera whose LOOK-AT snapped while its eye
+ * drifted reads as a swimming horizon.
+ */
+const CHASE_POS_HALFLIFE = 0.12;
+const CHASE_AIM_HALFLIFE = 0.08;
+/** REDUCED MOTION (`prefers-reduced-motion`, and plan §4.4's "Camera motion: full / reduced")
+ * does not mean "no camera" — it means the camera must not add motion of its own on top of the
+ * robot's. A near-zero half-life rigidly bolts the eye to the robot, so every pixel that moves
+ * is the robot actually moving; the smoothed version adds a swing the player did not command,
+ * which is the part that makes people ill. Orbit's auto-rotate is switched off outright. */
+const REDUCED_HALFLIFE = 0.012;
+/** a JUMP this big (in) is a teleport, not driving — a reset, a respawn, a reconnect snapping a
+ * remote robot into place — and the camera cuts rather than flying across the field. */
+const CHASE_SNAP_DIST = 72;
+
+/** orbit: the spectator ring's default radius and elevation, and what a wheel may zoom to. The
+ * field is 141 in across, so ~250 in out at 32° holds the whole field with the hives' tops
+ * inside the frame. */
+const ORBIT_RADIUS_DEFAULT = 250;
+const ORBIT_RADIUS_MIN = 90;
+const ORBIT_RADIUS_MAX = 620;
+const ORBIT_ELEV_DEFAULT = 0.56; // rad, ≈ 32°
+const ORBIT_ELEV_MIN = 0.08;
+const ORBIT_ELEV_MAX = 1.45; // just short of straight down, where the yaw becomes meaningless
+const ORBIT_CENTER_Z = 24;
+const ORBIT_FOV = 55;
+/** slow auto-rotate, rad/s — one lap in a bit over two minutes, i.e. a match. Slow enough to
+ * read as a gallery turntable rather than a moving shot. */
+const ORBIT_AUTO_RATE = 0.05;
+/** drag sensitivity: radians per CSS pixel. A half-screen drag (≈ 700 px) is a bit under half a
+ * turn, which is what "grab the field and swing it round" should cost. */
+const ORBIT_DRAG_YAW = 0.006;
+const ORBIT_DRAG_PITCH = 0.004;
+
+/** the driver/chase eye-height nudge (`i` / `o`, plan §4.3), in inches, and the total offset the
+ * keys may accumulate. The driver camera SOLVES its own eye height (`fitDriverCamera`), so this
+ * is an offset on top of the solved value, clamped into the plan's own 44–72 envelope. */
+const EYE_NUDGE_STEP = 4;
+const EYE_OFFSET_MAX = 24;
+
+/** one `MediaQueryList`, constructed once — `matchMedia()` per frame is the cost
+ * `GameController.mqCoarse` exists to avoid, and this is read on every camera update. Null in a
+ * non-DOM host (a headless harness), which reads as "motion is fine". */
+const reducedMotionMq: MediaQueryList | null =
+  typeof matchMedia === 'function' ? matchMedia('(prefers-reduced-motion: reduce)') : null;
+
+function reducedMotion(): boolean {
+  return reducedMotionMq?.matches ?? false;
+}
+
+/** frame-rate-independent blend factor for a half-life (see `CHASE_POS_HALFLIFE`). */
+function blend(dt: number, halfLife: number): number {
+  if (!(dt > 0)) return 0;
+  if (halfLife <= 0) return 1;
+  return 1 - Math.pow(2, -dt / halfLife);
+}
+
 export interface BbCameras {
   driver: THREE.PerspectiveCamera;
   overhead: THREE.OrthographicCamera;
-  /** update both cameras for this frame and return the one `frame.camera` names. */
-  update(frame: SceneFrame): THREE.Camera;
+  chase: THREE.PerspectiveCamera;
+  orbit: THREE.PerspectiveCamera;
+  /** the camera the LAST `update` returned — what `GameScene.project` must project through, so
+   * a label lands on the robot the player is actually looking at. */
+  active: THREE.Camera;
+  /**
+   * Update the cameras for this frame and return the one `camera` names.
+   *
+   * `camera` is the RESOLVED pick (the device preference applied over `frame.camera` —
+   * `renderScene.ts`), not `frame.camera` itself. `world` is read only for the local robot's
+   * pose, and only by the chase camera.
+   */
+  update(frame: SceneFrame, world: World, camera: SceneCamera): THREE.Camera;
+  /** raise (`+`) or lower (`−`) the driver/chase eye by one step; returns the new total offset
+   * in inches, for the caller to report. */
+  nudgeEye(dir: 1 | -1): number;
+  /** orbit: a mouse drag of (`dx`,`dy`) CSS pixels. Takes the turntable off auto-rotate — the
+   * viewer has taken the camera, and having it drift back out from under them is worse than
+   * losing the effect. */
+  orbitDrag(dx: number, dy: number): void;
+  /** orbit: a wheel notch (`deltaY`), zooming the ring in/out between its radius bounds. */
+  orbitZoom(deltaY: number): void;
 }
 
 /** scratch target for `driver.lookAt` — one object, mutated every frame, never reallocated. */
@@ -338,6 +449,43 @@ export function createCameras(): BbCameras {
   driver.up.set(0, 0, 1);
   const overhead = new THREE.OrthographicCamera(-1, 1, 1, -1, 1, 4000);
   overhead.up.set(0, 0, 1);
+  const chase = new THREE.PerspectiveCamera(CHASE_FOV, 1, 1, 4000);
+  chase.up.set(0, 0, 1);
+  const orbit = new THREE.PerspectiveCamera(ORBIT_FOV, 1, 1, 4000);
+  orbit.up.set(0, 0, 1);
+
+  // ── per-camera state, all module-free so two scenes (the gallery mounts several) never share
+  //    a turntable angle or a chase position.
+  /** the smoothed chase eye and aim point, in field inches. `have` is false until the first
+   * frame places them, so the camera never eases in from the origin. */
+  const chaseEye = new THREE.Vector3();
+  const chaseAim = new THREE.Vector3();
+  let chaseHave = false;
+  let orbitYaw = -Math.PI / 2; // start behind the audience-near wall, looking up-field
+  let orbitElev = ORBIT_ELEV_DEFAULT;
+  let orbitRadius = ORBIT_RADIUS_DEFAULT;
+  let orbitAuto = true;
+  let eyeOffset = 0;
+  /** wall-clock delta between updates, for the smoothing and the turntable. A RENDER file, so
+   * `performance.now()` is allowed here (`scripts/smoke.ts`'s clock guard exempts `render*`/
+   * `draw*` by name) — and required: `SceneFrame` carries no dt, and a camera that eased by a
+   * fixed step per frame would move at the display's refresh rate. */
+  let lastT = 0;
+
+  function frameDt(): number {
+    const now = performance.now();
+    const dt = lastT ? (now - lastT) / 1000 : 0;
+    lastT = now;
+    // a backgrounded tab, a blocking GLB decode or a devtools pause hands back a dt of seconds;
+    // clamping it means the camera resumes from where it was rather than teleporting.
+    return dt > 0 && dt < 0.25 ? dt : 0;
+  }
+
+  function localRobot(world: World, frame: SceneFrame): RobotState | null {
+    if (frame.localRobotId === undefined) return null;
+    for (const r of world.robots) if (r.id === frame.localRobotId) return r;
+    return null;
+  }
 
   function updateDriver(frame: SceneFrame): void {
     const fwd = forwardOf(frame.viewAngle);
@@ -355,14 +503,20 @@ export function createCameras(): BbCameras {
     applyViewOffset(driver);
     const eyeX = -fwd.x * eyeDist;
     const eyeY = -fwd.y * eyeDist;
-    driver.position.set(eyeX, eyeY, fit.eyeH);
+    // THE `i`/`o` NUDGE (plan §4.3) rides ON TOP of the solved height, clamped into the same
+    // 44–72 envelope the fit searches in. The pitch and FOV stay the SOLVED ones: re-fitting per
+    // keystroke would undo the nudge (the fit would simply re-solve a height that frames the
+    // field), so a nudged eye can crop a corner by the few degrees it moved — which is the
+    // player asking for a different view, not a broken fit.
+    const eyeH = clampEye(fit.eyeH + eyeOffset);
+    driver.position.set(eyeX, eyeY, eyeH);
     driver.up.set(0, 0, 1);
     // look along the pitched forward direction F(θ) = F0·cosθ − Z·sinθ — see `solveFit`'s header
     // for the derivation; any positive distance along that ray is a valid look-at target.
     const cosP = Math.cos(fit.pitch);
     const sinP = Math.sin(fit.pitch);
     const lookDist = 100;
-    scratchTarget.set(eyeX + fwd.x * cosP * lookDist, eyeY + fwd.y * cosP * lookDist, fit.eyeH - sinP * lookDist);
+    scratchTarget.set(eyeX + fwd.x * cosP * lookDist, eyeY + fwd.y * cosP * lookDist, eyeH - sinP * lookDist);
     driver.lookAt(scratchTarget);
     driver.updateProjectionMatrix();
   }
@@ -395,13 +549,129 @@ export function createCameras(): BbCameras {
     overhead.updateProjectionMatrix();
   }
 
-  return {
+  /**
+   * CHASE — 60 in behind the robot along its own heading, 40 up, aimed a little ahead of it
+   * (plan §4.3). Robot-centric: the yaw comes from `r.heading`, NOT from `frame.viewAngle`, so
+   * the picture turns with the robot the way a follow camera in a driving game does.
+   *
+   * Falls back to the driver camera when there is no local robot to chase (a spectator, a replay
+   * of somebody else's match) — see `SceneCamera`'s own note. Returns false in that case so
+   * `update` can hand back the fallback rather than a camera pointing at nothing.
+   */
+  function updateChase(frame: SceneFrame, world: World, dt: number): boolean {
+    const r = localRobot(world, frame);
+    if (!r) return false;
+    resolveSafeRect(frame);
+    const aspect = Math.max(1e-3, safe.w / safe.h);
+    const fx = Math.cos(r.heading);
+    const fy = Math.sin(r.heading);
+    const base = r.z ?? 0;
+    const wantEyeX = r.pos.x - fx * CHASE_BACK;
+    const wantEyeY = r.pos.y - fy * CHASE_BACK;
+    // the `i`/`o` nudge raises the chase eye too (it is the same "let me see further over the
+    // field" request), on its own bounds — this height is ABOVE THE ROBOT, not above the floor,
+    // so the driver camera's 44–72 stand-height envelope does not apply to it.
+    const wantEyeZ = base + Math.max(12, Math.min(96, CHASE_UP + eyeOffset));
+    const wantAimX = r.pos.x + fx * CHASE_LOOK_AHEAD;
+    const wantAimY = r.pos.y + fy * CHASE_LOOK_AHEAD;
+    const wantAimZ = base + CHASE_LOOK_Z;
+
+    const reduced = reducedMotion();
+    const snap =
+      !chaseHave ||
+      dt === 0 ||
+      chaseAim.distanceTo(scratchTarget.set(wantAimX, wantAimY, wantAimZ)) > CHASE_SNAP_DIST;
+    if (snap) {
+      chaseEye.set(wantEyeX, wantEyeY, wantEyeZ);
+      chaseAim.set(wantAimX, wantAimY, wantAimZ);
+      chaseHave = true;
+    } else {
+      const kPos = blend(dt, reduced ? REDUCED_HALFLIFE : CHASE_POS_HALFLIFE);
+      const kAim = blend(dt, reduced ? REDUCED_HALFLIFE : CHASE_AIM_HALFLIFE);
+      chaseEye.x += (wantEyeX - chaseEye.x) * kPos;
+      chaseEye.y += (wantEyeY - chaseEye.y) * kPos;
+      chaseEye.z += (wantEyeZ - chaseEye.z) * kPos;
+      chaseAim.x += (wantAimX - chaseAim.x) * kAim;
+      chaseAim.y += (wantAimY - chaseAim.y) * kAim;
+      chaseAim.z += (wantAimZ - chaseAim.z) * kAim;
+    }
+
+    chase.aspect = aspect;
+    applyViewOffset(chase);
+    chase.position.copy(chaseEye);
+    chase.up.set(0, 0, 1);
+    chase.lookAt(chaseAim);
+    chase.updateProjectionMatrix();
+    return true;
+  }
+
+  /**
+   * ORBIT — the spectator/gallery turntable: a ring around the field centre at
+   * `orbitRadius`/`orbitElev`, auto-rotating slowly until somebody drags it. Needs no robot and
+   * no `viewAngle`, which is what makes it the right camera for a replay, the scene gallery and
+   * a screenshot.
+   */
+  function updateOrbit(frame: SceneFrame, dt: number): void {
+    resolveSafeRect(frame);
+    orbit.aspect = Math.max(1e-3, safe.w / safe.h);
+    if (orbitAuto && !reducedMotion()) orbitYaw += ORBIT_AUTO_RATE * dt;
+    const ce = Math.cos(orbitElev);
+    const se = Math.sin(orbitElev);
+    applyViewOffset(orbit);
+    orbit.position.set(
+      Math.cos(orbitYaw) * ce * orbitRadius,
+      Math.sin(orbitYaw) * ce * orbitRadius,
+      ORBIT_CENTER_Z + se * orbitRadius,
+    );
+    orbit.up.set(0, 0, 1);
+    scratchTarget.set(0, 0, ORBIT_CENTER_Z);
+    orbit.lookAt(scratchTarget);
+    orbit.updateProjectionMatrix();
+  }
+
+  const cams: BbCameras = {
     driver,
     overhead,
-    update(frame: SceneFrame): THREE.Camera {
+    chase,
+    orbit,
+    active: driver,
+    update(frame: SceneFrame, world: World, camera: SceneCamera): THREE.Camera {
+      const dt = frameDt();
+      // THE DRIVER AND OVERHEAD CAMERAS ARE UPDATED EVERY FRAME whichever is active — they are
+      // two cheap closed-form solves, and both are the fallback for a camera that cannot be
+      // satisfied this frame (no local robot). Chase and orbit only run when asked: chase keeps
+      // smoothed STATE, and advancing it while it is not on screen would have it fly in from
+      // wherever the robot was when the player last looked.
       updateDriver(frame);
       updateOverhead(frame);
-      return frame.camera === 'driver' ? driver : overhead;
+      let picked: THREE.Camera;
+      if (camera === 'chase') picked = updateChase(frame, world, dt) ? chase : driver;
+      else if (camera === 'orbit') {
+        updateOrbit(frame, dt);
+        picked = orbit;
+      } else picked = camera === 'overhead' ? overhead : driver;
+      cams.active = picked;
+      return picked;
+    },
+    nudgeEye(dir: 1 | -1): number {
+      eyeOffset = Math.max(-EYE_OFFSET_MAX, Math.min(EYE_OFFSET_MAX, eyeOffset + dir * EYE_NUDGE_STEP));
+      // the driver fit is CACHED on (viewAngle, aspect) and the nudge is applied after it, so
+      // nothing has to be invalidated here — the next frame simply positions the eye higher.
+      return eyeOffset;
+    },
+    orbitDrag(dx: number, dy: number): void {
+      orbitAuto = false;
+      orbitYaw -= dx * ORBIT_DRAG_YAW;
+      orbitElev = Math.max(ORBIT_ELEV_MIN, Math.min(ORBIT_ELEV_MAX, orbitElev + dy * ORBIT_DRAG_PITCH));
+    },
+    orbitZoom(deltaY: number): void {
+      // a wheel notch is ±100 on a mouse and a handful of pixels on a trackpad, so zoom
+      // MULTIPLICATIVELY: the same gesture moves the same fraction of the current radius at
+      // every distance, which is what stops a zoom from crawling when far out and lurching when
+      // close in.
+      const factor = Math.exp(deltaY * 0.0012);
+      orbitRadius = Math.max(ORBIT_RADIUS_MIN, Math.min(ORBIT_RADIUS_MAX, orbitRadius * factor));
     },
   };
+  return cams;
 }
