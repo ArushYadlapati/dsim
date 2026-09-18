@@ -167,6 +167,24 @@ export class LobbyClient {
     this.transport.send(encodeMsg({ t: 'start' }));
   }
 
+  /**
+   * HOST ONLY: seat an AI driver on an empty slot, or give one back (plan §6).
+   *
+   * Fire-and-forget, like `update` and `start`: the server answers with a fresh `roster`, so the
+   * caller never tracks this optimistically. A refusal (a full room, a ranked room, a game with
+   * no driver) arrives as an ordinary `error`.
+   *
+   * ⚠️ The CALLER gates on `serverCaps()` containing `'bots'` — an older server ignores an
+   * unknown message rather than refusing it, so an ungated button would silently do nothing.
+   */
+  addBot(tier?: string): void {
+    this.transport.send(encodeMsg({ t: 'addBot', tier }));
+  }
+
+  removeBot(seat: string): void {
+    this.transport.send(encodeMsg({ t: 'removeBot', seat }));
+  }
+
   /** enter the ranked queue on this `?mm=1` connection. On a match the server sends
    * `matchAssigned` (reconnect to the host region). (Re)sends on open + reconnect,
    * with the auth JWT. `homeRegion`/`accessMs` are the client's network position (so

@@ -18,6 +18,14 @@ import { moduleFor } from '../games';
 import { getViewPref, setViewPref, subscribeViewPref } from '../games/biobuzz/graphics/store';
 
 /**
+ * A BOT TIER, IN SENTENCE CASE. The seam's tiers are opaque lower-case strings a game owns, and
+ * `docs/area/ui.md` rules sentence case for every button label — so the presentation happens
+ * here rather than the game's list being asked to carry display copy it would then have to keep
+ * consistent with the house rules. Shared by the practice control and the lobby's.
+ */
+export const botLabel = (tier: string): string => tier.charAt(0).toUpperCase() + tier.slice(1);
+
+/**
  * Match configuration — the pre-game options that belong to the MATCH, not the
  * robot: alliance, start position, practice dummies, and an imported auto path.
  * These apply to the SOLO/offline modes (Solo Practice, Free Drive, Records);
@@ -189,6 +197,10 @@ export function MatchSetup({
   // the VIEW picker needs a 3D renderer to switch to at all — absent on every game/build
   // until Lane B fills `scene` (Day 1 lands the seam, not the renderer).
   const hasScene = !!moduleFor(settings.game).scene;
+  // OPPONENTS (plan §6). The tier list is the GAME's (`GameSimModule.bot.tiers`) — opaque
+  // strings, so a game can add or rename a difficulty without this file changing — and its
+  // absence is what hides the control for DECODE and Chain Reaction.
+  const botTiers = moduleFor(settings.game).bot?.tiers;
 
   return (
     <section className="ds-panel">
@@ -286,6 +298,30 @@ export function MatchSetup({
               >
                 <span className="ot">Physics 3D</span>
               </button>
+            </div>
+          )}
+          {/* OPPONENTS (plan §6): fill the empty seats of the format with AI drivers, at a tier
+              this game names itself. Hidden entirely for a game with no `bot` driver — offering
+              difficulties nothing can play is worse than offering nothing. Solo PRACTICE only:
+              free drive has no match for a bot to play, and its `practiceDummies` above are a
+              different thing on purpose (inert obstacles). */}
+          {botTiers && settings.mode === 'match' && (
+            <div className="ds-opts fill">
+              <button
+                className={`ds-opt mini ${(settings.practiceBots ?? 'off') === 'off' ? 'on' : ''}`}
+                onClick={() => set({ practiceBots: 'off' })}
+              >
+                <span className="ot">Opponents off</span>
+              </button>
+              {botTiers.map((t) => (
+                <button
+                  key={t}
+                  className={`ds-opt mini ${settings.practiceBots === t ? 'on' : ''}`}
+                  onClick={() => set({ practiceBots: t })}
+                >
+                  <span className="ot">{botLabel(t)}</span>
+                </button>
+              ))}
             </div>
           )}
           {/* the VIEW is per DEVICE (`getViewPref`), never synced — a Graphics section in

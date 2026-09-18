@@ -57,6 +57,10 @@ export function defaultSettings(): GameSettings {
     // solo practice defaults to the 3D physics (Day 1 seam, `docs/biobuzz/plan-3d.md` §2.1);
     // the player picks '2d' for a casual or low-end run.
     practicePhysics: '3d',
+    // OFF by default (plan §6). Practice is where people go to drive their own robot, and a
+    // field with three strangers on it is a different exercise from the one they asked for —
+    // opting in is one button, opting out of a surprise is a support question.
+    practiceBots: 'off',
     audio: {
       volume: { master: 1, game: 1, shoot: 1, intake: 1, gate: 1, beep: 1, alert: 1, voice: 1 },
       sounds: true,
@@ -289,6 +293,20 @@ export function coerceSettings(raw: unknown): GameSettings {
     }
     if (typeof s.practiceDummies === 'boolean') out.practiceDummies = s.practiceDummies;
     if (s.practicePhysics === '2d' || s.practicePhysics === '3d') out.practicePhysics = s.practicePhysics;
+    /**
+     * THE BOT TIER IS COERCED BY THE GAME, not by a list written here.
+     *
+     * `tiers` is opaque on the seam so a game can rename a difficulty without a shared edit, so
+     * the only honest validation is the module's own `coerceTier` — which also answers for a
+     * tier that was legal when it was saved and is not any more. A game with no AI driver folds
+     * everything to `'off'`, which is what makes a stored `'hard'` harmless after switching to
+     * DECODE (`switchGame` does not archive this field: it is a practice preference, not part of
+     * a per-game loadout, and a player who wants opponents wants them in whatever they play).
+     */
+    if (typeof s.practiceBots === 'string') {
+      const bot = simModuleFor(out.game).bot;
+      out.practiceBots = s.practiceBots === 'off' || !bot ? 'off' : bot.coerceTier(s.practiceBots);
+    }
     if (typeof s.audio === 'object' && s.audio !== null) {
       const au = s.audio as Record<string, unknown>;
       const vol = au.volume;
