@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import type { Artifact, ArtifactColor, World } from '../../../types';
 import { SIM_DT } from '../../../config';
 import { BB_HIVE_W, BB_NECTAR_R, BB_POLLEN_R } from '../config';
+import type { ElementShadows } from '../graphics/settings';
 
 /**
  * BIOBUZZ 3D SCENE — the 56 scoring elements, as two `InstancedMesh`es (Day 1,
@@ -50,6 +51,20 @@ export interface BbElements {
    * every frame as balls come and go). Pruned of ids no longer on the field once a frame's
    * bookkeeping is done, so a long match does not grow this map without bound. */
   spin: Map<number, THREE.Quaternion>;
+  /**
+   * BLOB SHADOWS — one flat disc per loose element, for `elementShadows: 'blob'`
+   * (`docs/biobuzz/plan-3d.md` §4.4). It is a middle rung and not a consolation prize: the
+   * thing a driver actually reads off an element's shadow is WHERE IT IS ON THE FLOOR (and,
+   * for one in flight, how high), and a disc under it answers that for one instanced draw and
+   * zero shadow-map work, where `'real'` costs 56 more casters in the sun's depth pass.
+   */
+  blobs: THREE.InstancedMesh;
+  /** which of the three modes is live — read by `updateBiobuzzElements` so it only does the
+   * blob bookkeeping when there are blobs. Set through `setElementShadows`, never directly. */
+  shadowMode: ElementShadows;
+  /** `effects: 'minimal'` turns the rolling spin off: it is a cosmetic integration per ball per
+   * frame, and it is the first thing to go on a machine that is counting. */
+  rollingSpin: boolean;
 }
 
 export function buildBiobuzzElements(): BbElements {
@@ -93,10 +108,43 @@ export function buildBiobuzzElements(): BbElements {
     nectar.setMatrixAt(i, HIDE);
     nectar.setColorAt(i, new THREE.Color(NECTAR_COLORS.red));
   }
+  // THE BLOB DISC. Unlit (`MeshBasicMaterial`) on purpose — a shadow that got brighter when the
+  // sun moved would be the one object in the scene lit by the thing it is meant to be blocking.
+  // `depthWrite: false` keeps it from z-fighting the tile plane it lies a sixteenth of an inch
+  // above, and `renderOrder: -1` draws it before the elements so a ball never sorts behind its
+  // own shadow.
+  const blobGeo = new THREE.CircleGeometry(1, 16);
+  const blobMat = new THREE.MeshBasicMaterial({ color: 0x000000, transparent: true, opacity: 0.32, depthWrite: false });
+  const blobs = new THREE.InstancedMesh(blobGeo, blobMat, CAP * 2);
+  blobs.name = 'bb-element-blobs';
+  blobs.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+  blobs.renderOrder = -1;
+  blobs.visible = false;
+  for (let i = 0; i < CAP * 2; i++) blobs.setMatrixAt(i, HIDE);
+
   const group = new THREE.Group();
-  group.add(pollen, nectar);
-  return { pollen, nectar, group, spin: new Map() };
+  group.add(pollen, nectar, blobs);
+  return { pollen, nectar, blobs, group, spin: new Map(), shadowMode: 'real', rollingSpin: true };
 }
+
+/**
+ * Switch the element-shadow mode LIVE (`docs/biobuzz/plan-3d.md` §4.4). Nothing is rebuilt: the
+ * blob mesh always exists and is simply hidden, and `castShadow` is a per-object flag the
+ * shadow pass reads every frame.
+ */
+export function setElementShadows(els: BbElements, mode: ElementShadows): void {
+  els.shadowMode = mode;
+  els.pollen.castShadow = mode === 'real';
+  els.nectar.castShadow = mode === 'real';
+  els.blobs.visible = mode === 'blob';
+}
+
+/** the tile-surface offset a blob sits at, and the height over which an airborne element's blob
+ * fades and shrinks. A ball two feet up throws a shadow that is wider and fainter, not one that
+ * has followed it into the air — which is the whole reason the blob is drawn at z ≈ 0 and not at
+ * the element. */
+const BLOB_Z = 0.06;
+const BLOB_FADE_Z = 40;
 
 /** how far a hive-cell row can fan out before it would clear the cell's own width — same idea as
  * `drawCellContents`'s pitch collapse, simplified: a fixed pitch, clamped to fit. */
@@ -149,9 +197,25 @@ function rollSpin(spin: Map<number, THREE.Quaternion>, id: number, vx: number, v
   return q;
 }
 
+/** scratch for the blob's own (uniform) scale — the shared `scratchScale` is a constant 1,1,1
+ * every other pose relies on, so a blob must not borrow it. */
+const blobScale = new THREE.Vector3(1, 1, 1);
+
+function poseBlob(mesh: THREE.InstancedMesh, index: number, x: number, y: number, z: number, r: number): void {
+  // a rising element's shadow spreads and fades; `t` is 0 on the tiles and 1 at `BLOB_FADE_Z`
+  const t = Math.min(1, Math.max(0, z / BLOB_FADE_Z));
+  const s = r * (1.15 + t * 1.6);
+  blobScale.set(s, s, 1);
+  scratchPos.set(x, y, BLOB_Z);
+  scratchMatrix.compose(scratchPos, scratchQuat, blobScale);
+  mesh.setMatrixAt(index, scratchMatrix);
+}
+
 export function updateBiobuzzElements(els: BbElements, world: World): void {
   let pollenN = 0;
   let nectarN = 0;
+  let blobN = 0;
+  const blobsOn = els.shadowMode === 'blob';
   const seenSpin = new Set<number>();
 
   // group hive-parked elements by `el` so a shared cell position can be fanned into a row —
@@ -211,8 +275,13 @@ export function updateBiobuzzElements(els: BbElements, world: World): void {
       // 'ground' | 'flight' — `z` is the height of the ball's BOTTOM above the tile (a resting
       // ball reads z === 0), so the centre is lifted by its own radius. Spins as it moves.
       seenSpin.add(b.id);
-      const q = rollSpin(els.spin, b.id, b.vel.x, b.vel.y, r);
-      poseAtQuat(mesh, idx, b.pos.x, b.pos.y, b.z + r, q);
+      if (els.rollingSpin) {
+        const q = rollSpin(els.spin, b.id, b.vel.x, b.vel.y, r);
+        poseAtQuat(mesh, idx, b.pos.x, b.pos.y, b.z + r, q);
+      } else {
+        poseAt(mesh, idx, b.pos.x, b.pos.y, b.z + r);
+      }
+      if (blobsOn) poseBlob(els.blobs, blobN++, b.pos.x, b.pos.y, b.z, r);
     }
 
     if (nectar) els.nectar.setColorAt(idx, new THREE.Color(NECTAR_COLORS[b.color as 'red' | 'blue']));
@@ -221,6 +290,10 @@ export function updateBiobuzzElements(els: BbElements, world: World): void {
   // whatever is left over from a previous, larger frame must be hidden, not left stale
   for (let i = pollenN; i < CAP; i++) els.pollen.setMatrixAt(i, HIDE);
   for (let i = nectarN; i < CAP; i++) els.nectar.setMatrixAt(i, HIDE);
+  if (blobsOn) {
+    for (let i = blobN; i < CAP * 2; i++) els.blobs.setMatrixAt(i, HIDE);
+    els.blobs.instanceMatrix.needsUpdate = true;
+  }
 
   // drop spin state for ids that are no longer ground/flight (parked, captured, or off-field)
   // so a long match does not grow this map without bound.

@@ -79,6 +79,47 @@ const DRIVER_MARGIN = 0.04;
 const FOV_MIN_RAD = (DRIVER_FOV_MIN * Math.PI) / 180;
 const FOV_MAX_RAD = (DRIVER_FOV_MAX * Math.PI) / 180;
 
+// ─────────────────────────────────────────────────────────── graphics-settings tuning (Day 3) ──
+//
+// Two of §4.4's sixteen settings — FIELD OF VIEW and CAMERA MOTION — are camera properties, and
+// this is where they land. MODULE scope rather than per-`createCameras`, because they are a
+// property of the DEVICE (the preference store is per device) and because the alternative is
+// threading a settings object through `solveFit`, whose whole design is a cache keyed on two
+// raw numbers. A page with two live scenes (the gallery) shares them, which is correct: they are
+// one player's preference, not one scene's.
+//
+// FOV is a CEILING on the driver camera and an exact value on chase and orbit, and that
+// asymmetry is deliberate. The driver camera SOLVES its FOV from the fit (`fitDriverCamera`) so
+// the whole field is in frame from the alliance wall; forcing 60° there would crop the far
+// corners off, which is not a preference, it is a broken shot. So a smaller number pulls the eye
+// BACK (the fit's own second lever) instead of narrowing the lens, and the setting reads as
+// "how wide a lens will you allow" — which is what it is.
+
+/** the driver fit's FOV ceiling, in radians. Defaults to the fit's own hard maximum, so a build
+ * that never touches the setting behaves exactly as it did. */
+let tunedFovMaxRad = FOV_MAX_RAD;
+/** chase/orbit FOV in DEGREES, applied per frame. */
+let tunedChaseFov = 68;
+let tunedOrbitFov = 55;
+/** the player's own "reduced" pick, OR-ed with `prefers-reduced-motion` (which always wins). */
+let tunedReducedMotion = false;
+
+/**
+ * Apply §4.4's two camera rows. Called by `renderScene.ts` on every settings change; cheap
+ * enough to call every time rather than diffing, and it invalidates the driver fit's cache so
+ * the next frame re-solves against the new ceiling.
+ */
+export function setCameraTuning(fovDeg: number, motion: 'full' | 'reduced'): void {
+  const deg = Math.min(DRIVER_FOV_MAX, Math.max(DRIVER_FOV_MIN, fovDeg));
+  tunedFovMaxRad = (deg * Math.PI) / 180;
+  // chase sits closer to the robot than the driver eye does to the field, so it reads a few
+  // degrees wider at the same setting; orbit is a framing shot and stays the tighter of the two
+  tunedChaseFov = deg;
+  tunedOrbitFov = Math.max(DRIVER_FOV_MIN - 15, deg - 15);
+  tunedReducedMotion = motion === 'reduced';
+  cachedAspect = NaN; // force `fitDriverCamera` to re-solve against the new ceiling
+}
+
 /** the tray's own peak height during a tip, APPROX — the manual's up-cell opening tops out at
  * `BB_HIVE_OPEN_Z[1]` (65.6), and the brief's own figure for "the hive tops" is "z ≈ 66"; this is
  * that same APPROX carried as a named constant rather than a bare literal in the point list
@@ -187,7 +228,7 @@ function solveFit(eyeH: number, setback: number, aspect: number, viewAngle: numb
   const vFovForHorizontal = 2 * Math.atan(maxHorizRatio / (aspect * marginScale));
 
   const vFov = Math.max(vFovForVertical, vFovForHorizontal);
-  const fits = vFov <= FOV_MAX_RAD + 1e-9 && minZc > 1e-3 && Number.isFinite(vFov);
+  const fits = vFov <= tunedFovMaxRad + 1e-9 && minZc > 1e-3 && Number.isFinite(vFov);
   return { pitch, vFov, fits };
 }
 
@@ -260,7 +301,7 @@ export function fitDriverCamera(_alliance: Alliance, viewAngle: number, aspect: 
     r = solveFit(eyeH, setback, aspect, viewAngle);
   }
 
-  const vFov = Math.min(FOV_MAX_RAD, Math.max(FOV_MIN_RAD, r.vFov));
+  const vFov = Math.min(tunedFovMaxRad, Math.max(FOV_MIN_RAD, r.vFov));
   cached.eyeH = eyeH;
   cached.setback = setback;
   cached.pitch = r.pitch;
@@ -404,7 +445,10 @@ const reducedMotionMq: MediaQueryList | null =
   typeof matchMedia === 'function' ? matchMedia('(prefers-reduced-motion: reduce)') : null;
 
 function reducedMotion(): boolean {
-  return reducedMotionMq?.matches ?? false;
+  // THE OS PREFERENCE ALWAYS WINS. `tunedReducedMotion` is the player's own Graphics pick and can
+  // only ever ADD damping — somebody who has asked their system for less motion does not get it
+  // back by leaving a game setting on `full`.
+  return tunedReducedMotion || (reducedMotionMq?.matches ?? false);
 }
 
 /** frame-rate-independent blend factor for a half-life (see `CHASE_POS_HALFLIFE`). */
@@ -598,6 +642,8 @@ export function createCameras(): BbCameras {
 
     chase.aspect = aspect;
     applyViewOffset(chase);
+    // §4.4's FOV row, applied live — `updateProjectionMatrix` below is already being called
+    chase.fov = tunedChaseFov;
     chase.position.copy(chaseEye);
     chase.up.set(0, 0, 1);
     chase.lookAt(chaseAim);
@@ -614,6 +660,7 @@ export function createCameras(): BbCameras {
   function updateOrbit(frame: SceneFrame, dt: number): void {
     resolveSafeRect(frame);
     orbit.aspect = Math.max(1e-3, safe.w / safe.h);
+    orbit.fov = tunedOrbitFov;
     if (orbitAuto && !reducedMotion()) orbitYaw += ORBIT_AUTO_RATE * dt;
     const ce = Math.cos(orbitElev);
     const se = Math.sin(orbitElev);
