@@ -56,7 +56,7 @@ import { ServerMenu } from './ServerMenu';
 import type { MatchResultInfo, NetSession } from '../net/session';
 import { ServerSession } from '../net/serverSession';
 import { WebSocketTransport } from '../net/transport';
-import { encodeMsg } from '../net/protocol';
+import { CLIENT_CAPS, encodeMsg } from '../net/protocol';
 import { loadActiveGame, saveActiveGame, clearActiveGame, type ActiveGameRef } from '../net/activeGame';
 import { loadStagedMatch } from '../net/stagedMatch';
 import type { ResumedRoom } from './roomReturn';
@@ -715,6 +715,12 @@ export function App() {
           setups: s.setups,
           yourRobotId: s.localRobotId,
           game: s.game,
+          // ⚠️ THE ROOM'S PHYSICS, and it has to be here. This object is the handshake a REJOIN
+          // rebuilds its whole session from, and it is written out field by field — so a field
+          // that is missing is a room the returning client silently plays on the wrong solve.
+          // Measured: rejoining a 3D room built a 2D world, predicted a different game from the
+          // one the server was scoring, and never latched `physicsPending`.
+          physics: s.physics,
           ranked: s.ranked,
           intros: s.intros,
           region: s.region,
@@ -748,7 +754,19 @@ export function App() {
     }
     // send `rejoin` on the FIRST open (ServerSession only re-sends it on reconnects);
     // the server reattaches our held slot and a snapshot resyncs us
-    transport.onOpen(() => transport.send(encodeMsg({ t: 'rejoin', room: ref.room, clientId: ref.clientId })));
+    /**
+     * ⚠️ `caps` IS NOT OPTIONAL ON A REJOIN, AND LEAVING IT OFF LOCKED PLAYERS OUT OF 3D ROOMS.
+     *
+     * The server gates a `'3d'`-physics room on `'bb3d'` at every door it has, and `rejoin` is
+     * one of them (`physicsAllowed(r.physics, msg.caps)`). This frame advertised nothing, so a
+     * current client returning to its own live 3D match was answered with "Update DSIM to play
+     * this room." — measured in a browser on 2026-09-18, and invisible in the smoke suite
+     * because the lane tests the SERVER's four doors and this is the client's side of one.
+     * The field has existed on the message type since Day 2 for exactly this; nothing sent it.
+     */
+    transport.onOpen(() =>
+      transport.send(encodeMsg({ t: 'rejoin', room: ref.room, clientId: ref.clientId, caps: CLIENT_CAPS })),
+    );
     const s = new ServerSession(transport, false, ref.start, ref.clientId, ref.room);
     // A rejoin the server REFUSES (the match ended, the grace lapsed) leaves a record that
     // would keep offering the same dead match every time Home is opened. Forget it as soon

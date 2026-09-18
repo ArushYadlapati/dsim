@@ -493,6 +493,13 @@ export function coerceSpec(raw: unknown, base: RobotSpec = DEFAULT_SPEC, game?: 
     // must NOT default — `undefined` and `{ launcher: null }` mean different things to that
     // function (a legacy spec to migrate vs. a robot with genuinely no launcher).
     out.bbMech = sp.bbMech as RobotSpec['bbMech'];
+    // the SAME carry-across for heightIn -- coerceBiobuzzSpec clamps it (BB3_HEIGHT_MIN..MAX)
+    // off this field by name, and nothing in the shared passes above reads it, so without this
+    // line every real caller (settings load, server ingress, createWorld) silently dropped a
+    // spec's heightIn before the biobuzz clamp ever saw it -- see this lane's final report.
+    out.heightIn = sp.heightIn as RobotSpec['heightIn'];
+    // and the declared stow height (R102), read structurally downstream -- same reason
+    out.stowHeightIn = sp.stowHeightIn as RobotSpec['stowHeightIn'];
     return coerceBiobuzzSpec(out, base);
   }
   return out;

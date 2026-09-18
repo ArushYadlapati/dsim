@@ -3,6 +3,7 @@ import { clamp } from '../math';
 import { Keyboard } from './keyboard';
 import { GamepadInput } from './gamepad';
 import { KEY_ACTIONS, type ControlBindings } from './bindings';
+import { installViewKey } from '../games/biobuzz/graphics/viewKey';
 
 export interface VirtualInput {
   driveX: number;
@@ -68,12 +69,37 @@ export class InputManager {
     this.keyboard.setPreventKeys(KEY_ACTIONS.flatMap((a) => this.bindings.keys[a]));
   }
 
+  /**
+   * THE 2D ⇄ 3D VIEW KEY rides on this pair, and that is a deliberate placement rather than a
+   * convenience (`docs/biobuzz/plan-3d.md` §4.3).
+   *
+   * `t` has to be live FOR THE WHOLE MATCH, in both views. The 3D scene used to own it and
+   * could only ever go 3D → 2D: the listener died with the scene, so from the flat map there
+   * was nothing left to press. The obvious home is the controller, but the controller is
+   * another lane's file — and this is, in fact, the better home anyway: `attach`/`detach` is
+   * exactly "a match is taking the keyboard", which is the window the key should be armed for,
+   * and `InputManager` is already the module that owns what the keyboard means here.
+   *
+   * It is NOT a `KeyAction` in `bindings.ts`, and that is the one thing to be aware of: it does
+   * not go through `poll()`, it does not reach a `RobotCommand`, and it is not rebindable. It
+   * changes which RENDERER is mounted, which is not a robot input at all — and giving it a
+   * binding row would owe a settings migration for a key that does nothing to the robot. `t` is
+   * unbound in `DEFAULT_BINDINGS`, which is what makes that safe.
+   *
+   * `installViewKey` is reference-counted, so a Graphics screen or the touch controls holding
+   * it at the same time is fine and the press still counts once.
+   */
+  private releaseViewKey: (() => void) | null = null;
+
   attach(): void {
     this.keyboard.attach();
+    this.releaseViewKey ??= installViewKey();
   }
 
   detach(): void {
     this.keyboard.detach();
+    this.releaseViewKey?.();
+    this.releaseViewKey = null;
   }
 
   /** call once per animation frame; returns the merged command */

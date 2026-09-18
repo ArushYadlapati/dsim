@@ -7,12 +7,13 @@
 |----|------|--------|
 | `decode` | **DECODE presented by RTX** (FTC 2025–26) | full match, scored, ranked |
 | `chain` | **Chain Reaction** (2026 Unofficial-FTC CAD competition) | full match, scored, ranked |
-| `biobuzz` | **BIOBUZZ presented by RTX** (FTC 2026–27) | PLACEHOLDER shell, alpha channel only, unscored |
+| `biobuzz` | **BIOBUZZ presented by RTX** (FTC 2026–27) | full match, scored; 2D or 3D physics + view; alpha only |
 
 Vite + React + TypeScript, Canvas 2D. The CLIENT bundle is React + **Rapier 2D**
 (`@dimforge/rapier2d-compat`, wasm) and nothing else; the rest of `dependencies`
 (`ws`, `tsx`, `pg`, `jose`, `@neondatabase/auth`) exists for the SERVER and auth — keep the
-client that lean. Deploys to Vercel zero-config; a Node/`ws` authoritative game server on
+client that lean. BIOBUZZ 3D adds two LAZY chunks (Rapier 3D deterministic, Three.js), fetched
+only when a 3D world is stepped or drawn locally; `npm run bundleaudit` ratchets every chunk. Deploys to Vercel zero-config; a Node/`ws` authoritative game server on
 Fly; Electron wrapper for the desktop build.
 
 **The app brand is DSIM; a game is a "season" (`src/seasons.ts`).** Keep them separate in
@@ -43,7 +44,7 @@ mostly of the form "the obvious thing is wrong, and here is the measurement that
 | `src/ui/**` · `src/input/**` · `src/render/**` · **any user-visible string** | [docs/area/ui.md](docs/area/ui.md) | 1.6k |
 | DECODE rules — `src/sim/goal.ts`, `penalties.ts`, `field.ts`, `src/games/decode/**` | [docs/area/decode.md](docs/area/decode.md) | 10.6k |
 | `src/games/chain/**` | [docs/area/chain.md](docs/area/chain.md) | 4.5k |
-| `src/games/biobuzz/**` · `scripts/smoke-biobuzz/**` | [docs/area/biobuzz.md](docs/area/biobuzz.md) | 0.8k |
+| `src/games/biobuzz/**` · `scripts/smoke-biobuzz/**` | [docs/area/biobuzz.md](docs/area/biobuzz.md) | 2.1k |
 | adding a game — `src/games/types.ts`, `index.ts`, `sim.ts`, `src/seasons.ts` | [docs/area/adding-a-game.md](docs/area/adding-a-game.md) | 1.0k |
 | `src/ads/**` · `server/kofi.ts` · `src/legalText.ts` | [docs/area/monetization.md](docs/area/monetization.md) | 1.0k |
 | `src/sponsor.ts` · `src/ui/Sponsor.tsx` · `electron/**` | [docs/area/sponsor.md](docs/area/sponsor.md) | 0.9k |

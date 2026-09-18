@@ -1,0 +1,47 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>BIOBUZZ 3D scene preview</title>
+    <style>
+      html, body { margin: 0; height: 100%; background: #111; overflow: hidden; }
+      #layout { position: fixed; inset: 0; display: flex; }
+      #host { flex: 1 1 50%; position: relative; min-width: 0; }
+      #host canvas { display: block; width: 100%; height: 100%; }
+      #host2d { flex: 1 1 50%; min-width: 0; background: #0c0e11; display: block; }
+      #divider { flex: 0 0 2px; background: #444; }
+      #controls {
+        position: fixed; top: 8px; left: 8px; z-index: 10; display: flex; flex-wrap: wrap;
+        gap: 8px; font: 14px system-ui, sans-serif; max-width: calc(100vw - 16px);
+      }
+      button { padding: 6px 10px; cursor: pointer; }
+      #status {
+        position: fixed; bottom: 8px; left: 8px; z-index: 10; color: #eee;
+        font: 12px ui-monospace, monospace; white-space: pre; max-width: 45vw;
+      }
+      #checks {
+        position: fixed; top: 8px; right: 8px; z-index: 10; color: #eee;
+        font: 11px ui-monospace, monospace; white-space: pre; max-width: 52vw; max-height: 92vh;
+        overflow: auto; background: rgba(0,0,0,0.55); padding: 6px 8px; border-radius: 4px;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="layout">
+      <div id="host"></div>
+      <div id="divider"></div>
+      <canvas id="host2d"></canvas>
+    </div>
+    <div id="controls">
+      <button id="camBtn">Camera: driver</button>
+      <button id="reticleBtn">Reticle demo: off</button>
+      <button id="allianceBtn">Viewpoint: red</button>
+      <button id="probeBtn">Probe: off</button>
+      <button id="headingBtn">Heading: 0</button>
+      <button id="checkBtn">Run checks</button>
+    </div>
+    <div id="checks">checks not run yet — click "Run checks"</div>
+    <div id="status">loading...</div>
+    <script type="module" src="./main.ts"></script>
+  </body>
+</html>

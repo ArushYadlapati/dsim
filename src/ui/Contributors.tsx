@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { CONTRIBUTORS, type Contributor } from '../contributors';
+import { CONTRIBUTORS, THIRD_PARTY, type Contributor } from '../contributors';
 import { fetchProfileByUsername } from '../net/api';
 import { APP_NAME } from '../seasons';
 
@@ -39,6 +39,50 @@ export function Contributors({ onOpenProfile }: { onOpenProfile: (username: stri
           </div>
         </div>
       </section>
+
+      {/* THIRD-PARTY ASSETS. A separate panel rather than more cards in the grid above: these
+          are not people who worked on DSIM, and putting a stranger's name in "Built by" would
+          credit them for something they did not do. Rows, not cards — a licence and a link are
+          a table, and `docs/ui-standard.md` §6 says a row is label left, value right. */}
+      {THIRD_PARTY.length > 0 && (
+        <section className="ds-panel">
+          <div className="ds-panel-h">
+            <span className="ds-panel-title">Third-party assets</span>
+            <span className="ds-count">{THIRD_PARTY.length}</span>
+          </div>
+          <div className="ds-panel-body stack">
+            {THIRD_PARTY.map((a) => (
+              <div key={a.page} className="ds-field">
+                {/* BOTH LINKS LIVE IN THE HINT, not in the caption. `.ds-hint a` is the app's
+                    only anchor colour rule — there is no global one (see its own comment in
+                    shell.css) — so an anchor in a `.cap` would render UA-blue on a themed
+                    panel, which is the `--accent` class of bug written up in CLAUDE.md. */}
+                <span className="cap">
+                  {a.name} <span className="val">{a.source}</span>
+                </span>
+                <p className="ds-hint">
+                  {a.credits.map((c, i) => (
+                    <span key={c.name}>
+                      {i > 0 && ', '}
+                      {c.name} ({c.role.toLowerCase()})
+                    </span>
+                  ))}
+                  {' · '}
+                  <a href={a.licenseUrl} target="_blank" rel="noreferrer">
+                    {a.license}
+                  </a>
+                  {' · '}
+                  {a.use}
+                  {' · '}
+                  <a href={a.page} target="_blank" rel="noreferrer">
+                    Original
+                  </a>
+                </p>
+              </div>
+            ))}
+          </div>
+        </section>
+      )}
     </>
   );
 }

@@ -996,6 +996,197 @@ async function main(): Promise<void> {
   }
 
   /**
+   * ------------------------------------------- THE PHYSICS TAG (0039) -------
+   *
+   * BIOBUZZ gains a second deterministic solve and stays ONE game on ONE board (the owner's
+   * rule: never reset a season). So a 2D-era row and a 3D-era row are told apart by a column,
+   * and everything below is the round-trip of that column through the REAL repo functions.
+   *
+   * The pre-0039 half is the one worth having. `physics` is `not null default '2d'`, and a row
+   * written before the column existed IS a 2D-solve row — so it has to read back as one rather
+   * than as null, or every consumer grows a `?? '2d'` and one of them eventually forgets.
+   * There is no way to write a genuinely pre-0039 row here (the migration has already run), so
+   * the closest honest thing is asserted instead: an insert that names no `physics` at all, i.e.
+   * exactly the statement an older server build would send against the new schema.
+   */
+  {
+    const { REPLAY_FORMAT } = await import('../src/sim/replay');
+    const bb = (physics?: '2d' | '3d') => ({
+      format: REPLAY_FORMAT,
+      balanceVersion: 4,
+      sim: 7,
+      game: 'biobuzz' as const,
+      physics,
+      mode: 'match' as const,
+      seed: 4242,
+      ticks: 300,
+      setups: [] as never[],
+      tracks: { 0: [1, 2, 3, 4, 5, 6, 7] },
+    });
+
+    // ---- replays: the tag playback DISPATCHES on -------------------------------------
+    const id3d = await repo.saveReplay(bb('3d'), SEASON, 'biobuzz');
+    const back3d = await repo.getReplay(id3d);
+    check('physics: a 3D replay round-trips its physics tag', back3d?.physics === '3d', `physics=${String(back3d?.physics)}`);
+    const id2d = await repo.saveReplay(bb('2d'), SEASON, 'biobuzz');
+    const back2d = await repo.getReplay(id2d);
+    check(
+      'physics: a 2D replay comes back ABSENT, not as the string — absent already reads 2d everywhere',
+      back2d?.physics === undefined,
+      `physics=${String(back2d?.physics)}`,
+    );
+    const idNone = await repo.saveReplay(bb(undefined), SEASON, 'biobuzz');
+    check(
+      'physics: an UNTAGGED container is stored as 2d (the column is not null)',
+      ((await db.query(`select physics from replays where id = $1`, [idNone])).rows[0] as { physics: string }).physics === '2d',
+    );
+    // the pre-0039 row: an insert naming no `physics`, which is the statement an OLDER SERVER
+    // BUILD sends against this schema — one Fly app serves every client, and a rollback is a
+    // deploy away, so this is a live case and not a historical one.
+    const legacy = await db.query(
+      `insert into replays (format, balance_version, sim_version, behaviour_version, seed, ticks, setups, tracks, game)
+       values (2, 1, 1, 1, 7, 10, '[]'::jsonb, '{}'::jsonb, 'biobuzz') returning id, physics`,
+    );
+    check(
+      'physics: a row written WITHOUT the column reads back 2d, never null',
+      (legacy.rows[0] as { physics: string }).physics === '2d',
+      `physics=${String((legacy.rows[0] as { physics: string | null }).physics)}`,
+    );
+
+    // ---- records: the board row ------------------------------------------------------
+    await repo.ensureProfile('phys-a', 'Physicist');
+    const rec3d = await repo.submitRecord({
+      userId: 'phys-a', mode: 'solo', drivetrain: 'mecanum', score: 123,
+      balanceVersion: SEASON, replayId: id3d, game: 'biobuzz', physics: '3d',
+    });
+    const recRow = await db.query(`select physics from records where id = $1`, [rec3d]);
+    check('physics: a record run stores its solve', (recRow.rows[0] as { physics: string }).physics === '3d');
+    const recLegacy = await repo.submitRecord({
+      userId: 'phys-a', mode: 'solo', drivetrain: 'mecanum', score: 45,
+      balanceVersion: SEASON, replayId: id2d, game: 'biobuzz',
+    });
+    check(
+      'physics: a record run with no tag is 2d',
+      ((await db.query(`select physics from records where id = $1`, [recLegacy])).rows[0] as { physics: string }).physics === '2d',
+    );
+
+    // ---- the drivetrain CHECK finally knows about butterfly ---------------------------
+    //
+    // It was a hand-written list that never learned the fifth drivetrain, so a butterfly
+    // record run was refused by the DATABASE after the match had been played and scored —
+    // silent to the player, who simply never appeared on the board.
+    let butterfly = '';
+    try {
+      await repo.submitRecord({
+        userId: 'phys-a', mode: 'solo', drivetrain: 'butterfly', score: 66,
+        balanceVersion: SEASON, replayId: id3d, game: 'biobuzz', physics: '3d',
+      });
+    } catch (e) {
+      butterfly = e instanceof Error ? e.message : String(e);
+    }
+    check('physics: a BUTTERFLY record run is accepted (0039 widened records_drivetrain_check)',
+      butterfly === '', butterfly);
+    // ...and the constraint still REFUSES a name that is not a drivetrain, or it would have
+    // been widened into nothing at all
+    let bogus = '';
+    try {
+      await repo.submitRecord({
+        userId: 'phys-a', mode: 'solo', drivetrain: 'hovercraft', score: 1,
+        balanceVersion: SEASON, replayId: id3d, game: 'biobuzz',
+      });
+    } catch (e) {
+      bogus = e instanceof Error ? e.message : String(e);
+    }
+    check('physics: ...and the constraint still refuses a drivetrain that does not exist', bogus !== '');
+
+    /**
+     * ---- the BOARD read path: the badge and the era filter (Day 3) --------------------
+     *
+     * The column existing and the board SHOWING it are different facts, and the gap between
+     * them is the kind that ships: a `select` that simply does not project two columns still
+     * compiles and still renders, only bare — which is how the ranked board once sat badge-less
+     * (`docs/area/accounts.md`). So the projection is asserted, and so is the filter.
+     *
+     * ⚠️ **THE FILTER IS INSIDE `best`, AND THIS IS THE CHECK THAT SAYS SO.** `best` is one row
+     * per player. `phys-a` above has a 3D run of 123 and a 2D run of 45, so their overall best
+     * is the 3D one — and a filter applied AFTER `best` would find that row, reject it, and
+     * leave the player off a 2D board they demonstrably have a 2D score on. Filtering first is
+     * what makes "3D" mean "each player's best 3D run" instead of "players whose best run
+     * happens to be 3D".
+     */
+    {
+      const all = await repo.recordLeaderboard({ mode: 'solo', balanceVersion: SEASON, game: 'biobuzz' });
+      const mine = all.find((r) => r.userId === 'phys-a');
+      check('physics/board: an unfiltered board projects the era of each row', mine?.physics === '3d', String(mine?.physics));
+      const only3d = await repo.recordLeaderboard({ mode: 'solo', balanceVersion: SEASON, game: 'biobuzz', physics: '3d' });
+      check('physics/board: the 3D filter keeps the 3D run', only3d.find((r) => r.userId === 'phys-a')?.score === 123,
+        String(only3d.find((r) => r.userId === 'phys-a')?.score));
+      const only2d = await repo.recordLeaderboard({ mode: 'solo', balanceVersion: SEASON, game: 'biobuzz', physics: '2d' });
+      const mine2d = only2d.find((r) => r.userId === 'phys-a');
+      check(
+        'physics/board: ...and the 2D filter finds the player’s best 2D run, not nothing',
+        mine2d?.score === 45 && mine2d?.physics === '2d',
+        `${String(mine2d?.score)}/${String(mine2d?.physics)}`,
+      );
+    }
+
+    // ---- matches: the history row ----------------------------------------------------
+    const m3d = await repo.saveMatch('2v2', SEASON, id3d, true, 'biobuzz', '3d');
+    check(
+      'physics: a versus match stores its solve',
+      ((await db.query(`select physics from matches where id = $1`, [m3d])).rows[0] as { physics: string }).physics === '3d',
+    );
+    const mLegacy = await repo.saveMatch('1v1', SEASON, id2d, false, 'decode');
+    check(
+      'physics: an untagged match is 2d — which is what every DECODE match is',
+      ((await db.query(`select physics from matches where id = $1`, [mLegacy])).rows[0] as { physics: string }).physics === '2d',
+    );
+
+    // ---- practice runs: physics AND the view it was watched in ------------------------
+    //
+    // The two are different KINDS of fact and are sourced differently, which is the thing to
+    // pin: `physics` is read off the container (so it cannot disagree with the log), `view` is
+    // the only thing the client tells us, and it is nullable because an old row genuinely does
+    // not know rather than being 2D.
+    await repo.ensureProfile('phys-b', 'Watcher');
+    const run3d = await repo.savePracticeRun('phys-b', bb('3d'), 210, SEASON, 'biobuzz', '3d');
+    check('physics: a practice run carries the solve it ran on', run3d.physics === '3d', String(run3d.physics));
+    check('physics: ...and the view it was watched in', run3d.view === '3d', String(run3d.view));
+    const runMixed = await repo.savePracticeRun('phys-b', bb('3d'), 44, SEASON, 'biobuzz', '2d');
+    check(
+      'physics: 3D physics WATCHED in the 2D view is a real combination and is stored as one',
+      runMixed.physics === '3d' && runMixed.view === '2d',
+      `${String(runMixed.physics)}/${String(runMixed.view)}`,
+    );
+    const runNoView = await repo.savePracticeRun('phys-b', bb(undefined), 5, SEASON, 'biobuzz');
+    check(
+      'physics: no view stated ⇒ null, not a guess',
+      runNoView.view === null && runNoView.physics === '2d',
+      `${String(runNoView.physics)}/${String(runNoView.view)}`,
+    );
+    const back = await repo.listPracticeRuns('phys-b', 'biobuzz');
+    const listed3d = back.find((r) => r.id === run3d.id);
+    check(
+      'physics: the LIST path returns both columns (the Career panel reads this one)',
+      listed3d?.physics === '3d' && listed3d?.view === '3d',
+      `${String(listed3d?.physics)}/${String(listed3d?.view)}`,
+    );
+    // a garbage `view` off the wire must not reach the column: it is an enum, not free text
+    const runJunk = await repo.savePracticeRun('phys-b', bb('3d'), 6, SEASON, 'biobuzz', 'vr-headset');
+    check('physics: an unknown view is stored as null rather than passed through', runJunk.view === null,
+      String(runJunk.view));
+
+    // AND THE INVARIANT THAT MATTERS MOST: none of this made a practice run reachable from a
+    // board. The tag is a label on a row; it must not become a second way in.
+    const board = await repo.recordLeaderboard({ mode: 'solo', balanceVersion: SEASON, game: 'biobuzz' });
+    check(
+      'physics: a 3D practice run still never appears on the record leaderboard',
+      !board.some((r) => r.userId === 'phys-b'),
+      `${board.length} board rows`,
+    );
+  }
+
+  /**
    * --------------------------------------------- self-hosted LAN matches ----
    *
    * The SECOND table a client writes to, and the less trusted of the two: a practice run at

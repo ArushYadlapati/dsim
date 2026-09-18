@@ -1,0 +1,698 @@
+import * as THREE from 'three';
+import type { Alliance, World } from '../../../types';
+import * as C from '../../../config';
+import {
+  BB_FLOWERS,
+  BB_FLOWER_D,
+  BB_FLOWER_FOOT,
+  BB_FLOWER_OPEN_R,
+  BB_FLOWER_TOP_Z,
+  BB_FRAME_BAR_IN,
+  BB_FRAME_BAR_OUT,
+  BB_FRAME_Y,
+  BB_HALF_X,
+  BB_HALF_Y,
+  BB_HIVE_OPEN_Z,
+  BB_HIVE_TILT_DEG,
+  BB_HIVE_X,
+  BB_WALL_T,
+  BB_TAPE,
+  BB_TILE_SEAMS,
+  FLOWER_MOUTH,
+} from '../config';
+import { BB_FLOWER_FLOOR_Z, BB_FLOWER_MID_Z } from '../flower';
+import { hiveTiltAngle, hiveTrayRefTheta } from '../sim3d/tilt';
+import { loadFieldGlb, type FieldGroups } from './renderFieldGlb';
+
+/**
+ * BIOBUZZ 3D SCENE — the field: floor, walls, the two hives (frame + tilting tray) and the four
+ * flowers (Day 1, `docs/biobuzz/plan-3d.md` §4.2, §13.1).
+ *
+ * Coordinates: field inches, z UP. Every dimension not printed in the manual (walls, uprights,
+ * flower pipes, ring tube thickness) is flagged `APPROX` at its declaration, same convention as
+ * `src/games/biobuzz/config.ts`. Values the plan doc's own §13.1 table gives (`BB3_HIVE_PIVOT_Z`
+ * etc.) are cited by name even though they are not (yet) exported constants anywhere — Lane A's
+ * `sim3d/bodies.ts` is the only other place they would need to agree with this file, and neither
+ * lane has landed a shared home for them yet (see the report's gotchas).
+ */
+
+// ── HIVE — 3D-only constants (plan-3d.md §13.1; not exported anywhere in the 2D config) ───────
+/** pivot height above the tiles, in — `BB3_HIVE_PIVOT_Z`. */
+const HIVE_PIVOT_Z = 43.95;
+/** true (unprojected) distance from the pivot to a cell's centre along the arm, in —
+ * `BB3_HIVE_ARM`. The 2D `BB_HIVE_CELL_DY` (13.37) is this value's PLAN projection
+ * (`15.44 * cos 30°`); the tray's own local geometry below uses the true length because it is
+ * built in the tray's un-rotated local frame and Three.js applies the tilt itself. */
+const HIVE_ARM = 15.44;
+/** true cell depth along the arm, in — `BB3_HIVE_CELL_LEN` (12.04, the manual/CAD length; NOT
+ * the same-named 2D `BB_HIVE_CELL_LEN`, which is this value's plan projection, 10.43). */
+const HIVE_CELL_DEPTH = 12.04;
+/** cell width across the hive (x, unforeshortened) and height (z, local, before tilt) —
+ * `BB3_HIVE_CELL`'s 20 × 14 × 12.04. The 14 is the plan doc's own figure for this box; nothing
+ * in `config.ts` names it, so it is APPROX here exactly as it is there. */
+const HIVE_CELL_W = 20;
+const HIVE_CELL_H = 14; // APPROX — plan-3d.md §13.1
+/** true bar length end to end, in — the 2D `BB_HIVE_LEN` (37.16) is this value's cos 30°
+ * projection; 37.16 / cos(30°) ≈ 42.91, the figure the plan doc's prose gives directly. */
+const HIVE_BAR_LEN = 42.91;
+const HIVE_TILT_REST = (BB_HIVE_TILT_DEG * Math.PI) / 180; // ±30°, shared with the 2D renderer
+
+/** `BB3_HIVE_CELL_WALL` (plan-3d.md §13.1): the cell shell thickness, in. APPROX, CAD settles. */
+const HIVE_CELL_WALL = 0.25;
+
+/** local y (before tilt), measured from the pivot along the arm, of the cell's OUTER (open)
+ * face — the plane the manual's opening heights (`BB_HIVE_OPEN_Z`) are measured at. */
+const HIVE_CELL_OUTER_Y = HIVE_ARM + HIVE_CELL_DEPTH / 2;
+
+/**
+ * THE CELL BOX'S OWN LOCAL Z-CENTRE (before tilt), SOLVED rather than guessed, so the built
+ * geometry reproduces `BB_HIVE_OPEN_Z` (53.5 / 65.6, Fig 9-10) at the true 30° stable state
+ * instead of merely resembling it.
+ *
+ * A point at local `(x, HIVE_ARM ± HIVE_CELL_DEPTH/2, z)` on a tray tilted `HIVE_TILT_REST`
+ * about the pivot lands at world height `HIVE_PIVOT_Z + y·sin(tilt) + z·cos(tilt)`. The
+ * manual's BOTTOM-of-opening figure is exactly that, evaluated at the OUTER face
+ * (`HIVE_CELL_OUTER_Y`) and at the box's own bottom (`z = HIVE_CELL_Z0 − HIVE_CELL_H/2`).
+ * Solving for `HIVE_CELL_Z0` there (rather than centring the box at an arbitrary local z, which
+ * the first pass did and which landed the opening about 3 in high) is what makes the TOP come
+ * out within a few hundredths of an inch of 65.6 on its own — one equation fixes both ends
+ * because `HIVE_CELL_H` (14) already matches `BB_HIVE_OPEN_Z`'s own span (12.1) to within
+ * rounding.
+ *
+ * ⚠️ THE DOWN CELL'S OWN FLOOR DOES NOT COME OUT AT `BB_HIVE_BOTTOM_Z` (25.5) under this same
+ * rigid-bar model — it lands around 32 in. The two manual figures cannot both be hit by one
+ * cell box rotating rigidly about one pivot at `HIVE_ARM`: solving the up-cell's opening (this
+ * constant) trades away the down-cell's floor height, and centring the box in between trades
+ * away the up-cell's opening instead. This is reported as a real, unresolved discrepancy for
+ * the SIM lane (`docs/biobuzz/plan-3d.md` §3.6's dynamic tray, or a future two-part CAD tray),
+ * not something a fallback constants box can also get right — see the report's item (f)/(g).
+ */
+const HIVE_CELL_Z0 =
+  (BB_HIVE_OPEN_Z[0] - HIVE_PIVOT_Z - HIVE_CELL_OUTER_Y * Math.sin(HIVE_TILT_REST)) / Math.cos(HIVE_TILT_REST) +
+  HIVE_CELL_H / 2;
+
+/** wall visual thickness and height, in — APPROX (`BB_WALL_T` is the oversized PHYSICS collider
+ * half-thickness, deliberately far thicker than any real wall; this is what a driver should
+ * actually see). "12 in high APPROX" per the Day 1 brief. */
+const WALL_VIS_T = 2;
+const WALL_VIS_H = 12; // APPROX
+
+/** flower APPROX dimensions not named in `config.ts` (see `flower.ts`'s own APPROX comments for
+ * the two heights reused here: `BB_FLOWER_FLOOR_Z`, `BB_FLOWER_MID_Z`). */
+const FLOWER_LOWER_RING_R = 2.79 / 2; // APPROX — flower.ts's own comment: "2.79-in hole"
+const FLOWER_MID_RING_R = 3.2 / 2; // APPROX — `BB3_FLOWER_MID_HOLE` (plan-3d.md §13.1)
+const FLOWER_TUBE_R = 0.3; // APPROX — ring material thickness, undocumented
+const FLOWER_PIPE_R = 0.35; // APPROX — support pipe radius, undocumented
+const FLOWER_FOOT_H = 2; // APPROX — foot slab height, undocumented
+
+const ALLIANCES: readonly Alliance[] = ['red', 'blue'];
+
+// ── materials (flat colours, MeshStandardMaterial only — no textures beyond the floor) ────────
+function mat(color: string, opacity = 1): THREE.MeshStandardMaterial {
+  return new THREE.MeshStandardMaterial({
+    color,
+    transparent: opacity < 1,
+    opacity,
+    side: opacity < 1 ? THREE.DoubleSide : THREE.FrontSide,
+  });
+}
+
+// ── the floor texture: the tile SEAM GRID and the centre mark, on `drawField.ts`'s own colour
+// tokens. Generated ONCE at scene creation, never per frame. ──────────────────────────────────
+//
+// ⚠️ NO TAPE HERE ON THE CAD PATH. The previous version painted `strokeRectTex(BB_LZ[a], …)` and
+// `strokeRectTex(BB_GARDEN[a], …)` — a full four-sided outline of each zone rectangle — which is
+// the owner's "tape marks on the ground are also incorrect … zones bounded with the wall don't
+// have tape on the wall". The CAD carries 16 real gaffer-tape parts, all 1.000 in wide, and every
+// one of them is now drawn from the GLB's own `tape` node (`glbFieldToHandles`). The procedural
+// tape below survives ONLY for the constants-built fallback, and it draws the CAD's own layout:
+// three sides of each LOADING ZONE (the wall side bare) and the GARDEN as the solid 2-in band its
+// two side-by-side 1-in tapes actually make. `docs/biobuzz/field-cad-audit.md` §5 has the parts.
+//
+// The SEAM GRID is painted at the CAD's own pitch and footprint when the collider set carries
+// them (23.53 in over ±70.585, not `C.TILE`'s 24 over ±72 — audit §7), so the seams line up with
+// the CAD tape lying on top of them. It falls back to the constants when they are absent.
+const TEX_SIZE = 1024;
+const TEX_SCALE = TEX_SIZE / (2 * BB_HALF_X);
+
+/** world (x,y) → floor-texture canvas pixel. The canvas's row 0 is world +y (the far wall from
+ * a driver standing at -y) because a `CanvasTexture`'s default `flipY` already corrects a
+ * not-rotated `PlaneGeometry`'s V axis to run the same way — the same reason a ground texture
+ * drawn "right side up" in 2D canvas code needs no extra flip here. */
+function toTex(x: number, y: number): [number, number] {
+  return [(x + BB_HALF_X) * TEX_SCALE, (BB_HALF_Y - y) * TEX_SCALE];
+}
+
+/** the tape colours `drawField.ts`'s `TAPE_GAFFER` uses — NOT a theme token there either (the
+ * tape colour is the marking, per that file's own header), so copying the literals is exactly
+ * as stable as importing them would be. */
+const TAPE_GAFFER: Record<Alliance, string> = { red: '#e02020', blue: '#0a5cff' };
+
+/** a filled world-space rectangle on the floor texture — used for a tape STRIP, which is a
+ * physical band of a stated width, not a stroked outline. */
+function fillStripTex(ctx: CanvasRenderingContext2D, x0: number, y0: number, x1: number, y1: number, color: string): void {
+  const [px0, py0] = toTex(Math.min(x0, x1), Math.max(y0, y1));
+  const [px1, py1] = toTex(Math.max(x0, x1), Math.min(y0, y1));
+  ctx.fillStyle = color;
+  ctx.fillRect(px0, py0, Math.max(1, px1 - px0), Math.max(1, py1 - py0));
+}
+
+/**
+ * THE FALLBACK PATH'S TAPE — the CAD's own 16 strips, at the rectangles the CAD puts them at.
+ *
+ * The rule the owner named, and the one the CAD confirms part for part: **a zone edge that is a
+ * WALL carries no tape.** A LOADING ZONE is bounded by the side wall and three 1-in tapes (its
+ * two depth edges and its inner, field-side edge). A GARDEN is not outlined at all — it IS a
+ * 2-in band of two 1-in tapes laid side by side, with nothing across its ends and nothing on the
+ * two walls it sits in the corner of. `docs/biobuzz/field-cad-audit.md` §5.
+ *
+ * It used to RECONSTRUCT those strips from `BB_LZ`/`BB_GARDEN` by inset arithmetic, which was
+ * right in shape and ~1.9 in out in position because the zone rectangles themselves were figure
+ * reads. Both renderers now draw `BB_TAPE` — the measured rectangles — so the 2D panel, this
+ * fallback and the GLB's own tape geometry are one layout by construction.
+ */
+function drawZoneTape(ctx: CanvasRenderingContext2D, a: Alliance): void {
+  const colour = TAPE_GAFFER[a];
+  for (const strip of BB_TAPE.loadingZone[a]) fillStripTex(ctx, strip.x0, strip.y0, strip.x1, strip.y1, colour);
+  for (const strip of BB_TAPE.garden[a]) fillStripTex(ctx, strip.x0, strip.y0, strip.x1, strip.y1, colour);
+}
+
+function buildFloorTexture(withTape: boolean): THREE.CanvasTexture {
+  const canvas = document.createElement('canvas');
+  canvas.width = TEX_SIZE;
+  canvas.height = TEX_SIZE;
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return new THREE.CanvasTexture(canvas);
+
+  ctx.fillStyle = C.COLORS.mat;
+  ctx.fillRect(0, 0, TEX_SIZE, TEX_SIZE);
+
+  // tile SEAM GRID — the CAD's own seven measured seam lines per axis (`BB_TILE_SEAMS`), which is
+  // exactly what the 2D renderer draws, so the painted seams agree with the CAD tape lying on top
+  // of them and with the other panel. It used to step by `cadFloor()`'s pitch from the collider
+  // set's own floor extent, falling back to `C.TILE` — the same grid to about a hundredth, but
+  // reached two different ways in two files, and the fallback branch drew the 24-in grid the
+  // whole field-size finding is about.
+  ctx.strokeStyle = C.COLORS.tile;
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  for (const seam of BB_TILE_SEAMS) {
+    const [px] = toTex(seam, 0);
+    ctx.moveTo(px, 0);
+    ctx.lineTo(px, TEX_SIZE);
+    const [, py] = toTex(0, seam);
+    ctx.moveTo(0, py);
+    ctx.lineTo(TEX_SIZE, py);
+  }
+  ctx.stroke();
+
+  // centre mark, same purpose as the 2D renderer's: a still that is off-centre should be
+  // visible as such rather than indistinguishable from five other tile crossings
+  const [cx, cy] = toTex(0, 0);
+  const mark = 4 * TEX_SCALE;
+  ctx.strokeStyle = C.COLORS.white;
+  ctx.lineWidth = Math.max(1, C.TAPE_W * TEX_SCALE);
+  ctx.beginPath();
+  ctx.moveTo(cx - mark, cy);
+  ctx.lineTo(cx + mark, cy);
+  ctx.moveTo(cx, cy - mark);
+  ctx.lineTo(cx, cy + mark);
+  ctx.stroke();
+
+  if (withTape) for (const a of ALLIANCES) drawZoneTape(ctx, a);
+
+  const tex = new THREE.CanvasTexture(canvas);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.anisotropy = 4;
+  return tex;
+}
+
+/** `withTape` is false on the CAD path — the tape is real geometry there (the GLB's own `tape`
+ * node), and painting a second copy under it would double every line. */
+function buildFloor(withTape: boolean): THREE.Mesh {
+  const geo = new THREE.PlaneGeometry(2 * BB_HALF_X, 2 * BB_HALF_Y);
+  const material = new THREE.MeshStandardMaterial({ map: buildFloorTexture(withTape) });
+  const mesh = new THREE.Mesh(geo, material);
+  mesh.name = 'floor';
+  // a HAIR below z = 0. The CAD tape sits at z 0.000–0.010 and the GLB tile slab's top face is
+  // at z = 0 exactly; a co-planar painted floor and a 0.010-in tape strip are inside the depth
+  // buffer's noise at driver-camera range, and the tape materials' polygon offset
+  // (`renderFieldGlb.ts`) only helps if there is something to offset against.
+  mesh.position.z = -0.02;
+  return mesh;
+}
+
+/**
+ * TRANSPARENT POLYCARBONATE WALLS (2026-09-18 playtest, issue 3: "the field wall should be
+ * transparent"). The Day 1 wall was `mat(C.COLORS.wall, 0.35)` — a `FrontSide` material at 35%
+ * opacity, which is nowhere near see-through and (being `FrontSide`) does not even show its own
+ * far face, so a wall between the camera and the field read as a solid, faintly-tinted slab
+ * rather than the polycarbonate panel it is. This matches the real material's actual optical
+ * behaviour more closely: low opacity (0.22, inside the 0.18–0.28 the brief asks for), low
+ * roughness (a clear plastic panel is glossy), `DoubleSide` (both faces visible, since the camera
+ * can end up on either side of a near wall), and `depthWrite: false` + a `renderOrder` past every
+ * opaque object — a transparent object that WRITES depth can incorrectly occlude something drawn
+ * after it at a similar distance (here, another transparent wall on the far side of the field),
+ * and Three.js does not sort transparent objects by triangle depth, only by render order.
+ */
+const WALL_OPACITY = 0.22;
+function wallMaterial(): THREE.MeshStandardMaterial {
+  return new THREE.MeshStandardMaterial({
+    color: C.COLORS.wall,
+    transparent: true,
+    opacity: WALL_OPACITY,
+    roughness: 0.1,
+    metalness: 0,
+    depthWrite: false,
+    side: THREE.DoubleSide,
+  });
+}
+/** drawn well after the field/robots/elements (all at the default `renderOrder` 0) so a
+ * transparent wall never fights another transparent wall or a robot for a pixel. */
+const WALL_RENDER_ORDER = 10;
+
+function buildWalls(): THREE.Group {
+  const group = new THREE.Group();
+  group.name = 'walls';
+  const material = wallMaterial();
+  const span = 2 * BB_HALF_X + 2 * WALL_VIS_T;
+  const specs: { x: number; y: number; w: number; d: number }[] = [
+    { x: 0, y: BB_HALF_Y + WALL_VIS_T / 2, w: span, d: WALL_VIS_T },
+    { x: 0, y: -BB_HALF_Y - WALL_VIS_T / 2, w: span, d: WALL_VIS_T },
+    { x: BB_HALF_X + WALL_VIS_T / 2, y: 0, w: WALL_VIS_T, d: span },
+    { x: -BB_HALF_X - WALL_VIS_T / 2, y: 0, w: WALL_VIS_T, d: span },
+  ];
+  const names = ['wall:rear', 'wall:audience', 'wall:right', 'wall:left'] as const;
+  specs.forEach((s, i) => {
+    const geo = new THREE.BoxGeometry(s.w, s.d, WALL_VIS_H);
+    const mesh = new THREE.Mesh(geo, material);
+    mesh.name = names[i];
+    mesh.position.set(s.x, s.y, WALL_VIS_H / 2);
+    mesh.renderOrder = WALL_RENDER_ORDER;
+    group.add(mesh);
+  });
+  void BB_WALL_T; // physics-only constant; visual thickness is its own, smaller, number
+  return group;
+}
+
+/** a box spanning two points, `radius` thick on both cross-axes — the frame's uprights and
+ * crossbar, which are slanted segments rather than axis-aligned boxes. */
+function segmentMesh(a: THREE.Vector3, b: THREE.Vector3, radius: number, material: THREE.Material): THREE.Mesh {
+  const dir = new THREE.Vector3().subVectors(b, a);
+  const len = dir.length();
+  const geo = new THREE.CylinderGeometry(radius, radius, Math.max(len, 1e-3), 8);
+  const meshMesh = new THREE.Mesh(geo, material);
+  meshMesh.position.copy(a).addScaledVector(dir, 0.5);
+  meshMesh.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir.clone().normalize());
+  return meshMesh;
+}
+
+/** the HIVE frame: one triangular base bar (§9.6.1, Fig 9-8) plus uprights converging on the
+ * pivot. The base bar's x-range is the manual measurement (`BB_FRAME_BAR_IN/OUT`); the uprights
+ * and their count are this renderer's own reading of "triangular structure" — APPROX, same as
+ * the 2D renderer's dashed crossbar is its own reading of "joins at the apex". */
+function buildHiveFrame(alliance: Alliance): THREE.Group {
+  const group = new THREE.Group();
+  group.name = `hive:${alliance}:frame`;
+  const barMat = mat(C.COLORS.wall);
+  const sign = alliance === 'red' ? -1 : 1;
+  const barX = sign < 0 ? -(BB_FRAME_BAR_IN + BB_FRAME_BAR_OUT) / 2 : (BB_FRAME_BAR_IN + BB_FRAME_BAR_OUT) / 2;
+  const barW = BB_FRAME_BAR_OUT - BB_FRAME_BAR_IN;
+
+  const baseBar = new THREE.Mesh(new THREE.BoxGeometry(barW, 2 * BB_FRAME_Y, 1), barMat);
+  baseBar.name = `hive:${alliance}:frame:base`;
+  baseBar.position.set(barX, 0, 0.5);
+  group.add(baseBar);
+
+  const pivot = new THREE.Vector3(sign * BB_HIVE_X, 0, HIVE_PIVOT_Z);
+  for (const s of [1, -1] as const) {
+    const base = new THREE.Vector3(barX, s * BB_FRAME_Y, 1);
+    const upright = segmentMesh(base, pivot, 0.5, barMat);
+    upright.name = `hive:${alliance}:frame:upright${s > 0 ? 'N' : 'S'}`;
+    group.add(upright);
+  }
+  return group;
+}
+
+/** the crossbar joining the two hives' pivots — solid here (no dash pattern in 3D geometry; the
+ * 2D renderer's dash exists to say "this is overhead, not on the tile", which the actual height
+ * already says on its own in a 3D view). */
+function buildCrossbar(): THREE.Mesh {
+  const a = new THREE.Vector3(-BB_HIVE_X, 0, HIVE_PIVOT_Z);
+  const b = new THREE.Vector3(BB_HIVE_X, 0, HIVE_PIVOT_Z);
+  const bar = segmentMesh(a, b, 0.5, mat(C.COLORS.wall));
+  bar.name = 'hive:crossbar';
+  return bar;
+}
+
+/** one CELL, in the TRAY's own local (un-rotated) frame: floor, back wall, two side walls, and a
+ * ceiling — OPEN at the outer face (away from the pivot), five `HIVE_CELL_WALL`-thick boxes
+ * (`BB3_HIVE_CELL_WALL`, plan-3d.md §13.1) exactly as `scripts/spike3d-browser/main.ts`'s Day-0
+ * physics spike built them (the geometry the plan doc's "fallback five boxes per cell"
+ * describes). `s` is +1 for the north cell, −1 south.
+ *
+ * Z placement is `HIVE_CELL_Z0 ± HIVE_CELL_H/2`, SOLVED (see that constant's own comment) so the
+ * built box reproduces `BB_HIVE_OPEN_Z` at the true 30° tilt rather than a value that merely
+ * looks plausible — the first pass centred the box at local z 9 (an arbitrary choice) and the
+ * up-CELL opening came out roughly 3 in high of the manual figure. */
+function buildCell(s: 1 | -1, accent: string, alliance: Alliance): THREE.Group {
+  const group = new THREE.Group();
+  group.name = `hive:${alliance}:cell:${s > 0 ? 'north' : 'south'}`;
+  const structure = mat('#5c6676');
+  const accentMat = mat(accent, 0.85);
+  const cellY = s * HIVE_ARM;
+  const w = HIVE_CELL_WALL;
+  const zBot = HIVE_CELL_Z0 - HIVE_CELL_H / 2;
+  const zTop = HIVE_CELL_Z0 + HIVE_CELL_H / 2;
+  const innerY = cellY - s * (HIVE_CELL_DEPTH / 2 + w / 2); // back wall, just inside the true inner face
+  const half = HIVE_CELL_W / 2;
+
+  const floor = new THREE.Mesh(new THREE.BoxGeometry(HIVE_CELL_W, HIVE_CELL_DEPTH, w), accentMat);
+  floor.name = `${group.name}:floor`;
+  floor.position.set(0, cellY, zBot + w / 2);
+  group.add(floor);
+
+  const back = new THREE.Mesh(new THREE.BoxGeometry(HIVE_CELL_W, w, HIVE_CELL_H), structure);
+  back.name = `${group.name}:back`;
+  back.position.set(0, innerY, HIVE_CELL_Z0);
+  group.add(back);
+
+  for (const sx of [1, -1] as const) {
+    const side = new THREE.Mesh(new THREE.BoxGeometry(w, HIVE_CELL_DEPTH, HIVE_CELL_H), structure);
+    side.name = `${group.name}:side${sx > 0 ? 'X+' : 'X-'}`;
+    side.position.set(sx * (half + w / 2), cellY, HIVE_CELL_Z0);
+    group.add(side);
+  }
+
+  const ceiling = new THREE.Mesh(new THREE.BoxGeometry(HIVE_CELL_W, HIVE_CELL_DEPTH, w), structure);
+  ceiling.name = `${group.name}:ceiling`;
+  ceiling.position.set(0, cellY, zTop - w / 2);
+  group.add(ceiling);
+
+  return group;
+}
+
+/** the whole TRAY — the dynamic see-saw's visual half. A single `THREE.Group` so ONE rotation
+ * (`updateBiobuzzField`, about local x) tilts both cells together, matching the real hive: they
+ * ride one rigid bar (plan-3d.md §3.6). */
+function buildTray(alliance: Alliance): THREE.Group {
+  const tray = new THREE.Group();
+  tray.name = `hive:${alliance}:tray`;
+  const accent = alliance === 'blue' ? C.COLORS.blue : C.COLORS.red;
+  tray.add(buildCell(1, accent, alliance));
+  tray.add(buildCell(-1, accent, alliance));
+  // CylinderGeometry's axis is local Y by default — exactly the arm direction the two cells
+  // sit along (`cellY = s * HIVE_ARM` in `buildCell`), so no rotation is needed here at all.
+  const bar = new THREE.Mesh(new THREE.CylinderGeometry(1, 1, HIVE_BAR_LEN, 8), mat(accent));
+  bar.name = `hive:${alliance}:tray:bar`;
+  tray.add(bar);
+  return tray;
+}
+
+function buildFlowerFoot(f: (typeof BB_FLOWERS)[number], name: string): THREE.Mesh {
+  const n = FLOWER_MOUTH[f.wall];
+  const onY = f.wall === 'left' || f.wall === 'right';
+  const wx = f.x - n.x * BB_FLOWER_D;
+  const wy = f.y - n.y * BB_FLOWER_D;
+  const cx = wx + (n.x * BB_FLOWER_FOOT.deep) / 2;
+  const cy = wy + (n.y * BB_FLOWER_FOOT.deep) / 2;
+  const w = onY ? BB_FLOWER_FOOT.deep : BB_FLOWER_FOOT.along;
+  const d = onY ? BB_FLOWER_FOOT.along : BB_FLOWER_FOOT.deep;
+  const mesh = new THREE.Mesh(new THREE.BoxGeometry(w, d, FLOWER_FOOT_H), mat(C.COLORS.wall));
+  mesh.name = name;
+  mesh.position.set(cx, cy, FLOWER_FOOT_H / 2);
+  return mesh;
+}
+
+/** one FLOWER: a foot, four support pipes, the lower/middle/top rings — a fallback compound
+ * shape (plan-3d.md §3.7, §13.1); the CAD-derived GLB replaces this when it lands (§8). */
+function buildFlower(f: (typeof BB_FLOWERS)[number], idx: number): THREE.Group {
+  const group = new THREE.Group();
+  const base = `flower:${idx}`;
+  group.name = base;
+  group.add(buildFlowerFoot(f, `${base}:foot`));
+
+  const ringMat = mat(C.COLORS.white, 0.9);
+  const topRing = new THREE.Mesh(new THREE.TorusGeometry(BB_FLOWER_OPEN_R, FLOWER_TUBE_R, 8, 24), ringMat);
+  topRing.name = `${base}:ring`;
+  topRing.position.set(f.x, f.y, BB_FLOWER_TOP_Z);
+  group.add(topRing);
+
+  const midRing = new THREE.Mesh(new THREE.TorusGeometry(FLOWER_MID_RING_R, FLOWER_TUBE_R * 0.8, 8, 24), ringMat);
+  midRing.name = `${base}:midring`;
+  midRing.position.set(f.x, f.y, BB_FLOWER_MID_Z);
+  group.add(midRing);
+
+  const lowerRing = new THREE.Mesh(new THREE.CylinderGeometry(FLOWER_LOWER_RING_R + 0.3, FLOWER_LOWER_RING_R + 0.3, 0.5, 16), mat(C.COLORS.wall));
+  lowerRing.name = `${base}:lowerring`;
+  // default CylinderGeometry axis is local Y; rotate its axis onto Z so the ring lies FLAT
+  // (a thin disc on the tiles), not standing on edge.
+  lowerRing.rotation.x = Math.PI / 2;
+  lowerRing.position.set(f.x, f.y, BB_FLOWER_FLOOR_Z);
+  group.add(lowerRing);
+
+  // the four HIPS support pipes, standing VERTICALLY from the tiles to the top ring.
+  //
+  // ⚠️ BUG FOUND AND FIXED HERE: a `CylinderGeometry`'s axis is local Y by default, and the
+  // first pass never rotated it, so all four pipes were lying on their SIDES (each one's axis
+  // pointing along world Y, the same "sideways pole" for every flower regardless of which wall
+  // it stood against) instead of standing up from the foot to the ring. `rotation.x = PI/2`
+  // is the same axis-onto-Z trick `lowerRing` above already uses.
+  const pipeR = BB_FLOWER_OPEN_R + 0.3;
+  for (let i = 0; i < 4; i++) {
+    const a = (i / 4) * Math.PI * 2;
+    const px = f.x + Math.cos(a) * pipeR;
+    const py = f.y + Math.sin(a) * pipeR;
+    const pipe = new THREE.Mesh(new THREE.CylinderGeometry(FLOWER_PIPE_R, FLOWER_PIPE_R, BB_FLOWER_TOP_Z, 6), mat(C.COLORS.wall));
+    pipe.name = `${base}:pipe${i}`;
+    pipe.rotation.x = Math.PI / 2;
+    pipe.position.set(px, py, BB_FLOWER_TOP_Z / 2);
+    group.add(pipe);
+  }
+  return group;
+}
+
+/**
+ * A PROCEDURAL ROOM around the field — a wide floor beyond the perimeter and a backdrop
+ * cylinder, so the driver camera (a 12-in-or-more setback outside the wall, `renderCameras.ts`'s
+ * `fitDriverCamera`) does not look into the WebGL clear colour when it pans off the field.
+ * APPROX, no CAD reference: this is stagecraft, not a measured space, and is deliberately cheap
+ * (two meshes, one shared-per-mesh material).
+ *
+ * ⚠️ LIGHTENED HERE (2026-09-18 playtest, issue 3: "very dark"). The Day 1 colours (`0x14171c`
+ * floor, `0x20262c` backdrop) were near-black — closer to a blacked-out soundstage than the gym
+ * a real FTC event is held in — so the transparent walls (see `wallMaterial`) looked into a void
+ * past them instead of a room, and the field itself had nothing bright nearby to bounce light off
+ * of. A lighter, neutral grey (still darker than the field mat, so the field itself stays the
+ * thing your eye lands on) reads as a gym floor/wall instead of a black box, and gives the
+ * hemisphere fill and the IBL environment (`renderScene.ts`) something to actually reflect.
+ */
+const ROOM_R = BB_HALF_X * 6;
+
+function buildRoom(): THREE.Group {
+  const group = new THREE.Group();
+  group.name = 'bb-room';
+  const floorMat = new THREE.MeshStandardMaterial({ color: 0x4a4f57, roughness: 0.95 });
+  const floor = new THREE.Mesh(new THREE.CircleGeometry(ROOM_R, 32), floorMat);
+  floor.name = 'bb-room:floor';
+  // BELOW the CAD's own ALLIANCE AREA tape, which lies on the gym floor at z -0.589..-0.579 (the
+  // three-sided outline outside each perimeter wall). At the old -0.5 the room floor covered it.
+  floor.position.z = -0.75;
+  floor.receiveShadow = true;
+  group.add(floor);
+
+  const backdropMat = new THREE.MeshStandardMaterial({ color: 0x5b616a, side: THREE.BackSide, roughness: 0.95 });
+  const backdrop = new THREE.Mesh(new THREE.CylinderGeometry(ROOM_R, ROOM_R, 260, 24, 1, true), backdropMat);
+  backdrop.name = 'bb-room:backdrop';
+  backdrop.position.z = 130;
+  group.add(backdrop);
+
+  return group;
+}
+
+/**
+ * ONE HIVE — the pivot group named `hive:<alliance>` (per the field-import seam, plan-3d.md §8:
+ * the CAD `field.glb` will hand back a node under this same name), holding the static frame and
+ * the tilting `tray` child. Position is the pivot itself (`±BB_HIVE_X, 0, HIVE_PIVOT_Z`), so
+ * every child is authored in the pivot's own local frame — the tray's rotation is exactly the
+ * see-saw's revolute joint.
+ */
+function buildHive(alliance: Alliance): { group: THREE.Group; tray: THREE.Group } {
+  const group = new THREE.Group();
+  group.name = `hive:${alliance}`;
+  group.position.set(alliance === 'red' ? -BB_HIVE_X : BB_HIVE_X, 0, HIVE_PIVOT_Z);
+  group.add(buildHiveFrame(alliance));
+  const tray = buildTray(alliance);
+  group.add(tray);
+  return { group, tray };
+}
+
+export interface BbFieldHandles {
+  /** everything, for a single `scene.add()`. */
+  group: THREE.Group;
+  /** named `floor` / `walls` — the flat, non-animated field furniture. */
+  floor: THREE.Object3D;
+  walls: THREE.Object3D;
+  /** named `hive:red` / `hive:blue`, each with a `tray` child (`updateBiobuzzField` rotates it). */
+  hives: Record<Alliance, THREE.Group>;
+  /** named `flower:0`..`flower:3`, in `BB_FLOWERS` order. */
+  flowers: THREE.Group[];
+  /** the two tray groups, keyed by alliance — kept as its own map (rather than making callers
+   * dig `hives[a].getObjectByName('tray')` out every frame) because `updateBiobuzzField` sets a
+   * rotation on it every tick and that is a hot, tiny lookup worth keeping direct. */
+  trays: Record<Alliance, THREE.Group>;
+}
+
+/**
+ * Builds the WHOLE field, CONSTANTS-ONLY, as one group of NAMED sub-groups — `floor`, `walls`,
+ * `hive:<alliance>` (each with a `tray` child), `flower:<index>`. This is the Day 1 field and the
+ * fallback `buildBiobuzzField` (below) uses on any CAD-load failure; nothing downstream
+ * (`renderScene.ts`, `updateBiobuzzField`) reaches into this function's internals, only ever the
+ * returned handles.
+ */
+function buildBiobuzzFieldConstants(): BbFieldHandles {
+  const group = new THREE.Group();
+  group.name = 'bb-field';
+
+  const room = buildRoom();
+  const floor = buildFloor(true);
+  const walls = buildWalls();
+  group.add(room, floor, walls, buildCrossbar());
+
+  const hives = {} as Record<Alliance, THREE.Group>;
+  const trays = {} as Record<Alliance, THREE.Group>;
+  for (const a of ALLIANCES) {
+    const { group: hiveGroup, tray } = buildHive(a);
+    group.add(hiveGroup);
+    hives[a] = hiveGroup;
+    trays[a] = tray;
+  }
+
+  const flowers = BB_FLOWERS.map((f, idx) => {
+    const g = buildFlower(f, idx);
+    group.add(g);
+    return g;
+  });
+
+  return { group, floor, walls, hives, flowers, trays };
+}
+
+/**
+ * Maps a loaded CAD `FieldGroups` (`renderFieldGlb.ts`) into the SAME `BbFieldHandles` shape the
+ * constants field returns, so `updateBiobuzzField` and every named-object lookup (the scene-
+ * preview's own checks included) work unchanged regardless of which field is in play.
+ *
+ * TAPE COMES FROM THE GLB. All 16 CAD gaffer-tape parts are real geometry with the STEP's own
+ * pure red (#ff0000) and blue (#0000ff), in the layout the field actually has — three sides per
+ * LOADING ZONE with the wall side bare, the GARDEN as a solid 2-in band, and the two ALLIANCE
+ * AREA outlines on the gym floor outside the perimeter. The procedural tape that used to be
+ * painted here (a four-sided `strokeRect` of each zone rectangle, wall edge included) is gone
+ * from this path; it survives only for the constants fallback, where it now draws the same
+ * layout. `docs/biobuzz/field-cad-audit.md` §5.
+ *
+ * TILES stay PROCEDURAL, and this is the one place the CAD is deliberately not used as-is. The
+ * STEP's 36 soft tiles are a ribbed, perforated foam plate — 175,536 triangles and an 8.8 MB
+ * tessellation for something that reads as noise at a driver camera's distance — carrying one
+ * flat 50 %-grey placeholder colour and no seam or tread detail at all. `convert.py` therefore
+ * emits them as a single CAD-accurate slab (real footprint, real 0.589-in thickness) and this
+ * path hides that slab in favour of a flat plane carrying a seam-grid `CanvasTexture`, painted
+ * at the CAD's OWN measured pitch and footprint (`cadFloor()`, 23.53 in over ±70.585) so the
+ * seams line up with the CAD tape lying on them. The tone is the sim's `COLORS.mat`/`COLORS.tile`
+ * pair rather than the CAD grey, because the HUD contrast ratios (`npm run contrast`) are tuned
+ * against those two tokens.
+ */
+function glbFieldToHandles(fg: FieldGroups): BbFieldHandles {
+  const group = fg.root;
+  group.name = 'bb-field';
+
+  // hide the GLB's own tile slab (kept in the tree, not removed, so `fg.root` still mounts as one
+  // object with nothing missing) and use the procedural seam-grid plane instead — see the header.
+  // The TAPE node is left visible: it is the real thing.
+  fg.floor.visible = false;
+  const floor = buildFloor(false);
+  group.add(floor);
+
+  // the walls ARE used from the GLB (a real trimesh visual, not a flat token-coloured floor) —
+  // `renderFieldGlb.ts` already assigns `walls` the same polycarbonate-look material the
+  // constants path's `mat(C.COLORS.wall, 0.35)` was standing in for.
+  const walls = fg.walls;
+
+  // ONE HIVE GROUP PER ALLIANCE, at the pivot, holding the (world-absolute) frame and the
+  // pivot-anchored tray — `attach()` re-parents each without moving it (it recomputes the local
+  // offset from the current world transform), exactly like `renderFieldGlb.ts`'s own
+  // `buildTrayGroup` already does for the tray itself. This gives the CAD path the SAME shape
+  // (`hive:<alliance>` → `tray` child) the constants path's `buildHive` returns, so
+  // `updateBiobuzzField`'s `handles.trays[a].rotation.set(...)` and the scene-preview's
+  // `checkOrigin('hive:<alliance>', ...)` both work unchanged.
+  const hives = {} as Record<Alliance, THREE.Group>;
+  const trays = {} as Record<Alliance, THREE.Group>;
+  for (const a of ALLIANCES) {
+    const src = fg.hives[a];
+    const hiveGroup = new THREE.Group();
+    hiveGroup.name = `hive:${a}`;
+    const pivot = src.tray.position; // the tray pivot group is already parked at the world pivot
+    hiveGroup.position.copy(pivot);
+    group.add(hiveGroup);
+    hiveGroup.attach(src.frame);
+    hiveGroup.attach(src.tray);
+    src.tray.name = 'tray';
+    hives[a] = hiveGroup;
+    trays[a] = src.tray;
+  }
+
+  // flowers: named `flower:<idx>` to match the constants convention (the raw GLB node names are
+  // `flower_0`..`flower_3`, already index-matched to `BB_FLOWERS`).
+  const flowers = fg.flowers.map((node, idx) => {
+    node.name = `flower:${idx}`;
+    return node as THREE.Group;
+  });
+
+  return { group, floor, walls, hives, flowers, trays };
+}
+
+/**
+ * Builds the WHOLE field. Tries the CAD-derived `field.glb`/`field-low.glb` (`loadFieldGlb`,
+ * `docs/biobuzz/plan-3d.md` §8) first; on ANY failure (404, offline, a decode error, a missing
+ * expected node) logs one `console.warn` and falls back to `buildBiobuzzFieldConstants()` — the
+ * Day 1 field, kept complete on purpose (`public/models/biobuzz/README.md`: "these four files
+ * can be deleted in one commit if FIRST objects"). `quality` selects the GLB's high/low LOD
+ * (`SceneQuality.meshDetail`, `renderScene.ts`); it does nothing on the constants fallback.
+ */
+export async function buildBiobuzzField(quality: 'high' | 'low' = 'high'): Promise<BbFieldHandles> {
+  try {
+    const fg = await loadFieldGlb('models/biobuzz', quality);
+    return glbFieldToHandles(fg);
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.warn('BIOBUZZ 3D field: CAD field.glb failed to load; falling back to the constants-built field.', err);
+    return buildBiobuzzFieldConstants();
+  }
+}
+
+/**
+ * per-frame update: only the two trays' rotations change (everything else in the field group is
+ * static geometry built once at scene creation).
+ *
+ * THE TRAY-ANGLE CONTRACT (owned by the hive lane, `sim3d/hive3d.ts` + `sim3d/bodies.ts` —
+ * imported, never copied). `hiveTiltAngle(world, alliance)` is the tray's ABSOLUTE tilt, right-
+ * hand about the shared local x axis at the pivot — the SAME number `engine.ts`'s
+ * `applyHiveTilt` drives the physics tray body's kinematic rotation with. `hiveTrayRefTheta`
+ * (`bodies.ts`) is the angle the CAD tray NODE was captured at (`cadCaptureTheta`, 0 for the
+ * constants-built fallback, whose geometry is theta-independent by construction).
+ *
+ * ⚠️ BUG FIXED HERE: this used to recompute the tilt LOCALLY from `world.biobuzz.hives[a].up`/
+ * `.tipping` (the 2D hive-timer state) and apply that ABSOLUTE angle directly to the tray group
+ * — correct for the constants-built fallback (whose geometry sits at local zero), but WRONG for
+ * the CAD-loaded tray: that node is captured already tilted to its own rest pose
+ * (`hiveTrayRefTheta`), so applying the absolute angle on TOP of it drew roughly DOUBLE the real
+ * physics tilt. Rotating by the DIFFERENCE (`hiveTiltAngle − hiveTrayRefTheta`) is exactly what
+ * `engine.ts` already does for the physics body, so the visual and the collider agree at every
+ * instant, on both the CAD path (nonzero `refTheta`) and the fallback (zero, so this is the same
+ * absolute angle as before).
+ */
+export function updateBiobuzzField(handles: BbFieldHandles, world: World): void {
+  for (const a of ALLIANCES) {
+    const angle = hiveTiltAngle(world, a) - hiveTrayRefTheta(a);
+    handles.trays[a].rotation.set(angle, 0, 0);
+  }
+}

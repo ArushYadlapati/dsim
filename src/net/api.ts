@@ -4,6 +4,10 @@ import type { ReportedUser, ReportRow } from '../report';
 import type { AssistConfig, GameId, RobotSpec } from '../types';
 import { gameServerHttpUrl, setLanFromServer } from './env';
 import { getAuthToken } from '../lib/authClient';
+// the per-DEVICE view preference (localStorage, never `GameSettings`) — the one thing a
+// practice upload can say that the replay container structurally cannot. It is a leaf module
+// with no React and no DOM beyond `localStorage`, guarded against storage being unavailable.
+import { getViewPref } from '../games/biobuzz/graphics/store';
 
 /**
  * Boards + periods are per-game. DECODE is the server's default for a MISSING
@@ -65,6 +69,13 @@ export interface RecordRow extends BadgeFields {
   replayId: string | null;
   createdAt: string;
   config: RecordConfig | null;
+  /**
+   * WHICH SOLVE PRODUCED THIS RUN — `'2d'` | `'3d'` (migration 0039). Absent from an older
+   * server's response, and a pre-0039 row reads `'2d'`, so the chip is drawn only where the
+   * value is actually known to be `'3d'` — a board that claimed "2D" for every row an old
+   * deploy served would be stating something it was never told.
+   */
+  physics?: string;
 }
 
 export interface EloRow extends BadgeFields {
@@ -142,9 +153,14 @@ export function fetchRecords(
   drivetrain: Board,
   season?: number,
   game?: GameId,
+  /** the ERA filter (0039): `'2d'` or `'3d'`, or omitted for every row. An older server
+   *  ignores the parameter and answers with the whole board, which is the right degradation —
+   *  the filter narrows a board, so failing open shows MORE rather than an empty page. */
+  physics?: '2d' | '3d',
 ): Promise<{ rows: RecordRow[] }> {
   const s = season != null ? `&season=${season}` : '';
-  return getJson(`/api/records?mode=${mode}&drivetrain=${drivetrain}${s}${gameParam(game)}`);
+  const ph = physics ? `&physics=${physics}` : '';
+  return getJson(`/api/records?mode=${mode}&drivetrain=${drivetrain}${s}${ph}${gameParam(game)}`);
 }
 
 export function fetchElo(
@@ -538,6 +554,10 @@ export interface PracticeRun {
   ticks: number;
   replayId: string | null;
   createdAt: string;
+  /** which solve ran it ('2d' | '3d'; migration 0039). Older servers omit it. */
+  physics?: string;
+  /** which renderer it was watched in, or null/absent when unknown */
+  view?: string | null;
 }
 
 /**
@@ -559,10 +579,22 @@ export async function uploadPracticeRun(
   const token = await getAuthToken();
   if (!base || !token) return null;
   try {
+    /**
+     * `view` RIDES THE POST; `physics` DOES NOT, and the asymmetry is the point.
+     *
+     * The physics is already inside the container (`Replay.physics`, stamped by the recorder),
+     * and the server reads it from there — so it cannot be restated here, cannot drift from
+     * the log it describes, and cannot be claimed. The VIEW is the one fact the container has
+     * no room for, because it is a property of the screen rather than of the simulation: it is
+     * read from the device preference the player was actually watching in.
+     *
+     * An older server ignores the extra key entirely, which is what makes this safe to send
+     * unconditionally — one Fly app serves every client version.
+     */
     const res = await fetch(`${base}/api/practice?game=${game ?? 'decode'}`, {
       method: 'POST',
       headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
-      body: JSON.stringify({ replay, score }),
+      body: JSON.stringify({ replay, score, view: getViewPref() }),
     });
     if (!res.ok) return null;
     return ((await res.json()) as { run: PracticeRun }).run ?? null;

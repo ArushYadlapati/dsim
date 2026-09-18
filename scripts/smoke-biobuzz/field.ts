@@ -77,6 +77,7 @@ import {
   bbMirror,
   type BbRect,
 } from '../../src/games/biobuzz/config';
+import { FLOWER_ALONG } from '../../src/games/biobuzz/fieldDims.gen';
 import { tipProjection } from '../../src/games/biobuzz/drawField';
 import { BB_SOLID_COUNT, BB_WALL_COUNT, biobuzzColliders } from '../../src/games/biobuzz/colliders';
 import { bbFlowerSectionBox } from '../../src/games/biobuzz/drawField';
@@ -559,8 +560,16 @@ export function fieldChecks(check: Check): void {
     // first and the check would pass while proving nothing about C.
     cases.push({ name: 'off the wall (G304.C)', pose: { x: 36, y: 0, headingDeg: 180 }, want: 'touching' });
     // A -- blue seated on RED's own anchor 1. Legal for red, which is the point: the only
-    // thing wrong with it is whose side it is on.
-    cases.push({ name: "on the opponent's side (G304.A)", pose: { x: -46, y: 61.5, headingDeg: -90 }, want: 'ownSide' });
+    // thing wrong with it is whose side it is on. DERIVED from the anchor by `bbMirror` rather
+    // than typed: it used to be the literal (-46, 61.5), and when the CAD moved the wall in to
+    // 70.674 that y put the footprint 1.33in THROUGH the perimeter, so clause A never got a say
+    // -- the pose failed containment first and the check that names a clause named the wrong one.
+    const redAnchor1 = bbMirror({ ...BB_START_POSES[1].pos, heading: BB_START_POSES[1].heading });
+    cases.push({
+      name: "on the opponent's side (G304.A)",
+      pose: { x: redAnchor1.x, y: redAnchor1.y, headingDeg: ((redAnchor1.heading ?? 0) * 180) / Math.PI },
+      want: 'ownSide',
+    });
 
     for (const c of cases) {
       const v = bbEvalStart(BB_DEFAULT_SPEC, c.pose, 'blue');
@@ -1284,9 +1293,13 @@ export function fieldChecks(check: Check): void {
   /**
    * A FLOWER IS PLACED BY THREE NUMBERS AND EACH IS A SEPARATE WAY TO BE WRONG.
    *
-   *  1. THE OFF-WALL COORDINATE IS EXACTLY ±24 — one tile off the field centreline, read off
-   *     the tile seam in Fig 9-2/9-4. A flower at ±23 or ±25 sits mid-tile, which is not where
-   *     an FTC field puts anything, and it moves every approach a robot can take to it.
+   *  1. THE ALONG-WALL COORDINATE IS EXACTLY THE TILE SEAM one tile off the field centreline.
+   *     A flower half a tile either way sits mid-tile, which is not where an FTC field puts
+   *     anything, and it moves every approach a robot can take to it. ⚠️ THE SEAM IS AT
+   *     `BB_TILE_SEAMS[2]` = ±23.907's neighbour, not at ±24: real soft tiles are
+   *     `BB_TILE_PITCH` 23.528 on centre (CAD, owner ruling 2026-09-18), so the CAD bore sits at
+   *     ±`FLOWER_ALONG` 23.392. Asserted against the generated constant, not a literal — the
+   *     literal 24 was the whole field-size finding in one number.
    *  2. IT SITS ON THE WALL IT IS NAMED FOR, at the `BB_FLOWER_D` stand-off. `BB_FLOWERS`
    *     carries `wall` as a STRING and the coordinates separately, so the two can disagree in
    *     silence — and the collider array (`flowerFeet`) is built from the coordinates while
@@ -1297,7 +1310,7 @@ export function fieldChecks(check: Check): void {
    *     looking exactly like four flowers on four walls.
    *
    * The stand-off is asserted to 1e-9 rather than to a tolerance because the constants are
-   * BUILT from `BB_FLOWER_D` (`-72 + BB_FLOWER_D`), so anything but exact equality means
+   * BUILT from `BB_FLOWER_D` (`-BB_HALF_X + BB_FLOWER_D`), so anything but exact equality means
    * somebody typed a literal in place of the derivation.
    */
   {
@@ -1306,8 +1319,8 @@ export function fieldChecks(check: Check): void {
       // the coordinate ALONG the wall — the one that has to land on a tile seam
       const along = onX ? f.y : f.x;
       check(
-        `flower [${f.id}]: sits one tile off centre along its wall (|${onX ? 'y' : 'x'}| = 24)`,
-        Math.abs(Math.abs(along) - 24) < 1e-9,
+        `flower [${f.id}]: sits one tile off centre along its wall (|${onX ? 'y' : 'x'}| = FLOWER_ALONG ${FLOWER_ALONG})`,
+        Math.abs(Math.abs(along) - FLOWER_ALONG) < 1e-9,
         `${f.id} at (${f.x}, ${f.y}) on the ${f.wall} wall`,
       );
       const want =
@@ -3372,8 +3385,17 @@ export function fieldChecks(check: Check): void {
         `through the mouth → ${throughMouth ? `y ${throughMouth.pos.y.toFixed(2)} vy ${throughMouth.vel.y.toFixed(1)}` : 'null'} · from the back → ${fromBack ? `y ${fromBack.pos.y.toFixed(2)} vy ${fromBack.vel.y.toFixed(1)}` : 'null'} · under the box → ${lowPast === null ? 'free' : 'hit'}`,
       );
 
-      // b. the UNDERSIDE: a ball climbing into it from below is turned down, run dumped
-      const under = hiveDeflect(H, A, v(p.x, 0, 24), v(p.x + 1, 0, 27), v(60, 0, 180));
+      // b. the UNDERSIDE: a ball climbing into it from below is turned down, run dumped.
+      // The two z are STRADDLES OF `BB_HIVE_BOTTOM_Z`, not the literals 24 and 27 they used to
+      // be: the CAD put the underside at 31.981 instead of the manual's 25.5, so a fixture
+      // written around 25.5 climbed to 27 and never reached the surface it is about.
+      const under = hiveDeflect(
+        H,
+        A,
+        v(p.x, 0, BB_HIVE_BOTTOM_Z - 1.5),
+        v(p.x + 1, 0, BB_HIVE_BOTTOM_Z + 1.5),
+        v(60, 0, 180),
+      );
       check(
         'deflect: a shot rising into the UNDERSIDE comes back down at BB_HIVE_MISS_REST with its run cut to BB_HIVE_MISS_TANGENT',
         under !== null &&

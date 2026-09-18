@@ -9,6 +9,10 @@ import {
   type ReplayRefusal,
 } from '../sim/replay';
 import { moduleFor } from '../games';
+import type { GameScene, SceneCamera } from '../games/module';
+import { getViewPref } from '../games/biobuzz/graphics/store';
+// the lazy 3D physics chunk — fetched only for a `'3d'` container (see `ensurePhysics`)
+import { initPhysics3d, physics3dReady } from '../games/biobuzz/sim3d/engine';
 import { Renderer } from '../render/renderer';
 import { rangeFill } from './rangeFill';
 import { drawReplayHud, fieldScreenBottom, HUD_RESERVE, loadSponsorMark } from './replayOverlay';
@@ -192,6 +196,19 @@ export function ReplayView({
   const [capturing, setCapturing] = useState<VideoFormatId | null>(null);
   /** set to stop a fast capture between frames */
   const abortCapture = useRef(false);
+  /**
+   * WHAT THE VIDEO IS OF (`docs/roadmap.md` item 2, `docs/biobuzz/plan-3d.md` §4.7): the flat
+   * map, or the 3D scene, and from which camera.
+   *
+   * The default follows the DEVICE's own view preference, because the one thing a person
+   * exporting a clip of their own match almost always wants is the picture they were just
+   * looking at. 3D is offered only where the game HAS a scene and this browser can run one —
+   * a menu entry that produced a black video would be worse than no entry.
+   */
+  const [exportView, setExportView] = useState<'2d' | '3d'>('2d');
+  const [exportCam, setExportCam] = useState<SceneCamera>('driver');
+  /** measured when the menu opens — see `probe3d`. */
+  const [can3d, setCan3d] = useState(false);
   /** re-fits the canvas backing store to its box; owned by the render loop, called by the
    *  recording effect (see it for why the canvas stops matching) */
   const refit = useRef<(() => void) | null>(null);
@@ -201,6 +218,24 @@ export function ReplayView({
     let dead = false;
     setStatus('loading');
     setError('');
+    /**
+     * A `'3d'` CONTAINER NEEDS ITS PHYSICS BEFORE THE PLAYER IS CONSTRUCTED, not before the
+     * first frame is drawn.
+     *
+     * `ReplayPlayer`'s constructor builds the world and the render loop steps it on the very
+     * next tick, so the await has to sit between the container arriving and the player being
+     * made — which is what this wrapper is. The header above says "physics WASM is already
+     * inited (main.tsx)", and that is still true of the 2D module; the 3D one is a lazy chunk
+     * by design (a viewer watching a DECODE replay must never pay for it), so it is fetched
+     * here, once, on the one kind of container that needs it.
+     *
+     * A FAILED load becomes the `error` state rather than a silent 2D re-simulation: re-running
+     * a 3D log against the 2D pipeline would produce a different match from the same inputs and
+     * show something that never happened, which is the exact failure `replayRefusal` exists to
+     * prevent for a version mismatch.
+     */
+    const ensurePhysics = (r: Replay): Promise<void> =>
+      (r.physics ?? '2d') !== '3d' || physics3dReady() ? Promise.resolve() : initPhysics3d();
     const use = (r: Replay): void => {
       replay.current = r;
       // A replay is a deterministic INPUT log, and whether this build can re-run it —
@@ -218,11 +253,25 @@ export function ReplayView({
         return;
       }
       setDrift(why === 'behaviour' || why === 'unstamped' ? why : null);
-      player.current = new ReplayPlayer(r);
-      renderer.current = new Renderer();
-      setTotal(Math.max(1, r.ticks));
-      setTick(0);
-      setStatus('ready');
+      ensurePhysics(r).then(
+        () => {
+          if (dead) return;
+          player.current = new ReplayPlayer(r);
+          renderer.current = new Renderer();
+          setTotal(Math.max(1, r.ticks));
+          setTick(0);
+          setStatus('ready');
+        },
+        (e: unknown) => {
+          if (dead) return;
+          setError(
+            e instanceof Error
+              ? `Couldn’t load the 3D physics this replay needs. ${e.message}`
+              : 'Couldn’t load the 3D physics this replay needs. Check your connection and try again.',
+          );
+          setStatus('error');
+        },
+      );
     };
     if (preloadReplay) {
       use(preloadReplay);
@@ -611,6 +660,96 @@ export function ReplayView({
       solo: soloSide,
     };
 
+    /**
+     * THE 3D CAPTURE (`docs/roadmap.md` item 2, `docs/biobuzz/plan-3d.md` §4.7).
+     *
+     * A whole second scene, on a HOST OF ITS OWN that is in the document but off-screen. Off
+     * -screen because a WebGL canvas in the layout would be a second live renderer competing
+     * with the viewer's for the GPU; in the document rather than fully detached because the
+     * scene reads `--ds-bg` off `documentElement` at construction and a node outside the tree
+     * still resolves it, but an attached host is the case every other code path exercises.
+     *
+     * `quality: 'high'` FIXES the preset (§4.7): a video must not come out at whatever the
+     * machine that made it happened to be set to, and — just as important — a settings change
+     * made while the encode runs cannot change the resolution of a file that is half written.
+     * `interactive: false` binds no keys and no pointer handlers: an off-screen scene that
+     * installed the view key would have the player's `t` press swap a view they cannot see.
+     */
+    let scene: GameScene | null = null;
+    let sceneHost: HTMLDivElement | null = null;
+    /**
+     * ⚠️ THE OVERLAY GETS ITS OWN CANVAS, AND IT HAS TO.
+     *
+     * `Renderer.render(..., overlayOnly = true)` opens with `clearRect` over the WHOLE canvas —
+     * correct in the live game, where the 2D canvas is a separate transparent sheet ABOVE the
+     * WebGL one and has to be wiped every frame. In an export both passes would be aiming at
+     * the same canvas, so the overlay pass erased the 3D frame that had just been drawn onto
+     * it and every exported frame came out black. (Measured exactly that way: a composite whose
+     * average luminance was 0.)
+     *
+     * So the labels and auto paths are drawn onto a transparent sheet of their own and
+     * composited, which is the same stack the live view has, one canvas later.
+     */
+    let overlay: HTMLCanvasElement | null = null;
+    let overlayCtx: CanvasRenderingContext2D | null = null;
+    const sceneFn = exportView === '3d' ? moduleFor(r.game).scene : undefined;
+    if (sceneFn) {
+      try {
+        sceneHost = document.createElement('div');
+        sceneHost.style.position = 'fixed';
+        sceneHost.style.left = '-20000px';
+        sceneHost.style.top = '0';
+        sceneHost.style.width = `${cssW}px`;
+        sceneHost.style.height = `${cssH}px`;
+        sceneHost.setAttribute('aria-hidden', 'true');
+        document.body.appendChild(sceneHost);
+        const factory = await sceneFn();
+        scene = await factory(sceneHost, { quality: 'high', interactive: false });
+        // CSS units are the viewer's, the DPR carries it up to the encode size — the same two
+        // numbers `rend.camera` was retargeted with above, so the scene's pixels and the 2D
+        // overlay's land on exactly the same grid and `scene.project` reports CSS pixels the
+        // overlay can draw in without a second scale factor.
+        scene.resize(cssW, cssH, rend.camera.dpr);
+        rend.setScene(scene);
+        overlay = document.createElement('canvas');
+        overlay.width = width;
+        overlay.height = height;
+        overlayCtx = overlay.getContext('2d');
+      } catch (err) {
+        // a scene that will not build is not a failed export: fall through to the 2D path,
+        // which is what the menu would have written a minute ago
+        // eslint-disable-next-line no-console
+        console.warn('3D export unavailable; writing the 2D view instead.', err);
+        scene?.dispose();
+        scene = null;
+        sceneHost?.remove();
+        sceneHost = null;
+      }
+    }
+
+    /**
+     * WHAT THE FIELD IS FITTED INTO, when there is a 3D scene.
+     *
+     * The roadmap's design note says "insets are 0 (the burn-in reserves its own band)". That
+     * is true of the 2D path, where the CAMERA reserved the band by being shorter than the
+     * frame (`cssH` above is grown past `camera.h` precisely so the scoreboard has clear space
+     * under the field). A 3D camera has no such notion: it fits the field into whatever
+     * rectangle it is given, so handed the full frame it would put the field UNDER the burn-in.
+     * `SceneInsets` is the mechanism that already exists for exactly this, so the bottom band
+     * is declared as one and the framing comes out matching the 2D export's.
+     */
+    const sceneInsets = { top: 0, right: 0, bottom: Math.max(0, cssH - rend.camera.h), left: 0 };
+    const sceneFrame = {
+      alpha: 0,
+      viewAngle: rend.camera.viewAngle,
+      camera: exportCam,
+      localRobotId: localId,
+      width: cssW,
+      height: cssH,
+      dpr: rend.camera.dpr,
+      insets: sceneInsets,
+    };
+
     let blob: Blob | null = null;
     try {
       blob = await recordFast({
@@ -622,7 +761,21 @@ export function ReplayView({
         source: frame,
         draw: () => {
           shot.stepOnce();
-          rend.render(ctx, shot.world, null, localId);
+          if (scene && overlayCtx && overlay) {
+            // THE ORDER IS THE COMPOSITE (§4.7): the scene, then the overlay pass on its own
+            // sheet, then both flattened onto the export canvas IN THE SAME TASK (no
+            // `preserveDrawingBuffer` — a WebGL backbuffer is only guaranteed readable before
+            // the next paint, and `recordFast`'s `draw` is synchronous, which is what makes
+            // this legal), then the burn-in on top.
+            scene.render(shot.world, sceneFrame);
+            rend.render(overlayCtx, shot.world, null, localId, true);
+            ctx.setTransform(1, 0, 0, 1, 0, 0);
+            ctx.clearRect(0, 0, width, height);
+            ctx.drawImage(scene.element, 0, 0, width, height);
+            ctx.drawImage(overlay, 0, 0);
+          } else {
+            rend.render(ctx, shot.world, null, localId);
+          }
           // the scoreboard is DOM in the viewer, so the canvas alone carries no score, no
           // clock and no match start — see `drawReplayHud`. It draws in CSS units, which is
           // why the transform is left where the camera put it.
@@ -633,6 +786,11 @@ export function ReplayView({
       });
     } catch {
       blob = null;
+    } finally {
+      // the scene outlives neither a finished export nor a cancelled one
+      rend.setScene(null);
+      scene?.dispose();
+      sceneHost?.remove();
     }
 
     setCapturing(null);
@@ -722,12 +880,45 @@ export function ReplayView({
     setPlaying(false);
   };
 
+  /**
+   * CAN THIS REPLAY BE EXPORTED IN 3D? Two independent questions, both cheap, both answered on
+   * the frame the menu opens rather than on every render.
+   *
+   *   1. Does the GAME have a scene at all (`GameModule.scene`)? DECODE and Chain Reaction do
+   *      not, and never will from this menu — they have no 3D renderer.
+   *   2. Will this browser give us WebGL2? The probe is a throwaway canvas that is never
+   *      attached; `loseContext` hands the context straight back, so opening the menu twenty
+   *      times does not exhaust the page's context budget.
+   *
+   * Deliberately NOT the same probe `renderScene.ts` runs: that one lives in the renderer chunk
+   * and importing it here would drag Three.js into the main bundle to answer a yes/no question.
+   */
+  const probe3d = (): boolean => {
+    const r = replay.current;
+    if (!r || !moduleFor(r.game).scene) return false;
+    try {
+      const c = document.createElement('canvas');
+      const gl = c.getContext('webgl2');
+      if (!gl) return false;
+      gl.getExtension('WEBGL_lose_context')?.loseContext();
+      return true;
+    } catch {
+      return false;
+    }
+  };
+
   /** Measure the container ONCE, on open. Stringifying it is cheap, but this component
    *  re-renders 10 times a second off the progress readout, and a menu that re-serializes the
    *  whole replay on every one of those is a menu that stutters while it is open. */
   const openMenu = (): void => {
     const r = replay.current;
-    if (r && !menuOpen) setDataBytes(new Blob([JSON.stringify(r)]).size);
+    if (r && !menuOpen) {
+      setDataBytes(new Blob([JSON.stringify(r)]).size);
+      const can3d = probe3d();
+      setCan3d(can3d);
+      // the device's own view preference is the default, but only where it is possible
+      setExportView(can3d && getViewPref() === '3d' ? '3d' : '2d');
+    }
     setMenuOpen((v) => !v);
   };
   const pick = (fn: () => void): void => {
@@ -820,6 +1011,57 @@ export function ReplayView({
                 {/* Each option states its COST as well as its name — the formats differ by how
                     long they take and where they will play, and a menu of bare nouns hides
                     exactly the difference that decides which you want. */}
+                {/* WHAT THE VIDEO IS OF, before what file it goes into. Two compact rows rather
+                    than two more full-width options: they modify every format below them, and a
+                    card that looked like the MP4 card would read as a third thing to download.
+                    The 3D button is DISABLED, not hidden, where it is unavailable — its title
+                    then says which of the two reasons it is, because "this game has no 3D
+                    renderer" and "this browser has no WebGL2" want different answers from the
+                    person reading it. */}
+                <div className="ds-dl-row">
+                  <span className="rl">View</span>
+                  <div className="ds-dl-seg">
+                    <button
+                      className={exportView === '2d' ? 'on' : ''}
+                      aria-pressed={exportView === '2d'}
+                      onClick={() => setExportView('2d')}
+                    >
+                      2D
+                    </button>
+                    <button
+                      className={exportView === '3d' ? 'on' : ''}
+                      aria-pressed={exportView === '3d'}
+                      disabled={!can3d}
+                      title={
+                        can3d
+                          ? undefined
+                          : replay.current && moduleFor(replay.current.game).scene
+                            ? 'This browser has no WebGL2.'
+                            : 'This season has no 3D renderer.'
+                      }
+                      onClick={() => setExportView('3d')}
+                    >
+                      3D
+                    </button>
+                  </div>
+                </div>
+                {exportView === '3d' && (
+                  <div className="ds-dl-row">
+                    <span className="rl">Camera</span>
+                    <div className="ds-dl-seg">
+                      {(['driver', 'chase', 'orbit'] as const).map((c) => (
+                        <button
+                          key={c}
+                          className={exportCam === c ? 'on' : ''}
+                          aria-pressed={exportCam === c}
+                          onClick={() => setExportCam(c)}
+                        >
+                          {c[0].toUpperCase() + c.slice(1)}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
                 {formats.length === 0 && <p className="ds-dl-note">This browser can’t save video.</p>}
                 {formats.map((f) => (
                   <button

@@ -3,6 +3,8 @@ import type { InputManager } from '../input/input';
 import type { GameId, MobileLayout, MobilePos } from '../types';
 import type { MobileActionField } from '../games/module';
 import { moduleFor } from '../games';
+import { getViewPref, subscribeViewPref } from '../games/biobuzz/graphics/store';
+import { installViewKey, toggleViewPref } from '../games/biobuzz/graphics/viewKey';
 
 // base radii (px, BEFORE the layout scale) — the visible ring + the handle travel.
 const JOY_R = 58;
@@ -164,6 +166,31 @@ export function MobileControls({
 }) {
   const vp = useViewport();
   const scale = layout.scale;
+
+  /**
+   * THE 2D ⇄ 3D TOGGLE (plan-3d.md §4.3: "a `view` key in `MobileLayout`").
+   *
+   * A phone has no `t` key, so the touch layer needs a control of its own — and this is the one
+   * surface where the 3D view's default camera is already the overhead shot
+   * (`GameController.sceneCameraFor` returns `'overhead'` on a coarse pointer), so switching is
+   * a genuine choice between two readable pictures rather than a downgrade.
+   *
+   * It is NOT part of the draggable `MobileLayout`, deliberately: a layout key would mean a new
+   * field in `src/types.ts` and a settings migration, on another lane's files, for a button that
+   * is pressed twice a session. It is pinned to the top strip instead — the band `onTouchStart`
+   * already refuses to start a drive stick in ("leave the top strip for chips / menu"), so it
+   * cannot be hit by a thumb reaching for the joystick.
+   *
+   * Hidden while EDITING the layout: everything else on that screen is draggable and a fixed
+   * control among them reads as one that will not move.
+   */
+  const [view, setView] = useState(() => getViewPref());
+  useEffect(() => subscribeViewPref(setView), []);
+  // the key is reference-counted, so holding it here costs nothing on a device that has no
+  // keyboard and works immediately on one that does (a tablet with a case, a Chromebook in
+  // tablet mode) without waiting on a mount somewhere else
+  useEffect(() => installViewKey(), []);
+  const showView = !editing && game === 'biobuzz';
 
   // live-editable working copy while in edit mode (persist on release)
   const [edit, setEdit] = useState<MobileLayout>(layout);
@@ -344,6 +371,16 @@ export function MobileControls({
       {/* HIGH-Z visuals + buttons (above the scorebar, so nothing occludes them).
           pointer-events:none except the interactive children. */}
       <div className="mobile-overlay">
+        {showView && (
+          <button
+            className="game-btn mobile-view-btn"
+            data-hud-band
+            onClick={toggleViewPref}
+            aria-pressed={view === '3d'}
+          >
+            {view === '3d' ? '3D' : '2D'}
+          </button>
+        )}
         {joystick('drive', L.drive)}
         {joystick('turn', L.turn)}
         {buttons.map((b) => {

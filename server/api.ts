@@ -575,9 +575,20 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse): Prom
       // render as anything but a plausible score
       const raw = typeof body.score === 'number' && Number.isFinite(body.score) ? body.score : 0;
       const score = Math.max(0, Math.min(9999, Math.round(raw)));
+      /**
+       * THE VIEW IS SANITIZED TO THE ENUM; THE PHYSICS IS NOT TAKEN FROM THE BODY AT ALL.
+       *
+       * `view` is a cosmetic fact only the client can know (which renderer was on this
+       * screen), so it is accepted — forced to '2d' | '3d', absent otherwise, because it is a
+       * column and not free text. `physics` is NOT read from `body`: `sanitizeReplay` already
+       * carried it off the container, and the container is what a re-simulation will actually
+       * run. Taking it from a second place would let a client file a 2D run tagged as a 3D
+       * one, which is the only tag here anybody would have a reason to lie about.
+       */
+      const view = body.view === '2d' || body.view === '3d' ? body.view : undefined;
       await ensureProfile(user.userId, user.handle);
       const season = await currentSeasonNumber(BALANCE_VERSION, replay.game as GameId);
-      const run = await savePracticeRun(user.userId, replay, score, season, replay.game as GameId);
+      const run = await savePracticeRun(user.userId, replay, score, season, replay.game as GameId, view);
       /**
        * PLAYTIME + GAMES PLAYED. Practice is playing the game — it is the mode most people
        * spend most of their time in — and a "games played" that ignored it read as broken
@@ -630,7 +641,10 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse): Prom
       if (!lanRateOk(user.userId)) {
         return json(429, { error: 'too many LAN uploads — try again in a minute' }), true;
       }
-      const game: GameId = url.searchParams.get('game') === 'chain' ? 'chain' : 'decode';
+      // THE ALLOWLIST, not a two-valued ternary. This read `=== 'chain' ? 'chain' : 'decode'`,
+      // which is the exact shape `coerceGameId` exists to replace: a THIRD id degraded to
+      // DECODE silently, so a BIOBUZZ host's LAN match was listed and filed under DECODE.
+      const game: GameId = coerceGameId(url.searchParams.get('game'));
 
       if (req.method === 'GET') {
         return json(200, { runs: await listLanRuns(user.userId, game) }), true;
@@ -1119,10 +1133,19 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse): Prom
     if (url.pathname === '/api/records') {
       const mode = url.searchParams.get('mode') === 'duo' ? 'duo' : 'solo';
       const drivetrain = url.searchParams.get('drivetrain') ?? 'overall';
+      /**
+       * THE ERA FILTER (0039). An ALLOWLIST rather than a cast: this string reaches a SQL
+       * parameter, and while `q()` parameterises it, a value that is neither of the two would
+       * silently return an empty board rather than the "all" the caller meant. Anything that
+       * is not exactly `'2d'` or `'3d'` — absent, empty, `all`, nonsense — means no filter,
+       * which is what every client before Day 3 asks for.
+       */
+      const p = url.searchParams.get('physics');
+      const physics = p === '2d' || p === '3d' ? p : undefined;
       const rows = dbEnabled
-        ? await recordLeaderboard({ mode, drivetrain, balanceVersion: season, limit, game })
+        ? await recordLeaderboard({ mode, drivetrain, balanceVersion: season, limit, game, physics })
         : [];
-      return json(200, { season, mode, drivetrain, rows, game }), true;
+      return json(200, { season, mode, drivetrain, physics, rows, game }), true;
     }
 
     if (url.pathname === '/api/elo') {

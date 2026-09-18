@@ -192,6 +192,10 @@ export function sanitizeReplay(raw: unknown, game?: GameId): Replay | null {
         : 0,
     sim: typeof r.sim === 'number' && Number.isFinite(r.sim) ? Math.round(r.sim) : undefined,
     game: replayGame,
+    // AN ENUM, not a passthrough: `physics` reaches `createWorld` the moment anyone watches
+    // this back, and anything that is not the one known non-default value must come out
+    // ABSENT rather than as a string a `switch` will not recognise. Absent reads `'2d'`.
+    physics: r.physics === '3d' ? '3d' : undefined,
     mode: r.mode,
     seed,
     ticks,

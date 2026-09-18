@@ -5,6 +5,7 @@ import { createBiobuzzWorld } from '../../src/games/biobuzz/spawn';
 import { biobuzzStep } from '../../src/games/biobuzz/step';
 import { coerceSpec } from '../../src/sim/spawn';
 import { BB_DEFAULT_SPEC } from '../../src/games/biobuzz/robotConfig';
+import { step3d } from '../../src/games/biobuzz/sim3d/step3d';
 
 /**
  * The BIOBUZZ smoke harness — the `check` function and the fixtures both lane files share.
@@ -88,4 +89,38 @@ export function run(world: World, c: RobotCommand, seconds: number): void {
  */
 export function bbCoerce(raw: unknown): RobotSpec {
   return coerceSpec(raw, BB_DEFAULT_SPEC, 'biobuzz');
+}
+
+/** a BIOBUZZ world with one blue robot, staged on the 3D physics backend -- the SIM3D lane's
+ * own fixture (Day 1 seam, `docs/biobuzz/plan-3d.md`). Same staging as `mkWorld`; only the
+ * physics tag differs. */
+export function mkWorld3d(mode: GameMode, seed: number, spec: Partial<RobotSpec> = {}): World {
+  return createBiobuzzWorld(mode, seed, [setup(0, 'blue', spec)], undefined, '3d');
+}
+
+/** a BIOBUZZ 3D world with TWO robots (one per alliance) -- the SIM3D lane's 2v2-shaped and
+ * capture/launch fixtures. `startIndex` 0/1 keeps the pair on opposite ends of the field, same
+ * as the 2D lanes' own two-robot fixtures. */
+export function mkWorld3dPair(
+  mode: GameMode,
+  seed: number,
+  specA: Partial<RobotSpec> = {},
+  specB: Partial<RobotSpec> = {},
+): World {
+  return createBiobuzzWorld(
+    mode,
+    seed,
+    [setup(0, 'blue', specA, 0), setup(1, 'red', specB, 1)],
+    undefined,
+    '3d',
+  );
+}
+
+/** step `seconds` of the real BIOBUZZ 3D pipeline with commands from `cmds` (keyed by robot id)
+ * held for the whole run -- the SIM3D lane's own driver, mirroring `run()` but calling
+ * `step3d` directly (the world's own `physics` tag already routes `biobuzzStep` there; this
+ * skips the dispatch for lanes that want to be explicit about which pipeline they are timing). */
+export function run3d(world: World, cmds: Map<number, RobotCommand>, seconds: number): void {
+  const n = Math.round(seconds / SIM_DT);
+  for (let i = 0; i < n; i++) step3d(world, SIM_DT, cmds);
 }

@@ -1,4 +1,6 @@
-import type { GameSimModule } from '../types';
+import type { GameMode, GameSettings, World } from '../../types';
+import type { RobotSetup } from '../../sim/spawn';
+import type { GameSimModule, Physics } from '../types';
 import {
   BB_HALF_X,
   BB_HALF_Y,
@@ -9,7 +11,9 @@ import {
   bbAnchorName,
   bbDefaultIndex,
   bbRoleLabel,
+  bbStowLegal,
 } from './config';
+import { BIOBUZZ_BOT } from './ai';
 import { biobuzzColliders } from './colliders';
 import { biobuzzHud } from './hudRobot';
 import { bbRobotSolids } from './robot';
@@ -53,6 +57,47 @@ import { biobuzzStep } from './step';
  * game + act), so the number does not have to differ from another game's: DECODE and Chain
  * Reaction already share an act number in production without touching each other's boards.
  */
+
+/**
+ * THE `createWorld` ROUTE FOR PHYSICS (Day 1 seam, `docs/biobuzz/plan-3d.md` §2.1).
+ *
+ * `GameSimModule.createWorld(mode, seed, setups, settings?)` is the shared seam every game's
+ * world-builder is called through — `src/game.ts`'s `makeWorld()` already hands it the FULL
+ * `GameSettings` for both a solo build and a multiplayer one, so no signature change was
+ * needed to reach `settings.practicePhysics`. `createBiobuzzWorld` itself grew a fifth,
+ * trailing, OPTIONAL `physics` argument (defaulting `'2d'`) that the shared interface type
+ * does not know about — legal, because a function with an extra optional parameter is still
+ * assignable to a shorter function type, so registering this wrapper does not touch
+ * `GameSimModule.createWorld`'s signature at all. This wrapper is the one place that reads
+ * `settings?.practicePhysics` and forwards it; everything else keeps calling
+ * `createBiobuzzWorld` directly (the smoke suite, `scenes.ts`) and keeps getting `'2d'`.
+ *
+ * Day 2 added the ROOM's route beside it: an explicit fifth `physics` argument on the shared
+ * seam (`GameSimModule.createWorld`), sourced from `RoomConfig.physics` on the server and from
+ * `matchStart.physics` on every client in the room. It WINS over the settings field, because a
+ * room's physics is the room's fact and the settings bag is the player's — a driver whose
+ * Practice pick says `'2d'` must still build the `'3d'` world the room they joined is running,
+ * or their prediction steps a different game from the server's.
+ *
+ * So the precedence is: the room's explicit choice, then solo practice's setting, then `'2d'`
+ * — which is also what every caller that passes neither (the smoke suite, `scenes.ts`) gets,
+ * unchanged.
+ */
+function createBiobuzzSimWorld(
+  mode: GameMode,
+  seed: number,
+  setups: RobotSetup[],
+  settings?: GameSettings,
+  physics?: Physics,
+): World {
+  return createBiobuzzWorld(
+    mode,
+    seed,
+    setups,
+    settings,
+    physics ?? settings?.practicePhysics ?? '2d',
+  );
+}
 export const BIOBUZZ_SIM: GameSimModule = {
   id: 'biobuzz',
   scored: true,
@@ -62,10 +107,18 @@ export const BIOBUZZ_SIM: GameSimModule = {
   // `coerceSettings` and the server's per-alliance de-conflict loop, none of which may use
   // DECODE's five anchors for a game that has two
   startPoseCount: BB_START_POSE_COUNT,
-  // G304, off `bbEvalStart`. It MIRRORS the canonical pose onto the alliance first — this
-  // field is point-symmetric, so red's version of a stored pose is a 180° rotation of it and
-  // not an x-reflection; see `bbActiveStartLegal`.
-  startLegal: bbActiveStartLegal,
+  // G304 off `bbEvalStart`, AND R102 off `bbStowLegal`. It MIRRORS the canonical pose onto the
+  // alliance first — this field is point-symmetric, so red's version of a stored pose is a 180°
+  // rotation of it and not an x-reflection; see `bbActiveStartLegal`.
+  //
+  // ── WHY THE HEIGHT CLAUSE IS HERE AND NOT IN `bbEvalStart` ──────────────────
+  // G304 is five clauses about a POSE and `start.ts` assesses exactly those. R102 is a clause
+  // about the BUILD — "STARTING CONFIGURATION is limited to an 18-inch cube" — and it is true or
+  // false before a pose exists at all, which is why it is ANDed at the registration rather than
+  // smuggled into a pose evaluator that would then have to return it for `startPose === null`
+  // too. Both readers of this slot (the server's ready-up gate, `startSelectionLegal`) get one
+  // answer to "may this robot start", which is what they actually ask.
+  startLegal: (spec, a, startPose) => bbStowLegal(spec) && bbActiveStartLegal(spec, a, startPose),
   // start ROLES are TOP / BOTTOM (which end of the field a robot starts at), like Chain
   // Reaction's, not DECODE's CLOSE / FAR — read by the shared start-position helpers, the
   // role-swap bar and the lobby/strategy start chips
@@ -77,8 +130,11 @@ export const BIOBUZZ_SIM: GameSimModule = {
   autoPaths: false,
   bounds: { halfX: BB_HALF_X, halfY: BB_HALF_Y, viewMargin: BB_VIEW_MARGIN },
   colliders: biobuzzColliders,
-  createWorld: createBiobuzzWorld,
+  createWorld: createBiobuzzSimWorld,
   step: biobuzzStep,
+  // this game's UI may offer either physics (Day 1 seam) — DECODE and Chain Reaction leave
+  // this absent, which reads as '2d' only.
+  physicsOptions: ['2d', '3d'],
   // `{ field: { scored }, robot: { hopper, cap, mode } | null }` — the contract's §5 slice.
   // DOM-free, because the authoritative server computes it for its clients too.
   hud: biobuzzHud,
@@ -89,4 +145,8 @@ export const BIOBUZZ_SIM: GameSimModule = {
   // the match is finalized only once nothing left on the field can score (§10.5 A/C) — a tip
   // swing that the buzzer caught finishes and pays before anything is saved. See `bbSettled`.
   settled: bbSettled,
+  // THE AI SEAT (Day 3, plan §6). DECODE and Chain Reaction leave this absent, which is what
+  // "this game offers no bot" means at every reader. See `src/games/biobuzz/ai/index.ts` for the
+  // driving contract, and `BotDriver` for why there is a `create` and no `drive`.
+  bot: BIOBUZZ_BOT,
 };

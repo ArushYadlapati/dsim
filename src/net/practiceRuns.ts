@@ -1,5 +1,6 @@
 import type { GameId } from '../types';
 import type { Replay, ReplayResult } from '../sim/replay';
+import { getViewPref } from '../games/biobuzz/graphics/store';
 
 /**
  * SOLO PRACTICE REPLAYS, kept on this device.
@@ -46,6 +47,19 @@ export interface PracticeRunMeta {
   sim: number;
   /** the server's id once this run has been uploaded; absent ⇒ local only */
   remoteId?: string;
+  /**
+   * WHICH SOLVE RAN IT, off the container's own stamp (`Replay.physics`) — never off the
+   * SETTING, which can differ from what was played for a whole run when a 3D chunk load fails
+   * and the session falls back to 2D (`physicsFallbackNotice`). Absent on a run kept before
+   * this field existed, which is genuinely unknown rather than 2D.
+   */
+  physics?: string;
+  /**
+   * WHICH RENDERER IT WAS WATCHED IN. The one fact the container has no room for, because it is
+   * a property of the screen rather than of the simulation — the same asymmetry
+   * `uploadPracticeRun` documents on the POST.
+   */
+  view?: string;
 }
 
 const readIndex = (): PracticeRunMeta[] => {
@@ -121,6 +135,8 @@ export function savePracticeRun(replay: Replay, result: ReplayResult): PracticeR
     ticks: replay.ticks,
     balanceVersion: replay.balanceVersion,
     sim: replay.sim ?? 0,
+    physics: replay.physics,
+    view: getViewPref(),
   };
 
   const body = JSON.stringify(replay);

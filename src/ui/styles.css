@@ -170,10 +170,27 @@ button {
   overscroll-behavior: none;
 }
 
-.game-canvas {
-  display: block;
+/* BIOBUZZ 3D SEAM (Day 1, docs/biobuzz/plan-3d.md §4.1/§4.7): the box `.game-canvas` used
+   to fill on its own, now shared with a live 3D scene's own canvas. Whichever canvas lands
+   LAST in the DOM wins the stack (both `position:absolute`, `z-index:auto`) —
+   `GameController` inserts the scene's canvas BEFORE the 2D one, so the 2D canvas always
+   renders on top, transparent, drawing only its cheap overlay (name labels) while the scene
+   draws the field/robots/balls beneath it. A game/session with no `scene` module never
+   inserts a second canvas, so this box holds exactly the one `.game-canvas` it always did. */
+.game-viewport {
+  position: relative;
   width: 100%;
   height: 100%;
+}
+.game-viewport > canvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+}
+
+.game-canvas {
+  display: block;
   touch-action: none;
 }
 
@@ -192,6 +209,78 @@ button {
    (readable against both the card and the field), never --ds-line. Rules that draw a
    separator INSIDE a card keep --border. See the token block in shell.css.
    --------------------------------------------------------------------------- */
+
+/* ---------------------------------------------------------------------------
+   THE 3D VIEW'S HUD SCRIM (docs/biobuzz/plan-3d.md §4.7, Day 2).
+
+   The 2D field is a DARK canvas that never themes, which is the assumption every
+   --ds-hud* value above is tuned against. A 3D scene is not: behind the same chip
+   there may be a lit white wall, a hive's alliance panel or the dark tile floor,
+   changing several times a second as the camera moves. A 94%-opaque card survives
+   that; a translucent one over a bright wall does not, and in LIGHT theme the whole
+   HUD is light-on-light against a lit field.
+
+   So in a 3D view the HUD's own surfaces take a FIXED DARK scrim and fixed light ink
+   — category 3 in the theming note (its ground is the CANVAS, so it does not invert),
+   the same reasoning that keeps --ds-on-field out of the dark block. The literals
+   here are the token DEFINITIONS, which is the one place a literal belongs.
+
+   SCOPED TO [data-hud-band] and applied by REDEFINING the tokens rather than by
+   restyling components: the bands are exactly the clusters that float over the field
+   (the score bar, the breakdown chips, the status chips, MENU/RESET, and a game's own
+   scoreBar slot), every card inside them already draws with var(--ds-hud) /
+   var(--ds-hud-soft) / var(--ds-hud-line), and nothing else in .game-root — the
+   overlays, the results screen, the event log — inherits a thing. A game that adds a
+   HUD cluster gets the scrim by marking it data-hud-band, which it must do anyway for
+   the 3D camera to keep the field out from under it.
+
+   THE EDGE stays --ds-hud-line, per the theming note: it is the token tuned to read
+   against BOTH the card and the field, and it is light enough in either theme to
+   separate a dark card from a bright 3D background.
+   --------------------------------------------------------------------------- */
+.game-root.view-3d [data-hud-band],
+.game-root.view-3d .bb-gfxstat {
+  --ds-hud: rgba(14, 18, 22, 0.82);
+  --ds-hud-soft: rgba(14, 18, 22, 0.7);
+  --text: var(--ds-on-field);
+  --muted: var(--ds-on-field-dim);
+  --ds-ink-dim: var(--ds-on-field-dim);
+}
+
+/* ---------------------------------------------------------------------------
+   THE 3D PERFORMANCE OVERLAY (docs/biobuzz/plan-3d.md §4.4's last row).
+
+   Created by the scene itself (scene/renderStats.ts) inside `.game-viewport`, so it
+   appears and disappears with the renderer it is measuring. It is deliberately NOT a
+   [data-hud-band]: a band reserves an edge of the canvas and the camera reframes the
+   field around it, and a diagnostic that changed the shot would ruin every before/after
+   comparison somebody turned it on to make.
+
+   Its ground is therefore the CANVAS, not a panel — category 3 in the theming note — so
+   it takes --ds-on-field ink over its own fixed dark scrim in BOTH themes, exactly like
+   the HUD scrim above, and nothing here inverts.
+   --------------------------------------------------------------------------- */
+/* UNDER the MENU/RESET row, not over it: `.game-buttons` owns `top: 12px; left: 12px` and a
+   read-out that covered the button you leave the match with is not a diagnostic, it is a trap. */
+.bb-gfxstat {
+  position: absolute;
+  top: var(--ds-s-7);
+  left: var(--ds-s-3);
+  z-index: 11;
+  padding: var(--ds-s-1) var(--ds-s-2);
+  border-radius: var(--ds-round-sm);
+  border: 1px solid var(--ds-hud-line);
+  /* THE SCRIM COMES FROM THE SAME TOKEN THE HUD BANDS REDEFINE, one rule up — no second
+     literal, and a preview harness with no `.game-root.view-3d` around it still gets the
+     ordinary themed panel fill rather than nothing at all. */
+  background: var(--ds-hud);
+  color: var(--ds-on-field);
+  font-family: var(--ds-font-mono);
+  font-size: var(--ds-t-xs);
+  line-height: 1;
+  white-space: nowrap;
+  pointer-events: none;
+}
 
 /* FTC live-scoring style bar (bottom of screen): red panel | timer | blue panel */
 .scorebar {
@@ -673,6 +762,22 @@ button {
   text-align: right;
   color: var(--text);
   font-variant-numeric: tabular-nums;
+}
+
+/* THE TOUCH LAYER'S 2D ⇄ 3D TOGGLE (`MobileControls`). It borrows `.game-btn` whole (fill,
+   edge, press travel, the mono caps face) and adds only its position, so there is no second
+   pressable style to keep in step with the first.
+
+   ⚠️ UNDER the top strip's right end, not centred in it. It was top-centre first and landed
+   straight on the PRESENTED BY sponsor mark at phone width, which is centred there — measured
+   on a 375px viewport, the two overlapped by most of the button. Below the strip the whole row
+   is clear, and the right edge keeps it away from the drive thumb and from `.game-buttons` on
+   the left. */
+.mobile-view-btn {
+  position: absolute;
+  top: var(--ds-s-7);
+  right: var(--ds-s-3);
+  z-index: 10;
 }
 
 /* on-screen leave/reset buttons (Esc/R keyboard shortcuts also work) */

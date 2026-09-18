@@ -5,6 +5,7 @@ import type {
   Artifact,
   AssistConfig,
   GameId,
+  Physics,
   RobotCommand,
   RobotSpec,
   RobotState,
@@ -193,6 +194,19 @@ export interface RoomConfig {
   /** which game the room plays. Absent ⇒ 'decode' (old clients / back-compat).
    * The server resolves the game module from this; matchmaking buckets by it. */
   game?: GameId;
+  /**
+   * WHICH PHYSICS BACKEND THIS ROOM'S WORLD RUNS ON, fixed at room creation.
+   *
+   * Absent ⇒ `'2d'`, which is every room an older client can open and every room that existed
+   * before this field. The server decides it for ranked / matchmade / record rooms (always
+   * `'3d'` for BIOBUZZ); a custom lobby's HOST picks it and their `join` carries it, exactly
+   * like `kind` and `game` — the room's own config wins for everyone who joins afterwards.
+   *
+   * It is a ROOM property and not a per-client one: a room has one authoritative world, so a
+   * client whose build cannot step `'3d'` cannot be in it at all. That is what the `'bb3d'`
+   * capability gate below is for.
+   */
+  physics?: Physics;
 }
 
 export const DEFAULT_ROOM_CONFIG: RoomConfig = { kind: 'versus' };
@@ -252,6 +266,21 @@ export interface LobbyPlayer {
    * driver's name in a lobby is an impersonation primitive, not a cosmetic.
    */
   role?: StaffRole;
+  /**
+   * THIS SEAT IS A BOT, and the string is its TIER (plan §6).
+   *
+   * Server-authored on exactly the same terms as `supporter` and `role` — `sanitizePlayerPatch`
+   * builds an allowlisted object and `PlayerPatch` is a `Pick` that does not name it, so a
+   * client cannot put it on the wire. That matters here for a reason the badges do not have: a
+   * bot seat makes a room UNRATED, so a self-declared one would be a way to ask for that, and a
+   * self-declared ABSENCE would be a way to hide it.
+   *
+   * Optional, and an OLD CLIENT IS UNHARMED BY IT: it renders the roster row as an ordinary
+   * driver named "Medium bot", ready, on an alliance — which is exactly what the seat is. The
+   * only thing it cannot do is remove one, and removing one is a host action an old client has
+   * no button for anyway.
+   */
+  bot?: string;
 }
 
 /** a driver's pre-match ranked intro data (ELO, keyed by the robot id the server
@@ -295,7 +324,33 @@ export type PlayerPatch = Partial<
  * client is never stranded waiting for a `strategyStart` it can't render. Absent/old
  * clients send nothing ⇒ treated as no caps. Add new capability strings here as the
  * protocol grows. */
-export const CLIENT_CAPS: string[] = ['strategy', 'startpose', 'game', 'standing', 'recycle'];
+export const CLIENT_CAPS: string[] = ['strategy', 'startpose', 'game', 'standing', 'recycle', 'bb3d'];
+
+/**
+ * THE ONE CAPABILITY THAT IS A HARD GATE RATHER THAN A FEATURE FLAG.
+ *
+ * Every other entry in `CLIENT_CAPS` degrades: a client without `'strategy'` skips the
+ * pre-match window, one without `'recycle'` never sees a room go back to its lobby. `'bb3d'`
+ * cannot degrade, because it is about whether the client can SIMULATE the room at all — a
+ * `'3d'`-physics world steps through `step3d`, and a build that predates `sim3d/` has no code
+ * for it. Such a client in such a room would not render a worse match; it would throw on its
+ * first tick, or (worse) fall through to the 2D pipeline and predict a different game from the
+ * one the server is scoring.
+ *
+ * So the server REFUSES the join instead, with the sentence below. Named here, beside the
+ * capability, because three call sites send it (`join`, `rejoin`, `spectate`) and a fourth
+ * refuses a `queue` for a BIOBUZZ format — four spellings of one rule is how a refusal ends up
+ * saying something different depending on which door you came through.
+ */
+export const BB3D_CAP = 'bb3d';
+export const BB3D_REFUSAL = 'Update DSIM to play this room.';
+
+/** may a client advertising `caps` be seated in a room running `physics`? A `'2d'` room
+ *  admits everyone, exactly as it always did — that is the back-compat rule this whole gate
+ *  is written around. Absent caps (an old client that sends none) ⇒ no capabilities. */
+export function physicsAllowed(physics: Physics | undefined, caps: readonly string[] | undefined): boolean {
+  return (physics ?? '2d') !== '3d' || !!caps?.includes(BB3D_CAP);
+}
 
 /**
  * Capabilities the SERVER advertises, reported on `GET /api/presence`.
@@ -311,7 +366,30 @@ export const CLIENT_CAPS: string[] = ['strategy', 'startpose', 'game', 'standing
  * So the rated challenge formats stay hidden until the server says it can honour
  * them. No `caps` in the response at all (an older deploy) ⇒ no capabilities.
  */
-export const SERVER_CAPS: string[] = ['party'];
+export const SERVER_CAPS: string[] = [
+  'party',
+  /**
+   * `'bb3d'` — THIS DEPLOY RUNS BIOBUZZ RANKED AND RECORD ROOMS ON THE 3D SOLVE.
+   *
+   * The mirror of the client capability of the same name, and it exists because the cutover is
+   * PER SERVER (plan §7: alpha on Day 3, production when the owner says so). A client build that
+   * can play 3D rooms says so on `join`; a SERVER that will stage them says so here. Without it
+   * the client cannot tell a server that has not been deployed yet from one that has, and the
+   * two answers matter in opposite directions: a BIOBUZZ ranked queue against an old server
+   * stages a 2D match whose result lands on the same board as everybody's 3D ones, silently.
+   * So the client refuses to queue BIOBUZZ ranked on a server that does not advertise this, and
+   * says why. Nothing else is gated on it — 2D rooms, custom rooms and practice are untouched.
+   */
+  'bb3d',
+  /**
+   * `'bots'` — THIS DEPLOY UNDERSTANDS `addBot` / `removeBot`.
+   *
+   * An older server ignores an unknown client message rather than refusing it, so "Add a bot"
+   * would be a button that does nothing at all. Same reasoning as `party` directly above, and
+   * the same remedy: the control is not offered until the server says it can honour it.
+   */
+  'bots',
+];
 
 /** the formats a "play a friend" challenge can be issued in. Shared so the API's
  * allowlist, the matchmaker's gate, and the picker's tiles can't drift apart. */
@@ -358,7 +436,11 @@ export type ClientMsg =
     }
   // reclaim an in-match slot after a transient socket drop (within the grace
   // window) — the server rebinds the robot to the new connection and resyncs
-  | { t: 'rejoin'; room: string; clientId: string }
+  // `caps` is the same advertisement `join` carries, re-sent because a reclaim is a fresh
+  // socket and the server gates a `'3d'` room on it at every door. Absent (older clients) ⇒
+  // no capabilities, which is what they had before this field and refuses them only from the
+  // rooms they could never have joined in the first place.
+  | { t: 'rejoin'; room: string; clientId: string; caps?: string[] }
   /**
    * GIVE UP A HELD SLOT ON PURPOSE — the "Abandon" on the game-in-progress card.
    *
@@ -398,6 +480,24 @@ export type ClientMsg =
    */
   | { t: 'reportScore'; detail: string }
   | { t: 'update'; patch: PlayerPatch }
+  /**
+   * HOST ONLY: seat an AI driver on an empty slot, or give one back (plan §6).
+   *
+   * ⚠️ **CAP-GATED ON `SERVER_CAPS` `'bots'`, AND THAT GATE IS NOT OPTIONAL** — it is the same
+   * failure shape as `party`. One Fly app serves every client build, so a new client can be
+   * talking to a server that predates this message; an older server's `onMessage` falls through
+   * its switch and IGNORES it. The button would then appear, be pressed, and do nothing, with
+   * no error anywhere. So the client only offers "Add a bot" when the server says it can seat
+   * one (`serverCaps()`), exactly as the rated challenge formats stay hidden without `party`.
+   *
+   * `tier` is the game's own opaque difficulty string (`GameSimModule.bot.tiers`); absent or
+   * unknown folds to that driver's `defaultTier`, server-side, because a tier list is a
+   * property of the game module and not of the client that names one.
+   */
+  | { t: 'addBot'; tier?: string }
+  /** HOST ONLY: remove the bot seat with this roster `clientId` (the synthetic id the server
+   *  minted for it and put in the roster). */
+  | { t: 'removeBot'; seat: string }
   | { t: 'start' } // host only: build + broadcast the match world
   | { t: 'restart' } // host only: re-author the match with a fresh seed
   /**
@@ -611,6 +711,18 @@ export type ServerMsg =
       /** which game to build the world for. Absent ⇒ 'decode' (old servers); the
        * client also falls back to the first snapshot's `world.game`. */
       game?: GameId;
+      /**
+       * WHICH PHYSICS THE ROOM'S WORLD RUNS ON (`RoomConfig.physics`). Absent ⇒ `'2d'` — an
+       * older server, or any room that is not a 3D one.
+       *
+       * The client must build its predicted world with THIS, not with its own settings: it is
+       * the only thing in the handshake that says which pipeline the authoritative loop is
+       * stepping. A joiner or a reconnecting client that missed it can also read
+       * `world.biobuzz.physics` off the first keyframe, which is why the tag rides the world
+       * bag as well — two independent ways to learn one fact, because a spectator arriving
+       * mid-match gets `matchStart` and a snapshot in the same breath.
+       */
+      physics?: Physics;
       ranked?: boolean;
       intros?: PlayerIntro[];
       /**

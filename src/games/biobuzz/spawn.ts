@@ -4,6 +4,7 @@ import type {
   GameMode,
   GameSettings,
   GoalState,
+  Physics,
   RobotSpec,
   RobotState,
   StartPose,
@@ -683,6 +684,11 @@ export function createBiobuzzWorld(
   seed: number,
   setups: RobotSetup[],
   gameSettings?: GameSettings,
+  // Day 1 seam (`docs/biobuzz/plan-3d.md`). Trailing and optional so every existing 2/3/4-arg
+  // call site (the smoke suite, `scenes.ts`) is untouched. Defaults `'2d'` and is written onto
+  // `world.biobuzz.physics` ONLY when `'3d'` — see the field's own header for why a `'2d'`
+  // world must never carry the key at all.
+  physics: Physics = '2d',
 ): World {
   // The staged layout takes no draws (every position is a figure or a constant), but the
   // chain is still advanced once and stored on the world so the MATCH continues a seeded
@@ -700,6 +706,9 @@ export function createBiobuzzWorld(
   }
 
   const biobuzz = emptyBiobuzzState();
+  // set ONLY for '3d' — a '2d' world's JSON must stay byte-identical to before this param
+  // existed (stored hashes, snapshots and replays all depend on that).
+  if (physics === '3d') biobuzz.physics = physics;
   // THE WALLS EACH ROBOT STARTS AGAINST — what LEAVE is measured against (`bbLeftNow`). Seeded
   // here as well as on every `pre` tick (`step.ts`) so a world that never runs one — a headless
   // run that calls `startMatch` straight off this function — still has the masks.

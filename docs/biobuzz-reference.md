@@ -1,5 +1,43 @@
 # BIOBUZZ — the manual, distilled (Competition Manual V1, 2026-09-12)
 
+> ## ⚠️ RULING, 2026-09-18: THE CAD IS AUTHORITATIVE FOR DIMENSIONS
+>
+> Where a figure below disagrees with `public/models/biobuzz/field-measurements.json` — measured
+> off FIRST's own field CAD (STEP v26-27.2) by `scripts/field-cad/convert.py` — **the CAD wins**,
+> and `src/games/biobuzz/config.ts` follows it. The figures stay in this file because they are
+> what the manual prints and because a reader checking the sim against the rulebook needs to see
+> both. `docs/biobuzz/field-cad-audit.md` is the measurement report; `src/games/biobuzz/
+> fieldDims.gen.ts` is the generated constants file, and nothing hand-types a field dimension any
+> more.
+>
+> **The figures the ruling changed**, all of them one of two findings:
+>
+> | figure | manual (below) | CAD (authoritative) | Δ |
+> |---|---|---|---|
+> | FIELD span inside the walls | 144 | **141.348** (±70.674) | −2.652 |
+> | soft-tile pitch on centre | 24 | **23.528** | −0.472 |
+> | LOADING ZONE, red | x ∈ [−72, −61], y ∈ [24, 48] | **x ∈ [−70.674, −59.101], y ∈ [23.907, 46.599]** | up to 1.9 |
+> | GARDEN, red | x ∈ [−72, −49], y ∈ [−72, −70] | **x ∈ [−70.674, −47.409], y ∈ [−70.674, −68.101]** | up to 1.9 |
+> | FLOWER station along its wall | ±24.000 | **±23.392** | −0.608 |
+> | FLOWER ring stand-off from the wall | 2.54 (owner CAD) | **2.629** | +0.089 |
+> | FLOWER top ring bore | 4.0 dia | **4.171 dia** (mid 3.896, lower 3.222) | +0.171 |
+> | HIVE cell arm / depth / width | 15.44 / 12.04 / 20 | **15.519 / 11.750 / 20.141** | ≤0.29 |
+> | HIVE assembly length along the bar | 42.91 | **42.788** | −0.122 |
+> | up-CELL opening | 53.5 … 65.6 | **53.375 … 65.497** | ≤0.13 — a CONFIRMATION |
+> | **bottom of the down HIVE** | **25.5** | **31.981** | **+6.481** |
+> | lowest hive structure at rest | — | **30.652** (`am-5866: Goal Rib`) | a 29-in robot clears it |
+>
+> The first ten rows are ONE fact: real FTC soft tiles are 23.528 in on centre, not 24, so the
+> perimeter closes on 141.35 and everything measured from a tile seam or a wall face moves with
+> it. The eleventh is the real disagreement — one rigid bar at 30° cannot put the up-cell mouth
+> where Fig 9-10 says AND the down-cell floor where Fig 9-10 says, on this tray's own measured
+> dimensions, and the CAD's up-cell mouth is the one that matches the manual.
+>
+> Dimensions the CAD does NOT carry stay as printed and are flagged in `config.ts`:
+> `BB_FLOWER_TOP_Z` (21.5; the measurements file has the assembly's z extent, not the three ring
+> plates' own bands — the audit measures the top plate by hand at 20.254…21.404) and
+> `BB_FLOWER_FOOT` (6 × 4.9; audit §6 measures the plate at 6.04 × 4.93 by hand).
+
 Source: `BIOBUZZ_Competition_Manual_V1.pdf`, 173 pages. Sections 8–11 (Game Overview, ARENA,
 Game Details, Game Rules) plus the Section 16 glossary and the Section 12 robot envelope.
 Every number below cites its page or figure. Anything **not** in the text — a coordinate read

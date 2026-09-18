@@ -9,8 +9,9 @@ import { newSettleClock, settleStep, type SettleClock } from '../src/sim/settle'
 import { coerceAutoPath, DEFAULT_SPEC, DEFAULT_ASSISTS, type RobotSetup } from '../src/sim/spawn';
 import { simModuleFor } from '../src/games/sim';
 import { scrubName } from './moderation';
-import type { GameId } from '../src/types';
+import type { GameId, Physics } from '../src/types';
 import { physicsReady } from '../src/sim/physicsEngine';
+import { physics3dReady } from '../src/games/biobuzz/sim3d/engine';
 import { ReplayRecorder, worldResult, type Replay, type ReplayResult } from '../src/sim/replay';
 import type {
   Alliance,
@@ -24,6 +25,7 @@ import type {
 } from '../src/types';
 import {
   dequantizeCommand,
+  localizeCommand,
   sanitizeQCommand,
   encodeMsg,
   quantizeCommand,
@@ -472,9 +474,152 @@ export class Room {
     return this.game;
   }
 
+  /**
+   * WHICH PHYSICS THIS ROOM'S WORLD RUNS ON — decided once, here, and read by everything:
+   * the cap gate at the door, `matchStart`, and `createWorld`.
+   *
+   * Three rules, in order (plan §2.1):
+   *  1. A game that cannot run `'3d'` never does. DECODE and Chain Reaction declare no
+   *     `physicsOptions`, so a `physics: '3d'` config aimed at one of them is ignored rather
+   *     than handed to a `step` that would do nothing with it — and their rooms stay
+   *     byte-identical to what they were before this field existed.
+   *  2. RANKED, MATCHMADE and RECORD rooms are `'3d'`, and the SERVER decides that, not the
+   *     client. Those are the results that reach a board, and a board whose rows came from
+   *     two different solves is not a board. A staged room's roster arrives through
+   *     `applyPending` before anyone is seated, so `pendingMatch` is already set by the time
+   *     the first joiner is gated.
+   *  3. Otherwise the HOST's choice, off `RoomConfig.physics`, absent ⇒ `'2d'`. Absent is
+   *     what an older client sends and what every room minted before Day 2 was, which is the
+   *     whole back-compat rule: a room created without `physics` behaves exactly as before.
+   */
+  get physics(): Physics {
+    if (!simModuleFor(this.game).physicsOptions?.includes('3d')) return '2d';
+    // a STAGED pairing carries the matchmaker's own decision; honour it verbatim rather than
+    // re-deriving it here, so the room the host builds is the room the matchmaker promised
+    if (this.pendingMatch) return this.pendingMatch.physics ?? '3d';
+    if (this.ranked || this.config.kind === 'record') return '3d';
+    return this.config.physics ?? '2d';
+  }
+
   /** is a match actually running here (vs. still a lobby)? */
   get hasWorld(): boolean {
     return this.world !== null;
+  }
+
+  // ─────────────────────────────────────────────────────────── BOT SEATS (plan §6) ──
+  //
+  // An AI driver occupying a roster slot nobody is connected to. The SERVER drives it, on the
+  // authoritative loop, for the same reason the server drives everything else: a bot whose
+  // commands were produced by one client would be a client deciding what a robot in everyone's
+  // match does, and a reconcile would fight it every snapshot. It is one more entry in
+  // `frameCommands`, which is exactly what a bot is.
+  //
+  // ⚠️ **A BOT SEAT MAKES THE ROOM UNRATED, AND IT IS STRUCTURALLY IMPOSSIBLE IN A ROOM THAT
+  // WOULD RATE.** Two independent statements, because one of them can be got wrong quietly:
+  //   · `addBot` REFUSES a staged/matchmade room, a record room and a live match outright, so
+  //     there is no path by which a rated result is produced against an AI.
+  //   · `unpersisted` is true whenever a bot has ever been seated, so even a custom versus room
+  //     — which normally writes a `matches` row and credits playtime — writes nothing. The
+  //     results screen and the replay still work off the broadcast, exactly as an alpha room's
+  //     do. That is deliberately stronger than "unrated": ELO was never in play in a custom
+  //     room, and what IS in play is `user_activity`, which `docs/area/accounts.md` is explicit
+  //     that nothing competitive may start reading. A match against three bots is not playtime.
+
+  /** one seated bot: a synthetic roster row plus the tier it plays at. */
+  private readonly bots: { id: string; tier: string; alliance: Alliance; startIndex: number }[] = [];
+  /** live AI drivers for the match in flight, keyed by robot id. Built in `beginMatch`,
+   *  disposed in `stop`. Empty in every room with no bot seat, which is nearly all of them. */
+  private readonly botDrivers = new Map<number, { step(w: World): RobotCommand; dispose?(): void }>();
+  /** the tier each bot ROBOT plays at, resolved at `startMatch` when seats become robot ids. */
+  private readonly botTiers = new Map<number, string>();
+  /** a bot has been seated here at some point — latched, so removing one before START does not
+   *  quietly make the room persistable again after the roster was already built around it. */
+  private botsEverSeated = false;
+
+  /** how many seats are spoken for: connected drivers plus bots. */
+  private get seatsTaken(): number {
+    return this.clients.size + this.bots.length;
+  }
+
+  /** this game's AI driver, or undefined for a game that has none (DECODE, Chain Reaction,
+   *  and BIOBUZZ until its policy lands). Read through the module, never imported, so a game
+   *  gains bots by filling the slot and this file does not change. */
+  private get botDriver(): NonNullable<ReturnType<typeof simModuleFor>['bot']> | undefined {
+    return simModuleFor(this.game).bot;
+  }
+
+  /**
+   * SEAT A BOT (host only). Returns an error sentence, or null on success.
+   *
+   * The alliance is the EMPTIER one, so pressing the button three times in an empty 2v2 fills
+   * one partner and two opponents rather than stacking a side — which is what "fill the empty
+   * seats of the chosen format" means in a room where the format is the capacity.
+   */
+  addBot(tier?: string): string | null {
+    const drv = this.botDriver;
+    if (!drv) return 'This game has no AI drivers yet.';
+    if (this.pendingMatch || this.ranked) return 'A ranked match cannot have bots in it.';
+    if (this.config.kind === 'record') return 'A record run cannot have bots in it.';
+    if (this.world !== null || this.phase === 'match') return 'The match has already started.';
+    if (this.seatsTaken >= roomCapacity(this.config)) return 'The room is full.';
+    const red = this.sideCount('red');
+    const blue = this.sideCount('blue');
+    const alliance: Alliance = red <= blue ? 'red' : 'blue';
+    const anchors = simModuleFor(this.game).startPoseCount;
+    // the first anchor nobody on that alliance has claimed; past the anchors it wraps, exactly
+    // as `startMatch` de-conflicts a human roster (the solver pushes an overlap apart)
+    const used = new Set<number>();
+    for (const c of this.clients.values()) if (c.player.alliance === alliance) used.add(c.player.startIndex ?? 0);
+    for (const b of this.bots) if (b.alliance === alliance) used.add(b.startIndex);
+    let startIndex = 0;
+    for (let i = 0; i < anchors; i++) {
+      if (!used.has(i)) {
+        startIndex = i;
+        break;
+      }
+    }
+    this.bots.push({ id: `bot-${this.bots.length + 1}-${this.code}`, tier: drv.coerceTier(tier), alliance, startIndex });
+    this.botsEverSeated = true;
+    this.broadcastRoster();
+    return null;
+  }
+
+  /** give a bot seat back (host only). Silent no-op for an id that is not a bot seat — a
+   *  double-click on a row that is already gone is not an error worth a sentence. */
+  removeBot(seat: string): void {
+    if (this.world !== null || this.phase === 'match') return;
+    const i = this.bots.findIndex((b) => b.id === seat);
+    if (i < 0) return;
+    this.bots.splice(i, 1);
+    this.broadcastRoster();
+  }
+
+  private sideCount(a: Alliance): number {
+    let n = 0;
+    for (const c of this.clients.values()) if (c.player.alliance === a) n++;
+    for (const b of this.bots) if (b.alliance === a) n++;
+    return n;
+  }
+
+  /** the roster row a bot seat is broadcast as — a `LobbyPlayer` like any other, with `bot`
+   *  naming its tier. Rebuilt per broadcast rather than stored, so a spec/assist default
+   *  changing under it is never stale. */
+  private botPlayer(b: { id: string; tier: string; alliance: Alliance; startIndex: number }): LobbyPlayer {
+    return {
+      clientId: b.id,
+      // NAMED FOR WHAT IT IS, in the roster and in the match. `spec.name` is what the in-match
+      // label and the results screen print, so a bot that borrowed a human-looking default name
+      // would be indistinguishable from a driver who left.
+      name: `${b.tier} bot`,
+      teamName: 'AI',
+      teamNumber: 0,
+      alliance: b.alliance,
+      startIndex: b.startIndex,
+      ready: true, // a bot is never not ready; START must not wait on one
+      spec: { ...DEFAULT_SPEC, name: `${b.tier} bot`, teamName: 'AI', teamNumber: 0 },
+      assists: { ...DEFAULT_ASSISTS },
+      bot: b.tier,
+    };
   }
 
   constructor(
@@ -535,7 +680,10 @@ export class Room {
    * already locked into the pre-match strategy window) */
   canJoin(): boolean {
     return (
-      this.clients.size < roomCapacity(this.config) &&
+      // BOTS COUNT. A seat filled by an AI is a seat, and a human admitted past capacity would
+      // be built a setup the roster has no room for — the same oversized-roster failure the LAN
+      // host's `canSeat` was written for. The host gives a bot back to make room for a person.
+      this.seatsTaken < roomCapacity(this.config) &&
       this.world === null &&
       this.phase !== 'strategy'
     );
@@ -561,7 +709,7 @@ export class Room {
   canSeat(id: string): boolean {
     if (!this.canJoin()) return false;
     const hostPending = this.hostId !== '' && id !== this.hostId && !this.clients.has(this.hostId);
-    return !hostPending || this.clients.size + 1 < roomCapacity(this.config);
+    return !hostPending || this.seatsTaken + 1 < roomCapacity(this.config);
   }
 
   /**
@@ -707,7 +855,9 @@ export class Room {
    *  in-development build talking to the PRODUCTION server. On the alpha deployment, whose
    *  database is its own, alpha results persist normally (see server/channel.ts). */
   private get unpersisted(): boolean {
-    return !roomPersists(this.channel);
+    // A BOT ROOM WRITES NOTHING — see the bot-seat block's header for why that is stronger
+    // than "unrated" and why it is the right strength.
+    return !roomPersists(this.channel) || this.botsEverSeated;
   }
 
   /** add a read-only SPECTATOR. It receives the current `matchStart` (with a sentinel
@@ -746,6 +896,10 @@ export class Room {
       setups: this.matchSetups,
       yourRobotId,
       game: this.game,
+      // OMITTED for a 2D room, never sent as `'2d'`: an older client ignores an unknown key
+      // either way, but leaving it off keeps a 2D room's handshake byte-identical to the one
+      // this server sent before Day 2, which is the property the NET3D lane asserts.
+      physics: this.physics === '3d' ? '3d' : undefined,
       ranked: this.ranked,
       intros: this.ranked ? this.intros : undefined,
       gen: this.matchGen,
@@ -772,16 +926,29 @@ export class Room {
     // had already ended (and it is not spectatable: the world is over).
     if (w.match.phase === 'post') return null;
     const record = this.config.kind === 'record';
-    const players = [...this.clients.values()].map((c) => ({
-      name: c.player.name,
-      teamName: c.player.spec.teamName || undefined,
-      teamNumber: c.player.spec.teamNumber || undefined,
-      alliance: c.player.alliance,
-    }));
+    // BOTS ARE ON THE CARD. A spectator opening a 1v3 would otherwise be shown one driver and
+    // four robots, which reads as three people who left rather than as three seats nobody took.
+    const players = [...this.clients.values()]
+      .map((c) => ({
+        name: c.player.name,
+        teamName: c.player.spec.teamName || undefined,
+        teamNumber: c.player.spec.teamNumber || undefined,
+        alliance: c.player.alliance,
+      }))
+      .concat(
+        this.bots.map((b) => ({
+          name: `${b.tier} bot`,
+          teamName: 'AI' as string | undefined,
+          teamNumber: undefined,
+          alliance: b.alliance,
+        })),
+      );
     return {
       room: this.pendingCode() ?? this.code,
       game: this.game,
-      mode: record ? (this.config.record ?? 'solo') : eloMode(this.clients.size),
+      // the BUCKET this match's size makes it, bots included — a 1v3 is a 2v2 room, and calling
+      // it a 1v1 because only one socket is attached would put it in the wrong card
+      mode: record ? (this.config.record ?? 'solo') : eloMode(this.seatsTaken),
       phase: w.match.phase,
       timeLeft: Math.max(0, Math.round(w.match.phaseTimeLeft)),
       ranked: this.ranked,
@@ -1244,9 +1411,24 @@ export class Room {
         // physics WASM may still be loading in the first moment after boot; refuse
         // rather than throw inside step() (which would kill the tick loop)
         if (id === this.hostId && this.world === null) {
-          if (physicsReady()) this.startMatch();
+          // BOTH backends, because a 3D room's first tick is `step3d`: `physicsReady()` alone
+          // says the 2D wasm resolved, which for a `'3d'` room is a check of the wrong module.
+          const ready = physicsReady() && (this.physics !== '3d' || physics3dReady());
+          if (ready) this.startMatch();
           else c.send({ t: 'error', message: 'Server is starting up - try again in a moment.' });
         }
+        break;
+      case 'addBot': {
+        // HOST ONLY, like `start` and `lobby`: the roster is shared state and one guest must
+        // not seat an AI into everybody else's match.
+        if (id !== this.hostId) break;
+        const err = this.addBot(typeof msg.tier === 'string' ? msg.tier : undefined);
+        if (err) c.send({ t: 'error', message: err });
+        break;
+      }
+      case 'removeBot':
+        if (id !== this.hostId) break;
+        if (typeof msg.seat === 'string') this.removeBot(msg.seat);
         break;
       case 'rematch':
         this.voteRematch(id, msg.on === true);
@@ -1388,11 +1570,22 @@ export class Room {
     // pair just keys the record board's OVERALL bucket (decided at persist time).
     // So there is no drivetrain gate here.
     // build setups from the current roster; keep start poses distinct per alliance
-    const roster = [...this.clients.values()];
+    /**
+     * HUMANS FIRST, THEN BOTS — the same order `broadcastRoster` sends, so a lobby row and the
+     * robot id it becomes agree. A bot is a `LobbyPlayer` from here on and takes every line
+     * below unchanged: its spec, its assists and its start index are as real as anyone's, and
+     * the only thing that distinguishes it is that `botTiers` remembers the tier so `beginMatch`
+     * can seat a driver on the robot id.
+     */
+    const roster: { key: string; player: LobbyPlayer; tier: string | null }[] = [
+      ...[...this.clients.values()].map((c) => ({ key: c.id, player: c.player, tier: null })),
+      ...this.bots.map((b) => ({ key: b.id, player: this.botPlayer(b), tier: b.tier })),
+    ];
     const used: Record<Alliance, Set<number>> = { red: new Set(), blue: new Set() };
     const anchors = simModuleFor(this.game).startPoseCount;
     const setups: RobotSetup[] = [];
     this.robotOf.clear();
+    this.botTiers.clear();
     roster.forEach((c, i) => {
       const alliance: Alliance = record ? 'blue' : c.player.alliance;
       let si = c.player.startIndex ?? 0;
@@ -1424,7 +1617,10 @@ export class Room {
         autoPath: c.player.autoPath, // Include autoPath
         autoPathEnabled: c.player.autoPathEnabled, // Include autoPathEnabled
       });
-      this.robotOf.set(c.id, i);
+      // A BOT HAS NO SOCKET, so it takes no `robotOf` entry: that map is what `onInput` resolves
+      // a client id through, and a bot must never be a thing an input can be addressed to.
+      if (c.tier === null) this.robotOf.set(c.key, i);
+      else this.botTiers.set(i, c.tier);
     });
 
     const seed = (Date.now() ^ (Math.random() * 0xffffffff)) >>> 0;
@@ -1446,7 +1642,10 @@ export class Room {
     this.rematchVotes.clear();
     this.matchSeed = seed; // remembered so a spectator joining mid-match gets matchStart
     this.matchSetups = setups;
-    const world = simModuleFor(this.game).createWorld('match', seed, setups);
+    // THE ROOM'S physics, not a setting: the server holds no `GameSettings`, so the fifth
+    // argument is the only route a room's choice has into the builder. `undefined` for the
+    // settings bag is what every server-side build already passed.
+    const world = simModuleFor(this.game).createWorld('match', seed, setups, undefined, this.physics);
     world.match.preCountdown = C.PRE_COUNTDOWN; // sim-driven pre→auto, same as the client
     this.world = world;
     this.pending.clear();
@@ -1464,7 +1663,27 @@ export class Room {
     this.snapAck.clear();
     // start recording the input log; finalized once at phase 'post'. Stamp the game so
     // the replay re-sims through the right module (CR vs DECODE).
-    this.recorder = new ReplayRecorder(seed, setups, 'match', this.game);
+    // STAMPED WITH THE ROOM'S PHYSICS. A replay is an input log, so a `'3d'` match replayed
+    // against `step2d` is a different game from the one that was played — see `Replay.physics`.
+    this.recorder = new ReplayRecorder(seed, setups, 'match', this.game, this.physics);
+    /**
+     * SEAT THE AI DRIVERS, one per bot robot, seeded `(matchSeed, seat)` exactly as plan §6
+     * asks. Every peer that ever re-runs this match — a re-simulation, a second server, the
+     * verifier — gets the same driver for the same robot of the same match, and two seats of
+     * one match get different ones. The mix is Knuth's odd constant so adjacent robot ids do
+     * not produce adjacent seeds, which a bare `seed + rid` would.
+     *
+     * It does NOT matter for replay fidelity: the recorder stores every setup's COMMAND, so a
+     * replay of a match with bots in it re-simulates from the log without needing a bot at all.
+     * The seeding matters for the LIVE match, where two seats must not play identically.
+     */
+    this.botDrivers.clear();
+    const drv = this.botDriver;
+    if (drv) {
+      for (const [rid, tier] of this.botTiers) {
+        this.botDrivers.set(rid, drv.create(world, rid, tier, (seed ^ ((rid + 1) * 0x9e3779b1)) >>> 0));
+      }
+    }
     this.finalized = false;
     this.settle = newSettleClock();
     this.departed.clear();
@@ -2387,6 +2606,10 @@ export class Room {
     this.matchSeed = 0;
     this.matchSetups = [];
     this.robotOf.clear();
+    // the SEATS survive a recycle — the host set up a 1v3 and the room going back to its lobby
+    // is not a reason to take their opponents away — but the per-match tier map and the live
+    // drivers do not (`stop()` above disposed those).
+    this.botTiers.clear();
     this.rematchVotes.clear();
     this.recorder = null;
     this.finalized = false;
@@ -2498,6 +2721,30 @@ export class Room {
     const w = this.world as World;
     const frame = new Map<number, RobotCommand>();
     for (const r of w.robots) {
+      /**
+       * A BOT SEAT IS DRIVEN HERE, and this is the only place it is driven.
+       *
+       * BEFORE the step, once per tick, on the authoritative loop — so its command lands in
+       * `lastFrame`, is RECORDED by the replay recorder beside every human's, rides the
+       * snapshot's `cmds` array so clients predict it forward like any other remote, and counts
+       * toward participation like any other robot. There is no second path and no special case
+       * downstream; a bot differs from a driver only in where its command came from.
+       *
+       * It is checked before `dropped` because a bot cannot drop: nothing holds a socket for it.
+       */
+      const bot = this.botDrivers.get(r.id);
+      if (bot) {
+        /**
+         * ⚠️ **LOCALIZED, LIKE EVERY OTHER COMMAND THAT REACHES A STEP.** A human's command
+         * arrives off the wire already on the quantized lattice (`dequantizeCommand` of what
+         * was sent), and `ReplayRecorder.record` quantizes whatever it is handed — so a RAW
+         * bot command would be simulated at full precision and RECORDED rounded, and the
+         * replay would diverge from the run by the rounding, every tick. Same trap solo
+         * practice hit and the same fix (`docs/area/netcode.md`, `stepSolo`).
+         */
+        frame.set(r.id, localizeCommand(bot.step(w)));
+        continue;
+      }
       if (this.dropped.has(r.id)) {
         frame.set(r.id, ZERO_CMD);
         continue;
@@ -2545,6 +2792,15 @@ export class Room {
 
   private stop(): void {
     this.stopLoop();
+    // an AI driver may hold allocations of its own; the contract says the CALLER disposes.
+    for (const b of this.botDrivers.values()) {
+      try {
+        b.dispose?.();
+      } catch (e) {
+        console.warn(`[room ${this.code}] bot dispose threw:`, e);
+      }
+    }
+    this.botDrivers.clear();
     // room is going away — free any single-game locks it still holds (e.g. a match
     // abandoned before finalize) so those users aren't stuck unable to start again
     this.releaseActiveUsers();
@@ -2710,7 +2966,10 @@ export class Room {
     // outside the strategy window everyone sees the same roster (custom lobby / not
     // yet staged): the full build reveal is fine there.
     if (this.phase !== 'strategy') {
-      const players = [...this.clients.values()].map((c) => c.player);
+      // BOT SEATS RIDE THE SAME ROSTER, after the humans — the order the setups are built in
+      // (`startMatch`), so a lobby row and a robot id line up. An old client renders them as
+      // ordinary drivers, which is what they are; see `LobbyPlayer.bot`.
+      const players = [...this.clients.values()].map((c) => c.player).concat(this.bots.map((b) => this.botPlayer(b)));
       this.broadcast({ t: 'roster', players, hostId: this.hostId });
       return;
     }

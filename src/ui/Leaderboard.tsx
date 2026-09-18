@@ -238,6 +238,27 @@ export function Leaderboard({
   const [recMode, setRecMode] = useState<RecordMode>('solo');
   const [eloMode, setEloMode] = useState<EloMode>('1v1');
   const [board, setBoard] = useState<Board>('overall'); // record boards only
+  /**
+   * THE ERA FILTER (plan §7, migration 0039) — All / 3D / 2D, RECORD boards only.
+   *
+   * ── WHY RECORDS AND NOT RANKED ────────────────────────────────────────────────────────────
+   * A record row IS a run: one score, set on one day, by one solve, and the tag describes it
+   * exactly. A ranked row is a RATING — an aggregate over every match an account has played,
+   * across both eras, so there is no era for it to have and filtering by one would produce a
+   * number that is true of nothing. The badge and the filter therefore live where the fact does.
+   *
+   * ── WHY NOT AN ACT BUMP ───────────────────────────────────────────────────────────────────
+   * Splitting the eras into two seasons is the other way to do this and it is the wrong one:
+   * the owner's standing rule is that a season is never reset, and an act bump archives
+   * everyone's standings over a physics change they did not ask for. A column and a filter say
+   * the same thing and wipe nothing (plan §11's risk row).
+   *
+   * Shown only for a game that HAS two solves — `physicsOptions`, the same predicate the
+   * practice and lobby pickers read — because for DECODE and Chain Reaction every row is 2D and
+   * a filter with one real answer is furniture.
+   */
+  const [era, setEra] = useState<'all' | '3d' | '2d'>('all');
+  const twoEras = !!moduleFor(game).physicsOptions?.includes('3d');
 
   const [rows, setRows] = useState<(RecordRow | EloRow)[]>([]);
   const [me, setMe] = useState<EloStanding | null>(null);
@@ -279,7 +300,10 @@ export function Leaderboard({
     const s = season ?? undefined;
     const req =
       kind === 'records'
-        ? fetchRecords(recMode, board, s, game).then((r) => ({ rows: r.rows, me: null as EloStanding | null }))
+        ? fetchRecords(recMode, board, s, game, era === 'all' ? undefined : era).then((r) => ({
+            rows: r.rows,
+            me: null as EloStanding | null,
+          }))
         : fetchElo(eloMode, s, myUserId, game);
     req
       .then(({ rows, me }) => {
@@ -296,7 +320,7 @@ export function Leaderboard({
     return () => {
       alive = false;
     };
-  }, [kind, recMode, eloMode, board, season, configured, myUserId, game]);
+  }, [kind, recMode, eloMode, board, era, season, configured, myUserId, game]);
 
   const isRecords = kind === 'records';
   const valueLabel = isRecords ? 'Score' : 'ELO';
@@ -359,6 +383,29 @@ export function Leaderboard({
               ))}
             </div>
           </div>
+        )}
+
+        {isRecords && twoEras && (
+          <div className="ds-panel-h">
+            <span className="ds-panel-title">Physics</span>
+            <div className="ds-segs">
+              {([
+                ['all', 'All'],
+                ['3d', '3D'],
+                ['2d', '2D'],
+              ] as const).map(([id, label]) => (
+                <button key={id} className={`ds-seg ${era === id ? 'on' : ''}`} onClick={() => setEra(id)}>
+                  {label}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+        {isRecords && twoEras && era === 'all' && (
+          <p className="ds-panel-foot ds-hint">
+            Runs set on the 2D physics and on the 3D physics share this board. Only 3D-physics
+            runs are comparable with ranked play.
+          </p>
         )}
 
         {!isRecords && status === 'ok' && me && <MyStanding me={me} />}
@@ -433,6 +480,22 @@ export function Leaderboard({
                             </>
                           )}
                           {isMe && <span className="ds-dt lb-you-tag">YOU</span>}
+                          {/* THE ERA CHIP — a SIBLING of the name, exactly like the DUO and YOU
+                              tags and for the reason `docs/area/accounts.md` gives about badges:
+                              the name carries the hover underline and the ellipsis, so anything
+                              nested in it is underlined or truncated with it.
+
+                              Drawn only where the value is KNOWN and only for a game with two
+                              solves. An older server omits `physics` entirely, and a board that
+                              printed "2D" for every row of such a response would be asserting
+                              something it was never told. Reuses `.ds-dt`, the tag class the two
+                              chips beside it already use — no new colour, so nothing for
+                              `npm run contrast` to weigh in on. */}
+                          {twoEras && (rec.physics === '3d' || rec.physics === '2d') && (
+                            <span className="ds-dt" title={`Set on the ${rec.physics.toUpperCase()} physics`}>
+                              {rec.physics.toUpperCase()}
+                            </span>
+                          )}
                         </span>
                       </td>
                       {isRecords && (

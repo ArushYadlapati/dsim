@@ -1,6 +1,679 @@
+# HANDOFF — 2026-09-18/19 (biobuzz-3d: DAY 3 LANDED — bots, graphics settings, HDRI, 3D export, prediction modes, cutover; merged to ALPHA and the alpha server deployed)
+
+**READ FIRST.** Branch **`biobuzz-3d`** was merged into **`alpha`** at the merge commit named in the
+log and the ALPHA game server (`dsim-alpha`, `fly.alpha.toml`, one machine) was deployed from the
+alpha worktree with `./scripts/fly-deploy.sh --alpha` for proper testing (owner instruction). Every
+gate green on the merged tree: `build` · `bundleaudit` · `server:check` · `docaudit` · `uiaudit` ·
+`test:mm` (197) · `dbtest` (266) · `npm test` (1798 shared + the BIOBUZZ suite, count in the log).
+Production (`main`, `dohun-sim-decode`) is untouched; promotion is the owner's call (spec §12 q7).
+
+## Day 3 (spec §10) — landed, three OPUS lanes
+- **Lane A, bots** (`src/games/biobuzz/ai/`): `GameSimModule.bot = { tiers, defaultTier, coerceTier,
+  create(world, robotId, tier, seed) → { step(world): RobotCommand; dispose?() } }` — the caller owns
+  the memory, steps a seat once per tick BEFORE the sim step, records the (already quantized) command
+  like a driver's; nothing is written to `World`; reads positions and the derived lists only (a Proxy
+  check forbids `rngState`; source greps forbid DOM, clocks, `process.`, `import.meta`, `sim3d/` except
+  `tilt`). Tiers easy/medium/hard differ in execution only (hesitation, speed cap, aim tolerance, verdict
+  strictness, placing, defending, patience, park time). AI lane 47 checks in `npm test` (determinism
+  over 3,600 ticks under both physics with equal hashes AND command logs). `npm run test:ai` (150
+  matches, ~8 min, outside `npm test`): hard vs idle 102 pts mean (1.93× easy); **hard beats easy 59/100
+  head-to-head, NOT the plan's 90** — a BIOBUZZ 1v1 is decided in 20-point tip lumps from one shared
+  element pool; the check is a ratchet at the measured rate (`BB_AI_WIN_RATE_FLOOR` 0.55) with the target
+  named; levers: fouls (~6 pts/match), element denial, the 99-in drive after a hive flip. Perf with four
+  bots: `step3d` 2v2 median 0.345 ms, p95 0.498 — no tuning needed; bots cost 0.004 ms. R102: `bbStowHeightIn`
+  (declared `stowHeightIn` or `min(heightIn, 18)`), refused at `startLegal`, deploy = a read of
+  `world.match`, the collider rebuilt at the edge with `z` continuous.
+- **Lane B, graphics** (`graphics/{settings,auto,environments,viewKey}.ts`, `scene/renderEnvironment.ts`,
+  `renderStats.ts`, Configure's Graphics section): presets Auto/Low/Medium/High/Ultra/Custom over the
+  sixteen settings, per device (`decodesim.graphics`), 14 live, mesh detail needs a rebuild, SMAA and
+  SSAO NOT offered (chunk cost; the UI says why). AA is a scene-owned MSAA target (the renderer is created
+  `antialias:false`). Auto: GPU string + cores/memory/DPR → first guess, 2 s warm-up p95 (down > 16.7,
+  up < 6), slip ≥ 25 ms sustained 3 s lowers once with one event line; `STALL_MS` 500 discards samples
+  after a throttled gap (an alt-tabbed player must not come back to Low). This machine: Ultra. Two CC0
+  Poly Haven HDRIs (School Hall; Monochrome Studio 02), 1k `.hdr` on demand via `HDRLoader` + PMREM,
+  never bundled; `src/contributors.ts` DERIVES the credits from `BB_ENVIRONMENTS` (a check pins the
+  count). Replay export View 2D/3D + camera (roadmap item 2): scene → its own overlay sheet → export
+  canvas → burn-in; 3D costs 1.96× the 2D export at 1920; insets = the bottom band. Gallery draws 2D | 3D
+  per cell with ONE shared scene (Chrome caps contexts). Phone: overhead default, a 2D/3D button; the
+  view key `t` is armed by `InputManager.attach/detach` (`installViewKey`). Scene chunk 192 KB gz; a
+  `graphics` route (5.6 KB) in bundleaudit.
+- **Lane C, integration**: prediction Off/Light/Full/Auto (`src/net/predictionPref.ts`, Controls
+  section + in-match panel): in a 3D online room the client no longer steps the world — the local robot
+  advances through the predictor and the reconcile replays through it; measured Light 0.9 in / Full 0.16 in
+  headless, Full reconcile p95 0.3–0.4 ms live; Auto picked LIGHT on the dev build (a 45.8 ms cold probe
+  vs 0.3 ms steady — re-measure on a production build before tuning `PREDICT_FULL_BUDGET_MS`). Bot seats:
+  solo practice (`GameSettings.practiceBots`, "Opponents"), custom lobbies (host `addBot`/`removeBot`,
+  roster rows with `bot: tier`, refused in staged/ranked/record rooms, `unrated` latched), LAN via the
+  same `Room`; `SERVER_CAPS` `bb3d` + `bots`; the online "Loading 3D physics" panel via
+  `onPhysicsPending`; leaderboard era chip + All/3D/2D filter (`/api/records?physics=`), practice runs
+  carry `physics`/`view` with the comparability note; the client refuses BIOBUZZ ranked on a server
+  without `bb3d`. Migration renumbered **`0039_physics.sql`** (alpha took 0038 for replay privacy;
+  idempotent, disjoint). Two Day 2 rejoin bugs fixed (caps and `physics` on `rejoin`). costprobe 2v2 with
+  bots: 0.047 cores/room, 7,556 B/snapshot.
+- Coordinator: `game.ts` routes `SceneOptions.onQualityEvent` into `world.events`; `RobotSpec.stowHeightIn`
+  + its `coerceSpec` carry-across; the main-chunk bundleaudit baseline re-measured (the `ai/` policy is
+  in the main chunk by design — a tier is offered before any physics loads).
+
+## Owner actions and rulings pending
+- Test on alpha: online 3D rooms (custom lobby, physics 3D, both views), bots in a lobby and in practice,
+  prediction modes, the Graphics section, a 3D replay export (one human MP4 export closes the only
+  unexercised path), ranked BIOBUZZ (3D) on the alpha server.
+- Rulings: the lone-nectar flower score (CAD 3.597 vs floor 3.904); the CAD lower bore 3.222 vs the
+  manual's 2.79; weigh a real element set; the AI head-to-head target (59/100 measured vs 90).
+- Production promotion when satisfied (`main` from a main worktree; `./scripts/fly-deploy.sh`).
+
+## Next (roadmap) — `docs/roadmap.md`
+Own branches off `alpha`: `feat/auth-flows` (password reset, email verification, terms acceptance —
+the SDK already exposes the calls), `feat/privacy-cookies`, `feat/contributors`, `feat/tutorial`; on
+`biobuzz-3d`: the 3D robot creator (item 1); plans for cosmetics and rewards (items 3–4) for approval.
+BIOBUZZ 3D days 4–14: play-testing, tuning, weighing a set, `MAX_SAVED_ROBOTS` 3 → 4, promotion.
+
+## Gotchas (new)
+- `setViewport`/`setScissor` take CSS pixels (they multiply by the pixel ratio); `shadow.map` must be
+  disposed and nulled for a live map-size change; `renderer.info.render` resets at the START of `render()`.
+- A `process.env` read in `ai/` is green in Node and fatal in a browser (the first bot decision unmounts
+  the game screen) — the AI lane now greps for it.
+- `coerceSettings` must not fold `practiceBots` to `'off'` for a game with no driver (a DECODE visit
+  erased a BIOBUZZ tier); coerce at the point of use.
+- `Renderer.render(overlayOnly)` clears the whole canvas — right for the live view, fatal for a
+  composite export (every frame black); the export draws the overlay on its own sheet.
+- A perf watch pinned at 0.75 ms failed at 0.778 the moment the suite ran beside anything else —
+  thresholds that close to the measurement report the machine's load, not the code (gate at 1.5 ms).
+- `git merge-tree --write-tree` previews conflicts read-only; alpha and a feature branch both prepending
+  HANDOFF always conflict there — keep the feature sections on top; regenerate `docs/ui-components.md`.
+
+---
+
+# HANDOFF — 2026-09-18, night (biobuzz-3d: CAD-authoritative dimensions + DAY 2 LANDED — 3D rooms online, dynamic hive, flower tubes, prediction, cameras)
+
+**(Previously READ FIRST.)** Branch **`biobuzz-3d`**, worktree `.claude/worktrees/biobuzz-3d`, clean at the merge
+commit named in the log; every gate green there: `build` · `bundleaudit` · `server:check` ·
+`docaudit` · `uiaudit` · `test:mm` (197) · `dbtest` (263) · `npm test` (1798 shared + 1615 BIOBUZZ;
+lanes CORE/SIM3D/HIVE3D/FLOWER3D/PREDICT/NET3D/RENDER + the 2D lanes).
+
+⚠️ **THE OWNER MUST DEPLOY THE ALPHA APP before anyone joins a 3D room online**: this day adds a
+migration (`0038_physics.sql`), a protocol field (`RoomConfig.physics`, `matchStart.physics`, the
+`'bb3d'` cap) and a replay header field — three server changes. `./scripts/fly-deploy.sh` (the
+owner's wrapper; NEVER a bare `flyctl deploy`), then verify `/health` and `fly machine list`.
+Production later from a `main` worktree. Backward compatibility held: `physics` is omitted (never
+written as `'2d'`) on the wire and in containers; old clients still join 2D rooms; pre-0038 rows
+read `'2d'`; no version bumped.
+
+## Owner rulings this day
+- **"The CAD is authoritative for dimensions."** `BB_*` geometry is GENERATED: `npm run field-cad` →
+  `scripts/field-cad/emit-dims.mjs` → `src/games/biobuzz/fieldDims.gen.ts` (STEP version + sha, the
+  derivation and residual of every value); `config.ts` imports it under the old names. The field is
+  141.35 in inside the walls (`BB_HALF_X` 70.674), tiles 23.528 in on centre (`BB_TILE_PITCH`,
+  `BB_TILE_SEAMS`), flowers at their bore-fit centres, hive `BB_HIVE_BOTTOM_Z` 31.981, opening
+  [53.375, 65.497], tape as 16 CAD strips (`BB_TAPE`). 2D collider = 3D collider = GLB wall to
+  0.0000 in (asserted). The manual's figures are history where they differ
+  (`docs/biobuzz-reference.md` carries the dated note). `C.TILE`/`src/config.ts` untouched.
+  Pre-2026-09-18 BIOBUZZ replays diverge on re-sim (alpha-only, unranked; no version bump).
+- Better agents: rounds after the first play-test ran on OPUS with an analysis phase first.
+
+## Day 2 (spec §10) — landed
+- **Lane C, online** (`6ac687c`…`4ae3663`): `await initPhysics3d()` at server boot and lazily in
+  the LAN host worker (`vite.config.ts` `worker.format = 'es'` was REQUIRED — an IIFE worker cannot
+  code-split, and `initPhysics3d` had been tree-shaken out of the worker); `createWorld` gains a
+  FIFTH optional `physics` parameter (a room is not a practice); `Room.physics` decided once
+  (ranked/record/staged → `'3d'`, host option in the lobby, absent → `'2d'`); `'bb3d'` cap refused
+  at `join`/`spectate`/`rejoin`/BIOBUZZ `queue` with "Update DSIM to play this room."; matchmaking
+  stages BIOBUZZ `'3d'`; migration 0038 (`physics` on records/matches/replays/practice_runs, `view`
+  on practice_runs, `butterfly` in the drivetrain check); recorder/player stamp and honour `physics`
+  (`ReplayView` awaits the wasm); `displayWorld` interpolates elements and remote `z` in 3D worlds
+  only; `costprobe` `biobuzz3d-*`: 2v2 0.026 cores/room, 7,231 B/snapshot (72 % of budget; 3D is
+  cheaper than 2D). Verified locally: two clients, one 2D-view one 3D-view, same room, identical
+  scores/positions at the same tick, the replay re-simulated to the server's score exactly.
+- **Lane A, sim** (`366e3ce`…`506a890`): **dynamic see-saw ON** (`BB3_HIVE_DYNAMIC = true`): CAD
+  tray hulls on a revolute joint (limits via `.setLimits` on the instance), mass 13 lb APPROX with
+  the CoM 5.53 in above the pivot (that is the bi-stability), the detent is a HOLD at the stop
+  released when the contents' torque beats `restoring + BB3_HIVE_DETENT` (Rapier has no joint
+  friction; a capped motor keeps pulling), `npm run hive-calibrate` swept it: detent 3041, ballast
+  6 lb at w −9.5, damping 4.466 → 4.00 s swing; all four §12.3 target rows hold with ±0.31
+  element-weights of margin (the whole window is 0.60 wide at nectar ratio 1.6 — weighing a real
+  set is what widens it); validation 4/7 (no linear weighting fits the owner-measured rows, as the
+  reference already says). `hives[a].angle`/`angVel` ride the JSON; `hiveTiltAngle` reads them.
+  **Flower tubes** from the CAD plates (lower bore 3.222 at z −0.2…0.35, mid 3.896 at 3.90…5.25,
+  top 4.171 at 20.25…21.40; retrieval opening derives to 3.550 = Fig 9-12); elements fall to the
+  tiles inside the bottom bore (nothing seats on a ring); G418's intent holds (only pollen exits
+  the bottom). G409 (`bb.spill`) and G417 (`bb.hiveRam`, 3D only; the 2D "no robot can move the
+  hive" ruling stands) bill from real contacts. **Predictors** in `sim3d/predict.ts`:
+  `createLightPredictor(world, localId)` / `createFullPredictor(world, localId)` with
+  `reset/step/dispose`, `probeFullReconcileMs(world, id, now)`; convergence 0.57/0.22 in open
+  floor, 2.12/0.19 in on a push; Light < 1 ms, Full 2 ms (budget 8). `step3d` 2v2 median 0.255 ms.
+- **Lane B, render** (`a0557e1`…`5ec9d40`): reticle at the sim's own landing (`renderLanding.ts`
+  duplicates `bbFlightEnters`'s integrator on purpose — matching the sim beats being "accurate");
+  fixed dark HUD scrim in 3D (`.game-root.view-3d`, tracks a LIVE scene via a MutationObserver);
+  chase and orbit cameras (drag/wheel on the host; pref `decodesim.camera`, keys `c`/`i`/`o`/`t`
+  handled inside the scene while mounted); `GameScene.project` + `Renderer.setScene` so labels and
+  auto paths project through the scene camera (wired in `game.ts` by the coordinator, `8f7300b`);
+  theme change followed live. Scene chunk 187 KB gz.
+- Roadmap: `docs/roadmap.md` now leads with the owner's eight priorities (auth, privacy, contributors,
+  tutorial, replay 2D/3D export, 3D builder, cosmetics plan, rewards plan) with branches and order.
+
+## Owner rulings PENDING (raised by this day's measurements; nothing moved)
+1. **A lone NECTAR in a flower does not reach the scoring floor by the CAD geometry** (tops out at
+   3.597 vs `BB_FLOWER_VOL_Z` floor 3.904): by the 2D model it always scored. 0.30 in, worth 7
+   points and an ownership. `flowerScoreZ` is the extraction that measures it. The 2026-09-12
+   sorter ruling is what a change would overturn.
+2. The CAD lower bore is 3.222, the manual's Fig 9-12 says 2.79 — CAD wins by the standing ruling;
+   noted because the manual's sorting story (nectar seats on the middle ring) is not what the CAD
+   does.
+3. Weigh a real element set: `BB3_ELEMENT_MASS` 0.2 and the nectar ratio 1.6 are APPROX and the
+   tip margin depends on them.
+
+## Next: Day 3 (spec §10) — not started
+A: perf tuning, heights in coercion, AI policy and tiers (`GameSimModule.bot`), bots in practice and
+lobbies. B: Graphics section with presets and Auto detection (`SceneQuality` is ready), HDRI
+environments, export compositing (roadmap item 2), gallery 3D stills, the mobile overhead default,
+the 2D→3D key. C: wire the predictors into `game.ts`'s reconcile with the Off/Light/Full/Auto
+setting (Lane A's API above), the online-room "Loading 3D physics" panel (`GameView` `need3d` is
+`!session && …`; the controller latches `physicsPending` meanwhile), leaderboard `physics` badge and
+filter, ranked cutover on the alpha server, smoke lanes filled, docs. Then the alpha ship.
+DONE at the end of Day 2 (`20d0194`, `634d749`): `sim3d/` loads ONLY through `initPhysics3d()` —
+`sim3d/engine.ts` is the light loader, `sim3d/tilt.ts` the light `hiveTiltAngle`/`hiveTrayRefTheta`
+seam the scene imports, `sim3d/step3d.ts` a thin gate over `step3dImpl`, and `sim3d/impl.ts` the
+heavy re-export the loader `import()`s (predictors included: `physics3dImpl().createFullPredictor`
+after init). Main chunk 917 → 907.88 KB gz (seam 904.17 + the loader/tilt), hostWorker 700.84,
+physics3d 1123 (the impl rides with the wasm), scene 187.27; bundleaudit baselines re-measured; a
+CORE check forbids static imports of heavy sim3d modules outside `sim3d/` (only `engine` and `tilt`).
+
+## Gotchas (new)
+- `setAdditionalMassProperties` on a BODY is discarded by the collider mass recompute — set it on
+  the desc; `body.mass()` is stale until the first step. A pinned tray SLEEPS and gravity does not
+  wake it: `wakeUp()` at breakaway. The tray and its frame overlap at the bearing: separate
+  collision groups; the joint limits are the damper.
+- `atan2` is (−π, π]: wrap corner rays into [0, 2π) before sorting an annulus, or the ring closes
+  across its bore. A convex hull of a C-bracket fills the C (visual-only parts stay visual-only).
+- A `Date.now` DEFAULT PARAMETER trips the sim source guard, and should.
+- `Client.send` hands out a live view of the world (`slimWorld` spreads one level): a test sink
+  must encode/decode as the transport does. `physics: cond ? '3d' : undefined` CREATES the key:
+  test "absent" on `JSON.stringify`, not `in`.
+- `w.balls.length = 0` does not clear `rob.hopper`; a fired-out robot ends with an EMPTY hopper
+  (measure the peak).
+- `npm run dev` was broken by a Day 0 spike file importing an uninstalled package (`scripts/
+  spike3d-browser/noncompat.*`, deleted). Orphaned `esbuild.exe`/`node.exe` from a dead Vite lock
+  `npm ci` (taskkill first). Never `Remove-Item -Recurse` a directory containing a junction.
+
+---
+
+# HANDOFF — 2026-09-18, later (biobuzz-3d: play-test round 2 — true CAD geometry, CAD colours and tape, HUD-safe framing)
+
+**(Previously READ FIRST.)** Branch **`biobuzz-3d`**, worktree `.claude/worktrees/biobuzz-3d`, clean at the merge
+commit named in the log; all gates green there (`npm test` 1798 + the BIOBUZZ suite with a 105-check
+SIM3D lane). This round was done by OPUS agents with an analysis phase first, at the owner's request;
+the audit is `docs/biobuzz/field-cad-audit.md` — read it before touching the field pipeline.
+
+## The owner's five sentences → root cause → fix (all verified)
+1. *Balls on a different plane than the hive bottom* — `convert.py` exported tray hulls as WORLD-frame
+   bounding boxes at the 30° tilt and the sim read them as tray-LOCAL; the collider floor sat 3.26 in
+   above the mesh floor. Now every tray point is un-tilted about the pivot before export
+   (`captureTheta` ±30.000° exactly), `hiveTrayRefTheta` is 0, the body rotation is plain
+   `hiveTiltAngle`, and a headless check plus a dev-only raycast at GLB load assert the mesh and
+   collider floors coincide (Δ ≤ 0.017 in) with a resting element 1.275 in above the plane.
+2. *Hive back gone* — `convert.py`'s `other` group (25 parts: ACM logo panel, A-frame top bar, top
+   corners, axle holders, feet, AprilTag plates) was never emitted. Unknown parts now go to a `misc`
+   node and are printed; `assemble-gltf.mjs` refuses to finish with an unclaimed STL.
+3. *Support structures missing* — the fastener regex matched the word "rivet" and dropped the 24
+   perimeter rails and 16 corner hinges. `RE_FASTENER` is an explicit list of fastener families.
+4. *Flowers wrong colour* — `XCAFDoc_ColorTool` returns nothing on this STEP; the colours live in the
+   styled-item chain, now parsed from the STEP text and carried in the glTF material name
+   `<finish>#<rrggbb>` (flowers: amber top ring, green HIPS pipes, purple backstop; the hive's
+   alliance colour is the RIBS, not the white skins). Runtime overrides only surface params, forces
+   `glass` transparent, and forces `tile` to `COLORS.mat` (the CAD tile grey is a placeholder).
+5. *Tape wrong* — the GLB's 16 real tape strips were hidden behind procedural `strokeRect` outlines.
+   The CAD tape is shown: all strips 1.000 in wide; loading zones taped on three edges (wall edge
+   bare), gardens are two side-by-side 1-in strips, alliance areas on the gym floor; every on-tile
+   strip stops 0.573 in clear of the wall face (asserted).
+Also: the scoreboard/field overlap — `GameController.refreshHudInsets()` measures every
+`data-hud-band` element (score bar, breakdown, status, buttons, BIOBUZZ's own score bar) into
+`SceneFrame.insets`; both 3D cameras fit the field into the safe rect via `setViewOffset`; the 2D
+camera already reserved matching bands (unchanged). A game that fills the `scoreBar` slot must mark
+it `data-hud-band` or it gets the old overlapping fit.
+
+## Physics now
+Statics are true per-part convex hulls incl. the frame's diagonal legs, uprights, dampers and
+crossbar (73 hulls); tray colliders are planar-facet oriented boxes (a hull of an open shell fills
+the cell; the perforated Goal Rib gets none). 18-in AND 29-in robots pass under the down cell (CAD
+floor 31.98; a 34.98-in robot is stopped); retention 20/20 at 24/48/72 in; the load table matches;
+containment 0; two-run hash equal; perf median 0 ms / p95 1 ms. Sizes: `field.glb` 474 KB br,
+`field-low.glb` 137 KB, colliders 31 KB; scene chunk 184 KB gz.
+
+## OPEN findings (owner ruling pending; in the coordinator's memory) — now TWO facts, not four
+- The real field is **141.35 in inside the walls** (tiles 23.528 in on centre): that one fact is the
+  wall delta (±70.67 vs 72) AND the flower delta (~1.54 in vs `BB_FLOWERS`; `BB_FLOWER_D` itself is
+  right to 0.09 in). Deciding the sim's field size is a 2D gameplay change — the owner's call.
+- `BB_HIVE_BOTTOM_Z` 25.5 vs the CAD's 31.98.
+- CLOSED: the up-cell opening matches the manual within 0.13 in (the old delta was the bbox artifact).
+
+## Gotchas (new)
+- **Never `Remove-Item -Recurse` a directory that contains a junction** — it follows the junction; an
+  agent deleted 12 entries of this worktree's `node_modules` that way and restored them by copy;
+  `npm ci` was re-run afterwards.
+- A flat CAD face tessellates to its corners only: measure meshes by triangle/raycast, never by
+  vertex scan. `MeshoptSimplifier.compactMesh` rewrites indices in place and returns `[remap, n]`.
+  The LOW LOD needs `simplifySloppy` (honeycomb plates plateau). The determinism guard greps
+  `sim3d/` by TEXT — do not name a trig function even in a comment.
+- The scene preview's `scene.render` is what rotates the trays; a frozen frame loop draws them
+  level, which looks exactly like the tilt bug.
+- The near wall-top corners pin the driver FOV at 95° below ~21:9; the field fills the safe rect
+  horizontally and leaves vertical slack at 16:9 (inherent).
+
+---
+
+# HANDOFF — 2026-09-18 (biobuzz-3d: owner's first 3D play-test fixes — hive tilt/spill, visuals, driver POV)
+
+**(Previously READ FIRST.)** Branch **`biobuzz-3d`**, worktree `.claude/worktrees/biobuzz-3d`, clean at the merge
+commit named in the log; all gates green there (`npm test` 1798 + 1413, SIM3D lane 83). The owner
+reported four things after playing the Day 1 build; all four are fixed and verified:
+
+1. **Hive visually tilted more than the physics.** The GLB tray node is captured at its rest pose, and
+   the scene applied the ABSOLUTE tilt on top of it (double tilt). The scene now imports the physics'
+   `hiveTiltAngle(world, a)` (`sim3d/hive3d.ts`) and `hiveTrayRefTheta(a)` (`sim3d/bodies.ts`) and
+   rotates the tray by `hiveTiltAngle − hiveTrayRefTheta` — 0 at rest, 60° after a tip — the same
+   expression `engine.ts`'s `applyHiveTilt` gives the kinematic body. ONE angle authority; never
+   re-derive it in a renderer.
+2. **Elements spilled out of the up cell.** Root cause in the PHYSICS: the CAD-sized tray collider was
+   built from the box captured at the tray's own tilt without re-inclining it, so at rest the up-cell
+   floor was FLAT (mouth and divider at the same z) and every landed element rolled out. Fix:
+   `obliqueBoxCollider` bakes the capture angle into each collider's fixed local rotation (never a
+   per-tick collider rotation — that destabilises the kinematic body); tray colliders use a `Min`
+   restitution combine rule (floor/sides 0.15, back 0). Retention 20/20 at 24/48/72 in; the load table
+   (3, 7, 3+2 stay; 8, 3+3 tip) now matches the manual in physics; an unchanged kinematic target does
+   not wake resting elements. Consequence: the down-cell clearance is now ~22.7–29.8 in (mid 26.2, vs
+   the manual's 25.5) so a 29-in robot IS stopped; the up-cell opening top reads 68.85 vs the manual's
+   65.6 — a new OPEN finding beside the bottom one (see below).
+3. **Rendering too dark, bad shadows, opaque panels, grey flowers.** ACES exposure 1.2, hemisphere
+   1.3 + key 1.9, `RoomEnvironment` IBL via PMREM, `VSMShadowMap` (PCFSoft is deprecated in three
+   0.186) with a shadow camera fitted to ±92 in, bias −0.0012 / normalBias 0.035 / radius 3; walls and
+   station panels are transparent polycarbonate (opacity 0.22, depthWrite off, DoubleSide, renderOrder
+   10); room backdrop lightened to gym grey. The GLB now carries one primitive PER PART CLASS with a
+   named material (`flower_ring/pipe/base`, `hive_frame_metal`, `tray_metal`, `tray_panel_red/blue`,
+   `wall_panel/extrusion`, `tile`, `tape_*`); `renderFieldGlb.ts` assigns PBR by material NAME.
+   `convert.py` writes one STL per class per node; `assemble-gltf.mjs` builds the primitives.
+   Colliders/measurements stayed byte-identical through the regeneration.
+4. **Driver POV missed the near edge.** `fitDriverCamera(alliance, viewAngle, aspect)` in
+   `renderCameras.ts` solves pitch analytically and the setback by search so all four corners, both
+   wall tops and the hive tops fit with a 4 % margin: 16:9 → eye 72 in, setback 24 in, pitch 37.5°,
+   FOV 95° (the near corners pin the FOV at `DRIVER_FOV_MAX`; raising the eye is preferred over
+   pulling back). If it reads too wide in play, `DRIVER_EYE_H_*`/`DRIVER_SETBACK_*`/`DRIVER_FOV_MAX`
+   are the knobs.
+
+**OPEN findings (owner ruling pending, move nothing; in the coordinator's memory):** flower ring
+centres ~1.4 in off `BB_FLOWERS`/`BB_FLOWER_D`; wall inner faces ±70.67 vs 72 (3D walls stay at 72);
+hive up-cell opening [47.05, 68.85] vs `BB_HIVE_OPEN_Z` [53.5, 65.6] and down-cell clearance ~26.2
+vs 25.5. The measurements check prints them under wide, commented tolerances.
+
+**Gotchas added:** `PCFSoftShadowMap` is gone in three 0.186 (use `VSMShadowMap`); in the app the
+`computer` tool's key presses may not reach the game's listeners (dispatch a synthetic
+`KeyboardEvent`); `coerceAssists` forces `aimAssist` on, so a synthetic firing test sets
+`r.aimAssist = false` on the spawned robot; `releasePollen`/`takeHeld` need a matching `held` ball
+in `world.balls`, not just a hopper entry; the "Goal Rib" parts are treated as tray metal and only
+the Top/Back/Bottom skins as the alliance panel (a judgement from part names, unverified against a
+photo). Day 2 (spec §10) remains next; see the section below for the plan.
+
+**Owner re-test 2026-09-18, after these fixes: STILL WRONG.** Elements sit on a different plane than the
+tray floor; the hive's back and some support structures are missing from the GLB; flower colours still
+wrong; tape layout and widths incorrect (wall-bounded zones carry no tape on the wall side; tape widths
+are documented); the scoreboard overlaps the field. Diagnosis: the collider export used per-part AABB
+corners (so the physics tray floor is not the mesh floor and the frame legs were dropped), the GLB
+assembly drops/mis-classes structural parts, and colours/tape/tiles were procedural guesses. Round 2 is
+running on OPUS agents (owner asked for better agents and more thorough analysis): a CAD audit doc,
+true per-part hull colliders in each tray's un-tilted local frame, CAD (XCAF) colours and CAD tape,
+and HUD-safe camera framing.
+
+---
+
+# HANDOFF — 2026-09-17, night (biobuzz-3d: Day 1 LANDED — 3D physics, 3D renderer, CAD field)
+
+**(Previously READ FIRST.)** Branch **`biobuzz-3d`**, worktree `.claude/worktrees/biobuzz-3d`. Tree clean at the
+merge commit named in the log; every gate green at that commit: `build` · `server:check` · `docaudit`
+(CLAUDE.md 26,850 / 27,000 bytes) · `uiaudit` · `bundleaudit` · `npm test` (1798 shared + the
+BIOBUZZ suite incl. the SIM3D and RENDER lanes, count in the log). The owner play-tested the first
+3D view mid-day, found field parts misplaced and the graphics too plain, and ruled "the field should be
+CAD derived" — both are addressed below. Day 2 (spec §10) is next; nothing of it is started.
+
+## What Day 1 delivered (spec `docs/biobuzz/plan-3d.md` §10, all three lanes, merged)
+
+- **Seam** (`941a598`): `Physics` type; `World.biobuzz.physics` + `biobuzzPhysics()`; `step2d`/`step3d`
+  dispatch; `RobotState.z/vz`; `RobotSpec.heightIn` (+ the `coerceSpec` carry-across fix in
+  `src/sim/spawn.ts`); `GameSettings.practicePhysics` (default `'3d'`); `GameModule.scene` and the
+  `GameScene`/`SceneFrame` contract; `GameSimModule.bot?`/`physicsOptions`; `sim3d/engine.ts` loader
+  (`initPhysics3d()`, dynamic import of the wasm); `graphics/store.ts` view pref; `worldHash` mixes `r.z`.
+- **Lane A, sim** (`src/games/biobuzz/sim3d/`): persistent Rapier 3D world per `World` (WeakMap),
+  id-ordered bodies, sync-before/readback-after, robots on the SHARED wrench (parity 1.000 in open
+  field), elements with CCD, capture/launch/place/human player reusing the 2D bookkeeping (pure
+  extractions: `hiveTimerStep`, `bbHumanPlayerTick`, exported `placeInFlower`/`biobuzzStepMatch`),
+  KINEMATIC tray on the shared timer with PHYSICAL spill, `derive.ts` (contents/stacks/tags), containment
+  net with `containmentFixes === 0` asserted. SIM3D lane: 34+ checks incl. two-run hash and perf
+  (`step3d` 2v2 median ≈ 0 ms, p95 1 ms vs the 1.5 ms gate).
+- **Lane B, renderer** (`scene/render*.ts`, lazy chunk 182 KB gz of 250): field, robots generated from
+  spec (chamfered chassis, drivetrain wheels, sweepers, mechanisms, team sign), 56 instanced spheres
+  with rolling spin, driver-station + overhead cameras, ACES + sRGB, PCF-soft 2048 shadows, procedural
+  room. Geometry proven against `drawField.ts` with a side-by-side page (`scripts/scene-preview`, in-page
+  named-object check) — four real errors fixed (flower pipes sideways, up-cell 3 in high, wall
+  thickness, flower-parked element height); conventions (y direction, heading, alliance walls) were right.
+- **Lane C, client**: Practice setup gains **Physics 2D/3D** (`practicePhysics`) and **View 2D/3D**
+  (per device); `GameView` awaits `initPhysics3d()` before a 3D practice (fallback to 2D with an
+  event-log line); the scene mounts UNDER the 2D canvas (`renderer.ts` `overlayOnly`), created/disposed
+  live on view switch; `scripts/bundleaudit.mjs` ratchet (main, hostWorker, physics3d, scene).
+- **CAD field** (owner decision): `npm run field-cad` → `public/models/biobuzz/` (`field.glb` 359 KB br,
+  `field-low.glb` 242 KB, `field-colliders.json` 23 KB, `field-measurements.json`, README with source,
+  sha256 and node names). Scene draws the CAD walls, hive frames, trays and flowers over the procedural
+  tile/tape floor (constants fallback on any load failure). Physics: floor and walls analytic at the
+  CONSTANTS; tray cells sized from the CAD cell; flower supports CAD trimesh (`FIX_INTERNAL_EDGES`);
+  hive-frame legs/uprights EXCLUDED (their hulls are loose AABBs that sealed the drive-under). Twelve
+  probe points agree between the CAD and constants engines.
+- **Verified in the real app** (Physics 3D): drive, capture (HUD pips), a real parabolic shot, tray tip
+  with physical spill, View 2D↔3D mid-match, resize; console clean.
+
+## OPEN findings — owner ruling pending; MOVE NOTHING (also in the coordinator's memory)
+
+CAD vs constants: flower ring centres ~1.4 in off `BB_FLOWERS`/`BB_FLOWER_D` (pipe-centroid proxy;
+a bore fit would settle it); wall inner faces ±70.67 vs `BB_HALF_X` 72 (3D walls kept at 72 for
+parity with the 2D pipeline and the staging); hive up-cell opening [47.05, 65.65] vs `BB_HIVE_OPEN_Z`
+[53.5, 65.6] and down-cell lowest point 31.96 vs `BB_HIVE_BOTTOM_Z` 25.5 (one rigid bar cannot meet
+both manual figures; the CAD says 25.5 is not the tray floor). The measurements check prints all of
+them under wide, commented tolerances.
+
+## Next: Day 2 (spec §10)
+
+A: dynamic see-saw on a revolute joint + `scripts/hive-calibrate.ts` against the field-guide rows
+(`BB3_HIVE_DYNAMIC` flips to true; kinematic stays the fallback); flower TUBES (the CAD rings are
+excluded from the collider file because a hull of an annulus fills its hole — export ring trimeshes
+from `convert.py`); derived flower stacks by z; G409/G417 tags; Light/Full prediction worlds + Auto
+probe. B: reticle, HUD scrim, chase/orbit cameras, interpolation of balls and remotes (the scene
+ignores `frame.alpha` today), labels through the scene camera, theme change mid-scene (backdrop read
+once). C: `await initPhysics3d()` at server boot, `RoomConfig.physics`, `'bb3d'` cap gate, matchmaking
+`3d`, the `physics` migration, `costprobe` scenarios, replay header + re-sim check, LAN lazy init.
+Cleanups queued: move `sim3d/` behind `initPhysics3d()` (it is statically imported by `step.ts`, so
+the main chunk carries ≈ +4.5 KB gz); tight per-part hulls for the hive frame in `convert.py`; Aim
+Assist's landing prediction is an alignment gate under 3D; elements can marginally perturb a robot
+(collision groups); the GLB's tiles/tape node is unused (no per-region colour); courtesy note to FIRST
+(owner sends). Days 4-14: weigh a real element set (`BB3_ELEMENT_MASS` is APPROX).
+
+## Gotchas (new this day)
+
+- **Sonnet subagents obey the session's cwd over the prompt** when the Edit/Write tools refuse
+  cross-worktree paths: two of six lanes worked in the session's own worktree. State the path in every
+  command and check `git log` for where a commit landed. Lane worktrees shared ONE `node_modules`
+  through junctions (`New-Item -ItemType Junction`; remove with `cmd /c rmdir`, never `rm -rf`).
+- **Never route base64 image data through a tool call** (a `toDataURL` write blew the 64k output
+  limit twice). Describe screenshots; the browser pane is visible to the owner anyway.
+- **The in-app browser pane**: `requestAnimationFrame` only advances when a paint is forced
+  (alternate `wait` and `screenshot`); the pane is shared between concurrent agents (always
+  `tabs_create` and pass `tabId`); Enter does advance the countdown. Fastest way to drive the game
+  from a script: walk the React fiber from the canvas to `GameView`'s third ref (the `GameController`)
+  and edit `world` JSON directly — the next tick reconciles the bodies.
+- **Rapier 3D**: forces persist across steps (`resetForces`/`resetTorques` per tick); a collider's
+  `setTranslation` offset rotates with the BODY, so a per-collider rotation offset needs its
+  translation rotated too; `RigidBodyDesc.enabledRotations`; `TriMeshFlags.FIX_INTERNAL_EDGES`.
+- **CAD pipeline**: `BRepMesh_IncrementalMesh` caches on the shape (call `BRepTools.Clean_s`
+  first); flat STL normals block meshoptimizer's simplifier (drop normals, recompute in the loader);
+  GLTFLoader strips `/` from node names (use `userData.name`); `.cmd` shims cannot be `execFileSync`'d
+  on Windows (call `node <cli.js>`); the standalone `scene-preview` needed its own `vite.config.ts`
+  (`publicDir`) to serve `/models/biobuzz/*`.
+- Pre-existing: `uiaudit` `stale-component-index` after a merge — `npm run uiindex`; `smoke.ts` is 1798
+  checks, not the 1765 CLAUDE.md still says; a dev-only "Invalid hook call" cascade in `AdsProvider`
+  on cold loads (both physics; not investigated).
+
+---
+
+# HANDOFF — 2026-09-17, later (biobuzz-3d: Day 0 physics spike results)
+
+**(Previously READ FIRST.)** Branch **`biobuzz-3d`**, worktree `.claude/worktrees/biobuzz-3d`. Tree is clean
+except for the files this session adds/commits: `scripts/spike3d.ts` (new, throwaway CLI),
+`scripts/spike3d-browser/` (new, throwaway browser+Electron harness), `docs/biobuzz/spike3d-
+results.md` (new), this HANDOFF section, and `package.json`/`package-lock.json` (three new
+pinned installs, `src/` and `docs/area/` untouched). `npm ci` ran clean (560 packages). `npm run
+docaudit` passes (CLAUDE.md 26,670 / 27,000 bytes, unchanged).
+
+## Installed this session (all pinned `-E`, `@dimforge/rapier2d-compat` untouched at 0.19.3)
+
+`@dimforge/rapier3d-deterministic-compat@0.20.0` (dependencies), `three@0.186.0` +
+`@types/three@0.186.0` (devDependencies). `@dimforge/rapier3d-deterministic@0.20.0` (the
+non-compat build) was installed once with `--no-save` to probe it and is **not** in
+`package.json`/`package-lock.json` — confirmed by grep after the probe.
+
+## Results: the Day 0 spike PASSED the gate
+
+Full numbers, the runtime matrix, and the tray/joint gotcha are in
+`docs/biobuzz/spike3d-results.md`. Summary:
+
+- **Hashes equal across two Node runs** (`1971098706` both times) — the mandatory check.
+  **Also equal in Chromium (Electron)** — `1971098706` there too, which the gate did not
+  require but the plan hoped for. The deterministic build's cross-platform promise held on
+  this scene, this machine.
+- **Step time far under budget**: 0.020 ms median, 0.046 ms p95 against a ≤ 1.5 ms target — but
+  this scene (4 robots, 56 elements, 2 tray bodies, no CAD trimesh, no real gameplay reads) is
+  smaller than a real 2v2 room will be, so treat this as a floor, not a prediction; re-run with
+  `costprobe`'s `biobuzz3d-*` scenarios once `step3d` is real.
+- **Runtime matrix**: `-deterministic-compat` initialises and matches hashes in both Node/tsx
+  and browser (Vite dev + Electron). The non-compat `-deterministic` package **fails in both**
+  Node/tsx and Vite/browser as published on this Vite version (6.4.3) — it has no `init()` and
+  its glue does a bare `import * as wasm from "*.wasm"`, which Vite explicitly rejects without
+  `vite-plugin-wasm` and Node's ESM resolver rejects on the extensionless imports before it even
+  gets that far. **Stay on compat, as the plan already defaults to** — do not spend Day 1/2 time
+  trying to swap packages without adding a wasm plugin, which is a separate decision.
+- **Tray/joint gotcha, worth remembering for the real `sim3d/`**: `JointData.limitsEnabled` /
+  `.limits` set before `createImpulseJoint` were **not enough** — the tray span past the
+  intended ±30° to ~177° before something else stopped it. Fix: call `.setLimits(min, max)` on
+  the `ImpulseJoint` **instance** `createImpulseJoint` returns. With that, both trays sat
+  exactly at `30.0000448913582°` for the full run (the ballast pins the empty/lightly-loaded
+  tray at one stop, matching the intended start condition) — not a calibrated see-saw yet,
+  which is `hive-calibrate.ts`'s job on a later day per plan §3.6.
+- **Chunk size**: the physics chunk is 2,891,032 B raw / 1,089,268 B gzip-9 (matches the plan's
+  ~1.1 MB gzip estimate); the main chunk grows by a noise-level 110 B raw when the loader is
+  merely reachable. **Methodology gotcha**: an exported-but-never-referenced function is
+  tree-shaken away entirely before Rollup code-splits it — the first attempt (exactly what the
+  spec asked for) produced a byte-identical build and no new chunk at all. Had to add one
+  module-scope side-effecting reference (`globalThis.__x = theFn`) to keep the declaration alive
+  for the measurement, then revert everything (`git checkout --`) and rebuild to confirm the
+  tree was clean again (it was — byte-identical to the pre-spike baseline). Worth remembering
+  for whoever writes `bundleaudit` (spec §2.5/§7): it needs the same trick, or a real call site,
+  to measure an as-yet-unused dynamic import honestly.
+
+## Next: Day 1 (spec §10) — the whole game on 3D physics in the 2D view
+
+Not started. Per the spec: `sim3d/engine.ts` (persistent Rapier world, `initPhysics3d()` behind
+a dynamic import), `step3d` (§3.1's nine-step tick), `derive.ts` (§3.5, fills
+`hives[a].contents`/`flowers[i].stack` from body positions so `score.ts`/`hud.ts`/the 2D
+renderers work unchanged), the real hive frame + tray (§3.6, starting from this spike's geometry
+but calibrated against the manual's two published tip rows via `hive-calibrate.ts`), flowers
+(§3.7), and the `World.biobuzz.physics: '2d' | '3d'` dispatch in `biobuzzStep`. Also queued at
+Day 0 but not run by this session: the CAD pipeline (`scripts/field-cad.mjs` +
+`scripts/field-cad/convert.py`) and the courtesy note to FIRST (owner sends it; draft is in the
+demoted section below).
+
+## Gotchas (carried forward + new)
+
+- **`JointData`'s `limitsEnabled`/`limits` fields alone did not clamp a revolute joint** in
+  `@dimforge/rapier3d-deterministic-compat` 0.20.0 — call `.setLimits(min, max)` on the created
+  `ImpulseJoint` instance too. Untested whether this is a compat-wrapper quirk or true of raw
+  Rapier 0.35; did not have time to check upstream, and it does not block Day 1 since the
+  workaround is one line.
+- **An exported function with no call site or reference is dead-code-eliminated**, `import()`
+  inside it and all — do not trust "add an unused export, build, measure" for a chunk-size
+  check without also keeping the declaration reachable (see above).
+- Two Rapier packages coexist on purpose: 2D on `rapier2d-compat` 0.19.3, 3D on
+  `rapier3d-deterministic-compat` 0.20.0. Never upgrade the 2D package as a side effect.
+- The 3D wasm must load through a **dynamic import** inside `initPhysics3d()`, same reasoning
+  as before — this spike's own chunk-size measurement is the number that makes that concrete
+  (≈1.09 MB gzip if it ever leaked into a chunk every player loads).
+- Other sessions have worktrees here (`main-merge`, `alpha-ui`, `nice-morse-…`, a
+  `claude/biobuzz-3d-worktree-…` that is unrelated). Do not `cd` into them; the stash stack is
+  shared.
+- CLAUDE.md still has headroom (26,670 / 27,000 bytes) — unchanged this session, nothing here
+  touched it.
+
+---
+
+# HANDOFF — 2026-09-17, late (biobuzz-3d: Day 0 begun, alpha carries the split, PAUSED before the physics spike)
+
+**(Previously READ FIRST.)** Branch **`biobuzz-3d`**, worktree `.claude/worktrees/biobuzz-3d`, now based on
+**`alpha` 7e268dd**. The branch carries `docs/biobuzz/plan-3d.md` (draft 3 with the owner's eleven
+decisions, §12) and this HANDOFF. **No code has been written.** The owner asked for cheap
+subagents and a pause with a detailed handoff before any step that could use a whole session;
+this is that pause.
+
+## Done this session (Day 0, part 1)
+
+- **`efficiency-audit` merged into `alpha`** (1ecc3f2; the owner's Q10). No conflicts: the two
+  branches touched disjoint files (`git merge-tree` preview, then the merge). `npm run uiindex`
+  regenerated the component index alpha's six UI commits had outdated (7e268dd). **Every gate on
+  the merged alpha is green**: `build` · `docaudit` (CLAUDE.md 26,670 / 27,000 bytes) · `uiaudit`
+  · `npm test` **1765 + 1321 ALL PASS**. Pushed to `origin/alpha`.
+  ⚠️ **Migration 0037 is a SERVER change**: until the alpha app is redeployed (owner's wrapper,
+  `fly-deploy.sh --alpha`), its six indexes do not exist in production. Same for main later.
+- `biobuzz-3d` merged with the new alpha. HANDOFF conflict resolved by keeping the biobuzz-3d
+  sections on top of alpha's log. The spec's status line records the base.
+- `npm ci` ran in `.claude/worktrees/pr-alpha` (it has `node_modules` now); **the biobuzz-3d
+  worktree still has none**, and neither do the other worktrees.
+
+## PAUSED HERE: the next step is the Day 0 physics spike (spec §10)
+
+Run it as **one sonnet subagent** in the biobuzz-3d worktree. Estimated: 30 to 60 minutes wall,
+moderate tokens, no shared-file edits. The plan, in order, with the acceptance it must report:
+
+1. `npm ci` in the worktree (a few minutes; Electron is a dependency).
+2. Install, pinned exactly like the 2D physics: `npm i -E @dimforge/rapier3d-deterministic-compat@0.20.0`
+   (in `dependencies`: the server needs it) and `npm i -D -E three@0.186.0 @types/three@0.186.0`.
+   Nothing imports them yet except the spike. (Registry checked 2026-09-17: all three at those
+   versions; the compat package unpacks to 10.3 MB, wasm about 2.05 MB / 767 KB gz.)
+3. `scripts/spike3d.ts` (throwaway, run with `tsx`, never in `npm test`): `await import(...)` the
+   compat module and `init()`; build a z-up world (gravity `{x:0, y:0, z:-386}` in inches);
+   statics: floor, four walls at ±72, two frame base bars (x in [24,25] and [-25,-24], y ±19.4);
+   four dynamic 18-in boxes with yaw-only rotation (`setEnabledRotations(false,false,true)`),
+   z free; 56 dynamic spheres (40 × r 1.4, 16 × r 1.8, mass 0.2 lb, CCD on); one dynamic tray per
+   hive on a revolute joint about x at (±12.75, 0, 43.95) with limits ±30° and a trial ballast
+   (or kinematic first if the joint fights); a scripted push on one box for 600 ticks; step 3,600
+   ticks at 1/60. Every 60 ticks hash all positions rounded to 1e-4 (FNV-1a, the `worldHash`
+   shape). Print: median and p95 ms/step, body count, sleeping count, the final hash.
+4. **Run it twice in Node**: the two final hashes must be equal (the deterministic build's whole
+   promise). If they differ, stop and report; do not tune.
+5. Cross-runtime: run the same spike in Chromium (a throwaway Vite page or the Electron shot
+   runner) and compare the final hash with Node's. Report equal / not equal.
+6. Try the non-compat `@dimforge/rapier3d-deterministic@0.20.0` with the raw `.wasm` (Vite `?url`
+   in browser and worker; `fs.readFileSync` in Node and `tsx`). Record which of the four runtimes
+   initialise; if all four, it saves about 300 KB gzipped per §2.5. Do not switch packages in
+   this spike; just report.
+7. Add a dynamic `import()` of the compat module behind an unused function, `npm run build`, and
+   record the emitted chunk sizes (`dist/assets`), then remove it. `bundleaudit` does not exist
+   yet; this is the baseline number for it.
+8. Commit the spike script and a `docs/biobuzz/spike3d-results.md` (numbers only, the runtime
+   matrix, the hash outcome) on `biobuzz-3d`; prepend a HANDOFF section.
+
+**Gate (spec §10 Day 0):** hashes equal across two runs; median step at or under 1.5 ms for the
+2v2-equivalent world. **Kill/adjust:** step over 3 ms after enabling sleeping and limiting CCD to
+fast bodies → the "freeze far elements" fallback in spec §11; hashes unequal on the deterministic
+build → stop, the vendor's promise failed, report before anything else is written.
+
+Also on Day 0, as separate cheap agents once the spike passes: **the CAD pipeline**
+(`scripts/field-cad.mjs` + `scripts/field-cad/convert.py`; needs Python and `pip install cadquery`,
+a heavy install: run it in its own agent and report the measurements file first, the GLB second),
+and the **courtesy note to FIRST** (the owner sends it; draft below).
+
+## Draft note to FIRST (for the owner to send)
+
+> Hello. I run DSIM (playdsim.com), a free driver-practice simulator for FTC teams. For the
+> BIOBUZZ season I am building a 3D mode and would like to use the published field CAD (the STEP
+> release on ftc-resources) as the source for a simplified, decimated field mesh and collision
+> geometry, served from the site and committed to the project's public repository, with
+> attribution to FIRST and the manual's CAD credit. Your terms of use grant personal use; could
+> you confirm this use is acceptable, or tell me what attribution or limits you would want?
+> Thank you for publishing the CAD; it is what makes an accurate simulator possible.
+
+## Gotchas
+
+- **Two Rapier packages coexist**: 2D on `rapier2d-compat` 0.19.3, 3D on
+  `rapier3d-deterministic-compat` 0.20.0 (Rapier 0.35: new sleeping, sweep CCD on for fixed
+  colliders, changed contact defaults). Never upgrade the 2D package as a side effect.
+- The 3D wasm must load through a **dynamic import** inside `initPhysics3d()`; a static import
+  anywhere reachable from `src/games/index.ts` or the LAN `hostWorker` puts about 1.1 MB gzipped
+  into chunks every player pays for. `bundleaudit` (to write) is the ratchet.
+- CLAUDE.md has **330 bytes of headroom**: the spec's two sentences (game table row, the
+  client-bundle rule) must fit or the rule moves to `docs/area/biobuzz.md` with a pointer.
+- Other sessions have worktrees here (`main-merge`, `alpha-ui`, `nice-morse-…`, a
+  `claude/biobuzz-3d-worktree-…` that is a main-merge branch unrelated to this work). Do not
+  `cd` into them; the stash stack is shared.
+- The spec compares against a comparable third-party 3D sim only generically; keep it that way.
+- The CAD-derived field files SHIP by owner decision (Q9); keep the constants fallback complete.
+
+---
+
+# HANDOFF — 2026-09-17, night (biobuzz-3d: draft 3 of the spec, ONE game with a 3D deterministic authority)
+
+**(Previously READ FIRST.)** Branch **`biobuzz-3d`**, a worktree at `.claude/worktrees/biobuzz-3d`, based on
+`alpha` **1ecc3f2** (`efficiency-audit` merged into alpha on 2026-09-17, the first Day 0 step). The branch carries only **`docs/biobuzz/plan-3d.md`** and this HANDOFF. No
+code has been written. Every gate is alpha's, unchanged.
+
+⚠️ **Drafts 1 and 2 were REJECTED by the owner.** Draft 1 kept the 2D sim authoritative under a
+3D view; draft 2 made 3D a separate `biobuzz3d` game. The owner's direction (2026-09-17, verbatim
+in spirit): BIOBUZZ stays ONE game; every ranked or record match runs on a 3D deterministic
+server; players render in 2D or 3D and the 2D path stays very fast; practice offers the old 2D
+physics, 3D physics with a 2D view, or 3D physics with 3D rendering, each with or without AI;
+prediction is a player option; graphics have presets and detailed settings; GPU acceleration is
+on automatically. Draft 3 is that. Read it, not the commit history.
+
+## What draft 3 decides
+
+- **One game id.** `World.biobuzz.physics: '2d' | '3d'` (absent `'2d'`); `biobuzzStep` dispatches.
+  The 2D pipeline is untouched and stays selectable for practice and casual rooms; deleting it
+  later is one branch of one function (owner Q11).
+- **Rapier 3D, deterministic build** (`@dimforge/rapier3d-deterministic-compat` 0.20) in
+  `src/games/biobuzz/sim3d/`, authoritative for ranked, record and matchmade rooms and their
+  replays. Persistent server world, JSON readback each tick, spill and flower stacking from
+  physics, the manual's tip table kept.
+- **Derived lists** (`sim3d/derive.ts`) fill `hives[a].contents` and `flowers[i].stack` from body
+  positions, so the shared `score.ts`, HUD, results and the 2D renderers work under both physics.
+- **Same wire for 2D and 3D clients** (robots gain `z/vz`; elements already carry them). Two
+  renderers over one world: the canvas (no WebGL, no wasm) and a lazy Three.js chunk.
+- **Prediction: Off / Light / Full** (Light = drive model + walls, no wasm, the 2D default).
+- **Graphics: Auto / Low / Medium / High / Ultra / Custom** over sixteen settings, per device;
+  Auto = GPU detection + a 2 s warm-up; software GL → 2D view; `high-performance` power
+  preference; hardware acceleration never disabled in the app.
+- **Practice**: physics 2D/3D, view 2D/3D, AI opponents off or a tier. Runs upload with
+  `physics` + `view` tags. One migration adds `physics` to records/matches/replays/practice_runs
+  (default `'2d'`), no season reset (owner rule).
+- **CAD import**: `scripts/field-cad.mjs` (STEP → CadQuery → glTF + collider meshes +
+  measurements); constants fallback; licence unresolved (ask FIRST, owner Q9).
+- **Build plan in days**: Day 0 spike gate (hash equal across runtimes, 2v2 step ≤ 1.5 ms);
+  Day 1 the whole game on 3D physics in the 2D view; Day 2 3D rooms online; Day 3 the 3D
+  renderer, graphics settings and the alpha ranked cutover. Three lanes.
+
+## Owner decisions (2026-09-17, recorded in §12)
+
+Lobbies/LAN default 3D with a host 2D option · deterministic build everywhere (Day 0 speed gate) ·
+robots yaw-only now, pitch/roll designed for later (3.3) · **dynamic see-saw calibrated to the
+field-guide rows** (3.6; kinematic fallback) · realism then rulebook for opponent shots · prediction
+Auto-calibrated (5) · ranked cutover on alpha Day 3, production when the owner says · Force-GPU
+toggle offered, off by default, auto-cleared after a GPU crash · **ship the CAD-derived field files**
+(owner accepts the licence risk; courtesy note to FIRST) · merge `efficiency-audit` first · **the 2D
+physics is a permanent light practice option, never deleted**.
+
+## Next steps
+
+1. Merge `efficiency-audit` into `alpha` (a real merge, +14/+6), rebase `biobuzz-3d`.
+2. Day 0 per §10: deterministic 3D package spike (hash across runtimes, 2v2 step ≤ 1.5 ms),
+   CAD pipeline run, courtesy note to FIRST.
+3. Weigh a real element set when possible; mass and the nectar ratio are APPROX until then.
+
+## Gotchas
+
+- The base now carries the CLAUDE.md split: `docs/area/` guides, `npm run docaudit`, the sharded
+  `npm test` and migration 0037. CLAUDE.md is at 26,670 of its 27,000-byte budget, so the spec's
+  two sentences must fit or move to a guide. Spec line refs are as of `efficiency-audit` e0ce598.
+- The spec compares against a comparable third-party 3D sim only generically; keep it that way.
+- The CAD-derived field files SHIP by owner decision (Q9); keep the constants fallback complete so they can be pulled in one commit.
+- `V` is Chain Reaction's `fling`; the view-cycle key is `t`.
+- Under 3D physics, `state.kind === 'element'` means "a body inside a structure", not "not
+  solved": the 2D readers only read the tag; do not port the 2D assumption into `sim3d/`.
+
+---
+
 # HANDOFF — 2026-09-17 (match replays are private, and one player cannot publish a match)
 
-**READ FIRST.** Branch **`feat/replay-privacy`**, PR **#74**, merged into `alpha` and **NOT
+**(Previously READ FIRST.)** Branch **`feat/replay-privacy`**, PR **#74**, merged into `alpha` and **NOT
 DEPLOYED**. Gates on the merge: `npm test` ALL PASS ×2 (1798 + 1321) · `dbtest` ALL PASS ·
 `build` · `server:check` · `docaudit` · `uiaudit` (at baseline) · `contrast`.
 
@@ -57,9 +730,8 @@ a score, it is the game plan. The default is now private.
 
 # HANDOFF — 2026-09-16, later (efficiency audit: the test loop, the indexes, the render path)
 
-**(Superseded as READ FIRST by the replay-privacy section above — and `efficiency-audit` is
-MERGED into `alpha` now, though still not deployed: 0037's indexes do not exist in production.)**
-Branch **`efficiency-audit`** off `alpha`, 12 commits. Every gate green: `npm test` ALL PASS ×2 (1765 + 1321) · `test:mm` 186 · `dbtest`
+**READ FIRST.** Branch **`efficiency-audit`** off `alpha`, 12 commits, **not merged and not
+deployed**. Every gate green: `npm test` ALL PASS ×2 (1765 + 1321) · `test:mm` 186 · `dbtest`
 ALL PASS · `build` · `server:check` · `uiaudit` · `contrast` · **`docaudit`** (new).
 
 ⚠️ **The DB migration (0037) is a SERVER change and needs a deploy** to take effect, like

@@ -25,6 +25,15 @@ import { moduleFor } from '../games';
 import { seasonFor } from '../seasons';
 import { useCoarsePointer } from './useCoarsePointer';
 import type { Alliance, DrivetrainType, ScoreBreakdown } from '../types';
+import { initPhysics3d, physics3dReady } from '../games/biobuzz/sim3d/engine';
+import { subscribeViewPref } from '../games/biobuzz/graphics/store';
+import {
+  PREDICTION_BLURBS,
+  PREDICTION_LABELS,
+  PREDICTION_PREFS,
+  setPredictionPref,
+  type PredictionPref,
+} from '../net/predictionPref';
 
 /** top-right connection-quality readout (multiplayer only): a coloured signal dot
  * + live RTT / snapshot-rate / jitter, so a laggy player can see AT A GLANCE whether
@@ -109,6 +118,61 @@ function PingGraph({ net }: { net: NetStatus }) {
       <div className="ping-graph-foot">
         last {data.length} samples · newest → right
       </div>
+    </div>
+  );
+}
+
+/**
+ * THE IN-MATCH PREDICTION CONTROL (`docs/biobuzz/plan-3d.md` §5).
+ *
+ * ── WHY IT LIVES IN THE CONNECTION PANEL ──────────────────────────────────────────────────
+ * The plan asks for the setting "in the Controls section and the in-match menu". This game has
+ * no pause menu — MENU leaves the match — and the one in-match surface that already OPENS, is
+ * already about the netcode, and is already only shown online is the panel behind the
+ * connection chip. Prediction is what the client does about the latency that panel is measuring,
+ * so the ping graph and this are two halves of one answer: the graph says how bad the link is,
+ * this says what to do about it, and the foot line says what the last reconcile actually cost.
+ *
+ * It renders only for a 3D-physics room, because that is the only place the setting changes
+ * anything (`hud.prediction` is null everywhere else, which is the single fact that decides it).
+ */
+function PredictionPanel({
+  stats,
+  onPick,
+}: {
+  stats: NonNullable<HudSnapshot['prediction']>;
+  onPick: (p: PredictionPref) => void;
+}) {
+  // WHAT IS RUNNING, not what was asked for. `auto` resolves at the countdown probe and the
+  // slip rule can step Full down mid-match, so a player on Auto who reads only the pressed
+  // button would have no way to know which of the two they actually got.
+  const running = stats.pref === 'auto' ? `Auto · ${PREDICTION_LABELS[stats.mode]}` : PREDICTION_LABELS[stats.mode];
+  const cost = stats.reconcileP95 !== null ? `${stats.reconcileP95.toFixed(1)}ms p95` : `${stats.reconcileMs.toFixed(1)}ms`;
+  const foot =
+    stats.mode === 'off'
+      ? 'Drawn from the server. Nothing is guessed.'
+      : `Correction ${stats.correctionIn.toFixed(2)}in · reconcile ${cost}` +
+        (stats.probeMs !== null ? ` · probe ${stats.probeMs.toFixed(1)}ms` : '') +
+        (stats.stepped ? ' · stepped down' : '');
+  return (
+    <div className="pred-panel">
+      <div className="pred-head">
+        <span>PREDICTION</span>
+        <span className="pred-mode">{running}</span>
+      </div>
+      <div className="pred-opts">
+        {PREDICTION_PREFS.map((p) => (
+          <button
+            key={p}
+            className={`pred-opt ${stats.pref === p ? 'on' : ''}`}
+            title={PREDICTION_BLURBS[p]}
+            onClick={() => onPick(p)}
+          >
+            {PREDICTION_LABELS[p]}
+          </button>
+        ))}
+      </div>
+      <div className="pred-foot">{foot}</div>
     </div>
   );
 }
@@ -224,6 +288,15 @@ export function GameView({
   onBackToLobby,
 }: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  // BIOBUZZ 3D SEAM: the box a 3D scene mounts its own canvas into, UNDER the 2D one
+  // (`docs/biobuzz/plan-3d.md` §4.1/§4.7) — see `.game-viewport` in styles.css. Handed to
+  // `GameController` as `sceneHost`; unused by every game/session with no `scene` module.
+  const viewportRef = useRef<HTMLDivElement>(null);
+  // HUD-SAFE CAMERA FRAMING: `.game-root` is the containing block every absolutely-positioned
+  // HUD overlay is laid out against, so it is the subtree `GameController` measures the
+  // `[data-hud-band]` elements in — the bands a 3D camera must keep the field out from under
+  // (`SceneInsets`, `games/module.ts`). Handed over as `hudHost`; a 2D view never reads it.
+  const rootRef = useRef<HTMLDivElement>(null);
   const controllerRef = useRef<GameController | null>(null);
   const [hud, setHud] = useState<HudSnapshot | null>(null);
   const [intro, setIntro] = useState<IntroPlayer[] | null>(null);
@@ -244,47 +317,129 @@ export function GameView({
     () => typeof location !== 'undefined' && new URLSearchParams(location.search).has('perf'),
   );
   const [frames, setFrames] = useState<{ p50: number; p95: number; fps: number } | null>(null);
+  /**
+   * BIOBUZZ 3D SEAM: does STARTING this practice need the 3D physics chunk loaded first?
+   * Solo only — an online room's physics is a server decision and Day 2 scope (leave it
+   * exactly as it runs today); `practicePhysics` absent reads `'3d'`, the seam's default.
+   * A lazy initializer so the FIRST render already knows, same pattern as `perf`/`editingLayout`
+   * below — this effect is mount-only (see the trailing eslint-disable), so the decision is
+   * frozen at mount like every other setting it reads.
+   */
+  const [physicsLoading, setPhysicsLoading] = useState(() => {
+    const need3d =
+      !session &&
+      (settings.practicePhysics ?? '3d') === '3d' &&
+      !!moduleFor(settings.game).physicsOptions?.includes('3d');
+    return need3d && !physics3dReady();
+  });
+  /**
+   * THE ONLINE HALF OF THE SAME PANEL (Day 3).
+   *
+   * `physicsLoading` above is the SOLO answer and it is a decision this screen can make for
+   * itself: it awaits `initPhysics3d()` before it constructs anything, so it knows. A ROOM is
+   * the opposite — `session` arrives already built from a `matchStart` that landed on a socket,
+   * and whether that room is a 3D one is a fact only the controller reads (off the world, so it
+   * also covers a spectator and a mid-match joiner). So the CONTROLLER tells this screen, and
+   * this is the second flag it sets. Two flags rather than one because they are set from
+   * different places at different times and `||`ing them at the render site is clearer than a
+   * single flag two owners write.
+   */
+  const [roomPhysicsLoading, setRoomPhysicsLoading] = useState(false);
 
   useEffect(() => {
+    let cancelled = false;
     const canvas = canvasRef.current!;
-    const controller = new GameController(canvas, settings, session);
-    controllerRef.current = controller;
-    setIntro(controller.getIntro()); // ranked matches only; null otherwise
-    const hudTimer = window.setInterval(() => setHud(controller.getHud()), 100);
-    const onKey = (e: KeyboardEvent) => {
-      // Escape is reserved (never rebindable); restart is handled by the
-      // InputManager through the user's bindings
-      if (e.key === 'Escape') onExit();
-    };
-    window.addEventListener('keydown', onKey);
-    // once a networked match is DECIDED (phase 'post') or its slot is gone (failed),
-    // there's nothing to rejoin — forget the saved active-game record so Home stops
-    // offering "rejoin your match" for a finished/dead game.
-    const clearTimer = window.setInterval(() => {
-      if (!session) return;
-      const h = controller.getHud();
-      if (h && (h.phase === 'post' || h.net?.failed)) clearActiveGame();
-    }, 250);
-    // sampled at 2 Hz, and ONLY when the flag is on — a per-frame React state
-    // update to display a frame-time number would itself be the slowest thing on
-    // the page, which is a memorably useless way to measure performance.
-    const perfTimer = perf
-      ? window.setInterval(() => setFrames(controller.getFrameStats()), 500)
-      : 0;
+    const sceneHost = viewportRef.current!;
+    const hudHost = rootRef.current!;
+    const need3d =
+      !session &&
+      (settings.practicePhysics ?? '3d') === '3d' &&
+      !!moduleFor(settings.game).physicsOptions?.includes('3d');
+
+    let hudTimer = 0;
+    let clearTimer = 0;
+    let perfTimer = 0;
+    let onKey: ((e: KeyboardEvent) => void) | null = null;
+
+    async function boot(): Promise<void> {
+      // GameView.tsx: load the 3D physics chunk BEFORE the world exists, never after — a
+      // world built with `practicePhysics: '3d'` steps into `step3d` on its very first
+      // tick, and stepping one before `initPhysics3d()` resolves is the bug this await
+      // exists to rule out. Idempotent: a second solo practice in the same tab resolves
+      // immediately (`physicsLoading` never went true above), so this never re-shows the
+      // loading panel or re-fetches the chunk.
+      let effectiveSettings = settings;
+      let physicsFallbackNotice: string | undefined;
+      if (need3d && !physics3dReady()) {
+        try {
+          await initPhysics3d();
+        } catch (err) {
+          if (cancelled) return;
+          // OFFLINE, or a stale build whose physics chunk 404s — fall back to 2D physics
+          // for this session only (never persisted): `settings.practicePhysics` on disk is
+          // untouched, so the player's next practice tries 3D again.
+          // eslint-disable-next-line no-console
+          console.warn('BIOBUZZ 3D physics failed to load; playing this practice on 2D physics.', err);
+          effectiveSettings = { ...settings, practicePhysics: '2d' };
+          physicsFallbackNotice = 'Couldn’t load 3D physics — playing this practice on 2D physics.';
+        }
+      }
+      if (cancelled) return;
+      setPhysicsLoading(false);
+
+      const controller = new GameController(canvas, effectiveSettings, session, {
+        sceneHost,
+        hudHost,
+        physicsFallbackNotice,
+        // the controller's own chunk latch, for the room case this screen cannot answer.
+        // `cancelled` guards the unmount race: the load can settle after the effect tore down.
+        onPhysicsPending: (pending) => {
+          if (!cancelled) setRoomPhysicsLoading(pending);
+        },
+      });
+      controllerRef.current = controller;
+      setIntro(controller.getIntro()); // ranked matches only; null otherwise
+      hudTimer = window.setInterval(() => setHud(controller.getHud()), 100);
+      onKey = (e: KeyboardEvent) => {
+        // Escape is reserved (never rebindable); restart is handled by the
+        // InputManager through the user's bindings
+        if (e.key === 'Escape') onExit();
+      };
+      window.addEventListener('keydown', onKey);
+      // once a networked match is DECIDED (phase 'post') or its slot is gone (failed),
+      // there's nothing to rejoin — forget the saved active-game record so Home stops
+      // offering "rejoin your match" for a finished/dead game.
+      clearTimer = window.setInterval(() => {
+        if (!session) return;
+        const h = controller.getHud();
+        if (h && (h.phase === 'post' || h.net?.failed)) clearActiveGame();
+      }, 250);
+      // sampled at 2 Hz, and ONLY when the flag is on — a per-frame React state
+      // update to display a frame-time number would itself be the slowest thing on
+      // the page, which is a memorably useless way to measure performance.
+      perfTimer = perf ? window.setInterval(() => setFrames(controller.getFrameStats()), 500) : 0;
+    }
+
+    void boot();
+
     return () => {
+      cancelled = true;
       window.clearInterval(hudTimer);
       window.clearInterval(clearTimer);
       if (perfTimer) window.clearInterval(perfTimer);
-      window.removeEventListener('keydown', onKey);
-      // Check ONCE MORE on the way out. The poll above runs every 250ms, so leaving
-      // promptly after the final buzzer could beat it — and the cost of losing that race
-      // is Home still offering to rejoin a match that has already been decided.
-      if (session) {
-        const h = controller.getHud();
-        if (h && (h.phase === 'post' || h.net?.failed)) clearActiveGame();
+      if (onKey) window.removeEventListener('keydown', onKey);
+      const controller = controllerRef.current;
+      if (controller) {
+        // Check ONCE MORE on the way out. The poll above runs every 250ms, so leaving
+        // promptly after the final buzzer could beat it — and the cost of losing that race
+        // is Home still offering to rejoin a match that has already been decided.
+        if (session) {
+          const h = controller.getHud();
+          if (h && (h.phase === 'post' || h.net?.failed)) clearActiveGame();
+        }
+        controller.dispose();
+        controllerRef.current = null;
       }
-      controller.dispose();
-      controllerRef.current = null;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -319,6 +474,38 @@ export function GameView({
     const c = controllerRef.current;
     if (c) c.onPracticeRun = onPracticeRun ? (r, res) => onPracticeRun(r, res) : null;
   }, [onPracticeRun]);
+
+  /**
+   * IS A 3D SCENE ON SCREEN RIGHT NOW? — the flag behind the HUD's fixed dark scrim
+   * (`docs/biobuzz/plan-3d.md` §4.7: "HUD stays React at 10 Hz with a fixed dark scrim in 3D").
+   *
+   * NOT simply `getViewPref() === '3d'`. The preference is a WISH; what the HUD has to react to
+   * is a scene that is actually drawing, and the two come apart in three ordinary ways: the game
+   * may have no `scene` module at all (DECODE, Chain Reaction), the chunk load may fail or the
+   * GPU may refuse WebGL2 (`GameController.syncScene` falls back to the 2D view with a console
+   * warning), and the scene mounts ASYNCHRONOUSLY a beat after the preference flips. Scrimming
+   * the HUD over the ordinary dark 2D field would be a visible regression in all three.
+   *
+   * So the truth is read off the DOM: `GameController` inserts the scene's own canvas into
+   * `.game-viewport` as its first child, so a SECOND canvas in that box IS a live scene. A
+   * `MutationObserver` on that one box's children costs nothing (it fires on a view switch, not
+   * per frame), and the view-pref subscription is kept alongside it so a flip back to 2D is
+   * reflected even if the teardown order ever changes.
+   */
+  const [scene3d, setScene3d] = useState(false);
+  useEffect(() => {
+    const host = viewportRef.current;
+    if (!host) return;
+    const sync = (): void => setScene3d(host.querySelectorAll('canvas').length > 1);
+    sync();
+    const obs = new MutationObserver(sync);
+    obs.observe(host, { childList: true });
+    const stopPref = subscribeViewPref(sync);
+    return () => {
+      obs.disconnect();
+      stopPref();
+    };
+  }, []);
 
   // MOBILE zoom/select guard: iOS Safari ignores `user-scalable=no`, so a two-finger
   // pinch still zooms and a two-finger touch can pop the text-selection callout. Kill
@@ -368,22 +555,41 @@ export function GameView({
           <AdSlot unit="game" />
         </aside>
       )}
-      <div className="game-root">
+      {/* `view-3d` is the HUD's fixed dark scrim (plan-3d.md §4.7) — see `scene3d` above for why
+          it tracks a live scene rather than the view preference, and the `.game-root.view-3d`
+          block in styles.css for what it actually changes. */}
+      <div className={scene3d ? 'game-root view-3d' : 'game-root'} ref={rootRef}>
       {perf && frames && (
         <div className="perf-readout" role="status">
           {frames.fps.toFixed(0)} fps · p50 {frames.p50.toFixed(1)}ms · p95{' '}
           {frames.p95.toFixed(1)}ms · ads {ads ? 'ON' : 'off'}
         </div>
       )}
-      {/* A screen-reader-playable driving sim is out of scope (see the Phase 6 audit,
-          F7). The label at least stops this being an unlabelled interactive region;
-          score/timer/gate state is announced by the live regions below. */}
-      <canvas
-        ref={canvasRef}
-        className="game-canvas"
-        role="img"
-        aria-label={`${seasonFor(hud?.game ?? 'decode').name} field, top-down view. Match state is announced in the event log.`}
-      />
+      {/* BIOBUZZ 3D SEAM: the box a live scene mounts its own canvas into, UNDER this one
+          (`docs/biobuzz/plan-3d.md` §4.1/§4.7) — see `.game-viewport` in styles.css. Every
+          game/session with no `scene` module renders exactly the plain `.game-canvas` this
+          always was; `GameController` is what decides whether anything else ever occupies it. */}
+      <div className="game-viewport" ref={viewportRef}>
+        {/* A screen-reader-playable driving sim is out of scope (see the Phase 6 audit,
+            F7). The label at least stops this being an unlabelled interactive region;
+            score/timer/gate state is announced by the live regions below. */}
+        <canvas
+          ref={canvasRef}
+          className="game-canvas"
+          role="img"
+          aria-label={`${seasonFor(hud?.game ?? 'decode').name} field, top-down view. Match state is announced in the event log.`}
+        />
+      </div>
+      {/* ONE PANEL, TWO OWNERS. Solo decides for itself before the controller exists; a room's
+          answer comes back from the controller (see `roomPhysicsLoading`). The words are the
+          same either way, because it is the same wait for the same chunk. */}
+      {(physicsLoading || roomPhysicsLoading) && (
+        <div className="overlay">
+          <div className="overlay-panel">
+            <p className="ds-loading">Loading 3D physics…</p>
+          </div>
+        </div>
+      )}
       {coarsePointer && controllerRef.current && (
         <MobileControls
           inputManager={controllerRef.current.getInputManager()}
@@ -433,7 +639,10 @@ export function GameView({
         </div>
       )}
       {hud && <Hud hud={hud} showEventLog={settings.showEventLog} />}
-      <div className="game-buttons">
+      {/* `data-hud-band` — a HUD cluster that covers part of the field. The 3D camera keeps the
+          field out from under every one of them (`SceneInsets`, `games/module.ts`); nothing
+          visual reads it. See `GameController.refreshHudInsets` for what is NOT marked and why. */}
+      <div className="game-buttons" data-hud-band>
         <button className="game-btn" onClick={onExit} title="Menu (Esc)">
           ◄ MENU
         </button>
@@ -643,7 +852,7 @@ function Hud({ hud, showEventLog }: { hud: HudSnapshot; showEventLog: boolean })
       {GameScoreBar ? (
         <GameScoreBar hud={hud} />
       ) : hud.mode === 'match' ? (
-        <div className="scorebar">
+        <div className="scorebar" data-hud-band>
           <div className={`score-panel red ${hud.alliance === 'red' ? 'mine' : ''}`}>
             {hud.alliance === 'red' && <span className="you-tag">YOU</span>}
             <span className="panel-score">{redScore}</span>
@@ -677,7 +886,7 @@ function Hud({ hud, showEventLog }: { hud: HudSnapshot; showEventLog: boolean })
           </div>
         </div>
       ) : (
-        <div className="scorebar">
+        <div className="scorebar" data-hud-band>
           <div className="timer-panel">
             <span className="timer-phase">FREE DRIVE</span>
             {dec && (
@@ -692,7 +901,7 @@ function Hud({ hud, showEventLog }: { hud: HudSnapshot; showEventLog: boolean })
       )}
 
       {hud.mode === 'match' && dec && (
-        <div className="breakdown-row">
+        <div className="breakdown-row" data-hud-band>
           {/* artifact COUNTS, not points (points live in the score panels).
               PATTERN shows only BANKED points — it is assessed solely at the
               end of AUTO and the end of the match, never live. */}
@@ -707,7 +916,7 @@ function Hud({ hud, showEventLog }: { hud: HudSnapshot; showEventLog: boolean })
       )}
 
       {hud.mode === 'match' && cr && hud.chain && (
-        <div className="breakdown-row">
+        <div className="breakdown-row" data-hud-band>
           <span>PARTICLES {hud.chain.scored}</span>
           <span>MULT ×{hud.chain.mult}</span>
           <span>CATALYSTS {hud.chain.catalysts}/4</span>
@@ -718,7 +927,7 @@ function Hud({ hud, showEventLog }: { hud: HudSnapshot; showEventLog: boolean })
       )}
 
       {(!coarsePointer) && (
-        <div className="status-wrap">
+        <div className="status-wrap" data-hud-band>
           {/* ONE LINE: the status card and the presenting sponsor's mark, right-
               aligned together. The mark used to sit in its own line above and push
               the whole cluster down, which read as a floating badge over the field
@@ -807,6 +1016,9 @@ function Hud({ hud, showEventLog }: { hud: HudSnapshot; showEventLog: boolean })
             </div>
           </div>
           {hud.net && pingGraph && <PingGraph net={hud.net} />}
+          {hud.prediction && pingGraph && (
+            <PredictionPanel stats={hud.prediction} onPick={setPredictionPref} />
+          )}
         </div>
       )}
 

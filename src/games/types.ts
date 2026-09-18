@@ -69,6 +69,17 @@ export function coerceGameId(x: unknown, fallback: GameId = 'decode'): GameId {
   return isGameId(x) ? x : fallback;
 }
 
+/**
+ * WHICH PHYSICS BACKEND A WORLD STEPS ON — the shared Rapier 2D solve every game runs today
+ * (`'2d'`), or the deterministic Rapier 3D solve BIOBUZZ's Day 1 seam adds (`'3d'`,
+ * `docs/biobuzz/plan-3d.md`). Declared here — the DOM-free seam file the server imports —
+ * because a room's physics choice is a server/matchmaking fact, not a rendering one.
+ *
+ * Absent everywhere (a world, a spec, a setting) reads as `'2d'`: the 2D pipeline is
+ * PERMANENT and every stored world/snapshot/replay predates this field.
+ */
+export type Physics = '2d' | '3d';
+
 /** one static cuboid collider, as plain numbers (Rapier-independent). Moved out
  * of physicsEngine.ts so any game module can produce field geometry. */
 export interface StaticSpec {
@@ -224,7 +235,29 @@ export interface GameSimModule {
   autoPaths: boolean;
   bounds: FieldBounds;
   colliders: FieldColliders;
-  createWorld(mode: GameMode, seed: number, setups: RobotSetup[], settings?: GameSettings): World;
+  /**
+   * BUILD THE WORLD. `physics` is the ROOM's (or the replay's) backend choice — see `Physics`.
+   *
+   * ── WHY IT IS A FIFTH PARAMETER AND NOT A FIELD ON `settings` ──────────────
+   * Day 1 routed solo practice's pick through `GameSettings.practicePhysics`, which is right
+   * for practice and wrong for everything else: a ROOM is not a practice, and the world an
+   * authoritative server builds must not depend on a player-owned settings bag at all (the
+   * server holds no `GameSettings`, and a client's copy is whatever that client last saved).
+   * A room's physics is decided once at room creation, rides `RoomConfig.physics` and
+   * `matchStart.physics`, and reaches the builder HERE — one explicit argument, sourced from
+   * the room on both ends, so the server and every client in it build the same world.
+   *
+   * Absent ⇒ the game decides for itself (BIOBUZZ falls back to `settings.practicePhysics`,
+   * then `'2d'`). A game with no `physicsOptions` ignores it entirely, which is DECODE and
+   * Chain Reaction — their builders take four parameters and stay assignable to this type.
+   */
+  createWorld(
+    mode: GameMode,
+    seed: number,
+    setups: RobotSetup[],
+    settings?: GameSettings,
+    physics?: Physics,
+  ): World;
   step(world: World, dt: number, commands: Map<number, RobotCommand>): void;
   /**
    * This game's own HUD slice, read once per HUD poll and carried on
@@ -276,4 +309,82 @@ export interface GameSimModule {
    * solve collides on, what its pin test would measure against, and what its sprite must draw.
    */
   artifactSolids?(r: RobotState, heldBalls: readonly Artifact[], radius: number): RobotSolids;
+  /**
+   * WHICH PHYSICS BACKENDS THIS GAME'S UI MAY OFFER, for a room or practice setup — absent ⇒
+   * only `'2d'`, which is every game before BIOBUZZ's Day 1 seam. BIOBUZZ fills
+   * `['2d', '3d']` once `sim3d/` exists to step the second one; DECODE and Chain Reaction leave
+   * this empty rather than advertise a physics their `step` cannot run.
+   */
+  physicsOptions?: readonly Physics[];
+  /**
+   * A DETERMINISTIC, SCRIPTED DRIVER this game offers as an AI seat — absent ⇒ none. See
+   * `BotDriver` below. Nothing implements this yet; the slot exists so the three Day 1 lanes
+   * can build toward it without a later type edit.
+   */
+  bot?: BotDriver;
+}
+
+/**
+ * ONE SEATED BOT — the object a caller holds for one robot for one match.
+ *
+ * ⚠️ **THE MEMORY LIVES HERE, AND NEVER ON THE `World`** (`docs/biobuzz/plan-3d.md` §6). A bot
+ * has hysteresis: it re-decides on a cadence, holds the decision in between, and remembers
+ * what it was doing so it does not oscillate between two equally good targets every tick. All
+ * of that is STATE, and the one place it must not be is `world` — a world is snapshotted,
+ * delta-encoded to every client 30 times a second, reconciled, and replayed, so a bot field on
+ * it would be wire cost on every tick, a thing a reconcile could rewind, and a thing a replay
+ * would have to carry to play back. The caller owns the bot; the world stays exactly as wide as
+ * it was.
+ *
+ * `step` returns the command for ONE tick and is called ONCE per tick per seat, by whoever owns
+ * the seat: `GameController` in solo practice, `Room` on the server, the host worker on LAN.
+ * **The command is RECORDED like a human driver's** — the replay recorder records every setup's
+ * command per tick (`docs/area/netcode.md`), so a bot seat's command rides the same array and a
+ * replay of a match with a bot in it re-simulates without needing the bot at all.
+ *
+ * `dispose` releases anything the bot allocated. Optional, because a policy that is pure state
+ * has nothing to release; a caller must still call it when the match ends.
+ */
+export interface BotSeat {
+  step(world: World): RobotCommand;
+  dispose?(): void;
+}
+
+/**
+ * A DETERMINISTIC, SCRIPTED DRIVER — an AI seat a room or solo practice can fill instead of a
+ * human player.
+ *
+ * DOM-free and on the SIM module for the same reason `hud` is: the authoritative server needs
+ * to run it too, for a room with an empty seat. `tiers` names the DIFFICULTY LEVELS this
+ * game's bot offers as opaque strings, so a game can add or rename one without a shared type
+ * edit. A driver must read only `world` — the same determinism contract as the rest of
+ * `src/sim/` and `src/games/<id>/`: no DOM, no clock, no `Math.random` — and it must NOT read
+ * `world.rngState` either, because a bot drawing from the world's own seeded chain would move
+ * every later draw in the match (a spill's scatter, a human player's jitter) and a client
+ * predicting a tick without the bot would diverge from the server that ran it.
+ *
+ * ── `create`, NOT `drive` ──────────────────────────────────────────────────
+ * `drive(world, id, tier)` — one-shot, memoryless — is still declared, and it is OPTIONAL and
+ * deprecated. A driver with hysteresis cannot answer it honestly: it would have to re-decide
+ * every tick, which is a different policy from the one `create` runs, so a server calling one
+ * and a client predicting with the other would disagree about what the bot did. BIOBUZZ does
+ * not implement it; a caller that reaches for it gets a compile error pointing here.
+ */
+export interface BotDriver {
+  readonly tiers: readonly string[];
+  /** the tier a UI should preselect and an absent/unknown wire value folds to. */
+  readonly defaultTier: string;
+  /** force an untrusted tier (localStorage, the wire, a URL) onto `tiers`. */
+  coerceTier(x: unknown): string;
+  /**
+   * SEAT a bot on `robotId`. `seed` is the caller's: the plan's §6 rule is `(matchSeed, seat)`,
+   * so every peer that seats the same bot on the same robot of the same match gets the same
+   * driver, and two seats of one match get different ones.
+   *
+   * `world` is the world at seat time — a policy may read the field it is about to play on
+   * (which alliance, which spec) but must not keep a reference that outlives the match.
+   */
+  create(world: World, robotId: number, tier: string, seed: number): BotSeat;
+  /** @deprecated memoryless one-shot — see above. Prefer `create`. */
+  drive?(world: World, robotId: number, tier: string): RobotCommand;
 }
