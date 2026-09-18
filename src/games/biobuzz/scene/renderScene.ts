@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js';
 import type { GameScene, GameSceneFactory, SceneFrame } from '../../module';
 import type { World } from '../../../types';
 import { BB_HALF_X } from '../config';
@@ -143,14 +144,43 @@ class BiobuzzScene implements GameScene {
     // off instead of clipping, and a shadow map so the field reads as one lit scene rather than
     // flat-shaded shapes. `SceneQuality` (below) is the one place a future graphics-settings
     // panel toggles these — defaults are the "Medium" tier the plan doc's Day 3 section expects.
+    //
+    // ⚠️ EXPOSURE/FILL RAISED HERE (2026-09-18 playtest: "very dark, shadows don't look good").
+    // The Day 1 pass left `toneMappingExposure` at ACES's own neutral 1.0 and a hemisphere fill
+    // dim enough (`0x404048` ground, 1.1 intensity) that the tile floor — already a dark albedo
+    // (`COLORS.tile` #2c3038, ~0.17 linear) by DESIGN, so the HUD's on-field tokens keep their
+    // contrast — rendered as near-black rather than merely dark. 1.2 (within the 1.2–1.5 target)
+    // plus a brighter, lighter-grey ground term reads the tiles back close to the 2D canvas's own
+    // value; a first pass at 1.35 exposure with a 1.6/2.4 hemi/sun pair over-brightened the
+    // opposite way — the alliance-coloured tray panels (`tray_panel_red`/`_blue`) washed out to a
+    // pastel pink/lavender under ACES's own highlight roll-off, so both were dialed back one notch.
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
-    this.renderer.toneMappingExposure = 1.0;
+    this.renderer.toneMappingExposure = 1.2;
     this.renderer.shadowMap.enabled = QUALITY.shadows;
-    this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    // `PCFSoftShadowMap` is deprecated in this three release (WebGLShadowMap silently substitutes
+    // `PCFShadowMap` and warns) — `VSMShadowMap` is the maintained soft-shadow type and, unlike a
+    // bare PCF filter, its blur radius (`shadow.radius`, below) is genuinely a BLUR rather than a
+    // wider hard-edge sample pattern, which is what "shadows don't look good" was pointing at.
+    this.renderer.shadowMap.type = THREE.VSMShadowMap;
     this.scene.background = new THREE.Color(readBackdropColor());
 
-    const hemi = new THREE.HemisphereLight(0xffffff, 0x404048, 1.1);
-    const sun = new THREE.DirectionalLight(0xffffff, 1.6);
+    // IMAGE-BASED LIGHTING — a `RoomEnvironment` PMREM as `scene.environment`, not a loaded HDRI
+    // (plan-3d.md §4.5's HDRI sets are a Day 3, on-demand fetch; this is the free, zero-bytes-
+    // over-the-wire baseline that is what actually makes a metal turret ring or a glossy chassis
+    // read as a physical material instead of a flat-shaded polygon — a `MeshStandardMaterial`
+    // with no environment has nothing to reflect). Generated ONCE at scene construction, a few KB
+    // of GPU-side render-target memory, never touched per frame; every `MeshStandardMaterial`/
+    // `MeshPhysicalMaterial` in the scene (robots, the GLB field, the fallback field) picks it up
+    // automatically through `scene.environment` with no per-material wiring.
+    const pmrem = new THREE.PMREMGenerator(this.renderer);
+    this.scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
+    pmrem.dispose();
+
+    // HEMISPHERE FILL — a lighter, less blue-shifted ground term (`0x4b525c`, up from a near-navy
+    // `0x404048`) at a higher intensity so light bounced off the (dark) tile floor still lifts
+    // the underside of the robots and the hive trays instead of leaving them silhouetted.
+    const hemi = new THREE.HemisphereLight(0xffffff, 0x4b525c, 1.3);
+    const sun = new THREE.DirectionalLight(0xffffff, 1.9);
     sun.position.set(60, -80, 140);
     sun.castShadow = QUALITY.shadows;
     if (QUALITY.shadows) {
@@ -167,7 +197,17 @@ class BiobuzzScene implements GameScene {
       cam.near = 1;
       cam.far = 260;
       cam.updateProjectionMatrix();
-      sun.shadow.bias = -0.0015;
+      // BIAS/NORMAL-BIAS/RADIUS TUNED TOGETHER (2026-09-18 playtest: "shadows don't look good").
+      // `bias` alone at a value that kills acne on a flat floor peter-pans a THIN caster (a
+      // wall's own frame, a flower pipe) off its own base; `normalBias` (which offsets along the
+      // surface normal rather than the light direction) closes that gap without reopening the
+      // acne. `radius` is `VSMShadowMap`'s own blur-kernel size in shadow-map texels — a
+      // hard-edged shadow under studio-flat lighting is what read as "doesn't look good" as much
+      // as the darkness did, and VSM's blur is a real gaussian over the variance map rather than
+      // PCF's wider (and slower) sample pattern.
+      sun.shadow.bias = -0.0012;
+      sun.shadow.normalBias = 0.035;
+      sun.shadow.radius = 3;
     }
     this.scene.add(hemi, sun);
 
@@ -197,6 +237,7 @@ class BiobuzzScene implements GameScene {
   }
 
   dispose(): void {
+    this.scene.environment?.dispose();
     disposeObject3D(this.scene);
     this.renderer.dispose();
     this.element.parentElement?.removeChild(this.element);

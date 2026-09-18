@@ -53,6 +53,25 @@ normals block meshoptimizer's simplifier from collapsing any edge on a mesh buil
 small merged parts, since every triangle boundary then looks like a hard attribute seam).
 `renderFieldGlb.ts` calls `computeVertexNormals()` once per mesh after load.
 
+## Materials — one glTF material PER PART CLASS (2026-09-18 fidelity pass)
+
+A node with several distinct real materials (a flower is a ring + a HIPS pipe + a solid base/
+backstop; a hive tray is an alliance-coloured skin over bare structural metal) is **one mesh with
+one PRIMITIVE per part class**, not one merged blob — `convert.py` writes a separate
+`<node>__<class>.stl` per class it finds among that node's own CAD part names, and
+`assemble-gltf.mjs` turns each into a primitive carrying a glTF material named for that class.
+`renderFieldGlb.ts` assigns the runtime PBR material by that name (`Material.name`, preserved by
+GLTFLoader), not by walking node names — the full class vocabulary:
+
+`tile`, `wall_panel`, `wall_extrusion`, `hive_frame_metal`, `tray_panel_red`, `tray_panel_blue`,
+`tray_metal`, `flower_ring`, `flower_pipe`, `flower_base`, `tape_red`, `tape_blue`, `tape_white`.
+
+Regenerating writes ONLY `field.glb`/`field-low.glb` here — `field-colliders.json`,
+`field-measurements.json` and `sim3d/fieldColliders.gen.ts` are unaffected (the class split is a
+VISUAL-only grouping over the same collider/measurement instances `convert.py` already computed),
+and `npm run field-cad` prints a `git diff --stat` anyone regenerating should expect to show only
+the two `.glb` files changing.
+
 ## `field-colliders.json` schema
 
 ```ts

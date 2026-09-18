@@ -22,7 +22,7 @@ import {
 } from '../config';
 import { biobuzzColliders, BB_WALL_COUNT } from '../colliders';
 import { cadCellBox, fieldColliders3d } from './fieldColliders';
-import { yawQuat } from './math3';
+import { rotate2, tiltQuatX, yawQuat } from './math3';
 
 /**
  * TEST-ONLY OVERRIDE for `BB3_FIELD_COLLIDERS`, read by every CAD-vs-fallback branch in this
@@ -296,9 +296,19 @@ export interface HiveLocalBox {
   vMax: number;
   wMin: number;
   wMax: number;
-  /** which tilt angle this box's numbers are true AT — 0 for the theta-independent algebraic
-   * fallback, `cadCaptureTheta(alliance)` for a CAD box (see `fieldColliders.ts`'s own comment
-   * on why the CAD hulls are not pre-rotated). `derive.ts`'s `insideCell` reads this. */
+  /** which tilt angle this box's `vMin..wMax` numbers were CAPTURED AT — 0 for the
+   * theta-independent algebraic fallback, `cadCaptureTheta(alliance)` for a CAD box (see
+   * `fieldColliders.ts`'s own comment on why the CAD hulls are not pre-rotated). Consumed in
+   * exactly two places, both in `sim3d/bodies.ts`: `hiveTrayRefTheta` (re-exports it, for
+   * `engine.ts`'s `applyHiveTilt` and the scene's matching GLB-node rotation) and
+   * `obliqueBoxCollider` (bakes it into the built collider's own vertex data). Everything
+   * downstream of a BUILT collider -- `derive.ts`'s `insideCell`, the SIM3D smoke lane's
+   * `hiveWorldPoint` -- never reads `refTheta` again: once baked, `world = pivot + Rotate(theta)
+   * * (v, w)` holds for `vMin..wMax` the same way it always did for the fallback box (`refTheta`
+   * always 0 there), so those call sites use the plain absolute `theta`, no `refTheta` term. See
+   * `obliqueBoxCollider`'s own comment for the bug this split fixed (a CAD-only flat floor at
+   * rest, from using `theta - refTheta` -- which is 0 exactly at rest -- against an axis-aligned
+   * box built directly from the AS-CAPTURED, not baked, numbers). */
   refTheta: number;
 }
 
@@ -404,6 +414,72 @@ export const HIVE_BRACKET_T = 1.5;
  * cells; whatever the CAD supports for the down cell's clearance is what this measures, reported
  * (not assumed) by the SIM3D lane's measurements check.
  */
+/**
+ * A box collider description spanning `[xLo,xHi] x [vLo,vHi] x [wLo,wHi]` in the tray's own
+ * (x, v, w) local frame, honouring `refTheta` -- the CAD's own capture tilt
+ * (`HiveLocalBox.refTheta`) -- by BAKING it into the shape's own vertex data rather than into a
+ * per-collider Rapier rotation (see `buildHiveTray3d`'s own comment, just below, on why a
+ * kinematic body's collider cannot carry its own local rotation).
+ *
+ * WHY BAKING IS NEEDED AT ALL, FOUND BY THE SAME MEASUREMENT THAT DIAGNOSED THE TWO OWNER-REPORTED
+ * HIVE BUGS ("visually tilted more than where the balls end up", "spill out too easily"):
+ * `hiveCellLocalBox`'s CAD branch (`cadCellBox`, `fieldColliders.ts`) returns `vMin`/`vMax`/
+ * `wMin`/`wMax` measured DIRECTLY off the CAD hull's own captured vertices -- i.e. literally the
+ * world (y, z) offset from the pivot AT THE TILT the part was captured
+ * (`cadCaptureTheta(alliance)`), NOT a canonical, tilt-independent local frame the way the Day 1
+ * algebraic box's numbers already are (that box's `refTheta` is 0 for exactly this reason -- see
+ * `HiveLocalBox`'s own comment). A box built AXIS-ALIGNED in that captured (v, w) pair -- what
+ * this function replaces, which stood here unconditionally before this fix -- is therefore FLAT
+ * (parallel to v, i.e. constant world z along the whole cell depth) the instant `theta` reaches
+ * `refTheta`, which is exactly AT REST: `hiveTiltAngle(...) - hiveTrayRefTheta(alliance)` (this
+ * body's own kinematic rotation, `applyHiveTilt`) is 0 there, so an axis-aligned box built in the
+ * captured (v, w) pair comes through the body's identity rotation completely unrotated. MEASURED:
+ * the up-cell floor read the SAME world z (47.05) at both its inner (divider) and outer (mouth)
+ * v-edge at rest, instead of the ~7in rise toward the mouth the Day 1 fallback box (`refTheta`
+ * 0) already produces correctly there. A level floor cannot hold anything against the divider
+ * wall against gravity -- which is BOTH reported bugs at once: the scene's own GLB tilts by the
+ * true angle (it reads the same `hiveTiltAngle`/`hiveTrayRefTheta` pair this file exports and
+ * rotates a mesh that is not reduced to an axis-aligned box), while the level PHYSICS floor did
+ * not, and nothing rolled downhill to the back wall to be safe from the always-open mouth.
+ *
+ * THE FIX, EXACTLY: rotate each of the box's 8 corners by `+refTheta` about the pivot (plain
+ * numbers, via `rotate2` -- never a collider-local Rapier rotation) before handing them to
+ * `RAPIER.ColliderDesc.convexHull`. Composed with the BODY's own `hiveTiltAngle(...) -
+ * hiveTrayRefTheta(alliance)` rotation, the total rotation carried by a baked corner is
+ * `(theta - refTheta) + refTheta = theta` -- the tray's TRUE absolute tilt, for ANY `theta`, not
+ * only at rest -- reproducing exactly the Day 1 fallback's own `world = pivot + Rotate(theta) *
+ * (v, w)` convention, whatever `refTheta` reads. `refTheta === 0` (the fallback box, or CAD off)
+ * takes the untouched `cuboid()` path: baking a zero rotation is a no-op, so this is a strict
+ * generalization and the fallback's already-tight, already-measured numbers are byte-for-byte
+ * unaffected. UNLIKE re-deriving a new axis-aligned box from rotated hull VERTICES (an earlier,
+ * different, already-rejected attempt -- see `cadCaptureTheta`'s own comment on why that inflates
+ * a box), this bakes the box's OWN four corners exactly, with no re-boxing and no inflation: the
+ * shape stays exactly as tight as the un-rotated one, just correctly oriented.
+ *
+ * `derive.ts`'s `insideCell` and the SIM3D smoke lane's `hiveWorldPoint` do the matching inverse
+ * -- `rotate2(dy, dz, -theta)`, no `refTheta` term -- for the same reason: once baked into the
+ * shape, `refTheta` never appears in a live per-tick rotation again.
+ */
+function obliqueBoxCollider(
+  RAPIER: Rapier3d,
+  xLo: number,
+  xHi: number,
+  vLo: number,
+  vHi: number,
+  wLo: number,
+  wHi: number,
+  refTheta: number,
+) {
+  const half = (lo: number, hi: number) => (hi - lo) / 2;
+  const mid = (lo: number, hi: number) => (lo + hi) / 2;
+  const desc = RAPIER.ColliderDesc.cuboid(half(xLo, xHi), half(vLo, vHi), half(wLo, wHi));
+  if (refTheta === 0) {
+    return desc.setTranslation(mid(xLo, xHi), mid(vLo, vHi), mid(wLo, wHi));
+  }
+  const { a, b } = rotate2(mid(vLo, vHi), mid(wLo, wHi), refTheta);
+  return desc.setTranslation(mid(xLo, xHi), a, b).setRotation(tiltQuatX(refTheta));
+}
+
 export function buildHiveTray3d(
   RAPIER: Rapier3d,
   world3d: InstanceType<Rapier3d['World']>,
@@ -428,35 +504,28 @@ export function buildHiveTray3d(
   // COLLIDER'S OWN skin is padded, which is a standard mitigation for a thin fast contact and
   // not a change to the hive's modelled geometry.
   const wallHalf = Math.max(BB3_HIVE_CELL_WALL / 2, 0.75);
+  // TRAY-WALL RESTITUTION IS GOVERNED BY THE TRAY, NOT AVERAGED WITH THE ELEMENT'S OWN 0.45 --
+  // `Min` combine (owner playtest fix, "balls spill out too easily"): every tray collider below
+  // sets a LOW restitution and `CoefficientCombineRule.Min`, so `min(elementRestitution 0.45,
+  // trayRestitution)` -- the LOWER number -- governs every element/tray contact, the same
+  // direction `engine.ts`'s floor already takes for FRICTION (a `Min` rule there keeps a
+  // 0-friction floor from fighting the drivetrain model). Before this fix no restitution combine
+  // rule was set on any tray collider, so Rapier's own default (`Average`) applied: an element
+  // landing on the 0.2-restitution floor bounced at `(0.45+0.2)/2 = 0.325`, which, combined with
+  // the flat-floor bug this same pass fixes (see `obliqueBoxCollider`'s header), was enough
+  // height and roll time for a resting element to wander back out the always-open mouth.
+  const TRAY_RESTITUTION_COMBINE = RAPIER.CoefficientCombineRule.Min;
   for (const sideSign of [1, -1] as const) {
     const box = hiveCellLocalBox(sideSign, alliance);
-    // ⚠️ NO PER-COLLIDER ROTATION HERE -- an earlier version rotated each collider by
-    // `tiltQuatX(-box.refTheta)` and pre-rotated its translation to match, expecting the body's
-    // own rotation to cancel it back out to identity at the reference pose. That composition
-    // measured correct (translation and shape orientation both checked out by hand against the
-    // live collider, and the twelve-probe/launch/height checks all agreed) -- but a KINEMATIC
-    // body with a collider carrying its own non-identity local rotation produced a real, measured
-    // instability regardless: a resting element several inches clear of every collider (confirmed
-    // via `intersectionsWithPoint`, zero hits) got a several-hundred-in/s velocity kick on the
-    // very first tick, and it went away completely and only when the per-collider rotation was
-    // removed (isolated by disabling the floor/back/side colliders one at a time). The fix moves
-    // the SAME net rotation onto the BODY instead: `engine.ts`'s `applyHiveTilt` sets the tray
-    // body's kinematic rotation to `hiveTiltAngle(...) - hiveTrayRefTheta(alliance)` (0 for the
-    // fallback box, so this is a no-op there), and every collider below is built at IDENTITY
-    // rotation with its RAW (unrotated) `(v, w)` as its translation -- the body's own rotation
-    // alone reproduces `world = pivot + Rotate(theta - refTheta) * (v, w)`, with nothing left for
-    // an individual collider's own local pose to get wrong.
-    const vCentre = (box.vMin + box.vMax) / 2;
-    const vHalf = (box.vMax - box.vMin) / 2;
-    const wCentre = (box.wMin + box.wMax) / 2;
-    const wHalf = (box.wMax - box.wMin) / 2;
     // FLOOR (w = wMin): the surface a resting element sits on -- on the CAD path, THIS is the
-    // one shape's own answer for the down-cell clearance (see this function's header).
+    // one shape's own answer for the down-cell clearance (see this function's header), now
+    // correctly INCLINED by `obliqueBoxCollider` instead of flattened -- see that function's
+    // own comment for the bug this replaces.
     world3d.createCollider(
-      RAPIER.ColliderDesc.cuboid(box.xHalf, vHalf, wallHalf)
-        .setTranslation(0, vCentre, box.wMin + wallHalf)
+      obliqueBoxCollider(RAPIER, -box.xHalf, box.xHalf, box.vMin, box.vMax, box.wMin, box.wMin + 2 * wallHalf, box.refTheta)
         .setFriction(0.6)
-        .setRestitution(0.2),
+        .setRestitution(0.15)
+        .setRestitutionCombineRule(TRAY_RESTITUTION_COMBINE),
       body,
     );
     // BACK WALL (the INNER end, toward the pivot) -- closed. The OUTER end (away from the
@@ -471,21 +540,34 @@ export function buildHiveTray3d(
     // A dead-stop back wall is the more physically honest choice anyway (a POLLEN meeting a
     // padded cell wall, not a superball).
     const innerV = sideSign > 0 ? box.vMin : box.vMax;
+    const backA = innerV;
+    const backB = innerV - sideSign * 2 * wallHalf;
     world3d.createCollider(
-      RAPIER.ColliderDesc.cuboid(box.xHalf, wallHalf, wHalf)
-        .setTranslation(0, innerV - sideSign * wallHalf, wCentre)
+      obliqueBoxCollider(
+        RAPIER,
+        -box.xHalf,
+        box.xHalf,
+        Math.min(backA, backB),
+        Math.max(backA, backB),
+        box.wMin,
+        box.wMax,
+        box.refTheta,
+      )
         .setFriction(0.5)
-        .setRestitution(0),
+        .setRestitution(0)
+        .setRestitutionCombineRule(TRAY_RESTITUTION_COMBINE),
       body,
     );
     // TWO SIDE WALLS (along x = +-xHalf). Top is left open (plan section 3.6's "two open-top
     // cells") -- nothing above a cell but air.
     for (const s of [1, -1] as const) {
+      const xA = s * box.xHalf;
+      const xB = s * (box.xHalf - 2 * wallHalf);
       world3d.createCollider(
-        RAPIER.ColliderDesc.cuboid(wallHalf, vHalf, wHalf)
-          .setTranslation(s * (box.xHalf - wallHalf), vCentre, wCentre)
+        obliqueBoxCollider(RAPIER, Math.min(xA, xB), Math.max(xA, xB), box.vMin, box.vMax, box.wMin, box.wMax, box.refTheta)
           .setFriction(0.5)
-          .setRestitution(0.2),
+          .setRestitution(0.15)
+          .setRestitutionCombineRule(TRAY_RESTITUTION_COMBINE),
         body,
       );
     }

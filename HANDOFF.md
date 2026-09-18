@@ -1,6 +1,69 @@
+# HANDOFF — 2026-09-18 (biobuzz-3d: owner's first 3D play-test fixes — hive tilt/spill, visuals, driver POV)
+
+**READ FIRST.** Branch **`biobuzz-3d`**, worktree `.claude/worktrees/biobuzz-3d`, clean at the merge
+commit named in the log; all gates green there (`npm test` 1798 + 1413, SIM3D lane 83). The owner
+reported four things after playing the Day 1 build; all four are fixed and verified:
+
+1. **Hive visually tilted more than the physics.** The GLB tray node is captured at its rest pose, and
+   the scene applied the ABSOLUTE tilt on top of it (double tilt). The scene now imports the physics'
+   `hiveTiltAngle(world, a)` (`sim3d/hive3d.ts`) and `hiveTrayRefTheta(a)` (`sim3d/bodies.ts`) and
+   rotates the tray by `hiveTiltAngle − hiveTrayRefTheta` — 0 at rest, 60° after a tip — the same
+   expression `engine.ts`'s `applyHiveTilt` gives the kinematic body. ONE angle authority; never
+   re-derive it in a renderer.
+2. **Elements spilled out of the up cell.** Root cause in the PHYSICS: the CAD-sized tray collider was
+   built from the box captured at the tray's own tilt without re-inclining it, so at rest the up-cell
+   floor was FLAT (mouth and divider at the same z) and every landed element rolled out. Fix:
+   `obliqueBoxCollider` bakes the capture angle into each collider's fixed local rotation (never a
+   per-tick collider rotation — that destabilises the kinematic body); tray colliders use a `Min`
+   restitution combine rule (floor/sides 0.15, back 0). Retention 20/20 at 24/48/72 in; the load table
+   (3, 7, 3+2 stay; 8, 3+3 tip) now matches the manual in physics; an unchanged kinematic target does
+   not wake resting elements. Consequence: the down-cell clearance is now ~22.7–29.8 in (mid 26.2, vs
+   the manual's 25.5) so a 29-in robot IS stopped; the up-cell opening top reads 68.85 vs the manual's
+   65.6 — a new OPEN finding beside the bottom one (see below).
+3. **Rendering too dark, bad shadows, opaque panels, grey flowers.** ACES exposure 1.2, hemisphere
+   1.3 + key 1.9, `RoomEnvironment` IBL via PMREM, `VSMShadowMap` (PCFSoft is deprecated in three
+   0.186) with a shadow camera fitted to ±92 in, bias −0.0012 / normalBias 0.035 / radius 3; walls and
+   station panels are transparent polycarbonate (opacity 0.22, depthWrite off, DoubleSide, renderOrder
+   10); room backdrop lightened to gym grey. The GLB now carries one primitive PER PART CLASS with a
+   named material (`flower_ring/pipe/base`, `hive_frame_metal`, `tray_metal`, `tray_panel_red/blue`,
+   `wall_panel/extrusion`, `tile`, `tape_*`); `renderFieldGlb.ts` assigns PBR by material NAME.
+   `convert.py` writes one STL per class per node; `assemble-gltf.mjs` builds the primitives.
+   Colliders/measurements stayed byte-identical through the regeneration.
+4. **Driver POV missed the near edge.** `fitDriverCamera(alliance, viewAngle, aspect)` in
+   `renderCameras.ts` solves pitch analytically and the setback by search so all four corners, both
+   wall tops and the hive tops fit with a 4 % margin: 16:9 → eye 72 in, setback 24 in, pitch 37.5°,
+   FOV 95° (the near corners pin the FOV at `DRIVER_FOV_MAX`; raising the eye is preferred over
+   pulling back). If it reads too wide in play, `DRIVER_EYE_H_*`/`DRIVER_SETBACK_*`/`DRIVER_FOV_MAX`
+   are the knobs.
+
+**OPEN findings (owner ruling pending, move nothing; in the coordinator's memory):** flower ring
+centres ~1.4 in off `BB_FLOWERS`/`BB_FLOWER_D`; wall inner faces ±70.67 vs 72 (3D walls stay at 72);
+hive up-cell opening [47.05, 68.85] vs `BB_HIVE_OPEN_Z` [53.5, 65.6] and down-cell clearance ~26.2
+vs 25.5. The measurements check prints them under wide, commented tolerances.
+
+**Gotchas added:** `PCFSoftShadowMap` is gone in three 0.186 (use `VSMShadowMap`); in the app the
+`computer` tool's key presses may not reach the game's listeners (dispatch a synthetic
+`KeyboardEvent`); `coerceAssists` forces `aimAssist` on, so a synthetic firing test sets
+`r.aimAssist = false` on the spawned robot; `releasePollen`/`takeHeld` need a matching `held` ball
+in `world.balls`, not just a hopper entry; the "Goal Rib" parts are treated as tray metal and only
+the Top/Back/Bottom skins as the alliance panel (a judgement from part names, unverified against a
+photo). Day 2 (spec §10) remains next; see the section below for the plan.
+
+**Owner re-test 2026-09-18, after these fixes: STILL WRONG.** Elements sit on a different plane than the
+tray floor; the hive's back and some support structures are missing from the GLB; flower colours still
+wrong; tape layout and widths incorrect (wall-bounded zones carry no tape on the wall side; tape widths
+are documented); the scoreboard overlaps the field. Diagnosis: the collider export used per-part AABB
+corners (so the physics tray floor is not the mesh floor and the frame legs were dropped), the GLB
+assembly drops/mis-classes structural parts, and colours/tape/tiles were procedural guesses. Round 2 is
+running on OPUS agents (owner asked for better agents and more thorough analysis): a CAD audit doc,
+true per-part hull colliders in each tray's un-tilted local frame, CAD (XCAF) colours and CAD tape,
+and HUD-safe camera framing.
+
+---
+
 # HANDOFF — 2026-09-17, night (biobuzz-3d: Day 1 LANDED — 3D physics, 3D renderer, CAD field)
 
-**READ FIRST.** Branch **`biobuzz-3d`**, worktree `.claude/worktrees/biobuzz-3d`. Tree clean at the
+**(Previously READ FIRST.)** Branch **`biobuzz-3d`**, worktree `.claude/worktrees/biobuzz-3d`. Tree clean at the
 merge commit named in the log; every gate green at that commit: `build` · `server:check` · `docaudit`
 (CLAUDE.md 26,850 / 27,000 bytes) · `uiaudit` · `bundleaudit` · `npm test` (1798 shared + the
 BIOBUZZ suite incl. the SIM3D and RENDER lanes, count in the log). The owner play-tested the first

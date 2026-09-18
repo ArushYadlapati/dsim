@@ -50,6 +50,62 @@ import {
   FLOWER_MOUTH,
 } from '../../src/games/biobuzz/config';
 
+// ── ISSUE-1 VERIFICATION HARNESS (2026-09-18: tray-tilt fix, `?physics=3d[&probe=hive[&tip=1]]`)
+// Query-param driven so the file's DEFAULT behaviour (a 2D-physics world, side-by-side render)
+// is completely unchanged for every existing use of this page — see the report for what each
+// flag does and the numbers it produced.
+import { initPhysics3d } from '../../src/games/biobuzz/sim3d/engine';
+import { hiveCellLocalBox, hivePivotX } from '../../src/games/biobuzz/sim3d/bodies';
+import { hiveTiltAngle } from '../../src/games/biobuzz/sim3d/hive3d';
+import { rotate2 } from '../../src/games/biobuzz/sim3d/math3';
+import { BB3_HIVE_PIVOT_Z, BB_HIVE_UP_STAGED, BB_POLLEN_R } from '../../src/games/biobuzz/config';
+import { BB_TIP_SWING_S } from '../../src/games/biobuzz/hive';
+
+const urlParams = new URLSearchParams(location.search);
+const physicsMode = urlParams.get('physics') === '3d' ? '3d' : '2d';
+const hiveProbeAlliance: Alliance | null = urlParams.get('probe') === 'hive' ? 'red' : null;
+const forceTip = urlParams.get('tip') === '1';
+
+/**
+ * Places one already-staged ball INSIDE alliance's UP cell, resting a few inches above its own
+ * floor, tagged `{kind:'element', el:'hive:<alliance>'}` so the 3D sync (`engine.ts`'s
+ * `syncElement`, `wantsDynamicBody`) gives it a REAL dynamic body and the next few physics ticks
+ * settle it onto the cell's actual floor collider under gravity — this is the "place an element
+ * JSON-side and let the sync seat it" verification the report calls for, proving the CAD tray's
+ * captured pose and `hiveTrayRefTheta`'s correction agree with where the physics collider
+ * actually is (a wrong correction either floats the ball above the true floor or drops it
+ * through a wall it thinks is elsewhere).
+ *
+ * The WORLD position is computed the same way `derive.ts`'s `insideCell` does, in reverse: a
+ * local box point `(v, w)` maps to world via `rotate2(v, w, theta − box.refTheta)` around the
+ * pivot — see `sim3d/bodies.ts`'s file header for the derivation. Using the real formula (not
+ * assuming identity) is deliberate: at the CAD path's default (`BB3_FIELD_COLLIDERS` true),
+ * `theta` at rest already equals `box.refTheta` for the STAGED up side, so this reduces to a
+ * plain offset — but the fallback box's `refTheta` is always 0 while `hiveTiltAngle` is never 0
+ * at rest, so a probe that assumed identity would silently seat the ball wrong on that path.
+ */
+function placeElementInUpCell(world: World, alliance: Alliance): void {
+  const up = world.biobuzz?.hives[alliance]?.up ?? BB_HIVE_UP_STAGED[alliance];
+  const sideSign = up === 'north' ? 1 : -1;
+  const box = hiveCellLocalBox(sideSign, alliance);
+  const v = (box.vMin + box.vMax) / 2;
+  const w = box.wMin + 3; // a few inches above the floor — settles down, never spawns inside it
+  const theta = hiveTiltAngle(world, alliance);
+  const { a: dy, b: dz } = rotate2(v, w, theta - box.refTheta);
+  const target = world.balls.find((b) => b.state.kind === 'ground');
+  if (!target) {
+    status('hive probe: no ground-state ball available to place — skipped');
+    return;
+  }
+  const r = target.r ?? BB_POLLEN_R;
+  target.pos = { x: hivePivotX(alliance), y: dy };
+  target.z = BB3_HIVE_PIVOT_Z + dz - r; // b.z is the BOTTOM height (sim3d's own convention)
+  target.vel = { x: 0, y: 0 };
+  target.vz = 0;
+  target.state = { kind: 'element', el: `hive:${alliance}`, slot: 0 };
+  status(`hive probe: placed ball ${target.id} in ${alliance} ${up} cell at world (${hivePivotX(alliance).toFixed(2)}, ${dy.toFixed(2)}, ${(BB3_HIVE_PIVOT_Z + dz).toFixed(2)})`);
+}
+
 function setup(id: number, alliance: Alliance, startIndex: number): RobotSetup {
   return {
     id,
@@ -71,36 +127,59 @@ const checksEl = document.getElementById('checks')!;
 async function main(): Promise<void> {
   status('booting 2D physics...');
   await initPhysics();
+  if (physicsMode === '3d') {
+    status('booting 3D physics (rapier3d-deterministic-compat)...');
+    await initPhysics3d();
+  }
 
-  status('building a 2v2 biobuzz world...');
-  const world = createBiobuzzWorld('match', 4242, [
-    setup(0, 'red', 0), // TOP
-    setup(1, 'red', 1), // BOTTOM
-    setup(2, 'blue', 0),
-    setup(3, 'blue', 1),
-  ]);
+  status(`building a 2v2 biobuzz world (physics=${physicsMode})...`);
+  const world = createBiobuzzWorld(
+    'match',
+    4242,
+    [
+      setup(0, 'red', 0), // TOP
+      setup(1, 'red', 1), // BOTTOM
+      setup(2, 'blue', 0),
+      setup(3, 'blue', 1),
+    ],
+    undefined,
+    physicsMode,
+  );
   world.match.phase = 'teleop';
   world.match.phaseTimeLeft = 120;
 
   // drive forward, keep intake + fire held — with the default single-turret build this both
   // moves the robots off their start poses and gets a launch in flight once something is
   // captured, without needing a scripted, per-tick command sequence.
-  const drive: RobotCommand = {
-    driveX: 0,
-    driveY: 1,
-    rotate: 0.15,
-    leftDrive: 0,
-    rightDrive: 0,
-    intake: true,
-    fire: true,
-  };
+  //
+  // THE HIVE PROBE WANTS THE OPPOSITE: an ISOLATED hive, undisturbed by organic gameplay — a
+  // driving/firing robot can score into a hive on its own during the warm-up (or afterwards, in
+  // the live render loop) and start a REAL tip at a time this harness does not control, which
+  // both consumes the ball this probe is about to place and makes `tip=1`'s forced tip land on
+  // top of an already-tipping hive. So a hive probe gets an IDLE command (no drive, no intake, no
+  // fire, so the only thing moving is gravity on the placed ball and, if asked, the forced tip)
+  // and skips the 180-tick warm-up entirely — the ball is placed the instant the world exists,
+  // while `hive.up`/`.tipping` are still exactly `BB_HIVE_UP_STAGED`/`0`.
+  const drive: RobotCommand = hiveProbeAlliance
+    ? { driveX: 0, driveY: 0, rotate: 0, leftDrive: 0, rightDrive: 0, intake: false, fire: false }
+    : { driveX: 0, driveY: 1, rotate: 0.15, leftDrive: 0, rightDrive: 0, intake: true, fire: true };
   const commands = new Map<number, RobotCommand>([
     [0, drive],
     [1, drive],
     [2, drive],
     [3, drive],
   ]);
-  for (let i = 0; i < 180; i++) biobuzzStep(world, SIM_DT, commands);
+  const warmupTicks = hiveProbeAlliance ? 0 : 180;
+  for (let i = 0; i < warmupTicks; i++) biobuzzStep(world, SIM_DT, commands);
+
+  if (hiveProbeAlliance) {
+    placeElementInUpCell(world, hiveProbeAlliance);
+    if (forceTip && world.biobuzz) {
+      const hive = world.biobuzz.hives[hiveProbeAlliance];
+      world.biobuzz.hives[hiveProbeAlliance] = { ...hive, tipping: BB_TIP_SWING_S, released: false };
+      status(`hive probe: forced a ${BB_TIP_SWING_S}s tip on ${hiveProbeAlliance}`);
+    }
+  }
 
   status('loading the scene chunk...');
   const { createBiobuzzScene } = await import('../../src/games/biobuzz/scene/renderScene');
