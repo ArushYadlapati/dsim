@@ -1,7 +1,65 @@
+# HANDOFF — 2026-09-17 (match replays are private, and one player cannot publish a match)
+
+**READ FIRST.** Branch **`feat/replay-privacy`**, PR **#74**, merged into `alpha` and **NOT
+DEPLOYED**. Gates on the merge: `npm test` ALL PASS ×2 (1798 + 1321) · `dbtest` ALL PASS ·
+`build` · `server:check` · `docaudit` · `uiaudit` (at baseline) · `contrast`.
+
+⚠️ **THE DB MIGRATION (0038) IS A SERVER CHANGE AND NEEDS A DEPLOY**, and so does the gate
+itself — until Fly is deployed `/api/replay/<id>` is still open to anyone. **`0037` (the FK and
+feed indexes) is still undeployed too**, so one Fly deploy now owes two migrations. The account
+toggle and the viewer's refusal copy need **Vercel**, which is owner-only.
+
+## What landed
+
+`/api/replay/<id>` served any replay to anyone, and the public profile hands out the ids — so
+every leaderboard row was one click from a stranger's full-fidelity match replay, which is not
+a score, it is the game plan. The default is now private.
+
+- **`replayAccess(replayId, viewerId)`** (repo.ts) is the ONE decision, called BEFORE
+  `getReplay` so a refused viewer costs no jsonb. Per owner: **versus** = everyone who played,
+  either alliance, then unanimous opt-in; **record** = public (it is the board's proof);
+  **practice** = owner; **LAN** = the host, plus staff. Orphans are DENIED, a missing replay is
+  a 404 rather than a refusal, and staff are exempt because `AdminReports` moderates through
+  this route.
+- **`profiles.replays_public`** (migration **0038**) + `GET/POST /api/user/privacy` + a Privacy
+  panel in Account. It could not live in `profiles.settings` — that blob is opaque to the
+  server, so a bit in it is enforced by asking the client.
+- **The history LIST stays public**; `userMatchHistory` nulls `replayId` for a reader who may
+  not watch, so the Watch button is absent rather than present and answering 403.
+- ⚠️ **Unanimity is over the ROSTER, not the surviving rows.** `match_participants` stores only
+  AUTHED players and cascades on deletion, so the stored count is checked against
+  `matches.mode` (2 / 4). An anonymous or departed player is a permanent no.
+- `/api/replay/<id>` and both history routes are **optionally authed** now (`viewerId(req)`
+  server-side, `maybeAuthedJson` client-side).
+
+## Gotchas this cost
+
+- **`verifyAuthToken(undefined)` LOGS**, so the optional-auth helper short-circuits on a
+  missing header instead of letting it answer null — these are the routes a signed-out visitor
+  hits.
+- **`syncStaffRoles(owner, admins)` keeps its FIRST argument as owner** whatever the list says,
+  so the demote test has to name a different owner to demote anybody.
+- **`saveLanRun` takes positional args** and builds its own replay row; `savePracticeRun`
+  returns a row, not an id; the record writer is `submitRecord`, not `saveRecordRun`.
+- Alpha took **0037** mid-branch, so the migration renumbered to 0038 — and CLAUDE.md was split
+  while this was open, so the write-up is in **`docs/area/accounts.md`**. CLAUDE.md is at 26.7k
+  of a 27k budget `docaudit` enforces; new rules go in the area guide for the path they govern.
+
+## Next steps
+
+1. **Deploy Fly** (`./scripts/fly-deploy.sh`, never a bare `flyctl deploy`) — it owes 0037 and
+   0038. Then Vercel for the toggle and the refusal copy.
+2. **Not exercised end to end.** The Privacy panel needs a signed-in account against a live
+   server and DB; it is typechecked, audited and unit-tested, not clicked.
+3. One flake seen once and not reproduced: the BIOBUZZ lane reported `1 FAILURES of 1321` on a
+   run that shared the machine with a build and a dbtest (lanes 37.3s against 20.7s idle), then
+   passed four times in a row. Not identified — if it recurs, capture the FAIL line.
+
 # HANDOFF — 2026-09-16, later (efficiency audit: the test loop, the indexes, the render path)
 
-**READ FIRST.** Branch **`efficiency-audit`** off `alpha`, 12 commits, **not merged and not
-deployed**. Every gate green: `npm test` ALL PASS ×2 (1765 + 1321) · `test:mm` 186 · `dbtest`
+**(Superseded as READ FIRST by the replay-privacy section above — and `efficiency-audit` is
+MERGED into `alpha` now, though still not deployed: 0037's indexes do not exist in production.)**
+Branch **`efficiency-audit`** off `alpha`, 12 commits. Every gate green: `npm test` ALL PASS ×2 (1765 + 1321) · `test:mm` 186 · `dbtest`
 ALL PASS · `build` · `server:check` · `uiaudit` · `contrast` · **`docaudit`** (new).
 
 ⚠️ **The DB migration (0037) is a SERVER change and needs a deploy** to take effect, like
