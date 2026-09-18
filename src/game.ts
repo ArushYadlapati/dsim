@@ -1021,7 +1021,9 @@ export class GameController {
     const epoch = ++this.sceneEpoch;
     (async () => {
       const factory = await sceneFn();
-      const scene = await factory(host);
+      // Auto's preset line, the slip line and an HDRI failure go to the event log, like
+      // every other thing the match wants the player to know (plan §4.6).
+      const scene = await factory(host, { onQualityEvent: (line) => this.world.events.push(line) });
       // the view may have switched away, the controller may have been disposed, or a
       // second load may have started (rapid toggling) WHILE this one was in flight —
       // whichever result loses the race is disposed unused rather than replacing the
