@@ -1214,16 +1214,21 @@ def main() -> None:
         seen[base] = seen.get(base, 0) + 1
         return base if seen[base] == 1 else f"{base}_{seen[base]}"
 
-    wall_buckets: dict[str, list] = {s: [] for s in WALL_SIDES}
+    # ⚠️ THE FOUR PERIMETER WALLS ARE NOT EXPORTED AS COLLIDERS AT ALL. They are never built
+    # (`PHYSICAL_STATIC_CLASSES` in `sim3d/fieldColliders.ts`: the 3D perimeter is analytic at the
+    # constants, owner rule), nothing at runtime reads them, and `field-colliders.json` is compiled
+    # into `fieldColliders.gen.ts` which `step.ts` imports STATICALLY — so every byte here lands in
+    # the MAIN client bundle (`npm run bundleaudit` is what says so). The CAD wall inner face is a
+    # MEASUREMENT and lives in `field-measurements.json`'s `walls.innerFace`, which is where the
+    # SIM3D smoke lane reads it from.
     for k, p in enumerate(placed):
         if k not in col_pts:
             continue
         if p.inst.rule.group == "hive_tray":
             continue  # handled below, in the tray's own frame
-        pos, _ = col_pts[k]
         if p.inst.rule.phys == "wall":
-            wall_buckets[p.bucket.replace("wall_", "")].extend(pos)
             continue
+        pos, _ = col_pts[k]
         # the part's own name, minus its `am-XXXX:` SKU prefix — the SKU is in the inventory JSON
         # and in the audit, and 73 copies of it in a file that ships in the main bundle is not.
         slug = re.sub(r"^am[-_ ]?[0-9a-z]+[-_ ]?[a-z]*[:_ ]+", "", p.inst.name.lower())
@@ -1239,15 +1244,6 @@ def main() -> None:
         )
         if pts:
             statics.append({"name": nm, "class": p.inst.rule.phys, "points": pts})
-    # ⚠️ THE FOUR WALL SIDES ARE NOT EXPORTED AS COLLIDERS AT ALL. They are never built
-    # (`PHYSICAL_STATIC_CLASSES` in `sim3d/fieldColliders.ts`: the 3D perimeter is analytic at the
-    # constants, owner rule), nothing at runtime reads them, and `field-colliders.json` is compiled
-    # into `fieldColliders.gen.ts` which `step.ts` imports STATICALLY — so every byte here lands in
-    # the MAIN client bundle (`npm run bundleaudit` is what says so). The CAD wall inner face is a
-    # MEASUREMENT and lives in `field-measurements.json`'s `walls.innerFace`, which is where the
-    # SIM3D smoke lane reads it from.
-    _wall_points_unused = wall_buckets
-
     # ---- TRAYS: planar facet slabs, in the pivot-local UN-TILTED frame ---------------------
     trays: dict[str, dict] = {}
     tray_measure: dict[str, dict] = {}
