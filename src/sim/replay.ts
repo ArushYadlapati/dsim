@@ -118,6 +118,9 @@ export class ReplayRecorder {
     readonly setups: RobotSetup[],
     readonly mode: GameMode = 'match',
     readonly game: GameId = 'decode',
+    /** which physics backend the run being recorded is stepping (`Replay.physics`). Default
+     *  `'2d'` so every existing caller records exactly what it always did. */
+    readonly physics: Physics = '2d',
   ) {}
 
   /** record the command map applied at `tick` (1-based, == world.tick after the
@@ -148,6 +151,11 @@ export class ReplayRecorder {
       balanceVersion: C.BALANCE_VERSION,
       sim: C.SIM_VERSION,
       game: this.game,
+      // OMITTED when it is `'2d'`, never written as the string: absent already READS `'2d'`
+      // everywhere, and a container that gained a key would no longer be byte-identical to
+      // the one this build produced yesterday — which is exactly what the 2D-regression half
+      // of the NET3D lane compares.
+      physics: this.physics === '3d' ? '3d' : undefined,
       mode: this.mode,
       seed: this.seed,
       setups: this.setups.map((s) => ({
@@ -322,7 +330,21 @@ export class ReplayPlayer {
 
   constructor(private readonly replay: Replay) {
     this.mod = simModuleFor(replay.game);
-    this.world = this.mod.createWorld(replay.mode, replay.seed, replay.setups);
+    // THE CONTAINER'S physics, not this build's preference — re-simulating a `'3d'` log
+    // against `step2d` reproduces a different match from the same inputs, which is the one
+    // thing a replay may never do. Absent reads `'2d'`, which every pre-Day-2 container is.
+    //
+    // ⚠️ A `'3d'` replay needs the 3D physics module RESOLVED before this constructor runs —
+    // `createWorld` only stages it, but `stepOnce` steps it on the very next call. The viewer
+    // awaits `initPhysics3d()` (see `ReplayView`); a headless caller awaits it at the top of
+    // its script, exactly as it already awaits `initPhysics()`.
+    this.world = this.mod.createWorld(
+      replay.mode,
+      replay.seed,
+      replay.setups,
+      undefined,
+      replay.physics ?? '2d',
+    );
     if (replay.mode === 'match') this.world.match.preCountdown = C.PRE_COUNTDOWN;
     for (const s of this.replay.setups) this.current.set(s.id, { ...ZERO_CMD });
   }
@@ -524,14 +546,15 @@ export function runRecordMatch(
   seed: number,
   setups: RobotSetup[],
   src: CommandSource,
-  opts: { mode?: GameMode; stopTick?: number; game?: GameId } = {},
+  opts: { mode?: GameMode; stopTick?: number; game?: GameId; physics?: Physics } = {},
 ): RecordRun {
   const mode = opts.mode ?? 'match';
   const game = opts.game ?? 'decode';
+  const physics = opts.physics ?? '2d';
   const mod = simModuleFor(game);
-  const world = mod.createWorld(mode, seed, setups);
+  const world = mod.createWorld(mode, seed, setups, undefined, physics);
   if (mode === 'match') world.match.preCountdown = C.PRE_COUNTDOWN;
-  const rec = new ReplayRecorder(seed, setups, mode, game);
+  const rec = new ReplayRecorder(seed, setups, mode, game, physics);
   const cap = opts.stopTick ?? maxMatchTicks();
   while (world.match.phase !== 'post' && world.tick < cap) {
     const tick = world.tick + 1;
