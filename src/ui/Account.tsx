@@ -13,6 +13,7 @@ import {
   updateUsername,
   type Entitlements,
 } from '../net/api';
+import { AuthDisabled } from './AuthDisabled';
 import { AuthPanel } from './AuthPanel';
 import { copyText } from './copyText';
 import { DesktopUpdate } from './DesktopUpdate';
@@ -589,16 +590,7 @@ function Username({ userId }: { userId: string }) {
   );
 }
 
+/** the same panel the reset and verify screens show — see `AuthDisabled`. */
 function IdentityDisabled() {
-  return (
-    <div className="ds-panel">
-      <div className="ds-panel-h">
-        <span className="ds-panel-title">Account</span>
-      </div>
-      <div className="ds-empty">
-        <div className="big">Accounts are off in this build</div>
-        Set <code>VITE_NEON_AUTH_URL</code> to enable sign-in, saved records, and ranked ELO.
-      </div>
-    </div>
-  );
+  return <AuthDisabled />;
 }

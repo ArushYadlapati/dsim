@@ -3557,6 +3557,23 @@ tr.lb-detail td {
 .ds-form-switch .ds-btn {
   margin-left: 8px;
 }
+/* the reserved status line under a field, in its failure colour. `.ds-form-hint`
+   already holds 1em whether or not it has text, which is what keeps a form from
+   changing height when a message lands (ui-standard §1.4); `.ds-form-err` does not,
+   and is for the one-off line appended at the end of a form. */
+.ds-form-hint.err {
+  color: var(--ds-danger);
+}
+/* A QUIET TEXT ACTION ON ITS OWN ROW INSIDE `.ds-form` — today the "Forgot
+   password?" link under the sign-in password field. It needs a row rather than a
+   corner of the label above it: `.ds-form label` is a full-width column, so an
+   action tucked inside one would sit under the input it belongs beside. The row is
+   a flex child of `.ds-form`, so the 12px gap is the parent's, not a margin here
+   (ui-standard §2, "one owner per gap"). */
+.ds-form-aside {
+  display: flex;
+  justify-content: flex-end;
+}
 
 /* =====================================================================
    CONSOLE LAYER — full-screen setup surfaces (Lobby, Record Run, Ranked)
