@@ -108,8 +108,11 @@ The 2D pipeline is PERMANENT (owner rule): every existing check must stay byte-i
   there has the source, node names and schema. The scene loads the GLB (constants-built fallback
   in `renderField.ts`, kept geometrically right against `drawField.ts`); the physics takes the
   collider hulls/trimeshes with the floor and walls analytic. GLTFLoader strips `/` from node
-  names — look them up by `userData.name`. ⚠️ **OPEN:** the CAD puts the flower ring centres
-  ~1.4 in from `BB_FLOWERS`/`BB_FLOWER_D`; owner ruling pending — move neither.
+  names — look them up by `userData.name`. ⚠️ **OPEN (owner ruling pending, move nothing):** the
+  CAD puts the flower ring centres ~1.4 in from `BB_FLOWERS`/`BB_FLOWER_D`, the wall inner faces at
+  ±70.67 (constants 72; the 3D walls stay at 72 for parity with the 2D pipeline and the staging),
+  and the hive up-cell opening at [47.05, 65.65] with the down cell bottoming at 31.96 (manual
+  figures 53.5–65.6 and 25.5). The measurements check prints them under wide tolerances.
 - **Client:** `graphics/store.ts` holds the per-device view pref (`localStorage['decodesim.view']`);
   `GameView`/`game.ts` await `initPhysics3d()` before a 3D practice (fallback to 2D with an
   event-log line) and mount the lazily imported `scene` under the 2D canvas (`overlayOnly`).

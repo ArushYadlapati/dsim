@@ -2,7 +2,7 @@
 
 ## 0. Status
 
-**DRAFT 3, 2026-09-17, branch `biobuzz-3d`, `docs/biobuzz/plan-3d.md`.** Draft 1 (a 3D view over
+**DRAFT 3, 2026-09-17, branch `biobuzz-3d`, `docs/biobuzz/plan-3d.md`.** **Day 0 and Day 1 LANDED on 2026-09-17** (see `HANDOFF.md`): the seam, `sim3d/`, `scene/`, the client wiring and the CAD field are merged; CAD-vs-constants findings (flowers, walls, hive heights) are OPEN pending the owner. Day 2 not started. Draft 1 (a 3D view over
 the 2D sim) and draft 2 (a separate `biobuzz3d` game) were both rejected by the owner. This draft
 follows the owner's direction of 2026-09-17: BIOBUZZ stays ONE game; every ranked or record match
 runs on a 3D deterministic server; players render in 2D or 3D and the 2D path must stay very
