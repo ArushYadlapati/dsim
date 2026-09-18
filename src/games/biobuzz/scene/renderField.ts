@@ -13,6 +13,7 @@ import {
   BB_GARDEN,
   BB_HALF_X,
   BB_HALF_Y,
+  BB_HIVE_OPEN_Z,
   BB_HIVE_TILT_DEG,
   BB_HIVE_UP_STAGED,
   BB_HIVE_X,
@@ -58,6 +59,40 @@ const HIVE_CELL_H = 14; // APPROX — plan-3d.md §13.1
  * projection; 37.16 / cos(30°) ≈ 42.91, the figure the plan doc's prose gives directly. */
 const HIVE_BAR_LEN = 42.91;
 const HIVE_TILT_REST = (BB_HIVE_TILT_DEG * Math.PI) / 180; // ±30°, shared with the 2D renderer
+
+/** `BB3_HIVE_CELL_WALL` (plan-3d.md §13.1): the cell shell thickness, in. APPROX, CAD settles. */
+const HIVE_CELL_WALL = 0.25;
+
+/** local y (before tilt), measured from the pivot along the arm, of the cell's OUTER (open)
+ * face — the plane the manual's opening heights (`BB_HIVE_OPEN_Z`) are measured at. */
+const HIVE_CELL_OUTER_Y = HIVE_ARM + HIVE_CELL_DEPTH / 2;
+
+/**
+ * THE CELL BOX'S OWN LOCAL Z-CENTRE (before tilt), SOLVED rather than guessed, so the built
+ * geometry reproduces `BB_HIVE_OPEN_Z` (53.5 / 65.6, Fig 9-10) at the true 30° stable state
+ * instead of merely resembling it.
+ *
+ * A point at local `(x, HIVE_ARM ± HIVE_CELL_DEPTH/2, z)` on a tray tilted `HIVE_TILT_REST`
+ * about the pivot lands at world height `HIVE_PIVOT_Z + y·sin(tilt) + z·cos(tilt)`. The
+ * manual's BOTTOM-of-opening figure is exactly that, evaluated at the OUTER face
+ * (`HIVE_CELL_OUTER_Y`) and at the box's own bottom (`z = HIVE_CELL_Z0 − HIVE_CELL_H/2`).
+ * Solving for `HIVE_CELL_Z0` there (rather than centring the box at an arbitrary local z, which
+ * the first pass did and which landed the opening about 3 in high) is what makes the TOP come
+ * out within a few hundredths of an inch of 65.6 on its own — one equation fixes both ends
+ * because `HIVE_CELL_H` (14) already matches `BB_HIVE_OPEN_Z`'s own span (12.1) to within
+ * rounding.
+ *
+ * ⚠️ THE DOWN CELL'S OWN FLOOR DOES NOT COME OUT AT `BB_HIVE_BOTTOM_Z` (25.5) under this same
+ * rigid-bar model — it lands around 32 in. The two manual figures cannot both be hit by one
+ * cell box rotating rigidly about one pivot at `HIVE_ARM`: solving the up-cell's opening (this
+ * constant) trades away the down-cell's floor height, and centring the box in between trades
+ * away the up-cell's opening instead. This is reported as a real, unresolved discrepancy for
+ * the SIM lane (`docs/biobuzz/plan-3d.md` §3.6's dynamic tray, or a future two-part CAD tray),
+ * not something a fallback constants box can also get right — see the report's item (f)/(g).
+ */
+const HIVE_CELL_Z0 =
+  (BB_HIVE_OPEN_Z[0] - HIVE_PIVOT_Z - HIVE_CELL_OUTER_Y * Math.sin(HIVE_TILT_REST)) / Math.cos(HIVE_TILT_REST) +
+  HIVE_CELL_H / 2;
 
 /** wall visual thickness and height, in — APPROX (`BB_WALL_T` is the oversized PHYSICS collider
  * half-thickness, deliberately far thicker than any real wall; this is what a driver should
@@ -167,13 +202,13 @@ function buildFloor(): THREE.Mesh {
   const geo = new THREE.PlaneGeometry(2 * BB_HALF_X, 2 * BB_HALF_Y);
   const material = new THREE.MeshStandardMaterial({ map: buildFloorTexture() });
   const mesh = new THREE.Mesh(geo, material);
-  mesh.name = 'bb-floor';
+  mesh.name = 'floor';
   return mesh;
 }
 
 function buildWalls(): THREE.Group {
   const group = new THREE.Group();
-  group.name = 'bb-walls';
+  group.name = 'walls';
   const material = mat(C.COLORS.wall, 0.35);
   const span = 2 * BB_HALF_X + 2 * WALL_VIS_T;
   const specs: { x: number; y: number; w: number; d: number }[] = [
@@ -182,12 +217,14 @@ function buildWalls(): THREE.Group {
     { x: BB_HALF_X + WALL_VIS_T / 2, y: 0, w: WALL_VIS_T, d: span },
     { x: -BB_HALF_X - WALL_VIS_T / 2, y: 0, w: WALL_VIS_T, d: span },
   ];
-  for (const s of specs) {
+  const names = ['wall:rear', 'wall:audience', 'wall:right', 'wall:left'] as const;
+  specs.forEach((s, i) => {
     const geo = new THREE.BoxGeometry(s.w, s.d, WALL_VIS_H);
     const mesh = new THREE.Mesh(geo, material);
+    mesh.name = names[i];
     mesh.position.set(s.x, s.y, WALL_VIS_H / 2);
     group.add(mesh);
-  }
+  });
   void BB_WALL_T; // physics-only constant; visual thickness is its own, smaller, number
   return group;
 }
@@ -210,19 +247,23 @@ function segmentMesh(a: THREE.Vector3, b: THREE.Vector3, radius: number, materia
  * the 2D renderer's dashed crossbar is its own reading of "joins at the apex". */
 function buildHiveFrame(alliance: Alliance): THREE.Group {
   const group = new THREE.Group();
+  group.name = `hive:${alliance}:frame`;
   const barMat = mat(C.COLORS.wall);
   const sign = alliance === 'red' ? -1 : 1;
   const barX = sign < 0 ? -(BB_FRAME_BAR_IN + BB_FRAME_BAR_OUT) / 2 : (BB_FRAME_BAR_IN + BB_FRAME_BAR_OUT) / 2;
   const barW = BB_FRAME_BAR_OUT - BB_FRAME_BAR_IN;
 
   const baseBar = new THREE.Mesh(new THREE.BoxGeometry(barW, 2 * BB_FRAME_Y, 1), barMat);
+  baseBar.name = `hive:${alliance}:frame:base`;
   baseBar.position.set(barX, 0, 0.5);
   group.add(baseBar);
 
   const pivot = new THREE.Vector3(sign * BB_HIVE_X, 0, HIVE_PIVOT_Z);
   for (const s of [1, -1] as const) {
     const base = new THREE.Vector3(barX, s * BB_FRAME_Y, 1);
-    group.add(segmentMesh(base, pivot, 0.5, barMat));
+    const upright = segmentMesh(base, pivot, 0.5, barMat);
+    upright.name = `hive:${alliance}:frame:upright${s > 0 ? 'N' : 'S'}`;
+    group.add(upright);
   }
   return group;
 }
@@ -233,37 +274,53 @@ function buildHiveFrame(alliance: Alliance): THREE.Group {
 function buildCrossbar(): THREE.Mesh {
   const a = new THREE.Vector3(-BB_HIVE_X, 0, HIVE_PIVOT_Z);
   const b = new THREE.Vector3(BB_HIVE_X, 0, HIVE_PIVOT_Z);
-  return segmentMesh(a, b, 0.5, mat(C.COLORS.wall));
+  const bar = segmentMesh(a, b, 0.5, mat(C.COLORS.wall));
+  bar.name = 'hive:crossbar';
+  return bar;
 }
 
 /** one CELL, in the TRAY's own local (un-rotated) frame: floor, back wall, two side walls, and a
- * ceiling — OPEN at the outer face (away from the pivot), five 0.25-in-APPROX boxes exactly as
- * `scripts/spike3d-browser/main.ts`'s Day-0 physics spike built them (the geometry the plan
- * doc's "fallback five boxes per cell" describes). `s` is +1 for the north cell, −1 south. */
-function buildCell(s: 1 | -1, accent: string): THREE.Group {
+ * ceiling — OPEN at the outer face (away from the pivot), five `HIVE_CELL_WALL`-thick boxes
+ * (`BB3_HIVE_CELL_WALL`, plan-3d.md §13.1) exactly as `scripts/spike3d-browser/main.ts`'s Day-0
+ * physics spike built them (the geometry the plan doc's "fallback five boxes per cell"
+ * describes). `s` is +1 for the north cell, −1 south.
+ *
+ * Z placement is `HIVE_CELL_Z0 ± HIVE_CELL_H/2`, SOLVED (see that constant's own comment) so the
+ * built box reproduces `BB_HIVE_OPEN_Z` at the true 30° tilt rather than a value that merely
+ * looks plausible — the first pass centred the box at local z 9 (an arbitrary choice) and the
+ * up-CELL opening came out roughly 3 in high of the manual figure. */
+function buildCell(s: 1 | -1, accent: string, alliance: Alliance): THREE.Group {
   const group = new THREE.Group();
+  group.name = `hive:${alliance}:cell:${s > 0 ? 'north' : 'south'}`;
   const structure = mat('#5c6676');
   const accentMat = mat(accent, 0.85);
   const cellY = s * HIVE_ARM;
-  const innerY = cellY - s * (HIVE_CELL_DEPTH / 2 + 0.46); // back wall, just inside the depth
+  const w = HIVE_CELL_WALL;
+  const zBot = HIVE_CELL_Z0 - HIVE_CELL_H / 2;
+  const zTop = HIVE_CELL_Z0 + HIVE_CELL_H / 2;
+  const innerY = cellY - s * (HIVE_CELL_DEPTH / 2 + w / 2); // back wall, just inside the true inner face
   const half = HIVE_CELL_W / 2;
 
-  const floor = new THREE.Mesh(new THREE.BoxGeometry(HIVE_CELL_W, HIVE_CELL_DEPTH, 1), accentMat);
-  floor.position.set(0, cellY, 1.5);
+  const floor = new THREE.Mesh(new THREE.BoxGeometry(HIVE_CELL_W, HIVE_CELL_DEPTH, w), accentMat);
+  floor.name = `${group.name}:floor`;
+  floor.position.set(0, cellY, zBot + w / 2);
   group.add(floor);
 
-  const back = new THREE.Mesh(new THREE.BoxGeometry(HIVE_CELL_W, 1, HIVE_CELL_H), structure);
-  back.position.set(0, innerY, 9);
+  const back = new THREE.Mesh(new THREE.BoxGeometry(HIVE_CELL_W, w, HIVE_CELL_H), structure);
+  back.name = `${group.name}:back`;
+  back.position.set(0, innerY, HIVE_CELL_Z0);
   group.add(back);
 
   for (const sx of [1, -1] as const) {
-    const side = new THREE.Mesh(new THREE.BoxGeometry(1, HIVE_CELL_DEPTH, HIVE_CELL_H), structure);
-    side.position.set(sx * (half + 0.5), cellY, 9);
+    const side = new THREE.Mesh(new THREE.BoxGeometry(w, HIVE_CELL_DEPTH, HIVE_CELL_H), structure);
+    side.name = `${group.name}:side${sx > 0 ? 'X+' : 'X-'}`;
+    side.position.set(sx * (half + w / 2), cellY, HIVE_CELL_Z0);
     group.add(side);
   }
 
-  const ceiling = new THREE.Mesh(new THREE.BoxGeometry(HIVE_CELL_W, HIVE_CELL_DEPTH, 1), structure);
-  ceiling.position.set(0, cellY, 16.5);
+  const ceiling = new THREE.Mesh(new THREE.BoxGeometry(HIVE_CELL_W, HIVE_CELL_DEPTH, w), structure);
+  ceiling.name = `${group.name}:ceiling`;
+  ceiling.position.set(0, cellY, zTop - w / 2);
   group.add(ceiling);
 
   return group;
@@ -274,18 +331,19 @@ function buildCell(s: 1 | -1, accent: string): THREE.Group {
  * ride one rigid bar (plan-3d.md §3.6). */
 function buildTray(alliance: Alliance): THREE.Group {
   const tray = new THREE.Group();
-  tray.name = `bb-tray-${alliance}`;
+  tray.name = `hive:${alliance}:tray`;
   const accent = alliance === 'blue' ? C.COLORS.blue : C.COLORS.red;
-  tray.add(buildCell(1, accent));
-  tray.add(buildCell(-1, accent));
+  tray.add(buildCell(1, accent, alliance));
+  tray.add(buildCell(-1, accent, alliance));
   // CylinderGeometry's axis is local Y by default — exactly the arm direction the two cells
   // sit along (`cellY = s * HIVE_ARM` in `buildCell`), so no rotation is needed here at all.
   const bar = new THREE.Mesh(new THREE.CylinderGeometry(1, 1, HIVE_BAR_LEN, 8), mat(accent));
+  bar.name = `hive:${alliance}:tray:bar`;
   tray.add(bar);
   return tray;
 }
 
-function buildFlowerFoot(f: (typeof BB_FLOWERS)[number]): THREE.Mesh {
+function buildFlowerFoot(f: (typeof BB_FLOWERS)[number], name: string): THREE.Mesh {
   const n = FLOWER_MOUTH[f.wall];
   const onY = f.wall === 'left' || f.wall === 'right';
   const wx = f.x - n.x * BB_FLOWER_D;
@@ -295,69 +353,152 @@ function buildFlowerFoot(f: (typeof BB_FLOWERS)[number]): THREE.Mesh {
   const w = onY ? BB_FLOWER_FOOT.deep : BB_FLOWER_FOOT.along;
   const d = onY ? BB_FLOWER_FOOT.along : BB_FLOWER_FOOT.deep;
   const mesh = new THREE.Mesh(new THREE.BoxGeometry(w, d, FLOWER_FOOT_H), mat(C.COLORS.wall));
+  mesh.name = name;
   mesh.position.set(cx, cy, FLOWER_FOOT_H / 2);
   return mesh;
 }
 
 /** one FLOWER: a foot, four support pipes, the lower/middle/top rings — a fallback compound
  * shape (plan-3d.md §3.7, §13.1); the CAD-derived GLB replaces this when it lands (§8). */
-function buildFlower(f: (typeof BB_FLOWERS)[number]): THREE.Group {
+function buildFlower(f: (typeof BB_FLOWERS)[number], idx: number): THREE.Group {
   const group = new THREE.Group();
-  group.name = `bb-flower-${f.id}`;
-  group.add(buildFlowerFoot(f));
+  const base = `flower:${idx}`;
+  group.name = base;
+  group.add(buildFlowerFoot(f, `${base}:foot`));
 
   const ringMat = mat(C.COLORS.white, 0.9);
   const topRing = new THREE.Mesh(new THREE.TorusGeometry(BB_FLOWER_OPEN_R, FLOWER_TUBE_R, 8, 24), ringMat);
+  topRing.name = `${base}:ring`;
   topRing.position.set(f.x, f.y, BB_FLOWER_TOP_Z);
   group.add(topRing);
 
   const midRing = new THREE.Mesh(new THREE.TorusGeometry(FLOWER_MID_RING_R, FLOWER_TUBE_R * 0.8, 8, 24), ringMat);
+  midRing.name = `${base}:midring`;
   midRing.position.set(f.x, f.y, BB_FLOWER_MID_Z);
   group.add(midRing);
 
   const lowerRing = new THREE.Mesh(new THREE.CylinderGeometry(FLOWER_LOWER_RING_R + 0.3, FLOWER_LOWER_RING_R + 0.3, 0.5, 16), mat(C.COLORS.wall));
+  lowerRing.name = `${base}:lowerring`;
+  // default CylinderGeometry axis is local Y; rotate its axis onto Z so the ring lies FLAT
+  // (a thin disc on the tiles), not standing on edge.
   lowerRing.rotation.x = Math.PI / 2;
   lowerRing.position.set(f.x, f.y, BB_FLOWER_FLOOR_Z);
   group.add(lowerRing);
 
+  // the four HIPS support pipes, standing VERTICALLY from the tiles to the top ring.
+  //
+  // ⚠️ BUG FOUND AND FIXED HERE: a `CylinderGeometry`'s axis is local Y by default, and the
+  // first pass never rotated it, so all four pipes were lying on their SIDES (each one's axis
+  // pointing along world Y, the same "sideways pole" for every flower regardless of which wall
+  // it stood against) instead of standing up from the foot to the ring. `rotation.x = PI/2`
+  // is the same axis-onto-Z trick `lowerRing` above already uses.
   const pipeR = BB_FLOWER_OPEN_R + 0.3;
   for (let i = 0; i < 4; i++) {
     const a = (i / 4) * Math.PI * 2;
     const px = f.x + Math.cos(a) * pipeR;
     const py = f.y + Math.sin(a) * pipeR;
     const pipe = new THREE.Mesh(new THREE.CylinderGeometry(FLOWER_PIPE_R, FLOWER_PIPE_R, BB_FLOWER_TOP_Z, 6), mat(C.COLORS.wall));
+    pipe.name = `${base}:pipe${i}`;
+    pipe.rotation.x = Math.PI / 2;
     pipe.position.set(px, py, BB_FLOWER_TOP_Z / 2);
     group.add(pipe);
   }
   return group;
 }
 
+/**
+ * A PROCEDURAL ROOM around the field — a wide dark floor beyond the perimeter and a backdrop
+ * cylinder, so the driver camera (`BB3_DRIVER_SETBACK` = 12 in outside the wall) does not look
+ * into the WebGL clear colour when it pans off the field. APPROX, no CAD reference: this is
+ * stagecraft, not a measured space, and is deliberately cheap (two meshes, one shared material).
+ */
+const ROOM_R = BB_HALF_X * 6;
+
+function buildRoom(): THREE.Group {
+  const group = new THREE.Group();
+  group.name = 'bb-room';
+  const floorMat = new THREE.MeshStandardMaterial({ color: 0x14171c, roughness: 1 });
+  const floor = new THREE.Mesh(new THREE.CircleGeometry(ROOM_R, 32), floorMat);
+  floor.name = 'bb-room:floor';
+  floor.position.z = -0.5; // just under the field floor so it never z-fights
+  floor.receiveShadow = true;
+  group.add(floor);
+
+  const backdropMat = new THREE.MeshStandardMaterial({ color: 0x20262c, side: THREE.BackSide, roughness: 1 });
+  const backdrop = new THREE.Mesh(new THREE.CylinderGeometry(ROOM_R, ROOM_R, 260, 24, 1, true), backdropMat);
+  backdrop.name = 'bb-room:backdrop';
+  backdrop.position.z = 130;
+  group.add(backdrop);
+
+  return group;
+}
+
+/**
+ * ONE HIVE — the pivot group named `hive:<alliance>` (per the field-import seam, plan-3d.md §8:
+ * the CAD `field.glb` will hand back a node under this same name), holding the static frame and
+ * the tilting `tray` child. Position is the pivot itself (`±BB_HIVE_X, 0, HIVE_PIVOT_Z`), so
+ * every child is authored in the pivot's own local frame — the tray's rotation is exactly the
+ * see-saw's revolute joint.
+ */
+function buildHive(alliance: Alliance): { group: THREE.Group; tray: THREE.Group } {
+  const group = new THREE.Group();
+  group.name = `hive:${alliance}`;
+  group.position.set(alliance === 'red' ? -BB_HIVE_X : BB_HIVE_X, 0, HIVE_PIVOT_Z);
+  group.add(buildHiveFrame(alliance));
+  const tray = buildTray(alliance);
+  group.add(tray);
+  return { group, tray };
+}
+
 export interface BbFieldHandles {
+  /** everything, for a single `scene.add()`. */
   group: THREE.Group;
+  /** named `floor` / `walls` — the flat, non-animated field furniture. */
+  floor: THREE.Object3D;
+  walls: THREE.Object3D;
+  /** named `hive:red` / `hive:blue`, each with a `tray` child (`updateBiobuzzField` rotates it). */
+  hives: Record<Alliance, THREE.Group>;
+  /** named `flower:0`..`flower:3`, in `BB_FLOWERS` order. */
+  flowers: THREE.Group[];
+  /** the two tray groups, keyed by alliance — kept as its own map (rather than making callers
+   * dig `hives[a].getObjectByName('tray')` out every frame) because `updateBiobuzzField` sets a
+   * rotation on it every tick and that is a hot, tiny lookup worth keeping direct. */
   trays: Record<Alliance, THREE.Group>;
 }
 
+/**
+ * Builds the WHOLE field as one group of NAMED sub-groups — `floor`, `walls`, `hive:<alliance>`
+ * (each with a `tray` child), `flower:<index>` — so a CAD-derived `field.glb` (plan-3d.md §8,
+ * "the derived files ship") can later hand back the identical shape (`BbFieldHandles`) by
+ * resolving the same names out of the loaded scene graph instead of this constants-built one.
+ * Nothing downstream (`renderScene.ts`, `updateBiobuzzField`) reaches into this function's
+ * internals; it only ever touches the returned handles.
+ */
 export function buildBiobuzzField(): BbFieldHandles {
   const group = new THREE.Group();
   group.name = 'bb-field';
-  group.add(buildFloor());
-  group.add(buildWalls());
-  group.add(buildCrossbar());
 
+  const room = buildRoom();
+  const floor = buildFloor();
+  const walls = buildWalls();
+  group.add(room, floor, walls, buildCrossbar());
+
+  const hives = {} as Record<Alliance, THREE.Group>;
   const trays = {} as Record<Alliance, THREE.Group>;
   for (const a of ALLIANCES) {
-    const pivotGroup = new THREE.Group();
-    pivotGroup.position.set(a === 'red' ? -BB_HIVE_X : BB_HIVE_X, 0, HIVE_PIVOT_Z);
-    pivotGroup.add(buildHiveFrame(a));
-    const tray = buildTray(a);
-    pivotGroup.add(tray);
-    group.add(pivotGroup);
+    const { group: hiveGroup, tray } = buildHive(a);
+    group.add(hiveGroup);
+    hives[a] = hiveGroup;
     trays[a] = tray;
   }
 
-  for (const f of BB_FLOWERS) group.add(buildFlower(f));
+  const flowers = BB_FLOWERS.map((f, idx) => {
+    const g = buildFlower(f, idx);
+    group.add(g);
+    return g;
+  });
 
-  return { group, trays };
+  return { group, floor, walls, hives, flowers, trays };
 }
 
 /** the tray's tilt angle, RIGHT-HAND rule about the shared local x axis: positive raises the
