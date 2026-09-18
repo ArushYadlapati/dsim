@@ -35,42 +35,67 @@ deleted in one commit if FIRST objects — nothing else in the game depends on t
 | `field-colliders.json` | ≤ 200 KB raw | statics + tray hulls + flower descriptors, for `src/games/biobuzz/sim3d/fieldColliders.ts` |
 | `field-measurements.json` | — | CAD-measured dimensions vs. the `config.ts` constants they settle |
 
-Both GLBs share one node/mesh naming convention (only the tessellation and simplification level
-differ): `tiles`, `walls`, `tape`, `stations` (absent — no driver-station geometry in this STEP
-revision), `hive_red/frame`, `hive_blue/frame`, `hive_red/tray`, `hive_blue/tray`, `flower_0`
-.. `flower_3` (index-matched to `config.ts`'s `BB_FLOWERS`, i.e. F1..F4). The four flower nodes
-and both hive frame nodes are **glTF-native mesh instances** (one mesh, several nodes with
-different transforms) — see `scripts/field-cad/assemble-gltf.mjs`'s header for the exact
-rotation math and its runtime cross-check against the real tessellated geometry (residual
-0.000 in on the STEP this was built from).
+Both GLBs share one node/mesh naming convention (only the tessellation and decimation level
+differ): `tiles`, `walls`, `tape`, `stations`, `misc` (only if `convert.py` met a part it could
+not classify — see below), `hive_red/frame`, `hive_blue/frame`, `hive_shared/frame`,
+`hive_red/tray`, `hive_blue/tray`, `flower_0` .. `flower_3` (index-matched to `config.ts`'s
+`BB_FLOWERS`, i.e. F1..F4). The four flower nodes are **glTF-native mesh instances** (one mesh,
+four nodes with different rotations) — see `scripts/field-cad/assemble-gltf.mjs`'s header for the
+rotation math and its runtime cross-check against the real tessellated geometry (residual 0.016 in
+on the STEP this was built from). GLTFLoader strips `/` from node names, so look them up by
+`userData.name` (`renderFieldGlb.ts` does).
 
-`EXT_meshopt_compression` is used on both GLBs (smaller than plain `KHR_mesh_quantization`
-alone: 620 KB → 359 KB brotli on the high LOD, measured on this STEP) — the Three.js loader
-must register `MeshoptDecoder` before loading (`renderFieldGlb.ts` does this once, lazily).
+`hive_shared/frame` holds the parts that span BOTH hives — the `A-Frame Top Bar` (the crossbar)
+and the `ACM Panel` logo board with its sticker. Their centroid sits at x ≈ 0, so a red/blue split
+by sign would hand a shared part to one hive arbitrarily; every frame node is world-absolute and
+static, so which one a static part lives in is bookkeeping, not geometry.
+
+`EXT_meshopt_compression` is used on both GLBs — the Three.js loader must register
+`MeshoptDecoder` before loading (`renderFieldGlb.ts` does this once, lazily).
 
 Neither GLB carries a `NORMAL` attribute (see `assemble-gltf.mjs`'s header: flat per-triangle
-normals block meshoptimizer's simplifier from collapsing any edge on a mesh built from many
-small merged parts, since every triangle boundary then looks like a hard attribute seam).
+normals block the simplifier from collapsing any edge on a mesh built from many small merged
+parts, since every triangle boundary then looks like a hard attribute seam).
 `renderFieldGlb.ts` calls `computeVertexNormals()` once per mesh after load.
 
-## Materials — one glTF material PER PART CLASS (2026-09-18 fidelity pass)
+## Materials — the CAD's OWN colour, one glTF material per (finish, colour)
 
-A node with several distinct real materials (a flower is a ring + a HIPS pipe + a solid base/
-backstop; a hive tray is an alliance-coloured skin over bare structural metal) is **one mesh with
-one PRIMITIVE per part class**, not one merged blob — `convert.py` writes a separate
-`<node>__<class>.stl` per class it finds among that node's own CAD part names, and
-`assemble-gltf.mjs` turns each into a primitive carrying a glTF material named for that class.
-`renderFieldGlb.ts` assigns the runtime PBR material by that name (`Material.name`, preserved by
-GLTFLoader), not by walking node names — the full class vocabulary:
+Read `docs/biobuzz/field-cad-audit.md` §3 first; it has the measured table.
 
-`tile`, `wall_panel`, `wall_extrusion`, `hive_frame_metal`, `tray_panel_red`, `tray_panel_blue`,
-`tray_metal`, `flower_ring`, `flower_pipe`, `flower_base`, `tape_red`, `tape_blue`, `tape_white`.
+The STEP carries a real colour per part definition (104 `STYLED_ITEM` entities, 15 `COLOUR_RGB`),
+and `XCAFDoc_ColorTool.GetColor` returns nothing for any of them — which is why two earlier rounds
+concluded there was no colour and hand-picked greys, and why the owner's report said "flowers are
+still the wrong color". `convert.py` reads the styled-item chain out of the STEP text instead, so
+the asset now carries the real thing: a flower is an **amber** top ring (`#ffba52`), **green** HIPS
+pipes (`#5fa73d`), a **purple** backstop (`#641c65`) and dark-grey plates; a hive cell's alliance
+colour is its two **Goal Ribs** (pure `#ff0000` / `#0000ff`), not the white `#e6e6e6` skins the old
+pipeline painted.
 
-Regenerating writes ONLY `field.glb`/`field-low.glb` here — `field-colliders.json`,
-`field-measurements.json` and `sim3d/fieldColliders.gen.ts` are unaffected (the class split is a
-VISUAL-only grouping over the same collider/measurement instances `convert.py` already computed),
-and `npm run field-cad` prints a `git diff --stat` anyone regenerating should expect to show only
-the two `.glb` files changing.
+Each STL is written as `<node>__<finish>_<rrggbb>.stl` and becomes ONE primitive with a glTF
+material named `<finish>#<rrggbb>` carrying that colour (converted sRGB → linear).
+`renderFieldGlb.ts` parses the name: the **finish** gives the PBR parameters, the **hex** gives the
+colour. So a colour change in the CAD reaches the screen with no code edit.
+
+Finishes: `tile`, `glass`, `metal`, `plastic`, `decal`, `tape`, `misc`. Two deliberate runtime
+overrides, both because the CAD value is a placeholder rather than intent: `glass` keeps the hue
+but is forced transparent (the STEP has the polycarbonate perimeter opaque), and `tile` is forced
+to the sim's `COLORS.mat` token (the CAD gives the soft tiles a flat 50 % grey, and the HUD
+contrast pairs are tuned against that token).
+
+A part `convert.py` cannot classify goes to node `misc` with the `misc` finish and is PRINTED —
+it is never dropped. `assemble-gltf.mjs` additionally refuses to finish if any STL it was handed
+went unclaimed by a node.
+
+## Decimation
+
+There is no document-wide `gltf-transform simplify` step. A global `--ratio` is the wrong
+instrument for an asset whose primitives span four orders of magnitude in triangle count: measured
+on the previous build, `--ratio 0.06 --error 0.01` took the 12-triangle tile box down to FOUR
+triangles and the sixteen 1-inch tape strips from 192 to 120. `assemble-gltf.mjs` decimates PER
+PRIMITIVE against an absolute tolerance in INCHES (`SIMPLIFY_ERROR_IN`), so a part that cannot lose
+0.004 in simply keeps its triangles. The LOW LOD additionally falls back to `simplifySloppy` for
+primitives the topology-preserving pass cannot bring within 2× of target — the Goal Ribs are
+perforated honeycomb plates with ~100 holes each, and meshoptimizer will not close a hole.
 
 ## `field-colliders.json` schema
 
@@ -79,42 +104,64 @@ the two `.glb` files changing.
   units: 'in',
   frame: 'sim', // origin at the field centre on the tile top surface; +x = audience right,
                 // +y = away from the audience, z = up — same frame as config.ts/drawField.ts
+  floor: { x: [lo, hi], y: [lo, hi], z: [lo, hi], pitch: number },
+  // the 36 soft tiles' footprint and SEAM PITCH (23.53 in, not config's 24) — carried here, not
+  // only in the measurements, because `scene/renderField.ts` paints its tile-seam texture from it
+  // at runtime and the measurements JSON is not compiled into a client module.
+
   statics: [
-    { name: string, kind: 'trimesh', vertices: number[] /* flat xyz */, indices: number[] /* flat triangle indices */ },
-    // one entry per (wall side | hive-frame part-type | flower solid part-type), e.g.
-    // "wall_left", "wall_rear", "hive_red_frame_a_frame_leg", "flower_0_backstop". Each is a
-    // convex hull of that bucket's own bounding-box corners (NOT the true tessellated surface —
-    // see convert.py's header on `hull_bucket_static`), so real gaps between separate physical
-    // parts (the space under a hive crossbar, the space between two A-frame legs) stay real
-    // gaps rather than being filled in by one big merged hull.
-    // "tiles" is the one deliberate exception: one hull over ALL 36 tile plates (a flat floor's
-    // hull IS its bounding box; nothing physical is lost by not splitting it per tile).
-    // FLOWER RING PLATES ARE NOT HERE — see the flowers[] note below.
+    { name: string, class: string, points: number[] /* flat xyz, a TRUE convex hull */ },
+    // one entry per PART INSTANCE — never merged per part TYPE: one hull over both A-frame legs
+    // is a solid wedge between them, and that space is the drive-under G409 assumes. The only
+    // merged entries are the four `wall_<side>`, which exist purely as a MEASUREMENT
+    // (`cadWallExtents`) — the physics builds the perimeter analytically at the constants.
+    // `class` is what `sim3d/bodies.ts` filters on; `PHYSICAL_STATIC_CLASSES` there lists the
+    // ones that become solids and says why each of the others does not.
+    // FLOWER RING PLATES ARE NOT HERE — see the note below.
   ],
   trays: {
-    red:  { pivot: [x, y, z], axis: [1, 0, 0], hulls: [{ name: string, points: number[] }] },
-    blue: { pivot: [x, y, z], axis: [1, 0, 0], hulls: [{ name: string, points: number[] }] },
+    red:  { pivot: [x,y,z], axis: [1,0,0], refTheta: 0, captureTheta: number,
+            cells: { north: {xHalf,vMin,vMax,wMin,wMax}, south: {...} },
+            hulls: [{ name, class, points }] },
+    blue: { ... },
   },
-  // `pivot` is WORLD-ABSOLUTE (sim frame); `hulls[].points` are RELATIVE TO THAT PIVOT (the
-  // tray's own local frame — rotate about `axis` through the pivot to tilt it, matching
-  // `scene/renderField.ts`'s `buildTray()`/`updateBiobuzzField()` convention exactly). Hull
-  // names: "bar", "cell_north_floor", "cell_north_back", "cell_north_side_pos",
-  // "cell_north_side_neg", "cell_north_ceiling", and the "south" mirrors of the last five.
+  // `pivot` is WORLD-ABSOLUTE. `hulls[].points` are in the tray's PIVOT-LOCAL **UN-TILTED**
+  // frame: world = pivot + Rot_x(hiveTiltAngle) · (x, v, w), with NO reference-angle term, which
+  // is why `refTheta` is 0. `captureTheta` (±30.000°) is the tilt the STEP's own tray sits at and
+  // is a MEASUREMENT only — `convert.py` already rotated every point out of it.
+  //
+  // Hull names: `cell_<north|south>_{floor,side_pos,side_neg,roof_pos,roof_neg,back}` and
+  // `bar_<north|south>`. Each cell hull is a thin ORIENTED BOX sitting exactly ON one of the
+  // cell's own planar CAD facets, extruded 1.5 in OUTWARD. A per-PART hull would be wrong twice:
+  // `Hive Goal Bottom Skin` is an open U channel and `Hive Goal Top Skin` is a gable roof, so a
+  // hull of either fills the cell (an element would rest ~7.8 in above the floor it is drawn on).
+  // `Goal Rib` gets no hull at all — it is a perforated hexagonal FRAME whose hull fills its own
+  // opening, and at the mouth end that opening is the cell's aperture.
+  // `cells` is the cell INTERIOR, measured off those facet planes themselves (not read back off
+  // the hulls, which carry their extrusion); it is what `derive.ts`'s membership test reads.
   flowers: [
     { id: 'F1'..'F4', wall: 'left'|'rear'|'right'|'audience', pos: [x, y],
-      staticNames: string[], // this flower's SOLID-support statics (backstop/pipes/brackets/base)
+      staticNames: string[], // this flower's SOLID-support statics (pipes/backstop/brackets)
       visualNode: 'flower_0'..'flower_3' },
   ],
 }
 ```
 
-**The flower ring plates (top/middle/lower) are deliberately NOT in `statics`.** A convex hull
-of an annulus (or a torus) fills in its own centre hole — exactly the opening a POLLEN must pass
-through and a NECTAR must seat on (§10.5.2) — so a hull collider there would silently block
-every flower interaction. `flowers[].staticNames` lists only the SOLID support parts (backstop,
-HIPS pipes, brackets, the base). The existing torus/cylinder ring colliders in
-`scene/renderField.ts`'s fallback stay authoritative for the ring passage itself until a proper
-annulus/cylinder-shaped collider (not a mesh hull) is worth building — see the report's gotchas.
+**The flower ring plates (top/middle/lower) are deliberately NOT in `statics`.** A convex hull of
+an annulus fills in its own centre hole — exactly the opening a POLLEN must pass through and a
+NECTAR must seat on (§10.5.2) — so a hull collider there would silently block every flower
+interaction. The torus/cylinder ring colliders in `scene/renderField.ts`'s fallback stay
+authoritative for the ring passage until a proper annulus collider is worth building.
+
+## `field-measurements.json`
+
+Everything the CAD settles, printed against the constant or manual figure it confirms or
+unsettles, and asserted (under named tolerances) by `scripts/smoke-biobuzz/sim3d.ts`. Notable
+blocks: `hive.trays[a]` (capture tilt, the back-skin residual thickness that PROVES the un-tilt,
+the cell interiors, the facet list), `hive.openingZ` / `hive.downCellFloorZ` /
+`hive.lowestStructureZAtRest`, `hive.frameLegFootprints`, `flowers[].bore` (least-squares circle
+fits of all three ring plates), `tiles.pitch`, `walls.innerFace`, `tape.parts` (every strip's
+width, length, colour, position and plane) and `colours` (the CAD hex per part).
 
 ## Regenerating
 

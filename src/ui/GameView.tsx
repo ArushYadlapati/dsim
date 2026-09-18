@@ -229,6 +229,11 @@ export function GameView({
   // (`docs/biobuzz/plan-3d.md` §4.1/§4.7) — see `.game-viewport` in styles.css. Handed to
   // `GameController` as `sceneHost`; unused by every game/session with no `scene` module.
   const viewportRef = useRef<HTMLDivElement>(null);
+  // HUD-SAFE CAMERA FRAMING: `.game-root` is the containing block every absolutely-positioned
+  // HUD overlay is laid out against, so it is the subtree `GameController` measures the
+  // `[data-hud-band]` elements in — the bands a 3D camera must keep the field out from under
+  // (`SceneInsets`, `games/module.ts`). Handed over as `hudHost`; a 2D view never reads it.
+  const rootRef = useRef<HTMLDivElement>(null);
   const controllerRef = useRef<GameController | null>(null);
   const [hud, setHud] = useState<HudSnapshot | null>(null);
   const [intro, setIntro] = useState<IntroPlayer[] | null>(null);
@@ -269,6 +274,7 @@ export function GameView({
     let cancelled = false;
     const canvas = canvasRef.current!;
     const sceneHost = viewportRef.current!;
+    const hudHost = rootRef.current!;
     const need3d =
       !session &&
       (settings.practicePhysics ?? '3d') === '3d' &&
@@ -307,6 +313,7 @@ export function GameView({
 
       const controller = new GameController(canvas, effectiveSettings, session, {
         sceneHost,
+        hudHost,
         physicsFallbackNotice,
       });
       controllerRef.current = controller;
@@ -435,7 +442,7 @@ export function GameView({
           <AdSlot unit="game" />
         </aside>
       )}
-      <div className="game-root">
+      <div className="game-root" ref={rootRef}>
       {perf && frames && (
         <div className="perf-readout" role="status">
           {frames.fps.toFixed(0)} fps · p50 {frames.p50.toFixed(1)}ms · p95{' '}
@@ -513,7 +520,10 @@ export function GameView({
         </div>
       )}
       {hud && <Hud hud={hud} showEventLog={settings.showEventLog} />}
-      <div className="game-buttons">
+      {/* `data-hud-band` — a HUD cluster that covers part of the field. The 3D camera keeps the
+          field out from under every one of them (`SceneInsets`, `games/module.ts`); nothing
+          visual reads it. See `GameController.refreshHudInsets` for what is NOT marked and why. */}
+      <div className="game-buttons" data-hud-band>
         <button className="game-btn" onClick={onExit} title="Menu (Esc)">
           ◄ MENU
         </button>
@@ -723,7 +733,7 @@ function Hud({ hud, showEventLog }: { hud: HudSnapshot; showEventLog: boolean })
       {GameScoreBar ? (
         <GameScoreBar hud={hud} />
       ) : hud.mode === 'match' ? (
-        <div className="scorebar">
+        <div className="scorebar" data-hud-band>
           <div className={`score-panel red ${hud.alliance === 'red' ? 'mine' : ''}`}>
             {hud.alliance === 'red' && <span className="you-tag">YOU</span>}
             <span className="panel-score">{redScore}</span>
@@ -757,7 +767,7 @@ function Hud({ hud, showEventLog }: { hud: HudSnapshot; showEventLog: boolean })
           </div>
         </div>
       ) : (
-        <div className="scorebar">
+        <div className="scorebar" data-hud-band>
           <div className="timer-panel">
             <span className="timer-phase">FREE DRIVE</span>
             {dec && (
@@ -772,7 +782,7 @@ function Hud({ hud, showEventLog }: { hud: HudSnapshot; showEventLog: boolean })
       )}
 
       {hud.mode === 'match' && dec && (
-        <div className="breakdown-row">
+        <div className="breakdown-row" data-hud-band>
           {/* artifact COUNTS, not points (points live in the score panels).
               PATTERN shows only BANKED points — it is assessed solely at the
               end of AUTO and the end of the match, never live. */}
@@ -787,7 +797,7 @@ function Hud({ hud, showEventLog }: { hud: HudSnapshot; showEventLog: boolean })
       )}
 
       {hud.mode === 'match' && cr && hud.chain && (
-        <div className="breakdown-row">
+        <div className="breakdown-row" data-hud-band>
           <span>PARTICLES {hud.chain.scored}</span>
           <span>MULT ×{hud.chain.mult}</span>
           <span>CATALYSTS {hud.chain.catalysts}/4</span>
@@ -798,7 +808,7 @@ function Hud({ hud, showEventLog }: { hud: HudSnapshot; showEventLog: boolean })
       )}
 
       {(!coarsePointer) && (
-        <div className="status-wrap">
+        <div className="status-wrap" data-hud-band>
           {/* ONE LINE: the status card and the presenting sponsor's mark, right-
               aligned together. The mark used to sit in its own line above and push
               the whole cluster down, which read as a floating badge over the field

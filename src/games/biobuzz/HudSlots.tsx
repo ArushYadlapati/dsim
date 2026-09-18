@@ -340,6 +340,11 @@ const PHASE_LABEL: Record<HudSnapshot['phase'], string> = {
  * a driver who plays two games reads the same bar in both. The one addition is the sub-line,
  * which is `.score-panel.bb` stacking its children instead of centring one.
  *
+ * `data-hud-band` on the bar and the chip row: this game has a 3D view, and a camera fitted to
+ * the whole canvas frames the far wall underneath this bar (owner's re-test, 2026-09-18). The
+ * attribute is what `GameController.refreshHudInsets` measures; it changes nothing visually, and
+ * a game that fills the `scoreBar` slot and forgets it simply gets the old, overlapping fit.
+ *
  * The panels show the alliance TOTAL, read from the shared `ScoreBreakdown` rather than from
  * `score[a].total`: the shared number already folds in foul points and already reads 0 for a
  * VOIDED alliance, and a bar that disagreed with the results screen about who is winning
@@ -353,7 +358,7 @@ export function BiobuzzScoreBar({ hud }: GameHudProps) {
   const urgent = hud.timeLeft <= 10 && (hud.phase === 'auto' || hud.phase === 'teleop');
   if (hud.mode !== 'match') {
     return (
-      <div className="scorebar">
+      <div className="scorebar" data-hud-band>
         <div className="timer-panel">
           <span className="timer-phase">FREE DRIVE</span>
         </div>
@@ -373,14 +378,14 @@ export function BiobuzzScoreBar({ hud }: GameHudProps) {
           device does not render. `.warn` because it is a clock running against somebody, not a
           state of the field like the lock beside it. */}
       {(f?.nectarLocked || pin) && (
-        <div className="breakdown-row">
+        <div className="breakdown-row" data-hud-band>
           {f?.nectarLocked && (
             <span>NECTAR LOCKED{f.nectarIn === null ? '' : ` ${fmtTime(f.nectarIn)}`}</span>
           )}
           {pin && <span className="warn">{pinLine(pin)}</span>}
         </div>
       )}
-      <div className="scorebar">
+      <div className="scorebar" data-hud-band>
         <div className={`score-panel bb red ${hud.alliance === 'red' ? 'mine' : ''}`}>
           {hud.alliance === 'red' && <span className="you-tag">YOU</span>}
           <span className="panel-score">{red}</span>

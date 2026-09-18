@@ -2,7 +2,8 @@
  * BIOBUZZ field colliders — DOM-free, server-safe reader over the CAD-derived collider set
  * (`docs/biobuzz/plan-3d.md` §8; `public/models/biobuzz/field-colliders.json`, produced by
  * `scripts/field-cad/convert.py`, README next to it documents the schema and how to
- * regenerate).
+ * regenerate). The measured audit behind the current shape of this data is
+ * `docs/biobuzz/field-cad-audit.md`.
  *
  * NOT a JSON import: `tsconfig.json` has no `resolveJsonModule`, and its `include: ["src"]`
  * makes every file under `src/` a compilation ROOT rather than only files reachable from an
@@ -10,31 +11,61 @@
  * reads the GENERATED `fieldColliders.gen.ts` (a plain typed module `scripts/field-cad.mjs`
  * writes from the same JSON every `npm run field-cad`), which needs no compiler flag at all.
  *
- * WIRED (the CAD switch-over pass): `sim3d/bodies.ts`'s `buildStatics3d`/`buildHiveTray3d` and
- * `hiveCellLocalBox` read `cadWallExtents()`/`cadTrayHulls()`/`cadCellBox()` (below) behind the
- * `BB3_FIELD_COLLIDERS` switch (`config.ts`), falling back to the Day 1 analytic geometry per
- * part when the CAD set is missing it.
+ * ── WHAT CHANGED, AND WHY IT MATTERS ────────────────────────────────────────────────────
+ * Every entry here used to be a convex hull of a part's AXIS-ALIGNED BOUNDING BOX, taken in the
+ * final SIM frame. Two consequences, both shipped as bugs and both now gone:
+ *
+ *  - a LEANING part's AABB is the whole box it sweeps through, so `hive_*_frame_a_frame_leg`
+ *    measured a solid slab from the floor to the pivot and the entire hive frame had to be
+ *    excluded from physics to keep the drive-under drivable. Statics are now TRUE convex hulls
+ *    of each part instance's own tessellated surface, and the frame is a real collider again.
+ *  - the TRAY sits at ±30° in the STEP, so a world-frame AABB minus the pivot is NOT the tray's
+ *    local (v, w) — it is that box smeared by the tilt. Read as local, it put the up-cell floor
+ *    collider 3.26 in above the mesh floor (the owner's "balls are on a different plane than the
+ *    actual bottom of the hive"). `convert.py` now rotates every tray point by `−captureTheta`
+ *    about the pivot BEFORE exporting, so `trays[a].hulls` are in the tray's UN-TILTED local
+ *    frame, `trays[a].refTheta` is 0, and the runtime rotation is plain `hiveTiltAngle`.
+ *
+ * WIRED: `sim3d/bodies.ts`'s `buildStatics3d`/`buildHiveTray3d` and `hiveCellLocalBox` read
+ * `cadStatics()`/`cadTrayHulls()`/`cadCellBox()` behind the `BB3_FIELD_COLLIDERS` switch
+ * (`config.ts`), falling back to the Day 1 analytic geometry per part when the CAD set is
+ * missing it.
  */
 
 import type { Alliance } from '../../../types';
-import { BB_HIVE_TILT_DEG, BB_HIVE_UP_STAGED } from '../config';
+import { dcos, dsin } from '../../../math';
 import { FIELD_COLLIDERS_JSON } from './fieldColliders.gen';
 
-export type FieldStaticKind = 'trimesh';
+/** the PHYSICS class `convert.py`'s `PART_RULES` stamped on a part — what `bodies.ts` filters
+ * on. Only the values that reach this file are listed; an unknown string is simply not in
+ * `PHYSICAL_STATIC_CLASSES` and is therefore ignored by the physics, never crashed on. */
+export type FieldPartClass = string;
 
 export interface FieldStatic {
   readonly name: string;
-  readonly kind: FieldStaticKind;
-  /** flat [x0,y0,z0, x1,y1,z1, ...], inches, sim frame */
-  readonly vertices: readonly number[];
-  /** flat [a0,b0,c0, a1,b1,c1, ...] triangle indices into `vertices` */
-  readonly indices: readonly number[];
+  readonly class: FieldPartClass;
+  /** CONVEX HULL POINTS, flat [x0,y0,z0, x1,y1,z1, ...], inches, sim frame. Rapier rebuilds the
+   * faces itself (`ColliderDesc.convexHull`), which is why no indices are carried. */
+  readonly points: readonly number[];
 }
 
 export interface FieldTrayHull {
   readonly name: string;
-  /** flat [x0,y0,z0, ...], inches, RELATIVE TO THE TRAY'S OWN PIVOT (see `FieldTray.pivot`) */
+  readonly class: FieldPartClass;
+  /** flat [x0,v0,w0, ...], inches, in the tray's PIVOT-LOCAL **UN-TILTED** frame: world =
+   * pivot + Rot_x(hiveTiltAngle) · (x, v, w). */
   readonly points: readonly number[];
+}
+
+/** the cell's INTERIOR, in the same un-tilted local frame — measured off the structural facet
+ * planes themselves (`convert.py`'s `note_interior`), not re-derived from the hulls, which carry
+ * their own outward extrusion. */
+export interface FieldCellBox {
+  readonly xHalf: number;
+  readonly vMin: number;
+  readonly vMax: number;
+  readonly wMin: number;
+  readonly wMax: number;
 }
 
 export interface FieldTray {
@@ -42,6 +73,14 @@ export interface FieldTray {
   readonly pivot: readonly [number, number, number];
   /** the tilt axis, in the tray's own (pivot-relative) frame */
   readonly axis: readonly [number, number, number];
+  /** the angle the exported hull points are true AT. 0 by construction on the CAD path (the
+   * exporter un-tilts them); kept in the schema so a future revision that exports at some other
+   * pose still has one place to say so. */
+  readonly refTheta: number;
+  /** the tilt the STEP's own tray sits at, radians — a MEASUREMENT, reported by the smoke lane,
+   * never an input to a collider. */
+  readonly captureTheta: number;
+  readonly cells: { readonly north?: FieldCellBox; readonly south?: FieldCellBox };
   readonly hulls: readonly FieldTrayHull[];
 }
 
@@ -51,15 +90,28 @@ export interface FieldFlowerDesc {
   /** [x, y] in inches, sim frame — matches `BB_FLOWERS` */
   readonly pos: readonly [number, number];
   /** the `statics[].name` entries that are this flower's SOLID support (backstop/pipes/
-   * brackets/base) — the ring plates are visual-only, see convert.py's `RE_FLOWER_RING`. */
+   * brackets/base) — the ring plates are visual-only, see convert.py's `PART_RULES`. */
   readonly staticNames: readonly string[];
   /** the glTF node name for this flower's visual mesh (`field.glb` / `field-low.glb`) */
   readonly visualNode: string;
 }
 
+/** the 36 soft tiles' own footprint and seam pitch, carried here (not only in
+ * `field-measurements.json`) because `scene/renderField.ts` needs them at RUNTIME to paint its
+ * tile-seam texture where the CAD's tiles actually are. The real pitch is 23.53 in, not `C.TILE`'s
+ * 24 — see `docs/biobuzz/field-cad-audit.md` §7 — so a texture drawn on the constants' grid puts
+ * every seam up to an inch off the CAD tape lying on top of it. */
+export interface FieldFloor {
+  readonly x: readonly [number, number];
+  readonly y: readonly [number, number];
+  readonly z: readonly [number, number];
+  readonly pitch: number;
+}
+
 export interface FieldColliders {
   readonly units: 'in';
   readonly frame: 'sim';
+  readonly floor?: FieldFloor | null;
   readonly statics: readonly FieldStatic[];
   readonly trays: { readonly red: FieldTray; readonly blue: FieldTray };
   readonly flowers: readonly FieldFlowerDesc[];
@@ -71,6 +123,40 @@ let cached: FieldColliders | null = null;
 export function fieldColliders3d(): FieldColliders {
   if (!cached) cached = FIELD_COLLIDERS_JSON as unknown as FieldColliders;
   return cached;
+}
+
+/**
+ * THE CLASSES `buildStatics3d` ACTUALLY BUILDS AS SOLIDS.
+ *
+ * Everything else the exporter carries is either drawn-only or deliberately analytic:
+ *  - `wall` / `tile`: the perimeter and the floor stay ANALYTIC cuboids at the shared
+ *    `BB_HALF_X`/`BB_HALF_Y`/`BB3_WALL_H` constants (owner rule). The CAD's own inner face is
+ *    ±70.674 against the constants' 72, and every other system — the 2D pipeline, the staging,
+ *    the start poses flush to the wall — is keyed to 72; a 3D wall at the CAD figure is
+ *    cross-physics drift, not a correction. The hulls are still exported so `cadWallExtents()`
+ *    can REPORT the gap. A thin 1-in CAD wall trimesh would also tunnel, which is why
+ *    `FLOOR_HALF_T`/`BB_WALL_T` are oversized in the first place.
+ *  - `tape`, `decal`, `under_tile`, `furniture`: paint, stickers, hardware below the tiles, and
+ *    the human-player tray outside the wall. Nothing on the field can touch them.
+ *  - `flower_ring`: the annulus problem — a convex hull of a ring plate fills its own centre
+ *    hole, which is exactly the opening a POLLEN passes through and a NECTAR seats on (§10.5.2).
+ *    `convert.py` does not export a hull for them at all; the name is listed here so the reason
+ *    lives next to the rule.
+ *  - `misc`: a structural part `convert.py` could not classify. It is EMITTED visually and
+ *    logged, but never silently given a collider — an unknown solid in the middle of the field
+ *    is a worse failure than a missing one.
+ */
+export const PHYSICAL_STATIC_CLASSES: ReadonlySet<string> = new Set(['hive_frame', 'flower_support']);
+
+/** the CAD tile footprint and seam pitch, or `null` when the collider set predates it. */
+export function cadFloor(): FieldFloor | null {
+  return fieldColliders3d().floor ?? null;
+}
+
+/** every CAD static this build should turn into a real collider, in the file's own array order
+ * (determinism). Empty when the collider set is absent or carries nothing physical. */
+export function cadStatics(): readonly FieldStatic[] {
+  return fieldColliders3d().statics.filter((s) => PHYSICAL_STATIC_CLASSES.has(s.class));
 }
 
 interface Aabb {
@@ -99,8 +185,8 @@ function aabbOfFlat(flat: readonly number[]): Aabb {
   return { min: [x0, y0, z0], max: [x1, y1, z1] };
 }
 
-/** signed-ish distance from `p` to an AABB: 0 (or negative-feeling, but clamped to 0) when
- * inside, the Euclidean distance to the nearest face/edge/corner otherwise. */
+/** signed-ish distance from `p` to an AABB: 0 when inside, the Euclidean distance to the
+ * nearest face/edge/corner otherwise. */
 function distToAabb(p: readonly [number, number, number], box: Aabb): number {
   let d2 = 0;
   for (let k = 0; k < 3; k++) {
@@ -115,36 +201,52 @@ function distToAabb(p: readonly [number, number, number], box: Aabb): number {
 
 export interface ProbeResult {
   readonly point: readonly [number, number, number];
-  /** the nearest static's name, or a tray hull's `hive_red`/`hive_blue` id, or null if the
-   * collider set has nothing at all (e.g. the CAD import never ran) */
+  /** the nearest static's name, or a tray hull's `hive_red/...` id, or null if the collider set
+   * has nothing at all (e.g. the CAD import never ran) */
   readonly nearestName: string | null;
   /** APPROXIMATE distance (inches) to that static's/tray's AXIS-ALIGNED BOUNDING BOX — a
-   * deliberate simplification (see the header): a true point-to-trimesh distance needs a BVH
-   * this DOM-free, dependency-free module does not carry, and an AABB is exactly conservative
-   * enough for the smoke check this feeds (`docs/biobuzz/plan-3d.md` §8/§9: comparing the CAD
-   * and constants-built collider sets within 0.5 in at twelve probe points is a coarse
-   * agreement check, not a collision-accuracy one). A probe point genuinely embedded in a
-   * concave static's real geometry but outside its AABB is impossible by construction, so
-   * this never UNDER-reports "outside"; it can only be more generous than the true surface. */
+   * deliberate simplification: a true point-to-hull distance needs a BVH this DOM-free,
+   * dependency-free module does not carry, and an AABB is exactly conservative enough for the
+   * smoke check this feeds (`docs/biobuzz/plan-3d.md` §8/§9: comparing the CAD and
+   * constants-built collider sets at twelve probe points is a coarse agreement check, not a
+   * collision-accuracy one). A probe point genuinely embedded in a concave region but outside
+   * its AABB is impossible by construction, so this never UNDER-reports "outside". */
   readonly distance: number;
 }
 
 /**
- * For each `points` triple, the nearest static (by AABB) or tray hull, and the (approximate,
- * see `ProbeResult`) distance to it. Pure, DOM-free — the smoke lane that compares this
- * collider set against the constants-built one calls this directly.
+ * For each `points` triple, the nearest static or tray hull, and the (approximate) distance to
+ * it. Pure, DOM-free — the smoke lane that compares this collider set against the
+ * constants-built one calls this directly.
+ *
+ * Tray hulls are in the UN-TILTED local frame, so they are rotated by `captureTheta` and shifted
+ * by the pivot before boxing — i.e. the probe sees the tray where the STEP actually has it, which
+ * is also where `createBiobuzzWorld` stages it.
  */
 export function probeColliders(points: readonly (readonly [number, number, number])[]): ProbeResult[] {
   const fc = fieldColliders3d();
   const named: { name: string; box: Aabb }[] = [];
-  for (const s of fc.statics) named.push({ name: s.name, box: aabbOfFlat(s.vertices) });
+  for (const s of fc.statics) named.push({ name: s.name, box: aabbOfFlat(s.points) });
   for (const [alliance, tray] of [
-    ['hive_red_tray', fc.trays.red],
-    ['hive_blue_tray', fc.trays.blue],
+    ['hive_red', fc.trays.red],
+    ['hive_blue', fc.trays.blue],
   ] as const) {
+    // `dcos`/`dsin`, never the engine's own trig: `scripts/smoke.ts`'s source guard scans this
+    // whole directory for engine-defined transcendentals — by TEXT, so do not name one even in a
+    // comment — and it is right to: an engine's trig is not required to be correctly-rounded, so
+    // two peers can compute different bits from the same input.
+    const c = dcos(tray.captureTheta);
+    const sn = dsin(tray.captureTheta);
     for (const h of tray.hulls) {
-      // hull points are pivot-relative; shift to world/sim frame before boxing
-      const world = h.points.map((v, i) => v + tray.pivot[i % 3]);
+      const world: number[] = new Array(h.points.length);
+      for (let i = 0; i < h.points.length; i += 3) {
+        const x = h.points[i];
+        const v = h.points[i + 1];
+        const w = h.points[i + 2];
+        world[i] = x + tray.pivot[0];
+        world[i + 1] = v * c - w * sn + tray.pivot[1];
+        world[i + 2] = v * sn + w * c + tray.pivot[2];
+      }
       named.push({ name: `${alliance}/${h.name}`, box: aabbOfFlat(world) });
     }
   }
@@ -159,185 +261,76 @@ export function probeColliders(points: readonly (readonly [number, number, numbe
 }
 
 // ---------------------------------------------------------------------------------------------
-// THE CAD SWITCH-OVER (`docs/biobuzz/plan-3d.md` §8, this pass): the tray hull frame, the cell
-// interior box derived from it, and the wall extents used by `sim3d/bodies.ts`. Everything below
-// is new; `fieldColliders3d()`/`probeColliders()` above are unchanged.
+// THE TRAY
 // ---------------------------------------------------------------------------------------------
 
 /**
- * THE TRAY HULLS' CAPTURE POSE.
- *
- * `field-colliders.json`'s `trays[a].hulls[].points` are pivot-relative but are NOT true tight
- * oriented hulls of the tray's parts: `scripts/field-cad/convert.py`'s `tray_hulls()` builds each
- * one from `bbox_corners_sim(inst)`, an AXIS-ALIGNED bounding box of the part IN THE FINAL SIM
- * FRAME — i.e. already flattened to whatever pose the STEP assembly's tray happens to sit at, not
- * a rotation-invariant local shape. Checked against the sign of each cell's z relative to the
- * pivot (red: `cell_south_*` reads POSITIVE by about `2·BB3_HIVE_ARM·sin(30°)`, `cell_north_*`
- * NEGATIVE by the same amount; blue: the opposite), that pose is the STAGED tilt
- * (`BB_HIVE_UP_STAGED`, ±`BB_HIVE_TILT_DEG`) for THAT alliance — the pose `createBiobuzzWorld`
- * starts a match in.
- *
- * BECAUSE THE HULLS ARE AABBs, NOT ORIENTED SHAPES, ROTATING THEIR POINTS TO A DIFFERENT
- * REFERENCE ANGLE ONLY INFLATES THEM (an AABB rotated by any nonzero angle bounds a strictly
- * larger region than the AABB itself) — an early version of this file pre-rotated every point
- * into a hoped-for "canonical, un-rotated" frame and made every cell box materially bigger than
- * the raw CAD data (measured: a cell's own `v`-span grew from ~18 to ~26 for no physical reason).
- * So the points are used EXACTLY AS CAPTURED — tight at the one pose the CAD actually describes —
- * and the CAPTURE TILT is applied as a fixed ROTATION ON THE COLLIDER ITSELF (`buildHiveTray3d`
- * sets each CAD hull collider's own local rotation to `tiltQuatX(-cadCaptureTheta(alliance))`),
- * so that composing it with the kinematic BODY's live rotation (`tiltQuatX(hiveTiltAngle(...))`)
- * reproduces the true captured pose exactly when the body is at its staged tilt, and rotates the
- * same (now slightly loose, since it is still an AABB) hull the rest of the way for any other
- * tilt. `derive.ts`'s cell-membership test does the matching inverse (`hiveCellLocalBox`'s
- * `refTheta` field) — see that function's own comment.
+ * The tilt the STEP's own tray sits at, radians, as MEASURED by the exporter (it is ±30.000° on
+ * STEP v26-27.2, proven by the residual thickness of the Back Skin — a wrong angle reads as a
+ * thick sheet; see `docs/biobuzz/field-cad-audit.md` §4.1). It is NOT applied to anything: the
+ * exported hulls are already un-tilted by it. Read by `probeColliders` above and reported by the
+ * SIM3D smoke lane's measurements check.
  */
 export function cadCaptureTheta(alliance: Alliance): number {
-  const sign = BB_HIVE_UP_STAGED[alliance] === 'north' ? 1 : -1;
-  return sign * ((BB_HIVE_TILT_DEG * Math.PI) / 180);
+  return fieldColliders3d().trays[alliance].captureTheta;
 }
 
 /**
- * ⚠️ THE "SIDE" HULLS ARE EXCLUDED, HERE, FOR EVERY CALLER (both the physics collider and the
- * cell-membership box below) — found by measurement, not assumed: `cell_north_side_pos` (this
- * dataset has only a `_pos` bucket per cell, not the "two ribs, split by +/-x" pair
- * `scripts/field-cad/convert.py`'s own comment describes, so it is not "one side wall" either)
- * spans the CELL'S FULL WIDTH in x (not one edge) and reaches ~3.5 in PAST the floor's own outer
- * (open-face) edge in v -- i.e. it is bracing/gusset hardware bundled into one hull bucket, not a
- * clean side-wall panel. Built as a real collider, that overreach sits exactly in a shot's
- * arrival path at the cell mouth: a shot staged just outside the floor's own opening (the
- * geometrically correct "just outside the cell" position) lands INSIDE this hull instead,
- * and Rapier's contact solver, resolving a deep initial penetration, hands it a spurious
- * ~600 in/s vertical velocity on the very first tick -- the SIM3D lane's launch check never
- * settled because of exactly this. `back`/`floor`/`ceiling`/`bar` show no such overreach (each
- * is a clean box matching its own named part) and are unaffected.
+ * Every CAD hull for one hive's tray, in the PIVOT-LOCAL UN-TILTED frame — ready for
+ * `RAPIER.ColliderDesc.convexHull` with no rotation offset at all.
+ *
+ * ⚠️ NOTHING IS FILTERED OUT HERE ANY MORE, and that is the fix, not an oversight. The previous
+ * version dropped every `_side_` hull because the exporter's per-part AABB for the "side" bucket
+ * spanned the cell's FULL width and reached 3.5 in past the mouth, so a shot staged just outside
+ * the cell started INSIDE it and the solver ejected it at ~600 in/s. The hulls are now PLANAR
+ * FACET SLABS (`convert.py` §7): `cell_<side>_floor`, `_side_pos`, `_side_neg`, `_roof_pos`,
+ * `_roof_neg`, `_back`, plus `bar_<side>`. Each sits exactly on its own CAD surface, extruded
+ * outward, so the cell mouth is the real aperture and nothing overreaches it.
  */
-function usableHulls(alliance: Alliance): readonly FieldTrayHull[] {
-  return fieldColliders3d().trays[alliance].hulls.filter((h) => !/_side_/.test(h.name));
-}
-
-/** every CAD hull for one hive's tray, AS CAPTURED (see `cadCaptureTheta`'s comment on why these
- * are not pre-rotated), minus the "side" buckets (`usableHulls`'s own comment) — ready for
- * `RAPIER.ColliderDesc.convexHull` once the collider itself carries the
- * `-cadCaptureTheta(alliance)` rotation offset. Empty when the collider set carries no hulls for
- * this alliance (defensive; the committed file always has both today). */
 export function cadTrayHulls(alliance: Alliance): readonly FieldTrayHull[] {
-  return usableHulls(alliance);
+  return fieldColliders3d().trays[alliance].hulls;
 }
 
-export interface CadHiveBox {
-  readonly xHalf: number;
-  readonly vMin: number;
-  readonly vMax: number;
-  readonly wMin: number;
-  readonly wMax: number;
-  /** the angle (radians) `hiveTiltAngle` reads AT WHICH this box's `(vMin..wMax)` numbers are
-   * the true world-relative-to-pivot extent — 0 for the Day 1 algebraic fallback (whose numbers
-   * are already defined in the theta-independent local frame), `cadCaptureTheta(alliance)` for a
-   * CAD box (captured at that specific tilt; see the module header). `insideCell` (`derive.ts`)
-   * reads it to convert a WORLD point into this box's own frame: `rotate2(dy, dz, refTheta -
-   * theta)` rather than the fixed `rotate2(dy, dz, -theta)` a theta-independent box would use. */
+/** the angle `engine.ts`'s `applyHiveTilt` and `scene/renderField.ts` subtract from the absolute
+ * tilt before driving the tray. 0 on the CAD path by construction; the indirection stays so
+ * there is exactly ONE place that answers the question. */
+export function cadTrayRefTheta(alliance: Alliance): number {
+  return fieldColliders3d().trays[alliance].refTheta ?? 0;
+}
+
+export interface CadHiveBox extends FieldCellBox {
+  /** the angle at which this box's `(vMin..wMax)` numbers are the true extent relative to the
+   * pivot — 0 on both paths now (the CAD tray is exported un-tilted, the algebraic fallback is
+   * theta-independent by construction). Kept so `derive.ts` and the smoke lane have a named
+   * thing to assert rather than an assumed zero. */
   readonly refTheta: number;
 }
 
-function hullExtent(h: FieldTrayHull): { xAbs: number; vMin: number; vMax: number; wMin: number; wMax: number } {
-  let xAbs = 0;
-  let vMin = Infinity;
-  let vMax = -Infinity;
-  let wMin = Infinity;
-  let wMax = -Infinity;
-  for (let i = 0; i < h.points.length; i += 3) {
-    const x = h.points[i];
-    const v = h.points[i + 1];
-    const w = h.points[i + 2];
-    if (Math.abs(x) > xAbs) xAbs = Math.abs(x);
-    if (v < vMin) vMin = v;
-    if (v > vMax) vMax = v;
-    if (w < wMin) wMin = w;
-    if (w > wMax) wMax = w;
-  }
-  return { xAbs, vMin, vMax, wMin, wMax };
-}
-
 /**
- * The CAD cell interior for one hive's cell, in the canonical (un-rotated) local frame.
- * `null` when the collider set has no `floor` hull for this cell (the box-based fallback then
- * applies — see `sim3d/bodies.ts`'s `hiveCellLocalBox`).
+ * The CAD cell interior for one hive's cell, in the canonical (un-rotated) local frame, straight
+ * off `trays[a].cells` — which `convert.py` measured from the structural facet PLANES themselves
+ * (floor top surface, gable apex, side walls, back plate), not from the exported hulls. Reading
+ * it back off a hull would be wrong twice over: a slab's points carry its own 1.5-in outward
+ * extrusion, and the roof is a gable whose lowest point is the eaves, not the ceiling.
  *
- * `vMin`/`vMax` (the cell's DEPTH — where an element can actually come to rest along the arm)
- * COME FROM THE `floor` HULL ALONE, not the union of every part named for this cell. Found by
- * measurement: the `back` hull's own v-extent reaches ~3.5 in closer to the pivot than the floor
- * plate's real inner edge (it bundles the back panel with adjoining bracket hardware, the same
- * "AABB of more than one part" issue `cadTrayHulls`'s header describes for `side` — just smaller
- * here), and a `back`-driven `vMin` sends the pivot-side few inches of the box into a region with
- * NO floor beneath it — a shot deliberately dropped there in the SIM3D lane's hive-tip check
- * rolled straight through and never settled, because there was nothing physical to settle on.
- * `wMin`/`wMax` (the height — floor to ceiling) and `xHalf` (the width) still union
- * floor+back+ceiling, since a wall or ceiling genuinely reaching a little further than the floor
- * in THOSE axes does not create an unsupported gap the same way an inflated `back` does in `v`.
+ * `null` when the collider set has no cell for this side (the algebraic fallback then applies —
+ * see `sim3d/bodies.ts`'s `hiveCellLocalBox`).
  */
 export function cadCellBox(alliance: Alliance, sideSign: 1 | -1): CadHiveBox | null {
-  const side = sideSign > 0 ? 'north' : 'south';
-  const prefix = `cell_${side}_`;
-  const hulls = cadTrayHulls(alliance).filter((h) => h.name.startsWith(prefix));
-  const floor = hulls.find((h) => h.name.endsWith('_floor'));
-  if (!floor) return null;
-  const floorExtent = hullExtent(floor);
-  let xHalf = 0;
-  let wMin = Infinity;
-  let wMax = -Infinity;
-  for (const h of hulls) {
-    const e = hullExtent(h);
-    if (e.xAbs > xHalf) xHalf = e.xAbs;
-    if (e.wMin < wMin) wMin = e.wMin;
-    if (e.wMax > wMax) wMax = e.wMax;
-  }
-  return { xHalf, vMin: floorExtent.vMin, vMax: floorExtent.vMax, wMin, wMax, refTheta: cadCaptureTheta(alliance) };
+  const cell = fieldColliders3d().trays[alliance].cells?.[sideSign > 0 ? 'north' : 'south'];
+  if (!cell) return null;
+  return { ...cell, refTheta: cadTrayRefTheta(alliance) };
 }
 
-interface Aabb3 {
-  readonly min: readonly [number, number, number];
-  readonly max: readonly [number, number, number];
-}
-
-function staticAabb(name: string): Aabb3 | null {
-  const s = fieldColliders3d().statics.find((x) => x.name === name);
-  if (!s) return null;
-  return aabbOfFlat(s.vertices) as Aabb3;
-}
-
-export interface CadWallExtents {
-  /** inner-face (field-facing) coordinate of each wall, world/sim frame, inches. */
-  readonly left: number;
-  readonly right: number;
-  readonly rear: number;
-  readonly audience: number;
-  /** wall height (in), averaged over the four walls' own trimesh extent. */
-  readonly height: number;
-  /** the lowest z of any wall's own geometry (in) — the floor line the collider's height is
-   * built up from, which is not exactly 0 in the raw CAD data (the tile top has its own small
-   * offset — see `field-measurements.json`'s `tiles_extent_in.z`). */
-  readonly z0: number;
-}
-
-/** the four perimeter walls' inner faces and height, straight off their own trimesh vertices —
- * more precise than `field-measurements.json`'s `walls_extent_in` (that field averages each
- * wall PART's own centroid, not its true surface, so it reads the walls' approximate
- * CENTRELINE rather than a face). `null` when any of the four is missing from the collider set
- * (`sim3d/bodies.ts` falls back to `BB_HALF_X`/`BB_HALF_Y`/`BB3_WALL_H` in that case). */
-export function cadWallExtents(): CadWallExtents | null {
-  const l = staticAabb('wall_left');
-  const r = staticAabb('wall_right');
-  const rear = staticAabb('wall_rear');
-  const aud = staticAabb('wall_audience');
-  if (!l || !r || !rear || !aud) return null;
-  const heights = [l, r, rear, aud].map((b) => b.max[2] - b.min[2]);
-  const z0s = [l, r, rear, aud].map((b) => b.min[2]);
-  return {
-    left: l.max[0], // the face closer to x = 0 (the field side)
-    right: r.min[0],
-    rear: rear.min[1],
-    audience: aud.max[1],
-    height: heights.reduce((a, b) => a + b, 0) / heights.length,
-    z0: z0s.reduce((a, b) => a + b, 0) / z0s.length,
-  };
-}
+// THE PERIMETER WALL IS NOT IN THIS FILE AT ALL ANY MORE.
+//
+// It never was a collider — the 3D walls are analytic cuboids at `BB_HALF_X`/`BB_HALF_Y`/
+// `BB3_WALL_H` (owner rule; the CAD's own inner face is ±70.674 against the constants' 72, and
+// every other system — the 2D pipeline, the staging, the start poses flush to the wall — is keyed
+// to 72, so a 3D wall at the CAD figure would be cross-physics drift rather than a correction).
+// It was exported anyway so a `cadWallExtents()` reader could REPORT the gap, and nothing at
+// runtime ever called it: `field-colliders.json` is compiled into `fieldColliders.gen.ts` and
+// imported STATICALLY by `step.ts`, so those four hulls were shipping in the MAIN client bundle to
+// be read by a smoke check. The measurement now lives in `field-measurements.json`'s
+// `walls.innerFace`, which the SIM3D lane reads directly — see `docs/biobuzz/field-cad-audit.md`
+// §7 for the finding itself.

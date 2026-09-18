@@ -15,7 +15,7 @@ import * as THREE from 'three';
 import { GLTFLoader, type GLTF } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { MeshoptDecoder } from 'three/examples/jsm/libs/meshopt_decoder.module.js';
 import type { Alliance } from '../../../types';
-import { fieldColliders3d } from '../sim3d/fieldColliders';
+import { cadCellBox, fieldColliders3d } from '../sim3d/fieldColliders';
 
 export interface FieldHiveGroup {
   /** static — the triangular base + uprights + damper hardware. World-absolute pose. */
@@ -36,6 +36,15 @@ export interface FieldHiveGroup {
 export interface FieldGroups {
   floor: THREE.Object3D;
   walls: THREE.Object3D;
+  /** the 16 CAD gaffer-tape strips — the LOADING ZONE and GARDEN marks on the tiles and the two
+   * ALLIANCE AREA outlines on the gym floor. Present on every field revision that carries tape;
+   * `null` only if a future STEP drops it. */
+  tape: THREE.Object3D | null;
+  /** the parts of the HIVE frame that span BOTH hives — the A-Frame Top Bar (the crossbar) and
+   * the ACM logo panel with its sticker. World-absolute and static, like the per-alliance frames;
+   * separate only because their centroid sits at x ≈ 0 and a red/blue split by sign would hand a
+   * shared part to one hive arbitrarily. */
+  sharedFrame: THREE.Object3D | null;
   /** present only if the STEP assembly actually had driver-station geometry (it does not, as
    * of the 2026-09-15 field revision — see the report's part inventory) */
   stations: THREE.Object3D | null;
@@ -100,89 +109,121 @@ function findOptional(root: THREE.Object3D, name: string): THREE.Object3D | null
 }
 
 /**
- * PART-CLASS MATERIALS — one entry PER NAMED glTF MATERIAL `convert.py`/`assemble-gltf.mjs` can
- * write (2026-09-18 fidelity pass, owner playtest: "the flower has lost its colour", "the field
- * wall should be transparent"). The Day 1 version of this file assigned materials by WALKING UP
- * each mesh's ancestor chain looking for a node name it recognised (`/^flower_/` → one flat
- * "plastic" for the WHOLE flower) — that was fine as long as a flower was one merged STL with one
- * material, which is exactly the bug: a flower's ring, its HIPS pipe and its backstop are three
- * different real materials, and merging them into one node made "assign by node" and "assign by
- * part" the same operation. `convert.py` now writes one glTF PRIMITIVE per part class inside each
- * node (`flower_0` is a ring + a pipe + a base primitive, not one blob), so the loader can and
- * does assign BY THE PRIMITIVE'S OWN MATERIAL NAME — the name `assemble-gltf.mjs`'s `MAT` table
- * gave it, preserved by GLTFLoader on `Material.name` — which is a strictly finer-grained (and
- * simpler: no ancestor walk) lookup than the old node-name heuristic.
+ * ⚠️ THE COLOUR COMES FROM THE CAD, NOT FROM THIS FILE.
+ *
+ * Every glTF material in the asset is named `<finish>#<rrggbb>` and carries that colour in its
+ * own `baseColorFactor` — `convert.py` reads it out of the STEP's styled-item chain and
+ * `assemble-gltf.mjs` writes one material per (finish, colour) pair. This file supplies only the
+ * SURFACE (roughness / metalness / transparency), keyed by the finish.
+ *
+ * That split is the fix for the owner's "flowers are still the wrong color". The previous version
+ * kept a hand-picked hex per part class HERE and another set of placeholders in the assembler, so
+ * a flower rendered as three greys (`#e5e7eb` ring, `#c2c4c8` pipes, `#8c929c` base) when the CAD
+ * says amber `#ffba52`, green `#5fa73d` and purple `#641c65`. It also had the hive backwards: the
+ * alliance colour is the two RIBS (pure `#ff0000` / `#0000ff`), not the white `#e6e6e6` skins.
+ * See `docs/biobuzz/field-cad-audit.md` §3 for the full measured table.
+ *
+ * TWO DELIBERATE OVERRIDES, both flagged in the audit as CAD placeholders rather than intent:
+ *  - `glass` keeps the CAD hue but is forced transparent (the STEP has the polycarbonate panels
+ *    at an opaque `#e6e6e6`; the real thing is see-through, and a solid perimeter hides the
+ *    field from a driver camera outside it).
+ *  - `tile` is forced to the sim's own mat token. The CAD gives the soft tiles a flat 50 % grey
+ *    placeholder; a real FTC tile is near-black foam, and — more load-bearing — the HUD contrast
+ *    pairs (`npm run contrast`) are tuned against `COLORS.mat`/`COLORS.tile`, so a 50 %-grey
+ *    floor would quietly break them. The `tiles` node is hidden at runtime anyway
+ *    (`renderField.ts` draws the seam grid on its own textured plane), so this is a fallback.
  */
-const MATERIAL_CLASSES = [
-  'tile',
-  'wall_panel',
-  'wall_extrusion',
-  'hive_frame_metal',
-  'tray_panel_red',
-  'tray_panel_blue',
-  'tray_metal',
-  'flower_ring',
-  'flower_pipe',
-  'flower_base',
-  'tape_red',
-  'tape_blue',
-  'tape_white',
-] as const;
-type MaterialClass = (typeof MATERIAL_CLASSES)[number];
-type MaterialSet = Record<MaterialClass, THREE.Material>;
+const FINISHES = ['tile', 'glass', 'metal', 'plastic', 'decal', 'tape', 'misc'] as const;
+type Finish = (typeof FINISHES)[number];
+
+/** the sim's own floor token — see the `tile` override above. Matches `C.COLORS.mat`; the
+ * literal rather than the import because `renderField.ts` (which owns the floor) already
+ * depends on THIS file, and importing back would be a cycle. */
+const TILE_TONE = 0x2a2e33;
 
 /**
  * TRANSPARENT POLYCARBONATE WALL — the SAME optical policy as `renderField.ts`'s `wallMaterial()`
- * (the constants-built fallback), duplicated rather than imported: importing it here would make
- * this file depend on `renderField.ts`, which already depends on THIS file (`loadFieldGlb`) —
- * a cycle. Keep the two numbers in step by hand if the policy changes; the report calls out the
- * exact values (opacity 0.22, roughness 0.1) so a future edit greps for them in both files.
+ * (the constants-built fallback), duplicated rather than imported for the same cycle reason.
+ * Keep the two numbers in step by hand if the policy changes.
  */
 const WALL_PANEL_OPACITY = 0.22;
 /** matches `renderField.ts`'s `WALL_RENDER_ORDER` — drawn after every opaque object so two
  * transparent walls (or a wall and a robot) never fight over which one occludes the other. */
 const WALL_RENDER_ORDER = 10;
 
-function buildMaterials(): MaterialSet {
-  const metal = (color: number): THREE.Material => new THREE.MeshStandardMaterial({ color, metalness: 0.7, roughness: 0.35 });
-  return {
-    tile: new THREE.MeshStandardMaterial({ color: 0x2a2e33, metalness: 0, roughness: 0.9 }),
-    wall_panel: new THREE.MeshPhysicalMaterial({
-      color: 0xdfe6ea,
-      metalness: 0,
-      roughness: 0.1,
-      transparent: true,
-      opacity: WALL_PANEL_OPACITY,
-      depthWrite: false,
-      side: THREE.DoubleSide,
-    }),
-    wall_extrusion: metal(0x9aa1ab),
-    hive_frame_metal: metal(0x9aa1ab),
-    tray_panel_red: new THREE.MeshStandardMaterial({ color: 0xbf1f1a, metalness: 0.05, roughness: 0.5 }),
-    tray_panel_blue: new THREE.MeshStandardMaterial({ color: 0x0f4bd6, metalness: 0.05, roughness: 0.5 }),
-    tray_metal: metal(0x8b929c),
-    // the ring plates — the 2D renderer's own flower-ring token (`C.COLORS.white`, `drawField.ts`'s
-    // `buildFlower`'s `ringMat`), so the two views agree on what a flower's ring looks like.
-    flower_ring: new THREE.MeshStandardMaterial({ color: 0xe5e7eb, metalness: 0, roughness: 0.4 }),
-    // the HIPS support pipes — light grey, undecorated hardware.
-    flower_pipe: new THREE.MeshStandardMaterial({ color: 0xc2c4c8, metalness: 0.05, roughness: 0.55 }),
-    // backstop / field bracket / under-field bracket — the flower's solid structural hardware.
-    flower_base: new THREE.MeshStandardMaterial({ color: 0x8c929c, metalness: 0.3, roughness: 0.5 }),
-    tape_red: new THREE.MeshStandardMaterial({ color: 0xe02020, metalness: 0, roughness: 0.8 }),
-    tape_blue: new THREE.MeshStandardMaterial({ color: 0x0a5cff, metalness: 0, roughness: 0.8 }),
-    tape_white: new THREE.MeshStandardMaterial({ color: 0xe5e7eb, metalness: 0, roughness: 0.8 }),
-  };
+/** the tape and the AprilTag/sticker decals are painted ON a surface that is already there (the
+ * tiles, the hive's skins), 0.010 in proud of it. At a driver camera's depth precision that is
+ * inside the z-fighting band, so they are drawn with a polygon offset instead of being nudged
+ * geometrically — moving the geometry would put the picture and the CAD out of step, which is
+ * the whole class of bug this pass exists to remove. */
+const DECAL_POLYGON_OFFSET = -2;
+
+function materialFor(finish: Finish, colorHex: number): THREE.Material {
+  switch (finish) {
+    case 'glass':
+      return new THREE.MeshPhysicalMaterial({
+        color: colorHex,
+        metalness: 0,
+        roughness: 0.1,
+        transparent: true,
+        opacity: WALL_PANEL_OPACITY,
+        depthWrite: false,
+        side: THREE.DoubleSide,
+      });
+    case 'metal':
+      return new THREE.MeshStandardMaterial({ color: colorHex, metalness: 0.7, roughness: 0.35 });
+    case 'plastic':
+      return new THREE.MeshStandardMaterial({ color: colorHex, metalness: 0.05, roughness: 0.5 });
+    case 'tape':
+      return new THREE.MeshStandardMaterial({
+        color: colorHex,
+        metalness: 0,
+        roughness: 0.8,
+        polygonOffset: true,
+        polygonOffsetFactor: DECAL_POLYGON_OFFSET,
+        polygonOffsetUnits: DECAL_POLYGON_OFFSET,
+      });
+    case 'decal':
+      return new THREE.MeshStandardMaterial({
+        color: colorHex,
+        metalness: 0,
+        roughness: 0.85,
+        polygonOffset: true,
+        polygonOffsetFactor: DECAL_POLYGON_OFFSET,
+        polygonOffsetUnits: DECAL_POLYGON_OFFSET,
+      });
+    case 'tile':
+      return new THREE.MeshStandardMaterial({ color: TILE_TONE, metalness: 0, roughness: 0.9 });
+    case 'misc':
+    default:
+      return new THREE.MeshStandardMaterial({ color: colorHex, metalness: 0.2, roughness: 0.6 });
+  }
+}
+
+/** `<finish>#<rrggbb>` -> `{finish, colorHex}`; `null` for anything that is not in that shape. */
+function parseMaterialName(name: string | undefined): { finish: Finish; colorHex: number } | null {
+  if (!name) return null;
+  const cut = name.indexOf('#');
+  if (cut <= 0) return null;
+  const finish = name.slice(0, cut) as Finish;
+  if (!(FINISHES as readonly string[]).includes(finish)) return null;
+  const hex = name.slice(cut + 1);
+  if (!/^[0-9a-f]{6}$/i.test(hex)) return null;
+  return { finish, colorHex: parseInt(hex, 16) };
 }
 
 /**
- * Assigns each mesh's runtime PBR material BY ITS OWN GLTF MATERIAL NAME (`obj.material.name`,
- * preserved by GLTFLoader from `assemble-gltf.mjs`'s `doc.createMaterial(key)`) and turns on
- * shadows. The assembled glb ships NO vertex normals (see `assemble-gltf.mjs`'s header —
- * meshoptimizer's simplifier cannot collapse a flat-shaded mesh's edges, since every triangle
- * boundary then looks like a hard attribute seam), so this also computes smooth vertex normals
- * once here — the standard, cheap way to shade a decimated background asset.
+ * Assigns each mesh's runtime PBR material from ITS OWN GLTF MATERIAL NAME (`obj.material.name`,
+ * preserved by GLTFLoader) and turns on shadows. One THREE material per distinct name, shared
+ * across every mesh that carries it.
+ *
+ * The assembled glb ships NO vertex normals (see `assemble-gltf.mjs`'s header — meshoptimizer's
+ * simplifier cannot collapse a flat-shaded mesh's edges, since every triangle boundary then looks
+ * like a hard attribute seam), so this also computes smooth vertex normals once here.
  */
-function styleScene(root: THREE.Object3D, materials: MaterialSet): void {
+function styleScene(root: THREE.Object3D): void {
+  const cache = new Map<string, THREE.Material>();
+  const unknown = new Set<string>();
   root.traverse((obj) => {
     if (!(obj instanceof THREE.Mesh)) return;
     obj.castShadow = true;
@@ -190,17 +231,27 @@ function styleScene(root: THREE.Object3D, materials: MaterialSet): void {
     if (obj.geometry && !obj.geometry.getAttribute('normal')) {
       obj.geometry.computeVertexNormals();
     }
-    const srcMaterial = Array.isArray(obj.material) ? obj.material[0] : obj.material;
-    const cls = srcMaterial?.name as MaterialClass | undefined;
-    const resolved = cls && materials[cls] ? materials[cls] : materials.flower_base; // safe grey default
-    if (!cls || !materials[cls]) {
-      // eslint-disable-next-line no-console
-      console.warn(`renderFieldGlb: mesh "${obj.name}" has no recognised material class ("${cls}") — using a default grey.`);
+    const src = Array.isArray(obj.material) ? obj.material[0] : obj.material;
+    const name = src?.name;
+    const parsed = parseMaterialName(name);
+    const key = parsed ? name : '__unrecognised__';
+    let mat = cache.get(key);
+    if (!mat) {
+      if (!parsed) unknown.add(String(name));
+      mat = parsed ? materialFor(parsed.finish, parsed.colorHex) : materialFor('misc', 0x9aa1ab);
+      cache.set(key, mat);
     }
-    obj.material = resolved;
-    if (cls === 'tile') obj.castShadow = false; // the floor never casts, only receives
-    if (cls === 'wall_panel') obj.renderOrder = WALL_RENDER_ORDER;
+    obj.material = mat;
+    if (parsed?.finish === 'tile') obj.castShadow = false; // the floor never casts, only receives
+    if (parsed?.finish === 'glass') obj.renderOrder = WALL_RENDER_ORDER;
   });
+  if (unknown.size > 0) {
+    // eslint-disable-next-line no-console
+    console.warn(
+      `renderFieldGlb: ${unknown.size} glTF material name(s) are not "<finish>#<rrggbb>" and fell back to grey: ` +
+        `${[...unknown].join(', ')}. Regenerate with \`npm run field-cad\`, or add the finish to FINISHES here and to FINISH in assemble-gltf.mjs.`,
+    );
+  }
 }
 
 /** builds the pivot-anchored tray group for one alliance — see `FieldHiveGroup.tray`'s header. */
@@ -228,11 +279,13 @@ export async function loadFieldGlb(url: string, quality: 'high' | 'low' = 'high'
   const gltf: GLTF = await loader().loadAsync(resolved);
   const root = gltf.scene;
 
-  styleScene(root, buildMaterials());
+  styleScene(root);
 
   const floor = mustFind(root, 'tiles');
   const walls = mustFind(root, 'walls');
   const stations = findOptional(root, 'stations');
+  const tape = findOptional(root, 'tape');
+  const sharedFrame = findOptional(root, 'hive_shared/frame');
 
   const hives = {
     red: { frame: mustFind(root, 'hive_red/frame'), tray: buildTrayGroup(root, 'red') },
@@ -241,5 +294,73 @@ export async function loadFieldGlb(url: string, quality: 'high' | 'low' = 'high'
 
   const flowers = [0, 1, 2, 3].map((k) => mustFind(root, `flower_${k}`));
 
-  return { floor, walls, stations, hives, flowers, root };
+  checkTrayFloorAgreement(hives);
+
+  return { floor, walls, tape, sharedFrame, stations, hives, flowers, root };
+}
+
+/** how far the drawn tray floor may sit from the collider floor before the picture and the
+ * physics are telling a driver two different things. 0.25 in is the brief's own number; the CAD
+ * sheet is 0.020 in thick, so anything real lands far inside it. */
+const TRAY_FLOOR_TOLERANCE_IN = 0.25;
+
+/**
+ * DEV SELF-CHECK — the drawn tray floor against the collider's. This is the owner's "the balls
+ * are on a different plane than the actual bottom of the hive", turned into something that
+ * complains on its own the next time it drifts.
+ *
+ * It RAYCASTS the mesh: a ray dropped down the tray's own local -w axis from inside the cell,
+ * and the first surface it meets is compared to `cadCellBox(...).wMin`, the plane the collider's
+ * floor slab presents.
+ *
+ * ⚠️ IT HAS TO BE A RAYCAST, NOT A VERTEX SCAN. A flat CAD face tessellates to its CORNER
+ * vertices only — there is not one vertex in the middle of a cell's floor plate — so a "lowest
+ * vertex in a window" probe finds the Goal Ribs standing at each END of the cell (they hang
+ * 1.5 in below the floor) and reports a ~1-in disagreement that is entirely its own sampling.
+ * That is measured, not hypothetical: this check's first version did exactly that, in the app,
+ * four times over.
+ *
+ * `console.warn` only, and only in dev: a wrong floor is a fidelity bug, not a crash, and a
+ * player mid-match is not helped by a thrown error.
+ */
+function checkTrayFloorAgreement(hives: { red: FieldHiveGroup; blue: FieldHiveGroup }): void {
+  if (!import.meta.env?.DEV) return;
+  const ray = new THREE.Raycaster();
+  for (const alliance of ['red', 'blue'] as const) {
+    const pivotGroup = hives[alliance].tray;
+    pivotGroup.updateWorldMatrix(true, true);
+    const toLocal = pivotGroup.matrixWorld.clone().invert();
+    for (const sideSign of [1, -1] as const) {
+      const box = cadCellBox(alliance, sideSign);
+      if (!box) continue;
+      const vMid = (box.vMin + box.vMax) / 2;
+      // start well inside the cell, off the centreline so the `Basket Base Tube` (a solid rod
+      // under the floor at |x| < 0.51) is not what the ray finds first, and drop along local -w.
+      const origin = new THREE.Vector3(4, vMid, box.wMin + 6).applyMatrix4(pivotGroup.matrixWorld);
+      const down = new THREE.Vector3(0, 0, -1).transformDirection(pivotGroup.matrixWorld).normalize();
+      ray.set(origin, down);
+      ray.far = 12;
+      const hit = ray.intersectObject(pivotGroup, true)[0];
+      const side = sideSign > 0 ? 'north' : 'south';
+      if (!hit) {
+        // eslint-disable-next-line no-console
+        console.warn(
+          `renderFieldGlb: ${alliance} ${side} cell — nothing under the ray at local (4, ${vMid.toFixed(2)}); ` +
+            `the tray mesh may be missing its floor skin.`,
+        );
+        continue;
+      }
+      const meshFloorW = hit.point.clone().applyMatrix4(toLocal).z;
+      const delta = Math.abs(meshFloorW - box.wMin);
+      if (delta > TRAY_FLOOR_TOLERANCE_IN) {
+        // eslint-disable-next-line no-console
+        console.warn(
+          `renderFieldGlb: ${alliance} ${side} cell — the DRAWN floor (local w ${meshFloorW.toFixed(3)}) and the ` +
+            `COLLIDER floor (w ${box.wMin.toFixed(3)}) differ by ${delta.toFixed(3)} in, past the ` +
+            `${TRAY_FLOOR_TOLERANCE_IN} in tolerance. An element will look like it is floating or sunk. ` +
+            `Regenerate with \`npm run field-cad\`; see docs/biobuzz/field-cad-audit.md section 4.`,
+        );
+      }
+    }
+  }
 }

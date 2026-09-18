@@ -18,7 +18,7 @@ import * as C from './config';
 import { DEFAULT_ASSISTS, DEFAULT_SPEC, type RobotSetup } from './sim/spawn';
 import { moduleFor, gameOf } from './games';
 import type { GameModule } from './games';
-import type { GameScene, SceneCamera, SceneFrame } from './games/module';
+import type { GameScene, SceneCamera, SceneFrame, SceneInsets } from './games/module';
 import { getViewPref, subscribeViewPref } from './games/biobuzz/graphics/store';
 import { accelMultiplier as chainAccelMultiplier, type EndgameState } from './games/chain/state';
 import { chainCatalystGeom, chainHopperCap } from './games/chain/config';
@@ -388,6 +388,40 @@ export class GameController {
    * the old per-render `matchMedia()` calls, at render-loop frequency instead of 10 Hz). */
   private mqCoarse: MediaQueryList | null = null;
 
+  // ------------------------------------------------------------ HUD-SAFE CAMERA FRAMING --
+  //
+  // The 3D canvas fills the WHOLE `.game-viewport`, and every piece of HUD chrome is
+  // absolutely positioned over it — so a camera fitted to the canvas frames the field's far
+  // edge underneath the score bar. Owner's re-test, 2026-09-18: "make sure that the scoreboard
+  // and the field can both fit in the screen without overlap." These four numbers (CSS px) are
+  // what the scene fits into instead; see `refreshHudInsets` for how they are measured and
+  // `SceneInsets` in `games/module.ts` for the contract.
+  //
+  // The 2D path needs nothing here: `Camera.configure` has always reserved its own top/bottom
+  // bands (`HUD_TOP` / `HUD_BOTTOM` in `render/camera.ts`) and letterboxes the field inside
+  // them. This is the same idea, MEASURED rather than hardcoded, because a 3D camera has to
+  // solve a pitch and an FOV against it rather than just scale a square.
+
+  /** the element the HUD's own chrome is mounted in (GameView's `.game-root`) — the subtree
+   * `[data-hud-band]` is queried from. Null ⇒ no measurement, insets stay zero. */
+  private readonly hudHost: HTMLElement | null;
+  /** the live bands. ONE object, mutated in place and handed to the scene every frame —
+   * `SceneFrame.insets` documents that a scene must not retain it. */
+  private readonly hudInsets: SceneInsets = { top: 0, right: 0, bottom: 0, left: 0 };
+  /** set by the observers below (and by `onResize`), cleared by `refreshHudInsets`. The
+   * measurement is a DOM read, so it happens at most once per rendered frame and only when
+   * something has actually moved — never unconditionally per frame. */
+  private hudInsetsDirty = true;
+  /** fires when a HUD band changes SIZE (a chip row wrapping to a second line, the scorebar
+   * switching to its compact layout) without anything mounting or unmounting. */
+  private hudBandObserver: ResizeObserver | null = null;
+  /** fires when a band MOUNTS or UNMOUNTS (the scorebar appears with the first HUD poll, the
+   * chip row is suppressed on a coarse pointer, a game's `scoreBar` slot swaps in). */
+  private hudBandMutations: MutationObserver | null = null;
+  /** what `hudBandObserver` currently watches, so the set can be reconciled rather than torn
+   * down and rebuilt on every measurement. */
+  private readonly observedBands = new Set<Element>();
+
   constructor(
     private readonly canvas: HTMLCanvasElement,
     private settings: GameSettings,
@@ -397,6 +431,16 @@ export class GameController {
        * already contains the 2D canvas at the same box. Absent ⇒ never load a scene,
        * whatever the view preference says. */
       sceneHost?: HTMLElement;
+      /**
+       * The element the HUD chrome is mounted in — GameView's `.game-root`, the containing
+       * block every absolutely-positioned overlay is laid out against. Every band inside it
+       * carries `data-hud-band`; `refreshHudInsets` measures those against `sceneHost` and
+       * hands the result to the 3D scene as `SceneFrame.insets`.
+       *
+       * Absent ⇒ no measurement and no insets, which is every call site that has not been
+       * wired for one. A scene then fits to the whole canvas, exactly as before.
+       */
+      hudHost?: HTMLElement;
       /**
        * A ONE-LINE EVENT pushed into the freshly built world (Day 1 seam): GameView
        * awaits `initPhysics3d()` before constructing a 3D solo practice and passes this
@@ -411,6 +455,7 @@ export class GameController {
     this.ctx = canvas.getContext('2d')!;
     this.session = session;
     this.sceneHost = opts?.sceneHost ?? null;
+    this.hudHost = opts?.hudHost ?? null;
     // which game this controller builds its INITIAL world for. A networked
     // session's game is authoritative (from matchStart); solo uses the setting.
     // Once running, STEP/DRAW/HUD resolve from this.world.game (this.mod).
@@ -455,6 +500,30 @@ export class GameController {
       this.canvasObserver.observe(this.canvas);
     }
     this.mqCoarse = typeof matchMedia === 'function' ? matchMedia('(pointer: coarse)') : null;
+    // HUD-SAFE FRAMING: two observers, because a band changes in two unrelated ways and
+    // neither event implies the other. A `ResizeObserver` catches a band that changes SIZE in
+    // place (the chip row wrapping, the compact scorebar); a `MutationObserver` on the HUD
+    // subtree catches one MOUNTING or unmounting (the scorebar arrives with the first 10 Hz
+    // HUD poll, ~100 ms after this constructor runs, and would otherwise never be measured).
+    // Both only set a dirty flag — the DOM read itself happens once, in the render loop.
+    if (this.hudHost) {
+      if (typeof ResizeObserver === 'function') {
+        this.hudBandObserver = new ResizeObserver(() => {
+          this.hudInsetsDirty = true;
+        });
+      }
+      if (typeof MutationObserver === 'function') {
+        this.hudBandMutations = new MutationObserver(() => {
+          this.hudInsetsDirty = true;
+        });
+        // `childList` + `subtree` ONLY — deliberately not `characterData`, which the timer
+        // digits and every score change would fire several times a second for a band whose
+        // BOX never moves (the panels are min-width'd and tabular-nums). `attributeFilter` is
+        // likewise left off: a class flip that actually changes a band's size shows up on the
+        // ResizeObserver above, which is the cheaper of the two signals.
+        this.hudBandMutations.observe(this.hudHost, { childList: true, subtree: true });
+      }
+    }
     this.onResize();
     // BIOBUZZ 3D SEAM: pick up the device's current view preference now, and again on
     // every change (a live switch from Configure or a future in-match toggle) — see
@@ -547,8 +616,115 @@ export class GameController {
 
   private onResize = (): void => {
     this.renderer.camera.configure(this.canvas, this.viewAlliance(), this.mod.bounds);
+    this.hudInsetsDirty = true;
     this.scene?.resize(this.canvas.clientWidth, this.canvas.clientHeight, window.devicePixelRatio || 1);
   };
+
+  /**
+   * MEASURE THE HUD'S OCCUPIED BANDS off the live DOM — the safe rectangle a 3D camera fits
+   * the field into (`SceneInsets`, `games/module.ts`). Owner's re-test, 2026-09-18: "make sure
+   * that the scoreboard and the field can both fit in the screen without overlap."
+   *
+   * Called at most ONCE PER RENDERED FRAME and only when `hudInsetsDirty` is set (a resize, a
+   * band resizing in place, a band mounting/unmounting, a view switch) — a `getBoundingClientRect`
+   * is a layout read and this runs at up to 144 Hz. Writes into `this.hudInsets` in place, so
+   * there is no per-frame allocation either.
+   *
+   * ── WHICH EDGE DOES A BAND CLAIM? ─────────────────────────────────────────────────────
+   * Each band claims the edge it intrudes LEAST far from, measured as a FRACTION of that axis
+   * (not in pixels): a 52 px top band on a 900 px viewport is a 5.8 % bite, while the same
+   * element's right-edge intrusion could be 300 px of a 1600 px width — 19 %, and reserving
+   * THAT would throw away a fifth of the field for a corner chip cluster. Comparing fractions
+   * is what makes the choice scale-fair on a 21:9 desktop and a portrait phone alike.
+   *
+   * This matters because the chrome MOVES: on a landscape phone the score bar and the
+   * breakdown chips leave the bottom entirely and dock into the left and right gutters (see the
+   * landscape block in `styles.css`). Nothing here names a side — the geometry decides, so that
+   * layout is fitted correctly without this method knowing it exists.
+   *
+   * ── WHAT IS DELIBERATELY NOT A BAND ───────────────────────────────────────────────────
+   * The EVENT LOG (`.eventlog`) and the touch controls. The log is the toast surface — it grows
+   * and empties several times a match, and reserving a band that breathes would re-fit the
+   * camera every time a foul was announced. The touch sticks are drawn OVER the field on
+   * purpose (they are translucent, repositionable, and the 2D camera does not reserve for them
+   * either). Full-screen overlays (the pre-match panel, the results screen, a net overlay) are
+   * not bands either: they cover the field completely and briefly, and reserving for one would
+   * collapse the safe rect to nothing.
+   */
+  private refreshHudInsets(): void {
+    this.hudInsetsDirty = false;
+    const ins = this.hudInsets;
+    const host = this.sceneHost ?? this.canvas;
+    const root = this.hudHost;
+    if (!root) {
+      ins.top = ins.right = ins.bottom = ins.left = 0;
+      return;
+    }
+    const box = host.getBoundingClientRect();
+    if (box.width < 1 || box.height < 1) return; // mid-teardown / display:none — keep the last fit
+    const bands = root.querySelectorAll<HTMLElement>('[data-hud-band]');
+    let top = 0;
+    let right = 0;
+    let bottom = 0;
+    let left = 0;
+    for (let i = 0; i < bands.length; i++) {
+      const el = bands[i];
+      const r = el.getBoundingClientRect();
+      if (r.width < 1 || r.height < 1) continue; // rendered but empty (a chip row with no chips)
+      // clip to the render surface — a band docked in a gutter can hang outside it, and the
+      // part that does is not covering any field
+      const l = Math.max(r.left, box.left);
+      const rr = Math.min(r.right, box.right);
+      const t = Math.max(r.top, box.top);
+      const b = Math.min(r.bottom, box.bottom);
+      if (rr - l < 1 || b - t < 1) continue;
+      const dTop = b - box.top;
+      const dBottom = box.bottom - t;
+      const dLeft = rr - box.left;
+      const dRight = box.right - l;
+      const fTop = dTop / box.height;
+      const fBottom = dBottom / box.height;
+      const fLeft = dLeft / box.width;
+      const fRight = dRight / box.width;
+      const best = Math.min(fTop, fBottom, fLeft, fRight);
+      if (best === fTop) top = Math.max(top, dTop);
+      else if (best === fBottom) bottom = Math.max(bottom, dBottom);
+      else if (best === fLeft) left = Math.max(left, dLeft);
+      else right = Math.max(right, dRight);
+    }
+    // A BAND MAY NEVER EAT THE VIEWPORT. Two of these can only ever be measured together
+    // mid-relayout or on a viewport too small to play on, and a safe rect at or past zero would
+    // hand the scene an infinite aspect. 45 % a side leaves at least a tenth of each axis.
+    const capH = box.height * 0.45;
+    const capW = box.width * 0.45;
+    ins.top = Math.min(top, capH);
+    ins.bottom = Math.min(bottom, capH);
+    ins.left = Math.min(left, capW);
+    ins.right = Math.min(right, capW);
+    this.syncBandObserver(bands);
+  }
+
+  /** reconcile `hudBandObserver` to the bands that exist NOW — bands mount and unmount as the
+   * HUD relayouts, and an observer left pointing at a detached node neither fires nor frees. */
+  private syncBandObserver(bands: ArrayLike<Element>): void {
+    const obs = this.hudBandObserver;
+    if (!obs) return;
+    const seen = this.observedBands;
+    for (let i = 0; i < bands.length; i++) {
+      const el = bands[i];
+      if (seen.has(el)) continue;
+      seen.add(el);
+      obs.observe(el);
+    }
+    if (seen.size === bands.length) return; // nothing left
+    const live = new Set<Element>();
+    for (let i = 0; i < bands.length; i++) live.add(bands[i]);
+    for (const el of seen) {
+      if (live.has(el)) continue;
+      obs.unobserve(el);
+      seen.delete(el);
+    }
+  }
 
   /**
    * RECONCILE the live 3D scene to (a) whether this game HAS one and (b) the device's
@@ -584,6 +760,10 @@ export class GameController {
       // Sized before its first `render()`, never after.
       host.insertBefore(scene.element, host.firstChild);
       scene.resize(this.canvas.clientWidth, this.canvas.clientHeight, window.devicePixelRatio || 1);
+      // A VIEW SWITCH IS A RE-FIT. The HUD did not move, but this scene has never measured it
+      // — and the 2D view it replaces may have been mounted long enough for the last reading
+      // to be stale (the chip row grew, an ad column collapsed).
+      this.hudInsetsDirty = true;
       this.scene = scene;
     })().catch((err: unknown) => {
       if (epoch !== this.sceneEpoch) return;
@@ -866,6 +1046,11 @@ export class GameController {
     const world = this.session ? this.displayWorld(dtMs) : this.world;
     if (this.scene) {
       try {
+        // ONE DOM READ, and only when something moved — see `refreshHudInsets`. It sits here
+        // rather than in the observers themselves so the read happens at a known point in the
+        // frame (before anything has written to the DOM this tick), never interleaved with a
+        // React commit where it would force a synchronous relayout.
+        if (this.hudInsetsDirty) this.refreshHudInsets();
         const frame: SceneFrame = {
           // the fixed-timestep accumulator's leftover fraction — the same interpolation
           // alpha a fixed-timestep renderer uses between authoritative steps. The 2D
@@ -879,6 +1064,9 @@ export class GameController {
           width: this.canvas.clientWidth,
           height: this.canvas.clientHeight,
           dpr: window.devicePixelRatio || 1,
+          // the SAME object every frame (its contract says a scene reads it and does not
+          // retain it) — a fresh literal here would allocate 144 times a second
+          insets: this.hudInsets,
         };
         this.scene.render(world, frame);
       } catch (err) {
@@ -1537,6 +1725,9 @@ export class GameController {
     this.input.detach();
     window.removeEventListener('resize', this.onResize);
     this.canvasObserver?.disconnect();
+    this.hudBandObserver?.disconnect();
+    this.hudBandMutations?.disconnect();
+    this.observedBands.clear();
     this.unsubscribeViewPref();
     this.teardownScene();
   }

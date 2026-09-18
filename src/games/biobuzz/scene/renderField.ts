@@ -20,11 +20,11 @@ import {
   BB_WALL_T,
   BB_TAPE_1,
   FLOWER_MOUTH,
-  type BbRect,
 } from '../config';
 import { BB_FLOWER_FLOOR_Z, BB_FLOWER_MID_Z } from '../flower';
 import { hiveTiltAngle } from '../sim3d/hive3d';
 import { hiveTrayRefTheta } from '../sim3d/bodies';
+import { cadFloor } from '../sim3d/fieldColliders';
 import { loadFieldGlb, type FieldGroups } from './renderFieldGlb';
 
 /**
@@ -120,8 +120,21 @@ function mat(color: string, opacity = 1): THREE.MeshStandardMaterial {
   });
 }
 
-// ── the floor texture: 6×6 tiles of 24 in, tape/garden/loading-zone marks, drawField.ts's own
-// colour tokens. Generated ONCE at scene creation, never per frame. ───────────────────────────
+// ── the floor texture: the tile SEAM GRID and the centre mark, on `drawField.ts`'s own colour
+// tokens. Generated ONCE at scene creation, never per frame. ──────────────────────────────────
+//
+// ⚠️ NO TAPE HERE ON THE CAD PATH. The previous version painted `strokeRectTex(BB_LZ[a], …)` and
+// `strokeRectTex(BB_GARDEN[a], …)` — a full four-sided outline of each zone rectangle — which is
+// the owner's "tape marks on the ground are also incorrect … zones bounded with the wall don't
+// have tape on the wall". The CAD carries 16 real gaffer-tape parts, all 1.000 in wide, and every
+// one of them is now drawn from the GLB's own `tape` node (`glbFieldToHandles`). The procedural
+// tape below survives ONLY for the constants-built fallback, and it draws the CAD's own layout:
+// three sides of each LOADING ZONE (the wall side bare) and the GARDEN as the solid 2-in band its
+// two side-by-side 1-in tapes actually make. `docs/biobuzz/field-cad-audit.md` §5 has the parts.
+//
+// The SEAM GRID is painted at the CAD's own pitch and footprint when the collider set carries
+// them (23.53 in over ±70.585, not `C.TILE`'s 24 over ±72 — audit §7), so the seams line up with
+// the CAD tape lying on top of them. It falls back to the constants when they are absent.
 const TEX_SIZE = 1024;
 const TEX_SCALE = TEX_SIZE / (2 * BB_HALF_X);
 
@@ -138,15 +151,47 @@ function toTex(x: number, y: number): [number, number] {
  * as stable as importing them would be. */
 const TAPE_GAFFER: Record<Alliance, string> = { red: '#e02020', blue: '#0a5cff' };
 
-function strokeRectTex(ctx: CanvasRenderingContext2D, r: BbRect, color: string, widthIn: number): void {
-  const [x0, y0] = toTex(r.x0, r.y1);
-  const [x1, y1] = toTex(r.x1, r.y0);
-  ctx.strokeStyle = color;
-  ctx.lineWidth = Math.max(1, widthIn * TEX_SCALE);
-  ctx.strokeRect(x0, y0, x1 - x0, y1 - y0);
+/** a filled world-space rectangle on the floor texture — used for a tape STRIP, which is a
+ * physical band of a stated width, not a stroked outline. */
+function fillStripTex(ctx: CanvasRenderingContext2D, x0: number, y0: number, x1: number, y1: number, color: string): void {
+  const [px0, py0] = toTex(Math.min(x0, x1), Math.max(y0, y1));
+  const [px1, py1] = toTex(Math.max(x0, x1), Math.min(y0, y1));
+  ctx.fillStyle = color;
+  ctx.fillRect(px0, py0, Math.max(1, px1 - px0), Math.max(1, py1 - py0));
 }
 
-function buildFloorTexture(): THREE.CanvasTexture {
+/**
+ * THE FALLBACK PATH'S TAPE — the CAD layout, drawn from the 2D zone rectangles.
+ *
+ * The rule the owner named, and the one the CAD confirms part for part: **a zone edge that is a
+ * WALL carries no tape.** A LOADING ZONE is bounded by the side wall and three 1-in tapes (its
+ * two depth edges and its inner, field-side edge). A GARDEN is not outlined at all — it IS a
+ * 2-in band of two 1-in tapes laid side by side, with nothing across its ends and nothing on the
+ * two walls it sits in the corner of. `docs/biobuzz/field-cad-audit.md` §5.
+ */
+function drawZoneTape(ctx: CanvasRenderingContext2D, a: Alliance): void {
+  const colour = TAPE_GAFFER[a];
+  const lz = BB_LZ[a];
+  // which x edge is the WALL — red's zone backs onto the left wall, blue's onto the right.
+  const wallX = a === 'red' ? lz.x0 : lz.x1;
+  const innerX = a === 'red' ? lz.x1 : lz.x0;
+  const inward = a === 'red' ? -1 : 1; // from the inner edge back toward the wall
+  // inner (field-side) edge, its full 1-in width inside the zone
+  fillStripTex(ctx, innerX, lz.y0, innerX + inward * BB_TAPE_1, lz.y1, colour);
+  // the two depth edges, running from the wall to the outer face of the inner tape
+  for (const y of [lz.y0, lz.y1]) {
+    const inY = y === lz.y0 ? BB_TAPE_1 : -BB_TAPE_1;
+    fillStripTex(ctx, wallX, y, innerX, y + inY, colour);
+  }
+
+  // the GARDEN: the band itself, two 1-in tapes side by side. `BB_GARDEN` is already that 2-in
+  // strip, so it is FILLED, not stroked — a 1-in outline of a 2-in rectangle is two thin lines
+  // with mat showing between them, which is not what is on the floor.
+  const g = BB_GARDEN[a];
+  fillStripTex(ctx, g.x0, g.y0, g.x1, g.y1, colour);
+}
+
+function buildFloorTexture(withTape: boolean): THREE.CanvasTexture {
   const canvas = document.createElement('canvas');
   canvas.width = TEX_SIZE;
   canvas.height = TEX_SIZE;
@@ -156,16 +201,24 @@ function buildFloorTexture(): THREE.CanvasTexture {
   ctx.fillStyle = C.COLORS.mat;
   ctx.fillRect(0, 0, TEX_SIZE, TEX_SIZE);
 
-  // tile grid — one line per 24-in seam, matching drawBiobuzzField's own grid exactly
+  // tile SEAM GRID — at the CAD's own measured footprint and pitch when the collider set carries
+  // them (real FTC soft tiles are 23.53 in on centre, not 24), so the painted seams agree with
+  // the CAD tape drawn on top of them; the constants' 24-in grid otherwise.
+  const floor = cadFloor();
+  const x0 = floor ? floor.x[0] : -BB_HALF_X;
+  const x1 = floor ? floor.x[1] : BB_HALF_X;
+  const y0 = floor ? floor.y[0] : -BB_HALF_Y;
+  const y1 = floor ? floor.y[1] : BB_HALF_Y;
+  const pitch = floor ? floor.pitch : C.TILE;
   ctx.strokeStyle = C.COLORS.tile;
   ctx.lineWidth = 2;
   ctx.beginPath();
-  for (let x = -BB_HALF_X; x <= BB_HALF_X + 0.01; x += C.TILE) {
+  for (let x = x0; x <= x1 + 0.01; x += pitch) {
     const [px] = toTex(x, 0);
     ctx.moveTo(px, 0);
     ctx.lineTo(px, TEX_SIZE);
   }
-  for (let y = -BB_HALF_Y; y <= BB_HALF_Y + 0.01; y += C.TILE) {
+  for (let y = y0; y <= y1 + 0.01; y += pitch) {
     const [, py] = toTex(0, y);
     ctx.moveTo(0, py);
     ctx.lineTo(TEX_SIZE, py);
@@ -185,12 +238,7 @@ function buildFloorTexture(): THREE.CanvasTexture {
   ctx.lineTo(cx, cy + mark);
   ctx.stroke();
 
-  // loading zones + gardens: TAPE outlines, never a filled bar (owner ruling — see
-  // drawBiobuzzField's header on both)
-  for (const a of ALLIANCES) {
-    strokeRectTex(ctx, BB_LZ[a], TAPE_GAFFER[a], BB_TAPE_1);
-    strokeRectTex(ctx, BB_GARDEN[a], TAPE_GAFFER[a], BB_TAPE_1);
-  }
+  if (withTape) for (const a of ALLIANCES) drawZoneTape(ctx, a);
 
   const tex = new THREE.CanvasTexture(canvas);
   tex.colorSpace = THREE.SRGBColorSpace;
@@ -198,11 +246,18 @@ function buildFloorTexture(): THREE.CanvasTexture {
   return tex;
 }
 
-function buildFloor(): THREE.Mesh {
+/** `withTape` is false on the CAD path — the tape is real geometry there (the GLB's own `tape`
+ * node), and painting a second copy under it would double every line. */
+function buildFloor(withTape: boolean): THREE.Mesh {
   const geo = new THREE.PlaneGeometry(2 * BB_HALF_X, 2 * BB_HALF_Y);
-  const material = new THREE.MeshStandardMaterial({ map: buildFloorTexture() });
+  const material = new THREE.MeshStandardMaterial({ map: buildFloorTexture(withTape) });
   const mesh = new THREE.Mesh(geo, material);
   mesh.name = 'floor';
+  // a HAIR below z = 0. The CAD tape sits at z 0.000–0.010 and the GLB tile slab's top face is
+  // at z = 0 exactly; a co-planar painted floor and a 0.010-in tape strip are inside the depth
+  // buffer's noise at driver-camera range, and the tape materials' polygon offset
+  // (`renderFieldGlb.ts`) only helps if there is something to offset against.
+  mesh.position.z = -0.02;
   return mesh;
 }
 
@@ -459,7 +514,9 @@ function buildRoom(): THREE.Group {
   const floorMat = new THREE.MeshStandardMaterial({ color: 0x4a4f57, roughness: 0.95 });
   const floor = new THREE.Mesh(new THREE.CircleGeometry(ROOM_R, 32), floorMat);
   floor.name = 'bb-room:floor';
-  floor.position.z = -0.5; // just under the field floor so it never z-fights
+  // BELOW the CAD's own ALLIANCE AREA tape, which lies on the gym floor at z -0.589..-0.579 (the
+  // three-sided outline outside each perimeter wall). At the old -0.5 the room floor covered it.
+  floor.position.z = -0.75;
   floor.receiveShadow = true;
   group.add(floor);
 
@@ -517,7 +574,7 @@ function buildBiobuzzFieldConstants(): BbFieldHandles {
   group.name = 'bb-field';
 
   const room = buildRoom();
-  const floor = buildFloor();
+  const floor = buildFloor(true);
   const walls = buildWalls();
   group.add(room, floor, walls, buildCrossbar());
 
@@ -544,26 +601,34 @@ function buildBiobuzzFieldConstants(): BbFieldHandles {
  * constants field returns, so `updateBiobuzzField` and every named-object lookup (the scene-
  * preview's own checks included) work unchanged regardless of which field is in play.
  *
- * TILES/TAPE: kept on the PROCEDURAL floor, not the GLB's. The GLB's `tiles` node is one
- * monolithic mesh with a single flat material (`renderFieldGlb.ts`'s `styleScene`) — it carries
- * no per-region colour at all, so there is no way to attribute a `tape` sub-area to red/blue/
- * white the way the 2D canvas's on-field tokens require (the HUD contrast pairs are tuned
- * against those exact tokens — `COLORS.tile`/`TAPE_GAFFER`). The GLB's own `tiles` (and, if
- * present, a `tape` node under the same root) are therefore left in the loaded scene graph but
- * HIDDEN, and the existing procedural `buildFloor()` (the tile-grid + tape `CanvasTexture`) is
- * used for the floor instead, exactly as the constants path already does.
+ * TAPE COMES FROM THE GLB. All 16 CAD gaffer-tape parts are real geometry with the STEP's own
+ * pure red (#ff0000) and blue (#0000ff), in the layout the field actually has — three sides per
+ * LOADING ZONE with the wall side bare, the GARDEN as a solid 2-in band, and the two ALLIANCE
+ * AREA outlines on the gym floor outside the perimeter. The procedural tape that used to be
+ * painted here (a four-sided `strokeRect` of each zone rectangle, wall edge included) is gone
+ * from this path; it survives only for the constants fallback, where it now draws the same
+ * layout. `docs/biobuzz/field-cad-audit.md` §5.
+ *
+ * TILES stay PROCEDURAL, and this is the one place the CAD is deliberately not used as-is. The
+ * STEP's 36 soft tiles are a ribbed, perforated foam plate — 175,536 triangles and an 8.8 MB
+ * tessellation for something that reads as noise at a driver camera's distance — carrying one
+ * flat 50 %-grey placeholder colour and no seam or tread detail at all. `convert.py` therefore
+ * emits them as a single CAD-accurate slab (real footprint, real 0.589-in thickness) and this
+ * path hides that slab in favour of a flat plane carrying a seam-grid `CanvasTexture`, painted
+ * at the CAD's OWN measured pitch and footprint (`cadFloor()`, 23.53 in over ±70.585) so the
+ * seams line up with the CAD tape lying on them. The tone is the sim's `COLORS.mat`/`COLORS.tile`
+ * pair rather than the CAD grey, because the HUD contrast ratios (`npm run contrast`) are tuned
+ * against those two tokens.
  */
 function glbFieldToHandles(fg: FieldGroups): BbFieldHandles {
   const group = fg.root;
   group.name = 'bb-field';
 
-  // hide the GLB's own tiles/tape (kept in the tree, not removed, so `fg.root` still mounts as
-  // one object with nothing missing if a future pass wants them back) and use the procedural
-  // floor instead — see this function's own header.
+  // hide the GLB's own tile slab (kept in the tree, not removed, so `fg.root` still mounts as one
+  // object with nothing missing) and use the procedural seam-grid plane instead — see the header.
+  // The TAPE node is left visible: it is the real thing.
   fg.floor.visible = false;
-  const tape = findByOriginalNameLoose(group, 'tape');
-  if (tape) tape.visible = false;
-  const floor = buildFloor();
+  const floor = buildFloor(false);
   group.add(floor);
 
   // the walls ARE used from the GLB (a real trimesh visual, not a flat token-coloured floor) —
@@ -602,18 +667,6 @@ function glbFieldToHandles(fg: FieldGroups): BbFieldHandles {
   });
 
   return { group, floor, walls, hives, flowers, trays };
-}
-
-/** loose lookup for an optional node by its GLTFLoader-original name (see `renderFieldGlb.ts`'s
- * `findByOriginalName` header on why `.name` alone is not safe) — local copy since that helper
- * is not exported, and this file's only other need for it is the one optional `tape` node. */
-function findByOriginalNameLoose(root: THREE.Object3D, name: string): THREE.Object3D | null {
-  let hit: THREE.Object3D | null = null;
-  root.traverse((obj) => {
-    if (hit) return;
-    if ((obj.userData as { name?: string } | undefined)?.name === name || obj.name === name) hit = obj;
-  });
-  return hit;
 }
 
 /**

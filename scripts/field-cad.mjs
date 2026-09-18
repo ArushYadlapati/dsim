@@ -151,21 +151,34 @@ function brotliSize(p) {
   return zlib.brotliCompressSync(readFileSync(p)).length;
 }
 
-/** Build one LOD: assemble the STL group into a glTF, then weld -> simplify -> meshopt. Both
- * LODs share the chain; only the simplify aggressiveness differs (HIGH keeps more detail). */
-function buildLod(level, stlDir, collidersPath, outGlb, simplifyOpts) {
+/**
+ * Build one LOD: assemble the STL groups into a glTF, then weld -> meshopt.
+ *
+ * ⚠️ NO GLOBAL `gltf-transform simplify` STEP ANY MORE. A document-wide `--ratio` is the wrong
+ * instrument for an asset whose primitives span four orders of magnitude in triangle count:
+ * measured on the shipped `field.glb`, `--ratio 0.06 --error 0.01` took the 12-triangle tile box
+ * down to FOUR triangles and the 16 one-inch tape strips from 192 triangles to 120, because the
+ * error tolerance is a fraction of the MESH's extent and the tape mesh spans the whole field.
+ * `assemble-gltf.mjs` now decimates PER PRIMITIVE against an absolute tolerance in INCHES
+ * (`SIMPLIFY_ERROR_IN` there), so a part that cannot lose 0.05 in simply keeps its triangles.
+ * `weld` stays in the chain as a cheap belt-and-braces pass — `assemble-gltf.mjs` already welds
+ * on position, which is exact for this normal-less asset.
+ */
+function buildLod(level, stlDir, collidersPath, outGlb) {
   const work = path.join(SCRATCH, `lod-${level}`);
   mkdirSync(work, { recursive: true });
   const assembled = path.join(work, 'assembled.glb');
   const assembleScript = path.join(NPMTOOLS, 'assemble-gltf.mjs');
   cpSync(path.join(REPO_ROOT, 'scripts', 'field-cad', 'assemble-gltf.mjs'), assembleScript);
-  execFileSync('node', [assembleScript, '--stl', stlDir, '--colliders', collidersPath, '--out', assembled], { stdio: 'inherit' });
+  execFileSync(
+    'node',
+    [assembleScript, '--stl', stlDir, '--colliders', collidersPath, '--out', assembled, '--lod', level],
+    { stdio: 'inherit' },
+  );
 
   const welded = path.join(work, 'welded.glb');
   gltfTransform('weld', [assembled, welded]);
-  const simplified = path.join(work, 'simplified.glb');
-  gltfTransform('simplify', [welded, simplified, '--ratio', String(simplifyOpts.ratio), '--error', String(simplifyOpts.error), '--lock-border', 'false']);
-  gltfTransform('meshopt', [simplified, outGlb]);
+  gltfTransform('meshopt', [welded, outGlb]);
 
   return { rawBytes: statSync(outGlb).size, brotliBytes: brotliSize(outGlb) };
 }
@@ -214,11 +227,11 @@ function main() {
   const highGlb = path.join(PUBLIC_DIR, 'field.glb');
   const lowGlb = path.join(PUBLIC_DIR, 'field-low.glb');
 
-  log('building HIGH detail glb (weld -> simplify --ratio 0.06 --error 0.01 -> meshopt) ...');
-  const high = buildLod('high', path.join(cacheOut, 'stl', 'high'), collidersPath, highGlb, { ratio: 0.06, error: 0.01 });
+  log('building HIGH detail glb (per-primitive decimation -> weld -> meshopt) ...');
+  const high = buildLod('high', path.join(cacheOut, 'stl', 'high'), collidersPath, highGlb);
 
-  log('building LOW detail glb (weld -> simplify --ratio 0.03 --error 0.03 -> meshopt) ...');
-  const low = buildLod('low', path.join(cacheOut, 'stl', 'low'), collidersPath, lowGlb, { ratio: 0.03, error: 0.03 });
+  log('building LOW detail glb (per-primitive decimation -> weld -> meshopt) ...');
+  const low = buildLod('low', path.join(cacheOut, 'stl', 'low'), collidersPath, lowGlb);
 
   const collidersRaw = statSync(collidersPath).size;
 
