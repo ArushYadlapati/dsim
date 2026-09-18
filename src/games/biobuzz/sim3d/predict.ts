@@ -464,15 +464,21 @@ function makeElementBody(
  * once when the predictor is created, not once per reconcile, and including it would make Auto
  * choose Light on a machine that could comfortably run Full.
  *
- * ⚠️ It calls `performance.now` through the caller's clock, NOT its own: this module is under the
- * sim determinism guard and may not read a clock. `now()` is a parameter for that reason, and the
- * default is `Date.now`, which is only ever used by a smoke lane that has already decided it is
- * measuring rather than simulating.
+ * ⚠️ **`now` IS REQUIRED, AND HAS NO DEFAULT, BECAUSE THIS MODULE MAY NOT READ A CLOCK.**
+ * `scripts/smoke.ts`'s source guard scans `sim3d/` for `Date`/`performance` — "replays must be
+ * pure" — and it is right to: a sim file that can read the wall clock is a sim file that can make
+ * a replay diverge from the run that produced it. A first pass here defaulted the parameter to
+ * `() => Date.now()`, which reads exactly as harmless and is exactly the thing the guard exists
+ * to catch; the guard caught it on the first `npm test`.
+ *
+ * So the CALLER supplies the clock. `game.ts` passes `performance.now`, and a smoke lane passes
+ * whatever it is timing with — both of them modules that have already decided they are measuring
+ * rather than simulating.
  */
 export function probeFullReconcileMs(
   world: World,
   localRobotId: number,
-  now: () => number = () => Date.now(),
+  now: () => number,
   ticks: number = PREDICT_MAX_TICKS,
 ): number {
   const p = createFullPredictor(world, localRobotId);

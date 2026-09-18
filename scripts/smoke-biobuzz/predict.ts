@@ -225,7 +225,7 @@ export function predictChecks(check: Check): void {
       fullMs = Math.min(fullMs, replay(full, drive, PREDICT_MAX_TICKS).ms);
     }
     full.dispose();
-    const probe = probeFullReconcileMs(w, LOCAL);
+    const probe = probeFullReconcileMs(w, LOCAL, () => Date.now());
     console.log(
       `[smoke-bb predict] budgets, best of 5: LIGHT ${lightMs}ms (budget ${PREDICT_LIGHT_BUDGET_MS}), ` +
         `FULL ${fullMs}ms (budget ${PREDICT_FULL_BUDGET_MS}); probeFullReconcileMs reports ${probe.toFixed(1)}ms`,
