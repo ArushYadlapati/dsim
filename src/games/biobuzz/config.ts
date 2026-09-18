@@ -40,7 +40,7 @@
 
 import type { Alliance, AssistConfig, RobotSpec, StartCat, Vec2 } from '../../types';
 import { INTAKE_PRESETS, ROBOT_MAX_SIZE } from '../../config';
-import { wrapAngle } from '../../math';
+import { dcos, wrapAngle } from '../../math';
 import { lengthLimits, massLimits, widthLimits } from '../../sim/drivetrain';
 import {
   BB_DEFAULT_INTAKE_MOUNT,
@@ -52,6 +52,28 @@ import {
 // `mechs.ts` is a LEAF over `types` + `mounts`, so this import adds no cycle — the same reason
 // `mounts.ts` itself is safe to import here.
 import { bbLauncherOf, bbLiftOf } from './mechs';
+// THE FIELD'S DIMENSIONS ARE GENERATED FROM THE CAD, NOT TYPED HERE (owner ruling, 2026-09-18:
+// "the CAD is authoritative for dimensions"). `fieldDims.gen.ts` is written by `npm run
+// field-cad` out of `public/models/biobuzz/field-measurements.json`, and its header states the
+// derivation and the residual of every value. Nothing in it is hand-editable, and the SIM3D
+// smoke lane re-renders it and diffs it so it cannot drift from the measurements.
+//
+// The CONSTANT NAMES below are unchanged — every caller still imports `BB_HALF_X`, `BB_FLOWERS`
+// and the rest — and each one's comment now cites the CAD and keeps the manual figure it
+// replaced, because the figure is the history of why the number used to be what it was.
+import {
+  FIELD_HALF,
+  FLOWERS,
+  FLOWER_D,
+  FLOWER_RING_D,
+  GARDEN,
+  HIVE,
+  LZ,
+  TAPE,
+  TAPE_W,
+  TILE_PITCH,
+  TILE_SEAMS,
+} from './fieldDims.gen';
 
 /** millimetres → inches (the sim's world unit). The manual dimensions arrive in mm, so this
  * is the conversion every element constant is written THROUGH rather than pre-multiplied,
@@ -62,10 +84,32 @@ export const mm = (v: number): number => v / 25.4;
 // FIELD
 // ─────────────────────────────────────────────────────────────────────────────
 
-/** field half-extents (in). A 12 ft × 12 ft FTC field is 144" square ⇒ ±72 from centre.
- * NOT approximate: every FTC field is this size, and R102's 18" cube is stated against it. */
-export const BB_HALF_X = 72;
-export const BB_HALF_Y = 72;
+/**
+ * field half-extents (in) — the perimeter wall's INNER FACE, measured off FIRST's own field CAD.
+ *
+ * ⚠️ **NOT 72.** A "12 ft field" is the nominal description, not the dimension: the CAD's four
+ * inner faces sit at ±70.674 (residual 0.000 — they are symmetric), so the clear span is 141.35
+ * in, not 144. It follows from the tiles, which are `BB_TILE_PITCH` 23.528 in on centre and not
+ * 24; six of them close on 141.17 and the perimeter closes on that plus its own clearance. The
+ * manual never prints an interior span, so there is nothing here the CAD contradicts — the 144
+ * was inherited from DECODE's `C.TILE`-based field and was wrong by 1.87 %.
+ *
+ * Owner ruling, 2026-09-18: "The CAD is authoritative for dimensions." See `fieldDims.gen.ts`.
+ */
+export const BB_HALF_X = FIELD_HALF;
+export const BB_HALF_Y = FIELD_HALF;
+
+/**
+ * soft-tile pitch on centre (in) — CAD (`fieldDims.gen.ts`), and the reason the field is not 144
+ * wide. BIOBUZZ draws its own grid from this and from `BB_TILE_SEAMS`; `C.TILE` (24) stays
+ * DECODE's and Chain Reaction's, because their fields are still modelled on the nominal tile.
+ *
+ * The seams are NOT evenly spaced — a tile body is 24.312 in with its interlock tabs, and the
+ * measured gaps run 23.176…23.986 — so anything DRAWING the grid uses `BB_TILE_SEAMS`, the seven
+ * measured lines, and this constant is their mean, for the places that need one number.
+ */
+export const BB_TILE_PITCH = TILE_PITCH;
+export const BB_TILE_SEAMS = TILE_SEAMS;
 
 /** perimeter wall collider half-thickness (in). Deliberately far thicker than a real wall:
  * these cuboids sit entirely OUTSIDE the play area, and a thick static is what stops a fast
@@ -118,16 +162,19 @@ export interface BbRect {
 }
 
 /**
- * LOADING ZONE — ~23 wide × 11 deep against the side wall, bounded by tape and the wall, tape
- * included (§9.3, Fig 9-2 p65 / Fig 9-3 p66). The width is set by the TILE seams at rows 4
- * and 5; the zone belongs to the alliance whose ALLIANCE AREA it adjoins.
+ * LOADING ZONE — 11.57 wide × 22.69 deep against the side wall, bounded by tape and the wall,
+ * tape included (§9.3, Fig 9-2 p65 / Fig 9-3 p66). The zone belongs to the alliance whose
+ * ALLIANCE AREA it adjoins.
+ *
+ * CAD (`fieldDims.gen.ts`), no longer `APPROX`: the CAD carries the three real gaffer strips, so
+ * the rectangle is the union of their outer faces with the WALL edge as the fourth side — the
+ * wall-bounded edge carries no tape, which is why there are three strips and not four. The old
+ * figure read (x −72…−61, y 24…48) is off by 1.33 at the wall, 1.90 at the inner edge and up to
+ * 1.40 in y; all of it is the field-size finding, not a misread of the drawing.
  *
  * RED IS AT y > 0. That is the half of the field an x-mirror gets wrong.
  */
-export const BB_LZ: Record<Alliance, BbRect> = {
-  red: { x0: -72, x1: -61, y0: 24, y1: 48 }, // APPROX: Fig 9-2/9-3 — ±0.5 in on the tape edge
-  blue: { x0: 61, x1: 72, y0: -48, y1: -24 }, // point symmetry, Fig 9-2
-};
+export const BB_LZ: Record<Alliance, BbRect> = { red: LZ.red, blue: LZ.blue };
 
 /**
  * WHERE AN ELEMENT ENTERS THE FIELD FROM A HUMAN PLAYER'S HAND — the centre of `a`'s LOADING
@@ -150,26 +197,42 @@ export function bbLoadingZoneSpot(a: Alliance, r: number = BB_POLLEN_R): Vec2 {
  * tape", two 1-in tapes (§9.3, §10.5.3, Fig 9-2/9-3). Red's runs along the AUDIENCE wall from
  * the red corner; blue's along the REAR wall from the blue corner. Not protected (G411 note).
  */
-export const BB_GARDEN: Record<Alliance, BbRect> = {
-  red: { x0: -72, x1: -49, y0: -72, y1: -70 }, // APPROX: Fig 9-2/9-3 — strip depth off the drawing
-  blue: { x0: 49, x1: 72, y0: 70, y1: 72 }, // point symmetry, Fig 9-2
-};
+export const BB_GARDEN: Record<Alliance, BbRect> = { red: GARDEN.red, blue: GARDEN.blue };
 
-/** tape widths (in): 1-in gaffer for the LOADING ZONE bound, a 2-in strip for the GARDEN
- * (§9.3). Red / electric-blue — the one thing on this field that is NOT a theme token,
- * because the tape colour is what tells a driver whose zone it is. */
-export const BB_TAPE_1 = 1;
-export const BB_TAPE_2 = 2;
+/**
+ * THE TAPE STRIPS THEMSELVES — what a renderer draws, as opposed to the zone rectangles above.
+ *
+ * CAD (`fieldDims.gen.ts`): 16 parts, every one 1.000 in wide, and the layout is the rule the
+ * owner stated and the CAD confirms part for part — **a zone edge that is a WALL carries no
+ * tape**. A LOADING ZONE has three strips (two depth edges and the inner, field-side edge); a
+ * GARDEN has two laid side by side, which IS the 2-in band, with nothing across its ends; the
+ * ALLIANCE AREA has three, on the gym floor outside the perimeter, open on the field side.
+ *
+ * Outlining `BB_LZ`/`BB_GARDEN` instead — which both renderers used to do — paints tape onto the
+ * wall and turns the garden's solid band into two thin lines with mat between them.
+ */
+export const BB_TAPE = TAPE;
+
+/** tape width (in) — CAD: 1.000 in gaffer, and there is NO other width on this field. `BB_TAPE_2`
+ * is gone: the GARDEN's "2-in strip" (§9.3) is two of these laid side by side, which `BB_TAPE`
+ * carries as two rectangles. Red / electric-blue — the one thing on this field that is NOT a
+ * theme token, because the tape colour is what tells a driver whose zone it is. */
+export const BB_TAPE_1 = TAPE_W;
 
 // ── HIVE STRUCTURE (§9.6, Figs 9-7…9-11, pp69–73) ────────────────────────────
 
 /** pivot x of each HIVE (in): the pair is 25.5 in centre to centre (Fig 9-10), red at −x.
- * APPROX: Fig 9-2 — that the PAIR is centred on the field, which the plan view shows. */
-export const BB_HIVE_X = 12.75;
+ * CAD (`fieldDims.gen.ts`) — the measured pivots are ±12.750 with a 0.000 residual, which
+ * CONFIRMS Fig 9-10's spacing and the `APPROX` assumption that the pair is centred on the
+ * field. No longer approximate. */
+export const BB_HIVE_X = HIVE.PIVOT_X;
 
 /**
  * the BAR's tilt off level at either stable end (degrees) — the ±30° of a bi-stable see-saw
- * (§9.6, Figs 9-7…9-11; owner CAD, 2026-09-12; `docs/biobuzz-reference.md` §2.2).
+ * (§9.6, Figs 9-7…9-11; `docs/biobuzz-reference.md` §2.2). CAD-CONFIRMED to 0.000°: un-tilting
+ * the tray by exactly this angle collapses the 0.020-in back skin to its own thickness, and by
+ * any other angle spreads it over inches (audit §4.1). That is the one measurement that proves
+ * the whole tray export is in the frame it claims to be.
  *
  * It is already baked into every PLAN length below as a cos 30° — `BB_HIVE_CELL_DY`,
  * `BB_HIVE_CELL_LEN` and `BB_HIVE_LEN` are the projected numbers, not the true ones. The
@@ -177,30 +240,59 @@ export const BB_HIVE_X = 12.75;
  * foreshortening is 1 and the assembly reaches its true length, and a renderer animating that
  * needs the angle the projection came from rather than a second copy of 30 typed into it.
  */
-export const BB_HIVE_TILT_DEG = 30;
+export const BB_HIVE_TILT_DEG = HIVE.TILT_DEG;
+
+/** the plan projection at the rest tilt — every PLAN length below is a true CAD length times
+ * this. Written once so the three of them cannot drift apart.
+ *
+ * `dcos`, not `Math.cos`: this value is baked into staged element positions and into the hive
+ * footprint the scorer reads, so it is sim state, and `scripts/smoke.ts`'s source guard bans
+ * engine-defined trig anywhere under `src/games` for exactly that reason. */
+const HIVE_PROJ = dcos((HIVE.TILT_DEG * Math.PI) / 180);
 
 /** horizontal projection (in) of a CELL centre from its pivot, along the HIVE axis (y) —
- * 15.44 · cos 30°. MEASURED (owner CAD, 2026-09-12; `docs/biobuzz-reference.md` §2.2). */
-export const BB_HIVE_CELL_DY = 13.37;
+ * `HIVE.ARM` (15.519) · cos 30°. CAD (`fieldDims.gen.ts`); the earlier owner-CAD read was
+ * 15.44 · cos 30° = 13.37, 0.07 in short. */
+export const BB_HIVE_CELL_DY = HIVE.ARM * HIVE_PROJ;
 
-/** a CELL's depth along the HIVE axis IN PLAN (in) — the 12.04-in prism projected, 12.04 ·
- * cos 30°. MEASURED (owner CAD, 2026-09-12; reference §2.2). */
-export const BB_HIVE_CELL_LEN = 10.43;
+/** a CELL's depth along the HIVE axis IN PLAN (in) — `HIVE.CELL_D` (11.750) projected. CAD; the
+ * earlier read was 12.04 true → 10.43 in plan, 0.25 in long. */
+export const BB_HIVE_CELL_LEN = HIVE.CELL_D * HIVE_PROJ;
 
-/** the up-CELL opening's bottom and top above the tiles (in) — Fig 9-10. This is the window a
- * LAUNCH has to arrive through, and what `releasePollen` solves its arc against. */
-export const BB_HIVE_OPEN_Z: readonly [number, number] = [53.5, 65.6];
+/** the up-CELL opening's bottom and top above the tiles (in). This is the window a LAUNCH has to
+ * arrive through, and what `releasePollen` solves its arc against.
+ *
+ * CAD (`fieldDims.gen.ts`), measured at the mouth face of whichever cell is UP at rest. Fig 9-10
+ * prints [53.5, 65.6] and the CAD says [53.375, 65.497] — agreement to 0.13 in, so this one is a
+ * CONFIRMATION of the figure rather than a correction of it. (The "[47.05, 68.85]" once logged as
+ * an open finding was a collider-export bug, audit §4.4, and is long closed.) */
+export const BB_HIVE_OPEN_Z: readonly [number, number] = HIVE.OPEN_Z;
 
-/** bottom of the DOWN hive above the tiles (in) — Fig 9-10. The space under the structure is
- * drivable, which G409 assumes; the 2D sim simply puts no collider there. */
-export const BB_HIVE_BOTTOM_Z = 25.5;
+/**
+ * bottom of the DOWN hive above the tiles (in). The space under the structure is drivable, which
+ * G409 assumes; the 2D sim simply puts no collider there.
+ *
+ * ⚠️ **CAD 31.981, NOT Fig 9-10's 25.5** — the one place the CAD and the manual genuinely
+ * disagree, and the owner ruled on 2026-09-18 that the CAD wins. It is not a measurement error on
+ * either side: ONE RIGID BAR at 30° cannot put the up cell's mouth at 53.4 and the down cell's
+ * floor at 25.5 at the same time on this tray's own dimensions, and the CAD's up-cell opening
+ * matches the manual to 0.13 in, so the figure that has to give is this one. The lowest hive
+ * structure of ANY kind at rest is the Goal Rib's lower corner at 30.652, so a 29-in robot — the
+ * legal maximum — still clears the whole assembly, which is what G409 actually needs.
+ */
+export const BB_HIVE_BOTTOM_Z = HIVE.DOWN_FLOOR_Z;
+
+/** the lowest point of the hive assembly at rest (in) — CAD, the down-mouth Goal Rib's own lower
+ * corner, which is below the down CELL's floor. The real headroom under a hive, and the number
+ * that says a legal 29-in robot drives under it. */
+export const BB_HIVE_LOWEST_Z = HIVE.LOWEST_Z;
 
 /** the up-CELL's ACCEPT FOOTPRINT (in): `w` across the HIVE, `d` along it.
  *
  * MEASURED (reference §2.2). The 20-in opening WIDTH is perpendicular to the tilt axis, so it
  * is NOT foreshortened; the DEPTH is, and is `BB_HIVE_CELL_LEN` — the same 10.43 the cell is
  * drawn at, because the launch window and the cell footprint are the same rectangle. */
-export const BB_CELL_OPEN = { w: 20, d: BB_HIVE_CELL_LEN };
+export const BB_CELL_OPEN = { w: HIVE.CELL_W, d: BB_HIVE_CELL_LEN };
 
 /**
  * the CELL assembly end to end IN PLAN, along y (in) — 42.91 true · cos 30°. MEASURED
@@ -211,11 +303,12 @@ export const BB_CELL_OPEN = { w: 20, d: BB_HIVE_CELL_LEN };
  * Drawing the up cell at full length and the down cell short says the bar bends, and it makes
  * the hive 42.91 long in a view where nothing on it is.
  */
-export const BB_HIVE_LEN = 37.16;
+export const BB_HIVE_LEN = HIVE.LEN * HIVE_PROJ;
 
-/** the CELL assembly across, along x (in) — the 20-in opening width, which is PERPENDICULAR to
- * the tilt axis and so is not foreshortened (reference §2.2). */
-export const BB_HIVE_W = 20;
+/** the CELL assembly across, along x (in) — the opening width, which is PERPENDICULAR to the
+ * tilt axis and so is not foreshortened. CAD 20.141 (`HIVE.CELL_W`, the mean of the four measured
+ * cells); the manual's round 20 was within 0.15. */
+export const BB_HIVE_W = HIVE.CELL_W;
 
 /**
  * frame BASE BAR, inner and outer x (in) — MEASURED (owner CAD, 2026-09-12; reference §2.2):
@@ -254,17 +347,26 @@ export const BB_HIVE_UP_STAGED: Record<Alliance, 'north' | 'south'> = { red: 'so
 
 // ── FLOWERS (§9.7, Fig 9-12, pp72–73) ────────────────────────────────────────
 
-/** stand-off of a FLOWER's ring centre from its WALL FACE (in). MEASURED (owner CAD,
- * 2026-09-12; reference §2.3) — it was `APPROX` 3.0 off Fig 9-12. */
-export const BB_FLOWER_D = 2.54;
+/** stand-off of a FLOWER's ring centre from its WALL FACE (in). CAD (`fieldDims.gen.ts`):
+ * `FIELD_HALF` minus the least-squares centre of the top ring's own bore, 2.629, over four
+ * flowers with a 0.000 residual. The earlier owner-CAD read of 2.54 was within 0.09 — this
+ * figure was never the problem; the WALL it is measured from was 1.33 in out. */
+export const BB_FLOWER_D = FLOWER_D;
 
 /**
  * The four FLOWERS, one per perimeter wall, on the tile seam one tile off centre.
  *
- * MEASURED (owner CAD, 2026-09-12; reference §2.3): each one sits EXACTLY on the centreline of
- * its tile seam — ±24.000, not offset to one side of it — and its ring centre is BB_FLOWER_D
- * off the wall face. `nearest` is the alliance whose half of the wall it sits on, NOT
- * ownership: a FLOWER is owned at run time by whoever holds the top-most NECTAR (§10.5.2).
+ * CAD (`fieldDims.gen.ts`): each position is the least-squares centre of that flower's own TOP
+ * RING BORE — the hole an element is deposited through — re-expressed point-symmetrically as
+ * `BB_FLOWER_D` off its wall face and `FLOWER_ALONG` (23.392) along it. `nearest` is the
+ * alliance whose half of the wall it sits on, NOT ownership: a FLOWER is owned at run time by
+ * whoever holds the top-most NECTAR (§10.5.2).
+ *
+ * THE ±24 WAS THE TILE SEAM, AND THE TILE SEAM MOVED. The earlier table put each flower on the
+ * ±24.000 seam of a nominal 24-in tile. Real tiles are `BB_TILE_PITCH` 23.528 on centre, so that
+ * seam is really at 23.392 — one tile's worth of accumulated pitch error — and the wall it is
+ * measured from is at 70.674, not 72. Both deltas are the SAME finding, and together they are
+ * the ~1.5 in the CAD audit reported for these four points.
  */
 export const BB_FLOWERS: readonly {
   id: string;
@@ -272,12 +374,7 @@ export const BB_FLOWERS: readonly {
   x: number;
   y: number;
   nearest: Alliance;
-}[] = [
-  { id: 'F1', wall: 'left', x: -72 + BB_FLOWER_D, y: -24, nearest: 'red' },
-  { id: 'F2', wall: 'rear', x: -24, y: 72 - BB_FLOWER_D, nearest: 'red' },
-  { id: 'F3', wall: 'right', x: 72 - BB_FLOWER_D, y: 24, nearest: 'blue' },
-  { id: 'F4', wall: 'audience', x: 24, y: -72 + BB_FLOWER_D, nearest: 'blue' },
-];
+}[] = FLOWERS;
 
 /**
  * WHICH WAY A FLOWER'S MOUTH FACES — out of the wall it stands against, into the field.
@@ -299,22 +396,37 @@ export const FLOWER_MOUTH: Record<(typeof BB_FLOWERS)[number]['wall'], Vec2> = {
   audience: { x: 0, y: 1 }, // F4 stands on −y, opens toward +y
 };
 
-/** top ring height above the tiles (in) — Fig 9-12. The z a deposit arc solves for. */
+/** top ring height above the tiles (in) — Fig 9-12. The z a deposit arc solves for.
+ *
+ * ⚠️ STILL THE MANUAL'S FIGURE, AND FLAGGED. `field-measurements.json` carries the flower's whole
+ * z extent (−0.649 … 22.654, which tops out at the purple backstop) but not the three ring
+ * plates' own bands, so there is nothing in the generated file to read. The audit measures the
+ * top plate at 20.254…21.404 BY HAND (§6), i.e. this figure is within 0.10 in — but a hand
+ * measurement in a document is not a generated dimension, and putting it in `fieldDims.gen.ts`
+ * would mean editing `convert.py`, which rewrites the GLB and the collider set as a side effect.
+ * Next CAD pass: emit the per-ring bands and derive this. */
 export const BB_FLOWER_TOP_Z = 21.5;
 
-/** top ring opening RADIUS (in) — 4.0 in diameter, Fig 9-12. A 2.8 POLLEN and a 3.6 NECTAR both
- * pass it; only the POLLEN passes the 3.55 retrieval opening at the bottom (G418). */
-export const BB_FLOWER_OPEN_R = 2.0;
+/** top ring opening RADIUS (in) — CAD (`fieldDims.gen.ts`, `FLOWER_RING_D.top` 4.171 measured by
+ * a least-squares circle fit to the plate's own inner cylindrical surface, rms 0.049). Fig 9-12's
+ * round 4.0 was 0.17 under. A 2.8 POLLEN and a 3.6 NECTAR both pass it; only the POLLEN passes
+ * the retrieval opening at the bottom (`FLOWER_RING_D.lower` 3.222, G418). */
+export const BB_FLOWER_OPEN_R = FLOWER_RING_D.top / 2;
 
 /**
  * the FLOWER's FOOTPRINT on the tiles (in) — `along` the wall by `deep` into the field, flush
  * against the wall face. MEASURED (owner CAD, 2026-09-12; reference §2.3).
  *
  * A RECTANGLE, NOT A DISC. The first pass read Fig 9-12's ring plate as an `APPROX` 2.6-in
- * circle; the solid a robot actually meets is a 6 × 4.9 box with the 4.0-in ring opening
- * inside it, BB_FLOWER_D off the wall. The difference matters at both ends — it is wider along
- * the wall than a 2.6 disc (a robot running the wall hits it sooner) and shallower into the
- * field (it protrudes 4.9, not 5.2, and its corners are square).
+ * circle; the solid a robot actually meets is a 6 × 4.9 box with the ring opening inside it,
+ * BB_FLOWER_D off the wall. The difference matters at both ends — it is wider along the wall
+ * than a 2.6 disc (a robot running the wall hits it sooner) and shallower into the field (it
+ * protrudes 4.9, not 5.2, and its corners are square).
+ *
+ * ⚠️ NOT GENERATED, AND FLAGGED, for the same reason as `BB_FLOWER_TOP_Z`: the measurements file
+ * carries the flower's whole bounding extent, which includes the under-field bracket reaching
+ * BEHIND the wall plane, not the plate footprint on the tiles. The audit measures that plate at
+ * 6.04 × 4.93 by hand (§6), so this pair is CAD-CONFIRMED to 0.05 in but still typed here.
  *
  * The COLLIDER is `colliders.ts` (biobuzz-field-staging); this is the number it and the
  * drawing share.
@@ -977,39 +1089,44 @@ export interface BbStartAnchor {
  *
  * So they moved to the two walls an alliance shares with nobody's zone:
  *
- *   index 0  REAR wall     (34, 61.5) facing −y.  x = 34 keeps the footprint clear of blue's
- *                          GARDEN strip (x ≥ 49) and of F2, which is on RED's half at x = −24.
- *   index 1  AUDIENCE wall (46, −61.5) facing +y. x = 46 clears F4's foot (x ∈ [21, 27]) by
- *                          seven inches on one side and blue's LOADING ZONE (x ≥ 61) by three
- *                          on the other.
+ *   index 0  REAR wall     (34, wall−10.5) facing −y.  x = 34 keeps the footprint clear of
+ *                          blue's GARDEN strip (x ≥ 47.4) and of F2, on RED's half at x = −23.4.
+ *   index 1  AUDIENCE wall (46, −(wall−10.5)) facing +y. x = 46 clears F4's foot (x ∈ [20.4,
+ *                          26.4]) by seven inches on one side and blue's LOADING ZONE
+ *                          (x ≥ 59.1) by thirteen on the other.
  *
- * `y = ±61.5` is ±72 less a default chassis half-extent of 10.5, so the footprint CONTACTS its
- * wall rather than hovering off it. Spec-dependent by nature — a deeper sweeper reaches
- * further — so `bbSnapStart` still re-seats per build; it now has a hair to move, not a foot.
+ * THE WALL-NORMAL COORDINATE IS WRITTEN AS `BB_HALF_* − CHASSIS_HALF`, NOT AS A LITERAL. It used
+ * to be ±61.5, i.e. ±72 less a default chassis half-extent of 10.5, and the ±72 was wrong: the
+ * CAD wall is at ±70.674, so a literal would now hover 1.33 in off the wall and G304.C wants the
+ * robot TOUCHING it. Spec-dependent by nature — a deeper sweeper reaches further — so
+ * `bbSnapStart` still re-seats per build; it has a hair to move, not a foot.
  *
- * ⚠️ **APPROX, AND IN ONE PLACE: THE FRONTAGE.** The CLAUSES are verbatim, but two of the
- * shapes they are measured against are figure-derived — `BB_LZ` is a Fig 9-2/9-3 read with
- * ±0.5 in of slop on the tape edge, and `BB_FLOWER_FOOT` is owner CAD rather than a printed
- * dimension. The three-inch margin at the LOADING ZONE end of anchor 1 is deliberate cover for
- * exactly that: at ±0.5 in of tape error the pose is still plainly legal. The ±72 walls, the
- * x = 0 seam and the FLOWER centres are measured and are not APPROX.
+ * ⚠️ **NO LONGER APPROX.** Both shapes these poses are measured against are now CAD: `BB_LZ` is
+ * the union of three measured tape strips and `BB_FLOWER_FOOT` is CAD-confirmed to 0.05 in
+ * (audit §6). The generous along-wall margins stay as they are — they were cover for the tape
+ * slop, and the zones moving inward by ~1.9 in only widened them.
  *
  * ORDER IS LOAD-BEARING: a 2-robot alliance defaults to anchors 0 and 1, so index 0 must be
  * the TOP (y ≥ 0) anchor and index 1 the BOTTOM one (`bbAnchorCat`). They are 123 in apart —
  * opposite ends of the field — so two robots of one alliance cannot reach each other at the
  * buzzer, which is the whole reason there are two.
  */
+/** the default build's chassis half-extent along its own facing axis (in) — what seats an anchor
+ * against the wall it names. `bbSnapStart` re-seats per spec; this only has to be close. */
+const START_CHASSIS_HALF = 10.5;
+const START_SEAT_X = BB_HALF_X - START_CHASSIS_HALF;
+const START_SEAT_Y = BB_HALF_Y - START_CHASSIS_HALF;
 export const BB_START_POSES: readonly BbStartAnchor[] = [
-  { name: 'TOP · REAR WALL', wall: 'rear', pos: { x: 34, y: 61.5 }, heading: -Math.PI / 2 },
-  { name: 'BOTTOM · AUDIENCE WALL', wall: 'audience', pos: { x: 46, y: -61.5 }, heading: Math.PI / 2 },
+  { name: 'TOP · REAR WALL', wall: 'rear', pos: { x: 34, y: START_SEAT_Y }, heading: -Math.PI / 2 },
+  { name: 'BOTTOM · AUDIENCE WALL', wall: 'audience', pos: { x: 46, y: -START_SEAT_Y }, heading: Math.PI / 2 },
   // THE SIDE-WALL PAIR (owner, 2026-09-13: "come up with some default positions"). The start
   // editor offers each role two anchors, like Chain Reaction's corners. Both back onto the
-  // alliance's OWN side wall (x = 72 − 10.5, facing into the field) on either side of its LOADING
-  // ZONE (y ∈ [−48, −24], G304.E): TOP at y = 45 clears the zone and F3's foot (y ∈ [21, 27]),
+  // alliance's OWN side wall (facing into the field) on either side of its LOADING ZONE
+  // (y ∈ [−46.6, −23.9], G304.E): TOP at y = 45 clears the zone and F3's foot (y ∈ [20.4, 26.4]),
   // BOTTOM at y = −60 sits between the zone and the audience corner. Indices 0 and 1 are still
   // the TOP / BOTTOM defaults a 2-robot alliance spreads onto; these are the alternatives.
-  { name: 'TOP · SIDE WALL', wall: 'side', pos: { x: 61.5, y: 45 }, heading: Math.PI },
-  { name: 'BOTTOM · SIDE WALL', wall: 'side', pos: { x: 61.5, y: -60 }, heading: Math.PI },
+  { name: 'TOP · SIDE WALL', wall: 'side', pos: { x: START_SEAT_X, y: 45 }, heading: Math.PI },
+  { name: 'BOTTOM · SIDE WALL', wall: 'side', pos: { x: START_SEAT_X, y: -60 }, heading: Math.PI },
 ];
 
 /** how many start anchors this game offers — read by the shared per-game start-index clamp
@@ -1230,29 +1347,34 @@ export const BB3_HIVE_DYNAMIC = false;
  */
 export const BB3_FIELD_COLLIDERS = true;
 
-/** the HIVE pivot's height above the tiles (in) — manual (true length), reference §2.2. */
-export const BB3_HIVE_PIVOT_Z = 43.95;
+/** the HIVE pivot's height above the tiles (in) — CAD (`fieldDims.gen.ts`, `hive.pivotZ`
+ * 43.9497). The manual's 43.95 was exact. */
+export const BB3_HIVE_PIVOT_Z = HIVE.PIVOT_Z;
 
 /** distance from the pivot to a CELL's centre, ALONG THE BAR (in, true length, not the plan
- * projection `BB_HIVE_CELL_DY` already carries) — manual, reference §2.2. `BB3_HIVE_ARM ·
- * cos(BB_HIVE_TILT_DEG)` reproduces `BB_HIVE_CELL_DY` (15.44 · cos 30° = 13.37), which is the
- * cross-check that the true and the projected numbers agree. */
-export const BB3_HIVE_ARM = 15.44;
+ * projection `BB_HIVE_CELL_DY` already carries) — CAD, the midpoint of the measured cell's own
+ * near and far faces. `BB3_HIVE_ARM · cos(BB_HIVE_TILT_DEG)` IS `BB_HIVE_CELL_DY`, by
+ * construction now rather than by a pair of hand-typed numbers agreeing. Was 15.44. */
+export const BB3_HIVE_ARM = HIVE.ARM;
 
-/** a CELL's TRUE depth along the bar (in) — manual (true length); `BB_HIVE_CELL_LEN` (10.43) is
- * this number's plan projection at 30°, and `BB3_HIVE_CELL_LEN · cos(BB_HIVE_TILT_DEG)`
- * reproduces it. */
-export const BB3_HIVE_CELL_LEN = 12.04;
+/** a CELL's TRUE depth along the bar (in) — CAD (far − near over the four measured cells);
+ * `BB_HIVE_CELL_LEN` is this number's plan projection at 30°. Was 12.04. */
+export const BB3_HIVE_CELL_LEN = HIVE.CELL_D;
 
-/** the CELL assembly end to end, TRUE length along the bar (in) — manual; `BB_HIVE_LEN`
- * (37.16) is this number's plan projection at 30°. */
-export const BB3_HIVE_LEN = 42.91;
+/** the CELL assembly end to end, TRUE length along the bar (in) — CAD (2 × the far face);
+ * `BB_HIVE_LEN` is this number's plan projection at 30°. Was 42.91. */
+export const BB3_HIVE_LEN = HIVE.LEN;
 
-/** one CELL's interior box, in the tray-local frame `sim3d/bodies.ts` defines (`w` across the
- * bar / world x, `d` along the bar, `h` floor to open top). APPROX (CAD settles it): built from
- * `BB3_HIVE_CELL_LEN` (the true depth) rounded up to a plausible box depth and the manual's
- * 20-in opening WIDTH (`BB_CELL_OPEN.w`), which is not foreshortened by the tilt. */
-export const BB3_HIVE_CELL = { w: 20, d: 14, h: 12.04 };
+/**
+ * one CELL's interior box, in the tray-local frame `sim3d/bodies.ts` defines (`w` across the
+ * bar / world x, `d` along the bar, `h` floor to open top).
+ *
+ * CAD (`fieldDims.gen.ts`), no longer APPROX: the three numbers are the four measured cells'
+ * mean width, depth and floor-to-roof height. The Day 1 guesses were `{20, 14, 12.04}` — the
+ * depth was a true length "rounded up to a plausible box depth" and was 2.25 in too deep, and
+ * the height reused the DEPTH figure and was 1.96 in too short.
+ */
+export const BB3_HIVE_CELL = { w: HIVE.CELL_W, d: HIVE.CELL_D, h: HIVE.CELL_H };
 
 /** cell wall thickness (in) — APPROX, CAD settles it; used for the five-box kinematic tray
  * (floor, back, two sides, divider). */
