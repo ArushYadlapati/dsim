@@ -67,7 +67,7 @@ import {
   usernameAvailable,
   UsernameTakenError,
 } from './db/repo';
-import { verifyAuthToken } from './auth';
+import { emailGateRefusal, verifyAuthToken } from './auth';
 import { DEPLOY_REGIONS, interRegionMs } from './regions';
 
 /**
@@ -563,6 +563,18 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse): Prom
         return json(200, { runs: await listPracticeRuns(user.userId, game) }), true;
       }
 
+      /**
+       * PERSISTENCE, not play. Practice itself runs on the local sim and is open to
+       * everyone including signed-out visitors; what needs a confirmed address is
+       * WRITING a run to an account, because that row carries a score and a replay
+       * under somebody’s name. The GET above is deliberately outside this gate: an
+       * unverified account must still be able to read back what it saved before the
+       * gate was switched on.
+       */
+      {
+        const refusal = emailGateRefusal(user);
+        if (refusal) return json(403, { error: refusal }), true;
+      }
       let body: Record<string, unknown>;
       try {
         body = JSON.parse(await readBody(req)) as Record<string, unknown>;

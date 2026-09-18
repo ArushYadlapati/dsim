@@ -1,6 +1,6 @@
 import { useMemo, useState, type FormEvent } from 'react';
 import { authClient } from '../lib/authClient';
-import { requestPasswordReset } from '../lib/authFlows';
+import { requestEmailVerification, requestPasswordReset } from '../lib/authFlows';
 import { isEmbeddedBrowser } from '../lib/browserEnv';
 import { updateUsername } from '../net/api';
 import { UsernameInput, useUsernameCheck, usernameHintColor } from './UsernameField';
@@ -66,6 +66,18 @@ export function AuthPanel({ onClose }: { onClose: () => void }) {
         } catch {
           /* gate is the fallback */
         }
+        /**
+         * ASK FOR THE VERIFICATION EMAIL, and do not let it decide whether the
+         * sign-up succeeded. The account exists either way; a mail service having a
+         * bad minute must not strand somebody on a form whose submit already worked.
+         * The banner on the Profile page can resend, so the recoverable path exists
+         * whatever happens here.
+         *
+         * ⚠️ IT DOES NOTHING UNTIL THE NEON AUTH PROJECT HAS A SENDER CONFIGURED —
+         * that is an owner dashboard action (docs/deploy.md §4). The call is harmless
+         * before then; it just has nothing to send with.
+         */
+        void requestEmailVerification(email);
       } else {
         await client.signIn.email({ email, password });
       }

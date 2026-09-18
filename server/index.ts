@@ -6,7 +6,7 @@ import v8 from 'node:v8';
 import { Room, type Client } from './room';
 import { decodeClientMsg, encodeMsg, BB3D_REFUSAL, DEFAULT_ROOM_CONFIG, physicsAllowed, RATED_FORMATS, SERVER_CAPS, type ClientMsg, type LiveRoom, type RoomConfig, type ServerMsg } from '../src/net/protocol';
 import { sanitizePlayer } from '../src/net/sanitize';
-import { authConfigured, verifyAuthToken } from './auth';
+import { authConfigured, emailGateRefusal, verifyAuthToken } from './auth';
 import { initPhysics } from '../src/sim/physicsEngine';
 import { initPhysics3d } from '../src/games/biobuzz/sim3d/engine';
 import { migrate } from './db/migrate';
@@ -2395,6 +2395,34 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
       abandon(); // don't leave an empty just-created room behind
       return;
     }
+    /**
+     * A RECORD RUN IS A LEADERBOARD SUBMISSION, so it wants the same confirmed email
+     * address ranked does — and it is refused AT THE DOOR rather than at the end.
+     * Dropping the row silently would be the cruel version: somebody drives a personal
+     * best and only then learns it was never going to count.
+     *
+     * ONLY A SIGNED-IN JOINER CAN TRIP THIS. An anonymous one was never reaching the
+     * board anyway (`persistMatch` keeps authed participants only), so refusing them
+     * would take away a practice mode they are entitled to — and on a LAN server
+     * nobody is authenticated at all, so the gate cannot reach one.
+     *
+     * Here rather than in `Room.startMatch`, beside the duo-record 'both drivers must
+     * be signed in' guard it otherwise belongs with, because room.ts is bundled into
+     * the browser worker that hosts a LAN game and may not import this module.
+     * Off unless REQUIRE_VERIFIED_EMAIL=1 (server/auth.ts says why).
+     */
+    if (r.config.kind === 'record' && user) {
+      const refusal = emailGateRefusal(user);
+      if (refusal) {
+        send({
+          t: 'error',
+          message:
+            'Verify your email to save a record run. Open the link we sent you, or resend it from your Profile page.',
+        });
+        abandon();
+        return;
+      }
+    }
     // one live game per user: refuse a second game while one is in progress (they
     // rejoin/leave it from Home). Reconnects use `rejoin`, so this never blocks
     // returning to your OWN match.
@@ -2705,6 +2733,27 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
           if (!u) {
             send({ t: 'error', message: 'Sign in to play ranked.' });
             return;
+          }
+          /**
+           * ...AND THE ADDRESS BEHIND THAT ACCOUNT IS CONFIRMED.
+           *
+           * Ranked is the one mode where an account is not just a name on a board: it
+           * carries a rating other people are measured against, and a throwaway address
+           * is what makes a fresh one free. Casual rooms, free drive and practice PLAY
+           * stay open to anyone signed in or not — this is the narrowest gate that
+           * makes a smurf cost something.
+           *
+           * Refused HERE, at the same door as the sign-in check, for the reason that
+           * door exists: refusing after the matchmaker has staged a pairing would
+           * charge three other people for it. Off unless REQUIRE_VERIFIED_EMAIL=1
+           * (server/auth.ts says why).
+           */
+          {
+            const refusal = emailGateRefusal(u);
+            if (refusal) {
+              send({ t: 'error', message: refusal });
+              return;
+            }
           }
           if (lockedOut(u.userId)) {
             send({ t: 'error', message: lockoutMessage() });

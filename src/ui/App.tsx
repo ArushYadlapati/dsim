@@ -24,6 +24,7 @@ import { Admin } from './Admin';
 import { Announcements } from './Announcements';
 import { AccountReset } from './AccountReset';
 import { AccountSync } from './AccountSync';
+import { AccountVerify } from './AccountVerify';
 import { GameView } from './GameView';
 import { Lobby } from './Lobby';
 import { WatchLive } from './WatchLive';
@@ -1737,6 +1738,7 @@ export function App() {
         />
       )}
       {screen === 'accountreset' && <AccountReset onAccount={() => navigate('account')} />}
+      {screen === 'accountverify' && <AccountVerify onAccount={() => navigate('account')} />}
       {screen === 'admin' && isAdmin && <Admin onWatch={spectateRoom} onWatchReplay={watchReplay} />}
       {screen === 'dev' &&
         (() => {

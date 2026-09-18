@@ -20,6 +20,7 @@ import { DesktopUpdate } from './DesktopUpdate';
 import { fmtDay } from './fmtDate';
 import { ServerMenu } from './ServerMenu';
 import { UsernameInput, useUsernameCheck, usernameHintColor } from './UsernameField';
+import { VerifyEmailBanner } from './VerifyEmailBanner';
 import { APP_NAME } from '../seasons';
 import { SUPPORT_ENABLED } from '../net/env';
 import { LEGAL_CONTACT } from '../legalText';
@@ -51,6 +52,10 @@ export function Account({
     <>
       <p className="ds-eyebrow">{APP_NAME} · Profile</p>
       <h1 className="ds-h1">Profile</h1>
+
+      {/* ABOVE the identity panel, because it is about the address that panel shows,
+          and because this is the page the ranked refusal sends people to. */}
+      {authEnabled && <VerifyEmailBanner />}
 
       {authEnabled ? <Identity onHandleSaved={onHandleSaved} /> : <IdentityDisabled />}
 

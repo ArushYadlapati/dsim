@@ -3574,6 +3574,45 @@ tr.lb-detail td {
   display: flex;
   justify-content: flex-end;
 }
+/* ---- "verify your email" ---------------------------------------------
+   An in-page notice above the first panel, not a toast: it is a STATE of the
+   account rather than an event, and it has to stay put while somebody reads it and
+   presses Resend.
+
+   --ds-warn is CATEGORY 1 (readable against the surface, inverts with the theme),
+   which is what this needs — the bar sits on the page, not on the field canvas. The
+   tint is mixed from it rather than being a seventh palette entry, so it follows the
+   token in both themes and adds no pair to scripts/contrast.mjs. */
+.ds-verifybar {
+  display: flex;
+  align-items: center;
+  gap: var(--ds-s-3);
+  padding: var(--ds-s-3) var(--ds-s-4);
+  margin-bottom: var(--ds-s-5);
+  border: 1px solid var(--ds-warn);
+  border-radius: var(--ds-round);
+  background: color-mix(in srgb, var(--ds-warn) 10%, var(--ds-panel));
+  color: var(--ds-ink);
+  font-size: var(--ds-t-md);
+  line-height: 1.45;
+}
+/* the sentence takes the slack so both buttons stay hard right at any width */
+.ds-verifybar-text {
+  flex: 1;
+}
+.ds-verifybar-text .err {
+  color: var(--ds-danger);
+}
+/* PHONE: the buttons drop under the sentence rather than squeezing it to one word
+   per line. Same rule as the rest of the shell at this breakpoint. */
+@media (max-width: 560px) {
+  .ds-verifybar {
+    flex-wrap: wrap;
+  }
+  .ds-verifybar-text {
+    flex: 1 1 100%;
+  }
+}
 
 /* =====================================================================
    CONSOLE LAYER — full-screen setup surfaces (Lobby, Record Run, Ranked)
