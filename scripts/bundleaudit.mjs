@@ -128,10 +128,14 @@ const fmtKB = (bytes) => `${(bytes / 1000).toFixed(2)} KB`;
  *              compat` chunk). Present in this build BECAUSE this lane's `GameView`/`game.ts`
  *              wiring is what makes `initPhysics3d()` reachable at all — before it, nothing
  *              called it and the chunk did not exist. ≈ 1.09 MB, exactly the plan's estimate.
- *   scene      135.77 KB — `dist/assets/renderScene-*.js` (Lane B's Three.js renderer). Well
- *              under the §2.5 spec ceiling of 250 KB; the ceiling is kept as `budgetCeiling`
- *              below for context, but the RATCHET binds to the measurement, same as every
- *              other route — a budget is not a target.
+ *   scene      147.92 KB — `dist/assets/renderScene-*.js` (Lane B's Three.js renderer). RAISED
+ *              from 135.77 KB (2026-09-17) by the geometric-correctness + fidelity pass: the
+ *              solved hive-cell geometry, the procedural room, ACES/shadow-map plumbing, the
+ *              chamfered chassis (`ExtrudeGeometry`), drivetrain-styled wheels, the mecanum
+ *              roller texture, the per-robot sign-panel `CanvasTexture`, and the rolling-spin
+ *              bookkeeping. Still well under the §2.5 spec ceiling of 250 KB; the ceiling is
+ *              kept as `budgetCeiling` below for context, but the RATCHET binds to the
+ *              measurement, same as every other route — a budget is not a target.
  * `other` has no route in a healthy build (all four chunks above account for every `.js`/
  * `.wasm` file) — baseline near zero, so anything landing here at all is worth a look.
  *
@@ -142,7 +146,7 @@ const BASELINE = {
   main: { gzip: 904.4 * 1000 },
   hostWorker: { gzip: 699.38 * 1000 },
   physics3d: { gzip: 1089.27 * 1000 },
-  scene: { gzip: 135.77 * 1000, budgetCeiling: 250 * 1000 },
+  scene: { gzip: 147.92 * 1000, budgetCeiling: 250 * 1000 },
   other: { gzip: 1 * 1000 },
 };
 
