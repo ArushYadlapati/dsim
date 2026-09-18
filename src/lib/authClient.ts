@@ -20,6 +20,18 @@ export interface NeonAuthUser {
   id: string;
   name?: string;
   email?: string;
+  /**
+   * Has this address been confirmed by opening the link in the verification
+   * email? Better Auth carries it on the session user, and a Google sign-in
+   * arrives already true — the provider vouched for the address.
+   *
+   * OPTIONAL because it is only as present as the SDK makes it: an older adapter,
+   * or a session shape that changes under us, has to read as “not told” rather
+   * than as “not verified”. Every caller here treats `undefined` as verified for
+   * exactly that reason — the banner is a client-side nudge, and the gate that
+   * actually bites is the server's, off the JWT (see server/auth.ts).
+   */
+  emailVerified?: boolean;
 }
 export interface AuthClient {
   useSession: () => { isPending: boolean; data: { user: NeonAuthUser } | null };
