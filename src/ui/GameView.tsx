@@ -26,6 +26,7 @@ import { seasonFor } from '../seasons';
 import { useCoarsePointer } from './useCoarsePointer';
 import type { Alliance, DrivetrainType, ScoreBreakdown } from '../types';
 import { initPhysics3d, physics3dReady } from '../games/biobuzz/sim3d/engine';
+import { subscribeViewPref } from '../games/biobuzz/graphics/store';
 
 /** top-right connection-quality readout (multiplayer only): a coloured signal dot
  * + live RTT / snapshot-rate / jitter, so a laggy player can see AT A GLANCE whether
@@ -394,6 +395,38 @@ export function GameView({
     if (c) c.onPracticeRun = onPracticeRun ? (r, res) => onPracticeRun(r, res) : null;
   }, [onPracticeRun]);
 
+  /**
+   * IS A 3D SCENE ON SCREEN RIGHT NOW? — the flag behind the HUD's fixed dark scrim
+   * (`docs/biobuzz/plan-3d.md` §4.7: "HUD stays React at 10 Hz with a fixed dark scrim in 3D").
+   *
+   * NOT simply `getViewPref() === '3d'`. The preference is a WISH; what the HUD has to react to
+   * is a scene that is actually drawing, and the two come apart in three ordinary ways: the game
+   * may have no `scene` module at all (DECODE, Chain Reaction), the chunk load may fail or the
+   * GPU may refuse WebGL2 (`GameController.syncScene` falls back to the 2D view with a console
+   * warning), and the scene mounts ASYNCHRONOUSLY a beat after the preference flips. Scrimming
+   * the HUD over the ordinary dark 2D field would be a visible regression in all three.
+   *
+   * So the truth is read off the DOM: `GameController` inserts the scene's own canvas into
+   * `.game-viewport` as its first child, so a SECOND canvas in that box IS a live scene. A
+   * `MutationObserver` on that one box's children costs nothing (it fires on a view switch, not
+   * per frame), and the view-pref subscription is kept alongside it so a flip back to 2D is
+   * reflected even if the teardown order ever changes.
+   */
+  const [scene3d, setScene3d] = useState(false);
+  useEffect(() => {
+    const host = viewportRef.current;
+    if (!host) return;
+    const sync = (): void => setScene3d(host.querySelectorAll('canvas').length > 1);
+    sync();
+    const obs = new MutationObserver(sync);
+    obs.observe(host, { childList: true });
+    const stopPref = subscribeViewPref(sync);
+    return () => {
+      obs.disconnect();
+      stopPref();
+    };
+  }, []);
+
   // MOBILE zoom/select guard: iOS Safari ignores `user-scalable=no`, so a two-finger
   // pinch still zooms and a two-finger touch can pop the text-selection callout. Kill
   // the iOS `gesture*` events and any multi-touch default while the game is up, plus
@@ -442,7 +475,10 @@ export function GameView({
           <AdSlot unit="game" />
         </aside>
       )}
-      <div className="game-root" ref={rootRef}>
+      {/* `view-3d` is the HUD's fixed dark scrim (plan-3d.md §4.7) — see `scene3d` above for why
+          it tracks a live scene rather than the view preference, and the `.game-root.view-3d`
+          block in styles.css for what it actually changes. */}
+      <div className={scene3d ? 'game-root view-3d' : 'game-root'} ref={rootRef}>
       {perf && frames && (
         <div className="perf-readout" role="status">
           {frames.fps.toFixed(0)} fps · p50 {frames.p50.toFixed(1)}ms · p95{' '}
