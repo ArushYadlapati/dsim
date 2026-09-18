@@ -319,20 +319,24 @@ export function robotBodyOf(engine: Engine3d, id: number): InstanceType<Rapier3d
   return engine.robots.get(id);
 }
 
-/** does this `BallState` want an ordinary DYNAMIC sphere body -- everything except `held`,
- * `stock`, and a FLOWER-parked `element` (which is FIXED; see `isFixedFlowerState`)? BIOBUZZ
- * never produces `basin`/`rail` (DECODE/Chain Reaction only), so they fall through to "no body"
- * along with `held`/`stock` -- defensive, not expected. */
+/**
+ * Does this `BallState` want a DYNAMIC sphere body? Everything except `held` and `stock`.
+ *
+ * WARNING -- **A FLOWER-PARKED ELEMENT IS DYNAMIC SINCE DAY 2**, and that is the whole
+ * flower-tube change seen from the engine's side. It used to be a FIXED body pinned at whatever
+ * z the 2D `placeInFlower` computed from `flowerStackZ` -- the Day 1 shortcut, taken because the
+ * tube had no geometry to fall through. It has geometry now (`flowerTube.ts`: three real plates
+ * with their real bores), so a placed element is dropped at the top ring and SEATS WHERE THE
+ * RINGS LET IT, and `derive.ts` reads the column back off the bodies exactly as it reads a hive
+ * cell. Nothing in this file distinguishes a flower element from a hive-cell one any more.
+ *
+ * BIOBUZZ never produces `basin`/`rail` (DECODE/Chain Reaction only), so they fall through to
+ * "no body" along with `held`/`stock` -- defensive, not expected.
+ */
 function wantsDynamicBody(state: BallState): boolean {
   if (state.kind === 'ground' || state.kind === 'flight') return true;
-  if (state.kind === 'element') return !state.el.startsWith('flower:');
+  if (state.kind === 'element') return true;
   return false;
-}
-
-/** a FLOWER-parked element: FIXED at its JSON position (Day 1 shortcut -- the 2D `placeInFlower`
- * parks it there and the real tube is Day 2; see `bodies.ts`'s file header). */
-function isFixedFlowerState(state: BallState): boolean {
-  return state.kind === 'element' && state.el.startsWith('flower:');
 }
 
 function removeElementBody(engine: Engine3d, id: number): void {
@@ -356,64 +360,41 @@ function removeElementBody(engine: Engine3d, id: number): void {
  * create-once / diff-teleport-or-leave-alone rule `syncRobot` uses.
  */
 function syncElement(RAPIER: Rapier3d, engine: Engine3d, b: Artifact): void {
-  const wantDynamic = wantsDynamicBody(b.state);
-  const wantFixed = isFixedFlowerState(b.state);
   const existing = engine.elements.get(b.id);
 
-  if (!wantDynamic && !wantFixed) {
+  if (!wantsDynamicBody(b.state)) {
     removeElementBody(engine, b.id);
     return;
   }
 
   const last = engine.lastElement.get(b.id);
-  if (existing && last && last.fixed !== wantFixed) {
-    // crossed the dynamic/fixed line: a fresh body of the other kind, not a mutation of this one
-    removeElementBody(engine, b.id);
-    syncElement(RAPIER, engine, b);
-    return;
-  }
-
   const r = b.r ?? BB_POLLEN_R;
   const centreZ = b.z + r;
   const isNectar = b.color === 'red' || b.color === 'blue';
 
   if (!existing) {
-    let body: InstanceType<Rapier3d['RigidBody']>;
-    if (wantFixed) {
-      body = engine.world3d.createRigidBody(
-        RAPIER.RigidBodyDesc.fixed().setTranslation(b.pos.x, b.pos.y, centreZ),
-      );
-      engine.world3d.createCollider(
-        RAPIER.ColliderDesc.ball(r)
-          .setFriction(ELEMENT_FRICTION)
-          .setRestitution(ELEMENT_RESTITUTION)
-          .setFrictionCombineRule(RAPIER.CoefficientCombineRule.Max),
-        body,
-      );
-    } else {
-      body = engine.world3d.createRigidBody(
-        RAPIER.RigidBodyDesc.dynamic()
-          .setTranslation(b.pos.x, b.pos.y, centreZ)
-          .setLinvel(b.vel.x, b.vel.y, b.vz)
-          .setAngularDamping(ELEMENT_ROLL_DAMP)
-          .setCcdEnabled(hyp3(b.vel.x, b.vel.y, b.vz) > BB3_CCD_SPEED),
-      );
-      // MAX COMBINE, NOT THE DEFAULT AVERAGE: the floor is deliberately 0-friction for
-      // robots (see bodies.ts's floor comment), and an element resting on it must not inherit
-      // that -- MAX(elementFriction, otherSurface) keeps this element's own 0.6 against a
-      // 0-friction floor while still reading the higher of the two against anything (a wall, a
-      // hive wall, another element) whose own friction happens to exceed it.
-      engine.world3d.createCollider(
-        RAPIER.ColliderDesc.ball(r)
-          .setMass(elementMass(isNectar))
-          .setFriction(ELEMENT_FRICTION)
-          .setRestitution(ELEMENT_RESTITUTION)
-          .setFrictionCombineRule(RAPIER.CoefficientCombineRule.Max),
-        body,
-      );
-    }
+    const body = engine.world3d.createRigidBody(
+      RAPIER.RigidBodyDesc.dynamic()
+        .setTranslation(b.pos.x, b.pos.y, centreZ)
+        .setLinvel(b.vel.x, b.vel.y, b.vz)
+        .setAngularDamping(ELEMENT_ROLL_DAMP)
+        .setCcdEnabled(hyp3(b.vel.x, b.vel.y, b.vz) > BB3_CCD_SPEED),
+    );
+    // MAX COMBINE, NOT THE DEFAULT AVERAGE: the floor is deliberately 0-friction for
+    // robots (see bodies.ts's floor comment), and an element resting on it must not inherit
+    // that -- MAX(elementFriction, otherSurface) keeps this element's own 0.6 against a
+    // 0-friction floor while still reading the higher of the two against anything (a wall, a
+    // hive wall, another element) whose own friction happens to exceed it.
+    engine.world3d.createCollider(
+      RAPIER.ColliderDesc.ball(r)
+        .setMass(elementMass(isNectar))
+        .setFriction(ELEMENT_FRICTION)
+        .setRestitution(ELEMENT_RESTITUTION)
+        .setFrictionCombineRule(RAPIER.CoefficientCombineRule.Max),
+      body,
+    );
     engine.elements.set(b.id, body);
-    engine.lastElement.set(b.id, { x: b.pos.x, y: b.pos.y, z: b.z, vx: b.vel.x, vy: b.vel.y, vz: b.vz, fixed: wantFixed });
+    engine.lastElement.set(b.id, { x: b.pos.x, y: b.pos.y, z: b.z, vx: b.vel.x, vy: b.vel.y, vz: b.vz, fixed: false });
     return;
   }
 
@@ -422,24 +403,21 @@ function syncElement(RAPIER: Rapier3d, engine: Engine3d, b: Artifact): void {
     Math.abs(last.x - b.pos.x) > POSE_EPS ||
     Math.abs(last.y - b.pos.y) > POSE_EPS ||
     Math.abs(last.z - b.z) > POSE_EPS ||
-    (!wantFixed &&
-      (Math.abs(last.vx - b.vel.x) > POSE_EPS ||
-        Math.abs(last.vy - b.vel.y) > POSE_EPS ||
-        Math.abs(last.vz - b.vz) > POSE_EPS));
+    Math.abs(last.vx - b.vel.x) > POSE_EPS ||
+    Math.abs(last.vy - b.vel.y) > POSE_EPS ||
+    Math.abs(last.vz - b.vz) > POSE_EPS;
   if (changed) {
     existing.setTranslation({ x: b.pos.x, y: b.pos.y, z: centreZ }, true);
-    if (!wantFixed) existing.setLinvel({ x: b.vel.x, y: b.vel.y, z: b.vz }, true);
+    existing.setLinvel({ x: b.vel.x, y: b.vel.y, z: b.vz }, true);
   }
   // ONLY TOUCH CCD WHEN IT ACTUALLY CHANGES. `enableCcd` is a write even when the value is
   // unchanged, and (measured) calling any RigidBody setter every tick on a body that would
   // otherwise have gone to sleep keeps resetting its sleep timer -- a resting element then
   // never sleeps and drifts a hair every tick under residual solver noise, which is exactly
   // the "a resting element stays at rest" invariant this port has to hold.
-  if (!wantFixed) {
-    const wantCcd = hyp3(b.vel.x, b.vel.y, b.vz) > BB3_CCD_SPEED;
-    if (existing.isCcdEnabled() !== wantCcd) existing.enableCcd(wantCcd);
-  }
-  engine.lastElement.set(b.id, { x: b.pos.x, y: b.pos.y, z: b.z, vx: b.vel.x, vy: b.vel.y, vz: b.vz, fixed: wantFixed });
+  const wantCcd = hyp3(b.vel.x, b.vel.y, b.vz) > BB3_CCD_SPEED;
+  if (existing.isCcdEnabled() !== wantCcd) existing.enableCcd(wantCcd);
+  engine.lastElement.set(b.id, { x: b.pos.x, y: b.pos.y, z: b.z, vx: b.vel.x, vy: b.vel.y, vz: b.vz, fixed: false });
 }
 
 /** sync every artifact in `world.balls`. */
@@ -487,9 +465,10 @@ export function stepWorld3d(engine: Engine3d): void {
 /**
  * READBACK (plan section 3.1 step 6): every dynamic body writes `pos`/`z`/`vel`/`vz` back into
  * `world`, and a robot's `heading`/`angVel` too, all rounded to `round4` so the JSON is the
- * truth and two ticks that are physically identical serialise identically. A FIXED (flower-
- * parked) element is untouched -- it never moves on its own, and its JSON is already correct
- * (the 2D `placeInFlower`/`retrieveFromFlower` bookkeeping wrote it).
+ * truth and two ticks that are physically identical serialise identically. EVERY element that
+ * has a body is read back,
+ * including one sitting in a FLOWER -- since Day 2 that is a dynamic sphere in a real tube, not
+ * a fixed body parked at a modelled height.
  *
  * Also refreshes `engine.last*` to the JSON just written, so next tick's sync sees NO diff
  * unless gameplay (capture/launch/place/derive) changes something in between -- exactly the
@@ -525,7 +504,6 @@ export function readback(world: World, engine: Engine3d): void {
     });
   }
   for (const b of world.balls) {
-    if (isFixedFlowerState(b.state)) continue; // never moves on its own
     const body = engine.elements.get(b.id);
     if (!body) continue;
     const t = body.translation();
@@ -580,7 +558,7 @@ export function containmentPass(world: World, engine: Engine3d): void {
   }
 
   for (const b of world.balls) {
-    if (!wantsDynamicBody(b.state) && !isFixedFlowerState(b.state)) continue;
+    if (!wantsDynamicBody(b.state)) continue;
     const bad =
       !Number.isFinite(b.pos.x) ||
       !Number.isFinite(b.pos.y) ||
@@ -600,7 +578,7 @@ export function containmentPass(world: World, engine: Engine3d): void {
     const body = engine.elements.get(b.id);
     if (body) {
       body.setTranslation({ x: p.x, y: p.y, z: r }, true);
-      if (!isFixedFlowerState(b.state)) body.setLinvel({ x: 0, y: 0, z: 0 }, true);
+      body.setLinvel({ x: 0, y: 0, z: 0 }, true);
     }
     engine.containmentFixes++;
   }

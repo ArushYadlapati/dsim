@@ -604,7 +604,18 @@ export function sim3dChecks(check: Check): void {
       // own heightIn carry-across (the fix for the `heightIn` seam bug this lane's final
       // report describes) is exercised separately by the `heightIn:` checks above.
       r.spec = { ...r.spec, heightIn };
-      const startY = bracket.y - 40;
+      // ⚠️ 30, NOT 40, AND THE FLOWER IS WHY (Day 2 lane A). `bracket.y` is −17.79, so a 40-in
+      // run-up starts the robot at y = −57.79 — and its collider is `robotExtents` (the 2D
+      // solve's footprint, intake reach included, 12 in behind the centre), so its rear corner
+      // sat at y = −69.79, INSIDE flower F4's own on-tile footprint (x 20.42…26.37,
+      // y −70.64…−65.63). It always did: the pipes' hulls were already touching it at tick 0,
+      // and this check passed anyway because a vertical hull is something a robot slides along.
+      // The ring PLATES are horizontal, so the same overlap became a 0.354-in step the robot
+      // CLIMBED — measured, z rose to 0.337 in ten ticks and the run never recovered, stopping
+      // 5.5 in short of the hive. The obstacle is real and correctly placed (the plate rect IS
+      // `BB_FLOWER_FOOT`, the same box the 2D collider set uses); the START POSE was the bug.
+      // 30 in of run-up clears F4 by 3.8 in and still reaches 80 in/s well before the hive.
+      const startY = bracket.y - 30;
       r.pos.x = bracket.x;
       r.pos.y = startY;
       r.heading = Math.atan2(bracket.y - startY, bracket.x - r.pos.x);

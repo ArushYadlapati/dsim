@@ -222,7 +222,17 @@ PART_RULES: tuple[PartRule, ...] = (
     PartRule(r"flower backstop", "flowers", "flower_support", "plastic", True),
     PartRule(r"flower peanut support", "flowers", "flower_support", "metal", True),
     PartRule(r"flower under field bracket", "flowers", "flower_support", "metal", True),
-    PartRule(r"flower field bracket", "flowers", "flower_support", "metal", True),
+    # ⚠️ VISUAL ONLY, and it is the ANNULUS RULE again in its third costume. `Flower Field
+    # Bracket` is a C-shaped plate at z 11.45…11.84 that hugs the tube from the WALL side and
+    # bolts to the perimeter; its own material stops 2.07 in from the tube's axis. A CONVEX HULL
+    # of a C fills the C, so the hull's field-side face sits 0.975 in from that axis — a lid
+    # across the middle of the flower. Measured before it was excluded: a dropped NECTAR came to
+    # rest on it at z 13.03, eight inches up a tube it should have fallen straight down, which
+    # read exactly like "the middle bore is too small".
+    # Nothing is lost by dropping it: the 1.65 in of it that is in front of the perimeter wall is
+    # already occupied by the HIPS pipes and the peanut supports, which are real hulls, and the
+    # rest of it is inside the analytic wall.
+    PartRule(r"flower field bracket", "flowers", "flower_ring", "metal", False),
 )
 _COMPILED_RULES = tuple((re.compile(r.pat, re.IGNORECASE), r) for r in PART_RULES)
 MISC_RULE = PartRule(r"", "misc", "misc", "misc", False)

@@ -467,6 +467,12 @@ export const BB_FLOWER_RETRIEVE_Z: readonly [number, number] = FLOWER_RETRIEVAL_
 export const BB_FLOWER_MID_HOLE = FLOWER_RING_D.mid;
 export const BB_FLOWER_LOW_HOLE = FLOWER_RING_D.lower;
 
+/** the three PLATE bands themselves, re-exported so `sim3d/flowerTube.ts` and the FLOWER3D lane
+ * read the geometry through `config.ts` like every other BIOBUZZ constant rather than reaching
+ * into the generated module. The five named `BB_FLOWER_*_Z` constants above are the faces the
+ * RULES care about; this is the raw pair per plate, which is what a COLLIDER needs. */
+export { FLOWER_RING_Z };
+
 /** top ring opening RADIUS (in) — CAD (`fieldDims.gen.ts`, `FLOWER_RING_D.top` 4.171 measured by
  * a least-squares circle fit to the plate's own inner cylindrical surface, rms 0.049). Fig 9-12's
  * round 4.0 was 0.17 under. A 2.8 POLLEN and a 3.6 NECTAR both pass it; only the POLLEN passes
@@ -1483,3 +1489,68 @@ export const BB3_INTAKE_Z = 5;
 /** the readback rounding (in / rad) every dynamic body's JSON is written at (plan §3.1 step 6)
  * — see `sim3d/math3.ts`'s `round4`. */
 export const BB3_ROUND = 1e-4;
+
+/**
+ * how many even angular steps a FLOWER ring plate's bore is tessellated into
+ * (`sim3d/flowerTube.ts`; the four rectangle corners are inserted on top, so a plate is 36 rays
+ * and 288 triangles).
+ *
+ * 32 is where the INSCRIBED polygon's error stops mattering: `r·(1 − cos(π/32))` is 0.010 in on
+ * the 2.086-in top bore, against the 0.148-in clearance a NECTAR has through the middle bore and
+ * the 0.211-in a POLLEN has through the lower one. Doubling it would buy 0.0025 in and cost 288
+ * more triangles per plate across twelve plates, every one of which is in the broad phase for
+ * the whole match.
+ */
+export const BB3_FLOWER_RING_SEGMENTS = 32;
+
+// ── THE DYNAMIC HIVE SEE-SAW (plan §3.6) — calibrated block below ────────────────────────────
+
+/**
+ * THREE TERMS MAKE A BAR ON A HINGE BEHAVE LIKE THE REAL HIVE, and `scripts/hive-calibrate.ts`
+ * solves all three against the Event Field Setup Guide's own load rows. They live in the
+ * GENERATED BLOCK below so a re-run replaces the values (and their derivation) without touching
+ * a word of this comment, which is the part a human wrote.
+ *
+ *  • **BALLAST** `BB3_HIVE_BALLAST` (lb) at `BB3_HIVE_BALLAST_AT` = `[v, w]` in the tray's own
+ *    un-tilted local frame, `w` NEGATIVE (below the bar). This is what makes an EMPTY tray
+ *    BI-STABLE: without it the tray is a symmetric bar on a frictionless hinge, it has no
+ *    preferred pose, and the first element to land anywhere decides everything. Its sign is
+ *    taken from the tray's own geometry at run time, not here (`sim3d/hive3d.ts`). The real hive
+ *    is calibrated with ballast WASHERS (Event Field Setup Guide §12) — same hardware, same name.
+ *  • **DETENT** `BB3_HIVE_DETENT` (torque, lb·in²/s²): the breakaway the load must overcome
+ *    before the bar moves at all. Without it a single element starts the swing, because a bar at
+ *    30° with anything in the raised cell already carries a net torque. It is what makes the
+ *    manual's LOAD TABLE a table rather than a threshold on one number, and it is implemented as
+ *    a HOLD rather than as joint friction — `sim3d/hive3d.ts`'s `hiveDynamicTick` says why that
+ *    is the deterministic choice.
+ *  • **DAMPING** `BB3_HIVE_DAMPING` (angular damping, 1/s): the term that sets the SWING TIME.
+ *    `BB_TIP_SWING_S` (4.0 s, owner ruling) is what the kinematic tray's timer plays back and
+ *    what the dynamic tray has to REPRODUCE stop to stop under gravity alone. It is not a free
+ *    choice once the other two are fixed: a see-saw released at one stop accelerates under the
+ *    ballast's own torque, and the damping is the only thing between "four seconds" and "half a
+ *    second and a bang".
+ */
+
+/** the tray assembly's own mass (lb) — APPROX. The CAD carries no density, so this is the
+ * measured part VOLUMES times the materials they are made of: the two 20.1 × 11.75 × 14.0 cells
+ * are 0.020-in ACM skin (≈ 2.7 g/cm³ over ≈ 3,900 in² of sheet ⇒ ≈ 7.7 lb), the 42.8-in aluminium
+ * base tube and the ribs ≈ 4 lb, the AprilTag plates and hardware ≈ 1 lb. Flagged APPROX and
+ * owner-weighable, exactly like `BB3_ELEMENT_MASS`; the calibration is run AGAINST it, so a real
+ * weight is a re-run of `npm run hive-calibrate`, not an edit here. */
+export const BB3_HIVE_TRAY_MASS = 13;
+
+/** the joint is AT its stop when the tilt is within this of `BB_HIVE_TILT_DEG`, and the swing
+ * is OVER when the bar is that close AND turning slower than `BB3_HIVE_REST_W` (rad/s). The
+ * manual scores a TIP when the damper contacts the frame (§10.5.1 B), which is this. */
+export const BB3_HIVE_STOP_DEG = 29;
+export const BB3_HIVE_REST_W = 0.15;
+
+// ── BEGIN GENERATED: hive-calibrate ─────────────────────────────────────────────────────────
+// Written by `npm run hive-calibrate`. DO NOT HAND-EDIT the three values below — edit the
+// sweep, or the targets, and re-run. Everything outside these two markers is hand-written.
+// derivation: pending — `BB3_HIVE_DYNAMIC` is false until a sweep lands every target row.
+export const BB3_HIVE_BALLAST = 6;
+export const BB3_HIVE_BALLAST_AT: readonly [number, number] = [8, -6];
+export const BB3_HIVE_DETENT = 900;
+export const BB3_HIVE_DAMPING = 1.7;
+// ── END GENERATED: hive-calibrate ───────────────────────────────────────────────────────────

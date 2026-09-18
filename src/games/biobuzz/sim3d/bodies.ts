@@ -23,6 +23,7 @@ import {
 } from '../config';
 import { biobuzzColliders, BB_WALL_COUNT } from '../colliders';
 import { cadCellBox, cadStatics, cadTrayHulls, cadTrayRefTheta } from './fieldColliders';
+import { buildFlowerTubes3d } from './flowerTube';
 import { yawQuat } from './math3';
 
 /**
@@ -249,6 +250,14 @@ export function buildStatics3d(
       );
     }
   }
+
+  // ---- THE FLOWER RING PLATES, as rectangle-minus-disc TRIMESHES (Day 2, §3.7). LAST, after
+  // every hull, and that ORDER is load-bearing -- see `buildFlowerTubes3d`'s own comment.
+  // They are not in `cadStatics()` and never will be: their class is `flower_ring`, which
+  // `convert.py` exports no hull for, because a hull of an annulus fills the bore an element
+  // passes through. Nothing here on the FALLBACK path: the Day 1 constants field has no per-ring
+  // geometry to build from, and the flower foot box it does build stands in for the whole column.
+  if (useFieldColliders()) buildFlowerTubes3d(RAPIER, world3d, wallFriction);
 }
 
 // ---- HIVE TRAY -----------------------------------------------------------------

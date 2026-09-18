@@ -84,14 +84,46 @@ export interface FieldTray {
   readonly hulls: readonly FieldTrayHull[];
 }
 
+/**
+ * ONE RING PLATE, as PARAMETERS rather than as a mesh (Day 2 lane A).
+ *
+ * The plates are the FLOWER's whole mechanism — what an element passes, what it seats on, what
+ * the 3.55-in retrieval opening is the gap between — and they are the one part of this field a
+ * CONVEX HULL cannot express: a hull of an annulus fills its own bore, which is exactly the
+ * opening a POLLEN goes through. `sim3d/flowerTube.ts` tessellates a rectangle-minus-disc
+ * TRIMESH from these eleven numbers at engine-build time.
+ *
+ * PARAMETRIC AND NOT BAKED VERTICES, for a measured reason: this file is compiled into
+ * `fieldColliders.gen.ts` and imported STATICALLY by `step.ts`, so every vertex would ship in
+ * the MAIN client bundle (`npm run bundleaudit` is what says so). Twelve plates at ~300
+ * triangles each is ~100 KB of JSON; twelve plates at eleven numbers each is 1.4 KB.
+ */
+export interface FieldFlowerRing {
+  readonly id: 'lower' | 'mid' | 'top';
+  /** the plate's own z band, [underside, top face], inches, sim frame. */
+  readonly z: readonly [number, number];
+  /** the bore RADIUS (in) — least-squares fit to the plate's own inner cylindrical surface. */
+  readonly hole: number;
+  /** the bore CENTRE [x, y], sim frame. NOT the same as `pos` to the last decimal: the three
+   * plates' fitted centres differ by up to 0.011 in, and each plate's own hole is the one an
+   * element passing through IT has to clear. */
+  readonly bore: readonly [number, number];
+  /** the plate's own footprint, sim frame — the rectangle the bore is cut out of. */
+  readonly rect: { readonly x: readonly [number, number]; readonly y: readonly [number, number] };
+}
+
 export interface FieldFlowerDesc {
   readonly id: string;
   readonly wall: 'left' | 'rear' | 'right' | 'audience';
   /** [x, y] in inches, sim frame — matches `BB_FLOWERS` */
   readonly pos: readonly [number, number];
   /** the `statics[].name` entries that are this flower's SOLID support (backstop/pipes/
-   * brackets/base) — the ring plates are visual-only, see convert.py's `PART_RULES`. */
+   * brackets/base) — the ring plates are NOT among them, see `rings` and convert.py's
+   * `PART_RULES`. */
   readonly staticNames: readonly string[];
+  /** the three ring plates, bottom to top. Absent on a collider set predating Day 2 lane A,
+   * in which case `sim3d/flowerTube.ts` builds nothing and the tube is the supports alone. */
+  readonly rings?: readonly FieldFlowerRing[];
   /** the glTF node name for this flower's visual mesh (`field.glb` / `field-low.glb`) */
   readonly visualNode: string;
 }
@@ -151,6 +183,12 @@ export const PHYSICAL_STATIC_CLASSES: ReadonlySet<string> = new Set(['hive_frame
 /** the CAD tile footprint and seam pitch, or `null` when the collider set predates it. */
 export function cadFloor(): FieldFloor | null {
   return fieldColliders3d().floor ?? null;
+}
+
+/** the three ring plates of flower `i` (the `BB_FLOWERS` index), bottom to top — empty on a
+ * collider set predating Day 2 lane A. */
+export function cadFlowerRings(i: number): readonly FieldFlowerRing[] {
+  return fieldColliders3d().flowers[i]?.rings ?? [];
 }
 
 /** every CAD static this build should turn into a real collider, in the file's own array order
