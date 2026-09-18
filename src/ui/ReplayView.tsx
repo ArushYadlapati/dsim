@@ -243,6 +243,9 @@ export function ReplayView({
         // the link is broken, which is the one thing it is not; the replay is fine and the
         // people in it have not published it.
         if (e instanceof ReplayPrivateError) {
+          // the SERVER says which refusal it is (`replayRefusalMessage`) — a private match,
+          // somebody else's practice run and a self-hosted event are three different answers
+          setError(e.message);
           setStatus('private');
           return;
         }
@@ -866,9 +869,11 @@ export function ReplayView({
       {status === 'private' && (
         <div className="ds-empty">
           <div className="big">This replay is private</div>
-          A match replay shows both alliances’ strategy, so it stays between the people who
-          played it until every one of them turns it on. You can share your own from Profile ›
-          Privacy. The result is still on their match history.
+          {error}
+          {/* only the MATCH case has a setting behind it, so only that one points at it */}
+          {error.includes('played in the match') &&
+            ' A replay shows both alliances’ strategy, so it stays with the people who played' +
+              ' it. You can publish your own from Profile › Privacy.'}
         </div>
       )}
       {status === 'stale' && (

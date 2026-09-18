@@ -50,6 +50,7 @@ import {
   getReplaysPublic,
   isStaffUser,
   replayAccess,
+  replayRefusalMessage,
   setReplaysPublic,
   getUserSettings,
   getUserStats,
@@ -89,7 +90,9 @@ import { DEPLOY_REGIONS, interRegionMs } from './regions';
  *   GET  /api/profile/<username>/stats?season=<n> — one user's stats, by username
  *   GET  /api/user/settings                  — your synced settings (Bearer JWT)
  *   POST /api/user/settings {settings}       — save your settings (Bearer JWT)
- *   GET  /api/replay/<id>
+ *   GET  /api/user/privacy                   — your replay-visibility setting (Bearer JWT)
+ *   POST /api/user/privacy {replaysPublic}   — set it (Bearer JWT)
+ *   GET  /api/replay/<id>                    — 403 when the people in it have not published it
  *
  *   GET  /api/friends                        — friends + requests + presence (Bearer JWT)
  *   POST /api/friends/request  {username}    — send (or auto-accept a reciprocal) request
@@ -241,7 +244,7 @@ function bearer(req: IncomingMessage): string | undefined {
 
 /**
  * OPTIONAL auth, for a PUBLIC route whose answer narrows when it knows who is asking — the
- * replay gate and the match history it feeds (migration 0037). A token that is absent,
+ * replay gate and the match history it feeds (migration 0038). A token that is absent,
  * expired or bogus is anonymous, exactly as if none had been sent; nothing 401s.
  *
  * ⚠️ It short-circuits on a missing header rather than letting `verifyAuthToken(undefined)`
@@ -444,7 +447,7 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse): Prom
      * That blob is client-shaped, client-validated and opaque to the server — nothing in SQL
      * reads it — so a privacy bit living there could be enforced only by the client being
      * asked about it, which is not enforcement. This is a real column
-     * (`profiles.replays_public`, 0037) that `replayAccess` and `userMatchHistory` join
+     * (`profiles.replays_public`, 0038) that `replayAccess` and `userMatchHistory` join
      * against, and it is written here from the token's own subject and never from the body.
      */
     if (url.pathname === '/api/user/privacy' && (req.method === 'GET' || req.method === 'POST')) {
@@ -1045,7 +1048,7 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse): Prom
     };
     const emptyHistory = { rows: [], total: 0, offset: historyOpts.offset, limit: historyOpts.limit ?? 25 };
     /** the same opts plus WHO IS READING, which decides whether each versus row carries its
-     * `replayId` (migration 0037). Resolved per route rather than folded into `historyOpts`
+     * `replayId` (migration 0038). Resolved per route rather than folded into `historyOpts`
      * above: that object is built for every `/api/*` GET, and verifying a JWT for a
      * leaderboard poll that will never look at a replay is work for nothing. */
     const historyOptsFor = async (
@@ -1183,18 +1186,20 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse): Prom
     const replayMatch = url.pathname.match(/^\/api\/replay\/([\w-]+)$/);
     if (replayMatch) {
       if (!dbEnabled) return json(404, { error: 'not found' }), true;
-      // THE GATE RUNS BEFORE THE READ (migration 0037). `getReplay` pulls two jsonb blobs
+      // THE GATE RUNS BEFORE THE READ (migration 0038). `getReplay` pulls two jsonb blobs
       // the size of a whole match, and a refused viewer should never cost that — nor should
       // a private replay be loaded into this process to be thrown away.
       const access = await replayAccess(replayMatch[1], await viewerId(req));
-      if (access === 'missing') return json(404, { error: 'not found' }), true;
-      if (access === 'private') {
+      if (access.access === 'missing') return json(404, { error: 'not found' }), true;
+      if (access.access === 'private') {
         return (
           json(403, {
             error: 'private',
-            // the client shows its own copy for this; the string is here so a direct caller
-            // (or an older client, which prints `error` verbatim) is told something true
-            message: 'This replay is private. Everyone who played in it has to allow it.',
+            // WHICH refusal it is, in words — the same discipline `replayRefusal` follows for
+            // a version mismatch. A private match, somebody else's practice run and a
+            // self-hosted event are three different answers, and a client that printed one
+            // sentence for all of them would be wrong about two.
+            message: replayRefusalMessage(access.kind),
           }),
           true
         );

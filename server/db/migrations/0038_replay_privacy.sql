@@ -1,4 +1,4 @@
--- 0037 — A MATCH REPLAY IS PRIVATE UNTIL EVERYONE IN IT SAYS OTHERWISE
+-- 0038 — A MATCH REPLAY IS PRIVATE UNTIL EVERYONE IN IT SAYS OTHERWISE
 --
 -- `/api/replay/<id>` has always served any replay to anyone, and the public profile hands out
 -- the ids: open a leaderboard, click a name, and every Watch button on that stranger's match
@@ -21,10 +21,21 @@
 --     board is self-policing precisely because anyone can re-simulate the log behind a number
 --     (0001_init.sql:63-66), and a private proof is not one. Score-attack also has no opponent,
 --     so there is no second party's strategy in it.
---   * `lan_runs` — a self-hosted server's own archive, already scoped to the host who uploaded
---     it, and its drivers may have no accounts at all to carry a flag.
 --   * the match history LIST — results, scores, W/L and rating deltas stay public. Those are
 --     the leaderboard's substance; what comes off the page is the Watch button, not the row.
+--
+-- WHAT IS PRIVATE WITHOUT A FLAG TO OPEN IT:
+--   * `practice_runs` — its owner only, matching `/api/practice`, which is self-scoped on both
+--     verbs. An unverified offline run was never meant to be readable by anyone else.
+--   * `lan_runs` — THE HOST ONLY. A self-hosted match is somebody's own event on somebody's own
+--     machine, and 0033 already exposes exactly one read path: that host's own runs. Its drivers
+--     are NAMES, not accounts, so there is nobody else `replays_public` could speak for — which
+--     is an argument for keeping it shut, not for leaving it open. It still LANDS HERE, in the
+--     database, where staff can reach it; what it does not do is answer a stranger's GET.
+--
+-- STAFF (`profiles.role`, 0020) may watch anything. Score corrections and report adjudication
+-- reach a replay through this same route, and moderation that cannot see the match is not
+-- moderation.
 --
 -- ON `profiles` rather than in its own table, unlike `user_presence` (0016). That one is
 -- skinny because presence is REWRITTEN on every heartbeat and because leaking it would be a
@@ -32,6 +43,13 @@
 -- their mind, and the bit is not a secret — "this account's replays are public" is exactly what
 -- trying to watch one already tells you. Every public read of `profiles` projects an explicit
 -- column allowlist (repo.ts `ProfileCols`), so the column cannot join a payload by accident.
+--
+-- UNANIMITY IS OVER THE ROSTER, NOT OVER THE ROWS. `match_participants` carries a row only for
+-- an AUTHED player and cascades away with a deleted profile, so "every stored row opted in" is
+-- not "everyone who played consented". The gate therefore counts the stored rows against what
+-- `matches.mode` says the roster was (2 for a 1v1, 4 for a 2v2) and refuses short of it: an
+-- anonymous or departed player is a permanent no, which is the safe direction for a consent
+-- check to fail in.
 --
 -- DEFAULT FALSE IS RETROACTIVE, ON PURPOSE. Every replay recorded before today becomes private
 -- to its participants. Opting the existing corpus in would publish matches played by people who
@@ -43,4 +61,4 @@
 alter table profiles add column if not exists replays_public boolean not null default false;
 
 comment on column profiles.replays_public is
-  'Opt-in: may anyone watch this account''s versus match replays? A match replay is released only when EVERY participant has this set (see server/db/repo.ts replayVisibility). Does not cover record-run replays, which are public leaderboard proof.';
+  'Opt-in: may anyone watch this account''s versus match replays? A match replay is released only when EVERY participant has this set (see server/db/repo.ts replayAccess). Does not cover record-run replays, which are public leaderboard proof.';
