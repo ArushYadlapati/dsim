@@ -16,6 +16,7 @@ import {
   BB_FLOWER_TOP_Z,
   BB_HALF_X,
   BB_HALF_Y,
+  BB_HIVE_BOTTOM_Z,
   BB_HIVE_TILT_DEG,
   BB_HIVE_X,
   BB_WALL_T,
@@ -76,30 +77,29 @@ function useFieldColliders(): boolean {
  * world (pivotX + x, v*cos(theta) - w*sin(theta), BB3_HIVE_PIVOT_Z + v*sin(theta) +
  * w*cos(theta)), exactly rotate2(v, w, theta) for the last two.
  *
- * THE OPENING VS. THE CLEARANCE, TWO FEATURES, ONE RESIDUAL -- RESOLVED BY THE CAD (§8).
+ * THE OPENING VS. THE CLEARANCE, TWO FEATURES, ONE RESIDUAL -- RESOLVED BY THE CAD (§8), AND
+ * THEN BY THE OWNER'S RULING.
  * The Day 1 analytic CELL BOX (`hiveCellLocalBox`'s fallback branch, still here for when
- * `BB3_FIELD_COLLIDERS` is off or a part is missing) was calibrated to the LAUNCH OPENING: at
- * v = arm + d/2 (its open outer face) and the REST tilt (30 degrees), it spans world z =
- * [55.17, 65.60] against the manual's BB_HIVE_OPEN_Z [53.5, 65.6] -- exact at the top, +1.67in
- * at the bottom. The SAME box, mirrored to the DOWN side, spans [32.73, 43.16] -- nowhere near
- * BB_HIVE_BOTTOM_Z 25.5, because a rigid bar whose up-side opening matches the manual does not
- * also put its down-side floor where the manual's ROBOT-CLEARANCE figure says, on this box
- * geometry. The Day 1 fix was a SEPARATE, EXPLICIT clearance bracket (`HIVE_BRACKET_W` below),
- * added per cell at a w solved to read exactly 25.5in when that cell is down -- flagged APPROX
- * and reported as a residual, because a real CAD assembly delivers both figures from ONE shape.
- * With `BB3_FIELD_COLLIDERS` on, `cadCellBox`/`cadTrayHulls` (`fieldColliders.ts`) ARE that one
- * shape -- the CAD tray's own floor/back/side/ceiling hulls, un-rotated into this same (x, v, w)
- * frame -- so the bracket is dropped outright (see `buildHiveTray3d`) and whatever the CAD
- * actually gives for the down-cell clearance is what the sim uses; the smoke lane's measurements
- * check (`docs/biobuzz/plan-3d.md` §9/§10) prints that figure against 25.5 rather than assuming
- * agreement.
+ * `BB3_FIELD_COLLIDERS` is off or a part is missing) was calibrated to the LAUNCH OPENING and
+ * could not ALSO put its down-side floor at the manual's robot-clearance figure of 25.5, because
+ * a rigid bar whose up-side opening matches Fig 9-10 does not: the same box mirrored to the down
+ * side sat 7 in high. The Day 1 fix was a SEPARATE, EXPLICIT clearance bracket (`HIVE_BRACKET_W`
+ * below) solved to read exactly 25.5 in when that cell is down -- flagged APPROX, because a real
+ * CAD assembly delivers both figures from ONE shape.
+ * It does, and the answer is that the 25.5 was the figure at fault: the CAD's up-cell opening
+ * matches the manual to 0.13 in and its down-cell floor is 31.981, which the owner ruled
+ * authoritative on 2026-09-18. `BB_HIVE_BOTTOM_Z` is now that number, so the bracket lands where
+ * the CAD tray's own floor does and the two paths agree instead of trading one figure for the
+ * other. With `BB3_FIELD_COLLIDERS` on, `cadCellBox`/`cadTrayHulls` (`fieldColliders.ts`) ARE
+ * that one shape -- the CAD tray's own floor/back/side/ceiling hulls, un-rotated into this same
+ * (x, v, w) frame -- and the bracket is dropped outright (see `buildHiveTray3d`).
  */
 
 // ---- STATICS -----------------------------------------------------------------
 // floor (always analytic) and walls (always analytic cuboids at the shared BB_HALF_X/Y/
-// BB3_WALL_H constants -- owner correction, see buildStatics3d's own comment: the CAD's own
-// wall measurement is a few percent off the constants every OTHER system is keyed to, so using
-// it for the 3D collider would just be cross-physics drift by another name), and everything
+// BB3_WALL_H constants, which ARE the CAD's own measured inner faces since the 2026-09-18
+// ruling -- see buildStatics3d's own comment for why the analytic plane and not the CAD's
+// stepped wall trimesh), and everything
 // else (flower supports) as CAD trimesh statics -- falling back to the 2D field's own
 // frame-bar/flower-foot boxes (`biobuzzColliders`, extruded) when the CAD set is off or empty.
 
@@ -171,16 +171,20 @@ export function buildStatics3d(
     ground,
   );
 
-  // ---- WALLS: four thick cuboids, ALWAYS at the shared constants (BB_HALF_X/Y inner face,
-  // BB3_WALL_H height) -- NOT the CAD's own wall trimesh, on owner correction. The CAD's own
-  // measured inner face (~70.674) reads ~1.33in inside the constants' 72, and the constants are
-  // what the 2D pipeline, the shared staging (loading-zone/garden pollen, start poses flush to
-  // the wall) and every gameplay rule are already keyed to -- a 3D wall at the CAD's own figure
-  // is exactly the cross-physics drift the plan forbids, not a correction: it embedded several
-  // staged loading-zone pollen who were placed 1.4in clear of the CONSTANTS' wall (found as 6
-  // `containmentPass` fixes at tick 7, see that check's own comment). `cadWallExtents` stays as
-  // a MEASUREMENT (the measurements-vs-config check below reports the gap as an open finding,
-  // owner ruling pending), never as a collider input.
+  // ---- WALLS: four thick cuboids at the shared constants (BB_HALF_X/Y inner face, BB3_WALL_H
+  // height), which ARE the CAD's own measured inner faces now -- `BB_HALF_X/Y` is `FIELD_HALF`
+  // from `fieldDims.gen.ts` (owner ruling, 2026-09-18: "the CAD is authoritative for
+  // dimensions"). The "stay at 72 for parity" exception this comment used to carry is GONE,
+  // because there is nothing left for it to be an exception to: the 2D pipeline, the staging and
+  // every gameplay rule are keyed to the same ±70.674 these cuboids are built at, so building
+  // from the constants and building from the CAD are the same act.
+  //
+  // ⚠️ THEY ARE STILL BUILT FROM THE CONSTANTS, NOT FROM `cadWallExtents()`. The CAD's wall
+  // TRIMESH is the real panels, links and rails -- a stepped, gappy surface with the glass only
+  // 11 in tall -- and what the physics wants is one flat plane per side, tall enough that nothing
+  // legal clears it. The constants express that plane; the measurement is what the SIM3D lane
+  // checks the plane AGAINST (0.05 in, both pipelines and the GLB), which is the useful direction
+  // for that comparison.
   const wallHeight = BB3_WALL_H;
   const wallHalf = wallHeight / 2;
   const wallCentreZ = wallHalf;
@@ -326,7 +330,8 @@ export function hiveTrayRefTheta(alliance: Alliance): number {
 /**
  * The DOWN-CLEARANCE bracket for one cell -- a local point `(v, w)` calibrated so that, WHEN
  * THIS CELL IS DOWN (its own rest tilt), the bracket's world z is exactly `BB_HIVE_BOTTOM_Z`
- * (25.5). Solved once, algebraically, from the rest-tilt geometry (see the file header): at
+ * (31.981 -- the CAD's, since the 2026-09-18 ruling; it was the manual's 25.5 when this was
+ * written). Solved once, algebraically, from the rest-tilt geometry (see the file header): at
  * `theta = BB_HIVE_TILT_DEG` and `v = -BB3_HIVE_ARM` (the DOWN side's own centre, sign already
  * folded in), `BB3_HIVE_PIVOT_Z + v*sin(theta) + w*cos(theta) = BB_HIVE_BOTTOM_Z` solves for
  * `w`. The bracket sits at `v = sideSign * BB3_HIVE_ARM` (its own cell's centre) and this SAME
@@ -335,7 +340,7 @@ export function hiveTrayRefTheta(alliance: Alliance): number {
 export const HIVE_BRACKET_W = (() => {
   const rad = (BB_HIVE_TILT_DEG * Math.PI) / 180;
   // solved for the DOWN side (v = -ARM): PIVOT_Z - ARM*sin(rad) + w*cos(rad) = BOTTOM_Z
-  const BOTTOM_Z = 25.5; // manual, Fig 9-10 -- see `BB_HIVE_BOTTOM_Z` in config.ts
+  const BOTTOM_Z = BB_HIVE_BOTTOM_Z; // CAD (31.981) -- see `BB_HIVE_BOTTOM_Z` in config.ts
   // dsin/dcos, NOT Math.sin/cos -- this file is scanned by the sim source guard (deterministic
   // trig everywhere the sim can reach), and this constant is computed once at module load, on
   // every peer, so it has to be bit-identical everywhere too.
@@ -377,11 +382,10 @@ export const HIVE_BRACKET_T = 1.5;
  * NO CLEARANCE BRACKET, ON EITHER PATH: the Day 1 fallback used one (`HIVE_BRACKET_W`, still
  * exported below and read nowhere here -- kept because the SIM3D lane's measurements check
  * reports it as a historical reference point) precisely because its algebraic box could not put
- * a down cell's floor at the manual's `BB_HIVE_BOTTOM_Z` (25.5) and its up cell's opening at
- * `BB_HIVE_OPEN_Z` at the same time. The CAD needs no such trade: the real cell puts the up-cell
- * opening at [53.375, 65.627] against the manual's [53.5, 65.6] (0.13 in), and whatever it says
- * about the down-cell clearance is what the sim uses, reported rather than assumed by the SIM3D
- * lane's measurements check.
+ * a down cell's floor at the manual's 25.5 and its up cell's opening at the manual's [53.5, 65.6]
+ * at the same time. That tension is RESOLVED rather than traded now: the CAD's up-cell opening
+ * agrees with the manual to 0.13 in and its down-cell floor is 31.981, so `BB_HIVE_BOTTOM_Z` is
+ * the CAD figure and the fallback's bracket lands where the CAD tray's own floor does.
  */
 export function buildHiveTray3d(
   RAPIER: Rapier3d,
