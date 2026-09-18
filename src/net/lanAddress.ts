@@ -28,9 +28,12 @@ export type LanAddressError =
   /** not a host we can parse */
   | 'malformed'
   /**
-   * A routable public address. LAN hosting is deliberately scoped to private networks in v1
-   * (docs/lan-selfhost.md): public self-hosting means port forwarding, a moderation question
-   * about server lists, and a much larger promise than "play on the venue wifi".
+   * A routable public address. LAN hosting is deliberately scoped to networks that are NOT
+   * publicly routable (docs/lan-selfhost.md): public self-hosting means port forwarding, a
+   * moderation question about server lists, and a much larger promise than "play on the venue
+   * wifi". Private blocks, link-local, mDNS names and the tailnet range all pass; anything a
+   * stranger could dial does not — see `isPrivateHost` for why the tailnet belongs on this
+   * side of the line.
    */
   | 'not-private';
 
@@ -72,6 +75,37 @@ export function isPrivateHost(hostRaw: string): boolean {
   if (a === 192 && b === 168) return true;
   if (a === 169 && b === 254) return true; // link-local, what you get with no DHCP
   if (a === 127) return true;
+  /**
+   * 100.64.0.0/10 — RFC 6598 shared address space, which is where a TAILNET lives.
+   *
+   * Asked for by a player whose router re-leases every device constantly, so the address on
+   * the host's screen was stale by the time anyone finished typing it; they run Tailscale to
+   * reach their own machines by a stable address instead. Without this they were told "that
+   * address isn't on your local network" about a machine sitting next to them.
+   *
+   * ⚠️ IT IS THE SECOND OCTET THAT DECIDES, 64..127 — `100.63.x` and `100.128.x` are ordinary
+   * PUBLIC addresses and stay refused. `100.` is not a prefix to match on.
+   *
+   * WHY THIS IS STILL NOT PUBLIC SELF-HOSTING, which is the thing the rule above exists to
+   * refuse. The block is not routable on the public internet: no packet reaches one of these
+   * from outside, so widening to it cannot turn the box into "point the client at any server
+   * anywhere" — a public address still needs port forwarding and is still refused. And a
+   * tailnet is not a server anyone can find: every device that can reach it has been
+   * authenticated into the host's own private network, one at a time, by the host. That is a
+   * higher bar than reading an IP off a projector, not a lower one.
+   *
+   * THE HONEST CAVEAT: this block is also what ISPs use for real CGNAT, so a player behind one
+   * can hold a 100.x address that belongs to their ISP rather than to anything of theirs. The
+   * predicate is therefore "not publicly routable" rather than literally "on the wire you are
+   * on" — which is what the refusal was always protecting, and the error string still reads
+   * correctly for the public addresses it now exclusively names.
+   *
+   * NOTHING ELSE MOVES. `trustedFor` (`credentials.ts`) is an exact-origin allowlist against
+   * the configured cloud servers, so a tailnet host is untrusted exactly like a `192.168` one
+   * and never receives the account token. A LAN match still reaches the cloud the same way,
+   * from the HOST's own client (`lanRuns.ts`), whatever address the guests dialled.
+   */
+  if (a === 100 && b >= 64 && b <= 127) return true;
   return false;
 }
 
