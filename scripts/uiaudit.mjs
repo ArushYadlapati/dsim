@@ -248,11 +248,22 @@ for (const f of css) {
 {
   const OUT = 'docs/ui-components.md';
   const before = existsSync(OUT) ? readFileSync(OUT, 'utf8') : '';
+  /**
+   * ⚠️ COMPARE CONTENT, NOT LINE ENDINGS. `core.autocrlf` is true on Windows, so this
+   * file is CHECKED OUT as CRLF while `uiindex.mjs` writes LF — which made this rule
+   * fire on every run of a fresh Windows checkout, whether or not the CSS had moved. A
+   * check that is always red is worse than no check: it stops meaning anything, and the
+   * real staleness it exists to catch hides inside it. Same bug class as the CRLF split
+   * in the BIOBUZZ smoke source guards.
+   */
+  const eol = (s) => s.replace(/\r\n/g, '\n');
   try {
     execFileSync(process.execPath, ['scripts/uiindex.mjs'], { stdio: 'pipe' });
     const after = readFileSync(OUT, 'utf8');
-    if (before !== after) {
-      writeFileSync(OUT, before); // leave the tree as we found it; the run is the report
+    // restore byte-for-byte whenever anything changed, EOLs included: the run is the
+    // report, and it must not leave the working tree dirty either way
+    if (before !== after) writeFileSync(OUT, before);
+    if (eol(before) !== eol(after)) {
       hit('stale-component-index', OUT, 1, 'run `npm run uiindex` and commit the result');
     }
   } catch (e) {
