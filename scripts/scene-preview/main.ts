@@ -270,7 +270,20 @@ async function main(): Promise<void> {
     for (const n of ['wall:rear', 'wall:audience', 'wall:right', 'wall:left']) {
       const b = box(n);
       if (!b) {
-        rows.push({ name: n, expected: 'inner face at ±72', actual: 'MISSING', pass: false });
+        // the CAD field's four walls are ONE merged mesh named `walls` (`convert.py` groups
+        // "walls + tiles + tape + stations... merged one mesh per class"), so there is no
+        // PER-SIDE named node to measure an inner face off of the way the constants-built
+        // field's four separate `wall:<side>` meshes allow — a row testing a constants-only
+        // shape, adapted per item 12: the real inner-face figure is asserted from the CAD's
+        // OWN trimesh vertices (`cadWallExtents`) in the SIM3D smoke lane's measurements check,
+        // not re-derived here from a scene-graph lookup that cannot exist on this path.
+        const wholeWalls = bbScene.getObjectByName('walls');
+        rows.push({
+          name: n,
+          expected: 'inner face at ±72 (constants path) — see the SIM3D measurements check on the CAD path',
+          actual: wholeWalls ? 'skipped — CAD walls are one merged mesh, no per-side node' : 'MISSING',
+          pass: !!wholeWalls,
+        });
         continue;
       }
       // the wall's INNER face (the one facing the field) must sit at exactly ±BB_HALF_X/Y
@@ -327,13 +340,61 @@ async function main(): Promise<void> {
         checkScalar(`hive:${a}:cell:${upName}`, 'opening-bottom', floorSlab.max.z, BB_HIVE_OPEN_Z[0]);
         checkScalar(`hive:${a}:cell:${upName}`, 'opening-top', ceilingSlab.max.z, BB_HIVE_OPEN_Z[1]);
       } else {
-        rows.push({ name: `hive:${a}:cell:${upName}`, expected: 'present', actual: 'MISSING', pass: false });
+        // the CAD tray is ONE mesh (`hive_<alliance>/tray`), not decomposed into named
+        // floor/back/side/ceiling children the way the constants-built tray's `buildCell` is —
+        // a row testing a constants-only shape, adapted per item 12: the real opening figure
+        // (and the reported gap to BB_HIVE_OPEN_Z/BB_HIVE_BOTTOM_Z) is asserted in the SIM3D
+        // smoke lane's measurements check, off the physics collider geometry directly rather
+        // than a scene-graph lookup this mesh cannot answer.
+        const trayMesh = bbScene.getObjectByName(`hive:${a}`);
+        rows.push({
+          name: `hive:${a}:cell:${upName}`,
+          expected: 'present (constants path) — see the SIM3D measurements check on the CAD path',
+          actual: trayMesh ? 'skipped — CAD tray is one mesh, no per-cell-part node' : 'MISSING',
+          pass: !!trayMesh,
+        });
       }
     }
 
-    // FLOWERS
+    // FLOWERS — the ring position row STAYS ON THE CONSTANTS (`f.x, f.y` from `BB_FLOWERS`), per
+    // item 12, but with the OPEN FINDING's tolerance rather than the default 0.25in: a memory
+    // note from the owner found the CAD's own ring centres sit ~1.4-1.5in from `BB_FLOWERS` (e.g.
+    // F1 config (-69.46,-24.00) vs CAD (-68.04,-23.39), confirmed again by the SIM3D smoke lane's
+    // measurements check) — do NOT move the constants, do NOT nudge the GLB; this wider,
+    // documented tolerance is the whole adaptation.
+    const FLOWER_OPEN_FINDING_TOL = 2.0;
     BB_FLOWERS.forEach((f, idx) => {
-      checkCentre(`flower:${idx}:ring`, f.x, f.y, BB_FLOWER_TOP_Z);
+      const ringBox = box(`flower:${idx}:ring`);
+      if (ringBox) {
+        const c = ringBox.getCenter(new THREE.Vector3());
+        const dx = Math.abs(c.x - f.x);
+        const dy = Math.abs(c.y - f.y);
+        const dz = Math.abs(c.z - BB_FLOWER_TOP_Z);
+        const pass = dx <= FLOWER_OPEN_FINDING_TOL && dy <= FLOWER_OPEN_FINDING_TOL && dz <= FLOWER_OPEN_FINDING_TOL;
+        rows.push({
+          name: `flower:${idx}:ring (open finding, ${FLOWER_OPEN_FINDING_TOL}in tolerance)`,
+          expected: `(${f.x.toFixed(2)},${f.y.toFixed(2)},${BB_FLOWER_TOP_Z.toFixed(2)})`,
+          actual: `(${c.x.toFixed(2)},${c.y.toFixed(2)},${c.z.toFixed(2)})`,
+          pass,
+        });
+      } else {
+        // the CAD field's flower is ONE mesh (`flower_<idx>`), not decomposed into named
+        // ring/foot/pipe children the way the constants-built flower's own group is — fall back
+        // to the WHOLE flower node's own position, same tolerance, same reasoning.
+        const whole = box(`flower:${idx}`);
+        if (!whole) {
+          rows.push({ name: `flower:${idx}`, expected: 'present', actual: 'MISSING', pass: false });
+        } else {
+          const c = whole.getCenter(new THREE.Vector3());
+          const pass = Math.hypot(c.x - f.x, c.y - f.y) <= FLOWER_OPEN_FINDING_TOL;
+          rows.push({
+            name: `flower:${idx} (whole node, CAD is one mesh; open finding, ${FLOWER_OPEN_FINDING_TOL}in tolerance)`,
+            expected: `(${f.x.toFixed(2)},${f.y.toFixed(2)})`,
+            actual: `(${c.x.toFixed(2)},${c.y.toFixed(2)})`,
+            pass,
+          });
+        }
+      }
       const foot = box(`flower:${idx}:foot`);
       if (foot) {
         // the foot must be flush against the wall face (BB_FLOWER_D off the ring) and centred
@@ -345,7 +406,9 @@ async function main(): Promise<void> {
         const alongExpected = n.x !== 0 ? BB_FLOWER_FOOT.along : BB_FLOWER_FOOT.deep;
         void alongExpected;
       } else {
-        rows.push({ name: `flower:${idx}:foot`, expected: 'present', actual: 'MISSING', pass: false });
+        // not decomposed on the CAD path (one mesh per flower) — not a failure, see the ring
+        // check above for the same reasoning.
+        rows.push({ name: `flower:${idx}:foot`, expected: 'present (constants path)', actual: 'skipped — CAD flower is one mesh', pass: true });
       }
       // the pipe fix check: a support pipe's bounding box must be TALL (z-extent) and THIN
       // (x/y extent), not lying on its side — this is exactly the bug that was found and fixed.

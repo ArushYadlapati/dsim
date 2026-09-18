@@ -26,6 +26,7 @@ import {
 import { BB_FLOWER_FLOOR_Z, BB_FLOWER_MID_Z } from '../flower';
 import { BB_TIP_SWING_S } from '../hive';
 import type { BbCellSide, BbHiveState } from '../state';
+import { loadFieldGlb, type FieldGroups } from './renderFieldGlb';
 
 /**
  * BIOBUZZ 3D SCENE — the field: floor, walls, the two hives (frame + tilting tray) and the four
@@ -467,14 +468,13 @@ export interface BbFieldHandles {
 }
 
 /**
- * Builds the WHOLE field as one group of NAMED sub-groups — `floor`, `walls`, `hive:<alliance>`
- * (each with a `tray` child), `flower:<index>` — so a CAD-derived `field.glb` (plan-3d.md §8,
- * "the derived files ship") can later hand back the identical shape (`BbFieldHandles`) by
- * resolving the same names out of the loaded scene graph instead of this constants-built one.
- * Nothing downstream (`renderScene.ts`, `updateBiobuzzField`) reaches into this function's
- * internals; it only ever touches the returned handles.
+ * Builds the WHOLE field, CONSTANTS-ONLY, as one group of NAMED sub-groups — `floor`, `walls`,
+ * `hive:<alliance>` (each with a `tray` child), `flower:<index>`. This is the Day 1 field and the
+ * fallback `buildBiobuzzField` (below) uses on any CAD-load failure; nothing downstream
+ * (`renderScene.ts`, `updateBiobuzzField`) reaches into this function's internals, only ever the
+ * returned handles.
  */
-export function buildBiobuzzField(): BbFieldHandles {
+function buildBiobuzzFieldConstants(): BbFieldHandles {
   const group = new THREE.Group();
   group.name = 'bb-field';
 
@@ -499,6 +499,102 @@ export function buildBiobuzzField(): BbFieldHandles {
   });
 
   return { group, floor, walls, hives, flowers, trays };
+}
+
+/**
+ * Maps a loaded CAD `FieldGroups` (`renderFieldGlb.ts`) into the SAME `BbFieldHandles` shape the
+ * constants field returns, so `updateBiobuzzField` and every named-object lookup (the scene-
+ * preview's own checks included) work unchanged regardless of which field is in play.
+ *
+ * TILES/TAPE: kept on the PROCEDURAL floor, not the GLB's. The GLB's `tiles` node is one
+ * monolithic mesh with a single flat material (`renderFieldGlb.ts`'s `styleScene`) — it carries
+ * no per-region colour at all, so there is no way to attribute a `tape` sub-area to red/blue/
+ * white the way the 2D canvas's on-field tokens require (the HUD contrast pairs are tuned
+ * against those exact tokens — `COLORS.tile`/`TAPE_GAFFER`). The GLB's own `tiles` (and, if
+ * present, a `tape` node under the same root) are therefore left in the loaded scene graph but
+ * HIDDEN, and the existing procedural `buildFloor()` (the tile-grid + tape `CanvasTexture`) is
+ * used for the floor instead, exactly as the constants path already does.
+ */
+function glbFieldToHandles(fg: FieldGroups): BbFieldHandles {
+  const group = fg.root;
+  group.name = 'bb-field';
+
+  // hide the GLB's own tiles/tape (kept in the tree, not removed, so `fg.root` still mounts as
+  // one object with nothing missing if a future pass wants them back) and use the procedural
+  // floor instead — see this function's own header.
+  fg.floor.visible = false;
+  const tape = findByOriginalNameLoose(group, 'tape');
+  if (tape) tape.visible = false;
+  const floor = buildFloor();
+  group.add(floor);
+
+  // the walls ARE used from the GLB (a real trimesh visual, not a flat token-coloured floor) —
+  // `renderFieldGlb.ts` already assigns `walls` the same polycarbonate-look material the
+  // constants path's `mat(C.COLORS.wall, 0.35)` was standing in for.
+  const walls = fg.walls;
+
+  // ONE HIVE GROUP PER ALLIANCE, at the pivot, holding the (world-absolute) frame and the
+  // pivot-anchored tray — `attach()` re-parents each without moving it (it recomputes the local
+  // offset from the current world transform), exactly like `renderFieldGlb.ts`'s own
+  // `buildTrayGroup` already does for the tray itself. This gives the CAD path the SAME shape
+  // (`hive:<alliance>` → `tray` child) the constants path's `buildHive` returns, so
+  // `updateBiobuzzField`'s `handles.trays[a].rotation.set(...)` and the scene-preview's
+  // `checkOrigin('hive:<alliance>', ...)` both work unchanged.
+  const hives = {} as Record<Alliance, THREE.Group>;
+  const trays = {} as Record<Alliance, THREE.Group>;
+  for (const a of ALLIANCES) {
+    const src = fg.hives[a];
+    const hiveGroup = new THREE.Group();
+    hiveGroup.name = `hive:${a}`;
+    const pivot = src.tray.position; // the tray pivot group is already parked at the world pivot
+    hiveGroup.position.copy(pivot);
+    group.add(hiveGroup);
+    hiveGroup.attach(src.frame);
+    hiveGroup.attach(src.tray);
+    src.tray.name = 'tray';
+    hives[a] = hiveGroup;
+    trays[a] = src.tray;
+  }
+
+  // flowers: named `flower:<idx>` to match the constants convention (the raw GLB node names are
+  // `flower_0`..`flower_3`, already index-matched to `BB_FLOWERS`).
+  const flowers = fg.flowers.map((node, idx) => {
+    node.name = `flower:${idx}`;
+    return node as THREE.Group;
+  });
+
+  return { group, floor, walls, hives, flowers, trays };
+}
+
+/** loose lookup for an optional node by its GLTFLoader-original name (see `renderFieldGlb.ts`'s
+ * `findByOriginalName` header on why `.name` alone is not safe) — local copy since that helper
+ * is not exported, and this file's only other need for it is the one optional `tape` node. */
+function findByOriginalNameLoose(root: THREE.Object3D, name: string): THREE.Object3D | null {
+  let hit: THREE.Object3D | null = null;
+  root.traverse((obj) => {
+    if (hit) return;
+    if ((obj.userData as { name?: string } | undefined)?.name === name || obj.name === name) hit = obj;
+  });
+  return hit;
+}
+
+/**
+ * Builds the WHOLE field. Tries the CAD-derived `field.glb`/`field-low.glb` (`loadFieldGlb`,
+ * `docs/biobuzz/plan-3d.md` §8) first; on ANY failure (404, offline, a decode error, a missing
+ * expected node) logs one `console.warn` and falls back to `buildBiobuzzFieldConstants()` — the
+ * Day 1 field, kept complete on purpose (`public/models/biobuzz/README.md`: "these four files
+ * can be deleted in one commit if FIRST objects"). `quality` selects the GLB's high/low LOD
+ * (`SceneQuality.meshDetail`, `renderScene.ts`); it does nothing on the constants fallback.
+ */
+export async function buildBiobuzzField(quality: 'high' | 'low' = 'high'): Promise<BbFieldHandles> {
+  try {
+    const fg = await loadFieldGlb('models/biobuzz', quality);
+    return glbFieldToHandles(fg);
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.warn('BIOBUZZ 3D field: CAD field.glb failed to load; falling back to the constants-built field.', err);
+    return buildBiobuzzFieldConstants();
+  }
 }
 
 /** the tray's tilt angle, RIGHT-HAND rule about the shared local x axis: positive raises the

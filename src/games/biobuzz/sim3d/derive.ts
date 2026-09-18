@@ -42,13 +42,16 @@ const AIRBORNE_Z = 0.05;
 const AIRBORNE_VZ = 1;
 
 function insideCell(px: number, py: number, pz: number, alliance: Alliance, sideSign: 1 | -1, theta: number): boolean {
-  const box = hiveCellLocalBox(sideSign);
+  const box = hiveCellLocalBox(sideSign, alliance);
   const dx = px - hivePivotX(alliance);
   if (Math.abs(dx) > box.xHalf) return false;
   const dy = py - 0;
   const dz = pz - BB3_HIVE_PIVOT_Z;
-  // world (y, z) -> tray-local (v, w): rotate2(y, z, -theta) -- see math3.ts's rotate2 header.
-  const { a: v, b: w } = rotate2(dy, dz, -theta);
+  // world (y, z) -> the box's OWN frame: rotate2(y, z, refTheta - theta) -- see math3.ts's
+  // rotate2 header and `HiveLocalBox.refTheta`'s own comment (`sim3d/bodies.ts`). `refTheta` is
+  // 0 for the theta-independent algebraic fallback (reducing to the original `-theta`) and
+  // `cadCaptureTheta(alliance)` for a CAD box, whose numbers are true AT that specific tilt.
+  const { a: v, b: w } = rotate2(dy, dz, box.refTheta - theta);
   return v >= box.vMin && v <= box.vMax && w >= box.wMin && w <= box.wMax;
 }
 

@@ -4,11 +4,9 @@
  * `scripts/field-cad.mjs` — README next to the files documents the pipeline) and returns the
  * named parts as `THREE.Object3D`s, with materials assigned by part class and shadow flags set.
  *
- * NOT YET WIRED — `scene/renderField.ts` still builds the constants-based fallback field and
- * nothing calls `loadFieldGlb` yet. This file is self-contained so the switch-over (replacing
- * `buildBiobuzzField`'s bodies with these, and `sim3d/bodies.ts`'s statics with
- * `fieldColliders3d()`) can happen in one pass later — see the report's "what remains" section
- * for the exact call-site edits.
+ * WIRED (the CAD switch-over pass): `scene/renderField.ts`'s `buildBiobuzzField` awaits
+ * `loadFieldGlb` first and only falls back to the constants-based field on any failure; the
+ * physics side's `sim3d/bodies.ts` reads `fieldColliders3d()` independently (see that file).
  *
  * `three` only here (and in the other `scene/render*.ts` files) — never in `sim3d/**`, per the
  * repo's determinism/bundle-chunking rule (CLAUDE.md, `docs/area/biobuzz.md` §3.9).

@@ -1216,6 +1216,20 @@ export const BB3_HEIGHT_MAX = 29;
  * a fallback that fired; it is what Day 1 was scoped to build. */
 export const BB3_HIVE_DYNAMIC = false;
 
+/**
+ * CAD-DERIVED FIELD COLLIDERS (`docs/biobuzz/plan-3d.md` §8) vs. the Day 1 constants-built
+ * geometry, for the STATICS (walls' inner face/height, the hive frame legs, the flower supports)
+ * and the hive TRAY (`sim3d/bodies.ts`'s `buildHiveTray3d`/`hiveCellLocalBox`).
+ *
+ * `true` here is the switch-over: `sim3d/bodies.ts` reads `public/models/biobuzz/field-
+ * colliders.json` (via `sim3d/fieldColliders.ts`, generated into `fieldColliders.gen.ts` by
+ * `npm run field-cad`) when this is `true`, falling back to the analytic box/bar/foot geometry
+ * per part whenever the CAD set is missing that part (an empty hull list, an absent static) —
+ * so flipping this to `false` (or the CAD files ever being pulled per their own README's
+ * one-commit-revert plan) restores the Day 1 geometry exactly, with no other code change.
+ */
+export const BB3_FIELD_COLLIDERS = true;
+
 /** the HIVE pivot's height above the tiles (in) — manual (true length), reference §2.2. */
 export const BB3_HIVE_PIVOT_Z = 43.95;
 

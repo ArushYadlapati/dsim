@@ -18,8 +18,13 @@ export interface SceneQuality {
   shadows: boolean;
   /** the `DirectionalLight` shadow map's square resolution. */
   shadowMapSize: number;
+  /** which GLB LOD `buildBiobuzzField` requests (`docs/biobuzz/plan-3d.md` §8's two detail
+   * levels, `field.glb` / `field-low.glb`) — 'low' when `frame.camera === 'overhead'` on a
+   * phone-sized viewport is a reasonable Day 3 wiring, left for that pass; this field just makes
+   * the choice selectable today. Has no effect on the constants-built fallback. */
+  meshDetail: 'high' | 'low';
 }
-export const QUALITY: SceneQuality = { shadows: true, shadowMapSize: 2048 };
+export const QUALITY: SceneQuality = { shadows: true, shadowMapSize: 2048, meshDetail: 'high' };
 
 /** `castShadow`/`receiveShadow`, set ONCE after the static field/element/robot meshes exist —
  * not per-object at construction, because a GLB-backed field builder (plan-3d.md §8) returns the
@@ -130,7 +135,7 @@ class BiobuzzScene implements GameScene {
   private readonly elements: BbElements;
   private readonly robots: BbRobots;
 
-  constructor(canvas: HTMLCanvasElement) {
+  constructor(canvas: HTMLCanvasElement, field: BbFieldHandles) {
     this.element = canvas;
     this.renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: false, powerPreference: 'high-performance' });
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
@@ -166,7 +171,7 @@ class BiobuzzScene implements GameScene {
     }
     this.scene.add(hemi, sun);
 
-    this.field = buildBiobuzzField();
+    this.field = field;
     this.scene.add(this.field.group);
     this.elements = buildBiobuzzElements();
     this.scene.add(this.elements.group);
@@ -203,14 +208,22 @@ class BiobuzzScene implements GameScene {
  * appends it. Requires WebGL2 — probed before anything else touches the canvas — so the caller
  * can fall back to the 2D view on a software renderer or an old browser without this module
  * having thrown mid-construction.
+ *
+ * ASYNC (the CAD switch-over, `docs/biobuzz/plan-3d.md` §8): `buildBiobuzzField` awaits the GLB
+ * (or falls back to the constants field on any failure, logging its own warning) BEFORE the
+ * `BiobuzzScene` is constructed, so the scene never exists half-built. `GameSceneFactory`'s
+ * return type already allows a `Promise<GameScene>` for exactly this; `game.ts`'s `syncScene`
+ * awaits the factory and calls `resize` before the first `render` (its own comment says so),
+ * so nothing on the controller side needed to change.
  */
-export const createBiobuzzScene: GameSceneFactory = (host: HTMLElement): GameScene => {
+export const createBiobuzzScene: GameSceneFactory = async (host: HTMLElement): Promise<GameScene> => {
   const canvas = document.createElement('canvas');
   canvas.style.display = 'block';
   canvas.style.width = '100%';
   canvas.style.height = '100%';
   const gl2 = canvas.getContext('webgl2');
   if (!gl2) throw new SceneUnsupportedError('WebGL2 unavailable');
+  const field = await buildBiobuzzField(QUALITY.meshDetail);
   host.appendChild(canvas);
-  return new BiobuzzScene(canvas);
+  return new BiobuzzScene(canvas, field);
 };
