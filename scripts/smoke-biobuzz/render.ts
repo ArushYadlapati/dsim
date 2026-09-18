@@ -98,6 +98,35 @@ export function renderChecks(check: Check): void {
     dynamicSceneImports.join(', '),
   );
 
+  // ---- BOTH RENDERERS DRAW THE CAD'S OWN TAPE AND THE CAD'S OWN TILE SEAMS ----------------
+  //
+  // A SOURCE check, because the failure it guards is a renderer drawing something that is not on
+  // the field, and no headless run of the sim can see a canvas. Two specific regressions, both of
+  // which shipped:
+  //
+  //  - TAPE AS AN OUTLINE OF THE ZONE. `strokeRect(BB_LZ[a], ...)` / `strokeRectTex(...)` paints
+  //    all FOUR edges of a zone rectangle, including the one that is a perimeter WALL and carries
+  //    no tape on the real field, and it turns the GARDEN's solid 2-in band into a 1-in outline
+  //    of a 2-in rectangle. `BB_TAPE` is the CAD's own 16 measured strips; both renderers draw it.
+  //  - THE 24-IN TILE GRID. `C.TILE` is 24, which is DECODE's and Chain Reaction's nominal tile.
+  //    A real FTC soft tile is 23.528 on centre (`BB_TILE_PITCH`), so a grid stepped by 24 drifts
+  //    almost half an inch per tile away from the tape, the flowers and the GLB. Both renderers
+  //    draw `BB_TILE_SEAMS`, the seven measured seam lines.
+  {
+    const renderers = ['src/games/biobuzz/drawField.ts', 'src/games/biobuzz/scene/renderField.ts'];
+    for (const rel of renderers) {
+      const src = readFileSync(join(root, rel), 'utf8');
+      check(`${rel} draws the CAD tape strips (BB_TAPE), not an outline of a zone rectangle`, src.includes('BB_TAPE.loadingZone') && src.includes('BB_TAPE.garden'), rel);
+      check(`${rel} draws the CAD tile seams (BB_TILE_SEAMS)`, src.includes('BB_TILE_SEAMS'), rel);
+      const code = codeLines(join(root, rel)).map((l, i) => ({ l, i })).filter((r) => /\bC\.TILE\b/.test(r.l));
+      check(
+        `${rel} does NOT step a grid by the shared C.TILE (24in is not this field's tile)`,
+        code.length === 0,
+        code.map((r) => `${rel}:${r.i + 1}`).join(', '),
+      );
+    }
+  }
+
   // ---- the seam itself: GameModule.scene is a function ------------------------------------
   const mod = moduleFor('biobuzz');
   check('biobuzz fills the GameModule.scene slot, and it is a function', typeof mod.scene === 'function');

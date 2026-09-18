@@ -1032,7 +1032,21 @@ export function robotChecks(check: Check): void {
     park(r, cell.pos.x, cell.pos.y + edge + r.spec.length / 2, -Math.PI / 2);
     return { w, r, cellY: cell.pos.y };
   };
-  /** CLOSE IN it scores, and PAST THE CAP a held fire does nothing (Aim Assist: it would not land). */
+  /**
+   * CLOSE IN it scores, and PAST THE CAP a held fire does nothing (Aim Assist: it would not land).
+   *
+   * ⚠️ "CLOSE IN" IS 8 IN, NOT 6, AND THE SIX-INCH CASE IS NOW ITS OWN CHECK. The CAD ruling
+   * (2026-09-18) put the down cell's underside at `BB_HIVE_BOTTOM_Z` 31.98 instead of the
+   * manual's 25.5 — 6.5 in higher — and a dumper standing 6 in off the cell centre throws an
+   * almost vertical lob that is still BELOW that underside when it crosses into the hive's plan
+   * footprint. It gets deflected back down (`hiveDeflect`'s underside rule) and peaks at 31.97.
+   * At 8 in the arc is shallow enough to enter over the structure and reach the 65.1 apex.
+   *
+   * That is a real consequence of the taller hive, not a regression: standing right under the
+   * overhang and throwing straight up has always been a bad shot, and the field just said how
+   * bad. Both facts are asserted so a future change to either the hive height or the lob has to
+   * account for both ends of the band.
+   */
   {
     const run2 = (edge: number): { scored: number; load: number; hopper: number } => {
       const { w, r } = dumperWorld(59, edge);
@@ -1044,8 +1058,14 @@ export function robotChecks(check: Check): void {
       }
       return { scored: load.filter((id) => entered.has(id)).length, load: load.length, hopper: r.hopper.length };
     };
-    const close = run2(6);
-    check('dump range: 6 in from the cell a held fire dumps the whole load IN', close.scored === close.load && close.load > 0, JSON.stringify(close));
+    const close = run2(8);
+    check('dump range: 8 in from the cell a held fire dumps the whole load IN', close.scored === close.load && close.load > 0, JSON.stringify(close));
+    const under = run2(6);
+    check(
+      "dump range: at 6 in the lob is too steep and clips the down cell's underside — nothing scores, and the load is gone from the hopper",
+      under.scored === 0 && under.hopper === 0 && under.load > 0,
+      JSON.stringify(under),
+    );
     const far = run2(BB_DUMP_MAX_DIST + 8);
     check('dump range: past the cap a held fire dumps nothing', far.hopper === far.load && far.scored === 0, JSON.stringify(far));
   }

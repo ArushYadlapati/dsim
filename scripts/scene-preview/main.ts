@@ -426,12 +426,13 @@ async function main(): Promise<void> {
         // PER-SIDE named node to measure an inner face off of the way the constants-built
         // field's four separate `wall:<side>` meshes allow — a row testing a constants-only
         // shape, adapted per item 12: the real inner-face figure is asserted from the CAD's
-        // OWN trimesh vertices (`cadWallExtents`) in the SIM3D smoke lane's measurements check,
-        // not re-derived here from a scene-graph lookup that cannot exist on this path.
+        // OWN measured faces in the SIM3D lane's `one field` check (2D colliders vs 3D colliders
+        // vs the CAD, 0.05in), not re-derived here from a scene-graph lookup that cannot exist
+        // on this path.
         const wholeWalls = bbScene.getObjectByName('walls');
         rows.push({
           name: n,
-          expected: 'inner face at ±72 (constants path) — see the SIM3D measurements check on the CAD path',
+          expected: `inner face at ±${BB_HALF_X} (constants path, which IS the CAD) — see the SIM3D \`one field\` check on the CAD path`,
           actual: wholeWalls ? 'skipped — CAD walls are one merged mesh, no per-side node' : 'MISSING',
           pass: !!wholeWalls,
         });
@@ -507,13 +508,12 @@ async function main(): Promise<void> {
       }
     }
 
-    // FLOWERS — the ring position row STAYS ON THE CONSTANTS (`f.x, f.y` from `BB_FLOWERS`), per
-    // item 12, but with the OPEN FINDING's tolerance rather than the default 0.25in: a memory
-    // note from the owner found the CAD's own ring centres sit ~1.4-1.5in from `BB_FLOWERS` (e.g.
-    // F1 config (-69.46,-24.00) vs CAD (-68.04,-23.39), confirmed again by the SIM3D smoke lane's
-    // measurements check) — do NOT move the constants, do NOT nudge the GLB; this wider,
-    // documented tolerance is the whole adaptation.
-    const FLOWER_OPEN_FINDING_TOL = 2.0;
+    // FLOWERS — the ring row compares the drawn ring against `BB_FLOWERS`, at the DEFAULT 0.25in.
+    //
+    // It ran at 2.0in until 2026-09-18, because the CAD's own ring centres sat ~1.5in from
+    // `BB_FLOWERS` and the owner had not yet ruled on which was right. The ruling is that the CAD
+    // is, `BB_FLOWERS` IS the measured bore centre now, and the wide tolerance has no reason to
+    // exist — it would only hide the GLB and the constants parting company again.
     BB_FLOWERS.forEach((f, idx) => {
       const ringBox = box(`flower:${idx}:ring`);
       if (ringBox) {
@@ -521,9 +521,9 @@ async function main(): Promise<void> {
         const dx = Math.abs(c.x - f.x);
         const dy = Math.abs(c.y - f.y);
         const dz = Math.abs(c.z - BB_FLOWER_TOP_Z);
-        const pass = dx <= FLOWER_OPEN_FINDING_TOL && dy <= FLOWER_OPEN_FINDING_TOL && dz <= FLOWER_OPEN_FINDING_TOL;
+        const pass = dx <= TOL && dy <= TOL && dz <= TOL;
         rows.push({
-          name: `flower:${idx}:ring (open finding, ${FLOWER_OPEN_FINDING_TOL}in tolerance)`,
+          name: `flower:${idx}:ring`,
           expected: `(${f.x.toFixed(2)},${f.y.toFixed(2)},${BB_FLOWER_TOP_Z.toFixed(2)})`,
           actual: `(${c.x.toFixed(2)},${c.y.toFixed(2)},${c.z.toFixed(2)})`,
           pass,
@@ -537,9 +537,9 @@ async function main(): Promise<void> {
           rows.push({ name: `flower:${idx}`, expected: 'present', actual: 'MISSING', pass: false });
         } else {
           const c = whole.getCenter(new THREE.Vector3());
-          const pass = Math.hypot(c.x - f.x, c.y - f.y) <= FLOWER_OPEN_FINDING_TOL;
+          const pass = Math.hypot(c.x - f.x, c.y - f.y) <= TOL;
           rows.push({
-            name: `flower:${idx} (whole node, CAD is one mesh; open finding, ${FLOWER_OPEN_FINDING_TOL}in tolerance)`,
+            name: `flower:${idx} (whole node — the CAD flower is one mesh)`,
             expected: `(${f.x.toFixed(2)},${f.y.toFixed(2)})`,
             actual: `(${c.x.toFixed(2)},${c.y.toFixed(2)})`,
             pass,
