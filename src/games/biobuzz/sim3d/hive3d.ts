@@ -299,7 +299,15 @@ function hiveDynamicTick(world: World, engine: Engine3d): void {
       }
       const wasReleased = hive.released;
       const released = wasReleased || Math.sign(theta) !== upSign;
-      if (released && !wasReleased) world.events.push(`${a.toUpperCase()} HIVE SPILLS ${hive.contents.length}`);
+      if (released && !wasReleased) {
+        // THE SPILL TAG'S OWN COUNT, not `contents.length`: membership waits `BB3_REST_TICKS`
+        // and a tray loaded past its threshold in one volley is already swinging before anything
+        // has settled, so `contents` reads 0 there and the event said "SPILLS 0" over eight
+        // elements visibly leaving the cell. The tag was written from the POSITION test at the
+        // breakaway and is what the spill actually is.
+        const n = Object.values(bb.spill ?? {}).filter((x) => x === a).length;
+        world.events.push(`${a.toUpperCase()} HIVE SPILLS ${n || hive.contents.length}`);
+      }
       bb.hives[a] = { ...hive, tipping: tippingFromAngle(theta, upSign), released };
       continue;
     }

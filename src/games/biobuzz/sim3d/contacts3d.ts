@@ -1,4 +1,5 @@
 import type { Alliance, World } from '../../../types';
+import { BB3_REST_SPEED } from '../config';
 import { BB_FRAME_RAM_SPEED, bbBillG409 } from '../penalties';
 import { GROUP_FRAME, GROUP_TRAY } from './bodies';
 import type { Engine3d } from './engine';
@@ -105,6 +106,8 @@ export function hiveContactPass(world: World, engine: Engine3d): void {
   if (!spill) return;
   const byBody = new Map<number, number>();
   for (const [id, body] of engine.robots) byBody.set(body.handle, id);
+  const elementBodies = new Set<number>();
+  for (const body of engine.elements.values()) elementBodies.add(body.handle);
   for (const key of Object.keys(spill).map(Number).sort((a, b) => a - b)) {
     const alliance: Alliance = spill[key];
     const body = engine.elements.get(key);
@@ -119,13 +122,36 @@ export function hiveContactPass(world: World, engine: Engine3d): void {
       engine.world3d.contactPairsWith(own, (other) => {
         // the TRAY is not a "first contact": the element is still in the cell it is leaving.
         if (groupsOf(other) === GROUP_TRAY) return;
-        touched = true;
         const parent = other.parent();
         const robot = parent ? byBody.get(parent.handle) : undefined;
-        if (robot !== undefined && (caughtBy === null || robot < caughtBy)) caughtBy = robot;
+        if (robot !== undefined) {
+          touched = true;
+          if (caughtBy === null || robot < caughtBy) caughtBy = robot;
+          return;
+        }
+        /**
+         * ⚠️ **ANOTHER ELEMENT IS NOT A FIRST CONTACT EITHER**, and leaving that out made the
+         * whole rule unobservable. A cell holds its load as a PILE — the eight POLLEN of the
+         * field guide's own calibration row are stacked two deep and touching — so on the very
+         * tick the detent breaks, every tagged element is already in contact with its
+         * neighbours. Counting those cleared all eight tags before anything had moved, and a
+         * robot parked directly under the mouth caught four of them to a score of zero.
+         * A spill is one event; its own members are part of it.
+         */
+        if (parent && elementBodies.has(parent.handle)) return;
+        touched = true;
       });
     }
-    if (!touched) continue;
+    /**
+     * AND A TAG EXPIRES WHEN THE ELEMENT COMES TO REST, whatever it is resting on. Without that
+     * an element that lands on a PILE of untagged ground elements and never quite reaches a
+     * static keeps its tag for the rest of the match, and a robot that drives into it a minute
+     * later is billed for catching a spill that finished falling long ago. "Spilling" is a
+     * moment, and this is where the moment ends.
+     */
+    const el = world.balls.find((b) => b.id === key);
+    const atRest = el ? Math.abs(el.vel.x) + Math.abs(el.vel.y) + Math.abs(el.vz) < BB3_REST_SPEED : true;
+    if (!touched && !atRest) continue;
     if (caughtBy !== null) bbBillG409(world, alliance, caughtBy);
     delete spill[key];
   }

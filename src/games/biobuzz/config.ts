@@ -1594,3 +1594,36 @@ export const BB3_HIVE_BALLAST_AT: readonly [number, number] = [0, -9.5];
 export const BB3_HIVE_DETENT = 3041;
 export const BB3_HIVE_DAMPING = 4.466;
 // ── END GENERATED: hive-calibrate ───────────────────────────────────────────────────────────
+
+// ── CLIENT-SIDE PREDICTION (plan §5) ─────────────────────────────────────────────────────────
+
+/**
+ * How far from the LOCAL robot a FULL prediction world carries elements as dynamic bodies (in).
+ *
+ * APPROX, and sized by what prediction is FOR: the thing a driver feels through the stick is
+ * their own chassis meeting something, and at 82 in/s a 40-tick (0.67 s) reconcile window is
+ * about 55 in of travel. Anything further away cannot reach the robot inside the window, so
+ * carrying it would be paying wasm for a body that changes nothing. Elements outside the radius
+ * are simply absent from the prediction world; the server's own snapshot corrects anything the
+ * omission got wrong, which is the whole contract prediction runs under.
+ */
+export const PREDICT_ELEMENT_RADIUS = 36;
+
+/**
+ * The budget one FULL reconcile of 40 ticks may cost (ms) — plan §3.10 and §5's Auto decision.
+ *
+ * It is a DECISION THRESHOLD, not an assertion: `probeFullReconcileMs` times one real reconcile
+ * during the pre-match countdown and Auto picks Full when the measurement lands under this and
+ * Light when it does not. 8 ms is a sixth of a 60 Hz frame on the phone the plan sizes against,
+ * which leaves the rest of the frame for the renderer.
+ */
+export const PREDICT_FULL_BUDGET_MS = 8;
+
+/** the budget one LIGHT reconcile of 40 ticks may cost (ms). It has no wasm, no contacts and one
+ * body, so this is a sanity floor rather than a threshold anything chooses on. */
+export const PREDICT_LIGHT_BUDGET_MS = 1;
+
+/** how many ticks a reconcile re-steps at most — `MAX_PREDICT_LEAD` in `src/game.ts`, named here
+ * because both predictors and the Auto probe are sized against it and neither may import the
+ * controller (it is DOM-adjacent and Lane C's). */
+export const PREDICT_MAX_TICKS = 40;
