@@ -424,3 +424,33 @@ Note: today's snapshots are delta-encoded but assume the **ordered, reliable**
 WebSocket (no per-packet ack). WebTransport datagrams are unreliable, so adding it also
 means acking snapshots (the `ackInputTick` field is already plumbed for this) and
 keying deltas off the last **acked** tick instead of the last **sent** tick.
+
+---
+
+## Vercel deployments: only `main` and `alpha` build
+
+Every push to every branch used to create a Vercel deployment and a preview build. On a Hobby
+project builds run one at a time and deployments count against a daily limit, so a day of pushes
+to feature branches queued the ALPHA build behind previews nobody opened — and 500+ old preview
+deployments had accumulated by 2026-09-18.
+
+`vercel.json` now does two things:
+
+- **`ignoreCommand`** skips the build for any branch other than `main` and `alpha` (exit 0 = skip,
+  exit 1 = build; Vercel's "ignored build step"). A skipped push still creates a deployment
+  record marked canceled, which costs no build minutes.
+- **`git.deploymentEnabled`** turns auto-deployment OFF entirely for the branches we push most
+  (`biobuzz-3d`, the `feat/*` branches, …). The map takes exact branch names only — add a new
+  long-lived branch there when you create it.
+
+**Pruning what already accumulated** — the owner runs it, with a token from vercel.com → Account →
+Tokens passed through the environment (never on the command line, never in the repo):
+
+```bash
+VERCEL_TOKEN=… node scripts/vercel-prune.mjs --project dsim --days 14          # dry run: lists
+VERCEL_TOKEN=… node scripts/vercel-prune.mjs --project dsim --days 14 --yes    # deletes
+```
+
+It never deletes a production deployment, anything still carrying an alias, or the newest
+deployment of any branch. Deleting is permanent. To see which build a site is serving:
+`curl https://alpha.playdsim.com/version.json`.

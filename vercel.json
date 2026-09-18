@@ -1,7 +1,29 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "rewrites": [
-    { "source": "/download/:asset", "destination": "/api/download?asset=:asset" },
-    { "source": "/((?!assets/|api/|download/).*)", "destination": "/index.html" }
-  ]
+    {
+      "source": "/download/:asset",
+      "destination": "/api/download?asset=:asset"
+    },
+    {
+      "source": "/((?!assets/|api/|download/).*)",
+      "destination": "/index.html"
+    }
+  ],
+  "ignoreCommand": "bash -c 'case \"$VERCEL_GIT_COMMIT_REF\" in main|alpha) exit 1;; *) echo \"skipping build for branch $VERCEL_GIT_COMMIT_REF (only main and alpha build)\"; exit 0;; esac'",
+  "git": {
+    "deploymentEnabled": {
+      "biobuzz-3d": false,
+      "efficiency-audit": false,
+      "main-merge": false,
+      "feat/auth-flows": false,
+      "feat/tutorial": false,
+      "feat/contributors": false,
+      "feat/plans-cosmetics-rewards": false,
+      "feat/privacy-cookies": false,
+      "feat/3d-builder": false,
+      "feat/cosmetics": false,
+      "feat/rewards": false
+    }
+  }
 }
