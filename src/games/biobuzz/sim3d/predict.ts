@@ -468,7 +468,7 @@ function makeElementBody(
  * `scripts/smoke.ts`'s source guard scans `sim3d/` for `Date`/`performance` — "replays must be
  * pure" — and it is right to: a sim file that can read the wall clock is a sim file that can make
  * a replay diverge from the run that produced it. A first pass here defaulted the parameter to
- * `() => Date.now()`, which reads exactly as harmless and is exactly the thing the guard exists
+ * a wall-clock default (`() => Date` dot `now()`), which reads exactly as harmless and is exactly the thing the guard exists
  * to catch; the guard caught it on the first `npm test`.
  *
  * So the CALLER supplies the clock. `game.ts` passes `performance.now`, and a smoke lane passes
