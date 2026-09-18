@@ -53,7 +53,8 @@ function aiSources(): { name: string; lines: string[] }[] {
     .map((f) => ({
       name: `src/games/biobuzz/ai/${f}`,
       lines: readFileSync(join(AI_DIR, f), 'utf8')
-        .split('\n')
+        .split(/?
+/)
         // a ONE-LINE `/** … */` has to go too: two of `tiers.ts`'s own doc comments name
         // `localStorage` and `window` while describing what the policy must never touch, and a
         // stripper that understood only `//` and continuation lines flagged both.
