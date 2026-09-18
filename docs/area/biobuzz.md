@@ -181,3 +181,62 @@ The 2D pipeline is PERMANENT (owner rule): every existing check must stay byte-i
   `scripts/field-cad/preview` (GLB viewer). In an automated browser, drive the game through the
   live `GameController` (React fiber from the canvas) and judge progress by `world.tick`, since
   `requestAnimationFrame` only advances when a paint is forced.
+
+---
+
+# AI DRIVERS (`src/games/biobuzz/ai/`) — Day 3, plan §6
+
+`GameSimModule.bot` is filled for BIOBUZZ and absent for DECODE and Chain Reaction. Three tiers
+(`easy` / `medium` / `hard`), ONE policy: `tiers.ts` is a table of numbers the single state machine
+in `policy.ts` multiplies or branches on, so "Easy is a worse driver" never becomes "Easy is a
+different program". **No tier may read anything a lower tier cannot** — difficulty is execution
+(speed, hesitation, patience, how strict it is about taking a shot), never information.
+
+- **The memory is the CALLER's.** `bot.create(world, robotId, tier, seed)` returns a `BotSeat`; the
+  caller (the controller in practice, `Room` on the server, the LAN host worker) calls
+  `seat.step(world)` ONCE per tick before `biobuzzStep`, puts the result in the command map, and
+  **records it exactly like a driver's** — so a replay of a match with a bot in it re-simulates with
+  no bot at all. Nothing about the bot is written to the `World`. There is deliberately **no
+  memoryless `drive`**: a policy with hysteresis cannot answer one honestly, and a server calling it
+  while a client predicted with `create` would disagree about what the bot did.
+- ⚠️ **`ai/` IS SIM CODE AND IT IS IN THE MAIN CHUNK.** No DOM, no clock, no `Math.random`, no
+  `process` (a `process.env` debug hook threw on the first decision in a browser and took the render
+  loop down — green in Node, fatal on the page), no `import.meta`, and nothing from `sim3d/` but
+  `tilt`. The AI lane greps for all of it.
+- ⚠️ **It never reads `world.rngState`.** Its randomness is its own mulberry32 chain seeded
+  `(matchSeed, seat)`. The world's chain is CONSUMED, so a bot drawing from it would move every
+  later draw in the match and a client predicting a tick without the bot would diverge. The lane
+  proves the absence with a `Proxy` that records any access.
+- Commands leave through `localizeCommand` (the wire round-trip), so what is recorded and what is
+  simulated are the same bytes. The bot re-decides every `BB_AI_DECIDE_TICKS` (6) and holds in
+  between, which is what keeps a recorded bot track hold-last friendly.
+- **Tuning lives in `config.ts` under `BB_AI_*`**, all `APPROX`, and each constant's header carries
+  the measurement that fixed it. Four of them are bugs that shipped in a morning's tuning and are
+  worth knowing before touching the policy: a bot that drives at full stick right up to its goal
+  OVERSHOOTS it every decision window (`BB_AI_SLOW_RADIUS`); a purely radial obstacle push parks the
+  robot at the balance point instead of going round (the tangential term in `route`); patience
+  counted against an element ID never fires, because two elements in a corner take turns being the
+  nearest one (`BbBotMemory.noProgress` counts against the HOPPER); and giving up on one unreachable
+  element without its neighbours is giving up on nothing (`BB_AI_GIVEUP_RADIUS`).
+- **Fouls are the tier table's real constraint.** A faster bot that drives through an opponent
+  collects G421 PINNING majors and hands them 20 points each; the first tuning that made HARD
+  genuinely faster also made it LOSE to EASY. `BB_AI_PIN_DECISIONS` backs a bot off an opponent it
+  has been leaning on, `BB_AI_HIVE_CREEP` slows it under the HIVE so a legal drive-under is not a
+  G417 ram, and `BB_AI_ROBOT_CLEAR` keeps it out of contact it does not need.
+- **Verification:** the `AI` lane in `npm test` (the seam, determinism over 3,600 ticks under BOTH
+  physics, the read list, quantization, R102's stow/deploy, `step3d` perf with bots driving, and
+  that a bot can actually score) and `npm run test:ai` (`scripts/aismoke.ts`, ~9 min, OUTSIDE
+  `npm test`) for the statistical claim. The head-to-head win rate is a **RATCHET**, currently
+  under plan §6's 90% target — read the comment on `BB_AI_WIN_RATE_FLOOR` before changing it.
+
+**R102, the STOW HEIGHT and the DEPLOY LATCH** (plan §3.3). R105.A's 29 in is the EXPANDED height
+(`BB3_HEIGHT_MAX`); R102 limits the STARTING CONFIGURATION to an 18-in cube (`BB3_STOW_MAX`). A
+build over the cube is modelled as folding to exactly it (`bbStowHeightIn`), because `RobotSpec`
+carries no `stowHeightIn` field yet — adding one is a `src/types.ts` edit plus a carry-across in the
+shared `coerceSpec`, and until then a DECLARED value is read structurally so the rule binds the day
+the field lands. `coerceBiobuzzSpec` normalizes a declared stow to `[BB3_HEIGHT_MIN, heightIn]` and
+**deliberately does not clamp it to 18** — that would make `bbStowLegal` true by construction.
+The RULE refuses, at `GameSimModule.startLegal`; the builder says so first. Deployment is a READ of
+`world.match` (`bbDeployed`), never a stored latch, and `sim3d/engineImpl.ts` rebuilds the chassis
+collider at that edge, recording the height it built (`Engine3d.robotHeights`) so READBACK subtracts
+the same half-height it added — get that wrong and the robot's `z` jumps on the deploy tick.
