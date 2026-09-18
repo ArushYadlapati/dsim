@@ -18,6 +18,35 @@ import { BB_LAUNCH_Z0 } from '../../src/games/biobuzz/config';
 import { GRAVITY } from '../../src/config';
 import { ARC_MAX, arcBuffer, LANDING, solveLanding } from '../../src/games/biobuzz/scene/renderLanding';
 import { CAMERA_PREFS, getCameraPref } from '../../src/games/biobuzz/graphics/store';
+import {
+  GFX_PIXEL_BUDGET,
+  GFX_PRESETS,
+  GFX_TIERS,
+  getGraphics,
+  resetGraphicsToAuto,
+  setGraphicsTier,
+  coerceGraphicsSettings,
+  effectivePixelRatio,
+  frameIntervalMs,
+  matchesPreset,
+  msaaSamples,
+  shadowMapSize,
+} from '../../src/games/biobuzz/graphics/settings';
+import {
+  SLIP_MS,
+  SLIP_WINDOW_MS,
+  STALL_MS,
+  WARMUP_DOWN_MS,
+  WARMUP_MS,
+  WARMUP_UP_MS,
+  createQualityGovernor,
+  firstGuess,
+  p95,
+  stepTier,
+  type GpuProbe,
+} from '../../src/games/biobuzz/graphics/auto';
+import { BB_ENVIRONMENTS, environmentDef, hdriEnvironments } from '../../src/games/biobuzz/graphics/environments';
+import { THIRD_PARTY } from '../../src/contributors';
 import { Renderer } from '../../src/render/renderer';
 import type { ScoreTarget } from '../../src/games/biobuzz/state';
 import type { Check } from './harness';
@@ -382,5 +411,341 @@ export function renderChecks(check: Check): void {
     const view = readFileSync(join(root, 'src', 'ui', 'GameView.tsx'), 'utf8');
     check('styles.css scrims the HUD bands in the 3D view (.game-root.view-3d [data-hud-band])', css.includes('.game-root.view-3d [data-hud-band]'));
     check('GameView puts `view-3d` on .game-root when a scene canvas is live', view.includes("'game-root view-3d'"));
+  }
+
+  graphicsChecks(check, allFiles);
+}
+
+/**
+ * THE GRAPHICS SETTINGS (Day 3, `docs/biobuzz/plan-3d.md` §4.4-§4.7).
+ *
+ * All of it is either PURE (the preset table, the pixel budget, Auto's policy, the HDRI
+ * catalogue) or a SOURCE assertion, for the same reason the rest of this lane is: a settings
+ * model that decides what a GPU is asked to do can be checked without a GPU, and the parts that
+ * cannot be (does a shadow map actually reallocate) are what the manual pass is for.
+ */
+function graphicsChecks(check: Check, allFiles: string[]): void {
+  const GRAPHICS_DIR = join(BIOBUZZ_DIR, 'graphics');
+  const graphicsFiles = allFiles.filter((p) => p.startsWith(GRAPHICS_DIR + '\\') || p.startsWith(GRAPHICS_DIR + '/'));
+
+  // ---- the settings MODEL never reaches for a renderer ------------------------------------
+  //
+  // `graphics/` is imported by `src/ui/GraphicsSection.tsx` and by `src/contributors.ts`, both
+  // of which are ordinary main-bundle screens. One `import * as THREE` in here would put the
+  // whole renderer in the bundle a DECODE player downloads - the exact regression the scene
+  // boundary above exists to prevent, one directory over.
+  check('graphics/ has files (else every check below is vacuous)', graphicsFiles.length > 0, String(graphicsFiles.length));
+  const threeInGraphics = graphicsFiles.filter((f) => /from\s+['"]three['"]/.test(readFileSync(f, 'utf8')));
+  check('nothing under graphics/ imports three.js', threeInGraphics.length === 0, threeInGraphics.map(relPosix).join(', '));
+  const sceneFromGraphics = graphicsFiles.filter((f) => /from\s+['"]\.\.\/scene\//.test(readFileSync(f, 'utf8')));
+  check('nothing under graphics/ imports scene/', sceneFromGraphics.length === 0, sceneFromGraphics.map(relPosix).join(', '));
+
+  // ---- the settings table, the load-bearing cells ----------------------------------------
+  //
+  // Not every cell - a table transcribed twice is a table that disagrees with itself twice as
+  // often. These are the ones a preset would be WRONG without: the four that define what each
+  // tier is for, plus the two the plan hedges (see `GFX_NOT_OFFERED`).
+  check('Low renders at 75 % and caps at 60 fps', GFX_PRESETS.low.renderScale === 75 && GFX_PRESETS.low.maxFps === 60);
+  check('Low has no shadows at all', GFX_PRESETS.low.shadows === 'off' && GFX_PRESETS.low.elementShadows === 'none');
+  check('Medium is the first tier with the high-detail mesh', GFX_PRESETS.medium.meshDetail === 'high' && GFX_PRESETS.low.meshDetail === 'low');
+  check(
+    'High is the first tier with an HDRI, env lighting and reflections',
+    GFX_PRESETS.high.environment !== 'room' &&
+      GFX_PRESETS.high.envLighting &&
+      GFX_PRESETS.high.reflections &&
+      GFX_PRESETS.medium.environment === 'room' &&
+      !GFX_PRESETS.medium.envLighting,
+  );
+  check(
+    'Ultra is soft shadows, 16x filtering and the full effects set',
+    GFX_PRESETS.ultra.shadows === 'soft' && GFX_PRESETS.ultra.anisotropy === 16 && GFX_PRESETS.ultra.effects === 'full',
+  );
+  check(
+    'the PiP minimap is ON for Low/Medium and OFF for High/Ultra (the table, and it is a second pass)',
+    GFX_PRESETS.low.minimap && GFX_PRESETS.medium.minimap && !GFX_PRESETS.high.minimap && !GFX_PRESETS.ultra.minimap,
+  );
+  check('no preset turns on a feature this build does not implement (AO)', GFX_TIERS.every((t) => GFX_PRESETS[t].ao === 'off'));
+  check(
+    'every preset is exactly itself (matchesPreset is the `custom` test and must not misfire)',
+    GFX_TIERS.every((t) => matchesPreset(GFX_PRESETS[t], t)) && !matchesPreset({ ...GFX_PRESETS.high, shadows: 'off' }, 'high'),
+  );
+
+  // ---- the pixel budget actually binds ---------------------------------------------------
+  //
+  // The whole point of the budget is the case the render-scale slider cannot reach on its own:
+  // a big window on a HiDPI panel. At 2560x1440 CSS with a 2x device ratio and the slider at
+  // 200 %, the naive answer is a 4x ratio - 59 megapixels a frame. Low's budget is 0.6.
+  {
+    const r = effectivePixelRatio({ ...GFX_PRESETS.low, renderScale: 200 }, 'low', 2560, 1440, 2);
+    const px = 2560 * 1440 * r * r;
+    check('the tier pixel budget caps a 200 % scale on a HiDPI panel', px <= GFX_PIXEL_BUDGET.low * 1.001, `${(px / 1e6).toFixed(2)} MP`);
+    const ultra = effectivePixelRatio({ ...GFX_PRESETS.ultra }, 'ultra', 1280, 720, 1);
+    check('a small window at 100 % is NOT capped (the budget is a ceiling, not a target)', Math.abs(ultra - 1) < 1e-9, String(ultra));
+    check(
+      'the budgets are the spec table\u2019s own four numbers',
+      GFX_PIXEL_BUDGET.low === 0.6e6 && GFX_PIXEL_BUDGET.medium === 1.2e6 && GFX_PIXEL_BUDGET.high === 2.2e6 && GFX_PIXEL_BUDGET.ultra === 4.0e6,
+    );
+  }
+
+  // ---- a frame cap that halves the frame rate is the classic way to make things worse -----
+  check(
+    'the 60 fps cap leaves slack for a 16.67 ms vsync (else every other frame is dropped)',
+    frameIntervalMs(60) < 1000 / 60 && frameIntervalMs(60) > 15.5,
+    frameIntervalMs(60).toFixed(2),
+  );
+  check('display means no cap at all', frameIntervalMs(0) === 0);
+  check('MSAA maps to a real sample count, and off means no render target', msaaSamples('off') === 0 && msaaSamples('msaa2') === 2 && msaaSamples('msaa4') === 4);
+  check(
+    'soft shadows reuse the high map size (they are a wider blur, not a fourth resolution)',
+    shadowMapSize('soft') === shadowMapSize('high') && shadowMapSize('low') === 1024,
+  );
+
+  // ---- coercion: a stored blob from another build keeps what it can ------------------------
+  {
+    const stored = { shadows: 'off', aa: 'smaa', renderScale: 9999, fov: 12, nonsense: true };
+    const out = coerceGraphicsSettings(stored, GFX_PRESETS.high);
+    check('coercion keeps a value it understands', out.shadows === 'off');
+    check('coercion drops a value it does not (an `aa` from a build that offered SMAA)', out.aa === GFX_PRESETS.high.aa);
+    check('coercion clamps rather than resets (render scale, FOV)', out.renderScale === 200 && out.fov === 60, `${out.renderScale}/${out.fov}`);
+    check('coercion of nothing at all is the base preset', matchesPreset(coerceGraphicsSettings(undefined, GFX_PRESETS.medium), 'medium'));
+  }
+
+  // ---- the first guess, and the two steps -------------------------------------------------
+  {
+    const base: GpuProbe = { renderer: '', vendor: '', adapter: '', memoryGb: 16, cores: 12, dpr: 1, webgl2: true, software: false };
+    check('a software renderer is Low whatever else it says', firstGuess({ ...base, renderer: 'Google SwiftShader', software: true }) === 'low');
+    check('no WebGL2 is Low', firstGuess({ ...base, webgl2: false }) === 'low');
+    check('a discrete GPU with memory and cores behind it starts at Ultra', firstGuess({ ...base, renderer: 'NVIDIA GeForce RTX 4070' }) === 'ultra');
+    check('the same GPU on a thin machine starts at High', firstGuess({ ...base, renderer: 'NVIDIA GeForce RTX 4070', memoryGb: 4, cores: 4 }) === 'high');
+    check(
+      'an integrated GPU is Medium, and Low once it is pushing a HiDPI panel',
+      firstGuess({ ...base, renderer: 'Intel(R) UHD Graphics 620' }) === 'medium' &&
+        firstGuess({ ...base, renderer: 'Intel(R) UHD Graphics 620', dpr: 2 }) === 'low',
+    );
+    check(
+      'an unrecognised string is not a guess, it is Medium/High by the machine around it',
+      firstGuess({ ...base, renderer: '', cores: 2, memoryGb: 2 }) === 'medium' && firstGuess(base) === 'high',
+    );
+    check('stepping clamps at both ends', stepTier('low', -1) === 'low' && stepTier('ultra', 1) === 'ultra' && stepTier('high', -1) === 'medium');
+  }
+
+  // ---- p95 is nearest-rank, and does not reorder the caller's buffer ----------------------
+  {
+    const samples = [5, 5, 5, 5, 5, 5, 5, 5, 5, 40];
+    const copy = [...samples];
+    check('p95 of ten samples is the worst one', p95(samples) === 40, String(p95(samples)));
+    check('p95 does not mutate its input', samples.every((v, i) => v === copy[i]));
+    check('p95 of nothing is 0, not NaN', p95([]) === 0);
+    check('the three warm-up/slip thresholds are the spec\u2019s three numbers', WARMUP_DOWN_MS === 16.7 && WARMUP_UP_MS === 6 && SLIP_MS === 25);
+  }
+
+  // ---- THE GOVERNOR, on an injected clock -------------------------------------------------
+  //
+  // This is the one piece of the graphics lane with real BEHAVIOUR in it, and it is also the
+  // one piece that cannot be watched in a browser an agent drives: `requestAnimationFrame` only
+  // fires when something forces a paint, so a scripted session never produces the steady stream
+  // of frames a two-second warm-up is measuring. The clock is a parameter for exactly this
+  // reason (see `createQualityGovernor`'s own note), so the policy is driven here instead:
+  // frames in, preset changes out.
+  //
+  // ⚠️ THESE CHECKS WRITE THE SHARED SETTINGS STORE, which is module state for the process.
+  // Every block restores it, and the last line of the section resets it outright.
+  {
+    /** feed `frames` samples of `ms` each, one per `stepMs` of simulated wall clock. */
+    const drive = (gov: { sample(ms: number): void }, clock: { t: number }, frames: number, ms: number, stepMs = 16): void => {
+      for (let i = 0; i < frames; i++) {
+        clock.t += stepMs;
+        gov.sample(ms);
+      }
+    };
+
+    // a slow machine on Auto steps DOWN once the warm-up window closes
+    {
+      setGraphicsTier('high', true);
+      const clock = { t: 0 };
+      const gov = createQualityGovernor(() => clock.t);
+      drive(gov, clock, 200, 30);
+      check('warm-up: over the 60 Hz budget steps the preset DOWN one', getGraphics().tier === 'medium', getGraphics().tier);
+      check('warm-up: and it is still Auto afterwards (a measurement is not a choice)', getGraphics().preset === 'auto');
+    }
+
+    // a fast machine steps UP
+    {
+      setGraphicsTier('medium', true);
+      const clock = { t: 0 };
+      const gov = createQualityGovernor(() => clock.t);
+      drive(gov, clock, 200, 3);
+      check('warm-up: comfortably inside the budget steps the preset UP one', getGraphics().tier === 'high', getGraphics().tier);
+    }
+
+    // a HAND-PICKED preset is not moved by detection
+    {
+      setGraphicsTier('ultra', false);
+      const clock = { t: 0 };
+      const gov = createQualityGovernor(() => clock.t);
+      drive(gov, clock, 200, 40);
+      check('warm-up: a hand-picked preset is left alone', getGraphics().tier === 'ultra' && getGraphics().preset === 'ultra');
+    }
+
+    // a warm-up with almost no frames in it decides nothing
+    {
+      setGraphicsTier('high', true);
+      const clock = { t: 0 };
+      const gov = createQualityGovernor(() => clock.t);
+      drive(gov, clock, 8, 90, 300);
+      check('warm-up: too few frames to be a measurement decides nothing', getGraphics().tier === 'high');
+    }
+
+    // THE SLIP RULE: sustained, once, with a line
+    {
+      setGraphicsTier('ultra', true);
+      const clock = { t: 0 };
+      const lines: string[] = [];
+      const gov = createQualityGovernor(() => clock.t, (l) => lines.push(l));
+      drive(gov, clock, 200, 8); // a clean warm-up first (8 ms is inside the up threshold)
+      const afterWarmup = getGraphics().tier;
+      drive(gov, clock, 60, 40); // ~1 s of 40 ms frames: over the threshold, not yet sustained
+      const midSlip = getGraphics().tier;
+      drive(gov, clock, 250, 40); // past SLIP_WINDOW_MS
+      check('slip: a second of bad frames is not enough (that is a hiccup, not a machine)', midSlip === afterWarmup, `${afterWarmup} -> ${midSlip}`);
+      check('slip: a sustained one lowers the preset', getGraphics().tier === stepTier(afterWarmup, -1), getGraphics().tier);
+      const once = getGraphics().tier;
+      drive(gov, clock, 600, 60);
+      check('slip: and it fires ONCE, however bad it gets after', getGraphics().tier === once, getGraphics().tier);
+      check('slip: it writes exactly one line, and the line says what happened', lines.filter((l) => /lowered/i.test(l)).length === 1, lines.join(' | '));
+    }
+
+    // A BACKGROUNDED TAB IS NOT A SLOW MACHINE (the stall guard)
+    {
+      setGraphicsTier('ultra', true);
+      const clock = { t: 0 };
+      const lines: string[] = [];
+      const gov = createQualityGovernor(() => clock.t, (l) => lines.push(l));
+      drive(gov, clock, 200, 8);
+      const before = getGraphics().tier;
+      // ten "frames" a second apart, each measuring the whole second away - what an alt-tabbed
+      // or paint-gated tab hands the governor
+      drive(gov, clock, 10, 1000, 1000);
+      check('stall: a tab that was not being drawn does not lower anything', getGraphics().tier === before, `${before} -> ${getGraphics().tier}`);
+      check('stall: and it writes no line either', lines.filter((l) => /lowered/i.test(l)).length === 0, lines.join(' | '));
+      check('stall: the guard sits well past any frame a human would sit through', STALL_MS >= 250 && STALL_MS < SLIP_WINDOW_MS, String(STALL_MS));
+    }
+
+    check('the warm-up window is the spec\u2019s two seconds', WARMUP_MS === 2000);
+    resetGraphicsToAuto();
+  }
+
+  // ---- the environments, and that every fetched one is credited ---------------------------
+  {
+    check('the procedural room is first and costs nothing', BB_ENVIRONMENTS[0].id === 'room' && !BB_ENVIRONMENTS[0].hdri);
+    check('there are exactly two HDRI sets on this build', hdriEnvironments().length === 2, String(hdriEnvironments().length));
+    for (const e of hdriEnvironments()) {
+      const h = e.hdri!;
+      check(`${e.id}: a 1k .hdr on Poly Haven\u2019s CDN, never a bundled copy`, /^https:\/\/dl\.polyhaven\.org\/.*_1k\.hdr$/.test(h.url), h.url);
+      check(
+        `${e.id}: CC0, with a licence link and at least one named author`,
+        h.license === 'CC0 1.0' && h.licenseUrl.startsWith('https://') && h.authors.length > 0 && h.authors.every((a) => !!a.name && !!a.role),
+      );
+      check(`${e.id}: the picker states what the download costs`, h.bytes > 1e6 && h.bytes < 4e6 && /MB/.test(e.note), e.note);
+    }
+    check('an unknown environment id falls back to the room rather than throwing', environmentDef('nope' as never).id === 'room');
+    // THE CREDIT IS DERIVED, so a third HDRI cannot ship uncredited
+    check(
+      'every fetched environment is on the Contributors page',
+      THIRD_PARTY.length === hdriEnvironments().length && THIRD_PARTY.every((t) => t.license === 'CC0 1.0' && t.credits.length > 0),
+    );
+  }
+
+  // ---- nothing bundles an HDRI, which is the one rule stated as a byte count ---------------
+  {
+    const bundled = allFiles.filter((f) => !f.endsWith('environments.ts') && /\.hdr['"]/.test(readFileSync(f, 'utf8')));
+    check('no source file imports or embeds an .hdr (they are fetched, never shipped)', bundled.length === 0, bundled.map(relPosix).join(', '));
+  }
+
+  // ---- the SOURCE contracts the settings depend on ----------------------------------------
+  {
+    const sceneSrc = readFileSync(join(SCENE_DIR, 'renderScene.ts'), 'utf8');
+    check('the scene subscribes to the settings (a change applies without a rebuild)', sceneSrc.includes('subscribeGraphics'));
+    check(
+      'the WebGL context is created with antialias:false - MSAA is the render target\u2019s, which is what makes it live',
+      /antialias:\s*false/.test(sceneSrc) && sceneSrc.includes('WebGLRenderTarget'),
+    );
+    check('the shadow map is DISPOSED when its size changes (else low to high does nothing)', /this\.sun\.shadow\.map\?\.dispose\(\)/.test(sceneSrc));
+    check('a software renderer selects the 2D view before it throws', sceneSrc.includes("setViewPref('2d')") && sceneSrc.includes('SceneUnsupportedError'));
+    check(
+      'powerPreference high-performance on both the probe and the renderer',
+      sceneSrc.includes('high-performance') && readFileSync(join(GRAPHICS_DIR, 'auto.ts'), 'utf8').includes('high-performance'),
+    );
+
+    const moduleSrc = readFileSync(join(root, 'src', 'games', 'module.ts'), 'utf8');
+    check(
+      'GameSceneFactory takes OPTIONAL options (additive: an existing one-argument caller is unchanged)',
+      /options\?: SceneOptions/.test(moduleSrc) && /onQualityEvent\?\(line: string\)/.test(moduleSrc),
+    );
+
+    // the view key cannot live in the scene - that is the bug it was moved out to fix
+    const keySrc = readFileSync(join(GRAPHICS_DIR, 'viewKey.ts'), 'utf8');
+    check('the view key is outside the scene and toggles BOTH ways', keySrc.includes("=== '3d' ? '2d' : '3d'"));
+    check('the scene no longer binds `t` itself (it could only ever go 3D to 2D)', !/case 't':/.test(sceneSrc));
+    check('one shared listener, reference-counted (three hosts may hold it at once)', keySrc.includes('refs++') && keySrc.includes('attachedTo'));
+
+    const replaySrc = readFileSync(join(root, 'src', 'ui', 'ReplayView.tsx'), 'utf8');
+    check('the export menu picks a view and a camera', replaySrc.includes('exportView') && replaySrc.includes('exportCam') && replaySrc.includes("'chase'"));
+    check('a 3D export is fixed at High and binds no input', replaySrc.includes("quality: 'high'") && replaySrc.includes('interactive: false'));
+    check(
+      'the 3D export composites scene, then the overlay, then both onto the frame, then the burn-in',
+      replaySrc.indexOf('scene.render(shot.world, sceneFrame)') <
+        replaySrc.indexOf('rend.render(overlayCtx, shot.world, null, localId, true)') &&
+        replaySrc.indexOf('rend.render(overlayCtx, shot.world, null, localId, true)') < replaySrc.indexOf('drawImage(scene.element') &&
+        replaySrc.indexOf('drawImage(scene.element') < replaySrc.lastIndexOf('drawReplayHud'),
+    );
+    // ⚠️ THE ONE THAT SHIPPED BLACK FRAMES. `Renderer.render(..., overlayOnly)` opens with a
+    // `clearRect` over the whole canvas — right for the live view, where the 2D canvas is a
+    // separate sheet above the WebGL one, and fatal in an export if both aim at the same canvas.
+    check(
+      'the overlay pass has a canvas of its own (it CLEARS, and would wipe the 3D frame)',
+      /overlayCtx\s*=\s*overlay\.getContext\('2d'\)/.test(replaySrc) && replaySrc.includes("ctx.drawImage(overlay, 0, 0)"),
+    );
+
+    const configureSrc = readFileSync(join(root, 'src', 'ui', 'Configure.tsx'), 'utf8');
+    check('Configure routes a Graphics section', configureSrc.includes("'graphics'") && configureSrc.includes('GraphicsSection'));
+    check(
+      'the Graphics section is LAZY (16 3D settings are not in a DECODE player\u2019s bundle)',
+      /lazy\(\(\) => import\('\.\/GraphicsSection'\)/.test(configureSrc),
+    );
+
+    const css = readFileSync(join(root, 'src', 'ui', 'styles.css'), 'utf8');
+    check(
+      'the performance overlay has a style, and takes the HUD scrim\u2019s token rather than a second literal',
+      css.includes('.bb-gfxstat') && css.includes('.game-root.view-3d .bb-gfxstat'),
+    );
+    // THE GALLERY'S 3D STILLS share ONE scene across every cell. A browser caps live WebGL
+    // contexts (Chrome at about 16) and this grid is 30-odd cells, so a scene per cell would
+    // silently start dropping the oldest ones — the failure looks like "some cells went black",
+    // which is exactly what a reviewer would report as a renderer bug.
+    const gallerySrc = readFileSync(join(BIOBUZZ_DIR, 'Gallery.tsx'), 'utf8');
+    check(
+      'the gallery builds ONE 3D scene for the whole grid',
+      /function use3dStillScene/.test(gallerySrc) && (gallerySrc.match(/f\(host, \{ quality/g) ?? []).length === 1,
+      String((gallerySrc.match(/f\(host, \{ quality/g) ?? []).length),
+    );
+    check('and it reaches it through the module slot, never a direct scene import', gallerySrc.includes("moduleFor('biobuzz').scene"));
+    check('a per-scene 3D camera is optional and defaults to orbit (the gallery/spectator shot)', /camera3d\?: /.test(readFileSync(join(BIOBUZZ_DIR, 'scenes.ts'), 'utf8')) && gallerySrc.includes("camera ?? 'orbit'"));
+
+    // THE TOUCH LAYER's toggle: a button, not a `MobileLayout` key (that would be a field in
+    // another lane's `src/types.ts` plus a settings migration, for a control pressed twice a
+    // session), and only for the game that HAS a 3D view.
+    const mobileSrc = readFileSync(join(root, 'src', 'ui', 'MobileControls.tsx'), 'utf8');
+    check('the touch layer has a 2D/3D toggle, gated to BIOBUZZ', mobileSrc.includes('mobile-view-btn') && mobileSrc.includes("game === 'biobuzz'"));
+    check('...and it is NOT a draggable layout key', !/['"]view['"]\s*:/.test(mobileSrc) && !mobileSrc.includes("L['view']"));
+    check('the view key is armed for the whole match by the INPUT layer, not by the scene', readFileSync(join(root, 'src', 'input', 'input.ts'), 'utf8').includes('installViewKey()'));
+
+    const statsSrc = readFileSync(join(SCENE_DIR, 'renderStats.ts'), 'utf8');
+    // the ATTRIBUTE, not the word: the file's own header explains at length why it does not
+    // carry one, and a grep for the bare string finds that explanation
+    check(
+      'the overlay is NOT a HUD band (a diagnostic must not reframe the shot)',
+      !/setAttribute\(\s*['"]data-hud-band/.test(statsSrc),
+    );
   }
 }
