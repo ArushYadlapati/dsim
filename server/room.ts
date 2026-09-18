@@ -9,8 +9,9 @@ import { newSettleClock, settleStep, type SettleClock } from '../src/sim/settle'
 import { coerceAutoPath, DEFAULT_SPEC, DEFAULT_ASSISTS, type RobotSetup } from '../src/sim/spawn';
 import { simModuleFor } from '../src/games/sim';
 import { scrubName } from './moderation';
-import type { GameId } from '../src/types';
+import type { GameId, Physics } from '../src/types';
 import { physicsReady } from '../src/sim/physicsEngine';
+import { physics3dReady } from '../src/games/biobuzz/sim3d/engine';
 import { ReplayRecorder, worldResult, type Replay, type ReplayResult } from '../src/sim/replay';
 import type {
   Alliance,
@@ -472,6 +473,33 @@ export class Room {
     return this.game;
   }
 
+  /**
+   * WHICH PHYSICS THIS ROOM'S WORLD RUNS ON — decided once, here, and read by everything:
+   * the cap gate at the door, `matchStart`, and `createWorld`.
+   *
+   * Three rules, in order (plan §2.1):
+   *  1. A game that cannot run `'3d'` never does. DECODE and Chain Reaction declare no
+   *     `physicsOptions`, so a `physics: '3d'` config aimed at one of them is ignored rather
+   *     than handed to a `step` that would do nothing with it — and their rooms stay
+   *     byte-identical to what they were before this field existed.
+   *  2. RANKED, MATCHMADE and RECORD rooms are `'3d'`, and the SERVER decides that, not the
+   *     client. Those are the results that reach a board, and a board whose rows came from
+   *     two different solves is not a board. A staged room's roster arrives through
+   *     `applyPending` before anyone is seated, so `pendingMatch` is already set by the time
+   *     the first joiner is gated.
+   *  3. Otherwise the HOST's choice, off `RoomConfig.physics`, absent ⇒ `'2d'`. Absent is
+   *     what an older client sends and what every room minted before Day 2 was, which is the
+   *     whole back-compat rule: a room created without `physics` behaves exactly as before.
+   */
+  get physics(): Physics {
+    if (!simModuleFor(this.game).physicsOptions?.includes('3d')) return '2d';
+    // a STAGED pairing carries the matchmaker's own decision; honour it verbatim rather than
+    // re-deriving it here, so the room the host builds is the room the matchmaker promised
+    if (this.pendingMatch) return this.pendingMatch.physics ?? '3d';
+    if (this.ranked || this.config.kind === 'record') return '3d';
+    return this.config.physics ?? '2d';
+  }
+
   /** is a match actually running here (vs. still a lobby)? */
   get hasWorld(): boolean {
     return this.world !== null;
@@ -746,6 +774,10 @@ export class Room {
       setups: this.matchSetups,
       yourRobotId,
       game: this.game,
+      // OMITTED for a 2D room, never sent as `'2d'`: an older client ignores an unknown key
+      // either way, but leaving it off keeps a 2D room's handshake byte-identical to the one
+      // this server sent before Day 2, which is the property the NET3D lane asserts.
+      physics: this.physics === '3d' ? '3d' : undefined,
       ranked: this.ranked,
       intros: this.ranked ? this.intros : undefined,
       gen: this.matchGen,
@@ -1244,7 +1276,10 @@ export class Room {
         // physics WASM may still be loading in the first moment after boot; refuse
         // rather than throw inside step() (which would kill the tick loop)
         if (id === this.hostId && this.world === null) {
-          if (physicsReady()) this.startMatch();
+          // BOTH backends, because a 3D room's first tick is `step3d`: `physicsReady()` alone
+          // says the 2D wasm resolved, which for a `'3d'` room is a check of the wrong module.
+          const ready = physicsReady() && (this.physics !== '3d' || physics3dReady());
+          if (ready) this.startMatch();
           else c.send({ t: 'error', message: 'Server is starting up - try again in a moment.' });
         }
         break;
@@ -1446,7 +1481,10 @@ export class Room {
     this.rematchVotes.clear();
     this.matchSeed = seed; // remembered so a spectator joining mid-match gets matchStart
     this.matchSetups = setups;
-    const world = simModuleFor(this.game).createWorld('match', seed, setups);
+    // THE ROOM'S physics, not a setting: the server holds no `GameSettings`, so the fifth
+    // argument is the only route a room's choice has into the builder. `undefined` for the
+    // settings bag is what every server-side build already passed.
+    const world = simModuleFor(this.game).createWorld('match', seed, setups, undefined, this.physics);
     world.match.preCountdown = C.PRE_COUNTDOWN; // sim-driven pre→auto, same as the client
     this.world = world;
     this.pending.clear();
@@ -1464,7 +1502,9 @@ export class Room {
     this.snapAck.clear();
     // start recording the input log; finalized once at phase 'post'. Stamp the game so
     // the replay re-sims through the right module (CR vs DECODE).
-    this.recorder = new ReplayRecorder(seed, setups, 'match', this.game);
+    // STAMPED WITH THE ROOM'S PHYSICS. A replay is an input log, so a `'3d'` match replayed
+    // against `step2d` is a different game from the one that was played — see `Replay.physics`.
+    this.recorder = new ReplayRecorder(seed, setups, 'match', this.game, this.physics);
     this.finalized = false;
     this.settle = newSettleClock();
     this.departed.clear();

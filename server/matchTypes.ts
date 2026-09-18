@@ -1,4 +1,4 @@
-import type { Alliance, AssistConfig, GameId, RobotSpec } from '../src/types';
+import type { Alliance, AssistConfig, GameId, Physics, RobotSpec } from '../src/types';
 import type { QueueMode } from '../src/net/protocol';
 
 /**
@@ -36,6 +36,10 @@ export interface PendingRosterEntry {
    * in the roster jsonb so the host recovers `PendingMatch.game` without a schema
    * column (same trick as `channel`). Absent ⇒ 'decode'. */
   game?: GameId;
+  /** which PHYSICS the staged room runs on — the same jsonb trick again, for the same
+   * reason: no schema column, and every entry in one staged match shares the value.
+   * Absent ⇒ '2d', which is every pairing staged before Day 2. */
+  physics?: Physics;
 }
 
 export interface PendingMatch {
@@ -52,4 +56,13 @@ export interface PendingMatch {
   /** release channel of the paired players ('alpha' | 'stable' | …); the matchmaker
    * only ever groups a single channel. Alpha rooms are not persisted (in-dev). */
   channel?: string;
+  /**
+   * WHICH PHYSICS THE HOST MUST BUILD THIS MATCH ON.
+   *
+   * The matchmaker decides it, not the clients and not the host region: a ranked population
+   * is one population, so every staged match of a game must run the same solve or the board
+   * it feeds is two boards wearing one name. Absent ⇒ '2d' (every pairing staged before
+   * Day 2, and every game that declares no 3D option).
+   */
+  physics?: Physics;
 }

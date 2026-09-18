@@ -2,7 +2,8 @@ import { Room, type Client } from './room';
 import { persistMatch, persistDodges, persistBehaviour } from './persist';
 import { actFor, getRating, getSkill, createPendingMatch } from './db/repo';
 import { dbEnabled } from './db/pool';
-import type { GameId } from '../src/types';
+import type { GameId, Physics } from '../src/types';
+import { simModuleFor } from '../src/games/sim';
 import { DEPLOY_REGIONS, bestHost, type PingInfo } from './regions';
 import type { PendingMatch, PendingRosterEntry } from './matchTypes';
 import { QUEUE_NEED, type LobbyPlayer, type QueueMode, type ServerMsg } from '../src/net/protocol';
@@ -647,6 +648,21 @@ export class Matchmaker {
     else this.localStart(mode, group); // dev fallback: host here (same-machine only)
   }
 
+  /**
+   * WHICH PHYSICS A STAGED ROOM RUNS ON — the matchmaker's decision, taken from the GAME
+   * alone and from nothing the clients sent.
+   *
+   * Ranked is one population per game, so every staged match of that game must run the same
+   * solve; letting a client's preference near this would split a leaderboard down the middle
+   * with nothing on screen saying so. A game that declares no `'3d'` option stays `'2d'`,
+   * which is DECODE and Chain Reaction and is why their staged rooms are unchanged.
+   *
+   * Exported so `npm run test:mm` asserts the rule rather than the call site.
+   */
+  static stagedPhysics(game: GameId | undefined): Physics {
+    return simModuleFor(game).physicsOptions?.includes('3d') ? '3d' : '2d';
+  }
+
   /** stage the roster for the host region + tell each client to reconnect there */
   private async assign(mode: QueueMode, rawGroup: QueueEntry[], hostRegion: string): Promise<void> {
     const group = balanceAlliances(allianceOrder(rawGroup));
@@ -668,9 +684,21 @@ export class Matchmaker {
         channel: e.channel,
         // stash the game in the roster jsonb so the host recovers it (no schema col)
         game: e.game,
+        // ...and the physics, the same way and for the same reason (no schema column)
+        physics: Matchmaker.stagedPhysics(e.game),
       })),
     );
-    await this.stage!({ code, hostRegion, mode, seed, roster, ranked: true, channel: group[0].channel, game: group[0].game });
+    await this.stage!({
+      code,
+      hostRegion,
+      mode,
+      seed,
+      roster,
+      ranked: true,
+      channel: group[0].channel,
+      game: group[0].game,
+      physics: Matchmaker.stagedPhysics(group[0].game),
+    });
     for (const e of group) e.send({ t: 'matchAssigned', mode, room: code, hostRegion });
   }
 
@@ -696,6 +724,7 @@ export class Matchmaker {
       startIndex: i < half ? i : i - half,
       alliance: (i < half ? 'red' : 'blue') as PendingRosterEntry['alliance'],
       introElo: null,
+      physics: Matchmaker.stagedPhysics(e.game),
     }));
     group.forEach((e, i) => {
       const client: Client = {
@@ -711,7 +740,16 @@ export class Matchmaker {
       room.add(client);
       e.onRoom?.(room);
     });
-    room.applyPending({ code, hostRegion: '', mode, seed, roster, ranked: true });
+    room.applyPending({
+      code,
+      hostRegion: '',
+      mode,
+      seed,
+      roster,
+      ranked: true,
+      game: group[0].game,
+      physics: Matchmaker.stagedPhysics(group[0].game),
+    });
   }
 
   /** live queue depth per bucket ACROSS EVERY GAME. Kept because older clients read
