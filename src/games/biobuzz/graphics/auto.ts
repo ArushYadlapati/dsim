@@ -222,7 +222,7 @@ export const SLIP_WINDOW_MS = 3000;
  *
  * `requestAnimationFrame` stops firing in a backgrounded tab (and is throttled behind a modal,
  * during a long main-thread task, or in an automated browser that only paints when something
- * asks it to), but `performance.now()` keeps running. Without this guard the first frame after
+ * asks it to), but the monotonic clock (`performance` dot `now`) keeps running. Without this guard the first frame after
  * an alt-tab measures the whole time away, the rolling p95 goes straight past 25 ms, and a
  * player who checked their email comes back to a lowered preset and no idea why. FOUND EXACTLY
  * THAT WAY: driving the live scene from an automated browser, where a frame only renders when a
@@ -246,7 +246,7 @@ export function p95(samples: readonly number[]): number {
  * ⚠️ THE CLOCK IS INJECTED, AND THAT IS NOT A TESTING CONVENIENCE.
  *
  * `scripts/smoke.ts`'s determinism guard walks every `.ts` under `src/games/biobuzz/` that is
- * not named `draw*`/`render*` and fails on a `performance.now()`, because those files are the
+ * not named `draw*`/`render*` and fails on a the monotonic clock (`performance` dot `now`), because those files are the
  * ones a replay re-simulates through. This module is policy, not simulation — but the guard is
  * a grep and it is RIGHT to be: an exemption list is how a real clock read gets into a sim file
  * six months later. So the clock comes in from `renderScene.ts`, which is a `render*` file and
