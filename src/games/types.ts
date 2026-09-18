@@ -235,7 +235,29 @@ export interface GameSimModule {
   autoPaths: boolean;
   bounds: FieldBounds;
   colliders: FieldColliders;
-  createWorld(mode: GameMode, seed: number, setups: RobotSetup[], settings?: GameSettings): World;
+  /**
+   * BUILD THE WORLD. `physics` is the ROOM's (or the replay's) backend choice — see `Physics`.
+   *
+   * ── WHY IT IS A FIFTH PARAMETER AND NOT A FIELD ON `settings` ──────────────
+   * Day 1 routed solo practice's pick through `GameSettings.practicePhysics`, which is right
+   * for practice and wrong for everything else: a ROOM is not a practice, and the world an
+   * authoritative server builds must not depend on a player-owned settings bag at all (the
+   * server holds no `GameSettings`, and a client's copy is whatever that client last saved).
+   * A room's physics is decided once at room creation, rides `RoomConfig.physics` and
+   * `matchStart.physics`, and reaches the builder HERE — one explicit argument, sourced from
+   * the room on both ends, so the server and every client in it build the same world.
+   *
+   * Absent ⇒ the game decides for itself (BIOBUZZ falls back to `settings.practicePhysics`,
+   * then `'2d'`). A game with no `physicsOptions` ignores it entirely, which is DECODE and
+   * Chain Reaction — their builders take four parameters and stay assignable to this type.
+   */
+  createWorld(
+    mode: GameMode,
+    seed: number,
+    setups: RobotSetup[],
+    settings?: GameSettings,
+    physics?: Physics,
+  ): World;
   step(world: World, dt: number, commands: Map<number, RobotCommand>): void;
   /**
    * This game's own HUD slice, read once per HUD poll and carried on
