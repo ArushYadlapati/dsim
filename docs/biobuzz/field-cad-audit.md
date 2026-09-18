@@ -411,3 +411,68 @@ correction of it.
   `convert.py`; still true).
 - The axis map is fitted, not assumed; the red/blue tie-break uses the `Goal Rib` names, which
   is now doubly safe because those are the two parts the STEP gives pure red / pure blue.
+
+---
+
+# 10. After the fix — measured
+
+Everything below is from the shipped build, not from intent.
+
+## 10.1 One geometry
+
+`field-measurements.json`'s cell interior (measured off the tray skins' own planar facets — the
+surface the GLB draws) against `field-colliders.json`'s `cell_<side>_floor` hull (the surface
+Rapier stands an element on), both in the tray's un-tilted pivot-local frame:
+
+| cell | drawn floor (local w) | collider floor (local w) | Δ |
+|---|---|---|---|
+| red / north | −1.4682 | −1.4768 | 0.0086 |
+| red / south | −1.4682 | −1.4849 | 0.0167 |
+| blue / north | −1.4682 | −1.4849 | 0.0167 |
+| blue / south | −1.4682 | −1.4768 | 0.0086 |
+
+A dropped element settles with its centre **1.275 in** above that plane (red) and **1.274 in**
+(blue), against a 1.4-in radius — the remainder is Rapier's own contact slop. Asserted in
+`scripts/smoke-biobuzz/sim3d.ts` at 0.25 in, and again at load time in the browser by
+`renderFieldGlb.ts`'s `checkTrayFloorAgreement`, which RAYCASTS the drawn mesh.
+
+The physics floor was **3.26 in** above the drawn floor before this pass.
+
+## 10.2 The manual's hive figures, after
+
+| figure | manual | CAD, as built | Δ |
+|---|---|---|---|
+| up-cell opening bottom | 53.5 | 53.375 | −0.125 |
+| up-cell opening top | 65.6 | 65.627 | +0.027 |
+| down-cell floor | 25.5 | 31.981 | +6.481 — **OPEN** |
+| lowest hive structure at rest | — | 30.651 (`am-5866: Goal Rib`) | a 29-in robot CLEARS it |
+
+## 10.3 Structure restored
+
+All 225 structural leaf instances now reach a node and a material; `convert.py` reports zero
+`misc` parts and `assemble-gltf.mjs` refuses to finish if any STL it was handed goes unclaimed.
+The 25 dropped parts of §2.1 and the 40 fastener-swallowed parts of §2.2 are all present.
+
+`buildStatics3d` builds 73 true convex hulls (37 hive-frame parts, 36 flower supports) where it
+previously built none of the frame at all.
+
+## 10.4 Hull decimation
+
+Each hull is decimated to the smallest vertex budget that still meets its own residual limit
+(0.2 in below `HULL_HIGH_Z` 32 in, 0.4 in above it, where only an element in flight can reach).
+Worst residuals as built: `hive_blue_frame_frame_foot_a` and the four
+`flower_*_flower_field_bracket` at 0.1997 in, everything else below.
+
+## 10.5 Sizes
+
+| file | measured | budget |
+|---|---|---|
+| `field.glb` | 754,656 raw / **474,039 brotli** | 614,400 brotli |
+| `field-low.glb` | 211,580 raw / **137,411 brotli** | 256,000 brotli |
+| `field-colliders.json` | **30,704 raw** | 204,800 raw |
+
+`field-colliders.json` is compiled into `fieldColliders.gen.ts`, which `step.ts` imports
+statically — every byte of it lands in the MAIN client bundle. That is why the vertex budgets
+are searched rather than assigned, why the points are 2 dp, and why the (never-built, never-read)
+perimeter wall hulls are not exported at all. Net effect on `npm run bundleaudit` versus the
+pre-pass build: main +2.01 KB gzip, hostWorker +2.09 KB gzip, both inside baseline + tolerance.
