@@ -5,6 +5,7 @@ import { biobuzzPhysics } from '../../src/games/biobuzz/state';
 import { biobuzzStep } from '../../src/games/biobuzz/step';
 import { step3d } from '../../src/games/biobuzz/sim3d/step3d';
 import { engineFor } from '../../src/games/biobuzz/sim3d/engine';
+import { fieldColliders3d } from '../../src/games/biobuzz/sim3d/fieldColliders';
 import { hiveCellLocalBox, hivePivotX, hiveTrayRefTheta, __setFieldCollidersOverrideForTests } from '../../src/games/biobuzz/sim3d/bodies';
 import { hiveTiltAngle } from '../../src/games/biobuzz/sim3d/hive3d';
 import { rotate2 } from '../../src/games/biobuzz/sim3d/math3';
@@ -383,7 +384,14 @@ export function sim3dChecks(check: Check): void {
     const theta = Math.PI / 6; // the rest tilt, BB_HIVE_TILT_DEG in radians (blue up = north)
     const box = hiveCellLocalBox(1, 'blue');
     const wCentre = (box.wMin + box.wMax) / 2;
-    const startV = box.vMin - 3;
+    // START CLEAR OF THE BACK SLAB, NOT TOUCHING IT. The wall this fires at is the cell's BACK
+    // plate, whose collider is a 1.5-in slab extruded from the CAD plane AWAY from the cell -- so
+    // it occupies the 1.5 in of `v` immediately BEHIND `box.vMin`, which is where the old
+    // `box.vMin - 3` start point put the 1.5-in-radius element: overlapping the slab on tick
+    // zero, which is a deep-contact test, not a tunnelling test. Backing off by another two radii
+    // gives a genuine clear sweep INTO the wall at 260 in/s (4.33 in per tick against a 1.5-in
+    // slab), which is what this check is for.
+    const startV = box.vMin - 3 - 2 * BB_POLLEN_R;
     const start = hiveWorldPoint('blue', 1, theta, 0, startV, wCentre);
     const velDir = rotate2(260, 0, theta);
     const id = Math.max(...w.balls.map((b) => b.id)) + 1;
@@ -610,10 +618,10 @@ export function sim3dChecks(check: Check): void {
       `18in final y=${y18.toFixed(2)}, bracket y=${bracket.y.toFixed(2)}`,
     );
     check(
-      'height: a 29-in (legal max) robot is now STOPPED by the down-cell clearance -- the CAD ' +
-        `measures ${bracket.z.toFixed(2)}in, below BB3_HEIGHT_MAX (29), once the hive-tilt fix ` +
-        'applies the true tilt to the down cell too (was ~32in, comfortably clear, before it)',
-      y29 < bracket.y - 2,
+      'height: a 29-in (legal max) robot CLEARS the down cell -- what the CAD says, not what the ' +
+        `manual's BB_HIVE_BOTTOM_Z (${BB_HIVE_BOTTOM_Z}) says: the true tray geometry puts the ` +
+        `down-cell floor at ${bracket.z.toFixed(2)}in, above BB3_HEIGHT_MAX (29)`,
+      y29 > bracket.y + 5,
       `29in final y=${y29.toFixed(2)}, bracket y=${bracket.y.toFixed(2)}, clearance z=${bracket.z.toFixed(2)}`,
     );
     check(
@@ -686,10 +694,16 @@ export function sim3dChecks(check: Check): void {
     step3d(w, 1 / 60, new Map()); // one tick: builds the engine and runs applyHiveTilt once
     const theta = hiveTiltAngle(w, a);
     const refTheta = hiveTrayRefTheta(a);
+    const rest = (a === 'red' ? -1 : 1) * (Math.PI / 6); // BB_HIVE_UP_STAGED: red south up, blue north up
     check(
-      `rest-pose: ${a}'s hive body rotation is 0 at rest (CAD colliders on; up='${w.biobuzz!.hives[a].up}')`,
-      Math.abs(theta - refTheta) < 1e-9,
-      `theta=${theta.toFixed(4)} refTheta=${refTheta.toFixed(4)}`,
+      `rest-pose: ${a}'s exported tray needs NO reference-angle correction (refTheta === 0)`,
+      refTheta === 0,
+      `refTheta=${refTheta}`,
+    );
+    check(
+      `rest-pose: ${a}'s hive body rotation IS the absolute tilt at rest (CAD colliders on; up='${w.biobuzz!.hives[a].up}')`,
+      Math.abs(theta - refTheta - rest) < 1e-9,
+      `theta - refTheta=${(theta - refTheta).toFixed(4)} expected=${rest.toFixed(4)}`,
     );
     const upSide: 1 | -1 = w.biobuzz!.hives[a].up === 'north' ? 1 : -1;
     const box = hiveCellLocalBox(upSide, a);
@@ -907,9 +921,17 @@ export function sim3dChecks(check: Check): void {
       { name: 'wall:rear', point: { x: 0, y: BB_HALF_Y - 2, z: 6 }, tol: 0.5 },
       { name: 'wall:audience', point: { x: 0, y: -BB_HALF_Y + 2, z: 6 }, tol: 0.5 },
       { name: 'floor:centre', point: { x: 0, y: 0, z: 3 }, tol: 0.5 },
-      { name: 'frame:red-bar@y0', point: { x: -barX, y: 0, z: 5 }, tol: 0.5 },
-      { name: 'frame:red-bar@y15', point: { x: -barX, y: 15, z: 5 }, tol: 0.5 },
-      { name: 'frame:blue-bar@y0', point: { x: barX, y: 0, z: 5 }, tol: 0.5 },
+      // ⚠️ THE THREE FRAME PROBES AND THE F1 FOOT ARE RE-BASED ON THE NEW GEOMETRY, with a wide,
+      // NAMED tolerance, for the same reason the two tray probes already had one: the CAD path is
+      // SUPPOSED to differ here now. The fallback still builds the 2D field's single frame-BAR box
+      // (one slab from the floor to the pivot across the whole `BB_FRAME_BAR_IN..OUT` span); the
+      // CAD path builds the real parts -- two diagonal A-frame legs, a foot bar, two feet, the
+      // Churro braces -- which do not fill that span, because the space between them is the
+      // drive-under G409 assumes. A tight tolerance here would fail on exactly the correction this
+      // pass makes. Measured deltas at the time of writing: 2.375 / 1.286 / 2.375 in.
+      { name: 'frame:red-bar@y0 (CAD real legs vs fallback slab -- see header)', point: { x: -barX, y: 0, z: 5 }, tol: 4.0 },
+      { name: 'frame:red-bar@y15 (CAD real legs vs fallback slab -- see header)', point: { x: -barX, y: 15, z: 5 }, tol: 4.0 },
+      { name: 'frame:blue-bar@y0 (CAD real legs vs fallback slab -- see header)', point: { x: barX, y: 0, z: 5 }, tol: 4.0 },
       {
         name: 'tray:blue-up-floor (CAD intentionally differs -- see header)',
         point: { x: BB_HIVE_X, y: fbFloorLocal.a, z: BB3_HIVE_PIVOT_Z + fbFloorLocal.b },
@@ -920,8 +942,13 @@ export function sim3dChecks(check: Check): void {
         point: { x: BB_HIVE_X, y: fbBackLocal.a, z: BB3_HIVE_PIVOT_Z + fbBackLocal.b },
         tol: 9.0,
       },
-      { name: 'flower:F1-foot', point: { x: BB_FLOWERS[0].x - BB_FLOWER_D + 2, y: BB_FLOWERS[0].y, z: 1 }, tol: 0.5 },
-      { name: 'flower:F3-foot', point: { x: BB_FLOWERS[2].x - BB_FLOWER_D - 2, y: BB_FLOWERS[2].y, z: 1 }, tol: 0.5 },
+      // the flower feet: the CAD path now carries a true hull per SUPPORT PART (four HIPS pipes, a
+      // backstop, two peanut supports, two brackets) instead of one AABB per part TYPE, and the
+      // bore itself sits ~1.4in from `BB_FLOWERS` (the field-size open finding, audit §7), so a
+      // sub-inch agreement with the fallback's single foot box is not the right bar. Measured
+      // delta at the time of writing: 0.759 in at F1, 0.000 at F3.
+      { name: 'flower:F1-foot (CAD per-part hulls vs fallback foot box)', point: { x: BB_FLOWERS[0].x - BB_FLOWER_D + 2, y: BB_FLOWERS[0].y, z: 1 }, tol: 1.5 },
+      { name: 'flower:F3-foot (CAD per-part hulls vs fallback foot box)', point: { x: BB_FLOWERS[2].x - BB_FLOWER_D - 2, y: BB_FLOWERS[2].y, z: 1 }, tol: 1.5 },
     ];
     check('twelve-probe agreement: exactly twelve probes defined', probes.length === 12, `${probes.length}`);
 
@@ -961,8 +988,12 @@ export function sim3dChecks(check: Check): void {
     // coincidence; a wide, named, printed tolerance is the honest version of this probe pair.
   }
 
-  // ---- measurements vs config: what the CAD actually measures, printed against the numbers --
-  // it either confirms or unsettles (`docs/biobuzz/plan-3d.md` §8/§9/§10) --------------------
+  // ---- measurements vs config, and the ONE-GEOMETRY check ----------------------------------
+  //
+  // Two different jobs in one block. (1) Print what the CAD actually measures against the config
+  // constants and the manual figures it either confirms or unsettles. (2) Assert that the
+  // PICTURE and the PHYSICS are the same geometry -- the owner's "the balls are on a different
+  // plane than the actual bottom of the hive", turned into a check.
   {
     const m = fieldMeasurements;
     function checkClose(name: string, actual: number, expected: number, tol: number): void {
@@ -970,78 +1001,160 @@ export function sim3dChecks(check: Check): void {
       check(`measurements: ${name}`, delta <= tol, `CAD=${actual.toFixed(3)} config=${expected.toFixed(3)} delta=${delta.toFixed(3)} (tol ${tol})`);
     }
 
-    checkClose('hive pivot x, red', Math.abs(m.hive.pivot_x.red), m.hive.pivot_x.config_BB_HIVE_X, 0.05);
-    checkClose('hive pivot x, blue', m.hive.pivot_x.blue, m.hive.pivot_x.config_BB_HIVE_X, 0.05);
-    checkClose('hive pivot z, red', m.hive.pivot_z.red, m.hive.pivot_z.config_BB3_HIVE_PIVOT_Z, 0.05);
-    checkClose('hive pivot z, blue', m.hive.pivot_z.blue, m.hive.pivot_z.config_BB3_HIVE_PIVOT_Z, 0.05);
+    checkClose('hive pivot z', m.hive.pivotZ, m.hive.config_BB3_HIVE_PIVOT_Z, 0.05);
+    for (const a of ['red', 'blue'] as const) {
+      const t = m.hive.trays[a];
+      checkClose(`${a} tray capture tilt is exactly the manual's 30deg`, Math.abs(t.captureThetaDeg), 30, 0.01);
+      // A WRONG CAPTURE ANGLE READS AS A THICK SHEET. `Hive Goal Back Skin` is a flat 0.020-in
+      // plate; un-tilting the tray by the right angle leaves it 0.020 in thick in the local `v`
+      // axis, and by any other angle spreads it over inches. This is the one number that proves
+      // the whole tray export is in the frame it claims to be.
+      check(
+        `measurements: ${a} tray back-skin residual thickness proves the un-tilt (a wrong angle reads THICK)`,
+        t.backSkinThicknessIn !== null && t.backSkinThicknessIn <= 0.1,
+        `thickness=${t.backSkinThicknessIn}in`,
+      );
+      checkClose(`${a} pivot x`, Math.abs(t.pivot[0]), BB_HIVE_X, 0.05);
+    }
 
-    // tile floor extent -- `tiles_extent_in` is the CENTROID extent of every instance in that
-    // bucket (`convert.py`'s `part_extent_in`), not a true surface measurement (the schema has
-    // no per-tile-seam field), so this is printed only, not asserted.
-    const tileSpanX = m.tiles_extent_in.x[1] - m.tiles_extent_in.x[0];
-    console.log(`[smoke-bb sim3d] measurements: tiles_extent_in x-span=${tileSpanX.toFixed(2)}in (centroid-based, not a true edge measurement)`);
+    // THE UP-CELL OPENING -- the CAD and the manual AGREE to about a tenth of an inch, and this
+    // is a real result, not a loosened tolerance: [53.375, 65.627] against Fig 9-10's [53.5,
+    // 65.6]. The earlier "[47.05, 68.85], OPEN FINDING" reading was an artifact of the collider
+    // export treating a WORLD-frame AABB as a tray-LOCAL extent (`docs/biobuzz/field-cad-audit.md`
+    // section 4.4), and it is CLOSED.
+    for (const a of ['red', 'blue'] as const) {
+      const open = m.hive.openingZ[a];
+      console.log(`[smoke-bb sim3d] measurements: ${a} up-cell opening z=[${open[0].toFixed(3)}, ${open[1].toFixed(3)}] vs BB_HIVE_OPEN_Z ${JSON.stringify(BB_HIVE_OPEN_Z)}`);
+      checkClose(`${a} up-cell opening BOTTOM vs BB_HIVE_OPEN_Z[0]`, open[0], BB_HIVE_OPEN_Z[0], 0.4);
+      checkClose(`${a} up-cell opening TOP vs BB_HIVE_OPEN_Z[1]`, open[1], BB_HIVE_OPEN_Z[1], 0.4);
+    }
 
-    // ⚠️ WALL INNER FACE -- OPEN FINDING, owner ruling pending: the CAD's own wall trimesh
-    // measures the inner face at ~70.674in against the constants' BB_HALF_X (72), a ~1.33in
-    // gap. Neither side moves for this pass -- the 3D PHYSICS COLLIDER stays at the constants
-    // (`buildStatics3d`'s own comment: every other system, 2D and 3D alike, is keyed to 72), and
-    // the CAD's own number is not nudged either. This assertion exists only to keep the CAD
-    // measurement itself honest (it would fail loudly if a future CAD regeneration measured
-    // something wildly different), not to reconcile the two.
-    checkClose('wall inner face (x, right), CAD trimesh vs BB_HALF_X 72 (OPEN FINDING, owner ruling pending)', 70.674, BB_HALF_X, 1.5);
-
-    // ⚠️ HIVE OPENING/CLEARANCE -- OPEN FINDINGS, owner ruling pending, same treatment as the
-    // wall above and the flowers below: printed and asserted against a tolerance wide enough to
-    // pass, not silently dropped and not forced to agree. This is the field lane's own flagged
-    // concern ("a single rigid tray could not satisfy both") CONFIRMED by real CAD geometry, not
-    // resolved by it -- the BOTTOM and the down-cell's clearance read several inches off the
-    // manual's own figures, the same shape of discrepancy the Day 1 algebraic box already
-    // reported (see hiveCellLocalBox's and buildHiveTray3d's file header).
-    //
-    // ⚠️ THE TOP FIGURE MOVED TOO, 65.6 -> 68.9, WHEN THE HIVE-TILT FIX LANDED (`obliqueBoxCollider`,
-    // `sim3d/bodies.ts`) -- its OLD near-exact match to the manual (delta 0.05) was a SYMPTOM of
-    // the same bug the fix corrects, not a sign the geometry was right: at `theta - refTheta = 0`
-    // (the pre-fix body rotation, exactly at rest), reading the CAD box's raw `wMax` straight
-    // through an UN-rotated (`theta - refTheta`) transform is mathematically identical to reading
-    // it with NO rotation applied at all, so this "measurement" was, before the fix, silently
-    // reporting the CAD's raw local number rather than a true world position -- see the "rest-pose"
-    // checks below and `obliqueBoxCollider`'s own comment for the full derivation and the gameplay
-    // bug (balls not held against the divider) this same flattening caused. Both TOP and BOTTOM
-    // are OPEN FINDINGS now, on the same footing.
-    const upTheta = Math.PI / 6;
-    const upBox = hiveCellLocalBox(1, 'blue');
-    const upOpen = rotate2((upBox.vMin + upBox.vMax) / 2, upBox.wMin, upTheta);
-    const upOpenTop = rotate2((upBox.vMin + upBox.vMax) / 2, upBox.wMax, upTheta);
-    const upOpenBottomZ = BB3_HIVE_PIVOT_Z + upOpen.b;
-    const upOpenTopZ = BB3_HIVE_PIVOT_Z + upOpenTop.b;
+    // OPEN FINDING, owner ruling pending, nothing moved: the DOWN-cell clearance. The CAD puts
+    // the down cell's floor at ~31.98 in and the lowest hive structure of any kind (the Goal Rib's
+    // own lower corner, visual-only for physics) at ~30.65, against the manual's
+    // BB_HIVE_BOTTOM_Z 25.5. Printed, and asserted under a wide NAMED tolerance so a future CAD
+    // revision that moves it a long way still fails loudly.
+    for (const a of ['red', 'blue'] as const) {
+      const z = m.hive.downCellFloorZ[a];
+      console.log(`[smoke-bb sim3d] measurements: ${a} down-cell floor z=${z.toFixed(3)} vs BB_HIVE_BOTTOM_Z ${BB_HIVE_BOTTOM_Z} (OPEN FINDING)`);
+      checkClose(`${a} down-cell clearance vs BB_HIVE_BOTTOM_Z (OPEN FINDING, owner ruling pending)`, z, BB_HIVE_BOTTOM_Z, 7.0);
+    }
+    const lowest = m.hive.lowestStructureZAtRest;
     console.log(
-      `[smoke-bb sim3d] measurements: CAD up-cell opening z=[${upOpenBottomZ.toFixed(2)}, ${upOpenTopZ.toFixed(2)}] vs BB_HIVE_OPEN_Z ${JSON.stringify(BB_HIVE_OPEN_Z)}`,
+      `[smoke-bb sim3d] measurements: lowest hive structure at rest = ${lowest.z.toFixed(3)}in ("${lowest.part}") -- a 29in robot ${lowest.z > 29 ? 'CLEARS' : 'does NOT clear'} it`,
     );
-    checkClose('up-cell opening TOP vs BB_HIVE_OPEN_Z[1] (53.5..65.6) (OPEN FINDING, owner ruling pending)', upOpenTopZ, BB_HIVE_OPEN_Z[1], 4.0);
-    checkClose('up-cell opening BOTTOM vs BB_HIVE_OPEN_Z[0] (53.5) (OPEN FINDING, owner ruling pending)', upOpenBottomZ, BB_HIVE_OPEN_Z[0], 7.0);
 
-    const downBox = hiveCellLocalBox(-1, 'blue');
-    const downFloor = rotate2((downBox.vMin + downBox.vMax) / 2, downBox.wMin, upTheta);
-    const downFloorZ = BB3_HIVE_PIVOT_Z + downFloor.b;
-    console.log(
-      `[smoke-bb sim3d] measurements: CAD down-cell clearance z=${downFloorZ.toFixed(2)} vs BB_HIVE_BOTTOM_Z ${BB_HIVE_BOTTOM_Z} -- report (h) of the task: this is the settled figure`,
-    );
-    checkClose('down-cell clearance vs BB_HIVE_BOTTOM_Z (25.5) (OPEN FINDING, owner ruling pending)', downFloorZ, BB_HIVE_BOTTOM_Z, 7.0);
-
-    // flowers vs config -- the OPEN FINDING (owner memory note): CAD ring centres sit ~1.4-1.5in
-    // from BB_FLOWERS, e.g. F1 config (-69.46,-24.00) vs CAD (-68.04,-23.39). Do NOT move the
-    // constants, do NOT nudge the GLB -- a wide (2.0in) tolerance, named, is the whole point.
+    // OPEN FINDING, owner ruling pending: THE FIELD IS SMALLER THAN THE CONSTANTS. The three
+    // deltas previously logged separately (wall inner face, flower ring centres, tile pitch) are
+    // one fact -- real FTC soft tiles are 23.53 in on centre, not 24, so the perimeter closes on
+    // 141.35 in inside the walls, not 144. Everything else follows: the wall reads +-70.674
+    // against BB_HALF_X 72, and a flower sitting on the real seam at +-23.53 and 2.595 in off the
+    // real wall reads ~1.4 in from `BB_FLOWERS` while agreeing with `BB_FLOWER_D` (2.54) to
+    // 0.055 in. Nothing moves for this: the 3D physics wall and floor stay analytic at the
+    // constants (owner rule) and the CAD numbers are not nudged either.
+    checkClose('wall inner face vs BB_HALF_X (OPEN FINDING: the real field is 141.35in inside, not 144)', m.walls.innerFace.right, BB_HALF_X, 1.5);
+    checkClose('tile pitch vs C.TILE 24 (OPEN FINDING, same one)', m.tiles.pitch, 24, 0.6);
     for (const f of m.flowers) {
       const cfg = BB_FLOWERS.find((x) => x.id === f.id)!;
-      const dx = f.measured_ring_center[0] - cfg.x;
-      const dy = f.measured_ring_center[1] - cfg.y;
-      const dist = Math.hypot(dx, dy);
+      const c = f.bore.top.centre;
+      const dist = Math.hypot(c[0] - cfg.x, c[1] - cfg.y);
       check(
-        `measurements: flower ${f.id} ring centre vs BB_FLOWERS (OPEN FINDING, ~1.4-1.5in known, 2.0in tolerance)`,
+        `measurements: flower ${f.id} TOP-RING BORE centre vs BB_FLOWERS (OPEN FINDING: ~1.5in, the field-size delta)`,
         dist <= 2.0,
-        `CAD=(${f.measured_ring_center[0].toFixed(2)},${f.measured_ring_center[1].toFixed(2)}) config=(${cfg.x},${cfg.y}) dist=${dist.toFixed(3)}`,
+        `CAD bore=(${c[0].toFixed(3)},${c[1].toFixed(3)}) d=${f.bore.top.diameter.toFixed(3)} rms=${f.bore.top.rms.toFixed(4)} config=(${cfg.x},${cfg.y}) dist=${dist.toFixed(3)}`,
       );
-      checkClose(`flower ${f.id} top ring z vs BB_FLOWER_TOP_Z`, f.measured_top_ring_z, BB_FLOWER_TOP_Z, 1.0);
+      // the stand-off from the flower's OWN wall is the figure `BB_FLOWER_D` actually names, and
+      // it agrees -- which is what proves the ~1.5in above is the field size, not the flower.
+      const wallFaceAbs = Math.abs(m.walls.innerFace.right);
+      const standoff = Math.min(Math.abs(wallFaceAbs - Math.abs(c[0])), Math.abs(wallFaceAbs - Math.abs(c[1])));
+      checkClose(`flower ${f.id} bore stand-off from the CAD wall vs BB_FLOWER_D`, standoff, BB_FLOWER_D, 0.2);
+      checkClose(`flower ${f.id} top ring z vs BB_FLOWER_TOP_Z`, f.extent.z[1], BB_FLOWER_TOP_Z, 1.5);
+    }
+
+    // TAPE: every strip is 1.000 in wide, and there is no other width on this field.
+    check(
+      'measurements: every CAD gaffer tape strip is 1.000in wide (the documented width, and the only one)',
+      m.tape.widthsIn.length === 1 && Math.abs(m.tape.widthsIn[0] - 1) < 0.01,
+      `widths=${JSON.stringify(m.tape.widthsIn)} across ${m.tape.parts.length} parts`,
+    );
+    check('measurements: the CAD carries all 16 tape strips', m.tape.parts.length === 16, `${m.tape.parts.length}`);
+    // ...and every one of them stays CLEAR of the wall it borders. This is the owner's rule --
+    // "zones bounded with the wall usually do not have tape on the wall" -- asserted against the
+    // CAD rather than trusted: no on-tile strip may reach the wall's inner face.
+    const wallFace = Math.abs(m.walls.innerFace.right);
+    const onTile = m.tape.parts.filter((t) => t.plane === 'tiles');
+    const touching = onTile.filter(
+      (t) => Math.max(Math.abs(t.x[0]), Math.abs(t.x[1]), Math.abs(t.y[0]), Math.abs(t.y[1])) >= wallFace - 1e-3,
+    );
+    check(
+      'measurements: no on-tile tape strip runs onto a perimeter wall (the wall-bounded edge carries none)',
+      touching.length === 0,
+      `${touching.length} of ${onTile.length} strips reach x/y ${wallFace.toFixed(3)}: ${touching.map((t) => t.part).join(', ')}`,
+    );
+  }
+
+  // ---- ONE GEOMETRY: the drawn tray floor and the collider tray floor are the same plane -----
+  //
+  // THE OWNER'S FIRST SENTENCE, AS A CHECK. `field-measurements.json`'s `hive.trays[a].cells` is
+  // measured off the tray skins' own PLANAR FACETS -- i.e. the surface the GLB mesh draws -- and
+  // `field-colliders.json`'s `cell_<side>_floor` hull is what Rapier stands an element on. Two
+  // independent derivations in two files; if they part company, the picture and the physics are
+  // telling a driver different things, which is exactly what shipped twice.
+  {
+    const m = fieldMeasurements;
+    const fc = fieldColliders3d();
+    for (const a of ['red', 'blue'] as const) {
+      for (const side of ['north', 'south'] as const) {
+        const meshW = m.hive.trays[a].cells[side].wMin;
+        const hull = fc.trays[a].hulls.find((h) => h.name === `cell_${side}_floor`);
+        if (!hull) {
+          check(`one-geometry: ${a}/${side} has a floor hull to compare against`, false);
+          continue;
+        }
+        // the floor slab is extruded DOWNWARD from its own CAD plane, so its MAX w is the
+        // load-bearing surface.
+        let colliderW = -Infinity;
+        for (let i = 2; i < hull.points.length; i += 3) colliderW = Math.max(colliderW, hull.points[i]);
+        check(
+          `one-geometry: ${a}/${side} drawn floor plane and collider floor plane coincide within 0.25in`,
+          Math.abs(meshW - colliderW) <= 0.25,
+          `mesh w=${meshW.toFixed(4)} collider w=${colliderW.toFixed(4)} delta=${Math.abs(meshW - colliderW).toFixed(4)}`,
+        );
+      }
+    }
+  }
+
+  // ---- ...and a resting element sits exactly one radius above that plane ---------------------
+  {
+    for (const a of ['red', 'blue'] as const) {
+      const w = mkWorld3dPair('free', a === 'red' ? 512 : 513);
+      w.balls.length = 0;
+      const theta = hiveTiltAngle(w, a);
+      const sideSign: 1 | -1 = w.biobuzz!.hives[a].up === 'north' ? 1 : -1;
+      const box = hiveCellLocalBox(sideSign, a);
+      const vMid = (box.vMin + box.vMax) / 2;
+      const drop = hiveWorldPoint(a, sideSign, theta, 0, vMid, box.wMin + BB_POLLEN_R + 3);
+      const id = 900;
+      const dropped: Artifact = {
+        id,
+        color: 'yellow',
+        state: { kind: 'ground' },
+        pos: { x: drop.x, y: drop.y },
+        z: drop.z - BB_POLLEN_R,
+        vel: { x: 0, y: 0 },
+        vz: 0,
+      };
+      w.balls.push(dropped);
+      for (let t = 0; t < 240; t++) step3d(w, 1 / 60, new Map());
+      const b = w.balls.find((x) => x.id === id)!;
+      // back into the tray's own frame and read the height above the floor plane
+      const local = rotate2(b.pos.y, b.z + BB_POLLEN_R - BB3_HIVE_PIVOT_Z, -theta);
+      const above = local.b - box.wMin;
+      check(
+        `one-geometry: a settled element's centre sits one radius (${BB_POLLEN_R}in) above ${a}'s drawn cell floor`,
+        Math.abs(above - BB_POLLEN_R) <= 0.25,
+        `centre is ${above.toFixed(3)}in above the floor plane (w=${box.wMin.toFixed(3)}), world z=${b.z.toFixed(3)}`,
+      );
     }
   }
 

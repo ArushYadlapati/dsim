@@ -21,8 +21,8 @@ import {
   BB_WALL_T,
 } from '../config';
 import { biobuzzColliders, BB_WALL_COUNT } from '../colliders';
-import { cadCellBox, fieldColliders3d } from './fieldColliders';
-import { rotate2, tiltQuatX, yawQuat } from './math3';
+import { cadCellBox, cadStatics, cadTrayHulls, cadTrayRefTheta } from './fieldColliders';
+import { yawQuat } from './math3';
 
 /**
  * TEST-ONLY OVERRIDE for `BB3_FIELD_COLLIDERS`, read by every CAD-vs-fallback branch in this
@@ -114,55 +114,36 @@ const FRAME_COUNT = 2;
  * CCD, and the floor is the one static every dynamic body rests against every tick. */
 const FLOOR_HALF_T = 10;
 
-/** the CAD field's static names for the FLOOR and the four WALLS -- built as separate, thick
- * analytic shapes below (a plane and four cuboids), never as the CAD's own thin trimesh: a
- * fast-falling sphere or a robot slamming a wall can tunnel a single 1/60s step through a
- * thin static without CCD, which is exactly why `FLOOR_HALF_T`/`BB_WALL_T` are oversized in the
- * first place -- the CAD wall trimesh is ~1in thick, matching the real structure, which is too
- * thin for the same reason. */
-const FLOOR_AND_WALL_STATICS = new Set(['tiles', 'wall_left', 'wall_right', 'wall_rear', 'wall_audience']);
-
 /**
- * ⚠️ EVERY "hive_<alliance>_frame_*" CAD STATIC IS EXCLUDED FROM THE TRIMESH LOOP, PERMANENTLY,
- * NOT BEHIND `BB3_FIELD_COLLIDERS`.
+ * THE HIVE FRAME IS A REAL COLLIDER AGAIN (2026-09-18 CAD round 2).
  *
- * `scripts/field-cad/convert.py`'s static-collider builder makes every entry (`hull_bucket_
- * static`, this file's own header) from `bbox_corners_sim(inst)` -- an AXIS-ALIGNED BOUNDING BOX
- * of the part in the FINAL SIM FRAME, not its true tessellated (and, for a leaning strut, DIAGONAL)
- * surface. That is a fine approximation for a genuinely box-shaped, axis-aligned part (a flower
- * bracket) but a bad one for anything angled: `hive_red_frame_a_frame_leg`'s own AABB measures
- * x ∈ [-24.28, -12.24], z ∈ [0.22, 41.40] -- floor to nearly the pivot, and reaching almost to
- * the hive's own centreline -- because the true leg is a thin diagonal beam whose AABB, being
- * axis-aligned, has to cover the full box the beam sweeps through end to end. Built as a SOLID
- * collider, that turns "a robot drives under the hive" (`colliders.ts`'s own header: "the
- * triangles ... lean inward and upward out of a robot's way ... a robot between the bars is
- * under the hives and free to move") into "a robot cannot enter the space under the hive at
- * all" -- found by measurement: the drive-feel parity check's robot, driven from the field
- * centre, stopped dead at x ≈ 1.75, its extended intake footprint still 10+ inches short of the
- * pivot.
+ * It was excluded outright before, and the reason was a defect in the EXPORTER, not a property
+ * of the geometry: every static used to be a hull of the part's AXIS-ALIGNED BOUNDING BOX, and
+ * an AABB of a LEANING part is the whole box it sweeps through. `hive_red_frame_a_frame_leg`
+ * measured x ∈ [-24.28, -12.24], z ∈ [0.22, 41.40] -- floor to nearly the pivot, reaching almost
+ * to the hive's centreline -- so as a solid it turned "a robot drives under the hive" (G409,
+ * `colliders.ts`'s own header) into "a robot cannot enter the space under the hive at all":
+ * measured, the parity check's robot stopped dead at x ≈ 1.75. The same defect made
+ * `frame_upright`'s AABB a near-full-size box between the base and the pivot, which ejected the
+ * staged up-cell nectar at ~700 in/s on tick one.
  *
- * `hive_<alliance>_frame_upright` has the SAME issue one level up, and it is NOT harmless just
- * because its own z-range (checked: 38.80–59.88) sits above `BB3_HEIGHT_MAX` (29) -- that
- * reasoning only rules out a ROBOT hitting it. The hive's own CELLS sit in that same z-band
- * (the up-cell's opening is `BB_HIVE_OPEN_Z` 53.5–65.6), because the upright is precisely the
- * strut carrying the frame up to the pivot the cells hang from -- so its AABB (a near-full-size
- * box between the base and the pivot, covering most of the x/y/z the tray itself occupies)
- * physically collides with anything resting in the cell. Found the same way: the staged
- * up-cell nectar `createBiobuzzWorld` places on EVERY match start landed inside this box and
- * was ejected at a solver-resolved ~700+ in/s on the very first tick. `damper`/`damper_holder`/
- * `pivot_bracket` are smaller versions of the same class of part (off-axis hardware bundled into
- * one AABB) sitting in the same neighbourhood, so the whole `frame_*` family is excluded here,
- * not case by case -- this port's floor-level and cell geometry come from the LEGACY frame-bar
- * box (unconditional, below) and the thin-walled cells (`buildHiveTray3d`) respectively; nothing
- * currently needs the frame's own upper hardware modelled as a physics solid.
+ * `convert.py` now exports a TRUE convex hull of each part instance's own tessellated surface,
+ * so the A-frame leg is the thin diagonal strut it actually is (foot at ±(24.30, 19.07, 0.22),
+ * apex at ±(12.26, 0, 41.40)), the Churro braces are 0.37-in tubes, and the space between the
+ * two legs -- the drive-under -- is empty because nothing is in it. See
+ * `docs/biobuzz/field-cad-audit.md` §4.6.
+ *
+ * WHICH classes become solids is `PHYSICAL_STATIC_CLASSES` in `fieldColliders.ts`, with the
+ * reason for every exclusion written next to it (walls and floor stay analytic at the constants
+ * by owner rule; tape/decals/under-tile hardware cannot be touched; a flower RING plate's hull
+ * would fill the hole a POLLEN passes through).
  */
-const CAD_STATIC_EXCLUDE_PREFIX = /^hive_(red|blue)_frame_/;
-const CAD_STATIC_EXCLUDE = new Set(FLOOR_AND_WALL_STATICS);
 
 /**
  * Build every BIOBUZZ static collider into `world3d`: the floor, the four perimeter walls, the
- * two hive frame legs, and the four flower supports -- named order, fixed every call
- * (determinism: plan section 2.1's "statics (named, fixed order)").
+ * hive frames (legs, feet, foot bars, top corners, crossbar, uprights, dampers, brackets, logo
+ * panel) and the four flower supports -- named order, fixed every call (determinism: plan
+ * section 2.1's "statics (named, fixed order)").
  */
 export function buildStatics3d(
   RAPIER: Rapier3d,
@@ -226,44 +207,32 @@ export function buildStatics3d(
     );
   }
 
-  // ---- THE HIVE FRAME'S GROUND-LEVEL SUPPORT -- always the 2D field's own thin foot-bar box
-  // (`colliders.ts`), never the CAD "a_frame_leg" static -- see `CAD_STATIC_EXCLUDE`'s comment
-  // for why that CAD entry would wrongly seal off the space under the hive. Unconditional (not
-  // gated by `BB3_FIELD_COLLIDERS`): this is the one static this port never takes from the CAD.
-  const frameBars = biobuzzColliders.statics.slice(BB_WALL_COUNT, BB_WALL_COUNT + FRAME_COUNT);
-  for (const s of frameBars) {
-    const half = BB3_HIVE_PIVOT_Z / 2; // floor to the pivot -- see the Day 1 comment this replaced
-    const body = world3d.createRigidBody(
-      RAPIER.RigidBodyDesc.fixed().setTranslation(s.tx, s.ty, half).setRotation(yawQuat(s.rot)),
-    );
-    world3d.createCollider(
-      RAPIER.ColliderDesc.cuboid(s.hx, s.hy, half).setFriction(wallFriction).setRestitution(0),
-      body,
-    );
-  }
-
-  // ---- EVERYTHING ELSE: the flower solid supports (brackets/pipes/backstops/under-brackets),
-  // as CAD trimesh statics (one fixed body + collider per named part, in the collider file's own
-  // array order -- determinism). The hive's own upper frame hardware is excluded outright, not
-  // just gated -- see `CAD_STATIC_EXCLUDE_PREFIX`'s comment. Falls back to the 2D field's own
-  // flower-foot boxes when the CAD set is off or carries nothing beyond the floor/walls/legs (an
-  // empty or absent collider file).
-  const cadRest = useFieldColliders()
-    ? fieldColliders3d().statics.filter((s) => !CAD_STATIC_EXCLUDE.has(s.name) && !CAD_STATIC_EXCLUDE_PREFIX.test(s.name))
-    : [];
-  if (cadRest.length > 0) {
-    for (const s of cadRest) {
+  // ---- THE HIVE FRAMES AND THE FLOWER SUPPORTS, as CAD CONVEX HULLS: one fixed body + one
+  // `ColliderDesc.convexHull` per named part instance, in the collider file's own array order
+  // (determinism). Per INSTANCE, never merged per part TYPE -- one hull over both A-frame legs
+  // is a solid wedge filling the gap between them, and that gap is the drive-under.
+  const cad = useFieldColliders() ? cadStatics() : [];
+  if (cad.length > 0) {
+    for (const s of cad) {
+      const desc = RAPIER.ColliderDesc.convexHull(new Float32Array(s.points));
+      if (!desc) continue; // a degenerate point set -- Rapier returns null rather than throwing
       const body = world3d.createRigidBody(RAPIER.RigidBodyDesc.fixed());
-      const desc = RAPIER.ColliderDesc.trimesh(
-        new Float32Array(s.vertices),
-        new Uint32Array(s.indices),
-        RAPIER.TriMeshFlags.FIX_INTERNAL_EDGES,
-      );
       world3d.createCollider(desc.setFriction(wallFriction).setRestitution(0), body);
     }
   } else {
-    // legacy Day 1 fallback: the 2D field's own flower feet (`colliders.ts`), extruded to a flat
-    // height (the frame bars are already built above, unconditionally).
+    // legacy Day 1 fallback, used only when `BB3_FIELD_COLLIDERS` is off or the collider file is
+    // absent: the 2D field's own frame-bar and flower-foot boxes (`colliders.ts`), extruded.
+    const frameBars = biobuzzColliders.statics.slice(BB_WALL_COUNT, BB_WALL_COUNT + FRAME_COUNT);
+    for (const s of frameBars) {
+      const half = BB3_HIVE_PIVOT_Z / 2; // floor to the pivot
+      const body = world3d.createRigidBody(
+        RAPIER.RigidBodyDesc.fixed().setTranslation(s.tx, s.ty, half).setRotation(yawQuat(s.rot)),
+      );
+      world3d.createCollider(
+        RAPIER.ColliderDesc.cuboid(s.hx, s.hy, half).setFriction(wallFriction).setRestitution(0),
+        body,
+      );
+    }
     const flowerFeet = biobuzzColliders.statics.slice(BB_WALL_COUNT + FRAME_COUNT);
     for (const s of flowerFeet) {
       const half = BB_FLOWER_TOP_Z / 2; // floor to the ring's top -- the MEASURED rectangle
@@ -296,31 +265,29 @@ export interface HiveLocalBox {
   vMax: number;
   wMin: number;
   wMax: number;
-  /** which tilt angle this box's `vMin..wMax` numbers were CAPTURED AT — 0 for the
-   * theta-independent algebraic fallback, `cadCaptureTheta(alliance)` for a CAD box (see
-   * `fieldColliders.ts`'s own comment on why the CAD hulls are not pre-rotated). Consumed in
-   * exactly two places, both in `sim3d/bodies.ts`: `hiveTrayRefTheta` (re-exports it, for
-   * `engine.ts`'s `applyHiveTilt` and the scene's matching GLB-node rotation) and
-   * `obliqueBoxCollider` (bakes it into the built collider's own vertex data). Everything
-   * downstream of a BUILT collider -- `derive.ts`'s `insideCell`, the SIM3D smoke lane's
-   * `hiveWorldPoint` -- never reads `refTheta` again: once baked, `world = pivot + Rotate(theta)
-   * * (v, w)` holds for `vMin..wMax` the same way it always did for the fallback box (`refTheta`
-   * always 0 there), so those call sites use the plain absolute `theta`, no `refTheta` term. See
-   * `obliqueBoxCollider`'s own comment for the bug this split fixed (a CAD-only flat floor at
-   * rest, from using `theta - refTheta` -- which is 0 exactly at rest -- against an axis-aligned
-   * box built directly from the AS-CAPTURED, not baked, numbers). */
+  /** which tilt angle this box's `vMin..wMax` numbers are true AT — **0 on BOTH paths now**.
+   * The algebraic fallback has always been theta-independent by construction; the CAD path is
+   * exported UN-TILTED (`convert.py` rotates every tray point by `−captureTheta` about the
+   * pivot before writing it), which is the fix for the owner's "balls are on a different plane
+   * than the actual bottom of the hive". The field stays in the shape, and
+   * `hiveTrayRefTheta`/`applyHiveTilt`/`updateBiobuzzField` keep subtracting it, so that a
+   * future field revision exported at some other pose has exactly one place to say so and every
+   * consumer already honours it. `world = pivot + Rotate(theta) * (v, w)` holds for these
+   * numbers directly. */
   refTheta: number;
 }
 
 /**
  * The CELL interior -- the launch opening AND the physical container a resting element sits in,
- * ONE box for both (see the file header's residual note, now resolved by the CAD when
- * `BB3_FIELD_COLLIDERS` is on). `sideSign` is `1` (north, `v > 0`) or `-1` (south); `alliance`
- * picks whose tray (the CAD hulls are alliance-specific real geometry, not assumed symmetric).
+ * ONE box for both. `sideSign` is `1` (north, `v > 0`) or `-1` (south); `alliance` picks whose
+ * tray (the CAD cells are alliance-specific real geometry, not assumed symmetric, even though
+ * this STEP's four cells measure identically to 0.001 in).
  *
- * Prefers `cadCellBox` (the CAD tray's own floor/back/side/ceiling hulls, AS CAPTURED --
- * `fieldColliders.ts`); falls back to the Day 1 algebraic box, calibrated to the manual's
- * launch-opening figure alone, when the CAD set is off or has no hulls for this cell.
+ * Prefers `cadCellBox` — the interior `convert.py` measured off the cell's own structural facet
+ * PLANES (the floor plate's top surface at local w = −1.4682, the gable apex, the side walls,
+ * the back plate), which is the same surface the GLB mesh draws. Falls back to the Day 1
+ * algebraic box, calibrated to the manual's launch-opening figure alone, when the CAD set is off
+ * or has no cell for this side.
  */
 export function hiveCellLocalBox(sideSign: 1 | -1, alliance: Alliance): HiveLocalBox {
   if (useFieldColliders()) {
@@ -340,15 +307,20 @@ export function hiveCellLocalBox(sideSign: 1 | -1, alliance: Alliance): HiveLoca
 }
 
 /**
- * The reference angle `applyHiveTilt` (`engine.ts`) subtracts from `hiveTiltAngle`'s absolute
- * tilt before driving the tray body's kinematic rotation -- 0 for the Day 1 fallback box (whose
- * numbers are already theta-independent) or the CAD's `cadCaptureTheta(alliance)` (the tray's
- * hulls are AS CAPTURED at that specific tilt, `fieldColliders.ts`'s own comment). Both of this
- * alliance's cells share one rigid body and therefore one rotation, so either side's box gives
- * the same answer; `sideSign` here is arbitrary.
+ * The reference angle `applyHiveTilt` (`engine.ts`) and `scene/renderField.ts`'s
+ * `updateBiobuzzField` subtract from `hiveTiltAngle`'s absolute tilt before driving the tray
+ * body's kinematic rotation and the GLB tray node's rotation respectively.
+ *
+ * **0 ON BOTH PATHS NOW** — the CAD tray is exported in its UN-TILTED pivot-local frame, so the
+ * physics body, the GLB node and the cell box all take the plain absolute `hiveTiltAngle`. The
+ * function stays because it is the ONE place that answers "what pose is the exported tray true
+ * at", and because both the collider and the renderer read it: if a future field revision is
+ * exported at some other pose, this is the only number that changes and both stay in step.
+ * Reads the CAD path's own `refTheta` when the collider set is on, so a nonzero value in the
+ * data is honoured rather than assumed away.
  */
 export function hiveTrayRefTheta(alliance: Alliance): number {
-  return hiveCellLocalBox(1, alliance).refTheta;
+  return useFieldColliders() ? cadTrayRefTheta(alliance) : 0;
 }
 
 /**
@@ -380,106 +352,37 @@ export const HIVE_BRACKET_T = 1.5;
  * Build one hive's tray body and its colliders (two cells of thin walls: floor, back, two
  * sides). Returns the body so `engine.ts` can key it and drive its rotation every tick.
  *
- * THE SAME THIN-WALLED BOX SHAPE FOR BOTH THE CAD AND THE FALLBACK PATH -- `hiveCellLocalBox`
- * (`box`, below) already resolves to the CAD's own measured dimensions when `BB3_FIELD_COLLIDERS`
- * is on (`fieldColliders.ts`'s `cadCellBox`) or the Day 1 algebraic box otherwise, and `box.
- * refTheta` already carries which tilt those numbers are true AT (0 for the fallback, the CAD's
- * `cadCaptureTheta(alliance)` for a CAD box) -- see `HiveLocalBox`'s own comment. So the ONE
- * construction below, parametrized by `box` and a matching per-collider rotation offset of
- * `tiltQuatX(-box.refTheta)`, produces the Day 1 geometry when the switch is off and the CAD
- * geometry when it is on, with no separate code path to keep in sync.
+ * ONE SHAPE, TWO SOURCES. With `BB3_FIELD_COLLIDERS` on this builds the CAD tray's own PLANAR
+ * FACET SLABS (`cadTrayHulls`) as `ColliderDesc.convexHull` shapes, directly, with no rotation
+ * offset -- they are already in the tray's UN-TILTED pivot-local frame, which is the frame this
+ * body's own rotation (`hiveTiltAngle`) is defined in. With it off (or with no hulls in the
+ * file) it builds the Day 1 thin-walled box from `hiveCellLocalBox`'s algebraic fallback.
  *
- * ⚠️ WHY NOT ONE CONVEX HULL PER CAD PART (an earlier version of this function): each of the
- * CAD's own `floor`/`back`/`side`/`ceiling` hulls (`cadTrayHulls`) is an AXIS-ALIGNED BOUNDING BOX
- * of that PART, not a thin shell -- `floor`'s own `w`-extent alone spans ~12.6 in, most of the
- * cell's own height, because the named bucket collects more than a flat plate (see
- * `fieldColliders.ts`'s header on `side` for the same issue elsewhere). Built as a solid
- * collider, an element placed "just above the floor" is placed INSIDE it, and Rapier's shallow-
- * contact resolution pushed it out through whichever face happened to be nearest -- measured, a
- * pollen staged in the up cell this way fell straight through to the tiles below, because the
- * nearest face from a shallow position inside a ~12-in-thick "floor" is often the BOTTOM one.
- * Building a THIN wall AT the CAD's OWN MEASURED EXTENT (this function) keeps the real dimensions
- * without inheriting that instability. The CAD's own `bar` hull (a real connecting rod, not a
- * bucket of several parts) is not built as a collider either, for the same caution: it overlaps
- * both cells' own `v` ranges near the pivot, which is exactly where the thin BACK wall already
- * sits -- a robot reaching the very base of the frame near the pivot does not feel it, a
- * documented scope limit rather than a silent gap.
+ * ⚠️ WHY FACET SLABS AND NOT ONE HULL PER CAD PART -- the trap this replaces, twice over:
+ *  - `Hive Goal Bottom Skin` is an OPEN U CHANNEL (a flat floor at local w = -1.4884 with two
+ *    side walls rising to w = 6.33) and `Hive Goal Top Skin` is a GABLE ROOF. A convex hull of
+ *    either FILLS the cell: an element would rest ~7.8 in above the floor it is drawn on.
+ *  - `Goal Rib` is a perforated hexagonal FRAME plate at each end of the cell. Its hull fills
+ *    its own opening -- and at the mouth end that opening IS the cell's aperture, so a shot
+ *    could never get in. It is VISUAL-ONLY, exactly like the flower ring plates, and
+ *    `convert.py` exports no hull for it.
+ * `convert.py` therefore decomposes each shell into PLANAR FACETS and exports one thin oriented
+ * box per structural plane -- `cell_<side>_{floor,side_pos,side_neg,roof_pos,roof_neg,back}` --
+ * each sitting exactly ON its CAD surface and extruded 1.5 in OUTWARD. The padding is the same
+ * anti-tunnelling allowance the hand-built walls used (a 0.25-in wall meeting a 260 in/s sphere
+ * is at the edge of what one narrow-phase substep resolves); putting all of it on the outside is
+ * the difference between a collider that agrees with the picture and one that does not.
+ *  `bar_<side>` (`Basket Base Tube`) is a real solid rod and keeps a whole-part hull.
  *
- * NO CLEARANCE BRACKET, ON EITHER PATH TODAY: the Day 1 fallback used one (`HIVE_BRACKET_W`,
- * still exported below and read nowhere in this function — kept because the SIM3D smoke lane's
- * measurements check reports it as a historical reference point) precisely because its algebraic
- * box could not put a down cell's own floor at the manual's `BB_HIVE_BOTTOM_Z` (25.5) at the same
- * time as its up cell's opening matched `BB_HIVE_OPEN_Z` — see the file header. On the CAD path
- * the FLOOR wall built here, at `box.wMin`, already IS that one shape's own answer for both
- * cells; whatever the CAD supports for the down cell's clearance is what this measures, reported
- * (not assumed) by the SIM3D lane's measurements check.
+ * NO CLEARANCE BRACKET, ON EITHER PATH: the Day 1 fallback used one (`HIVE_BRACKET_W`, still
+ * exported below and read nowhere here -- kept because the SIM3D lane's measurements check
+ * reports it as a historical reference point) precisely because its algebraic box could not put
+ * a down cell's floor at the manual's `BB_HIVE_BOTTOM_Z` (25.5) and its up cell's opening at
+ * `BB_HIVE_OPEN_Z` at the same time. The CAD needs no such trade: the real cell puts the up-cell
+ * opening at [53.375, 65.627] against the manual's [53.5, 65.6] (0.13 in), and whatever it says
+ * about the down-cell clearance is what the sim uses, reported rather than assumed by the SIM3D
+ * lane's measurements check.
  */
-/**
- * A box collider description spanning `[xLo,xHi] x [vLo,vHi] x [wLo,wHi]` in the tray's own
- * (x, v, w) local frame, honouring `refTheta` -- the CAD's own capture tilt
- * (`HiveLocalBox.refTheta`) -- by BAKING it into the shape's own vertex data rather than into a
- * per-collider Rapier rotation (see `buildHiveTray3d`'s own comment, just below, on why a
- * kinematic body's collider cannot carry its own local rotation).
- *
- * WHY BAKING IS NEEDED AT ALL, FOUND BY THE SAME MEASUREMENT THAT DIAGNOSED THE TWO OWNER-REPORTED
- * HIVE BUGS ("visually tilted more than where the balls end up", "spill out too easily"):
- * `hiveCellLocalBox`'s CAD branch (`cadCellBox`, `fieldColliders.ts`) returns `vMin`/`vMax`/
- * `wMin`/`wMax` measured DIRECTLY off the CAD hull's own captured vertices -- i.e. literally the
- * world (y, z) offset from the pivot AT THE TILT the part was captured
- * (`cadCaptureTheta(alliance)`), NOT a canonical, tilt-independent local frame the way the Day 1
- * algebraic box's numbers already are (that box's `refTheta` is 0 for exactly this reason -- see
- * `HiveLocalBox`'s own comment). A box built AXIS-ALIGNED in that captured (v, w) pair -- what
- * this function replaces, which stood here unconditionally before this fix -- is therefore FLAT
- * (parallel to v, i.e. constant world z along the whole cell depth) the instant `theta` reaches
- * `refTheta`, which is exactly AT REST: `hiveTiltAngle(...) - hiveTrayRefTheta(alliance)` (this
- * body's own kinematic rotation, `applyHiveTilt`) is 0 there, so an axis-aligned box built in the
- * captured (v, w) pair comes through the body's identity rotation completely unrotated. MEASURED:
- * the up-cell floor read the SAME world z (47.05) at both its inner (divider) and outer (mouth)
- * v-edge at rest, instead of the ~7in rise toward the mouth the Day 1 fallback box (`refTheta`
- * 0) already produces correctly there. A level floor cannot hold anything against the divider
- * wall against gravity -- which is BOTH reported bugs at once: the scene's own GLB tilts by the
- * true angle (it reads the same `hiveTiltAngle`/`hiveTrayRefTheta` pair this file exports and
- * rotates a mesh that is not reduced to an axis-aligned box), while the level PHYSICS floor did
- * not, and nothing rolled downhill to the back wall to be safe from the always-open mouth.
- *
- * THE FIX, EXACTLY: rotate each of the box's 8 corners by `+refTheta` about the pivot (plain
- * numbers, via `rotate2` -- never a collider-local Rapier rotation) before handing them to
- * `RAPIER.ColliderDesc.convexHull`. Composed with the BODY's own `hiveTiltAngle(...) -
- * hiveTrayRefTheta(alliance)` rotation, the total rotation carried by a baked corner is
- * `(theta - refTheta) + refTheta = theta` -- the tray's TRUE absolute tilt, for ANY `theta`, not
- * only at rest -- reproducing exactly the Day 1 fallback's own `world = pivot + Rotate(theta) *
- * (v, w)` convention, whatever `refTheta` reads. `refTheta === 0` (the fallback box, or CAD off)
- * takes the untouched `cuboid()` path: baking a zero rotation is a no-op, so this is a strict
- * generalization and the fallback's already-tight, already-measured numbers are byte-for-byte
- * unaffected. UNLIKE re-deriving a new axis-aligned box from rotated hull VERTICES (an earlier,
- * different, already-rejected attempt -- see `cadCaptureTheta`'s own comment on why that inflates
- * a box), this bakes the box's OWN four corners exactly, with no re-boxing and no inflation: the
- * shape stays exactly as tight as the un-rotated one, just correctly oriented.
- *
- * `derive.ts`'s `insideCell` and the SIM3D smoke lane's `hiveWorldPoint` do the matching inverse
- * -- `rotate2(dy, dz, -theta)`, no `refTheta` term -- for the same reason: once baked into the
- * shape, `refTheta` never appears in a live per-tick rotation again.
- */
-function obliqueBoxCollider(
-  RAPIER: Rapier3d,
-  xLo: number,
-  xHi: number,
-  vLo: number,
-  vHi: number,
-  wLo: number,
-  wHi: number,
-  refTheta: number,
-) {
-  const half = (lo: number, hi: number) => (hi - lo) / 2;
-  const mid = (lo: number, hi: number) => (lo + hi) / 2;
-  const desc = RAPIER.ColliderDesc.cuboid(half(xLo, xHi), half(vLo, vHi), half(wLo, wHi));
-  if (refTheta === 0) {
-    return desc.setTranslation(mid(xLo, xHi), mid(vLo, vHi), mid(wLo, wHi));
-  }
-  const { a, b } = rotate2(mid(vLo, vHi), mid(wLo, wHi), refTheta);
-  return desc.setTranslation(mid(xLo, xHi), a, b).setRotation(tiltQuatX(refTheta));
-}
-
 export function buildHiveTray3d(
   RAPIER: Rapier3d,
   world3d: InstanceType<Rapier3d['World']>,
@@ -512,59 +415,70 @@ export function buildHiveTray3d(
   // 0-friction floor from fighting the drivetrain model). Before this fix no restitution combine
   // rule was set on any tray collider, so Rapier's own default (`Average`) applied: an element
   // landing on the 0.2-restitution floor bounced at `(0.45+0.2)/2 = 0.325`, which, combined with
-  // the flat-floor bug this same pass fixes (see `obliqueBoxCollider`'s header), was enough
-  // height and roll time for a resting element to wander back out the always-open mouth.
+  // the flat-floor bug of the same pass, was enough height and roll time for a resting element to
+  // wander back out the always-open mouth.
   const TRAY_RESTITUTION_COMBINE = RAPIER.CoefficientCombineRule.Min;
+
+  /** per-hull surface, by the class `convert.py` stamped on it. The FLOOR is the one an element
+   * rests on and rolls along, so it keeps the higher friction; the BACK is a dead stop (a POLLEN
+   * meeting a padded cell wall, not a superball -- measured: at 0.2 restitution a shot that
+   * reached the back wall bounced and rolled for 3+ seconds, long enough to drift back out the
+   * open mouth it came in through). */
+  const trayFriction = (name: string): number => (name.includes('_floor') ? 0.6 : 0.5);
+  const trayRestitution = (name: string): number => (name.includes('_back') ? 0 : 0.15);
+
+  const hulls = useFieldColliders() ? cadTrayHulls(alliance) : [];
+  if (hulls.length > 0) {
+    // THE CAD PATH: each hull is already a thin oriented slab sitting on its own CAD surface, in
+    // this body's own un-tilted local frame. Straight to `convexHull`, no translation, no
+    // rotation, no re-boxing -- which is the whole point: the collider the element rests on and
+    // the triangle the GLB draws are the same plane.
+    for (const h of hulls) {
+      const desc = RAPIER.ColliderDesc.convexHull(new Float32Array(h.points));
+      if (!desc) continue; // degenerate point set -- Rapier returns null rather than throwing
+      world3d.createCollider(
+        desc
+          .setFriction(trayFriction(h.name))
+          .setRestitution(trayRestitution(h.name))
+          .setRestitutionCombineRule(TRAY_RESTITUTION_COMBINE),
+        body,
+      );
+    }
+    return body;
+  }
+
+  // THE FALLBACK PATH (CAD off, or an empty collider file): the Day 1 thin-walled box per cell --
+  // floor, back, two sides, outer face open (the launch mouth / spill exit).
   for (const sideSign of [1, -1] as const) {
     const box = hiveCellLocalBox(sideSign, alliance);
-    // FLOOR (w = wMin): the surface a resting element sits on -- on the CAD path, THIS is the
-    // one shape's own answer for the down-cell clearance (see this function's header), now
-    // correctly INCLINED by `obliqueBoxCollider` instead of flattened -- see that function's
-    // own comment for the bug this replaces.
+    const cuboid = (xLo: number, xHi: number, vLo: number, vHi: number, wLo: number, wHi: number) =>
+      RAPIER.ColliderDesc.cuboid((xHi - xLo) / 2, (vHi - vLo) / 2, (wHi - wLo) / 2).setTranslation(
+        (xLo + xHi) / 2,
+        (vLo + vHi) / 2,
+        (wLo + wHi) / 2,
+      );
     world3d.createCollider(
-      obliqueBoxCollider(RAPIER, -box.xHalf, box.xHalf, box.vMin, box.vMax, box.wMin, box.wMin + 2 * wallHalf, box.refTheta)
+      cuboid(-box.xHalf, box.xHalf, box.vMin, box.vMax, box.wMin, box.wMin + 2 * wallHalf)
         .setFriction(0.6)
         .setRestitution(0.15)
         .setRestitutionCombineRule(TRAY_RESTITUTION_COMBINE),
       body,
     );
-    // BACK WALL (the INNER end, toward the pivot) -- closed. The OUTER end (away from the
-    // pivot) is deliberately left open: that is the launch mouth / spill exit.
-    //
-    // RESTITUTION 0, NOT 0.2 -- found by measurement: the CAD box's floor is a FLAT plate at a
-    // single local `w` (`box.wMin`), which is the same flattening the Day 1 box always made, but
-    // the CAD box's own `v`/`w` extent is bigger (a real measured cell, not a figure-calibrated
-    // one), so a shot entering fast enough to reach the back wall at 0.2 restitution had enough
-    // room to bounce off it and roll for 3+ seconds before friction caught it -- long enough to
-    // drift back out through the open (outer) face it had just come in through, never settling.
-    // A dead-stop back wall is the more physically honest choice anyway (a POLLEN meeting a
-    // padded cell wall, not a superball).
     const innerV = sideSign > 0 ? box.vMin : box.vMax;
     const backA = innerV;
     const backB = innerV - sideSign * 2 * wallHalf;
     world3d.createCollider(
-      obliqueBoxCollider(
-        RAPIER,
-        -box.xHalf,
-        box.xHalf,
-        Math.min(backA, backB),
-        Math.max(backA, backB),
-        box.wMin,
-        box.wMax,
-        box.refTheta,
-      )
+      cuboid(-box.xHalf, box.xHalf, Math.min(backA, backB), Math.max(backA, backB), box.wMin, box.wMax)
         .setFriction(0.5)
         .setRestitution(0)
         .setRestitutionCombineRule(TRAY_RESTITUTION_COMBINE),
       body,
     );
-    // TWO SIDE WALLS (along x = +-xHalf). Top is left open (plan section 3.6's "two open-top
-    // cells") -- nothing above a cell but air.
     for (const s of [1, -1] as const) {
       const xA = s * box.xHalf;
       const xB = s * (box.xHalf - 2 * wallHalf);
       world3d.createCollider(
-        obliqueBoxCollider(RAPIER, Math.min(xA, xB), Math.max(xA, xB), box.vMin, box.vMax, box.wMin, box.wMax, box.refTheta)
+        cuboid(Math.min(xA, xB), Math.max(xA, xB), box.vMin, box.vMax, box.wMin, box.wMax)
           .setFriction(0.5)
           .setRestitution(0.15)
           .setRestitutionCombineRule(TRAY_RESTITUTION_COMBINE),
