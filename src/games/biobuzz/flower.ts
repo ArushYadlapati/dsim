@@ -1,5 +1,13 @@
 import type { Alliance, Vec2 } from '../../types';
-import { BB_FLOWER_OPEN_R, BB_FLOWER_TOP_Z, BB_NECTAR_R, BB_POLLEN_R, BB_PTS } from './config';
+import {
+  BB_FLOWER_LOW_Z,
+  BB_FLOWER_MID_Z as BB_FLOWER_MID_Z_CAD,
+  BB_FLOWER_OPEN_R,
+  BB_FLOWER_TOP_Z,
+  BB_NECTAR_R,
+  BB_POLLEN_R,
+  BB_PTS,
+} from './config';
 
 /**
  * FLOWER logic — the stack model (§9.7 Fig 9-12, §10.5.2 Fig 10-5), PURE.
@@ -30,10 +38,20 @@ export function bbElementRadius(kind: BbElementKind): number {
 }
 
 /**
- * Top face of the LOWER ring, where the bottom element rests (Fig 9-12: lower ring 0.43 tall
- * on the tiles; its 2.79-in hole passes nothing). APPROX — Fig 9-12 pixel read.
+ * Top face of the LOWER ring, where the bottom element rests in the 2D stack model.
+ *
+ * ✅ CAD SINCE 2026-09-18 — `BB_FLOWER_LOW_Z` (`config.ts` ← `fieldDims.gen.ts`), the lower
+ * plate's own measured top face at 0.354. It was 0.43 `APPROX`, a Fig 9-12 pixel read, 0.076
+ * high. The alias stays so every existing caller and check keeps its name.
+ *
+ * ⚠️ The CAD's lower bore is 3.222, not Fig 9-12's 2.79, so it is the LOWER ring rather than the
+ * middle one that a NECTAR (3.6) cannot pass — and a POLLEN (2.8) passes it too, which means in
+ * the real tube a bottom pollen rests on the TILES inside the bore rather than on this face,
+ * 0.354 in lower. Immaterial to every outcome: the scoring volume starts 3.55 in above either
+ * height. `sim3d/` does not use this constant at all — a 3D flower's contents are where the
+ * bodies are.
  */
-export const BB_FLOWER_FLOOR_Z = 0.43; // APPROX
+export const BB_FLOWER_FLOOR_Z = BB_FLOWER_LOW_Z;
 
 /**
  * THE MIDDLE RING IS A SORTER — its hole falls BETWEEN the two element sizes (owner ruling
@@ -44,16 +62,23 @@ export const BB_FLOWER_FLOOR_Z = 0.43; // APPROX
  * and therefore ALWAYS scores, a lone POLLEN resting on the lower ring (0.43 → 3.23) scores
  * nothing, and retrieving a POLLEN from UNDER a ring-seated NECTAR does not lower the NECTAR.
  *
- * ⚠️ APPROX, AND IT IS THE RING'S UNDERSIDE. 3.98 is the retrieval opening 3.55 plus the lower
- * ring 0.43, so it is where the middle ring STARTS; V1 prints neither the ring's thickness nor
- * whether the scoring volume begins at its top (manual-distilled §11 item 1).
- * `docs/biobuzz/feedback/002-thresholds.md` §1 is the measurement that would settle it, and
- * names what moving this number costs — the capacities 8 / 5 are DERIVED from it. The SEAT rule is
- * what keeps the outcomes right whatever that number turns out to be — seating the nectar ON
- * the ring makes "a nectar always scores" a consequence of the geometry rather than of 3.98
- * happening to be 0.05 in below where a bare nectar's skin reaches.
+ * ✅ CAD SINCE 2026-09-18 — `BB_FLOWER_MID_Z` (`config.ts` ← `fieldDims.gen.ts`), the middle
+ * plate's own measured UNDERSIDE at 3.904. It was 3.98 `APPROX` (the retrieval opening 3.55 plus
+ * a 0.43 lower ring), i.e. the same quantity 0.076 high, and the SEAT rule is exactly what made
+ * that move safe: every outcome here is a consequence of "the nectar sits ON the ring" rather
+ * than of 3.98 happening to land 0.05 in below where a floor-resting nectar's skin reached.
+ * Re-checked after the move: capacities still 8 POLLEN / 5 NECTAR, Fig 10-5 cases A–H all equal.
+ *
+ * ⚠️ **AND THE CAD SAYS THE REAL MIDDLE RING DOES NOT SORT.** Its measured bore is 3.896
+ * (`BB_FLOWER_MID_HOLE`) against a 3.6-in NECTAR, so the real plate passes one. The 2026-09-12
+ * sorter ruling is a GAMEPLAY decision — it is what makes a nectar always score and a pollen
+ * retrievable from under one — and it STANDS for this model, which is the permanent 2D pipeline.
+ * The 3D tube (`sim3d/flowerTube.ts`) is the real plates with the real bores and does whatever
+ * they do: a nectar falls past both upper rings and comes to rest on the LOWER one, which is
+ * the ring whose 3.222 bore actually sorts. Two models, one field, and the difference is
+ * measured and written down rather than fudged away at either end — audit §11.
  */
-export const BB_FLOWER_MID_Z = 3.98; // APPROX
+export const BB_FLOWER_MID_Z = BB_FLOWER_MID_Z_CAD;
 
 /**
  * The SCORING VOLUME: between the top ring and the middle ring (§10.5.2, CAD 10-4), i.e. from
@@ -188,7 +213,29 @@ export interface FlowerScore {
  * Bonus 5 to the alliance of the bottom-most scoring NECTAR. No nectar ⇒ no owner, no bonus.
  */
 export function flowerScore(stack: readonly number[], kindOf: (id: number) => BbElementKind): FlowerScore {
-  const zs = flowerStackZ(stack, kindOf);
+  return flowerScoreZ(stack, kindOf, flowerStackZ(stack, kindOf));
+}
+
+/**
+ * §10.5.2 OVER HEIGHTS SOMEBODY ELSE MEASURED — the same rule, reading `zs` instead of modelling
+ * them. A PURE EXTRACTION: `flowerScore` above is now a call to this with `flowerStackZ`'s own
+ * answer, so the 2D pipeline is byte-for-byte what it was.
+ *
+ * It exists because the 3D pipeline HAS the heights. A flower's contents there are real bodies
+ * in a real tube (`sim3d/flowerTube.ts`), and their z is the readback, not a model — so a scorer
+ * that re-derived them from `flowerStackZ` would be scoring a picture of the stack rather than
+ * the stack. That difference is not academic on this field: the CAD's middle bore is 3.896 and a
+ * NECTAR is 3.6, so where the 2D model seats a lone nectar ON the middle ring the real tube lets
+ * it fall to the bottom (`BB_FLOWER_MID_Z`'s own comment, audit §11), and the two answers differ
+ * by five points and an ownership.
+ *
+ * `zs[i]` is element `stack[i]`'s CENTRE height. A short `zs` scores only what it covers.
+ */
+export function flowerScoreZ(
+  stack: readonly number[],
+  kindOf: (id: number) => BbElementKind,
+  zs: readonly number[],
+): FlowerScore {
   let inVolume = 0;
   let owner: Alliance | null = null;
   let bonusAlliance: Alliance | null = null;

@@ -65,7 +65,10 @@ import {
   FIELD_HALF,
   FLOWERS,
   FLOWER_D,
+  FLOWER_FOOT,
+  FLOWER_RETRIEVAL_Z,
   FLOWER_RING_D,
+  FLOWER_RING_Z,
   GARDEN,
   HIVE,
   LZ,
@@ -396,16 +399,73 @@ export const FLOWER_MOUTH: Record<(typeof BB_FLOWERS)[number]['wall'], Vec2> = {
   audience: { x: 0, y: 1 }, // F4 stands on −y, opens toward +y
 };
 
-/** top ring height above the tiles (in) — Fig 9-12. The z a deposit arc solves for.
+/**
+ * ── THE FLOWER TUBE, BOTTOM TO TOP — five CAD bands, no APPROX left ─────────────────────────
  *
- * ⚠️ STILL THE MANUAL'S FIGURE, AND FLAGGED. `field-measurements.json` carries the flower's whole
- * z extent (−0.649 … 22.654, which tops out at the purple backstop) but not the three ring
- * plates' own bands, so there is nothing in the generated file to read. The audit measures the
- * top plate at 20.254…21.404 BY HAND (§6), i.e. this figure is within 0.10 in — but a hand
- * measurement in a document is not a generated dimension, and putting it in `fieldDims.gen.ts`
- * would mean editing `convert.py`, which rewrites the GLB and the collider set as a side effect.
- * Next CAD pass: emit the per-ring bands and derive this. */
-export const BB_FLOWER_TOP_Z = 21.5;
+ *   `BB_FLOWER_LOW_Z`   0.354   the LOWER plate's top face: the column's floor
+ *   the RETRIEVAL OPENING          0.354 → 3.904, 3.550 in of clear gap on the field side
+ *   `BB_FLOWER_MID_Z`   3.904   the MID plate's underside: where the scoring volume starts
+ *   the SCORING VOLUME             3.904 → 21.404 (§10.5.2, "between the top and middle rings")
+ *   `BB_FLOWER_TOP_Z`  21.404   the TOP plate's top face: the z a deposit arc solves for
+ *
+ * All four were hand-typed manual or APPROX figures until 2026-09-18 (Day 2 lane A):
+ * `field-measurements.json` carried the flower's whole assembly extent (−0.649 … 22.654, which
+ * tops out at the purple backstop) but never separated the three ring PLATES, so there was
+ * nothing in the generated file to read. `convert.py` measures each plate's own band now.
+ *
+ * ⚠️ **THE 3.550-IN RETRIEVAL OPENING IS DERIVED, NOT MEASURED, AND IT LANDS ON FIG 9-12
+ * EXACTLY.** Nothing in the STEP is the hole; it is `mid[0] − lower[1]`, and the manual prints
+ * "3.55 in tall". Two independently measured plate bands reproducing a printed figure to three
+ * decimals is the strongest evidence in this file that the flower export is in the right frame.
+ */
+
+/** top ring height above the tiles (in) — the TOP plate's own top face, CAD
+ * (`fieldDims.gen.ts`, `FLOWER_RING_Z.top`, residual 0 over four flowers). Fig 9-12's 21.5 was
+ * 0.096 high; the audit's §6 hand read of 20.254…21.404 is now the generated number. */
+export const BB_FLOWER_TOP_Z = FLOWER_RING_Z.top[1];
+
+/**
+ * the MIDDLE plate's UNDERSIDE (in) — where the SCORING VOLUME starts, and, in the 2D pipeline's
+ * stack model, where a NECTAR seats. CAD (`FLOWER_RING_Z.mid[0]`, residual 0).
+ *
+ * It was 3.98 `APPROX` in `flower.ts` (the retrieval opening 3.55 plus a 0.43 lower ring), and
+ * the CAD says 3.904 — the same quantity, 0.076 lower, with the same meaning, so every outcome
+ * the sorter ruling produces survives the move (checked: the capacities are still 8 POLLEN and
+ * 5 NECTAR, and every Fig 10-5 case A–H reads the same).
+ *
+ * ⚠️ **THE CAD'S MIDDLE BORE DOES NOT SORT.** `BB_FLOWER_MID_HOLE` measures 3.896 and a NECTAR
+ * is 3.6, so the real plate passes one — which the 2D pipeline's own sorter ruling (owner,
+ * 2026-09-12: "a NECTAR cannot pass the middle ring and SEATS on it") says it does not. The
+ * ruling is a GAMEPLAY decision and it stands for the 2D model; the 3D tube is real geometry and
+ * does what the geometry does. See `BB_FLOWER_LOW_HOLE` for which ring actually sorts, and
+ * `docs/biobuzz/field-cad-audit.md` §11 for the measurement and the consequence.
+ */
+export const BB_FLOWER_MID_Z = FLOWER_RING_Z.mid[0];
+
+/** the LOWER plate's TOP FACE (in) — the column's floor in the 2D stack model. CAD
+ * (`FLOWER_RING_Z.lower[1]`); it was 0.43 `APPROX`, a Fig 9-12 pixel read, 0.076 high. */
+export const BB_FLOWER_LOW_Z = FLOWER_RING_Z.lower[1];
+
+/** the RETRIEVAL OPENING's own z span (in) — the clear gap between the lower plate's top face
+ * and the mid plate's underside, on the FIELD side (the wall side is the backstop extrusion).
+ * 3.550 in tall, which is Fig 9-12's printed figure to three decimals. G418.B's bottom-pop and
+ * the 3D intake sensor both read this band. */
+export const BB_FLOWER_RETRIEVE_Z: readonly [number, number] = FLOWER_RETRIEVAL_Z;
+
+/**
+ * the MIDDLE and LOWER bore DIAMETERS (in) — CAD least-squares fits (`FLOWER_RING_D`), residual
+ * 0 over four flowers, rms 0.052 / 0.038 on the fit itself.
+ *
+ * ⚠️ **THE SORTER IS THE LOWER RING, NOT THE MIDDLE ONE.** A 2.8-in POLLEN passes all three
+ * bores; a 3.6-in NECTAR passes the top (4.171) and the middle (3.896) and is stopped by the
+ * lower (3.222). So the manual's INTENT survives — "POLLEN out of the bottom and nothing else"
+ * (G418), because a nectar clears neither the lower bore nor the 3.55-in retrieval opening — but
+ * the ring that delivers it is the bottom one, and a nectar dropped into a real FLOWER falls to
+ * the bottom of the tube rather than seating half way up it. Measured, not assumed, and NOT
+ * fudged to match the 2D model: see `BB_FLOWER_MID_Z`.
+ */
+export const BB_FLOWER_MID_HOLE = FLOWER_RING_D.mid;
+export const BB_FLOWER_LOW_HOLE = FLOWER_RING_D.lower;
 
 /** top ring opening RADIUS (in) — CAD (`fieldDims.gen.ts`, `FLOWER_RING_D.top` 4.171 measured by
  * a least-squares circle fit to the plate's own inner cylindrical surface, rms 0.049). Fig 9-12's
@@ -423,15 +483,17 @@ export const BB_FLOWER_OPEN_R = FLOWER_RING_D.top / 2;
  * than a 2.6 disc (a robot running the wall hits it sooner) and shallower into the field (it
  * protrudes 4.9, not 5.2, and its corners are square).
  *
- * ⚠️ NOT GENERATED, AND FLAGGED, for the same reason as `BB_FLOWER_TOP_Z`: the measurements file
- * carries the flower's whole bounding extent, which includes the under-field bracket reaching
- * BEHIND the wall plane, not the plate footprint on the tiles. The audit measures that plate at
- * 6.04 × 4.93 by hand (§6), so this pair is CAD-CONFIRMED to 0.05 in but still typed here.
+ * ✅ GENERATED SINCE 2026-09-18 (Day 2 lane A): `FLOWER_FOOT` is the union of the three ring
+ * PLATES' own footprints, 5.951 × 5.013, residual 0 over four flowers. It could not be read off
+ * `flowers[].extent` — that carries the under-field bracket reaching BEHIND the wall plane and
+ * the backstop above the top plate — which is why the hand-typed 6 × 4.9 survived this long. It
+ * was within 0.05 along and 0.11 deep, so this is a confirmation with a small correction, not a
+ * move.
  *
  * The COLLIDER is `colliders.ts` (biobuzz-field-staging); this is the number it and the
  * drawing share.
  */
-export const BB_FLOWER_FOOT = { along: 6, deep: 4.9 };
+export const BB_FLOWER_FOOT = FLOWER_FOOT;
 
 /**
  * THE HIVE TIP TABLE. Indexed by the number of NECTAR in the up-CELL; the value is how many

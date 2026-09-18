@@ -8,7 +8,7 @@
 // source STEP : FIRST field CAD v26-27.2 (2026-09-15), sha256 5e768b731f1ec8dcd14debba53225c43718877923c351ce08504305f68f7fe00
 //               captured 2026-09-17 from https://ftc-resources.firstinspires.org/ftc/archive/2027/field/field-cad-step
 // measured by : scripts/field-cad/convert.py → public/models/biobuzz/field-measurements.json
-//               sha256 517219c718bc9b04a388fe530435fa54ac968281e0df21ee447453de5f9a8d95
+//               sha256 5555b9fd7bf0171b3c76796964858c7a1db450f94e5889a763067503f10cb65b
 // frame       : the sim frame — inches, origin at the field centre on the tile top surface,
 //               +x audience right, +y away from the audience. Rounded to 1e-3 in.
 //
@@ -24,9 +24,15 @@
 // FLOWER_ALONG 23.392  = mean |bore centre, along-wall axis| (residual 0in). The old ±24 was the 24-in tile seam; the real
 //                seam is at 23.392, which is one tile of accumulated pitch error.
 // FLOWER_RING_D top 4.171 / mid 3.896 / lower 3.222  = mean least-squares bore diameters (residuals 0/0/0in).
-// FLOWER_EXTENT_Z [-0.649, 22.654]  = mean flowers[].extent.z. ⚠️ This is the WHOLE assembly (the top is the purple
-//                backstop, the bottom is the under-field bracket) — the measurements file does NOT separate the three ring plates, so
-//                BB_FLOWER_TOP_Z stays the manual's figure. Audit §6 measures the top plate at 20.254…21.404 by hand.
+// FLOWER_EXTENT_Z [-0.649, 22.654]  = mean flowers[].extent.z — the WHOLE assembly (the top is the purple backstop, the
+//                bottom is the under-field bracket). FLOWER_RING_Z below is the per-PLATE band, which is what BB_FLOWER_TOP_Z reads now.
+// FLOWER_RING_Z top [20.254, 21.404] / mid [3.904, 5.254] / lower [-0.199, 0.354]  = mean of each PLATE's
+//                own z band (worst residual 0in). The clear gap between the lower plate's TOP and the mid plate's UNDERSIDE is
+//                3.55in — Fig 9-12's 3.55-in RETRIEVAL OPENING, derived rather than assumed, and the sharpest confirmation in this file.
+//                BB_FLOWER_TOP_Z was the manual's 21.5 (Δ 0.096); BB_FLOWER_MID_Z an APPROX 3.98 (Δ 0.076); BB_FLOWER_FLOOR_Z an APPROX 0.43 (Δ 0.076).
+// FLOWER_FOOT  5.951 × 5.013  = the union of the three ring plates' own footprints, along the wall × into the field (residuals
+//                0/0in). The hand-typed 6 × 4.9 was within 0.05 / 0.11. This is the on-tile solid a robot meets; flowers[].extent
+//                is NOT — it carries the backstop above the top plate and the bracket behind the wall plane.
 // HIVE.PIVOT_X 12.75 / PIVOT_Z 43.95 / TILT_DEG 30  = mean |trays[].pivot[0]| (residual 0), hive.pivotZ,
 //                mean |trays[].captureThetaDeg| (residual 0). The tilt is EXACTLY 30° — audit §4.1 proves it by un-tilting the
 //                0.020-in back skin and watching it collapse to its own thickness.
@@ -46,10 +52,12 @@
 //                "Bounded by tape and the wall, tape included" (§9.3) is exactly that rule: the tape's own outer face is the zone edge
 //                everywhere except where the perimeter is.
 //
-// ⚠️ NOT IN HERE, AND WHY: the flower's three RING PLATE z bands and its on-tile FOOTPRINT are
-// measured in the audit (§6) but not carried by `field-measurements.json`, so `BB_FLOWER_TOP_Z`
-// and `BB_FLOWER_FOOT` remain manual figures in `config.ts`, flagged there. Putting them here
-// would mean editing `convert.py`, which rewrites the GLB and the collider set as a side effect.
+// ✅ CLOSED 2026-09-18 (Day 2 lane A): the flower's three RING PLATE z bands and its on-tile
+// FOOTPRINT used to be measured in the audit (§6) but not carried by `field-measurements.json`,
+// so `BB_FLOWER_TOP_Z`, `BB_FLOWER_MID_Z`, `BB_FLOWER_FLOOR_Z` and `BB_FLOWER_FOOT` stayed hand-typed.
+// `convert.py` now separates the plates from the assembly and `FLOWER_RING_Z` / `FLOWER_FOOT`
+// below are the measurements; `config.ts` reads them and no flower dimension is APPROX any more.
+// The GLBs are byte-identical across that change — the plates were always in the visual export.
 
 /** an axis-aligned field region, world inches. Structurally identical to `config.ts`'s
  * `BbRect` — declared here so this module imports nothing at all. */
@@ -96,6 +104,22 @@ export const FLOWERS: readonly { readonly id: string; readonly wall: 'left' | 'r
 ];
 /** the three ring plates' bore DIAMETERS (in): what fits through the top, middle and bottom. */
 export const FLOWER_RING_D: { readonly top: number; readonly mid: number; readonly lower: number } = { top: 4.171, mid: 3.896, lower: 3.222 };
+/** each ring PLATE's own z band (in), [underside, top face]. The tube bottom to top is the
+ * lower plate, the retrieval opening, the mid plate, the scoring volume, the top plate. */
+export const FLOWER_RING_Z: {
+  readonly top: readonly [number, number];
+  readonly mid: readonly [number, number];
+  readonly lower: readonly [number, number];
+} = {
+  top: [20.254, 21.404],
+  mid: [3.904, 5.254],
+  lower: [-0.199, 0.354],
+};
+/** the RETRIEVAL OPENING's own z span (in) — the clear gap between the lower plate's top face
+ * and the mid plate's underside, 3.55 in tall against Fig 9-12's 3.55. */
+export const FLOWER_RETRIEVAL_Z: readonly [number, number] = [0.354, 3.904];
+/** the on-tile FOOTPRINT of a flower's ring plates (in) — along its wall × into the field. */
+export const FLOWER_FOOT: { readonly along: number; readonly deep: number } = { along: 5.951, deep: 5.013 };
 /** the whole flower assembly's z span (in) — backstop top, under-field bracket bottom. */
 export const FLOWER_EXTENT_Z: readonly [number, number] = [-0.649, 22.654];
 

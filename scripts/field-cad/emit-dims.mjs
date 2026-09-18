@@ -167,9 +167,41 @@ export function buildDims(m) {
   );
   const extentZ = [agree(m.flowers.map((f) => f.extent.z[0])), agree(m.flowers.map((f) => f.extent.z[1]))];
   notes.push(
-    `FLOWER_EXTENT_Z [${extentZ[0].value}, ${extentZ[1].value}]  = mean flowers[].extent.z. ⚠️ This is the WHOLE assembly (the top is the purple` +
-      `\n//                backstop, the bottom is the under-field bracket) — the measurements file does NOT separate the three ring plates, so` +
-      `\n//                BB_FLOWER_TOP_Z stays the manual's figure. Audit §6 measures the top plate at 20.254…21.404 by hand.`,
+    `FLOWER_EXTENT_Z [${extentZ[0].value}, ${extentZ[1].value}]  = mean flowers[].extent.z — the WHOLE assembly (the top is the purple backstop, the` +
+      `\n//                bottom is the under-field bracket). FLOWER_RING_Z below is the per-PLATE band, which is what BB_FLOWER_TOP_Z reads now.`,
+  );
+
+  // ── FLOWER RING PLATES (Day 2 lane A) ────────────────────────────────────────────────────
+  // `convert.py` now separates the three plates from the assembly, so the four figures that
+  // stayed hand-typed in `config.ts` — the top ring's height, the middle ring's underside, the
+  // lower ring's top face and the on-tile footprint — are measurements like everything else.
+  must(
+    m.flowers.every((f) => f.rings && f.rings.top && f.rings.mid && f.rings.lower),
+    'a flower is missing one of its three ring plates — re-run `npm run field-cad` after a convert.py change',
+  );
+  const ringBand = (label) => [
+    agree(m.flowers.map((f) => f.rings[label].z[0])),
+    agree(m.flowers.map((f) => f.rings[label].z[1])),
+  ];
+  const ringZ = { top: ringBand('top'), mid: ringBand('mid'), lower: ringBand('lower') };
+  const ringZResidual = r3(
+    Math.max(...['top', 'mid', 'lower'].flatMap((k) => [ringZ[k][0].residual, ringZ[k][1].residual])),
+  );
+  const retrieval = [ringZ.lower[1], ringZ.mid[0]];
+  notes.push(
+    `FLOWER_RING_Z top [${ringZ.top[0].value}, ${ringZ.top[1].value}] / mid [${ringZ.mid[0].value}, ${ringZ.mid[1].value}] / lower [${ringZ.lower[0].value}, ${ringZ.lower[1].value}]  = mean of each PLATE's` +
+      `\n//                own z band (worst residual ${ringZResidual}in). The clear gap between the lower plate's TOP and the mid plate's UNDERSIDE is` +
+      `\n//                ${r3(retrieval[1].raw - retrieval[0].raw)}in — Fig 9-12's 3.55-in RETRIEVAL OPENING, derived rather than assumed, and the sharpest confirmation in this file.` +
+      `\n//                BB_FLOWER_TOP_Z was the manual's 21.5 (Δ ${r3(Math.abs(21.5 - ringZ.top[1].raw))}); BB_FLOWER_MID_Z an APPROX 3.98 (Δ ${r3(Math.abs(3.98 - ringZ.mid[0].raw))}); BB_FLOWER_FLOOR_Z an APPROX 0.43 (Δ ${r3(Math.abs(0.43 - ringZ.lower[1].raw))}).`,
+  );
+  const foot = {
+    along: agree(m.flowers.map((f) => f.foot.along)),
+    deep: agree(m.flowers.map((f) => f.foot.deep)),
+  };
+  notes.push(
+    `FLOWER_FOOT  ${foot.along.value} × ${foot.deep.value}  = the union of the three ring plates' own footprints, along the wall × into the field (residuals` +
+      `\n//                ${foot.along.residual}/${foot.deep.residual}in). The hand-typed 6 × 4.9 was within 0.05 / 0.11. This is the on-tile solid a robot meets; flowers[].extent` +
+      `\n//                is NOT — it carries the backstop above the top plate and the bracket behind the wall plane.`,
   );
   const flowers = flowerRows.map((f) => {
     const n = Math.sign(f.normal) * r3(half.value - flowerD);
@@ -296,6 +328,13 @@ export function buildDims(m) {
     FLOWER_ALONG: along.value,
     FLOWERS: flowers,
     FLOWER_RING_D: { top: ringD.top.value, mid: ringD.mid.value, lower: ringD.lower.value },
+    FLOWER_RING_Z: {
+      top: [ringZ.top[0].value, ringZ.top[1].value],
+      mid: [ringZ.mid[0].value, ringZ.mid[1].value],
+      lower: [ringZ.lower[0].value, ringZ.lower[1].value],
+    },
+    FLOWER_RETRIEVAL_Z: [retrieval[0].value, retrieval[1].value],
+    FLOWER_FOOT: { along: foot.along.value, deep: foot.deep.value },
     FLOWER_EXTENT_Z: [extentZ[0].value, extentZ[1].value],
     HIVE: hive,
     TAPE_W: widths[0],
@@ -333,10 +372,12 @@ export function renderDims(measurementsJson) {
   L.push(`// ── EVERY VALUE, AND WHERE IT COMES FROM ────────────────────────────────────────────────────`);
   for (const n of d.notes) L.push(`// ${n}`);
   L.push(`//`);
-  L.push(`// ⚠️ NOT IN HERE, AND WHY: the flower's three RING PLATE z bands and its on-tile FOOTPRINT are`);
-  L.push(`// measured in the audit (§6) but not carried by \`field-measurements.json\`, so \`BB_FLOWER_TOP_Z\``);
-  L.push(`// and \`BB_FLOWER_FOOT\` remain manual figures in \`config.ts\`, flagged there. Putting them here`);
-  L.push(`// would mean editing \`convert.py\`, which rewrites the GLB and the collider set as a side effect.`);
+  L.push(`// ✅ CLOSED 2026-09-18 (Day 2 lane A): the flower's three RING PLATE z bands and its on-tile`);
+  L.push(`// FOOTPRINT used to be measured in the audit (§6) but not carried by \`field-measurements.json\`,`);
+  L.push(`// so \`BB_FLOWER_TOP_Z\`, \`BB_FLOWER_MID_Z\`, \`BB_FLOWER_FLOOR_Z\` and \`BB_FLOWER_FOOT\` stayed hand-typed.`);
+  L.push(`// \`convert.py\` now separates the plates from the assembly and \`FLOWER_RING_Z\` / \`FLOWER_FOOT\``);
+  L.push(`// below are the measurements; \`config.ts\` reads them and no flower dimension is APPROX any more.`);
+  L.push(`// The GLBs are byte-identical across that change — the plates were always in the visual export.`);
   L.push(``);
   L.push(`/** an axis-aligned field region, world inches. Structurally identical to \`config.ts\`'s`);
   L.push(` * \`BbRect\` — declared here so this module imports nothing at all. */`);
@@ -384,6 +425,22 @@ export function renderDims(measurementsJson) {
   L.push(`];`);
   L.push(`/** the three ring plates' bore DIAMETERS (in): what fits through the top, middle and bottom. */`);
   L.push(`export const FLOWER_RING_D: { readonly top: number; readonly mid: number; readonly lower: number } = { top: ${num(d.FLOWER_RING_D.top)}, mid: ${num(d.FLOWER_RING_D.mid)}, lower: ${num(d.FLOWER_RING_D.lower)} };`);
+  L.push(`/** each ring PLATE's own z band (in), [underside, top face]. The tube bottom to top is the`);
+  L.push(` * lower plate, the retrieval opening, the mid plate, the scoring volume, the top plate. */`);
+  L.push(`export const FLOWER_RING_Z: {`);
+  L.push(`  readonly top: readonly [number, number];`);
+  L.push(`  readonly mid: readonly [number, number];`);
+  L.push(`  readonly lower: readonly [number, number];`);
+  L.push(`} = {`);
+  L.push(`  top: [${num(d.FLOWER_RING_Z.top[0])}, ${num(d.FLOWER_RING_Z.top[1])}],`);
+  L.push(`  mid: [${num(d.FLOWER_RING_Z.mid[0])}, ${num(d.FLOWER_RING_Z.mid[1])}],`);
+  L.push(`  lower: [${num(d.FLOWER_RING_Z.lower[0])}, ${num(d.FLOWER_RING_Z.lower[1])}],`);
+  L.push(`};`);
+  L.push(`/** the RETRIEVAL OPENING's own z span (in) — the clear gap between the lower plate's top face`);
+  L.push(` * and the mid plate's underside, ${num(r3(d.FLOWER_RETRIEVAL_Z[1] - d.FLOWER_RETRIEVAL_Z[0]))} in tall against Fig 9-12's 3.55. */`);
+  L.push(`export const FLOWER_RETRIEVAL_Z: readonly [number, number] = [${num(d.FLOWER_RETRIEVAL_Z[0])}, ${num(d.FLOWER_RETRIEVAL_Z[1])}];`);
+  L.push(`/** the on-tile FOOTPRINT of a flower's ring plates (in) — along its wall × into the field. */`);
+  L.push(`export const FLOWER_FOOT: { readonly along: number; readonly deep: number } = { along: ${num(d.FLOWER_FOOT.along)}, deep: ${num(d.FLOWER_FOOT.deep)} };`);
   L.push(`/** the whole flower assembly's z span (in) — backstop top, under-field bracket bottom. */`);
   L.push(`export const FLOWER_EXTENT_Z: readonly [number, number] = [${num(d.FLOWER_EXTENT_Z[0])}, ${num(d.FLOWER_EXTENT_Z[1])}];`);
   L.push(``);
