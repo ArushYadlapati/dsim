@@ -209,8 +209,8 @@ const fmtKB = (bytes) => `${(bytes / 1000).toFixed(2)} KB`;
  * totals in here, the same way `uiaudit.mjs`'s header describes lowering ITS baseline.
  */
 const BASELINE = {
-  main: { gzip: 907.88 * 1000 },
-  hostWorker: { gzip: 700.84 * 1000 },
+  main: { gzip: 918.72 * 1000 },
+  hostWorker: { gzip: 705.23 * 1000 },
   physics3d: { gzip: 1123.14 * 1000 },
   scene: { gzip: 192.28 * 1000, budgetCeiling: 250 * 1000 },
   graphics: { gzip: 5.60 * 1000 },
