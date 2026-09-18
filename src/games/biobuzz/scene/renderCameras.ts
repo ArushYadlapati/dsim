@@ -212,17 +212,18 @@ export interface DriverFit {
  *
  * CACHED, not recomputed every frame: `updateDriver` calls this once per render, but the search
  * only has to re-run when `viewAngle` or `aspect` actually changes (an alliance switch, a
- * resize) — the common case (same match, same window) is a single object-identity comparison and
- * four field reads, no trig at all, which is what keeps this a zero-per-frame-allocation camera
- * despite the search itself allocating a small scratch array per solve.
+ * resize) — the common case (same match, same window) is two `!==` comparisons against the raw
+ * numbers (no string key, no allocation at all), which is what keeps this a zero-per-frame-
+ * allocation camera despite the search itself allocating a small scratch array per solve.
  */
-let cacheKey = '';
-let cached: DriverFit = { eyeH: DRIVER_EYE_H_DEFAULT, setback: DRIVER_SETBACK_DEFAULT, pitch: 0, vFov: FOV_MAX_RAD };
+let cachedViewAngle = NaN;
+let cachedAspect = NaN;
+const cached: DriverFit = { eyeH: DRIVER_EYE_H_DEFAULT, setback: DRIVER_SETBACK_DEFAULT, pitch: 0, vFov: FOV_MAX_RAD };
 
 export function fitDriverCamera(_alliance: Alliance, viewAngle: number, aspect: number): DriverFit {
-  const key = `${viewAngle.toFixed(4)}|${aspect.toFixed(4)}`;
-  if (key === cacheKey) return cached;
-  cacheKey = key;
+  if (viewAngle === cachedViewAngle && aspect === cachedAspect) return cached;
+  cachedViewAngle = viewAngle;
+  cachedAspect = aspect;
 
   let eyeH = DRIVER_EYE_H_DEFAULT;
   let setback = DRIVER_SETBACK_DEFAULT;
@@ -251,7 +252,10 @@ export function fitDriverCamera(_alliance: Alliance, viewAngle: number, aspect: 
   }
 
   const vFov = Math.min(FOV_MAX_RAD, Math.max(FOV_MIN_RAD, r.vFov));
-  cached = { eyeH, setback, pitch: r.pitch, vFov };
+  cached.eyeH = eyeH;
+  cached.setback = setback;
+  cached.pitch = r.pitch;
+  cached.vFov = vFov;
   return cached;
 }
 
