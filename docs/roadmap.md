@@ -85,7 +85,7 @@ Sizes are working days for one agent; "exists" cites what the survey found so no
 - **Decisions for the owner.** Which decals; whether the team-number plate is editable (moderation:
   numbers only, no free text); whether cosmetics show on the leaderboard rows.
 
-### 4. Rewards for loyal and top players — plan first (`docs/rewards-plan.md` → `feat/rewards`)
+### 4. Rewards for loyal and top players — plan first ([docs/rewards-plan.md](rewards-plan.md) → `feat/rewards`)
 
 - **Exists.** Paid supporter perks (badge, ads-off, saved starts, colours), staff badges, Glicko-2
   ranked with archived Act→Season periods per game, records with PB/WR, `user_activity`
