@@ -210,10 +210,15 @@ export interface DriverFit {
  * up to `DRIVER_SETBACK_MAX`, and use the best the search reaches even if that cap itself cannot
  * fit (reported as `!fits`, never thrown — a slightly-cropped corner beats a broken camera).
  *
+ * `aspect` IS THE SAFE RECT'S, not the canvas's (see the safe-rect block below `DriverFit`): the
+ * field has to fit the part of the viewport the HUD does not cover, so every number this returns
+ * is solved against that, and the canvas is then rendered as a wider window onto it.
+ *
  * CACHED, not recomputed every frame: `updateDriver` calls this once per render, but the search
  * only has to re-run when `viewAngle` or `aspect` actually changes (an alliance switch, a
- * resize) — the common case (same match, same window) is two `!==` comparisons against the raw
- * numbers (no string key, no allocation at all), which is what keeps this a zero-per-frame-
+ * resize, a HUD band appearing) — the common case (same match, same window) is two `!==`
+ * comparisons against the raw numbers (no string key, no allocation at all), which is what
+ * keeps this a zero-per-frame-
  * allocation camera despite the search itself allocating a small scratch array per solve.
  */
 let cachedViewAngle = NaN;
@@ -259,6 +264,65 @@ export function fitDriverCamera(_alliance: Alliance, viewAngle: number, aspect: 
   return cached;
 }
 
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+// THE SAFE RECT (owner's re-test, 2026-09-18: "make sure that the scoreboard and the field can
+// both fit in the screen without overlap"). The WebGL canvas fills the whole `.game-viewport`,
+// and the score bar, the breakdown chips and the status/menu clusters are absolutely positioned
+// ON TOP of it — so a camera fitted to the canvas puts part of the field under chrome that hides
+// it. `SceneFrame.insets` (measured off the live DOM by `GameController.refreshHudInsets`) says
+// how much of each edge is spoken for; the field is fitted to what is LEFT.
+//
+// THE TRICK IS `setViewOffset`, not a smaller viewport. Rendering into a sub-viewport would
+// leave the HUD sitting on empty backdrop and waste the pixels behind it; instead the camera
+// solves for a VIRTUAL IMAGE the size of the safe rect, and then renders a WINDOW onto that
+// virtual image which is the whole canvas — offset so the safe rect lands exactly under the
+// uncovered area. The field fills the safe rect; what spills past it is the parts of the scene
+// that were always going to be behind the HUD anyway (backdrop, the near floor), drawn rather
+// than blanked. Both three.js cameras implement the same `view` carve-out, so the driver
+// (perspective) and the overhead (orthographic) take identical arguments.
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+
+/** the resolved safe rect for THIS frame — one module-scope object, rewritten per frame and
+ * never reallocated (this camera file allocates nothing per frame; see `fitDriverCamera`'s
+ * cache note). `left`/`top` are the CSS-px insets, `w`/`h` the safe rect's size, `fullW`/`fullH`
+ * the canvas's, and `offset` is false when there is no chrome at all (the gallery, a preview
+ * harness, a `SceneFrame` from before `insets` existed) — in which case the cameras run exactly
+ * as they did before this existed. */
+const safe = { left: 0, top: 0, w: 1, h: 1, fullW: 1, fullH: 1, offset: false };
+
+function resolveSafeRect(frame: SceneFrame): void {
+  const fullW = Math.max(1, frame.width);
+  const fullH = Math.max(1, frame.height);
+  const ins = frame.insets;
+  let left = ins ? Math.max(0, ins.left) : 0;
+  let right = ins ? Math.max(0, ins.right) : 0;
+  let top = ins ? Math.max(0, ins.top) : 0;
+  let bottom = ins ? Math.max(0, ins.bottom) : 0;
+  // A DEGENERATE SAFE RECT IS A BROKEN CAMERA, not a tight one: a zero or negative width hands
+  // the fit an infinite aspect and `setViewOffset` a division by zero. The controller caps each
+  // band at 45 % already, but this scene takes its insets from whoever hands it a `SceneFrame`
+  // and must not trust them — an axis that has been over-claimed drops its chrome allowance
+  // entirely rather than produce a rect nothing can be fitted into.
+  if (left + right > fullW * 0.9) left = right = 0;
+  if (top + bottom > fullH * 0.9) top = bottom = 0;
+  safe.left = left;
+  safe.top = top;
+  safe.w = fullW - left - right;
+  safe.h = fullH - top - bottom;
+  safe.fullW = fullW;
+  safe.fullH = fullH;
+  safe.offset = left > 0.5 || right > 0.5 || top > 0.5 || bottom > 0.5;
+}
+
+/** apply (or clear) this frame's safe-rect window on either camera. `setViewOffset`'s first two
+ * arguments are the VIRTUAL image — the safe rect — and the last four the window rendered onto
+ * it, which is the whole canvas shifted back by the top/left insets. On a `PerspectiveCamera`
+ * this also sets `aspect` to the safe rect's, which is exactly the aspect the fit solved for. */
+function applyViewOffset(cam: THREE.PerspectiveCamera | THREE.OrthographicCamera): void {
+  if (safe.offset) cam.setViewOffset(safe.w, safe.h, -safe.left, -safe.top, safe.fullW, safe.fullH);
+  else if (cam.view?.enabled) cam.clearViewOffset();
+}
+
 export interface BbCameras {
   driver: THREE.PerspectiveCamera;
   overhead: THREE.OrthographicCamera;
@@ -277,13 +341,18 @@ export function createCameras(): BbCameras {
 
   function updateDriver(frame: SceneFrame): void {
     const fwd = forwardOf(frame.viewAngle);
-    const aspect = Math.max(1e-3, frame.width / Math.max(1, frame.height));
+    // THE FIT IS AGAINST THE SAFE RECT, not the canvas — the field has to land inside the part
+    // of the viewport the HUD is not covering, so that is the aspect (and the virtual image)
+    // every number below is solved for.
+    resolveSafeRect(frame);
+    const aspect = Math.max(1e-3, safe.w / safe.h);
     // the field is square (BB_HALF_X === BB_HALF_Y), so one half-extent is the wall distance on
     // every side regardless of which alliance's viewAngle this frame carries
     const fit = fitDriverCamera('red', frame.viewAngle, aspect);
     const eyeDist = BB_HALF_X + fit.setback;
     driver.aspect = aspect;
     driver.fov = (fit.vFov * 180) / Math.PI;
+    applyViewOffset(driver);
     const eyeX = -fwd.x * eyeDist;
     const eyeY = -fwd.y * eyeDist;
     driver.position.set(eyeX, eyeY, fit.eyeH);
@@ -300,7 +369,11 @@ export function createCameras(): BbCameras {
 
   function updateOverhead(frame: SceneFrame): void {
     const fwd = forwardOf(frame.viewAngle);
-    const aspect = Math.max(1e-3, frame.width / Math.max(1, frame.height));
+    // the SAFE rect's aspect, same as the driver camera — this is the phone/touch default
+    // (`sceneCameraFor`), where the score bar and the chip row take the largest share of a
+    // small viewport and an unfitted overhead shot puts the far wall straight under the bar
+    resolveSafeRect(frame);
+    const aspect = Math.max(1e-3, safe.w / safe.h);
     // fit the field plus the same view margin the 2D bounds use (`bounds.viewMargin`), in BOTH
     // screen axes — the square field means a screen-aligned fit needs no rotation-dependent math
     const half = BB_HALF_X + BB_VIEW_MARGIN;
@@ -312,6 +385,8 @@ export function createCameras(): BbCameras {
     overhead.bottom = -halfH;
     overhead.near = 1;
     overhead.far = 4000;
+    // the ortho box just set IS the virtual image; the window onto it is the whole canvas
+    applyViewOffset(overhead);
     overhead.position.set(0, 0, 800);
     // screen-up on the overhead view is world "forward" (into the field from the driver's own
     // wall), matching `worldToScreen`'s rotation for the 2D view
