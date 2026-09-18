@@ -5,18 +5,27 @@ import {
   BB3D_CAP,
   BB3D_REFUSAL,
   CLIENT_CAPS,
+  SERVER_CAPS,
   applyBallDelta,
   decodeServerMsg,
   encodeBallDelta,
   encodeMsg,
+  localizeCommand,
   physicsAllowed,
   quantizeCommand,
   slimWorld,
   unslimWorld,
   type ServerMsg,
 } from '../../src/net/protocol';
+import {
+  PREDICTION_BLURBS,
+  PREDICTION_LABELS,
+  PREDICTION_PREFS,
+} from '../../src/net/predictionPref';
+import { createFullPredictor, createLightPredictor, type Predictor } from '../../src/games/biobuzz/sim3d/predict';
 import { simModuleFor } from '../../src/games/sim';
-import { DEFAULT_ASSISTS } from '../../src/sim/spawn';
+import type { BotDriver } from '../../src/games/types';
+import { DEFAULT_ASSISTS, type RobotSetup } from '../../src/sim/spawn';
 import { ReplayPlayer, maxMatchTicks, runRecordMatch, type Replay } from '../../src/sim/replay';
 import { Room, type Client } from '../../server/room';
 import { BB_DEFAULT_SPEC } from '../../src/games/biobuzz/robotConfig';
@@ -47,6 +56,11 @@ import { cmd, setup, type Check } from './harness';
  * the CAD in parallel; every assertion below is about ids, counts, tags and equality between
  * two runs, never about a position or a score being a particular number.
  */
+
+/** `SMOOTH_MAX_DIST` from `src/game.ts` — the distance past which a correction SNAPS instead of
+ *  easing in. Restated rather than imported for the reason `predict.ts` gives: it lives in a
+ *  DOM-adjacent module, and the number is the contract, not the import. */
+const SMOOTH_MAX_DIST = 16;
 
 /** the four seats of a 2v2, the same roster shape `field.ts`'s SERVER lane uses */
 const ROSTER: { id: string; alliance: Alliance; startIndex: number }[] = [
@@ -580,4 +594,322 @@ export function net3dChecks(check: Check): void {
   // than neither working, because only one of them has anybody's stored matches in it.
   resim('3d', '3d');
   resim('2d', '2d');
+
+  // ═══ 9. THE PREDICTION WIRING (Day 3 lane C, plan §5) ══════════════════════
+  //
+  // The PREDICT lane proves the two predictors are right against a scripted scene. This proves
+  // they are CONNECTED — that a client re-stepping its own buffered inputs through one, from a
+  // real `Room`'s real snapshots, lands where that room is about to put it. Different failure:
+  // a predictor that is perfect and a reconcile that hands it the wrong tick, the wrong world,
+  // or the wrong buffer produces exactly the rubber-banding the predictors exist to remove, and
+  // nothing in the other lane can see it.
+  {
+    check('predict: the stored preference defaults to Auto', PREDICTION_PREFS[0] === 'auto', PREDICTION_PREFS.join(','));
+    check('predict: ...and Auto never picks Off (it is not in the resolved set)',
+      !['light', 'full'].includes('off'));
+    check('predict: every preference has a label and a blurb',
+      PREDICTION_PREFS.every((p) => !!PREDICTION_LABELS[p] && !!PREDICTION_BLURBS[p]));
+
+    /**
+     * ONE CLIENT, RECONCILING FOR REAL.
+     *
+     * It does exactly what `GameController.stepServer` does in a 3D room: send an input stamped
+     * `LEAD` ticks ahead, buffer it, and on every snapshot drop the acknowledged half of the
+     * buffer, `reset` the predictor to the authoritative world, and re-step what is left. Every
+     * intermediate pose is kept, so the NEXT snapshot — which is the server's own answer for a
+     * tick the client already predicted — is the comparison. That is the number a driver feels.
+     *
+     * ⚠️ `LEAD` IS WHAT MAKES THIS NON-VACUOUS. With inputs stamped `tick + 1` the room applies
+     * each one on the tick the client predicted it on and the two agree by construction, which
+     * would measure nothing. Six ticks (100 ms) is an ordinary amount of prediction to be
+     * running at, and it is inside `MAX_INPUT_LEAD_TICKS` by a wide margin.
+     */
+    const LEAD = 6;
+    const converge = (kind: 'light' | 'full', ticks: number): { max: number; samples: number } => {
+      const room = new Room(`n3-pr-${kind}`, () => {}, { kind: 'versus', game: 'biobuzz', physics: '3d' });
+      let setups: RobotSetup[] = [];
+      const baseline = new Map<number, Artifact>();
+      let fresh: { tick: number; world: World } | null = null;
+      const sink = (raw: ServerMsg): void => {
+        const m = wireCopy(raw);
+        if (m.t === 'matchStart') {
+          setups = m.setups;
+          return;
+        }
+        if (m.t !== 'snapshot') return;
+        const balls = applyBallDelta(baseline, m.balls);
+        fresh = {
+          tick: m.serverTick,
+          world: unslimWorld(m.w, balls, (id) => setups.find((s) => s.id === id)!.spec),
+        };
+      };
+      for (const s of ROSTER) room.add(mkClient(s, s.id === 'n3-b1' ? sink : () => {}));
+      room.onMessage('n3-b1', { t: 'start' });
+      room.advanceForTest(1); // matchStart + the first snapshot, so `setups` is in hand
+
+      let predictor: Predictor | null = null;
+      const buf: { tick: number; cmd: RobotCommand }[] = [];
+      const predicted = new Map<number, { x: number; y: number }>();
+      let max = 0;
+      let samples = 0;
+      let lastSnapTick = -1;
+      for (let n = 0; n < ticks; n++) {
+        const tick = room.tick + LEAD;
+        ROSTER.forEach((seat, i) => {
+          const c = drive(tick, i);
+          room.onMessage(seat.id, { t: 'input', tick, q: quantizeCommand(c) });
+          // the LOCAL client buffers its own, localized exactly as `stepServer` does — the
+          // server steps the dequantized value, so predicting on the raw one would drift by
+          // the rounding on every single tick
+          if (i === 0) buf.push({ tick, cmd: localizeCommand(c) });
+        });
+        room.advanceForTest(1);
+        const snap = fresh as { tick: number; world: World } | null;
+        if (!snap || snap.tick === lastSnapTick) continue;
+        lastSnapTick = snap.tick;
+        // THE COMPARISON, before this snapshot is consumed: what did we predict for this tick?
+        const want = predicted.get(snap.tick);
+        const server = snap.world.robots.find((r) => r.id === 0);
+        if (want && server) {
+          samples++;
+          max = Math.max(max, Math.hypot(want.x - server.pos.x, want.y - server.pos.y));
+        }
+        // ...then reconcile, exactly as `replayThroughPredictor` does
+        while (buf.length && buf[0].tick <= snap.tick) buf.shift();
+        if (!predictor) {
+          predictor = kind === 'full'
+            ? createFullPredictor(snap.world, 0)
+            : createLightPredictor(snap.world, 0);
+        }
+        predictor.reset(snap.world, snap.tick);
+        predicted.clear();
+        for (let i = 0; i < buf.length; i++) {
+          const pose = predictor.step(buf[i].cmd);
+          predicted.set(snap.tick + 1 + i, { x: pose.pos.x, y: pose.pos.y });
+        }
+      }
+      predictor?.dispose();
+      return { max, samples };
+    };
+
+    for (const kind of ['light', 'full'] as const) {
+      const r = converge(kind, 420);
+      check(
+        `predict: the ${kind} reconcile was actually exercised (snapshots compared)`,
+        r.samples >= 50,
+        `${r.samples} samples`,
+      );
+      check(
+        `predict: ...and it converged inside SMOOTH_MAX_DIST on a driven 2v2`,
+        r.samples >= 50 && r.max < SMOOTH_MAX_DIST,
+        `worst correction ${r.max.toFixed(2)} in (snap at ${SMOOTH_MAX_DIST})`,
+      );
+    }
+
+    /**
+     * THE 2D PATH IS UNTOUCHED, and it is asserted on the SOURCE because the thing being
+     * protected is a BRANCH rather than a number. `reconcile` must still replay the whole game
+     * step for a room that is not a predicted 3D one; a refactor that made the predictor the
+     * only path would pass every 3D check in this file and silently change DECODE and Chain
+     * Reaction netcode, which is the owner's permanence rule broken in the one place it is
+     * hardest to notice.
+     */
+    const game = readFileSync('src/game.ts', 'utf8');
+    check(
+      'predict: reconcile still replays `mod.step` for a room that is not predicted-3D',
+      /if \(this\.predicted3d\(\)\) this\.replayThroughPredictor\([\s\S]{0,80}else for \(const b of this\.inputBuf\) this\.mod\.step\(/.test(game),
+      'the 2D reconcile branch is not where it was',
+    );
+    check(
+      'predict: the predictors are reached through the LAZY loader, never a static import',
+      game.includes('physics3dImpl().createFullPredictor') === false &&
+        /impl\.createFullPredictor/.test(game) &&
+        !/from '\.\/games\/biobuzz\/sim3d\/predict'/.test(game),
+      'sim3d/predict must not be imported from src/game.ts',
+    );
+    check(
+      'predict: Auto probes with `probeFullReconcileMs` and the plan’s budget',
+      /probeFullReconcileMs\(/.test(game) && /PREDICT_FULL_BUDGET_MS/.test(game),
+    );
+    check(
+      'predict: Off renders the local robot interpolated (displayWorld stops exempting it)',
+      /const predictLocal = !\(this\.predicted3d\(\) && this\.predictionMode === 'off'\)/.test(game),
+    );
+  }
+
+  // ═══ 10. BOT SEATS (Day 3 lane C, plan §6) ═════════════════════════════════
+  //
+  // A bot is a seat the SERVER drives. Everything below is about that sentence being true at
+  // each of the four places it has to be: the roster, the setups, the command frame, and the
+  // rules about which rooms may have one.
+  {
+    const mod = simModuleFor('biobuzz') as { bot?: BotDriver };
+    const real = mod.bot;
+    // THE GAME'S OWN DRIVER WHEN IT HAS ONE. The stub exists so this lane is meaningful before
+    // the policy lands and after it is swapped out for a different one — what is being checked
+    // is the ROOM's plumbing, which must not depend on how well anybody drives.
+    if (!real) mod.bot = STUB_BOT;
+    try {
+      const drv = simModuleFor('biobuzz').bot!;
+      check('bots: the game exposes a driver with at least one tier', drv.tiers.length > 0, drv.tiers.join(','));
+      check('bots: ...and a default that is one of them', drv.tiers.includes(drv.defaultTier), drv.defaultTier);
+      check('bots: an unknown tier folds to the default rather than being taken on trust',
+        drv.coerceTier('nonsense') === drv.defaultTier, drv.coerceTier('nonsense'));
+
+      // ---- where a bot may and may not sit ----
+      {
+        const rec = new Room('n3-bot-rec', () => {}, { kind: 'record', record: 'solo', game: 'biobuzz' });
+        check('bots: a RECORD room refuses one (its replay is leaderboard proof)', rec.addBot() !== null, String(rec.addBot()));
+        const dec = new Room('n3-bot-dec', () => {}, { kind: 'versus', game: 'decode' });
+        check('bots: a game with no driver refuses one', dec.addBot() !== null, String(dec.addBot()));
+        const staged = new Room('n3-bot-mm', () => {}, { kind: 'versus', game: 'biobuzz' });
+        staged.applyPending({
+          code: 'n3-bot-mm',
+          game: 'biobuzz',
+          mode: '2v2',
+          seed: 1,
+          physics: '3d',
+          roster: [],
+        } as unknown as Parameters<Room['applyPending']>[0]);
+        check('bots: a STAGED (matchmade, rated) room refuses one', staged.addBot() !== null, String(staged.addBot()));
+      }
+
+      // ---- one human, three bots: the roster, the setups, the frame ----
+      {
+        let rosterMsg: Extract<ServerMsg, { t: 'roster' }> | null = null;
+        const room = new Room('n3-bot', () => {}, { kind: 'versus', game: 'biobuzz' });
+        room.add(
+          mkClient(ROSTER[0], (m) => {
+            const c = wireCopy(m);
+            if (c.t === 'roster') rosterMsg = c;
+          }),
+        );
+        check('bots: seating three is accepted',
+          [room.addBot(drv.tiers[0]), room.addBot(drv.tiers[0]), room.addBot(drv.tiers[0])].every((e) => e === null));
+        check('bots: a fourth is refused — a seat is a seat', room.addBot(drv.tiers[0]) !== null);
+        check('bots: ...and a human is refused too, so nobody is seated past capacity', !room.canJoin());
+
+        const ros = rosterMsg as Extract<ServerMsg, { t: 'roster' }> | null;
+        check('bots: the roster carries four rows', ros?.players.length === 4, `${ros?.players.length}`);
+        check('bots: ...three of them tagged as bots', ros?.players.filter((p) => p.bot).length === 3);
+        check('bots: ...each READY, so START never waits on one', (ros?.players ?? []).filter((p) => p.bot).every((p) => p.ready));
+        check('bots: ...and named for what they are', (ros?.players ?? []).filter((p) => p.bot).every((p) => p.name.includes('bot')));
+        // ONE HUMAN, TWO ALLIANCES. Three bots on the human's own side would be a 4v0.
+        const sides = new Set((ros?.players ?? []).map((p) => p.alliance));
+        check('bots: ...filling BOTH alliances rather than stacking one', sides.size === 2,
+          (ros?.players ?? []).map((p) => `${p.name}:${p.alliance}`).join(' '));
+
+        room.onMessage(ROSTER[0].id, { t: 'start' });
+        room.advanceForTest(4);
+        check('bots: the match started with four robots', room.tick > 0);
+      }
+
+      // ---- the bots DRIVE, and the recorder keeps what they did ----
+      //
+      // A 2D room on purpose: a bot is physics-agnostic and a whole 3D match here would cost
+      // seconds to prove something about the frame builder. The checks are about commands
+      // arriving, not about a solve.
+      {
+        let outcome: { replay: Replay } | null = null;
+        const room = new Room('n3-bot-run', () => {}, { kind: 'versus', game: 'biobuzz' }, (o) => {
+          outcome = o as unknown as { replay: Replay };
+        });
+        room.add(mkClient(ROSTER[0], () => {}));
+        room.addBot(drv.tiers[drv.tiers.length - 1]);
+        room.onMessage(ROSTER[0].id, { t: 'start' });
+        for (let t = 0; t < 700; t++) {
+          const tick = room.tick + 1;
+          room.onMessage(ROSTER[0].id, { t: 'input', tick, q: quantizeCommand(drive(tick, 0)) });
+          room.advanceForTest(1);
+        }
+        check('bots: a room with a bot in it is UNPERSISTED — nothing reached the DB layer',
+          outcome === null, outcome ? 'onResult fired' : '');
+        // and the replay the recorder is building has the bot's track in it. Read through the
+        // room's own snapshot stream: robot 1 is the bot, and it has to have MOVED.
+        const room2 = new Room('n3-bot-move', () => {}, { kind: 'versus', game: 'biobuzz' });
+        let first: World | null = null;
+        let last: World | null = null;
+        const setups2: RobotSetup[] = [];
+        const base2 = new Map<number, Artifact>();
+        room2.add(
+          mkClient(ROSTER[0], (m) => {
+            const c = wireCopy(m);
+            if (c.t === 'matchStart') setups2.push(...c.setups);
+            if (c.t !== 'snapshot') return;
+            const w = unslimWorld(c.w, applyBallDelta(base2, c.balls), (id) => setups2.find((s) => s.id === id)!.spec);
+            if (!first) first = w;
+            last = w;
+          }),
+        );
+        room2.addBot(drv.tiers[drv.tiers.length - 1]);
+        room2.onMessage(ROSTER[0].id, { t: 'start' });
+        room2.advanceForTest(700);
+        const a = first as World | null;
+        const b = last as World | null;
+        const botA = a?.robots.find((r) => r.id === 1);
+        const botB = b?.robots.find((r) => r.id === 1);
+        check('bots: the bot seat became robot 1', !!botA && !!botB);
+        check('bots: ...and the SERVER drove it (it left its start pose with no client attached)',
+          !!botA && !!botB && Math.hypot(botB.pos.x - botA.pos.x, botB.pos.y - botA.pos.y) > 6,
+          botA && botB ? `${Math.hypot(botB.pos.x - botA.pos.x, botB.pos.y - botA.pos.y).toFixed(1)} in` : '');
+      }
+    } finally {
+      // leave the registry exactly as it was found — a lane that patches a module and keeps it
+      // has changed what every later lane is testing
+      if (real) mod.bot = real;
+      else delete mod.bot;
+    }
+  }
+
+  // ═══ 11. THE RANKED CUTOVER (Day 3 lane C, plan §7) ════════════════════════
+  {
+    check('cutover: the server advertises the 3D-ranked capability', SERVER_CAPS.includes(BB3D_CAP), SERVER_CAPS.join(','));
+    check('cutover: ...and the bot-seat capability, so the button is not offered to an old deploy',
+      SERVER_CAPS.includes('bots'));
+    // The SERVER's half of the cutover is already asserted in section 2 (a record room is 3D
+    // whatever its config says). This is the CLIENT's half: it must refuse to queue rather than
+    // stage a 2D rated match against an old deploy, which is the silent failure the cap exists
+    // for — and the refusal has to be at the moment of committing, not merely a sentence.
+    const mm = readFileSync('src/ui/Matchmaking.tsx', 'utf8');
+    check(
+      'cutover: the client checks the capability before it queues',
+      /const find = async[\s\S]{0,2000}serverCaps\(\)[\s\S]{0,200}BB3D_CAP/.test(mm),
+      'no capability gate inside find()',
+    );
+    check(
+      'cutover: ...and only for a game that HAS two solves',
+      /physicsOptions\?\.includes\('3d'\)/.test(mm),
+    );
+  }
 }
+
+/**
+ * A DETERMINISTIC STAND-IN DRIVER, used only when the game has none yet.
+ *
+ * It drives forward and weaves, with no clock, no `Math.random` and no read of `world.rngState`
+ * — the seam's own contract. Its purpose is to make the ROOM's bot plumbing testable
+ * independently of whatever policy ships: every check in section 10 is about a command reaching
+ * a robot, and none of them should start failing because a real policy decided to sit still for
+ * the first second of autonomous.
+ */
+const STUB_BOT: BotDriver = {
+  tiers: ['easy', 'hard'],
+  defaultTier: 'easy',
+  coerceTier: (x) => (x === 'hard' ? 'hard' : 'easy'),
+  create: (_w, robotId, tier, seed) => {
+    let t = 0;
+    return {
+      step(): RobotCommand {
+        t++;
+        // a triangle wave off the seed — no trig, so the sim source guard has nothing to object
+        // to if this file is ever moved under `src/`
+        const phase = ((t + (seed % 37) + robotId * 11) % 120) / 120;
+        return cmd({
+          driveY: tier === 'hard' ? 1 : 0.55,
+          rotate: (phase < 0.5 ? phase * 4 - 1 : 3 - phase * 4) * 0.4,
+          intake: true,
+        });
+      },
+    };
+  },
+};

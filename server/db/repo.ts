@@ -1341,6 +1341,9 @@ export interface BoardRow {
    *  names are printed, so both names carry their own badge. */
   partnerSupporter?: boolean;
   partnerRole?: StaffRole;
+  /** which solve produced this run (0039). A pre-0039 row reads `'2d'` because that is what it
+   *  was; the board shows it as a chip beside the name so two eras on one board are legible. */
+  physics?: string;
 }
 
 /** best score per player within a season × mode × drivetrain, ranked. Pass
@@ -1352,6 +1355,16 @@ export async function recordLeaderboard(opts: {
   balanceVersion: number;
   limit?: number;
   game?: Game;
+  /**
+   * WHICH ERA (migration 0039). Absent ⇒ every row, which is what the board shows by default
+   * and what every caller before Day 3 asked for.
+   *
+   * ⚠️ **THE FILTER IS INSIDE `best`, NOT OUTSIDE IT**, and that placement is the whole point:
+   * `best` is one row per player, so filtering after it would show a player's 2D personal best
+   * and then hide it, leaving them off a 3D board they have a legitimate 3D score on. Filtering
+   * first makes the board "each player's best 3D run", which is what a player picking 3D means.
+   */
+  physics?: '2d' | '3d';
 }): Promise<BoardRow[]> {
   const params: unknown[] = [opts.balanceVersion, opts.mode, g(opts.game)];
   let dtFilter = '';
@@ -1359,20 +1372,25 @@ export async function recordLeaderboard(opts: {
     params.push(opts.drivetrain);
     dtFilter = `and r.drivetrain = $${params.length}`;
   }
+  let physFilter = '';
+  if (opts.physics) {
+    params.push(opts.physics);
+    physFilter = `and r.physics = $${params.length}`;
+  }
   params.push(opts.limit ?? 100);
   return q<BoardRow>(
     `with best as (
        select distinct on (r.user_id)
-         r.user_id, r.partner_id, r.score, r.replay_id, r.created_at, r.config
+         r.user_id, r.partner_id, r.score, r.replay_id, r.created_at, r.config, r.physics
        from records r
-       where r.balance_version = $1 and r.mode = $2 and r.game = $3 ${dtFilter}
+       where r.balance_version = $1 and r.mode = $2 and r.game = $3 ${dtFilter} ${physFilter}
        order by r.user_id, r.score desc, r.created_at asc
      )
      select b.user_id as "userId", p.handle, p.username, ${badgeCols('p.')},
             b.partner_id as "partnerId",
             pp.handle as "partnerHandle", pp.username as "partnerUsername",
             ${badgeCols('pp.', 'partner')},
-            b.score, b.replay_id as "replayId", b.created_at as "createdAt", b.config
+            b.score, b.replay_id as "replayId", b.created_at as "createdAt", b.config, b.physics
      from best b
        join profiles p on p.user_id = b.user_id
        left join profiles pp on pp.user_id = b.partner_id

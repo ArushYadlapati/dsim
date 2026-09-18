@@ -1099,6 +1099,37 @@ async function main(): Promise<void> {
     }
     check('physics: ...and the constraint still refuses a drivetrain that does not exist', bogus !== '');
 
+    /**
+     * ---- the BOARD read path: the badge and the era filter (Day 3) --------------------
+     *
+     * The column existing and the board SHOWING it are different facts, and the gap between
+     * them is the kind that ships: a `select` that simply does not project two columns still
+     * compiles and still renders, only bare — which is how the ranked board once sat badge-less
+     * (`docs/area/accounts.md`). So the projection is asserted, and so is the filter.
+     *
+     * ⚠️ **THE FILTER IS INSIDE `best`, AND THIS IS THE CHECK THAT SAYS SO.** `best` is one row
+     * per player. `phys-a` above has a 3D run of 123 and a 2D run of 45, so their overall best
+     * is the 3D one — and a filter applied AFTER `best` would find that row, reject it, and
+     * leave the player off a 2D board they demonstrably have a 2D score on. Filtering first is
+     * what makes "3D" mean "each player's best 3D run" instead of "players whose best run
+     * happens to be 3D".
+     */
+    {
+      const all = await repo.recordLeaderboard({ mode: 'solo', balanceVersion: SEASON, game: 'biobuzz' });
+      const mine = all.find((r) => r.userId === 'phys-a');
+      check('physics/board: an unfiltered board projects the era of each row', mine?.physics === '3d', String(mine?.physics));
+      const only3d = await repo.recordLeaderboard({ mode: 'solo', balanceVersion: SEASON, game: 'biobuzz', physics: '3d' });
+      check('physics/board: the 3D filter keeps the 3D run', only3d.find((r) => r.userId === 'phys-a')?.score === 123,
+        String(only3d.find((r) => r.userId === 'phys-a')?.score));
+      const only2d = await repo.recordLeaderboard({ mode: 'solo', balanceVersion: SEASON, game: 'biobuzz', physics: '2d' });
+      const mine2d = only2d.find((r) => r.userId === 'phys-a');
+      check(
+        'physics/board: ...and the 2D filter finds the player’s best 2D run, not nothing',
+        mine2d?.score === 45 && mine2d?.physics === '2d',
+        `${String(mine2d?.score)}/${String(mine2d?.physics)}`,
+      );
+    }
+
     // ---- matches: the history row ----------------------------------------------------
     const m3d = await repo.saveMatch('2v2', SEASON, id3d, true, 'biobuzz', '3d');
     check(
