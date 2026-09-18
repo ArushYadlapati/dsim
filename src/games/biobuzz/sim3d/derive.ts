@@ -47,11 +47,15 @@ function insideCell(px: number, py: number, pz: number, alliance: Alliance, side
   if (Math.abs(dx) > box.xHalf) return false;
   const dy = py - 0;
   const dz = pz - BB3_HIVE_PIVOT_Z;
-  // world (y, z) -> the box's OWN frame: rotate2(y, z, refTheta - theta) -- see math3.ts's
-  // rotate2 header and `HiveLocalBox.refTheta`'s own comment (`sim3d/bodies.ts`). `refTheta` is
-  // 0 for the theta-independent algebraic fallback (reducing to the original `-theta`) and
-  // `cadCaptureTheta(alliance)` for a CAD box, whose numbers are true AT that specific tilt.
-  const { a: v, b: w } = rotate2(dy, dz, box.refTheta - theta);
+  // world (y, z) -> the box's OWN frame: rotate2(y, z, -theta), NO `refTheta` TERM -- since
+  // `sim3d/bodies.ts`'s `obliqueBoxCollider` now BAKES `refTheta` into the built collider's own
+  // vertex data (a CAD box's `vMin..wMax` are captured AT `refTheta`; baking rotates them by
+  // `+refTheta` so the body's `theta - refTheta` rotation composes to the tray's true absolute
+  // `theta`), `world = pivot + Rotate(theta) * (v, w)` holds for EVERY box the same way the Day 1
+  // fallback's (`refTheta` always 0) already did -- see `HiveLocalBox.refTheta`'s and
+  // `obliqueBoxCollider`'s own comments for the derivation and the bug this replaces (a flat,
+  // untilted floor at rest, on the CAD path only).
+  const { a: v, b: w } = rotate2(dy, dz, -theta);
   return v >= box.vMin && v <= box.vMax && w >= box.wMin && w <= box.wMax;
 }
 

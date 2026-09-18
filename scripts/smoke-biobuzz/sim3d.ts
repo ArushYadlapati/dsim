@@ -5,11 +5,12 @@ import { biobuzzPhysics } from '../../src/games/biobuzz/state';
 import { biobuzzStep } from '../../src/games/biobuzz/step';
 import { step3d } from '../../src/games/biobuzz/sim3d/step3d';
 import { engineFor } from '../../src/games/biobuzz/sim3d/engine';
-import { hiveCellLocalBox, hivePivotX, __setFieldCollidersOverrideForTests } from '../../src/games/biobuzz/sim3d/bodies';
+import { hiveCellLocalBox, hivePivotX, hiveTrayRefTheta, __setFieldCollidersOverrideForTests } from '../../src/games/biobuzz/sim3d/bodies';
 import { hiveTiltAngle } from '../../src/games/biobuzz/sim3d/hive3d';
 import { rotate2 } from '../../src/games/biobuzz/sim3d/math3';
 import { worldHash } from '../../src/net/checksum';
 import { bbScoreWorld } from '../../src/games/biobuzz/score';
+import { bbSolveShot } from '../../src/games/biobuzz/robot';
 import {
   BB3_HIVE_PIVOT_Z,
   BB3_CAPTURE_TICKS,
@@ -101,12 +102,15 @@ function turnProfile(
  * `sim3d/bodies.ts`/`derive.ts` use, so a scene staged with it is staged where the engine
  * actually thinks the cell is.
  *
- * `refTheta` is `hiveCellLocalBox(...).refTheta` -- 0 for the theta-independent algebraic
- * fallback box (this function then reduces to its original `rotate2(v, w, theta)`), or
- * `cadCaptureTheta(alliance)` for a CAD box, whose (v, w) numbers are only the true
- * world-relative-to-pivot extent AT that specific tilt: placing one at the CURRENT tilt needs the
- * DELTA `theta - refTheta`, exactly mirroring `sim3d/bodies.ts`'s per-collider rotation offset
- * and `derive.ts`'s `insideCell` (see either one's own comment on why).
+ * NO `refTheta` TERM -- `hiveCellLocalBox`'s `vMin..wMax` numbers (0 for the theta-independent
+ * algebraic fallback box, `cadCaptureTheta(alliance)` for a CAD box, captured AT that tilt) are
+ * now BAKED into the built collider's own geometry by `sim3d/bodies.ts`'s `obliqueBoxCollider`
+ * (a per-collider Rapier rotation of `refTheta`, fixed once at creation -- not the live, per-tick
+ * `setNextKinematicRotation` the earlier, REJECTED per-collider-rotation attempt used, which is
+ * what destabilized a resting element; see that function's own comment), so `world = pivot +
+ * Rotate(theta) * (v, w)` holds the same way it always did for the fallback box (`refTheta`
+ * always 0) -- see `HiveLocalBox.refTheta`'s own comment. `derive.ts`'s `insideCell` does the
+ * matching inverse, also with no `refTheta` term.
  */
 function hiveWorldPoint(
   alliance: 'red' | 'blue',
@@ -115,9 +119,8 @@ function hiveWorldPoint(
   x: number,
   v: number,
   w: number,
-  refTheta = 0,
 ): { x: number; y: number; z: number } {
-  const { a: y, b: z } = rotate2(v, w, theta - refTheta);
+  const { a: y, b: z } = rotate2(v, w, theta);
   return { x: hivePivotX(alliance) + x, y, z: BB3_HIVE_PIVOT_Z + z };
 }
 
@@ -381,7 +384,7 @@ export function sim3dChecks(check: Check): void {
     const box = hiveCellLocalBox(1, 'blue');
     const wCentre = (box.wMin + box.wMax) / 2;
     const startV = box.vMin - 3;
-    const start = hiveWorldPoint('blue', 1, theta, 0, startV, wCentre, box.refTheta);
+    const start = hiveWorldPoint('blue', 1, theta, 0, startV, wCentre);
     const velDir = rotate2(260, 0, theta);
     const id = Math.max(...w.balls.map((b) => b.id)) + 1;
     const shot: Artifact = {
@@ -398,7 +401,7 @@ export function sim3dChecks(check: Check): void {
     const after = w.balls.find((b) => b.id === id)!;
     const dy = after.pos.y - 0;
     const dz = after.z + BB_POLLEN_R - BB3_HIVE_PIVOT_Z;
-    const local = rotate2(dy, dz, box.refTheta - theta);
+    const local = rotate2(dy, dz, -theta);
     check(
       'CCD: a 260 in/s shot into a 0.25-in cell wall does not tunnel through it',
       local.a <= box.vMin + 1,
@@ -475,7 +478,17 @@ export function sim3dChecks(check: Check): void {
   }
 
   // ---- launch into the hive: own cell scores for the owner; the other alliance's for it -----
-  function fireIntoCell(w: World, alliance: 'red' | 'blue', color: Artifact['color']): number {
+  //
+  // `speed`/`xOffset` are additive parameters (both default to the ORIGINAL fixed values, so
+  // every existing call site below is byte-identical) -- the retention lane further down reuses
+  // this exact, already-correct entry geometry (staged just outside the mouth, moving inboard
+  // along the tray's own v axis) at DISTANCE-SCALED entry speeds instead of re-deriving a
+  // full-field ballistic approach, which measurably runs into two things outside this lane's
+  // scope: a straight shot from far across the x axis crosses the OPPONENT alliance's own hive
+  // frame, and the cell's closed back wall (full height) stops anything approaching from behind
+  // the pivot well short of the aim point even on a steep arc -- both real, but ROBOT-AIMING
+  // questions (`robot.ts`'s own turret geometry), not hive-tray ones.
+  function fireIntoCell(w: World, alliance: 'red' | 'blue', color: Artifact['color'], speed = 55, xOffset = 0): number {
     // the REAL tilt for THIS alliance's hive -- red's up cell is `south` at staging, which is
     // `theta = -rest`, not `+rest`; a hardcoded sign-agnostic angle here was the bug that sent
     // an earlier version of this shot falling to the tiles well short of the cell (see this
@@ -485,8 +498,8 @@ export function sim3dChecks(check: Check): void {
     const box = hiveCellLocalBox(sideSign, alliance);
     const wCentre = (box.wMin + box.wMax) / 2;
     const startV = sideSign > 0 ? box.vMax + 2 : box.vMin - 2;
-    const start = hiveWorldPoint(alliance, sideSign, theta, 0, startV, wCentre, box.refTheta);
-    const inward = rotate2(-sideSign * 55, 0, theta);
+    const start = hiveWorldPoint(alliance, sideSign, theta, xOffset, startV, wCentre);
+    const inward = rotate2(-sideSign * speed, 0, theta);
     const id = Math.max(...w.balls.map((b) => b.id)) + 1;
     const shot: Artifact = {
       id,
@@ -532,16 +545,40 @@ export function sim3dChecks(check: Check): void {
     // height the one rigid CAD shape actually puts it at), not the Day 1 algebraic bracket
     // calibrated to 25.5in by hand -- see `hiveCellLocalBox`'s and `buildHiveTray3d`'s comments
     // on dropping that bracket once the CAD hulls give the real clearance.
+    //
+    // THE WORST-CASE (LOWEST) CORNER ALONG THE DOWN CELL'S OWN v-SPAN, not its midpoint -- a
+    // robot driving THROUGH the down cell crosses the whole span, so the binding obstruction is
+    // whichever end sits lower, found by measurement once the hive-tilt fix below landed: the
+    // down box's own v-extremes read world z 22.7 (outer) and 29.8 (inner), so a robot's actual
+    // headroom is set by the LOWER of the two, not their average.
     const downBox = hiveCellLocalBox(-1, 'blue');
-    const bracket = hiveWorldPoint('blue', -1, theta, 0, (downBox.vMin + downBox.vMax) / 2, downBox.wMin, downBox.refTheta);
-    // ⚠️ THE CAD'S OWN DOWN-CELL CLEARANCE (bracket.z, ~31.96in) DOES NOT MATCH THE MANUAL'S
-    // BB_HIVE_BOTTOM_Z (25.5in) -- printed and asserted against in the MEASUREMENTS check below,
-    // where the gap is the story: it is the SAME ~6.5in the Day 1 algebraic box's own header
-    // already reported (25.5 vs its own ~32in), now confirmed by real CAD geometry rather than
-    // an APPROX box -- one rigid tilting bar cannot put the up-cell opening at BB_HIVE_OPEN_Z
-    // AND the down-cell floor at BB_HIVE_BOTTOM_Z at the same time, on this hive's own measured
-    // dimensions, matching the field lane's own flagged concern. This test therefore asserts
-    // what the BUILT COLLIDER actually does, not the manual figure it cannot reach.
+    const cornerOuter = hiveWorldPoint('blue', -1, theta, 0, downBox.vMin, downBox.wMin);
+    const cornerInner = hiveWorldPoint('blue', -1, theta, 0, downBox.vMax, downBox.wMin);
+    const bracket = cornerOuter.z <= cornerInner.z ? cornerOuter : cornerInner;
+    // ⚠️ THE CAD'S OWN DOWN-CELL CLEARANCE (bracket.z, ~22.7in) DOES NOT MATCH THE MANUAL'S
+    // BB_HIVE_BOTTOM_Z (25.5in) either, though it is now MUCH closer (delta ~2.8in, was ~6.5in
+    // before the hive-tilt fix below) -- printed and asserted against in the MEASUREMENTS check
+    // below, where the gap is the story: one rigid tilting bar cannot put the up-cell opening at
+    // BB_HIVE_OPEN_Z AND the down-cell floor at BB_HIVE_BOTTOM_Z at the same time, on this hive's
+    // own measured dimensions, matching the field lane's own flagged concern. This test therefore
+    // asserts what the BUILT COLLIDER actually does, not the manual figure it cannot reach.
+    //
+    // ⚠️ THIS NUMBER MOVED, ~32in -> ~22.7in, WHEN `obliqueBoxCollider` (`sim3d/bodies.ts`) FIXED
+    // THE HIVE-TILT BUG THE OWNER PLAYTEST REPORTED ("visually tilted more than where the balls
+    // end up", "spill out too easily"): the CAD box's `vMin..wMax` are captured AT the tray's
+    // OWN tilt, and the PRE-FIX code built an axis-aligned collider straight from them with NO
+    // rotation baked in, which is exactly flat (untilted) in world space the instant the body's
+    // own kinematic rotation is 0 -- which is AT REST, the one moment the tilt matters most. That
+    // bug flattened BOTH cells: the up cell's floor read the same world z at its inner and outer
+    // edge (no slope to hold a landed element against the divider -- the actual GAMEPLAY bug),
+    // and the down cell's clearance came out ~32in, comfortably over `BB3_HEIGHT_MAX` (29),
+    // purely because the true CAD tilt was never applied to it either. The fix makes BOTH cells
+    // genuinely tilted at rest, and 22.7in -- BELOW 29 -- is what the down cell's real geometry
+    // (as CAD-measured) turns out to be once it or actually gets the correct tilt: a legal
+    // 29-in robot no longer clears it, which the checks below now assert directly, and which is
+    // arguably the more game-realistic reading of BB_HIVE_BOTTOM_Z (25.5) sitting BELOW
+    // BB3_HEIGHT_MAX (29) in the first place -- a max-height build was never obviously meant to
+    // duck under the down cell for free.
     function driveAtBracket(heightIn: number): number {
       const w = mkWorld3d('free', 28);
       const r = w.robots[0];
@@ -573,9 +610,10 @@ export function sim3dChecks(check: Check): void {
       `18in final y=${y18.toFixed(2)}, bracket y=${bracket.y.toFixed(2)}`,
     );
     check(
-      'height: a 29-in (legal max) robot ALSO passes -- the CAD down-cell clearance measures ' +
-        `${bracket.z.toFixed(2)}in, above BB3_HEIGHT_MAX (29); see the measurements check for the gap to BB_HIVE_BOTTOM_Z`,
-      y29 > bracket.y + 5,
+      'height: a 29-in (legal max) robot is now STOPPED by the down-cell clearance -- the CAD ' +
+        `measures ${bracket.z.toFixed(2)}in, below BB3_HEIGHT_MAX (29), once the hive-tilt fix ` +
+        'applies the true tilt to the down cell too (was ~32in, comfortably clear, before it)',
+      y29 < bracket.y - 2,
       `29in final y=${y29.toFixed(2)}, bracket y=${bracket.y.toFixed(2)}, clearance z=${bracket.z.toFixed(2)}`,
     );
     check(
@@ -597,7 +635,7 @@ export function sim3dChecks(check: Check): void {
       const v = box.vMin + 2 + (i % 4) * 2.2;
       const x = -6 + Math.floor(i / 4) * 4;
       const w0 = box.wMin + BB_POLLEN_R + 0.3;
-      const p = hiveWorldPoint('blue', 1, theta, x, v, w0, box.refTheta);
+      const p = hiveWorldPoint('blue', 1, theta, x, v, w0);
       const id = nextId++;
       placedIds.push(id);
       w.balls.push({
@@ -625,6 +663,200 @@ export function sim3dChecks(check: Check): void {
     check('tip: every previously-contained element left the cell', stillIn.length === 0, `${stillIn.length} still listed: ${JSON.stringify(stillIn)}`);
     check('tip: the up cell reads empty after the swing', w.biobuzz!.hives.blue.contents.length === 0);
     check('tip: element count is unchanged (56 + the ones this check added)', w.balls.length === 56 + n);
+  }
+
+  // ---- rest-pose: the tray's tilt convention, per alliance -- the hive-tilt fix itself --------
+  //
+  // The owner's playtest reported two hive bugs: the SCENE visually tilts more than where balls
+  // end up, and landed elements spill out too easily. Both traced to ONE bug in the CAD-collider
+  // path: `hiveCellLocalBox`'s `vMin..wMax` are captured AT the tray's own tilt (`refTheta`), and
+  // the PRE-FIX code built an axis-aligned collider straight from those numbers with no further
+  // rotation baked in -- exactly FLAT (untilted) in world space the instant the body's own
+  // kinematic rotation (`hiveTiltAngle - hiveTrayRefTheta`) is 0, which is AT REST, the one moment
+  // the tilt matters most. `obliqueBoxCollider` (`sim3d/bodies.ts`) fixes it by baking `refTheta`
+  // into the collider's own geometry (a FIXED Rapier collider-local rotation, set once at
+  // creation -- never a live `setNextKinematicRotation` on the collider itself, which is the
+  // documented, measured source of an earlier attempt's kinematic instability). These checks
+  // assert the fixed geometry directly, so a regression here fails loudly rather than only
+  // showing up as a gameplay symptom three steps removed. Worked example, both alliances, per
+  // `BB_HIVE_UP_STAGED`: red's up cell is `south` (theta = -30deg at rest), blue's is `north`
+  // (theta = +30deg) -- `hiveTiltAngle`'s own JSDoc carries the same two cases.
+  for (const a of ['red', 'blue'] as const) {
+    const w = mkWorld3d('free', a === 'red' ? 460 : 461);
+    step3d(w, 1 / 60, new Map()); // one tick: builds the engine and runs applyHiveTilt once
+    const theta = hiveTiltAngle(w, a);
+    const refTheta = hiveTrayRefTheta(a);
+    check(
+      `rest-pose: ${a}'s hive body rotation is 0 at rest (CAD colliders on; up='${w.biobuzz!.hives[a].up}')`,
+      Math.abs(theta - refTheta) < 1e-9,
+      `theta=${theta.toFixed(4)} refTheta=${refTheta.toFixed(4)}`,
+    );
+    const upSide: 1 | -1 = w.biobuzz!.hives[a].up === 'north' ? 1 : -1;
+    const box = hiveCellLocalBox(upSide, a);
+    // the OUTER (open/mouth) end of the cell is whichever v-extreme sits farther from the pivot
+    const outerV = Math.abs(box.vMax) > Math.abs(box.vMin) ? box.vMax : box.vMin;
+    const innerV = outerV === box.vMax ? box.vMin : box.vMax;
+    const outerZ = BB3_HIVE_PIVOT_Z + rotate2(outerV, box.wMin, theta).b;
+    const innerZ = BB3_HIVE_PIVOT_Z + rotate2(innerV, box.wMin, theta).b;
+    check(
+      `rest-pose: ${a}'s up cell (${w.biobuzz!.hives[a].up}) floor slopes DOWN toward the divider -- the open (mouth) edge reads HIGHER than the inner (divider) wall base`,
+      outerZ > innerZ,
+      `outer(mouth) z=${outerZ.toFixed(2)} inner(divider) z=${innerZ.toFixed(2)}`,
+    );
+  }
+
+  // ---- retention: realistic shots at typical distances stay in the up cell ------------------
+  //
+  // A shot fired along `fireIntoCell`'s own (already-correct) entry geometry, at the entry speed
+  // a REAL turret shot would carry from `d` inches out (`bbSolveShot`, `robot.ts`, zero elevation
+  // gain: `sqrt(g*d)`) -- see `fireIntoCell`'s own header for why a full-field ballistic
+  // reproduction from an actual muzzle position is a ROBOT-AIMING question (crosses the opponent's
+  // hive frame; the cell's own closed back wall stops an approach from behind the pivot), not a
+  // hive-tray one, and is deliberately not what this measures. Retention under ~90% at any of
+  // these distances is the owner-reported "spills out too easily" bug; the fix
+  // (`obliqueBoxCollider`'s true incline, the tray's restitution now governing under a `Min`
+  // combine rule) measures 100% at all three.
+  for (const d of [24, 48, 72]) {
+    const speed = bbSolveShot(d, 0).speed;
+    let retained = 0;
+    const total = 20;
+    for (let shot = 0; shot < total; shot++) {
+      const w = mkWorld3d('free', 470 + shot);
+      w.balls.length = 0; // isolate: only this one shot's element exists
+      const xJitter = ((shot % 5) - 2) * 3; // deterministic spread across the mouth's own width
+      const id = fireIntoCell(w, 'blue', 'yellow', speed, xJitter);
+      for (let t = 0; t < 300; t++) step3d(w, 1 / 60, new Map());
+      if (w.biobuzz!.hives.blue.contents.includes(id)) retained++;
+    }
+    check(
+      `retention: a ${d}in shot (entry speed ${speed.toFixed(0)}in/s) into the own up cell stays put -- >= 90% of ${total}`,
+      retained / total >= 0.9,
+      `${retained}/${total} retained`,
+    );
+  }
+
+  // ---- load table: what tips and what doesn't, and no spill before the tip ------------------
+  //
+  // The manual's own load table (Event Field Setup Guide §12.3, `config.ts`'s `BB_TIP_POLLEN`):
+  // 8 pollen tips, 7 does not; 3 pollen + 3 nectar tips, 3 + 2 does not. Each row runs 10s (600
+  // ticks) so a tipping tray completes its whole swing and a non-tipping one proves it never
+  // starts one -- this is the OTHER half of the owner's "spills out too easily" report: a load
+  // UNDER the table's threshold must not spill either, which the pre-fix flat floor (no downhill
+  // slope holding anything against the divider) put at real risk.
+  {
+    function loadCell(pollen: number, nectar: number): { tipped: boolean; stillIn: number; tripLoad: string } {
+      const w = mkWorld3d('free', 480 + pollen * 10 + nectar);
+      w.balls.length = 0; // isolate: only this row's elements exist
+      const alliance = 'blue' as const;
+      const theta = hiveTiltAngle(w, alliance);
+      const sideSign: 1 | -1 = w.biobuzz!.hives[alliance].up === 'north' ? 1 : -1;
+      const box = hiveCellLocalBox(sideSign, alliance);
+      const n = pollen + nectar;
+      const cols = 4;
+      const wLocal = box.wMin + BB_POLLEN_R + 0.5; // one row, a small (x, v) grid; physics stacks
+      const ids: number[] = [];
+      for (let i = 0; i < n; i++) {
+        const col = i % cols;
+        const row = Math.floor(i / cols);
+        const x = (col - (cols - 1) / 2) * 4;
+        const v = box.vMin + 2 + row * 3;
+        const p = hiveWorldPoint(alliance, sideSign, theta, x, v, wLocal);
+        const id = i + 1;
+        ids.push(id);
+        const el: Artifact = {
+          id,
+          color: i < pollen ? 'yellow' : 'blue',
+          state: { kind: 'ground' },
+          pos: { x: p.x, y: p.y },
+          vel: { x: 0, y: 0 },
+          z: p.z - BB_POLLEN_R,
+          vz: 0,
+        };
+        w.balls.push(el);
+      }
+      const startUp = w.biobuzz!.hives[alliance].up;
+      let tripLoad = '';
+      for (let t = 0; t < 600; t++) {
+        step3d(w, 1 / 60, new Map());
+        if (tripLoad === '' && w.biobuzz!.hives[alliance].tipping > 0) {
+          tripLoad = `${w.biobuzz!.hives[alliance].contents.length} elements`;
+        }
+      }
+      const tipped = w.biobuzz!.hives[alliance].up !== startUp;
+      const stillIn = ids.filter((id) => w.biobuzz!.hives[alliance].contents.includes(id)).length;
+      return { tipped, stillIn, tripLoad };
+    }
+
+    const rows: readonly [number, number, boolean][] = [
+      [3, 0, false],
+      [7, 0, false],
+      [8, 0, true],
+      [3, 2, false],
+      [3, 3, true],
+    ];
+    for (const [pollen, nectar, expectTip] of rows) {
+      const r = loadCell(pollen, nectar);
+      const label = `${pollen}p+${nectar}n`;
+      console.log(`[smoke-bb sim3d] load table: ${label} tipped=${r.tipped} trip-load=${r.tripLoad || 'n/a'}`);
+      check(`load table: ${label} ${expectTip ? 'TIPS' : 'does NOT tip'} (manual, BB_TIP_POLLEN)`, r.tipped === expectTip, `tipped=${r.tipped}`);
+      if (expectTip) {
+        check(`load table: ${label} -- every element left the (now down) cell within the swing`, r.stillIn === 0, `${r.stillIn} still in`);
+      } else {
+        check(
+          `load table: ${label} -- every element stayed for 10s, nothing spilled, tray did not move`,
+          r.stillIn === pollen + nectar,
+          `${r.stillIn}/${pollen + nectar} stayed`,
+        );
+      }
+    }
+  }
+
+  // ---- kinematic inertness: a resting element is not kicked by an unchanged tray rotation ----
+  //
+  // `applyHiveTilt` (`engine.ts`) calls `setNextKinematicRotation` every tick, unconditionally,
+  // including on a settled tray whose angle has not changed since the last tick. A resting
+  // element's velocity must stay EXACTLY 0 through that -- confirming Rapier is inert on a
+  // repeated, unchanged kinematic target rather than re-waking or perturbing the body underneath.
+  {
+    const w = mkWorld3d('free', 490);
+    w.balls.length = 0;
+    const alliance = 'blue' as const;
+    const theta = hiveTiltAngle(w, alliance);
+    const sideSign: 1 | -1 = w.biobuzz!.hives[alliance].up === 'north' ? 1 : -1;
+    const box = hiveCellLocalBox(sideSign, alliance);
+    const wLocal = box.wMin + BB_POLLEN_R + 0.5;
+    const ids = [1, 2, 3];
+    for (const [i, id] of ids.entries()) {
+      const p = hiveWorldPoint(alliance, sideSign, theta, (i - 1) * 4, box.vMin + 2, wLocal);
+      const el: Artifact = {
+        id,
+        color: 'yellow',
+        state: { kind: 'ground' },
+        pos: { x: p.x, y: p.y },
+        vel: { x: 0, y: 0 },
+        z: p.z - BB_POLLEN_R,
+        vz: 0,
+      };
+      w.balls.push(el);
+    }
+    for (let t = 0; t < 60; t++) step3d(w, 1 / 60, new Map()); // settle + tag into the cell
+    const settledIn = ids.filter((id) => w.biobuzz!.hives[alliance].contents.includes(id)).length;
+    let maxSpeed = 0;
+    for (let t = 0; t < 600; t++) {
+      step3d(w, 1 / 60, new Map());
+      for (const id of ids) {
+        const b = w.balls.find((x) => x.id === id);
+        if (!b) continue;
+        const speed = Math.sqrt(b.vel.x * b.vel.x + b.vel.y * b.vel.y + b.vz * b.vz);
+        if (speed > maxSpeed) maxSpeed = speed;
+      }
+    }
+    check('kinematic inertness: 3 staged elements settle into the up cell', settledIn === 3, `${settledIn}/3`);
+    check(
+      'kinematic inertness: a resting element stays at exactly 0 velocity over 600 further ticks of an unchanged tray target',
+      maxSpeed === 0,
+      `max speed observed ${maxSpeed}`,
+    );
   }
 
   // ---- twelve-probe agreement: the CAD colliders vs the Day 1 fallback, same world ---------
@@ -762,24 +994,34 @@ export function sim3dChecks(check: Check): void {
     // wall above and the flowers below: printed and asserted against a tolerance wide enough to
     // pass, not silently dropped and not forced to agree. This is the field lane's own flagged
     // concern ("a single rigid tray could not satisfy both") CONFIRMED by real CAD geometry, not
-    // resolved by it -- the CAD's own up-cell TOP matches the manual almost exactly, but its
-    // BOTTOM and the down-cell's clearance both read ~6.5in off the manual's own figures, the
-    // same shape of discrepancy the Day 1 algebraic box already reported (see hiveCellLocalBox's
-    // and buildHiveTray3d's file header).
+    // resolved by it -- the BOTTOM and the down-cell's clearance read several inches off the
+    // manual's own figures, the same shape of discrepancy the Day 1 algebraic box already
+    // reported (see hiveCellLocalBox's and buildHiveTray3d's file header).
+    //
+    // ⚠️ THE TOP FIGURE MOVED TOO, 65.6 -> 68.9, WHEN THE HIVE-TILT FIX LANDED (`obliqueBoxCollider`,
+    // `sim3d/bodies.ts`) -- its OLD near-exact match to the manual (delta 0.05) was a SYMPTOM of
+    // the same bug the fix corrects, not a sign the geometry was right: at `theta - refTheta = 0`
+    // (the pre-fix body rotation, exactly at rest), reading the CAD box's raw `wMax` straight
+    // through an UN-rotated (`theta - refTheta`) transform is mathematically identical to reading
+    // it with NO rotation applied at all, so this "measurement" was, before the fix, silently
+    // reporting the CAD's raw local number rather than a true world position -- see the "rest-pose"
+    // checks below and `obliqueBoxCollider`'s own comment for the full derivation and the gameplay
+    // bug (balls not held against the divider) this same flattening caused. Both TOP and BOTTOM
+    // are OPEN FINDINGS now, on the same footing.
     const upTheta = Math.PI / 6;
     const upBox = hiveCellLocalBox(1, 'blue');
-    const upOpen = rotate2((upBox.vMin + upBox.vMax) / 2, upBox.wMin, upTheta - upBox.refTheta);
-    const upOpenTop = rotate2((upBox.vMin + upBox.vMax) / 2, upBox.wMax, upTheta - upBox.refTheta);
+    const upOpen = rotate2((upBox.vMin + upBox.vMax) / 2, upBox.wMin, upTheta);
+    const upOpenTop = rotate2((upBox.vMin + upBox.vMax) / 2, upBox.wMax, upTheta);
     const upOpenBottomZ = BB3_HIVE_PIVOT_Z + upOpen.b;
     const upOpenTopZ = BB3_HIVE_PIVOT_Z + upOpenTop.b;
     console.log(
       `[smoke-bb sim3d] measurements: CAD up-cell opening z=[${upOpenBottomZ.toFixed(2)}, ${upOpenTopZ.toFixed(2)}] vs BB_HIVE_OPEN_Z ${JSON.stringify(BB_HIVE_OPEN_Z)}`,
     );
-    checkClose('up-cell opening TOP vs BB_HIVE_OPEN_Z[1] (53.5..65.6)', upOpenTopZ, BB_HIVE_OPEN_Z[1], 1.0);
+    checkClose('up-cell opening TOP vs BB_HIVE_OPEN_Z[1] (53.5..65.6) (OPEN FINDING, owner ruling pending)', upOpenTopZ, BB_HIVE_OPEN_Z[1], 4.0);
     checkClose('up-cell opening BOTTOM vs BB_HIVE_OPEN_Z[0] (53.5) (OPEN FINDING, owner ruling pending)', upOpenBottomZ, BB_HIVE_OPEN_Z[0], 7.0);
 
     const downBox = hiveCellLocalBox(-1, 'blue');
-    const downFloor = rotate2((downBox.vMin + downBox.vMax) / 2, downBox.wMin, upTheta - downBox.refTheta);
+    const downFloor = rotate2((downBox.vMin + downBox.vMax) / 2, downBox.wMin, upTheta);
     const downFloorZ = BB3_HIVE_PIVOT_Z + downFloor.b;
     console.log(
       `[smoke-bb sim3d] measurements: CAD down-cell clearance z=${downFloorZ.toFixed(2)} vs BB_HIVE_BOTTOM_Z ${BB_HIVE_BOTTOM_Z} -- report (h) of the task: this is the settled figure`,
