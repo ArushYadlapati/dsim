@@ -7134,6 +7134,64 @@ function pushContest(A: Partial<RobotSpec>, B: Partial<RobotSpec>, seconds = 3):
       'lan addr: a PUBLIC address is refused — v1 is scoped to the network you are on',
       err('8.8.8.8') === 'not-private' && err('example.com') === 'not-private',
     );
+    /**
+     * THE TAILNET RANGE, and the two addresses either side of it.
+     *
+     * 100.64.0.0/10 is RFC 6598 shared address space — where Tailscale puts a tailnet — and it
+     * is allowed because it is NOT publicly routable, so it cannot become a way to dial an
+     * arbitrary server (see `isPrivateHost`). The boundary is the whole check: the second octet
+     * decides, and `100.63` / `100.128` are ordinary public addresses that must stay refused.
+     * Matching on `100.` alone would hand out a /8, three quarters of which is the public
+     * internet.
+     */
+    check(
+      'lan addr: the TAILNET range 100.64.0.0/10 is reachable (a stable address when DHCP churns)',
+      ['100.64.0.1', '100.100.100.100', '100.127.255.254'].every(isPrivateHost),
+    );
+    check(
+      'lan addr: ...and its EDGES are public — 100.63 and 100.128 are not a tailnet',
+      !isPrivateHost('100.63.255.255') &&
+        !isPrivateHost('100.128.0.0') &&
+        err('100.63.255.255') === 'not-private' &&
+        err('100.128.0.0') === 'not-private',
+    );
+    check(
+      'lan addr: a tailnet address parses like any other host',
+      ok('100.101.102.103')?.url === 'ws://100.101.102.103:8787' &&
+        ok('100.101.102.103:9000')?.port === 9000,
+    );
+    /**
+     * THE MAGICDNS NAME, which is the only address in this module that speaks https.
+     *
+     * `tailscale serve` terminates TLS on 443 with a real certificate for
+     * `machine.tailnet.ts.net` and proxies to the game server's plain-HTTP port. So the BARE
+     * name is `wss://` and a NAMED PORT is the raw server behind it, which has no certificate
+     * and must stay `ws://` — answering `wss://host:8787` would hand back a URL that cannot
+     * connect, which is the exact failure this module exists to prevent.
+     */
+    check(
+      'lan addr: a bare tailnet name is wss:// on 443 — the one LAN host with a real certificate',
+      ok('machine.example-tailnet.ts.net')?.url === 'wss://machine.example-tailnet.ts.net' &&
+        ok('machine.example-tailnet.ts.net')?.httpUrl === 'https://machine.example-tailnet.ts.net' &&
+        ok('machine.example-tailnet.ts.net')?.port === 443 &&
+        ok('machine.example-tailnet.ts.net')?.tls === true,
+    );
+    check(
+      'lan addr: ...but a NAMED port is the raw server behind the proxy, so it stays ws://',
+      ok('machine.example-tailnet.ts.net:8787')?.url === 'ws://machine.example-tailnet.ts.net:8787' &&
+        ok('machine.example-tailnet.ts.net:8787')?.tls === false,
+    );
+    check(
+      'lan addr: every OTHER address is tls:false — the certificate is not assumed anywhere else',
+      ok('192.168.1.5')?.tls === false && ok('localhost')?.tls === false && ok('100.64.0.1')?.tls === false,
+    );
+    check(
+      'lan addr: the LEADING DOT decides — `evilts.net` and a bare `ts.net` are not a tailnet',
+      !isPrivateHost('evilts.net') &&
+        !isPrivateHost('ts.net') &&
+        err('evilts.net') === 'not-private' &&
+        err('ts.net') === 'not-private',
+    );
     check('lan addr: nothing typed is `empty`, not a crash', err('') === 'empty' && err('   ') === 'empty');
     check(
       'lan addr: a TYPO is malformed, not "not on this network" — they are different problems',
@@ -7163,6 +7221,12 @@ function pushContest(A: Partial<RobotSpec>, B: Partial<RobotSpec>, seconds = 3):
     check(
       'mixed content: a file:// page (the desktop shell offline) is not blocked either',
       mixedContentBlock(lan, 'file:') === null,
+    );
+    check(
+      'mixed content: a bare tailnet name is exempt from the https page too — wss:// is not mixed',
+      mixedContentBlock(ok('machine.example-tailnet.ts.net')!, 'https:') === null &&
+        mixedContentBlock(ok('machine.example-tailnet.ts.net:8787')!, 'https:') ===
+          'http://machine.example-tailnet.ts.net:8787',
     );
   }
 
