@@ -105,9 +105,16 @@ async function drain(): Promise<void> {
       host.setAttribute('aria-hidden', 'true');
       host.className = 'bb-thumb-host';
       document.body.appendChild(host);
-      // FIXED at High and driven by nothing: a cached image must not depend on the device's
-      // graphics preference, and there is no loop to animate a single frame.
-      scene = factory(host, { quality: 'high', interactive: false, animate: false });
+      // ⚠️ NO FIXED QUALITY — it FOLLOWS the device's own preference, and that is the opposite of
+      // what a replay export does (§4.7 pins those at High so a video is not made at whatever the
+      // machine happened to be set to). Two reasons, and they point the same way. A thumbnail sits
+      // on the same screen as the live turntable, so one drawn at a tier the device is not on is a
+      // second picture of the same robot that does not match the first — the exact drift this
+      // whole feature is built to avoid. And High selects the `school-hall` HDRI: pinning it would
+      // fetch 1.7 MB to draw three 96px cards, on a menu screen, for somebody whose own setting
+      // asked for the procedural room. The cache is per DOCUMENT and regenerated on demand, so a
+      // settings change catching up on the next load is the whole of the cost.
+      scene = factory(host, { interactive: false, animate: false });
       for (const req of batch) {
         scene.setSpec(req.spec, req.alliance);
         const url = scene.capture(THUMB_CAPTURE_PX);
