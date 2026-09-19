@@ -46,6 +46,7 @@ import { practiceSaveDecision } from './replaySavePolicy';
 import { readRenderStats } from './perfStats';
 import { robotInLaunchZone } from './sim/robot';
 import { InputManager } from './input/input';
+import { effectiveBindings, type ControlBindings } from './input/bindings';
 import { Renderer } from './render/renderer';
 import { MatchAudio } from './audio';
 import type { MatchResultInfo, NetSession, NetStatus, Snapshot } from './net/session';
@@ -471,6 +472,8 @@ export class GameController {
    * resolve the module from `this.world.game` via `this.mod` — a reconciled server
    * world carries its own game, so prediction/replay never use the wrong step. */
   private readonly gameId: GameId;
+  /** the EFFECTIVE control bindings for `gameId` — see where it is assigned. */
+  private readonly bindings: ControlBindings;
   /** the active game module, resolved from the CURRENT world (hot-path safe). */
   private get mod(): GameModule {
     return gameOf(this.world);
@@ -799,7 +802,21 @@ export class GameController {
     this.audio.beepVolume = settings.audio.volume.beep;
     this.audio.alertVolume = settings.audio.volume.alert;
     this.audio.voiceVolume = settings.audio.volume.voice;
-    this.input = new InputManager(settings.bindings);
+    /**
+     * THE BINDINGS FOR THIS GAME, not the player's whole map.
+     *
+     * `settings.bindings` is the MAIN setting plus every season's overrides; what a match plays
+     * on is `effectiveBindings(main, game)` — this season's overrides applied, and the actions
+     * this season does not use emptied so they can neither fire nor (on a pad) mask and consume
+     * inside the chord resolver, which reads a `PadBindings` and has no idea what a game is.
+     *
+     * Resolved ONCE, here, because `this.gameId` is fixed for a controller's life (a networked
+     * session's game is authoritative; solo takes the setting) and so is `settings.bindings` —
+     * the Controls screen is not reachable mid-match. Everything in this file that drives or
+     * NAMES a control reads this field, never `this.settings.bindings`.
+     */
+    this.bindings = effectiveBindings(settings.bindings, this.gameId);
+    this.input = new InputManager(this.bindings);
 
     // NO mobile assist override. A touch device used to have autoFire/autoIntake FORCED on
     // here, which dates from before every assist defaulted on and before they lived on the
@@ -1810,7 +1827,9 @@ export class GameController {
    */
   private hintCtx(): TutorialHintCtx {
     return {
-      bindings: this.settings.bindings,
+      // the EFFECTIVE map, so a hint names the key this season is actually on — and never
+      // names a control for an action this season does not have.
+      bindings: this.bindings,
       gamepad: this.input.gamepadConnected,
       touch: this.mqCoarse?.matches ?? false,
     };
