@@ -1,6 +1,8 @@
 import type { RobotSpec } from '../../types';
 import { rangeFill } from '../../ui/rangeFill';
 import {
+  BB3_HEIGHT_MAX,
+  BB3_HEIGHT_MIN,
   BB3_STOW_MAX,
   BB_DUMP_MAX_DIST,
   BB_HOOD_DEFAULT_DEG,
@@ -135,6 +137,12 @@ export function BiobuzzBuilder({ spec, setSpec }: BiobuzzBuilderProps) {
   const lift = bbLiftOf(spec);
   const dials = bbDials(spec);
   const store = Math.min(spec.ballStorage ?? dials.storage.max, dials.storage.max);
+  // THE HEIGHT PAIR (R105.A's expanded height and R102's starting cube). Read through the
+  // resolvers rather than off the raw fields, same rule as the launcher above: `bbStowHeightIn`
+  // is where "a build over the cube folds to exactly it unless it declares otherwise" is decided.
+  const deployed = bbDeployedHeightIn(spec);
+  const stow = bbStowHeightIn(spec);
+  const folds = deployed > BB3_STOW_MAX;
 
   // ── WHY EVERY EDIT RE-SENDS `scoreMode`/`shooterMount` ALONGSIDE `bbMech` ──────────────
   // The container is what `coerceBbMech` (`./coerce.ts`) resolves, and the two flat fields are
@@ -409,6 +417,50 @@ export function BiobuzzBuilder({ spec, setSpec }: BiobuzzBuilderProps) {
             onChange={(e) => setSpec({ ballStorage: Number(e.target.value) })}
           />
         </label>
+        {/* HEIGHT, the third chassis dimension — R105.A's own vertical one, and the last of the
+            three to become real (the 2D pipeline never asked; the 3D chassis collider is
+            extruded to it, and the 3D preview stands this tall). It sits with LENGTH and WIDTH
+            because it is the same kind of number, and it is the one dial on this panel with a
+            RULE hanging off it: over 18 in the build has to fold to start, which is the row
+            below and the note under it. */}
+        <label className="ds-field">
+          <span className="cap">
+            Height <span className="val">{deployed}&quot;</span>
+          </span>
+          <input
+            className="ds-range"
+            type="range"
+            min={BB3_HEIGHT_MIN}
+            max={BB3_HEIGHT_MAX}
+            step={1}
+            value={deployed}
+            style={rangeFill(deployed, BB3_HEIGHT_MIN, BB3_HEIGHT_MAX)}
+            onChange={(e) => setSpec({ heightIn: Number(e.target.value) })}
+          />
+        </label>
+        {/* THE DECLARED STOW HEIGHT (R102) — only for a build that is over the cube, because for
+            anything at or under 18 in the answer is its own height and a slider that can only be
+            set to the value it already has is chrome. A build over the cube is MODELLED as
+            folding to exactly 18 unless it says otherwise (`bbStowHeightIn`), so that is where
+            this starts; declaring more than 18 is allowed and is REFUSED by the rule rather than
+            clamped away, which is what makes the note below able to say no. */}
+        {folds && (
+          <label className="ds-field">
+            <span className="cap">
+              Stow height <span className="val">{stow}&quot;</span>
+            </span>
+            <input
+              className="ds-range"
+              type="range"
+              min={BB3_HEIGHT_MIN}
+              max={deployed}
+              step={1}
+              value={stow}
+              style={rangeFill(stow, BB3_HEIGHT_MIN, deployed)}
+              onChange={(e) => setSpec({ stowHeightIn: Number(e.target.value) })}
+            />
+          </label>
+        )}
       </div>
       <StowHeightNote spec={spec} />
     </>

@@ -205,14 +205,32 @@ const fmtKB = (bytes) => `${(bytes / 1000).toFixed(2)} KB`;
  * `other` has no route in a healthy build (every `.js`/`.wasm` file lands in one of the four
  * above) — baseline near zero, so anything landing here at all is worth a look.
  *
+ *
+ * ── RE-MEASURED 2026-09-18, the 3D ROBOT BUILDER (`docs/roadmap.md` item 1) ─────────────────
+ *   main        919.99 KB — +1.27. `Preview3D.tsx` (the 2D/3D toggle, the stow toggle and the
+ *               thumbnail batcher), `specKey.ts`, the two height dials in `Builder.tsx` and the
+ *               `savedCard` wiring in `Menu.tsx`. This is the whole main-chunk cost of the
+ *               feature and it is inside §10's "+≤ 2 KB" for a UI toggle: the component holds no
+ *               renderer, reaching it through `GameModule.previewScene` instead.
+ *   scene       194.67 KB — +2.39, and still 55 KB inside the §2.5 ceiling. `scene/
+ *               renderPreview.ts` (the turntable, the floor disc, `capture()`) plus
+ *               `scene/renderCore.ts`, which is a MOVE rather than an addition — the renderer
+ *               factory, the light-rig constants and the disposal walk came out of
+ *               `renderScene.ts` so both scenes build a renderer the same way. The preview is in
+ *               this chunk and not a chunk of its own on purpose: BOTH module slots write
+ *               `import('./scene/renderScene')`, because two dynamic specifiers would hoist
+ *               three.js into a shared chunk and leave two facades that carry none of the
+ *               `MARKERS.scene` strings — they would route to `other` and fail this audit for a
+ *               reason that has nothing to do with size.
+ *
  * RECALIBRATE by running `npm run build && npm run bundleaudit` and copying the printed gzip
  * totals in here, the same way `uiaudit.mjs`'s header describes lowering ITS baseline.
  */
 const BASELINE = {
-  main: { gzip: 918.72 * 1000 },
+  main: { gzip: 919.99 * 1000 },
   hostWorker: { gzip: 705.23 * 1000 },
   physics3d: { gzip: 1123.14 * 1000 },
-  scene: { gzip: 192.28 * 1000, budgetCeiling: 250 * 1000 },
+  scene: { gzip: 194.67 * 1000, budgetCeiling: 250 * 1000 },
   graphics: { gzip: 5.60 * 1000 },
   other: { gzip: 1 * 1000 },
 };
