@@ -24,8 +24,9 @@ import type { TutorialHintCtx, TutorialSpec, TutorialView } from './tutorial/typ
 import type { GameModule } from './games';
 import type { GameScene, SceneCamera, SceneFrame, SceneInsets } from './games/module';
 import { getViewPref, subscribeViewPref } from './games/biobuzz/graphics/store';
-import { initPhysics3d, physics3dReady, physics3dImpl } from './games/biobuzz/sim3d/engine';
+import { initPhysics3d, physics3dReady, physics3dImpl, disposePhysics3dFor } from './games/biobuzz/sim3d/engine';
 import { PREDICT_FULL_BUDGET_MS } from './games/biobuzz/config';
+import { biobuzzPhysics } from './games/biobuzz/state';
 import {
   getPredictionPref,
   markOffNoticeShown,
@@ -726,11 +727,18 @@ export class GameController {
      */
     if (this.interp3d() && !physics3dReady()) {
       this.setPhysicsPending(true);
+      // ⚠️ BOTH CONTINUATIONS CHECK `disposed`. The chunk is ~1.12 MB gz and the await can
+      // easily outlive the controller — a player who leaves a room while it is still in flight.
+      // `setPhysicsPending` calls back into a view that has unmounted (a React state write on a
+      // dead component), and the failure branch pushes an event onto a world nobody will ever
+      // drain, which then holds that world alive through the closure.
       void initPhysics3d().then(
         () => {
+          if (this.disposed) return;
           this.setPhysicsPending(false);
         },
         (err: unknown) => {
+          if (this.disposed) return;
           this.setPhysicsPending(false);
           // eslint-disable-next-line no-console
           console.warn('BIOBUZZ 3D physics failed to load for this match.', err);
@@ -815,6 +823,25 @@ export class GameController {
    * menu's settings.alliance; in solo they are the same) */
   private viewAlliance(): Alliance {
     return this.localRobot().alliance;
+  }
+
+  /**
+   * ⚠️ **REPLACE `this.world`, AND FREE THE OUTGOING WORLD'S RAPIER 3D SOLVE.**
+   *
+   * A 3D BIOBUZZ world owns a wasm world, held in a `WeakMap` keyed on the `World` object
+   * (`sim3d/engineImpl.ts`). Dropping the `World` drops the map ENTRY and the only handle on
+   * that wasm world — it does not free it, and wasm linear memory never shrinks, so every
+   * restart, every step change and (for a spectator, whose path steps each snapshot's world)
+   * every snapshot would hold another one for the life of the tab.
+   *
+   * `disposePhysics3dFor` is the LIGHT gate, so this is a no-op for a 2D world and for a build
+   * that never loaded the physics chunk. That is what lets this sit on the one path every world
+   * swap goes through instead of on the three that remembered to ask.
+   */
+  private adoptWorld(next: World): void {
+    const prev = this.world;
+    if (prev && prev !== next) disposePhysics3dFor(prev);
+    this.world = next;
   }
 
   private makeWorld(reseed = true): World {
@@ -999,16 +1026,22 @@ export class GameController {
    * collapse the safe rect to nothing.
    */
   private refreshHudInsets(): void {
-    this.hudInsetsDirty = false;
     const ins = this.hudInsets;
     const host = this.sceneHost ?? this.canvas;
     const root = this.hudHost;
     if (!root) {
       ins.top = ins.right = ins.bottom = ins.left = 0;
+      this.hudInsetsDirty = false;
       return;
     }
     const box = host.getBoundingClientRect();
-    if (box.width < 1 || box.height < 1) return; // mid-teardown / display:none — keep the last fit
+    // ⚠️ A ZERO-SIZE HOST LEAVES THE FLAG SET, DELIBERATELY. Mid-teardown or `display:none` is
+    // not a measurement — the last fit is kept — so the work has NOT been done and clearing
+    // `hudInsetsDirty` here would swallow the request: the surface comes back with its old
+    // insets and nothing left to re-fit it. That is one dirty frame on a view switch, where a
+    // band has mounted but the canvas has not been laid out yet.
+    if (box.width < 1 || box.height < 1) return;
+    this.hudInsetsDirty = false;
     const bands = root.querySelectorAll<HTMLElement>('[data-hud-band]');
     let top = 0;
     let right = 0;
@@ -1584,7 +1617,7 @@ export class GameController {
    * free drive, so there is no recorder — see `startMatch`).
    */
   private rebuildForTutorial(): void {
-    this.world = this.makeWorld();
+    this.adoptWorld(this.makeWorld());
     this.prevPhase = this.world.match.phase;
     this.acc = 0;
     this.warningPlayed = false;
@@ -1793,10 +1826,18 @@ export class GameController {
         z: r.z ?? 0,
         heading: r.heading,
       })),
-      // ONLY for a 3D-physics world — see the field's own header. `interp3d()` is a read of
-      // `this.world`, which is the world this snapshot was reconciled into, so the two can
-      // never disagree about which pipeline is running.
-      balls: this.interp3d()
+      /**
+       * ONLY for a 3D-physics world — see the field's own header.
+       *
+       * ⚠️ READ OFF `snap.world`, NOT OFF `this.world`. This runs BEFORE `reconcile`, so
+       * `this.world` is still the PREVIOUS world — the one the last snapshot was adopted into.
+       * `interp3d()` reads that, and its own comment used to claim the opposite ("the world
+       * this snapshot was reconciled into"). They agree for every snapshot after the first,
+       * which is what made it survive: the one frame they disagree is the FIRST snapshot of a
+       * 3D room, whose ball poses were dropped on the floor because the outgoing world was
+       * still 2D — and a spectator or a mid-match joiner starts every session on that frame.
+       */
+      balls: biobuzzPhysics(w) === '3d'
         ? w.balls.map((b) => ({
             id: b.id,
             x: b.pos.x,
@@ -2233,7 +2274,7 @@ export class GameController {
     const preY = pre ? pre.pos.y + this.localSmooth.y : 0;
     const preH = pre ? pre.heading + this.localSmooth.heading : 0;
 
-    this.world = snap.world;
+    this.adoptWorld(snap.world);
     this.collectNetEvents(firstSnap); // authoritative events, BEFORE replay re-emits any
     this.lastServerTick = snap.serverTick;
     this.gotSnapshot = true;
@@ -2286,7 +2327,7 @@ export class GameController {
   /** host-authored restart arrived over the net: rebuild from the new seed */
   private rebuildFromNet(): void {
     this.audio.stopSpeech();
-    this.world = this.makeWorld();
+    this.adoptWorld(this.makeWorld());
     this.prevPhase = this.world.match.phase;
     this.warningPlayed = false;
     this.matchOverAt = null;
@@ -2372,7 +2413,7 @@ export class GameController {
     if (this.tutorial) return;
     if (this.world.match.phase !== 'pre') return;
     if (this.world.match.preCountdown != null) return; // already counting down
-    this.world = this.makeWorld(false);
+    this.adoptWorld(this.makeWorld(false));
     this.world.match.preCountdown = C.PRE_COUNTDOWN;
     this.prevPhase = this.world.match.phase;
     this.practice = null;
@@ -2410,7 +2451,7 @@ export class GameController {
     // `completed` — and `this.practice` is cleared below anyway, because a restart has no
     // results screen to show it on.
     this.harvestPracticeRun(false);
-    this.world = this.makeWorld();
+    this.adoptWorld(this.makeWorld());
     this.prevPhase = this.world.match.phase;
     this.warningPlayed = false;
     this.matchOverAt = null;
@@ -2648,6 +2689,11 @@ export class GameController {
     // a FULL predictor owns a Rapier world; leaking one per match leaks wasm memory for the
     // life of the tab, which is exactly as long as somebody plays
     this.disposePredictor();
+    // ...and so does the MATCH's own 3D solve, which nothing freed until now — see
+    // `adoptWorld`. The predictor's world was the one anybody thought of, because it is created
+    // here; the match's is created inside `step3d` and held in a `WeakMap`, which is precisely
+    // why it was invisible.
+    disposePhysics3dFor(this.world);
     this.teardownScene();
   }
 }

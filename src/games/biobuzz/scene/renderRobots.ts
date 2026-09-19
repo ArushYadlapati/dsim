@@ -1196,7 +1196,21 @@ export function buildBiobuzzRobots(): BbRobots {
 
   return {
     group,
+    /**
+     * ⚠️ **FREE EVERY LIVE ROBOT GROUP THROUGH `disposeRobotGroup`, WHICH IS WHY THIS EXISTS.**
+     *
+     * It used to only `entries.clear()`, which left the scene's own teardown to reach these
+     * meshes — and that teardown is a blanket `disposeObject3D` walk, which does not know about
+     * `SHARED_GEO`/`SHARED_MAT` and would free the frame geometry, the roller texture and every
+     * solid material the BUILDER PREVIEW and the next match are still holding. The module caches
+     * outlive any one scene, so "the scene is going away, nothing needs them" is exactly the
+     * assumption that is false here.
+     */
     dispose(): void {
+      for (const entry of entries.values()) {
+        group.remove(entry.group);
+        disposeRobotGroup(entry.group);
+      }
       entries.clear();
     },
   };

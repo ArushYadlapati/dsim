@@ -37,6 +37,7 @@ import {
   SceneUnsupportedError,
   createSceneLights,
   createSceneRenderer,
+  watchContextLoss,
   disposeObject3D,
   gpuProbe,
   readBackdropColor,
@@ -211,6 +212,23 @@ class BiobuzzScene implements GameScene {
     // its renderer from too — so the same robot cannot come out two different colours in the
     // two places this game draws it.
     this.renderer = createSceneRenderer(canvas, { antialias: false, alpha: false });
+    /**
+     * A LOST CONTEXT TAKES THE SAME EXIT AS AN UNSUPPORTED ONE — `setViewPref('2d')` plus an
+     * event-log line, exactly what the factory below does for a failed WebGL2 probe or a
+     * software renderer. One host path, because a player cannot tell the three apart and
+     * neither answer is "keep looking at this canvas": see `watchContextLoss` for why a lost
+     * context is otherwise INVISIBLE (no throw, no error — the calls just stop doing anything).
+     *
+     * The scene is not disposed from in here. The host owns the mount, `dispose` is its call to
+     * make when it swaps the view, and disposing a scene from inside its own canvas's event
+     * handler would free the renderer under the frame that is running.
+     */
+    this.teardown.push(
+      watchContextLoss(canvas, () => {
+        setViewPref('2d');
+        this.onQualityEvent?.('Lost the graphics context. Showing the 2D view.');
+      }),
+    );
 
     // HEMISPHERE FILL — a lighter, less blue-shifted ground term (`0x4b525c`, up from a near-navy
     // `0x404048`) so light bounced off the (dark) tile floor still lifts the underside of the
@@ -715,6 +733,22 @@ class BiobuzzScene implements GameScene {
     this.target?.dispose();
     this.blitMesh.geometry.dispose();
     this.blitMesh.material.dispose();
+    /**
+     * ⚠️ **THE ROBOTS COME OUT OF THE SCENE BEFORE THE BLANKET WALK, AND ARE FREED THEIR OWN
+     * WAY.** `disposeObject3D` frees every geometry and material it touches, and
+     * `renderRobots.ts` SHARES most of a robot's geometry and material between robots, between
+     * scenes and with the builder's preview (`SHARED_GEO` / `SHARED_MAT`, and that file's header
+     * says exactly this). Walking them from here frees the frame geometry, the roller texture
+     * and every solid material out from under a preview that is still mounted and under the next
+     * 3D view the player opens — three re-uploads and recompiles whatever it can, so the symptom
+     * is a frame hitch and a warning, not a crash, which is how it survives review.
+     * `renderPreview.ts`'s own `dispose` has always done it this way.
+     *
+     * Only the robots need this. The field builds its meshes per scene (its caches are local to
+     * the build function), and the elements, the reticle and the blit mesh are this scene's own.
+     */
+    this.scene.remove(this.robots.group);
+    this.robots.dispose();
     disposeObject3D(this.scene);
     this.renderer.dispose();
     this.element.parentElement?.removeChild(this.element);

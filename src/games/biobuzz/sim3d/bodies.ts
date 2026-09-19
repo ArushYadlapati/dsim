@@ -27,7 +27,7 @@ import {
   BB_WALL_T,
 } from '../config';
 import { biobuzzColliders, BB_WALL_COUNT } from '../colliders';
-import { INTAKE_RAIL_T } from '../../../config';
+import { INTAKE_RAIL_T, PHYS_FRICTION } from '../../../config';
 import { BB3_MOUTH_SLOT_Z, bbIntakeReach } from '../config';
 import { bbMouths } from '../robot';
 import { cadCellBox, cadStatics, cadTrayHulls } from './fieldColliders';
@@ -777,6 +777,57 @@ export function chassis3dShapes(spec: RobotSpec, heightIn: number): Chassis3dSha
     }
   }
   return out;
+}
+
+/**
+ * ⚠️ **THE ONE CHASSIS-COLLIDER BUILDER FOR THE AUTHORITY.** `engineImpl.ts`'s `syncRobot` calls
+ * it twice — at body creation and again at the R102 deploy edge — and nothing else builds the
+ * compound. It lives here rather than in `engineImpl.ts` so the shape is one function away from
+ * `chassis3dShapes`, which is also what `bbRobotSolids` (2D) draws from.
+ *
+ * The FULL PREDICTOR (`predict.ts`) does NOT call it, on purpose and by measurement: it keeps
+ * one `robotExtents` cuboid, because the compound doubled its forty-tick reconcile past
+ * `PREDICT_FULL_BUDGET_MS` (see the note above `makeRobotBody` there). It shares only
+ * `clearChassis3dColliders` below, for the same deploy-edge re-fit.
+ *
+ * `heightIn` is the caller's, and it is `bbHeightNow(world, spec)` — never
+ * `robotHeightIn(spec)`, which is the deployed height whatever the phase says. A collider
+ * cannot be resized in place, so a caller that survives the deploy edge re-builds (see
+ * `Engine3d.robotHeights` for why the height built has to be RECORDED, not recomputed).
+ *
+ * Every box is DENSITY 0: mass and inertia are written explicitly by whoever owns the body, so
+ * the compound's box count can never move drive feel.
+ */
+export function addChassis3dColliders(
+  RAPIER: Rapier3d,
+  world3d: InstanceType<Rapier3d['World']>,
+  body: InstanceType<Rapier3d['RigidBody']>,
+  spec: RobotSpec,
+  heightIn: number,
+): void {
+  for (const s of chassis3dShapes(spec, heightIn)) {
+    world3d.createCollider(
+      RAPIER.ColliderDesc.cuboid(s.hx, s.hy, s.hz)
+        .setTranslation(s.cx, s.cy, s.cz)
+        .setDensity(0)
+        .setFriction(PHYS_FRICTION)
+        .setRestitution(0),
+      body,
+    );
+  }
+}
+
+/** drop every collider off a chassis body so it can be re-built at a new height. Shared by the
+ * authority (`addChassis3dColliders`) and the predictor (its own cuboid): the deploy edge happens
+ * in both, and a loop that counts DOWN is the only one that is safe while the collider list
+ * shrinks under it. */
+export function clearChassis3dColliders(
+  world3d: InstanceType<Rapier3d['World']>,
+  body: InstanceType<Rapier3d['RigidBody']>,
+): void {
+  for (let i = body.numColliders() - 1; i >= 0; i--) {
+    world3d.removeCollider(body.collider(i), false);
+  }
 }
 
 // ---- ELEMENTS -----------------------------------------------------------------

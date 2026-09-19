@@ -14,9 +14,9 @@ import { rapier3d, type Rapier3d } from './engine';
 import type { Alliance, Artifact, BallState, RobotState, World } from '../../../types';
 import { chassisInertia } from '../../../sim/robot';
 import { shoveMass } from '../../../sim/drivetrain';
-import { BALL_REST_SPEED, PHYS_FRICTION, PHYS_WALL_FRICTION, GRAVITY, PHYS_SOLVER_ITERS, PHYS_CONTACT_FREQ, PHYS_ALLOWED_ERROR } from '../../../config';
+import { BALL_REST_SPEED, PHYS_WALL_FRICTION, GRAVITY, PHYS_SOLVER_ITERS, PHYS_CONTACT_FREQ, PHYS_ALLOWED_ERROR } from '../../../config';
 import { BB3_CCD_SPEED, BB3_LAUNCH_CLEAR_MAX, BB3_LAUNCH_CLEAR_SLOP, BB3_LAUNCH_CLEAR_STEP, BB3_REST_SPEED, BB3_REST_TICKS, BB3_ROLL_DECEL, BB3_ROLL_FLOOR_Z, BB_POLLEN_R, bbHeightNow } from '../config';
-import { chassis3dShapes, type Chassis3dShape } from './bodies';
+import { addChassis3dColliders, clearChassis3dColliders, chassis3dShapes, type Chassis3dShape } from './bodies';
 import {
   buildHiveTray3d,
   buildStatics3d,
@@ -107,6 +107,31 @@ function disposeEngine(e: Engine3d): void {
   e.world3d.free();
 }
 
+/**
+ * ⚠️ **FREE A FINISHED MATCH'S 3D WORLD. A `WeakMap` CANNOT DO THIS FOR YOU.**
+ *
+ * `ENGINES` is keyed on the `World` object, so when the `World` is dropped the ENTRY goes — and
+ * the `Engine3d` with it, and with that the only handle anyone had on the wasm world. What does
+ * NOT go is the world itself: it lives in Rapier's linear memory, and the JS GC has no idea that
+ * memory exists. `free()` is the only thing that returns it, and wasm linear memory never
+ * shrinks, so what is not freed is held for the life of the tab or the server process. One room
+ * at a time is nothing; a server that has run a few hundred matches, or a player who has started
+ * a dozen practices without reloading, is a different number.
+ *
+ * Idempotent, and safe for a `World` that never had a 3D engine — every teardown path may call
+ * it unconditionally, which is the only way it actually gets called on all of them.
+ *
+ * ⚠️ The world must be DEAD when this is called: anything that steps it afterwards steps a freed
+ * wasm world. `engineFor` would happily build a fresh one, so the failure is silent memory
+ * churn rather than a crash, which is worse — keep this on the teardown path only.
+ */
+export function disposeEngineFor(world: World): void {
+  const e = ENGINES.get(world);
+  if (!e) return;
+  ENGINES.delete(world);
+  disposeEngine(e);
+}
+
 function buildEngine(world: World): Engine3d {
   const RAPIER = rapier3d();
   const world3d = new RAPIER.World({ x: 0, y: 0, z: -GRAVITY });
@@ -187,10 +212,14 @@ export function engineFor(world: World): Engine3d {
 const POSE_EPS = 1e-4;
 
 /**
- * THE CHASSIS COLLIDER, at `heightIn`. Extracted because it is built twice: once when the body
- * is created, and again at the R102 DEPLOY EDGE when a stowed robot stands up (see
- * `Engine3d.robotHeights`). Two copies of this would be two chances for the footprint rule below
- * to drift.
+ * THE CHASSIS COLLIDER, at `heightIn`. Built twice here: once when the body is created, and
+ * again at the R102 DEPLOY EDGE when a stowed robot stands up (see `Engine3d.robotHeights`).
+ *
+ * ⚠️ THE SHAPE ITSELF LIVES IN `bodies.ts` (`addChassis3dColliders`), next to `chassis3dShapes`;
+ * this wrapper is only "which world, and off which engine". The FULL predictor deliberately does
+ * NOT share it — it keeps one `robotExtents` cuboid, because the compound doubled its reconcile
+ * cost (`predict.ts`, the note above `makeRobotBody`). What it does share is the HEIGHT rule
+ * (`bbHeightNow`, re-fit at the deploy edge), which it used to get wrong.
  */
 function addChassisCollider(
   RAPIER: Rapier3d,
@@ -199,19 +228,7 @@ function addChassisCollider(
   r: RobotState,
   heightIn: number,
 ): void {
-  // A COMPOUND WITH AN OPEN MOUTH, not one `robotExtents` cuboid — see `chassis3dShapes`
-  // (`bodies.ts`) for what it is and for why the outermost surfaces are unchanged. Every box is
-  // density 0; the body's real mass and inertia are written below, every tick.
-  for (const s of chassis3dShapes(r.spec, heightIn)) {
-    engine.world3d.createCollider(
-      RAPIER.ColliderDesc.cuboid(s.hx, s.hy, s.hz)
-        .setTranslation(s.cx, s.cy, s.cz)
-        .setDensity(0)
-        .setFriction(PHYS_FRICTION)
-        .setRestitution(0),
-      body,
-    );
-  }
+  addChassis3dColliders(RAPIER, engine.world3d, body, r.spec, heightIn);
 }
 
 /** the height a robot's collider is CURRENTLY built to — the recorded one, falling back to the
@@ -286,9 +303,7 @@ function syncRobot(RAPIER: Rapier3d, engine: Engine3d, r: RobotState, wantHeight
      * R102's cube — every 18-in-and-under robot takes the `!body` path above and never comes
      * back here.
      */
-    for (let i = body.numColliders() - 1; i >= 0; i--) {
-      engine.world3d.removeCollider(body.collider(i), false);
-    }
+    clearChassis3dColliders(engine.world3d, body);
     addChassisCollider(RAPIER, engine, body, r, heightIn);
     engine.robotHeights.set(r.id, heightIn);
     body.setTranslation({ x: r.pos.x, y: r.pos.y, z: centreZ }, true);

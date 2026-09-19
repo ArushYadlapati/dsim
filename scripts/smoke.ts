@@ -15149,6 +15149,48 @@ for (const game of ['decode', 'chain', 'biobuzz'] as const) {
   check('cloud room: a 5th driver is refused by capacity', !cloud.canSeat('c5'));
 }
 
+/* A BOT SEAT'S ID IS A ROSTER `clientId`, so it has to be UNIQUE FOR THE LIFE OF THE ROOM — not
+   merely unique among the bots seated right now. Numbering from `bots.length` satisfied the
+   second and not the first: remove a seat, add another, and the new one is handed an id the
+   roster has already used. Two rows with one key is a roster the client cannot render, and
+   `removeBot`'s `findIndex` reaches only the OLDER of the pair, so the newer seat could not be
+   taken back out at all. BIOBUZZ because it is the only game with a `bot` policy. */
+{
+  const seen: ServerMsg[] = [];
+  const host: Client = {
+    id: 'botid-host',
+    send: (m) => seen.push(m),
+    player: { clientId: 'botid-host', name: 'host', teamName: 'T', teamNumber: 1, alliance: 'red', startIndex: 0, ready: false, spec: { ...DEFAULT_SPEC }, assists: { ...DEFAULT_ASSISTS } },
+    connected: true,
+    disconnectAt: 0,
+  };
+  const room = new Room('smoke-botid', () => {}, { kind: 'versus', game: 'biobuzz' });
+  room.add(host);
+  /** the bot rows of the most recent roster broadcast (a bot row is the one with `bot` set) */
+  const botIds = (): string[] => {
+    for (let i = seen.length - 1; i >= 0; i--) {
+      const m = seen[i];
+      if (m.t === 'roster') return m.players.filter((p) => p.bot).map((p) => p.clientId);
+    }
+    return [];
+  };
+  check('bot seats: BIOBUZZ has an AI driver, so the seat can be taken at all', room.addBot() === null);
+  room.addBot();
+  const first = botIds();
+  check('bot seats: two bots are two rows with two ids', first.length === 2 && first[0] !== first[1], first.join(','));
+  room.removeBot(first[0]);
+  check('bot seats: removing one leaves the other', botIds().length === 1 && botIds()[0] === first[1], botIds().join(','));
+  room.addBot();
+  const live = botIds();
+  check(
+    '⚠️ bot seats: remove-then-add mints a FRESH id, never one the roster already used',
+    live.length === 2 && new Set(live).size === 2 && !live.includes(first[0]),
+    `${first.join(',')} -> ${live.join(',')}`,
+  );
+  room.removeBot(live[1]);
+  check('bot seats: the newest seat can be removed (it is not shadowed by an older twin)', botIds().length === 1, botIds().join(','));
+}
+
 {
   const mkDriver = (id: string, alliance: Alliance, sink: ServerMsg[]): Client => ({
     id,
@@ -21020,7 +21062,9 @@ const mkMM = () => {
   // the world the run happened in. After `makeWorld()` it would score a fresh field.
   const restartBody = gsrc.slice(gsrc.indexOf('  restart(): void {'));
   const restartHarvest = restartBody.indexOf('this.harvestPracticeRun(false)');
-  const restartRebuild = restartBody.indexOf('this.world = this.makeWorld()');
+  // the swap goes through `adoptWorld` (it frees the outgoing world's 3D solve), so that is the
+  // rebuild this looks for; a bare assignment would be a second swap path and is not accepted.
+  const restartRebuild = restartBody.indexOf('this.adoptWorld(this.makeWorld())');
   check(
     'save policy: restart harvests BEFORE it rebuilds the world',
     restartHarvest > 0 && restartRebuild > 0 && restartHarvest < restartRebuild,
@@ -21749,8 +21793,22 @@ const mkMM = () => {
         '⚠️ analytics: storage that THROWS answers on, not off (a blocked read is not a refusal)',
         analyticsAllowed(),
       );
-      setAnalyticsAllowed(false); // must not escape
-      check('analytics: a write to dead storage is swallowed', true);
+      // ...AND THE WRITE MUST NOT ESCAPE EITHER. This was asserted as a literal `true`, which
+      // proves only that the line above it did not throw synchronously — i.e. nothing. Catch it
+      // for real: a browser with storage locked down throws on `setItem` as readily as on
+      // `getItem`, and an opt-out control that throws out of its own click handler is a dead
+      // Settings page rather than a muted one.
+      let threw: unknown = null;
+      try {
+        setAnalyticsAllowed(false);
+      } catch (e) {
+        threw = e;
+      }
+      check(
+        '⚠️ analytics: a write to dead storage is swallowed, not thrown at the caller',
+        threw === null,
+        threw instanceof Error ? threw.message : String(threw),
+      );
       boom = false;
     } finally {
       if (had) g.localStorage = prev;

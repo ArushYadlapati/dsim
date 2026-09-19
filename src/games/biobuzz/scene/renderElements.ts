@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import type { Artifact, ArtifactColor, World } from '../../../types';
 import { SIM_DT } from '../../../config';
 import { BB_HIVE_W, BB_NECTAR_R, BB_POLLEN_R } from '../config';
+import { biobuzzPhysics } from '../state';
 import type { ElementShadows } from '../graphics/settings';
 
 /**
@@ -14,9 +15,10 @@ import type { ElementShadows } from '../graphics/settings';
  * `z` is real altitude). `held`/`stock` balls are off-field and hidden (scaled to zero).
  *
  * `element` balls (parked in a HIVE cell or a FLOWER stack, `state.ts`'s `BallState`) already
- * carry a REAL, useful `pos`/`z` written by `play.ts`'s `park()` — a flower stack's z is
- * `flowerStackZ`'s own centre height, unique per element, so those are posed exactly like a
- * ground ball with no adjustment. A HIVE cell is the one case `park()` does NOT give a unique
+ * carry a REAL, useful `pos`/`z` — but WHAT that z means depends on which solve wrote it, so
+ * the height adjustment branches on `biobuzzPhysics(world)` and not on the ball's kind; the
+ * comment inside `updateBiobuzzElements` has the two conventions and the two bugs. A HIVE cell
+ * is the one case `park()` does NOT give a unique
  * position: every element parked in the same cell shares that cell's centre point and a single
  * fixed height (`CELL_MID_Z`, `play.ts`), because "a parked element is not solved and has no
  * position of its own; this is somewhere to point at" (that file's own comment). Rendered
@@ -215,6 +217,25 @@ export function updateBiobuzzElements(els: BbElements, world: World): void {
   let pollenN = 0;
   let nectarN = 0;
   let blobN = 0;
+  /**
+   * ⚠️ A PARKED ELEMENT'S `z` MEANS DIFFERENT THINGS UNDER THE TWO PHYSICS, SO THE CONVENTION
+   * BRANCHES ON THE SOLVE AND NEVER ON `state.kind`.
+   *
+   * 3D writes a BOTTOM: the readback is `b.z = t.z - r` (`sim3d/engineImpl.ts`) and a placed
+   * flower element is seated `ball.z = PLACE_CENTRE_Z - r` (`sim3d/flower3d.ts`), so every ball
+   * a 3D world solves — parked or loose — reports its underside and has to be lifted by `r`.
+   * 2D writes a CENTRE for a parked element and only for a parked one: `play.ts`'s `park()`
+   * puts a hive element at `CELL_MID_Z` ("where a parked element is drawn to sit") and a flower
+   * element at `flowerStackZ`, which is documented as centre heights. Its loose balls still
+   * report a bottom.
+   *
+   * Keying this off the KIND is what put one branch wrong under each solve — a hive element
+   * floating 1.4 in high in 2D, a flower element sunk a radius in 3D. And a 2D-physics world in
+   * the 3D VIEW is reachable, not theoretical: `GameView.tsx` falls back to `practicePhysics:
+   * '2d'` when the 3D chunk fails to load WITHOUT changing the view, which is the same reason
+   * `sim3d/tilt.ts` exists as a physics-free module.
+   */
+  const bottom = biobuzzPhysics(world) === '3d';
   const blobsOn = els.shadowMode === 'blob';
   const seenSpin = new Set<number>();
 
@@ -260,25 +281,25 @@ export function updateBiobuzzElements(els: BbElements, world: World): void {
       const row = hiveIndex.get(b.id);
       const span = row && row.n > 1 ? Math.min(HIVE_CELL_ROW_SPAN, (row.n - 1) * HIVE_ROW_PAD) : 0;
       const t = row && row.n > 1 ? row.i / (row.n - 1) - 0.5 : 0;
-      // ⚠️ `+ r`, THE SAME AS THE ground/flight BRANCH BELOW. `b.z` is the BOTTOM for a hive
-      // element too -- `syncElement` (sim3d/engineImpl.ts) places its BODY at `b.z + r`, which is
-      // the sim's one convention for every ball it solves. Drawing it raw put every hive element
-      // one radius low, and you could WATCH it happen: a shot arrives as `flight` (drawn at
-      // `b.z + r`), `derive.ts` tags it `element` the tick it settles, and the picture dropped by
-      // a pollen's 1.4 in in one frame. Owner report: "once balls land inside the HIVE, they
-      // teleport slightly downwards."
-      poseAt(mesh, idx, b.pos.x + t * span, b.pos.y, b.z + r);
+      // HIVE cell, fanned along local x. The height is `bottom`'s (see the top of this
+      // function): under 3D `b.z` is the body's underside and is lifted by `r`, under 2D
+      // `park()` has already written the cell's CENTRE height and lifting it again floats the
+      // element a radius above the cell. Lifting unconditionally is how the 3D fix — a shot
+      // that "teleports slightly downwards" the tick `derive.ts` retags it from `flight` to
+      // `element` — leaked into the 2D pipeline it was never about.
+      poseAt(mesh, idx, b.pos.x + t * span, b.pos.y, bottom ? b.z + r : b.z);
     } else if (b.state.kind === 'element') {
-      // FLOWER stack (`el` is `flower:<index>`, not `hive:...`). `flowerStackZ` (`flower.ts`)
-      // already returns a CENTRE height ("Centre heights (in) of every element in the stack"),
-      // so this one IS drawn raw -- and it is the exception, not the rule. Every other branch
-      // here, the hive one included, reads `b.z` as a BOTTOM and lifts it by `r`.
+      // FLOWER stack (`el` is `flower:<index>`, not `hive:...`), same rule as the hive branch
+      // above and for the same reason. Under 2D, `flowerStackZ` (`flower.ts`) has written a
+      // CENTRE height ("Centre heights (in) of every element in the stack") and it is drawn
+      // raw; under 3D the element is a real body seated at `PLACE_CENTRE_Z - r`
+      // (`sim3d/flower3d.ts`) and reported as an underside, so it is lifted like any other.
       //
-      // ⚠️ BUG FOUND AND FIXED HERE: this used to fall into the `ground`/`flight` branch below
-      // and get `+ r` added on top of that already-a-centre height, so every pollen and nectar
-      // parked in a FLOWER rendered floating high by its own radius (1.4–1.8 in) — never
-      // touching the stack it was visually sitting in.
-      poseAt(mesh, idx, b.pos.x, b.pos.y, b.z);
+      // ⚠️ DRAWING THIS RAW UNCONDITIONALLY SANK EVERY 3D FLOWER ELEMENT BY ITS OWN RADIUS
+      // (1.4–1.8 in) — into the stack it was supposed to be resting on. The opposite mistake
+      // shipped first: it used to fall through to the `ground`/`flight` branch and get `+ r`
+      // on top of a 2D centre height, which floated it by the same amount.
+      poseAt(mesh, idx, b.pos.x, b.pos.y, bottom ? b.z + r : b.z);
     } else {
       // 'ground' | 'flight' — `z` is the height of the ball's BOTTOM above the tile (a resting
       // ball reads z === 0), so the centre is lifted by its own radius. Spins as it moves.

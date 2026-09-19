@@ -29,6 +29,9 @@
  * for a different solve.
  */
 
+// TYPE-ONLY, so it costs the chunk nothing — the light-seam rule above is about VALUE imports.
+import type { World } from '../../../types';
+
 /** the resolved module's shape — `typeof import(...)`, so every caller gets the package's own
  * types without a second, hand-maintained copy of them. */
 export type Rapier3d = typeof import('@dimforge/rapier3d-deterministic-compat');
@@ -102,4 +105,19 @@ export function rapier3d(): Rapier3d {
 export function physics3dImpl(): Physics3dImpl {
   if (!impl) throw new Error('3D physics not initialised: await initPhysics3d() first');
   return impl;
+}
+
+/**
+ * FREE the Rapier world a finished match was solved in — see `disposeEngineFor`
+ * (`engineImpl.ts`) for why a `WeakMap` cannot do it and what is leaked when nobody does.
+ *
+ * ⚠️ THIS ONE IS A NO-OP WHEN 3D WAS NEVER LOADED, and that is the point of routing it through
+ * the light gate instead of through `physics3dImpl()`. Every teardown path — the controller's
+ * `dispose`, a world swap, `Room.stop()` — runs for 2D matches too, and the barrel's accessor
+ * THROWS before `initPhysics3d()` resolves. A teardown that has to ask "was this a 3D room"
+ * first is a teardown that gets skipped on the path where someone forgets to ask.
+ */
+export function disposePhysics3dFor(world: World): void {
+  if (!impl) return;
+  impl.disposeEngineFor(world);
 }

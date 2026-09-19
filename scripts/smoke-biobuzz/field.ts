@@ -3204,6 +3204,40 @@ export function fieldChecks(check: Check): void {
           `(range ${BB_SPILL_SPEED[0]}..${BB_SPILL_SPEED[1]} ± kick ${BB_SPILL_KICK}) · ` +
           `fan ${Math.max(...poses.map(fanOf)).toFixed(1)}° of ±${BB_SPILL_FAN}° (+${(fanMax - BB_SPILL_FAN).toFixed(1)}° kick)`,
       );
+
+      /**
+       * ⚠️ SIX DRAWS PER POSE — AND CHANGING THAT NUMBER RE-WRITES EVERY STORED REPLAY.
+       *
+       * A replay is `{seed, setups, commands}` and the RNG is reproduced by RE-RUNNING it, so
+       * how many values `spillPoses` consumes is part of the container's format in everything
+       * but name. Take one more or one fewer and every draw after the first spill lands on a
+       * different number — the next spill, every scatter, everything seeded after it — so the
+       * match a viewer re-simulates is not the match that was played. And the viewer cannot
+       * tell on its own: playback is gated on `SIM_VERSION`, so a change here without a bump
+       * plays a fabrication back as the real thing.
+       *
+       * Not hypothetical, and this branch is where it happened. The count moved 4 -> 6 in the
+       * HIVE-feel batch (the fan gained an all-directions KICK: direction and magnitude, two
+       * extra draws) while `SIM_VERSION` still said 2, so replays recorded between 2026-09-13
+       * and 2026-09-17 are stamped 2 over six-draw behaviour. `SIM_VERSION` is 3 now and that
+       * bump covers this. The next change to this number comes with ANOTHER bump, and this
+       * expectation moves in the same commit — that pairing is the whole point of the check.
+       */
+      let draws = 0;
+      let countState = 11;
+      const counted = (): number => {
+        draws++;
+        const r = nextRandom(countState);
+        countState = r.state;
+        return r.value;
+      };
+      const drawN = 5;
+      spillPoses(mid, a, drawN, counted);
+      check(
+        `hive [${a}]: a spill draws exactly 6 RNG values per element (the replay chain depends on it)`,
+        draws === 6 * drawN,
+        `${draws} draws for ${drawN} poses — ${(draws / drawN).toFixed(2)} each, expected 6`,
+      );
     }
 
     // 8a-ii. THE KICK IS REAL: across a spill, the poses are NOT all on the fan. With the kick

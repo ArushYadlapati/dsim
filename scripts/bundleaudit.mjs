@@ -45,6 +45,13 @@
  *                not in the bundle that player downloads. ⚠️ TESTED AFTER `scene`, because the
  *                renderer chunk carries its own inlined copy of the settings model and
  *                "it has three.js in it" has to keep winning for that one.
+ *   gallery    — the BIOBUZZ SCENE GALLERY (`Gallery-*.js`), a dev route. `devRouteFor`
+ *                (`src/ui/App.tsx`) never matches `/gallery/*` on a stable build, but a static
+ *                import is a bundling fact and not a runtime one: until 2026-09-19 the gallery,
+ *                its seventy-scene registry and everything they reach were in `main` for every
+ *                player of every game, to be gated at the URL. `GalleryRoute.tsx` `React.lazy`s
+ *                it now, so it is its own chunk and this route is where it lands. Matched by
+ *                FILENAME, before the content scans — it renders nothing itself.
  *   other      — everything else. In practice this is empty: `@dimforge/rapier2d-compat` is a
  *                STATIC import (`src/sim/physicsEngine.ts`), so the 2D physics engine lives
  *                inside `main` already and always has (that is existing, unchanged behavior,
@@ -117,6 +124,7 @@ function routeFor(file, buf) {
   const base = file;
   if (/^index-[^/]*\.js$/.test(base)) return 'main';
   if (/^hostWorker-[^/]*\.js$/.test(base)) return 'hostWorker';
+  if (/^Gallery-[^/]*\.js$/.test(base)) return 'gallery';
   // filename-first for a standalone `.wasm` asset (cheap, and a real one would be named after
   // its source module, e.g. `rapier_wasm3d_bg-<hash>.wasm`), then a content scan for both .js
   // and .wasm alike — content is what actually decided this in the measured build, where the
@@ -226,15 +234,27 @@ const fmtKB = (bytes) => `${(bytes / 1000).toFixed(2)} KB`;
  *               counted once in main instead of once in the lazy chunk. Locked in because the
  *               ratchet asked; it is not a win to defend.
  *
+ * ── RE-MEASURED 2026-09-19, the pre-publish audit ─────────────────────────────────────
+ *   main        927.95 KB — −5.99 from 933.94: the BIOBUZZ scene gallery left the entry chunk
+ *               (see the `gallery` route above). The same audit's own additions to main — the
+ *               legal-page gate suspension, the auth dialog's a11y, `coerceCaps`, the analytics
+ *               query strip — are inside the noise of that.
+ *   gallery       7.33 KB — NEW: `Gallery-*.js`, the lazy gallery chunk. Bytes that used to be
+ *               counted under main; a stable build never requests it.
+ *   hostWorker  706.37, physics3d 1125.26, scene 199.67 — within noise (+0.11, +0.20, +0.19):
+ *               the 3D-world disposal, the shared chassis-collider builder and the context-loss
+ *               watcher. Baselines left where they were; the ratchet's tolerance covers them.
+ *
  * RECALIBRATE by running `npm run build && npm run bundleaudit` and copying the printed gzip
  * totals in here, the same way `uiaudit.mjs`'s header describes lowering ITS baseline.
  */
 const BASELINE = {
-  main: { gzip: 933.94 * 1000 },
+  main: { gzip: 927.95 * 1000 },
   hostWorker: { gzip: 706.26 * 1000 },
   physics3d: { gzip: 1125.06 * 1000 },
   scene: { gzip: 199.48 * 1000, budgetCeiling: 250 * 1000 },
   graphics: { gzip: 4.01 * 1000 },
+  gallery: { gzip: 7.33 * 1000 },
   other: { gzip: 1 * 1000 },
 };
 

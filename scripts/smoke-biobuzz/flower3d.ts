@@ -4,6 +4,7 @@ import { step3d } from '../../src/games/biobuzz/sim3d/step3d';
 import { cadFlowerRings } from '../../src/games/biobuzz/sim3d/fieldColliders';
 import { ringTrimesh, flowerTubeOf, flowerAtRetrieval } from '../../src/games/biobuzz/sim3d/flowerTube';
 import { flowerPlace3d, flowerRetrieve3d } from '../../src/games/biobuzz/sim3d/flower3d';
+import { engineFor } from '../../src/games/biobuzz/sim3d/engineImpl';
 import { bbPlacePointLocal } from '../../src/games/biobuzz/robot';
 import {
   BB3_FLOWER_RING_SEGMENTS,
@@ -373,5 +374,34 @@ export function flower3dChecks(check: Check): void {
       w.biobuzz!.flowers[F].stack.length === 1 && el.z < 1,
       `stack ${JSON.stringify(w.biobuzz!.flowers[F].stack)}, z ${el.z.toFixed(3)}`,
     );
+
+    /**
+     * ⚠️ UNDER 3D, `b.z` IS THE BODY'S UNDERSIDE — INCLUDING FOR A FLOWER ELEMENT.
+     *
+     * `scene/renderElements.ts` draws a ball's CENTRE, and it gets it from `b.z + r` for every
+     * ball a 3D world solves. It cannot be read headlessly (it poses an `InstancedMesh`), so the
+     * convention is pinned here, at the data level, against the authority: the Rapier body's own
+     * `translation().z`. The hazard is specifically the PARKED kinds, because the 2D pipeline
+     * writes a CENTRE there (`play.ts` parks at `CELL_MID_Z`, `flowerStackZ` returns centre
+     * heights) — so a renderer that branches on `state.kind` instead of on the PHYSICS draws one
+     * of the two solves a radius wrong, and did: a flower element sunk 1.4–1.8 in into its stack.
+     *
+     * The tolerance is the READBACK's own quantum, not a fudge: `readback` writes
+     * `b.z = round4(t.z - r)`, so the pair can legitimately disagree by half of 1e-4 and by
+     * nothing more. A residual larger than that is a different convention, which is the failure
+     * this check exists to catch.
+     */
+    {
+      const engine = engineFor(w);
+      const body = engine.elements.get(el.id);
+      const t = body?.translation();
+      const drawn = el.z + (el.r ?? BB_POLLEN_R);
+      const resid = t ? Math.abs(drawn - t.z) : Infinity;
+      check(
+        'a 3D flower element: the DRAWN centre (b.z + r) is the body centre — one z convention per solve',
+        !!t && resid <= 5e-5 + 1e-6,
+        `drawn ${drawn.toFixed(6)} vs body ${t ? t.z.toFixed(6) : 'NO BODY'} — residual ${resid.toExponential(2)} (readback rounds to 1e-4)`,
+      );
+    }
   }
 }
