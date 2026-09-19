@@ -1,5 +1,4 @@
 {
-  "description": "Impeccable design detector: immediate-tier checks after Edit/Write/MultiEdit on UI files, full-rule deep pass on Stop. Plus the coordination board's per-turn publisher (Stop) — a no-op unless .coord.json exists, and it hands the network work to a detached child so a turn never waits on it.",
   "hooks": {
     "PostToolUse": [
       {
@@ -31,6 +30,12 @@
           }
         ]
       }
+    ]
+  },
+  "description": "Impeccable design detector: immediate-tier checks after Edit/Write/MultiEdit on UI files, full-rule deep pass on Stop. Plus the coordination board's per-turn publisher (Stop) — a no-op unless .coord.json exists, and it hands the network work to a detached child so a turn never waits on it.",
+  "permissions": {
+    "allow": [
+      "Bash(npm run *)"
     ]
   }
 }
