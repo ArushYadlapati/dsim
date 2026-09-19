@@ -1,7 +1,7 @@
 import type { Artifact, ArtifactColor, Vec2, World } from '../../types';
 import { BB_HIVE_BOTTOM_Z, BB_POLLEN_R } from './config';
 import { drawHiveCanopy } from './drawField';
-import { drawBiobuzzShotPath } from './drawShot';
+import { drawBiobuzzReachCue, drawBiobuzzShotPath } from './drawShot';
 
 /**
  * BIOBUZZ element renderer (the `drawBalls` slot — drawn AFTER the robots, so an element at
@@ -49,10 +49,30 @@ import { drawBiobuzzShotPath } from './drawShot';
  * shared — one dark outline reads against the mat in both themes and against all three
  * fills. */
 export const ELEMENT_LINE = 'rgba(28,22,6,0.6)';
+/**
+ * OWNER BUG 12 (2026-09-19): "the blue alliance looks too purple — are you sure that is the
+ * exact colour AndyMark uses?" Measured, the complaint is right and BOTH answers the repo had
+ * were wrong. In OKLCH: the old `#4d8fe2`/`#0a5cff`/`C.COLORS.blue` family sits at hue 255-262°,
+ * and the field CAD's own hive Goal Ribs are `plastic#0000ff` — hue 264.1°, which is 1.7° off the
+ * most violet blue sRGB can express and the WORST answer available. A STEP assembly carrying
+ * pure `#ff0000` and pure `#0000ff` is carrying PLACEHOLDER part colours, not a paint spec, and
+ * `renderFieldGlb.ts` already overrides the same file's `#e6e6e6` "white plastic" placeholder for
+ * exactly that reason. No authoritative AndyMark blue was found, so this is not one.
+ *
+ * `#007be1` is a PERCEPTUAL CORRECTION and APPROX: hue 252.9°, which is the least violet a
+ * saturated blue gets before it starts reading cyan, at the maximum chroma sRGB has there
+ * (0.179) and L 0.583 — within 0.002 of the red tape's own lightness, so the two alliances read
+ * at the same weight. It is 11.2° off the CAD's rib colour, and that gap is deliberate.
+ *
+ * ⚠️ ONE BIOBUZZ BLUE. Tape, NECTAR, hive accents, the constants-built fallback scene, the GLB's
+ * ribs and the robot silhouette all take this value; there is no second approximation left.
+ */
+export const BB_ALLIANCE_BLUE = '#007be1';
+
 export const ELEMENT_FILL: Record<ArtifactColor, string> = {
   yellow: '#f2d14b', // POLLEN
   red: '#e2564d', // red NECTAR
-  blue: '#4d8fe2', // blue NECTAR
+  blue: BB_ALLIANCE_BLUE, // blue NECTAR
   // DECODE's two, unreachable in a BIOBUZZ world but the record has to be total
   purple: '#9b6bd6',
   green: '#59c08a',
@@ -99,9 +119,13 @@ export function drawBiobuzzBalls(
   drawHiveCanopy(ctx, world);
   drawLoose(ctx, world, screenUp, (b) => b.z >= BB_HIVE_BOTTOM_Z);
 
-  // ...and LAST of all, over the canopy and every element, the local driver's SHOT PATH — drawn
-  // only when the shot would actually go in (`drawShot.ts` / `shotPath.ts`). It is an instrument,
-  // so nothing on the field is allowed to sit on top of it.
+  // ...then the two DRIVER INSTRUMENTS, over the canopy and every element, in the order the 3D
+  // twin stacks them (`scene/renderReticle.ts`: the collar is renderOrder 9, the path 10). They
+  // answer two unrelated questions — can I place into that FLOWER, and would this shot enter the
+  // HIVE — so the one that is a field MARKING goes under the one that is a TRAJECTORY.
+  drawBiobuzzReachCue(ctx, world, localRobotId);
+  // Drawn only when the shot would actually go in (`drawShot.ts` / `shotPath.ts`). It is an
+  // instrument, so nothing on the field is allowed to sit on top of it.
   drawBiobuzzShotPath(ctx, world, screenUp, localRobotId);
 }
 

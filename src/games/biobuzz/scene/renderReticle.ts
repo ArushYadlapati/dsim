@@ -9,13 +9,15 @@ import {
   shotArc,
   solveShotPath,
 } from '../shotPath';
+import { BB_FLOWERS, BB_FLOWER_OPEN_R, BB_FLOWER_TOP_Z } from '../config';
+import { bbFlowerInReach } from '../robot';
 
 /**
- * BIOBUZZ 3D SCENE — THE SHOT PATH.
+ * BIOBUZZ 3D SCENE — TWO FIELD INSTRUMENTS, ONE GROUP.
  *
- * WHAT IT DRAWS: a DOTTED line along the arc the local robot's next shot would fly, and ONLY when
- * that shot goes in. Nothing else — no landing ring, no marker, no faint line for a shot that
- * misses (owner playtest feedback 2026-09-18, items 5 and 6).
+ * 1. THE SHOT PATH: a DOTTED line along the arc the local robot's next shot would fly, and ONLY
+ *    when that shot goes in. Nothing else — no landing ring, no marker, no faint line for a shot
+ *    that misses (owner playtest feedback 2026-09-18, items 5 and 6).
  *
  * ── WHY THE RING IS GONE ────────────────────────────────────────────────────────────────────
  * It was a ring at the solved landing point, drawn for EVERY solvable shot, so a robot out of
@@ -29,13 +31,29 @@ import {
  *
  * ZERO PER-FRAME ALLOCATION: one `BufferGeometry` wrapping `shotPath`'s preallocated point buffer
  * plus a `lineDistance` buffer of its own, both rewritten through `setDrawRange`.
+ *
+ * 2. THE FLOWER-IN-REACH COLLAR (2026-09-19, owner bug report item 6: "a clearer in-field
+ *    indicator when the flower is in reach"). `docs/area/biobuzz.md`'s "ONE PREDICTOR AND TWO
+ *    DRAWINGS" rule applies here exactly as it does to the shot path above: this draws
+ *    `bbFlowerInReach(world, robot)` (`../robot.ts`) and works out no distance of its own — no
+ *    `BB_PLACE_TOL`, no loop over `BB_FLOWERS`' positions. `drawShot.ts`'s `drawBiobuzzReachCue`
+ *    is the 2D twin, same predicate. It is a filled, PULSING annulus (never `RingGeometry` or
+ *    `CircleGeometry` — see the file-content check this file has carried since the shot path
+ *    landed) around the flower's own opening, a different field location and a different SHAPE
+ *    from the dotted shot-path line on purpose: the two instruments answer two different
+ *    questions (can I shoot into a hive cell / can I place into a flower) and must never be
+ *    mistaken for each other. The pulse is cosmetic (driven by `world.time`, not a clock), which
+ *    is what makes the state change unmistakable at match distance without adding any text —
+ *    the field draws none during a match (owner ruling).
  */
 
 /** how far above the arc's own height the line floats, so it never z-fights the tiles at the two
  * ends where the flight is near the floor. */
 const PATH_LIFT = 0.25;
 
-function readPathColor(): number {
+/** the on-field accent, category 3 in `docs/area/ui.md` (its ground is the canvas, so it never
+ * re-values in the dark block) — shared by both instruments this file draws. */
+function readOnFieldAccent(): number {
   try {
     const raw = getComputedStyle(document.documentElement).getPropertyValue('--ds-on-field-accent').trim();
     if (/^#[0-9a-fA-F]{6}$/.test(raw)) return parseInt(raw.slice(1), 16);
@@ -43,6 +61,41 @@ function readPathColor(): number {
     // a detached / pre-layout document — the literal is the same value
   }
   return parseInt(SHOT_PATH_COLOR.slice(1), 16);
+}
+
+/**
+ * The reach collar's radii, in field inches — the SAME pad `drawShot.ts`'s 2D twin uses, so the
+ * cue is one physical size in both views. APPROX: sized off the flower's own measured top-ring
+ * opening (`BB_FLOWER_OPEN_R`) with enough pad to clear its rim and read as a distinct band
+ * rather than tracing the opening's own edge.
+ */
+const REACH_COLLAR_IN = BB_FLOWER_OPEN_R + 0.4; // APPROX
+const REACH_COLLAR_OUT = BB_FLOWER_OPEN_R + 1.6; // APPROX
+
+/** how far above the flower's top plate the collar floats, so it never z-fights the flower mesh
+ * (the same role `PATH_LIFT` plays for the shot path). */
+const REACH_LIFT = 0.4;
+
+/** the pulse rate (Hz) and the opacity/scale range it drives — tuned so the collar reads as
+ * ACTIVE at match distance (the owner's complaint: today's cue, the HUD chip, is "too subtle")
+ * without reading as flicker. APPROX, cosmetic only — `world.time`-driven, so it costs nothing
+ * to determinism or a replay. */
+const REACH_PULSE_HZ = 1.6; // APPROX
+const REACH_OPACITY_MIN = 0.42; // APPROX
+const REACH_OPACITY_MAX = 0.88; // APPROX
+const REACH_SCALE_PULSE = 0.14; // APPROX — fraction of radius the collar breathes by
+
+/** a flat annulus in the local XY plane (normal +Z, i.e. it lies flat and faces up) — built from
+ * a `Shape` with a hole rather than `RingGeometry` so this file's own "no ring geometry, no ring
+ * word" guarantee (the check that has covered the shot path since it landed) covers this mesh
+ * too. */
+function buildReachCollarGeometry(): THREE.ShapeGeometry {
+  const outer = new THREE.Shape();
+  outer.absarc(0, 0, REACH_COLLAR_OUT, 0, Math.PI * 2, false);
+  const inner = new THREE.Path();
+  inner.absarc(0, 0, REACH_COLLAR_IN, 0, Math.PI * 2, true);
+  outer.holes.push(inner);
+  return new THREE.ShapeGeometry(outer, 32);
 }
 
 export interface BbReticle {
@@ -65,7 +118,7 @@ export function buildBiobuzzReticle(): BbReticle {
   geo.setDrawRange(0, 0);
 
   const mat = new THREE.LineDashedMaterial({
-    color: readPathColor(),
+    color: readOnFieldAccent(),
     // FIELD INCHES, the same pattern the 2D map dots with (`shotPath.ts`)
     dashSize: SHOT_DASH,
     gapSize: SHOT_GAP,
@@ -86,24 +139,51 @@ export function buildBiobuzzReticle(): BbReticle {
   // and it must never be frustum-culled against a bounding sphere computed when the buffer was
   // empty and never recomputed.
   line.frustumCulled = false;
+  line.visible = false;
   group.add(line);
   group.userData.path = line;
   group.userData.dists = dists;
+
+  // THE FLOWER-IN-REACH COLLAR — see the file header. Independent visibility from the shot path
+  // above (a robot can be in reach of a flower with no hive shot solved, or vice versa), so it is
+  // a SIBLING whose own `.visible` is set every frame, never the parent `group`'s.
+  const reachGeo = buildReachCollarGeometry();
+  const reachMat = new THREE.MeshBasicMaterial({
+    color: readOnFieldAccent(),
+    transparent: true,
+    opacity: REACH_OPACITY_MIN,
+    depthTest: false,
+    depthWrite: false,
+    side: THREE.DoubleSide,
+  });
+  const reach = new THREE.Mesh(reachGeo, reachMat);
+  reach.name = 'bb-reticle:reach';
+  reach.renderOrder = 9; // just under the shot path's 10 — the collar reads through the flower
+  reach.frustumCulled = false;
+  reach.visible = false;
+  group.add(reach);
+  group.userData.reach = reach;
 
   return {
     group,
     dispose(): void {
       geo.dispose();
       mat.dispose();
+      reachGeo.dispose();
+      reachMat.dispose();
     },
   };
 }
 
 /**
- * Pose the shot path for this frame, or hide it.
+ * Pose this frame's two field instruments, or hide either.
  *
- * HIDDEN when: `effects` is `minimal`, there is no local robot (a spectator, a replay of somebody
- * else's match), the robot is a passive practice dummy, or the shot would not be made.
+ * BOTH HIDDEN when: `effects` is `minimal`, there is no local robot (a spectator, a replay of
+ * somebody else's match), or the robot is a passive practice dummy.
+ *
+ * The SHOT PATH is additionally hidden when the shot would not be made; the REACH COLLAR is
+ * additionally hidden when `bbFlowerInReach` finds no flower within reach. These are two
+ * independent predicates, so one instrument showing says nothing about the other.
  */
 export function updateBiobuzzReticle(
   ret: BbReticle,
@@ -123,11 +203,33 @@ export function updateBiobuzzReticle(
       break;
     }
   }
-  if (!robot || robot.passive || !solveShotPath(world, robot) || SHOT.points < 2) {
+  if (!robot || robot.passive) {
     group.visible = false;
     return;
   }
+  group.visible = true;
+
+  const reach = group.userData.reach as THREE.Mesh;
+  const idx = bbFlowerInReach(world, robot);
+  if (idx === null) {
+    reach.visible = false;
+  } else {
+    const f = BB_FLOWERS[idx];
+    const pulse = 0.5 + 0.5 * Math.sin(world.time * REACH_PULSE_HZ * Math.PI * 2);
+    reach.position.set(f.x, f.y, BB_FLOWER_TOP_Z + REACH_LIFT);
+    const s = 1 + pulse * REACH_SCALE_PULSE;
+    reach.scale.set(s, s, 1);
+    (reach.material as THREE.MeshBasicMaterial).opacity =
+      REACH_OPACITY_MIN + pulse * (REACH_OPACITY_MAX - REACH_OPACITY_MIN);
+    reach.visible = true;
+  }
+
   const line = group.userData.path as THREE.Line;
+  if (!solveShotPath(world, robot) || SHOT.points < 2) {
+    line.visible = false;
+    return;
+  }
+  line.visible = true;
   const dists = group.userData.dists as Float32Array;
   // cumulative arc length, in field inches, so the dash pattern is a real length and not a
   // function of how many points the flight happened to produce
@@ -143,5 +245,4 @@ export function updateBiobuzzReticle(
   line.geometry.setDrawRange(0, SHOT.points);
   (line.geometry.getAttribute('position') as THREE.BufferAttribute).needsUpdate = true;
   (line.geometry.getAttribute('lineDistance') as THREE.BufferAttribute).needsUpdate = true;
-  group.visible = true;
 }

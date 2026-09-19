@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import type { Artifact, ArtifactColor, World } from '../../../types';
 import { SIM_DT } from '../../../config';
 import { BB_HIVE_W, BB_NECTAR_R, BB_POLLEN_R } from '../config';
+import { biobuzzPhysics } from '../state';
 import type { ElementShadows } from '../graphics/settings';
 
 /**
@@ -16,16 +17,30 @@ import type { ElementShadows } from '../graphics/settings';
  * `element` balls (parked in a HIVE cell or a FLOWER stack, `state.ts`'s `BallState`) already
  * carry a REAL, useful `pos`/`z` written by `play.ts`'s `park()` — a flower stack's z is
  * `flowerStackZ`'s own centre height, unique per element, so those are posed exactly like a
- * ground ball with no adjustment. A HIVE cell is the one case `park()` does NOT give a unique
- * position: every element parked in the same cell shares that cell's centre point and a single
- * fixed height (`CELL_MID_Z`, `play.ts`), because "a parked element is not solved and has no
- * position of its own; this is somewhere to point at" (that file's own comment). Rendered
- * verbatim, every pollen in a cell would sit inside every other one. So this file does the ONE
- * approximation the Day 1 brief calls out: it groups a hive's parked elements by their `slot`
- * and fans them out along local x (the cell's un-foreshortened width axis, `BB_HIVE_W`, which a
- * hive tilt does not move since the tilt rotates about world x) — a row, exactly like the 2D
- * renderer's `drawCellContents`, but done from the ball's own (shared) position rather than the
+ * ground ball with no adjustment.
+ *
+ * A HIVE cell forks on `biobuzzPhysics(world)` (2026-09-19, owner report "elements sometimes
+ * mesh with the bottom of the hive"). Under `'2d'` (a practice watched in the 3D view — the ONLY
+ * way a 2D-physics world reaches this file), `park()` does NOT give a unique position: every
+ * element parked in the same cell shares that cell's centre point and a single fixed height
+ * (`CELL_MID_Z`, `play.ts`), because "a parked element is not solved and has no position of its
+ * own; this is somewhere to point at" (that file's own comment). Rendered verbatim, every pollen
+ * in a cell would sit inside every other one, so this branch does the ONE approximation the Day
+ * 1 brief calls out: it groups a hive's parked elements by their `slot` and fans them out along
+ * local x (the cell's un-foreshortened width axis, `BB_HIVE_W`, which a hive tilt does not move
+ * since the tilt rotates about world x) — a row, exactly like the 2D renderer's
+ * `drawCellContents`, but done from the ball's own (shared) position rather than the
  * `BbHiveState.contents` array (this file never reads `world.biobuzz.hives`).
+ *
+ * Under `'3d'` every element in the cell already has its own SOLVED position from the tray's
+ * Rapier body — there is nothing to fan. Adding the 2D row fan on top of an already-distinct
+ * position was itself a bug: measured, it walked a drawn sphere up to ±3.00 in off the body it
+ * was meant to mark (5 elements in a cell), drew two elements that physically sit at the same
+ * local x 4.5 in apart, and at higher counts pushed the sphere past the floor plate's own edge
+ * and through the side wall — read at a glance as "meshing with the hive". The actual small
+ * (0.06–0.15 in) penetration into the tray floor is the CONTACT SOLVE's, not this file's — see
+ * `sim3d/engineImpl.ts`/`predict.ts`'s `contact_natural_frequency`; this file poses at the body
+ * exactly, and does not fudge the draw to hide a physics number.
  */
 
 /** how many instances each kind's `InstancedMesh` is sized for — the Day 1 brief's number, well
@@ -33,7 +48,9 @@ import type { ElementShadows } from '../graphics/settings';
 const CAP = 56;
 
 const POLLEN_COLOR = 0xf2d14b; // matches `draw.ts`'s ELEMENT_FILL.yellow
-const NECTAR_COLORS: Record<'red' | 'blue', number> = { red: 0xe2564d, blue: 0x4d8fe2 };
+/** the one BIOBUZZ blue (`draw.ts`'s `ELEMENT_FILL.blue`, owner bug 12 — see that header for why
+ * it is NOT the CAD's `plastic#0000ff`); red still matches `draw.ts`'s own `#e2564d`. */
+const NECTAR_COLORS: Record<'red' | 'blue', number> = { red: 0xe2564d, blue: 0x007be1 };
 
 const HIDE = new THREE.Matrix4().makeScale(0, 0, 0);
 
@@ -218,27 +235,37 @@ export function updateBiobuzzElements(els: BbElements, world: World): void {
   const blobsOn = els.shadowMode === 'blob';
   const seenSpin = new Set<number>();
 
+  // The row fan is a stand-in for a position `park()` never gives a 2D hive element — under 3D
+  // physics every element already has one, so the whole grouping pass is dead work there (and
+  // building `hiveIndex` unconditionally is exactly what let the fan apply itself to a 3D world
+  // too). One physics mode per `World`, so one check covers every ball below.
+  const is3dHive = biobuzzPhysics(world) === '3d';
+
   // group hive-parked elements by `el` so a shared cell position can be fanned into a row —
   // small (a hive holds at most a handful of elements), so a per-frame Map here is not the
-  // "no allocation" hot path the per-ball pose loop below is.
+  // "no allocation" hot path the per-ball pose loop below is. 2D-only: see `is3dHive` above.
   const hiveGroups = new Map<string, Artifact[]>();
-  for (const b of world.balls) {
-    if (b.state.kind === 'element' && b.state.el.startsWith('hive:')) {
-      const arr = hiveGroups.get(b.state.el);
-      if (arr) arr.push(b);
-      else hiveGroups.set(b.state.el, [b]);
+  if (!is3dHive) {
+    for (const b of world.balls) {
+      if (b.state.kind === 'element' && b.state.el.startsWith('hive:')) {
+        const arr = hiveGroups.get(b.state.el);
+        if (arr) arr.push(b);
+        else hiveGroups.set(b.state.el, [b]);
+      }
+    }
+    for (const arr of hiveGroups.values()) {
+      arr.sort((a, c) => {
+        const sa = a.state.kind === 'element' ? a.state.slot : 0;
+        const sc = c.state.kind === 'element' ? c.state.slot : 0;
+        return sa - sc;
+      });
     }
   }
-  for (const arr of hiveGroups.values()) {
-    arr.sort((a, c) => {
-      const sa = a.state.kind === 'element' ? a.state.slot : 0;
-      const sc = c.state.kind === 'element' ? c.state.slot : 0;
-      return sa - sc;
-    });
-  }
   const hiveIndex = new Map<number, { i: number; n: number }>();
-  for (const arr of hiveGroups.values()) {
-    arr.forEach((b, i) => hiveIndex.set(b.id, { i, n: arr.length }));
+  if (!is3dHive) {
+    for (const arr of hiveGroups.values()) {
+      arr.forEach((b, i) => hiveIndex.set(b.id, { i, n: arr.length }));
+    }
   }
 
   for (const b of world.balls) {
@@ -257,17 +284,24 @@ export function updateBiobuzzElements(els: BbElements, world: World): void {
     if (b.state.kind === 'held' || b.state.kind === 'stock') {
       mesh.setMatrixAt(idx, HIDE);
     } else if (b.state.kind === 'element' && b.state.el.startsWith('hive:')) {
-      const row = hiveIndex.get(b.id);
-      const span = row && row.n > 1 ? Math.min(HIVE_CELL_ROW_SPAN, (row.n - 1) * HIVE_ROW_PAD) : 0;
-      const t = row && row.n > 1 ? row.i / (row.n - 1) - 0.5 : 0;
-      // ⚠️ `+ r`, THE SAME AS THE ground/flight BRANCH BELOW. `b.z` is the BOTTOM for a hive
-      // element too -- `syncElement` (sim3d/engineImpl.ts) places its BODY at `b.z + r`, which is
-      // the sim's one convention for every ball it solves. Drawing it raw put every hive element
-      // one radius low, and you could WATCH it happen: a shot arrives as `flight` (drawn at
-      // `b.z + r`), `derive.ts` tags it `element` the tick it settles, and the picture dropped by
-      // a pollen's 1.4 in in one frame. Owner report: "once balls land inside the HIVE, they
-      // teleport slightly downwards."
-      poseAt(mesh, idx, b.pos.x + t * span, b.pos.y, b.z + r);
+      // ⚠️ `+ r`, THE SAME AS THE ground/flight BRANCH BELOW IN BOTH SUB-BRANCHES. `b.z` is the
+      // BOTTOM for a hive element too -- `syncElement` (sim3d/engineImpl.ts) places its BODY at
+      // `b.z + r`, which is the sim's one convention for every ball it solves. Drawing it raw put
+      // every hive element one radius low, and you could WATCH it happen: a shot arrives as
+      // `flight` (drawn at `b.z + r`), `derive.ts` tags it `element` the tick it settles, and the
+      // picture dropped by a pollen's 1.4 in in one frame. Owner report: "once balls land inside
+      // the HIVE, they teleport slightly downwards."
+      if (is3dHive) {
+        // 3D: `b.pos`/`b.z` already IS this element's own solved position -- no fan term. Adding
+        // one here was the 2026-09-19 "meshes with the bottom of the hive" report's render half
+        // (see the file header): it draws the body's own position, nothing invented on top.
+        poseAt(mesh, idx, b.pos.x, b.pos.y, b.z + r);
+      } else {
+        const row = hiveIndex.get(b.id);
+        const span = row && row.n > 1 ? Math.min(HIVE_CELL_ROW_SPAN, (row.n - 1) * HIVE_ROW_PAD) : 0;
+        const t = row && row.n > 1 ? row.i / (row.n - 1) - 0.5 : 0;
+        poseAt(mesh, idx, b.pos.x + t * span, b.pos.y, b.z + r);
+      }
     } else if (b.state.kind === 'element') {
       // FLOWER stack (`el` is `flower:<index>`, not `hive:...`). `flowerStackZ` (`flower.ts`)
       // already returns a CENTRE height ("Centre heights (in) of every element in the stack"),
