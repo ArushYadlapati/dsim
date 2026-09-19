@@ -223,7 +223,7 @@ import {
   assignPadBind,
   removePadBind,
 } from '../src/input/bindings';
-import { PadChordResolver, PAD_CHORD_GRACE_MS } from '../src/input/padChords';
+import { PadChordResolver, PAD_CHORD_GRACE_MS, PAD_TAP_HOLD_MS } from '../src/input/padChords';
 import { quantizeCommand, dequantizeCommand, localizeCommand, sanitizeQCommand, slimWorld, unslimWorld, encodeBallDelta, applyBallDelta } from '../src/net/protocol';
 import type { Artifact } from '../src/types';
 import { worldHash } from '../src/net/checksum';
@@ -22352,13 +22352,100 @@ const mkMM = () => {
   rt.resolve([7], pad, 0);
   const t1 = rt.resolve([], pad, 50);
   const t2 = rt.resolve([], pad, 60);
-  check('resolver: a prefix tapped inside the wait fires once on release', t1.fire === true && t1.fling === false && t2.fire === false, J([t1.fire, t2.fire]));
+  const t2b = rt.resolve([], pad, 50 + PAD_TAP_HOLD_MS);
+  check(
+    'resolver: a prefix tapped inside the wait fires on release, holds PAD_TAP_HOLD_MS, then stops',
+    t1.fire === true && t1.fling === false && t2.fire === true && t2b.fire === false,
+    J([t1.fire, t2.fire, t2b.fire]),
+  );
   const padE = cloneBindings(DEFAULT_BINDINGS).pad; // park on X, and X + LB bound as a combo
   padE.combos.catalyst = [[2, 4]];
   const re = new PadChordResolver();
   const e0 = re.resolve([2], padE, 0);
   const e1 = re.resolve([], padE, 40);
-  check('resolver: an edge action tapped on a combo button still fires once', e0.park === false && e1.park === true && re.resolve([], padE, 50).park === false);
+  check(
+    'resolver: an edge action tapped on a combo button still fires once',
+    e0.park === false && e1.park === true && re.resolve([], padE, 50).park === true &&
+      re.resolve([], padE, 40 + PAD_TAP_HOLD_MS).park === false,
+  );
+
+  /**
+   * THE TAP HAS TO OUTLIVE THE FRAME IT FIRED ON, or most of them never reach the sim.
+   *
+   * `resolve()` runs once per FRAME (`InputManager.poll()`), but the HELD-level bits it
+   * produces are consumed by the SIM on a fixed 60 Hz accumulator — above 60 fps most frames
+   * step ZERO ticks, and in multiplayer the sim runs off a jittery `setInterval` at the same
+   * period. A tap asserted for exactly one frame therefore landed on a frame that stepped
+   * nothing about two times in three at 165 Hz, and a quick RT tap shot only sometimes.
+   * `PAD_TAP_HOLD_MS` is the bound that fixes it: longer than the worst gap between two
+   * STEPPING frames at any refresh rate (just under 2 × 16.67 ms, at a display barely past
+   * 60 Hz). Sampled here at REAL 165 Hz frame spacing, walking the 16.67 ms sim boundaries.
+   */
+  const FRAME_165 = 1000 / 165;
+  const SIM_MS = 1000 / 60;
+  const padT = cloneBindings(DEFAULT_BINDINGS).pad;
+  padT.combos.fling = [[7, 12]];
+  const rTap = new PadChordResolver();
+  // RT down for one 165 Hz frame, then released — a tap well inside the 80 ms wait.
+  rTap.resolve([7], padT, 0);
+  // frame 1 onward: RT is up. Sample every 165 Hz frame for 100 ms and record when `fire` is on.
+  const onAt: number[] = [];
+  for (let f = 1; f * FRAME_165 < 100; f++) {
+    const t = f * FRAME_165;
+    if (rTap.resolve([], padT, t).fire) onAt.push(t);
+  }
+  check('resolver/tap: a 165 Hz-sampled tap is asserted on more than one frame', onAt.length >= 2, J(onAt));
+  check(
+    'resolver/tap: the asserted window is one continuous run (one rising edge, never two)',
+    onAt.length > 0 && onAt.every((t, i) => i === 0 || Math.abs(t - onAt[i - 1] - FRAME_165) < 1e-9),
+    J(onAt),
+  );
+  // THE POINT: the sim steps on 16.67 ms boundaries, so at least one has to fall inside the
+  // asserted run or no tick ever sees the tap.
+  const runStart = onAt[0];
+  const runEnd = onAt[onAt.length - 1];
+  const boundariesInside = [];
+  for (let n = 0; n * SIM_MS <= 200; n++) if (n * SIM_MS >= runStart && n * SIM_MS <= runEnd) boundariesInside.push(n * SIM_MS);
+  check(
+    'resolver/tap: the asserted run spans at least one 16.67 ms sim boundary',
+    boundariesInside.length >= 1,
+    J({ runStart, runEnd, boundariesInside }),
+  );
+  check(
+    'resolver/tap: the run is at least PAD_TAP_HOLD_MS long minus one frame of sampling',
+    runEnd - runStart >= PAD_TAP_HOLD_MS - FRAME_165 - 1e-9,
+    J([runStart, runEnd, PAD_TAP_HOLD_MS]),
+  );
+  // EXACTLY ONE RISING EDGE, the way `gamepad.ts`'s `prev*` detectors count them: a latch that
+  // blinked would fire park twice off one press.
+  const padP = cloneBindings(DEFAULT_BINDINGS).pad; // park on X (2), with X + LB a combo
+  padP.combos.catalyst = [[2, 4]];
+  const rEdge = new PadChordResolver();
+  let prevPark = false;
+  let edges = 0;
+  for (let f = 0; f * FRAME_165 < 200; f++) {
+    const t = f * FRAME_165;
+    const on = rEdge.resolve(t < FRAME_165 * 2 ? [2] : [], padP, t).park;
+    if (on && !prevPark) edges++;
+    prevPark = on;
+  }
+  check('resolver/tap: one tap is exactly one rising edge at 165 Hz', edges === 1, `edges=${edges}`);
+  // A HELD PRESS IS UNCHANGED — the latch is for taps, and must not extend a release.
+  const rHeld = new PadChordResolver();
+  let heldOn = 0;
+  let heldAfter = true;
+  for (let f = 0; f * FRAME_165 < 400; f++) {
+    const t = f * FRAME_165;
+    // RT held for 200 ms (well past the 80 ms wait), then released
+    const on = rHeld.resolve(t < 200 ? [7] : [], padT, t).fire;
+    if (t < 200) { if (on) heldOn++; }
+    else if (on && t >= 200 + PAD_TAP_HOLD_MS) heldAfter = false;
+  }
+  check(
+    'resolver/tap: a held press still fires for its whole hold and stops at release',
+    heldOn > 10 && heldAfter,
+    J({ heldOn, heldAfter }),
+  );
   // …but not when the wider chord fired in between: RT, then D-UP inside the wait, release all
   const rt2 = new PadChordResolver();
   rt2.resolve([7], pad, 0);

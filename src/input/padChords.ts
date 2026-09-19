@@ -33,7 +33,8 @@ import { PAD_ACTIONS, PAD_CHORD_GRACE_MS, chordKey, padBinds, type PadAction, ty
  *    wider chord having fired, fires ONCE on the frame it is let go — a quick RT tap is still
  *    one shot, and park / flip / start / restart, which are tapped by nature, still work on a
  *    button that also lives in a combo. A tapped COMBO (a two-chord under a three-chord)
- *    consumes whatever of it is still held, per rule 3.
+ *    consumes whatever of it is still held, per rule 3. The tap is then HELD ASSERTED for
+ *    `PAD_TAP_HOLD_MS` (see the constant) — one frame is not long enough for the sim to see it.
  *
  * Two things these rules deliberately do NOT do. Overlapping chords that are not nested —
  * `LB + RT` and `RB + D-UP` both held also satisfies an `RT + D-UP` bound elsewhere — all
@@ -43,6 +44,31 @@ import { PAD_ACTIONS, PAD_CHORD_GRACE_MS, chordKey, padBinds, type PadAction, ty
  * two-chord fires, since the two-chord is satisfied (and waiting) the whole time.
  */
 export { PAD_CHORD_GRACE_MS };
+
+/**
+ * HOW LONG A RULE-4 TAP STAYS ASSERTED. 34 ms, and the number is a bound, not a feel.
+ *
+ * `resolve()` runs once per `InputManager.poll()`, which runs once per FRAME; the HELD-level
+ * bits it produces (`fire`, `intake`, `catalyst`, `fling`, `bbPlace*`, `bbNectar`, `driveMode`)
+ * are read by the SIM, which advances on a fixed 60 Hz accumulator. Above 60 fps most frames
+ * step ZERO ticks (`GameController.stepCounts` says so in as many words), and in multiplayer
+ * the sim is driven by a jittery `setInterval` at the same period — so a tap asserted for
+ * exactly ONE frame lands on a frame that steps nothing roughly two times in three at 165 Hz,
+ * and the shot is silently lost. (The EDGE actions — park / flip / start / restart — are read
+ * per frame in `frameLogic`, never through the accumulator, and were never affected.)
+ *
+ * The bound: with a frame period `p` and a sim period `T` = 1/60 s, at most `floor(T/p)` frames
+ * in a row step nothing, so the longest gap between two STEPPING frames is `(floor(T/p)+1)·p`,
+ * which is at most `T·(1 + 1/floor(T/p))` and is therefore strictly under `2T` = 33.34 ms — its
+ * worst case is a display just past 60 Hz, where every other frame can step nothing. Assert the
+ * tap for longer than that and at least one stepping frame's poll is guaranteed to see it, at
+ * any refresh rate. 34 ms is that floor rounded up.
+ *
+ * It is a CONTINUOUS window, not a repeat: the action is on from the release frame to the
+ * deadline without a gap, so `gamepad.ts`'s `prev*` edge detectors still see exactly one rising
+ * edge. It is not a user setting — it is the sim's clock, not a preference.
+ */
+export const PAD_TAP_HOLD_MS = 34;
 
 interface Bind {
   action: PadAction;
@@ -69,12 +95,17 @@ export class PadChordResolver {
   /** the chords rule 2 held back on the previous frame — a release before the wait ran out
    *  is a TAP (rule 4) */
   private waiting = new Map<string, Bind>();
+  /** rule 4's LATCH: for each action whose tap fired, the wall time it stops being asserted
+   *  (`PAD_TAP_HOLD_MS` past the release). Empty whenever no tap is live, which is what keeps
+   *  the no-combo fast path stateless. */
+  private tapUntil = new Map<PadAction, number>();
 
   /** forget everything held — on a disconnect, so nothing is consumed or timed across it */
   reset(): void {
     this.downSince.clear();
     this.consumedBy.clear();
     this.waiting.clear();
+    this.tapUntil.clear();
   }
 
   resolve(heldButtons: Iterable<number>, pad: PadBindings, nowMs: number): PadActive {
@@ -125,11 +156,23 @@ export class PadChordResolver {
       }
       fired.push(b);
     }
-    for (const b of taps) if (!fired.some((f) => f.key === b.key)) fired.push(b);
+    for (const b of taps) {
+      if (fired.some((f) => f.key === b.key)) continue;
+      fired.push(b);
+      // rule 4's latch — see `PAD_TAP_HOLD_MS`. `max` so a second tap inside a live latch
+      // extends it rather than cutting it short.
+      this.tapUntil.set(b.action, Math.max(this.tapUntil.get(b.action) ?? 0, nowMs + PAD_TAP_HOLD_MS));
+    }
     for (const b of fired) {
       out[b.action] = true;
       // only what is still held can be consumed; a released button's entry is already gone
       if (b.chord.length > 1) for (const i of b.chord) if (held.has(i)) this.consumedBy.set(i, b.key);
+    }
+    // A LIVE TAP OUTLASTS ITS FRAME. Consumption (rule 3) is deliberately NOT re-applied here:
+    // it was settled on the frame the tap fired, off the buttons that were still down then.
+    for (const [a, until] of [...this.tapUntil]) {
+      if (nowMs >= until) this.tapUntil.delete(a);
+      else out[a] = true;
     }
     return out;
   }
