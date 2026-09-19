@@ -1,6 +1,112 @@
+# HANDOFF — 2026-09-18 (feat/3d-builder: roadmap item 1, A PROPER 3D ROBOT CREATOR MENU — landed, not merged)
+
+**READ FIRST.** Branch **`feat/3d-builder`**, off `biobuzz-3d` at `cf794b6`, five commits, **not
+pushed and not merged**. Every gate green: `build` · `bundleaudit` · `npm test` (both suites) ·
+`uiindex`+`uiaudit` · `docaudit` · `server:check`. The section below is the whole of it; the
+Day 3 handoff it sits on top of follows underneath.
+
+## What landed (`docs/roadmap.md` item 1)
+
+- **`scene/renderPreview.ts`** — `createRobotPreviewScene(host, opts)` → `{ element, setSpec(spec,
+  alliance), setQuality(tier|null), resize, capture(size), dispose }`. A turntable over ONE robot on
+  a disc of field tile: slow auto-rotate (0.28 rad/s, off under `prefers-reduced-motion`), drag to
+  swing and wheel to zoom at the match orbit camera's own rates and signs, the shared light rig, the
+  same environment map at the device's own quality, transparent buffer so the card's themed surface
+  is the background.
+- **`scene/renderCore.ts`** — factored OUT of `renderScene.ts`: the renderer factory, the light-rig
+  constants (`SCENE_EXPOSURE`, the hemisphere pair, the sun, the shadow bias pair), the
+  once-per-document WebGL2 probe, `readBackdropColor`, `SceneUnsupportedError`, `disposeObject3D`.
+  Both scenes build a renderer through it, so the same robot cannot come out two colours.
+  `antialias: false` stays at `renderScene`'s own call site (a decision, not plumbing); the preview
+  passes `true` — a 190px card recreated on every mount does not earn a render target and a blit.
+- **`Preview3D.tsx`** (main chunk, no `three`, no `scene/` import) — the `Preview` slot. Without the
+  host's `allow3d` it IS the 2D schematic, unchanged, which is what the four strategy cards get.
+  The builder hero passes it and gets the turntable, a 2D/3D segmented toggle on the device's own
+  `decodesim.view`, a `Stowed` toggle for a build over the cube, and a one-line fallback to the
+  schematic when the scene cannot start (the 3D button doubles as the retry). It reaches the chunk
+  through `moduleFor('biobuzz').previewScene()`.
+- **Chassis colour in 3D** — fill = `chassisFill(spec.chassisColor)`, alliance = the silhouette
+  `LineSegments` plus the sign panel. **This fixes the live match too**: the 3D chassis was
+  alliance-filled and `chassisColor` was not rendered in 3D at all.
+- **Height pair in the Frame section** — `heightIn` 12–29, and (only over the 18-in cube) the
+  declared `stowHeightIn`, beside the R102 note that was already there.
+- **Saved-robot thumbnails** — rendered once per build+alliance through the same scene, in place of
+  the summary line on the 3D view, cached in memory and never persisted.
+
+## The three bugs the preview exposed, all fixed in `renderRobots.ts`
+
+Looking at a BIOBUZZ robot from close up for the first time found three things the match view had
+been hiding at driver range. All three are fixed for the MATCH, not only the preview.
+
+1. **The turret and the Box Tube were built INSIDE the chassis box** (z 1 and 0.6·height). Every
+   robot in the 3D view was a featureless slab whatever launcher it carried. Both sit on the deck.
+2. **`specKey` left out `drivetrain`**, so swapping mecanum for tank never rebuilt the wheels.
+3. **A group thrown away on a rebuild was never disposed** — and a blanket traverse would have
+   freed the module caches every other robot is still using. `SHARED_GEO`/`SHARED_MAT` register what
+   is shared and `disposeRobotGroup` frees the rest; the match's own sync uses it too.
+
+## Decisions worth knowing before touching this
+
+- ⚠️ **BOTH module slots write `import('./scene/renderScene')`.** `previewScene` resolves the
+  preview factory through a re-export rather than importing `./scene/renderPreview` by its own path.
+  One dynamic specifier is ONE Rollup chunk; two would hoist three.js into a shared chunk behind two
+  facades, and a facade carries none of the marker strings `bundleaudit` routes the `scene` budget
+  by — both would land in `other` and fail that audit for a reason unrelated to size.
+- **`bbSpecKey` (`src/games/biobuzz/specKey.ts`) is the one rebuild key.** It has readers on both
+  sides of the lazy boundary: the generator, and the thumbnail cache in the main chunk, which cannot
+  load the scene chunk to ask. Two copies is how a cached thumbnail shows the previous build.
+- **The camera frames a bounding sphere MEASURED off the built group** (`Box3.setFromObject`), not
+  one derived from `length × width × heightIn`: a turret stands above the deck and its barrel
+  reaches past the frame rail, and the spec-derived fit cropped it off the top of the card. The
+  distance is aspect-aware — a `PerspectiveCamera`'s `fov` is the VERTICAL one and the builder's
+  220px column is taller than it is wide.
+- **Thumbnails follow the DEVICE tier and are deliberately not pinned to High**, which is the
+  opposite of what a replay export does. Two reasons pointing the same way: a thumbnail sits on the
+  same screen as the live turntable, so one drawn at another tier is a second picture that does not
+  match the first; and High selects the `school-hall` HDRI, so pinning it would fetch 1.7 MB to draw
+  three 96px cards for somebody whose own setting asked for the procedural room.
+- **The preview does NOT set the view preference to 2D when it fails.** `createBiobuzzScene` does,
+  because there the fallback has to stick or the scene is retried on every remount. A menu card with
+  a toggle directly above it is not that.
+- **One WebGL context per thumbnail BATCH**, drained on a microtask and disposed immediately —
+  not one per card (`Gallery.tsx` shares one scene across thirty cells for the same reason).
+
+## Deviations from the roadmap's design, and what was not done
+
+- The roadmap said "a `BiobuzzPreview3D` component fills the `Preview` slot" and left the loader
+  unspecified; it is a new `GameModule.previewScene` slot so that ALL of a game's dynamic renderer
+  imports stay in its `index.ts` (the property the RENDER lane asserts).
+- The saved-robot card needed a second new slot, `GameModule.savedCard`: what belongs under the name
+  is no longer always a sentence, and the choice between a thumbnail and a summary is the GAME's,
+  not the shared menu's.
+- `buildRobotGroup` now takes `(spec, id, alliance)` rather than a `RobotState` — a preview has no
+  pose, no hopper and no world.
+- **Not done: a Gallery still of the preview.** The Gallery's robot cells still draw the 2D
+  schematic. The anti-drift claim is covered structurally instead (one generator, one rebuild key,
+  both asserted in the RENDER lane), which is stronger than a picture.
+- **Not done: `shiftaudit`.** It needs a build plus `vite preview` in a second shell; the new
+  controls are `.ds-seg` (weight constant across states by design) and a fixed-size preview box, so
+  there is nothing new that moves layout — but it has not been RUN on this tree.
+
+## Numbers
+
+- `npm test` — both suites green; the BIOBUZZ suite is 1800+ checks with the new RENDER-lane block
+  (one generator, one rebuild key, the colour split, the import boundary, the height pair).
+- `bundleaudit` — main 918.72 → **919.99 KB gz** (+1.27: the toggle, the thumbnail batcher, the two
+  dials, the Menu wiring — inside §10's "+≤ 2 KB" because the component holds no renderer); scene
+  192.28 → **194.67 KB gz** (+2.39: the turntable plus `renderCore`, which is a MOVE), 55 KB inside
+  the §2.5 ceiling.
+- Browser (dev server, this machine): the toggle, wheels by drivetrain, the two deck turrets, the
+  sign panel, live follow on preset / height / colour changes, drag-to-orbit, the stow toggle, a
+  saved thumbnail, back to 2D (zero canvases left mounted), both themes, 375px with no horizontal
+  overflow, console clean of anything but the pre-existing AdSense 403s. A solo practice in View 3D
+  shows the same rust chassis with the same blue outline as the card.
+
+---
+
 # HANDOFF — 2026-09-19 (alpha: ROADMAP ROUND 1 LANDED — auth flows, tutorial, contributors, cosmetics/rewards plans, Vercel policy; alpha server redeployed)
 
-**READ FIRST.** Branch **`alpha`** (worktree `.claude/worktrees/pr-alpha`), pushed, every gate green on
+**(Previously READ FIRST.)** Branch **`alpha`** (worktree `.claude/worktrees/pr-alpha`), pushed, every gate green on
 the merged tree: `build` · `bundleaudit` · `server:check` · `docaudit` · `uiaudit` · `contrast` ·
 `test:mm` · `dbtest` · `npm test` (counts in the log). The ALPHA game server (`dsim-alpha`) was redeployed
 from this tree (`./scripts/fly-deploy.sh --alpha`) because auth adds migration `0040` and server routes.
@@ -906,63 +1012,6 @@ physics is a permanent light practice option, never deleted**.
   solved": the 2D readers only read the tag; do not port the 2D assumption into `sim3d/`.
 
 ---
-
-# HANDOFF — 2026-09-17 (match replays are private, and one player cannot publish a match)
-
-**(Previously READ FIRST.)** Branch **`feat/replay-privacy`**, PR **#74**, merged into `alpha` and **NOT
-DEPLOYED**. Gates on the merge: `npm test` ALL PASS ×2 (1798 + 1321) · `dbtest` ALL PASS ·
-`build` · `server:check` · `docaudit` · `uiaudit` (at baseline) · `contrast`.
-
-⚠️ **THE DB MIGRATION (0038) IS A SERVER CHANGE AND NEEDS A DEPLOY**, and so does the gate
-itself — until Fly is deployed `/api/replay/<id>` is still open to anyone. **`0037` (the FK and
-feed indexes) is still undeployed too**, so one Fly deploy now owes two migrations. The account
-toggle and the viewer's refusal copy need **Vercel**, which is owner-only.
-
-## What landed
-
-`/api/replay/<id>` served any replay to anyone, and the public profile hands out the ids — so
-every leaderboard row was one click from a stranger's full-fidelity match replay, which is not
-a score, it is the game plan. The default is now private.
-
-- **`replayAccess(replayId, viewerId)`** (repo.ts) is the ONE decision, called BEFORE
-  `getReplay` so a refused viewer costs no jsonb. Per owner: **versus** = everyone who played,
-  either alliance, then unanimous opt-in; **record** = public (it is the board's proof);
-  **practice** = owner; **LAN** = the host, plus staff. Orphans are DENIED, a missing replay is
-  a 404 rather than a refusal, and staff are exempt because `AdminReports` moderates through
-  this route.
-- **`profiles.replays_public`** (migration **0038**) + `GET/POST /api/user/privacy` + a Privacy
-  panel in Account. It could not live in `profiles.settings` — that blob is opaque to the
-  server, so a bit in it is enforced by asking the client.
-- **The history LIST stays public**; `userMatchHistory` nulls `replayId` for a reader who may
-  not watch, so the Watch button is absent rather than present and answering 403.
-- ⚠️ **Unanimity is over the ROSTER, not the surviving rows.** `match_participants` stores only
-  AUTHED players and cascades on deletion, so the stored count is checked against
-  `matches.mode` (2 / 4). An anonymous or departed player is a permanent no.
-- `/api/replay/<id>` and both history routes are **optionally authed** now (`viewerId(req)`
-  server-side, `maybeAuthedJson` client-side).
-
-## Gotchas this cost
-
-- **`verifyAuthToken(undefined)` LOGS**, so the optional-auth helper short-circuits on a
-  missing header instead of letting it answer null — these are the routes a signed-out visitor
-  hits.
-- **`syncStaffRoles(owner, admins)` keeps its FIRST argument as owner** whatever the list says,
-  so the demote test has to name a different owner to demote anybody.
-- **`saveLanRun` takes positional args** and builds its own replay row; `savePracticeRun`
-  returns a row, not an id; the record writer is `submitRecord`, not `saveRecordRun`.
-- Alpha took **0037** mid-branch, so the migration renumbered to 0038 — and CLAUDE.md was split
-  while this was open, so the write-up is in **`docs/area/accounts.md`**. CLAUDE.md is at 26.7k
-  of a 27k budget `docaudit` enforces; new rules go in the area guide for the path they govern.
-
-## Next steps
-
-1. **Deploy Fly** (`./scripts/fly-deploy.sh`, never a bare `flyctl deploy`) — it owes 0037 and
-   0038. Then Vercel for the toggle and the refusal copy.
-2. **Not exercised end to end.** The Privacy panel needs a signed-in account against a live
-   server and DB; it is typechecked, audited and unit-tested, not clicked.
-3. One flake seen once and not reproduced: the BIOBUZZ lane reported `1 FAILURES of 1321` on a
-   run that shared the machine with a build and a dbtest (lanes 37.3s against 20.7s idle), then
-   passed four times in a row. Not identified — if it recurs, capture the FAIL line.
 
 # HANDOFF — 2026-09-16, later (efficiency audit: the test loop, the indexes, the render path)
 

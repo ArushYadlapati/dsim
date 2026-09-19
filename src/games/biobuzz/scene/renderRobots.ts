@@ -1,8 +1,10 @@
 import * as THREE from 'three';
-import type { RobotSpec, RobotState, World } from '../../../types';
+import type { Alliance, RobotSpec, World } from '../../../types';
+import { chassisFill } from '../../../config';
 import { BB3_HEIGHT_DEFAULT, bbHopperCap } from '../config';
 import { bbIsTurreted, bbLauncherOf, bbLiftOf, type BbLauncherSpec } from '../mechs';
 import { bbMouths } from '../robot';
+import { bbSpecKey } from '../specKey';
 import { bbShooterEdgeOf, EDGE_ANGLE, edgeGeom, turretLocal, turretRadius, type BbMountPos } from '../mounts';
 
 /**
@@ -22,6 +24,21 @@ import { bbShooterEdgeOf, EDGE_ANGLE, edgeGeom, turretLocal, turretRadius, type 
  * (that one is a SCREEN-space schematic; this is a plain world-frame yaw).
  */
 
+/**
+ * EVERY GEOMETRY AND MATERIAL THIS MODULE SHARES BETWEEN ROBOTS, registered as it is created.
+ *
+ * `disposeRobotGroup` (bottom of the file) is what reads them, and the reason it has to exist
+ * at all: a group is thrown away and rebuilt whenever `bbSpecKey` changes, which in a match is
+ * rare and in the BUILDER is every drag of a slider. A blanket `traverse` + `dispose()` over a
+ * discarded group would free the chassis geometry, the roller texture and every solid material
+ * that the next group — and every other robot on the field — is still using, so three would
+ * re-upload the buffers and recompile the programs on the next frame. Disposing NOTHING leaks
+ * the per-robot meshes instead (a nose, four wheels, a sign plane, the sweeper bars, a turret).
+ * These sets are how the walk tells the two apart.
+ */
+const SHARED_GEO = new Set<THREE.BufferGeometry>();
+const SHARED_MAT = new Set<THREE.Material>();
+
 const BODY_MAT_CACHE = new Map<string, THREE.MeshStandardMaterial>();
 function solidMat(color: string, roughness = 0.6, metalness = 0.1): THREE.MeshStandardMaterial {
   const key = `${color}|${roughness}|${metalness}`;
@@ -29,6 +46,7 @@ function solidMat(color: string, roughness = 0.6, metalness = 0.1): THREE.MeshSt
   if (!m) {
     m = new THREE.MeshStandardMaterial({ color, roughness, metalness });
     BODY_MAT_CACHE.set(key, m);
+    SHARED_MAT.add(m);
   }
   return m;
 }
@@ -90,7 +108,38 @@ function chassisGeometry(length: number, width: number, height: number): THREE.E
   });
   geo.translate(0, 0, -height / 2);
   CHASSIS_GEO_CACHE.set(key, geo);
+  SHARED_GEO.add(geo);
   return geo;
+}
+
+/**
+ * THE CHASSIS SILHOUETTE, as line geometry — this is what carries the ALLIANCE in 3D.
+ *
+ * `thresholdAngle` 30°: the extrusion's bevel meets the top and bottom faces at a shallow
+ * angle, so the default 1° threshold draws a doubled line all the way round every edge. Past
+ * 30° only the real silhouette and the deck corners survive, which is the line the 2D sprite
+ * strokes (`drawChassisOutline`, `parts.ts`).
+ */
+const CHASSIS_EDGE_CACHE = new Map<string, THREE.EdgesGeometry>();
+function chassisEdges(length: number, width: number, height: number): THREE.EdgesGeometry {
+  const key = `${length}|${width}|${height}`;
+  const cached = CHASSIS_EDGE_CACHE.get(key);
+  if (cached) return cached;
+  const geo = new THREE.EdgesGeometry(chassisGeometry(length, width, height), 30);
+  CHASSIS_EDGE_CACHE.set(key, geo);
+  SHARED_GEO.add(geo);
+  return geo;
+}
+
+const LINE_MAT_CACHE = new Map<string, THREE.LineBasicMaterial>();
+function lineMat(color: string): THREE.LineBasicMaterial {
+  let m = LINE_MAT_CACHE.get(color);
+  if (!m) {
+    m = new THREE.LineBasicMaterial({ color });
+    LINE_MAT_CACHE.set(color, m);
+    SHARED_MAT.add(m);
+  }
+  return m;
 }
 
 /** a shared diagonal-roller stripe texture for MECANUM/X-DRIVE wheels — one canvas, reused by
@@ -120,7 +169,10 @@ function getMecanumTexture(): THREE.CanvasTexture {
 }
 let mecanumMat: THREE.MeshStandardMaterial | null = null;
 function getMecanumMat(): THREE.MeshStandardMaterial {
-  if (!mecanumMat) mecanumMat = new THREE.MeshStandardMaterial({ map: getMecanumTexture(), roughness: 0.8 });
+  if (!mecanumMat) {
+    mecanumMat = new THREE.MeshStandardMaterial({ map: getMecanumTexture(), roughness: 0.8 });
+    SHARED_MAT.add(mecanumMat);
+  }
   return mecanumMat;
 }
 
@@ -198,24 +250,11 @@ function getSignTexture(id: number, alliance: 'red' | 'blue'): THREE.CanvasTextu
   return tex;
 }
 
-/** the fields that change a robot's GEOMETRY (not its pose) — a group is rebuilt only when this
- * key changes, so a driving robot never pays for a full teardown/rebuild every frame. */
-function specKey(spec: RobotSpec): string {
-  const launcher = bbLauncherOf(spec, 0);
-  const lift = bbLiftOf(spec);
-  return [
-    spec.length,
-    spec.width,
-    spec.heightIn ?? BB3_HEIGHT_DEFAULT,
-    spec.chassisColor ?? '',
-    spec.intakeMount ?? '',
-    spec.intake,
-    launcher.kind,
-    launcher.mount,
-    launcher.mount2 ?? '',
-    lift?.mount ?? '',
-  ].join('|');
-}
+// ⚠️ THE GROUP'S REBUILD KEY IS `bbSpecKey` (`../specKey.ts`), NOT A COPY OF IT HERE. This
+// file used to carry its own `specKey`, and the saved-robot THUMBNAIL cache in the main chunk
+// needs the same answer without loading this chunk at all — two copies is the exact way a
+// thumbnail ends up showing the previous build. (The local copy also left `drivetrain` out, so
+// swapping mecanum for tank never rebuilt the wheels.)
 
 function buildSweeper(spec: RobotSpec): THREE.Object3D[] {
   const out: THREE.Object3D[] = [];
@@ -238,11 +277,20 @@ function buildSweeper(spec: RobotSpec): THREE.Object3D[] {
   return out;
 }
 
-function buildTurret(spec: RobotSpec, mountPos: BbMountPos): THREE.Group {
+/**
+ * ONE TURRET, BOLTED TO THE DECK.
+ *
+ * ⚠️ `deckZ`, NOT 0 — and that was a real bug, invisible until something looked at a robot from
+ * close up. The Day 1 pass put the ring at z = 1 with the group at z = 0, which is one inch off
+ * the FLOOR: the whole turret sat INSIDE the chassis box, so every robot in the 3D view was a
+ * featureless slab whatever launcher it carried. The 2D sprite draws the turret over the deck
+ * because a top-down view has no z to get wrong; this is the same statement in three dimensions.
+ */
+function buildTurret(spec: RobotSpec, mountPos: BbMountPos, deckZ: number): THREE.Group {
   const group = new THREE.Group();
   const ring = turretRadius(spec);
   const local = turretLocal(spec, mountPos);
-  group.position.set(local.x, local.y, 0);
+  group.position.set(local.x, local.y, deckZ);
 
   const ringMesh = new THREE.Mesh(new THREE.CylinderGeometry(ring, ring, 2, 16), solidMat(TURRET_RING, 0.4, 0.5));
   ringMesh.rotation.x = Math.PI / 2;
@@ -283,22 +331,52 @@ function buildDumperBucket(spec: RobotSpec): THREE.Mesh {
   return bucket;
 }
 
-function buildRobotGroup(r: RobotState): THREE.Group {
-  const spec = r.spec;
+/**
+ * ONE ROBOT'S `THREE.Group`, BUILT FROM ITS SPEC — and the ONLY generator there is.
+ *
+ * The builder's 3D preview (`renderPreview.ts`) and the saved-robot thumbnails call THIS
+ * function, not a second drawing of the same robot: that is roadmap item 1's stated risk
+ * ("preview and match must not drift") answered structurally rather than by a habit. It takes a
+ * spec, an id and an alliance rather than a `RobotState` for exactly that reason — a preview has
+ * no pose, no hopper and no world, and asking it to fake one would have been the seam where the
+ * two pictures started to differ.
+ *
+ * ── THE ALLIANCE AND THE COSMETIC COLOUR (roadmap item 1) ──────────────────────────────────
+ * The chassis FILL is the supporter cosmetic (`chassisFill`, the 7-key allowlist in
+ * `src/config.ts`) and the ALLIANCE is the silhouette line plus the sign panel — the same split
+ * the 2D sprite has always made (`drawRobot.ts`: `drawChassisBody(…, chassisFill(…))` then
+ * `drawChassisOutline(…, allianceColour)`). Until this landed the 3D chassis was filled with the
+ * alliance colour and `chassisColor` was not rendered in 3D at all, so a player's chosen colour
+ * simply vanished when they pressed `t`. Scoping the cosmetic to the FILL is what keeps it from
+ * ever making a red robot read as blue, which is the one thing a cosmetic may not do here.
+ */
+export function buildRobotGroup(spec: RobotSpec, id: number, alliance: Alliance): THREE.Group {
   const group = new THREE.Group();
-  group.name = `robot:${r.id}`;
-  const color = r.alliance === 'blue' ? BLUE : RED;
+  group.name = `robot:${id}`;
+  const color = alliance === 'blue' ? BLUE : RED;
   const height = spec.heightIn ?? BB3_HEIGHT_DEFAULT;
 
   // CHAMFERED CHASSIS (Phase 2 fidelity): rounded plan corners + a bevelled top/bottom edge via
   // `ExtrudeGeometry`, replacing the bare `BoxGeometry` slab the Day 1 pass used.
-  const chassis = new THREE.Mesh(chassisGeometry(spec.length, spec.width, height), solidMat(color, 0.55, 0.15));
-  chassis.name = `robot:${r.id}:chassis`;
+  const chassis = new THREE.Mesh(
+    chassisGeometry(spec.length, spec.width, height),
+    solidMat(chassisFill(spec.chassisColor), 0.55, 0.15),
+  );
+  chassis.name = `robot:${id}:chassis`;
   chassis.position.z = height / 2;
   group.add(cast(chassis));
 
+  // THE ALLIANCE LINE. Scaled out by a whisker so it cannot z-fight with the faces it traces —
+  // a co-planar line and surface flicker per pixel per frame, which reads as a rendering fault
+  // rather than as an outline.
+  const edges = new THREE.LineSegments(chassisEdges(spec.length, spec.width, height), lineMat(color));
+  edges.name = `robot:${id}:outline`;
+  edges.position.z = height / 2;
+  edges.scale.set(1.004, 1.004, 1.002);
+  group.add(edges);
+
   const nose = new THREE.Mesh(new THREE.BoxGeometry(1.2, spec.width * 0.5, height * 0.3), solidMat(NOSE, 0.3, 0));
-  nose.name = `robot:${r.id}:nose`;
+  nose.name = `robot:${id}:nose`;
   nose.position.set(spec.length / 2 - 0.6, 0, height * 0.75);
   group.add(cast(nose));
 
@@ -309,9 +387,9 @@ function buildRobotGroup(r: RobotState): THREE.Group {
   // usual spot), textured once per id via `getSignTexture`.
   const sign = new THREE.Mesh(
     new THREE.PlaneGeometry(Math.min(6, spec.length * 0.4), Math.min(6, spec.length * 0.4)),
-    new THREE.MeshStandardMaterial({ map: getSignTexture(r.id, r.alliance), roughness: 0.6 }),
+    new THREE.MeshStandardMaterial({ map: getSignTexture(id, alliance), roughness: 0.6 }),
   );
-  sign.name = `robot:${r.id}:sign`;
+  sign.name = `robot:${id}:sign`;
   sign.position.set(0, spec.width / 2 + 0.05, height * 0.55);
   // a PlaneGeometry's default normal/up (+Z/+Y) cannot be rotated to face outward (+Y) with
   // "up" vertical (+Z) AND "right" un-mirrored in one proper (determinant +1) rotation — normal
@@ -325,11 +403,11 @@ function buildRobotGroup(r: RobotState): THREE.Group {
   const launcher = bbLauncherOf(spec, 0);
   const heads: THREE.Group[] = [];
   if (bbIsTurreted(launcher)) {
-    const t0 = buildTurret(spec, launcher.mount);
+    const t0 = buildTurret(spec, launcher.mount, height);
     group.add(t0);
     heads.push(t0.userData.head as THREE.Group);
     if (launcher.kind === 'twinturret' && launcher.mount2) {
-      const t1 = buildTurret(spec, launcher.mount2);
+      const t1 = buildTurret(spec, launcher.mount2, height);
       group.add(t1);
       heads.push(t1.userData.head as THREE.Group);
     }
@@ -344,8 +422,10 @@ function buildRobotGroup(r: RobotState): THREE.Group {
     const tubeMat = solidMat('#98a3b2', 0.4, 0.4);
     const local = turretLocal(spec, lift.mount);
     const tube = new THREE.Mesh(new THREE.BoxGeometry(3, 1.4, 1.4), tubeMat);
-    tube.name = `robot:${r.id}:tube`;
-    tube.position.set(local.x, local.y, height * 0.6);
+    tube.name = `robot:${id}:tube`;
+    // ON the deck, for the reason `buildTurret` explains at length: `height * 0.6` put the Box
+    // Tube inside the chassis box, where nothing can see it.
+    tube.position.set(local.x, local.y, height + 0.7);
     group.add(cast(tube));
   }
 
@@ -373,11 +453,14 @@ export function buildBiobuzzRobots(): BbRobots {
     const seen = new Set<number>();
     for (const r of world.robots) {
       seen.add(r.id);
-      const key = specKey(r.spec);
+      const key = bbSpecKey(r.spec);
       let entry = entries.get(r.id);
       if (!entry || entry.key !== key) {
-        if (entry) group.remove(entry.group);
-        const g = buildRobotGroup(r);
+        if (entry) {
+          group.remove(entry.group);
+          disposeRobotGroup(entry.group);
+        }
+        const g = buildRobotGroup(r.spec, r.id, r.alliance);
         entry = { group: g, key };
         entries.set(r.id, entry);
         group.add(g);
@@ -404,6 +487,7 @@ export function buildBiobuzzRobots(): BbRobots {
     for (const [id, entry] of entries) {
       if (!seen.has(id)) {
         group.remove(entry.group);
+        disposeRobotGroup(entry.group);
         entries.delete(id);
       }
     }
@@ -418,6 +502,25 @@ export function buildBiobuzzRobots(): BbRobots {
       entries.clear();
     },
   };
+}
+
+/**
+ * Free what ONE robot group owns, and nothing that is shared.
+ *
+ * The per-robot half is every mesh built inline in `buildRobotGroup` — the nose box, the four
+ * wheel cylinders (their MATERIAL is shared), the sign plane and its material (its TEXTURE is
+ * cached per id and is not touched), the sweeper rollers, the turret ring/barrel/hood and the
+ * dumper bucket. Anything from `solidMat`, `lineMat`, `getMecanumMat`, `chassisGeometry` or
+ * `chassisEdges` is left alone: see `SHARED_GEO`'s header.
+ */
+export function disposeRobotGroup(group: THREE.Group): void {
+  group.traverse((child) => {
+    const mesh = child as Partial<THREE.Mesh>;
+    const geo = mesh.geometry;
+    if (geo && !SHARED_GEO.has(geo)) geo.dispose();
+    const mats = Array.isArray(mesh.material) ? mesh.material : mesh.material ? [mesh.material] : [];
+    for (const m of mats) if (!SHARED_MAT.has(m)) m.dispose();
+  });
 }
 
 export function updateBiobuzzRobots(robots: BbRobots, world: World): void {

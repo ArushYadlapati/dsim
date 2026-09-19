@@ -70,6 +70,18 @@ export interface GameModule extends GameSimModule {
    * like `sim3d/engine.ts`'s `initPhysics3d()` on the physics side.
    */
   scene?: () => Promise<GameSceneFactory>;
+  /**
+   * THE ROBOT PREVIEW'S 3D SCENE (`docs/roadmap.md` item 1) — absent ⇒ this game's builder has
+   * only its 2D schematic, which is DECODE and Chain Reaction today.
+   *
+   * A SECOND loader beside `scene` rather than a field on it, for the reason `scene` is a
+   * function at all: a player who never opens the 3D preview never downloads Three.js. It is
+   * declared here, and filled in the game's own `index.ts`, so that ALL of a game's dynamic
+   * `import()`s of its renderer live in one file — which is the property `scripts/smoke-biobuzz/
+   * render.ts` asserts, and the reason a builder component can reach the chunk without an import
+   * that would drag it into the main bundle.
+   */
+  previewScene?: () => Promise<RobotPreviewFactory>;
 
   // ---------------------------------------------------------------- UI slots --
 
@@ -142,6 +154,20 @@ export interface GameModule extends GameSimModule {
    */
   statTiles?(spec: RobotSpec): readonly GameStatTile[];
   /**
+   * THE BODY OF ONE SAVED-ROBOT CARD — under the name and team, where `Menu.tsx` prints the
+   * one-line build summary.
+   *
+   * It is a COMPONENT rather than a second string slot because what belongs there is no longer
+   * always a string: BIOBUZZ shows a 3D thumbnail of the saved build when the device is on the 3D
+   * view and the summary sentence when it is not (`docs/roadmap.md` item 1). The choice is the
+   * GAME's, not the menu's — the menu does not know what a 3D view is, and a `showThumbnail`
+   * boolean threaded through it would be the shared screen learning one game's rendering model.
+   *
+   * A game that fills it also owns printing its own summary, which it already has: the slot's
+   * filler and `labels.configSummary` read the same vocabulary module.
+   */
+  savedCard?: ComponentType<GameSavedCardProps>;
+  /**
    * The game's PRESET ROBOTS — the cards the builder's `Presets` section offers.
    *
    * ── WHY THIS IS A SLOT ──────────────────────────────────────────────────
@@ -212,6 +238,29 @@ export interface GamePreviewProps {
   spec: RobotSpec;
   /** rendered edge length in px */
   size?: number;
+  /**
+   * Whose robot this is. A 2D schematic has no use for it (both current ones draw in neutral
+   * `ds-*` tokens), but a 3D preview does: the alliance is the chassis outline and the sign
+   * panel, so a preview without one would be the only place this game draws a robot with no
+   * alliance at all. Absent ⇒ the game's own default.
+   */
+  alliance?: Alliance;
+  /**
+   * MAY this host mount a live 3D scene? Opt-IN, and it is a statement about the HOST, not a
+   * preference: the builder hero is one preview on screen at a time and can afford a WebGL
+   * context, while the 2v2 strategy screen renders FOUR preview cards at once and a context each
+   * would put it near the browser's own cap for no gain — that screen wants a picture of a robot,
+   * not a turntable. Absent ⇒ no live scene, which is every host that existed before this.
+   */
+  allow3d?: boolean;
+}
+
+/**
+ * props for `GameModule.savedCard` — the BODY of one saved-robot card in the builder's garage.
+ */
+export interface GameSavedCardProps {
+  spec: RobotSpec;
+  alliance: Alliance;
 }
 
 /** props for the live-HUD slots (`hudChips`, `scoreBar`) */
@@ -462,3 +511,39 @@ export interface SceneOptions {
  *
  * `options` is ADDITIVE (Day 3): an existing caller passing only `host` is unchanged. */
 export type GameSceneFactory = (host: HTMLElement, options?: SceneOptions) => GameScene | Promise<GameScene>;
+
+/**
+ * What a HOST can tell a ROBOT PREVIEW scene at construction. Same additive rule as
+ * `SceneOptions`: a factory called with only `host` behaves as it did before any of this existed.
+ */
+export interface RobotPreviewOptions {
+  /** FIX the quality tier, ignoring the device's graphics preference — a cached thumbnail must
+   * not change because a settings screen was opened somewhere else. */
+  quality?: 'low' | 'medium' | 'high' | 'ultra';
+  /** `false` binds no pointer handlers: a scene nobody is driving (a thumbnail). */
+  interactive?: boolean;
+  /** `false` runs no frame loop at all — the scene draws only when `capture()` asks it to. */
+  animate?: boolean;
+}
+
+/**
+ * A persistent preview of ONE robot over one canvas, owned by the component that mounted it.
+ *
+ * It takes a SPEC, never a `World`: a builder has no match, and the point of the seam is that the
+ * same generator draws the same robot in both places (`scene/renderPreview.ts`'s header).
+ */
+export interface RobotPreviewScene {
+  readonly element: HTMLCanvasElement;
+  /** show this build. Cheap to call on every render — an unchanged build rebuilds nothing. */
+  setSpec(spec: RobotSpec, alliance: Alliance): void;
+  /** fix or release the quality tier (`null` follows the device preference again). */
+  setQuality(tier: 'low' | 'medium' | 'high' | 'ultra' | null): void;
+  resize(width: number, height: number, dpr: number): void;
+  /** ONE frame at `size`x`size` CSS pixels, synchronously, as a PNG data URL. */
+  capture(size: number): string;
+  dispose(): void;
+}
+
+/** builds a `RobotPreviewScene` inside `host`. Synchronous: unlike the match scene it loads no
+ * GLB, so once the chunk is here there is nothing left to await. */
+export type RobotPreviewFactory = (host: HTMLElement, options?: RobotPreviewOptions) => RobotPreviewScene;

@@ -129,11 +129,30 @@ export function renderChecks(check: Check): void {
     staticSceneImports.length === 0,
     staticSceneImports.join(', '),
   );
+  // ⚠️ TWO SLOTS, ONE SPECIFIER. `index.ts` fills `scene` (the match view) and `previewScene`
+  // (the robot-builder turntable, `docs/roadmap.md` item 1), and BOTH write
+  // `import('./scene/renderScene')` — the preview factory is re-exported from there rather than
+  // imported by its own path. That is not tidiness: one dynamic specifier is ONE Rollup chunk, and
+  // two would hoist three.js into a shared chunk with a thin facade either side. A facade carries
+  // none of the marker strings `scripts/bundleaudit.mjs` routes the `scene` budget by, so both
+  // would land in `other` and fail that audit for a reason with nothing to do with size. So the
+  // rule is: every dynamic scene import is in `index.ts`, and they all name the same module.
   check(
-    'exactly one dynamic import(\'./scene/...\'), in index.ts',
-    dynamicSceneImports.length === 1 && dynamicSceneImports[0].startsWith('src/games/biobuzz/index.ts:'),
+    'every dynamic import(\'./scene/...\') is in index.ts',
+    dynamicSceneImports.length > 0 && dynamicSceneImports.every((l) => l.startsWith('src/games/biobuzz/index.ts:')),
     dynamicSceneImports.join(', '),
   );
+  {
+    const indexSrc = readFileSync(join(BIOBUZZ_DIR, 'index.ts'), 'utf8');
+    const specifiers = new Set(
+      [...indexSrc.matchAll(/import\(\s*['\"](\.\/scene\/[^'\"]*)['\"]\s*\)/g)].map((m) => m[1]),
+    );
+    check(
+      'and they all name ONE module, so the chunk stays one measurable file',
+      specifiers.size === 1 && specifiers.has('./scene/renderScene'),
+      [...specifiers].join(', '),
+    );
+  }
 
   // ---- THE 3D PHYSICS IMPORT BOUNDARY — the other half of the same rule ------------------
   //
@@ -676,9 +695,22 @@ function graphicsChecks(check: Check, allFiles: string[]): void {
     );
     check('the shadow map is DISPOSED when its size changes (else low to high does nothing)', /this\.sun\.shadow\.map\?\.dispose\(\)/.test(sceneSrc));
     check('a software renderer selects the 2D view before it throws', sceneSrc.includes("setViewPref('2d')") && sceneSrc.includes('SceneUnsupportedError'));
+    // the renderer ITSELF is built by `renderCore.ts`'s shared factory now (the builder preview
+    // builds one the same way), so the attribute lives there — the `antialias: false` above is
+    // still this file's own call site, which is the half that is a decision rather than plumbing.
+    const coreSrc = readFileSync(join(SCENE_DIR, 'renderCore.ts'), 'utf8');
     check(
       'powerPreference high-performance on both the probe and the renderer',
-      sceneSrc.includes('high-performance') && readFileSync(join(GRAPHICS_DIR, 'auto.ts'), 'utf8').includes('high-performance'),
+      coreSrc.includes('high-performance') && readFileSync(join(GRAPHICS_DIR, 'auto.ts'), 'utf8').includes('high-performance'),
+    );
+    // ONE light rig, shared. The preview is not allowed to pick its own exposure or its own fill:
+    // a robot lit differently in the builder than in the match is the drift roadmap item 1 names.
+    check(
+      'the light rig is CONSTANTS in renderCore.ts, not literals in either scene',
+      /export const SCENE_EXPOSURE/.test(coreSrc) &&
+        sceneSrc.includes('createSceneLights()') &&
+        sceneSrc.includes('SCENE_HEMI_INTENSITY') &&
+        !/new THREE\.HemisphereLight\(/.test(sceneSrc),
     );
 
     const moduleSrc = readFileSync(join(root, 'src', 'games', 'module.ts'), 'utf8');
@@ -743,6 +775,124 @@ function graphicsChecks(check: Check, allFiles: string[]): void {
     check('the touch layer has a 2D/3D toggle, gated to BIOBUZZ', mobileSrc.includes('mobile-view-btn') && mobileSrc.includes("game === 'biobuzz'"));
     check('...and it is NOT a draggable layout key', !/['"]view['"]\s*:/.test(mobileSrc) && !mobileSrc.includes("L['view']"));
     check('the view key is armed for the whole match by the INPUT layer, not by the scene', readFileSync(join(root, 'src', 'input', 'input.ts'), 'utf8').includes('installViewKey()'));
+
+    // ══ THE 3D ROBOT BUILDER (`docs/roadmap.md` item 1) ═══════════════════════════════════
+    //
+    // Item 1's stated risk is one sentence: "preview and match must not drift". Every check in
+    // this block is that sentence turned into something a grep can refuse, because a preview that
+    // has drifted looks exactly as convincing as one that has not — the whole point of the
+    // feature is that a player trusts it, so nothing here can be left to a habit.
+    {
+      const previewSrc = readFileSync(join(SCENE_DIR, 'renderPreview.ts'), 'utf8');
+      const robotsSrc = readFileSync(join(SCENE_DIR, 'renderRobots.ts'), 'utf8');
+      const slotSrc = readFileSync(join(BIOBUZZ_DIR, 'Preview3D.tsx'), 'utf8');
+      // COMMENTS STRIPPED for the two rules below: both of them are about what the file DOES, and
+      // this file's headers quote the very strings they forbid while explaining why.
+      const slotCode = codeLines(join(BIOBUZZ_DIR, 'Preview3D.tsx')).join('\n');
+      const bbMod = moduleFor('biobuzz');
+      const builderSrc = readFileSync(join(BIOBUZZ_DIR, 'Builder.tsx'), 'utf8');
+      const menuSrc = readFileSync(join(root, 'src', 'ui', 'Menu.tsx'), 'utf8');
+
+      // ── ONE GENERATOR ────────────────────────────────────────────────────────────────────
+      check(
+        'renderRobots.ts EXPORTS buildRobotGroup (else the preview cannot share it)',
+        /export function buildRobotGroup\(/.test(robotsSrc),
+      );
+      check(
+        'the preview builds its robot with buildRobotGroup — the match\u2019s own generator',
+        /import \{[^}]*buildRobotGroup[^}]*\} from '\.\/renderRobots'/.test(previewSrc) &&
+          previewSrc.includes('buildRobotGroup(spec, 1, alliance)'),
+      );
+      // and it draws NOTHING of its own: a `new THREE.Mesh` in here would be the second drawing
+      // of a robot that this whole design exists to not have. The floor disc is the one mesh the
+      // preview owns, and it is not part of the robot.
+      {
+        const meshes = (previewSrc.match(/new THREE\.Mesh\(/g) ?? []).length;
+        check('...and it builds no robot geometry of its own (one mesh: the floor disc)', meshes === 1, String(meshes));
+      }
+
+      // ── ONE REBUILD KEY ──────────────────────────────────────────────────────────────────
+      // The thumbnail cache lives in the MAIN chunk and has to key on the same identity the
+      // generator rebuilds on, without loading the scene chunk to ask. Two copies is exactly how
+      // a cached thumbnail ends up showing the previous build.
+      check(
+        'the rebuild key is bbSpecKey, in ONE place, read by the generator and the thumbnail cache',
+        !/function specKey\(/.test(robotsSrc) &&
+          robotsSrc.includes('bbSpecKey(r.spec)') &&
+          previewSrc.includes('bbSpecKey(next)') &&
+          slotSrc.includes('bbSpecKey(spec)'),
+      );
+
+      // ── THE COSMETIC CHASSIS COLOUR, AND THE ALLIANCE (the gap item 1 names) ─────────────
+      // 2D has always been fill = `chassisFill(chassisColor)`, alliance = the outline. 3D filled
+      // the chassis with the ALLIANCE and never rendered `chassisColor` at all, so a supporter's
+      // colour vanished the moment they pressed `t`. This is the fix, pinned.
+      check(
+        'the 3D chassis is FILLED with chassisFill(spec.chassisColor), the 2D allowlist',
+        robotsSrc.includes("import { chassisFill } from '../../../config';") &&
+          robotsSrc.includes('solidMat(chassisFill(spec.chassisColor)'),
+      );
+      check(
+        '...and the ALLIANCE is the outline plus the sign panel, never the fill',
+        /LineSegments\(chassisEdges\([^)]*\), lineMat\(color\)\)/.test(robotsSrc) &&
+          robotsSrc.includes('getSignTexture(id, alliance)') &&
+          !/chassisGeometry\([^)]*\), solidMat\(color/.test(robotsSrc),
+      );
+
+      // ── THE IMPORT BOUNDARY, FOR THE ONE COMPONENT THAT REACHES A LAZY CHUNK ─────────────
+      // `Preview3D.tsx` is in the MAIN chunk (the builder is a menu screen). A static import of
+      // the scene, or of `three`, would put Three.js in a DECODE player's bundle.
+      check(
+        'Preview3D.tsx imports no three, and no scene/ module',
+        !/from\s+['\"]three['\"]/.test(slotSrc) && !/from\s+['\"]\.\/scene/.test(slotSrc),
+      );
+      check(
+        '...and reaches the renderer ONLY through the module slot',
+        slotCode.includes("moduleFor('biobuzz').previewScene") && !/\bimport\(/.test(slotCode),
+      );
+      // the thumbnails are DERIVED data and are never written to storage: they would be the
+      // biggest thing in localStorage and would go stale, plausibly, the day the generator changed
+      check('thumbnails are cached in memory only, never persisted', !slotCode.includes('localStorage'));
+      // and the preview must not rewrite the app's view preference the way the MATCH scene does —
+      // a menu card quietly changing what the next match renders with would be a surprise
+      check('the preview scene does not touch the view preference', !previewSrc.includes('setViewPref'));
+
+      // ── THE SLOTS, AND THE HOSTS THAT FILL THEM ──────────────────────────────────────────
+      check('biobuzz fills previewScene, and it is a function', typeof bbMod.previewScene === 'function');
+      check(
+        'decode and chain do NOT (no 3D generator for either)',
+        moduleFor('decode').previewScene === undefined && moduleFor('chain').previewScene === undefined,
+      );
+      check('biobuzz fills the savedCard slot', typeof bbMod.savedCard === 'function');
+      check(
+        'the builder hero opts INTO a live scene; the strategy cards do not',
+        menuSrc.includes('allow3d') &&
+          !readFileSync(join(root, 'src', 'ui', 'MatchStrategy.tsx'), 'utf8').includes('allow3d'),
+      );
+      check('Menu routes the savedCard slot ahead of its own two branches', menuSrc.includes('<SavedCard spec={r}'));
+
+      // ── THE HEIGHT PAIR (R102 / R105.A) ──────────────────────────────────────────────────
+      check(
+        'the builder has a heightIn dial over R105.A\u2019s own 12..29 range',
+        builderSrc.includes('heightIn: Number(e.target.value)') &&
+          builderSrc.includes('min={BB3_HEIGHT_MIN}') &&
+          builderSrc.includes('max={BB3_HEIGHT_MAX}'),
+      );
+      check(
+        '...and a stow declaration that appears ONLY over the 18-in cube',
+        builderSrc.includes('stowHeightIn: Number(e.target.value)') &&
+          builderSrc.includes('const folds = deployed > BB3_STOW_MAX;') &&
+          builderSrc.includes('{folds && ('),
+      );
+      // the preview's stow toggle is the SAME resolver the rule reads, expressed as a spec whose
+      // height IS the stow height — which is what makes the group rebuild for free
+      check(
+        'the preview\u2019s stow toggle shows bbStowHeightIn, and only for a folding build',
+        slotSrc.includes('bbStowHeightIn(spec)') &&
+          slotSrc.includes('{ ...spec, heightIn: stowHeight }') &&
+          slotSrc.includes('deployed > BB3_STOW_MAX'),
+      );
+    }
 
     const statsSrc = readFileSync(join(SCENE_DIR, 'renderStats.ts'), 'utf8');
     // the ATTRIBUTE, not the word: the file's own header explains at length why it does not

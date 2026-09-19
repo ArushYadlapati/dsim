@@ -1,6 +1,6 @@
 import type { GameModule } from '../module';
 import { BiobuzzGallery } from './Gallery';
-import { BiobuzzRobotPreview } from './RobotPreview';
+import { BiobuzzPreview3D, BiobuzzSavedCard } from './Preview3D';
 import {
   BiobuzzBuilderSlot,
   BiobuzzHudChips,
@@ -44,7 +44,15 @@ export const BIOBUZZ_MODULE: GameModule = {
   drawBalls: drawBiobuzzBalls,
   // ---- UI slots ----
   Builder: BiobuzzBuilderSlot,
-  Preview: BiobuzzRobotPreview,
+  /**
+   * THE ROBOT SCHEMATIC — and, where the host allows it, the live 3D turntable
+   * (`docs/roadmap.md` item 1). `BiobuzzPreview3D` wraps `BiobuzzRobotPreview`: without the
+   * host's `allow3d` it IS the schematic, byte for byte what this slot was before.
+   */
+  Preview: BiobuzzPreview3D,
+  /** the saved-robot card's body: a 3D thumbnail on the 3D view, the build summary on the 2D
+   * one. See `GameModule.savedCard` for why the GAME makes that choice and not the menu. */
+  savedCard: BiobuzzSavedCard,
   hudChips: BiobuzzHudChips,
   scoreBar: BiobuzzScoreBar,
   resultsRows: biobuzzResultsRows,
@@ -135,4 +143,15 @@ export const BIOBUZZ_MODULE: GameModule = {
    * `scripts/smoke-biobuzz/render.ts`'s import-boundary checks.
    */
   scene: () => import('./scene/renderScene').then((m) => m.createBiobuzzScene),
+  /**
+   * THE ROBOT-BUILDER TURNTABLE, out of the SAME chunk (`docs/roadmap.md` item 1).
+   *
+   * ⚠️ THE SPECIFIER IS `./scene/renderScene`, NOT `./scene/renderPreview`, AND THAT IS THE
+   * POINT. One dynamic specifier is one Rollup chunk. Two would make three.js a hoisted shared
+   * chunk with a thin facade either side — and a facade contains none of the marker strings
+   * `scripts/bundleaudit.mjs` routes the `scene` budget by, so both would land in `other` and
+   * fail the audit for a reason that has nothing to do with size. `renderScene.ts` re-exports
+   * the preview factory; its header carries the same note.
+   */
+  previewScene: () => import('./scene/renderScene').then((m) => m.createRobotPreviewScene),
 };

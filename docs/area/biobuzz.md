@@ -174,6 +174,29 @@ The 2D pipeline is PERMANENT (owner rule): every existing check must stay byte-i
   doing exactly that, so `step.ts` can dispatch without pulling a byte of physics in. Node callers
   (smoke lanes, `hive-calibrate`, `costprobe`) still import the modules directly — there is no
   bundle to protect there. The RENDER lane fails on a static import of anything else.
+- **THE 3D ROBOT CREATOR (`docs/roadmap.md` item 1)** — `scene/renderPreview.ts` is a second,
+  small scene in the SAME chunk, and `Preview3D.tsx` (main chunk, no `three`) is the builder's
+  2D/3D toggle, the `Stowed` toggle and the saved-robot thumbnails. Three rules hold it together,
+  and each is asserted by the RENDER lane rather than left to a habit:
+  - **ONE GENERATOR.** The preview calls `buildRobotGroup(spec, id, alliance)` — the function the
+    live match calls for every robot on the field — and builds exactly one mesh of its own (the
+    floor disc). The renderer, the tone mapping and the light rig come from `scene/renderCore.ts`,
+    which both scenes share, because those are per-RENDERER settings and every one of them changes
+    the pixels. A preview drawn a second way would be a preview that lies.
+  - **ONE REBUILD KEY.** `bbSpecKey` (`specKey.ts`, NOT under `scene/`) is the build's geometry
+    identity, read by the generator inside the chunk and by the thumbnail cache outside it — the
+    main chunk has to key a cache on it without loading the scene chunk to ask.
+  - ⚠️ **ONE DYNAMIC SPECIFIER.** `index.ts` fills TWO slots (`scene`, `previewScene`) and both
+    write `import('./scene/renderScene')`; the preview factory is re-exported from there. Two
+    specifiers would hoist three.js into a shared chunk behind two facades, and a facade carries
+    none of the marker strings `bundleaudit` routes the `scene` budget by — both would land in
+    `other` and fail that audit for a reason that has nothing to do with size.
+  The COSMETIC CHASSIS COLOUR is rendered in 3D now (fill = `chassisFill(spec.chassisColor)`,
+  alliance = the silhouette line plus the sign panel, the split the 2D sprite has always made);
+  it was alliance-filled and the colour was not drawn at all, so it vanished when a player pressed
+  `t`. Looking at a robot close up also found the TURRET and the BOX TUBE built INSIDE the chassis
+  box, `specKey` missing `drivetrain`, and a discarded group never disposed — all three were the
+  MATCH's bugs and all three are fixed there.
 - **Verification:** `scripts/smoke-biobuzz/sim3d.ts` (SIM3D lane: seam, drive parity, two-run
   hash, conservation, containment with `containmentFixes === 0`, CCD, capture, launch into either
   up cell, 18/29-in clearance, tip/spill, perf ≤ 1.5 ms, CAD probe agreement) and `render.ts`
