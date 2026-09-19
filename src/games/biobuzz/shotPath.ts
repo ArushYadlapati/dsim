@@ -96,7 +96,9 @@ export function solveShotPath(world: World, r: RobotState): boolean {
     // to promise for it
     if (!sol || !sol.reachable) return false;
     const rel = bbTurretRelease(r, which, sol.speed);
-    if (!bbFlightEnters(hive, r.alliance, rel.origin, BB_LAUNCH_Z0, rel.vel, SIM_DT, TRACE)) return false;
+    // `rel.z` — the hood lip at this turret's CURRENT pitch. The drawn arc starts where the
+    // element starts, which is the whole point of reading the sim's own release.
+    if (!bbFlightEnters(hive, r.alliance, rel.origin, rel.z, rel.vel, SIM_DT, TRACE)) return false;
     SHOT.made = true;
     SHOT.points = TRACE.n;
     return true;

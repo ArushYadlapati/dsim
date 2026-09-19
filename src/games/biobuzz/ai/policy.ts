@@ -796,7 +796,8 @@ function wantsFire(
       const sol = bbTurretSolution(r, target, which);
       if (!sol || !sol.reachable) continue;
       const rel = bbTurretRelease(r, which, sol.speed);
-      if (bbFlightEnters(pretend, a, rel.origin, BB_LAUNCH_Z0, rel.vel, SIM_DT)) return true;
+      // `rel.z` — stage 5b's own release height, so the bot's verdict and the sim's agree.
+      if (bbFlightEnters(pretend, a, rel.origin, rel.z, rel.vel, SIM_DT)) return true;
     }
     return false;
   }
@@ -805,6 +806,7 @@ function wantsFire(
   const throws = bbDumpSolution(r, target, r.hopper.length);
   return (
     throws !== null &&
+    // the DUMPER's lip is flat (no hood) — `BB_LAUNCH_Z0` unchanged.
     throws.every((th) => bbFlightEnters(pretend, a, th.origin, BB_LAUNCH_Z0, th.vel, SIM_DT))
   );
 }

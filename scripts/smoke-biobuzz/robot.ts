@@ -38,12 +38,28 @@ import {
   BB_PTS,
   BB_START_POSE_COUNT,
   BB_TURRET_PITCH_MAX,
+  BB_TURRET_PITCH_MIN,
   BB_TURRET_SLEW,
   bbStorageMax,
+  BB_FLYWHEEL_CLEAR,
+  BB_FLYWHEEL_D_MM,
+  BB_FLYWHEEL_R,
+  BB_HOOD_PATH_R,
+  BB_HOOD_R,
+  BB_HOOD_T,
+  BB_HOOD_WRAP,
+  BB_SIDE_PLATE_BOTTOM_Z,
+  BB_SIDE_PLATE_FRONT_X,
+  BB_SIDE_PLATE_TOP_Z,
+  BB_TURRET_AXLE_Z,
+  BB_TURRET_BRACE_R,
+  BB_TURRET_BRACES,
+  BB_TURRET_MOTOR,
+  BB_TURRET_PLATE_TOP_Z,
 } from '../../src/games/biobuzz/config';
 import { biobuzzColliders } from '../../src/games/biobuzz/colliders';
 import { bbEvalStart, bbStartBox } from '../../src/games/biobuzz/start';
-import { capturePollen, pollenIn, releasePollen, scoreTargets, takeHeld } from '../../src/games/biobuzz/elements';
+import { capturePollen, hiveCellTarget, pollenIn, releasePollen, scoreTargets, takeHeld } from '../../src/games/biobuzz/elements';
 import type { ScoreTarget } from '../../src/games/biobuzz/state';
 import {
   BB_INTAKE_MOUNTS,
@@ -63,12 +79,14 @@ import {
   bbLobThrow,
   bbHopperCap,
   bbMouths,
+  bbMuzzleLocal,
   bbMuzzleZ,
   bbPlacePoint,
   bbPlacePointLocal,
   bbRobotSolids,
   bbSolveShot,
   bbTurretOrigin,
+  bbTurretRelease,
   bbTurretSolution,
 } from '../../src/games/biobuzz/robot';
 import { bbConfigSummary } from '../../src/games/biobuzz/labels';
@@ -783,6 +801,133 @@ export function robotChecks(check: Check): void {
       check(`arc @${d}in: its elevation is inside the turret envelope`, hive.angle <= BB_TURRET_PITCH_MAX, `${(hive.angle / BB_DEG).toFixed(1)}deg`);
     }
   }
+  // ── THE MUZZLE FOLLOWS THE HOOD ───────────────────────────────────
+  /**
+   * The shooter rebuild of 2026-09-19 (owner report items a–e, sixth pass). The turret's whole
+   * dimension chain moved out of `scene/renderRobots.ts` into `config.ts`, and `bbMuzzleLocal`
+   * became the ONE function the sim and the 3D scene both read — five previous passes disagreed
+   * because the renderer owned the geometry privately and the sim owned a constant.
+   *
+   * These checks are the chain itself, not a restatement of it: each one would have caught one of
+   * the five rounds of feedback before it shipped.
+   */
+  {
+    const level = bbMuzzleLocal(BB_TURRET_PITCH_MIN);
+    const top = bbMuzzleLocal(BB_TURRET_PITCH_MAX);
+    check(
+      'muzzle: the flywheel is 72 MM of MEASURED hardware, recorded as millimetres',
+      BB_FLYWHEEL_D_MM === 72 && Math.abs(BB_FLYWHEEL_R - 36 / 25.4) < 1e-12,
+      `${BB_FLYWHEEL_D_MM}mm -> r=${BB_FLYWHEEL_R}`,
+    );
+    /** owner item (c): the flywheel sits RIGHT ABOVE the turret plate, not wherever a pivot left
+     * it. The axle is the plate top plus one bearing block plus the wheel radius, and nothing
+     * else — so the wheel's bottom is `BB_FLYWHEEL_CLEAR` off the plate by construction. */
+    check(
+      'muzzle: the flywheel sits one bearing block above the turret plate (owner item c)',
+      Math.abs(BB_TURRET_AXLE_Z - (BB_TURRET_PLATE_TOP_Z + BB_FLYWHEEL_CLEAR + BB_FLYWHEEL_R)) < 1e-12 &&
+        Math.abs(BB_TURRET_AXLE_Z - BB_FLYWHEEL_R - BB_TURRET_PLATE_TOP_Z - BB_FLYWHEEL_CLEAR) < 1e-12,
+      `axle ${BB_TURRET_AXLE_Z.toFixed(4)}, wheel bottom ${(BB_TURRET_AXLE_Z - BB_FLYWHEEL_R).toFixed(3)} over a plate at ${BB_TURRET_PLATE_TOP_Z.toFixed(2)}`,
+    );
+    /** the lip rides the element's own path circle about the axle — the closed form, not a fit. */
+    check(
+      'muzzle: the lip is the path circle rotated by the elevation',
+      Math.abs(level.z - (BB_TURRET_AXLE_Z + BB_HOOD_PATH_R)) < 1e-9 &&
+        Math.abs(level.back) < 1e-9 &&
+        Math.abs(top.z - (BB_TURRET_AXLE_Z + BB_HOOD_PATH_R * Math.cos(BB_TURRET_PITCH_MAX))) < 1e-6 &&
+        Math.abs(top.back - BB_HOOD_PATH_R * Math.sin(BB_TURRET_PITCH_MAX)) < 1e-6,
+      `level (${level.back.toFixed(4)}, ${level.z.toFixed(4)})  80deg (${top.back.toFixed(4)}, ${top.z.toFixed(4)})`,
+    );
+    /** MONOTONE, both ways: elevating drops the release and pulls it back. This is the whole of
+     * what "the release follows the hood" buys, and a sign slip would read as a shooter that
+     * fires from in FRONT of itself. */
+    let mono = true;
+    let prev = level;
+    for (let i = 1; i <= 80; i++) {
+      const m = bbMuzzleLocal((i / 80) * BB_TURRET_PITCH_MAX);
+      if (!(m.z < prev.z && m.back > prev.back)) mono = false;
+      prev = m;
+    }
+    check('muzzle: elevating LOWERS the release and pulls it BACK, monotonically', mono,
+      `9.634 -> ${prev.z.toFixed(3)} in, 0 -> ${prev.back.toFixed(3)} in back`);
+    /** owner item (b): the hood extends above the plates. Not by a tuned offset — the plate's
+     * outer arc IS `BB_HOOD_R` and the hood occupies the shell outside it, so the hood is proud
+     * by exactly `BB_HOOD_T` in the worst case and by the plate's flat-top cut everywhere else. */
+    const plateR = (th: number): number => {
+      const c = Math.cos(th);
+      const sn = Math.sin(th);
+      let lim = BB_HOOD_R;
+      if (sn > 1e-9) lim = Math.min(lim, BB_SIDE_PLATE_TOP_Z / sn);
+      if (sn < -1e-9) lim = Math.min(lim, BB_SIDE_PLATE_BOTTOM_Z / sn);
+      if (c > 1e-9) lim = Math.min(lim, BB_SIDE_PLATE_FRONT_X / c);
+      return Math.max(0, lim);
+    };
+    let proud = Infinity;
+    for (let i = 0; i <= 48; i++) {
+      const pit = (i / 48) * BB_TURRET_PITCH_MAX;
+      for (let j = 0; j <= 48; j++) proud = Math.min(proud, BB_HOOD_R + BB_HOOD_T - plateR(Math.PI / 2 + pit + (BB_HOOD_WRAP * j) / 48));
+    }
+    check('muzzle: the HOOD stands proud of the side plates at every pitch (owner item b)',
+      proud >= BB_HOOD_T - 1e-9, `worst +${proud.toFixed(4)} in, rest +${(BB_HOOD_R + BB_HOOD_T - plateR(Math.PI / 2)).toFixed(3)}`);
+    /** the plate's flat top is the CEILING for anything fixed near the shot: it clears the
+     * pitch-0 corridor by 0.15 by definition, which is why the +20° brace's 0.133 is as good as
+     * that height gets rather than a part that wandered into the arc. */
+    check('muzzle: the plate top clears the level corridor, and by the amount its own formula says',
+      Math.abs(BB_HOOD_PATH_R - BB_POLLEN_R - BB_SIDE_PLATE_TOP_Z - 0.15) < 1e-12,
+      `${(BB_HOOD_PATH_R - BB_POLLEN_R - BB_SIDE_PLATE_TOP_Z).toFixed(3)} in`);
+    /** and no fixed part may sit INSIDE the turret plate — the −40° brace did, by 0.044. */
+    let lowest = Infinity;
+    for (const b of BB_TURRET_BRACES) lowest = Math.min(lowest, BB_TURRET_AXLE_Z + Math.sin(b.th) * b.r - BB_TURRET_BRACE_R);
+    lowest = Math.min(lowest, BB_TURRET_AXLE_Z + Math.sin(BB_TURRET_MOTOR.th) * BB_TURRET_MOTOR.r - BB_TURRET_MOTOR.bodyR);
+    check('muzzle: every brace and the motor stand ON the turret plate, not inside it',
+      lowest >= BB_TURRET_PLATE_TOP_Z, `lowest ${lowest.toFixed(3)} vs plate top ${BB_TURRET_PLATE_TOP_Z.toFixed(3)}`);
+  }
+  /**
+   * ⚠️ THE DUMPER HAS NO HOOD, AND THE TURRET'S CHANGE MUST NOT LEAK INTO IT. A tipping tray's
+   * lip does not swing about a flywheel axle, so its release is `BB_LAUNCH_Z0` at every angle —
+   * `bbMuzzleZ` has to say so for a turretless build whatever pitch it is handed.
+   */
+  {
+    const w = mkWorld('free', 61);
+    const r = w.robots[0];
+    r.spec = bbCoerce({ ...r.spec, ...mech({ launcher: { kind: 'dumper', mount: 'back', hoodDeg: BB_HOOD_DEFAULT_DEG }, lift: null }) });
+    let flat = true;
+    for (let i = 0; i <= 16; i++) if (bbMuzzleZ(r.spec, (i / 16) * BB_TURRET_PITCH_MAX) !== BB_LAUNCH_Z0) flat = false;
+    check('dumper: its release stays FLAT at BB_LAUNCH_Z0 at every pitch (no hood to follow)', flat,
+      `${bbMuzzleZ(r.spec, BB_TURRET_PITCH_MAX)} at 80deg`);
+    r.spec = bbCoerce({ ...r.spec, ...mech({ launcher: { kind: 'turret', mount: 'center', hoodDeg: BB_HOOD_DEFAULT_DEG }, lift: null }) });
+    check('dumper: ...while a TURRET on the same chassis follows its hood down', bbMuzzleZ(r.spec, BB_TURRET_PITCH_MAX) < bbMuzzleZ(r.spec, BB_TURRET_PITCH_MIN),
+      `${bbMuzzleZ(r.spec, BB_TURRET_PITCH_MAX).toFixed(3)} < ${bbMuzzleZ(r.spec, BB_TURRET_PITCH_MIN).toFixed(3)}`);
+  }
+  /**
+   * ⚠️ RESIDUAL 4 OF THE REBUILD, AS A RATCHET. A lower release costs muzzle speed, and the
+   * far-corner shot is what runs out first. MEASURED at the shipped geometry: 256.37 in/s against
+   * a `BB_LAUNCH_SPEED_MAX` of 260, i.e. 3.63 of headroom, down from 6.74. The cap was NOT raised
+   * and must not be; what this check exists to stop is the NEXT change quietly eating the rest.
+   */
+  {
+    const w = mkWorld('free', 63, mech({ launcher: { kind: 'turret', mount: 'center', hoodDeg: BB_HOOD_DEFAULT_DEG }, lift: null }));
+    const r = w.robots[0];
+    let worst = 0;
+    let at = '';
+    for (const side of ['north', 'south'] as const) {
+      const target = hiveCellTarget('blue', side);
+      for (const sx of [-1, 1]) {
+        for (const sy of [-1, 1]) {
+          r.pos = { x: sx * (BB_HALF_X - 9), y: sy * (BB_HALF_Y - 9) };
+          const sol = bbTurretSolution(r, target)!;
+          const o = bbTurretOrigin(r);
+          const raw = bbSolveShot(
+            Math.hypot(target.pos.x - o.x, target.pos.y - o.y) + bbMuzzleLocal(sol.pitch).back,
+            target.z - bbMuzzleZ(r.spec, sol.pitch),
+          ).speed;
+          if (raw > worst) { worst = raw; at = `${side} from (${r.pos.x.toFixed(1)},${r.pos.y.toFixed(1)})`; }
+        }
+      }
+    }
+    check('headroom: the far-corner shot still fits under BB_LAUNCH_SPEED_MAX, with the measured margin',
+      worst <= BB_LAUNCH_SPEED_MAX && BB_LAUNCH_SPEED_MAX - worst >= 3.6,
+      `worst ${worst.toFixed(2)} at ${at}, headroom ${(BB_LAUNCH_SPEED_MAX - worst).toFixed(2)} (cap ${BB_LAUNCH_SPEED_MAX})`);
+  }
   /** a turretless build has no pitch axis to solve, and says so rather than guessing one. */
   {
     const w = mkWorld('free', 29);
@@ -888,12 +1033,32 @@ export function robotChecks(check: Check): void {
       check('turret: the PITCH axis is driven too, and off zero', (r.bbTurretPitch ?? 0) > 0.05 && Math.abs((r.bbTurretPitch ?? 0) - pitch0) > 1e-3, `pitch=${((r.bbTurretPitch ?? 0) / BB_DEG).toFixed(1)}deg`);
       check('turret: pitch stays inside the barrel envelope', (r.bbTurretPitch ?? 0) <= BB_TURRET_PITCH_MAX + 1e-9);
       check('turret: a single turret never writes the second turret\'s fields', r.bbTurret2Heading === undefined && r.bbTurret2Pitch === undefined);
+      /**
+       * ⚠️ MEASURED FROM THE MUZZLE, WHICH IS NO LONGER THE BOLT POINT (2026-09-19, the hood
+       * rebuild). The hood lip rides the element's path circle about the flywheel axle, so at
+       * elevation it sits LOWER and FURTHER BACK than the turret's mount — `bbMuzzleLocal` is the
+       * one function that says by how much, and `bbTurretSolution` solves the fixed point it
+       * creates. Reading `d` off the bolt point and `want` off a flat 10 in was right while the
+       * exit was a constant; it now understates the range by `back` and the drop by 2.1 in, and
+       * this check failed at rise=52.15 want=49.80 for exactly that reason.
+       */
+      const m = bbMuzzleLocal(sol.pitch);
       const o = bbTurretOrigin(r);
-      const d = Math.hypot(target.pos.x - o.x, target.pos.y - o.y);
+      const d = Math.hypot(target.pos.x - o.x, target.pos.y - o.y) + m.back;
       const t = d / (sol.speed * Math.cos(sol.pitch));
       const rise = sol.speed * Math.sin(sol.pitch) * t - 0.5 * C.GRAVITY * t * t;
-      const want = target.z - bbMuzzleZ(r.spec);
+      const want = target.z - bbMuzzleZ(r.spec, sol.pitch);
       check('turret: the solved (speed, angle) pair lands at the target HEIGHT', Math.abs(rise - want) < 0.5, `rise=${rise.toFixed(2)} want=${want.toFixed(2)} d=${d.toFixed(1)}`);
+      /** THE FIXED POINT ACTUALLY CONVERGED. One more pass must not move the pitch: the release
+       * height implied by the answer has to be the release height the answer was solved from. */
+      {
+        const again = bbSolveShot(d, target.z - bbMuzzleZ(r.spec, sol.pitch));
+        check(
+          'turret: the muzzle-follows-hood solve is a CONVERGED fixed point (one more pass moves nothing)',
+          Math.abs(again.angle - sol.pitch) < 1e-6,
+          `residual=${Math.abs(again.angle - sol.pitch).toExponential(2)} rad`,
+        );
+      }
       check('turret: the solved speed is inside the launcher ceiling', sol.speed <= BB_LAUNCH_SPEED_MAX + 1e-9, `${sol.speed.toFixed(1)}`);
     }
   }
@@ -923,29 +1088,56 @@ export function robotChecks(check: Check): void {
     give(w, r, ['yellow', 'blue']);
     r.fireReadyAt = w.time;
     const seen = new Set<number>();
-    let nectarAt: { p: { x: number; y: number }; o: { x: number; y: number }; z: number } | null = null;
-    let pollenAt: { p: { x: number; y: number }; o: { x: number; y: number }; z: number } | null = null;
+    type Born = { p: { x: number; y: number }; o: { x: number; y: number }; mz: number; z: number };
+    let nectarAt: Born | null = null;
+    let pollenAt: Born | null = null;
     for (let k = 0; k < 40 && !(nectarAt && pollenAt); k++) {
       tick(w, cmd({ fire: true }));
       for (const b of w.balls) {
         if (b.state.kind !== 'flight' || seen.has(b.id)) continue;
         seen.add(b.id);
-        const rec = { p: { ...b.pos }, o: bbTurretOrigin(r, b.color === 'blue' ? 1 : 0), z: b.z };
+        const which = b.color === 'blue' ? 1 : 0;
+        // the RELEASE, read at the pitch the turret is at on the tick it fired — `bbTurretRelease`
+        // is what `bbLaunch` itself called, so this is the same point and not a re-derivation
+        const rel = bbTurretRelease(r, which, 0);
+        const rec = { p: { ...b.pos }, o: rel.origin, mz: rel.z, z: b.z };
         if (b.color === 'blue') nectarAt = rec;
         else pollenAt = rec;
       }
     }
     const dist = (a: { x: number; y: number }, b: { x: number; y: number }): number => Math.hypot(a.x - b.x, a.y - b.y);
-    check('twin: a NECTAR is born at turret 1 (mount2)', !!nectarAt && dist(nectarAt.p, nectarAt.o) < 1e-6, nectarAt ? `${dist(nectarAt.p, nectarAt.o)}` : 'never fired');
-    check('twin: a POLLEN is born at turret 0 (mount)', !!pollenAt && dist(pollenAt.p, pollenAt.o) < 1e-6, pollenAt ? `${dist(pollenAt.p, pollenAt.o)}` : 'never fired');
+    /** ⚠️ AT THE MUZZLE, NOT AT THE MOUNT. These two compared the birth point against
+     * `bbTurretOrigin` while the exit was a fixed point over the ring; the hood lip RETREATS
+     * along the turret heading as the barrel elevates (`bbMuzzleLocal`), so at the ~70° these
+     * poses shoot at, the element is born 2.33/2.35 in behind the bolt point — which is what they
+     * measured when they failed. `bbTurretRelease` is the one answer both the check and
+     * `bbLaunch` read. */
+    check('twin: a NECTAR is born at turret 1\'s MUZZLE (mount2, set back by the hood)', !!nectarAt && dist(nectarAt.p, nectarAt.o) < 1e-6, nectarAt ? `${dist(nectarAt.p, nectarAt.o)}` : 'never fired');
+    check('twin: a POLLEN is born at turret 0\'s MUZZLE (mount, set back by the hood)', !!pollenAt && dist(pollenAt.p, pollenAt.o) < 1e-6, pollenAt ? `${dist(pollenAt.p, pollenAt.o)}` : 'never fired');
     check('twin: ...and the two exits are genuinely different points', dist(bbTurretOrigin(r, 0), bbTurretOrigin(r, 1)) > 3);
     /** THE SOLVE STARTS WHERE THE ELEMENT DOES. `bbTurretSolution` solves from `bbMuzzleZ` and
-     * `releasePollen` releases at `BB_LAUNCH_Z0`; the turret once solved from 2in above the
-     * release, and every turret shot arrived 2in low. Read off the world, on both turrets. */
+     * `releasePollen` is handed that same height; the turret once solved from 2in above the
+     * release, and every turret shot arrived 2in low. Read off the world, on both turrets.
+     *
+     * ⚠️ IT IS NO LONGER `BB_LAUNCH_Z0`, AND THAT IS THE POINT OF THE REBUILD (owner,
+     * 2026-09-19): the muzzle FOLLOWS THE HOOD. The two turrets sit at slightly different
+     * elevations here, so they release at slightly different heights — 8.07 and 8.01 in these
+     * poses — and each has to match ITS OWN solve, which a single shared constant could not
+     * express. Both are below the level-muzzle 9.634 and below the old flat 10. */
     check(
-      'twin: both turrets release at the height their arc was solved from',
-      !!nectarAt && !!pollenAt && Math.abs(nectarAt.z - bbMuzzleZ(r.spec)) < 1e-9 && Math.abs(pollenAt.z - bbMuzzleZ(r.spec)) < 1e-9 && bbMuzzleZ(r.spec) === BB_LAUNCH_Z0,
-      `nectar z=${nectarAt?.z} pollen z=${pollenAt?.z} solve z=${bbMuzzleZ(r.spec)}`,
+      'twin: both turrets release at the height their OWN arc was solved from',
+      !!nectarAt && !!pollenAt && Math.abs(nectarAt.z - nectarAt.mz) < 1e-9 && Math.abs(pollenAt.z - pollenAt.mz) < 1e-9,
+      `nectar z=${nectarAt?.z} (solve ${nectarAt?.mz}) pollen z=${pollenAt?.z} (solve ${pollenAt?.mz})`,
+    );
+    check(
+      'twin: ...and that height is the hood lip, below both the level muzzle and the old flat BB_LAUNCH_Z0',
+      !!nectarAt &&
+        !!pollenAt &&
+        nectarAt.z < bbMuzzleZ(r.spec) &&
+        pollenAt.z < bbMuzzleZ(r.spec) &&
+        nectarAt.z < BB_LAUNCH_Z0 &&
+        pollenAt.z < BB_LAUNCH_Z0,
+      `level=${bbMuzzleZ(r.spec).toFixed(3)} flat=${BB_LAUNCH_Z0} nectar=${nectarAt?.z.toFixed(3)} pollen=${pollenAt?.z.toFixed(3)}`,
     );
   }
 

@@ -715,7 +715,9 @@ export function updateBiobuzz(
         let land = false;
         if (asking && sol && sol.reachable) {
           const rel = bbTurretRelease(rob, which, sol.speed);
-          land = bbFlightEnters(pretend, rob.alliance, rel.origin, BB_LAUNCH_Z0, rel.vel, dt);
+          // FROM `rel.z`, NOT `BB_LAUNCH_Z0`: a turret's muzzle is the hood lip and it drops as
+          // the barrel elevates. Predicting from the wrong height is predicting a different shot.
+          land = bbFlightEnters(pretend, rob.alliance, rel.origin, rel.z, rel.vel, dt);
         }
         lands[which] = land;
       }
@@ -733,6 +735,7 @@ export function updateBiobuzz(
             : null;
         land =
           throws !== null &&
+          // A DUMPER STAYS FLAT — no hood, no swing, so `BB_LAUNCH_Z0` is still its lip.
           throws.every((t) => bbFlightEnters(pretend, rob.alliance, t.origin, BB_LAUNCH_Z0, t.vel, dt));
       }
       shots.set(rob.id, { target, speed: [], lands: [land] });

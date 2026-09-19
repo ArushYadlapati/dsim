@@ -14,12 +14,15 @@ import {
   BB_FIRE_BURST_MAX,
   BB_FIRE_INTERVAL,
   BB_FLOWERS,
+  BB_HOOD_PATH_R,
   BB_INTAKES,
   BB_LAUNCH_LINE_FRAC,
   BB_LAUNCH_SPEED_DEFAULT,
   BB_LAUNCH_SPEED_MAX,
   BB_LAUNCH_Z0,
   BB_PLACE_REACH,
+  BB_TURRET_AXLE_Z,
+  BB_TURRET_SOLVE_PASSES,
   BB_PLACE_TOL,
   BB_POLLEN_R,
   bbHopperCap,
@@ -538,18 +541,36 @@ export function bbTurretOrigin(r: RobotState, which: 0 | 1 = 0): Vec2 {
   return { x: r.pos.x + off.x, y: r.pos.y + off.y };
 }
 
+/** the ELEVATION of turret `which` right now (rad) — 0 for a turret this build does not have. */
+function turretPitchOf(r: RobotState, which: 0 | 1): number {
+  return which === 1 ? (r.bbTurret2Pitch ?? 0) : (r.bbTurretPitch ?? 0);
+}
+
 /**
- * THE RELEASE turret `which` makes RIGHT NOW at `speed`: where the element is born and the
- * velocity it leaves with, along that turret's current heading and pitch (not its solution —
- * a turret still swinging fires where it points). ONE function because two readers need the same
- * answer: `bbLaunch` releases it, and stage 5b runs it forward to ask whether it will score.
+ * THE RELEASE turret `which` makes RIGHT NOW at `speed`: where the element is born — in the
+ * plane AND in height — and the velocity it leaves with, along that turret's current heading and
+ * pitch (not its solution — a turret still swinging fires where it points). ONE function because
+ * three readers need the same answer: `bbLaunch` releases it, stage 5b runs it forward to ask
+ * whether it will score, and `shotPath.ts` draws it.
+ *
+ * ⚠️ **`origin` IS NO LONGER THE TURRET'S BOLT POINT, AND `z` IS NO LONGER A CONSTANT.** The
+ * muzzle FOLLOWS THE HOOD (owner, 2026-09-19): the hood lip swings about the axle, so as the
+ * barrel elevates the release drops and RETREATS along the turret's own heading. Both halves come
+ * out of `bbMuzzleLocal`, which is the one place the dimension chain is read.
  */
-export function bbTurretRelease(r: RobotState, which: 0 | 1, speed: number): { origin: Vec2; vel: Vec3 } {
+export function bbTurretRelease(
+  r: RobotState,
+  which: 0 | 1,
+  speed: number,
+): { origin: Vec2; z: number; vel: Vec3 } {
   const h = which === 1 ? (r.bbTurret2Heading ?? r.turretHeading) : r.turretHeading;
-  const pitch = which === 1 ? (r.bbTurret2Pitch ?? 0) : (r.bbTurretPitch ?? 0);
+  const pitch = turretPitchOf(r, which);
+  const m = bbMuzzleLocal(pitch);
+  const o = bbTurretOrigin(r, which);
   const vh = dcos(pitch);
   return {
-    origin: bbTurretOrigin(r, which),
+    origin: { x: o.x - dcos(h) * m.back, y: o.y - dsin(h) * m.back },
+    z: bbMuzzleZ(r.spec, pitch),
     vel: { x: dcos(h) * speed * vh, y: dsin(h) * speed * vh, z: speed * dsin(pitch) },
   };
 }
@@ -709,7 +730,9 @@ export function bbLaunch(world: World, r: RobotState, cmd: RobotCommand, enabled
     const which = bbTurretFor(launcher, isNectarColour(colour));
     if (!lands(which)) break; // a double turret's next element leaves the OTHER turret
     const rel = bbTurretRelease(r, which, shot?.speed[which] ?? BB_LAUNCH_SPEED_DEFAULT);
-    releasePollen(world, r, rel.vel, undefined, rel.origin, colour);
+    // THE HEIGHT TRAVELS WITH THE POINT. `rel.z` is the hood lip at this turret's CURRENT pitch,
+    // not `BB_LAUNCH_Z0` — a turret at full elevation releases ~2.1 in lower than one at rest.
+    releasePollen(world, r, rel.vel, undefined, rel.origin, colour, rel.z);
     r.fireReadyAt += BB_FIRE_INTERVAL;
     fired++;
   }
@@ -801,18 +824,51 @@ export function bbDumpSolution(r: RobotState, target: ScoreTarget, n: number): B
   return out;
 }
 
-/** how high above the tiles this build's element leaves the robot, for the arc solve (in).
+/**
+ * ⚠️ **THE MUZZLE — THE ONE FUNCTION THE PICTURE AND THE PHYSICS BOTH READ.**
  *
- * ⚠️ IT IS THE RELEASE HEIGHT, FOR EVERY LAUNCHER. `releasePollen` (`elements.ts`) puts every
- * launched element at `BB_LAUNCH_Z0`, turret or dumper, so that is the height the solve has to
- * start from. The turret used to solve from `BB_LAUNCH_Z0 + 2` ("the turret rides on the deck")
- * while the element was still born at `BB_LAUNCH_Z0` — every turret shot was aimed for a muzzle
- * two inches above where it actually left, and arrived two inches low. Raising a turret's muzzle
- * is a change to the RELEASE (pass the height through `releasePollen`), never to this solve
- * alone. `spec` stays so that change has somewhere to go. */
-export function bbMuzzleZ(spec: RobotSpec): number {
-  void spec;
-  return BB_LAUNCH_Z0;
+ * Where the hood lip is at elevation `pitch`, in the TURRET FRAME: `z` off the tiles, and `back`
+ * how far BEHIND the turret's bolt point along the turret's own heading. The lip rides the
+ * element's path circle about the flywheel axle, so it is one rotation of `BB_HOOD_PATH_R`:
+ *
+ *     back = BB_HOOD_PATH_R · sin p        z = BB_TURRET_AXLE_Z + BB_HOOD_PATH_R · cos p
+ *
+ * At rest that is (0, 9.634); at `BB_TURRET_PITCH_MAX` it is (2.479, 7.554). The old geometry
+ * put it at a flat 10 in at every elevation, which is what a fixed exit means, and a fixed exit
+ * is not what an adjustable-hood shooter has.
+ *
+ * ⚠️ **IT LIVES HERE, NOT IN THE RENDERER.** Nothing outside `scene/` may import from `scene/`,
+ * so a formula that lived there could only ever have had one reader — which is exactly how the
+ * shooter reached a sixth review pass with the drawing and the ballistics disagreeing. The 3D
+ * scene builds `bb-turret-pitch` about the AXLE and reads this for the muzzle; the sim releases
+ * here and solves against here. Same rule as `shotPath.ts`: ONE PREDICTOR, TWO DRAWINGS.
+ *
+ * Deterministic trig (`dsin`/`dcos`), because this is sim code on the release path.
+ */
+export function bbMuzzleLocal(pitch: number): { back: number; z: number } {
+  const p = clamp(pitch, BB_TURRET_PITCH_MIN, BB_TURRET_PITCH_MAX);
+  return { back: BB_HOOD_PATH_R * dsin(p), z: BB_TURRET_AXLE_Z + BB_HOOD_PATH_R * dcos(p) };
+}
+
+/**
+ * how high above the tiles this build's element leaves the mechanism at elevation `pitch` (in).
+ *
+ * ⚠️ IT IS THE RELEASE HEIGHT, AND THE RELEASE READS IT. `releasePollen` (`elements.ts`) is
+ * handed this for a turret shot, so the height the arc was solved from and the height the element
+ * is actually born at cannot drift: the turret once solved from 2 in above the release and every
+ * turret shot arrived 2 in low, which is the bug this function exists to make impossible.
+ *
+ * ⚠️ **A DUMPER HAS NO HOOD, SO ITS RELEASE IS STILL FLAT.** `BB_LAUNCH_Z0` is a tipping tray's
+ * lip, it does not swing about a flywheel axle, and the turret's change must not leak into it —
+ * `bbLobThrow`, `bbDumpSolution` and `bbLaunch`'s dumper branch all still use `BB_LAUNCH_Z0`
+ * directly, and this returns it unchanged for a turretless build whatever `pitch` says.
+ *
+ * `pitch` defaults to the rest pose (`BB_TURRET_PITCH_MIN`), which is the muzzle a caller with no
+ * elevation in hand means.
+ */
+export function bbMuzzleZ(spec: RobotSpec, pitch: number = BB_TURRET_PITCH_MIN): number {
+  if (!bbIsTurreted(bbLauncherOf(spec, BB_HOOD_DEFAULT_DEG))) return BB_LAUNCH_Z0;
+  return bbMuzzleLocal(pitch).z;
 }
 
 /**
@@ -825,6 +881,23 @@ export function bbMuzzleZ(spec: RobotSpec): number {
  * into `BB_LAUNCH_SPEED_MAX`, so a solution the hardware cannot reach comes back as the nearest
  * one it can — which then MISSES, honestly — and says so in `reachable`, which stage 5b reads before
  * running Aim Assist's landing prediction.
+ *
+ * ── ⚠️ AND IT IS A FIXED POINT, BECAUSE THE MUZZLE FOLLOWS THE HOOD ─────────
+ * The elevation moves the release (`bbMuzzleLocal`: lower, and further back along the heading),
+ * and the release moves the elevation the arc asks for. That circularity is the hardware's, not
+ * a modelling choice, so the solve iterates it: start level, solve, re-read the muzzle at the
+ * pitch that came out, solve again. `BB_TURRET_SOLVE_PASSES` passes, ALWAYS — no early exit and
+ * no tolerance, because a trip count that depends on a float comparison is a trip count that can
+ * differ between a client's prediction and the server's authority. The map converges
+ * geometrically (the release moves by well under an inch for a degree of pitch at the ranges a
+ * HIVE shot lives at): MEASURED over 7,688 field poses, a fifth pass moves the pitch by at most
+ * 1.76e-9 rad.
+ *
+ * MEASURED CONSEQUENCE, over the whole 2-in field grid at both cells: scoreable cells go
+ * 1359 → 1382 (north) and 1417 → 1439 (south), pitch-capped cells 255 → 211, nothing is
+ * speed-capped, and the worst required muzzle speed rises from 253.26 to 256.37 against a 260
+ * cap. The release is ~2.1 in lower at hive elevations, which costs a little speed and unblocks
+ * more of the field than it loses — the owner authorised the outcome change knowingly.
  */
 export function bbTurretSolution(
   r: RobotState,
@@ -834,12 +907,22 @@ export function bbTurretSolution(
   const launcher = bbLauncherOf(r.spec, BB_HOOD_DEFAULT_DEG);
   if (!bbIsTurreted(launcher)) return null;
   if (which === 1 && launcher.kind !== 'twinturret') return null;
-  // FROM THE MUZZLE, NOT THE CHASSIS CENTRE — see `bbTurretOrigin`.
+  // FROM THE TURRET'S BOLT POINT, NOT THE CHASSIS CENTRE — see `bbTurretOrigin`. The muzzle's own
+  // SETBACK from that point is the `back` term inside the loop, and it grows with elevation.
   const o = bbTurretOrigin(r, which);
   const dx = target.pos.x - o.x;
   const dy = target.pos.y - o.y;
-  const sol = bbSolveShot(hyp(dx, dy), target.z - bbMuzzleZ(r.spec));
-  const pitch = clamp(sol.angle, BB_TURRET_PITCH_MIN, BB_TURRET_PITCH_MAX);
+  const d0 = hyp(dx, dy);
+  // PASS 1 is the level muzzle (`back` is 0 there, so it is also the old one-shot solve); each
+  // later pass re-reads the muzzle at the pitch the previous one produced.
+  let pitch = BB_TURRET_PITCH_MIN;
+  let sol = bbSolveShot(d0, target.z - bbMuzzleZ(r.spec, pitch));
+  pitch = clamp(sol.angle, BB_TURRET_PITCH_MIN, BB_TURRET_PITCH_MAX);
+  for (let i = 1; i < BB_TURRET_SOLVE_PASSES; i++) {
+    const m = bbMuzzleLocal(pitch);
+    sol = bbSolveShot(d0 + m.back, target.z - bbMuzzleZ(r.spec, pitch));
+    pitch = clamp(sol.angle, BB_TURRET_PITCH_MIN, BB_TURRET_PITCH_MAX);
+  }
   return {
     yaw: datan2(dy, dx),
     pitch,

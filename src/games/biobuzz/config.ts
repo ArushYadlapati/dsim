@@ -40,7 +40,7 @@
 
 import type { Alliance, AssistConfig, RobotSpec, StartCat, Vec2, World } from '../../types';
 import { INTAKE_PRESETS, ROBOT_MAX_SIZE } from '../../config';
-import { dcos, wrapAngle } from '../../math';
+import { datan2, dcos, wrapAngle } from '../../math';
 import { lengthLimits, massLimits, widthLimits } from '../../sim/drivetrain';
 import {
   BB_DEFAULT_INTAKE_MOUNT,
@@ -807,7 +807,14 @@ export const BB_LAUNCH_LINE_FRAC = 0.92;
  * upward and apexed 0.13 in: there was effectively no arc in this game. The velocity use is
  * gone — a launch's vertical speed is now solved from the target's height (`bbSolveShot`) or
  * set by the hood angle — and this is a height and only a height. The name is left alone
- * because renaming it touches Lane A's `elements.ts`; that is a separate cross-lane change. */
+ * because renaming it touches Lane A's `elements.ts`; that is a separate cross-lane change.
+ *
+ * ⚠️ **IT IS THE DUMPER'S RELEASE NOW, AND ONLY THE DUMPER'S** (owner, 2026-09-19). A TURRET's
+ * muzzle is the hood lip, which swings about the flywheel axle, so its release moves with the
+ * elevation: `bbMuzzleLocal` / `bbMuzzleZ` (`robot.ts`) are the one answer, and every turret
+ * consumer — the solve, `releasePollen`, stage 5b's landing prediction, the bot's verdict and
+ * `shotPath.ts` — reads them. A tipping tray has no hood and no swing, so a dump still leaves
+ * here, flat, at every distance. Do not re-point the dumper at the turret's function. */
 export const BB_LAUNCH_Z0 = 10;
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -962,10 +969,14 @@ export const BB_TURRET_PITCH_MAX = 80 * BB_DEG;
  * bounded somewhere it reaches every opening on the field from everywhere and the pitch envelope
  * and the hood become decoration. A dump whose hood has no solution fires AT this cap.
  * SIZED SO IT IS NOT NORMALLY WHAT BITES: the longest legal shot at a HIVE is a robot in the
- * far corner (~66, 66) firing at the opposite up-CELL — d = 111.8 in, dh = 47.6 in above a
- * turret muzzle, which the minimum-speed solution takes at **255.5 in/s**. 260 clears that with
- * a little margin, so today the thing that makes a turret miss is the SLEW (aim is a physical
- * state) and not the range. A target further or higher than the HIVE would fall short, which is
+ * far corner firing at the opposite up-CELL. RE-MEASURED 2026-09-19 through the real solve, on
+ * the 2-in field grid with the robot centre 9 in off the wall: the worst pose is (−61.67,
+ * −61.67) at **256.37 in/s**, leaving **3.63 in/s of headroom**. It was 253.26 (6.74 of
+ * headroom) while the muzzle was a flat 10 in; the hood-following release sits ~2.1 in lower at
+ * the elevations a HIVE shot uses, and a lower release costs a little speed. NOTHING on the
+ * field is speed-capped either way — the cap was not raised and must not be, since the same
+ * change cut PITCH-capped poses from 255 to 211 and added 45 scoreable cells. The thing that
+ * makes a turret miss is still the SLEW (aim is a physical state) and not the range. A target further or higher than the HIVE would fall short, which is
  * a miss the driver can see and drive out of rather than a silent skip.
  *
  * APPROX, like every launcher number here — see the risks in `docs/biobuzz/plan-mechanisms.md`.
@@ -983,6 +994,240 @@ export const BB_LAUNCH_SPEED_DEFAULT = 175;
  * than being an independent number. APPROX with the element. */
 export const BB_LAUNCH_PLATE_GAP = BB_POLLEN_R * 2 + 0.3;
 export const BB_LAUNCH_PLATE_OVERHANG = 1.2;
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ROBOT — THE TURRET'S DIMENSION CHAIN (the hooded flywheel)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * ⚠️ **THIS CHAIN USED TO LIVE IN `scene/renderRobots.ts`, PRIVATELY, AND THAT IS WHY IT TOOK
+ * SIX PASSES.** (owner report 2026-09-19, items a–e.)
+ *
+ * The renderer owned the flywheel radius, the hood radius, the plate profile and the muzzle
+ * height; the sim owned `BB_LAUNCH_Z0`. Two numbers, two owners, and every round of feedback
+ * moved one of them to answer the last complaint — so the picture and the physics agreed at one
+ * pitch and nowhere else, and the next look found the next disagreement. The chain is here now,
+ * `bbMuzzleLocal` (`robot.ts`) is the ONE function that turns it into a release, and BOTH the
+ * sim and the 3D scene read that function. Same rule the shot path already follows: ONE
+ * PREDICTOR, TWO DRAWINGS.
+ *
+ * Every length is in INCHES, every angle in RADIANS. The frame the angles are in is THE AXLE
+ * FRAME: origin on the flywheel axle, +x the shot direction at rest, +z up, θ measured CCW from
+ * +x. That frame is why the numbers below read oddly at first — the exit is at θ = 90° (straight
+ * up over the wheel), not at θ = 0.
+ */
+
+/**
+ * FLYWHEEL DIAMETER, IN MILLIMETRES — **72 mm, MEASURED HARDWARE** (owner, 2026-09-19 item e).
+ *
+ * Recorded as the millimetres it actually is and converted here, once. A 72 mm wheel is
+ * 2.8346 in, and writing that as a decimal literal would lose the only thing about it that is
+ * not a judgement call.
+ *
+ * ⚠️ THE HEADER THIS REPLACES ARGUED FOR 1.5 ON A MOTOR-POCKET GROUND — "it came down from 2.0
+ * because of `BB_HEAD_RHO_MAX`… at a 4-in wheel the axle sits 3.1 in below the muzzle, which
+ * leaves 2.1 in of ρ budget". That whole argument is void. `BB_HEAD_RHO_MAX` existed because the
+ * pitch node pivoted about the MUZZLE, which it did because `bbMuzzleZ` was a constant; the head
+ * pivots about the AXLE now (owner item d — the flywheel and the plates are FIXED, only the hood
+ * moves), the axle is a fixed height off the turret plate, and there is no ρ budget to spend.
+ * The wheel is 72 mm because that is the wheel, not because it fits.
+ */
+export const BB_FLYWHEEL_D_MM = 72;
+export const BB_FLYWHEEL_R = BB_FLYWHEEL_D_MM / 2 / 25.4;
+
+/** how much a POLLEN is squeezed between the wheel and the hood (in). APPROX — a compliant
+ * wheel against a polycarb hood; it is what makes a shooter grip rather than jam. */
+export const BB_HOOD_COMPRESSION = 0.3;
+
+/**
+ * the hood's INNER radius about the axle: wheel + one element diameter, less the compression.
+ * A 2.8-in POLLEN (`BB_POLLEN_R` 1.4, MEASURED — AndyMark am-5851) has to fit through it, so
+ * changing the element moves the hood and everything hung off it.
+ */
+export const BB_HOOD_R = BB_FLYWHEEL_R + BB_POLLEN_R * 2 - BB_HOOD_COMPRESSION; // 3.91732
+
+/** the radius the element's CENTRE travels at. This is the one that sets the muzzle, because the
+ * muzzle is where that centre leaves the wrap — see `bbMuzzleLocal`. */
+export const BB_HOOD_PATH_R = BB_HOOD_R - BB_POLLEN_R; // 2.51732
+
+/** hood wall thickness (in). It is what makes the hood stand PROUD of the side plates: the
+ * plates' outer arc is exactly `BB_HOOD_R` and the hood occupies `BB_HOOD_R … +BB_HOOD_T`, so
+ * the hood is the outermost part BY CONSTRUCTION at every pitch, never by a tuned offset. */
+export const BB_HOOD_T = 0.28;
+
+/**
+ * how far round the wheel the hood wraps, from the exit lip BACKWARD (rad ≈ 31.9°).
+ *
+ * ⚠️ **WAS 1.05 (60°), AND IT SHRANK BECAUSE THE HOOD MOVES NOW.** A hood that pivots on the
+ * axle carries its own feed mouth round with it: at `BB_TURRET_PITCH_MAX` the mouth has gone 80°
+ * round the wheel and no longer lines up with anything the chassis can feed. So the hood keeps
+ * only the arc it needs to turn the element and let go of it, and a FIXED `BB_FEED_SHOE_*` takes
+ * over the entry (below). The old header's two bounds — the ρ budget and the motor pocket — are
+ * both void with the pivot moved to the axle.
+ */
+export const BB_HOOD_WRAP = 0.556;
+
+/**
+ * THE HOOD'S ARMS — how it hangs off the axle, since the side plates deliberately do not reach
+ * it (owner item b: the plates stop well below the hood).
+ *
+ * A real adjustable hood is an arc on two side arms that pivot on the shooter axle, and that is
+ * what this is: `_T` is an arm's thickness in the arc's own plane, `_INSET` how far inboard of
+ * each side plate's inner face the arm runs, so the pair reads as the hood's own linkage and not
+ * as a third pair of plates. They go on the PITCH node with the arc — they ARE the hood — which
+ * keeps owner item d exact: the flywheel and the plates never move.
+ *
+ * APPROX both: sized off the arc they carry (an arm spanning `BB_HOOD_R` of reach wants roughly
+ * a quarter inch of section) and off `BB_LAUNCH_PLATE_GAP`'s working clearance.
+ */
+export const BB_HOOD_ARM_T = 0.26;
+export const BB_HOOD_ARM_INSET = 0.06;
+
+/**
+ * THE FEED SHOE — the FIXED outer wall of the entry, and the rear tie between the two plates.
+ *
+ * ⚠️ **IT IS WHAT REPLACES THE OWNER'S "WEIRD FLAP IN THE BACK" (item a), RATHER THAN MERELY
+ * DELETING IT.** With the wrap cut to `BB_HOOD_WRAP` the hood no longer reaches the feed at any
+ * elevation, so something fixed has to hold the element against the wheel on the way in. The shoe
+ * spans θ ∈ [`BB_FEED_SHOE_LEAD`, `BB_FEED_SHOE_FAR`] ≈ [146°, 202°] at radius `BB_FEED_SHOE_R`,
+ * which is one hood thickness plus a sliding clearance outboard of the hood's own arc — so the
+ * hood sweeps INSIDE it and the two never touch. It bolts to BOTH side plates, which is the rear
+ * structure the flap was pretending to be.
+ *
+ * MEASURED, on the design sweep: the entering element's bottom clears the deck at 4.601 against
+ * a 4.600 deck, the shoe's own lowest point is 5.398, and the outgoing corridor clears the shoe
+ * by 0.100 at the worst pitch.
+ */
+export const BB_FEED_SHOE_SLIDE = 0.2;
+export const BB_FEED_SHOE_R = BB_HOOD_R + BB_HOOD_T + BB_FEED_SHOE_SLIDE; // 4.39732
+export const BB_FEED_SHOE_T = 0.22;
+/**
+ * where the shoe STARTS, derived rather than chosen: the angle at which its inner face has risen
+ * clear of the hood's outermost swept position (`BB_HOOD_R` + 0.10 of slide), measured from the
+ * hood lip at full elevation. Moving `BB_TURRET_PITCH_MAX` or the wrap moves this with it.
+ *
+ * ⚠️ `datan2(√(1−u²), u)`, NOT `Math.acos(u)`. This is sim source, and `smoke.ts`'s
+ * determinism guard bans every engine-defined `Math` transcendental by name: `acos` is one of
+ * them, and its result is the JS engine's choice. The identity is exact, `Math.sqrt` is
+ * IEEE-exact, and `datan2` is the deterministic wrapper the rest of the sim uses.
+ */
+const SHOE_LEAD_COS = (BB_HOOD_R + 0.1) / BB_FEED_SHOE_R;
+export const BB_FEED_SHOE_LEAD =
+  Math.PI / 2 +
+  BB_TURRET_PITCH_MAX -
+  datan2(Math.sqrt(1 - SHOE_LEAD_COS * SHOE_LEAD_COS), SHOE_LEAD_COS); // ≈ 146.0°
+/** and where it ENDS — the mouth, one full wrap past the fully elevated lip. */
+export const BB_FEED_SHOE_FAR = Math.PI / 2 + BB_TURRET_PITCH_MAX + BB_HOOD_WRAP; // ≈ 201.856°
+
+/**
+ * THE DECK — the top of the drivetrain, where every mechanism is bolted (in off the tiles).
+ *
+ * The same 4.6 the renderer's side plates are built to (`BB_PLATE_H`); it is here because the
+ * turret's whole stack is measured up from it and the stack is no longer the renderer's private
+ * business. Anything that draws the drivetrain should read this rather than retyping it.
+ */
+export const BB_DECK_Z = 4.6;
+
+/** the slew ring the turret stands on, and the turret plate on top of it (in). A real turret is a
+ * toothed ring bearing with a plate bolted to its inner race; APPROX both, sized as ordinary FTC
+ * ring-bearing hardware. */
+export const BB_TURRET_RING_H = 0.55;
+export const BB_TURRET_PLATE_T = 0.25;
+/** the top face of the turret plate — the surface everything on the turret stands on. */
+export const BB_TURRET_PLATE_TOP_Z = BB_DECK_Z + BB_TURRET_RING_H + BB_TURRET_PLATE_T; // 5.40
+/** the turret plate's own radius. It has to cover the side plates' footprint, which reaches
+ * `BB_SIDE_PLATE_FRONT_X` forward and 3.521 back — 3.70 covers both with a rim to bolt through. */
+export const BB_TURRET_PLATE_R = 3.7;
+
+/**
+ * clearance between the turret plate and the bottom of the flywheel (in).
+ *
+ * ⚠️ **THIS IS OWNER ITEM (c) — "the flywheel can be situated much lower, it just needs to be
+ * right above the turret plate".** The flywheel used to hang wherever the muzzle-pivot geometry
+ * left it; it now sits one bearing block above the plate, which is what a flywheel shooter looks
+ * like. Everything above it follows: the axle is plate + clearance + radius, and the muzzle is
+ * axle + `BB_HOOD_PATH_R` rotated by the hood's angle. APPROX — a pillow block's own height.
+ */
+export const BB_FLYWHEEL_CLEAR = 0.3;
+/** the flywheel axle's height off the tiles (in) — the pivot the hood swings about, and the
+ * origin of the AXLE FRAME every θ on this page is measured in. Wheel bottom lands at 5.70. */
+export const BB_TURRET_AXLE_Z = BB_TURRET_PLATE_TOP_Z + BB_FLYWHEEL_CLEAR + BB_FLYWHEEL_R; // 7.11732
+
+/**
+ * THE SIDE PLATE — an ARC INTERSECTED WITH A BOX, in the axle frame:
+ *
+ *     r(θ) = min( BB_HOOD_R,
+ *                 BB_SIDE_PLATE_TOP_Z    / sin θ   (sin θ > 0),
+ *                 BB_SIDE_PLATE_BOTTOM_Z / sin θ   (sin θ < 0),
+ *                 BB_SIDE_PLATE_FRONT_X  / cos θ   (cos θ > 0) )
+ *
+ * cut by a FLAT TOP, a FLAT FRONT and a FLAT BOTTOM that lands on the turret plate. The four
+ * angles where the binding constraint CHANGES are 15.040° (front↔top), 165.704° (top↔arc),
+ * 206.001° (arc↔bottom) and 334.497° (bottom↔front), so the plate is at the FULL `BB_HOOD_R`
+ * over θ ∈ [165.70°, 206.00°] — **40.3°, at the BACK, and nowhere else**. Everything from
+ * 15° to 166° is governed by the flat top, which is the whole of owner item (b).
+ *
+ * That is also why the hood-proud figure is 3.23 at rest and 0.280 at full elevation rather than
+ * one number: at rest the hood sits at θ 90…122°, where the plate is down on its flat top and
+ * the hood rides its ARMS well clear of it; at 80° of pitch the hood has swung round to 170…202°,
+ * which is exactly the arc stretch, and the gap closes to the hood's own thickness.
+ *
+ * ⚠️ **THE FLAT TOP IS OWNER ITEM (b) — "the arc in the parallel plates reaches too high; the
+ * hood extends above the supporting plates".** It is not a taste offset: it is one element radius
+ * plus 0.15 below the outgoing corridor's own centre line, i.e. the highest a fixed plate can
+ * reach without fouling a flat shot. Measured over 9 pitches × 9 hood angles the hood stands
+ * proud by **+0.280 everywhere, never negative**, and by +3.23 at rest — which is the complaint,
+ * answered by construction rather than by a number someone chose.
+ */
+export const BB_SIDE_PLATE_TOP_Z = BB_HOOD_PATH_R - BB_POLLEN_R - 0.15; // +0.96732 above the axle
+export const BB_SIDE_PLATE_FRONT_X = 3.6;
+export const BB_SIDE_PLATE_BOTTOM_Z = BB_TURRET_PLATE_TOP_Z - BB_TURRET_AXLE_Z; // −1.71732 = the plate
+
+/**
+ * THE FLYWHEEL MOTOR AND THE CROSS BRACES, as angle/radius sites in the axle frame.
+ *
+ * Every site has to miss four things at once — the turret plate below, the flywheel rim inboard,
+ * the element's outgoing corridor, and the side plate's own clipped profile — and all four are
+ * measurements, not opinions. The numbers in each comment are from the design sweep.
+ *
+ * ⚠️ **THE −40° BRACE MOVED TO −37°.** At −40° its bottom sat at 5.356 against a turret plate
+ * whose top is 5.400: it was 0.044 in INSIDE the plate. −37° puts it at 5.450, clear by 0.050,
+ * and its margin inside the plate profile improves from 0.089 to 0.271 at the same time.
+ *
+ * The +20° brace is the tightest thing near the shot, at 0.133 in of corridor clearance, and it
+ * STAYS: the binding part there is the side plate's own flat top, which clears the corridor by
+ * 0.150 by definition (`BB_SIDE_PLATE_TOP_Z`). Nothing fixed at that height can do better than
+ * 0.150, so 0.133 is not a brace that wandered into the shot — it is a brace sitting as high as
+ * the design allows anything to sit.
+ */
+export const BB_TURRET_BRACE_R = 0.283;
+export const BB_TURRET_BRACES: readonly { th: number; r: number }[] = [
+  { th: -37 * BB_DEG, r: 2.3 }, // under the wheel, front-bottom: 0.050 over the plate, 2.31 of corridor
+  { th: 8 * BB_DEG, r: 2.2 }, //   front, under the corridor: 0.528 of corridor
+  { th: 20 * BB_DEG, r: 2.05 }, // front-top, hard under the corridor: 0.133 — see above
+];
+/** the flywheel motor: a 1.42-in can belt-driven off the wheel, in the one pocket that clears the
+ * plate (0.334), the wheel (0.473), the corridor (1.080) and the element's run in (1.950).
+ * APPROX — the can is an ordinary FTC motor diameter; the site is derived. */
+export const BB_TURRET_MOTOR = { th: -15 * BB_DEG, r: 2.6, bodyR: 0.71 } as const;
+
+/**
+ * how many fixed-point passes `bbTurretSolution` makes over the pitch (see `bbMuzzleLocal`).
+ *
+ * ⚠️ **THE SOLVE IS A FIXED POINT NOW, AND IT IS BOUNDED RATHER THAN TOLERANCED.** The muzzle
+ * FOLLOWS THE HOOD (owner, 2026-09-19, asked and answered), so the elevation sets the release —
+ * height and setback both — and the release sets the elevation. A `while (err > tol)` would be a
+ * loop whose trip count depends on floating point, which in a lockstep sim is a loop that can
+ * run a different number of times on two machines. Four passes, always, no early exit, no
+ * tolerance.
+ *
+ * MEASURED, sweeping the whole 2-in field grid at both HIVE cells (7,688 poses): a FIFTH pass
+ * moves the pitch by at most **1.76e-9 rad** — 3.4e-6 of a degree, which at the longest shot on
+ * the field is under a thousandth of an inch at the opening. The map contracts hard because the
+ * release moves by well under an inch per degree of pitch at HIVE ranges. Three passes would
+ * very likely do; four is one more than the measurement needs and still a fixed cost.
+ */
+export const BB_TURRET_SOLVE_PASSES = 4;
 /** the mass floor a DOUBLE turret's second turret assembly adds (lb on the chassis mass FLOOR).
  * Its two turrets share one feed and one cadence clock (`BB_FIRE_INTERVAL`), so there is no
  * throughput bonus — the second turret is what lets it launch NECTAR, not a faster stream. */
@@ -1554,8 +1799,10 @@ export const BB3_HEIGHT_MIN = 12;
  * ⚠️ **14, NOT 18** (owner, 2026-09-18, off the 3D robot playtest: "robot is way too tall for no
  * apparent reason"). 18 was chosen as "a plausible mid-size chassis" before anything drew a robot
  * in three dimensions, and it happens to be R102's stow cube — but nothing a preset build CARRIES
- * needs it. The drivetrain is 4.6 in (`renderRobots.ts`), a launcher releases at `BB_LAUNCH_Z0`
- * = 10, and the tallest mechanism geometry on any preset tops out around 12.1 in. 14 clears the
+ * needs it. The drivetrain is `BB_DECK_Z` 4.6 in, a dumper releases at `BB_LAUNCH_Z0` = 10 and a
+ * turret between 7.55 and 9.63 depending on its elevation (`bbMuzzleLocal`, the hood rebuild of
+ * 2026-09-19 — a turret's release came DOWN, so nothing here got tighter), and the tallest
+ * mechanism geometry on any preset tops out around 12.1 in. 14 clears the
  * whole shooter with an inch or two of air, stays legal at stow (`BB3_STOW_MAX` is 18, so a
  * default build still folds inside the cube by construction) and still drives under the HIVE
  * (`BB_HIVE_BOTTOM_Z` 31.98). It is the 3D COLLIDER height for a spec that names none, so it
