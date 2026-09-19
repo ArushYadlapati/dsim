@@ -1,14 +1,16 @@
 /**
  * App branding + the SEASON registry.
  *
- * The product is **DohunSim** — a 2D FTC driver-practice simulator. Each FTC
- * game is a "season". Right now only DECODE (2025–26) is playable; the sim's
- * geometry/scoring in `src/config.ts` + `src/sim/` are DECODE-specific. This
- * module is the seam for adding future seasons: register another `Season` here,
- * flip `playable: true` once its rules land, and the UI (season badge/picker)
- * picks it up automatically. Keep the APP name ("DohunSim") separate from the
- * SEASON name ("DECODE") everywhere in the UI — the brand is the app, DECODE is
- * just the game currently loaded.
+ * The product is **DSIM** — a 2D/3D FTC driver-practice simulator. Each FTC-style
+ * game is a "season"; three are playable today (DECODE, Chain Reaction, BIOBUZZ).
+ * `src/sim/` is the SHARED deterministic core used by every season — DECODE's own
+ * geometry/scoring rules also live there, predating the game seam, and were never
+ * relocated. A season's own rules live in `src/games/<id>/`. This module is the
+ * seam for adding a future season: register another `Season` here, flip
+ * `playable: true` once its rules land, and the UI (season badge/picker) picks it
+ * up automatically. Keep the APP name ("DSIM") separate from the SEASON name
+ * (e.g. "DECODE") everywhere in the UI — the brand is the app, a season is just
+ * whichever game is currently loaded.
  */
 
 export const APP_NAME = 'DSIM';

@@ -121,10 +121,10 @@ const walk = (dir, out = []) => {
   return out;
 };
 /** every file a `governs:` glob could name. NOT extension-filtered and NOT limited to
- *  src+server: guides legitimately govern `scripts/smoke-biobuzz/**`, `electron/**` and the
- *  sponsor artwork, and an extension filter made those globs unmatchable — which the audit
- *  then reported as a stale path. */
-const universe = ['src', 'server', 'scripts', 'electron'].filter(existsSync).flatMap((d) => walk(d));
+ *  src+server: guides legitimately govern `scripts/smoke-biobuzz/**`, `electron/**`, `api/**`
+ *  (Vercel serverless routes) and the sponsor artwork, and an extension filter made those globs
+ *  unmatchable — which the audit then reported as a stale path. */
+const universe = ['src', 'server', 'scripts', 'electron', 'api'].filter(existsSync).flatMap((d) => walk(d));
 /** the subset that is CODE, which is what coverage is asked about */
 const sources = universe.filter((f) => /\.(ts|tsx)$/.test(f) && (f.startsWith('src/') || f.startsWith('server/')));
 
@@ -132,7 +132,7 @@ const sources = universe.filter((f) => /\.(ts|tsx)$/.test(f) && (f.startsWith('s
   const empty = [];
   for (const [g, globs] of governs) {
     for (const glob of globs) {
-      if (!glob.startsWith('src/') && !glob.startsWith('server/') && !glob.startsWith('scripts/') && !glob.startsWith('electron/')) continue;
+      if (!glob.startsWith('src/') && !glob.startsWith('server/') && !glob.startsWith('scripts/') && !glob.startsWith('electron/') && !glob.startsWith('api/')) continue;
       const r = rx(glob);
       const hits = glob.includes('*') ? universe.some((f) => r.test(f)) : existsSync(glob);
       if (!hits) empty.push(`${g} → ${glob}`);

@@ -1,4 +1,4 @@
-<!-- governs: server/**, src/net/**, src/lan/**, src/game.ts, src/sim/replay.ts, src/replaySavePolicy.ts, src/ui/ReplayView.tsx, src/ui/ReplayRail.tsx, src/ui/replayVideo.ts, src/ui/replayOverlay.ts, src/ui/webm.ts, src/ui/mp4.ts -->
+<!-- governs: server/**, api/**, src/net/**, src/lan/**, src/game.ts, src/sim/replay.ts, src/replaySavePolicy.ts, src/ui/ReplayView.tsx, src/ui/ReplayRail.tsx, src/ui/replayVideo.ts, src/ui/replayOverlay.ts, src/ui/webm.ts, src/ui/mp4.ts -->
 # Netcode — server authority, prediction, snapshots, replays, deploy
 
 The authoritative loop, delta snapshots, reconcile, interpolation, replay containers and video export, LAN, and the Fly deploy protocol. ⚠️ One app serves every client version, so protocol changes must stay backward-compatible.
@@ -295,6 +295,13 @@ The old P2P lockstep/mesh/TURN/Supabase-lobby is DELETED. Full roadmap: `docs/ne
   **NEVER deploy with a bare `flyctl deploy`** — fly.toml expresses only ONE `[[vm]]` size, so
   a bare deploy re-applies `shared-cpu-4x` to EVERY machine and silently upsizes the cheap
   satellites. The wrapper re-shrinks them; verify with `fly machine list -a dohun-sim-decode`.
+- **`api/` is the OTHER server**: Vercel serverless functions, deployed alongside the static
+  client, not the Fly game server above. `api/download.ts` is an Edge-runtime proxy that streams
+  a desktop-release binary from the site's own domain (via the `/download/:asset` rewrite in
+  `vercel.json`) rather than sending the browser to github.com; it checks the requested asset
+  name against a strict allowlist before fetching anything, forwards Range/HEAD so downloads can
+  resume, and never caches a response (a cached partial served for a different request would
+  hand someone a truncated file).
 - **The one Fly app serves EVERY client version** (alpha/beta/main bake the same
   `VITE_GAME_SERVER_URL`), so protocol changes MUST stay backward-compatible. New clients
   advertise `caps` (`CLIENT_CAPS`) on `join`/`queue` and the server feature-gates on them.
