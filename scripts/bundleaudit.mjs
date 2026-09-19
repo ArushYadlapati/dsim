@@ -202,6 +202,13 @@ const fmtKB = (bytes) => `${(bytes / 1000).toFixed(2)} KB`;
  *               `GFX_NOT_OFFERED`) and that is most of why this is +5.6 and not +30. Still
  *               57 KB inside the §2.5 spec ceiling, kept below as `budgetCeiling` for context —
  *               the RATCHET binds to the measurement, because a budget is not a target.
+ *               RAISED AGAIN 2026-09-19, 192.28 → 199.48 (+7.20), by the field-visuals lane and
+ *               the owner's render pass on top of it: the shot-path reticle's arc, the clear-
+ *               panel edge outlines, the turret's split yaw/pitch nodes, the swerve module and
+ *               the two extra roller stripe textures, the braced shooter plates, and the
+ *               am-5706 holding box. `scene/renderLanding.ts` was DELETED in the same lane and
+ *               gave some of it back. Every one of those is geometry arithmetic; nothing new is
+ *               imported into the chunk, which is why +7 and not +70. 50 KB of ceiling left.
  * `other` has no route in a healthy build (every `.js`/`.wasm` file lands in one of the four
  * above) — baseline near zero, so anything landing here at all is worth a look.
  *
@@ -223,10 +230,10 @@ const fmtKB = (bytes) => `${(bytes / 1000).toFixed(2)} KB`;
  * totals in here, the same way `uiaudit.mjs`'s header describes lowering ITS baseline.
  */
 const BASELINE = {
-  main: { gzip: 929.04 * 1000 },
-  hostWorker: { gzip: 705.23 * 1000 },
-  physics3d: { gzip: 1123.14 * 1000 },
-  scene: { gzip: 192.28 * 1000, budgetCeiling: 250 * 1000 },
+  main: { gzip: 933.94 * 1000 },
+  hostWorker: { gzip: 706.26 * 1000 },
+  physics3d: { gzip: 1125.06 * 1000 },
+  scene: { gzip: 199.48 * 1000, budgetCeiling: 250 * 1000 },
   graphics: { gzip: 4.01 * 1000 },
   other: { gzip: 1 * 1000 },
 };

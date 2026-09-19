@@ -1,6 +1,175 @@
+# HANDOFF — 2026-09-19 (alpha: THREE ABANDONED LANES FINISHED, plus the owner's render pass — IN PROGRESS)
+
+**READ FIRST.** ⚠️ **This section describes a tree that is still being worked on. Nothing is committed yet.**
+
+Three lanes had been left UNCOMMITTED in the worktree `.claude/worktrees/alpha-main-divergence-7a6134`
+(branch `claude/3d-field-visuals-855bd5`, sitting on `56e5836`, two commits behind alpha). They were
+replayed onto alpha's tip with `git apply --3way` and finished here. **The originating worktree was not
+touched** — it still holds the abandoned copy, so it is safe to delete once these land.
+
+Two other dirty worktrees were left alone on the owner's instruction:
+- `.claude/worktrees/alpha-ui` (detached at `dada8a0`, **396 commits behind**) holds a home-menu
+  redesign — the eyebrow merged into one subtitle, the season moved onto the cards that pick it, the
+  outbound links moved below the menu. It was applied here by mistake and then **fully reverted**. The
+  owner does not want it.
+- `.claude/worktrees/main-deploy` (branch `main`) holds staged-match / `copyText.ts` / contributors work
+  with **two files still carrying unresolved index entries** (`src/ui/App.tsx`, `src/ui/Matchmaking.tsx`).
+
+## The three lanes
+
+**1. BIOBUZZ field visuals + one shot-path predictor.** `src/games/biobuzz/shotPath.ts` is the one
+predictor; `drawShot.ts` (2D) and `scene/renderReticle.ts` (3D) are two drawings of it, and neither
+works anything out for itself. It is NOT under `scene/`, because nothing outside `scene/` may import
+from there. A path is drawn only for a shot that is MADE, dotted, no landing ring; "made" is
+`hiveAccepts` against the REAL hive, not Aim Assist's pretend-up copy. `bbFlightEnters` gained an
+optional `BbFlightTrace` out-parameter, which is what retired `scene/renderLanding.ts` — that file
+carried a COPY of the integrator and its own header said the copy would drift.
+⚠️ **A TURRET'S YAW AND ELEVATION ARE SEPARATE NODES** (`bb-turret-head` → `bb-turret-pitch`). Both on
+one node is what "the shooter is not automatically aiming" looked like: a `THREE.Euler` defaults to
+order `XYZ`, so elevation was applied about the UN-yawed axis, and at the 160° yaw / 80° elevation hive
+range asks for, the barrel came out 67.7° BELOW horizontal and 44.5° off in azimuth while the SIM's
+turret was dead on target.
+
+**2. One board is one physics (owner ruling 2026-09-18).** Every server-connected match of a 3D-capable
+game runs 3D; nobody picks. `Room.physics` is one line (`serverPhysics`); `RoomConfig.physics` still
+rides the wire and is still sanitized but no current server reads it, and the lobby's 3D/2D picker is
+gone. `boardPhysics` (`server/db/repo.ts`) is the single predicate, applied by the DATA LAYER and read
+by `recordLeaderboard`, `personalBest`, `recordRank` and `getUserStats`; it sits INSIDE the per-player
+`best` CTE, because filtering after it would find a player's 2D personal best, reject it, and leave them
+off a board they have a legitimate 3D score on. Pre-ruling 2D rows are KEPT, not deleted; no season was
+reset. An old client without the `'bb3d'` cap is REFUSED (`BB3D_REFUSAL`), not silently downgraded.
+
+**3. The broadcast Results screen.** `src/ui/Results.tsx`, 1,064 lines, split out of `GameView.tsx`
+(which loses ~700). ⚠️ **FIXED-DARK, like the field canvas**: `--ds-stage-bg` (new) and the
+`--ds-on-field*` family are CANVAS-GROUND tokens, never re-valued in the dark block.
+
+## What the lanes had left broken, and what fixed it
+
+| where | what was wrong |
+|---|---|
+| `scene/renderFieldGlb.ts` | three type errors from a half-done refactor; `addPanelEdges` written and never wired |
+| `scene/renderField.ts` | the clear-panel re-tune reached the CAD path only, so the fallback kept the rejected 0.22 / 0.3 / `DoubleSide` while its comments claimed parity |
+| `sim3d/elements3d.ts` | a dumper fired on the first tick fire was held, at any heading — the 2D pipeline has gated this since stage 5b existed |
+| `sim3d/contacts3d.ts` | G409's spill tag died while the element was still riding the tray it was leaving (seed 871: 8 tags at tick 13, all gone by tick 16 at z≈48) |
+| `scripts/smoke.ts` | four `recycle/biobuzz` checks measured NOTHING — a BIOBUZZ room will not tick until `physics3dReady()`, and the shared suite never called `initPhysics3d()` |
+| `scene/renderElements.ts` | every hive element drew one radius LOW. `syncElement` puts the body at `b.z + r`, so `b.z` is the BOTTOM for every ball the sim solves; the hive branch alone read it as a centre. Visible as a drop the tick `derive.ts` retags a landing shot from `flight` to `element` |
+
+⚠️ **The settle check no longer pins a magic tick count.** It settles 3,600 ticks and asserts BIT
+equality plus exactly-zero velocity, and a sibling check asserts the residual contact relaxation DECAYS
+(each 600-tick window drifts at most half the last). The old 900-tick / 1e-3 form reported the machine.
+
+## STILL RED — a 3D dumper cannot score into a hive cell
+
+`drive: shoot (3d, blue|red, box tube)` in the TUTORIAL lane. Measured over 28 stationary firing poses
+(dx 0/3/6/9 in, dy 14–38 in from the cell): a clean HEAD tree scores from **13**, this tree from **0**.
+
+The cause is NOT the tutorial. `bbLaunch` throws the hopper from the release line at the bare FRAME face
+(`mountOrigin` = `spec.length/2`). Until this lane the 3D chassis collider was `robotExtents(r)` — the
+footprint, 3 in wider on a mouthed edge — so a dumped element was **born inside its own robot's
+collider** and depenetration flung the four arcs apart; one happened to settle in the cell. The collider
+is now `chassis3dShapes`, whose base box is the bare frame, so the release sits on the collider face and,
+on a mouthed edge, inside the `BB3_MOUTH_SLOT_Z` lintel, where the four elements jam and rest on the
+roof. **The old behaviour was an accident and the new collider is correct; do not restore the accident.**
+Pushing the release out to `bbFootprint` was tried: 2/28. The deeper cause is that `bbLobThrow` /
+`bbDumpSolution` throw a near-vertical lob at a cell whose mouth normal is HORIZONTAL, so the element
+arrives dropping onto the lip rather than travelling into the opening.
+
+## The owner's render pass (2026-09-19, from looking at the running game)
+
+Landed or in flight, in order received:
+
+1. the human player's nectar container should be the STANDARD HOLDING BOX, on the GROUND — not the
+   bespoke shelf-on-legs at `RACK_SHELF_Z = 30`;
+2. the shooter's side plates end in a sharp radial point — the front should terminate flat, and there
+   should be BRACING between the two plates. ⚠️ **Follow-up: the bracing must sit CLOSE TO THE
+   FLYWHEELS, and the plate does not need to be as big as it is;**
+3. swerve is not rendered at all — one squat cylinder per corner at deck height, not a module.
+   ⚠️ **Follow-up: NO MOTOR ON TOP of the swerve module;**
+4. the intake wants a much faster draw-in and a real force model; its sides must not be solid aluminium
+   plate; the roller stays but elements must pass UNDER it; and the roller is too low.
+   ⚠️ **Measured: `BB_ROLLER_R` 1.0 at `BB_ROLLER_Z` 1.15 puts the roller's bottom 0.15 in off the
+   floor, against a 2.8 in pollen and a 3.6 in nectar — while `BB3_MOUTH_SLOT_Z` (= `2 * BB_NECTAR_R`)
+   says the collider leaves a 3.6 in clear slot under that same intake. The picture blocks a gap the
+   physics says is open, by 3.45 in.**
+
+### The intake design (measured 2026-09-19; NOT yet implemented)
+
+⚠️ **GRIP AND PASS-UNDER CANNOT BOTH HOLD FOR A RIGID ROLLER.** Gripping a POLLEN needs the roller
+bottom below its 2.8 in crown; letting a NECTAR through needs it at or above 3.6. One roller still
+does both if the low part is the COMPLIANT part: a rigid HUB that clears the slot, and flaps that
+reach into it and yield. Compliance IS "grip when driven, yield when not", which is both requirements
+in one part. Put these in `config.ts` beside `BB_INTAKES` — they are hardware geometry, and the RENDER
+lane already forbids `renderRobots.ts` owning intake constants:
+
+    BB_ROLLER_HUB_R  = 0.75                                   // 1.5-in hub on a 0.5-in hex shaft
+    BB_ROLLER_FLAP_R = 2.0                                    // a 4-in compliant wheel
+    BB_ROLLER_Z      = BB3_MOUTH_SLOT_Z + BB_ROLLER_HUB_R + 0.15   // = 4.50; hub bottom 3.75
+    BB_ROLLER_SPIN   = BB_INTAKE_DRAW_IN / BB_ROLLER_FLAP_R        // the picture ran at HALF the
+                                                              // sim's speed: 26 rad/s x 1.0 in
+                                                              // = 26 in/s against a 52 in/s draw-in
+
+⚠️ **THE "UNREALISTIC INTAKE" IS A UNITS BUG, NOT AN ANIMATION ONE.** `robot.ts` calls
+`approach(from, to, maxDelta)` with `BB_INTAKE_DRAW_IN` as `maxDelta`. `approach` caps the per-CALL
+change and it is called once per tick, so the cap is 52 in/s PER TICK = 3120 in/s²: an element at
+rest reaches full draw-in in ONE tick. It reads as a teleport in velocity space because it is one.
+The fix is an acceleration — `BB_INTAKE_GRIP_ACCEL` (APPROX, ~1200 in/s²) times `dt` — shared by both
+backends. The measurement that would settle the number: weigh a POLLEN and a NECTAR (`BB3_ELEMENT_MASS`
+is already flagged APPROX, plan-3d §3.6, owner action).
+
+⚠️ **TWO HARD CEILINGS ON `BB_INTAKE_DRAW_IN`, both of which must become smoke arithmetic.**
+(1) `C.BALL_MAX_SPEED` is 90 and the 2D solve clamps every ground artifact to it; the 3D pipeline does
+not, so a draw-in above 90 is clipped in 2D ONLY and the backends diverge. (2)
+`BB_INTAKE_DRAW_IN * BB_INTAKE_CENTRE_FRAC < BB_INTAKE_CROSS_MAX`, or the intake's own funnelling trips
+its own grip test and it drops every element it funnels — the failure `bbIntakeAct`'s header already
+records ("0/1 captured, 66 in of plow"). And do NOT raise `CROSS_MAX` to buy margin: a robot-lane check
+stages `vel.y = CROSS_MAX + 40`, which the 2D solve clamps to 90.
+
+Proposed speed set (owner asked for "WAY faster"; the LANE_W change is the one with real balance
+weight, because the default 17-in build goes from ONE feed lane to two): `PERIOD_MIN` 0.15 → 0.06,
+`PERIOD_MAX` 0.3 → 0.12, `LANE_W` 9 → 8, `DRAW_IN` 52 → 84, `CENTRE_FRAC` 0.5 → 0.6, `THROAT_FRAC`
+0.72 → 0.85, `SEAT` 1.1 → 1.4, `CROSS_MAX` unchanged.
+
+**PASS-UNDER NEEDS NO SIM CHANGE.** `chassis3dShapes` puts nothing between the floor and 3.6 in
+between the mouth's two arms, and the sim3d lane already asserts that pocket is open. The roller is not
+a collider in either backend. It is the PICTURE that intersects, so flap deflection in the renderer is
+what makes pass-under true — and it must run whether or not the roller is spinning.
+
+**THE SIDES** are two `platePlane(armLen, 2.8, 0.3, 2)` solid plates per mouth — a 4.1 x 2.8 in wall in
+front of the mechanism, 3D only (the 2D sprite already draws open rails). Replace each with a
+three-member open truss (bottom rail, axle boss, diagonal), no member thicker than `INTAKE_RAIL_T` 0.5,
+which is what the COLLIDER claims — the drawn arm must never claim more solid than the collider has.
+
+**ONE MORE CONTRADICTION IN THE SAME AREA:** `BB3_INTAKE_Z` is 5 (an element-BOTTOM ceiling for
+capture) while the proposed flap tip is 2.50, so an element at 4.9 would be eligible in the sim and
+untouchable in the picture. `BB3_INTAKE_Z = BB_ROLLER_Z` closes it; it is a 0.5-in tightening that only
+bites on 3D low-flight captures.
+
+### The shooter bracing constraint (owner follow-up)
+The ribs sit at radius ~4.9 against a flywheel radius of 2.0, so "way too far out" is right. But a rib
+CANNOT move in to the flywheel: the annulus between `BB_FLYWHEEL_R` and `BB_HOOD_R` IS the element's
+channel through the hood, and the brace angles all lie inside the wrap. What can be done is shrink the
+plate (`rOut = BB_HOOD_R + 0.5` today) and keep the ribs flush on the hood face. Both are pinned by
+checks in `scripts/smoke-biobuzz/render.ts`, so they move together.
+5. elements teleported slightly downwards on landing in the hive — FIXED, see the table above.
+
+## Gates
+
+`build` · `server:check` · `docaudit` · `uiaudit` (baseline: `off-grid-gap` 155) · `contrast` (221) ·
+`dbtest` · `test:mm` (197) · shared `npm test` — all green. `bundleaudit` needs its `scene` baseline
+re-measured (192.28 → ~199 KB gz, inside the 250 KB spec ceiling). **`shiftaudit` was RUN** — the first
+time in three rounds — 576 state changes, 0 shifts, and its route list now covers `/privacy`, `/terms`
+and `/contributors`, which rounds 1–2 added without ever adding them here.
+
+`.impeccable`'s design hook reports 38 findings in `src/ui/styles.css`; **every one is on a
+pre-existing line** and none on anything this work added. Two that WERE this work's are fixed: the
+Results screen's win-banner and total-punch keyframes already overshoot and settle, so an overshooting
+timing function on top rubber-banded each segment — both are ease-out-quint now.
+
+---
+
 # HANDOFF — 2026-09-19 (alpha: ROADMAP ROUND 2 LANDED — privacy & cookie settings, the 3D robot creator; alpha server redeployed for the export route)
 
-**READ FIRST.** Branch **`alpha`** (worktree `.claude/worktrees/pr-alpha`), pushed; every gate green on the
+**(Previously READ FIRST.)** Branch **`alpha`** (worktree `.claude/worktrees/pr-alpha`), pushed; every gate green on the
 merged tree (counts in the log). `dsim-alpha` was redeployed after the privacy merge (`GET /api/user/export`
 is a server route). The section directly below is the 3D builder's own handoff from `biobuzz-3d`; the
 ones after it are round 1 (auth, tutorial, contributors, plans) and the BIOBUZZ 3D days. All eight

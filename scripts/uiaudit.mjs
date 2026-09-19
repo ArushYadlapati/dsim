@@ -53,14 +53,14 @@ const BASELINE = {
   'inline-spacing': 29,
   'fractional-font-size': 0,
   'banned-font-weight': 0,
-  'off-grid-gap': 163,
+  'off-grid-gap': 155,
   // measured 2026-09-16, when these three rules were written. §4's own ruling ("10px … rounds
   // to --ds-round-md") was executed in the same commit, which is why radius starts at 17 and
   // not the 31 first measured. The other two start where they stand: paying them down needs a
   // visual decision per site, and a baseline is how that gets paid off in any order without
   // being able to grow back.
   'off-scale-font-size': 46,
-  'literal-radius': 16,
+  'literal-radius': 14,
   'shadow-sprawl': 14,
   'stale-component-index': 0,
 };
