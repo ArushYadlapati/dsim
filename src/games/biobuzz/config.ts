@@ -712,12 +712,31 @@ export function bbIntakeReach(spec: Pick<RobotSpec, 'intake'>): number {
  */
 /** roller surface speed (in/s): how fast the rollers walk an element they have hold of toward
  * the throat. Above the ~40 in/s a robot drives at, so a robot driving INTO a pile still draws
- * elements in rather than plowing them; well under a launch speed, so nothing is flung. */
-export const BB_INTAKE_DRAW_IN = 52;
+ * elements in rather than plowing them; well under a launch speed, so nothing is flung.
+ * WAS 52. Raised to 84 (owner: intake cadence "way faster") — ceiling check 1: 84 <
+ * `C.BALL_MAX_SPEED` (90) still holds, but the margin shrinks from 38 to 6 in/s (RULES lane
+ * asserts this explicitly now, so a future bump that clips in 2D only and diverges the two
+ * backends is caught rather than shipped quietly). */
+export const BB_INTAKE_DRAW_IN = 84;
 /** how much of the draw-in goes into CENTRING an off-centre element, as a fraction of the
  * inboard pull. A full-width sweeper takes an element mostly straight back over the bumper; the
- * compliant wheels' funnel is a secondary effect, not the main one. */
-export const BB_INTAKE_CENTRE_FRAC = 0.5;
+ * compliant wheels' funnel is a secondary effect, not the main one.
+ * WAS 0.5. Raised to 0.6 alongside the `BB_INTAKE_DRAW_IN` bump — ceiling check 2:
+ * `DRAW_IN * CENTRE_FRAC` = 84*0.6 = 50.4, comfortably under `BB_INTAKE_CROSS_MAX` (80), same
+ * margin shape as before (was 52*0.5=26/80). This is the exact self-trip class of bug the
+ * funnel's own lateral pull can cause against its own `CROSS_MAX` on the next tick — keep the
+ * product well clear of the ceiling whenever either constant moves again. */
+export const BB_INTAKE_CENTRE_FRAC = 0.6;
+/** NEW. Acceleration (in/s²) an element's grip velocity ramps toward `BB_INTAKE_DRAW_IN` at, in
+ * `bbIntakeAct`. Fixes a units bug: that function used to pass `BB_INTAKE_DRAW_IN` straight into
+ * `approach()`'s per-tick `maxDelta`, i.e. a velocity as if it were a per-TICK displacement cap —
+ * effectively 52 in/s ÷ (1/60 s) = 3120 in/s² of acceleration, reaching full draw-in speed from
+ * rest in exactly one tick (instant velocity, reads as a teleport/jerk). 1200 in/s² gives a
+ * 0.043–0.07 s (2.6–4.2 tick) ramp to today's/tomorrow's `BB_INTAKE_DRAW_IN`, well under one feed
+ * period, so it smooths the motion without becoming the new bottleneck. APPROX — no published
+ * intake spec exists to measure the real number against, same caveat this file already carries
+ * for `BB3_ELEMENT_MASS`. */
+export const BB_INTAKE_GRIP_ACCEL = 1200;
 /** the FEED THROAT, as a fraction of the mouth's lateral half-span. An element has to be drawn
  * into this band to be swallowed — everything else is the funnel's job, and it costs TIME. */
 export const BB_INTAKE_THROAT_FRAC = 0.72;
@@ -732,9 +751,17 @@ export const BB_INTAKE_LIP = 0.35;
  * ticks from the roller line) instead of a teleport out of the whole mouth rect. */
 export const BB_INTAKE_SEAT = 1.1;
 /** seconds per element through the feed: `MIN` dead centre on the roller, `MAX` at its lateral
- * edge or on a wall grab. One real FTC intake passes an element every 0.15–0.3 s. */
-export const BB_INTAKE_PERIOD_MIN = 0.15;
-export const BB_INTAKE_PERIOD_MAX = 0.3;
+ * edge or on a wall grab. One real FTC intake passes an element every 0.15–0.3 s.
+ * WAS 0.15 / 0.3. Halved to 0.06 / 0.12 (owner: cadence "way faster") — MEASURED against the
+ * live gate (`world.time - lastIntakeAt < period`, `bbIntakeAct`), not just the doc comment:
+ * today's real cadence, driven through the actual pipeline, is 0.10–0.19 s/element parked dead
+ * centre and 0.10–0.13 s driving in with the closing bonus — already close to the old MIN, so
+ * halving both bounds is the direct, verified lever. New range with the closing bonus applied:
+ * 0.0375 s (driving in hard) to 0.06 s (parked dead centre) per lane-burst; new worst case
+ * (lateral edge / wall grab) is 0.075–0.12 s, still faster than the OLD best case (0.09375 s),
+ * so the whole range strictly improves. */
+export const BB_INTAKE_PERIOD_MIN = 0.06;
+export const BB_INTAKE_PERIOD_MAX = 0.12;
 /** inches of roller per FEED LANE. A bar wide enough for two paths into the hopper can take two
  * elements side by side in one cycle; a narrow one takes one. */
 export const BB_INTAKE_LANE_W = 9;
@@ -793,12 +820,15 @@ export const BB_LAUNCH_Z0 = 10;
  *
  * FLOWER scoring is a PROXIMITY action (owner ruling 2026-09-12), not a raise: there is no
  * carriage height and no travel. `bbPlacePointLocal` (`robot.ts`) is the one geometry, and it is
- * sized against the FLOWER solid (`BB_FLOWER_FOOT`, 4.9 deep, ring `BB_FLOWER_D` = 2.54 off the
- * wall): a chassis face flush on the flower is 4.9 − 2.54 = 2.36 in past the ring centre. The
- * reach is DERIVED as exactly that, so a robot pressed square against a FLOWER foot has its
- * placement point dead on the ring.
+ * sized against the FLOWER solid (`BB_FLOWER_FOOT`, CAD-regenerated `deep` 5.013, ring
+ * `BB_FLOWER_D` = 2.629 off the wall): a chassis face flush on the flower is 5.013 − 2.629 =
+ * 2.384 in past the ring centre. The reach is DERIVED as exactly that, so a robot pressed square
+ * against a FLOWER foot has its placement point dead on the ring.
+ *
+ * WAS cited as 4.9 / 2.54 / 2.36 before the CAD regeneration (`fieldDims.gen.ts`); the VALUE was
+ * always derived and correct, only this prose had drifted.
  */
-export const BB_PLACE_REACH = BB_FLOWER_FOOT.deep - BB_FLOWER_D; // 2.36 — flush on the foot = dead centre
+export const BB_PLACE_REACH = BB_FLOWER_FOOT.deep - BB_FLOWER_D; // 2.384 — flush on the foot = dead centre
 /** how close the placement point must be to a FLOWER ring centre to place (in). APPROX — the
  * slop of a real tube lining up on a 4.0-in ring; a placement should not need the pixel. */
 export const BB_PLACE_TOL = 2.0;
@@ -811,6 +841,31 @@ export const BB_FLOWER_RETRIEVE_S = 0.35;
 export const BB_FLOWER_RETRIEVE_PAD = 1.0;
 /** extra lb on the chassis mass FLOOR for carrying a Box Tube. APPROX. */
 export const BB_LIFT_MASS_FLOOR = 2.0;
+
+/**
+ * NEW. THE BOX TUBE'S OWN HARDWARE GEOMETRY — named here, not in the renderer, because the
+ * RENDER lane forbids `renderRobots.ts` naming a mechanism constant of its own (the same rule
+ * that keeps the intake's geometry here rather than in the file that draws it).
+ *
+ * `BB_BOX_TUBE_SECTIONS` (in, outer to inner): a real FTC box tube is 1.5×1.5 outer with a
+ * 0.125-in wall, giving a 1.25-in clear bore, with a 1×1 tube nested inside that — three genuine
+ * telescoping sections, measured hardware rather than APPROX. `BB_BOX_TUBE_WALL` is the wall
+ * thickness that makes the nest close exactly: 1.5 − 2×0.125 = 1.25 is the next section's outer
+ * dimension, and it is also how much each stage must be hollowed by in the mesh to read as a
+ * tube rather than a bar.
+ */
+export const BB_BOX_TUBE_SECTIONS = [1.5, 1.25, 1.0] as const;
+export const BB_BOX_TUBE_WALL = 0.125;
+/** how much of each telescoping stage stays captured inside the one outboard of it at full
+ * extension (in). APPROX — sized as one section width so a fully extended tube never draws as
+ * two boxes with a visible gap between them; it sets per-stage travel,
+ * `(bbTubeReach - (n-1) * BB_BOX_TUBE_STAGE_OVERLAP) / n`. */
+export const BB_BOX_TUBE_STAGE_OVERLAP = 1.25;
+/** seconds for the Box Tube to fully extend or retract, in the RENDERER only. APPROX — a RENDER
+ * rate with NO sim consequence: the Box Tube has no sim travel (placement is a proximity action,
+ * not a raise — see `BB_PLACE_REACH`'s header), so this can never change what scores. Shared by
+ * both renderers so the 2D and 3D views ease identically. */
+export const BB_BOX_TUBE_EXTEND_S = 0.35;
 
 /**
  * A DUMPER'S RANGE (owner, 2026-09-13) — how far from the cell it is dumping into a dumper can
@@ -1526,23 +1581,29 @@ export const BB3_HEIGHT_MAX = 29;
 /**
  * Day 1's kinematic tray vs. Day 2's DYNAMIC SEE-SAW on a revolute joint (plan §3.6, §11).
  *
- * ✅ **TRUE SINCE 2026-09-18**, and the plan's own condition for that is met: `npm run
- * hive-calibrate` fits all FOUR of the Event Field Setup Guide's §12.3 acceptance rows — 8 POLLEN
- * tips, 7 does not, 3 POLLEN + 3 NECTAR tips, 2 + 3 does not — with ±0.31 element-weights of
- * margin, and the calibrated tray's measured stop-to-stop swing lands on `BB_TIP_SWING_S` (4.00 s
- * against the owner's 4.0). The generated block at the end of this file carries the derivation
- * and the row-by-row result.
+ * ✅ **STILL TRUE — 2026-09-19, RELEASE PREDICATE REPLACED, NOT THE TRAY.** The tray body, the
+ * joint, the CAD geometry, the damping-fitted ~4 s swing, the physical spill and G409's
+ * `bb.spill` tag all work and all depend on this being `true`.
  *
- * ⚠️ **THE MARGIN IS 0.31, NOT THE PLAN'S 0.5, AND THAT IS NOT A TUNING FAILURE.** The whole
- * window between "7 POLLEN must not tip" (5648 of torque) and "3 + 3 must" (6198) is 0.60
- * element-weights wide at `BB3_NECTAR_MASS_RATIO` 1.6, so half of it is the most any threshold
- * can have. Weighing a real element set is what moves it, and re-running the calibration is what
- * picks the number up.
+ * ⚠️ **WHAT CHANGED: THE TRIGGER IS NOW THE TABLE, NOT A TORQUE.** A torque threshold was fit
+ * against the Event Field Setup Guide's §12.3 rows and looked right at one packing per row —
+ * but one COUNT does not determine one TORQUE. MEASURED at the fitted hold (5915): 8 POLLEN in
+ * the same cell spans torque 4644 (piled at the back wall) to 9355 (a two-wide line), and 7
+ * POLLEN spans 4204 to 7769 — the two counts' torque ranges overlap almost entirely, so no
+ * `BB3_HIVE_DETENT`/`BB3_HIVE_BALLAST` pair can separate them. Worse, the guide's own rows were
+ * violated in BOTH directions under the torque trigger: 8 POLLEN piled at the back wall did not
+ * tip, and 7 POLLEN in a two-wide line did. `sim3d/hive3d.ts`'s `hiveDetentHold` now releases on
+ * `hiveWillTip(hiveLoad(hives[a].contents, kindOf))` — the SAME `BB_TIP_POLLEN` list the HUD
+ * counts — so the HUD's "0 more to tip" and the tray's own release agree BY CONSTRUCTION on every
+ * row and every packing, which a torque number could not promise. `BB3_HIVE_DETENT` is
+ * unchanged and still reported (see its header) — it is a diagnostic now, not the release.
  *
- * Setting it back to `false` reverts to the kinematic tray and the shared TIMER over the measured
- * `BB_TIP_POLLEN` table, with no other edit: `hiveTiltAngle` falls back to the timer's formula,
- * `hive3dTick` runs instead of `hive3dJointTick`, and the HIVE3D lane proves the table under BOTH
- * trays so the fallback stays live rather than rotting.
+ * Setting it back to `false` is **NOT** "a one-word change that stays proven" (that used to be
+ * true and no longer is): `bb.spill` — G409's whole tag — is written in exactly one place,
+ * `hiveDynamicTick`, on the DYNAMIC path only. The kinematic path never writes it, so flipping
+ * this word silently turns G409 off in 3D. If it is ever flipped, the HIVE3D lane's four G409
+ * blocks must move out from under `if (BB3_HIVE_DYNAMIC)` first, or the lane stays green while
+ * G409 stops firing.
  */
 export const BB3_HIVE_DYNAMIC = true;
 
@@ -1611,6 +1672,35 @@ export const BB3_NECTAR_MASS_RATIO = 1.6;
 export const BB3_ELEMENT_FRICTION = 0.6;
 export const BB3_ELEMENT_RESTITUTION = 0.45;
 export const BB3_ELEMENT_ROLL_DAMP = 0.4;
+
+/**
+ * NEW. Contact stiffness (`contact_natural_frequency`, Hz) for the whole BIOBUZZ 3D world
+ * (`sim3d/engineImpl.ts` and `sim3d/predict.ts` — BOTH must read this constant, or the client's
+ * predicted world and the authoritative one solve contacts at different stiffness and reconcile-
+ * snap on every landed shot). Was: absent — the 3D world inherited the shared `PHYS_CONTACT_FREQ`
+ * (12 Hz, `src/config.ts`), which is tuned for the 2D DECODE robot world and is explicitly NOT
+ * higher there because 15 Hz broke the classifier-jitter ratchet and 25 Hz broke two G408
+ * possession checks and the wall-ram torque bound — none of which exists in this world, so the
+ * shared constant cannot move and BIOBUZZ 3D needs its own.
+ *
+ * MEASURED, two independent overlap problems the same stiffness governs, both improving with
+ * frequency per the closed-form soft-contact sag `g/(2·π·f)²`:
+ *  • a settled element's penetration into the HIVE cell floor: 0.061–0.067 in at 12 Hz, 0.025–
+ *    0.030 in at 25 Hz (closed form 0.068 / 0.0157 in — the measurement is the model).
+ *  • a stacked POLLEN column's worst pollen-pollen overlap in a FLOWER tube (4-stack / 8-stack,
+ *    the FLOWER's own POLLEN capacity): 12→0.406/0.948 in, 20→0.146/0.341, 30→0.065/0.152,
+ *    45→0.029/0.068, 60→0.016/0.038 (bare-Rapier control).
+ * 30 is the first value where an 8-high FLOWER column overlaps by less than a 16th of a diameter,
+ * and it is 1.5× the shared robot-world value rather than 4×, which keeps robot-robot/robot-wall
+ * contacts near where the drive-parity checks measured them. It also improves the HIVE floor case
+ * beyond what 25 Hz gave it (closed-form sag at 30 Hz ≈ 0.0109 in, better than 25 Hz's 0.0157),
+ * so one value serves both measurements — a separate diagnosis proposed 25 Hz (parity with the
+ * 2D pipeline's `PHYS_BALL_CONTACT_FREQ`) for the HIVE case alone; 30 Hz is taken instead because
+ * it is evidenced across both hive-floor and flower-stack measurements and dominates 25 Hz on
+ * both. `normalizedAllowedLinearError` and `numSolverIterations` were swept and ruled out as
+ * levers for either problem (bit-identical / very slightly worse) — see `sim3d/engineImpl.ts`.
+ */
+export const BB3_CONTACT_FREQ = 30;
 
 /** CCD switches on above this speed (in/s) — APPROX, sized so a full-speed launch
  * (`BB_LAUNCH_SPEED_MAX` 260) never tunnels a 0.25-in cell wall. */
@@ -1720,12 +1810,12 @@ export const BB3_FLOWER_RING_SEGMENTS = 32;
  *    preferred pose, and the first element to land anywhere decides everything. Its sign is
  *    taken from the tray's own geometry at run time, not here (`sim3d/hive3d.ts`). The real hive
  *    is calibrated with ballast WASHERS (Event Field Setup Guide §12) — same hardware, same name.
- *  • **DETENT** `BB3_HIVE_DETENT` (torque, lb·in²/s²): the breakaway the load must overcome
- *    before the bar moves at all. Without it a single element starts the swing, because a bar at
- *    30° with anything in the raised cell already carries a net torque. It is what makes the
- *    manual's LOAD TABLE a table rather than a threshold on one number, and it is implemented as
- *    a HOLD rather than as joint friction — `sim3d/hive3d.ts`'s `hiveDynamicTick` says why that
- *    is the deterministic choice.
+ *  • **DETENT** `BB3_HIVE_DETENT` (torque, lb·in²/s²) — ⚠️ AS OF 2026-09-19 THIS IS A PIN THE
+ *    TABLE LIFTS, NOT A BREAKAWAY THE LOAD BEATS. The release predicate is `BB_TIP_POLLEN` now
+ *    (see `BB3_HIVE_DYNAMIC`'s header: one COUNT does not determine one TORQUE, measured across
+ *    packings). This constant is still live as a DIAGNOSTIC — `hiveHoldTorque` and the HIVE3D
+ *    lane still report it, and it is the measurement of how far the see-saw's own torque sits
+ *    from the published table — but nothing releases on it any more.
  *  • **DAMPING** `BB3_HIVE_DAMPING` (angular damping, 1/s): the term that sets the SWING TIME.
  *    `BB_TIP_SWING_S` (4.0 s, owner ruling) is what the kinematic tray's timer plays back and
  *    what the dynamic tray has to REPRODUCE stop to stop under gravity alone. It is not a free
