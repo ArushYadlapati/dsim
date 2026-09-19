@@ -1,6 +1,6 @@
 import type { Artifact, RobotCommand, RobotSpec, RobotState, World } from '../../src/types';
 import * as C from '../../src/config';
-import { wrapAngle } from '../../src/math';
+import { hyp, wrapAngle } from '../../src/math';
 import { worldHash } from '../../src/net/checksum';
 import { defaultSettings, switchGame } from '../../src/settings';
 import { DEFAULT_ASSISTS, DEFAULT_SPEC } from '../../src/sim/spawn';
@@ -25,7 +25,11 @@ import {
   BB_LAUNCH_Z0,
   BB_HALF_X,
   BB_HALF_Y,
+  BB_INTAKE_CENTRE_FRAC,
   BB_INTAKE_CROSS_MAX,
+  BB_INTAKE_DRAW_IN,
+  BB_INTAKE_GRIP_ACCEL,
+  BB_INTAKE_PERIOD_MAX,
   bbIntakeReach,
   BB_PLACE_REACH,
   BB_POLLEN_R,
@@ -969,9 +973,12 @@ export function robotChecks(check: Check): void {
       const m = bbMouths(r.spec)[0];
       const b: Artifact = { ...bbPollen(nextId(w), (m.x0 + m.x1) / 2, 0), color: colour };
       w.balls.push(b);
-      // 0.35 s, not 0.1: an intake is a ROLLER now, not a trigger rect — one element per
-      // `BB_INTAKE_PERIOD_MIN`..`_MAX` through the feed (`bbIntakeAct`), so a tenth of a second
-      // is less than one cadence and this check was asserting the old instant swallow.
+      // 0.35 s: an intake is a ROLLER now, not a trigger rect — one element per
+      // `BB_INTAKE_PERIOD_MIN`..`_MAX` through the feed (`bbIntakeAct`), so the wait has to
+      // clear the slowest cadence, not just be nonzero. WAS 0.15/0.3 s (a tenth of a second
+      // was safely under the old MIN); PERIOD_MIN dropped to 0.06 s, so 0.35 s is kept as the
+      // margin over the new PERIOD_MAX (0.12 s) rather than tightened — this check is about
+      // WHICH colour is taken, not how fast, and a false failure here reads as a rules bug.
       run(w, cmd({ intake: true }), 0.35);
       const want = colour === 'yellow' || (colour === 'blue' && kind !== 'turret');
       const what = colour === 'yellow' ? 'POLLEN' : colour === 'blue' ? 'own NECTAR' : 'OPPONENT NECTAR';
@@ -1097,32 +1104,139 @@ export function robotChecks(check: Check): void {
 
     // THROUGHPUT: a wide bar feeds two lanes side by side, and it is still a CADENCE — four
     // POLLEN across the throat are not swallowed on one tick the way the rect test swallowed them.
+    // WAS a 1.2 s budget (4 × the old `BB_INTAKE_PERIOD_MAX` of 0.3 s, worst case one lane,
+    // sequential). PERIOD_MAX halved to 0.12 s, so the same worst case is 4 × 0.12 = 0.48 s;
+    // 0.6 s keeps a margin without leaving the bound so loose it stops demonstrating the
+    // "way faster" cadence fix.
     {
       const { w, r } = staged(46, 0, -30);
       const hl = r.spec.length / 2;
       for (const y of [-6, -2, 2, 6]) w.balls.push(bbPollen(nextId(w), hl + 1, -30 + y));
       run(w, cmd({ intake: true }), 1 / 60);
       const firstTick = heldCount(w, r);
-      run(w, cmd({ intake: true }), 1.2);
+      run(w, cmd({ intake: true }), 0.6);
       check(
-        'roller: four POLLEN across the throat feed a lane at a time, and all four are in within 1.2 s',
+        'roller: four POLLEN across the throat feed a lane at a time, and all four are in within 0.6 s',
         firstTick <= 2 && heldCount(w, r) === 4,
         `tick1=${firstTick} end=${heldCount(w, r)}`,
       );
     }
 
     // A POLLEN CROSSING THE ROLLERS AT SPEED IS NOT GRIPPED — the rect test took it instantly.
+    // WAS run for 0.25 s. Measured: this fast POLLEN hits the mouth's own solid geometry around
+    // tick 8 (~0.13 s) and the COLLISION, not the intake, kills most of its speed — after that it
+    // is a legitimately slow ball near the mouth and the funnel is right to take it (that part
+    // used to complete after 0.25 s under the old, slower `BB_INTAKE_DRAW_IN`; the faster draw-in
+    // now reaches the seat before 0.25 s is up). Shortened to 0.1 s (6 ticks, safely before the
+    // bounce) so this asserts what its name says — REJECTED WHILE STILL CROSSING FAST — instead
+    // of depending on how many ticks an unrelated collision takes to settle it.
     {
       const { w, r } = staged(47, 0, -30);
       const m = bbMouths(r.spec)[0];
       const fast = bbPollen(nextId(w), (m.x0 + m.x1) / 2, -30 - 6);
       fast.vel = { x: 0, y: BB_INTAKE_CROSS_MAX + 40 };
       w.balls.push(fast);
-      run(w, cmd({ intake: true }), 0.25);
+      run(w, cmd({ intake: true }), 0.1);
       check(
         'roller: a POLLEN crossing the mouth faster than BB_INTAKE_CROSS_MAX is not gripped',
         fast.state.kind === 'ground',
         `state=${fast.state.kind}`,
+      );
+    }
+
+    // ── TWO HARD CEILINGS, ASSERTED AS ARITHMETIC (OWNER BUG 11) ──────────────
+    // Both must hold with the CONSTANTS as they stand, not just at review time — a future bump
+    // to either side of either inequality should fail HERE, not surface as a 2D/3D divergence
+    // or a self-tripping funnel weeks later.
+    {
+      // ceiling 1: the roller's draw-in speed must stay under `C.BALL_MAX_SPEED` (90), the
+      // 2D-only ground-ball clamp (`clampBallPosToStatics`'s sibling speed clamp). 3D has no
+      // equivalent ceiling, so a `BB_INTAKE_DRAW_IN` at or above 90 would clip in 2D only and
+      // the two backends would disagree on where a captured element's target speed lands.
+      check(
+        'roller ceiling 1: BB_INTAKE_DRAW_IN stays under C.BALL_MAX_SPEED (2D-only clamp)',
+        BB_INTAKE_DRAW_IN < C.BALL_MAX_SPEED,
+        `BB_INTAKE_DRAW_IN=${BB_INTAKE_DRAW_IN} BALL_MAX_SPEED=${C.BALL_MAX_SPEED}`,
+      );
+      // ceiling 2: the CENTRING term (`wv`'s magnitude) must stay under `BB_INTAKE_CROSS_MAX`,
+      // or the funnel's own lateral pull trips its own cross-speed rejection on the next tick —
+      // the exact self-trip bug documented at the `wv`/`wu` split above (measured once: 0/1
+      // captured, 66 in of plow on a POLLEN 0.7 in off the throat).
+      const centring = BB_INTAKE_DRAW_IN * BB_INTAKE_CENTRE_FRAC;
+      check(
+        'roller ceiling 2: BB_INTAKE_DRAW_IN * BB_INTAKE_CENTRE_FRAC stays under BB_INTAKE_CROSS_MAX',
+        centring < BB_INTAKE_CROSS_MAX,
+        `centring=${centring} BB_INTAKE_CROSS_MAX=${BB_INTAKE_CROSS_MAX}`,
+      );
+    }
+
+    // ── THE UNITS-BUG REGRESSION (OWNER BUG 11) ───────────────────────────────
+    // `approach()`'s `maxDelta` used to BE `BB_INTAKE_DRAW_IN` itself — a SPEED passed as a
+    // per-TICK displacement cap, i.e. an effective 52 in/s ÷ (1/60 s) = 3120 in/s² of
+    // acceleration, reaching full draw-in speed from rest in exactly one tick (an instant
+    // teleport, not a grip). It is now `BB_INTAKE_GRIP_ACCEL * dt`. This is the regression test
+    // for that units bug: an element pulled from REST must NOT already be at (or near)
+    // `BB_INTAKE_DRAW_IN` after a single tick — it has to still be ramping.
+    {
+      const { w, r } = staged(48, 0, -30);
+      const m = bbMouths(r.spec)[0];
+      // off-centre and short of the seat, so the pull is live but nothing has arrived yet —
+      // same positioning family as "THE FUNNEL" check above.
+      w.balls.push(bbPollen(nextId(w), (m.x0 + m.x1) / 2, -30 + m.y1 * 0.5));
+      const b = w.balls[w.balls.length - 1];
+      run(w, cmd({ intake: true }), 1 / 60); // exactly one tick
+      const speed = hyp(b.vel.x, b.vel.y);
+      const oneTickMax = BB_INTAKE_GRIP_ACCEL * C.SIM_DT + 1e-6;
+      check(
+        'roller: an element pulled from rest ramps over >1 tick, not an instant BB_INTAKE_DRAW_IN teleport',
+        speed > 0 && speed <= oneTickMax && speed < BB_INTAKE_DRAW_IN,
+        `speed=${speed.toFixed(3)} oneTickMax=${oneTickMax.toFixed(3)} BB_INTAKE_DRAW_IN=${BB_INTAKE_DRAW_IN}`,
+      );
+    }
+
+    // ── CADENCE, MEASURED (OWNER BUG 11: "cadence is really, really slow") ────
+    // A robot driving full-stick over a dense line of POLLEN, at least `CADENCE_FLOOR`
+    // elements/s. The hopper is drained every tick (the held ball spliced straight back out,
+    // `r.hopper.length` reset to 0) so the fixed 4-element `BB_STORAGE_MAX` cap cannot mask the
+    // intake MECHANISM's own throughput — `bbHopperCap` clamps any requested `ballStorage` to
+    // that cap regardless of value, so a bigger `ballStorage` cannot do this the way the
+    // diagnosis's own scratch measurement did; draining is the equivalent for this suite.
+    //
+    // `CADENCE_FLOOR = 10`/s comes from the new worst-case PERIOD (lateral edge or wall grab,
+    // no closing bonus): `BB_INTAKE_PERIOD_MAX` = 0.12 s → 8.33/s on its own; driving full-stick
+    // adds the closing bonus (`BB_INTAKE_CLOSE_BONUS`) on most of the line, and `BB_DEFAULT_SPEC`
+    // is a single-lane intake (`BB_INTAKE_LANE_W` unchanged at 9), so 10/s is a floor with margin
+    // below the measured rate, not the measured rate itself — it is the number a future
+    // regression on either constant should trip, not a tight fit to today's build.
+    {
+      const CADENCE_FLOOR = 10;
+      const DURATION = 2;
+      const { w, r } = staged(50, -BB_HALF_X + 6, -60, 0);
+      // a dense line of POLLEN every 1.5 in along the drive direction (a robot at full stick
+      // covers roughly 60-70 in in 2 s, so 90+ elements is more supply than the run can reach).
+      for (let i = 0; i < 100; i++) w.balls.push(bbPollen(nextId(w), -BB_HALF_X + 6 + i * 1.5, -60));
+      // driveY, not driveX: robot-centric stick-up is local +x (`sim/robot.ts`'s `robotVec.x =
+      // stick.y`), and heading 0 makes local +x world +x — the same axis the line of POLLEN
+      // and the front mouth both sit on.
+      const commands = new Map([[0, cmd({ driveY: 1, intake: true })]]);
+      let captured = 0;
+      const ticks = Math.round(DURATION / C.SIM_DT);
+      for (let i = 0; i < ticks; i++) {
+        biobuzzStep(w, C.SIM_DT, commands);
+        if (r.hopper.length > 0) {
+          captured += r.hopper.length;
+          for (let bi = w.balls.length - 1; bi >= 0; bi--) {
+            const bl = w.balls[bi];
+            if (bl.state.kind === 'held' && bl.state.robot === r.id) w.balls.splice(bi, 1);
+          }
+          r.hopper.length = 0;
+        }
+      }
+      const rate = captured / DURATION;
+      check(
+        `roller: driving over a line of POLLEN captures at least ${CADENCE_FLOOR}/s (hopper drained to isolate cadence)`,
+        rate >= CADENCE_FLOOR,
+        `captured=${captured} over ${DURATION}s = ${rate.toFixed(2)}/s, floor=${CADENCE_FLOOR}/s`,
       );
     }
   }

@@ -1,5 +1,5 @@
 import type { Artifact, RobotCommand, RobotSpec, RobotState, Vec2, World } from '../../types';
-import { INTAKE_RAIL_T } from '../../config';
+import { INTAKE_RAIL_T, SIM_DT } from '../../config';
 import type { RobotSolids, SolidShape } from '../../sim/artifactSolids';
 import { clamp, datan2, dcos, dsin, hyp, rot, wrapAngle } from '../../math';
 import { GRAVITY } from '../../config';
@@ -30,6 +30,7 @@ import {
   BB_INTAKE_CLOSE_REF,
   BB_INTAKE_CROSS_MAX,
   BB_INTAKE_DRAW_IN,
+  BB_INTAKE_GRIP_ACCEL,
   BB_INTAKE_LANE_W,
   BB_INTAKE_LIP,
   BB_INTAKE_PERIOD_MAX,
@@ -346,11 +347,19 @@ export interface BbIntakeOpts {
    * and measured that way nothing was EVER captured in 3D.
    */
   seat?: 'chassis' | 'footprint';
+  /**
+   * The tick length the grip ramp (`BB_INTAKE_GRIP_ACCEL`) integrates over. Optional and
+   * defaulted to `SIM_DT` because neither caller (`play.ts`'s `step2d`, `sim3d/elements3d.ts`'s
+   * `step3d`) steps at any other rate today — this exists so a future variable-rate caller (or a
+   * lane's own dt-sweep check) does not have to fork the function to pass one in.
+   */
+  dt?: number;
 }
 
 export function bbIntakeAct(world: World, r: RobotState, opts: BbIntakeOpts = {}): BbIntakeAct {
   const lowFlight = opts.lowFlight ?? false;
   const atRoller = opts.seat === 'footprint';
+  const dt = opts.dt ?? SIM_DT;
   const cap = bbHopperCap(r.spec);
   const room = cap - r.hopper.length;
   // A FULL HOPPER DOES NOT PULL. The element is left to the solve and the chassis pushes it,
@@ -436,8 +445,15 @@ export function bbIntakeAct(world: World, r: RobotState, opts: BbIntakeOpts = {}
         velRobot.x * g.p.x +
         velRobot.y * g.p.y +
         (dl > 0.05 ? (dv / dl) * BB_INTAKE_DRAW_IN * BB_INTAKE_CENTRE_FRAC : 0);
-      const cu = approach(vLocal.x * g.n.x + vLocal.y * g.n.y, wu, BB_INTAKE_DRAW_IN);
-      const cv = approach(vLocal.x * g.p.x + vLocal.y * g.p.y, wv, BB_INTAKE_DRAW_IN);
+      // ⚠️ THE RAMP IS AN ACCELERATION TIMES `dt`, NOT THE TARGET SPEED ITSELF. This used to pass
+      // `BB_INTAKE_DRAW_IN` — a speed — straight in as `approach`'s per-TICK `maxDelta`, which
+      // reached the full draw-in speed from rest in exactly one tick (52 in/s ÷ (1/60 s) = 3120
+      // in/s² of effective acceleration — an instant-velocity teleport, not a grip). `approach`'s
+      // `maxDelta` is a displacement, so a real acceleration cap is `BB_INTAKE_GRIP_ACCEL * dt`:
+      // an element now ramps to `wu`/`wv` over several ticks instead of arriving there whole.
+      const grip = BB_INTAKE_GRIP_ACCEL * dt;
+      const cu = approach(vLocal.x * g.n.x + vLocal.y * g.n.y, wu, grip);
+      const cv = approach(vLocal.x * g.p.x + vLocal.y * g.p.y, wv, grip);
       pull.push({
         ball: b,
         vel: rot({ x: cu * g.n.x + cv * g.p.x, y: cu * g.n.y + cv * g.p.y }, r.heading),
