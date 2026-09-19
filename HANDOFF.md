@@ -1,6 +1,10 @@
-# HANDOFF — 2026-09-19 (alpha: THREE ABANDONED LANES FINISHED, plus the owner's render pass — IN PROGRESS)
+# HANDOFF — 2026-09-19 (alpha: THREE ABANDONED LANES FINISHED, plus the owner's render pass)
 
-**READ FIRST.** ⚠️ **This section describes a tree that is still being worked on. Nothing is committed yet.**
+**READ FIRST.** Four commits on top of `8d3cde4`, every gate green:
+`build` · `server:check` · `docaudit` · `uiaudit` · `contrast` (221) · `dbtest` · `test:mm` (197) ·
+`bundleaudit` (re-measured) · `npm test` (**2375** BIOBUZZ + **1861** shared) · **`shiftaudit`**
+(576 state changes, 0 shifts — the first run in three rounds, and its route list now covers
+`/privacy`, `/terms` and `/contributors`).
 
 Three lanes had been left UNCOMMITTED in the worktree `.claude/worktrees/alpha-main-divergence-7a6134`
 (branch `claude/3d-field-visuals-855bd5`, sitting on `56e5836`, two commits behind alpha). They were
@@ -58,12 +62,24 @@ reset. An old client without the `'bb3d'` cap is REFUSED (`BB3D_REFUSAL`), not s
 equality plus exactly-zero velocity, and a sibling check asserts the residual contact relaxation DECAYS
 (each 600-tick window drifts at most half the last). The old 900-tick / 1e-3 form reported the machine.
 
-## STILL RED — a 3D dumper cannot score into a hive cell
+## FIXED — a 3D dumper could not score into a hive cell
 
 `drive: shoot (3d, blue|red, box tube)` in the TUTORIAL lane. Measured over 28 stationary firing poses
 (dx 0/3/6/9 in, dy 14–38 in from the cell): a clean HEAD tree scores from **13**, this tree from **0**.
 
-The cause is NOT the tutorial. `bbLaunch` throws the hopper from the release line at the bare FRAME face
+⚠️ **THE FIX IS IN TWO PARTS AND BOTH HAD TO BE 3D-ONLY** (the 2D pipeline is permanent): a
+`flight` body is born CLEAR of the robot that threw it, walked out along its own parabola at
+body-creation time in `sim3d/engineImpl.ts`; and a 3D dump is STAGGERED one element at a time
+(`BbShot.perDump`, set only by `sim3d/elements3d.ts`), because `bbDumpSolution` converges every
+element on one point — free in 2D, a four-way pile-up at the mouth in 3D. **0/28 → 20/28**, 2D
+byte-identical at 28/28. A shared `launchClearance()` in `robot.ts` was tried first and reverted:
+3/28, and it broke two 2D checks. A straight-ray nudge was also tried and measured at 3/28 — a
+dumper's lob leaves at 80.6°, so raising the release without advancing the solved `vz` overshoots
+the opening. The eight remaining misses are the two CLOSEST rows, where the lob clips the hive
+underside; that is the CAD ruling's own documented consequence, and 2D scores there only because
+a 2D flight element passes through the hive.
+
+The cause was NOT the tutorial. `bbLaunch` throws the hopper from the release line at the bare FRAME face
 (`mountOrigin` = `spec.length/2`). Until this lane the 3D chassis collider was `robotExtents(r)` — the
 footprint, 3 in wider on a mouthed edge — so a dumped element was **born inside its own robot's
 collider** and depenetration flung the four arcs apart; one happened to settle in the cell. The collider
