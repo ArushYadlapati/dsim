@@ -599,7 +599,7 @@ button {
   background: var(--ds-hud);
   border: 1px solid var(--ds-hud-line);
   border-radius: var(--ds-round-md);
-  padding: 8px 14px;
+  padding: 8px;
 }
 
 /* a second card below `.robot-status`, rendered only while at least one row in it is
@@ -869,12 +869,13 @@ button {
    `.power-gauge .pg-bar`/`.pg-fill` mechanic (chunky bar, rounded caps, recessed track,
    DESIGN.md "Progress Bars"), rotated: clipped from the TOP so the fill rises from the
    bottom instead of growing from the left. Empty track vs card is ~1.03:1, so the ring
-   carries it, as on `.hopper-pip`. This base height is DECODE's (3 vertical hopper pips +
-   the gate icon); CR overrides it shorter in `.cr-hud-right .v-gauge` to leave room for the
-   fraction readout below its own bar. */
+   carries it, as on `.hopper-pip`. This base height is DECODE's — sets `.dec-hud-left`'s
+   stretched height too (`align-items: stretch` on `.dec-hud`), so shrinking it is what
+   shrinks the storage/gate column; CR overrides it shorter still in `.cr-hud-right
+   .v-gauge` to leave room for the fraction readout below its own bar. */
 .v-gauge {
   width: 14px;
-  height: 132px;
+  height: 92px;
   border-radius: var(--ds-round-full);
   background: var(--ds-tile);
   border: 1px solid var(--ds-mut);
@@ -912,22 +913,29 @@ button {
   background: color-mix(in srgb, var(--red) calc((1 - var(--vg, 0)) * 100%), var(--ds-ink));
 }
 
-/* DECODE's two-column HUD block: storage dots (top) + gate lever (bottom) on the left,
-   the vertical power gauge + its percentage on the right — the same `align-items:
-   stretch` trick as `.bb-hud` so the fixed-height gauge sets the block's height and the
-   left column's `space-between` spreads storage/gate to fill it. */
+/* DECODE's two-column HUD block: storage dots atop the gate lever on the left, the
+   vertical power gauge + its percentage on the right — the same `align-items: stretch`
+   trick as `.bb-hud` so the fixed-height gauge sets the block's height. The left column
+   used to `space-between` the dots and the lever, which pinned the lever to the very
+   bottom of that height with a lot of dead air above it; `justify-content: center` groups
+   them together and centers that group in the height the (now shorter) gauge sets. */
 .dec-hud {
   display: flex;
   align-items: stretch;
-  gap: 8px;
+  gap: 4px;
 }
 
 .dec-hud-left {
   display: flex;
   flex-direction: column;
-  justify-content: space-between;
-  align-items: center;
-  gap: 8px;
+  /* flush top, not spread apart — the gate icon sits right under the dots rather than
+     pinned to the bottom of the (gauge-height) column with dead air above it. */
+  justify-content: flex-start;
+  /* flex-start, not center: the gate icon is the widest child (22px vs the dots' 18px),
+     so it already sits at the column's own left edge and `align-items: center` only
+     moved the narrower dots — this puts both on the same left edge instead. */
+  align-items: flex-start;
+  gap: 4px;
 }
 
 .dec-hud-right {
@@ -935,6 +943,14 @@ button {
   flex-direction: column;
   align-items: center;
   gap: 4px;
+}
+
+/* DECODE's storage dots read bigger than the shared `.hopper-pip` base (BIOBUZZ's own
+   hopper/nectar columns use that base size and stay untouched) — scoped to this one
+   instance rather than the shared class. */
+.dec-hud-left .hopper-pip {
+  width: 18px;
+  height: 18px;
 }
 
 /* the DECODE gate lever (manual Fig. 9-16): a rod hinged at its base, rotating between a
@@ -948,6 +964,11 @@ button {
   width: 22px;
   height: 22px;
   flex: none;
+  /* the icon's own box is already the column's widest element (see `.dec-hud-left`), so
+     shifting it further left means past that edge, not just flush with it — the closed
+     rod (`::before`, rotate(50deg) off vertical) also leans visually right within its
+     own box, which this offsets. */
+  margin-left: -6px;
 }
 
 .gate-icon::before {
