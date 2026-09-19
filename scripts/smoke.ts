@@ -9993,6 +9993,26 @@ const acquireTicks = (speed: number): number => Math.round(acquireSecs(speed) / 
     w.match.fouls.blue.major === N + 1,
     `blueMajor=${w.match.fouls.blue.major} (expected ${N + 1})  redFoulPts=${w.match.scores.red.foulPoints}`,
   );
+  check(
+    'HudSnapshot.gateForced: an opponent forcing the gate open pins gateCulprit to them',
+    w.penalties.gateCulprit.red === 'blue',
+    `gateCulprit.red=${w.penalties.gateCulprit.red}`,
+  );
+
+  // the OWNER (red) pushing its own gate open must never set gateCulprit — HudSnapshot.gateForced
+  // is a straight read of it, and it drives the gate icon's red "forced" state vs. green
+  // "own alliance opened it" (game.ts).
+  const w2 = foulWorld();
+  w2.robots[1].pos = { x: gz.x0 - 7, y: (gz.y0 + gz.y1) / 2 }; // red field-side of its OWN gate
+  w2.robots[1].heading = 0;
+  w2.robots[1].fieldCentric = false;
+  w2.robots[0].pos = { x: 0, y: 30 };
+  runCmds(w2, new Map([[1, cmd({ driveY: 1 })]]), 2.5);
+  check(
+    'HudSnapshot.gateForced: the owner opening its own gate never sets gateCulprit',
+    w2.penalties.gateCulprit.red === null && w2.goals.red.gateOpen,
+    `gateCulprit.red=${w2.penalties.gateCulprit.red} gateOpen=${w2.goals.red.gateOpen}`,
+  );
 }
 
 // ---- G418.B is billed on the DRAIN, not on the touch -------------------------

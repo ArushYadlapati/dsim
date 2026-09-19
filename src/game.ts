@@ -196,6 +196,9 @@ export interface HudSnapshot {
    * HUD hint so the driver knows why the button isn't doing anything yet */
   canPark: boolean;
   gateOpen: boolean;
+  /** true when the OPPONENT is the one holding this gate open (`penalties.gateCulprit`) —
+   * drives the gate icon's red "forced" state vs. green "own alliance opened it". */
+  gateForced: boolean;
   rampCount: number;
   classifiedCount: number;
   overflowCount: number;
@@ -1322,6 +1325,7 @@ export class GameController {
       parked: this.parked,
       canPark: this.canPark(),
       gateOpen: goal.gateOpen,
+      gateForced: w.penalties.gateCulprit[a] !== null,
       rampCount: w.balls.filter(
         (b) => b.state.kind === 'rail' && b.state.goal === a && !b.state.overflow,
       ).length,

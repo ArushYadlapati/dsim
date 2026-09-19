@@ -17,7 +17,6 @@ import { DesktopUpdate } from './DesktopUpdate';
 import { fmtDay } from './fmtDate';
 import { ServerMenu } from './ServerMenu';
 import { UsernameInput, useUsernameCheck, usernameHintColor } from './UsernameField';
-import { APP_NAME } from '../seasons';
 import { SUPPORT_ENABLED } from '../net/env';
 import { LEGAL_CONTACT } from '../legalText';
 import { trackEvent } from '../analytics';
@@ -46,53 +45,42 @@ export function Account({
 }) {
   return (
     <>
-      <p className="ds-eyebrow">{APP_NAME} · Profile</p>
       <h1 className="ds-h1">Profile</h1>
 
       {authEnabled ? <Identity onHandleSaved={onHandleSaved} /> : <IdentityDisabled />}
 
       {multiServer() && (
-        // `ds-panel-open` drops the panel's `overflow: hidden` so the region
-        // dropdown can escape below the card instead of being clipped by it.
-        <div className="ds-panel ds-panel-open">
-          <div className="ds-panel-h">
-            <span className="ds-panel-title">Server</span>
-          </div>
-          <div className="ds-panel-body">
-            <ServerMenu
-              value={settings.preferredServerId ?? selectedServerId()}
-              onChange={(id) => onChange({ ...settings, preferredServerId: id })}
-            />
-          </div>
-        </div>
+        <section className="ds-sec">
+          <h2>Server</h2>
+          <ServerMenu
+            value={settings.preferredServerId ?? selectedServerId()}
+            onChange={(id) => onChange({ ...settings, preferredServerId: id })}
+          />
+        </section>
       )}
 
       <DesktopUpdate />
 
       {authEnabled && SUPPORT_ENABLED && <Membership onDonate={onDonate} />}
 
-      <div className="ds-panel">
-        <div className="ds-panel-h">
-          <span className="ds-panel-title">Reset</span>
-        </div>
-        <div className="ds-panel-body stack start">
-          <button
-            className="ds-btn"
-            onClick={() => {
-              if (
-                confirm(
-                  'Reset every setting? This clears your robot build, saved robots, imported autos, ' +
-                    'saved start positions, key bindings, audio and mobile layout. It cannot be undone.',
-                )
-              ) {
-                onChange(defaultSettings());
-              }
-            }}
-          >
-            Reset all settings
-          </button>
-        </div>
-      </div>
+      <section className="ds-sec">
+        <h2>Reset</h2>
+        <button
+          className="ds-btn"
+          onClick={() => {
+            if (
+              confirm(
+                'Reset every setting? This clears your robot build, saved robots, imported autos, ' +
+                  'saved start positions, key bindings, audio and mobile layout. It cannot be undone.',
+              )
+            ) {
+              onChange(defaultSettings());
+            }
+          }}
+        >
+          Reset all settings
+        </button>
+      </section>
 
       {authEnabled && <DeleteAccount />}
     </>
@@ -132,37 +120,32 @@ function Membership({ onDonate }: { onDonate?: () => void }) {
   const until = ent?.supporterUntil ? new Date(ent.supporterUntil) : null;
 
   return (
-    <div className="ds-panel">
-      <div className="ds-panel-h">
-        <span className="ds-panel-title">Membership</span>
-        {ent?.supporter && <span className="ds-count">supporter</span>}
-      </div>
-      <div className="ds-panel-body stack start">
-        {!ent ? (
-          <p className="ds-hint">Checking…</p>
-        ) : ent.supporter ? (
-          <>
-            <p className="ds-hint">
-              Supporter{until ? ` until ${fmtDay(until)}` : ''} ·{' '}
-              {ent.autoRenews ? 'renews automatically' : 'will not renew'}
+    <section className="ds-sec">
+      <h2>Membership{ent?.supporter && <span className="ds-count">supporter</span>}</h2>
+      {!ent ? (
+        <p className="ds-hint">Checking…</p>
+      ) : ent.supporter ? (
+        <>
+          <p className="ds-hint">
+            Supporter{until ? ` until ${fmtDay(until)}` : ''} ·{' '}
+            {ent.autoRenews ? 'renews automatically' : 'will not renew'}
+          </p>
+          {!ent.autoRenews && (
+            <p className="ds-hint warn">
+              This membership isn’t linked to a Ko-fi account, so it will stop at the end of the
+              period. Claim a payment on the Support page to link it.
             </p>
-            {!ent.autoRenews && (
-              <p className="ds-hint warn">
-                This membership isn’t linked to a Ko-fi account, so it will stop at the end of the
-                period. Claim a payment on the Support page to link it.
-              </p>
-            )}
-          </>
-        ) : (
-          <p className="ds-hint">No membership.</p>
-        )}
-        {onDonate && (
-          <button className="ds-btn ghost" onClick={onDonate}>
-            {ent?.supporter ? 'Manage membership' : 'Support DSIM'}
-          </button>
-        )}
-      </div>
-    </div>
+          )}
+        </>
+      ) : (
+        <p className="ds-hint">No membership.</p>
+      )}
+      {onDonate && (
+        <button className="ds-btn ghost" onClick={onDonate}>
+          {ent?.supporter ? 'Manage membership' : 'Support DSIM'}
+        </button>
+      )}
+    </section>
   );
 }
 
@@ -213,44 +196,40 @@ function DeleteAccount() {
   };
 
   return (
-    <div className="ds-panel">
-      <div className="ds-panel-h">
-        <span className="ds-panel-title">Delete account</span>
+    <section className="ds-sec">
+      <h2>Delete account</h2>
+      <p className="ds-hint">
+        Permanently deletes your profile, username, saved settings and robot presets, records
+        and practice runs with their replays, ranked rating and history, your playtime and
+        account standing, and every friendship, block, and invite. This cannot be undone.
+      </p>
+      <p className="ds-hint">
+        Matches you played stay on other players' history without your name, and payment records
+        are kept (without your email) because they are financial records. Your sign-in identity
+        itself lives with our authentication provider. Delete it there too if you want it gone.
+      </p>
+      <div className="ds-claim-row">
+        <input
+          className="ds-input"
+          value={confirm}
+          onChange={(e) => setConfirm(e.target.value)}
+          placeholder="Type DELETE to confirm"
+          aria-label="Type DELETE to confirm account deletion"
+        />
+        <button
+          className="ds-btn danger"
+          disabled={busy || confirm !== 'DELETE'}
+          onClick={() => void doDelete()}
+        >
+          {busy ? 'Deleting…' : 'Delete my account'}
+        </button>
       </div>
-      <div className="ds-panel-body stack">
-        <p className="ds-hint">
-          Permanently deletes your profile, username, saved settings and robot presets, records
-          and practice runs with their replays, ranked rating and history, your playtime and
-          account standing, and every friendship, block, and invite. This cannot be undone.
+      {err && (
+        <p className="ds-claim-msg err" role="status">
+          {err}
         </p>
-        <p className="ds-hint">
-          Matches you played stay on other players' history without your name, and payment records
-          are kept (without your email) because they are financial records. Your sign-in identity
-          itself lives with our authentication provider. Delete it there too if you want it gone.
-        </p>
-        <div className="ds-claim-row">
-          <input
-            className="ds-input"
-            value={confirm}
-            onChange={(e) => setConfirm(e.target.value)}
-            placeholder="Type DELETE to confirm"
-            aria-label="Type DELETE to confirm account deletion"
-          />
-          <button
-            className="ds-btn danger"
-            disabled={busy || confirm !== 'DELETE'}
-            onClick={() => void doDelete()}
-          >
-            {busy ? 'Deleting…' : 'Delete my account'}
-          </button>
-        </div>
-        {err && (
-          <p className="ds-claim-msg err" role="status">
-            {err}
-          </p>
-        )}
-      </div>
-    </div>
+      )}
+    </section>
   );
 }
 
@@ -274,13 +253,10 @@ function Identity({ onHandleSaved }: { onHandleSaved?: (handle: string) => void 
   };
 
   return (
-    <div className="ds-panel">
-      <div className="ds-panel-h">
-        <span className="ds-panel-title">Account</span>
-        {session.isPending && <span className="ds-chip">…</span>}
-      </div>
+    <section className="ds-sec">
+      <h2>Account {session.isPending && <span className="ds-chip">…</span>}</h2>
       {user ? (
-        <div className="ds-panel-body stack">
+        <>
           <div className="ds-field-row">
             <span className="ds-acct-email">{user.email ?? 'signed in'}</span>
             <span className="ds-head-spacer" />
@@ -311,9 +287,9 @@ function Identity({ onHandleSaved }: { onHandleSaved?: (handle: string) => void 
               </button>
             </div>
           </div>
-        </div>
+        </>
       ) : (
-        <div className="ds-panel-body row">
+        <div className="ds-field-row">
           <p className="ds-hint">Sign in to save records and rank up.</p>
           <span className="ds-head-spacer" />
           <button className="ds-btn primary" onClick={() => setOpen(true)}>
@@ -322,7 +298,7 @@ function Identity({ onHandleSaved }: { onHandleSaved?: (handle: string) => void 
         </div>
       )}
       {open && <AuthPanel onClose={() => setOpen(false)} />}
-    </div>
+    </section>
   );
 }
 
@@ -493,14 +469,12 @@ function Username({ userId }: { userId: string }) {
 
 function IdentityDisabled() {
   return (
-    <div className="ds-panel">
-      <div className="ds-panel-h">
-        <span className="ds-panel-title">Account</span>
-      </div>
+    <section className="ds-sec">
+      <h2>Account</h2>
       <div className="ds-empty">
         <div className="big">Accounts are off in this build</div>
         Set <code>VITE_NEON_AUTH_URL</code> to enable sign-in, saved records, and ranked ELO.
       </div>
-    </div>
+    </section>
   );
 }

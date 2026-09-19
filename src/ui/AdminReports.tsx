@@ -58,7 +58,7 @@ export function AdminReports({ onWatchReplay }: { onWatchReplay?: WatchReplay })
       <ScoreReportQueue onWatchReplay={onWatchReplay} />
 
       <h2 className="ds-h2">Moderation · reports</h2>
-      <p className="ds-sub" style={{ margin: '0 0 16px' }}>
+      <p className="ds-sub compact">
         Players other players have reported, most recently reported first. Open one to read the
         reports and watch their recent matches — a cheating or throwing report is only
         judgeable from the replay.
@@ -284,7 +284,7 @@ function ScoreReportQueue({ onWatchReplay }: { onWatchReplay?: WatchReplay }) {
   return (
     <>
       <h2 className="ds-h2">Moderation · misscores</h2>
-      <p className="ds-sub" style={{ margin: '0 0 16px' }}>
+      <p className="ds-sub compact">
         Claims that a match scored wrong. Open the replay and check it: UPHELD records that the
         sim got it wrong, REJECTED closes it. Smite only a claim that was made in bad faith —
         the count beside each filer is how many of theirs have been rejected before.

@@ -194,10 +194,8 @@ export function MatchHistory({
   const seasonName = seasonLabel;
 
   return (
-    <div className="ds-panel">
-      <div className="ds-panel-h">
-        <span className="ds-panel-title">Match history</span>
-      </div>
+    <section className="ds-sec">
+      <h2>Match history</h2>
       <div className="mh-filters">
           <select className="ds-select" value={type} onChange={(e) => changeType(e.target.value as TypeFilter)}>
             {TYPE_OPTS.map((o) => (
@@ -329,6 +327,6 @@ export function MatchHistory({
           </div>
         </>
       )}
-    </div>
+    </section>
   );
 }

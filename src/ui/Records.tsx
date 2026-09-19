@@ -1,6 +1,5 @@
 import type { GameId } from '../types';
 import type { Replay } from '../sim/replay';
-import { APP_NAME } from '../seasons';
 import { Leaderboard } from './Leaderboard';
 import { Stats } from './Stats';
 import { UserSearchBar } from './UserSearchBar';
@@ -43,7 +42,6 @@ export function Records({
 }) {
   return (
     <>
-      <p className="ds-eyebrow">{APP_NAME} · Records</p>
       <h1 className="ds-h1">Records</h1>
 
       <UserSearchBar onOpenProfile={onOpenProfile} />

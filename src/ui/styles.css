@@ -405,6 +405,15 @@ button {
   border-color: var(--ds-warn);
 }
 
+/* a link that is actively WRONG, not just laggy — takes over the NetQuality box's spot
+   rather than sitting beside it, and blinks (the existing `.timer-panel.urgent` keyframe)
+   because it is the one connection state worth interrupting a glance at the corner for. */
+.chip.desync {
+  color: var(--ds-red-ink);
+  border-color: var(--ds-red-ink);
+  animation: blink 1s steps(2) infinite;
+}
+
 /* a RED CARD — the alliance's match points are VOIDED, which is the worst thing that can
    happen to a score, so it is filled rather than outlined like the softer states. Fixed
    ink on a fixed fill (category 2 in the theming note): it does not invert. */
@@ -487,10 +496,33 @@ button {
   max-width: 50%;
 }
 
-/* the connection chip doubles as a toggle for the expandable ping graph */
+/* the bottom-right net cluster (spectators / connection / server region) — same anchor
+   idiom as `.status-wrap` above, mirrored to the opposite corner and edge: `bottom`
+   instead of `top` means the box grows UPWARD as the ping graph opens above the row,
+   rather than the row scrolling off the bottom of the screen. */
+.net-corner {
+  position: absolute;
+  bottom: 12px;
+  right: max(12px, env(safe-area-inset-right));
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 8px;
+}
+
+.net-corner-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* the connection chip doubles as a toggle for the expandable ping graph — has to
+   re-enable hit-testing itself since `.hud` (its ancestor) is `pointer-events: none`
+   so the field stays clickable everywhere a chip ISN'T. */
 .chip.net-quality.clickable {
   cursor: pointer;
   user-select: none;
+  pointer-events: auto;
 }
 .chip.net-quality.clickable:hover {
   border-color: var(--ds-accent);
@@ -567,7 +599,108 @@ button {
   background: var(--ds-hud);
   border: 1px solid var(--ds-hud-line);
   border-radius: var(--ds-round-md);
-  padding: 8px 14px;
+  padding: 8px;
+}
+
+/* a second card below `.robot-status`, rendered only while at least one row in it is
+   true — reversed drive, a butterfly's wheel set, a card — so it appears and grows
+   downward rather than permanently reserving chip width in the row above. */
+.sub-hud {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: var(--ds-hud);
+  border: 1px solid var(--ds-hud-line);
+  border-radius: var(--ds-round-md);
+  padding: 8px 12px;
+}
+
+/* REVERSED — two overlapping rings reading as one flipped shape, `--ds-warn` matching
+   the chip colour this replaced. */
+.reversed-icon {
+  position: relative;
+  display: inline-block;
+  width: 22px;
+  height: 16px;
+  flex: none;
+}
+
+.reversed-icon::before,
+.reversed-icon::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  border: 2px solid var(--ds-warn);
+}
+
+.reversed-icon::before {
+  left: 0;
+}
+
+.reversed-icon::after {
+  right: 0;
+}
+
+/* BUTTERFLY — two triangles meeting at the centre, standing in for the wing shape the
+   drivetrain is named after. Recolours per which set is down, reusing existing tokens
+   rather than the archetype getting its own. */
+.butterfly-icon {
+  position: relative;
+  display: inline-block;
+  width: 20px;
+  height: 14px;
+  flex: none;
+}
+
+.butterfly-icon::before,
+.butterfly-icon::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  width: 10px;
+  height: 14px;
+  background: var(--ds-mut);
+}
+
+.butterfly-icon::before {
+  left: 0;
+  clip-path: polygon(100% 0, 100% 100%, 0 50%);
+}
+
+.butterfly-icon::after {
+  right: 0;
+  clip-path: polygon(0 0, 0 100%, 100% 50%);
+}
+
+.butterfly-icon.tank::before,
+.butterfly-icon.tank::after {
+  background: var(--ds-ink);
+}
+
+.butterfly-icon.mecanum::before,
+.butterfly-icon.mecanum::after {
+  background: var(--purple);
+}
+
+/* CARD — a small filled rectangle reading like a real referee's card, reusing the two
+   fills `.chip.prompt`/`.chip.bad` already carry for these colours. */
+.card-icon {
+  display: inline-block;
+  width: 12px;
+  height: 16px;
+  border-radius: var(--ds-round-sm);
+  flex: none;
+}
+
+.card-icon.yellow {
+  background: var(--ds-gold);
+}
+
+.card-icon.red {
+  background: var(--ds-red);
 }
 
 .hopper {
@@ -617,11 +750,107 @@ button {
   box-shadow: 0 0 0 2px var(--ds-ink);
 }
 
-/* drive power-draw gauge in the top-right status bar */
-.power-gauge {
+/* an unplaced NECTAR dot currently due — same ring pattern as .next, layered only on an
+   already-coloured (available) dot, never a grey one. */
+.hopper-pip.due {
+  box-shadow: 0 0 0 2px var(--ds-pollen);
+}
+
+/* a NECTAR still in stock but not yet available — FILLED, so it doesn't read as an empty
+   STORAGE slot (plain `.hopper-pip`, a hollow --ds-tile well): something is there, it just
+   isn't actionable yet. --ds-line is a step darker than --ds-tile in both themes. */
+.hopper-pip.grey {
+  background: var(--ds-line);
+}
+
+/* BiobuzzHudChips' two columns: STORAGE (+ FLOWER/CONTROL under it) on the left, the 8 NECTAR
+   dots on the right — both top-aligned, `align-items: stretch` so the left column's own
+   `justify-content: space-between` can push FLOWER/CONTROL down to match the taller NECTAR
+   column's height. `.robot-status` stays the shared flex row; this is its one child for
+   BIOBUZZ, so the negative horizontal margin here bleeds against ITS padding (8px 14px)
+   without touching that shared rule, which DECODE's and CR's chip rows also use. */
+.bb-hud {
   display: flex;
+  align-items: stretch;
+  gap: 4px;
+  margin: 0 -6px;
+}
+
+.bb-hud-left {
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  /* centered, not flex-start — the FLOWER icon (22px) is wider than a storage dot (14px), so
+     centering keeps it on the dot column's own vertical axis instead of overhanging the
+     right of a left-justified stack. */
   align-items: center;
   gap: 8px;
+}
+
+.bb-hud-right {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+}
+
+/* the storage/NECTAR dot columns — `.hopper`'s own row layout, stacked instead. */
+.hopper.vertical {
+  flex-direction: column;
+}
+
+/* the FLOWER icon: a hexagonal collar with a hole. Grey while G410 (`nectarLocked`) still
+   blocks entry, --ds-pollen once it opens at the 1:00 cue. Two layered clip-path hexagons
+   because a box-shadow ring follows the element's BOX, not its clip — the base element is
+   the ring colour and only shows through the 2px gap left by `::before`, the actual fill.
+   --ds-ink (not --ds-pollen) for the ring, matching `.hopper-pip.next`, because the ring has
+   to read against EITHER fill colour. `::after` punches the hole with --ds-hud, this card's
+   own background. */
+.flower-icon {
+  position: relative;
+  display: inline-block;
+  width: 22px;
+  height: 16px;
+  clip-path: polygon(25% 0%, 75% 0%, 100% 50%, 75% 100%, 25% 100%, 0% 50%);
+  background: transparent;
+}
+
+.flower-icon.reach {
+  background: var(--ds-ink);
+}
+
+.flower-icon::before {
+  content: '';
+  position: absolute;
+  inset: 2px;
+  clip-path: polygon(25% 0%, 75% 0%, 100% 50%, 75% 100%, 25% 100%, 0% 50%);
+  background: var(--ds-mut);
+}
+
+.flower-icon.open::before {
+  background: var(--ds-pollen);
+}
+
+/* a fixed-px square, not a percentage `inset` — the icon's box is wider than it is tall, and
+   an inset that follows the box's own aspect ratio punches an OVAL, not a circle. */
+.flower-icon::after {
+  content: '';
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 8px;
+  height: 8px;
+  transform: translate(-50%, -50%);
+  border-radius: 50%;
+  background: var(--ds-hud);
+}
+
+/* drive power-draw gauge in the top-right status bar — vertical, bar on top of its
+   percentage, to sit beside DECODE's storage+gate column (`.dec-hud-right`). */
+.power-gauge {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
   font-family: var(--ds-font-mono);
   font-size: 11px;
   font-weight: 700;
@@ -629,50 +858,286 @@ button {
   color: var(--muted);
 }
 
-/* chunky bar, rounded caps, recessed track (DESIGN.md "Progress Bars").
-   Empty track vs card is ~1.03:1, so the ring carries it — as on .hopper-pip. */
-.power-gauge .pg-bar {
-  width: 66px;
-  height: 8px;
+.power-gauge .pg-num {
+  min-width: 30px;
+  text-align: center;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+
+/* shared vertical fill gauge (DECODE's power draw, CR's storage) — the horizontal
+   `.power-gauge .pg-bar`/`.pg-fill` mechanic (chunky bar, rounded caps, recessed track,
+   DESIGN.md "Progress Bars"), rotated: clipped from the TOP so the fill rises from the
+   bottom instead of growing from the left. Empty track vs card is ~1.03:1, so the ring
+   carries it, as on `.hopper-pip`. This base height is DECODE's — sets `.dec-hud-left`'s
+   stretched height too (`align-items: stretch` on `.dec-hud`), so shrinking it is what
+   shrinks the storage/gate column; CR overrides it shorter still in `.cr-hud-right
+   .v-gauge` to leave room for the fraction readout below its own bar. */
+.v-gauge {
+  width: 14px;
+  height: 92px;
   border-radius: var(--ds-round-full);
   background: var(--ds-tile);
   border: 1px solid var(--ds-mut);
   overflow: hidden;
+  position: relative;
+  flex: none;
 }
 
 /**
- * The fill is FULL WIDTH and CLIPPED to the level, rather than a width that animates.
- *
- * Animating `width` is a layout property, and this bar is on the in-match HUD — the one
- * surface in the app where frame time is a stated concern (there is a `?perf=1` readout for
- * exactly this). Clipping is not layout, and unlike the usual `transform: scaleX` fix it
- * leaves the rounded caps circular instead of stretching them into ellipses, which is the
- * reason bars like this are so often written with width in the first place.
- *
- * `--pg` is the level, 0..1, set inline by the HUD.
+ * The fill is FULL SIZE and CLIPPED to the level, rather than a height that animates —
+ * same reasoning as the horizontal `.pg-fill` (this is the in-match HUD, frame time is a
+ * stated perf concern). `--vg` is the level, 0..1, set inline by the HUD.
  */
-.power-gauge .pg-fill {
-  width: 100%;
-  height: 100%;
+.v-gauge-fill {
+  position: absolute;
+  inset: 0;
   border-radius: var(--ds-round-full);
   background: var(--ds-ok);
-  clip-path: inset(0 calc((1 - var(--pg, 1)) * 100%) 0 0 round var(--ds-round-full));
+  clip-path: inset(calc((1 - var(--vg, 0)) * 100%) 0 0 0 round var(--ds-round-full));
   transition: clip-path 0.1s linear, background 0.2s;
 }
 
-.power-gauge .pg-fill.warm {
+.v-gauge-fill.warm {
   background: var(--ds-warn);
 }
 
-.power-gauge .pg-fill.hot {
+.v-gauge-fill.hot {
   background: var(--red);
 }
 
-.power-gauge .pg-num {
-  min-width: 30px;
-  text-align: right;
+/* CR's storage fill only — full reads as neutral ink ("white" in both themes' sense, see
+   .flower-icon.reach), draining toward red as the hopper empties. Continuous off the same
+   --vg level rather than a threshold jump, the same way the fill itself already animates. */
+.v-gauge-fill.storage {
+  background: color-mix(in srgb, var(--red) calc((1 - var(--vg, 0)) * 100%), var(--ds-ink));
+}
+
+/* DECODE's two-column HUD block: storage dots atop the gate lever on the left, the
+   vertical power gauge + its percentage on the right — the same `align-items: stretch`
+   trick as `.bb-hud` so the fixed-height gauge sets the block's height. The left column
+   used to `space-between` the dots and the lever, which pinned the lever to the very
+   bottom of that height with a lot of dead air above it; `justify-content: center` groups
+   them together and centers that group in the height the (now shorter) gauge sets. */
+.dec-hud {
+  display: flex;
+  align-items: stretch;
+  gap: 4px;
+}
+
+.dec-hud-left {
+  display: flex;
+  flex-direction: column;
+  /* flush top, not spread apart — the gate icon sits right under the dots rather than
+     pinned to the bottom of the (gauge-height) column with dead air above it. */
+  justify-content: flex-start;
+  /* flex-start, not center: the gate icon is the widest child (22px vs the dots' 18px),
+     so it already sits at the column's own left edge and `align-items: center` only
+     moved the narrower dots — this puts both on the same left edge instead. */
+  align-items: flex-start;
+  gap: 4px;
+}
+
+.dec-hud-right {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+}
+
+/* DECODE's storage dots read bigger than the shared `.hopper-pip` base (BIOBUZZ's own
+   hopper/nectar columns use that base size and stay untouched) — scoped to this one
+   instance rather than the shared class. */
+.dec-hud-left .hopper-pip {
+  width: 18px;
+  height: 18px;
+}
+
+/* the DECODE gate lever (manual Fig. 9-16): a rod hinged at its base, rotating between a
+   near-flat CLOSED pose and a near-vertical OPEN one. The container is fixed-size so the
+   rotating rod never reflows the column around it; the rod is the ::before, pivoting from
+   its own bottom-centre. 50deg off the rod's upright rest pose closed (40 deg off
+   horizontal, per the manual figure), swinging up to 5deg open. */
+.gate-icon {
+  position: relative;
+  display: inline-block;
+  width: 22px;
+  height: 22px;
+  flex: none;
+  /* the icon's own box is already the column's widest element (see `.dec-hud-left`), so
+     shifting it further left means past that edge, not just flush with it — the closed
+     rod (`::before`, rotate(50deg) off vertical) also leans visually right within its
+     own box, which this offsets. */
+  margin-left: -6px;
+}
+
+.gate-icon::before {
+  content: '';
+  position: absolute;
+  left: 50%;
+  bottom: 1px;
+  width: 4px;
+  height: 19px;
+  border-radius: var(--ds-round-full);
+  background: var(--ds-ink);
+  border: 1px solid var(--ds-mut);
+  transform-origin: bottom center;
+  transform: translateX(-50%) rotate(50deg);
+  transition: transform 0.25s ease, background 0.15s;
+}
+
+/* open, own alliance worked the lever */
+.gate-icon.open::before {
+  transform: translateX(-50%) rotate(5deg);
+  background: var(--green);
+}
+
+/* open, but the OPPONENT is the one holding it (`HudSnapshot.gateForced`) */
+.gate-icon.open.forced::before {
+  background: var(--red);
+}
+
+/* Chain Reaction's two-column HUD block: multiplier badge + 4 catalyst pips + a holding
+   indicator on the left, the vertical storage-fill gauge on the right — same `.bb-hud`
+   stretch trick as DECODE's block above. */
+.cr-hud {
+  display: flex;
+  align-items: stretch;
+  gap: 8px;
+}
+
+.cr-hud-left {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+}
+
+.cr-hud-right {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+}
+
+/* CR's bar shrinks from the shared 132px so the bar + fraction below it still total
+   .cr-hud-left's max height (mult badge + vertical 4-pip column + holding indicator).
+   DECODE's .v-gauge (in .dec-hud-right) is untouched. */
+.cr-hud-right .v-gauge {
+  height: 96px;
+}
+
+/* the storage fraction under the bar — numerator, a divider line, denominator. aria-hidden:
+   .v-gauge's own title already says "Storage X of Y." aloud; this is the sighted echo of it,
+   same relationship as .power-gauge .pg-num has to .power-gauge's title. */
+.v-frac {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  font-family: var(--ds-font-mono);
+  font-size: 11px;
+  font-weight: 700;
   color: var(--text);
   font-variant-numeric: tabular-nums;
+}
+
+.v-frac-num,
+.v-frac-den {
+  line-height: 1;
+}
+
+.v-frac-bar {
+  width: 14px;
+  height: 1px;
+  margin: 3px 0;
+  background: var(--ds-mut);
+}
+
+/* the ×N multiplier badge. Only the ring recolours when it's active (`mult > 1`) — the
+   text stays `--text` in both states so raising the multiplier never touches contrast. */
+.mult-badge {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  border: 2px solid var(--ds-mut);
+  background: var(--ds-tile);
+  font-family: var(--ds-font-mono);
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--text);
+  flex: none;
+}
+
+.mult-badge.on {
+  border-color: var(--purple);
+}
+
+/* a catalyst — a 6" purple ring — drawn as an annulus with the same hole-punch technique
+   as `.flower-icon`: the base disc is the ring's colour, `::after` punches the hole in
+   the card's own background. Grey base = empty seat; `.filled` (seated on a hook) turns
+   purple; the standalone holding indicator reuses this shape in gold (in range to
+   pick up/place, `.chip.prompt`'s existing "actionable now" colour) or green (carrying,
+   out of range). */
+.catalyst-pip {
+  position: relative;
+  display: inline-block;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: var(--ds-mut);
+  border: 1px solid var(--ds-mut);
+  flex: none;
+}
+
+.catalyst-pip::after {
+  content: '';
+  position: absolute;
+  inset: 3px;
+  border-radius: 50%;
+  background: var(--ds-hud);
+}
+
+.catalyst-pip.filled {
+  background: var(--purple);
+}
+
+.catalyst-pip.prompt {
+  background: var(--ds-gold);
+}
+
+.catalyst-pip.carrying {
+  background: var(--green);
+}
+
+/* CR's endgame ring-stand/lab-area status — only rendered once it's true (see GameView.tsx),
+   so there's no default/neutral state to colour here. Border matches the existing on-canvas
+   badge over the robot (`drawChain.ts`: ascended gold, parked white) — `--ds-warn` (gold-
+   adjacent, not the raw --ds-gold fill, which lands under 3:1 on the light card as a plain
+   border with no ring shape to carry the boundary the way `.catalyst-pip`/`.gate-icon` do)
+   and `--ds-ink` (the dual-theme read of "white": near-white ink on the dark card, same as
+   the canvas badge's literal white on the always-dark field). Both already have AA pairs
+   against the HUD card in contrast.mjs (`.chip.warn`, `.chip ink`) — no new ones needed. */
+.park-status {
+  background: var(--ds-hud);
+  border: 2px solid var(--ds-mut);
+  border-radius: var(--ds-round-md);
+  padding: 8px 12px;
+  font-family: var(--ds-font-mono);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 1px;
+  color: var(--text);
+}
+
+.park-status.ascended {
+  border-color: var(--ds-warn);
+}
+
+.park-status.parked {
+  border-color: var(--ds-ink);
 }
 
 /* on-screen leave/reset buttons (Esc/R keyboard shortcuts also work) */
@@ -796,7 +1261,7 @@ button {
   top: 52px;
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 8px;
   align-items: flex-start;
 }
 
@@ -814,6 +1279,16 @@ button {
   letter-spacing: 1px;
   color: var(--ds-ink-dim);
   animation: log-out 0.5s ease-in 2s forwards;
+}
+
+/* the BIOBUZZ PIN countdown — a live value, not a fact that happened, so unlike an ordinary
+   toast it must NOT fade: it stays exactly as long as `BiobuzzPinnedNotice` keeps rendering
+   it. Same warning voice as `.chip.warn`, since it is one, just living in the log instead of
+   the HUD card. */
+.eventlog-pinned {
+  color: var(--ds-warn);
+  border-left-color: var(--ds-warn);
+  animation: none;
 }
 
 @keyframes log-out {
@@ -2035,33 +2510,6 @@ button {
 /* the console is wider than a settings column now — it carries a live table */
 .adm-wide { max-width: 940px; }
 
-.adm-tabs {
-  display: flex;
-  gap: 6px;
-  flex-wrap: wrap;
-  margin: 0 0 22px;
-  border-bottom: 1px solid var(--ds-line);
-  padding-bottom: 10px;
-}
-.adm-tab {
-  background: transparent;
-  border: 1px solid transparent;
-  border-radius: var(--ds-round-full);
-  padding: 8px 16px;
-  font: inherit;
-  font-size: 13px;
-  font-weight: 700;
-  letter-spacing: 0.03em;
-  color: var(--ds-mut);
-  cursor: pointer;
-}
-.adm-tab:hover { color: var(--ds-ink); }
-.adm-tab.on {
-  background: var(--ds-tile);
-  border-color: var(--ds-line-strong);
-  color: var(--ds-ink);
-}
-
 .adm-h3 {
   font-size: 13px;
   font-weight: 800;
@@ -2114,6 +2562,7 @@ button {
   font: inherit;
   font-size: 13px;
   color: var(--ds-ink);
+  margin-top: var(--ds-s-5);
   margin-bottom: 12px;
 }
 
@@ -2147,6 +2596,7 @@ button {
 }
 .adm-pill.match { color: var(--ds-ok-ink); border-color: var(--ds-ok-ink); }
 .adm-pill.queued { color: var(--ds-accent); border-color: var(--ds-accent); }
+.adm-pill.count { margin-left: var(--ds-s-2); }
 
 .adm-rooms { display: flex; flex-direction: column; gap: 8px; }
 .adm-room {
@@ -2182,6 +2632,10 @@ button {
   flex-direction: column;
   gap: 14px;
 }
+/* a lone note or the next section's heading right after a card — .admin-card owns
+   no gap outside itself, so these are the ones spacing it from what follows */
+.admin-card + .ds-hint { margin-top: var(--ds-s-4); }
+.admin-card + .ds-h2 { margin-top: var(--ds-s-6); }
 .admin-field { display: flex; align-items: center; gap: 8px; font-size: 13px; font-weight: 600; }
 .admin-field.col { flex-direction: column; align-items: stretch; gap: 5px; }
 .admin-field input {
@@ -2466,7 +2920,6 @@ input.admin-months {
   box-shadow: 0 24px 60px rgba(0, 0, 0, 0.35);
   animation: ann-pop 0.28s cubic-bezier(0.2, 1, 0.3, 1);
 }
-.ann-panel .ds-eyebrow { margin: 0; }
 .ann-scroll {
   display: flex;
   flex-direction: column;

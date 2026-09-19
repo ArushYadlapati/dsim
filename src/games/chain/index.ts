@@ -3,6 +3,7 @@ import { CHAIN_SIM } from './sim';
 import { drawChainField } from './drawField';
 import { drawChainBalls } from './draw';
 import { drawChainRobot } from './drawRobot';
+import { ChainHudChips } from './HudSlots';
 
 /**
  * Chain Reaction as a full (client) `GameModule` — the DOM-free `CHAIN_SIM` plus
@@ -14,5 +15,6 @@ export const CHAIN_MODULE: GameModule = {
   drawField: drawChainField,
   drawRobot: drawChainRobot,
   drawBalls: drawChainBalls,
+  hudChips: ChainHudChips,
   ui: { showScoreHud: true, startEditor: false, intakes: ['sloped'] },
 };

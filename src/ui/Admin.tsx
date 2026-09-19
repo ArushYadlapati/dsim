@@ -40,15 +40,19 @@ const TABS: { id: AdminTab; label: string }[] = [
 function AdminHeader({ tab, setTab }: { tab: AdminTab; setTab: (t: AdminTab) => void }) {
   return (
     <>
-      <p className="ds-eyebrow">Admin</p>
-      <h1 className="ds-h1">Control panel</h1>
-      <div className="adm-tabs" role="tablist">
+      {/* "Control Panel" is a deliberate title-case exception (user request) to the
+          house sentence-case rule for headings. */}
+      <h1 className="ds-h1">Control Panel</h1>
+      {/* Visual style matches Records' .ds-tabs/.ds-tab; role/aria-selected stay
+          (unlike Records' nav+aria-current) because these tabs switch content
+          in place with no URL change — the real ARIA-tablist case. */}
+      <div className="ds-tabs" role="tablist">
         {TABS.map((t) => (
           <button
             key={t.id}
             role="tab"
             aria-selected={tab === t.id}
-            className={`adm-tab${tab === t.id ? ' on' : ''}`}
+            className={`ds-tab${tab === t.id ? ' on' : ''}`}
             onClick={() => setTab(t.id)}
           >
             {t.label}
@@ -331,7 +335,7 @@ export function Admin({
 
       {tab === 'server' && (
         <>
-      <p className="ds-sub" style={{ margin: '0 0 20px' }}>
+      <p className="ds-sub">
         Announce a restart to every connected player with a live countdown, then deploy the
         server when it hits zero. Players see a banner; anyone already playing gets warned.
       </p>
@@ -368,9 +372,9 @@ export function Admin({
             CANCEL NOTICE
           </button>
         </div>
-        {status && <p className="ds-hint" style={{ marginTop: 12 }}>{status}</p>}
+        {status && <p className="ds-hint">{status}</p>}
       </div>
-      <p className="ds-hint" style={{ marginTop: 16 }}>
+      <p className="ds-hint">
         Reminder: this only warns players. It doesn’t restart the server. Run your deploy when
         the countdown reaches 0.
       </p>
@@ -380,7 +384,7 @@ export function Admin({
       {tab === 'content' && (
         <>
       <h2 className="ds-h2">Announcements</h2>
-      <p className="ds-sub" style={{ margin: '0 0 20px' }}>
+      <p className="ds-sub">
         Publish patch notes, bug-fix summaries, or a new season / act. Each player sees it once -
         the first time they open the app after you publish. A new season or act plays a full-screen
         cinematic reveal; patch notes show in a “What’s new” panel.
@@ -426,7 +430,7 @@ export function Admin({
             placeholder={'## Gate & Intake\n- Fixed the gate lever swinging closed on a **resting** robot\n- Faster basin drain\n\n## Drivetrain\n- New swerve pod wobble tuning - see [the notes](https://example.com)'}
             onChange={(e) => setAnnBody(e.target.value)}
           />
-          <span className="ds-hint" style={{ marginTop: 4 }}>
+          <span className="ds-hint">
             Supports Markdown: <code>## headings</code>, <code>**bold**</code>, <code>- bullets</code>{' '}
             (indent to nest), <code>[links](url)</code>, <code>---</code> rules.
           </span>
@@ -444,9 +448,9 @@ export function Admin({
             PUBLISH
           </button>
         </div>
-        {annStatus && <p className="ds-hint" style={{ marginTop: 12 }}>{annStatus}</p>}
+        {annStatus && <p className="ds-hint">{annStatus}</p>}
         {announcements.length > 0 && (
-          <div className="admin-list" style={{ marginTop: 12 }}>
+          <div className="admin-list">
             {announcements.map((a) => (
               <div key={a.id} className="admin-row">
                 <span className={`ann-badge ${a.kind}`}>{a.kind}</span>
@@ -463,8 +467,8 @@ export function Admin({
         )}
       </div>
 
-      <h2 className="ds-h2" style={{ marginTop: 32 }}>Acts &amp; Seasons</h2>
-      <p className="ds-sub" style={{ margin: '0 0 20px' }}>
+      <h2 className="ds-h2">Acts &amp; Seasons</h2>
+      <p className="ds-sub">
         Competitive periods are grouped Act → Season (both 1-indexed; Act 0 is the beta).
         A <b>new season</b> resets the boards within the current act; a <b>new act</b> also
         rolls the act and restarts the season count at 1, firing the “A NEW ACT” cinematic.
@@ -493,7 +497,7 @@ export function Admin({
             PURGE ARCHIVED REPLAYS
           </button>
         </div>
-        {seasonStatus && <p className="ds-hint" style={{ marginTop: 12 }}>{seasonStatus}</p>}
+        {seasonStatus && <p className="ds-hint">{seasonStatus}</p>}
       </div>
 
         </>
@@ -507,7 +511,7 @@ export function Admin({
       <AdminReports onWatchReplay={onWatchReplay} />
       <hr className="adm-sep" />
       <h2 className="ds-h2">Moderation · records</h2>
-      <p className="ds-sub" style={{ margin: '0 0 20px' }}>
+      <p className="ds-sub">
         Inspect a leaderboard bucket (live season) and remove cheated or invalid runs. Deleting a
         run also deletes its replay. “Clear all” wipes every run by that player, for confirmed
         cheaters.
@@ -529,7 +533,7 @@ export function Admin({
           </button>
         </div>
         {records.length > 0 && (
-          <div className="admin-list" style={{ marginTop: 12 }}>
+          <div className="admin-list">
             {records.map((r, i) => (
               <div key={r.recordId} className="admin-row">
                 <span className="admin-rank">{i + 1}</span>
@@ -547,13 +551,13 @@ export function Admin({
             ))}
           </div>
         )}
-        {recStatus && <p className="ds-hint" style={{ marginTop: 12 }}>{recStatus}</p>}
+        {recStatus && <p className="ds-hint">{recStatus}</p>}
       </div>
 
       {/* main's heading was "Moderation - display names"; this section now does
           memberships too. */}
-      <h2 className="ds-h2" style={{ marginTop: 32 }}>Players · names, memberships &amp; standing</h2>
-      <p className="ds-sub" style={{ margin: '0 0 20px' }}>
+      <h2 className="ds-h2">Players · names, memberships &amp; standing</h2>
+      <p className="ds-sub">
         Find a player by display name, username, or exact user id. Force an inappropriate name to
         something clean, comp or revoke a supporter membership, or open their account standing to
         pardon penalties the server got wrong. Every membership change and every standing edit is
@@ -574,7 +578,7 @@ export function Admin({
           </button>
         </div>
         {users.length > 0 && (
-          <div className="admin-list" style={{ marginTop: 12 }}>
+          <div className="admin-list">
             {users.map((u) => (
               <div key={u.userId} className="admin-user">
                 <div className="admin-row">
@@ -672,7 +676,7 @@ export function Admin({
             ))}
           </div>
         )}
-        {userStatus && <p className="ds-hint" style={{ marginTop: 12 }}>{userStatus}</p>}
+        {userStatus && <p className="ds-hint">{userStatus}</p>}
       </div>
         </>
       )}

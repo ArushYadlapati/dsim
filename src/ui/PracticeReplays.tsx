@@ -118,11 +118,8 @@ export function PracticeReplays({
   const rows = mergeRuns(remote, local);
 
   return (
-    <div className="ds-panel">
-      <div className="ds-panel-h">
-        <span className="ds-panel-title">Practice replays</span>
-      </div>
-
+    <section className="ds-sec">
+      <h2>Practice replays</h2>
       {loading && rows.length === 0 ? (
         <div className="ds-loading">Loading…</div>
       ) : rows.length === 0 ? (
@@ -133,10 +130,8 @@ export function PracticeReplays({
         </div>
       ) : (
         <>
-          {/* the same scroller the two sibling tables use. `.ds-panel` is
-              `overflow: hidden` for its rounded corners, so a table wider than the
-              panel is CUT rather than scrolled — this was the one list in the slice
-              without it. */}
+          {/* the same scroller the two sibling tables use, for a table wider than
+              its container. */}
           <div className="mh-scroll">
             <table className="ds-table">
               <thead>
@@ -201,6 +196,6 @@ export function PracticeReplays({
           </p>
         </>
       )}
-    </div>
+    </section>
   );
 }

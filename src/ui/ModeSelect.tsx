@@ -1,4 +1,3 @@
-import { APP_NAME } from '../seasons';
 import { QueueCounts } from './QueueCounts';
 import { useLanEnabled } from './useLanEnabled';
 
@@ -39,7 +38,6 @@ export function ModeSelect({
   const lanOn = useLanEnabled();
   return (
     <>
-      <p className="ds-eyebrow">{APP_NAME} · Play</p>
       <h1 className="ds-h1">Pick a mode</h1>
 
       {activeGame && (
