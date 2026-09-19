@@ -413,6 +413,20 @@ function scoringChecks(check: Check): void {
      *                                    110
      */
     check('TABLE: BLUE TOTAL = 100+4+5+1 = 110', s.blue.total === 110, String(s.blue.total));
+    /**
+     * THE FINAL SCORE IS UNCHANGED BY THE INSTANT RULING (owner ruling, 2026-09-19).
+     *
+     * Every harvest — the results screen, `submitRecord`, the server's finalize — happens at or
+     * after `post`, so zeroing LEAVE / PARK / GARDEN until their instants moves the RUNNING
+     * total and nothing that was ever banked. This world is the whole of Table 10-2 and it is
+     * at `post`: 88 and 110, the same two numbers as before, with nothing left owing. Written
+     * as its own check so a review can see that at a glance rather than by diffing the block.
+     */
+    check(
+      'ASSESS: the FINAL score is unchanged by this ruling, and nothing is left pending at post',
+      s.red.total === 88 && s.blue.total === 110 && s.red.pendingPts === 0 && s.blue.pendingPts === 0,
+      `${s.red.total}/${s.blue.total} pending ${s.red.pendingPts}/${s.blue.pendingPts}`,
+    );
     check('TABLE: blue scored nothing it did not earn (no LEAVE, no PARK)', s.blue.leave === 0 && s.blue.parkAuto === 0);
     check('TABLE: FLOWER owners are F1 red, F2 blue, F3/F4 unowned',
       s.flowerOwners.join(',') === 'red,blue,,',
@@ -435,8 +449,10 @@ function scoringChecks(check: Check): void {
       });
       w.match.phase = 'post';
       // the total is checked against the sum of the OTHER lines rather than against 88 − 8:
-      // LEAVE and both PARKs are themselves phase-dependent, so the invariant here is that the
-      // cell line contributes nothing, not that the match total is a particular number.
+      // LEAVE, both PARKs and the GARDEN are themselves phase-dependent (they are instant lines
+      // too, §10.5 F/G/E), so the invariant here is that the cell line contributes nothing, not
+      // that the match total is a particular number. `others()` reads the same zeroed fields the
+      // total sums, so the two move together and the equality still isolates `cellPts`.
       const others = (x: (typeof live)[number]['s']['red']) =>
         x.leave + x.parkAuto + x.parkTele + x.tipPts + x.ownedPts + x.bottomPts + x.gardenPts;
       const bad = live.filter((x) => x.s.red.cellPts !== 0 || x.s.red.cellCount !== 4 || x.s.red.total !== others(x.s.red));
@@ -483,14 +499,40 @@ function scoringChecks(check: Check): void {
     check('HUD: the score breakdown rides the slice', hud.score.red.total === 88);
   }
 
-  // ── LEAVE and PARK are LIVE before their instant and LATCHED after it ──────
+  /**
+   * ── THE FOUR INSTANT-ASSESSED LINES, AND THE TWO CONTINUOUS ONES ──────────
+   *
+   * §10.5 assesses LEAVE and AUTO PARK at the end of AUTO (F), TELEOP PARK at the end of the
+   * MATCH (G), and the up-CELL contents and the GARDEN once everything has come to rest (C, E).
+   * Each of those is worth ZERO until its instant has passed (owner ruling, 2026-09-19) — the
+   * live predicate feeds the COUNT and `pendingPts`, and neither reaches the total.
+   *
+   * It shipped the other way, and the measurement is the reason these checks exist: a RED robot
+   * free-placed clear of the perimeter with one POLLEN in its GARDEN put **4 points on the bar
+   * before the match started** and 9 one second into AUTO, 29 s before anything on it had been
+   * assessed. The FINAL score never moved — every harvest is at or after `post` — so what these
+   * pin is the RUNNING total, which is the only thing that was wrong.
+   *
+   * The TIP (§10.5 A) and both FLOWER lines (§10.5 D, "throughout the MATCH") are CONTINUOUS
+   * and are checked here too, as negative controls: they must stay live, or somebody latches
+   * them by symmetry later and this bug comes back pointing the other way.
+   */
+
+  // ── LEAVE: a live COUNT before the instant, the LATCH after it, 0 points until then ───
   {
     const w = bare([{ id: 0, alliance: 'red' }]);
     const bb = w.biobuzz;
     if (!bb) return;
     place(w, 0, -40, 0); // clear of the wall, clear of the zone
     w.match.phase = 'auto';
-    check('ASSESS: LEAVE is provisional during AUTO', bbScoreWorld(w).red.leave === BB_PTS.leave);
+    {
+      const s = bbScoreWorld(w).red;
+      check(
+        'ASSESS (§10.5 F): LEAVE during AUTO is a PENDING COUNT worth 0 points',
+        s.leave === 0 && s.leaveCount === 1 && s.pendingPts === BB_PTS.leave,
+        `pts=${s.leave} count=${s.leaveCount} pending=${s.pendingPts}`,
+      );
+    }
     // the latch says otherwise, and after the instant the latch is what is read
     bb.leave[0] = false;
     w.match.phase = 'teleop';
@@ -498,6 +540,202 @@ function scoringChecks(check: Check): void {
     bb.leave[0] = true;
     place(w, 0, -72 + 9, 0); // back at the wall — the achievement is kept
     check('ASSESS: a robot that returns to the wall KEEPS its LEAVE', bbScoreWorld(w).red.leave === BB_PTS.leave);
+  }
+
+  /**
+   * ONE POSE THAT SATISFIES LEAVE AND PARK AT ONCE, derived from the wall rather than typed.
+   *
+   * Both are measured off the FOOTPRINT, which is 21 × 17 — `robotExtents` adds the sweeper's
+   * reach to each end — so the near corner is 10.5 in from the centre and a pose that looks
+   * clear by an inch is not. The same derivation the two-instant check in `cueChecks` uses, and
+   * for the same reason it stopped being a literal there: at x = −59 the corner sits 1.17 in
+   * inside the CAD wall, i.e. within `START_TOUCH_TOL`, so the robot never LEAVES.
+   */
+  const CLEAR_X = -BB_HALF_X + 10.5 + START_TOUCH_TOL + 2;
+  const LZ_Y = (BB_LZ.red.y0 + BB_LZ.red.y1) / 2;
+  /** the middle of RED's GARDEN strip, far enough off the wall that containment leaves it be. */
+  const GARDEN_Y = -69;
+
+  // ── AUTO PARK: counted live in AUTO, worth 0 until the end-of-AUTO instant (§10.5 F) ──
+  {
+    const w = bare([{ id: 0, alliance: 'red' }]);
+    const bb = w.biobuzz;
+    if (!bb) return;
+    place(w, 0, CLEAR_X, LZ_Y); // clear of the perimeter AND inside its own LOADING ZONE
+    markStarts(w);
+    w.match.phase = 'auto';
+    const during = bbScoreWorld(w).red;
+    check(
+      'ASSESS (§10.5 F): AUTO PARK is 0 during AUTO and lands at the instant',
+      during.parkAutoCount === 1 &&
+        during.parkAuto === 0 &&
+        during.pendingPts === BB_PTS.leave + BB_PTS.parkAuto,
+      `count=${during.parkAutoCount} pts=${during.parkAuto} pending=${during.pendingPts}`,
+    );
+    bb.leave[0] = true;
+    bb.parkAuto[0] = true;
+    w.match.phase = 'transition';
+    const after = bbScoreWorld(w).red;
+    check(
+      'ASSESS (§10.5 F): past the instant the latched LEAVE and AUTO PARK are paid',
+      after.parkAuto === BB_PTS.parkAuto && after.leave === BB_PTS.leave && after.pendingPts === 0,
+      `leave=${after.leave} park=${after.parkAuto} pending=${after.pendingPts}`,
+    );
+  }
+
+  // ── TELEOP PARK: counted live in TELEOP, worth 0 until the buzzer (§10.5 G) ──
+  {
+    const w = bare([{ id: 0, alliance: 'red' }]);
+    const bb = w.biobuzz;
+    if (!bb) return;
+    place(w, 0, CLEAR_X, LZ_Y);
+    markStarts(w);
+    w.match.phase = 'teleop';
+    const during = bbScoreWorld(w).red;
+    check(
+      'ASSESS (§10.5 G): TELEOP PARK is 0 during TELEOP and lands at post',
+      during.parkTeleCount === 1 && during.parkTele === 0 && during.pendingPts === BB_PTS.parkTele,
+      `count=${during.parkTeleCount} pts=${during.parkTele} pending=${during.pendingPts}`,
+    );
+    bb.parkTele[0] = true;
+    w.match.phase = 'post';
+    const after = bbScoreWorld(w).red;
+    check(
+      'ASSESS (§10.5 G): at post the latched TELEOP PARK is paid and nothing is left pending',
+      after.parkTele === BB_PTS.parkTele && after.pendingPts === 0,
+      `pts=${after.parkTele} pending=${after.pendingPts}`,
+    );
+  }
+
+  // ── THE PRE-MATCH SCORE IS 0 — the regression, exactly as it was measured ──
+  {
+    const w = bare([{ id: 0, alliance: 'red' }]);
+    const bb = w.biobuzz;
+    if (!bb) return;
+    // free placement is legal in this game and the editor allows a pose off the wall, which is
+    // what made the bar read 4 with the field frozen: 3 for a LEAVE nothing had assessed plus 1
+    // for a GARDEN pollen the match had not started to score.
+    place(w, 0, -40, 0);
+    markStarts(w);
+    w.balls.push(el('yellow', { kind: 'ground' }, -60, GARDEN_Y));
+    w.match.phase = 'pre';
+    const s = bbScoreWorld(w).red;
+    check(
+      'ASSESS: the PRE-MATCH score is 0, even for a robot free-placed clear of the perimeter',
+      s.total === 0 && s.leaveCount === 1 && s.gardenCount === 1 && s.pendingPts === BB_PTS.leave + BB_PTS.garden,
+      `total=${s.total} leaveCount=${s.leaveCount} gardenCount=${s.gardenCount} pending=${s.pendingPts}`,
+    );
+  }
+
+  // ── GARDEN: the twin of the up-CELL line, by §10.5 E's own words ───────────
+  {
+    const w = bare([{ id: 0, alliance: 'red' }]);
+    if (!w.biobuzz) return;
+    w.balls.push(el('yellow', { kind: 'ground' }, -60, GARDEN_Y));
+    const at = (ph: World['match']['phase']) => {
+      w.match.phase = ph;
+      return bbScoreWorld(w).red;
+    };
+    const live = (['pre', 'auto', 'teleop'] as const).map((ph) => ({ ph, s: at(ph) }));
+    const end = at('post');
+    const bad = live.filter((x) => x.s.gardenCount !== 1 || x.s.gardenPts !== 0);
+    check(
+      'GARDEN (§10.5 E): the garden line is 0 until the buzzer, and the COUNT stays live',
+      bad.length === 0 && end.gardenCount === 1 && end.gardenPts === BB_PTS.garden,
+      bad.length
+        ? bad.map((x) => `${x.ph}: count=${x.s.gardenCount} pts=${x.s.gardenPts}`).join(' · ')
+        : `pre/auto/teleop: 1 in the strip, 0 points · post: ${end.gardenPts}`,
+    );
+  }
+
+  // ── THE CONTINUOUS LINES MUST NOT FOLLOW — §10.5 A and D ──────────────────
+  {
+    const w = bare([{ id: 0, alliance: 'red' }]);
+    const bb = w.biobuzz;
+    if (!bb) return;
+    intoFlower(w, 0, ['yellow', 'red', 'yellow', 'yellow']); // 3 in the volume, red owns, red bottom
+    bb.hives.red.tips = 1;
+    w.match.phase = 'teleop';
+    const t = bbScoreWorld(w).red;
+    check(
+      "FLOWER (§10.5 D): the FLOWER lines are CONTINUOUS and stay live mid-match",
+      t.ownedPts === 3 * BB_PTS.owned && t.bottomPts === BB_PTS.bottomNectar,
+      `owned=${t.ownedPts} bottom=${t.bottomPts}`,
+    );
+    w.match.phase = 'auto';
+    const a = bbScoreWorld(w).red;
+    check(
+      'TIP (§10.5 A): a TIP is paid the tick it completes, mid-match',
+      a.tipPts === BB_PTS.tip,
+      String(a.tipPts),
+    );
+  }
+
+  /**
+   * ── THE PHASE LADDER: the check that would have caught the bug ────────────
+   *
+   * A DRIVEN run through the real phase machine (`biobuzzStep`, so `bbAssess` fires at the two
+   * instants it always has) on the fixture the regression was measured on — one RED robot clear
+   * of the perimeter and inside its own LOADING ZONE for the whole match, one POLLEN in the red
+   * GARDEN. Each phase is shortened to two ticks, the way `cueChecks` shortens them, because
+   * what is under test is the boundary and not the clock.
+   *
+   * Sampled at every phase change, the total must read:
+   *   pre 0 · auto 0 · transition 8 · teleop 8 · post 14
+   * Before this ruling the same run read 4 · 9 · 9 · 14 · 14.
+   *
+   * ⚠️ `total + pendingPts` is 14 from TELEOP ON, and deliberately NOT before it: TELEOP PARK
+   * is assessed on where a robot ends the MATCH, so during AUTO there is nothing provisional
+   * about it to show and `pendingPts` does not claim it. Asserting the invariant across the
+   * whole match would be asserting that a robot parked in AUTO has already earned the endgame
+   * 5, which is the same class of promise this whole change exists to stop making.
+   */
+  {
+    const w = bare([{ id: 0, alliance: 'red' }]);
+    const bb = w.biobuzz;
+    if (!bb) return;
+    place(w, 0, CLEAR_X, LZ_Y);
+    markStarts(w);
+    w.balls.push(el('yellow', { kind: 'ground' }, -60, GARDEN_Y));
+    const none = new Map<number, RobotCommand>();
+    const rung: { phase: string; total: number; pending: number }[] = [];
+    const sample = () => {
+      const s = bbScoreWorld(w).red;
+      rung.push({ phase: w.match.phase, total: s.total, pending: s.pendingPts });
+    };
+    /** two ticks of the shortened phase, which is what carries the boundary. */
+    const run = () => {
+      w.match.phaseTimeLeft = 2 * SIM_DT;
+      biobuzzStep(w, SIM_DT, none);
+      biobuzzStep(w, SIM_DT, none);
+      sample();
+    };
+    w.match.phase = 'pre';
+    sample();
+    w.match.phase = 'auto';
+    sample();
+    run(); // AUTO ends: LEAVE and AUTO PARK are latched
+    run(); // transition ends
+    run(); // the MATCH ends: TELEOP PARK is latched
+    const totals = rung.map((r) => r.total).join(',');
+    const phases = rung.map((r) => r.phase).join(',');
+    check(
+      'PHASES: the running total never includes a line whose instant has not passed',
+      phases === 'pre,auto,transition,teleop,post' && totals === '0,0,8,8,14',
+      `${phases} → ${totals}`,
+    );
+    const pendings = rung.map((r) => r.pending).join(',');
+    check(
+      'PENDING: pendingPts is what the instants still owe, and it is never in the total',
+      pendings === '9,9,1,6,0',
+      `${phases} → ${pendings}`,
+    );
+    const late = rung.slice(3); // teleop, post
+    check(
+      'PENDING: from TELEOP on, total + pendingPts is the final score all the way to the buzzer',
+      late.every((r) => r.total + r.pending === 14),
+      late.map((r) => `${r.phase}: ${r.total}+${r.pending}`).join(' · '),
+    );
   }
 
   // ── A TIP CAUGHT BY THE BUZZER — the swing outlasts the harvest window ─────
@@ -1768,9 +2006,26 @@ function sceneChecks(check: Check): void {
       const parked = w.robots.filter((r) => bbParkedNow(r)).map((r) => r.id);
       check('SCENE park-examples: robots 0, 1 and 3 park; robot 2 does not',
         parked.join(',') === '0,1,3', parked.join(','));
+      // the scene sits in TELEOP, so the LIVE PARK predicate is what drives the COUNT — which
+      // is what the picture illustrates. The POINTS wait for the end-of-match instant (§10.5 G),
+      // so mid-match the line is a count of 2 worth 0, and `pendingPts` is the 10 it will pay.
       const score = bbScoreWorld(w);
-      check('SCENE park-examples: two RED park at 5 each, live in TELEOP',
-        score.red.parkTele === 2 * BB_PTS.parkTele, String(score.red.parkTele));
+      check('SCENE park-examples: two RED park, counted live in TELEOP and worth 0 until the buzzer',
+        score.red.parkTeleCount === 2 &&
+          score.red.parkTele === 0 &&
+          score.red.pendingPts === 2 * BB_PTS.parkTele,
+        `count=${score.red.parkTeleCount} pts=${score.red.parkTele} pending=${score.red.pendingPts}`);
+      // ...and the 10 the label promises still lands, on the same world, once the instant has
+      // passed. Robots 0 and 1 are the scene's RED pair, and both are in the parked list above.
+      const bb = w.biobuzz;
+      if (bb) {
+        bb.parkTele[0] = true;
+        bb.parkTele[1] = true;
+        w.match.phase = 'post';
+        check('SCENE park-examples: the two RED PARKs pay 5 each at the buzzer',
+          bbScoreWorld(w).red.parkTele === 2 * BB_PTS.parkTele,
+          String(bbScoreWorld(w).red.parkTele));
+      }
     }
   }
 

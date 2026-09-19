@@ -30,18 +30,34 @@ import type { BiobuzzState } from './state';
  * paper, which is what `scripts/smoke-biobuzz/rules.ts` does for every line of the table.
  *
  * ── THE TWO KINDS OF LINE, AND WHY LATCHES EXIST AT ALL ─────────────────────
- * Most lines are CONTINUOUS: cell contents, flowers, gardens. They are read live and they are
- * whatever they are when the buzzer goes, which is exactly what "at rest after the match"
- * (§10.5.C/E) means for a sim that stops stepping at the buzzer.
+ * §10.5 splits Table 10-2 in two, and the split is the whole of this file's bookkeeping.
  *
- * LEAVE and PARK are not. They are assessed at an INSTANT — the end of AUTO, and the end of
- * the MATCH (Table 10-2) — and a robot that drives back to the wall after that keeps its
- * points. So those three are LATCHED into `world.biobuzz` by `step.ts` at the phase boundary,
- * and this file reads the latch once the instant has passed. BEFORE the instant it reads the
- * live predicate instead, so a HUD shows a provisional value that moves while a driver can
- * still change it, and freezes when the rule says it freezes. `bbLeftNow` / `bbParkedNow` are
- * exported so `step.ts` latches with the same predicate this scores with — one definition, or
- * the HUD and the final score disagree by exactly the bug nobody finds until a real match.
+ * CONTINUOUS lines are assessed "throughout the MATCH": the HIVE TIP (§10.5 A) and both FLOWER
+ * lines — elements in a FLOWER you OWN and the Bottom NECTAR Bonus (§10.5 D, "throughout the
+ * MATCH with final assessment…"). They are read live, they are paid live, and latching one of
+ * them would be this same bug pointing the other way.
+ *
+ * INSTANT lines are assessed at a MOMENT and at no other:
+ *   • LEAVE and AUTO PARK — the end of AUTO (§10.5 F)
+ *   • TELEOP PARK — the end of the MATCH (§10.5 G)
+ *   • POLLEN/NECTAR remaining in an upward-facing CELL — after everything comes to rest at the
+ *     conclusion of the MATCH (§10.5 C)
+ *   • POLLEN/NECTAR at least partially in a GARDEN — the end of TELEOP, all ROBOTS and SCORING
+ *     ELEMENTS at rest (§10.5 E)
+ *
+ * ⚠️ **AN INSTANT LINE IS WORTH ZERO POINTS UNTIL ITS INSTANT HAS PASSED** (owner ruling,
+ * 2026-09-19). The live predicate feeds the COUNT — the driver's readout — and `pendingPts`,
+ * and it never reaches `total`. It used to reach `total`, and the measured consequence was a
+ * score bar reading 4 BEFORE the match started (a free-placed robot clear of the perimeter with
+ * one POLLEN in its GARDEN) and 9 one second into AUTO, 29 s before anything on it had been
+ * assessed. The FINAL score is unchanged — every harvest happens at or after `post` — so this
+ * moves the running total and nothing that was ever banked.
+ *
+ * LEAVE and PARK also have to survive the robot moving afterwards: a robot that drives back to
+ * the wall keeps its 3. So the three are LATCHED into `world.biobuzz` by `step.ts` at the phase
+ * boundary and read from the latch from then on. `bbLeftNow` / `bbParkedNow` are exported so
+ * `step.ts` latches with the same predicate this scores with — one definition, or the HUD and
+ * the final score disagree by exactly the bug nobody finds until a real match.
  *
  * ── FOULS ARE NOT IN HERE ───────────────────────────────────────────────────
  * `foul` on the breakdown is READ from `world.match.scores[a].foulPoints`, which `penalties.ts`
@@ -215,13 +231,29 @@ export interface BbAllianceScore {
   /** FLOWERS whose bottom-most scoring NECTAR is this alliance's, and 5 each */
   bottomCount: number;
   bottomPts: number;
-  /** elements at least partially in this alliance's GARDEN, and 1 each */
+  /** elements at least partially in this alliance's GARDEN, and 1 each — **and 0 points until
+   * the match is over**, by §10.5 E, which is word for word §10.5 C's instant: "at the end of
+   * TELEOP when all ROBOTS and SCORING ELEMENTS have come to rest". Same treatment as the CELL
+   * line it sits beside; the COUNT stays live because a driver pushing pollen into the strip
+   * still needs to see it land. */
   gardenCount: number;
   gardenPts: number;
   /** points from the OPPONENT's fouls — read from `world.match`, never written here */
   foul: number;
   /** the sum of every line above EXCEPT `foul` */
   total: number;
+  /**
+   * What the instants still ahead WOULD pay if every one of them were assessed right now —
+   * LEAVE + AUTO PARK before the end of AUTO; TELEOP PARK + up-CELL + GARDEN before the buzzer.
+   *
+   * **NOT in `total`, ever**, and that is the point of it existing. Once an instant line pays
+   * nothing until its instant, a driver who clears the perimeter sees no change at all, and a
+   * bar that never moves reads as broken in the other direction. This is the number the HUD
+   * shows separately, so the score promises nothing it does not already have while the driver
+   * can still see that the achievement is satisfied. `total + pendingPts` is invariant across
+   * the whole match for a field that does not change, which is what makes it honest.
+   */
+  pendingPts: number;
 }
 
 /** the RANKING POINTS an alliance has earned so far (Tables 10-2/10-3). */
@@ -261,6 +293,7 @@ const zero = (): BbAllianceScore => ({
   gardenPts: 0,
   foul: 0,
   total: 0,
+  pendingPts: 0,
 });
 
 /**
@@ -296,20 +329,31 @@ export function bbScoreWorld(world: World): BbScore {
   const kindOf = bbKindIndex(world);
   const phase = world.match.phase;
 
-  // ── LEAVE / PARK — live while the instant is still ahead, latched once it has passed ──
+  /**
+   * THE TWO INSTANTS, as booleans, hoisted because four lines below need them.
+   *
+   * `autoAssessed` deliberately reads TRUE in `freeplay`: free drive has no AUTO buzzer, so the
+   * latch it then reads was never written and every instant line scores 0. That is the same
+   * answer freeplay already gave for PARK and for the CELL line, and it is the honest one — a
+   * practice session has no moment at which anything was assessed.
+   */
+  const autoAssessed = phase !== 'pre' && phase !== 'auto';
+  const matchOver = phase === 'post';
+
+  // ── LEAVE / PARK — a live COUNT while the instant is still ahead, the LATCH once it has
+  //    passed. The POINTS wait for the instant either way; see the arithmetic at the bottom. ──
   for (const r of world.robots) {
     if (r.passive) continue; // a practice dummy is not a competitor and scores nothing
     const s = out[r.alliance];
-    const left =
-      phase === 'pre' || phase === 'auto'
-        ? bbLeftNow(r, bb.startWalls[r.id] ?? BB_WALL.all)
-        : (bb.leave[r.id] ?? false);
+    const left = autoAssessed
+      ? (bb.leave[r.id] ?? false)
+      : bbLeftNow(r, bb.startWalls[r.id] ?? BB_WALL.all);
     if (left) s.leaveCount++;
-    const parkA = phase === 'auto' ? bbParkedNow(r) : (bb.parkAuto[r.id] ?? false);
+    const parkA = autoAssessed ? (bb.parkAuto[r.id] ?? false) : bbParkedNow(r);
     if (parkA) s.parkAutoCount++;
     // PARK is assessed a second time at the END OF THE MATCH, so before TELEOP there is
     // nothing provisional to show — a robot parked in AUTO has not yet earned the teleop 5.
-    const parkT = phase === 'teleop' ? bbParkedNow(r) : (bb.parkTele[r.id] ?? false);
+    const parkT = matchOver ? (bb.parkTele[r.id] ?? false) : phase === 'teleop' && bbParkedNow(r);
     if (parkT) s.parkTeleCount++;
   }
 
@@ -338,7 +382,6 @@ export function bbScoreWorld(world: World): BbScore {
    * PARK already gives in freeplay (its latch is never written), and it is the honest one: a
    * practice session has no buzzer, so there is no instant at which anything was "left in".
    */
-  const matchOver = phase === 'post';
   for (const a of ALLIANCES) {
     const hive = bb.hives[a];
     /**
@@ -441,20 +484,32 @@ export function bbScoreWorld(world: World): BbScore {
   // ── the arithmetic, once ──────────────────────────────────────────────────
   for (const a of ALLIANCES) {
     const s = out[a];
-    s.leave = s.leaveCount * BB_PTS.leave;
-    s.parkAuto = s.parkAutoCount * BB_PTS.parkAuto;
-    s.parkTele = s.parkTeleCount * BB_PTS.parkTele;
+    // the INSTANT lines: each one is 0 until the moment §10.5 assesses it has passed.
+    s.leave = autoAssessed ? s.leaveCount * BB_PTS.leave : 0; // §10.5 F, end of AUTO
+    s.parkAuto = autoAssessed ? s.parkAutoCount * BB_PTS.parkAuto : 0; // §10.5 F, end of AUTO
+    s.parkTele = matchOver ? s.parkTeleCount * BB_PTS.parkTele : 0; // §10.5 G, end of the MATCH
+    s.cellPts = matchOver ? s.cellCount * BB_PTS.cell : 0; // §10.5 C — see the CELL block above
+    s.gardenPts = matchOver ? s.gardenCount * BB_PTS.garden : 0; // §10.5 E, the same instant as C
+    // the CONTINUOUS ones: §10.5 A for the TIP, §10.5 D for both FLOWER lines ("throughout the
+    // MATCH"). `ownedPts` and `bottomPts` were summed above, live, and stay live.
     s.tipPts = s.tips * BB_PTS.tip;
-    // 0 until the buzzer — see the CELL block above.
-    s.cellPts = matchOver ? s.cellCount * BB_PTS.cell : 0;
-    s.gardenPts = s.gardenCount * BB_PTS.garden;
     s.foul = world.match.scores[a].foulPoints;
     s.total =
       s.leave + s.parkAuto + s.parkTele + s.tipPts + s.cellPts + s.ownedPts + s.bottomPts + s.gardenPts;
+    // what the instants still ahead owe, for the HUD alone — exactly the lines zeroed above.
+    s.pendingPts =
+      (autoAssessed ? 0 : s.leaveCount * BB_PTS.leave + s.parkAutoCount * BB_PTS.parkAuto) +
+      (matchOver
+        ? 0
+        : s.parkTeleCount * BB_PTS.parkTele +
+          s.cellCount * BB_PTS.cell +
+          s.gardenCount * BB_PTS.garden);
     out.rp[a] = {
       // SWARM counts the LEAVE and PARK lines only — 16 is exactly both robots LEAVE and both
       // PARK in AUTO (3+3+5+5), which is why it is a threshold on those four numbers and not
-      // on the match total.
+      // on the match total. It therefore reads false until the end of AUTO now, which is right:
+      // an RP is awarded at the end of the MATCH, and a flag that flickered true mid-AUTO was
+      // showing a driver an award nothing had assessed.
       swarm: s.leave + s.parkAuto + s.parkTele >= BB_RP.swarm,
       pollinator1: s.tips >= BB_RP.pollinator1,
       pollinator2: s.tips >= BB_RP.pollinator2,

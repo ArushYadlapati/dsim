@@ -114,6 +114,31 @@ const pinLine = (p: BbPinHud): string =>
   `PIN · ${BB_PTS.foulMajor} IN ${p.nextIn.toFixed(1)} S` +
   (p.billed > 0 ? ` · ${p.billed * BB_PTS.foulMajor} BILLED` : '');
 
+/**
+ * THE PENDING LINE — what this alliance has SATISFIED but has not been AWARDED yet.
+ *
+ * §10.5 assesses LEAVE and AUTO PARK at the end of AUTO (F), TELEOP PARK at the end of the
+ * MATCH (G), and the up-CELL contents and the GARDEN once everything has come to rest (C, E).
+ * `score.ts` pays each of those exactly zero until its instant has passed (owner ruling,
+ * 2026-09-19) — before that, a robot clear of the perimeter and sitting in its own LOADING
+ * ZONE moves the score bar by nothing at all.
+ *
+ * Which is correct and, on its own, unreadable: a driver who has just done the right thing
+ * sees no acknowledgement, and a bar that never moves reads as broken. So the amount the
+ * instants still owe gets a chip of its own, in the muted chip row rather than in the panel,
+ * because the one thing it must never look like is part of the total. `+` and PENDING both say
+ * so; `score.ts` guarantees `total + pendingPts` is the same number all match for a field that
+ * stops changing, so the chip is a promise the score will keep.
+ *
+ * Empty at 0, like every other chip in this row — nothing satisfied, nothing to say. The ROW
+ * is what is always mounted (see the band note in `BiobuzzScoreBar`); the spans inside it come
+ * and go, which is the pattern the row's reserved `min-height` exists for.
+ */
+const pendingLine = (f: BiobuzzFieldHud | undefined, a: Alliance): string => {
+  const n = f?.score[a].pendingPts ?? 0;
+  return n > 0 ? `+${n} PENDING` : '';
+};
+
 
 /**
  * A CHIP THAT HAS TO OUTLIVE ITS FACT.
@@ -310,6 +335,9 @@ const PHASE_LABEL: Record<HudSnapshot['phase'], string> = {
 export function BiobuzzScoreBar({ hud }: GameHudProps) {
   const f = sliceOf(hud)?.field;
   const pin = soonestPin(f?.pins);
+  // the VIEWER's alliance: PENDING is a driver's own readout, and two of them on one chip row
+  // would be a scoreboard the row is not.
+  const pending = pendingLine(f, hud.alliance);
   const red = hud.alliance === 'red' ? hud.score.total : hud.oppTotal;
   const blue = hud.alliance === 'blue' ? hud.score.total : hud.oppTotal;
   const urgent = hud.timeLeft <= 10 && (hud.phase === 'auto' || hud.phase === 'teleop');
@@ -342,10 +370,16 @@ export function BiobuzzScoreBar({ hud }: GameHudProps) {
           (owner report, 2026-09-18). A band's box must be a function of the VIEWPORT, never
           of match state, so the slot is reserved (`.breakdown-row` has a min extent) and
           only the spans inside it are conditional. An empty row draws nothing. */}
+      {/* PENDING rides this row for the third time the same reason the two above do: it is a
+          number the field draws nowhere, it belongs to the driver rather than to the field, and
+          this row is the only one a coarse-pointer device renders. It is deliberately NOT in
+          the alliance panel — the panel is the score, and the whole point of this figure is
+          that it is not in the score yet (§10.5 C/E/F/G). */}
       <div className="breakdown-row" data-hud-band>
         {f?.nectarLocked && (
           <span>NECTAR LOCKED{f.nectarIn === null ? '' : ` ${fmtTime(f.nectarIn)}`}</span>
         )}
+        {pending && <span>{pending}</span>}
         {pin && <span className="warn">{pinLine(pin)}</span>}
       </div>
       <div className="scorebar" data-hud-band>
@@ -414,13 +448,20 @@ export function biobuzzResultsRows(hud: HudSnapshot): readonly ResultsSection[] 
     [
       'AUTONOMOUS',
       [
+        // the COUNT rows are the live, provisional readout and the POINTS rows wait for the
+        // instant §10.5 names, so the label carries the instant — the same thing the up-CELL
+        // row below has always done, and the only way a 0 beside a 2 in the count column reads
+        // as the rule rather than as a bug.
         row('LEAVE (robots)', 'leaveCount'),
-        row('LEAVE (points)', 'leave'),
+        row('LEAVE (points at the end of AUTO)', 'leave'),
         row('PARK (robots)', 'parkAutoCount'),
-        row('PARK (points)', 'parkAuto'),
+        row('PARK (points at the end of AUTO)', 'parkAuto'),
       ],
     ],
-    ['END OF MATCH', [row('PARK (robots)', 'parkTeleCount'), row('PARK (points)', 'parkTele')]],
+    [
+      'END OF MATCH',
+      [row('PARK (robots)', 'parkTeleCount'), row('PARK (points at the end of the MATCH)', 'parkTele')],
+    ],
     [
       'HIVE',
       [
@@ -442,7 +483,10 @@ export function biobuzzResultsRows(hud: HudSnapshot): readonly ResultsSection[] 
         row('Bottom NECTAR Bonus (points)', 'bottomPts'),
       ],
     ],
-    ['GARDEN', [row('GARDEN (elements)', 'gardenCount'), row('GARDEN (points)', 'gardenPts')]],
+    // §10.5 E is word for word §10.5 C's instant — "at the end of TELEOP when all ROBOTS and
+    // SCORING ELEMENTS have come to rest" — so the GARDEN line waits exactly as the CELL line
+    // does, and says so in the same words.
+    ['GARDEN', [row('GARDEN (elements)', 'gardenCount'), row('GARDEN (points at the buzzer)', 'gardenPts')]],
     // points AWARDED to each alliance, i.e. earned from the OPPONENT's violations — the same
     // direction the shared breakdown prints, so the two reconcile against their totals.
     ['PENALTIES', [row('Fouls awarded (points)', 'foul')]],
