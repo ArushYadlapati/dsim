@@ -8,16 +8,37 @@ import {
   BB_BOX_TUBE_SECTIONS,
   BB_BOX_TUBE_STAGE_OVERLAP,
   BB_BOX_TUBE_WALL,
+  BB_DECK_Z,
+  BB_FEED_SHOE_FAR,
+  BB_FEED_SHOE_LEAD,
+  BB_FEED_SHOE_R,
+  BB_FEED_SHOE_T,
+  BB_FLYWHEEL_R,
+  BB_HOOD_ARM_INSET,
+  BB_HOOD_ARM_T,
+  BB_HOOD_R,
+  BB_HOOD_T,
+  BB_HOOD_WRAP,
   BB_INTAKE_DRAW_IN,
   BB_LAUNCH_PLATE_GAP,
   BB_LAUNCH_Z0,
   BB_POLLEN_R,
-  BB_TURRET_PITCH_MAX,
+  BB_SIDE_PLATE_BOTTOM_Z,
+  BB_SIDE_PLATE_FRONT_X,
+  BB_SIDE_PLATE_TOP_Z,
+  BB_TURRET_AXLE_Z,
+  BB_TURRET_BRACE_R,
+  BB_TURRET_BRACES,
+  BB_TURRET_MOTOR,
+  BB_TURRET_PITCH_MIN,
+  BB_TURRET_PLATE_R,
+  BB_TURRET_PLATE_T,
+  BB_TURRET_RING_H,
   bbHopperCap,
 } from '../config';
 import { bbIsTurreted, bbLauncherOf, bbLiftOf, type BbLauncherSpec } from '../mechs';
 import { bbBoxTubeGlyph } from '../parts';
-import { bbFlowerInReach, bbMouths, bbPlacePointLocal } from '../robot';
+import { bbFlowerInReach, bbMouths, bbMuzzleLocal, bbPlacePointLocal } from '../robot';
 import { bbSpecKey } from '../specKey';
 import {
   bbMouthFrame,
@@ -120,9 +141,16 @@ const MOTOR = '#2b313a';
 // does, which is the whole of complaint #9.
 // ─────────────────────────────────────────────────────────────────────────────
 
-/** side-plate height — a real drivetrain is a 4-ish inch channel, and this is the number that
- * decides how much of a robot reads as "chassis". */
-const BB_PLATE_H = 4.6;
+/**
+ * side-plate height — a real drivetrain is a 4-ish inch channel, and this is the number that
+ * decides how much of a robot reads as "chassis".
+ *
+ * ⚠️ IT IS `BB_DECK_Z`, IMPORTED, NOT A LOCAL 4.6. The whole turret stack is measured up from the
+ * deck (`BB_TURRET_RING_H`, `BB_TURRET_PLATE_TOP_Z`, `BB_TURRET_AXLE_Z`) and that stack is in
+ * `config.ts` now, so the deck cannot be a second number typed here. The drivetrain's side plate
+ * IS the deck's height by construction, which is the statement this line makes.
+ */
+const BB_PLATE_H = BB_DECK_Z;
 /** plate thickness. The OUTER plate's outer face is the frame line, so the footprint of the
  * built group is exactly `spec.length × spec.width`. */
 const BB_PLATE_T = 0.22;
@@ -133,51 +161,6 @@ const BB_WHEEL_W = 1.5;
 const BB_PLATE_GAP = BB_WHEEL_W + 0.4;
 /** square section of the cross members, the belly pan and the tower uprights. */
 const BB_RAIL_T = 0.95;
-/** the DECK — where every mechanism is bolted. */
-const BB_DECK_Z = BB_PLATE_H;
-
-/**
- * ⚠️ THE HEAD'S RHO BUDGET — the arithmetic every shooter dimension below is bounded by, and
- * the one thing nobody had written down.
- *
- * `buildTurret` puts the yaw node at world z = `BB_LAUNCH_Z0`, and `buildShooterHead` hangs the
- * whole shooter off that point, so the ELEVATION node `bb-turret-pitch` PIVOTS ABOUT THE MUZZLE.
- * That is forced, not stylistic: `bbMuzzleZ` (`robot.ts`) returns `BB_LAUNCH_Z0` at EVERY pitch,
- * so any other pivot puts the picture and the physics together at one angle only.
- *
- * The consequence is the part that was never written down. `pitch.rotation.y = −p` maps a
- * head-frame point `(x, z)` to world z = `BB_LAUNCH_Z0 + x·sin p + z·cos p`, i.e.
- * `BB_LAUNCH_Z0 + ρ·sin(p + φ)` with `ρ = hypot(x, z)`, `φ = atan2(z, x)`. Over the real
- * elevation envelope (`BB_TURRET_PITCH_MIN` 0 … `BB_TURRET_PITCH_MAX` 80°) any point whose φ
- * lies in [110°, 270°] — everything BEHIND and BELOW the muzzle — sweeps through −90° and
- * reaches world z = `BB_LAUNCH_Z0 − ρ` exactly. So:
- *
- *     NOTHING ON THE PITCHING HEAD MAY EXCEED ρ = BB_LAUNCH_Z0 − BB_DECK_Z − clearance.
- *
- * At rest pitch the old head cleared the deck by 0.45 in and looked right, which is why it
- * shipped; at ~44° of elevation its side plate's rear corner was 1.10 in INSIDE the drivetrain
- * and the feed ramp swept the deck, the belly pan and the wheels and stopped 0.04 in off the
- * tile. Hive shots want 40–80° for most of a match, so that is what the owner was looking at.
- * The 0.2 is the deck clearance. `minHeadWorldZ` below is the closed form the RENDER lane
- * re-derives; everything on the head is sized against it rather than eyeballed at rest.
- */
-const BB_HEAD_RHO_MAX = BB_LAUNCH_Z0 - BB_DECK_Z - 0.2;
-
-/**
- * The LOWEST world z a head-frame point `(x, z)` reaches over the whole elevation envelope.
- * Closed form, no sampling: the minimum of the two endpoints, or `BB_LAUNCH_Z0 − ρ` when the
- * critical pitch `−π/2 − φ` falls inside the envelope.
- */
-function minHeadWorldZ(x: number, z: number): number {
-  const rho = Math.hypot(x, z);
-  const phi = Math.atan2(z, x);
-  const crit = -Math.PI / 2 - phi;
-  for (let k = -2; k <= 2; k++) {
-    const p = crit + 2 * Math.PI * k;
-    if (p >= 0 && p <= BB_TURRET_PITCH_MAX) return BB_LAUNCH_Z0 - rho;
-  }
-  return BB_LAUNCH_Z0 + rho * Math.min(Math.sin(phi), Math.sin(BB_TURRET_PITCH_MAX + phi));
-}
 
 /** the drivetrain's inner clear width (between the two inner plates) for a given chassis. */
 function innerHalfWidth(spec: Pick<RobotSpec, 'width'>): number {
@@ -876,314 +859,345 @@ function buildIntake(spec: RobotSpec): { nodes: THREE.Object3D[]; rollers: BbRol
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// THE HOODED FLYWHEEL (owner playtest #10)
+// THE HOODED FLYWHEEL — AND EVERY DIMENSION IN IT COMES OUT OF `config.ts`
+//
+// ⚠️ **THIS SECTION USED TO OWN THE SHOOTER'S DIMENSION CHAIN PRIVATELY, AND THAT IS WHY IT TOOK
+// SIX PASSES** (owner report 2026-09-19, items a–e). The flywheel radius, the hood radius, the
+// side-plate profile and the muzzle height were local `const`s in this file; the sim owned
+// `BB_LAUNCH_Z0`. Two numbers, two owners, and every round of feedback moved one of them to
+// answer the last complaint — so the picture and the physics agreed at ONE elevation and nowhere
+// else, and the next look found the next disagreement.
+//
+// The chain lives in `config.ts` now and `bbMuzzleLocal` (`robot.ts`) is the ONE function that
+// turns an elevation into a release; both are IMPORTED at the top of this file. **Nothing below
+// re-derives a length the sim also knows.** What is still declared here is what exists only in
+// the picture — material thicknesses, the belt, the chute — and even those are derived wherever
+// the chain already fixes them.
+//
+// THE FRAME. `bb-turret-head` (yaw) has its ORIGIN ON THE FLYWHEEL AXLE, so this file's x–z plane
+// IS the AXLE FRAME every θ in `config.ts` is measured in: +x the shot direction at rest, +z up,
+// θ CCW from +x, the exit at θ = 90°. `bb-turret-pitch` sits at the head's own origin — the axle
+// — and carries the hood and its two arms and NOTHING ELSE. That is owner item (d) as a node
+// structure rather than as a promise: the flywheel, both side plates, the braces, the motor, the
+// belt, the feed shoe and the chute are all on the FIXED node, so no number can make them move.
 // ─────────────────────────────────────────────────────────────────────────────
 
-/**
- * flywheel radius (in) — a 3-in compliant wheel pair on one axle.
- *
- * ⚠️ THIS ONE NUMBER IS THE HEAD OF THE WHOLE DIMENSION CHAIN (hood radius, path radius, axle
- * height, plate radius), and it came down from 2.0 because of `BB_HEAD_RHO_MAX`. At a 4-in wheel
- * the axle sits 3.1 in below the muzzle, which leaves 2.1 in of ρ budget under it — not enough
- * for a motor of any real size, so the motor had nowhere to go but outboard of a plate, which is
- * exactly what the owner objected to. A 3-in compliant wheel is an ordinary FTC shooter wheel,
- * not a compromise made to fit.
- */
-const BB_FLYWHEEL_R = 1.5;
-/** how much a POLLEN is squeezed between the wheel and the hood (in). */
-const BB_HOOD_COMPRESSION = 0.3;
-/** the hood's inner radius about the flywheel axle: wheel + one element diameter, less the
- * compression. A 2.8-in POLLEN (`BB_POLLEN_R` 1.4 — and `config.ts` records that 2.8 as MEASURED,
- * AndyMark am-5851, not rounded) has to fit through it, which is the whole dimension chain:
- * change the element and the hood follows. */
-const BB_HOOD_R = BB_FLYWHEEL_R + BB_POLLEN_R * 2 - BB_HOOD_COMPRESSION;
-/** the radius the element's CENTRE travels at, which is what puts the exit where it is. */
-const BB_HOOD_PATH_R = BB_HOOD_R - BB_POLLEN_R;
-/**
- * how far round the wheel the hood wraps, from the feed to the exit (rad ≈ 60°).
- *
- * ⚠️ BOUNDED TWICE OVER, AND NEITHER BOUND IS TASTE. (1) `BB_HEAD_RHO_MAX`: the hood's outer
- * corner at the feed runs out of budget first, and at the old 2.0 rad that corner sat at ρ 6.69,
- * i.e. 1.29 in inside the deck at 41° of elevation. (2) THE MOTOR: the feed mouth is where the
- * element sits at its lowest point in this frame, and the only pocket a motor fits in is behind
- * and below the axle — so the wrap has to end early enough to leave that pocket clear of it. At
- * 1.45 rad the mouth is 1.43 in from the motor against an element that is 1.4 in fat; at 1.05 it
- * is 2.40.
- */
-const BB_HOOD_WRAP = 1.05;
 /** the channel the element runs down — the same gap the 2D sprite draws between its plates. */
 const BB_HOOD_W = BB_LAUNCH_PLATE_GAP;
 /**
- * the side plate's nominal outer radius, before the ρ clip. Module-level because the BRACING and
- * the MOTOR are placed against it.
- *
- * ⚠️ `+ 0.35`, not `+ 0.5` (owner, 2026-09-19: the plate does not need to be as big as it is). It
- * still has to BRIDGE the hub to the hood or the flywheel reads as unjournalled — the failure
- * `shooterPlate` records below — so this is the smallest bridge that keeps the wheel constrained.
+ * the hood's own half-width. It spans EXACTLY the element it turns, which is what a hood is: a
+ * wall the POLLEN rolls against. Not a taste number — it is `BB_POLLEN_R`, and the two ARMS get
+ * what is left of the channel on either side of it.
  */
-const BB_PLATE_R_OUT = BB_HOOD_R + 0.35;
-/** the band's inner radius. Inboard of the flywheel rim deliberately: a side plate is what the
- * wheel is journalled in. */
-const BB_PLATE_R_IN = BB_FLYWHEEL_R * 0.52;
+const BB_HOOD_HALF_W = BB_POLLEN_R;
 /**
- * THE FLAT FRONT (owner, 2026-09-19: "the front should be like flat or something").
+ * ...so an arm's lateral width is DERIVED, not chosen: the channel's half, less the inset from
+ * the side plate's inner face (`BB_HOOD_ARM_INSET`), less the hood. It comes out at 0.09 in —
+ * a sheet-metal cheek, which is what a hood arm is.
  *
- * The band's forward boundary is a STRAIGHT horizontal cut at this height about the axle, not a
- * radial end face with a filleted corner. A radial cut always meets the outer arc in a corner —
- * which is the thing being complained about — and a fillet only rounds that corner off.
- * `BB_HOOD_PATH_R − BB_POLLEN_R − 0.15` puts the cut 0.15 in below the outgoing corridor's lower
- * edge, so the shot still leaves clean and there is no radial end left to make a corner out of.
+ * ⚠️ **THE ARM'S INBOARD FACE IS THE CHANNEL WALL, AND THAT IS WHY IT MAY CROSS THE ELEMENT'S
+ * PATH.** A POLLEN is a SPHERE: at lateral offset `BB_POLLEN_R` its cross-section is a point, so
+ * a member that starts there sweeps no volume the element occupies, at any radius and any angle.
+ * That is the only reason the arms can run straight from the axle out to the hood — in the x–z
+ * PROJECTION there is no such path, because the element fills it. Measured, on the design sweep:
+ * a radial spoke clear of the projection has to sit 37° behind the hood's tail, and 37° behind
+ * the tail it is 4.42 in off the tiles at full elevation, i.e. inside the drivetrain.
  */
-const BB_PLATE_FRONT_Z = BB_HOOD_PATH_R - BB_POLLEN_R - 0.15;
+const BB_HOOD_ARM_W = BB_HOOD_W / 2 - BB_HOOD_ARM_INSET - BB_HOOD_HALF_W;
+/** the arm's hub, where it pivots on the shooter axle. Inside the flywheel's own radius — it is
+ * a bearing boss, and it is laterally outboard of the wheel, so the radius is free. APPROX. */
+const BB_HOOD_ARM_HUB_R = 0.75;
+/** side-plate thickness. APPROX — ordinary 1/4-in FTC plate, and the number `BB_TURRET_PLATE_R`'s
+ * header assumes when it says the plate has a rim to bolt through. */
+const BB_SHOOTER_PLATE_T = 0.22;
 /**
- * How far the plate runs PAST the feed (rad).
- *
- * ⚠️ IT RUNS A LONG WAY PAST NOW, AND THE ρ CLIP IS WHY IT CAN. The old `0` was the right answer
- * to the wrong question: the tail was measured AT REST, where the rim's height is `axle +
- * rOut·sin θ` and anything past the feed dives under the deck. What actually binds is
- * `BB_HEAD_RHO_MAX`, and the band's outer boundary is CLIPPED to it (`plateOuterR`), so past the
- * feed the rim follows an arc centred on the MUZZLE instead of on the axle — a swept relief edge,
- * which is exactly what a real elevating plate has cut into it. That buys plate either side of
- * the rear standoff and the motor, at a radius that cannot reach the drivetrain at ANY elevation.
+ * the flywheel as DRAWN: two compliant wheels of `BB_FLYWHEEL_R` on one axle with a gap down the
+ * middle. The RADIUS is the sim's (72 mm, `BB_FLYWHEEL_D_MM`); only the stack width is the
+ * picture's, and it is bounded on both sides — the gap is the only plane the BELT can run in
+ * without crossing the element's path, and the outer faces have to clear the HOOD ARMS, which
+ * live in the lateral band between the element and each side plate.
  */
-const BB_PLATE_TAIL = 1.75;
+const BB_FLYWHEEL_GAP = 0.5;
+const BB_FLYWHEEL_W = 0.9;
 
 /**
- * THE OUTER BOUNDARY OF THE SIDE PLATE at one axle-frame angle: `BB_PLATE_R_OUT`, clipped to
- * wherever the ρ budget runs out.
+ * THE SIDE PLATE'S OUTER BOUNDARY at one axle-frame angle — `config.ts`'s own profile, an ARC
+ * INTERSECTED WITH A BOX, and nothing else:
  *
- * Bisected against `minHeadWorldZ` ITSELF rather than against a re-derivation of it, so the clip
- * IS the invariant and the two cannot drift apart.
+ *     r(θ) = min( BB_HOOD_R,
+ *                 BB_SIDE_PLATE_TOP_Z    / sin θ   (sin θ > 0),
+ *                 BB_SIDE_PLATE_BOTTOM_Z / sin θ   (sin θ < 0),
+ *                 BB_SIDE_PLATE_FRONT_X  / cos θ   (cos θ > 0) )
+ *
+ * ⚠️ **THE FLAT TOP IS OWNER ITEM (b)** — "the arc in the parallel plates reaches too high; the
+ * hood extends above the supporting plates". Because the outer ARC is exactly `BB_HOOD_R` and the
+ * hood occupies `BB_HOOD_R … +BB_HOOD_T`, the hood is proud of the plate BY CONSTRUCTION at every
+ * elevation and every angle in the wrap — +0.280 at worst, +3.23 at rest. There is no offset to
+ * keep in step, which is the point: the five passes before this one each tuned one.
+ *
+ * ⚠️ AND THE OLD ρ CLIP IS GONE, not re-tuned. `plateOuterR` used to bisect the outer arc against
+ * `minHeadWorldZ`, because the plate ELEVATED and could dig into the drivetrain. The plate does
+ * not move any more (owner item d), so there is nothing to clip: its flat bottom lands ON the
+ * turret plate and stays there.
  */
-function plateOuterR(th: number): number {
-  const floor = BB_LAUNCH_Z0 - BB_HEAD_RHO_MAX; // the deck plus its clearance
-  const ok = (r: number): boolean =>
-    minHeadWorldZ(Math.cos(th) * r, Math.sin(th) * r - BB_HOOD_PATH_R) >= floor;
-  if (ok(BB_PLATE_R_OUT)) return BB_PLATE_R_OUT;
-  let lo = 0;
-  let hi = BB_PLATE_R_OUT;
-  for (let i = 0; i < 40; i++) {
-    const mid = (lo + hi) / 2;
-    if (ok(mid)) lo = mid;
-    else hi = mid;
-  }
-  return lo;
+function sidePlateR(th: number): number {
+  const st = Math.sin(th);
+  const ct = Math.cos(th);
+  let r = BB_HOOD_R;
+  if (st > 1e-9) r = Math.min(r, BB_SIDE_PLATE_TOP_Z / st);
+  if (st < -1e-9) r = Math.min(r, BB_SIDE_PLATE_BOTTOM_Z / st);
+  if (ct > 1e-9) r = Math.min(r, BB_SIDE_PLATE_FRONT_X / ct);
+  return r;
 }
 
 /**
- * THE BRACING — two STANDOFFS across the channel, tying the two side plates together. Angles are
- * about the FLYWHEEL AXLE (0 = +x, CCW, the frame `thExit`/`thFeed` are in).
- *
- * ⚠️ CLOSE TO THE FLYWHEEL (owner follow-up, 2026-09-19: the bracing must sit close to the
- * flywheels). The three ribs this replaces rode the plate RIM at radius 5.11 against a 2.0
- * flywheel — 3.1 in off the wheel — and the file argued at length that a rib could not come
- * inboard. THAT ARGUMENT HOLDS ONLY INSIDE THE WRAP. At an angle outside `[thExit, thFeed]` there
- * is no element in the channel at all, so a cross-member may sit at any radius there, hard
- * against the wheel included. Both standoffs are 0.22 in off the rim.
- *
- * A standoff must still miss three regions, and the RENDER lane re-derives all three rather than
- * trusting this: the WRAP (an annulus of `BB_HOOD_PATH_R ± BB_POLLEN_R` over `[thExit, thFeed]`),
- * the OUTGOING CORRIDOR (the same band of heights running out along +x from the muzzle) and the
- * FEED APPROACH (the last element-diameter of the run into the pinch).
- *
- * ⚠️ AND THEY STAND PROUD OF BOTH PLATE FACES (owner, 2026-09-19: "i dont see the bracing"). The
- * span is the channel plus both plate thicknesses plus 0.15 either end, so the bosses show as
- * squares on the OUTSIDE of each plate from any side view — which is how a real standoff looks
- * and, unlike the old ribs, is not something the plate can occlude.
+ * The four angles where the profile above CHANGES WHICH CONSTRAINT BINDS. Sampling alone rounds a
+ * corner off; these go into the sample set so every corner is an exact vertex and every flat face
+ * is genuinely flat rather than a 0.75° chord.
  */
-const BB_BRACE_T = 0.4;
-const BB_BRACE_SPAN = BB_HOOD_W + 0.44 + 0.3;
-const BB_BRACE_SITES: readonly { th: number; r: number }[] = [
-  { th: 0.384, r: BB_FLYWHEEL_R + 0.5 }, // 22° — the open front-bottom, UNDER the outgoing corridor
-  { th: 4.189, r: BB_FLYWHEEL_R + 0.5 }, // 240° — behind and below, clear of the run into the pinch
+const SIDE_PLATE_CORNERS: readonly number[] = [
+  Math.atan2(BB_SIDE_PLATE_TOP_Z, BB_SIDE_PLATE_FRONT_X), //                   front ↔ top
+  Math.PI - Math.asin(BB_SIDE_PLATE_TOP_Z / BB_HOOD_R), //                     top ↔ arc
+  Math.PI - Math.asin(BB_SIDE_PLATE_BOTTOM_Z / BB_HOOD_R), //                  arc ↔ bottom
+  Math.PI * 2 + Math.atan2(BB_SIDE_PLATE_BOTTOM_Z, BB_SIDE_PLATE_FRONT_X), //  bottom ↔ front
 ];
 
-/**
- * THE FLYWHEEL MOTOR — BEHIND THE HOOD, BETWEEN THE PLATES, BELT-DRIVEN (owner, 2026-09-19: the
- * motor must move off the side of the flywheel).
- *
- * It was a can at head-frame (−2.70, +3.45, −4.10) with its axis along y: 3.28 in OUTBOARD of the
- * plate's outer face and level with the wheel, which is the complaint verbatim. The site below is
- * the one that survives all five constraints at once — the ρ budget, flywheel clearance, the
- * element's wrap, the last stretch of its run into the pinch, and staying inside the CLIPPED
- * plate rim — and it only exists at all because `BB_FLYWHEEL_R` came down to 1.5.
- *
- * APPROX: the can is 1.42 in across, an ordinary FTC motor diameter; its LENGTH is set by
- * `BB_LAUNCH_PLATE_GAP` (3.1 in of channel, 0.3 of clearance), not by any catalogue number. The
- * two pulley radii are sized for the 0.5-in gap between the two flywheel halves, which is the
- * only plane a belt can run in without crossing the element's own path.
- */
-const BB_MOTOR_TH = 3.578; // 205° about the axle
-const BB_MOTOR_R = 2.6;
-const BB_MOTOR_BODY_R = 0.71;
+/** the flywheel MOTOR's can and the BELT that drives it. The SITE is `BB_TURRET_MOTOR` (derived,
+ * in `config.ts`); the can's length and the two pulley radii are the picture's, bounded by the
+ * channel and by the flywheel's own centre gap. APPROX. */
 const BB_MOTOR_LEN = 2.5;
 const BB_FW_PULLEY_R = 0.68;
 const BB_MOTOR_PULLEY_R = 0.54;
 const BB_BELT_T = 0.16;
 const BB_BELT_W = 0.45;
 
-/**
- * THE FEED CHUTE, which is on the YAW node and NOT on the pitching head — see `buildTurret`.
- * Tilt in radians and the plank's size in inches.
- */
-const BB_FEED_TILT = 0.6;
-const BB_FEED_LEN = 4.4;
+/** how far a cross member stands PROUD of each side plate's outer face (owner, 2026-09-19: "i
+ * dont see the bracing"). A standoff the plate can occlude is a standoff reported as missing. */
+const BB_BRACE_PROUD = 0.15;
+/** …so every member that ties the two plates together spans exactly this. The FEED SHOE uses it
+ * too, because the shoe IS the rear tie — see `BB_FEED_SHOE_R`'s header in `config.ts`. */
+const BB_TIE_SPAN = BB_HOOD_W + 2 * BB_SHOOTER_PLATE_T + 2 * BB_BRACE_PROUD;
+
+/** the feed chute's rake and thickness. Its LENGTH is derived below, because the chute has to
+ * reach from the deck to the feed shoe's mouth and neither end is a number this file owns. */
+const BB_FEED_TILT = 0.3;
 const BB_FEED_T = 0.24;
 
-/**
- * ONE SHOOTER ASSEMBLY, WITH ITS EXIT AT THE ORIGIN.
- *
- * ⚠️ THE ORIGIN IS THE MUZZLE, and that is not a stylistic choice: the sim releases every
- * element at `bbMuzzleZ` = `BB_LAUNCH_Z0` from `bbTurretOrigin`, at the turret's yaw and pitch,
- * whatever the pitch is (`robot.ts`). Hanging the assembly off its exit is the only arrangement
- * where the visible muzzle is at that exact point and pointing that exact way at EVERY
- * elevation — pivot anywhere else and the picture and the physics agree at one angle only.
- *
- * Local frame: +x is the shot direction, +z up, the axle along y. The element enters at the
- * bottom rear, is pinched between the flywheel and the hood, climbs the back of the wheel and
- * leaves over the top along +x. The hood is a real arc — `Shape.absarc` twice and an extrusion —
- * at `BB_HOOD_R` about the axle, so the gap it leaves is one POLLEN diameter less the
- * compression, which is the thing a hood IS.
- */
-function buildShooterHead(): THREE.Group {
-  const head = new THREE.Group();
-  const cz = -BB_HOOD_PATH_R; // the flywheel axle, directly below the exit
-  const thExit = Math.PI / 2;
-  const thFeed = thExit + BB_HOOD_WRAP;
+/** the AXLE-FRAME angle of the hood's exit lip: straight up over the wheel, at every pitch,
+ * because the hood's own frame elevates with it. */
+const TH_EXIT = Math.PI / 2;
+/** …and of its trailing edge, one wrap behind. */
+const TH_FEED = TH_EXIT + BB_HOOD_WRAP;
 
-  // THE HOOD — an annular sector, extruded across the channel
-  const hoodGeo = framePart('hood', () => {
-    const t = 0.28;
-    const shape = new THREE.Shape();
-    shape.absarc(0, 0, BB_HOOD_R, thExit, thFeed, false);
-    shape.absarc(0, 0, BB_HOOD_R + t, thFeed, thExit, true);
-    shape.closePath();
-    const geo = new THREE.ExtrudeGeometry(shape, { depth: BB_HOOD_W, bevelEnabled: false, curveSegments: 20 });
-    geo.rotateX(Math.PI / 2);
-    geo.translate(0, BB_HOOD_W / 2, 0);
-    return [geo];
-  });
+/**
+ * An ANNULAR SECTOR in the axle frame (the x–z plane), extruded across the channel.
+ *
+ * `THREE.ExtrudeGeometry` runs its depth along +z and `rotateX(π/2)` maps the shape's own y to
+ * world z and the depth to −y, so the band lands in y ∈ [−depth, 0]; `y0` re-centres it. Every
+ * arc part in this section is built through here, so the frame convention is stated once.
+ */
+function arcBand(rIn: number, rOut: number, th0: number, th1: number, depth: number, y0: number): THREE.ExtrudeGeometry {
+  const shape = new THREE.Shape();
+  shape.absarc(0, 0, rOut, th0, th1, false);
+  if (rIn > 0) shape.absarc(0, 0, rIn, th1, th0, true);
+  shape.closePath();
+  const geo = new THREE.ExtrudeGeometry(shape, { depth, bevelEnabled: false, curveSegments: 24 });
+  geo.rotateX(Math.PI / 2);
+  geo.translate(0, y0 + depth / 2, 0);
+  return geo;
+}
+
+/**
+ * a bar lying in the axle frame, from the axle out along `th` to `len`, `t` thick in that plane
+ * and `w` wide across the channel. `rotateY(−a)` maps the box's own +x to (cos a, sin a) in this
+ * x–z frame, which is the same idiom the belt runs use.
+ *
+ * ⚠️ `toNonIndexed()`, AND IT IS NOT TIDINESS. `mergeGeometries` refuses a list that mixes indexed
+ * and non-indexed buffers — it logs and returns `null`, and `framePart` then falls back to
+ * `parts[0]`, so the merge SILENTLY drops every part after the first. An `ExtrudeGeometry` is
+ * non-indexed and a `BoxGeometry` is indexed, so an arm built of both came out as its rim alone:
+ * a hood arc floating on nothing, in a build whose whole point is that the hood has something to
+ * hang from. Measured before the fix: 2 of the 4 parts per arm survived.
+ */
+function radialBar(th: number, len: number, t: number, w: number, y0: number): THREE.BufferGeometry {
+  const g = new THREE.BoxGeometry(len, w, t).toNonIndexed();
+  g.rotateY(-th);
+  g.translate((Math.cos(th) * len) / 2, y0, (Math.sin(th) * len) / 2);
+  return g;
+}
+
+/**
+ * THE HOOD, AND THE ONLY THING THAT ELEVATES WITH IT.
+ *
+ * ⚠️ **OWNER ITEM (d), VERBATIM: "when the hood is initialising/changing angle, the flywheel
+ * should be fixed and the parallel plates should be fixed. Only the hood, a central arc in the
+ * back, should be moving up and down."** This group IS that sentence. It pivots on the AXLE (it
+ * sits at the yaw node's own origin) and it holds the arc, its two arms and the muzzle node.
+ *
+ * ── RESIDUAL 1: THE HOOD NEEDS ARMS ──────────────────────────────────────────────────────────
+ * The side plates stop at `BB_SIDE_PLATE_TOP_Z` — 0.967 in above the axle — and the hood's arc
+ * lives at 3.92…4.20, so the plates deliberately do not reach it. That is owner item (b), and it
+ * leaves the hood with nothing to hang from. On a real adjustable hood that something is two side
+ * ARMS pivoting on the shooter axle, and this is them: a fabricated frame per side — hub, two
+ * spokes at the lip and at the tail, and a rim following the hood's outer face — `BB_HOOD_ARM_T`
+ * thick in the arc's own plane and `BB_HOOD_ARM_W` wide, running in the lateral band between the
+ * element and the side plate. They are INSIDE the plates' own width (`BB_HOOD_ARM_INSET` clear of
+ * each inner face), so they read as the hood's linkage rather than as a third pair of plates, and
+ * they are on THIS node, so "only the hood moves" stays exactly true.
+ */
+function buildHoodNode(): THREE.Group {
+  const pitch = new THREE.Group();
+
+  // THE ARC — one element diameter clear of the wheel, less the compression, and `BB_HOOD_T`
+  // thick, which is what stands it proud of the plates at every elevation.
+  const hoodGeo = framePart('hood', () => [
+    arcBand(BB_HOOD_R, BB_HOOD_R + BB_HOOD_T, TH_EXIT, TH_FEED, BB_HOOD_HALF_W * 2, 0),
+  ]);
   const hood = new THREE.Mesh(hoodGeo, solidMat(TURRET_BARREL, 0.35, 0.55));
   hood.name = 'bb-turret-hood';
-  hood.position.z = cz;
-  head.add(cast(hood));
+  pitch.add(cast(hood));
 
-  // TWO SIDE PLATES. A "C" following the hood, plus a hub at the axle — NOT a full disc. A disc
-  // was the first attempt and it hid the whole mechanism: from any angle the shooter read as a
-  // spool, because the only things visible were two circles. The band leaves the front-bottom
-  // quadrant open, which is where the flywheel, the muzzle and the hood's gap actually show.
+  // THE TWO ARMS — see the header. One merged part per side; the key carries the side, because
+  // the two are mirror images and a shared buffer would put both on one.
+  for (const s of [1, -1] as const) {
+    const y0 = s * (BB_HOOD_HALF_W + BB_HOOD_ARM_W / 2);
+    const armGeo = framePart(`hoodArm:${s}`, () => [
+      // the rim, flanking the arc it carries
+      arcBand(BB_HOOD_R, BB_HOOD_R + BB_HOOD_T, TH_EXIT, TH_FEED, BB_HOOD_ARM_W, y0),
+      // the two spokes, hub to rim, at the lip and at the tail
+      radialBar(TH_EXIT, BB_HOOD_R + BB_HOOD_T, BB_HOOD_ARM_T, BB_HOOD_ARM_W, y0),
+      radialBar(TH_FEED, BB_HOOD_R + BB_HOOD_T, BB_HOOD_ARM_T, BB_HOOD_ARM_W, y0),
+      // ...and the hub they pivot on
+      arcBand(0, BB_HOOD_ARM_HUB_R, 0, Math.PI * 2, BB_HOOD_ARM_W, y0),
+    ]);
+    const arm = new THREE.Mesh(armGeo, solidMat(ALU, 0.4, 0.45));
+    arm.name = 'bb-turret-hood-arm';
+    pitch.add(cast(arm));
+  }
+
+  // THE MUZZLE, as a named empty at the hood's LIP — `BB_HOOD_PATH_R` straight up from the axle
+  // in this node's own frame, which becomes `bbMuzzleLocal(pitch)` once the node has turned.
   //
-  // ⚠️ THE FRONT IS A FLAT CUT, NOT A RADIAL ONE (owner playtest, 2026-09-19: "this sharp corner
-  // that looks ugly and serves no purpose", then "the front should be like flat or something").
-  // The first answer was a square radial end face with a filleted outer corner, which is still a
-  // corner — a radial cut meets the outer arc at one by construction. The forward boundary is now
-  // a STRAIGHT horizontal cut at `BB_PLATE_FRONT_Z` about the axle, dropping to the inner arc on a
-  // short vertical face: two flat faces meeting at a right angle, and no radial end left at all.
-  //
-  // ⚠️ AND THE OUTER BOUNDARY IS CLIPPED TO THE ρ BUDGET (`plateOuterR`), which is what stopped
-  // the plate digging into the chassis at elevation. `BB_PLATE_TAIL` sets how far past the feed
-  // it runs; the clip decides how far OUT it may be while it does.
-  const plateGeo = framePart('shooterPlate', () => {
-    // ⚠️ THE BAND REACHES IN PAST THE FLYWHEEL RIM, AND HAS TO. A first answer to "the plate
-    // does not have to be that big" started it at `BB_FLYWHEEL_R + 0.2`, which left a bare
-    // annulus between the hub disc and the band with the flywheel's own rim sitting in it —
-    // owner: "the flywheel looks like it is not constrained to the plate anymore". A side plate
-    // is what the flywheel is journalled in; it must bridge the hub to the hood or the wheel
-    // reads as floating.
-    const rIn = BB_PLATE_R_IN;
-    const th0 = Math.asin(BB_PLATE_FRONT_Z / BB_PLATE_R_OUT); // where the flat cut meets the arc
-    const th1 = thFeed + BB_PLATE_TAIL;
-    const band = new THREE.Shape();
-    // the front, as two flat faces: up the short vertical at the bore, then straight out along
-    // the cut to the outer arc
-    band.moveTo(rIn, 0);
-    band.lineTo(rIn, BB_PLATE_FRONT_Z);
-    band.lineTo(Math.cos(th0) * BB_PLATE_R_OUT, BB_PLATE_FRONT_Z);
-    // the outer boundary, SAMPLED rather than arced: it is `BB_PLATE_R_OUT` over most of its run
-    // and the muzzle-centred relief arc past that, and one polyline expresses both.
-    const steps = 96;
-    for (let i = 1; i <= steps; i++) {
-      const th = th0 + ((th1 - th0) * i) / steps;
-      const r = plateOuterR(th);
-      band.lineTo(Math.cos(th) * r, Math.sin(th) * r);
-    }
-    band.lineTo(Math.cos(th1) * rIn, Math.sin(th1) * rIn); // the square end face, at the tail
-    band.absarc(0, 0, rIn, th1, 0, true);
-    band.closePath();
-    const hub = new THREE.Shape();
-    hub.absarc(0, 0, 1.05, 0, Math.PI * 2, false);
-    const extrude = (s: THREE.Shape): THREE.ExtrudeGeometry => {
-      const g = new THREE.ExtrudeGeometry(s, { depth: 0.22, bevelEnabled: false, curveSegments: 20 });
-      g.rotateX(Math.PI / 2);
-      g.translate(0, 0.11, 0);
-      return g;
-    };
-    return [extrude(band), extrude(hub)];
+  // ⚠️ IT MOVES WITH ELEVATION NOW, AND THAT IS THE WHOLE CHANGE. It used to BE the pitch pivot,
+  // because `bbMuzzleZ` returned `BB_LAUNCH_Z0` at every angle and no other arrangement could put
+  // the picture and the physics together. The sim's release follows the hood now (owner,
+  // 2026-09-19, asked and answered), so the node goes where the hood's lip actually is and the
+  // two agree by construction at EVERY elevation instead of at one.
+  const exit = new THREE.Object3D();
+  exit.name = 'bb-turret-exit';
+  // read off `bbMuzzleLocal` ITSELF at the rest pose, where this node's frame and the axle frame
+  // coincide — the node's own rotation then carries it to every other elevation. Placing it at a
+  // locally written `BB_HOOD_PATH_R` would be the same number by a second route, and a second
+  // route is how the last five passes disagreed.
+  const rest = bbMuzzleLocal(BB_TURRET_PITCH_MIN);
+  exit.position.set(-rest.back, 0, rest.z - BB_TURRET_AXLE_Z);
+  pitch.add(exit);
+  return pitch;
+}
+
+/**
+ * EVERYTHING ELSE THE SHOOTER IS — and none of it elevates.
+ *
+ * Added straight to the YAW node, whose origin is the flywheel axle, so every position below is a
+ * `config.ts` (θ, r) read off as (cos θ · r, sin θ · r) with no frame shift to get wrong.
+ */
+function addFixedShooter(head: THREE.Group): void {
+  // ── THE TURRET PLATE, on the slew ring: the surface the whole assembly stands on ──────────
+  const plateGeo = framePart('turretPlate', () => {
+    const g = new THREE.CylinderGeometry(BB_TURRET_PLATE_R, BB_TURRET_PLATE_R, BB_TURRET_PLATE_T, 28);
+    g.rotateX(Math.PI / 2);
+    g.translate(0, 0, BB_SIDE_PLATE_BOTTOM_Z - BB_TURRET_PLATE_T / 2);
+    return [g];
+  });
+  const turretPlate = new THREE.Mesh(plateGeo, solidMat(ALU_DK, 0.45, 0.4));
+  turretPlate.name = 'bb-turret-plate';
+  head.add(cast(turretPlate));
+
+  // ── THE TWO SIDE PLATES — `sidePlateR`, sampled, with its four corners exact ───────────────
+  // SOLID, not a band with a bore: a side plate is what the flywheel is JOURNALLED in, and the
+  // bare annulus the old band left between its hub and its rim is what made the wheel read as
+  // unconstrained. Everywhere the flat top does not cut it, the plate is behind the wheel's rim.
+  const sideGeo = framePart('shooterSidePlate', () => {
+    const angles: number[] = [];
+    const N = 480;
+    for (let i = 0; i < N; i++) angles.push((Math.PI * 2 * i) / N);
+    for (const c of SIDE_PLATE_CORNERS) angles.push(((c % (Math.PI * 2)) + Math.PI * 2) % (Math.PI * 2));
+    angles.sort((a, b) => a - b);
+    const shape = new THREE.Shape();
+    angles.forEach((th, i) => {
+      const r = sidePlateR(th);
+      const x = Math.cos(th) * r;
+      const y = Math.sin(th) * r;
+      if (i === 0) shape.moveTo(x, y);
+      else shape.lineTo(x, y);
+    });
+    shape.closePath();
+    const geo = new THREE.ExtrudeGeometry(shape, { depth: BB_SHOOTER_PLATE_T, bevelEnabled: false });
+    geo.rotateX(Math.PI / 2);
+    return [geo];
   });
   for (const s of [1, -1] as const) {
-    const plate = new THREE.Mesh(plateGeo, solidMat(ALU, 0.4, 0.45));
-    plate.position.set(0, s * (BB_HOOD_W / 2 + 0.11), cz);
+    const plate = new THREE.Mesh(sideGeo, solidMat(ALU, 0.4, 0.45));
+    plate.name = 'bb-turret-side-plate';
+    // the geometry runs y ∈ [−t, 0], so this puts each plate's INNER face on the channel wall
+    plate.position.y = s > 0 ? BB_HOOD_W / 2 + BB_SHOOTER_PLATE_T : -BB_HOOD_W / 2;
     head.add(cast(plate));
   }
 
-  // THE BRACING — two standoffs across the channel, one merged mesh. Two unsupported plates
-  // holding a flywheel apart is not a machine anybody would build; these are what stops them
-  // splaying. Each spans the channel, both plate thicknesses AND 0.15 proud of each outer face,
-  // so its end shows as a square boss from any side view — a rib the plate hides is a rib the
-  // owner reports as missing, which is what happened to the last three.
-  const braceGeo = framePart('shooterBrace', () => {
-    const parts: THREE.BufferGeometry[] = [];
-    for (const site of BB_BRACE_SITES) {
-      // square section, axis along y: no rotation to get wrong, and a standoff IS a square tube.
-      parts.push(
-        boxAt(BB_BRACE_T, BB_BRACE_SPAN, BB_BRACE_T, Math.cos(site.th) * site.r, 0, Math.sin(site.th) * site.r),
-      );
-    }
-    return parts;
-  });
-  const braces = new THREE.Mesh(braceGeo, solidMat(ALU, 0.35, 0.55));
-  braces.name = 'bb-shooter-brace';
-  braces.position.z = cz;
-  head.add(cast(braces));
-
-  // THE FLYWHEEL — two stacked compliant wheels on one axle, with a 0.5-in gap down the middle.
-  // The gap is not decoration: it is the only plane the BELT below can run in without crossing
-  // the element's own path through the channel.
-  const fwGeo = wheelGeometry(BB_FLYWHEEL_R, 1.0);
+  // ── THE FLYWHEEL — ONE BEARING BLOCK ABOVE THE TURRET PLATE (owner item c) ─────────────────
+  // Its height is not this file's to choose any more: `BB_TURRET_AXLE_Z` is the turret plate plus
+  // `BB_FLYWHEEL_CLEAR` plus the radius, so the wheel sits where a flywheel shooter's wheel sits,
+  // and the hood, the muzzle and the release all follow it down.
+  const fwGeo = wheelGeometry(BB_FLYWHEEL_R, BB_FLYWHEEL_W);
   for (const s of [1, -1] as const) {
     const w = new THREE.Mesh(fwGeo, solidMat(SWEEPER, 0.45, 0.2));
-    w.position.set(0, s * 0.75, cz);
+    w.name = 'bb-turret-flywheel';
+    w.position.y = s * (BB_FLYWHEEL_GAP / 2 + BB_FLYWHEEL_W / 2);
     head.add(cast(w));
   }
   const axle = new THREE.Mesh(
     new THREE.CylinderGeometry(0.26, 0.26, BB_HOOD_W + 1.3, 8),
     solidMat(ALU, 0.3, 0.7),
   );
-  axle.position.z = cz;
+  axle.name = 'bb-turret-axle';
   head.add(axle);
 
-  // ── THE MOTOR, BEHIND THE HOOD AND BETWEEN THE PLATES, BELTED TO THE FLYWHEEL ──────────────
-  // See `BB_MOTOR_TH`'s header for why this is the one site that works. Axis along y, parallel
-  // to the flywheel axle, and 2.5 in of it inside a 3.1-in channel.
-  const mx = Math.cos(BB_MOTOR_TH) * BB_MOTOR_R;
-  const mz = cz + Math.sin(BB_MOTOR_TH) * BB_MOTOR_R;
+  // ── THE CROSS BRACES — `BB_TURRET_BRACES`, which is a MEASURED site list ───────────────────
+  // ⚠️ RESIDUAL 2 IS ALREADY IN THE CONSTANT: the −40° brace sat 0.044 in INSIDE the turret plate
+  // and `config.ts` moved it to −37°, where its bottom is 5.450 against a 5.400 plate. Nothing is
+  // adjusted here — this draws the list. RESIDUAL 3 (the +20° brace, 0.133 in of exit corridor)
+  // STANDS: the side plate's own flat top is the binding part at that height and it clears the
+  // corridor by 0.150 by definition, so nothing fixed up there can do better.
+  const braceGeo = framePart('shooterBrace', () =>
+    BB_TURRET_BRACES.map((site) => {
+      const g = new THREE.CylinderGeometry(BB_TURRET_BRACE_R, BB_TURRET_BRACE_R, BB_TIE_SPAN, 10);
+      g.translate(Math.cos(site.th) * site.r, 0, Math.sin(site.th) * site.r);
+      return g;
+    }),
+  );
+  const braces = new THREE.Mesh(braceGeo, solidMat(ALU, 0.35, 0.55));
+  braces.name = 'bb-turret-brace';
+  head.add(cast(braces));
+
+  // ── THE MOTOR, BEHIND THE HOOD AND BETWEEN THE PLATES, BELTED TO THE WHEEL ─────────────────
+  const mx = Math.cos(BB_TURRET_MOTOR.th) * BB_TURRET_MOTOR.r;
+  const mz = Math.sin(BB_TURRET_MOTOR.th) * BB_TURRET_MOTOR.r;
   const motor = new THREE.Mesh(
-    new THREE.CylinderGeometry(BB_MOTOR_BODY_R, BB_MOTOR_BODY_R, BB_MOTOR_LEN, 12),
+    new THREE.CylinderGeometry(BB_TURRET_MOTOR.bodyR, BB_TURRET_MOTOR.bodyR, BB_MOTOR_LEN, 12),
     solidMat(MOTOR, 0.5, 0.4),
   );
-  motor.name = 'bb-shooter-motor';
+  motor.name = 'bb-turret-motor';
   motor.position.set(mx, 0, mz);
   head.add(cast(motor));
 
-  // THE BELT — two pulleys in the flywheel's centre gap and the two straight tangent runs
-  // between them, merged into one part. A `TubeGeometry` over a closed spline is the obvious
-  // alternative and costs ~20× the vertices for a loop 0.16 in thick; `ExtrudeGeometry` cannot
-  // do it at all without hand-building the four arcs first.
+  // THE BELT — two pulleys in the flywheel's centre gap and the two straight tangent runs between
+  // them, merged into one part. A `TubeGeometry` over a closed spline is the obvious alternative
+  // and costs ~20× the vertices for a loop 0.16 in thick.
   const beltGeo = framePart('shooterBelt', () => {
     const parts: THREE.BufferGeometry[] = [];
     for (const [r, x, z] of [
       [BB_FW_PULLEY_R, 0, 0],
-      [BB_MOTOR_PULLEY_R, mx, mz - cz],
+      [BB_MOTOR_PULLEY_R, mx, mz],
     ] as const) {
       const p = new THREE.CylinderGeometry(r, r, 0.3, 14);
       p.translate(x, 0, z);
@@ -1191,18 +1205,16 @@ function buildShooterHead(): THREE.Group {
     }
     // the external tangents of two circles of radii R1, R2 a distance d apart leave each centre
     // along the SAME unit normal, offset from the centre line by asin((R1 − R2) / d)
-    const d = BB_MOTOR_R;
+    const d = BB_TURRET_MOTOR.r;
     const off = Math.asin((BB_FW_PULLEY_R - BB_MOTOR_PULLEY_R) / d);
     const runLen = Math.sqrt(d * d - (BB_FW_PULLEY_R - BB_MOTOR_PULLEY_R) ** 2);
     for (const s of [1, -1] as const) {
-      const u = BB_MOTOR_TH + s * (Math.PI / 2 + off);
+      const u = BB_TURRET_MOTOR.th + s * (Math.PI / 2 + off);
       const ax = Math.cos(u) * BB_FW_PULLEY_R;
       const az = Math.sin(u) * BB_FW_PULLEY_R;
       const bx = mx + Math.cos(u) * BB_MOTOR_PULLEY_R;
-      const bz = mz - cz + Math.sin(u) * BB_MOTOR_PULLEY_R;
+      const bz = mz + Math.sin(u) * BB_MOTOR_PULLEY_R;
       const g = new THREE.BoxGeometry(runLen, BB_BELT_W, BB_BELT_T);
-      // same rotation idiom the standoffs used to use: `rotateY(−a)` maps the box's local +x to
-      // `(cos a, sin a)` in this x–z frame, so `a` is the run's own direction.
       g.rotateY(-Math.atan2(bz - az, bx - ax));
       g.translate((ax + bx) / 2, 0, (az + bz) / 2);
       parts.push(g);
@@ -1210,22 +1222,48 @@ function buildShooterHead(): THREE.Group {
     return parts;
   });
   const belt = new THREE.Mesh(beltGeo, solidMat(ALU_DK, 0.55, 0.3));
-  belt.name = 'bb-shooter-belt';
-  belt.position.z = cz;
+  belt.name = 'bb-turret-belt';
   head.add(cast(belt));
 
-  // ⚠️ THE FEED CHUTE IS NOT BUILT HERE ANY MORE. It used to hang off the pitch node at head
-  // frame (−5.59, −5.97), i.e. ρ 9.96 — 1.62 in below the deck at REST and sweeping to world z
-  // 0.044 at 45° of elevation, through the deck, the belly pan and the wheels. A real turret's
-  // feed tube is fixed to the frame and only the hood elevates, so it is built in `buildTurret`
-  // under the YAW node, standing on the deck, where pitch cannot move it at all.
+  // ── THE FEED SHOE — FIXED, AND THE REAR TIE BETWEEN THE TWO PLATES ────────────────────────
+  // ⚠️ **THIS IS WHAT REPLACES THE OWNER'S "WEIRD FLAP IN THE BACK" (item a), RATHER THAN MERELY
+  // DELETING IT.** The hood's wrap came down to 31.86° because a hood that pivots on the axle
+  // carries its own feed mouth round with it — at full elevation the mouth has gone 80° round the
+  // wheel and lines up with nothing the chassis can feed. So the ENTRY is fixed: an arc at
+  // `BB_FEED_SHOE_R`, one hood thickness plus a sliding clearance outboard of the hood's own arc,
+  // spanning 146°…202°, and it spans the whole channel plus both plates — which is the rear
+  // structure the flap was pretending to be. The hood sweeps INSIDE it and the two never touch.
+  const shoeGeo = framePart('feedShoe', () => [
+    arcBand(BB_FEED_SHOE_R, BB_FEED_SHOE_R + BB_FEED_SHOE_T, BB_FEED_SHOE_LEAD, BB_FEED_SHOE_FAR, BB_TIE_SPAN, 0),
+  ]);
+  const shoe = new THREE.Mesh(shoeGeo, solidMat(ALU, 0.4, 0.45));
+  shoe.name = 'bb-turret-feed-shoe';
+  head.add(cast(shoe));
 
-  // THE MUZZLE, as a named empty at the origin: the one node a caller can read the world-space
-  // exit off, and what the RENDER lane measures against `BB_LAUNCH_Z0`.
-  const exit = new THREE.Object3D();
-  exit.name = 'bb-turret-exit';
-  head.add(exit);
-  return head;
+  // ── THE FEED CHUTE — FROM THE DECK TO THE SHOE'S MOUTH, ON THE YAW NODE ────────────────────
+  // ⚠️ IT IS NOT ON THE PITCH NODE, AND IT USED TO BE. Built there it sat at ρ 9.96 from the
+  // muzzle and swept to world z 0.044 — 0.04 in off the tile — at 45° of elevation, through the
+  // deck, the belly pan and the wheels. A real feed tube is bolted to the frame; only the hood
+  // elevates. BOTH ENDS ARE DERIVED: its top face meets the shoe's mouth and its rear-bottom
+  // corner lands on the deck, so its LENGTH is simply whatever spans the two.
+  const ux = Math.cos(BB_FEED_TILT);
+  const uz = Math.sin(BB_FEED_TILT);
+  const mouthX = Math.cos(BB_FEED_SHOE_FAR) * BB_FEED_SHOE_R;
+  const mouthZ = Math.sin(BB_FEED_SHOE_FAR) * BB_FEED_SHOE_R;
+  const deck = BB_DECK_Z - BB_TURRET_AXLE_Z; // the deck, in this node's own frame
+  const feedLen = (mouthZ - deck - BB_FEED_T * ux) / uz;
+  const chute = new THREE.Mesh(new THREE.BoxGeometry(feedLen, BB_HOOD_W, BB_FEED_T), solidMat(ALU, 0.45, 0.35));
+  chute.name = 'bb-turret-feed';
+  chute.rotation.y = -BB_FEED_TILT; // local +x → (cos t, sin t) in this x–z frame: it rises forward
+  // the plank's own up-normal is (−uz, ux), which is where the two `BB_FEED_T / 2` terms come
+  // from: the front-TOP corner is the mouth, so the centre is half a length back along the plank
+  // and half a thickness down its own normal
+  chute.position.set(
+    mouthX - (feedLen / 2) * ux + (BB_FEED_T / 2) * uz,
+    0,
+    mouthZ - (feedLen / 2) * uz - (BB_FEED_T / 2) * ux,
+  );
+  head.add(cast(chute));
 }
 
 /**
@@ -1236,12 +1274,23 @@ function buildShooterHead(): THREE.Group {
  * to the top of the full-height box, which stood the shooter a foot and a half up in the air for
  * no reason anything could see. It is bolted to the DECK, like the real thing.
  *
- * THE NODE NAMES ARE AN INTERFACE. `bb-turret-head` is the YAW pivot (it carries the turret's own
- * world heading minus the chassis's), `bb-turret-pitch` is the ELEVATION pivot under it, and
- * `bb-turret-exit` is the muzzle. Anything that wants to aim this turret — the per-frame sync
- * below, the reticle, a future auto-aim — rotates those two and reads that one.
+ * THE NODE NAMES ARE AN INTERFACE, AND THEY ARE UNCHANGED. `bb-turret-head` is the YAW pivot (it
+ * carries the turret's own world heading minus the chassis's), `bb-turret-pitch` is the ELEVATION
+ * pivot under it, and `bb-turret-exit` is the muzzle. What changed is WHERE pitch pivots — on the
+ * AXLE now, not on the muzzle — and WHAT hangs off it: the hood and its two arms, and nothing
+ * else. The per-frame sync writes the same two rotations, in the same order, with the same signs.
+ *
+ * ⚠️ AND THE TOWER POSTS ARE GONE. Two posts carried the shooter up from the ring to the old
+ * muzzle-height yaw node; the assembly stands on its own turret plate now, and a post at that
+ * radius would sit in the feed chute's run.
+ *
+ * EXPORTED for `scripts/smoke-biobuzz/render.ts`, which BUILDS this group and MEASURES it at
+ * sampled elevations rather than reading the source and trusting it. Five passes were signed off
+ * by a lane that only ever grepped for literals; a check that cannot see the geometry cannot see
+ * the bug. It is not imported anywhere in `src/` — `buildRobotGroup` below is still the one
+ * generator the match and the builder share.
  */
-function buildTurret(spec: RobotSpec, mountPos: BbMountPos): THREE.Group {
+export function buildTurret(spec: RobotSpec, mountPos: BbMountPos): THREE.Group {
   const group = new THREE.Group();
   const ring = turretRadius(spec);
   const local = turretLocal(spec, mountPos);
@@ -1249,52 +1298,25 @@ function buildTurret(spec: RobotSpec, mountPos: BbMountPos): THREE.Group {
   group.position.set(local.x, local.y, BB_DECK_Z);
 
   // THE SLEW RING STAYS WITH THE CHASSIS — the toothed outer race is bolted to the frame and the
-  // head turns on it, which is the same statement `drawRobot.ts` makes in 2D.
-  const ringMesh = new THREE.Mesh(new THREE.CylinderGeometry(ring, ring, 1.1, 18), solidMat(TURRET_RING, 0.4, 0.5));
+  // head turns on it, which is the same statement `drawRobot.ts` makes in 2D. Its height is
+  // `BB_TURRET_RING_H`, the first term of the stack `BB_TURRET_AXLE_Z` adds up.
+  const ringMesh = new THREE.Mesh(
+    new THREE.CylinderGeometry(ring, ring, BB_TURRET_RING_H, 18),
+    solidMat(TURRET_RING, 0.4, 0.5),
+  );
   ringMesh.rotation.x = Math.PI / 2;
-  ringMesh.position.z = 0.55;
+  ringMesh.position.z = BB_TURRET_RING_H / 2;
   group.add(cast(ringMesh));
 
   const head = new THREE.Group();
   head.name = 'bb-turret-head';
-  head.position.z = BB_LAUNCH_Z0 - BB_DECK_Z; // the yaw axis meets the muzzle height here
-  // THE TOWER — two posts from the ring up to the shooter, turning with the head
-  const postH = BB_LAUNCH_Z0 - BB_DECK_Z - 1.0;
-  for (const s of [1, -1] as const) {
-    const post = new THREE.Mesh(
-      new THREE.BoxGeometry(0.7, 0.7, postH),
-      solidMat(ALU_DK, 0.45, 0.4),
-    );
-    post.position.set(-ring * 0.45, s * (BB_HOOD_W / 2 + 0.5), -BB_LAUNCH_Z0 + BB_DECK_Z + postH / 2 + 0.55);
-    head.add(cast(post));
-  }
+  // ⚠️ THE YAW NODE'S ORIGIN IS THE FLYWHEEL AXLE. That is what makes this group's x–z plane the
+  // AXLE FRAME `config.ts`'s angles are measured in, and it is what lets the PITCH node pivot
+  // about the axle simply by sitting at the head's own origin.
+  head.position.z = BB_TURRET_AXLE_Z - BB_DECK_Z;
+  addFixedShooter(head);
 
-  // ── THE FEED CHUTE — ON THE YAW NODE, WHERE PITCH CANNOT MOVE IT ──────────────────────────
-  // ⚠️ THIS IS THE WORST OF THE FOUR THINGS THAT USED TO DIG INTO THE CHASSIS, AND IT WAS THE
-  // ONE NOTHING MEASURED. Built on the pitch node it sat at ρ 9.96 from the muzzle, 1.62 in below
-  // the deck at rest, and swept to world z 0.044 — 0.04 in off the tile — at 45° of elevation.
-  // On a real shooter the feed tube is bolted to the frame and only the hood elevates, so it
-  // belongs here: it turns with the turret, and its rear-bottom corner is placed ON the deck by
-  // construction, which is an invariant rather than a number to keep an eye on.
-  const ux = Math.cos(BB_FEED_TILT);
-  const uz = Math.sin(BB_FEED_TILT);
-  const deck = BB_DECK_Z - BB_LAUNCH_Z0; // the deck, in this node's own frame
-  const chute = new THREE.Mesh(
-    new THREE.BoxGeometry(BB_FEED_LEN, BB_HOOD_W, BB_FEED_T),
-    solidMat(ALU, 0.45, 0.35),
-  );
-  chute.name = 'bb-turret-feed';
-  chute.rotation.y = -BB_FEED_TILT; // local +x → (cos t, sin t) in this x–z frame: it rises forward
-  chute.position.set(
-    // ...the plank's own up-normal is (−uz, ux), which is where the two `BB_FEED_T / 2` terms
-    // come from: the corner is half a thickness BELOW the mid-plane as well as half a length back
-    -5.2 + (BB_FEED_LEN / 2) * ux - (BB_FEED_T / 2) * uz,
-    0,
-    deck + (BB_FEED_LEN / 2) * uz + (BB_FEED_T / 2) * ux,
-  );
-  head.add(cast(chute));
-
-  const pitch = buildShooterHead();
+  const pitch = buildHoodNode();
   pitch.name = 'bb-turret-pitch';
   head.add(pitch);
   group.add(head);
@@ -1523,11 +1545,14 @@ function buildBoxTube(
 /** THE VISUAL HEIGHT OF THE DRIVETRAIN — where the DECK is, for anything that has to reason
  * about it without importing three.js. `BB_DECK_Z` is this number. */
 export const BB_DRIVETRAIN_H = BB_PLATE_H;
-/** where the hooded flywheel's muzzle sits, by construction — the sim's own release height. The
- * construction that has to keep this true (turret group at the deck, `bb-turret-head` one
- * `BB_LAUNCH_Z0 - BB_DECK_Z` above it, `bb-turret-exit` at the head's local origin) is walked and
- * added up by the RENDER lane, `scripts/smoke-biobuzz/render.ts`. */
-export const BB_SHOOTER_MUZZLE_Z = BB_LAUNCH_Z0;
+/**
+ * ⚠️ `BB_SHOOTER_MUZZLE_Z` IS RETIRED, AND SO IS THE IDEA BEHIND IT. It exported `BB_LAUNCH_Z0`
+ * as "where the muzzle sits", which was true only while the muzzle was a CONSTANT. The release
+ * follows the hood now (owner, 2026-09-19), so the muzzle is a FUNCTION of elevation and the one
+ * that answers it is `bbMuzzleLocal(pitch)` in `robot.ts` — read by the sim, by the shot-path
+ * predictor and by the `bb-turret-exit` node this file places. A second export here would be the
+ * second number that started all of this.
+ */
 
 interface RobotEntry {
   group: THREE.Group;
@@ -1638,8 +1663,13 @@ export function buildBiobuzzRobots(): BbRobots {
       if (heads && heads.length > 0 && pitches && launcher) {
         // the turret's WORLD yaw is independent of the chassis (`turretHeading`); this group is
         // a child of the chassis group, which already carries `r.heading`, so the child's own
-        // rotation only needs the DIFFERENCE. ELEVATION is a separate node under it, because the
-        // hood pivots about the muzzle and the tower under it does not.
+        // rotation only needs the DIFFERENCE. ELEVATION is a separate node under it, because only
+        // the HOOD elevates — the flywheel, the plates and everything bolted between them are on
+        // the yaw node and do not move with pitch at all (owner item d, 2026-09-19).
+        //
+        // ⚠️ NOTHING HERE CHANGED WHEN THE ASSEMBLY DID, AND THAT IS THE TEST OF THE RESTRUCTURE.
+        // Same two node names, same two rotations, same signs; what moved is where `bb-turret-
+        // pitch` pivots (the AXLE) and what hangs off it (the hood and its arms).
         heads[0].rotation.z = r.turretHeading - r.heading;
         pitches[0].rotation.y = -(r.bbTurretPitch ?? 0);
         if (heads.length > 1) {
@@ -1687,7 +1717,7 @@ export function buildBiobuzzRobots(): BbRobots {
  *
  * The per-robot half is every mesh built inline in `buildRobotGroup` — the nose box, the sign
  * plane and its material (its TEXTURE is cached per id and is not touched), the turret ring,
- * posts, axle, motor and feed chute. The Box Tube's sections, the shooter's belt and the swerve
+ * axle, motor and feed chute. The Box Tube's sections, the shooter's belt and the swerve
  * pod's drive all come from `framePart` and are SHARED. Anything from `solidMat`, `lineMat`,
  * `getRollerMat`, `wheelGeometry`, `framePart` or `chassisEdges` is left alone: see
  * `SHARED_GEO`'s header. The SWERVE POD is entirely shared — its three merged geometries come

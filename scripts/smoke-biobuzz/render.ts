@@ -8,6 +8,7 @@
  * Kept fast on purpose (a handful of `readFileSync` calls over a few dozen files): this lane
  * never boots physics or steps a world.
  */
+import * as THREE from 'three';
 import { readdirSync, readFileSync } from 'node:fs';
 import { dirname, join, relative, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -44,14 +45,42 @@ import {
   BB_BOX_TUBE_SECTIONS,
   BB_BOX_TUBE_STAGE_OVERLAP,
   BB_BOX_TUBE_WALL,
+  BB_DECK_Z,
+  BB_FEED_SHOE_FAR,
+  BB_FEED_SHOE_R,
+  BB_FLYWHEEL_CLEAR,
+  BB_FLYWHEEL_D_MM,
+  BB_FLYWHEEL_R,
+  BB_HOOD_ARM_INSET,
+  BB_HOOD_ARM_T,
+  BB_HOOD_PATH_R,
+  BB_HOOD_R,
+  BB_HOOD_T,
+  BB_HOOD_WRAP,
+  BB_LAUNCH_PLATE_GAP,
   BB_LAUNCH_Z0,
   BB_POLLEN_R,
+  BB_SIDE_PLATE_BOTTOM_Z,
+  BB_SIDE_PLATE_FRONT_X,
+  BB_SIDE_PLATE_TOP_Z,
+  BB_TURRET_AXLE_Z,
+  BB_TURRET_BRACE_R,
+  BB_TURRET_BRACES,
+  BB_TURRET_MOTOR,
   BB_TURRET_PITCH_MAX,
   BB_TURRET_PITCH_MIN,
+  BB_TURRET_PLATE_TOP_Z,
   BB3_HEIGHT_DEFAULT,
   BB3_HEIGHT_MIN,
   BB3_MOUTH_SLOT_Z,
 } from '../../src/games/biobuzz/config';
+// ⚠️ THE ONE PLACE IN THIS LANE THAT REACHES INTO `scene/`, AND THE ONLY SCRIPT THAT IMPORTS
+// `three`. The chunk-boundary rules this file enforces are about `src/`; a Node smoke script is
+// not bundled, and `buildTurret` touches no DOM. It is here because five passes of shooter
+// geometry were signed off by a lane that could only grep the source — see its own header, and
+// the SHOOTER block below.
+import { buildTurret, disposeRobotGroup } from '../../src/games/biobuzz/scene/renderRobots';
+import { bbMuzzleLocal } from '../../src/games/biobuzz/robot';
 import { INTAKE_RAIL_T } from '../../src/config';
 import { BB_DEFAULT_SPEC } from '../../src/games/biobuzz/coerce';
 import { bbCoerceSpec } from '../../src/games/biobuzz/robotConfig';
@@ -1141,7 +1170,11 @@ function graphicsChecks(check: Check, allFiles: string[]): void {
       const robotsCode = codeLines(join(SCENE_DIR, 'renderRobots.ts')).join('\n');
 
       // ── #9 / #16: A LOW DRIVETRAIN, NOT A FULL-HEIGHT SLAB ───────────────────────────────
-      const plateH = Number(/const BB_PLATE_H = ([\d.]+);/.exec(robotsSrc)?.[1] ?? NaN);
+      // ⚠️ `BB_DECK_Z`, NOT A LITERAL SCRAPED OUT OF THE RENDERER. The deck moved into
+      // `config.ts` with the rest of the turret's stack (2026-09-19), and `BB_PLATE_H` is now an
+      // alias for it — a regex for `= 4.6;` reads NaN and every number below it comes out NaN,
+      // which is how a check quietly stops checking.
+      const plateH = BB_DECK_Z;
       check(
         'the drivetrain has its own height, and it is a drivetrain height',
         plateH > 3 && plateH < 6 && plateH < BB3_HEIGHT_MIN / 2,
@@ -1173,14 +1206,16 @@ function graphicsChecks(check: Check, allFiles: string[]): void {
       // rest pitch, which is what this measures; a hood ELEVATED past level legitimately swings
       // above the frame, the same way real hardware does inside R105's expanded volume.)
       {
-        const num = (name: string): number => Number(new RegExp(`const ${name} = ([\\d.]+);`).exec(robotsSrc)?.[1] ?? NaN);
-        const fw = num('BB_FLYWHEEL_R');
-        const comp = num('BB_HOOD_COMPRESSION');
-        const hoodR = fw + BB_POLLEN_R * 2 - comp;
-        // the plate's own outer radius, read out of the generator rather than re-typed: it came
-        // down from `BB_HOOD_R + 0.5` to `+ 0.35` when the owner said the plate was oversized
-        const plateOut = hoodR + Number(/const BB_PLATE_R_OUT = BB_HOOD_R \+ ([\d.]+);/.exec(robotsSrc)?.[1] ?? NaN);
-        const shooterTop = BB_LAUNCH_Z0 - (hoodR - BB_POLLEN_R) + plateOut; // axle z + plate radius
+        // ⚠️ MEASURED OFF THE BUILT GROUP, NOT RE-DERIVED FROM SCRAPED LITERALS. The version this
+        // replaces reconstructed the chain (`BB_FLYWHEEL_R` + `BB_HOOD_COMPRESSION` +
+        // `BB_PLATE_R_OUT`) out of the renderer's source with three regexes, and when that chain
+        // moved into `config.ts` every one of them read NaN — a check that stops checking without
+        // ever going red. It also named the wrong part: the tallest thing at rest is the HOOD now,
+        // not the side plate, because the plate deliberately stops below it (owner item b).
+        const probe = buildTurret({ ...BB_DEFAULT_SPEC }, 'center');
+        probe.updateMatrixWorld(true);
+        const shooterTop = new THREE.Box3().setFromObject(probe).max.z;
+        disposeRobotGroup(probe);
         check(
           'the tallest drawn part still fits inside the SHORTEST legal collider',
           Number.isFinite(shooterTop) && shooterTop <= BB3_HEIGHT_MIN,
@@ -1219,378 +1254,565 @@ function graphicsChecks(check: Check, allFiles: string[]): void {
       );
       check('cross members, a belly pan and a deck — a frame, not a box', /CROSS MEMBERS/.test(robotsSrc) && /BELLY PAN/.test(robotsSrc));
 
-      // ── #10: THE HOODED FLYWHEEL LEAVES WHERE THE SIM SAYS IT DOES ───────────────────────
-      // `bbMuzzleZ` is `BB_LAUNCH_Z0` at every elevation, so the visible exit has to be too. The
-      // yaw node sits AT that height and the pitch node under it pivots about the exit — put the
-      // pivot anywhere else and the picture and the physics agree at one angle only.
-      check(
-        'the turret head is placed at the sim’s own muzzle height',
-        robotsCode.includes('head.position.z = BB_LAUNCH_Z0 - BB_DECK_Z;'),
-      );
-      check(
-        '...and the muzzle is a named node at the pitch pivot',
-        robotsCode.includes("exit.name = 'bb-turret-exit'") && robotsCode.includes('const cz = -BB_HOOD_PATH_R;'),
-      );
-      // the node names are an INTERFACE: the sync, the reticle and any auto-aim rotate these two
-      check(
-        'the yaw and pitch pivots are named groups (bb-turret-head / bb-turret-pitch)',
-        robotsCode.includes("head.name = 'bb-turret-head'") && robotsCode.includes("pitch.name = 'bb-turret-pitch'"),
-      );
-      check(
-        'the hood clears ONE element diameter, read from BB_POLLEN_R rather than typed',
-        /const BB_HOOD_R = BB_FLYWHEEL_R \+ BB_POLLEN_R \* 2 - BB_HOOD_COMPRESSION;/.test(robotsCode),
-      );
-      check('the shooter is an arc hood over a flywheel, not a barrel', /absarc\(0, 0, BB_HOOD_R/.test(robotsCode) && !/TURRET_BARREL[\s\S]{0,80}BoxGeometry\(ring/.test(robotsCode));
-
-      // ── 2026-09-19 OWNER PLAYTEST: THE SIDE PLATE'S OPEN END, AND THE BRACING ─────────────
-      // "The shooter's parallel plates have this sharp corner that looks ugly and serves no
-      // purpose. The front should be like flat or something and there should be bracing between
-      // the two plates."
+      // ── THE SHOOTER: BUILT, POSED AND MEASURED — NOT GREPPED ────────────────────────────
       //
-      // The band stays a "C" (a full disc hid the mechanism and read as a spool — see the
-      // generator's own header), so what changed is how it ENDS and what ties the two plates
-      // together. Both halves are checked here, and the bracing half is ARITHMETIC over the
-      // sim's own element dimensions rather than a grep, because the one thing a standoff may
-      // not do is stand in the element's way.
+      // ⚠️ **EVERYTHING BELOW USED TO BE A STRING CHECK OVER `renderRobots.ts`, AND IT PASSED
+      // FIVE TIMES ON GEOMETRY THE OWNER REJECTED** (report of 2026-09-19, items a–e). It
+      // asserted `head.position.z = BB_LAUNCH_Z0 - BB_DECK_Z;`, `const cz = -BB_HOOD_PATH_R;` and
+      // `export const BB_SHOOTER_MUZZLE_Z = BB_LAUNCH_Z0;` — three literals that were all present,
+      // all consistent with each other, and all describing a machine with the flywheel hung three
+      // inches in the air, side plates reaching over the hood, and a flap on the back. A lane that
+      // greps cannot see a shape. This one BUILDS the real `buildTurret` group, poses
+      // `bb-turret-pitch` through the whole elevation envelope, and measures VERTICES.
+      //
+      // That is why this file imports `three` — the only script in the lane that does. The
+      // chunk-boundary rules at the top of this function are about `src/`; a Node smoke script is
+      // not bundled, and `buildTurret` touches no DOM (the sign texture, which does, is in
+      // `buildRobotGroup` and is not on this path).
       {
-        const num = (name: string): number => Number(new RegExp(`const ${name} = ([\\d.]+);`).exec(robotsSrc)?.[1] ?? NaN);
-        const flywheelR = num('BB_FLYWHEEL_R');
-        const hoodR = flywheelR + BB_POLLEN_R * 2 - num('BB_HOOD_COMPRESSION');
-        const pathR = hoodR - BB_POLLEN_R;
-        const wrap = num('BB_HOOD_WRAP');
-        const thExit = Math.PI / 2;
-        const thFeed = thExit + wrap;
-        const rIn = flywheelR * 0.52;
-        const rOut = hoodR + Number(/const BB_PLATE_R_OUT = BB_HOOD_R \+ ([\d.]+);/.exec(robotsSrc)?.[1] ?? NaN);
-        const deckZ = num('BB_PLATE_H');
-        const frontZ = pathR - BB_POLLEN_R - 0.15; // `BB_PLATE_FRONT_Z`
-
-        // ══ THE ρ INVARIANT — THE CHECK THAT REPLACES THE ONE THAT PASSED ON A BROKEN PICTURE ══
-        //
-        // ⚠️ WHAT WAS HERE BEFORE EVALUATED `axleZ + sin(th) * rOut` — AT PITCH 0 ONLY — over the
-        // side plate's OUTER ARC and nothing else. Three defects, in order of cost:
-        //   (1) the head PIVOTS ABOUT THE MUZZLE through `BB_TURRET_PITCH_MAX`, and the pivot
-        //       never entered the arithmetic, so the one configuration it measured was the one
-        //       configuration that was fine;
-        //   (2) it covered the side plate ALONE — the hood, the braces, the motor, the belt and
-        //       the FEED RAMP were unmeasured, and the ramp was the real offender at 1.62 in
-        //       below the deck at rest and 4.56 below at 45° of elevation;
-        //   (3) it sampled the outer arc only, not the fillets, the end faces or the inner arc,
-        //       so it reported 4.819 where the true outline minimum was 5.050.
-        // It passed while the plate dug 1.10 in into the drivetrain. A check that green-lights
-        // the bug it was written for is worse than no check.
-        //
-        // The replacement is the closed form, re-derived here rather than imported: a head-frame
-        // point (x, z) reaches world z = `BB_LAUNCH_Z0 + ρ·sin(p + φ)`, so if the critical pitch
-        // `−π/2 − φ` falls inside [0, PITCH_MAX] it reaches `BB_LAUNCH_Z0 − ρ` exactly.
-        const minWorldZ = (x: number, z: number): number => {
-          const rho = Math.hypot(x, z);
-          const phi = Math.atan2(z, x);
-          const crit = -Math.PI / 2 - phi;
-          for (let k = -2; k <= 2; k++) {
-            const p = crit + 2 * Math.PI * k;
-            if (p >= BB_TURRET_PITCH_MIN && p <= BB_TURRET_PITCH_MAX) return BB_LAUNCH_Z0 - rho;
-          }
-          return BB_LAUNCH_Z0 + rho * Math.min(Math.sin(phi), Math.sin(BB_TURRET_PITCH_MAX + phi));
+        const turret = buildTurret({ ...BB_DEFAULT_SPEC }, 'center');
+        const root = new THREE.Group();
+        root.add(turret);
+        const head = turret.userData.head as THREE.Group;
+        const pitchNode = turret.userData.pitch as THREE.Group;
+        const exitNode = pitchNode.getObjectByName('bb-turret-exit');
+        const headInv = new THREE.Matrix4();
+        /** put the turret at elevation `p` and refresh both frames we measure in. */
+        const pose = (p: number): void => {
+          pitchNode.rotation.y = -p;
+          root.updateMatrixWorld(true);
+          headInv.copy(head.matrixWorld).invert();
         };
-        /** a point in the AXLE frame, checked in the HEAD frame (the axle is `pathR` below it). */
-        const minAxleZ = (x: number, z: number): number => minWorldZ(x, z - pathR);
-        const rhoMax = BB_LAUNCH_Z0 - deckZ - 0.2;
+        const meshes: THREE.Mesh[] = [];
+        turret.traverse((o) => {
+          if ((o as THREE.Mesh).isMesh) meshes.push(o as THREE.Mesh);
+        });
+        const named = (n: string): THREE.Mesh[] => meshes.filter((m) => m.name === n);
+        const scratch = new THREE.Vector3();
+        /** every vertex of `m`, in the ROBOT frame — z is height off the tiles. */
+        const robotVerts = (m: THREE.Mesh): THREE.Vector3[] => {
+          const pos = m.geometry.getAttribute('position') as THREE.BufferAttribute;
+          const out: THREE.Vector3[] = [];
+          for (let i = 0; i < pos.count; i++) out.push(scratch.fromBufferAttribute(pos, i).applyMatrix4(m.matrixWorld).clone());
+          return out;
+        };
+        /** …and in the AXLE frame, which is the yaw node's own frame and the one every θ in
+         *  `config.ts` is measured in. */
+        const axleVerts = (m: THREE.Mesh): THREE.Vector3[] =>
+          robotVerts(m).map((v) => v.clone().applyMatrix4(headInv));
+        /**
+         * ⚠️ THE TOLERANCE EVERY MEASUREMENT BELOW IS PAID AT, AND WHY IT IS NOT 1e-9. A
+         * `BufferAttribute`'s positions are FLOAT32 — that is what goes to the GPU, so it is what
+         * the picture actually is — and at these radii that is ~5e-7 of absolute error. Anything
+         * tighter would be a check on double arithmetic the renderer never performs. The node
+         * POSITIONS (the muzzle) are doubles and are held to 1e-9; only vertex readings pay this.
+         */
+        const F32 = 1e-4;
+        /** the elevations every sweep below samples: the whole envelope, ends included. */
+        const PITCHES = 41;
+        const pitchAt = (i: number): number =>
+          BB_TURRET_PITCH_MIN + ((BB_TURRET_PITCH_MAX - BB_TURRET_PITCH_MIN) * i) / (PITCHES - 1);
+
+        pose(BB_TURRET_PITCH_MIN);
+        const PARTS = [
+          'bb-turret-plate',
+          'bb-turret-side-plate',
+          'bb-turret-flywheel',
+          'bb-turret-axle',
+          'bb-turret-brace',
+          'bb-turret-motor',
+          'bb-turret-belt',
+          'bb-turret-feed-shoe',
+          'bb-turret-feed',
+          'bb-turret-hood',
+          'bb-turret-hood-arm',
+        ] as const;
         check(
-          'the head’s ρ budget is DERIVED (BB_LAUNCH_Z0 − the deck − its clearance), not typed',
-          /const BB_HEAD_RHO_MAX = BB_LAUNCH_Z0 - BB_DECK_Z - 0\.2;/.test(robotsCode) &&
-            Math.abs(rhoMax - (BB_LAUNCH_Z0 - deckZ - 0.2)) < 1e-12,
-          `${rhoMax.toFixed(2)} in`,
+          'the shooter is an ASSEMBLY of named parts, and every one of them was built',
+          PARTS.every((n) => named(n).length > 0) && named('bb-turret-side-plate').length === 2 && named('bb-turret-hood-arm').length === 2,
+          PARTS.map((n) => `${n}×${named(n).length}`).join(' '),
         );
-        check(
-          '...and the generator carries the same closed form, so the clip IS the invariant',
-          /function minHeadWorldZ\(/.test(robotsCode) &&
-            /const crit = -Math\.PI \/ 2 - phi;/.test(robotsCode) &&
-            robotsCode.includes('minHeadWorldZ(Math.cos(th) * r, Math.sin(th) * r - BB_HOOD_PATH_R)'),
-        );
-        // and the sanity test the OLD form would have failed: a point one ρ-budget behind the
-        // muzzle really does reach the deck, at a pitch inside the envelope
+
+        // ══ (d) ONLY THE HOOD AND ITS ARMS MOVE WITH PITCH ══════════════════════════════════
+        //
+        // ⚠️ **THIS IS OWNER ITEM (d), AND IT IS THE CHECK THE LANE NEVER HAD.** "When the hood is
+        // changing angle, the flywheel should be fixed and the parallel plates should be fixed.
+        // Only the hood, a central arc in the back, should be moving up and down." Before this
+        // restructure `bb-turret-pitch` carried the WHOLE shooter — wheel, plates, braces, motor
+        // and belt all swung with elevation — and nothing said otherwise, because the only thing
+        // ever checked was where the pivot was written down.
+        //
+        // A part's fingerprint is its vertex extent in the ROBOT frame. Sampled over 41 pitches:
+        // eight parts must not move by so much as a float, and three must.
         {
-          // a point BEHIND AND BELOW the muzzle at exactly the budget: at rest it clears the deck
-          // by 1.5 in, and at 45° of elevation it is on the clearance line. That gap is the whole
-          // bug — the old check only ever looked at the first number.
-          const k = rhoMax / Math.SQRT2;
+          const FIXED = ['bb-turret-plate', 'bb-turret-side-plate', 'bb-turret-flywheel', 'bb-turret-axle', 'bb-turret-brace', 'bb-turret-motor', 'bb-turret-belt', 'bb-turret-feed-shoe', 'bb-turret-feed'];
+          const MOVES = ['bb-turret-hood', 'bb-turret-hood-arm'];
+          const print = (m: THREE.Mesh): THREE.Box3 => new THREE.Box3().setFromPoints(robotVerts(m));
+          pose(BB_TURRET_PITCH_MIN);
+          const base = new Map<THREE.Mesh, THREE.Box3>(meshes.map((m) => [m, print(m)]));
+          const drift = new Map<THREE.Mesh, number>(meshes.map((m) => [m, 0]));
+          for (let i = 1; i < PITCHES; i++) {
+            pose(pitchAt(i));
+            for (const m of meshes) {
+              const b = print(m);
+              const b0 = base.get(m) as THREE.Box3;
+              drift.set(m, Math.max(drift.get(m) ?? 0, b.min.distanceTo(b0.min) + b.max.distanceTo(b0.max)));
+            }
+          }
+          const worstFixed = Math.max(...meshes.filter((m) => FIXED.includes(m.name)).map((m) => drift.get(m) ?? 0));
+          const leastMoved = Math.min(...meshes.filter((m) => MOVES.includes(m.name)).map((m) => drift.get(m) ?? 0));
           check(
-            'the invariant bites — a point that looks clear at rest reaches the deck at 45°',
-            Math.abs(minWorldZ(-k, -k) - (deckZ + 0.2)) < 1e-9 && BB_LAUNCH_Z0 - k > deckZ + 1.4,
-            `rest ${(BB_LAUNCH_Z0 - k).toFixed(3)} → min ${minWorldZ(-k, -k).toFixed(3)} vs deck ${deckZ}`,
+            'ONLY the hood moves with elevation: wheel, both plates, braces, motor, belt, shoe and chute do not',
+            worstFixed === 0,
+            `worst drift ${worstFixed.toFixed(6)} in over ${PITCHES} pitches`,
+          );
+          check(
+            '...and the hood and its two arms DO — they are on the pitch node, so this is not vacuous',
+            leastMoved > 1,
+            `least-moved hood part travels ${leastMoved.toFixed(3)} in`,
+          );
+          check(
+            '...and the pitch node carries NOTHING ELSE (three meshes: the arc and two arms)',
+            pitchNode.children.filter((c) => (c as THREE.Mesh).isMesh).length === 3,
+            pitchNode.children.map((c) => c.name || c.type).join(', '),
           );
         }
 
-        // ── THE FLAT FRONT (owner, 2026-09-19: "the front should be like flat or something").
-        // The forward boundary is a STRAIGHT horizontal cut at `BB_PLATE_FRONT_Z` about the axle
-        // with a short vertical face down to the bore — two flat faces at a right angle. The
-        // radial end cut and its fillet, which is what made the corner in the first place, are
-        // asserted GONE rather than re-tuned.
-        check(
-          'the side plate’s front is a FLAT cut, not a radial end face',
-          robotsCode.includes('band.lineTo(rIn, BB_PLATE_FRONT_Z);') &&
-            robotsCode.includes('band.lineTo(Math.cos(th0) * BB_PLATE_R_OUT, BB_PLATE_FRONT_Z);') &&
-            /const th0 = Math\.asin\(BB_PLATE_FRONT_Z \/ BB_PLATE_R_OUT\);/.test(robotsCode),
-        );
-        check(
-          '...and the radial end cut and its fillet are gone entirely',
-          !/BB_PLATE_END_R/.test(robotsCode) && !/const dth = /.test(robotsCode),
-        );
-        check(
-          '...and the cut clears the outgoing corridor by the margin it claims',
-          frontZ > 0 && pathR - BB_POLLEN_R - frontZ > 0.14 && pathR - BB_POLLEN_R - frontZ < 0.16,
-          `cut ${frontZ.toFixed(2)} vs corridor floor ${(pathR - BB_POLLEN_R).toFixed(2)}`,
-        );
-        // THE OPENING SURVIVES. The band is still a "C" and still leaves the FRONT-BOTTOM
-        // QUADRANT open, which is the constraint the generator's header sets — a full disc hid
-        // the mechanism. The fillet only ever removes material; the TAIL behind the feed did
-        // grow, because that is the one sector with plate and no element in it and the bracing
-        // has to bolt to something. So this is arithmetic on the open sector, not a grep for
-        // two literals: what matters is the quadrant, not the number that produces it.
-        const th0 = Math.asin(frontZ / rOut);
-        const th1 = thFeed + num('BB_PLATE_TAIL');
-        const openFrom = ((th1 % (Math.PI * 2)) + Math.PI * 2) % (Math.PI * 2); // where the plate ends
-        const openTo = th0 + Math.PI * 2; // ...and where it starts again
-        check(
-          'the band is still a C, not a disc',
-          openTo - openFrom > Math.PI / 2,
-          `${(((openTo - openFrom) * 180) / Math.PI).toFixed(1)}° open`,
-        );
-        check(
-          '...and the FRONT-BOTTOM, where the muzzle and the flywheel show, is inside the opening',
-          openFrom <= (Math.PI * 3) / 2 + 0.02 && openTo >= Math.PI * 2,
-          `open ${((openFrom * 180) / Math.PI).toFixed(1)}°..${((openTo * 180) / Math.PI).toFixed(1)}°`,
-        );
-
-        // ⚠️ AND NOTHING ON THE PITCHING HEAD MAY DIP INTO THE CHASSIS IT STANDS ON, AT ANY
-        // ELEVATION (owner, 2026-09-19: "the plate is meshing with the chassis"). The outer
-        // boundary is `BB_PLATE_R_OUT` clipped to the ρ budget, so re-derive that clip here and
-        // walk the WHOLE outline — all four boundaries, not just the arc that used to be sampled.
-        const plateOuterAt = (th: number): number => {
-          const ok = (r: number): boolean => minAxleZ(Math.cos(th) * r, Math.sin(th) * r) >= deckZ + 0.2;
-          if (ok(rOut)) return rOut;
-          let lo = 0;
-          let hi = rOut;
-          for (let i = 0; i < 40; i++) {
-            const mid = (lo + hi) / 2;
-            if (ok(mid)) lo = mid;
-            else hi = mid;
+        // ══ THE CONTRACT: THE DRAWN LIP IS THE SIM'S MUZZLE, AT EVERY ELEVATION ═════════════
+        //
+        // ⚠️ THE WHOLE POINT OF MOVING THE DIMENSION CHAIN INTO `config.ts`. `bbMuzzleLocal`
+        // (`robot.ts`) is the ONE function; the sim releases from it and this node is placed by
+        // it, so the picture and the physics agree by construction rather than by two people
+        // keeping two numbers in step. The old arrangement agreed at ONE pitch — which is exactly
+        // what the check it replaces asserted, and why five rounds of disagreement got through.
+        {
+          let worst = 0;
+          let where = '';
+          for (let i = 0; i < PITCHES; i++) {
+            const p = pitchAt(i);
+            pose(p);
+            const w = new THREE.Vector3();
+            (exitNode as THREE.Object3D).getWorldPosition(w);
+            const m = bbMuzzleLocal(p);
+            // `back` is measured along the turret's heading, which at zero yaw is +x
+            const err = Math.hypot(w.x - -m.back, w.y, w.z - m.z);
+            if (err > worst) {
+              worst = err;
+              where = `${((p * 180) / Math.PI).toFixed(1)}° drawn (${w.x.toFixed(4)}, ${w.z.toFixed(4)}) vs sim (${(-m.back).toFixed(4)}, ${m.z.toFixed(4)})`;
+            }
           }
-          return lo;
+          check('the DRAWN hood lip is at bbMuzzleLocal(pitch) at EVERY elevation, not just at rest', worst < 1e-9, `worst ${worst.toExponential(2)} in — ${where}`);
+          pose(BB_TURRET_PITCH_MIN);
+          const rest = new THREE.Vector3();
+          (exitNode as THREE.Object3D).getWorldPosition(rest);
+          pose(BB_TURRET_PITCH_MAX);
+          const top = new THREE.Vector3();
+          (exitNode as THREE.Object3D).getWorldPosition(top);
+          check(
+            '...and it is not a constant any more — the lip DROPS and sets BACK as the hood elevates',
+            rest.z - top.z > 2 && top.x < -2 && Math.abs(rest.z - BB_LAUNCH_Z0) > 0.3,
+            `${rest.z.toFixed(3)} → ${top.z.toFixed(3)} (was a flat ${BB_LAUNCH_Z0} at every pitch)`,
+          );
+        }
+
+        // ══ (b) THE HOOD IS PROUD OF THE SIDE PLATES, BY CONSTRUCTION ══════════════════════
+        //
+        // "The arc in the parallel plates of the shooter reaches too high. The hood extends above
+        // the supporting parallel plates." The plate's outer boundary is `config.ts`'s profile —
+        // an arc at `BB_HOOD_R` cut by a flat top, a flat front and a flat bottom — and the hood
+        // occupies `BB_HOOD_R … +BB_HOOD_T`, so the hood is the outermost part at every angle in
+        // the wrap and at every elevation, with no offset anybody can drift.
+        //
+        // The arithmetic is over sampled ANGLES × sampled PITCHES, and it is bound to the DRAWING
+        // by the two measurements under it: the hood's own drawn radii, and the plate's drawn
+        // boundary sampled off its vertices.
+        const plateR = (th: number): number => {
+          const st = Math.sin(th);
+          const ct = Math.cos(th);
+          let r = BB_HOOD_R;
+          if (st > 1e-9) r = Math.min(r, BB_SIDE_PLATE_TOP_Z / st);
+          if (st < -1e-9) r = Math.min(r, BB_SIDE_PLATE_BOTTOM_Z / st);
+          if (ct > 1e-9) r = Math.min(r, BB_SIDE_PLATE_FRONT_X / ct);
+          return r;
         };
+        {
+          let worst = Infinity;
+          let worstAt = '';
+          let rest = Infinity;
+          let top = Infinity;
+          const NA = 24;
+          for (let i = 0; i < PITCHES; i++) {
+            const p = pitchAt(i);
+            for (let j = 0; j <= NA; j++) {
+              const th = Math.PI / 2 + (BB_HOOD_WRAP * j) / NA;
+              const proud = BB_HOOD_R + BB_HOOD_T - plateR(th + p);
+              if (proud < worst) {
+                worst = proud;
+                worstAt = `p=${((p * 180) / Math.PI).toFixed(1)}° θ=${(((th + p) * 180) / Math.PI).toFixed(1)}°`;
+              }
+              if (i === 0) rest = Math.min(rest, proud);
+              if (i === PITCHES - 1) top = Math.min(top, proud);
+            }
+          }
+          check(
+            'the hood stands PROUD of the plate at every angle in the wrap, at rest AND at full elevation',
+            worst >= BB_HOOD_T - 1e-9 && rest > 3 && top >= BB_HOOD_T - 1e-9,
+            `worst +${worst.toFixed(4)} (${worstAt}); rest +${rest.toFixed(3)}, 80° +${top.toFixed(3)}`,
+          );
+          pose(BB_TURRET_PITCH_MIN);
+          // the DRAWN hood: its vertices live in exactly the band the arithmetic above assumes
+          const hoodR = axleVerts(named('bb-turret-hood')[0]).map((v) => Math.hypot(v.x, v.z));
+          check(
+            '...and the DRAWN hood really does occupy BB_HOOD_R … +BB_HOOD_T (the arithmetic is about this mesh)',
+            Math.min(...hoodR) > BB_HOOD_R - 1e-6 && Math.max(...hoodR) < BB_HOOD_R + BB_HOOD_T + 1e-6,
+            `${Math.min(...hoodR).toFixed(4)} … ${Math.max(...hoodR).toFixed(4)}`,
+          );
+          // the DRAWN plate: no vertex outside the profile, and the profile is actually reached
+          let over = 0;
+          let reach = 0;
+          for (const v of axleVerts(named('bb-turret-side-plate')[0])) {
+            const r = Math.hypot(v.x, v.z);
+            const lim = plateR(Math.atan2(v.z, v.x));
+            over = Math.max(over, r - lim);
+            reach = Math.max(reach, r);
+          }
+          check(
+            '...and the DRAWN side plate IS that profile: nothing outside it, and its arc is reached',
+            over < 1e-6 && Math.abs(reach - BB_HOOD_R) < 1e-6,
+            `worst overshoot ${over.toExponential(2)}, max r ${reach.toFixed(4)} vs BB_HOOD_R ${BB_HOOD_R.toFixed(4)}`,
+          );
+        }
+
+        // ══ THE PLATE'S TOP IS BELOW THE HOOD'S TOP ════════════════════════════════════════
+        // The rest pose, deliberately: that is the configuration owner item (b) is about and the
+        // one a robot sits in between shots. At full elevation the hood has swung BACK and DOWN,
+        // so the fixed plate is legitimately the taller of the two — the all-elevation statement
+        // is the RADIAL one above, which holds at every pitch.
+        {
+          pose(BB_TURRET_PITCH_MIN);
+          const plateTop = Math.max(...robotVerts(named('bb-turret-side-plate')[0]).map((v) => v.z));
+          const hoodTop = Math.max(...robotVerts(named('bb-turret-hood')[0]).map((v) => v.z));
+          check(
+            'at rest the plate’s highest point is well below the hood’s',
+            plateTop < hoodTop - 3,
+            `plate ${plateTop.toFixed(3)} vs hood ${hoodTop.toFixed(3)}`,
+          );
+          check(
+            '...and the plate’s own top is the flat cut BB_SIDE_PLATE_TOP_Z, not an arc that outran it',
+            Math.abs(plateTop - (BB_TURRET_AXLE_Z + BB_SIDE_PLATE_TOP_Z)) < 1e-6,
+            `${plateTop.toFixed(4)} vs ${(BB_TURRET_AXLE_Z + BB_SIDE_PLATE_TOP_Z).toFixed(4)}`,
+          );
+        }
+
+        // ══ (c) (e) THE FLYWHEEL IS 72 mm AND IT SITS ON THE TURRET PLATE ═══════════════════
+        // "The flywheel can be situated much lower. It just needs to be right above the turret
+        // plate." — and "a standard flywheel is 72 mm diameter". Both are measurements now, and
+        // the radius is checked by converting it BACK: a decimal literal that had drifted would
+        // not come out at 72.
+        {
+          pose(BB_TURRET_PITCH_MIN);
+          const wheel = named('bb-turret-flywheel');
+          const vs = wheel.flatMap((m) => axleVerts(m));
+          const rim = Math.max(...vs.map((v) => Math.hypot(v.x, v.z)));
+          const bottom = Math.min(...wheel.flatMap((m) => robotVerts(m)).map((v) => v.z));
+          check(
+            'the flywheel’s drawn radius back-converts to 72 mm',
+            Math.abs(rim * 25.4 * 2 - BB_FLYWHEEL_D_MM) < 0.5,
+            `${(rim * 25.4 * 2).toFixed(2)} mm (drawn as a 14-segment wheel, so the rim reads a hair under)`,
+          );
+          check(
+            '...and its lowest point is BB_FLYWHEEL_CLEAR above the turret plate, not hung in the air',
+            Math.abs(bottom - (BB_TURRET_PLATE_TOP_Z + BB_FLYWHEEL_CLEAR)) < 1e-6,
+            `${bottom.toFixed(3)} vs plate top ${BB_TURRET_PLATE_TOP_Z.toFixed(3)} + ${BB_FLYWHEEL_CLEAR}`,
+          );
+          // ...and it is JOURNALLED: everywhere the plate's flat top does not cut across it, the
+          // plate is behind the wheel's rim. The old band left a bare annulus between its hub and
+          // its rim with the rim sitting in it — owner: "the flywheel looks like it is not
+          // constrained to the plate anymore".
+          let gaps = 0;
+          for (let i = 0; i < 720; i++) {
+            const th = (Math.PI * 2 * i) / 720;
+            if (Math.sin(th) * BB_FLYWHEEL_R > BB_SIDE_PLATE_TOP_Z) continue; // the flat top, where the hood is
+            if (plateR(th) < BB_FLYWHEEL_R) gaps++;
+          }
+          check('...and the plate covers the wheel’s rim everywhere its flat top does not cut it', gaps === 0, `${gaps} of 720 sampled angles uncovered`);
+          // …which needs the plate SOLID. A bore would show as drawn material stopping at some
+          // radius INSIDE the profile's own smallest value; with no bore the closest the plate
+          // ever comes to the axle is the profile itself, which is its flat top at θ = 90°.
+          let profileMin = Infinity;
+          for (let i = 0; i < 3600; i++) profileMin = Math.min(profileMin, plateR((Math.PI * 2 * i) / 3600));
+          const bore = Math.min(...axleVerts(named('bb-turret-side-plate')[0]).map((v) => Math.hypot(v.x, v.z)));
+          check('...which needs the plate SOLID, with no bore for the rim to show through', bore >= profileMin - F32, `closest drawn radius ${bore.toFixed(4)} vs the profile's own minimum ${profileMin.toFixed(4)}`);
+        }
+
+        // ══ NOTHING SWEEPS BELOW THE DECK, AT ANY ELEVATION ════════════════════════════════
+        //
+        // ⚠️ THE FAILURE THIS REPLACES WAS REAL AND IT WAS INVISIBLE AT REST: with the whole head
+        // on the pitch node, the side plate's rear corner went 1.10 in INSIDE the drivetrain at
+        // ~44° and the feed ramp swept to 0.04 in off the tile. The old lane re-derived a closed
+        // form (`minHeadWorldZ`) to catch it. There is nothing left to derive — the plates do not
+        // elevate any more — so this is the direct measurement: every vertex of every mesh, at 41
+        // elevations, against the deck it stands on.
         {
           let lowest = Infinity;
-          let where = '';
-          const at = (x: number, z: number, label: string): void => {
-            const v = minAxleZ(x, z);
-            if (v < lowest) {
-              lowest = v;
-              where = label;
+          let who = '';
+          for (let i = 0; i < PITCHES; i++) {
+            pose(pitchAt(i));
+            for (const m of meshes) {
+              for (const v of robotVerts(m)) {
+                if (v.z < lowest) {
+                  lowest = v.z;
+                  who = `${m.name || 'slew ring'} @${((pitchAt(i) * 180) / Math.PI).toFixed(0)}°`;
+                }
+              }
             }
-          };
-          const N = 240;
-          for (let i = 0; i <= N; i++) {
-            const th = th0 + ((th1 - th0) * i) / N;
-            const r = plateOuterAt(th);
-            at(Math.cos(th) * r, Math.sin(th) * r, 'outer'); // the clipped outer boundary
-            at(Math.cos(th) * rIn, Math.sin(th) * rIn, 'inner'); // the bore
           }
-          for (let i = 0; i <= N; i++) {
-            at(rIn + ((rOut - rIn) * i) / N, frontZ, 'flat front'); // the FLAT cut
-            at(rIn, (frontZ * i) / N, 'front bore face'); // the short vertical face
-            const r = rIn + ((plateOuterAt(th1) - rIn) * i) / N;
-            at(Math.cos(th1) * r, Math.sin(th1) * r, 'tail end face');
+          check('NOTHING on the turret reaches below the deck, at any elevation', lowest >= BB_DECK_Z - F32, `lowest ${lowest.toFixed(4)} (${who}) vs deck ${BB_DECK_Z}`);
+          // …and the things that ELEVATE keep a real margin, not a rounding one
+          let swept = Infinity;
+          for (let i = 0; i < PITCHES; i++) {
+            pose(pitchAt(i));
+            for (const n of ['bb-turret-hood', 'bb-turret-hood-arm']) {
+              for (const m of named(n)) for (const v of robotVerts(m)) swept = Math.min(swept, v.z);
+            }
           }
-          check(
-            'NO POINT OF THE SIDE PLATE reaches the deck, over the whole elevation envelope',
-            lowest >= deckZ,
-            `lowest ${lowest.toFixed(3)} (${where}) vs deck ${deckZ}`,
-          );
-        }
-        // ...and the same, for every OTHER part the generator hangs on `bb-turret-pitch`. This is
-        // the half that was missing entirely: the plate was the only thing anyone measured.
-        {
-          const hoodT = 0.28;
-          const parts: [string, number, number, number][] = [
-            // label, axle-frame x, axle-frame z, the part's own bounding radius about that point
-            ['hood @feed corner', Math.cos(thFeed) * (hoodR + hoodT), Math.sin(thFeed) * (hoodR + hoodT), 0],
-            ['hood @exit corner', Math.cos(thExit) * (hoodR + hoodT), Math.sin(thExit) * (hoodR + hoodT), 0],
-            ['flywheel rim', 0, 0, flywheelR],
-            ['axle', 0, 0, 0.26],
-          ];
-          for (const [label, x, z, pad] of parts) {
-            const got = minAxleZ(x, z) - pad;
-            check(`${label}: clears the deck at every elevation`, got >= deckZ, `${got.toFixed(3)} vs ${deckZ}`);
-          }
-        }
-        // ⚠️ AND THE FEED CHUTE IS NOT ON THE PITCH NODE AT ALL. It is the part that reached
-        // world z 0.044 — 0.04 in off the tile — at 45° of elevation, and nothing measured it.
-        // A feed tube that elevates is the DEFECT, not a tuning of it: it belongs on the YAW
-        // node, standing on the deck, where pitch cannot move it.
-        {
-          const headAt = robotsCode.indexOf("head.name = 'bb-turret-head'");
-          const pitchAt = robotsCode.indexOf("pitch.name = 'bb-turret-pitch'");
-          const shooterAt = robotsCode.indexOf('function buildShooterHead');
-          const shooterEnd = robotsCode.indexOf('\nfunction ', shooterAt + 1);
-          const shooterBody = robotsCode.slice(shooterAt, shooterEnd);
-          check(
-            'the FEED CHUTE is built on the YAW node, not on the pitching head',
-            headAt > 0 && pitchAt > headAt &&
-              robotsCode.includes("chute.name = 'bb-turret-feed'") &&
-              robotsCode.includes('head.add(cast(chute));') &&
-              !/ramp/i.test(shooterBody.replace(/^\s*\/\/.*$/gm, '')),
-          );
-          check(
-            '...and its rear-bottom corner is placed ON the deck by construction, not by a number',
-            robotsCode.includes('const deck = BB_DECK_Z - BB_LAUNCH_Z0;') &&
-              robotsCode.includes('deck + (BB_FEED_LEN / 2) * uz + (BB_FEED_T / 2) * ux'),
-          );
+          check('...and the hood and its arms clear it by the design’s own 0.2 in margin', swept >= BB_DECK_Z + 0.2, `hood sweep bottoms out at ${swept.toFixed(3)}`);
         }
 
-        // ══ THE BRACING, AND THE MOTOR ═══════════════════════════════════════════════════════
+        // ══ THE BRACES AND THE MOTOR ═══════════════════════════════════════════════════════
         //
-        // ⚠️ THIS BLOCK USED TO PIN LAST ROUND'S CONCLUSION RATHER THAN THE RULE BEHIND IT.
-        // `BB_BRACE_RADIUS = BB_PLATE_R_OUT + BB_BRACE_T / 2` was asserted as an identity and a
-        // rib was required to be "seated on the plate rim" — both of which encode "a rib can
-        // only live OUTBOARD of the hood". That holds only INSIDE THE WRAP. At an angle outside
-        // `[thExit, thFeed]` there is no element in the channel at all, so a cross-member may sit
-        // at any radius there — which is what makes the owner's "close to the flywheels"
-        // achievable. The rule restated: a member must be clear of the WRAP, the OUTGOING
-        // CORRIDOR and the FEED APPROACH, and inside the plate it bolts to.
-        const braceT = num('BB_BRACE_T');
-        const sitesSrc = /const BB_BRACE_SITES[^=]*=\s*\[([\s\S]*?)\n\];/.exec(robotsSrc)?.[1] ?? '';
-        const sites = [...sitesSrc.matchAll(/\{\s*th:\s*(-?[\d.]+),\s*r:\s*BB_FLYWHEEL_R \+ ([\d.]+)\s*\}/g)].map(
-          (m) => ({ th: Number(m[1]), r: flywheelR + Number(m[2]) }),
-        );
-        const eff = Math.hypot(braceT / 2, braceT / 2); // a conservative disc round a square section
-        check('the two plates are tied together at all', sites.length >= 2 && braceT > 0, `${sites.length} standoffs`);
-        check(
-          '...as ONE merged, cached part rather than a mesh per member',
-          robotsCode.includes("framePart('shooterBrace'"),
-        );
-        check(
-          '...spanning the channel, both plate thicknesses AND 0.15 proud of each outer face',
-          /const BB_BRACE_SPAN = BB_HOOD_W \+ 0\.44 \+ 0\.3;/.test(robotsCode) &&
-            robotsCode.includes('s * (BB_HOOD_W / 2 + 0.11)'),
-        );
-
-        // THE FEED MOUTH is the element's BODY where it is pinched, and that is the whole of the
-        // feed in this frame — NOT a long backward ray. Everything before the pinch is on the
-        // fixed chute, which hangs off the YAW node and does not pitch with the head at all, so
-        // it is not in this frame to exclude. Head-frame swept region, complete: the wrap
-        // annulus, the outgoing corridor, and this one disc.
-        const feed = { x: Math.cos(thFeed) * pathR, z: Math.sin(thFeed) * pathR };
-        const feedGapTo = (x: number, z: number): number => Math.hypot(x - feed.x, z - feed.z);
-        /** the three exclusion tests every member in the channel has to pass. */
-        const clearOfElement = (label: string, x: number, z: number, pad: number): void => {
-          const r = Math.hypot(x, z);
-          const th = ((Math.atan2(z, x) % (Math.PI * 2)) + Math.PI * 2) % (Math.PI * 2);
-          const halfAng = r > 1e-6 ? Math.asin(Math.min(1, pad / r)) : Math.PI;
-          const inWrapAngle = th + halfAng > thExit && th - halfAng < thFeed;
-          const radialClear = r + pad < pathR - BB_POLLEN_R || r - pad > pathR + BB_POLLEN_R;
-          check(`${label}: outside the element's wrap round the flywheel`, !inWrapAngle || radialClear, `r ${r.toFixed(2)} θ ${((th * 180) / Math.PI).toFixed(0)}°`);
-          const inCorridor = x + pad > 0 && Math.abs(z - pathR) < BB_POLLEN_R + pad;
-          check(`${label}: clear of the muzzle's outgoing corridor`, !inCorridor, `(${x.toFixed(2)}, ${z.toFixed(2)}) vs exit z ${pathR.toFixed(2)}`);
-          check(`${label}: clear of the element where it is pinched at the feed`, feedGapTo(x, z) > BB_POLLEN_R + pad, `${feedGapTo(x, z).toFixed(2)} in vs ${(BB_POLLEN_R + pad).toFixed(2)}`);
-        };
-
-        for (const site of sites) {
-          const label = `standoff @${site.th}rad`;
-          const bx = Math.cos(site.th) * site.r;
-          const bz = Math.sin(site.th) * site.r;
-          // (a) ⚠️ CLOSE TO THE FLYWHEEL — the owner's follow-up, as arithmetic. It must CLEAR
-          // the rim (it spins in the same channel) and it must be WITHIN AN INCH of it, which is
-          // the half the old outboard ribs failed by 3.1 in.
-          const gap = site.r - eff - flywheelR;
-          check(`${label}: clears the flywheel rim and sits close to it`, gap >= 0.2 && gap <= 1.0, `${gap.toFixed(3)} in off the rim`);
-          // (b) on PLATE — inside the bore, inside the clipped rim, and inside the band's span
-          const onPlate = site.r - eff > rIn && site.r + eff < plateOuterAt(site.th) && site.th > th0 && site.th < th1;
-          check(`${label}: is bolted to plate rather than hanging in air`, onPlate, `r ${site.r.toFixed(2)} vs bore ${rIn.toFixed(2)}..rim ${plateOuterAt(site.th).toFixed(2)}`);
-          // (c) the three exclusion zones
-          clearOfElement(label, bx, bz, eff);
-          // (d) and it clears the deck at every elevation, like everything else on this node
-          check(`${label}: clears the deck at every elevation`, minAxleZ(bx, bz) - eff >= deckZ, `${(minAxleZ(bx, bz) - eff).toFixed(3)} vs ${deckZ}`);
-        }
-
-        // ══ THE MOTOR — BEHIND THE HOOD, NOT BESIDE THE FLYWHEEL (owner, 2026-09-19) ══════════
-        // It was a can at head-frame (−2.70, +3.45, −4.10): axis along y, spanning y 1.85..5.05
-        // against a plate outer face at 1.77, i.e. 3.28 in OUTBOARD of the plate and level with
-        // the wheel. A string check alone would not catch a future one drifting back out, so
-        // this is arithmetic in all three axes.
+        // Sites come from `BB_TURRET_BRACES` / `BB_TURRET_MOTOR`, which are MEASURED lists in
+        // `config.ts`. RESIDUAL 2 is already in the constant — the −40° brace was 0.044 in inside
+        // the turret plate and moved to −37° — and this is what holds it there.
         {
-          const mTh = num('BB_MOTOR_TH');
-          const mR = num('BB_MOTOR_R');
-          const mBody = num('BB_MOTOR_BODY_R');
-          const mLen = num('BB_MOTOR_LEN');
-          const hoodW = BB_POLLEN_R * 2 + 0.3; // `BB_LAUNCH_PLATE_GAP`
-          const mx = Math.cos(mTh) * mR;
-          const mz = Math.sin(mTh) * mR;
+          pose(BB_TURRET_PITCH_MIN);
+          const braceVs = robotVerts(named('bb-turret-brace')[0]);
+          const plateOuterY = BB_LAUNCH_PLATE_GAP / 2 + 0.22;
+          check(
+            'the two plates are TIED together: the braces span the channel and stand proud of both outer faces',
+            BB_TURRET_BRACES.length >= 2 && Math.max(...braceVs.map((v) => v.y)) > plateOuterY && Math.min(...braceVs.map((v) => v.y)) < -plateOuterY,
+            `${BB_TURRET_BRACES.length} standoffs, y ±${Math.max(...braceVs.map((v) => v.y)).toFixed(3)} vs plate face ±${plateOuterY.toFixed(3)}`,
+          );
+          check(
+            '...and every one of them stands ABOVE the turret plate it is bolted over (residual 2)',
+            Math.min(...braceVs.map((v) => v.z)) >= BB_TURRET_PLATE_TOP_Z - 1e-9,
+            `lowest ${Math.min(...braceVs.map((v) => v.z)).toFixed(4)} vs plate top ${BB_TURRET_PLATE_TOP_Z.toFixed(3)}`,
+          );
+          for (const site of BB_TURRET_BRACES) {
+            const deg = ((site.th * 180) / Math.PI).toFixed(0);
+            const inside = plateR(site.th) - (site.r + BB_TURRET_BRACE_R);
+            const rim = site.r - BB_TURRET_BRACE_R - BB_FLYWHEEL_R;
+            check(`brace @${deg}°: inside the plate profile it bolts to, and clear of the wheel it sits beside`, inside > 0 && rim >= 0.2 && rim <= 1.0, `inside ${inside.toFixed(3)}, off the rim ${rim.toFixed(3)}`);
+          }
+          const mv = robotVerts(named('bb-turret-motor')[0]);
+          const mInside = plateR(BB_TURRET_MOTOR.th) - (BB_TURRET_MOTOR.r + BB_TURRET_MOTOR.bodyR);
           check(
             'the flywheel motor is BETWEEN the plates, not outboard of one',
-            mLen / 2 + 0.1 <= hoodW / 2 && robotsCode.includes('motor.position.set(mx, 0, mz);'),
-            `±${(mLen / 2).toFixed(2)} in a ±${(hoodW / 2).toFixed(2)} channel`,
+            Math.max(...mv.map((v) => Math.abs(v.y))) < BB_LAUNCH_PLATE_GAP / 2,
+            `±${Math.max(...mv.map((v) => Math.abs(v.y))).toFixed(2)} in a ±${(BB_LAUNCH_PLATE_GAP / 2).toFixed(2)} channel`,
           );
           check(
-            '...and BEHIND THE HOOD in angle, past the feed',
-            mTh > thFeed && mTh < Math.PI * 2,
-            `${((mTh * 180) / Math.PI).toFixed(1)}° vs feed ${((thFeed * 180) / Math.PI).toFixed(1)}°`,
+            '...BEHIND the hood: outside the wrap at every elevation the hood can reach',
+            (() => {
+              let clear = true;
+              const th = ((BB_TURRET_MOTOR.th % (Math.PI * 2)) + Math.PI * 2) % (Math.PI * 2);
+              const half = Math.asin(Math.min(1, BB_TURRET_MOTOR.bodyR / BB_TURRET_MOTOR.r));
+              for (let i = 0; i < PITCHES; i++) {
+                const p = pitchAt(i);
+                if (th + half > Math.PI / 2 + p && th - half < Math.PI / 2 + p + BB_HOOD_WRAP) clear = false;
+              }
+              return clear;
+            })(),
+            `${((BB_TURRET_MOTOR.th * 180) / Math.PI).toFixed(0)}° vs a wrap that sweeps 90°…${(((Math.PI / 2 + BB_TURRET_PITCH_MAX + BB_HOOD_WRAP) * 180) / Math.PI).toFixed(0)}°`,
           );
+          check('...inside the plate that carries it, and clear of the wheel it drives', mInside > 0 && BB_TURRET_MOTOR.r - BB_TURRET_MOTOR.bodyR > BB_FLYWHEEL_R + 0.1, `inside ${mInside.toFixed(3)}, off the rim ${(BB_TURRET_MOTOR.r - BB_TURRET_MOTOR.bodyR - BB_FLYWHEEL_R).toFixed(3)}`);
+          const bv = robotVerts(named('bb-turret-belt')[0]);
           check(
-            '...and inside the clipped plate rim, so it has plate either side of it',
-            mR + mBody < plateOuterAt(mTh) && mR - mBody > rIn,
-            `${(mR + mBody).toFixed(2)} vs rim ${plateOuterAt(mTh).toFixed(2)}`,
+            'the drive is a BELT, and it runs in the flywheel’s own centre gap',
+            Math.max(...bv.map((v) => Math.abs(v.y))) <= 0.25 + 1e-9,
+            `belt ±${Math.max(...bv.map((v) => Math.abs(v.y))).toFixed(3)} in a ±0.25 gap`,
           );
-          check(
-            '...and clear of the flywheel it drives',
-            mR - mBody > flywheelR + 0.1,
-            `${(mR - mBody).toFixed(2)} vs ${flywheelR}`,
-          );
-          clearOfElement('motor', mx, mz, mBody);
-          check('motor: clears the deck at every elevation', minAxleZ(mx, mz) - mBody >= deckZ, `${(minAxleZ(mx, mz) - mBody).toFixed(3)} vs ${deckZ}`);
-          // the old outboard can, asserted gone by its exact form
-          check(
-            '...and the can beside the flywheel is gone',
-            !/motor\.position\.set\(-BB_HOOD_R \* 0\.6/.test(robotsCode) && !robotsCode.includes('BB_HOOD_W / 2 + 1.9'),
-          );
-
-          // THE BELT. Two pulleys and the two straight external tangents between them, in the
-          // 0.5-in gap between the flywheel's two halves — the only plane a belt can run in
-          // without crossing the element's own path down the channel.
-          const R1 = num('BB_FW_PULLEY_R');
-          const R2 = num('BB_MOTOR_PULLEY_R');
-          check('the drive is a BELT, built as two pulleys and two tangent runs', robotsCode.includes("framePart('shooterBelt'") && /const off = Math\.asin\(\(BB_FW_PULLEY_R - BB_MOTOR_PULLEY_R\) \/ d\);/.test(robotsCode), `R ${R1} / ${R2}`);
-          check(
-            '...and it runs in the flywheel’s own centre gap, not outboard of a plate',
-            robotsCode.includes('w.position.set(0, s * 0.75, cz);') && num('BB_BELT_W') + 0.05 <= 0.5,
-            `belt ${num('BB_BELT_W')} in a 0.5-in gap`,
-          );
-          const off = Math.asin((R1 - R2) / mR);
-          for (const s of [1, -1] as const) {
-            const u = mTh + s * (Math.PI / 2 + off);
-            const ax = Math.cos(u) * R1;
-            const az = Math.sin(u) * R1;
-            const bx = mx + Math.cos(u) * R2;
-            const bz = mz + Math.sin(u) * R2;
-            // sample the run: it is inside the element's INNER bound at the flywheel end and
-            // behind the feed at the motor end, and it may not stray into the wrap in between
-            let worst = Infinity;
-            let deepest = Infinity;
-            for (let i = 0; i <= 40; i++) {
-              const x = ax + ((bx - ax) * i) / 40;
-              const z = az + ((bz - az) * i) / 40;
-              const r = Math.hypot(x, z);
-              const th = ((Math.atan2(z, x) % (Math.PI * 2)) + Math.PI * 2) % (Math.PI * 2);
-              const inWrapAngle = th > thExit && th < thFeed;
-              worst = Math.min(worst, !inWrapAngle ? 1 : pathR - BB_POLLEN_R - r);
-              deepest = Math.min(deepest, minAxleZ(x, z));
-            }
-            check(`belt run ${s > 0 ? 'A' : 'B'}: never crosses the element's path through the wrap`, worst >= 0, `${worst.toFixed(3)} in`);
-            check(`belt run ${s > 0 ? 'A' : 'B'}: clears the deck at every elevation`, deepest >= deckZ, `${deepest.toFixed(3)} vs ${deckZ}`);
-          }
         }
-      }
 
+        // ══ (a) THE FEED SHOE IS FIXED, AND IT IS THE REAR TIE ═════════════════════════════
+        //
+        // "There is a weird flap in the back of the shooter." The flap is GONE, and what stands
+        // where it stood is structure: the wrap came down to 31.9° because a hood that pivots on
+        // the axle carries its own feed mouth round with it, so the ENTRY is a FIXED arc outboard
+        // of the hood's sweep, bolted to both plates. Its invariance under pitch is proved by the
+        // (d) block above; what is proved here is that it is the tie and that the hood clears it.
+        {
+          pose(BB_TURRET_PITCH_MIN);
+          const shoe = named('bb-turret-feed-shoe')[0];
+          const sv = robotVerts(shoe);
+          const plateOuterY = BB_LAUNCH_PLATE_GAP / 2 + 0.22;
+          check(
+            'the FEED SHOE ties both plates — it spans the channel and both plate thicknesses',
+            Math.max(...sv.map((v) => v.y)) > plateOuterY && Math.min(...sv.map((v) => v.y)) < -plateOuterY,
+            `y ±${Math.max(...sv.map((v) => v.y)).toFixed(3)} vs plate face ±${plateOuterY.toFixed(3)}`,
+          );
+          const sr = axleVerts(shoe).map((v) => Math.hypot(v.x, v.z));
+          check(
+            '...outboard of the hood’s own sweep, so the two never touch at any elevation',
+            Math.min(...sr) >= BB_HOOD_R + BB_HOOD_T,
+            `shoe from ${Math.min(...sr).toFixed(4)}, hood out to ${(BB_HOOD_R + BB_HOOD_T).toFixed(4)} — ${(Math.min(...sr) - BB_HOOD_R - BB_HOOD_T).toFixed(3)} of slide`,
+          );
+          check(
+            '...and the hood’s wrap is the SHORT one the fixed entry made possible',
+            BB_HOOD_WRAP < 0.6,
+            `${((BB_HOOD_WRAP * 180) / Math.PI).toFixed(1)}° (was 60°, and a 60° hood’s mouth is 80° out of line at full elevation)`,
+          );
+          const chute = robotVerts(named('bb-turret-feed')[0]);
+          check(
+            'the FEED CHUTE stands on the deck and reaches the shoe’s mouth — both ends derived, neither typed',
+            Math.abs(Math.min(...chute.map((v) => v.z)) - BB_DECK_Z) < F32 &&
+              Math.abs(Math.max(...chute.map((v) => v.z)) - (BB_TURRET_AXLE_Z + Math.sin(BB_FEED_SHOE_FAR) * BB_FEED_SHOE_R)) < F32,
+            `${Math.min(...chute.map((v) => v.z)).toFixed(3)} … ${Math.max(...chute.map((v) => v.z)).toFixed(3)}`,
+          );
+        }
+
+        // ══ RESIDUAL 1: THE HOOD HANGS OFF SOMETHING ═══════════════════════════════════════
+        //
+        // The plates stop at `BB_SIDE_PLATE_TOP_Z` and the hood's arc is three inches above that,
+        // so without arms the hood is a floating band. Each arm reaches the axle, carries the arc,
+        // and stays in the lateral strip between the element and the side plate — which is the
+        // only place it can be: in the x–z PROJECTION the element fills every path from the axle
+        // to the hood, and a POLLEN is a sphere, so at lateral offset `BB_POLLEN_R` it has no
+        // cross-section left to foul.
+        {
+          pose(BB_TURRET_PITCH_MIN);
+          const arms = named('bb-turret-hood-arm');
+          const av = arms.map((m) => axleVerts(m));
+          const rs = av.flat().map((v) => Math.hypot(v.x, v.z));
+          // its spokes run to the axle and out to the hood's OUTER face; the outermost vertex is
+          // a spoke's own end CORNER, half a thickness off that centreline, so both bounds carry
+          // the arm's own section rather than pretending it is a line.
+          const corner = Math.hypot(BB_HOOD_R + BB_HOOD_T, BB_HOOD_ARM_T / 2);
+          check(
+            'each hood ARM reaches from the axle out to the arc it carries',
+            Math.min(...rs) <= BB_HOOD_ARM_T / 2 + F32 &&
+              Math.max(...rs) >= BB_HOOD_R + BB_HOOD_T - F32 &&
+              Math.max(...rs) <= corner + F32,
+            `r ${Math.min(...rs).toFixed(3)} … ${Math.max(...rs).toFixed(4)} (hood face ${(BB_HOOD_R + BB_HOOD_T).toFixed(4)}, spoke corner ${corner.toFixed(4)})`,
+          );
+          const ys = av.flat().map((v) => Math.abs(v.y));
+          check(
+            '...inboard of the side plate by BB_HOOD_ARM_INSET, and never inside the element’s own width',
+            Math.min(...ys) >= BB_POLLEN_R - F32 && Math.abs(Math.max(...ys) - (BB_LAUNCH_PLATE_GAP / 2 - BB_HOOD_ARM_INSET)) < F32,
+            `|y| ${Math.min(...ys).toFixed(3)} … ${Math.max(...ys).toFixed(3)}; element ±${BB_POLLEN_R}, plate face ${(BB_LAUNCH_PLATE_GAP / 2).toFixed(3)}`,
+          );
+          check(
+            '...so they do not read as a third plate: both are inside the plates they hide between',
+            Math.max(...ys) < BB_LAUNCH_PLATE_GAP / 2,
+            `${Math.max(...ys).toFixed(3)} vs ${(BB_LAUNCH_PLATE_GAP / 2).toFixed(3)}`,
+          );
+          check(
+            '...and they clear the flywheel they straddle',
+            Math.min(...ys) - Math.max(...named('bb-turret-flywheel').flatMap((m) => axleVerts(m)).map((v) => Math.abs(v.y))) > 0.1,
+            `${(Math.min(...ys) - Math.max(...named('bb-turret-flywheel').flatMap((m) => axleVerts(m)).map((v) => Math.abs(v.y)))).toFixed(3)} in`,
+          );
+        }
+
+        // ══ THE EXIT CORRIDOR IS UNOBSTRUCTED, AT EVERY ELEVATION ══════════════════════════
+        //
+        // The element leaves the lip along the hood's own tangent and flies a POLLEN-wide tube out
+        // of the machine. Every member that SPANS THE CHANNEL has to stay out of it — and unlike
+        // everything else here, the elevation makes this one WORSE in places, because the corridor
+        // swings up across the fixed feed shoe.
+        //
+        // ⚠️ MEASURED ON THE DRAWN MESHES, projected into the axle plane. A part whose lateral
+        // extent never reaches the element (the side plates, the hood arms) cannot obstruct it at
+        // all and is excluded by that test rather than by a list; the hood and the wheel ARE the
+        // mechanism that throws it, so they are excluded too. `CHORD` is the sagitta a 10-segment
+        // standoff loses to its own faceting — this is a clearance measurement, so it is paid.
+        {
+          const CHORD = 0.02;
+          const EXCLUDE = ['bb-turret-hood', 'bb-turret-hood-arm', 'bb-turret-flywheel', 'bb-turret-side-plate'];
+          let worst = Infinity;
+          let who = '';
+          for (let i = 0; i < PITCHES; i++) {
+            const p = pitchAt(i);
+            pose(p);
+            const m = bbMuzzleLocal(p);
+            const ox = -m.back;
+            const oz = m.z - BB_TURRET_AXLE_Z; // the lip, in the axle frame
+            const dx = Math.cos(p);
+            const dz = Math.sin(p);
+            for (const mesh of meshes) {
+              if (EXCLUDE.includes(mesh.name)) continue;
+              const vs = axleVerts(mesh);
+              // ⚠️ THE LATERAL TEST IS ON THE PART'S y INTERVAL, NOT ON ITS NEAREST VERTEX. A
+              // `CylinderGeometry` standoff has vertices at its two END CAPS and nowhere in
+              // between, so "nearest vertex to the centreline" reads ±1.92 for a member that runs
+              // straight through y = 0 — and the braces, the motor and the belt all dropped out of
+              // this sweep unmeasured. The interval is what spans the channel.
+              const ys = vs.map((v) => v.y);
+              if (Math.min(...ys) >= BB_POLLEN_R - F32 || Math.max(...ys) <= -BB_POLLEN_R + F32) continue;
+              for (const v of vs) {
+                const s = (v.x - ox) * dx + (v.z - oz) * dz;
+                if (s < 0 || s > 8) continue;
+                const perp = Math.abs((v.x - ox) * dz - (v.z - oz) * dx) - BB_POLLEN_R - CHORD;
+                if (perp < worst) {
+                  worst = perp;
+                  who = `${mesh.name || 'slew ring'} @${((p * 180) / Math.PI).toFixed(0)}°`;
+                }
+              }
+            }
+          }
+          check('the EXIT CORRIDOR is unobstructed at every elevation', worst > 0, `worst clearance ${worst.toFixed(3)} in (${who})`);
+          // RESIDUAL 3, as a RATCHET. The +20° brace leaves 0.133, and it stays: the side plate's
+          // own flat top is the binding part at that height and clears the corridor by 0.150 BY
+          // DEFINITION (`BB_SIDE_PLATE_TOP_Z` is one element radius plus 0.15 under the corridor's
+          // centre line), so nothing fixed up there can do better. What must not happen is the
+          // margin shrinking further, and this is what says so.
+          check(
+            '...with the margin the design measured, not less',
+            worst >= 0.05,
+            `${worst.toFixed(3)} after the ${CHORD} chord pad — the design's own binding pair are the feed shoe at 0.100 and the +20° brace at 0.133`,
+          );
+          check(
+            '...and the plate’s flat top is the ceiling anything fixed can reach (residual 3’s reason)',
+            Math.abs(BB_HOOD_PATH_R - BB_POLLEN_R - BB_SIDE_PLATE_TOP_Z - 0.15) < 1e-9,
+            `${(BB_HOOD_PATH_R - BB_POLLEN_R - BB_SIDE_PLATE_TOP_Z).toFixed(3)} in under the corridor floor`,
+          );
+        }
+
+        // ══ AND THE CHAIN IS NOT DUPLICATED HERE ═══════════════════════════════════════════
+        //
+        // ⚠️ THE ORIGINAL SIN, ASSERTED GONE. The renderer owned `BB_FLYWHEEL_R`, `BB_HOOD_R`,
+        // `BB_HOOD_PATH_R`, `BB_HOOD_WRAP` and the plate profile as local `const`s and the sim
+        // owned `BB_LAUNCH_Z0`; six passes of feedback each moved one of them. A second copy of
+        // any of them is the bug, so it is named.
+        {
+          const dupes = ['BB_FLYWHEEL_R', 'BB_HOOD_R', 'BB_HOOD_PATH_R', 'BB_HOOD_COMPRESSION', 'BB_HOOD_WRAP', 'BB_HOOD_T', 'BB_TURRET_AXLE_Z', 'BB_DECK_Z', 'BB_TURRET_BRACE_R']
+            .filter((n) => new RegExp(`^const ${n}\\b`, 'm').test(robotsCode));
+          check('renderRobots.ts declares NO second copy of a shooter dimension', dupes.length === 0, dupes.join(', '));
+          check(
+            '...and the retired pieces of the muzzle-pivot era are gone with it',
+            !/BB_HEAD_RHO_MAX|minHeadWorldZ|plateOuterR|BB_PLATE_R_OUT|BB_PLATE_TAIL|BB_SHOOTER_MUZZLE_Z/.test(robotsCode),
+          );
+          check(
+            'the muzzle node is placed by the SIM’s own function, imported, not by a local formula',
+            robotsCode.includes('bbMuzzleLocal') &&
+              robotsCode.includes('const rest = bbMuzzleLocal(BB_TURRET_PITCH_MIN);') &&
+              robotsCode.includes('exit.position.set(-rest.back, 0, rest.z - BB_TURRET_AXLE_Z);'),
+            'the lip is read off bbMuzzleLocal at rest; the node’s own rotation carries it to every other pitch',
+          );
+          check(
+            'the node names are still the interface the sync writes to',
+            robotsCode.includes("head.name = 'bb-turret-head'") &&
+              robotsCode.includes("pitch.name = 'bb-turret-pitch'") &&
+              robotsCode.includes("exit.name = 'bb-turret-exit'") &&
+              robotsCode.includes('pitches[0].rotation.y = -(r.bbTurretPitch ?? 0);') &&
+              robotsCode.includes('heads[0].rotation.z = r.turretHeading - r.heading;'),
+          );
+          check(
+            '...and the pitch node pivots on the AXLE, which is what makes the lip move',
+            robotsCode.includes('head.position.z = BB_TURRET_AXLE_Z - BB_DECK_Z;') && !/head\.position\.z = BB_LAUNCH_Z0/.test(robotsCode),
+          );
+        }
+        disposeRobotGroup(turret);
+      }
       // ── 2026-09-19 OWNER PLAYTEST: "SWERVE IS NOT RENDERED PROPERLY AT ALL" ───────────────
       // It was one squat cylinder per corner floating at deck height with the wheel left behind
       // pointing forward — a puck, not a module, and unable to steer. A pod is a group whose
@@ -1650,7 +1872,7 @@ function graphicsChecks(check: Check, allFiles: string[]): void {
         // from. The ceiling for a pod is the DECK PLATE'S UNDERSIDE, not the robot's legal
         // height, and the FOOTPRINT was never checked at all.
         const num = (name: string): number => Number(new RegExp(`const ${name} = ([\\d.]+);`).exec(robotsSrc)?.[1] ?? NaN);
-        const deck = num('BB_PLATE_H');
+        const deck = BB_DECK_Z;
         const ringH = num('BB_POD_RING_H');
         const podPlateZ = deck - 0.26 - ringH;
         const podTop = podPlateZ + ringH;
@@ -1978,40 +2200,22 @@ function graphicsChecks(check: Check, allFiles: string[]): void {
         );
       }
 
-      // ── #15: THE DRAWN MUZZLE ADDS UP TO THE SIM'S RELEASE HEIGHT ──────────────────────
-      // `renderRobots.ts` exports `BB_DRIVETRAIN_H` and `BB_SHOOTER_MUZZLE_Z` so anything that
-      // has to reason about the deck or the exit can do it without importing `three`; the
-      // invariant the exports CLAIM is that the drawn muzzle sits at `BB_LAUNCH_Z0`, and that
-      // is a chain of three statements, not one constant. So walk the chain and add it up —
-      // a `three` import is not allowed in this lane, so the heights come out of the source and
-      // the total is compared against the sim's own number, imported for real.
+      // ── #15: THE DECK IS ONE NUMBER, AND IT IS THE SIM'S ───────────────────────────────
+      //
+      // ⚠️ THIS BLOCK USED TO ADD UP THE MUZZLE FROM SOURCE LITERALS — deck + head lift + an exit
+      // left at the head's own origin — and compare the total to `BB_LAUNCH_Z0`. It passed every
+      // time, because all three literals were there and they did add up. What it could not see is
+      // that the total was only right AT ONE ELEVATION, which is the whole of the 2026-09-19
+      // report. The muzzle is measured off the built mesh now, at 41 pitches, in the block above.
+      // What is left here is the one statement that is still a statement about SOURCE: the deck
+      // is not a second number.
       {
-        const num = (re: RegExp): number => {
-          const m = re.exec(robotsCode);
-          return m ? Number(m[1]) : NaN;
-        };
-        const plateH = num(/const BB_PLATE_H = ([\d.]+);/);
         check(
-          'the deck is the top of the drivetrain, and BB_DRIVETRAIN_H is that number',
-          plateH > 0 && /const BB_DECK_Z = BB_PLATE_H;/.test(robotsCode) && /export const BB_DRIVETRAIN_H = BB_PLATE_H;/.test(robotsCode),
-          `BB_PLATE_H=${plateH}`,
-        );
-        // the three links: turret bolted to the DECK, yaw head lifted to the muzzle height, and
-        // the `bb-turret-exit` empty left at the head's LOCAL ORIGIN (never re-positioned — that
-        // is what makes the head's own z the muzzle's z).
-        const exitAt = robotsCode.indexOf("exit.name = 'bb-turret-exit'");
-        const untouched = exitAt > 0 && !/exit\.position/.test(robotsCode.slice(exitAt, robotsCode.indexOf('head.add(exit)', exitAt)));
-        const drawn = /group\.position\.set\(local\.x, local\.y, BB_DECK_Z\);/.test(robotsCode) && /head\.position\.z = BB_LAUNCH_Z0 - BB_DECK_Z;/.test(robotsCode)
-          ? plateH + (BB_LAUNCH_Z0 - plateH)
-          : NaN;
-        check(
-          'the DRAWN muzzle (deck + head lift + exit at the head origin) IS BB_LAUNCH_Z0',
-          untouched && Math.abs(drawn - BB_LAUNCH_Z0) < 1e-9,
-          `drawn ${drawn} vs BB_LAUNCH_Z0 ${BB_LAUNCH_Z0}, exit-at-origin=${untouched}`,
-        );
-        check(
-          '...and that is what BB_SHOOTER_MUZZLE_Z exports (the exports are not a second source of truth)',
-          /export const BB_SHOOTER_MUZZLE_Z = BB_LAUNCH_Z0;/.test(robotsCode),
+          'the drivetrain’s side plate IS the sim’s deck — imported, not a local 4.6',
+          /const BB_PLATE_H = BB_DECK_Z;/.test(robotsCode) &&
+            /export const BB_DRIVETRAIN_H = BB_PLATE_H;/.test(robotsCode) &&
+            /\bBB_DECK_Z,/.test(robotsCode.slice(0, robotsCode.indexOf("} from '../config'"))),
+          `BB_DECK_Z=${BB_DECK_Z}`,
         );
       }
     }
