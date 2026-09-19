@@ -222,6 +222,22 @@ import {
   removeKey,
   assignPadBind,
   removePadBind,
+  ACTION_GAMES,
+  BIND_SLOTS_MAX,
+  actionUsedBy,
+  actionsConflict,
+  assignKeyInGame,
+  assignPadBindInGame,
+  effectiveBindings,
+  gameHasOverrides,
+  keyActionsFor,
+  keyDesynced,
+  padActionsFor,
+  padDesynced,
+  removeKeyInGame,
+  syncGame,
+  syncKeyInGame,
+  syncPadInGame,
 } from '../src/input/bindings';
 import { PadChordResolver, PAD_CHORD_GRACE_MS, PAD_TAP_HOLD_MS } from '../src/input/padChords';
 import { quantizeCommand, dequantizeCommand, localizeCommand, sanitizeQCommand, slimWorld, unslimWorld, encodeBallDelta, applyBallDelta } from '../src/net/protocol';
@@ -278,7 +294,7 @@ import { dsin, dcos, dtan, datan2, hyp, rot, wrapAngle, clamp } from '../src/mat
 import { initPhysics } from '../src/sim/physicsEngine';
 import { initPhysics3d } from '../src/games/biobuzz/sim3d/engine';
 import { simModuleFor } from '../src/games/sim';
-import { serverPhysics } from '../src/games/types';
+import { serverPhysics, GAME_IDS } from '../src/games/types';
 import { moduleFor, gameOf } from '../src/games';
 import { decodeColliders } from '../src/games/decode/colliders';
 import { createChainWorld } from '../src/games/chain/spawn';
@@ -22482,6 +22498,432 @@ const mkMM = () => {
   r3.reset();
   s = r3.resolve([4, 7, 12], pad3, 5000);
   check('resolver: reset clears consumption and timing', s.catalyst === true);
+}
+
+// ---- GAME-SPECIFIC KEYBINDS: the action table and the effective map ----------------
+// Every action belongs to a set of GAMES, and that table is the whole feature: two actions
+// conflict only if some game uses both, so the main map may put `catalyst` (Chain Reaction)
+// and `bbPlace` (BIOBUZZ) on one key while `fire`, which every game reads, still steals.
+// The rows below were checked against which `RobotCommand` bit each game's SIM reads, not
+// against intent — an action that silently claimed the wrong games would let a bind fire, mask
+// or consume inside a game that has no such mechanism.
+{
+  const J = (v: unknown): string => JSON.stringify(v);
+
+  check(
+    'games: every action names at least one game, and only real ones',
+    KEY_ACTIONS.every((a) => ACTION_GAMES[a].length > 0 && ACTION_GAMES[a].every((g) => (GAME_IDS as readonly string[]).includes(g))),
+  );
+  check(
+    'games: the season-specific actions are exactly the five that are',
+    J(ACTION_GAMES.catalyst) === J(['chain']) && J(ACTION_GAMES.fling) === J(['chain']) &&
+      J(ACTION_GAMES.bbPlace) === J(['biobuzz']) && J(ACTION_GAMES.bbPlaceNectar) === J(['biobuzz']) &&
+      J(ACTION_GAMES.bbNectar) === J(['biobuzz']),
+  );
+  check(
+    'games: drive, intake, fire, driveMode and the match controls are in every game',
+    (['driveUp', 'driveDown', 'driveLeft', 'driveRight', 'rotateCCW', 'rotateCW', 'tankRightUp', 'tankRightDown', 'intake', 'fire', 'driveMode', 'flipFront', 'park', 'start', 'restart'] as const).every(
+      (a) => GAME_IDS.every((g) => actionUsedBy(a, g)),
+    ),
+  );
+  check(
+    'games: PAD_ACTIONS is a subset of KEY_ACTIONS, so one table answers for both devices',
+    PAD_ACTIONS.every((a) => (KEY_ACTIONS as string[]).includes(a)),
+  );
+  // THE CONFLICT RULE. `catalyst` and `bbPlace` share no game, `fire` shares one with everything.
+  check(
+    'games: two actions conflict only when some game uses both',
+    actionsConflict('catalyst', 'bbPlace') === false && actionsConflict('fling', 'bbNectar') === false &&
+      actionsConflict('catalyst', 'fling') === true && actionsConflict('fire', 'bbPlace') === true &&
+      actionsConflict('fire', 'catalyst') === true && actionsConflict('bbPlace', 'bbNectar') === true,
+  );
+  check('games: an action always conflicts with itself', KEY_ACTIONS.every((a) => actionsConflict(a, a)));
+  check(
+    'games: keyActionsFor/padActionsFor drop what the game does not use',
+    !keyActionsFor('biobuzz').includes('catalyst') && keyActionsFor('biobuzz').includes('bbPlace') &&
+      !padActionsFor('chain').includes('bbNectar') && padActionsFor('chain').includes('catalyst') &&
+      !keyActionsFor('decode').includes('fling') && !keyActionsFor('decode').includes('bbNectar'),
+  );
+
+  // THE EFFECTIVE MAP with no override is main, except that the actions the game does not use
+  // are EMPTY — which is what stops a Chain Reaction bind firing, masking or consuming inside
+  // BIOBUZZ's chord resolver, which reads a `PadBindings` and has no idea what a game is.
+  const eff = effectiveBindings(DEFAULT_BINDINGS, 'biobuzz');
+  check(
+    'effective: with no override, every action the game USES is exactly main',
+    keyActionsFor('biobuzz').every((a) => J(eff.keys[a]) === J(DEFAULT_BINDINGS.keys[a])) &&
+      padActionsFor('biobuzz').every(
+        (a) => J(eff.pad.buttons[a]) === J(DEFAULT_BINDINGS.pad.buttons[a]) && J(eff.pad.combos[a]) === J(DEFAULT_BINDINGS.pad.combos[a]),
+      ),
+  );
+  check(
+    'effective: an action the game does not use is empty on BOTH devices',
+    J(eff.keys.catalyst) === J([]) && J(eff.keys.fling) === J([]) &&
+      J(eff.pad.buttons.catalyst) === J([]) && J(eff.pad.combos.catalyst) === J([]) &&
+      J(padBinds(eff.pad, 'fling')) === J([]),
+    J({ k: eff.keys.catalyst, b: eff.pad.buttons.catalyst }),
+  );
+  check(
+    'effective: the stick role and the sliders are carried through unchanged (they are global)',
+    eff.pad.driveStick === DEFAULT_BINDINGS.pad.driveStick && eff.pad.deadzone === DEFAULT_BINDINGS.pad.deadzone &&
+      eff.pad.curve === DEFAULT_BINDINGS.pad.curve && eff.pad.triggerThreshold === DEFAULT_BINDINGS.pad.triggerThreshold &&
+      eff.pad.chordGraceMs === DEFAULT_BINDINGS.pad.chordGraceMs,
+  );
+  check('effective: the result carries no perGame of its own (it is already applied)', eff.perGame === undefined);
+  const effChain = effectiveBindings(DEFAULT_BINDINGS, 'chain');
+  check(
+    'effective: each game empties its OWN non-actions, not the same ones',
+    J(effChain.keys.catalyst) === J(DEFAULT_BINDINGS.keys.catalyst) && J(effChain.keys.bbPlace) === J([]),
+  );
+  check(
+    'effective: DECODE empties every season-specific action',
+    (['catalyst', 'fling', 'bbPlace', 'bbPlaceNectar', 'bbNectar'] as const).every(
+      (a) => effectiveBindings(DEFAULT_BINDINGS, 'decode').keys[a].length === 0,
+    ),
+  );
+}
+
+// ---- GAME-SPECIFIC KEYBINDS: overriding one action in one game --------------------
+// An action PRESENT in a game's override is DESYNCED there — its binds are exactly the
+// override. An action ABSENT inherits main. "Sync back" is the deletion of the entry and
+// nothing else. Main is never written from a game scope, and no other game is touched.
+{
+  const J = (v: unknown): string => JSON.stringify(v);
+
+  // Rebind Shoot in BIOBUZZ only.
+  const b = assignKeyInGame(DEFAULT_BINDINGS, 'biobuzz', 'fire', 0, 'g');
+  check('override: the edited action is desynced in that game', keyDesynced(b, 'biobuzz', 'fire'));
+  check(
+    'override: the game sees the override and nothing else moved in it',
+    J(effectiveBindings(b, 'biobuzz').keys.fire) === J(['g']) &&
+      J(effectiveBindings(b, 'biobuzz').keys.intake) === J(DEFAULT_BINDINGS.keys.intake),
+  );
+  check('override: MAIN is untouched', J(b.keys.fire) === J(DEFAULT_BINDINGS.keys.fire), J(b.keys.fire));
+  check(
+    'override: the OTHER games are untouched',
+    J(effectiveBindings(b, 'decode').keys.fire) === J(DEFAULT_BINDINGS.keys.fire) &&
+      J(effectiveBindings(b, 'chain').keys.fire) === J(DEFAULT_BINDINGS.keys.fire) &&
+      !keyDesynced(b, 'chain', 'fire') && !keyDesynced(b, 'decode', 'fire'),
+  );
+  check('override: gameHasOverrides answers per game', gameHasOverrides(b, 'biobuzz') && !gameHasOverrides(b, 'chain'));
+
+  // SYNC BACK is a deletion, and it restores inheritance rather than copying main in.
+  const synced = syncKeyInGame(b, 'biobuzz', 'fire');
+  check(
+    'override: sync back restores inheritance, not a copy',
+    !keyDesynced(synced, 'biobuzz', 'fire') && J(effectiveBindings(synced, 'biobuzz').keys.fire) === J(DEFAULT_BINDINGS.keys.fire),
+  );
+  check(
+    'override: syncing the last one prunes perGame away entirely',
+    synced.perGame === undefined && J(synced) === J(cloneBindings(DEFAULT_BINDINGS)),
+    J(synced.perGame),
+  );
+  // …and inheritance is LIVE: main moving afterwards moves the synced action with it.
+  const mainMoved = assignKey(synced, 'fire', 0, 'h');
+  check(
+    'override: a synced action follows a later main edit',
+    J(effectiveBindings(mainMoved, 'biobuzz').keys.fire) === J(['h']),
+  );
+  const stillCustom = assignKey(b, 'fire', 0, 'h');
+  check(
+    'override: a DESYNCED action does not follow a later main edit',
+    J(effectiveBindings(stillCustom, 'biobuzz').keys.fire) === J(['g']) && J(stillCustom.keys.fire) === J(['h']),
+  );
+
+  // PAD: singles and combos desync TOGETHER — "the binds of Shoot on a pad in BIOBUZZ" is one
+  // thing, so writing one half writes both and Sync takes both back.
+  let p = assignPadBindInGame(DEFAULT_BINDINGS, 'biobuzz', 'fire', 0, [3]);
+  check('override/pad: a single edit desyncs the action', padDesynced(p, 'biobuzz', 'fire'));
+  check(
+    'override/pad: BOTH halves are written, so combos are frozen with the singles',
+    p.perGame?.biobuzz?.padButtons?.fire !== undefined && p.perGame?.biobuzz?.padCombos?.fire !== undefined,
+    J(p.perGame?.biobuzz),
+  );
+  check('override/pad: main keeps its own singles', J(p.pad.buttons.fire) === J(DEFAULT_BINDINGS.pad.buttons.fire));
+  p = assignPadBindInGame(p, 'biobuzz', 'fire', 2, [5, 1]);
+  check(
+    'override/pad: a combo added in a game stays in that game',
+    J(padBinds(effectiveBindings(p, 'biobuzz').pad, 'fire')) === J([[3], [0], [1, 5]]) &&
+      J(effectiveBindings(p, 'chain').pad.combos.fire) === J([]),
+    J(padBinds(effectiveBindings(p, 'biobuzz').pad, 'fire')),
+  );
+  const pSync = syncPadInGame(p, 'biobuzz', 'fire');
+  check(
+    'override/pad: Sync takes singles and combos back together',
+    !padDesynced(pSync, 'biobuzz', 'fire') &&
+      J(padBinds(effectiveBindings(pSync, 'biobuzz').pad, 'fire')) === J(padBinds(DEFAULT_BINDINGS.pad, 'fire')),
+  );
+
+  // SYNC ALL drops the whole game's override and leaves every other game's alone.
+  const two = assignKeyInGame(assignKeyInGame(DEFAULT_BINDINGS, 'biobuzz', 'fire', 0, 'g'), 'chain', 'fire', 0, 'y');
+  const allSynced = syncGame(two, 'biobuzz');
+  check(
+    'override: Sync all clears one game and leaves the others',
+    !gameHasOverrides(allSynced, 'biobuzz') && gameHasOverrides(allSynced, 'chain') &&
+      J(effectiveBindings(allSynced, 'chain').keys.fire) === J(['y']),
+  );
+
+  // AN ACTION A GAME DOES NOT USE CANNOT BE OVERRIDDEN IN IT — there is nothing to bind.
+  const refused = assignKeyInGame(DEFAULT_BINDINGS, 'biobuzz', 'catalyst', 0, 'g');
+  check(
+    'override: an action the game does not use is refused outright',
+    refused.perGame === undefined && J(refused) === J(cloneBindings(DEFAULT_BINDINGS)),
+  );
+  const removed = removeKeyInGame(DEFAULT_BINDINGS, 'decode', 'fling', 0);
+  check('override: removing one is refused the same way', removed.perGame === undefined);
+}
+
+// ---- GAME-SPECIFIC KEYBINDS: the conflict rules -----------------------------------
+// The POINT of the feature. In MAIN, two actions may share a bind when no game uses both.
+// Inside a game scope, the steal scope is that game's EFFECTIVE map, and a victim is desynced
+// IN THAT GAME rather than edited in main. And a MAIN edit that would create a duplicate
+// inside some game's effective map resolves one way, deterministically: the OVERRIDE loses.
+{
+  const J = (v: unknown): string => JSON.stringify(v);
+
+  // MAIN: a duplicate across seasons is legal and is NOT stolen.
+  const shared = assignKey(DEFAULT_BINDINGS, 'bbPlace', 0, 'c'); // 'c' is Catalyst's default
+  check(
+    'conflict/main: catalyst and bbPlace may share a key — neither is stolen',
+    J(shared.keys.bbPlace) === J(['c']) && J(shared.keys.catalyst) === J(['c']),
+    J({ bbPlace: shared.keys.bbPlace, catalyst: shared.keys.catalyst }),
+  );
+  check(
+    'conflict/main: and the shared key still reaches only its own game',
+    J(effectiveBindings(shared, 'chain').keys.catalyst) === J(['c']) &&
+      J(effectiveBindings(shared, 'chain').keys.bbPlace) === J([]) &&
+      J(effectiveBindings(shared, 'biobuzz').keys.bbPlace) === J(['c']) &&
+      J(effectiveBindings(shared, 'biobuzz').keys.catalyst) === J([]),
+  );
+  const stolen = assignKey(DEFAULT_BINDINGS, 'bbPlace', 0, ' '); // SPACE is Shoot, in every game
+  check(
+    'conflict/main: an action every game uses is still stolen from',
+    J(stolen.keys.bbPlace) === J([' ']) && J(stolen.keys.fire) === J([]),
+    J({ bbPlace: stolen.keys.bbPlace, fire: stolen.keys.fire }),
+  );
+  const padShared = assignPadBind(DEFAULT_BINDINGS, 'bbPlace', 0, [4]); // LB is Catalyst's
+  check(
+    'conflict/main: the pad rule is the same — LB can be Catalyst and Place POLLEN',
+    J(padShared.pad.buttons.bbPlace) === J([4]) && J(padShared.pad.buttons.catalyst) === J([4]),
+  );
+  const padStolen = assignPadBind(DEFAULT_BINDINGS, 'catalyst', 0, [7]); // RT is Shoot's
+  check(
+    'conflict/main: a pad button an every-game action holds is still stolen',
+    J(padStolen.pad.buttons.catalyst) === J([7]) && J(padStolen.pad.buttons.fire) === J([0]),
+  );
+
+  // A GAME SCOPE steals inside that game only, by DESYNCING the victim there.
+  const g = assignKeyInGame(DEFAULT_BINDINGS, 'biobuzz', 'bbPlace', 0, ' '); // take Shoot's SPACE
+  check(
+    'conflict/game: the victim is desynced in that game and loses the key there',
+    keyDesynced(g, 'biobuzz', 'fire') && J(effectiveBindings(g, 'biobuzz').keys.fire) === J([]) &&
+      J(effectiveBindings(g, 'biobuzz').keys.bbPlace) === J([' ']),
+    J(g.perGame?.biobuzz?.keys),
+  );
+  check(
+    'conflict/game: MAIN is untouched by the steal',
+    J(g.keys.fire) === J(DEFAULT_BINDINGS.keys.fire) && J(g.keys.bbPlace) === J(DEFAULT_BINDINGS.keys.bbPlace),
+  );
+  check(
+    'conflict/game: the other games keep Shoot on SPACE',
+    J(effectiveBindings(g, 'chain').keys.fire) === J([' ']) && J(effectiveBindings(g, 'decode').keys.fire) === J([' ']) &&
+      !keyDesynced(g, 'chain', 'fire') && !keyDesynced(g, 'decode', 'fire'),
+  );
+  check(
+    'conflict/game: a steal never reaches an action the game does not use',
+    g.perGame?.biobuzz?.keys?.catalyst === undefined && g.perGame?.chain === undefined,
+  );
+
+  // MAIN-EDIT vs OVERRIDE. Shoot is desynced in BIOBUZZ onto 'g'. Now main puts 'g' on Intake,
+  // which every game uses — inside BIOBUZZ that would be 'g' on two actions at once. The rule:
+  // THE OVERRIDE LOSES THE BIND, so the edit the player just made survives everywhere.
+  const pre = assignKeyInGame(DEFAULT_BINDINGS, 'biobuzz', 'fire', 0, 'g');
+  const clash = assignKey(pre, 'intake', 0, 'g');
+  check(
+    'conflict/collision: a main edit strips the colliding bind out of the override',
+    J(effectiveBindings(clash, 'biobuzz').keys.fire) === J([]) &&
+      J(effectiveBindings(clash, 'biobuzz').keys.intake) === J(['g', 'k']),
+    J({ fire: effectiveBindings(clash, 'biobuzz').keys.fire, intake: effectiveBindings(clash, 'biobuzz').keys.intake }),
+  );
+  check(
+    'conflict/collision: the override survives as an override — only that bind went',
+    keyDesynced(clash, 'biobuzz', 'fire'),
+  );
+  // …but NOT when the main-edited action is itself desynced in that game: main's new bind never
+  // reaches that game, so there is no duplicate to resolve and the override is left alone.
+  const both = assignKeyInGame(pre, 'biobuzz', 'intake', 0, 'q'); // slot 0 REPLACES: ['q','k']
+  const noClash = assignKey(both, 'intake', 0, 'g');
+  check(
+    'conflict/collision: a main edit to an action desynced there leaves the override alone',
+    J(effectiveBindings(noClash, 'biobuzz').keys.fire) === J(['g']) &&
+      J(effectiveBindings(noClash, 'biobuzz').keys.intake) === J(['q', 'k']) &&
+      J(noClash.keys.intake) === J(['g', 'k']),
+    J({ eff: effectiveBindings(noClash, 'biobuzz').keys.intake, main: noClash.keys.intake }),
+  );
+  // …and not across a season boundary either: main putting 'g' on Catalyst cannot collide with
+  // a BIOBUZZ override, because BIOBUZZ has no Catalyst.
+  const acrossSeason = assignKey(pre, 'catalyst', 0, 'g');
+  check(
+    'conflict/collision: a main edit to a Chain-only action never touches a BIOBUZZ override',
+    J(effectiveBindings(acrossSeason, 'biobuzz').keys.fire) === J(['g']) && J(acrossSeason.keys.catalyst) === J(['g']),
+  );
+  // THE PAD COLLISION IS EXACT, like every other steal: a single scrubs the single, a combo
+  // scrubs the identical combo, and neither touches the other kind.
+  const padPre = assignPadBindInGame(DEFAULT_BINDINGS, 'biobuzz', 'fire', 0, [11]); // RS
+  const padClash = assignPadBind(padPre, 'intake', 0, [11]);
+  check(
+    'conflict/collision: the pad rule matches — the override loses that single',
+    J(effectiveBindings(padClash, 'biobuzz').pad.buttons.fire) === J([0]) &&
+      J(effectiveBindings(padClash, 'biobuzz').pad.buttons.intake) === J([11, 1]),
+    J(effectiveBindings(padClash, 'biobuzz').pad.buttons),
+  );
+  const comboPre = assignPadBindInGame(DEFAULT_BINDINGS, 'biobuzz', 'fire', 2, [7, 12]);
+  const comboClash = assignPadBind(comboPre, 'intake', 2, [7, 12]);
+  check(
+    'conflict/collision: a combo scrubs the identical combo and leaves the singles',
+    J(effectiveBindings(comboClash, 'biobuzz').pad.combos.fire) === J([]) &&
+      J(effectiveBindings(comboClash, 'biobuzz').pad.buttons.fire) === J([7, 0]),
+    J(effectiveBindings(comboClash, 'biobuzz').pad),
+  );
+}
+
+// ---- GAME-SPECIFIC KEYBINDS: persistence, caps, and back-compat -------------------
+// The settings blob is persisted and account-synced VERBATIM, and the stable site runs older
+// code against the same accounts — which is why `perGame` is a NEW SIBLING FIELD and not a
+// change to the shape of `keys`/`pad`. Three ways this fails silently: an old blob that loads
+// with a `perGame` of the wrong shape (every consumer then throws on the controls screen), a
+// stale override for an action its game does not use (it could never fire, but it would
+// confuse every conflict rule), and a list `+` grew without bound until the 64 KB blob cap
+// started rejecting the player's saves.
+{
+  const J = (v: unknown): string => JSON.stringify(v);
+
+  check(
+    'perGame: a blob without the field loads to exactly the old shape',
+    mergeBindings({ keys: { fire: ['j'] } }).perGame === undefined &&
+      J(mergeBindings(JSON.parse(J(DEFAULT_BINDINGS)))) === J(DEFAULT_BINDINGS),
+  );
+  const real = assignPadBindInGame(assignKeyInGame(DEFAULT_BINDINGS, 'biobuzz', 'fire', 0, 'g'), 'chain', 'catalyst', 0, [11]);
+  check('perGame: a real override round-trips through mergeBindings', J(mergeBindings(JSON.parse(J(real)))) === J(real), J(real.perGame));
+
+  const corrupt = mergeBindings({
+    perGame: {
+      biobuzz: { keys: { fire: ['g'], catalyst: ['q'], nonsense: ['z'], intake: 'nope', park: ['escape'] } },
+      chain: { padButtons: { catalyst: [4], bbPlace: [9], fling: 'x' }, padCombos: { catalyst: [[7, 12], [7], 'junk'] } },
+      decode: 'not an object',
+      atlantis: { keys: { fire: ['z'] } },
+    },
+  });
+  check('perGame: an unknown game id is dropped', (corrupt.perGame as Record<string, unknown>)?.atlantis === undefined);
+  check('perGame: a game whose entry is not an object is dropped', corrupt.perGame?.decode === undefined);
+  check('perGame: an unknown action is dropped', (corrupt.perGame?.biobuzz?.keys as Record<string, unknown>)?.nonsense === undefined);
+  check(
+    'perGame: an action the game does not use is dropped',
+    corrupt.perGame?.biobuzz?.keys?.catalyst === undefined && corrupt.perGame?.chain?.padButtons?.bbPlace === undefined,
+    J(corrupt.perGame),
+  );
+  check(
+    'perGame: a bad list is dropped without taking its neighbours',
+    J(corrupt.perGame?.biobuzz?.keys?.fire) === J(['g']) && corrupt.perGame?.biobuzz?.keys?.intake === undefined,
+  );
+  check('perGame: escape is refused in an override too', corrupt.perGame?.biobuzz?.keys?.park === undefined);
+  check(
+    'perGame: combos in an override go through normalizeChord, entry by entry',
+    J(corrupt.perGame?.chain?.padCombos?.catalyst) === J([[7, 12]]),
+    J(corrupt.perGame?.chain?.padCombos),
+  );
+  check(
+    'perGame: a half-written pad override is completed from main, so the unit is whole',
+    J(corrupt.perGame?.chain?.padButtons?.fling) === J(DEFAULT_BINDINGS.pad.buttons.fling) &&
+      corrupt.perGame?.chain?.padCombos?.fling !== undefined,
+    J({ bt: corrupt.perGame?.chain?.padButtons, cb: corrupt.perGame?.chain?.padCombos }),
+  );
+  check(
+    'perGame: a perGame that validates to nothing leaves the field absent',
+    mergeBindings({ perGame: { decode: { keys: { catalyst: ['z'] } } } }).perGame === undefined,
+  );
+  check('perGame: a perGame that is not an object is ignored', mergeBindings({ perGame: 'yes' }).perGame === undefined);
+  check(
+    'perGame: cloneBindings deep-copies the overrides',
+    (() => {
+      const src = assignKeyInGame(DEFAULT_BINDINGS, 'biobuzz', 'fire', 0, 'g');
+      const copy = cloneBindings(src);
+      copy.perGame!.biobuzz!.keys!.fire!.push('z');
+      return J(src.perGame?.biobuzz?.keys?.fire) === J(['g']);
+    })(),
+  );
+
+  // THE PER-ACTION CAP. It applies to MAIN as well — `+` could grow a list without bound before
+  // it existed, and the server caps the whole settings blob at 64 KB, so a player leaning on it
+  // could have written a blob their own account then refused, silently, forever.
+  const long = Array.from({ length: 30 }, (_, i) => String.fromCharCode(97 + i));
+  check(
+    'cap: mergeBindings truncates a main key list to BIND_SLOTS_MAX',
+    mergeBindings({ keys: { fire: long } }).keys.fire.length === BIND_SLOTS_MAX,
+  );
+  check(
+    'cap: and an override list too',
+    mergeBindings({ perGame: { biobuzz: { keys: { fire: long } } } }).perGame?.biobuzz?.keys?.fire?.length === BIND_SLOTS_MAX,
+  );
+  const padLong = mergeBindings({
+    pad: { buttons: { fire: [0, 1, 2, 3, 4, 5] }, combos: { fire: [[6, 7], [8, 9], [10, 11], [12, 13], [14, 15]] } },
+  });
+  check(
+    'cap: the pad cap is on the COMBINED list a player sees, singles kept first',
+    padBinds(padLong.pad, 'fire').length === BIND_SLOTS_MAX && J(padLong.pad.buttons.fire) === J([0, 1, 2, 3, 4, 5]),
+    J(padBinds(padLong.pad, 'fire')),
+  );
+  let full = cloneBindings(DEFAULT_BINDINGS);
+  for (let i = 0; i < 12; i++) full = assignKey(full, 'fire', full.keys.fire.length, String.fromCharCode(97 + i));
+  check('cap: assignKey refuses to append past the cap', full.keys.fire.length === BIND_SLOTS_MAX, J(full.keys.fire));
+  check(
+    'cap: replacing an existing slot at the cap still works',
+    assignKey(full, 'fire', 0, 'z').keys.fire[0] === 'z',
+  );
+  let padFull = cloneBindings(DEFAULT_BINDINGS);
+  for (let i = 0; i < 12; i++) padFull = assignPadBind(padFull, 'park', padBinds(padFull.pad, 'park').length, [16 + i]);
+  check('cap: assignPadBind refuses to append past the cap', padBinds(padFull.pad, 'park').length === BIND_SLOTS_MAX);
+}
+
+// ---- GAME-SPECIFIC KEYBINDS: the chord resolver on an effective map ---------------
+// The resolver reads a `PadBindings` and has no idea what a game is, which is exactly why the
+// effective map EMPTIES the actions a game does not use rather than merely ignoring them later:
+// a Chain Reaction combo left in a BIOBUZZ map would mask a single (rule 1), consume its
+// buttons (rule 3), and make a tap wait for a combo that can never fire (rule 2).
+{
+  const J = (v: unknown): string => JSON.stringify(v);
+  const main = cloneBindings(DEFAULT_BINDINGS);
+  // Catalyst (Chain Reaction only) keeps LB, and gets RT + D-UP as a combo — which in the main
+  // map would mask Shoot's RT and Place POLLEN's D-UP.
+  main.pad.combos.catalyst = [[7, 12]];
+
+  const inChain = effectiveBindings(main, 'chain');
+  const rc = new PadChordResolver();
+  const cs = rc.resolve([7, 12], inChain.pad, 0);
+  check('resolver/effective: in Chain Reaction the combo fires and masks Shoot', cs.catalyst === true && cs.fire === false, J(cs));
+
+  const inBB = effectiveBindings(main, 'biobuzz');
+  check('resolver/effective: the Chain-only action is gone from the BIOBUZZ map', J(padBinds(inBB.pad, 'catalyst')) === J([]));
+  const rb = new PadChordResolver();
+  const bs = rb.resolve([7, 12], inBB.pad, 0);
+  check(
+    'resolver/effective: in BIOBUZZ the same buttons are Shoot and Place POLLEN, with nothing masked',
+    bs.catalyst === false && bs.fire === true && bs.bbPlace === true,
+    J(bs),
+  );
+  // …and no WAIT either: with the Chain combo gone there is no wider chord pending, so the
+  // fast path runs and RT fires on the frame it is pressed.
+  const rb2 = new PadChordResolver();
+  check('resolver/effective: and RT fires at once, with no combo wait to serve', rb2.resolve([7], inBB.pad, 0).fire === true);
+  // The same in DECODE, which has neither of the season actions.
+  const inDec = effectiveBindings(main, 'decode');
+  const rd = new PadChordResolver();
+  const ds = rd.resolve([7, 12], inDec.pad, 0);
+  check(
+    'resolver/effective: DECODE fires only what DECODE has',
+    ds.fire === true && ds.catalyst === false && ds.bbPlace === false && ds.bbPlaceNectar === false,
+    J(ds),
+  );
 }
 
 console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILURES`);

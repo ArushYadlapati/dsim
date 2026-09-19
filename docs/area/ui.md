@@ -60,12 +60,61 @@ and then the code. **`uiaudit`** is what actually enforces both, as ratchets.
   a prefix let go before the wait runs out, with no wider chord having fired, fires once on
   the frame of the release, so a quick RT tap is still one shot and park / flip / start /
   restart still work on a button that also lives in a combo (rule 2 alone swallowed it, which
-  a review caught). Two things the rules deliberately do NOT do, so nobody rediscovers them:
+  a review caught). ⚠️ **A rule-4 tap is held asserted for `PAD_TAP_HOLD_MS` (34 ms), not one
+  frame.** `resolve()` runs once per FRAME, but the HELD-level bits it produces are consumed by
+  the SIM on a fixed 60 Hz accumulator, and above 60 fps most frames step ZERO ticks — so a
+  one-frame pulse landed on a frame that stepped nothing about two in three at 165 Hz and the
+  shot was silently lost (multiplayer has the same hole: a jittery `setInterval` at the sim
+  period). With frame period `p` and sim period `T`, at most `floor(T/p)` frames in a row step
+  nothing, so the gap between stepping frames is always under `2T` = 33.34 ms; 34 is that floor
+  rounded up. The window is CONTINUOUS, so `gamepad.ts`'s `prev*` detectors still see exactly
+  one rising edge. Two things the rules deliberately do NOT do, so nobody rediscovers them:
   overlapping chords that are not nested all fire (`LB + RT` and `RB + D-UP` held together
   also satisfies an `RT + D-UP` bound elsewhere, exactly as `&&` on the real pad would), and
   masking reads SATISFIED rather than fired, so under a three-chord the two-chord's wait also
   silences the single for its length. With no combo bound, none of this runs: the fast path is
   the old any-button test with no state. All of it is pinned in `npm test`.
+- **GAME-SPECIFIC BINDS — one main map, per-season overrides** (`ControlBindings.perGame`,
+  `effectiveBindings`). `ControlBindings` (keys + pad + combos) stays THE MAIN SETTING, the
+  shared map every season starts from. `perGame?: Partial<Record<GameId, {keys?, padButtons?,
+  padCombos?}>>` is a NEW SIBLING FIELD — same reasoning as `combos`, and it matters more here:
+  an older client ignores it and plays the main map. An action PRESENT in a game's override is
+  **DESYNCED** there (its binds are exactly the override); ABSENT means it inherits main
+  (**SYNCED**), and "sync back" is the deletion of the entry, nothing else. `padButtons` and
+  `padCombos` for one action are ONE UNIT. Stick role, deadzone, curve, trigger threshold and
+  the combo wait stay GLOBAL — they are how a hand works, not what a button means.
+  **`effectiveBindings(b, game)` is the one resolver**, and everything that drives or NAMES a
+  control reads it, never `settings.bindings`: `InputManager` (via `GameController.bindings`,
+  resolved once from `gameId`), the start overlay, and the tutorial hints. It returns a plain
+  main-shaped `ControlBindings` with the overrides applied, `perGame` stripped, and the actions
+  the game does not use **EMPTIED** — not ignored later. That emptying is load-bearing: the
+  chord resolver reads a `PadBindings` and has no idea what a game is, so a Chain Reaction combo
+  left in a BIOBUZZ map would mask a single, consume its buttons, and make a tap wait for a
+  combo that can never fire.
+  ⚠️ **`ACTION_GAMES` (`bindings.ts`) is the table that makes a duplicate legal**, and every row
+  was checked against which `RobotCommand` bit that game's SIM reads: `catalyst`/`fling` are
+  Chain Reaction only, `bbPlace`/`bbPlaceNectar`/`bbNectar` are BIOBUZZ only, everything else is
+  every game (`driveMode` included — it is read in `src/sim/robot.ts`, which all three route
+  through). **Two actions conflict only if some game uses both.** So MAIN may put one key on
+  both `catalyst` and `bbPlace` — no session offers both — while `fire` still steals from
+  everything. Inside a game scope the steal scope is that game's EFFECTIVE map, and the victim
+  is DESYNCED in that game rather than edited in main; the game-scope editors are literally the
+  main editors run against the effective map, where the non-actions are already empty, so the
+  scope comes out right by construction. **Main-edit vs override**: when a main edit would put a
+  bind on an action that is SYNCED in game G while some other action G uses holds it in a
+  DESYNCED override, **the override loses that bind** — so the edit the player just made
+  survives everywhere, and an edit under "All games" never silently does nothing.
+  `mergeBindings` validates `perGame` entry by entry (unknown game ids, unknown actions, and
+  actions a game does not use are all dropped; lists go through the same validators as main),
+  and **`BIND_SLOTS_MAX` (8) caps every list, main included** — `+` could grow one without
+  bound, and the server caps the settings blob at 64 KB. A blob with no `perGame` round-trips
+  byte for byte, and the field is pruned back to absent when the last override is synced away.
+  UI: a scope switch (`.ds-segs`) at the top of the Controls card — `All games` plus one entry
+  per **visible** season. A season scope lists only that season's actions, each row marked
+  SYNCED or CUSTOM (in BOTH states, so the marker never changes a row's height mid-edit) with a
+  Sync control, and a "Sync all to shared" in the foot, disabled rather than hidden for the same
+  reason the combo-wait slider is. The main scope tags a row with its seasons when they are not
+  all of them, so a key shared by Catalyst and Place POLLEN does not read as a bug.
   ⚠️ **The capture effects on the controls screen depend on `capture` ALONE**, with
   `bindings`/`onChange` in refs: `onChange` is a fresh arrow every render and the App re-renders
   on its own every few seconds (the presence poll), which restarted the pad effect mid-capture
