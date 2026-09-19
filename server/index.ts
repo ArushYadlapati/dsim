@@ -47,6 +47,10 @@ import {
   revokeSupporter,
   refundKofiPayment,
   listSupporterGrants,
+  clearUsername,
+  setSuspension,
+  getSuspension,
+  deleteAccount,
   createAnnouncement,
   deleteAnnouncement,
   upsertPresence,
@@ -297,6 +301,29 @@ function lockoutMessage(): string {
   const mins = Math.max(1, Math.round((maint.endsAt - Date.now()) / 60000));
   return `${base} Back in about ${mins} minute${mins === 1 ? '' : 's'}.`;
 }
+/**
+ * WHAT A SUSPENDED PLAYER IS TOLD AT THE DOOR (0043).
+ *
+ * ⚠️ IT NAMES THE ACT, CARRIES THE MODERATOR'S OWN REASON, AND SAYS WHEN IT ENDS — the same
+ * three things `lockoutMessage` gives a maintenance window, and for the same reason. "You are
+ * suspended" with nothing after it is not a refusal a person can do anything with: it
+ * generates an appeal that has to be answered by looking the account up by hand, which is the
+ * work this console exists to remove.
+ *
+ * The date is FORMATTED IN UTC and labelled as such. A bare `toLocaleString()` on a server
+ * prints the machine's zone, which on Fly is UTC and is not the reader's — and a wrong local
+ * time is worse than an explicit foreign one, because the reader has no way to tell.
+ */
+function suspensionMessage(s: { until: number | null; reason: string | null }): string {
+  const why = s.reason?.trim();
+  const when = s.until ? `${new Date(s.until).toISOString().slice(0, 16).replace('T', ' ')} UTC` : null;
+  return (
+    `This account is suspended from online play${when ? ` until ${when}` : ''}.` +
+    (why ? ` Reason: ${why}` : '') +
+    ' Free drive and practice still work.'
+  );
+}
+
 /** true if this user already has a LIVE match in a DIFFERENT room (stale entries whose
  * room has since vanished are pruned and treated as clear). */
 const activeElsewhere = (userId: string, code: string): boolean => {
@@ -1609,6 +1636,9 @@ const httpServer = createServer((req, res) => {
         u.pathname === '/api/admin/user/records/clear' ||
         u.pathname === '/api/admin/users' ||
         u.pathname === '/api/admin/user/rename' ||
+        u.pathname === '/api/admin/user/username' ||
+        u.pathname === '/api/admin/user/suspend' ||
+        u.pathname === '/api/admin/user/delete' ||
         u.pathname === '/api/admin/supporter/grant' ||
         u.pathname === '/api/admin/supporter/revoke' ||
         u.pathname === '/api/admin/supporter/history' ||
@@ -1726,6 +1756,134 @@ const httpServer = createServer((req, res) => {
             note: u.searchParams.get('note') ?? undefined,
           });
           jsonOut(200, { ok: true, userId: uid, handle });
+          return;
+        }
+
+        /**
+         * POST /api/admin/user/username?userId=&note= — TAKE AN ABUSIVE @USERNAME AWAY.
+         *
+         * The rename above forces a clean DISPLAY name, which is the one its owner can change
+         * back as soon as nobody is looking. The @username is the permanent, unique, public
+         * one — it goes on every leaderboard row and every profile URL — and nothing in this
+         * console could touch it, so a name-policy report about a username had no remedy at
+         * all short of a psql session.
+         *
+         * CLEARED, NOT SET: `clearUsername` says why. The account goes back through
+         * `UsernameGate`, which already validates format, uniqueness and content.
+         */
+        if (req.method === 'POST' && u.pathname === '/api/admin/user/username') {
+          const uid = u.searchParams.get('userId') ?? '';
+          if (!uid) {
+            jsonOut(400, { ok: false, error: 'missing userId' });
+            return;
+          }
+          if (!(await getProfile(uid))) {
+            jsonOut(404, { ok: false, error: 'no such user' });
+            return;
+          }
+          const was = await clearUsername(uid);
+          // THE OLD NAME IS THE EVIDENCE. Like `user.rename`, this action destroys the only
+          // record of what made somebody reach for the button, so the audit row carries it.
+          if (was) {
+            await writeAudit({
+              adminId: actor,
+              action: 'user.username.clear',
+              targetUser: uid,
+              detail: { from: was },
+              note: u.searchParams.get('note') ?? undefined,
+            });
+          }
+          jsonOut(200, { ok: true, userId: uid, cleared: was });
+          return;
+        }
+
+        /**
+         * POST /api/admin/user/suspend?userId=&days=&reason=   suspend
+         * POST /api/admin/user/suspend?userId=&lift=1&reason=  lift it
+         *
+         * THE LEVER THE CONSOLE DID NOT HAVE. Everything else here stops short of stopping
+         * somebody: a rename takes a word off them, clearing their records takes the scores
+         * off the boards, and a standing charge locks RANKED and nothing else. None of those
+         * keeps an account out of the custom rooms other players are in.
+         *
+         * A DEADLINE IN DAYS, not a flag — see migration 0043. `days` is capped at 3650,
+         * which is how a permanent ban is expressed: a decision with a date on it rather
+         * than a boolean nobody remembers to clear.
+         *
+         * THE REASON IS SHOWN TO THE PLAYER at the door, so it is not the place for a private
+         * note — `admin_notes` is, and the console says so beside the box.
+         */
+        if (req.method === 'POST' && u.pathname === '/api/admin/user/suspend') {
+          const uid = u.searchParams.get('userId') ?? '';
+          const lift = u.searchParams.get('lift') === '1';
+          const days = Math.floor(Number(u.searchParams.get('days') ?? 0));
+          if (!uid) {
+            jsonOut(400, { ok: false, error: 'missing userId' });
+            return;
+          }
+          if (!lift && (!Number.isFinite(days) || days < 1 || days > 3650)) {
+            jsonOut(400, { ok: false, error: 'days must be 1–3650' });
+            return;
+          }
+          const reason = (u.searchParams.get('reason') ?? '').slice(0, 300);
+          const before = await getSuspension(uid);
+          const next = await setSuspension(uid, lift ? null : Date.now() + days * 86_400_000, reason);
+          if (next === null) {
+            jsonOut(404, { ok: false, error: 'no such user' });
+            return;
+          }
+          await writeAudit({
+            adminId: actor,
+            action: lift ? 'account.unsuspend' : 'account.suspend',
+            targetUser: uid,
+            detail: lift ? { wasUntil: before.until } : { days, until: next.until },
+            note: reason || undefined,
+          });
+          jsonOut(200, { ok: true, userId: uid, suspension: next });
+          return;
+        }
+
+        /**
+         * POST /api/admin/user/delete?userId=&note= — REMOVE AN ACCOUNT AND EVERYTHING IT OWNS.
+         *
+         * For a spam or bot signup, where a suspension leaves the abusive name, the records
+         * and the reports sitting on the service with nobody behind them. The same
+         * `deleteAccount` the player's own Delete-my-account button calls, so the cascade is
+         * the one `npm run dbtest` already exercises rather than a second spelling of it.
+         *
+         * ⚠️ THE AUDIT ROW OUTLIVES THE ACCOUNT, which is exactly what `admin_audit` has no
+         * foreign keys for (0041). It is written BEFORE the delete, because afterwards there
+         * is no `profiles` row for the log's own join to resolve a name from — and because a
+         * delete that half-succeeded must still leave a record that it was attempted.
+         */
+        if (req.method === 'POST' && u.pathname === '/api/admin/user/delete') {
+          const uid = u.searchParams.get('userId') ?? '';
+          if (!uid) {
+            jsonOut(400, { ok: false, error: 'missing userId' });
+            return;
+          }
+          const profile = await getProfile(uid);
+          if (!profile) {
+            jsonOut(404, { ok: false, error: 'no such user' });
+            return;
+          }
+          // AN ADMIN IS NOT DELETABLE FROM HERE. The staff role is a projection of
+          // ADMIN_USER_IDS and `syncStaffRoles` re-creates the row at the next boot, so the
+          // delete would be undone silently while the records it cascaded away stayed gone.
+          if (ADMIN_IDS.has(uid)) {
+            jsonOut(409, { ok: false, error: 'that account is staff — remove it from ADMIN_USER_IDS first' });
+            return;
+          }
+          await writeAudit({
+            adminId: actor,
+            action: 'account.delete',
+            targetUser: uid,
+            detail: { handle: profile.handle, username: profile.username },
+            note: u.searchParams.get('note') ?? undefined,
+          });
+          const gone = await deleteAccount(uid);
+          console.log(`[admin] deleted account ${uid} ("${profile.handle}") -> ${gone}`);
+          jsonOut(200, { ok: gone });
           return;
         }
 
@@ -2674,6 +2832,33 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
       return;
     }
     /**
+     * SUSPENSION (0043) — the door a moderator's decision actually has to reach.
+     *
+     * HERE rather than only in the ranked queue, and unlike the maintenance window it has NO
+     * staged-room exemption: a suspension is about this account playing with other people at
+     * all, so the custom rooms are the point of it and a pairing the matchmaker happened to
+     * stage is not a reason to let it through.
+     *
+     * A DATABASE READ ON THE JOIN PATH, deliberately, where maintenance is cached on a timer.
+     * The two are different shapes: a lockdown window is one row every socket asks about, so
+     * caching it costs nothing and staleness is measured against a window announced minutes
+     * ahead. A suspension is per account, and the moment it matters most is the moment after
+     * a moderator presses the button — a cached answer would let somebody keep joining rooms
+     * for as long as the timer runs. A join is a rare event; this is one indexed read on it.
+     */
+    if (user) {
+      const susp = await getSuspension(user.userId);
+      if (closed) {
+        abandon();
+        return;
+      }
+      if (susp.until) {
+        send({ t: 'error', message: suspensionMessage(susp) });
+        abandon();
+        return;
+      }
+    }
+    /**
      * ONE ACCOUNT, ONE SEAT IN THIS ROOM — ASKED BEFORE `canJoin`, because the answer is
      * sometimes "you already have a seat here" and that outranks "the room is full".
      *
@@ -3143,7 +3328,21 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
             // not the JWT `name` claim. It matters more here, because the ranked client
             // does not even send a real one — `Matchmaking.tsx` sends the ROBOT's
             // `teamName` — so this read is the only thing that can name the player.
-            const prof = dbEnabled ? await getProfile(u.userId).catch(() => null) : null;
+            //
+            // ...AND A SUSPENDED ACCOUNT DOES NOT QUEUE (0043). It rides along with the
+            // profile read rather than taking a round trip of its own — the two are the same
+            // row — and it is refused HERE rather than at the room door the pairing will
+            // reach, for the reason the sign-in check is here: a refusal after the matchmaker
+            // has staged a match charges three other people for it.
+            const [prof, susp] = await Promise.all([
+              dbEnabled ? getProfile(u.userId).catch(() => null) : Promise.resolve(null),
+              getSuspension(u.userId).catch(() => ({ until: null, reason: null })),
+            ]);
+            if (stale()) return;
+            if (susp.until) {
+              send({ t: 'error', message: suspensionMessage(susp) });
+              return;
+            }
             // LAST GAP, and the one that matters: nothing may await between here and
             // `enqueue`, or the entry outlives the cancel that was meant to stop it.
             if (stale()) return;

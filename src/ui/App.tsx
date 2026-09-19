@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { Suspense, lazy, useCallback, useEffect, useRef, useState } from 'react';
 import type { ComponentType } from 'react';
 import type { GameSettings } from '../game';
 import { loadSettings, saveSettings, switchGame, syncAudioMirrors } from '../settings';
@@ -20,7 +20,17 @@ import { challengeOf, type PendingChallenge } from './challenge';
 import type { RoomConfig, RoomKind } from '../net/protocol';
 import { useNewVersion } from '../net/version';
 import { useServerNotice } from '../net/notice';
-import { Admin } from './Admin';
+/**
+ * THE WHOLE ADMIN CONSOLE IS A LAZY CHUNK, and this import is the split point.
+ *
+ * `Admin` statically pulls in `AdminLive`, `AdminReports`, `AdminAudit`, `AdminUser`,
+ * `AdminStanding`, `adminBits` and `adminCopy`. Imported eagerly, every one of them shipped in
+ * the chunk a PLAYER downloads to drive a robot — a route exactly one account on the service can
+ * reach. `npm run bundleaudit` ratchets `main`, and the console is the fastest-growing thing in
+ * it. Splitting HERE rather than per panel is what makes it one boundary instead of seven, and
+ * it takes `AdminAnalytics`'s own `lazy()` with it as a nested chunk.
+ */
+const Admin = lazy(() => import('./Admin').then((m) => ({ default: m.Admin })));
 import { Announcements } from './Announcements';
 import { AccountReset } from './AccountReset';
 import { AccountSync } from './AccountSync';
@@ -478,8 +488,14 @@ export function App() {
     // history entry, and in anything that reads `location.href` (a copied link, a
     // referrer, an analytics beacon). Stripping it here is safe because `entryToken.ts`
     // captured it at MODULE LOAD, which is exactly why that file exists.
+    // ⚠️ KEEP THE FRAGMENT. `pathFor` emits neither a query nor a hash, so replacing the URL
+    // with it alone DELETED the hash — and the admin console's whole URL state lives there
+    // (`#tab=users&user=<id>`, chosen precisely because App owns the path and the query). The
+    // unprefixed `/admin` canonicalizes to `/decode/admin`, which is not equal, so EVERY
+    // pasted console link was rewritten to a bare path before `Admin` mounted and opened on
+    // Live. The query still goes: `?token=` is consumed at module load and must not survive.
     if (window.location.pathname + window.location.search !== canonical) {
-      window.history.replaceState(null, '', canonical);
+      window.history.replaceState(null, '', canonical + window.location.hash);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -1886,7 +1902,11 @@ export function App() {
       )}
       {screen === 'accountreset' && <AccountReset onAccount={() => navigate('account')} />}
       {screen === 'accountverify' && <AccountVerify onAccount={() => navigate('account')} />}
-      {screen === 'admin' && isAdmin && <Admin onWatch={spectateRoom} onWatchReplay={watchReplay} />}
+      {screen === 'admin' && isAdmin && (
+        <Suspense fallback={<p className="ds-loading">Loading the console…</p>}>
+          <Admin onWatch={spectateRoom} onWatchReplay={watchReplay} />
+        </Suspense>
+      )}
       {screen === 'dev' &&
         (() => {
           const Dev = devRouteFor(settings.game, route.dev ?? '');

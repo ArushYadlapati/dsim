@@ -102,7 +102,11 @@ export function AdminReports({
           Everything
         </button>
         <span className="adm-grow" />
-        <button className="ds-btn ghost small" disabled={!users || users.length === 0} onClick={load}>
+        {/* disabled only while the FIRST load is in flight. It was `users.length === 0` too,
+            which made Refresh dead in exactly the state you press it in: the queue is empty,
+            somebody says they have just reported a player, and the one control that would
+            fetch them is greyed out. */}
+        <button className="ds-btn ghost small" disabled={!users} onClick={load}>
           Refresh
         </button>
         <button

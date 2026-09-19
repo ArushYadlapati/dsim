@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { gameServerHttpUrl } from '../net/env';
 import { getAuthToken } from '../lib/authClient';
 import { GAME_IDS } from '../games/types';
@@ -314,11 +314,27 @@ export function AdminAnalytics() {
 
       {report && (
         <>
+          {/* ⚠️ A PAGE OF ZEROS IS A CLAIM, and on this tier it is usually the wrong one. A
+              range past the raw window is answered from `analytics_daily`, which is written by
+              the hourly rollup — so a service younger than the range, or one whose rollup has
+              not caught up, answers zero for every tile and draws no chart at all. Saying "read
+              from the daily rollups" over that reads as "traffic collapsed". The two states get
+              two different sentences. */}
           {report.source === 'aggregate' && (
             <p className="ds-hint warn" role="status">
-              This range reaches further back than the 30 days of raw data, so it is read from the
-              daily rollups. Breakdowns still work; the filter chips do not, and visitor counts are
-              sums of daily uniques.
+              {t && t.views === 0 ? (
+                <>
+                  This range reaches past the 30 days of raw data and the daily rollups hold
+                  nothing for it — which is what a service younger than the range looks like, not
+                  a range with no traffic. Pick a shorter one to read it exactly.
+                </>
+              ) : (
+                <>
+                  This range reaches further back than the 30 days of raw data, so it is read from
+                  the daily rollups. Breakdowns still work; the filter chips do not, and visitor
+                  counts are sums of daily uniques. Events below are the last 30 days only.
+                </>
+              )}
             </p>
           )}
 
@@ -519,8 +535,12 @@ function EventsPanel({
                 const detail = props.filter((p) => p.name === e.name);
                 const isOpen = open === e.name;
                 return (
-                  <>
-                    <tr key={e.name}>
+                  // ⚠️ THE KEY GOES ON THE FRAGMENT, not on the first row inside it. The
+                  // fragment IS the array element, so keying its child left every event row
+                  // keyless: React warned on every render and re-created the expanded property
+                  // sub-rows whenever the list re-ordered under a range change.
+                  <Fragment key={e.name}>
+                    <tr>
                       <td>{e.name}</td>
                       <td className="num">{fmtExact(e.views)}</td>
                       <td className="num">{fmtExact(e.visitors)}</td>
@@ -542,7 +562,7 @@ function EventsPanel({
                           <td colSpan={2} />
                         </tr>
                       ))}
-                  </>
+                  </Fragment>
                 );
               })}
             </tbody>

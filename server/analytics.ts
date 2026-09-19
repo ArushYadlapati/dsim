@@ -858,7 +858,24 @@ async function aggTotals(from: Date, to: Date, game: string): Promise<Totals> {
  */
 export async function analyticsReport(qy: RangeQuery): Promise<AnalyticsReport> {
   const floor = new Date(Date.now() - RAW_RETENTION_DAYS * 86_400_000);
-  const source: 'raw' | 'aggregate' = qy.from >= floor ? 'raw' : 'aggregate';
+  /**
+   * ⚠️ THE BOUNDARY NEEDS A GRACE, and without one the "30 days" preset could never take the
+   * raw tier it is named after. `from` is computed in the BROWSER and `floor` here, so the
+   * client's "exactly 30 days ago" is always a few hundred milliseconds — plus whatever the
+   * two clocks disagree by — EARLIER than the server's floor. The comparison therefore failed
+   * every single time, and the most useful range on the dashboard answered from
+   * `analytics_daily`: zero views, zero visitors, no chart and no breakdowns on a service
+   * whose raw table held every row of it.
+   *
+   * An hour is sized to swallow clock skew and the request in flight, not to reach for data
+   * the raw tier does not have: `sweepAnalytics` deletes rows OLDER than the retention window,
+   * so the extra hour simply finds fewer rows at the very start of the range rather than
+   * different ones. Under-reporting the oldest sixty minutes of a thirty-day window is a far
+   * smaller error than reporting the whole window as zero.
+   */
+  const BOUNDARY_GRACE_MS = 3_600_000;
+  const source: 'raw' | 'aggregate' =
+    qy.from.getTime() >= floor.getTime() - BOUNDARY_GRACE_MS ? 'raw' : 'aggregate';
   const span = qy.to.getTime() - qy.from.getTime();
   const prevFrom = new Date(qy.from.getTime() - span);
 

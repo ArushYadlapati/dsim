@@ -2,19 +2,25 @@ import { useCallback, useEffect, useState } from 'react';
 import {
   adminAddNote,
   adminClearUserRecords,
+  adminClearUsername,
   adminDeleteNote,
   adminDeleteRecord,
+  adminDeleteUser,
   adminFetchUser,
   adminGrantSupporter,
+  adminLiftSuspension,
+  adminRefundPayment,
   adminRenameUser,
   adminRevokeSupporter,
+  adminSuspendUser,
   type AdminUserDetail,
 } from '../net/api';
+import { REPORT_LABELS, type ReportReason } from '../report';
 import { SEASONS } from '../seasons';
 import { STANDING_MAX, tierOf, lockRemaining } from '../standing';
 import { adminFail } from './adminCopy';
 import { StandingEditor } from './AdminStanding';
-import { CopyId, When, confirmed, downloadCsv } from './adminBits';
+import { AccountName, CopyId, When, confirmed, downloadCsv } from './adminBits';
 import type { WatchReplay } from './AdminReports';
 
 /**
@@ -54,6 +60,7 @@ export function AdminUser({
   const [months, setMonths] = useState('1');
   const [note, setNote] = useState('');
   const [showStanding, setShowStanding] = useState(false);
+  const [susDays, setSusDays] = useState('7');
 
   const load = useCallback(async (): Promise<void> => {
     const d = await adminFetchUser(userId);
@@ -84,6 +91,10 @@ export function AdminUser({
   if (!u) return <div className="ds-loading">Loading account…</div>;
 
   const name = u.handle?.trim() || u.username || userId;
+  // `suspension` is absent on an older server (one Fly app serves every client version), which
+  // is "we were not told", not "not suspended" — but both render the same, and the panel must
+  // not assert a state it was not sent.
+  const suspendedUntil = u.suspension?.until ?? null;
   const standing = u.standing?.score ?? STANDING_MAX;
   const tier = tierOf(standing);
   const lockedUntil = u.standing?.restrictedUntil ?? null;
@@ -152,6 +163,86 @@ export function AdminUser({
     );
   };
 
+  /**
+   * SUSPEND. The reason is asked for and is NOT optional, because it is the sentence the
+   * player reads at the door — a refusal with nothing after it generates an appeal that has
+   * to be answered by looking the account up by hand, which is the work this panel exists to
+   * remove. Anything a moderator does not want them to read goes in a note instead, and the
+   * prompt says so.
+   */
+  const doSuspend = (): void => {
+    const d = Math.floor(Number(susDays));
+    if (!Number.isFinite(d) || d < 1 || d > 3650) {
+      setStatus('Days must be 1–3650. Use a long one for a permanent ban.');
+      return;
+    }
+    const why = window.prompt(
+      `Suspend ${name} from online play for ${d} day${d === 1 ? '' : 's'}.\n\n` +
+        'This reason is shown to them at the door. Put anything private in a note instead.',
+      '',
+    );
+    if (why === null) return;
+    if (!why.trim()) {
+      setStatus('Give a reason — the player is shown it.');
+      return;
+    }
+    void act(
+      async () => (await adminSuspendUser(userId, d, why.trim())) !== null,
+      `Suspended for ${d} day${d === 1 ? '' : 's'}.`,
+      'suspend the account',
+    );
+  };
+
+  const doLift = (): void => {
+    if (!confirmed('Lift the suspension on', name, 'They can join rooms and queue ranked again immediately.')) return;
+    void act(async () => (await adminLiftSuspension(userId)) !== null, 'Suspension lifted.', 'lift the suspension');
+  };
+
+  const doClearUsername = (): void => {
+    if (!u.username) return;
+    if (
+      !confirmed(
+        'Take the username @' + u.username + ' from',
+        name,
+        'They keep the account and are asked to claim a new one, which is checked the same way the first was. The old name is kept in the audit log.',
+      )
+    )
+      return;
+    void act(
+      async () => (await adminClearUsername(userId)) !== null,
+      'Username cleared. They claim a new one on their next load.',
+      'clear the username',
+    );
+  };
+
+  /**
+   * DELETE. TERMINAL, so the guard is a TYPED confirmation rather than another OK button:
+   * every other destructive control here is one click behind a `confirm`, and a control that
+   * removes an account with its records, matches and reports should not be reachable by the
+   * same reflex. The audit row survives the account — `admin_audit` has no foreign keys for
+   * exactly this.
+   */
+  const doDelete = (): void => {
+    const expect = u.username ?? userId;
+    const typed = window.prompt(
+      `Delete ${name} and everything they own — records, matches, reports, replays, membership.\n\n` +
+        'This cannot be undone. The audit log keeps the record of it.\n\n' +
+        `Type ${expect} to confirm.`,
+      '',
+    );
+    if (typed === null) return;
+    if (typed.trim().replace(/^@/, '') !== expect) {
+      setStatus('That didn’t match, so nothing was deleted.');
+      return;
+    }
+    const why = window.prompt('Why is this account being deleted?', '') ?? '';
+    void act(
+      async () => (await adminDeleteUser(userId, why))?.ok === true,
+      'Account deleted.',
+      'delete the account',
+    );
+  };
+
   const addNote = (): void => {
     const text = note.trim();
     if (!text) return;
@@ -173,6 +264,7 @@ export function AdminUser({
             )}
             {u.role && <span className={`adm-pill role ${u.role}`}>{u.role}</span>}
             {u.supporter && <span className="adm-pill">supporter</span>}
+            {suspendedUntil !== null && <span className="adm-pill queued">suspended</span>}
             {!u.known && (
               <span className="adm-pill standing" title="No profiles row exists for this account id">
                 no profile row
@@ -205,6 +297,17 @@ export function AdminUser({
         <Tile label="Matches" value={`${u.recentMatches.length}`} sub="most recent" />
       </div>
 
+      {/* THE SUSPENSION LINE GOES ABOVE THE RANKED LOCK, because they are different
+          punishments and the bigger one has to be read first: a ranked lock is the automatic
+          standing penalty healing on its own timer, a suspension is a moderator keeping this
+          account out of every room. Somebody who reads only the first line must not come away
+          thinking the account can still play. */}
+      {suspendedUntil !== null && (
+        <p className="adm-lockline">
+          Suspended from online play · {suspensionLeft(suspendedUntil)} ·{' '}
+          {u.suspension?.reason ? `“${u.suspension.reason}”` : 'no reason recorded'}
+        </p>
+      )}
       {locked && (
         <p className="adm-lockline">
           Ranked is locked for this account · {lockRemaining(lockedUntil as number, Date.now())}
@@ -281,6 +384,47 @@ export function AdminUser({
           Clear all records
         </button>
       </div>
+
+      {/* NAME POLICY AND ENFORCEMENT, one row below the everyday actions. Rename and Grant are
+          things a moderator does most days; these three end with somebody not being able to
+          play, so they are not mixed in with them. */}
+      <div className="adm-actions">
+        <button className="ds-btn ghost small" disabled={busy || !u.username} onClick={doClearUsername}>
+          {u.username ? `Clear @${u.username}` : 'No username to clear'}
+        </button>
+        {suspendedUntil === null ? (
+          <>
+            <label className="admin-field">
+              <span>Suspend for</span>
+              <input
+                type="number"
+                min={1}
+                max={3650}
+                className="admin-months"
+                aria-label={`Days to suspend ${name}`}
+                value={susDays}
+                onChange={(e) => setSusDays(e.target.value)}
+              />
+              <span>days</span>
+            </label>
+            <button className="ds-btn danger small" disabled={busy} onClick={doSuspend}>
+              Suspend
+            </button>
+          </>
+        ) : (
+          <button className="ds-btn small primary" disabled={busy} onClick={doLift}>
+            Lift suspension
+          </button>
+        )}
+        <button className="ds-btn danger small" disabled={busy || !u.known} onClick={doDelete}>
+          Delete account
+        </button>
+      </div>
+      <p className="ds-hint">
+        A suspension blocks every online room and the ranked queue, on every region, and ends by
+        itself on the day it names — free drive and practice keep working. The reason is shown to
+        the player; anything private belongs in a note below.
+      </p>
       {status && <p className="ds-hint">{status}</p>}
 
       {showStanding && <StandingEditor userId={userId} handleHint={u.handle ?? undefined} />}
@@ -332,6 +476,64 @@ export function AdminUser({
             </li>
           ))}
         </ul>
+      )}
+
+      {/* ⚠️ THE ROWS BEHIND THE TWO REPORT TILES. The panel printed "3 open · 5 total · 3
+          reporters" and "14 filed · 9 rejected" and stopped: both numbers raise a question
+          neither can answer. Three reports from three people in one evening and three across a
+          season are the same tile; nine rejected claims spread over a year and nine aimed at
+          one opponent are the same tile. The rows were always in `player_reports` — nothing
+          read them from this direction. */}
+      {(u.reportsAgainstList?.length ?? 0) > 0 && (
+        <>
+          <h4 className="adm-h3">
+            Reports against them <span className="ds-muted">· {u.reportsAgainst.open} still open</span>
+          </h4>
+          <div className="adm-report-list">
+            {(u.reportsAgainstList ?? []).map((r) => (
+              <div className="adm-report-item" key={r.id}>
+                <span className="adm-pill">{REPORT_LABELS[r.reason as ReportReason] ?? r.reason}</span>
+                <span className="adm-report-by ds-muted">
+                  by {r.reporterUsername ? `@${r.reporterUsername}` : r.reporterHandle} ·{' '}
+                  <When at={r.createdAt} />
+                  {r.roomCode && ` · room ${r.roomCode}`}
+                  {r.status !== 'open' && ` · ${r.status}`}
+                </span>
+                {r.detail && <p className="adm-report-detail">{r.detail}</p>}
+              </div>
+            ))}
+          </div>
+        </>
+      )}
+
+      {(u.reportsFiledList?.length ?? 0) > 0 && (
+        <>
+          <h4 className="adm-h3">
+            Reports they filed{' '}
+            <span className="ds-muted">· {u.reportsFiled.rejected} dismissed</span>
+          </h4>
+          <div className="adm-report-list">
+            {(u.reportsFiledList ?? []).map((r) => (
+              <div className="adm-report-item" key={r.id}>
+                <span className="adm-pill">{REPORT_LABELS[r.reason as ReportReason] ?? r.reason}</span>
+                <span className="adm-report-by ds-muted">
+                  {/* the SUBJECT is the useful name here — the filer is the open account */}
+                  against{' '}
+                  <AccountName
+                    userId={r.subjectId}
+                    handle={r.subjectHandle}
+                    username={r.subjectUsername}
+                    known={r.subjectHandle !== null}
+                  />{' '}
+                  · <When at={r.createdAt} />
+                  {r.roomCode && ` · room ${r.roomCode}`}
+                  {r.status !== 'open' && ` · ${r.status}`}
+                </span>
+                {r.detail && <p className="adm-report-detail">{r.detail}</p>}
+              </div>
+            ))}
+          </div>
+        </>
       )}
 
       <h4 className="adm-h3">
@@ -443,6 +645,67 @@ export function AdminUser({
         </>
       )}
 
+      {/* ⚠️ PAYMENTS, NOT GRANTS — and that is why the refund route had no caller. A GRANT is
+          months; a PAYMENT is a transaction, and `/api/admin/supporter/refund` is keyed by the
+          second. The membership history above showed only the first, so the id the route needs
+          appeared nowhere in the console and a chargeback could not be recorded from it at all.
+          Flagging a payment deliberately does NOT end the membership: it may cover other
+          payments, so revoking is a second decision and Revoke above is where it lives. */}
+      {(u.payments?.length ?? 0) > 0 && (
+        <>
+          <h4 className="adm-h3">Payments claimed</h4>
+          <ul className="adm-notes">
+            {(u.payments ?? []).map((p, i) => (
+              <li key={p.transactionId ?? i}>
+                <span className="adm-note-body">
+                  <b>
+                    {p.amount ?? '—'} {p.currency ?? ''}
+                  </b>{' '}
+                  · {p.kind}
+                  {p.isSubscription ? ' · subscription' : ''}
+                  {p.transactionId ? (
+                    <>
+                      {' · '}
+                      <code className="adm-guest-id">{p.transactionId}</code>
+                      <CopyId id={p.transactionId} label="transaction id" />
+                    </>
+                  ) : (
+                    <span className="ds-muted"> · no transaction id</span>
+                  )}
+                  {p.refundedAt && <span className="adm-pill queued">charged back</span>}
+                </span>
+                <span className="ds-muted">
+                  <When at={p.claimedAt} />
+                </span>
+                {p.transactionId && !p.refundedAt && (
+                  <button
+                    className="ds-btn ghost small"
+                    disabled={busy}
+                    onClick={() => {
+                      if (
+                        !confirmed(
+                          'Flag the payment',
+                          `${p.amount ?? ''} ${p.currency ?? ''} (${p.transactionId})`,
+                          'It is marked charged back. The membership is NOT ended — use Revoke above for that.',
+                        )
+                      )
+                        return;
+                      void act(
+                        async () => (await adminRefundPayment(p.transactionId as string))?.ok === true,
+                        'Payment flagged as charged back.',
+                        'flag the payment',
+                      );
+                    }}
+                  >
+                    Flag refunded
+                  </button>
+                )}
+              </li>
+            ))}
+          </ul>
+        </>
+      )}
+
       {/* WHAT HAS BEEN DONE TO THIS ACCOUNT — the audit log, filtered to them. The Audit tab
           answers "what has this moderator done"; this answers the other direction, which is
           the one an appeal arrives as. */}
@@ -469,6 +732,31 @@ export function AdminUser({
       )}
     </div>
   );
+}
+
+/**
+ * HOW LONG A SUSPENSION HAS LEFT, on the scale a suspension is actually set on.
+ *
+ * ⚠️ NOT `lockRemaining`. That one is the STANDING lock's formatter and its scale is minutes
+ * and hours, because that is what a standing lock is — five minutes for a dodge, thirty for
+ * leaving a match. A suspension is set in DAYS, so it rendered a one-week ban as "168 hours"
+ * and would render the permanent one as "87600 hours". Two different punishments on two
+ * different scales need two formatters; sharing one is how the wrong unit gets shipped.
+ *
+ * The exact end is in the `title`, because "6 days" is what you read a panel with and a date
+ * is what you put in a reply to an appeal.
+ */
+function suspensionLeft(until: number): React.ReactNode {
+  const ms = Math.max(0, until - Date.now());
+  const hours = Math.ceil(ms / 3_600_000);
+  const days = Math.round(ms / 86_400_000);
+  const text =
+    hours <= 48
+      ? `${hours} hour${hours === 1 ? '' : 's'} left`
+      : days < 400
+        ? `${days} day${days === 1 ? '' : 's'} left`
+        : 'effectively permanent';
+  return <span title={new Date(until).toLocaleString()}>{text}</span>;
 }
 
 function Tile({ label, value, sub, tone }: { label: string; value: string; sub?: string; tone?: string }) {

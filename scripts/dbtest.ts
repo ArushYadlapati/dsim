@@ -2899,6 +2899,138 @@ async function main(): Promise<void> {
     check('search: two identically-named rows still page apart', sp1[0].userId !== sp2[0].userId);
     check('search: and the page after the last one is empty', (await repo.searchProfiles('Zzpager', 1, 2)).length === 0);
 
+    /* ---- MODERATION CAPABILITIES (migration 0043 + the reads behind them) --------------
+       The five things a moderator could not do before: suspend an account, take an abusive
+       @username away, see the reports it FILED rather than only a count of them, flag a
+       charged-back payment, and delete the account outright. Every one of them is a moderation
+       surface, and three of the five are the kind whose failure is silent — a suspension that
+       reads as lifted because the deadline passed, a cleared name that the audit row records
+       as `null`, a refund flagged against a transaction nobody could find.
+    */
+    {
+      await repo.ensureProfile('adm-susp', 'Suspendable');
+      await repo.setUsername('adm-susp', 'suspendable');
+
+      // ---- suspension is a DEADLINE, not a flag ------------------------------------
+      check(
+        'suspend: a fresh account is not suspended',
+        (await repo.getSuspension('adm-susp')).until === null,
+      );
+      check(
+        'suspend: an account that does not exist is not suspended either (the gate fails OPEN)',
+        (await repo.getSuspension('nobody-at-all')).until === null,
+      );
+      const set = await repo.setSuspension('adm-susp', Date.now() + 7 * 86_400_000, 'griefing');
+      check('suspend: setting one answers with the stored state', set !== null && set.until !== null);
+      const live = await repo.getSuspension('adm-susp');
+      check('suspend: ...and the door reads it back', live.until !== null && live.reason === 'griefing');
+      check(
+        'suspend: setting one against an id with no profile row answers null, not a silent no-op',
+        (await repo.setSuspension('nobody-at-all', Date.now() + 86_400_000, 'x')) === null,
+      );
+      // ⚠️ AN EXPIRED DEADLINE IS "NOT SUSPENDED". This is the whole reason the column is a
+      // timestamp: a suspension has to end by ARRIVING. A `getSuspension` that answered
+      // "suspended, in the past" would keep somebody out for ever.
+      await repo.setSuspension('adm-susp', Date.now() + 86_400_000, 'temporary');
+      await db.query(`update profiles set suspended_until = now() - interval '1 hour' where user_id = 'adm-susp'`);
+      check(
+        'suspend: an expired deadline reads as not suspended, without anybody lifting it',
+        (await repo.getSuspension('adm-susp')).until === null,
+      );
+      // ...and `setSuspension` refuses to store a deadline in the past rather than writing one
+      // that is already expired, which would read as a suspension nobody can find the end of.
+      const past = await repo.setSuspension('adm-susp', Date.now() - 1000, 'backdated');
+      check('suspend: a past deadline stores as NOT suspended', past !== null && past.until === null);
+
+      await repo.setSuspension('adm-susp', Date.now() + 5 * 86_400_000, 'cheating');
+      const lifted = await repo.setSuspension('adm-susp', null, null);
+      check('suspend: lifting clears the deadline', lifted !== null && lifted.until === null);
+      // the REASON goes with it: a sentence left behind on an account that is no longer
+      // suspended is a line the next moderator reads as current.
+      check('suspend: ...and takes the reason with it', lifted !== null && lifted.reason === null);
+
+      await repo.writeAudit({ adminId: 'adm-mod', action: 'account.suspend', targetUser: 'adm-susp', detail: { days: 7 }, note: 'griefing' });
+      check(
+        'suspend: the action is in the audit log',
+        (await repo.listAudit({ action: 'account.suspend' })).rows[0]?.targetUser === 'adm-susp',
+      );
+
+      // ---- clearing an abusive @username -------------------------------------------
+      const was = await repo.clearUsername('adm-susp');
+      check('username: clearing answers with the name that was taken away', was === 'suspendable');
+      check(
+        'username: ...and the column really is null afterwards',
+        (await repo.getProfile('adm-susp'))?.username == null,
+      );
+      check('username: clearing again answers null rather than pretending', (await repo.clearUsername('adm-susp')) === null);
+      // the freed name is claimable again — by anybody, including them. A unique index that
+      // still held it would make this a permanent seizure rather than a name-policy action.
+      check('username: the freed name is available again', await repo.usernameAvailable('suspendable'));
+      await repo.writeAudit({ adminId: 'adm-mod', action: 'user.username.clear', targetUser: 'adm-susp', detail: { from: was } });
+      check(
+        'username: the OLD name is in the audit row — it is the only remaining evidence',
+        (await repo.listAudit({ action: 'user.username.clear' })).rows[0]?.detail.from === 'suspendable',
+      );
+
+      // ---- the reports an account FILED --------------------------------------------
+      await repo.submitReport({ reportedId: 'adm-target', reporterId: 'adm-susp', reason: 'cheating', roomCode: 'iad-1', detail: 'wallhacks' });
+      await repo.ensureProfile('adm-vanish', 'Will Be Deleted');
+      await repo.submitReport({ reportedId: 'adm-vanish', reporterId: 'adm-susp', reason: 'afk', roomCode: 'iad-2' });
+      const filed = await repo.listReportsBy('adm-susp');
+      check('reports filed: both rows come back, newest first', filed.length === 2);
+      // the SUBJECT's live handle, not a literal: `adm-target` is renamed by the audit block
+      // above, and a test that pins the old name is asserting the order of two blocks.
+      const subjectHandle = (await repo.getProfile('adm-target'))?.handle ?? null;
+      check(
+        'reports filed: each names its SUBJECT, which is the useful name when the filer is known',
+        filed.some((r) => r.subjectId === 'adm-target' && r.subjectHandle === subjectHandle),
+      );
+      await repo.ensureProfile('adm-quiet', 'Never Reported Anyone');
+      check('reports filed: an account that has filed nothing gets an empty list, not an error', (await repo.listReportsBy('adm-quiet')).length === 0);
+      // ⚠️ A REPORT DIES WITH EITHER PARTY, and the filer's history is thinned by deletions
+      // they had nothing to do with. `player_reports` cascades on BOTH `reported_id` and
+      // `reporter_id` (0026), so a moderator reading "9 filed, 4 rejected" is reading what
+      // SURVIVES, not what was filed. Pinned here because the number is used to judge a
+      // person: it is a floor, never a total, and a future migration that softened either
+      // foreign key would change what this panel means without changing a line of its code.
+      // `listReportsBy` left-joins anyway, so the row would render with a null subject rather
+      // than vanish a second time if that ever happens.
+      await repo.deleteAccount('adm-vanish');
+      check(
+        'reports filed: a row is deleted with its SUBJECT — the filed count is a floor, not a total',
+        (await repo.listReportsBy('adm-susp')).length === 1,
+      );
+
+      // ---- Ko-fi payments, and the chargeback flag ---------------------------------
+      await repo.recordKofiPayment({
+        messageId: 'msg-refund-1', kind: 'Donation', email: 'payer@example.test',
+        transactionId: 'txn-refund-1', amount: '5.00', currency: 'USD',
+        isSubscription: false, tierName: null, months: 1,
+      });
+      await db.query(`update kofi_payments set claimed_by = 'adm-susp', claimed_at = now() where message_id = 'msg-refund-1'`);
+      const pays = await repo.listKofiPayments('adm-susp');
+      check('payments: a claimed payment is listed against the account that claimed it', pays.length === 1);
+      check('payments: ...with the TRANSACTION id, which is what the refund route is keyed by', pays[0]?.transactionId === 'txn-refund-1');
+      // ⚠️ THE BUYER'S EMAIL IS NEVER PROJECTED. 0018 stores it to match a claim and says it is
+      // never displayed; the admin console is not an exception to that.
+      check('payments: the buyer email is not in the row', !('email' in (pays[0] ?? {})));
+      check('payments: not yet charged back', pays[0]?.refundedAt === null);
+      check('payments: flagging one takes', await repo.refundKofiPayment('txn-refund-1'));
+      check('payments: ...and shows on the row', (await repo.listKofiPayments('adm-susp'))[0]?.refundedAt !== null);
+      check('payments: flagging it twice answers false rather than re-stamping it', !(await repo.refundKofiPayment('txn-refund-1')));
+
+      // ---- and all of it reaches the one request the panel actually makes -----------
+      await repo.setSuspension('adm-susp', Date.now() + 3 * 86_400_000, 'final warning');
+      const detail = await repo.adminUserDetail('adm-susp');
+      check('user detail: carries the live suspension', detail.suspension.until !== null && detail.suspension.reason === 'final warning');
+      check('user detail: carries the reports filed', detail.reportsFiledList.length === 1);
+      check('user detail: carries the payments', detail.payments.length === 1);
+      check(
+        'user detail: and the reports AGAINST, which the counts alone could not explain',
+        detail.reportsAgainstList.length === (await repo.listReportsFor('adm-susp')).length,
+      );
+    }
+
     // ---- account deletion sweeps the notes, and deliberately NOT the audit -------------
     await repo.deleteAccount('adm-other');
     check('notes: a deleted account takes its notes with it (the FK cascades)', (await repo.listAdminNotes('adm-other')).length === 0);

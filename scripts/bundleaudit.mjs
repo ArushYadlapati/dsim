@@ -52,6 +52,15 @@
  *                player of every game, to be gated at the URL. `GalleryRoute.tsx` `React.lazy`s
  *                it now, so it is its own chunk and this route is where it lands. Matched by
  *                FILENAME, before the content scans — it renders nothing itself.
+ *   admin      — the ADMIN CONSOLE (`Admin-*.js` + the `AdminAnalytics-*.js` it lazily loads).
+ *                One route, reachable by the accounts in `ADMIN_USER_IDS` and nobody else, and
+ *                the fastest-growing thing in this repo: `Admin.tsx` statically pulls in
+ *                `AdminLive`, `AdminReports`, `AdminAudit`, `AdminUser`, `AdminStanding` and
+ *                `adminBits`, all of which were in `main` for every player until `App.tsx`
+ *                `React.lazy`d the console (2026-09-19). Matched by FILENAME, before the
+ *                content scans. ⚠️ THIS BUCKET IS WHY THE SPLIT HOLDS: without a route of its
+ *                own the console's growth would land in `other`, whose near-zero baseline is
+ *                meant to catch a chunk nobody meant to create.
  *   other      — everything else. In practice this is empty: `@dimforge/rapier2d-compat` is a
  *                STATIC import (`src/sim/physicsEngine.ts`), so the 2D physics engine lives
  *                inside `main` already and always has (that is existing, unchanged behavior,
@@ -125,6 +134,12 @@ function routeFor(file, buf) {
   if (/^index-[^/]*\.js$/.test(base)) return 'main';
   if (/^hostWorker-[^/]*\.js$/.test(base)) return 'hostWorker';
   if (/^Gallery-[^/]*\.js$/.test(base)) return 'gallery';
+  // The admin console's chunks, by FILENAME like the three above — Vite names a lazy chunk
+  // after its facade module, so `Admin-*.js` and `AdminAnalytics-*.js` are what it emits, and
+  // neither renders anything a content marker would recognise. Before the content scans,
+  // because the console imports the SEASONS registry and the standing model and a future
+  // marker could otherwise claim it.
+  if (/^Admin[A-Za-z]*-[^/]*\.js$/.test(base)) return 'admin';
   // filename-first for a standalone `.wasm` asset (cheap, and a real one would be named after
   // its source module, e.g. `rapier_wasm3d_bg-<hash>.wasm`), then a content scan for both .js
   // and .wasm alike — content is what actually decided this in the measured build, where the
@@ -245,11 +260,26 @@ const fmtKB = (bytes) => `${(bytes / 1000).toFixed(2)} KB`;
  *               the 3D-world disposal, the shared chassis-collider builder and the context-loss
  *               watcher. Baselines left where they were; the ratchet's tolerance covers them.
  *
+ * ── RE-MEASURED 2026-09-19, the admin console's verification pass ─────────────────────
+ *   main        923.89 KB — −4.06 from 927.95, and −14.70 from the 938.59 the console's own
+ *               commit (9162190) had already pushed it to. `App.tsx` imported `Admin`
+ *               STATICALLY, which pulled `AdminLive`, `AdminReports`, `AdminAudit`,
+ *               `AdminUser`, `AdminStanding`, `adminBits` and `adminCopy` into the chunk every
+ *               player downloads to drive a robot — for a route exactly the accounts in
+ *               `ADMIN_USER_IDS` can open. One `React.lazy` took all of it out, and took the
+ *               moderation features added in the same pass with it.
+ *   admin        25.10 KB — NEW (`Admin-*.js` 17.48 + `AdminAnalytics-*.js` 7.61). Bytes that
+ *               were counted under `main` until this build, plus suspension, username clearing,
+ *               account deletion, the two report lists and the payments panel.
+ *   other         1.66 KB — back to just `settings-*.js`. It had been 9.12 and FAILING since
+ *               9162190, because `AdminAnalytics-*.js` had no route of its own and fell through
+ *               to the bucket whose near-zero baseline exists to catch exactly that.
+ *
  * RECALIBRATE by running `npm run build && npm run bundleaudit` and copying the printed gzip
  * totals in here, the same way `uiaudit.mjs`'s header describes lowering ITS baseline.
  */
 const BASELINE = {
-  main: { gzip: 927.95 * 1000 },
+  main: { gzip: 923.89 * 1000 },
   hostWorker: { gzip: 706.26 * 1000 },
   physics3d: { gzip: 1125.06 * 1000 },
   // 2026-09-19: 199.48 -> 201.44 (+1.96). The owner's render pass made three meshes REAL —
@@ -260,6 +290,9 @@ const BASELINE = {
   scene: { gzip: 201.44 * 1000, budgetCeiling: 250 * 1000 },
   graphics: { gzip: 4.01 * 1000 },
   gallery: { gzip: 7.33 * 1000 },
+  // 2026-09-19: NEW. The whole admin console, lazily loaded by `App.tsx`. See the route note
+  // above and the RE-MEASURED entry below for what moved out of `main` to create it.
+  admin: { gzip: 25.10 * 1000 },
   other: { gzip: 1 * 1000 },
 };
 

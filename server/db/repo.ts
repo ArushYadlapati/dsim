@@ -515,6 +515,34 @@ export async function setUsername(userId: string, username: string): Promise<voi
   }
 }
 
+/**
+ * TAKE AN ABUSIVE @USERNAME AWAY. Returns the one that was cleared, or null if there was none.
+ *
+ * ⚠️ CLEARED, NOT REPLACED, and that is the whole design. `user.rename` forces a clean DISPLAY
+ * name, which is the one a player can change back the moment the moderator looks away — the
+ * @username is the permanent, unique, public one, and nothing in the console could touch it.
+ * A "set the username" control would have a moderator choosing somebody's permanent handle for
+ * them, and would have to answer what happens when the name they pick is taken. Clearing the
+ * column puts the account straight back through `UsernameGate`, which already validates the
+ * format, checks uniqueness and runs the same content moderation the first claim did.
+ *
+ * `username` is nullable and its unique index admits any number of nulls, so this can never
+ * collide. `updated_at` moves with it, as it does on every other write to this row.
+ */
+export async function clearUsername(userId: string): Promise<string | null> {
+  // The CTE captures the OLD name in the statement's own snapshot, so the update and the
+  // read of what it replaced are one statement: the audit row cannot end up saying `null`
+  // because a second moderator cleared it a moment earlier.
+  const rows = await q<{ username: string | null }>(
+    `with old as (select username from profiles where user_id = $1)
+     update profiles set username = null, updated_at = now()
+      where user_id = $1 and username is not null
+      returning (select username from old) as username`,
+    [userId],
+  );
+  return rows.length > 0 ? (rows[0].username ?? null) : null;
+}
+
 /** is a username free to claim? (false if any other user already holds it) */
 export async function usernameAvailable(username: string, forUserId?: string): Promise<boolean> {
   const rows = await q<{ user_id: string }>(`select user_id from profiles where username = $1`, [
@@ -908,6 +936,51 @@ export async function claimKofiPayment(
  * entitlement is a running instant that may also cover other payments, so the
  * admin decides whether to revoke as a separate act.
  */
+/**
+ * The payments one account has CLAIMED — the console's way into `refundKofiPayment`.
+ *
+ * `/api/admin/supporter/refund?txn=` has existed since 0018 and nothing in the console could
+ * reach it, because the panel showed `supporter_grants` (what was granted) and a refund is
+ * keyed by the PAYMENT (what was paid). They are not the same row and one does not carry the
+ * other's id: a grant is months, a payment is a transaction. This is the missing half.
+ *
+ * `claimed_by` is already indexed as a foreign key (0037's sweep), so this is a cheap read on
+ * a panel that runs ten of them at once. The buyer's EMAIL is deliberately not projected — it
+ * is stored to match a claim and never displayed (0018 says so), and the console is not an
+ * exception to that.
+ */
+export interface KofiPaymentRow {
+  transactionId: string | null;
+  kind: string;
+  amount: string | null;
+  currency: string | null;
+  isSubscription: boolean;
+  claimedAt: string | null;
+  refundedAt: string | null;
+}
+
+export async function listKofiPayments(userId: string, limit = 20): Promise<KofiPaymentRow[]> {
+  const rows = await q<{
+    transaction_id: string | null; kind: string; amount: string | null; currency: string | null;
+    is_subscription: boolean; claimed_at: string | null; refunded_at: string | null;
+  }>(
+    `select transaction_id, kind, amount::text as amount, currency, is_subscription,
+            claimed_at, refunded_at
+       from kofi_payments where claimed_by = $1
+      order by created_at desc limit $2`,
+    [userId, Math.min(100, Math.max(1, Math.floor(limit)))],
+  );
+  return rows.map((r) => ({
+    transactionId: r.transaction_id,
+    kind: r.kind,
+    amount: r.amount,
+    currency: r.currency,
+    isSubscription: r.is_subscription,
+    claimedAt: r.claimed_at,
+    refundedAt: r.refunded_at,
+  }));
+}
+
 export async function refundKofiPayment(transactionId: string): Promise<boolean> {
   const rows = await q<{ message_id: string }>(
     `update kofi_payments set refunded_at = now()
@@ -3184,6 +3257,65 @@ export async function listReportsFor(userId: string, limit = 100): Promise<Repor
   }));
 }
 
+/**
+ * Every report this player has FILED — the other direction, and the one the console could
+ * not show.
+ *
+ * ⚠️ A COUNT DOES NOT ANSWER THE QUESTION IT RAISES. The account panel printed "14 filed · 9
+ * rejected" and stopped there, which tells a moderator that something is wrong and nothing
+ * about what: nine rejections spread over a year of honest confusion and nine filed at the
+ * same opponent in one evening are the same two numbers and completely different decisions.
+ * The rows are already in `player_reports` under `reporter_id`, indexed for the queue, so
+ * this is the same shape as `listReportsFor` read from the other column — `subject` naming
+ * the REPORTED player, since that is the useful name on a row whose filer is already known.
+ */
+export interface ReportFiledRow {
+  id: string;
+  reason: string;
+  detail: string | null;
+  roomCode: string;
+  game: string;
+  status: string;
+  createdAt: string;
+  subjectId: string;
+  subjectHandle: string | null;
+  subjectUsername: string | null;
+}
+
+export async function listReportsBy(userId: string, limit = 50): Promise<ReportFiledRow[]> {
+  const rows = await q<{
+    id: string; reason: string; detail: string | null; room_code: string; game: string;
+    status: string; created_at: string; reported_id: string; handle: string | null; username: string | null;
+  }>(
+    // LEFT JOIN, unlike `listReportsFor`'s inner one. ⚠️ It does NOT rescue a row from a
+    // deleted subject — `player_reports.reported_id` cascades (0026), so that row is already
+    // gone and the "filed" count a moderator reads is a FLOOR rather than a total. What the
+    // left join buys is that a subject with no `profiles` row (the lazily-created case
+    // `profileNames` exists for) still appears, instead of silently thinning the history
+    // somebody is being judged on. `npm run dbtest` pins both halves.
+    `select r.id::text as id, r.reason, r.detail, r.room_code, r.game, r.status,
+            r.created_at, r.reported_id, p.handle, p.username
+       from player_reports r
+       left join profiles p on p.user_id = r.reported_id
+      where r.reporter_id = $1
+      order by r.created_at desc
+      limit $2`,
+    [userId, Math.min(200, Math.max(1, Math.floor(limit)))],
+  );
+  return rows.map((x) => ({
+    id: x.id,
+    reason: x.reason,
+    detail: x.detail,
+    roomCode: x.room_code,
+    game: x.game,
+    status: x.status,
+    createdAt: x.created_at,
+    subjectId: x.reported_id,
+    subjectHandle: x.handle,
+    subjectUsername: x.username,
+  }));
+}
+
 /** triage: mark every open report against a player reviewed or dismissed. Per-user rather
  *  than per-report because that is how the queue is actually worked — a moderator judges a
  *  PLAYER after watching their matches, not each complaint in isolation. */
@@ -5354,6 +5486,76 @@ export async function auditActions(): Promise<string[]> {
   return rows.map((r) => r.action);
 }
 
+// ------------------------------------------------------- account suspension ---
+
+/**
+ * SUSPENSION — the one moderation lever the console did not have (migration 0043).
+ *
+ * ⚠️ IT IS A DEADLINE, NOT A FLAG, and `null` means "not suspended". A suspension ends by
+ * ARRIVING rather than by a second human action nothing schedules; see the migration for why
+ * a boolean is the wrong shape. A permanent ban is a far-future date, which reads as a
+ * decision rather than as somebody having forgotten to lift it.
+ *
+ * ⚠️ IT IS NOT STANDING. `standing_events` (0036) is the AUTOMATIC penalty ledger — sized to
+ * heal on its own, read back to the player, and it locks ranked only. This is a human
+ * decision that keeps somebody out of the rooms other people are in, and mixing the two would
+ * mean either a moderator's ban decaying on a timer meant for a rage-quit, or a rage-quit
+ * locking somebody out of the whole service.
+ *
+ * ⚠️ IT IS NOT A PRIVATE NOTE. `reason` is shown to the player at the door, in the
+ * moderator's own words, because "you are suspended" with no sentence after it is the thing
+ * that generates an appeal nobody can answer. Anything they should not read goes in
+ * `admin_notes` and the console says so beside the box.
+ */
+export interface Suspension {
+  /** ms epoch, or null when the account is not suspended */
+  until: number | null;
+  reason: string | null;
+}
+
+const NOT_SUSPENDED: Suspension = { until: null, reason: null };
+
+/** Is this account suspended RIGHT NOW? Read at the room-join and ranked-queue doors, so it
+ *  answers `NOT_SUSPENDED` for an id with no profile row and for an expired deadline — a gate
+ *  whose unknown case refuses goes dark silently (the `emailGateRefusal` rule). */
+export async function getSuspension(userId: string): Promise<Suspension> {
+  if (!dbEnabled) return NOT_SUSPENDED;
+  const rows = await q<{ until: string | null; reason: string | null }>(
+    `select suspended_until as until, suspended_reason as reason
+       from profiles where user_id = $1`,
+    [userId],
+  );
+  const until = rows[0]?.until ? new Date(rows[0].until).getTime() : null;
+  if (!until || !Number.isFinite(until) || until <= Date.now()) return NOT_SUSPENDED;
+  return { until, reason: rows[0]?.reason ?? null };
+}
+
+/**
+ * Suspend until `untilMs`, or LIFT with `null`. Returns the stored state, or `null` when no
+ * such account exists — the route needs to tell "lifted" from "there was nobody to lift".
+ *
+ * Lifting clears the reason with the deadline: a sentence left behind on an account that is
+ * no longer suspended is a line a later moderator reads as current.
+ */
+export async function setSuspension(
+  userId: string,
+  untilMs: number | null,
+  reason: string | null,
+): Promise<Suspension | null> {
+  const until = untilMs != null && Number.isFinite(untilMs) && untilMs > Date.now() ? new Date(untilMs) : null;
+  const rows = await q<{ until: string | null; reason: string | null }>(
+    `update profiles set suspended_until = $2, suspended_reason = $3
+      where user_id = $1
+      returning suspended_until as until, suspended_reason as reason`,
+    [userId, until, until ? (reason ?? '').slice(0, 300) || null : null],
+  );
+  if (rows.length === 0) return null;
+  return {
+    until: rows[0].until ? new Date(rows[0].until).getTime() : null,
+    reason: rows[0].reason,
+  };
+}
+
 // ------------------------------------------------------------ admin notes ---
 
 export interface AdminNoteRow {
@@ -5461,8 +5663,16 @@ export interface AdminUserDetail {
   reportsAgainst: { total: number; open: number; reporters: number };
   reportsFiled: { total: number; rejected: number };
   scoreReportsFiled: { total: number; rejected: number };
+  /** the ROWS behind those two counts — see `listReportsBy` for why a count is not enough */
+  reportsAgainstList: ReportDetailRow[];
+  reportsFiledList: ReportFiledRow[];
+  /** null ⇒ not suspended. A deadline, not a flag — see `getSuspension` */
+  suspension: Suspension;
   notes: AdminNoteRow[];
   grants: SupporterGrantRow[];
+  /** Ko-fi payments this account claimed, so a chargeback can be flagged against the
+   *  transaction it belongs to rather than against the months it bought */
+  payments: KofiPaymentRow[];
   recentMatches: Awaited<ReturnType<typeof userRecentMatches>>;
   records: { recordId: string; game: string; mode: string; drivetrain: string; score: number; replayId: string | null; createdAt: string }[];
   audit: AuditRow[];
@@ -5483,18 +5693,23 @@ export interface AdminUserDetail {
  * precisely the thing an operator needs to be shown rather than protected from.
  */
 export async function adminUserDetail(userId: string): Promise<AdminUserDetail> {
-  const [prof, standings, events, against, filed, scoreFiled, notes, grants, matches, records, audit] =
+  const [
+    prof, standings, events, against, filed, scoreFiled, notes, grants, matches, records, audit,
+    againstList, filedList, payments,
+  ] =
     await Promise.all([
       q<{
         handle: string; username: string | null; role: string | null; supporter: boolean;
         supporter_until: string | null; auto_renews: boolean; replays_public: boolean;
         terms_version: string | null; terms_accepted_at: string | null; created_at: string | null;
+        suspended_until: string | null; suspended_reason: string | null;
       }>(
         `select handle, username, role,
                 (supporter_until is not null and supporter_until > now()) as supporter,
                 supporter_until, (kofi_email is not null) as auto_renews,
                 coalesce(replays_public, false) as replays_public,
-                terms_version, terms_accepted_at, created_at
+                terms_version, terms_accepted_at, created_at,
+                suspended_until, suspended_reason
            from profiles where user_id = $1`,
         [userId],
       ),
@@ -5528,8 +5743,16 @@ export async function adminUserDetail(userId: string): Promise<AdminUserDetail> 
         [userId],
       ),
       listAudit({ targetUser: userId, limit: 25 }),
+      listReportsFor(userId, 50),
+      listReportsBy(userId, 50),
+      listKofiPayments(userId, 20),
     ]);
   const p = prof[0];
+  // read off the row already fetched rather than re-querying: `getSuspension` is the door's
+  // read and this is the panel's, and they must agree about an EXPIRED deadline being "not
+  // suspended" rather than "suspended, in the past".
+  const suspendedUntil = p?.suspended_until ? new Date(p.suspended_until).getTime() : null;
+  const suspended = suspendedUntil != null && Number.isFinite(suspendedUntil) && suspendedUntil > Date.now();
   return {
     userId,
     known: !!p,
@@ -5555,8 +5778,14 @@ export async function adminUserDetail(userId: string): Promise<AdminUserDetail> 
       total: Number(scoreFiled[0]?.total ?? 0),
       rejected: Number(scoreFiled[0]?.rejected ?? 0),
     },
+    reportsAgainstList: againstList,
+    reportsFiledList: filedList,
+    suspension: suspended
+      ? { until: suspendedUntil, reason: p?.suspended_reason ?? null }
+      : { until: null, reason: null },
     notes,
     grants,
+    payments,
     recentMatches: matches,
     records: records.map((r) => ({
       recordId: r.id,

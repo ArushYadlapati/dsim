@@ -1549,6 +1549,52 @@ export async function adminRenameUser(userId: string, handle: string): Promise<s
   return data.handle ?? null;
 }
 
+/**
+ * Take an abusive @username away. Returns the one that was cleared, `''` when there was none.
+ *
+ * CLEARED, NOT REPLACED — the account goes back through the username gate, which already
+ * validates format, uniqueness and content. `adminRenameUser` above is the DISPLAY name, which
+ * its owner can change straight back; this is the permanent public one, which they cannot.
+ */
+export async function adminClearUsername(
+  userId: string,
+  note = '',
+): Promise<{ cleared: string | null } | null> {
+  return adminPost('/api/admin/user/username', { userId, note });
+}
+
+/** the shape both suspension calls answer with. `until` is ms epoch, null ⇒ not suspended. */
+export interface AdminSuspension {
+  until: number | null;
+  reason: string | null;
+}
+
+/**
+ * Suspend an account from online play for `days`, or lift it.
+ *
+ * The reason IS SHOWN TO THE PLAYER at the door — anything they should not read belongs in a
+ * private note instead.
+ */
+export function adminSuspendUser(
+  userId: string,
+  days: number,
+  reason: string,
+): Promise<{ suspension: AdminSuspension } | null> {
+  return adminPost('/api/admin/user/suspend', { userId, days: String(days), reason });
+}
+
+export function adminLiftSuspension(
+  userId: string,
+  reason = '',
+): Promise<{ suspension: AdminSuspension } | null> {
+  return adminPost('/api/admin/user/suspend', { userId, lift: '1', reason });
+}
+
+/** delete an account and everything it owns. Terminal; the audit row outlives it. */
+export function adminDeleteUser(userId: string, note = ''): Promise<{ ok: boolean } | null> {
+  return adminPost('/api/admin/user/delete', { userId, note });
+}
+
 // ---- friends ---------------------------------------------------------------
 
 /** a friend's presence, as resolved BY THE SERVER. `online` already accounts for
@@ -2033,6 +2079,43 @@ export interface AdminNote {
 }
 
 /** everything the console knows about one account, in one request */
+/** one report filed AGAINST the open account */
+export interface AdminReportRow {
+  id: string;
+  reason: string;
+  detail: string | null;
+  roomCode: string;
+  game: string;
+  status: string;
+  createdAt: string;
+  reporterHandle: string;
+  reporterUsername: string | null;
+}
+
+/** one report the open account FILED — the direction a bare "9 rejected" cannot explain */
+export interface AdminReportFiledRow {
+  id: string;
+  reason: string;
+  detail: string | null;
+  roomCode: string;
+  game: string;
+  status: string;
+  createdAt: string;
+  subjectId: string;
+  subjectHandle: string | null;
+  subjectUsername: string | null;
+}
+
+export interface AdminKofiPayment {
+  transactionId: string | null;
+  kind: string;
+  amount: string | null;
+  currency: string | null;
+  isSubscription: boolean;
+  claimedAt: string | null;
+  refundedAt: string | null;
+}
+
 export interface AdminUserDetail {
   userId: string;
   /** false ⇒ there is no `profiles` row for this id — see `AdminPresencePlayer.known` */
@@ -2052,8 +2135,16 @@ export interface AdminUserDetail {
   reportsAgainst: { total: number; open: number; reporters: number };
   reportsFiled: { total: number; rejected: number };
   scoreReportsFiled: { total: number; rejected: number };
+  /** the rows behind those counts. OPTIONAL: one Fly app serves every client version, so a
+   *  console loaded from a newer deploy may be talking to a server that does not send them. */
+  reportsAgainstList?: AdminReportRow[];
+  reportsFiledList?: AdminReportFiledRow[];
+  /** `until: null` ⇒ not suspended. Absent on an older server. */
+  suspension?: AdminSuspension;
   notes: AdminNote[];
   grants: SupporterGrantRow[];
+  /** Ko-fi payments this account claimed — the rows `adminRefundPayment` acts on */
+  payments?: AdminKofiPayment[];
   recentMatches: ModMatch[];
   records: {
     recordId: string;

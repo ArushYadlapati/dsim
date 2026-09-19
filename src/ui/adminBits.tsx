@@ -170,6 +170,14 @@ export function CopyId({ id, label }: { id: string; label?: string }) {
  *    Their display name is perfectly good and goes on the row; the missing @ is a footnote.
  *  - `known` absent entirely — an older server that does not send the field. Then a missing
  *    handle means "not looked up", which is not something to assert anything about.
+ *
+ * ⚠️ `username` HAS THE SAME THREE STATES AS `handle`, AND MISSING ONE OF THEM IS THE SAME BUG
+ * ONE LEVEL DOWN. `null` is "this account has never claimed one" and is worth saying;
+ * `undefined` is "the row this came from does not carry the column", which is not. They were
+ * both rendered as "no username yet", so the Moderation tab's record list — whose rows are
+ * `AdminRecordRow`, which projects a handle and no username — printed it beside every name on
+ * the board, including accounts whose username is on the public leaderboard two clicks away.
+ * A label that is FALSE for most of the rows it appears on is worse than no label.
  */
 export function AccountName({
   userId,
@@ -193,11 +201,11 @@ export function AccountName({
       <span className="adm-name">{name}</span>
       {username ? (
         <span className="ds-muted"> @{username}</span>
-      ) : (
+      ) : username === null ? (
         <span className="adm-nouser" title="This account has never claimed a username">
           no username yet
         </span>
-      )}
+      ) : null}
     </>
   ) : known === false ? (
     <>

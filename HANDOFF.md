@@ -1,7 +1,186 @@
+# HANDOFF — 2026-09-19b (alpha: THE OWNER'S 25-ITEM PASS, RECOVERED FROM A HALTED SESSION AND FINISHED)
+
+**READ FIRST.** A previous session ran out of usage mid-pass over the owner's 25-item list and
+left its whole tree UNCOMMITTED in `.claude/worktrees/shooter-simulation-fixes-c916ec` — ~70 files,
+7.7k insertions, never committed and never gated. That work is now commit `9162190` (checkpoint,
+verbatim) plus the lanes below. **All 25 items are closed.** Every gate is green.
+
+## Where the work actually was (the archaeology, so nobody repeats it)
+
+Ten worktrees exist. Only ONE held live work:
+
+| worktree | state |
+|---|---|
+| `shooter-simulation-fixes-c916ec` | **the live one** — ~70 files uncommitted at `4a48038`, the tip of every other branch's lineage. Now `9162190`. |
+| `alpha-main-divergence-7a6134` | 60 files uncommitted at `56e5836`, superseded — its `shotPath.ts` / `drawShot.ts` / `Results.tsx` are committed in `9b4478a`, an ancestor of `4a48038`. |
+| `nice-morse-09b59a` | clean, same commit as the live one. |
+| `alpha-ui` | 5 files uncommitted, last commit 2026-09-12. Long superseded. |
+| `main-deploy` | ⚠️ leftover UNMERGED index entries from an aborted operation (no `MERGE_HEAD`), local `main` 62 commits behind `origin/main`. Its staged work (`src/net/stagedMatch.ts`, `src/ui/copyText.ts`) is already in `origin/main`, so the leftovers are discardable — NOT discarded here, because that worktree holds production's branch. |
+| `biobuzz-3d`, `biobuzz-3d-worktree-*`, `pr-alpha` | clean, all ancestors. |
+
+`origin/alpha` was already at `4a48038` — so the alpha BRANCH was never behind. Item 9's complaint
+was about the deployed `dsim-alpha` machine, not about code.
+
+## The checkpoint (`9162190`) — what the halted session had already finished
+
+Items 1, 3, 4, 5, 6, 7, 8, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 24, 25. Audited
+item-by-item against the diff rather than taken on trust, and the claims hold: each carries a
+measurement or a regression check, not a renamed constant. The load-bearing ones:
+
+- **Item 1, the shooter** (five previous passes rejected). `bbHeadDims(elemR)` in `config.ts` is the
+  whole dimension chain: motor at θ = 180°, dead behind the wheel and outboard of the hood's swept
+  disc (a); `axleX = pathR`, so the element pinches on the rotation axis it came up (b); the back
+  flap is now `bb-turret-throat`, the channel's rear wall and the rear tie (c); `BB_HEAD_POLLEN` vs
+  `BB_HEAD_NECTAR` are genuinely different heads — 9.635 in muzzle against 10.035 (d). The RENDER
+  lane proves the motor can's front face is behind the hood's rear-most point over the WHOLE pitch
+  sweep, rather than asserting an angle.
+- **Items 6 and 12, the tape.** The manual (p65) says 1-in or 2-in ProGaff; `docs/biobuzz/manual-distilled.md:510`
+  shows the 2-in zones drawn as two 1-in strips, which is why `BB_TAPE` is 16 measured 1.000-in
+  strips and `BB_TAPE_2` is gone. No centre cross exists on the real field — the HIVE structure is
+  what stands at the centre — so the fake 8-in white cross was removed. **`BB_TAPE_W` is not a line
+  width**: every mark is a filled rectangle.
+- **Items 11 and 13.** Gated on `quality === 'high'`. The AprilTag check decodes `apriltag36h11Cells`
+  against the real `tag36h11.c` payloads for ids 30 and 45 — it is not a picture of a tag.
+- **Item 21.** The restitution combine rule was picking Min, so a 30-in drop rebounded 0.9 in once.
+  Measured now over eight elements: 1–4 bounces, up to 12.7 in of rebound, ~38 in of scatter.
+
+## What this session added
+
+- **Item 2 — the swerve pod's check was wrong, not its renderer.** `podParts()` merges the fork
+  plates, the TOP PLATE and the kingpin into one unnamed `swervePod:struct` geometry, and the check
+  took the union bbox of every unnamed mesh — so it picked up the 3.2-in top plate sitting at
+  z 3.60–3.90, clear above the wheel's 3.00 crown, and called the 2.1-in fork "3.20 long over a 2.92
+  tyre". Both checks now walk the struct's own world-space triangles, keep what reaches the crown or
+  below, and RASTERISE the silhouette onto the tyre's bounding square on a 200×200 grid: **74% left
+  clear against a 55% floor**. ⚠️ The companion "fork length" metric reads 0.90, not ~1.76, because
+  three.js's `CurvePath.getPoints` does not subdivide straight `LineCurve` segments — the only
+  below-crown VERTICES are the boss arc's. The rasterised coverage is the real assertion; the length
+  metric is a weaker sanity bound than it looks.
+- **Item 23 — the replay export camera.** It was `useState<SceneCamera>('driver')`, a literal. The
+  live camera is not scene state: it is the device preference in `graphics/store.ts` that the scene
+  reads at construction and writes when `c` cycles it. `openMenu()` now seeds the default through
+  the same `resolveSceneCamera(interactive, hostPick, pref)` the render loop resolves with, so there
+  is no second copy of the cycling logic. `exportView` was already seeded this way; no other export
+  default carried the bug.
+- **Item 9 — nothing to fix.** `eaf5a71` is in `origin/alpha`. Redeploy `dsim-alpha`.
+
+## Gotchas found while verifying at the surface
+
+- ⚠️ **The perf HUD needs 30 frames before it draws anything** (`getPerfStats` returns null under
+  `frames.count < 30`). In an automated browser the Browser pane only paints when a screenshot forces
+  one, so the card looks BROKEN at every level until ~30 forced paints have gone by — and then the
+  frame times read 100007 ms, which is the harness, not the game. This cost a false bug report here;
+  do not file it again. Same root cause as the `world.tick` note in `docs/area/biobuzz.md`.
+- `GraphicsSettings.perfOverlay` is deliberately INERT — `GameSettings.perfDisplay` is the one
+  setting, and it is four levels (`off` / `simple` / `detailed` / `graphs`), not a boolean. There is
+  no UI control bound to `perfOverlay`; do not add one back.
+
+## The admin console (items 24 and 25) — verified at the surface, and it was broken at the door
+
+The checkpoint's admin work compiled and passed `dbtest`, but nobody had ever WATCHED it run. Driven
+through `scratch/admin/boot.ts` (the real `server/index.ts` on PGlite with a local JWKS) it turned
+out the front door did not work at all:
+
+- ⚠️ **`/admin#tab=users&user=…` ALWAYS OPENED ON LIVE.** `App.tsx` canonicalizes `/admin` →
+  `/decode/admin` with `replaceState(canonical)`, and `pathFor` emits no fragment — so the hash was
+  destroyed before `Admin` mounted. Every tab link, every account link pasted between moderators,
+  and the whole `#tab=`/`#user=` design added in `9162190` had never worked once. `replaceState`
+  now carries `location.hash`; the QUERY is still stripped, which is what that call is for
+  (`?token=`).
+- ⚠️ **`bundleaudit` HAD BEEN RED SINCE `9162190`** — `other` 9.12 KB against a 1.00 baseline, and
+  `main` grown to 938.59 KB, because `App.tsx` imported `Admin` STATICALLY and dragged six panels
+  into the chunk every player downloads. `lazy(() => import('./Admin'))` puts it behind its own
+  route: **main 938.59 → 923.89 KB**, `other` 1.66, a new `admin` route at 25.21. The static import
+  predated the checkpoint; what made it fail was the checkpoint's ~1000 new lines behind it.
+- **The 30d and 90d analytics ranges rendered a dashboard of zeros.** `from` is computed in the
+  browser and floored on the server, so the 30-day preset was ALWAYS microseconds past the
+  raw-retention boundary and fell through to `analytics_daily`, which is empty on a service younger
+  than the range. A 1-hour boundary grace fixes it (series 0 → 186 points), and an empty aggregate
+  tier now says so instead of printing zeros under "read from the daily rollups".
+- Four smaller ones: `ds-btn ghost smallall danger` (`smallall` is declared nowhere, so two
+  destructive buttons rendered full-size — same bug class as `--ds-font`), a keyless fragment in
+  `EventsPanel`, `AccountName` printing "no username yet" beside accounts that HAVE one (it treated
+  an unprojected `undefined` as a never-claimed `null` — the same three-state bug as `(no profile)`,
+  one level down), a 7-day suspension reading "168 hours", and Refresh disabled exactly when the
+  report queue is empty.
+
+All 7 tabs render, 22 read routes return 200, and all 18 mutating routes round-trip AND write an
+audit row — verified by diffing `listAudit` across every call, not by reading the code.
+
+**Five moderation gaps closed** (migration `0043`): suspend/lift (a DEADLINE, not a flag, so it ends
+by arriving; enforced at BOTH `join` and the ranked `queue`, read from the DB rather than a cache
+because it matters most one second after the button); clear an abusive @username (CLEARED, so the
+account re-runs `UsernameGate` and no moderator picks somebody's permanent name); delete an account
+(the player's own tested cascade, refused for a staff id because `syncStaffRoles` would resurrect
+it, audit row written BEFORE the delete since afterwards there is no profile row to join); reports
+filed AND received on the account panel; and flagging a Ko-fi payment charged back (it does not
+revoke — that stays a second decision). ⚠️ `player_reports` cascades on BOTH parties, so the "filed"
+count a moderator judges somebody on is a FLOOR, not a total.
+
+**Deliberately not done: kicking a live session.** Sockets live on the machine serving the request
+and one Fly app runs several regions, so a kick from the console would silently miss sessions
+elsewhere. The suspension is the cross-region lever; a real kick needs a cross-machine signal.
+Also left: events on an aggregate range still read the raw tier (labelled in the banner);
+`adminSupporterHistory` in `src/net/api.ts` is now a dead client function.
+
+## Design pass on three left-border accents (the `impeccable` hook, owner asked for a real fix)
+
+The hook flags `border-left: Npx solid <colour>` on a card as the side-tab tell. All three sites
+predate this work. The test applied was **does the colour carry anything a reader who cannot see it
+would lose** — and it split them three ways:
+
+- **`.eventlog-line`** — carried NOTHING. Identical accent on every line whatever the event was.
+  Removed; the 1px full edge was always what separated it from the letterbox.
+- **`.ann-item`** — carried nothing EITHER, and the comment that defended it was wrong.
+  `Announcements.tsx` renders `<KindBadge kind={a.kind} />` at the top of every item, so the edge
+  restated in colour what the header already says in words. Removed, with `.ann-item.season` and
+  `.ann-item.act` (which existed only to recolour it).
+- **`.intro-card`** — the ONLY one that had to keep its colour. Nothing else in that card says red
+  or blue: it prints a team number, a name, a team name, a drivetrain and an ELO. So the SHAPE
+  changed instead — 1px frame + 4px left slab became a 2px border all round, and `.red`/`.blue`
+  set `border-color` rather than `border-left-color`. Symmetric weight is not a side-tab, and it
+  reads better over the intro's dark scrim. `box-sizing` is border-box globally, so it moves no
+  layout — `shiftaudit` agrees (576 state changes, 0 shifts).
+
+⚠️ **The hook also reports ~31 `design-system-color` / `-radius` / `-font` findings in
+`src/ui/styles.css` that are PRE-EXISTING palette drift**, untouched by any of this work. They are
+not addressed here — that is a separate, whole-file pass, and mixing it into this one would bury
+the 25 items in unrelated churn.
+
+## The admin harness is real tooling now, not scratch
+
+`scratch/admin/boot.ts` (gitignored) is promoted to **`scripts/adminharness.ts`** / `npm run
+adminharness`, and `.claude/launch.json` gains an `admin-harness` entry on port 5189 plus
+`"autoPort": false` on `dev` (the owner wants `dev` pinned to 5173). The reason is the trap: the
+admin console is the one surface with no automated UI coverage, the harness is how you verify it,
+and a launch config pointing at a gitignored file is a dead end on a fresh clone. It touches no
+real database and no Fly machine — PGlite in memory, a local JWKS, bound to localhost, gone when
+the process is. Same `setPoolForTests` seam `scripts/dbtest.ts` already uses.
+
+⚠️ **It binds 8798/8799 and the client wants 5189.** A harness left running from a previous session
+will silently answer your `curl` and make a FAILED boot look green — that happened here. Kill the
+old PID before trusting a health check.
+
+## Gates on the merged tree
+
+`npm test` **shared PASS + biobuzz PASS** (2713 checks) · `build` exit 0 · `server:check` exit 0 ·
+`dbtest` ALL PASS · `test:mm` 197 · `contrast` ALL PASS (221) · `uiaudit` at/under baseline ·
+`uiindex` 251 classes, 0 unreferenced · `docaudit` ALL PASS · `bundleaudit` ALL ROUTES AT/UNDER
+(main 923.89, admin 25.21, other 1.66) · `shiftaudit` **576 state changes, 0 layout shifts**.
+
+## Next steps
+
+1. Merge to `alpha`, push, and **redeploy `dsim-alpha`** — that is item 9, and the server moved
+   (analytics, admin routes, suspension enforcement at `join`/`queue`, migrations 0041–0043).
+2. Production (`main`, `dohun-sim-decode`) is untouched; promotion is the owner's call.
+3. `main-deploy`'s stale unmerged entries are still sitting there — see the table at the top.
+
+---
+
 # HANDOFF — 2026-09-19 (alpha: THE SHOOTER REBUILT — hood-only elevation, a 72 mm flywheel on a
 turret plate, and the sim's release following the hood lip)
 
-**READ FIRST.** The sixth pass at this one mechanism, and the first that changed the machine rather
+**(Previously READ FIRST.)** The sixth pass at this one mechanism, and the first that changed the machine rather
 than a constant. Gates: `npm test` (**2538** — shared and BIOBUZZ both green) · `build` ·
 `server:check` · `docaudit` · `uiaudit` · `contrast` (221) · `test:mm` (197) · `bundleaudit`
 (scene 201.81 against a 201.44 baseline, inside the 4 KB tolerance and the 250 ceiling) ·

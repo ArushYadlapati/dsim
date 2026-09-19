@@ -968,10 +968,12 @@ button {
 
 .eventlog-line {
   background: var(--ds-hud-soft);
-  /* the log sits in the left letterbox (the themed floor, not the field) — it needs a
-     full edge, not just the accent bar, to separate from it */
+  /* the log sits in the left letterbox (the themed floor, not the field), so it needs a full
+     edge to separate from it. It carried an accent bar down the left as well, IDENTICAL on
+     every line whatever the event was — so it marked nothing and was decoration on a read-out
+     four lines long. The full edge was always what did the separating; the bar only made each
+     line read as a callout. */
   border: 1px solid var(--ds-hud-line);
-  border-left: 2px solid var(--ds-accent);
   border-radius: var(--ds-round-sm);
   padding: 2px 8px;
   font-family: var(--ds-font-mono);
@@ -1701,11 +1703,18 @@ p.resx-standing {
   color: var(--ds-on-field-dim);
   animation: intro-drop 0.5s ease-out 0.1s both;
 }
+/* ⚠️ THE ALLIANCE IS THE WHOLE BORDER, NOT A LEFT SLAB. This is the one of the three side-tabs
+   that had to KEEP its colour: nothing else in the card says red or blue — it prints a team
+   number, a name, a team name, a drivetrain and an ELO — so unlike the event log (no meaning at
+   all) and the announcement item (a `KindBadge` already says it in words), the edge is the only
+   carrier. What changed is the SHAPE: a 4px left edge over a 1px frame is the side-tab look, and
+   the same colour around all four sides says "this is a red card" more plainly and at a weight
+   that holds up over the intro's dark scrim. box-sizing is border-box globally, so 1px → 2px
+   moves no layout — checked against `shiftaudit`'s fixed-width assumption for this card. */
 .intro-card {
   width: 230px;
   background: var(--panel);
-  border: 1px solid var(--ds-hud-line);
-  border-left: 4px solid var(--ds-hud-line);
+  border: 2px solid var(--ds-hud-line);
   border-radius: var(--ds-round-md);
   padding: 12px 14px;
   text-align: left;
@@ -1716,10 +1725,10 @@ p.resx-standing {
   animation-name: intro-slide-r;
 }
 .intro-card.red {
-  border-left-color: var(--red);
+  border-color: var(--red);
 }
 .intro-card.blue {
-  border-left-color: var(--blue);
+  border-color: var(--blue);
 }
 .intro-card.you {
   box-shadow: 0 0 0 1px var(--amber) inset;
@@ -2930,18 +2939,17 @@ input.admin-months {
   overflow-y: auto;
   padding-right: 4px;
 }
-/* the left edge CARRIES the announcement's kind (season vs act, see the two rules below), so
-   it stays — but at the same 2px the event log uses for the same idiom rather than the 4px
-   slab it was, which reads as decoration rather than as a category marker */
+/* ⚠️ THE KIND IS THE BADGE, AND IT ALWAYS WAS. The comment that stood here said the left edge
+   "carries the announcement's kind" and kept it on that ground — but `Announcements.tsx` renders
+   a `<KindBadge kind={a.kind} />` at the top of every item, so the edge restated in colour what
+   the header already says in words. A reader who cannot tell amber from teal lost nothing by it,
+   which is the test that settles whether a colour is carrying meaning or decorating. */
 .ann-item {
   border: 1px solid var(--ds-line);
-  border-left: 2px solid var(--ds-accent);
   border-radius: var(--ds-round-md);
   background: var(--ds-tile);
   padding: 12px 16px;
 }
-.ann-item.season { border-left-color: var(--ds-warn); }
-.ann-item.act { border-left-color: var(--ds-accent); }
 .ann-item-head {
   display: flex;
   align-items: center;

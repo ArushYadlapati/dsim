@@ -597,7 +597,7 @@ export function Admin({
                   <strong>{a.title}</strong>
                   <span className="ds-hint"> · {new Date(a.publishedAt).toLocaleDateString()}</span>
                 </span>
-                <button className="ds-btn ghost smallall danger" disabled={annBusy} onClick={() => retireAnnouncement(a)}>
+                <button className="ds-btn ghost small danger" disabled={annBusy} onClick={() => retireAnnouncement(a)}>
                   RETIRE
                 </button>
               </div>
@@ -706,7 +706,7 @@ export function Admin({
                 <button className="ds-btn ghost small" disabled={recBusy} onClick={() => deleteRecord(r)}>
                   DELETE
                 </button>
-                <button className="ds-btn ghost smallall danger" disabled={recBusy} onClick={() => clearUser(r)}>
+                <button className="ds-btn ghost small danger" disabled={recBusy} onClick={() => clearUser(r)}>
                   CLEAR ALL
                 </button>
               </div>

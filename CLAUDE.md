@@ -40,7 +40,7 @@ mostly of the form "the obvious thing is wrong, and here is the measurement that
 |---|---|---|
 | `src/sim/**` · `src/config.ts` · `src/math.ts` · `src/types.ts` | [docs/area/physics.md](docs/area/physics.md) | 7.2k |
 | `server/**` · `src/net/**` · `src/game.ts` · replays | [docs/area/netcode.md](docs/area/netcode.md) | 6.8k |
-| `server/db/**` · ranked · matchmaking · standing · admin | [docs/area/accounts.md](docs/area/accounts.md) | 2.4k |
+| `server/db/**` · ranked · matchmaking · standing · admin | [docs/area/accounts.md](docs/area/accounts.md) | 7.0k |
 | `src/ui/**` · `src/input/**` · `src/render/**` · `src/tutorial/**` · **strings** | [docs/area/ui.md](docs/area/ui.md) | 3.1k |
 | DECODE rules — `src/sim/goal.ts`, `penalties.ts`, `field.ts`, `src/games/decode/**` | [docs/area/decode.md](docs/area/decode.md) | 10.6k |
 | `src/games/chain/**` | [docs/area/chain.md](docs/area/chain.md) | 4.5k |

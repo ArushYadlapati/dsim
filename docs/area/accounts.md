@@ -39,10 +39,24 @@ the server enforces every action independently). **VERSION GATE**: a new build i
 
 ### The admin console's own rules
 
-Six tabs — Live, Users, Moderation, Content, Server, Audit — and the order is the order of an
-incident. **APPEND a new tab, never reorder.** Tab + open account live in the URL HASH
-(`#tab=users&user=<id>`), not the path or the query: `App.tsx` owns routing and
+Seven tabs — Live, Users, Moderation, Content, Server, Audit, Analytics — and the order is the
+order of an incident. **APPEND a new tab, never reorder.** Tab + open account live in the URL
+HASH (`#tab=users&user=<id>`), not the path or the query: `App.tsx` owns routing and
 canonicalizes `pathname + search` on mount, so anything put there is stripped.
+
+- ⚠️ **THE CANONICALIZE MUST CARRY THE HASH FORWARD** (`App.tsx`, `replaceState(canonical +
+  location.hash)`). "The hash is ignored by all of it" was the design and was NOT true:
+  `pathFor` emits neither a query nor a hash, so replacing the URL with it alone DELETED the
+  fragment. The unprefixed `/admin` canonicalizes to `/decode/admin`, which is never equal, so
+  every pasted console link was rewritten to a bare path before `Admin` mounted and opened on
+  Live — the one thing the hash exists for. The QUERY still goes; `?token=` is captured at
+  module load and must not survive.
+- ⚠️ **THE WHOLE CONSOLE IS A LAZY CHUNK.** `App.tsx` `React.lazy`s `Admin`, which is the only
+  boundary between this graph and the bundle a player downloads to drive a robot — `Admin.tsx`
+  statically imports `AdminLive`, `AdminReports`, `AdminAudit`, `AdminUser`, `AdminStanding`
+  and `adminBits`, so an eager import put all of them in `main` for everyone. `npm run
+  bundleaudit` has an `admin` route so the console's growth is measured where it lands instead
+  of falling into `other`, whose near-zero baseline means something else.
 
 - ⚠️ **"(no profile)" WAS THREE DIFFERENT SITUATIONS WEARING ONE LABEL, and it is now one
   function** — `AccountName` (`src/ui/adminBits.tsx`), fed by `profileNames` in repo.ts. The
@@ -66,6 +80,33 @@ canonicalizes `pathname + search` on mount, so anything put there is stripped.
   construction, and the `secret` actor is the `ADMIN_SECRET` deploy-script path, not a person.
 - **`admin_notes`** is a moderator's private note on an account. It could not go in
   `standing_events`, which is read BACK to the player (0036).
+- **SUSPENSION (`profiles.suspended_until` / `suspended_reason`, migration 0043) IS THE ONLY
+  LEVER THAT STOPS SOMEBODY PLAYING.** Everything else stops short: a forced rename takes a
+  word off them, clearing their records takes the scores off the boards, and a standing charge
+  locks RANKED only — by design, since it is the automatic penalty for leaving matches and is
+  sized to heal on its own. **It is a DEADLINE, not a flag**, so a temporary suspension ends by
+  ARRIVING rather than by a second human action nothing schedules; a permanent ban is a
+  far-future date, which reads as a decision instead of an omission. `null` and an EXPIRED date
+  both mean "not suspended" (`getSuspension`), and the gate fails OPEN for an unknown id, the
+  same rule `emailGateRefusal` states. Enforced at TWO doors in `server/index.ts` — the room
+  `join` and the ranked `queue` — with **no staged-room exemption**, unlike maintenance: the
+  custom rooms are the point of it. The join door reads the database rather than a cache
+  (maintenance is cached, deliberately) because the moment it matters most is the moment after
+  a moderator presses the button. **The `reason` IS SHOWN TO THE PLAYER** at the door, so it is
+  not the place for a private note — that is `admin_notes`, and the console says so beside the
+  box. Format it with `suspensionLeft`, never `lockRemaining`: that one is the standing lock's
+  minutes-and-hours scale and rendered a one-week ban as "168 hours".
+- **The other four things a moderator can now do**, all on the account panel, all audited:
+  **clear an abusive @username** (`clearUsername` — CLEARED, not set, so the account goes back
+  through `UsernameGate` and the moderator is not choosing somebody's permanent public name);
+  **delete an account** (the same `deleteAccount` the player's own button calls, refused for a
+  staff id because `syncStaffRoles` would re-create the row at the next boot; the audit row is
+  written BEFORE the delete, since afterwards there is no `profiles` row for the log's join to
+  name); **read the reports it filed and received** (`listReportsBy` — ⚠️ `player_reports`
+  cascades on BOTH parties, so a "filed" count is a FLOOR, not a total); and **flag a Ko-fi
+  payment charged back** (`listKofiPayments` — the refund route is keyed by the TRANSACTION and
+  the panel only ever showed GRANTS, which is why it had no caller at all; flagging does not
+  revoke, which stays a second decision).
 - **`GET /api/admin/user?id=` is the one read behind the user detail** — nine bounded queries
   in parallel. It answers for an id with NO profile row (`known: false`) rather than 404ing:
   that is the state somebody is looking at when they arrive from a session that said it was
