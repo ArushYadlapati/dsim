@@ -100,6 +100,12 @@ export const PRACTICE_RUNS_KEY = 'decodesim.practice.v1';
 export const LAN_RUNS_KEY = 'decodesim.lanruns.v1';
 /** the "verify your email" banner, dismissed for this tab only */
 export const VERIFY_BANNER_KEY = 'decodesim.verifyBanner.v1';
+/**
+ * the Discord Activity instance this tab was launched into. Written ONLY inside an activity
+ * embed; the launch URL carries it once and the router drops it, so a reload would otherwise
+ * lose the party (`net/discordActivity.ts`)
+ */
+export const DISCORD_INSTANCE_KEY = 'decodesim.discordInstance.v1';
 
 /**
  * THE INVENTORY, in the order the privacy page prints it: `necessary` first (the ones you
@@ -117,6 +123,14 @@ export const STORAGE_KEYS: readonly StorageKeyEntry[] = [
     purpose:
       'The room code of the multiplayer match this browser is in, so closing the tab by accident and reopening it rejoins the match instead of abandoning your alliance.',
     retention: 'Removed when the match ends or you leave it.',
+  },
+  {
+    key: DISCORD_INSTANCE_KEY,
+    storage: 'session',
+    category: 'necessary',
+    purpose:
+      'The Discord activity this tab was launched into, so a reload inside the activity still finds the same party. Only written when DSIM runs as a Discord Activity.',
+    retention: 'Ends with this browser tab.',
   },
   {
     key: LAN_RUNS_KEY,

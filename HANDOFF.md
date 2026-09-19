@@ -1,3 +1,41 @@
+# HANDOFF — 2026-09-19 (branch `discord-activity`: alpha re-merged, PR #41 conflict-free)
+
+**READ FIRST if you are on `discord-activity`.** `origin/alpha` @ `d64cf19` (the owner's 25-item
+pass, the shooter rebuild, the pre-publish audit, the admin console gone lazy) is merged; PR #41
+into alpha was CONFLICTING on GitHub and is not now. Four conflicts, all resolved on alpha's
+structure:
+- `src/ui/App.tsx` — only the React import line: alpha's `Suspense`/`lazy` (the admin console)
+  plus this branch's `useMemo` (the deterministic main-lobby code).
+- `scripts/bundleaudit.mjs` — both route additions kept (`discord` beside alpha's `gallery` and
+  `admin`); the baselines are alpha's numbers plus the `discord` entry, then `main` RE-MEASURED
+  at 927.11 with the split taken against a clean `origin/alpha` build (924.97): +2.14 is the
+  activity, +1.08 is alpha's own tip. `hostWorker`/`physics3d`/`scene` are identical to clean
+  alpha to 0.05 KB and are left at alpha's baselines for alpha to re-measure.
+- `docs/ui-components.md` — GENERATED; `npm run uiindex` once the CSS had auto-merged.
+- `HANDOFF.md` — alpha's sections stacked above this branch's 09-18 one.
+
+**Post-merge fix alpha's new rule demanded.** The storage-key registry (`feat/privacy-cookies`)
+forbids a file touching `sessionStorage` without importing its key from `src/storageKeys.ts`, and
+`discordActivity.ts` held its own `dsim.discord.instance` literal. It is `DISCORD_INSTANCE_KEY`
+(`decodesim.discordInstance.v1`, session, necessary) now, published on the Your-data table like
+every other key. The old key was session-scoped, so nothing migrates and nothing is orphaned.
+
+- **Green:** `build`, `server:check`, `test:mm` (197), `uiaudit`, `contrast` (223), `bundleaudit`,
+  `docaudit`, and `scripts/smoke.ts` ALL PASS. The biobuzz suite is 2712/2713, and the ONE
+  failure (`fieldDims.gen.ts is exactly what emit-dims.mjs renders…`) is alpha's, not this
+  branch's: neither `fieldDims.gen.ts` nor `field-measurements.json` differs from `origin/alpha`
+  here, and the rendered-vs-disk diff is ONLY the header's sha256 stamp of the JSON — the
+  constants are byte-identical. The committed JSON hashes to `3d8c1d40…` as LF and `8ee9f30f…`
+  as CRLF; the committed header says `5555b9fd…`, so alpha's emitter ran against JSON bytes that
+  are not the committed ones. A one-line header re-stamp on alpha fixes it. Not done here
+  because it is alpha's file and would be a hidden sim-adjacent change in a Discord PR.
+- **Not verified:** the activity in a real Discord embed after this merge (needs the `/gs`
+  backend redeployed from this tree and a Discord launch); alpha's new gates (`TermsGate`, the
+  tutorial offer) inside the embed, where auth is CSP-blocked — `compete` already hides the
+  ranked/records tiles, but a terms prompt appearing in the iframe would be new.
+
+---
+
 # HANDOFF — 2026-09-19b (alpha: THE OWNER'S 25-ITEM PASS, RECOVERED FROM A HALTED SESSION AND FINISHED)
 
 **READ FIRST.** A previous session ran out of usage mid-pass over the owner's 25-item list and
@@ -934,6 +972,8 @@ been hiding at driver range. All three are fixed for the MATCH, not only the pre
   saved thumbnail, back to 2D (zero canvases left mounted), both themes, 375px with no horizontal
   overflow, console clean of anything but the pre-existing AdSense 403s. A solo practice in View 3D
   shows the same rust chassis with the same blue outline as the card.
+---
+
 # HANDOFF — 2026-09-18 (branch `discord-activity`: alpha merged in, PR ready)
 
 **READ FIRST if you are on `discord-activity`.** `origin/alpha` @ `1237b7f0` (roadmap round 1) is

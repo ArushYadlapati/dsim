@@ -23,6 +23,7 @@
  * (`instance_id`, detection) is plain query-string / hostname.
  */
 
+import { DISCORD_INSTANCE_KEY } from '../storageKeys';
 import { ROOM_CODE_ALPHABET, ROOM_CODE_LENGTH, isValidRoomCode } from './roomCode';
 
 /** true when this page is being served through Discord's activity proxy — the
@@ -38,9 +39,6 @@ function onDiscordHost(): boolean {
 export function inDiscordActivity(): boolean {
   return onDiscordHost() || discordInstanceId() !== '';
 }
-
-/** where the launch's instance id is remembered for the life of the TAB */
-const INSTANCE_KEY = 'dsim.discord.instance';
 
 /**
  * The activity instance id shared by every participant of one launch ('' outside).
@@ -62,10 +60,10 @@ export function discordInstanceId(): string {
   const fromUrl = new URLSearchParams(window.location.search).get('instance_id') ?? '';
   try {
     if (fromUrl) {
-      window.sessionStorage.setItem(INSTANCE_KEY, fromUrl);
+      window.sessionStorage.setItem(DISCORD_INSTANCE_KEY, fromUrl);
       return fromUrl;
     }
-    return window.sessionStorage.getItem(INSTANCE_KEY) ?? '';
+    return window.sessionStorage.getItem(DISCORD_INSTANCE_KEY) ?? '';
   } catch {
     // storage blocked (private mode, a throwing accessor) — the URL is all there is
     return fromUrl;

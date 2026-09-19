@@ -279,11 +279,27 @@ const fmtKB = (bytes) => `${(bytes / 1000).toFixed(2)} KB`;
  *               9162190, because `AdminAnalytics-*.js` had no route of its own and fell through
  *               to the bucket whose near-zero baseline exists to catch exactly that.
  *
+ * ── RE-MEASURED 2026-09-19, `discord-activity` after pulling alpha (PR #41) ──────────
+ *   main        927.11 KB — +3.22 over 923.89, and the split was measured against a clean
+ *               `origin/alpha` worktree built the same minute (924.97): **+2.14 is the
+ *               activity** — `discordActivity.ts`, the lobby browser, the Lobby "You"
+ *               section, the home button and the App/ModeSelect wiring, all MAIN by design
+ *               because `inDiscordActivity()` is what decides whether to render them — and
+ *               +1.08 is alpha's own tip since the console pass (the URL-state fix in
+ *               d64cf19). Under the 4 KB tolerance, which is the overhang this header warns
+ *               about, so it is measured here instead.
+ *   discord      44.30 KB — unchanged, and still exactly the SDK: nothing of the activity's
+ *               own code leaks into the lazy chunk.
+ *   hostWorker 709.94, physics3d 1130.92, scene 203.60 — IDENTICAL to clean alpha to
+ *               within 0.05 KB, i.e. alpha's own drift since its last entry (+3.63, +5.86,
+ *               +2.16), none of it this branch's. Left where alpha left them, for alpha to
+ *               re-measure with whatever moved them.
+ *
  * RECALIBRATE by running `npm run build && npm run bundleaudit` and copying the printed gzip
  * totals in here, the same way `uiaudit.mjs`'s header describes lowering ITS baseline.
  */
 const BASELINE = {
-  main: { gzip: 923.89 * 1000 },
+  main: { gzip: 927.11 * 1000 },
   // `@discord/embedded-app-sdk` behind `watchDiscordParticipants`'s dynamic import —
   // loaded only inside a real Discord Activity embed (`onDiscordHost()` gates the
   // import), so no ordinary player downloads it. MEASURED 2026-09-18.
