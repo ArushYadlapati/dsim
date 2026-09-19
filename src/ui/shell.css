@@ -5894,3 +5894,55 @@ button.ds-key:active {
   justify-content: center;
   margin-top: var(--ds-s-5);
 }
+
+/* PRIVACY · "Your data" (src/ui/YourData.tsx) — the storage inventory and the four
+   controls under the policy. Its own namespace because nothing else on the site prints a
+   generated table of keys, and the alternative was overloading `.ds-panel-foot` as a
+   mid-panel band, which is how a class ends up meaning two things. */
+.yd-head {
+  margin-top: var(--ds-s-6);
+}
+/* the category band between two inventory tables. Same geometry as `.ds-panel-foot`,
+   written out rather than shared: that one means "the last band in a panel", and this one
+   is a heading for what follows it. */
+.yd-group {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ds-s-1);
+  padding: var(--ds-s-3) var(--ds-s-4);
+  border-top: 1px solid var(--ds-line);
+}
+.yd-group-name {
+  font-weight: 700;
+}
+/* `.ds-panel` clips for its rounded corners, so a table wider than a phone needs its own
+   horizontal scroller — the same fix `.mh-scroll` and `.lb-scroll` carry. */
+.yd-scroll {
+  overflow-x: auto;
+}
+/* narrower than match history's 640: two of the three columns are prose and wrap, so the
+   floor is only what keeps the key column from breaking mid-token. */
+.yd-table {
+  min-width: 480px;
+}
+.yd-table td {
+  vertical-align: top;
+}
+/* the key column is the narrow one on purpose — it is an identifier, not reading matter */
+.yd-table td:first-child {
+  width: 1%;
+  white-space: nowrap;
+}
+.yd-key {
+  font-family: var(--ds-font-mono);
+  font-size: var(--ds-t-sm);
+  color: var(--ds-ink);
+}
+.yd-store {
+  display: block;
+  font-size: var(--ds-t-xs);
+  color: var(--ds-mut);
+}
+.yd-keep {
+  color: var(--ds-mut);
+}

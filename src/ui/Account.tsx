@@ -282,7 +282,14 @@ function Membership({ onDonate }: { onDonate?: () => void }) {
  * everything would be a lie, since a completed match's result still involves the
  * other players and financial records have to outlive the account.
  */
-function DeleteAccount() {
+/**
+ * ⚠️ EXPORTED, and rendered in TWO places: here, and in the privacy page's "Your data" panel
+ * (`src/ui/YourData.tsx`). Deliberately the same component rather than a second button that
+ * posts to the same route: the typed confirmation and the paragraph about what SURVIVES a
+ * deletion are the load-bearing parts, and two copies of that copy would drift — which is the
+ * exact failure the storage registry exists to stop one file over.
+ */
+export function DeleteAccount() {
   const session = authClient!.useSession();
   const [confirm, setConfirm] = useState('');
   const [busy, setBusy] = useState(false);
