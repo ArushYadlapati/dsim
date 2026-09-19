@@ -539,7 +539,10 @@ export function Results({
   // the suspense is the point (see the phase doc comment above).
   const redTotal = useCountUp(redFinal, totalsActive, 700);
   const blueTotal = useCountUp(blueFinal, totalsActive, 700);
-  const netTotal = useCountUp(netScore, totalsActive, 700);
+  // ⚠️ NO count-up for the record run's net score here. `RecordResults` runs its own, and
+  // animating it twice made the child count up toward a target that moved every frame — the
+  // inner tween restarted on each new `target`, so the number crawled and never landed. The
+  // RAW `netScore` goes down; the single animation belongs to the component that prints it.
   const eloNote = useEloPending(ranked, eloResults);
   const actionsRef = useFocusPrimaryAction(doneVisible);
 
@@ -557,7 +560,7 @@ export function Results({
         hud={hud}
         mine={mine}
         penaltyPts={penaltyPts}
-        netTotal={netTotal}
+        netScore={netScore}
         revealed={revealed}
         lost={lost}
         practiceRun={practiceRun}
@@ -647,13 +650,20 @@ export function Results({
         ],
       ];
 
-  // SOLO (`!session` at the call site, forwarded as `canRematch`) has nobody to show an
-  // opposing half for — a practice dummy is `passive` and never appears in the roster,
-  // and a bare `mode: 'match'` solo run has no bot opponent yet (see games/types.ts).
-  const solo = canRematch;
+  // SOLO means NOBODY TO SHOW AN OPPOSING HALF FOR, which is not the same as "no session".
+  // `canRematch` (`!session` at the call site) only says the run was local: a BIOBUZZ solo
+  // practice against bots picks an Opponents tier in `MatchSetup`, and `src/game.ts` seats a
+  // NON-PASSIVE bot for it — a real opponent, with a real score and a real winner. Reading
+  // `canRematch` alone hid all of that behind a one-sided screen. The roster is the honest
+  // test, because `rosterFor` already drops `passive` setups, so a practice dummy is absent
+  // from it and a bot is not.
+  const solo = canRematch && (redRoster.length === 0 || blueRoster.length === 0);
   const season = seasonFor(hud.game).name;
   const format = redRoster.length && blueRoster.length ? `${redRoster.length}V${blueRoster.length}` : '';
-  const modeLabel = solo
+  // the EYEBROW asks a different question from the layout: `canRematch` (no session) is what
+  // makes a run solo practice, bots or not — a practice run against a bot is still practice,
+  // and calling it CUSTOM 1V1 because the field had an opponent on it would be wrong.
+  const modeLabel = canRematch
     ? 'SOLO PRACTICE'
     : ranked
       ? `RANKED${format ? ` ${format}` : ''}`
@@ -908,7 +918,7 @@ function RecordResults({
   hud,
   mine,
   penaltyPts,
-  netTotal,
+  netScore,
   revealed,
   lost,
   recordResult,
@@ -926,7 +936,8 @@ function RecordResults({
   hud: HudSnapshot;
   mine: ScoreBreakdown;
   penaltyPts: number;
-  netTotal: number;
+  /** the RAW net score. Animated HERE and only here — see the note at the call site. */
+  netScore: number;
   revealed: boolean;
   /** the final score never arrived — see `HudSnapshot.resultLost` */
   lost: boolean;
@@ -951,7 +962,7 @@ function RecordResults({
   const rowsActive = phase === 'rows' || phase === 'totals' || phase === 'done';
   const totalsActive = phase === 'totals' || phase === 'done';
   const doneVisible = phase === 'done';
-  const netCount = useCountUp(netTotal, totalsActive, 700);
+  const netCount = useCountUp(netScore, totalsActive, 700);
 
   // the game's own breakdown, through the module slot. A solo run has no opponent,
   // so only the "mine" half of each row is printed.

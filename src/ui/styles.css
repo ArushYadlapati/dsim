@@ -1106,6 +1106,18 @@ button {
   cursor: auto;
 }
 
+/* ⚠️ THE FOCUS RING HAS TO CHANGE TOKEN ON THIS STAGE, and only here. The shared
+   `.overlay-buttons button:focus-visible` rule rings in `--ds-ink`, which is correct on a
+   THEMED panel — but this stage's ground is `--ds-stage-bg`, a fixed-dark canvas token that
+   does not invert, so in light theme a near-black ring sat on near-black and the keyboard
+   focus this screen AUTOFOCUSES was invisible. `--ds-on-field` is the canvas-ground ink
+   (CLAUDE.md's third token category), which is what reads on a dark ground in both themes.
+   Colour only — the outline still never moves the box (`shiftaudit`). */
+.resx-stage .overlay-buttons button:focus-visible,
+.resx-stage .overlay-buttons button.ghost:focus-visible {
+  outline-color: var(--ds-on-field);
+}
+
 .resx-sting {
   position: fixed;
   inset: 0;

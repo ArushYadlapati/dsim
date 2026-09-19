@@ -470,7 +470,16 @@ export function App() {
     // `startScreen`, not `start.screen` — a staged ranked match overrides the restored
     // URL (see above), and the address bar has to say where the player actually is
     const canonical = pathFor(startScreen, start, settingsRef.current.game);
-    if (window.location.pathname !== canonical) window.history.replaceState(null, '', canonical);
+    // ⚠️ COMPARE THE SEARCH TOO, not just the pathname. `pathFor` never emits a query,
+    // so anything in one is consumed-and-finished — including the `?token=` a reset or
+    // verification link arrives with. Comparing pathnames alone meant a token sitting on
+    // an ALREADY-canonical path was never stripped: it stayed in the address bar, in the
+    // history entry, and in anything that reads `location.href` (a copied link, a
+    // referrer, an analytics beacon). Stripping it here is safe because `entryToken.ts`
+    // captured it at MODULE LOAD, which is exactly why that file exists.
+    if (window.location.pathname + window.location.search !== canonical) {
+      window.history.replaceState(null, '', canonical);
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -1506,6 +1515,8 @@ export function App() {
 
   const configureSection: ConfigureSection = isConfigureSection(route.sub) ? route.sub : 'robot';
   const recordsTab: RecordsTab = isRecordsTab(route.sub) ? route.sub : 'leaderboard';
+  /** the two public legal screens — the blocking gates below suspend on them */
+  const legalScreen = screen === 'privacy' || screen === 'terms';
 
   return (
     <FriendsProvider
@@ -1544,9 +1555,15 @@ export function App() {
           `.ds-modal-backdrop`s at once double-darken the page and show one dialog dimmed
           behind the other. `TermsGate` renders its children only once it is satisfied, so
           the order is structural: agree to the service, then pick a name inside it. */}
+      {/* ⚠️ BOTH GATES STAND DOWN ON THE LEGAL PAGES. They are full-viewport backdrops
+          rendered BESIDE the routed screen, so on `/terms` and `/privacy` they covered
+          the documents themselves — including the new tab the gate's own links open.
+          Those two screens are public by design (see the render site below), so a
+          signed-in account that has not accepted yet can still go and read them; the
+          gate is back the moment the route is anything else. */}
       {authEnabled && (
-        <TermsGate>
-          <UsernameGate />
+        <TermsGate suspended={legalScreen}>
+          <UsernameGate suspended={legalScreen} />
         </TermsGate>
       )}
 

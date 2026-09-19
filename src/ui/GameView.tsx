@@ -157,12 +157,17 @@ function PredictionPanel({
         <span>PREDICTION</span>
         <span className="pred-mode">{running}</span>
       </div>
-      <div className="pred-opts">
+      {/* `role="group"` + `aria-pressed`, not a radiogroup: these are three TOGGLES sharing
+          one setting, and `.on` is the only thing that says which is chosen — a screen reader
+          reading three bare buttons could not tell. The group's label is what gives "Auto"
+          its context, since the heading above is decorative text, not a heading element. */}
+      <div className="pred-opts" role="group" aria-label="Prediction">
         {PREDICTION_PREFS.map((p) => (
           <button
             key={p}
             className={`pred-opt ${stats.pref === p ? 'on' : ''}`}
             title={PREDICTION_BLURBS[p]}
+            aria-pressed={stats.pref === p}
             onClick={() => onPick(p)}
           >
             {PREDICTION_LABELS[p]}
