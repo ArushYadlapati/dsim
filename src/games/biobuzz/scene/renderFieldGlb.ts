@@ -125,6 +125,7 @@ function findOptional(root: THREE.Object3D, name: string): THREE.Object3D | null
  * a flower rendered as three greys (`#e5e7eb` ring, `#c2c4c8` pipes, `#8c929c` base) when the CAD
  * says amber `#ffba52`, green `#5fa73d` and purple `#641c65`. It also had the hive backwards: the
  * alliance colour is the two RIBS (pure `#ff0000` / `#0000ff`), not the white `#e6e6e6` skins.
+ * The rib BLUE is the one CAD colour this file overrides — see `ALLIANCE_BLUE_TINT` below.
  * See `docs/biobuzz/field-cad-audit.md` §3 for the full measured table.
  *
  * TWO DELIBERATE OVERRIDES, both flagged in the audit as CAD placeholders rather than intent:
@@ -206,6 +207,26 @@ const CLEAR_ENV_INTENSITY = 0.15;
 const CLEAR_PANEL_TINT = 0x7d8b96;
 /** the faint outline that makes a nearly-invisible panel's shape readable. */
 const PANEL_EDGE_TINT = 0xb9c6d2;
+
+/**
+ * ⚠️ THE FOURTH DELIBERATE CAD OVERRIDE (owner bug 12, 2026-09-19: "the blue alliance looks too
+ * purple — are you sure that is the exact colour AndyMark uses?").
+ *
+ * The STEP gives the hive Goal Ribs `plastic#0000ff`, and pure `#0000ff` is OKLCH hue 264.1° —
+ * 1.7° off the most violet blue sRGB can express. An assembly carrying pure `#ff0000` AND pure
+ * `#0000ff` is carrying placeholder part colours, the same way its `#e6e6e6` "white plastic" is a
+ * placeholder rather than a paint (see `CLEAR_PANEL_TINT` above, which overrides it for that
+ * reason). So the CAD is authoritative for DIMENSIONS — the owner's 2026-09-18 ruling, and
+ * nothing here touches one — and is NOT authoritative for this colour.
+ *
+ * `ALLIANCE_BLUE_TINT` is the one BIOBUZZ blue every other surface takes (`draw.ts`'s
+ * `ELEMENT_FILL` header carries the measurement): hue 252.9°, the least violet a saturated blue
+ * gets, at the most chroma sRGB has there. APPROX — no authoritative AndyMark blue was found.
+ * RED is left at the CAD's `#ff0000`: a pure red still reads as red, and the owner named only
+ * blue.
+ */
+const CAD_ALLIANCE_BLUE = 0x0000ff;
+const ALLIANCE_BLUE_TINT = 0x007be1;
 const PANEL_EDGE_OPACITY = 0.3;
 /** matches `renderField.ts`'s `WALL_RENDER_ORDER` — drawn after every opaque object so two
  * transparent walls (or a wall and a robot) never fight over which one occludes the other. */
@@ -271,10 +292,13 @@ function isClearPanel(finish: Finish, colorHex: number, family: NodeFamily): boo
   return finish === 'plastic' && colorHex === 0xe6e6e6 && family === 'hive_tray';
 }
 
-function materialFor(finish: Finish, colorHex: number, family: NodeFamily): THREE.Material {
-  if (isClearPanel(finish, colorHex, family)) {
+function materialFor(finish: Finish, rawHex: number, family: NodeFamily): THREE.Material {
+  if (isClearPanel(finish, rawHex, family)) {
     return clearPanelMaterial(finish === 'glass' ? WALL_PANEL_OPACITY : CELL_PANEL_OPACITY);
   }
+  // the clear-panel test reads the CAD's own value; everything painted below reads the corrected
+  // one — see `ALLIANCE_BLUE_TINT`.
+  const colorHex = rawHex === CAD_ALLIANCE_BLUE ? ALLIANCE_BLUE_TINT : rawHex;
   switch (finish) {
     case 'glass':
       // unreachable while `isClearPanel` claims every `glass`; kept so the switch stays total

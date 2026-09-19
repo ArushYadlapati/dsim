@@ -162,10 +162,33 @@ function toTex(x: number, y: number): [number, number] {
   return [(x + BB_HALF_X) * TEX_SCALE, (BB_HALF_Y - y) * TEX_SCALE];
 }
 
+/**
+ * OWNER BUG 12 (2026-09-19): "the blue alliance looks too purple — are you sure that is the
+ * exact colour AndyMark uses?" Measured, the complaint is right and BOTH answers the repo had
+ * were wrong. In OKLCH: the old `#4d8fe2`/`#0a5cff`/`C.COLORS.blue` family sits at hue 255-262°,
+ * and the field CAD's own hive Goal Ribs are `plastic#0000ff` — hue 264.1°, which is 1.7° off the
+ * most violet blue sRGB can express and the WORST answer available. A STEP assembly carrying
+ * pure `#ff0000` and pure `#0000ff` is carrying PLACEHOLDER part colours, not a paint spec, and
+ * `renderFieldGlb.ts` already overrides the same file's `#e6e6e6` "white plastic" placeholder for
+ * exactly that reason. No authoritative AndyMark blue was found, so this is not one.
+ *
+ * `#007be1` is a PERCEPTUAL CORRECTION and APPROX: hue 252.9°, which is the least violet a
+ * saturated blue gets before it starts reading cyan, at the maximum chroma sRGB has there
+ * (0.179) and L 0.583 — within 0.002 of the red tape's own lightness, so the two alliances read
+ * at the same weight. It is 11.2° off the CAD's rib colour, and that gap is deliberate.
+ *
+ * ⚠️ ONE BIOBUZZ BLUE. Tape, NECTAR, hive accents, the constants-built fallback scene, the GLB's
+ * ribs and the robot silhouette all take this value; there is no second approximation left.
+ */
+const ALLIANCE_BLUE = '#007be1';
+const ALLIANCE_BLUE_HEX = 0x007be1; // same value, numeric — `THREE.MeshStandardMaterial.color` below
+
 /** the tape colours `drawField.ts`'s `TAPE_GAFFER` uses — NOT a theme token there either (the
- * tape colour is the marking, per that file's own header), so copying the literals is exactly
- * as stable as importing them would be. */
-const TAPE_GAFFER: Record<Alliance, string> = { red: '#e02020', blue: '#0a5cff' };
+ * tape colour is the marking, per that file's own header). The red literal is copied, which is
+ * exactly as stable as importing it would be; the blue is the local `ALLIANCE_BLUE` above, so
+ * this file cannot drift from its own hive accents. */
+const TAPE_GAFFER: Record<Alliance, string> = { red: '#e02020', blue: ALLIANCE_BLUE };
+
 
 /** a filled world-space rectangle on the floor texture — used for a tape STRIP, which is a
  * physical band of a stated width, not a stroked outline. */
@@ -505,7 +528,7 @@ function buildCell(s: 1 | -1, accent: string, alliance: Alliance): THREE.Group {
 function buildTray(alliance: Alliance): THREE.Group {
   const tray = new THREE.Group();
   tray.name = `hive:${alliance}:tray`;
-  const accent = alliance === 'blue' ? C.COLORS.blue : C.COLORS.red;
+  const accent = alliance === 'blue' ? ALLIANCE_BLUE : C.COLORS.red;
   tray.add(buildCell(1, accent, alliance));
   tray.add(buildCell(-1, accent, alliance));
   // CylinderGeometry's axis is local Y by default — exactly the arm direction the two cells
@@ -700,7 +723,7 @@ function buildNectarBox(a: Alliance): BbNectarBox {
   floorSlab.receiveShadow = true;
   group.add(floorSlab);
 
-  const frameMat = mat(a === 'blue' ? C.COLORS.blue : C.COLORS.red);
+  const frameMat = mat(a === 'blue' ? ALLIANCE_BLUE : C.COLORS.red);
   const wallZ = BB_BOX_H / 2;
   for (const s of [1, -1] as const) {
     // the two long sides (across the depth, facing the wall / facing the driver)
@@ -716,7 +739,7 @@ function buildNectarBox(a: Alliance): BbNectarBox {
   }
 
   const beadMat = new THREE.MeshStandardMaterial({
-    color: a === 'blue' ? 0x4d8fe2 : 0xe2564d, // `renderElements.ts`'s `NECTAR_COLORS`
+    color: a === 'blue' ? ALLIANCE_BLUE_HEX : 0xe2564d, // red still matches `renderElements.ts`'s `NECTAR_COLORS`
     roughness: 0.4,
     metalness: 0.05,
   });

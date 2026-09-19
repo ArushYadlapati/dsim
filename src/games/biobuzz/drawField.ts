@@ -89,6 +89,26 @@ import { BB_BOX_SLOTS, BB_BOX_T, bbNectarBoxRect, bbNectarBoxSlot } from './nect
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
+ * OWNER BUG 12 (2026-09-19): "the blue alliance looks too purple — are you sure that is the
+ * exact colour AndyMark uses?" Measured, the complaint is right and BOTH answers the repo had
+ * were wrong. In OKLCH: the old `#4d8fe2`/`#0a5cff`/`C.COLORS.blue` family sits at hue 255-262°,
+ * and the field CAD's own hive Goal Ribs are `plastic#0000ff` — hue 264.1°, which is 1.7° off the
+ * most violet blue sRGB can express and the WORST answer available. A STEP assembly carrying
+ * pure `#ff0000` and pure `#0000ff` is carrying PLACEHOLDER part colours, not a paint spec, and
+ * `renderFieldGlb.ts` already overrides the same file's `#e6e6e6` "white plastic" placeholder for
+ * exactly that reason. No authoritative AndyMark blue was found, so this is not one.
+ *
+ * `#007be1` is a PERCEPTUAL CORRECTION and APPROX: hue 252.9°, which is the least violet a
+ * saturated blue gets before it starts reading cyan, at the maximum chroma sRGB has there
+ * (0.179) and L 0.583 — within 0.002 of the red tape's own lightness, so the two alliances read
+ * at the same weight. It is 11.2° off the CAD's rib colour, and that gap is deliberate.
+ *
+ * ⚠️ ONE BIOBUZZ BLUE. Tape, NECTAR, hive accents, the constants-built fallback scene, the GLB's
+ * ribs and the robot silhouette all take this value; there is no second approximation left.
+ */
+const ALLIANCE_BLUE = '#007be1';
+
+/**
  * THE ZONE TAPE IS THE ONE THING HERE THAT IS NOT A THEME TOKEN.
  *
  * §9.3 specifies red and electric-blue gaffer, and on this field the tape COLOUR is the
@@ -96,7 +116,8 @@ import { BB_BOX_SLOTS, BB_BOX_T, bbNectarBoxRect, bbNectarBoxSlot } from './nect
  * at. A token that flipped with the light/dark theme would be drawing a different field in
  * one of the two. So these two are fixed, and everything else on this canvas is `C.COLORS`.
  */
-const TAPE_GAFFER: Record<Alliance, string> = { red: '#e02020', blue: '#0a5cff' };
+const TAPE_GAFFER: Record<Alliance, string> = { red: '#e02020', blue: ALLIANCE_BLUE };
+
 
 /** frame BASE BAR thickness and centreline x (in) — both DERIVED from the two measured edges
  * so the bar's INNER edge stays exactly on the ±24 tile seam, which is the measured fact. */
@@ -179,7 +200,7 @@ function elementType(color: ArtifactColor): 0 | 1 | 2 {
 
 function elementInk(color: ArtifactColor): string {
   const t = elementType(color);
-  return t === 1 ? C.COLORS.red : t === 2 ? C.COLORS.blue : POLLEN_INK;
+  return t === 1 ? C.COLORS.red : t === 2 ? ALLIANCE_BLUE : POLLEN_INK;
 }
 
 /** the same classification as `elementType`, in the vocabulary `flower.ts` scores in. Both
@@ -265,7 +286,7 @@ export function bbFlowerSectionBox(f: (typeof BB_FLOWERS)[number]): BbRect {
 // ─────────────────────────────────────────────────────────────────────────────
 
 function allianceColor(a: Alliance): string {
-  return a === 'blue' ? C.COLORS.blue : C.COLORS.red;
+  return a === 'blue' ? ALLIANCE_BLUE : C.COLORS.red;
 }
 
 /** an element's drawn radius. `r` is optional on `Artifact` (DECODE has one size and never

@@ -24,7 +24,7 @@ import {
   turretRadius,
 } from './mounts';
 import { bbFlowerInReach, bbFootprint, bbMouths, bbPlacePointLocal } from './robot';
-import { ELEMENT_FILL, ELEMENT_LINE } from './draw';
+import { BB_ALLIANCE_BLUE, ELEMENT_FILL, ELEMENT_LINE } from './draw';
 
 /**
  * BIOBUZZ robot sprite (top-down).
@@ -130,7 +130,9 @@ export function drawBiobuzzRobot(
 ): void {
   void screenUp; // nothing lifts the chassis off the tile in BIOBUZZ — no terrain is published
   const hl = r.spec.length / 2;
-  const color = r.alliance === 'blue' ? C.COLORS.blue : C.COLORS.red;
+  // the BIOBUZZ blue, not the shared `C.COLORS.blue` — owner bug 12, and `draw.ts`'s
+  // `ELEMENT_FILL` header carries the measurement. Red stays shared: it was never the complaint.
+  const color = r.alliance === 'blue' ? BB_ALLIANCE_BLUE : C.COLORS.red;
   const loaded = r.hopper.length > 0;
   // THE MECHANISM LOADOUT — see the file header. The launcher is never null; the tube may be.
   const launcher = bbLauncherOf(r.spec, BB_HOOD_DEFAULT_DEG);
