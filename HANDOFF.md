@@ -1,7 +1,116 @@
+# HANDOFF — 2026-09-19 (alpha: THE SHOOTER REBUILT — hood-only elevation, a 72 mm flywheel on a
+turret plate, and the sim's release following the hood lip)
+
+**READ FIRST.** The sixth pass at this one mechanism, and the first that changed the machine rather
+than a constant. Gates: `npm test` (**2538** — shared and BIOBUZZ both green) · `build` ·
+`server:check` · `docaudit` · `uiaudit` · `contrast` (221) · `test:mm` (197) · `bundleaudit`
+(scene 201.81 against a 201.44 baseline, inside the 4 KB tolerance and the 250 ceiling) ·
+**`test:ai`** (150 matches, 9.5 min: HARD beats EASY 74/100, mean margin 26.2; tiers ordered
+66.1 / 113.3 / 127.8 against idle).
+
+## Why five passes failed
+
+Each one moved a constant to answer the last complaint and produced the next: a flat front cut
+(accepted); `rIn` raised until the flywheel's rim sat in a bare annulus ("the flywheel looks like it
+is not constrained to the plate anymore"); the tail zeroed after measuring AT REST ("the plate is
+meshing with the chassis"); `BB_FLYWHEEL_R` cut 2.0 → 1.5 to buy ρ for a motor pocket under the axle.
+
+⚠️ **THE ROOT CAUSE WAS OWNERSHIP, NOT GEOMETRY.** `scene/renderRobots.ts` owned the shooter's
+dimension chain privately while the sim owned a flat `BB_LAUNCH_Z0 = 10`. Two sources, no check
+between them, so the picture and the physics could disagree indefinitely — and did, for five rounds.
+The chain lives in `config.ts` now and the renderer imports it.
+
+## The four owner rulings this implements
+
+| | ruling | what it forced |
+|---|---|---|
+| (b) | the hood extends above the plates | the plate's outer arc IS `BB_HOOD_R`, so the hood's own 0.28 of material is the proud part, by construction |
+| (c) | the flywheel sits right above the turret plate | a real turret plate exists now; the wheel bottom is 0.300 above it |
+| (d) | only the hood moves | `bb-turret-pitch` carries the hood arc and two arms and nothing else |
+| (e) | a standard flywheel is 72 mm | `BB_FLYWHEEL_D_MM = 72`, never a rounded decimal |
+
+⚠️ **(d) IS WHAT MADE THE REST POSSIBLE.** The pitch node used to carry the whole head, pivoting
+about the muzzle, which is the only reason a ρ budget ever existed — the entire assembly swept
+through the drivetrain at elevation and everything had to be squeezed inside it. Fixed parts need
+static deck clearance and nothing more, so `BB_HEAD_RHO_MAX`, `minHeadWorldZ` and `plateOuterR` are
+gone rather than re-tuned.
+
+## The release follows the hood (owner-authorised, it changes shot outcomes)
+
+A hood pivoting on the axle moves its own lip, so the release is no longer flat: **9.634 in level,
+8.466 at 57.6°, 7.554 at the 80° cap**, retreating along the heading as it drops. `bbMuzzleLocal`
+(`robot.ts`) is the one muzzle and `scene/renderRobots.ts` imports it — the RENDER lane proves the
+drawn lip is on the sim's muzzle at every pitch rather than assuming it.
+
+⚠️ **`bbTurretSolution` IS A FIXED POINT**: the elevation moves the release and the release moves
+the elevation. `BB_TURRET_SOLVE_PASSES` (4) runs ALWAYS — no early exit, no tolerance — because a
+trip count resting on a float comparison can differ between a client's prediction and the server's
+authority. A fifth pass moves the pitch by at most 1.76e-9 rad over 7,688 field poses.
+
+Measured consequence, authorised knowingly: scoreable field cells **1359 → 1382** north and
+1417 → 1439 south, pitch-capped cells 255 → 211, nothing speed-capped, worst required muzzle speed
+253.26 → 256.37 against a 260 cap. The lower release costs a little speed and unblocks more of the
+field than it loses. **No version was bumped** — replays from before this re-simulate slightly
+differently under the same `SIM_VERSION`, which the owner was told and has not asked to change.
+
+⚠️ **A DUMPER HAS NO HOOD AND ITS RELEASE IS STILL FLAT.** `bbLobThrow`, `bbDumpSolution` and
+`bbLaunch`'s dumper branch all still read `BB_LAUNCH_Z0`, and the ROBOT lane carries a leak guard: a
+dumper's release stays flat at every pitch while a turret on the same chassis follows its hood down.
+
+## The feed shoe, which is what answered "a weird flap in the back"
+
+A hood on an axle pivot carries its own feed mouth round with it — at 80° of pitch the mouth has
+gone 80° round the wheel and the feed no longer lines up. So the wrap shrank 1.05 → 0.556 rad and a
+FIXED shoe at `BB_FEED_SHOE_R` 4.397 spans 146°–202° and takes over the entry. It bolts to both side
+plates, so it is also the rear tie. The loose plank is gone because something real replaced it.
+
+## What the adversarial check measured, not what the builders claimed
+
+An independent agent built the real `buildTurret()` group and measured world positions:
+
+- meshes under the pitch node: `hood`, `hood-arm`, `hood-arm` — nothing else;
+- wheel, plates, braces, motor and feed shoe all diff **0.000000** between pitch 0 and the cap;
+- hood-minus-plate gap **+0.280 worst** over 3600 samples, +3.230 at rest, never negative;
+- wheel lowest 5.700 against a turret plate top of 5.400;
+- sim muzzle vs drawn lip: **0.000000** at pitch 0/20/40/60/80.
+
+It also found a defect neither builder caught: the plate's full-radius arc was documented as
+θ ∈ [14.30°, 206.00°] when it is actually **[165.70°, 206.00°] — 40.3°, at the back, and nowhere
+else**. Everything from 15° to 166° is governed by the flat top. Corrected in `config.ts`, with the
+reason the hood-proud figure is 3.23 at rest and 0.280 at full elevation rather than one number: at
+rest the hood rides its arms well above the flat top, and at 80° it has swung round to exactly the
+arc stretch.
+
+## Two bugs the build found in the CHECKS themselves
+
+Both had been hiding real geometry, and both are why the RENDER lane passed five times on work the
+owner rejected:
+
+1. `radialBar` returned an INDEXED `BoxGeometry`. `mergeGeometries` refuses a mixed indexed and
+   non-indexed list, returns null, and `framePart` falls back to `parts[0]` — so each hood arm was
+   silently its rim alone.
+2. The corridor sweep filtered on the nearest VERTEX's `|y|`. A `CylinderGeometry` standoff has
+   vertices only at its end caps, so every brace, the motor and the belt read `|y| ≥ 1.92` and
+   dropped out of the sweep unmeasured. It tests the part's y INTERVAL now.
+
+The lane no longer greps source text for the shooter: it imports `buildTurret`, BUILDS the group,
+poses `bb-turret-pitch` at 41 elevations and measures vertices.
+
+## Open
+
+- The `+20°` brace leaves **0.133** of exit-corridor clearance. It stands: the side plate's own flat
+  top is the binding part there and clears by 0.150 by definition, so nothing fixed at that height
+  can do better.
+- Far-corner speed headroom is **3.63** against the 260 cap, down from 6.74. A ratchet check fails
+  if it drops below 3.6. Raising `BB_LAUNCH_SPEED_MAX` is a balance decision nobody has made.
+- `BB_AI_WIN_RATE_FLOOR` stays at 55%. `test:ai` measured 74% and its own footer suggests raising
+  the ratchet, but the PRE-change rate was never measured, so there is no way to say whether 74 is
+  an improvement or where it always sat. Measure a baseline before tightening it.
+
 # HANDOFF — 2026-09-19 (alpha: THE OWNER'S TWELVE-ITEM PASS — the hive tip, scoring instants, flower
 and tile contact, the shooter/swerve/box-tube rebuild, intake cadence, one alliance blue)
 
-**READ FIRST.** Eight commits plus the merge of `origin/alpha` they sit on. Twelve items, all
+Eight commits plus the merge of `origin/alpha` they sit on. Twelve items, all
 from playing the running 3D game. Nine were diagnosed read-only first and then implemented under
 one-owner-per-file, which is what kept nine concurrent agents off each other.
 

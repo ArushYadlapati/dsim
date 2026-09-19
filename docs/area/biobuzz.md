@@ -265,6 +265,34 @@ newest-first — it is never ranked, which is what keeps the two eras from meeti
     turret yaw and 80° elevation hive range actually asks for, the barrel came out 67.7° BELOW
     horizontal and 44.5° off in azimuth while the SIM's turret was dead on target. The sim aims
     correctly under both physics — measured, converging in 41–52 ticks with no button held.
+  - ⚠️ **ONLY THE HOOD ELEVATES, AND THE RELEASE FOLLOWS IT** (owner ruling, 2026-09-19, after five
+    rejected passes at this one mechanism). `bb-turret-pitch` used to carry the WHOLE head — plates,
+    flywheel, hood, motor, braces — pivoting about the muzzle, which is the only reason a ρ budget
+    ever existed: the entire assembly swept through the drivetrain at elevation. It now carries the
+    hood arc and its two arms and NOTHING else, pivoting about the FLYWHEEL AXLE, which is the one
+    pivot that holds the wheel-to-hood gap constant. The wheel, both side plates, the braces, the
+    motor, the belt and the feed are fixed and need static deck clearance only.
+  - ⚠️ **`bbMuzzleLocal(pitch)` (`robot.ts`) IS THE ONE MUZZLE, AND `scene/renderRobots.ts` IMPORTS
+    IT.** The shooter's whole dimension chain lives in `config.ts` now — it used to be private to
+    the renderer, which is exactly how the picture and the physics disagreed for five rounds. A hood
+    on an axle pivot moves its own lip, so the release is no longer a flat `BB_LAUNCH_Z0`: it is
+    9.634 in level, 8.466 at 57.6° and 7.554 at the 80° cap, and it retreats along the heading as it
+    drops. Same "one predictor, two drawings" rule the shot path follows, and the RENDER lane proves
+    the drawn lip sits on the sim's muzzle at every pitch rather than assuming it.
+  - ⚠️ **`bbTurretSolution` IS A FIXED POINT** — the elevation moves the release and the release
+    moves the elevation. `BB_TURRET_SOLVE_PASSES` (4) passes ALWAYS, with no early exit and no
+    tolerance, because a trip count that depends on a float comparison can differ between a client's
+    prediction and the server's authority. Measured over 7,688 field poses, a fifth pass moves the
+    pitch by at most 1.76e-9 rad. The outcome change was authorised: scoreable field cells 1359 →
+    1382 north and 1417 → 1439 south, pitch-capped cells 255 → 211, nothing speed-capped, worst
+    required muzzle speed 253.26 → 256.37 against a 260 cap.
+  - ⚠️ **A DUMPER HAS NO HOOD AND ITS RELEASE IS STILL FLAT.** `BB_LAUNCH_Z0` is a tipping tray's
+    lip; it does not swing about a flywheel axle. `bbLobThrow`, `bbDumpSolution` and `bbLaunch`'s
+    dumper branch all still read it directly, and the ROBOT lane has a leak guard: a dumper's release
+    stays flat at every pitch while a turret on the same chassis follows its hood down.
+  - **The hood's own feed mouth rotates away from the feed at elevation**, which is why the wrap is
+    0.556 rad and not the 1.05 it was: a FIXED feed shoe at `BB_FEED_SHOE_R` spans 146°–202° and
+    takes over the entry. It bolts to both side plates, so it is also the rear tie.
 - **Verification:** `scripts/smoke-biobuzz/sim3d.ts` (SIM3D lane: seam, drive parity, two-run
   hash, conservation, containment with `containmentFixes === 0`, CCD, capture, launch into either
   up cell, 18/29-in clearance, tip/spill, perf ≤ 1.5 ms, CAD probe agreement) and `render.ts`
