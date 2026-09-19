@@ -519,60 +519,59 @@ export function coreChecks(check: Check): void {
     const hudSrc = readRepo('src/games/biobuzz/HudSlots.tsx');
     check('HudSlots.tsx renders no HOPPER count chip', !hudSrc.includes('HOPPER'));
     check('HudSlots.tsx renders the held elements as hopper pips', hudSrc.includes('hopper-pip'));
-    check('HudSlots.tsx shows the FLOWER IN REACH chip', hudSrc.includes('FLOWER IN REACH'));
+    // FLOWER IN REACH is now the flower icon's RING, not its own text chip.
+    check('HudSlots.tsx draws the flower icon', hudSrc.includes('flower-icon'));
+    check(
+      '...ringed by the same flowerInReach signal FLOWER IN REACH used to read',
+      hudSrc.includes("r?.flowerInReach ? ' reach'"),
+    );
 
     /**
-     * THE NECTAR CHIP NAMES WHICH REFUSAL IT WAS, and there is one line per member of
-     * `BbNectarWhy`. Pinned at the source for the same reason the HOPPER check above is: a
-     * mapping that quietly loses a branch still renders a perfectly plausible chip, and the
-     * field draws no text, so a wrong line here is a driver's only reading of the rule.
+     * THE NECTAR DOT ROW REPLACES THE OLD TEXT CHIP — 3 always-coloured staged dots plus 5
+     * stock dots whose colour and ring are pinned at the source, for the same reason the
+     * HOPPER check above is: a wrong rule here is a driver's only reading of it, since the
+     * field draws no text.
      */
     check(
-      'HudSlots.tsx drives the NECTAR chip from nectarWhy, not from the stock and the debt',
+      'HudSlots.tsx splits the 8 NECTAR into 3 staged + 5 stock',
+      hudSrc.includes('NECTAR_STAGED') && hudSrc.includes('NECTAR_STOCK_MAX'),
+    );
+    check(
+      'HudSlots.tsx drives the dot colour from nectarWhy, not from the stock and the debt alone',
       hudSrc.includes('nectarWhy[hud.alliance]'),
     );
+    // An unplaced stock dot turns alliance-coloured the moment it is AVAILABLE, not only once
+    // it has actually been pressed in — a first draft of this kept an available-but-unplaced
+    // dot grey, which is the one thing the user corrected.
     check(
-      'NECTAR chip: `ok` with a banked TIP states the stock and what is owed',
-      hudSrc.includes('due > 0 ? `NECTAR ${n} · ${due} DUE`'),
+      'a not-yet-placed dot is coloured once available, same as an already-placed one',
+      hudSrc.includes('isPlaced || available'),
     );
-    // Past the 1:00 cue the whole remaining stock may go in with nothing banked, so `due` is 0
-    // while the press is still granted. `0 DUE` would read as "nothing to do" in the one minute
-    // where the answer is "all of it" — the same word the FLOWERS OPEN chip uses, on purpose.
+    // The ring layers ONLY on a dot that is already coloured (available) and not yet placed —
+    // never on a grey one.
     check(
-      'NECTAR chip: `ok` in the dump window says OPEN, never `0 DUE`',
-      hudSrc.includes('`NECTAR ${n} · OPEN`'),
+      'the due ring is layered only on an unplaced, already-coloured dot',
+      hudSrc.includes('!isPlaced && i - placed < ringCount'),
     );
+    // The dump window: past the 1:00 cue the WHOLE remaining stock may go in with nothing
+    // banked, so `due` is 0 while a press is still granted — every stock dot left rings.
     check(
-      'NECTAR chip: `none-owed` says so, so a dead button does not read as broken',
-      hudSrc.includes('`NECTAR ${n} · NONE OWED`'),
+      'the dump window rings the whole remaining stock, not just `due`',
+      hudSrc.includes('due > 0 ? Math.min(due, stock) : stock'),
     );
-    check(
-      'NECTAR chip: `none-left` drops the count — an empty stock is not a quantity',
-      hudSrc.includes("'NECTAR OUT'"),
-    );
-    check(
-      'NECTAR chip: `locked` (the FROZEN FIELD, not G410) states the stock alone',
-      hudSrc.includes('locked: (n) => `NECTAR ${n}`'),
-    );
-    // G410 keeps its OWN chip. The two are different rules about different acts — a frozen
-    // field versus a NECTAR entering a FLOWER — and one line for both would misstate both.
-    check('...and G410 keeps its own separate chip', hudSrc.includes('NECTAR LOCKED'));
-
     /**
-     * THE CUE HAS A POSITIVE SIGNAL, HELD, NOT A CHIP THAT SITS THERE FOR A MINUTE.
-     * NECTAR LOCKED used to just stop being drawn at 1:00, which is not a cue. The chip must
-     * go through `useHeldBump` (`opened`) or it becomes noise for the rest of the match, and
-     * it must reuse `chip on` — a colour token invented for one chip is a new pair for
-     * `npm run contrast` to audit.
+     * THE FLOWER ICON'S FILL IS A STANDING STATE, NOT A HELD-BUMP FLASH.
+     * "Grey before the 1:00 mark" is a standing fact for the rest of the match, unlike a G407
+     * warning, which genuinely only matters for a few seconds — so this one reads straight off
+     * `nectarLocked` instead of going through `useHeldBump`.
      */
-    check('HudSlots.tsx shows FLOWERS OPEN at the 1:00 cue', hudSrc.includes('FLOWERS OPEN'));
     check(
-      '...HELD off the match clock, not bound to the state for the rest of the match',
-      hudSrc.includes('{opened && '),
+      'the flower icon fill reads nectarLocked directly, as a standing state',
+      hudSrc.includes('f?.nectarLocked === false'),
     );
     check(
-      '...and it reuses `chip on` rather than a colour of its own',
-      hudSrc.includes('<span className="chip on">FLOWERS OPEN</span>'),
+      '...and the open class name says so',
+      hudSrc.includes("flowerOpen ? ' open'"),
     );
   }
 

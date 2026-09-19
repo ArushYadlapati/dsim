@@ -4,6 +4,7 @@ import { BiobuzzRobotPreview } from './RobotPreview';
 import {
   BiobuzzBuilderSlot,
   BiobuzzHudChips,
+  BiobuzzPinnedNotice,
   BiobuzzScoreBar,
   biobuzzResultsRows,
 } from './HudSlots';
@@ -46,6 +47,7 @@ export const BIOBUZZ_MODULE: GameModule = {
   Preview: BiobuzzRobotPreview,
   hudChips: BiobuzzHudChips,
   scoreBar: BiobuzzScoreBar,
+  pinnedNotice: BiobuzzPinnedNotice,
   resultsRows: biobuzzResultsRows,
   labels: { configSummary: bbConfigSummary },
   // THE START EDITOR. Empty, Configure fell into Chain Reaction's editor and the 2v2 lobby and
