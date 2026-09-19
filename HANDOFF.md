@@ -1,6 +1,47 @@
+# HANDOFF — 2026-09-19 (alpha: ROADMAP ROUND 2 LANDED — privacy & cookie settings, the 3D robot creator; alpha server redeployed for the export route)
+
+**READ FIRST.** Branch **`alpha`** (worktree `.claude/worktrees/pr-alpha`), pushed; every gate green on the
+merged tree (counts in the log). `dsim-alpha` was redeployed after the privacy merge (`GET /api/user/export`
+is a server route). The section directly below is the 3D builder's own handoff from `biobuzz-3d`; the
+ones after it are round 1 (auth, tutorial, contributors, plans) and the BIOBUZZ 3D days. All eight
+roadmap items are now either landed or a plan awaiting the owner's decisions:
+
+| # | item | state |
+|---|---|---|
+| 1 | 3D robot creator | landed (`feat/3d-builder` → `biobuzz-3d` → alpha): `Preview3D.tsx` on the `Preview` slot, `scene/renderPreview.ts` turntable built by the match's own `buildRobotGroup`, height + stow controls, saved-robot thumbnails; the chassis colour finally draws in 3D (fill = `chassisFill`, alliance = edge silhouette + sign panel), which also fixed the live match; three match render bugs fixed (mechanisms built inside the chassis, `specKey` missing `drivetrain`, group disposal) |
+| 2 | replay download 2D/3D | landed with BIOBUZZ Day 3 |
+| 3 | cosmetics | PLAN `docs/cosmetics-plan.md` — owner decisions pending |
+| 4 | rewards | PLAN `docs/rewards-plan.md` — owner decisions pending |
+| 5 | auth: reset, verification, terms | landed round 1; server gate off until `REQUIRE_VERIFIED_EMAIL=1` (`docs/deploy.md` §4) |
+| 6 | tutorial | landed round 1 (BIOBUZZ + DECODE) |
+| 7 | contributors | landed round 1; owner fills the `TODO` handles |
+| 8 | privacy & cookies | landed round 2: `src/storageKeys.ts` registry (17 keys; the privacy page renders from it; a smoke check forbids unregistered keys — the old prose listed four keys that never existed), analytics opt-out incl. the pageview beacon (`src/analyticsPref.ts`, `beforeSend`), `GET /api/user/export` (authed, one per minute, own rows only, ids-only for replays, no email column; 404 after deletion; 24 dbtest checks), the Your-data panel on `/privacy` with the existing typed-`DELETE` account deletion surfaced, a footer consent link that explains itself when the CMP offers no revocation entry; legal text changes (CCPA/CPRA paragraph, Poly Haven added to the processors, storage prose by category) with `LEGAL_VERSION` deliberately NOT bumped — bumping re-prompts every account; the owner decides |
+
+## Owner actions (consolidated)
+- Legal: review the round-1/round-2 wording (terms acceptance, CCPA line, Poly Haven processor, storage
+  categories); decide whether to bump `LEGAL_VERSION`.
+- Neon Auth: sender domain, "require email verification", then `REQUIRE_VERIFIED_EMAIL=1`.
+- Contributors' handles/avatars; the cosmetics and rewards decisions; test the 3D builder, the privacy
+  panel (export needs a signed-in session) and the tutorial on `alpha.playdsim.com`.
+- BIOBUZZ 3D rulings still open: lone-nectar flower scoring; weigh an element set; AI 59/100.
+
+## Gotchas (new)
+- An OLD server answers `/api/user/export` with a 200 from its `/api/user/<id>` profile route — guard
+  on the payload, not the status. `analytics.ts` reads `import.meta.env` at module scope, so the
+  pref lives in `analyticsPref.ts` (importable by `smoke.ts`).
+- `index.ts` fills `scene` and `previewScene` from ONE dynamic specifier on purpose: two would hoist
+  three.js into a shared chunk behind two facades that carry none of `bundleaudit`'s marker strings.
+  `specKey` moved out of the scene chunk (`src/games/biobuzz/specKey.ts`) so the thumbnail cache can
+  key on it without loading `three`. Thumbnails follow the device quality tier on purpose (pinning
+  High fetched a 1.7 MB HDRI to draw three 96-px cards).
+- Merging `biobuzz-3d` into `alpha` conflicts on `scripts/bundleaudit.mjs` (baselines) and
+  `scripts/vercel-prune.mjs` (alpha's has the rate-limit fix): take alpha's, then re-measure.
+
+---
+
 # HANDOFF — 2026-09-18 (feat/3d-builder: roadmap item 1, A PROPER 3D ROBOT CREATOR MENU — landed, not merged)
 
-**READ FIRST.** Branch **`feat/3d-builder`**, off `biobuzz-3d` at `cf794b6`, five commits, **not
+**(Previously READ FIRST.)** Branch **`feat/3d-builder`**, off `biobuzz-3d` at `cf794b6`, five commits, **not
 pushed and not merged**. Every gate green: `build` · `bundleaudit` · `npm test` (both suites) ·
 `uiindex`+`uiaudit` · `docaudit` · `server:check`. The section below is the whole of it; the
 Day 3 handoff it sits on top of follows underneath.
