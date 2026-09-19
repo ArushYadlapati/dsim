@@ -1875,6 +1875,156 @@ export function sim3dChecks(check: Check): void {
     }
   }
 
+  // ---- contact stiffness: the seat in a hive cell, and the rebound off the tiles -----------
+  //
+  // TWO OWNER REPORTS, ONE CAUSE AND ONE NEAR-MISS (2026-09-19).
+  //
+  // 1. "Elements mesh with the bottom of the HIVE." They do: a soft contact sags `g/(2*pi*f)^2`
+  //    at rest, and this world used to build with the shared `PHYS_CONTACT_FREQ` (12 Hz), which
+  //    is DECODE's robot-shove stiffness. MEASURED here, worst penetration of a settled element
+  //    into the cell floor plane after 900 ticks: 12 Hz -> 0.127in (3 elements) / 0.135in (5),
+  //    20 -> 0.056 / 0.062, 25 -> 0.043 / 0.047, 30 -> 0.035 / 0.039, 45 -> 0.025 / 0.028. The
+  //    world now takes `BB3_CONTACT_FREQ`.
+  //    THE TOLERANCE IS 0.06in, and it is picked to sit in the gap rather than beside a number:
+  //    it passes 25 Hz as well as the 30 Hz in the constant (so a re-tune inside the evidenced
+  //    band does not fail here), and it fails 12 Hz by more than 2x -- which is the regression
+  //    this check exists for, someone re-sharing the chassis constant with this world. For
+  //    scale, 0.06in is 4% of a POLLEN's 1.4in radius; the cell floor skin is what the owner is
+  //    looking at, so the bound is on what shows, not on what the solver would like.
+  //
+  // 2. "Make the balls bounce very slightly more from the field tiles." Two things were wrong.
+  //    The tiles had restitution 0, so the element/tile pair averaged to e = 0.223 (measured: a
+  //    24in drop rebounded 1.19in); `TILE_RESTITUTION` (`sim3d/bodies.ts`) makes that 0.25. And
+  //    `groundRoll3d`'s planar rest snap was taking `vz` with it, so an element landing with NO
+  //    planar speed -- a lob dropped straight down -- had its rebound zeroed on the tick it was
+  //    earned and did not bounce AT ALL. Both halves are asserted, because either one alone
+  //    still leaves the owner's report half-true.
+  for (const a of ['blue', 'red'] as const) {
+    for (const n of [3, 5]) {
+      const w = mkWorld3d('free', 490);
+      w.balls.length = 0;
+      const theta = hiveTiltAngle(w, a);
+      const sideSign: 1 | -1 = w.biobuzz!.hives[a].up === 'north' ? 1 : -1;
+      const box = hiveCellLocalBox(sideSign, a);
+      const wLocal = box.wMin + BB_POLLEN_R + 0.5;
+      const ids: number[] = [];
+      for (let i = 0; i < n; i++) {
+        const p = hiveWorldPoint(a, sideSign, theta, (i - (n - 1) / 2) * 3.2, box.vMin + 2 + (i % 2) * 2.4, wLocal);
+        const el: Artifact = {
+          id: i + 1,
+          color: 'yellow',
+          state: { kind: 'ground' },
+          pos: { x: p.x, y: p.y },
+          vel: { x: 0, y: 0 },
+          z: p.z - BB_POLLEN_R,
+          vz: 0,
+        };
+        ids.push(el.id);
+        w.balls.push(el);
+      }
+      for (let t = 0; t < 900; t++) step3d(w, 1 / 60, new Map());
+      let worst = -Infinity;
+      for (const id of ids) {
+        const b = w.balls.find((x) => x.id === id)!;
+        const r = b.r ?? BB_POLLEN_R;
+        // the element's centre, back in the tray's own (v, w) frame: a centre below the cell
+        // floor plane (`box.wMin`) by more than one radius is a sphere sunk into that floor.
+        const local = rotate2(b.pos.y, b.z + r - BB3_HIVE_PIVOT_Z, -theta);
+        worst = Math.max(worst, box.wMin + r - local.b);
+      }
+      const inCell = ids.filter((id) => w.biobuzz!.hives[a].contents.includes(id)).length;
+      check(
+        `contact stiffness: ${n} elements settled in ${a}'s up cell all stayed in it`,
+        inCell === n,
+        `${inCell}/${n} contained`,
+      );
+      check(
+        `contact stiffness: a settled element rests ON ${a}'s cell floor, not in it (<= 0.06in)`,
+        worst <= 0.06,
+        `worst penetration ${worst.toFixed(4)}in -- 0.035in at BB3_CONTACT_FREQ 30, 0.127in at the shared 12`,
+      );
+    }
+  }
+  {
+    /** drop a POLLEN from `dropZ` (bottom height, in) with planar speed `vx`; return the height
+     * its BOTTOM reaches after the first bounce, or 0 if it never left the tiles. */
+    const reboundApex = (vx: number, dropZ: number): number => {
+      const w = mkWorld3d('free', 31);
+      w.balls.length = 0;
+      w.balls.push({
+        id: 900,
+        color: 'yellow',
+        state: { kind: 'ground' },
+        // the open garden corner: clear of the flowers, the hive and both start boxes.
+        pos: { x: -40, y: -30 },
+        vel: { x: vx, y: 0 },
+        z: dropZ,
+        vz: 0,
+      });
+      let apex = 0;
+      let rebounding = false;
+      for (let t = 0; t < 400; t++) {
+        step3d(w, 1 / 60, new Map());
+        const b = w.balls[0];
+        if (!rebounding) {
+          if (b.vz > 0.5) rebounding = true; // the tiles have just handed it back some speed
+        } else {
+          apex = Math.max(apex, b.z);
+          if (b.vz <= 0 && b.z <= 0.05) break; // back down -- one bounce is all this measures
+        }
+      }
+      return apex;
+    };
+    // A 24in drop arrives at 141in/s. The rebound HEIGHT is e^2 * drop, so this band is really a
+    // band on e: 1.30..1.70in is e 0.233..0.266 around the measured 1.485in (e 0.249). It fails
+    // LOW at the old restitution-0 tiles (1.19in, e 0.223) and it fails HIGH by a mile if anyone
+    // gives the pair a MAX combine rule instead of the average (e 0.45 -> 4.9in) -- the tempting
+    // one-word version of this change, and not what "very slightly more" asked for.
+    const drift = reboundApex(20, 24);
+    check(
+      'tiles: a POLLEN dropped 24in with planar drift rebounds 1.30-1.70in (e ~= 0.25)',
+      drift >= 1.3 && drift <= 1.7,
+      `apex ${drift.toFixed(4)}in, e=${Math.sqrt(Math.max(drift, 0) / 24).toFixed(3)}`,
+    );
+    // THE SAME BALL, STRAIGHT DOWN. Before `groundRoll3d` stopped taking `vz` with the planar
+    // rest snap this was 0.0000in -- not a small bounce, none -- because a vertical drop has no
+    // planar speed for the snap to spare. The two numbers must agree: the tiles cannot care
+    // whether the ball happened to be moving sideways as well.
+    const straight = reboundApex(0, 24);
+    check(
+      'tiles: a POLLEN dropped STRAIGHT DOWN bounces the same as one with drift (the rest snap does not eat vz)',
+      straight >= 1.3 && straight <= 1.7 && Math.abs(straight - drift) <= 0.05,
+      `straight ${straight.toFixed(4)}in vs drift ${drift.toFixed(4)}in`,
+    );
+  }
+  {
+    // THE TWO WORLDS ARE BUILT THE SAME. `sim3d/predict.ts` hand-copies `buildEngine`'s four
+    // integration parameters into its own Rapier world, and nothing at runtime notices when only
+    // one of them moves -- the symptom is a client whose predicted contacts solve at a different
+    // stiffness from the authority's, i.e. a reconcile snap on every landed shot, in every
+    // server-connected match. Asserted at the SOURCE because the predictor does not expose its
+    // world, and this is the cheap guard that would have caught the copy going stale.
+    const params = (src: string): Record<string, string> => {
+      const out: Record<string, string> = {};
+      for (const m of src.matchAll(/integrationParameters\.(\w+)\s*=\s*([^;]+);/g)) out[m[1]] = m[2].trim();
+      return out;
+    };
+    const engineSrc = params(readFileSync('src/games/biobuzz/sim3d/engineImpl.ts', 'utf8'));
+    const predictSrc = params(readFileSync('src/games/biobuzz/sim3d/predict.ts', 'utf8'));
+    const keys = ['lengthUnit', 'numSolverIterations', 'contact_natural_frequency', 'normalizedAllowedLinearError'];
+    const mismatched = keys.filter((k) => engineSrc[k] === undefined || engineSrc[k] !== predictSrc[k]);
+    check(
+      'predict: the predictor world is built with the same four integration parameters as the authority',
+      mismatched.length === 0,
+      mismatched.map((k) => `${k}: engine=${engineSrc[k]} predict=${predictSrc[k]}`).join('; '),
+    );
+    check(
+      "predict: both worlds take BIOBUZZ's own contact stiffness, not the shared robot one",
+      engineSrc.contact_natural_frequency === 'BB3_CONTACT_FREQ',
+      `engine=${engineSrc.contact_natural_frequency}`,
+    );
+  }
+
   // ---- perf: 2v2 (4 robots), median/p95 step3d cost ----------------------------------------
   {
     const w = createBiobuzzWorld(

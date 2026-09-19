@@ -160,6 +160,31 @@ const FRAME_COUNT = 2;
 const FLOOR_HALF_T = 10;
 
 /**
+ * THE TILES' OWN RESTITUTION — the owner's "make the balls bounce very slightly more from the
+ * field tiles" (2026-09-19), and it is deliberately a SMALL number rather than a big one.
+ *
+ * Rapier combines a pair's restitution with the default AVERAGE rule unless one side asks for
+ * something stronger, and the element collider (`engineImpl.ts`'s `syncElement`) asks only for
+ * MAX FRICTION, not max restitution. So the element/tile coefficient is `(0.45 + floor) / 2`:
+ * MEASURED at floor 0, a POLLEN dropped 24 in with planar drift rebounds to 1.19 in, i.e. an
+ * effective e of 0.223, which is exactly `BB3_ELEMENT_RESTITUTION / 2`. At 0.05 that becomes
+ * 0.25 and the same drop rebounds to ~1.50 in — a quarter more bounce height, which is the
+ * "very slightly" the request asks for, and a tenth of what handing the pair a MAX rule would
+ * have done (e 0.45, a 4.9-in rebound off the same drop).
+ *
+ * APPROX: no coefficient for a real BIOBUZZ element on FTC's foam tiles has been measured —
+ * `BB3_ELEMENT_RESTITUTION` itself is flagged APPROX in `../config` for the same reason — so
+ * this is sized to the owner's report, not to an instrument.
+ *
+ * ⚠️ It is the SAME collider the robots rest on, and the pair is averaged there too: a chassis
+ * sets restitution 0, so robot/tile is 0.025 rather than 0. That is inert in practice — a
+ * BIOBUZZ robot never leaves the tiles, so there is no approach velocity for a restitution to
+ * act on — and the SIM3D lane's drive-feel parity checks measure it. Give this a MAX combine
+ * rule and that stops being true.
+ */
+const TILE_RESTITUTION = 0.05;
+
+/**
  * ⚠️ **THE TRAY AND ITS OWN FRAME DO NOT COLLIDE**, and under the DYNAMIC see-saw that is the
  * difference between a hive that tips and one that does not.
  *
@@ -239,7 +264,7 @@ export function buildStatics3d(
     RAPIER.ColliderDesc.cuboid(1000, 1000, FLOOR_HALF_T)
       .setFriction(0)
       .setFrictionCombineRule(RAPIER.CoefficientCombineRule.Min)
-      .setRestitution(0),
+      .setRestitution(TILE_RESTITUTION),
     ground,
   );
 
@@ -780,8 +805,10 @@ export function chassis3dShapes(spec: RobotSpec, heightIn: number): Chassis3dSha
 }
 
 // ---- ELEMENTS -----------------------------------------------------------------
-// a dynamic sphere per ground/flight/hive-cell element. A flower-parked element is FIXED (see
-// `engine.ts`'s sync rule) and is built with `RAPIER.RigidBodyDesc.fixed()` instead.
+// a dynamic sphere per element that wants a body at all — ground, flight, hive cell AND flower.
+// The Day 1 sentence here said a flower-parked element was FIXED instead; that has been false
+// since Day 2 gave the flowers real tubes, `wantsDynamicBody` (`engineImpl.ts`) returns true for
+// every `element`, and the stale claim cost one investigation an afternoon of disproving it.
 
 export function elementMass(isNectar: boolean): number {
   return BB3_ELEMENT_MASS * (isNectar ? BB3_NECTAR_MASS_RATIO : 1);

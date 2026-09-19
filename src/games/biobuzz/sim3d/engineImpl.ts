@@ -14,8 +14,8 @@ import { rapier3d, type Rapier3d } from './engine';
 import type { Alliance, Artifact, BallState, RobotState, World } from '../../../types';
 import { chassisInertia } from '../../../sim/robot';
 import { shoveMass } from '../../../sim/drivetrain';
-import { BALL_REST_SPEED, PHYS_FRICTION, PHYS_WALL_FRICTION, GRAVITY, PHYS_SOLVER_ITERS, PHYS_CONTACT_FREQ, PHYS_ALLOWED_ERROR } from '../../../config';
-import { BB3_CCD_SPEED, BB3_LAUNCH_CLEAR_MAX, BB3_LAUNCH_CLEAR_SLOP, BB3_LAUNCH_CLEAR_STEP, BB3_REST_SPEED, BB3_REST_TICKS, BB3_ROLL_DECEL, BB3_ROLL_FLOOR_Z, BB_POLLEN_R, bbHeightNow } from '../config';
+import { BALL_REST_SPEED, PHYS_FRICTION, PHYS_WALL_FRICTION, GRAVITY, PHYS_SOLVER_ITERS, PHYS_ALLOWED_ERROR } from '../../../config';
+import { BB3_CCD_SPEED, BB3_CONTACT_FREQ, BB3_LAUNCH_CLEAR_MAX, BB3_LAUNCH_CLEAR_SLOP, BB3_LAUNCH_CLEAR_STEP, BB3_REST_SPEED, BB3_REST_TICKS, BB3_ROLL_DECEL, BB3_ROLL_FLOOR_Z, BB_POLLEN_R, bbHeightNow } from '../config';
 import { chassis3dShapes, type Chassis3dShape } from './bodies';
 import {
   buildHiveTray3d,
@@ -44,10 +44,11 @@ interface LastRobot {
   angVel: number;
 }
 
-/** the LAST JSON an element body was synced to. `fixed` records which BODY KIND it was built
- * as (dynamic ground/flight/hive-cell vs. a fixed flower-parked seat), so a state change that
- * crosses that line (a capture into `held`, a placement into a FLOWER) is caught even when the
- * position happens not to have moved. */
+/** the LAST JSON an element body was synced to — what `syncElement` diffs against, the same way
+ * `LastRobot` works. It used to carry a `fixed` flag recording which BODY KIND the element was
+ * built as, back when a flower-parked element was a FIXED body; since Day 2 every element that
+ * wants a body at all is dynamic (`wantsDynamicBody`), the flag was written `false` at all three
+ * call sites and read nowhere, so it is gone. */
 interface LastElement {
   x: number;
   y: number;
@@ -55,7 +56,6 @@ interface LastElement {
   vx: number;
   vy: number;
   vz: number;
-  fixed: boolean;
 }
 
 export interface Engine3d {
@@ -121,7 +121,22 @@ function buildEngine(world: World): Engine3d {
   // DIFFERENT Rapier solvers rather than the shared drivetrain model -- see the SIM3D lane's
   // drive-feel checks, which now measure in the open field instead.
   world3d.integrationParameters.numSolverIterations = PHYS_SOLVER_ITERS;
-  world3d.integrationParameters.contact_natural_frequency = PHYS_CONTACT_FREQ;
+  // ⚠️ CONTACT STIFFNESS IS THE ONE PARAMETER THAT IS **NOT** THE 2D ROBOT SOLVE'S.
+  // `PHYS_CONTACT_FREQ` (12 Hz) is tuned for DECODE's robot-robot shove and cannot move — its
+  // own header records that 15 Hz broke the classifier-jitter ratchet and 25 Hz broke two G408
+  // checks. A soft contact sags `g/(2·π·f)²` at rest, which at 12 Hz is 0.068 in of overlap on
+  // every resting pair in this world: MEASURED here, an element settled in a HIVE cell sank
+  // 0.127 in into the tray floor (3 or 5 elements, both alliances, 900 ticks) and a POLLEN
+  // column in a FLOWER tube overlapped itself by up to 0.95 in at capacity. The 2D pipeline
+  // already answered this question the other way for BALLS — `PHYS_BALL_CONTACT_FREQ` is 25,
+  // "stiffer than the robot world (12 Hz), which let two grounded balls sit visibly
+  // overlapping" — and the 3D engine runs ONE world, so it had been giving every element in it
+  // the chassis numbers. `BB3_CONTACT_FREQ` is BIOBUZZ's own dial; at 30 Hz the same cell
+  // measurement is 0.035 in. See its header in `../config` for the full sweep.
+  // ⚠️ `sim3d/predict.ts` builds a SECOND world with a hand-copied parameter block and must
+  // carry the same four values, or a predicted contact solves at a different stiffness from the
+  // authoritative one and every landed shot reconciles with a snap. The SIM3D lane asserts it.
+  world3d.integrationParameters.contact_natural_frequency = BB3_CONTACT_FREQ;
   world3d.integrationParameters.normalizedAllowedLinearError = PHYS_ALLOWED_ERROR;
   buildStatics3d(RAPIER, world3d, PHYS_WALL_FRICTION);
   // THE TRAY IS BUILT AT THE POSE THE WORLD SAYS IT IS IN, not at level: a dynamic body created
@@ -525,7 +540,7 @@ function syncElement(RAPIER: Rapier3d, engine: Engine3d, world: World, b: Artifa
       body,
     );
     engine.elements.set(b.id, body);
-    engine.lastElement.set(b.id, { x: b.pos.x, y: b.pos.y, z: b.z, vx: b.vel.x, vy: b.vel.y, vz: b.vz, fixed: false });
+    engine.lastElement.set(b.id, { x: b.pos.x, y: b.pos.y, z: b.z, vx: b.vel.x, vy: b.vel.y, vz: b.vz });
     return;
   }
 
@@ -548,7 +563,7 @@ function syncElement(RAPIER: Rapier3d, engine: Engine3d, world: World, b: Artifa
   // the "a resting element stays at rest" invariant this port has to hold.
   const wantCcd = hyp3(b.vel.x, b.vel.y, b.vz) > BB3_CCD_SPEED;
   if (existing.isCcdEnabled() !== wantCcd) existing.enableCcd(wantCcd);
-  engine.lastElement.set(b.id, { x: b.pos.x, y: b.pos.y, z: b.z, vx: b.vel.x, vy: b.vel.y, vz: b.vz, fixed: false });
+  engine.lastElement.set(b.id, { x: b.pos.x, y: b.pos.y, z: b.z, vx: b.vel.x, vy: b.vel.y, vz: b.vz });
 }
 
 /** sync every artifact in `world.balls`. */
@@ -674,7 +689,7 @@ export function readback(world: World, engine: Engine3d): void {
     b.vel.x = round4(v.x);
     b.vel.y = round4(v.y);
     b.vz = round4(v.z);
-    engine.lastElement.set(b.id, { x: b.pos.x, y: b.pos.y, z, vx: b.vel.x, vy: b.vel.y, vz: b.vz, fixed: false });
+    engine.lastElement.set(b.id, { x: b.pos.x, y: b.pos.y, z, vx: b.vel.x, vy: b.vel.y, vz: b.vz });
   }
 }
 
@@ -783,8 +798,19 @@ export function groundRoll3d(world: World, engine: Engine3d, dt: number): void {
       const k = speed > 1e-9 ? ns / speed : 0;
       b.vel.x *= k;
       b.vel.y *= k;
-      if (ns === 0) b.vz = 0;
-      body.setLinvel({ x: b.vel.x, y: b.vel.y, z: ns === 0 ? 0 : b.vz }, true);
+      // ⚠️ **THE PLANAR SNAP MUST NOT STEAL A LIVE REBOUND.** This used to read
+      // `if (ns === 0) b.vz = 0`, which killed the BOUNCE of anything landing with no planar
+      // speed of its own: an element dropped straight down reaches the floor band
+      // (`BB3_ROLL_FLOOR_Z`) with `speed` 0, so `ns` is 0, so the `vz` the solver had just
+      // given it back was zeroed on the very tick it was earned. MEASURED, a pollen dropped
+      // from 24 in: with planar drift it rebounds to 1.19 in (effective e 0.223, which is the
+      // element's own 0.45 averaged with the tiles'); dropped vertically it rebounded to
+      // nothing at all and crept down to rest instead. The rest snap is a ROLLING law — it is
+      // about a ball that will not stop sliding — so it now only takes `vz` when `vz` is
+      // itself at rest, and `BALL_REST_SPEED` (2 in/s) is the same threshold the planar half
+      // uses. A settled element still snaps exactly as before: its `vz` is already ~0.
+      if (ns === 0 && Math.abs(b.vz) < BALL_REST_SPEED) b.vz = 0;
+      body.setLinvel({ x: b.vel.x, y: b.vel.y, z: b.vz }, true);
       // THE SPIN GOES WITH IT. Scaled by the same factor while it is rolling, zeroed with it at
       // rest — a stopped sphere still spinning re-accelerates itself through floor contact.
       const w = body.angvel();

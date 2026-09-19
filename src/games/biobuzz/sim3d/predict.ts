@@ -1,5 +1,5 @@
 import type { Artifact, RobotCommand, RobotState, Vec2, World } from '../../../types';
-import { SIM_DT, PHYS_FRICTION, PHYS_WALL_FRICTION, GRAVITY, PHYS_SOLVER_ITERS, PHYS_CONTACT_FREQ, PHYS_ALLOWED_ERROR } from '../../../config';
+import { SIM_DT, PHYS_FRICTION, PHYS_WALL_FRICTION, GRAVITY, PHYS_SOLVER_ITERS, PHYS_ALLOWED_ERROR } from '../../../config';
 import { updateRobot } from '../../../sim/robot';
 import { chassisInertia } from '../../../sim/robot';
 import { shoveMass } from '../../../sim/drivetrain';
@@ -7,6 +7,7 @@ import { robotExtents, squareUpRobotsWalls } from '../../../sim/physics';
 import { dcos, dsin } from '../../../math';
 import {
   BB3_CCD_SPEED,
+  BB3_CONTACT_FREQ,
   BB_HALF_X,
   BB_HALF_Y,
   BB_POLLEN_R,
@@ -262,7 +263,14 @@ export function createFullPredictor(world: World, localRobotId: number): Predict
   const world3d = new RAPIER.World({ x: 0, y: 0, z: -GRAVITY });
   world3d.integrationParameters.lengthUnit = 10;
   world3d.integrationParameters.numSolverIterations = PHYS_SOLVER_ITERS;
-  world3d.integrationParameters.contact_natural_frequency = PHYS_CONTACT_FREQ;
+  // ⚠️ THE SAME FOUR PARAMETERS AS THE AUTHORITATIVE WORLD (`engineImpl.ts`'s `buildEngine`),
+  // and `contact_natural_frequency` is BIOBUZZ's own `BB3_CONTACT_FREQ`, not the shared
+  // `PHYS_CONTACT_FREQ` the robot solve uses -- see that function's comment for why the 3D
+  // world needs a stiffer contact than DECODE's chassis shove does. This block is HAND-COPIED,
+  // so moving one and not the other predicts contacts at a different stiffness from the
+  // authority and reconciles with a snap on every landed shot; the SIM3D lane asserts the two
+  // worlds agree rather than trusting the copy.
+  world3d.integrationParameters.contact_natural_frequency = BB3_CONTACT_FREQ;
   world3d.integrationParameters.normalizedAllowedLinearError = PHYS_ALLOWED_ERROR;
   buildStatics3d(RAPIER, world3d, PHYS_WALL_FRICTION);
   // the trays are KINEMATIC here whatever `BB3_HIVE_DYNAMIC` says — see the header.

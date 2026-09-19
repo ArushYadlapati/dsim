@@ -56,6 +56,29 @@ export { bbFlowerAtIntake };
  * The highest centre that clears the backstop is 21.05 for a POLLEN and 20.64 for a NECTAR
  * (`sqrt(r² − 0.375²)` below 22.40); the top plate's underside, 20.254, is below both with room
  * to spare and is a MEASURED feature rather than a number tuned against that arithmetic.
+ *
+ * ⚠️ **AND THE DROP IS DEAD ON THE AXIS ON PURPOSE. DO NOT JITTER IT.** This is the obvious
+ * thing to try, because the column it produces is a mathematically perfect vertical line — every
+ * POLLEN settles at dxy 0.0000, and the 3.222-in lower bore leaves a 2.8-in POLLEN 0.211 in of
+ * radial slack it never uses, so a lateral seat looks like the cure for "the balls stack too
+ * perfectly". MEASURED through `step3d` in flower 0 at `BB3_CONTACT_FREQ` = 30, worst
+ * pollen-pollen centre gap against the ideal 2.800 (4-stack / 8-stack overlap, max dxy):
+ *
+ *   offset 0      0.065 / 0.152 in, dxy 0.000   ← today
+ *   offset 0.032  0.795 / 0.834,    dxy 1.015
+ *   offset 0.053  0.790 / 0.834,    dxy 1.015
+ *   offset 0.084  0.796 / 0.831,    dxy 1.015
+ *   offset 0.160  0.790 / 0.829,    dxy 1.015
+ *
+ * An offset of 15 % of the slack already TOPPLES the column — a ball ends up an inch off the
+ * axis, resting on the shoulder of the one below instead of on top of it — and that costs an
+ * ORDER OF MAGNITUDE of interpenetration, because a shouldered pair's centres sit far closer
+ * than a stacked pair's. The response is not proportional either: 0.032 and 0.160 topple the
+ * same amount, so there is no small safe value. The reason is the tube itself: above the lower
+ * plate the bore opens to 3.896 and then to 4.171, and nothing up there holds a column vertical.
+ * What made the picture read as fake was the INTERPENETRATION, not the alignment, and that was a
+ * contact-stiffness question — `BB3_CONTACT_FREQ`, applied in `engineImpl.ts` — not a drop-point
+ * one. The FLOWER3D lane measures both halves.
  */
 const PLACE_CENTRE_Z = FLOWER_RING_Z.top[0];
 
