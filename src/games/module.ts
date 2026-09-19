@@ -79,6 +79,12 @@ export interface GameModule extends GameSimModule {
   /** the whole bottom red|timer|blue bar, for a game that needs a different one.
    * Absent means the shared bar, which is what both current games use. */
   scoreBar?: ComponentType<GameHudProps>;
+  /** a line PINNED above the event log's toasts while some live countdown is running (a PIN's
+   * clock ticking down, say) — the log itself only ever shows things that already happened, so
+   * a running countdown would otherwise have to re-fire as a new toast every tick, and it does
+   * not have that shape (BIOBUZZ). The component reads its own condition and renders `null`
+   * when there is nothing to pin, exactly like `hudChips`. */
+  pinnedNotice?: ComponentType<GameHudProps>;
   /**
    * The score BREAKDOWN sections for the results screens.
    *

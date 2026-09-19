@@ -611,6 +611,7 @@ function Hud({ hud, showEventLog }: { hud: HudSnapshot; showEventLog: boolean })
   // the ones that were already there.
   const GameScoreBar = moduleFor(hud.game).scoreBar;
   const GameChips = moduleFor(hud.game).hudChips;
+  const GamePinnedNotice = moduleFor(hud.game).pinnedNotice;
   const urgent = hud.timeLeft <= 10 && (hud.phase === 'auto' || hud.phase === 'teleop');
   const endgame = hud.timeLeft <= ENDGAME_START && hud.phase === 'teleop';
   const redScore = hud.alliance === 'red' ? hud.score.total : hud.oppTotal;
@@ -767,7 +768,6 @@ function Hud({ hud, showEventLog }: { hud: HudSnapshot; showEventLog: boolean })
               {hud.butterflyMode && (
                 <span className="chip">{hud.butterflyMode === 'tank' ? 'TRACTION' : 'MECANUM'}</span>
               )}
-              <span className={`chip ${hud.gamepadConnected ? 'on' : 'off'}`}>🎮</span>
               {/* NO PEER-COUNT CHIP. "NET 2P" was a headcount, and a headcount is only news
                   the moment it CHANGES — which is exactly what the two chips beside it already
                   say out loud: `WAITING · <name>` when somebody is missing, `⚠ DESYNC` when the
@@ -810,6 +810,7 @@ function Hud({ hud, showEventLog }: { hud: HudSnapshot; showEventLog: boolean })
           field corner clear, and nothing here is actionable. */}
       {showEventLog && (
         <div className="eventlog" aria-live="polite">
+          {GamePinnedNotice && <GamePinnedNotice hud={hud} />}
           {hud.toasts.map((t) => (
             <div key={t.id} className="eventlog-line">
               {t.text}
