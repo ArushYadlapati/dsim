@@ -1,12 +1,27 @@
 # BIOBUZZ manual-conformance audit — findings for review
 
+*Written 2026-09-13 against `79f55f4`. **Re-verified 2026-09-19 against `b7fa0ce`** (branch
+`sync-engine`), 293 commits later, 107 of them touching `src/games/biobuzz/`,
+`scripts/smoke-biobuzz/` or the BIOBUZZ docs. Every finding below carries a **Status
+2026-09-19** line stating what it looks like now; the finding bodies above those lines are the
+original text and are NOT rewritten, so a stale file:line in one of them is evidence of the
+move, not an error to fix in place. Three findings were added by the re-verification
+(BB-53 – BB-55) and are marked as such.*
+
 ## Preamble
 
 This is a gap audit of the BIOBUZZ season implementation (`src/games/biobuzz/`, plus the shared surfaces it rides on) against the FTC BIOBUZZ Competition Manual V1 of 2026-09-12: Section 8 (GAME OVERVIEW), Section 9 (ARENA), Section 10 (GAME DETAILS), and the Section 11 G-rules that Section 10 points into. Verbatim manual text was the authority. `docs/biobuzz/manual-distilled.md` was used as a secondary reference and agreed with the verbatim text everywhere it was checked.
 
 The implementation is already deep. Every point value in Table 10-2 is exact, every assessment instant in §10.5 A–G is modelled, five G-rules are enforced against their own text, and the smoke lane pins several of the manual's figures case by case. Roughly 150 manual facts were checked and confirmed correct; they are listed in the appendix so the coverage can be judged. What follows is the residue.
 
-**Headline count: 0 critical, 2 major, 13 minor, 37 nit. 52 findings.**
+**Headline count as written: 0 critical, 2 major, 13 minor, 37 nit. 52 findings.**
+
+**Headline count at 2026-09-19: 55 findings — 4 closed, 3 half-closed, 4 superseded by a
+change of authority, 44 open. The 44 open are 1 major, 13 minor, 30 nit; no criticals, then
+or now.** One of the two majors (BB-01) is fixed with the test it asked for; BB-02 is the
+survivor. Of the four findings that could change a number a player sees, two are fixed (BB-01,
+BB-04) and two are open (BB-02, BB-11). Three findings were added: BB-53 (the CAD ruling),
+BB-54 (G409 is live and still listed as absent) and BB-55 (the 3D lane is unaudited).
 
 **Every finding names the rule that governs it.** Sections 8, 9 and 10 carry no G-numbers of their own, so each finding is resolved to the rule it is actually about. Eleven are governed by a real game rule or robot rule and name it. The rest are governed by a numbered section, a table, or repo doctrine, and say so outright rather than borrowing a rule number that does not cover them. The rule is the second column of the summary, it is in brackets in every heading, and the by-rule index below the summary groups the findings under it.
 
@@ -16,63 +31,129 @@ Thirty-one of the 52 are terminology, stale documentation, dead constants, or te
 
 ---
 
+## Re-verification — 2026-09-19
+
+### What moved under the audit
+
+Six things changed in the 293 commits, and they are why some findings closed, some got
+sharper, and four stopped being answerable in their own terms.
+
+1. **A settle clock exists.** `GameSimModule.settled` is a real slot, `src/sim/settle.ts` is
+   the shared clock, and `src/games/biobuzz/settle.ts` fills it. The score is harvested when
+   the field comes to rest rather than at a fixed 2.8 s, bounded by `MATCH_SETTLE_MAX_S`.
+   `MATCH_SETTLE_S` itself was not moved, so DECODE and Chain Reaction stayed put — which is
+   what BB-01 asked for. This closes the more expensive of the two majors.
+2. **Every instant line is gated on `post`.** `cellPts`, `gardenPts` and `parkTele` now pay
+   only at the buzzer while their counts stay live (`score.ts:490-492`). That closes BB-04 and
+   moves BB-17 and BB-42 onto slightly different ground.
+3. **⚠️ THE FIELD'S GEOMETRY IS CAD-AUTHORITATIVE, NOT MANUAL-AUTHORITATIVE.** Owner ruling
+   2026-09-18: "The CAD is authoritative for dimensions." `src/games/biobuzz/fieldDims.gen.ts`
+   is generated from FIRST's own field STEP (v26-27.2, sha256 `5e768b73…`) and `config.ts`
+   reads it. Where a V1 figure disagrees with a measured number, the measured number wins.
+   **This changes what a §9 finding IS.** It is the single most important fact for anyone
+   using this document, and it is written up as BB-53.
+4. **BIOBUZZ has a second physics backend and a 3D renderer.** `sim3d/` (18 files, 4,713
+   lines, Rapier 3D deterministic) and `scene/` (11 files, 6,632 lines, Three.js), both lazy
+   chunks, plus `ai/` (3 files, 1,205 lines). None of it existed when this audit was written
+   and none of it has been read against the manual — BB-55.
+5. **A sixth rule is enforced.** G409 (catching a spilling element) bills a VERBAL WARNING
+   from the 3D contact pass (`penalties.ts:112-136`, called by `sim3d/contacts3d.ts`). It is
+   3D-only, and the file's own NOT-HERE list still says it is not modelled — BB-54.
+6. **LEAVE was re-read.** It is now "clear the wall(s) the robot STARTED against"
+   (`BiobuzzState.startWalls`) rather than all four, measured against a solo practice match
+   where the all-four reading paid 0 at the buzzer. BB-16's description is stale; the 1.25 in
+   tolerance it actually complains about is not.
+
+### The Appendix B limit that lifted
+
+`npm run test:bb` was run this time. **2,536 checks, all pass**, across fourteen lanes
+(CORE · SIM3D · HIVE3D · FLOWER3D · PREDICT · AI · FIELD · RULES · SERVER · ROBOT · SPONSOR ·
+RENDER · NET3D · TUTORIAL), 80 s. So every test-gap finding below is a gap in a green suite,
+not a gap in a broken one. This remains a read-only audit in every other respect: no
+screenshots, no visual verification, no 3D scene inspection.
+
+### Status at a glance
+
+| status | ids | n |
+|---|---|---|
+| **FIXED** | BB-01, BB-04, BB-49, BB-52 | 4 |
+| **PARTLY FIXED / HALF FIXED / PARTLY CLOSED** | BB-15, BB-33, BB-40 | 3 |
+| **SUPERSEDED or REFRAMED** — the finding still names something real, but its own terms changed | BB-16, BB-18, BB-19, BB-45 | 4 |
+| **OPEN, unchanged** | BB-02, BB-03, BB-05 – BB-14, BB-17, BB-20 – BB-32, BB-34 – BB-39, BB-41 – BB-44, BB-46 – BB-48, BB-50, BB-51 | 41 |
+| **NEW at 2026-09-19** | BB-53, BB-54, BB-55 | 3 |
+
+### If you are fixing three things this week
+
+- **BB-02** is the only remaining major and it is the smallest of the three: latch G410 the
+  way G402 and G417 latch, plus two smoke cases across the phase boundary.
+- **BB-53** costs no code at all. It is a page of writing that stops the next reader
+  believing the shipped field matches the manual's printed figures.
+- **BB-13** got wider rather than narrower — fifteen files now carry `APPROX` outside the one
+  file the documented worklist greps. Changing two comment strings to `grep -rn APPROX
+  src/games/biobuzz/` is a one-line fix to a work list that is currently wrong by an order of
+  magnitude.
+
+---
+
 ## Summary
 
-| id | rule | title | severity | category |
-|---|---|---|---|---|
-| BB-01 | **§10.5 A** | A HIVE TIP still swinging at the buzzer scores nothing | major | missing-scoring |
-| BB-02 | **G410** | G410 double-bills one illegal NECTAR across the AUTO→TELEOP boundary | major | penalty |
-| BB-03 | **§9.8** | A held NECTAR collides as a POLLEN | minor | geometry |
-| BB-04 | **Table 10-2** | GARDEN points accrue during AUTO | minor | missing-scoring |
-| BB-05 | **G403** | A turret slews under power in `pre`, the transition and `post` | minor | penalty |
-| BB-06 | **G427** | G427.C is not modelled: an entered NECTAR can land inside a ROBOT | minor | penalty |
-| BB-07 | **G407** | G407 is given DECODE's G408.C LOADING ZONE carve-out | minor | penalty |
-| BB-08 | **G417** | G417 is disabled outright, so the HIVE-protection rule bills nothing | minor | penalty |
-| BB-09 | **§10.6.1** | No card path exists in BIOBUZZ | minor | missing-rule |
-| BB-10 | **repo doctrine** | No fouls are assessed in Free Drive | minor | penalty |
-| BB-11 | **Table 10-2** | WIN and TIE ranking points are never computed or printed | minor | missing-scoring |
-| BB-12 | **§10.5.1** | Three owner rulings narrow manual-legal scoring paths | minor | missing-scoring |
-| BB-13 | **repo convention** | The APPROX worklist grep misses nine constants | minor | other |
-| BB-14 | **§9.6** | Four `BB_TIP_POLLEN` rows are single bench readings and carry no marker | minor | wrong-value |
-| BB-15 | **internal** | A cluster of placeholder-era comments still declares BIOBUZZ unscored | minor | other |
-| BB-16 | **§10.5.4** | LEAVE requires 1.25 in of wall clearance the rule does not ask for | nit | wrong-value |
-| BB-17 | **§10.5.3** | `bbInGarden` adds a not-held condition §10.5.3 does not state | nit | missing-rule |
-| BB-18 | **§9.6.1** | HIVE frame bars are 50.0 in outer-to-outer against a printed 49.46 | nit | geometry |
-| BB-19 | **§9.7** | The lower FLOWER ring is a flat floor, not a seat | nit | geometry |
-| BB-20 | **§10.6.1** | The RP block ignores `voided` | nit | missing-rule |
-| BB-21 | **§10.4** | AUTO is driver-controlled | nit | missing-rule |
-| BB-22 | **G418.A** | Nothing launched can enter a FLOWER | nit | missing-rule |
-| BB-23 | **G408** | `bbIntakeAccepts` enforces G408 structurally | nit | penalty |
-| BB-24 | **G419** | G419 and G420 are absent from the “deliberately not here” list | nit | penalty |
-| BB-25 | **Table 9-1** | “END GAME” is burned into every exported BIOBUZZ replay video | nit | terminology |
-| BB-26 | **Table 9-1** | The HUD clock shows the phase countdown, not the field timer | nit | ux-hud |
-| BB-27 | **Table 10-4** | The sanction line says WARNING where the manual says VERBAL WARNING | nit | terminology |
-| BB-28 | **§9.3** | The gallery label abbreviates LOADING ZONE to “LZ” | nit | terminology |
-| BB-29 | **§9.8** | `bb.scored` and the config summary say POLLEN where they mean elements | nit | terminology |
-| BB-30 | **§9.8** | `BiobuzzState.held`'s example invents a QUEEN | nit | terminology |
-| BB-31 | **§10.4** | `bb.endgame` has no reader and an unreachable `'climbed'` member | nit | other |
-| BB-32 | **§10.3.1** | `BB_POLLEN_SIM = 60` is a dead element count with a live marker | nit | staging |
-| BB-33 | **R105.A** | `BB_TAPE_2` and `BB_EXPANSION` are dead constants | nit | other |
-| BB-34 | **G421** | Stale comment claims G421's solid probe reads DECODE's field | nit | other |
-| BB-35 | **§9.6.1** | Two stale doc claims inside live contracts | nit | other |
-| BB-36 | **§10.5.2** | Stale hand-worked z values in the rules.ts FLOWER block | nit | other |
-| BB-37 | **G403** | Test gap: the transition is never stepped with a live mechanism | nit | test-gap |
-| BB-38 | **§10.4** | Test gap: the `ZERO_CMD` substitution is unpinned | nit | test-gap |
-| BB-39 | **§10.1** | Test gap: BIOBUZZ's phase machine never asserts the durations | nit | test-gap |
-| BB-40 | **§10.5 C** | Test gap: nothing pins an element landing during `post` | nit | test-gap |
-| BB-41 | **§10.5.1** | Test gap: no opponent-coloured NECTAR is ever staged in a CELL | nit | test-gap |
-| BB-42 | **§10.5 D** | Test gap: the FLOWER line is never scored at a non-post phase | nit | test-gap |
-| BB-43 | **§10.5.3** | Test gap: no GARDEN check uses a NECTAR | nit | test-gap |
-| BB-44 | **§9.3** | Test gap: BB_LZ and BB_GARDEN dimensions are never asserted | nit | test-gap |
-| BB-45 | **§9.6** | Test gap: no HIVE dimension is pinned as a literal | nit | test-gap |
-| BB-46 | **§9.9** | Test gap: the AprilTag id groups are unpinned | nit | test-gap |
-| BB-47 | **§10.5.2** | Test gap: the FLOWER owner/bonus fan-out is never split across alliances | nit | test-gap |
-| BB-48 | **G426** | Test gap: the G426.A entitlement is never exercised in AUTO | nit | test-gap |
-| BB-49 | **§9.8** | Test gap: nothing pins the 40 / 8 / 8 element split | nit | test-gap |
-| BB-50 | **Table 10-3** | Test gap: all four RP checks sit off the threshold boundary | nit | test-gap |
-| BB-51 | **Table 10-2** | Test gap: `biobuzzResultsRows` is never invoked by any suite | nit | test-gap |
-| BB-52 | **seam contract** | Test gap: two of the four game registrations are unpinned | nit | test-gap |
-
+| id | rule | title | severity | category | status 09-19 |
+|---|---|---|---|---|---|
+| BB-01 | **§10.5 A** | A HIVE TIP still swinging at the buzzer scores nothing | major | missing-scoring | FIXED |
+| BB-02 | **G410** | G410 double-bills one illegal NECTAR across the AUTO→TELEOP boundary | major | penalty | OPEN |
+| BB-03 | **§9.8** | A held NECTAR collides as a POLLEN | minor | geometry | OPEN |
+| BB-04 | **Table 10-2** | GARDEN points accrue during AUTO | minor | missing-scoring | FIXED |
+| BB-05 | **G403** | A turret slews under power in `pre`, the transition and `post` | minor | penalty | OPEN |
+| BB-06 | **G427** | G427.C is not modelled: an entered NECTAR can land inside a ROBOT | minor | penalty | OPEN |
+| BB-07 | **G407** | G407 is given DECODE's G408.C LOADING ZONE carve-out | minor | penalty | OPEN |
+| BB-08 | **G417** | G417 is disabled outright, so the HIVE-protection rule bills nothing | minor | penalty | OPEN by ruling |
+| BB-09 | **§10.6.1** | No card path exists in BIOBUZZ | minor | missing-rule | OPEN |
+| BB-10 | **repo doctrine** | No fouls are assessed in Free Drive | minor | penalty | OPEN |
+| BB-11 | **Table 10-2** | WIN and TIE ranking points are never computed or printed | minor | missing-scoring | OPEN |
+| BB-12 | **§10.5.1** | Three owner rulings narrow manual-legal scoring paths | minor | missing-scoring | OPEN |
+| BB-13 | **repo convention** | The APPROX worklist grep misses nine constants | minor | other | OPEN |
+| BB-14 | **§9.6** | Four `BB_TIP_POLLEN` rows are single bench readings and carry no marker | minor | wrong-value | OPEN |
+| BB-15 | **internal** | A cluster of placeholder-era comments still declares BIOBUZZ unscored | minor | other | PARTLY FIXED |
+| BB-16 | **§10.5.4** | LEAVE requires 1.25 in of wall clearance the rule does not ask for | nit | wrong-value | REFRAMED |
+| BB-17 | **§10.5.3** | `bbInGarden` adds a not-held condition §10.5.3 does not state | nit | missing-rule | OPEN |
+| BB-18 | **§9.6.1** | HIVE frame bars are 50.0 in outer-to-outer against a printed 49.46 | nit | geometry | OPEN |
+| BB-19 | **§9.7** | The lower FLOWER ring is a flat floor, not a seat | nit | geometry | SUPERSEDED by measurement |
+| BB-20 | **§10.6.1** | The RP block ignores `voided` | nit | missing-rule | OPEN |
+| BB-21 | **§10.4** | AUTO is driver-controlled | nit | missing-rule | OPEN |
+| BB-22 | **G418.A** | Nothing launched can enter a FLOWER | nit | missing-rule | OPEN |
+| BB-23 | **G408** | `bbIntakeAccepts` enforces G408 structurally | nit | penalty | OPEN |
+| BB-24 | **G419** | G419 and G420 are absent from the “deliberately not here” list | nit | penalty | OPEN |
+| BB-25 | **Table 9-1** | “END GAME” is burned into every exported BIOBUZZ replay video | nit | terminology | OPEN |
+| BB-26 | **Table 9-1** | The HUD clock shows the phase countdown, not the field timer | nit | ux-hud | OPEN |
+| BB-27 | **Table 10-4** | The sanction line says WARNING where the manual says VERBAL WARNING | nit | terminology | OPEN |
+| BB-28 | **§9.3** | The gallery label abbreviates LOADING ZONE to “LZ” | nit | terminology | OPEN |
+| BB-29 | **§9.8** | `bb.scored` and the config summary say POLLEN where they mean elements | nit | terminology | OPEN |
+| BB-30 | **§9.8** | `BiobuzzState.held`'s example invents a QUEEN | nit | terminology | OPEN |
+| BB-31 | **§10.4** | `bb.endgame` has no reader and an unreachable `'climbed'` member | nit | other | OPEN |
+| BB-32 | **§10.3.1** | `BB_POLLEN_SIM = 60` is a dead element count with a live marker | nit | staging | OPEN |
+| BB-33 | **R105.A** | `BB_TAPE_2` and `BB_EXPANSION` are dead constants | nit | other | HALF FIXED |
+| BB-34 | **G421** | Stale comment claims G421's solid probe reads DECODE's field | nit | other | OPEN |
+| BB-35 | **§9.6.1** | Two stale doc claims inside live contracts | nit | other | OPEN |
+| BB-36 | **§10.5.2** | Stale hand-worked z values in the rules.ts FLOWER block | nit | other | OPEN |
+| BB-37 | **G403** | Test gap: the transition is never stepped with a live mechanism | nit | test-gap | OPEN |
+| BB-38 | **§10.4** | Test gap: the `ZERO_CMD` substitution is unpinned | nit | test-gap | OPEN |
+| BB-39 | **§10.1** | Test gap: BIOBUZZ's phase machine never asserts the durations | nit | test-gap | OPEN |
+| BB-40 | **§10.5 C** | Test gap: nothing pins an element landing during `post` | nit | test-gap | PARTLY CLOSED |
+| BB-41 | **§10.5.1** | Test gap: no opponent-coloured NECTAR is ever staged in a CELL | nit | test-gap | OPEN |
+| BB-42 | **§10.5 D** | Test gap: the FLOWER line is never scored at a non-post phase | nit | test-gap | OPEN |
+| BB-43 | **§10.5.3** | Test gap: no GARDEN check uses a NECTAR | nit | test-gap | OPEN |
+| BB-44 | **§9.3** | Test gap: BB_LZ and BB_GARDEN dimensions are never asserted | nit | test-gap | OPEN |
+| BB-45 | **§9.6** | Test gap: no HIVE dimension is pinned as a literal | nit | test-gap | SUPERSEDED |
+| BB-46 | **§9.9** | Test gap: the AprilTag id groups are unpinned | nit | test-gap | OPEN |
+| BB-47 | **§10.5.2** | Test gap: the FLOWER owner/bonus fan-out is never split across alliances | nit | test-gap | OPEN |
+| BB-48 | **G426** | Test gap: the G426.A entitlement is never exercised in AUTO | nit | test-gap | OPEN |
+| BB-49 | **§9.8** | Test gap: nothing pins the 40 / 8 / 8 element split | nit | test-gap | FIXED |
+| BB-50 | **Table 10-3** | Test gap: all four RP checks sit off the threshold boundary | nit | test-gap | OPEN |
+| BB-51 | **Table 10-2** | Test gap: `biobuzzResultsRows` is never invoked by any suite | nit | test-gap | OPEN |
+| BB-52 | **seam contract** | Test gap: two of the four game registrations are unpinned | nit | test-gap | FIXED |
+| BB-53 | **§9 (all)** | The shipped field is the CAD's, not the manual's, and nothing says so where a rules reader looks | minor | other | NEW |
+| BB-54 | **G409** | G409 is enforced in 3D and still listed as "NOT HERE" | nit | other | NEW |
+| BB-55 | **audit scope** | The 3D pipeline, the 3D renderer and the AI drivers have never been read against the manual | nit | coverage | NEW |
 ## By rule
 
 What each rule number covers, so a question about one rule is answerable in one look. A finding
@@ -83,6 +164,7 @@ listed under a numbered section is one the manual governs without a G-rule.
 - **G403** — BB-05, BB-37
 - **G407** — BB-07
 - **G408** — BB-23
+- **G409** — BB-54
 - **G410** — BB-02
 - **G417** — BB-08
 - **G418.A** — BB-22
@@ -94,6 +176,7 @@ listed under a numbered section is one the manual governs without a G-rule.
 
 **Governed by a numbered section, no G-rule exists**
 
+- **§9 (all)** — BB-53
 - **§9.3** — BB-28, BB-44
 - **§9.6** — BB-14, BB-45
 - **§9.6.1** — BB-18, BB-35
@@ -119,12 +202,15 @@ listed under a numbered section is one the manual governs without a G-rule.
 - **repo convention** — BB-13
 - **repo doctrine** — BB-10
 - **seam contract** — BB-52
+- **audit scope** — BB-55
 
 ---
 
 ## BB-01 — [§10.5 A] A HIVE TIP still swinging at the buzzer scores nothing
 
 *Rule: §10.5 A. Severity: major. Category: missing-scoring.*
+
+**Status 2026-09-19 — FIXED.** The module now states a settle requirement, which is what the finding asked for. `GameSimModule.settled` is a real slot (`src/games/types.ts`), the shared clock lives in `src/sim/settle.ts`, and BIOBUZZ fills it with `bbSettled` (`src/games/biobuzz/settle.ts`) — no element moving, no HIVE swinging, no TIP owed by the load table, every robot at rest. `MATCH_SETTLE_S` was left alone, so DECODE and Chain Reaction did not move; a `MATCH_SETTLE_MAX_S` cap bounds the wait. `score.ts:453` also credits a swing that is in flight at the buzzer (`hive.tips + (matchOver && (swinging || pending) ? 1 : 0)`). The test half landed too: `scripts/smoke-biobuzz/rules.ts:765-810` starts a swing at T−0.5 s, steps the real pipeline into `post`, and asserts the score never falls after the buzzer and the 20 lands at the harvest tick.
 
 **The rule.** No G-rule governs this. §10.5 A is the governing text: “Assessment of HIVE TIPS occurs throughout the MATCH and continues until all SCORING ELEMENTS and ROBOTS have come to rest at the conclusion of the MATCH.”
 
@@ -157,6 +243,8 @@ Give the module a way to state a settle requirement, so the room and the control
 ## BB-02 — [G410] G410 double-bills one illegal NECTAR across the AUTO→TELEOP boundary
 
 *Rule: G410. Severity: major. Category: penalty.*  Also bears on: Table 10-4, Table 10-6.
+
+**Status 2026-09-19 — OPEN.** Unchanged in substance. The wholesale wipe is still `penalties.ts:273` (`bb.foulEdge = {}`) inside the same `!isAuto && !isTeleop` guard, and G410 still fires through the bare rising edge at `penalties.ts:326` with no per-MATCH latch beside G402's and G417's. `rules.ts:1020-1072` still runs the whole G410 block at a fixed `teleop`. This is now the only major left in the set.
 
 **The rule.** “ROBOTS may not enter NECTAR into the FLOWER scoring volume until the last 60 seconds of the MATCH.” Penalty: MAJOR FOUL per NECTAR.
 
@@ -196,6 +284,8 @@ Latch G410 the way G402 and G417 latch, so the award survives the `foulEdge` cle
 
 *Rule: §9.8. Severity: minor. Category: geometry.*
 
+**Status 2026-09-19 — OPEN.** `robot.ts:219` is still `held.push({ kind: 'circle', cx: b.state.lx, cy: b.state.ly, r: radius })`. `config.ts:599` now names it explicitly — "`bbRobotSolids` is the one holdout" — so the code has gone from admitting the gap in the constant's doc comment to admitting it twice. ⚠️ Re-scope before fixing: the 3D pipeline carries its own held-element bodies (`sim3d/robot3d.ts`, `sim3d/elements3d.ts`), so "one expression" is now the 2D half of the answer and the 3D half needs its own read.
+
 **The rule.** No G-rule governs this. §9.8 is the governing text: “POLLEN are approximately 2.8 in. … NECTAR are approximately 3.6 in.”
 
 **What the manual says**
@@ -223,6 +313,8 @@ A robot carrying NECTAR presents a 2.8 in plug where the element is 3.6 in. A gr
 ## BB-04 — [Table 10-2] GARDEN points accrue during AUTO
 
 *Rule: Table 10-2. Severity: minor. Category: missing-scoring.*  Also bears on: §10.5 E.
+
+**Status 2026-09-19 — FIXED.** `score.ts:492` is `s.gardenPts = matchOver ? s.gardenCount * BB_PTS.garden : 0`, gated exactly as `cellPts` is on the line above, with the comment naming §10.5 E as the same instant as C. `parkTele` (`:490`) went with it. The count stays live as the driver's readout, which is what the finding proposed. Pinned at `rules.ts:639-648`: the garden line is 0 through `pre`/`auto`/`teleop` and pays at `post`, with the count 1 throughout.
 
 **The rule.** No G-rule governs this. Table 10-2 is the governing text: The GARDEN row reads AUTO “-”, TELEOP 1. §10.5 E: “Assessment of GARDEN scoring occurs at the end of TELEOP.”
 
@@ -252,6 +344,8 @@ Gate `gardenPts` on the phase the way `cellPts` is gated, keeping `gardenCount` 
 
 *Rule: G403. Severity: minor. Category: penalty.*  Also bears on: G404.
 
+**Status 2026-09-19 — OPEN.** Unchanged, and now argued rather than merely stated. `play.ts:689-692` still runs the stage-5b slew for every non-passive robot with no `enabled` gate, and the comment there has grown the rebuttal the finding anticipated: "Spawn aims a turret at FIELD CENTRE, so gating this on `enabled` would start every match with a swing off that bearing on the first live tick." The finding's answer to that — seed `turretHeading` on `bbAimTarget`'s bearing in `spawn.ts` so there is nothing to slew off — is still unbuilt, so the argument is still load-bearing.
+
 **The rule.** “Any powered movement of the ROBOT or any of its MECHANISMS” during the 8-second transition. G404 extends it past the end of TELEOP. Penalty: VERBAL WARNING; MAJOR FOUL and YELLOW CARD per MATCH, if STRATEGIC.
 
 **What the manual says**
@@ -280,6 +374,8 @@ Gate the stage-5b slew on `enabled` the way `bbLaunch` is, and have `spawn.ts` s
 
 *Rule: G427. Severity: minor. Category: penalty.*  Also bears on: G204.
 
+**Status 2026-09-19 — OPEN.** Unchanged. `play.ts:1213` still lands the entry at `bbLoadingZoneSpot(a, BB_NECTAR_R)` through `clearOfStatics` (`play.ts:155,177`), which clears statics and nothing else, and `bb.nectarWhy` still carries only `none-left` / `locked` / `ok` / `none-owed` (`play.ts:1234-1240`) — no refusal channel for an occupied footprint.
+
 **The rule.** Constraints on where and how a SCORING ELEMENT is entered onto the FIELD. Penalty: MINOR FOUL per SCORING ELEMENT.
 
 **What the manual says**
@@ -306,6 +402,8 @@ Refuse the entry while a robot overlaps the entry footprint and say so through `
 ## BB-07 — [G407] G407 is given DECODE's G408.C LOADING ZONE carve-out
 
 *Rule: G407. Severity: minor. Category: penalty.*  Also bears on: G408.
+
+**Status 2026-09-19 — OPEN.** Unchanged. `penalties.ts:192` is still `carveOut: (a) => BB_LZ[a]`, and the shared consumer is still `src/sim/penalties.ts:596`.
 
 **The rule.** “A ROBOT may not simultaneously CONTROL more than 4 SCORING ELEMENTS.” Penalty: VERBAL WARNING; MAJOR FOUL and YELLOW CARD per MATCH, if STRATEGIC.
 
@@ -335,6 +433,8 @@ Drop `carveOut` from `BB_CONTROL_GEOMETRY`, since the shared field is optional, 
 
 *Rule: G417. Severity: minor. Category: penalty.*  Also bears on: Table 10-4.
 
+**Status 2026-09-19 — OPEN by ruling.** Unchanged and still correct as described. `penalties.ts:155` is `BB_G417_ENABLED = false`, the loop still opens `if (!BB_G417_ENABLED) continue` (`:473`), and `rules.ts:1535` still pins the disabled state. No code change was asked for.
+
 **The rule.** “ROBOTS may not manipulate the motion of the HIVE in any way other than by LAUNCHING SCORING ELEMENTS into an upward-facing CELL.” Penalty: VERBAL WARNING; MAJOR FOUL and YELLOW CARD per MATCH, if STRATEGIC.
 
 **What the manual says**
@@ -360,6 +460,8 @@ No code change needed while the ruling stands. Keep `BB_G417_ENABLED` as the one
 ## BB-09 — [§10.6.1] No card path exists in BIOBUZZ
 
 *Rule: §10.6.1. Severity: minor. Category: missing-rule.*  Also bears on: §10.6.3, Table 10-4.
+
+**Status 2026-09-19 — OPEN.** Unchanged. `rg awardCard src/games/biobuzz` is still empty and the sole call site in the repo is still DECODE's G408 (`src/sim/penalties.ts:424`). The sanction text builders did move to a shared module in the interim (`src/sim/penaltyLog.ts`), which already exports `cardEventText` — so the string half of the plumbing now exists and only the award half is missing.
 
 **The rule.** No G-rule governs this. §10.6.1 is the governing text: “YELLOW CARDS are additive, meaning that a second YELLOW CARD is automatically converted to a RED CARD.” A RED CARD results in MATCH DISQUALIFICATION.
 
@@ -390,6 +492,8 @@ Wire `awardCard` into `bbAwardFoul` behind a fourth severity or a separate `bbAw
 
 *Rule: repo doctrine. Severity: minor. Category: penalty.*  Also bears on: §10.6.
 
+**Status 2026-09-19 — OPEN.** Unchanged. `penalties.ts:269-285` still returns early for anything that is not `auto` or `teleop`, still clearing both `bb.foulEdge` and `world.penalties.pins`, and the file header still gives edge-memory hygiene as the reason rather than a phase-scope argument.
+
 **The rule.** No G-rule governs this. repo doctrine is the governing text: No manual rule. CLAUDE.md states that DECODE assesses penalties in Free Drive, deliberately, because Free Drive is driver practice.
 
 **What the manual says**
@@ -417,6 +521,8 @@ Extend the guard to `auto | teleop | freeplay`, which makes only G421 and G407 l
 ## BB-11 — [Table 10-2] WIN and TIE ranking points are never computed or printed
 
 *Rule: Table 10-2. Severity: minor. Category: missing-scoring.*
+
+**Status 2026-09-19 — OPEN.** Unchanged. `score.ts:507-516` still builds `out.rp[a]` from exactly `swarm` / `pollinator1` / `pollinator2`, and nothing reads `BB_RP.win` or `BB_RP.tie`. The one thing that did change is the RP block's timing: SWARM now reads false until the end of AUTO because `parkAuto` is latched rather than live, and the comment there argues that "an RP is awarded at the end of the MATCH" — which is the same argument the finding makes for awarding WIN/TIE only at `post`.
 
 **The rule.** No G-rule governs this. Table 10-2 is the governing text: “WIN — Completing a MATCH with more MATCH points than your opponent” 3 RP. “TIE … the same MATCH points” 1 RP.
 
@@ -446,6 +552,8 @@ Add `win` and `tie` to `BbRankPoints` (or one `winTie: 0|1|3`), set them in `bbS
 ## BB-12 — [§10.5.1] Three owner rulings narrow manual-legal scoring paths
 
 *Rule: §10.5.1. Severity: minor. Category: missing-scoring.*  Also bears on: §10.5.2, G407.
+
+**Status 2026-09-19 — OPEN, and the list has grown.** No divergences block exists: `rg -i divergence docs/biobuzz-reference.md docs/area/biobuzz.md` is empty, and each ruling still lives only at its enforcement site. Three more rulings have landed since, which raises the value of collecting them: the CAD-over-manual ruling of 2026-09-18 (see BB-53), the LEAVE re-reading (see BB-16), and G409 being 3D-only (see BB-54).
 
 **The rule.** No G-rule governs this. §10.5.1 is the governing text: The HIVE TIP and FLOWER scoring criteria, which these owner rulings narrow.
 
@@ -477,6 +585,8 @@ Nothing to change if the rulings stand. Collect them, plus BB-08's G417 switch a
 
 *Rule: repo convention. Severity: minor. Category: other.*
 
+**Status 2026-09-19 — OPEN, wider.** The nine became more. `APPROX` now appears in fifteen files under `src/games/biobuzz/` outside `config.ts` — `hive.ts` (14), `flower.ts` (7), `drawShot.ts` (7), `drawField.ts` (4), `start.ts` (3), `presets.ts` (3), `penalties.ts` (3), and eight others with one or two each — against 74 in `config.ts`. Both stated worklist commands still say `grep APPROX src/games/biobuzz/config.ts` (`config.ts:20,151`; `drawField.ts:54`). The CAD generator relieves part of the pressure — the flower ring z values are now measured rather than derived — but it does not change the grep.
+
 **The rule.** No G-rule governs this. repo convention is the governing text: No manual rule. config.ts states that every constant not printed in the manual carries an APPROX marker, and that the grep for it is the tape-measure work list.
 
 **What the convention says**
@@ -505,6 +615,8 @@ Move the nine into `config.ts` (`flower.ts`'s own header already says the move i
 
 *Rule: §9.6. Severity: minor. Category: wrong-value.*
 
+**Status 2026-09-19 — OPEN.** Unchanged. `config.ts:535` is still `BB_TIP_POLLEN = [8, 7, 6, 3, 1, 0]` with no per-row marker. The constant got more load-bearing, not less: `sim3d/hive3d.ts` moved the 3D tip trigger off a torque balance and onto this same table (2026-09-19, so the HUD's "N MORE TO TIP" cannot lie), and `settle.ts` asks `hiveWillTip(hiveLoad(...))` to decide whether the match may finalize. Four unmarked bench rows now gate the settle clock as well as the score.
+
 **The rule.** No G-rule governs this. §9.6 is the governing text: “Each HIVE is bi-stable and will hold its position until enough POLLEN or NECTAR are LAUNCHED into the upwards-facing CELL.” V1 prints no threshold anywhere.
 
 **What the source says**
@@ -532,6 +644,8 @@ Mark rows 1, 2, 4 and 5 in the constant's own taxonomy, with a third marker such
 ## BB-15 — [internal] A cluster of placeholder-era comments still declares BIOBUZZ unscored
 
 *Rule: internal. Severity: minor. Category: other.*
+
+**Status 2026-09-19 — PARTLY FIXED.** One of the nine was answered properly: `index.ts:133-151` now carries a block explaining that `showScoreHud: false` is not "nothing is scored" and that `sim.ts` has said `scored: true` since 2026-09-12. The rest still read as written — `state.ts:220` (`SHELL: only 'none' is ever set`), `state.ts:253` (`SHELL: always 0 … nothing writes here`), `state.ts:282-283` (`SHELL: always empty — penalties.ts has no rules`), `step.ts:15` ("a playable, unscored match"), `spawn.ts:47` ("PLAYABLE, UNSCORED match"), `index.ts:33` ("Section 9 (ARENA) is a Kickoff placeholder, so the field is four walls and a tile grid" — now false twice over, since the field is generated from FIRST's CAD), and `robot.ts:81`. `index.ts:147` added a new one: "`startEditor: false` is still literally true (no legality model)" sits eighty lines under `startEditor: BiobuzzStartEditor` (`:63`) and against `startLegality: true` (`sim.ts:104`).
 
 **The rule.** No G-rule governs this. internal is the governing text: No manual rule. These are placeholder-era comments left from before the manual landed.
 
@@ -565,6 +679,8 @@ One pass deleting the SHELL and placeholder claims. `index.ts`'s `ui: { showScor
 
 *Rule: §10.5.4. Severity: nit. Category: wrong-value.*
 
+**Status 2026-09-19 — REFRAMED — the rule changed, the tolerance did not.** LEAVE was re-read in the interim and the finding's description of it is stale. `bbLeftNow` is now `(bbWallsTouched(r) & walls) === 0` (`score.ts:153-155`), where `walls` defaults to the mask of the walls the ROBOT STARTED AGAINST (`BiobuzzState.startWalls`) rather than all four — the owner's reading of "the perimeter wall", measured against a solo practice match where the all-four version paid 0 at the buzzer. What the finding actually raised survives untouched: `bbWallsTouched` (`score.ts:122-133`) still computes `BB_HALF_X - START_TOUCH_TOL` with `START_TOUCH_TOL` at 1.25 in (`src/config.ts:2830`), so clearing a wall still means backing a full 1.25 in off it. Under the new reading this bites harder, not less: it is now the only wall that matters.
+
 **The rule.** No G-rule governs this. §10.5.4 is the governing text: “To qualify for LEAVE points, a ROBOT must move so that it is no longer contacting the perimeter wall.”
 
 **What the manual says**
@@ -590,6 +706,8 @@ Shrink the tolerance to something well under a referee's eye, such as the contai
 ## BB-17 — [§10.5.3] `bbInGarden` adds a not-held condition §10.5.3 does not state
 
 *Rule: §10.5.3. Severity: nit. Category: missing-rule.*
+
+**Status 2026-09-19 — OPEN.** Unchanged. `score.ts:183` is still `if (ball.state.kind !== 'ground') return false` as the first line of `bbInGarden`. BB-04 landing does not settle it either way — the GARDEN line is now assessed at `post`, which is when a held element is most likely to be over the tape.
 
 **The rule.** No G-rule governs this. §10.5.3 is the governing text: “To qualify for GARDEN points, POLLEN or NECTAR must be at least partially in the GARDEN zone.”
 
@@ -619,6 +737,8 @@ If the GARDEN line moves to end-of-match assessment (BB-04), reconsider whether 
 
 *Rule: §9.6.1. Severity: nit. Category: geometry.*
 
+**Status 2026-09-19 — OPEN, and now anomalous.** `BB_FRAME_BAR_IN` 24 and `BB_FRAME_BAR_OUT` 25 (`config.ts:326-327`) are unchanged and still 50.0 in outer-to-outer against a printed 49.46, still with no note. The finding is sharper now than when it was written: every other dimension in this block comes from `fieldDims.gen.ts`, measured off FIRST's own CAD, so the frame bars are hand-typed numbers sitting inside a generated field. Whichever way it is resolved, it should be resolved the way the rest of the field was — by measuring the CAD, not by choosing between 24 and 24.73.
+
 **The rule.** No G-rule governs this. §9.6.1 is the governing text: “The frame is 49.46 in. (125.65 cm) wide, and 38.95 in. (98.95 cm) deep at its base.”
 
 **What the manual says**
@@ -647,6 +767,8 @@ Add the same one-line note the depth carries, or move `BB_FRAME_BAR_OUT` to 24.7
 
 *Rule: §9.7. Severity: nit. Category: geometry.*
 
+**Status 2026-09-19 — SUPERSEDED by measurement.** The ring z values are no longer hand-derived. `fieldDims.gen.ts` measures each FLOWER plate's own z band off the CAD — lower `[-0.199, 0.354]`, mid `[3.904, 5.254]`, top `[20.254, 21.404]` — and the generator's header records the deltas against the old constants (`BB_FLOWER_FLOOR_Z` APPROX 0.43, Δ 0.076). The clear gap between the lower plate's top and the mid plate's underside comes out at 3.55 in, which is Figure 9-12's Retrieval Opening derived rather than assumed. The "seat versus floor" question the finding raised is answerable from the measured plate bands now, and its conclusion — that nothing downstream moves — still holds.
+
 **The rule.** No G-rule governs this. §9.7 is the governing text: “There is a lower ring that sits on the TILE floor and is approximately 0.4 in. (1.0 cm) tall with an hole for POLLEN to sit in that is approximately 2.79 in. (7.1 cm) diameter.”
 
 **What the manual says**
@@ -674,6 +796,8 @@ Leave it, or recess by `min(ringHeight, R − sqrt(R² − (2.79/2)²))` if the 
 ## BB-20 — [§10.6.1] The RP block ignores `voided`
 
 *Rule: §10.6.1. Severity: nit. Category: missing-rule.*  Also bears on: Table 10-4.
+
+**Status 2026-09-19 — OPEN.** Unchanged. `bbApplyScore` still honours the void for MATCH points (`score.ts:560`) and the RP block at `score.ts:507-516` still never reads `world.match.scores[a].voided`. Still latent for the same reason: BB-09 has not landed, so no BIOBUZZ alliance can be voided.
 
 **The rule.** No G-rule governs this. §10.6.1 is the governing text: DISQUALIFIED is “the state of a team in which they receive 0 MATCH points and 0 RANKING POINTS in a Qualification MATCH”.
 
@@ -704,6 +828,8 @@ Zero the whole `rp[a]` record when `world.match.scores[a].voided`, in the same l
 
 *Rule: §10.4. Severity: nit. Category: missing-rule.*  Also bears on: G305, G401.
 
+**Status 2026-09-19 — OPEN.** Unchanged. `sim.ts:130` is still `autoPaths: false` and no `updatePathTraversal` call exists in `step.ts`. AI drivers landed in the interim (`src/games/biobuzz/ai/`, three tiers, `npm run test:ai`), which is a different thing — a scripted opponent, not a driver-authored auto path — so the seam the finding names is still where it was.
+
 **The rule.** No G-rule governs this. §10.4 is the governing text: “During AUTO, ROBOTS operate without any DRIVER control or input.”
 
 **What the manual says**
@@ -732,6 +858,8 @@ If this is to be closed, the seam exists: implement `updatePathTraversal` in `bi
 
 *Rule: G418.A. Severity: nit. Category: missing-rule.*  Also bears on: §10.5.2.
 
+**Status 2026-09-19 — OPEN.** Unchanged. `flowerAccepts` still has callers only in the smoke lane (`scripts/smoke-biobuzz/field.ts:3795-3798`), and placement is still the sole entry path. The 3D pipeline did not reopen it: `sim3d/flowerTube.ts` models the tube a placed element falls down, not a lobbed arrival.
+
 **The rule.** “ROBOTS may not enter SCORING ELEMENTS into … a FLOWER except: A. only enter POLLEN and NECTAR into the top of a FLOWER.” §10.5.2: “Placing SCORING ELEMENTS into the top of the FLOWER is the only allowable way to score.”
 
 **What the manual says**
@@ -759,6 +887,8 @@ No code change unless the owner reopens it. If reopened, `flowerAccepts` is alre
 ## BB-23 — [G408] `bbIntakeAccepts` enforces G408 structurally
 
 *Rule: G408. Severity: nit. Category: penalty.*
+
+**Status 2026-09-19 — OPEN, by design.** Unchanged. `bbIntakeAccepts` still refuses the opponent's NECTAR structurally, and G410's comment at `penalties.ts:330-332` still states the dependency out loud, which is the note the finding asked for. Left open only because the verbatim G408 text has still not been read (Appendix B).
 
 **The rule.** “A ROBOT may not CONTROL the opponent’s NECTAR.” Penalty: VERBAL WARNING; YELLOW CARD per MATCH, if STRATEGIC. No FOUL at any level.
 
@@ -790,6 +920,8 @@ Leave the structural refusal and note the dependency at the G410 site, so the tw
 
 *Rule: G419. Severity: nit. Category: penalty.*  Also bears on: G420, G421.
 
+**Status 2026-09-19 — OPEN.** Unchanged. `rg "G419|G420" src/games/biobuzz` is still empty. The NOT-HERE list itself moved on (`penalties.ts:59-61` now reads G405 / G409 / G411 / G418 / G426 / G427) but neither rule was added to it, and G409 has since become a live rule without leaving the list — see BB-54.
+
 **The rule.** “A ROBOT may not damage or functionally impair an opponent ROBOT.” G420 covers attaching, tipping over and entangling. The §11.4.5 preamble makes G419 and G420 mutually exclusive.
 
 **What the manual says**
@@ -817,6 +949,8 @@ Add G419 and G420 to the NOT-HERE list with the real reason, no damage model and
 ## BB-25 — [Table 9-1] “END GAME” is burned into every exported BIOBUZZ replay video
 
 *Rule: Table 9-1. Severity: nit. Category: terminology.*  Also bears on: §10.4.
+
+**Status 2026-09-19 — OPEN.** Unchanged. `src/ui/replayOverlay.ts:118-121` still splits on `m.phaseTimeLeft <= ENDGAME_START` and returns `'END GAME'` for every game, and the live BIOBUZZ bar is still correct.
 
 **The rule.** No G-rule governs this. Table 9-1 is the governing text: The audio cue table. “Final 20 seconds 0:20 Train Whistle” is the whole of what the manual attaches to that instant. BIOBUZZ defines no endgame period.
 
@@ -848,6 +982,8 @@ Gate the END GAME split on the game in `hudLabels`, or route it through a module
 
 *Rule: Table 9-1. Severity: nit. Category: ux-hud.*
 
+**Status 2026-09-19 — OPEN.** Still the phase countdown. `HudSlots.tsx:399` is now `hud.phase === 'post' ? '0:00' : fmtTime(hud.timeLeft)` — a `post` special case was added, the AUTO offset was not — so the AUTO buzzer still reads 0:00 where a real field reads 2:00.
+
 **The rule.** No G-rule governs this. Table 9-1 is the governing text: The primary FIELD timer reads 2:30 at MATCH start and 2:00 when AUTO ends.
 
 **What the manual says**
@@ -873,6 +1009,8 @@ BIOBUZZ owns its whole bottom bar, so the display half is local: in `BiobuzzScor
 ## BB-27 — [Table 10-4] The sanction line says WARNING where the manual says VERBAL WARNING
 
 *Rule: Table 10-4. Severity: nit. Category: terminology.*
+
+**Status 2026-09-19 — OPEN, and no longer local.** The string moved into the shared penalty log: `warningEventText` (`src/sim/penaltyLog.ts:79`) returns `WARNING - ${SIDE(alliance)} (${rule})`, and `penalties.ts:100` calls it. The parser `WARN_RE` (`penaltyLog.ts`) is written against the same shape, so the fix is now three edits rather than one — the builder, the regex, and the pinned strings in `rules.ts`. BIOBUZZ is still the only caller, so no other game moves with it.
 
 **The rule.** No G-rule governs this. Table 10-4 is the governing text: “VERBAL WARNING — a warning issued by event staff or the Head REFEREE.”
 
@@ -900,6 +1038,8 @@ BIOBUZZ owns its whole bottom bar, so the display half is local: in `BiobuzzScor
 
 *Rule: §9.3. Severity: nit. Category: terminology.*
 
+**Status 2026-09-19 — OPEN.** Unchanged. `drawField.ts:1253` still prints `${name} LZ` behind the gallery-labels flag.
+
 **The rule.** No G-rule governs this. §9.3 is the governing text: “LOADING ZONE: an approximately 23 in. … by 11 in. … volume bounded by red or blue tape and the adjoining FIELD perimeters.”
 
 **What the manual says**
@@ -925,6 +1065,8 @@ A reviewer reading a gallery still sees an abbreviation the manual never uses. I
 ## BB-29 — [§9.8] `bb.scored` and the config summary say POLLEN where they mean elements
 
 *Rule: §9.8. Severity: nit. Category: terminology.*
+
+**Status 2026-09-19 — OPEN.** Unchanged in both places. `state.ts:247` still declares `scored` as "POLLEN scored per alliance", and `labels.ts:182` still pushes `` `${spec.ballStorage ?? 0} pollen` `` into `bbConfigSummary`.
 
 **The rule.** No G-rule governs this. §9.8 is the governing text: “SCORING ELEMENTS for BIOBUZZ are POLLEN and NECTAR.” They are two distinct kinds.
 
@@ -954,6 +1096,8 @@ Say “elements” in both places. The manual has no collective noun, but SCORIN
 
 *Rule: §9.8. Severity: nit. Category: terminology.*
 
+**Status 2026-09-19 — OPEN.** Unchanged. `state.ts:263` still documents the latch bag with `held[robotId]['queen'] = true`.
+
 **The rule.** No G-rule governs this. §9.8 is the governing text: “SCORING ELEMENTS for BIOBUZZ are POLLEN and NECTAR.” There is no third kind.
 
 **What the manual says**
@@ -979,6 +1123,8 @@ Use one of the real keys as the example.
 ## BB-31 — [§10.4] `bb.endgame` has no reader and an unreachable `'climbed'` member
 
 *Rule: §10.4. Severity: nit. Category: other.*  Also bears on: §10.1.
+
+**Status 2026-09-19 — OPEN.** Unchanged. `state.ts:224` is still `type BbEndgame = 'none' | 'parked' | 'climbed'` with the stale SHELL comment above it (`:220`). The cost argument got heavier: this field now ships on the 3D snapshot path as well.
 
 **The rule.** No G-rule governs this. §10.4 is the governing text: The MATCH is AUTO, an 8-second transition and TELEOP. No endgame period is defined.
 
@@ -1010,6 +1156,8 @@ Delete `endgame` from `BiobuzzState`, since PARK already lives in `parkAuto`/`pa
 
 *Rule: §10.3.1. Severity: nit. Category: staging.*  Also bears on: §9.8.
 
+**Status 2026-09-19 — OPEN.** Unchanged. `config.ts:615` still declares `BB_POLLEN_SIM = 60` and `scripts/smoke-biobuzz/field.ts:24` still imports it without using it. Still open against `docs/biobuzz/feedback/002-thresholds.md:271` rather than as a second ticket.
+
 **The rule.** No G-rule governs this. §10.3.1 is the governing text: “40 POLLEN are staged on the FIELD as follows: 4 POLLEN in each of the 4 FLOWERS (16) … 4 POLLEN pre-loaded in each ROBOT (16).”
 
 **What the manual says**
@@ -1035,6 +1183,8 @@ Delete `BB_POLLEN_SIM` and the import at `scripts/smoke-biobuzz/field.ts:22`. Cl
 ## BB-33 — [R105.A] `BB_TAPE_2` and `BB_EXPANSION` are dead constants
 
 *Rule: R105.A. Severity: nit. Category: other.*  Also bears on: §9.3.
+
+**Status 2026-09-19 — HALF FIXED.** `BB_TAPE_2` is gone — the only surviving mention is a note in the `BB_TAPE_1` doc comment (`config.ts:219`) saying there is no other tape width on this field, which the CAD confirmed (sixteen strips, every one 1.000 in). `BB_EXPANSION` is still declared at `config.ts:1013` with no reader; `bbEnvelope` still works off `BB_PRISM` directly.
 
 **The rule.** In-MATCH expansion is limited to an 18 x 24 x 29 in sizing volume.
 
@@ -1062,6 +1212,8 @@ Delete both, or give `BB_TAPE_2` its reader: the GARDEN stroke currently draws t
 
 *Rule: G421. Severity: nit. Category: other.*
 
+**Status 2026-09-19 — OPEN.** Unchanged. `penalties.ts:606` still opens "⚠️ `isPinning`'s INTERNAL SOLID PROBE IS DECODE'S FIELD", and `bbPinSolid` is still passed thirty lines below.
+
 **The rule.** “A ROBOT may not PIN an opponent’s ROBOT for more than 3 seconds.” Penalty: MAJOR FOUL per instance and an additional MAJOR FOUL for every 3 seconds in which the situation is not corrected.
 
 **What the sim does**
@@ -1086,6 +1238,8 @@ Rewrite the block to record that the request landed and `bbPinSolid` is passed, 
 
 *Rule: §9.6.1. Severity: nit. Category: other.*  Also bears on: §10.5.1.
 
+**Status 2026-09-19 — OPEN.** Both unchanged. `hud.ts:65` still says the CELL "accepts nothing while this is > 0" against a `hiveAccepts` that takes elements through the whole swing, and `colliders.ts:48` still writes `BB_FRAME_Y = ±19.5` against a constant of 19.4. The first one costs more now than when it was written: `BbCellHud` is the contract the 3D client reads as well as the 2D one.
+
 **The rule.** No G-rule governs this. §9.6.1 is the governing text: The frame dimensions, and the HIVE TIP criteria the other stale claim touches.
 
 **What the sim does**
@@ -1109,6 +1263,8 @@ Fix both comments. The `tipping` one matters: it is the seam's own type document
 
 *Rule: §10.5.2. Severity: nit. Category: other.*
 
+**Status 2026-09-19 — OPEN.** Unchanged. `scripts/smoke-biobuzz/rules.ts:260-262` still hand-works the stack as 5.03 / 8.23 / 11.03.
+
 **The rule.** No G-rule governs this. §10.5.2 is the governing text: “NECTAR and POLLEN score when they are at least partially within the FLOWER scoring volume: between the top ring and the middle ring.”
 
 **What the sim does**
@@ -1130,6 +1286,8 @@ Update the four z values in the `rules.ts` comment to 1.83 / 5.78 / 8.98 / 11.78
 ## BB-37 — [G403] Test gap: the transition is never stepped with a live mechanism
 
 *Rule: G403. Severity: nit. Category: test-gap.*
+
+**Status 2026-09-19 — OPEN.** Unchanged, and now contradicted by a neighbour. Nothing steps the transition with a live mechanism and asserts the state is frozen, while `scripts/smoke-biobuzz/robot.ts:886` asserts the opposite for the played phases ("STEPPING THE WORLD moves the yaw axis off its spawn bearing"). The check the finding proposes would fail today on `turretHeading`, which is still the point.
 
 **The rule.** “Any powered movement of the ROBOT or any of its MECHANISMS” during the 8-second transition.
 
@@ -1156,6 +1314,8 @@ One check: build a world, snapshot every mechanism field for both robots, step 8
 ## BB-38 — [§10.4] Test gap: the `ZERO_CMD` substitution is unpinned
 
 *Rule: §10.4. Severity: nit. Category: test-gap.*  Also bears on: G403.
+
+**Status 2026-09-19 — OPEN.** Unchanged. The transition block in `core.ts:657-677` still steps one tick with an empty command map to check the phase-event vocabulary, and no call site anywhere in the lane holds a command through the 8 s and asserts the pose.
 
 **The rule.** No G-rule governs this. §10.4 is the governing text: “There is an 8-second transition period between AUTO and TELEOP for scoring purposes.”
 
@@ -1185,6 +1345,8 @@ In the existing `core.ts` transition block, place a robot, hold full throttle th
 
 *Rule: §10.1. Severity: nit. Category: test-gap.*  Also bears on: §10.4.
 
+**Status 2026-09-19 — OPEN.** Unchanged. The lane still reads the three constants rather than asserting them (`field.ts:1890,2371,2391,2597`), and every phase test still hand-writes `phase` and `phaseTimeLeft`. `npm test` still catches a value change through DECODE's clock, so the uncovered case is still a BIOBUZZ-specific mis-wiring.
+
 **The rule.** No G-rule governs this. §10.1 is the governing text: “a 30-second AUTO period, an 8-second transition period between AUTO and TELEOP, and a 2-minute TELEOP period”.
 
 **What the manual says**
@@ -1211,6 +1373,8 @@ Three lines in `scripts/smoke-biobuzz/rules.ts`: step a fresh `createBiobuzzWorl
 
 *Rule: §10.5 C. Severity: nit. Category: test-gap.*  Also bears on: §10.5 D, §10.5 E.
 
+**Status 2026-09-19 — PARTLY CLOSED.** The BB-01 fix brought most of this with it: `rules.ts:765-810` now steps the real pipeline from `teleop` through the whole of `post` to the settle harvest, so "gameplay keeps running in `post`" is no longer vacuous — a change that froze `post` would fail there. What is still unpinned is the specific case the finding named: an element in `{kind:'flight'}` at 0:00 that lands in a CELL, FLOWER or GARDEN during the post ticks. The spill half is covered incidentally, the shot half is not.
+
 **The rule.** No G-rule governs this. §10.5 C is the governing text: Assessment “will occur after all SCORING ELEMENTS and ROBOTS have come to rest at the conclusion of the MATCH”.
 
 **What the manual says**
@@ -1236,6 +1400,8 @@ One check: put a ball in `{kind:'flight'}` aimed at a cell, set phase `post`, st
 ## BB-41 — [§10.5.1] Test gap: no opponent-coloured NECTAR is ever staged in a CELL
 
 *Rule: §10.5.1. Severity: nit. Category: test-gap.*
+
+**Status 2026-09-19 — OPEN.** Unchanged. All `intoCell` call sites are still RED-only (`rules.ts:297, 306, 369, 771, 850`).
 
 **The rule.** No G-rule governs this. §10.5.1 is the governing text: “At the end of the MATCH, any POLLEN and/or NECTAR left in an upward-facing CELL will earn points for that ALLIANCE.”
 
@@ -1265,6 +1431,8 @@ Add a blue NECTAR to the staged red cell in the existing table check and extend 
 
 *Rule: §10.5 D. Severity: nit. Category: test-gap.*  Also bears on: §10.5.2.
 
+**Status 2026-09-19 — OPEN.** Unchanged in substance. The phase sweep at `rules.ts:445-465` still asserts the CELL line only, and `others()` still sums the flower lines into an identity rather than asserting them. The sweep did get narrower — it now runs `auto` and `teleop` against `post` — and the GARDEN half moved to its own check (`rules.ts:639-648`) as part of BB-04, so the FLOWER half is now the only line in the sweep with no per-phase assertion of its own.
+
 **The rule.** No G-rule governs this. §10.5 D is the governing text: “Assessment of SCORING ELEMENTS scored in a FLOWER will occur throughout the MATCH with final assessment taking place at the end of TELEOP.”
 
 **What the manual says**
@@ -1293,6 +1461,8 @@ Extend the same sweep with a per-line assertion that the FLOWER lines are live i
 
 *Rule: §10.5.3. Severity: nit. Category: test-gap.*
 
+**Status 2026-09-19 — OPEN.** Unchanged. Every element in every GARDEN check in the lane is still a POLLEN.
+
 **The rule.** No G-rule governs this. §10.5.3 is the governing text: “NECTAR belonging to either ALLIANCE and POLLEN scores in the GARDEN for the ALLIANCE that corresponds with the color of the GARDEN.”
 
 **What the manual says**
@@ -1318,6 +1488,8 @@ Two checks beside the existing GARDEN block: a blue NECTAR on red's strip gives 
 ## BB-44 — [§9.3] Test gap: BB_LZ and BB_GARDEN dimensions are never asserted
 
 *Rule: §9.3. Severity: nit. Category: test-gap.*
+
+**Status 2026-09-19 — OPEN, and worth more now.** Unchanged in the lane — still no depth or width literal anywhere — but the target moved underneath it. `BB_LZ` and `BB_GARDEN` are now built from the CAD's measured tape strips (`fieldDims.gen.ts`: sixteen 1.000-in strips, grouped by nominal length, with any edge within 1.25 in of a wall face snapped onto it). That is a better source than a hand-entered rect, and it is also a generated one that a regenerate can move. The finding's correction still applies and now has a second half: assert the generated rects against the manual's §9.3 figures AND record the deltas, rather than asserting bare literals.
 
 **The rule.** No G-rule governs this. §9.3 is the governing text: The LOADING ZONE is “23 in. … by 11 in.” and includes its tape; the GARDEN is “23 in. … by 2 in.” measured to the tape’s outside edge.
 
@@ -1345,6 +1517,8 @@ Four lines in `field.ts` beside the symmetry block. Note the correct expectation
 
 *Rule: §9.6. Severity: nit. Category: test-gap.*  Also bears on: §9.6.1, §9.6.2.
 
+**Status 2026-09-19 — SUPERSEDED — re-scope before writing the check.** The finding proposed pinning the HIVE constants against the manual's printed literals. That check would now FAIL BY DESIGN, and writing it as described would encode the wrong authority. Since the owner ruling of 2026-09-18 the HIVE dimensions are generated from FIRST's field CAD (`fieldDims.gen.ts`), and three of them disagree with the printed figures on purpose: `DOWN_FLOOR_Z` 31.981 against Figure 9-10's 25.5 (the generator's note works out that one rigid bar cannot put the up mouth at 53.4 and the down floor at 25.5 at once), `OPEN_Z` [53.375, 65.497] against [53.5, 65.6], and `CELL_W` 20.141 against a printed 20. `PIVOT_X` 12.75 and `TILT_DEG` 30 still match exactly. The real gap is the one the generated file cannot close for itself: nothing in the lane asserts that the generated values are the ones in the CAD report, and nothing anywhere states the three manual deltas where a rules reader would find them. See BB-53.
+
 **The rule.** No G-rule governs this. §9.6 is the governing text: The HIVE, frame and CELL dimensions printed in §9.6 and Figures 9-8 to 9-11.
 
 **What the manual says**
@@ -1370,6 +1544,8 @@ One block in `scripts/smoke-biobuzz/field.ts` asserting the manual literals: `2*
 ## BB-46 — [§9.9] Test gap: the AprilTag id groups are unpinned
 
 *Rule: §9.9. Severity: nit. Category: test-gap.*  Also bears on: §9.6.
+
+**Status 2026-09-19 — OPEN.** Unchanged. `rg -i "apriltag|BB_HIVE_TAGS" scripts/smoke-biobuzz` is still empty. Still the lowest-value item in the set.
 
 **The rule.** No G-rule governs this. §9.9 is the governing text: “AprilTag ID’s 30, 31, 32, 33 on the red CELL on the side of the FIELD opposite of the audience”, and the three further groups through 45.
 
@@ -1397,6 +1573,8 @@ One check: each group has length 4 and four consecutive ids, the four groups are
 
 *Rule: §10.5.2. Severity: nit. Category: test-gap.*
 
+**Status 2026-09-19 — OPEN.** Unchanged. `rules.ts:401` still uses a red-owner/red-bottom flower and `rules.ts:270-276` still pins the split case on the pure function only. The fan-out at `score.ts` is still unsplit by any check.
+
 **The rule.** No G-rule governs this. §10.5.2 is the governing text: The Bottom NECTAR Bonus and FLOWER Owner lines, which can belong to different ALLIANCES in one FLOWER.
 
 **What the manual says**
@@ -1422,6 +1600,8 @@ Cheapest version: change one word in the existing Table check so F2's bottom ele
 ## BB-48 — [G426] Test gap: the G426.A entitlement is never exercised in AUTO
 
 *Rule: G426. Severity: nit. Category: test-gap.*  Also bears on: §10.1.
+
+**Status 2026-09-19 — OPEN.** Unchanged. Every human-player check still sets `phase = 'teleop'` first, including the per-TIP entitlement case at `field.ts:2388-2398` which sets `nectarDue.red = 1` in TELEOP — the one place the AUTO half would naturally have been written.
 
 **The rule.** Entering NECTAR: one per HIVE TIP, or all remaining at 60 seconds or less, whichever comes first. Penalty: MINOR FOUL per NECTAR.
 
@@ -1451,6 +1631,8 @@ One case: spawn a match, set `phase = 'auto'` with a full `phaseTimeLeft`, set `
 
 *Rule: §9.8. Severity: nit. Category: test-gap.*  Also bears on: §10.3.1.
 
+**Status 2026-09-19 — FIXED.** `scripts/smoke-biobuzz/field.ts:1504-1600` now asserts the §10.3.1 decomposition at tick 0: 40 POLLEN and 16 NECTAR and nothing else, then 16 in the four FLOWERS (4 each, by slot), 4 per GARDEN as a row at the right pitch, 3 NECTAR in each up-CELL, 5 stock per alliance, and the 16 preloads accounted for as a three-way partition (held / LOADING ZONE centre / beside a robot) so a pollen that fell through the staging rules lands in none of them and fails with its position printed. The counts are named constants, as the finding asked. Every radius is asserted too, which catches the "NECTAR simulated as a POLLEN" case from the other end than BB-03 does.
+
 **The rule.** No G-rule governs this. §9.8 is the governing text: “There are 40 POLLEN, 8 red NECTAR, and 8 blue NECTAR total in a BIOBUZZ MATCH.”
 
 **What the manual says**
@@ -1478,6 +1660,8 @@ One check at tick 0 counting by `bbKindOf` and by `state.kind`, asserting 40/8/8
 
 *Rule: Table 10-3. Severity: nit. Category: test-gap.*  Also bears on: Table 10-2.
 
+**Status 2026-09-19 — OPEN.** Unchanged. `rg "swarm|pollinator" scripts/smoke-biobuzz/rules.ts` still returns the same four assertions, all off the boundary, all of which survive `>=` becoming `>`.
+
 **The rule.** No G-rule governs this. Table 10-3 is the governing text: SWARM RP 16 Points, POLLINATOR 1 RP 4 TIPS, POLLINATOR 2 RP 7 TIPS, each “at or above threshold”.
 
 **What the manual says**
@@ -1503,6 +1687,8 @@ Three checks at the boundary: exactly 16 earns SWARM and 15 does not, exactly 4 
 ## BB-51 — [Table 10-2] Test gap: `biobuzzResultsRows` is never invoked by any suite
 
 *Rule: Table 10-2. Severity: nit. Category: test-gap.*
+
+**Status 2026-09-19 — OPEN.** Unchanged. `rg resultsRows scripts/smoke-biobuzz` is still empty, and the HUD-slice block still asserts everything but `hud.rp`.
 
 **The rule.** No G-rule governs this. Table 10-2 is the governing text: The point-value table the results screen prints.
 
@@ -1532,6 +1718,8 @@ One check in `core.ts` that `biobuzzModule.resultsRows` is a function, matching 
 
 *Rule: seam contract. Severity: nit. Category: test-gap.*
 
+**Status 2026-09-19 — FIXED.** `scripts/smoke-biobuzz/core.ts:75` asserts `moduleFor(id).id === id` for every id in `GAME_IDS` — which is exactly the DECODE-fallback test, since a dropped registration returns DECODE — and `:87` asserts `SEASONS.some(s => s.key === id)`. The lane imports the client registry directly (`core.ts:18`), so both client-side registrations are now pinned. `:105` adds a third, that BIOBUZZ brings its own start editor rather than another game's.
+
 **The rule.** No G-rule governs this. seam contract is the governing text: No manual rule. CLAUDE.md requires four registrations per game and states that all four fail silently when missed.
 
 **What the contract says**
@@ -1554,9 +1742,125 @@ Two checks in `core.ts`: `moduleFor('biobuzz').id === 'biobuzz'`, not the DECODE
 
 ---
 
+## BB-53 — [§9 (all)] The shipped field is the CAD's, not the manual's, and nothing says so where a rules reader looks
+
+*Rule: §9 (all). Severity: minor. Category: other.*  Raised 2026-09-19. Also bears on: BB-18, BB-19, BB-44, BB-45, and every §9 line in Appendix A.
+
+**Status 2026-09-19 — NEW.** Raised by the re-verification. Not a defect in the ruling; a gap in where the ruling is written down.
+
+**The rule.** No G-rule governs this. Section 9 (ARENA) in its entirety is the governing text, together with the owner ruling of 2026-09-18 that supersedes it for dimensions.
+
+**What the manual says**
+
+Section 9 prints figures for the field, the tiles, the HIVE, the FLOWERS and the zones. Figure 9-10 prints the HIVE opening at 53.5–65.6 in and the bottom of the HIVE at 25.5 in above the TILES. §9.2 is a 12 ft field of 24 in tiles.
+
+**What the sim does**
+
+`src/games/biobuzz/fieldDims.gen.ts` is generated by `scripts/field-cad/emit-dims.mjs` from FIRST's own field STEP (v26-27.2 of 2026-09-15, sha256 `5e768b73…`, measured into `public/models/biobuzz/field-measurements.json`), and `config.ts` reads it. The generated header states the policy: *"Owner ruling, 2026-09-18: the CAD is authoritative for dimensions. Where a figure in the V1 Competition Manual disagrees with a number below, the number below wins."* The measurement report is `docs/biobuzz/field-cad-audit.md`.
+
+Several shipped numbers therefore differ from printed ones, deliberately:
+
+| what | manual | shipped (CAD) | Δ |
+|---|---|---|---|
+| interior field span | 144 ("12 ft") | 141.348 (`FIELD_HALF` 70.674) | −2.65 |
+| TILE pitch | 24 | 23.528 | −0.47 |
+| HIVE down-cell floor | 25.5 (Fig 9-10) | 31.981 (`HIVE.DOWN_FLOOR_Z`) | **+6.48** |
+| HIVE opening z | [53.5, 65.6] (Fig 9-10) | [53.375, 65.497] | −0.13 |
+| CELL opening width | 20 | 20.141 | +0.14 |
+| FLOWER offset from wall | 2.54 (hand-entered) | 2.629 | +0.09 |
+| FLOWER along-wall position | ±24 tile seam | ±23.392 | −0.61 |
+
+The 6.48 in one is not a tolerance: the generator's own note works out that one rigid bar cannot put the up mouth at 53.4 and the down floor at 25.5 at the same time, so Figure 9-10 is internally inconsistent and the CAD settles it. A 29 in robot still clears the structure either way.
+
+**Why it matters**
+
+Three separate audiences read the wrong thing today.
+
+- **This document.** Four findings (BB-18, BB-19, BB-44, BB-45) were written as "the code disagrees with a printed figure", which was the right question on 2026-09-13 and is the wrong question now. BB-45's suggested fix — assert the manual's literals — would fail by design and would encode the losing authority in a test.
+- **Appendix A.** Its §9 lines assert the manual's numbers as confirmed correct: "144 × 144 in field … ±72 half-extents", "36 interlocking 24 in TILES", "each ring centre 2.54 in off its wall face on the ±24 tile seam". All three are now false as written, and one of them is the field size.
+- **A player or a reviewer.** Nothing in `docs/biobuzz-reference.md`, `docs/area/biobuzz.md` or the rules-facing copy states that the field is CAD-derived. The ruling lives in a generated file's header and a 38 KB measurement report, neither of which is where someone checking a figure against the manual would look.
+
+**Suggested fix**
+
+Write the ruling and the delta table into `docs/biobuzz-reference.md` §9, next to the divergences block BB-12 already proposes — same block, one more entry. Then re-point BB-18, BB-19, BB-44 and BB-45 at it: the question those four ask becomes "does the shipped constant match the CAD, and is the delta against the manual recorded?", which is checkable, instead of "does it match the manual?", which is now answered "no, on purpose". Nothing in `src/` has to move.
+
+**Confidence: high.** The ruling, the source hash and the deltas are all stated in the generated file's own header; the Appendix A contradictions were read directly.
+
+---
+
+## BB-54 — [G409] G409 is enforced in 3D and still listed as "NOT HERE"
+
+*Rule: G409. Severity: nit. Category: other.*  Raised 2026-09-19. Also bears on: BB-24.
+
+**Status 2026-09-19 — NEW.** The same class as BB-24 and BB-34: the file's own audit trail is the only record of which Section 11 rules were considered, and it is now wrong about one of them.
+
+**The rule.** "ROBOTS may not catch SCORING ELEMENTS spilling from a TIPPED HIVE." Table 10-4: VERBAL WARNING; YELLOW CARD if STRATEGIC.
+
+**What the sim does**
+
+`bbBillG409` (`penalties.ts:112-136`) bills a `warning` against the robot's alliance on the tick a spilling element's first non-tray contact turns out to be a robot, called from `sim3d/contacts3d.ts`. Its own doc comment is careful and correct: a warning and only a warning, because the escalation is a card and BIOBUZZ has no card machinery (BB-09); billed once per element by construction; and **3D only**, because the 2D pipeline hands a spill straight to the tiles through `spillPoses` so there is no flight and no first contact to catch.
+
+The file's enumeration has not followed it. `penalties.ts:43` still lists five rules as enforced, and `penalties.ts:59-61` still reads "NOT HERE, each for a stated reason rather than an oversight: **G405 / G409** / G411 / G418 / G426 / G427 … structural". G409's own comment at `:129` even says so out loud — "`penalties.ts` has always recorded G409 as 'not modelled (spill lands on tiles)' and that stays true for that pipeline" — which is an accurate statement about the 2D pipeline sitting under a list that does not distinguish the two.
+
+**Why it matters**
+
+No runtime effect. The consequence is the same one BB-24 names: that comment is the repo's only record of which Section 11 rules were weighed, and it now reads as complete while being wrong about a rule that fires. It is also the first rule in this game whose enforcement depends on which physics backend the room is running, which is a fact about the engine worth stating once rather than discovering from a contact callback.
+
+**Suggested fix**
+
+Move G409 out of the NOT-HERE list into the enforced list, marked 3D-only, and say in one line that the 2D pipeline cannot express it because `spillPoses` skips the flight. Do it in the same pass as BB-24's G419/G420 addition.
+
+**Confidence: high.** Both the call path and the stale list were read directly.
+
+---
+
+## BB-55 — [audit scope] The 3D pipeline, the 3D renderer and the AI drivers have never been read against the manual
+
+*Rule: audit scope. Severity: nit. Category: coverage.*  Raised 2026-09-19.
+
+**Status 2026-09-19 — NEW.** A statement of coverage, not a defect. It belongs in the findings rather than in Appendix B because it is actionable.
+
+**What the sim does**
+
+Three subtrees post-date this audit entirely and were not examined by it:
+
+- `src/games/biobuzz/sim3d/` — 18 files, 4,713 lines. A deterministic Rapier 3D backend: bodies, contacts, element derivation, the hive see-saw, the flower tube, prediction, `step3d`.
+- `src/games/biobuzz/scene/` — 11 files, 6,632 lines. The Three.js renderer, the CAD field GLB, cameras, environments.
+- `src/games/biobuzz/ai/` — 3 files, 1,205 lines. Deterministic AI drivers in three tiers.
+
+A world now carries a physics tag and either backend can be the authority for a room. Several rules already resolve differently between them: G409 fires in 3D only (BB-54), the HIVE tip trigger moved onto `BB_TIP_POLLEN` in `sim3d/hive3d.ts` (2026-09-19) where the 2D timer tray already used it, and `settle.ts` discriminates the two trays by whether `angle` is present. Each of those is a place where "what the manual requires" could come out differently depending on which engine ran the match, and this document has checked one of the two.
+
+The smoke lane did follow: `SIM3D`, `HIVE3D`, `FLOWER3D`, `PREDICT`, `NET3D` and `AI` are six of the fourteen lanes and all are green. That is parity and behaviour coverage, which is not the same as conformance coverage — the same distinction this audit draws for the 2D lane throughout.
+
+**Why it matters**
+
+The stated coverage of this document ("roughly 150 manual facts checked") is now a claim about
+roughly half the code that decides a BIOBUZZ score. A reader who takes the headline count as
+current will believe the game has been audited when one of its two engines has not.
+
+**Suggested fix**
+
+Either scope a second pass over `sim3d/` against Sections 9 and 10 — the cheap version is the
+assessment instants and the HIVE/FLOWER geometry, which is where the two backends can diverge
+on a score — or state the limit in the preamble so the count is read correctly. The second is
+free and is what the Appendix B note above does; the first is the real answer before a ranked
+BIOBUZZ 3D season.
+
+**Confidence: high.** File and line counts measured; the three divergences named were read.
+
+---
+
 ## Appendix A — confirmed correct
 
 Manual facts checked and found correctly implemented. Grouped by domain, deduplicated.
+
+> ⚠️ **Read this appendix as of 2026-09-13, not as of today.** The CAD ruling of 2026-09-18
+> (BB-53) superseded the geometry half: where a line below asserts a printed §9 figure as
+> implemented, the shipped constant is now the CAD's measured one and may differ. The lines
+> that are now false as written are marked **[CAD 09-18]** inline with the shipped value. The
+> scoring, penalty, timing and terminology lines were re-spot-checked on 2026-09-19 and stand,
+> except where a finding's status line above says otherwise (BB-04 and BB-01 both changed
+> behaviour this appendix describes, in the direction the appendix wanted).
 
 **Match structure and timing**
 
@@ -1608,8 +1912,8 @@ Manual facts checked and found correctly implemented. Grouped by domain, dedupli
 - A frame holding one red and one blue HIVE, pivots 25.5 in centre to centre, matching Figure 9-10.
 - The 30° tilt between the stable states, baked into every plan length as a cos 30° and re-derived for the drawn swing by `tipProjection`, pinned at rest, level and settle.
 - Figure 9-9's three callouts are reconciled self-consistently: 18.84 is the clear gap between the cells, giving 15.44 pivot-to-cell-centre, 13.37 / 10.43 / 37.16 as the cos-30 plan lengths, and §9.6.2's “CELLS approximately 18.8 in. apart” is the same gap. Note the audit brief glosses 18.84 as pivot-to-cell, which would put the cells 37.68 apart and contradict §9.6.2; the sim's reading is the consistent one.
-- CELL opening 20 in wide by 14 in tall by 12 in deep, with the 20 in width perpendicular to the tilt axis and therefore unforeshortened, and 65.6 − 53.5 = 12.1 = 14·cos30 exactly.
-- Bottom of HIVE 25.5 in above the TILES, with no dynamic collider for the cells, which is what makes G409's “robots drive under the HIVE” assumption true.
+- CELL opening 20 in wide by 14 in tall by 12 in deep, with the 20 in width perpendicular to the tilt axis and therefore unforeshortened, and 65.6 − 53.5 = 12.1 = 14·cos30 exactly. **[CAD 09-18]** — the shipped opening is 20.141 × 13.997 × 11.75 and the shipped band is [53.375, 65.497]; the cos-30 identity still closes on the measured numbers.
+- ~~Bottom of HIVE 25.5 in above the TILES~~ **[CAD 09-18]** — 31.981 (`HIVE.DOWN_FLOOR_Z`); the generator's note shows Figure 9-10's 25.5 is 6.481 in low and internally inconsistent with the 53.4 up-mouth. Still no dynamic collider for the cells, and a 29 in robot still clears, so G409's “robots drive under the HIVE” assumption holds either way.
 - Four distinct AprilTags on the bottom face of every CELL, with the audience-versus-rear assignment per alliance matching Figure 9-17.
 - Tipping swaps which CELL is up, and the elements in the tipping CELL are released and go somewhere: they re-enter the world as ground elements carrying an outboard velocity at `BB_HIVE_BOTTOM_Z`, so nothing is destroyed and G409 has a referent.
 - Only the upward-facing CELL accepts and is scored: `hiveAccepts` requires a descending element travelling inboard over the open outer lip, inside the opening footprint and within its z band. Every reject case is pinned, including a shot from the closed back.
@@ -1620,10 +1924,10 @@ Manual facts checked and found correctly implemented. Grouped by domain, dedupli
 
 **FLOWER**
 
-- Four FLOWERS, one per wall, each ring centre 2.54 in off its wall face on the ±24 tile seam, point-symmetric about the origin. The set of four is asserted closed under the point mirror, which is the check that catches an x-mirror.
-- Top ring opening 4.0 in diameter; top ring height 21.5 in above the TILES, and it is the upper bound of the scoring volume.
+- Four FLOWERS, one per wall, ~~each ring centre 2.54 in off its wall face on the ±24 tile seam~~ **[CAD 09-18]** — 2.629 off the wall face and ±23.392 along it, point-symmetric about the origin. The set of four is asserted closed under the point mirror, which is the check that catches an x-mirror.
+- Top ring opening 4.0 in diameter; top ring height 21.5 in above the TILES, and it is the upper bound of the scoring volume. **[CAD 09-18]** — measured 4.171 and a top-plate band of [20.254, 21.404] (Δ 0.096 on the height).
 - The scoring volume is a band from the middle ring to the top ring, exactly as §10.5.2 words it. An element resting on the lower ring is outside it, and the staged bottom POLLEN scores nothing.
-- The middle-ring height is a sound derivation, not a guess: 3.55 in Retrieval Opening plus the 0.43 in bottom-ring thickness, both printed in Figure 9-12, and honestly flagged APPROX because V1 prints no ring thickness.
+- The middle-ring height is a sound derivation, not a guess: 3.55 in Retrieval Opening plus the 0.43 in bottom-ring thickness, both printed in Figure 9-12, and honestly flagged APPROX because V1 prints no ring thickness. **[CAD 09-18 — confirmed, not superseded]** — the CAD's own plate bands put the clear gap between the lower plate's top and the mid plate's underside at 3.55 in, which is Figure 9-12's Retrieval Opening arrived at independently. The derivation was right to within 0.076 in and is now a measurement.
 - “At least partially within” is implemented as a partial-overlap test, strict at both ends, not a centre test. Both planes are exercised with an element on each side and one straddling each.
 - Owned value is 2 per element and the Bottom NECTAR Bonus is 5 per flower, both read from `BB_PTS`, ceiling 4 × 5 = 20.
 - POLLEN alone score nothing, and the bonus requires the NECTAR to be scoring.
@@ -1639,8 +1943,8 @@ Manual facts checked and found correctly implemented. Grouped by domain, dedupli
 
 **Field, zones and staging**
 
-- 144 × 144 in field, origin centre, ±72 half-extents, with the perimeter as a hard containment invariant.
-- 36 interlocking 24 in TILES, with the grid derived from `C.TILE` rather than typed, and the Figure 9-5 coordinate convention (columns A-F left to right along the audience wall, rows 1-6 with row 1 nearest the audience). G402's A-C / D-F split reads as x < 0 red, x > 0 blue, matching it.
+- ~~144 × 144 in field, origin centre, ±72 half-extents~~ **[CAD 09-18]** — 141.348 in interior span, ±70.674 (`FIELD_HALF`, mean of the CAD's four inner wall faces, residual 0). The perimeter is still a hard containment invariant.
+- ~~36 interlocking 24 in TILES~~ **[CAD 09-18]** — pitch 23.528 (`TILE_PITCH`, from the CAD's measured seam positions), with the grid derived rather than typed, and the Figure 9-5 coordinate convention (columns A-F left to right along the audience wall, rows 1-6 with row 1 nearest the audience). G402's A-C / D-F split reads as x < 0 red, x > 0 blue, matching it.
 - The layout is point-symmetric, not mirrored: red LOADING ZONE on the left wall at y ∈ [24,48] and red GARDEN in the audience-left corner, with `bbMirror` a true 180° rotation including heading, and the symmetry asserted with an explicit x-mirror negative control.
 - Red is on the left from the audience view, and the shared `viewAngleOf` puts the drivers on the correct walls.
 - GARDEN is 23 × 2 in flush in the corner, drawn as two 1 in tapes by stroking rather than filling. LOADING ZONE depth is 11 in against the side wall, tape-bounded on the three open sides.
@@ -1696,7 +2000,9 @@ Manual facts checked and found correctly implemented. Grouped by domain, dedupli
 - **Whether §10.1's 60 s cue and G410's 60 s FLOWER unlock are the same threshold.** The sim folds them into one constant. Both quoted texts say 60 seconds, so one constant is defensible; if a later revision moves one, this is the line that has to split.
 - **G408's verbatim text.** BB-23 cites the rule as the sim cites it. The rule text itself was not available to this pass.
 - **Which sound asset backs each Table 9-1 cue.** `handlePhaseAudio` maps the AUTO buzzer and the match-end buzzer to the same `audio.play('end')`, where the manual distinguishes “Buzzer x 3” from a “3-second Buzzer”. `public/sounds` was not inspected. Table 9-1 also lists the 1:00 cue as [TBD], so the sim's event-only treatment is not obviously wrong.
-- **Visual verification.** `npm run test:bb` was not run and no screenshots were taken; this was a strictly read-only audit. All rendering and test-coverage claims come from reading the code and the assertions, not from observing them.
+- **Visual verification.** ~~`npm run test:bb` was not run~~ **— lifted 2026-09-19:** the suite was run at `b7fa0ce` and reports **2,536 checks, all pass** across fourteen lanes in 80 s, so every test-gap finding here is a gap in a green suite. Still read-only otherwise: no screenshots were taken, no 3D scene was inspected, and all rendering claims still come from reading the code.
+- **The 3D pipeline, the 3D renderer and the AI drivers** (`sim3d/`, `scene/`, `ai/` — 12,550 lines across 32 files) post-date this audit and were not read against the manual. Raised as BB-55 rather than left here, because it is actionable.
+- **The CAD measurement report.** `docs/biobuzz/field-cad-audit.md` (38 KB) is the authority behind `fieldDims.gen.ts` and was not audited — only its generated output and the deltas its header records. A wrong measurement in it would propagate into the shipped field with nothing here to catch it. See BB-53.
 
 **Out of scope.**
 
@@ -1705,4 +2011,4 @@ Manual facts checked and found correctly implemented. Grouped by domain, dedupli
 - §10.8.2's element-return paths were treated as field-staff logistics with no robot rule attached, and the sim has no out-of-field region to return anything from, since the wall clamp is applied to both flight and ground elements.
 - Code style, comment density, refactoring, performance, and anything the manual does not speak to were excluded by the audit's own terms. The stale-comment findings (BB-15, BB-34, BB-35, BB-36) are included only because each one asserts something about manual conformance that is no longer true.
 
-**Refuted and deliberately excluded.** Twenty-three candidate findings were checked and dropped, either because the manual does not require what they claimed, because the behaviour was already implemented under a name the first pass did not guess, or because the divergence was a dated owner ruling on a point the manual leaves open. The ones a reader is most likely to re-raise: GARDEN being scored live (the buzzer value is the assessed value, and the CELL gate exists for a double-counting reason, not a timing one); PARK being scoped to the own LOADING ZONE (§9.3 makes the zone alliance-specific); HIVE TIPS not being split AUTO versus TELEOP (both columns pay 20 and no period subtotal exists anywhere); a CELL refusing the opponent's launched element (an open question in the manual, settled by dated ruling); the FLOWER backstop being unmodelled (its one scoring consequence is modelled and tested as case G); and the LOADING ZONE's 24 in along-wall span against a printed ~23 (the two zones have different boundary conventions in §9.3, and both constants are correct under their own).
+**Refuted and deliberately excluded.** Twenty-three candidate findings were checked and dropped, either because the manual does not require what they claimed, because the behaviour was already implemented under a name the first pass did not guess, or because the divergence was a dated owner ruling on a point the manual leaves open. The ones a reader is most likely to re-raise: ~~GARDEN being scored live (the buzzer value is the assessed value, and the CELL gate exists for a double-counting reason, not a timing one)~~ **— overtaken 2026-09-19: BB-04 was accepted and the GARDEN line is now gated on `post` like the CELL line, so the refutation no longer describes the code**; PARK being scoped to the own LOADING ZONE (§9.3 makes the zone alliance-specific); HIVE TIPS not being split AUTO versus TELEOP (both columns pay 20 and no period subtotal exists anywhere); a CELL refusing the opponent's launched element (an open question in the manual, settled by dated ruling); the FLOWER backstop being unmodelled (its one scoring consequence is modelled and tested as case G); and the LOADING ZONE's 24 in along-wall span against a printed ~23 (the two zones have different boundary conventions in §9.3, and both constants are correct under their own).
