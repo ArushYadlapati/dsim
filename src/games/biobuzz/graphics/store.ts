@@ -13,7 +13,7 @@
  * the renderer that actually exists is the only default that draws anything.
  */
 
-const VIEW_KEY = 'decodesim.view';
+import { VIEW_KEY, CAMERA_KEY } from '../../../storageKeys';
 
 export type ViewPref = '2d' | '3d';
 
@@ -72,7 +72,7 @@ export function subscribeViewPref(fn: ViewListener): () => void {
  * the frame's camera, so a player who has chosen `orbit` keeps it across matches, rooms and
  * reloads until they choose something else.
  */
-const CAMERA_KEY = 'decodesim.camera';
+// CAMERA_KEY is imported at the top, beside VIEW_KEY (src/storageKeys.ts)
 
 export type CameraPref = 'auto' | 'driver' | 'overhead' | 'chase' | 'orbit';
 

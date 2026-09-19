@@ -19,7 +19,8 @@ const startPoseCount = (game: GameId): number => simModuleFor(game).startPoseCou
 import { cloneBindings, DEFAULT_BINDINGS, mergeBindings } from './input/bindings';
 import { clamp } from './math';
 
-const STORAGE_KEY = 'decodesim.settings.v1';
+// the key itself comes from the registry every privacy surface reads (src/storageKeys.ts)
+import { SETTINGS_KEY as STORAGE_KEY } from './storageKeys';
 
 /** default touch-control layout (centres as viewport fractions), tuned for landscape:
  * drive stick bottom-left, turn stick bottom-right, action buttons clustered on the

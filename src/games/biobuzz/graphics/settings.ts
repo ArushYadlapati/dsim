@@ -243,7 +243,7 @@ export const GFX_NOT_OFFERED: readonly { label: string; why: string }[] = [
 
 // ────────────────────────────────────────────────────────────────────────────── the store ──
 
-const GRAPHICS_KEY = 'decodesim.graphics';
+import { GRAPHICS_KEY } from '../../../storageKeys';
 
 export interface GraphicsState {
   preset: GraphicsPreset;

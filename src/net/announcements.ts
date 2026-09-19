@@ -13,7 +13,7 @@ import { gameServerConfigured } from './env';
  * Changelog page, which is where a first-time visitor should meet it.
  */
 
-const SEEN_KEY = 'decodesim.seenAnnouncements.v1';
+import { SEEN_ANNOUNCEMENTS_KEY as SEEN_KEY } from '../storageKeys';
 // don't dump ancient history on a brand-new visitor (empty seen set): only unseen
 // announcements newer than this are shown. Comfortably longer than a patch cadence.
 const MAX_AGE_DAYS = 21;

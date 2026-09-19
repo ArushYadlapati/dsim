@@ -23,7 +23,7 @@ export interface ActiveGameRef {
   savedAt: number;
 }
 
-const KEY = 'decodesim.activeGame.v1';
+import { ACTIVE_GAME_KEY as KEY } from '../storageKeys';
 /** how long a saved ref stays valid. Comfortably longer than a match + settle, but
  * short enough that a long-abandoned entry expires on its own (the server grace is
  * far shorter, so a stale rejoin just fails cleanly regardless). */

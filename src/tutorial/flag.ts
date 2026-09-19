@@ -12,7 +12,7 @@
  * somebody who has never played is the failure this exists to prevent. A write that throws is
  * swallowed, so the tutorial simply offers itself again next session.
  */
-const KEY = 'decodesim.tutorial.v1';
+import { TUTORIAL_SEEN_KEY as KEY } from '../storageKeys';
 
 /** has this device finished (or dismissed) the tutorial? */
 export function tutorialSeen(): boolean {
