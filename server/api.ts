@@ -229,9 +229,13 @@ const lanRate = new Map<string, { n: number; until: number }>();
 
 function lanRateOk(userId: string): boolean {
   const now = Date.now();
-  // sweep on the way past, so an idle server does not keep a map of everyone who ever posted.
-  // Cheap: this route is rate-limited, so the map cannot be large enough for this to matter.
-  if (lanRate.size > 1000) for (const [k, v] of lanRate) if (v.until <= now) lanRate.delete(k);
+  // Sweep on the way past, so an idle server does not keep a map of everyone who ever posted.
+  // UNCONDITIONAL, and that is the point: gating the sweep on `size > 1000` made the map grow
+  // to 1000 before anything was ever collected, and 1001 DISTINCT accounts inside one window is
+  // exactly the case where no entry is expired yet and the sweep frees nothing anyway. Sweeping
+  // every call keeps the map to "accounts seen in the last minute", which is small enough that
+  // the O(n) walk is cheaper than the branch was worth.
+  for (const [k, v] of lanRate) if (v.until <= now) lanRate.delete(k);
   const hit = lanRate.get(userId);
   if (!hit || hit.until <= now) {
     lanRate.set(userId, { n: 1, until: now + LAN_WINDOW_MS });
@@ -258,7 +262,10 @@ const exportRate = new Map<string, number>();
 
 function exportRateOk(userId: string): boolean {
   const now = Date.now();
-  if (exportRate.size > 1000) for (const [k, t] of exportRate) if (t <= now) exportRate.delete(k);
+  // unconditional, for the reason spelled out in `lanRateOk`: a size-gated sweep never runs
+  // until 1000 rows have accumulated, and the one burst that would justify it — 1001 distinct
+  // accounts inside a single window — is the burst in which nothing has expired to sweep.
+  for (const [k, t] of exportRate) if (t <= now) exportRate.delete(k);
   const until = exportRate.get(userId);
   if (until && until > now) return false;
   exportRate.set(userId, now + EXPORT_WINDOW_MS);
@@ -529,7 +536,11 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse): Prom
       // POST: save the whole settings blob
       let settings: unknown;
       try {
-        settings = JSON.parse(await readBody(req)).settings;
+        // 64 KB, not `readBody`'s 512 KB default. This blob is keybinds, toggles and a colour
+        // or two — a few KB at the outside — and it is stored per account, so the default cap
+        // let a signed-in client park half a megabyte of anything in Postgres under the name
+        // "settings". The limit is the shape of the data, not the shape of the transport.
+        settings = JSON.parse(await readBody(req, 64 * 1024)).settings;
       } catch {
         return json(400, { error: 'bad request' }), true;
       }
@@ -562,6 +573,16 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse): Prom
       if (!user) return json(401, { error: 'sign in required' }), true;
       if (!dbEnabled) {
         return json(503, { error: 'recording an acceptance needs the database' }), true;
+      }
+      // ALREADY ON THIS REVISION ⇒ ANSWER FROM THE ROW, WRITE NOTHING. The client's gate calls
+      // this on mount whenever its cached answer is stale, and `acceptTerms` is an UPDATE that
+      // overwrites `terms_accepted_at` with `now()` — so a re-post was silently MOVING the
+      // recorded consent date forward, which is the one field a dispute would read. It also put
+      // two writes (ensureProfile + the update) on a route that had nothing to record. The read
+      // is a single-row lookup by primary key; the response shape is byte-identical.
+      const prior = await getTermsAcceptance(user.userId);
+      if (prior.version === LEGAL_VERSION) {
+        return json(200, { termsVersion: prior.version, termsAcceptedAt: prior.acceptedAt }), true;
       }
       await ensureProfile(user.userId, user.handle);
       const a = await acceptTerms(user.userId, LEGAL_VERSION);

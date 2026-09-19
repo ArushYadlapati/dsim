@@ -203,11 +203,17 @@ export interface RoomConfig {
    * every server-connected match — record, ranked, matchmade, custom, spectated, LAN — because
    * the record board is one solve. There is no host choice left for this field to carry.
    *
-   * It stays on the wire for ONE reason, and it is the usual one: a single Fly app serves every
-   * client version, and a server can be a deploy behind a client. An older server DOES read
-   * this and defaults it to `'2d'`, so a current client keeps sending `'3d'` for a 3D-capable
-   * game — that is what makes both servers build the same room. It is omitted entirely for a
-   * game with no 3D solve, which keeps DECODE and Chain Reaction's handshake byte-identical.
+   * It stays on the wire as the room's DECLARED solve, and it is omitted entirely for a game
+   * with no 3D solve, which keeps DECODE and Chain Reaction's handshake byte-identical.
+   *
+   * ⚠️ IT IS NOT A BACK-COMPAT PATH. An older server does not read this field at all — the
+   * `RoomConfig` on main has no `physics` key and the decoder drops config keys it does not
+   * know — so sending it to a server a deploy behind is inert, not compatible. The
+   * compatibility that has to be managed runs the OTHER way and it is a DEPLOY ORDER: BIOBUZZ
+   * is public on the stable channel, and every production client built before the `'bb3d'` cap
+   * existed is refused from every BIOBUZZ room until it reloads. Ship and verify the CLIENT
+   * (Vercel) FIRST, then the server (Fly); a tab held open across the deploy is refused with
+   * `BB3D_REFUSAL` until the version gate reloads it.
    *
    * It is a ROOM property and not a per-client one: a room has one authoritative world, so a
    * client whose build cannot step `'3d'` cannot be in it at all. That is what the `'bb3d'`
@@ -358,6 +364,20 @@ export const BB3D_REFUSAL = 'Update DSIM to play this room.';
  *  is written around. Absent caps (an old client that sends none) ⇒ no capabilities. */
 export function physicsAllowed(physics: Physics | undefined, caps: readonly string[] | undefined): boolean {
   return (physics ?? '2d') !== '3d' || !!caps?.includes(BB3D_CAP);
+}
+
+/**
+ * The `caps` off a client frame, as a list of strings and nothing else.
+ *
+ * ONE coercion for every door, because `caps` is attacker-controlled and `Array.isArray` alone
+ * is not a validation: it admits `[{…}, 5, null]`, which is then STORED on the client record
+ * and compared by every feature gate, and it admits an array of any LENGTH — a free per-socket
+ * allocation on a frame that arrives before anything is authenticated. Strings only, and the
+ * first 16 of them; `CLIENT_CAPS` has six, so the cap is slack rather than a limit anyone can
+ * reach honestly.
+ */
+export function coerceCaps(x: unknown): string[] {
+  return Array.isArray(x) ? x.filter((c): c is string => typeof c === 'string').slice(0, 16) : [];
 }
 
 /**

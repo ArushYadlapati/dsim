@@ -12,7 +12,7 @@ import { serverPhysics } from '../src/games/types';
 import { scrubName } from './moderation';
 import type { GameId, Physics } from '../src/types';
 import { physicsReady } from '../src/sim/physicsEngine';
-import { physics3dReady } from '../src/games/biobuzz/sim3d/engine';
+import { physics3dReady, disposePhysics3dFor } from '../src/games/biobuzz/sim3d/engine';
 import { ReplayRecorder, worldResult, type Replay, type ReplayResult } from '../src/sim/replay';
 import type {
   Alliance,
@@ -495,8 +495,11 @@ export class Room {
    * without `physics` used to get a 2D room; it now gets a 3D one it cannot step, so the
    * `'bb3d'` cap gate at the door (`physicsAllowed`, server/index.ts) turns it away with
    * `BB3D_REFUSAL`. That is the intended failure: a silent 2D room is the one outcome the
-   * ruling forbids. BIOBUZZ is alpha-only, so the case that can actually happen is a stale tab
-   * held across a deploy.
+   * ruling forbids. ⚠️ **SO DEPLOY ORDER MATTERS**: BIOBUZZ is public on the stable channel, and
+   * every production client built before the `'bb3d'` cap existed is refused from every BIOBUZZ
+   * room until it reloads. Ship and verify the CLIENT (Vercel) FIRST, then the server (Fly); a
+   * tab held open across the deploy is refused with `BB3D_REFUSAL` until the version gate
+   * reloads it.
    */
   get physics(): Physics {
     return serverPhysics(simModuleFor(this.game));
@@ -505,6 +508,22 @@ export class Room {
   /** is a match actually running here (vs. still a lobby)? */
   get hasWorld(): boolean {
     return this.world !== null;
+  }
+
+  /**
+   * MAY THIS ROOM STEP YET? — the ONE readiness predicate, asked by every path that builds a
+   * world (`start`, `startRankedImmediate`, `beginRanked`).
+   *
+   * ⚠️ `physicsReady()` ALONE IS A CHECK OF THE WRONG MODULE FOR A 3D ROOM. The two wasm
+   * backends load independently at boot, and a `'3d'` room's first tick is `step3d`, which
+   * THROWS `3D physics not initialised` if `initPhysics3d()` has not resolved. That throw
+   * happens INSIDE the tick loop — i.e. after the match has been announced and the dodge
+   * accounting has run — so the failure is a killed interval and a room full of people
+   * watching a frozen field, not a "try again in a moment". The ranked paths had only the 2D
+   * half, which was harmless while every game was `'2d'` and is not now that BIOBUZZ is.
+   */
+  private physicsReadyForRoom(): boolean {
+    return physicsReady() && (this.physics !== '3d' || physics3dReady());
   }
 
   // ─────────────────────────────────────────────────────────── BOT SEATS (plan §6) ──
@@ -528,6 +547,12 @@ export class Room {
 
   /** one seated bot: a synthetic roster row plus the tier it plays at. */
   private readonly bots: { id: string; tier: string; alliance: Alliance; startIndex: number }[] = [];
+  /** MONOTONIC, never `bots.length`. A bot id is a roster `clientId`, and the roster is keyed by
+   *  it — so numbering from the array length mints a DUPLICATE the moment anybody removes a seat
+   *  and adds another (remove bot-1, add ⇒ a second `bot-1-CODE`). Two rows with one id is a
+   *  roster the client cannot key, and `removeBot`'s `findIndex` would only ever reach the older
+   *  of the pair, so the newer one could not be taken back out. This counter only goes up. */
+  private botSeq = 0;
   /** live AI drivers for the match in flight, keyed by robot id. Built in `beginMatch`,
    *  disposed in `stop`. Empty in every room with no bot seat, which is nearly all of them. */
   private readonly botDrivers = new Map<number, { step(w: World): RobotCommand; dispose?(): void }>();
@@ -579,7 +604,7 @@ export class Room {
         break;
       }
     }
-    this.bots.push({ id: `bot-${this.bots.length + 1}-${this.code}`, tier: drv.coerceTier(tier), alliance, startIndex });
+    this.bots.push({ id: `bot-${++this.botSeq}-${this.code}`, tier: drv.coerceTier(tier), alliance, startIndex });
     this.botsEverSeated = true;
     this.broadcastRoster();
     return null;
@@ -1442,10 +1467,7 @@ export class Room {
         // physics WASM may still be loading in the first moment after boot; refuse
         // rather than throw inside step() (which would kill the tick loop)
         if (id === this.hostId && this.world === null) {
-          // BOTH backends, because a 3D room's first tick is `step3d`: `physicsReady()` alone
-          // says the 2D wasm resolved, which for a `'3d'` room is a check of the wrong module.
-          const ready = physicsReady() && (this.physics !== '3d' || physics3dReady());
-          if (ready) this.startMatch();
+          if (this.physicsReadyForRoom()) this.startMatch();
           else c.send({ t: 'error', message: 'Server is starting up - try again in a moment.' });
         }
         break;
@@ -1858,7 +1880,8 @@ export class Room {
   private startRankedImmediate(): void {
     const p = this.pendingMatch;
     if (!p || this.world !== null || this.phase !== 'connecting') return;
-    if (!physicsReady()) {
+    // BOTH backends (see `physicsReadyForRoom`): a ranked BIOBUZZ room steps `step3d`.
+    if (!this.physicsReadyForRoom()) {
       setTimeout(() => this.startRankedImmediate(), 200); // WASM still loading; retry
       return;
     }
@@ -1961,7 +1984,8 @@ export class Room {
   private beginRanked(): void {
     const p = this.pendingMatch;
     if (!p || this.world !== null || this.phase !== 'strategy') return;
-    if (!physicsReady()) {
+    // BOTH backends (see `physicsReadyForRoom`): a ranked BIOBUZZ room steps `step3d`.
+    if (!this.physicsReadyForRoom()) {
       setTimeout(() => this.beginRanked(), 200); // WASM still loading; retry shortly
       return;
     }
@@ -2823,6 +2847,11 @@ export class Room {
 
   private stop(): void {
     this.stopLoop();
+    // free the match's Rapier 3D world. The engine map is a WeakMap keyed on the World, so
+    // dropping the World drops the only handle without calling free(), and wasm linear memory
+    // never shrinks — a server that has run a few hundred 3D matches would hold every one.
+    // No-op for a 2D room and for a process that never loaded the chunk.
+    if (this.world) disposePhysics3dFor(this.world);
     // an AI driver may hold allocations of its own; the contract says the CALLER disposes.
     for (const b of this.botDrivers.values()) {
       try {
