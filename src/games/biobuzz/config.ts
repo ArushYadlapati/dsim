@@ -1169,6 +1169,13 @@ export const BB_TURRET_AXLE_Z = BB_TURRET_PLATE_TOP_Z + BB_FLYWHEEL_CLEAR + BB_F
  * without fouling a flat shot. `pathR − elemR` is `BB_FLYWHEEL_R − BB_HOOD_COMPRESSION` whatever
  * the element is, so the corridor floor — and therefore this cut — is the SAME height for a
  * POLLEN head and a NECTAR head. That is why the number below has no element in it.
+ *
+ * ⚠️ **AND IT IS A *FORWARD* CUT, NOT A HEMISPHERE ONE — see `sidePlateR` (`scene/renderRobots.ts`),
+ * which is the only reader this constant has.** Applied over the whole upper half it also cut the
+ * plate away BEHIND the exit lip, where there is no outgoing corridor and where the hood, its tail
+ * and the feed shoe are — leaving the hood 2.95 in above anything fixed and carried by two 0.26-in
+ * arms (owner item (B), 2026-09-19). The value here is unchanged; the angular range it binds over
+ * is not. Nothing in the muzzle chain reads it.
  */
 export const BB_SIDE_PLATE_TOP_Z = BB_FLYWHEEL_R - BB_HOOD_COMPRESSION - 0.15; // +0.96732 above the axle
 /**
@@ -2121,9 +2128,49 @@ export const BB3_ROLL_FLOOR_Z = 0.25;
 export const BB3_ROLL_DECEL = 12;
 
 /** an element counts as AT REST below this speed (in/s), for `BB3_REST_TICKS` consecutive
- * ticks — `sim3d/derive.ts`'s cell-membership test. APPROX. */
+ * ticks — `sim3d/derive.ts`'s REST SNAP and `sim3d/engineImpl.ts`'s off-floor twin. APPROX.
+ *
+ * ⚠️ It is NOT the cell-membership test any more (2026-09-19) — see `BB3_CELL_SEAT_DEPTH`. */
 export const BB3_REST_SPEED = 2;
 export const BB3_REST_TICKS = 6;
+
+/**
+ * HOW FAR BELOW A CELL'S RIM AN ELEMENT'S CENTRE HAS TO BE BEFORE THE CELL COUNTS IT (in), in
+ * the tray's own tilted frame. `sim3d/derive.ts`'s cell-membership test, and the whole of it:
+ * no rest requirement, no dwell.
+ *
+ * ⚠️ **IT REPLACED A REST TIMER, AND THE REST TIMER WAS THE OWNER'S BUG** (2026-09-19: "a lot of
+ * delay registering when the balls land in the hive... a significant amount of lengthened tipping
+ * time due to the registration time"). Membership used to need `BB3_REST_TICKS` of stillness,
+ * which is a proxy for "landed in it" that costs whatever the element's own settling costs.
+ * MEASURED over 1,500 randomized arrivals at a real cell, entry of the centre to
+ * `hives[a].contents`: **mean 95 ticks (1,588 ms), p50 75, p90 205, max 264**, and one arrival in
+ * a hundred never registered at all inside five seconds. A real HIVE is a see-saw: an element's
+ * weight is on the tray the moment it is in the tray, and it does not wait until it has stopped
+ * rolling.
+ *
+ * **THE ONLY THING THE REST GATE WAS REALLY BUYING** was a filter against a shot that GRAZES the
+ * open top of the cell and carries on — "a shot crossing the mouth is not yet in it". That is a
+ * real case and the same sweep measured it exactly: of 209 arrivals that put a centre inside the
+ * interior, 92 left again, and **every one of them stayed in the top 2.75 in of a 14-in cell**.
+ * None entered the mouth and came back out; the cell is a box with one opening and what gets
+ * properly inside it stays. So DEPTH separates the two populations outright, where "has it
+ * stopped moving" only separates them by waiting:
+ *
+ *   deepest any grazing shot ever reached   2.75 in below the rim
+ *   ─────────── 3.5, here ───────────
+ *   shallowest a landed element ever RESTS  4.33 in below the rim  (a 4-high stacked pile;
+ *                                                                   an ordinary load rests 10+)
+ *
+ * 0.75 in of margin below, 0.83 in above, and at this value the sweep records **0 grazes counted
+ * and 0 landed shots missed**. What it costs is nothing: entry to depth is **mean 0.2 ticks,
+ * max 7** across the same 1,500 arrivals, against the 95 the rest gate cost.
+ *
+ * Re-measure it (`scripts/smoke-biobuzz/hive3d.ts` prints both bounds) if the cell box, the
+ * element radii or the tray restitution move — it is a window, not a threshold, and it is the
+ * only tuned number in the membership test.
+ */
+export const BB3_CELL_SEAT_DEPTH = 3.5;
 
 /* `BB3_CAPTURE_TICKS` (a 3-tick consecutive-overlap dwell before a 3D capture) is GONE. The
  * roller model (`bbIntakeAct`) is shared by both backends now and does that job better and in

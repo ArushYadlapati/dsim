@@ -126,6 +126,22 @@ newest-first — it is never ranked, which is what keeps the two eras from meeti
   TABLE LIFTS. Everything after the release is still the free see-saw. `hiveContentsTorque` /
   `hiveRestoringTorque` remain exported: they are how the HIVE3D lane and `hive-calibrate.ts`
   MEASURE the tray, not what triggers it.
+- ⚠️ **A CELL COUNTS WHAT IS IN IT, NOT WHAT HAS STOPPED MOVING** (owner report 2026-09-19: "a lot
+  of delay registering when the balls land in the hive... a significant amount of lengthened
+  tipping time due to the registration time"). `derive.ts` needed `BB3_REST_TICKS` of stillness
+  before an element joined `hives[a].contents`, which measured **mean 95 ticks (1.59 s), p90 205,
+  max 264** from the tick its centre entered the cell, with 8 of 75 landings never registering at
+  all — and `contents` is what the tip trigger, the HUD's "N MORE TO TIP" and §10.5 C all read, so
+  the TIP inherited every millisecond of it. Membership is GEOMETRY now: inside the interior AND
+  `BB3_CELL_SEAT_DEPTH` below the cell's open rim, which is **mean 0.2 ticks** after entry. The
+  depth is what the rest gate was really buying — of 209 arrivals that got a centre inside the
+  interior, 92 left again and every one stayed within 2.75 in of the rim (they SKIM the open top;
+  nothing crosses the mouth and comes back), against 4.33 in for the shallowest a landed element
+  ever rests. Once counted, an element is held by a LATCH read off `b.state` — plain world JSON the
+  wire already round-trips, so a peer that rebuilds its engine mid-match agrees — for as long as it
+  is anywhere inside the interior; that hysteresis is in `derive.ts` and NOT at the score, because
+  `contents` being one list with one reader-set is the whole of why the HUD's promise and the tray
+  cannot come apart.
 - ⚠️ **`BB3_HIVE_DYNAMIC = false` IS NOT THE ONE-WORD REVERT IT IS DOCUMENTED AS.** `bb.spill` —
   G409's entire tag — is written only inside `hiveDynamicTick`; the kinematic path never writes
   it, and all four G409 checks sit inside `if (BB3_HIVE_DYNAMIC)` blocks, so flipping the word

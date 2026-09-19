@@ -163,21 +163,65 @@ function siteReachable() {
   });
 }
 
-// ---- auto-check preference (persisted in userData) ----------------------
+// ---- persisted preferences (userData) -----------------------------------
+//
+// ONE FILE, READ-MODIFY-WRITE. It held a single `autoCheck` key and was written by
+// replacing the whole document, which is fine for one key and silently destroys the
+// others the moment there are two. `unlimitedFps` is the second.
 const prefPath = () => path.join(app.getPath('userData'), 'update-pref.json');
-function getAutoCheck() {
+function readPrefs() {
   try {
-    return JSON.parse(fs.readFileSync(prefPath(), 'utf8')).autoCheck !== false;
+    const o = JSON.parse(fs.readFileSync(prefPath(), 'utf8'));
+    return o && typeof o === 'object' ? o : {};
   } catch {
-    return true; // default ON
+    return {}; // missing, corrupt, or a profile we cannot read — every default is below
   }
 }
-function setAutoCheck(v) {
+function writePrefs(patch) {
   try {
-    fs.writeFileSync(prefPath(), JSON.stringify({ autoCheck: !!v }));
+    fs.writeFileSync(prefPath(), JSON.stringify({ ...readPrefs(), ...patch }));
   } catch {
     /* best-effort */
   }
+}
+function getAutoCheck() {
+  return readPrefs().autoCheck !== false; // default ON
+}
+function setAutoCheck(v) {
+  writePrefs({ autoCheck: !!v });
+}
+
+/**
+ * UNLIMITED FRAME RATE — the desktop half of the Max frame rate row (see
+ * `src/games/biobuzz/graphics/settings.ts`, which carries the full reasoning).
+ *
+ * The renderer's draw loop is `requestAnimationFrame`, so the compositor paces it at the
+ * display's refresh and no amount of renderer-side setting can present a frame past it.
+ * These two Chromium switches are the only thing that can, and they are why the option
+ * exists in the desktop app and nowhere else.
+ *
+ * ⚠️ **THEY MUST BE APPENDED BEFORE `app.whenReady()`** — the command line is read when the
+ * GPU process is spawned, and appending a switch afterwards does nothing at all (quietly:
+ * no error, no warning, and a frame rate that is still pinned to the panel). That is why
+ * this reads the preference at module scope, why the renderer is told what THIS process
+ * actually launched with, and why changing the setting asks for a restart instead of
+ * pretending to take effect.
+ *
+ * Default OFF, and `=== true` rather than `!== false`: leaving vsync off costs a GPU that
+ * renders frames nobody will ever see, so it is opt-in and a corrupt pref file opts out.
+ */
+function getUnlimitedFps() {
+  return readPrefs().unlimitedFps === true;
+}
+function setUnlimitedFps(v) {
+  writePrefs({ unlimitedFps: !!v });
+}
+
+/** what THIS process launched with — frozen here, because the pref can change under it. */
+const UNLIMITED_FPS_ACTIVE = getUnlimitedFps();
+if (UNLIMITED_FPS_ACTIVE) {
+  app.commandLine.appendSwitch('disable-frame-rate-limit');
+  app.commandLine.appendSwitch('disable-gpu-vsync');
 }
 
 // ---- update check -------------------------------------------------------
@@ -271,6 +315,29 @@ ipcMain.handle('dsim:setAuto', (_e, v) => {
   return getAutoCheck();
 });
 ipcMain.handle('dsim:openDownload', () => shell.openExternal(`${SITE}/download`));
+
+/**
+ * THE FRAME-RATE SWITCHES. Two facts, not one, because they can legitimately disagree:
+ * `unlimitedFps` is what the NEXT launch will do and `active` is what THIS one did. The
+ * renderer shows "restart to apply" from exactly that difference — there is no other way for
+ * it to know, and guessing would make the restart prompt appear when nothing had changed.
+ */
+const perfState = () => ({ unlimitedFps: getUnlimitedFps(), active: UNLIMITED_FPS_ACTIVE });
+ipcMain.handle('dsim:getPerf', () => perfState());
+ipcMain.handle('dsim:setPerf', (_e, v) => {
+  setUnlimitedFps(v);
+  return perfState();
+});
+/**
+ * RESTART, ONLY EVER BECAUSE SOMEBODY PRESSED A BUTTON. The Graphics screen is its own
+ * top-level screen (`screen === 'configure'` in `App.tsx`), mutually exclusive with the one a
+ * match runs on, so there is no match to interrupt from there — but the rule stands anyway:
+ * nothing in the main process may decide on its own that now is a good moment to quit.
+ */
+ipcMain.handle('dsim:relaunch', () => {
+  app.relaunch();
+  app.quit();
+});
 
 /**
  * HOSTING A LAN GAME. See `electron/lanHost.cjs`.

@@ -223,6 +223,14 @@ const CLEAR_ENV_INTENSITY = 0.15;
  * neutral that disappears into whatever is behind it instead of hazing it white. */
 const CLEAR_PANEL_TINT = 0x7d8b96;
 /**
+ * ⚠️ NOT 0.08. A hive that has played a season is scuffed, and 0.08 is showroom acrylic: it
+ * gives a mirror lobe so tight that the light rig only lands on a panel at the exact mirror
+ * angle, which is a point highlight and not a sheen. 0.18 spreads the same energy across the
+ * face, which is what makes the sheet read as a surface from an arbitrary camera — and it is the
+ * half of the fix for the back panel that does NOT depend on the viewing angle.
+ */
+const PANEL_ROUGHNESS = 0.18;
+/**
  * ⚠️ THE FOURTH DELIBERATE CAD OVERRIDE (owner bug 12, 2026-09-19: "the blue alliance looks too
  * purple — are you sure that is the exact colour AndyMark uses?").
  *
@@ -248,18 +256,110 @@ const WALL_RENDER_ORDER = 10;
  * opaque. Matches `renderField.ts`'s `CELL_RENDER_ORDER`. */
 const CELL_RENDER_ORDER = 5;
 
+/**
+ * ── THE PANEL IS A DIELECTRIC, NOT A CONSTANT ALPHA (owner, 2026-09-19: "the hive's back panel
+ *    reads as perfectly transparent from behind, and should not") ───────────────────────────
+ *
+ * FIRST, WHAT IT IS NOT. It is not back-face culling. Measured on the shipped `field.glb`, red
+ * tray, the `plastic#e6e6e6` primitive: **0 boundary edges**, 6,809 manifold and 317
+ * non-manifold, with the face normals in matched opposite pairs (±y 1,203 / 1,233 tris, ±x 204 /
+ * 192). Every skin is a closed 0.020-in slab, so from behind a panel you are looking at the
+ * FRONT face of its rear skin and `THREE.FrontSide` culls nothing. The panel is drawn. It is
+ * just drawn at `CELL_PANEL_OPACITY`.
+ *
+ * AND THAT IS THE BUG. `transparent` + a constant `opacity` multiplies the WHOLE shaded fragment
+ * by that number — diffuse and SPECULAR alike. So the more see-through the sheet is, the fainter
+ * its reflection gets, which is backwards: a reflection does not pass through the sheet, it
+ * bounces off the front of it, and it is the ONLY thing you see when there is nothing behind the
+ * panel to tint. A real polycarbonate sheet at 0.13 transmittance-equivalent still shows a
+ * sheen, because the 5 % it reflects is 5 % of the room, not 0.13 × 5 %.
+ *
+ * So two things change, and both are physics rather than taste:
+ *
+ *  1. **FRESNEL ALPHA.** Schlick against polycarbonate's own IOR. The face-on opacity is left at
+ *     EXACTLY the measured `WALL_PANEL_OPACITY` / `CELL_PANEL_OPACITY` — the 2026-09-19 re-tune
+ *     that stopped these reading as white boards is untouched, and the six-layer stack it was
+ *     tuned against is unchanged face-on — and what is added is the EXCESS over normal
+ *     incidence, rising to `PANEL_GRAZE_OPACITY` at grazing. That is the sheen, and it is also
+ *     the EDGE: a slab's 0.020-in side face is at grazing incidence from almost everywhere, so
+ *     it picks up the full term and the panel gets a boundary.
+ *  2. **THE SPECULAR IS ADDED BACK UN-ATTENUATED**, capped. Undoing the alpha multiply on the
+ *     reflected term costs a factor of `1/a − 1`, which at the wall's 0.08 is 11.5 — hence the
+ *     cap, which does not bind on either shipped value and exists so a future lower opacity
+ *     cannot divide by something tiny.
+ *
+ * ⚠️ **AND NOTHING HERE DRAWS A LINE.** The edge this restores is a per-pixel term on the
+ * panel's own faces: no `EdgesGeometry`, no `LineSegments`, no new geometry and no new mesh, so
+ * the 2026-09-19 stray-dash bug (`addPanelEdges`, whose autopsy is in the policy header above)
+ * cannot come back through it. The RENDER lane's "the loader runs no edge/outline pass at all"
+ * check still holds over this file, and it is the thing that proves it.
+ */
+/** polycarbonate's own refractive index (Makrolon / Lexan datasheet nD = 1.586), which is where
+ *  every number below comes from rather than from a look. */
+const PANEL_IOR = 1.586;
+/** Schlick's F0 for that IOR against air, ((n−1)/(n+1))² = 0.0513. */
+const PANEL_F0 = ((PANEL_IOR - 1) / (PANEL_IOR + 1)) ** 2;
+/** what a clear panel's alpha reaches at grazing incidence. A dielectric's reflectance goes to
+ *  1.0 there; this is deliberately well short of it, because the panel is still only ~1/16 in of
+ *  plastic and a hive wall that went fully opaque edge-on would hide the elements behind it. */
+const PANEL_GRAZE_OPACITY = 0.55;
+/** ceiling on the specular the shader adds back. See point 2 above. */
+const PANEL_SHEEN_MAX = 12;
+
+/**
+ * The same curve the shader runs, in JS, so the RENDER lane can check it without a GL context.
+ * `cosTheta` is N·V; `abs` because a panel seen from behind behaves exactly as one seen from in
+ * front, which is the whole point of the item this answers.
+ */
+export function clearPanelAlphaAt(baseOpacity: number, cosTheta: number): number {
+  const c = Math.min(1, Math.max(0, Math.abs(cosTheta)));
+  // Schlick: R(θ) = F0 + (1 − F0)(1 − cos θ)⁵. What is wanted is the EXCESS over normal
+  // incidence, normalized to [0, 1] — (R(θ) − F0) / (1 − F0) — because the measured face-on
+  // opacity already accounts for R(0). F0 cancels out of that ratio exactly, leaving (1 − c)⁵;
+  // it is written through `PANEL_F0` anyway so the derivation is legible rather than asserted,
+  // and the shader's one-line `pow( 1.0 - bbCos, 5.0 )` is this expression reduced.
+  const schlick = PANEL_F0 + (1 - PANEL_F0) * (1 - c) ** 5;
+  const excess = (schlick - PANEL_F0) / (1 - PANEL_F0);
+  return baseOpacity + (PANEL_GRAZE_OPACITY - baseOpacity) * excess;
+}
+
+/** the factor the reflected term is scaled by so the alpha multiply does not eat it. */
+export function clearPanelSheenGain(alpha: number): number {
+  return Math.min(1 / Math.max(alpha, 0.02) - 1, PANEL_SHEEN_MAX);
+}
+
 /** the one clear-plastic material this file builds, for both the perimeter and the cell skins. */
 function clearPanelMaterial(opacity: number): THREE.Material {
-  return new THREE.MeshPhysicalMaterial({
+  const mat = new THREE.MeshPhysicalMaterial({
     color: CLEAR_PANEL_TINT,
     metalness: 0,
-    roughness: 0.08,
+    roughness: PANEL_ROUGHNESS,
+    ior: PANEL_IOR,
     transparent: true,
     opacity,
     depthWrite: false,
     side: THREE.FrontSide,
     envMapIntensity: CLEAR_ENV_INTENSITY,
   });
+  // ⚠️ THE HOOK IS KEYED, or three caches one program for every panel and the second material to
+  // compile gets the first one's chunk. `customProgramCacheKey` is how that is declared.
+  mat.customProgramCacheKey = () => `bb-clear-panel|${PANEL_GRAZE_OPACITY}|${PANEL_SHEEN_MAX}`;
+  mat.onBeforeCompile = (shader) => {
+    shader.fragmentShader = shader.fragmentShader.replace(
+      '#include <opaque_fragment>',
+      [
+        // `normal` and `vViewPosition` are both in scope here (they are what the lighting was
+        // just evaluated from), and `reflectedLight` still holds the split terms.
+        'float bbCos = abs( dot( normalize( normal ), normalize( vViewPosition ) ) );',
+        'float bbExcess = pow( 1.0 - bbCos, 5.0 );',
+        `diffuseColor.a = mix( diffuseColor.a, ${PANEL_GRAZE_OPACITY.toFixed(4)}, bbExcess );`,
+        'vec3 bbSpec = reflectedLight.directSpecular + reflectedLight.indirectSpecular;',
+        `outgoingLight += bbSpec * min( 1.0 / max( diffuseColor.a, 0.02 ) - 1.0, ${PANEL_SHEEN_MAX.toFixed(1)} );`,
+        '#include <opaque_fragment>',
+      ].join('\n'),
+    );
+  };
+  return mat;
 }
 
 /** the tape and the AprilTag/sticker decals are painted ON a surface that is already there (the
@@ -870,7 +970,12 @@ const TAG_LABEL: Readonly<Record<Alliance, Readonly<Record<'north' | 'south', st
 
 /** §9.9 p74: "AprilTags for BIOBUZZ are 3.25 in. (8.25 cm) square targets from the 36h11 tag
  * family." That is the black-bordered square; the quiet zone is the white plate around it. */
-const TAG_SIZE_IN = 3.25;
+export const TAG_SIZE_IN = 3.25;
+/** §9.9 p74, and what Fig 9-16 letters on the sticker under the cell name. */
+const TAG_FAMILY = '36h11';
+/** one CELL of a 36h11 tag — the tag is 10 of them across, and a DECODER reads one bit per cell.
+ *  Exported because the bleed's undecodability is stated against this length. */
+export const TAG_CELL_IN = TAG_SIZE_IN / 10;
 /**
  * ⚠️ APPROX — THE MANUAL'S OWN PITCH CANNOT BE RIGHT AS DISTILLED. `docs/biobuzz-reference.md`
  * §2.2 reads Fig 9-15 as "tags on 2.75-in centres in two pairs 7.0 in apart", and
@@ -910,11 +1015,21 @@ function tagClusterTexture(ids: readonly number[], label: string, plateW: number
       }
     }
   }
-  ctx.fillStyle = '#3c4450';
-  ctx.font = `600 ${Math.round(0.6 * pxPerIn)}px system-ui, sans-serif`;
+  // THE LABEL IS WHAT FIG 9-16 PRINTS, AND NOTHING ELSE. `manual-distilled.md` §9.9: "The
+  // cluster sticker in Fig 9-16 is labelled per cell, e.g. 'RED AUDIENCE / Tag family: 36h11'."
+  // Two lines, the cell name over the family — this used to run them together with the four IDs
+  // appended (`RED AUDIENCE · 36h11 · 34 35 36 37`), which is a caption the real sticker does
+  // not carry. The IDs are on the tags.
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
-  ctx.fillText(`${label} · 36h11 · ${ids.join(' ')}`, canvas.width / 2, top / 2);
+  const nameSize = Math.round(0.6 * pxPerIn);
+  const familySize = Math.round(0.4 * pxPerIn);
+  ctx.fillStyle = '#1b1f24';
+  ctx.font = `700 ${nameSize}px system-ui, sans-serif`;
+  ctx.fillText(label, canvas.width / 2, top / 2 - familySize * 0.7);
+  ctx.fillStyle = '#3c4450';
+  ctx.font = `500 ${familySize}px system-ui, sans-serif`;
+  ctx.fillText(`Tag family: ${TAG_FAMILY}`, canvas.width / 2, top / 2 + nameSize * 0.7);
   const tex = new THREE.CanvasTexture(canvas);
   tex.colorSpace = THREE.SRGBColorSpace;
   tex.magFilter = THREE.NearestFilter;
@@ -924,37 +1039,159 @@ function tagClusterTexture(ids: readonly number[], label: string, plateW: number
 }
 
 /**
- * The centre structure's banner. TEXT ONLY, in the field's own colours — no FIRST or RTX logo
- * artwork is drawn or shipped, and the wording is what the manual's field drawings letter across
- * this panel.
+ * ── THE BLEED-THROUGH, ON THE UPPER FACE OF THE SAME CELL FLOOR ────────────────────────────
+ *
+ * §9.9 puts the cluster sticker on the BOTTOM face of each CELL, facing DOWN at the tiles, and
+ * that stays exactly as it is. But the sticker is WHITE VINYL on a TRANSLUCENT polycarbonate
+ * floor, so from above it is not invisible: you see white bleeding through, with a suggestion of
+ * something darker inside it. Owner, 2026-09-19 — "the AprilTag sticker shows from below but not
+ * from above, and it should faintly."
+ *
+ * ⚠️ **IT MUST NOT BE DECODABLE FROM THE WRONG SIDE, AND THAT IS ENFORCED AT RASTER TIME, NOT BY
+ * TURNING THE OPACITY DOWN.** A faint but crisp copy still carries all 36 bits: a detector
+ * thresholds, it does not care how grey the ink is. So the bleed canvas is rasterized at
+ * `TAG_BLEED_PX_PER_IN`, a pitch of 0.714 in against a tag CELL of 0.325 — **2.2 cells per
+ * pixel**. The bits are averaged away by the rasterizer before the texture exists; there is no
+ * resolution at which they come back, and `LinearFilter` on the way up smears what is left.
+ * The RENDER lane checks that ratio rather than the opacity, because the ratio is the guarantee.
  */
+const TAG_BLEED_PX_PER_IN = 1.4;
+/** how much of the bleed quad shows. Against the crisp sticker's opaque decal this is a whisper;
+ *  it is the SECOND line of defence, and the raster pitch above is the first. */
+const TAG_BLEED_OPACITY = 0.3;
+/** the white the vinyl carries through the panel, and the grey the tag ink shows as. Neither is
+ *  the sticker's own `#ffffff`/`#000000`: two layers of translucent polycarbonate between the
+ *  eye and the ink is what a low-contrast pair means here. */
+const TAG_BLEED_WHITE = '#f2f4f6';
+const TAG_BLEED_INK = '#a8b2bc';
+
+function tagBleedTexture(ids: readonly number[], plateW: number, plateH: number): THREE.CanvasTexture {
+  const pxPerIn = TAG_BLEED_PX_PER_IN;
+  const canvas = document.createElement('canvas');
+  canvas.width = Math.max(2, Math.round(plateW * pxPerIn));
+  canvas.height = Math.max(2, Math.round(plateH * pxPerIn));
+  const ctx = canvas.getContext('2d');
+  if (!ctx) throw new Error('tagBleedTexture: no 2d context');
+  // the WHITE sticker itself, coming through the panel — this is most of the effect
+  ctx.fillStyle = TAG_BLEED_WHITE;
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  // and the dark cells, laid down at the same sub-cell pitch the row is. Each `fillRect` here is
+  // a fraction of a pixel wide, so the rasterizer's own coverage blending is what destroys the
+  // code; nothing is drawn at bit resolution and then blurred.
+  const tagIn = TAG_SIZE_IN;
+  const cellIn = TAG_CELL_IN;
+  const topIn = plateH - 0.4 - tagIn;
+  ctx.fillStyle = TAG_BLEED_INK;
+  for (let k = 0; k < ids.length; k++) {
+    const cells = apriltag36h11Cells(ids[k]);
+    const leftIn = plateW / 2 + (k - (ids.length - 1) / 2) * TAG_PITCH_IN - tagIn / 2;
+    for (let r = 0; r < 10; r++) {
+      for (let c = 0; c < 10; c++) {
+        if (cells[r * 10 + c] !== 0) continue;
+        ctx.fillRect((leftIn + c * cellIn) * pxPerIn, (topIn + r * cellIn) * pxPerIn, cellIn * pxPerIn, cellIn * pxPerIn);
+      }
+    }
+  }
+  const tex = new THREE.CanvasTexture(canvas);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  // LINEAR both ways: the point is the smear. `NearestFilter` (what the crisp sticker uses to
+  // keep its bits square) would hand back hard 0.7-in blocks, which reads as a checkerboard
+  // rather than as something seen through a panel.
+  tex.magFilter = THREE.LinearFilter;
+  tex.minFilter = THREE.LinearMipmapLinearFilter;
+  tex.needsUpdate = true;
+  return tex;
+}
+
+/** the bleed's own material: translucent, unlit-ish and never a shadow caster. Not
+ *  `decalMaterial` — that one is opaque, which is right for a sticker and wrong for a stain. */
+function bleedMaterial(map: THREE.Texture): THREE.MeshStandardMaterial {
+  return new THREE.MeshStandardMaterial({
+    map,
+    metalness: 0,
+    roughness: 0.95,
+    transparent: true,
+    opacity: TAG_BLEED_OPACITY,
+    depthWrite: false,
+    polygonOffset: true,
+    polygonOffsetFactor: DECAL_POLYGON_OFFSET,
+    polygonOffsetUnits: DECAL_POLYGON_OFFSET,
+  });
+}
+
+/**
+ * The centre structure's ACM panel face.
+ *
+ * ⚠️ **IT IS BLANK, AND THAT IS THE CAD, NOT A PLACEHOLDER.** The comment block above (the blank
+ * `decal#ffffff` inventory) records what the STEP ships here: `am-5883: Panel Sticker` ×2 on the
+ * two outward faces of the `am-5877 ACM Panel` board, both BLANK. This function used to letter
+ * "F I R S T   T E C H   C H A L L E N G E" / "BIOBUZZ" and an amber rule across it — invented
+ * artwork painted onto blank source data, and the owner called it out as wrong (2026-09-19).
+ * §9 also notes the logo panel may not be present at every event, so a blank panel is a real
+ * field configuration rather than a compromise.
+ *
+ * ⚠️ **AND A HAND-REDRAWN WORDMARK IS NOT THE ALTERNATIVE.** FIRST's *Policy on the Use of FIRST
+ * Trademarks and Copyrighted Materials* (rev 04/19/25) restricts the LOGO marks hardest — they
+ * are "not available for use by anyone other than by currently registered FIRST Teams to identify
+ * their own Teams and activities, by FIRST Committees and Partners, or by separate written
+ * agreement with FIRST" — while field DESIGNS sit in the more permissive copyright tier this
+ * whole CAD pipeline relies on. The brand guidelines additionally say to use only the versions
+ * provided and forbid altered ones, so a redraw is both a reproduction and a guideline breach.
+ * Do not put a logo back, in any form, including a "close enough" traced one.
+ *
+ * What it draws instead is a PANEL: the ACM board's own white face with the shading that makes it
+ * read as a physical sheet — a vertical gradient off the light rig, a faint edge darkening, and
+ * the brushed-composite tone — rather than a flat white rectangle.
+ */
+/** the bottom of the ACM face's own gradient, and the tone its wrapped edge shows. */
+const PANEL_STICKER_SHADE = '#e4e7ea';
+const PANEL_STICKER_EDGE = 'rgba(80, 90, 102, 0.28)';
+
 function bannerTexture(wIn: number, hIn: number): THREE.CanvasTexture {
-  const pxPerIn = 32;
+  const pxPerIn = 16;
   const canvas = document.createElement('canvas');
   canvas.width = Math.round(wIn * pxPerIn);
   canvas.height = Math.round(hIn * pxPerIn);
   const ctx = canvas.getContext('2d');
   if (!ctx) throw new Error('bannerTexture: no 2d context');
-  ctx.fillStyle = '#ffffff';
+  // the sheet, top-lit: the board leans 24 degrees back, so its own face catches more of the
+  // rig at the top edge than at the bottom one
+  const grad = ctx.createLinearGradient(0, 0, 0, canvas.height);
+  grad.addColorStop(0, '#ffffff');
+  grad.addColorStop(1, PANEL_STICKER_SHADE);
+  ctx.fillStyle = grad;
   ctx.fillRect(0, 0, canvas.width, canvas.height);
-  ctx.textAlign = 'center';
-  ctx.textBaseline = 'middle';
-  const cx = canvas.width / 2;
-  ctx.fillStyle = '#5a6270';
-  ctx.font = `600 ${Math.round(0.72 * pxPerIn)}px system-ui, sans-serif`;
-  ctx.fillText('F I R S T   T E C H   C H A L L E N G E', cx, canvas.height * 0.26);
-  ctx.fillStyle = '#1b1f24';
-  ctx.font = `800 ${Math.round(2.1 * pxPerIn)}px system-ui, sans-serif`;
-  ctx.fillText('BIOBUZZ', cx, canvas.height * 0.62);
-  // the flower's own amber (`am-5857 Flower Layer C`, CAD #ffba52) as the rule under it
-  ctx.fillStyle = '#ffba52';
-  const ruleW = Math.round(canvas.width * 0.34);
-  ctx.fillRect(cx - ruleW / 2, Math.round(canvas.height * 0.86), ruleW, Math.max(2, Math.round(0.16 * pxPerIn)));
+  // the sticker's edge — a real applied vinyl face is a hair darker where it wraps the board,
+  // which is what stops a white rectangle reading as a hole in the structure. Drawn INSIDE the
+  // face as a soft band rather than as a stroked outline: this file runs no outline pass at all
+  // (see `clearPanelMaterial`'s header), and a 1-px stroke on a leaning quad aliases into dashes.
+  const inset = Math.max(1, Math.round(0.18 * pxPerIn));
+  const edge = ctx.createLinearGradient(0, 0, canvas.width, 0);
+  edge.addColorStop(0, PANEL_STICKER_EDGE);
+  edge.addColorStop(inset / canvas.width, 'rgba(0,0,0,0)');
+  edge.addColorStop(1 - inset / canvas.width, 'rgba(0,0,0,0)');
+  edge.addColorStop(1, PANEL_STICKER_EDGE);
+  ctx.fillStyle = edge;
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
   const tex = new THREE.CanvasTexture(canvas);
   tex.colorSpace = THREE.SRGBColorSpace;
   tex.minFilter = THREE.LinearMipmapLinearFilter;
   tex.needsUpdate = true;
   return tex;
+}
+
+/** the ACM board's face: aluminium composite under a vinyl sticker is semi-gloss, not the matt
+ *  0.85 a printed floor decal is, and that sheen is the other half of "a panel, not a white
+ *  rectangle". Same polygon offset as every other thing printed on a surface. */
+function panelStickerMaterial(map: THREE.Texture): THREE.MeshStandardMaterial {
+  return new THREE.MeshStandardMaterial({
+    map,
+    metalness: 0.08,
+    roughness: 0.42,
+    polygonOffset: true,
+    polygonOffsetFactor: DECAL_POLYGON_OFFSET,
+    polygonOffsetUnits: DECAL_POLYGON_OFFSET,
+  });
 }
 
 function decalMaterial(map: THREE.Texture): THREE.MeshStandardMaterial {
@@ -1090,21 +1327,24 @@ const STANDOFF_INSET_IN = 0.265;
 export interface FieldMarkings {
   /** 4 at the high LOD (one per CELL), 0 at the low one. */
   tagPlates: number;
+  /** 4 — the white of the same sticker, coming through the panel from above. */
+  tagBleeds: number;
   /** 2 — the ACM panel's two outward faces. */
   banners: number;
   /** 8 — two under each flower's backstop. */
   standoffs: number;
 }
 
-const NO_MARKINGS: FieldMarkings = { tagPlates: 0, banners: 0, standoffs: 0 };
+const NO_MARKINGS: FieldMarkings = { tagPlates: 0, tagBleeds: 0, banners: 0, standoffs: 0 };
 
 function buildFieldMarkings(
   root: THREE.Object3D,
   hives: { red: FieldHiveGroup; blue: FieldHiveGroup },
   flowers: readonly THREE.Object3D[],
 ): FieldMarkings {
-  const out: FieldMarkings = { tagPlates: 0, banners: 0, standoffs: 0 };
+  const out: FieldMarkings = { tagPlates: 0, tagBleeds: 0, banners: 0, standoffs: 0 };
   const DOWN = new THREE.Vector3(0, 0, -1);
+  const UP = new THREE.Vector3(0, 0, 1);
 
   // ── the four AprilTag clusters, on the underside of each cell floor ──
   for (const alliance of ['red', 'blue'] as const) {
@@ -1127,6 +1367,34 @@ function buildFieldMarkings(
         quad.receiveShadow = true;
         tray.attach(quad);
         out.tagPlates++;
+
+        // …and the same sticker seen THROUGH the floor, on the face above it.
+        //
+        // ⚠️ IT IS THE *SAME RECTANGLE*, FLIPPED — NOT A SECOND `facetFrame` WITH THE NORMAL
+        // REVERSED. That was the first spelling and it is wrong: measured on the shipped
+        // `field.glb`, the plate's up-facing triangles are a 14.434 × 0.123-in strip, not the
+        // 17.001 × 5.001 face the down side gives, because the decimator kept almost nothing of
+        // the surface the plate is pressed against. Measuring the top face measures a lip. The
+        // rectangle is the one below, lifted to the plate's own top (`bbox.max.z`, so the CAD is
+        // still what sets it) and mirrored: +x negated, which is exactly what looking through a
+        // translucent panel does to the artwork. See `tagBleedTexture` for why it cannot be read.
+        const topZ = new THREE.Box3().setFromObject(mesh).max.z;
+        const bleed = new THREE.Mesh(
+          new THREE.PlaneGeometry(frame.width, frame.height),
+          bleedMaterial(tagBleedTexture(ids, frame.width, frame.height)),
+        );
+        bleed.name = `bb-apriltag-bleed:${alliance}:${side}`;
+        bleed.position.set(frame.centre.x, frame.centre.y, topZ + MARKING_LIFT_IN);
+        bleed.quaternion.setFromRotationMatrix(
+          new THREE.Matrix4().makeBasis(new THREE.Vector3(sideSign, 0, 0), new THREE.Vector3(0, sideSign, 0), UP),
+        );
+        bleed.castShadow = false;
+        bleed.receiveShadow = false;
+        // after the opaque field, like every other transparent surface here — it shares the cell
+        // skins' order so two translucent layers over one pixel never fight for it
+        bleed.renderOrder = CELL_RENDER_ORDER;
+        tray.attach(bleed);
+        out.tagBleeds++;
       }
       mesh.visible = false;
     }
@@ -1142,7 +1410,7 @@ function buildFieldMarkings(
         if (!frame) continue;
         const quad = new THREE.Mesh(
           new THREE.PlaneGeometry(frame.width, frame.height),
-          decalMaterial(bannerTexture(frame.width, frame.height)),
+          panelStickerMaterial(bannerTexture(frame.width, frame.height)),
         );
         quad.name = `bb-banner:${sideSign > 0 ? 'north' : 'south'}`;
         quad.position.copy(frame.centre).addScaledVector(new THREE.Vector3(0, 0, 1).applyQuaternion(frame.quaternion), MARKING_LIFT_IN);

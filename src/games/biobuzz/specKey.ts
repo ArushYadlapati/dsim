@@ -27,6 +27,13 @@ import { bbLauncherOf, bbLiftOf } from './mechs';
  * `heightIn` goes in RESOLVED (`bbDeployedHeightIn`), not raw, so an absent height and an
  * explicit 18 are one key rather than two. The STOWED preview is expressed as a spec whose
  * `heightIn` IS the stow height, which is why the stow toggle rebuilds correctly for free.
+ *
+ * ⚠️ **`teamNumber` IS IN IT, EVEN THOUGH IT MOVES NO VERTEX.** It became geometry the day the
+ * ROBOT SIGNS started printing it (R403, `scene/renderRobots.ts`): the number is rasterised into
+ * the sign texture at BUILD time, so a spec whose number changed and whose shape did not would
+ * keep the previous number on both plates — on the robot AND in the cached thumbnail, which is
+ * the exact "a key the generator does not rebuild on" failure this module exists to prevent. It
+ * is the one entry here that is not a shape, and that is why it carries this note.
  */
 export function bbSpecKey(spec: RobotSpec): string {
   const launcher = bbLauncherOf(spec, 0);
@@ -36,6 +43,7 @@ export function bbSpecKey(spec: RobotSpec): string {
     spec.width,
     bbDeployedHeightIn(spec),
     spec.chassisColor ?? '',
+    spec.teamNumber ?? '',
     spec.intakeMount ?? '',
     spec.intake,
     spec.drivetrain,

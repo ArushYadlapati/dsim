@@ -12,7 +12,17 @@ import {
 } from '../../src/games/biobuzz/sim3d/bodies';
 import { hiveContentsTorque, hiveHoldTorque, hiveTiltAngle, insideCell } from '../../src/games/biobuzz/sim3d/hive3d';
 import { rotate2 } from '../../src/games/biobuzz/sim3d/math3';
+import { bbScoreWorld } from '../../src/games/biobuzz/score';
+import { bbSettled } from '../../src/games/biobuzz/settle';
 import {
+  MATCH_SETTLE_HOLD_S,
+  MATCH_SETTLE_MAX_S,
+  newSettleClock,
+  settleStep,
+} from '../../src/sim/settle';
+import { BALL_REST_SPEED, GRAVITY, SIM_DT } from '../../src/config';
+import {
+  BB3_CELL_SEAT_DEPTH,
   BB3_HIVE_BALLAST,
   BB3_HIVE_DAMPING,
   BB3_HIVE_DETENT,
@@ -21,6 +31,7 @@ import {
   BB3_HIVE_REST_W,
   BB3_HIVE_STOP_DEG,
   BB3_HIVE_TRAY_MASS,
+  BB3_REST_SPEED,
   BB_HALF_X,
   BB_HALF_Y,
   BB_HIVE_OPEN_Z,
@@ -138,6 +149,115 @@ function loaded(seed: number, pollen: number, nectar: number, packing: Packing =
   const w = mkWorld3d('free', seed);
   w.balls.length = 0;
   return { world: w, ids: fillCell(w, pollen, nectar, packing) };
+}
+
+/** the up CELL's own box, on a freshly built world. */
+function upBox(w: World): { side: 1 | -1; box: ReturnType<typeof hiveCellLocalBox> } {
+  const side: 1 | -1 = w.biobuzz!.hives[A].up === 'north' ? 1 : -1;
+  return { side, box: hiveCellLocalBox(side, A) };
+}
+
+/** local `w` (height above the tray bar, in the tray's own tilted frame) of a world `(y, z)` —
+ * the inverse of `cellPoint`'s rotation, which is how a DEPTH BELOW THE RIM is measured. */
+function localW(theta: number, y: number, z: number): number {
+  return rotate2(y, z - BB3_HIVE_PIVOT_Z, -theta).b;
+}
+
+/**
+ * A BALLISTIC ARRIVAL at the up CELL: the launch point and velocity that reach the tray-local
+ * point `(0, mid-v, wMin + aimW)` in `flightS` seconds, from `dHoriz` inches outboard of it and
+ * `dUp` inches above it. A short flight is a flat turret shot; a long one is a dumper's lob.
+ *
+ * Built off a world with the SAME SEED the arrival will be stepped in, so the tray it is aimed at
+ * is the tray it meets.
+ */
+function shotInto(seed: number, dHoriz: number, dUp: number, flightS: number, aimW = 2): { start: Vec3; vel: Vec3 } {
+  const w = mkWorld3d('free', seed);
+  const theta = hiveTiltAngle(w, A);
+  const { side, box } = upBox(w);
+  const target = cellPoint(A, theta, 0, (box.vMin + box.vMax) / 2, box.wMin + aimW);
+  const start = { x: target.x, y: target.y + side * dHoriz, z: target.z + dUp };
+  return {
+    start,
+    vel: {
+      x: 0,
+      y: (target.y - start.y) / flightS,
+      z: (target.z - start.z) / flightS + 0.5 * GRAVITY * flightS,
+    },
+  };
+}
+
+type Vec3 = { x: number; y: number; z: number };
+
+/** what one arrival did: when its centre entered the cell interior, when `contents` first held
+ * it, when it first read AT REST, how deep below the rim it ever got, how shallow it came back
+ * after being counted, how many ticks it spent inside in one run, and whether it ever DROPPED
+ * OUT of `contents` again. Every registration check below is one field of this. */
+interface Arrival {
+  entered: number;
+  counted: number;
+  rested: number;
+  deepest: number;
+  shallowestAfterCount: number;
+  runIn: number;
+  endIn: boolean;
+  drops: number;
+  minCellCountAfter: number;
+}
+
+function arrive(seed: number, s: Vec3, v: Vec3, ticks = 300): Arrival {
+  const w = mkWorld3d('free', seed);
+  w.balls.length = 0;
+  w.balls.push({
+    id: 1,
+    color: 'yellow',
+    state: { kind: 'flight', target: 'blue' },
+    pos: { x: s.x, y: s.y },
+    vel: { x: v.x, y: v.y },
+    z: s.z - BB_POLLEN_R,
+    vz: v.z,
+    r: BB_POLLEN_R,
+  } as Artifact);
+  const rim = upBox(w).box.wMax;
+  const out: Arrival = {
+    entered: -1,
+    counted: -1,
+    rested: -1,
+    deepest: -Infinity,
+    shallowestAfterCount: Infinity,
+    runIn: 0,
+    endIn: false,
+    drops: 0,
+    minCellCountAfter: Infinity,
+  };
+  let run = 0;
+  let was = false;
+  for (let t = 0; t < ticks; t++) {
+    step3d(w, 1 / 60, new Map());
+    const b = w.balls.find((x) => x.id === 1);
+    if (!b) break;
+    const th = trayTilt(engineFor(w).hiveTrays[A]);
+    const z = b.z + (b.r ?? BB_POLLEN_R);
+    const depth = rim - localW(th, b.pos.y, z);
+    const ins = insideCell(b.pos.x, b.pos.y, z, A, 1, th) || insideCell(b.pos.x, b.pos.y, z, A, -1, th);
+    if (ins) {
+      if (out.entered < 0) out.entered = t;
+      out.deepest = Math.max(out.deepest, depth);
+    }
+    run = ins ? run + 1 : 0;
+    out.runIn = Math.max(out.runIn, run);
+    out.endIn = ins;
+    const now = w.biobuzz!.hives[A].contents.includes(1);
+    if (now && out.counted < 0) out.counted = t;
+    if (was && !now) out.drops++;
+    was = now;
+    if (out.counted >= 0) {
+      out.shallowestAfterCount = Math.min(out.shallowestAfterCount, depth);
+      out.minCellCountAfter = Math.min(out.minCellCountAfter, bbScoreWorld(w)[A].cellCount);
+    }
+    if (out.rested < 0 && t > 2 && Math.hypot(b.vel.x, b.vel.y, b.vz) < BB3_REST_SPEED) out.rested = t;
+  }
+  return out;
 }
 
 /** step a staged cell until its up side swaps, up to `ticks`. Returns the tick it tipped on, or
@@ -301,12 +421,24 @@ export function hive3dChecks(check: Check): void {
     const report = (pollen: number, nectar: number): string =>
       packings
         .map((pk) => {
-          // 15 ticks: long enough for a staged pile to settle against the tray, short enough that
-          // the pin has not lifted yet on any packing (the 8-POLLEN breakaway is ~tick 29), so
-          // the number reported is the load AT THE STOP and does not depend on the trigger
+          // 15 ticks is long enough for a staged pile to settle against the tray. The reading
+          // taken is the LAST tick the tray was still AT ITS STOP, which is what makes this a
+          // measurement of the LOAD rather than of the trigger's timing.
+          //
+          // ⚠️ It used to be "the torque at tick 15", on the argument that the pin could not have
+          // lifted by then (the 8-POLLEN breakaway was ~tick 29). That argument died with the
+          // registration fix (2026-09-19): membership is geometry now, a STAGED pile is over
+          // threshold on tick one, and the 8-POLLEN rows broke away at tick 13 — so tick 15 was
+          // reading a tray that had been swinging for two ticks, and the printed numbers moved
+          // (8 POLLEN guide 5656 → 6648) for a reason that has nothing to do with the load.
           const w = loaded(960 + pollen * 7 + nectar, pollen, nectar, pk).world;
-          for (let t = 0; t < 15; t++) step3d(w, 1 / 60, new Map());
-          return `${pk} ${Math.abs(hiveContentsTorque(w, A, hiveTiltAngle(w, A))).toFixed(0)}`;
+          let atStop = 0;
+          for (let t = 0; t < 15; t++) {
+            step3d(w, 1 / 60, new Map());
+            const th = hiveTiltAngle(w, A);
+            if (Math.abs(th) >= STOP_RAD) atStop = Math.abs(hiveContentsTorque(w, A, th));
+          }
+          return `${pk} ${atStop.toFixed(0)}`;
         })
         .join(' · ');
     withTray(true, () => {
@@ -506,6 +638,247 @@ export function hive3dChecks(check: Check): void {
     );
   });
 
+  // ═══ REGISTRATION: WHEN DOES A CELL COUNT WHAT LANDS IN IT? ════════════════════════════════
+  //
+  // ⚠️ **THE OWNER'S SECOND HIVE REPORT** (2026-09-19, the day after "it says 0 more to tip and it
+  // does not tip"): "there is a lot of delay registering when the balls land in the hive, which
+  // means when it needs to tip, there is a significant amount of lengthened tipping time due to
+  // the registration time."
+  //
+  // `sim3d/derive.ts` used to call an element part of a CELL only once it had read under
+  // `BB3_REST_SPEED` for `BB3_REST_TICKS` CONSECUTIVE ticks — and `contents` is what the tip
+  // trigger, the HUD's "N MORE TO TIP" and §10.5 C's count all read. MEASURED over 1,500
+  // randomized arrivals, from the tick an element's centre entered the cell interior to the tick
+  // `contents` held it: **mean 95 ticks (1.59 s), p50 75, p90 205, max 264 — and 8 of 75 landings
+  // never registered at all** inside five seconds. Six of those ticks were the gate; the rest was
+  // the element's own settling, which a see-saw does not wait for.
+  //
+  // Membership is GEOMETRY now (inside the interior, `BB3_CELL_SEAT_DEPTH` below the cell's open
+  // rim) and the blocks below are what make that falsifiable in BOTH directions. The lane had
+  // nothing here at all: every fixture above stages elements already at rest inside the cell, so
+  // the registration path was the one path this file never ran.
+
+  // ---- 1. a shot that lands is counted AS IT ARRIVES, not when it stops moving ---------------
+  //
+  // Four arrivals a real driver produces, each aimed into the up CELL. Two assertions per shot,
+  // and the second is the one that cannot be satisfied by a shorter timer: `counted` must come
+  // BEFORE `rested`, so any rest requirement reintroduced anywhere in the path fails here rather
+  // than merely making the lane slower.
+  {
+    const SHOTS: readonly [string, number, number, number][] = [
+      // label, inches outboard, inches above, flight seconds
+      ['flat turret', 55, 4, 0.3],
+      ['mid turret', 45, 12, 0.45],
+      ['steep turret', 30, 25, 0.6],
+      ["dumper's lob", 14, 30, 0.7],
+    ];
+    for (const [label, dH, dUp, T] of SHOTS) {
+      const seed = 1210 + Math.round(dH);
+      const s = shotInto(seed, dH, dUp, T);
+      const a = arrive(seed, s.start, s.vel);
+      console.log(
+        `[smoke-bb hive3d] arrival "${label}": entered the cell at tick ${a.entered}, counted at ${a.counted} ` +
+          `(${a.counted - a.entered} ticks later), first read at rest at ${a.rested}`,
+      );
+      check(
+        `registration: a "${label}" shot is in hives.${A}.contents within 2 ticks of entering the cell`,
+        a.entered >= 0 && a.counted >= 0 && a.counted - a.entered <= 2,
+        `entered ${a.entered}, counted ${a.counted}`,
+      );
+      check(
+        `registration: a "${label}" shot is counted BEFORE it comes to rest (no rest gate)`,
+        a.counted >= 0 && a.rested >= 0 && a.counted < a.rested,
+        `counted ${a.counted}, first at rest ${a.rested} — the rest gate made this 54/28/34 ticks late`,
+      );
+    }
+  }
+
+  // ---- 2. a lob that SKIMS the open rim is never counted -------------------------------------
+  //
+  // ⚠️ **THIS IS THE CASE THE REST GATE WAS REALLY BUYING, AND THE ONLY ONE.** Its comment said
+  // "'in the cell' has to mean 'landed in it', and a shot crossing the mouth is not yet in it".
+  // Measured, nothing crosses the MOUTH and comes back: a box with one opening keeps what
+  // properly enters it. What does happen is a shot arcing over the hive whose centre dips under
+  // the open TOP of the cell for a few ticks on its way past — of 209 arrivals that put a centre
+  // inside the interior, 92 left again and every one of them stayed within **2.75 in** of the rim.
+  //
+  // The fixture is the deepest of those 92, taken verbatim from the sweep: a lob released 53 in
+  // out and 39 in up, arriving over the up cell at 171 in/s. It spends 19 consecutive ticks with
+  // its centre inside the interior — so this check bites: the plain interior box counts it, and
+  // `BB3_CELL_SEAT_DEPTH` is the whole of what does not.
+  {
+    const a = arrive(1240, { x: 29.183, y: 53.23, z: 38.869 }, { x: -16.86, y: -79.575, z: 149.588 });
+    console.log(
+      `[smoke-bb hive3d] the rim-skimming lob: ${a.runIn} consecutive ticks with its centre inside the interior, ` +
+        `deepest ${a.deepest.toFixed(2)} in below the rim (seat depth ${BB3_CELL_SEAT_DEPTH}), ended inside ${a.endIn}`,
+    );
+    check(
+      'the rim-skimming lob really does enter the interior box — otherwise this check tests nothing',
+      a.entered >= 0 && a.runIn >= 8 && !a.endIn,
+      `entered ${a.entered}, longest run inside ${a.runIn}, ended inside ${a.endIn}`,
+    );
+    check(
+      'registration: a shot that skims the open rim and carries on is NEVER counted',
+      a.counted < 0,
+      `counted at tick ${a.counted}; it reached ${a.deepest.toFixed(2)} in below the rim against a seat depth of ${BB3_CELL_SEAT_DEPTH}`,
+    );
+  }
+
+  // ---- 3. and the count does NOT flicker while a counted element is still bouncing -----------
+  //
+  // The price of counting on entry is that an element can bounce back out of the entry band while
+  // it settles — measured on the flat turret shot, which is counted on tick 18 and then comes back
+  // to within **3.02 in** of the rim, inside the 3.5 the entry test asks for. `derive.ts` holds it
+  // with a LATCH off `b.state` (plain world JSON, so a peer rebuilding its engine agrees): the
+  // depth is earned once and then the element belongs to the cell for as long as it is anywhere
+  // inside the interior.
+  //
+  // ⚠️ **THE HYSTERESIS IS HERE AND NOT AT THE SCORE**, deliberately. `contents` is ONE list with
+  // one meaning, read by the tip trigger, the HUD and §10.5 C, and that is exactly the arrangement
+  // the 2026-09-19 tip fix was for — a second opinion held at the score would put the HUD's "0 MORE
+  // TO TIP" and the tray back into disagreement, which is the bug before last.
+  {
+    const s = shotInto(1250, 55, 4, 0.3);
+    const a = arrive(1250, s.start, s.vel);
+    console.log(
+      `[smoke-bb hive3d] after being counted at tick ${a.counted} the flat shot bounces back to ` +
+        `${a.shallowestAfterCount.toFixed(2)} in below the rim (entry needs ${BB3_CELL_SEAT_DEPTH}) and drops out ${a.drops} times`,
+    );
+    check(
+      'the bounce fixture really does come back above the entry depth — otherwise this tests nothing',
+      a.counted >= 0 && a.shallowestAfterCount < BB3_CELL_SEAT_DEPTH,
+      `shallowest after counting ${a.shallowestAfterCount.toFixed(2)} in vs a seat depth of ${BB3_CELL_SEAT_DEPTH}`,
+    );
+    check(
+      'no flicker: a counted element never drops out of the cell while it is still bouncing in it',
+      a.drops === 0,
+      `${a.drops} drops out of hives.${A}.contents`,
+    );
+    check(
+      "no flicker: the SCORE's cellCount never dips once the element is counted",
+      a.minCellCountAfter >= 1,
+      `lowest cellCount after registration ${a.minCellCountAfter}`,
+    );
+  }
+
+  // ---- 4. the entry depth sits between the two populations it separates ----------------------
+  //
+  // `BB3_CELL_SEAT_DEPTH` is the only tuned number in the membership test and it is a WINDOW, not
+  // a threshold: too shallow and a rim-skimming lob scores, too deep and an element resting on top
+  // of a pile is never counted. Both bounds are re-measured here, from the same fixtures, so
+  // moving the cell box, an element radius or the tray's restitution fails this rather than
+  // silently eating one of the two margins.
+  {
+    const skim = arrive(1260, { x: 29.183, y: 53.23, z: 38.869 }, { x: -16.86, y: -79.575, z: 149.588 }).deepest;
+    // the shallowest a really-landed element rests: an 8-POLLEN pile crammed UP the back wall,
+    // which is the tallest staging the packings produce
+    const w = loaded(1261, 8, 0, 'crammed4').world;
+    for (let t = 0; t < 120; t++) step3d(w, 1 / 60, new Map());
+    const th = hiveTiltAngle(w, A);
+    const rim = upBox(w).box.wMax;
+    let rest = Infinity;
+    for (const b of w.balls) {
+      if (!w.biobuzz!.hives[A].contents.includes(b.id)) continue;
+      rest = Math.min(rest, rim - localW(th, b.pos.y, b.z + (b.r ?? BB_POLLEN_R)));
+    }
+    console.log(
+      `[smoke-bb hive3d] seat-depth window: deepest rim skim ${skim.toFixed(2)} in < BB3_CELL_SEAT_DEPTH ` +
+        `${BB3_CELL_SEAT_DEPTH} < shallowest resting element ${rest.toFixed(2)} in`,
+    );
+    check(
+      'BB3_CELL_SEAT_DEPTH is deeper than any shot that skims the rim, and shallower than the highest a load rests',
+      skim < BB3_CELL_SEAT_DEPTH && BB3_CELL_SEAT_DEPTH < rest,
+      `skim ${skim.toFixed(2)} / constant ${BB3_CELL_SEAT_DEPTH} / rest ${rest.toFixed(2)}`,
+    );
+  }
+
+  // ---- 5. and the TIP follows the registration, which is the owner's actual complaint --------
+  //
+  // A cell one element short of `BB_TIP_POLLEN`, and the eighth arrives. The number that matters
+  // is from the tick that element's centre enters the cell to the tick the tray leaves its stop:
+  // **48-76 ticks (0.8-1.3 s) under the rest gate**, and it is a RATCHET here, because "the tip
+  // takes too long" is the report and nothing else in the lane measures it. `hiveDetentHold` reads
+  // last tick's `contents`, so one tick of it is structural; the rest is the tray's own rotation
+  // out of `BB3_HIVE_STOP_DEG`, which is physics and not latency.
+  withTray(true, () => {
+    for (const [label, dH, dUp, T] of [
+      ['mid turret', 45, 12, 0.45],
+      ["dumper's lob", 14, 30, 0.7],
+    ] as [string, number, number, number][]) {
+      const seed = 1270 + Math.round(dH);
+      const s = shotInto(seed, dH, dUp, T);
+      const w = loaded(seed, BB_TIP_POLLEN[0] - 1, 0).world;
+      for (let t = 0; t < 40; t++) step3d(w, 1 / 60, new Map()); // let the staged load settle
+      w.balls.push({
+        id: 99,
+        color: 'yellow',
+        state: { kind: 'flight', target: 'blue' },
+        pos: { x: s.start.x, y: s.start.y },
+        vel: { x: s.vel.x, y: s.vel.y },
+        z: s.start.z - BB_POLLEN_R,
+        vz: s.vel.z,
+        r: BB_POLLEN_R,
+      } as Artifact);
+      let entered = -1;
+      let broke = -1;
+      for (let t = 0; t < 600 && broke < 0; t++) {
+        step3d(w, 1 / 60, new Map());
+        const b = w.balls.find((x) => x.id === 99);
+        const th = trayTilt(engineFor(w).hiveTrays[A]);
+        if (b && entered < 0) {
+          const z = b.z + (b.r ?? BB_POLLEN_R);
+          if (insideCell(b.pos.x, b.pos.y, z, A, 1, th) || insideCell(b.pos.x, b.pos.y, z, A, -1, th)) entered = t;
+        }
+        if (entered >= 0 && Math.abs(th) < STOP_RAD) broke = t;
+      }
+      console.log(
+        `[smoke-bb hive3d] the ${BB_TIP_POLLEN[0]}th POLLEN ("${label}"): entered at tick ${entered}, ` +
+          `the tray left its stop at ${broke} — ${broke - entered} ticks (${(((broke - entered) / 60) * 1000).toFixed(0)} ms)`,
+      );
+      check(
+        `the TIP starts within 20 ticks of the last element entering the cell ("${label}")`,
+        entered >= 0 && broke > entered && broke - entered <= 20,
+        `entered ${entered}, broke away ${broke} (${broke - entered} ticks; it was 48-76 under the rest gate)`,
+      );
+    }
+  });
+
+  // ---- 6. and it is a pure function of the JSON: one seed, two runs, the same history --------
+  //
+  // The membership LATCH lives in `b.state` rather than in an engine-local map precisely so this
+  // holds across a rebuilt engine; what is asserted here is the weaker and more basic half, that
+  // the whole registration path is deterministic at all. The hash is the per-tick `contents` list,
+  // not just the endpoint, so a run that arrives at the same place by a different route fails.
+  {
+    const hashes: string[] = [];
+    for (let run = 0; run < 2; run++) {
+      const s = shotInto(1280, 45, 12, 0.45);
+      const w = loaded(1280, 4, 1).world;
+      for (let t = 0; t < 30; t++) step3d(w, 1 / 60, new Map());
+      w.balls.push({
+        id: 99,
+        color: 'yellow',
+        state: { kind: 'flight', target: 'blue' },
+        pos: { x: s.start.x, y: s.start.y },
+        vel: { x: s.vel.x, y: s.vel.y },
+        z: s.start.z - BB_POLLEN_R,
+        vz: s.vel.z,
+        r: BB_POLLEN_R,
+      } as Artifact);
+      const history: string[] = [];
+      for (let t = 0; t < 180; t++) {
+        step3d(w, 1 / 60, new Map());
+        history.push(w.biobuzz!.hives[A].contents.join(','));
+      }
+      hashes.push(history.join('|'));
+    }
+    check(
+      'determinism: two runs of one seed produce the identical tick-by-tick contents history',
+      hashes[0] === hashes[1],
+      `${hashes[0].length} vs ${hashes[1].length} chars of history`,
+    );
+  }
+
   // ---- the mouth takes a shot; the closed faces bounce ---------------------------------------
   //
   // The CELL is open at its OUTER end only (owner ruling 2026-09-12): a LAUNCH has to arrive over
@@ -659,4 +1032,115 @@ export function hive3dChecks(check: Check): void {
     }
     check('determinism: two identical tips produce the identical tray state', angles[0] === angles[1], `${angles[0]} vs ${angles[1]}`);
   });
+
+  settleChecks(check);
+}
+
+/**
+ * THE SETTLE CLOCK OVER A 3D TRAY (`src/games/biobuzz/settle.ts`), and it is a HIVE3D question
+ * because both of the bugs it pins are about what a CELL does to an element's TAG.
+ *
+ * `bbSettled` used to ask about motion only for `flight` and `ground`. That was harmless while
+ * an element bouncing in a cell stayed `flight` all the way down; since membership became
+ * GEOMETRY (`BB3_CELL_SEAT_DEPTH`) it is `element` from the tick its centre is seated, so the
+ * motion test skipped it and the clock could close on a moving tray. The opposite failure is on
+ * record too — refusing on a TAG held the clock to the 10 s cap on a still field — so every
+ * check here comes in a pair: the moving thing holds, the parked thing does not.
+ */
+function settleChecks(check: Check): void {
+  /* ── a ball still BOUNCING in a CELL holds the clock open ────────────────
+     Staged by hand, one tick into the world so `derive.ts` has seated it and tagged it
+     `element`, then given a real upward bounce. Under the old test this read "settled" at
+     83 in/s, and the settle clock is when the match is CALLED — §10.5 A's TIP is assessed at
+     that instant, so a tip one bounce away could be missed. */
+  {
+    const w = mkWorld3d('match', 901);
+    w.balls.length = 0;
+    const theta = hiveTiltAngle(w, A);
+    const box = upBox(w).box;
+    const p = cellPoint(A, theta, 0, (box.vMin + box.vMax) / 2, box.wMin + 4.5);
+    w.balls.push({
+      id: 1,
+      color: 'yellow',
+      state: { kind: 'ground' },
+      pos: { x: p.x, y: p.y },
+      vel: { x: 0, y: 0 },
+      z: p.z - BB_POLLEN_R,
+      vz: 0,
+      r: BB_POLLEN_R,
+    } as Artifact);
+    step3d(w, 1 / 60, new Map());
+    const seated = w.balls[0].state.kind === 'element';
+    w.balls[0].vz = 90;
+    step3d(w, 1 / 60, new Map());
+    const b = w.balls[0];
+    check(
+      'SETTLE (3D): a ball bouncing INSIDE a cell is tagged `element` and still holds the clock open',
+      seated && b.state.kind === 'element' && !bbSettled(w),
+      `tag ${b.state.kind}${b.state.kind === 'element' ? ':' + b.state.el : ''}, vz ${b.vz.toFixed(2)}, settled ${bbSettled(w)}`,
+    );
+  }
+
+  /* ── a LOADED TRAY at rest settles, promptly ─────────────────────────────
+     The other half of the pair. Seven POLLEN is one short of the tip table, so the tray stays
+     on its stop with a full cell — and `derive.ts`'s rest snap holds every one of them at
+     exactly zero, which is what makes the motion test safe to run on an `element` tag at all.
+     Measured with the snap live: maxV 0.0000 and max|vz| 0.0000 over 400 further ticks, in the
+     guide packing and crammed against the back wall alike. */
+  for (const packing of ['guide', 'crammed4'] as const) {
+    const { world } = loaded(902, BB_TIP_POLLEN[0] - 1, 0, packing);
+    for (let t = 0; t < 240; t++) step3d(world, 1 / 60, new Map());
+    let worst = 0;
+    let tagged = 0;
+    for (let t = 0; t < 120; t++) {
+      step3d(world, 1 / 60, new Map());
+      for (const b of world.balls) {
+        if (b.state.kind !== 'element') continue;
+        worst = Math.max(worst, Math.hypot(b.vel.x, b.vel.y), Math.abs(b.vz));
+      }
+    }
+    for (const b of world.balls) if (b.state.kind === 'element') tagged++;
+    check(
+      `SETTLE (3D): a loaded tray at rest is SETTLED — ${packing} packing, and nothing in the cell jitters`,
+      tagged === BB_TIP_POLLEN[0] - 1 && worst === 0 && bbSettled(world),
+      `${tagged} tagged \`element\`, worst |v| over 120 further ticks ${worst.toFixed(4)} (threshold ${BALL_REST_SPEED}), settled ${bbSettled(world)}`,
+    );
+  }
+
+  /* ── PARKED ELEMENTS ON THE STRUCTURE FINALIZE, AND NOWHERE NEAR THE CAP ──
+     The 2026-09-18 report, re-pinned against the settle CLOCK rather than the predicate: eight
+     elements dropped onto the hive and left to come to rest used to hold the clock for the
+     whole `MATCH_SETTLE_MAX_S`. Asserted as a tick count, because "settled" on one tick is not
+     the thing that was broken — the clock closing is. */
+  {
+    const w = mkWorld3d('match', 903);
+    w.balls.length = 0;
+    for (let k = 0; k < 8; k++) {
+      w.balls.push({
+        id: k + 1,
+        color: 'yellow',
+        state: { kind: 'flight', target: A },
+        pos: { x: hivePivotX(A) + (k % 3) * 2.6, y: Math.floor(k / 3) * 2.6 },
+        vel: { x: 0, y: 0 },
+        z: 60 + k * 3.2,
+        vz: 0,
+        r: BB_POLLEN_R,
+      } as Artifact);
+    }
+    for (let t = 0; t < 420; t++) step3d(w, 1 / 60, new Map());
+    w.match.phase = 'post';
+    const clock = newSettleClock();
+    const capTicks = Math.round(MATCH_SETTLE_MAX_S / SIM_DT);
+    let at = -1;
+    for (let t = 0; t < capTicks + 5 && at < 0; t++) {
+      step3d(w, 1 / 60, new Map());
+      if (settleStep(clock, w, bbSettled)) at = t + 1;
+    }
+    const holdTicks = Math.round(MATCH_SETTLE_HOLD_S / SIM_DT);
+    check(
+      'SETTLE (3D): a field of elements parked on the HIVE finalizes on the HOLD, not on the cap',
+      at > 0 && at < holdTicks * 4,
+      `finalized ${at} ticks after the buzzer (hold ${holdTicks}, cap ${capTicks})`,
+    );
+  }
 }

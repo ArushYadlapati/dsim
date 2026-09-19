@@ -1,20 +1,29 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import {
+  coerceMaxFps,
   GFX_FOV_MAX,
   GFX_FOV_MIN,
+  GFX_FPS_MAX,
+  GFX_FPS_MIN,
+  GFX_FPS_STEPS,
   GFX_NOT_OFFERED,
   GFX_PIXEL_BUDGET,
   GFX_PRESET_LABEL,
   GFX_RENDER_SCALE_MAX,
   GFX_RENDER_SCALE_MIN,
   getGraphics,
+  isCustomFps,
+  MAX_FPS_UNLIMITED,
+  MAX_FPS_VSYNC,
   resetGraphicsToAuto,
   setGraphicsPreset,
   setGraphicsSetting,
   subscribeGraphics,
   type GraphicsPreset,
   type GraphicsSettings,
+  type MaxFps,
 } from '../games/biobuzz/graphics/settings';
+import { desktop, type DesktopPerfState } from '../desktop';
 import { BB_ENVIRONMENTS } from '../games/biobuzz/graphics/environments';
 import {
   CAMERA_PREFS,
@@ -90,6 +99,216 @@ function OptRow<T extends string | number | boolean>({
           </button>
         ))}
       </div>
+    </div>
+  );
+}
+
+/**
+ * MAX FRAME RATE — the one row in this screen that is not a fixed set of choices, and the one
+ * whose effect is not entirely inside this process. It gets its own component for three
+ * reasons `OptRow` cannot carry:
+ *
+ *  1. **TWO OF THE EIGHT TILES ARE NOT NUMBERS.** VSync and Unlimited are the ABSENCE of a
+ *     cap, not a bigger one, so they carry a sub-line saying what they are while the rates
+ *     stay bare. That is also what keeps them from reading as the top of the ladder.
+ *  2. **A RATE YOU TYPE.** The tiles are the common panels; the field covers 165 Hz and every
+ *     other one. It commits on blur or Enter rather than per keystroke, because clamping mid-
+ *     type turns `144` into `24` the moment you have deleted two digits, and it CANNOT reach
+ *     either sentinel: a minus sign is a slip, not a choice.
+ *  3. **UNLIMITED IS A SETTING IN TWO PLACES.** The value lives here; the Chromium switches
+ *     live in the desktop shell's own store and are read before the app is ready. So this row
+ *     reconciles the two, and says plainly which of the three situations the player is in —
+ *     web build (it behaves as VSync), desktop needing a restart, or desktop already running
+ *     with the limit off.
+ *
+ * ⚠️ **EIGHT TILES, SO THE GRID IS `.eight`** — a modifier that exists for this row, with the
+ * measurement in `shell.css` beside it. The short version: `.three` ends in a 2-tile orphan at
+ * panel width, and `.four`'s auto-fit track collapses to ONE column in a 298px panel at 375,
+ * which is eight stacked tiles for one setting. `.eight` is a fixed 4, and a fixed 2 under
+ * 560px.
+ */
+function MaxFpsRow({ value, onPick }: { value: MaxFps; onPick: (v: MaxFps) => void }) {
+  const bridge = desktop();
+  /** what the shell reports. `null` until it answers, and on the web for ever. */
+  const [perf, setPerf] = useState<DesktopPerfState | null>(null);
+  /** a desktop shell older than this feature — the app loads the live site, so a new client
+   *  in last month's shell is ordinary. `bridge.perf` is optional for exactly this. */
+  const [shellTooOld, setShellTooOld] = useState(false);
+  const [dismissed, setDismissed] = useState(false);
+
+  const custom = isCustomFps(value);
+  const [showCustom, setShowCustom] = useState(custom);
+  const [draft, setDraft] = useState(custom ? String(value) : '');
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    if (custom) setDraft(String(value));
+  }, [custom, value]);
+  useEffect(() => {
+    if (showCustom) inputRef.current?.focus();
+  }, [showCustom]);
+
+  /**
+   * RECONCILE, then report. Runs on mount and after every change to the value, and the
+   * renderer's value always wins: it is the thing the player last clicked, while the shell's
+   * copy can be left over from an install whose `localStorage` has since been cleared. The
+   * store's own `commit` writes the same thing for the writers that never open this screen —
+   * both are idempotent, so the double write costs one no-op IPC.
+   */
+  useEffect(() => {
+    if (!bridge) return;
+    const p = bridge.perf;
+    if (!p) {
+      setShellTooOld(true);
+      return;
+    }
+    let alive = true;
+    const want = value === MAX_FPS_UNLIMITED;
+    void p
+      .get()
+      .then((st) => (st.unlimitedFps === want ? st : p.setUnlimitedFps(want)))
+      .then((st) => {
+        if (alive) setPerf(st);
+      })
+      .catch(() => {
+        /* the row simply says nothing about restarting rather than guessing */
+      });
+    return () => {
+      alive = false;
+    };
+  }, [bridge, value]);
+
+  const pickTile = (v: MaxFps) => {
+    setShowCustom(false);
+    setDismissed(false);
+    onPick(v);
+  };
+
+  const commitDraft = () => {
+    const n = Number.parseInt(draft, 10);
+    // Not `coerceMaxFps` alone: that accepts both sentinels, because they are legal values of
+    // the field. Typing your way into one is an accident, so anything that is not a positive
+    // integer snaps the box back to what is actually set.
+    if (!Number.isInteger(n) || n < 1) {
+      setDraft(isCustomFps(value) ? String(value) : '');
+      return;
+    }
+    const next = coerceMaxFps(n, value);
+    setDraft(String(next));
+    setDismissed(false);
+    onPick(next);
+  };
+
+  const unlimited = value === MAX_FPS_UNLIMITED;
+  const needsRestart = !!perf && perf.unlimitedFps !== perf.active;
+
+  return (
+    <div className="ds-field">
+      <span className="cap">Max frame rate</span>
+      <div className="ds-opts eight">
+        {GFX_FPS_STEPS.map((f) => (
+          <button
+            key={f}
+            className={`ds-opt ${value === f ? 'on' : ''}`}
+            aria-pressed={value === f}
+            onClick={() => pickTile(f)}
+          >
+            <span className="ot">{f}</span>
+          </button>
+        ))}
+        <button
+          className={`ds-opt ${custom ? 'on' : ''}`}
+          aria-pressed={custom}
+          onClick={() => {
+            setShowCustom(true);
+            inputRef.current?.focus();
+          }}
+        >
+          <span className="ot">Custom</span>
+          <span className="od">{custom ? `${value} fps` : 'Type a rate'}</span>
+        </button>
+        <button
+          className={`ds-opt ${value === MAX_FPS_VSYNC ? 'on' : ''}`}
+          aria-pressed={value === MAX_FPS_VSYNC}
+          onClick={() => pickTile(MAX_FPS_VSYNC)}
+        >
+          <span className="ot">VSync</span>
+          <span className="od">Paced by your display</span>
+        </button>
+        <button
+          className={`ds-opt ${unlimited ? 'on' : ''}`}
+          aria-pressed={unlimited}
+          onClick={() => pickTile(MAX_FPS_UNLIMITED)}
+        >
+          <span className="ot">Unlimited</span>
+          <span className="od">Desktop app only</span>
+        </button>
+      </div>
+
+      {(showCustom || custom) && (
+        <label className="ds-field">
+          <span className="cap">
+            Custom rate{' '}
+            <span className="val">
+              {GFX_FPS_MIN}–{GFX_FPS_MAX} fps
+            </span>
+          </span>
+          <input
+            ref={inputRef}
+            className="ds-input"
+            type="number"
+            min={GFX_FPS_MIN}
+            max={GFX_FPS_MAX}
+            step={1}
+            inputMode="numeric"
+            value={draft}
+            onChange={(e) => setDraft(e.target.value)}
+            onBlur={commitDraft}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') {
+                e.preventDefault();
+                commitDraft();
+              }
+            }}
+          />
+        </label>
+      )}
+
+      {/* THE THREE TRUTHS ABOUT UNLIMITED, one per situation. Only ever shown when Unlimited
+          is the selected value — the tile already says "Desktop app only" on its face, and a
+          paragraph about a shell restart under a row set to 60 is noise. */}
+      {unlimited && !bridge && (
+        <p className="ds-hint">
+          Unlimited needs the desktop app. A browser tab is drawn by the compositor at your
+          display’s refresh, so here it behaves exactly as VSync.
+        </p>
+      )}
+      {unlimited && shellTooOld && (
+        <p className="ds-hint warn">
+          This copy of the desktop app is older than the setting. Update it from the download
+          page to draw past your display’s refresh.
+        </p>
+      )}
+      {unlimited && !!perf && !needsRestart && perf.active && (
+        <p className="ds-hint ok">The frame-rate limit is off in this session.</p>
+      )}
+      {needsRestart && !dismissed && (
+        <>
+          <p className="ds-hint warn">
+            {perf?.unlimitedFps
+              ? 'DSIM is still running with your display’s frame-rate limit on. The switch is set for the next launch.'
+              : 'DSIM is still running with the frame-rate limit off. Restarting puts it back.'}
+          </p>
+          <div className="ds-field-row">
+            <button className="ds-btn small" onClick={() => void bridge?.perf?.relaunch()}>
+              Restart DSIM
+            </button>
+            <button className="ds-btn small ghost" onClick={() => setDismissed(true)}>
+              Not now
+            </button>
+          </div>
+        </>
+      )}
     </div>
   );
 }
@@ -210,18 +429,11 @@ export function GraphicsSection() {
               onChange={(e) => setGraphicsSetting('renderScale', Number(e.target.value))}
             />
           </label>
-          <OptRow
-            label="Max frame rate"
-            value={s.maxFps}
-            cols="four"
-            onPick={set('maxFps')}
-            options={[
-              { v: 30 as const, t: '30' },
-              { v: 60 as const, t: '60' },
-              { v: 120 as const, t: '120' },
-              { v: 0 as const, t: 'Display' },
-            ]}
-          />
+          {/* `VSync` is `0`: the draw loop is `requestAnimationFrame`, so the display's refresh
+              is the ceiling and nothing in a browser can present past it. It read as a cap
+              while it was called "Display". `Unlimited` is `-1` and is the only control on this
+              screen whose effect lives outside the page — see `MaxFpsRow`. */}
+          <MaxFpsRow value={s.maxFps} onPick={set('maxFps')} />
           <OptRow
             label="Anti-aliasing"
             value={s.aa}

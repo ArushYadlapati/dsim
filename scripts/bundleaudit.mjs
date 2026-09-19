@@ -287,7 +287,18 @@ const BASELINE = {
   // instead of a squat box, a flywheel motor behind the hood driving through a belt, and a
   // telescoping box tube — plus the in-reach collar. It crept in under the 4 KB tolerance,
   // which is exactly the overhang this header warns about, so it is measured here instead.
-  scene: { gzip: 201.44 * 1000, budgetCeiling: 250 * 1000 },
+  //
+  // 2026-09-19, the SECOND owner pass: 201.44 -> 205.83 (+4.39), which crossed the tolerance.
+  // ⚠️ ONLY 0.93 OF IT IS THAT PASS. The tree measured 204.90 BEFORE a line of it was written —
+  // 3.46 KB had already crept in under the tolerance, which is the overhang this header warns
+  // about happening twice in one day. Measured, not inferred: a `npm run build && npm run
+  // bundleaudit` on the clean tree printed 204.90.
+  // What the pass itself added: the ROBOT SIGN assembly (§12.4 R401–R403 — two plates, the
+  // team-number canvas, the basis-built orientation), the AprilTag bleed-through texture and
+  // its material, the clear panel's Fresnel shader chunk and its JS twin, the side plate's
+  // relief ramp, and the cosmetic top caps. Every one of them is geometry or a texture that a
+  // 3D scene has to carry; none of it is reachable from the main chunk.
+  scene: { gzip: 205.83 * 1000, budgetCeiling: 250 * 1000 },
   graphics: { gzip: 4.01 * 1000 },
   gallery: { gzip: 7.33 * 1000 },
   // 2026-09-19: NEW. The whole admin console, lazily loaded by `App.tsx`. See the route note

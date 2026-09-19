@@ -63,9 +63,12 @@ import { rotate2, tiltQuatX } from './math3';
  * tipped when the elements really in the cell out-torqued `hiveHoldTorque` at the lever arms they
  * really had -- and that is wrong for one reason that no calibration can reach: ONE COUNT DOES
  * NOT DETERMINE ONE TORQUE. Measured in one cell at the stop, at the shipped hold of 5915,
- * staging the same count four ways (the HIVE3D lane prints all of it): 8 POLLEN weigh **4560**
- * piled two-wide up the back wall and **8051** in a two-wide line down the tray; 7 POLLEN weigh
- * **4146** to **6769**. The two counts' torque ranges OVERLAP over most of their length, so NO
+ * staging the same count four ways (the HIVE3D lane prints all of it): 8 POLLEN weigh **4608**
+ * piled two-wide up the back wall and **8166** in a two-wide line down the tray; 7 POLLEN weigh
+ * **4146** to **6771**. (The 8-POLLEN figures were 4560 / 8051 until the registration fix of
+ * 2026-09-19 gave those rows a few ticks less settling at the stop before the pin lifts; the
+ * 7-POLLEN row, which never tips, is unchanged to the digit.) The two counts' torque ranges
+ * OVERLAP over most of their length, so NO
  * value of `BB3_HIVE_DETENT` separates them -- and both halves of field guide §12.3 were being
  * violated at once on the shipped numbers: 8 POLLEN crammed did NOT tip and 7 POLLEN in a line
  * DID, confirmed by running the lane's new checks against the old trigger. The lane never saw it
@@ -105,6 +108,14 @@ const STOP_RAD = (BB3_HIVE_STOP_DEG * Math.PI) / 180;
  * world (y, z) -> the box's OWN frame is `rotate2(y, z, -theta)` with NO `refTheta` term: the CAD
  * tray is exported UN-TILTED, so `world = pivot + Rotate(theta) · (v, w)` holds directly for
  * every box on both paths -- see `HiveLocalBox.refTheta`.
+ *
+ * `minDepth` (inches, default 0 -- i.e. the plain interior test every existing caller makes)
+ * LOWERS THE CEILING by that much: the point has to be that far below the cell's open rim rather
+ * than merely inside it. It exists because the interior box alone cannot tell an element that is
+ * IN the cell from a shot GRAZING across its open top, and depth can. `derive.ts` is the only
+ * caller that passes it; see `BB3_CELL_SEAT_DEPTH` for the two measured bounds it sits between.
+ * Keeping it here rather than as a second function is deliberate: the cell's geometry has ONE
+ * authority, the way the tray's angle does.
  */
 export function insideCell(
   px: number,
@@ -113,12 +124,13 @@ export function insideCell(
   alliance: Alliance,
   sideSign: 1 | -1,
   theta: number,
+  minDepth = 0,
 ): boolean {
   const box = hiveCellLocalBox(sideSign, alliance);
   const dx = px - hivePivotX(alliance);
   if (Math.abs(dx) > box.xHalf) return false;
   const { a: v, b: w } = rotate2(py, pz - BB3_HIVE_PIVOT_Z, -theta);
-  return v >= box.vMin && v <= box.vMax && w >= box.wMin && w <= box.wMax;
+  return v >= box.vMin && v <= box.vMax && w >= box.wMin && w <= box.wMax - minDepth;
 }
 
 /**
@@ -146,8 +158,8 @@ export { hiveTiltAngle } from './tilt';
  *
  * It reads the BODIES' positions (via the JSON the readback wrote), not the derived `contents`
  * list, for two reasons: this runs at stage 6, BEFORE `derive.ts`, so `contents` would be a tick
- * stale; and an element that is bouncing rather than resting still presses on the tray, so the
- * rest requirement membership needs would be wrong here.
+ * stale; and an element bouncing in the top of the cell presses on the tray without having earned
+ * its `BB3_CELL_SEAT_DEPTH` yet, so it belongs in a WEIGHT and not in a count.
  */
 export function hiveContentsTorque(world: World, alliance: Alliance, theta: number): number {
   let tau = 0;
@@ -243,11 +255,14 @@ export function hiveDetentHold(world: World, engine: Engine3d): void {
      * by construction rather than by calibration. See the header for the measurement that
      * retired the torque trigger.
      *
-     * It is one tick behind `derive.ts` (this runs inside `applyHiveTilt`, before the solve;
-     * derive is stage 10), and membership itself waits `BB3_REST_TICKS` of stillness. So a
-     * volley that lands past threshold lifts the pin around tick 9-17 rather than tick 2 -- the
-     * same timing the 2D pipeline and the kinematic tray have always had, and the reason the
-     * spill tag below is a POSITION test rather than a read of `contents`.
+     * It is ONE TICK behind `derive.ts` (this runs inside `applyHiveTilt`, before the solve;
+     * derive is stage 10) and that one tick is now the WHOLE registration delay. It used to be
+     * far more: membership waited `BB3_REST_TICKS` of stillness on top of whatever the element's
+     * own settling cost, measured at a mean of 95 ticks and a p90 of 205 from the tick its centre
+     * entered the cell, so a volley that landed past threshold lifted the pin a second and a half
+     * late and the owner reported it as the TIP being slow ("a significant amount of lengthened
+     * tipping time due to the registration time", 2026-09-19). `derive.ts` counts on geometry now
+     * -- see `BB3_CELL_SEAT_DEPTH` -- and the pin lifts the tick after the element is in.
      */
     const load = hiveLoad(world.biobuzz?.hives[a].contents ?? [], kindOf);
     if (hiveWillTip(load)) {
@@ -326,11 +341,14 @@ function hiveDynamicTick(world: World, engine: Engine3d): void {
       const wasReleased = hive.released;
       const released = wasReleased || Math.sign(theta) !== upSign;
       if (released && !wasReleased) {
-        // THE SPILL TAG'S OWN COUNT, not `contents.length`: membership waits `BB3_REST_TICKS`
-        // and a tray loaded past its threshold in one volley is already swinging before anything
-        // has settled, so `contents` reads 0 there and the event said "SPILLS 0" over eight
-        // elements visibly leaving the cell. The tag was written from the POSITION test at the
-        // breakaway and is what the spill actually is.
+        // THE SPILL TAG'S OWN COUNT, not `contents.length`. Originally because membership waited
+        // `BB3_REST_TICKS`, so a tray loaded past its threshold in one volley was already swinging
+        // before anything had settled, `contents` read 0, and the event said "SPILLS 0" over eight
+        // elements visibly leaving the cell. Membership is geometry now and `contents` would
+        // usually agree — but the tag is still the honest number, because it is written from the
+        // POSITION test at the breakaway and therefore also counts whatever was bouncing above
+        // `BB3_CELL_SEAT_DEPTH` and is leaving with the rest. `|| contents.length` is the fallback
+        // for a kinematic-tray world that never wrote a tag.
         const n = Object.values(bb.spill ?? {}).filter((x) => x === a).length;
         world.events.push(`${a.toUpperCase()} HIVE SPILLS ${n || hive.contents.length}`);
       }
@@ -346,12 +364,15 @@ function hiveDynamicTick(world: World, engine: Engine3d): void {
        * IS the tray, so `contacts3d.ts`'s "first NON-TRAY contact" rule gives the identical
        * answer from a rule that needs no per-element lip test. See `BiobuzzState.spill`.
        *
-       * ⚠️ IT IS THE POSITION TEST, NOT `hive.contents`. Membership needs `BB3_REST_TICKS` of
-       * stillness before it will call an element part of the cell, which is right for SCORING —
-       * a shot crossing the mouth is not yet in it — and wrong here: a tray loaded past its
-       * threshold in one volley starts swinging before anything has settled, and reading
-       * `contents` then tags an empty set. Measured on a staged 8-POLLEN tip, which broke away
-       * on tick 2 with `contents` still reading 0.
+       * ⚠️ IT IS THE POSITION TEST, NOT `hive.contents`, and it stays that way. It was written
+       * because membership used to need `BB3_REST_TICKS` of stillness, so a tray loaded past its
+       * threshold in one volley started swinging before anything had settled and `contents` read
+       * an empty set — measured on a staged 8-POLLEN tip that broke away on tick 2 with
+       * `contents` still 0. That reason is gone (membership is geometry now,
+       * `BB3_CELL_SEAT_DEPTH`), but the test is still the RIGHT one and is now strictly the wider
+       * of the two: a spill is everything the cell is about to throw out, including whatever is
+       * bouncing above the entry depth on the breakaway tick and has never been counted. What is
+       * leaving is a question about position, so it is asked of position.
        */
       const spill = (bb.spill ??= {});
       for (const b of world.balls) {

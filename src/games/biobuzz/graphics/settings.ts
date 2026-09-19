@@ -27,8 +27,100 @@
 
 // ─────────────────────────────────────────────────────────────────────── the sixteen values ──
 
-/** §4.4 row 2. `0` is "display" — no cap, render on every frame the browser gives us. */
-export type MaxFps = 0 | 30 | 60 | 120;
+/**
+ * §4.4 row 2 — the draw-loop frame cap, in frames per second, with TWO SENTINELS.
+ *
+ * It is a plain `number` and not a union of literals because the row is no longer a fixed
+ * ladder: the owner asked for a rate you type (2026-09-19), so any integer in
+ * `[GFX_FPS_MIN, GFX_FPS_MAX]` is a legal cap and the five tiles in the picker are a shortcut,
+ * not the domain. `coerceMaxFps` below is what keeps that honest — this is the first field in
+ * the whole settings object whose value arrives from a TEXT BOX rather than from a click, so
+ * it is the first one that has to reject shapes (`NaN`, `Infinity`, `'60'`, `59.5`) instead of
+ * merely choosing between known ones.
+ *
+ * ── THE TWO SENTINELS, AND WHY THEY ARE NOT "A BIGGER NUMBER" ──────────────────────────────
+ *
+ * **`0` — VSync.** The draw loop is `requestAnimationFrame` (`src/game.ts`), which the
+ * compositor paces at the display's refresh. `0` means "no skip, draw on every frame the
+ * browser hands us" — which in a BROWSER is the ceiling, because there is no way to PRESENT
+ * more frames than the panel shows. It was called "Display", which is what made it read as a
+ * CAP rather than as the absence of one.
+ *
+ * **`-1` — Unlimited.** Negative is the one thing a frame rate can never be, so it cannot
+ * collide with a real rate however the picker grows, and it survives `JSON.stringify` exactly
+ * (a `null` or a `'unlimited'` string would not survive `Number` coercion anywhere this value
+ * is compared). It behaves IDENTICALLY to VSync inside the loop — `frameIntervalMs` returns
+ * `0` for both — because the difference is not in the loop at all: it is whether the SHELL has
+ * let the compositor run free.
+ *
+ * ── WHY UNLIMITED IS DESKTOP-ONLY, AND WHY IT IS STILL SHOWN ON THE WEB ────────────────────
+ * Genuinely exceeding vsync needs Chromium's `disable-frame-rate-limit` and
+ * `disable-gpu-vsync`, which only the desktop shell can pass (`electron/main.cjs`), and which
+ * must be appended BEFORE `app.whenReady()` — so changing it cannot take effect until the app
+ * restarts. Neither switch exists for a web page: a browser tab cannot ask its own compositor
+ * for this, at any price.
+ *
+ * It is NOT hidden on the web anyway. The rule this repo follows is "do not ship a control
+ * that silently does nothing", and hiding it fails that in the other direction: a player who
+ * has read the download page, or who practises on the desktop app at home and the web build at
+ * school, would find the option missing on one of them with nothing saying why. So the tile is
+ * present in both builds, says `Desktop app only` on its face, and the row prints the whole
+ * truth — in a browser it behaves as VSync — when it is the selected value.
+ *
+ * The numeric values are caps BELOW the vsync ceiling, which is the only direction a cap could
+ * go before Unlimited existed. 144 and 240 are tiles because the ladder used to stop at 120, so
+ * a 144/165/240 Hz panel had nothing between "120" and "every frame" — that gap is the other
+ * half of what the owner hit, and a typed rate is what covers 165 and every other panel.
+ */
+export type MaxFps = number;
+
+/** `0` — draw every frame the compositor offers, i.e. the display's refresh. */
+export const MAX_FPS_VSYNC = 0;
+/** `-1` — ask the desktop shell to stop honouring the display's refresh at all. */
+export const MAX_FPS_UNLIMITED = -1;
+
+/**
+ * The bounds a TYPED rate is clamped into. Both are deliberate, and a value outside them
+ * clamps to the bound rather than being dropped — somebody who types 5000 meant "as fast as
+ * possible", and answering that by silently reverting to whatever was there tells them nothing.
+ *
+ *   • **24** — the film rate, and the floor at which this is still a driver-practice sim. The
+ *     fixed sim step is 60 Hz; a render cap under 24 means most ticks are never drawn, a shot
+ *     cannot be timed by eye, and the player is breaking their own practice rather than tuning
+ *     it. The lowest TILE is 30 for the same reason; 24 leaves a little room under it on
+ *     purpose, for the battery-saving and thermal cases the tiles do not cover.
+ *   • **1000** — past every panel that exists (the fastest shipping displays are under 600 Hz),
+ *     so it is already indistinguishable from no cap, and a four-digit box reads as a frame
+ *     rate rather than as a budget in some other unit. Anything genuinely uncapped is the
+ *     Unlimited sentinel, which is a different control for a different reason.
+ */
+export const GFX_FPS_MIN = 24;
+export const GFX_FPS_MAX = 1000;
+
+/** the one-click rates in the picker. A shortcut over the range, never the range itself. */
+export const GFX_FPS_STEPS: readonly number[] = [30, 60, 120, 144, 240];
+
+/** a positive cap that is not one of the tiles — i.e. what the Custom field is showing. */
+export function isCustomFps(v: MaxFps): boolean {
+  return v > 0 && !GFX_FPS_STEPS.includes(v);
+}
+
+/**
+ * The one coercer in this file that is not an allowlist, because its domain is a RANGE.
+ *
+ * Order matters: the sentinels are matched FIRST and exactly, so no arithmetic can ever produce
+ * one — `-1` and `0` are reachable only by being exactly `-1` and `0`, never by clamping. A
+ * negative integer that is not the sentinel is not "a cap below the floor", it is junk of the
+ * wrong shape, so it falls back rather than clamping up to 24; clamping it would quietly turn a
+ * corrupt value into a working cap the player never chose.
+ */
+export function coerceMaxFps(v: unknown, fallback: MaxFps): MaxFps {
+  if (v === MAX_FPS_VSYNC || v === MAX_FPS_UNLIMITED) return v;
+  // `Number.isInteger` is false for NaN, ±Infinity, 59.5 and for anything that is not a number
+  // at all, which is the whole junk list in one predicate.
+  if (!Number.isInteger(v) || (v as number) < 1) return fallback;
+  return Math.min(GFX_FPS_MAX, Math.max(GFX_FPS_MIN, v as number));
+}
 
 /**
  * §4.4 row 3. `smaa` IS NOT OFFERED ON THIS BUILD and the type does not carry it — see
@@ -254,6 +346,7 @@ export const GFX_NOT_OFFERED: readonly { label: string; why: string }[] = [
 // ────────────────────────────────────────────────────────────────────────────── the store ──
 
 import { GRAPHICS_KEY } from '../../../storageKeys';
+import { desktop } from '../../../desktop';
 
 export interface GraphicsState {
   preset: GraphicsPreset;
@@ -294,7 +387,7 @@ export function coerceGraphicsSettings(raw: unknown, base: GraphicsSettings): Gr
   const o = (raw ?? {}) as Partial<Record<keyof GraphicsSettings, unknown>>;
   return {
     renderScale: clampNum(o.renderScale, GFX_RENDER_SCALE_MIN, GFX_RENDER_SCALE_MAX, base.renderScale),
-    maxFps: oneOf<MaxFps>([0, 30, 60, 120], o.maxFps, base.maxFps),
+    maxFps: coerceMaxFps(o.maxFps, base.maxFps),
     aa: oneOf<AntiAliasing>(['off', 'msaa2', 'msaa4'], o.aa, base.aa),
     shadows: oneOf<ShadowQuality>(['off', 'low', 'high', 'soft'], o.shadows, base.shadows),
     elementShadows: oneOf<ElementShadows>(['none', 'blob', 'real'], o.elementShadows, base.elementShadows),
@@ -366,13 +459,37 @@ export function subscribeGraphics(fn: GraphicsListener): () => void {
   };
 }
 
+/**
+ * KEEP THE DESKTOP SHELL'S PREFERENCE IN STEP WITH THIS ONE.
+ *
+ * Unlimited is TWO stores: the graphics setting lives here, in `localStorage`, and the
+ * Chromium switches live in the main process, in `userData`, because they have to be appended
+ * before the app is ready. This is the seam between them, and it is here — inside `commit` —
+ * rather than in the picker, because `maxFps` has three other writers: `setGraphicsPreset`,
+ * `setGraphicsTier` (which `graphics/auto.ts` calls after detection) and `resetGraphicsToAuto`.
+ * A player who picks Unlimited and then drops to Low has NOT asked to keep running with vsync
+ * disabled, and a sync that only ran in the picker would leave them there forever.
+ *
+ * Fire-and-forget, and swallowed: an older desktop shell has no `perf` bridge at all (the app
+ * loads the LIVE site, so a new client inside last month's shell is the ordinary case, not an
+ * edge one), and a failed IPC must not lose the pick the player just made. The renderer's value
+ * is the intent; `GraphicsSection` reconciles the two on mount and reports any disagreement.
+ */
+function syncDesktopUnlimited(prev: MaxFps | null, next: MaxFps): void {
+  const wantOn = next === MAX_FPS_UNLIMITED;
+  if (prev !== null && wantOn === (prev === MAX_FPS_UNLIMITED)) return;
+  desktop()?.perf?.setUnlimitedFps(wantOn).catch(() => {});
+}
+
 function commit(next: GraphicsState): void {
+  const prev = state;
   state = next;
   try {
     localStorage.setItem(GRAPHICS_KEY, JSON.stringify(next));
   } catch {
     /* non-fatal: the pick still applies for this session */
   }
+  syncDesktopUnlimited(prev ? prev.settings.maxFps : null, next.settings.maxFps);
   for (const fn of listeners) fn(next);
 }
 
@@ -450,11 +567,17 @@ export function msaaSamples(aa: AntiAliasing): number {
   return aa === 'msaa2' ? 2 : aa === 'msaa4' ? 4 : 0;
 }
 
-/** the minimum wall-clock gap between two rendered frames, in ms; 0 is uncapped. */
+/**
+ * The minimum wall-clock gap between two rendered frames, in ms; `0` is uncapped.
+ *
+ * BOTH SENTINELS RETURN 0, and that is the point: in the loop, Unlimited and VSync are the
+ * same instruction — skip nothing. Whether the frames that instruction produces are actually
+ * presented faster is decided by the shell, before this process had a draw loop at all.
+ */
 export function frameIntervalMs(fps: MaxFps): number {
   // 0.5 ms of slack: a 60 Hz display's rAF lands at 16.66 ms and a hard `>= 16.666` compare
   // drops every other frame to 30 fps, which is the classic way a frame cap makes things worse.
-  return fps === 0 ? 0 : 1000 / fps - 0.5;
+  return fps > 0 ? 1000 / fps - 0.5 : 0;
 }
 
 /** the human label for a preset, for the picker and for an event-log line. */

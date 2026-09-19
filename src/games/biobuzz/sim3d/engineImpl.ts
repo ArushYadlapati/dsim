@@ -15,7 +15,7 @@ import type { Alliance, Artifact, BallState, RobotState, World } from '../../../
 import { chassisInertia } from '../../../sim/robot';
 import { shoveMass } from '../../../sim/drivetrain';
 import { BALL_REST_SPEED, PHYS_WALL_FRICTION, GRAVITY, PHYS_SOLVER_ITERS, PHYS_ALLOWED_ERROR } from '../../../config';
-import { BB3_CCD_SPEED, BB3_CONTACT_FREQ, BB3_LAUNCH_CLEAR_MAX, BB3_LAUNCH_CLEAR_SLOP, BB3_LAUNCH_CLEAR_STEP, BB3_REST_SPEED, BB3_REST_TICKS, BB3_ROLL_DECEL, BB3_ROLL_FLOOR_Z, BB_POLLEN_R, bbHeightNow } from '../config';
+import { BB3_CCD_SPEED, BB3_CONTACT_FREQ, BB3_LAUNCH_CLEAR_MAX, BB3_LAUNCH_CLEAR_SLOP, BB3_LAUNCH_CLEAR_STEP, BB3_REST_SPEED, BB3_REST_TICKS, BB3_ROLL_DECEL, BB3_ROLL_FLOOR_Z, BB3_WALL_H, BB_POLLEN_R, bbHeightNow } from '../config';
 import { addChassis3dColliders, clearChassis3dColliders, chassis3dShapes, type Chassis3dShape } from './bodies';
 import {
   buildHiveTray3d,
@@ -441,6 +441,64 @@ function clearOfSolids(solids: readonly BirthSolid[], x: number, y: number, z: n
 }
 
 /**
+ * ⚠️ **THE FIELD IS THE OTHER SOLID A BODY CAN BE BORN INSIDE, AND IT NEEDS THE OPPOSITE
+ * STRATEGY TO A ROBOT'S.**
+ *
+ * `birthClear` escapes a chassis by marching FORWARD along the element's own arc, because the
+ * element is LEAVING the robot that threw it and the far side of a 3-inch pocket is a few inches
+ * along the parabola. Marching forward out of a WALL does the reverse: the perimeter cuboids are
+ * `BB_WALL_T` (10 in) of solid with the play area on ONE side, so every step of the march drives
+ * the element DEEPER, no clear point is found inside `BB3_LAUNCH_CLEAR_MAX`, and the element is
+ * left exactly where it was — inside the wall, where Rapier's penetration recovery throws it out
+ * along the contact normal at a speed the overlap depth chose. That is the owner's "launching
+ * from a corner or against a wall sometimes shoots the ball in a completely different direction".
+ *
+ * So a static is escaped by the SHORTEST WAY OUT OF IT — straight back into the field along that
+ * wall's own inward normal — with the solved VELOCITY untouched, which is what makes the next
+ * step an ordinary wall bounce at the speed the shot was fired at rather than a teleport.
+ *
+ * ⚠️ **ANALYTIC, FROM THE SAME CONSTANTS `buildStatics3d` BUILDS THE WALLS FROM** (`BB_HALF_X`,
+ * `BB_HALF_Y`, `BB3_WALL_H`), and NEVER a query of `engine.world3d`. `syncElement` runs mid-sync:
+ * some bodies are already at this tick's JSON and some are still at last tick's, so a shape cast
+ * would answer differently depending on where in the loop it was asked, and the nudge it produced
+ * would differ between two peers reconciling the same state. The nudge has to be a pure function
+ * of the world JSON — see this function's caller.
+ *
+ * ⚠️ **THE WALLS AND THE TILES ONLY, AND THAT IS A MEASUREMENT, NOT AN OVERSIGHT.** The rest of
+ * the field's statics are CAD CONVEX HULLS (`cadStatics`, the hive frames and the flower
+ * supports) and trimeshes (the flower ring plates). There is no analytic sphere-vs-hull escape to
+ * be had from a point cloud, and the obvious stand-in — each hull's AABB — is worse than nothing
+ * here: the A-frame leg's AABB is a 12 × 19 × 41-in box that is almost entirely the air a robot
+ * legally drives through (`bodies.ts` records the same trap from the other side, when the
+ * exporter really did emit AABBs), so escaping it would teleport an element several inches for no
+ * reason. MEASURED instead, on the poses a match can actually reach: 576 real shots fired flush
+ * against all four walls and in all four corners, at eight headings, with three turret mounts —
+ * ZERO birth points inside any static, worst velocity turn 8.5° in the five ticks after the shot,
+ * which is gravity. 17,000+ aim-gated poses per mount swept analytically over the whole field,
+ * with the poses the robot's own collider could not occupy excluded — also zero. Every hit found
+ * before that filter was a pose with the ROBOT ITSELF standing inside the flower or the hive
+ * frame. So this guard is the cheap, exact half; a hull escape would be an expensive, inexact
+ * half for a case nothing reaches.
+ */
+function fieldClamp(x: number, y: number, z: number, radius: number, need: number): { x: number; y: number; z: number } {
+  let cx = x;
+  let cy = y;
+  let cz = z;
+  // the perimeter, but only while the element is below the top of it: a scoring arc apexes at
+  // 60+ in and passes clean over a 40-in wall, and clamping THAT would be a teleport of its own.
+  if (cz - need < BB3_WALL_H) {
+    if (cx > BB_HALF_X - need) cx = BB_HALF_X - need;
+    else if (cx < -BB_HALF_X + need) cx = -BB_HALF_X + need;
+    if (cy > BB_HALF_Y - need) cy = BB_HALF_Y - need;
+    else if (cy < -BB_HALF_Y + need) cy = -BB_HALF_Y + need;
+  }
+  // the TILES. `radius`, not `need`: an element resting on the floor is legal and must not be
+  // lifted by the slop — only a centre below the tile plane's own surface is inside the slab.
+  if (cz < radius) cz = radius;
+  return { x: cx, y: cy, z: cz };
+}
+
+/**
  * ⚠️ **A FLIGHT BODY IS BORN CLEAR OF THE ROBOT THAT THREW IT.** 3D only, by construction: this
  * runs at the moment `syncElement` CREATES a body, and 2D never creates one.
  *
@@ -471,9 +529,15 @@ function clearOfSolids(solids: readonly BirthSolid[], x: number, y: number, z: n
  * puts the apex back at 63.4 and the element back through the opening, descending and inboard,
  * because it is quite literally the same throw — just started `t` later.
  *
+ * ⚠️ **AND THE FIELD IS ESCAPED THE OTHER WAY — SEE `fieldClamp`.** A robot is something the
+ * element is leaving, so the way out is forward along the arc; a WALL is 10 in of solid with the
+ * play area on one side, so the way out is the shortest push back inside, with the velocity left
+ * alone. Two solids, two strategies, and forcing either rule to do both makes the other case
+ * worse.
+ *
  * The JSON is written back so the 2D map, the 3D scene and the body all agree about where the
  * element is. A body that finds no clear point inside `BB3_LAUNCH_CLEAR_MAX` of path is left
- * exactly where the release put it.
+ * exactly where the release put it (clamped inside the field).
  *
  * It runs on EVERY flight body this engine creates, not only on a fresh launch, so an engine
  * REBUILD (`engineFor`: a tick going backwards, a robot joining or leaving) that happens to
@@ -485,6 +549,19 @@ function clearOfSolids(solids: readonly BirthSolid[], x: number, y: number, z: n
 function birthClear(engine: Engine3d, world: World, b: Artifact, radius: number): void {
   const sp = hyp3(b.vel.x, b.vel.y, b.vz);
   if (!(sp > 1e-9)) return;
+  const need = radius + BB3_LAUNCH_CLEAR_SLOP;
+  const z0 = b.z + radius;
+
+  /**
+   * ── 1. THE FIELD, FIRST AND BY A DIFFERENT RULE ──────────────────────────
+   * A release inside a WALL is pushed straight back inside along that wall's own normal, which
+   * is the shortest way out of a solid the play area is on one side of. The velocity is left
+   * exactly as solved, so the very next step is the wall bounce the shot earned. In the open
+   * field this is the identity and everything below is byte-for-byte what it was.
+   */
+  const p = fieldClamp(b.pos.x, b.pos.y, z0, radius, need);
+  const clamped = p.x !== b.pos.x || p.y !== b.pos.y || p.z !== z0;
+
   const solids: BirthSolid[] = [];
   for (const rob of world.robots) {
     const h = builtHeight(engine, rob);
@@ -496,19 +573,36 @@ function birthClear(engine: Engine3d, world: World, b: Artifact, radius: number)
       shapes: chassis3dShapes(rob.spec, h),
     });
   }
-  if (solids.length === 0) return;
-  const need = radius + BB3_LAUNCH_CLEAR_SLOP;
-  const z0 = b.z + radius;
-  if (clearOfSolids(solids, b.pos.x, b.pos.y, z0, need)) return;
-  // the march is in TIME, one `BB3_LAUNCH_CLEAR_STEP` of path per sample at the release speed —
-  // which is the same thing as stepping along the velocity over these distances (the parabola
-  // drops 0.37 in over the 9 in a default dumper needs) while staying exactly on the arc.
+  const writeBack = (): void => {
+    if (!clamped) return;
+    b.pos = { x: p.x, y: p.y };
+    b.z = p.z - radius;
+  };
+  if (solids.length === 0 || clearOfSolids(solids, p.x, p.y, p.z, need)) {
+    writeBack();
+    return;
+  }
+
+  /**
+   * ── 2. THE ROBOT, BY THE ARC MARCH ───────────────────────────────────────
+   * the march is in TIME, one `BB3_LAUNCH_CLEAR_STEP` of path per sample at the release speed —
+   * which is the same thing as stepping along the velocity over these distances (the parabola
+   * drops 0.37 in over the 9 in a default dumper needs) while staying exactly on the arc.
+   *
+   * ⚠️ **AND IT STOPS AT THE FIELD.** A sample the field clamp would move is a sample inside a
+   * wall, and every further one is deeper in: marching on would swap a body inside the chassis
+   * for a body inside the wall, which is the worse of the two by the size of the ejection. The
+   * fallback is the clamped release — inside the thrower, on the wall face, where the chassis
+   * contact resolves it at chassis speed instead of at penetration-recovery speed.
+   */
   const dt = BB3_LAUNCH_CLEAR_STEP / sp;
   const tMax = BB3_LAUNCH_CLEAR_MAX / sp;
   for (let t = dt; t <= tMax; t += dt) {
-    const x = b.pos.x + b.vel.x * t;
-    const y = b.pos.y + b.vel.y * t;
-    const z = z0 + b.vz * t - 0.5 * GRAVITY * t * t;
+    const x = p.x + b.vel.x * t;
+    const y = p.y + b.vel.y * t;
+    const z = p.z + b.vz * t - 0.5 * GRAVITY * t * t;
+    const q = fieldClamp(x, y, z, radius, need);
+    if (q.x !== x || q.y !== y || q.z !== z) break; // the arc has left the field — stop marching
     if (clearOfSolids(solids, x, y, z, need)) {
       b.pos = { x, y };
       b.z = z - radius;
@@ -516,10 +610,11 @@ function birthClear(engine: Engine3d, world: World, b: Artifact, radius: number)
       return;
     }
   }
+  writeBack();
 }
 
 function syncElement(RAPIER: Rapier3d, engine: Engine3d, world: World, b: Artifact): void {
-  const existing = engine.elements.get(b.id);
+  let existing = engine.elements.get(b.id);
 
   if (!wantsDynamicBody(b.state)) {
     removeElementBody(engine, b.id);
@@ -529,6 +624,54 @@ function syncElement(RAPIER: Rapier3d, engine: Engine3d, world: World, b: Artifa
   const last = engine.lastElement.get(b.id);
   const r = b.r ?? BB_POLLEN_R;
   const isNectar = b.color === 'red' || b.color === 'blue';
+
+  /**
+   * ⚠️ **AN ELEMENT CAN REACH `flight` WITHOUT LOSING ITS OLD BODY, AND THEN THE BIRTH CLEARANCE
+   * BELOW NEVER RUNS.** Owner report 2026-09-19: "similar incorrect launches happen with the
+   * intake collision too — like when I'm intaking as I'm shooting". The whole chain is one tick:
+   *
+   *   · stage 11 runs GAMEPLAY in the order capture → aim+launch (`step3dImpl.ts`);
+   *   · `capturePollen` flips a ground element to `held` and pushes its colour on the hopper. It
+   *     does NOT touch the body — removal is this function's job, and this function does not run
+   *     again until the NEXT tick's stage 5. The element keeps its ground body for the rest of
+   *     the tick;
+   *   · still stage 11, `bbLaunch` → `releasePollen` → `takeHeld` picks the held element of that
+   *     colour at the HIGHEST `world.balls` index, which with an empty hopper is the one just
+   *     picked up, and writes it into `flight` at the MUZZLE;
+   *   · next tick, `!existing` is FALSE, so the body is simply `setTranslation`ed to the muzzle —
+   *     a point on the mechanism, inside the chassis compound — and Rapier's penetration recovery
+   *     throws it out along whatever normal it finds.
+   *
+   * MEASURED before this guard, on a robot parked in range of its own CELL with an empty hopper,
+   * intake and fire both held (the ordinary "feed and shoot" loop): every shot was a same-tick
+   * capture-and-launch, the release sat **7.3 in inside the chassis**, and a DUMPER's lob — the
+   * deepest pocket on any build, and the one `birthClear` was written for — came out **63° to
+   * 101° off the velocity it was fired at within five ticks**, apexing at 10–12 in instead of
+   * 61–65 in. That is the 0/28 tutorial-grid failure, back, for exactly the elements a driver
+   * picks up and fires in one motion. A turret's release is shallower and faster, and its shots
+   * turned 2.4–3.6°, so the same bug is a graze there and a total loss for a dumper.
+   *
+   * THE GUARD IS THE LAUNCH, NOT THE KIND CHANGE. "Kind changed to `flight`" would fire on every
+   * bouncing ground element, because `derive.ts` re-tags one `flight` the moment it leaves the
+   * tiles — and a ball in flight near a robot must COLLIDE with it, not be teleported clear of
+   * it. `by` is the discriminator: `releasePollen` is the only writer that stamps it, `derive.ts`
+   * never does. Paired with "the JSON has been TELEPORTED since the last readback", it is exactly
+   * "this body is about to be moved somewhere it was not flying to", which is the one case the
+   * birth clearance is for. A free-flying element's JSON is written by `readback` and matches it,
+   * so it never qualifies; an intake PULL edits velocity and not position, so it never qualifies
+   * either.
+   *
+   * Destroying the body and taking the creation path (rather than nudging in place) is what buys
+   * the fresh CCD decision and the initial `linvel` for free, and keeps ONE birth path.
+   */
+  const launched = b.state.kind === 'flight' && b.state.by !== undefined;
+  const teleported =
+    last !== undefined &&
+    (Math.abs(last.x - b.pos.x) > POSE_EPS || Math.abs(last.y - b.pos.y) > POSE_EPS || Math.abs(last.z - b.z) > POSE_EPS);
+  if (existing && launched && teleported) {
+    removeElementBody(engine, b.id);
+    existing = undefined;
+  }
 
   if (!existing && b.state.kind === 'flight') birthClear(engine, world, b, r);
   const centreZ = b.z + r;
