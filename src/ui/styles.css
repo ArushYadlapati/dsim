@@ -617,6 +617,100 @@ button {
   box-shadow: 0 0 0 2px var(--ds-ink);
 }
 
+/* an unplaced NECTAR dot currently due — same ring pattern as .next, layered only on an
+   already-coloured (available) dot, never a grey one. */
+.hopper-pip.due {
+  box-shadow: 0 0 0 2px var(--ds-pollen);
+}
+
+/* a NECTAR still in stock but not yet available — FILLED, so it doesn't read as an empty
+   STORAGE slot (plain `.hopper-pip`, a hollow --ds-tile well): something is there, it just
+   isn't actionable yet. --ds-line is a step darker than --ds-tile in both themes. */
+.hopper-pip.grey {
+  background: var(--ds-line);
+}
+
+/* BiobuzzHudChips' two columns: STORAGE (+ FLOWER/CONTROL under it) on the left, the 8 NECTAR
+   dots on the right — both top-aligned, `align-items: stretch` so the left column's own
+   `justify-content: space-between` can push FLOWER/CONTROL down to match the taller NECTAR
+   column's height. `.robot-status` stays the shared flex row; this is its one child for
+   BIOBUZZ, so the negative horizontal margin here bleeds against ITS padding (8px 14px)
+   without touching that shared rule, which DECODE's and CR's chip rows also use. */
+.bb-hud {
+  display: flex;
+  align-items: stretch;
+  gap: 4px;
+  margin: 0 -6px;
+}
+
+.bb-hud-left {
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  /* centered, not flex-start — the FLOWER icon (22px) is wider than a storage dot (14px), so
+     centering keeps it on the dot column's own vertical axis instead of overhanging the
+     right of a left-justified stack. */
+  align-items: center;
+  gap: 8px;
+}
+
+.bb-hud-right {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+}
+
+/* the storage/NECTAR dot columns — `.hopper`'s own row layout, stacked instead. */
+.hopper.vertical {
+  flex-direction: column;
+}
+
+/* the FLOWER icon: a hexagonal collar with a hole. Grey while G410 (`nectarLocked`) still
+   blocks entry, --ds-pollen once it opens at the 1:00 cue. Two layered clip-path hexagons
+   because a box-shadow ring follows the element's BOX, not its clip — the base element is
+   the ring colour and only shows through the 2px gap left by `::before`, the actual fill.
+   --ds-ink (not --ds-pollen) for the ring, matching `.hopper-pip.next`, because the ring has
+   to read against EITHER fill colour. `::after` punches the hole with --ds-hud, this card's
+   own background. */
+.flower-icon {
+  position: relative;
+  display: inline-block;
+  width: 22px;
+  height: 16px;
+  clip-path: polygon(25% 0%, 75% 0%, 100% 50%, 75% 100%, 25% 100%, 0% 50%);
+  background: transparent;
+}
+
+.flower-icon.reach {
+  background: var(--ds-ink);
+}
+
+.flower-icon::before {
+  content: '';
+  position: absolute;
+  inset: 2px;
+  clip-path: polygon(25% 0%, 75% 0%, 100% 50%, 75% 100%, 25% 100%, 0% 50%);
+  background: var(--ds-mut);
+}
+
+.flower-icon.open::before {
+  background: var(--ds-pollen);
+}
+
+/* a fixed-px square, not a percentage `inset` — the icon's box is wider than it is tall, and
+   an inset that follows the box's own aspect ratio punches an OVAL, not a circle. */
+.flower-icon::after {
+  content: '';
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 8px;
+  height: 8px;
+  transform: translate(-50%, -50%);
+  border-radius: 50%;
+  background: var(--ds-hud);
+}
+
 /* drive power-draw gauge in the top-right status bar */
 .power-gauge {
   display: flex;
@@ -814,6 +908,16 @@ button {
   letter-spacing: 1px;
   color: var(--ds-ink-dim);
   animation: log-out 0.5s ease-in 2s forwards;
+}
+
+/* the BIOBUZZ PIN countdown — a live value, not a fact that happened, so unlike an ordinary
+   toast it must NOT fade: it stays exactly as long as `BiobuzzPinnedNotice` keeps rendering
+   it. Same warning voice as `.chip.warn`, since it is one, just living in the log instead of
+   the HUD card. */
+.eventlog-pinned {
+  color: var(--ds-warn);
+  border-left-color: var(--ds-warn);
+  animation: none;
 }
 
 @keyframes log-out {
