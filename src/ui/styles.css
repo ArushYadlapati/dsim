@@ -2035,33 +2035,6 @@ button {
 /* the console is wider than a settings column now — it carries a live table */
 .adm-wide { max-width: 940px; }
 
-.adm-tabs {
-  display: flex;
-  gap: 6px;
-  flex-wrap: wrap;
-  margin: 0 0 22px;
-  border-bottom: 1px solid var(--ds-line);
-  padding-bottom: 10px;
-}
-.adm-tab {
-  background: transparent;
-  border: 1px solid transparent;
-  border-radius: var(--ds-round-full);
-  padding: 8px 16px;
-  font: inherit;
-  font-size: 13px;
-  font-weight: 700;
-  letter-spacing: 0.03em;
-  color: var(--ds-mut);
-  cursor: pointer;
-}
-.adm-tab:hover { color: var(--ds-ink); }
-.adm-tab.on {
-  background: var(--ds-tile);
-  border-color: var(--ds-line-strong);
-  color: var(--ds-ink);
-}
-
 .adm-h3 {
   font-size: 13px;
   font-weight: 800;

@@ -40,15 +40,19 @@ const TABS: { id: AdminTab; label: string }[] = [
 function AdminHeader({ tab, setTab }: { tab: AdminTab; setTab: (t: AdminTab) => void }) {
   return (
     <>
-      <p className="ds-eyebrow">Admin</p>
-      <h1 className="ds-h1">Control panel</h1>
-      <div className="adm-tabs" role="tablist">
+      {/* "Control Panel" is a deliberate title-case exception (user request) to the
+          house sentence-case rule for headings. */}
+      <h1 className="ds-h1">Control Panel</h1>
+      {/* Visual style matches Records' .ds-tabs/.ds-tab; role/aria-selected stay
+          (unlike Records' nav+aria-current) because these tabs switch content
+          in place with no URL change — the real ARIA-tablist case. */}
+      <div className="ds-tabs" role="tablist">
         {TABS.map((t) => (
           <button
             key={t.id}
             role="tab"
             aria-selected={tab === t.id}
-            className={`adm-tab${tab === t.id ? ' on' : ''}`}
+            className={`ds-tab${tab === t.id ? ' on' : ''}`}
             onClick={() => setTab(t.id)}
           >
             {t.label}
