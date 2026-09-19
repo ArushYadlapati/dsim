@@ -11,7 +11,6 @@ import type {
   RobotSpec,
   RobotState,
   World,
-  AutoPathData, // Import AutoPathData
   StartPose,
   StartCat,
 } from '../types';
@@ -252,8 +251,11 @@ export interface LobbyPlayer {
   ready: boolean;
   spec: RobotSpec;
   assists: AssistConfig;
-  autoPath?: AutoPathData; // Add autoPath
-  autoPathEnabled?: boolean; // Add autoPathEnabled
+  // NOTE: no `autoPath` here. Autonomous does not run in a server-authoritative
+  // match (`Room.beginMatch` strips it from every setup), so carrying a whole
+  // path on the roster put an unbounded object on every `roster` broadcast for
+  // a field nothing read. A path still reaches a STAGED match through
+  // `PendingRobot.autoPath`, which is a different source and still coerced.
   // ---- server-authored, set only during the ranked pre-match STRATEGY phase ----
   // (never accepted from a client patch). `slot` is this player's roster/robot
   // index so its card can look up its `PlayerIntro` ELO; `hidden` marks an OPPONENT
@@ -325,7 +327,7 @@ export interface EloDelta {
 export type PlayerPatch = Partial<
   Pick<
     LobbyPlayer,
-    'name' | 'teamName' | 'teamNumber' | 'alliance' | 'startIndex' | 'startPose' | 'startRole' | 'swapReq' | 'ready' | 'spec' | 'assists' | 'autoPath' | 'autoPathEnabled'
+    'name' | 'teamName' | 'teamNumber' | 'alliance' | 'startIndex' | 'startPose' | 'startRole' | 'swapReq' | 'ready' | 'spec' | 'assists'
   >
 >;
 

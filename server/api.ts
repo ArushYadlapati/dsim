@@ -249,11 +249,14 @@ function readBody(req: IncomingMessage, limit = 512 * 1024): Promise<string> {
  */
 const LAN_WINDOW_MS = 60_000;
 const LAN_MAX_PER_WINDOW = 30;
+/** BUCKETED, so `/api/practice` can share the implementation without sharing the budget —
+ * a player draining a practice backlog must not spend a LAN host's allowance, or vice versa. */
 const LAN_MAX_IN_FLIGHT = 4;
 let lanInFlight = 0;
 const lanRate = new Map<string, { n: number; until: number }>();
 
-function lanRateOk(userId: string): boolean {
+function uploadRateOk(bucket: string, userId: string): boolean {
+  const key = `${bucket}:${userId}`;
   const now = Date.now();
   // Sweep on the way past, so an idle server does not keep a map of everyone who ever posted.
   // UNCONDITIONAL, and that is the point: gating the sweep on `size > 1000` made the map grow
@@ -262,9 +265,9 @@ function lanRateOk(userId: string): boolean {
   // every call keeps the map to "accounts seen in the last minute", which is small enough that
   // the O(n) walk is cheaper than the branch was worth.
   for (const [k, v] of lanRate) if (v.until <= now) lanRate.delete(k);
-  const hit = lanRate.get(userId);
+  const hit = lanRate.get(key);
   if (!hit || hit.until <= now) {
-    lanRate.set(userId, { n: 1, until: now + LAN_WINDOW_MS });
+    lanRate.set(key, { n: 1, until: now + LAN_WINDOW_MS });
     return true;
   }
   hit.n++;
@@ -813,6 +816,17 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse): Prom
       if (req.method === 'GET') {
         return json(200, { runs: await listPracticeRuns(user.userId, game) }), true;
       }
+      // ⚠️ THE POST IS RATE-LIMITED BECAUSE IT REACHES A HOSTED THIRD-PARTY API. `saveReplay`
+      // runs every setup's robot/team name through `scrubSpecNames` (the names are drawn ON THE
+      // FIELD, so they are public in the viewer and burned into exported video), and the
+      // decision cache only absorbs REPEATED text — a client posting a fresh name each time
+      // bills one moderation call per upload, with the account's own token on it. Its `/api/lan`
+      // sibling has carried this limiter from the start for exactly the same reason; practice
+      // only joined the moderated paths in Sept 2026 and inherited no throttle with it.
+      // Its own budget, not LAN's: draining a practice backlog must not lock out a LAN host.
+      if (!uploadRateOk('practice', user.userId)) {
+        return json(429, { error: 'too many practice uploads — try again in a minute' }), true;
+      }
 
       /**
        * PERSISTENCE, not play. Practice itself runs on the local sim and is open to
@@ -901,7 +915,7 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse): Prom
       const user = await verifyAuthToken(bearer(req));
       if (!user) return json(401, { error: 'sign in required' }), true;
       if (!dbEnabled) return json(503, { error: 'saving LAN matches needs the database' }), true;
-      if (!lanRateOk(user.userId)) {
+      if (!uploadRateOk('lan', user.userId)) {
         return json(429, { error: 'too many LAN uploads — try again in a minute' }), true;
       }
       // THE ALLOWLIST, not a two-valued ternary. This read `=== 'chain' ? 'chain' : 'decode'`,
