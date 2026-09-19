@@ -46,7 +46,7 @@ mostly of the form "the obvious thing is wrong, and here is the measurement that
 | `src/games/chain/**` | [docs/area/chain.md](docs/area/chain.md) | 4.5k |
 | `src/games/biobuzz/**` · `scripts/smoke-biobuzz/**` | [docs/area/biobuzz.md](docs/area/biobuzz.md) | 2.1k |
 | adding a game — `src/games/types.ts`, `index.ts`, `sim.ts`, `src/seasons.ts` | [docs/area/adding-a-game.md](docs/area/adding-a-game.md) | 1.0k |
-| `src/ads/**` · `server/kofi.ts` · `src/legalText.ts` | [docs/area/monetization.md](docs/area/monetization.md) | 1.0k |
+| `src/ads/**` · `server/kofi.ts` · `src/legalText.ts` · `src/storageKeys.ts` | [docs/area/monetization.md](docs/area/monetization.md) | 2.2k |
 | `src/sponsor.ts` · `src/ui/Sponsor.tsx` · `electron/**` | [docs/area/sponsor.md](docs/area/sponsor.md) | 0.9k |
 
 ⚠️ **`src/sim/` is TWO guides.** It is the shared deterministic core (physics.md) *and* it is
@@ -86,7 +86,7 @@ future session read it.
 ## Commands
 
 - `npm run dev` — dev server (localhost:5173)
-- `npm test` — **headless sim verification** (1765 checks in `scripts/smoke.ts` + 1321 in
+- `npm test` — **headless sim verification** (1861 checks in `scripts/smoke.ts` + 2098 in
   `scripts/smoke-biobuzz/`, BOTH games, **~39s**). Run this after ANY change to `src/sim/`,
   `src/config.ts`, or `src/games/`. It catches almost everything. **Add a check per behavior
   change.**

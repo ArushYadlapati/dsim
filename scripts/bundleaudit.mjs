@@ -205,15 +205,29 @@ const fmtKB = (bytes) => `${(bytes / 1000).toFixed(2)} KB`;
  * `other` has no route in a healthy build (every `.js`/`.wasm` file lands in one of the four
  * above) — baseline near zero, so anything landing here at all is worth a look.
  *
+ * ── RE-MEASURED on `feat/privacy-cookies` (roadmap item 8) ────────────────────────────
+ * The privacy page's "Your data" panel and the storage registry behind it are MAIN-CHUNK by
+ * design: `/privacy` must render for a visitor with no account and for the AdSense review
+ * fetch, so nothing on it may sit behind a lazy boundary, and `src/storageKeys.ts` is imported
+ * by `settings.ts` and `theme.ts` which are on the entry path anyway.
+ *   main        929.04 KB — +10.32 over 918.72. The panel, the registry (most of it PROSE: a
+ *               purpose and a retention sentence per key, which is the point of it), the CCPA
+ *               paragraph and the rest of the legal-text edits, and `fetchMyExport`.
+ *   graphics      4.01 KB — −1.59 from 5.60, and it is the same bytes moving rather than bytes
+ *               saved: `graphics/settings.ts` and `graphics/store.ts` used to hold their own key
+ *               literals and now import them from the registry, so the three key strings are
+ *               counted once in main instead of once in the lazy chunk. Locked in because the
+ *               ratchet asked; it is not a win to defend.
+ *
  * RECALIBRATE by running `npm run build && npm run bundleaudit` and copying the printed gzip
  * totals in here, the same way `uiaudit.mjs`'s header describes lowering ITS baseline.
  */
 const BASELINE = {
-  main: { gzip: 918.72 * 1000 },
+  main: { gzip: 929.04 * 1000 },
   hostWorker: { gzip: 705.23 * 1000 },
   physics3d: { gzip: 1123.14 * 1000 },
   scene: { gzip: 192.28 * 1000, budgetCeiling: 250 * 1000 },
-  graphics: { gzip: 5.60 * 1000 },
+  graphics: { gzip: 4.01 * 1000 },
   other: { gzip: 1 * 1000 },
 };
 
