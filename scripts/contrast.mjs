@@ -188,6 +188,10 @@ const themedPairs = (t) => {
     // fills with fixed white ink — identical in both themes, asserted in both anyway
     ['alliance-red chip', '#ffffff', t('--ds-red-chip'), AA],
     ['alliance-blue chip', '#ffffff', t('--ds-blue-chip'), AA],
+    // the results screen's alliance PANEL (a solid fill, not a small chip) — its own
+    // token pair, not the literal above, so a future edit to either has to keep them in sync
+    ['Results .resx-half.red ink', t('--ds-red-chip-ink'), t('--ds-red-chip'), AA],
+    ['Results .resx-half.blue ink', t('--ds-blue-chip-ink'), t('--ds-blue-chip'), AA],
   ];
 };
 
@@ -233,8 +237,6 @@ const hudPairs = (t) => {
     ['HUD .hopper-pip.next marker (1.4.11)', t('--ds-ink'), card, NON_TEXT],
     ['HUD alliance-red chip', '#ffffff', t('--ds-red-chip'), AA],
     ['HUD alliance-blue chip', '#ffffff', t('--ds-blue-chip'), AA],
-    ['HUD .res-side.red label', '#ffffff', '#991b1b', AA],
-    ['HUD .res-side.blue label', '#ffffff', '#1d4ed8', AA],
 
     // The standing "you are still queued" chip — the one menu-shell surface that
     // ALSO floats over the field. Its fill is the panel, so its ink is measured
@@ -245,18 +247,23 @@ const hudPairs = (t) => {
     ['HUD .ds-queuechip ink over the field', t('--ds-ink'), panel, AA],
     ['HUD .ds-queuechip live dot (1.4.11)', t('--ds-accent'), panel, NON_TEXT],
 
-    // the .overlay-panel is `--ds-panel` on a dark scrim, so its ink is the panel's
-    ['HUD .record-total on the results panel', t('--ds-ink'), panel, AA],
-    ['HUD .results-table th.red', t('--ds-red-ink'), panel, AA],
-    ['HUD .results-table th.blue', t('--ds-blue-ink'), panel, AA],
-    ['HUD .elo-delta.up on its tint', t('--ds-ok-ink'), composite('#34d399', 0.12, panel), AA],
-    ['HUD .elo-delta.down on its tint', t('--ds-danger'), composite('#f87171', 0.12, panel), AA],
+    // the results screen's own alliance-half ink pair is asserted with the other
+    // fixed-ink chip pairs, further up in this file (Results .resx-half.{red,blue} ink)
 
     // ON-CANVAS text: fixed, and measured against the two dark grounds it ever meets
     ['canvas countdown on the field', t('--ds-on-field'), FIELD, AA],
     ['canvas .intro-vs on the scrim', t('--ds-on-field-dim'), INTRO_SCRIM, AA],
     ['canvas .intro-eyebrow on the scrim', t('--ds-on-field-accent'), INTRO_SCRIM, AA],
     ['canvas .mobile-joystick-label', t('--ds-on-field-dim'), FIELD, AA],
+
+    // the RESULTS SCREEN's own fixed-dark stage (`--ds-stage-bg`) — a broadcast scoreboard,
+    // same non-inverting doctrine as the field above but its own token (see shell.css).
+    ['Results stage title/body text', t('--ds-on-field'), t('--ds-stage-bg'), AA],
+    ['Results stage muted text (eyebrow/category/note)', t('--ds-on-field-dim'), t('--ds-stage-bg'), AA],
+    ['Results stage accent note (saved/recorded)', t('--ds-on-field-accent'), t('--ds-stage-bg'), AA],
+    // the WINNER/TIE banner flips the relationship (fixed light fill, dark ink) rather
+    // than reusing the app's inverting --ds-panel/--ds-ink pair
+    ['Results .resx-winbanner ink', t('--ds-stage-bg'), t('--ds-on-field'), AA],
   ];
 };
 

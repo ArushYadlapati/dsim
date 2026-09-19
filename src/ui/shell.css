@@ -134,6 +134,15 @@
   --ds-red-chip: #d32020;
   --ds-blue-chip: #1f6fe0;
 
+  /* the INK for text printed straight on a `-chip` fill (the results screen's alliance
+     panels — a SOLID red/blue card, not a small chip). Fixed, like the fills themselves:
+     an alliance panel's colour must read the same in both themes, so its ink does too.
+     White clears AA on both fills (5.25:1 red, 4.76:1 blue — see scripts/contrast.mjs);
+     `--ds-red-ink`/`--ds-blue-ink` above are a DIFFERENT pair (tuned against `--ds-panel`,
+     not against the chip fill) and would fail here. */
+  --ds-red-chip-ink: #ffffff;
+  --ds-blue-chip-ink: #ffffff;
+
   /* PROVISIONAL/medal gold (Leaderboard placement). A fill with fixed dark ink, so it
      does NOT invert — same category as the alliance chips. Gold as TYPE is 1.98:1 on
      the light panel; use --ds-warn there, which is the same idea, themed. */
@@ -163,6 +172,11 @@
   --ds-on-field: #f9faf7;
   --ds-on-field-dim: #b9beb8;
   --ds-on-field-accent: #5fb597;
+  /* the full-screen RESULTS SCREEN's own backdrop (`src/ui/Results.tsx`) — a broadcast
+     scoreboard, same doctrine as the field: fixed, deliberately absent from the dark
+     block below. Its own shade (not `--ds-mat`'s exact value, which is a TS constant in
+     `src/config.ts`, not a CSS token) so it stays a token the design system actually owns. */
+  --ds-stage-bg: #14171c;
 
   /* Jakarta = the friendly workhorse; Grotesk = labels + technical data (scores,
      timers, keycaps). Both are VARIABLE cuts, so `font-weight: 750` is real. */

@@ -1,31 +1,27 @@
-import { Fragment, useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import {
   GameController,
   type GameSettings,
   type HudSnapshot,
   type IntroPlayer,
-  type EloResultRow,
 } from '../game';
 import { keyLabel, padButtonLabel } from '../input/bindings';
-import { appChannel, lanActive } from '../net/env';
-import { ENDGAME_START, PTS_FOUL_MINOR, PTS_FOUL_MAJOR, POWER_DRAW_MAX } from '../config';
+import { ENDGAME_START, POWER_DRAW_MAX } from '../config';
 import { MobileControls } from './MobileControls';
-import { AdSlot, ResultsAd, useAdUnitActive } from './AdSlot';
+import { AdSlot, useAdUnitActive } from './AdSlot';
 import { SponsorGameChip } from './Sponsor';
+import { Results } from './Results';
 
 import { DEFAULT_MOBILE_LAYOUT } from '../settings';
-import type { MatchResultInfo, NetSession, NetStatus } from '../net/session';
+import type { NetSession, NetStatus } from '../net/session';
 import { clearActiveGame } from '../net/activeGame';
-import { ReportDialog } from './ReportDialog';
 import { TutorialCard } from './TutorialCard';
-import { ScoreReportDialog } from './ScoreReportDialog';
-import type { RecordRankInfo } from '../net/protocol';
 import type { Replay, ReplayResult } from '../sim/replay';
 import { CHAIN_MODE_LABELS } from '../games/chain/labels';
 import { moduleFor } from '../games';
 import { seasonFor } from '../seasons';
 import { useCoarsePointer } from './useCoarsePointer';
-import type { Alliance, DrivetrainType, ScoreBreakdown } from '../types';
+import type { Alliance, DrivetrainType } from '../types';
 import { initPhysics3d, physics3dReady } from '../games/biobuzz/sim3d/engine';
 import { subscribeViewPref } from '../games/biobuzz/graphics/store';
 import {
@@ -335,11 +331,21 @@ export function GameView({
   const [frames, setFrames] = useState<{ p50: number; p95: number; fps: number } | null>(null);
   /**
    * BIOBUZZ 3D SEAM: does STARTING this practice need the 3D physics chunk loaded first?
-   * Solo only — an online room's physics is a server decision and Day 2 scope (leave it
-   * exactly as it runs today); `practicePhysics` absent reads `'3d'`, the seam's default.
-   * A lazy initializer so the FIRST render already knows, same pattern as `perf`/`editingLayout`
-   * below — this effect is mount-only (see the trailing eslint-disable), so the decision is
-   * frozen at mount like every other setting it reads.
+   *
+   * ⚠️ **SOLO ONLY — `!session` IS LOAD-BEARING, NOT A CONVENIENCE.** This branch owns the
+   * FALLBACK TO 2D below, and falling back is legitimate for exactly one kind of run: an
+   * offline practice, which reaches no board. Everything with a `session` is a server room,
+   * every server room of a 3D-capable game is 3D (`Room.physics`, owner ruling 2026-09-18),
+   * and a record run that quietly re-ran on the 2D solve would put a score on a 3D board.
+   * Those refuse instead: `RecordRun` preflights the chunk and says so if it will not load,
+   * and a room already under way surfaces the failure through the controller's own latch
+   * (`onPhysicsPending` and the event-log line in `game.ts`). Never widen this condition to
+   * cover a session.
+   *
+   * `practicePhysics` absent reads `'3d'`, the seam's default. A lazy initializer so the FIRST
+   * render already knows, same pattern as `perf`/`editingLayout` below — this effect is
+   * mount-only (see the trailing eslint-disable), so the decision is frozen at mount like every
+   * other setting it reads.
    */
   const [physicsLoading, setPhysicsLoading] = useState(() => {
     const need3d =
@@ -415,6 +421,9 @@ export function GameView({
           // OFFLINE, or a stale build whose physics chunk 404s — fall back to 2D physics
           // for this session only (never persisted): `settings.practicePhysics` on disk is
           // untouched, so the player's next practice tries 3D again.
+          //
+          // ⚠️ PRACTICE ONLY. See `physicsLoading` above: a run that can reach a board refuses
+          // instead of degrading, because the board is one solve.
           // eslint-disable-next-line no-console
           console.warn('BIOBUZZ 3D physics failed to load; playing this practice on 2D physics.', err);
           effectiveSettings = { ...settings, practicePhysics: '2d' };
@@ -838,6 +847,9 @@ export function GameView({
           recordResult={controllerRef.current?.getRecordResult() ?? null}
           signedIn={signedIn}
           onWatchReplay={onWatchReplay}
+          /* marks the "YOU" row in the results roster (built from the match's own
+             recorded setups) — slot 0 in solo, the lobby-assigned id in multiplayer. */
+          localRobotId={controllerRef.current?.localRobotId}
         />
       )}
       </div>
@@ -1152,665 +1164,6 @@ function RankedIntro({
   );
 }
 
-/** one driver's ELO change row. Rows reveal in a stagger; the rating rolls from
- * `before` up/down to `after` while the delta chip slams in and pulses. */
-function EloRow({ r, index }: { r: EloResultRow; index: number }) {
-  const delta = r.after - r.before;
-  // stagger each row, then run the count-up (and the CSS pop keys off `.in`)
-  const [live, setLive] = useState(false);
-  useEffect(() => {
-    const id = window.setTimeout(() => setLive(true), 120 + index * 260);
-    return () => window.clearTimeout(id);
-  }, [index]);
-  const after = useCountUp(r.after, live, 1100, r.before);
-  const dir = delta >= 0 ? 'up' : 'down';
-  return (
-    <div className={`elo-row ${r.alliance} ${r.isLocal ? 'you' : ''} ${live ? 'in' : ''}`}>
-      <span className="elo-name">
-        {r.name}
-        {r.isLocal && <span className="elo-you">YOU</span>}
-        {r.provisional && (
-          <span className="elo-prov" title="In placements - finish your placement matches to join the leaderboard">
-            ?
-          </span>
-        )}
-      </span>
-      <span className="elo-nums">
-        <span className="elo-before">{r.before}</span>
-        <span className="elo-arrow">→</span>
-        <span className={`elo-after ${live ? dir : ''}`}>
-          {after}
-          {r.provisional && <span className="elo-prov-mark">?</span>}
-        </span>
-        <span className={`elo-delta ${dir} ${live ? 'pop' : ''}`}>
-          <span className="elo-delta-caret">{delta >= 0 ? '▲' : '▼'}</span>
-          {delta >= 0 ? `+${delta}` : delta}
-        </span>
-      </span>
-    </div>
-  );
-}
-
-/** ranked ELO change section on the results screen. `rows` is null until the
- * server's scored eloResult lands (a beat after the score), so we show a short
- * "Updating ELO…" placeholder — but never hang: if nothing arrives within a few
- * seconds (e.g. a match that couldn't be rated), fall back to a clear message. */
-function EloResults({ rows }: { rows: EloResultRow[] | null }) {
-  const [timedOut, setTimedOut] = useState(false);
-  useEffect(() => {
-    if (rows !== null) return;
-    const id = window.setTimeout(() => setTimedOut(true), 9000);
-    return () => window.clearTimeout(id);
-  }, [rows]);
-  // alpha builds never persist — the server sends no eloResult, so say so up front
-  // instead of spinning on "Updating ELO…"
-  if (appChannel() === 'alpha' && rows === null) {
-    return (
-      <div className="elo-block">
-        <div className="elo-head">RANKED · ELO</div>
-        <p className="ds-hint elo-wait">Not rated on this test build.</p>
-      </div>
-    );
-  }
-  return (
-    <div className="elo-block">
-      <div className="elo-head">RANKED · ELO</div>
-      {rows === null ? (
-        <p className="ds-hint elo-wait">{timedOut ? 'No rating change this match.' : 'Updating ELO…'}</p>
-      ) : (
-        rows.map((r, i) => <EloRow key={r.robotId} r={r} index={i} />)
-      )}
-    </div>
-  );
-}
-
-/** final match results — RED | category | BLUE, like the FTC audience board.
- * Foul rows show the fouls each alliance COMMITTED (its own count) — the POINTS
- * for those go to the OPPONENT's total (see the footnote), so a foul always
- * benefits the fouled alliance. */
-/**
- * The rematch control, in EVERY multiplayer mode — ranked, custom and record alike.
- *
- * It reads its pressed state from the SERVER tally rather than a local guess, so
- * everyone in the room always sees the same count, and it is a VOTE: the match only
- * restarts once every connected driver has pressed it. Declining costs nothing —
- * you simply do not press — which is what makes "everyone agrees" a gate rather
- * than a way to lean on somebody.
- */
-function RematchVote({
-  vote,
-  onToggle,
-}: {
-  vote: { votes: number; need: number; mine: boolean };
-  onToggle: () => void;
-}) {
-  const waiting = vote.mine && vote.votes < vote.need;
-  return (
-    <button className={vote.mine ? 'primary' : ''} onClick={onToggle}>
-      {waiting ? 'WAITING…' : '⟲ REMATCH'} {vote.votes}/{vote.need}
-    </button>
-  );
-}
-
-function Results({
-  hud,
-  final,
-  lost,
-  ranked,
-  eloResults,
-  canRematch,
-  onRematch,
-  rematchVote,
-  onRematchVote,
-  onQueueAgain,
-  onBackToLobby,
-  onExit,
-  matchResult,
-  practiceRun,
-  recordResult,
-  signedIn,
-  lanHost,
-  onWatchReplay,
-  reportable,
-  onReport,
-  onReportScore,
-}: {
-  hud: HudSnapshot;
-  /** the score is FINALIZED (see `HudSnapshot.resultFinal`) — the reveal lands then, not on a timer */
-  final: boolean;
-  /** the final score never arrived (see `HudSnapshot.resultLost`) */
-  lost: boolean;
-  /** ranked match? shows the ELO-change section */
-  ranked: boolean;
-  /** per-driver ELO changes, or null until the server's eloResult lands */
-  eloResults: EloResultRow[] | null;
-  canRematch: boolean;
-  onRematch: () => void;
-  /** duo-record co-op vote (null unless this run has one) */
-  rematchVote: { votes: number; need: number; mine: boolean } | null;
-  onRematchVote: () => void;
-  onQueueAgain?: () => void;
-  onBackToLobby?: () => void;
-  onExit: () => void;
-  matchResult: MatchResultInfo | null;
-  /**
-   * The finished SOLO PRACTICE run, kept apart from `matchResult` on purpose: that one is the
-   * SERVER's authoritative payload, and a locally produced stand-in would quietly claim this
-   * score was witnessed. Nothing witnessed it — that is what offline means — and the replay is
-   * offered on exactly those terms.
-   */
-  practiceRun: { replay: Replay; result: ReplayResult } | null;
-  /** record run's leaderboard standing, or null until the server's recordResult
-   * lands (or forever if anonymous) */
-  recordResult: RecordRankInfo | null;
-  signedIn: boolean;
-  /** on a LAN match, is THIS client the one hosting it? — decides which of the two LAN
-   *  lines the results screen shows, since only the host keeps the match */
-  lanHost?: boolean;
-  onWatchReplay?: (replay: Replay) => void;
-  /** the OTHER drivers in this match, reportable by robot id (empty in solo) */
-  reportable?: { robotId: number; name: string }[];
-  /** send a report; absent in solo / on an older session */
-  onReport?: (robotId: number, reason: string, detail: string) => void;
-  /** file a MISSCORE claim about this match — see ScoreReportDialog */
-  onReportScore?: (detail: string) => void;
-}) {
-  const [reporting, setReporting] = useState(false);
-  const [scoreReporting, setScoreReporting] = useState(false);
-  const [scoreReported, setScoreReported] = useState(false);
-  const red = hud.alliance === 'red' ? hud.score : hud.oppScore;
-  const blue = hud.alliance === 'blue' ? hud.score : hud.oppScore;
-  /**
-   * THE TOTALS SHOWN ARE THE SAVED ONES. Online, the server's finalized result is the score of
-   * record; the HUD beside it is this client's PREDICTED world, which can run a few ticks past
-   * the last snapshot. The breakdown rows still come from the HUD — the field has settled by the
-   * time this reveals, so they agree — but the numbers a driver reads as "the score" are exactly
-   * the numbers that were saved. Solo practice has no server, and its own world IS the result.
-   */
-  const saved = matchResult?.result ?? null;
-  const redFinal = saved ? saved.score.red : red.total;
-  const blueFinal = saved ? saved.score.blue : blue.total;
-  const winner: Alliance | 'tie' =
-    redFinal > blueFinal ? 'red' : blueFinal > redFinal ? 'blue' : 'tie';
-
-  // RECORD runs are opponent-free score attacks: no winner, and the player's own
-  // fouls (which are "awarded" to the empty opposing alliance) SUBTRACT from the
-  // net score shown + saved.
-  const isRecord = matchResult?.kind === 'record';
-  const mine = hud.score; // the player's own breakdown
-  const penaltyPts = hud.oppScore.foulPoints; // points the player's fouls handed the empty opponent
-  const oppAlliance: Alliance = hud.alliance === 'red' ? 'blue' : 'red';
-  const netScore = saved
-    ? Math.max(0, saved.score[hud.alliance] - saved.foulPoints[oppAlliance])
-    : Math.max(0, mine.total - penaltyPts);
-
-  // the reveal lands when the score is FINAL — nothing on the field can change it any more —
-  // then counts up and slams the winner
-  const revealed = final;
-  const redTotal = useCountUp(redFinal, revealed, 900);
-  const blueTotal = useCountUp(blueFinal, revealed, 900);
-  const netTotal = useCountUp(netScore, revealed, 900);
-
-  if (isRecord) {
-    return (
-      <RecordResults
-        hud={hud}
-        mine={mine}
-        penaltyPts={penaltyPts}
-        netScore={netScore}
-        netTotal={netTotal}
-        revealed={revealed}
-        lost={lost}
-        practiceRun={practiceRun}
-        recordResult={recordResult}
-        signedIn={signedIn}
-        matchResult={matchResult}
-        canRematch={canRematch}
-        onRematch={onRematch}
-        rematchVote={rematchVote}
-        onRematchVote={onRematchVote}
-        onExit={onExit}
-        onWatchReplay={onWatchReplay}
-      />
-    );
-  }
-
-  const cr = hud.game === 'chain';
-  const f = hud.fouls; // fouls COMMITTED by each alliance
-  const val = (get: (s: ScoreBreakdown) => number): [number, number] => [get(red), get(blue)];
-
-  // Chain Reaction has its own scoring: Particle points (catalyst multiplier folded in) +
-  // End Game (park 5 / ascend 100) + penalty points awarded from the OPPONENT's fouls.
-  const crSections = (): [string, [string, number, number][]][] => {
-    const c = hud.chain;
-    if (!c) return [];
-    const isRed = hud.alliance === 'red';
-    const redP = isRed ? c.particlePts : c.oppParticlePts;
-    const blueP = isRed ? c.oppParticlePts : c.particlePts;
-    const redF = isRed ? c.foulPts : c.oppFoulPts;
-    const blueF = isRed ? c.oppFoulPts : c.foulPts;
-    return [
-      ['SCORING', [['Particles ×mult', redP, blueP]]],
-      ['RING STAND / PARK', [['Descend / Ascend / Park', red.total - redP - redF, blue.total - blueP - blueF]]],
-      ['PENALTIES', [['Fouls awarded', redF, blueF]]],
-    ];
-  };
-
-  // a game's OWN breakdown, through the module slot. Its rows are
-  // alliance-RELATIVE ([label, mine, opp]) — this screen prints red | blue.
-  const own = moduleFor(hud.game).resultsRows;
-  const ownSections = (): [string, [string, number, number][]][] =>
-    (own?.(hud) ?? []).map(([title, rows]) => [
-      title,
-      rows.map(([label, mine2, opp2]) =>
-        hud.alliance === 'red' ? [label, mine2, opp2] : [label, opp2, mine2],
-      ) as [string, number, number][],
-    ]);
-
-  const sections: [string, [string, number, number][]][] = own
-    ? ownSections()
-    : cr
-    ? crSections()
-    : [
-        [
-          'AUTONOMOUS',
-          [
-            ['Leave', ...val((s) => s.leave)],
-            ['Classified', ...val((s) => s.autoClassified)],
-            ['Overflow', ...val((s) => s.autoOverflow)],
-            ['Pattern', ...val((s) => s.autoPattern)],
-          ],
-        ],
-        [
-          'DRIVER-CONTROLLED',
-          [
-            ['Classified', ...val((s) => s.teleClassified)],
-            ['Overflow', ...val((s) => s.teleOverflow)],
-            ['Pattern', ...val((s) => s.telePattern)],
-          ],
-        ],
-        [
-          'END OF MATCH',
-          [
-            ['Depot', ...val((s) => s.depot)],
-            ['Base return', ...val((s) => s.base)],
-          ],
-        ],
-        [
-          // penalty POINTS awarded to each alliance (from the OPPONENT's fouls) —
-          // shown as points, not counts, so the breakdown reconciles with each TOTAL
-          'PENALTIES',
-          [
-            ['Minor', f.blue.minor * PTS_FOUL_MINOR, f.red.minor * PTS_FOUL_MINOR],
-            ['Major', f.blue.major * PTS_FOUL_MAJOR, f.red.major * PTS_FOUL_MAJOR],
-          ],
-        ],
-      ];
-
-  return (
-    <div className="overlay">
-      <div className={`overlay-panel results ${revealed ? 'revealed' : 'tallying'}`}>
-        <h2>{revealed ? 'MATCH RESULTS' : 'FINAL SCORE'}</h2>
-        <div className={`results-head ${revealed ? 'reveal' : ''}`}>
-          <div className={`res-side red ${revealed && winner === 'red' ? 'win' : ''}`}>
-            <span>RED</span>
-            <strong>{revealed ? redTotal : '-'}</strong>
-          </div>
-          <div className="res-verdict">
-            {revealed ? (winner === 'tie' ? 'TIE' : `${winner.toUpperCase()} WINS`) : '···'}
-          </div>
-          <div className={`res-side blue ${revealed && winner === 'blue' ? 'win' : ''}`}>
-            <span>BLUE</span>
-            <strong>{revealed ? blueTotal : '-'}</strong>
-          </div>
-        </div>
-        {/* A VOIDED total is 0 with a full breakdown above it, which reads as a bug unless
-            the reason is stated. Say it plainly, next to the score it explains. */}
-        {revealed && (red.voided || blue.voided) && (
-          <p className="results-void">
-            RED CARD — {red.voided && blue.voided ? 'both alliances have' : `${red.voided ? 'RED' : 'BLUE'} has`}{' '}
-            forfeited the match. Points earned are shown below but do not count.
-          </p>
-        )}
-        {!revealed && (
-          <p className="ds-hint results-wait">
-            {lost
-              ? 'Couldn’t get the final score from the server. Check Career for the result.'
-              : 'Waiting for the field to settle…'}
-          </p>
-        )}
-        {revealed && (
-          <>
-        <table className="score-table results-table">
-          <thead>
-            <tr>
-              <th className="rv red">RED</th>
-              <th className="cat" />
-              <th className="bv blue">BLUE</th>
-            </tr>
-          </thead>
-          <tbody>
-            {sections.map(([title, rows]) => (
-              <Fragment key={title}>
-                <tr className="section-row">
-                  <td colSpan={3}>{title}</td>
-                </tr>
-                {rows.map(([label, rv, bv]) => (
-                  <tr key={label}>
-                    <td className="rv">{rv}</td>
-                    <td className="cat">{label}</td>
-                    <td className="bv">{bv}</td>
-                  </tr>
-                ))}
-              </Fragment>
-            ))}
-            <tr className="total-row">
-              <td className="rv">{redFinal}</td>
-              <td className="cat">TOTAL</td>
-              <td className="bv">{blueFinal}</td>
-            </tr>
-          </tbody>
-        </table>
-        {ranked && <EloResults rows={eloResults} />}
-        {matchResult && (
-          <p className="ds-hint ok">
-            {/* A LAN MATCH WAS NOT RECORDED BY THE SERVER THAT RAN IT, and "✓ Match recorded."
-                is simply false there — a LAN box has no database. What actually happened
-                depends on which end of the room you are, so it says which: the HOST keeps it
-                (and their account gets it once they are online), and a guest keeps nothing. */}
-            {lanActive()
-              ? lanHost
-                ? signedIn
-                  ? '✓ Saved on this computer. It goes to your account next time you’re online.'
-                  : '✓ Saved on this computer. Sign in to save it to your account.'
-                : '✓ Match over. The host keeps the replay.'
-              : matchResult.kind === 'record'
-                ? '✓ Recorded - sign in to save it to the leaderboard.'
-                : '✓ Match recorded.'}
-          </p>
-        )}
-        {/* A practice run says what it IS. It was not on a leaderboard and never will be —
-            offline has no authority to put it there — so the copy promises only what happened:
-            the run is kept, and it is yours to watch. */}
-        {practiceRun && !matchResult && (
-          <p className="ds-hint ok">
-            {signedIn
-              ? '✓ Saved to your practice replays.'
-              : '✓ Saved on this device. Sign in to keep it on your account.'}
-          </p>
-        )}
-        <div className="overlay-buttons">
-          {(matchResult ?? practiceRun) && onWatchReplay && (
-            <button onClick={() => onWatchReplay((matchResult ?? practiceRun)!.replay)}>
-              ▶ WATCH REPLAY
-            </button>
-          )}
-          {canRematch && <button onClick={onRematch}>REMATCH</button>}
-          {rematchVote && <RematchVote vote={rematchVote} onToggle={onRematchVote} />}
-          {/* the OTHER thing you want after a ranked match. REMATCH beside it plays
-              the same people again; this finds new ones without going out to the
-              menu and back in through Play ▸ Ranked. */}
-          {onQueueAgain && <button onClick={onQueueAgain}>QUEUE AGAIN</button>}
-          {/* REMATCH plays these same people on these same sides. This re-opens the room,
-              so the next game is built from whoever is in it then — which is what you want
-              when somebody left, or when the sides want swapping. */}
-          {onBackToLobby && <button onClick={onBackToLobby}>BACK TO LOBBY</button>}
-          {/* the EXIT, not a fourth primary: `.overlay-buttons button` is accent-filled
-              unless `.ghost`, so an unmarked MENU sat beside REMATCH and WATCH REPLAY
-              with nothing saying which one the screen expects. */}
-          <button className="ghost" onClick={onExit}>
-            MENU
-          </button>
-        </div>
-        {/* REPORT is deliberately not in the button row. It is a rare, deliberate action and
-            the row is where REMATCH and MENU live — the two things every player reaches for
-            every match. A quiet link below keeps it available without putting it under a
-            thumb aiming for the exit. */}
-        {onReport && reportable && reportable.length > 0 && !reporting && (
-          <button className="ds-linkbtn results-report" onClick={() => setReporting(true)}>
-            ⚑ Report a player
-          </button>
-        )}
-        {/* ...and the SCORE itself. A separate action from reporting a player because it is a
-            separate claim: the score is the server's arithmetic, so a wrong one is nobody's
-            misconduct and asking the reporter to name a culprit would be asking them to
-            invent one. Only offered on a match that actually SCORED (a record run has its own
-            number and no opponent to dispute it with). */}
-        {onReportScore && matchResult && !scoreReporting && !scoreReported && (
-          <button className="ds-linkbtn results-report" onClick={() => setScoreReporting(true)}>
-            ⚖ Report a misscore
-          </button>
-        )}
-        {scoreReported && (
-          <p className="results-report-done">
-            Misscore reported. A moderator will check the replay.
-          </p>
-        )}
-        {scoreReporting && onReportScore && (
-          <ScoreReportDialog
-            onSubmit={(detail) => {
-              onReportScore(detail);
-              setScoreReported(true);
-              setScoreReporting(false);
-            }}
-            onClose={() => setScoreReporting(false)}
-          />
-        )}
-        {reporting && onReport && reportable && (
-          <ReportDialog
-            drivers={reportable}
-            onSubmit={(rid, reason, detail) => onReport(rid, reason, detail)}
-            onClose={() => setReporting(false)}
-          />
-        )}
-        {/* AFTER the buttons, deliberately. The results screen is a good place
-            for an ad — the match is over and the player is reading rather than
-            driving — but REMATCH and MENU must stay the first things reachable,
-            by mouse and by tab order. An ad between the score and the exit is
-            the pattern that generates accidental clicks. */}
-        <ResultsAd />
-          </>
-        )}
-      </div>
-    </div>
-  );
-}
-
-const DRIVETRAIN_LABEL: Record<string, string> = {
-  mecanum: 'Mecanum',
-  xdrive: 'X-Drive',
-  butterfly: 'Butterfly',
-  tank: 'Tank',
-  swerve: 'Swerve',
-  // sentinel for a mixed-drivetrain duo run (overall board only, no dt-specific)
-  overall: 'Mixed',
-};
-const prettyDrivetrain = (d: string): string => DRIVETRAIN_LABEL[d] ?? d;
-
-/** the PB / WR / rank line on a record run's results screen. Null info ⇒ either
- * the run is still being scored (signed in) or it was anonymous (prompt to sign
- * in — anonymous runs are never persisted, so no rank exists). */
-function RecordStanding({ info, signedIn }: { info: RecordRankInfo | null; signedIn: boolean }) {
-  if (!info) {
-    // alpha builds are not persisted server-side (no recordResult ever arrives) —
-    // don't leave a signed-in player spinning on "Saving…"
-    if (appChannel() === 'alpha') {
-      return <p className="ds-hint record-standing pending">Not saved on this test build.</p>;
-    }
-    return signedIn ? (
-      <p className="ds-hint record-standing pending">Saving · computing your rank…</p>
-    ) : (
-      <p className="record-standing signin">Sign in to save this run &amp; see your rank →</p>
-    );
-  }
-  const cat = `${info.mode === 'duo' ? 'Duo' : 'Solo'} · ${prettyDrivetrain(info.drivetrain)}`;
-  if (info.isWR) {
-    return (
-      <div className="record-standing wr">
-        <strong>🏆 WORLD RECORD</strong>
-        <span>{cat} · #1 of {info.total}</span>
-      </div>
-    );
-  }
-  if (info.isPB) {
-    return (
-      <div className="record-standing pb">
-        <strong>★ NEW PERSONAL BEST</strong>
-        <span>{cat} · #{info.rank} of {info.total}</span>
-      </div>
-    );
-  }
-  return (
-    <div className="record-standing rank">
-      <strong>#{info.rank}</strong>
-      <span>of {info.total} · {cat}</span>
-    </div>
-  );
-}
-
-/** opponent-free record-run results: one net score (own penalties subtracted),
- * a PB / WR / rank line, and a single-column breakdown. No opponent, no winner. */
-function RecordResults({
-  hud,
-  mine,
-  penaltyPts,
-  netScore,
-  netTotal,
-  revealed,
-  lost,
-  recordResult,
-  signedIn,
-  matchResult,
-  practiceRun,
-  canRematch,
-  onRematch,
-  rematchVote,
-  onRematchVote,
-  onExit,
-  onWatchReplay,
-}: {
-  hud: HudSnapshot;
-  mine: ScoreBreakdown;
-  penaltyPts: number;
-  netScore: number;
-  netTotal: number;
-  revealed: boolean;
-  /** the final score never arrived — see `HudSnapshot.resultLost` */
-  lost: boolean;
-  recordResult: RecordRankInfo | null;
-  signedIn: boolean;
-  matchResult: MatchResultInfo | null;
-  /** the finished SOLO PRACTICE run — see the note on the other results panel */
-  practiceRun: { replay: Replay; result: ReplayResult } | null;
-  canRematch: boolean;
-  onRematch: () => void;
-  /** duo-record co-op vote (null unless this run has one) */
-  rematchVote: { votes: number; need: number; mine: boolean } | null;
-  onRematchVote: () => void;
-  onExit: () => void;
-  onWatchReplay?: (replay: Replay) => void;
-}) {
-  const cr = hud.game === 'chain';
-  const f = hud.fouls[hud.alliance]; // fouls the PLAYER committed
-  // the game's own breakdown, through the module slot. A solo run has no opponent,
-  // so only the "mine" half of each row is printed.
-  const own = moduleFor(hud.game).resultsRows;
-  const sections: [string, [string, number][]][] = own
-    ? (own(hud) ?? []).map(([title, rows]) => [
-        title,
-        rows.map(([label, val]) => [label, val] as [string, number]),
-      ])
-    : cr && hud.chain
-      ? [
-          ['SCORING', [['Particles ×mult', hud.chain.particlePts]]],
-          ['END GAME', [['Park / Ascend', mine.total - hud.chain.particlePts - hud.chain.foulPts]]],
-        ]
-      : [
-          ['AUTONOMOUS', [
-            ['Leave', mine.leave],
-            ['Classified', mine.autoClassified],
-            ['Overflow', mine.autoOverflow],
-            ['Pattern', mine.autoPattern],
-          ]],
-          ['DRIVER-CONTROLLED', [
-            ['Classified', mine.teleClassified],
-            ['Overflow', mine.teleOverflow],
-            ['Pattern', mine.telePattern],
-          ]],
-          ['END OF MATCH', [
-            ['Depot', mine.depot],
-            ['Base return', mine.base],
-          ]],
-        ];
-
-  return (
-    <div className="overlay">
-      <div className={`overlay-panel results record ${revealed ? 'revealed' : 'tallying'}`}>
-        <h2>{revealed ? 'RUN COMPLETE' : 'FINAL SCORE'}</h2>
-        <div className={`record-scoreline ${revealed ? 'reveal' : ''}`}>
-          <strong className="record-total">{revealed ? netTotal : '-'}</strong>
-          <span className="record-total-label">POINTS</span>
-        </div>
-        {!revealed && (
-          <p className="ds-hint results-wait">
-            {lost
-              ? 'Couldn’t get the final score from the server. Check Career for the result.'
-              : 'Waiting for the field to settle…'}
-          </p>
-        )}
-        {revealed && (
-          <>
-            <RecordStanding info={recordResult} signedIn={signedIn} />
-            <table className="score-table results-table record-table">
-              <tbody>
-                {sections.map(([title, rows]) => (
-                  <Fragment key={title}>
-                    <tr className="section-row"><td colSpan={2}>{title}</td></tr>
-                    {rows.map(([label, v]) => (
-                      <tr key={label}>
-                        <td className="cat">{label}</td>
-                        <td className="bv">{v}</td>
-                      </tr>
-                    ))}
-                  </Fragment>
-                ))}
-                {/* PENALTIES belongs to whoever owns the breakdown: a game with its own
-                    `resultsRows` puts its penalty row in `sections`, and printing this one
-                    too would show the heading twice. `!own` is `!cr` for both games that
-                    existed - neither filled the slot. */}
-                {!own && (
-                  <>
-                    <tr className="section-row"><td colSpan={2}>PENALTIES</td></tr>
-                    <tr className="penalty-row">
-                      <td className="cat">
-                        Fouls committed ({f.minor} minor · {f.major} major)
-                      </td>
-                      <td className="bv">{penaltyPts > 0 ? `−${penaltyPts}` : 0}</td>
-                    </tr>
-                  </>
-                )}
-                <tr className="total-row">
-                  <td className="cat">{cr ? 'TOTAL' : 'NET SCORE'}</td>
-                  <td className="bv">{netScore}</td>
-                </tr>
-              </tbody>
-            </table>
-            <div className="overlay-buttons">
-              {(matchResult ?? practiceRun) && onWatchReplay && (
-                <button onClick={() => onWatchReplay((matchResult ?? practiceRun)!.replay)}>
-                  ▶ WATCH REPLAY
-                </button>
-              )}
-              {canRematch && <button onClick={onRematch}>RUN AGAIN</button>}
-              {/* CO-OP: the run belongs to both drivers, so restarting is a vote —
-                  the same control (and the same R binding) as mid-match. */}
-              {rematchVote && <RematchVote vote={rematchVote} onToggle={onRematchVote} />}
-              <button onClick={onExit}>MENU</button>
-            </div>
-          </>
-        )}
-      </div>
-    </div>
-  );
-}
+/** RankedIntro / Results / RecordResults + their helpers moved to `./Results.tsx` —
+ * see that file. */
 
