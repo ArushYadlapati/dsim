@@ -1549,6 +1549,7 @@ button.ds-chip {
   margin: 0 0 24px;
   max-width: 64ch;
 }
+.ds-sub.compact { margin: 0 0 var(--ds-s-4); }
 
 /* ---- Records: "look up a username" ----------------------------------- */
 /* Spans the full content column so it lines up with the `.ds-panel` board below
@@ -1713,8 +1714,9 @@ button.ds-chip {
 }
 .ds-tileset-label {
   font-family: var(--ds-font-mono);
-  font-size: 11px;
-  letter-spacing: 0.14em;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.16em;
   text-transform: uppercase;
   color: var(--ds-mut);
   margin: 0 0 10px 2px;

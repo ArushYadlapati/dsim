@@ -104,106 +104,98 @@ export function AudioSection({
 
   return (
     <>
-      <section className="ds-panel">
-        <div className="ds-panel-h">
-          <span className="ds-panel-title">Audio</span>
-        </div>
-        <div className="ds-panel-body stack">
-          <VolumeRow
-            label="Master"
-            value={vol.master}
-            onChange={(master) => setVolume({ master })}
-            onAudition={() => audio.beep()}
-          />
-          <VolumeRow
-            label="Game sounds"
-            value={vol.game}
-            muted={silent}
-            onChange={(game) => setVolume({ game })}
-            onAudition={() => audio.play('resume')}
-          />
-          {/* ONE ROW PER EMITTER. These four were a single slider labelled
-              "Beeping" — which moved the launcher, the intake and the gate as well,
-              and was named after the rarest of them. Each auditions its own sound,
-              so the label is checkable rather than a claim. */}
-          <VolumeRow
-            label="Shooter"
-            value={vol.shoot}
-            muted={silent}
-            onChange={(shoot) => setVolume({ shoot })}
-            onAudition={() => audio.sfxShoot()}
-          />
-          <VolumeRow
-            label="Intake"
-            value={vol.intake}
-            muted={silent}
-            onChange={(intake) => setVolume({ intake })}
-            onAudition={() => audio.sfxIntake()}
-          />
-          <VolumeRow
-            label="Classifier gate"
-            value={vol.gate}
-            muted={silent}
-            onChange={(gate) => setVolume({ gate })}
-            onAudition={() => audio.sfxGate()}
-          />
-          <VolumeRow
-            label="Countdown beeps"
-            value={vol.beep}
-            muted={silent}
-            onChange={(beep) => setVolume({ beep })}
-            onAudition={() => audio.beep()}
-          />
-          <VolumeRow
-            label="Match alerts"
-            value={vol.alert}
-            muted={silent}
-            onChange={(alert) => setVolume({ alert })}
-            onAudition={() => audio.sfxMatchFound()}
-          />
-          <VolumeRow
-            label="Voice lines"
-            value={vol.voice}
-            muted={silent}
-            onChange={(voice) => setVolume({ voice })}
-            onAudition={() => audio.say('Volume', true)}
-          />
-          {/* NO "master is at 0%" line. The `muted` prop already greys every value in
-              the panel for exactly this state and the Master row itself reads 0%; a
-              sentence that appears and disappears also moved the panel's height. */}
-        </div>
+      <section className="ds-sec">
+        <h2>Audio</h2>
+        <VolumeRow
+          label="Master"
+          value={vol.master}
+          onChange={(master) => setVolume({ master })}
+          onAudition={() => audio.beep()}
+        />
+        <VolumeRow
+          label="Game sounds"
+          value={vol.game}
+          muted={silent}
+          onChange={(game) => setVolume({ game })}
+          onAudition={() => audio.play('resume')}
+        />
+        {/* ONE ROW PER EMITTER. These four were a single slider labelled
+            "Beeping" — which moved the launcher, the intake and the gate as well,
+            and was named after the rarest of them. Each auditions its own sound,
+            so the label is checkable rather than a claim. */}
+        <VolumeRow
+          label="Shooter"
+          value={vol.shoot}
+          muted={silent}
+          onChange={(shoot) => setVolume({ shoot })}
+          onAudition={() => audio.sfxShoot()}
+        />
+        <VolumeRow
+          label="Intake"
+          value={vol.intake}
+          muted={silent}
+          onChange={(intake) => setVolume({ intake })}
+          onAudition={() => audio.sfxIntake()}
+        />
+        <VolumeRow
+          label="Classifier gate"
+          value={vol.gate}
+          muted={silent}
+          onChange={(gate) => setVolume({ gate })}
+          onAudition={() => audio.sfxGate()}
+        />
+        <VolumeRow
+          label="Countdown beeps"
+          value={vol.beep}
+          muted={silent}
+          onChange={(beep) => setVolume({ beep })}
+          onAudition={() => audio.beep()}
+        />
+        <VolumeRow
+          label="Match alerts"
+          value={vol.alert}
+          muted={silent}
+          onChange={(alert) => setVolume({ alert })}
+          onAudition={() => audio.sfxMatchFound()}
+        />
+        <VolumeRow
+          label="Voice lines"
+          value={vol.voice}
+          muted={silent}
+          onChange={(voice) => setVolume({ voice })}
+          onAudition={() => audio.say('Volume', true)}
+        />
+        {/* NO "master is at 0%" line. The `muted` prop already greys every value in
+            the panel for exactly this state and the Master row itself reads 0%; a
+            sentence that appears and disappears also moved the panel's height. */}
       </section>
 
-      <section className="ds-panel">
-        <div className="ds-panel-h">
-          <span className="ds-panel-title">Visual</span>
-        </div>
-        <div className="ds-panel-body stack">
-          <div className="ds-opts three">
-            {THEMES.map((t) => (
-              <button
-                key={t.id}
-                className={`ds-opt ${theme === t.id ? 'on' : ''}`}
-                aria-pressed={theme === t.id}
-                onClick={() => pickTheme(t.id)}
-              >
-                <span className="ot">{t.title}</span>
-              </button>
-            ))}
-          </div>
-          {/* the stack of messages in the field's top-left corner during a match
-              (scoring, gate, penalties). It is a read-out and never a control, so
-              turning it off costs nothing but the reading. */}
-          <div className="ds-opts">
+      <section className="ds-sec">
+        <h2>Visual</h2>
+        <div className="ds-opts three">
+          {THEMES.map((t) => (
             <button
-              className={`ds-opt ${settings.showEventLog ? 'on' : ''}`}
-              aria-pressed={settings.showEventLog}
-              onClick={() => onChange({ ...settings, showEventLog: !settings.showEventLog })}
+              key={t.id}
+              className={`ds-opt ${theme === t.id ? 'on' : ''}`}
+              aria-pressed={theme === t.id}
+              onClick={() => pickTheme(t.id)}
             >
-              <span className="ot">In-match messages {settings.showEventLog ? 'ON' : 'OFF'}</span>
-              <span className="od">Scoring and penalty notices in the field’s top-left corner</span>
+              <span className="ot">{t.title}</span>
             </button>
-          </div>
+          ))}
+        </div>
+        {/* the stack of messages in the field's top-left corner during a match
+            (scoring, gate, penalties). It is a read-out and never a control, so
+            turning it off costs nothing but the reading. */}
+        <div className="ds-opts">
+          <button
+            className={`ds-opt ${settings.showEventLog ? 'on' : ''}`}
+            aria-pressed={settings.showEventLog}
+            onClick={() => onChange({ ...settings, showEventLog: !settings.showEventLog })}
+          >
+            <span className="ot">In-match messages {settings.showEventLog ? 'ON' : 'OFF'}</span>
+            <span className="od">Scoring and penalty notices in the field’s top-left corner</span>
+          </button>
         </div>
       </section>
     </>

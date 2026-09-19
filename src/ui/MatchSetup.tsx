@@ -174,87 +174,82 @@ export function MatchSetup({
   const runsAutoPaths = moduleFor(settings.game).autoPaths;
 
   return (
-    <section className="ds-panel">
-      <div className="ds-panel-h">
-        <span className="ds-panel-title">Match setup</span>
-      </div>
+    <>
+      <section className="ds-sec">
+        <h2>Alliance</h2>
+        <div className="ds-opts two">
+          <button
+            className={`ds-opt red ${settings.alliance === 'red' ? 'on' : ''}`}
+            onClick={() => setAlliance('red')}
+          >
+            <span className="ot">RED</span>
+          </button>
+          <button
+            className={`ds-opt blue ${settings.alliance === 'blue' ? 'on' : ''}`}
+            onClick={() => setAlliance('blue')}
+          >
+            <span className="ot">BLUE</span>
+          </button>
+        </div>
+      </section>
 
-      <div className="ds-panel-body stack">
-        <section className="ds-sec">
-          <h2>Alliance</h2>
-          <div className="ds-opts two">
-            <button
-              className={`ds-opt red ${settings.alliance === 'red' ? 'on' : ''}`}
-              onClick={() => setAlliance('red')}
-            >
-              <span className="ot">RED</span>
-            </button>
-            <button
-              className={`ds-opt blue ${settings.alliance === 'blue' ? 'on' : ''}`}
-              onClick={() => setAlliance('blue')}
-            >
-              <span className="ot">BLUE</span>
-            </button>
-          </div>
-        </section>
+      <section className="ds-sec">
+        <h2>Start position</h2>
+        {StartEd ? (
+          <StartEd
+            maxSaved={maxSaved}
+            spec={settings.spec}
+            alliance={settings.alliance}
+            value={settings.startPose}
+            startIndex={settings.startIndex ?? 0}
+            category={settings.startCat}
+            saved={settings.savedStartPoses}
+            onChange={(startPose) => startPose && set(selectStart(settings, { index: -1, pose: startPose }))}
+            onPickPreset={(i) => set(selectStart(settings, { index: i, pose: null }))}
+            onCategory={(c) => set(switchCategory(settings, c))}
+            onSave={(pose) => set(saveStart(settings, pose))}
+            onDeleteSaved={(c, i) => set(deleteSavedStart(settings, c, i))}
+          />
+        ) : isDecode ? (
+          <StartPositionEditor
+            spec={settings.spec}
+            alliance={settings.alliance}
+            value={settings.startPose}
+            startIndex={settings.startIndex}
+            category={settings.startCat}
+            saved={settings.savedStartPoses}
+            onChange={(startPose) => startPose && set(selectStart(settings, { index: -1, pose: startPose }))}
+            onPickPreset={(i) => set(selectStart(settings, { index: i, pose: null }))}
+            onCategory={(c) => set(switchCategory(settings, c))}
+            onSave={(pose) => set(saveStart(settings, pose))}
+            onDeleteSaved={(c, i) => set(deleteSavedStart(settings, c, i))}
+          />
+        ) : (
+          <ChainStartEditor
+            spec={settings.spec}
+            alliance={settings.alliance}
+            value={settings.startPose}
+            startIndex={settings.startIndex ?? 0}
+            category={settings.startCat}
+            saved={settings.savedStartPoses}
+            onChange={(startPose) => set(selectStart(settings, { index: -1, pose: startPose }))}
+            onPickPreset={(i) => set(selectStart(settings, { index: i, pose: null }))}
+            onCategory={(c) => set(switchCategory(settings, c))}
+            onSave={(pose) => set(saveStart(settings, pose))}
+            onDeleteSaved={(c, i) => set(deleteSavedStart(settings, c, i))}
+          />
+        )}
+        <div className="ds-opts fill">
+          <button
+            className={`ds-opt mini ${settings.practiceDummies ? 'on' : ''}`}
+            onClick={() => set({ practiceDummies: !settings.practiceDummies })}
+          >
+            <span className="ot">Practice dummies {settings.practiceDummies ? 'ON' : 'OFF'}</span>
+          </button>
+        </div>
+      </section>
 
-        <section className="ds-sec">
-          <h2>Start position</h2>
-          {StartEd ? (
-            <StartEd
-              maxSaved={maxSaved}
-              spec={settings.spec}
-              alliance={settings.alliance}
-              value={settings.startPose}
-              startIndex={settings.startIndex ?? 0}
-              category={settings.startCat}
-              saved={settings.savedStartPoses}
-              onChange={(startPose) => startPose && set(selectStart(settings, { index: -1, pose: startPose }))}
-              onPickPreset={(i) => set(selectStart(settings, { index: i, pose: null }))}
-              onCategory={(c) => set(switchCategory(settings, c))}
-              onSave={(pose) => set(saveStart(settings, pose))}
-              onDeleteSaved={(c, i) => set(deleteSavedStart(settings, c, i))}
-            />
-          ) : isDecode ? (
-            <StartPositionEditor
-              spec={settings.spec}
-              alliance={settings.alliance}
-              value={settings.startPose}
-              startIndex={settings.startIndex}
-              category={settings.startCat}
-              saved={settings.savedStartPoses}
-              onChange={(startPose) => startPose && set(selectStart(settings, { index: -1, pose: startPose }))}
-              onPickPreset={(i) => set(selectStart(settings, { index: i, pose: null }))}
-              onCategory={(c) => set(switchCategory(settings, c))}
-              onSave={(pose) => set(saveStart(settings, pose))}
-              onDeleteSaved={(c, i) => set(deleteSavedStart(settings, c, i))}
-            />
-          ) : (
-            <ChainStartEditor
-              spec={settings.spec}
-              alliance={settings.alliance}
-              value={settings.startPose}
-              startIndex={settings.startIndex ?? 0}
-              category={settings.startCat}
-              saved={settings.savedStartPoses}
-              onChange={(startPose) => set(selectStart(settings, { index: -1, pose: startPose }))}
-              onPickPreset={(i) => set(selectStart(settings, { index: i, pose: null }))}
-              onCategory={(c) => set(switchCategory(settings, c))}
-              onSave={(pose) => set(saveStart(settings, pose))}
-              onDeleteSaved={(c, i) => set(deleteSavedStart(settings, c, i))}
-            />
-          )}
-          <div className="ds-opts fill">
-            <button
-              className={`ds-opt mini ${settings.practiceDummies ? 'on' : ''}`}
-              onClick={() => set({ practiceDummies: !settings.practiceDummies })}
-            >
-              <span className="ot">Practice dummies {settings.practiceDummies ? 'ON' : 'OFF'}</span>
-            </button>
-          </div>
-        </section>
-
-        {runsAutoPaths && (
+      {runsAutoPaths && (
         <section className="ds-sec">
           <h2>
             Auto path{' '}
@@ -325,8 +320,7 @@ export function MatchSetup({
             .
           </p>
         </section>
-        )}
-      </div>
-    </section>
+      )}
+    </>
   );
 }

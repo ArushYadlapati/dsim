@@ -138,7 +138,6 @@ export function AdminLive({
 
       <input
         className="adm-filter"
-        style={{ marginTop: 20 }}
         placeholder="Filter every session by name, id, room or region…"
         value={filter}
         onChange={(e) => setFilter(e.target.value)}
@@ -154,7 +153,7 @@ export function AdminLive({
             <>
               <span className="adm-name">{p.handle ?? '(no profile)'}</span>
               {p.username && <span className="ds-muted"> @{p.username}</span>}
-              {(p.sessions ?? 1) > 1 && <span className="adm-pill" style={{ marginLeft: 6 }}>×{p.sessions}</span>}
+              {(p.sessions ?? 1) > 1 && <span className="adm-pill count">×{p.sessions}</span>}
             </>
           ),
           act: p.act,
@@ -464,7 +463,7 @@ function MaintenancePanel() {
         </span>
       </div>
       {live && w && (
-        <p className="ds-hint" style={{ margin: 0 }}>
+        <p className="ds-hint">
           {w.message || 'Maintenance'} · {windowLabel({ ...w, biting }) || 'no window set'}
         </p>
       )}
@@ -487,12 +486,12 @@ function MaintenancePanel() {
           LIFT LOCKDOWN
         </button>
       </div>
-      <p className="ds-hint" style={{ margin: 0 }}>
+      <p className="ds-hint">
         Blocks new matches, ranked queueing and custom rooms for everyone except admins — enforced
         on the server, not just hidden in the UI. Matches already running are left alone to finish.
         Set “starts in” above 0 so players get told before it bites.
       </p>
-      {status && <p className="ds-hint" style={{ margin: 0 }}>{status}</p>}
+      {status && <p className="ds-hint">{status}</p>}
     </div>
   );
 }

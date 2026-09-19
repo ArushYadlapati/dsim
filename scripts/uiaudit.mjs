@@ -49,7 +49,7 @@ const BASELINE = {
   'duplicate-selector': 0,
   'var-literal-fallback': 0,
   'ghost-primary': 0,
-  'inline-spacing': 29,
+  'inline-spacing': 5,
   'fractional-font-size': 0,
   'banned-font-weight': 0,
   'off-grid-gap': 164,

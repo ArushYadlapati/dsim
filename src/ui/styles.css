@@ -2114,6 +2114,7 @@ button {
   font: inherit;
   font-size: 13px;
   color: var(--ds-ink);
+  margin-top: var(--ds-s-5);
   margin-bottom: 12px;
 }
 
@@ -2147,6 +2148,7 @@ button {
 }
 .adm-pill.match { color: var(--ds-ok-ink); border-color: var(--ds-ok-ink); }
 .adm-pill.queued { color: var(--ds-accent); border-color: var(--ds-accent); }
+.adm-pill.count { margin-left: var(--ds-s-2); }
 
 .adm-rooms { display: flex; flex-direction: column; gap: 8px; }
 .adm-room {
@@ -2182,6 +2184,10 @@ button {
   flex-direction: column;
   gap: 14px;
 }
+/* a lone note or the next section's heading right after a card — .admin-card owns
+   no gap outside itself, so these are the ones spacing it from what follows */
+.admin-card + .ds-hint { margin-top: var(--ds-s-4); }
+.admin-card + .ds-h2 { margin-top: var(--ds-s-6); }
 .admin-field { display: flex; align-items: center; gap: 8px; font-size: 13px; font-weight: 600; }
 .admin-field.col { flex-direction: column; align-items: stretch; gap: 5px; }
 .admin-field input {

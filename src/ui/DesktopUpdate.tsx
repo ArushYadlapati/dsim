@@ -42,16 +42,9 @@ export function DesktopUpdate() {
   };
 
   return (
-    <div className="ds-panel">
-      <div className="ds-panel-h">
-        <span className="ds-panel-title">Desktop app</span>
-        {version && <span className="ds-chip">v{version}</span>}
-      </div>
-      {/* `.ds-panel-body.stack` — the four properties written out here
-          inline (padding 16, flex column, gap 12, align flex-start) are the same
-          four retyped in half a dozen other panel bodies. */}
-      <div className="ds-panel-body stack">
-        <div className="ds-opts">
+    <section className="ds-sec">
+      <h2>Desktop app{version && <span className="ds-chip">v{version}</span>}</h2>
+      <div className="ds-opts">
           <button className={`ds-opt ${autoCheck ? 'on' : ''}`} onClick={toggleAuto} aria-pressed={autoCheck}>
             <span className="ot">Auto-check for updates {autoCheck ? 'ON' : 'OFF'}</span>
           </button>
@@ -77,7 +70,6 @@ export function DesktopUpdate() {
         {result && !result.updateAvailable && (
           <p className="ds-hint ok">You’re on the latest version.</p>
         )}
-      </div>
-    </div>
+    </section>
   );
 }
