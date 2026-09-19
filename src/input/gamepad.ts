@@ -1,4 +1,5 @@
 import type { PadBindings } from './bindings';
+import { PadChordResolver } from './padChords';
 
 /** deadzone + sensitivity curve: below `deadzone` reads as dead center; past
  * it, the remaining travel is rescaled to 0-1 and raised to `curve` (1 =
@@ -55,12 +56,15 @@ const EMPTY: GamepadSample = {
 };
 
 /** standard-mapping gamepad. Stick roles and button assignments come from the
- * user's PadBindings: the drive stick translates, the other stick's X turns. */
+ * user's PadBindings: the drive stick translates, the other stick's X turns.
+ * Which BUTTONS mean which ACTION — singles and combos alike — is the chord
+ * resolver's answer (`padChords.ts`); this class only reads the hardware. */
 export class GamepadInput {
   private prevStart = false;
   private prevRestart = false;
   private prevFlip = false;
   private prevPark = false;
+  private chords = new PadChordResolver();
 
   sample(bindings: PadBindings): GamepadSample {
     const pads = typeof navigator !== 'undefined' && navigator.getGamepads ? navigator.getGamepads() : [];
@@ -70,19 +74,20 @@ export class GamepadInput {
       this.prevRestart = false;
       this.prevFlip = false;
       this.prevPark = false;
+      this.chords.reset();
       return { ...EMPTY };
     }
-    const btn = (i: number): boolean =>
-      pad.buttons[i] ? pad.buttons[i].pressed || pad.buttons[i].value > bindings.triggerThreshold : false;
-    const anyBtn = (idxs: number[]): boolean => idxs.some(btn);
+    const held: number[] = [];
+    for (let i = 0; i < pad.buttons.length; i++) {
+      const b = pad.buttons[i];
+      if (b && (b.pressed || b.value > bindings.triggerThreshold)) held.push(i);
+    }
+    const now = typeof performance !== 'undefined' ? performance.now() : Date.now();
+    const on = this.chords.resolve(held, bindings, now);
     const ax = (i: number): number => shape(pad.axes[i] ?? 0, bindings.deadzone, bindings.curve);
     // left stick = axes 0/1, right stick = axes 2/3
     const drive = bindings.driveStick === 'left' ? [0, 1] : [2, 3];
     const rotAxis = bindings.driveStick === 'left' ? 2 : 0;
-    const startNow = anyBtn(bindings.buttons.start);
-    const restartNow = anyBtn(bindings.buttons.restart);
-    const flipNow = anyBtn(bindings.buttons.flipFront);
-    const parkNow = anyBtn(bindings.buttons.park);
     const sampleOut: GamepadSample = {
       connected: true,
       driveX: ax(drive[0]),
@@ -90,23 +95,23 @@ export class GamepadInput {
       rotate: -ax(rotAxis),
       leftY: -ax(1),
       rightY: -ax(3),
-      fire: anyBtn(bindings.buttons.fire),
-      intake: anyBtn(bindings.buttons.intake),
-      catalyst: anyBtn(bindings.buttons.catalyst),
-      fling: anyBtn(bindings.buttons.fling),
-      bbPlaceNectar: anyBtn(bindings.buttons.bbPlaceNectar),
-      bbPlace: anyBtn(bindings.buttons.bbPlace),
-      bbNectar: anyBtn(bindings.buttons.bbNectar),
-      driveMode: anyBtn(bindings.buttons.driveMode),
-      flipFront: flipNow && !this.prevFlip,
-      park: parkNow && !this.prevPark,
-      start: startNow && !this.prevStart,
-      restart: restartNow && !this.prevRestart,
+      fire: on.fire,
+      intake: on.intake,
+      catalyst: on.catalyst,
+      fling: on.fling,
+      bbPlaceNectar: on.bbPlaceNectar,
+      bbPlace: on.bbPlace,
+      bbNectar: on.bbNectar,
+      driveMode: on.driveMode,
+      flipFront: on.flipFront && !this.prevFlip,
+      park: on.park && !this.prevPark,
+      start: on.start && !this.prevStart,
+      restart: on.restart && !this.prevRestart,
     };
-    this.prevStart = startNow;
-    this.prevRestart = restartNow;
-    this.prevFlip = flipNow;
-    this.prevPark = parkNow;
+    this.prevStart = on.start;
+    this.prevRestart = on.restart;
+    this.prevFlip = on.flipFront;
+    this.prevPark = on.park;
     return sampleOut;
   }
 }

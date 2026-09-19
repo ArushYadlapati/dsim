@@ -1500,7 +1500,8 @@ button.ds-chip {
 .ds-subnav-btn:focus-visible,
 .ds-tab:focus-visible,
 .ds-cta:focus-visible,
-.ds-opt:focus-visible {
+.ds-opt:focus-visible,
+button.ds-key:focus-visible {
   outline: 2px solid var(--ds-accent);
   outline-offset: 2px;
 }
@@ -4833,6 +4834,10 @@ a.ds-cta {
   width: 130px;
   cursor: pointer;
 }
+.ds-bind-row input[type='range']:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
 .ds-keys {
   display: flex;
   gap: 6px;
@@ -4893,6 +4898,14 @@ button.ds-key:active {
   color: var(--ds-mut);
   cursor: default;
   background: var(--ds-panel);
+}
+/* the ADD slot at the end of a row: a keycap in the muted ink so the bound ones read first,
+   the same pressable as the rest (it captures like any slot) */
+.ds-key.add {
+  color: var(--ds-mut);
+}
+.ds-key.add.capturing {
+  color: var(--ds-accent);
 }
 /* ---- lobby roster ---------------------------------------------------- */
 .ds-players {

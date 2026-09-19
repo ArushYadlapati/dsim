@@ -30,6 +30,47 @@ and then the code. **`uiaudit`** is what actually enforces both, as ratchets.
   reserved (menu/cancel — never bindable). Conflict policy: a rebound key is STOLEN from its
   old action (may show UNBOUND). Defaults: WASD drive, Q/E or ←/→ turn, Shift/K intake,
   Space fire, C catalyst (CR), F flip-front, P park, Enter start, R restart.
+  **Every action carries as many alternatives as the player wants**: the `+` keycap at the end
+  of a row captures into a new slot, and Backspace or Delete while a slot is waiting removes
+  it (neither key is anywhere a driving hand goes, so nothing bindable is lost). The screen
+  used to let you REPLACE a slot and never ADD one, which with sixteen buttons and twelve pad
+  actions meant every rebind cascaded into an UNBOUND somewhere else.
+- **GAMEPAD COMBOS** (`PadBindings.combos`, `src/input/padChords.ts`): two or three buttons
+  held together fire one action (`RT + D-UP` for a lift), the way real drive-team code reads
+  `gamepad.dpad_up && gamepad.right_trigger > 0.5`. Capture commits on the first RELEASE, so a
+  second button can join; a chord is stored canonical (ascending, unique, `2..PAD_CHORD_MAX`)
+  and `padBinds(pad, action)` is the one view — singles then combos — that the resolver, the
+  keycaps, the start overlay and the tutorial hints all read.
+  ⚠️ **`combos` is a SEPARATE field from `buttons`, on purpose.** A settings blob is persisted
+  and account-synced VERBATIM, so an older client reading `buttons` full of arrays would reject
+  every pad binding and, on its next save, write the defaults back over them. Kept apart, an
+  older client ignores the field and the singles keep working.
+  **Stealing is EXACT**: a single steals that single from every action and touches no combo; a
+  combo steals the identical combo and touches no single. RT can be Shoot AND half of a lift
+  combo at once, which is the whole point.
+  **The resolver has three rules, and each one wrong is a lift that fires a shot** (DECODE's
+  first shot is instant): (1) the longest satisfied chord wins, masking the singles it is made
+  of; (2) a satisfied chord that is a strict prefix of a bound, unsatisfied chord WAITS
+  the COMBO WAIT from the moment it completed, because nobody presses two buttons on the
+  same frame — `PadBindings.chordGraceMs`, the player's own slider under the gamepad block
+  (default `PAD_CHORD_GRACE_MS` 80 ms, clamped to 20..200 on load, disabled rather than
+  hidden while no combo is bound so the rows under it never move); (3) a fired combo CONSUMES its buttons until they are released, so
+  letting go of D-UP with RT still down does not start shooting, and one finger lifting off a
+  three-chord does not fire the two-chord under it; (4) a tap INSIDE the wait still counts —
+  a prefix let go before the wait runs out, with no wider chord having fired, fires once on
+  the frame of the release, so a quick RT tap is still one shot and park / flip / start /
+  restart still work on a button that also lives in a combo (rule 2 alone swallowed it, which
+  a review caught). Two things the rules deliberately do NOT do, so nobody rediscovers them:
+  overlapping chords that are not nested all fire (`LB + RT` and `RB + D-UP` held together
+  also satisfies an `RT + D-UP` bound elsewhere, exactly as `&&` on the real pad would), and
+  masking reads SATISFIED rather than fired, so under a three-chord the two-chord's wait also
+  silences the single for its length. With no combo bound, none of this runs: the fast path is
+  the old any-button test with no state. All of it is pinned in `npm test`.
+  ⚠️ **The capture effects on the controls screen depend on `capture` ALONE**, with
+  `bindings`/`onChange` in refs: `onChange` is a fresh arrow every render and the App re-renders
+  on its own every few seconds (the presence poll), which restarted the pad effect mid-capture
+  and swept the buttons still held into `alreadyDown` — the release then bound nothing. A
+  single-press capture never showed it; commit-on-release made it a real window.
 - "Flip front" reverses robot-centric drive so the shooter side leads — applied at INPUT level
   in `GameController`, sim untouched; REVERSED chip in the HUD.
 - All `GameSettings` persist to `localStorage['decodesim.settings.v1']` via `src/settings.ts`

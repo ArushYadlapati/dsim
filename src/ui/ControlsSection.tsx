@@ -1,14 +1,23 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import {
   KEY_ACTIONS,
   PAD_ACTIONS,
+  PAD_CHORD_GRACE_MAX_MS,
+  PAD_CHORD_GRACE_MIN_MS,
+  PAD_CHORD_MAX,
   DEFAULT_BINDINGS,
+  assignKey,
+  assignPadBind,
   cloneBindings,
   keyLabel,
-  padButtonLabel,
+  padBindLabel,
+  padBinds,
+  removeKey,
+  removePadBind,
   type ControlBindings,
   type KeyAction,
   type PadAction,
+  type PadChord,
 } from '../input/bindings';
 import { rangeFill } from './rangeFill';
 import {
@@ -63,25 +72,13 @@ type Capture =
   | { kind: 'key'; action: KeyAction; slot: number }
   | { kind: 'pad'; action: PadAction; slot: number };
 
-/** a rebound key is removed from every other action it was assigned to */
-function assignKey(b: ControlBindings, action: KeyAction, slot: number, key: string): ControlBindings {
-  const next = cloneBindings(b);
-  for (const a of KEY_ACTIONS) next.keys[a] = next.keys[a].filter((k) => k !== key);
-  const list = next.keys[action];
-  if (slot < list.length) list[slot] = key;
-  else list.push(key);
-  return next;
-}
-
-function assignPadButton(b: ControlBindings, action: PadAction, slot: number, idx: number): ControlBindings {
-  const next = cloneBindings(b);
-  for (const a of PAD_ACTIONS) next.pad.buttons[a] = next.pad.buttons[a].filter((i) => i !== idx);
-  const list = next.pad.buttons[action];
-  if (slot < list.length) list[slot] = idx;
-  else list.push(idx);
-  return next;
-}
-
+/**
+ * A CAPTURE is one slot of one action waiting for input. `slot` indexes the action's list —
+ * `bindings.keys[a]` for a key, `padBinds(pad, a)` (singles then combos) for the pad — and a
+ * slot PAST THE END is the add slot, which is how every action can carry as many alternatives
+ * as the player has buttons. The steal policy lives with the model (`assignKey` /
+ * `assignPadBind` in `bindings.ts`), where `npm test` pins it.
+ */
 interface Props {
   bindings: ControlBindings;
   onChange: (b: ControlBindings) => void;
@@ -94,6 +91,23 @@ interface Props {
 
 export function ControlsSection({ bindings, onChange, onEditTouchControls, onTutorial }: Props) {
   const [capture, setCapture] = useState<Capture | null>(null);
+  /** the buttons held so far while a PAD slot is capturing, in the order they went down —
+   *  shown live on the keycap so a driver sees the combo build (`RT + …`) */
+  const [chordSoFar, setChordSoFar] = useState<PadChord>([]);
+  /**
+   * THE CAPTURE EFFECTS DEPEND ON `capture` ALONE. `onChange` arrives as a fresh arrow from
+   * `Configure` on every render, and the App re-renders every few seconds on its own (the
+   * presence poll, among others) — with `bindings`/`onChange` in the deps, every one of those
+   * restarted the pad effect mid-capture: its cleanup ran, `first` went back to true, the
+   * buttons the driver was still holding were swept into `alreadyDown`, and the release then
+   * committed nothing. A single-press capture was a one-frame window, so it never showed;
+   * commit-on-release made it a real one. Refs give the effects the live values without
+   * making them dependencies.
+   */
+  const bindingsRef = useRef(bindings);
+  bindingsRef.current = bindings;
+  const onChangeRef = useRef(onChange);
+  onChangeRef.current = onChange;
   /**
    * CLIENT PREDICTION (`docs/biobuzz/plan-3d.md` §5). Per DEVICE, so it is NOT a `GameSettings`
    * field and does not arrive through `props` — it has its own store and its own subscription,
@@ -108,7 +122,9 @@ export function ControlsSection({ bindings, onChange, onEditTouchControls, onTut
   const [prediction, setPrediction] = useState<PredictionPref>(() => getPredictionPref());
   useEffect(() => subscribePredictionPref(setPrediction), []);
 
-  // keyboard capture: next keydown becomes the binding; Escape cancels
+  // keyboard capture: next keydown becomes the binding; Escape cancels. Backspace and Delete
+  // REMOVE the slot instead, for either device: it is the only way to shrink a list that `+`
+  // can grow, and neither key is anywhere a driving hand goes, so nothing bindable is lost.
   useEffect(() => {
     if (!capture) return;
     const onKey = (e: KeyboardEvent) => {
@@ -118,16 +134,29 @@ export function ControlsSection({ bindings, onChange, onEditTouchControls, onTut
         setCapture(null);
         return;
       }
+      if (e.key === 'Backspace' || e.key === 'Delete') {
+        onChangeRef.current(
+          capture.kind === 'key'
+            ? removeKey(bindingsRef.current, capture.action, capture.slot)
+            : removePadBind(bindingsRef.current, capture.action, capture.slot),
+        );
+        setCapture(null);
+        return;
+      }
       if (capture.kind === 'key') {
-        onChange(assignKey(bindings, capture.action, capture.slot, e.key.toLowerCase()));
+        onChangeRef.current(assignKey(bindingsRef.current, capture.action, capture.slot, e.key.toLowerCase()));
         setCapture(null);
       }
     };
     window.addEventListener('keydown', onKey, true);
     return () => window.removeEventListener('keydown', onKey, true);
-  }, [capture, bindings, onChange]);
+  }, [capture]);
 
-  // gamepad capture: poll for a button that goes down AFTER capture starts
+  // gamepad capture: everything that goes down AFTER capture starts, and is still down, is the
+  // bind. It COMMITS when any of those buttons is released (one button → a single, two or
+  // three → a combo) or the instant it reaches `PAD_CHORD_MAX`. Committing on release rather
+  // than on press is what lets a second button join; a single press costs the driver nothing
+  // but the release they were going to make anyway.
   useEffect(() => {
     if (!capture || capture.kind !== 'pad') return;
     const { action, slot } = capture;
@@ -135,27 +164,49 @@ export function ControlsSection({ bindings, onChange, onEditTouchControls, onTut
     let first = true;
     let done = false;
     let raf = 0;
+    let chord: number[] = [];
+    const commit = () => {
+      done = true;
+      onChangeRef.current(assignPadBind(bindingsRef.current, action, slot, chord));
+      setCapture(null);
+    };
     const poll = () => {
       const pads = navigator.getGamepads ? navigator.getGamepads() : [];
       const pad = Array.from(pads).find((p) => p && p.connected);
       if (pad) {
+        // the same press test the game uses, so a trigger that counts as held in play (past the
+        // player's own threshold) is the same trigger the capture sees
+        const threshold = bindingsRef.current.pad.triggerThreshold;
+        const down = new Set<number>();
         for (let i = 0; i < pad.buttons.length; i++) {
-          const pressed = pad.buttons[i].pressed || pad.buttons[i].value > 0.5;
-          if (pressed && first) alreadyDown.add(i);
-          else if (pressed && !alreadyDown.has(i) && !done) {
-            done = true;
-            onChange(assignPadButton(bindings, action, slot, i));
-            setCapture(null);
-            return;
-          } else if (!pressed) alreadyDown.delete(i);
+          if (pad.buttons[i].pressed || pad.buttons[i].value > threshold) down.add(i);
         }
-        first = false;
+        if (first) {
+          for (const i of down) alreadyDown.add(i);
+          first = false;
+        } else {
+          for (const i of alreadyDown) if (!down.has(i)) alreadyDown.delete(i);
+          if (chord.length > 0 && chord.some((i) => !down.has(i)) && !done) {
+            commit();
+            return;
+          }
+          const before = chord.length;
+          for (const i of down) if (!alreadyDown.has(i) && !chord.includes(i)) chord.push(i);
+          if (chord.length !== before) setChordSoFar([...chord]);
+          if (chord.length >= PAD_CHORD_MAX && !done) {
+            commit();
+            return;
+          }
+        }
       }
       raf = requestAnimationFrame(poll);
     };
     raf = requestAnimationFrame(poll);
-    return () => cancelAnimationFrame(raf);
-  }, [capture, bindings, onChange]);
+    return () => {
+      cancelAnimationFrame(raf);
+      setChordSoFar([]);
+    };
+  }, [capture]);
 
   const keycap = (
     label: string,
@@ -163,15 +214,32 @@ export function ControlsSection({ bindings, onChange, onEditTouchControls, onTut
     unbound: boolean,
     onClick: () => void,
     key?: number,
+    activeLabel = 'PRESS…',
   ) => (
     <button
       key={key}
       className={`ds-key ${active ? 'capturing' : ''} ${unbound ? 'unbound' : ''}`}
       onClick={onClick}
     >
-      {active ? 'PRESS…' : label}
+      {active ? activeLabel : label}
     </button>
   );
+  /** the ADD slot: one past the end of a list that has something in it (an empty list shows
+   *  UNBOUND instead, which already captures into slot 0) */
+  const addcap = (active: boolean, onClick: () => void, what: string, activeLabel = 'PRESS…') => (
+    <button
+      key="add"
+      className={`ds-key add ${active ? 'capturing' : ''}`}
+      aria-label={`Add another ${what}`}
+      title={`Add another ${what}`}
+      onClick={onClick}
+    >
+      {active ? activeLabel : '+'}
+    </button>
+  );
+  const anyCombo = PAD_ACTIONS.some((a) => bindings.pad.combos[a].length > 0);
+  // what a capturing PAD slot reads while the combo builds
+  const padLive = chordSoFar.length === 0 ? 'PRESS…' : `${padBindLabel([...chordSoFar].sort((a, b) => a - b))} + …`;
 
   return (
     <section className="ds-sec">
@@ -234,13 +302,18 @@ export function ControlsSection({ bindings, onChange, onEditTouchControls, onTut
                       i,
                     ),
                   )}
-                  {bindings.keys[a].length === 0 &&
-                    keycap(
-                      'UNBOUND',
-                      capture?.kind === 'key' && capture.action === a,
-                      true,
-                      () => setCapture({ kind: 'key', action: a, slot: 0 }),
-                    )}
+                  {bindings.keys[a].length === 0
+                    ? keycap(
+                        'UNBOUND',
+                        capture?.kind === 'key' && capture.action === a,
+                        true,
+                        () => setCapture({ kind: 'key', action: a, slot: 0 }),
+                      )
+                    : addcap(
+                        capture?.kind === 'key' && capture.action === a && capture.slot >= bindings.keys[a].length,
+                        () => setCapture({ kind: 'key', action: a, slot: bindings.keys[a].length }),
+                        'key',
+                      )}
                 </span>
               </div>
             ))}
@@ -251,6 +324,7 @@ export function ControlsSection({ bindings, onChange, onEditTouchControls, onTut
               </span>
             </div>
           </div>
+          <p className="ds-hint">Backspace while a key is waiting removes it.</p>
         </div>
 
         <div className="ds-bind-block">
@@ -335,30 +409,69 @@ export function ControlsSection({ bindings, onChange, onEditTouchControls, onTut
                 }
               />
             </div>
-            {PAD_ACTIONS.map((a) => (
-              <div className="ds-bind-row" key={a}>
-                <span className="ds-bind-label">{PAD_LABELS[a]}</span>
-                <span className="ds-keys">
-                  {bindings.pad.buttons[a].map((idx, i) =>
-                    keycap(
-                      padButtonLabel(idx),
-                      capture?.kind === 'pad' && capture.action === a && capture.slot === i,
-                      false,
-                      () => setCapture({ kind: 'pad', action: a, slot: i }),
-                      i,
-                    ),
-                  )}
-                  {bindings.pad.buttons[a].length === 0 &&
-                    keycap(
-                      'UNBOUND',
-                      capture?.kind === 'pad' && capture.action === a,
-                      true,
-                      () => setCapture({ kind: 'pad', action: a, slot: 0 }),
+            {/* THE COMBO WAIT. Disabled rather than hidden while no combo is bound: it does nothing
+                then, and a row that appears when the first combo lands would move every row under
+                it (§1.4 of the UI standard), whereas a greyed slider says the setting exists. */}
+            <div className="ds-bind-row">
+              <span className="ds-bind-label">Combo wait {Math.round(bindings.pad.chordGraceMs)} ms</span>
+              <input
+                type="range"
+                min={PAD_CHORD_GRACE_MIN_MS}
+                max={PAD_CHORD_GRACE_MAX_MS}
+                step={10}
+                value={bindings.pad.chordGraceMs}
+                disabled={!anyCombo}
+                aria-label="Combo wait"
+                style={rangeFill(bindings.pad.chordGraceMs, PAD_CHORD_GRACE_MIN_MS, PAD_CHORD_GRACE_MAX_MS)}
+                onChange={(e) =>
+                  onChange({
+                    ...cloneBindings(bindings),
+                    pad: { ...bindings.pad, chordGraceMs: Number(e.target.value) },
+                  })
+                }
+              />
+            </div>
+            {PAD_ACTIONS.map((a) => {
+              const binds = padBinds(bindings.pad, a);
+              return (
+                <div className="ds-bind-row" key={a}>
+                  <span className="ds-bind-label">{PAD_LABELS[a]}</span>
+                  <span className="ds-keys">
+                    {binds.map((c, i) =>
+                      keycap(
+                        padBindLabel(c),
+                        capture?.kind === 'pad' && capture.action === a && capture.slot === i,
+                        false,
+                        () => setCapture({ kind: 'pad', action: a, slot: i }),
+                        i,
+                        padLive,
+                      ),
                     )}
-                </span>
-              </div>
-            ))}
+                    {binds.length === 0
+                      ? keycap(
+                          'UNBOUND',
+                          capture?.kind === 'pad' && capture.action === a,
+                          true,
+                          () => setCapture({ kind: 'pad', action: a, slot: 0 }),
+                          undefined,
+                          padLive,
+                        )
+                      : addcap(
+                          capture?.kind === 'pad' && capture.action === a && capture.slot >= binds.length,
+                          () => setCapture({ kind: 'pad', action: a, slot: binds.length }),
+                          'button or combo',
+                          padLive,
+                        )}
+                  </span>
+                </div>
+              );
+            })}
           </div>
+          <p className="ds-hint">
+            Hold two or three buttons together for a combo, the way your own drive code reads them: the
+            combo wins over the buttons it is made of, and a button that is also part of a combo fires
+            on its own only after the combo wait. Backspace while a slot is waiting removes it.
+          </p>
         </div>
       </div>
       <div className="ds-bind-foot">
