@@ -1,5 +1,5 @@
 import type { Alliance, World } from '../../../types';
-import { BB3_REST_SPEED, BB3_REST_TICKS, BB_POLLEN_R } from '../config';
+import { BB3_CELL_SEAT_DEPTH, BB3_REST_SPEED, BB3_REST_TICKS, BB_POLLEN_R } from '../config';
 import { hiveTiltAngle, insideCell } from './hive3d';
 import { flowerTubeOf } from './flowerTube';
 import type { Engine3d } from './engineImpl';
@@ -40,6 +40,14 @@ import type { Engine3d } from './engineImpl';
  * cell of an alliance's tray (the one currently up, or, rarely, one that flew into the currently-
  * down cell's still-open outer face) is tagged for that alliance. See `bodies.ts`'s file header
  * for the geometry and its one flagged residual.
+ *
+ * ⚠️ **AND IT IS TESTED ON GEOMETRY ALONE -- THERE IS NO REST REQUIREMENT** (2026-09-19). A new
+ * element has to be `BB3_CELL_SEAT_DEPTH` below the cell's open rim to be counted the first time,
+ * which is what tells "in the cell" apart from "grazing across the top of it"; after that it is
+ * counted anywhere inside the interior. See the loop below for the measurement that replaced the
+ * rest gate, and `BB3_CELL_SEAT_DEPTH` for the window the constant sits in. The REST SNAP further
+ * down is a different thing that happens to share `BB3_REST_TICKS`: it holds a settled element's
+ * velocity at zero, and it decides nothing about membership.
  */
 
 const ALLIANCES: readonly Alliance[] = ['red', 'blue'];
@@ -113,26 +121,63 @@ export function deriveTick(world: World, engine: Engine3d): void {
 
     const r = b.r ?? BB_POLLEN_R;
     const centreZ = b.z + r;
+    /**
+     * THE LATCH, AND IT IS PLAIN WORLD JSON. An element already tagged into THIS alliance's tray
+     * last tick keeps its place for as long as its centre is anywhere inside either of that
+     * tray's cells -- the entry DEPTH below has to be earned once, not held.
+     *
+     * ⚠️ Read off `b.state`, which every snapshot, delta and replay already carries (`slimWorld`
+     * copies the whole state object, `el` included) and which `deriveTick` itself wrote last
+     * tick. NOT an engine-local map: a peer that rebuilds its Rapier world mid-match -- a
+     * reconnection, a reconcile, a prediction rewind -- rebuilds bodies from this same JSON and
+     * therefore agrees about the latch, where `engine.restTicks` would have started from zero and
+     * silently un-counted a settled cell. That is the one determinism question this rule raises
+     * and it is why the answer is a field the wire already round-trips.
+     */
+    const latched = b.state.kind === 'element' ? b.state.el : '';
     let tagged = false;
-    if (ticks >= BB3_REST_TICKS) {
-      for (const a of ALLIANCES) {
-        for (const sideSign of [1, -1] as const) {
-          if (insideCell(b.pos.x, b.pos.y, centreZ, a, sideSign, theta[a])) {
-            b.state = { kind: 'element', el: `hive:${a}`, slot: 0 }; // `slot` is set below, by id order
-            hiveIds[a].push(b.id);
-            tagged = true;
-            break;
-          }
+    for (const a of ALLIANCES) {
+      /**
+       * ⚠️ **MEMBERSHIP IS GEOMETRY, NOT A REST TIMER** (owner report 2026-09-19: "a lot of delay
+       * registering when the balls land in the hive, which means when it needs to tip, there is a
+       * significant amount of lengthened tipping time due to the registration time").
+       *
+       * This test used to be guarded by `ticks >= BB3_REST_TICKS` -- an element counted only once
+       * it had read under `BB3_REST_SPEED` for six consecutive ticks -- and the comment defending
+       * it said "'in the cell' has to mean 'landed in it', and a shot crossing the mouth is not
+       * yet in it". The concern was real; the instrument was not. MEASURED over 1,500 randomized
+       * arrivals, entry of the centre into the interior to `hives[a].contents`: mean **95 ticks
+       * (1.59 s)**, p90 205, max 264, one in a hundred never at all. Almost all of that is the
+       * element's own SETTLING (the six-tick gate itself is six ticks); a real see-saw does not
+       * wait for it, because the weight is on the tray as soon as the element is.
+       *
+       * What separates the two populations without waiting is DEPTH. The same sweep: of 209
+       * arrivals that got a centre inside the interior, 92 left again, and every single one of
+       * those stayed within 2.75 in of the cell's open rim -- they are shots grazing the top, not
+       * shots crossing the mouth, because a box with one opening keeps what properly enters it.
+       * `BB3_CELL_SEAT_DEPTH` is the window between that 2.75 and the 4.33 at which the shallowest
+       * really-landed element ever rests; at it the sweep counts 0 grazes and misses 0 landings,
+       * for a mean cost of 0.2 ticks. Its header carries both bounds and how to re-measure them.
+       *
+       * The FLOWER branch below has needed no rest requirement since Day 2 and its reasoning is
+       * the same one, arrived at first: waiting "would drop a placed element out of the stack for
+       * the six ticks of its own fall and flicker the HUD and G410's trigger with it".
+       */
+      const depth = latched === `hive:${a}` ? 0 : BB3_CELL_SEAT_DEPTH;
+      for (const sideSign of [1, -1] as const) {
+        if (insideCell(b.pos.x, b.pos.y, centreZ, a, sideSign, theta[a], depth)) {
+          b.state = { kind: 'element', el: `hive:${a}`, slot: 0 }; // `slot` is set below, by id order
+          hiveIds[a].push(b.id);
+          tagged = true;
+          break;
         }
-        if (tagged) break;
       }
+      if (tagged) break;
     }
 
-    // A FLOWER TUBE, tested SECOND and with no rest requirement -- unlike a cell. A cell waits
-    // for `BB3_REST_TICKS` because "in the cell" has to mean "landed in it", and a shot crossing
-    // the mouth is not yet in it. A tube has one way in and no way out but the retrieval opening,
-    // so an element inside it is in it: waiting would drop a placed element out of the stack for
-    // the six ticks of its own fall and flicker the HUD and G410's trigger with it.
+    // A FLOWER TUBE, tested SECOND. A tube has one way in and no way out but the retrieval
+    // opening, so an element inside it is in it, with no entry margin at all -- unlike a cell,
+    // whose open top a shot can graze across (see `BB3_CELL_SEAT_DEPTH` above).
     if (!tagged) {
       const i = flowerTubeOf(b.pos.x, b.pos.y, centreZ);
       if (i !== null && i < flowerIds.length) {

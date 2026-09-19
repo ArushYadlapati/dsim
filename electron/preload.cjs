@@ -24,4 +24,18 @@ contextBridge.exposeInMainWorld('dsim', {
     stop: () => ipcRenderer.invoke('dsim:lanStop'),
     status: () => ipcRenderer.invoke('dsim:lanStatus'),
   },
+  /**
+   * THE UNLIMITED FRAME RATE (desktop only — a browser tab cannot ask its own compositor to
+   * stop honouring the display's refresh, which is why the Max frame rate row says so).
+   *
+   * `get` returns BOTH the stored preference and what the running process launched with: the
+   * switches are appended before `app.whenReady()`, so the two disagree from the moment the
+   * setting is changed until the app is restarted, and the UI has to be able to say that.
+   * `relaunch` is wired to a button the player presses and to nothing else.
+   */
+  perf: {
+    get: () => ipcRenderer.invoke('dsim:getPerf'),
+    setUnlimitedFps: (v) => ipcRenderer.invoke('dsim:setPerf', !!v),
+    relaunch: () => ipcRenderer.invoke('dsim:relaunch'),
+  },
 });

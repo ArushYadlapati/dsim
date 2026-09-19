@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { Alliance, Artifact, ArtifactColor, RobotCommand, RobotSpec, World } from '../../src/types';
-import { PIN_WALL_SLOP, SIM_DT, START_TOUCH_TOL } from '../../src/config';
+import { BALL_REST_SPEED, PIN_WALL_SLOP, SIM_DT, START_TOUCH_TOL } from '../../src/config';
 import { MATCH_SETTLE_MAX_S, newSettleClock, settleStep } from '../../src/sim/settle';
 import { bbPinSolid } from '../../src/games/biobuzz/colliders';
 import { createBiobuzzWorld } from '../../src/games/biobuzz/spawn';
@@ -29,6 +29,7 @@ import {
   hiveWillTip,
 } from '../../src/games/biobuzz/hive';
 import { flowerScore } from '../../src/games/biobuzz/flower';
+import { BIOBUZZ_BOT } from '../../src/games/biobuzz/ai';
 import { bbSettled } from '../../src/games/biobuzz/settle';
 import { mkWorld as bbSettleWorld } from './harness';
 import {
@@ -2474,6 +2475,79 @@ function settleChecks(check: Check): void {
       );
       bbf.hives.red = red;
     }
+  }
+
+  /* ── E2 (2026-09-19): THE MOTION TEST RUNS FOR EVERY TAG THAT HAS A POSITION ──
+     The 3D half of this is the HIVE3D lane's (a ball bouncing in a CELL is tagged `element`
+     since membership became geometry, and the old `flight`/`ground` gate skipped it). What is
+     asserted HERE is that the 2D pipeline did not move: `park()` zeroes an element's `vel` and
+     `vz` and nothing writes them again, so an `element` tag in 2D is always a dead stop and
+     the widened test cannot change a 2D answer. Driven through the real pipeline with real
+     bots rather than argued from `park()`'s source, because the claim is about every path that
+     can produce the tag, not about one function. */
+  {
+    const f = bbSettleWorld('match', 5);
+    const e = f.balls.find((b) => b.state.kind === 'element');
+    check('E2 SETTLE: the 2D fixture had an `element`-tagged ball to test with', !!e);
+    if (e) {
+      e.vel = { x: 30, y: 0 };
+      check(
+        'E2 SETTLE: an element MOVING inside a CELL or a FLOWER is not settled (it was skipped)',
+        !bbSettled(f),
+        `${e.state.kind === 'element' ? e.state.el : e.state.kind} at 30 in/s`,
+      );
+      e.vel = { x: 0, y: 0 };
+      e.vz = -30;
+      check('E2 SETTLE: the same element FALLING is not settled either', !bbSettled(f));
+      e.vz = 0;
+      check('E2 SETTLE: and at rest it is settled again', bbSettled(f));
+    }
+  }
+  {
+    const w = createBiobuzzWorld(
+      'match',
+      31,
+      [setup(0, 'blue', {}, 0), setup(1, 'red', {}, 1)],
+      undefined,
+      '2d',
+    );
+    w.match.preCountdown = undefined;
+    w.match.phase = 'auto';
+    w.match.phaseTimeLeft = 30;
+    const seats = [0, 1].map((i) => BIOBUZZ_BOT.create(w, i, 'hard', 3100 + i));
+    let worst = 0;
+    let disagreements = 0;
+    let sawElement = 0;
+    const ticks = Math.round(45 / SIM_DT);
+    for (let t = 0; t < ticks; t++) {
+      const cmds = new Map<number, RobotCommand>();
+      for (let i = 0; i < 2; i++) cmds.set(i, seats[i].step(w));
+      biobuzzStep(w, SIM_DT, cmds);
+      // the OLD ball loop (motion for `flight`/`ground` only) against the one that shipped.
+      let oldQuiet = true;
+      let newQuiet = true;
+      for (const b of w.balls) {
+        const moving =
+          Math.hypot(b.vel.x, b.vel.y) >= BALL_REST_SPEED || Math.abs(b.vz) >= BALL_REST_SPEED;
+        if (moving && (b.state.kind === 'flight' || b.state.kind === 'ground')) oldQuiet = false;
+        if (moving && b.state.kind !== 'held' && b.state.kind !== 'stock') newQuiet = false;
+        if (b.state.kind === 'element') {
+          sawElement++;
+          worst = Math.max(worst, Math.hypot(b.vel.x, b.vel.y), Math.abs(b.vz));
+        }
+      }
+      if (oldQuiet !== newQuiet) disagreements++;
+    }
+    check(
+      'E2 SETTLE (2D): the widened motion test answers what the old one did, on every tick of a driven match',
+      disagreements === 0 && sawElement > 0,
+      `${disagreements} disagreements over ${ticks} ticks, ${sawElement} \`element\` readings`,
+    );
+    check(
+      'E2 SETTLE (2D): an `element`-tagged ball never carries velocity in the 2D pipeline',
+      worst === 0,
+      `worst |v| ${worst.toFixed(6)} (threshold ${BALL_REST_SPEED})`,
+    );
   }
 }
 

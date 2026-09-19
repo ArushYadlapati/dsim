@@ -626,13 +626,39 @@ function buildWheels(spec: RobotSpec): BbWheels {
   return out;
 }
 
+/** the cosmetic TOP CAP over each side plate — thickness, and how far inboard of the frame line
+ *  it reaches. Deliberately narrow: it covers the outer plate and a 0.5-in lip, so the wheels are
+ *  still visible from straight above through the pocket it does not cover. See `buildFrame`. */
+const BB_TOP_CAP_T = 0.2;
+const BB_TOP_CAP_W = BB_PLATE_T + 0.5;
+
 /**
  * THE FRAME — side plates, cross members, belly pan, deck, tower. Two merged meshes: the
- * cosmetic one (the plates and the deck, which carry `chassisFill`) and the structural one (the
- * darker extrusion). Open TOP by construction: the deck is inset from the frame on every side,
- * so the mechanisms above it are seen against daylight rather than against a lid.
+ * cosmetic one (`chassisFill`) and the structural one (the darker extrusion). Open TOP by
+ * construction: the deck is inset from the frame on every side, so the mechanisms above it are
+ * seen against daylight rather than against a lid.
+ *
+ * ── ⚠️ WHAT CARRIES THE COSMETIC COLOUR, AND WHY IT CHANGED ────────────────────────────────
+ * It used to be the SIDE PLATES ALONE, which are four VERTICAL surfaces. From straight above —
+ * the angle a top-down driver camera and the builder preview's orbit spend most of their time at
+ * — a supporter's chosen colour presented an edge 0.22 in wide and nothing else, so it read as
+ * not applied at all (owner, 2026-09-19: "chassis color change is not noticeable enough. The top
+ * needs to change"). The header here CLAIMED the deck carried it; the code put the deck in the
+ * structural part, and the comment on that line said so explicitly.
+ *
+ * That line's reason was real: a full-width coloured deck plus coloured plates "turned the top of
+ * the robot back into one flat slab". What answers BOTH is that the deck is INSET — it is
+ * `length − 2.47` by `innerHW × 2` (12.32 in on a 17-in chassis), framed on every side by the
+ * dark cross members, the dark rails and the wheel pockets. A coloured panel inside a dark frame
+ * is not a slab. The TOP CAPS add the rest: a narrow cosmetic strip lying on each side plate's
+ * top edge, which is the one perimeter surface no mechanism stands on, so the colour survives
+ * whatever the player bolts to the deck.
+ *
+ * The ALLIANCE is untouched by all of it and must stay that way — it is the outline round the
+ * bumper band and the two ROBOT SIGNS, which is a RULES matter (G414, R401–R403), not a style
+ * one. `chassisFill`'s 7-key allowlist is what keeps a cosmetic from ever reading as an alliance.
  */
-function buildFrame(spec: RobotSpec): THREE.Object3D[] {
+export function buildFrame(spec: RobotSpec): THREE.Object3D[] {
   const hl = spec.length / 2;
   const hw = spec.width / 2;
   const innerHW = innerHalfWidth(spec);
@@ -657,7 +683,18 @@ function buildFrame(spec: RobotSpec): THREE.Object3D[] {
         p.translate(0, sy * y, BB_PLATE_H / 2);
         parts.push(p);
       }
+      // THE TOP CAP — lying ON that side's plate, the one perimeter surface a mechanism never
+      // stands on, so a top-down view always has the colour somewhere even on a robot whose deck
+      // is covered end to end.
+      parts.push(
+        boxAt(spec.length, BB_TOP_CAP_W, BB_TOP_CAP_T, 0, sy * (hw - BB_TOP_CAP_W / 2), BB_PLATE_H + BB_TOP_CAP_T / 2),
+      );
     }
+    // THE DECK — the polycarb floor mechanisms bolt to, and the biggest surface a top-down camera
+    // sees. COSMETIC (see the header): it is inset from the frame line on every side, so it reads
+    // as a coloured panel inside a dark frame rather than as the one flat slab the full-width
+    // version was.
+    parts.push(boxAt(spec.length - BB_RAIL_T * 2.6, innerHW * 2, 0.26, 0, 0, BB_DECK_Z - 0.13));
     return parts;
   });
   const frame = framePart(`frame:${key}`, () => {
@@ -668,11 +705,6 @@ function buildFrame(spec: RobotSpec): THREE.Object3D[] {
     }
     // BELLY PAN — thin, low, spanning the inner channel
     parts.push(boxAt(spec.length - BB_RAIL_T * 2.6, innerHW * 2, 0.22, 0, 0, 0.85));
-    // THE DECK — the polycarb floor mechanisms bolt to. Inset on every side so the side plates
-    // and the channel read past it, and in the STRUCTURAL colour rather than the cosmetic one:
-    // the player's chassis colour is the PLATES (that is the surface a bumper-height view sees),
-    // and a deck in the same colour turned the top of the robot back into one flat slab.
-    parts.push(boxAt(spec.length - BB_RAIL_T * 2.6, innerHW * 2, 0.26, 0, 0, BB_DECK_Z - 0.13));
     return parts;
   });
 
@@ -683,38 +715,126 @@ function buildFrame(spec: RobotSpec): THREE.Object3D[] {
   return [cast(skinMesh), cast(frameMesh)];
 }
 
-/** a small `CanvasTexture` sign panel showing the robot's slot number on the alliance colour —
- * generated ONCE per robot id (not per frame), cached by id since a robot's `id` never changes
- * across a `specKey` rebuild. */
+/**
+ * ── THE ROBOT SIGN (§12.4, R401 / R402 / R403) ──────────────────────────────────────────────
+ *
+ * ⚠️ THIS IS A RULED ASSEMBLY, NOT A DECORATION, AND EVERY NUMBER BELOW IS THE MANUAL'S.
+ * Competition Manual V1 §12.4 p127: "A ROBOT SIGN is a required assembly which attaches to the
+ * ROBOT. A ROBOT SIGN simultaneously identifies a ROBOT'S team number as well as its ALLIANCE
+ * affiliation for FIELD STAFF." Three rules bind what is drawn:
+ *
+ *  - **R401 (p127) — MINIMUM OF TWO PER ROBOT**, "in at least 2 separate locations … on opposite
+ *    or adjacent surfaces of the ROBOT, 90 degrees apart", minimally 6.5 in wide and 2.5 in tall,
+ *    supported by the robot's structure. Intent: readable by FIELD STAFF from 12 ft away. This
+ *    file drew ONE, on the left side plate only — owner, 2026-09-19: "the number plates should be
+ *    on both sides of the robot". Both side plates is the OPPOSITE-surfaces case.
+ *  - **R402 (p128) — the ALLIANCE rectangle** is "a solid red or blue opaque background at least
+ *    6.5 in. by 2.5 in.", and "visible markings on ROBOT SIGNS when installed on the ROBOT, other
+ *    than the following, are prohibited" — the R403 team number, fasteners, narrow colour slivers
+ *    at corners/folds/cutouts, and narrow template marks. ⚠️ **THAT IS WHY THERE IS NO LONGER A
+ *    WHITE BORDER.** The old panel stroked a 6-px white frame round itself, which is none of the
+ *    four and is therefore a prohibited marking. The colour is the MATCH SCHEDULE's alliance,
+ *    which is the `alliance` argument, never anything off the spec.
+ *  - **R403 (pp128–129) — the team number**: "solid opaque white Arabic numbers … approximately
+ *    2.25 in. (5.70 cm) tall", with "a minimum of approximately 0.25 in. (0.60 cm) of background
+ *    surrounding the numbers", and they "may not be vertically stacked" (Fig 12-10, which also
+ *    rules mirrored text NOT OK). One line, upright, un-mirrored, white on the alliance fill.
+ *
+ * The plate is therefore **6.5 × 2.75 in**: 6.5 is R401.B/R402 exactly, and 2.75 is the only
+ * height at which R403.A's 2.25-in digits and R403.B's 0.25-in margin both hold (2.25 + 2×0.25),
+ * which is ≥ R401.C's 2.5 minimum. It does NOT scale with the chassis — the rule is an absolute
+ * size in inches, and the old `min(3.6, length × 0.3)` square was under the legal minimum on
+ * every build in the game. The smallest legal BIOBUZZ chassis is 11 × 10 in (`lengthLimits` /
+ * `widthLimits`), so a 6.5-in sign fits on any side plate this builder can make.
+ */
+export const BB_SIGN_W = 6.5;
+/** R403.A — cap height of the numerals. */
+export const BB_SIGN_DIGIT_H = 2.25;
+/** R403.B — background clear of the numerals, on every side. */
+export const BB_SIGN_MARGIN = 0.25;
+export const BB_SIGN_H = BB_SIGN_DIGIT_H + BB_SIGN_MARGIN * 2;
+/** R401.B/R402 — the width floor. R401.C/R402 — the height floor. Exported so the RENDER lane
+ *  checks the plate against the RULE rather than against a literal copied out of this file. */
+export const BB_SIGN_MIN_W = 6.5;
+export const BB_SIGN_MIN_H = 2.5;
+
+/**
+ * What R403 puts on the plate for a given spec. `teamNumber` 0 is "no team declared" — the 2D
+ * team card renders `-` there (`GameView.tsx`, `HomeMenu.tsx`) and this matches that intent
+ * rather than printing a literal `0`, which would read as a real team number.
+ *
+ * DOM-free and exported so the RENDER lane can check the string without a canvas.
+ */
+export function bbRobotSignText(spec: Pick<RobotSpec, 'teamNumber'>): string {
+  const n = Math.round(spec.teamNumber);
+  return Number.isFinite(n) && n > 0 ? String(n) : '-';
+}
+
+/** px per inch the sign canvas is rasterized at — 2.25-in digits land at 108 px. */
+const SIGN_PX_PER_IN = 48;
+
+/**
+ * The plate's artwork, cached by (text, alliance): TWO signs on one robot are the SAME texture,
+ * and a robot's team number and alliance do not change inside a `bbSpecKey` rebuild.
+ *
+ * ⚠️ IT IS NOT PRE-MIRRORED ANY MORE. The old comment here claimed no proper rotation could get
+ * the outward normal, a vertical "up" AND un-mirrored text at once, so the canvas was drawn
+ * flipped to cancel a flip. That is false — it is true of `Euler` triples, not of rotations:
+ * `makeBasis(up × n, up, n)` is right-handed by construction for either side plate (see
+ * `bbRobotSignOrientation`). Fig 12-10 rules mirrored text NOT OK, so one un-mirrored canvas
+ * serving both signs is both the legal answer and the cheap one.
+ */
 const SIGN_TEXTURE_CACHE = new Map<string, THREE.CanvasTexture>();
-function getSignTexture(id: number, alliance: 'red' | 'blue'): THREE.CanvasTexture {
-  const key = `${id}|${alliance}`;
+function getSignTexture(text: string, alliance: 'red' | 'blue'): THREE.CanvasTexture {
+  const key = `${text}|${alliance}`;
   const cached = SIGN_TEXTURE_CACHE.get(key);
   if (cached) return cached;
-  const size = 128;
   const canvas = document.createElement('canvas');
-  canvas.width = size;
-  canvas.height = size;
+  canvas.width = Math.round(BB_SIGN_W * SIGN_PX_PER_IN);
+  canvas.height = Math.round(BB_SIGN_H * SIGN_PX_PER_IN);
   const ctx = canvas.getContext('2d')!;
-  // pre-mirrored: the mesh orientation that gets this panel's outward normal and vertical "up"
-  // right (`buildRobotGroup`) only achieves them with "right" flipped, so the draw is flipped
-  // here to cancel it — the panel reads correctly left-to-right once mounted.
-  ctx.translate(size, 0);
-  ctx.scale(-1, 1);
+  // R402 — the whole plate is the solid, opaque alliance rectangle, and nothing else is on it.
   ctx.fillStyle = alliance === 'blue' ? BLUE : RED;
-  ctx.fillRect(0, 0, size, size);
-  ctx.strokeStyle = '#ffffff';
-  ctx.lineWidth = 6;
-  ctx.strokeRect(3, 3, size - 6, size - 6);
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  // R403.A — solid opaque WHITE Arabic numerals at a 2.25-in cap height, on ONE line (R403.C
+  // forbids stacking them). `system-ui` reports a cap height near 0.72 em, so the em size that
+  // puts the caps at 2.25 in is 2.25 / 0.72.
   ctx.fillStyle = '#ffffff';
-  ctx.font = '700 72px system-ui, sans-serif';
+  ctx.font = `700 ${Math.round((BB_SIGN_DIGIT_H / 0.72) * SIGN_PX_PER_IN)}px system-ui, sans-serif`;
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
-  ctx.fillText(String(id), size / 2, size / 2 + 4);
+  // R403.B — the numerals stay inside the 0.25-in background margin. A five-digit team number is
+  // wider than 6.0 in at natural proportions, so it is CONDENSED rather than allowed to run into
+  // the margin: R403 fixes the height and the margin and specifies no font or width.
+  const inner = (BB_SIGN_W - BB_SIGN_MARGIN * 2) * SIGN_PX_PER_IN;
+  const natural = ctx.measureText(text).width;
+  const squeeze = natural > inner ? inner / natural : 1;
+  ctx.translate(canvas.width / 2, canvas.height / 2);
+  ctx.scale(squeeze, 1);
+  ctx.fillText(text, 0, 0);
   const tex = new THREE.CanvasTexture(canvas);
   tex.colorSpace = THREE.SRGBColorSpace;
+  tex.anisotropy = 4;
   SIGN_TEXTURE_CACHE.set(key, tex);
   return tex;
+}
+
+/**
+ * The orientation of the sign on the side plate whose outward normal is `+y * side`.
+ *
+ * Built as an explicit BASIS rather than an `Euler`: a plane's texture "right" is its +x, so the
+ * only basis that reads un-mirrored from outside is `x = y × n` with `n` the outward normal and
+ * `y` vertical — right-handed by construction (det +1) on both sides, which an Euler triple
+ * cannot express without flipping one axis. Fig 12-10: mirrored text is NOT OK.
+ *
+ * Exported for the RENDER lane, which checks the BASIS (outward, upright, determinant +1) rather
+ * than a rotation triple — a mirrored sign is a rule violation the old spelling made invisible.
+ */
+export function bbRobotSignOrientation(side: 1 | -1): THREE.Quaternion {
+  const n = new THREE.Vector3(0, side, 0);
+  const up = new THREE.Vector3(0, 0, 1);
+  const right = new THREE.Vector3().crossVectors(up, n);
+  return new THREE.Quaternion().setFromRotationMatrix(new THREE.Matrix4().makeBasis(right, up, n));
 }
 
 // ⚠️ THE GROUP'S REBUILD KEY IS `bbSpecKey` (`../specKey.ts`), NOT A COPY OF IT HERE. This
@@ -743,6 +863,11 @@ function getSignTexture(id: number, alliance: 'red' | 'blue'): THREE.CanvasTextu
  * ⚠️ `BB_ROLLER_Z` IS DERIVED FROM THE COLLIDER, NOT TYPED. If the mouth slot ever moves, the
  * picture follows it instead of drifting — which is the whole failure this replaces.
  */
+/** how far inboard of the frame line an intake side arm is set — the outer plate's own thickness
+ *  plus a clearance, so the arm bolts to that plate's inner face instead of sharing its outer
+ *  one. Exported for the RENDER lane, which checks it against the measured coplanarity hazard. */
+export const BB_INTAKE_ARM_INSET = BB_PLATE_T + 0.06;
+
 const BB_ROLLER_HUB_R = 0.75;
 /** the compliant flaps' tip radius — a 4-in wheel. They reach 0.30 in below a POLLEN's crown and
  *  1.10 below a NECTAR's; that overlap IS the compression that makes the roller grip. */
@@ -855,9 +980,23 @@ function buildIntake(spec: RobotSpec): { nodes: THREE.Object3D[]; rollers: BbRol
       parts.push(diag);
       return parts;
     });
+    // ⚠️ **THE ARM IS SET INBOARD OF THE FRAME LINE, AND THAT IS NOT A STYLE CHOICE** (owner,
+    // 2026-09-19: "the intake side plate is meshing with chassis"). `bbMouths` makes the mouth
+    // EXACTLY as wide as the chassis — measured across all three intake presets and all four
+    // mounts, `f.half` equals the chassis half-width/half-length to 0.0000 in, every time — so an
+    // arm at `f.half − armT/2` puts its outer face precisely ON the side plate's outer face. And
+    // `armX0 = f.rail − 1.1` runs the arm 1.1 in back INSIDE the frame, by design ("where they are
+    // bolted"). Two solids overlapping for 1.1 in with co-planar outer faces is per-pixel
+    // z-fighting along that whole seam — the same failure the alliance line round the bumper band
+    // is scaled out by a whisker to avoid, at a far bigger scale.
+    //
+    // `BB_PLATE_T` is the outer plate's thickness, so this lands the arm's outer face against
+    // that plate's INNER face, plus a clearance: which is where a real over-the-bumper intake's
+    // arm bolts anyway. The arm's own visible reach is unchanged outboard of the frame — it loses
+    // 0.28 in a side on a mouth that is 17 in wide.
     for (const s of [1, -1] as const) {
       const arm = new THREE.Mesh(armGeo, solidMat(ALU, 0.45, 0.35));
-      arm.position.set(0, s * (f.half - armT / 2), 0);
+      arm.position.set(0, s * (f.half - BB_INTAKE_ARM_INSET - armT / 2), 0);
       g.add(cast(arm));
     }
 
@@ -998,11 +1137,48 @@ const TH_EXIT = Math.PI / 2;
  * `hoodR` is the only per-head term — a NECTAR plate is a bigger plate, and it is bigger by
  * exactly the element.
  */
+/**
+ * ⚠️ **THE FLAT TOP IS A *FORWARD* CUT NOW, AND THAT IS OWNER ITEM (B) OF 2026-09-19: "in the 3D
+ * preview of the robot configure menu, the hood is way too high up and it looks disconnected from
+ * the shooter."**
+ *
+ * It was applied over the WHOLE upper hemisphere — everywhere `sin θ > 0`, which is θ ∈ (14.3°,
+ * 165.7°) once the arc stops binding. The hood's arc lives at `hoodR` = 3.917 in from the axle
+ * (POLLEN head) over θ ∈ [90°, 121.9°], and the cut holds the plate to `BB_SIDE_PLATE_TOP_Z` =
+ * **+0.967** — below even the flywheel's own crown at +1.417. So the plates stopped 2.95 in short
+ * of the hood and the only thing reaching it was two 0.26-in arms. The picture was right about the
+ * geometry: the hood WAS carried by nothing.
+ *
+ * ⚠️ **AND THE WHEEL-TO-HOOD GAP IS NOT WHAT MOVED.** That gap is one element diameter less the
+ * compression — it is the channel the element travels up, and `bbMuzzleLocal` is measured off it.
+ * Nothing about `hoodR`, the release, or any constant in `config.ts` changes here. What changes is
+ * how much PLATE is left, which `BB_SIDE_PLATE_TOP_Z` is read by and nothing else does: grep it —
+ * it appears in this file and in its own doc comment, never in `robot.ts`.
+ *
+ * The cut's stated reason is the OUTGOING CORRIDOR ("the highest a fixed plate can reach without
+ * fouling a flat shot"), and that corridor is FORWARD of the exit lip, which sits at `TH_EXIT`
+ * (straight up over the wheel). Behind the lip there is no corridor — there is the hood, its
+ * tail, the feed shoe that "bolts to both side plates", and the motor. So the top cut binds only
+ * up to `TH_EXIT`; past it the plate climbs a straight relief ramp over `BB_HOOD_RELIEF` and then
+ * follows the hood's own arc, which is what carries it. The exit is relieved OUT of the plate
+ * rather than the whole plate being cut down below the wheel.
+ */
+const BB_HOOD_RELIEF = 22 * (Math.PI / 180);
+
 function sidePlateR(th: number, hoodR: number): number {
   const st = Math.sin(th);
   const ct = Math.cos(th);
   let r = hoodR;
-  if (st > 1e-9) r = Math.min(r, BB_SIDE_PLATE_TOP_Z / st);
+  if (st > 1e-9) {
+    // the flat top, then the ramp, then nothing: `cap` is the height the plate is allowed at this
+    // angle, and past the ramp there is no height limit at all and the arc alone binds.
+    const past = th - TH_EXIT;
+    if (past <= 0) r = Math.min(r, BB_SIDE_PLATE_TOP_Z / st);
+    else if (past < BB_HOOD_RELIEF) {
+      const t = past / BB_HOOD_RELIEF;
+      r = Math.min(r, BB_SIDE_PLATE_TOP_Z + (hoodR - BB_SIDE_PLATE_TOP_Z) * t);
+    }
+  }
   if (st < -1e-9) r = Math.min(r, BB_SIDE_PLATE_BOTTOM_Z / st);
   if (ct > 1e-9) r = Math.min(r, BB_SIDE_PLATE_FRONT_X / ct);
   return r;
@@ -1016,7 +1192,8 @@ function sidePlateR(th: number, hoodR: number): number {
 function sidePlateCorners(hoodR: number): number[] {
   return [
     Math.atan2(BB_SIDE_PLATE_TOP_Z, BB_SIDE_PLATE_FRONT_X), //                   front ↔ top
-    Math.PI - Math.asin(BB_SIDE_PLATE_TOP_Z / hoodR), //                         top ↔ arc
+    TH_EXIT, //                                                                  top ↔ relief ramp
+    TH_EXIT + BB_HOOD_RELIEF, //                                                 ramp ↔ arc
     Math.PI - Math.asin(BB_SIDE_PLATE_BOTTOM_Z / hoodR), //                      arc ↔ bottom
     Math.PI * 2 + Math.atan2(BB_SIDE_PLATE_BOTTOM_Z, BB_SIDE_PLATE_FRONT_X), //  bottom ↔ front
   ];
@@ -1091,13 +1268,21 @@ function roundedRect<T extends THREE.Path>(p: T, x0: number, x1: number, halfW: 
  * should be moving up and down."** This group IS that sentence. It pivots on the AXLE (it sits at
  * the axle node's own origin) and it holds the arc, its two arms and the muzzle node.
  *
- * ── THE HOOD NEEDS ARMS ──────────────────────────────────────────────────────────────────────
- * The side plates stop at `BB_SIDE_PLATE_TOP_Z` — 0.967 in above the axle — and the hood's arc
- * lives at `hoodR … +BB_HOOD_T`, so the plates deliberately do not reach it. That leaves the hood
- * with nothing to hang from. On a real adjustable hood that something is two side ARMS pivoting on
- * the shooter axle, and this is them: a fabricated frame per side — hub, two spokes at the lip and
- * at the tail, and a rim following the hood's outer face — running in the lateral band between the
- * element and the side plate. They are on THIS node, so "only the hood moves" stays exactly true.
+ * ── THE HOOD NEEDS ARMS, AND THEY ARE NOT THE ONLY THING CARRYING IT ANY MORE ────────────────
+ * The hood's arc lives at `hoodR … +BB_HOOD_T` and it ELEVATES, so it can never simply bolt to a
+ * fixed plate. On a real adjustable hood what carries it is two side ARMS pivoting on the shooter
+ * axle, and this is them: a fabricated frame per side — hub, three spokes (lip, middle, tail) and
+ * a rim following the hood's outer face — running in the lateral band between the element and the
+ * side plate. They are on THIS node, so "only the hood moves" stays exactly true.
+ *
+ * ⚠️ The arms used to be the WHOLE answer, because the fixed side plates were cut down to
+ * `BB_SIDE_PLATE_TOP_Z` (+0.967 above the axle) over the entire upper hemisphere — 2.95 in short
+ * of the hood, and below the flywheel's own crown. That is owner item (B), "the hood is way too
+ * high up and it looks disconnected from the shooter", and it is fixed in `sidePlateR`, where the
+ * flat top is a FORWARD cut now and the plate climbs to the hood's own arc behind the exit. The
+ * arms still do the moving half of the job; the plate is what the assembly now reads as hanging
+ * from. The MIDDLE spoke is part of the same answer — two spokes at the ends of a 32° arc read as
+ * a floating rim.
  */
 function buildHoodNode(H: BbHeadDims, which: 0 | 1): THREE.Group {
   const pitch = new THREE.Group();
@@ -1130,8 +1315,9 @@ function buildHoodNode(H: BbHeadDims, which: 0 | 1): THREE.Group {
     const armGeo = framePart(`hoodArm:${which}:${s}`, () => [
       // the rim, flanking the arc it carries
       arcBand(H.hoodR, H.hoodR + BB_HOOD_T, TH_EXIT, thFeed, armW, y0),
-      // the two spokes, hub to rim, at the lip and at the tail
+      // the three spokes, hub to rim, at the lip, the middle and the tail
       radialBar(TH_EXIT, H.hoodR + BB_HOOD_T, BB_HOOD_ARM_T, armW, y0),
+      radialBar((TH_EXIT + thFeed) / 2, H.hoodR + BB_HOOD_T, BB_HOOD_ARM_T, armW, y0),
       radialBar(thFeed, H.hoodR + BB_HOOD_T, BB_HOOD_ARM_T, armW, y0),
       // ...and the hub they pivot on
       arcBand(0, armHubR, 0, Math.PI * 2, armW, y0),
@@ -1526,21 +1712,23 @@ export function buildRobotGroup(spec: RobotSpec, id: number, alliance: Alliance)
   nose.position.set(spec.length / 2 - 0.55, 0, BB_DECK_Z + 0.25);
   group.add(cast(nose));
 
-  // ALLIANCE SIGN PANEL — a placard on the robot's LEFT side plate (a real pit sign's usual
-  // spot), textured once per id via `getSignTexture`.
-  const signSize = Math.min(3.6, spec.length * 0.3);
-  const sign = new THREE.Mesh(
-    new THREE.PlaneGeometry(signSize, signSize),
-    new THREE.MeshStandardMaterial({ map: getSignTexture(id, alliance), roughness: 0.6 }),
-  );
-  sign.name = `robot:${id}:sign`;
-  sign.position.set(0, spec.width / 2 + 0.05, BB_PLATE_H * 0.5);
-  // a PlaneGeometry's default normal/up (+Z/+Y) cannot be rotated to face outward (+Y) with
-  // "up" vertical (+Z) AND "right" un-mirrored in one proper (determinant +1) rotation — normal
-  // × up fixes handedness. This orientation is the one that gets normal and up right; the
-  // canvas is drawn pre-mirrored (`getSignTexture`) to cancel the resulting left-right flip.
-  sign.rotation.set(Math.PI / 2, Math.PI, 0);
-  group.add(sign);
+  // THE TWO ROBOT SIGNS (R401: "Minimum of two ROBOT SIGNS per ROBOT … on opposite or adjacent
+  // surfaces"). Both side plates is the OPPOSITE case, and it is the one that reads from either
+  // side of the FIELD — the header above has the rule text and every dimension's citation. ONE
+  // texture and ONE geometry serve both; only the orientation differs, and neither is mirrored.
+  const signTex = getSignTexture(bbRobotSignText(spec), alliance);
+  const signGeo = new THREE.PlaneGeometry(BB_SIGN_W, BB_SIGN_H);
+  const signMat = new THREE.MeshStandardMaterial({ map: signTex, roughness: 0.6 });
+  for (const [side, where] of [[1, 'left'], [-1, 'right']] as const) {
+    const sign = new THREE.Mesh(signGeo, signMat);
+    sign.name = `robot:${id}:sign:${where}`;
+    // R401.D — supported by the structure of the ROBOT: it sits ON the side plate, a hair proud
+    // of it, and centred on the drivetrain band. `BB_PLATE_H` is 4.6 in, so a 2.75-in plate has
+    // clearance top and bottom on every chassis this builder can make.
+    sign.position.set(0, side * (spec.width / 2 + 0.05), BB_PLATE_H * 0.5);
+    sign.quaternion.copy(bbRobotSignOrientation(side));
+    group.add(sign);
+  }
 
   const intake = buildIntake(spec);
   for (const n of intake.nodes) group.add(n);
@@ -1822,8 +2010,9 @@ export function buildBiobuzzRobots(): BbRobots {
 /**
  * Free what ONE robot group owns, and nothing that is shared.
  *
- * The per-robot half is every mesh built inline in `buildRobotGroup` — the nose box, the sign
- * plane and its material (its TEXTURE is cached per id and is not touched), the turret ring,
+ * The per-robot half is every mesh built inline in `buildRobotGroup` — the nose box, the two
+ * ROBOT SIGN planes and their one shared material (their TEXTURE is cached per team number and
+ * alliance, is shared with every other robot carrying it, and is not touched), the turret ring,
  * axle, motor and feed chute. The Box Tube's sections, the shooter's belt and the swerve
  * pod's drive all come from `framePart` and are SHARED. Anything from `solidMat`, `lineMat`,
  * `getRollerMat`, `wheelGeometry`, `framePart` or `chassisEdges` is left alone: see

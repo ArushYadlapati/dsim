@@ -1,6 +1,195 @@
+# HANDOFF — 2026-09-19c (alpha: THE OWNER'S PLAYTEST PASS — two launch bugs, the hive registration delay, the robot signs, the frame-rate row; FLOWER LANE STOPPED AND NOT LANDED)
+
+**READ FIRST.** Six lanes ran off `d64cf19`. Five landed and are in this commit. **The SIXTH — the
+FLOWER lane — was STOPPED mid-work on owner instruction and its source edits were REVERTED**; what
+it learned is written down below and its probes survive in `scratch/`. Read "THE FLOWER LANE"
+before picking that up, because the expensive half (the measurement harnesses) is already done.
+
+## What landed
+
+- ⚠️ **TWO LAUNCH BUGS, ONE ROOT SHAPE: a Rapier body created or teleported INSIDE a solid, which
+  penetration recovery then ejects along the contact normal.** `birthClear`
+  (`sim3d/engineImpl.ts`) is the guard, and there were two doors into it.
+  1. **Walls and corners.** It built its solid list from `world.robots` ONLY — no walls, no frame
+     bars, no flower feet — and its escape marches FORWARD along the arc, which walks a release
+     deeper INTO a wall rather than out of it. ⚠️ **Measured NOT reachable on the normal path:**
+     576 real shots flush at every wall and corner, 8 headings by 3 mounts, gave **0** bad births,
+     because aim assist is forced on by `coerceAssists` and only releases a shot its landing gate
+     says enters the CELL, which is always inboard. On MANUAL aim (`r.aimAssist = false`, a branch
+     the sim still has) it is severe: birth 2.86–3.84 in PAST the wall's inner face, and five ticks
+     later the element was dead and buried in 12 of 21 poses, or 136–176 degrees off in the
+     corners. `fieldClamp` now pushes a birth point the shortest way out along that wall's own
+     normal with the solved velocity untouched, and the arc march STOPS at the first sample that
+     leaves the field. Identity in the open field; the old dumper behaviour is byte-for-byte
+     unchanged.
+  2. ⚠️ **INTAKE WHILE SHOOTING — this is the one that bit in production.** `birthClear` was gated
+     on `!existing`, i.e. it guarded body CREATION and not the transition INTO flight. An element
+     normally has no body while `held` (`wantsDynamicBody` is true only for `ground`/`flight`/
+     `element`), but bodies are removed only inside `syncElement`, and stage 11 runs capture then
+     launch **with no sync between them** (`step3dImpl.ts:148-149`). So on any tick where the
+     intake takes something and the turret's beat is ready — the ordinary feed-and-shoot loop, with
+     `autoIntake`/`autoFire` on — the element went ground to held to flight keeping its live ground
+     body, the guard was skipped, and the body was teleported to the muzzle, a point on the
+     mechanism INSIDE the chassis compound. A dumper's lob came out **101 degrees off, apexing at
+     10 in instead of 63**; a turret's 2.4–3.6 degrees, born 7.3 in inside the chassis. After:
+     **2.1 degrees, apex 63.2**, born 0.00 in inside.
+     ⚠️ **THE GUARD IS KEYED ON "TELEPORTED SINCE THE LAST READBACK **AND** `by` STAMPED", NOT ON
+     "kind changed to flight".** `derive.ts` re-tags every bouncing GROUND element as `flight`, so
+     the obvious rule would teleport a ball in mid-flight clear of a robot it is supposed to hit.
+     Only `releasePollen` stamps `by`. An intake pull edits velocity only, so it never qualifies.
+- ⚠️ **THE HIVE REGISTRATION DELAY — a rest timer where the physics wanted a depth test.**
+  `deriveTick` required `BB3_REST_TICKS` (6) consecutive ticks under `BB3_REST_SPEED` before a ball
+  counted as being in a CELL, and `hives[a].contents` — which the tip threshold, `cellCount`, the
+  HUD and G410 all read — was built from that. Measured over **1,500 randomized arrivals**, centre
+  entering the interior to `contents` holding it: **mean 95.3 ticks / 1,588 ms, p50 75, p90 205,
+  max 264, and 1 in 100 never registered at all.** The settling was 84–90% of it. TIP latency
+  48–76 ticks (0.80–1.27 s). **After: mean 0.3 ticks / 6 ms, 0 misses; TIP 11–15 ticks
+  (0.18–0.25 s).** No animation duration and no tip threshold was touched.
+  ⚠️ **THE REST GATE'S STATED REASON WAS FALSE, AND THAT IS WHAT MADE THE FIX CHEAP.** It was
+  defended as "a shot crossing the mouth is not yet in it". Of 209 arrivals that put a centre
+  inside, 92 left again — and **every one stayed within 2.75 in of the open rim**. Nothing enters a
+  one-opening box and comes back. The shallowest a really-landed element ever RESTS is 4.33 in
+  down. So `BB3_CELL_SEAT_DEPTH` (3.5 in, mid-window) separates them outright, with a LATCH read
+  off `b.state.el` so a counted ball cannot flicker. 0 grazes counted, 0 landings missed.
+- **The settle clock asks about MOTION again** (`settle.ts`). The hive fix left a hole: an element
+  bouncing in a cell used to be tagged `flight` and held the clock open, and is now tagged
+  `element` from the tick it is deep, so it held nothing — and a tray over its load is a TIP **when
+  the match is called**, so a clock that can close mid-bounce can miss one. Reproduced at `vz`
+  83.57 in/s reading `settled = true`. The gate is inverted now: skip `held`/`stock`, motion-test
+  everything else. ⚠️ **The opposite failure is on record in that file** (elements parked on the
+  frame are permanently `flight`, and refusing on the TAG held the clock for the whole 10 s cap —
+  the owner's "takes forever when nothing is moving"), so this was measured before it was changed:
+  across nine end-of-match states, every `element`-tagged ball read max planar `v` **0.0000** and
+  max `|vz|` **0.0000**, 0 ticks above threshold, because `derive.ts`'s REST SNAP has no tag gate
+  and holds a rested element at exactly zero. Eight bot-driven matches finalize at identical ticks
+  with identical scores and **0** predicate disagreements; 51,857 `element` readings in 2D agree.
+- **ROBOT SIGNS, to the actual rules.** R401/R402/R403 were fetched from Competition Manual V1
+  section 12.4 (pp127–129) rather than guessed. Two signs on opposite surfaces, **6.5 x 2.75 in**
+  (2.75 is the only height at which R403.A and R403.B both hold and it still clears R401.C's 2.5),
+  solid alliance fill, white Arabic numerals. Two bugs found on the way: the old sign printed the
+  robot's **slot index** and not `spec.teamNumber`, and its white border is **prohibited** by R402.
+  `-` when the number is 0/unset, matching the 2D team card.
+  ⚠️ **`bbSpecKey` NOW CARRIES `teamNumber`** even though it moves no vertex: the number is
+  rasterised into the sign texture at BUILD time, so without it a changed number would keep the old
+  one on both plates AND in the cached thumbnail.
+- **The hive's own surfaces.** AprilTag bleed on the upper face — undecodable by RASTER RESOLUTION
+  (1.4 px/in against 0.325-in tag cells, 2.2 cells per pixel), not by opacity, so the bits are gone
+  before the texture exists. The sticker label is the manual's two-line form. The back panel was
+  never a culling problem: `transparent` with a constant `opacity` multiplies the SPECULAR too, so
+  a more see-through sheet got a fainter reflection — backwards; it is polycarbonate IOR 1.586 with
+  a Fresnel-weighted alpha now, face-on unchanged at the measured 0.08/0.13.
+- ⚠️ **THE BANNER IS BLANK ON PURPOSE, AND IT IS NOT A COMPROMISE.** The CAD's `am-5883 Panel
+  Sticker` ships BLANK (`decal#ffffff`); the old `bannerTexture` invented "FIRST TECH CHALLENGE /
+  BIOBUZZ / amber rule" and painted it onto blank source data, which is why it read as wrong.
+  FIRST's IP policy (rev 04/19/25) restricts LOGOS to registered teams identifying their own teams,
+  to written agreement, or to nobody — field DESIGNS are copyrighted material in a different, more
+  permissive tier, which is what the rest of this sim relies on. Redrawing the wordmark by hand is
+  not a loophole: the brand guidelines say use only the versions provided and forbid altered ones.
+  The manual also notes the panel "may not be present at all events". The no-logo assertion is
+  STRENGTHENED — the banner body may now contain no `fillText`/`strokeText`/`.font`.
+- **Intake plate meshing with the chassis.** `bbMouths` makes every mouth EXACTLY chassis-width —
+  `f.half - chassisHalf = 0.0000` at all 20 mouth sites — so the arm's outer face sat precisely on
+  the side plate's, with `armX0 = f.rail - 1.1` running 1.1 in of overlapping solids behind it.
+- **The hood reads as one assembly.** `BB_SIDE_PLATE_TOP_Z` (+0.967, BELOW the flywheel crown at
+  +1.417) was applied over the WHOLE upper hemisphere, including behind the exit lip where the
+  hood, its tail and the feed shoe are — so the hood floated 2.95 in above anything fixed, carried
+  by two 0.26-in arms. ⚠️ **The VALUE did not move and nothing in the muzzle chain reads it**
+  (`sidePlateR` is its only reader); what changed is the ANGULAR RANGE it binds over — a forward
+  cut, then a 22-degree relief ramp, then the hood's own arc. Gap **3.23 to 0.566 in**.
+- **Chassis colour actually shows.** The file header CLAIMED the deck carried `chassisFill`; the
+  code had the deck in the STRUCTURAL mesh, and the cosmetic mesh was four VERTICAL plates
+  presenting a 0.22-in edge from above. The deck is cosmetic now, plus a top cap on each side
+  plate, with the lane measuring upward-facing cosmetic area (>60 sq in, >25% and <75% of
+  footprint).
+- **The frame-rate row** (`graphics/settings.ts`, `GraphicsSection.tsx`, `electron/`).
+  `30 / 60 / 120 / 144 / 240 / Custom / VSync / Unlimited`. `MaxFps` is a `number` with two
+  sentinels (`0` VSync, `-1` Unlimited) and a typed range `[24, 1000]`; `coerceMaxFps` matches the
+  sentinels FIRST and exactly so no clamp can produce one, and rejects `NaN`, the infinities,
+  `'60'` and `59.5` via `Number.isInteger`. ⚠️ **`0` ALWAYS WAS UNCAPPED** — it was called
+  "Display", which is what made it read as a cap; rAF is paced by the compositor, so in a browser
+  it IS the ceiling. Unlimited is real only in the desktop shell (`disable-frame-rate-limit` plus
+  `disable-gpu-vsync`, appended before `app.whenReady()`, hence a restart), shown on the web anyway
+  with the truth on its face. ⚠️ **`update-pref.json` was written by REPLACING the whole
+  document**, so adding a second key would have silently destroyed the update auto-check
+  preference; it is read-modify-write now.
+
+## THE FLOWER LANE — stopped, reverted, and how to finish it cheaply
+
+Owner instruction, mid-work. **Its source edits are GONE** (`sim3d/flower3d.ts`, `sim3d/bodies.ts`
+and `scripts/smoke-biobuzz/flower3d.ts` reverted to `d64cf19`; `BB3_INTAKE_CORNER_*` and
+`BB3_FLOWER_CAGE_*` stripped from `config.ts`) — roughly 756 insertions. **Its PROBES SURVIVE in
+`scratch/` and are the expensive half**: `flowerstuck{,2,3,4,5}.ts`, `flowersweep.ts`,
+`flowerthresh.ts`, `flowerperturb.ts`, `flowerplace.ts`, `flowermissing.ts`, `cageperf.ts`,
+`corner{,2,3}.ts`, `cornerfinal.ts`, `intakebox.ts`, `bbintake.ts`, `rapiercaps.ts`.
+
+Three items, none landed:
+
+1. **Placing balls in a flower is too uniform** (owner). `placeFlower3d` drops every element on the
+   flower's exact centreline with zero velocity, so a column is a perfect stack. Needs
+   deterministic scatter — from `world.rngState` (mulberry32) or from settling the element, NEVER
+   `Math.random`, and the draw has to happen where every peer makes it identically.
+2. **POLLEN get stuck in a flower instead of dropping.** The lane reached a jam between a PAIR of
+   elements across the bore and was probing contact NORMALS (`flowerstuck5.ts`). Its proposed fix
+   was a **CAGE WALL**: a fan of tangent cuboid slabs inside the bore, `BB3_FLOWER_CAGE_SEGMENTS`
+   12 and `BB3_FLOWER_CAGE_T` 0.5 in, because a trimesh measured WORSE on the SIM3D room-tick
+   budget. Inscribed shave at 12 rays is `r * (1 - cos(pi/12))` = 0.066 in on the 1.948-in bore —
+   tighter than CAD, which is the safe direction — against 1.02 in of slack for a 2.8-in POLLEN.
+3. **The intake corner catch** (owner: "I can get stuck on a corner"). ⚠️ **MEASURED: the side
+   plates are NOT longer than the rollers.** Arms end exactly at the mouth's `uOut` for every
+   preset — sloped 10.250, vector 10.750, triangle 12.250 — and are flush with the frame laterally
+   (+/-8.250 = `hw`). What catches is that the LINTEL spans the same depth across the full mouth
+   width from z -5.40 to +9.00, so for anything taller than an element the robot's whole front face
+   is `reach` (3–5 in) ahead of the frame, with perfect 90-degree corners. **Do NOT shorten the
+   arms or the lintel** — `chassis3dShapes`'s header records that the tips end exactly where
+   `robotExtents` ended so flat-wall contact, wall-flush starts and start legality do not move, and
+   that thin arms alone let a robot climb a low static (parked 2.14 in in the air, stalled).
+   The approach was an EDGE BREAK, not a shorter box: `ColliderDesc.roundCuboid` **is available in
+   `@dimforge/rapier3d-deterministic-compat`** (probed at runtime — `scratch/rapiercaps.ts` also
+   confirms `convexHull`, `roundConvexHull`, `roundCylinder`), so half-extents reduced by `r` keep
+   every flat face in its own plane. At `r = 0.125` the two-edge corner pulls in by
+   `(1 - 1/sqrt 2) * r` = 0.037 in and the three-edge vertex by `(1 - 1/sqrt 3) * r` = 0.053 in —
+   both under the 0.1 in of resting penetration the solver allows anyway, so no contact distance
+   anybody measures can tell the difference.
+   ⚠️ **ITS LAST FINDING, UNRESOLVED:** "a 45-degree chamfer still has lockable edges (and locks
+   harder at depth) — try a multi-segment arc." Start there.
+
+## Two follow-ups the lanes raised and left
+
+- **`scene/renderField.ts`** (the constants fallback path) did NOT get the Fresnel panel treatment
+  the GLB path did, so its panels will look flatter. The three cross-path constants the RENDER lane
+  compares are unchanged, so nothing fails — it is a fidelity gap, not a break.
+- **The CAD statics gap in `fieldClamp` is open and documented in the code.** It covers the four
+  perimeter walls and the tile plane analytically; the rest of the field's statics are CAD convex
+  hulls and trimeshes with no analytic sphere-vs-hull escape, and an AABB stand-in would teleport
+  an element several inches out of a box that is mostly air a robot legally drives through. No
+  reachable launch puts a birth point inside one, which is why it was left.
+
+## Gates
+
+Run on a QUIET tree, after the flower lane was stopped and reverted.
+
+`npm test` **2918 checks, ALL PASS** (shared PASS, biobuzz PASS) - `build` exit 0 -
+`server:check` exit 0 - `dbtest` ALL PASS - `test:mm` 197 - `contrast` ALL PASS (221) -
+`uiaudit` at/under baseline - `docaudit` ALL PASS - `bundleaudit` ALL ROUTES AT/UNDER -
+`shiftaudit` 576 state changes, 0 layout shifts.
+
+⚠️ **`perf: a 2v2 BIOBUZZ ROOM tick costs <= 1.2x a 2v2 Chain Reaction room tick` IS LOAD
+SENSITIVE, NOT FLAKY LOGIC.** Three separate lanes hit it while five agents were running; it reads
+1.20–1.42 under contention and 0.79–0.86 in isolation, and it passes on a quiet tree. If it fails,
+check what else is running before believing it.
+
+## Next steps
+
+1. Merge to `alpha`, push, redeploy `dsim-alpha` (the server moved: nothing here, but the previous
+   commit's analytics/admin/suspension did).
+2. Production (`main`, `dohun-sim-decode`) is untouched; promotion is the owner's call.
+3. The flower lane above is the only owner item from this pass that is not done.
+
+---
+
 # HANDOFF — 2026-09-19b (alpha: THE OWNER'S 25-ITEM PASS, RECOVERED FROM A HALTED SESSION AND FINISHED)
 
-**READ FIRST.** A previous session ran out of usage mid-pass over the owner's 25-item list and
+**(Previously READ FIRST.)** A previous session ran out of usage mid-pass over the owner's 25-item list and
 left its whole tree UNCOMMITTED in `.claude/worktrees/shooter-simulation-fixes-c916ec` — ~70 files,
 7.7k insertions, never committed and never gated. That work is now commit `9162190` (checkpoint,
 verbatim) plus the lanes below. **All 25 items are closed.** Every gate is green.

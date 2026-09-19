@@ -32,7 +32,16 @@ import { drawBiobuzzField } from '../../src/games/biobuzz/drawField';
 // the CAD loader's own DOM-free exports — the AprilTag bitmap, the ID table the manual sets, and
 // the creased-normal pass. Importing a `scene/` module here is fine: this is a script, not the
 // bundle, and the chunk-boundary checks above read the SOURCE rather than the module graph.
-import { CREASE_ANGLE_DEG, TAG_IDS as BB_TAG_IDS, apriltag36h11Cells, computeCreasedNormals } from '../../src/games/biobuzz/scene/renderFieldGlb';
+import {
+  CREASE_ANGLE_DEG,
+  TAG_CELL_IN,
+  TAG_IDS as BB_TAG_IDS,
+  TAG_SIZE_IN,
+  apriltag36h11Cells,
+  clearPanelAlphaAt,
+  clearPanelSheenGain,
+  computeCreasedNormals,
+} from '../../src/games/biobuzz/scene/renderFieldGlb';
 import { COLORS as SHARED_COLORS } from '../../src/config';
 import {
   BB_BOX_DEPTH,
@@ -84,11 +93,28 @@ import {
 // not bundled, and `buildTurret` touches no DOM. It is here because five passes of shooter
 // geometry were signed off by a lane that could only grep the source — see its own header, and
 // the SHOOTER block below.
-import { buildSwervePod, buildTurret, disposeRobotGroup } from '../../src/games/biobuzz/scene/renderRobots';
+import {
+  BB_INTAKE_ARM_INSET,
+  BB_SIGN_DIGIT_H,
+  BB_SIGN_H,
+  BB_SIGN_MARGIN,
+  BB_SIGN_MIN_H,
+  BB_SIGN_MIN_W,
+  BB_SIGN_W,
+  bbRobotSignOrientation,
+  bbRobotSignText,
+  buildFrame,
+  buildSwervePod,
+  buildTurret,
+  disposeRobotGroup,
+} from '../../src/games/biobuzz/scene/renderRobots';
+import { lengthLimits } from '../../src/sim/drivetrain';
+import { bbMouthFrame } from '../../src/games/biobuzz/mounts';
 import { bbMuzzleLocal } from '../../src/games/biobuzz/robot';
 import { INTAKE_RAIL_T } from '../../src/config';
 import { BB_DEFAULT_SPEC } from '../../src/games/biobuzz/coerce';
 import { bbCoerceSpec } from '../../src/games/biobuzz/robotConfig';
+import { bbSpecKey } from '../../src/games/biobuzz/specKey';
 import { SHOT, SHOT_ARC_MAX, shotArc, solveShotPath } from '../../src/games/biobuzz/shotPath';
 import { drawBiobuzzShotPath } from '../../src/games/biobuzz/drawShot';
 import { CAMERA_PREFS, getCameraPref, resolveSceneCamera } from '../../src/games/biobuzz/graphics/store';
@@ -100,9 +126,16 @@ import {
   resetGraphicsToAuto,
   setGraphicsTier,
   coerceGraphicsSettings,
+  coerceMaxFps,
   effectivePixelRatio,
   frameIntervalMs,
+  GFX_FPS_MAX,
+  GFX_FPS_MIN,
+  GFX_FPS_STEPS,
+  isCustomFps,
   matchesPreset,
+  MAX_FPS_UNLIMITED,
+  MAX_FPS_VSYNC,
   msaaSamples,
   shadowMapSize,
 } from '../../src/games/biobuzz/graphics/settings';
@@ -992,6 +1025,68 @@ function graphicsChecks(check: Check, allFiles: string[]): void {
     frameIntervalMs(60).toFixed(2),
   );
   check('display means no cap at all', frameIntervalMs(0) === 0);
+
+  // ---- the two sentinels, and the rate you type -------------------------------------------
+  //
+  // `maxFps` stopped being a union of literals when the owner asked for a typed rate
+  // (2026-09-19), which makes it the one field in this settings object whose value arrives
+  // from a TEXT BOX. Everything below is a shape the box can produce.
+  {
+    // Unlimited and VSync are the SAME instruction to the draw loop — skip nothing. The
+    // difference is entirely whether the Electron shell was launched with
+    // `disable-frame-rate-limit`, which nothing in this process can see or change.
+    check(
+      'both sentinels mean no cap at all in the loop (VSync and Unlimited)',
+      frameIntervalMs(MAX_FPS_VSYNC) === 0 && frameIntervalMs(MAX_FPS_UNLIMITED) === 0,
+    );
+    check('the two sentinels cannot collide with a real rate', MAX_FPS_VSYNC === 0 && MAX_FPS_UNLIMITED === -1 && GFX_FPS_MIN > 0);
+    check(
+      'a typed rate keeps the same 0.5 ms of slack as a tile',
+      Math.abs(frameIntervalMs(165) - (1000 / 165 - 0.5)) < 1e-12 && frameIntervalMs(165) > 0,
+      frameIntervalMs(165).toFixed(3),
+    );
+  }
+  {
+    // A preset shipping Unlimited would turn vsync off on a machine nobody asked, and (on the
+    // desktop) leave it off until somebody found this row again.
+    check('no preset ships Unlimited', GFX_TIERS.every((t) => GFX_PRESETS[t].maxFps !== MAX_FPS_UNLIMITED));
+    check(
+      'every preset ships a value the picker can show as selected (a tile or a sentinel)',
+      GFX_TIERS.every((t) => {
+        const f = GFX_PRESETS[t].maxFps;
+        return f === MAX_FPS_VSYNC || f === MAX_FPS_UNLIMITED || GFX_FPS_STEPS.includes(f);
+      }),
+    );
+    check('the tiles are inside the typed range, so the two controls agree', GFX_FPS_STEPS.every((f) => f >= GFX_FPS_MIN && f <= GFX_FPS_MAX));
+    check(
+      'isCustomFps is exactly "a positive rate that is not a tile"',
+      !isCustomFps(MAX_FPS_VSYNC) && !isCustomFps(MAX_FPS_UNLIMITED) && !isCustomFps(144) && isCustomFps(165),
+    );
+  }
+  {
+    // COERCION. The sentinels are matched exactly and first, so no clamp can ever produce one.
+    const base = GFX_PRESETS.high.maxFps;
+    check('coercion accepts both sentinels unchanged', coerceMaxFps(MAX_FPS_VSYNC, base) === MAX_FPS_VSYNC && coerceMaxFps(MAX_FPS_UNLIMITED, base) === MAX_FPS_UNLIMITED);
+    check('a custom rate round-trips', coerceMaxFps(165, base) === 165);
+    check(
+      'out of range CLAMPS to the bound rather than reverting',
+      coerceMaxFps(5, base) === GFX_FPS_MIN && coerceMaxFps(9999, base) === GFX_FPS_MAX,
+      `${coerceMaxFps(5, base)}/${coerceMaxFps(9999, base)}`,
+    );
+    const junk: unknown[] = [NaN, Infinity, -Infinity, '60', 59.5, null, undefined, {}, true, -5];
+    check('junk falls back to the base, every shape of it', junk.every((v) => coerceMaxFps(v, base) === base), String(junk.length));
+    // -5 is in that list on purpose: an integer below zero that is not the sentinel is not a
+    // cap under the floor, it is a corrupt value, and clamping it up to 24 would hand the
+    // player a working cap they never chose.
+    check('a negative that is not the sentinel does not clamp up into a real cap', coerceMaxFps(-5, base) === base);
+  }
+  {
+    // the whole-object coercer routes through it, and an old stored blob still loads
+    const out = coerceGraphicsSettings({ maxFps: 165 }, GFX_PRESETS.medium);
+    check('the settings coercer takes a custom rate', out.maxFps === 165);
+    check('a stored blob from the fixed-ladder build still loads', coerceGraphicsSettings({ maxFps: 240 }, GFX_PRESETS.medium).maxFps === 240);
+    check('a stored blob with junk in it keeps the base rate', coerceGraphicsSettings({ maxFps: 'fast' }, GFX_PRESETS.low).maxFps === GFX_PRESETS.low.maxFps);
+  }
   check('MSAA maps to a real sample count, and off means no render target', msaaSamples('off') === 0 && msaaSamples('msaa2') === 2 && msaaSamples('msaa4') === 4);
   check(
     'soft shadows reuse the high map size (they are a wider blur, not a fourth resolution)',
@@ -1311,6 +1406,21 @@ function graphicsChecks(check: Check, allFiles: string[]): void {
           previewSrc.includes('bbSpecKey(next)') &&
           slotSrc.includes('bbSpecKey(spec)'),
       );
+      // ⚠️ AND IT KEYS ON `teamNumber`, WHICH IS NOT A SHAPE. The ROBOT SIGNS rasterise the number
+      // into their texture at BUILD time (R403), so from the day the signs started printing
+      // `spec.teamNumber` it became part of the built geometry's identity: without it, editing
+      // only the team number leaves the old number on both plates AND in the cached thumbnail.
+      // Measured as a behaviour, not grepped — two specs differing in nothing else must not
+      // collide.
+      {
+        const keyFor = (teamNumber: number): string =>
+          bbSpecKey(bbCoerceSpec({ ...BB_DEFAULT_SPEC, teamNumber } as RobotSpec));
+        const a = keyFor(19745);
+        const b = keyFor(12345);
+        const same = keyFor(19745);
+        check('the rebuild key separates two builds that differ only in team number', a !== b, `${a} vs ${b}`);
+        check('...and is stable for the same team number', a === same);
+      }
 
       // ── THE COSMETIC CHASSIS COLOUR, AND THE ALLIANCE (the gap item 1 names) ─────────────
       // 2D has always been fill = `chassisFill(chassisColor)`, alliance = the outline. 3D filled
@@ -1324,11 +1434,299 @@ function graphicsChecks(check: Check, allFiles: string[]): void {
           robotsSrc.includes('solidMat(chassisFill(spec.chassisColor)'),
       );
       check(
-        '...and the ALLIANCE is the outline plus the sign panel, never the fill',
+        '...and the ALLIANCE is the outline plus the ROBOT SIGNS, never the fill',
         /LineSegments\(chassisEdges\([^)]*\), lineMat\(color\)\)/.test(robotsSrc) &&
-          robotsSrc.includes('getSignTexture(id, alliance)') &&
+          robotsSrc.includes('getSignTexture(bbRobotSignText(spec), alliance)') &&
           !/chassisGeometry\([^)]*\), solidMat\(color/.test(robotsSrc),
       );
+
+      // ══ THE ROBOT SIGN (§12.4 — R401, R402, R403) ════════════════════════════════════════
+      //
+      // Owner, 2026-09-19, items 1-3: two signs, not one; follow the real ROBOT SIGN rules; and
+      // the number on the plate must be the ROBOT'S team number. The rule text is quoted in
+      // `renderRobots.ts`'s own header and every number below is the manual's, not a taste call:
+      //
+      //   R401  minimum TWO per ROBOT, in >= 2 separate locations on opposite or adjacent
+      //         surfaces; minimally 6.5 in wide and 2.5 in tall; supported by the structure.
+      //   R402  a SOLID red or blue opaque rectangle >= 6.5 x 2.5 in, and visible markings other
+      //         than the R403 number, fasteners, corner/fold/cutout slivers and template marks
+      //         are PROHIBITED -- which is why the old white border is gone.
+      //   R403  solid opaque WHITE Arabic numerals approx 2.25 in tall, >= 0.25 in of background
+      //         round them, never vertically stacked (Fig 12-10 also rules mirrored text out).
+      //
+      // What shipped before: ONE square placard `min(3.6, length * 0.3)` on the LEFT plate only,
+      // with a white stroked frame, printing the robot's SLOT INDEX (`String(id)`, 0..3). Every
+      // one of the three rules was broken, and the number was not the team's.
+      {
+        // -- (1) TWO SIGNS, ONE PER SIDE ------------------------------------------------------
+        check(
+          'R401: the robot carries TWO ROBOT SIGNS, named left and right',
+          robotsSrc.includes("[[1, 'left'], [-1, 'right']] as const") &&
+            robotsSrc.includes('sign.name = `robot:${id}:sign:${where}`'),
+        );
+        check(
+          '...on OPPOSITE surfaces, mirrored across the chassis centreline',
+          robotsSrc.includes('sign.position.set(0, side * (spec.width / 2 + 0.05), BB_PLATE_H * 0.5)'),
+        );
+        check('...and the single-placard spelling is gone', !/robot:\$\{id\}:sign`/.test(robotsSrc));
+
+        // -- (2) THE RULED DIMENSIONS ---------------------------------------------------------
+        // Against the RULE's floors, which are exported beside the plate, not against a literal
+        // copied out of the renderer -- the same reason the tape and plate rectangles are.
+        check(`R401.B/R402: the plate is at least 6.5 in wide (${BB_SIGN_W})`, BB_SIGN_W >= BB_SIGN_MIN_W, `${BB_SIGN_W}`);
+        check(`R401.C/R402: ...and at least 2.5 in tall (${BB_SIGN_H})`, BB_SIGN_H >= BB_SIGN_MIN_H, `${BB_SIGN_H}`);
+        check(
+          'R403.A+B: the height is EXACTLY the 2.25-in digits plus 0.25 in of background top and bottom',
+          Math.abs(BB_SIGN_H - (BB_SIGN_DIGIT_H + 2 * BB_SIGN_MARGIN)) < 1e-9 && BB_SIGN_DIGIT_H === 2.25 && BB_SIGN_MARGIN === 0.25,
+          `${BB_SIGN_H} = ${BB_SIGN_DIGIT_H} + 2 x ${BB_SIGN_MARGIN}`,
+        );
+        // the rule is an ABSOLUTE size in inches. A sign that scaled with the chassis was under
+        // the legal minimum on every build in the game, and would go on being under it.
+        check(
+          '...and the plate does NOT scale with the chassis (the old `min(3.6, spec.length * 0.3)`)',
+          !robotsSrc.includes('spec.length * 0.3') && robotsSrc.includes('new THREE.PlaneGeometry(BB_SIGN_W, BB_SIGN_H)'),
+        );
+        // and it FITS: the smallest chassis this builder can make is 11 x 10 in, and the side
+        // plate it mounts on is `BB_PLATE_H` tall.
+        {
+          const minLen = Math.min(...(['sloped', 'vector', 'triangle'] as const).map((s) => lengthLimits(s).min));
+          check(
+            'a 6.5 x 2.75 sign fits the SMALLEST legal chassis side plate',
+            BB_SIGN_W <= minLen && BB_SIGN_H <= BB_DECK_Z,
+            `${BB_SIGN_W} <= ${minLen} long, ${BB_SIGN_H} <= ${BB_DECK_Z} tall`,
+          );
+        }
+
+        // -- R402: NOTHING ON THE PLATE BUT THE NUMBER ----------------------------------------
+        // The old 6-px white `strokeRect` is not one of R402's four permitted markings. Scoped
+        // to the texture builder, because the file legitimately strokes other things.
+        {
+          const at = robotsSrc.indexOf('function getSignTexture(');
+          const body = at < 0 ? '' : robotsSrc.slice(at, robotsSrc.indexOf('\n}', at));
+          check('R402: the sign texture strokes nothing (the white border was a prohibited marking)', body.length > 0 && !/stroke/i.test(body));
+          check('R402: ...and the whole plate is the solid alliance fill', body.includes("alliance === 'blue' ? BLUE : RED") && body.includes('ctx.fillRect(0, 0, canvas.width, canvas.height)'));
+          check('R403.A: ...with WHITE numerals on it', body.includes("ctx.fillStyle = '#ffffff'"));
+          check('R403.C: ...on ONE line, never stacked', (body.match(/fillText\(/g) ?? []).length === 1);
+        }
+
+        // -- Fig 12-10: NOT MIRRORED ----------------------------------------------------------
+        // Measured on the BASIS, not grepped: a mirrored sign is a rule violation the old Euler
+        // spelling (`rotation.set(PI/2, PI, 0)` plus a pre-flipped canvas) made invisible.
+        for (const side of [1, -1] as const) {
+          const m = new THREE.Matrix4().makeRotationFromQuaternion(bbRobotSignOrientation(side));
+          const x = new THREE.Vector3().setFromMatrixColumn(m, 0);
+          const y = new THREE.Vector3().setFromMatrixColumn(m, 1);
+          const z = new THREE.Vector3().setFromMatrixColumn(m, 2);
+          const det = new THREE.Vector3().crossVectors(x, y).dot(z);
+          const tag = side > 0 ? 'left' : 'right';
+          check(`Fig 12-10 (${tag}): the sign basis is a PROPER rotation, so the digits are not mirrored`, Math.abs(det - 1) < 1e-9, `det ${det.toFixed(6)}`);
+          check(`R401 (${tag}): ...it faces outward`, Math.abs(z.y - side) < 1e-9 && Math.abs(z.x) < 1e-9 && Math.abs(z.z) < 1e-9, `n=(${z.x},${z.y},${z.z})`);
+          check(`R403 (${tag}): ...and it is upright, so the number is not on its side`, Math.abs(y.z - 1) < 1e-9, `up=(${y.x},${y.y},${y.z})`);
+        }
+        check('the pre-mirrored canvas hack is gone with it', !/ctx\.scale\(-1, 1\)/.test(robotsSrc));
+
+        // -- (3) THE NUMBER IS THE TEAM'S -----------------------------------------------------
+        // It printed `String(id)`, the robot's SLOT in the match (0..3). §12.4: a ROBOT SIGN
+        // "identifies a ROBOT'S team number".
+        check('the sign no longer prints the robot slot index', !robotsSrc.includes('getSignTexture(id,'));
+        for (const [n, want] of [[19745, '19745'], [1, '1'], [186033, '186033']] as const) {
+          check(`the sign prints spec.teamNumber (${n})`, bbRobotSignText({ teamNumber: n }) === want, bbRobotSignText({ teamNumber: n }));
+        }
+        // and the unset case matches what the 2D team card does rather than printing a literal 0,
+        // which would read as a real team number
+        for (const n of [0, -3, Number.NaN] as const) {
+          check(`teamNumber ${n} renders the 2D card's '-', not a digit`, bbRobotSignText({ teamNumber: n }) === '-', bbRobotSignText({ teamNumber: n }));
+        }
+        check(
+          "...and that is the same test the 2D card makes (`teamNumber ? '#'+n : '-'`)",
+          readFileSync(join(root, 'src', 'ui', 'GameView.tsx'), 'utf8').includes("{p.teamNumber ? `#${p.teamNumber}` : '-'}"),
+        );
+      }
+
+      // ══ ITEM A -- "THE INTAKE SIDE PLATE IS MESHING WITH CHASSIS" ════════════════════════
+      //
+      // MEASURED, not guessed: `bbMouths` makes every mouth EXACTLY as wide as the chassis, at
+      // every intake preset and every mount. So an arm mounted at `f.half - armT/2` puts its
+      // outer face precisely ON the side plate's outer face -- and `armX0 = f.rail - 1.1` runs it
+      // 1.1 in back inside the frame, so the two solids overlap for 1.1 in with co-planar outer
+      // faces. That is the repo's own documented z-fight ("a co-planar line and surface flicker
+      // per pixel per frame, which reads as a rendering fault"), at 1.1 in instead of a line.
+      {
+        let sites = 0;
+        let flush = 0;
+        for (const intake of ['sloped', 'vector', 'triangle'] as const) {
+          for (const mount of ['front', 'back', 'left', 'right'] as const) {
+            const base = BB_DEFAULT_SPEC as unknown as { bbMech: Record<string, unknown> };
+            const spec = bbCoerceSpec({ ...BB_DEFAULT_SPEC, intake, bbMech: { ...base.bbMech, intakeMount: mount } } as never);
+            for (const m of bbMouths(spec)) {
+              const f = bbMouthFrame(m, spec.length / 2, spec.width / 2);
+              const chassisHalf = m.edge === 'front' || m.edge === 'back' ? spec.width / 2 : spec.length / 2;
+              sites++;
+              if (Math.abs(f.half - chassisHalf) < 1e-9) flush++;
+            }
+          }
+        }
+        check('the mouth is exactly as wide as the chassis at EVERY preset and mount (the hazard)', sites > 0 && flush === sites, `${flush}/${sites}`);
+        check(
+          '...so the arm is set inboard of the frame line rather than sharing its outer face',
+          robotsSrc.includes('arm.position.set(0, s * (f.half - BB_INTAKE_ARM_INSET - armT / 2), 0)') &&
+            !robotsSrc.includes('arm.position.set(0, s * (f.half - armT / 2), 0)'),
+        );
+        // the inset has to CLEAR the plate, not merely be non-zero: flush against the plate's
+        // inner face is still two coincident faces.
+        check(
+          '...by more than the outer plate is thick, so the two faces are genuinely apart',
+          BB_INTAKE_ARM_INSET > 0.22,
+          `${BB_INTAKE_ARM_INSET.toFixed(3)} in vs a 0.22-in plate`,
+        );
+        // ...and not so far that the arm stops reading as the mouth's own side
+        check('...and by less than half an inch, so the mouth still reads its own width', BB_INTAKE_ARM_INSET < 0.5, `${BB_INTAKE_ARM_INSET}`);
+      }
+
+      // ══ ITEM B -- THE HOOD IS CARRIED, NOT FLOATING ══════════════════════════════════════
+      //
+      // Owner: "the hood is way too high up and it looks disconnected from the shooter."
+      //
+      // FIRST, IT IS NOT A PREVIEW ARTIFACT. `pitches[0].rotation.y` is written ONLY by the match
+      // sync, so the preview's pitch node sits at its BUILD value of 0 -- which is
+      // `BB_TURRET_PITCH_MIN`, i.e. the resting match pose. The preview and a resting match robot
+      // are the same picture, so what the close-up found is real geometry.
+      {
+        check('the preview shows the RESTING match pose (its pitch node is never written)', BB_TURRET_PITCH_MIN === 0, `${BB_TURRET_PITCH_MIN}`);
+        check(
+          '...because only the match sync writes it',
+          (robotsSrc.match(/pitches\[\d\]\.rotation\.y = -\(r\./g) ?? []).length === 2 && !previewSrc.includes('rotation.y'),
+        );
+
+        // THE GEOMETRY, run rather than grepped. `sidePlateR` is not exported (it is an internal
+        // profile), so this measures the BUILT side plate: the highest point of the plate's own
+        // mesh, against where the hood's arc actually is.
+        const H = bbHead(0);
+        const hoodInner = H.hoodR;
+        // the plate's reach, sampled round the profile off the built turret
+        const turret = buildTurret(BB_DEFAULT_SPEC, 'front', 0);
+        turret.updateMatrixWorld(true);
+        let plate: THREE.Mesh | null = null;
+        let hood: THREE.Mesh | null = null;
+        turret.traverse((o) => {
+          if (!(o instanceof THREE.Mesh)) return;
+          if (o.name === 'bb-turret-side-plate' && !plate) plate = o;
+          if (o.name === 'bb-turret-hood' && !hood) hood = o;
+        });
+        check('the turret builds both a side plate and a hood (else the next checks are vacuous)', plate !== null && hood !== null);
+        if (plate && hood) {
+          const pBox = new THREE.Box3().setFromObject(plate);
+          const hBox = new THREE.Box3().setFromObject(hood);
+          // the SHORTFALL the owner saw: how far the plate's top sits below the hood's underside.
+          const shortfall = hBox.min.z - pBox.max.z;
+          check(
+            'the side plate now reaches the hood rather than stopping ~3 in short of it',
+            shortfall <= 0.05,
+            `plate top ${pBox.max.z.toFixed(3)}, hood bottom ${hBox.min.z.toFixed(3)}, shortfall ${shortfall.toFixed(3)} in`,
+          );
+          check(
+            '...and it does so by climbing to the hood own arc, not by moving the hood',
+            Math.abs(pBox.max.z - (BB_TURRET_AXLE_Z + hoodInner)) < 0.35,
+            `plate top ${(pBox.max.z - BB_TURRET_AXLE_Z).toFixed(3)} above the axle vs hoodR ${hoodInner.toFixed(3)}`,
+          );
+          // THE EXIT IS STILL RELIEVED. The plate must not climb in FRONT of the lip, which is
+          // what the flat top was for: forward of the axle it stays at the corridor cut.
+          const forwardTop = Math.max(
+            ...[0, 10, 20, 30, 45, 60, 80].map((deg) => {
+              const th = (deg * Math.PI) / 180;
+              // the profile's own forward branch, restated: min(hoodR, TOP/sin, FRONT/cos)
+              let r = hoodInner;
+              if (Math.sin(th) > 1e-9) r = Math.min(r, 0.96732 / Math.sin(th));
+              if (Math.cos(th) > 1e-9) r = Math.min(r, 2.2 / Math.cos(th));
+              return Math.sin(th) * r;
+            }),
+          );
+          check(
+            'forward of the axle the plate is still cut to the outgoing corridor',
+            forwardTop < 1.0,
+            `${forwardTop.toFixed(3)} in above the axle`,
+          );
+        }
+        disposeRobotGroup(turret);
+
+        check('the relief is a named ramp, not a bare step at the exit', /const BB_HOOD_RELIEF = /.test(robotsSrc));
+        check('the hood arm has a middle spoke now, so a 32-degree rim is not held at its ends alone', robotsSrc.includes('radialBar((TH_EXIT + thFeed) / 2,'));
+        // ⚠️ AND THE MUZZLE CONTRACT IS UNTOUCHED -- the SHOOTER block above proves the drawn lip
+        // sits on `bbMuzzleLocal` at every pitch. These two say the constants it reads did not
+        // move to get this picture.
+        check('the release chain did not move for this (BB_LAUNCH_Z0)', BB_LAUNCH_Z0 === 10, `${BB_LAUNCH_Z0}`);
+        check(
+          '...and `BB_SIDE_PLATE_TOP_Z` is still the corridor cut it always was',
+          Math.abs(BB_SIDE_PLATE_TOP_Z - (BB_FLYWHEEL_R - 0.3 - 0.15)) < 1e-9,
+          `${BB_SIDE_PLATE_TOP_Z.toFixed(5)}`,
+        );
+        check('...and nothing outside this renderer reads it', !readFileSync(join(BIOBUZZ_DIR, 'robot.ts'), 'utf8').includes('BB_SIDE_PLATE_TOP_Z'));
+      }
+
+      // ══ ITEM C -- THE CHASSIS COLOUR HAS TO BE THERE FROM ABOVE ══════════════════════════
+      //
+      // Owner: "chassis color change is not noticeable enough. The top needs to change." The
+      // cosmetic mesh was the four side plates -- VERTICAL surfaces, presenting a 0.22-in edge
+      // from straight above and nothing else. The file header CLAIMED the deck carried the
+      // colour; the code put the deck in the structural part and said so on the line.
+      //
+      // Measured on the built frame: the UPWARD-FACING area of the cosmetic mesh. That is the
+      // invariant, not "the deck is in the skin now" -- a future rearrangement is free, as long
+      // as a top-down camera still sees the colour.
+      {
+        const upArea = (spec: RobotSpec, cosmetic: boolean): number => {
+          const parts = buildFrame(spec);
+          const mesh = parts.find((p) => p.name === (cosmetic ? 'robot:frame:skin' : 'robot:frame:rails')) as THREE.Mesh | undefined;
+          if (!mesh) return 0;
+          const pos = mesh.geometry.getAttribute('position');
+          const idx = mesh.geometry.getIndex();
+          const n = idx ? idx.count : pos.count;
+          const a = new THREE.Vector3();
+          const b = new THREE.Vector3();
+          const c = new THREE.Vector3();
+          const e1 = new THREE.Vector3();
+          const e2 = new THREE.Vector3();
+          const nn = new THREE.Vector3();
+          let area = 0;
+          for (let t = 0; t < n; t += 3) {
+            const ia = idx ? idx.getX(t) : t;
+            const ib = idx ? idx.getX(t + 1) : t + 1;
+            const ic = idx ? idx.getX(t + 2) : t + 2;
+            a.fromBufferAttribute(pos, ia);
+            b.fromBufferAttribute(pos, ib);
+            c.fromBufferAttribute(pos, ic);
+            e1.subVectors(c, b);
+            e2.subVectors(a, b);
+            nn.crossVectors(e1, e2);
+            const len = nn.length();
+            if (len <= 0) continue;
+            if (nn.z / len > 0.9) area += len / 2; // faces up
+          }
+          return area;
+        };
+        for (const dt of ['mecanum', 'swerve'] as const) {
+          const spec = bbCoerceSpec({ ...BB_DEFAULT_SPEC, drivetrain: dt } as never);
+          const up = upArea(spec, true);
+          const foot = spec.length * spec.width;
+          check(
+            `${dt}: the chassis colour presents real upward-facing area (it was ~0)`,
+            up > 60,
+            `${up.toFixed(1)} sq in of ${foot.toFixed(0)} footprint`,
+          );
+          check(`${dt}: ...at least a quarter of the footprint`, up / foot > 0.25, `${((up / foot) * 100).toFixed(0)} %`);
+          // ...but NOT a lid: the frame is still open, so the deck stays inset and the structure
+          // reads past it. A cosmetic top covering the whole footprint is the "one flat slab" the
+          // previous arrangement was avoiding, and it is still forbidden.
+          check(`${dt}: ...and not the whole top (the frame stays open, not a slab)`, up / foot < 0.75, `${((up / foot) * 100).toFixed(0)} %`);
+        }
+        check('the deck is cosmetic now, and the header says why', robotsSrc.includes('WHAT CARRIES THE COSMETIC COLOUR, AND WHY IT CHANGED'));
+        check('there is a cosmetic top cap on each side plate', /const BB_TOP_CAP_W = /.test(robotsSrc) && robotsSrc.includes('sy * (hw - BB_TOP_CAP_W / 2), BB_PLATE_H + BB_TOP_CAP_T / 2'));
+        // and the ALLIANCE must not have moved into the cosmetic path -- G414 is a rules matter
+        check(
+          'the ALLIANCE is still the outline and the signs, never the fill',
+          !/lineMat\(chassisFill/.test(robotsSrc) && !/getSignTexture\([^)]*chassisColor/.test(robotsSrc),
+        );
+      }
 
       // ── THE IMPORT BOUNDARY, FOR THE ONE COMPONENT THAT REACHES A LAZY CHUNK ─────────────
       // `Preview3D.tsx` is in the MAIN chunk (the builder is a menu screen). A static import of
@@ -1698,11 +2096,24 @@ function graphicsChecks(check: Check, allFiles: string[]): void {
         // an arc at the head's own `hoodR` cut by a flat top, a flat front and a flat bottom — and
         // the hood occupies `hoodR … +BB_HOOD_T`, so the hood is the outermost part at every angle
         // in the wrap and at every elevation, with no offset anybody can drift.
+        //
+        // ⚠️ THE FLAT TOP IS A FORWARD CUT (owner item (B), 2026-09-19). Applied over the whole
+        // upper hemisphere it also cut the plate away BEHIND the exit lip, where the hood, its
+        // tail and the feed shoe are — leaving the hood 2.95 in above anything fixed. Past
+        // `TH_EXIT` the plate climbs a straight relief ramp over `BB_HOOD_RELIEF` and then follows
+        // the arc. Restated here rather than imported, the way this lane always restates the
+        // profile, so the two copies have to agree.
+        const TH_EXIT = Math.PI / 2;
+        const BB_HOOD_RELIEF = 22 * (Math.PI / 180);
         const plateR = (th: number): number => {
           const st = Math.sin(th);
           const ct = Math.cos(th);
           let r = H.hoodR;
-          if (st > 1e-9) r = Math.min(r, BB_SIDE_PLATE_TOP_Z / st);
+          if (st > 1e-9) {
+            const past = th - TH_EXIT;
+            if (past <= 0) r = Math.min(r, BB_SIDE_PLATE_TOP_Z / st);
+            else if (past < BB_HOOD_RELIEF) r = Math.min(r, BB_SIDE_PLATE_TOP_Z + (H.hoodR - BB_SIDE_PLATE_TOP_Z) * (past / BB_HOOD_RELIEF));
+          }
           if (st < -1e-9) r = Math.min(r, BB_SIDE_PLATE_BOTTOM_Z / st);
           if (ct > 1e-9) r = Math.min(r, BB_SIDE_PLATE_FRONT_X / ct);
           return r;
@@ -1728,8 +2139,18 @@ function graphicsChecks(check: Check, allFiles: string[]): void {
           }
           check(
             `${tag}: the hood stands PROUD of the plate at every angle in the wrap, at rest AND at full elevation`,
-            worst >= BB_HOOD_T - 1e-9 && rest > 3 && top >= BB_HOOD_T - 1e-9,
+            worst >= BB_HOOD_T - 1e-9 && top >= BB_HOOD_T - 1e-9,
             `worst +${worst.toFixed(4)} (${worstAt}); rest +${rest.toFixed(3)}, 80° +${top.toFixed(3)}`,
+          );
+          // ⚠️ AND IT IS CARRIED. The clause that used to sit in the line above was `rest > 3`,
+          // i.e. "at rest the plate is more than 3 in clear of the hood everywhere in the wrap" —
+          // which is owner item (B) written down as a requirement. The requirement is the
+          // opposite: SOMEWHERE in the wrap the plate must come right up under the hood's inner
+          // face, while never passing it (the line above).
+          check(
+            `${tag}: ...and at rest the plate comes right up under it somewhere in the wrap`,
+            rest <= BB_HOOD_T + 1e-6,
+            `closest approach +${rest.toFixed(4)} vs the hood's own ${BB_HOOD_T} thickness`,
           );
           pose(BB_TURRET_PITCH_MIN);
           // the DRAWN hood: its vertices live in exactly the band the arithmetic above assumes
@@ -1755,7 +2176,7 @@ function graphicsChecks(check: Check, allFiles: string[]): void {
           );
         }
 
-        // ══ THE PLATE'S TOP IS BELOW THE HOOD'S TOP ════════════════════════════════════════
+        // ══ THE PLATE'S TOP: UNDER THE HOOD, AND CUT AWAY IN FRONT OF THE EXIT ═════════════
         // The rest pose, deliberately: that is the configuration the ruling is about and the one a
         // robot sits in between shots. At full elevation the hood has swung BACK and DOWN, so the
         // fixed plate is legitimately the taller of the two — the all-elevation statement is the
@@ -1764,15 +2185,30 @@ function graphicsChecks(check: Check, allFiles: string[]): void {
           pose(BB_TURRET_PITCH_MIN);
           const plateTop = Math.max(...robotVerts(named('bb-turret-side-plate')[0]).map((v) => v.z));
           const hoodTop = Math.max(...robotVerts(named('bb-turret-hood')[0]).map((v) => v.z));
+          // ⚠️ THESE USED TO PIN THE BUG. They asserted `plateTop < hoodTop - 3` and that the
+          // plate's own top WAS `BB_SIDE_PLATE_TOP_Z` — i.e. that the plate stopped 3 in short of
+          // the hood, everywhere, which is exactly owner item (B) of 2026-09-19 written down as a
+          // requirement. What they say now is the shape the fix has: the plate reaches the hood's
+          // inner face and stops there, and the cut that keeps the outgoing corridor clear applies
+          // FORWARD of the axle, where the corridor actually is.
+          // the plate's own top is on the ARC now (behind the relief ramp), not on the flat cut,
+          // so it sits just under the hood instead of 3.2 in below it. The RADIAL statement — the
+          // plate reaching the hood's inner face somewhere in the wrap — is the one above.
           check(
-            `${tag}: at rest the plate’s highest point is well below the hood’s`,
-            plateTop < hoodTop - 3,
-            `plate ${plateTop.toFixed(3)} vs hood ${hoodTop.toFixed(3)}`,
+            `${tag}: at rest the plate’s top is right under the hood’s, not 3 in below it`,
+            hoodTop - plateTop < 1,
+            `gap ${(hoodTop - plateTop).toFixed(3)} in (it was ${(hoodTop - (BB_TURRET_AXLE_Z + BB_SIDE_PLATE_TOP_Z)).toFixed(3)})`,
           );
           check(
-            `${tag}: ...and the plate’s own top is the flat cut BB_SIDE_PLATE_TOP_Z, not an arc that outran it`,
-            Math.abs(plateTop - (BB_TURRET_AXLE_Z + BB_SIDE_PLATE_TOP_Z)) < 1e-6,
-            `${plateTop.toFixed(4)} vs ${(BB_TURRET_AXLE_Z + BB_SIDE_PLATE_TOP_Z).toFixed(4)}`,
+            `${tag}: ...and the hood is still the topmost part, by its own thickness`,
+            plateTop < hoodTop - BB_HOOD_T + 1e-3 && hoodTop - plateTop < BB_HOOD_T + 0.5,
+            `plate ${plateTop.toFixed(3)} vs hood ${hoodTop.toFixed(3)}`,
+          );
+          const fwdTop = Math.max(...axleVerts(named('bb-turret-side-plate')[0]).filter((v) => v.x > 0.05).map((v) => v.z));
+          check(
+            `${tag}: ...while forward of the axle it is still the flat cut BB_SIDE_PLATE_TOP_Z`,
+            Math.abs(fwdTop - BB_SIDE_PLATE_TOP_Z) < 1e-3,
+            `${fwdTop.toFixed(4)} vs ${BB_SIDE_PLATE_TOP_Z.toFixed(4)}`,
           );
         }
 
@@ -3114,8 +3550,271 @@ function graphicsChecks(check: Check, allFiles: string[]): void {
       check('...and the low LOD gets a zeroed record rather than a partial one', /: NO_MARKINGS;/.test(glbSrc));
       check('mesh detail is `low` on the LOW tier alone', GFX_PRESETS.low.meshDetail === 'low' && (['medium', 'high', 'ultra'] as const).every((t) => GFX_PRESETS[t].meshDetail === 'high'));
     }
+
+    // == THE 2026-09-19 OWNER PASS, ITEMS 6 AND 8, AND THE STICKER LABEL ===================
+
+    // ITEM 13a -- THE LABEL IS FIG 9-16'S, NOT A CAPTION. `manual-distilled.md` §9.9: "The
+    // cluster sticker in Fig 9-16 is labelled per cell, e.g. 'RED AUDIENCE / Tag family: 36h11'."
+    // It was drawn as one line with the four IDs appended, which the real sticker does not carry.
+    {
+      check(
+        'the sticker label is the CELL name over `Tag family: 36h11`, on two lines',
+        glbCode.includes('ctx.fillText(label,') && glbCode.includes('ctx.fillText(`Tag family: ${TAG_FAMILY}`'),
+      );
+      check('...and the IDs are no longer lettered beside it', !glbCode.includes("${ids.join(' ')}"));
+      check('the four cell names are the manual own', Object.values(TAG_LABEL_EXPECTED).join('|') === 'RED FAR|RED AUDIENCE|BLUE FAR|BLUE AUDIENCE');
+      for (const [a, side, want] of TAG_LABEL_ROWS) {
+        check(`Fig 9-16 labels the ${a} ${side} cell "${want}"`, glbSrc.includes(`${side}: '${want}'`), want);
+      }
+      // the tag BITMAPS are untouched -- they are real 36h11 and the block above round-trips them
+      check('the label change did not touch the tag raster', glbSrc.includes('TAG_CELL_PX = 12') && glbSrc.includes('magFilter = THREE.NearestFilter'));
+    }
+
+    // ITEM 6 -- THE STICKER BLEEDS THROUGH FROM ABOVE, AND CANNOT BE READ FROM THERE.
+    //
+    // §9.9 keeps the cluster on the BOTTOM face of each CELL facing DOWN -- that is unchanged and
+    // checked first, because the fix must not move the real sticker. What is ADDED is the white
+    // vinyl coming through the translucent floor when you look down at it (owner, 2026-09-19).
+    //
+    // ⚠️ THE UNDECODABILITY IS A RASTER PROPERTY, NOT AN OPACITY. A faint but CRISP copy still
+    // carries all 36 bits; a detector thresholds and does not care how grey the ink is. So the
+    // check is on the PITCH: the bleed canvas is rasterized coarser than a tag CELL, so the
+    // rasterizer averages the bits away before the texture exists.
+    {
+      check(
+        '§9.9 is intact: the crisp cluster still faces DOWN off the cell floor',
+        glbSrc.includes('const DOWN = new THREE.Vector3(0, 0, -1)') &&
+          glbSrc.includes('facetFrame(mesh, (_cx, cy) => Math.sign(cy) === sideSign, DOWN,') &&
+          glbSrc.includes('quad.position.copy(frame.centre).addScaledVector(DOWN, MARKING_LIFT_IN)'),
+      );
+      check(
+        'and a SECOND, faint quad is built on the UPPER face of the same plate',
+        glbSrc.includes('bleed.name = `bb-apriltag-bleed:${alliance}:${side}`') &&
+          glbSrc.includes('bleed.position.set(frame.centre.x, frame.centre.y, topZ + MARKING_LIFT_IN)'),
+      );
+      // ⚠️ IT IS THE STICKER'S OWN RECTANGLE, LIFTED AND MIRRORED, NOT A SECOND MEASUREMENT.
+      // Measured on the shipped `field.glb`: `facetFrame(..., UP, ...)` over the same plate
+      // returns a 14.434 x 0.123-in STRIP, because the decimator kept almost none of the face
+      // the plate is pressed against. A bleed built on that sits 2.3 in off the sticker and is
+      // 40x too thin. Both statements are checked, so nobody "simplifies" it back.
+      check(
+        '...on the SAME rectangle the sticker uses (a second facetFrame measures a lip)',
+        /new THREE\.PlaneGeometry\(frame\.width, frame\.height\),\s*bleedMaterial\(tagBleedTexture\(ids, frame\.width, frame\.height\)\),/.test(glbSrc),
+      );
+      check(
+        '...at the CAD plate own top face, not a typed thickness',
+        glbSrc.includes('const topZ = new THREE.Box3().setFromObject(mesh).max.z;'),
+      );
+      check(
+        '...and MIRRORED, which is what looking through a translucent panel does',
+        glbSrc.includes('makeBasis(new THREE.Vector3(sideSign, 0, 0), new THREE.Vector3(0, sideSign, 0), UP)'),
+      );
+      check('one per CELL, counted beside the stickers', /tagBleeds: number;/.test(glbSrc) && glbSrc.includes('out.tagBleeds++'));
+      check('...and the low LOD still zeroes every marking', glbSrc.includes('const NO_MARKINGS: FieldMarkings = { tagPlates: 0, tagBleeds: 0, banners: 0, standoffs: 0 }'));
+
+      // the four tuning values below are restated in this file rather than imported, so the
+      // checks test a VALUE and not the same symbol the renderer reads. That only works if the
+      // two copies agree, which is this check.
+      check(
+        'the bleed tuning this lane checks against is the renderer own',
+        glbSrc.includes(`const TAG_BLEED_PX_PER_IN = ${TAG_BLEED_PX_PER_IN};`) &&
+          glbSrc.includes(`const TAG_BLEED_OPACITY = ${TAG_BLEED_OPACITY_EXPECTED};`) &&
+          glbSrc.includes(`const TAG_BLEED_WHITE = '${TAG_BLEED_WHITE_EXPECTED}';`) &&
+          glbSrc.includes(`const TAG_BLEED_INK = '${TAG_BLEED_INK_EXPECTED}';`),
+      );
+
+      // THE GUARANTEE. A 36h11 decoder samples one bit per tag CELL; a bleed pixel that spans
+      // more than one cell cannot hold one.
+      const pitchIn = 1 / TAG_BLEED_PX_PER_IN;
+      check(
+        'the bleed raster is COARSER than a 36h11 cell, so no pixel can hold one bit',
+        pitchIn > TAG_CELL_IN,
+        `${pitchIn.toFixed(3)}in per pixel vs a ${TAG_CELL_IN.toFixed(3)}in cell`,
+      );
+      check(
+        '...and coarser by a margin, not by a hair (>= 2 cells per pixel)',
+        pitchIn >= 2 * TAG_CELL_IN,
+        `${(pitchIn / TAG_CELL_IN).toFixed(2)} cells per pixel`,
+      );
+      // a whole 3.25-in tag lands on ~4.5 px, so a cluster of four is a smudge and not a grid
+      check(
+        'a whole tag lands on a handful of pixels',
+        TAG_SIZE_IN * TAG_BLEED_PX_PER_IN < 6,
+        `${(TAG_SIZE_IN * TAG_BLEED_PX_PER_IN).toFixed(2)} px across`,
+      );
+      check(
+        'the bleed is SMEARED on the way back up, never `NearestFilter` (which would give hard blocks)',
+        /function tagBleedTexture[\s\S]*?magFilter = THREE\.LinearFilter/.test(glbSrc),
+      );
+      // and it is a stain, not a sticker: translucent, low contrast, no shadow, not `decalMaterial`
+      check('the bleed material is translucent and writes no depth', /function bleedMaterial[\s\S]*?transparent: true,[\s\S]*?depthWrite: false,/.test(glbSrc));
+      check('the bleed is much fainter than the sticker below it', TAG_BLEED_OPACITY_EXPECTED <= 0.35, `${TAG_BLEED_OPACITY_EXPECTED}`);
+      check('...and casts no shadow', glbSrc.includes('bleed.castShadow = false'));
+      // LOW contrast: the two tones it paints are near each other and near white, so even the
+      // blocks the raster leaves are a suggestion rather than a black-and-white pattern
+      {
+        const lum = (hex: string): number => {
+          const v = [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16) / 255);
+          return 0.2126 * v[0] + 0.7152 * v[1] + 0.0722 * v[2];
+        };
+        const ratio = (lum(TAG_BLEED_WHITE_EXPECTED) + 0.05) / (lum(TAG_BLEED_INK_EXPECTED) + 0.05);
+        check(
+          'the bleed pair is LOW contrast (the sticker itself is 21:1 black on white)',
+          ratio < 2,
+          `${ratio.toFixed(2)}:1`,
+        );
+      }
+    }
+
+    // ITEM 8 -- A CLEAR PANEL IS A DIELECTRIC, NOT A CONSTANT ALPHA.
+    //
+    // Owner, 2026-09-19: "the hive's back panel reads as perfectly transparent from behind, and
+    // should not." It is NOT back-face culling -- measured on the shipped `field.glb`, red tray,
+    // the `plastic#e6e6e6` primitive has 0 BOUNDARY edges and matched opposite normal bins, so
+    // every skin is a closed slab and `FrontSide` culls nothing. The panel is drawn; it is drawn
+    // at a constant 0.13 alpha, which also divides its own reflection by 0.13, and a reflection
+    // does not pass through the sheet. See `clearPanelMaterial`'s header.
+    //
+    // ⚠️ AND THE ANSWER MUST NOT BRING BACK THE STRAY DASHES. `addPanelEdges` is what was removed
+    // to fix owner bug 3, and the "no edge/outline pass at all" check above is what keeps it out.
+    // These add the second half of that guard: the fix is a per-pixel SHADER term, so it builds
+    // no geometry and no mesh either.
+    {
+      check(
+        'the panel takes polycarbonate own IOR, and every other number derives from it',
+        /const PANEL_IOR = 1\.586;/.test(glbSrc) && /ior: PANEL_IOR/.test(glbSrc),
+      );
+      check(
+        'the alpha is FRESNEL-weighted, in the shader, on |N.V| (so behind behaves like in front)',
+        glbSrc.includes('mat.onBeforeCompile = (shader)') &&
+          glbSrc.includes('abs( dot( normalize( normal ), normalize( vViewPosition ) ) )') &&
+          glbSrc.includes('diffuseColor.a = mix( diffuseColor.a,'),
+      );
+      check(
+        '...and the injected program is CACHE-KEYED, or three hands every panel the first one',
+        glbSrc.includes('mat.customProgramCacheKey = () =>'),
+      );
+      check(
+        'the reflected term is added back un-attenuated, capped',
+        glbSrc.includes('reflectedLight.directSpecular + reflectedLight.indirectSpecular') &&
+          glbSrc.includes('outgoingLight += bbSpec * min( 1.0 / max( diffuseColor.a, 0.02 ) - 1.0,'),
+      );
+
+      // THE CURVE, run rather than grepped -- the shader's own `pow(1-c,5)` is this reduced.
+      for (const base of [0.08, 0.13] as const) {
+        check(
+          `face-on, a ${base} panel is still EXACTLY ${base} (the white-board re-tune is untouched)`,
+          Math.abs(clearPanelAlphaAt(base, 1) - base) < 1e-12,
+          `${clearPanelAlphaAt(base, 1)}`,
+        );
+        check(
+          `...and at grazing it reaches the panel graze alpha, from ${base}`,
+          Math.abs(clearPanelAlphaAt(base, 0) - 0.55) < 1e-12,
+          `${clearPanelAlphaAt(base, 0)}`,
+        );
+        // MONOTONE, and symmetric in the sign of N.V: a panel seen from behind is the same panel
+        let prev = clearPanelAlphaAt(base, 1);
+        let monotone = true;
+        let symmetric = true;
+        for (let k = 20; k >= 0; k--) {
+          const c = k / 20;
+          const a = clearPanelAlphaAt(base, c);
+          if (a < prev - 1e-12) monotone = false;
+          if (Math.abs(a - clearPanelAlphaAt(base, -c)) > 1e-12) symmetric = false;
+          prev = a;
+        }
+        check(`the ${base} panel alpha rises monotonically off normal`, monotone);
+        check(`...and is identical for a NEGATIVE N.V (the whole of "from behind")`, symmetric);
+        // ⚠️ AND IT IS AN EDGE TERM, WHICH IS THE HALF OF THE FIX THAT IS EASY TO MISREAD.
+        // Schlick's fifth power is steep: at 45 deg the excess is 0.010 and at 60 it is 0.031,
+        // so the alpha anywhere near face-on is the measured one to within a rounding -- the
+        // re-tune is untouched over most of the sphere, deliberately. What the term buys is the
+        // last 20 deg before grazing, which is where a slab's 0.020-in side face always is, and
+        // that is the EDGE. The thing that answers "invisible from behind, FACE-ON" is the sheen
+        // gain below, not this.
+        {
+          const at = (deg: number): number => clearPanelAlphaAt(base, Math.cos((deg * Math.PI) / 180));
+          check(
+            `${base}: a look within 45 deg of normal is the measured opacity, to a rounding`,
+            at(45) - base < 0.005,
+            `${at(45).toFixed(4)} vs ${base}`,
+          );
+          check(
+            `${base}: ...and at 80 deg the edge is real (more than double)`,
+            at(80) > base * 2,
+            `${at(80).toFixed(4)} vs ${base}`,
+          );
+        }
+      }
+      // THE SHEEN GAIN: face-on is exactly where the panel needs it most, and the cap does not
+      // bind on either shipped opacity (it exists so a future lower one cannot divide by ~0).
+      check('the sheen gain restores the reflection face-on', clearPanelSheenGain(0.13) > 6, `${clearPanelSheenGain(0.13).toFixed(2)}x`);
+      check('...more so on the thinner perimeter panel', clearPanelSheenGain(0.08) > clearPanelSheenGain(0.13));
+      check('...and the cap never binds on a shipped value', clearPanelSheenGain(0.08) < 12, `${clearPanelSheenGain(0.08).toFixed(2)}`);
+      check('...but does bind on an absurd one', clearPanelSheenGain(0.001) === 12);
+
+      // THE ROUGHNESS -- the half of the fix that does not depend on the viewing angle
+      check('a season-old panel is not showroom acrylic', /const PANEL_ROUGHNESS = 0\.18;/.test(glbSrc) && !/roughness: 0\.08/.test(glbCode));
+
+      // ⚠️ AND NO STRAY DASHES CAME BACK WITH IT. Three statements, all over the CODE:
+      check('ITEM 8 adds no edge pass (the file-wide guard, restated against THIS change)', !/EdgesGeometry|LineSegments/.test(glbCode));
+      {
+        const at = glbCode.indexOf('function clearPanelMaterial');
+        const body = at < 0 ? '' : glbCode.slice(at, glbCode.indexOf('\n}', glbCode.indexOf('onBeforeCompile', at)));
+        check(
+          '...and the panel material builds no geometry and no mesh of its own',
+          body.length > 0 && !/new THREE\.Mesh\(|Geometry\(|new THREE\.Line/.test(body),
+          `${body.length} chars`,
+        );
+        check('...it is one material, whose only addition is a fragment-shader replace', body.includes('shader.fragmentShader = shader.fragmentShader.replace('));
+        // the FrontSide / depthWrite policy the 2026-09-19 re-tune set is unchanged by all this
+        check('...and FrontSide + depthWrite:false survive it', /side: THREE\.FrontSide/.test(body) && /depthWrite: false/.test(body) && !/DoubleSide/.test(body));
+      }
+    }
+
+    // ITEM 13b -- THE ACM PANEL IS BLANK, BECAUSE THE CAD SHIPS IT BLANK.
+    //
+    // `am-5883: Panel Sticker` x2 arrives as `decal#ffffff` with no artwork (the blank-decal
+    // inventory above records it). The renderer used to letter "F I R S T  T E C H  C H A L L E
+    // N G E" / "BIOBUZZ" / an amber rule onto it -- invented artwork on blank source data.
+    // A hand-redrawn wordmark is not the alternative either: FIRST's trademark policy restricts
+    // the LOGO marks to registered teams, committees/partners and written agreements, and the
+    // brand guidelines forbid altered versions. So: a blank panel, shaded to read as a physical
+    // sheet. §9 notes the logo panel may not be present at all events, so this is a real field.
+    {
+      check('the banner embeds or fetches NO logo artwork (unchanged, and it stays)', !/data:image|logo|\.svg|\.png/i.test(glbCode));
+      {
+        const at = glbCode.indexOf('function bannerTexture(');
+        const body = at < 0 ? '' : glbCode.slice(at, glbCode.indexOf('\n}', at));
+        check('the banner letters NOTHING -- no wordmark, no season name, no invented text', body.length > 0 && !/fillText|strokeText|\.font\s*=/.test(body), `${body.length} chars`);
+        check('...and the three invented marks are gone by name', !/F I R S T|BIOBUZZ.*fillText|#ffba52/.test(body));
+        check('it draws a SHEET instead: a gradient face and a soft wrapped edge', body.includes('createLinearGradient') && body.includes('PANEL_STICKER_EDGE'));
+        // ...as a filled band, not a stroked outline -- a 1-px stroke on a quad leaning 24 deg
+        // aliases into exactly the dashes owner bug 3 was about
+        check('...with no stroked outline anywhere in it', !/stroke/i.test(body));
+      }
+      check('the panel face is semi-gloss composite, not a matt floor decal', glbSrc.includes('function panelStickerMaterial(') && glbSrc.includes('panelStickerMaterial(bannerTexture('));
+      check('and the reasoning is recorded where the next session will read it', /Policy on the Use of FIRST\s+\*?\s*Trademarks/.test(glbSrc) || /Trademarks and Copyrighted Materials/.test(glbSrc));
+      check('...including that the CAD sticker is the source of truth for it being blank', /am-5883/.test(glbSrc));
+    }
   }
 }
+
+/** Fig 9-16's four cell names, written out here rather than imported, so the renderer's own
+ *  table is checked against a second copy. */
+const TAG_LABEL_EXPECTED = { redNorth: 'RED FAR', redSouth: 'RED AUDIENCE', blueNorth: 'BLUE FAR', blueSouth: 'BLUE AUDIENCE' } as const;
+const TAG_LABEL_ROWS = [
+  ['red', 'north', 'RED FAR'],
+  ['red', 'south', 'RED AUDIENCE'],
+  ['blue', 'north', 'BLUE FAR'],
+  ['blue', 'south', 'BLUE AUDIENCE'],
+] as const;
+/** the bleed's shipped tuning, restated here so the checks above test the VALUE rather than
+ *  reading the same symbol the renderer does. */
+const TAG_BLEED_PX_PER_IN = 1.4;
+const TAG_BLEED_OPACITY_EXPECTED = 0.3;
+const TAG_BLEED_WHITE_EXPECTED = '#f2f4f6';
+const TAG_BLEED_INK_EXPECTED = '#a8b2bc';
 
 /** read the 36 code bits back out of a rendered 36h11 grid, MSB first at the published
  * `bit_x`/`bit_y` offsets — the inverse of `apriltag36h11Cells`, written out longhand here so the

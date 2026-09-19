@@ -4,7 +4,7 @@ import { createBiobuzzWorld } from '../../src/games/biobuzz/spawn';
 import { biobuzzPhysics } from '../../src/games/biobuzz/state';
 import { biobuzzStep } from '../../src/games/biobuzz/step';
 import { step3d } from '../../src/games/biobuzz/sim3d/step3d';
-import { engineFor } from '../../src/games/biobuzz/sim3d/engineImpl';
+import { engineFor, syncElements } from '../../src/games/biobuzz/sim3d/engineImpl';
 import { cadTrayRefTheta, fieldColliders3d } from '../../src/games/biobuzz/sim3d/fieldColliders';
 import { hiveCellLocalBox, hivePivotX, hiveTrayRefTheta, __setFieldCollidersOverrideForTests } from '../../src/games/biobuzz/sim3d/bodies';
 import { hiveTiltAngle } from '../../src/games/biobuzz/sim3d/hive3d';
@@ -41,6 +41,7 @@ import {
   BB_TAPE,
   BB_TILE_PITCH,
   BB_TIP_POLLEN,
+  bbHeightNow,
 } from '../../src/games/biobuzz/config';
 import * as C from '../../src/config';
 import { biobuzzColliders, BB_WALL_COUNT } from '../../src/games/biobuzz/colliders';
@@ -1099,6 +1100,252 @@ export function sim3dChecks(check: Check): void {
         'dump 2d: with no perDump the WHOLE hopper still leaves on one tick',
         load >= 2 && r.hopper.length === 0,
         `load=${load} → ${r.hopper.length}`,
+      );
+    }
+  }
+
+  // ---- BIRTH CLEARANCE: THE FIELD, AND A CAPTURE-AND-FIRE ON ONE TICK -------------------------
+  //
+  // Two owner reports, 2026-09-19, and one root shape: a body created or teleported INSIDE a
+  // solid, which Rapier's penetration recovery then throws out along whatever normal it finds.
+  //
+  //   (a) "launching balls from a corner or against a wall sometimes shoots the balls in a
+  //       completely different incorrect direction". `birthClear` escapes a chassis by marching
+  //       FORWARD along the arc, and it knew about robots only — so a release that started inside
+  //       the thrower and pointed at a wall was marched STRAIGHT INTO the wall. Measured with the
+  //       field clamp disabled, on a robot flush at each wall with the turret yawed into it: the
+  //       birth point ended 2.9-3.8 in past the wall's inner face, and five ticks later the
+  //       element was DEAD (|v| = 0, buried) or 136-176° off the heading it was fired at.
+  //   (b) "similar incorrect launches happen with the intake collision too — like when I'm
+  //       intaking as I'm shooting". Capture and launch run in that order inside ONE gameplay
+  //       stage, and `capturePollen` does not remove the body, so an element picked up and fired
+  //       on the same tick reached `flight` still owning its ground body — and the guard ran on
+  //       body CREATION, so it was skipped and the body was teleported to the muzzle, 7.3 in
+  //       inside the chassis. Measured with the guard disabled: a DUMPER's lob apexed at 10.8 in
+  //       instead of 63.2, which is `birthClear`'s own 0/28 tutorial-grid failure, back.
+  //
+  // ⚠️ THE WALL CASE NEEDS MANUAL AIM TO REACH AT ALL, and that is worth knowing before anyone
+  // "simplifies" these scenes: Aim Assist only releases a shot its landing gate says will enter
+  // the CELL, so no aim-gated shot is ever fired at a wall from point blank. 576 real aim-gated
+  // shots flush against all four walls and in all four corners found no birth inside any static
+  // (worst turn 8.5°, which is gravity). The manual-aim path is what a driver with the assist off
+  // would have, and it is the one that reaches the geometry.
+  {
+    const TURRET_R = { bbMech: { launcher: { kind: 'turret' as const, mount: 'right' as const, hoodDeg: 75 }, lift: null } };
+    const TURRET_M = { bbMech: { launcher: { kind: 'turret' as const, mount: 'center' as const, hoodDeg: 75 }, lift: null } };
+    const DUMPER_B = { bbMech: { launcher: { kind: 'dumper' as const, mount: 'back' as const, hoodDeg: 45 }, lift: null } };
+    /** LAUNCHED, not merely tagged `flight`: `releasePollen` is the only writer that stamps `by`,
+     * and `derive.ts` calls every bouncing ground element `flight` without one. */
+    const isLaunched = (b: Artifact): boolean => b.state.kind === 'flight' && b.state.by !== undefined;
+    const turnDeg = (a: { x: number; y: number; z: number }, c: { x: number; y: number; z: number }): number => {
+      const da = Math.hypot(a.x, a.y, a.z);
+      const dc = Math.hypot(c.x, c.y, c.z);
+      if (da < 1e-9 || dc < 1e-9) return 180;
+      return (Math.acos(Math.min(1, Math.max(-1, (a.x * c.x + a.y * c.y + a.z * c.z) / (da * dc)))) * 180) / Math.PI;
+    };
+    /** how far INSIDE a chassis solid the element's centre sits (in); 0 = clear. `bbHeightNow`,
+     * not `spec.heightIn`: R102's stow is what the collider was actually built to. */
+    const chassisDepth = (w: World, b: Artifact): number => {
+      const rad = b.r ?? BB_POLLEN_R;
+      let worst = 0;
+      for (const rob of w.robots) {
+        const h = bbHeightNow(w, rob.spec);
+        const l = rot({ x: b.pos.x - rob.pos.x, y: b.pos.y - rob.pos.y }, -rob.heading);
+        const lz = b.z + rad - ((rob.z ?? 0) + h / 2);
+        for (const s of chassis3dShapes(rob.spec, h)) {
+          const dx = Math.max(Math.abs(l.x - s.cx) - s.hx, 0);
+          const dy = Math.max(Math.abs(l.y - s.cy) - s.hy, 0);
+          const dz = Math.max(Math.abs(lz - s.cz) - s.hz, 0);
+          worst = Math.max(worst, rad - Math.hypot(dx, dy, dz));
+        }
+      }
+      return worst;
+    };
+    /** how far the element's sphere reaches PAST a perimeter wall's inner face (in); 0 = inside. */
+    const outsideBy = (b: Artifact): number => {
+      const rad = b.r ?? BB_POLLEN_R;
+      return Math.max(0, Math.abs(b.pos.x) + rad - BB_HALF_X, Math.abs(b.pos.y) + rad - BB_HALF_Y);
+    };
+
+    /**
+     * Step until this robot fires, then hand back the element AS THE SYNC LEAVES IT.
+     *
+     * ⚠️ IT SYNCS THE ENGINE ITSELF RATHER THAN STEPPING AGAIN. `releasePollen` writes the launch
+     * JSON in the gameplay stage at the END of a tick and `birthClear` runs in the NEXT tick's
+     * sync (stage 5) — so a check that stepped once more would be looking at the element a whole
+     * solve later, with the nudge already flown off. `syncElements` is that stage, called on its
+     * own; the step that follows it in the loop above is what the physical assertions then use.
+     */
+    const fireAndSync = (
+      w: World,
+      c: RobotCommand,
+      ticks: number,
+      before?: () => void,
+    ): {
+      shot: Artifact | null;
+      v0: { x: number; y: number; z: number };
+      pos0: { x: number; y: number; z: number };
+      bodyAtLaunch: unknown;
+    } => {
+      const cmds = new Map([[0, c]]);
+      const had = new Map<number, boolean>();
+      for (const b of w.balls) had.set(b.id, isLaunched(b));
+      for (let t = 0; t < ticks; t++) {
+        before?.();
+        step3d(w, 1 / 60, cmds);
+        for (const b of w.balls) {
+          const now = isLaunched(b);
+          const was = had.get(b.id) ?? false;
+          had.set(b.id, now);
+          if (!now || was) continue;
+          const v0 = { x: b.vel.x, y: b.vel.y, z: b.vz };
+          const pos0 = { x: b.pos.x, y: b.pos.y, z: b.z };
+          const bodyAtLaunch = engineFor(w).elements.get(b.id);
+          syncElements(w, engineFor(w));
+          return { shot: b, v0, pos0, bodyAtLaunch };
+        }
+      }
+      return { shot: null, v0: { x: 0, y: 0, z: 0 }, pos0: { x: 0, y: 0, z: 0 }, bodyAtLaunch: undefined };
+    };
+
+    // (a) POINT BLANK INTO EACH WALL AND TWO CORNERS, ON MANUAL AIM.
+    const flush = BB_HALF_X - bbFootprint(bbCoerce({})).half; // a FLANK is flush at its half-width
+    for (const [nm, px, py, heading, yaw] of [
+      ['+x', flush, 0, Math.PI / 2, 0],
+      ['-x', -flush, 0, -Math.PI / 2, Math.PI],
+      ['+y', 0, flush, 0, Math.PI / 2],
+      ['-y', 0, -flush, 0, -Math.PI / 2],
+      ['+x+y corner', flush, flush, Math.PI / 2, Math.PI / 4],
+      ['-x-y corner', -flush, -flush, -Math.PI / 2, (-3 * Math.PI) / 4],
+    ] as const) {
+      for (const pitch of [0, 0.9]) {
+        const w = createBiobuzzWorld('free', 41, [setup(0, 'blue', TURRET_R)], undefined, '3d');
+        const r = w.robots[0];
+        r.pos = { x: px, y: py };
+        r.heading = heading;
+        r.vel = { x: 0, y: 0 };
+        r.angVel = 0;
+        r.hopper.length = 2;
+        const { shot, v0 } = fireAndSync(w, cmd({ fire: true }), 90, () => {
+          // MANUAL AIM, re-asserted every tick: `coerceAssists` forces the flag on (the menu
+          // toggle is gone), so a test sets it on the spawned robot — its own comment says so —
+          // and stage 5b slews the turret back toward the hive on every tick, so the yaw and
+          // pitch have to be re-held or this stops being a shot at the wall.
+          r.aimAssist = false;
+          r.turretHeading = yaw;
+          r.bbTurretPitch = pitch;
+        });
+        check(`wall birth: a point-blank shot into the ${nm} wall fires (pitch ${pitch})`, shot !== null);
+        if (!shot) continue;
+        check(
+          `wall birth: ...and is born INSIDE the field, not in the wall (${nm}, pitch ${pitch})`,
+          outsideBy(shot) <= 0,
+          `past the face by ${outsideBy(shot).toFixed(2)}in at (${shot.pos.x.toFixed(1)}, ${shot.pos.y.toFixed(1)})`,
+        );
+        // THE VELOCITY IS THE SHOT'S OWN. A static is escaped by MOVING the birth point, never by
+        // rewriting the solved velocity — that is what makes the next step an honest wall bounce
+        // at the speed it was fired at. (`vz` may be advanced by the arc march, and only by it:
+        // `g·dt` over at most `BB3_LAUNCH_CLEAR_MAX` of path.)
+        check(
+          `wall birth: ...with the planar velocity it was solved with (${nm}, pitch ${pitch})`,
+          Math.abs(shot.vel.x - v0.x) < 1e-9 && Math.abs(shot.vel.y - v0.y) < 1e-9 && shot.vz <= v0.z + 1e-9,
+          `v0=(${v0.x.toFixed(1)}, ${v0.y.toFixed(1)}, ${v0.z.toFixed(1)}) born=(${shot.vel.x.toFixed(1)}, ${shot.vel.y.toFixed(1)}, ${shot.vz.toFixed(1)})`,
+        );
+      }
+    }
+
+    // (b) OUT OF A CORNER, aim-gated — the production path, and the regression guard for the
+    //     whole area: a corner shot must leave along the arc it was solved onto.
+    {
+      const w = createBiobuzzWorld('free', 41, [setup(0, 'blue', TURRET_M)], undefined, '3d');
+      const r = w.robots[0];
+      r.pos = { x: -flush, y: -flush };
+      r.heading = Math.PI / 4;
+      r.vel = { x: 0, y: 0 };
+      r.hopper.length = 2;
+      for (let t = 0; t < 120; t++) step3d(w, 1 / 60, new Map([[0, cmd({})]])); // the turret slews on
+      const { shot, v0 } = fireAndSync(w, cmd({ fire: true }), 120);
+      check('corner: a robot parked in a corner fires at its own CELL', shot !== null);
+      if (shot) {
+        const id = shot.id;
+        for (let t = 0; t < 5; t++) step3d(w, 1 / 60, new Map());
+        const b = w.balls.find((x) => x.id === id)!;
+        const turn = turnDeg(v0, { x: b.vel.x, y: b.vel.y, z: b.vz });
+        check('corner: ...and the element leaves along the heading it was fired at', turn < 12, `${turn.toFixed(1)}deg in 5 ticks`);
+        check(
+          'corner: ...without gaining speed on the way out',
+          Math.hypot(b.vel.x, b.vel.y, b.vz) <= Math.hypot(v0.x, v0.y, v0.z) + 1,
+          `${Math.hypot(b.vel.x, b.vel.y, b.vz).toFixed(0)} vs ${Math.hypot(v0.x, v0.y, v0.z).toFixed(0)} in/s`,
+        );
+      }
+    }
+
+    // (c) CAPTURE AND FIRE ON ONE TICK, for both archetypes.
+    for (const [kind, spec] of [
+      ['dumper', DUMPER_B],
+      ['turret', TURRET_M],
+    ] as const) {
+      const w = createBiobuzzWorld('free', 44, [setup(0, 'blue', spec)], undefined, '3d');
+      const r = w.robots[0];
+      r.pos = { x: BB_HIVE_X, y: BB_HIVE_CELL_DY + 26 };
+      r.heading = Math.PI / 2; // the dumper's back edge — its firing edge — faces the cell
+      r.vel = { x: 0, y: 0 };
+      r.angVel = 0;
+      // EMPTY THE HOPPER, held elements and all: the only element this robot can fire is one it
+      // picks up, so the launch is forced to take the element captured on that same tick.
+      for (let i = w.balls.length - 1; i >= 0; i--) {
+        const st = w.balls[i].state;
+        if (st.kind === 'held' && st.robot === 0) w.balls.splice(i, 1);
+      }
+      r.hopper.length = 0;
+      for (let t = 0; t < 120; t++) step3d(w, 1 / 60, new Map([[0, cmd({})]]));
+      // one POLLEN sitting in the intake mouth
+      const mouth = bbMouths(r.spec).find((m) => m.edge === 'front')!;
+      const lp = rot({ x: (mouth.x0 + mouth.x1) / 2, y: 0 }, r.heading);
+      const fedId = Math.max(...w.balls.map((b) => b.id)) + 1;
+      w.balls.push({
+        id: fedId,
+        color: 'yellow',
+        state: { kind: 'ground' },
+        pos: { x: r.pos.x + lp.x, y: r.pos.y + lp.y },
+        z: 0,
+        vel: { x: 0, y: 0 },
+        vz: 0,
+      });
+      const { shot, v0, pos0, bodyAtLaunch } = fireAndSync(w, cmd({ intake: true, fire: true }), 120, () => {
+        // HOLD THE CADENCE CLOCK OPEN so the capture tick is also a fire tick. It is the state
+        // the launcher is in every `BB_FIRE_INTERVAL` anyway; without it whether the two land on
+        // the same tick is a coin flip on phase, which is exactly why the bug read as "sometimes".
+        r.fireReadyAt = w.time;
+      });
+      check(`capture+fire (${kind}): the element picked up this tick is the one fired`, shot !== null && shot.id === fedId, `shot=${shot?.id ?? 'none'} fed=${fedId}`);
+      if (!shot) continue;
+      check(
+        `capture+fire (${kind}): ...its ground body does not survive into its own flight`,
+        bodyAtLaunch !== undefined && engineFor(w).elements.get(fedId) !== bodyAtLaunch,
+        bodyAtLaunch === undefined ? 'no body at launch — the scene is not testing the gap' : 'the sync rebuilt the body',
+      );
+      check(
+        `capture+fire (${kind}): ...and it is born CLEAR of the chassis that threw it`,
+        chassisDepth(w, shot) <= 0,
+        `${chassisDepth(w, shot).toFixed(2)}in inside, moved ${Math.hypot(shot.pos.x - pos0.x, shot.pos.y - pos0.y, shot.z - pos0.z).toFixed(2)}in`,
+      );
+      for (let t = 0; t < 5; t++) step3d(w, 1 / 60, new Map());
+      const flown = w.balls.find((x) => x.id === fedId)!;
+      const turn = turnDeg(v0, { x: flown.vel.x, y: flown.vel.y, z: flown.vz });
+      check(`capture+fire (${kind}): ...and leaves along the arc it was fired on`, turn < 12, `${turn.toFixed(1)}deg in 5 ticks`);
+      let apex = flown.z;
+      for (let t = 0; t < 120; t++) {
+        step3d(w, 1 / 60, new Map());
+        const bb = w.balls.find((x) => x.id === fedId);
+        if (bb) apex = Math.max(apex, bb.z);
+      }
+      // THE SIGNATURE, and the one a dumper fails loudest: an element born inside the chassis
+      // rides it at z ~ 11 instead of flying. Same landmark `dump 3d` uses.
+      check(
+        `capture+fire (${kind}): ...and reaches the CELL opening band`,
+        apex >= BB_HIVE_OPEN_Z[0],
+        `apex ${apex.toFixed(1)}in, band starts ${BB_HIVE_OPEN_Z[0].toFixed(1)}in`,
       );
     }
   }

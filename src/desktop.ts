@@ -20,6 +20,18 @@ export interface LanHostStatus {
   log: string[];
 }
 
+/**
+ * The frame-rate switches, as the main process sees them. TWO booleans, because they
+ * legitimately disagree: `unlimitedFps` is what the NEXT launch will do, `active` is what
+ * THIS one did. Chromium reads `disable-frame-rate-limit`/`disable-gpu-vsync` when it spawns
+ * the GPU process, so the setting cannot take effect until the app restarts, and the gap
+ * between these two is the only honest basis for saying so.
+ */
+export interface DesktopPerfState {
+  unlimitedFps: boolean;
+  active: boolean;
+}
+
 export interface DesktopBridge {
   isDesktop: true;
   version(): Promise<string>;
@@ -37,6 +49,17 @@ export interface DesktopBridge {
     start(opts: { port?: number }): Promise<LanHostStatus | { error: string }>;
     stop(): Promise<LanHostStatus>;
     status(): Promise<LanHostStatus>;
+  };
+  /**
+   * UNLIMITED FRAME RATE. OPTIONAL for the reason `lan` is: this build's client runs inside
+   * whatever shell the player downloaded, and one older than this feature has a preload that
+   * never defined it. Every caller checks `bridge.perf` first and says so rather than throwing.
+   */
+  perf?: {
+    get(): Promise<DesktopPerfState>;
+    setUnlimitedFps(v: boolean): Promise<DesktopPerfState>;
+    /** quit and start again, so the switches are on the new process's command line. */
+    relaunch(): Promise<void>;
   };
 }
 
