@@ -15,7 +15,7 @@ import { requestEmailVerification } from '../lib/authFlows';
  * `GameSettings` — that blob syncs to Postgres per account, and "I closed a banner"
  * is not account state.
  */
-const KEY = 'decodesim.verifyBanner.v1';
+import { VERIFY_BANNER_KEY as KEY } from '../storageKeys';
 
 function dismissed(): boolean {
   try {

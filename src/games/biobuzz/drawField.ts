@@ -22,6 +22,7 @@ import {
   BB_HIVE_W,
   BB_HIVE_X,
   BB_LZ,
+  BB_NECTAR_R,
   BB_POLLEN_R,
   BB_TAPE,
   BB_TILE_SEAMS,
@@ -38,6 +39,7 @@ import {
   type BbElementKind,
 } from './flower';
 import { BB_TIP_SWING_S, hiveTakingSide } from './hive';
+import { BB_BOX_SLOTS, BB_BOX_T, bbNectarBoxRect, bbNectarBoxSlot } from './nectarBox';
 
 /**
  * BIOBUZZ field renderer — THE MAT, THE ZONES, THE HIVE STRUCTURE, THE FLOWERS, THE WALL.
@@ -45,8 +47,10 @@ import { BB_TIP_SWING_S, hiveTakingSide } from './hive';
  * This file used to draw an empty 12-ft square and say so at length, because Section 9 (ARENA)
  * of the V0 pre-season manual was one page promising Kickoff. Kickoff happened. Everything
  * drawn below is the V1 manual, distilled in `docs/biobuzz-reference.md` §2 with a figure
- * number against every value, and EVERY dimension on this canvas is an import from
- * `./config` — there is not one literal field number in here. That is the whole discipline:
+ * number against every value, and EVERY dimension on this canvas is an import — from
+ * `./config` for the FIELD, and from `./nectarBox` for the one piece of furniture that stands
+ * outside the perimeter — there is not one literal field number in here. That is the whole
+ * discipline:
  * `grep APPROX src/games/biobuzz/config.ts` is the tape-measure list, and a dimension typed
  * into a renderer is a dimension that list cannot find.
  *
@@ -85,6 +89,26 @@ import { BB_TIP_SWING_S, hiveTakingSide } from './hive';
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
+ * OWNER BUG 12 (2026-09-19): "the blue alliance looks too purple — are you sure that is the
+ * exact colour AndyMark uses?" Measured, the complaint is right and BOTH answers the repo had
+ * were wrong. In OKLCH: the old `#4d8fe2`/`#0a5cff`/`C.COLORS.blue` family sits at hue 255-262°,
+ * and the field CAD's own hive Goal Ribs are `plastic#0000ff` — hue 264.1°, which is 1.7° off the
+ * most violet blue sRGB can express and the WORST answer available. A STEP assembly carrying
+ * pure `#ff0000` and pure `#0000ff` is carrying PLACEHOLDER part colours, not a paint spec, and
+ * `renderFieldGlb.ts` already overrides the same file's `#e6e6e6` "white plastic" placeholder for
+ * exactly that reason. No authoritative AndyMark blue was found, so this is not one.
+ *
+ * `#007be1` is a PERCEPTUAL CORRECTION and APPROX: hue 252.9°, which is the least violet a
+ * saturated blue gets before it starts reading cyan, at the maximum chroma sRGB has there
+ * (0.179) and L 0.583 — within 0.002 of the red tape's own lightness, so the two alliances read
+ * at the same weight. It is 11.2° off the CAD's rib colour, and that gap is deliberate.
+ *
+ * ⚠️ ONE BIOBUZZ BLUE. Tape, NECTAR, hive accents, the constants-built fallback scene, the GLB's
+ * ribs and the robot silhouette all take this value; there is no second approximation left.
+ */
+const ALLIANCE_BLUE = '#007be1';
+
+/**
  * THE ZONE TAPE IS THE ONE THING HERE THAT IS NOT A THEME TOKEN.
  *
  * §9.3 specifies red and electric-blue gaffer, and on this field the tape COLOUR is the
@@ -92,7 +116,8 @@ import { BB_TIP_SWING_S, hiveTakingSide } from './hive';
  * at. A token that flipped with the light/dark theme would be drawing a different field in
  * one of the two. So these two are fixed, and everything else on this canvas is `C.COLORS`.
  */
-const TAPE_GAFFER: Record<Alliance, string> = { red: '#e02020', blue: '#0a5cff' };
+const TAPE_GAFFER: Record<Alliance, string> = { red: '#e02020', blue: ALLIANCE_BLUE };
+
 
 /** frame BASE BAR thickness and centreline x (in) — both DERIVED from the two measured edges
  * so the bar's INNER edge stays exactly on the ±24 tile seam, which is the measured fact. */
@@ -108,6 +133,7 @@ const FRAME_BAR_MID = (BB_FRAME_BAR_IN + BB_FRAME_BAR_OUT) / 2;
 const HIVE_R = 2; // rounded-rect corner radius on a HIVE body and its CELLS
 const DASH: readonly number[] = [3.2, 2.4]; // crossbar dash pitch, in WORLD INCHES
 const WALL_INSET = 2.5; // how far OUTSIDE a wall a tile letter/number sits, in the view margin
+const PERIMETER_W = 1; // stroke on the wall line, in WORLD INCHES — a schematic edge, NOT tape
 // how far out a FLOWER section's NEAR bore wall sits, from the wall FACE. Balanced between two
 // neighbours it must not touch: the tile ruler, which sits WALL_INSET out and whose glyphs
 // reach about 0.9 further, and the edge of the camera at BB_VIEW_MARGIN — see
@@ -175,7 +201,7 @@ function elementType(color: ArtifactColor): 0 | 1 | 2 {
 
 function elementInk(color: ArtifactColor): string {
   const t = elementType(color);
-  return t === 1 ? C.COLORS.red : t === 2 ? C.COLORS.blue : POLLEN_INK;
+  return t === 1 ? C.COLORS.red : t === 2 ? ALLIANCE_BLUE : POLLEN_INK;
 }
 
 /** the same classification as `elementType`, in the vocabulary `flower.ts` scores in. Both
@@ -261,7 +287,7 @@ export function bbFlowerSectionBox(f: (typeof BB_FLOWERS)[number]): BbRect {
 // ─────────────────────────────────────────────────────────────────────────────
 
 function allianceColor(a: Alliance): string {
-  return a === 'blue' ? C.COLORS.blue : C.COLORS.red;
+  return a === 'blue' ? ALLIANCE_BLUE : C.COLORS.red;
 }
 
 /** an element's drawn radius. `r` is optional on `Artifact` (DECODE has one size and never
@@ -881,22 +907,17 @@ export function drawBiobuzzField(
   ctx.stroke();
   ctx.restore();
 
-  // CENTRE MARK — a small cross at the origin. The tile grid alone has a LINE through the
-  // centre of the field (144" is six 24" tiles, so x=0 and y=0 are both grid lines), which
-  // means "the middle" is a crossing indistinguishable from five others. The mark is what
-  // makes a still self-orienting: it says where the origin is, so a reviewer can tell whether
-  // a scatter is centred and whether a robot's pose is where the scene claims.
-  const MARK = 4;
-  ctx.save();
-  ctx.strokeStyle = C.COLORS.white;
-  ctx.lineWidth = C.TAPE_W;
-  ctx.beginPath();
-  ctx.moveTo(-MARK, 0);
-  ctx.lineTo(MARK, 0);
-  ctx.moveTo(0, -MARK);
-  ctx.lineTo(0, MARK);
-  ctx.stroke();
-  ctx.restore();
+  // ⚠️ NO CENTRE MARK (owner, 2026-09-19: "centre cross tape mark does not exist, I think").
+  // It does not. Event Field Guide V1.0 §8 "Tape Placement" installs exactly three things —
+  // §8.3 LOADING ZONES, §8.4 GARDENS, §8.5 ALLIANCE AREAS — and Fig 9-2 (manual p65) shows no
+  // marking at the origin. It could not have one: §9.1 of the guide has you REMOVE the four
+  // centre tiles for the frame's under-tile strips, so the origin is under the HIVE structure,
+  // which this file already draws as the two base bars and the dashed crossbar.
+  //
+  // What was here was a white cross 8 in across at `C.TAPE_W`, added to make a gallery still
+  // self-orienting. That is a reason to want a mark, not a reason for the field to have one, and
+  // drawn in tape's own width it read as tape. The stills are oriented by the tile seams, the
+  // frame bars and the two hives, all of which are real.
 
   // LOADING ZONES (§9.3, Fig 9-2/9-3) — ~23 × 11 against the side wall, bounded by tape and
   // the wall, tape included. The layout is POINT-SYMMETRIC, so red's is at y > 0 on the LEFT
@@ -917,9 +938,15 @@ export function drawBiobuzzField(
   // sits in the corner of. Stroking `BB_LZ`/`BB_GARDEN` instead drew tape on the wall and turned
   // the garden's solid band into a 1-in outline of a 2-in rectangle. `BB_TAPE` is the CAD's own
   // 16 strips and the 3D renderer draws exactly the same rectangles.
+  //
+  // `gardenSupplement` is the one strip per alliance that is NOT in the CAD: the measured band
+  // stops 0.573 in clear of the corner wall, while `BB_GARDEN` — the SCORED zone — snaps that
+  // edge onto it, so the band as drawn stopped short of the corner it is defined to reach. See
+  // `fieldDims.gen.ts`'s header for why it is a separate group.
   for (const a of ALLIANCES) {
     for (const strip of BB_TAPE.loadingZone[a]) fillStrip(ctx, strip, TAPE_GAFFER[a]);
     for (const strip of BB_TAPE.garden[a]) fillStrip(ctx, strip, TAPE_GAFFER[a]);
+    for (const strip of BB_TAPE.gardenSupplement[a]) fillStrip(ctx, strip, TAPE_GAFFER[a]);
   }
 
   // HIVE FRAME (§9.6.1, Fig 9-8) — two triangular structures joined at the apex. Top-down,
@@ -1133,11 +1160,69 @@ export function drawBiobuzzField(
     drawFlowerSection(ctx, f, elements(bb?.flowers?.[i]?.stack));
   });
 
+  /**
+   * THE HUMAN PLAYER'S NECTAR HOLDING BOX (owner, 2026-09-19: "Add the same andymark box in the
+   * 2d game as well").
+   *
+   * The SAME box the 3D field builds — `am-5706 Artifact Tray`, at the same field position, from
+   * the same `./nectarBox.ts`. Not a second drawing of a similar thing: a driver who switches
+   * views must find the supply in the same place, and two copies of the footprint is exactly how
+   * that stops being true.
+   *
+   * IN THE 2D IDIOM, which here means the same three moves the FLOWER FOOT and the HIVE CELLS
+   * already make — a solid for the structure, a 1:1 outline for the part you interact with, and
+   * the contents as DISCS AT ELEMENT SCALE rather than a number (§2.5: nothing on this field is
+   * a letter or a digit). The tray reads as its dark interior inside an alliance-coloured rim,
+   * which is what the 3D tray is: a dark slab inside bright side walls, seen from above.
+   *
+   * OUTSIDE THE PERIMETER, in the camera's own view margin, like the tile ruler and the flower
+   * sections. `BB_BOX_GAP + BB_BOX_DEPTH` is 11.75 against `BB_VIEW_MARGIN`'s 12 — see
+   * `nectarBox.ts`, where that quarter inch is the reason the gap is the number it is.
+   *
+   * THE COUNT IS READ OFF `world.balls`, never stored, exactly as the 3D box and `hud.ts` read
+   * it — one pass for `stock` elements of this alliance. Over six (there are five) simply
+   * under-draws beads; the supply is still whatever the world says it is.
+   *
+   * DRAWN BEFORE THE PERIMETER AND LONG BEFORE THE LABELS, on purpose. The tile ruler's last row
+   * digit sits at `-hx - WALL_INSET` on this same wall and its centre falls inside the tray's
+   * length, so in LABELLED stills (the gallery only — a match draws no labels at all) the digit
+   * lands on the tray. Over the dark interior it stays legible; under it, it would not.
+   */
+  for (const a of ALLIANCES) {
+    const box = bbNectarBoxRect(a);
+    ctx.save();
+    ctx.fillStyle = C.COLORS.tile;
+    ctx.fillRect(box.x0, box.y0, box.x1 - box.x0, box.y1 - box.y0);
+    ctx.strokeStyle = allianceColor(a);
+    ctx.lineWidth = BB_BOX_T;
+    // inset by half the wall thickness, so the stroke's OUTER face is the tray's real outline
+    // rather than straddling it — the same rule the HIVE frame bar is drawn by above.
+    ctx.strokeRect(
+      box.x0 + BB_BOX_T / 2,
+      box.y0 + BB_BOX_T / 2,
+      box.x1 - box.x0 - BB_BOX_T,
+      box.y1 - box.y0 - BB_BOX_T,
+    );
+    let stock = 0;
+    for (const b of world.balls) if (b.state.kind === 'stock' && b.state.alliance === a) stock++;
+    ctx.fillStyle = allianceColor(a);
+    for (let i = 0; i < Math.min(stock, BB_BOX_SLOTS); i++) {
+      const slot = bbNectarBoxSlot(a, i);
+      ctx.beginPath();
+      ctx.arc(slot.x, slot.y, BB_NECTAR_R, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.restore();
+  }
+
   // PERIMETER — drawn last, so it sits over the grid lines and the garden tape that run into
-  // it.
+  // it. `PERIMETER_W` and not a tape width: this is the WALL, and no tape on this field runs
+  // onto the perimeter (Field Guide §8.3/§8.4 start every strip at a tile seam). It read as
+  // `C.TAPE_W` for the coincidence that both are 1 in, which made the wall line move whenever
+  // the tape width did.
   ctx.save();
   ctx.strokeStyle = C.COLORS.white;
-  ctx.lineWidth = C.TAPE_W;
+  ctx.lineWidth = PERIMETER_W;
   ctx.strokeRect(-hx, -hy, 2 * hx, 2 * hy);
   ctx.restore();
 

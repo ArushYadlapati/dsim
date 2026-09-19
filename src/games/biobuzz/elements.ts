@@ -159,6 +159,14 @@ export function takeHeld(world: World, r: RobotState, color: Artifact['color']):
  * had.
  *
  * `color` (trailing, optional) names which colour to release; absent, it is the hopper's top.
+ *
+ * `z` (trailing, optional) is the RELEASE HEIGHT, and it is the same extension-past-the-contract
+ * that `origin` is, for the same reason: a TURRET's muzzle is the hood lip, which swings about
+ * the flywheel axle, so its release drops as the barrel elevates (`bbMuzzleLocal`, `robot.ts` —
+ * the one function the sim and the 3D scene both read). A caller that omits it releases at
+ * `BB_LAUNCH_Z0`, which is what a DUMPER does: a tipping tray has no hood and its lip does not
+ * move. ⚠️ Whatever a caller passes here MUST be what it solved its arc against, or every shot
+ * arrives off by the difference — that bug shipped once already, at 2 in.
  */
 export function releasePollen(
   world: World,
@@ -167,6 +175,7 @@ export function releasePollen(
   target?: ScoreTarget,
   origin?: Vec2,
   color?: Artifact['color'],
+  z?: number,
 ): void {
   void target; // the caller has already solved the arc
   if (r.hopper.length === 0) return;
@@ -179,7 +188,7 @@ export function releasePollen(
   held.state = { kind: 'flight', target: r.alliance, by: r.alliance };
   held.pos = { x: o.x, y: o.y };
   held.vel = { x: v.x, y: v.y };
-  held.z = BB_LAUNCH_Z0;
+  held.z = z ?? BB_LAUNCH_Z0;
   held.vz = v.z;
 }
 

@@ -1,4 +1,4 @@
-<!-- governs: src/ads/**, server/kofi.ts, src/legalText.ts, src/analytics.ts -->
+<!-- governs: src/ads/**, server/kofi.ts, src/legalText.ts, src/analytics.ts, src/analyticsPref.ts, src/pageviews.ts, src/storageKeys.ts -->
 # Monetization — ads and the supporter tier
 
 Perks are cosmetic or convenience ONLY — never anything affecting how a robot drives or scores.
@@ -63,8 +63,100 @@ Not yet deployed. `HANDOFF.md` has the full write-up; the load-bearing rules:
 - ⚠️ **`LEGAL_OPERATOR`/`LEGAL_JURISDICTION` in `src/legalText.ts` are PLACEHOLDERS.**
   Until filled, the Terms page shows a visible warning to every visitor. Fill them
   before taking a payment; do not guess them from a timezone or an email domain.
+- **FIRST-PARTY ANALYTICS — the admin console's Analytics tab.** DSIM measures itself now
+  (`server/analytics.ts`, migration `0042`, `src/pageviews.ts`, `src/ui/AdminAnalytics.tsx`),
+  in ADDITION to the host's dashboard below, because the thing a third party structurally
+  cannot do is put traffic beside the PRODUCT tables — matches per game × mode × physics,
+  signups, D1/D7/D30 retention, the ranked distribution, replay storage, moderation load,
+  Ko-fi conversions. Every one of those is a query over tables that already existed; the
+  feature added no column to any of them.
+  - **COLLECTED, per page view**: the scrubbed path, the game, the referrer's HOST, the three
+    UTM parameters, a two-letter country, device/OS/browser family, a screen BUCKET
+    (`sm`/`md`/`lg`/`xl`), the primary language subtag, `web`/`electron`, the release channel
+    and the build id. Named events land beside them with at most four bounded properties.
+  - ⚠️ **NEVER COLLECTED, and this is a SCHEMA guarantee rather than a discipline**: no IP
+    address, no full user agent, no account id, no exact viewport, no click or input. `dbtest`
+    asserts against `information_schema` that no `analytics_*` table has such a column, because
+    a column somebody adds later for a good reason is exactly how this would be lost.
+  - **THE VISITOR KEY IS `sha256(daily salt || ip || ua || site)` truncated to 16 hex**, and
+    the salt is DESTROYED at two days (`analytics_salt`). That deletion is the guarantee: past
+    it, nobody can recompute yesterday's hash from an address. The consequence is stated on the
+    dashboard and in the policy rather than hidden — **a visitor count over a range is a SUM OF
+    DAILY UNIQUES**, and the same person on two days is two visitors. Sessions are DERIVED in
+    SQL from a 30-minute gap; there is no session identifier to store.
+  - **COUNTRY** comes from `fly-client-country` (or `cf-ipcountry` / `x-vercel-ip-country`)
+    when the edge sets one, else from the browser's coarse IANA timezone mapped by a table in
+    `server/analytics.ts`. The timezone string is used for that line and discarded. **Never a
+    third-party geo-IP service.**
+  - **SCRUBBING HAPPENS ON THE CLIENT**, in `normalizePath`: the query string goes
+    unconditionally (`?token=` is how a password reset arrives) and `/replay/<id>`,
+    `/profile/<name>` and room codes become placeholders, so an id never leaves the browser.
+    `npm test` exercises the scrubbers headlessly, which is why `src/pageviews.ts` reads
+    `import.meta.env` through a guard and reaches `net/env` by dynamic import.
+  - **RETENTION**: raw rows 30 days, `analytics_hourly` 35 days, `analytics_daily` kept,
+    `analytics_concurrency` 120 days, the salt 2 days. The rollup and the sweep run on a
+    five-minute interval under `pg_try_advisory_lock`, so exactly one Fly machine does the
+    work — and the interval is **started by the first beacon**, never at boot, because Neon
+    bills the wall-clock time the compute is awake and an unconditional timer costs the month.
+  - **GATES**: `VITE_ANALYTICS=1` **and** a configured cloud game server, plus
+    `analyticsAllowed()`, plus `doNotTrack`/GPC. A self-hosted, LAN or offline build sends
+    nothing. The ingest route needs `DATABASE_URL` on the Fly side and nothing else.
+  - **The dashboard is a LAZY chunk** and is gated on `isStaffUser` — `profiles.role`, the
+    projection of `ADMIN_USER_IDS`, not a second env read. A range inside the raw window is
+    exact and cross-filterable; one reaching further back is served from the daily rollups and
+    the panel SAYS so rather than silently degrading.
+  - ⚠️ **`LEGAL_UPDATED` HAS NOT BEEN MOVED.** The policy describes this already; the date is
+    to move in the deploy that sets `VITE_ANALYTICS=1`, because moving it asks every signed-in
+    account to accept the terms again.
 - Analytics (`src/analytics.ts`, `VITE_ANALYTICS=1`, Vercel Web Analytics — cookieless).
   **Rule: no identifiers in any event payload** — counts and enums only.
+  It has an **OFF SWITCH**, `src/analyticsPref.ts`, read by `trackEvent` on EVERY call
+  (not cached: it is an opt-OUT, so a second tab turning it off must stop a session already
+  running). DEFAULT ON, and storage that THROWS answers on — failing closed would mute every
+  locked-down browser and bias the numbers the sponsor report is read off. It lives in its own
+  leaf module because `analytics.ts` reads `import.meta.env` at module scope and therefore
+  cannot be imported from `scripts/smoke.ts` at all.
+
+---
+
+## Privacy: the storage registry, "Your data", and the export
+
+Built on branch `feat/privacy-cookies` for roadmap item 8.
+
+- ⚠️ **`src/storageKeys.ts` IS THE ONLY PLACE A `decodesim.` KEY MAY BE WRITTEN DOWN**, and
+  `npm test` enforces exactly that: no such literal anywhere in `src/` outside that file
+  (comments stripped), every storage call site naming its key by identifier or a documented
+  `…Key(id)` accessor, every file touching storage importing from the registry, and no dead
+  entries. It exists because `PRIVACY_MD` used to enumerate the keys in prose and had drifted
+  to FOUR names that did not exist plus SEVEN keys missing — undetectable by reading, because
+  the list and the code were different files.
+- **`PRIVACY_MD` NAMES NO KEY, and must not start again.** It describes the three categories
+  (`necessary` / `preference` / `analytics`) and points at the live table, which
+  `src/ui/YourData.tsx` renders off `STORAGE_KEYS`. The `analytics` group is printed EMPTY
+  on purpose: "none" is the most reassuring line on the page and it stays true by construction.
+- **ONE LITERAL LIVES OUTSIDE THE REGISTRY**: `index.html`'s blocking theme stamp, which runs
+  before any module loads. A smoke check pins it to `THEME_KEY`.
+- ⚠️ **THE FOOTER CONSENT LINK MUST NEVER DELETE ITSELF.** `ConsentLink` used to `return null`
+  once `showConsentSettings()` answered false — the NORMAL case outside the EEA/UK/CH — so the
+  one control the privacy policy names by name vanished for most of the world. It now falls back
+  to `/privacy#your-data`, where the row says why no dialog opened. A smoke check greps for the
+  early return coming back.
+- **`GET /api/user/export`** (`exportAccount` in `server/db/repo.ts`, written NEXT TO
+  `deleteAccount` so a table added to one list and not the other is one screenful apart).
+  Rate-limited to **one per minute per account** — seventeen queries on compute that bills by
+  the minute. **Only rows keyed to the caller**, plus a match's own facts: the other players in
+  a versus match are absent entirely, and `dbtest` asserts that against the SERIALIZED
+  document, because the leak to fear is a join somebody adds later for a good reason. Replay
+  BODIES are out (ids and metadata only); no email address is selected at all. A missing profile
+  row is a **404**, which is what a just-deleted account gets.
+- ⚠️ **AN OLD SERVER ANSWERS `/api/user/export` WITH A 200.** That path also matches the older
+  build's `/api/user/<id>` profile route, which cheerfully reports a profile for the user id
+  `"export"`. One Fly app serves every client version, so `fetchMyExport` guards on the
+  payload (`format`), not on the status — handing that object to somebody as their personal
+  data would be the worst failure this route has available to it.
+- **`DeleteAccount` is ONE component rendered in two places** (Profile and "Your data"). The
+  typed confirmation and the paragraph about what SURVIVES a deletion are the load-bearing
+  parts; two copies of that copy would drift.
 
 ---
 

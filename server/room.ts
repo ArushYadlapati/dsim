@@ -8,10 +8,11 @@ import * as C from '../src/config';
 import { newSettleClock, settleStep, type SettleClock } from '../src/sim/settle';
 import { coerceAutoPath, DEFAULT_SPEC, DEFAULT_ASSISTS, type RobotSetup } from '../src/sim/spawn';
 import { simModuleFor } from '../src/games/sim';
+import { serverPhysics } from '../src/games/types';
 import { scrubName } from './moderation';
 import type { GameId, Physics } from '../src/types';
 import { physicsReady } from '../src/sim/physicsEngine';
-import { physics3dReady } from '../src/games/biobuzz/sim3d/engine';
+import { physics3dReady, disposePhysics3dFor } from '../src/games/biobuzz/sim3d/engine';
 import { ReplayRecorder, worldResult, type Replay, type ReplayResult } from '../src/sim/replay';
 import type {
   Alliance,
@@ -479,32 +480,51 @@ export class Room {
    * WHICH PHYSICS THIS ROOM'S WORLD RUNS ON — decided once, here, and read by everything:
    * the cap gate at the door, `matchStart`, and `createWorld`.
    *
-   * Three rules, in order (plan §2.1):
-   *  1. A game that cannot run `'3d'` never does. DECODE and Chain Reaction declare no
-   *     `physicsOptions`, so a `physics: '3d'` config aimed at one of them is ignored rather
-   *     than handed to a `step` that would do nothing with it — and their rooms stay
-   *     byte-identical to what they were before this field existed.
-   *  2. RANKED, MATCHMADE and RECORD rooms are `'3d'`, and the SERVER decides that, not the
-   *     client. Those are the results that reach a board, and a board whose rows came from
-   *     two different solves is not a board. A staged room's roster arrives through
-   *     `applyPending` before anyone is seated, so `pendingMatch` is already set by the time
-   *     the first joiner is gated.
-   *  3. Otherwise the HOST's choice, off `RoomConfig.physics`, absent ⇒ `'2d'`. Absent is
-   *     what an older client sends and what every room minted before Day 2 was, which is the
-   *     whole back-compat rule: a room created without `physics` behaves exactly as before.
+   * ONE RULE (owner ruling, 2026-09-18): **a game that can step `'3d'` runs `'3d'` here,
+   * always.** Every room is a server-connected match — record, ranked, matchmade, custom,
+   * spectated, LAN-hosted — and the ruling is that those all run the one solve. `RoomConfig.
+   * physics` is therefore no longer read at all: it was the host's pick for a CUSTOM room, and
+   * a host who could pick 2D could put a run on the board that nothing else on it was produced
+   * by. `serverPhysics` is the shared predicate (`src/games/types.ts`) so the room, the
+   * matchmaker, the board queries and the LAN worker cannot drift.
+   *
+   * A game with no `'3d'` option is `'2d'` — DECODE and Chain Reaction, byte-identical to what
+   * they were before this field existed, including the wire (a 2D room still omits `physics`
+   * from `matchStart` entirely).
+   *
+   * ⚠️ BACK-COMPAT IS NOW A REFUSAL, NOT A DOWNGRADE. An old client that opens a BIOBUZZ room
+   * without `physics` used to get a 2D room; it now gets a 3D one it cannot step, so the
+   * `'bb3d'` cap gate at the door (`physicsAllowed`, server/index.ts) turns it away with
+   * `BB3D_REFUSAL`. That is the intended failure: a silent 2D room is the one outcome the
+   * ruling forbids. ⚠️ **SO DEPLOY ORDER MATTERS**: BIOBUZZ is public on the stable channel, and
+   * every production client built before the `'bb3d'` cap existed is refused from every BIOBUZZ
+   * room until it reloads. Ship and verify the CLIENT (Vercel) FIRST, then the server (Fly); a
+   * tab held open across the deploy is refused with `BB3D_REFUSAL` until the version gate
+   * reloads it.
    */
   get physics(): Physics {
-    if (!simModuleFor(this.game).physicsOptions?.includes('3d')) return '2d';
-    // a STAGED pairing carries the matchmaker's own decision; honour it verbatim rather than
-    // re-deriving it here, so the room the host builds is the room the matchmaker promised
-    if (this.pendingMatch) return this.pendingMatch.physics ?? '3d';
-    if (this.ranked || this.config.kind === 'record') return '3d';
-    return this.config.physics ?? '2d';
+    return serverPhysics(simModuleFor(this.game));
   }
 
   /** is a match actually running here (vs. still a lobby)? */
   get hasWorld(): boolean {
     return this.world !== null;
+  }
+
+  /**
+   * MAY THIS ROOM STEP YET? — the ONE readiness predicate, asked by every path that builds a
+   * world (`start`, `startRankedImmediate`, `beginRanked`).
+   *
+   * ⚠️ `physicsReady()` ALONE IS A CHECK OF THE WRONG MODULE FOR A 3D ROOM. The two wasm
+   * backends load independently at boot, and a `'3d'` room's first tick is `step3d`, which
+   * THROWS `3D physics not initialised` if `initPhysics3d()` has not resolved. That throw
+   * happens INSIDE the tick loop — i.e. after the match has been announced and the dodge
+   * accounting has run — so the failure is a killed interval and a room full of people
+   * watching a frozen field, not a "try again in a moment". The ranked paths had only the 2D
+   * half, which was harmless while every game was `'2d'` and is not now that BIOBUZZ is.
+   */
+  private physicsReadyForRoom(): boolean {
+    return physicsReady() && (this.physics !== '3d' || physics3dReady());
   }
 
   // ─────────────────────────────────────────────────────────── BOT SEATS (plan §6) ──
@@ -528,6 +548,12 @@ export class Room {
 
   /** one seated bot: a synthetic roster row plus the tier it plays at. */
   private readonly bots: { id: string; tier: string; alliance: Alliance; startIndex: number }[] = [];
+  /** MONOTONIC, never `bots.length`. A bot id is a roster `clientId`, and the roster is keyed by
+   *  it — so numbering from the array length mints a DUPLICATE the moment anybody removes a seat
+   *  and adds another (remove bot-1, add ⇒ a second `bot-1-CODE`). Two rows with one id is a
+   *  roster the client cannot key, and `removeBot`'s `findIndex` would only ever reach the older
+   *  of the pair, so the newer one could not be taken back out. This counter only goes up. */
+  private botSeq = 0;
   /** live AI drivers for the match in flight, keyed by robot id. Built in `beginMatch`,
    *  disposed in `stop`. Empty in every room with no bot seat, which is nearly all of them. */
   private readonly botDrivers = new Map<number, { step(w: World): RobotCommand; dispose?(): void }>();
@@ -579,7 +605,7 @@ export class Room {
         break;
       }
     }
-    this.bots.push({ id: `bot-${this.bots.length + 1}-${this.code}`, tier: drv.coerceTier(tier), alliance, startIndex });
+    this.bots.push({ id: `bot-${++this.botSeq}-${this.code}`, tier: drv.coerceTier(tier), alliance, startIndex });
     this.botsEverSeated = true;
     this.broadcastRoster();
     return null;
@@ -783,6 +809,24 @@ export class Room {
       this.activeUserIds.delete(c.userId);
       this.onUserInactive?.(c.userId);
     }
+    /**
+     * ⚠️ A DECIDED SOLO RUN IS NOT A SLOT TO GIVE UP — IT IS A SCORE TO WRITE.
+     *
+     * `detach` already knows this: a solo record room inside `inFinishWindow` is kept alive
+     * by `finishing` until the field settles and `finalizeMatch` writes the PB, because the
+     * loop FREEZES a room nobody is connected to. This frame bypasses detach entirely and
+     * deletes the client outright — so pressing RESTART or Abandon in the seconds after the
+     * buzzer took the room down before its own score was saved, which is the unsaved-PB bug
+     * (`f1fc93a`) coming back through a door that did not exist when it was fixed.
+     *
+     * The LOCK is already gone above, which is the whole of what the caller needs: they are
+     * starting another run and this one can no longer be in their way. The seat is left for
+     * the close that is about to follow, where detach does the right thing with it.
+     */
+    if (this.soloRecord && this.inFinishWindow()) {
+      this.broadcastRoster();
+      return true;
+    }
     // mid-match this is a departure like any other: the match stays rated and the
     // leaver takes the loss (`departed` is what keeps their result on the board).
     const rid = this.robotOf.get(c.id);
@@ -806,6 +850,36 @@ export class Room {
       this.onEmpty();
     }
     return true;
+  }
+
+  /**
+   * FREE THIS USER'S SINGLE-GAME LOCK HERE, AND TOUCH NOTHING ELSE.
+   *
+   * `abandonSlot` is the other way out and it is much heavier: it deletes the client,
+   * drops its robot, and takes the whole room down once the last seat goes. That is right
+   * for "I have left this match", and WRONG for the one case this exists for — a solo
+   * RECORD run whose owner has pressed restart. Two things have to be true at once there:
+   * they can start a new run immediately (the lock cannot outlive their interest in the
+   * old one), and the run they just walked away from still SAVES if it was already decided
+   * (`finishing` — a score is written when the field settles after the buzzer, with nobody
+   * watching). Killing the room would serve the first and quietly break the second, which
+   * is the bug `f1fc93a` fixed and which must not come back by another door.
+   *
+   * So: the lock goes, the room stays. The held slot is still held and is reaped by its own
+   * grace exactly as before, so nothing about the reconnect path changes either.
+   */
+  releaseSeatLock(userId: string): boolean {
+    if (!this.activeUserIds.has(userId)) return false;
+    this.activeUserIds.delete(userId);
+    this.onUserInactive?.(userId);
+    return true;
+  }
+
+  /** is this a SOLO record run — one driver, no opponent, no rating? The single-game lock
+   *  treats these differently, because a room with nobody else in it can only ever be in
+   *  its own owner's way (see `releaseSeatLock` and the join guard). */
+  get soloRecord(): boolean {
+    return this.config.kind === 'record' && this.config.record === 'solo';
   }
 
   /** authoritative sim tick (0 before the match starts) */
@@ -1272,7 +1346,12 @@ export class Room {
     this.snapPrimed.delete(id); // lost its baseline — force a full keyframe
     this.snapAck.delete(id); // drop its stale pre-drop ack so it doesn't re-keyframe
     send({ t: 'welcome', clientId: id });
-    send({ t: 'rejoined', ok: true });
+    // SAY WHICH MATCH THE SLOT IS IN. A client returning through the Home rejoin card
+    // built its session from a SAVED matchStart, so its generation is whatever that
+    // record held — and an input stamped with a stale one is dropped by `onInput`, which
+    // reads on screen as a robot that will not move. The room is the authority on this,
+    // so it answers with it rather than hoping the client's copy is current.
+    send({ t: 'rejoined', ok: true, gen: this.matchGen });
     if (this.world) this.sendSnapshotTo(c); // immediate full resync (re-primes)
     /**
      * A SEAT RECLAIMED INSIDE THE STRATEGY WINDOW HAS TO BE TOLD WHAT IT CAME BACK TO.
@@ -1432,10 +1511,7 @@ export class Room {
         // physics WASM may still be loading in the first moment after boot; refuse
         // rather than throw inside step() (which would kill the tick loop)
         if (id === this.hostId && this.world === null) {
-          // BOTH backends, because a 3D room's first tick is `step3d`: `physicsReady()` alone
-          // says the 2D wasm resolved, which for a `'3d'` room is a check of the wrong module.
-          const ready = physicsReady() && (this.physics !== '3d' || physics3dReady());
-          if (ready) this.startMatch();
+          if (this.physicsReadyForRoom()) this.startMatch();
           else c.send({ t: 'error', message: 'Server is starting up - try again in a moment.' });
         }
         break;
@@ -1848,7 +1924,8 @@ export class Room {
   private startRankedImmediate(): void {
     const p = this.pendingMatch;
     if (!p || this.world !== null || this.phase !== 'connecting') return;
-    if (!physicsReady()) {
+    // BOTH backends (see `physicsReadyForRoom`): a ranked BIOBUZZ room steps `step3d`.
+    if (!this.physicsReadyForRoom()) {
       setTimeout(() => this.startRankedImmediate(), 200); // WASM still loading; retry
       return;
     }
@@ -1951,7 +2028,8 @@ export class Room {
   private beginRanked(): void {
     const p = this.pendingMatch;
     if (!p || this.world !== null || this.phase !== 'strategy') return;
-    if (!physicsReady()) {
+    // BOTH backends (see `physicsReadyForRoom`): a ranked BIOBUZZ room steps `step3d`.
+    if (!this.physicsReadyForRoom()) {
       setTimeout(() => this.beginRanked(), 200); // WASM still loading; retry shortly
       return;
     }
@@ -2813,6 +2891,11 @@ export class Room {
 
   private stop(): void {
     this.stopLoop();
+    // free the match's Rapier 3D world. The engine map is a WeakMap keyed on the World, so
+    // dropping the World drops the only handle without calling free(), and wasm linear memory
+    // never shrinks — a server that has run a few hundred 3D matches would hold every one.
+    // No-op for a 2D room and for a process that never loaded the chunk.
+    if (this.world) disposePhysics3dFor(this.world);
     // an AI driver may hold allocations of its own; the contract says the CALLER disposes.
     for (const b of this.botDrivers.values()) {
       try {

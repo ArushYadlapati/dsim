@@ -86,7 +86,7 @@ let selectedId = SERVERS[0]?.id ?? '';
  * read by `gameServerUrl()`, which every connect site calls, and those calls happen far from
  * whatever screen set it.
  */
-const LAN_KEY = 'decodesim.lanServer.v1';
+import { LAN_SERVER_KEY as LAN_KEY } from '../storageKeys';
 
 let lanUrl = (() => {
   try {

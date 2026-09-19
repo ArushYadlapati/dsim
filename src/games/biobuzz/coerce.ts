@@ -15,6 +15,7 @@ import {
   bbMassFloorBump,
   bbMountFits,
   bbSizeLimits,
+  bbSnapSize,
   bbStorageMax,
 } from './config';
 import {
@@ -140,8 +141,14 @@ export function coerceBiobuzzSpec(raw: RobotSpec, base: RobotSpec = BB_DEFAULT_S
   // When a mount leaves nothing legal, `bbSizeLimits` reports max < min on purpose. Clamping
   // to an inverted range would produce the MAX (i.e. a robot smaller than the floor), so
   // widen to the floor.
-  out.length = clampFinite(out.length, size.minLength, Math.max(size.minLength, size.maxLength), base.length);
-  out.width = clampFinite(out.width, size.minWidth, Math.max(size.minWidth, size.maxWidth), base.width);
+  //
+  // ⚠️ SNAPPED TO THE SLIDER'S GRID, NOT JUST CLAMPED TO IT (`bbSnapSize`, owner re-report
+  // 2026-09-18). A clamp only touches a value that is OUT of range, so 16.331227996399747 —
+  // which an older coercer wrote and a save still carries — sailed through every later pass and
+  // the builder printed it. Snapping heals the stored spec on load, and it happens HERE rather
+  // than in the builder so that what is sent, saved, simulated and keyed is the snapped number.
+  out.length = bbSnapSize(clampFinite(out.length, size.minLength, Math.max(size.minLength, size.maxLength), base.length));
+  out.width = bbSnapSize(clampFinite(out.width, size.minWidth, Math.max(size.minWidth, size.maxWidth), base.width));
 
   // 3) MASS, from drivetrain × flywheel inertia × whatever heavy mechanism the loadout carries.
   // R104 says there is NO ROBOT weight limit in BIOBUZZ, so this is the sim's own model of what
@@ -159,8 +166,12 @@ export function coerceBiobuzzSpec(raw: RobotSpec, base: RobotSpec = BB_DEFAULT_S
   // R105.A's vertical envelope; anything else (absent, a string, NaN, Infinity off a spoofed
   // wire spec) is DROPPED rather than clamped to a boundary that would look like a deliberate
   // choice nobody made. The 2D pipeline never reads this field either way.
+  //
+  // SNAPPED TO THE DIAL'S 1-in STEP for the same reason the two sizes above are: a clamp is not
+  // a repair for a value that is already in range, and a 15-digit height would print the same
+  // way a 15-digit width did. Both bounds are whole inches, so rounding cannot leave the range.
   if (typeof raw.heightIn === 'number' && Number.isFinite(raw.heightIn)) {
-    out.heightIn = clamp(raw.heightIn, BB3_HEIGHT_MIN, BB3_HEIGHT_MAX);
+    out.heightIn = Math.round(clamp(raw.heightIn, BB3_HEIGHT_MIN, BB3_HEIGHT_MAX));
   } else {
     delete out.heightIn;
   }
@@ -182,7 +193,9 @@ export function coerceBiobuzzSpec(raw: RobotSpec, base: RobotSpec = BB_DEFAULT_S
   // up. Clamping here is how a legality check quietly becomes a decoration.
   const stow = (out as { stowHeightIn?: unknown }).stowHeightIn;
   if (typeof stow === 'number' && Number.isFinite(stow)) {
-    (out as { stowHeightIn?: number }).stowHeightIn = clamp(stow, BB3_HEIGHT_MIN, bbDeployedHeightIn(out));
+    (out as { stowHeightIn?: number }).stowHeightIn = Math.round(
+      clamp(stow, BB3_HEIGHT_MIN, bbDeployedHeightIn(out)),
+    );
   } else {
     delete (out as { stowHeightIn?: number }).stowHeightIn;
   }

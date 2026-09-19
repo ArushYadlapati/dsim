@@ -20,11 +20,19 @@ today is a PLACEHOLDER: an empty 12 ft square with four walls and drivable robot
 `scored: false`, `startLegality: false`, two start anchors. `src/games/biobuzz/{sim,index,
 state}.ts` say so at the top and the P0-shell chat replaces all three.
 
-**It is ALPHA-ONLY** (`channels: ['alpha']` in `SEASONS`). The repo is public and the
-season is private until further notice: on a stable build it is absent from the home
-picker and the queue counts, invisible to the SEO surfaces, and its URL prefix falls back
-to the saved game. Nothing about it may be pushed to a public branch or deployed to the
-stable site.
+**It is PUBLIC on every channel, since 2026-09-13** (the promotion to production). Its
+entry in `SEASONS` (`src/seasons.ts`) carries NO `channels` key, so `seasonVisible` returns
+true everywhere: it is in the home picker and the queue counts, visible to the SEO surfaces,
+and `/biobuzz/...` resolves on a stable build. It ships to `main` and it deploys to the
+stable site like any other season.
+
+This paragraph used to say the opposite — alpha-only, `channels: ['alpha']`, "nothing about
+it may be pushed to a public branch" — which was true while the game was built before
+kickoff and has been false since the promotion. The `channels` SWITCH is still there and
+still works; it is simply not set for this season, and it is what a future unannounced
+season would use. What remains alpha-only is the DEV ROUTES (the scene gallery,
+`GameModule.devRoutes`), gated by `devRoutesEnabled()` in `App.tsx`'s `devRouteFor` — a
+different gate on a different thing.
 
 **Read `docs/biobuzz-contract.md` FIRST** — it is the lane contract: who owns which file
 (Lane A the field, Lane B the robot, the integration chat everything outside
@@ -70,9 +78,25 @@ BIOBUZZ, a persistent 2.1" overlap under a pressing chassis, a struck pollen rea
 Spec: `docs/biobuzz/plan-3d.md` (owner decisions in §12). **One game, two physics.**
 `World.biobuzz.physics` is `'2d' | '3d'` (absent reads `'2d'`; read it ONLY through
 `biobuzzPhysics(world)`); `biobuzzStep` dispatches to `step2d` (the untouched pipeline above) or
-`step3d`. Solo practice picks via `GameSettings.practicePhysics` (default `'3d'`; Practice setup
-has the control); online rooms, LAN and replays are still 2D until Day 2 (`RoomConfig.physics`).
-The 2D pipeline is PERMANENT (owner rule): every existing check must stay byte-identical.
+`step3d`. The 2D pipeline is PERMANENT (owner rule): every existing check must stay
+byte-identical.
+
+⚠️ **EVERY SERVER-CONNECTED MATCH IS 3D — nobody picks** (owner ruling, 2026-09-18). Record runs,
+ranked, matchmade, custom code rooms, spectators and LAN all run `'3d'` for a game whose
+`physicsOptions` include it. `Room.physics` is that one line (`serverPhysics`,
+`src/games/types.ts`); `RoomConfig.physics` still exists on the wire but no current server reads
+it, and the custom lobby's 3D/2D picker is gone. The reason is the RECORD BOARD: two solves
+feeding one board is two boards, so `recordLeaderboard`, `personalBest`, `recordRank` and the
+career panel all filter to `'3d'` server-side (`boardPhysics`, `server/db/repo.ts`) and
+`submitRecord` refuses a 2D container outright. Pre-ruling 2D rows are kept, not deleted — they
+simply stop appearing on a board; no season was reset. An old client without the `'bb3d'` cap is
+now REFUSED (`BB3D_REFUSAL`) rather than downgraded to a silent 2D room.
+
+**2D survives exactly where nothing reaches a board:** solo practice and free drive, via
+`GameSettings.practicePhysics` (default `'3d'`; Practice setup has the control). A record run
+whose 3D chunk fails to load REFUSES (`RecordRun.tsx` preflights it); only a practice falls back
+(`GameView`). Practice-run history (`practice_runs`) keeps its own `physics` tag and is listed
+newest-first — it is never ranked, which is what keeps the two eras from meeting there.
 
 - ⚠️ **The "BIOBUZZ owns no ground-pollen physics" rule above is the 2D pipeline's.** `sim3d/`
   OWNS its own solve: one persistent Rapier 3D world per `World` object (`WeakMap` in
@@ -81,11 +105,39 @@ The 2D pipeline is PERMANENT (owner rule): every existing check must stay byte-i
   what the last readback wrote — no thresholds), READBACK rounded to 1e-4 after. Robots are
   cuboids `length × width × heightIn` (yaw-only, z free; `RobotState.z` = chassis BOTTOM height,
   0 while driving); elements are spheres with CCD when fast; `held`/`stock` have no body; an
-  `element` in a flower is a fixed body at its 2D-parked position (tubes are Day 2). The hive
-  tray is a KINEMATIC body swung by the shared timer (`hiveTimerStep`, split out of `hiveStep`
-  with no 2D change; `BB3_HIVE_DYNAMIC = false` until Day 2 calibrates the see-saw) and the spill
-  is PHYSICAL. `derive.ts` fills `hives[a].contents` / `flowers[i].stack` and the `element` tags
-  from body positions every tick, so `score.ts`, `hud.ts` and the 2D renderers run unchanged.
+  `element` in a flower FALLS and seats where the real bores let it (`flowerTube.ts`, Day 2) —
+  it is not parked at a computed height and it is not a fixed body. The hive tray is a JOINTED
+  DYNAMIC body — a real see-saw on a revolute joint, held at each stop by a DETENT
+  (`applyHiveTilt` / `hiveDetentHold`) rather than driven to an angle; `hiveTiltAngle`
+  (`sim3d/tilt.ts`) reads `hive.angle` back off the body. `BB3_HIVE_DYNAMIC` is **`true`**
+  (`config.ts`) — the Day 1 line here said `false` "until Day 2 calibrates the see-saw", and the
+  KINEMATIC path it described survives as the fallback that constant switches to, which is also
+  the shape the PREDICTORS build (`buildKinematicTray`). The shared timer (`hiveTimerStep`, split
+  out of `hiveStep` with no 2D change) still runs the 2D pipeline. The spill is PHYSICAL.
+  `derive.ts` fills `hives[a].contents` / `flowers[i].stack` and the `element` tags from body
+  positions every tick, so `score.ts`, `hud.ts` and the 2D renderers run unchanged.
+- ⚠️ **THE HIVE TIPS ON `BB_TIP_POLLEN`, NOT ON THE CONTENTS' WEIGHT** (owner report 2026-09-19:
+  "it says 0 more to tip and it does not tip"). The detent used to be a breakaway the load had to
+  out-torque, and no calibration can make that agree with a COUNT: measured at the shipped hold,
+  8 POLLEN weigh 4560 crammed against the back wall and 8051 in a two-wide line, 7 POLLEN weigh
+  4146 to 6769 — the ranges OVERLAP, so no detent value separates the rows, and field guide §12.3
+  was being violated in both directions at once. The published table is the rule, `hud.ts` and
+  `HudSlots.tsx` promise it to the driver in as many words, so `hiveDetentHold` is a PIN THE
+  TABLE LIFTS. Everything after the release is still the free see-saw. `hiveContentsTorque` /
+  `hiveRestoringTorque` remain exported: they are how the HIVE3D lane and `hive-calibrate.ts`
+  MEASURE the tray, not what triggers it.
+- ⚠️ **`BB3_HIVE_DYNAMIC = false` IS NOT THE ONE-WORD REVERT IT IS DOCUMENTED AS.** `bb.spill` —
+  G409's entire tag — is written only inside `hiveDynamicTick`; the kinematic path never writes
+  it, and all four G409 checks sit inside `if (BB3_HIVE_DYNAMIC)` blocks, so flipping the word
+  kills G409 in 3D **and leaves the lane green**. Restoring the kinematic tray means porting the
+  spill tagging and un-gating those checks first.
+- ⚠️ **A LINE §10.5 ASSESSES AT AN INSTANT IS WORTH ZERO UNTIL THAT INSTANT PASSES** (owner
+  ruling, 2026-09-19; shared rules code, so it binds both pipelines). LEAVE and AUTO PARK at the
+  end of AUTO (F), TELEOP PARK at the end of the MATCH (G), the up-CELL contents at rest at the
+  conclusion (C), the GARDEN at the end of TELEOP at rest (E). The TIP and both FLOWER lines are
+  continuous (A, D) and are paid live. The COUNT stays live either way — that is the driver's
+  readout — and `BbAllianceScore.pendingPts` carries what the instants still owe, shown as its
+  own chip and never inside `total`. Before this, the bar read 9 one second into AUTO.
 - **Determinism:** the source guard in `scripts/smoke.ts` scans `sim3d/`; `dsin/dcos/datan2/hyp`
   only; the SIM3D lane hashes two runs. Renderer files MUST be `scene/render*.ts` (the guard
   exempts `draw*`/`render*`, and the RENDER lane asserts `three` is imported nowhere else).
@@ -125,7 +177,13 @@ The 2D pipeline is PERMANENT (owner rule): every existing check must stay byte-i
   "stay at 72 for parity" exception is GONE — the constants ARE the CAD — and the SIM3D lane's
   `one field` check asserts the 2D collider faces, the 3D collider faces and the CAD/GLB faces
   agree within 0.05 in. Tape is the CAD's 16 measured strips in BOTH renderers (`BB_TAPE`), never
-  an outline of a zone rectangle. A `fieldDims.gen.ts` that drifts from the measurements JSON
+  an outline of a zone rectangle, all of them **one width, `BB_TAPE_W`** (the CAD's 1.000 in, NOT
+  the shared `C.TAPE_W`, which is DECODE's field and equal by coincidence) — and **there is no
+  centre mark**: Event Field Guide V1.0 §8 tapes the LOADING ZONES, the GARDENS and the ALLIANCE
+  AREAS and nothing else, and guide §9.1 has the four centre tiles come OUT for the frame, so the
+  origin is bare tile under the HIVE. Both renderers drew a white cross there at tape width; the
+  RENDER lane now runs `drawBiobuzzField` against a recording context and fails on any white line
+  inside the perimeter. A `fieldDims.gen.ts` that drifts from the measurements JSON
   fails the SIM3D lane, which re-renders it and diffs byte for byte. `docs/biobuzz-reference.md`
   carries the ruling and the full before/after table.
 - **GRAPHICS SETTINGS ARE PER DEVICE, AND THE SCENE SUBSCRIBES TO THEM** (Day 3, plan §4.4–§4.6).
@@ -174,6 +232,73 @@ The 2D pipeline is PERMANENT (owner rule): every existing check must stay byte-i
   doing exactly that, so `step.ts` can dispatch without pulling a byte of physics in. Node callers
   (smoke lanes, `hive-calibrate`, `costprobe`) still import the modules directly — there is no
   bundle to protect there. The RENDER lane fails on a static import of anything else.
+- **THE 3D ROBOT CREATOR (`docs/roadmap.md` item 1)** — `scene/renderPreview.ts` is a second,
+  small scene in the SAME chunk, and `Preview3D.tsx` (main chunk, no `three`) is the builder's
+  2D/3D toggle, the `Stowed` toggle and the saved-robot thumbnails. Three rules hold it together,
+  and each is asserted by the RENDER lane rather than left to a habit:
+  - **ONE GENERATOR.** The preview calls `buildRobotGroup(spec, id, alliance)` — the function the
+    live match calls for every robot on the field — and builds exactly one mesh of its own (the
+    floor disc). The renderer, the tone mapping and the light rig come from `scene/renderCore.ts`,
+    which both scenes share, because those are per-RENDERER settings and every one of them changes
+    the pixels. A preview drawn a second way would be a preview that lies.
+  - **ONE REBUILD KEY.** `bbSpecKey` (`specKey.ts`, NOT under `scene/`) is the build's geometry
+    identity, read by the generator inside the chunk and by the thumbnail cache outside it — the
+    main chunk has to key a cache on it without loading the scene chunk to ask.
+  - ⚠️ **ONE DYNAMIC SPECIFIER.** `index.ts` fills TWO slots (`scene`, `previewScene`) and both
+    write `import('./scene/renderScene')`; the preview factory is re-exported from there. Two
+    specifiers would hoist three.js into a shared chunk behind two facades, and a facade carries
+    none of the marker strings `bundleaudit` routes the `scene` budget by — both would land in
+    `other` and fail that audit for a reason that has nothing to do with size.
+  The COSMETIC CHASSIS COLOUR is rendered in 3D now (fill = `chassisFill(spec.chassisColor)`,
+  alliance = the silhouette line plus the sign panel, the split the 2D sprite has always made);
+  it was alliance-filled and the colour was not drawn at all, so it vanished when a player pressed
+  `t`. Looking at a robot close up also found the TURRET and the BOX TUBE built INSIDE the chassis
+  box, `specKey` missing `drivetrain`, and a discarded group never disposed — all three were the
+  MATCH's bugs and all three are fixed there.
+- **THE SHOT PATH IS ONE PREDICTOR AND TWO DRAWINGS** (owner playtest feedback 2026-09-18, items
+  5–6). `src/games/biobuzz/shotPath.ts` — NOT under `scene/`, because nothing outside `scene/` may
+  import from it — answers "would this shot go in, and what does it fly through". `drawShot.ts`
+  draws it on the 2D map and `scene/renderReticle.ts` in 3D, and neither works anything out for
+  itself. The rules: a path ONLY for a shot that is MADE, drawn DOTTED, with no landing ring at the
+  end. "Made" is `hiveAccepts` against the REAL hive (not Aim Assist's pretend-up copy), so a cell
+  that is down or mid-swing draws nothing. `bbFlightEnters` now takes an optional `BbFlightTrace`
+  out-parameter and records the arc into a caller-owned buffer, which is what retired
+  `scene/renderLanding.ts` — that file carried a COPY of the integrator, and its own header said
+  the copy would drift.
+  - ⚠️ **A TURRET'S YAW AND ELEVATION ARE SEPARATE NODES** (`bb-turret-head` → `bb-turret-pitch`).
+    Both on ONE node is what "the shooter is not automatically aiming" looked like: a `THREE.Euler`
+    defaults to order `XYZ`, so the elevation was applied about the UN-yawed axis, and at the 160°
+    turret yaw and 80° elevation hive range actually asks for, the barrel came out 67.7° BELOW
+    horizontal and 44.5° off in azimuth while the SIM's turret was dead on target. The sim aims
+    correctly under both physics — measured, converging in 41–52 ticks with no button held.
+  - ⚠️ **ONLY THE HOOD ELEVATES, AND THE RELEASE FOLLOWS IT** (owner ruling, 2026-09-19, after five
+    rejected passes at this one mechanism). `bb-turret-pitch` used to carry the WHOLE head — plates,
+    flywheel, hood, motor, braces — pivoting about the muzzle, which is the only reason a ρ budget
+    ever existed: the entire assembly swept through the drivetrain at elevation. It now carries the
+    hood arc and its two arms and NOTHING else, pivoting about the FLYWHEEL AXLE, which is the one
+    pivot that holds the wheel-to-hood gap constant. The wheel, both side plates, the braces, the
+    motor, the belt and the feed are fixed and need static deck clearance only.
+  - ⚠️ **`bbMuzzleLocal(pitch)` (`robot.ts`) IS THE ONE MUZZLE, AND `scene/renderRobots.ts` IMPORTS
+    IT.** The shooter's whole dimension chain lives in `config.ts` now — it used to be private to
+    the renderer, which is exactly how the picture and the physics disagreed for five rounds. A hood
+    on an axle pivot moves its own lip, so the release is no longer a flat `BB_LAUNCH_Z0`: it is
+    9.634 in level, 8.466 at 57.6° and 7.554 at the 80° cap, and it retreats along the heading as it
+    drops. Same "one predictor, two drawings" rule the shot path follows, and the RENDER lane proves
+    the drawn lip sits on the sim's muzzle at every pitch rather than assuming it.
+  - ⚠️ **`bbTurretSolution` IS A FIXED POINT** — the elevation moves the release and the release
+    moves the elevation. `BB_TURRET_SOLVE_PASSES` (4) passes ALWAYS, with no early exit and no
+    tolerance, because a trip count that depends on a float comparison can differ between a client's
+    prediction and the server's authority. Measured over 7,688 field poses, a fifth pass moves the
+    pitch by at most 1.76e-9 rad. The outcome change was authorised: scoreable field cells 1359 →
+    1382 north and 1417 → 1439 south, pitch-capped cells 255 → 211, nothing speed-capped, worst
+    required muzzle speed 253.26 → 256.37 against a 260 cap.
+  - ⚠️ **A DUMPER HAS NO HOOD AND ITS RELEASE IS STILL FLAT.** `BB_LAUNCH_Z0` is a tipping tray's
+    lip; it does not swing about a flywheel axle. `bbLobThrow`, `bbDumpSolution` and `bbLaunch`'s
+    dumper branch all still read it directly, and the ROBOT lane has a leak guard: a dumper's release
+    stays flat at every pitch while a turret on the same chassis follows its hood down.
+  - **The hood's own feed mouth rotates away from the feed at elevation**, which is why the wrap is
+    0.556 rad and not the 1.05 it was: a FIXED feed shoe at `BB_FEED_SHOE_R` spans 146°–202° and
+    takes over the entry. It bolts to both side plates, so it is also the rear tie.
 - **Verification:** `scripts/smoke-biobuzz/sim3d.ts` (SIM3D lane: seam, drive parity, two-run
   hash, conservation, containment with `containmentFixes === 0`, CCD, capture, launch into either
   up cell, 18/29-in clearance, tip/spill, perf ≤ 1.5 ms, CAD probe agreement) and `render.ts`

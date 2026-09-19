@@ -4,7 +4,7 @@ import { randomUUID } from 'node:crypto';
 import { monitorEventLoopDelay } from 'node:perf_hooks';
 import v8 from 'node:v8';
 import { Room, type Client } from './room';
-import { decodeClientMsg, encodeMsg, BB3D_REFUSAL, DEFAULT_ROOM_CONFIG, physicsAllowed, RATED_FORMATS, SERVER_CAPS, type ClientMsg, type LiveRoom, type RoomConfig, type ServerMsg } from '../src/net/protocol';
+import { coerceCaps, decodeClientMsg, encodeMsg, BB3D_REFUSAL, DEFAULT_ROOM_CONFIG, physicsAllowed, RATED_FORMATS, SERVER_CAPS, type ClientMsg, type LiveRoom, type RoomConfig, type ServerMsg } from '../src/net/protocol';
 import { sanitizePlayer } from '../src/net/sanitize';
 import { authConfigured, emailGateRefusal, verifyAuthToken } from './auth';
 import { initPhysics } from '../src/sim/physicsEngine';
@@ -27,7 +27,8 @@ import { Matchmaker } from './matchmaking';
 import { MATCHMAKER_REGION } from './regions';
 import { BALANCE_VERSION } from '../src/config';
 import { periodLabel } from '../src/seasons';
-import { coerceGameId, isGameId } from '../src/games/types';
+import { coerceGameId, isGameId, serverPhysics } from '../src/games/types';
+import { simModuleFor } from '../src/games/sim';
 import { dbEnabled } from './db/pool';
 import {
   currentSeasonNumber,
@@ -46,6 +47,10 @@ import {
   revokeSupporter,
   refundKofiPayment,
   listSupporterGrants,
+  clearUsername,
+  setSuspension,
+  getSuspension,
+  deleteAccount,
   createAnnouncement,
   deleteAnnouncement,
   upsertPresence,
@@ -78,6 +83,14 @@ import {
   challengeParty,
   syncStaffRoles,
   type GlobalPresence,
+  // the admin console's own layer (migration 0041)
+  profileNames,
+  writeAudit,
+  listAudit,
+  auditActions,
+  adminUserDetail,
+  addAdminNote,
+  deleteAdminNote,
 } from './db/repo';
 
 /**
@@ -288,6 +301,29 @@ function lockoutMessage(): string {
   const mins = Math.max(1, Math.round((maint.endsAt - Date.now()) / 60000));
   return `${base} Back in about ${mins} minute${mins === 1 ? '' : 's'}.`;
 }
+/**
+ * WHAT A SUSPENDED PLAYER IS TOLD AT THE DOOR (0043).
+ *
+ * ⚠️ IT NAMES THE ACT, CARRIES THE MODERATOR'S OWN REASON, AND SAYS WHEN IT ENDS — the same
+ * three things `lockoutMessage` gives a maintenance window, and for the same reason. "You are
+ * suspended" with nothing after it is not a refusal a person can do anything with: it
+ * generates an appeal that has to be answered by looking the account up by hand, which is the
+ * work this console exists to remove.
+ *
+ * The date is FORMATTED IN UTC and labelled as such. A bare `toLocaleString()` on a server
+ * prints the machine's zone, which on Fly is UTC and is not the reader's — and a wrong local
+ * time is worse than an explicit foreign one, because the reader has no way to tell.
+ */
+function suspensionMessage(s: { until: number | null; reason: string | null }): string {
+  const why = s.reason?.trim();
+  const when = s.until ? `${new Date(s.until).toISOString().slice(0, 16).replace('T', ' ')} UTC` : null;
+  return (
+    `This account is suspended from online play${when ? ` until ${when}` : ''}.` +
+    (why ? ` Reason: ${why}` : '') +
+    ' Free drive and practice still work.'
+  );
+}
+
 /** true if this user already has a LIVE match in a DIFFERENT room (stale entries whose
  * room has since vanished are pruned and treated as clear). */
 const activeElsewhere = (userId: string, code: string): boolean => {
@@ -297,6 +333,42 @@ const activeElsewhere = (userId: string, code: string): boolean => {
     userRoom.delete(userId);
     return false;
   }
+  return true;
+};
+
+/**
+ * A SOLO RECORD RUN NEVER BLOCKS ITS OWN OWNER FROM STARTING ANOTHER ONE.
+ *
+ * ⚠️ THIS IS WHAT MAKES THE RESTART BUTTON WORK, and it is needed because restarting a
+ * record run is a full TEARDOWN: the client disposes its session and opens a BRAND-NEW
+ * `rec-` room (see `restartRun`), so the new run arrives as a join from an account the
+ * old room is still holding a lock for. Whether the old lock has been let go by then is
+ * a race the client cannot win — its close frame and the new socket's handshake are two
+ * different connections — and the old room can legitimately still be holding on anyway,
+ * because a run decided at the buzzer is kept alive (`finishing`) until the field settles
+ * and the score is written. Either way the player pressed restart and got "You already
+ * have a game in progress", about a run they had just ended.
+ *
+ * The lock exists to stop one account occupying two seats or two RATED games at once. A
+ * solo record run has no opponent, no alliance and no rating: the only person it can ever
+ * be in the way of is the person who started it. So it yields, and it is the ONLY kind of
+ * room that does — versus, duo and ranked all still refuse, because there the lock is
+ * protecting somebody else.
+ *
+ * Only the LOCK is released (`releaseSeatLock`), never the room: a run already decided
+ * must still finish settling and write its score, with nobody watching.
+ */
+const releaseSoloRecordHold = (userId: string): boolean => {
+  const held = userRoom.get(userId);
+  if (!held) return false;
+  const hr = rooms.get(held);
+  if (!hr) {
+    userRoom.delete(userId); // stale entry for a room that is already gone
+    return true;
+  }
+  if (!hr.soloRecord) return false;
+  hr.releaseSeatLock(userId);
+  userRoom.delete(userId); // belt and braces: the room may never have registered it
   return true;
 };
 
@@ -458,6 +530,18 @@ function coresInUse(): number {
 }
 // stable per-machine id for the shared presence table (unique per Fly machine)
 const MACHINE = process.env.FLY_MACHINE_ID || REGION || 'local';
+
+/**
+ * WHICH BUILD IS THIS MACHINE RUNNING? — reported as `x-build` on `GET /health`.
+ *
+ * `/health` answered a bare `ok`, so there was no way to tell a deployed fix from an
+ * undeployed one from outside: "is this bug in the code or in the running image" cost a
+ * day of argument over the record-restart report (2026-09-19), and `/api/presence`'s
+ * capability list only moves when a capability does. `FLY_MACHINE_VERSION` is set by the
+ * platform and changes on EVERY release, which is exactly the question being asked; set
+ * `BUILD_REF` in the deploy if you want the git sha instead of an opaque id.
+ */
+const BUILD_REF = process.env.BUILD_REF || process.env.FLY_MACHINE_VERSION || 'dev';
 
 /**
  * ADMISSION CONTROL — the maximum number of rooms this machine will HOST.
@@ -811,10 +895,14 @@ const httpServer = createServer((req, res) => {
     res.writeHead(200, {
       'content-type': 'text/plain',
       'access-control-allow-origin': '*',
-      'access-control-expose-headers': 'x-region',
+      'access-control-expose-headers': 'x-region, x-build',
       'cache-control': 'no-store',
       ...(REGION ? { 'x-region': REGION } : {}),
+      'x-build': BUILD_REF,
     });
+    // THE BODY STAYS EXACTLY `ok`. The platform health check and `docs/deploy.md` both
+    // read it, so the build stamp is a HEADER: adding a word here would be a protocol
+    // change dressed as a diagnostic.
     res.end('ok');
     return;
   }
@@ -840,6 +928,15 @@ const httpServer = createServer((req, res) => {
       const token = typeof auth === 'string' && auth.startsWith('Bearer ') ? auth.slice(7) : undefined;
       const user = await verifyAuthToken(token);
       const isAdmin = !!user && ADMIN_IDS.has(user.userId);
+      /**
+       * WHO THE AUDIT LOG ATTRIBUTES THIS CALL TO.
+       *
+       * `'secret'` rather than a made-up person for the `ADMIN_SECRET` query path: that path
+       * is a deploy script (`scripts/announce-deploy.sh`) and has no human behind it, and a
+       * log that names one is worse than a log that says so. The five routes that accept the
+       * secret are the only ones that can produce it.
+       */
+      const actor = user?.userId ?? 'secret';
 
       if (req.method === 'GET' && u.pathname === '/api/admin/status') {
         res.writeHead(200, { ...cors, 'content-type': 'application/json' });
@@ -871,6 +968,36 @@ const httpServer = createServer((req, res) => {
         }
         const machines = dbEnabled ? await adminPresence() : [];
         const local = operatorSnapshot();
+        /**
+         * ⚠️ NAME THE LOCAL SNAPSHOT'S PLAYERS. This is the whole of the "(no profile)" bug.
+         *
+         * `adminPresence()` resolves handles by joining `profiles` over the heartbeat rows,
+         * so every machine's players come back named — except this one's, which is assembled
+         * here from live socket state and carries ONLY ids (`PresencePlayer` has no name
+         * field at all, deliberately: a name copied onto a 5-second heartbeat would go stale
+         * the first time somebody is renamed). The client then REPLACES the database row for
+         * this machine with `local`, because `local` is fresher — and in doing so threw away
+         * the only names it had. On a single-region deploy that is EVERY signed-in session,
+         * every time, reported as "signed in sessions often say no profile".
+         *
+         * So the same lookup runs here, over the same ids, and `known` distinguishes the two
+         * situations the label conflated: an account with no `profiles` row yet (real, and
+         * normal for seconds after a first sign-in — `ensureProfile` runs on the API routes a
+         * client hits, not on the socket) versus a name we simply never looked up.
+         */
+        const names = dbEnabled
+          ? await profileNames(local.players.map((p) => p.userId)).catch(() => new Map())
+          : new Map();
+        const namedLocal = local.players.map((p) => {
+          const n = names.get(p.userId);
+          return {
+            ...p,
+            handle: n?.handle ?? null,
+            username: n?.username ?? null,
+            role: n?.role ?? null,
+            known: n?.known ?? false,
+          };
+        });
         // EVERY region and EVERY kind. The operator list used to be this machine's
         // rooms only, which on a multi-region deploy meant "Live matches" answered
         // with whatever happened to be hosted next to the admin — the same bug
@@ -887,7 +1014,7 @@ const httpServer = createServer((req, res) => {
             machines,
             // this machine's own numbers too, so a single-region/dev deploy — and
             // the gap between a socket opening and the next beat — still reads true
-            local: { machine: MACHINE, region: REGION, online: onlineCount, ...local },
+            local: { machine: MACHINE, region: REGION, online: onlineCount, ...local, players: namedLocal },
             rooms: liveRooms,
             queues: matchmaker.queueSizes(),
           }),
@@ -924,6 +1051,108 @@ const httpServer = createServer((req, res) => {
         );
         res.writeHead(200, { ...cors, 'content-type': 'application/json' });
         res.end(JSON.stringify({ matches: rows }));
+        return;
+      }
+      /**
+       * GET /api/admin/audit — every admin action, newest first (migration 0041).
+       *
+       * `?action=&admin=&user=&q=&limit=&offset=`, all optional, the page hard-capped in the
+       * data layer. `?actions=1` answers the filter menu's list of distinct keys instead.
+       *
+       * This is the tab that makes the rest of the console accountable, so it is READ-ONLY by
+       * construction: there is no route that edits or deletes a row here, and adding one would
+       * defeat the point of the table existing. Rows outlive their targets on purpose (no
+       * foreign key either side, see 0041), so deleting an account does not erase what was
+       * done to it.
+       */
+      if (req.method === 'GET' && u.pathname === '/api/admin/audit') {
+        if (!isAdmin) {
+          res.writeHead(403, cors);
+          res.end('forbidden');
+          return;
+        }
+        if (!dbEnabled) {
+          res.writeHead(200, { ...cors, 'content-type': 'application/json' });
+          res.end(JSON.stringify({ rows: [], more: false, actions: [] }));
+          return;
+        }
+        if (u.searchParams.get('actions')) {
+          res.writeHead(200, { ...cors, 'content-type': 'application/json' });
+          res.end(JSON.stringify({ actions: await auditActions() }));
+          return;
+        }
+        const page = await listAudit({
+          action: u.searchParams.get('action') ?? undefined,
+          adminId: u.searchParams.get('admin') ?? undefined,
+          targetUser: u.searchParams.get('user') ?? undefined,
+          query: u.searchParams.get('q') ?? undefined,
+          limit: Number(u.searchParams.get('limit')) || 50,
+          offset: Number(u.searchParams.get('offset')) || 0,
+        });
+        res.writeHead(200, { ...cors, 'content-type': 'application/json' });
+        res.end(JSON.stringify(page));
+        return;
+      }
+      /**
+       * GET /api/admin/user?id=<userId> — EVERYTHING about one account, in one request.
+       *
+       * The console had a name in the live table, counts in the report queue, the ledger in
+       * the standing editor and the membership in the user search, and no page that held all
+       * four — so "what do I do about this person" meant opening four panels and keeping the
+       * answer in your head. One read, `adminUserDetail`, nine bounded queries in parallel.
+       *
+       * An id with NO PROFILE ROW still answers, with `known: false`. That is not an error
+       * case to hide: it is a real state (an account seconds after its first sign-in, before
+       * anything has called `ensureProfile`) and it is the state the operator view used to
+       * mislabel. See `profileNames`.
+       *
+       * POST /api/admin/user/note?id=&note=   pin a private moderator note
+       * POST /api/admin/user/note?id=&delete=<noteId>   remove one
+       */
+      if (u.pathname === '/api/admin/user' || u.pathname === '/api/admin/user/note') {
+        if (!isAdmin) {
+          res.writeHead(403, cors);
+          res.end('forbidden');
+          return;
+        }
+        const target = u.searchParams.get('id');
+        if (!target || !dbEnabled) {
+          res.writeHead(dbEnabled ? 400 : 503, cors);
+          res.end(dbEnabled ? 'bad request' : 'database disabled');
+          return;
+        }
+        if (u.pathname === '/api/admin/user/note') {
+          if (req.method !== 'POST') {
+            res.writeHead(405, cors);
+            res.end('method not allowed');
+            return;
+          }
+          const del = u.searchParams.get('delete');
+          if (del) {
+            const gone = await deleteAdminNote(target, del);
+            if (gone) {
+              await writeAudit({ adminId: actor, action: 'user.note.delete', targetUser: target, targetId: del });
+            }
+            res.writeHead(200, { ...cors, 'content-type': 'application/json' });
+            res.end(JSON.stringify({ ok: gone }));
+            return;
+          }
+          const row = await addAdminNote(target, actor, u.searchParams.get('note') ?? '');
+          if (!row) {
+            res.writeHead(400, cors);
+            res.end('empty note');
+            return;
+          }
+          // the note's TEXT is not copied into the audit detail: it is already stored, once,
+          // in the row this points at, and a second copy is a second thing to redact.
+          await writeAudit({ adminId: actor, action: 'user.note.add', targetUser: target, targetId: row.id });
+          res.writeHead(200, { ...cors, 'content-type': 'application/json' });
+          res.end(JSON.stringify({ ok: true, note: row }));
+          return;
+        }
+        const detail = await adminUserDetail(target);
+        res.writeHead(200, { ...cors, 'content-type': 'application/json' });
+        res.end(JSON.stringify({ user: detail }));
         return;
       }
       /**
@@ -971,6 +1200,12 @@ const httpServer = createServer((req, res) => {
               console.error('[standing] upheld charge failed:', e),
             );
           }
+          await writeAudit({
+            adminId: actor,
+            action: status === 'reviewed' ? 'report.uphold' : 'report.dismiss',
+            targetUser: target,
+            detail: { reports: n },
+          });
           res.writeHead(200, { ...cors, 'content-type': 'application/json' });
           res.end(JSON.stringify({ ok: true, updated: n }));
           return;
@@ -1044,6 +1279,18 @@ const httpServer = createServer((req, res) => {
               points: smite,
             }).catch((e) => console.error('[standing] smite failed:', e));
           }
+          if (done) {
+            // the TARGET of this row is the REPORTER, not the match: a misscore claim is
+            // resolved against a person only when it is smitten, and "what has been done to
+            // this account" has to surface that alongside their standing ledger.
+            await writeAudit({
+              adminId: actor,
+              action: `misscore.${verdict}`,
+              targetUser: smite > 0 ? done.reporterId : null,
+              targetId: id,
+              detail: { verdict, smite, roomCode: done.roomCode },
+            });
+          }
           res.writeHead(200, { ...cors, 'content-type': 'application/json' });
           res.end(JSON.stringify({ ok: Boolean(done) }));
           return;
@@ -1103,6 +1350,16 @@ const httpServer = createServer((req, res) => {
               `[admin] match ${id} score corrected by ${user?.userId ?? 'admin'}: ` +
                 `${done.redBefore}-${done.blueBefore} -> ${done.redAfter}-${done.blueAfter}`,
             );
+            await writeAudit({
+              adminId: actor,
+              action: 'match.rescore',
+              targetId: id,
+              detail: {
+                before: `${done.redBefore}-${done.blueBefore}`,
+                after: `${done.redAfter}-${done.blueAfter}`,
+              },
+              note: u.searchParams.get('note') ?? undefined,
+            });
           }
           res.writeHead(done ? 200 : 404, { ...cors, 'content-type': 'application/json' });
           res.end(JSON.stringify(done ? { ok: true, ...done } : { error: 'no such match' }));
@@ -1173,6 +1430,18 @@ const httpServer = createServer((req, res) => {
               `${out.pardoned ? `, ${out.pardoned} offence(s) voided` : ''}` +
               `${lock === false ? ', lock cleared' : ''}`,
           );
+          await writeAudit({
+            adminId: actor,
+            action: 'standing.edit',
+            targetUser: target,
+            detail: {
+              scoreBefore: out.scoreBefore,
+              scoreAfter: out.scoreAfter,
+              pardoned: out.pardoned,
+              lock: lock === false ? 'cleared' : lock,
+            },
+            note: u.searchParams.get('note') ?? undefined,
+          });
           res.writeHead(200, { ...cors, 'content-type': 'application/json' });
           res.end(JSON.stringify({ ok: true, ...out }));
           return;
@@ -1234,6 +1503,12 @@ const httpServer = createServer((req, res) => {
             message: (u.searchParams.get('msg') ?? '').slice(0, 200),
           });
           await refreshMaintenance(true); // this machine stops/starts enforcing NOW
+          await writeAudit({
+            adminId: actor,
+            action: next.active ? 'maintenance.schedule' : 'maintenance.lift',
+            detail: { startsAt: next.startsAt, endsAt: next.endsAt },
+            note: next.message || undefined,
+          });
           res.writeHead(200, { ...cors, 'content-type': 'application/json' });
           res.end(JSON.stringify({ ok: true, maintenance: next }));
           return;
@@ -1255,6 +1530,7 @@ const httpServer = createServer((req, res) => {
           currentNotice = { t: 'serverNotice', kind: 'info', message: '' }; // empty => clear on client
           const n = broadcastAll(currentNotice);
           currentNotice = null;
+          await writeAudit({ adminId: actor, action: 'notice.cancel', detail: { notified: n } });
           res.writeHead(200, { ...cors, 'content-type': 'application/json' });
           res.end(JSON.stringify({ ok: true, cancelled: true, notified: n }));
           return;
@@ -1264,6 +1540,12 @@ const httpServer = createServer((req, res) => {
         currentNotice = { t: 'serverNotice', kind: 'restart', message, until: Date.now() + seconds * 1000 };
         const notified = broadcastAll(currentNotice);
         console.log(`[admin] restart notice in ${seconds}s -> ${notified} clients: "${message}"`);
+        await writeAudit({
+          adminId: actor,
+          action: 'notice.restart',
+          detail: { seconds, notified },
+          note: message,
+        });
         res.writeHead(200, { ...cors, 'content-type': 'application/json' });
         res.end(JSON.stringify({ ok: true, notified, until: currentNotice.until }));
         return;
@@ -1300,6 +1582,11 @@ const httpServer = createServer((req, res) => {
           console.log(
             `[admin] started new ${bumpAct ? 'act' : 'season'}: bv=${season} (${label})`,
           );
+          await writeAudit({
+            adminId: actor,
+            action: bumpAct ? 'season.newAct' : 'season.start',
+            detail: { game: adminGame, season, act, seasonNo, label },
+          });
           // auto-publish a cinematic announcement (editable/retire-able from the
           // admin console). `announce=0` opts out for a silent roll.
           if (u.searchParams.get('announce') !== '0') {
@@ -1330,6 +1617,11 @@ const httpServer = createServer((req, res) => {
           for (let s = 1; s < current; s++) freed += await purgeSeasonReplays(s, adminGame);
         }
         console.log(`[admin] purged ${freed} archived-season replays`);
+        await writeAudit({
+          adminId: actor,
+          action: 'season.purgeReplays',
+          detail: { game: adminGame, season: seasonArg ?? `every season before ${current}`, freed },
+        });
         res.writeHead(200, { ...cors, 'content-type': 'application/json' });
         res.end(JSON.stringify({ ok: true, freed }));
         return;
@@ -1344,6 +1636,9 @@ const httpServer = createServer((req, res) => {
         u.pathname === '/api/admin/user/records/clear' ||
         u.pathname === '/api/admin/users' ||
         u.pathname === '/api/admin/user/rename' ||
+        u.pathname === '/api/admin/user/username' ||
+        u.pathname === '/api/admin/user/suspend' ||
+        u.pathname === '/api/admin/user/delete' ||
         u.pathname === '/api/admin/supporter/grant' ||
         u.pathname === '/api/admin/supporter/revoke' ||
         u.pathname === '/api/admin/supporter/history' ||
@@ -1386,6 +1681,15 @@ const httpServer = createServer((req, res) => {
           }
           const deleted = await deleteRecordById(id);
           console.log(`[admin] delete record ${id} -> ${deleted}`);
+          if (deleted) {
+            await writeAudit({
+              adminId: actor,
+              action: 'record.delete',
+              targetUser: u.searchParams.get('userId') || null,
+              targetId: id,
+              note: u.searchParams.get('note') ?? undefined,
+            });
+          }
           jsonOut(deleted ? 200 : 404, { ok: deleted });
           return;
         }
@@ -1398,14 +1702,28 @@ const httpServer = createServer((req, res) => {
           }
           const removed = await deleteUserRecords(uid);
           console.log(`[admin] cleared ${removed} records for user ${uid}`);
+          await writeAudit({
+            adminId: actor,
+            action: 'record.clearAll',
+            targetUser: uid,
+            detail: { removed },
+            note: u.searchParams.get('note') ?? undefined,
+          });
           jsonOut(200, { ok: true, removed });
           return;
         }
         // GET /api/admin/users?q= — find profiles to rename/moderate
         if (req.method === 'GET' && u.pathname === '/api/admin/users') {
           const query = (u.searchParams.get('q') ?? '').trim();
-          const users = query ? await searchProfiles(query) : [];
-          jsonOut(200, { users });
+          // PAGED AND CAPPED. It was a bare `searchProfiles(query)` behind a box with no
+          // way to ask for the rest, so a common name silently showed its first 25 matches
+          // as though they were all of them — which for a moderation search is not a
+          // cosmetic limit, it is the wrong answer to "is this account here".
+          const limit = Math.min(50, Math.max(1, Number(u.searchParams.get('limit')) || 25));
+          const offset = Math.max(0, Math.min(5000, Number(u.searchParams.get('offset')) || 0));
+          // one row past the page, so "is there more" needs no second count(*)
+          const found = query ? await searchProfiles(query, limit + 1, offset) : [];
+          jsonOut(200, { users: found.slice(0, limit), more: found.length > limit });
           return;
         }
         // POST /api/admin/user/rename?userId=&handle= — force a clean display name
@@ -1427,7 +1745,145 @@ const httpServer = createServer((req, res) => {
           }
           await setHandle(uid, handle);
           console.log(`[admin] renamed ${uid}: "${profile.handle}" -> "${handle}"`);
+          // BOTH names in the detail. A forced rename is the one moderation action whose
+          // evidence it destroys: after it runs, nothing anywhere still says what the name
+          // was that made somebody reach for the button.
+          await writeAudit({
+            adminId: actor,
+            action: 'user.rename',
+            targetUser: uid,
+            detail: { from: profile.handle, to: handle },
+            note: u.searchParams.get('note') ?? undefined,
+          });
           jsonOut(200, { ok: true, userId: uid, handle });
+          return;
+        }
+
+        /**
+         * POST /api/admin/user/username?userId=&note= — TAKE AN ABUSIVE @USERNAME AWAY.
+         *
+         * The rename above forces a clean DISPLAY name, which is the one its owner can change
+         * back as soon as nobody is looking. The @username is the permanent, unique, public
+         * one — it goes on every leaderboard row and every profile URL — and nothing in this
+         * console could touch it, so a name-policy report about a username had no remedy at
+         * all short of a psql session.
+         *
+         * CLEARED, NOT SET: `clearUsername` says why. The account goes back through
+         * `UsernameGate`, which already validates format, uniqueness and content.
+         */
+        if (req.method === 'POST' && u.pathname === '/api/admin/user/username') {
+          const uid = u.searchParams.get('userId') ?? '';
+          if (!uid) {
+            jsonOut(400, { ok: false, error: 'missing userId' });
+            return;
+          }
+          if (!(await getProfile(uid))) {
+            jsonOut(404, { ok: false, error: 'no such user' });
+            return;
+          }
+          const was = await clearUsername(uid);
+          // THE OLD NAME IS THE EVIDENCE. Like `user.rename`, this action destroys the only
+          // record of what made somebody reach for the button, so the audit row carries it.
+          if (was) {
+            await writeAudit({
+              adminId: actor,
+              action: 'user.username.clear',
+              targetUser: uid,
+              detail: { from: was },
+              note: u.searchParams.get('note') ?? undefined,
+            });
+          }
+          jsonOut(200, { ok: true, userId: uid, cleared: was });
+          return;
+        }
+
+        /**
+         * POST /api/admin/user/suspend?userId=&days=&reason=   suspend
+         * POST /api/admin/user/suspend?userId=&lift=1&reason=  lift it
+         *
+         * THE LEVER THE CONSOLE DID NOT HAVE. Everything else here stops short of stopping
+         * somebody: a rename takes a word off them, clearing their records takes the scores
+         * off the boards, and a standing charge locks RANKED and nothing else. None of those
+         * keeps an account out of the custom rooms other players are in.
+         *
+         * A DEADLINE IN DAYS, not a flag — see migration 0043. `days` is capped at 3650,
+         * which is how a permanent ban is expressed: a decision with a date on it rather
+         * than a boolean nobody remembers to clear.
+         *
+         * THE REASON IS SHOWN TO THE PLAYER at the door, so it is not the place for a private
+         * note — `admin_notes` is, and the console says so beside the box.
+         */
+        if (req.method === 'POST' && u.pathname === '/api/admin/user/suspend') {
+          const uid = u.searchParams.get('userId') ?? '';
+          const lift = u.searchParams.get('lift') === '1';
+          const days = Math.floor(Number(u.searchParams.get('days') ?? 0));
+          if (!uid) {
+            jsonOut(400, { ok: false, error: 'missing userId' });
+            return;
+          }
+          if (!lift && (!Number.isFinite(days) || days < 1 || days > 3650)) {
+            jsonOut(400, { ok: false, error: 'days must be 1–3650' });
+            return;
+          }
+          const reason = (u.searchParams.get('reason') ?? '').slice(0, 300);
+          const before = await getSuspension(uid);
+          const next = await setSuspension(uid, lift ? null : Date.now() + days * 86_400_000, reason);
+          if (next === null) {
+            jsonOut(404, { ok: false, error: 'no such user' });
+            return;
+          }
+          await writeAudit({
+            adminId: actor,
+            action: lift ? 'account.unsuspend' : 'account.suspend',
+            targetUser: uid,
+            detail: lift ? { wasUntil: before.until } : { days, until: next.until },
+            note: reason || undefined,
+          });
+          jsonOut(200, { ok: true, userId: uid, suspension: next });
+          return;
+        }
+
+        /**
+         * POST /api/admin/user/delete?userId=&note= — REMOVE AN ACCOUNT AND EVERYTHING IT OWNS.
+         *
+         * For a spam or bot signup, where a suspension leaves the abusive name, the records
+         * and the reports sitting on the service with nobody behind them. The same
+         * `deleteAccount` the player's own Delete-my-account button calls, so the cascade is
+         * the one `npm run dbtest` already exercises rather than a second spelling of it.
+         *
+         * ⚠️ THE AUDIT ROW OUTLIVES THE ACCOUNT, which is exactly what `admin_audit` has no
+         * foreign keys for (0041). It is written BEFORE the delete, because afterwards there
+         * is no `profiles` row for the log's own join to resolve a name from — and because a
+         * delete that half-succeeded must still leave a record that it was attempted.
+         */
+        if (req.method === 'POST' && u.pathname === '/api/admin/user/delete') {
+          const uid = u.searchParams.get('userId') ?? '';
+          if (!uid) {
+            jsonOut(400, { ok: false, error: 'missing userId' });
+            return;
+          }
+          const profile = await getProfile(uid);
+          if (!profile) {
+            jsonOut(404, { ok: false, error: 'no such user' });
+            return;
+          }
+          // AN ADMIN IS NOT DELETABLE FROM HERE. The staff role is a projection of
+          // ADMIN_USER_IDS and `syncStaffRoles` re-creates the row at the next boot, so the
+          // delete would be undone silently while the records it cascaded away stayed gone.
+          if (ADMIN_IDS.has(uid)) {
+            jsonOut(409, { ok: false, error: 'that account is staff — remove it from ADMIN_USER_IDS first' });
+            return;
+          }
+          await writeAudit({
+            adminId: actor,
+            action: 'account.delete',
+            targetUser: uid,
+            detail: { handle: profile.handle, username: profile.username },
+            note: u.searchParams.get('note') ?? undefined,
+          });
+          const gone = await deleteAccount(uid);
+          console.log(`[admin] deleted account ${uid} ("${profile.handle}") -> ${gone}`);
+          jsonOut(200, { ok: gone });
           return;
         }
 
@@ -1464,6 +1920,13 @@ const httpServer = createServer((req, res) => {
             `by ${user?.userId ?? 'secret'}${note ? `: ${note}` : ''}`,
           );
           console.log(`[admin] supporter +${months}mo for ${uid} -> ${until}`);
+          await writeAudit({
+            adminId: actor,
+            action: 'supporter.grant',
+            targetUser: uid,
+            detail: { months, until },
+            note: note || undefined,
+          });
           jsonOut(200, { ok: true, userId: uid, until });
           return;
         }
@@ -1481,6 +1944,13 @@ const httpServer = createServer((req, res) => {
             `by ${user?.userId ?? 'secret'}${note ? `: ${note}` : ''}`,
           );
           console.log(`[admin] supporter revoked for ${uid} -> ${revoked}`);
+          await writeAudit({
+            adminId: actor,
+            action: 'supporter.revoke',
+            targetUser: uid,
+            detail: { revoked },
+            note: note || undefined,
+          });
           jsonOut(200, { ok: true, userId: uid, revoked });
           return;
         }
@@ -1496,6 +1966,9 @@ const httpServer = createServer((req, res) => {
           }
           const flagged = await refundKofiPayment(txn);
           console.log(`[admin] payment ${txn} flagged refunded -> ${flagged}`);
+          if (flagged) {
+            await writeAudit({ adminId: actor, action: 'supporter.refund', targetId: txn });
+          }
           jsonOut(flagged ? 200 : 404, { ok: flagged });
           return;
         }
@@ -1542,6 +2015,9 @@ const httpServer = createServer((req, res) => {
           }
           const deleted = await deleteAnnouncement(id);
           console.log(`[admin] retire announcement ${id} -> ${deleted}`);
+          if (deleted) {
+            await writeAudit({ adminId: actor, action: 'announcement.retire', targetId: id });
+          }
           jsonOut(deleted ? 200 : 404, { ok: deleted });
           return;
         }
@@ -1563,6 +2039,12 @@ const httpServer = createServer((req, res) => {
           const tagline = (payload.tagline ?? '').trim().slice(0, 80) || null;
           const row = await createAnnouncement({ kind: payload.kind ?? 'patch', title, body, tagline });
           console.log(`[admin] published ${row.kind} announcement "${row.title}"`);
+          await writeAudit({
+            adminId: actor,
+            action: 'announcement.publish',
+            targetId: row.id,
+            detail: { kind: row.kind, title: row.title },
+          });
           // a live-info banner nudges connected players to look — the feed itself
           // shows on their NEXT load (localStorage "seen" gate), but this makes it
           // feel immediate for anyone already online.
@@ -2270,6 +2752,11 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
       // the untrusted physics, forced to the enum. Anything that is not the one known
       // non-default value becomes ABSENT, i.e. `'2d'` — a room is a thing the server has to
       // be able to step, so an unrecognised string must not reach `createWorld`.
+      //
+      // ⚠️ `Room.physics` NO LONGER READS THIS (owner ruling, 2026-09-18: every server room of
+      // a 3D-capable game is 3D). It is still coerced rather than dropped because old clients
+      // keep sending it and the config is echoed back in the operator snapshot; nothing
+      // downstream may treat it as the room's answer.
       physics: msg.config?.physics === '3d' ? '3d' : undefined,
     };
     if (!r && MAX_ROOMS > 0 && rooms.size >= MAX_ROOMS) {
@@ -2369,7 +2856,7 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
      * this attempt may have created the room, and a room nobody ever joined would otherwise
      * be counted against `MAX_ROOMS` for the life of the process.
      */
-    if (!physicsAllowed(r.physics, Array.isArray(msg.caps) ? msg.caps : [])) {
+    if (!physicsAllowed(r.physics, coerceCaps(msg.caps))) {
       send({ t: 'error', message: BB3D_REFUSAL });
       abandon();
       return;
@@ -2392,6 +2879,33 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
       send({ t: 'error', message: lockoutMessage() });
       abandon();
       return;
+    }
+    /**
+     * SUSPENSION (0043) — the door a moderator's decision actually has to reach.
+     *
+     * HERE rather than only in the ranked queue, and unlike the maintenance window it has NO
+     * staged-room exemption: a suspension is about this account playing with other people at
+     * all, so the custom rooms are the point of it and a pairing the matchmaker happened to
+     * stage is not a reason to let it through.
+     *
+     * A DATABASE READ ON THE JOIN PATH, deliberately, where maintenance is cached on a timer.
+     * The two are different shapes: a lockdown window is one row every socket asks about, so
+     * caching it costs nothing and staleness is measured against a window announced minutes
+     * ahead. A suspension is per account, and the moment it matters most is the moment after
+     * a moderator presses the button — a cached answer would let somebody keep joining rooms
+     * for as long as the timer runs. A join is a rare event; this is one indexed read on it.
+     */
+    if (user) {
+      const susp = await getSuspension(user.userId);
+      if (closed) {
+        abandon();
+        return;
+      }
+      if (susp.until) {
+        send({ t: 'error', message: suspensionMessage(susp) });
+        abandon();
+        return;
+      }
     }
     /**
      * ONE ACCOUNT, ONE SEAT IN THIS ROOM — ASKED BEFORE `canJoin`, because the answer is
@@ -2489,8 +3003,17 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
     if (user && activeElsewhere(user.userId, code)) {
       if (r.stagedFor(user.userId)) {
         userRoom.delete(user.userId);
+      } else if (releaseSoloRecordHold(user.userId)) {
+        /* a solo run of their own was in the way; it is not any more — see below */
       } else {
-        send({ t: 'error', message: 'You already have a game in progress - rejoin or leave it first.' });
+        // CODED, because this is one of the few refusals a client can do something about:
+        // the record launcher turns it into "go to that game" instead of a dead card. The
+        // sentence stays self-sufficient for every build that predates the code.
+        send({
+          t: 'error',
+          message: 'You already have a game in progress - rejoin or leave it first.',
+          code: 'active_game',
+        });
         abandon();
         return;
       }
@@ -2513,7 +3036,7 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
       disconnectAt: 0,
       // protocol capabilities this client build understands (mixed-version safe:
       // the room only opens the strategy window if EVERY member supports it)
-      caps: Array.isArray(msg.caps) ? msg.caps : [],
+      caps: coerceCaps(msg.caps),
       // release channel: alpha rooms are segregated + never persisted (in-dev)
       channel: typeof msg.channel === 'string' ? msg.channel : undefined,
     };
@@ -2620,7 +3143,7 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
         // still advances the world between snapshots off the authoritative commands (see
         // `stepServer`'s spectator arm), so a build that cannot run this room's physics cannot
         // watch it either — and the honest answer is the same sentence a driver gets.
-        if (!physicsAllowed(r.physics, Array.isArray(msg.caps) ? msg.caps : [])) {
+        if (!physicsAllowed(r.physics, coerceCaps(msg.caps))) {
           send({ t: 'error', message: BB3D_REFUSAL });
           return;
         }
@@ -2632,7 +3155,7 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
           player: { ...sanitizePlayer(undefined, r.config.game), clientId: id },
           connected: true,
           disconnectAt: 0,
-          caps: Array.isArray(msg.caps) ? msg.caps : [],
+          caps: coerceCaps(msg.caps),
         };
         room = r; // route this socket's close → r.detach (drops the spectator)
         // HIDDEN OBSERVER: an admin may watch without moving the spectator count.
@@ -2658,7 +3181,7 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
         // passed the gate on `join`, so this refuses almost nothing — but it refuses it with
         // the sentence that explains it, instead of a bare `rejoined: ok=false` that reads as
         // "your slot expired".
-        if (r && !physicsAllowed(r.physics, Array.isArray(msg.caps) ? msg.caps : [])) {
+        if (r && !physicsAllowed(r.physics, coerceCaps(msg.caps))) {
           send({ t: 'error', message: BB3D_REFUSAL });
           return;
         }
@@ -2759,12 +3282,18 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
          * paired into. Refusing at the door instead would cancel a staged pairing and charge
          * three other people for a dodge that was a version skew.
          *
-         * BIOBUZZ is alpha-only, so no old client legitimately queues for it: the message is
-         * for the one case that can happen, a stale tab left open across a deploy.
+         * ⚠️ BIOBUZZ IS PUBLIC ON THE STABLE CHANNEL, so this refusal is not a corner case:
+         * every production client built before the `'bb3d'` cap existed hits it, for every
+         * BIOBUZZ queue, until it reloads. That makes DEPLOY ORDER part of the feature — ship
+         * and verify the CLIENT (Vercel) before the server (Fly) — and a tab held open across
+         * the deploy stays refused until the version gate reloads it.
+         *
+         * Asked of the GAME MODULE (`serverPhysics`) rather than by naming BIOBUZZ, so a third
+         * game that gains a 3D solve is gated the day it declares one.
          */
         if (
-          coerceGameId(msg.game) === 'biobuzz' &&
-          !physicsAllowed('3d', Array.isArray(msg.caps) ? msg.caps : [])
+          serverPhysics(simModuleFor(coerceGameId(msg.game))) === '3d' &&
+          !physicsAllowed('3d', coerceCaps(msg.caps))
         ) {
           send({ t: 'error', message: BB3D_REFUSAL });
           return;
@@ -2848,7 +3377,21 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
             // not the JWT `name` claim. It matters more here, because the ranked client
             // does not even send a real one — `Matchmaking.tsx` sends the ROBOT's
             // `teamName` — so this read is the only thing that can name the player.
-            const prof = dbEnabled ? await getProfile(u.userId).catch(() => null) : null;
+            //
+            // ...AND A SUSPENDED ACCOUNT DOES NOT QUEUE (0043). It rides along with the
+            // profile read rather than taking a round trip of its own — the two are the same
+            // row — and it is refused HERE rather than at the room door the pairing will
+            // reach, for the reason the sign-in check is here: a refusal after the matchmaker
+            // has staged a match charges three other people for it.
+            const [prof, susp] = await Promise.all([
+              dbEnabled ? getProfile(u.userId).catch(() => null) : Promise.resolve(null),
+              getSuspension(u.userId).catch(() => ({ until: null, reason: null })),
+            ]);
+            if (stale()) return;
+            if (susp.until) {
+              send({ t: 'error', message: suspensionMessage(susp) });
+              return;
+            }
             // LAST GAP, and the one that matters: nothing may await between here and
             // `enqueue`, or the entry outlives the cancel that was meant to stop it.
             if (stale()) return;
@@ -2872,7 +3415,7 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
             homeRegion: msg.homeRegion || edgeRegion || REGION,
             accessMs: msg.accessMs ?? 0,
             noWiden: msg.noWiden ?? false,
-            caps: Array.isArray(msg.caps) ? msg.caps : [],
+            caps: coerceCaps(msg.caps),
             // segregate the queue by GAME (a CR queuer never pairs into a DECODE room)
             game: coerceGameId(msg.game),
             channel: typeof msg.channel === 'string' ? msg.channel : undefined,
@@ -2903,7 +3446,7 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
               return;
             }
             const tier = tierOf(lock.score);
-            if ((Array.isArray(msg.caps) ? msg.caps : []).includes('standing')) {
+            if (coerceCaps(msg.caps).includes('standing')) {
               // a lock is a state with a CLOCK, so the client is sent the deadline and
               // counts it down itself rather than being handed a sentence that is wrong
               // thirty seconds later

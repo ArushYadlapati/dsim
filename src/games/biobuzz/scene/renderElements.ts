@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import type { Artifact, ArtifactColor, World } from '../../../types';
 import { SIM_DT } from '../../../config';
 import { BB_HIVE_W, BB_NECTAR_R, BB_POLLEN_R } from '../config';
+import { biobuzzPhysics } from '../state';
 import type { ElementShadows } from '../graphics/settings';
 
 /**
@@ -14,9 +15,10 @@ import type { ElementShadows } from '../graphics/settings';
  * `z` is real altitude). `held`/`stock` balls are off-field and hidden (scaled to zero).
  *
  * `element` balls (parked in a HIVE cell or a FLOWER stack, `state.ts`'s `BallState`) already
- * carry a REAL, useful `pos`/`z` written by `play.ts`'s `park()` — a flower stack's z is
- * `flowerStackZ`'s own centre height, unique per element, so those are posed exactly like a
- * ground ball with no adjustment. A HIVE cell is the one case `park()` does NOT give a unique
+ * carry a REAL, useful `pos`/`z` — but WHAT that z means depends on which solve wrote it, so
+ * the height adjustment branches on `biobuzzPhysics(world)` and not on the ball's kind; the
+ * comment inside `updateBiobuzzElements` has the two conventions and the two bugs. A HIVE cell
+ * is the one case `park()` does NOT give a unique
  * position: every element parked in the same cell shares that cell's centre point and a single
  * fixed height (`CELL_MID_Z`, `play.ts`), because "a parked element is not solved and has no
  * position of its own; this is somewhere to point at" (that file's own comment). Rendered
@@ -26,6 +28,16 @@ import type { ElementShadows } from '../graphics/settings';
  * hive tilt does not move since the tilt rotates about world x) — a row, exactly like the 2D
  * renderer's `drawCellContents`, but done from the ball's own (shared) position rather than the
  * `BbHiveState.contents` array (this file never reads `world.biobuzz.hives`).
+ *
+ * Under `'3d'` every element in the cell already has its own SOLVED position from the tray's
+ * Rapier body — there is nothing to fan. Adding the 2D row fan on top of an already-distinct
+ * position was itself a bug: measured, it walked a drawn sphere up to ±3.00 in off the body it
+ * was meant to mark (5 elements in a cell), drew two elements that physically sit at the same
+ * local x 4.5 in apart, and at higher counts pushed the sphere past the floor plate's own edge
+ * and through the side wall — read at a glance as "meshing with the hive". The actual small
+ * (0.06–0.15 in) penetration into the tray floor is the CONTACT SOLVE's, not this file's — see
+ * `sim3d/engineImpl.ts`/`predict.ts`'s `contact_natural_frequency`; this file poses at the body
+ * exactly, and does not fudge the draw to hide a physics number.
  */
 
 /** how many instances each kind's `InstancedMesh` is sized for — the Day 1 brief's number, well
@@ -33,7 +45,9 @@ import type { ElementShadows } from '../graphics/settings';
 const CAP = 56;
 
 const POLLEN_COLOR = 0xf2d14b; // matches `draw.ts`'s ELEMENT_FILL.yellow
-const NECTAR_COLORS: Record<'red' | 'blue', number> = { red: 0xe2564d, blue: 0x4d8fe2 };
+/** the one BIOBUZZ blue (`draw.ts`'s `ELEMENT_FILL.blue`, owner bug 12 — see that header for why
+ * it is NOT the CAD's `plastic#0000ff`); red still matches `draw.ts`'s own `#e2564d`. */
+const NECTAR_COLORS: Record<'red' | 'blue', number> = { red: 0xe2564d, blue: 0x007be1 };
 
 const HIDE = new THREE.Matrix4().makeScale(0, 0, 0);
 
@@ -215,30 +229,58 @@ export function updateBiobuzzElements(els: BbElements, world: World): void {
   let pollenN = 0;
   let nectarN = 0;
   let blobN = 0;
+  /**
+   * ⚠️ A PARKED ELEMENT'S `z` MEANS DIFFERENT THINGS UNDER THE TWO PHYSICS, SO THE CONVENTION
+   * BRANCHES ON THE SOLVE AND NEVER ON `state.kind`.
+   *
+   * 3D writes a BOTTOM: the readback is `b.z = t.z - r` (`sim3d/engineImpl.ts`) and a placed
+   * flower element is seated `ball.z = PLACE_CENTRE_Z - r` (`sim3d/flower3d.ts`), so every ball
+   * a 3D world solves — parked or loose — reports its underside and has to be lifted by `r`.
+   * 2D writes a CENTRE for a parked element and only for a parked one: `play.ts`'s `park()`
+   * puts a hive element at `CELL_MID_Z` ("where a parked element is drawn to sit") and a flower
+   * element at `flowerStackZ`, which is documented as centre heights. Its loose balls still
+   * report a bottom.
+   *
+   * Keying this off the KIND is what put one branch wrong under each solve — a hive element
+   * floating 1.4 in high in 2D, a flower element sunk a radius in 3D. And a 2D-physics world in
+   * the 3D VIEW is reachable, not theoretical: `GameView.tsx` falls back to `practicePhysics:
+   * '2d'` when the 3D chunk fails to load WITHOUT changing the view, which is the same reason
+   * `sim3d/tilt.ts` exists as a physics-free module.
+   */
+  // ONE CHECK, TWO JOBS, because one `World` has one physics: it decides whether `b.z` is an
+  // underside (above), and it decides whether the hive row fan runs at all. The fan is a stand-in
+  // for a position `park()` never gives a 2D hive element — under 3D every element already has
+  // its own solved one, so the grouping pass below is dead work there, and building `hiveIndex`
+  // unconditionally is exactly what let the fan apply itself to a 3D world too.
+  const bottom = biobuzzPhysics(world) === '3d';
   const blobsOn = els.shadowMode === 'blob';
   const seenSpin = new Set<number>();
 
   // group hive-parked elements by `el` so a shared cell position can be fanned into a row —
   // small (a hive holds at most a handful of elements), so a per-frame Map here is not the
-  // "no allocation" hot path the per-ball pose loop below is.
+  // "no allocation" hot path the per-ball pose loop below is. 2D-only: see `bottom` above.
   const hiveGroups = new Map<string, Artifact[]>();
-  for (const b of world.balls) {
-    if (b.state.kind === 'element' && b.state.el.startsWith('hive:')) {
-      const arr = hiveGroups.get(b.state.el);
-      if (arr) arr.push(b);
-      else hiveGroups.set(b.state.el, [b]);
+  if (!bottom) {
+    for (const b of world.balls) {
+      if (b.state.kind === 'element' && b.state.el.startsWith('hive:')) {
+        const arr = hiveGroups.get(b.state.el);
+        if (arr) arr.push(b);
+        else hiveGroups.set(b.state.el, [b]);
+      }
+    }
+    for (const arr of hiveGroups.values()) {
+      arr.sort((a, c) => {
+        const sa = a.state.kind === 'element' ? a.state.slot : 0;
+        const sc = c.state.kind === 'element' ? c.state.slot : 0;
+        return sa - sc;
+      });
     }
   }
-  for (const arr of hiveGroups.values()) {
-    arr.sort((a, c) => {
-      const sa = a.state.kind === 'element' ? a.state.slot : 0;
-      const sc = c.state.kind === 'element' ? c.state.slot : 0;
-      return sa - sc;
-    });
-  }
   const hiveIndex = new Map<number, { i: number; n: number }>();
-  for (const arr of hiveGroups.values()) {
-    arr.forEach((b, i) => hiveIndex.set(b.id, { i, n: arr.length }));
+  if (!bottom) {
+    for (const arr of hiveGroups.values()) {
+      arr.forEach((b, i) => hiveIndex.set(b.id, { i, n: arr.length }));
+    }
   }
 
   for (const b of world.balls) {
@@ -260,17 +302,25 @@ export function updateBiobuzzElements(els: BbElements, world: World): void {
       const row = hiveIndex.get(b.id);
       const span = row && row.n > 1 ? Math.min(HIVE_CELL_ROW_SPAN, (row.n - 1) * HIVE_ROW_PAD) : 0;
       const t = row && row.n > 1 ? row.i / (row.n - 1) - 0.5 : 0;
-      poseAt(mesh, idx, b.pos.x + t * span, b.pos.y, b.z);
+      // HIVE cell, fanned along local x. The height is `bottom`'s (see the top of this
+      // function): under 3D `b.z` is the body's underside and is lifted by `r`, under 2D
+      // `park()` has already written the cell's CENTRE height and lifting it again floats the
+      // element a radius above the cell. Lifting unconditionally is how the 3D fix — a shot
+      // that "teleports slightly downwards" the tick `derive.ts` retags it from `flight` to
+      // `element` — leaked into the 2D pipeline it was never about.
+      poseAt(mesh, idx, b.pos.x + t * span, b.pos.y, bottom ? b.z + r : b.z);
     } else if (b.state.kind === 'element') {
-      // FLOWER stack (`el` is `flower:<index>`, not `hive:...`). `flowerStackZ` (`flower.ts`)
-      // already returns a CENTRE height ("Centre heights (in) of every element in the stack"),
-      // the same convention the hive branch above reads `b.z` at directly.
+      // FLOWER stack (`el` is `flower:<index>`, not `hive:...`), same rule as the hive branch
+      // above and for the same reason. Under 2D, `flowerStackZ` (`flower.ts`) has written a
+      // CENTRE height ("Centre heights (in) of every element in the stack") and it is drawn
+      // raw; under 3D the element is a real body seated at `PLACE_CENTRE_Z - r`
+      // (`sim3d/flower3d.ts`) and reported as an underside, so it is lifted like any other.
       //
-      // ⚠️ BUG FOUND AND FIXED HERE: this used to fall into the `ground`/`flight` branch below
-      // and get `+ r` added on top of that already-a-centre height, so every pollen and nectar
-      // parked in a FLOWER rendered floating high by its own radius (1.4–1.8 in) — never
-      // touching the stack it was visually sitting in.
-      poseAt(mesh, idx, b.pos.x, b.pos.y, b.z);
+      // ⚠️ DRAWING THIS RAW UNCONDITIONALLY SANK EVERY 3D FLOWER ELEMENT BY ITS OWN RADIUS
+      // (1.4–1.8 in) — into the stack it was supposed to be resting on. The opposite mistake
+      // shipped first: it used to fall through to the `ground`/`flight` branch and get `+ r`
+      // on top of a 2D centre height, which floated it by the same amount.
+      poseAt(mesh, idx, b.pos.x, b.pos.y, bottom ? b.z + r : b.z);
     } else {
       // 'ground' | 'flight' — `z` is the height of the ball's BOTTOM above the tile (a resting
       // ball reads z === 0), so the centre is lifted by its own radius. Spins as it moves.

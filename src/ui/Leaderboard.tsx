@@ -15,6 +15,7 @@ import {
 import { gameServerConfigured } from '../net/env';
 import { periodLabel } from '../seasons';
 import { moduleFor } from '../games';
+import { serverPhysics } from '../games/types';
 import { PeriodPicker } from './PeriodPicker';
 import { SupporterBadge, type StaffRole } from './SupporterBadge';
 import { PLACEMENT_GAMES } from '../config';
@@ -239,26 +240,24 @@ export function Leaderboard({
   const [eloMode, setEloMode] = useState<EloMode>('1v1');
   const [board, setBoard] = useState<Board>('overall'); // record boards only
   /**
-   * THE ERA FILTER (plan §7, migration 0039) — All / 3D / 2D, RECORD boards only.
+   * THE ERA FILTER IS GONE (owner ruling, 2026-09-18), and so is the 2D/3D chip per row.
    *
-   * ── WHY RECORDS AND NOT RANKED ────────────────────────────────────────────────────────────
-   * A record row IS a run: one score, set on one day, by one solve, and the tag describes it
-   * exactly. A ranked row is a RATING — an aggregate over every match an account has played,
-   * across both eras, so there is no era for it to have and filtering by one would produce a
-   * number that is true of nothing. The badge and the filter therefore live where the fact does.
+   * There was an All / 3D / 2D segmented control here, because the two eras shared this board.
+   * They do not share it: every server-connected match of a game that can step 3D runs 3D
+   * (`serverPhysics`), so this board is the 3D board and the server filters it (`boardPhysics`
+   * in server/db/repo.ts) — a client-side picker could only ask for a second board that nothing
+   * new can ever be added to.
    *
-   * ── WHY NOT AN ACT BUMP ───────────────────────────────────────────────────────────────────
-   * Splitting the eras into two seasons is the other way to do this and it is the wrong one:
-   * the owner's standing rule is that a season is never reset, and an act bump archives
-   * everyone's standings over a physics change they did not ask for. A column and a filter say
-   * the same thing and wipe nothing (plan §11's risk row).
+   * ── WHAT HAPPENED TO THE 2D ROWS ──────────────────────────────────────────────────────────
+   * Nothing. They keep their row, their replay and their place in the player's own match
+   * history; a season was NOT reset over this (the owner's standing rule), and the column
+   * migration 0039 added is what makes hiding them possible without wiping anything.
    *
-   * Shown only for a game that HAS two solves — `physicsOptions`, the same predicate the
-   * practice and lobby pickers read — because for DECODE and Chain Reaction every row is 2D and
-   * a filter with one real answer is furniture.
+   * `threeD` is what `twoEras` became: it no longer gates a filter, only the one line of copy
+   * that says which solve the board is made of, which is worth saying for a game whose players
+   * can also practise on the other one.
    */
-  const [era, setEra] = useState<'all' | '3d' | '2d'>('all');
-  const twoEras = !!moduleFor(game).physicsOptions?.includes('3d');
+  const threeD = serverPhysics(moduleFor(game)) === '3d';
 
   const [rows, setRows] = useState<(RecordRow | EloRow)[]>([]);
   const [me, setMe] = useState<EloStanding | null>(null);
@@ -300,8 +299,16 @@ export function Leaderboard({
     const s = season ?? undefined;
     const req =
       kind === 'records'
-        ? fetchRecords(recMode, board, s, game, era === 'all' ? undefined : era).then((r) => ({
-            rows: r.rows,
+        ? fetchRecords(recMode, board, s, game).then((r) => ({
+            /**
+             * TOLERATING AN OLDER SERVER. One Fly app serves every client version and the
+             * reverse is just as true — this page can be talking to a deploy that predates
+             * the ruling and still returns both eras. Such a response is filtered HERE, where
+             * the field is present; a row that carries no `physics` at all is older still and
+             * is kept, because dropping it would blank the board for a game whose rows are all
+             * 2D anyway (DECODE, Chain Reaction) and for pre-0039 rows that are what they are.
+             */
+            rows: threeD ? r.rows.filter((x) => x.physics !== '2d') : r.rows,
             me: null as EloStanding | null,
           }))
         : fetchElo(eloMode, s, myUserId, game);
@@ -320,7 +327,7 @@ export function Leaderboard({
     return () => {
       alive = false;
     };
-  }, [kind, recMode, eloMode, board, era, season, configured, myUserId, game]);
+  }, [kind, recMode, eloMode, board, threeD, season, configured, myUserId, game]);
 
   const isRecords = kind === 'records';
   const valueLabel = isRecords ? 'Score' : 'ELO';
@@ -385,27 +392,8 @@ export function Leaderboard({
           </div>
         )}
 
-        {isRecords && twoEras && (
-          <div className="ds-panel-h">
-            <span className="ds-panel-title">Physics</span>
-            <div className="ds-segs">
-              {([
-                ['all', 'All'],
-                ['3d', '3D'],
-                ['2d', '2D'],
-              ] as const).map(([id, label]) => (
-                <button key={id} className={`ds-seg ${era === id ? 'on' : ''}`} onClick={() => setEra(id)}>
-                  {label}
-                </button>
-              ))}
-            </div>
-          </div>
-        )}
-        {isRecords && twoEras && era === 'all' && (
-          <p className="ds-panel-foot ds-hint">
-            Runs set on the 2D physics and on the 3D physics share this board. Only 3D-physics
-            runs are comparable with ranked play.
-          </p>
+        {isRecords && threeD && (
+          <p className="ds-panel-foot ds-hint">Record runs are played on the 3D physics.</p>
         )}
 
         {!isRecords && status === 'ok' && me && <MyStanding me={me} />}
@@ -480,22 +468,9 @@ export function Leaderboard({
                             </>
                           )}
                           {isMe && <span className="ds-dt lb-you-tag">YOU</span>}
-                          {/* THE ERA CHIP — a SIBLING of the name, exactly like the DUO and YOU
-                              tags and for the reason `docs/area/accounts.md` gives about badges:
-                              the name carries the hover underline and the ellipsis, so anything
-                              nested in it is underlined or truncated with it.
-
-                              Drawn only where the value is KNOWN and only for a game with two
-                              solves. An older server omits `physics` entirely, and a board that
-                              printed "2D" for every row of such a response would be asserting
-                              something it was never told. Reuses `.ds-dt`, the tag class the two
-                              chips beside it already use — no new colour, so nothing for
-                              `npm run contrast` to weigh in on. */}
-                          {twoEras && (rec.physics === '3d' || rec.physics === '2d') && (
-                            <span className="ds-dt" title={`Set on the ${rec.physics.toUpperCase()} physics`}>
-                              {rec.physics.toUpperCase()}
-                            </span>
-                          )}
+                          {/* NO ERA CHIP. There was a 2D/3D tag here while the two eras shared
+                              this board; every row on it is now 3D, and a chip whose value never
+                              varies is furniture beside a name that has two real ones. */}
                         </span>
                       </td>
                       {isRecords && (

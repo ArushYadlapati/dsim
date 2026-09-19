@@ -1,13 +1,17 @@
 import { useMemo, useState, type FormEvent } from 'react';
 import { authClient } from '../lib/authClient';
-import { requestEmailVerification, requestPasswordReset } from '../lib/authFlows';
+import { describeAuthError, requestEmailVerification, requestPasswordReset } from '../lib/authFlows';
 import { isEmbeddedBrowser } from '../lib/browserEnv';
 import { acceptTerms, updateUsername } from '../net/api';
 import { TermsAgreement } from './TermsGate';
 import { UsernameInput, useUsernameCheck, usernameHintColor } from './UsernameField';
+import { useEscape } from './useEscape';
 
 /** which of the three forms the modal is showing */
 type AuthMode = 'in' | 'up' | 'forgot';
+
+/** the panel title's element id, so `aria-labelledby` on the dialog can point at it */
+const TITLE_ID = 'ds-auth-title';
 
 const TITLES: Record<AuthMode, string> = {
   in: 'Sign in',
@@ -35,6 +39,9 @@ export function AuthPanel({ onClose }: { onClose: () => void }) {
   // In-app webviews (LinkedIn/Instagram/… browsers) get Google's
   // `disallowed_useragent` 403 — steer them to a real browser instead.
   const embedded = useMemo(() => isEmbeddedBrowser(), []);
+  // Esc closes, same as the ✕ and the backdrop — this modal is dismissible (unlike the
+  // blocking gates), so the keyboard needs the exit the mouse already has.
+  useEscape(onClose);
 
   const copyLink = async () => {
     try {
@@ -111,12 +118,17 @@ export function AuthPanel({ onClose }: { onClose: () => void }) {
       }
       onClose();
     } catch (err) {
+      // ⚠️ NOT `err.message`. The SDK's own wording reached this form unedited — a dropped
+      // connection printed "Failed to fetch" under a sign-in button. `describeAuthError`
+      // answers the app's sentence for the failures it can name and hands back the one
+      // below, which names the ACTION, for anything it cannot.
       setError(
-        err instanceof Error
-          ? err.message
-          : mode === 'up'
+        describeAuthError(
+          err,
+          mode === 'up'
             ? 'Couldn’t create the account. Try again.'
             : 'Couldn’t sign in. Check your email and password, then try again.',
+        ),
       );
     } finally {
       setBusy(false);
@@ -147,15 +159,24 @@ export function AuthPanel({ onClose }: { onClose: () => void }) {
     try {
       await client.signIn.social({ provider: 'google', callbackURL: window.location.href });
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Google sign-in failed.');
+      // same reason as `submit` — the raw SDK message is not this app's voice
+      setError(describeAuthError(err, 'Couldn’t start Google sign-in. Try again in a moment.'));
     }
   };
 
   return (
     <div className="ds-modal-backdrop" onClick={onClose}>
-      <div className="ds-modal" onClick={(e) => e.stopPropagation()}>
+      {/* the DIALOG is the panel, not the backdrop: the backdrop is the click-away scrim and
+          naming it the dialog would put everything behind it inside the modal boundary. */}
+      <div
+        className="ds-modal"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={TITLE_ID}
+        onClick={(e) => e.stopPropagation()}
+      >
         <div className="ds-modal-h">
-          <span className="ds-panel-title">{TITLES[mode]}</span>
+          <span className="ds-panel-title" id={TITLE_ID}>{TITLES[mode]}</span>
           <button className="ds-btn ghost" onClick={onClose} aria-label="Close">✕</button>
         </div>
         {mode === 'forgot' ? (

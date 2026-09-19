@@ -45,6 +45,10 @@
 // HIVE.DOWN_FLOOR_Z 31.981 / LOWEST_Z 30.652  = mean hive.downCellFloorZ[] (residual 0in) and
 //                hive.lowestStructureZAtRest.z ("am-5866-blue: Blue Goal Rib"). Fig 9-10's 25.5 is 6.481in low: one rigid bar
 //                cannot put the up mouth at 53.4 and the down floor at 25.5 at the same time. A 29-in robot CLEARS the structure.
+// TAPE.gardenSupplement    NOT MEASURED — one 0.573 x 2 in patch per alliance,
+//                bridging the GARDEN band's corner end to the perimeter face so the drawn band covers the whole of
+//                `GARDEN` (which snaps that edge onto the wall). Its own group: `TAPE.garden` stays the CAD's, and
+//                the zone rectangles below are built from `TAPE.garden` alone, so this cannot move a rule.
 // TAPE         16 strips, every one 1.000 in wide, grouped by the nominal length in the STEP part name
 //                (22.69 = a GARDEN band half, 20.69 = a LOADING ZONE's inner edge, 11 = a depth edge, 54/94.82 = the ALLIANCE AREA).
 //                A zone edge that is a WALL carries NO tape (audit §5) — the on-tile strips stop 0.573in clear of the inner face.
@@ -169,6 +173,8 @@ export const TAPE: {
   readonly loadingZone: { readonly red: readonly BbGenRect[]; readonly blue: readonly BbGenRect[] };
   readonly garden: { readonly red: readonly BbGenRect[]; readonly blue: readonly BbGenRect[] };
   readonly allianceArea: { readonly red: readonly BbGenRect[]; readonly blue: readonly BbGenRect[] };
+  /** NOT CAD — see the header. Drawn beside `garden`; never part of a zone rectangle. */
+  readonly gardenSupplement: { readonly red: readonly BbGenRect[]; readonly blue: readonly BbGenRect[] };
 } = {
   loadingZone: {
     red: [
@@ -202,6 +208,14 @@ export const TAPE: {
       { x0: 71.65, x1: 125.65, y0: -48.41, y1: -47.41 },
       { x0: 71.65, x1: 125.65, y0: 47.41, y1: 48.41 },
       { x0: 124.65, x1: 125.65, y0: -47.41, y1: 47.41 },
+    ],
+  },
+  gardenSupplement: {
+    red: [
+      { x0: -70.674, x1: -70.101, y0: -70.101, y1: -68.101 },
+    ],
+    blue: [
+      { x0: 70.101, x1: 70.674, y0: 68.101, y1: 70.101 },
     ],
   },
 };

@@ -142,7 +142,7 @@ function pileScene(name: keyof typeof PILE_SPEEDS): Scene {
 export const BB_FIELD_SCENES: readonly Scene[] = [
   {
     id: 'field-empty',
-    title: 'Empty field — mat, tiles, centre mark, perimeter',
+    title: 'Empty field — mat, tile seams, perimeter',
     lane: 'field',
     // THE FIRST CELL IN THE GALLERY, and deliberately the most boring one. Every other picture
     // is drawn on top of this, so if the tile grid is the wrong pitch or the perimeter is

@@ -125,33 +125,58 @@ export function emailGateRefusal(user: AuthedUser): string | null {
  */
 const verifiedByToken = new Map<string, boolean | null>();
 const VERIFIED_CACHE_MAX = 2000;
+// ONE FETCH PER TOKEN HAS TO MEAN ONE FETCH WHILE THE FIRST IS STILL OPEN, TOO. The answer
+// cache above is only written when the fetch RESOLVES, so a tab that reconnects and fires its
+// join plus a friends poll plus a profile read at once would open one `/get-session` round trip
+// EACH — the thundering herd the cache was supposed to remove. Concurrent callers for the same
+// token string share the in-flight promise instead; the entry is dropped once it settles, and
+// from then on the resolved answer is served out of `verifiedByToken`.
+const verifiedInFlight = new Map<string, Promise<boolean | null>>();
 
 async function verifiedFromSession(token: string): Promise<boolean | null> {
   const hit = verifiedByToken.get(token);
   if (hit !== undefined) return hit;
-  let answer: boolean | null = null;
-  if (AUTH_URL) {
-    try {
-      const res = await fetch(`${AUTH_URL.replace(/\/$/, '')}/get-session`, {
-        headers: { authorization: `Bearer ${token}` },
-      });
-      if (res.ok) {
-        const body = (await res.json()) as { user?: { emailVerified?: unknown } } | null;
-        const v = body?.user?.emailVerified;
-        if (typeof v === 'boolean') answer = v;
+  const flying = verifiedInFlight.get(token);
+  if (flying) return flying;
+  const pending = (async (): Promise<boolean | null> => {
+    let answer: boolean | null = null;
+    if (AUTH_URL) {
+      try {
+        const res = await fetch(`${AUTH_URL.replace(/\/$/, '')}/get-session`, {
+          headers: { authorization: `Bearer ${token}` },
+          // A HUNG UPSTREAM MUST NOT HANG THE JOIN. Without a deadline this `await` is however
+          // long the platform's socket timeout is (minutes), and it sits in front of the join
+          // handshake — an auth endpoint that stops answering would stall every sign-in rather
+          // than degrade one field. An abort lands in the catch below, which is the fail-open
+          // "not told" answer, so the timeout costs the gate nothing it was not already
+          // prepared for.
+          signal: AbortSignal.timeout(2000),
+        });
+        if (res.ok) {
+          const body = (await res.json()) as { user?: { emailVerified?: unknown } } | null;
+          const v = body?.user?.emailVerified;
+          if (typeof v === 'boolean') answer = v;
+        }
+      } catch {
+        // network, CORS, a route that does not exist on this build, our own 2 s abort — all of
+        // them mean "not told", which the gate reads as verified. Never fatal.
       }
-    } catch {
-      // network, CORS, a route that does not exist on this build — all of them mean
-      // "not told", which the gate reads as verified. Never fatal.
     }
+    // FIFO eviction: a Map iterates in insertion order, so the oldest key is first.
+    if (verifiedByToken.size >= VERIFIED_CACHE_MAX) {
+      const oldest = verifiedByToken.keys().next().value;
+      if (oldest !== undefined) verifiedByToken.delete(oldest);
+    }
+    verifiedByToken.set(token, answer);
+    return answer;
+  })();
+  verifiedInFlight.set(token, pending);
+  try {
+    return await pending;
+  } finally {
+    // the answer is in `verifiedByToken` by now, so later callers hit the cache, not this map
+    verifiedInFlight.delete(token);
   }
-  // FIFO eviction: a Map iterates in insertion order, so the oldest key is first.
-  if (verifiedByToken.size >= VERIFIED_CACHE_MAX) {
-    const oldest = verifiedByToken.keys().next().value;
-    if (oldest !== undefined) verifiedByToken.delete(oldest);
-  }
-  verifiedByToken.set(token, answer);
-  return answer;
 }
 
 
@@ -179,8 +204,12 @@ export async function verifyAuthToken(token: string | undefined): Promise<Authed
     // Better Auth’s own field, and which one a Neon Auth project signs is its
     // configuration rather than ours. Anything that is not a boolean is "not told".
     const claim = payload.email_verified ?? payload.emailVerified;
+    // AND ONLY ASK THE SESSION ENDPOINT WHEN THE ANSWER CAN CHANGE A DECISION. With the gate
+    // off — which is every deployment until the owner sets the secret — `null` and `false` lead
+    // to the same place (`emailGateRefusal` returns null first thing), so a round trip on the
+    // join path buys nothing at all. `null` is already the honest value for "not told".
     const emailVerified =
-      typeof claim === 'boolean' ? claim : await verifiedFromSession(token);
+      typeof claim === 'boolean' ? claim : REQUIRE_VERIFIED ? await verifiedFromSession(token) : null;
     // Deliberately NOT logged. The friends read doubles as the presence heartbeat, so
     // every signed-in browser tab re-verifies roughly twice a minute for as long as it
     // is open — a success line here meant an idle server with two users online emitted

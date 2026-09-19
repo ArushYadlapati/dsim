@@ -21,10 +21,13 @@ import {
   BB3_HIVE_REST_W,
   BB3_HIVE_STOP_DEG,
   BB3_HIVE_TRAY_MASS,
+  BB_HALF_X,
+  BB_HALF_Y,
   BB_HIVE_OPEN_Z,
   BB_HIVE_TILT_DEG,
   BB_NECTAR_R,
   BB_POLLEN_R,
+  BB_TIP_POLLEN,
 } from '../../src/games/biobuzz/config';
 import { BB_TIP_SWING_S } from '../../src/games/biobuzz/hive';
 import type { Alliance, Artifact, World } from '../../src/types';
@@ -39,8 +42,21 @@ import type { Alliance, Artifact, World } from '../../src/types';
  * ⚠️ **THE LOAD TABLE RUNS UNDER BOTH TRAYS, AND THAT IS THE POINT OF THE LANE.** The kinematic
  * tray is the plan's own fallback (§3.6, §11) and a fallback nothing exercises is a fallback that
  * has already rotted. `__setHiveDynamicOverrideForTests` builds a world on either tray from the
- * same fixtures, so flipping `BB3_HIVE_DYNAMIC` back is a one-word change that stays proven —
- * which is what makes it a real escape hatch rather than a comment about one.
+ * same fixtures, so both models answer the guide's rows under the same staging.
+ *
+ * ⚠️ **BUT FLIPPING `BB3_HIVE_DYNAMIC` BACK IS *NOT* "A ONE-WORD CHANGE THAT STAYS PROVEN", AND
+ * THIS FILE USED TO SAY IT WAS.** `bb.spill` — G409's entire tag — is written in exactly ONE
+ * place, `hive3d.ts`'s `hiveDynamicTick`. The kinematic path never writes it and `contacts3d.ts`
+ * returns immediately without it, so the word alone turns G409 off in 3D. The four G409 blocks
+ * below ran under `if (BB3_HIVE_DYNAMIC)` and would simply have STOPPED RUNNING, leaving a green
+ * lane over a dead rule. They are `withTray(true, …)` now: the dynamic tray is exercised whatever
+ * the constant says, which is the only form in which the escape hatch could ever be honest.
+ *
+ * ⚠️ **AND THE DYNAMIC TRAY TIPS ON `BB_TIP_POLLEN`, NOT ON A TORQUE** (2026-09-19). The lane was
+ * 27/27 green with the owner's bug live — "0 MORE TO TIP" and nothing happened on 1 POLLEN + 4
+ * NECTAR — because it covered four §12.3 rows at ONE packing and never the two nectar-heavy rows
+ * the HUD also promises. The three checks that now make that promise falsifiable are "the HUD
+ * promise", "one short", and "packing independence"; see each for its measurement.
  */
 
 const REST_RAD = (BB_HIVE_TILT_DEG * Math.PI) / 180;
@@ -64,20 +80,42 @@ function cellPoint(alliance: Alliance, theta: number, x: number, v: number, w: n
   return { x: hivePivotX(alliance) + x, y, z: BB3_HIVE_PIVOT_Z + z };
 }
 
-/** stage `pollen` + `nectar` against the up cell's back wall, in a line — §12.3's own words, and
- * the same staging `scripts/hive-calibrate.ts` fits the constants against. */
-function fillCell(w: World, pollen: number, nectar: number): number[] {
+/**
+ * HOW A CELL IS LOADED, which is not a detail — it is what hid the owner's bug for a week.
+ *
+ * `guide` is §12.3's own words and the staging `scripts/hive-calibrate.ts` fits against: against
+ * the back wall, four across, rows running OUT along the tray. The other three are the same
+ * COUNT at different lever arms, because a real cell is loaded by shots landing where they land:
+ *
+ *  · `crammed4` / `crammed2` pile the rows UP the back wall (along `w`) instead of running them
+ *    out along `v`, which is what a volley into a tilted tray actually does — every element ends
+ *    up at the shortest arm there is.
+ *  · `line2` runs two across and four deep, the longest arm a cell can give a count.
+ */
+type Packing = 'guide' | 'crammed4' | 'crammed2' | 'line2';
+
+/** stage `pollen` + `nectar` in the up cell under one of the packings above. `guide` is the
+ * default and is byte-identical to what this helper did before the packings existed. */
+function fillCell(w: World, pollen: number, nectar: number, packing: Packing = 'guide'): number[] {
   const theta = hiveTiltAngle(w, A);
   const side: 1 | -1 = w.biobuzz!.hives[A].up === 'north' ? 1 : -1;
   const box = hiveCellLocalBox(side, A);
   const innerV = side > 0 ? box.vMin : box.vMax;
+  const perRow = packing === 'crammed2' || packing === 'line2' ? 2 : 4;
+  const stack = packing === 'crammed4' || packing === 'crammed2';
   const ids: number[] = [];
   let i = 0;
   const put = (isNectar: boolean): void => {
     const r = isNectar ? BB_NECTAR_R : BB_POLLEN_R;
-    const col = i % 4;
-    const row = Math.floor(i / 4);
-    const p = cellPoint(A, theta, (col - 1.5) * 4.6, innerV + side * (r + 0.2 + row * 3.4), box.wMin + r + 0.2);
+    const col = i % perRow;
+    const row = Math.floor(i / perRow);
+    const x = (col - (perRow - 1) / 2) * 4.6;
+    // `stack` advances rows in `w` (up the back wall) instead of `v` (out along the tray) — same
+    // count, shortest arm instead of longest. 2r per layer is balls touching, which is what a
+    // pile is; the solve settles the overlap either way.
+    const p = stack
+      ? cellPoint(A, theta, x, innerV + side * (r + 0.2), box.wMin + r + 0.2 + row * 2 * r)
+      : cellPoint(A, theta, x, innerV + side * (r + 0.2 + row * 3.4), box.wMin + r + 0.2);
     ids.push(i + 1);
     w.balls.push({
       id: i + 1,
@@ -96,10 +134,21 @@ function fillCell(w: World, pollen: number, nectar: number): number[] {
   return ids;
 }
 
-function loaded(seed: number, pollen: number, nectar: number): { world: World; ids: number[] } {
+function loaded(seed: number, pollen: number, nectar: number, packing: Packing = 'guide'): { world: World; ids: number[] } {
   const w = mkWorld3d('free', seed);
   w.balls.length = 0;
-  return { world: w, ids: fillCell(w, pollen, nectar) };
+  return { world: w, ids: fillCell(w, pollen, nectar, packing) };
+}
+
+/** step a staged cell until its up side swaps, up to `ticks`. Returns the tick it tipped on, or
+ * -1 — the one question every table check below is asking. */
+function tipTick(world: World, ticks = 600): number {
+  const startUp = world.biobuzz!.hives[A].up;
+  for (let t = 0; t < ticks; t++) {
+    step3d(world, 1 / 60, new Map());
+    if (world.biobuzz!.hives[A].up !== startUp) return t;
+  }
+  return -1;
 }
 
 export function hive3dChecks(check: Check): void {
@@ -188,8 +237,104 @@ export function hive3dChecks(check: Check): void {
     }
   }
 
+  // ---- THE HUD'S PROMISE, STATED AS A CHECK --------------------------------------------------
+  //
+  // ⚠️ **THIS IS THE OWNER'S BUG** (2026-09-19: "0 more to tip" and nothing happens). `hud.ts`
+  // computes `needed = BB_TIP_POLLEN[min(nectar, 5)] − pollen` off `hives[a].contents` and
+  // `HudSlots.tsx` prints it; the tray has to agree on EVERY row of that table, not on the four
+  // §12.3 rows above. It did not: on 1 POLLEN + 4 NECTAR the HUD read 0 more and the load weighed
+  // 5701 against a hold of 5915, so the tray sat on its stop for the rest of the match. Both
+  // numbers come from one list and one predicate now (`hiveWillTip`), which is what makes this
+  // check pass by construction rather than by calibration — and the reason it stays is that it
+  // is the check which fails the moment anything reintroduces a second opinion.
+  {
+    for (const dynamic of [true, false]) {
+      withTray(dynamic, () => {
+        const label = dynamic ? 'dynamic' : 'kinematic';
+        for (let n = 0; n < BB_TIP_POLLEN.length; n++) {
+          const p = BB_TIP_POLLEN[n];
+          const t = tipTick(loaded(900 + n * 2 + (dynamic ? 0 : 1), p, n).world);
+          check(
+            `[${label}] the HUD promise: ${p}p+${n}n reads "0 MORE TO TIP" and TIPS`,
+            t >= 0,
+            `tipped at tick ${t}`,
+          );
+        }
+      });
+    }
+  }
+
+  // ---- and the other side of the same table: one element short must NOT tip ------------------
+  //
+  // Half a promise is not one. Two of these rows TIPPED on the torque trigger — 6p+1n and 5p+2n,
+  // which are `scripts/hive-calibrate.ts`'s own MISS rows — so the shipped tray was violating
+  // §12.3 in BOTH directions at once while this lane read green.
+  {
+    for (const dynamic of [true, false]) {
+      withTray(dynamic, () => {
+        const label = dynamic ? 'dynamic' : 'kinematic';
+        for (let n = 0; n < BB_TIP_POLLEN.length; n++) {
+          const p = BB_TIP_POLLEN[n] - 1;
+          if (p < 0) continue; // the 0p+5n row has no "one short" — five NECTAR tip on their own
+          const t = tipTick(loaded(930 + n * 2 + (dynamic ? 0 : 1), p, n).world);
+          check(
+            `[${label}] one short of the table: ${p}p+${n}n does NOT tip`,
+            t < 0,
+            `tipped at tick ${t}`,
+          );
+        }
+      });
+    }
+  }
+
+  // ---- PACKING INDEPENDENCE, which is what actually hid the bug ------------------------------
+  //
+  // ⚠️ **ONE COUNT DOES NOT DETERMINE ONE TORQUE, AND THAT IS WHY THE TABLE HAS TO BE THE
+  // TRIGGER.** A real cell is loaded by shots landing where they land; "in a line against the
+  // back wall" is a STAGING INSTRUCTION in the field guide, not a physical law. Staged four ways
+  // at one count, the same 8 POLLEN weigh anywhere from a pile at the back wall to a two-wide
+  // line reaching down the tray, and the ranges for 8 and for 7 OVERLAP — so no `BB3_HIVE_DETENT`
+  // could ever have separated them. The console line below is that measurement; the checks are
+  // that the table wins over it in both directions.
+  {
+    const packings: readonly Packing[] = ['guide', 'crammed4', 'crammed2', 'line2'];
+    const report = (pollen: number, nectar: number): string =>
+      packings
+        .map((pk) => {
+          // 15 ticks: long enough for a staged pile to settle against the tray, short enough that
+          // the pin has not lifted yet on any packing (the 8-POLLEN breakaway is ~tick 29), so
+          // the number reported is the load AT THE STOP and does not depend on the trigger
+          const w = loaded(960 + pollen * 7 + nectar, pollen, nectar, pk).world;
+          for (let t = 0; t < 15; t++) step3d(w, 1 / 60, new Map());
+          return `${pk} ${Math.abs(hiveContentsTorque(w, A, hiveTiltAngle(w, A))).toFixed(0)}`;
+        })
+        .join(' · ');
+    withTray(true, () => {
+      console.log(`[smoke-bb hive3d] 8 POLLEN torque by packing: ${report(8, 0)}`);
+      console.log(`[smoke-bb hive3d] 7 POLLEN torque by packing: ${report(7, 0)}`);
+      // the owner's own row, for the record: at threshold by the table, under the hold by torque
+      console.log(`[smoke-bb hive3d] 1p+4n (the reported bug) torque by packing: ${report(1, 4)}`);
+      for (const pk of packings) {
+        const t = tipTick(loaded(980 + packings.indexOf(pk), 8, 0, pk).world);
+        check(
+          `[dynamic] packing independence: 8 POLLEN packed "${pk}" still TIPS`,
+          t >= 0,
+          `tipped at tick ${t}`,
+        );
+      }
+      for (const pk of packings) {
+        const t = tipTick(loaded(990 + packings.indexOf(pk), 7, 0, pk).world);
+        check(
+          `[dynamic] packing independence: 7 POLLEN packed "${pk}" does NOT tip`,
+          t < 0,
+          `tipped at tick ${t}`,
+        );
+      }
+    });
+  }
+
   // ---- the swing: 4.0 s stop to stop, and the tray empties within 1.0 s ---------------------
-  if (BB3_HIVE_DYNAMIC) {
+  withTray(true, () => {
     const { world, ids } = loaded(840, 8, 0);
     const e = engineFor(world);
     const body = e.hiveTrays[A];
@@ -219,7 +364,12 @@ export function hive3dChecks(check: Check): void {
           continue;
         }
         if (!leftCell.has(id)) leftCell.set(id, t);
-        if (!landed.has(id) && b.z <= 0.25 && Math.abs(b.vz) < 2) landed.set(id, t);
+        // ⚠️ FIRST TOUCH, NOT FIRST SETTLE. This used to also require `|vz| < 2`, which on the
+        // old dead tiles was the same tick and since the bounce landed (owner item 21, e 0.25 →
+        // 0.57) is not: an element that touches down at 160 in/s now leaves again at 90 and does
+        // not have `|vz| < 2` near the floor until it has finished bouncing, ~0.9 s later. The
+        // check below is about the FALL — see its own header — so it measures the fall.
+        if (!landed.has(id) && b.z <= 0.25) landed.set(id, t);
       }
       if (emptied < 0 && stillIn === 0) emptied = t;
     }
@@ -259,10 +409,81 @@ export function hive3dChecks(check: Check): void {
     );
     const stillListed = ids.filter((id) => world.biobuzz!.hives[A].contents.includes(id));
     check('after the swing the cell reads empty', stillListed.length === 0, `${stillListed.length} still listed`);
-  }
+  });
 
-  // ---- the detent: a torque balance, not the table -------------------------------------------
-  if (BB3_HIVE_DYNAMIC) {
+  // ---- THE SPILL DISPERSES, AND IT STILL COMES TO REST (owner item 21, 2026-09-19) ----------
+  /**
+   * "In real life, the balls bounce and disperse a lot more after the hive tips and it hits the
+   * field tiles."
+   *
+   * The lever is the element/TILE restitution — `BB3_ELEMENT_RESTITUTION` plus the floor's
+   * MULTIPLY rule (`sim3d/bodies.ts` `TILE_RESTITUTION`), which is what lets an element carry the
+   * real pair while a chassis still reads zero on the same collider. Both of those headers carry
+   * the derivation; what is asserted here is the OUTCOME on a real tip, in both directions:
+   *
+   *  · a FLOOR, so a future change that deadens the tiles again puts the pile back under the hive
+   *    and this fails. ON THIS EXACT FIXTURE the pile's 90th-percentile radius about its own
+   *    centroid is **17.8 in at the old e 0.25 and 22.9 in at e 0.57** — the floor of 20 sits
+   *    between them, and reverting either constant turns this check red. It is ONE fixture and
+   *    the landing is chaotic, so the number is a ratchet rather than a tolerance: across four
+   *    packings the mean went 29.7 → 33.4 in and individual packings moved both ways.
+   *  · a CEILING on both the spread and the SETTLE, because a bouncier world is one that can stop
+   *    settling. Every scoring instant §10.5 assesses waits for "all at rest", so an unbounded
+   *    settle is a score that never lands. Measured here: **6.60 s before, 6.62 s after**, from
+   *    the tick the tray is staged — the bounce cost 0.02 s, because the 4.0 s swing dominates.
+   *    Worst over four packings 9.17 s before / 9.00 s after. Nothing left the field either way
+   *    (`containmentFixes`, pinned by the SIM3D lane, is 0).
+   */
+  withTray(true, () => {
+    const { world, ids } = loaded(845, 8, 0);
+    const pivotX = hivePivotX(A);
+    let restAt = -1;
+    const TICKS = 1200; // 20 s — comfortably past the 4.0 s swing plus the roll
+    for (let t = 0; t < TICKS; t++) {
+      step3d(world, 1 / 60, new Map());
+      const bs = ids.map((id) => world.balls.find((b) => b.id === id)).filter((b): b is Artifact => !!b);
+      const moving = bs.filter((b) => Math.hypot(b.vel.x, b.vel.y) > 1 || Math.abs(b.vz) > 1 || b.z > 0.5);
+      if (moving.length === 0 && world.biobuzz!.hives[A].tips > 0) {
+        if (restAt < 0) restAt = t;
+      } else {
+        restAt = -1;
+      }
+    }
+    const bs = ids.map((id) => world.balls.find((b) => b.id === id)).filter((b): b is Artifact => !!b);
+    const cx = bs.reduce((s, b) => s + b.pos.x, 0) / bs.length;
+    const cy = bs.reduce((s, b) => s + b.pos.y, 0) / bs.length;
+    const rc = bs.map((b) => Math.hypot(b.pos.x - cx, b.pos.y - cy)).sort((a, b) => a - b);
+    const r90 = rc[Math.ceil(0.9 * rc.length) - 1];
+    const fromCell = bs.map((b) => Math.hypot(b.pos.x - pivotX, b.pos.y)).sort((a, b) => a - b);
+    const nearest = fromCell[0];
+    const farthest = fromCell[fromCell.length - 1];
+    const inField = bs.every((b) => Math.abs(b.pos.x) <= BB_HALF_X && Math.abs(b.pos.y) <= BB_HALF_Y);
+    console.log(
+      `[smoke-bb hive3d] spill dispersal: pile r90 ${r90.toFixed(1)}in about its centroid, ` +
+        `${nearest.toFixed(1)}..${farthest.toFixed(1)}in from the pivot, everything at rest at ${(restAt / 60).toFixed(2)}s`,
+    );
+    check(
+      'the spill DISPERSES — the pile is 20..60 in wide, not a heap under the hive',
+      r90 >= 20 && r90 <= 60,
+      `90th-percentile radius ${r90.toFixed(1)}in (17.8 at the old dead tiles)`,
+    );
+    check(
+      'the spill still comes to REST, inside the field, within 12 s',
+      restAt >= 0 && restAt / 60 <= 12 && inField,
+      `rest at ${restAt < 0 ? 'never' : `${(restAt / 60).toFixed(2)}s`}, in field ${inField}`,
+    );
+  });
+
+  // ---- the trigger is the TABLE, and the torque is only the measurement ----------------------
+  //
+  // This check used to read "the detent is a TORQUE BALANCE: 7 POLLEN pull less than the hold",
+  // and it would have gone on passing over a rule that no longer exists. The console line is kept
+  // exactly as it was, because it is still the useful measurement — and it is now the EVIDENCE
+  // THAT THE TWO DISAGREE: at the guide's own staging 7p pulls ~5647 and 8p ~7284 against a hold
+  // of ~5915, which looks like a clean separation until the packing check above moves both
+  // numbers across each other. What is asserted instead is the OUTCOME the table promises: the
+  // under-threshold tray has not left its stop, and the over-threshold one has.
+  withTray(true, () => {
     const under = loaded(850, 7, 0).world;
     const over = loaded(851, 8, 0).world;
     for (let t = 0; t < 120; t++) {
@@ -278,11 +499,12 @@ export function hive3dChecks(check: Check): void {
         `${Math.abs(hiveContentsTorque(over, A, thO)).toFixed(0)}`,
     );
     check(
-      'the detent is a TORQUE BALANCE: 7 POLLEN pull less than the hold, and the tray has not moved',
-      pullU < holdU && Math.abs(Math.abs(thU) - REST_RAD) < 2e-3,
-      `pull ${pullU.toFixed(0)} hold ${holdU.toFixed(0)} theta ${((thU * 180) / Math.PI).toFixed(2)}deg`,
+      'the trigger is the TABLE: 7 POLLEN leave the tray pinned at its stop and 8 POLLEN lift it',
+      Math.abs(Math.abs(thU) - REST_RAD) < 2e-3 && Math.abs(thO) < REST_RAD,
+      `under ${((thU * 180) / Math.PI).toFixed(2)}deg, over ${((thO * 180) / Math.PI).toFixed(2)}deg ` +
+        `(pull ${pullU.toFixed(0)} vs hold ${holdU.toFixed(0)})`,
     );
-  }
+  });
 
   // ---- the mouth takes a shot; the closed faces bounce ---------------------------------------
   //
@@ -331,9 +553,16 @@ export function hive3dChecks(check: Check): void {
   }
 
   // ---- G409: the spill tag, with and without a robot under -----------------------------------
-  if (BB3_HIVE_DYNAMIC) {
-    /** run a tip and report whether anything was tagged, and how many G409 lines were written. */
-    function tipWithRobot(under: boolean, seed: number): { tagged: number; g409: number } {
+  //
+  // ⚠️ `withTray(true, …)` RATHER THAN `if (BB3_HIVE_DYNAMIC)`, and the difference is the whole
+  // rule: `bb.spill` is written only on the dynamic path, so the constant flipping to `false`
+  // would have taken these four checks out of the run at the same moment it took G409 out of the
+  // game. See the file header.
+  withTray(true, () => {
+    /** run a tip and report whether anything was tagged, how many G409 lines were written, and
+     * the LOWEST z any element reached while it was still tagged (the tag's reach: see the
+     * "survives the fall" check below). */
+    function tipWithRobot(under: boolean, seed: number): { tagged: number; g409: number; lowestTagged: number } {
       const { world } = loaded(seed, 8, 0);
       if (under) {
         /**
@@ -359,14 +588,17 @@ export function hive3dChecks(check: Check): void {
         world.robots[0].pos.y = 60;
       }
       let tagged = 0;
+      let lowestTagged = Infinity;
       const before = world.events.length;
       for (let t = 0; t < 600; t++) {
         step3d(world, 1 / 60, new Map());
-        const n = Object.keys(world.biobuzz!.spill ?? {}).length;
+        const spill = world.biobuzz!.spill ?? {};
+        const n = Object.keys(spill).length;
         if (n > tagged) tagged = n;
+        for (const b of world.balls) if (spill[b.id] !== undefined && b.z < lowestTagged) lowestTagged = b.z;
       }
       const g409 = world.events.slice(before).filter((e) => e.includes('G409')).length;
-      return { tagged, g409 };
+      return { tagged, g409, lowestTagged };
     }
     const away = tipWithRobot(false, 870);
     const beneath = tipWithRobot(true, 871);
@@ -388,6 +620,24 @@ export function hive3dChecks(check: Check): void {
       beneath.g409 > 0,
       `${beneath.g409} lines`,
     );
+    /**
+     * ⚠️ **THE TAG HAS TO OUTLIVE THE TRAY, AND IT DID NOT.** `contacts3d.ts` expires a spill
+     * tag when the element comes to rest — but an element still sitting in the cell it is
+     * leaving reads AT REST twice over: the tag is written on the tick the detent breaks, while
+     * the load is still stacked against the back wall at a dead stop, and `groundRoll3d`'s
+     * off-floor snap then pins anything that dips under `BB3_REST_SPEED` mid-swing to exactly
+     * zero in the WORLD frame while the tray rotates under it. Measured on seed 871: all eight
+     * tags written on tick 13, all eight deleted by tick 16, elements still 48 in up — G409 was
+     * unbillable by a robot parked anywhere, which is what the check above was really reporting.
+     * The fix is that TRAY CONTACT holds the moment open, and THIS is the check that pins it:
+     * with no robot to catch anything the tag may only die on the TILES, so a tagged element
+     * has to have got all the way down. The 46-in reading is the failure mode, not a near miss.
+     */
+    check(
+      'G409: the spill tag outlives the TRAY — it dies on the tiles, not in the cell',
+      away.lowestTagged < 1,
+      `lowest z reached while still tagged ${away.lowestTagged.toFixed(2)} (cell floor is ~46)`,
+    );
     const { world: w2 } = loaded(872, 8, 0);
     for (let t = 0; t < 900; t++) step3d(w2, 1 / 60, new Map());
     check(
@@ -395,10 +645,10 @@ export function hive3dChecks(check: Check): void {
       w2.biobuzz!.spill === undefined || Object.keys(w2.biobuzz!.spill).length === 0,
       `${Object.keys(w2.biobuzz!.spill ?? {}).length} still tagged`,
     );
-  }
+  });
 
   // ---- determinism: the dynamic tray is a pure function of the JSON ---------------------------
-  if (BB3_HIVE_DYNAMIC) {
+  withTray(true, () => {
     const angles: string[] = [];
     for (let run = 0; run < 2; run++) {
       const { world } = loaded(880, 8, 0);
@@ -408,5 +658,5 @@ export function hive3dChecks(check: Check): void {
       );
     }
     check('determinism: two identical tips produce the identical tray state', angles[0] === angles[1], `${angles[0]} vs ${angles[1]}`);
-  }
+  });
 }

@@ -294,6 +294,47 @@ export function buildDims(m) {
       tape[group][a] = tape[group][a].map((rct) => ({ x0: r3(rct.x0), x1: r3(rct.x1), y0: r3(rct.y0), y1: r3(rct.y1) }));
     }
   }
+  // ── SUPPLEMENTAL STRIPS — drawn, but NOT in the CAD ──────────────────────────────────────
+  //
+  // The ONLY thing in this file that is not a measurement, and it is deliberately its own group
+  // so nothing can mistake it for one: `TAPE.garden` stays exactly the CAD's four strips, and
+  // the SIM3D lane's "no DRAWN tape strip runs onto a perimeter wall" check keeps binding them.
+  //
+  // WHY. A GARDEN is a 2-in band of two 1-in tapes run into the alliance's corner, and the CAD's
+  // band stops 0.573 in clear of the wall at that corner (§5.1 — no tape ever runs onto the
+  // perimeter). `GARDEN` below, which is the SCORED zone, snaps that edge ONTO the wall, so the
+  // band as drawn left the zone's own corner unmarked: on screen the band visibly stops short of
+  // the corner it is defined to reach (2026-09-18 playtest, "add a very tiny short section of
+  // tape on the bounds"). One 0.573 x 2.000 in patch per alliance closes it.
+  //
+  // The band's LONG side has the same 0.573 in gap against the wall it runs along, over its whole
+  // 23.265 in. It is left alone: it is not "a very tiny short section", it is against the wall
+  // base where nothing reads it, and the CAD is right about it.
+  //
+  // Zone rectangles are computed from `TAPE[group]` ONLY, so this table cannot move a rule.
+  const gardenSupplement = { red: [], blue: [] };
+  for (const a of ALLIANCES) {
+    const band = tape.garden[a].reduce((acc, rct) => unite(rct, acc), tape.garden[a][0]);
+    // the band's own END, on whichever x face the corner is: red runs from the left wall, blue
+    // from the right. Take the end that is NEAR a wall face and bridge it.
+    const nearX0 = Math.abs(band.x0 + half.value);
+    const nearX1 = Math.abs(band.x1 - half.value);
+    const patch =
+      nearX0 <= nearX1
+        ? { x0: r3(-half.value), x1: r3(band.x0), y0: r3(band.y0), y1: r3(band.y1) }
+        : { x0: r3(band.x1), x1: r3(half.value), y0: r3(band.y0), y1: r3(band.y1) };
+    const len = r3(patch.x1 - patch.x0);
+    must(len > 0 && len <= SNAP_IN, `${a} garden corner patch is ${len}in long — expected a sub-${SNAP_IN}in bridge to the wall`);
+    gardenSupplement[a] = [patch];
+  }
+  tape.gardenSupplement = gardenSupplement;
+  notes.push(
+    `TAPE.gardenSupplement    NOT MEASURED — one ${r3(gardenSupplement.red[0].x1 - gardenSupplement.red[0].x0)} x ${r3(gardenSupplement.red[0].y1 - gardenSupplement.red[0].y0)} in patch per alliance,` +
+      `\n//                bridging the GARDEN band's corner end to the perimeter face so the drawn band covers the whole of` +
+      `\n//                \`GARDEN\` (which snaps that edge onto the wall). Its own group: \`TAPE.garden\` stays the CAD's, and` +
+      `\n//                the zone rectangles below are built from \`TAPE.garden\` alone, so this cannot move a rule.`,
+  );
+
   const zones = {};
   const snaps = [];
   for (const group of Object.keys(EXPECTED)) {
@@ -490,8 +531,10 @@ export function renderDims(measurementsJson) {
   L.push(`  readonly loadingZone: { readonly red: readonly BbGenRect[]; readonly blue: readonly BbGenRect[] };`);
   L.push(`  readonly garden: { readonly red: readonly BbGenRect[]; readonly blue: readonly BbGenRect[] };`);
   L.push(`  readonly allianceArea: { readonly red: readonly BbGenRect[]; readonly blue: readonly BbGenRect[] };`);
+  L.push(`  /** NOT CAD — see the header. Drawn beside \`garden\`; never part of a zone rectangle. */`);
+  L.push(`  readonly gardenSupplement: { readonly red: readonly BbGenRect[]; readonly blue: readonly BbGenRect[] };`);
   L.push(`} = {`);
-  for (const group of ['loadingZone', 'garden', 'allianceArea']) {
+  for (const group of ['loadingZone', 'garden', 'allianceArea', 'gardenSupplement']) {
     L.push(`  ${group}: {`);
     for (const a of ALLIANCES) L.push(`    ${a}: ${rectList(d.TAPE[group][a], '    ')},`);
     L.push(`  },`);

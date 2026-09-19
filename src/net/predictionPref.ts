@@ -28,7 +28,7 @@
  * That is the owner's permanence rule for the 2D pipeline applied to the netcode half.
  */
 
-const PREDICT_KEY = 'decodesim.prediction';
+import { PREDICTION_KEY as PREDICT_KEY, PREDICTION_OFF_NOTICE_KEY as OFF_NOTICE_KEY } from '../storageKeys';
 
 /** the stored preference — what the player asked for, which is not necessarily what is
  *  running (see `PredictionMode` for that). */
@@ -110,7 +110,7 @@ export function subscribePredictionPref(fn: Listener): () => void {
  * kickoff stops being an explanation and becomes noise. Stored rather than held in memory so
  * a reload does not re-earn it.
  */
-const OFF_NOTICE_KEY = 'decodesim.prediction.offNotice';
+// OFF_NOTICE_KEY is imported at the top, beside PREDICT_KEY (src/storageKeys.ts)
 
 export function offNoticeShown(): boolean {
   try {

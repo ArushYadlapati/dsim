@@ -4,6 +4,7 @@ import type {
   Alliance,
   Artifact,
   AssistConfig,
+  BallState,
   GameId,
   Physics,
   RobotCommand,
@@ -195,16 +196,29 @@ export interface RoomConfig {
    * The server resolves the game module from this; matchmaking buckets by it. */
   game?: GameId;
   /**
-   * WHICH PHYSICS BACKEND THIS ROOM'S WORLD RUNS ON, fixed at room creation.
+   * WHICH PHYSICS BACKEND THIS ROOM'S WORLD RUNS ON — ⚠️ **NO LONGER READ BY THE SERVER**
+   * (owner ruling, 2026-09-18).
    *
-   * Absent ⇒ `'2d'`, which is every room an older client can open and every room that existed
-   * before this field. The server decides it for ranked / matchmade / record rooms (always
-   * `'3d'` for BIOBUZZ); a custom lobby's HOST picks it and their `join` carries it, exactly
-   * like `kind` and `game` — the room's own config wins for everyone who joins afterwards.
+   * `Room.physics` now answers from the GAME alone: a game that can step `'3d'` runs `'3d'` for
+   * every server-connected match — record, ranked, matchmade, custom, spectated, LAN — because
+   * the record board is one solve. There is no host choice left for this field to carry.
+   *
+   * It stays on the wire as the room's DECLARED solve, and it is omitted entirely for a game
+   * with no 3D solve, which keeps DECODE and Chain Reaction's handshake byte-identical.
+   *
+   * ⚠️ IT IS NOT A BACK-COMPAT PATH. An older server does not read this field at all — the
+   * `RoomConfig` on main has no `physics` key and the decoder drops config keys it does not
+   * know — so sending it to a server a deploy behind is inert, not compatible. The
+   * compatibility that has to be managed runs the OTHER way and it is a DEPLOY ORDER: BIOBUZZ
+   * is public on the stable channel, and every production client built before the `'bb3d'` cap
+   * existed is refused from every BIOBUZZ room until it reloads. Ship and verify the CLIENT
+   * (Vercel) FIRST, then the server (Fly); a tab held open across the deploy is refused with
+   * `BB3D_REFUSAL` until the version gate reloads it.
    *
    * It is a ROOM property and not a per-client one: a room has one authoritative world, so a
    * client whose build cannot step `'3d'` cannot be in it at all. That is what the `'bb3d'`
-   * capability gate below is for.
+   * capability gate below is for — and since a bare BIOBUZZ join now yields a 3D room rather
+   * than a 2D one, that gate is where an old client is turned away instead of downgraded.
    */
   physics?: Physics;
 }
@@ -353,6 +367,20 @@ export function physicsAllowed(physics: Physics | undefined, caps: readonly stri
 }
 
 /**
+ * The `caps` off a client frame, as a list of strings and nothing else.
+ *
+ * ONE coercion for every door, because `caps` is attacker-controlled and `Array.isArray` alone
+ * is not a validation: it admits `[{…}, 5, null]`, which is then STORED on the client record
+ * and compared by every feature gate, and it admits an array of any LENGTH — a free per-socket
+ * allocation on a frame that arrives before anything is authenticated. Strings only, and the
+ * first 16 of them; `CLIENT_CAPS` has six, so the cap is slack rather than a limit anyone can
+ * reach honestly.
+ */
+export function coerceCaps(x: unknown): string[] {
+  return Array.isArray(x) ? x.filter((c): c is string => typeof c === 'string').slice(0, 16) : [];
+}
+
+/**
  * Capabilities the SERVER advertises, reported on `GET /api/presence`.
  *
  * The mirror image of `CLIENT_CAPS`, pointed the other way and for the same
@@ -369,7 +397,13 @@ export function physicsAllowed(physics: Physics | undefined, caps: readonly stri
 export const SERVER_CAPS: string[] = [
   'party',
   /**
-   * `'bb3d'` — THIS DEPLOY RUNS BIOBUZZ RANKED AND RECORD ROOMS ON THE 3D SOLVE.
+   * `'bb3d'` — THIS DEPLOY RUNS EVERY BIOBUZZ ROOM ON THE 3D SOLVE.
+   *
+   * (It said "ranked and record rooms" until the 2026-09-18 ruling made it all of them. The
+   * capability's job is unchanged: it is how a client tells a deployed server from one that is
+   * still behind. A CUSTOM room no longer needs it either way — the client sends
+   * `physics: '3d'` and an older server honours that — but a RANKED queue does, because the
+   * matchmaker stages the room and no client field reaches it.)
    *
    * The mirror of the client capability of the same name, and it exists because the cutover is
    * PER SERVER (plan §7: alpha on Day 3, production when the owner says so). A client build that
@@ -648,7 +682,12 @@ export interface LiveRoom {
 export type ErrorCode =
   /** this machine is at its room cap — the same code can be joined elsewhere, so the
    *  client should offer a different region rather than just reporting a failure */
-  | 'region_full';
+  | 'region_full'
+  /** the single-game lock refused this join: the account is already in a match somewhere.
+   *  The client can act on it — rejoin that game or leave it — so it is worth a code
+   *  instead of a screen that only reads the sentence back. Older servers send no code,
+   *  so a handler must still recognise the message (see `RecordRun`). */
+  | 'active_game';
 
 export type ServerMsg =
   | { t: 'welcome'; clientId: string }
@@ -680,7 +719,17 @@ export type ServerMsg =
   | { t: 'error'; message: string; code?: ErrorCode }
   // reply to a 'rejoin': ok ⇒ slot reclaimed (a snapshot follows); !ok ⇒ the
   // grace window lapsed / slot is gone, stop trying
-  | { t: 'rejoined'; ok: boolean }
+  /**
+   * ⚠️ `gen` IS THE MATCH GENERATION THE ROOM IS ON, AND A REJOIN THAT DOES NOT ADOPT IT
+   * IS A ROBOT THAT DOES NOT MOVE.
+   *
+   * The server drops any `input` stamped with a stale generation (see `matchStart.gen`),
+   * and a client that came back through the Home rejoin card rebuilds its session from a
+   * SAVED `matchStart` — which may be a generation behind, or may never have carried one.
+   * So the reply that hands the slot back also states which match the slot is in. Optional
+   * and additive: an older server sends none and the client keeps what it had.
+   */
+  | { t: 'rejoined'; ok: boolean; gen?: number }
   /** a `report` was accepted (or was a duplicate, which is reported the same way — the
    *  reporter does not need to know which, and telling them would leak prior reports) */
   | { t: 'reported'; ok: boolean }
@@ -994,14 +1043,29 @@ export function encodeBallDelta(
 
 /** Reconstruct the ball array from a running `baseline` (MUTATED in place: patched
  * with `upd`, then pruned to exactly `order`). Byte-identical to the server's
- * `world.balls`. Returns the rebuilt array in the authoritative order. */
+ * `world.balls`. Returns the rebuilt array in the authoritative order.
+ *
+ * ⚠️ THE RETURNED BALLS ARE COPIES, AND THAT IS THE WHOLE POINT: nothing the caller
+ * holds is in the baseline. The sim mutates artifacts IN PLACE every tick (`b.pos.x`,
+ * `st.v`/`st.s`/`state.pending` on the rail, `st.lx`/`st.ly` on a held ball), so
+ * handing out the baseline's own objects corrupted the diff baseline as the client
+ * stepped — a ball the server then did NOT re-send rebuilt from the client's own
+ * drifted value and stayed wrong for as long as it sat still. `state` is a nested
+ * object too, hence FOUR spreads; every `BallState` member is flat scalars, so a
+ * shallow spread of each is total. */
 export function applyBallDelta(baseline: Map<number, Artifact>, delta: BallDelta): Artifact[] {
   for (const b of delta.upd) baseline.set(b.id, b);
   const keep = new Set(delta.order);
   for (const id of baseline.keys()) if (!keep.has(id)) baseline.delete(id);
   return delta.order
     .map((id) => baseline.get(id))
-    .filter((b): b is Artifact => b !== undefined);
+    .filter((b): b is Artifact => b !== undefined)
+    .map((b) => ({
+      ...b,
+      pos: { ...b.pos },
+      vel: { ...b.vel },
+      state: { ...b.state } as BallState,
+    }));
 }
 
 /** rebuild a full World from a slim world + reconstructed ball array, re-injecting

@@ -522,40 +522,31 @@ export function coreChecks(check: Check): void {
     check('HudSlots.tsx shows the FLOWER IN REACH chip', hudSrc.includes('FLOWER IN REACH'));
 
     /**
-     * THE NECTAR CHIP NAMES WHICH REFUSAL IT WAS, and there is one line per member of
-     * `BbNectarWhy`. Pinned at the source for the same reason the HOPPER check above is: a
-     * mapping that quietly loses a branch still renders a perfectly plausible chip, and the
-     * field draws no text, so a wrong line here is a driver's only reading of the rule.
+     * ⚠️ THERE IS NO NECTAR STOCK CHIP, AND IT MUST NOT COME BACK (owner, 2026-09-19: "get rid
+     * of ... the top right corner display that shows the number of nectar remaining").
+     *
+     * The count was said TWICE on screen — on this right-anchored row and on a billboard over
+     * the human player's box in the 3D world — and the box itself is the thing that actually
+     * holds the NECTAR. Both are gone.
+     *
+     * WHAT WENT WITH IT, recorded because it was a real thing and not just clutter: the chip's
+     * TEXT was the only place the HUD said WHY a press would refuse — `none-owed` (a full stock
+     * the alliance is not yet entitled to spend), `none-left`, and `locked` (the FROZEN FIELD,
+     * not G410). `nectarWhy` still exists on the slice and FIELD-lane checks still pin every
+     * branch of it, so the fact is still derived; it is only no longer DRAWN. If it is wanted
+     * back it belongs on the score bar's own rule row, which survives a coarse pointer — not on
+     * this row, which is `nowrap`, right-anchored and grows leftward into the sponsor mark.
      */
+    // the DECLARATION, not the name: the comment that records why the chip went still says
+    // `NECTAR_CHIP`, and a check that a word never appears is a check that forbids writing
+    // down why something was removed.
+    check('HudSlots.tsx renders no NECTAR stock chip', !/const NECTAR_CHIP/.test(hudSrc));
     check(
-      'HudSlots.tsx drives the NECTAR chip from nectarWhy, not from the stock and the debt',
-      hudSrc.includes('nectarWhy[hud.alliance]'),
+      '...and nothing else on that row reads the stock or the debt',
+      !hudSrc.includes('nectarStock[hud.alliance]') && !hudSrc.includes('nectarDue[hud.alliance]'),
     );
-    check(
-      'NECTAR chip: `ok` with a banked TIP states the stock and what is owed',
-      hudSrc.includes('due > 0 ? `NECTAR ${n} · ${due} DUE`'),
-    );
-    // Past the 1:00 cue the whole remaining stock may go in with nothing banked, so `due` is 0
-    // while the press is still granted. `0 DUE` would read as "nothing to do" in the one minute
-    // where the answer is "all of it" — the same word the FLOWERS OPEN chip uses, on purpose.
-    check(
-      'NECTAR chip: `ok` in the dump window says OPEN, never `0 DUE`',
-      hudSrc.includes('`NECTAR ${n} · OPEN`'),
-    );
-    check(
-      'NECTAR chip: `none-owed` says so, so a dead button does not read as broken',
-      hudSrc.includes('`NECTAR ${n} · NONE OWED`'),
-    );
-    check(
-      'NECTAR chip: `none-left` drops the count — an empty stock is not a quantity',
-      hudSrc.includes("'NECTAR OUT'"),
-    );
-    check(
-      'NECTAR chip: `locked` (the FROZEN FIELD, not G410) states the stock alone',
-      hudSrc.includes('locked: (n) => `NECTAR ${n}`'),
-    );
-    // G410 keeps its OWN chip. The two are different rules about different acts — a frozen
-    // field versus a NECTAR entering a FLOWER — and one line for both would misstate both.
+    // G410 KEEPS ITS OWN CHIP, and it is a different rule about a different act — a NECTAR
+    // entering a FLOWER, not a human player's entry. Removing the stock chip must not take it.
     check('...and G410 keeps its own separate chip', hudSrc.includes('NECTAR LOCKED'));
 
     /**

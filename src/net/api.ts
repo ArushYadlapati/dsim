@@ -72,9 +72,12 @@ export interface RecordRow extends BadgeFields {
   config: RecordConfig | null;
   /**
    * WHICH SOLVE PRODUCED THIS RUN — `'2d'` | `'3d'` (migration 0039). Absent from an older
-   * server's response, and a pre-0039 row reads `'2d'`, so the chip is drawn only where the
-   * value is actually known to be `'3d'` — a board that claimed "2D" for every row an old
-   * deploy served would be stating something it was never told.
+   * server's response, and a pre-0039 row reads `'2d'`.
+   *
+   * No longer shown as a chip (every row on the board is 3D now). It is still projected, and
+   * `Leaderboard` still reads it, for exactly one job: dropping a `'2d'` row served by a deploy
+   * that predates the ruling. Absent is kept rather than dropped — absent means "this server
+   * never told us", not "2D".
    */
   physics?: string;
 }
@@ -149,19 +152,21 @@ async function maybeAuthedJson<T>(path: string): Promise<T> {
   return (await res.json()) as T;
 }
 
+/**
+ * The record board. NO ERA ARGUMENT (owner ruling, 2026-09-18): the server decides which solve
+ * this board is made of, because a board it could be asked for is a board two callers can
+ * disagree about. The `physics` query parameter the Day 3 filter used is gone from here; a
+ * current server ignores it if an older client still sends one, and `Leaderboard` filters an
+ * OLDER server's mixed response client-side.
+ */
 export function fetchRecords(
   mode: RecordMode,
   drivetrain: Board,
   season?: number,
   game?: GameId,
-  /** the ERA filter (0039): `'2d'` or `'3d'`, or omitted for every row. An older server
-   *  ignores the parameter and answers with the whole board, which is the right degradation —
-   *  the filter narrows a board, so failing open shows MORE rather than an empty page. */
-  physics?: '2d' | '3d',
 ): Promise<{ rows: RecordRow[] }> {
   const s = season != null ? `&season=${season}` : '';
-  const ph = physics ? `&physics=${physics}` : '';
-  return getJson(`/api/records?mode=${mode}&drivetrain=${drivetrain}${s}${ph}${gameParam(game)}`);
+  return getJson(`/api/records?mode=${mode}&drivetrain=${drivetrain}${s}${gameParam(game)}`);
 }
 
 export function fetchElo(
@@ -857,6 +862,22 @@ export interface AdminPresencePlayer {
   sessions?: number;
   handle: string | null;
   username: string | null;
+  /** owner/admin, so the console can tell a colleague's session from a player's */
+  role?: 'owner' | 'admin' | null;
+  /**
+   * A `profiles` row EXISTS for this account.
+   *
+   * ⚠️ `handle: null` means two completely different things and the console printed
+   * both as "(no profile)". The row is created lazily — `ensureProfile` runs on the
+   * API routes a signed-in client hits, not when its socket authenticates — so an
+   * account can genuinely have auth and no profile for a few seconds after signing
+   * up. That is `known: false`, and it renders as the account id plus "no username
+   * yet". `known: true` with a null handle would be a bug worth seeing.
+   *
+   * OPTIONAL because a server older than this field does not send it, and the
+   * client's own merge fills the names in from the database row in that case.
+   */
+  known?: boolean;
   act: 'menu' | 'lobby' | 'match';
   room?: string;
   queue?: '1v1' | '2v2';
@@ -1460,17 +1481,29 @@ export interface AdminUserRow {
   role?: StaffRole | null;
 }
 
-/** search profiles by handle (substring), exact userId, or exact username */
-export async function adminSearchUsers(query: string): Promise<AdminUserRow[]> {
+/**
+ * Search profiles by handle (substring), exact userId, or exact username.
+ *
+ * PAGED. `more` says there is at least one row past this page, which the server answers by
+ * fetching one extra rather than by counting — a count over a `ilike '%…%'` is the same scan
+ * twice. An older server sends no `more` field and the page simply never offers "load more".
+ */
+export async function adminSearchUsers(
+  query: string,
+  opts: { limit?: number; offset?: number } = {},
+): Promise<{ users: AdminUserRow[]; more: boolean }> {
   const base = gameServerHttpUrl();
   const token = await getAuthToken();
-  if (!base || !token || !query.trim()) return [];
-  const res = await fetch(base + '/api/admin/users?q=' + encodeURIComponent(query.trim()), {
+  if (!base || !token || !query.trim()) return { users: [], more: false };
+  const q = new URLSearchParams({ q: query.trim() });
+  if (opts.limit) q.set('limit', String(opts.limit));
+  if (opts.offset) q.set('offset', String(opts.offset));
+  const res = await fetch(base + '/api/admin/users?' + q.toString(), {
     headers: { authorization: `Bearer ${token}` },
   });
-  if (!res.ok) return [];
-  const data = (await res.json().catch(() => ({}))) as { users?: AdminUserRow[] };
-  return data.users ?? [];
+  if (!res.ok) return { users: [], more: false };
+  const data = (await res.json().catch(() => ({}))) as { users?: AdminUserRow[]; more?: boolean };
+  return { users: data.users ?? [], more: data.more === true };
 }
 
 /** POST to an admin route with the signed-in token; null when not authorized */
@@ -1544,6 +1577,52 @@ export async function adminRenameUser(userId: string, handle: string): Promise<s
   if (!res.ok) return null;
   const data = (await res.json().catch(() => ({}))) as { handle?: string };
   return data.handle ?? null;
+}
+
+/**
+ * Take an abusive @username away. Returns the one that was cleared, `''` when there was none.
+ *
+ * CLEARED, NOT REPLACED — the account goes back through the username gate, which already
+ * validates format, uniqueness and content. `adminRenameUser` above is the DISPLAY name, which
+ * its owner can change straight back; this is the permanent public one, which they cannot.
+ */
+export async function adminClearUsername(
+  userId: string,
+  note = '',
+): Promise<{ cleared: string | null } | null> {
+  return adminPost('/api/admin/user/username', { userId, note });
+}
+
+/** the shape both suspension calls answer with. `until` is ms epoch, null ⇒ not suspended. */
+export interface AdminSuspension {
+  until: number | null;
+  reason: string | null;
+}
+
+/**
+ * Suspend an account from online play for `days`, or lift it.
+ *
+ * The reason IS SHOWN TO THE PLAYER at the door — anything they should not read belongs in a
+ * private note instead.
+ */
+export function adminSuspendUser(
+  userId: string,
+  days: number,
+  reason: string,
+): Promise<{ suspension: AdminSuspension } | null> {
+  return adminPost('/api/admin/user/suspend', { userId, days: String(days), reason });
+}
+
+export function adminLiftSuspension(
+  userId: string,
+  reason = '',
+): Promise<{ suspension: AdminSuspension } | null> {
+  return adminPost('/api/admin/user/suspend', { userId, lift: '1', reason });
+}
+
+/** delete an account and everything it owns. Terminal; the audit row outlives it. */
+export function adminDeleteUser(userId: string, note = ''): Promise<{ ok: boolean } | null> {
+  return adminPost('/api/admin/user/delete', { userId, note });
 }
 
 // ---- friends ---------------------------------------------------------------
@@ -1883,6 +1962,49 @@ export async function fetchPricing(): Promise<TierPrice | null> {
 }
 
 /**
+ * EVERYTHING THE SERVER HOLDS ABOUT YOU, as one JSON document (`GET /api/user/export`).
+ *
+ * Typed loosely on purpose. The client's job is to hand the file to the person who asked for
+ * it, unchanged — it does not read a single field, and a mirrored interface here would be a
+ * second copy of the server's shape to keep in step for no benefit. `format` is the one thing
+ * it does check, and it checks it for a specific reason below.
+ */
+export interface AccountExport {
+  format: number;
+  exportedAt: string;
+  [section: string]: unknown;
+}
+
+/** the server serving this client predates the export route */
+export class ExportUnavailableError extends Error {
+  constructor() {
+    super('export unavailable');
+    this.name = 'ExportUnavailableError';
+  }
+}
+
+/**
+ * ⚠️ AN OLD SERVER ANSWERS THIS PATH 200, WITH SOMETHING ELSE.
+ *
+ * One Fly app serves every client version, so this call can land on a build that has no export
+ * route — and `/api/user/export` matches that server's `/api/user/<id>` public-profile route,
+ * which happily reports a profile for the user id `"export"`: `{userId:'export', handle:null}`,
+ * status 200. There is no HTTP status to catch, so the guard is the payload: a real export
+ * carries `format`, and anything without it is a server that does not have this feature rather
+ * than an account with no data. Handing that object to somebody as their personal data export
+ * would be the worst possible failure of this route, so it is checked here and not in the UI.
+ *
+ * `method: 'GET'` is passed explicitly, which looks redundant and is not: `authedJson` turns a
+ * 404 on a method-less call into `FriendsUnavailableError`, and that would swallow the server's
+ * own "no account data" message for a deleted account.
+ */
+export async function fetchMyExport(): Promise<AccountExport> {
+  const data = await authedJson<Partial<AccountExport>>('/api/user/export', { method: 'GET' });
+  if (typeof data?.format !== 'number') throw new ExportUnavailableError();
+  return data as AccountExport;
+}
+
+/**
  * Delete the signed-in account and everything DSIM stores about it.
  *
  * Irreversible, so the server demands the literal string `DELETE` in the body —
@@ -1913,4 +2035,180 @@ export async function claimKofiPayment(
     { method: 'POST', body: JSON.stringify({ transactionId }) },
   );
   return { ok: !!r.ok, supporterUntil: r.supporterUntil ?? null, months: r.months ?? 0 };
+}
+
+// ======================================================== admin: audit + user ==
+//
+// The two reads behind the console's Audit tab and its user detail panel (server:
+// migration 0041). Both are GETs with the signed-in admin token, both are paged, and
+// both answer an EMPTY page rather than null when the server is older than the route —
+// one Fly app serves every client version, so a console loaded from a newer Vercel
+// deploy has to degrade to "nothing to show" instead of an error the admin cannot act on.
+
+/** one row of the admin audit log */
+export interface AuditRow {
+  id: string;
+  adminId: string;
+  /** a dotted key: `user.rename`, `record.delete`, `season.start`, … */
+  action: string;
+  targetUser: string | null;
+  targetHandle: string | null;
+  targetUsername: string | null;
+  targetId: string | null;
+  detail: Record<string, unknown>;
+  note: string | null;
+  at: string;
+}
+
+export async function adminFetchAudit(
+  opts: { action?: string; admin?: string; user?: string; q?: string; limit?: number; offset?: number } = {},
+): Promise<{ rows: AuditRow[]; more: boolean } | null> {
+  const base = gameServerHttpUrl();
+  const token = await getAuthToken();
+  if (!base || !token) return null;
+  const q = new URLSearchParams();
+  for (const [k, v] of Object.entries(opts)) if (v) q.set(k, String(v));
+  try {
+    const res = await fetch(base + '/api/admin/audit?' + q.toString(), {
+      headers: { authorization: `Bearer ${token}` },
+      cache: 'no-store',
+    });
+    // 404 is an OLD SERVER, not a failure: the tab shows its empty state rather than
+    // "couldn't load", which would send an admin looking for a problem that is a deploy.
+    if (res.status === 404) return { rows: [], more: false };
+    if (!res.ok) return null;
+    const body = (await res.json()) as { rows?: AuditRow[]; more?: boolean };
+    return { rows: body.rows ?? [], more: body.more === true };
+  } catch {
+    return null;
+  }
+}
+
+/** the distinct action keys present in the log — the filter menu's options */
+export async function adminFetchAuditActions(): Promise<string[]> {
+  const base = gameServerHttpUrl();
+  const token = await getAuthToken();
+  if (!base || !token) return [];
+  try {
+    const res = await fetch(base + '/api/admin/audit?actions=1', {
+      headers: { authorization: `Bearer ${token}` },
+      cache: 'no-store',
+    });
+    if (!res.ok) return [];
+    return ((await res.json()) as { actions?: string[] }).actions ?? [];
+  } catch {
+    return [];
+  }
+}
+
+export interface AdminNote {
+  id: string;
+  adminId: string;
+  note: string;
+  at: string;
+}
+
+/** everything the console knows about one account, in one request */
+/** one report filed AGAINST the open account */
+export interface AdminReportRow {
+  id: string;
+  reason: string;
+  detail: string | null;
+  roomCode: string;
+  game: string;
+  status: string;
+  createdAt: string;
+  reporterHandle: string;
+  reporterUsername: string | null;
+}
+
+/** one report the open account FILED — the direction a bare "9 rejected" cannot explain */
+export interface AdminReportFiledRow {
+  id: string;
+  reason: string;
+  detail: string | null;
+  roomCode: string;
+  game: string;
+  status: string;
+  createdAt: string;
+  subjectId: string;
+  subjectHandle: string | null;
+  subjectUsername: string | null;
+}
+
+export interface AdminKofiPayment {
+  transactionId: string | null;
+  kind: string;
+  amount: string | null;
+  currency: string | null;
+  isSubscription: boolean;
+  claimedAt: string | null;
+  refundedAt: string | null;
+}
+
+export interface AdminUserDetail {
+  userId: string;
+  /** false ⇒ there is no `profiles` row for this id — see `AdminPresencePlayer.known` */
+  known: boolean;
+  handle: string | null;
+  username: string | null;
+  role: StaffRole | null;
+  supporter: boolean;
+  supporterUntil: string | null;
+  autoRenews: boolean;
+  replaysPublic: boolean;
+  termsVersion: string | null;
+  termsAcceptedAt: string | null;
+  createdAt: string | null;
+  standing: StandingInfo | null;
+  standingEvents: StandingEvent[];
+  reportsAgainst: { total: number; open: number; reporters: number };
+  reportsFiled: { total: number; rejected: number };
+  scoreReportsFiled: { total: number; rejected: number };
+  /** the rows behind those counts. OPTIONAL: one Fly app serves every client version, so a
+   *  console loaded from a newer deploy may be talking to a server that does not send them. */
+  reportsAgainstList?: AdminReportRow[];
+  reportsFiledList?: AdminReportFiledRow[];
+  /** `until: null` ⇒ not suspended. Absent on an older server. */
+  suspension?: AdminSuspension;
+  notes: AdminNote[];
+  grants: SupporterGrantRow[];
+  /** Ko-fi payments this account claimed — the rows `adminRefundPayment` acts on */
+  payments?: AdminKofiPayment[];
+  recentMatches: ModMatch[];
+  records: {
+    recordId: string;
+    game: string;
+    mode: string;
+    drivetrain: string;
+    score: number;
+    replayId: string | null;
+    createdAt: string;
+  }[];
+  audit: AuditRow[];
+}
+
+export async function adminFetchUser(userId: string): Promise<AdminUserDetail | null> {
+  const base = gameServerHttpUrl();
+  const token = await getAuthToken();
+  if (!base || !token) return null;
+  try {
+    const res = await fetch(base + '/api/admin/user?id=' + encodeURIComponent(userId), {
+      headers: { authorization: `Bearer ${token}` },
+      cache: 'no-store',
+    });
+    if (!res.ok) return null;
+    return ((await res.json()) as { user: AdminUserDetail }).user ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/** pin a private moderator note to an account (never shown to the player) */
+export function adminAddNote(userId: string, note: string): Promise<{ note: AdminNote } | null> {
+  return adminPost('/api/admin/user/note', { id: userId, note });
+}
+
+export function adminDeleteNote(userId: string, noteId: string): Promise<{ ok: boolean } | null> {
+  return adminPost('/api/admin/user/note', { id: userId, delete: noteId });
 }

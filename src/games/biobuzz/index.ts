@@ -1,6 +1,6 @@
 import type { GameModule } from '../module';
-import { BiobuzzGallery } from './Gallery';
-import { BiobuzzRobotPreview } from './RobotPreview';
+import { BiobuzzGalleryRoute } from './GalleryRoute';
+import { BiobuzzPreview3D, BiobuzzSavedCard } from './Preview3D';
 import {
   BiobuzzBuilderSlot,
   BiobuzzHudChips,
@@ -44,7 +44,15 @@ export const BIOBUZZ_MODULE: GameModule = {
   drawBalls: drawBiobuzzBalls,
   // ---- UI slots ----
   Builder: BiobuzzBuilderSlot,
-  Preview: BiobuzzRobotPreview,
+  /**
+   * THE ROBOT SCHEMATIC — and, where the host allows it, the live 3D turntable
+   * (`docs/roadmap.md` item 1). `BiobuzzPreview3D` wraps `BiobuzzRobotPreview`: without the
+   * host's `allow3d` it IS the schematic, byte for byte what this slot was before.
+   */
+  Preview: BiobuzzPreview3D,
+  /** the saved-robot card's body: a 3D thumbnail on the 3D view, the build summary on the 2D
+   * one. See `GameModule.savedCard` for why the GAME makes that choice and not the menu. */
+  savedCard: BiobuzzSavedCard,
   hudChips: BiobuzzHudChips,
   scoreBar: BiobuzzScoreBar,
   resultsRows: biobuzzResultsRows,
@@ -116,11 +124,30 @@ export const BIOBUZZ_MODULE: GameModule = {
    * game-stripped remainder of the URL. A bare `/gallery` entry would drop every sub-path
    * through to `parseScreen`, which sends an unknown path home — so the trailing `/*` is what
    * makes a pasted scene link actually open. Seventy scenes is not seventy route entries.
+   *
+   * ⚠️ THE COMPONENT IS `GalleryRoute`, NOT `Gallery` — a lazy wrapper, because the gate is on
+   * the URL and a static import is on the BUNDLE. See that file.
    */
-  devRoutes: [{ path: '/gallery/*', Component: BiobuzzGallery }],
-  // no score HUD (nothing is scored) and no start editor (no legality model). `intakes` is the
-  // SHARED preset list, which is what the shared builder would offer; BIOBUZZ's own sweeper
-  // dials live in `Builder` and the slot above is what actually renders.
+  devRoutes: [{ path: '/gallery/*', Component: BiobuzzGalleryRoute }],
+  /**
+   * ⚠️ `showScoreHud: false` IS NOT "NOTHING IS SCORED". `sim.ts` has said `scored: true` since
+   * kickoff evening and `score.ts` scores the whole of Table 10-2 — the old comment here
+   * ("nothing is scored") predates that and read as a claim about the GAME.
+   *
+   * What it actually says is "do not give this game the SHARED score chrome", and BIOBUZZ draws
+   * its own: `scoreBar: BiobuzzScoreBar` and `hudChips: BiobuzzHudChips` (`HudSlots.tsx`) print
+   * the alliance panels, the up-CELL line and the rule row. `GameView.tsx`'s `Hud` picks the
+   * slot when a game fills it, so the shared bar on top of those would be the same numbers twice.
+   *
+   * ⚠️ AND NOTHING READS THIS FLAG ANY MORE — grep it: the three games set it and no consumer
+   * asks. The slots replaced it. It is kept because `GameUiSpec` still requires it and because
+   * `false` is the answer that stays right if a reader comes back; do not take it as the thing
+   * that suppresses anything today.
+   *
+   * `startEditor: false` is still literally true (no legality model, so no G304-style editor).
+   * `intakes` is the SHARED preset list, which is what the shared builder would offer; BIOBUZZ's
+   * own sweeper dials live in `Builder` and the slot above is what actually renders.
+   */
   ui: { showScoreHud: false, startEditor: false, intakes: ['sloped', 'vector'] },
   // THE TUTORIAL (roadmap item 6). Content only — the engine is `src/tutorial/` and the thing
   // that drives it is `GameController`. Read `./tutorial.ts`'s header before editing a step:
@@ -135,4 +162,15 @@ export const BIOBUZZ_MODULE: GameModule = {
    * `scripts/smoke-biobuzz/render.ts`'s import-boundary checks.
    */
   scene: () => import('./scene/renderScene').then((m) => m.createBiobuzzScene),
+  /**
+   * THE ROBOT-BUILDER TURNTABLE, out of the SAME chunk (`docs/roadmap.md` item 1).
+   *
+   * ⚠️ THE SPECIFIER IS `./scene/renderScene`, NOT `./scene/renderPreview`, AND THAT IS THE
+   * POINT. One dynamic specifier is one Rollup chunk. Two would make three.js a hoisted shared
+   * chunk with a thin facade either side — and a facade contains none of the marker strings
+   * `scripts/bundleaudit.mjs` routes the `scene` budget by, so both would land in `other` and
+   * fail the audit for a reason that has nothing to do with size. `renderScene.ts` re-exports
+   * the preview factory; its header carries the same note.
+   */
+  previewScene: () => import('./scene/renderScene').then((m) => m.createRobotPreviewScene),
 };

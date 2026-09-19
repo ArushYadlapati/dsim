@@ -171,6 +171,7 @@ function emptyHud(): BiobuzzFieldHud {
     gardenPts: 0,
     foul: 0,
     total: 0,
+    pendingPts: 0,
   };
   const rp: BbRankPoints = { swarm: false, pollinator1: false, pollinator2: false };
   return {

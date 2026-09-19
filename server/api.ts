@@ -1,6 +1,6 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { GameId } from '../src/types';
-import { coerceGameId, isGameId } from '../src/games/types';
+import { coerceGameId, isGameId, serverPhysics } from '../src/games/types';
 import { simModuleFor } from '../src/games/sim';
 import { BALANCE_VERSION, SIM_DT } from '../src/config';
 import { monthsFor, policyFromEnv, whyNoMonths } from './kofi';
@@ -60,6 +60,7 @@ import {
   claimKofiPayment,
   recordKofiPayment,
   deleteAccount,
+  exportAccount,
   listSeasons,
   recordLeaderboard,
   saveUserSettings,
@@ -69,6 +70,27 @@ import {
   usernameAvailable,
   UsernameTakenError,
 } from './db/repo';
+import {
+  analyticsReport,
+  classify,
+  clientIp,
+  countryForTimezone,
+  currentSalt,
+  dimColumn,
+  ensureAnalyticsJobs,
+  headerCountry,
+  insertEvent,
+  insertPageview,
+  isBot,
+  parseEvent,
+  parsePageview,
+  primaryLang,
+  productReport,
+  rateOk,
+  visitorHash,
+  ADDRESS_LIMIT,
+  VISITOR_LIMIT,
+} from './analytics';
 import { emailGateRefusal, verifyAuthToken } from './auth';
 import { LEGAL_VERSION } from '../src/legalText';
 import { DEPLOY_REGIONS, interRegionMs } from './regions';
@@ -95,6 +117,7 @@ import { DEPLOY_REGIONS, interRegionMs } from './regions';
  *   POST /api/user/settings {settings}       — save your settings (Bearer JWT)
  *   GET  /api/user/privacy                   — your replay-visibility setting (Bearer JWT)
  *   POST /api/user/privacy {replaysPublic}   — set it (Bearer JWT)
+ *   GET  /api/user/export                    — everything we hold about you (Bearer JWT)
  *   GET  /api/replay/<id>                    — 403 when the people in it have not published it
  *
  *   GET  /api/friends                        — friends + requests + presence (Bearer JWT)
@@ -111,6 +134,11 @@ import { DEPLOY_REGIONS, interRegionMs } from './regions';
  *   POST /api/friends/invite/decline {id}    — decline one sent to you (sender is told)
  *   POST /api/friends/invite/cancel  {id}    — withdraw one you sent
  *   GET  /api/users/search?q=<prefix>        — public username-PREFIX search
+ *
+ *   POST /api/a/pv                           — one cookieless page view (public beacon)
+ *   POST /api/a/ev                           — one named event (public beacon)
+ *   GET  /api/analytics?from&to&game&grain&f — the traffic dashboard (staff only)
+ *   GET  /api/analytics/product?from&to&game — matches, retention, ranked, … (staff only)
  */
 
 /** Public usernames: lowercase letters + digits only, 4–20 chars. Kept in sync
@@ -227,9 +255,13 @@ const lanRate = new Map<string, { n: number; until: number }>();
 
 function lanRateOk(userId: string): boolean {
   const now = Date.now();
-  // sweep on the way past, so an idle server does not keep a map of everyone who ever posted.
-  // Cheap: this route is rate-limited, so the map cannot be large enough for this to matter.
-  if (lanRate.size > 1000) for (const [k, v] of lanRate) if (v.until <= now) lanRate.delete(k);
+  // Sweep on the way past, so an idle server does not keep a map of everyone who ever posted.
+  // UNCONDITIONAL, and that is the point: gating the sweep on `size > 1000` made the map grow
+  // to 1000 before anything was ever collected, and 1001 DISTINCT accounts inside one window is
+  // exactly the case where no entry is expired yet and the sweep frees nothing anyway. Sweeping
+  // every call keeps the map to "accounts seen in the last minute", which is small enough that
+  // the O(n) walk is cheaper than the branch was worth.
+  for (const [k, v] of lanRate) if (v.until <= now) lanRate.delete(k);
   const hit = lanRate.get(userId);
   if (!hit || hit.until <= now) {
     lanRate.set(userId, { n: 1, until: now + LAN_WINDOW_MS });
@@ -237,6 +269,33 @@ function lanRateOk(userId: string): boolean {
   }
   hit.n++;
   return hit.n <= LAN_MAX_PER_WINDOW;
+}
+
+/**
+ * ONE DATA EXPORT PER MINUTE PER ACCOUNT (`GET /api/user/export`).
+ *
+ * Built to the shape of `lanRateOk` above rather than a generic limiter, because the two
+ * limits are the same kind of thing — an authenticated route whose real cost is database
+ * compute, bounded per ACCOUNT — and one more four-line function is cheaper to read than an
+ * abstraction over two call sites.
+ *
+ * `EXPORT_WINDOW_MS` is the whole limit: there is no burst allowance, because there is no
+ * legitimate reason to ask twice in a minute. The map is swept on the way past for the same
+ * reason the LAN one is, so an idle server does not keep a row per account that ever exported.
+ */
+const EXPORT_WINDOW_MS = 60_000;
+const exportRate = new Map<string, number>();
+
+function exportRateOk(userId: string): boolean {
+  const now = Date.now();
+  // unconditional, for the reason spelled out in `lanRateOk`: a size-gated sweep never runs
+  // until 1000 rows have accumulated, and the one burst that would justify it — 1001 distinct
+  // accounts inside a single window — is the burst in which nothing has expired to sweep.
+  for (const [k, t] of exportRate) if (t <= now) exportRate.delete(k);
+  const until = exportRate.get(userId);
+  if (until && until > now) return false;
+  exportRate.set(userId, now + EXPORT_WINDOW_MS);
+  return true;
 }
 
 /** the Bearer token from an Authorization header, if it looks like one */
@@ -364,6 +423,123 @@ async function saveLanUpload(
   }
 }
 
+/**
+ * ANALYTICS — the public beacon (`POST /api/a/pv`, `/api/a/ev`) and the admin read
+ * (`GET /api/analytics`, `/api/analytics/product`).
+ *
+ * ⚠️ THE TWO HALVES HAVE OPPOSITE THREAT MODELS and are in one function so that stays
+ * visible. The beacon is the only unauthenticated WRITE this server accepts and it answers 204
+ * to everything — a refusal that says WHY would tell a script which of the four limits it
+ * tripped, and there is nothing a real client could do with the answer anyway. The read is
+ * staff-only and says so plainly, because an admin who is signed in wrong needs to know.
+ *
+ * ⚠️ `isStaffUser` IS THE GATE, not a second copy of `ADMIN_IDS`. `profiles.role` is the
+ * projection of `ADMIN_USER_IDS` that exists so exactly this kind of question can be answered
+ * in SQL (`docs/area/accounts.md`), it is reconciled at every boot, and the sweep is symmetric
+ * — an id removed from the env loses the dashboard with everything else. A second env read
+ * here would be a second thing to keep in step.
+ */
+async function handleAnalytics(
+  req: IncomingMessage,
+  url: URL,
+  json: (code: number, body: unknown) => void,
+): Promise<boolean> {
+  const p = url.pathname;
+
+  // ---- ingest ------------------------------------------------------------
+  if (req.method === 'POST' && (p === '/api/a/pv' || p === '/api/a/ev')) {
+    // 202 WHATEVER HAPPENS: no database, a bot, over a limit, or a body that is not a beacon
+    // all look identical from outside. `sendBeacon` discards the response, a real client has
+    // nothing it could do with a reason, and a probe should not be able to learn which of the
+    // four limits it tripped. "Accepted" is also the honest status — the row is written after
+    // the response on every path that writes one.
+    const done = (): boolean => (json(202, {}), true);
+    if (!dbEnabled) return done();
+    const ua = (req.headers['user-agent'] as string | undefined) ?? '';
+    if (isBot(ua)) return done();
+
+    let body: unknown;
+    try {
+      // 4 KiB, not the 512 KiB default. A beacon is a few hundred bytes and the cap is the
+      // first thing standing between a public POST and somebody's idea of a fun afternoon.
+      body = JSON.parse(await readBody(req, 4096));
+    } catch {
+      return done();
+    }
+
+    const salt = await currentSalt();
+    const ip = clientIp(req);
+    // The HOST HEADER, not `url.host` — `handleApi` parses the request against a fixed
+    // `http://localhost` base, so that would be the same constant for every deployment and the
+    // `site` term in the hash would do nothing at all.
+    const site = (req.headers.host ?? '').slice(0, 64);
+    const visitor = visitorHash(salt, ip, ua, site);
+    // The per-ADDRESS key is a hash under the same rotating salt, so the limiter never becomes
+    // the one place raw addresses are kept. `ip:` keeps the two key spaces apart.
+    const addr = 'ip:' + visitorHash(salt, ip, '', site);
+    if (!rateOk(visitor, VISITOR_LIMIT) || !rateOk(addr, ADDRESS_LIMIT)) return done();
+
+    ensureAnalyticsJobs();
+    if (p === '/api/a/ev') {
+      const ev = parseEvent(body);
+      if (ev) await insertEvent(ev, visitor);
+      return done();
+    }
+    const pv = parsePageview(body);
+    if (!pv) return done();
+    const { device, os, browser } = classify(ua);
+    await insertPageview(pv, {
+      visitor,
+      // The header when the edge gives us one, the browser's coarse timezone otherwise. The
+      // timezone string is used for this line and then dropped; it is never a column.
+      country: headerCountry(req) || countryForTimezone(pv.timezone),
+      device,
+      os,
+      browser,
+      lang: primaryLang(req.headers['accept-language']),
+    });
+    return done();
+  }
+
+  // ---- the dashboard -----------------------------------------------------
+  if (req.method !== 'GET') return json(405, { error: 'method not allowed' }), true;
+  const user = await verifyAuthToken(bearer(req));
+  if (!user || !dbEnabled || !(await isStaffUser(user.userId))) {
+    return json(403, { error: 'forbidden' }), true;
+  }
+
+  // A range is two instants and both are clamped: an unbounded `from` is a full-table scan on
+  // a route somebody will leave open in a tab with auto-refresh on.
+  const now = Date.now();
+  const at = (key: string, fallback: number): Date => {
+    const raw = Date.parse(url.searchParams.get(key) ?? '');
+    return new Date(Number.isFinite(raw) ? Math.min(Math.max(raw, now - 730 * 86_400_000), now + 86_400_000) : fallback);
+  };
+  const to = at('to', now);
+  const from = at('from', to.getTime() - 7 * 86_400_000);
+  if (from >= to) return json(400, { error: 'empty range' }), true;
+  const game = url.searchParams.get('game') ?? '*';
+  const grain = url.searchParams.get('grain') === 'hour' ? 'hour' : 'day';
+
+  if (p === '/api/analytics/product') {
+    return json(200, await productReport(from, to, game)), true;
+  }
+  if (p !== '/api/analytics') return json(404, { error: 'unknown endpoint' }), true;
+
+  // `f=<dim>:<value>`, repeatable — the click-to-filter chips. Capped at six: the panel cannot
+  // produce more, and an URL that could would be a way to ask for an arbitrarily long `where`.
+  const filters = url.searchParams
+    .getAll('f')
+    .slice(0, 6)
+    .map((raw) => {
+      const i = raw.indexOf(':');
+      return i < 0 ? { dim: raw, val: '' } : { dim: raw.slice(0, i), val: raw.slice(i + 1).slice(0, 128) };
+    })
+    .filter((f) => dimColumn(f.dim) !== null);
+
+  return json(200, await analyticsReport({ from, to, game, filters, grain })), true;
+}
+
 export async function handleApi(req: IncomingMessage, res: ServerResponse): Promise<boolean> {
   const url = new URL(req.url ?? '/', 'http://localhost');
   if (!url.pathname.startsWith('/api/')) return false;
@@ -381,6 +557,13 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse): Prom
   }
 
   try {
+    // ---- analytics: the public beacon, and the admin read -------------------
+    // FIRST in the chain because it is the most frequent request this server answers and the
+    // cheapest to refuse. See `server/analytics.ts` for what is and is not recorded.
+    if (url.pathname.startsWith('/api/a/') || url.pathname.startsWith('/api/analytics')) {
+      return await handleAnalytics(req, url, json);
+    }
+
     // ---- authenticated write: set your own display name --------------------
     if (req.method === 'POST' && url.pathname === '/api/user/handle') {
       const auth = req.headers['authorization'];
@@ -503,7 +686,11 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse): Prom
       // POST: save the whole settings blob
       let settings: unknown;
       try {
-        settings = JSON.parse(await readBody(req)).settings;
+        // 64 KB, not `readBody`'s 512 KB default. This blob is keybinds, toggles and a colour
+        // or two — a few KB at the outside — and it is stored per account, so the default cap
+        // let a signed-in client park half a megabyte of anything in Postgres under the name
+        // "settings". The limit is the shape of the data, not the shape of the transport.
+        settings = JSON.parse(await readBody(req, 64 * 1024)).settings;
       } catch {
         return json(400, { error: 'bad request' }), true;
       }
@@ -536,6 +723,16 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse): Prom
       if (!user) return json(401, { error: 'sign in required' }), true;
       if (!dbEnabled) {
         return json(503, { error: 'recording an acceptance needs the database' }), true;
+      }
+      // ALREADY ON THIS REVISION ⇒ ANSWER FROM THE ROW, WRITE NOTHING. The client's gate calls
+      // this on mount whenever its cached answer is stale, and `acceptTerms` is an UPDATE that
+      // overwrites `terms_accepted_at` with `now()` — so a re-post was silently MOVING the
+      // recorded consent date forward, which is the one field a dispute would read. It also put
+      // two writes (ensureProfile + the update) on a route that had nothing to record. The read
+      // is a single-row lookup by primary key; the response shape is byte-identical.
+      const prior = await getTermsAcceptance(user.userId);
+      if (prior.version === LEGAL_VERSION) {
+        return json(200, { termsVersion: prior.version, termsAcceptedAt: prior.acceptedAt }), true;
       }
       await ensureProfile(user.userId, user.handle);
       const a = await acceptTerms(user.userId, LEGAL_VERSION);
@@ -819,6 +1016,43 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse): Prom
         json(200, { ok: true, supporterUntil: r.until ?? null, months: r.months ?? 0 }),
         true
       );
+    }
+
+    /**
+     * ---- DATA PORTABILITY: everything we hold about you, as one file ---------
+     *
+     * The other half of the promise `/api/user/delete` keeps. The privacy policy claims a
+     * right of portability for anyone under UK/EU-comparable law, and until this existed the
+     * only way to exercise it was to email a person and wait — which is a promise, not a
+     * feature.
+     *
+     * RATE LIMITED TO ONE PER MINUTE PER ACCOUNT, and that limit is about cost rather than
+     * abuse. This is the most expensive read in the whole API: seventeen queries, several of
+     * them unbounded scans of the caller's own history, on Neon compute that bills by the
+     * wall-clock minute it is kept awake. One per minute is far more than a human downloading
+     * a file needs and far less than a loop could spend. Per ACCOUNT, not per IP, for the same
+     * reason `/api/lan` is: the route is authenticated before it is reached, and a school's
+     * whole network shares one address.
+     *
+     * A 404 for an account with no profile row. That is the honest answer for a DELETED
+     * account — the token can outlive the row it named, and an empty document with a 200 on it
+     * would read as "we hold nothing about you", which is a claim rather than a fact.
+     */
+    if (url.pathname === '/api/user/export' && req.method === 'GET') {
+      const user = await verifyAuthToken(bearer(req));
+      if (!user) return json(401, { error: 'sign in required' }), true;
+      if (!dbEnabled) return json(503, { error: 'an export needs the database' }), true;
+      if (!exportRateOk(user.userId)) {
+        return (
+          json(429, {
+            error: 'One export a minute. Try again shortly — the file you already asked for is the same one.',
+          }),
+          true
+        );
+      }
+      const data = await exportAccount(user.userId);
+      if (!data) return json(404, { error: 'no account data' }), true;
+      return json(200, data), true;
     }
 
     // ---- delete your own account -------------------------------------------
@@ -1200,17 +1434,24 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse): Prom
       const mode = url.searchParams.get('mode') === 'duo' ? 'duo' : 'solo';
       const drivetrain = url.searchParams.get('drivetrain') ?? 'overall';
       /**
-       * THE ERA FILTER (0039). An ALLOWLIST rather than a cast: this string reaches a SQL
-       * parameter, and while `q()` parameterises it, a value that is neither of the two would
-       * silently return an empty board rather than the "all" the caller meant. Anything that
-       * is not exactly `'2d'` or `'3d'` — absent, empty, `all`, nonsense — means no filter,
-       * which is what every client before Day 3 asks for.
+       * ⚠️ THE `physics` QUERY PARAMETER IS IGNORED (owner ruling, 2026-09-18).
+       *
+       * It briefly existed as an era picker — All / 3D / 2D — back when the two eras shared
+       * this board. They do not: every server-connected match of a game that can step 3D is a
+       * 3D match, so the board is the 3D board and `recordLeaderboard` decides that itself
+       * (`boardPhysics` in repo.ts). Accepting the parameter would leave a URL anyone can type
+       * that returns a second, unadvertised board of runs nothing new can be added to, and the
+       * response would have to explain which one it was.
+       *
+       * READ AND DROPPED rather than deleted, so an older client that still appends
+       * `&physics=2d` gets the live board instead of an error — and `physics` is echoed back
+       * as what the board actually IS, not as what was asked for, so such a client's chip and
+       * its rows cannot disagree.
        */
-      const p = url.searchParams.get('physics');
-      const physics = p === '2d' || p === '3d' ? p : undefined;
       const rows = dbEnabled
-        ? await recordLeaderboard({ mode, drivetrain, balanceVersion: season, limit, game, physics })
+        ? await recordLeaderboard({ mode, drivetrain, balanceVersion: season, limit, game })
         : [];
+      const physics = serverPhysics(simModuleFor(game));
       return json(200, { season, mode, drivetrain, physics, rows, game }), true;
     }
 

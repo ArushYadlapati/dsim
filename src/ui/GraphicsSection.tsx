@@ -384,17 +384,12 @@ export function GraphicsSection() {
               { v: true, t: 'On', d: 'A second pass over the field' },
             ]}
           />
-          <OptRow
-            label="Performance overlay"
-            value={s.perfOverlay}
-            cols="three"
-            onPick={set('perfOverlay')}
-            options={[
-              { v: 'off' as const, t: 'Off' },
-              { v: 'fps' as const, t: 'Frame rate' },
-              { v: 'full' as const, t: 'Everything', d: 'fps, p95, draw calls' },
-            ]}
-          />
+          {/* THE PERFORMANCE OVERLAY ROW IS GONE FROM HERE. It was 3D-only, and it drew its
+              own corner div on top of the event log; the read-out is one display for all
+              three games now, under Audio and Visual, because it is a `GameSettings` field
+              and nothing in this section is. The 3D renderer's draw calls and triangles are
+              on it, at the Detailed level. */}
+          <p className="ds-hint">The performance read-out is under Audio and Visual.</p>
           {/* §4.4 lists two rows this build does not ship. Saying so here — with the reason —
               beats a disabled switch, which reads as a bug, and beats silence, which reads as
               an oversight to anyone holding the plan doc. */}

@@ -27,6 +27,9 @@ import {
   BB_WALL_T,
 } from '../config';
 import { biobuzzColliders, BB_WALL_COUNT } from '../colliders';
+import { INTAKE_RAIL_T, PHYS_FRICTION } from '../../../config';
+import { BB3_MOUTH_SLOT_Z, bbIntakeReach } from '../config';
+import { bbMouths } from '../robot';
 import { cadCellBox, cadStatics, cadTrayHulls } from './fieldColliders';
 import { buildFlowerTubes3d } from './flowerTube';
 import { tiltQuatX, yawQuat } from './math3';
@@ -157,6 +160,43 @@ const FRAME_COUNT = 2;
 const FLOOR_HALF_T = 10;
 
 /**
+ * THE TILES' RESTITUTION IS A **MULTIPLIER**, NOT A COEFFICIENT — which is what lets an element
+ * bounce off the tiles like a hard ball off foam while a chassis resting on the same collider
+ * reads exactly zero.
+ *
+ * ── WHY THE RULE AND NOT THE NUMBER ────────────────────────────────────────
+ * Rapier resolves a pair's restitution by taking the HIGHER-PRIORITY of the two colliders' rules
+ * (Average 0 < Min 1 < Multiply 2 < Max 3) and applying it to the two values. Under the default
+ * AVERAGE the floor's number is shared by everything that rests on it, and the three things that
+ * rest on it want three different answers:
+ *
+ *  · an ELEMENT wants the real pair — `BB3_ELEMENT_RESTITUTION`, a hard plastic ball on foam;
+ *  · a CHASSIS wants ZERO, because a robot never leaves the tiles and any rebound there is a
+ *    numerical term on top of the drive model, which the SIM3D lane's parity checks measure;
+ *  · the element/TRAY pair wants the TRAY's own low number (`TRAY_RESTITUTION_COMBINE`, Min),
+ *    and Min has to keep winning or a shot bounces back out of the cell.
+ *
+ * MULTIPLY gives all three from one line. `e_pair = e_a · e_b`, so with this at **1.0** an
+ * element reads its OWN coefficient against the tiles (`0.55 · 1.0`) and a chassis reads
+ * `0 · 1.0` = 0 exactly. The tray is untouched: this rule is on the FLOOR, which the tray never
+ * meets, and every element/tray pair is still the element's Average against the tray's Min, so
+ * Min wins there as it always did. Handing the ELEMENT a Max rule instead would have been the
+ * obvious move and is the wrong one: it travels with the element to EVERY pair, Max outranks
+ * Min, and it would have taken the cell's own low restitution with it.
+ *
+ * ⚠️ 1.0 IS NOT "A PERFECTLY ELASTIC FLOOR". Nothing ever reads it as a coefficient; it is the
+ * identity of the multiply. Changing the BOUNCE means changing `BB3_ELEMENT_RESTITUTION`.
+ *
+ * WAS 0.05 under the AVERAGE rule, which made the element/tile pair `(0.45 + 0.05)/2 = 0.25`
+ * and a robot/tile pair of 0.025. Measured on a real 8-POLLEN tip: elements arriving at 160 in/s
+ * rebounded **1.0–2.1 in**, which on a 30-in drop is not a bounce anybody can see, and the owner
+ * reported it as such ("in real life the balls bounce and disperse a lot more after the hive tips
+ * and it hits the field tiles", 2026-09-19). See `BB3_ELEMENT_RESTITUTION` for the band it is
+ * sized to now and the dispersal the change bought.
+ */
+const TILE_RESTITUTION = 1.0;
+
+/**
  * ⚠️ **THE TRAY AND ITS OWN FRAME DO NOT COLLIDE**, and under the DYNAMIC see-saw that is the
  * difference between a hive that tips and one that does not.
  *
@@ -236,7 +276,10 @@ export function buildStatics3d(
     RAPIER.ColliderDesc.cuboid(1000, 1000, FLOOR_HALF_T)
       .setFriction(0)
       .setFrictionCombineRule(RAPIER.CoefficientCombineRule.Min)
-      .setRestitution(0),
+      // MULTIPLY, and the value is the identity — see `TILE_RESTITUTION`. Each body that rests
+      // here reads its own coefficient against the tiles and a chassis reads zero.
+      .setRestitution(TILE_RESTITUTION)
+      .setRestitutionCombineRule(RAPIER.CoefficientCombineRule.Multiply),
     ground,
   );
 
@@ -682,15 +725,156 @@ function buildTrayColliders(
 }
 
 // ---- ROBOTS -----------------------------------------------------------------
-// a dynamic cuboid, `length x width x heightIn`, yaw-only.
+// a dynamic COMPOUND, yaw-only: the bare frame `length x width x heightIn` plus the sweeper's
+// side arms out to `bbIntakeReach`. See `chassis3dShapes`.
 
 export function robotHeightIn(spec: RobotSpec): number {
   return spec.heightIn ?? 18;
 }
 
+/** one box of the chassis compound, in the robot frame (+x forward, +y left, z measured from
+ * the chassis mid-height). */
+export interface Chassis3dShape {
+  cx: number;
+  cy: number;
+  /** box centre in z, relative to the CHASSIS mid-height (the body's own origin) */
+  cz: number;
+  hx: number;
+  hy: number;
+  hz: number;
+}
+
+/**
+ * ⚠️ **THE 3D CHASSIS IS A COMPOUND WITH AN OPEN INTAKE MOUTH** — the bare frame plus the
+ * sweeper's two SIDE ARMS per mounted edge, and it is the SAME shape list `bbRobotSolids`
+ * (`robot.ts`) hands the 2D artifact solve. Derived from `bbMouths` here too, so the drawn
+ * mouth, the 2D collision geometry and the 3D collider cannot drift apart.
+ *
+ * IT USED TO BE ONE `robotExtents` CUBOID, which is the 2D SOLVE's footprint — correct for
+ * robot-vs-wall and robot-vs-robot (that is the bug it was introduced to fix; see the note in
+ * `addChassisCollider`) and wrong for an ELEMENT, because it fills the mouth with solid. With a
+ * closed mouth an element can never get nearer than the roller line, so `bbIntakeAct` had
+ * nothing to draw it in ACROSS: measured on the intake lane's scenario set, a six-element
+ * cluster gave 10/18 and a strafe past a line 1/4, and every element near the mouth's lateral
+ * edge was deflected by the collider corner before the funnel reached it.
+ *
+ * ⚠️ **THE ARM TIPS END EXACTLY WHERE `robotExtents` ENDED** (`hl + reach` on a mounted end,
+ * `hw + reach` on a mounted flank), so flat-wall contact distance, a wall-flush start position
+ * and start legality do not move — they are what the single cuboid existed for. What changes is
+ * only the POCKET between the arms, which is now open to an element and closed to nothing else:
+ * a wall, another chassis and the HIVE underside all still meet the same outermost surfaces at
+ * the same distances and the same height.
+ *
+ * MASS AND INERTIA ARE UNTOUCHED: every collider is built at density 0 and the body's mass
+ * properties are set explicitly each tick (`syncRobot`), so drive parity with 2D is not a
+ * function of how many boxes the compound has.
+ */
+export function chassis3dShapes(spec: RobotSpec, heightIn: number): Chassis3dShape[] {
+  const hl = spec.length / 2;
+  const hw = spec.width / 2;
+  const half = heightIn / 2;
+  const out: Chassis3dShape[] = [{ cx: 0, cy: 0, cz: 0, hx: hl, hy: hw, hz: half }];
+  const reach = bbIntakeReach(spec);
+  if (reach <= 1e-6) return out;
+  // never thicker than the frame it is bolted to — `bbRobotSolids`' own clamp, for the same
+  // reason (a degenerate or inverted box is a collider Rapier cannot build).
+  const t = Math.max(1e-3, Math.min(INTAKE_RAIL_T, hw / 2, hl / 2));
+  /**
+   * ⚠️ **THE POCKET IS OPEN ONLY BELOW ELEMENT HEIGHT, AND THE LINTEL ABOVE IT IS WHAT KEEPS
+   * EVERY OTHER CONTACT WHERE IT WAS.** The mouth is an OVER-BUMPER intake: the roller bar spans
+   * it at roller height and an element rolls in UNDER the bar — which is exactly what
+   * `bbRobotSolids` says in 2D ("THE MOUTH ITSELF IS OPEN... a POLLEN rolls in under it").
+   *
+   * Leaving the pocket open all the way up was measured and is wrong in a way that has nothing
+   * to do with elements: with only two thin arms out front, the FRAME face sits `reach` further
+   * back than the old cuboid's did, so a robot driving at a low field static reached 3 in past
+   * where it used to stop, caught the static's top edge on its frame's bottom edge and CLIMBED
+   * it — parked 2.14 in in the air, stalled, for the rest of the match (scenario `f turn onto a
+   * ball`, 3D: captured at tick 24 before, never after).
+   *
+   * With the lintel, anything taller than `BB3_MOUTH_SLOT_Z` — a wall, another robot, the HIVE
+   * structure, a FLOWER — meets the same outermost surface at the same distance as the single
+   * `robotExtents` cuboid did, and only an ELEMENT fits through the slot.
+   */
+  const slot = Math.min(BB3_MOUTH_SLOT_Z, heightIn - 0.1);
+  const lintelHz = Math.max(1e-3, (heightIn - slot) / 2);
+  const lintelCz = slot / 2;
+  for (const m of bbMouths(spec)) {
+    if (m.edge === 'front' || m.edge === 'back') {
+      const cx = (m.edge === 'front' ? 1 : -1) * (hl + reach / 2);
+      for (const s of [1, -1]) {
+        const outer = s > 0 ? m.y1 : m.y0;
+        out.push({ cx, cy: outer - (s * t) / 2, cz: 0, hx: reach / 2, hy: t / 2, hz: half });
+      }
+      out.push({ cx, cy: (m.y0 + m.y1) / 2, cz: lintelCz, hx: reach / 2, hy: (m.y1 - m.y0) / 2, hz: lintelHz });
+    } else {
+      const cy = (m.edge === 'left' ? 1 : -1) * (hw + reach / 2);
+      for (const s of [1, -1]) {
+        const outer = s > 0 ? m.x1 : m.x0;
+        out.push({ cx: outer - (s * t) / 2, cy, cz: 0, hx: t / 2, hy: reach / 2, hz: half });
+      }
+      out.push({ cx: (m.x0 + m.x1) / 2, cy, cz: lintelCz, hx: (m.x1 - m.x0) / 2, hy: reach / 2, hz: lintelHz });
+    }
+  }
+  return out;
+}
+
+/**
+ * ⚠️ **THE ONE CHASSIS-COLLIDER BUILDER FOR THE AUTHORITY.** `engineImpl.ts`'s `syncRobot` calls
+ * it twice — at body creation and again at the R102 deploy edge — and nothing else builds the
+ * compound. It lives here rather than in `engineImpl.ts` so the shape is one function away from
+ * `chassis3dShapes`, which is also what `bbRobotSolids` (2D) draws from.
+ *
+ * The FULL PREDICTOR (`predict.ts`) does NOT call it, on purpose and by measurement: it keeps
+ * one `robotExtents` cuboid, because the compound doubled its forty-tick reconcile past
+ * `PREDICT_FULL_BUDGET_MS` (see the note above `makeRobotBody` there). It shares only
+ * `clearChassis3dColliders` below, for the same deploy-edge re-fit.
+ *
+ * `heightIn` is the caller's, and it is `bbHeightNow(world, spec)` — never
+ * `robotHeightIn(spec)`, which is the deployed height whatever the phase says. A collider
+ * cannot be resized in place, so a caller that survives the deploy edge re-builds (see
+ * `Engine3d.robotHeights` for why the height built has to be RECORDED, not recomputed).
+ *
+ * Every box is DENSITY 0: mass and inertia are written explicitly by whoever owns the body, so
+ * the compound's box count can never move drive feel.
+ */
+export function addChassis3dColliders(
+  RAPIER: Rapier3d,
+  world3d: InstanceType<Rapier3d['World']>,
+  body: InstanceType<Rapier3d['RigidBody']>,
+  spec: RobotSpec,
+  heightIn: number,
+): void {
+  for (const s of chassis3dShapes(spec, heightIn)) {
+    world3d.createCollider(
+      RAPIER.ColliderDesc.cuboid(s.hx, s.hy, s.hz)
+        .setTranslation(s.cx, s.cy, s.cz)
+        .setDensity(0)
+        .setFriction(PHYS_FRICTION)
+        .setRestitution(0),
+      body,
+    );
+  }
+}
+
+/** drop every collider off a chassis body so it can be re-built at a new height. Shared by the
+ * authority (`addChassis3dColliders`) and the predictor (its own cuboid): the deploy edge happens
+ * in both, and a loop that counts DOWN is the only one that is safe while the collider list
+ * shrinks under it. */
+export function clearChassis3dColliders(
+  world3d: InstanceType<Rapier3d['World']>,
+  body: InstanceType<Rapier3d['RigidBody']>,
+): void {
+  for (let i = body.numColliders() - 1; i >= 0; i--) {
+    world3d.removeCollider(body.collider(i), false);
+  }
+}
+
 // ---- ELEMENTS -----------------------------------------------------------------
-// a dynamic sphere per ground/flight/hive-cell element. A flower-parked element is FIXED (see
-// `engine.ts`'s sync rule) and is built with `RAPIER.RigidBodyDesc.fixed()` instead.
+// a dynamic sphere per element that wants a body at all — ground, flight, hive cell AND flower.
+// The Day 1 sentence here said a flower-parked element was FIXED instead; that has been false
+// since Day 2 gave the flowers real tubes, `wantsDynamicBody` (`engineImpl.ts`) returns true for
+// every `element`, and the stale claim cost one investigation an afternoon of disproving it.
 
 export function elementMass(isNectar: boolean): number {
   return BB3_ELEMENT_MASS * (isNectar ? BB3_NECTAR_MASS_RATIO : 1);

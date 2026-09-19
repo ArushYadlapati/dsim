@@ -45,6 +45,22 @@
  *                not in the bundle that player downloads. ⚠️ TESTED AFTER `scene`, because the
  *                renderer chunk carries its own inlined copy of the settings model and
  *                "it has three.js in it" has to keep winning for that one.
+ *   gallery    — the BIOBUZZ SCENE GALLERY (`Gallery-*.js`), a dev route. `devRouteFor`
+ *                (`src/ui/App.tsx`) never matches `/gallery/*` on a stable build, but a static
+ *                import is a bundling fact and not a runtime one: until 2026-09-19 the gallery,
+ *                its seventy-scene registry and everything they reach were in `main` for every
+ *                player of every game, to be gated at the URL. `GalleryRoute.tsx` `React.lazy`s
+ *                it now, so it is its own chunk and this route is where it lands. Matched by
+ *                FILENAME, before the content scans — it renders nothing itself.
+ *   admin      — the ADMIN CONSOLE (`Admin-*.js` + the `AdminAnalytics-*.js` it lazily loads).
+ *                One route, reachable by the accounts in `ADMIN_USER_IDS` and nobody else, and
+ *                the fastest-growing thing in this repo: `Admin.tsx` statically pulls in
+ *                `AdminLive`, `AdminReports`, `AdminAudit`, `AdminUser`, `AdminStanding` and
+ *                `adminBits`, all of which were in `main` for every player until `App.tsx`
+ *                `React.lazy`d the console (2026-09-19). Matched by FILENAME, before the
+ *                content scans. ⚠️ THIS BUCKET IS WHY THE SPLIT HOLDS: without a route of its
+ *                own the console's growth would land in `other`, whose near-zero baseline is
+ *                meant to catch a chunk nobody meant to create.
  *   other      — everything else. In practice this is empty: `@dimforge/rapier2d-compat` is a
  *                STATIC import (`src/sim/physicsEngine.ts`), so the 2D physics engine lives
  *                inside `main` already and always has (that is existing, unchanged behavior,
@@ -121,6 +137,13 @@ function routeFor(file, buf) {
   // exists precisely so this chunk is NOT named `index-*` — the package's own entry is
   // index.js, and without the facade it was billed against main's baseline).
   if (/^discordSdk-[^/]*\.js$/.test(base)) return 'discord';
+  if (/^Gallery-[^/]*\.js$/.test(base)) return 'gallery';
+  // The admin console's chunks, by FILENAME like the three above — Vite names a lazy chunk
+  // after its facade module, so `Admin-*.js` and `AdminAnalytics-*.js` are what it emits, and
+  // neither renders anything a content marker would recognise. Before the content scans,
+  // because the console imports the SEASONS registry and the standing model and a future
+  // marker could otherwise claim it.
+  if (/^Admin[A-Za-z]*-[^/]*\.js$/.test(base)) return 'admin';
   // filename-first for a standalone `.wasm` asset (cheap, and a real one would be named after
   // its source module, e.g. `rapier_wasm3d_bg-<hash>.wasm`), then a content scan for both .js
   // and .wasm alike — content is what actually decided this in the measured build, where the
@@ -206,22 +229,78 @@ const fmtKB = (bytes) => `${(bytes / 1000).toFixed(2)} KB`;
  *               `GFX_NOT_OFFERED`) and that is most of why this is +5.6 and not +30. Still
  *               57 KB inside the §2.5 spec ceiling, kept below as `budgetCeiling` for context —
  *               the RATCHET binds to the measurement, because a budget is not a target.
+ *               RAISED AGAIN 2026-09-19, 192.28 → 199.48 (+7.20), by the field-visuals lane and
+ *               the owner's render pass on top of it: the shot-path reticle's arc, the clear-
+ *               panel edge outlines, the turret's split yaw/pitch nodes, the swerve module and
+ *               the two extra roller stripe textures, the braced shooter plates, and the
+ *               am-5706 holding box. `scene/renderLanding.ts` was DELETED in the same lane and
+ *               gave some of it back. Every one of those is geometry arithmetic; nothing new is
+ *               imported into the chunk, which is why +7 and not +70. 50 KB of ceiling left.
  * `other` has no route in a healthy build (every `.js`/`.wasm` file lands in one of the four
  * above) — baseline near zero, so anything landing here at all is worth a look.
+ *
+ * ── RE-MEASURED on `feat/privacy-cookies` (roadmap item 8) ────────────────────────────
+ * The privacy page's "Your data" panel and the storage registry behind it are MAIN-CHUNK by
+ * design: `/privacy` must render for a visitor with no account and for the AdSense review
+ * fetch, so nothing on it may sit behind a lazy boundary, and `src/storageKeys.ts` is imported
+ * by `settings.ts` and `theme.ts` which are on the entry path anyway.
+ *   main        929.04 KB — +10.32 over 918.72. The panel, the registry (most of it PROSE: a
+ *               purpose and a retention sentence per key, which is the point of it), the CCPA
+ *               paragraph and the rest of the legal-text edits, and `fetchMyExport`.
+ *   graphics      4.01 KB — −1.59 from 5.60, and it is the same bytes moving rather than bytes
+ *               saved: `graphics/settings.ts` and `graphics/store.ts` used to hold their own key
+ *               literals and now import them from the registry, so the three key strings are
+ *               counted once in main instead of once in the lazy chunk. Locked in because the
+ *               ratchet asked; it is not a win to defend.
+ *
+ * ── RE-MEASURED 2026-09-19, the pre-publish audit ─────────────────────────────────────
+ *   main        927.95 KB — −5.99 from 933.94: the BIOBUZZ scene gallery left the entry chunk
+ *               (see the `gallery` route above). The same audit's own additions to main — the
+ *               legal-page gate suspension, the auth dialog's a11y, `coerceCaps`, the analytics
+ *               query strip — are inside the noise of that.
+ *   gallery       7.33 KB — NEW: `Gallery-*.js`, the lazy gallery chunk. Bytes that used to be
+ *               counted under main; a stable build never requests it.
+ *   hostWorker  706.37, physics3d 1125.26, scene 199.67 — within noise (+0.11, +0.20, +0.19):
+ *               the 3D-world disposal, the shared chassis-collider builder and the context-loss
+ *               watcher. Baselines left where they were; the ratchet's tolerance covers them.
+ *
+ * ── RE-MEASURED 2026-09-19, the admin console's verification pass ─────────────────────
+ *   main        923.89 KB — −4.06 from 927.95, and −14.70 from the 938.59 the console's own
+ *               commit (9162190) had already pushed it to. `App.tsx` imported `Admin`
+ *               STATICALLY, which pulled `AdminLive`, `AdminReports`, `AdminAudit`,
+ *               `AdminUser`, `AdminStanding`, `adminBits` and `adminCopy` into the chunk every
+ *               player downloads to drive a robot — for a route exactly the accounts in
+ *               `ADMIN_USER_IDS` can open. One `React.lazy` took all of it out, and took the
+ *               moderation features added in the same pass with it.
+ *   admin        25.10 KB — NEW (`Admin-*.js` 17.48 + `AdminAnalytics-*.js` 7.61). Bytes that
+ *               were counted under `main` until this build, plus suspension, username clearing,
+ *               account deletion, the two report lists and the payments panel.
+ *   other         1.66 KB — back to just `settings-*.js`. It had been 9.12 and FAILING since
+ *               9162190, because `AdminAnalytics-*.js` had no route of its own and fell through
+ *               to the bucket whose near-zero baseline exists to catch exactly that.
  *
  * RECALIBRATE by running `npm run build && npm run bundleaudit` and copying the printed gzip
  * totals in here, the same way `uiaudit.mjs`'s header describes lowering ITS baseline.
  */
 const BASELINE = {
-  main: { gzip: 918.72 * 1000 },
+  main: { gzip: 923.89 * 1000 },
   // `@discord/embedded-app-sdk` behind `watchDiscordParticipants`'s dynamic import —
   // loaded only inside a real Discord Activity embed (`onDiscordHost()` gates the
   // import), so no ordinary player downloads it. MEASURED 2026-09-18.
   discord: { gzip: 44.30 * 1000 },
-  hostWorker: { gzip: 705.23 * 1000 },
-  physics3d: { gzip: 1123.14 * 1000 },
-  scene: { gzip: 192.28 * 1000, budgetCeiling: 250 * 1000 },
-  graphics: { gzip: 5.60 * 1000 },
+  hostWorker: { gzip: 706.26 * 1000 },
+  physics3d: { gzip: 1125.06 * 1000 },
+  // 2026-09-19: 199.48 -> 201.44 (+1.96). The owner's render pass made three meshes REAL —
+  // a swerve pod that is a pod (top plate, azimuth ring, fork, 3-in wheel, belt drive)
+  // instead of a squat box, a flywheel motor behind the hood driving through a belt, and a
+  // telescoping box tube — plus the in-reach collar. It crept in under the 4 KB tolerance,
+  // which is exactly the overhang this header warns about, so it is measured here instead.
+  scene: { gzip: 201.44 * 1000, budgetCeiling: 250 * 1000 },
+  graphics: { gzip: 4.01 * 1000 },
+  gallery: { gzip: 7.33 * 1000 },
+  // 2026-09-19: NEW. The whole admin console, lazily loaded by `App.tsx`. See the route note
+  // above and the RE-MEASURED entry below for what moved out of `main` to create it.
+  admin: { gzip: 25.10 * 1000 },
   other: { gzip: 1 * 1000 },
 };
 

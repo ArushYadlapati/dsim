@@ -507,6 +507,10 @@ export interface GoalState {
 
 export type MatchPhase = 'pre' | 'auto' | 'transition' | 'teleop' | 'post' | 'freeplay';
 
+/** how much of the in-match performance read-out to print — see `GameSettings.perfDisplay`.
+ * Ordered least→most, and `PERF_DISPLAY_LEVELS` in `settings.ts` is the runtime list. */
+export type PerfDisplay = 'off' | 'simple' | 'detailed' | 'graphs';
+
 export interface ScoreBreakdown {
   leave: number;
   autoClassified: number;
@@ -839,6 +843,20 @@ export interface GameSettings {
    *  corner (scoring, gate, penalty notices). Off hides it entirely; it is a
    *  read-out, never a control, so nothing is lost but the reading. */
   showEventLog: boolean;
+  /**
+   * THE IN-MATCH PERFORMANCE READ-OUT, and how much of it to print.
+   *
+   * ONE setting for ONE display. It used to be three things at once — a `?perf=1` frame-time
+   * line, a 3D-only corner overlay behind a Graphics row, and a connection chip you clicked to
+   * open a ping graph — which is why the levels are a LEVEL and not a set of switches: the
+   * display decides what it shows from this alone, and nothing on it is clickable.
+   *
+   *   off       nothing
+   *   simple    frame rate, and the ping when there is a server (the DEFAULT)
+   *   detailed  + frame/sim/render timings, the 3D counters, the link's numbers
+   *   graphs    + a frame-time and a ping sparkline
+   */
+  perfDisplay: PerfDisplay;
   // New fields for auto pathing
   autoPath: AutoPathData | null;
   autoPathEnabled: boolean;

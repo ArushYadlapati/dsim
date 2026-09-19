@@ -75,7 +75,17 @@ export type EffectsLevel = 'minimal' | 'standard' | 'full';
  * asked their system for less motion gets it whatever this says. */
 export type CameraMotion = 'full' | 'reduced';
 
-/** §4.4 row 16 — what the corner read-out prints. */
+/**
+ * §4.4 row 16 — what the corner read-out prints.
+ *
+ * ⚠️ **INERT.** The read-out is one display for all three games now, in the React HUD, on
+ * `GameSettings.perfDisplay` (`src/ui/PerfHud.tsx`) — a 3D-only row could not carry the ping,
+ * and the div it drew sat on top of the event log. `scene/renderStats.ts` publishes its
+ * counters instead of drawing, and ignores this value; the picker for it is gone from
+ * `GraphicsSection`. The field is still here only because deleting it means editing
+ * `renderScene.ts`'s two call sites, which another lane is in this week — take all three out
+ * together.
+ */
 export type PerfOverlay = 'off' | 'fps' | 'full';
 
 /** the environment ids `graphics/environments.ts` defines, repeated here as a type so this
@@ -243,7 +253,7 @@ export const GFX_NOT_OFFERED: readonly { label: string; why: string }[] = [
 
 // ────────────────────────────────────────────────────────────────────────────── the store ──
 
-const GRAPHICS_KEY = 'decodesim.graphics';
+import { GRAPHICS_KEY } from '../../../storageKeys';
 
 export interface GraphicsState {
   preset: GraphicsPreset;

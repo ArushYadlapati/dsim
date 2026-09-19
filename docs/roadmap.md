@@ -23,11 +23,24 @@ Sizes are working days for one agent; "exists" cites what the survey found so no
 | 7 | Contributors page | `feat/contributors` (off alpha) | 1 d | now (owner supplies handles/avatars) |
 | 6 | Game tutorial | `feat/tutorial` (off alpha) | 1 d engine + 2 d per game | now |
 | 2 | Download a replay as 2D or 3D | `biobuzz-3d` | 1–2 d | Day 2 lane B (the `project` hook) |
-| 1 | 3D robot creator menu | `biobuzz-3d` | 2–3 d | Day 3 (graphics quality settings) |
+| 1 | 3D robot creator menu — **DONE 2026-09-18**, `feat/3d-builder` | `biobuzz-3d` | 2–3 d | — |
 | 3 | Cosmetics — plan, then build | `docs/cosmetics-plan.md` → `feat/cosmetics` | 0.5 d plan, 3–4 d build | plan now; build after owner approval |
 | 4 | Rewards for loyal and top players — plan, then build | `docs/rewards-plan.md` → `feat/rewards` | 0.5 d plan, 3–5 d build | plan now; build after owner approval |
 
-### 1. A proper 3D robot creator menu (`biobuzz-3d`)
+### 1. A proper 3D robot creator menu (`biobuzz-3d`) — **DONE 2026-09-18**
+
+> Landed on `feat/3d-builder` off `biobuzz-3d`. Built as designed below, with three deviations,
+> all recorded in `HANDOFF.md` and `docs/area/biobuzz.md`:
+> **(a)** the component reaches the renderer through a new `GameModule.previewScene` slot rather
+> than its own `import()`, so all of a game's dynamic renderer imports stay in one file — and
+> both slots name the same module, because two dynamic specifiers would split the scene chunk
+> into facades that `bundleaudit` cannot route. **(b)** the saved-robot card needed a second
+> slot, `GameModule.savedCard`: thumbnail-or-summary is the game's choice, not the shared
+> menu's. **(c)** the Gallery still of the preview was NOT built — the anti-drift claim is held
+> structurally instead (one generator, one rebuild key, both asserted in the RENDER lane).
+> The colour gap named below turned out to be one of four: the turret and the Box Tube were
+> built inside the chassis box, `specKey` did not cover `drivetrain`, and a discarded robot
+> group was never disposed. All four were the MATCH's bugs and all four are fixed there.
 
 - **Exists.** `GameModule.Builder`/`Preview` slots (`src/games/module.ts`), BIOBUZZ's `Builder.tsx`
   (launcher → Box Tube → intake → frame, clamped in that order), the 2D schematic

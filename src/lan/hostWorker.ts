@@ -38,7 +38,8 @@ import { Room, type Client } from '../../server/room';
 import { decodeClientMsg, encodeMsg, type ClientMsg, type ServerMsg } from '../net/protocol';
 import { initPhysics } from '../sim/physicsEngine';
 import { initPhysics3d } from '../games/biobuzz/sim3d/engine';
-import { coerceGameId } from '../games/types';
+import { coerceGameId, serverPhysics } from '../games/types';
+import { simModuleFor } from '../games/sim';
 import { HEALTH_INTERVAL_MS, HOST_SEAT, type HostIn, type HostOut } from './hostProtocol';
 
 const post = (m: HostOut): void => {
@@ -130,7 +131,13 @@ self.addEventListener('message', (e: MessageEvent) => {
        must not exist until BOTH are in hand: the host reads the code out and guests start
        arriving the moment `ready` is posted, and a room that can be joined but not stepped is
        the failure this whole `then` was written around. */
-    const needs3d = m.config?.physics === '3d';
+    /* ⚠️ ASK THE SAME QUESTION `Room` ASKS, not the config. A LAN room is an ordinary `Room`
+       and its physics is decided by the GAME (`serverPhysics`) since the 2026-09-18 ruling —
+       a BIOBUZZ room hosted here is 3D whatever the page put in the config. Reading
+       `config.physics` meant this branch skipped the chunk for exactly the room that needs it,
+       and the first `step3d` then threw inside the worker, which is the silent-`ready` failure
+       the comment above is about. */
+    const needs3d = serverPhysics(simModuleFor(coerceGameId(m.config?.game))) === '3d';
     void Promise.all([initPhysics(), needs3d ? initPhysics3d() : null]).then(
       () => {
         /* No persistence callbacks — see the header. The room empties itself when the last

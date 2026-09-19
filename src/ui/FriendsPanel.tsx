@@ -39,7 +39,7 @@ function canChallenge(f: FriendRow): boolean {
   return f.online && f.status !== 'dnd' && f.activity !== 'match' && !!f.username;
 }
 
-const OPEN_KEY = 'decodesim.friendsPanelOpen';
+import { FRIENDS_PANEL_OPEN_KEY as OPEN_KEY } from '../storageKeys';
 
 /** The room currently open beside this panel. Its region is the hosting region,
  * which may be different from the sender's currently preferred server. */

@@ -21,10 +21,106 @@ LEAVES mid-match is retained (`departed`) so the match still rates. **SOLO RECOR
 (score-attack): results show NET score (earned − own penalties), no opponent/winner, and
 PB / WR / global rank per **mode × drivetrain × season**. Boards, records, and Act→Season
 periods are **keyed per game**, so DECODE and CR never share a leaderboard.
+**A RECORD BOARD IS ALSO ONE PHYSICS** (owner ruling, 2026-09-18): every server-connected match
+of a game that can step 3D runs 3D (`Room.physics` / `serverPhysics`), so the board shows 3D runs
+only. `boardPhysics` in `repo.ts` is the single predicate and it is applied by the DATA LAYER,
+not by a caller — `recordLeaderboard`, `personalBest`, `recordRank` and `getUserStats`'s record
+half all read it, because the era filter used to be an optional argument that `/api/records`
+filled from a QUERY PARAMETER and every path that forgot to ask silently mixed both eras. The
+filter sits INSIDE the per-player `best` CTE: filtering after it would find a player's 2D
+personal best, reject it, and leave them off a board they have a legitimate 3D score on.
+`submitRecord` refuses a 2D container at the table, read off the replay and never off a body.
+Pre-ruling 2D rows are KEPT (no season reset); they just stop appearing. Covered in
+`npm run dbtest`.
 **ADMIN MENU** (`src/ui/Admin.tsx`, `/admin`) gated on the signed-in UUID (`ADMIN_USER_IDS`;
 the server enforces every action independently). **VERSION GATE**: a new build is detected
 (`__BUILD_ID__` → `/version.json` poll) and forces a refresh when a player STARTS a run
 (never mid-run) — no "play anyway", everyone must be on the same version for multiplayer.
+
+### The admin console's own rules
+
+Seven tabs — Live, Users, Moderation, Content, Server, Audit, Analytics — and the order is the
+order of an incident. **APPEND a new tab, never reorder.** Tab + open account live in the URL
+HASH (`#tab=users&user=<id>`), not the path or the query: `App.tsx` owns routing and
+canonicalizes `pathname + search` on mount, so anything put there is stripped.
+
+- ⚠️ **THE CANONICALIZE MUST CARRY THE HASH FORWARD** (`App.tsx`, `replaceState(canonical +
+  location.hash)`). "The hash is ignored by all of it" was the design and was NOT true:
+  `pathFor` emits neither a query nor a hash, so replacing the URL with it alone DELETED the
+  fragment. The unprefixed `/admin` canonicalizes to `/decode/admin`, which is never equal, so
+  every pasted console link was rewritten to a bare path before `Admin` mounted and opened on
+  Live — the one thing the hash exists for. The QUERY still goes; `?token=` is captured at
+  module load and must not survive.
+- ⚠️ **THE WHOLE CONSOLE IS A LAZY CHUNK.** `App.tsx` `React.lazy`s `Admin`, which is the only
+  boundary between this graph and the bundle a player downloads to drive a robot — `Admin.tsx`
+  statically imports `AdminLive`, `AdminReports`, `AdminAudit`, `AdminUser`, `AdminStanding`
+  and `adminBits`, so an eager import put all of them in `main` for everyone. `npm run
+  bundleaudit` has an `admin` route so the console's growth is measured where it lands instead
+  of falling into `other`, whose near-zero baseline means something else.
+
+- ⚠️ **"(no profile)" WAS THREE DIFFERENT SITUATIONS WEARING ONE LABEL, and it is now one
+  function** — `AccountName` (`src/ui/adminBits.tsx`), fed by `profileNames` in repo.ts. The
+  bug: `adminPresence()` resolves handles by joining `profiles` over the HEARTBEAT rows, but
+  `operatorSnapshot()` in `server/index.ts` assembles this machine's own snapshot from live
+  socket state and `PresencePlayer` carries no name field at all (deliberately — a name on a
+  5-second heartbeat goes stale the first time somebody is renamed). `mergeMachines` then
+  REPLACES the database row for the local machine with that fresher, nameless one, throwing
+  away the only names it had. On a single-region deploy that is every signed-in session, all
+  the time. The route now resolves names for the local snapshot too, `known: false` says "there
+  genuinely is no `profiles` row yet" (it is created lazily by `ensureProfile` on the API
+  routes a client hits, not when its socket authenticates), and the client merge keeps the
+  database row's names as a fallback for an OLDER SERVER — one Fly app serves every client.
+- **EVERY MUTATING ADMIN ROUTE WRITES TO `admin_audit`** (migration 0041), in addition to
+  whatever domain record it already keeps (`supporter_grants`, `standing_events.voided_by`,
+  `match_score_corrections`, `player_reports.reviewed_by`). Those four carry the before/after a
+  reversal needs; this one answers "what has this moderator done", "what has been done to this
+  account", "what happened on Tuesday". No foreign key either side — an admin is an env id and
+  a target may be deleted — so the log outlives the account it names. `writeAudit` NEVER
+  THROWS into a route (same rule as `server/standing.ts`), the tab is read-only by
+  construction, and the `secret` actor is the `ADMIN_SECRET` deploy-script path, not a person.
+- **`admin_notes`** is a moderator's private note on an account. It could not go in
+  `standing_events`, which is read BACK to the player (0036).
+- **SUSPENSION (`profiles.suspended_until` / `suspended_reason`, migration 0043) IS THE ONLY
+  LEVER THAT STOPS SOMEBODY PLAYING.** Everything else stops short: a forced rename takes a
+  word off them, clearing their records takes the scores off the boards, and a standing charge
+  locks RANKED only — by design, since it is the automatic penalty for leaving matches and is
+  sized to heal on its own. **It is a DEADLINE, not a flag**, so a temporary suspension ends by
+  ARRIVING rather than by a second human action nothing schedules; a permanent ban is a
+  far-future date, which reads as a decision instead of an omission. `null` and an EXPIRED date
+  both mean "not suspended" (`getSuspension`), and the gate fails OPEN for an unknown id, the
+  same rule `emailGateRefusal` states. Enforced at TWO doors in `server/index.ts` — the room
+  `join` and the ranked `queue` — with **no staged-room exemption**, unlike maintenance: the
+  custom rooms are the point of it. The join door reads the database rather than a cache
+  (maintenance is cached, deliberately) because the moment it matters most is the moment after
+  a moderator presses the button. **The `reason` IS SHOWN TO THE PLAYER** at the door, so it is
+  not the place for a private note — that is `admin_notes`, and the console says so beside the
+  box. Format it with `suspensionLeft`, never `lockRemaining`: that one is the standing lock's
+  minutes-and-hours scale and rendered a one-week ban as "168 hours".
+- **The other four things a moderator can now do**, all on the account panel, all audited:
+  **clear an abusive @username** (`clearUsername` — CLEARED, not set, so the account goes back
+  through `UsernameGate` and the moderator is not choosing somebody's permanent public name);
+  **delete an account** (the same `deleteAccount` the player's own button calls, refused for a
+  staff id because `syncStaffRoles` would re-create the row at the next boot; the audit row is
+  written BEFORE the delete, since afterwards there is no `profiles` row for the log's join to
+  name); **read the reports it filed and received** (`listReportsBy` — ⚠️ `player_reports`
+  cascades on BOTH parties, so a "filed" count is a FLOOR, not a total); and **flag a Ko-fi
+  payment charged back** (`listKofiPayments` — the refund route is keyed by the TRANSACTION and
+  the panel only ever showed GRANTS, which is why it had no caller at all; flagging does not
+  revoke, which stays a second decision).
+- **`GET /api/admin/user?id=` is the one read behind the user detail** — nine bounded queries
+  in parallel. It answers for an id with NO profile row (`known: false`) rather than 404ing:
+  that is the state somebody is looking at when they arrive from a session that said it was
+  signed in.
+- **EVERY LIST IS PAGED AND HARD-CAPPED IN THE DATA LAYER**, not by the route (the
+  `boardPhysics` argument: a default a new call site cannot forget). `listAudit` caps at 200;
+  `searchProfiles` takes an offset and is tie-broken on `user_id`, because `handle` is not
+  unique and two people called "Player" otherwise page one row twice. Both `ilike` searches
+  ESCAPE `% _ \` — a bare `%` used to enumerate every account on the service, and those rows
+  carry the membership and the staff role.
+- **POLLING PAUSES WHILE THE TAB IS HIDDEN** (`usePolled`). The console polled presence and
+  maintenance at 5s and matches at 30s on bare intervals, forever: an admin tab left open
+  behind an editor was by itself enough to keep the game server — which auto-stops when idle —
+  permanently awake.
 
 **STAFF ROLES — owner + admin badges, and perks, DONE.** `profiles.role`
 (`0020_staff_roles.sql`) is null | 'owner' | 'admin'. It is a **PROJECTION** of

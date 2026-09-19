@@ -258,6 +258,10 @@ export function Menu({ settings, onChange }: Props) {
   const mod = moduleFor(settings.game);
   const Preview = mod.Preview;
   const Builder = mod.Builder;
+  // the saved-robot card's BODY, when the game owns it. BIOBUZZ shows a 3D thumbnail of the
+  // build on the 3D view and its summary sentence on the 2D one; the two branches below are
+  // DECODE's and CR's, unchanged.
+  const SavedCard = mod.savedCard;
   // slider envelopes come from the SAME limit functions coerceSpec clamps with,
   // in the same dependency order (intake → size, drivetrain → rpm, drivetrain ×
   // inertia → mass), so the UI and the validator can never disagree
@@ -350,7 +354,10 @@ export function Menu({ settings, onChange }: Props) {
                 main's, untouched, and Chain Reaction's is its own — so work on one
                 game's mechanisms can never change how the other's robot looks. */}
             {Preview ? (
-              <Preview spec={spec} size={160} />
+              // `allow3d`: this is ONE preview on screen and it is the whole point of the
+              // screen, so a game with a 3D generator may mount a live scene here. The
+              // strategy cards pass no such thing — see `GamePreviewProps`.
+              <Preview spec={spec} size={160} alliance={settings.alliance} allow3d />
             ) : isDecode ? (
               <RobotPreview spec={spec} size={160} />
             ) : (
@@ -492,7 +499,11 @@ export function Menu({ settings, onChange }: Props) {
                     not exist. Same split the leaderboard's spec summary makes.
                     A game may now own the sentence outright through `labels.configSummary`;
                     the two branches below are DECODE's and CR's, unchanged. */}
-                {gameSummary ? (
+                {SavedCard ? (
+                  // the game owns the whole body, because what belongs there is not always a
+                  // sentence: BIOBUZZ puts a rendered thumbnail of the build here on the 3D view
+                  <SavedCard spec={r} alliance={settings.alliance} />
+                ) : gameSummary ? (
                   // the game writes its own sentence — the SAME one the leaderboard, the
                   // lobby roster and the strategy card print, so a saved slot and a record
                   // row can never describe one robot in two different vocabularies

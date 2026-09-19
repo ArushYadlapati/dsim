@@ -1,4 +1,4 @@
-<!-- governs: src/ui/**, src/input/**, src/render/**, src/tutorial/**, src/settings.ts, src/theme.ts, src/audio.ts, src/main.tsx, src/seo.ts, src/download.ts, src/contributors.ts, src/desktop.ts -->
+<!-- governs: src/ui/**, src/input/**, src/render/**, src/tutorial/**, src/settings.ts, src/theme.ts, src/audio.ts, src/main.tsx, src/seo.ts, src/download.ts, src/contributors.ts, src/desktop.ts, src/perfStats.ts -->
 # UI — controls, settings, audio, HUD, and the copy rules
 
 Rebindable controls, assists, persisted settings, HUD product rules, and the UI COPY house rules — which were settled by a measured audit, so read them before writing any user-visible string. `docs/ui-standard.md` is the CSS half.
@@ -64,6 +64,19 @@ and then the code. **`uiaudit`** is what actually enforces both, as ratchets.
   BEGINS IN" text lead-in before the 3-2-1 digits.
 - END GAME at 20 s left (`ENDGAME_START` / `CHAIN_ENDGAME_S`): warning cue + HUD label/tint.
 - Games opt into chrome via `GameModule.ui` (`showScoreHud`, `startEditor`, `intakes`).
+- ⚠️ **`.hud` IS `pointer-events: none`** so the canvas keeps a drag. Anything in it meant to
+  be clicked re-enables them ON ITSELF (`.game-btn`, `.sponsor-chip`, `.mobile-btn`,
+  `.pred-panel`). The connection chip did not, for months: its `onClick` opened a ping graph
+  and the click never arrived. **Before adding a control to the HUD, add the rule.**
+- **ONE performance read-out**, `PerfHud` in the top-right under the status chips, driven by
+  `GameSettings.perfDisplay` alone (off · simple · detailed · graphs, default simple = fps +
+  ping). It is NOT interactive and NOT a `[data-hud-band]`: a band reserves an edge and the 3D
+  camera reframes the field around it, so a diagnostic carrying one would change the shot it
+  was turned on to measure. Its three ancestors each drew their own corner box and two of them
+  landed on something — `?perf=1` over MENU/RESET, the 3D overlay over the event log.
+- **`data-hud-band` goes on the thing that covers the field, not on its wrapper.** It is on
+  `.status-row` (the chips), not on `.status-wrap`, so a panel stacked under the chips cannot
+  grow the reserved inset mid-match.
 
 ### UI COPY — the house rules, settled by measurement
 

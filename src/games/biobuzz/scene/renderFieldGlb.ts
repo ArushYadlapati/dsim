@@ -15,7 +15,7 @@ import * as THREE from 'three';
 import { GLTFLoader, type GLTF } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { MeshoptDecoder } from 'three/examples/jsm/libs/meshopt_decoder.module.js';
 import type { Alliance } from '../../../types';
-import { cadCellBox, fieldColliders3d } from '../sim3d/fieldColliders';
+import { cadCaptureTheta, cadCellBox, fieldColliders3d } from '../sim3d/fieldColliders';
 
 export interface FieldHiveGroup {
   /** static — the triangular base + uprights + damper hardware. World-absolute pose. */
@@ -55,6 +55,12 @@ export interface FieldGroups {
    * (including the raw hive/flower nodes before `attach()` reparenting) rather than the
    * individually-typed groups above. Most callers want the typed groups instead. */
   root: THREE.Group;
+  /** how many triangles `reparentTrayBraces` moved out of the static frame nodes and into the
+   * two trays — see that function's header. Non-zero on the shipped asset; zero once the pipeline
+   * files the braces as tray parts itself. */
+  braceTris: number;
+  /** what the PRINTED FIELD MARKINGS block built — all zero on the LOW LOD, by design. */
+  markings: FieldMarkings;
 }
 
 let sharedLoader: GLTFLoader | null = null;
@@ -121,6 +127,7 @@ function findOptional(root: THREE.Object3D, name: string): THREE.Object3D | null
  * a flower rendered as three greys (`#e5e7eb` ring, `#c2c4c8` pipes, `#8c929c` base) when the CAD
  * says amber `#ffba52`, green `#5fa73d` and purple `#641c65`. It also had the hive backwards: the
  * alliance colour is the two RIBS (pure `#ff0000` / `#0000ff`), not the white `#e6e6e6` skins.
+ * The rib BLUE is the one CAD colour this file overrides — see `ALLIANCE_BLUE_TINT` below.
  * See `docs/biobuzz/field-cad-audit.md` §3 for the full measured table.
  *
  * TWO DELIBERATE OVERRIDES, both flagged in the audit as CAD placeholders rather than intent:
@@ -142,14 +149,118 @@ type Finish = (typeof FINISHES)[number];
 const TILE_TONE = 0x2a2e33;
 
 /**
- * TRANSPARENT POLYCARBONATE WALL — the SAME optical policy as `renderField.ts`'s `wallMaterial()`
- * (the constants-built fallback), duplicated rather than imported for the same cycle reason.
- * Keep the two numbers in step by hand if the policy changes.
+ * ⚠️ CLEAR PLASTIC IS A POLICY, NOT A COLOUR — and the CAD cannot tell you which parts want it.
+ *
+ * The STEP paints every clear polycarbonate panel on this field the same placeholder white
+ * (`#e6e6e6`) it paints the solid white parts, so "is this see-through?" has to be decided PART
+ * BY PART, here, against the real field. 2026-09-18 playtest: "many completely transparent /
+ * semi-transparent panels are rendered as white or opaque white that is too strong."
+ *
+ * The classification, made from the GLB's own node × material inventory
+ * (`docs/biobuzz/field-cad-audit.md` §3 has the measured CAD colour of every part):
+ *
+ *  CLEAR  `glass#*`  in `walls`                — `FTC Field Side Glass`, the perimeter panels.
+ *  CLEAR  `plastic#e6e6e6` in a `hive_<a>` tray    — `Hive Goal {Top,Back,Bottom} Skin`, the three
+ *                                                polycarbonate skins that make a CELL. They are
+ *                                                the ONLY `plastic#e6e6e6` in a tray node (the
+ *                                                `Basket Base Tube` is the `metal` finish and
+ *                                                the ribs are `plastic#ff0000`/`#0000ff`), so
+ *                                                the node+material pair names them exactly.
+ *  OPAQUE `plastic#e6e6e6` in `hive_shared/frame` — `am-5877 ACM Panel`, an aluminium-composite
+ *                                                logo board. Same material name, opposite answer:
+ *                                                this is why the rule is keyed on the NODE too.
+ *  OPAQUE `plastic#641c65` (flower backstop), `#5fa73d` (HIPS pipes), `#ffba52` (top ring),
+ *         `#303030`, every `metal#*`, `decal#*`, `tape#*` — solid parts with a real CAD colour.
+ *
+ * ⚠️ AND A CLEAR PANEL IS NOT A PER-MATERIAL NUMBER — IT IS WHAT THE LAYERS SUM TO.
+ *
+ * The first pass set a "reasonable" 0.22 / 0.3 and looked right on a single panel from four feet
+ * away. From the DRIVER camera it was not (2026-09-19 re-test: "the HIVE cell skins still read as
+ * WHITE BOARDS… the far and side walls read as solid beige bands"), because four things stack:
+ *  - LAYER COUNT. A cell puts floor + roof + back between the eye and a ball, a look across the
+ *    field puts the near wall and the far wall in the way, and `DoubleSide` doubled every one of
+ *    them. At 0.22 each, six surfaces sum to 1 − 0.78⁶ = **78 % opaque**. `FrontSide` is right for
+ *    every one of these parts — each is a closed SOLID (the 0.020-in skins tessellate as a slab;
+ *    the raycast in `checkTrayFloorAgreement` hits both of a floor's faces), so the near surface
+ *    is always front-facing whichever side the camera is on, and the count halves.
+ *  - ALPHA. 0.08 for a wall panel, 0.10 for a cell skin. Through the worst stack that is still
+ *    only ~27 %, which is what clear polycarbonate actually does: near-invisible face-on.
+ *  - BASE COLOUR. `#e6e6e6` is the STEP's placeholder for "white plastic", and a near-white base
+ *    under any lighting is a white haze however low the alpha goes. Overridden to a cool neutral
+ *    (`CLEAR_PANEL_TINT`) — the third deliberate CAD override in this file, for the same reason as
+ *    the other two: the value is a placeholder, not intent.
+ *  - `envMapIntensity`. At 1.0 a glossy panel mirrors the environment; the warm practice HDRI is
+ *    exactly where the "beige" came from. 0.15 keeps a glancing highlight and nothing else.
+ *
+ * ⚠️ AND THE OUTLINE PASS THAT USED TO FINISH THIS OFF IS GONE — IT DREW NO OUTLINE (owner bug 3,
+ * 2026-09-19: "there are stray lines on the transparent panels of the hives").
+ *
+ * `addPanelEdges` ran `THREE.EdgesGeometry(mesh.geometry, 25)` over a tray's `plastic#e6e6e6`
+ * mesh, which is ONE merged, welded and per-primitive-decimated soup of SIX cell skins. Measured
+ * on the shipped `field.glb`, red tray: **3,552 segments, 2,811 of them 0.01 in or shorter, and
+ * the LONGEST is 0.84 in** — on skins that are 20 in wide and 11.75 in deep. Not one segment in
+ * it is a panel boundary. The mesh has no boundary edge at all (each skin is a closed 0.020-in
+ * slab), so every segment came from the 2,994 tessellation creases the decimator left plus 317
+ * non-manifold edges: 125 in of sub-inch dashes sprayed over the panel in `#b9c6d2`. That is the
+ * report, exactly.
+ *
+ * Nothing replaces it, because nothing needs to: a CELL's shape is drawn by its two opaque
+ * alliance-coloured GOAL RIBS (`plastic#ff0000`/`#0000ff`, 46 k triangles, a perforated frame
+ * plate at the divider end AND at the mouth — the audit's §4.2), and the mouth-end rib IS the
+ * aperture outline a driver aims at. The skins carry a touch more alpha instead.
+ *
+ * `depthWrite: false` + a `renderOrder` past every opaque object stays: three.js sorts transparent
+ * objects by render order, not per triangle, so two clear panels must never fight over a pixel.
  */
-const WALL_PANEL_OPACITY = 0.22;
+const WALL_PANEL_OPACITY = 0.08;
+/** the hive CELL skins sit a hair denser than the perimeter — they are what a driver reads the
+ * cell's shape off, and there are fewer of them in any one line of sight. Raised from 0.10 when
+ * the outline pass came out. */
+const CELL_PANEL_OPACITY = 0.13;
+/** how much of the environment map a clear panel gathers. */
+const CLEAR_ENV_INTENSITY = 0.15;
+/** the tone every clear panel is forced to, overriding the STEP's `#e6e6e6` placeholder: a cool
+ * neutral that disappears into whatever is behind it instead of hazing it white. */
+const CLEAR_PANEL_TINT = 0x7d8b96;
+/**
+ * ⚠️ THE FOURTH DELIBERATE CAD OVERRIDE (owner bug 12, 2026-09-19: "the blue alliance looks too
+ * purple — are you sure that is the exact colour AndyMark uses?").
+ *
+ * The STEP gives the hive Goal Ribs `plastic#0000ff`, and pure `#0000ff` is OKLCH hue 264.1° —
+ * 1.7° off the most violet blue sRGB can express. An assembly carrying pure `#ff0000` AND pure
+ * `#0000ff` is carrying placeholder part colours, the same way its `#e6e6e6` "white plastic" is a
+ * placeholder rather than a paint (see `CLEAR_PANEL_TINT` above, which overrides it for that
+ * reason). So the CAD is authoritative for DIMENSIONS — the owner's 2026-09-18 ruling, and
+ * nothing here touches one — and is NOT authoritative for this colour.
+ *
+ * `ALLIANCE_BLUE_TINT` is the one BIOBUZZ blue every other surface takes (`draw.ts`'s
+ * `ELEMENT_FILL` header carries the measurement): hue 252.9°, the least violet a saturated blue
+ * gets, at the most chroma sRGB has there. APPROX — no authoritative AndyMark blue was found.
+ * RED is left at the CAD's `#ff0000`: a pure red still reads as red, and the owner named only
+ * blue.
+ */
+const CAD_ALLIANCE_BLUE = 0x0000ff;
+const ALLIANCE_BLUE_TINT = 0x007be1;
 /** matches `renderField.ts`'s `WALL_RENDER_ORDER` — drawn after every opaque object so two
  * transparent walls (or a wall and a robot) never fight over which one occludes the other. */
 const WALL_RENDER_ORDER = 10;
+/** the cell skins are INSIDE the field, so they draw before the perimeter and after everything
+ * opaque. Matches `renderField.ts`'s `CELL_RENDER_ORDER`. */
+const CELL_RENDER_ORDER = 5;
+
+/** the one clear-plastic material this file builds, for both the perimeter and the cell skins. */
+function clearPanelMaterial(opacity: number): THREE.Material {
+  return new THREE.MeshPhysicalMaterial({
+    color: CLEAR_PANEL_TINT,
+    metalness: 0,
+    roughness: 0.08,
+    transparent: true,
+    opacity,
+    depthWrite: false,
+    side: THREE.FrontSide,
+    envMapIntensity: CLEAR_ENV_INTENSITY,
+  });
+}
 
 /** the tape and the AprilTag/sticker decals are painted ON a surface that is already there (the
  * tiles, the hive's skins), 0.010 in proud of it. At a driver camera's depth precision that is
@@ -158,18 +269,35 @@ const WALL_RENDER_ORDER = 10;
  * the whole class of bug this pass exists to remove. */
 const DECAL_POLYGON_OFFSET = -2;
 
-function materialFor(finish: Finish, colorHex: number): THREE.Material {
+/** the top-level GLB node a mesh hangs off — the second half of the clear-plastic key above. */
+type NodeFamily = 'tiles' | 'walls' | 'tape' | 'stations' | 'hive_tray' | 'hive_frame' | 'flower' | 'other';
+
+function nodeFamilyOf(name: string | undefined): NodeFamily | null {
+  if (!name) return null;
+  if (name === 'tiles' || name === 'walls' || name === 'tape' || name === 'stations') return name;
+  if (/^hive_(red|blue)\/tray$/.test(name)) return 'hive_tray';
+  if (/^hive_(red|blue|shared)\/frame$/.test(name)) return 'hive_frame';
+  if (/^flower_\d+$/.test(name)) return 'flower';
+  return null;
+}
+
+/** TRUE for the parts that are clear polycarbonate on the real field — see the policy header. */
+function isClearPanel(finish: Finish, colorHex: number, family: NodeFamily): boolean {
+  if (finish === 'glass') return true;
+  return finish === 'plastic' && colorHex === 0xe6e6e6 && family === 'hive_tray';
+}
+
+function materialFor(finish: Finish, rawHex: number, family: NodeFamily): THREE.Material {
+  if (isClearPanel(finish, rawHex, family)) {
+    return clearPanelMaterial(finish === 'glass' ? WALL_PANEL_OPACITY : CELL_PANEL_OPACITY);
+  }
+  // the clear-panel test reads the CAD's own value; everything painted below reads the corrected
+  // one — see `ALLIANCE_BLUE_TINT`.
+  const colorHex = rawHex === CAD_ALLIANCE_BLUE ? ALLIANCE_BLUE_TINT : rawHex;
   switch (finish) {
     case 'glass':
-      return new THREE.MeshPhysicalMaterial({
-        color: colorHex,
-        metalness: 0,
-        roughness: 0.1,
-        transparent: true,
-        opacity: WALL_PANEL_OPACITY,
-        depthWrite: false,
-        side: THREE.DoubleSide,
-      });
+      // unreachable while `isClearPanel` claims every `glass`; kept so the switch stays total
+      return clearPanelMaterial(WALL_PANEL_OPACITY);
     case 'metal':
       return new THREE.MeshStandardMaterial({ color: colorHex, metalness: 0.7, roughness: 0.35 });
     case 'plastic':
@@ -200,6 +328,189 @@ function materialFor(finish: Finish, colorHex: number): THREE.Material {
   }
 }
 
+/**
+ * ⚠️ `computeVertexNormals()` IS THE WRONG PASS FOR THIS ASSET, AND IT IS WHAT PUT WHITE
+ * ARTIFACTS ON THE BLACK BRACKETS (owner bug 4, 2026-09-19: "all of the black linking components
+ * that hold the support beams of the center structure are rendered weirdly — it looks like it has
+ * white artifacts").
+ *
+ * Neither GLB carries a `NORMAL` attribute, and that is deliberate (`assemble-gltf.mjs`'s header:
+ * flat per-triangle normals stop meshoptimizer collapsing any edge on a mesh built from many
+ * merged parts). So the loader has to compute them — and it computed them SMOOTH, over a soup in
+ * which every part of a hive frame sharing one CAD colour is one welded primitive. Measured on
+ * the shipped `field.glb`:
+ *
+ * | mesh | tris | triangles with a vertex normal > 45° off the face | zero-length normals |
+ * |---|---|---|---|
+ * | `hive_red/frame` `metal#303030` | 19,674 | 71 % | 0 |
+ * | `hive_blue/frame` `metal#303030` | 19,672 | 71 % | 3 |
+ * | `walls` `metal#303030` | 18,480 | 64 % | 12 |
+ * | `flower_*` `metal#303030` | 1,332 | 75 % | 0 |
+ *
+ * Worst case 180°: a vertex where two parts meet back to back averages to nothing, `normalize()`
+ * of a zero vector is NaN, and the shader's specular term goes undefined. It shows up on the BLACK
+ * parts first because `metal` is `metalness: 0.7` — on a `#303030` base the reflection IS the
+ * picture, so a wrong normal samples the bright environment and the bracket flashes white.
+ *
+ * This is the same pass with a CREASE ANGLE: a corner's normal averages only the faces around
+ * that vertex within `creaseDeg` OF ITS OWN, so a box corner keeps three hard normals while a
+ * tessellated cylinder stays round. Measured on `field.glb`: 63–75 % of triangles over-smoothed
+ * before and **0.07 %** after — 141 triangles out of 208,172, every one of them a sliver of under
+ * 1.5e-11 in² that covers no pixel at any camera — with 0 degenerate normals, in 149 ms once at
+ * load.
+ *
+ * ⚠️ THE GROUPING IS PER CORNER AND IS NOT TRANSITIVE, AND THAT IS THE WHOLE TRICK. The first
+ * version union-found a vertex's faces into smoothing GROUPS, which is the obvious reading of
+ * "group by angle" and is wrong on exactly the shape this field is full of: on a 12-sided
+ * tessellated cylinder every face is 30° from its neighbour, so at a 40° crease the union chains
+ * all the way round the ring, one group spans 360°, and its area-weighted average is the ZERO
+ * VECTOR. It took the over-smoothed count from 68 % to 7.5 % and left the worst case at a full
+ * 180° — the same artifact, just rarer. Per corner there is nothing to chain: each one averages
+ * itself plus its two neighbours and comes out normal to the ring.
+ *
+ * It keeps the INDEX, deduplicating corners that agree on a normal. Three's own
+ * `BufferGeometryUtils.toCreasedNormals` (which does the same per-corner average) de-indexes
+ * instead — 624,516 vertices on this field against the 243,547 the dedupe needs.
+ *
+ * ⚠️ EVERY ATTRIBUTE IS COPIED THROUGH `getX/getY/getZ/getW`, for the `KHR_mesh_quantization`
+ * reason `partitionTrianglesWorld` documents below.
+ */
+export const CREASE_ANGLE_DEG = 40;
+
+/** exported for the RENDER lane, which runs it over the real `field.glb` in Node. */
+export function computeCreasedNormals(geo: THREE.BufferGeometry, creaseDeg: number): void {
+  const index = geo.getIndex();
+  const pos = geo.getAttribute('position');
+  // a NON-indexed geometry already has one vertex per corner, so the plain pass is exact there.
+  if (!index || !pos) {
+    geo.computeVertexNormals();
+    return;
+  }
+  const triCount = index.count / 3;
+  const vertCount = pos.count;
+  const faceN = new Float32Array(triCount * 3);
+  const faceArea = new Float32Array(triCount);
+  const a = new THREE.Vector3();
+  const b = new THREE.Vector3();
+  const c = new THREE.Vector3();
+  const e1 = new THREE.Vector3();
+  const e2 = new THREE.Vector3();
+  for (let t = 0; t < triCount; t++) {
+    a.fromBufferAttribute(pos, index.getX(t * 3));
+    b.fromBufferAttribute(pos, index.getX(t * 3 + 1));
+    c.fromBufferAttribute(pos, index.getX(t * 3 + 2));
+    e1.subVectors(c, b);
+    e2.subVectors(a, b);
+    e1.cross(e2);
+    const twiceArea = e1.length();
+    faceArea[t] = twiceArea / 2;
+    if (twiceArea > 0) e1.divideScalar(twiceArea);
+    faceN[t * 3] = e1.x;
+    faceN[t * 3 + 1] = e1.y;
+    faceN[t * 3 + 2] = e1.z;
+  }
+
+  // vertex -> incident corners, as CSR (one array of 100k sub-arrays is the slow way to say this)
+  const start = new Uint32Array(vertCount + 1);
+  for (let i = 0; i < index.count; i++) start[index.getX(i) + 1]++;
+  for (let v = 0; v < vertCount; v++) start[v + 1] += start[v];
+  const cursor = start.slice(0, vertCount);
+  const incFace = new Uint32Array(index.count);
+  const incCorner = new Uint32Array(index.count);
+  for (let t = 0; t < triCount; t++) {
+    for (let k = 0; k < 3; k++) {
+      const slot = cursor[index.getX(t * 3 + k)]++;
+      incFace[slot] = t;
+      incCorner[slot] = t * 3 + k;
+    }
+  }
+
+  const cosCrease = Math.cos((creaseDeg * Math.PI) / 180);
+  const newIndex = new Uint32Array(index.count);
+  const srcOf: number[] = [];
+  const outN: number[] = [];
+  /** corners of one vertex whose normals agree to within this dot share an output vertex — a
+   * vertex has a handful of corners, so the scan is cheaper than hashing 624 k strings. */
+  const SAME_NORMAL_DOT = 1 - 1e-6;
+  const mine: number[] = [];
+  for (let v = 0; v < vertCount; v++) {
+    const lo = start[v];
+    const hi = start[v + 1];
+    if (lo === hi) {
+      // an unreferenced vertex: keep it (the index never names it) so every attribute stays aligned
+      srcOf.push(v);
+      outN.push(0, 0, 1);
+      continue;
+    }
+    mine.length = 0;
+    for (let i = lo; i < hi; i++) {
+      const fi = incFace[i] * 3;
+      // ⚠️ A DEGENERATE FACE HAS NO NORMAL, AND `KHR_mesh_quantization` MAKES THEM: snapping a
+      // position to the 16-bit grid collapses a sliver to zero area. Its own dot with anything is
+      // 0, so an angle test would exclude every face INCLUDING itself and leave the corner with a
+      // zero-length normal — the exact defect this function exists to remove. Such a corner takes
+      // the flat average of the vertex's real faces instead; the triangle draws no pixels either
+      // way, but nothing leaves here un-normalised.
+      const flat = faceArea[incFace[i]] === 0;
+      let nx = 0;
+      let ny = 0;
+      let nz = 0;
+      for (let j = lo; j < hi; j++) {
+        const f = incFace[j];
+        const w = faceArea[f];
+        if (w === 0) continue;
+        const fj = f * 3;
+        if (!flat) {
+          const dot = faceN[fi] * faceN[fj] + faceN[fi + 1] * faceN[fj + 1] + faceN[fi + 2] * faceN[fj + 2];
+          if (dot < cosCrease) continue;
+        }
+        nx += faceN[fj] * w;
+        ny += faceN[fj + 1] * w;
+        nz += faceN[fj + 2] * w;
+      }
+      const len = Math.hypot(nx, ny, nz);
+      if (len > 0) {
+        nx /= len;
+        ny /= len;
+        nz /= len;
+      } else {
+        nz = 1;
+      }
+      let out = -1;
+      for (const cand of mine) {
+        if (outN[cand * 3] * nx + outN[cand * 3 + 1] * ny + outN[cand * 3 + 2] * nz >= SAME_NORMAL_DOT) {
+          out = cand;
+          break;
+        }
+      }
+      if (out < 0) {
+        out = srcOf.length;
+        mine.push(out);
+        srcOf.push(v);
+        outN.push(nx, ny, nz);
+      }
+      newIndex[incCorner[i]] = out;
+    }
+  }
+
+  const outCount = srcOf.length;
+  const normals = Float32Array.from(outN);
+  const get = (src: THREE.BufferAttribute | THREE.InterleavedBufferAttribute, i: number, k: number): number =>
+    k === 0 ? src.getX(i) : k === 1 ? src.getY(i) : k === 2 ? src.getZ(i) : src.getW(i);
+  for (const name of Object.keys(geo.attributes)) {
+    const src = geo.getAttribute(name);
+    const size = src.itemSize;
+    const dst = new Float32Array(outCount * size);
+    for (let i = 0; i < outCount; i++) {
+      const s = srcOf[i];
+      for (let k = 0; k < size; k++) dst[i * size + k] = get(src, s, k);
+    }
+    geo.setAttribute(name, new THREE.BufferAttribute(dst, size));
+  }
+  geo.setAttribute('normal', new THREE.BufferAttribute(normals, 3));
+  geo.setIndex(new THREE.BufferAttribute(newIndex, 1));
+}
+
 /** `<finish>#<rrggbb>` -> `{finish, colorHex}`; `null` for anything that is not in that shape. */
 function parseMaterialName(name: string | undefined): { finish: Finish; colorHex: number } | null {
   if (!name) return null;
@@ -219,32 +530,50 @@ function parseMaterialName(name: string | undefined): { finish: Finish; colorHex
  *
  * The assembled glb ships NO vertex normals (see `assemble-gltf.mjs`'s header — meshoptimizer's
  * simplifier cannot collapse a flat-shaded mesh's edges, since every triangle boundary then looks
- * like a hard attribute seam), so this also computes smooth vertex normals once here.
+ * like a hard attribute seam), so this also computes them once here — CREASED, never smooth; see
+ * `computeCreasedNormals`, whose header carries the measurement that made it necessary.
+ *
+ * ⚠️ THE CACHE KEY IS `<material>@<node family>`, NOT THE MATERIAL NAME. One glTF material name
+ * can want two different surfaces — `plastic#e6e6e6` is a clear CELL skin in a tray node and an
+ * opaque ACM logo board in the shared frame — so keying on the name alone hands whichever node
+ * loads first its answer to both. See the clear-plastic policy header.
  */
 function styleScene(root: THREE.Object3D): void {
   const cache = new Map<string, THREE.Material>();
   const unknown = new Set<string>();
-  root.traverse((obj) => {
-    if (!(obj instanceof THREE.Mesh)) return;
-    obj.castShadow = true;
-    obj.receiveShadow = true;
-    if (obj.geometry && !obj.geometry.getAttribute('normal')) {
-      obj.geometry.computeVertexNormals();
+  const walk = (obj: THREE.Object3D, family: NodeFamily): void => {
+    const own = nodeFamilyOf((obj.userData as { name?: string } | undefined)?.name ?? obj.name);
+    const here = own ?? family;
+    if (obj instanceof THREE.Mesh) {
+      obj.castShadow = true;
+      obj.receiveShadow = true;
+      // the four flower nodes share ONE geometry, so the guard is what keeps this to one pass
+      if (obj.geometry && !obj.geometry.getAttribute('normal')) {
+        computeCreasedNormals(obj.geometry, CREASE_ANGLE_DEG);
+      }
+      const src = Array.isArray(obj.material) ? obj.material[0] : obj.material;
+      const name = src?.name;
+      const parsed = parseMaterialName(name);
+      const key = `${parsed ? name : '__unrecognised__'}@${here}`;
+      let mat = cache.get(key);
+      if (!mat) {
+        if (!parsed) unknown.add(String(name));
+        mat = parsed ? materialFor(parsed.finish, parsed.colorHex, here) : materialFor('misc', 0x9aa1ab, here);
+        mat.name = key; // debuggable from a console walk of the live scene; nothing reads it
+        cache.set(key, mat);
+      }
+      obj.material = mat;
+      if (parsed?.finish === 'tile') obj.castShadow = false; // the floor never casts, only receives
+      if (parsed && isClearPanel(parsed.finish, parsed.colorHex, here)) {
+        // a clear panel casts no shadow: a see-through sheet that throws a solid black shadow is
+        // the single most obvious way to say "this is not actually transparent".
+        obj.castShadow = false;
+        obj.renderOrder = parsed.finish === 'glass' ? WALL_RENDER_ORDER : CELL_RENDER_ORDER;
+      }
     }
-    const src = Array.isArray(obj.material) ? obj.material[0] : obj.material;
-    const name = src?.name;
-    const parsed = parseMaterialName(name);
-    const key = parsed ? name : '__unrecognised__';
-    let mat = cache.get(key);
-    if (!mat) {
-      if (!parsed) unknown.add(String(name));
-      mat = parsed ? materialFor(parsed.finish, parsed.colorHex) : materialFor('misc', 0x9aa1ab);
-      cache.set(key, mat);
-    }
-    obj.material = mat;
-    if (parsed?.finish === 'tile') obj.castShadow = false; // the floor never casts, only receives
-    if (parsed?.finish === 'glass') obj.renderOrder = WALL_RENDER_ORDER;
-  });
+    for (const child of obj.children) walk(child, here);
+  };
+  walk(root, 'other');
   if (unknown.size > 0) {
     // eslint-disable-next-line no-console
     console.warn(
@@ -269,10 +598,606 @@ function buildTrayGroup(root: THREE.Object3D, alliance: Alliance): THREE.Group {
   return pivotGroup;
 }
 
+// ── THE TRAY BRACES THE PIPELINE FILED AS FRAME ───────────────────────────────────────────────
+//
+// 2026-09-18 playtest: "some weird lines remain after the HIVE is tipped."
+//
+// `convert.py`'s PART_RULES sends `am-5867: 10.5in Churro Lite` to `hive_frame` (STATIC), but all
+// EIGHT of them ride the TRAY: un-tilting each one by its alliance's own `captureTheta` about the
+// pivot collapses it to a segment at a constant tray-local `w ≈ 6.2` (the floor/roof seam) and
+// `|x_local| ≈ 9.5` (the cell's two sides), running the cell's full depth `|v| 10.05 … 20.84` —
+// measured off `field-colliders.json`'s own per-instance hulls. A static part could not sit at
+// ±30° in a mirrored pair like that. So the GLB bakes them into the frame node at the captured
+// pose, and when the tray swings they stay: four 10.5-in tubes 0.37 in wide, left hanging in the
+// air. They are exactly the "weird lines".
+//
+// THE REAL FIX IS ONE LINE IN `PART_RULES`, and it is not made here: re-running `npm run field-cad`
+// rewrites the GLBs, `field-colliders.json` and `fieldColliders.gen.ts`, which moves a physics
+// static into the kinematic tray. That is a sim change and it is not this lane's. This reparents
+// them at load instead, and is a no-op on a future asset that files them correctly (the selector
+// simply finds nothing).
+//
+// THE SELECTOR is world-space and stated as measurements, because the braces are merged into one
+// triangle soup per material and there is no name left to ask:
+//  - nothing else in a hive FRAME node reaches z 46: the tallest static part is the Goal Pivot
+//    Bracket at 45.70, and the raised pair of braces spans 54.27 … 59.85.
+//  - the lowered pair spans z 38.83 … 44.40 at |y| 11.85 … 21.11, and at |y| ≥ 11.5 the only other
+//    frame part with any material is the A-Frame Leg — a diagonal strut from its foot (|y| 19.07,
+//    z 0.22) to the apex (y 0, z 41.40), which at |y| = 11.5 is down at z ≈ 16.
+const BRACE_HIGH_Z = 46;
+const BRACE_MIN_ABS_Y = 11.5;
+const BRACE_MIN_Z = 36;
+
+function isTrayBracePoint(y: number, z: number): boolean {
+  return z >= BRACE_HIGH_Z || (Math.abs(y) >= BRACE_MIN_ABS_Y && z >= BRACE_MIN_Z);
+}
+
+/**
+ * Partitions `mesh`'s triangles by a WORLD-space test on each triangle's centroid: each labelled
+ * group comes back as a new geometry already baked into WORLD coordinates, and `mesh` is left
+ * with everything `classify` returned `null` for. One pass, not one per label — a second pass
+ * over a mesh this has already rewritten would read back what it wrote, which is how the first
+ * version of this produced coordinates in the millions.
+ *
+ * ⚠️ EVERY ATTRIBUTE IS COPIED THROUGH `getX/getY/getZ/getW`, NEVER OFF `.array`. The field GLB
+ * uses `KHR_mesh_quantization`, so a position attribute is a NORMALIZED Int16Array and its raw
+ * array holds counts, not inches: copying the buffer verbatim into a plain Float32Array is the
+ * bug just described, and it is silent until you look at a bounding box.
+ */
+function partitionTrianglesWorld(
+  mesh: THREE.Mesh,
+  classify: (cx: number, cy: number, cz: number) => string | null,
+): Map<string, THREE.BufferGeometry> {
+  const out = new Map<string, THREE.BufferGeometry>();
+  const geo = mesh.geometry;
+  const pos = geo.getAttribute('position');
+  if (!pos) return out;
+  mesh.updateWorldMatrix(true, false);
+  const v = new THREE.Vector3();
+  const worldPos = new Float32Array(pos.count * 3);
+  for (let i = 0; i < pos.count; i++) {
+    v.fromBufferAttribute(pos, i).applyMatrix4(mesh.matrixWorld);
+    worldPos[i * 3] = v.x;
+    worldPos[i * 3 + 1] = v.y;
+    worldPos[i * 3 + 2] = v.z;
+  }
+  const idx = geo.getIndex();
+  const triCount = idx ? idx.count / 3 : pos.count / 3;
+  const groups = new Map<string, number[]>();
+  const kept: number[] = [];
+  for (let t = 0; t < triCount; t++) {
+    const a = idx ? idx.getX(t * 3) : t * 3;
+    const b = idx ? idx.getX(t * 3 + 1) : t * 3 + 1;
+    const c = idx ? idx.getX(t * 3 + 2) : t * 3 + 2;
+    const cx = (worldPos[a * 3] + worldPos[b * 3] + worldPos[c * 3]) / 3;
+    const cy = (worldPos[a * 3 + 1] + worldPos[b * 3 + 1] + worldPos[c * 3 + 1]) / 3;
+    const cz = (worldPos[a * 3 + 2] + worldPos[b * 3 + 2] + worldPos[c * 3 + 2]) / 3;
+    const label = classify(cx, cy, cz);
+    if (label === null) {
+      kept.push(a, b, c);
+    } else {
+      const bucket = groups.get(label);
+      if (bucket) bucket.push(a, b, c);
+      else groups.set(label, [a, b, c]);
+    }
+  }
+  if (groups.size === 0) return out;
+
+  const names = Object.keys(geo.attributes);
+  const get = (src: THREE.BufferAttribute | THREE.InterleavedBufferAttribute, i: number, k: number): number =>
+    k === 0 ? src.getX(i) : k === 1 ? src.getY(i) : k === 2 ? src.getZ(i) : src.getW(i);
+  const rebuild = (order: number[], world: boolean): THREE.BufferGeometry => {
+    const g = new THREE.BufferGeometry();
+    for (const name of names) {
+      const src = geo.getAttribute(name);
+      const size = src.itemSize;
+      const dst = new Float32Array(order.length * size);
+      for (let i = 0; i < order.length; i++) {
+        const s = order[i];
+        if (world && name === 'position') {
+          dst[i * 3] = worldPos[s * 3];
+          dst[i * 3 + 1] = worldPos[s * 3 + 1];
+          dst[i * 3 + 2] = worldPos[s * 3 + 2];
+        } else {
+          for (let k = 0; k < size; k++) dst[i * size + k] = get(src, s, k);
+        }
+      }
+      g.setAttribute(name, new THREE.BufferAttribute(dst, size));
+    }
+    // the same pass the rest of the field gets. `rebuild` emits a NON-indexed geometry (one
+    // vertex per corner), so this resolves to flat per-face normals — right for a 0.37-in churro
+    // and, more to the point, the one normal pass in this file stays the one function.
+    if (!g.getAttribute('normal')) computeCreasedNormals(g, CREASE_ANGLE_DEG);
+    return g;
+  };
+
+  for (const [label, order] of groups) out.set(label, rebuild(order, true));
+  const keptGeo = rebuild(kept, false);
+  geo.dispose();
+  mesh.geometry = keptGeo;
+  return out;
+}
+
+/**
+ * Moves the eight tray braces out of the three hive FRAME nodes and into the alliance's own tray
+ * pivot group, so they swing with the cell they belong to. Returns how many triangles moved,
+ * which the RENDER lane asserts is not zero on the shipped asset.
+ */
+function reparentTrayBraces(root: THREE.Object3D, hives: { red: FieldHiveGroup; blue: FieldHiveGroup }): number {
+  const pivots: Record<Alliance, number> = {
+    red: fieldColliders3d().trays.red.pivot[0],
+    blue: fieldColliders3d().trays.blue.pivot[0],
+  };
+  let moved = 0;
+  for (const nodeName of ['hive_red/frame', 'hive_blue/frame', 'hive_shared/frame']) {
+    const node = findOptional(root, nodeName);
+    if (!node) continue;
+    const meshes: THREE.Mesh[] = [];
+    node.traverse((o) => {
+      if (o instanceof THREE.Mesh) meshes.push(o);
+    });
+    for (const mesh of meshes) {
+      // ONE pass, labelled by alliance — `hive_shared/frame` holds two of red's braces and two of
+      // blue's, so the split has to name both in the same sweep. A brace belongs to whichever
+      // pivot it is nearer: they sit at the cell's own |x_local| ≈ 9.5, half the hive spacing.
+      const parts = partitionTrianglesWorld(mesh, (cx, cy, cz) => {
+        if (!isTrayBracePoint(cy, cz)) return null;
+        return Math.abs(cx - pivots.red) < Math.abs(cx - pivots.blue) ? 'red' : 'blue';
+      });
+      for (const [label, geo] of parts) {
+        const alliance = label as Alliance;
+        // ⚠️ UN-TILT BEFORE PARENTING, or the brace is rotated TWICE. The tray MESH is exported in
+        // the pivot-local UN-TILTED frame (`convert.py` rotates every tray point out of the STEP's
+        // capture pose, which is why `refTheta` is 0 and `updateBiobuzzField` applies the absolute
+        // `hiveTiltAngle`) — but a FRAME node is world-absolute, so these braces come off the disc
+        // already sitting at ±30°. Parenting them as-is and then applying the tilt puts them at
+        // `captureTheta + hiveTiltAngle`: they swing, at double the angle, which looks worse than
+        // the bug being fixed. `world = pivot + Rot_x(captureTheta)·(x, v, w)`, so the inverse is
+        // exactly this.
+        const tray = fieldColliders3d().trays[alliance];
+        const toLocal = new THREE.Matrix4()
+          .makeRotationX(-cadCaptureTheta(alliance))
+          .multiply(new THREE.Matrix4().makeTranslation(-tray.pivot[0], -tray.pivot[1], -tray.pivot[2]));
+        geo.applyMatrix4(toLocal);
+        const braces = new THREE.Mesh(geo, mesh.material);
+        braces.name = `hive_${alliance}/tray-brace`;
+        braces.castShadow = true;
+        braces.receiveShadow = true;
+        moved += geo.getAttribute('position').count / 3;
+        hives[alliance].tray.add(braces);
+      }
+    }
+  }
+  return moved;
+}
+
+// ── PRINTED FIELD MARKINGS — the HIGH LOD only ────────────────────────────────────────────────
+//
+// 2026-09-19 playtest, owner items 11 and 13: "the flower's purple top guard part does not have
+// standoffs rendered in game. For higher graphics settings, it should be rendered", and "April
+// tags and FTC Biobuzz banner in the center structure should be rendered for higher graphics
+// settings."
+//
+// All three are CAD parts the pipeline either drops or ships BLANK:
+//
+//  - THE TAG CLUSTERS. `am-5888-{red,blue}{1,2}: Goal April Tag` ×4 ARE in both GLBs, as
+//    `decal#ffffff` plates measuring 17.0005 × 5.0009 × 0.0105 in on the UNDERSIDE of each cell
+//    floor (tray-local w −1.4976…−1.4872, against the floor skin's own outer face at −1.4884) —
+//    four blank white rectangles, because a STEP file carries no artwork. §9.9 (p74) says what
+//    goes on them and `docs/biobuzz/manual-distilled.md` §5.5 has it distilled; `TAG_IDS` below
+//    carries the IDs and the placement rule.
+//  - THE BANNER. `am-5883: Panel Sticker` ×2, likewise `decal#ffffff`, on the two outward faces
+//    of the `am-5877 ACM Panel` logo board that spans both hives — a 29.0 × 5.44 in face leaning
+//    24° back, at z 34.5…39.6. Also blank.
+//  - THE FLOWER STANDOFFS. `am-1696: Nylon Spacer, 0.194in ID, 0.375in OD, 1.000in Long` ×2 per
+//    flower, the spacers the purple `am-5884: Flower Backstop` stands on. These are not blank —
+//    they are ABSENT, swallowed by `convert.py`'s `RE_FASTENER`, which matches the bare words
+//    `nylon spacer`. Exactly the class of bug §2.2 of the audit records for the 24 perimeter
+//    rails ("FTC Rail with **Rivet** Holes"). Measured in the STEP (flower F4, mm, min corner):
+//    (652.3, 543.7, 1739.3) and (526.5, 543.7, 1739.3), i.e. sim z 21.406 → 22.406 — the gap
+//    between the amber top ring's top face (21.404) and the backstop's underside (22.404), which
+//    is the spacer's own stated 1.000 in. THE ONE-LINE REAL FIX IS IN `PART_RULES`; it is not
+//    made here, for the reason `reparentTrayBraces` states above (re-running `npm run field-cad`
+//    rewrites `fieldColliders.gen.ts`, which is a sim change and not this lane's).
+//
+// HIGH LOD ONLY, which is `GraphicsSettings.meshDetail` and therefore MEDIUM and up: nothing
+// below is built, no canvas is allocated and no texture is uploaded when `quality` is `'low'`.
+// Every texture hangs off a material under the field group, so `renderCore.ts`'s
+// `disposeObject3D` frees it with the scene (it disposes `material.map`).
+
+/**
+ * THE 36h11 CODE TABLE, for the sixteen IDs BIOBUZZ uses and no others.
+ *
+ * Source: `tag36h11.c` from AprilRobotics/apriltag (BSD-2-Clause), `codedata[]` entries 30–45 and
+ * the `bit_x`/`bit_y` layout verbatim. A tag is `total_width` 10 cells — a 1-cell white quiet
+ * zone around an 8-cell (`width_at_border`) black square, whose inner 6×6 carries the 36 code
+ * bits MSB first at `(bit_x[i], bit_y[i])`, `reversed_border` false. Generating the bitmap beats
+ * shipping sixteen PNGs: 16 numbers and 72 offsets against ~16 KB of image.
+ */
+const TAG_BIT_X = [1, 2, 3, 4, 5, 2, 3, 4, 3, 6, 6, 6, 6, 6, 5, 5, 5, 4, 6, 5, 4, 3, 2, 5, 4, 3, 4, 1, 1, 1, 1, 1, 2, 2, 2, 3] as const;
+const TAG_BIT_Y = [1, 1, 1, 1, 1, 2, 2, 2, 3, 1, 2, 3, 4, 5, 2, 3, 4, 3, 6, 6, 6, 6, 6, 5, 5, 5, 4, 6, 5, 4, 3, 2, 5, 4, 3, 4] as const;
+/** `codedata[30]` … `codedata[45]`. 36-bit integers — exact as doubles, so no BigInt. */
+const TAG_CODES: Readonly<Record<number, number>> = {
+  30: 0x0e2cfda160,
+  31: 0x02ff497c63,
+  32: 0x047240671b,
+  33: 0x05047a2e55,
+  34: 0x0635ca87c7,
+  35: 0x0691254166,
+  36: 0x068f43d94a,
+  37: 0x06ef24bdb6,
+  38: 0x08cdd8f886,
+  39: 0x09de96b718,
+  40: 0x0aff6e5a8a,
+  41: 0x0bae46f029,
+  42: 0x0d225b6d59,
+  43: 0x0df8ba8c01,
+  44: 0x0e3744a22f,
+  45: 0x0fbb59375d,
+};
+
+/** one tag as a 10×10 grid, row-major from the TOP, `1` = white. Exported for the RENDER lane,
+ * which has no DOM and so cannot look at the texture. */
+export function apriltag36h11Cells(id: number): Uint8Array {
+  const code = TAG_CODES[id];
+  if (code === undefined) throw new Error(`apriltag36h11Cells: no code for tag ${id} (BIOBUZZ uses 30..45)`);
+  const cells = new Uint8Array(100).fill(1);
+  const off = 1; // (total_width 10 − width_at_border 8) / 2
+  for (let r = 0; r < 8; r++) for (let c = 0; c < 8; c++) cells[(r + off) * 10 + (c + off)] = 0;
+  for (let i = 0; i < 36; i++) {
+    const bit = Math.floor(code / 2 ** (35 - i)) % 2;
+    cells[(TAG_BIT_Y[i] + off) * 10 + (TAG_BIT_X[i] + off)] = bit;
+  }
+  return cells;
+}
+
+/**
+ * WHICH CLUSTER GOES ON WHICH CELL — §9.9 p76, read off the page raster (that page's text layer
+ * drops most of the digits; `docs/biobuzz/manual-distilled.md`'s header lists it as a known
+ * defect). The AUDIENCE is at −y, which is the side F4 sits on.
+ */
+export const TAG_IDS: Readonly<Record<Alliance, Readonly<Record<'north' | 'south', readonly number[]>>>> = {
+  // "red CELL on the side of the FIELD opposite the audience" / "red CELL on the audience side"
+  red: { north: [30, 31, 32, 33], south: [34, 35, 36, 37] },
+  // "blue CELL on the audience side" / "blue CELL on the side opposite the audience"
+  blue: { north: [42, 43, 44, 45], south: [38, 39, 40, 41] },
+};
+/** what Fig 9-16's sticker prints on itself, per cell. */
+const TAG_LABEL: Readonly<Record<Alliance, Readonly<Record<'north' | 'south', string>>>> = {
+  red: { north: 'RED FAR', south: 'RED AUDIENCE' },
+  blue: { north: 'BLUE FAR', south: 'BLUE AUDIENCE' },
+};
+
+/** §9.9 p74: "AprilTags for BIOBUZZ are 3.25 in. (8.25 cm) square targets from the 36h11 tag
+ * family." That is the black-bordered square; the quiet zone is the white plate around it. */
+const TAG_SIZE_IN = 3.25;
+/**
+ * ⚠️ APPROX — THE MANUAL'S OWN PITCH CANNOT BE RIGHT AS DISTILLED. `docs/biobuzz-reference.md`
+ * §2.2 reads Fig 9-15 as "tags on 2.75-in centres in two pairs 7.0 in apart", and
+ * `manual-distilled.md` §9 already flags that line as measured off a drawing rather than stated:
+ * 2.75-in centres would overlap two 3.25-in tags by half an inch. 3.5 is the smallest pitch that
+ * clears, and it makes the two PAIR centres exactly the 7.0 in the same figure calls out. The
+ * row lands 13.75 in wide on the CAD's 17.0005-in plate, 1.63 in clear at each end.
+ */
+const TAG_PITCH_IN = 3.5;
+/** px per tag CELL — the tag is drawn on integer cell boundaries so `NearestFilter` keeps the
+ * bits square. 12 puts a 3.25-in tag at 120 px. */
+const TAG_CELL_PX = 12;
+
+function tagClusterTexture(ids: readonly number[], label: string, plateW: number, plateH: number): THREE.CanvasTexture {
+  const pxPerIn = (TAG_CELL_PX * 10) / TAG_SIZE_IN;
+  const canvas = document.createElement('canvas');
+  canvas.width = Math.round(plateW * pxPerIn);
+  canvas.height = Math.round(plateH * pxPerIn);
+  const ctx = canvas.getContext('2d');
+  if (!ctx) throw new Error('tagClusterTexture: no 2d context');
+  ctx.fillStyle = '#ffffff';
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  // ⚠️ THE ROW SITS LOW ON THE CANVAS, AND THAT IS THE ORIENTATION RULE, NOT A MARGIN CHOICE.
+  // §9.9 p75: the cluster faces down "with its bottom edge oriented towards the center of the
+  // FIELD". The quad this paints has its +y (canvas TOP, v = 1) pointing AWAY from the field
+  // centre, so canvas-down IS field-centre-ward and an upright tag's bottom edge already points
+  // the right way. The label takes the wider margin that leaves.
+  const tagPx = TAG_CELL_PX * 10;
+  const top = Math.round(canvas.height - 0.4 * pxPerIn - tagPx);
+  for (let k = 0; k < ids.length; k++) {
+    const cells = apriltag36h11Cells(ids[k]);
+    const left = Math.round((plateW / 2 + (k - (ids.length - 1) / 2) * TAG_PITCH_IN) * pxPerIn - tagPx / 2);
+    ctx.fillStyle = '#000000';
+    for (let r = 0; r < 10; r++) {
+      for (let c = 0; c < 10; c++) {
+        if (cells[r * 10 + c] === 0) ctx.fillRect(left + c * TAG_CELL_PX, top + r * TAG_CELL_PX, TAG_CELL_PX, TAG_CELL_PX);
+      }
+    }
+  }
+  ctx.fillStyle = '#3c4450';
+  ctx.font = `600 ${Math.round(0.6 * pxPerIn)}px system-ui, sans-serif`;
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(`${label} · 36h11 · ${ids.join(' ')}`, canvas.width / 2, top / 2);
+  const tex = new THREE.CanvasTexture(canvas);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.magFilter = THREE.NearestFilter;
+  tex.minFilter = THREE.LinearMipmapLinearFilter;
+  tex.needsUpdate = true;
+  return tex;
+}
+
+/**
+ * The centre structure's banner. TEXT ONLY, in the field's own colours — no FIRST or RTX logo
+ * artwork is drawn or shipped, and the wording is what the manual's field drawings letter across
+ * this panel.
+ */
+function bannerTexture(wIn: number, hIn: number): THREE.CanvasTexture {
+  const pxPerIn = 32;
+  const canvas = document.createElement('canvas');
+  canvas.width = Math.round(wIn * pxPerIn);
+  canvas.height = Math.round(hIn * pxPerIn);
+  const ctx = canvas.getContext('2d');
+  if (!ctx) throw new Error('bannerTexture: no 2d context');
+  ctx.fillStyle = '#ffffff';
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  const cx = canvas.width / 2;
+  ctx.fillStyle = '#5a6270';
+  ctx.font = `600 ${Math.round(0.72 * pxPerIn)}px system-ui, sans-serif`;
+  ctx.fillText('F I R S T   T E C H   C H A L L E N G E', cx, canvas.height * 0.26);
+  ctx.fillStyle = '#1b1f24';
+  ctx.font = `800 ${Math.round(2.1 * pxPerIn)}px system-ui, sans-serif`;
+  ctx.fillText('BIOBUZZ', cx, canvas.height * 0.62);
+  // the flower's own amber (`am-5857 Flower Layer C`, CAD #ffba52) as the rule under it
+  ctx.fillStyle = '#ffba52';
+  const ruleW = Math.round(canvas.width * 0.34);
+  ctx.fillRect(cx - ruleW / 2, Math.round(canvas.height * 0.86), ruleW, Math.max(2, Math.round(0.16 * pxPerIn)));
+  const tex = new THREE.CanvasTexture(canvas);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.minFilter = THREE.LinearMipmapLinearFilter;
+  tex.needsUpdate = true;
+  return tex;
+}
+
+function decalMaterial(map: THREE.Texture): THREE.MeshStandardMaterial {
+  return new THREE.MeshStandardMaterial({
+    map,
+    metalness: 0,
+    roughness: 0.85,
+    polygonOffset: true,
+    polygonOffsetFactor: DECAL_POLYGON_OFFSET,
+    polygonOffsetUnits: DECAL_POLYGON_OFFSET,
+  });
+}
+
+interface FacetFrame {
+  centre: THREE.Vector3;
+  quaternion: THREE.Quaternion;
+  width: number;
+  height: number;
+}
+
+/**
+ * The OUTERMOST planar face of `mesh` among the triangles `keep` accepts, as a world-space frame:
+ * +z is that face's outward normal, +y is `up` projected into it, +x = y × z (right-handed, so a
+ * texture mapped onto a quad in this frame reads unmirrored from outside). `width`/`height` are
+ * the face's own extents along +x/+y.
+ *
+ * Measuring instead of hard-coding is the point: the plate rectangles and the banner's 24° lean
+ * are CAD, and the CAD is authoritative for dimensions (owner ruling 2026-09-18). A field
+ * revision that moves a sticker moves the artwork with it.
+ */
+function facetFrame(
+  mesh: THREE.Mesh,
+  keep: (cx: number, cy: number, cz: number) => boolean,
+  outward: THREE.Vector3,
+  up: THREE.Vector3,
+): FacetFrame | null {
+  const geo = mesh.geometry;
+  const pos = geo.getAttribute('position');
+  if (!pos) return null;
+  mesh.updateWorldMatrix(true, false);
+  const pts: THREE.Vector3[] = [];
+  const v = new THREE.Vector3();
+  for (let i = 0; i < pos.count; i++) pts.push(v.fromBufferAttribute(pos, i).applyMatrix4(mesh.matrixWorld).clone());
+  const idx = geo.getIndex();
+  const triCount = idx ? idx.count / 3 : pos.count / 3;
+  const n = new THREE.Vector3();
+  const e1 = new THREE.Vector3();
+  const e2 = new THREE.Vector3();
+  const face = new THREE.Vector3();
+  const used = new Set<number>();
+  for (let t = 0; t < triCount; t++) {
+    const a = idx ? idx.getX(t * 3) : t * 3;
+    const b = idx ? idx.getX(t * 3 + 1) : t * 3 + 1;
+    const c = idx ? idx.getX(t * 3 + 2) : t * 3 + 2;
+    const pa = pts[a];
+    const pb = pts[b];
+    const pc = pts[c];
+    if (!keep((pa.x + pb.x + pc.x) / 3, (pa.y + pb.y + pc.y) / 3, (pa.z + pb.z + pc.z) / 3)) continue;
+    e1.subVectors(pc, pb);
+    e2.subVectors(pa, pb);
+    face.copy(e1).cross(e2);
+    const twiceArea = face.length();
+    if (twiceArea <= 0) continue;
+    face.divideScalar(twiceArea);
+    if (face.dot(outward) < 0.7) continue;
+    n.addScaledVector(face, twiceArea / 2);
+    used.add(a);
+    used.add(b);
+    used.add(c);
+  }
+  if (used.size === 0 || n.lengthSq() === 0) return null;
+  n.normalize();
+  const y = up.clone().addScaledVector(n, -up.dot(n));
+  if (y.lengthSq() === 0) return null;
+  y.normalize();
+  const x = new THREE.Vector3().crossVectors(y, n);
+  let uMin = Infinity;
+  let uMax = -Infinity;
+  let vMin = Infinity;
+  let vMax = -Infinity;
+  let d = -Infinity;
+  for (const i of used) {
+    const p = pts[i];
+    uMin = Math.min(uMin, p.dot(x));
+    uMax = Math.max(uMax, p.dot(x));
+    vMin = Math.min(vMin, p.dot(y));
+    vMax = Math.max(vMax, p.dot(y));
+    d = Math.max(d, p.dot(n));
+  }
+  const centre = new THREE.Vector3()
+    .addScaledVector(x, (uMin + uMax) / 2)
+    .addScaledVector(y, (vMin + vMax) / 2)
+    .addScaledVector(n, d);
+  return {
+    centre,
+    quaternion: new THREE.Quaternion().setFromRotationMatrix(new THREE.Matrix4().makeBasis(x, y, n)),
+    width: uMax - uMin,
+    height: vMax - vMin,
+  };
+}
+
+/** the glTF material name `styleScene` was handed, recovered from the `<material>@<family>` key
+ * it renamed the runtime material to. */
+function glbMaterialName(obj: THREE.Mesh): string {
+  const m = Array.isArray(obj.material) ? obj.material[0] : obj.material;
+  const name = m && !Array.isArray(m) ? (m.name ?? '') : '';
+  const at = name.lastIndexOf('@');
+  return at > 0 ? name.slice(0, at) : name;
+}
+
+function meshesUnder(node: THREE.Object3D, material: string): THREE.Mesh[] {
+  const out: THREE.Mesh[] = [];
+  node.traverse((o) => {
+    if (o instanceof THREE.Mesh && glbMaterialName(o) === material) out.push(o);
+  });
+  return out;
+}
+
+/** how far a printed quad floats off the surface it is printed on, in. Small enough to be inside
+ * the CAD's own 0.0105-in plate; `DECAL_POLYGON_OFFSET` does the rest. */
+const MARKING_LIFT_IN = 0.01;
+
+/** `am-1696`'s own outside diameter. */
+const STANDOFF_OD_IN = 0.375;
+/**
+ * How far a standoff's axis sits inside the backstop plate's field-side edge and inside each of
+ * its ends. Measured on flower F4: spacer centres at sim (25.868, −68.663) and (20.915, −68.663)
+ * against a backstop spanning x 20.650…26.138, y −70.453…−68.398 — 0.265, 0.273 and 0.262 in
+ * from the three edges, i.e. one inset, three times.
+ */
+const STANDOFF_INSET_IN = 0.265;
+
+export interface FieldMarkings {
+  /** 4 at the high LOD (one per CELL), 0 at the low one. */
+  tagPlates: number;
+  /** 2 — the ACM panel's two outward faces. */
+  banners: number;
+  /** 8 — two under each flower's backstop. */
+  standoffs: number;
+}
+
+const NO_MARKINGS: FieldMarkings = { tagPlates: 0, banners: 0, standoffs: 0 };
+
+function buildFieldMarkings(
+  root: THREE.Object3D,
+  hives: { red: FieldHiveGroup; blue: FieldHiveGroup },
+  flowers: readonly THREE.Object3D[],
+): FieldMarkings {
+  const out: FieldMarkings = { tagPlates: 0, banners: 0, standoffs: 0 };
+  const DOWN = new THREE.Vector3(0, 0, -1);
+
+  // ── the four AprilTag clusters, on the underside of each cell floor ──
+  for (const alliance of ['red', 'blue'] as const) {
+    const tray = hives[alliance].tray;
+    for (const mesh of meshesUnder(tray, 'decal#ffffff')) {
+      for (const sideSign of [1, -1] as const) {
+        const side = sideSign > 0 ? 'north' : 'south';
+        // the tray is loaded UN-TILTED (`refTheta` 0), so world y is the cell's own +v here.
+        const frame = facetFrame(mesh, (_cx, cy) => Math.sign(cy) === sideSign, DOWN, new THREE.Vector3(0, sideSign, 0));
+        if (!frame) continue;
+        const ids = TAG_IDS[alliance][side];
+        const quad = new THREE.Mesh(
+          new THREE.PlaneGeometry(frame.width, frame.height),
+          decalMaterial(tagClusterTexture(ids, TAG_LABEL[alliance][side], frame.width, frame.height)),
+        );
+        quad.name = `bb-apriltags:${alliance}:${side}`;
+        quad.position.copy(frame.centre).addScaledVector(DOWN, MARKING_LIFT_IN);
+        quad.quaternion.copy(frame.quaternion);
+        quad.castShadow = false;
+        quad.receiveShadow = true;
+        tray.attach(quad);
+        out.tagPlates++;
+      }
+      mesh.visible = false;
+    }
+  }
+
+  // ── the two banner faces on the shared ACM panel ──
+  const sharedFrame = findOptional(root, 'hive_shared/frame');
+  if (sharedFrame) {
+    for (const mesh of meshesUnder(sharedFrame, 'decal#ffffff')) {
+      for (const sideSign of [1, -1] as const) {
+        const outward = new THREE.Vector3(0, sideSign, 0);
+        const frame = facetFrame(mesh, (_cx, cy) => Math.sign(cy) === sideSign, outward, new THREE.Vector3(0, 0, 1));
+        if (!frame) continue;
+        const quad = new THREE.Mesh(
+          new THREE.PlaneGeometry(frame.width, frame.height),
+          decalMaterial(bannerTexture(frame.width, frame.height)),
+        );
+        quad.name = `bb-banner:${sideSign > 0 ? 'north' : 'south'}`;
+        quad.position.copy(frame.centre).addScaledVector(new THREE.Vector3(0, 0, 1).applyQuaternion(frame.quaternion), MARKING_LIFT_IN);
+        quad.quaternion.copy(frame.quaternion);
+        quad.castShadow = false;
+        quad.receiveShadow = true;
+        sharedFrame.attach(quad);
+        out.banners++;
+      }
+      mesh.visible = false;
+    }
+  }
+
+  // ── the eight flower standoffs ──
+  let standoffGeo: THREE.BufferGeometry | null = null;
+  let standoffMat: THREE.Material | null = null;
+  for (let k = 0; k < flowers.length; k++) {
+    const backstop = meshesUnder(flowers[k], 'plastic#641c65')[0];
+    const topRing = meshesUnder(flowers[k], 'plastic#ffba52')[0];
+    if (!backstop || !topRing) continue;
+    const plate = new THREE.Box3().setFromObject(backstop);
+    const ring = new THREE.Box3().setFromObject(topRing);
+    const height = plate.min.z - ring.max.z;
+    // the spacer is a 1.000-in part; anything else means the CAD moved and the inset below is a
+    // guess about a plate that is no longer there.
+    if (!(height > 0.5 && height < 2)) continue;
+    if (!standoffGeo) {
+      standoffGeo = new THREE.CylinderGeometry(STANDOFF_OD_IN / 2, STANDOFF_OD_IN / 2, height, 12);
+      standoffGeo.rotateX(Math.PI / 2); // three builds a cylinder +y up; this field is +z up
+      standoffMat = materialFor('plastic', 0xe6e6e6, 'flower');
+    }
+    // the plate's LONG horizontal axis runs along the wall; the short one crosses it, and its
+    // edge nearer the field centre is the flower's field side.
+    const long: 'x' | 'y' = plate.max.x - plate.min.x >= plate.max.y - plate.min.y ? 'x' : 'y';
+    const short: 'x' | 'y' = long === 'x' ? 'y' : 'x';
+    const inner = Math.abs(plate.min[short]) < Math.abs(plate.max[short]) ? plate.min[short] : plate.max[short];
+    const across = inner + Math.sign(inner) * STANDOFF_INSET_IN;
+    const z = (ring.max.z + plate.min.z) / 2;
+    for (const along of [plate.min[long] + STANDOFF_INSET_IN, plate.max[long] - STANDOFF_INSET_IN]) {
+      const post = new THREE.Mesh(standoffGeo, standoffMat!);
+      post.name = `bb-flower-standoff:${k}`;
+      post.position.set(long === 'x' ? along : across, long === 'x' ? across : along, z);
+      post.castShadow = true;
+      post.receiveShadow = true;
+      flowers[k].attach(post);
+      out.standoffs++;
+    }
+  }
+  return out;
+}
+
 /**
  * Loads one detail level of the CAD field and returns its named parts. `quality` selects
  * `field.glb` (high) or `field-low.glb` (low) — see `docs/biobuzz/plan-3d.md` §8 for the two
- * LODs' size budgets.
+ * LODs' size budgets, and the PRINTED FIELD MARKINGS block above for what only the high one gets.
  */
 export async function loadFieldGlb(url: string, quality: 'high' | 'low' = 'high'): Promise<FieldGroups> {
   const resolved = resolveGlbUrl(url, quality);
@@ -294,9 +1219,12 @@ export async function loadFieldGlb(url: string, quality: 'high' | 'low' = 'high'
 
   const flowers = [0, 1, 2, 3].map((k) => mustFind(root, `flower_${k}`));
 
+  const braceTris = reparentTrayBraces(root, hives);
+  const markings = quality === 'high' ? buildFieldMarkings(root, hives, flowers) : NO_MARKINGS;
+
   checkTrayFloorAgreement(hives);
 
-  return { floor, walls, tape, sharedFrame, stations, hives, flowers, root };
+  return { floor, walls, tape, sharedFrame, stations, hives, flowers, root, braceTris, markings };
 }
 
 /** how far the drawn tray floor may sit from the collider floor before the picture and the

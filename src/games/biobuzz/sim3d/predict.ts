@@ -1,5 +1,5 @@
 import type { Artifact, RobotCommand, RobotState, Vec2, World } from '../../../types';
-import { SIM_DT, PHYS_FRICTION, PHYS_WALL_FRICTION, GRAVITY, PHYS_SOLVER_ITERS, PHYS_CONTACT_FREQ, PHYS_ALLOWED_ERROR } from '../../../config';
+import { SIM_DT, PHYS_FRICTION, PHYS_WALL_FRICTION, GRAVITY, PHYS_SOLVER_ITERS, PHYS_ALLOWED_ERROR } from '../../../config';
 import { updateRobot } from '../../../sim/robot';
 import { chassisInertia } from '../../../sim/robot';
 import { shoveMass } from '../../../sim/drivetrain';
@@ -7,18 +7,20 @@ import { robotExtents, squareUpRobotsWalls } from '../../../sim/physics';
 import { dcos, dsin } from '../../../math';
 import {
   BB3_CCD_SPEED,
+  BB3_CONTACT_FREQ,
   BB_HALF_X,
   BB_HALF_Y,
   BB_POLLEN_R,
   PREDICT_ELEMENT_RADIUS,
   PREDICT_MAX_TICKS,
+  bbHeightNow,
 } from '../config';
 import { rapier3d, type Rapier3d } from './engine';
 import {
   buildHiveTray3d,
   buildStatics3d,
+  clearChassis3dColliders,
   elementMass,
-  robotHeightIn,
   ELEMENT_FRICTION,
   ELEMENT_RESTITUTION,
   ELEMENT_ROLL_DAMP,
@@ -262,7 +264,14 @@ export function createFullPredictor(world: World, localRobotId: number): Predict
   const world3d = new RAPIER.World({ x: 0, y: 0, z: -GRAVITY });
   world3d.integrationParameters.lengthUnit = 10;
   world3d.integrationParameters.numSolverIterations = PHYS_SOLVER_ITERS;
-  world3d.integrationParameters.contact_natural_frequency = PHYS_CONTACT_FREQ;
+  // ⚠️ THE SAME FOUR PARAMETERS AS THE AUTHORITATIVE WORLD (`engineImpl.ts`'s `buildEngine`),
+  // and `contact_natural_frequency` is BIOBUZZ's own `BB3_CONTACT_FREQ`, not the shared
+  // `PHYS_CONTACT_FREQ` the robot solve uses -- see that function's comment for why the 3D
+  // world needs a stiffer contact than DECODE's chassis shove does. This block is HAND-COPIED,
+  // so moving one and not the other predicts contacts at a different stiffness from the
+  // authority and reconciles with a snap on every landed shot; the SIM3D lane asserts the two
+  // worlds agree rather than trusting the copy.
+  world3d.integrationParameters.contact_natural_frequency = BB3_CONTACT_FREQ;
   world3d.integrationParameters.normalizedAllowedLinearError = PHYS_ALLOWED_ERROR;
   buildStatics3d(RAPIER, world3d, PHYS_WALL_FRICTION);
   // the trays are KINEMATIC here whatever `BB3_HIVE_DYNAMIC` says — see the header.
@@ -274,6 +283,11 @@ export function createFullPredictor(world: World, localRobotId: number): Predict
   let localBody: InstanceType<Rapier3d['RigidBody']> | null = null;
   let local: RobotState | null = null;
   let scratch: World | null = null;
+  /** the height each chassis collider was actually BUILT to — `Engine3d.robotHeights`' job, done
+   * here for the predictor's own world. READBACK subtracts the same half-height the build added,
+   * so recomputing it instead of recording it is how a robot's z jumps on the deploy tick. */
+  let localHeight = 0;
+  const otherHeights = new Map<number, number>();
   const others = new Map<number, InstanceType<Rapier3d['RigidBody']>>();
   const elements = new Map<number, InstanceType<Rapier3d['RigidBody']>>();
   let tick = 0;
@@ -300,20 +314,30 @@ export function createFullPredictor(world: World, localRobotId: number): Predict
         trays[a].setNextKinematicRotation(tiltQuatX(hiveTiltAngle(w, a)));
       }
 
-      // the LOCAL robot: created once, re-seated every reset.
+      // the LOCAL robot: created once, RE-FITTED across the deploy edge, re-seated every reset.
       if (local) {
-        if (!localBody) localBody = makeRobotBody(RAPIER, world3d, local, true);
-        seatRobot(localBody, local);
+        const h = bbHeightNow(w, local.spec);
+        if (!localBody) {
+          localBody = makeRobotBody(RAPIER, world3d, local, true, h);
+          localHeight = h;
+        } else {
+          localHeight = refitRobotBody(RAPIER, world3d, localBody, local, localHeight, h);
+        }
+        seatRobot(localBody, local, localHeight);
       }
-      // the others: kinematic, created on first sight, re-seated every reset.
+      // the others: kinematic, created on first sight, re-fitted and re-seated every reset.
       for (const r of w.robots) {
         if (r.id === localRobotId) continue;
+        const h = bbHeightNow(w, r.spec);
         let body = others.get(r.id);
         if (!body) {
-          body = makeRobotBody(RAPIER, world3d, r, false);
+          body = makeRobotBody(RAPIER, world3d, r, false, h);
           others.set(r.id, body);
+        } else {
+          refitRobotBody(RAPIER, world3d, body, r, otherHeights.get(r.id) ?? h, h);
         }
-        seatRobot(body, r);
+        otherHeights.set(r.id, h);
+        seatRobot(body, r, h);
       }
 
       // the near elements: replaced outright. Fifteen-ish bodies is cheaper to rebuild than to
@@ -353,10 +377,10 @@ export function createFullPredictor(world: World, localRobotId: number): Predict
       const t = localBody.translation();
       const v = localBody.linvel();
       const av = localBody.angvel();
-      const heightIn = robotHeightIn(local.spec);
+      // the height the collider was BUILT to, not `robotHeightIn` — see `localHeight`.
       local.pos.x = round4(t.x);
       local.pos.y = round4(t.y);
-      local.z = round4(t.z - heightIn / 2);
+      local.z = round4(t.z - localHeight / 2);
       local.heading = round4(yawOfQuat(localBody.rotation()));
       local.vel.x = round4(v.x);
       local.vel.y = round4(v.y);
@@ -365,7 +389,7 @@ export function createFullPredictor(world: World, localRobotId: number): Predict
       // the SAME stage 8b the real pipeline runs, for the same reason: a wall-flush robot's
       // contact torque comes from this pass and not from the solver.
       squareUpRobotsWalls(scratch, preVels, BB_HALF_X, BB_HALF_Y);
-      seatRobot(localBody, local);
+      seatRobot(localBody, local, localHeight);
       tick++;
       return poseOf(local);
     },
@@ -396,17 +420,50 @@ function buildKinematicTray(
   return built.body;
 }
 
+/**
+ * ⚠️ **THE PREDICTOR'S CHASSIS IS ONE `robotExtents` CUBOID, AND THAT IS A MEASURED TRADE, NOT
+ * AN OVERSIGHT.** The authority solves a compound with an open intake mouth (`chassis3dShapes`,
+ * `bodies.ts`); this predictor does not, so a predicted element can bounce off a mouth the real
+ * one rolls into, and the reconcile corrects it. Giving the predictor the same compound was
+ * tried on 2026-09-19 and costs what it looks like it would cost: the forty-tick reconcile went
+ * from 3–6 ms to 9–11 ms with the compound on the LOCAL robot alone, and to 16–17 ms on all four
+ * (dev box, best of five, alternated A/B against the tree without it). `PREDICT_FULL_BUDGET_MS`
+ * is 8, Auto reads that probe, and it would have picked LIGHT on nearly every machine — the
+ * fidelity fix would have switched Full prediction OFF. The mismatch is real, small (the arm
+ * tips end exactly where `robotExtents` ends, so walls, robots and the hive meet the same
+ * surfaces; only the pocket differs) and cheaper to reconcile than to predict. If the budget or
+ * the compound ever gets cheaper, `fitChassis` is the one place to change.
+ *
+ * What IS taken from the authority is the HEIGHT rule: `heightIn` comes from the CALLER, which
+ * reads `bbHeightNow(world, spec)` — stowed before the match, deployed after — exactly as
+ * `syncRobots` does, and the body is re-fitted across the deploy edge. It used to be
+ * `robotHeightIn` (deployed, whatever the phase), so the predicted robot stood at the wrong
+ * height for the whole of `pre` and its readback subtracted a half-height it had not added.
+ */
 function makeRobotBody(
   RAPIER: Rapier3d,
   world3d: InstanceType<Rapier3d['World']>,
   r: RobotState,
   dynamic: boolean,
+  heightIn: number,
 ): InstanceType<Rapier3d['RigidBody']> {
-  const heightIn = robotHeightIn(r.spec);
   const desc = dynamic
     ? RAPIER.RigidBodyDesc.dynamic().enabledRotations(false, false, true)
     : RAPIER.RigidBodyDesc.kinematicPositionBased();
   const body = world3d.createRigidBody(desc);
+  fitChassis(RAPIER, world3d, body, r, heightIn);
+  return body;
+}
+
+/** the one `robotExtents` cuboid — see the note above `makeRobotBody` for why it is not the
+ * authority's compound. Density 0: the predictor writes the body's mass itself. */
+function fitChassis(
+  RAPIER: Rapier3d,
+  world3d: InstanceType<Rapier3d['World']>,
+  body: InstanceType<Rapier3d['RigidBody']>,
+  r: RobotState,
+  heightIn: number,
+): void {
   const fe = robotExtents(r);
   const hx = (fe.front + fe.rear) / 2;
   const forward = (fe.front - fe.rear) / 2;
@@ -418,11 +475,30 @@ function makeRobotBody(
       .setRestitution(0),
     body,
   );
-  return body;
 }
 
-function seatRobot(body: InstanceType<Rapier3d['RigidBody']>, r: RobotState): void {
-  const heightIn = robotHeightIn(r.spec);
+/**
+ * Re-fit an existing chassis body to `heightIn` if it was built to something else — the R102
+ * DEPLOY EDGE, seen from the predictor. A collider cannot be resized in place, so the shape is
+ * dropped and rebuilt, which is what the authority does at the same edge. Returns the height
+ * the body now carries, so the caller can record it and read back against the SAME half-height
+ * it added (get that wrong and the predicted robot sinks a few inches for one tick).
+ */
+function refitRobotBody(
+  RAPIER: Rapier3d,
+  world3d: InstanceType<Rapier3d['World']>,
+  body: InstanceType<Rapier3d['RigidBody']>,
+  r: RobotState,
+  builtHeight: number,
+  heightIn: number,
+): number {
+  if (Math.abs(builtHeight - heightIn) <= 1e-9) return builtHeight;
+  clearChassis3dColliders(world3d, body);
+  fitChassis(RAPIER, world3d, body, r, heightIn);
+  return heightIn;
+}
+
+function seatRobot(body: InstanceType<Rapier3d['RigidBody']>, r: RobotState, heightIn: number): void {
   body.setTranslation({ x: r.pos.x, y: r.pos.y, z: (r.z ?? 0) + heightIn / 2 }, true);
   body.setRotation(yawQuat(r.heading), true);
   body.setLinvel({ x: r.vel.x, y: r.vel.y, z: r.vz ?? 0 }, true);

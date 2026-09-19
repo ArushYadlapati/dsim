@@ -1061,13 +1061,58 @@ async function main(): Promise<void> {
     });
     const recRow = await db.query(`select physics from records where id = $1`, [rec3d]);
     check('physics: a record run stores its solve', (recRow.rows[0] as { physics: string }).physics === '3d');
-    const recLegacy = await repo.submitRecord({
-      userId: 'phys-a', mode: 'solo', drivetrain: 'mecanum', score: 45,
-      balanceVersion: SEASON, replayId: id2d, game: 'biobuzz',
+
+    /**
+     * ---- THE WRITE GATE (owner ruling, 2026-09-18) -----------------------------------
+     *
+     * Every server-connected BIOBUZZ match is 3D (`Room.physics`), so a 2D record submission
+     * for it can only come from a process that disagrees — a stale one mid-deploy, or a caller
+     * that invented one. `submitRecord` is the chokepoint and it REFUSES, rather than writing a
+     * row every later read then has to hide. DECODE is the control: it has one solve, so its
+     * untagged submissions are exactly what they always were.
+     */
+    let twoD = '';
+    try {
+      await repo.submitRecord({
+        userId: 'phys-a', mode: 'solo', drivetrain: 'mecanum', score: 45,
+        balanceVersion: SEASON, replayId: id2d, game: 'biobuzz', physics: '2d',
+      });
+    } catch (e) {
+      twoD = e instanceof Error ? e.message : String(e);
+    }
+    check('ruling: a 2D record submission for BIOBUZZ is REFUSED', twoD !== '', twoD);
+    let untagged = '';
+    try {
+      await repo.submitRecord({
+        userId: 'phys-a', mode: 'solo', drivetrain: 'mecanum', score: 46,
+        balanceVersion: SEASON, replayId: id2d, game: 'biobuzz',
+      });
+    } catch (e) {
+      untagged = e instanceof Error ? e.message : String(e);
+    }
+    check('ruling: ...and so is an UNTAGGED one, since absent reads 2d', untagged !== '', untagged);
+    await repo.ensureProfile('phys-dec', 'Decoder');
+    const decRec = await repo.submitRecord({
+      userId: 'phys-dec', mode: 'solo', drivetrain: 'mecanum', score: 77,
+      balanceVersion: SEASON, replayId: id2d, game: 'decode',
     });
     check(
-      'physics: a record run with no tag is 2d',
-      ((await db.query(`select physics from records where id = $1`, [recLegacy])).rows[0] as { physics: string }).physics === '2d',
+      'ruling: ...but a DECODE record run with no tag is accepted and stored as 2d',
+      ((await db.query(`select physics from records where id = $1`, [decRec])).rows[0] as { physics: string })
+        .physics === '2d',
+    );
+
+    /**
+     * THE PRE-RULING ROW. Written with raw SQL on purpose: `submitRecord` refuses it now, and
+     * the rows that matter are the ones already in the table from before the ruling. Its score
+     * is HIGHER than the same player's 3D run, which is the shape that breaks a naive fix —
+     * dedupe first and filter after, and this row becomes their "best", gets rejected by the
+     * filter, and the player vanishes from a board they have a real 3D score on.
+     */
+    await db.query(
+      `insert into records (user_id, mode, drivetrain, score, balance_version, replay_id, game, physics)
+       values ('phys-a', 'solo', 'mecanum', 200, $1, $2, 'biobuzz', '2d')`,
+      [SEASON, id2d],
     );
 
     // ---- the drivetrain CHECK finally knows about butterfly ---------------------------
@@ -1092,7 +1137,7 @@ async function main(): Promise<void> {
     try {
       await repo.submitRecord({
         userId: 'phys-a', mode: 'solo', drivetrain: 'hovercraft', score: 1,
-        balanceVersion: SEASON, replayId: id3d, game: 'biobuzz',
+        balanceVersion: SEASON, replayId: id3d, game: 'biobuzz', physics: '3d',
       });
     } catch (e) {
       bogus = e instanceof Error ? e.message : String(e);
@@ -1100,34 +1145,77 @@ async function main(): Promise<void> {
     check('physics: ...and the constraint still refuses a drivetrain that does not exist', bogus !== '');
 
     /**
-     * ---- the BOARD read path: the badge and the era filter (Day 3) --------------------
+     * ---- the BOARD read path: the DEFAULT is the 3D era ------------------------------
      *
-     * The column existing and the board SHOWING it are different facts, and the gap between
-     * them is the kind that ships: a `select` that simply does not project two columns still
-     * compiles and still renders, only bare — which is how the ranked board once sat badge-less
-     * (`docs/area/accounts.md`). So the projection is asserted, and so is the filter.
+     * The column existing and the board READING it are different facts, and the gap between
+     * them is the kind that ships: a `select` that simply does not project a column still
+     * compiles and still renders — which is how the ranked board once sat badge-less
+     * (`docs/area/accounts.md`). So the projection is asserted, and so is the default.
+     *
+     * The default is the whole point of the ruling. It used to be "every row", with an optional
+     * `physics` argument that `/api/records` filled from a QUERY PARAMETER — so the board a
+     * client saw was the board it asked for, and a personal best or a career panel that forgot
+     * to ask read both eras. `boardPhysics` moved that decision into the data layer.
      *
      * ⚠️ **THE FILTER IS INSIDE `best`, AND THIS IS THE CHECK THAT SAYS SO.** `best` is one row
-     * per player. `phys-a` above has a 3D run of 123 and a 2D run of 45, so their overall best
-     * is the 3D one — and a filter applied AFTER `best` would find that row, reject it, and
-     * leave the player off a 2D board they demonstrably have a 2D score on. Filtering first is
-     * what makes "3D" mean "each player's best 3D run" instead of "players whose best run
-     * happens to be 3D".
+     * per player. `phys-a` has a 3D run of 123 and a pre-ruling 2D run of 200, so their overall
+     * best is the 2D one — and a filter applied AFTER `best` would find that row, reject it,
+     * and leave the player off a board they demonstrably have a 3D score on. Filtering first is
+     * what makes the board "each player's best 3D run".
      */
     {
-      const all = await repo.recordLeaderboard({ mode: 'solo', balanceVersion: SEASON, game: 'biobuzz' });
-      const mine = all.find((r) => r.userId === 'phys-a');
-      check('physics/board: an unfiltered board projects the era of each row', mine?.physics === '3d', String(mine?.physics));
-      const only3d = await repo.recordLeaderboard({ mode: 'solo', balanceVersion: SEASON, game: 'biobuzz', physics: '3d' });
-      check('physics/board: the 3D filter keeps the 3D run', only3d.find((r) => r.userId === 'phys-a')?.score === 123,
-        String(only3d.find((r) => r.userId === 'phys-a')?.score));
+      const def = await repo.recordLeaderboard({ mode: 'solo', balanceVersion: SEASON, game: 'biobuzz' });
+      const mine = def.find((r) => r.userId === 'phys-a');
+      check(
+        'ruling/board: the DEFAULT BIOBUZZ board shows the player’s 3D run, not their higher 2D one',
+        mine?.score === 123 && mine?.physics === '3d',
+        `${String(mine?.score)}/${String(mine?.physics)}`,
+      );
+      check(
+        'ruling/board: ...and no 2D row reaches it at all',
+        !def.some((r) => r.physics === '2d'),
+        def.map((r) => `${r.userId}:${String(r.physics)}`).join(','),
+      );
+      // the ESCAPE HATCH is still an argument (admin moderation, and this suite) — it is only
+      // the public request that can no longer choose an era
       const only2d = await repo.recordLeaderboard({ mode: 'solo', balanceVersion: SEASON, game: 'biobuzz', physics: '2d' });
       const mine2d = only2d.find((r) => r.userId === 'phys-a');
       check(
-        'physics/board: ...and the 2D filter finds the player’s best 2D run, not nothing',
-        mine2d?.score === 45 && mine2d?.physics === '2d',
+        'ruling/board: an explicit 2D read still finds the retained row — nothing was deleted',
+        mine2d?.score === 200 && mine2d?.physics === '2d',
         `${String(mine2d?.score)}/${String(mine2d?.physics)}`,
       );
+      // DECODE is the control: one solve, so no filter is applied and its SQL is unchanged
+      const dec = await repo.recordLeaderboard({ mode: 'solo', balanceVersion: SEASON, game: 'decode' });
+      check(
+        'ruling/board: a one-solve game is unfiltered — its 2D rows are its only rows',
+        dec.some((r) => r.userId === 'phys-dec'),
+        `${dec.length} rows`,
+      );
+
+      /**
+       * THE THREE FIGURES BESIDE THE BOARD read the same era, or they contradict it: a PB of
+       * 200 next to a board row of 123 is the player being told their best run is one nobody
+       * can see, and a rank counted over both eras is a position on no board.
+       */
+      const pb = await repo.personalBest('phys-a', 'solo', 'mecanum', SEASON, 'biobuzz');
+      check('ruling/pb: the personal best is the 3D one, not the higher 2D one', pb === 123, String(pb));
+      const pbDec = await repo.personalBest('phys-dec', 'solo', 'mecanum', SEASON, 'decode');
+      check('ruling/pb: ...and a one-solve game’s PB is untouched', pbDec === 77, String(pbDec));
+      const rank = await repo.recordRank('phys-a', 'solo', 'mecanum', SEASON, 'biobuzz');
+      check(
+        'ruling/rank: the rank is computed WITHIN the 3D set',
+        rank.rank === 1 && rank.total === 1,
+        `${rank.rank}/${rank.total}`,
+      );
+      const stats = await repo.getUserStats('phys-a', SEASON, 'biobuzz');
+      const solo = stats.records.find((r) => r.mode === 'solo');
+      check(
+        'ruling/career: the career panel’s record PB is the 3D one too',
+        solo?.best === 123,
+        String(solo?.best),
+      );
+      check('ruling/career: ...and its rank is over the 3D set', solo?.rank === 1, String(solo?.rank));
     }
 
     // ---- matches: the history row ----------------------------------------------------
@@ -1863,6 +1951,227 @@ async function main(): Promise<void> {
     );
   }
 
+  /* ---- DATA EXPORT (GET /api/user/export) -----------------------------------
+     The other half of the promise `deleteAccount` keeps, and the half with a way of going
+     quietly wrong that deletion does not have: an export can be COMPLETE and still be a
+     privacy failure, if what it completes with is somebody else's row. So the checks come in
+     two halves — everything of mine is in there, and nothing of theirs is, asserted against
+     the SERIALIZED document rather than field by field, because the leak this guards against
+     is a join nobody remembered adding.
+  */
+  {
+    const SEA = 1041;
+    await repo.ensureSeason(SEA, 'decode', 9);
+    await repo.ensureProfile('exp-me', 'Exporter');
+    await repo.ensureProfile('exp-other', 'Bystander');
+    await repo.setUsername('exp-me', 'exporter');
+    await repo.setUsername('exp-other', 'bystander');
+
+    const container = (seed: number) => ({
+      format: 2,
+      balanceVersion: SEA,
+      sim: 3,
+      game: 'decode' as const,
+      mode: 'match' as const,
+      seed,
+      ticks: 600,
+      setups: [] as never[],
+      tracks: { 0: [1, 2, 3] },
+    });
+
+    await repo.saveUserSettings('exp-me', { drivetrain: 'swerve', dsimExportProbe: true });
+    await repo.savePreset('exp-me', 1, 'Comp bot', { drivetrain: 'swerve' } as never);
+    await repo.acceptTerms('exp-me', '2026-08-04');
+    await repo.setReplaysPublic('exp-me', true);
+
+    const recReplay = await repo.saveReplay(container(1), SEA, 'decode');
+    await repo.submitRecord({
+      userId: 'exp-me', mode: 'solo', drivetrain: 'swerve', score: 321,
+      balanceVersion: SEA, replayId: recReplay, game: 'decode',
+    });
+    // ...and one belonging to the OTHER account, with a score nothing of mine shares
+    const otherReplay = await repo.saveReplay(container(2), SEA, 'decode');
+    await repo.submitRecord({
+      userId: 'exp-other', mode: 'solo', drivetrain: 'tank', score: 777,
+      balanceVersion: SEA, replayId: otherReplay, game: 'decode',
+    });
+
+    const prac = await repo.savePracticeRun('exp-me', container(3), 45, SEA, 'decode');
+
+    // A MATCH WITH BOTH OF THEM IN IT — the shape the "no other players" rule exists for.
+    const mid = await repo.saveMatch('1v1', SEA, null as unknown as string, true, 'decode');
+    await repo.addMatchParticipant({
+      matchId: mid, userId: 'exp-me', alliance: 'red', drivetrain: 'swerve',
+      score: 88, won: true, ratingBefore: 1000, ratingAfter: 1016,
+    });
+    await repo.addMatchParticipant({
+      matchId: mid, userId: 'exp-other', alliance: 'blue', drivetrain: 'tank',
+      score: 41, won: false, ratingBefore: 1000, ratingAfter: 984,
+    });
+
+    // social: a friendship and a block, both of which MUST name the other party
+    await repo.sendFriendRequest('exp-me', 'exp-other');
+    await repo.acceptFriendRequest('exp-other', 'exp-me');
+    await repo.ensureProfile('exp-blocked', 'Blocked');
+    await repo.setUsername('exp-blocked', 'blockedone');
+    await repo.blockUser('exp-me', 'exp-blocked');
+
+    // a claimed payment, so the email-omission check has something to omit
+    await repo.recordKofiPayment({
+      messageId: 'exp-msg', kind: 'Subscription', email: 'exporter-payer@example.com',
+      transactionId: 'exp-txn', amount: '3.00', currency: 'USD',
+      isSubscription: true, tierName: 'Supporter', months: 1,
+    });
+    await repo.claimKofiPayment('exp-me', 'exp-txn');
+
+    const ex = await repo.exportAccount('exp-me');
+    check('export: an account with data exports something', !!ex);
+    if (!ex) throw new Error('export: exportAccount returned null for a live account');
+    const doc = JSON.stringify(ex);
+
+    check(
+      'export: it is versioned and stamped, so a file read years later is readable',
+      ex.format === 1 && !!Date.parse(ex.exportedAt),
+      `format=${ex.format} at=${ex.exportedAt}`,
+    );
+    check(
+      'export: the profile fields are the ones the app shows you',
+      ex.account.handle === 'Exporter' &&
+        ex.account.username === 'exporter' &&
+        ex.account.replaysPublic === true &&
+        ex.account.termsVersion === '2026-08-04',
+      JSON.stringify(ex.account),
+    );
+    check(
+      'export: the synced settings blob comes back whole',
+      !!ex.settings && (ex.settings as { dsimExportProbe?: boolean }).dsimExportProbe === true,
+    );
+    check('export: saved robot presets are included', ex.robotPresets.length === 1);
+    check(
+      'export: records are included, with the replay id behind each score',
+      ex.records.length === 1 &&
+        ex.records[0].score === 321 &&
+        ex.records[0].replay_id === recReplay,
+      `${ex.records.length} records`,
+    );
+    check(
+      'export: practice runs are included',
+      ex.practiceRuns.length === 1 && ex.practiceRuns[0].id === prac.id,
+    );
+    check(
+      'export: ranked rating and its per-season history are included',
+      Array.isArray(ex.ranked.ratings) && Array.isArray(ex.ranked.history),
+    );
+    check(
+      'export: playtime and standing are included',
+      Array.isArray(ex.playtime) && 'standing' in ex,
+    );
+
+    // REPLAYS BY ID AND KIND — not bodies. The union is the one `deleteAccount` deletes by,
+    // so a replay that would be destroyed with the account must be listed with it.
+    check(
+      'export: every replay the account owns is listed by id and what it belongs to',
+      ex.replays.some((r) => r.id === recReplay && r.kind === 'record') &&
+        ex.replays.some((r) => r.id === prac.replayId && r.kind === 'practice'),
+      JSON.stringify(ex.replays),
+    );
+    check(
+      '⚠️ export: replay BODIES are not in it (seeds, tracks and setups stay out)',
+      !doc.includes('"tracks"') && !doc.includes('"setups"'),
+    );
+
+    // MY OWN MATCH ROW, and nothing about who I played.
+    check(
+      'export: the match carries MY result and the match’s own facts',
+      ex.matches.length === 1 &&
+        ex.matches[0].match_id === mid &&
+        ex.matches[0].alliance === 'red' &&
+        ex.matches[0].score === 88 &&
+        ex.matches[0].rating_after === 1016,
+      JSON.stringify(ex.matches),
+    );
+
+    /**
+     * ⚠️ THE OPPONENT IS NOWHERE IN THE FILE.
+     *
+     * Asserted against the serialized document and not against a field, because the leak this
+     * guards against is a join somebody adds later for a good reason — "it would be nice to
+     * see who I played" — and no per-field check would notice it. `exp-other` IS a friend, so
+     * their public handle and username are legitimately in the friends section; what must not
+     * appear is their USER ID, which is the thing that links rows across every table here, and
+     * their score and rating, which are their match row rather than mine.
+     */
+    check(
+      '⚠️ export: another player’s user id never appears, anywhere in the document',
+      !doc.includes('exp-other'),
+      doc.slice(Math.max(0, doc.indexOf('exp-other') - 60), doc.indexOf('exp-other') + 60),
+    );
+    check(
+      '⚠️ export: and neither does their half of the match (their score, their rating move)',
+      !ex.matches.some((m) => m.score === 41 || m.rating_after === 984),
+    );
+    check(
+      '⚠️ export: another account’s RECORDS never appear (777 is theirs alone)',
+      !ex.records.some((r) => r.score === 777) && !doc.includes(otherReplay),
+    );
+
+    // NAMES ONLY WHERE THE APP ALREADY SHOWS THEM. A friends list without names is not a
+    // portable friends list, and both fields are public on every leaderboard already.
+    check(
+      'export: the friends list names the other party by handle and username',
+      ex.friends.friends.length === 1 &&
+        ex.friends.friends[0].handle === 'Bystander' &&
+        ex.friends.friends[0].username === 'bystander',
+      JSON.stringify(ex.friends.friends),
+    );
+    check(
+      'export: blocks are included and name who is blocked',
+      ex.friends.blocked.length === 1 && ex.friends.blocked[0].username === 'blockedone',
+    );
+    check(
+      'export: the four request/invite buckets all exist, even when empty',
+      Array.isArray(ex.friends.requestsSent) &&
+        Array.isArray(ex.friends.requestsReceived) &&
+        Array.isArray(ex.friends.invitesSent) &&
+        Array.isArray(ex.friends.invitesReceived),
+    );
+
+    // PAYMENTS WITHOUT THE PAYER ADDRESS. The row survives account deletion with the email
+    // nulled, so a route that reads the column at all is one refactor from reading it for the
+    // wrong `claimed_by`; the address is on the caller's own Ko-fi receipt instead.
+    check(
+      'export: the payment behind a membership is included',
+      ex.payments.length === 1 && ex.payments[0].transaction_id === 'exp-txn',
+      JSON.stringify(ex.payments),
+    );
+    check(
+      '⚠️ export: no email address is in the document, not even the payer’s own',
+      !doc.includes('exporter-payer@example.com') && !doc.includes('"email"'),
+    );
+    check(
+      'export: the file states what it deliberately leaves out',
+      ex.notes.length >= 3 && ex.notes.some((n) => /other players/i.test(n)),
+    );
+
+    // ...AND AFTER DELETION THERE IS NOTHING TO EXPORT. The token outlives the row, so this is
+    // the answer a live session gets seconds after pressing delete — a 404 at the route, which
+    // is the honest reading of null, rather than an empty document that says "we hold nothing"
+    // as though that had been checked.
+    check(
+      'export: an account that never existed exports null (the route’s 404)',
+      (await repo.exportAccount('exp-nobody')) === null,
+    );
+    await repo.deleteAccount('exp-me');
+    check(
+      '⚠️ export: a DELETED account exports null, not an empty document',
+      (await repo.exportAccount('exp-me')) === null,
+    );
+    check(
+      'export: ...and the other account is still exportable (deletion took only mine)',
+      !!(await repo.exportAccount('exp-other')),
+    );
+  }
+
   /* ---- REPLAY PRIVACY (migration 0038) -------------------------------------
      Match replays are private by default: watchable by everyone who PLAYED in the match, and
      by nobody else unless every one of them opts in. Every assertion below was written to
@@ -2143,6 +2452,591 @@ async function main(): Promise<void> {
       'privacy/history: a fully released match hands a stranger the replay id',
       (await hist('rp-red', 'rp-nosy')).rows.find((r) => r.id === String(mid))?.replayId === String(vsReplay),
       'rp-red and rp-blue are both public here',
+    );
+  }
+
+  /* ---- ANALYTICS (migration 0042) -------------------------------------------------------
+     The feature's guarantees are all database-shaped, which is to say none of them can be
+     confirmed by reading the code that states them:
+
+       · a visitor hash is stable within a day and DIFFERENT across days, because the salt
+         rotated and the old one was destroyed;
+       · sessions are derived from a 30-minute gap — a rule that exists only inside a window
+         function, and whose two failure modes (a session split by a bucket boundary, a session
+         counted again in the bucket it continued into) both look like plausible numbers;
+       · the rollup is IDEMPOTENT, because the job re-runs the last three hours every pass;
+       · the all-games `'*'` row is a real aggregate and not the sum of the per-game ones,
+         which is the whole reason it is written;
+       · retention actually deletes, including the salt, which is the privacy promise itself.
+
+     Run against the real migration and the real queries, like everything else in this file.  */
+  {
+    const an = await import('../server/analytics');
+
+    // ---- the salt, and the hash that depends on it --------------------------------------
+    an.resetSaltCache();
+    const today = await an.currentSalt(new Date('2026-09-19T10:00:00Z'));
+    an.resetSaltCache();
+    const again = await an.currentSalt(new Date('2026-09-19T22:00:00Z'));
+    check('analytics/salt: one salt per UTC day, shared rather than per process', today === again);
+    an.resetSaltCache();
+    const tomorrow = await an.currentSalt(new Date('2026-09-20T01:00:00Z'));
+    check('analytics/salt: a new UTC day gets a new salt', tomorrow !== today);
+
+    const ip = '203.0.113.9';
+    const ua = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/128.0 Safari/537.36';
+    const h1 = an.visitorHash(today, ip, ua, 'playdsim.com');
+    check('analytics/hash: the same visitor on the same day hashes the same', h1 === an.visitorHash(today, ip, ua, 'playdsim.com'));
+    check(
+      '⚠️ analytics/hash: the SAME visitor on the NEXT day is a different visitor — the salt is what makes that true',
+      h1 !== an.visitorHash(tomorrow, ip, ua, 'playdsim.com'),
+    );
+    check('analytics/hash: two deployments never merge audiences (the site term)', h1 !== an.visitorHash(today, ip, ua, 'alpha.playdsim.com'));
+    check('analytics/hash: 16 hex characters, not a full digest', /^[0-9a-f]{16}$/.test(h1));
+
+    // ---- classification, which decides most of the breakdown columns --------------------
+    check('analytics/ua: Edge is Edge, not the Chrome and Safari it also claims to be', an.classify(ua.replace('Chrome/128.0', 'Chrome/128.0 Edg/128.0')).browser === 'Edge');
+    check('analytics/ua: plain Chrome on Windows', an.classify(ua).browser === 'Chrome' && an.classify(ua).os === 'Windows' && an.classify(ua).device === 'desktop');
+    check(
+      'analytics/ua: an iPhone is mobile and an Android tablet is a tablet',
+      an.classify('Mozilla/5.0 (iPhone; CPU iPhone OS 17_0) AppleWebKit/605 Version/17 Mobile Safari/604').device === 'mobile' &&
+        an.classify('Mozilla/5.0 (Linux; Android 13; SM-X700) AppleWebKit/537 Chrome/120 Safari/537').device === 'tablet',
+    );
+    check('⚠️ analytics/bot: a blank user agent is a bot, not a visitor', an.isBot(''));
+    check('analytics/bot: crawlers and probes are refused', an.isBot('Googlebot/2.1') && an.isBot('curl/8.4.0') && an.isBot('Mozilla/5.0 HeadlessChrome/120'));
+    check('analytics/bot: a real browser is not', !an.isBot(ua));
+    check('analytics/lang: the primary subtag only, never the whole header', an.primaryLang('en-GB,en;q=0.9,de;q=0.8') === 'en' && an.primaryLang('') === '');
+    check('analytics/country: a known zone maps, an unknown one contributes nothing', an.countryForTimezone('Europe/Berlin') === 'DE' && an.countryForTimezone('Etc/GMT+5') === '');
+
+    // ---- the beacon validator ------------------------------------------------------------
+    check('analytics/parse: a beacon with no path is not a partial record, it is not a record', an.parsePageview({ g: 'decode' }) === null);
+    {
+      const pv = an.parsePageview({ p: '/decode/records', g: 'decode', w: 'lg', x: 'web', r: 'GOOGLE.COM', z: 'Europe/Berlin' });
+      check('analytics/parse: a good beacon comes back normalized', pv?.path === '/decode/records' && pv.ref === 'google.com' && pv.screen === 'lg');
+      const junk = an.parsePageview({ p: '/x', w: '9000', x: 'curl', g: 'DECODE!', evil: 'select 1' });
+      check(
+        '⚠️ analytics/parse: an allowlist — an unknown key is never read, and a bad enum falls back',
+        junk !== null && junk.screen === '' && junk.surface === 'web' && junk.game === '' && !('evil' in junk),
+      );
+      const long = an.parsePageview({ p: '/a', c: 'x'.repeat(500) });
+      check('analytics/parse: every field is length-capped at the boundary', (long?.utmCampaign.length ?? 0) <= 48);
+    }
+    check('analytics/parse: an event needs a well-formed name', an.parseEvent({ n: 'Drop Table' }) === null);
+    {
+      const ev = an.parseEvent({ n: 'sponsor_shown', p: '/decode', d: { placement: 'footer', n: 3, bad_KEY: 'x', long: 'y'.repeat(99) } });
+      check(
+        '⚠️ analytics/parse: event properties are BOUNDED here, not trusted — bad keys dropped, values truncated',
+        ev?.props.placement === 'footer' && ev.props.n === '3' && !('bad_KEY' in (ev?.props ?? {})) && (ev?.props.long.length ?? 0) <= 32,
+      );
+    }
+
+    // ---- rate limits ----------------------------------------------------------------------
+    an.resetRateLimits();
+    let allowed = 0;
+    for (let i = 0; i < an.VISITOR_LIMIT + 5; i++) if (an.rateOk('v1', an.VISITOR_LIMIT)) allowed++;
+    check('analytics/rate: one visitor is bounded inside the window', allowed === an.VISITOR_LIMIT);
+    check('analytics/rate: ...and a DIFFERENT visitor is unaffected by it', an.rateOk('v2', an.VISITOR_LIMIT));
+    check('analytics/rate: the window expires rather than banning', an.rateOk('v1', an.VISITOR_LIMIT, Date.now() + 20 * 60_000));
+
+    // ---- ingest, sessions, and the rollup -------------------------------------------------
+    const t0 = new Date('2026-09-10T12:00:00Z');
+    const mins = (n: number): Date => new Date(t0.getTime() + n * 60_000);
+    const pv = async (visitor: string, at: Date, path: string, game: string, extra: Partial<Record<string, string>> = {}): Promise<void> => {
+      await db.query(
+        `insert into analytics_pageviews (at, visitor, path, game, ref_host, country, device, os, browser, screen, lang, surface, channel, build)
+         values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`,
+        [at, visitor, path, game, extra.ref ?? '', extra.country ?? 'US', extra.device ?? 'desktop',
+          extra.os ?? 'Windows', extra.browser ?? 'Chrome', 'lg', 'en', 'web', 'stable', 'abc123'],
+      );
+    };
+    // visitor A: three views five minutes apart (ONE session), then a fourth two hours later
+    // (a SECOND session). visitor B: one view, which is a bounce.
+    await pv('aaaa000000000001', mins(0), '/decode', 'decode', { ref: 'google.com' });
+    await pv('aaaa000000000001', mins(5), '/decode/records', 'decode');
+    await pv('aaaa000000000001', mins(10), '/chain/records', 'chain');
+    await pv('aaaa000000000001', mins(130), '/decode', 'decode');
+    await pv('bbbb000000000002', mins(20), '/privacy', '', { country: 'DE', device: 'mobile' });
+    await db.query(`insert into analytics_events (at, visitor, name, game, path, props) values ($1,$2,'support_view','decode','/decode/donate','{"placement":"footer"}')`, [mins(6), 'aaaa000000000001']);
+
+    const day0 = new Date('2026-09-10T00:00:00Z');
+    const day1 = new Date('2026-09-11T00:00:00Z');
+    await an.runRollup(day0, day1);
+
+    const daily = async (game: string, dim: string, val: string) =>
+      (await db.query<{ views: number; visitors: number; sessions: number; bounces: number; seconds: string }>(
+        `select views, visitors, sessions, bounces, seconds from analytics_daily
+          where day = '2026-09-10' and game = $1 and dim = $2 and val = $3`,
+        [game, dim, val],
+      )).rows[0];
+
+    const all = await daily('*', 'total', '*');
+    check('analytics/rollup: every view in the day is counted once', all?.views === 5, `views=${all?.views}`);
+    check('analytics/rollup: two distinct visitors', all?.visitors === 2, `visitors=${all?.visitors}`);
+    check(
+      '⚠️ analytics/session: a 30-minute gap ends one — A is two sessions, B is one',
+      all?.sessions === 3,
+      `sessions=${all?.sessions}`,
+    );
+    check(
+      'analytics/session: a one-view session is a bounce (B, and A’s second)',
+      all?.bounces === 2,
+      `bounces=${all?.bounces}`,
+    );
+    check(
+      'analytics/session: duration is first view to last — A’s first session is 10 minutes',
+      Number(all?.seconds ?? 0) === 600,
+      `seconds=${all?.seconds}`,
+    );
+
+    const decode = await daily('decode', 'total', '*');
+    check('analytics/rollup: the per-game row counts only that game’s views', decode?.views === 3, `views=${decode?.views}`);
+    check(
+      '⚠️ analytics/rollup: the all-games row is an AGGREGATE, not the sum of the per-game rows',
+      (await daily('chain', 'total', '*'))?.visitors === 1 && decode?.visitors === 1 && all?.visitors === 2,
+      'one person on two games is one visitor, not two',
+    );
+
+    check('analytics/rollup: the pages breakdown', (await daily('*', 'path', '/decode'))?.views === 2);
+    check('analytics/rollup: the referrer breakdown, with direct traffic kept as its own value', (await daily('*', 'ref', ''))?.views === 4 && (await daily('*', 'ref', 'google.com'))?.views === 1);
+    check('analytics/rollup: the country breakdown', (await daily('*', 'country', 'DE'))?.views === 1);
+    check('analytics/rollup: entry pages are a SESSION fact, and /decode is where two of them started', (await daily('*', 'entry', '/decode'))?.sessions === 2);
+    check('analytics/rollup: named events land in the same table as the traffic', (await daily('*', 'event', 'support_view'))?.views === 1);
+
+    // ⚠️ IDEMPOTENCE. The job re-rolls the last three hours on every pass, so a second run
+    // must REPLACE rather than accumulate — an `insert … on conflict do update` that said
+    // `views = analytics_daily.views + excluded.views` would double every number here and
+    // look perfectly reasonable in review.
+    await an.runRollup(day0, day1);
+    check('⚠️ analytics/rollup: re-running a bucket replaces it rather than adding to it', (await daily('*', 'total', '*'))?.views === 5);
+
+    // ---- the dashboard read ---------------------------------------------------------------
+    {
+      const rep = await an.analyticsReport({ from: day0, to: day1, game: '*', filters: [], grain: 'day' });
+      check('analytics/report: totals match the rollup', rep.totals.views === 5 && rep.totals.sessions === 3);
+      check('analytics/report: the series has a bucket', rep.series.length === 1 && rep.series[0].views === 5);
+      const country = rep.breakdowns.filter((b) => b.dim === 'country');
+      check('analytics/report: breakdowns come back for every dimension at once', country.length === 2 && rep.breakdowns.some((b) => b.dim === 'entry'));
+      check('analytics/report: events and their properties both come back', rep.events[0]?.name === 'support_view' && rep.eventProps[0]?.val === 'footer');
+
+      // CLICK-TO-FILTER is the feature the raw tier exists for: it has to narrow EVERY number
+      // on the page, not just the panel that was clicked.
+      const de = await an.analyticsReport({ from: day0, to: day1, game: '*', filters: [{ dim: 'country', val: 'DE' }], grain: 'day' });
+      check('⚠️ analytics/filter: a filter narrows the totals, not just its own panel', de.totals.views === 1 && de.totals.visitors === 1);
+      check('analytics/filter: ...and the breakdowns with them', de.breakdowns.filter((b) => b.dim === 'path').length === 1);
+      const bogus = await an.analyticsReport({ from: day0, to: day1, game: '*', filters: [{ dim: 'drop table', val: 'x' }], grain: 'day' });
+      check(
+        '⚠️ analytics/filter: a dimension that is not one of ours is DROPPED, never interpolated',
+        bogus.totals.views === 5,
+      );
+      check('analytics/report: a game filter narrows it too', (await an.analyticsReport({ from: day0, to: day1, game: 'chain', filters: [], grain: 'day' })).totals.views === 1);
+      check(
+        'analytics/report: a range older than the raw tier keeps is served from the aggregates, and says so',
+        (await an.analyticsReport({ from: new Date('2025-01-01'), to: new Date('2025-02-01'), game: '*', filters: [], grain: 'day' })).source === 'aggregate',
+      );
+    }
+
+    // ---- retention, which is where the privacy promise is either kept or not ---------------
+    await db.query(`insert into analytics_pageviews (at, visitor, path) values (now() - interval '45 days', 'old0000000000001', '/old')`);
+    await db.query(`insert into analytics_salt (day, salt) values ((now() at time zone 'UTC')::date - 9, 'ancient')`);
+    await an.sweepAnalytics();
+    check(
+      'analytics/retention: a raw row past 30 days is deleted',
+      Number((await db.query<{ n: string }>(`select count(*) as n from analytics_pageviews where path = '/old'`)).rows[0].n) === 0,
+    );
+    check(
+      '⚠️ analytics/retention: an old SALT is DESTROYED — this deletion is the promise that a visitor cannot be followed across days',
+      Number((await db.query<{ n: string }>(`select count(*) as n from analytics_salt where salt = 'ancient'`)).rows[0].n) === 0,
+    );
+    check(
+      'analytics/retention: the aggregates outlive the raw rows they were built from',
+      (await daily('*', 'total', '*'))?.views === 5,
+    );
+
+    // ---- ⚠️ THE SCHEMA ITSELF CANNOT HOLD AN IDENTIFIER ------------------------------------
+    // The strongest statement this feature makes is "no account id is ever attached to
+    // traffic", and it is worth asserting as a property of the SCHEMA rather than of the code
+    // that writes it: a column somebody adds later for a good reason is exactly how this
+    // guarantee would be lost, and it would not fail any other test here.
+    {
+      const cols = (await db.query<{ table_name: string; column_name: string }>(
+        `select table_name, column_name from information_schema.columns
+          where table_schema = 'public' and table_name like 'analytics\\_%'
+            and (column_name in ('user_id', 'ip', 'ip_address', 'user_agent', 'ua', 'email', 'handle', 'username')
+                 or column_name like '%user_id%')`,
+      )).rows;
+      check(
+        '⚠️ analytics/schema: no analytics table has a user id, an IP or a user-agent column',
+        cols.length === 0,
+        cols.map((c) => `${c.table_name}.${c.column_name}`).join(', ') || 'none',
+      );
+    }
+
+    // ---- the product half ------------------------------------------------------------------
+    {
+      const prod = await an.productReport(new Date('2020-01-01'), new Date('2030-01-01'), '*');
+      check('analytics/product: matches are counted per game × kind × mode × physics', prod.matches.length > 0);
+      check('analytics/product: signups per day come off `profiles`', prod.signups.length > 0);
+      check('analytics/product: the ranked distribution buckets by 100 points', prod.ranked.every((r) => r.bucket % 100 === 0));
+      check('analytics/product: replay storage is measured, not estimated', prod.replayBytes > 0);
+      check('analytics/product: a retention cohort carries its own size', prod.retention.every((r) => r.size >= r.d1 && r.d1 >= 0));
+      check(
+        'analytics/product: a day is YYYY-MM-DD rather than whatever the driver returned',
+        prod.signups.every((r) => /^\d{4}-\d{2}-\d{2}$/.test(r.day)),
+      );
+      const one = await an.productReport(new Date('2020-01-01'), new Date('2030-01-01'), 'chain');
+      check('analytics/product: the game filter reaches every per-game query', one.matches.every((m) => m.game === 'chain'));
+    }
+
+    // ---- concurrency sampling ---------------------------------------------------------------
+    await db.query(
+      `insert into presence (machine, region, online, authed, q1v1, q2v2, updated_at, rooms)
+       values ('m1', 'iad', 7, '["u1","u2"]'::jsonb, 1, 0, now(), '[{"room":"a"}]'::jsonb)`,
+    );
+    check('analytics/concurrency: a live machine is sampled into the history table', (await an.sampleConcurrency()) === 1);
+    check(
+      '⚠️ analytics/concurrency: an EMPTY service writes nothing — the gap in the chart is the answer, and an unconditional write would pin the Neon compute awake',
+      (await db.query(`update presence set online = 0 where machine = 'm1'`), await an.sampleConcurrency()) === 0,
+    );
+  }
+
+  /* ---- THE ADMIN CONSOLE'S OWN LAYER (migration 0041) ----------------------
+     The audit log, moderator notes, the name resolver behind the "(no profile)" fix, and the
+     one-request user detail. Every one of these is a moderation surface, which is the class
+     of code where a read-only review is worth least: the guarantees live in a `left join`
+     that must survive a missing row, a delete scoped by two columns, and a paging clause
+     that must not show one row twice.
+  */
+  {
+    await repo.ensureProfile('adm-mod', 'Moderator');
+    await repo.ensureProfile('adm-target', 'Target Player');
+    await repo.ensureProfile('adm-other', 'Somebody Else');
+    await repo.setUsername('adm-target', 'targetplayer');
+
+    const t41 = (
+      await db.query<{ table_name: string }>(
+        `select table_name from information_schema.tables
+          where table_schema = 'public' and table_name in ('admin_audit','admin_notes')`,
+      )
+    ).rows.map((r) => r.table_name);
+    check('audit: 0041 created admin_audit', t41.includes('admin_audit'));
+    check('audit: 0041 created admin_notes', t41.includes('admin_notes'));
+
+    // ---- the log ---------------------------------------------------------------------
+    await repo.writeAudit({
+      adminId: 'adm-mod',
+      action: 'user.rename',
+      targetUser: 'adm-target',
+      detail: { from: 'Target Player', to: 'Renamed' },
+      note: 'inappropriate name',
+    });
+    await repo.writeAudit({ adminId: 'adm-mod', action: 'season.start', detail: { season: 7 } });
+    await repo.writeAudit({ adminId: 'secret', action: 'notice.restart', detail: { seconds: 300 } });
+
+    const all = await repo.listAudit({ limit: 50 });
+    check('audit: every write lands, newest first', all.rows.length === 3 && all.rows[0].action === 'notice.restart');
+    check(
+      'audit: the detail blob round-trips as an object, not a string',
+      all.rows.find((r) => r.action === 'user.rename')?.detail.to === 'Renamed',
+    );
+    // ⚠️ THE NAME IS RESOLVED AT READ TIME, NEVER STORED. A handle copied into the row would
+    // be a lie the moment somebody is renamed — which, for a log whose commonest entry IS a
+    // rename, is the very next row.
+    check(
+      'audit: the target’s CURRENT name is joined on, not a copy taken when it was written',
+      all.rows.find((r) => r.action === 'user.rename')?.targetHandle === 'Target Player',
+    );
+    await repo.setHandle('adm-target', 'After The Rename');
+    check(
+      'audit: ...so renaming them changes what the old row reads as',
+      (await repo.listAudit({ action: 'user.rename' })).rows[0]?.targetHandle === 'After The Rename',
+    );
+    // a SERVICE-WIDE action has no target, and that is a real state rather than a gap: the
+    // acting admin must never end up in the column that means "the person this was done to"
+    check(
+      'audit: a service-wide action has no target account',
+      all.rows.find((r) => r.action === 'season.start')?.targetUser === null,
+    );
+
+    check('audit: filter by action', (await repo.listAudit({ action: 'season.start' })).rows.length === 1);
+    check('audit: filter by acting admin', (await repo.listAudit({ adminId: 'secret' })).rows.length === 1);
+    check(
+      'audit: filter by target account — "what has been done to this person"',
+      (await repo.listAudit({ targetUser: 'adm-target' })).rows.length === 1,
+    );
+    check(
+      'audit: free text reaches the note',
+      (await repo.listAudit({ query: 'inappropriate' })).rows.length === 1,
+    );
+    check(
+      'audit: ...and the target’s name, through the join',
+      (await repo.listAudit({ query: 'After The' })).rows.length === 1,
+    );
+    // ⚠️ A BARE `%` MUST NOT MATCH EVERYTHING. The search is five `ilike`s; unescaped, one
+    // character typed into the box turns a filter into a full scan that returns the lot.
+    check(
+      'audit: a wildcard typed into the search box is a literal, not a wildcard',
+      (await repo.listAudit({ query: '%' })).rows.length === 0,
+    );
+    check(
+      'audit: the action list is the filter menu’s options',
+      (await repo.auditActions()).join(',') === 'notice.restart,season.start,user.rename',
+    );
+
+    // PAGING. `more` is answered by fetching one row past the page, never by a second count
+    // over the same scan.
+    const p1 = await repo.listAudit({ limit: 2 });
+    check('audit: a page is capped at what was asked for', p1.rows.length === 2);
+    check('audit: ...and says there is another', p1.more === true);
+    const p2 = await repo.listAudit({ limit: 2, offset: 2 });
+    check('audit: the next page is the remainder', p2.rows.length === 1 && p2.more === false);
+    check(
+      'audit: no row appears on both pages',
+      !p1.rows.some((a) => p2.rows.some((b) => b.id === a.id)),
+    );
+    check(
+      'audit: an absurd limit is clamped rather than honoured',
+      (await repo.listAudit({ limit: 10_000 })).rows.length === 3,
+    );
+
+    // ⚠️ IT MUST NEVER THROW INTO A ROUTE. A moderator who has just pardoned somebody must
+    // not see the pardon fail because a logging insert did — the same rule server/standing.ts
+    // states. `admin_audit` has no foreign keys, so an unknown target is fine by design; this
+    // asserts the swallow on a genuinely broken write.
+    let auditThrew = false;
+    await repo
+      .writeAudit({ adminId: 'adm-mod', action: 'x'.repeat(100_000), targetUser: 'nobody-at-all' })
+      .catch(() => {
+        auditThrew = true;
+      });
+    check('audit: a write can never throw into the route that called it', !auditThrew);
+    check(
+      'audit: a row naming an account that does not exist still reads back',
+      (await repo.listAudit({ targetUser: 'nobody-at-all' })).rows.length === 1,
+    );
+
+    // ---- moderator notes -------------------------------------------------------------
+    const n1 = await repo.addAdminNote('adm-target', 'adm-mod', '  warned in the event chat  ');
+    check('notes: a note is stored trimmed', n1?.note === 'warned in the event chat');
+    check('notes: an empty note is refused rather than stored blank', (await repo.addAdminNote('adm-target', 'adm-mod', '   ')) === null);
+    await repo.addAdminNote('adm-other', 'adm-mod', 'unrelated');
+    check('notes: a note belongs to ONE account', (await repo.listAdminNotes('adm-target')).length === 1);
+    // ⚠️ SCOPED BY USER AS WELL AS ID. A note id pasted from one account's panel must not be
+    // able to delete another's row — the delete takes both, so a mistyped id is a no-op.
+    check(
+      'notes: deleting by id from the WRONG account does nothing',
+      (await repo.deleteAdminNote('adm-other', n1!.id)) === false,
+    );
+    check('notes: ...and the note is still there', (await repo.listAdminNotes('adm-target')).length === 1);
+    check('notes: deleting from the right account works', (await repo.deleteAdminNote('adm-target', n1!.id)) === true);
+
+    // ---- the name resolver: the whole of the "(no profile)" fix ----------------------
+    const names = await repo.profileNames(['adm-target', 'no-such-account']);
+    check('names: a real account resolves to its handle', names.get('adm-target')?.handle === 'After The Rename');
+    check('names: ...with its username', names.get('adm-target')?.username === 'targetplayer');
+    // ⚠️ THE BIT THAT MATTERS. An account with auth and no `profiles` row is NOT "a name we
+    // failed to look up" — it is a real state (the row is created lazily by `ensureProfile`
+    // on the API routes a client hits, not when its socket authenticates), and the operator
+    // view printed both as "(no profile)". `known` is what lets the UI say which it is.
+    check('names: an account with no profile row is ABSENT, not a null handle', !names.has('no-such-account'));
+    check('names: a resolved row says so explicitly', names.get('adm-target')?.known === true);
+    check('names: an empty input costs no query', (await repo.profileNames([])).size === 0);
+    await repo.syncStaffRoles('adm-mod', ['adm-mod']);
+    check(
+      'names: the staff role rides along, so the console can tell a colleague’s session apart',
+      (await repo.profileNames(['adm-mod'])).get('adm-mod')?.role === 'owner',
+    );
+
+    // ---- the one-request user detail --------------------------------------------------
+    await repo.submitReport({ reportedId: 'adm-target', reporterId: 'adm-other', reason: 'cheating', roomCode: 'r1' });
+    await repo.submitReport({ reportedId: 'adm-target', reporterId: 'adm-mod', reason: 'afk', roomCode: 'r1' });
+    await repo.submitReport({ reportedId: 'adm-other', reporterId: 'adm-target', reason: 'afk', roomCode: 'r2' });
+    await repo.submitScoreReport({ reporterId: 'adm-target', roomCode: 'r3', detail: 'the score was wrong' });
+    await repo.addAdminNote('adm-target', 'adm-mod', 'keep an eye on this one');
+
+    const detail = await repo.adminUserDetail('adm-target');
+    check('detail: the profile half', detail.known && detail.handle === 'After The Rename' && detail.username === 'targetplayer');
+    check('detail: reports AGAINST, open and distinct reporters', detail.reportsAgainst.total === 2 && detail.reportsAgainst.open === 2 && detail.reportsAgainst.reporters === 2);
+    // ⚠️ BOTH DIRECTIONS. "Reported twice" and "has filed forty reports of their own" are
+    // opposite conclusions about the same person, and the console could only see the first.
+    check('detail: reports FILED by them, which is how a report-button habit becomes visible', detail.reportsFiled.total === 1);
+    check('detail: misscore claims they have filed', detail.scoreReportsFiled.total === 1);
+    check('detail: their notes', detail.notes.length === 1);
+    check('detail: their standing ledger is on the same read', Array.isArray(detail.standingEvents));
+    check('detail: what has been done to them', detail.audit.some((a) => a.action === 'user.rename'));
+
+    // AN ID WITH NO ACCOUNT STILL ANSWERS. That is the state somebody is looking at when they
+    // arrive from a session that said it was signed in, and refusing it would hide exactly
+    // the thing they came to see.
+    const ghost = await repo.adminUserDetail('no-such-account');
+    check('detail: an unknown account answers rather than erroring', ghost.userId === 'no-such-account');
+    check('detail: ...and says it has no profile row', ghost.known === false && ghost.handle === null);
+
+    // ---- the admin search ------------------------------------------------------------
+    check(
+      'search: a substring of the display name finds them',
+      (await repo.searchProfiles('Rename')).some((r) => r.userId === 'adm-target'),
+    );
+    check(
+      'search: an exact username finds them',
+      (await repo.searchProfiles('targetplayer')).some((r) => r.userId === 'adm-target'),
+    );
+    check(
+      'search: an exact account id finds them',
+      (await repo.searchProfiles('adm-target')).some((r) => r.userId === 'adm-target'),
+    );
+    // ⚠️ THE SAME WILDCARD HOLE AS THE AUDIT SEARCH, and worse here: these rows carry the
+    // membership and the staff role, so one character typed into the box used to enumerate
+    // every account on the service.
+    check('search: a bare wildcard matches nothing rather than everyone', (await repo.searchProfiles('%')).length === 0);
+    // PAGING is tie-broken on `user_id` because `handle` is NOT unique — two people called
+    // "Zzpager" have no stable order between pages without it, so one is shown twice and
+    // another never at all. Which is why both of these share a handle exactly.
+    await repo.ensureProfile('adm-page1', 'Zzpager');
+    await repo.ensureProfile('adm-page2', 'Zzpager');
+    const sp1 = await repo.searchProfiles('Zzpager', 1, 0);
+    const sp2 = await repo.searchProfiles('Zzpager', 1, 1);
+    check('search: a page is the size asked for', sp1.length === 1 && sp2.length === 1);
+    check('search: two identically-named rows still page apart', sp1[0].userId !== sp2[0].userId);
+    check('search: and the page after the last one is empty', (await repo.searchProfiles('Zzpager', 1, 2)).length === 0);
+
+    /* ---- MODERATION CAPABILITIES (migration 0043 + the reads behind them) --------------
+       The five things a moderator could not do before: suspend an account, take an abusive
+       @username away, see the reports it FILED rather than only a count of them, flag a
+       charged-back payment, and delete the account outright. Every one of them is a moderation
+       surface, and three of the five are the kind whose failure is silent — a suspension that
+       reads as lifted because the deadline passed, a cleared name that the audit row records
+       as `null`, a refund flagged against a transaction nobody could find.
+    */
+    {
+      await repo.ensureProfile('adm-susp', 'Suspendable');
+      await repo.setUsername('adm-susp', 'suspendable');
+
+      // ---- suspension is a DEADLINE, not a flag ------------------------------------
+      check(
+        'suspend: a fresh account is not suspended',
+        (await repo.getSuspension('adm-susp')).until === null,
+      );
+      check(
+        'suspend: an account that does not exist is not suspended either (the gate fails OPEN)',
+        (await repo.getSuspension('nobody-at-all')).until === null,
+      );
+      const set = await repo.setSuspension('adm-susp', Date.now() + 7 * 86_400_000, 'griefing');
+      check('suspend: setting one answers with the stored state', set !== null && set.until !== null);
+      const live = await repo.getSuspension('adm-susp');
+      check('suspend: ...and the door reads it back', live.until !== null && live.reason === 'griefing');
+      check(
+        'suspend: setting one against an id with no profile row answers null, not a silent no-op',
+        (await repo.setSuspension('nobody-at-all', Date.now() + 86_400_000, 'x')) === null,
+      );
+      // ⚠️ AN EXPIRED DEADLINE IS "NOT SUSPENDED". This is the whole reason the column is a
+      // timestamp: a suspension has to end by ARRIVING. A `getSuspension` that answered
+      // "suspended, in the past" would keep somebody out for ever.
+      await repo.setSuspension('adm-susp', Date.now() + 86_400_000, 'temporary');
+      await db.query(`update profiles set suspended_until = now() - interval '1 hour' where user_id = 'adm-susp'`);
+      check(
+        'suspend: an expired deadline reads as not suspended, without anybody lifting it',
+        (await repo.getSuspension('adm-susp')).until === null,
+      );
+      // ...and `setSuspension` refuses to store a deadline in the past rather than writing one
+      // that is already expired, which would read as a suspension nobody can find the end of.
+      const past = await repo.setSuspension('adm-susp', Date.now() - 1000, 'backdated');
+      check('suspend: a past deadline stores as NOT suspended', past !== null && past.until === null);
+
+      await repo.setSuspension('adm-susp', Date.now() + 5 * 86_400_000, 'cheating');
+      const lifted = await repo.setSuspension('adm-susp', null, null);
+      check('suspend: lifting clears the deadline', lifted !== null && lifted.until === null);
+      // the REASON goes with it: a sentence left behind on an account that is no longer
+      // suspended is a line the next moderator reads as current.
+      check('suspend: ...and takes the reason with it', lifted !== null && lifted.reason === null);
+
+      await repo.writeAudit({ adminId: 'adm-mod', action: 'account.suspend', targetUser: 'adm-susp', detail: { days: 7 }, note: 'griefing' });
+      check(
+        'suspend: the action is in the audit log',
+        (await repo.listAudit({ action: 'account.suspend' })).rows[0]?.targetUser === 'adm-susp',
+      );
+
+      // ---- clearing an abusive @username -------------------------------------------
+      const was = await repo.clearUsername('adm-susp');
+      check('username: clearing answers with the name that was taken away', was === 'suspendable');
+      check(
+        'username: ...and the column really is null afterwards',
+        (await repo.getProfile('adm-susp'))?.username == null,
+      );
+      check('username: clearing again answers null rather than pretending', (await repo.clearUsername('adm-susp')) === null);
+      // the freed name is claimable again — by anybody, including them. A unique index that
+      // still held it would make this a permanent seizure rather than a name-policy action.
+      check('username: the freed name is available again', await repo.usernameAvailable('suspendable'));
+      await repo.writeAudit({ adminId: 'adm-mod', action: 'user.username.clear', targetUser: 'adm-susp', detail: { from: was } });
+      check(
+        'username: the OLD name is in the audit row — it is the only remaining evidence',
+        (await repo.listAudit({ action: 'user.username.clear' })).rows[0]?.detail.from === 'suspendable',
+      );
+
+      // ---- the reports an account FILED --------------------------------------------
+      await repo.submitReport({ reportedId: 'adm-target', reporterId: 'adm-susp', reason: 'cheating', roomCode: 'iad-1', detail: 'wallhacks' });
+      await repo.ensureProfile('adm-vanish', 'Will Be Deleted');
+      await repo.submitReport({ reportedId: 'adm-vanish', reporterId: 'adm-susp', reason: 'afk', roomCode: 'iad-2' });
+      const filed = await repo.listReportsBy('adm-susp');
+      check('reports filed: both rows come back, newest first', filed.length === 2);
+      // the SUBJECT's live handle, not a literal: `adm-target` is renamed by the audit block
+      // above, and a test that pins the old name is asserting the order of two blocks.
+      const subjectHandle = (await repo.getProfile('adm-target'))?.handle ?? null;
+      check(
+        'reports filed: each names its SUBJECT, which is the useful name when the filer is known',
+        filed.some((r) => r.subjectId === 'adm-target' && r.subjectHandle === subjectHandle),
+      );
+      await repo.ensureProfile('adm-quiet', 'Never Reported Anyone');
+      check('reports filed: an account that has filed nothing gets an empty list, not an error', (await repo.listReportsBy('adm-quiet')).length === 0);
+      // ⚠️ A REPORT DIES WITH EITHER PARTY, and the filer's history is thinned by deletions
+      // they had nothing to do with. `player_reports` cascades on BOTH `reported_id` and
+      // `reporter_id` (0026), so a moderator reading "9 filed, 4 rejected" is reading what
+      // SURVIVES, not what was filed. Pinned here because the number is used to judge a
+      // person: it is a floor, never a total, and a future migration that softened either
+      // foreign key would change what this panel means without changing a line of its code.
+      // `listReportsBy` left-joins anyway, so the row would render with a null subject rather
+      // than vanish a second time if that ever happens.
+      await repo.deleteAccount('adm-vanish');
+      check(
+        'reports filed: a row is deleted with its SUBJECT — the filed count is a floor, not a total',
+        (await repo.listReportsBy('adm-susp')).length === 1,
+      );
+
+      // ---- Ko-fi payments, and the chargeback flag ---------------------------------
+      await repo.recordKofiPayment({
+        messageId: 'msg-refund-1', kind: 'Donation', email: 'payer@example.test',
+        transactionId: 'txn-refund-1', amount: '5.00', currency: 'USD',
+        isSubscription: false, tierName: null, months: 1,
+      });
+      await db.query(`update kofi_payments set claimed_by = 'adm-susp', claimed_at = now() where message_id = 'msg-refund-1'`);
+      const pays = await repo.listKofiPayments('adm-susp');
+      check('payments: a claimed payment is listed against the account that claimed it', pays.length === 1);
+      check('payments: ...with the TRANSACTION id, which is what the refund route is keyed by', pays[0]?.transactionId === 'txn-refund-1');
+      // ⚠️ THE BUYER'S EMAIL IS NEVER PROJECTED. 0018 stores it to match a claim and says it is
+      // never displayed; the admin console is not an exception to that.
+      check('payments: the buyer email is not in the row', !('email' in (pays[0] ?? {})));
+      check('payments: not yet charged back', pays[0]?.refundedAt === null);
+      check('payments: flagging one takes', await repo.refundKofiPayment('txn-refund-1'));
+      check('payments: ...and shows on the row', (await repo.listKofiPayments('adm-susp'))[0]?.refundedAt !== null);
+      check('payments: flagging it twice answers false rather than re-stamping it', !(await repo.refundKofiPayment('txn-refund-1')));
+
+      // ---- and all of it reaches the one request the panel actually makes -----------
+      await repo.setSuspension('adm-susp', Date.now() + 3 * 86_400_000, 'final warning');
+      const detail = await repo.adminUserDetail('adm-susp');
+      check('user detail: carries the live suspension', detail.suspension.until !== null && detail.suspension.reason === 'final warning');
+      check('user detail: carries the reports filed', detail.reportsFiledList.length === 1);
+      check('user detail: carries the payments', detail.payments.length === 1);
+      check(
+        'user detail: and the reports AGAINST, which the counts alone could not explain',
+        detail.reportsAgainstList.length === (await repo.listReportsFor('adm-susp')).length,
+      );
+    }
+
+    // ---- account deletion sweeps the notes, and deliberately NOT the audit -------------
+    await repo.deleteAccount('adm-other');
+    check('notes: a deleted account takes its notes with it (the FK cascades)', (await repo.listAdminNotes('adm-other')).length === 0);
+    check(
+      'audit: ...but the audit log outlives the account it names, which is the point of it',
+      (await repo.listAudit({ targetUser: 'adm-target' })).rows.length > 0,
     );
   }
 

@@ -51,7 +51,12 @@ process.on('unhandledRejection', (e) => { log('UNHANDLED REJECTION:', (e && e.st
 process.on('uncaughtException', (e) => { log('UNCAUGHT:', (e && e.stack) || e); process.exit(3); });
 
 const ALL_PAGES = ['/', '/modes', '/configure/robot', '/configure/match', '/configure/controls',
-               '/configure/audio', '/records', '/records/career', '/account', '/download'];
+               '/configure/audio', '/records', '/records/career', '/account', '/download',
+               // The routes roadmap rounds 1-2 added. They were NOT in this list when they
+               // shipped, which is the failure mode the list has: a page nobody adds here is a
+               // page this audit silently reports zero shifts for. `/privacy` earns its place
+               // twice over — the Your-data panel is the densest run of pressables in the app.
+               '/privacy', '/terms', '/contributors'];
 // DSIM_PAGES=/configure/robot,/records narrows a run to the routes you actually touched.
 const PAGES = process.env.DSIM_PAGES
   ? process.env.DSIM_PAGES.split(',').map((p) => p.trim()).filter(Boolean)

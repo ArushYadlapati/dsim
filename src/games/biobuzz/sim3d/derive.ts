@@ -83,7 +83,29 @@ export function deriveTick(world: World, engine: Engine3d): void {
     // untouched) the FIRST time, and every tick after that the JSON already reads zero -- but
     // if the solver hands the body a nonzero velocity again, this clamps it right back down
     // before it can accumulate into a slide.
-    if (ticks >= BB3_REST_TICKS && b.state.kind !== 'flight') {
+    // ⚠️ NO `kind !== 'flight'` GATE. It used to be here, and it is exactly what made an element
+    // at rest ON STRUCTURE immortal: such an element is tagged `flight` (it is off the tiles),
+    // so the snap skipped it, so the damping creep it was written to catch was the one case it
+    // could never reach. The BODY-side snap (`groundRoll3d`) has the same coverage, including
+    // angular velocity, and refuses only an element with no contact at all — the one in mid-air.
+    // ⚠️ AND NO `flowerTubeOf` GATE EITHER — MEASURED, AND IT IS THE OPPOSITE OF THE GUESS.
+    // A settling FLOWER column separates at a depenetration speed well under `BB3_REST_SPEED`,
+    // so this snap zeroes it every tick and `syncElement`'s diff-teleport writes that zero onto
+    // the body; the obvious reading is that the snap FREEZES the column mid-separation and that
+    // exempting a tube element would let it finish pushing itself apart. It does not. Measured
+    // through `step3d` in flower 0 at `BB3_CONTACT_FREQ` = 30, worst pollen-pollen centre gap
+    // against the ideal 2.800 (4-stack / 8-stack overlap, max dxy off the bore axis):
+    //   snap on   0.065 / 0.152 in, dxy 0.000   ← today
+    //   snap off  0.818 / 0.848,    dxy 1.018
+    // An ORDER OF MAGNITUDE worse, because what the exemption really buys is residual solver
+    // noise that nothing damps: the column walks off the axis until the upper balls rest on each
+    // other's shoulders, and a shouldered pair's centres are far closer than a stacked pair's.
+    // (Measured the same way before `BB3_CONTACT_FREQ` landed, at the shared 12 Hz, it was
+    // 0.406 / 0.948 with the snap against 0.407 / 1.107 without — so the exemption never helped
+    // at any stiffness.) The interpenetration is CONTACT COMPLIANCE and the lever on it is that
+    // constant, not this clamp. Leave the snap alone: the 2.3-in garden-line creep it was
+    // written for is still the reason it exists.
+    if (ticks >= BB3_REST_TICKS) {
       b.vel.x = 0;
       b.vel.y = 0;
       b.vz = 0;
@@ -121,7 +143,23 @@ export function deriveTick(world: World, engine: Engine3d): void {
     }
 
     if (!tagged) {
-      const airborne = b.z > AIRBORNE_Z || Math.abs(b.vz) > AIRBORNE_VZ;
+      /**
+       * ⚠️ **`flight` MEANS MOVING THROUGH THE AIR, NOT "OFF THE TILES".** An element that has
+       * read AT REST for `BB3_REST_TICKS` and is in no cell and no tube is LOOSE ON THE FIELD,
+       * whatever it is resting on — the hive frame, a tray's outer face, a pile — and the honest
+       * tag for that is `ground`. It used to be `flight`, forever, and that was not cosmetic:
+       * `capturePollen` refuses anything that is not `ground`, and the AI's element scan reads
+       * `ground` only, so an element balanced on a frame bar was permanently out of play — no
+       * robot could ever intake it and no bot could ever see it. Repro: an element dropped at
+       * (12.3, −5.6) comes to rest on the blue HIVE frame at z 38.96 with zero velocity and read
+       * `flight` for the rest of the match. It reads `ground` now, and the settle clock, which
+       * asks about MOTION rather than the tag (`settle.ts`), is unaffected either way.
+       *
+       * No new `BallState` kind and no new wire field: `ground` already rides the snapshot and
+       * the delta codec, and `z` already travels with it, so every reader that cared about the
+       * height still has it.
+       */
+      const airborne = (b.z > AIRBORNE_Z || Math.abs(b.vz) > AIRBORNE_VZ) && ticks < BB3_REST_TICKS;
       if (airborne) {
         // preserve `target`/`by` while a launched element stays airborne (the 2D `by` alliance
         // filter is not read in 3D -- see `elements3d.ts`'s header -- but the field is kept

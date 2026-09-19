@@ -24,8 +24,9 @@ import type { TutorialHintCtx, TutorialSpec, TutorialView } from './tutorial/typ
 import type { GameModule } from './games';
 import type { GameScene, SceneCamera, SceneFrame, SceneInsets } from './games/module';
 import { getViewPref, subscribeViewPref } from './games/biobuzz/graphics/store';
-import { initPhysics3d, physics3dReady, physics3dImpl } from './games/biobuzz/sim3d/engine';
+import { initPhysics3d, physics3dReady, physics3dImpl, disposePhysics3dFor } from './games/biobuzz/sim3d/engine';
 import { PREDICT_FULL_BUDGET_MS } from './games/biobuzz/config';
+import { biobuzzPhysics } from './games/biobuzz/state';
 import {
   getPredictionPref,
   markOffNoticeShown,
@@ -42,6 +43,7 @@ import { robotsEnabled } from './sim/match';
 import { ReplayRecorder, worldResult, type Replay, type ReplayResult } from './sim/replay';
 import { MATCH_SETTLE_MAX_S, newSettleClock, settleStep } from './sim/settle';
 import { practiceSaveDecision } from './replaySavePolicy';
+import { readRenderStats } from './perfStats';
 import { robotInLaunchZone } from './sim/robot';
 import { InputManager } from './input/input';
 import { Renderer } from './render/renderer';
@@ -149,6 +151,112 @@ export interface IntroPlayer {
   elo: number | null;
   isLocal: boolean;
 }
+
+/**
+ * A FIXED SAMPLE WINDOW that never allocates after construction.
+ *
+ * The frame loop pushes into three of these on EVERY frame for every player, whatever the
+ * read-out is set to, so `push` has to be one typed-array write and an index bump — no
+ * `Array.shift` (which is O(n) and was what the old single window did), no object per sample.
+ * The sorting a percentile needs happens in `quantile`, which only the 4 Hz HUD poll calls.
+ */
+class PerfRing {
+  private readonly buf: Float64Array;
+  /** scratch for `quantile`, allocated once — sorting a copy at 4 Hz is fine, allocating one
+   *  240-element array per poll per percentile is the kind of thing this class exists to avoid */
+  private readonly scratch: Float64Array;
+  private n = 0;
+  private i = 0;
+  constructor(size: number) {
+    this.buf = new Float64Array(size);
+    this.scratch = new Float64Array(size);
+  }
+  push(v: number): void {
+    this.buf[this.i] = v;
+    this.i = (this.i + 1) % this.buf.length;
+    if (this.n < this.buf.length) this.n++;
+  }
+  get count(): number {
+    return this.n;
+  }
+  mean(): number {
+    if (this.n === 0) return 0;
+    let sum = 0;
+    for (let k = 0; k < this.n; k++) sum += this.buf[k];
+    return sum / this.n;
+  }
+  max(): number {
+    let m = 0;
+    for (let k = 0; k < this.n; k++) if (this.buf[k] > m) m = this.buf[k];
+    return m;
+  }
+  quantile(q: number): number {
+    if (this.n === 0) return 0;
+    const s = this.scratch.subarray(0, this.n);
+    s.set(this.buf.subarray(0, this.n));
+    s.sort();
+    return s[Math.min(this.n - 1, Math.floor(this.n * q))];
+  }
+  /** oldest→newest, for a sparkline. Allocates, so it is only called at the 4 Hz poll and only
+   *  when the read-out is actually drawing graphs. */
+  series(max: number): number[] {
+    const take = Math.min(this.n, max);
+    const out: number[] = [];
+    for (let k = take; k > 0; k--) out.push(this.buf[(this.i - k + this.buf.length) % this.buf.length]);
+    return out;
+  }
+}
+
+/** what `GameController.getPerfStats()` hands the in-match performance read-out. Every field
+ * that cannot be measured on this run is null, never 0 — see the method's header. */
+export interface PerfSnapshot {
+  fps: number;
+  /** frame PERIOD percentiles over the window, ms (the gap between presented frames) */
+  p50: number;
+  p95: number;
+  p99: number;
+  /** the single worst frame in the window, ms */
+  worst: number;
+  /** mean cost of one frame's fixed-timestep stepping, ms */
+  simMs: number;
+  /** mean sim steps per frame over the window — see `stepCounts` on why it is not the last
+   *  frame's count */
+  stepsPerFrame: number;
+  /** mean cost of one frame's drawing (the 3D scene, if any, plus the 2D pass), ms */
+  renderMs: number;
+  /** which solve this world runs on */
+  physics: Physics;
+  /** is a 3D scene actually drawing (not merely preferred)? */
+  view3d: boolean;
+  /** the live 3D renderer's own counters, or null in a 2D view */
+  scene: ReturnType<typeof readRenderStats>;
+  /** canvas CSS size and the device pixel ratio behind it */
+  width: number;
+  height: number;
+  dpr: number;
+  /** the connection, or null in solo */
+  net: NetStatus | null;
+  /** how far behind the newest snapshot remotes are drawn, ms (online only) */
+  interpMs: number | null;
+  /** render clock vs the newest authoritative tick, in ticks (online only) */
+  behindTicks: number | null;
+  /** corrections applied this match (online only) */
+  reconciles: number | null;
+  /** the last correction's distance, inches (online only) */
+  correctionIn: number | null;
+  prediction: ReturnType<GameController['getPredictionStats']>;
+  /** recent frame periods, oldest→newest, for the sparkline. Empty unless the caller asked —
+   *  see `getPerfStats`, which only builds it for the `graphs` level. */
+  frameSeries: readonly number[];
+}
+
+/** how many frame samples a sparkline draws. ~1.7 s at 60 fps: long enough to show a stutter
+ * in context, short enough that one bad frame is still visible as a spike rather than a pixel. */
+const PERF_SERIES_LEN = 100;
+
+/** the ONE empty array every non-`graphs` poll hands back, so a 4 Hz poll that draws no
+ * sparkline allocates nothing at all. */
+const EMPTY_SERIES: readonly number[] = [];
 
 export interface HudSnapshot {
   /** which game is being played — drives which score HUD GameView renders */
@@ -601,6 +709,12 @@ export class GameController {
    * measurement is a DOM read, so it happens at most once per rendered frame and only when
    * something has actually moved — never unconditionally per frame. */
   private hudInsetsDirty = true;
+  /**
+   * THE LAYOUT THESE INSETS BELONG TO — `"<width>x<height>"` of the render surface, or null to
+   * start fresh. Within one layout the insets only ever GROW (see `refreshHudInsets`); a resize
+   * or a view switch clears this and the next measurement starts from zero.
+   */
+  private hudInsetsEpoch: string | null = null;
   /** fires when a HUD band changes SIZE (a chip row wrapping to a second line, the scorebar
    * switching to its compact layout) without anything mounting or unmounting. */
   private hudBandObserver: ResizeObserver | null = null;
@@ -720,11 +834,18 @@ export class GameController {
      */
     if (this.interp3d() && !physics3dReady()) {
       this.setPhysicsPending(true);
+      // ⚠️ BOTH CONTINUATIONS CHECK `disposed`. The chunk is ~1.12 MB gz and the await can
+      // easily outlive the controller — a player who leaves a room while it is still in flight.
+      // `setPhysicsPending` calls back into a view that has unmounted (a React state write on a
+      // dead component), and the failure branch pushes an event onto a world nobody will ever
+      // drain, which then holds that world alive through the closure.
       void initPhysics3d().then(
         () => {
+          if (this.disposed) return;
           this.setPhysicsPending(false);
         },
         (err: unknown) => {
+          if (this.disposed) return;
           this.setPhysicsPending(false);
           // eslint-disable-next-line no-console
           console.warn('BIOBUZZ 3D physics failed to load for this match.', err);
@@ -809,6 +930,25 @@ export class GameController {
    * menu's settings.alliance; in solo they are the same) */
   private viewAlliance(): Alliance {
     return this.localRobot().alliance;
+  }
+
+  /**
+   * ⚠️ **REPLACE `this.world`, AND FREE THE OUTGOING WORLD'S RAPIER 3D SOLVE.**
+   *
+   * A 3D BIOBUZZ world owns a wasm world, held in a `WeakMap` keyed on the `World` object
+   * (`sim3d/engineImpl.ts`). Dropping the `World` drops the map ENTRY and the only handle on
+   * that wasm world — it does not free it, and wasm linear memory never shrinks, so every
+   * restart, every step change and (for a spectator, whose path steps each snapshot's world)
+   * every snapshot would hold another one for the life of the tab.
+   *
+   * `disposePhysics3dFor` is the LIGHT gate, so this is a no-op for a 2D world and for a build
+   * that never loaded the physics chunk. That is what lets this sit on the one path every world
+   * swap goes through instead of on the three that remembered to ask.
+   */
+  private adoptWorld(next: World): void {
+    const prev = this.world;
+    if (prev && prev !== next) disposePhysics3dFor(prev);
+    this.world = next;
   }
 
   private makeWorld(reseed = true): World {
@@ -947,6 +1087,7 @@ export class GameController {
   private onResize = (): void => {
     this.renderer.camera.configure(this.canvas, this.viewAlliance(), this.mod.bounds);
     this.hudInsetsDirty = true;
+    this.hudInsetsEpoch = null; // a new viewport is a new layout — see `refreshHudInsets`
     this.scene?.resize(this.canvas.clientWidth, this.canvas.clientHeight, window.devicePixelRatio || 1);
   };
 
@@ -972,6 +1113,16 @@ export class GameController {
    * landscape block in `styles.css`). Nothing here names a side — the geometry decides, so that
    * layout is fitted correctly without this method knowing it exists.
    *
+   * ⚠️ ── A BAND'S BOX MUST NOT DEPEND ON MATCH STATE ────────────────────────────────────
+   * This is the safe rect a camera frames the field into, so a band that mounts, unmounts or
+   * resizes mid-match MOVES THE FIELD UNDER THE DRIVER. BIOBUZZ's cue row shipped that way —
+   * `{(nectarLocked || pin) && <div data-hud-band>…}` — and at the 1:00 cue the bottom inset
+   * fell 98px → 73px at 1431×649 and the whole field jumped (owner report, 2026-09-18). A HUD
+   * item that comes and goes belongs INSIDE a band whose slot is reserved (see
+   * `.breakdown-row`'s `min-height` in `styles.css`), never as a band of its own. Nothing here
+   * can enforce that — it is a rule about the markup, and it is why the two observers below
+   * exist at all: they are for a LAYOUT change (a resize, a view switch), not a score change.
+   *
    * ── WHAT IS DELIBERATELY NOT A BAND ───────────────────────────────────────────────────
    * The EVENT LOG (`.eventlog`) and the touch controls. The log is the toast surface — it grows
    * and empties several times a match, and reserving a band that breathes would re-fit the
@@ -982,16 +1133,22 @@ export class GameController {
    * collapse the safe rect to nothing.
    */
   private refreshHudInsets(): void {
-    this.hudInsetsDirty = false;
     const ins = this.hudInsets;
     const host = this.sceneHost ?? this.canvas;
     const root = this.hudHost;
     if (!root) {
       ins.top = ins.right = ins.bottom = ins.left = 0;
+      this.hudInsetsDirty = false;
       return;
     }
     const box = host.getBoundingClientRect();
-    if (box.width < 1 || box.height < 1) return; // mid-teardown / display:none — keep the last fit
+    // ⚠️ A ZERO-SIZE HOST LEAVES THE FLAG SET, DELIBERATELY. Mid-teardown or `display:none` is
+    // not a measurement — the last fit is kept — so the work has NOT been done and clearing
+    // `hudInsetsDirty` here would swallow the request: the surface comes back with its old
+    // insets and nothing left to re-fit it. That is one dirty frame on a view switch, where a
+    // band has mounted but the canvas has not been laid out yet.
+    if (box.width < 1 || box.height < 1) return;
+    this.hudInsetsDirty = false;
     const bands = root.querySelectorAll<HTMLElement>('[data-hud-band]');
     let top = 0;
     let right = 0;
@@ -1027,10 +1184,24 @@ export class GameController {
     // hand the scene an infinite aspect. 45 % a side leaves at least a tenth of each axis.
     const capH = box.height * 0.45;
     const capW = box.width * 0.45;
-    ins.top = Math.min(top, capH);
-    ins.bottom = Math.min(bottom, capH);
-    ins.left = Math.min(left, capW);
-    ins.right = Math.min(right, capW);
+    /**
+     * WITHIN ONE LAYOUT THE SAFE RECT ONLY EVER SHRINKS — the belt to the reserved-slot braces.
+     *
+     * The rule above says a band's box must not depend on match state, and the rows that can be
+     * reserved in CSS are. The chip rows cannot be: `.robot-status` WRAPS against its 50% cap, so
+     * a foul chip or a PIN countdown can add a line at a narrow width and take one back four
+     * seconds later — measured at 375px wide, the top inset moved 130px → 151px. Taking the
+     * MAXIMUM for as long as the layout lasts turns that into a one-way reserve: the field can
+     * settle a little smaller, once, and never oscillates under a driver mid-match. A resize or a
+     * view switch is a new layout and starts over (`hudInsetsEpoch`).
+     */
+    const epoch = `${Math.round(box.width)}x${Math.round(box.height)}`;
+    const keep = this.hudInsetsEpoch === epoch;
+    this.hudInsetsEpoch = epoch;
+    ins.top = Math.min(Math.max(top, keep ? ins.top : 0), capH);
+    ins.bottom = Math.min(Math.max(bottom, keep ? ins.bottom : 0), capH);
+    ins.left = Math.min(Math.max(left, keep ? ins.left : 0), capW);
+    ins.right = Math.min(Math.max(right, keep ? ins.right : 0), capW);
     this.syncBandObserver(bands);
   }
 
@@ -1096,6 +1267,7 @@ export class GameController {
       // — and the 2D view it replaces may have been mounted long enough for the last reading
       // to be stale (the chip row grew, an ad column collapsed).
       this.hudInsetsDirty = true;
+      this.hudInsetsEpoch = null;
       this.scene = scene;
       // the 2D overlay projects labels and auto paths through the scene's camera from here on
       this.renderer.setScene(scene);
@@ -1345,8 +1517,14 @@ export class GameController {
     this.lastCmd = cmd;
 
     this.acc += Math.min(dtMs / 1000, 0.25);
+    // TWO `performance.now()` CALLS AND ONE RING WRITE, always on. This is the number the
+    // read-out's SIM row prints, and it is the only way to tell "my machine cannot draw this"
+    // from "my machine cannot step this" — which are the two completely different answers a
+    // player reporting a slow match needs. See `PerfRing` on why it costs what it costs.
+    const simT0 = performance.now();
     if (this.session) this.stepServer(cmd);
     else this.stepSolo(cmd);
+    this.simTimes.push(performance.now() - simT0);
 
     this.hudCountdown = this.updateCountdown();
     this.handlePhaseAudio();
@@ -1379,6 +1557,9 @@ export class GameController {
     // solo renders the predicted world directly; the networked path renders remote
     // robots + balls INTERPOLATED (smooth) with the local robot predicted
     const world = this.session ? this.displayWorld(dtMs) : this.world;
+    // the DRAW half of the read-out's split (the sim half is timed in `frameLogic`) — the 3D
+    // pass, if there is one, plus the 2D pass that always runs.
+    const drawT0 = performance.now();
     if (this.scene) {
       try {
         // ONE DOM READ, and only when something moved — see `refreshHudInsets`. It sits here
@@ -1413,39 +1594,92 @@ export class GameController {
     // a live scene draws the field/robots/balls beneath this canvas — the 2D pass then
     // stays transparent and draws only its cheap overlay (name labels), never the field.
     this.renderer.render(this.ctx, world, this.lastCmd, this.localRobotId, !!this.scene);
+    this.renderTimes.push(performance.now() - drawT0);
     this.sampleFrame(dtMs);
     this.raf = requestAnimationFrame(this.loop);
   };
 
   /**
-   * Rolling frame-time samples, surfaced by `?perf=1`.
+   * Rolling FRAME, SIM and RENDER samples — everything the in-match performance read-out
+   * prints, and the thing an ad sign-off is measured with.
    *
-   * Exists to answer one question with a number instead of a guess: what does an
-   * AdSense creative parked beside a 60 Hz canvas actually cost? An ad iframe can
-   * run video, and "it feels fine" is not a measurement you can compare before
-   * and after. Load the game with `?perf=1`, drive for ten seconds with the ad
-   * columns off, then again with them on, and compare p95 — that is the sign-off
-   * the in-game unit needs before `VITE_ADSENSE_SLOT_GAME` is ever set on a live
-   * deploy.
+   * It began as one array behind `?perf=1`, to answer one question with a number instead of a
+   * guess: what does an AdSense creative parked beside a 60 Hz canvas actually cost? An ad
+   * iframe can run video, and "it feels fine" is not a measurement you can compare before and
+   * after. Drive for ten seconds with the ad columns off, then again with them on, and compare
+   * p95 — that is the sign-off the in-game unit needs before `VITE_ADSENSE_SLOT_GAME` is ever
+   * set on a live deploy. The read-out is on by default now, so the comparison is a settings
+   * change rather than a query string somebody has to remember.
    *
-   * One array write per frame and nothing else when the flag is off, so it ships
-   * always-on rather than being a rebuild somebody has to remember how to do.
+   * ⚠️ **THREE RINGS AND NO ALLOCATION PER FRAME.** The sampling runs always-on, in the frame
+   * loop, for every player — so it has to cost three `Float64Array` writes and two
+   * `performance.now()` calls, and nothing else. The sorting a percentile needs happens in
+   * `getPerfStats`, which the HUD polls at 4 Hz.
    */
-  private frames: number[] = [];
+  private readonly frames = new PerfRing(240); // ~4 s at 60 fps
+  private readonly simTimes = new PerfRing(240);
+  private readonly renderTimes = new PerfRing(240);
+  /**
+   * Steps the fixed-timestep loop ran, per frame.
+   *
+   * A WINDOW AND NOT THE LAST FRAME'S COUNT, because on any machine above 60 fps most frames
+   * step ZERO times and the occasional one steps once — a display bound to the last frame
+   * flickered between "0 steps" and "1 step" and told a reader nothing. The mean is the
+   * number that means something: 1.0 is keeping up exactly, below 1 is a display faster than
+   * the sim, and above 1 is a frame loop catching up on ticks it owes.
+   */
+  private readonly stepCounts = new PerfRing(240);
+  /** reconciles applied this match — a correction COUNT, which is the thing that says whether
+   * prediction is fighting the server or agreeing with it */
+  private reconciles = 0;
   private sampleFrame(dtMs: number): void {
-    // ~4s at 60fps: long enough for a stable p95, short enough to react to a
-    // creative that only starts misbehaving once it has finished loading.
-    if (this.frames.length >= 240) this.frames.shift();
     this.frames.push(dtMs);
   }
 
-  /** p50 / p95 frame time in ms, or null until enough samples exist */
-  getFrameStats(): { p50: number; p95: number; fps: number } | null {
-    if (this.frames.length < 30) return null;
-    const s = [...this.frames].sort((a, b) => a - b);
-    const at = (q: number): number => s[Math.min(s.length - 1, Math.floor(s.length * q))];
-    const p50 = at(0.5);
-    return { p50, p95: at(0.95), fps: p50 > 0 ? 1000 / p50 : 0 };
+  /**
+   * EVERYTHING THE PERFORMANCE READ-OUT PRINTS, in one object, sampled at 4 Hz.
+   *
+   * ONE call rather than a method per number, because the display is memoized on the identity
+   * of what it is handed: the HUD around it re-renders at 10 Hz off `getHud()`, and a read-out
+   * that re-rendered with it would be a frame-time counter that costs frame time. Null until
+   * there are enough samples for a percentile to mean anything.
+   *
+   * Rows the display cannot draw are null rather than 0 — a 0 ms ping and an unmeasured one
+   * look identical on screen, and the whole value of this thing is that its numbers are real.
+   */
+  getPerfStats(withSeries = false): PerfSnapshot | null {
+    if (this.frames.count < 30) return null;
+    const p50 = this.frames.quantile(0.5);
+    const net = this.session ? this.session.status() : null;
+    const scene = readRenderStats();
+    const canvas = this.canvas;
+    return {
+      fps: p50 > 0 ? 1000 / p50 : 0,
+      p50,
+      p95: this.frames.quantile(0.95),
+      p99: this.frames.quantile(0.99),
+      worst: this.frames.max(),
+      simMs: this.simTimes.mean(),
+      stepsPerFrame: this.stepCounts.mean(),
+      renderMs: this.renderTimes.mean(),
+      physics: this.interp3d() ? '3d' : '2d',
+      view3d: !!this.scene,
+      scene,
+      width: canvas.clientWidth,
+      height: canvas.clientHeight,
+      dpr: typeof window === 'undefined' ? 1 : window.devicePixelRatio || 1,
+      net,
+      /** the interpolation delay is a CONSTANT, but it is the one number that explains why a
+       *  remote robot is where it is rather than where the newest snapshot says, so it prints */
+      interpMs: net ? INTERP_DELAY_TICKS * C.SIM_DT * 1000 : null,
+      /** how far the render clock is behind the newest authoritative tick, in ticks. The
+       *  interpolation delay is the floor; anything much above it is a snapshot stall. */
+      behindTicks: net && this.gotSnapshot ? Math.max(0, Math.round(this.lastServerTick - this.renderTick)) : null,
+      reconciles: net ? this.reconciles : null,
+      correctionIn: net ? this.lastCorrection : null,
+      prediction: this.getPredictionStats(),
+      frameSeries: withSeries ? this.frames.series(PERF_SERIES_LEN) : EMPTY_SERIES,
+    };
   }
 
   /** multiplayer sim driver — a timer (not rAF) so a backgrounded tab keeps
@@ -1517,6 +1751,7 @@ export class GameController {
         return;
       }
     }
+    this.stepCounts.push(steps);
     if (steps === C.MAX_STEPS_PER_FRAME) this.acc = 0;
   }
 
@@ -1552,7 +1787,7 @@ export class GameController {
    * free drive, so there is no recorder — see `startMatch`).
    */
   private rebuildForTutorial(): void {
-    this.world = this.makeWorld();
+    this.adoptWorld(this.makeWorld());
     this.prevPhase = this.world.match.phase;
     this.acc = 0;
     this.warningPlayed = false;
@@ -1736,6 +1971,7 @@ export class GameController {
       this.acc -= C.SIM_DT;
       steps++;
     }
+    this.stepCounts.push(steps);
     // bound the buffer (only recent, unacked inputs ever matter)
     if (this.inputBuf.length > 600) this.inputBuf.splice(0, this.inputBuf.length - 600);
   }
@@ -1761,10 +1997,18 @@ export class GameController {
         z: r.z ?? 0,
         heading: r.heading,
       })),
-      // ONLY for a 3D-physics world — see the field's own header. `interp3d()` is a read of
-      // `this.world`, which is the world this snapshot was reconciled into, so the two can
-      // never disagree about which pipeline is running.
-      balls: this.interp3d()
+      /**
+       * ONLY for a 3D-physics world — see the field's own header.
+       *
+       * ⚠️ READ OFF `snap.world`, NOT OFF `this.world`. This runs BEFORE `reconcile`, so
+       * `this.world` is still the PREVIOUS world — the one the last snapshot was adopted into.
+       * `interp3d()` reads that, and its own comment used to claim the opposite ("the world
+       * this snapshot was reconciled into"). They agree for every snapshot after the first,
+       * which is what made it survive: the one frame they disagree is the FIRST snapshot of a
+       * 3D room, whose ball poses were dropped on the floor because the outgoing world was
+       * still 2D — and a spectator or a mid-match joiner starts every session on that frame.
+       */
+      balls: biobuzzPhysics(w) === '3d'
         ? w.balls.map((b) => ({
             id: b.id,
             x: b.pos.x,
@@ -2190,6 +2434,10 @@ export class GameController {
 
   private reconcile(snap: Snapshot): void {
     const firstSnap = !this.gotSnapshot;
+    // counted for the read-out's CORRECTIONS row. A count on its own says little; beside the
+    // last correction's DISTANCE it is what separates "the server agrees with me 30 times a
+    // second" from "the server is dragging me back 30 times a second".
+    this.reconciles++;
     // VISUAL error smoothing (rubberbanding fix): capture where the LOCAL robot is
     // currently rendered (predicted pos + the decaying offset). After we snap to
     // the authoritative world below, we set `localSmooth` so the RENDERED position
@@ -2201,7 +2449,7 @@ export class GameController {
     const preY = pre ? pre.pos.y + this.localSmooth.y : 0;
     const preH = pre ? pre.heading + this.localSmooth.heading : 0;
 
-    this.world = snap.world;
+    this.adoptWorld(snap.world);
     this.collectNetEvents(firstSnap); // authoritative events, BEFORE replay re-emits any
     this.lastServerTick = snap.serverTick;
     this.gotSnapshot = true;
@@ -2254,7 +2502,7 @@ export class GameController {
   /** host-authored restart arrived over the net: rebuild from the new seed */
   private rebuildFromNet(): void {
     this.audio.stopSpeech();
-    this.world = this.makeWorld();
+    this.adoptWorld(this.makeWorld());
     this.prevPhase = this.world.match.phase;
     this.warningPlayed = false;
     this.matchOverAt = null;
@@ -2340,7 +2588,7 @@ export class GameController {
     if (this.tutorial) return;
     if (this.world.match.phase !== 'pre') return;
     if (this.world.match.preCountdown != null) return; // already counting down
-    this.world = this.makeWorld(false);
+    this.adoptWorld(this.makeWorld(false));
     this.world.match.preCountdown = C.PRE_COUNTDOWN;
     this.prevPhase = this.world.match.phase;
     this.practice = null;
@@ -2378,7 +2626,7 @@ export class GameController {
     // `completed` — and `this.practice` is cleared below anyway, because a restart has no
     // results screen to show it on.
     this.harvestPracticeRun(false);
-    this.world = this.makeWorld();
+    this.adoptWorld(this.makeWorld());
     this.prevPhase = this.world.match.phase;
     this.warningPlayed = false;
     this.matchOverAt = null;
@@ -2616,6 +2864,11 @@ export class GameController {
     // a FULL predictor owns a Rapier world; leaking one per match leaks wasm memory for the
     // life of the tab, which is exactly as long as somebody plays
     this.disposePredictor();
+    // ...and so does the MATCH's own 3D solve, which nothing freed until now — see
+    // `adoptWorld`. The predictor's world was the one anybody thought of, because it is created
+    // here; the match's is created inside `step3d` and held in a `WeakMap`, which is precisely
+    // why it was invisible.
+    disposePhysics3dFor(this.world);
     this.teardownScene();
   }
 }

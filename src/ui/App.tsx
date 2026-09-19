@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { ComponentType } from 'react';
 import type { GameSettings } from '../game';
 import { loadSettings, saveSettings, switchGame, syncAudioMirrors } from '../settings';
@@ -20,7 +20,17 @@ import { challengeOf, type PendingChallenge } from './challenge';
 import type { RoomConfig, RoomKind } from '../net/protocol';
 import { useNewVersion } from '../net/version';
 import { useServerNotice } from '../net/notice';
-import { Admin } from './Admin';
+/**
+ * THE WHOLE ADMIN CONSOLE IS A LAZY CHUNK, and this import is the split point.
+ *
+ * `Admin` statically pulls in `AdminLive`, `AdminReports`, `AdminAudit`, `AdminUser`,
+ * `AdminStanding`, `adminBits` and `adminCopy`. Imported eagerly, every one of them shipped in
+ * the chunk a PLAYER downloads to drive a robot — a route exactly one account on the service can
+ * reach. `npm run bundleaudit` ratchets `main`, and the console is the fastest-growing thing in
+ * it. Splitting HERE rather than per panel is what makes it one boundary instead of seven, and
+ * it takes `AdminAnalytics`'s own `lazy()` with it as a nested chunk.
+ */
+const Admin = lazy(() => import('./Admin').then((m) => ({ default: m.Admin })));
 import { Announcements } from './Announcements';
 import { AccountReset } from './AccountReset';
 import { AccountSync } from './AccountSync';
@@ -87,6 +97,7 @@ import {
   loadLanReplay,
 } from '../net/lanRuns';
 import { applyRouteMeta } from '../seo';
+import { trackPageview } from '../pageviews';
 import type { GameId } from '../games/types';
 import { chainDisclaimerSeen, markChainDisclaimerSeen } from '../chainDisclaimer';
 import { startSelectionLegal } from './startPositions';
@@ -483,7 +494,22 @@ export function App() {
     // `startScreen`, not `start.screen` — a staged ranked match overrides the restored
     // URL (see above), and the address bar has to say where the player actually is
     const canonical = pathFor(startScreen, start, settingsRef.current.game);
-    if (window.location.pathname !== canonical) window.history.replaceState(null, '', canonical);
+    // ⚠️ COMPARE THE SEARCH TOO, not just the pathname. `pathFor` never emits a query,
+    // so anything in one is consumed-and-finished — including the `?token=` a reset or
+    // verification link arrives with. Comparing pathnames alone meant a token sitting on
+    // an ALREADY-canonical path was never stripped: it stayed in the address bar, in the
+    // history entry, and in anything that reads `location.href` (a copied link, a
+    // referrer, an analytics beacon). Stripping it here is safe because `entryToken.ts`
+    // captured it at MODULE LOAD, which is exactly why that file exists.
+    // ⚠️ KEEP THE FRAGMENT. `pathFor` emits neither a query nor a hash, so replacing the URL
+    // with it alone DELETED the hash — and the admin console's whole URL state lives there
+    // (`#tab=users&user=<id>`, chosen precisely because App owns the path and the query). The
+    // unprefixed `/admin` canonicalizes to `/decode/admin`, which is not equal, so EVERY
+    // pasted console link was rewritten to a bare path before `Admin` mounted and opened on
+    // Live. The query still goes: `?token=` is consumed at module load and must not survive.
+    if (window.location.pathname + window.location.search !== canonical) {
+      window.history.replaceState(null, '', canonical + window.location.hash);
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -510,7 +536,14 @@ export function App() {
   // static tags in index.html describe the homepage (all a social scraper ever
   // gets); this is the rendering-crawler + browser-tab half of the same job.
   useEffect(() => {
-    applyRouteMeta(screen, pathFor(screen, route, settings.game), settings.game, ENTRY_HAS_GAME);
+    const path = pathFor(screen, route, settings.game);
+    applyRouteMeta(screen, path, settings.game, ENTRY_HAS_GAME);
+    // The page view rides the SAME effect, because it answers the same question this one
+    // does — when a route becomes the current one — and a second effect on the same deps
+    // would be a second place for that answer to drift. `pathFor` never emits a query string
+    // and `trackPageview` scrubs the ids out of what it is given anyway; both halves are in
+    // `src/pageviews.ts`, along with every gate that decides whether anything is sent at all.
+    trackPageview(path, settings.game);
   }, [screen, route, settings.game]);
 
   // surface the one-time Chain Reaction disclaimer the first time CR is selected
@@ -762,6 +795,9 @@ export function App() {
   // the multiplayer game this browser is currently in (persisted to localStorage), so
   // the player can REJOIN it after navigating away and is stopped from starting a 2nd.
   const [activeGame, setActiveGame] = useState<ActiveGameRef | null>(() => loadActiveGame());
+  // the server refused to give a saved seat back — the match ended or its grace lapsed.
+  // Declared here rather than with the other overlays below because `rejoinGame` sets it.
+  const [rejoinGone, setRejoinGone] = useState(false);
   // A backgrounded ranked search that PAIRED. The match will not wait — the server
   // holds the slot for RANKED_JOIN_GRACE_MS and then forfeits it — so this takes the
   // screen back rather than offering a choice, and a solo run in flight is discarded
@@ -787,6 +823,13 @@ export function App() {
           // Measured: rejoining a 3D room built a 2D world, predicted a different game from the
           // one the server was scoring, and never latched `physicsPending`.
           physics: s.physics,
+          // ⚠️ AND THE MATCH GENERATION, for the same reason and with a worse symptom. The
+          // server drops an `input` stamped with a stale generation, so a session rebuilt
+          // without this one came back as 0 against a room on 1 and EVERY command was
+          // discarded: prediction moved the robot, each snapshot snapped it back, and the
+          // returning driver could not move at all. Measured against a local server on
+          // 2026-09-19 — 0.000 in of travel without it, 38.7 in with it.
+          gen: s.gen,
           ranked: s.ranked,
           intros: s.intros,
           region: s.region,
@@ -834,16 +877,35 @@ export function App() {
       transport.send(encodeMsg({ t: 'rejoin', room: ref.room, clientId: ref.clientId, caps: CLIENT_CAPS })),
     );
     const s = new ServerSession(transport, false, ref.start, ref.clientId, ref.room);
-    // A rejoin the server REFUSES (the match ended, the grace lapsed) leaves a record that
-    // would keep offering the same dead match every time Home is opened. Forget it as soon
-    // as the refusal lands — the session itself already fails hard, and the controller
-    // freezes rather than predicting on (see `stepServer`).
+    /**
+     * A REJOIN THE SERVER REFUSES GOES BACK TO THE MENU, IT DOES NOT PARK ON A DEAD CARD.
+     *
+     * The record was already forgotten here — otherwise Home offers the same dead match
+     * every time it opens — but the player was left on the game screen behind the
+     * "connection lost" panel, which is a screen about a connection that is fine. They
+     * pressed Rejoin and the answer is that the match is over; say that and put them
+     * where they can start another one.
+     *
+     * ⚠️ ON THE REFUSAL, NOT ON `failed`. `failed` is also how an ordinary mid-match drop
+     * ends (the retry budget ran out), and yanking somebody out of a real game they are
+     * still in would be much worse than the dead card. `slotRefused` is `rejoined: ok=false`
+     * and nothing else. The ref still goes on either, because a match we cannot reach is
+     * not one to keep offering.
+     */
     const watch = window.setInterval(() => {
-      if (s.status().failed) {
-        window.clearInterval(watch);
-        clearActiveGame();
-        setActiveGame(null);
-      }
+      const st = s.status();
+      if (!st.failed) return;
+      window.clearInterval(watch);
+      clearActiveGame();
+      setActiveGame(null);
+      if (!s.slotRefused()) return;
+      setEditMobileLayout(false);
+      s.dispose();
+      setSession(null);
+      setSessionKind(null);
+      setSessionCoop(false);
+      setRejoinGone(true);
+      navigate('home');
     }, 400);
     window.setTimeout(() => window.clearInterval(watch), 30_000);
     setSession(s);
@@ -1065,6 +1127,26 @@ export function App() {
    * RecordRun connects on mount, so this costs one reconnect, not a menu trip.
    */
   const restartRun = (): void => {
+    /**
+     * ⚠️ TELL THE SERVER THE OLD RUN IS OVER, AND FORGET IT LOCALLY — both halves used to
+     * be missing, and both became visible the moment the single-game lock started actually
+     * holding (it was released at match start by `startLoop`'s old `stop()` call, so for
+     * months it bound nothing).
+     *
+     * The server half: the new run is a join on a BRAND-NEW `rec-` code, so the old room's
+     * lock is still registered against this account until its own socket close is processed.
+     * `abandon` is the same frame the you-have-a-game-in-progress card sends and it needs no
+     * reply. It is sent on the LIVE session's socket before it is disposed, so it cannot race
+     * the new connection. The server also yields a solo record hold at the door now, so this
+     * is belt and braces rather than the only defence — but it is the half that keeps the old
+     * room from sitting on a lock it no longer has any use for.
+     *
+     * The local half: `activeGame` still named the run we are walking away from, so Home went
+     * on offering to rejoin a match that no longer exists.
+     */
+    session?.abandonSlot?.();
+    clearActiveGame();
+    setActiveGame(null);
     session?.dispose();
     setSession(null);
     setSessionKind(null);
@@ -1179,6 +1261,19 @@ export function App() {
   /** tear the session down without deciding where to go next */
   const leaveSession = (): void => {
     setEditMobileLayout(false);
+    /**
+     * ⚠️ A SOLO RECORD RUN YOU WALK OUT OF IS OVER, SO STOP OFFERING TO REJOIN IT.
+     *
+     * `dispose()` is a CLEAN close (1000/1005), and `Room.detach` reaps a solo record room
+     * on one rather than holding it for the reconnect grace — the room is gone before the
+     * menu has finished rendering. Keeping the record left Home offering a Rejoin that the
+     * server answers `rejoined: ok=false` to, which is a button whose only outcome is an
+     * error. Every OTHER kind holds its seat for the grace, so their record stays and the
+     * offer is real: a custom or ranked match is still there to go back to, and in ranked
+     * going back is what stops the away ticks accruing against your standing.
+     */
+    const soloRecord = sessionKind === 'record' && !sessionCoop;
+    if (soloRecord) clearActiveGame();
     session?.dispose();
     setSession(null);
     setSessionKind(null);
@@ -1471,6 +1566,13 @@ export function App() {
         mode="solo"
         onStart={(s) => beginSession(s, 'record')}
         onCancel={() => navigate('modes')}
+        /* the launcher only offers this when the server refused with `active_game`, so the
+           record is the match that refusal is about — go there instead of dead-ending. */
+        onRejoinActive={() => {
+          const ref = loadActiveGame();
+          if (ref) rejoinGame(ref);
+          else navigate('modes');
+        }}
       />
     );
   }
@@ -1549,6 +1651,8 @@ export function App() {
 
   const configureSection: ConfigureSection = isConfigureSection(route.sub) ? route.sub : 'robot';
   const recordsTab: RecordsTab = isRecordsTab(route.sub) ? route.sub : 'leaderboard';
+  /** the two public legal screens — the blocking gates below suspend on them */
+  const legalScreen = screen === 'privacy' || screen === 'terms';
 
   return (
     <FriendsProvider
@@ -1587,9 +1691,15 @@ export function App() {
           `.ds-modal-backdrop`s at once double-darken the page and show one dialog dimmed
           behind the other. `TermsGate` renders its children only once it is satisfied, so
           the order is structural: agree to the service, then pick a name inside it. */}
+      {/* ⚠️ BOTH GATES STAND DOWN ON THE LEGAL PAGES. They are full-viewport backdrops
+          rendered BESIDE the routed screen, so on `/terms` and `/privacy` they covered
+          the documents themselves — including the new tab the gate's own links open.
+          Those two screens are public by design (see the render site below), so a
+          signed-in account that has not accepted yet can still go and read them; the
+          gate is back the moment the route is anything else. */}
       {authEnabled && (
-        <TermsGate>
-          <UsernameGate />
+        <TermsGate suspended={legalScreen}>
+          <UsernameGate suspended={legalScreen} />
         </TermsGate>
       )}
 
@@ -1697,6 +1807,23 @@ export function App() {
               <button className="ghost" onClick={abandonActiveGame}>
                 Abandon
               </button>
+            </div>
+          </div>
+        </div>
+      )}
+      {/* the saved seat could not be reclaimed — see the refusal watcher in `rejoinGame`.
+          One sentence on the menu, instead of the "connection lost" panel on a game screen
+          for a match that no longer exists. */}
+      {rejoinGone && (
+        <div className="overlay">
+          <div className="overlay-panel">
+            <h2>That match is over</h2>
+            <p className="ds-sub overlay-sub">
+              It finished, or it was held open too long for you to get back into. Start a new one
+              when you’re ready.
+            </p>
+            <div className="overlay-buttons ds-dialog-actions">
+              <button onClick={() => setRejoinGone(false)}>Got it</button>
             </div>
           </div>
         </div>
@@ -1840,7 +1967,11 @@ export function App() {
       )}
       {screen === 'accountreset' && <AccountReset onAccount={() => navigate('account')} />}
       {screen === 'accountverify' && <AccountVerify onAccount={() => navigate('account')} />}
-      {screen === 'admin' && isAdmin && <Admin onWatch={spectateRoom} onWatchReplay={watchReplay} />}
+      {screen === 'admin' && isAdmin && (
+        <Suspense fallback={<p className="ds-loading">Loading the console…</p>}>
+          <Admin onWatch={spectateRoom} onWatchReplay={watchReplay} />
+        </Suspense>
+      )}
       {screen === 'dev' &&
         (() => {
           const Dev = devRouteFor(settings.game, route.dev ?? '');

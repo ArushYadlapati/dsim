@@ -1,3 +1,939 @@
+# HANDOFF — 2026-09-19b (alpha: THE OWNER'S 25-ITEM PASS, RECOVERED FROM A HALTED SESSION AND FINISHED)
+
+**READ FIRST.** A previous session ran out of usage mid-pass over the owner's 25-item list and
+left its whole tree UNCOMMITTED in `.claude/worktrees/shooter-simulation-fixes-c916ec` — ~70 files,
+7.7k insertions, never committed and never gated. That work is now commit `9162190` (checkpoint,
+verbatim) plus the lanes below. **All 25 items are closed.** Every gate is green.
+
+## Where the work actually was (the archaeology, so nobody repeats it)
+
+Ten worktrees exist. Only ONE held live work:
+
+| worktree | state |
+|---|---|
+| `shooter-simulation-fixes-c916ec` | **the live one** — ~70 files uncommitted at `4a48038`, the tip of every other branch's lineage. Now `9162190`. |
+| `alpha-main-divergence-7a6134` | 60 files uncommitted at `56e5836`, superseded — its `shotPath.ts` / `drawShot.ts` / `Results.tsx` are committed in `9b4478a`, an ancestor of `4a48038`. |
+| `nice-morse-09b59a` | clean, same commit as the live one. |
+| `alpha-ui` | 5 files uncommitted, last commit 2026-09-12. Long superseded. |
+| `main-deploy` | ⚠️ leftover UNMERGED index entries from an aborted operation (no `MERGE_HEAD`), local `main` 62 commits behind `origin/main`. Its staged work (`src/net/stagedMatch.ts`, `src/ui/copyText.ts`) is already in `origin/main`, so the leftovers are discardable — NOT discarded here, because that worktree holds production's branch. |
+| `biobuzz-3d`, `biobuzz-3d-worktree-*`, `pr-alpha` | clean, all ancestors. |
+
+`origin/alpha` was already at `4a48038` — so the alpha BRANCH was never behind. Item 9's complaint
+was about the deployed `dsim-alpha` machine, not about code.
+
+## The checkpoint (`9162190`) — what the halted session had already finished
+
+Items 1, 3, 4, 5, 6, 7, 8, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 24, 25. Audited
+item-by-item against the diff rather than taken on trust, and the claims hold: each carries a
+measurement or a regression check, not a renamed constant. The load-bearing ones:
+
+- **Item 1, the shooter** (five previous passes rejected). `bbHeadDims(elemR)` in `config.ts` is the
+  whole dimension chain: motor at θ = 180°, dead behind the wheel and outboard of the hood's swept
+  disc (a); `axleX = pathR`, so the element pinches on the rotation axis it came up (b); the back
+  flap is now `bb-turret-throat`, the channel's rear wall and the rear tie (c); `BB_HEAD_POLLEN` vs
+  `BB_HEAD_NECTAR` are genuinely different heads — 9.635 in muzzle against 10.035 (d). The RENDER
+  lane proves the motor can's front face is behind the hood's rear-most point over the WHOLE pitch
+  sweep, rather than asserting an angle.
+- **Items 6 and 12, the tape.** The manual (p65) says 1-in or 2-in ProGaff; `docs/biobuzz/manual-distilled.md:510`
+  shows the 2-in zones drawn as two 1-in strips, which is why `BB_TAPE` is 16 measured 1.000-in
+  strips and `BB_TAPE_2` is gone. No centre cross exists on the real field — the HIVE structure is
+  what stands at the centre — so the fake 8-in white cross was removed. **`BB_TAPE_W` is not a line
+  width**: every mark is a filled rectangle.
+- **Items 11 and 13.** Gated on `quality === 'high'`. The AprilTag check decodes `apriltag36h11Cells`
+  against the real `tag36h11.c` payloads for ids 30 and 45 — it is not a picture of a tag.
+- **Item 21.** The restitution combine rule was picking Min, so a 30-in drop rebounded 0.9 in once.
+  Measured now over eight elements: 1–4 bounces, up to 12.7 in of rebound, ~38 in of scatter.
+
+## What this session added
+
+- **Item 2 — the swerve pod's check was wrong, not its renderer.** `podParts()` merges the fork
+  plates, the TOP PLATE and the kingpin into one unnamed `swervePod:struct` geometry, and the check
+  took the union bbox of every unnamed mesh — so it picked up the 3.2-in top plate sitting at
+  z 3.60–3.90, clear above the wheel's 3.00 crown, and called the 2.1-in fork "3.20 long over a 2.92
+  tyre". Both checks now walk the struct's own world-space triangles, keep what reaches the crown or
+  below, and RASTERISE the silhouette onto the tyre's bounding square on a 200×200 grid: **74% left
+  clear against a 55% floor**. ⚠️ The companion "fork length" metric reads 0.90, not ~1.76, because
+  three.js's `CurvePath.getPoints` does not subdivide straight `LineCurve` segments — the only
+  below-crown VERTICES are the boss arc's. The rasterised coverage is the real assertion; the length
+  metric is a weaker sanity bound than it looks.
+- **Item 23 — the replay export camera.** It was `useState<SceneCamera>('driver')`, a literal. The
+  live camera is not scene state: it is the device preference in `graphics/store.ts` that the scene
+  reads at construction and writes when `c` cycles it. `openMenu()` now seeds the default through
+  the same `resolveSceneCamera(interactive, hostPick, pref)` the render loop resolves with, so there
+  is no second copy of the cycling logic. `exportView` was already seeded this way; no other export
+  default carried the bug.
+- **Item 9 — nothing to fix.** `eaf5a71` is in `origin/alpha`. Redeploy `dsim-alpha`.
+
+## Gotchas found while verifying at the surface
+
+- ⚠️ **The perf HUD needs 30 frames before it draws anything** (`getPerfStats` returns null under
+  `frames.count < 30`). In an automated browser the Browser pane only paints when a screenshot forces
+  one, so the card looks BROKEN at every level until ~30 forced paints have gone by — and then the
+  frame times read 100007 ms, which is the harness, not the game. This cost a false bug report here;
+  do not file it again. Same root cause as the `world.tick` note in `docs/area/biobuzz.md`.
+- `GraphicsSettings.perfOverlay` is deliberately INERT — `GameSettings.perfDisplay` is the one
+  setting, and it is four levels (`off` / `simple` / `detailed` / `graphs`), not a boolean. There is
+  no UI control bound to `perfOverlay`; do not add one back.
+
+## The admin console (items 24 and 25) — verified at the surface, and it was broken at the door
+
+The checkpoint's admin work compiled and passed `dbtest`, but nobody had ever WATCHED it run. Driven
+through `scratch/admin/boot.ts` (the real `server/index.ts` on PGlite with a local JWKS) it turned
+out the front door did not work at all:
+
+- ⚠️ **`/admin#tab=users&user=…` ALWAYS OPENED ON LIVE.** `App.tsx` canonicalizes `/admin` →
+  `/decode/admin` with `replaceState(canonical)`, and `pathFor` emits no fragment — so the hash was
+  destroyed before `Admin` mounted. Every tab link, every account link pasted between moderators,
+  and the whole `#tab=`/`#user=` design added in `9162190` had never worked once. `replaceState`
+  now carries `location.hash`; the QUERY is still stripped, which is what that call is for
+  (`?token=`).
+- ⚠️ **`bundleaudit` HAD BEEN RED SINCE `9162190`** — `other` 9.12 KB against a 1.00 baseline, and
+  `main` grown to 938.59 KB, because `App.tsx` imported `Admin` STATICALLY and dragged six panels
+  into the chunk every player downloads. `lazy(() => import('./Admin'))` puts it behind its own
+  route: **main 938.59 → 923.89 KB**, `other` 1.66, a new `admin` route at 25.21. The static import
+  predated the checkpoint; what made it fail was the checkpoint's ~1000 new lines behind it.
+- **The 30d and 90d analytics ranges rendered a dashboard of zeros.** `from` is computed in the
+  browser and floored on the server, so the 30-day preset was ALWAYS microseconds past the
+  raw-retention boundary and fell through to `analytics_daily`, which is empty on a service younger
+  than the range. A 1-hour boundary grace fixes it (series 0 → 186 points), and an empty aggregate
+  tier now says so instead of printing zeros under "read from the daily rollups".
+- Four smaller ones: `ds-btn ghost smallall danger` (`smallall` is declared nowhere, so two
+  destructive buttons rendered full-size — same bug class as `--ds-font`), a keyless fragment in
+  `EventsPanel`, `AccountName` printing "no username yet" beside accounts that HAVE one (it treated
+  an unprojected `undefined` as a never-claimed `null` — the same three-state bug as `(no profile)`,
+  one level down), a 7-day suspension reading "168 hours", and Refresh disabled exactly when the
+  report queue is empty.
+
+All 7 tabs render, 22 read routes return 200, and all 18 mutating routes round-trip AND write an
+audit row — verified by diffing `listAudit` across every call, not by reading the code.
+
+**Five moderation gaps closed** (migration `0043`): suspend/lift (a DEADLINE, not a flag, so it ends
+by arriving; enforced at BOTH `join` and the ranked `queue`, read from the DB rather than a cache
+because it matters most one second after the button); clear an abusive @username (CLEARED, so the
+account re-runs `UsernameGate` and no moderator picks somebody's permanent name); delete an account
+(the player's own tested cascade, refused for a staff id because `syncStaffRoles` would resurrect
+it, audit row written BEFORE the delete since afterwards there is no profile row to join); reports
+filed AND received on the account panel; and flagging a Ko-fi payment charged back (it does not
+revoke — that stays a second decision). ⚠️ `player_reports` cascades on BOTH parties, so the "filed"
+count a moderator judges somebody on is a FLOOR, not a total.
+
+**Deliberately not done: kicking a live session.** Sockets live on the machine serving the request
+and one Fly app runs several regions, so a kick from the console would silently miss sessions
+elsewhere. The suspension is the cross-region lever; a real kick needs a cross-machine signal.
+Also left: events on an aggregate range still read the raw tier (labelled in the banner);
+`adminSupporterHistory` in `src/net/api.ts` is now a dead client function.
+
+## Design pass on three left-border accents (the `impeccable` hook, owner asked for a real fix)
+
+The hook flags `border-left: Npx solid <colour>` on a card as the side-tab tell. All three sites
+predate this work. The test applied was **does the colour carry anything a reader who cannot see it
+would lose** — and it split them three ways:
+
+- **`.eventlog-line`** — carried NOTHING. Identical accent on every line whatever the event was.
+  Removed; the 1px full edge was always what separated it from the letterbox.
+- **`.ann-item`** — carried nothing EITHER, and the comment that defended it was wrong.
+  `Announcements.tsx` renders `<KindBadge kind={a.kind} />` at the top of every item, so the edge
+  restated in colour what the header already says in words. Removed, with `.ann-item.season` and
+  `.ann-item.act` (which existed only to recolour it).
+- **`.intro-card`** — the ONLY one that had to keep its colour. Nothing else in that card says red
+  or blue: it prints a team number, a name, a team name, a drivetrain and an ELO. So the SHAPE
+  changed instead — 1px frame + 4px left slab became a 2px border all round, and `.red`/`.blue`
+  set `border-color` rather than `border-left-color`. Symmetric weight is not a side-tab, and it
+  reads better over the intro's dark scrim. `box-sizing` is border-box globally, so it moves no
+  layout — `shiftaudit` agrees (576 state changes, 0 shifts).
+
+⚠️ **The hook also reports ~31 `design-system-color` / `-radius` / `-font` findings in
+`src/ui/styles.css` that are PRE-EXISTING palette drift**, untouched by any of this work. They are
+not addressed here — that is a separate, whole-file pass, and mixing it into this one would bury
+the 25 items in unrelated churn.
+
+## The admin harness is real tooling now, not scratch
+
+`scratch/admin/boot.ts` (gitignored) is promoted to **`scripts/adminharness.ts`** / `npm run
+adminharness`, and `.claude/launch.json` gains an `admin-harness` entry on port 5189 plus
+`"autoPort": false` on `dev` (the owner wants `dev` pinned to 5173). The reason is the trap: the
+admin console is the one surface with no automated UI coverage, the harness is how you verify it,
+and a launch config pointing at a gitignored file is a dead end on a fresh clone. It touches no
+real database and no Fly machine — PGlite in memory, a local JWKS, bound to localhost, gone when
+the process is. Same `setPoolForTests` seam `scripts/dbtest.ts` already uses.
+
+⚠️ **It binds 8798/8799 and the client wants 5189.** A harness left running from a previous session
+will silently answer your `curl` and make a FAILED boot look green — that happened here. Kill the
+old PID before trusting a health check.
+
+## Gates on the merged tree
+
+`npm test` **shared PASS + biobuzz PASS** (2713 checks) · `build` exit 0 · `server:check` exit 0 ·
+`dbtest` ALL PASS · `test:mm` 197 · `contrast` ALL PASS (221) · `uiaudit` at/under baseline ·
+`uiindex` 251 classes, 0 unreferenced · `docaudit` ALL PASS · `bundleaudit` ALL ROUTES AT/UNDER
+(main 923.89, admin 25.21, other 1.66) · `shiftaudit` **576 state changes, 0 layout shifts**.
+
+## Next steps
+
+1. Merge to `alpha`, push, and **redeploy `dsim-alpha`** — that is item 9, and the server moved
+   (analytics, admin routes, suspension enforcement at `join`/`queue`, migrations 0041–0043).
+2. Production (`main`, `dohun-sim-decode`) is untouched; promotion is the owner's call.
+3. `main-deploy`'s stale unmerged entries are still sitting there — see the table at the top.
+
+---
+
+# HANDOFF — 2026-09-19 (alpha: THE SHOOTER REBUILT — hood-only elevation, a 72 mm flywheel on a
+turret plate, and the sim's release following the hood lip)
+
+**(Previously READ FIRST.)** The sixth pass at this one mechanism, and the first that changed the machine rather
+than a constant. Gates: `npm test` (**2538** — shared and BIOBUZZ both green) · `build` ·
+`server:check` · `docaudit` · `uiaudit` · `contrast` (221) · `test:mm` (197) · `bundleaudit`
+(scene 201.81 against a 201.44 baseline, inside the 4 KB tolerance and the 250 ceiling) ·
+**`test:ai`** (150 matches, 9.5 min: HARD beats EASY 74/100, mean margin 26.2; tiers ordered
+66.1 / 113.3 / 127.8 against idle).
+
+## Why five passes failed
+
+Each one moved a constant to answer the last complaint and produced the next: a flat front cut
+(accepted); `rIn` raised until the flywheel's rim sat in a bare annulus ("the flywheel looks like it
+is not constrained to the plate anymore"); the tail zeroed after measuring AT REST ("the plate is
+meshing with the chassis"); `BB_FLYWHEEL_R` cut 2.0 → 1.5 to buy ρ for a motor pocket under the axle.
+
+⚠️ **THE ROOT CAUSE WAS OWNERSHIP, NOT GEOMETRY.** `scene/renderRobots.ts` owned the shooter's
+dimension chain privately while the sim owned a flat `BB_LAUNCH_Z0 = 10`. Two sources, no check
+between them, so the picture and the physics could disagree indefinitely — and did, for five rounds.
+The chain lives in `config.ts` now and the renderer imports it.
+
+## The four owner rulings this implements
+
+| | ruling | what it forced |
+|---|---|---|
+| (b) | the hood extends above the plates | the plate's outer arc IS `BB_HOOD_R`, so the hood's own 0.28 of material is the proud part, by construction |
+| (c) | the flywheel sits right above the turret plate | a real turret plate exists now; the wheel bottom is 0.300 above it |
+| (d) | only the hood moves | `bb-turret-pitch` carries the hood arc and two arms and nothing else |
+| (e) | a standard flywheel is 72 mm | `BB_FLYWHEEL_D_MM = 72`, never a rounded decimal |
+
+⚠️ **(d) IS WHAT MADE THE REST POSSIBLE.** The pitch node used to carry the whole head, pivoting
+about the muzzle, which is the only reason a ρ budget ever existed — the entire assembly swept
+through the drivetrain at elevation and everything had to be squeezed inside it. Fixed parts need
+static deck clearance and nothing more, so `BB_HEAD_RHO_MAX`, `minHeadWorldZ` and `plateOuterR` are
+gone rather than re-tuned.
+
+## The release follows the hood (owner-authorised, it changes shot outcomes)
+
+A hood pivoting on the axle moves its own lip, so the release is no longer flat: **9.634 in level,
+8.466 at 57.6°, 7.554 at the 80° cap**, retreating along the heading as it drops. `bbMuzzleLocal`
+(`robot.ts`) is the one muzzle and `scene/renderRobots.ts` imports it — the RENDER lane proves the
+drawn lip is on the sim's muzzle at every pitch rather than assuming it.
+
+⚠️ **`bbTurretSolution` IS A FIXED POINT**: the elevation moves the release and the release moves
+the elevation. `BB_TURRET_SOLVE_PASSES` (4) runs ALWAYS — no early exit, no tolerance — because a
+trip count resting on a float comparison can differ between a client's prediction and the server's
+authority. A fifth pass moves the pitch by at most 1.76e-9 rad over 7,688 field poses.
+
+Measured consequence, authorised knowingly: scoreable field cells **1359 → 1382** north and
+1417 → 1439 south, pitch-capped cells 255 → 211, nothing speed-capped, worst required muzzle speed
+253.26 → 256.37 against a 260 cap. The lower release costs a little speed and unblocks more of the
+field than it loses. **No version was bumped** — replays from before this re-simulate slightly
+differently under the same `SIM_VERSION`, which the owner was told and has not asked to change.
+
+⚠️ **A DUMPER HAS NO HOOD AND ITS RELEASE IS STILL FLAT.** `bbLobThrow`, `bbDumpSolution` and
+`bbLaunch`'s dumper branch all still read `BB_LAUNCH_Z0`, and the ROBOT lane carries a leak guard: a
+dumper's release stays flat at every pitch while a turret on the same chassis follows its hood down.
+
+## The feed shoe, which is what answered "a weird flap in the back"
+
+A hood on an axle pivot carries its own feed mouth round with it — at 80° of pitch the mouth has
+gone 80° round the wheel and the feed no longer lines up. So the wrap shrank 1.05 → 0.556 rad and a
+FIXED shoe at `BB_FEED_SHOE_R` 4.397 spans 146°–202° and takes over the entry. It bolts to both side
+plates, so it is also the rear tie. The loose plank is gone because something real replaced it.
+
+## What the adversarial check measured, not what the builders claimed
+
+An independent agent built the real `buildTurret()` group and measured world positions:
+
+- meshes under the pitch node: `hood`, `hood-arm`, `hood-arm` — nothing else;
+- wheel, plates, braces, motor and feed shoe all diff **0.000000** between pitch 0 and the cap;
+- hood-minus-plate gap **+0.280 worst** over 3600 samples, +3.230 at rest, never negative;
+- wheel lowest 5.700 against a turret plate top of 5.400;
+- sim muzzle vs drawn lip: **0.000000** at pitch 0/20/40/60/80.
+
+It also found a defect neither builder caught: the plate's full-radius arc was documented as
+θ ∈ [14.30°, 206.00°] when it is actually **[165.70°, 206.00°] — 40.3°, at the back, and nowhere
+else**. Everything from 15° to 166° is governed by the flat top. Corrected in `config.ts`, with the
+reason the hood-proud figure is 3.23 at rest and 0.280 at full elevation rather than one number: at
+rest the hood rides its arms well above the flat top, and at 80° it has swung round to exactly the
+arc stretch.
+
+## Two bugs the build found in the CHECKS themselves
+
+Both had been hiding real geometry, and both are why the RENDER lane passed five times on work the
+owner rejected:
+
+1. `radialBar` returned an INDEXED `BoxGeometry`. `mergeGeometries` refuses a mixed indexed and
+   non-indexed list, returns null, and `framePart` falls back to `parts[0]` — so each hood arm was
+   silently its rim alone.
+2. The corridor sweep filtered on the nearest VERTEX's `|y|`. A `CylinderGeometry` standoff has
+   vertices only at its end caps, so every brace, the motor and the belt read `|y| ≥ 1.92` and
+   dropped out of the sweep unmeasured. It tests the part's y INTERVAL now.
+
+The lane no longer greps source text for the shooter: it imports `buildTurret`, BUILDS the group,
+poses `bb-turret-pitch` at 41 elevations and measures vertices.
+
+## Open
+
+- The `+20°` brace leaves **0.133** of exit-corridor clearance. It stands: the side plate's own flat
+  top is the binding part there and clears by 0.150 by definition, so nothing fixed at that height
+  can do better.
+- Far-corner speed headroom is **3.63** against the 260 cap, down from 6.74. A ratchet check fails
+  if it drops below 3.6. Raising `BB_LAUNCH_SPEED_MAX` is a balance decision nobody has made.
+- `BB_AI_WIN_RATE_FLOOR` stays at 55%. `test:ai` measured 74% and its own footer suggests raising
+  the ratchet, but the PRE-change rate was never measured, so there is no way to say whether 74 is
+  an improvement or where it always sat. Measure a baseline before tightening it.
+
+# HANDOFF — 2026-09-19 (alpha: THE OWNER'S TWELVE-ITEM PASS — the hive tip, scoring instants, flower
+and tile contact, the shooter/swerve/box-tube rebuild, intake cadence, one alliance blue)
+
+Eight commits plus the merge of `origin/alpha` they sit on. Twelve items, all
+from playing the running 3D game. Nine were diagnosed read-only first and then implemented under
+one-owner-per-file, which is what kept nine concurrent agents off each other.
+
+⚠️ **THIS LANDED ON TOP OF THE PRE-PUBLISH MERGE BELOW, AND THAT SECTION'S PUBLISH STILL HOLDS.**
+`alpha` still contains `main`, so `git checkout main && git merge --ff-only alpha` is still a
+fast-forward, and the deploy ORDER that section gives — Vercel builds `main` and serves it FIRST,
+`./scripts/fly-deploy.sh` from a `main` worktree SECOND — is unchanged and still load-bearing.
+Nothing here was deployed.
+
+Four files conflicted with what had landed on alpha meanwhile. Three were mine to keep; the fourth
+was not: **`scene/renderElements.ts` took the upstream resolution whole.** That lane found the same
+bug from the other end and its answer is a superset of mine — one `bottom = biobuzzPhysics(world)
+=== '3d'` deciding whether `b.z` is an underside, applied to the FLOWER branch as well as the hive
+one, and it also catches that my earlier "lift by `r` unconditionally" fix had leaked into the 2D
+pipeline it was never about.
+
+## 1 · The HIVE tips on the table it promises
+
+⚠️ **THE DYNAMIC TRAY'S TRIGGER IS `BB_TIP_POLLEN`, NOT A TORQUE** (`sim3d/hive3d.ts`). The owner's
+report was "it says 0 more to tip and it does not tip", staged as 1 POLLEN + 4 NECTAR: the load
+weighed 5701 against a hold of 5915 and the tray sat on its stop for the rest of the match.
+
+No calibration could have fixed it, and that is the part worth keeping. **ONE COUNT DOES NOT
+DETERMINE ONE TORQUE.** Measured in one cell at the shipped hold, staging the same count four ways:
+
+| load | crammed 2-wide up the back | guide staging | 2-wide line down the tray |
+|---|---|---|---|
+| 8 POLLEN | 4560 (no tip) | 7284 | 8051 |
+| 7 POLLEN | 4146 (no tip) | 5647 | 6769 (tips) |
+| 3P + 3N | 4933 (no tip) | 6869 | 8407 |
+
+The two counts' ranges overlap over most of their length, so no value of `BB3_HIVE_DETENT` separates
+them — and both halves of field guide §12.3 were being violated at once on the shipped numbers. The
+lane never saw it because every fixture staged one packing. The detent is a PIN THE TABLE LIFTS now;
+everything after the release is still the free see-saw. `hiveContentsTorque`/`hiveRestoringTorque`
+stay exported because they are how the lane and `scripts/hive-calibrate.ts` MEASURE the tray.
+
+⚠️ **`BB3_HIVE_DYNAMIC = false` IS NOT A ONE-WORD REVERT, AND HAS NOT BEEN SINCE G409 LANDED.**
+`bb.spill` — G409's whole tag — is written in exactly one place, inside `hiveDynamicTick`. The
+kinematic path never writes it, and all four G409 checks live inside `if (BB3_HIVE_DYNAMIC)` blocks,
+so flipping the word kills G409 in 3D **and the lane stays green**. The comments that claimed
+otherwise are corrected.
+
+## 2 · A scored line waits for the instant §10.5 assesses it at
+
+⚠️ **AN INSTANT LINE IS WORTH ZERO UNTIL ITS INSTANT HAS PASSED.** Measured before the fix: the
+score bar read 4 before the match started and 9 one second into AUTO, 29 s before anything on it had
+been assessed.
+
+| line | instant | §10.5 |
+|---|---|---|
+| LEAVE, AUTO PARK | end of AUTO | F |
+| TELEOP PARK | end of the MATCH | G |
+| POLLEN/NECTAR in the up-CELL | everything at rest, end of MATCH | C |
+| POLLEN/NECTAR in a GARDEN | end of TELEOP, all at rest | E |
+| the HIVE TIP, both FLOWER lines | continuous | A, D |
+
+The COUNT stays live — a driver still sees the achievement land — and `BbAllianceScore.pendingPts`
+carries what the instants still owe, shown as a `+N PENDING` chip in the muted row, deliberately not
+in the panel. `total + pendingPts` is invariant for a field that stops changing. **The FINAL score is
+unchanged**: every harvest happens at or after `post`. This is shared rules code, so it moved the 2D
+pipeline too — correct for a rules bug, and no version was bumped.
+
+## 3 · The shooter, the swerve pods and the box tube
+
+The shooter plate had been "fixed" twice and kept digging into the chassis, because both fixes
+measured the plate AT REST. ⚠️ **THE CONSTRAINT IS THE SWEPT ENVELOPE, NOT THE POSE.** Elevation
+rotates the whole pitching head, so `BB_HEAD_RHO_MAX` is the new invariant: nothing on the head may
+exceed ρ = `BB_LAUNCH_Z0 − BB_DECK_Z − 0.2`. At rest the old head cleared the deck by 0.45 in and
+looked right; at 45° of elevation the feed ramp swept the deck, the belly pan and the wheels and
+stopped 0.04 in off the tile. `minHeadWorldZ` is the closed form the RENDER lane samples.
+
+- **Swerve is a pod**: top plate, azimuth ring, fork, 3-in wheel, belt drive, all of it under the
+  deck plate's 4.34 in of headroom and inside the frame (`BB_POD_INSET`). A 4-in wheel does not fit
+  — it leaves 0.34 in for plate, ring and bearing — which is why COTS FTC pods are 3-in.
+- **The flywheel motor** is behind the hood at 205° about the axle, between the plates, driving a
+  belt over a 0.68/0.54 pulley pair. It is not beside the flywheel any more.
+- **The box tube** telescopes over `BB_BOX_TUBE_EXTEND_S`, off `bbFlowerInReach` — the SIM's own
+  predicate, not a second reach model.
+- **The in-reach cue** is one predicate and two drawings, the rule the shot path already follows:
+  `scene/renderReticle.ts` in 3D and `drawShot.ts`'s `drawBiobuzzReachCue` in 2D, both reading
+  `bbFlowerInReach`. The 2D call site is in `draw.ts`, under the shot path, matching the 3D render
+  order.
+
+## 4 · Flower and tile contact
+
+A FLOWER column is a physical pile now, not computed heights: four POLLEN settle at gaps
+2.735/2.757/2.778 against an ideal 2.8, and a dropped POLLEN's bottom lands at −0.011 in at all four
+tubes with `containmentFixes` still 0. A NECTAR is still stopped by the 3.222 bore, so G418 holds.
+`BB3_CONTACT_FREQ` 30 (the shared default is 12) is what stopped elements sinking into the tray
+floor. The tiles bounce slightly more: `TILE_RESTITUTION` 0.05, which under Rapier's Average rule
+makes the element/tile coefficient 0.25 rather than 0.225. `sim3d/predict.ts` took the same number,
+or the drawn shot path would lie.
+
+## 5 · The intake
+
+The cadence gate is 0.06–0.12 s per element (was 0.15–0.3). ⚠️ **AND THE GRIP WAS A UNITS BUG**:
+`approach(from, to, maxDelta)` was being handed `BB_INTAKE_DRAW_IN` — a SPEED — as a per-TICK
+displacement cap, i.e. 3120 in/s² of effective acceleration, so an element reached full draw-in
+speed from rest in one tick. `BB_INTAKE_GRIP_ACCEL` (1200 in/s², APPROX) times `dt` replaces it, and
+`BB_INTAKE_DRAW_IN` is 84 (was 52).
+
+## 6 · One alliance blue, and it is not the CAD's
+
+⚠️ **THE CAD IS AUTHORITATIVE FOR DIMENSIONS AND IS NOT AUTHORITATIVE FOR THIS COLOUR.** The STEP
+gives the hive Goal Ribs `plastic#0000ff`. Pure `#0000ff` is OKLCH hue 264.1° — 1.7° off the most
+violet blue sRGB can express, and the worst available answer to "it looks too purple". An assembly
+carrying pure `#ff0000` AND pure `#0000ff` is carrying placeholder part colours, the same way its
+`#e6e6e6` "white plastic" is one, which `renderFieldGlb.ts` has overridden since the clear-panel
+pass.
+
+Every BIOBUZZ blue is **`#007be1`** now — tape, NECTAR, hive accents, the constants-built fallback
+scene, the GLB's ribs and the robot silhouette. Hue 252.9°, the least violet a saturated blue gets
+before it reads cyan, at the most chroma sRGB has there, and L 0.583, within 0.002 of the red tape's
+own lightness. APPROX: **no authoritative AndyMark blue was found**, so this is a perceptual
+correction and not a sourced value. RED is untouched — a pure red still reads as red, and the owner
+named only blue.
+
+## Open, and deliberately so
+
+- **`BB_INTAKE_LANE_W` stays at 9.** Moving it to 8 gives the default 17-in build a second feed lane
+  — a balance change rather than a feel change, and the owner has not ruled on it.
+- **`src/config.ts`'s `COLORS.blue` (`#3b82f6`, hue 259.8°) is unchanged.** It is DECODE's and Chain
+  Reaction's too; BIOBUZZ no longer reaches for it.
+- A staged FLOWER column is born one radius high in 3D — `spawn.ts` writes `flowerStackZ`, which
+  returns CENTRES (the one exception to `b.z` being a bottom), and `syncElement` adds another
+  radius. It settles correctly on tick 1 now that the column is physical, so it is a first-tick
+  drop rather than a wrong resting height.
+- A vz −200 shot still peaks at 0.154 in of penetration into the tray floor on the landing tick at
+  30 Hz. Settled penetration is what item 3 was about and that is fixed; the transient is not, and
+  no check pins it.
+# HANDOFF — 2026-09-19 (alpha: PRE-PUBLISH AUDIT — main merged INTO alpha, so alpha → main is a fast-forward)
+
+`alpha` was ready to publish at this commit. `origin/main` has been merged into it here, with the
+five conflicts resolved (below), so the publish is a **fast-forward**, no hand-merge:
+
+```
+git checkout main
+git merge --ff-only alpha
+git push origin main
+```
+
+Then deploy **in this order and no other**: let Vercel build `main` and confirm the site serves
+it, THEN `./scripts/fly-deploy.sh` from a `main` worktree. `docs/deploy.md` → "Deploy ORDER when
+the wire protocol moved" says why: the new server refuses every pre-`bb3d` client from every
+BIOBUZZ room, and the reverse order locks production BIOBUZZ players out until Vercel catches up.
+
+Gates on the tree this merge commit carries: `build` · `server:check` · `docaudit` · `uiaudit` ·
+`contrast` (221) · `test:mm` (197) · `dbtest` · `bundleaudit` (re-measured: `main` DOWN 6 KB gz, a
+new `gallery` route) all green; `npm test` is **1878** shared, all green, and **2380** BIOBUZZ with
+**three wall-clock `step3d` perf checks red on the audit machine** — the same three are red on the
+PRE-fix tree there (A/B, alternated), and green in the 2026-09-19 render-pass HANDOFF below on the
+owner's. Every other BIOBUZZ check passes. `npm test` now runs BOTH suites unconditionally
+(`scripts/test-all.mjs`). `shiftaudit` was not run this round.
+
+## What the audit was
+
+Eight read-only audits of the alpha-vs-main delta (202 commits, 245 files) by lane — main-only
+drift, server/net, security, sim core + versioning, BIOBUZZ 3D, UI, docs/hygiene, tests — then
+the findings triaged and fixed in four disjoint batches. Findings the owner has to rule on are
+listed at the end; nothing there was decided silently.
+
+## Fixed — things main had and alpha lacked (cherry-picked: `63bc806` `882fda6` `eaf5a71`)
+
+- `applyBallDelta` returns COPIES — a spectator's stationary elements (flower stacks, hive
+  cells) were never corrected again. `f52b175`.
+- A reconnecting spectator re-spectates instead of claiming a driver slot. `747dae0`, hand-merged
+  so the rejoin frame keeps alpha's `caps: CLIENT_CAPS` (a `'3d'` room re-gates a reclaim).
+- Restarting a solo record run works — `releaseSeatLock` / `abandonSlot` /
+  `releaseSoloRecordHold`. `aca358e`; this was the regression main's 2026-09-17b section is about,
+  and alpha never had the fix.
+
+Everything else on main was already on alpha by content. Main's `ff5044c` (revert of the
+HIVE-feel batch) is the ONE intentional divergence and the merge resolved it to alpha — see the
+versioning entry below for why that is now safe.
+
+## Fixed — replay fidelity
+
+- **`SIM_VERSION` 2 → 3.** Main and alpha both stamped 2 over DIFFERENT `step()` behaviour for a
+  BIOBUZZ world (six-draw spill, `hiveDeflect`, load-driven swing rate, CAD geometry, the 2D
+  intake rewrite, `bbSnapSize`). The ledger in `src/config.ts` now lists all of it under 3, and
+  says plainly that replays recorded 2026-09-13→17 are mis-stamped 2 and will play as `behaviour`
+  DRIFT on a v3 build, which is the correct label. A bump is a drift, not a refusal.
+- Main's spill draw-count tripwire is ported to the FIELD lane, retargeted to **6**. The next
+  change to that number comes with another bump, in the same commit.
+
+## Fixed — server
+
+- `verifiedFromSession` (the email-verified fallback) is deduplicated per token and has a 2 s
+  timeout; it was an unbounded, un-timed HTTP call on the join hot path, made even when the gate
+  it feeds is off.
+- A ranked / matchmade room cannot start before the 3D wasm has resolved
+  (`physicsReadyForRoom`): custom rooms waited, `startRankedImmediate` / `beginRanked` did not.
+- `Room.stop()` frees the match's Rapier 3D world (`disposePhysics3dFor`). The engine map is a
+  `WeakMap`, so dropping the World dropped the only handle without `free()`, and wasm linear
+  memory never shrinks — a few hundred 3D matches would have held every one.
+- `addBot` mints unique seat ids (`bot-<seq>-<code>`); remove-then-add reused an id.
+- `caps` off the wire is coerced (`coerceCaps`: strings only, ≤16) at all eight sites.
+- `lanRateOk` / `exportRateOk` sweep unconditionally; `POST /api/user/settings` body capped at
+  64 KB (was 512 KB, unlimited calls); `accept-terms` short-circuits when the version is already
+  accepted.
+
+## Fixed — client / UI
+
+- `TermsGate` and `UsernameGate` STAND DOWN on `/terms` and `/privacy` (`suspended`). They are
+  full-viewport backdrops beside the routed screen, so the gate's own "read the terms" link opened
+  a tab with the same gate over the document. The acceptance fetch still runs.
+- Results: `solo` is "no opposing roster", not "no session" — a BIOBUZZ practice against bots
+  showed a one-sided screen for a match that had an opponent and a winner. The eyebrow still says
+  SOLO PRACTICE for any local run. The record run's net score is animated once (it was tweened
+  twice, and the inner tween restarted every frame).
+- `AuthPanel` is a real dialog (`role="dialog"`, labelled, Escape closes); auth errors are
+  described, not dumped (`describeAuthError`). The prediction picker has group semantics and a
+  focus ring; Results overlay buttons have a visible focus ring on the field surface.
+- The analytics beacon strips the QUERY STRING, and URL canonicalization compares
+  `pathname + search` — a reset / verification `?token=` on an already-canonical path was never
+  cleaned and left the device inside a pageview.
+- `safeHref` no longer admits protocol-relative (`//evil`) links in admin markdown.
+- `vercel.json` sends `X-Frame-Options: DENY`, `frame-ancestors 'none'`, `Referrer-Policy`,
+  `nosniff` — the one-click consent controls were frameable.
+
+## Fixed — BIOBUZZ 3D
+
+- `renderElements.ts` branches the parked-element z convention on the PHYSICS
+  (`biobuzzPhysics(world)`), never on `state.kind`: 3D writes a bottom for every ball, 2D writes a
+  centre for a parked one. Both mistakes had shipped, one per branch (hive floating 1.4 in in 2D,
+  flower sunk a radius in 3D). Pinned numerically in the FLOWER3D lane against the real body.
+- The FULL predictor stands its robots at `bbHeightNow` (stowed before the match, deployed after)
+  and re-fits across the R102 deploy edge, reading back against the height it actually built. It
+  used `robotHeightIn` — deployed whatever the phase. **Its chassis stays ONE `robotExtents`
+  cuboid, deliberately**: giving it the authority's open-mouth compound was built, measured
+  (forty-tick reconcile 3–6 ms → 9–11 ms on the local robot alone, 16–17 ms on all four, A/B
+  alternated against the tree without it) and taken back out, because Auto reads that probe
+  against `PREDICT_FULL_BUDGET_MS = 8` and would have picked LIGHT everywhere. Written down above
+  `makeRobotBody` in `predict.ts`; owner decision 11.
+- `GameController.adoptWorld` frees the outgoing world's 3D solve on every swap (five sites) and
+  on `dispose`; `bufferSnapshot` reads the physics off `snap.world`, not the previous world (the
+  first snapshot of a 3D room dropped its ball poses); both `initPhysics3d()` continuations check
+  `disposed`.
+- WebGL context loss is watched (`watchContextLoss`): the match scene falls back to the 2D view
+  with an event-log line, the builder preview tears itself down. Without it a lost context is a
+  frozen field that still takes input.
+- `renderScene.dispose()` frees robots through `BbRobots.dispose()` BEFORE the blanket walk, which
+  was freeing `SHARED_GEO`/`SHARED_MAT` out from under the builder preview.
+- The scene gallery is `React.lazy` (`GalleryRoute.tsx`) — a gated dev route was still a static
+  import, 6 KB gz in `main` for every player of every game.
+- The RENDER lane's `three` boundary check now catches subpath imports and scans all of `src/`.
+
+## Fixed — docs and hygiene
+
+- `CLAUDE.md`: BIOBUZZ is a full scored ranked game, not alpha-only; the repo map gains
+  `src/tutorial`, `src/lib`, `src/lan`, `src/games/biobuzz`, `api/`, `electron/`; counts current.
+  26,896 of the 27,000-byte docaudit budget — the next addition must cut something first.
+- `README.md` rewritten: DSIM, three games, playdsim.com. It described a DECODE-only 2D sim.
+- `src/seasons.ts` header said "DohunSim, only DECODE is playable". Fixed.
+- `docs/area/netcode.md` governs `api/**` (the `api/download.ts` Vercel function had no owner and
+  was invisible to `docaudit`). `docs/multiplayer.md` carries a HISTORICAL banner.
+- `docs/area/biobuzz.md`: the alpha-only paragraph and the "kinematic tray, `BB3_HIVE_DYNAMIC =
+  false`" sentence rewritten to the shipped config.
+- `docs/deploy.md`: the deploy-order section above.
+
+## The merge of main into alpha — how the five conflicts went
+
+| file | resolution |
+|---|---|
+| `HANDOFF.md` | alpha's sections on top; main's 2026-09-17b and 2026-09-17 sections kept verbatim in their date order (the 17b one is the only record of the record-restart cause AND of the still-open "account in a live versus is admitted to a new solo record room" gap) |
+| `src/games/biobuzz/hive.ts`, `state.ts` | **alpha** — the physics-agnostic `hiveTimerStep` the 3D pipeline depends on; `angle`/`angVel` are the dynamic-tray readback |
+| `src/net/serverSession.ts` | **alpha** — it already carries main's `if (!spectator)` guard (cherry-pick `882fda6`) plus `caps` on the rejoin frame |
+| `scripts/smoke-biobuzz/field.ts` | **alpha** — its 12 hive-feel checks plus main's draw-count tripwire at 6 |
+| `src/games/biobuzz/play.ts` | NOT flagged by git, auto-merged to main's REVERTED text; restored to alpha's (`hiveDeflect` in the flight loop). A merge algorithm was making a gameplay decision |
+
+`SIM_VERSION = 3` is what makes "take alpha" honest here: main's replays at 2 play as drift on
+3, labelled.
+
+## Owner decisions — nothing below was decided for you
+
+1. **Deploy order** is the mitigation for the `bb3d` lockout; the zero-window alternative is an
+   env flag in front of `serverPhysics`/`boardPhysics`/`stagedPhysics`. Not built. Say so if wanted.
+2. **Every production BIOBUZZ record row is `'2d'` and vanishes from the boards** the moment the
+   new server boots (`boardPhysics`). Filtered, not deleted. Your ruling of 2026-09-18 implies it;
+   confirm you want it, or change the one predicate before deploying.
+3. `jwtVerify` (`server/auth.ts`) is called with no `issuer` / `audience` / `algorithms`. Pinning
+   them needs a live Neon Auth token to read the claims off; not done blind.
+4. `ADMIN_SECRET` is accepted as a URL query parameter (pre-existing). Header-only would be a
+   one-line change plus your own bookmarks.
+5. `cm.pdf` (9.2 MB, the competition manual) is tracked with no licence; the FIRST courtesy note
+   for the field CAD is unsent. Both are yours.
+6. `LEGAL_UPDATED` (`src/legalText.ts`) drives `LEGAL_VERSION`. The privacy text changed (CCPA
+   paragraph, Your-data panel); if that is a material change, move the date so everyone
+   re-accepts. If not, leave it.
+7. `flowerScoreZ` ships unused — 3D flower scoring runs on the 2D stacking model. Ruling needed.
+8. `package.json` is `0.1.3`; this publish is the largest since it was set.
+9. `migrate()` (`server/index.ts`) is not awaited before `listen`, and a migration failure is
+   non-fatal while the new code hard-depends on 0037–0040's columns. Worth an `await` and a
+   fatal exit — but that reverses a deliberate "a DB failure must not take the game server down".
+10. Neon Auth `trustedOrigins` — confirm no wildcard on the production project (dashboard only).
+11. **The FULL predictor's mouth is solid where the authority's is open.** A predicted element
+    can bounce off a mouth the real one rolls into, and the reconcile snaps it. Fixing it costs
+    2× the reconcile (numbers above). Options: accept as is; raise `PREDICT_FULL_BUDGET_MS` and
+    accept Full on fewer machines; or make the compound cheaper (fewer boxes: arms only, no
+    lintel, for the predictor). Not decided here.
+12. Follow-ups, not blockers: a golden `worldHash` table so cross-build sim drift fails a test;
+    `.gitattributes` (`* text=auto eol=lf`) for the CRLF checkout; dead `spike3d` / `scene-preview`
+    scripts; no 404 route.
+
+## Gotchas found on the way
+
+- `rg` is not on the Bash PATH under the rtk hook; `git grep` is.
+- Three BIOBUZZ perf checks (`PREDICT_FULL_BUDGET_MS`, `step3d p95`, room-tick ratio) are
+  wall-clock and fail under CPU contention from parallel agents. They pass on an idle machine;
+  do not "fix" them by widening the budget.
+- The CLAUDE.md byte ratchet is at 99.6%.
+
+---
+
+# HANDOFF — 2026-09-19 (alpha: THREE ABANDONED LANES FINISHED, plus the owner's render pass)
+
+Four commits on top of `8d3cde4`, every gate green:
+`build` · `server:check` · `docaudit` · `uiaudit` · `contrast` (221) · `dbtest` · `test:mm` (197) ·
+`bundleaudit` (re-measured) · `npm test` (**2375** BIOBUZZ + **1861** shared) · **`shiftaudit`**
+(576 state changes, 0 shifts — the first run in three rounds, and its route list now covers
+`/privacy`, `/terms` and `/contributors`).
+
+Three lanes had been left UNCOMMITTED in the worktree `.claude/worktrees/alpha-main-divergence-7a6134`
+(branch `claude/3d-field-visuals-855bd5`, sitting on `56e5836`, two commits behind alpha). They were
+replayed onto alpha's tip with `git apply --3way` and finished here. **The originating worktree was not
+touched** — it still holds the abandoned copy, so it is safe to delete once these land.
+
+Two other dirty worktrees were left alone on the owner's instruction:
+- `.claude/worktrees/alpha-ui` (detached at `dada8a0`, **396 commits behind**) holds a home-menu
+  redesign — the eyebrow merged into one subtitle, the season moved onto the cards that pick it, the
+  outbound links moved below the menu. It was applied here by mistake and then **fully reverted**. The
+  owner does not want it.
+- `.claude/worktrees/main-deploy` (branch `main`) holds staged-match / `copyText.ts` / contributors work
+  with **two files still carrying unresolved index entries** (`src/ui/App.tsx`, `src/ui/Matchmaking.tsx`).
+
+## The three lanes
+
+**1. BIOBUZZ field visuals + one shot-path predictor.** `src/games/biobuzz/shotPath.ts` is the one
+predictor; `drawShot.ts` (2D) and `scene/renderReticle.ts` (3D) are two drawings of it, and neither
+works anything out for itself. It is NOT under `scene/`, because nothing outside `scene/` may import
+from there. A path is drawn only for a shot that is MADE, dotted, no landing ring; "made" is
+`hiveAccepts` against the REAL hive, not Aim Assist's pretend-up copy. `bbFlightEnters` gained an
+optional `BbFlightTrace` out-parameter, which is what retired `scene/renderLanding.ts` — that file
+carried a COPY of the integrator and its own header said the copy would drift.
+⚠️ **A TURRET'S YAW AND ELEVATION ARE SEPARATE NODES** (`bb-turret-head` → `bb-turret-pitch`). Both on
+one node is what "the shooter is not automatically aiming" looked like: a `THREE.Euler` defaults to
+order `XYZ`, so elevation was applied about the UN-yawed axis, and at the 160° yaw / 80° elevation hive
+range asks for, the barrel came out 67.7° BELOW horizontal and 44.5° off in azimuth while the SIM's
+turret was dead on target.
+
+**2. One board is one physics (owner ruling 2026-09-18).** Every server-connected match of a 3D-capable
+game runs 3D; nobody picks. `Room.physics` is one line (`serverPhysics`); `RoomConfig.physics` still
+rides the wire and is still sanitized but no current server reads it, and the lobby's 3D/2D picker is
+gone. `boardPhysics` (`server/db/repo.ts`) is the single predicate, applied by the DATA LAYER and read
+by `recordLeaderboard`, `personalBest`, `recordRank` and `getUserStats`; it sits INSIDE the per-player
+`best` CTE, because filtering after it would find a player's 2D personal best, reject it, and leave them
+off a board they have a legitimate 3D score on. Pre-ruling 2D rows are KEPT, not deleted; no season was
+reset. An old client without the `'bb3d'` cap is REFUSED (`BB3D_REFUSAL`), not silently downgraded.
+
+**3. The broadcast Results screen.** `src/ui/Results.tsx`, 1,064 lines, split out of `GameView.tsx`
+(which loses ~700). ⚠️ **FIXED-DARK, like the field canvas**: `--ds-stage-bg` (new) and the
+`--ds-on-field*` family are CANVAS-GROUND tokens, never re-valued in the dark block.
+
+## What the lanes had left broken, and what fixed it
+
+| where | what was wrong |
+|---|---|
+| `scene/renderFieldGlb.ts` | three type errors from a half-done refactor; `addPanelEdges` written and never wired |
+| `scene/renderField.ts` | the clear-panel re-tune reached the CAD path only, so the fallback kept the rejected 0.22 / 0.3 / `DoubleSide` while its comments claimed parity |
+| `sim3d/elements3d.ts` | a dumper fired on the first tick fire was held, at any heading — the 2D pipeline has gated this since stage 5b existed |
+| `sim3d/contacts3d.ts` | G409's spill tag died while the element was still riding the tray it was leaving (seed 871: 8 tags at tick 13, all gone by tick 16 at z≈48) |
+| `scripts/smoke.ts` | four `recycle/biobuzz` checks measured NOTHING — a BIOBUZZ room will not tick until `physics3dReady()`, and the shared suite never called `initPhysics3d()` |
+| `scene/renderElements.ts` | every hive element drew one radius LOW. `syncElement` puts the body at `b.z + r`, so `b.z` is the BOTTOM for every ball the sim solves; the hive branch alone read it as a centre. Visible as a drop the tick `derive.ts` retags a landing shot from `flight` to `element` |
+
+⚠️ **The settle check no longer pins a magic tick count.** It settles 3,600 ticks and asserts BIT
+equality plus exactly-zero velocity, and a sibling check asserts the residual contact relaxation DECAYS
+(each 600-tick window drifts at most half the last). The old 900-tick / 1e-3 form reported the machine.
+
+## FIXED — a 3D dumper could not score into a hive cell
+
+`drive: shoot (3d, blue|red, box tube)` in the TUTORIAL lane. Measured over 28 stationary firing poses
+(dx 0/3/6/9 in, dy 14–38 in from the cell): a clean HEAD tree scores from **13**, this tree from **0**.
+
+⚠️ **THE FIX IS IN TWO PARTS AND BOTH HAD TO BE 3D-ONLY** (the 2D pipeline is permanent): a
+`flight` body is born CLEAR of the robot that threw it, walked out along its own parabola at
+body-creation time in `sim3d/engineImpl.ts`; and a 3D dump is STAGGERED one element at a time
+(`BbShot.perDump`, set only by `sim3d/elements3d.ts`), because `bbDumpSolution` converges every
+element on one point — free in 2D, a four-way pile-up at the mouth in 3D. **0/28 → 20/28**, 2D
+byte-identical at 28/28. A shared `launchClearance()` in `robot.ts` was tried first and reverted:
+3/28, and it broke two 2D checks. A straight-ray nudge was also tried and measured at 3/28 — a
+dumper's lob leaves at 80.6°, so raising the release without advancing the solved `vz` overshoots
+the opening. The eight remaining misses are the two CLOSEST rows, where the lob clips the hive
+underside; that is the CAD ruling's own documented consequence, and 2D scores there only because
+a 2D flight element passes through the hive.
+
+The cause was NOT the tutorial. `bbLaunch` throws the hopper from the release line at the bare FRAME face
+(`mountOrigin` = `spec.length/2`). Until this lane the 3D chassis collider was `robotExtents(r)` — the
+footprint, 3 in wider on a mouthed edge — so a dumped element was **born inside its own robot's
+collider** and depenetration flung the four arcs apart; one happened to settle in the cell. The collider
+is now `chassis3dShapes`, whose base box is the bare frame, so the release sits on the collider face and,
+on a mouthed edge, inside the `BB3_MOUTH_SLOT_Z` lintel, where the four elements jam and rest on the
+roof. **The old behaviour was an accident and the new collider is correct; do not restore the accident.**
+Pushing the release out to `bbFootprint` was tried: 2/28. The deeper cause is that `bbLobThrow` /
+`bbDumpSolution` throw a near-vertical lob at a cell whose mouth normal is HORIZONTAL, so the element
+arrives dropping onto the lip rather than travelling into the opening.
+
+## The owner's render pass (2026-09-19, from looking at the running game)
+
+Landed or in flight, in order received:
+
+1. the human player's nectar container should be the STANDARD HOLDING BOX, on the GROUND — not the
+   bespoke shelf-on-legs at `RACK_SHELF_Z = 30`;
+2. the shooter's side plates end in a sharp radial point — the front should terminate flat, and there
+   should be BRACING between the two plates. ⚠️ **Follow-up: the bracing must sit CLOSE TO THE
+   FLYWHEELS, and the plate does not need to be as big as it is;**
+3. swerve is not rendered at all — one squat cylinder per corner at deck height, not a module.
+   ⚠️ **Follow-up: NO MOTOR ON TOP of the swerve module;**
+4. the intake wants a much faster draw-in and a real force model; its sides must not be solid aluminium
+   plate; the roller stays but elements must pass UNDER it; and the roller is too low.
+   ⚠️ **Measured: `BB_ROLLER_R` 1.0 at `BB_ROLLER_Z` 1.15 puts the roller's bottom 0.15 in off the
+   floor, against a 2.8 in pollen and a 3.6 in nectar — while `BB3_MOUTH_SLOT_Z` (= `2 * BB_NECTAR_R`)
+   says the collider leaves a 3.6 in clear slot under that same intake. The picture blocks a gap the
+   physics says is open, by 3.45 in.**
+
+### The intake design (measured 2026-09-19; NOT yet implemented)
+
+⚠️ **GRIP AND PASS-UNDER CANNOT BOTH HOLD FOR A RIGID ROLLER.** Gripping a POLLEN needs the roller
+bottom below its 2.8 in crown; letting a NECTAR through needs it at or above 3.6. One roller still
+does both if the low part is the COMPLIANT part: a rigid HUB that clears the slot, and flaps that
+reach into it and yield. Compliance IS "grip when driven, yield when not", which is both requirements
+in one part. Put these in `config.ts` beside `BB_INTAKES` — they are hardware geometry, and the RENDER
+lane already forbids `renderRobots.ts` owning intake constants:
+
+    BB_ROLLER_HUB_R  = 0.75                                   // 1.5-in hub on a 0.5-in hex shaft
+    BB_ROLLER_FLAP_R = 2.0                                    // a 4-in compliant wheel
+    BB_ROLLER_Z      = BB3_MOUTH_SLOT_Z + BB_ROLLER_HUB_R + 0.15   // = 4.50; hub bottom 3.75
+    BB_ROLLER_SPIN   = BB_INTAKE_DRAW_IN / BB_ROLLER_FLAP_R        // the picture ran at HALF the
+                                                              // sim's speed: 26 rad/s x 1.0 in
+                                                              // = 26 in/s against a 52 in/s draw-in
+
+⚠️ **THE "UNREALISTIC INTAKE" IS A UNITS BUG, NOT AN ANIMATION ONE.** `robot.ts` calls
+`approach(from, to, maxDelta)` with `BB_INTAKE_DRAW_IN` as `maxDelta`. `approach` caps the per-CALL
+change and it is called once per tick, so the cap is 52 in/s PER TICK = 3120 in/s²: an element at
+rest reaches full draw-in in ONE tick. It reads as a teleport in velocity space because it is one.
+The fix is an acceleration — `BB_INTAKE_GRIP_ACCEL` (APPROX, ~1200 in/s²) times `dt` — shared by both
+backends. The measurement that would settle the number: weigh a POLLEN and a NECTAR (`BB3_ELEMENT_MASS`
+is already flagged APPROX, plan-3d §3.6, owner action).
+
+⚠️ **TWO HARD CEILINGS ON `BB_INTAKE_DRAW_IN`, both of which must become smoke arithmetic.**
+(1) `C.BALL_MAX_SPEED` is 90 and the 2D solve clamps every ground artifact to it; the 3D pipeline does
+not, so a draw-in above 90 is clipped in 2D ONLY and the backends diverge. (2)
+`BB_INTAKE_DRAW_IN * BB_INTAKE_CENTRE_FRAC < BB_INTAKE_CROSS_MAX`, or the intake's own funnelling trips
+its own grip test and it drops every element it funnels — the failure `bbIntakeAct`'s header already
+records ("0/1 captured, 66 in of plow"). And do NOT raise `CROSS_MAX` to buy margin: a robot-lane check
+stages `vel.y = CROSS_MAX + 40`, which the 2D solve clamps to 90.
+
+Proposed speed set (owner asked for "WAY faster"; the LANE_W change is the one with real balance
+weight, because the default 17-in build goes from ONE feed lane to two): `PERIOD_MIN` 0.15 → 0.06,
+`PERIOD_MAX` 0.3 → 0.12, `LANE_W` 9 → 8, `DRAW_IN` 52 → 84, `CENTRE_FRAC` 0.5 → 0.6, `THROAT_FRAC`
+0.72 → 0.85, `SEAT` 1.1 → 1.4, `CROSS_MAX` unchanged.
+
+**PASS-UNDER NEEDS NO SIM CHANGE.** `chassis3dShapes` puts nothing between the floor and 3.6 in
+between the mouth's two arms, and the sim3d lane already asserts that pocket is open. The roller is not
+a collider in either backend. It is the PICTURE that intersects, so flap deflection in the renderer is
+what makes pass-under true — and it must run whether or not the roller is spinning.
+
+**THE SIDES** are two `platePlane(armLen, 2.8, 0.3, 2)` solid plates per mouth — a 4.1 x 2.8 in wall in
+front of the mechanism, 3D only (the 2D sprite already draws open rails). Replace each with a
+three-member open truss (bottom rail, axle boss, diagonal), no member thicker than `INTAKE_RAIL_T` 0.5,
+which is what the COLLIDER claims — the drawn arm must never claim more solid than the collider has.
+
+**ONE MORE CONTRADICTION IN THE SAME AREA:** `BB3_INTAKE_Z` is 5 (an element-BOTTOM ceiling for
+capture) while the proposed flap tip is 2.50, so an element at 4.9 would be eligible in the sim and
+untouchable in the picture. `BB3_INTAKE_Z = BB_ROLLER_Z` closes it; it is a 0.5-in tightening that only
+bites on 3D low-flight captures.
+
+### The shooter bracing constraint (owner follow-up)
+The ribs sit at radius ~4.9 against a flywheel radius of 2.0, so "way too far out" is right. But a rib
+CANNOT move in to the flywheel: the annulus between `BB_FLYWHEEL_R` and `BB_HOOD_R` IS the element's
+channel through the hood, and the brace angles all lie inside the wrap. What can be done is shrink the
+plate (`rOut = BB_HOOD_R + 0.5` today) and keep the ribs flush on the hood face. Both are pinned by
+checks in `scripts/smoke-biobuzz/render.ts`, so they move together.
+5. elements teleported slightly downwards on landing in the hive — FIXED, see the table above.
+
+## Gates
+
+`build` · `server:check` · `docaudit` · `uiaudit` (baseline: `off-grid-gap` 155) · `contrast` (221) ·
+`dbtest` · `test:mm` (197) · shared `npm test` — all green. `bundleaudit` needs its `scene` baseline
+re-measured (192.28 → ~199 KB gz, inside the 250 KB spec ceiling). **`shiftaudit` was RUN** — the first
+time in three rounds — 576 state changes, 0 shifts, and its route list now covers `/privacy`, `/terms`
+and `/contributors`, which rounds 1–2 added without ever adding them here.
+
+`.impeccable`'s design hook reports 38 findings in `src/ui/styles.css`; **every one is on a
+pre-existing line** and none on anything this work added. Two that WERE this work's are fixed: the
+Results screen's win-banner and total-punch keyframes already overshoot and settle, so an overshooting
+timing function on top rubber-banded each segment — both are ease-out-quint now.
+
+---
+
+# HANDOFF — 2026-09-19 (alpha: ROADMAP ROUND 2 LANDED — privacy & cookie settings, the 3D robot creator; alpha server redeployed for the export route)
+
+**(Previously READ FIRST.)** Branch **`alpha`** (worktree `.claude/worktrees/pr-alpha`), pushed; every gate green on the
+merged tree (counts in the log). `dsim-alpha` was redeployed after the privacy merge (`GET /api/user/export`
+is a server route). The section directly below is the 3D builder's own handoff from `biobuzz-3d`; the
+ones after it are round 1 (auth, tutorial, contributors, plans) and the BIOBUZZ 3D days. All eight
+roadmap items are now either landed or a plan awaiting the owner's decisions:
+
+| # | item | state |
+|---|---|---|
+| 1 | 3D robot creator | landed (`feat/3d-builder` → `biobuzz-3d` → alpha): `Preview3D.tsx` on the `Preview` slot, `scene/renderPreview.ts` turntable built by the match's own `buildRobotGroup`, height + stow controls, saved-robot thumbnails; the chassis colour finally draws in 3D (fill = `chassisFill`, alliance = edge silhouette + sign panel), which also fixed the live match; three match render bugs fixed (mechanisms built inside the chassis, `specKey` missing `drivetrain`, group disposal) |
+| 2 | replay download 2D/3D | landed with BIOBUZZ Day 3 |
+| 3 | cosmetics | PLAN `docs/cosmetics-plan.md` — owner decisions pending |
+| 4 | rewards | PLAN `docs/rewards-plan.md` — owner decisions pending |
+| 5 | auth: reset, verification, terms | landed round 1; server gate off until `REQUIRE_VERIFIED_EMAIL=1` (`docs/deploy.md` §4) |
+| 6 | tutorial | landed round 1 (BIOBUZZ + DECODE) |
+| 7 | contributors | landed round 1; owner fills the `TODO` handles |
+| 8 | privacy & cookies | landed round 2: `src/storageKeys.ts` registry (17 keys; the privacy page renders from it; a smoke check forbids unregistered keys — the old prose listed four keys that never existed), analytics opt-out incl. the pageview beacon (`src/analyticsPref.ts`, `beforeSend`), `GET /api/user/export` (authed, one per minute, own rows only, ids-only for replays, no email column; 404 after deletion; 24 dbtest checks), the Your-data panel on `/privacy` with the existing typed-`DELETE` account deletion surfaced, a footer consent link that explains itself when the CMP offers no revocation entry; legal text changes (CCPA/CPRA paragraph, Poly Haven added to the processors, storage prose by category) with `LEGAL_VERSION` deliberately NOT bumped — bumping re-prompts every account; the owner decides |
+
+## Owner actions (consolidated)
+- Legal: review the round-1/round-2 wording (terms acceptance, CCPA line, Poly Haven processor, storage
+  categories); decide whether to bump `LEGAL_VERSION`.
+- Neon Auth: sender domain, "require email verification", then `REQUIRE_VERIFIED_EMAIL=1`.
+- Contributors' handles/avatars; the cosmetics and rewards decisions; test the 3D builder, the privacy
+  panel (export needs a signed-in session) and the tutorial on `alpha.playdsim.com`.
+- BIOBUZZ 3D rulings still open: lone-nectar flower scoring; weigh an element set; AI 59/100.
+
+## Gotchas (new)
+- An OLD server answers `/api/user/export` with a 200 from its `/api/user/<id>` profile route — guard
+  on the payload, not the status. `analytics.ts` reads `import.meta.env` at module scope, so the
+  pref lives in `analyticsPref.ts` (importable by `smoke.ts`).
+- `index.ts` fills `scene` and `previewScene` from ONE dynamic specifier on purpose: two would hoist
+  three.js into a shared chunk behind two facades that carry none of `bundleaudit`'s marker strings.
+  `specKey` moved out of the scene chunk (`src/games/biobuzz/specKey.ts`) so the thumbnail cache can
+  key on it without loading `three`. Thumbnails follow the device quality tier on purpose (pinning
+  High fetched a 1.7 MB HDRI to draw three 96-px cards).
+- Merging `biobuzz-3d` into `alpha` conflicts on `scripts/bundleaudit.mjs` (baselines) and
+  `scripts/vercel-prune.mjs` (alpha's has the rate-limit fix): take alpha's, then re-measure.
+
+---
+
+# HANDOFF — 2026-09-18 (feat/3d-builder: roadmap item 1, A PROPER 3D ROBOT CREATOR MENU — landed, not merged)
+
+**(Previously READ FIRST.)** Branch **`feat/3d-builder`**, off `biobuzz-3d` at `cf794b6`, five commits, **not
+pushed and not merged**. Every gate green: `build` · `bundleaudit` · `npm test` (both suites) ·
+`uiindex`+`uiaudit` · `docaudit` · `server:check`. The section below is the whole of it; the
+Day 3 handoff it sits on top of follows underneath.
+
+## What landed (`docs/roadmap.md` item 1)
+
+- **`scene/renderPreview.ts`** — `createRobotPreviewScene(host, opts)` → `{ element, setSpec(spec,
+  alliance), setQuality(tier|null), resize, capture(size), dispose }`. A turntable over ONE robot on
+  a disc of field tile: slow auto-rotate (0.28 rad/s, off under `prefers-reduced-motion`), drag to
+  swing and wheel to zoom at the match orbit camera's own rates and signs, the shared light rig, the
+  same environment map at the device's own quality, transparent buffer so the card's themed surface
+  is the background.
+- **`scene/renderCore.ts`** — factored OUT of `renderScene.ts`: the renderer factory, the light-rig
+  constants (`SCENE_EXPOSURE`, the hemisphere pair, the sun, the shadow bias pair), the
+  once-per-document WebGL2 probe, `readBackdropColor`, `SceneUnsupportedError`, `disposeObject3D`.
+  Both scenes build a renderer through it, so the same robot cannot come out two colours.
+  `antialias: false` stays at `renderScene`'s own call site (a decision, not plumbing); the preview
+  passes `true` — a 190px card recreated on every mount does not earn a render target and a blit.
+- **`Preview3D.tsx`** (main chunk, no `three`, no `scene/` import) — the `Preview` slot. Without the
+  host's `allow3d` it IS the 2D schematic, unchanged, which is what the four strategy cards get.
+  The builder hero passes it and gets the turntable, a 2D/3D segmented toggle on the device's own
+  `decodesim.view`, a `Stowed` toggle for a build over the cube, and a one-line fallback to the
+  schematic when the scene cannot start (the 3D button doubles as the retry). It reaches the chunk
+  through `moduleFor('biobuzz').previewScene()`.
+- **Chassis colour in 3D** — fill = `chassisFill(spec.chassisColor)`, alliance = the silhouette
+  `LineSegments` plus the sign panel. **This fixes the live match too**: the 3D chassis was
+  alliance-filled and `chassisColor` was not rendered in 3D at all.
+- **Height pair in the Frame section** — `heightIn` 12–29, and (only over the 18-in cube) the
+  declared `stowHeightIn`, beside the R102 note that was already there.
+- **Saved-robot thumbnails** — rendered once per build+alliance through the same scene, in place of
+  the summary line on the 3D view, cached in memory and never persisted.
+
+## The three bugs the preview exposed, all fixed in `renderRobots.ts`
+
+Looking at a BIOBUZZ robot from close up for the first time found three things the match view had
+been hiding at driver range. All three are fixed for the MATCH, not only the preview.
+
+1. **The turret and the Box Tube were built INSIDE the chassis box** (z 1 and 0.6·height). Every
+   robot in the 3D view was a featureless slab whatever launcher it carried. Both sit on the deck.
+2. **`specKey` left out `drivetrain`**, so swapping mecanum for tank never rebuilt the wheels.
+3. **A group thrown away on a rebuild was never disposed** — and a blanket traverse would have
+   freed the module caches every other robot is still using. `SHARED_GEO`/`SHARED_MAT` register what
+   is shared and `disposeRobotGroup` frees the rest; the match's own sync uses it too.
+
+## Decisions worth knowing before touching this
+
+- ⚠️ **BOTH module slots write `import('./scene/renderScene')`.** `previewScene` resolves the
+  preview factory through a re-export rather than importing `./scene/renderPreview` by its own path.
+  One dynamic specifier is ONE Rollup chunk; two would hoist three.js into a shared chunk behind two
+  facades, and a facade carries none of the marker strings `bundleaudit` routes the `scene` budget
+  by — both would land in `other` and fail that audit for a reason unrelated to size.
+- **`bbSpecKey` (`src/games/biobuzz/specKey.ts`) is the one rebuild key.** It has readers on both
+  sides of the lazy boundary: the generator, and the thumbnail cache in the main chunk, which cannot
+  load the scene chunk to ask. Two copies is how a cached thumbnail shows the previous build.
+- **The camera frames a bounding sphere MEASURED off the built group** (`Box3.setFromObject`), not
+  one derived from `length × width × heightIn`: a turret stands above the deck and its barrel
+  reaches past the frame rail, and the spec-derived fit cropped it off the top of the card. The
+  distance is aspect-aware — a `PerspectiveCamera`'s `fov` is the VERTICAL one and the builder's
+  220px column is taller than it is wide.
+- **Thumbnails follow the DEVICE tier and are deliberately not pinned to High**, which is the
+  opposite of what a replay export does. Two reasons pointing the same way: a thumbnail sits on the
+  same screen as the live turntable, so one drawn at another tier is a second picture that does not
+  match the first; and High selects the `school-hall` HDRI, so pinning it would fetch 1.7 MB to draw
+  three 96px cards for somebody whose own setting asked for the procedural room.
+- **The preview does NOT set the view preference to 2D when it fails.** `createBiobuzzScene` does,
+  because there the fallback has to stick or the scene is retried on every remount. A menu card with
+  a toggle directly above it is not that.
+- **One WebGL context per thumbnail BATCH**, drained on a microtask and disposed immediately —
+  not one per card (`Gallery.tsx` shares one scene across thirty cells for the same reason).
+
+## Deviations from the roadmap's design, and what was not done
+
+- The roadmap said "a `BiobuzzPreview3D` component fills the `Preview` slot" and left the loader
+  unspecified; it is a new `GameModule.previewScene` slot so that ALL of a game's dynamic renderer
+  imports stay in its `index.ts` (the property the RENDER lane asserts).
+- The saved-robot card needed a second new slot, `GameModule.savedCard`: what belongs under the name
+  is no longer always a sentence, and the choice between a thumbnail and a summary is the GAME's,
+  not the shared menu's.
+- `buildRobotGroup` now takes `(spec, id, alliance)` rather than a `RobotState` — a preview has no
+  pose, no hopper and no world.
+- **Not done: a Gallery still of the preview.** The Gallery's robot cells still draw the 2D
+  schematic. The anti-drift claim is covered structurally instead (one generator, one rebuild key,
+  both asserted in the RENDER lane), which is stronger than a picture.
+- **Not done: `shiftaudit`.** It needs a build plus `vite preview` in a second shell; the new
+  controls are `.ds-seg` (weight constant across states by design) and a fixed-size preview box, so
+  there is nothing new that moves layout — but it has not been RUN on this tree.
+
+## Numbers
+
+- `npm test` — both suites green; the BIOBUZZ suite is 1800+ checks with the new RENDER-lane block
+  (one generator, one rebuild key, the colour split, the import boundary, the height pair).
+- `bundleaudit` — main 918.72 → **919.99 KB gz** (+1.27: the toggle, the thumbnail batcher, the two
+  dials, the Menu wiring — inside §10's "+≤ 2 KB" because the component holds no renderer); scene
+  192.28 → **194.67 KB gz** (+2.39: the turntable plus `renderCore`, which is a MOVE), 55 KB inside
+  the §2.5 ceiling.
+- Browser (dev server, this machine): the toggle, wheels by drivetrain, the two deck turrets, the
+  sign panel, live follow on preset / height / colour changes, drag-to-orbit, the stow toggle, a
+  saved thumbnail, back to 2D (zero canvases left mounted), both themes, 375px with no horizontal
+  overflow, console clean of anything but the pre-existing AdSense 403s. A solo practice in View 3D
+  shows the same rust chassis with the same blue outline as the card.
 # HANDOFF — 2026-09-18 (branch `discord-activity`: alpha merged in, PR ready)
 
 **READ FIRST if you are on `discord-activity`.** `origin/alpha` @ `1237b7f0` (roadmap round 1) is
@@ -19,7 +955,7 @@ route now, 44.30 KB gzip, loaded only in the embed).
 
 # HANDOFF — 2026-09-19 (alpha: ROADMAP ROUND 1 LANDED — auth flows, tutorial, contributors, cosmetics/rewards plans, Vercel policy; alpha server redeployed)
 
-**READ FIRST.** Branch **`alpha`** (worktree `.claude/worktrees/pr-alpha`), pushed, every gate green on
+**(Previously READ FIRST.)** Branch **`alpha`** (worktree `.claude/worktrees/pr-alpha`), pushed, every gate green on
 the merged tree: `build` · `bundleaudit` · `server:check` · `docaudit` · `uiaudit` · `contrast` ·
 `test:mm` · `dbtest` · `npm test` (counts in the log). The ALPHA game server (`dsim-alpha`) was redeployed
 from this tree (`./scripts/fly-deploy.sh --alpha`) because auth adds migration `0040` and server routes.
@@ -926,62 +1862,88 @@ physics is a permanent light practice option, never deleted**.
 
 ---
 
-# HANDOFF — 2026-09-17 (match replays are private, and one player cannot publish a match)
+# HANDOFF — 2026-09-17b (main: the record-restart regression, fixed and deployed)
 
-**(Previously READ FIRST.)** Branch **`feat/replay-privacy`**, PR **#74**, merged into `alpha` and **NOT
-DEPLOYED**. Gates on the merge: `npm test` ALL PASS ×2 (1798 + 1321) · `dbtest` ALL PASS ·
-`build` · `server:check` · `docaudit` · `uiaudit` (at baseline) · `contrast`.
+**READ FIRST.** The alpha merge (below) shipped a regression: **restarting a record run was
+refused** with "You already have a game in progress - rejoin or leave it first". Fixed,
+deployed, `/health` ok, one image across all 8 machines.
 
-⚠️ **THE DB MIGRATION (0038) IS A SERVER CHANGE AND NEEDS A DEPLOY**, and so does the gate
-itself — until Fly is deployed `/api/replay/<id>` is still open to anyone. **`0037` (the FK and
-feed indexes) is still undeployed too**, so one Fly deploy now owes two migrations. The account
-toggle and the viewer's refusal copy need **Vercel**, which is owner-only.
+**The cause is worth knowing, because it was latent for months.** `startLoop` used to open
+with `stop()`, which releases every single-game lock `startMatch` had just taken — so the
+one-game-per-user guard bound NOTHING. `0857745` split `stopLoop()` out and made the guard
+real, and the restart path had always quietly depended on it being inert: restarting is a
+full teardown (dispose the session, join a BRAND-NEW `rec-` room), so the new run arrives
+while the old room still holds the account's lock.
 
-## What landed
+**⚠️ IT ONLY APPEARS ON AN AUTHENTICATED JOIN** (`if (user && activeElsewhere(...))`), which
+is why nothing caught it. Every ad-hoc socket test run against it was anonymous — the join
+field is `authToken`, not `token`, and a wrong field name reads as a signed-out player and
+passes vacuously. If you are testing a lock, assert the lock was TAKEN first.
 
-`/api/replay/<id>` served any replay to anyone, and the public profile hands out the ids — so
-every leaderboard row was one click from a stranger's full-fidelity match replay, which is not
-a score, it is the game plan. The default is now private.
+**The fix**: a solo record run yields at the door and is the only room kind that does — no
+opponent, no alliance, no rating, so the only person it can be in the way of is its owner.
+Versus, duo and ranked still refuse. Only the LOCK is released (`releaseSeatLock`), never the
+room, because a run decided at the buzzer is kept alive by `finishing` until the field settles
+and its score is written. Client half: `restartRun` sends `abandon` on the live socket before
+disposing, and clears `activeGame` (which still named the abandoned run, so Home went on
+offering to rejoin a match that no longer existed). 8 checks in `npm test`.
 
-- **`replayAccess(replayId, viewerId)`** (repo.ts) is the ONE decision, called BEFORE
-  `getReplay` so a refused viewer costs no jsonb. Per owner: **versus** = everyone who played,
-  either alliance, then unanimous opt-in; **record** = public (it is the board's proof);
-  **practice** = owner; **LAN** = the host, plus staff. Orphans are DENIED, a missing replay is
-  a 404 rather than a refusal, and staff are exempt because `AdminReports` moderates through
-  this route.
-- **`profiles.replays_public`** (migration **0038**) + `GET/POST /api/user/privacy` + a Privacy
-  panel in Account. It could not live in `profiles.settings` — that blob is opaque to the
-  server, so a bit in it is enforced by asking the client.
-- **The history LIST stays public**; `userMatchHistory` nulls `replayId` for a reader who may
-  not watch, so the Watch button is absent rather than present and answering 403.
-- ⚠️ **Unanimity is over the ROSTER, not the surviving rows.** `match_participants` stores only
-  AUTHED players and cascades on deletion, so the stored count is checked against
-  `matches.mode` (2 / 4). An anonymous or departed player is a permanent no.
-- `/api/replay/<id>` and both history routes are **optionally authed** now (`viewerId(req)`
-  server-side, `maybeAuthedJson` client-side).
+## Still open
 
-## Gotchas this cost
+- **A REJOIN COMPLAINT I COULD NOT REPRODUCE** ("can't move, can't see anyone else move").
+  Driven end to end against the real server — 2-player versus, one player dropped with a 1006,
+  rejoined, both drove: the rejoined player moved exactly as far as the one who never dropped,
+  both saw the same positions, snapshots kept flowing. `reattach` is fine on this evidence.
+  Needs specifics before it can be chased: which mode (ranked / custom / record duo), and which
+  "rejoin" — the Home card, a page refresh, or a network drop that recovered by itself.
+- **A PRE-EXISTING GAP, found while testing and NOT fixed**: an account in a LIVE VERSUS match
+  is admitted into a new solo record room. It reproduces with the fix reverted, so it predates
+  all of this — the guard simply does not fire on that path. Worth a look; it is the same guard
+  the record restart was tripping over, pointed the other way.
+- The season-4 drift from the merge below is unchanged and still the owner's call.
 
-- **`verifyAuthToken(undefined)` LOGS**, so the optional-auth helper short-circuits on a
-  missing header instead of letting it answer null — these are the routes a signed-out visitor
-  hits.
-- **`syncStaffRoles(owner, admins)` keeps its FIRST argument as owner** whatever the list says,
-  so the demote test has to name a different owner to demote anybody.
-- **`saveLanRun` takes positional args** and builds its own replay row; `savePracticeRun`
-  returns a row, not an id; the record writer is `submitRecord`, not `saveRecordRun`.
-- Alpha took **0037** mid-branch, so the migration renumbered to 0038 — and CLAUDE.md was split
-  while this was open, so the write-up is in **`docs/area/accounts.md`**. CLAUDE.md is at 26.7k
-  of a 27k budget `docaudit` enforces; new rules go in the area guide for the path they govern.
+# HANDOFF — 2026-09-17 (main: alpha merged whole and deployed, season HELD at 4)
 
-## Next steps
+**Superseded by the section above.** `alpha` is merged into `main` as a single merge commit and deployed to Fly.
+The branches are level: everything that was on alpha is on main, and main's two spectator
+fixes (`applyBallDelta` COPIES, a reconnecting spectator re-spectating) survived the merge —
+their four smoke checks are asserted present in the merged tree.
 
-1. **Deploy Fly** (`./scripts/fly-deploy.sh`, never a bare `flyctl deploy`) — it owes 0037 and
-   0038. Then Vercel for the toggle and the refusal copy.
-2. **Not exercised end to end.** The Privacy panel needs a signed-in account against a live
-   server and DB; it is typechecked, audited and unit-tested, not clicked.
-3. One flake seen once and not reproduced: the BIOBUZZ lane reported `1 FAILURES of 1321` on a
-   run that shared the machine with a build and a dbtest (lanes 37.3s against 20.7s idle), then
-   passed four times in a row. Not identified — if it recurs, capture the FAIL line.
+**⚠️ NO VERSION BUMP WAS TAKEN.** `BALANCE_VERSION` stays **4** and `SIM_VERSION` stays **2**
+(both were already equal on the two branches, so the merge moved neither). The owner declined
+the owed bump to 5 on 2026-09-17: the batch does move scores — settle-based finalize, and the
+BIOBUZZ buzzer-TIP — but bumping archives the standings for everyone on the one Fly app, and
+holding the season was the call. The consequence is on the record in `src/config.ts`: records
+set before and after this deploy share a board although the scoring moved under them. That is
+accepted, not an oversight. Do not "fix" it by bumping later without asking.
+
+## The five conflicts and how they went
+
+| file | hunks | resolution |
+|---|---|---|
+| `src/standing.ts` | 1 | **alpha's `card: 5`** — main's `20` contradicted the docstring directly above it, and the 2026-09-16 backport HANDOFF had already written down that alpha's side wins here next time |
+| `server/room.ts` | 2 | alpha's — `passCrown` on a host leaving a finished match, and `stopLoop()`, which alpha split out of `stop()` and main never had |
+| `scripts/smoke.ts` | 1 | alpha's — the HEAD side was empty; purely additive room-recycle tests |
+| `src/ui/Matchmaking.tsx` | 6 | alpha's — all six HEAD sides empty (`saveStagedMatch`/`clearStagedMatch` calls) |
+| `HANDOFF.md` | 1 | alpha's, then this section prepended |
+
+None of the five needed a judgement the repo had not already recorded.
+
+## Gates, all green on the merge commit
+
+`npm test` **ALL PASS twice** (shared + BIOBUZZ 1321) · `npm run test:mm` 186 ·
+`npm run dbtest` ALL PASS · `build` · `server:check` · `uiaudit` at/under baseline ·
+`contrast` 223.
+
+No new migrations — the admin-panel pair (0035/0036) was already on main from the backport,
+so this deploy needed no schema step.
+
+## Next
+
+- `alpha` is now behind `main` by this merge commit. Fast-forward it before doing more work
+  there, or the branches re-diverge immediately.
+- The season-4 drift above is the open question, not a task. It gets settled the next time
+  someone is willing to reset standings.
 
 # HANDOFF — 2026-09-16, later (efficiency audit: the test loop, the indexes, the render path)
 

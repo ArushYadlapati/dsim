@@ -13,7 +13,8 @@
  * the renderer that actually exists is the only default that draws anything.
  */
 
-const VIEW_KEY = 'decodesim.view';
+import { VIEW_KEY, CAMERA_KEY } from '../../../storageKeys';
+import type { SceneCamera } from '../../module';
 
 export type ViewPref = '2d' | '3d';
 
@@ -72,7 +73,7 @@ export function subscribeViewPref(fn: ViewListener): () => void {
  * the frame's camera, so a player who has chosen `orbit` keeps it across matches, rooms and
  * reloads until they choose something else.
  */
-const CAMERA_KEY = 'decodesim.camera';
+// CAMERA_KEY is imported at the top, beside VIEW_KEY (src/storageKeys.ts)
 
 export type CameraPref = 'auto' | 'driver' | 'overhead' | 'chase' | 'orbit';
 
@@ -117,4 +118,27 @@ export function subscribeCameraPref(fn: CameraListener): () => void {
   return () => {
     cameraListeners.delete(fn);
   };
+}
+
+/**
+ * WHICH CAMERA A SCENE ACTUALLY RENDERS, given what the host asked for and (only for an
+ * INTERACTIVE scene) the device's own persisted preference.
+ *
+ * The stored preference is "the way I like to watch a match", and it is right that it wins
+ * over whatever `driver`/`overhead` the live controller or the gallery asked for — that is
+ * what lets a player who cycled to `chase` keep it across matches and reloads. But an EXPORT
+ * or a STILL is not a match somebody is watching: the download menu's own Camera row IS the
+ * ask, and honouring a `decodesim.camera` the player set while driving weeks ago is why
+ * picking Chase in that menu produced a Driver video instead. `interactive: false` is already
+ * how a host says "nobody is driving this" (it also skips binding pointer/keys, see
+ * `SceneOptions`) — the same flag is the right gate here, so a non-interactive scene is fully
+ * host-controlled and a live one keeps deferring to the device.
+ */
+export function resolveSceneCamera(
+  interactive: boolean,
+  hostPick: SceneCamera,
+  devicePref: CameraPref,
+): SceneCamera {
+  if (!interactive) return hostPick;
+  return devicePref === 'auto' ? hostPick : devicePref;
 }

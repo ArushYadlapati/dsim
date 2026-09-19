@@ -2,15 +2,37 @@ import type { Replay } from '../../src/sim/replay';
 import type { AssistConfig, GameId, RobotSpec } from '../../src/types';
 import type { PendingMatch, PendingRosterEntry } from '../matchTypes';
 import { BALANCE_VERSION, PLACEMENT_GAMES } from '../../src/config';
-import { coerceGameId, GAME_IDS } from '../../src/games/types';
+import { coerceGameId, GAME_IDS, serverPhysics } from '../../src/games/types';
+import { simModuleFor } from '../../src/games/sim';
 import {
   STANDING_MAX, HEAL_PER_DAY, HEAL_PER_CLEAN_MATCH, clampScore, type StandingVerdict,
 } from '../../src/standing';
-import { q, tx } from './pool';
+import { dbEnabled, q, tx } from './pool';
 
 /** every board/period is keyed by game; old callers/rows default to DECODE. */
 type Game = GameId;
 const g = (game?: Game): Game => game ?? 'decode';
+
+/**
+ * WHICH ERA A BOARD READ OF THIS GAME MEANS — the record board's half of the owner's ruling
+ * (2026-09-18): runs set on the 2D physics and on the 3D physics do NOT share a record board,
+ * because every server-connected match of a 3D-capable game is 3D (`serverPhysics`).
+ *
+ * `'3d'` for such a game, `undefined` (no filter at all) for a one-solve game, whose rows are
+ * all `'2d'` anyway — so DECODE's and Chain Reaction's queries keep the exact SQL they had.
+ *
+ * ⚠️ **DECIDED HERE, NOT BY THE CALLER.** It used to ride in as an optional `physics` argument
+ * that `/api/records` filled from a QUERY PARAMETER, which means the board a client saw was
+ * the board it asked for — and every path that forgot to ask (a personal best, a career panel,
+ * a profile page) silently read both eras. A default in the data layer is the only version of
+ * this rule that a new call site cannot miss.
+ *
+ * The pre-0039 rows are NOT deleted: a 2D BIOBUZZ run keeps its row, its replay and its place
+ * in the player's own match history. It simply stops being ranked against 3D runs.
+ */
+function boardPhysics(game: Game): '3d' | undefined {
+  return serverPhysics(simModuleFor(game)) === '3d' ? '3d' : undefined;
+}
 
 /** the robot configuration a record run used (denormalized onto the row) */
 export interface RecordConfig {
@@ -493,6 +515,34 @@ export async function setUsername(userId: string, username: string): Promise<voi
   }
 }
 
+/**
+ * TAKE AN ABUSIVE @USERNAME AWAY. Returns the one that was cleared, or null if there was none.
+ *
+ * ⚠️ CLEARED, NOT REPLACED, and that is the whole design. `user.rename` forces a clean DISPLAY
+ * name, which is the one a player can change back the moment the moderator looks away — the
+ * @username is the permanent, unique, public one, and nothing in the console could touch it.
+ * A "set the username" control would have a moderator choosing somebody's permanent handle for
+ * them, and would have to answer what happens when the name they pick is taken. Clearing the
+ * column puts the account straight back through `UsernameGate`, which already validates the
+ * format, checks uniqueness and runs the same content moderation the first claim did.
+ *
+ * `username` is nullable and its unique index admits any number of nulls, so this can never
+ * collide. `updated_at` moves with it, as it does on every other write to this row.
+ */
+export async function clearUsername(userId: string): Promise<string | null> {
+  // The CTE captures the OLD name in the statement's own snapshot, so the update and the
+  // read of what it replaced are one statement: the audit row cannot end up saying `null`
+  // because a second moderator cleared it a moment earlier.
+  const rows = await q<{ username: string | null }>(
+    `with old as (select username from profiles where user_id = $1)
+     update profiles set username = null, updated_at = now()
+      where user_id = $1 and username is not null
+      returning (select username from old) as username`,
+    [userId],
+  );
+  return rows.length > 0 ? (rows[0].username ?? null) : null;
+}
+
 /** is a username free to claim? (false if any other user already holds it) */
 export async function usernameAvailable(username: string, forUserId?: string): Promise<boolean> {
   const rows = await q<{ user_id: string }>(`select user_id from profiles where username = $1`, [
@@ -886,6 +936,51 @@ export async function claimKofiPayment(
  * entitlement is a running instant that may also cover other payments, so the
  * admin decides whether to revoke as a separate act.
  */
+/**
+ * The payments one account has CLAIMED — the console's way into `refundKofiPayment`.
+ *
+ * `/api/admin/supporter/refund?txn=` has existed since 0018 and nothing in the console could
+ * reach it, because the panel showed `supporter_grants` (what was granted) and a refund is
+ * keyed by the PAYMENT (what was paid). They are not the same row and one does not carry the
+ * other's id: a grant is months, a payment is a transaction. This is the missing half.
+ *
+ * `claimed_by` is already indexed as a foreign key (0037's sweep), so this is a cheap read on
+ * a panel that runs ten of them at once. The buyer's EMAIL is deliberately not projected — it
+ * is stored to match a claim and never displayed (0018 says so), and the console is not an
+ * exception to that.
+ */
+export interface KofiPaymentRow {
+  transactionId: string | null;
+  kind: string;
+  amount: string | null;
+  currency: string | null;
+  isSubscription: boolean;
+  claimedAt: string | null;
+  refundedAt: string | null;
+}
+
+export async function listKofiPayments(userId: string, limit = 20): Promise<KofiPaymentRow[]> {
+  const rows = await q<{
+    transaction_id: string | null; kind: string; amount: string | null; currency: string | null;
+    is_subscription: boolean; claimed_at: string | null; refunded_at: string | null;
+  }>(
+    `select transaction_id, kind, amount::text as amount, currency, is_subscription,
+            claimed_at, refunded_at
+       from kofi_payments where claimed_by = $1
+      order by created_at desc limit $2`,
+    [userId, Math.min(100, Math.max(1, Math.floor(limit)))],
+  );
+  return rows.map((r) => ({
+    transactionId: r.transaction_id,
+    kind: r.kind,
+    amount: r.amount,
+    currency: r.currency,
+    isSubscription: r.is_subscription,
+    claimedAt: r.claimed_at,
+    refundedAt: r.refunded_at,
+  }));
+}
+
 export async function refundKofiPayment(transactionId: string): Promise<boolean> {
   const rows = await q<{ message_id: string }>(
     `update kofi_payments set refunded_at = now()
@@ -1537,6 +1632,25 @@ export interface RecordSubmit {
 }
 
 export async function submitRecord(r: RecordSubmit): Promise<string> {
+  /**
+   * THE WRITE-SIDE HALF OF THE SAME RULE, and the chokepoint version of it.
+   *
+   * `boardPhysics` keeps a 2D row off the board; this keeps it out of the TABLE. A record room
+   * of a 3D-capable game is 3D (`Room.physics`), so a 2D container reaching here means the
+   * server that produced it disagreed with this one — a stale process mid-deploy, or a caller
+   * that invented a submission. Either way the run was not played on the solve the board is
+   * made of, and accepting it would leave a row that every read then has to hide.
+   *
+   * THROWS rather than silently coercing the column: the score is real and the player was told
+   * it counted, so the honest outcome is a refusal that shows up in the server log, not a row
+   * quietly relabelled `'3d'` for a match that was not.
+   */
+  const want = boardPhysics(g(r.game));
+  if (want && (r.physics ?? '2d') !== want) {
+    throw new Error(
+      `record refused: ${g(r.game)} runs on ${want} physics, this one is ${r.physics ?? '2d'}`,
+    );
+  }
   const rows = await q<{ id: string }>(
     `insert into records (user_id, partner_id, mode, drivetrain, score, balance_version, replay_id, config, game, physics)
      values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) returning id`,
@@ -1591,13 +1705,17 @@ export async function recordLeaderboard(opts: {
   limit?: number;
   game?: Game;
   /**
-   * WHICH ERA (migration 0039). Absent ⇒ every row, which is what the board shows by default
-   * and what every caller before Day 3 asked for.
+   * WHICH ERA (migration 0039). Absent ⇒ `boardPhysics(game)`, i.e. `'3d'` for a game that has
+   * two solves and no filter at all for one that does not. The board is not a place two eras
+   * meet (owner ruling, 2026-09-18) — see `boardPhysics`.
+   *
+   * Still an ARGUMENT because the admin console and the tests have a legitimate reason to ask
+   * for the other era; it is no longer something a public request can set.
    *
    * ⚠️ **THE FILTER IS INSIDE `best`, NOT OUTSIDE IT**, and that placement is the whole point:
    * `best` is one row per player, so filtering after it would show a player's 2D personal best
    * and then hide it, leaving them off a 3D board they have a legitimate 3D score on. Filtering
-   * first makes the board "each player's best 3D run", which is what a player picking 3D means.
+   * first makes the board "each player's best 3D run", which is what the board now means.
    */
   physics?: '2d' | '3d';
 }): Promise<BoardRow[]> {
@@ -1608,8 +1726,9 @@ export async function recordLeaderboard(opts: {
     dtFilter = `and r.drivetrain = $${params.length}`;
   }
   let physFilter = '';
-  if (opts.physics) {
-    params.push(opts.physics);
+  const phys = opts.physics ?? boardPhysics(g(opts.game));
+  if (phys) {
+    params.push(phys);
     physFilter = `and r.physics = $${params.length}`;
   }
   params.push(opts.limit ?? 100);
@@ -1645,14 +1764,25 @@ export async function personalBest(
   // 'overall' = the cross-drivetrain board (no drivetrain filter), matching
   // recordLeaderboard — a mixed-drivetrain duo run's PB is over ALL the user's
   // runs in this mode×season, not one drivetrain.
+  //
+  // ERA-SCOPED like the board it is compared against (`boardPhysics`): a PB that counted an
+  // old 2D run would tell a player their first 3D run was not a personal best, against a row
+  // they cannot see on any board and can never beat on this solve.
   const overall = drivetrain === 'overall';
+  const phys = boardPhysics(g(game));
+  const params: unknown[] = [userId, mode, balanceVersion, g(game)];
+  if (!overall) params.push(drivetrain);
+  const dtFilter = overall ? '' : `and drivetrain = $${params.length}`;
+  let physFilter = '';
+  if (phys) {
+    params.push(phys);
+    physFilter = `and physics = $${params.length}`;
+  }
   const rows = await q<{ score: number | null }>(
     `select max(score) as score from records
      where user_id = $1 and mode = $2 and balance_version = $3 and game = $4
-       ${overall ? '' : 'and drivetrain = $5'}`,
-    overall
-      ? [userId, mode, balanceVersion, g(game)]
-      : [userId, mode, balanceVersion, g(game), drivetrain],
+       ${dtFilter} ${physFilter}`,
+    params,
   );
   return rows[0]?.score ?? null;
 }
@@ -1669,18 +1799,25 @@ export async function recordRank(
   balanceVersion: number,
   game?: Game,
 ): Promise<{ rank: number; total: number }> {
+  // ERA-SCOPED, and INSIDE `best` — same rule and same placement as `recordLeaderboard`, so
+  // the "#3 of 57" a player is shown after a run is a position on the board they can go and
+  // look at rather than a rank over a population the board does not contain.
   const overall = drivetrain === 'overall';
+  const phys = boardPhysics(g(game));
   const rows = await q<{ rank: number; total: number }>(
     `with best as (
        select user_id, max(score) as s from records
        where balance_version = $1 and mode = $2 and game = $5
          ${overall ? '' : 'and drivetrain = $4'}
+         ${phys ? 'and physics = $6' : ''}
        group by user_id
      ), me as (select s from best where user_id = $3)
      select
        (select count(*) from best)::int as total,
        (1 + (select count(*) from best where s > (select s from me)))::int as rank`,
-    [balanceVersion, mode, userId, overall ? null : drivetrain, g(game)],
+    phys
+      ? [balanceVersion, mode, userId, overall ? null : drivetrain, g(game), phys]
+      : [balanceVersion, mode, userId, overall ? null : drivetrain, g(game)],
   );
   return { rank: rows[0]?.rank ?? 1, total: rows[0]?.total ?? 1 };
 }
@@ -1763,6 +1900,9 @@ export async function deleteUserRecords(userId: string): Promise<number> {
 export async function searchProfiles(
   query: string,
   limit = 25,
+  /** rows to skip — the console pages through a name that matches a lot of people
+   *  rather than silently showing the first 25 and pretending that is all of them */
+  offset = 0,
 ): Promise<
   {
     userId: string;
@@ -1786,9 +1926,15 @@ export async function searchProfiles(
             supporter_until as "supporterUntil",
             (kofi_email is not null) as "autoRenews"
        from profiles
-      where handle ilike $1 or user_id = $2 or username = lower($2)
-      order by handle limit $3`,
-    [`%${query}%`, query, limit],
+      where handle ilike $1 escape '\\' or user_id = $2 or username = lower($2)
+      order by handle, user_id limit $3 offset $4`,
+    // ESCAPED. A bare `%` in the box matched every profile on the service in one
+    // request — the same hole `searchPublicProfiles` closed on the public side, and a
+    // worse one here because these rows carry the membership and the staff role.
+    // `order by` is tie-broken on `user_id` so paging cannot show one row twice and skip
+    // another: `handle` is not unique and two people called "Player" have no stable order
+    // between pages without it.
+    [`%${query.replace(/[\\%_]/g, '\\$&')}%`, query, limit, Math.max(0, Math.floor(offset))],
   );
 }
 
@@ -1847,6 +1993,283 @@ export async function deleteAccount(userId: string): Promise<boolean> {
     await query(`delete from profiles where user_id = $1`, [userId]);
     return true;
   });
+}
+
+
+// ------------------------------------------------------ data portability ----
+/**
+ * EVERYTHING THIS DATABASE HOLDS ABOUT ONE ACCOUNT, as one JSON document.
+ *
+ * The twin of `deleteAccount` above, and deliberately written next to it: the two answer the
+ * same question from opposite ends, so a table added to one list and not the other is visible
+ * in a single screenful. The privacy policy promises portability alongside deletion, and a
+ * promise kept by a mailbox is not the same as one kept by a button.
+ *
+ * TWO RULES ABOUT OTHER PEOPLE, because an export is the easiest place in an app to hand
+ * somebody a copy of data that is not theirs:
+ *
+ *  1. **Only rows keyed to this user id**, plus the public facts of matches they played in.
+ *     A versus match involves three other accounts; this export carries the caller's own
+ *     participant row and the match's final score, and NOT the other players — not their ids,
+ *     not their names, not their ratings. That is a real loss of context (you cannot see who
+ *     you beat) and it is the right trade: match history is already on screen in the app for
+ *     anyone who wants to look, and a downloadable file is a thing that gets forwarded.
+ *  2. **Names only where the caller already sees them in the app.** Friends, blocks and
+ *     invites name the other party by handle and username — both public, both already on
+ *     screen in the friends rail, and the list is meaningless without them.
+ *
+ * REPLAY BODIES ARE NOT IN HERE, by id and metadata only. One replay is tens of kilobytes of
+ * per-tick input log; forty of them would make this a multi-megabyte response built in memory
+ * on a machine whose real job is running match loops. Every one of those ids is individually
+ * downloadable from the app already, which is the better shape for a thing that large.
+ *
+ * Returns `null` for an account with no profile row — including one that has just been
+ * deleted, which is what makes "my export after deletion" a 404 rather than an empty file
+ * that looks like a successful export of nothing.
+ */
+export interface AccountExport {
+  /** bumped if the SHAPE changes incompatibly, so a file can be read years later */
+  format: number;
+  exportedAt: string;
+  userId: string;
+  /** what is deliberately absent, stated in the file rather than only in the policy */
+  notes: string[];
+  account: Record<string, unknown>;
+  settings: unknown;
+  robotPresets: Record<string, unknown>[];
+  records: Record<string, unknown>[];
+  practiceRuns: Record<string, unknown>[];
+  lanRuns: Record<string, unknown>[];
+  matches: Record<string, unknown>[];
+  ranked: { ratings: Record<string, unknown>[]; history: Record<string, unknown>[] };
+  standing: Record<string, unknown> | null;
+  standingEvents: Record<string, unknown>[];
+  playtime: Record<string, unknown>[];
+  friends: {
+    friends: Record<string, unknown>[];
+    requestsReceived: Record<string, unknown>[];
+    requestsSent: Record<string, unknown>[];
+    blocked: Record<string, unknown>[];
+    invitesReceived: Record<string, unknown>[];
+    invitesSent: Record<string, unknown>[];
+  };
+  replays: Record<string, unknown>[];
+  payments: Record<string, unknown>[];
+}
+
+export async function exportAccount(userId: string): Promise<AccountExport | null> {
+  const prof = await q<{
+    handle: string;
+    username: string | null;
+    created_at: string;
+    updated_at: string;
+    role: string | null;
+    settings: unknown;
+    supporter_until: string | null;
+    kofi_email: string | null;
+    replays_public: boolean;
+    terms_version: string | null;
+    terms_accepted_at: string | null;
+  }>(
+    `select handle, username, created_at, updated_at, role, settings, supporter_until,
+            kofi_email, replays_public, terms_version, terms_accepted_at
+       from profiles where user_id = $1`,
+    [userId],
+  );
+  const p = prof[0];
+  if (!p) return null;
+
+  // NAMED PARTY LOOKUPS. One join per relation rather than one query per friend: these lists
+  // are small (a friends list is dozens, not thousands) but they are still four of them, and
+  // N+1 on an authenticated route is how a rate limit ends up being the only thing between a
+  // button and a Neon bill.
+  const named = (
+    rows: { handle: string; username: string | null; created_at: string }[],
+  ): Record<string, unknown>[] =>
+    rows.map((r) => ({ handle: r.handle, username: r.username, since: r.created_at }));
+
+  const [
+    presets, records, practice, lan, matches, ratings, history, standing, events, activity,
+    friends, reqIn, reqOut, blocked, invIn, invOut, payments,
+  ] = await Promise.all([
+    q<Record<string, unknown>>(
+      `select slot, name, spec, updated_at from robot_presets where user_id = $1 order by slot`,
+      [userId],
+    ),
+    // `partner_id` is another account's id, so it is reported as a BOOLEAN — "this was a duo
+    // run" is the fact the owner needs; who with is the other person's row.
+    q<Record<string, unknown>>(
+      `select id, game, mode, drivetrain, score, balance_version, replay_id, physics,
+              created_at, partner_id is not null as was_duo, config
+         from records where user_id = $1 order by created_at desc`,
+      [userId],
+    ),
+    q<Record<string, unknown>>(
+      `select id, game, score, ticks, balance_version, replay_id, physics, view, created_at
+         from practice_runs where user_id = $1 order by created_at desc`,
+      [userId],
+    ),
+    // `participants` is the roster the HOST uploaded with the match, and is display text they
+    // already see in their own self-hosted replay list.
+    q<Record<string, unknown>>(
+      `select id, match_id, game, score, participants, replay_id, created_at
+         from lan_runs where host_user_id = $1 order by created_at desc`,
+      [userId],
+    ),
+    // ⚠️ THE CALLER'S OWN PARTICIPANT ROW AND THE MATCH'S OWN FACTS, AND NOTHING ELSE. No
+    // second join back to `match_participants`, deliberately: adding one is how the other
+    // three players in a 2v2 would end up in somebody's download.
+    q<Record<string, unknown>>(
+      `select m.id as match_id, m.game, m.mode, m.ranked, m.physics, m.balance_version,
+              m.replay_id, m.created_at,
+              mp.alliance, mp.drivetrain, mp.score, mp.won,
+              mp.rating_before, mp.rating_after
+         from match_participants mp join matches m on m.id = mp.match_id
+        where mp.user_id = $1 order by m.created_at desc`,
+      [userId],
+    ),
+    q<Record<string, unknown>>(
+      `select game, mode, act, rating, rd, vol, games, updated_at
+         from elo_ratings where user_id = $1 order by game, mode, act`,
+      [userId],
+    ),
+    q<Record<string, unknown>>(
+      `select game, mode, balance_version, rating, rd, vol, games, updated_at
+         from elo_history where user_id = $1 order by game, mode, balance_version`,
+      [userId],
+    ),
+    q<Record<string, unknown>>(
+      `select score, restricted_until, healed_at, updated_at
+         from account_standing where user_id = $1`,
+      [userId],
+    ),
+    q<Record<string, unknown>>(
+      `select kind, points, score_after, cooldown_min, rating_charge, game, mode, at
+         from standing_events where user_id = $1 order by at desc`,
+      [userId],
+    ),
+    q<Record<string, unknown>>(
+      `select game, games, seconds, updated_at from user_activity where user_id = $1 order by game`,
+      [userId],
+    ),
+    // friendships store ONE row per unordered pair, so "the other one" is whichever column
+    // is not the caller (see migration 0016's `user_low < user_high` check).
+    q<{ handle: string; username: string | null; created_at: string }>(
+      `select pr.handle, pr.username, f.created_at
+         from friendships f
+         join profiles pr
+           on pr.user_id = case when f.user_low = $1 then f.user_high else f.user_low end
+        where f.user_low = $1 or f.user_high = $1
+        order by f.created_at`,
+      [userId],
+    ),
+    q<{ handle: string; username: string | null; created_at: string }>(
+      `select pr.handle, pr.username, r.created_at
+         from friend_requests r join profiles pr on pr.user_id = r.from_user_id
+        where r.to_user_id = $1 order by r.created_at`,
+      [userId],
+    ),
+    q<{ handle: string; username: string | null; created_at: string }>(
+      `select pr.handle, pr.username, r.created_at
+         from friend_requests r join profiles pr on pr.user_id = r.to_user_id
+        where r.from_user_id = $1 order by r.created_at`,
+      [userId],
+    ),
+    q<{ handle: string; username: string | null; created_at: string }>(
+      `select pr.handle, pr.username, b.created_at
+         from friend_blocks b join profiles pr on pr.user_id = b.blocked_id
+        where b.blocker_id = $1 order by b.created_at`,
+      [userId],
+    ),
+    q<Record<string, unknown>>(
+      `select pr.handle, pr.username, i.room, i.game, i.kind, i.record, i.created_at
+         from room_invites i join profiles pr on pr.user_id = i.from_user_id
+        where i.to_user_id = $1 order by i.created_at`,
+      [userId],
+    ),
+    q<Record<string, unknown>>(
+      `select pr.handle, pr.username, i.room, i.game, i.kind, i.record, i.created_at
+         from room_invites i join profiles pr on pr.user_id = i.to_user_id
+        where i.from_user_id = $1 order by i.created_at`,
+      [userId],
+    ),
+    // ⚠️ `email` IS NOT SELECTED, and that is not squeamishness. The payer address on this row
+    // is the caller's own, so including it would be defensible — but a payment row survives
+    // account deletion with the email nulled (see `deleteAccount`), and a route that reads the
+    // column at all is one refactor away from reading it for the wrong `claimed_by`. The
+    // address is on the caller's own Ko-fi receipt, which is a better source than this table.
+    q<Record<string, unknown>>(
+      `select transaction_id, kind, amount, currency, is_subscription, months, claimed_at
+         from kofi_payments where claimed_by = $1 order by claimed_at`,
+      [userId],
+    ),
+  ]);
+
+  /**
+   * REPLAY IDS AND WHAT THEY BELONG TO, gathered from the three tables that point at one.
+   *
+   * Read off the rows already fetched rather than with a fourth query, and this is the same
+   * union `deleteAccount` deletes by — a replay has no back-reference to its owner, so the
+   * only way to know which of them are yours is to ask the things that reference them.
+   */
+  const replayRefs: Record<string, unknown>[] = [];
+  const pushRef = (kind: string, rows: Record<string, unknown>[]): void => {
+    for (const r of rows) {
+      if (typeof r.replay_id === 'string') {
+        replayRefs.push({ id: r.replay_id, kind, game: r.game ?? null, at: r.created_at ?? null });
+      }
+    }
+  };
+  pushRef('record', records);
+  pushRef('practice', practice);
+  pushRef('lanMatch', lan);
+  // A versus replay is shared with the other players and is released only when EVERY one of
+  // them opts in (migration 0038), so it is listed as a match replay rather than as "yours".
+  pushRef('match', matches);
+
+  return {
+    format: 1,
+    exportedAt: new Date().toISOString(),
+    userId,
+    notes: [
+      'Only rows belonging to this account are included. Other players in a match you played are deliberately absent — their names, ids and ratings are theirs, not yours.',
+      'Replays are listed by id and metadata. The input log itself is tens of kilobytes per match and is downloadable one at a time from the app.',
+      'Your sign-in identity (email address and password) lives with the authentication provider, not in this database, so it is not in this file.',
+      'Settings, theme and other on-device values are in your browser, not here. The privacy page lists every key and your browser can show you their contents.',
+    ],
+    account: {
+      handle: p.handle,
+      username: p.username,
+      createdAt: p.created_at,
+      updatedAt: p.updated_at,
+      staffRole: p.role,
+      supporterUntil: p.supporter_until,
+      supporterRenewalLinked: !!p.kofi_email,
+      replaysPublic: p.replays_public,
+      termsVersion: p.terms_version,
+      termsAcceptedAt: p.terms_accepted_at,
+    },
+    settings: p.settings ?? null,
+    robotPresets: presets,
+    records,
+    practiceRuns: practice,
+    lanRuns: lan,
+    matches,
+    ranked: { ratings, history },
+    standing: standing[0] ?? null,
+    standingEvents: events,
+    playtime: activity,
+    friends: {
+      friends: named(friends),
+      requestsReceived: named(reqIn),
+      requestsSent: named(reqOut),
+      blocked: named(blocked),
+      invitesReceived: invIn,
+      invitesSent: invOut,
+    },
+    replays: replayRefs,
+    payments,
+  };
 }
 
 // -------------------------------------------------------- robot presets -----
@@ -2834,6 +3257,65 @@ export async function listReportsFor(userId: string, limit = 100): Promise<Repor
   }));
 }
 
+/**
+ * Every report this player has FILED — the other direction, and the one the console could
+ * not show.
+ *
+ * ⚠️ A COUNT DOES NOT ANSWER THE QUESTION IT RAISES. The account panel printed "14 filed · 9
+ * rejected" and stopped there, which tells a moderator that something is wrong and nothing
+ * about what: nine rejections spread over a year of honest confusion and nine filed at the
+ * same opponent in one evening are the same two numbers and completely different decisions.
+ * The rows are already in `player_reports` under `reporter_id`, indexed for the queue, so
+ * this is the same shape as `listReportsFor` read from the other column — `subject` naming
+ * the REPORTED player, since that is the useful name on a row whose filer is already known.
+ */
+export interface ReportFiledRow {
+  id: string;
+  reason: string;
+  detail: string | null;
+  roomCode: string;
+  game: string;
+  status: string;
+  createdAt: string;
+  subjectId: string;
+  subjectHandle: string | null;
+  subjectUsername: string | null;
+}
+
+export async function listReportsBy(userId: string, limit = 50): Promise<ReportFiledRow[]> {
+  const rows = await q<{
+    id: string; reason: string; detail: string | null; room_code: string; game: string;
+    status: string; created_at: string; reported_id: string; handle: string | null; username: string | null;
+  }>(
+    // LEFT JOIN, unlike `listReportsFor`'s inner one. ⚠️ It does NOT rescue a row from a
+    // deleted subject — `player_reports.reported_id` cascades (0026), so that row is already
+    // gone and the "filed" count a moderator reads is a FLOOR rather than a total. What the
+    // left join buys is that a subject with no `profiles` row (the lazily-created case
+    // `profileNames` exists for) still appears, instead of silently thinning the history
+    // somebody is being judged on. `npm run dbtest` pins both halves.
+    `select r.id::text as id, r.reason, r.detail, r.room_code, r.game, r.status,
+            r.created_at, r.reported_id, p.handle, p.username
+       from player_reports r
+       left join profiles p on p.user_id = r.reported_id
+      where r.reporter_id = $1
+      order by r.created_at desc
+      limit $2`,
+    [userId, Math.min(200, Math.max(1, Math.floor(limit)))],
+  );
+  return rows.map((x) => ({
+    id: x.id,
+    reason: x.reason,
+    detail: x.detail,
+    roomCode: x.room_code,
+    game: x.game,
+    status: x.status,
+    createdAt: x.created_at,
+    subjectId: x.reported_id,
+    subjectHandle: x.handle,
+    subjectUsername: x.username,
+  }));
+}
+
 /** triage: mark every open report against a player reviewed or dismissed. Per-user rather
  *  than per-report because that is how the queue is actually worked — a moderator judges a
  *  PLAYER after watching their matches, not each complaint in isolation. */
@@ -3151,6 +3633,17 @@ export async function getUserStats(
   const eloTable = isLive ? 'elo_ratings' : 'elo_history';
   const eloKeyCol = isLive ? 'act' : 'balance_version';
   const eloKeyVal = isLive ? act : balanceVersion;
+  /**
+   * THE CAREER PANEL'S RECORD HALF IS THE SAME BOARD, so it reads the same era.
+   *
+   * `recPb` and `recRank` below are "your best run" and "where it places" — the two figures
+   * the Records page prints beside the board itself. Left unfiltered they would have shown a
+   * BIOBUZZ player a 2D personal best that appears on no board and a rank over a population
+   * the board does not contain. The value is PARAMETERISED (`$4` in both queries) — the SQL
+   * fragment is chosen here, the era itself is bound.
+   */
+  const phys = boardPhysics(gm);
+  const recPhys = phys ? 'and physics = $4' : '';
   const [profile, elo, recPb, recRank, match, recent] = await Promise.all([
     q<{ handle: string; username: string | null; supporter: boolean; role: string | null }>(
       `select handle, username, role, ${SUPPORTER_COL} from profiles where user_id = $1`,
@@ -3171,20 +3664,22 @@ export async function getUserStats(
     ),
     q<{ mode: 'solo' | 'duo'; score: number; replay_id: string | null }>(
       `select distinct on (mode) mode, score, replay_id
-       from records where user_id = $1 and balance_version = $2 and game = $3
+       from records where user_id = $1 and balance_version = $2 and game = $3 ${recPhys}
        order by mode, score desc, created_at asc`,
-      [userId, balanceVersion, gm],
+      phys ? [userId, balanceVersion, gm, phys] : [userId, balanceVersion, gm],
     ),
     q<{ mode: 'solo' | 'duo'; rnk: string }>(
+      // the era filter sits INSIDE `best`, for the reason `recordLeaderboard` documents:
+      // one row per player, so filtering after it drops a player who has a 3D run
       `with best as (
          select user_id, mode, max(score) as score
-         from records where balance_version = $1 and game = $3 group by user_id, mode
+         from records where balance_version = $1 and game = $3 ${recPhys} group by user_id, mode
        ), ranked as (
          select user_id, mode, rank() over (partition by mode order by score desc) as rnk
          from best
        )
        select mode, rnk from ranked where user_id = $2`,
-      [balanceVersion, userId, gm],
+      phys ? [balanceVersion, userId, gm, phys] : [balanceVersion, userId, gm],
     ),
     q<{ played: string; wins: string }>(
       `select count(*) as played, count(*) filter (where mp.won) as wins
@@ -3995,7 +4490,14 @@ export interface AdminPresenceRow {
   region: string;
   online: number;
   updatedAt: string;
-  players: (PresencePlayer & { handle: string | null; username: string | null })[];
+  players: (PresencePlayer & {
+    handle: string | null;
+    username: string | null;
+    role: StaffRole | null;
+    /** a `profiles` row exists for this id — see `profileNames` for why the two
+     *  cases have to be told apart rather than both rendering as "no profile" */
+    known: boolean;
+  })[];
   guests: PresenceGuest[];
   anon: PresenceAnon;
 }
@@ -4008,15 +4510,9 @@ export async function adminPresence(freshSeconds = 20): Promise<AdminPresenceRow
       where updated_at > now() - $1::interval order by region`,
     [`${Math.max(1, Math.floor(freshSeconds))} seconds`],
   );
-  const ids = [...new Set(rows.flatMap((r) => (Array.isArray(r.players) ? r.players : []).map((p) => p.userId)))];
-  const names = new Map<string, { handle: string; username: string | null }>();
-  if (ids.length) {
-    const profs = await q<{ user_id: string; handle: string; username: string | null }>(
-      `select user_id, handle, username from profiles where user_id = any($1::text[])`,
-      [ids],
-    );
-    for (const p of profs) names.set(p.user_id, { handle: p.handle, username: p.username });
-  }
+  const names = await profileNames(
+    rows.flatMap((r) => (Array.isArray(r.players) ? r.players : []).map((p) => p.userId)),
+  );
   return rows.map((r) => ({
     machine: r.machine,
     region: r.region,
@@ -4026,6 +4522,8 @@ export async function adminPresence(freshSeconds = 20): Promise<AdminPresenceRow
       ...p,
       handle: names.get(p.userId)?.handle ?? null,
       username: names.get(p.userId)?.username ?? null,
+      role: names.get(p.userId)?.role ?? null,
+      known: names.get(p.userId)?.known ?? false,
     })),
     guests: Array.isArray(r.guests) ? r.guests : [],
     anon:
@@ -4836,4 +5334,468 @@ export async function searchUsersByName(query: string, limit = 20): Promise<Publ
     [esc + '%', '% ' + esc + '%', Math.min(Math.max(1, limit), 50)],
   );
   return rows.map(shapeProfile);
+}
+
+// ============================================================ admin console ==
+//
+// The console's own data layer (migration 0041). Three jobs that the per-feature tables
+// above could not do between them: one AUDIT LOG every mutating route writes to, private
+// moderator NOTES on an account, and the single USER DETAIL read that every place a name
+// appears can now open.
+//
+// ⚠️ EVERY LIST HERE IS PAGINATED AND HARD-CAPPED. An admin list is the one place in this
+// codebase where "just fetch them all" looks harmless — there are only ever a handful of
+// admins — and it is exactly where it is not: these tables grow with the SITE, not with the
+// caller, so an unbounded `select … order by at desc` is a query whose cost rises forever and
+// whose first slow day is an incident. The cap is applied HERE rather than by the route, for
+// the reason `boardPhysics` is: a default in the data layer is the only version a new call
+// site cannot forget.
+
+/** one row of the audit log */
+export interface AuditRow {
+  id: string;
+  adminId: string;
+  action: string;
+  targetUser: string | null;
+  /** the target account's display name, resolved at read time (never stored — a name
+   *  copied into the log would go stale the first time somebody is renamed) */
+  targetHandle: string | null;
+  targetUsername: string | null;
+  targetId: string | null;
+  detail: Record<string, unknown>;
+  note: string | null;
+  at: string;
+}
+
+export interface AuditEntry {
+  adminId: string;
+  action: string;
+  targetUser?: string | null;
+  targetId?: string | null;
+  detail?: Record<string, unknown>;
+  note?: string | null;
+}
+
+/**
+ * Record one admin action.
+ *
+ * NEVER THROWS INTO A ROUTE — the same rule `server/standing.ts` states for the same reason.
+ * The audit is bookkeeping about an action, not part of performing it: a moderator who has
+ * just pardoned somebody must not see the pardon fail because a logging insert did. A failed
+ * write is logged loudly to the console and swallowed.
+ *
+ * `detail` is server-authored in every caller. Nothing a client sends reaches it, which is
+ * what keeps a jsonb column from becoming an injection surface for whatever a rename form
+ * was talked into posting.
+ */
+export async function writeAudit(e: AuditEntry): Promise<void> {
+  if (!dbEnabled) return;
+  try {
+    await q(
+      `insert into admin_audit (admin_id, action, target_user, target_id, detail, note)
+       values ($1, $2, $3, $4, $5::jsonb, $6)`,
+      [
+        e.adminId || 'unknown',
+        e.action,
+        e.targetUser ?? null,
+        e.targetId ?? null,
+        JSON.stringify(e.detail ?? {}),
+        e.note ? e.note.slice(0, 500) : null,
+      ],
+    );
+  } catch (err) {
+    console.error('[audit] FAILED recording', e.action, 'by', e.adminId, err);
+  }
+}
+
+/** the audit tab's read. Every filter is optional; the page is capped at 200. */
+export async function listAudit(
+  opts: {
+    action?: string;
+    adminId?: string;
+    targetUser?: string;
+    /** free text over the action, the note and the target id */
+    query?: string;
+    limit?: number;
+    offset?: number;
+  } = {},
+): Promise<{ rows: AuditRow[]; more: boolean }> {
+  const limit = Math.min(200, Math.max(1, Math.floor(opts.limit ?? 50)));
+  const offset = Math.max(0, Math.min(100_000, Math.floor(opts.offset ?? 0)));
+  const where: string[] = [];
+  const params: unknown[] = [];
+  const add = (clause: string, value: unknown): void => {
+    params.push(value);
+    where.push(clause.replace('$?', `$${params.length}`));
+  };
+  if (opts.action) add('a.action = $?', opts.action);
+  if (opts.adminId) add('a.admin_id = $?', opts.adminId);
+  if (opts.targetUser) add('a.target_user = $?', opts.targetUser);
+  if (opts.query?.trim()) {
+    // escaped for the same reason `searchPublicProfiles` escapes: a bare `%` typed into the
+    // box would otherwise match every row and turn a filter into a full scan. ONE parameter
+    // reused across five columns — `add` fills only the first `$?`, so the placeholder is
+    // resolved here and the clause handed over already complete.
+    params.push(`%${opts.query.trim().replace(/[\\%_]/g, '\\$&')}%`);
+    const n = `$${params.length}`;
+    where.push(
+      `(a.action ilike ${n} escape '\\' or a.note ilike ${n} escape '\\'` +
+        ` or a.target_id ilike ${n} escape '\\' or a.target_user ilike ${n} escape '\\'` +
+        ` or p.handle ilike ${n} escape '\\' or p.username ilike ${n} escape '\\')`,
+    );
+  }
+  // one row more than asked for, so "is there another page" costs no second query
+  params.push(limit + 1, offset);
+  const rows = await q<{
+    id: string; admin_id: string; action: string; target_user: string | null;
+    handle: string | null; username: string | null;
+    target_id: string | null; detail: Record<string, unknown> | null; note: string | null; at: string;
+  }>(
+    `select a.id::text as id, a.admin_id, a.action, a.target_user, a.target_id,
+            a.detail, a.note, a.at, p.handle, p.username
+       from admin_audit a
+       left join profiles p on p.user_id = a.target_user
+      ${where.length ? `where ${where.join(' and ')}` : ''}
+      order by a.at desc, a.id desc
+      limit $${params.length - 1} offset $${params.length}`,
+    params,
+  );
+  return {
+    rows: rows.slice(0, limit).map((r) => ({
+      id: r.id,
+      adminId: r.admin_id,
+      action: r.action,
+      targetUser: r.target_user,
+      targetHandle: r.handle,
+      targetUsername: r.username,
+      targetId: r.target_id,
+      detail: (r.detail ?? {}) as Record<string, unknown>,
+      note: r.note,
+      at: r.at,
+    })),
+    more: rows.length > limit,
+  };
+}
+
+/** every distinct action seen in the log, for the filter menu. Bounded by the number of
+ *  dotted keys the code can emit (a couple of dozen), not by the table's size. */
+export async function auditActions(): Promise<string[]> {
+  const rows = await q<{ action: string }>(
+    `select distinct action from admin_audit order by action limit 100`,
+  );
+  return rows.map((r) => r.action);
+}
+
+// ------------------------------------------------------- account suspension ---
+
+/**
+ * SUSPENSION — the one moderation lever the console did not have (migration 0043).
+ *
+ * ⚠️ IT IS A DEADLINE, NOT A FLAG, and `null` means "not suspended". A suspension ends by
+ * ARRIVING rather than by a second human action nothing schedules; see the migration for why
+ * a boolean is the wrong shape. A permanent ban is a far-future date, which reads as a
+ * decision rather than as somebody having forgotten to lift it.
+ *
+ * ⚠️ IT IS NOT STANDING. `standing_events` (0036) is the AUTOMATIC penalty ledger — sized to
+ * heal on its own, read back to the player, and it locks ranked only. This is a human
+ * decision that keeps somebody out of the rooms other people are in, and mixing the two would
+ * mean either a moderator's ban decaying on a timer meant for a rage-quit, or a rage-quit
+ * locking somebody out of the whole service.
+ *
+ * ⚠️ IT IS NOT A PRIVATE NOTE. `reason` is shown to the player at the door, in the
+ * moderator's own words, because "you are suspended" with no sentence after it is the thing
+ * that generates an appeal nobody can answer. Anything they should not read goes in
+ * `admin_notes` and the console says so beside the box.
+ */
+export interface Suspension {
+  /** ms epoch, or null when the account is not suspended */
+  until: number | null;
+  reason: string | null;
+}
+
+const NOT_SUSPENDED: Suspension = { until: null, reason: null };
+
+/** Is this account suspended RIGHT NOW? Read at the room-join and ranked-queue doors, so it
+ *  answers `NOT_SUSPENDED` for an id with no profile row and for an expired deadline — a gate
+ *  whose unknown case refuses goes dark silently (the `emailGateRefusal` rule). */
+export async function getSuspension(userId: string): Promise<Suspension> {
+  if (!dbEnabled) return NOT_SUSPENDED;
+  const rows = await q<{ until: string | null; reason: string | null }>(
+    `select suspended_until as until, suspended_reason as reason
+       from profiles where user_id = $1`,
+    [userId],
+  );
+  const until = rows[0]?.until ? new Date(rows[0].until).getTime() : null;
+  if (!until || !Number.isFinite(until) || until <= Date.now()) return NOT_SUSPENDED;
+  return { until, reason: rows[0]?.reason ?? null };
+}
+
+/**
+ * Suspend until `untilMs`, or LIFT with `null`. Returns the stored state, or `null` when no
+ * such account exists — the route needs to tell "lifted" from "there was nobody to lift".
+ *
+ * Lifting clears the reason with the deadline: a sentence left behind on an account that is
+ * no longer suspended is a line a later moderator reads as current.
+ */
+export async function setSuspension(
+  userId: string,
+  untilMs: number | null,
+  reason: string | null,
+): Promise<Suspension | null> {
+  const until = untilMs != null && Number.isFinite(untilMs) && untilMs > Date.now() ? new Date(untilMs) : null;
+  const rows = await q<{ until: string | null; reason: string | null }>(
+    `update profiles set suspended_until = $2, suspended_reason = $3
+      where user_id = $1
+      returning suspended_until as until, suspended_reason as reason`,
+    [userId, until, until ? (reason ?? '').slice(0, 300) || null : null],
+  );
+  if (rows.length === 0) return null;
+  return {
+    until: rows[0].until ? new Date(rows[0].until).getTime() : null,
+    reason: rows[0].reason,
+  };
+}
+
+// ------------------------------------------------------------ admin notes ---
+
+export interface AdminNoteRow {
+  id: string;
+  adminId: string;
+  note: string;
+  at: string;
+}
+
+/** pin a private note to an account. Returns the stored row. */
+export async function addAdminNote(
+  userId: string,
+  adminId: string,
+  note: string,
+): Promise<AdminNoteRow | null> {
+  const text = note.trim().slice(0, 1000);
+  if (!text) return null;
+  const rows = await q<{ id: string; admin_id: string; note: string; at: string }>(
+    `insert into admin_notes (user_id, admin_id, note) values ($1, $2, $3)
+     returning id::text as id, admin_id, note, at`,
+    [userId, adminId, text],
+  );
+  const r = rows[0];
+  return r ? { id: r.id, adminId: r.admin_id, note: r.note, at: r.at } : null;
+}
+
+export async function listAdminNotes(userId: string, limit = 50): Promise<AdminNoteRow[]> {
+  const rows = await q<{ id: string; admin_id: string; note: string; at: string }>(
+    `select id::text as id, admin_id, note, at from admin_notes
+      where user_id = $1 order by at desc limit $2`,
+    [userId, Math.min(200, Math.max(1, Math.floor(limit)))],
+  );
+  return rows.map((r) => ({ id: r.id, adminId: r.admin_id, note: r.note, at: r.at }));
+}
+
+/** delete one note. Scoped by `user_id` as well as `id` so a mistyped id from one account's
+ *  panel can never reach another's row. */
+export async function deleteAdminNote(userId: string, id: string): Promise<boolean> {
+  const rows = await q<{ id: string }>(
+    `delete from admin_notes where user_id = $1 and id = $2::bigint returning id`,
+    [userId, id],
+  );
+  return rows.length > 0;
+}
+
+// ------------------------------------------------------------ user detail ---
+
+/**
+ * NAMES FOR A SET OF ACCOUNT IDS — the fix for "(no profile)".
+ *
+ * ⚠️ AN ACCOUNT WITH NO `profiles` ROW IS NOT A MISSING NAME, IT IS A DIFFERENT SITUATION,
+ * and the admin console printed both as "(no profile)". `profiles` is created LAZILY —
+ * `ensureProfile` runs on the API routes a signed-in client hits, so an account that has
+ * authenticated and opened a socket but not yet reached one genuinely has no row — and the
+ * operator view had no way to say which of the two it was looking at. `known` is that bit:
+ * false means "this account really has no profile row yet", and every caller renders that as
+ * the account id plus "no username yet", never as a missing lookup.
+ */
+export interface ProfileName {
+  handle: string | null;
+  username: string | null;
+  role: StaffRole | null;
+  /** a `profiles` row exists for this id */
+  known: boolean;
+}
+export async function profileNames(userIds: string[]): Promise<Map<string, ProfileName>> {
+  const out = new Map<string, ProfileName>();
+  const ids = [...new Set(userIds.filter(Boolean))];
+  if (!ids.length || !dbEnabled) return out;
+  const rows = await q<{ user_id: string; handle: string; username: string | null; role: string | null }>(
+    `select user_id, handle, username, role from profiles where user_id = any($1::text[])`,
+    [ids],
+  );
+  for (const r of rows) {
+    out.set(r.user_id, {
+      handle: r.handle,
+      username: r.username,
+      role: asRole(r.role) ?? null,
+      known: true,
+    });
+  }
+  return out;
+}
+
+export interface AdminUserDetail {
+  userId: string;
+  /** false ⇒ no `profiles` row at all (see `profileNames`) */
+  known: boolean;
+  handle: string | null;
+  username: string | null;
+  role: StaffRole | null;
+  /** the PAID membership, deliberately — see `searchProfiles` for why the admin console
+   *  never shows staff as supporters on a row where months get granted */
+  supporter: boolean;
+  supporterUntil: string | null;
+  autoRenews: boolean;
+  replaysPublic: boolean;
+  termsVersion: string | null;
+  termsAcceptedAt: string | null;
+  createdAt: string | null;
+  standing: StandingSnapshot | null;
+  standingEvents: StandingEventRow[];
+  /** reports filed AGAINST this account, and BY it — the second half is what tells a
+   *  pattern from somebody working the report button */
+  reportsAgainst: { total: number; open: number; reporters: number };
+  reportsFiled: { total: number; rejected: number };
+  scoreReportsFiled: { total: number; rejected: number };
+  /** the ROWS behind those two counts — see `listReportsBy` for why a count is not enough */
+  reportsAgainstList: ReportDetailRow[];
+  reportsFiledList: ReportFiledRow[];
+  /** null ⇒ not suspended. A deadline, not a flag — see `getSuspension` */
+  suspension: Suspension;
+  notes: AdminNoteRow[];
+  grants: SupporterGrantRow[];
+  /** Ko-fi payments this account claimed, so a chargeback can be flagged against the
+   *  transaction it belongs to rather than against the months it bought */
+  payments: KofiPaymentRow[];
+  recentMatches: Awaited<ReturnType<typeof userRecentMatches>>;
+  records: { recordId: string; game: string; mode: string; drivetrain: string; score: number; replayId: string | null; createdAt: string }[];
+  audit: AuditRow[];
+}
+
+/**
+ * EVERYTHING ABOUT ONE ACCOUNT, IN ONE REQUEST.
+ *
+ * The console used to answer "who is this person" from four places that did not know about
+ * each other: the Live table had a name, the report queue had counts, the standing editor had
+ * the ledger, and the user search had the membership. A moderator deciding what to do about
+ * somebody had to open all four and hold the answer in their head.
+ *
+ * Every query here is bounded, and they run CONCURRENTLY rather than in sequence — this is one
+ * page load, not a pipeline, and nine round trips at 30ms each is a third of a second of
+ * staring at a spinner for no reason. An id with no profile row still answers (with `known:
+ * false`), because "this session says it is signed in and there is no account behind it" is
+ * precisely the thing an operator needs to be shown rather than protected from.
+ */
+export async function adminUserDetail(userId: string): Promise<AdminUserDetail> {
+  const [
+    prof, standings, events, against, filed, scoreFiled, notes, grants, matches, records, audit,
+    againstList, filedList, payments,
+  ] =
+    await Promise.all([
+      q<{
+        handle: string; username: string | null; role: string | null; supporter: boolean;
+        supporter_until: string | null; auto_renews: boolean; replays_public: boolean;
+        terms_version: string | null; terms_accepted_at: string | null; created_at: string | null;
+        suspended_until: string | null; suspended_reason: string | null;
+      }>(
+        `select handle, username, role,
+                (supporter_until is not null and supporter_until > now()) as supporter,
+                supporter_until, (kofi_email is not null) as auto_renews,
+                coalesce(replays_public, false) as replays_public,
+                terms_version, terms_accepted_at, created_at,
+                suspended_until, suspended_reason
+           from profiles where user_id = $1`,
+        [userId],
+      ),
+      standingsFor([userId]),
+      listStandingEvents(userId, 50),
+      q<{ total: number; open: number; reporters: number }>(
+        `select count(*)::int as total,
+                count(*) filter (where status = 'open')::int as open,
+                count(distinct reporter_id)::int as reporters
+           from player_reports where reported_id = $1`,
+        [userId],
+      ),
+      q<{ total: number; rejected: number }>(
+        `select count(*)::int as total,
+                count(*) filter (where status = 'dismissed')::int as rejected
+           from player_reports where reporter_id = $1`,
+        [userId],
+      ),
+      q<{ total: number; rejected: number }>(
+        `select count(*)::int as total,
+                count(*) filter (where status = 'rejected')::int as rejected
+           from score_reports where reporter_id = $1`,
+        [userId],
+      ),
+      listAdminNotes(userId, 50),
+      listSupporterGrants(userId, 20),
+      userRecentMatches(userId, 20),
+      q<{ id: string; game: string; mode: string; drivetrain: string; score: number; replay_id: string | null; created_at: string }>(
+        `select id::text as id, game, mode, drivetrain, score, replay_id::text as replay_id, created_at
+           from records where user_id = $1 order by created_at desc limit 20`,
+        [userId],
+      ),
+      listAudit({ targetUser: userId, limit: 25 }),
+      listReportsFor(userId, 50),
+      listReportsBy(userId, 50),
+      listKofiPayments(userId, 20),
+    ]);
+  const p = prof[0];
+  // read off the row already fetched rather than re-querying: `getSuspension` is the door's
+  // read and this is the panel's, and they must agree about an EXPIRED deadline being "not
+  // suspended" rather than "suspended, in the past".
+  const suspendedUntil = p?.suspended_until ? new Date(p.suspended_until).getTime() : null;
+  const suspended = suspendedUntil != null && Number.isFinite(suspendedUntil) && suspendedUntil > Date.now();
+  return {
+    userId,
+    known: !!p,
+    handle: p?.handle ?? null,
+    username: p?.username ?? null,
+    role: asRole(p?.role ?? null) ?? null,
+    supporter: !!p?.supporter,
+    supporterUntil: p?.supporter_until ?? null,
+    autoRenews: !!p?.auto_renews,
+    replaysPublic: !!p?.replays_public,
+    termsVersion: p?.terms_version ?? null,
+    termsAcceptedAt: p?.terms_accepted_at ?? null,
+    createdAt: p?.created_at ?? null,
+    standing: standings[userId] ?? null,
+    standingEvents: events,
+    reportsAgainst: {
+      total: Number(against[0]?.total ?? 0),
+      open: Number(against[0]?.open ?? 0),
+      reporters: Number(against[0]?.reporters ?? 0),
+    },
+    reportsFiled: { total: Number(filed[0]?.total ?? 0), rejected: Number(filed[0]?.rejected ?? 0) },
+    scoreReportsFiled: {
+      total: Number(scoreFiled[0]?.total ?? 0),
+      rejected: Number(scoreFiled[0]?.rejected ?? 0),
+    },
+    reportsAgainstList: againstList,
+    reportsFiledList: filedList,
+    suspension: suspended
+      ? { until: suspendedUntil, reason: p?.suspended_reason ?? null }
+      : { until: null, reason: null },
+    notes,
+    grants,
+    payments,
+    recentMatches: matches,
+    records: records.map((r) => ({
+      recordId: r.id,
+      game: r.game,
+      mode: r.mode,
+      drivetrain: r.drivetrain,
+      score: r.score,
+      replayId: r.replay_id,
+      createdAt: r.created_at,
+    })),
+    audit: audit.rows,
+  };
 }

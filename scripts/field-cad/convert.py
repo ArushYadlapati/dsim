@@ -1273,8 +1273,8 @@ def main() -> None:
             # A DELIBERATE SIMPLIFICATION, both LOD levels: the real tile geometry is a ribbed,
             # perforated foam plate (175,536 triangles for the 36 plates, measured, an 8.8 MB
             # STL) whose detail reads only as noise at this sim's camera distance. The floor's
-            # actual on-screen texture — the 23.53-in tile seam grid and the centre mark, at the
-            # CAD's OWN measured pitch — is a canvas texture (`renderField.ts`'s
+            # actual on-screen texture — the 23.53-in tile seam grid at the CAD's OWN
+            # measured pitch — is a canvas texture (`renderField.ts`'s
             # `buildFloorTexture`) painted on a flat plane; this box is that plane's CAD-accurate
             # replacement (real thickness, real footprint), not a tessellation of the underside.
             corners = []

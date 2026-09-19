@@ -9,12 +9,21 @@ import {
   type ReplayRefusal,
 } from '../sim/replay';
 import { moduleFor } from '../games';
-import type { GameScene, SceneCamera } from '../games/module';
-import { getViewPref } from '../games/biobuzz/graphics/store';
+import type { GameScene, SceneCamera, SceneFrame } from '../games/module';
+import {
+  getCameraPref,
+  getViewPref,
+  resolveSceneCamera,
+  subscribeViewPref,
+  type ViewPref,
+} from '../games/biobuzz/graphics/store';
+import { installViewKey, toggleViewPref } from '../games/biobuzz/graphics/viewKey';
 // the lazy 3D physics chunk — fetched only for a `'3d'` container (see `ensurePhysics`)
 import { initPhysics3d, physics3dReady } from '../games/biobuzz/sim3d/engine';
 import { Renderer } from '../render/renderer';
 import { rangeFill } from './rangeFill';
+import { resolveReplayView } from './replayViewMode';
+import { clamp } from '../math';
 import { drawReplayHud, fieldScreenBottom, HUD_RESERVE, loadSponsorMark } from './replayOverlay';
 import { trackEvent } from '../analytics';
 import { sponsorActive } from '../sponsor';
@@ -204,6 +213,10 @@ export function ReplayView({
    * exporting a clip of their own match almost always wants is the picture they were just
    * looking at. 3D is offered only where the game HAS a scene and this browser can run one —
    * a menu entry that produced a black video would be worse than no entry.
+   *
+   * The CAMERA default follows the same rule, one level down: whichever of the four the
+   * on-screen scene is actually rendering right now. Both are set together in `openMenu`, off
+   * the same read — see it for where the camera value comes from.
    */
   const [exportView, setExportView] = useState<'2d' | '3d'>('2d');
   const [exportCam, setExportCam] = useState<SceneCamera>('driver');
@@ -212,6 +225,34 @@ export function ReplayView({
   /** re-fits the canvas backing store to its box; owned by the render loop, called by the
    *  recording effect (see it for why the canvas stops matching) */
   const refit = useRef<(() => void) | null>(null);
+  /**
+   * THE ON-SCREEN 3D VIEW (`docs/roadmap.md` item 2) — a replay opens in the graphics the
+   * player defined, not a hardcoded 2D map, mirroring `GameController.scene`/`syncScene`.
+   * Owned entirely by the render-loop effect below (created and disposed there); `view` is
+   * only the DEVICE PREFERENCE for the toggle button's own label, exactly like
+   * `MobileControls`' view button — it does not track whether a scene actually mounted, so a
+   * failed load (no WebGL2) still shows "3D" selected with a console warning, same as the live
+   * game and the Graphics section.
+   */
+  const scene = useRef<GameScene | null>(null);
+  /** the element the on-screen scene mounts its canvas into, under the 2D one. */
+  const sceneHostRef = useRef<HTMLDivElement>(null);
+  const [view, setView] = useState<ViewPref>(() => getViewPref());
+  /**
+   * RE-RUN the on-screen scene sync from OUTSIDE the render-loop effect. The realtime capture
+   * below (`startRealtime`) films the VISIBLE 2D canvas (`canvas.captureStream`) — which, in a
+   * 3D view, is a transparent overlay with no field drawn on it at all, because the scene draws
+   * the field on its own canvas underneath. So a realtime recording has to force the on-screen
+   * view back to 2D for its length, and this is how it reaches a sync function that lives
+   * inside an effect scoped to `[status, viewerRobotId]`, not `recording`. Same cross-effect-ref
+   * pattern as `refit`, for the same reason.
+   */
+  const syncSceneRef = useRef<(() => void) | null>(null);
+  /** true while a realtime capture is filming the visible canvas — read (not subscribed to) by
+   *  the render-loop effect's `syncScene`, set directly (not through React state) so forcing the
+   *  view back to 2D cannot lag a state-update round trip and let the recorder catch a
+   *  transparent frame. See `syncSceneRef` above. */
+  const realtimeCapture = useRef(false);
 
   // fetch the replay (or use a preloaded one) + build the player
   useEffect(() => {
@@ -309,6 +350,7 @@ export function ReplayView({
   // render loop + a 10 Hz progress readout (no per-frame React churn)
   useEffect(() => {
     if (status !== 'ready') return;
+    let dead = false;
     const canvas = canvasRef.current!;
     const ctx = canvas.getContext('2d')!;
     const r = replay.current!;
@@ -318,13 +360,82 @@ export function ReplayView({
     // CR's field is larger (protruding goals) — configure the camera with the game's
     // bounds so a CR replay isn't cropped to DECODE's field.
     const bounds = moduleFor(r.game).bounds;
+    const sceneFn = moduleFor(r.game).scene;
+    const mqCoarse = typeof matchMedia === 'function' ? matchMedia('(pointer: coarse)') : null;
 
-    const resize = (): void => rend.camera.configure(canvas, alliance, bounds);
+    const resize = (): void => {
+      rend.camera.configure(canvas, alliance, bounds);
+      scene.current?.resize(canvas.clientWidth, canvas.clientHeight, window.devicePixelRatio || 1);
+    };
     resize();
     window.addEventListener('resize', resize);
     // ...and let the recording effect below re-fit too; it is the same operation, run at the
     // other moment the canvas can stop matching its box
     refit.current = resize;
+
+    /**
+     * MOUNT/DROP THE ON-SCREEN 3D SCENE (`docs/roadmap.md` item 2) — mirrors
+     * `GameController.syncScene`/`teardownScene` almost exactly, one screen over: same
+     * insertBefore-decides-the-stack rule, same epoch guard against a late resolve landing
+     * after a second toggle, same "no `interactive` option" (this scene IS the one somebody is
+     * watching, so it takes the keys/pointer — camera cycling, drag-to-orbit — exactly like
+     * the live match). The only addition is `realtimeCapture`: forced OFF for the length of a
+     * realtime video capture, which films this canvas and would otherwise film a transparent
+     * overlay with no field drawn on it. No HUD insets: unlike the live match, nothing is
+     * absolutely positioned over this canvas (the score/foul rows sit in their own flow above
+     * it), so a scene fits the whole box.
+     */
+    let sceneEpoch = 0;
+    const teardownScene = (): void => {
+      sceneEpoch++;
+      const s = scene.current;
+      if (!s) return;
+      scene.current = null;
+      rend.setScene(null);
+      try {
+        s.element.remove();
+      } catch {
+        /* not attached, or already gone */
+      }
+      try {
+        s.dispose();
+      } catch (err) {
+        // eslint-disable-next-line no-console
+        console.warn('BIOBUZZ 3D scene threw disposing; continuing on the 2D view.', err);
+      }
+    };
+    const syncScene = (): void => {
+      const host = sceneHostRef.current;
+      const want =
+        resolveReplayView(getViewPref(), !!sceneFn) === '3d' && !!host && !realtimeCapture.current;
+      if (!want || !sceneFn) {
+        teardownScene();
+        return;
+      }
+      if (scene.current) return; // already showing one
+      const epoch = ++sceneEpoch;
+      (async () => {
+        const factory = await sceneFn();
+        const s = await factory(host!);
+        // the view may have switched away, a realtime capture may have started, or the
+        // component may have unmounted WHILE this load was in flight
+        if (dead || epoch !== sceneEpoch) {
+          s.dispose();
+          return;
+        }
+        host!.insertBefore(s.element, host!.firstChild);
+        s.resize(canvas.clientWidth, canvas.clientHeight, window.devicePixelRatio || 1);
+        scene.current = s;
+        rend.setScene(s);
+      })().catch((err: unknown) => {
+        if (epoch !== sceneEpoch) return;
+        // eslint-disable-next-line no-console
+        console.warn('BIOBUZZ 3D scene failed to load; staying on the 2D view.', err);
+      });
+    };
+    syncScene();
+    syncSceneRef.current = syncScene;
+    const unsubView = subscribeViewPref(syncScene);
 
     let raf = 0;
     let lastT = performance.now();
@@ -360,16 +471,40 @@ export function ReplayView({
           if (recorder.current?.state === 'recording') recorder.current.stop();
         }
       }
-      rend.render(ctx, p.world, null, localId);
+      if (scene.current) {
+        try {
+          const frame: SceneFrame = {
+            alpha: clamp(acc / SIM_DT, 0, 1),
+            viewAngle: rend.camera.viewAngle,
+            camera: mqCoarse?.matches ? 'overhead' : 'driver',
+            localRobotId: localId,
+            width: canvas.clientWidth,
+            height: canvas.clientHeight,
+            dpr: window.devicePixelRatio || 1,
+          };
+          scene.current.render(p.world, frame);
+        } catch (err) {
+          // eslint-disable-next-line no-console
+          console.warn('BIOBUZZ 3D scene failed to render; falling back to the 2D view.', err);
+          teardownScene();
+        }
+      }
+      // a mounted scene draws the field/robots/balls beneath this canvas — the 2D pass then
+      // stays transparent and draws only its cheap overlay (name labels), never the field.
+      rend.render(ctx, p.world, null, localId, !!scene.current);
       raf = requestAnimationFrame(loop);
     };
     raf = requestAnimationFrame(loop);
     const readout = window.setInterval(sync, 100);
 
     return () => {
+      dead = true;
       cancelAnimationFrame(raf);
       window.clearInterval(readout);
       window.removeEventListener('resize', resize);
+      unsubView();
+      teardownScene();
+      syncSceneRef.current = null;
       refit.current = null;
     };
   }, [status, viewerRobotId]);
@@ -424,6 +559,14 @@ export function ReplayView({
       dead = true;
     };
   }, []);
+
+  // THE VIEW TOGGLE: follow the device's preference (a Graphics-section change while this
+  // screen is open takes effect live, exactly like the live match), and arm the `t` key —
+  // reference-counted, so a mounted scene holding it too (see the render-loop effect) never
+  // double-toggles a press. Unconditional, like `MobileControls`': a no-op on a game with no
+  // 3D scene at all.
+  useEffect(() => subscribeViewPref(setView), []);
+  useEffect(() => installViewKey(), []);
 
   /** The menu closes on Escape and on a press anywhere outside it. A popover that only closes
    *  by re-clicking its own button is one people leave open by accident — and this one covers
@@ -819,6 +962,17 @@ export function ReplayView({
       downloadData();
       return;
     }
+    /**
+     * FORCE THE ON-SCREEN VIEW BACK TO 2D, SYNCHRONOUSLY, BEFORE ANYTHING ELSE HERE.
+     *
+     * This path films the VISIBLE canvas (`captureStream` below): a mounted 3D scene draws the
+     * field on its OWN canvas underneath and leaves this one transparent, so a capture taken
+     * while the on-screen view is 3D would record nothing but name labels over blank frames.
+     * Set directly on a ref rather than through `setRecording`/React state — a state-driven
+     * effect lags a render, and any frame captured in that gap is a frame the file keeps.
+     */
+    realtimeCapture.current = true;
+    syncSceneRef.current?.();
     const fmt = videoFormat(id);
     const rec = new MediaRecorder(canvas.captureStream(60), {
       mimeType: mime,
@@ -837,6 +991,9 @@ export function ReplayView({
       stopVisibility.current = null;
       setRecording(false);
       setCapturing(null);
+      // release the forced 2D view and let the on-screen scene follow the preference again
+      realtimeCapture.current = false;
+      syncSceneRef.current?.();
       if (!discard.current && parts.length) {
         saveBlob(new Blob(parts, { type: mime }), filename(fmt.ext));
         countBurnIn(fmt.ext);
@@ -907,6 +1064,18 @@ export function ReplayView({
     }
   };
 
+  /**
+   * WHAT THE ON-SCREEN SCENE WOULD PICK IF LEFT TO THE DEVICE (`mqCoarse` in the render-loop
+   * effect, reproduced here rather than shared through a ref: it's one `matchMedia` read, and
+   * the render-loop effect only exists while a scene might be mounted). This is the `hostPick`
+   * half of `resolveSceneCamera` — the other half, the device's own camera preference, is
+   * `getCameraPref()` below.
+   */
+  const hostCameraPick = (): SceneCamera =>
+    typeof matchMedia === 'function' && matchMedia('(pointer: coarse)').matches
+      ? 'overhead'
+      : 'driver';
+
   /** Measure the container ONCE, on open. Stringifying it is cheap, but this component
    *  re-renders 10 times a second off the progress readout, and a menu that re-serializes the
    *  whole replay on every one of those is a menu that stutters while it is open. */
@@ -917,7 +1086,20 @@ export function ReplayView({
       const can3d = probe3d();
       setCan3d(can3d);
       // the device's own view preference is the default, but only where it is possible
-      setExportView(can3d && getViewPref() === '3d' ? '3d' : '2d');
+      setExportView(resolveReplayView(getViewPref(), can3d));
+      /**
+       * THE CAMERA DEFAULTS TO WHAT THE ON-SCREEN SCENE IS ACTUALLY SHOWING, not a hardcoded
+       * literal. `renderScene.ts`'s own `resolvedCamera` runs exactly this — `resolveSceneCamera
+       * (this.interactive, hostPick, this.cameraPref)` — every frame, against the SAME
+       * `graphics/store.ts` camera preference the scene reads at construction and rewrites on
+       * every `c` key press (`setCameraPref`). Reading that store here, rather than asking the
+       * mounted `GameScene` for its camera (the interface has no such getter, and adding one
+       * would mean editing `games/module.ts` and the scene's own file, both outside this fix),
+       * means there is still exactly one owner of "which camera" — the store — and this menu
+       * just reads it the same way the scene does. The on-screen scene is always constructed
+       * interactive (see the render-loop effect), so `interactive` is `true` here too.
+       */
+      setExportCam(resolveSceneCamera(true, hostCameraPick(), getCameraPref()));
     }
     setMenuOpen((v) => !v);
   };
@@ -996,102 +1178,120 @@ export function ReplayView({
             clock read as two more transport controls. The spacer keeps the title centred on
             the screens where there is nothing to download. */}
         {status === 'ready' ? (
-          <div className="ds-dl" ref={menuRoot}>
-            <button
-              className={`ds-btn${menuOpen ? ' primary' : ''}`}
-              onClick={openMenu}
-              disabled={recording || saving}
-              aria-haspopup="menu"
-              aria-expanded={menuOpen}
-            >
-              ↓ Download
-            </button>
-            {menuOpen && (
-              <div className="ds-dl-pop" role="menu">
-                {/* Each option states its COST as well as its name — the formats differ by how
-                    long they take and where they will play, and a menu of bare nouns hides
-                    exactly the difference that decides which you want. */}
-                {/* WHAT THE VIDEO IS OF, before what file it goes into. Two compact rows rather
-                    than two more full-width options: they modify every format below them, and a
-                    card that looked like the MP4 card would read as a third thing to download.
-                    The 3D button is DISABLED, not hidden, where it is unavailable — its title
-                    then says which of the two reasons it is, because "this game has no 3D
-                    renderer" and "this browser has no WebGL2" want different answers from the
-                    person reading it. */}
-                <div className="ds-dl-row">
-                  <span className="rl">View</span>
-                  <div className="ds-dl-seg">
-                    <button
-                      className={exportView === '2d' ? 'on' : ''}
-                      aria-pressed={exportView === '2d'}
-                      onClick={() => setExportView('2d')}
-                    >
-                      2D
-                    </button>
-                    <button
-                      className={exportView === '3d' ? 'on' : ''}
-                      aria-pressed={exportView === '3d'}
-                      disabled={!can3d}
-                      title={
-                        can3d
-                          ? undefined
-                          : replay.current && moduleFor(replay.current.game).scene
-                            ? 'This browser has no WebGL2.'
-                            : 'This season has no 3D renderer.'
-                      }
-                      onClick={() => setExportView('3d')}
-                    >
-                      3D
-                    </button>
-                  </div>
-                </div>
-                {exportView === '3d' && (
+          <div className="ds-replay-actions">
+            {/* SHOW THE MATCH IN THE GRAPHICS THE PLAYER DEFINED (`docs/roadmap.md` item 2):
+                starts from the device's own view preference (`getViewPref`, see the
+                render-loop effect's `syncScene`) and lets them switch without leaving the
+                replay, exactly like the live match's own `t` key. Hidden for DECODE/Chain
+                Reaction, which have no 3D renderer to switch to. */}
+            {replay.current && moduleFor(replay.current.game).scene && (
+              <button
+                className={view === '3d' ? 'ds-btn small primary' : 'ds-btn ghost small'}
+                onClick={toggleViewPref}
+                disabled={recording}
+                aria-pressed={view === '3d'}
+                title="Press T to switch"
+              >
+                {view === '3d' ? '3D' : '2D'}
+              </button>
+            )}
+            <div className="ds-dl" ref={menuRoot}>
+              <button
+                className={`ds-btn${menuOpen ? ' primary' : ''}`}
+                onClick={openMenu}
+                disabled={recording || saving}
+                aria-haspopup="menu"
+                aria-expanded={menuOpen}
+              >
+                ↓ Download
+              </button>
+              {menuOpen && (
+                <div className="ds-dl-pop" role="menu">
+                  {/* Each option states its COST as well as its name — the formats differ by how
+                      long they take and where they will play, and a menu of bare nouns hides
+                      exactly the difference that decides which you want. */}
+                  {/* WHAT THE VIDEO IS OF, before what file it goes into. Two compact rows rather
+                      than two more full-width options: they modify every format below them, and a
+                      card that looked like the MP4 card would read as a third thing to download.
+                      The 3D button is DISABLED, not hidden, where it is unavailable — its title
+                      then says which of the two reasons it is, because "this game has no 3D
+                      renderer" and "this browser has no WebGL2" want different answers from the
+                      person reading it. */}
                   <div className="ds-dl-row">
-                    <span className="rl">Camera</span>
+                    <span className="rl">View</span>
                     <div className="ds-dl-seg">
-                      {(['driver', 'chase', 'orbit'] as const).map((c) => (
-                        <button
-                          key={c}
-                          className={exportCam === c ? 'on' : ''}
-                          aria-pressed={exportCam === c}
-                          onClick={() => setExportCam(c)}
-                        >
-                          {c[0].toUpperCase() + c.slice(1)}
-                        </button>
-                      ))}
+                      <button
+                        className={exportView === '2d' ? 'on' : ''}
+                        aria-pressed={exportView === '2d'}
+                        onClick={() => setExportView('2d')}
+                      >
+                        2D
+                      </button>
+                      <button
+                        className={exportView === '3d' ? 'on' : ''}
+                        aria-pressed={exportView === '3d'}
+                        disabled={!can3d}
+                        title={
+                          can3d
+                            ? undefined
+                            : replay.current && moduleFor(replay.current.game).scene
+                              ? 'This browser has no WebGL2.'
+                              : 'This season has no 3D renderer.'
+                        }
+                        onClick={() => setExportView('3d')}
+                      >
+                        3D
+                      </button>
                     </div>
                   </div>
-                )}
-                {formats.length === 0 && <p className="ds-dl-note">This browser can’t save video.</p>}
-                {formats.map((f) => (
-                  <button
-                    key={f.id}
-                    className="ds-dl-opt"
-                    role="menuitem"
-                    onClick={() => pick(() => void startCapture(f.id))}
-                  >
+                  {exportView === '3d' && (
+                    <div className="ds-dl-row">
+                      <span className="rl">Camera</span>
+                      <div className="ds-dl-seg">
+                        {(['driver', 'chase', 'orbit'] as const).map((c) => (
+                          <button
+                            key={c}
+                            className={exportCam === c ? 'on' : ''}
+                            aria-pressed={exportCam === c}
+                            onClick={() => setExportCam(c)}
+                          >
+                            {c[0].toUpperCase() + c.slice(1)}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                  {formats.length === 0 && <p className="ds-dl-note">This browser can’t save video.</p>}
+                  {formats.map((f) => (
+                    <button
+                      key={f.id}
+                      className="ds-dl-opt"
+                      role="menuitem"
+                      onClick={() => pick(() => void startCapture(f.id))}
+                    >
+                      <span className="dl-h">
+                        {f.label}
+                        <em>{f.fast ? fastEta : mmss(runtime)}</em>
+                      </span>
+                      <span className="dl-d">{f.note}</span>
+                    </button>
+                  ))}
+                  <button className="ds-dl-opt" role="menuitem" onClick={() => pick(downloadData)}>
                     <span className="dl-h">
-                      {f.label}
-                      <em>{f.fast ? fastEta : mmss(runtime)}</em>
+                      Replay data
+                      <em>{dataBytes ? `${Math.max(1, Math.round(dataBytes / 1024))} KB` : '.json'}</em>
                     </span>
-                    <span className="dl-d">{f.note}</span>
+                    <span className="dl-d">
+                      The input log. Plays in DSIM on balance v{BALANCE_VERSION}, sim v
+                      {SIM_VERSION}.
+                    </span>
                   </button>
-                ))}
-                <button className="ds-dl-opt" role="menuitem" onClick={() => pick(downloadData)}>
-                  <span className="dl-h">
-                    Replay data
-                    <em>{dataBytes ? `${Math.max(1, Math.round(dataBytes / 1024))} KB` : '.json'}</em>
-                  </span>
-                  <span className="dl-d">
-                    The input log. Plays in DSIM on balance v{BALANCE_VERSION}, sim v
-                    {SIM_VERSION}.
-                  </span>
-                </button>
-                <p className="ds-dl-note">
-                  Replays only play on the version that recorded them. Videos always play.
-                </p>
-              </div>
-            )}
+                  <p className="ds-dl-note">
+                    Replays only play on the version that recorded them. Videos always play.
+                  </p>
+                </div>
+              )}
+            </div>
           </div>
         ) : (
           // the same box the menu occupies, so the title stays centred on the
@@ -1185,7 +1385,15 @@ export function ReplayView({
           shortening it — the camera fits the field to the SHORTER of its two spans, and height
           is the one the HUD bands are already eating into */}
       <div className="ds-replay-stage">
-        <canvas ref={canvasRef} className="ds-replay-canvas" style={{ display: status === 'ready' ? 'block' : 'none' }} />
+        {/* BIOBUZZ 3D SEAM, one screen over from `.game-viewport` (styles.css), reused here:
+            the box a live scene mounts its own canvas into, UNDER the 2D one — whichever lands
+            LAST in the DOM wins the stack (both `position:absolute`, `z-index:auto`), and the
+            render-loop effect inserts the scene's canvas BEFORE this one. A replay with no
+            scene (DECODE, Chain Reaction, or a WebGL2-less browser) never gets a second
+            canvas, so this box holds exactly the one canvas it always did. */}
+        <div ref={sceneHostRef} className="ds-replay-viewport game-viewport">
+          <canvas ref={canvasRef} className="ds-replay-canvas" style={{ display: status === 'ready' ? 'block' : 'none' }} />
+        </div>
         {status === 'ready' && railOpen && (
           <aside className="ds-replay-rail">
             <PenaltyLog entries={penalties} done={done} solo={solo} onSeek={seek} />

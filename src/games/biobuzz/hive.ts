@@ -175,6 +175,14 @@ export function hiveLoad(contents: readonly number[], kindOf: (id: number) => Bb
  * (config.ts, owner 2026-09-12) and nothing interpolates it — a see-saw is torque and packing,
  * not weight, and no linear mass model fits the measured rows. Past the end of the table the
  * last row holds, which is 0 pollen: five nectar tip a cell on their own.
+ *
+ * ⚠️ **THIS IS THE TRIGGER UNDER BOTH PHYSICS AND IT IS ALSO WHAT THE HUD PRINTS** (2026-09-19).
+ * The 3D see-saw used to tip on its own torque balance instead, and that is how "0 MORE TO TIP"
+ * came to be a lie on 1 POLLEN + 4 NECTAR: a count does not determine a torque, so the two
+ * answers drifted apart on real packings. `sim3d/hive3d.ts`'s header carries the measurement.
+ * One list (`hives[a].contents`), one predicate (this one), three readers — `hud.ts`, the timer
+ * tray and the dynamic tray — which is the only arrangement in which the promise cannot come
+ * apart. Changing this function changes the rule for all three at once, which is the point.
  */
 export function hiveWillTip(load: HiveLoad): boolean {
   return load.pollen >= BB_TIP_POLLEN[Math.min(load.nectar, BB_TIP_POLLEN.length - 1)];

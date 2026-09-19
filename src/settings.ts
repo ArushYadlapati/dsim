@@ -1,4 +1,4 @@
-import type { GameId, GameLoadout, GameSettings } from './types';
+import type { GameId, GameLoadout, GameSettings, PerfDisplay } from './types';
 import {
   DEFAULT_SPEC,
   coerceSpec,
@@ -19,7 +19,8 @@ const startPoseCount = (game: GameId): number => simModuleFor(game).startPoseCou
 import { cloneBindings, DEFAULT_BINDINGS, mergeBindings } from './input/bindings';
 import { clamp } from './math';
 
-const STORAGE_KEY = 'decodesim.settings.v1';
+// the key itself comes from the registry every privacy surface reads (src/storageKeys.ts)
+import { SETTINGS_KEY as STORAGE_KEY } from './storageKeys';
 
 /** default touch-control layout (centres as viewport fractions), tuned for landscape:
  * drive stick bottom-left, turn stick bottom-right, action buttons clustered on the
@@ -37,6 +38,15 @@ export const DEFAULT_MOBILE_LAYOUT: GameSettings['mobileLayout'] = {
   bbNectar: { x: 0.74, y: 0.16 },
   scale: 1,
 };
+
+/**
+ * The performance read-out's levels, least→most, as a runtime list.
+ *
+ * Here rather than in `types.ts` because it is both the COERCER's allowlist and the picker's
+ * order, and those two drifting apart is how a level ends up selectable and then discarded on
+ * the next load.
+ */
+export const PERF_DISPLAY_LEVELS: readonly PerfDisplay[] = ['off', 'simple', 'detailed', 'graphs'];
 
 export function defaultSettings(): GameSettings {
   return {
@@ -70,6 +80,11 @@ export function defaultSettings(): GameSettings {
     autoPath: null, // Default to no auto path loaded
     autoPathEnabled: false, // Default to auto path disabled
     showEventLog: true,
+    // SIMPLE, not off (owner, 2026-09-19: "default for performance statistics should include
+    // simple ping and fps"). Two numbers on one line in a corner nothing else uses — the cost
+    // of it being on for everybody is smaller than the cost of a player who cannot tell a bad
+    // connection from a bad machine having to find a setting first.
+    perfDisplay: 'simple',
     parkSpeedPct: 30,
     tankControlMode: 'normal',
     mobileLayout: cloneMobileLayout(DEFAULT_MOBILE_LAYOUT),
@@ -350,6 +365,23 @@ export function coerceSettings(raw: unknown): GameSettings {
     // drift from the sliders (see the `audio` type for why they still exist)
     Object.assign(out.audio, audioMirrors(out.audio.volume));
     if (typeof s.showEventLog === 'boolean') out.showEventLog = s.showEventLog;
+    /**
+     * THE PERFORMANCE READ-OUT'S LEVEL, and the one migration it needs.
+     *
+     * An absent value takes the default (`simple`), which is what every settings blob written
+     * before this field existed carries — and that is the intended outcome, not an accident of
+     * the coercer: the owner asked for fps + ping to be on out of the box, so a returning
+     * player gets it on the same terms as a new one.
+     *
+     * `true`/`false` are accepted because the read-out's ancestors were switches — the
+     * `?perf=1` line and the 3D-only Graphics overlay — and anything that round-trips a
+     * boolean through this field means "on" rather than "reset me".
+     */
+    if (PERF_DISPLAY_LEVELS.includes(s.perfDisplay as PerfDisplay)) {
+      out.perfDisplay = s.perfDisplay as PerfDisplay;
+    } else if (typeof s.perfDisplay === 'boolean') {
+      out.perfDisplay = s.perfDisplay ? 'simple' : 'off';
+    }
     if (typeof s.parkSpeedPct === 'number') {
       out.parkSpeedPct = clamp(Math.round(s.parkSpeedPct), 0, 100);
     }

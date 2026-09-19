@@ -13,6 +13,14 @@
  * server — would mean building session attribution, bot filtering, and a
  * dashboard, all of which are solved problems.
  *
+ * ⚠️ THAT ARGUMENT IS NOW HALF SPENT, and the code below says so. Session
+ * attribution, bot filtering and a dashboard were all built (`server/analytics.ts`,
+ * `src/pageviews.ts`, `src/ui/AdminAnalytics.tsx`) for the one thing a third-party
+ * dashboard structurally cannot do: put traffic next to the PRODUCT tables in this
+ * project's own database — matches per game, signups, retention, the ranked
+ * distribution. So every event below now goes to BOTH, and neither is a fallback
+ * for the other.
+ *
  * IT IS ALSO THE SPONSOR REPORT. The presenting sponsor is owed monthly numbers —
  * clicks, sessions, new players — and they are what the deal renews on. Those come
  * from the `sponsor_*` / `player_joined` events below plus Vercel's own session
@@ -27,6 +35,10 @@
  * not "be careful".
  */
 import { track } from '@vercel/analytics';
+// the opt-out is its own leaf module — see the note there for why it is not in this file
+import { analyticsAllowed } from './analyticsPref';
+// ...and the SECOND sink. See the note above `trackEvent`.
+import { trackEventBeacon } from './pageviews';
 
 /** OFF unless explicitly enabled, matching how ads and auth are gated. A
  *  self-hosted or Electron build should not be firing beacons at a host it does
@@ -67,14 +79,32 @@ export type AnalyticsEvent =
   | 'desktop_download' // a desktop build was taken (`os`) — the splash's only proxy
   | 'player_joined'; // a NEW account finished signing up — "new players"
 
+/**
+ * TWO SINKS, ONE CALL SITE.
+ *
+ * The host's dashboard is still here because it is what the sponsor report has been read off
+ * since launch and because nothing about it broke. What it cannot do is sit beside the product
+ * numbers — matches per game, retention, the ranked distribution — which live in this project's
+ * own database and always did. So the same event also goes to `POST /api/a/ev`, and the admin
+ * console's Analytics tab renders both halves on one page.
+ *
+ * ⚠️ THE GATES ARE NOT DUPLICATED. This function's `ENABLED`/`analyticsAllowed()` pair decides
+ * whether an event exists at all; `trackEventBeacon` applies the SAME opt-out plus the two the
+ * first sink has no use for — a configured cloud server to send to, and `doNotTrack`/GPC. It
+ * is called after the first sink rather than before it so a change to either one cannot
+ * silently mute the other.
+ */
 export function trackEvent(
   event: AnalyticsEvent,
   props?: Record<string, string | number | boolean>,
 ): void {
-  if (!ENABLED) return;
+  // `ENABLED` first, because it is a build constant: a build with analytics off never
+  // touches storage at all.
+  if (!ENABLED || !analyticsAllowed()) return;
   try {
     track(event, props);
   } catch {
     /* analytics must never be able to break a page it is only observing */
   }
+  trackEventBeacon(event, props);
 }

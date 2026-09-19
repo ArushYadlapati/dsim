@@ -114,6 +114,16 @@ export interface NetSession {
   setups: RobotSetup[];
   /** ranked matchmaking match? gates the pre-match ELO intro overlay */
   ranked: boolean;
+  /**
+   * THE MATCH GENERATION THIS SESSION IS PLAYING (`matchStart.gen`; absent ⇒ 0).
+   *
+   * Here for one reason: the rejoin record is built field by field from a live session, and
+   * the server DROPS an input stamped with a stale generation. A record that omitted this
+   * came back as generation 0 against a room on 1, every input was discarded, and the robot
+   * sat still while the client predicted it moving — see `ActiveGameRef`. Optional because a
+   * LAN session has no generation to report.
+   */
+  readonly gen?: number;
   /** per-driver ELO for the intro overlay (empty unless ranked) */
   intros: PlayerIntro[];
   /** per-driver overall-ELO change for the results screen (populated shortly
@@ -169,6 +179,15 @@ export interface NetSession {
    * All optional: a solo practice run has no session at all, a record run does not
    * recycle, and a build older than the feature simply never offers the control.
    */
+  /**
+   * GIVE UP THIS SEAT ON THE WAY OUT — one frame, no reply, sent while the socket is still
+   * open. The server stops holding this account's single-game lock for the rest of the
+   * reconnect grace, which is what a RECORD restart needs: it tears the session down and
+   * joins a brand-new room, and the old lock would otherwise still be registered when that
+   * join lands. Optional, like the three below — a solo practice run has no session, and an
+   * older build simply never sends it.
+   */
+  abandonSlot?(): void;
   /** host only: ask the server to send this finished room back to its lobby */
   requestLobby?(): void;
   /** the room went back to its lobby; `clientId` is ours on the socket being handed over */
