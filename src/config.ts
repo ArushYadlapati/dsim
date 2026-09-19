@@ -46,17 +46,22 @@ export const BALANCE_VERSION = 4; // 2: real-motor drivetrain retune (torque–s
 // Bumping this INVALIDATES older replays for playback (they only re-sim exactly under their own
 // version's build): ReplayView gates on it and shows "recorded on an older version" instead.
 //
-// ⚠️ **A BUMP TO 5 IS OWED, AND IS TAKEN WHEN ALPHA MERGES INTO MAIN — NOT BEFORE** (owner,
-// 2026-09-15). The alpha batch DOES move scores, so by the rule above it has earned one:
+// ⚠️ **THE BUMP TO 5 WAS DECLINED AT THE MERGE, AND THE SEASON RUNS ON** (owner, 2026-09-17).
+// The alpha batch merged into main on that date WITHOUT a bump: the score-moving changes below
+// are live on 4, deliberately, because bumping archives the standings for everyone on the one
+// Fly app and the owner chose to keep the season rather than reset it over them. So a record
+// set before this merge and one set after share a board although the scoring moved under them
+// — that is the accepted cost, not an oversight. The list stands as the record of what moved,
+// and a later bump starts its season from here rather than re-litigating any of it.
+// 2026-09-15, superseded: the batch DOES move scores, so by the rule above it had earned one:
 //   · BIOBUZZ — a TIP still swinging at the buzzer is scored as the TIP it becomes and its load
 //     is no longer also paid as left in the CELL (§10.5 A/C, `games/biobuzz/score.ts`);
 //   · every game — a match is finalized when the FIELD COMES TO REST rather than at a fixed
 //     2.8 s (`sim/settle.ts`), so anything still scoring after the buzzer now lands.
-// What it has NOT earned is a new SEASON, which is the other thing this number does: bumping
-// archives the standings for everyone on the one Fly app, and the changes above exist only on
-// alpha. So the bump rides the promotion commit, where the season it starts is the season those
-// changes are actually live for. Add to the list above rather than bumping early; if a later
-// alpha change makes the batch unshippable without a reset, that is the moment to reconsider.
+// What it has NOT earned is a new SEASON, which is the other thing this number does. That was
+// the reason to hold the bump while the changes were alpha-only, and at the merge it became the
+// reason to decline it outright. Add to the list above rather than bumping; if a later change
+// makes the accumulated drift unshippable without a reset, that is the moment to reconsider.
 
 /**
  * SIM BEHAVIOUR version — "which builds can re-simulate a replay", which is a
