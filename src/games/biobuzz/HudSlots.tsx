@@ -332,7 +332,6 @@ const PHASE_LABEL: Record<HudSnapshot['phase'], string> = {
 
 /**
  * The whole bottom bar — red | timer | blue, each alliance's up-CELL line under its total,
- * and the G410 cue above.
  *
  * It exists because the SHARED bar is DECODE's: it draws the motif dots for every game that
  * is not Chain Reaction, and BIOBUZZ has no motif. The LAYOUT is the shared one on purpose
@@ -347,7 +346,6 @@ const PHASE_LABEL: Record<HudSnapshot['phase'], string> = {
  */
 export function BiobuzzScoreBar({ hud }: GameHudProps) {
   const f = sliceOf(hud)?.field;
-  const pin = soonestPin(f?.pins);
   const red = hud.alliance === 'red' ? hud.score.total : hud.oppTotal;
   const blue = hud.alliance === 'blue' ? hud.score.total : hud.oppTotal;
   const urgent = hud.timeLeft <= 10 && (hud.phase === 'auto' || hud.phase === 'teleop');
@@ -362,24 +360,6 @@ export function BiobuzzScoreBar({ hud }: GameHudProps) {
   }
   return (
     <>
-      {/* G410: a NECTAR into a FLOWER before the 1:00 cue is a MAJOR, PER NECTAR. On a real
-          field the cue is audio; here it has to be readable from the driver's station, so it
-          sits on the bar rather than only in the desktop-only chip row. `nectarIn` is null
-          outside TELEOP, where a countdown would be a guess at the remaining AUTO — so the
-          chip states the lock and says nothing about when. */}
-      {/* G421 rides the same row and for the same reason G410 does: `GameView` suppresses the
-          whole chip row on a coarse pointer, so on a phone the bar is the only place a PIN can
-          be read — and 20 points every three seconds is not a tariff to leave to a cue the
-          device does not render. `.warn` because it is a clock running against somebody, not a
-          state of the field like the lock beside it. */}
-      {(f?.nectarLocked || pin) && (
-        <div className="breakdown-row">
-          {f?.nectarLocked && (
-            <span>NECTAR LOCKED{f.nectarIn === null ? '' : ` ${fmtTime(f.nectarIn)}`}</span>
-          )}
-          {pin && <span className="warn">{pinLine(pin)}</span>}
-        </div>
-      )}
       <div className="scorebar">
         <div className={`score-panel bb red ${hud.alliance === 'red' ? 'mine' : ''}`}>
           {hud.alliance === 'red' && <span className="you-tag">YOU</span>}

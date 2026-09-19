@@ -796,7 +796,7 @@ button {
   top: 52px;
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 8px;
   align-items: flex-start;
 }
 
