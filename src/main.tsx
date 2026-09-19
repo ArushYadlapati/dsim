@@ -64,8 +64,18 @@ Promise.all([initPhysics(), lanReady]).then(() => {
           on — which is the kind of false statement a privacy control must not make. `beforeSend`
           is consulted per send, so `analyticsAllowed()` is read fresh and the switch takes
           effect with no reload, exactly as it does for events. Returning null drops the beacon
-          before it leaves the page. */}
-      {analyticsEnabled() && <Analytics beforeSend={(e) => (analyticsAllowed() ? e : null)} />}
+          before it leaves the page.
+
+          ⚠️ IT ALSO STRIPS THE QUERY STRING. A password-reset or email-verification link
+          arrives as `/account/reset?token=…`, and the first pageview fires on that URL — so
+          without this the one-time token leaves the device inside an analytics beacon. Nothing
+          this app measures is keyed on a query parameter, so there is no route detail to lose:
+          the path alone is the page. */}
+      {analyticsEnabled() && (
+        <Analytics
+          beforeSend={(e) => (analyticsAllowed() ? { ...e, url: e.url.split('?')[0] } : null)}
+        />
+      )}
     </StrictMode>,
   );
 });

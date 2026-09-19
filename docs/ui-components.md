@@ -140,12 +140,12 @@ The look and the depth model are `DESIGN.md`. This file is only the inventory.
 
 | class | declared | used |
 |---|---|---|
-| `.ds-lan-banner` | src/ui/styles.css:2947 | 1 |
-| `.ds-lan-leave` | src/ui/styles.css:2960 | 1 |
-| `.ds-lan-state` | src/ui/styles.css:2870 | 4 |
-| `.ds-lan-steps` | src/ui/styles.css:2923 | 1 |
-| `.ds-lan-url` | src/ui/styles.css:2886 | 3 |
-| `.ds-lan-urls` | src/ui/styles.css:2876 | 1 |
+| `.ds-lan-banner` | src/ui/styles.css:2959 | 1 |
+| `.ds-lan-leave` | src/ui/styles.css:2972 | 1 |
+| `.ds-lan-state` | src/ui/styles.css:2882 | 4 |
+| `.ds-lan-steps` | src/ui/styles.css:2935 | 1 |
+| `.ds-lan-url` | src/ui/styles.css:2898 | 3 |
+| `.ds-lan-urls` | src/ui/styles.css:2888 | 1 |
 
 ## `ds-panel` — 6
 
@@ -272,8 +272,8 @@ The look and the depth model are `DESIGN.md`. This file is only the inventory.
 
 | class | declared | used |
 |---|---|---|
-| `.ds-modal` | src/ui/shell.css:3476 | 14 |
-| `.ds-modal-backdrop` | src/ui/shell.css:3467 | 6 |
+| `.ds-modal` | src/ui/shell.css:3476 | 15 |
+| `.ds-modal-backdrop` | src/ui/shell.css:3467 | 7 |
 | `.ds-modal-h` | src/ui/shell.css:3488 | 4 |
 
 ## `ds-opt` — 3
@@ -368,8 +368,8 @@ The look and the depth model are `DESIGN.md`. This file is only the inventory.
 
 | class | declared | used |
 |---|---|---|
-| `.ds-maint` | src/ui/styles.css:2164 | 3 |
-| `.ds-maint-wrap` | src/ui/styles.css:2161 | 2 |
+| `.ds-maint` | src/ui/styles.css:2176 | 3 |
+| `.ds-maint-wrap` | src/ui/styles.css:2173 | 2 |
 
 ## `ds-menu` — 2
 
@@ -572,7 +572,7 @@ The look and the depth model are `DESIGN.md`. This file is only the inventory.
 
 | class | declared | used |
 |---|---|---|
-| `.ds-loading` | src/ui/shell.css:1959 | 19 |
+| `.ds-loading` | src/ui/shell.css:1959 | 20 |
 
 ## `ds-mark` — 1
 
@@ -758,7 +758,7 @@ The look and the depth model are `DESIGN.md`. This file is only the inventory.
 
 | class | declared | used |
 |---|---|---|
-| `.ds-tip` | src/ui/styles.css:2142 | 2 |
+| `.ds-tip` | src/ui/styles.css:2154 | 2 |
 
 ## `ds-title` — 1
 

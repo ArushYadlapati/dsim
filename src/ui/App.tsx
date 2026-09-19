@@ -470,7 +470,16 @@ export function App() {
     // `startScreen`, not `start.screen` — a staged ranked match overrides the restored
     // URL (see above), and the address bar has to say where the player actually is
     const canonical = pathFor(startScreen, start, settingsRef.current.game);
-    if (window.location.pathname !== canonical) window.history.replaceState(null, '', canonical);
+    // ⚠️ COMPARE THE SEARCH TOO, not just the pathname. `pathFor` never emits a query,
+    // so anything in one is consumed-and-finished — including the `?token=` a reset or
+    // verification link arrives with. Comparing pathnames alone meant a token sitting on
+    // an ALREADY-canonical path was never stripped: it stayed in the address bar, in the
+    // history entry, and in anything that reads `location.href` (a copied link, a
+    // referrer, an analytics beacon). Stripping it here is safe because `entryToken.ts`
+    // captured it at MODULE LOAD, which is exactly why that file exists.
+    if (window.location.pathname + window.location.search !== canonical) {
+      window.history.replaceState(null, '', canonical);
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -1017,6 +1026,26 @@ export function App() {
    * RecordRun connects on mount, so this costs one reconnect, not a menu trip.
    */
   const restartRun = (): void => {
+    /**
+     * ⚠️ TELL THE SERVER THE OLD RUN IS OVER, AND FORGET IT LOCALLY — both halves used to
+     * be missing, and both became visible the moment the single-game lock started actually
+     * holding (it was released at match start by `startLoop`'s old `stop()` call, so for
+     * months it bound nothing).
+     *
+     * The server half: the new run is a join on a BRAND-NEW `rec-` code, so the old room's
+     * lock is still registered against this account until its own socket close is processed.
+     * `abandon` is the same frame the you-have-a-game-in-progress card sends and it needs no
+     * reply. It is sent on the LIVE session's socket before it is disposed, so it cannot race
+     * the new connection. The server also yields a solo record hold at the door now, so this
+     * is belt and braces rather than the only defence — but it is the half that keeps the old
+     * room from sitting on a lock it no longer has any use for.
+     *
+     * The local half: `activeGame` still named the run we are walking away from, so Home went
+     * on offering to rejoin a match that no longer exists.
+     */
+    session?.abandonSlot?.();
+    clearActiveGame();
+    setActiveGame(null);
     session?.dispose();
     setSession(null);
     setSessionKind(null);
@@ -1486,6 +1515,8 @@ export function App() {
 
   const configureSection: ConfigureSection = isConfigureSection(route.sub) ? route.sub : 'robot';
   const recordsTab: RecordsTab = isRecordsTab(route.sub) ? route.sub : 'leaderboard';
+  /** the two public legal screens — the blocking gates below suspend on them */
+  const legalScreen = screen === 'privacy' || screen === 'terms';
 
   return (
     <FriendsProvider
@@ -1524,9 +1555,15 @@ export function App() {
           `.ds-modal-backdrop`s at once double-darken the page and show one dialog dimmed
           behind the other. `TermsGate` renders its children only once it is satisfied, so
           the order is structural: agree to the service, then pick a name inside it. */}
+      {/* ⚠️ BOTH GATES STAND DOWN ON THE LEGAL PAGES. They are full-viewport backdrops
+          rendered BESIDE the routed screen, so on `/terms` and `/privacy` they covered
+          the documents themselves — including the new tab the gate's own links open.
+          Those two screens are public by design (see the render site below), so a
+          signed-in account that has not accepted yet can still go and read them; the
+          gate is back the moment the route is anything else. */}
       {authEnabled && (
-        <TermsGate>
-          <UsernameGate />
+        <TermsGate suspended={legalScreen}>
+          <UsernameGate suspended={legalScreen} />
         </TermsGate>
       )}
 

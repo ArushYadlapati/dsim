@@ -137,19 +137,30 @@ export function renderChecks(check: Check): void {
     badNames.map(relPosix).join(', '),
   );
 
-  // ---- `from 'three'` (or `import('three')`) appears ONLY under scene/ -------------------
-  const threeRx = /from\s+['"]three['"]|import\(\s*['"]three['"]\s*\)/;
+  // ---- `three` (bare OR a subpath) appears ONLY under scene/, anywhere in src/ -----------
+  /**
+   * ⚠️ TWO HOLES, BOTH OF WHICH LET A THREE.JS IMPORT INTO THE MAIN CHUNK UNSEEN.
+   *
+   * It matched the BARE specifier only, so `import { GLTFLoader } from 'three/examples/jsm/...'`
+   * — which is how three's loaders and controls are actually reached, and which pulls three
+   * itself in as a dependency — read as not an import of three at all. And it scanned only
+   * `src/games/biobuzz/**`, so the same line in `src/ui/`, `src/render/` or `src/lib/` was
+   * outside the scan entirely; those are ordinary MAIN-chunk files, which is the worst place for
+   * it and the only place this check exists to protect. The sim3d boundary scan three blocks
+   * below has always walked all of `src/` — this is the same statement about the other chunk.
+   */
+  const threeRx = /from\s+['"]three(\/[^'"]*)?['"]|import\(\s*['"]three(\/[^'"]*)?['"]\s*\)/;
+  const isSceneFile = (p: string): boolean => p.startsWith(SCENE_DIR + sep) || p.startsWith(SCENE_DIR + '/');
   const threeOutside: string[] = [];
   const threeInside: string[] = [];
-  for (const p of allFiles) {
-    const inScene = sceneFiles.includes(p);
+  for (const p of walkTs(join(root, 'src'))) {
     codeLines(p).forEach((line, i) => {
       if (!threeRx.test(line)) return;
-      (inScene ? threeInside : threeOutside).push(`${relPosix(p)}:${i + 1}`);
+      (isSceneFile(p) ? threeInside : threeOutside).push(`${relPosix(p)}:${i + 1}`);
     });
   }
   check('every scene/ render file that uses three.js actually imports it (else the next check is vacuous)', threeInside.length > 0);
-  check("'three' is imported ONLY by files under scene/", threeOutside.length === 0, threeOutside.join(', '));
+  check("'three' (bare or a subpath) is imported ONLY by files under scene/, across all of src/", threeOutside.length === 0, threeOutside.join(', '));
 
   // ---- nothing outside index.ts imports from ./scene, and index.ts only dynamically ------
   const sceneImportRx = /from\s+['"](\.\/)?scene(\/[^'"]*)?['"]|import\(\s*['"]\.\/scene[^'"]*['"]\s*\)/;
@@ -2328,32 +2339,48 @@ function hudBandChecks(check: Check): void {
     game.includes('hudInsetsEpoch') && /ins\.bottom = Math\.min\(Math\.max\(bottom, keep \? ins\.bottom : 0\)/.test(game),
   );
 
-  // ── 2026-09-19 OWNER REPORT: "ONCE BALLS LAND INSIDE THE HIVE, THEY TELEPORT SLIGHTLY DOWNWARDS"
-  //
-  // ⚠️ `b.z` IS THE BALL'S BOTTOM. THERE IS ONE EXCEPTION AND IT IS NOT THE HIVE.
-  // `syncElement` (sim3d/engineImpl.ts) creates every element body at `b.z + r`, so that is the
-  // sim's convention for everything it solves. `renderElements.ts`'s hive branch was drawing at a
-  // bare `b.z`, which put every hive element one radius low — 1.4 in for a POLLEN, 1.8 for a
-  // NECTAR. It was only VISIBLE on a landing shot, because a shot arrives tagged `flight` (drawn
-  // at `b.z + r`) and `derive.ts` retags it `element` the tick it settles: one frame, one radius,
-  // straight down.
-  //
-  // The FLOWER branch genuinely is a centre — `flowerStackZ` returns "Centre heights (in) of every
-  // element in the stack" — so it alone draws raw. These two checks pin which is which, because a
-  // comment in this file used to claim the hive shared the flower's convention and it did not.
+  /**
+   * ⚠️ **A PARKED ELEMENT'S `z` CONVENTION BRANCHES ON THE PHYSICS, NEVER ON `state.kind`.**
+   *
+   * 3D writes a BOTTOM for every ball it solves, parked or loose: `readback` is `b.z = t.z - r`
+   * and a placed flower element is seated `PLACE_CENTRE_Z - r`. 2D writes a CENTRE for a parked
+   * one and only for a parked one: `play.ts`'s `park()` uses `CELL_MID_Z` and `flowerStackZ`
+   * returns "Centre heights (in) of every element in the stack".
+   *
+   * Both mistakes have shipped, one per branch, and both came from keying on the KIND:
+   *  · the HIVE branch drew a bare `b.z`, one radius LOW under 3D — visible on a landing shot,
+   *    because it arrives tagged `flight` (drawn at `b.z + r`) and `derive.ts` retags it
+   *    `element` the tick it settles (owner, 2026-09-19: "once balls land inside the HIVE, they
+   *    teleport slightly downwards"). It was then fixed to lift ALWAYS, which floats the same
+   *    element 1.4 in high under 2D;
+   *  · the FLOWER branch drew raw ALWAYS, which sinks a 3D element a radius into its own stack.
+   *
+   * A 2D-physics world in the 3D VIEW is reachable — `GameView.tsx` falls back to
+   * `practicePhysics: '2d'` on a 3D chunk-load failure without changing the view — so neither
+   * branch may assume its own solve. These checks pin the branch itself; the FLOWER3D lane
+   * asserts the 3D half numerically, against a real body.
+   */
   {
     const els = readFileSync(join(root, 'src', 'games', 'biobuzz', 'scene', 'renderElements.ts'), 'utf8');
     const engine = readFileSync(join(root, 'src', 'games', 'biobuzz', 'sim3d', 'engineImpl.ts'), 'utf8');
     check(
-      'the hive branch lifts by the element RADIUS, like the body the sim creates',
-      /poseAt\(mesh, idx, b\.pos\.x \+ t \* span, b\.pos\.y, b\.z \+ r\)/.test(els),
+      'the parked-element height is read off the PHYSICS, not off `state.kind`',
+      /const bottom = biobuzzPhysics\(world\) === '3d';/.test(els),
     );
     check(
-      '...and that IS the sim convention — `syncElement` places the body at `b.z + r`',
+      'the HIVE branch lifts by the radius under 3D and draws raw under 2D',
+      /poseAt\(mesh, idx, b\.pos\.x \+ t \* span, b\.pos\.y, bottom \? b\.z \+ r : b\.z\)/.test(els),
+    );
+    check(
+      'the FLOWER branch takes the SAME branch, not the opposite one',
+      /poseAt\(mesh, idx, b\.pos\.x, b\.pos\.y, bottom \? b\.z \+ r : b\.z\)/.test(els),
+    );
+    check(
+      '...and 3D really does write a BOTTOM — `syncElement` places the body at `b.z + r`',
       /const centreZ = b\.z \+ r;/.test(engine) && /setTranslation\(b\.pos\.x, b\.pos\.y, centreZ\)/.test(engine),
     );
     check(
-      'the FLOWER branch stays raw, because `flowerStackZ` really does return centres',
+      '...while 2D really does write a CENTRE — `flowerStackZ` returns seat + r',
       /out\.push\(seat \+ r\);/.test(readFileSync(join(root, 'src', 'games', 'biobuzz', 'flower.ts'), 'utf8')),
     );
   }

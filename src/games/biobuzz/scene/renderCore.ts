@@ -142,6 +142,36 @@ export function createSceneRenderer(
   return renderer;
 }
 
+/**
+ * ⚠️ **WATCH FOR A LOST WEBGL CONTEXT. THE BROWSER WILL NOT TELL YOU ANY OTHER WAY.**
+ *
+ * A context is lost on a GPU reset, a driver update, a laptop switching graphics card, a tab
+ * backgrounded long enough on a memory-pressured phone, or another tab taking the GPU. What the
+ * page sees is NOT an exception: every GL call after it becomes a silent no-op and the canvas
+ * keeps whatever pixels it last had. So the failure looks like a FROZEN 3D VIEW that still
+ * accepts input, with a HUD updating on top of it — which reads as "the game hung", and the one
+ * thing a player cannot do about it is find the 2D view, because the field they are looking at
+ * has not moved.
+ *
+ * `preventDefault()` on the event is what makes restoration POSSIBLE at all (without it the
+ * browser never fires `webglcontextrestored`). This scene does not restore — every buffer,
+ * texture and program would have to be rebuilt — it hands the loss to the host, which takes the
+ * same route the `SceneUnsupportedError` fallback takes: the view preference goes to 2D and a
+ * line goes to the event log. That is a live game a click later instead of a dead canvas.
+ *
+ * Returns the REMOVER, for the caller's teardown list. A scene that is disposed and remounted
+ * (a view switch, a restart) would otherwise leave a listener holding a closure over a dead
+ * scene on a canvas that has been detached.
+ */
+export function watchContextLoss(canvas: HTMLCanvasElement, onLost: () => void): () => void {
+  const handler = (e: Event): void => {
+    e.preventDefault();
+    onLost();
+  };
+  canvas.addEventListener('webglcontextlost', handler);
+  return () => canvas.removeEventListener('webglcontextlost', handler);
+}
+
 /** the hemisphere + directional pair every scene here lights with, at the shared intensities.
  * The SHADOW CAMERA is the caller's: a field-sized frustum and a robot-sized one want completely
  * different extents, and sizing it to what is actually casting is the whole of that decision. */

@@ -4,7 +4,7 @@ import { randomUUID } from 'node:crypto';
 import { monitorEventLoopDelay } from 'node:perf_hooks';
 import v8 from 'node:v8';
 import { Room, type Client } from './room';
-import { decodeClientMsg, encodeMsg, BB3D_REFUSAL, DEFAULT_ROOM_CONFIG, physicsAllowed, RATED_FORMATS, SERVER_CAPS, type ClientMsg, type LiveRoom, type RoomConfig, type ServerMsg } from '../src/net/protocol';
+import { coerceCaps, decodeClientMsg, encodeMsg, BB3D_REFUSAL, DEFAULT_ROOM_CONFIG, physicsAllowed, RATED_FORMATS, SERVER_CAPS, type ClientMsg, type LiveRoom, type RoomConfig, type ServerMsg } from '../src/net/protocol';
 import { sanitizePlayer } from '../src/net/sanitize';
 import { authConfigured, emailGateRefusal, verifyAuthToken } from './auth';
 import { initPhysics } from '../src/sim/physicsEngine';
@@ -298,6 +298,42 @@ const activeElsewhere = (userId: string, code: string): boolean => {
     userRoom.delete(userId);
     return false;
   }
+  return true;
+};
+
+/**
+ * A SOLO RECORD RUN NEVER BLOCKS ITS OWN OWNER FROM STARTING ANOTHER ONE.
+ *
+ * ⚠️ THIS IS WHAT MAKES THE RESTART BUTTON WORK, and it is needed because restarting a
+ * record run is a full TEARDOWN: the client disposes its session and opens a BRAND-NEW
+ * `rec-` room (see `restartRun`), so the new run arrives as a join from an account the
+ * old room is still holding a lock for. Whether the old lock has been let go by then is
+ * a race the client cannot win — its close frame and the new socket's handshake are two
+ * different connections — and the old room can legitimately still be holding on anyway,
+ * because a run decided at the buzzer is kept alive (`finishing`) until the field settles
+ * and the score is written. Either way the player pressed restart and got "You already
+ * have a game in progress", about a run they had just ended.
+ *
+ * The lock exists to stop one account occupying two seats or two RATED games at once. A
+ * solo record run has no opponent, no alliance and no rating: the only person it can ever
+ * be in the way of is the person who started it. So it yields, and it is the ONLY kind of
+ * room that does — versus, duo and ranked all still refuse, because there the lock is
+ * protecting somebody else.
+ *
+ * Only the LOCK is released (`releaseSeatLock`), never the room: a run already decided
+ * must still finish settling and write its score, with nobody watching.
+ */
+const releaseSoloRecordHold = (userId: string): boolean => {
+  const held = userRoom.get(userId);
+  if (!held) return false;
+  const hr = rooms.get(held);
+  if (!hr) {
+    userRoom.delete(userId); // stale entry for a room that is already gone
+    return true;
+  }
+  if (!hr.soloRecord) return false;
+  hr.releaseSeatLock(userId);
+  userRoom.delete(userId); // belt and braces: the room may never have registered it
   return true;
 };
 
@@ -2326,7 +2362,7 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
      * this attempt may have created the room, and a room nobody ever joined would otherwise
      * be counted against `MAX_ROOMS` for the life of the process.
      */
-    if (!physicsAllowed(r.physics, Array.isArray(msg.caps) ? msg.caps : [])) {
+    if (!physicsAllowed(r.physics, coerceCaps(msg.caps))) {
       send({ t: 'error', message: BB3D_REFUSAL });
       abandon();
       return;
@@ -2446,6 +2482,8 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
     if (user && activeElsewhere(user.userId, code)) {
       if (r.stagedFor(user.userId)) {
         userRoom.delete(user.userId);
+      } else if (releaseSoloRecordHold(user.userId)) {
+        /* a solo run of their own was in the way; it is not any more — see below */
       } else {
         send({ t: 'error', message: 'You already have a game in progress - rejoin or leave it first.' });
         abandon();
@@ -2470,7 +2508,7 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
       disconnectAt: 0,
       // protocol capabilities this client build understands (mixed-version safe:
       // the room only opens the strategy window if EVERY member supports it)
-      caps: Array.isArray(msg.caps) ? msg.caps : [],
+      caps: coerceCaps(msg.caps),
       // release channel: alpha rooms are segregated + never persisted (in-dev)
       channel: typeof msg.channel === 'string' ? msg.channel : undefined,
     };
@@ -2577,7 +2615,7 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
         // still advances the world between snapshots off the authoritative commands (see
         // `stepServer`'s spectator arm), so a build that cannot run this room's physics cannot
         // watch it either — and the honest answer is the same sentence a driver gets.
-        if (!physicsAllowed(r.physics, Array.isArray(msg.caps) ? msg.caps : [])) {
+        if (!physicsAllowed(r.physics, coerceCaps(msg.caps))) {
           send({ t: 'error', message: BB3D_REFUSAL });
           return;
         }
@@ -2589,7 +2627,7 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
           player: { ...sanitizePlayer(undefined, r.config.game), clientId: id },
           connected: true,
           disconnectAt: 0,
-          caps: Array.isArray(msg.caps) ? msg.caps : [],
+          caps: coerceCaps(msg.caps),
         };
         room = r; // route this socket's close → r.detach (drops the spectator)
         // HIDDEN OBSERVER: an admin may watch without moving the spectator count.
@@ -2615,7 +2653,7 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
         // passed the gate on `join`, so this refuses almost nothing — but it refuses it with
         // the sentence that explains it, instead of a bare `rejoined: ok=false` that reads as
         // "your slot expired".
-        if (r && !physicsAllowed(r.physics, Array.isArray(msg.caps) ? msg.caps : [])) {
+        if (r && !physicsAllowed(r.physics, coerceCaps(msg.caps))) {
           send({ t: 'error', message: BB3D_REFUSAL });
           return;
         }
@@ -2716,15 +2754,18 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
          * paired into. Refusing at the door instead would cancel a staged pairing and charge
          * three other people for a dodge that was a version skew.
          *
-         * BIOBUZZ is alpha-only, so no old client legitimately queues for it: the message is
-         * for the one case that can happen, a stale tab left open across a deploy.
+         * ⚠️ BIOBUZZ IS PUBLIC ON THE STABLE CHANNEL, so this refusal is not a corner case:
+         * every production client built before the `'bb3d'` cap existed hits it, for every
+         * BIOBUZZ queue, until it reloads. That makes DEPLOY ORDER part of the feature — ship
+         * and verify the CLIENT (Vercel) before the server (Fly) — and a tab held open across
+         * the deploy stays refused until the version gate reloads it.
          *
          * Asked of the GAME MODULE (`serverPhysics`) rather than by naming BIOBUZZ, so a third
          * game that gains a 3D solve is gated the day it declares one.
          */
         if (
           serverPhysics(simModuleFor(coerceGameId(msg.game))) === '3d' &&
-          !physicsAllowed('3d', Array.isArray(msg.caps) ? msg.caps : [])
+          !physicsAllowed('3d', coerceCaps(msg.caps))
         ) {
           send({ t: 'error', message: BB3D_REFUSAL });
           return;
@@ -2832,7 +2873,7 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
             homeRegion: msg.homeRegion || edgeRegion || REGION,
             accessMs: msg.accessMs ?? 0,
             noWiden: msg.noWiden ?? false,
-            caps: Array.isArray(msg.caps) ? msg.caps : [],
+            caps: coerceCaps(msg.caps),
             // segregate the queue by GAME (a CR queuer never pairs into a DECODE room)
             game: coerceGameId(msg.game),
             channel: typeof msg.channel === 'string' ? msg.channel : undefined,
@@ -2863,7 +2904,7 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
               return;
             }
             const tier = tierOf(lock.score);
-            if ((Array.isArray(msg.caps) ? msg.caps : []).includes('standing')) {
+            if (coerceCaps(msg.caps).includes('standing')) {
               // a lock is a state with a CLOCK, so the client is sent the deadline and
               // counts it down itself rather than being handed a sentence that is wrong
               // thirty seconds later

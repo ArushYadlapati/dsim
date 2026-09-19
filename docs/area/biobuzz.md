@@ -20,11 +20,19 @@ today is a PLACEHOLDER: an empty 12 ft square with four walls and drivable robot
 `scored: false`, `startLegality: false`, two start anchors. `src/games/biobuzz/{sim,index,
 state}.ts` say so at the top and the P0-shell chat replaces all three.
 
-**It is ALPHA-ONLY** (`channels: ['alpha']` in `SEASONS`). The repo is public and the
-season is private until further notice: on a stable build it is absent from the home
-picker and the queue counts, invisible to the SEO surfaces, and its URL prefix falls back
-to the saved game. Nothing about it may be pushed to a public branch or deployed to the
-stable site.
+**It is PUBLIC on every channel, since 2026-09-13** (the promotion to production). Its
+entry in `SEASONS` (`src/seasons.ts`) carries NO `channels` key, so `seasonVisible` returns
+true everywhere: it is in the home picker and the queue counts, visible to the SEO surfaces,
+and `/biobuzz/...` resolves on a stable build. It ships to `main` and it deploys to the
+stable site like any other season.
+
+This paragraph used to say the opposite — alpha-only, `channels: ['alpha']`, "nothing about
+it may be pushed to a public branch" — which was true while the game was built before
+kickoff and has been false since the promotion. The `channels` SWITCH is still there and
+still works; it is simply not set for this season, and it is what a future unannounced
+season would use. What remains alpha-only is the DEV ROUTES (the scene gallery,
+`GameModule.devRoutes`), gated by `devRoutesEnabled()` in `App.tsx`'s `devRouteFor` — a
+different gate on a different thing.
 
 **Read `docs/biobuzz-contract.md` FIRST** — it is the lane contract: who owns which file
 (Lane A the field, Lane B the robot, the integration chat everything outside
@@ -97,19 +105,25 @@ newest-first — it is never ranked, which is what keeps the two eras from meeti
   what the last readback wrote — no thresholds), READBACK rounded to 1e-4 after. Robots are
   cuboids `length × width × heightIn` (yaw-only, z free; `RobotState.z` = chassis BOTTOM height,
   0 while driving); elements are spheres with CCD when fast; `held`/`stock` have no body; an
-  `element` in a flower FALLS and seats where the real bores let it (`flowerTube.ts`, Day 2 —
-  it is not parked at a computed height and it is not a fixed body). The hive tray is a DYNAMIC
-  see-saw on a revolute joint (`BB3_HIVE_DYNAMIC = true`) and the spill is PHYSICAL. `derive.ts`
-  fills `hives[a].contents` / `flowers[i].stack` and the `element` tags from body positions every
-  tick, so `score.ts`, `hud.ts` and the 2D renderers run unchanged.
-- ⚠️ **THE HIVE TIPS ON `BB_TIP_POLLEN`, NOT ON A TORQUE** (owner report 2026-09-19: "it says 0
-  more to tip and it does not tip"). The dynamic tray used to release when the load out-torqued
-  the detent, and no calibration can make that agree with a COUNT: measured at the shipped hold,
+  `element` in a flower FALLS and seats where the real bores let it (`flowerTube.ts`, Day 2) —
+  it is not parked at a computed height and it is not a fixed body. The hive tray is a JOINTED
+  DYNAMIC body — a real see-saw on a revolute joint, held at each stop by a DETENT
+  (`applyHiveTilt` / `hiveDetentHold`) rather than driven to an angle; `hiveTiltAngle`
+  (`sim3d/tilt.ts`) reads `hive.angle` back off the body. `BB3_HIVE_DYNAMIC` is **`true`**
+  (`config.ts`) — the Day 1 line here said `false` "until Day 2 calibrates the see-saw", and the
+  KINEMATIC path it described survives as the fallback that constant switches to, which is also
+  the shape the PREDICTORS build (`buildKinematicTray`). The shared timer (`hiveTimerStep`, split
+  out of `hiveStep` with no 2D change) still runs the 2D pipeline. The spill is PHYSICAL.
+  `derive.ts` fills `hives[a].contents` / `flowers[i].stack` and the `element` tags from body
+  positions every tick, so `score.ts`, `hud.ts` and the 2D renderers run unchanged.
+- ⚠️ **THE HIVE TIPS ON `BB_TIP_POLLEN`, NOT ON THE CONTENTS' WEIGHT** (owner report 2026-09-19:
+  "it says 0 more to tip and it does not tip"). The detent used to be a breakaway the load had to
+  out-torque, and no calibration can make that agree with a COUNT: measured at the shipped hold,
   8 POLLEN weigh 4560 crammed against the back wall and 8051 in a two-wide line, 7 POLLEN weigh
-  4146 to 6769 — the ranges OVERLAP, so no detent value separates the rows, and the guide's §12.3
+  4146 to 6769 — the ranges OVERLAP, so no detent value separates the rows, and field guide §12.3
   was being violated in both directions at once. The published table is the rule, `hud.ts` and
-  `HudSlots.tsx` promise it in as many words, so `hiveDetentHold` is a PIN THAT THE TABLE LIFTS.
-  Everything after the release is still the free see-saw. `hiveContentsTorque` /
+  `HudSlots.tsx` promise it to the driver in as many words, so `hiveDetentHold` is a PIN THE
+  TABLE LIFTS. Everything after the release is still the free see-saw. `hiveContentsTorque` /
   `hiveRestoringTorque` remain exported: they are how the HIVE3D lane and `hive-calibrate.ts`
   MEASURE the tray, not what triggers it.
 - ⚠️ **`BB3_HIVE_DYNAMIC = false` IS NOT THE ONE-WORD REVERT IT IS DOCUMENTED AS.** `bb.spill` —

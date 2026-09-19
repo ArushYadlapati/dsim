@@ -19,7 +19,7 @@
     "dev": "vite",
     "build": "tsc && vite build",
     "preview": "vite preview",
-    "test": "node scripts/smokeshard.mjs && tsx scripts/smoke-biobuzz/index.ts",
+    "test": "node scripts/test-all.mjs",
     "test:serial": "tsx scripts/smoke.ts && tsx scripts/smoke-biobuzz/index.ts",
     "test:calibrate": "node scripts/smokeshard.mjs --calibrate",
     "test:bb": "tsx scripts/smoke-biobuzz/index.ts",

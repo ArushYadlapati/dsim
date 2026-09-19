@@ -170,6 +170,45 @@ works the same way.
 
 ---
 
+## Deploy ORDER when the wire protocol moved — client first, then server
+
+Normally the two deploys are independent and the order does not matter: the server accepts
+every client build it has ever shipped, and a client that is one server behind still plays.
+**The 2026-09-19 publish of `alpha` to `main` is not that case**, and the same shape will
+recur whenever a server starts REFUSING clients that lack a capability.
+
+The new server runs every BIOBUZZ room in 3D physics (`serverPhysics`, owner ruling
+2026-09-18) and refuses a client that does not advertise `bb3d` in its `caps`
+(`BB3D_REFUSAL`, `server/index.ts`). Every production client built before this publish
+lacks it. So:
+
+- **Fly before Vercel** locks every production BIOBUZZ player out of every BIOBUZZ room
+  until Vercel catches up and their tab reloads. DECODE and Chain Reaction are unaffected.
+- **Vercel before Fly** (the right order) leaves a window in which a NEW client plays a
+  BIOBUZZ solo record on the OLD server. That run is 2D, is accepted and shown a rank, and
+  becomes board-invisible the moment the new server boots, because every pre-existing
+  record row is stamped `physics = '2d'` by migration `0039` and BIOBUZZ boards are
+  filtered to `'3d'` by `boardPhysics` (`server/db/repo.ts`). The window is as long as you
+  make it: minutes if the Fly deploy follows the Vercel one directly.
+
+The order, then:
+
+1. Merge to `main`. Vercel builds it automatically; wait for the deployment to be READY
+   and load `playdsim.com` once to confirm the new client is what it serves.
+2. From a **main** worktree (never the alpha tree — `fly-deploy.sh` builds whatever tree it
+   runs in): `./scripts/fly-deploy.sh`, or the announce-first `announce-deploy.sh` if
+   `/api/presence` shows anyone online.
+3. Watch `/health` and the Fly logs for the first BIOBUZZ room to open in 3D.
+
+⚠️ **Every BIOBUZZ record and personal best set before this publish disappears from the
+boards** — not deleted, filtered: they are `'2d'` rows on a board that now shows `'3d'`.
+There is no 2D BIOBUZZ board any more. That is the owner's ruling, not a bug; if it is
+not wanted, `boardPhysics` is the one predicate to change, before the deploy.
+
+If a zero-window deploy is ever needed, the alternative is an env flag in front of
+`serverPhysics`/`boardPhysics`/`stagedPhysics` (deploy dark, flip after Vercel). It was
+NOT built for this publish; the reversed order above is the whole mitigation.
+
 ## 1. Game server → Fly.io (reference)
 
 The server is a single stateless process (all match state lives in memory). Files:

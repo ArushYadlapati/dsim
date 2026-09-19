@@ -18,8 +18,13 @@ function suggest(seed: string | undefined): string {
  * depend on everyone having one. Non-dismissible: no backdrop-close, no ✕. Renders
  * nothing when auth/server is off, signed out, or the account already has a
  * username. Only mounted when auth is enabled, so `authClient` is non-null.
+ *
+ * ⚠️ `suspended` is the legal pages, for `TermsGate`'s reason — `/terms` and `/privacy`
+ * are public by design, and a blocking backdrop over them hides the documents the app
+ * is asking people to read. The profile check still runs, so coming back off those
+ * pages does not restart from "unknown".
  */
-export function UsernameGate() {
+export function UsernameGate({ suspended = false }: { suspended?: boolean }) {
   const configured = gameServerConfigured();
   const session = authClient!.useSession();
   const user = session.data?.user;
@@ -51,7 +56,7 @@ export function UsernameGate() {
     };
   }, [configured, user]);
 
-  if (!configured || !user || needs !== true) return null;
+  if (suspended || !configured || !user || needs !== true) return null;
 
   const submit = (e: FormEvent): void => {
     e.preventDefault();

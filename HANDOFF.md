@@ -1,12 +1,22 @@
 # HANDOFF — 2026-09-19 (alpha: THE OWNER'S TWELVE-ITEM PASS — the hive tip, scoring instants, flower
 and tile contact, the shooter/swerve/box-tube rebuild, intake cadence, one alliance blue)
 
-**READ FIRST.** Five commits, every gate green: `npm test` (**2531** BIOBUZZ + 1861 shared) ·
-`build` · `server:check` · `docaudit` · `uiaudit` · `contrast` (221) · `dbtest` · `test:mm` (197) ·
-`bundleaudit` (scene re-measured 199.48 → 201.44) · `shiftaudit` (576 state changes, 0 shifts).
+**READ FIRST.** Eight commits plus the merge of `origin/alpha` they sit on. Twelve items, all
+from playing the running 3D game. Nine were diagnosed read-only first and then implemented under
+one-owner-per-file, which is what kept nine concurrent agents off each other.
 
-Twelve items, all from playing the running 3D game. Nine were diagnosed read-only first and then
-implemented under one-owner-per-file, which is what kept nine concurrent agents off each other.
+⚠️ **THIS LANDED ON TOP OF THE PRE-PUBLISH MERGE BELOW, AND THAT SECTION'S PUBLISH STILL HOLDS.**
+`alpha` still contains `main`, so `git checkout main && git merge --ff-only alpha` is still a
+fast-forward, and the deploy ORDER that section gives — Vercel builds `main` and serves it FIRST,
+`./scripts/fly-deploy.sh` from a `main` worktree SECOND — is unchanged and still load-bearing.
+Nothing here was deployed.
+
+Four files conflicted with what had landed on alpha meanwhile. Three were mine to keep; the fourth
+was not: **`scene/renderElements.ts` took the upstream resolution whole.** That lane found the same
+bug from the other end and its answer is a superset of mine — one `bottom = biobuzzPhysics(world)
+=== '3d'` deciding whether `b.z` is an underside, applied to the FLOWER branch as well as the hive
+one, and it also catches that my earlier "lift by `r` unconditionally" fix had leaked into the 2D
+pipeline it was never about.
 
 ## 1 · The HIVE tips on the table it promises
 
@@ -123,6 +133,189 @@ named only blue.
 - A vz −200 shot still peaks at 0.154 in of penetration into the tray floor on the landing tick at
   30 Hz. Settled penetration is what item 3 was about and that is fixed; the transient is not, and
   no check pins it.
+# HANDOFF — 2026-09-19 (alpha: PRE-PUBLISH AUDIT — main merged INTO alpha, so alpha → main is a fast-forward)
+
+`alpha` was ready to publish at this commit. `origin/main` has been merged into it here, with the
+five conflicts resolved (below), so the publish is a **fast-forward**, no hand-merge:
+
+```
+git checkout main
+git merge --ff-only alpha
+git push origin main
+```
+
+Then deploy **in this order and no other**: let Vercel build `main` and confirm the site serves
+it, THEN `./scripts/fly-deploy.sh` from a `main` worktree. `docs/deploy.md` → "Deploy ORDER when
+the wire protocol moved" says why: the new server refuses every pre-`bb3d` client from every
+BIOBUZZ room, and the reverse order locks production BIOBUZZ players out until Vercel catches up.
+
+Gates on the tree this merge commit carries: `build` · `server:check` · `docaudit` · `uiaudit` ·
+`contrast` (221) · `test:mm` (197) · `dbtest` · `bundleaudit` (re-measured: `main` DOWN 6 KB gz, a
+new `gallery` route) all green; `npm test` is **1878** shared, all green, and **2380** BIOBUZZ with
+**three wall-clock `step3d` perf checks red on the audit machine** — the same three are red on the
+PRE-fix tree there (A/B, alternated), and green in the 2026-09-19 render-pass HANDOFF below on the
+owner's. Every other BIOBUZZ check passes. `npm test` now runs BOTH suites unconditionally
+(`scripts/test-all.mjs`). `shiftaudit` was not run this round.
+
+## What the audit was
+
+Eight read-only audits of the alpha-vs-main delta (202 commits, 245 files) by lane — main-only
+drift, server/net, security, sim core + versioning, BIOBUZZ 3D, UI, docs/hygiene, tests — then
+the findings triaged and fixed in four disjoint batches. Findings the owner has to rule on are
+listed at the end; nothing there was decided silently.
+
+## Fixed — things main had and alpha lacked (cherry-picked: `63bc806` `882fda6` `eaf5a71`)
+
+- `applyBallDelta` returns COPIES — a spectator's stationary elements (flower stacks, hive
+  cells) were never corrected again. `f52b175`.
+- A reconnecting spectator re-spectates instead of claiming a driver slot. `747dae0`, hand-merged
+  so the rejoin frame keeps alpha's `caps: CLIENT_CAPS` (a `'3d'` room re-gates a reclaim).
+- Restarting a solo record run works — `releaseSeatLock` / `abandonSlot` /
+  `releaseSoloRecordHold`. `aca358e`; this was the regression main's 2026-09-17b section is about,
+  and alpha never had the fix.
+
+Everything else on main was already on alpha by content. Main's `ff5044c` (revert of the
+HIVE-feel batch) is the ONE intentional divergence and the merge resolved it to alpha — see the
+versioning entry below for why that is now safe.
+
+## Fixed — replay fidelity
+
+- **`SIM_VERSION` 2 → 3.** Main and alpha both stamped 2 over DIFFERENT `step()` behaviour for a
+  BIOBUZZ world (six-draw spill, `hiveDeflect`, load-driven swing rate, CAD geometry, the 2D
+  intake rewrite, `bbSnapSize`). The ledger in `src/config.ts` now lists all of it under 3, and
+  says plainly that replays recorded 2026-09-13→17 are mis-stamped 2 and will play as `behaviour`
+  DRIFT on a v3 build, which is the correct label. A bump is a drift, not a refusal.
+- Main's spill draw-count tripwire is ported to the FIELD lane, retargeted to **6**. The next
+  change to that number comes with another bump, in the same commit.
+
+## Fixed — server
+
+- `verifiedFromSession` (the email-verified fallback) is deduplicated per token and has a 2 s
+  timeout; it was an unbounded, un-timed HTTP call on the join hot path, made even when the gate
+  it feeds is off.
+- A ranked / matchmade room cannot start before the 3D wasm has resolved
+  (`physicsReadyForRoom`): custom rooms waited, `startRankedImmediate` / `beginRanked` did not.
+- `Room.stop()` frees the match's Rapier 3D world (`disposePhysics3dFor`). The engine map is a
+  `WeakMap`, so dropping the World dropped the only handle without `free()`, and wasm linear
+  memory never shrinks — a few hundred 3D matches would have held every one.
+- `addBot` mints unique seat ids (`bot-<seq>-<code>`); remove-then-add reused an id.
+- `caps` off the wire is coerced (`coerceCaps`: strings only, ≤16) at all eight sites.
+- `lanRateOk` / `exportRateOk` sweep unconditionally; `POST /api/user/settings` body capped at
+  64 KB (was 512 KB, unlimited calls); `accept-terms` short-circuits when the version is already
+  accepted.
+
+## Fixed — client / UI
+
+- `TermsGate` and `UsernameGate` STAND DOWN on `/terms` and `/privacy` (`suspended`). They are
+  full-viewport backdrops beside the routed screen, so the gate's own "read the terms" link opened
+  a tab with the same gate over the document. The acceptance fetch still runs.
+- Results: `solo` is "no opposing roster", not "no session" — a BIOBUZZ practice against bots
+  showed a one-sided screen for a match that had an opponent and a winner. The eyebrow still says
+  SOLO PRACTICE for any local run. The record run's net score is animated once (it was tweened
+  twice, and the inner tween restarted every frame).
+- `AuthPanel` is a real dialog (`role="dialog"`, labelled, Escape closes); auth errors are
+  described, not dumped (`describeAuthError`). The prediction picker has group semantics and a
+  focus ring; Results overlay buttons have a visible focus ring on the field surface.
+- The analytics beacon strips the QUERY STRING, and URL canonicalization compares
+  `pathname + search` — a reset / verification `?token=` on an already-canonical path was never
+  cleaned and left the device inside a pageview.
+- `safeHref` no longer admits protocol-relative (`//evil`) links in admin markdown.
+- `vercel.json` sends `X-Frame-Options: DENY`, `frame-ancestors 'none'`, `Referrer-Policy`,
+  `nosniff` — the one-click consent controls were frameable.
+
+## Fixed — BIOBUZZ 3D
+
+- `renderElements.ts` branches the parked-element z convention on the PHYSICS
+  (`biobuzzPhysics(world)`), never on `state.kind`: 3D writes a bottom for every ball, 2D writes a
+  centre for a parked one. Both mistakes had shipped, one per branch (hive floating 1.4 in in 2D,
+  flower sunk a radius in 3D). Pinned numerically in the FLOWER3D lane against the real body.
+- The FULL predictor stands its robots at `bbHeightNow` (stowed before the match, deployed after)
+  and re-fits across the R102 deploy edge, reading back against the height it actually built. It
+  used `robotHeightIn` — deployed whatever the phase. **Its chassis stays ONE `robotExtents`
+  cuboid, deliberately**: giving it the authority's open-mouth compound was built, measured
+  (forty-tick reconcile 3–6 ms → 9–11 ms on the local robot alone, 16–17 ms on all four, A/B
+  alternated against the tree without it) and taken back out, because Auto reads that probe
+  against `PREDICT_FULL_BUDGET_MS = 8` and would have picked LIGHT everywhere. Written down above
+  `makeRobotBody` in `predict.ts`; owner decision 11.
+- `GameController.adoptWorld` frees the outgoing world's 3D solve on every swap (five sites) and
+  on `dispose`; `bufferSnapshot` reads the physics off `snap.world`, not the previous world (the
+  first snapshot of a 3D room dropped its ball poses); both `initPhysics3d()` continuations check
+  `disposed`.
+- WebGL context loss is watched (`watchContextLoss`): the match scene falls back to the 2D view
+  with an event-log line, the builder preview tears itself down. Without it a lost context is a
+  frozen field that still takes input.
+- `renderScene.dispose()` frees robots through `BbRobots.dispose()` BEFORE the blanket walk, which
+  was freeing `SHARED_GEO`/`SHARED_MAT` out from under the builder preview.
+- The scene gallery is `React.lazy` (`GalleryRoute.tsx`) — a gated dev route was still a static
+  import, 6 KB gz in `main` for every player of every game.
+- The RENDER lane's `three` boundary check now catches subpath imports and scans all of `src/`.
+
+## Fixed — docs and hygiene
+
+- `CLAUDE.md`: BIOBUZZ is a full scored ranked game, not alpha-only; the repo map gains
+  `src/tutorial`, `src/lib`, `src/lan`, `src/games/biobuzz`, `api/`, `electron/`; counts current.
+  26,896 of the 27,000-byte docaudit budget — the next addition must cut something first.
+- `README.md` rewritten: DSIM, three games, playdsim.com. It described a DECODE-only 2D sim.
+- `src/seasons.ts` header said "DohunSim, only DECODE is playable". Fixed.
+- `docs/area/netcode.md` governs `api/**` (the `api/download.ts` Vercel function had no owner and
+  was invisible to `docaudit`). `docs/multiplayer.md` carries a HISTORICAL banner.
+- `docs/area/biobuzz.md`: the alpha-only paragraph and the "kinematic tray, `BB3_HIVE_DYNAMIC =
+  false`" sentence rewritten to the shipped config.
+- `docs/deploy.md`: the deploy-order section above.
+
+## The merge of main into alpha — how the five conflicts went
+
+| file | resolution |
+|---|---|
+| `HANDOFF.md` | alpha's sections on top; main's 2026-09-17b and 2026-09-17 sections kept verbatim in their date order (the 17b one is the only record of the record-restart cause AND of the still-open "account in a live versus is admitted to a new solo record room" gap) |
+| `src/games/biobuzz/hive.ts`, `state.ts` | **alpha** — the physics-agnostic `hiveTimerStep` the 3D pipeline depends on; `angle`/`angVel` are the dynamic-tray readback |
+| `src/net/serverSession.ts` | **alpha** — it already carries main's `if (!spectator)` guard (cherry-pick `882fda6`) plus `caps` on the rejoin frame |
+| `scripts/smoke-biobuzz/field.ts` | **alpha** — its 12 hive-feel checks plus main's draw-count tripwire at 6 |
+| `src/games/biobuzz/play.ts` | NOT flagged by git, auto-merged to main's REVERTED text; restored to alpha's (`hiveDeflect` in the flight loop). A merge algorithm was making a gameplay decision |
+
+`SIM_VERSION = 3` is what makes "take alpha" honest here: main's replays at 2 play as drift on
+3, labelled.
+
+## Owner decisions — nothing below was decided for you
+
+1. **Deploy order** is the mitigation for the `bb3d` lockout; the zero-window alternative is an
+   env flag in front of `serverPhysics`/`boardPhysics`/`stagedPhysics`. Not built. Say so if wanted.
+2. **Every production BIOBUZZ record row is `'2d'` and vanishes from the boards** the moment the
+   new server boots (`boardPhysics`). Filtered, not deleted. Your ruling of 2026-09-18 implies it;
+   confirm you want it, or change the one predicate before deploying.
+3. `jwtVerify` (`server/auth.ts`) is called with no `issuer` / `audience` / `algorithms`. Pinning
+   them needs a live Neon Auth token to read the claims off; not done blind.
+4. `ADMIN_SECRET` is accepted as a URL query parameter (pre-existing). Header-only would be a
+   one-line change plus your own bookmarks.
+5. `cm.pdf` (9.2 MB, the competition manual) is tracked with no licence; the FIRST courtesy note
+   for the field CAD is unsent. Both are yours.
+6. `LEGAL_UPDATED` (`src/legalText.ts`) drives `LEGAL_VERSION`. The privacy text changed (CCPA
+   paragraph, Your-data panel); if that is a material change, move the date so everyone
+   re-accepts. If not, leave it.
+7. `flowerScoreZ` ships unused — 3D flower scoring runs on the 2D stacking model. Ruling needed.
+8. `package.json` is `0.1.3`; this publish is the largest since it was set.
+9. `migrate()` (`server/index.ts`) is not awaited before `listen`, and a migration failure is
+   non-fatal while the new code hard-depends on 0037–0040's columns. Worth an `await` and a
+   fatal exit — but that reverses a deliberate "a DB failure must not take the game server down".
+10. Neon Auth `trustedOrigins` — confirm no wildcard on the production project (dashboard only).
+11. **The FULL predictor's mouth is solid where the authority's is open.** A predicted element
+    can bounce off a mouth the real one rolls into, and the reconcile snaps it. Fixing it costs
+    2× the reconcile (numbers above). Options: accept as is; raise `PREDICT_FULL_BUDGET_MS` and
+    accept Full on fewer machines; or make the compound cheaper (fewer boxes: arms only, no
+    lintel, for the predictor). Not decided here.
+12. Follow-ups, not blockers: a golden `worldHash` table so cross-build sim drift fails a test;
+    `.gitattributes` (`* text=auto eol=lf`) for the CRLF checkout; dead `spike3d` / `scene-preview`
+    scripts; no 404 route.
+
+## Gotchas found on the way
+
+- `rg` is not on the Bash PATH under the rtk hook; `git grep` is.
+- Three BIOBUZZ perf checks (`PREDICT_FULL_BUDGET_MS`, `step3d p95`, room-tick ratio) are
+  wall-clock and fail under CPU contention from parallel agents. They pass on an idle machine;
+  do not "fix" them by widening the budget.
+- The CLAUDE.md byte ratchet is at 99.6%.
+
+---
 
 # HANDOFF — 2026-09-19 (alpha: THREE ABANDONED LANES FINISHED, plus the owner's render pass)
 
@@ -1364,6 +1557,89 @@ physics is a permanent light practice option, never deleted**.
   solved": the 2D readers only read the tag; do not port the 2D assumption into `sim3d/`.
 
 ---
+
+# HANDOFF — 2026-09-17b (main: the record-restart regression, fixed and deployed)
+
+**READ FIRST.** The alpha merge (below) shipped a regression: **restarting a record run was
+refused** with "You already have a game in progress - rejoin or leave it first". Fixed,
+deployed, `/health` ok, one image across all 8 machines.
+
+**The cause is worth knowing, because it was latent for months.** `startLoop` used to open
+with `stop()`, which releases every single-game lock `startMatch` had just taken — so the
+one-game-per-user guard bound NOTHING. `0857745` split `stopLoop()` out and made the guard
+real, and the restart path had always quietly depended on it being inert: restarting is a
+full teardown (dispose the session, join a BRAND-NEW `rec-` room), so the new run arrives
+while the old room still holds the account's lock.
+
+**⚠️ IT ONLY APPEARS ON AN AUTHENTICATED JOIN** (`if (user && activeElsewhere(...))`), which
+is why nothing caught it. Every ad-hoc socket test run against it was anonymous — the join
+field is `authToken`, not `token`, and a wrong field name reads as a signed-out player and
+passes vacuously. If you are testing a lock, assert the lock was TAKEN first.
+
+**The fix**: a solo record run yields at the door and is the only room kind that does — no
+opponent, no alliance, no rating, so the only person it can be in the way of is its owner.
+Versus, duo and ranked still refuse. Only the LOCK is released (`releaseSeatLock`), never the
+room, because a run decided at the buzzer is kept alive by `finishing` until the field settles
+and its score is written. Client half: `restartRun` sends `abandon` on the live socket before
+disposing, and clears `activeGame` (which still named the abandoned run, so Home went on
+offering to rejoin a match that no longer existed). 8 checks in `npm test`.
+
+## Still open
+
+- **A REJOIN COMPLAINT I COULD NOT REPRODUCE** ("can't move, can't see anyone else move").
+  Driven end to end against the real server — 2-player versus, one player dropped with a 1006,
+  rejoined, both drove: the rejoined player moved exactly as far as the one who never dropped,
+  both saw the same positions, snapshots kept flowing. `reattach` is fine on this evidence.
+  Needs specifics before it can be chased: which mode (ranked / custom / record duo), and which
+  "rejoin" — the Home card, a page refresh, or a network drop that recovered by itself.
+- **A PRE-EXISTING GAP, found while testing and NOT fixed**: an account in a LIVE VERSUS match
+  is admitted into a new solo record room. It reproduces with the fix reverted, so it predates
+  all of this — the guard simply does not fire on that path. Worth a look; it is the same guard
+  the record restart was tripping over, pointed the other way.
+- The season-4 drift from the merge below is unchanged and still the owner's call.
+
+# HANDOFF — 2026-09-17 (main: alpha merged whole and deployed, season HELD at 4)
+
+**Superseded by the section above.** `alpha` is merged into `main` as a single merge commit and deployed to Fly.
+The branches are level: everything that was on alpha is on main, and main's two spectator
+fixes (`applyBallDelta` COPIES, a reconnecting spectator re-spectating) survived the merge —
+their four smoke checks are asserted present in the merged tree.
+
+**⚠️ NO VERSION BUMP WAS TAKEN.** `BALANCE_VERSION` stays **4** and `SIM_VERSION` stays **2**
+(both were already equal on the two branches, so the merge moved neither). The owner declined
+the owed bump to 5 on 2026-09-17: the batch does move scores — settle-based finalize, and the
+BIOBUZZ buzzer-TIP — but bumping archives the standings for everyone on the one Fly app, and
+holding the season was the call. The consequence is on the record in `src/config.ts`: records
+set before and after this deploy share a board although the scoring moved under them. That is
+accepted, not an oversight. Do not "fix" it by bumping later without asking.
+
+## The five conflicts and how they went
+
+| file | hunks | resolution |
+|---|---|---|
+| `src/standing.ts` | 1 | **alpha's `card: 5`** — main's `20` contradicted the docstring directly above it, and the 2026-09-16 backport HANDOFF had already written down that alpha's side wins here next time |
+| `server/room.ts` | 2 | alpha's — `passCrown` on a host leaving a finished match, and `stopLoop()`, which alpha split out of `stop()` and main never had |
+| `scripts/smoke.ts` | 1 | alpha's — the HEAD side was empty; purely additive room-recycle tests |
+| `src/ui/Matchmaking.tsx` | 6 | alpha's — all six HEAD sides empty (`saveStagedMatch`/`clearStagedMatch` calls) |
+| `HANDOFF.md` | 1 | alpha's, then this section prepended |
+
+None of the five needed a judgement the repo had not already recorded.
+
+## Gates, all green on the merge commit
+
+`npm test` **ALL PASS twice** (shared + BIOBUZZ 1321) · `npm run test:mm` 186 ·
+`npm run dbtest` ALL PASS · `build` · `server:check` · `uiaudit` at/under baseline ·
+`contrast` 223.
+
+No new migrations — the admin-panel pair (0035/0036) was already on main from the backport,
+so this deploy needed no schema step.
+
+## Next
+
+- `alpha` is now behind `main` by this merge commit. Fast-forward it before doing more work
+  there, or the branches re-diverge immediately.
+- The season-4 drift above is the open question, not a task. It gets settled the next time
+  someone is willing to reset standings.
 
 # HANDOFF — 2026-09-16, later (efficiency audit: the test loop, the indexes, the render path)
 

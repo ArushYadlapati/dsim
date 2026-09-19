@@ -235,6 +235,14 @@ export const STORAGE_KEYS: readonly StorageKeyEntry[] = [
     retention: 'Until you clear your browser data.',
   },
   {
+    key: TUTORIAL_SEEN_KEY,
+    storage: 'local',
+    category: 'preference',
+    purpose:
+      'That the tutorial has been offered and finished or skipped on this device, so the first-run card is not shown again.',
+    retention: 'Until you clear your browser data.',
+  },
+  {
     key: VIEW_KEY,
     storage: 'local',
     category: 'preference',

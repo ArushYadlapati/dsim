@@ -7,7 +7,7 @@
 |----|------|--------|
 | `decode` | **DECODE presented by RTX** (FTC 2025–26) | full match, scored, ranked |
 | `chain` | **Chain Reaction** (2026 Unofficial-FTC CAD competition) | full match, scored, ranked |
-| `biobuzz` | **BIOBUZZ presented by RTX** (FTC 2026–27) | full match, scored; 2D or 3D physics + view; alpha only |
+| `biobuzz` | **BIOBUZZ presented by RTX** (FTC 2026–27) | full match, scored, ranked; 2D or 3D physics + view |
 
 Vite + React + TypeScript, Canvas 2D. The CLIENT bundle is React + **Rapier 2D**
 (`@dimforge/rapier2d-compat`, wasm) and nothing else; the rest of `dependencies`
@@ -55,8 +55,8 @@ not relocated. Editing `src/sim/penalties.ts` or `src/sim/goal.ts` means both.
 
 Also on demand, not in the routing table because they are not keyed to a path:
 `docs/ui-standard.md` (the CSS rules `npm run uiaudit` enforces) · `docs/deploy.md` ·
-`docs/capacity.md` · `docs/netcodeplan.md` · `docs/roadmap.md` (what is next, none of it
-started) · `docs/coordination-board.md` (**retired** — `.coord.retired.json` is in the repo
+`docs/capacity.md` · `docs/netcodeplan.md` · `docs/roadmap.md` (the eight roadmap items and
+their state) · `docs/coordination-board.md` (**retired** — `.coord.retired.json` is in the repo
 root, every `coord` command is a no-op, ignore it) · `docs/handoff-archive.md`.
 
 **These are links, NOT `@imports`.** A CLAUDE.md `@path` import is loaded eagerly into every
@@ -86,17 +86,16 @@ future session read it.
 ## Commands
 
 - `npm run dev` — dev server (localhost:5173)
-- `npm test` — **headless sim verification** (1861 checks in `scripts/smoke.ts` + 2098 in
+- `npm test` — **headless sim verification** (1861 checks in `scripts/smoke.ts` + 2375 in
   `scripts/smoke-biobuzz/`, BOTH games, **~39s**). Run this after ANY change to `src/sim/`,
   `src/config.ts`, or `src/games/`. It catches almost everything. **Add a check per behavior
   change.**
-  It is fast because `smoke.ts` is SHARDED ACROSS CORES by `scripts/smokeshard.mjs`, not
-  because it is small: serially it is 3m40s, and that is what it cost until 2026-09-16. It
-  parses smoke.ts with the TypeScript parser, keeps the 103-statement preamble verbatim in
-  every shard, deals its 257 top-level blocks out across 12 processes and bin-packs them
-  longest-first from a measured cost table. **smoke.ts itself is untouched — write checks
-  exactly as before.** A serial and a sharded run produce the same 1765 check names with the
-  same outcomes.
+  It is fast because `scripts/smokeshard.mjs` SHARDS smoke.ts across cores, not because it is
+  small (serially it is 3m40s, what it cost until 2026-09-16): it parses smoke.ts, keeps the
+  103-statement preamble verbatim in every shard, and bin-packs its 257 top-level blocks
+  longest-first across 12 processes from a measured cost table. **smoke.ts itself is
+  untouched — write checks exactly as before**; a serial run produces the same check names
+  and outcomes as the sharded one.
   ⚠️ **The sharding rests on one property: no state crosses a block boundary.** A block is a
   closed scope and the only top-level mutable is `failures`, which every block writes and none
   reads. The runner ASSERTS that rather than assuming it — add a top-level `let`, or a
@@ -109,7 +108,7 @@ future session read it.
     invalidate one entry rather than all of them, and a stale table only packs worse.
   - **~22s is the FLOOR** at any width: one block costs 22.4s on its own and a block cannot be
     split across processes. More shards past 12 buy nothing.
-- `npm run test:mm` — **matchmaker verification** (`scripts/mmsmoke.ts`, 186 checks, no DB or
+- `npm run test:mm` — **matchmaker verification** (`scripts/mmsmoke.ts`, 197 checks, no DB or
   sockets — injected clock + `stage`). Run after ANY change to `server/matchmaking.ts`. Kept
   out of `npm test` on purpose, same reasoning as `contrast`: a red `npm test` must keep
   meaning "physics broke".
@@ -117,41 +116,37 @@ future session read it.
 - `npm run server:check` — typecheck the server against the shared sim (`tsconfig.server.json`).
 - `npm run uiaudit` — **UI STANDARD audit** (`scripts/uiaudit.mjs`, zero deps). Enforces
   `docs/ui-standard.md`: undefined custom properties, duplicate selector blocks, `var(--x,
-  #literal)` fallbacks, inline spacing in JSX, the type scale and the 4px grid. It is a
-  **RATCHET** — every rule carries the count measured when it was written, and the audit
-  fails if a count goes UP (and tells you to lower the baseline when it goes down), so the
-  standard binds new code immediately without a big-bang refactor of the existing debt. The
-  first three rules sit at 0 and are hard errors, because both bugs they describe shipped
-  silently: `--ds-font` was used 13 times and defined nowhere (an unresolvable `var()` in a
-  `font:` shorthand voids the WHOLE declaration), and `.ds-dl` was declared twice for two
-  unrelated components so the later block quietly re-laid-out the replay export menu. Same
-  rule as `contrast`: deliberately NOT in `npm test`.
+  #literal)` fallbacks, inline spacing in JSX, the type scale and the 4px grid. A **RATCHET**:
+  every rule carries the count measured when written and fails if a count goes UP (lower the
+  baseline when it goes down), so the standard binds new code without a big-bang refactor of
+  existing debt. The first three rules sit at 0 and are hard errors, because both bugs they
+  describe shipped silently: `--ds-font` was used 13 times and defined nowhere (voids the
+  WHOLE `font:` shorthand), and `.ds-dl` was declared twice so the later block quietly
+  re-laid-out the replay export menu. Same rule as `contrast`: deliberately NOT in `npm test`.
 - `npm run docaudit` — **doc routing audit** (`scripts/docaudit.mjs`, zero deps, instant). Checks
-  that the CLAUDE.md split above is still TRUE: every `docs/area/` guide is routed from here,
-  every link resolves, every `governs:` glob still matches real files (this is what catches a
-  RENAME, which otherwise leaves a guide silently governing nothing), every source file has an
-  owning guide, and **CLAUDE.md is inside its token budget**. The budget is a RATCHET like
-  `uiaudit`'s — it only ever goes down, so this file cannot grow back to the 43k it was. Run it
-  after moving a rule, renaming a directory, or adding a top-level module. Same rule as
-  `contrast`: deliberately NOT in `npm test`.
-- `npm run contrast` — WCAG audit of the palette (`scripts/contrast.mjs`, 175 pairs, light +
+  the CLAUDE.md split above is still TRUE: every `docs/area/` guide is routed from here, every
+  link resolves, every `governs:` glob still matches real files (catches a directory RENAME,
+  which otherwise leaves a guide governing nothing), every source file has an owning guide, and
+  **CLAUDE.md is inside its token budget** — a RATCHET like `uiaudit`'s, only ever going down, so
+  this file cannot grow back to the 43k it was. Run after moving a rule, renaming a directory, or
+  adding a top-level module. Same rule as `contrast`: deliberately NOT in `npm test`.
+- `npm run contrast` — WCAG audit of the palette (`scripts/contrast.mjs`, 221 pairs, light +
   dark, no deps). Run after ANY colour/token edit. Not wired into `npm test` on purpose: a red
   `npm test` must keep meaning "physics broke".
-- `npm run dbtest` — **database + payments verification** (`scripts/dbtest.ts`).
-  Boots **PGlite** (Postgres 17 in WASM, a devDependency — there is no Postgres on a dev box),
-  runs the REAL migrations and the REAL `server/db/repo.ts` against it, and asserts the Ko-fi
-  webhook's idempotency, the claim race, the auto-renewal path, the tier policy, admin
-  grant/revoke, and account deletion's cascade. Run after ANY change to `server/db/`,
-  `server/kofi.ts`, or a migration. Same rule as `contrast`: deliberately NOT in `npm test`.
-  `server/db/pool.ts` exposes a structural `DbPool` + `setPoolForTests` so the swap is possible;
-  production still builds a real `pg.Pool`.
-  It also asserts two SCHEMA invariants against the live schema, after every migration has run,
-  as RULES rather than as a list of columns: **every foreign key has an index leading with its
-  own columns** (without one, each parent delete scans the whole child table to apply
-  `ON DELETE` — migration 0037 fixed five of these, and the rule found the fifth itself), and
-  **no index is a dead prefix of another** (it can never be chosen, and costs a write on every
-  insert). Both failures are silent by nature: nothing errors, the database just does more work
-  as the tables grow. A new migration that reintroduces either is caught here.
+- `npm run dbtest` — **database + payments verification** (`scripts/dbtest.ts`). Boots
+  **PGlite** (Postgres 17 in WASM, a devDependency — there is no Postgres on a dev box), runs
+  the REAL migrations and `server/db/repo.ts` against it, and asserts the Ko-fi webhook's
+  idempotency, the claim race, the auto-renewal path, the tier policy, admin grant/revoke, and
+  account deletion's cascade. Run after ANY change to `server/db/`, `server/kofi.ts`, or a
+  migration. Same rule as `contrast`: deliberately NOT in `npm test`. `server/db/pool.ts`
+  exposes a structural `DbPool` + `setPoolForTests` so the swap is possible; production still
+  builds a real `pg.Pool`. It also asserts two SCHEMA invariants against the live schema after
+  every migration, as RULES rather than a list of columns: **every foreign key has an index
+  leading with its own columns** (without one, each parent delete scans the whole child table
+  — migration 0037 fixed five, and the rule found the fifth itself), and **no index is a dead
+  prefix of another** (never chosen, costs a write on every insert). Both fail silently —
+  nothing errors, the database just does more work as tables grow. A reintroducing migration is
+  caught here.
 - `npm run shiftaudit` — layout-shift audit (`scripts/shiftaudit.cjs`, Electron). Needs a
   build + `npx vite preview --port 4173` in another shell. Forces `:hover`/`:active` and the
   `on`/`primary` state classes on every interactive element across 10 routes + the live HUD,
@@ -163,10 +158,9 @@ future session read it.
   `slimWorld`/`encodeBallDelta` codec, then extrapolates to a concurrency
   (`-- --ccu=2000 --solo=0.75 --util=0.65`). Run it when someone asks what N players would
   cost, before resizing a Fly VM, and **after any change that adds a per-tick `RobotState` or
-  `World` field** — a one-line field ships 30 times a second to every client in the room, and
-  EGRESS, not compute, is ~90% of this bill. It is a measurement, not a test: nothing fails,
-  and the published rates it prices against are stamped at the top of the file, so re-check
-  them before quoting a number.
+  `World` field** — a one-line field ships 30 times a second to every client, and EGRESS, not
+  compute, is ~90% of this bill. A measurement, not a test: nothing fails, and the published
+  rates it prices against are stamped at the top of the file — re-check them before quoting.
 - `npm run server` / `server:start` — the authoritative game server locally.
 - `npm run electron` / `npm run dist` — desktop shell / installers (`release/`).
   **Desktop builds MUST be built with `ELECTRON=1`** (relative asset base — see Gotchas).
@@ -206,11 +200,17 @@ src/
     sim.ts         SERVER-SAFE registry (simModuleFor/simGameOf) — no DOM imports
     decode/        thin: points at src/sim + src/render (DECODE is NOT relocated)
     chain/         Chain Reaction: config/spawn/step/play/state/beams/penalties/mounts/draw*
+    biobuzz/       BIOBUZZ: 2D + sim3d/ (Rapier3D backend) + scene/ (Three.js renderer), lazy chunks
   render/          DECODE canvas renderers + the shared camera/robot/wheel drawing
   ui/              React menus, HUD, leaderboard, lobby (read-only over world state)
   input/           keyboard/gamepad → RobotCommand (+ rebindable bindings.ts)
   net/             protocol / transport / lobbyClient / serverSession / sanitize
+  tutorial/        DOM-free tutorial runner, the GameModule.tutorial slot
+  lib/             authFlows.ts — the one wrapper over the auth SDK
+  lan/             tab-hosted LAN room; hostWorker.ts
 server/            Node + ws authoritative rooms, Neon Postgres repo, Glicko-2 ranked
+api/               Vercel serverless: download.ts (desktop-build proxy)
+electron/          desktop shell
 scripts/           smoke.ts (the real test suite), contrast.mjs, shiftaudit.cjs, fly-deploy.sh
 docs/              decode-reference.md (field sources), netcodeplan.md (roadmap), deploy.md,
                    ui-standard.md (THE UI RULES — read before touching any component)
@@ -328,9 +328,9 @@ if it names a game element (artifact, gate, particle, catalyst, beam) it belongs
 - **SEARCH WITH `rg`, NOT `grep -r` OR `find`, FROM THE REPO ROOT.** `.claude/worktrees/`
   holds full checkouts of this repo (810 MB at the last look), so a recursive `grep`/`find`
   walks four copies of `src/`, `scripts/` and `docs/` and returns the same hit four times —
-  measured, it is also slow enough to blow a two-minute tool timeout. Ripgrep honours
-  `.git/info/exclude:13`, which already excludes them, so it returns 7 hits where `grep -r`
-  returns 28. Scope the exception (`find src server scripts …`) when only `find` will do.
+  measured, it is also slow enough to blow a two-minute tool timeout. Ripgrep only honours an
+  exclusion you add yourself: add `.claude/worktrees/` to your local `.git/info/exclude` (it is
+  not tracked) or scope searches to `src server scripts docs`.
 - Windows PowerShell 5.1: no `&&` in npm-adjacent commands; use `;` or `if ($?)`.
 
 ---

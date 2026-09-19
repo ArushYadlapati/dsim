@@ -94,6 +94,7 @@ async function liveClient(): Promise<AuthFlowsClient | null> {
 export type AuthFlowFailure =
   | 'unavailable' // auth is not configured in this build
   | 'invalid-token' // expired, already spent, or not ours
+  | 'invalid-credentials' // the email/password pair was rejected — see `describeAuthError`
   | 'weak-password'
   | 'invalid-email'
   | 'rate-limited'
@@ -115,6 +116,7 @@ const MESSAGES: Record<AuthFlowFailure, string> = {
   unavailable: 'Accounts are turned off in this build.',
   'invalid-token':
     'That link has expired or has already been used. Request a new one and open it from the newest email.',
+  'invalid-credentials': 'That email and password don’t match an account. Check both and try again.',
   'weak-password': `Passwords need at least ${PASSWORD_MIN} characters.`,
   'invalid-email': 'That doesn’t look like an email address.',
   'rate-limited': 'Too many attempts. Wait a minute, then try again.',
@@ -186,6 +188,49 @@ export function thrownAsSdkError(e: unknown): SdkError | null {
   const code = typeof o.code === 'string' ? o.code : undefined;
   if (status === undefined && code === undefined) return null;
   return { status, code, message: typeof o.message === 'string' ? o.message : undefined };
+}
+
+/**
+ * THE SENTENCE FOR A THROW OFF THE SESSION SURFACE — `signIn.email`, `signUp.email`,
+ * `signIn.social`. The UI calls those on `authClient` directly (they are not one of
+ * the four flows this module wraps), but they come out of the same adapter and throw
+ * the same normalized `AuthApiError`, so they get the same treatment. `AuthPanel` was
+ * printing `err.message` raw, which is how "Failed to fetch" reached a sign-in form.
+ *
+ * ⚠️ IT IS NOT `classifySdkError`, AND THE DIFFERENCE IS ONE LINE OF ITS DOC COMMENT:
+ * there, a bare 400/401/403 means THE TOKEN was rejected, because those four routes
+ * take nothing else the server could object to. On a sign-in the caller supplies an
+ * email and a password, so the same status means the CREDENTIALS were rejected —
+ * routing it through the other function would answer a mistyped password with "that
+ * link has expired". Everything that is genuinely route-independent (the rate-limit
+ * and transport rules, and both upstream code vocabularies) is shared.
+ *
+ * `fallback` is the CALLER'S sentence for `unknown`, because only the caller knows
+ * which action failed ("Couldn’t sign in." vs "Couldn’t create the account."), and
+ * naming the action is the house rule (docs/area/ui.md).
+ */
+export function describeAuthError(e: unknown, fallback: string): string {
+  const err = thrownAsSdkError(e);
+  // no status and no code ⇒ the transport failed, the same judgement `run` makes
+  if (!err) return MESSAGES.network;
+  const code = (err.code ?? '').toUpperCase();
+  const status = err.status ?? 0;
+  // ORDER, as in `classifySdkError`: `over_email_send_rate_limit` contains EMAIL.
+  if (code.includes('RATE_LIMIT') || status === 429) return MESSAGES['rate-limited'];
+  if (code.includes('PASSWORD_TOO_SHORT') || code.includes('WEAK_PASSWORD')) {
+    return MESSAGES['weak-password'];
+  }
+  if (code.includes('EMAIL') && !code.includes('VERIF') && !code.includes('EXIST')) {
+    return MESSAGES['invalid-email'];
+  }
+  if (status >= 500 || status === 0) return MESSAGES.network;
+  // ⚠️ AN ALREADY-TAKEN ADDRESS IS A 400 TOO, and it is not a wrong password — so it takes
+  // the caller's sentence rather than the credential one. It gets no sentence of its own
+  // here on purpose: "an account already uses that email" is the enumeration disclosure the
+  // note above refuses to write, and adding it is a product decision, not an audit fix.
+  if (code.includes('EXIST') || code.includes('ALREADY')) return fallback;
+  if (status === 400 || status === 401 || status === 403) return MESSAGES['invalid-credentials'];
+  return fallback;
 }
 
 /**

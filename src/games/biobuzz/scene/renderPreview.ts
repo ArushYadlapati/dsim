@@ -20,6 +20,7 @@ import {
   SceneUnsupportedError,
   createSceneLights,
   createSceneRenderer,
+  watchContextLoss,
   gpuProbe,
 } from './renderCore';
 import { createEnvironment, type BbEnvironment } from './renderEnvironment';
@@ -540,7 +541,19 @@ export const createRobotPreviewScene: RobotPreviewFactory = (host, options) => {
   applyQuality();
   if (opts.animate !== false) raf = requestAnimationFrame(loop);
 
-  return {
+  /**
+   * A LOST CONTEXT, KEPT DELIBERATELY SIMPLE HERE — the card TEARS ITSELF DOWN and the 3D tab
+   * above it is the retry.
+   *
+   * The match scene routes a loss to the host's 2D fallback; this one must not, for the same
+   * reason it does not touch the view preference when WebGL2 is missing (see this factory's
+   * header). What it must not do either is keep drawing: every GL call after a loss is a silent
+   * no-op, so the card would sit frozen on its last frame, indistinguishable from a build the
+   * turntable had simply stopped rotating. Disposing removes the canvas, `Preview3D.tsx` still
+   * holds this scene and calls `dispose()` again on unmount (idempotent, via `disposed`), and
+   * its 3D button builds a fresh context on the next press.
+   */
+  const api: RobotPreviewScene = {
     element: canvas,
     setSpec(next: RobotSpec, nextAlliance: Alliance): void {
       if (disposed) return;
@@ -622,4 +635,8 @@ export const createRobotPreviewScene: RobotPreviewFactory = (host, options) => {
       canvas.parentElement?.removeChild(canvas);
     },
   };
+
+  teardown.push(watchContextLoss(canvas, () => api.dispose()));
+
+  return api;
 };

@@ -54,8 +54,24 @@ export function TermsAgreement() {
  * SIGN OUT IS THE OTHER BUTTON, because a required agreement with one option is not
  * an agreement. Declining means not having an account here, which the terms already
  * say, and there is nothing else to decline into.
+ *
+ * ⚠️ `suspended` IS NOT A DISMISS — IT IS THE LEGAL PAGES THEMSELVES. The gate is a
+ * full-viewport `.ds-modal-backdrop` rendered as a SIBLING of the routed screen, so on
+ * `/terms` and `/privacy` it covered the very documents it is asking about: the two
+ * links in the sentence below open a new tab, and the same modal was waiting there.
+ * Nobody could read what they were agreeing to. Those pages are public by design
+ * (App.tsx says so at the render site — AdSense review fetches `/privacy` directly),
+ * so the gate stands down on them and re-blocks everywhere else. The acceptance fetch
+ * still runs: suspending the DIALOG must not suspend knowing the answer, or a route
+ * back from `/terms` would start from "unknown" again.
  */
-export function TermsGate({ children }: { children?: ReactNode }) {
+export function TermsGate({
+  children,
+  suspended = false,
+}: {
+  children?: ReactNode;
+  suspended?: boolean;
+}) {
   const configured = gameServerConfigured();
   const session = authClient!.useSession();
   const user = session.data?.user ?? null;
@@ -81,7 +97,7 @@ export function TermsGate({ children }: { children?: ReactNode }) {
   }, [user, configured]);
 
   const state = termsGateState(user && configured ? recorded : undefined, LEGAL_VERSION);
-  if (!termsGateBlocks(state)) return <>{children}</>;
+  if (suspended || !termsGateBlocks(state)) return <>{children}</>;
 
   const accept = async (): Promise<void> => {
     if (busy) return;

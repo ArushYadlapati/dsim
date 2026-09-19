@@ -1,5 +1,5 @@
 import type { GameModule } from '../module';
-import { BiobuzzGallery } from './Gallery';
+import { BiobuzzGalleryRoute } from './GalleryRoute';
 import { BiobuzzPreview3D, BiobuzzSavedCard } from './Preview3D';
 import {
   BiobuzzBuilderSlot,
@@ -124,11 +124,30 @@ export const BIOBUZZ_MODULE: GameModule = {
    * game-stripped remainder of the URL. A bare `/gallery` entry would drop every sub-path
    * through to `parseScreen`, which sends an unknown path home — so the trailing `/*` is what
    * makes a pasted scene link actually open. Seventy scenes is not seventy route entries.
+   *
+   * ⚠️ THE COMPONENT IS `GalleryRoute`, NOT `Gallery` — a lazy wrapper, because the gate is on
+   * the URL and a static import is on the BUNDLE. See that file.
    */
-  devRoutes: [{ path: '/gallery/*', Component: BiobuzzGallery }],
-  // no score HUD (nothing is scored) and no start editor (no legality model). `intakes` is the
-  // SHARED preset list, which is what the shared builder would offer; BIOBUZZ's own sweeper
-  // dials live in `Builder` and the slot above is what actually renders.
+  devRoutes: [{ path: '/gallery/*', Component: BiobuzzGalleryRoute }],
+  /**
+   * ⚠️ `showScoreHud: false` IS NOT "NOTHING IS SCORED". `sim.ts` has said `scored: true` since
+   * kickoff evening and `score.ts` scores the whole of Table 10-2 — the old comment here
+   * ("nothing is scored") predates that and read as a claim about the GAME.
+   *
+   * What it actually says is "do not give this game the SHARED score chrome", and BIOBUZZ draws
+   * its own: `scoreBar: BiobuzzScoreBar` and `hudChips: BiobuzzHudChips` (`HudSlots.tsx`) print
+   * the alliance panels, the up-CELL line and the rule row. `GameView.tsx`'s `Hud` picks the
+   * slot when a game fills it, so the shared bar on top of those would be the same numbers twice.
+   *
+   * ⚠️ AND NOTHING READS THIS FLAG ANY MORE — grep it: the three games set it and no consumer
+   * asks. The slots replaced it. It is kept because `GameUiSpec` still requires it and because
+   * `false` is the answer that stays right if a reader comes back; do not take it as the thing
+   * that suppresses anything today.
+   *
+   * `startEditor: false` is still literally true (no legality model, so no G304-style editor).
+   * `intakes` is the SHARED preset list, which is what the shared builder would offer; BIOBUZZ's
+   * own sweeper dials live in `Builder` and the slot above is what actually renders.
+   */
   ui: { showScoreHud: false, startEditor: false, intakes: ['sloped', 'vector'] },
   // THE TUTORIAL (roadmap item 6). Content only — the engine is `src/tutorial/` and the thing
   // that drives it is `GameController`. Read `./tutorial.ts`'s header before editing a step:
