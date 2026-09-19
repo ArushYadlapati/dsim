@@ -27,7 +27,8 @@ import { Matchmaker } from './matchmaking';
 import { MATCHMAKER_REGION } from './regions';
 import { BALANCE_VERSION } from '../src/config';
 import { periodLabel } from '../src/seasons';
-import { coerceGameId, isGameId } from '../src/games/types';
+import { coerceGameId, isGameId, serverPhysics } from '../src/games/types';
+import { simModuleFor } from '../src/games/sim';
 import { dbEnabled } from './db/pool';
 import {
   currentSeasonNumber,
@@ -2228,6 +2229,11 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
       // the untrusted physics, forced to the enum. Anything that is not the one known
       // non-default value becomes ABSENT, i.e. `'2d'` — a room is a thing the server has to
       // be able to step, so an unrecognised string must not reach `createWorld`.
+      //
+      // ⚠️ `Room.physics` NO LONGER READS THIS (owner ruling, 2026-09-18: every server room of
+      // a 3D-capable game is 3D). It is still coerced rather than dropped because old clients
+      // keep sending it and the config is echoed back in the operator snapshot; nothing
+      // downstream may treat it as the room's answer.
       physics: msg.config?.physics === '3d' ? '3d' : undefined,
     };
     if (!r && MAX_ROOMS > 0 && rooms.size >= MAX_ROOMS) {
@@ -2712,9 +2718,12 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
          *
          * BIOBUZZ is alpha-only, so no old client legitimately queues for it: the message is
          * for the one case that can happen, a stale tab left open across a deploy.
+         *
+         * Asked of the GAME MODULE (`serverPhysics`) rather than by naming BIOBUZZ, so a third
+         * game that gains a 3D solve is gated the day it declares one.
          */
         if (
-          coerceGameId(msg.game) === 'biobuzz' &&
+          serverPhysics(simModuleFor(coerceGameId(msg.game))) === '3d' &&
           !physicsAllowed('3d', Array.isArray(msg.caps) ? msg.caps : [])
         ) {
           send({ t: 'error', message: BB3D_REFUSAL });

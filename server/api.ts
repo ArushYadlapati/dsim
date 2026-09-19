@@ -1,6 +1,6 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { GameId } from '../src/types';
-import { coerceGameId, isGameId } from '../src/games/types';
+import { coerceGameId, isGameId, serverPhysics } from '../src/games/types';
 import { simModuleFor } from '../src/games/sim';
 import { BALANCE_VERSION, SIM_DT } from '../src/config';
 import { monthsFor, policyFromEnv, whyNoMonths } from './kofi';
@@ -1263,17 +1263,24 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse): Prom
       const mode = url.searchParams.get('mode') === 'duo' ? 'duo' : 'solo';
       const drivetrain = url.searchParams.get('drivetrain') ?? 'overall';
       /**
-       * THE ERA FILTER (0039). An ALLOWLIST rather than a cast: this string reaches a SQL
-       * parameter, and while `q()` parameterises it, a value that is neither of the two would
-       * silently return an empty board rather than the "all" the caller meant. Anything that
-       * is not exactly `'2d'` or `'3d'` — absent, empty, `all`, nonsense — means no filter,
-       * which is what every client before Day 3 asks for.
+       * ⚠️ THE `physics` QUERY PARAMETER IS IGNORED (owner ruling, 2026-09-18).
+       *
+       * It briefly existed as an era picker — All / 3D / 2D — back when the two eras shared
+       * this board. They do not: every server-connected match of a game that can step 3D is a
+       * 3D match, so the board is the 3D board and `recordLeaderboard` decides that itself
+       * (`boardPhysics` in repo.ts). Accepting the parameter would leave a URL anyone can type
+       * that returns a second, unadvertised board of runs nothing new can be added to, and the
+       * response would have to explain which one it was.
+       *
+       * READ AND DROPPED rather than deleted, so an older client that still appends
+       * `&physics=2d` gets the live board instead of an error — and `physics` is echoed back
+       * as what the board actually IS, not as what was asked for, so such a client's chip and
+       * its rows cannot disagree.
        */
-      const p = url.searchParams.get('physics');
-      const physics = p === '2d' || p === '3d' ? p : undefined;
       const rows = dbEnabled
-        ? await recordLeaderboard({ mode, drivetrain, balanceVersion: season, limit, game, physics })
+        ? await recordLeaderboard({ mode, drivetrain, balanceVersion: season, limit, game })
         : [];
+      const physics = serverPhysics(simModuleFor(game));
       return json(200, { season, mode, drivetrain, physics, rows, game }), true;
     }
 

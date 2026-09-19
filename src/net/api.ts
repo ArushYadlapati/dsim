@@ -71,9 +71,12 @@ export interface RecordRow extends BadgeFields {
   config: RecordConfig | null;
   /**
    * WHICH SOLVE PRODUCED THIS RUN — `'2d'` | `'3d'` (migration 0039). Absent from an older
-   * server's response, and a pre-0039 row reads `'2d'`, so the chip is drawn only where the
-   * value is actually known to be `'3d'` — a board that claimed "2D" for every row an old
-   * deploy served would be stating something it was never told.
+   * server's response, and a pre-0039 row reads `'2d'`.
+   *
+   * No longer shown as a chip (every row on the board is 3D now). It is still projected, and
+   * `Leaderboard` still reads it, for exactly one job: dropping a `'2d'` row served by a deploy
+   * that predates the ruling. Absent is kept rather than dropped — absent means "this server
+   * never told us", not "2D".
    */
   physics?: string;
 }
@@ -148,19 +151,21 @@ async function maybeAuthedJson<T>(path: string): Promise<T> {
   return (await res.json()) as T;
 }
 
+/**
+ * The record board. NO ERA ARGUMENT (owner ruling, 2026-09-18): the server decides which solve
+ * this board is made of, because a board it could be asked for is a board two callers can
+ * disagree about. The `physics` query parameter the Day 3 filter used is gone from here; a
+ * current server ignores it if an older client still sends one, and `Leaderboard` filters an
+ * OLDER server's mixed response client-side.
+ */
 export function fetchRecords(
   mode: RecordMode,
   drivetrain: Board,
   season?: number,
   game?: GameId,
-  /** the ERA filter (0039): `'2d'` or `'3d'`, or omitted for every row. An older server
-   *  ignores the parameter and answers with the whole board, which is the right degradation —
-   *  the filter narrows a board, so failing open shows MORE rather than an empty page. */
-  physics?: '2d' | '3d',
 ): Promise<{ rows: RecordRow[] }> {
   const s = season != null ? `&season=${season}` : '';
-  const ph = physics ? `&physics=${physics}` : '';
-  return getJson(`/api/records?mode=${mode}&drivetrain=${drivetrain}${s}${ph}${gameParam(game)}`);
+  return getJson(`/api/records?mode=${mode}&drivetrain=${drivetrain}${s}${gameParam(game)}`);
 }
 
 export function fetchElo(

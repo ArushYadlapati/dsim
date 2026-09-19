@@ -181,13 +181,27 @@ export function net3dChecks(check: Check): void {
     );
   }
 
-  // ═══ 2. A RANKED / RECORD ROOM IS 3D WHETHER THE CLIENT ASKED OR NOT ═══════
+  // ═══ 2. EVERY SERVER ROOM OF A 3D GAME IS 3D, WHATEVER THE CLIENT ASKED ════
   //
-  // The server decides this one (plan §2.1) — a board fed by two solves is two boards — so the
-  // config is deliberately the WRONG answer in each case and the room has to overrule it.
+  // The owner's ruling (2026-09-18): a game that connects to the server runs one solve, because
+  // a board fed by two solves is two boards. So the config is deliberately the WRONG answer in
+  // every case below and the room has to overrule it — including the CUSTOM room, which is the
+  // case that used to be the host's to pick.
   {
     const rec = new Room('n3-rec', () => {}, { kind: 'record', record: 'solo', game: 'biobuzz' });
     check('room: a RECORD room is 3D even with no physics in its config', rec.physics === '3d', rec.physics);
+    const custom = new Room('n3-cust', () => {}, { kind: 'versus', game: 'biobuzz', physics: '2d' });
+    check(
+      'room: a CUSTOM room that asks for 2D is 3D anyway — the host no longer picks',
+      custom.physics === '3d',
+      custom.physics,
+    );
+    const bare = new Room('n3-bare', () => {}, { kind: 'versus', game: 'biobuzz' });
+    check(
+      'room: ...and so is one that says nothing (an old client’s join is not a 2D request)',
+      bare.physics === '3d',
+      bare.physics,
+    );
     const dec = new Room('n3-dec', () => {}, { kind: 'record', record: 'solo', game: 'decode' });
     check(
       'room: ...but only for a game that HAS a 3D solve — a DECODE record room is untouched',
@@ -200,13 +214,31 @@ export function net3dChecks(check: Check): void {
       forced.physics === '2d',
       forced.physics,
     );
+    /**
+     * BACK-COMPAT IS A REFUSAL NOW, NOT A DOWNGRADE — and this is the check that pins it.
+     *
+     * An old client used to open a BIOBUZZ room by sending no `physics` and get a 2D room. The
+     * ruling forbids exactly that outcome (its score would reach the same board), so the room
+     * is 3D and the `'bb3d'` cap gate at the door turns that client away instead. The two
+     * halves have to agree: a 3D room plus a client that can step it, or a clean refusal.
+     */
+    check(
+      'room: an old client (no caps) is REFUSED at a bare BIOBUZZ room rather than given a 2D one',
+      !physicsAllowed(bare.physics, []),
+    );
+    check('room: ...and a current client is admitted to it', physicsAllowed(bare.physics, CLIENT_CAPS));
   }
 
-  // ═══ 3. THE OLD-CLIENT PROOF: a room with NO physics is what it always was ══
+  // ═══ 3. THE OLD-CLIENT PROOF: a 2D GAME's wire is what it always was ═══════
+  //
+  // This used to be a BIOBUZZ room with no `physics` in its config. That room is 3D now (section
+  // 2), so the thing this section actually guards — that a 2D room's handshake and snapshots are
+  // byte-for-byte what they were before the field existed — is asserted where it is still true
+  // and always will be: a DECODE room, whose game declares no 3D solve at all.
   {
     const msgs: ServerMsg[] = [];
-    const room = new Room('n3-2d', () => {}, { kind: 'versus', game: 'biobuzz' });
-    check('room: a config with no physics is a 2D room', room.physics === '2d', room.physics);
+    const room = new Room('n3-2d', () => {}, { kind: 'versus', game: 'decode' });
+    check('room: a DECODE room is a 2D room', room.physics === '2d', room.physics);
     for (const s of ROSTER) {
       room.add(mkClient(s, s.id === 'n3-b1' ? (m) => msgs.push(wireCopy(m)) : () => {}));
     }
@@ -417,6 +449,7 @@ export function net3dChecks(check: Check): void {
     let flightSeen = false;
     let firstSnap: Extract<ServerMsg, { t: 'snapshot' }> | null = null;
     let lastSnap: Extract<ServerMsg, { t: 'snapshot' }> | null = null;
+    const maxAway: number[] = [];
     const sink = (raw: ServerMsg): void => {
       if (raw.t !== 'snapshot') {
         control.push(wireCopy(raw));
@@ -429,6 +462,13 @@ export function net3dChecks(check: Check): void {
       if (!flightSeen && (m.balls.upd ?? []).some((b) => b.state.kind === 'flight')) flightSeen = true;
       if (!firstSnap) firstSnap = m;
       lastSnap = m;
+      const base = firstSnap as Extract<ServerMsg, { t: 'snapshot' }>;
+      m.w.robots.forEach((r, i) => {
+        const p = base.w.robots[i];
+        if (!p) return;
+        const d = Math.hypot(r.pos.x - p.pos.x, r.pos.y - p.pos.y);
+        if (d > (maxAway[i] ?? 0)) maxAway[i] = d;
+      });
     };
 
     let outcomePhysics: string | undefined = '<onResult never called>';
@@ -472,16 +512,14 @@ export function net3dChecks(check: Check): void {
 
     // THE ROBOTS MOVED. Without this, everything else here is true of four robots sitting on
     // their start poses — and `DEFAULT_ASSISTS.fieldCentric` has produced exactly that twice.
+    // ⚠️ FURTHEST FROM THE START, NOT WHERE IT FINISHED. Comparing the last frame to the first
+    // asks whether a robot happened to END somewhere else, and over a three-minute match on a
+    // 12-ft field one of four roaming robots eventually finishes within a few inches of where it
+    // began — which read as "robot 3 drove 3.3 in" while its trace crossed the whole field. The
+    // question is whether it MOVED, so the measure is the maximum displacement seen.
     const a = firstSnap as Extract<ServerMsg, { t: 'snapshot' }> | null;
-    const b = lastSnap as Extract<ServerMsg, { t: 'snapshot' }> | null;
-    const moved =
-      !!a && !!b &&
-      b.w.robots.every((r, i) => {
-        const p = a.w.robots[i];
-        return Math.hypot(r.pos.x - p.pos.x, r.pos.y - p.pos.y) > 6;
-      });
-    check('match: every robot drove somewhere', moved,
-      a && b ? b.w.robots.map((r, i) => Math.hypot(r.pos.x - a.w.robots[i].pos.x, r.pos.y - a.w.robots[i].pos.y).toFixed(1)).join(', ') : '');
+    const moved = !!a && maxAway.length === a.w.robots.length && maxAway.every((d) => d > 6);
+    check('match: every robot drove somewhere', moved, maxAway.map((d) => d.toFixed(1)).join(', '));
 
     check('match: at least one element was in flight during the match', flightSeen);
 
@@ -917,6 +955,82 @@ export function net3dChecks(check: Check): void {
     check(
       'cutover: ...and only for a game that HAS two solves',
       /physicsOptions\?\.includes\('3d'\)/.test(mm),
+    );
+  }
+
+  // ═══ 12. THE RULING: NOBODY PICKS A SERVER ROOM'S PHYSICS (2026-09-18) ═════
+  //
+  // Section 2 proves the ROOM's answer. These are the four other places that used to hold an
+  // opinion about it, and every one of them fails SILENTLY — a picker still on screen, a LAN
+  // worker skipping the chunk, a board still asking for an era — so each is pinned at the
+  // source rather than left to a habit. Source greps, like the cutover checks above, because
+  // there is no headless way to render a React screen in this suite.
+  {
+    const room = readFileSync('server/room.ts', 'utf8');
+    const getter = /get physics\(\): Physics \{[\s\S]{0,400}?\n  \}/.exec(room)?.[0] ?? '';
+    check(
+      'ruling: Room.physics asks the GAME and nothing else',
+      getter.includes('serverPhysics(simModuleFor(this.game))') &&
+        !getter.includes('this.config.physics') &&
+        !getter.includes('this.ranked'),
+      getter.split('\n')[1] ?? 'no getter found',
+    );
+
+    /**
+     * THE QUEUE DOOR. A matchmade BIOBUZZ room is staged 3D, so a client that cannot step it
+     * has to be refused BEFORE a pairing is committed — refusing at the room's door instead
+     * would cancel a staged match and charge three innocent people for a dodge that was a
+     * version skew. Asked of the game MODULE rather than by naming BIOBUZZ, so a third game
+     * that gains a 3D solve is gated the day it declares one.
+     */
+    const server = readFileSync('server/index.ts', 'utf8');
+    check(
+      'ruling: the queue gate reads the game’s own rule, not a hardcoded id',
+      /serverPhysics\(simModuleFor\(coerceGameId\(msg\.game\)\)\) === '3d'/.test(server) &&
+        !/coerceGameId\(msg\.game\) === 'biobuzz'/.test(server),
+    );
+    check('ruling: ...and it refuses an old client', !physicsAllowed('3d', []), BB3D_REFUSAL);
+
+    const worker = readFileSync('src/lan/hostWorker.ts', 'utf8');
+    check(
+      'ruling: the LAN host worker loads the 3D chunk on the ROOM’s rule, not on its config',
+      /const needs3d = serverPhysics\(/.test(worker) && !/needs3d = m\.config\?\.physics/.test(worker),
+    );
+
+    const lobby = readFileSync('src/ui/Lobby.tsx', 'utf8');
+    check(
+      'ruling: the custom lobby no longer offers a 2D/3D choice',
+      !/setRoomPhysics|roomPhysics === '2d'/.test(lobby),
+    );
+    check(
+      'ruling: ...but it still SAYS `3d` on the wire, so a server one deploy behind builds the same room',
+      /physics: physicsOffered \? '3d' : undefined/.test(lobby),
+    );
+
+    const board = readFileSync('src/ui/Leaderboard.tsx', 'utf8');
+    check(
+      'ruling: the record board has no era filter and no per-row 2D/3D chip',
+      !/setEra|ds-seg \$\{era/.test(board) && !/physics\.toUpperCase\(\)/.test(board),
+    );
+    check(
+      'ruling: ...and it drops a 2D row an OLDER server still serves',
+      /filter\(\(x\) => x\.physics !== '2d'\)/.test(board),
+    );
+    const api = readFileSync('src/net/api.ts', 'utf8');
+    check(
+      'ruling: ...and the client cannot ask for an era at all',
+      !/&physics=/.test(api),
+    );
+
+    const rec = readFileSync('src/ui/RecordRun.tsx', 'utf8');
+    check(
+      'ruling: a record run PREFLIGHTS the 3D chunk and refuses rather than falling back',
+      /initPhysics3d\(\)/.test(rec) && /Record runs are played on it/.test(rec),
+    );
+    const view = readFileSync('src/ui/GameView.tsx', 'utf8');
+    check(
+      'ruling: ...and the 2D fallback is still reachable ONLY from a session-less practice',
+      /const need3d =\s*\n?\s*!session &&/.test(view),
     );
   }
 }

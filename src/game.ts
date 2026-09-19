@@ -601,6 +601,12 @@ export class GameController {
    * measurement is a DOM read, so it happens at most once per rendered frame and only when
    * something has actually moved — never unconditionally per frame. */
   private hudInsetsDirty = true;
+  /**
+   * THE LAYOUT THESE INSETS BELONG TO — `"<width>x<height>"` of the render surface, or null to
+   * start fresh. Within one layout the insets only ever GROW (see `refreshHudInsets`); a resize
+   * or a view switch clears this and the next measurement starts from zero.
+   */
+  private hudInsetsEpoch: string | null = null;
   /** fires when a HUD band changes SIZE (a chip row wrapping to a second line, the scorebar
    * switching to its compact layout) without anything mounting or unmounting. */
   private hudBandObserver: ResizeObserver | null = null;
@@ -947,6 +953,7 @@ export class GameController {
   private onResize = (): void => {
     this.renderer.camera.configure(this.canvas, this.viewAlliance(), this.mod.bounds);
     this.hudInsetsDirty = true;
+    this.hudInsetsEpoch = null; // a new viewport is a new layout — see `refreshHudInsets`
     this.scene?.resize(this.canvas.clientWidth, this.canvas.clientHeight, window.devicePixelRatio || 1);
   };
 
@@ -971,6 +978,16 @@ export class GameController {
    * breakdown chips leave the bottom entirely and dock into the left and right gutters (see the
    * landscape block in `styles.css`). Nothing here names a side — the geometry decides, so that
    * layout is fitted correctly without this method knowing it exists.
+   *
+   * ⚠️ ── A BAND'S BOX MUST NOT DEPEND ON MATCH STATE ────────────────────────────────────
+   * This is the safe rect a camera frames the field into, so a band that mounts, unmounts or
+   * resizes mid-match MOVES THE FIELD UNDER THE DRIVER. BIOBUZZ's cue row shipped that way —
+   * `{(nectarLocked || pin) && <div data-hud-band>…}` — and at the 1:00 cue the bottom inset
+   * fell 98px → 73px at 1431×649 and the whole field jumped (owner report, 2026-09-18). A HUD
+   * item that comes and goes belongs INSIDE a band whose slot is reserved (see
+   * `.breakdown-row`'s `min-height` in `styles.css`), never as a band of its own. Nothing here
+   * can enforce that — it is a rule about the markup, and it is why the two observers below
+   * exist at all: they are for a LAYOUT change (a resize, a view switch), not a score change.
    *
    * ── WHAT IS DELIBERATELY NOT A BAND ───────────────────────────────────────────────────
    * The EVENT LOG (`.eventlog`) and the touch controls. The log is the toast surface — it grows
@@ -1027,10 +1044,24 @@ export class GameController {
     // hand the scene an infinite aspect. 45 % a side leaves at least a tenth of each axis.
     const capH = box.height * 0.45;
     const capW = box.width * 0.45;
-    ins.top = Math.min(top, capH);
-    ins.bottom = Math.min(bottom, capH);
-    ins.left = Math.min(left, capW);
-    ins.right = Math.min(right, capW);
+    /**
+     * WITHIN ONE LAYOUT THE SAFE RECT ONLY EVER SHRINKS — the belt to the reserved-slot braces.
+     *
+     * The rule above says a band's box must not depend on match state, and the rows that can be
+     * reserved in CSS are. The chip rows cannot be: `.robot-status` WRAPS against its 50% cap, so
+     * a foul chip or a PIN countdown can add a line at a narrow width and take one back four
+     * seconds later — measured at 375px wide, the top inset moved 130px → 151px. Taking the
+     * MAXIMUM for as long as the layout lasts turns that into a one-way reserve: the field can
+     * settle a little smaller, once, and never oscillates under a driver mid-match. A resize or a
+     * view switch is a new layout and starts over (`hudInsetsEpoch`).
+     */
+    const epoch = `${Math.round(box.width)}x${Math.round(box.height)}`;
+    const keep = this.hudInsetsEpoch === epoch;
+    this.hudInsetsEpoch = epoch;
+    ins.top = Math.min(Math.max(top, keep ? ins.top : 0), capH);
+    ins.bottom = Math.min(Math.max(bottom, keep ? ins.bottom : 0), capH);
+    ins.left = Math.min(Math.max(left, keep ? ins.left : 0), capW);
+    ins.right = Math.min(Math.max(right, keep ? ins.right : 0), capW);
     this.syncBandObserver(bands);
   }
 
@@ -1096,6 +1127,7 @@ export class GameController {
       // — and the 2D view it replaces may have been mounted long enough for the last reading
       // to be stale (the chip row grew, an ad column collapsed).
       this.hudInsetsDirty = true;
+      this.hudInsetsEpoch = null;
       this.scene = scene;
       // the 2D overlay projects labels and auto paths through the scene's camera from here on
       this.renderer.setScene(scene);

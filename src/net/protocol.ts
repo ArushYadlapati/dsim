@@ -195,16 +195,23 @@ export interface RoomConfig {
    * The server resolves the game module from this; matchmaking buckets by it. */
   game?: GameId;
   /**
-   * WHICH PHYSICS BACKEND THIS ROOM'S WORLD RUNS ON, fixed at room creation.
+   * WHICH PHYSICS BACKEND THIS ROOM'S WORLD RUNS ON — ⚠️ **NO LONGER READ BY THE SERVER**
+   * (owner ruling, 2026-09-18).
    *
-   * Absent ⇒ `'2d'`, which is every room an older client can open and every room that existed
-   * before this field. The server decides it for ranked / matchmade / record rooms (always
-   * `'3d'` for BIOBUZZ); a custom lobby's HOST picks it and their `join` carries it, exactly
-   * like `kind` and `game` — the room's own config wins for everyone who joins afterwards.
+   * `Room.physics` now answers from the GAME alone: a game that can step `'3d'` runs `'3d'` for
+   * every server-connected match — record, ranked, matchmade, custom, spectated, LAN — because
+   * the record board is one solve. There is no host choice left for this field to carry.
+   *
+   * It stays on the wire for ONE reason, and it is the usual one: a single Fly app serves every
+   * client version, and a server can be a deploy behind a client. An older server DOES read
+   * this and defaults it to `'2d'`, so a current client keeps sending `'3d'` for a 3D-capable
+   * game — that is what makes both servers build the same room. It is omitted entirely for a
+   * game with no 3D solve, which keeps DECODE and Chain Reaction's handshake byte-identical.
    *
    * It is a ROOM property and not a per-client one: a room has one authoritative world, so a
    * client whose build cannot step `'3d'` cannot be in it at all. That is what the `'bb3d'`
-   * capability gate below is for.
+   * capability gate below is for — and since a bare BIOBUZZ join now yields a 3D room rather
+   * than a 2D one, that gate is where an old client is turned away instead of downgraded.
    */
   physics?: Physics;
 }
@@ -369,7 +376,13 @@ export function physicsAllowed(physics: Physics | undefined, caps: readonly stri
 export const SERVER_CAPS: string[] = [
   'party',
   /**
-   * `'bb3d'` — THIS DEPLOY RUNS BIOBUZZ RANKED AND RECORD ROOMS ON THE 3D SOLVE.
+   * `'bb3d'` — THIS DEPLOY RUNS EVERY BIOBUZZ ROOM ON THE 3D SOLVE.
+   *
+   * (It said "ranked and record rooms" until the 2026-09-18 ruling made it all of them. The
+   * capability's job is unchanged: it is how a client tells a deployed server from one that is
+   * still behind. A CUSTOM room no longer needs it either way — the client sends
+   * `physics: '3d'` and an older server honours that — but a RANKED queue does, because the
+   * matchmaker stages the room and no client field reaches it.)
    *
    * The mirror of the client capability of the same name, and it exists because the cutover is
    * PER SERVER (plan §7: alpha on Day 3, production when the owner says so). A client build that

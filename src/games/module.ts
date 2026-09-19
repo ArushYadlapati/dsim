@@ -59,8 +59,15 @@ export interface GameModule extends GameSimModule {
     world?: World,
   ): void;
   /** scoring-elements renderer, drawn after the robots (DECODE: balls; CR: particles
-   * + catalysts + endgame badges). `screenUp` is world-space "up" for z-lift. */
-  drawBalls(ctx: CanvasRenderingContext2D, world: World, screenUp: Vec2): void;
+   * + catalysts + endgame badges). `screenUp` is world-space "up" for z-lift.
+   *
+   * `localRobotId` is the LAST thing drawn over the field, and it is optional for the reason
+   * every other slot argument here is: DECODE and Chain Reaction ignore it and are unchanged.
+   * BIOBUZZ needs it because its shot path is a per-DRIVER instrument — whose shot it is is not
+   * on `World` — and this is the only per-frame hook that is drawn after the robots AND carries
+   * `screenUp`, which a path with a height has to have. Absent for a spectator or a replay of
+   * somebody else's match. */
+  drawBalls(ctx: CanvasRenderingContext2D, world: World, screenUp: Vec2, localRobotId?: number): void;
   ui: GameUiSpec;
   /**
    * THE LAZY 3D SCENE (Day 1 seam, `docs/biobuzz/plan-3d.md` §2.3/§2.5) — absent ⇒ this game

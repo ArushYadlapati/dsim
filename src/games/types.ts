@@ -80,6 +80,30 @@ export function coerceGameId(x: unknown, fallback: GameId = 'decode'): GameId {
  */
 export type Physics = '2d' | '3d';
 
+/**
+ * WHICH PHYSICS EVERY SERVER-CONNECTED MATCH OF THIS GAME RUNS ON (owner ruling, 2026-09-18).
+ *
+ * A game that can step `'3d'` runs `'3d'` for everything that reaches the server: record runs,
+ * ranked, matchmade, custom rooms, spectators, LAN. Nobody chooses — not the host, not a
+ * client's settings, not a query param. The reason is the record board: two solves feeding one
+ * board is two boards wearing one hat, and the alternative (split the eras into two seasons)
+ * archives everybody's standings over a physics change they did not ask for.
+ *
+ * A game with no `'3d'` option is `'2d'` and is therefore byte-identical to what it always was,
+ * which is DECODE and Chain Reaction.
+ *
+ * OFFLINE is the exception and is not this function's business: solo practice and free drive
+ * still honour `GameSettings.practicePhysics`, because the 2D pipeline is permanent and a
+ * low-end machine has to be able to drive. Nothing offline reaches a board.
+ *
+ * Takes the MODULE rather than a `GameId` so both registries can call it — the server-safe one
+ * (`games/sim.ts`) and the client's full one (`games/index.ts`) — without this file importing
+ * either and closing a cycle.
+ */
+export function serverPhysics(mod: Pick<GameSimModule, 'physicsOptions'> | undefined): Physics {
+  return mod?.physicsOptions?.includes('3d') ? '3d' : '2d';
+}
+
 /** one static cuboid collider, as plain numbers (Rapier-independent). Moved out
  * of physicsEngine.ts so any game module can produce field geometry. */
 export interface StaticSpec {

@@ -8,6 +8,7 @@ import * as C from '../src/config';
 import { newSettleClock, settleStep, type SettleClock } from '../src/sim/settle';
 import { coerceAutoPath, DEFAULT_SPEC, DEFAULT_ASSISTS, type RobotSetup } from '../src/sim/spawn';
 import { simModuleFor } from '../src/games/sim';
+import { serverPhysics } from '../src/games/types';
 import { scrubName } from './moderation';
 import type { GameId, Physics } from '../src/types';
 import { physicsReady } from '../src/sim/physicsEngine';
@@ -478,27 +479,27 @@ export class Room {
    * WHICH PHYSICS THIS ROOM'S WORLD RUNS ON — decided once, here, and read by everything:
    * the cap gate at the door, `matchStart`, and `createWorld`.
    *
-   * Three rules, in order (plan §2.1):
-   *  1. A game that cannot run `'3d'` never does. DECODE and Chain Reaction declare no
-   *     `physicsOptions`, so a `physics: '3d'` config aimed at one of them is ignored rather
-   *     than handed to a `step` that would do nothing with it — and their rooms stay
-   *     byte-identical to what they were before this field existed.
-   *  2. RANKED, MATCHMADE and RECORD rooms are `'3d'`, and the SERVER decides that, not the
-   *     client. Those are the results that reach a board, and a board whose rows came from
-   *     two different solves is not a board. A staged room's roster arrives through
-   *     `applyPending` before anyone is seated, so `pendingMatch` is already set by the time
-   *     the first joiner is gated.
-   *  3. Otherwise the HOST's choice, off `RoomConfig.physics`, absent ⇒ `'2d'`. Absent is
-   *     what an older client sends and what every room minted before Day 2 was, which is the
-   *     whole back-compat rule: a room created without `physics` behaves exactly as before.
+   * ONE RULE (owner ruling, 2026-09-18): **a game that can step `'3d'` runs `'3d'` here,
+   * always.** Every room is a server-connected match — record, ranked, matchmade, custom,
+   * spectated, LAN-hosted — and the ruling is that those all run the one solve. `RoomConfig.
+   * physics` is therefore no longer read at all: it was the host's pick for a CUSTOM room, and
+   * a host who could pick 2D could put a run on the board that nothing else on it was produced
+   * by. `serverPhysics` is the shared predicate (`src/games/types.ts`) so the room, the
+   * matchmaker, the board queries and the LAN worker cannot drift.
+   *
+   * A game with no `'3d'` option is `'2d'` — DECODE and Chain Reaction, byte-identical to what
+   * they were before this field existed, including the wire (a 2D room still omits `physics`
+   * from `matchStart` entirely).
+   *
+   * ⚠️ BACK-COMPAT IS NOW A REFUSAL, NOT A DOWNGRADE. An old client that opens a BIOBUZZ room
+   * without `physics` used to get a 2D room; it now gets a 3D one it cannot step, so the
+   * `'bb3d'` cap gate at the door (`physicsAllowed`, server/index.ts) turns it away with
+   * `BB3D_REFUSAL`. That is the intended failure: a silent 2D room is the one outcome the
+   * ruling forbids. BIOBUZZ is alpha-only, so the case that can actually happen is a stale tab
+   * held across a deploy.
    */
   get physics(): Physics {
-    if (!simModuleFor(this.game).physicsOptions?.includes('3d')) return '2d';
-    // a STAGED pairing carries the matchmaker's own decision; honour it verbatim rather than
-    // re-deriving it here, so the room the host builds is the room the matchmaker promised
-    if (this.pendingMatch) return this.pendingMatch.physics ?? '3d';
-    if (this.ranked || this.config.kind === 'record') return '3d';
-    return this.config.physics ?? '2d';
+    return serverPhysics(simModuleFor(this.game));
   }
 
   /** is a match actually running here (vs. still a lobby)? */

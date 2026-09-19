@@ -255,6 +255,9 @@ import {
 import type { ServerMsg, QueueMode } from '../src/net/protocol';
 import { dsin, dcos, dtan, datan2, hyp, rot, wrapAngle, clamp } from '../src/math';
 import { initPhysics } from '../src/sim/physicsEngine';
+import { initPhysics3d } from '../src/games/biobuzz/sim3d/engine';
+import { simModuleFor } from '../src/games/sim';
+import { serverPhysics } from '../src/games/types';
 import { moduleFor, gameOf } from '../src/games';
 import { decodeColliders } from '../src/games/decode/colliders';
 import { createChainWorld } from '../src/games/chain/spawn';
@@ -14444,6 +14447,12 @@ function pinScene(
 // claim that goes stale, and BIOBUZZ has FEWER start anchors than DECODE, which is the one
 // place a rebuilt roster could pick an index its game cannot resolve.
 for (const game of ['decode', 'chain', 'biobuzz'] as const) {
+  // ⚠️ A SERVER-CONNECTED BIOBUZZ ROOM IS 3D (owner ruling 2026-09-18, `serverPhysics`), and a
+  // room whose physics is 3D refuses to tick until `physics3dReady()`. Without this the loop
+  // silently measured nothing on the one game it was written to cover: `advanceForTest` ran the
+  // full match length against a room that never started, and every check below read `undefined`.
+  // It is awaited HERE, not in the preamble, so only this block pays for the 3D WASM.
+  if (serverPhysics(simModuleFor(game)) === '3d') await initPhysics3d();
   const sink: Record<string, ServerMsg[]> = { p1: [], p2: [] };
   const mk = (id: string, alliance: Alliance): Client => ({
     id,

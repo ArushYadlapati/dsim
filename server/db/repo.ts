@@ -2,7 +2,8 @@ import type { Replay } from '../../src/sim/replay';
 import type { AssistConfig, GameId, RobotSpec } from '../../src/types';
 import type { PendingMatch, PendingRosterEntry } from '../matchTypes';
 import { BALANCE_VERSION, PLACEMENT_GAMES } from '../../src/config';
-import { coerceGameId, GAME_IDS } from '../../src/games/types';
+import { coerceGameId, GAME_IDS, serverPhysics } from '../../src/games/types';
+import { simModuleFor } from '../../src/games/sim';
 import {
   STANDING_MAX, HEAL_PER_DAY, HEAL_PER_CLEAN_MATCH, clampScore, type StandingVerdict,
 } from '../../src/standing';
@@ -11,6 +12,27 @@ import { q, tx } from './pool';
 /** every board/period is keyed by game; old callers/rows default to DECODE. */
 type Game = GameId;
 const g = (game?: Game): Game => game ?? 'decode';
+
+/**
+ * WHICH ERA A BOARD READ OF THIS GAME MEANS — the record board's half of the owner's ruling
+ * (2026-09-18): runs set on the 2D physics and on the 3D physics do NOT share a record board,
+ * because every server-connected match of a 3D-capable game is 3D (`serverPhysics`).
+ *
+ * `'3d'` for such a game, `undefined` (no filter at all) for a one-solve game, whose rows are
+ * all `'2d'` anyway — so DECODE's and Chain Reaction's queries keep the exact SQL they had.
+ *
+ * ⚠️ **DECIDED HERE, NOT BY THE CALLER.** It used to ride in as an optional `physics` argument
+ * that `/api/records` filled from a QUERY PARAMETER, which means the board a client saw was
+ * the board it asked for — and every path that forgot to ask (a personal best, a career panel,
+ * a profile page) silently read both eras. A default in the data layer is the only version of
+ * this rule that a new call site cannot miss.
+ *
+ * The pre-0039 rows are NOT deleted: a 2D BIOBUZZ run keeps its row, its replay and its place
+ * in the player's own match history. It simply stops being ranked against 3D runs.
+ */
+function boardPhysics(game: Game): '3d' | undefined {
+  return serverPhysics(simModuleFor(game)) === '3d' ? '3d' : undefined;
+}
 
 /** the robot configuration a record run used (denormalized onto the row) */
 export interface RecordConfig {
@@ -1537,6 +1559,25 @@ export interface RecordSubmit {
 }
 
 export async function submitRecord(r: RecordSubmit): Promise<string> {
+  /**
+   * THE WRITE-SIDE HALF OF THE SAME RULE, and the chokepoint version of it.
+   *
+   * `boardPhysics` keeps a 2D row off the board; this keeps it out of the TABLE. A record room
+   * of a 3D-capable game is 3D (`Room.physics`), so a 2D container reaching here means the
+   * server that produced it disagreed with this one — a stale process mid-deploy, or a caller
+   * that invented a submission. Either way the run was not played on the solve the board is
+   * made of, and accepting it would leave a row that every read then has to hide.
+   *
+   * THROWS rather than silently coercing the column: the score is real and the player was told
+   * it counted, so the honest outcome is a refusal that shows up in the server log, not a row
+   * quietly relabelled `'3d'` for a match that was not.
+   */
+  const want = boardPhysics(g(r.game));
+  if (want && (r.physics ?? '2d') !== want) {
+    throw new Error(
+      `record refused: ${g(r.game)} runs on ${want} physics, this one is ${r.physics ?? '2d'}`,
+    );
+  }
   const rows = await q<{ id: string }>(
     `insert into records (user_id, partner_id, mode, drivetrain, score, balance_version, replay_id, config, game, physics)
      values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) returning id`,
@@ -1591,13 +1632,17 @@ export async function recordLeaderboard(opts: {
   limit?: number;
   game?: Game;
   /**
-   * WHICH ERA (migration 0039). Absent ⇒ every row, which is what the board shows by default
-   * and what every caller before Day 3 asked for.
+   * WHICH ERA (migration 0039). Absent ⇒ `boardPhysics(game)`, i.e. `'3d'` for a game that has
+   * two solves and no filter at all for one that does not. The board is not a place two eras
+   * meet (owner ruling, 2026-09-18) — see `boardPhysics`.
+   *
+   * Still an ARGUMENT because the admin console and the tests have a legitimate reason to ask
+   * for the other era; it is no longer something a public request can set.
    *
    * ⚠️ **THE FILTER IS INSIDE `best`, NOT OUTSIDE IT**, and that placement is the whole point:
    * `best` is one row per player, so filtering after it would show a player's 2D personal best
    * and then hide it, leaving them off a 3D board they have a legitimate 3D score on. Filtering
-   * first makes the board "each player's best 3D run", which is what a player picking 3D means.
+   * first makes the board "each player's best 3D run", which is what the board now means.
    */
   physics?: '2d' | '3d';
 }): Promise<BoardRow[]> {
@@ -1608,8 +1653,9 @@ export async function recordLeaderboard(opts: {
     dtFilter = `and r.drivetrain = $${params.length}`;
   }
   let physFilter = '';
-  if (opts.physics) {
-    params.push(opts.physics);
+  const phys = opts.physics ?? boardPhysics(g(opts.game));
+  if (phys) {
+    params.push(phys);
     physFilter = `and r.physics = $${params.length}`;
   }
   params.push(opts.limit ?? 100);
@@ -1645,14 +1691,25 @@ export async function personalBest(
   // 'overall' = the cross-drivetrain board (no drivetrain filter), matching
   // recordLeaderboard — a mixed-drivetrain duo run's PB is over ALL the user's
   // runs in this mode×season, not one drivetrain.
+  //
+  // ERA-SCOPED like the board it is compared against (`boardPhysics`): a PB that counted an
+  // old 2D run would tell a player their first 3D run was not a personal best, against a row
+  // they cannot see on any board and can never beat on this solve.
   const overall = drivetrain === 'overall';
+  const phys = boardPhysics(g(game));
+  const params: unknown[] = [userId, mode, balanceVersion, g(game)];
+  if (!overall) params.push(drivetrain);
+  const dtFilter = overall ? '' : `and drivetrain = $${params.length}`;
+  let physFilter = '';
+  if (phys) {
+    params.push(phys);
+    physFilter = `and physics = $${params.length}`;
+  }
   const rows = await q<{ score: number | null }>(
     `select max(score) as score from records
      where user_id = $1 and mode = $2 and balance_version = $3 and game = $4
-       ${overall ? '' : 'and drivetrain = $5'}`,
-    overall
-      ? [userId, mode, balanceVersion, g(game)]
-      : [userId, mode, balanceVersion, g(game), drivetrain],
+       ${dtFilter} ${physFilter}`,
+    params,
   );
   return rows[0]?.score ?? null;
 }
@@ -1669,18 +1726,25 @@ export async function recordRank(
   balanceVersion: number,
   game?: Game,
 ): Promise<{ rank: number; total: number }> {
+  // ERA-SCOPED, and INSIDE `best` — same rule and same placement as `recordLeaderboard`, so
+  // the "#3 of 57" a player is shown after a run is a position on the board they can go and
+  // look at rather than a rank over a population the board does not contain.
   const overall = drivetrain === 'overall';
+  const phys = boardPhysics(g(game));
   const rows = await q<{ rank: number; total: number }>(
     `with best as (
        select user_id, max(score) as s from records
        where balance_version = $1 and mode = $2 and game = $5
          ${overall ? '' : 'and drivetrain = $4'}
+         ${phys ? 'and physics = $6' : ''}
        group by user_id
      ), me as (select s from best where user_id = $3)
      select
        (select count(*) from best)::int as total,
        (1 + (select count(*) from best where s > (select s from me)))::int as rank`,
-    [balanceVersion, mode, userId, overall ? null : drivetrain, g(game)],
+    phys
+      ? [balanceVersion, mode, userId, overall ? null : drivetrain, g(game), phys]
+      : [balanceVersion, mode, userId, overall ? null : drivetrain, g(game)],
   );
   return { rank: rows[0]?.rank ?? 1, total: rows[0]?.total ?? 1 };
 }
@@ -3428,6 +3492,17 @@ export async function getUserStats(
   const eloTable = isLive ? 'elo_ratings' : 'elo_history';
   const eloKeyCol = isLive ? 'act' : 'balance_version';
   const eloKeyVal = isLive ? act : balanceVersion;
+  /**
+   * THE CAREER PANEL'S RECORD HALF IS THE SAME BOARD, so it reads the same era.
+   *
+   * `recPb` and `recRank` below are "your best run" and "where it places" — the two figures
+   * the Records page prints beside the board itself. Left unfiltered they would have shown a
+   * BIOBUZZ player a 2D personal best that appears on no board and a rank over a population
+   * the board does not contain. The value is PARAMETERISED (`$4` in both queries) — the SQL
+   * fragment is chosen here, the era itself is bound.
+   */
+  const phys = boardPhysics(gm);
+  const recPhys = phys ? 'and physics = $4' : '';
   const [profile, elo, recPb, recRank, match, recent] = await Promise.all([
     q<{ handle: string; username: string | null; supporter: boolean; role: string | null }>(
       `select handle, username, role, ${SUPPORTER_COL} from profiles where user_id = $1`,
@@ -3448,20 +3523,22 @@ export async function getUserStats(
     ),
     q<{ mode: 'solo' | 'duo'; score: number; replay_id: string | null }>(
       `select distinct on (mode) mode, score, replay_id
-       from records where user_id = $1 and balance_version = $2 and game = $3
+       from records where user_id = $1 and balance_version = $2 and game = $3 ${recPhys}
        order by mode, score desc, created_at asc`,
-      [userId, balanceVersion, gm],
+      phys ? [userId, balanceVersion, gm, phys] : [userId, balanceVersion, gm],
     ),
     q<{ mode: 'solo' | 'duo'; rnk: string }>(
+      // the era filter sits INSIDE `best`, for the reason `recordLeaderboard` documents:
+      // one row per player, so filtering after it drops a player who has a 3D run
       `with best as (
          select user_id, mode, max(score) as score
-         from records where balance_version = $1 and game = $3 group by user_id, mode
+         from records where balance_version = $1 and game = $3 ${recPhys} group by user_id, mode
        ), ranked as (
          select user_id, mode, rank() over (partition by mode order by score desc) as rnk
          from best
        )
        select mode, rnk from ranked where user_id = $2`,
-      [balanceVersion, userId, gm],
+      phys ? [balanceVersion, userId, gm, phys] : [balanceVersion, userId, gm],
     ),
     q<{ played: string; wins: string }>(
       `select count(*) as played, count(*) filter (where mp.won) as wins

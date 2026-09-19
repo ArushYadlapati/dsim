@@ -21,6 +21,17 @@ LEAVES mid-match is retained (`departed`) so the match still rates. **SOLO RECOR
 (score-attack): results show NET score (earned − own penalties), no opponent/winner, and
 PB / WR / global rank per **mode × drivetrain × season**. Boards, records, and Act→Season
 periods are **keyed per game**, so DECODE and CR never share a leaderboard.
+**A RECORD BOARD IS ALSO ONE PHYSICS** (owner ruling, 2026-09-18): every server-connected match
+of a game that can step 3D runs 3D (`Room.physics` / `serverPhysics`), so the board shows 3D runs
+only. `boardPhysics` in `repo.ts` is the single predicate and it is applied by the DATA LAYER,
+not by a caller — `recordLeaderboard`, `personalBest`, `recordRank` and `getUserStats`'s record
+half all read it, because the era filter used to be an optional argument that `/api/records`
+filled from a QUERY PARAMETER and every path that forgot to ask silently mixed both eras. The
+filter sits INSIDE the per-player `best` CTE: filtering after it would find a player's 2D
+personal best, reject it, and leave them off a board they have a legitimate 3D score on.
+`submitRecord` refuses a 2D container at the table, read off the replay and never off a body.
+Pre-ruling 2D rows are KEPT (no season reset); they just stop appearing. Covered in
+`npm run dbtest`.
 **ADMIN MENU** (`src/ui/Admin.tsx`, `/admin`) gated on the signed-in UUID (`ADMIN_USER_IDS`;
 the server enforces every action independently). **VERSION GATE**: a new build is detected
 (`__BUILD_ID__` → `/version.json` poll) and forces a refresh when a player STARTS a run

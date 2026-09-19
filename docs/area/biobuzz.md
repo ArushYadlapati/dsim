@@ -70,9 +70,25 @@ BIOBUZZ, a persistent 2.1" overlap under a pressing chassis, a struck pollen rea
 Spec: `docs/biobuzz/plan-3d.md` (owner decisions in §12). **One game, two physics.**
 `World.biobuzz.physics` is `'2d' | '3d'` (absent reads `'2d'`; read it ONLY through
 `biobuzzPhysics(world)`); `biobuzzStep` dispatches to `step2d` (the untouched pipeline above) or
-`step3d`. Solo practice picks via `GameSettings.practicePhysics` (default `'3d'`; Practice setup
-has the control); online rooms, LAN and replays are still 2D until Day 2 (`RoomConfig.physics`).
-The 2D pipeline is PERMANENT (owner rule): every existing check must stay byte-identical.
+`step3d`. The 2D pipeline is PERMANENT (owner rule): every existing check must stay
+byte-identical.
+
+⚠️ **EVERY SERVER-CONNECTED MATCH IS 3D — nobody picks** (owner ruling, 2026-09-18). Record runs,
+ranked, matchmade, custom code rooms, spectators and LAN all run `'3d'` for a game whose
+`physicsOptions` include it. `Room.physics` is that one line (`serverPhysics`,
+`src/games/types.ts`); `RoomConfig.physics` still exists on the wire but no current server reads
+it, and the custom lobby's 3D/2D picker is gone. The reason is the RECORD BOARD: two solves
+feeding one board is two boards, so `recordLeaderboard`, `personalBest`, `recordRank` and the
+career panel all filter to `'3d'` server-side (`boardPhysics`, `server/db/repo.ts`) and
+`submitRecord` refuses a 2D container outright. Pre-ruling 2D rows are kept, not deleted — they
+simply stop appearing on a board; no season was reset. An old client without the `'bb3d'` cap is
+now REFUSED (`BB3D_REFUSAL`) rather than downgraded to a silent 2D room.
+
+**2D survives exactly where nothing reaches a board:** solo practice and free drive, via
+`GameSettings.practicePhysics` (default `'3d'`; Practice setup has the control). A record run
+whose 3D chunk fails to load REFUSES (`RecordRun.tsx` preflights it); only a practice falls back
+(`GameView`). Practice-run history (`practice_runs`) keeps its own `physics` tag and is listed
+newest-first — it is never ranked, which is what keeps the two eras from meeting there.
 
 - ⚠️ **The "BIOBUZZ owns no ground-pollen physics" rule above is the 2D pipeline's.** `sim3d/`
   OWNS its own solve: one persistent Rapier 3D world per `World` object (`WeakMap` in

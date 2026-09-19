@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import type { GameSettings } from '../game';
-import type { Alliance, GameSettings as GS, Physics, RobotSpec } from '../types';
+import type { Alliance, GameSettings as GS, RobotSpec } from '../types';
 import { START_POSES } from '../config';
 import { CHAIN_START_POSES } from '../games/chain/config';
 import { StartPositionEditor } from './StartPositionEditor';
@@ -8,6 +8,7 @@ import { savedStartCap } from './startPositions';
 import { useAds } from '../ads/AdsProvider';
 import { ChainStartEditor } from './ChainStartEditor';
 import { moduleFor } from '../games';
+import { serverPhysics } from '../games/types';
 import { selectStart, switchCategory, saveStart, deleteSavedStart, indexCategory, startSelectionLegal } from './startPositions';
 import { useRoleSwap, useDismissable } from './useRoleSwap';
 import { RoleSwapBar } from './RoleSwapBar';
@@ -147,21 +148,20 @@ export function Lobby({
   // entry sub-mode: pick whether you're creating a fresh room or joining a code
   const [entryMode, setEntryMode] = useState<'create' | 'join'>('create');
   /**
-   * THE ROOM'S PHYSICS, and it is a CREATE-time choice only.
+   * THE ROOM'S PHYSICS IS NOT A CHOICE ANY MORE (owner ruling, 2026-09-18).
    *
-   * A room's physics is fixed when the room is made (`RoomConfig.physics`), so this control
-   * belongs on the entry screen next to Create room and nowhere else — by the time the roster
-   * arrives and `isHost` is knowable, the world it describes has already been decided. A
-   * joiner's value is ignored by the server, which is right: the room they are dialling into
-   * already has one, and the code carries no way to negotiate.
+   * There was a 3D/2D picker here, on the create side, because `RoomConfig.physics` was the
+   * host's to set. It is not: every server-connected match of a game that can step 3D runs 3D
+   * (`serverPhysics`, and `Room.physics` enforces it), so a picker offered a choice the server
+   * would overrule and an answer — "2D" — whose runs could reach the record board. The 2D
+   * pipeline stays available where it does not reach a board: solo practice and free drive,
+   * through `GameSettings.practicePhysics`.
    *
-   * Defaults `'3d'` for a game that offers it (plan §2.1). The control is hidden entirely for
-   * a game whose `physicsOptions` lack `'3d'`, which is DECODE and Chain Reaction — offering a
-   * choice their `step` cannot honour would be offering a choice that does not exist.
+   * `physicsOffered` survives as the predicate for the ONE LINE that replaces it, and for the
+   * value below.
    */
   const roomGame = config.game ?? settings.game;
-  const physicsOffered = !!moduleFor(roomGame).physicsOptions?.includes('3d');
-  const [roomPhysics, setRoomPhysics] = useState<Physics>('3d');
+  const physicsOffered = serverPhysics(moduleFor(roomGame)) === '3d';
   const [copied, setCopied] = useState(false);
   // One app, several regions: a shared room code only lands two people on the same machine
   // if they connect to the same one. JOINING an invite, that is not a choice — it is
@@ -372,10 +372,20 @@ export function Lobby({
     return {
       ...config,
       game: config.game ?? settings.game,
-      // OMITTED unless this game offers 3D and the host picked it. Sending `physics: '2d'`
-      // and sending nothing mean the same thing to the server, and sending nothing is what
-      // keeps a DECODE or Chain Reaction join byte-identical to what it was before Day 2.
-      physics: physicsOffered && roomPhysics === '3d' ? '3d' : undefined,
+      /**
+       * ⚠️ STILL SENT, THOUGH THIS SERVER IGNORES IT — and that is the point.
+       *
+       * A current server decides a room's physics itself (`Room.physics`). An OLDER one does
+       * not: it reads this field and defaults it to `'2d'`, so a new client that stopped
+       * sending anything would open a silent 2D BIOBUZZ room on a server one deploy behind and
+       * put its runs on the board. One Fly app serves every client version, so saying `'3d'`
+       * out loud is what makes both servers build the same room.
+       *
+       * OMITTED for a game with no 3D solve, which keeps a DECODE or Chain Reaction join
+       * byte-identical to what it was before Day 2 — `physics: '2d'` and nothing mean the same
+       * thing, and nothing is what the wire has always carried.
+       */
+      physics: physicsOffered ? '3d' : undefined,
     };
   }
 
@@ -635,33 +645,15 @@ export function Lobby({
                 <span className="ot">Join room</span>
               </button>
             </div>
-            {/* THE PHYSICS IS THE HOST'S TO PICK AND ONLY AT CREATION — see `roomPhysics`.
-                Hidden for a game with no 3D solve, and hidden on the JOIN side, where the
-                room already has one and this control would imply a negotiation that does not
-                exist. The sentence under it states the consequence rather than restating the
-                labels: which one is compared with ranked is the whole reason to choose. */}
+            {/* WHAT IS LEFT OF THE PICKER: a statement, not a control. Every room runs the 3D
+                physics, so the thing worth saying is the consequence for a machine that
+                struggles with it — practice is where the 2D solve still lives. Shown on the
+                create side only; a joiner is not choosing anything. */}
             {entryMode === 'create' && physicsOffered && (
-              <>
-                <div className="ds-opts two">
-                  <button
-                    className={`ds-opt ${roomPhysics === '3d' ? 'on' : ''}`}
-                    onClick={() => setRoomPhysics('3d')}
-                  >
-                    <span className="ot">3D physics</span>
-                  </button>
-                  <button
-                    className={`ds-opt ${roomPhysics === '2d' ? 'on' : ''}`}
-                    onClick={() => setRoomPhysics('2d')}
-                  >
-                    <span className="ot">2D physics</span>
-                  </button>
-                </div>
-                <p className="ds-hint">
-                  {roomPhysics === '3d'
-                    ? 'The same solve ranked matches run on. Everyone in the room loads it.'
-                    : 'The lighter solve, for a low-end machine. Not comparable with ranked.'}
-                </p>
-              </>
+              <p className="ds-hint">
+                Online rooms run on the 3D physics, so everyone in the room loads it. Practice
+                can still run on the 2D physics.
+              </p>
             )}
             {entryMode === 'join' && (
               <label className="ds-field">

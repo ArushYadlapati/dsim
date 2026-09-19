@@ -4,6 +4,7 @@ import { actFor, getRating, getSkill, createPendingMatch } from './db/repo';
 import { dbEnabled } from './db/pool';
 import type { GameId, Physics } from '../src/types';
 import { simModuleFor } from '../src/games/sim';
+import { serverPhysics } from '../src/games/types';
 import { DEPLOY_REGIONS, bestHost, type PingInfo } from './regions';
 import type { PendingMatch, PendingRosterEntry } from './matchTypes';
 import { QUEUE_NEED, type LobbyPlayer, type QueueMode, type ServerMsg } from '../src/net/protocol';
@@ -660,7 +661,7 @@ export class Matchmaker {
    * Exported so `npm run test:mm` asserts the rule rather than the call site.
    */
   static stagedPhysics(game: GameId | undefined): Physics {
-    return simModuleFor(game).physicsOptions?.includes('3d') ? '3d' : '2d';
+    return serverPhysics(simModuleFor(game));
   }
 
   /** stage the roster for the host region + tell each client to reconnect there */

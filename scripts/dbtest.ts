@@ -1061,13 +1061,58 @@ async function main(): Promise<void> {
     });
     const recRow = await db.query(`select physics from records where id = $1`, [rec3d]);
     check('physics: a record run stores its solve', (recRow.rows[0] as { physics: string }).physics === '3d');
-    const recLegacy = await repo.submitRecord({
-      userId: 'phys-a', mode: 'solo', drivetrain: 'mecanum', score: 45,
-      balanceVersion: SEASON, replayId: id2d, game: 'biobuzz',
+
+    /**
+     * ---- THE WRITE GATE (owner ruling, 2026-09-18) -----------------------------------
+     *
+     * Every server-connected BIOBUZZ match is 3D (`Room.physics`), so a 2D record submission
+     * for it can only come from a process that disagrees — a stale one mid-deploy, or a caller
+     * that invented one. `submitRecord` is the chokepoint and it REFUSES, rather than writing a
+     * row every later read then has to hide. DECODE is the control: it has one solve, so its
+     * untagged submissions are exactly what they always were.
+     */
+    let twoD = '';
+    try {
+      await repo.submitRecord({
+        userId: 'phys-a', mode: 'solo', drivetrain: 'mecanum', score: 45,
+        balanceVersion: SEASON, replayId: id2d, game: 'biobuzz', physics: '2d',
+      });
+    } catch (e) {
+      twoD = e instanceof Error ? e.message : String(e);
+    }
+    check('ruling: a 2D record submission for BIOBUZZ is REFUSED', twoD !== '', twoD);
+    let untagged = '';
+    try {
+      await repo.submitRecord({
+        userId: 'phys-a', mode: 'solo', drivetrain: 'mecanum', score: 46,
+        balanceVersion: SEASON, replayId: id2d, game: 'biobuzz',
+      });
+    } catch (e) {
+      untagged = e instanceof Error ? e.message : String(e);
+    }
+    check('ruling: ...and so is an UNTAGGED one, since absent reads 2d', untagged !== '', untagged);
+    await repo.ensureProfile('phys-dec', 'Decoder');
+    const decRec = await repo.submitRecord({
+      userId: 'phys-dec', mode: 'solo', drivetrain: 'mecanum', score: 77,
+      balanceVersion: SEASON, replayId: id2d, game: 'decode',
     });
     check(
-      'physics: a record run with no tag is 2d',
-      ((await db.query(`select physics from records where id = $1`, [recLegacy])).rows[0] as { physics: string }).physics === '2d',
+      'ruling: ...but a DECODE record run with no tag is accepted and stored as 2d',
+      ((await db.query(`select physics from records where id = $1`, [decRec])).rows[0] as { physics: string })
+        .physics === '2d',
+    );
+
+    /**
+     * THE PRE-RULING ROW. Written with raw SQL on purpose: `submitRecord` refuses it now, and
+     * the rows that matter are the ones already in the table from before the ruling. Its score
+     * is HIGHER than the same player's 3D run, which is the shape that breaks a naive fix —
+     * dedupe first and filter after, and this row becomes their "best", gets rejected by the
+     * filter, and the player vanishes from a board they have a real 3D score on.
+     */
+    await db.query(
+      `insert into records (user_id, mode, drivetrain, score, balance_version, replay_id, game, physics)
+       values ('phys-a', 'solo', 'mecanum', 200, $1, $2, 'biobuzz', '2d')`,
+      [SEASON, id2d],
     );
 
     // ---- the drivetrain CHECK finally knows about butterfly ---------------------------
@@ -1092,7 +1137,7 @@ async function main(): Promise<void> {
     try {
       await repo.submitRecord({
         userId: 'phys-a', mode: 'solo', drivetrain: 'hovercraft', score: 1,
-        balanceVersion: SEASON, replayId: id3d, game: 'biobuzz',
+        balanceVersion: SEASON, replayId: id3d, game: 'biobuzz', physics: '3d',
       });
     } catch (e) {
       bogus = e instanceof Error ? e.message : String(e);
@@ -1100,34 +1145,77 @@ async function main(): Promise<void> {
     check('physics: ...and the constraint still refuses a drivetrain that does not exist', bogus !== '');
 
     /**
-     * ---- the BOARD read path: the badge and the era filter (Day 3) --------------------
+     * ---- the BOARD read path: the DEFAULT is the 3D era ------------------------------
      *
-     * The column existing and the board SHOWING it are different facts, and the gap between
-     * them is the kind that ships: a `select` that simply does not project two columns still
-     * compiles and still renders, only bare — which is how the ranked board once sat badge-less
-     * (`docs/area/accounts.md`). So the projection is asserted, and so is the filter.
+     * The column existing and the board READING it are different facts, and the gap between
+     * them is the kind that ships: a `select` that simply does not project a column still
+     * compiles and still renders — which is how the ranked board once sat badge-less
+     * (`docs/area/accounts.md`). So the projection is asserted, and so is the default.
+     *
+     * The default is the whole point of the ruling. It used to be "every row", with an optional
+     * `physics` argument that `/api/records` filled from a QUERY PARAMETER — so the board a
+     * client saw was the board it asked for, and a personal best or a career panel that forgot
+     * to ask read both eras. `boardPhysics` moved that decision into the data layer.
      *
      * ⚠️ **THE FILTER IS INSIDE `best`, AND THIS IS THE CHECK THAT SAYS SO.** `best` is one row
-     * per player. `phys-a` above has a 3D run of 123 and a 2D run of 45, so their overall best
-     * is the 3D one — and a filter applied AFTER `best` would find that row, reject it, and
-     * leave the player off a 2D board they demonstrably have a 2D score on. Filtering first is
-     * what makes "3D" mean "each player's best 3D run" instead of "players whose best run
-     * happens to be 3D".
+     * per player. `phys-a` has a 3D run of 123 and a pre-ruling 2D run of 200, so their overall
+     * best is the 2D one — and a filter applied AFTER `best` would find that row, reject it,
+     * and leave the player off a board they demonstrably have a 3D score on. Filtering first is
+     * what makes the board "each player's best 3D run".
      */
     {
-      const all = await repo.recordLeaderboard({ mode: 'solo', balanceVersion: SEASON, game: 'biobuzz' });
-      const mine = all.find((r) => r.userId === 'phys-a');
-      check('physics/board: an unfiltered board projects the era of each row', mine?.physics === '3d', String(mine?.physics));
-      const only3d = await repo.recordLeaderboard({ mode: 'solo', balanceVersion: SEASON, game: 'biobuzz', physics: '3d' });
-      check('physics/board: the 3D filter keeps the 3D run', only3d.find((r) => r.userId === 'phys-a')?.score === 123,
-        String(only3d.find((r) => r.userId === 'phys-a')?.score));
+      const def = await repo.recordLeaderboard({ mode: 'solo', balanceVersion: SEASON, game: 'biobuzz' });
+      const mine = def.find((r) => r.userId === 'phys-a');
+      check(
+        'ruling/board: the DEFAULT BIOBUZZ board shows the player’s 3D run, not their higher 2D one',
+        mine?.score === 123 && mine?.physics === '3d',
+        `${String(mine?.score)}/${String(mine?.physics)}`,
+      );
+      check(
+        'ruling/board: ...and no 2D row reaches it at all',
+        !def.some((r) => r.physics === '2d'),
+        def.map((r) => `${r.userId}:${String(r.physics)}`).join(','),
+      );
+      // the ESCAPE HATCH is still an argument (admin moderation, and this suite) — it is only
+      // the public request that can no longer choose an era
       const only2d = await repo.recordLeaderboard({ mode: 'solo', balanceVersion: SEASON, game: 'biobuzz', physics: '2d' });
       const mine2d = only2d.find((r) => r.userId === 'phys-a');
       check(
-        'physics/board: ...and the 2D filter finds the player’s best 2D run, not nothing',
-        mine2d?.score === 45 && mine2d?.physics === '2d',
+        'ruling/board: an explicit 2D read still finds the retained row — nothing was deleted',
+        mine2d?.score === 200 && mine2d?.physics === '2d',
         `${String(mine2d?.score)}/${String(mine2d?.physics)}`,
       );
+      // DECODE is the control: one solve, so no filter is applied and its SQL is unchanged
+      const dec = await repo.recordLeaderboard({ mode: 'solo', balanceVersion: SEASON, game: 'decode' });
+      check(
+        'ruling/board: a one-solve game is unfiltered — its 2D rows are its only rows',
+        dec.some((r) => r.userId === 'phys-dec'),
+        `${dec.length} rows`,
+      );
+
+      /**
+       * THE THREE FIGURES BESIDE THE BOARD read the same era, or they contradict it: a PB of
+       * 200 next to a board row of 123 is the player being told their best run is one nobody
+       * can see, and a rank counted over both eras is a position on no board.
+       */
+      const pb = await repo.personalBest('phys-a', 'solo', 'mecanum', SEASON, 'biobuzz');
+      check('ruling/pb: the personal best is the 3D one, not the higher 2D one', pb === 123, String(pb));
+      const pbDec = await repo.personalBest('phys-dec', 'solo', 'mecanum', SEASON, 'decode');
+      check('ruling/pb: ...and a one-solve game’s PB is untouched', pbDec === 77, String(pbDec));
+      const rank = await repo.recordRank('phys-a', 'solo', 'mecanum', SEASON, 'biobuzz');
+      check(
+        'ruling/rank: the rank is computed WITHIN the 3D set',
+        rank.rank === 1 && rank.total === 1,
+        `${rank.rank}/${rank.total}`,
+      );
+      const stats = await repo.getUserStats('phys-a', SEASON, 'biobuzz');
+      const solo = stats.records.find((r) => r.mode === 'solo');
+      check(
+        'ruling/career: the career panel’s record PB is the 3D one too',
+        solo?.best === 123,
+        String(solo?.best),
+      );
+      check('ruling/career: ...and its rank is over the 3D set', solo?.rank === 1, String(solo?.rank));
     }
 
     // ---- matches: the history row ----------------------------------------------------

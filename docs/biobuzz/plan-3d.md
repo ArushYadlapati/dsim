@@ -78,16 +78,27 @@ tick and calls `step2d` (today's `step.ts` body, moved) or `step3d`.
 
 Who picks the physics:
 
+⚠️ **SUPERSEDED 2026-09-18 by the owner's ruling: every server-connected match is 3D.** The
+table below is the Day 2 design, kept for the reasoning; the rows marked *(was)* no longer hold.
+
 | context | physics | who decides |
 |---|---|---|
 | ranked, matchmade, record rooms | `3d` | the server, always |
-| custom lobby (code room) | `3d` default | the host, a lobby option (`2d` for a casual or low-end room) |
-| LAN room | `3d` default | the host |
-| solo practice | `3d` default | the player, in Practice setup |
+| custom lobby (code room) | `3d` | the server, always — *(was: the host, a `2d` lobby option)* |
+| LAN room | `3d` | the server, always — a LAN room is an ordinary `Room` — *(was: the host)* |
+| solo practice / free drive | `3d` default | the player, in Practice setup — the ONE place 2D survives |
 | replay playback | the replay's header | recorded |
 
-A room's physics is fixed at creation and rides `RoomConfig.physics`, the `matchStart` message and
-the world bag. Matchmaking stages rooms with `physics: '3d'` only.
+A room's physics is decided by `Room.physics` off the GAME alone (`serverPhysics`,
+`src/games/types.ts`) and rides the `matchStart` message and the world bag. `RoomConfig.physics`
+is still on the wire and still sanitized, but no current server reads it — a NEW client keeps
+sending `'3d'` so that a server one deploy behind, which does read it, builds the same room.
+Matchmaking stages rooms with `physics: '3d'` only.
+
+The record board follows: it shows 3D runs only (`boardPhysics` in `server/db/repo.ts`), and so
+do the personal best, the rank and the career panel that sit beside it. The 2D rows from before
+the ruling are kept, not deleted — they keep their replay and their place in a player's own match
+history, and no season was reset over this.
 
 ### 2.2 Mode matrix
 
