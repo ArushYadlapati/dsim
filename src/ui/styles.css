@@ -1091,6 +1091,34 @@ button {
   background: var(--green);
 }
 
+/* CR's endgame ring-stand/lab-area status — only rendered once it's true (see GameView.tsx),
+   so there's no default/neutral state to colour here. Border matches the existing on-canvas
+   badge over the robot (`drawChain.ts`: ascended gold, parked white) — `--ds-warn` (gold-
+   adjacent, not the raw --ds-gold fill, which lands under 3:1 on the light card as a plain
+   border with no ring shape to carry the boundary the way `.catalyst-pip`/`.gate-icon` do)
+   and `--ds-ink` (the dual-theme read of "white": near-white ink on the dark card, same as
+   the canvas badge's literal white on the always-dark field). Both already have AA pairs
+   against the HUD card in contrast.mjs (`.chip.warn`, `.chip ink`) — no new ones needed. */
+.park-status {
+  background: var(--ds-hud);
+  border: 2px solid var(--ds-mut);
+  border-radius: var(--ds-round-md);
+  padding: 8px 12px;
+  font-family: var(--ds-font-mono);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 1px;
+  color: var(--text);
+}
+
+.park-status.ascended {
+  border-color: var(--ds-warn);
+}
+
+.park-status.parked {
+  border-color: var(--ds-ink);
+}
+
 /* on-screen leave/reset buttons (Esc/R keyboard shortcuts also work) */
 .game-buttons {
   position: absolute;

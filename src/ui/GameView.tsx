@@ -787,13 +787,14 @@ function Hud({ hud, showEventLog }: { hud: HudSnapshot; showEventLog: boolean })
               )}
             </div>
           )}
-          {/* a THIRD card — CR's ring-stand/lab-area endgame status. Present for the whole of
-              endgame (not just once earned), so it reads as a standing reminder rather than a
-              chip that only ever confirms what already happened: red until this robot has
-              ascended or parked, then it turns. Border only — see HUD-RELOCATION.md. */}
-          {cr && endgame && hud.chain && (
+          {/* a THIRD card — CR's ring-stand/lab-area endgame status. Only while it's actually
+              true (`hud.chain.endgame` is already phase-gated to 'none' outside endgame by
+              the sim itself, see `chainStep`), so no default/reminder state to render.
+              Border colour matches the existing on-canvas badge over the robot
+              (`drawChain.ts`: ascended gold, parked white) — see HUD-RELOCATION.md. */}
+          {cr && hud.chain && (hud.chain.endgame === 'ascended' || hud.chain.endgame === 'parked') && (
             <div className={`park-status ${hud.chain.endgame}`}>
-              {hud.chain.endgame === 'ascended' ? 'ASCENDED' : hud.chain.endgame === 'parked' ? 'PARKED' : 'PARK'}
+              {hud.chain.endgame === 'ascended' ? 'ASCENDED' : 'PARKED'}
             </div>
           )}
         </div>

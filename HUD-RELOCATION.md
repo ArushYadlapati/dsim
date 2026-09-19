@@ -23,27 +23,41 @@ left where they are.
   Replacement/destination: have it appear in the new hud
   DONE — `.card-icon` in `.sub-hud`, `.yellow`/`.red`.
 
-- [ ] **🌐 `<server>`** chip — net/region indicator, online matches only.
+- [x] **🌐 `<server>`** chip — net/region indicator, online matches only.
   Replacement/destination: in the bottom right corner, add a new box with design based on design.md. the server will appear there.
+  DONE — new `.net-corner` cluster, bottom-right, mirroring `.status-wrap`'s own
+  corner-anchor idiom. The server chip is the corner box itself (unchanged `.chip on`).
 
-- [ ] **👁 `<count>`** chip — spectator count, shown only when > 0, online only.
+- [x] **👁 `<count>`** chip — spectator count, shown only when > 0, online only.
   Replacement/destination: "spec: #" caps or not caps, left of the new bottom right corner box. appears to the left side of the server.
+  DONE — `SPEC <n>` (text, not the eye emoji), leftmost in `.net-corner-row`.
 
-- [ ] **`<NetQuality>`** — the SMOOTH/OK/CHOPPY connection dot (+ its expandable ping
+- [x] **`<NetQuality>`** — the SMOOTH/OK/CHOPPY connection dot (+ its expandable ping
   graph), online only.
   Replacement/destination: in the bottom right corner box. appears as it's own box to the right of the left of right box. when pressed, it expands. between the spectator count and bottom right box.
+  DONE — moved into `.net-corner-row` between SPEC and the server chip, unchanged
+  otherwise. Also fixed a real bug found while moving it: `.chip.net-quality.clickable`
+  never had `pointer-events: auto`, and it sits under `.hud` (`pointer-events: none`) —
+  the click-to-expand never actually reached the chip. Added the missing declaration.
+  The ping graph now renders ABOVE the row (the cluster is anchored by `bottom`, not
+  `top`, so it grows upward when opened instead of running off the bottom edge).
 
-- [ ] **WAITING · `<name>`** chip — waiting on a peer to (re)join, online only.
+- [x] **WAITING · `<name>`** chip — waiting on a peer to (re)join, online only.
   Replacement/destination: put it pinned in the nofications instead
+  DONE — pinned line in `.eventlog` (`.eventlog-pinned`, same treatment as the
+  per-game pinned notices), above the toast list.
 
-- [ ] **⚠ DESYNC** chip — connection desync warning, online only.
+- [x] **⚠ DESYNC** chip — connection desync warning, online only.
   Replacement/destination: flashing box that replaces the netquality box when desynced
+  DONE — new `.chip.desync` (red-ink, blinking via the existing `.timer-panel.urgent`
+  keyframe), rendered in NetQuality's slot in `.net-corner-row` instead of it.
 
 ## DECODE
 
-- [ ] **FOULS `n MIN · n MAJ`** chip — this alliance's foul tally so far this match
+- [x] **FOULS `n MIN · n MAJ`** chip — this alliance's foul tally so far this match
   (match mode only, only shown once > 0).
   Replacement/destination: pinned in notifications
+  DONE — pinned line in `.eventlog`, same as WAITING above.
 
 ## Chain Reaction
 
@@ -52,8 +66,17 @@ left where they are.
   Replacement/destination: not needed — REMOVED (`GameView.tsx`, the unused
   `CHAIN_MODE_LABELS` import went with it)
 
-- [ ] **▲ ASCENDED** / **■ PARKED** chip — endgame ring-stand/lab-area status.
+- [x] **▲ ASCENDED** / **■ PARKED** chip — endgame ring-stand/lab-area status.
   Replacement/destination: have a new gui box underneath the topright one that says "park" whenever endgame begins. it will be a yellow border for parked, and green for ascended, red at all other times
+  DONE, then revised — new `.park-status` box under `.status-wrap` (below `.sub-hud`),
+  rendered ONLY once `hud.chain.endgame` is `'ascended'` or `'parked'` (the sim already
+  reads `'none'` outside endgame, so no separate box for "endgame started but neither
+  yet" and nothing to gate on the clock). Border colour matches the existing on-canvas
+  badge drawn over the robot itself (`drawChain.ts`: ascended gold, parked white) rather
+  than the original yellow/green/red scheme: `--ds-warn` (gold-adjacent) for ascended,
+  `--ds-ink` (the dual-theme read of "white" — near-white on the dark card) for parked.
+  Both already have AA pairs against the HUD card in `contrast.mjs`, so no new ones
+  were needed.
 
 - [ ] *(no FOULS chip exists for CR today — the DECODE one above is gated to DECODE only,
   so CR's own G05/G06 tally currently has no HUD chip at all. Worth deciding whether it
@@ -69,5 +92,7 @@ chips — CARD and FOULS don't currently fire for this game at all).
 
 ---
 
-Once you've filled in destinations, I'll wire each one to its new spot and pull it out
-of `.robot-status`.
+**All items above are wired.** `npm run build`, `npm run uiaudit`, `npm run contrast`
+(225/225) and `npm test` are all green. The one open item is the CR-FOULS note right
+above — a scope decision (does CR's G05/G06 tally get a HUD chip at all?), not a
+relocation, so it's left for a call rather than guessed at.
