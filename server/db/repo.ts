@@ -1849,6 +1849,283 @@ export async function deleteAccount(userId: string): Promise<boolean> {
   });
 }
 
+
+// ------------------------------------------------------ data portability ----
+/**
+ * EVERYTHING THIS DATABASE HOLDS ABOUT ONE ACCOUNT, as one JSON document.
+ *
+ * The twin of `deleteAccount` above, and deliberately written next to it: the two answer the
+ * same question from opposite ends, so a table added to one list and not the other is visible
+ * in a single screenful. The privacy policy promises portability alongside deletion, and a
+ * promise kept by a mailbox is not the same as one kept by a button.
+ *
+ * TWO RULES ABOUT OTHER PEOPLE, because an export is the easiest place in an app to hand
+ * somebody a copy of data that is not theirs:
+ *
+ *  1. **Only rows keyed to this user id**, plus the public facts of matches they played in.
+ *     A versus match involves three other accounts; this export carries the caller's own
+ *     participant row and the match's final score, and NOT the other players — not their ids,
+ *     not their names, not their ratings. That is a real loss of context (you cannot see who
+ *     you beat) and it is the right trade: match history is already on screen in the app for
+ *     anyone who wants to look, and a downloadable file is a thing that gets forwarded.
+ *  2. **Names only where the caller already sees them in the app.** Friends, blocks and
+ *     invites name the other party by handle and username — both public, both already on
+ *     screen in the friends rail, and the list is meaningless without them.
+ *
+ * REPLAY BODIES ARE NOT IN HERE, by id and metadata only. One replay is tens of kilobytes of
+ * per-tick input log; forty of them would make this a multi-megabyte response built in memory
+ * on a machine whose real job is running match loops. Every one of those ids is individually
+ * downloadable from the app already, which is the better shape for a thing that large.
+ *
+ * Returns `null` for an account with no profile row — including one that has just been
+ * deleted, which is what makes "my export after deletion" a 404 rather than an empty file
+ * that looks like a successful export of nothing.
+ */
+export interface AccountExport {
+  /** bumped if the SHAPE changes incompatibly, so a file can be read years later */
+  format: number;
+  exportedAt: string;
+  userId: string;
+  /** what is deliberately absent, stated in the file rather than only in the policy */
+  notes: string[];
+  account: Record<string, unknown>;
+  settings: unknown;
+  robotPresets: Record<string, unknown>[];
+  records: Record<string, unknown>[];
+  practiceRuns: Record<string, unknown>[];
+  lanRuns: Record<string, unknown>[];
+  matches: Record<string, unknown>[];
+  ranked: { ratings: Record<string, unknown>[]; history: Record<string, unknown>[] };
+  standing: Record<string, unknown> | null;
+  standingEvents: Record<string, unknown>[];
+  playtime: Record<string, unknown>[];
+  friends: {
+    friends: Record<string, unknown>[];
+    requestsReceived: Record<string, unknown>[];
+    requestsSent: Record<string, unknown>[];
+    blocked: Record<string, unknown>[];
+    invitesReceived: Record<string, unknown>[];
+    invitesSent: Record<string, unknown>[];
+  };
+  replays: Record<string, unknown>[];
+  payments: Record<string, unknown>[];
+}
+
+export async function exportAccount(userId: string): Promise<AccountExport | null> {
+  const prof = await q<{
+    handle: string;
+    username: string | null;
+    created_at: string;
+    updated_at: string;
+    role: string | null;
+    settings: unknown;
+    supporter_until: string | null;
+    kofi_email: string | null;
+    replays_public: boolean;
+    terms_version: string | null;
+    terms_accepted_at: string | null;
+  }>(
+    `select handle, username, created_at, updated_at, role, settings, supporter_until,
+            kofi_email, replays_public, terms_version, terms_accepted_at
+       from profiles where user_id = $1`,
+    [userId],
+  );
+  const p = prof[0];
+  if (!p) return null;
+
+  // NAMED PARTY LOOKUPS. One join per relation rather than one query per friend: these lists
+  // are small (a friends list is dozens, not thousands) but they are still four of them, and
+  // N+1 on an authenticated route is how a rate limit ends up being the only thing between a
+  // button and a Neon bill.
+  const named = (
+    rows: { handle: string; username: string | null; created_at: string }[],
+  ): Record<string, unknown>[] =>
+    rows.map((r) => ({ handle: r.handle, username: r.username, since: r.created_at }));
+
+  const [
+    presets, records, practice, lan, matches, ratings, history, standing, events, activity,
+    friends, reqIn, reqOut, blocked, invIn, invOut, payments,
+  ] = await Promise.all([
+    q<Record<string, unknown>>(
+      `select slot, name, spec, updated_at from robot_presets where user_id = $1 order by slot`,
+      [userId],
+    ),
+    // `partner_id` is another account's id, so it is reported as a BOOLEAN — "this was a duo
+    // run" is the fact the owner needs; who with is the other person's row.
+    q<Record<string, unknown>>(
+      `select id, game, mode, drivetrain, score, balance_version, replay_id, physics,
+              created_at, partner_id is not null as was_duo, config
+         from records where user_id = $1 order by created_at desc`,
+      [userId],
+    ),
+    q<Record<string, unknown>>(
+      `select id, game, score, ticks, balance_version, replay_id, physics, view, created_at
+         from practice_runs where user_id = $1 order by created_at desc`,
+      [userId],
+    ),
+    // `participants` is the roster the HOST uploaded with the match, and is display text they
+    // already see in their own self-hosted replay list.
+    q<Record<string, unknown>>(
+      `select id, match_id, game, score, participants, replay_id, created_at
+         from lan_runs where host_user_id = $1 order by created_at desc`,
+      [userId],
+    ),
+    // ⚠️ THE CALLER'S OWN PARTICIPANT ROW AND THE MATCH'S OWN FACTS, AND NOTHING ELSE. No
+    // second join back to `match_participants`, deliberately: adding one is how the other
+    // three players in a 2v2 would end up in somebody's download.
+    q<Record<string, unknown>>(
+      `select m.id as match_id, m.game, m.mode, m.ranked, m.physics, m.balance_version,
+              m.replay_id, m.created_at,
+              mp.alliance, mp.drivetrain, mp.score, mp.won,
+              mp.rating_before, mp.rating_after
+         from match_participants mp join matches m on m.id = mp.match_id
+        where mp.user_id = $1 order by m.created_at desc`,
+      [userId],
+    ),
+    q<Record<string, unknown>>(
+      `select game, mode, act, rating, rd, vol, games, updated_at
+         from elo_ratings where user_id = $1 order by game, mode, act`,
+      [userId],
+    ),
+    q<Record<string, unknown>>(
+      `select game, mode, balance_version, rating, rd, vol, games, updated_at
+         from elo_history where user_id = $1 order by game, mode, balance_version`,
+      [userId],
+    ),
+    q<Record<string, unknown>>(
+      `select score, restricted_until, healed_at, updated_at
+         from account_standing where user_id = $1`,
+      [userId],
+    ),
+    q<Record<string, unknown>>(
+      `select kind, points, score_after, cooldown_min, rating_charge, game, mode, at
+         from standing_events where user_id = $1 order by at desc`,
+      [userId],
+    ),
+    q<Record<string, unknown>>(
+      `select game, games, seconds, updated_at from user_activity where user_id = $1 order by game`,
+      [userId],
+    ),
+    // friendships store ONE row per unordered pair, so "the other one" is whichever column
+    // is not the caller (see migration 0016's `user_low < user_high` check).
+    q<{ handle: string; username: string | null; created_at: string }>(
+      `select pr.handle, pr.username, f.created_at
+         from friendships f
+         join profiles pr
+           on pr.user_id = case when f.user_low = $1 then f.user_high else f.user_low end
+        where f.user_low = $1 or f.user_high = $1
+        order by f.created_at`,
+      [userId],
+    ),
+    q<{ handle: string; username: string | null; created_at: string }>(
+      `select pr.handle, pr.username, r.created_at
+         from friend_requests r join profiles pr on pr.user_id = r.from_user_id
+        where r.to_user_id = $1 order by r.created_at`,
+      [userId],
+    ),
+    q<{ handle: string; username: string | null; created_at: string }>(
+      `select pr.handle, pr.username, r.created_at
+         from friend_requests r join profiles pr on pr.user_id = r.to_user_id
+        where r.from_user_id = $1 order by r.created_at`,
+      [userId],
+    ),
+    q<{ handle: string; username: string | null; created_at: string }>(
+      `select pr.handle, pr.username, b.created_at
+         from friend_blocks b join profiles pr on pr.user_id = b.blocked_id
+        where b.blocker_id = $1 order by b.created_at`,
+      [userId],
+    ),
+    q<Record<string, unknown>>(
+      `select pr.handle, pr.username, i.room, i.game, i.kind, i.record, i.created_at
+         from room_invites i join profiles pr on pr.user_id = i.from_user_id
+        where i.to_user_id = $1 order by i.created_at`,
+      [userId],
+    ),
+    q<Record<string, unknown>>(
+      `select pr.handle, pr.username, i.room, i.game, i.kind, i.record, i.created_at
+         from room_invites i join profiles pr on pr.user_id = i.to_user_id
+        where i.from_user_id = $1 order by i.created_at`,
+      [userId],
+    ),
+    // ⚠️ `email` IS NOT SELECTED, and that is not squeamishness. The payer address on this row
+    // is the caller's own, so including it would be defensible — but a payment row survives
+    // account deletion with the email nulled (see `deleteAccount`), and a route that reads the
+    // column at all is one refactor away from reading it for the wrong `claimed_by`. The
+    // address is on the caller's own Ko-fi receipt, which is a better source than this table.
+    q<Record<string, unknown>>(
+      `select transaction_id, kind, amount, currency, is_subscription, months, claimed_at
+         from kofi_payments where claimed_by = $1 order by claimed_at`,
+      [userId],
+    ),
+  ]);
+
+  /**
+   * REPLAY IDS AND WHAT THEY BELONG TO, gathered from the three tables that point at one.
+   *
+   * Read off the rows already fetched rather than with a fourth query, and this is the same
+   * union `deleteAccount` deletes by — a replay has no back-reference to its owner, so the
+   * only way to know which of them are yours is to ask the things that reference them.
+   */
+  const replayRefs: Record<string, unknown>[] = [];
+  const pushRef = (kind: string, rows: Record<string, unknown>[]): void => {
+    for (const r of rows) {
+      if (typeof r.replay_id === 'string') {
+        replayRefs.push({ id: r.replay_id, kind, game: r.game ?? null, at: r.created_at ?? null });
+      }
+    }
+  };
+  pushRef('record', records);
+  pushRef('practice', practice);
+  pushRef('lanMatch', lan);
+  // A versus replay is shared with the other players and is released only when EVERY one of
+  // them opts in (migration 0038), so it is listed as a match replay rather than as "yours".
+  pushRef('match', matches);
+
+  return {
+    format: 1,
+    exportedAt: new Date().toISOString(),
+    userId,
+    notes: [
+      'Only rows belonging to this account are included. Other players in a match you played are deliberately absent — their names, ids and ratings are theirs, not yours.',
+      'Replays are listed by id and metadata. The input log itself is tens of kilobytes per match and is downloadable one at a time from the app.',
+      'Your sign-in identity (email address and password) lives with the authentication provider, not in this database, so it is not in this file.',
+      'Settings, theme and other on-device values are in your browser, not here. The privacy page lists every key and your browser can show you their contents.',
+    ],
+    account: {
+      handle: p.handle,
+      username: p.username,
+      createdAt: p.created_at,
+      updatedAt: p.updated_at,
+      staffRole: p.role,
+      supporterUntil: p.supporter_until,
+      supporterRenewalLinked: !!p.kofi_email,
+      replaysPublic: p.replays_public,
+      termsVersion: p.terms_version,
+      termsAcceptedAt: p.terms_accepted_at,
+    },
+    settings: p.settings ?? null,
+    robotPresets: presets,
+    records,
+    practiceRuns: practice,
+    lanRuns: lan,
+    matches,
+    ranked: { ratings, history },
+    standing: standing[0] ?? null,
+    standingEvents: events,
+    playtime: activity,
+    friends: {
+      friends: named(friends),
+      requestsReceived: named(reqIn),
+      requestsSent: named(reqOut),
+      blocked: named(blocked),
+      invitesReceived: invIn,
+      invitesSent: invOut,
+    },
+    replays: replayRefs,
+    payments,
+  };
+}
+
 // -------------------------------------------------------- robot presets -----
 export async function listPresets(
   userId: string,

@@ -60,6 +60,7 @@ import {
   claimKofiPayment,
   recordKofiPayment,
   deleteAccount,
+  exportAccount,
   listSeasons,
   recordLeaderboard,
   saveUserSettings,
@@ -95,6 +96,7 @@ import { DEPLOY_REGIONS, interRegionMs } from './regions';
  *   POST /api/user/settings {settings}       — save your settings (Bearer JWT)
  *   GET  /api/user/privacy                   — your replay-visibility setting (Bearer JWT)
  *   POST /api/user/privacy {replaysPublic}   — set it (Bearer JWT)
+ *   GET  /api/user/export                    — everything we hold about you (Bearer JWT)
  *   GET  /api/replay/<id>                    — 403 when the people in it have not published it
  *
  *   GET  /api/friends                        — friends + requests + presence (Bearer JWT)
@@ -237,6 +239,30 @@ function lanRateOk(userId: string): boolean {
   }
   hit.n++;
   return hit.n <= LAN_MAX_PER_WINDOW;
+}
+
+/**
+ * ONE DATA EXPORT PER MINUTE PER ACCOUNT (`GET /api/user/export`).
+ *
+ * Built to the shape of `lanRateOk` above rather than a generic limiter, because the two
+ * limits are the same kind of thing — an authenticated route whose real cost is database
+ * compute, bounded per ACCOUNT — and one more four-line function is cheaper to read than an
+ * abstraction over two call sites.
+ *
+ * `EXPORT_WINDOW_MS` is the whole limit: there is no burst allowance, because there is no
+ * legitimate reason to ask twice in a minute. The map is swept on the way past for the same
+ * reason the LAN one is, so an idle server does not keep a row per account that ever exported.
+ */
+const EXPORT_WINDOW_MS = 60_000;
+const exportRate = new Map<string, number>();
+
+function exportRateOk(userId: string): boolean {
+  const now = Date.now();
+  if (exportRate.size > 1000) for (const [k, t] of exportRate) if (t <= now) exportRate.delete(k);
+  const until = exportRate.get(userId);
+  if (until && until > now) return false;
+  exportRate.set(userId, now + EXPORT_WINDOW_MS);
+  return true;
 }
 
 /** the Bearer token from an Authorization header, if it looks like one */
@@ -819,6 +845,43 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse): Prom
         json(200, { ok: true, supporterUntil: r.until ?? null, months: r.months ?? 0 }),
         true
       );
+    }
+
+    /**
+     * ---- DATA PORTABILITY: everything we hold about you, as one file ---------
+     *
+     * The other half of the promise `/api/user/delete` keeps. The privacy policy claims a
+     * right of portability for anyone under UK/EU-comparable law, and until this existed the
+     * only way to exercise it was to email a person and wait — which is a promise, not a
+     * feature.
+     *
+     * RATE LIMITED TO ONE PER MINUTE PER ACCOUNT, and that limit is about cost rather than
+     * abuse. This is the most expensive read in the whole API: seventeen queries, several of
+     * them unbounded scans of the caller's own history, on Neon compute that bills by the
+     * wall-clock minute it is kept awake. One per minute is far more than a human downloading
+     * a file needs and far less than a loop could spend. Per ACCOUNT, not per IP, for the same
+     * reason `/api/lan` is: the route is authenticated before it is reached, and a school's
+     * whole network shares one address.
+     *
+     * A 404 for an account with no profile row. That is the honest answer for a DELETED
+     * account — the token can outlive the row it named, and an empty document with a 200 on it
+     * would read as "we hold nothing about you", which is a claim rather than a fact.
+     */
+    if (url.pathname === '/api/user/export' && req.method === 'GET') {
+      const user = await verifyAuthToken(bearer(req));
+      if (!user) return json(401, { error: 'sign in required' }), true;
+      if (!dbEnabled) return json(503, { error: 'an export needs the database' }), true;
+      if (!exportRateOk(user.userId)) {
+        return (
+          json(429, {
+            error: 'One export a minute. Try again shortly — the file you already asked for is the same one.',
+          }),
+          true
+        );
+      }
+      const data = await exportAccount(user.userId);
+      if (!data) return json(404, { error: 'no account data' }), true;
+      return json(200, data), true;
     }
 
     // ---- delete your own account -------------------------------------------
