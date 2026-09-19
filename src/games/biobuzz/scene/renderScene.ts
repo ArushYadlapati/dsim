@@ -22,7 +22,7 @@ import {
   type GraphicsSettings,
   type GraphicsTier,
 } from '../graphics/settings';
-import { applyFirstGuess, createQualityGovernor, probeAdapter, probeGpu, type QualityGovernor } from '../graphics/auto';
+import { applyFirstGuess, createQualityGovernor, probeAdapter, type QualityGovernor } from '../graphics/auto';
 import { installViewKey } from '../graphics/viewKey';
 import { buildBiobuzzField, updateBiobuzzField, type BbFieldHandles } from './renderField';
 import { buildBiobuzzElements, setElementShadows, updateBiobuzzElements, type BbElements } from './renderElements';
@@ -31,6 +31,34 @@ import { buildBiobuzzReticle, updateBiobuzzReticle, type BbReticle } from './ren
 import { createCameras, setCameraTuning, type BbCameras } from './renderCameras';
 import { createEnvironment, type BbEnvironment } from './renderEnvironment';
 import { createStats, type BbStats } from './renderStats';
+import {
+  SCENE_HEMI_INTENSITY,
+  SCENE_HEMI_INTENSITY_NO_IBL,
+  SceneUnsupportedError,
+  createSceneLights,
+  createSceneRenderer,
+  disposeObject3D,
+  gpuProbe,
+  readBackdropColor,
+} from './renderCore';
+
+/**
+ * THE CHUNK'S TWO ENTRY POINTS, BOTH REACHED THROUGH THIS ONE MODULE SPECIFIER.
+ *
+ * `src/games/biobuzz/index.ts` fills two module slots — `scene` (the match view, below) and
+ * `previewScene` (the robot-builder turntable, `renderPreview.ts`) — and BOTH of them write
+ * `import('./scene/renderScene')`. That is deliberate: one dynamic specifier is ONE Rollup
+ * chunk, so `bundleaudit`'s `scene` route stays one measurable file. Two specifiers would make
+ * three.js a hoisted shared chunk with a facade either side, and a facade carries none of the
+ * marker strings that route says `scene` by — both would land in `other` and fail the audit for
+ * a reason that has nothing to do with size. The re-export is what makes the second slot
+ * reachable without a second entry.
+ *
+ * `SceneUnsupportedError` is re-exported for a plainer reason: it used to be DECLARED here, and
+ * a host catching it imports it from here.
+ */
+export { SceneUnsupportedError } from './renderCore';
+export { createRobotPreviewScene, type RobotPreviewScene } from './renderPreview';
 
 /**
  * ⚠️ `SceneQuality` / `QUALITY` ARE GONE. They were a module CONSTANT at "Medium", with a header
@@ -87,56 +115,6 @@ function applyShadowFlags(field: BbFieldHandles): void {
  * audience"), so a position read straight off `World` needs no transform to become a Three.js
  * position.
  */
-
-export class SceneUnsupportedError extends Error {
-  readonly reason: string;
-  constructor(reason: string) {
-    super(`BIOBUZZ 3D scene unsupported: ${reason}`);
-    this.name = 'SceneUnsupportedError';
-    this.reason = reason;
-  }
-}
-
-/** literal fallback for the letterbox backdrop colour — `COLORS.backdropDark` (`src/config.ts`),
- * copied rather than imported so this file's only cross-directory import stays the seam types
- * and the shared `World` shape; the CSS token is read at creation instead (see below). */
-const BACKDROP_FALLBACK = 0x20262c;
-
-/** the letterbox backdrop's current CSS value, read via `--ds-bg` (the token
- * `COLORS.backdrop`/`backdropDark` tracks — `src/config.ts`'s own comment on `backdrop`).
- *
- * ⚠️ READ ON EVERY THEME CHANGE, not once (Day 2 fix). It used to be read once at construction,
- * so toggling light/dark while a 3D view was mounted left the old letterbox behind the field
- * until the scene was torn down and rebuilt — and on the CAD field path the backdrop is not a
- * letterbox at all but the whole surround (`glbFieldToHandles` adds no procedural room), so the
- * stale colour was most of the picture. `BiobuzzScene` now watches `documentElement`'s
- * `data-theme` attribute — the attribute `src/theme.ts`'s `applyTheme` stamps, and the same
- * signal `docs/area/ui.md` tells JS to read instead of `getComputedStyle` — and re-reads this.
- * The ROOM's own greys (`bb-room:floor`/`:backdrop`) stay fixed: they are a gym, their ground is
- * the canvas, category 3 in the theming note. */
-function readBackdropColor(): number {
-  try {
-    const raw = getComputedStyle(document.documentElement).getPropertyValue('--ds-bg').trim();
-    if (/^#[0-9a-fA-F]{6}$/.test(raw)) return parseInt(raw.slice(1), 16);
-  } catch {
-    // getComputedStyle can throw on a detached / pre-layout document; the literal covers it
-  }
-  return BACKDROP_FALLBACK;
-}
-
-function disposeObject3D(root: THREE.Object3D): void {
-  root.traverse((child) => {
-    const mesh = child as Partial<THREE.Mesh> & Partial<THREE.InstancedMesh>;
-    if (!mesh.geometry) return;
-    mesh.geometry.dispose();
-    const materials = Array.isArray(mesh.material) ? mesh.material : mesh.material ? [mesh.material] : [];
-    for (const m of materials) {
-      const map = (m as THREE.MeshStandardMaterial).map;
-      if (map) map.dispose();
-      m.dispose();
-    }
-  });
-}
 
 /** the PiP minimap's size as a fraction of the canvas's short edge, and its margin. §4.4 offers
  * it on Low/Medium, where the 3D shot is the least legible and a top-down aid earns its second
@@ -225,35 +203,21 @@ class BiobuzzScene implements GameScene {
      * its own (`syncTarget`) and blits, which makes the sample count a number this scene owns
      * and can change between two frames.
      */
-    this.renderer = new THREE.WebGLRenderer({ canvas, antialias: false, alpha: false, powerPreference: 'high-performance' });
-    this.renderer.outputColorSpace = THREE.SRGBColorSpace;
-    // FIDELITY PASS (plan-3d.md §4.4): filmic tone mapping so the key light's highlights roll
-    // off instead of clipping.
-    //
-    // ⚠️ EXPOSURE/FILL RAISED HERE (2026-09-18 playtest: "very dark, shadows don't look good").
-    // The Day 1 pass left `toneMappingExposure` at ACES's own neutral 1.0 and a hemisphere fill
-    // dim enough (`0x404048` ground, 1.1 intensity) that the tile floor — already a dark albedo
-    // (`COLORS.tile` #2c3038, ~0.17 linear) by DESIGN, so the HUD's on-field tokens keep their
-    // contrast — rendered as near-black rather than merely dark. 1.2 (within the 1.2–1.5 target)
-    // plus a brighter, lighter-grey ground term reads the tiles back close to the 2D canvas's own
-    // value; a first pass at 1.35 exposure with a 1.6/2.4 hemi/sun pair over-brightened the
-    // opposite way — the alliance-coloured tray panels (`tray_panel_red`/`_blue`) washed out to a
-    // pastel pink/lavender under ACES's own highlight roll-off, so both were dialed back one notch.
-    this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
-    this.renderer.toneMappingExposure = 1.2;
-    // `PCFSoftShadowMap` is deprecated in this three release (WebGLShadowMap silently substitutes
-    // `PCFShadowMap` and warns) — `VSMShadowMap` is the maintained soft-shadow type and, unlike a
-    // bare PCF filter, its blur radius (`shadow.radius`) is genuinely a BLUR rather than a wider
-    // hard-edge sample pattern, which is what "shadows don't look good" was pointing at.
-    this.renderer.shadowMap.type = THREE.VSMShadowMap;
+    // `antialias: false` HERE, ALWAYS — the reason is the paragraph above, and the target that
+    // replaces it is `syncTarget` below. Tone mapping, the output colour space and the shadow
+    // filter come with the shared factory (`renderCore.ts`), which the builder preview builds
+    // its renderer from too — so the same robot cannot come out two different colours in the
+    // two places this game draws it.
+    this.renderer = createSceneRenderer(canvas, { antialias: false, alpha: false });
 
     // HEMISPHERE FILL — a lighter, less blue-shifted ground term (`0x4b525c`, up from a near-navy
     // `0x404048`) so light bounced off the (dark) tile floor still lifts the underside of the
     // robots and the hive trays instead of leaving them silhouetted. Its INTENSITY is a function
     // of the environment-lighting setting (`applyQuality`): with the IBL off it is most of the
     // ambient term there is and has to carry more.
-    this.hemi = new THREE.HemisphereLight(0xffffff, 0x4b525c, 1.3);
-    this.sun = new THREE.DirectionalLight(0xffffff, 1.9);
+    const lights = createSceneLights();
+    this.hemi = lights.hemi;
+    this.sun = lights.sun;
     this.sun.position.set(60, -80, 140);
     // the shadow camera is an orthographic frustum sized to cover the field plus the hive's
     // height — a frustum sized to the whole 260-in room would waste most of its depth/texel
@@ -268,12 +232,8 @@ class BiobuzzScene implements GameScene {
       cam.near = 1;
       cam.far = 260;
       cam.updateProjectionMatrix();
-      // BIAS/NORMAL-BIAS TUNED TOGETHER (2026-09-18 playtest). `bias` alone at a value that kills
-      // acne on a flat floor peter-pans a THIN caster (a wall's own frame, a flower pipe) off its
-      // own base; `normalBias` (which offsets along the surface normal rather than the light
-      // direction) closes that gap without reopening the acne.
-      this.sun.shadow.bias = -0.0012;
-      this.sun.shadow.normalBias = 0.035;
+      // BIAS and NORMAL-BIAS are `createSceneLights`' (`renderCore.ts`), shared with the builder
+      // preview — that file carries the note on why the two have to be tuned as a pair.
     }
     this.scene.add(this.hemi, this.sun);
 
@@ -373,7 +333,7 @@ class BiobuzzScene implements GameScene {
 
     // ── environment and its lighting ───────────────────────────────────────────────────────
     // With the IBL off there is no ambient term but the hemisphere light, so it carries more.
-    this.hemi.intensity = s.envLighting ? 1.3 : 2.1;
+    this.hemi.intensity = s.envLighting ? SCENE_HEMI_INTENSITY : SCENE_HEMI_INTENSITY_NO_IBL;
     if (!s.envLighting) {
       // and no HDRI is fetched at all — an environment map that is not lighting anything is a
       // 1.7 MB download for a backdrop, which is not a trade this setting is offering
@@ -765,14 +725,8 @@ class BiobuzzScene implements GameScene {
  * measures anything, runs per scene inside the governor.
  */
 let detected = false;
-/** the probe's own result, cached for the document. `probeGpu` creates (and immediately loses) a
- * real WebGL2 context, and Chrome caps how many a page may hold — probing once per scene mount
- * would eventually cost the scene the context it is trying to create. */
-let cachedProbe: ReturnType<typeof probeGpu> | null = null;
-function gpuProbe(): ReturnType<typeof probeGpu> {
-  cachedProbe ??= probeGpu();
-  return cachedProbe;
-}
+// `gpuProbe()` (the once-per-document WebGL2 probe) is `renderCore.ts`'s now: the builder
+// preview needs the same answer, and a second probe would cost a real WebGL context.
 
 function detectOnce(onEvent?: (line: string) => void): void {
   if (detected) return;
