@@ -4228,6 +4228,62 @@ input[type='range']:focus-visible {
   width: auto;
   height: auto;
 }
+
+/* ─── the BIOBUZZ robot preview: the 2D/3D toggle and the live turntable ───────────────────
+   `docs/roadmap.md` item 1. The hero's preview column is 220px wide with 16px of padding, so
+   the host is whatever is left of it, square. A FIXED box either way (the schematic is capped
+   at the same 190px above): switching 2D/3D must not resize the card, and neither must a
+   thumbnail landing on a saved-robot card below. */
+.bb-prev {
+  display: grid;
+  gap: var(--ds-s-2);
+  justify-items: center;
+  width: 100%;
+}
+.bb-prev-tabs {
+  justify-content: center;
+}
+/* `Stowed` is a different KIND of control from the two view segments beside it, so it is
+   separated rather than sitting flush against them. */
+.bb-prev-stow {
+  margin-left: var(--ds-s-2);
+}
+.bb-prev-host {
+  width: 100%;
+  aspect-ratio: 1 / 1;
+  max-height: 190px;
+  border-radius: var(--ds-round);
+  border: 1px solid var(--ds-line-soft);
+  overflow: hidden;
+  /* drag-to-orbit, and a CURSOR that says so. `pan-y` keeps a vertical touch swipe scrolling
+     the page — a 190px box that swallowed it would strand a phone in the middle of the
+     builder — so on touch the turntable takes the horizontal axis only. */
+  touch-action: pan-y;
+  cursor: grab;
+}
+.bb-prev-host:active {
+  cursor: grabbing;
+}
+/* the offscreen host the saved-robot thumbnails render through. Off to the side rather than
+   `display: none`, which would give the canvas no size at all. */
+.bb-thumb-host {
+  position: fixed;
+  left: -20000px;
+  top: 0;
+  width: 192px;
+  height: 192px;
+}
+/* one saved robot's 3D thumbnail, in place of its summary line. The box keeps its height while
+   the image is still rendering, so the card does not jump (§1.4 of docs/ui-standard.md). */
+.bb-savedthumb {
+  display: block;
+  height: 96px;
+}
+.bb-savedthumb img {
+  display: block;
+  height: 100%;
+  width: auto;
+}
 .ds-hero-info {
   display: flex;
   flex-direction: column;
