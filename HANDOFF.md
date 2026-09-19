@@ -1,3 +1,22 @@
+# HANDOFF — 2026-09-18 (branch `discord-activity`: alpha merged in, PR ready)
+
+**READ FIRST if you are on `discord-activity`.** `origin/alpha` @ `1237b7f0` (roadmap round 1) is
+merged. Conflicts were the Discord additions meeting alpha's refactors, all resolved on alpha's
+structure: `Lobby.tsx`'s join flow is alpha's `wire()`/`join()` split with the Discord `group` tag
+passed at the one `wire(...).join(...)` call site and the DISCORD_REGION pin inside `join()`;
+`clipboard.ts` is GONE in favour of alpha's `copyText.ts` (same fallback, callback style);
+`ModeSelect` carries both `compete` and `onTutorial`. Post-merge fixes: `.ds-discord-join` onto the
+type scale + house shadow (uiaudit ratchet), and the Embedded App SDK behind `src/net/discordSdk.ts`
+so its lazy chunk stops being named `index-*` and billed against main (bundleaudit has a `discord`
+route now, 44.30 KB gzip, loaded only in the embed).
+- **Green:** `build`, `server:check`, `test:mm` (197), `uiaudit`, `contrast`, `bundleaudit`,
+  `docaudit`. `npm test` is 2097/2098 — the ONE failure (`fieldDims.gen.ts is exactly what
+  emit-dims.mjs renders…`) **reproduces on a clean `origin/alpha` worktree**, so it is alpha's, not
+  this branch's; upstream probably needs an `npm run field-cad` commit.
+- `gh` auth is broken on this machine (401), so PR #41's GitHub-side state was not checked here.
+
+---
+
 # HANDOFF — 2026-09-19 (alpha: ROADMAP ROUND 1 LANDED — auth flows, tutorial, contributors, cosmetics/rewards plans, Vercel policy; alpha server redeployed)
 
 **READ FIRST.** Branch **`alpha`** (worktree `.claude/worktrees/pr-alpha`), pushed, every gate green on
