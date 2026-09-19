@@ -1,0 +1,65 @@
+import type { GameHudProps } from '../module';
+
+/**
+ * Chain Reaction's top-right HUD, two columns — mirrors BIOBUZZ's `BiobuzzHudChips`
+ * dot/icon layout (`.bb-hud`) rather than the plain-text chips this replaces
+ * (`HOPPER n/storage`, `×N`, `CARRYING CATALYST`, the pick-up/place/throw prompts).
+ * Every icon carries no text of its own, so each row gets a spoken `aria-label`/`title`.
+ *
+ * LEFT: the ×N multiplier badge, the 4 catalyst pips (filled left-to-right by count —
+ * there's no per-hook identity in `HudSnapshot`, same by-count idiom BIOBUZZ uses for its
+ * NECTAR dots), then a holding indicator that only exists while there's something to say
+ * about it (gold = an action is available now, green = carrying but out of range, absent
+ * otherwise). RIGHT: a vertical fill for the hopper's storage capacity, reading near-white
+ * (neutral `--ds-ink`) when full and draining toward red as it empties, with a numeric
+ * n/storage fraction underneath for an exact reading (the bar's title already says it aloud,
+ * so the fraction is `aria-hidden`, same relationship as `.pg-num` to `.power-gauge`'s title).
+ */
+export function ChainHudChips({ hud }: GameHudProps) {
+  const chain = hud.chain;
+  if (!chain) return null;
+
+  const multSaid = `Multiplier ${chain.mult}x.`;
+  const catalystsSaid = `${chain.catalysts} of 4 catalysts seated.`;
+  const holdSaid =
+    chain.ringAction !== null
+      ? 'Catalyst in reach — pick up or place available.'
+      : chain.carrying
+        ? 'Carrying a catalyst, out of range to place.'
+        : null;
+  const storage = chain.storage > 0 ? Math.min(1, hud.hopper.length / chain.storage) : 0;
+  const storageSaid = `Storage ${hud.hopper.length} of ${chain.storage}.`;
+
+  return (
+    <div className="cr-hud">
+      <div className="cr-hud-left">
+        <span className={`mult-badge${chain.mult > 1 ? ' on' : ''}`} role="img" aria-label={multSaid} title={multSaid}>
+          {chain.mult}x
+        </span>
+        <div className="hopper vertical" role="img" aria-label={catalystsSaid} title={catalystsSaid}>
+          {Array.from({ length: 4 }, (_, i) => (
+            <span key={i} className={`catalyst-pip${i < chain.catalysts ? ' filled' : ''}`} />
+          ))}
+        </div>
+        {holdSaid && (
+          <span
+            className={`catalyst-pip${chain.ringAction !== null ? ' prompt' : ' carrying'}`}
+            role="img"
+            aria-label={holdSaid}
+            title={holdSaid}
+          />
+        )}
+      </div>
+      <div className="cr-hud-right">
+        <span className="v-gauge" role="img" aria-label={storageSaid} title={storageSaid}>
+          <span className="v-gauge-fill storage" style={{ ['--vg' as string]: String(storage) }} />
+        </span>
+        <span className="v-frac" aria-hidden="true">
+          <span className="v-frac-num">{hud.hopper.length}</span>
+          <span className="v-frac-bar" />
+          <span className="v-frac-den">{chain.storage}</span>
+        </span>
+      </div>
+    </div>
+  );
+}

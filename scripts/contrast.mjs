@@ -231,6 +231,12 @@ const hudPairs = (t) => {
     ['HUD .hopper-pip / .pg-bar ring (1.4.11)', t('--ds-mut'), card, NON_TEXT],
     // BIOBUZZ's next-out marker: the only cue for which held element leaves next
     ['HUD .hopper-pip.next marker (1.4.11)', t('--ds-ink'), card, NON_TEXT],
+    // CR/DECODE HUD ring icons (.mult-badge / .catalyst-pip / .gate-icon). Their
+    // outer ring is --ds-mut (already covered by the .hopper-pip entry above) — the
+    // ONE state fill that swaps the ring colour instead of just the disc (mult-badge.on)
+    // is checked here, since --ds-gold/--ds-green/--ds-red land under 3:1 on the light
+    // card as a raw fill (1.81 / 1.70 / 2.92) and are legible only via that ring border.
+    ['HUD .mult-badge.on ring (1.4.11)', t('--ds-purple'), card, NON_TEXT],
     ['HUD alliance-red chip', '#ffffff', t('--ds-red-chip'), AA],
     ['HUD alliance-blue chip', '#ffffff', t('--ds-blue-chip'), AA],
     ['HUD .res-side.red label', '#ffffff', '#991b1b', AA],
