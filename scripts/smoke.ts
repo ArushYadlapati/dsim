@@ -189,9 +189,18 @@ import {
   LEGAL_UPDATED,
   LEGAL_VERSION,
   legalVersionOf,
+  PRIVACY_MD,
   termsGateBlocks,
   termsGateState,
 } from '../src/legalText';
+import {
+  ANALYTICS_KEY,
+  STORAGE_CATEGORY_ORDER,
+  STORAGE_KEYS,
+  storageKeysIn,
+  THEME_KEY,
+} from '../src/storageKeys';
+import { analyticsAllowed, setAnalyticsAllowed } from '../src/analyticsPref';
 import type { RobotSetup } from '../src/sim/spawn';
 import { DEFAULT_BINDINGS, KEY_ACTIONS, PAD_ACTIONS, mergeBindings } from '../src/input/bindings';
 import { quantizeCommand, dequantizeCommand, localizeCommand, sanitizeQCommand, slimWorld, unslimWorld, encodeBallDelta, applyBallDelta } from '../src/net/protocol';
@@ -21381,6 +21390,275 @@ const mkMM = () => {
       '⚠️ authFlows: both sub-routes are matched BEFORE the bare /account that prefixes them',
       bare > 0 && reset < bare && verify < bare,
       reset + ',' + verify + ' < ' + bare,
+    );
+  }
+}
+
+// ---- THE STORAGE REGISTRY: the privacy page cannot drift from the code ------
+//
+// `src/storageKeys.ts` exists because `PRIVACY_MD` used to enumerate browser-storage keys in
+// prose, and by the time anyone checked, FOUR of the names it listed did not exist under those
+// spellings and SEVEN real keys were missing. Nobody was going to catch that by reading: the
+// list and the code were different files with nothing tying them together.
+//
+// These checks are the tie. They are greps, deliberately, for the same reason the sim's
+// `Math.sin` guard is one: the rule is "don't write this", and only the source can be asked.
+{
+  const KEY_PREFIX = 'decodesim.';
+  const srcFiles: string[] = [];
+  const walkSrc = (dir: string): void => {
+    for (const e of readdirSync(dir, { withFileTypes: true })) {
+      const p = joinPath(dir, e.name);
+      if (e.isDirectory()) {
+        walkSrc(p);
+        continue;
+      }
+      if (/\.tsx?$/.test(e.name) && !e.name.endsWith('.d.ts')) srcFiles.push(p);
+    }
+  };
+  walkSrc('src');
+
+  /**
+   * COMMENTS ARE NOT CODE. Five files legitimately NAME a key in prose while explaining why it
+   * is not a `GameSettings` field, and `legalText.ts`'s own header names the rule it is subject
+   * to. `//` lines and the ` * ` lines of a block comment are stripped exactly as the sim source
+   * guard strips them — and SPLIT ON BOTH LINE ENDINGS, because this tree is checked out with
+   * `core.autocrlf=true` and a `\r` left on the end of a `//` line is how the same stripper
+   * missed every comment in `smoke-biobuzz` once already.
+   */
+  const codeLines = (file: string): { n: number; code: string }[] =>
+    readFileSync(file, 'utf8')
+      .split(/\r\n|\r|\n/)
+      .map((line, i) => ({
+        n: i + 1,
+        code: line.replace(/\/\/.*$/, '').replace(/^\s*\*.*$/, ''),
+      }));
+
+  // 1. THE REGISTRY ITSELF IS WELL FORMED. Everything below trusts it, so it is checked first.
+  {
+    const keys = STORAGE_KEYS.map((e) => e.key);
+    check(
+      'storage registry: every key is prefixed decodesim. and unique',
+      keys.every((k) => k.startsWith(KEY_PREFIX)) && new Set(keys).size === keys.length,
+      String(keys.length) + ' keys',
+    );
+    check(
+      'storage registry: every entry carries a purpose and a retention answer',
+      STORAGE_KEYS.every((e) => e.purpose.trim().length > 20 && e.retention.trim().length > 5),
+      STORAGE_KEYS.filter((e) => e.purpose.trim().length <= 20).map((e) => e.key).join(', '),
+    );
+    check(
+      'storage registry: every category in the order list is a real category, and none is missed',
+      new Set(STORAGE_CATEGORY_ORDER).size === STORAGE_CATEGORY_ORDER.length &&
+        STORAGE_KEYS.every((e) => STORAGE_CATEGORY_ORDER.includes(e.category)),
+    );
+    check(
+      'storage registry: the grouped view accounts for every entry (nothing is invisible)',
+      STORAGE_CATEGORY_ORDER.reduce((n, c) => n + storageKeysIn(c).length, 0) ===
+        STORAGE_KEYS.length,
+    );
+  }
+
+  // 2. ⚠️ NO `decodesim.` LITERAL ANYWHERE IN `src/` EXCEPT THE REGISTRY.
+  //
+  // This is the check that actually holds the line, and it is stronger than "every key used is
+  // registered" on purpose: it makes a key IMPOSSIBLE TO WRITE DOWN anywhere else, so an
+  // unregistered key cannot come into existence to be missed. It is also what stops
+  // `legalText.ts` from starting to enumerate them again.
+  {
+    const offenders: string[] = [];
+    for (const f of srcFiles) {
+      if (f === joinPath('src', 'storageKeys.ts')) continue;
+      for (const { n, code } of codeLines(f)) {
+        if (code.includes(KEY_PREFIX)) offenders.push(`${f}:${n}`);
+      }
+    }
+    check(
+      '⚠️ storage registry: no decodesim.* literal in src/ outside storageKeys.ts (the key list cannot fork)',
+      offenders.length === 0,
+      offenders.join(', '),
+    );
+  }
+
+  // 3. EVERY FILE THAT TOUCHES STORAGE TAKES ITS KEY FROM THE REGISTRY.
+  //
+  // Check 2 already forbids a literal, so what is left is the shape of the argument: an
+  // identifier (or a member expression) that came from here, or the documented accessor pattern
+  // — `practiceRuns.ts` and `lanRuns.ts` address one run's body as `bodyKey(id)`, which derives
+  // `<index key>.<id>` from the registry key. Anything else (a template literal, a concatenation,
+  // a value off the wire) is a key nobody can inventory, which is the whole failure mode.
+  {
+    const ACCESSOR = /^[A-Za-z_$][\w$]*Key\(/; // bodyKey(id), and anything named the same way
+    const IDENT = /^[A-Za-z_$][\w$.]*$/;
+    const bad: string[] = [];
+    const noImport: string[] = [];
+    for (const f of srcFiles) {
+      if (f === joinPath('src', 'storageKeys.ts')) continue;
+      const lines = codeLines(f);
+      let touches = false;
+      for (const { n, code } of lines) {
+        // the first argument of a localStorage/sessionStorage call, up to its comma or `)`
+        const m = /\b(?:local|session)Storage\.\w+\(\s*([^,)]*)/.exec(code);
+        if (!m) continue;
+        touches = true;
+        const arg = m[1].trim();
+        if (!(IDENT.test(arg) || ACCESSOR.test(arg))) bad.push(`${f}:${n} → ${arg || '(empty)'}`);
+      }
+      if (touches && !/from '[^']*storageKeys'/.test(readFileSync(f, 'utf8'))) noImport.push(f);
+    }
+    check(
+      'storage registry: every storage call names its key by identifier or a …Key(id) accessor',
+      bad.length === 0,
+      bad.join(', '),
+    );
+    check(
+      'storage registry: every file that touches storage imports from storageKeys',
+      noImport.length === 0,
+      noImport.join(', '),
+    );
+  }
+
+  // 4. NO DEAD ENTRIES. A registry that lists a key the app stopped writing is the same lie as
+  //    one that omits a key it does write — it just reads as reassuring instead of incomplete.
+  //    Matched by the EXPORTED CONSTANT's name, because check 2 guarantees the literal is here.
+  {
+    const reg = readFileSync(joinPath('src', 'storageKeys.ts'), 'utf8');
+    const named = new Map<string, string>(); // key string -> exported constant name
+    for (const m of reg.matchAll(/export const (\w+) = '(decodesim\.[^']+)';/g)) {
+      named.set(m[2], m[1]);
+    }
+    check(
+      'storage registry: every inventory entry has an exported constant for use sites to import',
+      STORAGE_KEYS.every((e) => named.has(e.key)),
+      STORAGE_KEYS.filter((e) => !named.has(e.key)).map((e) => e.key).join(', '),
+    );
+    const unused: string[] = [];
+    const html = readFileSync('index.html', 'utf8');
+    for (const [key, name] of named) {
+      const rx = new RegExp(`\\b${name}\\b`);
+      const used = srcFiles.some((f) => f !== joinPath('src', 'storageKeys.ts') && rx.test(readFileSync(f, 'utf8')));
+      if (!used && !html.includes(key)) unused.push(name);
+    }
+    check(
+      'storage registry: no entry is dead — every key is still read or written somewhere',
+      unused.length === 0,
+      unused.join(', '),
+    );
+  }
+
+  // 5. THE ONE LITERAL OUTSIDE THE REGISTRY, pinned.
+  //    `index.html` stamps the theme in a blocking script before any module exists, so it cannot
+  //    import anything. A rename of THEME_KEY that missed it would leave every visitor with a
+  //    flash of the wrong theme, silently, because the fallback is a perfectly valid answer.
+  {
+    const html = readFileSync('index.html', 'utf8');
+    const m = /localStorage\.getItem\('([^']+)'\)/.exec(html);
+    check(
+      "⚠️ storage registry: index.html's first-paint theme stamp still reads THEME_KEY",
+      !!m && m[1] === THEME_KEY,
+      m ? m[1] + ' vs ' + THEME_KEY : 'no getItem in index.html',
+    );
+  }
+
+  // 6. THE PRIVACY PAGE RENDERS THE INVENTORY, and the POLICY does not enumerate keys.
+  //    Check 2 already makes the second half true for `legalText.ts`; this states the intent, so
+  //    a future edit that moves the table somewhere else has to move this with it.
+  {
+    const yd = readFileSync(joinPath('src', 'ui', 'YourData.tsx'), 'utf8');
+    const legal = readFileSync(joinPath('src', 'ui', 'Legal.tsx'), 'utf8');
+    check(
+      'privacy page: the storage inventory is rendered FROM the registry, not typed out',
+      /from '\.\.\/storageKeys'/.test(yd) && /STORAGE_KEYS/.test(yd) && /storageKeysIn/.test(yd),
+    );
+    check(
+      'privacy page: /privacy renders the policy AND the Your data panel',
+      /<YourData \/>/.test(legal) && /PRIVACY_MD/.test(legal),
+    );
+    check(
+      'privacy page: the policy points at the live table instead of listing keys',
+      PRIVACY_MD.includes('Every key is listed on this page') && !PRIVACY_MD.includes(KEY_PREFIX),
+    );
+  }
+
+  // 7. THE ANALYTICS OPT-OUT, exercised against a storage stub rather than asserted by reading.
+  //
+  // `trackEvent` is a no-op in this process anyway (`VITE_ANALYTICS` is unset), so the behaviour
+  // worth testing is the PREFERENCE: default on, '0' means off, opting back in leaves NOTHING
+  // behind, and storage that throws answers on rather than silently muting a locked-down
+  // browser. The stub is installed and removed inside this block so nothing crosses a shard
+  // boundary.
+  {
+    const store = new Map<string, string>();
+    let boom = false;
+    const stub = {
+      getItem: (k: string): string | null => {
+        if (boom) throw new Error('blocked');
+        return store.has(k) ? store.get(k)! : null;
+      },
+      setItem: (k: string, v: string): void => {
+        if (boom) throw new Error('blocked');
+        store.set(k, v);
+      },
+      removeItem: (k: string): void => {
+        if (boom) throw new Error('blocked');
+        store.delete(k);
+      },
+    };
+    const g = globalThis as { localStorage?: unknown };
+    const had = 'localStorage' in g;
+    const prev = g.localStorage;
+    g.localStorage = stub;
+    try {
+      check('analytics: absent means ON (cookieless, identifier-free, so opt-OUT)', analyticsAllowed());
+      setAnalyticsAllowed(false);
+      check(
+        'analytics: off is persisted, and read back off',
+        !analyticsAllowed() && store.get(ANALYTICS_KEY) === '0',
+        store.get(ANALYTICS_KEY) ?? '(absent)',
+      );
+      setAnalyticsAllowed(true);
+      check(
+        '⚠️ analytics: opting back IN removes the key — an opt-out must be fully undoable',
+        analyticsAllowed() && !store.has(ANALYTICS_KEY),
+      );
+      setAnalyticsAllowed(false);
+      boom = true;
+      check(
+        '⚠️ analytics: storage that THROWS answers on, not off (a blocked read is not a refusal)',
+        analyticsAllowed(),
+      );
+      setAnalyticsAllowed(false); // must not escape
+      check('analytics: a write to dead storage is swallowed', true);
+      boom = false;
+    } finally {
+      if (had) g.localStorage = prev;
+      else delete g.localStorage;
+    }
+    // ...and the wiring, which no stub can prove: `trackEvent` must actually consult it.
+    const an = readFileSync(joinPath('src', 'analytics.ts'), 'utf8');
+    check(
+      'analytics: trackEvent short-circuits on the preference, not just on the build flag',
+      /if \(!ENABLED \|\| !analyticsAllowed\(\)\) return;/.test(an),
+    );
+  }
+
+  // 8. ⚠️ THE CONSENT ENTRY POINT NEVER VANISHES.
+  //    `ConsentLink` used to `return null` once `showConsentSettings()` answered false, which is
+  //    the normal case outside the EEA/UK/CH — so the one control the privacy policy names by
+  //    name deleted itself for most of the world. The fix is that it LEADS somewhere, so the
+  //    regression to guard is the early return coming back.
+  {
+    const shell = readFileSync(joinPath('src', 'ui', 'AppShell.tsx'), 'utf8');
+    const fn = shell.slice(shell.indexOf('function ConsentLink'));
+    const body = fn.slice(0, fn.indexOf('\n}'));
+    check(
+      '⚠️ footer: the consent link renders unconditionally (it must never delete itself)',
+      body.length > 0 && !/return null/.test(body) && /onPrivacy\(\)/.test(body),
+    );
+    const yd = readFileSync(joinPath('src', 'ui', 'YourData.tsx'), 'utf8');
+    check(
+      'footer: and what it falls back to says why no dialog opened',
+      /CONSENT_UNAVAILABLE/.test(yd) && /id="your-data"/.test(yd) && /your-data/.test(shell),
     );
   }
 }

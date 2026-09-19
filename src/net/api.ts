@@ -1853,6 +1853,49 @@ export async function fetchPricing(): Promise<TierPrice | null> {
 }
 
 /**
+ * EVERYTHING THE SERVER HOLDS ABOUT YOU, as one JSON document (`GET /api/user/export`).
+ *
+ * Typed loosely on purpose. The client's job is to hand the file to the person who asked for
+ * it, unchanged — it does not read a single field, and a mirrored interface here would be a
+ * second copy of the server's shape to keep in step for no benefit. `format` is the one thing
+ * it does check, and it checks it for a specific reason below.
+ */
+export interface AccountExport {
+  format: number;
+  exportedAt: string;
+  [section: string]: unknown;
+}
+
+/** the server serving this client predates the export route */
+export class ExportUnavailableError extends Error {
+  constructor() {
+    super('export unavailable');
+    this.name = 'ExportUnavailableError';
+  }
+}
+
+/**
+ * ⚠️ AN OLD SERVER ANSWERS THIS PATH 200, WITH SOMETHING ELSE.
+ *
+ * One Fly app serves every client version, so this call can land on a build that has no export
+ * route — and `/api/user/export` matches that server's `/api/user/<id>` public-profile route,
+ * which happily reports a profile for the user id `"export"`: `{userId:'export', handle:null}`,
+ * status 200. There is no HTTP status to catch, so the guard is the payload: a real export
+ * carries `format`, and anything without it is a server that does not have this feature rather
+ * than an account with no data. Handing that object to somebody as their personal data export
+ * would be the worst possible failure of this route, so it is checked here and not in the UI.
+ *
+ * `method: 'GET'` is passed explicitly, which looks redundant and is not: `authedJson` turns a
+ * 404 on a method-less call into `FriendsUnavailableError`, and that would swallow the server's
+ * own "no account data" message for a deleted account.
+ */
+export async function fetchMyExport(): Promise<AccountExport> {
+  const data = await authedJson<Partial<AccountExport>>('/api/user/export', { method: 'GET' });
+  if (typeof data?.format !== 'number') throw new ExportUnavailableError();
+  return data as AccountExport;
+}
+
+/**
  * Delete the signed-in account and everything DSIM stores about it.
  *
  * Irreversible, so the server demands the literal string `DELETE` in the body —

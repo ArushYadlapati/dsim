@@ -27,7 +27,7 @@ export interface StagedMatchRef {
   savedAt: number;
 }
 
-const KEY = 'decodesim.stagedMatch.v1';
+import { STAGED_MATCH_KEY as KEY } from '../storageKeys';
 
 /**
  * How long the record is worth acting on. The server's own clocks bound the match this

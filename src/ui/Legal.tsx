@@ -1,6 +1,7 @@
 import { Markdown } from './markdown';
 import { PRIVACY_MD, TERMS_MD, LEGAL_UPDATED, LEGAL_IDENTIFIED, LEGAL_CONTACT } from '../legalText';
 import { APP_NAME } from '../seasons';
+import { YourData } from './YourData';
 
 /**
  * Privacy policy + terms pages. Both are the same shape — an eyebrow, a title, a
@@ -39,13 +40,26 @@ function LegalPage({ title, sub, body }: { title: string; sub?: string; body: st
   );
 }
 
+/**
+ * The policy, then the CONTROLS (`src/ui/YourData.tsx`): the storage inventory generated from
+ * `src/storageKeys.ts`, the analytics switch, the ad-consent door, an export and a delete.
+ *
+ * One page rather than a settings screen of its own, for two reasons. The policy makes promises
+ * ("there is a Delete account button", "you have a right of portability") and the shortest
+ * distance between a promise and the thing that keeps it is nothing at all. And this is the URL
+ * a reviewer, a regulator or a parent is given — it is already the page people arrive at with a
+ * question, so it should be the page that answers it.
+ */
 export function Privacy() {
   return (
-    <LegalPage
-      title="Privacy Policy"
-      sub="What DSIM collects, why, and how to get rid of it."
-      body={PRIVACY_MD}
-    />
+    <>
+      <LegalPage
+        title="Privacy Policy"
+        sub="What DSIM collects, why, and how to get rid of it."
+        body={PRIVACY_MD}
+      />
+      <YourData />
+    </>
   );
 }
 

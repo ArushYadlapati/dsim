@@ -24,7 +24,7 @@ import type { LanParticipant } from './api';
  * lose matches for reasons that have nothing to do with the match.
  */
 
-const KEY = 'decodesim.lanruns.v1';
+import { LAN_RUNS_KEY as KEY } from '../storageKeys';
 const bodyKey = (id: string): string => `${KEY}.${id}`;
 
 /**

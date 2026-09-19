@@ -22,7 +22,7 @@ import { getViewPref } from '../games/biobuzz/graphics/store';
  * index is small enough to rewrite on every change.
  */
 
-const KEY = 'decodesim.practice.v1';
+import { PRACTICE_RUNS_KEY as KEY } from '../storageKeys';
 const bodyKey = (id: string): string => `${KEY}.${id}`;
 
 /**

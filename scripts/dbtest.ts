@@ -1863,6 +1863,227 @@ async function main(): Promise<void> {
     );
   }
 
+  /* ---- DATA EXPORT (GET /api/user/export) -----------------------------------
+     The other half of the promise `deleteAccount` keeps, and the half with a way of going
+     quietly wrong that deletion does not have: an export can be COMPLETE and still be a
+     privacy failure, if what it completes with is somebody else's row. So the checks come in
+     two halves — everything of mine is in there, and nothing of theirs is, asserted against
+     the SERIALIZED document rather than field by field, because the leak this guards against
+     is a join nobody remembered adding.
+  */
+  {
+    const SEA = 1041;
+    await repo.ensureSeason(SEA, 'decode', 9);
+    await repo.ensureProfile('exp-me', 'Exporter');
+    await repo.ensureProfile('exp-other', 'Bystander');
+    await repo.setUsername('exp-me', 'exporter');
+    await repo.setUsername('exp-other', 'bystander');
+
+    const container = (seed: number) => ({
+      format: 2,
+      balanceVersion: SEA,
+      sim: 3,
+      game: 'decode' as const,
+      mode: 'match' as const,
+      seed,
+      ticks: 600,
+      setups: [] as never[],
+      tracks: { 0: [1, 2, 3] },
+    });
+
+    await repo.saveUserSettings('exp-me', { drivetrain: 'swerve', dsimExportProbe: true });
+    await repo.savePreset('exp-me', 1, 'Comp bot', { drivetrain: 'swerve' } as never);
+    await repo.acceptTerms('exp-me', '2026-08-04');
+    await repo.setReplaysPublic('exp-me', true);
+
+    const recReplay = await repo.saveReplay(container(1), SEA, 'decode');
+    await repo.submitRecord({
+      userId: 'exp-me', mode: 'solo', drivetrain: 'swerve', score: 321,
+      balanceVersion: SEA, replayId: recReplay, game: 'decode',
+    });
+    // ...and one belonging to the OTHER account, with a score nothing of mine shares
+    const otherReplay = await repo.saveReplay(container(2), SEA, 'decode');
+    await repo.submitRecord({
+      userId: 'exp-other', mode: 'solo', drivetrain: 'tank', score: 777,
+      balanceVersion: SEA, replayId: otherReplay, game: 'decode',
+    });
+
+    const prac = await repo.savePracticeRun('exp-me', container(3), 45, SEA, 'decode');
+
+    // A MATCH WITH BOTH OF THEM IN IT — the shape the "no other players" rule exists for.
+    const mid = await repo.saveMatch('1v1', SEA, null as unknown as string, true, 'decode');
+    await repo.addMatchParticipant({
+      matchId: mid, userId: 'exp-me', alliance: 'red', drivetrain: 'swerve',
+      score: 88, won: true, ratingBefore: 1000, ratingAfter: 1016,
+    });
+    await repo.addMatchParticipant({
+      matchId: mid, userId: 'exp-other', alliance: 'blue', drivetrain: 'tank',
+      score: 41, won: false, ratingBefore: 1000, ratingAfter: 984,
+    });
+
+    // social: a friendship and a block, both of which MUST name the other party
+    await repo.sendFriendRequest('exp-me', 'exp-other');
+    await repo.acceptFriendRequest('exp-other', 'exp-me');
+    await repo.ensureProfile('exp-blocked', 'Blocked');
+    await repo.setUsername('exp-blocked', 'blockedone');
+    await repo.blockUser('exp-me', 'exp-blocked');
+
+    // a claimed payment, so the email-omission check has something to omit
+    await repo.recordKofiPayment({
+      messageId: 'exp-msg', kind: 'Subscription', email: 'exporter-payer@example.com',
+      transactionId: 'exp-txn', amount: '3.00', currency: 'USD',
+      isSubscription: true, tierName: 'Supporter', months: 1,
+    });
+    await repo.claimKofiPayment('exp-me', 'exp-txn');
+
+    const ex = await repo.exportAccount('exp-me');
+    check('export: an account with data exports something', !!ex);
+    if (!ex) throw new Error('export: exportAccount returned null for a live account');
+    const doc = JSON.stringify(ex);
+
+    check(
+      'export: it is versioned and stamped, so a file read years later is readable',
+      ex.format === 1 && !!Date.parse(ex.exportedAt),
+      `format=${ex.format} at=${ex.exportedAt}`,
+    );
+    check(
+      'export: the profile fields are the ones the app shows you',
+      ex.account.handle === 'Exporter' &&
+        ex.account.username === 'exporter' &&
+        ex.account.replaysPublic === true &&
+        ex.account.termsVersion === '2026-08-04',
+      JSON.stringify(ex.account),
+    );
+    check(
+      'export: the synced settings blob comes back whole',
+      !!ex.settings && (ex.settings as { dsimExportProbe?: boolean }).dsimExportProbe === true,
+    );
+    check('export: saved robot presets are included', ex.robotPresets.length === 1);
+    check(
+      'export: records are included, with the replay id behind each score',
+      ex.records.length === 1 &&
+        ex.records[0].score === 321 &&
+        ex.records[0].replay_id === recReplay,
+      `${ex.records.length} records`,
+    );
+    check(
+      'export: practice runs are included',
+      ex.practiceRuns.length === 1 && ex.practiceRuns[0].id === prac.id,
+    );
+    check(
+      'export: ranked rating and its per-season history are included',
+      Array.isArray(ex.ranked.ratings) && Array.isArray(ex.ranked.history),
+    );
+    check(
+      'export: playtime and standing are included',
+      Array.isArray(ex.playtime) && 'standing' in ex,
+    );
+
+    // REPLAYS BY ID AND KIND — not bodies. The union is the one `deleteAccount` deletes by,
+    // so a replay that would be destroyed with the account must be listed with it.
+    check(
+      'export: every replay the account owns is listed by id and what it belongs to',
+      ex.replays.some((r) => r.id === recReplay && r.kind === 'record') &&
+        ex.replays.some((r) => r.id === prac.replayId && r.kind === 'practice'),
+      JSON.stringify(ex.replays),
+    );
+    check(
+      '⚠️ export: replay BODIES are not in it (seeds, tracks and setups stay out)',
+      !doc.includes('"tracks"') && !doc.includes('"setups"'),
+    );
+
+    // MY OWN MATCH ROW, and nothing about who I played.
+    check(
+      'export: the match carries MY result and the match’s own facts',
+      ex.matches.length === 1 &&
+        ex.matches[0].match_id === mid &&
+        ex.matches[0].alliance === 'red' &&
+        ex.matches[0].score === 88 &&
+        ex.matches[0].rating_after === 1016,
+      JSON.stringify(ex.matches),
+    );
+
+    /**
+     * ⚠️ THE OPPONENT IS NOWHERE IN THE FILE.
+     *
+     * Asserted against the serialized document and not against a field, because the leak this
+     * guards against is a join somebody adds later for a good reason — "it would be nice to
+     * see who I played" — and no per-field check would notice it. `exp-other` IS a friend, so
+     * their public handle and username are legitimately in the friends section; what must not
+     * appear is their USER ID, which is the thing that links rows across every table here, and
+     * their score and rating, which are their match row rather than mine.
+     */
+    check(
+      '⚠️ export: another player’s user id never appears, anywhere in the document',
+      !doc.includes('exp-other'),
+      doc.slice(Math.max(0, doc.indexOf('exp-other') - 60), doc.indexOf('exp-other') + 60),
+    );
+    check(
+      '⚠️ export: and neither does their half of the match (their score, their rating move)',
+      !ex.matches.some((m) => m.score === 41 || m.rating_after === 984),
+    );
+    check(
+      '⚠️ export: another account’s RECORDS never appear (777 is theirs alone)',
+      !ex.records.some((r) => r.score === 777) && !doc.includes(otherReplay),
+    );
+
+    // NAMES ONLY WHERE THE APP ALREADY SHOWS THEM. A friends list without names is not a
+    // portable friends list, and both fields are public on every leaderboard already.
+    check(
+      'export: the friends list names the other party by handle and username',
+      ex.friends.friends.length === 1 &&
+        ex.friends.friends[0].handle === 'Bystander' &&
+        ex.friends.friends[0].username === 'bystander',
+      JSON.stringify(ex.friends.friends),
+    );
+    check(
+      'export: blocks are included and name who is blocked',
+      ex.friends.blocked.length === 1 && ex.friends.blocked[0].username === 'blockedone',
+    );
+    check(
+      'export: the four request/invite buckets all exist, even when empty',
+      Array.isArray(ex.friends.requestsSent) &&
+        Array.isArray(ex.friends.requestsReceived) &&
+        Array.isArray(ex.friends.invitesSent) &&
+        Array.isArray(ex.friends.invitesReceived),
+    );
+
+    // PAYMENTS WITHOUT THE PAYER ADDRESS. The row survives account deletion with the email
+    // nulled, so a route that reads the column at all is one refactor from reading it for the
+    // wrong `claimed_by`; the address is on the caller's own Ko-fi receipt instead.
+    check(
+      'export: the payment behind a membership is included',
+      ex.payments.length === 1 && ex.payments[0].transaction_id === 'exp-txn',
+      JSON.stringify(ex.payments),
+    );
+    check(
+      '⚠️ export: no email address is in the document, not even the payer’s own',
+      !doc.includes('exporter-payer@example.com') && !doc.includes('"email"'),
+    );
+    check(
+      'export: the file states what it deliberately leaves out',
+      ex.notes.length >= 3 && ex.notes.some((n) => /other players/i.test(n)),
+    );
+
+    // ...AND AFTER DELETION THERE IS NOTHING TO EXPORT. The token outlives the row, so this is
+    // the answer a live session gets seconds after pressing delete — a 404 at the route, which
+    // is the honest reading of null, rather than an empty document that says "we hold nothing"
+    // as though that had been checked.
+    check(
+      'export: an account that never existed exports null (the route’s 404)',
+      (await repo.exportAccount('exp-nobody')) === null,
+    );
+    await repo.deleteAccount('exp-me');
+    check(
+      '⚠️ export: a DELETED account exports null, not an empty document',
+      (await repo.exportAccount('exp-me')) === null,
+    );
+    check(
+      'export: ...and the other account is still exportable (deletion took only mine)',
+      !!(await repo.exportAccount('exp-other')),
+    );
+  }
+
   /* ---- REPLAY PRIVACY (migration 0038) -------------------------------------
      Match replays are private by default: watchable by everyone who PLAYED in the match, and
      by nobody else unless every one of them opts in. Every assertion below was written to

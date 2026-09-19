@@ -7,7 +7,7 @@
  */
 // bumped v1→v2 when the wording was corrected (it's the SIM that's unrealistic,
 // not the game) — so anyone who dismissed the old copy sees the fixed one once.
-const KEY = 'decodesim.chainDisclaimer.v2';
+import { CHAIN_DISCLAIMER_KEY as KEY } from './storageKeys';
 
 /** has the player already dismissed the Chain Reaction disclaimer on this device? */
 export function chainDisclaimerSeen(): boolean {
