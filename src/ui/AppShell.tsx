@@ -247,9 +247,15 @@ export function AppShell({
  * this build ships a CMP at all, because the panel behind it is useful either way — it is where
  * the analytics switch, the storage inventory, the export and the delete live.
  *
- * The scroll is in a `requestAnimationFrame` because `onPrivacy` navigates by React state: the
- * heading does not exist yet when this handler runs, and on the privacy page itself (where
- * navigation is a no-op) the jump is the only feedback there is.
+ * The scroll is DEFERRED because `onPrivacy` navigates by React state — the heading does not
+ * exist yet when this handler runs — and on the privacy page itself, where navigating is a
+ * no-op, the jump is the only feedback there is.
+ *
+ * ⚠️ `setTimeout` AND NOT `requestAnimationFrame`. rAF does not fire in a hidden or backgrounded
+ * tab, so the version that used it scrolled nowhere whenever the page was not being painted —
+ * which is exactly the state a tab is in while something else is in front of it. A frame
+ * callback is the right tool for "before the next paint" and the wrong one for "after React has
+ * committed", which is all this needs.
  */
 function ConsentLink({ onPrivacy }: { onPrivacy: () => void }) {
   return (
@@ -258,9 +264,9 @@ function ConsentLink({ onPrivacy }: { onPrivacy: () => void }) {
       onClick={() => {
         if (showConsentSettings()) return;
         onPrivacy();
-        requestAnimationFrame(() => {
+        setTimeout(() => {
           document.getElementById('your-data')?.scrollIntoView({ block: 'start' });
-        });
+        }, 0);
       }}
     >
       Privacy &amp; cookie settings

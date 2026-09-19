@@ -50,7 +50,7 @@ export function YourData() {
       <AnalyticsRow />
       <AdsRow />
       <ExportRow />
-      {authEnabled ? <DeleteAccount /> : <DeleteUnavailable />}
+      <DeleteRow />
     </>
   );
 }
@@ -358,8 +358,23 @@ function ExportRow() {
   );
 }
 
-/** the delete panel's signed-out twin. `DeleteAccount` renders nothing without a session, and
- *  the row it leaves behind has to say what it would have done — see the note on `YourData`. */
+/**
+ * DELETE — the real flow when there is a session, an explanation when there is not.
+ *
+ * ⚠️ THE SESSION CHECK IS HERE AND NOT INSIDE `DeleteAccount`, which is the bug this shape
+ * exists to avoid. That component returns null without a session — correct on the Profile page,
+ * where the whole page is already behind a sign-in panel — so gating on `authEnabled` alone
+ * left a signed-out visitor to an auth-ENABLED build with no delete row at all: not the flow,
+ * not the explanation, just a missing section. That is the same disappearing act the footer
+ * consent link was doing, one panel further down the page.
+ */
+function DeleteRow() {
+  const session = authEnabled ? authClient!.useSession() : null;
+  return session?.data?.user ? <DeleteAccount /> : <DeleteUnavailable />;
+}
+
+/** what the delete row says to somebody who is not signed in — what it WOULD do, and the
+ *  mailbox for anyone who cannot get back into the account they want removed. */
 function DeleteUnavailable() {
   return (
     <section className="ds-panel">
