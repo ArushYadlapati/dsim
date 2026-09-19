@@ -6,7 +6,6 @@ import {
   type UserStats,
 } from '../net/api';
 import { gameServerConfigured } from '../net/env';
-import { APP_NAME } from '../seasons';
 import { CareerView } from './CareerView';
 import { ShareButton } from './ShareButton';
 import { SupporterBadge } from './SupporterBadge';
@@ -52,7 +51,6 @@ export function Profile({
 
   const head = (stats: UserStats | null) => (
     <>
-      <p className="ds-eyebrow">{APP_NAME} · Player</p>
       <h1 className="ds-h1">
         {stats?.handle ?? `@${username}`}
         <SupporterBadge supporter={stats?.supporter} role={stats?.role} size="md" />

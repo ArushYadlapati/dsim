@@ -225,10 +225,9 @@ function SponsorMark({
 
 /** HOME MENU — "Presented by [mark]", under the app title.
  *
- *  Its own line rather than folded into `.ds-eyebrow`: that eyebrow already names
- *  the SEASON and its presenter ("BIOBUZZ presented by RTX"), and two different
- *  "presented by"s in one sentence would read as one claim about one thing. The
- *  season's presenter is FIRST's; this one is the app's. */
+ *  Its own line: the SEASON has its own presenter too ("BIOBUZZ presented by
+ *  RTX"), a different fact from this one. The season's presenter is FIRST's;
+ *  this one is the app's. */
 export function SponsorPresents() {
   if (!sponsorActive()) return null;
   return (

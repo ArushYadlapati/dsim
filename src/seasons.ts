@@ -12,7 +12,6 @@
  */
 
 export const APP_NAME = 'DSIM';
-export const APP_TAGLINE = '2D Driver Practice';
 /** One plain sentence saying what this is. Shown on the home menu and reused as
  * the first sentence of the meta description (`src/seo.ts`) — so it is also the
  * line that shows up in a search result and a pasted-link preview. The static

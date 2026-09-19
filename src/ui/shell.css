@@ -1372,14 +1372,6 @@
   flex-wrap: wrap;
   gap: 8px 18px;
 }
-.ds-foot-links a {
-  color: var(--ds-ink-dim);
-  text-decoration: none;
-  font-weight: 600;
-}
-.ds-foot-links a:hover {
-  color: var(--ds-accent);
-}
 
 /* ---- chips + buttons ------------------------------------------------- */
 /* a chip that is a BUTTON is clickable; one rule rather than a per-instance cursor */
@@ -1504,19 +1496,6 @@ button.ds-chip {
 }
 
 /* ---- page headings --------------------------------------------------- */
-.ds-eyebrow {
-  font-family: var(--ds-font-mono);
-  font-size: 12px;
-  letter-spacing: 0.2em;
-  text-transform: uppercase;
-  color: var(--ds-accent);
-  margin: 0 0 10px;
-}
-/* A brand that owns its capitalization opts out of the uppercasing above:
-   goBILDA is not GOBILDA. Only ever wraps a trademark, never label text. */
-.ds-brand {
-  text-transform: none;
-}
 /* `.overlay-panel` is a flex column with `gap: 14px`, and a margin on a flex item
    ADDS to the gap instead of collapsing with it — the five dialogs each carried
    `margin: 4px auto 16px`, so the designed 14/14 rendered as 18/30. Only the
@@ -4449,8 +4428,7 @@ input[type='range']:focus-visible {
     min-height: 34px;
     padding: 6px 12px;
   }
-  .ds-foot-link,
-  .ds-foot-links a {
+  .ds-foot-link {
     padding: 8px 2px; /* 17px of ink -> 33px of tap, without moving the row */
   }
   .ds-mark {
@@ -5744,8 +5722,8 @@ button.ds-key:active {
   outline: 2px solid var(--ds-accent);
   outline-offset: 2px;
 }
-/* the caption. Mono + tracked like `.ds-eyebrow`, so the credit reads as chrome
-   rather than as a sentence in the page's prose. */
+/* the caption. Mono + tracked so the credit reads as chrome rather than as a
+   sentence in the page's prose. */
 .sponsor-pre {
   font-family: var(--ds-font-mono);
   font-size: var(--ds-t-xs);
@@ -5775,8 +5753,8 @@ button.ds-key:active {
   display: block;
 }
 
-/* HOME — under the app title, above the lead. Its own line, because the eyebrow
-   above already names the SEASON's presenter and the two are different facts. */
+/* HOME — under the app title, above the lead. Its own line: the SEASON has its
+   own presenter (FIRST's sponsor of the game) and this is a different fact. */
 .ds-home-presents {
   margin: 0 0 var(--ds-s-4);
 }

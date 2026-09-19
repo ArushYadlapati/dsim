@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { APP_NAME, LINKS } from '../seasons';
+import { LINKS } from '../seasons';
 import type { GameId } from '../games/types';
 import { desktop, type LanHostStatus } from '../desktop';
 import { LanHost, type HostHealth } from '../lan/hostRuntime';
@@ -395,7 +395,6 @@ export function LanPanel({
       <button className="ds-back" onClick={onBack}>
         ← Back
       </button>
-      <p className="ds-eyebrow">{APP_NAME} · LAN</p>
       <h1 className="ds-h1">LAN play</h1>
 
       <p className="ds-page-note">

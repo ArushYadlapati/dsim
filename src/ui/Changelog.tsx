@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { fetchAnnouncements, type Announcement, type AnnouncementKind } from '../net/api';
 import { gameServerConfigured } from '../net/env';
-import { APP_NAME, LINKS } from '../seasons';
+import { LINKS } from '../seasons';
 import { Markdown } from './markdown';
 
 const KIND_LABEL: Record<AnnouncementKind, string> = {
@@ -35,14 +35,13 @@ export function Changelog() {
 
   return (
     <>
-      <p className="ds-eyebrow">{APP_NAME} · Changes</p>
       <h1 className="ds-h1">Changes</h1>
 
       <section className="ds-panel">
-        {/* NO PANEL TITLE. The eyebrow says "DSIM · Changes", the h1 says
-            "Changes", and "What's changed" said it a third time inside 60px on a
-            page holding exactly one panel. The GitHub link is the only thing in
-            this header carrying information, so it is the only thing in it —
+        {/* NO PANEL TITLE. The h1 already says "Changes"; "What's changed" said
+            it again inside 60px on a page holding exactly one panel. The GitHub
+            link is the only thing in this header carrying information, so it is
+            the only thing in it —
             `.cl-head` right-aligns the lone action, and `.ds-btn.small` puts it
             on the same scale as every other panel-header slot (the `.ds-home-link`
             pill it used to be is 14px/700 and made this header 20px taller than

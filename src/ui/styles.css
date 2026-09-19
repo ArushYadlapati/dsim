@@ -2466,7 +2466,6 @@ input.admin-months {
   box-shadow: 0 24px 60px rgba(0, 0, 0, 0.35);
   animation: ann-pop 0.28s cubic-bezier(0.2, 1, 0.3, 1);
 }
-.ann-panel .ds-eyebrow { margin: 0; }
 .ann-scroll {
   display: flex;
   flex-direction: column;

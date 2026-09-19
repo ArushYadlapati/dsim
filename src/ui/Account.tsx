@@ -17,7 +17,6 @@ import { DesktopUpdate } from './DesktopUpdate';
 import { fmtDay } from './fmtDate';
 import { ServerMenu } from './ServerMenu';
 import { UsernameInput, useUsernameCheck, usernameHintColor } from './UsernameField';
-import { APP_NAME } from '../seasons';
 import { SUPPORT_ENABLED } from '../net/env';
 import { LEGAL_CONTACT } from '../legalText';
 import { trackEvent } from '../analytics';
@@ -46,7 +45,6 @@ export function Account({
 }) {
   return (
     <>
-      <p className="ds-eyebrow">{APP_NAME} · Profile</p>
       <h1 className="ds-h1">Profile</h1>
 
       {authEnabled ? <Identity onHandleSaved={onHandleSaved} /> : <IdentityDisabled />}

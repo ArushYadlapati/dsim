@@ -3,7 +3,7 @@ import type { LiveRoom } from '../net/protocol';
 import { fetchLiveRoom, fetchLiveRooms } from '../net/api';
 import { gameServerConfigured } from '../net/env';
 import { normalizeRoomCode, isValidRoomCode, ROOM_CODE_LENGTH } from '../net/roomCode';
-import { APP_NAME, seasonFor } from '../seasons';
+import { seasonFor } from '../seasons';
 
 /**
  * "Watch Live" — the games currently in progress on the game server.
@@ -59,7 +59,6 @@ export function WatchLive({
       <button className="ds-back" onClick={onBack}>
         ← Back
       </button>
-      <p className="ds-eyebrow">{APP_NAME} · Live</p>
       <h1 className="ds-h1">Watch Live</h1>
 
       {/* ONE panel, four bodies. The populated grid used to render with NO panel at
