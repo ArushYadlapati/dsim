@@ -9,7 +9,7 @@ import {
   BB_HIVE_TILT_DEG,
   BB_POLLEN_R,
 } from '../config';
-import { BB_TIP_SWING_S, hiveTimerStep, otherSide } from '../hive';
+import { BB_TIP_SWING_S, hiveLoad, hiveTimerStep, hiveWillTip, otherSide } from '../hive';
 import { bbKindIndex } from '../score';
 import { elementMass, hiveCellLocalBox, hivePivotX, hiveTrayMassProps, useHiveDynamic } from './bodies';
 import type { Engine3d } from './engineImpl';
@@ -39,31 +39,51 @@ import { rotate2, tiltQuatX } from './math3';
  *     equilibrium at level and a stable one at each stop. That IS §9.6's "bi-stable", and it is
  *     the tray's shape rather than a term anyone added. `BB3_HIVE_BALLAST` tunes it, the way the
  *     field guide's ballast washers tune the real one.
- *  2. **the DETENT**, `BB3_HIVE_DETENT`: a breakaway torque the load has to beat before the bar
- *     moves at all.
+ *  2. **the DETENT**, `BB3_HIVE_DETENT`: a PIN that holds the bar at its stop until the load
+ *     table lifts it. It used to be a breakaway torque the load had to beat — see the trigger
+ *     note below for the measurement that retired that reading.
  *  3. **the DAMPING**, `BB3_HIVE_DAMPING`: angular damping on the body, which is what makes the
  *     stop-to-stop swing take the owner's 4.0 s instead of under two.
  *
  * ⚠️ **WHY THE DETENT IS A HOLD AND NOT JOINT FRICTION.** Rapier has no joint friction, and the
  * two things it does have are both worse here. A MOTOR with a torque cap holds the tray at its
- * stop, but it goes on pulling toward that stop after breakaway, so the swing has to fight it
+ * stop, but it goes on pulling toward that stop after the release, so the swing has to fight it
  * the whole way and the released tray is no longer a free see-saw. Raising the joint's own
  * limits to bite is not a detent at all. The HOLD below is instead a plain statement of what a
- * detent IS: while the bar is at a stop and the load's torque has not beaten `hold + DETENT`,
- * the bar does not move -- pinned exactly, at exactly the stop angle. The moment it does beat
- * it, the pin is gone and nothing is left but gravity, the contents and the damping.
+ * detent IS: while the bar is at a stop and nothing has called for a tip, the bar does not move
+ * -- pinned exactly, at exactly the stop angle. The moment the pin lifts, it is gone and nothing
+ * is left but gravity, the contents and the damping.
  *
- * It is DETERMINISTIC because it is a pure function of the JSON: the torque is computed from
- * where the element bodies actually are (read back last tick, rounded to 1e-4), through the
- * shared `dsin`/`dcos`, with no solver state and no clock in it. Two peers stepping the same
- * inputs break the detent on the same tick.
+ * It is DETERMINISTIC because it is a pure function of the JSON: the trigger reads the derived
+ * `contents` list, which `derive.ts` wrote from body positions (read back last tick, rounded to
+ * 1e-4), with no solver state and no clock in it. Two peers stepping the same inputs lift the
+ * pin on the same tick.
  *
- * ⚠️ **AND THE TRIGGER IS A TORQUE, NOT THE TABLE.** `BB_TIP_POLLEN` -- the measured 8/7/6/3/1/0
- * rows -- is what the 2D pipeline and the kinematic fallback trip on. The dynamic tray never
- * reads it: it tips when the elements that are really in the cell really out-torque the hold, at
- * the lever arms they really have. `scripts/hive-calibrate.ts` is what makes those two answer
- * the same on the guide's rows, and the reason the calibration is a SCRIPT rather than a
- * constant is that only the physics knows where a pile of spheres settles.
+ * ⚠️ **AND THE TRIGGER IS THE TABLE, NOT A TORQUE.** It was a torque until 2026-09-19 -- the tray
+ * tipped when the elements really in the cell out-torqued `hiveHoldTorque` at the lever arms they
+ * really had -- and that is wrong for one reason that no calibration can reach: ONE COUNT DOES
+ * NOT DETERMINE ONE TORQUE. Measured in one cell at the stop, at the shipped hold of 5915,
+ * staging the same count four ways (the HIVE3D lane prints all of it): 8 POLLEN weigh **4560**
+ * piled two-wide up the back wall and **8051** in a two-wide line down the tray; 7 POLLEN weigh
+ * **4146** to **6769**. The two counts' torque ranges OVERLAP over most of their length, so NO
+ * value of `BB3_HIVE_DETENT` separates them -- and both halves of field guide §12.3 were being
+ * violated at once on the shipped numbers: 8 POLLEN crammed did NOT tip and 7 POLLEN in a line
+ * DID, confirmed by running the lane's new checks against the old trigger. The lane never saw it
+ * because every fixture staged one packing.
+ *
+ * `BB_TIP_POLLEN` is the only PUBLISHED statement of what a HIVE tips on, and `hud.ts` /
+ * `HudSlots.tsx` promise it to the driver in as many words ("N MORE TO TIP"). So it is the rule,
+ * and the torque is not: the trigger below is `hiveWillTip` over the same `contents` list the HUD
+ * counts. One list, one predicate, two readers, which is the only arrangement in which "when it
+ * says 0 more, it tips" cannot come apart. The owner's report was 1 POLLEN + 4 NECTAR: the HUD
+ * read 0 more, the load weighed 5701 against a hold of 5915 -- short by 214, less than a quarter
+ * of what one more POLLEN adds -- and the tray sat on its stop for the rest of the match.
+ *
+ * ⚠️ The detent is now a PIN THE TABLE LIFTS, not a breakaway the load beats. EVERYTHING AFTER
+ * the release is unchanged and still the free see-saw: gravity, the contents leaving because the
+ * floor tilted out from under them, the damping, and the joint's far limit. `hiveContentsTorque`
+ * and `hiveRestoringTorque` stay exported and stay correct -- they are how the HIVE3D lane and
+ * `scripts/hive-calibrate.ts` MEASURE the tray. They are no longer what triggers it.
  */
 
 const ALLIANCES: readonly Alliance[] = ['red', 'blue'];
@@ -158,11 +178,14 @@ export function hiveRestoringTorque(alliance: Alliance, theta: number): number {
 }
 
 /**
- * CALIBRATION-ONLY DETENT OVERRIDE. `scripts/hive-calibrate.ts` sweeps the breakaway torque to
- * find the one that makes the field guide's rows come out right, and it cannot do that by
+ * CALIBRATION-ONLY DETENT OVERRIDE. `scripts/hive-calibrate.ts` sweeps the hold torque to report
+ * how far the see-saw's own balance sits from the published table, and it cannot do that by
  * rewriting `config.ts` between candidates — the module is already loaded. `null` (the default)
  * means "use `BB3_HIVE_DETENT`, as production does"; nothing outside that script and the HIVE3D
  * lane calls the setter, and neither leaves it set.
+ *
+ * It is a DIAGNOSTIC knob now, not a gameplay one: since the table became the trigger, nothing
+ * the sweep finds changes which rows tip. It stays because it is how the measurement is taken.
  */
 let detentOverride: number | null = null;
 
@@ -170,8 +193,16 @@ export function __setDetentForCalibration(value: number | null): void {
   detentOverride = value;
 }
 
-/** how hard the tray resists leaving its stop, in torque: its own weight plus the detent. The
- * two are ADDITIVE and, at a stop, degenerate — see `scripts/hive-calibrate.ts`'s report. */
+/**
+ * What the tray's own weight plus the detent WOULD have held against, in torque — REPORTED by
+ * the HIVE3D lane and by `scripts/hive-calibrate.ts`, and no longer what releases the tray.
+ *
+ * See the header: a count does not determine a torque, so this number and `BB_TIP_POLLEN`
+ * disagree on real packings and the published table wins. It is kept because it is the
+ * measurement that says HOW FAR apart they are, which is the number a re-weighed element set
+ * would have to move, and because `BB3_HIVE_DETENT` with no reader would be a constant
+ * documenting an intention nothing implements.
+ */
 export function hiveHoldTorque(alliance: Alliance, theta: number): number {
   return Math.abs(hiveRestoringTorque(alliance, theta)) + (detentOverride ?? BB3_HIVE_DETENT);
 }
@@ -184,8 +215,8 @@ function stopAngle(sign: number): number {
 /**
  * THE DETENT, applied every tick before the solve (`engine.ts`'s `applyHiveTilt`).
  *
- * While a tray is AT a stop and the load has not out-torqued `hiveHoldTorque`, it is pinned
- * there exactly: rotation set to the stop, angular velocity zeroed. The moment the load wins,
+ * While a tray is AT a stop and the LOAD TABLE has not called for a tip, it is pinned there
+ * exactly: rotation set to the stop, angular velocity zeroed. The tick the table calls for one,
  * the pin is not applied and the body is an ordinary dynamic one for the rest of the swing —
  * gravity, the contents sliding out, the damping and the joint's far limit, and nothing else.
  *
@@ -196,6 +227,7 @@ function stopAngle(sign: number): number {
  * that is being re-woken sixty times a second.
  */
 export function hiveDetentHold(world: World, engine: Engine3d): void {
+  const kindOf = bbKindIndex(world);
   for (const a of ALLIANCES) {
     const body = engine.hiveTrays[a];
     const theta = trayTilt(body);
@@ -205,9 +237,20 @@ export function hiveDetentHold(world: World, engine: Engine3d): void {
       engine.hiveHeld[a] = false;
       continue;
     }
-    // the load pulls AWAY from this stop when its torque opposes the stop's own sign
-    const pull = -sign * hiveContentsTorque(world, a, theta);
-    if (pull > hiveHoldTorque(a, theta)) {
+    /**
+     * THE PIN LIFTS WHEN THE PUBLISHED TABLE SAYS THE CELL TIPS -- read off the SAME `contents`
+     * list `hud.ts` counts its "N MORE TO TIP" from, which is what makes the HUD's promise true
+     * by construction rather than by calibration. See the header for the measurement that
+     * retired the torque trigger.
+     *
+     * It is one tick behind `derive.ts` (this runs inside `applyHiveTilt`, before the solve;
+     * derive is stage 10), and membership itself waits `BB3_REST_TICKS` of stillness. So a
+     * volley that lands past threshold lifts the pin around tick 9-17 rather than tick 2 -- the
+     * same timing the 2D pipeline and the kinematic tray have always had, and the reason the
+     * spill tag below is a POSITION test rather than a read of `contents`.
+     */
+    const load = hiveLoad(world.biobuzz?.hives[a].contents ?? [], kindOf);
+    if (hiveWillTip(load)) {
       /**
        * ⚠️ **THE BREAKAWAY HAS TO WAKE THE BODY, AND FORGETTING THAT LOOKS EXACTLY LIKE A TRAY
        * THAT WILL NOT TIP.** A pinned tray stops moving, so Rapier puts it to sleep — correctly:

@@ -12,26 +12,46 @@
  *                                          3 POLLEN + 3 NECTAR TIPS · 2 + 3 does NOT
  *   owner-measured, 2026-09-12 (validation) 1n+7p · 2n+6p · 4n+1p · 5n+0p
  *
+ * ⚠️ **STEPS 1-3 ARE A REPORT NOW, NOT A FIT** (2026-09-19). The tray stopped tipping on a torque
+ * and started tipping on `BB_TIP_POLLEN`, the published table, because ONE COUNT DOES NOT
+ * DETERMINE ONE TORQUE: staged four ways in one cell, 8 POLLEN weigh 4560 to 8051 and 7 POLLEN
+ * 4146 to 6769, so the two counts' ranges overlap and no threshold could ever separate them.
+ * `sim3d/hive3d.ts`'s header has the whole measurement. So the threshold this script solves no
+ * longer decides anything — it MEASURES how far the see-saw's own balance sits from the table,
+ * which is the number a re-weighed element set would have to move, and `BB3_HIVE_DETENT` is the
+ * tray's PIN rather than the breakaway the load beats.
+ *
+ * **STEP 4 AND THE BALLAST'S LEVER ARM ARE STILL LIVE.** The ballast is what carries the tray to
+ * its far stop once the load has left, and the damping is what makes that take the owner's 4.0 s
+ * — neither is a trigger, and neither is touched by the change.
+ *
  * ── WHY IT IS A SCRIPT AND NOT A CONSTANT ───────────────────────────────────────────────────
- * The trigger is a torque, a torque is a LEVER ARM, and only the solve knows where a pile of
- * spheres settles on a floor sloping at 30°. Three POLLEN and three NECTAR do not sit where six
- * POLLEN sit. That is also why the manual's own answer is a TABLE: "[3] Pollen + [3] Nectar has
- * less mass than [8] Pollen" and both tip, which no single mass threshold expresses and no
- * hand-computed arm would have found.
+ * A torque is a LEVER ARM, and only the solve knows where a pile of spheres settles on a floor
+ * sloping at 30°. Three POLLEN and three NECTAR do not sit where six POLLEN sit. That is also why
+ * the manual's own answer is a TABLE: "[3] Pollen + [3] Nectar has less mass than [8] Pollen" and
+ * both tip, which no single mass threshold expresses and no hand-computed arm would have found —
+ * which is, in the end, the same fact that retired the torque trigger.
  *
  * ── HOW IT SOLVES ───────────────────────────────────────────────────────────────────────────
  * 1. **WEIGH** each row once, on the real tray, with the tray PINNED at its stop so nothing tips
  *    while it is being weighed. One number per row: the settled contents' torque about the pivot.
- * 2. **SOLVE the threshold.** A row tips iff its torque beats `|restoring| + DETENT`. The
- *    admissible window is `(max torque that must NOT tip, min torque that MUST tip]` and the
+ * 2. **SOLVE the threshold.** The torque a row would have had to beat, back when torque decided.
+ *    The admissible window is `(max torque that must NOT tip, min torque that MUST tip]` and the
  *    threshold is its midpoint, which is the largest margin available on both sides at once.
  * 3. **SWEEP the ballast's LEVER ARM** to split that threshold. At a stop the ballast and the
  *    detent are degenerate — both are terms in one number — so the split is a stated choice and
  *    the script says so rather than pretending to a two-dimensional fit it does not have.
  * 4. **FIT the damping** by bisection on a REAL 8-POLLEN tip, measured stop to stop, against
  *    `BB_TIP_SWING_S` (4.0 s, owner ruling).
- * 5. **VERIFY** every row through the real `step3d` pipeline and **WRITE** the constants, with
+ * 5. **VERIFY** every row through the real `step3d` pipeline — which now has to agree with the
+ *    PUBLISHED TABLE on every row, the owner's requirement — and **WRITE** the constants, with
  *    their derivation, into `config.ts`'s generated block.
+ *
+ * ⚠️ **THE RUN IS NOT BIT-REPRODUCIBLE ACROSS MACHINES.** A run on a Windows box produced DAMPING
+ * 4.363 against the committed 4.466 and shifted two derivation figures by one. The committed
+ * value measures 4.12 s stop to stop there, inside the HIVE3D lane's ±0.5 s of `BB_TIP_SWING_S`,
+ * so it is correct as committed and re-running to "fix" it only moves the block again on the next
+ * machine. It also REWRITES `config.ts`, so do not run it while anyone else is editing that file.
  *
  * Deterministic, headless, and NOT in `npm test` — it is a solve that takes a minute, and a red
  * `npm test` has to keep meaning "physics broke".
@@ -261,6 +281,13 @@ const TARGETS: Row[] = [
  * would be requiring the impossible. They are here because the SIZE and the SIGN of the misses
  * are the useful output: they say how far a mass model is from the real see-saw's packing, which
  * is the number a future re-measurement or a weighed element set has to move.
+ *
+ * ⚠️ TWO OF THESE MISSES ARE WHAT RETIRED THE TORQUE TRIGGER (2026-09-19), rather than being an
+ * expected limit anyone had to live with. `1p+4n` is the owner's own bug report — the HUD read
+ * "0 MORE TO TIP" and the tray did not move — and `6p+1n` / `5p+2n` tipped when the table says
+ * they must not, so the shipped see-saw was violating the published rows in BOTH directions at
+ * once. Every row below now runs through the table, so the `pipeline` column is expected to hold
+ * on all eleven and the `torque` column is the measurement of the gap.
  */
 const VALIDATION: Row[] = [
   { pollen: 6, nectar: 1, tip: false, source: 'owner 2026-09-12 (1n needs 7p)' },
@@ -383,22 +410,30 @@ console.log('\n[hive-calibrate] verifying every row through the real step3d pipe
 let failures = 0;
 let misses = 0;
 const report: string[] = [];
-for (const [rows, required] of [
-  [TARGETS, true],
-  [VALIDATION, false],
-] as const) {
+for (const rows of [TARGETS, VALIDATION]) {
   for (const r of rows) {
     const key = `${r.pollen}p+${r.nectar}n`;
     const torque = weighed.get(key)!.torque;
+    /**
+     * TWO ANSWERS PER ROW, AND THE WHOLE POINT IS THAT THEY DIFFER.
+     *
+     *  · `got` is the SHIPPED pipeline's, which since 2026-09-19 is `BB_TIP_POLLEN` — the
+     *    published table, read off the same `contents` the HUD counts. It must equal the row, on
+     *    every row, or the driver's "N MORE TO TIP" is lying again; that is a FAIL.
+     *  · `torqueSays` is what the fitted see-saw ALONE would have done, and a disagreement is a
+     *    MISS: the measurement of how far a one-nectar-mass torque model sits from the table.
+     *    It is expected on some rows and it is no longer a defect, because it no longer decides
+     *    anything — see the header.
+     */
     const got = rowTips(r.pollen, r.nectar, detent, ballastW);
+    const torqueSays = torque > threshold;
     const ok = got === r.tip;
-    if (!ok) {
-      if (required) failures++;
-      else misses++;
-    }
+    if (!ok) failures++;
+    else if (torqueSays !== r.tip) misses++;
     const m = (r.tip ? torque - threshold : threshold - torque) / oneElement;
     const line =
-      `${ok ? 'OK  ' : required ? 'FAIL' : 'MISS'} ${key.padEnd(7)} expect ${r.tip ? 'TIP   ' : 'NO TIP'} got ${got ? 'TIP   ' : 'NO TIP'}` +
+      `${ok ? (torqueSays === r.tip ? 'OK  ' : 'MISS') : 'FAIL'} ${key.padEnd(7)} expect ${r.tip ? 'TIP   ' : 'NO TIP'} ` +
+      `pipeline ${got ? 'TIP   ' : 'NO TIP'} torque ${torqueSays ? 'TIP   ' : 'NO TIP'}` +
       ` margin ${m >= 0 ? '+' : ''}${m.toFixed(2)} element-weights  [${r.source}]`;
     console.log(`  ${line}`);
     report.push(line);
@@ -438,8 +473,10 @@ const block = [
   `//   so the lever arm was swept over w ∈ [-24, 0] and a ${splitPct.toFixed(0)}/${(100 - splitPct).toFixed(0)} split taken: restoring`,
   `//   ${best.restoring.toFixed(0)}, detent ${detent}. The damping was fitted by bisection against a REAL 8-POLLEN`,
   `//   tip, stop to stop, at ${Number.isFinite(measured) ? `${measured.toFixed(2)}s` : 'never'} against BB_TIP_SWING_S ${BB_TIP_SWING_S}s.`,
-  '//   Rows, through the real step3d pipeline (MISS = an owner-measured row a torque model cannot',
-  '//   reach at one nectar mass; see VALIDATION in the script for why that is expected):',
+  '//   Rows, twice over: `pipeline` is what the shipped tray does (BB_TIP_POLLEN, the published',
+  '//   table) and `torque` is what this fitted see-saw alone would have done. MISS = the two',
+  '//   disagree, which is the measurement, not a defect — the table is the trigger. FAIL = the',
+  '//   pipeline disagrees with the published row, which would be the HUD lying to the driver:',
   ...report.map((l) => `//     ${l}`),
   `export const BB3_HIVE_BALLAST = ${BB3_HIVE_BALLAST};`,
   `export const BB3_HIVE_BALLAST_AT: readonly [number, number] = [0, ${ballastW}];`,
@@ -457,8 +494,16 @@ console.log(`[hive-calibrate] BB3_HIVE_DETENT  ${detent}`);
 console.log(
   `[hive-calibrate] BB3_HIVE_DAMPING ${damping}  (stop-to-stop ${Number.isFinite(measured) ? `${measured.toFixed(2)}s` : 'never'}, target ${BB_TIP_SWING_S}s)`,
 );
-console.log(`[hive-calibrate] target rows:     ${TARGETS.length - failures}/${TARGETS.length} hold, margin ±${margin.toFixed(2)} element-weights`);
-console.log(`[hive-calibrate] validation rows: ${VALIDATION.length - misses}/${VALIDATION.length} agree (one nectar mass cannot reach all of them)`);
+const allRows = TARGETS.length + VALIDATION.length;
+// the GATE: the shipped tray has to answer every published row the way the row reads, because
+// that is what `hud.ts` promises the driver in "N MORE TO TIP".
+console.log(`[hive-calibrate] pipeline vs the table: ${allRows - failures}/${allRows} rows hold — the owner's requirement`);
+// the MEASUREMENT: how far this fitted see-saw's own torque sits from the same table. Counted
+// only over rows the pipeline got right, so a FAIL is never also reported as a MISS.
+console.log(
+  `[hive-calibrate] torque model vs the table: ${allRows - failures - misses}/${allRows} agree, margin ±${margin.toFixed(2)} ` +
+    'element-weights (one nectar mass cannot reach all of them, and no longer has to)',
+);
 console.log(
   `[hive-calibrate] BB3_HIVE_DYNAMIC should be ${dynamic ? 'TRUE' : 'FALSE'} ` +
     `(${dynamic ? 'every target row holds and the swing lands' : 'plan §3.6 fallback: keep the kinematic tray'})`,
