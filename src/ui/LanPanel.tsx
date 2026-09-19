@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { APP_NAME, LINKS } from '../seasons';
+import type { GameId } from '../games/types';
 import { desktop, type LanHostStatus } from '../desktop';
 import { LanHost, type HostHealth } from '../lan/hostRuntime';
 import { joinLanRoom } from '../lan/joinLan';
@@ -11,6 +12,7 @@ import { serverCaps } from '../net/api';
 import { useEscape } from './useEscape';
 import { appBuild, clearLanServer, lanActive, lanServerUrl, setLanServer } from '../net/env';
 import { LAN_DEFAULT_PORT, mixedContentBlock, parseLanAddress } from '../net/lanAddress';
+import { copyText } from './copyText';
 
 /**
  * LAN PLAY — host a game on this machine, or join one on this network.
@@ -52,11 +54,21 @@ const HOST_STEPS = [
 ] as const;
 export function LanPanel({
   signedIn,
+  game,
   onConnected,
   onBack,
 }: {
   /** hosting requires an account: the match data has to land somewhere */
   signedIn: boolean;
+  /**
+   * The game a room hosted from this tab is built for — the player's current pick.
+   *
+   * ⚠️ It has to be THIS, not the protocol default. A room built with no game is a DECODE
+   * room, and the host's own lobby then joins it as whatever game their settings say. With
+   * BIOBUZZ selected that put a BIOBUZZ lobby in front of a DECODE room: every READY UP was
+   * judged against DECODE's start rules, cleared by the room, and nothing on screen said why.
+   */
+  game: GameId;
   /** connected to a LAN server — take the player to the room screen */
   /**
    * Go to the room screen. The CODE is passed when this navigation already knows which room
@@ -64,8 +76,12 @@ export function LanPanel({
    * code, and making somebody type it again on the next screen (having just typed it here)
    * is a second chance to get it wrong for no information gained. The two ADDRESS paths pass
    * nothing: reaching a LAN server is not choosing a room on it.
+   *
+   * `game` rides along for the tab-hosted HOST, because it is the room's game and not
+   * necessarily the setting any more: a host who parks the room, changes game and comes back
+   * must still re-enter the room they are running, as the game it runs.
    */
-  onConnected: (code?: string) => void;
+  onConnected: (code?: string, game?: GameId) => void;
   /** leave the LAN screen without connecting to anything — see the note on `.ds-back` below */
   onBack: () => void;
 }) {
@@ -172,7 +188,7 @@ export function LanPanel({
       },
     });
     void host
-      .start(code)
+      .start(code, { kind: 'versus', game })
       .then((live) => {
         /* ⚠️ RAISED HERE, NOT WHERE THE ROOM IS ADOPTED. The match has to be kept by this tab
            and by no other (`src/lan/hosting.ts`), and the only tab that can know that is the
@@ -184,7 +200,7 @@ export function LanPanel({
       })
       .catch((e: Error) => {
         host.stop();
-        setTabErr(e.message || 'Could not start hosting.');
+        setTabErr(e.message || 'Couldn’t start hosting. Try again.');
         setTabBusy(false);
       });
   };
@@ -196,8 +212,9 @@ export function LanPanel({
        a hand-off rather than an abandonment. */
     handedOff.current = true;
     keepHostedRoom(tabHost);
+    // `transport` is a fresh loopback if the last visit's was disposed — see `LanHost.transport`
     setPendingLanRoom({ transport: tabHost.transport, code: tabCode, hosting: true });
-    onConnected(tabCode);
+    onConnected(tabCode, tabHost.game);
   };
 
   const joinByCode = (): void => {
@@ -212,7 +229,7 @@ export function LanPanel({
         onConnected(r.code);
       })
       .catch((e: Error) => {
-        setJoinCodeErr(e.message || 'Could not reach that room.');
+        setJoinCodeErr(e.message || 'Couldn’t reach that room. Check the code and try again.');
         setJoinCodeBusy(false);
       });
   };
@@ -220,7 +237,7 @@ export function LanPanel({
   const [host, setHost] = useState<LanHostStatus | null>(null);
   const [hostBusy, setHostBusy] = useState(false);
   const [hostErr, setHostErr] = useState('');
-  const [addr, setAddr] = useState(() => lanServerUrl().replace(/^ws:\/\//, ''));
+  const [addr, setAddr] = useState(() => lanServerUrl().replace(/^wss?:\/\//, ''));
   const [joinErr, setJoinErr] = useState('');
   /** the URL a blocked guest must open in a browser instead — see constraint 2 above */
   const [openInstead, setOpenInstead] = useState('');
@@ -302,57 +319,22 @@ export function LanPanel({
   };
 
   /**
-   * ⚠️ `navigator.clipboard` DOES NOT EXIST ON THE PAGE THIS SCREEN MATTERS MOST ON.
+   * ⚠️ THIS IS THE PAGE WHERE THE CLIPBOARD API IS NOT THERE.
    *
-   * The Clipboard API is gated on a SECURE CONTEXT. A LAN guest is served from
-   * `http://192.168.x.x:8787`, which is plain http and not `localhost`, so it is not secure and
-   * `navigator.clipboard` is `undefined` there — measured, not assumed. The optional chain meant
-   * the whole call evaporated and every copy button on this page was a button that did nothing,
-   * silently, with no error to notice. It is exactly the wrong page for that: the join URL and
-   * the host commands are the two things anyone comes here to copy.
+   * A LAN guest is served from `http://192.168.x.x:8787` — plain http, not `localhost`, so not
+   * a secure context and `navigator.clipboard` is `undefined`. The join URL and the host
+   * commands are the two things anyone comes to this screen to copy, so the fallback matters
+   * here more than anywhere else. It lives in `copyText` now, which every copy button shares;
+   * the host's own window is on `localhost`, which IS exempt, so it takes the modern path.
    *
-   * So there is a fallback, and it is the old `execCommand('copy')` one. It is deprecated and it
-   * is also the only thing that works without a secure context, which is the situation. The
-   * textarea is off-screen rather than `display:none` because a hidden element cannot be
-   * selected, and `readOnly` keeps a mobile keyboard from opening over the page.
-   *
-   * The host's own window is on `localhost`, which IS exempt and secure, so the modern path is
-   * the normal one and this is the guest's path.
+   * The flash is keyed to whether the text ACTUALLY landed, not to the click.
    */
   const flash = (text: string): void => {
     setCopied(text);
     window.setTimeout(() => alive.current && setCopied(''), 1600);
   };
-  const copyFallback = (text: string): boolean => {
-    try {
-      const ta = document.createElement('textarea');
-      ta.value = text;
-      ta.setAttribute('readonly', '');
-      ta.style.position = 'fixed';
-      ta.style.top = '-1000px';
-      document.body.appendChild(ta);
-      ta.select();
-      const ok = document.execCommand('copy');
-      document.body.removeChild(ta);
-      return ok;
-    } catch {
-      return false;
-    }
-  };
   const copy = (text: string): void => {
-    if (navigator.clipboard?.writeText) {
-      void navigator.clipboard.writeText(text).then(
-        () => flash(text),
-        // a rejection here is usually "the document is not focused" rather than "not allowed",
-        // and the fallback copes with both — so try it before giving up.
-        () => {
-          if (copyFallback(text)) flash(text);
-          else setCopied('');
-        },
-      );
-      return;
-    }
-    if (copyFallback(text)) flash(text);
+    copyText(text, (ok) => (ok ? flash(text) : setCopied('')));
   };
 
   /**
@@ -370,10 +352,10 @@ export function LanPanel({
     if (!hit.ok) {
       setJoinErr(
         hit.error === 'empty'
-          ? 'Enter the address the host is showing on their screen.'
+          ? 'Enter the address shown on the host’s screen.'
           : hit.error === 'not-private'
-            ? 'That isn’t an address on this network. LAN play only connects to servers on the network you’re on.'
-            : 'Couldn’t read that address. It should look like 192.168.1.5 or 192.168.1.5:8787.',
+            ? 'That address isn’t on your local network.'
+            : 'Couldn’t read that address. It should look like 192.168.1.5:8787.',
       );
       return;
     }
@@ -417,30 +399,25 @@ export function LanPanel({
       <h1 className="ds-h1">LAN play</h1>
 
       <p className="ds-page-note">
-        The match runs on one network, with no game server in the middle. LAN matches are
-        unofficial — they’re never rated and never reach a leaderboard. The host’s replays are
-        still saved to their account.
+        Play with everyone on the same network. LAN matches aren’t ranked, and the host’s
+        replays save to their account.
       </p>
 
       {active && (
         <div className="ds-panelbox">
           <p className="ds-lan-state">
-            Connected to <b>{lanServerUrl().replace(/^ws:\/\//, '')}</b>
-          </p>
-          <p className="ds-hint">
-            Matches you play here are unofficial. Leaderboards, records and your account still
-            come from the DSIM servers.
+            Connected to <b>{lanServerUrl().replace(/^wss?:\/\//, '')}</b>
           </p>
           <div className="ds-actions">
             <button className="ds-btn" onClick={leave}>
-              Play on the DSIM servers instead
+              Disconnect
             </button>
           </div>
         </div>
       )}
 
       {/* ---- HOST ---- */}
-      <p className="ds-tileset-label">Host · this computer</p>
+      <p className="ds-tileset-label">Host</p>
 
       {/* THE ONE HOST PATH WITH NOTHING TO INSTALL. It is first because for most people it is
           the only one they can use: the desktop app needs a download and the terminal needs
@@ -450,26 +427,17 @@ export function LanPanel({
         {!tabHost && (
           <>
             <p className="ds-hint">
-              Runs the game here, in this browser tab. Nothing to download and no commands —
-              everyone else joins with a six-character code and plays over your network, so the
-              match itself never leaves the building.
+              Runs the match in this browser tab. Players join with a six-character code.
             </p>
             <p className="ds-hint">
-              <b>You need internet for about a second</b>, at the start, so the players can find
-              each other. After that the match runs entirely on your own network. If the venue
-              has no internet at all, use one of the two options below instead.
+              Needs internet for a moment at the start so players can find each other. After
+              that the match stays on your network.
             </p>
             {!signedIn && !anonHostOk && (
-              <p className="ds-hint warn">
-                Sign in first. The matches played here are saved to your account, and there’s
-                nowhere for them to go otherwise.
-              </p>
+              <p className="ds-hint warn">Sign in to host. Matches are saved to your account.</p>
             )}
             {!signedIn && anonHostOk && (
-              <p className="ds-hint warn">
-                This server has no accounts, so the match stays on this device until you play
-                one signed in somewhere that does.
-              </p>
+              <p className="ds-hint warn">This server has no accounts. Matches stay on this device.</p>
             )}
             {tabErr && <p className="ds-form-err">⚠ {tabErr}</p>}
             <div className="ds-actions">
@@ -481,24 +449,21 @@ export function LanPanel({
         )}
         {tabHost && (
           <>
-            <p className="ds-hint">Read this code out. Everyone joins with it.</p>
+            <p className="ds-hint">Share this code with your players.</p>
             <button className="ds-lan-url" onClick={() => copy(tabCode)} title="Copy">
               <span className="u">{tabCode}</span>
               <span className="c">{copied === tabCode ? 'Copied' : 'Copy'}</span>
             </button>
             <p className="ds-hint">
               {tabGuests === 0
-                ? 'Waiting for players to join…'
-                : `${tabGuests} ${tabGuests === 1 ? 'player has' : 'players have'} joined.`}
+                ? 'Waiting for players…'
+                : `${tabGuests} ${tabGuests === 1 ? 'player' : 'players'} joined.`}
             </p>
             {/* THE HOST LOOP'S OWN HEALTH. A throttled tab does not announce itself — it just
                 runs the match slowly for everyone else — so the one person who can fix it is
                 told. See docs/lan-webrtc.md §6. */}
             {tabHealth && tabHealth.behind > 250 && (
-              <p className="ds-hint warn">
-                This tab is being slowed down by your browser. Keep it visible and on screen
-                while you host.
-              </p>
+              <p className="ds-hint warn">Your browser is slowing this tab. Keep it visible while you host.</p>
             )}
             <div className="ds-actions">
               <button className="ds-cta" onClick={playTabHost}>
@@ -518,14 +483,11 @@ export function LanPanel({
             {!running && (
               <>
                 <p className="ds-hint">
-                  Starts a game server on this computer. Everyone else opens the address it
-                  shows — no download, nothing to install.
+                  Starts a game server on this computer. Players open the address it shows in a
+                  browser.
                 </p>
                 {!signedIn && (
-                  <p className="ds-hint warn">
-                    Sign in first. The matches played on your server are saved to your
-                    account, and there’s nowhere for them to go otherwise.
-                  </p>
+                  <p className="ds-hint warn">Sign in to host. Matches are saved to your account.</p>
                 )}
                 {hostErr && <p className="ds-form-err">⚠ {hostErr}</p>}
                 <div className="ds-actions">
@@ -543,14 +505,12 @@ export function LanPanel({
                 </p>
                 {joinUrls.length === 0 ? (
                   <p className="ds-hint warn">
-                    This computer isn’t on a network anyone else can reach. Connect to the
-                    venue’s Wi-Fi or an ethernet switch, then start hosting again.
+                    This computer isn’t on a network other players can reach. Connect to Wi-Fi or
+                    ethernet, then start hosting again.
                   </p>
                 ) : (
                   <>
-                    <p className="ds-hint">
-                      Everyone else opens this in a browser on the same network:
-                    </p>
+                    <p className="ds-hint">Players open this in a browser on the same network:</p>
                     <div className="ds-lan-urls">
                       {joinUrls.map((u, i) => (
                         <button
@@ -565,19 +525,14 @@ export function LanPanel({
                       ))}
                     </div>
                     {joinUrls.length > 1 && (
-                      <p className="ds-hint">
-                        More than one is listed because this computer is on more than one
-                        network. If the first doesn’t work, try the next.
-                      </p>
+                      <p className="ds-hint">If the first address doesn’t work, try the next.</p>
                     )}
                   </>
                 )}
                 {skew && (
                   <p className="ds-hint warn">
-                    Your server is handing out a different build of DSIM than this window is
-                    running ({skew} vs {appBuild()}), which would desync a match. Open{' '}
-                    <b>http://localhost:{port}</b> in this app or a browser and play from
-                    there — that’s the same copy everyone else gets.
+                    Your server runs a different DSIM build ({skew}) than this window ({appBuild()}).
+                    Play from <b>http://localhost:{port}</b> so everyone is on the same build.
                   </p>
                 )}
                 <div className="ds-actions">
@@ -621,20 +576,12 @@ export function LanPanel({
           on the page rather than being deleted now that hosting has a button.
 
           GUESTS ARE UNAFFECTED either way, which is the part people assume wrong: only the
-          HOST needs any of this. `docs/lan-selfhost.md` carries the long version.
-
-          GUESTS ARE UNAFFECTED and that is worth saying out loud here, because it is the
-          part people assume wrong: only the HOST needs any of this. -------------------- */}
+          HOST needs any of this. `docs/lan-selfhost.md` carries the long version. ------------ */}
       <div className="ds-panelbox">
-        <p className="ds-lan-state">
-          {bridge?.lan ? 'Or host from a terminal' : 'Host with no internet at all'}
-        </p>
+        <p className="ds-lan-state">Host without internet</p>
         <p className="ds-hint">
-          For a venue with no internet whatsoever, including the moment of it the option above
-          needs. This runs the game outside the browser, so guests reach it by typing an
-          address instead of a code. It takes one command, and the steps are the same on macOS,
-          Windows and Linux. You need Node.js (nodejs.org) and Git (git-scm.com); if you
-          already write code on this machine you almost certainly have both.
+          Runs the game server from a terminal, so it works with no internet at all. Players
+          join by address instead of a code. Needs Node.js and Git, on macOS, Windows or Linux.
         </p>
         <ol className="ds-lan-steps">
           {HOST_STEPS.map((step) => (
@@ -652,18 +599,13 @@ export function LanPanel({
           ))}
         </ol>
         <p className="ds-hint">
-          It prints the addresses to put on a projector, and keeps hosting until you press
-          Ctrl-C. The first run builds the app once, so give it a minute.
-        </p>
-        <p className="ds-hint">
-          <b>Your guests install nothing.</b> They open the address you read out, in whatever
-          browser is already on their laptop. Only the host needs the command above — or the
-          desktop app, which does the same thing with a button.
+          It prints the addresses to share and hosts until you press Ctrl-C. The first run takes
+          a minute to build. Players don’t install anything.
         </p>
       </div>
 
       {/* ---- JOIN ---- */}
-      <p className="ds-tileset-label">Join · someone else’s computer</p>
+      <p className="ds-tileset-label">Join</p>
 
       {/* Two ways in, and they are not interchangeable: a CODE reaches a tab-hosted room and an
           ADDRESS reaches a machine running the server. The code is first because it is the one
@@ -682,10 +624,7 @@ export function LanPanel({
             maxLength={6}
           />
         </label>
-        <p className="ds-hint">
-          The six characters the host is showing. Works when the host is running DSIM in a
-          browser tab.
-        </p>
+        <p className="ds-hint">For a host running DSIM in a browser tab.</p>
         {joinCodeErr && <p className="ds-form-err">⚠ {joinCodeErr}</p>}
         <div className="ds-actions">
           <button className="ds-cta" onClick={joinByCode} disabled={joinCode.length < 6 || joinCodeBusy}>
@@ -713,9 +652,8 @@ export function LanPanel({
             of retrying will change that. So it says what to do instead. */}
         {openInstead && (
           <p className="ds-hint warn">
-            This page is loaded over a secure connection, so your browser won’t let it reach a
-            server on your local network. Open <b>{openInstead}</b> in a browser tab instead —
-            the host is serving DSIM there.
+            Your browser blocks this page from reaching a local server. Open <b>{openInstead}</b>{' '}
+            in a new tab instead.
           </p>
         )}
         <div className="ds-actions">
@@ -724,7 +662,7 @@ export function LanPanel({
           </button>
           {openInstead && (
             <button className="ds-btn" onClick={() => copy(openInstead)}>
-              {copied === openInstead ? 'Copied' : 'Copy that address'}
+              {copied === openInstead ? 'Copied' : 'Copy address'}
             </button>
           )}
         </div>

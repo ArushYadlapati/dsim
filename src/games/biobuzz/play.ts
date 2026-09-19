@@ -20,7 +20,6 @@ import {
   BB_HOOD_DEFAULT_DEG,
   BB_LAUNCH_Z0,
   BB_NECTAR_R,
-  BB_ON_TARGET_TOL,
   BB_POLLEN_R,
   BB_POLLEN_WALL_REST,
   FLOWER_MOUTH,
@@ -28,15 +27,16 @@ import {
   bbLoadingZoneSpot,
 } from './config';
 import { biobuzzColliders } from './colliders';
-import { capturePollen, scoreTargets, takeHeld } from './elements';
+import { capturePollen, hiveCellTarget, scoreTargets, takeHeld } from './elements';
 import { bbElementRadius, flowerFits, flowerRetrieve, flowerStackZ, type BbElementKind } from './flower';
-import { hiveAccepts, hiveCellPos, hiveLoad, hiveStep, hiveTakingSide, hiveWillTip, spillPoses } from './hive';
+import { hiveAccepts, hiveCellPos, hiveDeflect, hiveStep, hiveTakingSide, spillPoses } from './hive';
 import { bbIsTurreted, bbLauncherOf, bbLiftOf } from './mechs';
 import {
   type BbShot,
   bbAimHeading,
   bbDumpSolution,
   bbFlowerInReach,
+  bbIntakeAct,
   bbLaunch,
   bbMouths,
   bbSlewTurret,
@@ -120,8 +120,17 @@ import { rectContains, type BiobuzzState, type ScoreTarget, type Vec3 } from './
  * BIOBUZZ copy of shared physics, which is the thing this file just stopped doing.
  */
 function clampPollenToWalls(b: Artifact): void {
-  const lim = BB_HALF_X - BB_POLLEN_R;
-  const limY = BB_HALF_Y - BB_POLLEN_R;
+  /**
+   * ⚠️ THE ELEMENT'S OWN RADIUS, NOT THE POLLEN'S. This field carries two sizes at once —
+   * POLLEN 1.4 and NECTAR 1.8 — and a NECTAR entered by the human player is a GROUND element
+   * for as long as it takes a robot to come and get it. Clamped at the POLLEN radius it came
+   * to rest with 0.4 in of its skin through the wall, which is the "0.4 in past the wall" note
+   * in HANDOFF-field. `bbElementRadius` is the same answer `land`, the spawner and the
+   * renderer give, so there is one definition of how big a NECTAR is.
+   */
+  const r = bbElementRadius(bbKindOf(b));
+  const lim = BB_HALF_X - r;
+  const limY = BB_HALF_Y - r;
   if (b.pos.x > lim) {
     b.pos.x = lim;
     if (b.vel.x > 0) b.vel.x = -b.vel.x * BB_POLLEN_WALL_REST;
@@ -197,40 +206,35 @@ function clearOfStatics(x: number, y: number, r: number): Vec2 {
 }
 
 /**
- * Resolve one ground POLLEN against one robot: CAPTURE IT, OR LEAVE IT ALONE.
+ * ONE ROBOT'S INTAKE, THIS TICK — the rollers PULL, then whatever has arrived at the throat is
+ * swallowed.
  *
- * Capture and nothing else. There used to be a PLOW branch here — if the POLLEN was inside the
- * footprint and not collected, this pushed it out along the minimum-penetration axis by the
- * whole penetration depth and gave it the robot's speed. That was a SECOND POSITION WRITER for
- * a ground pollen, fighting the shared solve for the same element on the same tick, which is
- * the one thing the artifact rework on `alpha` forbids. It is gone. The chassis, the intake
- * structure and the held pollen are all colliders in `solveArtifacts` (via `robotSolids`), so
- * everything the plow was reaching for — a pollen shoved ahead of a driving frame, a pollen
- * squeezed against a wall popping out sideways — is the solve's own answer, computed from the
- * chassis sweep rather than from a normal guessed off a box.
+ * The decision is `bbIntakeAct`'s (`robot.ts`), because it is GEOMETRY and hardware and because
+ * the 3D pipeline has to make exactly the same one (`sim3d/elements3d.ts` calls it too). This
+ * function is the 2D APPLICATION of it, and it writes exactly two kinds of thing:
  *
- * A POLLEN AT THE ROLLER IS STILL COLLECTED BEFORE THE FRAME REACHES IT, because this runs
- * BEFORE the solve in `updateBiobuzz`'s stage order. Driving into a pile collects it instead of
- * scattering it, which is the single biggest difference between an intake that feels real and
- * one that feels like a bulldozer.
+ *  · a VELOCITY on a ground element the rollers have hold of. Not a position — the shared solve
+ *    is still the one position authority (`docs/biobuzz-contract.md` §1), and this runs BEFORE
+ *    it, so the pull is simply the speed the element is trying to move at and what it actually
+ *    does is what the solve leaves behind. DECODE's `intakeSuction` is the same shape at the
+ *    same point in the tick, and its own header says why writing it AFTER the solve is a lie.
+ *  · a CAPTURE, through `capturePollen`, which is still what enforces the hopper cap and G408.
+ *
+ * There used to be a PLOW branch here — if the POLLEN was inside the footprint and not
+ * collected, it was pushed out along the minimum-penetration axis and given the robot's speed.
+ * That was a second POSITION writer for a ground pollen and it is gone for good; the chassis,
+ * the intake structure and the held pollen are all colliders in `solveArtifacts`.
  */
-function interact(
+function intakeTick(
   world: World,
-  b: Artifact,
   rob: RobotState,
   cmd: RobotCommand | undefined,
   enabled: boolean,
-): 'collected' | 'none' {
-  const intakeActive = enabled && (rob.autoIntake || (cmd?.intake ?? false));
-  if (!intakeActive) return 'none';
-  const local = rot({ x: b.pos.x - rob.pos.x, y: b.pos.y - rob.pos.y }, -rob.heading);
-  // ANY mounted edge grabs: one mouth for front/back, two for `side` (both flanks) and
-  // `frontback` (both ends). `capturePollen` is what enforces the hopper cap, so a full robot
-  // simply leaves the POLLEN on the floor for the solve to push around.
-  for (const m of bbMouths(rob.spec)) {
-    if (rectContains(m, local.x, local.y, BB_POLLEN_R) && capturePollen(world, rob, b)) return 'collected';
-  }
-  return 'none';
+): void {
+  if (!(enabled && (rob.autoIntake || (cmd?.intake ?? false)))) return;
+  const act = bbIntakeAct(world, rob);
+  for (const p of act.pull) p.ball.vel = p.vel;
+  for (const b of act.take) capturePollen(world, rob, b);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -341,7 +345,7 @@ const NECTAR_PRESS_KEY = 'nectarPress';
  *      launch so a turret that slewed this tick fires on this tick's bearing.
  *   5c. the BOX TUBE PLACES: an edge on the place-POLLEN / place-NECTAR buttons, with a FLOWER
  *      in reach, moves one held element into that FLOWER's stack. Before the launch, so an
- *      auto-fire on the same tick cannot throw away the element being placed.
+ *      held fire on the same tick cannot throw away the element being placed.
  *   6. LAUNCHERS fire, which is what creates tick-N+1's flight pollen.
  *   7. the HUMAN PLAYERS enter what they are owed (G426), as ground elements in their own
  *      LOADING ZONE.
@@ -444,9 +448,11 @@ export function updateBiobuzz(
    * sit here is gone; `flowerAccepts` (`flower.ts`) stays as a pure function. A lob that comes
    * down over a FLOWER lands beside it (`land` clears the foot).
    *
-   * A miss is NOT a foul and not special-cased: an element that meets the structure anywhere
-   * else simply keeps flying and lands on the tiles (G417.H), which is also what the open-face
-   * gate in `hiveAccepts` produces for a shot taken from the pivot side.
+   * A miss is NOT a foul (G417.H) but it is no longer NOTHING: an element that meets the HIVE
+   * structure anywhere but the taking cell's mouth BOUNCES OFF IT and drops beside it
+   * (`hiveDeflect`, after the capture test below) — the shot taken from the pivot side that the
+   * open-face gate in `hiveAccepts` refuses hits the closed back and comes down next to the
+   * cell, instead of passing through the assembly and landing downrange.
    */
   for (const b of world.balls) {
     if (b.state.kind !== 'flight') continue;
@@ -454,6 +460,8 @@ export function updateBiobuzz(
     // Absent on an old snapshot and on anything that did not come out of `releasePollen`; see
     // the CELL branch for what that fallback means.
     const launchedBy = b.state.by;
+    // where it WAS, for the structure test: a face is something you cross, not somewhere you are
+    const prev: Vec3 = { x: b.pos.x, y: b.pos.y, z: b.z };
     b.pos.x += b.vel.x * dt;
     b.pos.y += b.vel.y * dt;
     b.z += b.vz * dt;
@@ -508,6 +516,24 @@ export function updateBiobuzz(
       break;
     }
     if (took) continue;
+
+    /**
+     * THE STRUCTURE (owner feedback, 2026-09-13). Either HIVE — a red shot can hit blue's
+     * assembly, and a refused shot at the opponent's cell is the commonest way to. `hiveDeflect`
+     * is an ENTRY test, so an element the capture loop refused over the taking cell (already
+     * inside the footprint, at the mouth) is left to drop through, and one that met a side, the
+     * underside or the pivot is put back on that surface with a dumped velocity and falls from
+     * there. At most one hive can be entered in one tick — they are 25.5 in apart.
+     */
+    for (const a of ALLIANCES) {
+      const hit = hiveDeflect(bb.hives[a], a, prev, { x: b.pos.x, y: b.pos.y, z: b.z }, vel);
+      if (!hit) continue;
+      b.pos = { x: hit.pos.x, y: hit.pos.y };
+      b.z = hit.pos.z;
+      b.vel = { x: hit.vel.x, y: hit.vel.y };
+      b.vz = hit.vel.z;
+      break;
+    }
 
     if (b.z <= 0) land(b, b.pos.x, b.pos.y);
   }
@@ -589,14 +615,12 @@ export function updateBiobuzz(
    */
   for (const b of world.balls) if (b.state.kind === 'ground') stepGroundBall(b, dt);
 
-  // CAPTURE. Nothing here moves a POLLEN — stage 4 is the one position authority, and this runs
-  // first so a POLLEN at the roller is taken before the frame reaches it.
-  for (const b of world.balls) {
-    if (b.state.kind !== 'ground') continue;
-    for (const rob of world.robots) {
-      if (interact(world, b, rob, cmds.get(rob.id), enabled) === 'collected') break;
-    }
-  }
+  // THE INTAKES: the rollers PULL, then swallow whatever has arrived at the throat. Nothing
+  // here moves a POLLEN — the pull is a VELOCITY, handed to the solve below, which is still the
+  // one position authority. Per ROBOT in array order (a captured element is `held` and cannot
+  // be taken twice), and BEFORE the solve so an element at the roller is drawn in rather than
+  // plowed by the frame arriving behind it.
+  for (const rob of world.robots) intakeTick(world, rob, cmds.get(rob.id), enabled);
 
   // ── 4b. INTAKE OFF A FLOWER (G418.B) ──────────────────────────────────────
   // After the ground capture, so a robot that took a loose element this tick has spent its
@@ -660,18 +684,6 @@ export function updateBiobuzz(
   // read one stage after it is written, and a per-tick robot field is wire cost on every
   // snapshot to every client.
   const shots = new Map<number, BbShot>();
-  // "is the own up-CELL still taking elements for a shot fired now" — once per alliance per tick,
-  // and only when some robot asks, because it runs every in-flight element of that alliance
-  // forward (`bbCellTaking`).
-  const taking = new Map<Alliance, boolean>();
-  const cellTaking = (a: Alliance): boolean => {
-    let t = taking.get(a);
-    if (t === undefined) {
-      t = bbCellTaking(world, a, dt, kindOf);
-      taking.set(a, t);
-    }
-    return t;
-  };
   for (const rob of world.robots) {
     if (rob.passive) continue; // a practice dummy has no mechanisms to run
     // A TURRET TRACKS WHETHER OR NOT THE ROBOTS ARE ENABLED. `robotsEnabled` gates DRIVER
@@ -679,60 +691,51 @@ export function updateBiobuzz(
     // still refuses to fire while disabled. Spawn aims a turret at FIELD CENTRE, so gating this
     // on `enabled` would start every match with a swing off that bearing on the first live tick.
     const launcher = bbLauncherOf(rob.spec, BB_HOOD_DEFAULT_DEG);
-    const target = bbPickTarget(world, rob);
-    // `scores` is read only by AUTO-FIRE, so only a robot that would auto-fire pays for predicting it.
-    const predict = rob.autoFire && rob.hopper.length > 0 && target !== null;
-    const hive = bb.hives[rob.alliance];
+    // AIM ASSIST (owner, 2026-09-13): the NEARER cell of the own HIVE, and whether a shot would
+    // land in it is asked of a copy of the HIVE with THAT cell up and settled — the assist knows
+    // where the cells are, not which way the HIVE will be tilted when the shot arrives, and not
+    // how many elements are already on their way. The real capture (stage 2) still reads the real
+    // HIVE, so a shot at a down or swinging cell misses.
+    const target = bbAimTarget(world, rob);
+    const pretend: BiobuzzState['hives'][Alliance] = { ...bb.hives[rob.alliance], up: bbCellSideOf(target), tipping: 0, released: false };
+    // `lands` is read only while the driver is holding fire, so only then is it predicted.
+    const asking = enabled && (cmds.get(rob.id)?.fire ?? false) && rob.hopper.length > 0;
     if (bbIsTurreted(launcher)) {
       // EVERY TURRET: one for a single turret, both for a double (POLLEN turret 0, NECTAR 1).
       const speed: (number | undefined)[] = [];
-      const onTarget: boolean[] = [];
-      const scores: boolean[] = [];
+      const lands: boolean[] = [];
       const exits: readonly (0 | 1)[] = launcher.kind === 'twinturret' ? [0, 1] : [0];
       for (const which of exits) {
-        const sol = target ? bbTurretSolution(rob, target, which) : null;
-        // `null` on either axis means "hold where you are" — a turret with nothing on its open
-        // side stops rather than drifting.
+        const sol = bbTurretSolution(rob, target, which);
         bbSlewTurret(rob, sol?.yaw ?? null, sol?.pitch ?? null, dt, which);
         speed[which] = sol?.speed;
-        const yaw = which === 1 ? (rob.bbTurret2Heading ?? rob.turretHeading) : rob.turretHeading;
-        const pitch = which === 1 ? (rob.bbTurret2Pitch ?? 0) : (rob.bbTurretPitch ?? 0);
-        onTarget[which] =
-          sol !== null &&
-          sol.reachable &&
-          Math.abs(wrapAngle(sol.yaw - yaw)) < BB_ON_TARGET_TOL &&
-          Math.abs(sol.pitch - pitch) < BB_ON_TARGET_TOL;
-        // WILL IT SCORE: the release this turret would make now (its current yaw and pitch, at the
-        // speed `bbLaunch` will use), run forward through the flight stage, into a cell still taking.
-        let will = false;
-        if (predict && onTarget[which] && sol && cellTaking(rob.alliance)) {
+        // WILL IT LAND: the release this turret would make NOW — its current yaw and pitch, at the
+        // speed `bbLaunch` will use — run forward through the flight stage into the pretend-up
+        // cell. A turret still slewing predicts a miss, so the shot waits for it.
+        let land = false;
+        if (asking && sol && sol.reachable) {
           const rel = bbTurretRelease(rob, which, sol.speed);
-          will = bbFlightEnters(hive, rob.alliance, rel.origin, BB_LAUNCH_Z0, rel.vel, dt);
+          land = bbFlightEnters(pretend, rob.alliance, rel.origin, BB_LAUNCH_Z0, rel.vel, dt);
         }
-        scores[which] = will;
+        lands[which] = land;
       }
-      shots.set(rob.id, { target, speed, onTarget, scores });
+      shots.set(rob.id, { target, speed, lands });
     } else {
-      // A DUMPER is on target when the chassis is within `BB_AIM_TOL` of its aim heading AND the
-      // whole load has an accepted arc (`bbDumpSolution`). The assist steers it there (step.ts).
-      // It WILL SCORE when, on top of that, every throw of the dump runs forward into a cell that
-      // is still taking elements.
-      let on = false;
-      let will = false;
-      if (target) {
+      // A DUMPER lands when the chassis is within `BB_AIM_TOL` of its aim heading (the assist
+      // steers it there while fire is held — step.ts) AND every throw of the dump runs forward
+      // into the pretend-up cell.
+      let land = false;
+      if (asking) {
         const want = bbAimHeading(rob, target);
         const throws =
           want !== null && Math.abs(wrapAngle(want - rob.heading)) < BB_AIM_TOL
             ? bbDumpSolution(rob, target, rob.hopper.length)
             : null;
-        on = throws !== null;
-        will =
-          predict &&
+        land =
           throws !== null &&
-          cellTaking(rob.alliance) &&
-          throws.every((t) => bbFlightEnters(hive, rob.alliance, t.origin, BB_LAUNCH_Z0, t.vel, dt));
+          throws.every((t) => bbFlightEnters(pretend, rob.alliance, t.origin, BB_LAUNCH_Z0, t.vel, dt));
       }
-      shots.set(rob.id, { target, speed: [], onTarget: [on], scores: [will] });
+      shots.set(rob.id, { target, speed: [], lands: [land] });
     }
   }
 
@@ -807,84 +810,7 @@ export function updateBiobuzz(
    * cannot even be pressed — the explicit gate below is for the smoke lane and any other
    * direct caller of this function, which pass their own command map.
    */
-  {
-    const teleop = world.match.phase === 'teleop';
-    // THE 1:00 CUE. Past it the alliance may enter everything it still holds — it is a larger
-    // ENTITLEMENT, not a faster one, which is why it sits beside `nectarDue` in the test rather
-    // than replacing it. `BB_FLOWER_UNLOCK_S` is the same 60 s G410 unlocks the FLOWERS at; one
-    // cue, read in one place.
-    const dumping = teleop && world.match.phaseTimeLeft <= BB_FLOWER_UNLOCK_S;
-    // ONE ENTRY PER ALLIANCE PER TICK. A second robot's rising edge on the same tick is still
-    // CONSUMED (its latch is written above the test) rather than ignored, so a partner holding
-    // the button does not fire on the tick after.
-    const entered: Record<Alliance, boolean> = { red: false, blue: false };
-
-    for (const rob of world.robots) {
-      if (rob.passive) continue; // a practice dummy has no drive team
-      const a = rob.alliance;
-      const latch = (bb.held[rob.id] ??= {});
-      const now = enabled && (cmds.get(rob.id)?.bbNectar ?? false);
-      const rising = now && !latch[NECTAR_PRESS_KEY];
-      // A TRUE key, or NO key — the convention `placeLatch` sets for this same per-robot bag,
-      // and what the lane's smoke asserts about it. `bb.held` is plain JSON on `world.biobuzz`,
-      // so it rides every 30 Hz snapshot and every replay: a `false` parked under a robot id
-      // for the rest of the match is bytes on the wire that say nothing.
-      if (now) latch[NECTAR_PRESS_KEY] = true;
-      else delete latch[NECTAR_PRESS_KEY];
-      if (!rising || entered[a]) continue;
-      if (bb.nectarStock[a] <= 0) continue;
-      if (!(bb.nectarDue[a] > 0 || dumping)) continue;
-
-      // OLDEST FIRST, by id. `world.balls` order is stable but is not a promise; the id is,
-      // and the human player's five are staged consecutively (`spawn.ts`), so the lowest id
-      // still in hand is the one that has been waiting longest.
-      let next: Artifact | null = null;
-      for (const ball of world.balls) {
-        if (ball.state.kind !== 'stock' || ball.state.alliance !== a) continue;
-        if (!next || ball.id < next.id) next = ball;
-      }
-      if (!next) {
-        // the counter and the array disagree — trust the ARRAY, which is the conservation
-        // authority, and stop claiming a stock that is not there.
-        bb.nectarStock[a] = 0;
-        bb.nectarDue[a] = 0;
-        continue;
-      }
-      // The jitter is the world's seeded chain, drawn twice per entry, so five NECTAR entering
-      // one LOADING ZONE make a small scatter rather than a stack of five discs on one tile —
-      // and the same scatter on every peer. Drawn ONLY on an entry that actually happens: a
-      // refused press must not advance the chain, or a client that predicted a refusal and a
-      // server that granted it would disagree about every later draw in the match.
-      const spot = bbLoadingZoneSpot(a, BB_NECTAR_R);
-      const jx = (nextRandomValue(world) * 2 - 1) * NECTAR_ENTRY_JITTER;
-      const jy = (nextRandomValue(world) * 2 - 1) * NECTAR_ENTRY_JITTER;
-      land(next, spot.x + jx, spot.y + jy);
-      bb.nectarStock[a] -= 1;
-      // `max(0, …)`: in the dump window an alliance may enter stock it was never OWED, and a
-      // negative debt would make the next TIP's entitlement free.
-      bb.nectarDue[a] = Math.max(0, bb.nectarDue[a] - 1);
-      entered[a] = true;
-      world.events.push(`${a.toUpperCase()} NECTAR ENTERS`);
-    }
-
-    // WHY THE BUTTON WOULD REFUSE, recomputed for BOTH alliances every tick — AFTER the
-    // entries above, so the HUD reads the situation the driver is now in rather than the one
-    // they were in before their own press. Most permanent answer first: an empty stock never
-    // becomes anything else, so it outranks a frozen field and a missing entitlement.
-    for (const a of ALLIANCES) {
-      if (bb.nectarStock[a] <= 0) {
-        // owed an entry with nothing left to enter: the debt is void, not banked
-        bb.nectarDue[a] = 0;
-        bb.nectarWhy[a] = 'none-left';
-      } else if (!enabled) {
-        bb.nectarWhy[a] = 'locked';
-      } else if (bb.nectarDue[a] > 0 || dumping) {
-        bb.nectarWhy[a] = 'ok';
-      } else {
-        bb.nectarWhy[a] = 'none-owed';
-      }
-    }
-  }
+  bbHumanPlayerTick(world, bb, cmds, enabled);
 
   // ── 8. SCORE + ENDGAME ────────────────────────────────────────────────────
   /**
@@ -951,7 +877,7 @@ function placeLatch(
  * (`flowerStackZ`). A NECTAR placed makes its alliance the FLOWER's owner by the ordinary stack
  * rule (`flowerScore`), whoever placed it.
  */
-function placeInFlower(
+export function placeInFlower(
   world: World,
   bb: BiobuzzState,
   rob: RobotState,
@@ -1020,7 +946,7 @@ export function bbFlowerAtIntake(r: RobotState): number | null {
  * by the element removed — except above a NECTAR seated on the middle ring, which the geometry
  * already holds up.
  */
-function retrieveFromFlower(
+export function retrieveFromFlower(
   world: World,
   bb: BiobuzzState,
   rob: RobotState,
@@ -1057,75 +983,53 @@ function retrieveFromFlower(
 }
 
 /**
- * THE TARGET A ROBOT IS ACTUALLY TRYING TO SCORE IN, or `null` when there is not one.
+ * AIM ASSIST'S TARGET — the NEARER of the robot's OWN HIVE's two CELLS, as if that cell were up
+ * (owner, 2026-09-13).
  *
- * `scoreTargets()` reports every opening on the field, INCLUDING ones this robot should not
- * shoot at, and it is this function's job — not the field's — to say which of them is worth
- * turning toward.
+ * ⚠️ IT DOES NOT KNOW WHICH CELL IS UP, ON PURPOSE. It used to aim at the real up cell and an
+ * auto-fire released a shot whenever the up cell would take it, holding back when the elements
+ * already in the air would tip it. No robot can sense either of those things. So the assist aims
+ * at the nearer cell, whichever way the HIVE is tilted, and stage 5b asks whether a shot would
+ * land in THAT cell pretending it is up and settled (`bbCellSideOf` → a copy of the HIVE). The
+ * driver decides when to shoot; the capture in stage 2 reads the real HIVE, so a shot at a cell
+ * that is down, or that tips before the shot arrives, misses.
  *
- * ⚠️ HIVE CELLS ONLY (owner ruling 2026-09-12). Launchers stopped auto-aiming at FLOWERS: a
- * FLOWER is scored only by the Box Tube's placement, and nothing launched ever enters one, so a
- * FLOWER on this list would be a target no shot can score in.
+ * ⚠️ OWN HIVE ONLY. An element launched by the other alliance does not enter a CELL (owner ruling
+ * 2026-09-12), and the two HIVES are 25.5 in apart across field centre, so on the far side of the
+ * centreline the opponent's HIVE is nearer — nearest-over-both would aim at a target no shot can
+ * score in. Never a FLOWER either: nothing launched enters one.
  *
- * ⚠️ **THE OPPONENT'S CELL MUST NOT BE AIMED AT, AND THE ALLIANCE FILTER BELOW STAYS.**
- * `scoreTargets(world, a)` no longer lists it (owner ruling 2026-09-12: an element launched by
- * the other alliance does not enter, so it is not a place `a` can score), which makes the
- * filter a second line of defence rather than the only one. It is kept because the failure it
- * prevents is severe and silent: the two HIVES sit at x = ∓`BB_HIVE_X`, **25.5 in apart**
- * across field centre, so a robot anywhere on the far side of the centreline is NEARER the
- * opponent's opening than its own, and nearest-by-distance cannot tell them apart. Before the
- * ruling, unfiltered, the aim assist would have held the robot pointed at the opponent's HIVE
- * and fed it on the driver's own fire button for as long as it was held; a future target list
- * that carries an opponent-owned opening for any other reason would do the same.
- *
- * ⚠️ **A TARGET IS ONLY A TARGET FROM ITS OPEN SIDE** (`ScoreTarget.mouth`). Every BIOBUZZ
- * target is a hole in something solid and `pos` alone does not say which side of that solid is
- * the open one: a FLOWER is a column standing against the perimeter, so from behind it the
- * "target" is the wall, and an up-CELL opens back along the axis its see-saw was tipped. An
- * arc solved from the closed side arrives through the floor of the cell or through the
- * perimeter — a shot that cannot be taken on a real field. The test is the half-space: the
- * robot must lie on the side `mouth` points to.
- *
- * WHETHER A SHOT SCORES IS NOT DECIDED HERE. Lane A owns the acceptance gate, including the
- * approach-side half of it; this is only about where a launcher POINTS, so the test is the
- * plain half-space rather than a second, competing copy of that gate. An ABSENT `mouth` is
- * "no constraint" and never a default direction — a plain volume (a zone, a basket open at the
- * top) has no approach side to report, and guessing one is the bug the field exists to stop.
+ * The two cells open in opposite directions (`mouth` is ±y), so from between them the nearer cell
+ * is on its CLOSED side. The assist still points there, and no shot from there lands
+ * (`hiveAccepts` needs an inboard arrival), so fire simply does nothing.
  */
-export function bbPickTarget(world: World, r: RobotState): ScoreTarget | null {
-  let best: ScoreTarget | null = null;
-  let bestD = Infinity;
-  for (const t of scoreTargets(world, r.alliance)) {
-    // HIVE cells only — a FLOWER is never a launch target.
-    if (!HIVE_OF.has(t.id)) continue;
-    // a target owned by the OTHER alliance scores nothing.
-    if (t.alliance !== r.alliance) continue;
-    const dx = t.pos.x - r.pos.x;
-    const dy = t.pos.y - r.pos.y;
-    // ON THE OPEN SIDE? `mouth` points OUT of the opening, so the vector from the target TO
-    // the robot must agree with it. (dx,dy) points target-ward, hence the negation.
-    if (t.mouth && -dx * t.mouth.x + -dy * t.mouth.y <= 0) continue;
-    const d = dx * dx + dy * dy; // squared — no sqrt needed for a comparison
-    if (d < bestD) {
-      bestD = d;
-      best = t;
-    }
-  }
-  return best;
+export function bbAimTarget(world: World, r: RobotState): ScoreTarget {
+  void world; // the pick is geometry alone — which cell is up is exactly what it must not read
+  const north = hiveCellTarget(r.alliance, 'north');
+  const south = hiveCellTarget(r.alliance, 'south');
+  const dn = (north.pos.x - r.pos.x) ** 2 + (north.pos.y - r.pos.y) ** 2;
+  const ds = (south.pos.x - r.pos.x) ** 2 + (south.pos.y - r.pos.y) ** 2;
+  return ds < dn ? south : north;
+}
+
+/** which cell of its HIVE a `hiveCellTarget` is — its mouth opens along its own side. */
+export function bbCellSideOf(t: ScoreTarget): 'north' | 'south' {
+  return (t.mouth?.y ?? t.pos.y) < 0 ? 'south' : 'north';
 }
 
 /**
  * WILL A FLIGHT ELEMENT ENTER `owner`'s up-CELL — stage 2 of this file, run forward, against the
- * hive as it is now.
+ * `hive` it is given (Aim Assist hands it a copy with the aimed cell up — stage 5b).
  *
  * ⚠️ IT IS THE SAME STEP, IN THE SAME ORDER, AND IT HAS TO STAY THAT WAY: integrate position,
  * height, then gravity; the wall clamp; the `hiveAccepts` test; land at `z <= 0`. An element
  * released at tick N is first integrated at the start of tick N+1, and so is the first step here,
- * so a release predicted to enter does enter unless the HIVE changes under it — which is what
- * `bbCellTaking` is for. A predictor with its own ballistics would be a second answer to "did it
- * go in", and auto-fire would fire on the wrong one.
+ * so a release predicted to enter a HIVE in that state does enter one. A predictor with its own
+ * ballistics would be a second answer to "did it go in", and Aim Assist would release shots that
+ * miss the cell it is aimed at.
  *
- * Pure: the element is copied, nothing in the world is written.
+ * Pure: the element is copied, nothing in the world is written. `trace` is the ONE exception and
+ * it is an OUT-PARAMETER the caller owns — see `BbFlightTrace`.
  */
 export function bbFlightEnters(
   hive: BiobuzzState['hives'][Alliance],
@@ -1134,6 +1038,7 @@ export function bbFlightEnters(
   z: number,
   vel: Vec3,
   dt: number,
+  trace?: BbFlightTrace,
 ): boolean {
   if (!(dt > 0)) return false;
   const b = { pos: { x: pos.x, y: pos.y }, vel: { x: vel.x, y: vel.y } } as Artifact;
@@ -1141,57 +1046,56 @@ export function bbFlightEnters(
   let vz = vel.z;
   // four seconds of flight is well past any arc a legal launch speed can make
   const steps = Math.ceil(4 / dt);
+  if (trace) trace.n = 0;
   for (let i = 0; i < steps; i++) {
     b.pos.x += b.vel.x * dt;
     b.pos.y += b.vel.y * dt;
     zz += vz * dt;
     vz -= C.GRAVITY * dt;
     clampPollenToWalls(b);
-    if (hiveAccepts(hive, owner, b.pos, zz, { x: b.vel.x, y: b.vel.y, z: vz })) return true;
-    if (zz <= 0) return false;
+    if (trace && i % trace.every === 0) traceWrite(trace, b.pos.x, b.pos.y, zz);
+    if (hiveAccepts(hive, owner, b.pos, zz, { x: b.vel.x, y: b.vel.y, z: vz })) {
+      if (trace) traceWrite(trace, b.pos.x, b.pos.y, zz);
+      return true;
+    }
+    if (zz <= 0) {
+      if (trace) traceWrite(trace, b.pos.x, b.pos.y, zz);
+      return false;
+    }
   }
   return false;
 }
 
 /**
- * WILL `owner`'s up-CELL STILL BE TAKING ELEMENTS when a shot fired now arrives?
+ * THE ARC A PREDICTED FLIGHT ACTUALLY FLEW — the optional out-parameter of `bbFlightEnters`, and
+ * the reason the shot-path preview is not a second set of ballistics.
  *
- * ── THROUGH A SWING, AUTO-FIRE RESUMES AT THE RELEASE (owner feedback, 2026-09-12) ─────────
- * No in the FIRST half. The cell has not refused since `hiveTakingSide` landed, but the tray
- * taking elements there is the one about to empty, so a shot fired into it is a shot thrown on
- * the floor two seconds later. The turret is already slewing to the incoming cell through this
- * window (`aimCell`, `elements.ts`); what holds is the trigger, not the aim.
+ * `renderLanding.ts` used to carry a COPY of the loop above, because that one answers a boolean
+ * and a drawn path needs positions; its own header said in as many words that the two would drift.
+ * They are one loop again: a caller that wants the path hands in a buffer it owns, the sim writes
+ * every `every`-th step into it plus the terminal point, and a caller that does not (every call in
+ * the 2D and 3D pipelines) passes nothing and the branch is never taken.
  *
- * Yes in the SECOND half. The release hands the opening over to the incoming tray, and from
- * that instant a shot aimed at the cell the turret has been tracking for two seconds goes in
- * and stays in — `hiveStep` carries a post-release load through the settle. Waiting for the
- * settle instead threw away the two seconds the tracking existed to buy.
- *
- * ── AND NO WHEN THE LOAD IS ABOUT TO TIP ───────────────────────────────────────────────────
- * No when what is already in it PLUS every element of that alliance already in the air and
- * predicted to enter (`bbFlightEnters`) will tip it: the element that completes the load goes
- * in and starts the swing, so anything arriving after it reaches a tray on its way down. A shot
- * that would itself complete the load is fine — it is the one that goes in.
- *
- * Measured before this existed, a turret on a steady feed auto-fired 61 elements and 58 missed,
- * every one of them launched at a settled cell that the shots ahead of it were about to tip.
+ * `pts` is `[x, y, z]` per point and is NEVER reallocated here — a short buffer simply stops being
+ * written, so a preview cannot make the sim allocate. `n` is written back.
  */
-export function bbCellTaking(
-  world: World,
-  owner: Alliance,
-  dt: number,
-  kindOf: (id: number) => BbElementKind,
-): boolean {
-  const bb = world.biobuzz as BiobuzzState | undefined;
-  if (!bb) return false;
-  const hive = bb.hives[owner];
-  if (hive.tipping > 0 && !hive.released) return false;
-  const load = [...hive.contents];
-  for (const b of world.balls) {
-    if (b.state.kind !== 'flight' || b.state.by !== owner) continue;
-    if (bbFlightEnters(hive, owner, b.pos, b.z, { x: b.vel.x, y: b.vel.y, z: b.vz }, dt)) load.push(b.id);
-  }
-  return !hiveWillTip(hiveLoad(load, kindOf));
+export interface BbFlightTrace {
+  /** caller-owned `[x,y,z]` triples, written in place */
+  pts: Float32Array;
+  /** record one point per `every` integration steps (≥ 1) */
+  every: number;
+  /** how many points were written (OUT) */
+  n: number;
+}
+
+/** append one point to a trace, if its buffer still has room. */
+function traceWrite(t: BbFlightTrace, x: number, y: number, z: number): void {
+  const i = t.n * 3;
+  if (i + 3 > t.pts.length) return;
+  t.pts[i] = x;
+  t.pts[i + 1] = y;
+  t.pts[i + 2] = z;
+  t.n++;
 }
 
 /**
@@ -1204,9 +1108,8 @@ export function bbCellTaking(
  * would fight the driver for no benefit.
  *
  * A P-controller on the heading error, dead-banded by `BB_AIM_TOL` so a robot already lined up
- * does not oscillate. Returning `null` when `bbPickTarget` finds nothing is the right answer
- * and not a failure: a robot with no scorable opening on its open side has nothing to be
- * steered toward, and the driver keeps their own rotate command.
+ * does not oscillate. It steers toward `bbAimTarget` — the nearer own cell, whichever way the
+ * HIVE is tilted — exactly the cell stage 5b asks the dump to land in.
  */
 export function bbAimAssist(
   world: World,
@@ -1215,9 +1118,7 @@ export function bbAimAssist(
   enabled: boolean,
 ): number | null {
   if (!enabled || !cmd.fire || !r.aimAssist) return null;
-  const best = bbPickTarget(world, r);
-  if (!best) return null;
-  const want = bbAimHeading(r, best);
+  const want = bbAimHeading(r, bbAimTarget(world, r));
   if (want === null) return null; // turreted: the turret does this
   const err = wrapAngle(want - r.heading);
   if (Math.abs(err) < BB_AIM_TOL) return 0; // lined up — hold still rather than hunt
@@ -1239,3 +1140,105 @@ const ZERO_CMD: RobotCommand = Object.freeze({
   intake: false,
   fire: false,
 });
+
+/**
+ * THE HUMAN PLAYER, stage 7 of `updateBiobuzz` -- pulled out into its own exported function
+ * (Day 1 3D seam, `docs/biobuzz/plan-3d.md` section 3.8) so `sim3d/elements3d.ts` can call the
+ * SAME bookkeeping the 2D pipeline does, rather than a second copy of it. A PURE EXTRACTION:
+ * the body below is byte-for-byte what stage 7 always did, called from exactly the point it
+ * used to sit inline -- see `updateBiobuzz`'s stage 7 for why it runs where it does.
+ *
+ * Returns the NECTAR that entered this tick, per alliance (`null` when none did) -- the one
+ * thing 2D never needed to know and 3D does: `land()` puts an entered element on the tiles at
+ * `z = 0`, vel zero, which is correct for the 2D pipeline (nothing there simulates the drop)
+ * and WRONG for 3D, where a NECTAR is meant to fall a short drop in from the human player's
+ * hand (plan section 3.8) rather than appear already resting. `sim3d/elements3d.ts` uses the
+ * return value to bump `z` on whichever ball actually entered, right after calling this; the
+ * 2D call site in `updateBiobuzz` simply ignores it.
+ */
+export function bbHumanPlayerTick(
+  world: World,
+  bb: BiobuzzState,
+  cmds: Map<number, RobotCommand>,
+  enabled: boolean,
+): Record<Alliance, Artifact | null> {
+  const entered: Record<Alliance, Artifact | null> = { red: null, blue: null };
+  const teleop = world.match.phase === 'teleop';
+  // THE 1:00 CUE. Past it the alliance may enter everything it still holds — it is a larger
+  // ENTITLEMENT, not a faster one, which is why it sits beside `nectarDue` in the test rather
+  // than replacing it. `BB_FLOWER_UNLOCK_S` is the same 60 s G410 unlocks the FLOWERS at; one
+  // cue, read in one place.
+  const dumping = teleop && world.match.phaseTimeLeft <= BB_FLOWER_UNLOCK_S;
+  // ONE ENTRY PER ALLIANCE PER TICK. A second robot's rising edge on the same tick is still
+  // CONSUMED (its latch is written above the test) rather than ignored, so a partner holding
+  // the button does not fire on the tick after.
+  const enteredOnce: Record<Alliance, boolean> = { red: false, blue: false };
+
+  for (const rob of world.robots) {
+    if (rob.passive) continue; // a practice dummy has no drive team
+    const a = rob.alliance;
+    const latch = (bb.held[rob.id] ??= {});
+    const now = enabled && (cmds.get(rob.id)?.bbNectar ?? false);
+    const rising = now && !latch[NECTAR_PRESS_KEY];
+    // A TRUE key, or NO key — the convention `placeLatch` sets for this same per-robot bag,
+    // and what the lane's smoke asserts about it. `bb.held` is plain JSON on `world.biobuzz`,
+    // so it rides every 30 Hz snapshot and every replay: a `false` parked under a robot id
+    // for the rest of the match is bytes on the wire that say nothing.
+    if (now) latch[NECTAR_PRESS_KEY] = true;
+    else delete latch[NECTAR_PRESS_KEY];
+    if (!rising || enteredOnce[a]) continue;
+    if (bb.nectarStock[a] <= 0) continue;
+    if (!(bb.nectarDue[a] > 0 || dumping)) continue;
+
+    // OLDEST FIRST, by id. `world.balls` order is stable but is not a promise; the id is,
+    // and the human player's five are staged consecutively (`spawn.ts`), so the lowest id
+    // still in hand is the one that has been waiting longest.
+    let next: Artifact | null = null;
+    for (const ball of world.balls) {
+      if (ball.state.kind !== 'stock' || ball.state.alliance !== a) continue;
+      if (!next || ball.id < next.id) next = ball;
+    }
+    if (!next) {
+      // the counter and the array disagree — trust the ARRAY, which is the conservation
+      // authority, and stop claiming a stock that is not there.
+      bb.nectarStock[a] = 0;
+      bb.nectarDue[a] = 0;
+      continue;
+    }
+    // The jitter is the world's seeded chain, drawn twice per entry, so five NECTAR entering
+    // one LOADING ZONE make a small scatter rather than a stack of five discs on one tile —
+    // and the same scatter on every peer. Drawn ONLY on an entry that actually happens: a
+    // refused press must not advance the chain, or a client that predicted a refusal and a
+    // server that granted it would disagree about every later draw in the match.
+    const spot = bbLoadingZoneSpot(a, BB_NECTAR_R);
+    const jx = (nextRandomValue(world) * 2 - 1) * NECTAR_ENTRY_JITTER;
+    const jy = (nextRandomValue(world) * 2 - 1) * NECTAR_ENTRY_JITTER;
+    land(next, spot.x + jx, spot.y + jy);
+    entered[a] = next; // reported to the caller (sim3d/elements3d.ts sets the 3D fall height)
+    bb.nectarStock[a] -= 1;
+    // `max(0, …)`: in the dump window an alliance may enter stock it was never OWED, and a
+    // negative debt would make the next TIP's entitlement free.
+    bb.nectarDue[a] = Math.max(0, bb.nectarDue[a] - 1);
+    enteredOnce[a] = true;
+    world.events.push(`${a.toUpperCase()} NECTAR ENTERS`);
+  }
+
+  // WHY THE BUTTON WOULD REFUSE, recomputed for BOTH alliances every tick — AFTER the
+  // entries above, so the HUD reads the situation the driver is now in rather than the one
+  // they were in before their own press. Most permanent answer first: an empty stock never
+  // becomes anything else, so it outranks a frozen field and a missing entitlement.
+  for (const a of ALLIANCES) {
+    if (bb.nectarStock[a] <= 0) {
+      // owed an entry with nothing left to enter: the debt is void, not banked
+      bb.nectarDue[a] = 0;
+      bb.nectarWhy[a] = 'none-left';
+    } else if (!enabled) {
+      bb.nectarWhy[a] = 'locked';
+    } else if (bb.nectarDue[a] > 0 || dumping) {
+      bb.nectarWhy[a] = 'ok';
+    } else {
+      bb.nectarWhy[a] = 'none-owed';
+    }
+  }
+  return entered;
+}

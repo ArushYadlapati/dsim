@@ -2,7 +2,9 @@ import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { Alliance, Artifact, ArtifactColor, RobotCommand, World } from '../../src/types';
-import { SIM_DT } from '../../src/config';
+import { PIN_WALL_SLOP, SIM_DT, START_TOUCH_TOL } from '../../src/config';
+import { MATCH_SETTLE_MAX_S, newSettleClock, settleStep } from '../../src/sim/settle';
+import { bbPinSolid } from '../../src/games/biobuzz/colliders';
 import { createBiobuzzWorld } from '../../src/games/biobuzz/spawn';
 import { biobuzzStep } from '../../src/games/biobuzz/step';
 import {
@@ -27,17 +29,21 @@ import {
   hiveWillTip,
 } from '../../src/games/biobuzz/hive';
 import { flowerScore } from '../../src/games/biobuzz/flower';
+import { bbSettled } from '../../src/games/biobuzz/settle';
+import { mkWorld as bbSettleWorld } from './harness';
 import {
   bbApplyScore,
   bbInGarden,
   bbKindIndex,
   bbLeftNow,
+  bbWallsTouched,
   bbParkedNow,
   bbScoreWorld,
 } from '../../src/games/biobuzz/score';
 import {
   BB_CONTROL_LIMIT,
   BB_FRAME_RAM_SPEED,
+  BB_G417_ENABLED,
   bbAwardFoul,
   bbFootprintGap,
   bbNectarLocked,
@@ -45,7 +51,8 @@ import {
 } from '../../src/games/biobuzz/penalties';
 import { biobuzzFieldHud } from '../../src/games/biobuzz/hud';
 import { bbScene, bbSceneAt } from '../../src/games/biobuzz/scenes';
-import { footprintExtents } from '../../src/sim/field';
+import { footprintExtents, loadZone } from '../../src/sim/field';
+import { robotIntersectsRect } from '../../src/sim/physics';
 import { cmd, setup, type Check } from './harness';
 
 /** the repo root, for the source-text checks below — `core.ts`'s pattern. */
@@ -113,6 +120,22 @@ function place(world: World, id: number, x: number, y: number, headingDeg = 0): 
   r.vel = { x: 0, y: 0 };
 }
 
+/**
+ * TREAT WHERE THE ROBOTS ARE NOW AS WHERE THEY STARTED — the `pre`-tick bookkeeping, for a
+ * fixture that teleports instead of driving.
+ *
+ * LEAVE is measured against the walls a ROBOT STARTED AGAINST (`BiobuzzState.startWalls`,
+ * written on every `pre` tick and seeded at spawn), and a check that `place`s a robot onto a
+ * wall and then runs AUTO out has skipped both. Without this the robot is judged against the
+ * anchor it spawned on, which is a DIFFERENT wall, and it reads as having LEFT while sitting
+ * flat against the perimeter.
+ */
+function markStarts(world: World): void {
+  const bb = world.biobuzz;
+  if (!bb) return;
+  for (const r of world.robots) bb.startWalls[r.id] = bbWallsTouched(r);
+}
+
 let nextId = 500;
 /** one element, in whatever state the check needs. Ids are unique across the whole lane so a
  * stale reference in one fixture can never resolve inside another. */
@@ -165,6 +188,35 @@ function scoringChecks(check: Check): void {
     check('LEAVE: a robot against the perimeter has not LEFT', !bbLeftNow(w.robots[0]));
     place(w, 0, -40, 0);
     check('LEAVE: a robot in open field has LEFT', bbLeftNow(w.robots[0]));
+
+    /**
+     * ⚠️ THE WALL IT STARTED ON, not any of the four.
+     *
+     * §10.5.4 says "no longer contacting THE perimeter wall", and read as all four the
+     * achievement is unreachable in ordinary play: the HIVE, the FLOWERS and both GARDENS are
+     * at the perimeter, so a robot that crosses the field and ends AUTO somewhere useful is
+     * still touching A wall. Measured in a solo practice match before the fix — 3 points live
+     * for the whole of AUTO and 0 from the buzzer on, which is what "the LEAVE points aren't
+     * given" looks like from the driver's seat.
+     */
+    place(w, 0, -72 + 9, 0); // flat on the RED side wall, where it started
+    const startedOn = bbWallsTouched(w.robots[0]);
+    check('LEAVE: the start mask names the wall it is on', startedOn !== 0, String(startedOn));
+    check('LEAVE: still on its own start wall — not LEFT', !bbLeftNow(w.robots[0], startedOn));
+    place(w, 0, BB_HALF_X - 9, 0); // drove the width of the field, onto the OPPOSITE wall
+    check(
+      'LEAVE: parked on the FAR wall has LEFT — it is clear of the wall it started on',
+      bbLeftNow(w.robots[0], startedOn),
+    );
+    check(
+      'LEAVE: ...and the all-four reading is what would refuse it',
+      !bbLeftNow(w.robots[0]),
+    );
+    place(w, 0, -40, 0);
+    check(
+      'LEAVE: a robot that started clear of the perimeter has nothing to leave',
+      bbLeftNow(w.robots[0], 0),
+    );
 
     // PARK is the OWN LOADING ZONE (owner ruling, field-plan §8), "at least partially".
     const lz = BB_LZ.red;
@@ -361,10 +413,57 @@ function scoringChecks(check: Check): void {
      *                                    110
      */
     check('TABLE: BLUE TOTAL = 100+4+5+1 = 110', s.blue.total === 110, String(s.blue.total));
+    /**
+     * THE FINAL SCORE IS UNCHANGED BY THE INSTANT RULING (owner ruling, 2026-09-19).
+     *
+     * Every harvest — the results screen, `submitRecord`, the server's finalize — happens at or
+     * after `post`, so zeroing LEAVE / PARK / GARDEN until their instants moves the RUNNING
+     * total and nothing that was ever banked. This world is the whole of Table 10-2 and it is
+     * at `post`: 88 and 110, the same two numbers as before, with nothing left owing. Written
+     * as its own check so a review can see that at a glance rather than by diffing the block.
+     */
+    check(
+      'ASSESS: the FINAL score is unchanged by this ruling, and nothing is left pending at post',
+      s.red.total === 88 && s.blue.total === 110 && s.red.pendingPts === 0 && s.blue.pendingPts === 0,
+      `${s.red.total}/${s.blue.total} pending ${s.red.pendingPts}/${s.blue.pendingPts}`,
+    );
     check('TABLE: blue scored nothing it did not earn (no LEAVE, no PARK)', s.blue.leave === 0 && s.blue.parkAuto === 0);
     check('TABLE: FLOWER owners are F1 red, F2 blue, F3/F4 unowned',
       s.flowerOwners.join(',') === 'red,blue,,',
       s.flowerOwners.join(','));
+
+    /**
+     * THE CELL LINE IS BANKED AT THE BUZZER, NOT LIVE (owner ruling, 2026-09-12). Table 10-2
+     * pays for an element LEFT IN the up-CELL, which is a state of the field at the end — and
+     * counting it live made the score climb 2 at a time as a load built and then fall by ten
+     * when the HIVE did the one thing it is for.
+     *
+     * The same world, re-scored at each phase. The COUNT is live throughout (it is the
+     * driver's readout of the tray); the POINTS are 0 until `post`, and the total is short by
+     * exactly the cell line while they are.
+     */
+    {
+      const live = (['auto', 'teleop'] as const).map((ph) => {
+        w.match.phase = ph;
+        return { ph, s: bbScoreWorld(w) };
+      });
+      w.match.phase = 'post';
+      // the total is checked against the sum of the OTHER lines rather than against 88 − 8:
+      // LEAVE, both PARKs and the GARDEN are themselves phase-dependent (they are instant lines
+      // too, §10.5 F/G/E), so the invariant here is that the cell line contributes nothing, not
+      // that the match total is a particular number. `others()` reads the same zeroed fields the
+      // total sums, so the two move together and the equality still isolates `cellPts`.
+      const others = (x: (typeof live)[number]['s']['red']) =>
+        x.leave + x.parkAuto + x.parkTele + x.tipPts + x.ownedPts + x.bottomPts + x.gardenPts;
+      const bad = live.filter((x) => x.s.red.cellPts !== 0 || x.s.red.cellCount !== 4 || x.s.red.total !== others(x.s.red));
+      check(
+        'TABLE: the up-CELL line is 0 until the buzzer, and the COUNT stays live throughout',
+        bad.length === 0 && s.red.cellPts === 8,
+        bad.length
+          ? bad.map((x) => `${x.ph}: pts=${x.s.red.cellPts} count=${x.s.red.cellCount} total=${x.s.red.total}`).join(' · ')
+          : `auto ${live[0].s.red.total} / teleop ${live[1].s.red.total}, both with 0 cell points and 4 in the tray · post: ${s.red.cellPts} pts on a total of ${s.red.total}`,
+      );
+    }
 
     // RP thresholds (Table 10-2/10-3)
     check('RP: SWARM — red LEAVE+PARK 26 ≥ 16', s.rp.red.swarm, `${s.red.leave + s.red.parkAuto + s.red.parkTele}`);
@@ -400,14 +499,40 @@ function scoringChecks(check: Check): void {
     check('HUD: the score breakdown rides the slice', hud.score.red.total === 88);
   }
 
-  // ── LEAVE and PARK are LIVE before their instant and LATCHED after it ──────
+  /**
+   * ── THE FOUR INSTANT-ASSESSED LINES, AND THE TWO CONTINUOUS ONES ──────────
+   *
+   * §10.5 assesses LEAVE and AUTO PARK at the end of AUTO (F), TELEOP PARK at the end of the
+   * MATCH (G), and the up-CELL contents and the GARDEN once everything has come to rest (C, E).
+   * Each of those is worth ZERO until its instant has passed (owner ruling, 2026-09-19) — the
+   * live predicate feeds the COUNT and `pendingPts`, and neither reaches the total.
+   *
+   * It shipped the other way, and the measurement is the reason these checks exist: a RED robot
+   * free-placed clear of the perimeter with one POLLEN in its GARDEN put **4 points on the bar
+   * before the match started** and 9 one second into AUTO, 29 s before anything on it had been
+   * assessed. The FINAL score never moved — every harvest is at or after `post` — so what these
+   * pin is the RUNNING total, which is the only thing that was wrong.
+   *
+   * The TIP (§10.5 A) and both FLOWER lines (§10.5 D, "throughout the MATCH") are CONTINUOUS
+   * and are checked here too, as negative controls: they must stay live, or somebody latches
+   * them by symmetry later and this bug comes back pointing the other way.
+   */
+
+  // ── LEAVE: a live COUNT before the instant, the LATCH after it, 0 points until then ───
   {
     const w = bare([{ id: 0, alliance: 'red' }]);
     const bb = w.biobuzz;
     if (!bb) return;
     place(w, 0, -40, 0); // clear of the wall, clear of the zone
     w.match.phase = 'auto';
-    check('ASSESS: LEAVE is provisional during AUTO', bbScoreWorld(w).red.leave === BB_PTS.leave);
+    {
+      const s = bbScoreWorld(w).red;
+      check(
+        'ASSESS (§10.5 F): LEAVE during AUTO is a PENDING COUNT worth 0 points',
+        s.leave === 0 && s.leaveCount === 1 && s.pendingPts === BB_PTS.leave,
+        `pts=${s.leave} count=${s.leaveCount} pending=${s.pendingPts}`,
+      );
+    }
     // the latch says otherwise, and after the instant the latch is what is read
     bb.leave[0] = false;
     w.match.phase = 'teleop';
@@ -415,6 +540,382 @@ function scoringChecks(check: Check): void {
     bb.leave[0] = true;
     place(w, 0, -72 + 9, 0); // back at the wall — the achievement is kept
     check('ASSESS: a robot that returns to the wall KEEPS its LEAVE', bbScoreWorld(w).red.leave === BB_PTS.leave);
+  }
+
+  /**
+   * ONE POSE THAT SATISFIES LEAVE AND PARK AT ONCE, derived from the wall rather than typed.
+   *
+   * Both are measured off the FOOTPRINT, which is 21 × 17 — `robotExtents` adds the sweeper's
+   * reach to each end — so the near corner is 10.5 in from the centre and a pose that looks
+   * clear by an inch is not. The same derivation the two-instant check in `cueChecks` uses, and
+   * for the same reason it stopped being a literal there: at x = −59 the corner sits 1.17 in
+   * inside the CAD wall, i.e. within `START_TOUCH_TOL`, so the robot never LEAVES.
+   */
+  const CLEAR_X = -BB_HALF_X + 10.5 + START_TOUCH_TOL + 2;
+  const LZ_Y = (BB_LZ.red.y0 + BB_LZ.red.y1) / 2;
+  /** the middle of RED's GARDEN strip, far enough off the wall that containment leaves it be. */
+  const GARDEN_Y = -69;
+
+  // ── AUTO PARK: counted live in AUTO, worth 0 until the end-of-AUTO instant (§10.5 F) ──
+  {
+    const w = bare([{ id: 0, alliance: 'red' }]);
+    const bb = w.biobuzz;
+    if (!bb) return;
+    place(w, 0, CLEAR_X, LZ_Y); // clear of the perimeter AND inside its own LOADING ZONE
+    markStarts(w);
+    w.match.phase = 'auto';
+    const during = bbScoreWorld(w).red;
+    check(
+      'ASSESS (§10.5 F): AUTO PARK is 0 during AUTO and lands at the instant',
+      during.parkAutoCount === 1 &&
+        during.parkAuto === 0 &&
+        during.pendingPts === BB_PTS.leave + BB_PTS.parkAuto,
+      `count=${during.parkAutoCount} pts=${during.parkAuto} pending=${during.pendingPts}`,
+    );
+    bb.leave[0] = true;
+    bb.parkAuto[0] = true;
+    w.match.phase = 'transition';
+    const after = bbScoreWorld(w).red;
+    check(
+      'ASSESS (§10.5 F): past the instant the latched LEAVE and AUTO PARK are paid',
+      after.parkAuto === BB_PTS.parkAuto && after.leave === BB_PTS.leave && after.pendingPts === 0,
+      `leave=${after.leave} park=${after.parkAuto} pending=${after.pendingPts}`,
+    );
+  }
+
+  // ── TELEOP PARK: counted live in TELEOP, worth 0 until the buzzer (§10.5 G) ──
+  {
+    const w = bare([{ id: 0, alliance: 'red' }]);
+    const bb = w.biobuzz;
+    if (!bb) return;
+    place(w, 0, CLEAR_X, LZ_Y);
+    markStarts(w);
+    w.match.phase = 'teleop';
+    const during = bbScoreWorld(w).red;
+    check(
+      'ASSESS (§10.5 G): TELEOP PARK is 0 during TELEOP and lands at post',
+      during.parkTeleCount === 1 && during.parkTele === 0 && during.pendingPts === BB_PTS.parkTele,
+      `count=${during.parkTeleCount} pts=${during.parkTele} pending=${during.pendingPts}`,
+    );
+    bb.parkTele[0] = true;
+    w.match.phase = 'post';
+    const after = bbScoreWorld(w).red;
+    check(
+      'ASSESS (§10.5 G): at post the latched TELEOP PARK is paid and nothing is left pending',
+      after.parkTele === BB_PTS.parkTele && after.pendingPts === 0,
+      `pts=${after.parkTele} pending=${after.pendingPts}`,
+    );
+  }
+
+  // ── THE PRE-MATCH SCORE IS 0 — the regression, exactly as it was measured ──
+  {
+    const w = bare([{ id: 0, alliance: 'red' }]);
+    const bb = w.biobuzz;
+    if (!bb) return;
+    // free placement is legal in this game and the editor allows a pose off the wall, which is
+    // what made the bar read 4 with the field frozen: 3 for a LEAVE nothing had assessed plus 1
+    // for a GARDEN pollen the match had not started to score.
+    place(w, 0, -40, 0);
+    markStarts(w);
+    w.balls.push(el('yellow', { kind: 'ground' }, -60, GARDEN_Y));
+    w.match.phase = 'pre';
+    const s = bbScoreWorld(w).red;
+    check(
+      'ASSESS: the PRE-MATCH score is 0, even for a robot free-placed clear of the perimeter',
+      s.total === 0 && s.leaveCount === 1 && s.gardenCount === 1 && s.pendingPts === BB_PTS.leave + BB_PTS.garden,
+      `total=${s.total} leaveCount=${s.leaveCount} gardenCount=${s.gardenCount} pending=${s.pendingPts}`,
+    );
+  }
+
+  // ── GARDEN: the twin of the up-CELL line, by §10.5 E's own words ───────────
+  {
+    const w = bare([{ id: 0, alliance: 'red' }]);
+    if (!w.biobuzz) return;
+    w.balls.push(el('yellow', { kind: 'ground' }, -60, GARDEN_Y));
+    const at = (ph: World['match']['phase']) => {
+      w.match.phase = ph;
+      return bbScoreWorld(w).red;
+    };
+    const live = (['pre', 'auto', 'teleop'] as const).map((ph) => ({ ph, s: at(ph) }));
+    const end = at('post');
+    const bad = live.filter((x) => x.s.gardenCount !== 1 || x.s.gardenPts !== 0);
+    check(
+      'GARDEN (§10.5 E): the garden line is 0 until the buzzer, and the COUNT stays live',
+      bad.length === 0 && end.gardenCount === 1 && end.gardenPts === BB_PTS.garden,
+      bad.length
+        ? bad.map((x) => `${x.ph}: count=${x.s.gardenCount} pts=${x.s.gardenPts}`).join(' · ')
+        : `pre/auto/teleop: 1 in the strip, 0 points · post: ${end.gardenPts}`,
+    );
+  }
+
+  // ── THE CONTINUOUS LINES MUST NOT FOLLOW — §10.5 A and D ──────────────────
+  {
+    const w = bare([{ id: 0, alliance: 'red' }]);
+    const bb = w.biobuzz;
+    if (!bb) return;
+    intoFlower(w, 0, ['yellow', 'red', 'yellow', 'yellow']); // 3 in the volume, red owns, red bottom
+    bb.hives.red.tips = 1;
+    w.match.phase = 'teleop';
+    const t = bbScoreWorld(w).red;
+    check(
+      "FLOWER (§10.5 D): the FLOWER lines are CONTINUOUS and stay live mid-match",
+      t.ownedPts === 3 * BB_PTS.owned && t.bottomPts === BB_PTS.bottomNectar,
+      `owned=${t.ownedPts} bottom=${t.bottomPts}`,
+    );
+    w.match.phase = 'auto';
+    const a = bbScoreWorld(w).red;
+    check(
+      'TIP (§10.5 A): a TIP is paid the tick it completes, mid-match',
+      a.tipPts === BB_PTS.tip,
+      String(a.tipPts),
+    );
+  }
+
+  /**
+   * ── THE PHASE LADDER: the check that would have caught the bug ────────────
+   *
+   * A DRIVEN run through the real phase machine (`biobuzzStep`, so `bbAssess` fires at the two
+   * instants it always has) on the fixture the regression was measured on — one RED robot clear
+   * of the perimeter and inside its own LOADING ZONE for the whole match, one POLLEN in the red
+   * GARDEN. Each phase is shortened to two ticks, the way `cueChecks` shortens them, because
+   * what is under test is the boundary and not the clock.
+   *
+   * Sampled at every phase change, the total must read:
+   *   pre 0 · auto 0 · transition 8 · teleop 8 · post 14
+   * Before this ruling the same run read 4 · 9 · 9 · 14 · 14.
+   *
+   * ⚠️ `total + pendingPts` is 14 from TELEOP ON, and deliberately NOT before it: TELEOP PARK
+   * is assessed on where a robot ends the MATCH, so during AUTO there is nothing provisional
+   * about it to show and `pendingPts` does not claim it. Asserting the invariant across the
+   * whole match would be asserting that a robot parked in AUTO has already earned the endgame
+   * 5, which is the same class of promise this whole change exists to stop making.
+   */
+  {
+    const w = bare([{ id: 0, alliance: 'red' }]);
+    const bb = w.biobuzz;
+    if (!bb) return;
+    place(w, 0, CLEAR_X, LZ_Y);
+    markStarts(w);
+    w.balls.push(el('yellow', { kind: 'ground' }, -60, GARDEN_Y));
+    const none = new Map<number, RobotCommand>();
+    const rung: { phase: string; total: number; pending: number }[] = [];
+    const sample = () => {
+      const s = bbScoreWorld(w).red;
+      rung.push({ phase: w.match.phase, total: s.total, pending: s.pendingPts });
+    };
+    /** two ticks of the shortened phase, which is what carries the boundary. */
+    const run = () => {
+      w.match.phaseTimeLeft = 2 * SIM_DT;
+      biobuzzStep(w, SIM_DT, none);
+      biobuzzStep(w, SIM_DT, none);
+      sample();
+    };
+    w.match.phase = 'pre';
+    sample();
+    w.match.phase = 'auto';
+    sample();
+    run(); // AUTO ends: LEAVE and AUTO PARK are latched
+    run(); // transition ends
+    run(); // the MATCH ends: TELEOP PARK is latched
+    const totals = rung.map((r) => r.total).join(',');
+    const phases = rung.map((r) => r.phase).join(',');
+    check(
+      'PHASES: the running total never includes a line whose instant has not passed',
+      phases === 'pre,auto,transition,teleop,post' && totals === '0,0,8,8,14',
+      `${phases} → ${totals}`,
+    );
+    const pendings = rung.map((r) => r.pending).join(',');
+    check(
+      'PENDING: pendingPts is what the instants still owe, and it is never in the total',
+      pendings === '9,9,1,6,0',
+      `${phases} → ${pendings}`,
+    );
+    const late = rung.slice(3); // teleop, post
+    check(
+      'PENDING: from TELEOP on, total + pendingPts is the final score all the way to the buzzer',
+      late.every((r) => r.total + r.pending === 14),
+      late.map((r) => `${r.phase}: ${r.total}+${r.pending}`).join(' · '),
+    );
+  }
+
+  // ── A TIP CAUGHT BY THE BUZZER — the swing outlasts the harvest window ─────
+  /**
+   * REPORTED (solo record, 2026-09-13): “sometimes when I get a tip at the end of the game it
+   * deducts points from me rather than adding the points for the tip … the tip doesn't count
+   * and the points get deducted”.
+   *
+   * Two clocks made that inevitable: the swing is `BB_TIP_SWING_S` 4.0 s and the window the
+   * results screen and the server both harvested the final score on was a fixed 2.8 s (it is
+   * now the field coming to rest — `src/sim/settle.ts`), so
+   * a TIP triggered in the last four seconds of TELEOP could not reach `hive.tips` in time. The
+   * bar passes level at `BB_TIP_RELEASE_S`, which then emptied the tray and took the cell line
+   * away with it — measured on this very scene before the fix, 16 points at the buzzer and 0
+   * harvested.
+   *
+   * §10.5 settles it, and settles both halves: (A) "Assessment of HIVE TIPS occurs throughout
+   * the MATCH and continues until all SCORING ELEMENTS and ROBOTS have come to rest at the
+   * conclusion of the MATCH", and (C) "Assessment of POLLEN and NECTAR remaining in the CELL
+   * will occur after all SCORING ELEMENTS and ROBOTS have come to rest". The state that scores
+   * is the one at REST: the swing is a TIP, and its load is not remaining in the CELL.
+   *
+   * The invariant checked here is the one a driver feels: THE SCORE NEVER GOES DOWN AFTER THE
+   * BUZZER, and a bar that was moving when it went is paid its 20. Driven through the real
+   * pipeline rather than by hand, because the bug lives in the arithmetic of those two clocks.
+   */
+  {
+    const w = bare([{ id: 0, alliance: 'red' }]);
+    const bb = w.biobuzz;
+    if (!bb) return;
+    place(w, 0, -40, 20); // clear of the wall and of the LOADING ZONE: no LEAVE, no PARK
+    // a bare cell tips at `BB_TIP_POLLEN[0]` POLLEN, and `bare()` left it empty
+    intoCell(w, 'red', Array.from({ length: BB_TIP_POLLEN[0] }, () => 'yellow' as ArtifactColor));
+    const load = bb.hives.red.contents.length;
+    w.match.phase = 'teleop';
+    // the swing starts on the next tick, so the buzzer catches it 0.5 s in: it passes LEVEL
+    // 1.5 s into `post` and settles 3.5 s in — past the fixed 2.8 s the score used to be
+    // harvested at, which is the reported case exactly. The score is now harvested when the
+    // SETTLE CLOCK finalizes (the one the server uses), and that has to wait for the swing.
+    w.match.phaseTimeLeft = 0.5;
+    const cmds = new Map<number, RobotCommand>();
+    let buzzer = -1;
+    let buzzerCellPts = -1;
+    let lowest = Infinity;
+    let harvest = -1;
+    let tipsAtHarvest = -1;
+    let post = 0;
+    let harvestAt = -1;
+    const clock = newSettleClock();
+    const ticks = Math.round((0.5 + MATCH_SETTLE_MAX_S + 1) / SIM_DT);
+    for (let i = 0; i < ticks && harvest < 0; i++) {
+      biobuzzStep(w, SIM_DT, cmds);
+      if (w.match.phase !== 'post') continue;
+      const sc = bbScoreWorld(w).red;
+      if (buzzer < 0) {
+        buzzer = sc.total;
+        buzzerCellPts = sc.cellPts;
+      }
+      lowest = Math.min(lowest, sc.total);
+      post += SIM_DT;
+      if (harvest < 0 && settleStep(clock, w, bbSettled)) {
+        harvest = sc.total;
+        tipsAtHarvest = sc.tipPts;
+        harvestAt = post;
+      }
+    }
+    check(
+      `BUZZER TIP: the swing really was still moving when the match ended (${load} in the tray)`,
+      bb.hives.red.tips === 1,
+      `tips after the run: ${bb.hives.red.tips}`,
+    );
+    check(
+      'BUZZER TIP (§10.5 A): a swing under way at the buzzer is paid its 20 right there',
+      buzzer === BB_PTS.tip,
+      `total at the buzzer ${buzzer}, expected ${BB_PTS.tip}`,
+    );
+    check(
+      'BUZZER TIP (§10.5 C): its load is NOT also paid as remaining in the up-CELL',
+      buzzerCellPts === 0,
+      `cell points at the buzzer ${buzzerCellPts} on ${load} elements`,
+    );
+    check(
+      'BUZZER TIP (§10.5 A): the TIP is on the board when the score is FINALIZED — the settle waits for the swing',
+      tipsAtHarvest === BB_PTS.tip && harvestAt >= BB_TIP_SWING_S - 0.5,
+      `tip points at finalize (+${harvestAt.toFixed(2)}s after the buzzer): ${tipsAtHarvest}`,
+    );
+    check(
+      'BUZZER TIP: the score never goes DOWN after the buzzer — the reported deduction',
+      lowest >= buzzer && harvest >= buzzer,
+      `buzzer ${buzzer}, lowest ${lowest}, harvested ${harvest}`,
+    );
+
+    /* ── A TRAY OVER ITS LOAD WHEN THE MATCH IS CALLED IS A TIP ──────────────
+       Reported as "last tips are not counted": the balls settle in the HIVE, the field goes
+       still, the score is taken, and the 20 for the TIP that follows is not in it.
+
+       The state this pins is the one between the two the checks above cover: the load has
+       crossed `BB_TIP_POLLEN` but `hiveStep` has not yet started the swing, so `tipping` is
+       still 0. `bbSettled` does hold the clock open here — but the clock has a CAP
+       (`MATCH_SETTLE_MAX_S`), and the cap finalizes whatever the field looks like. Landing on
+       this state used to pay NOTHING for the tip and then pay its load a SECOND time as
+       elements remaining in the CELL, which is a few points against the tip's 20.
+
+       Built by hand rather than driven, because the window is one tick wide in a driven run
+       and the rule is about the STATE, not about how long it lasts. */
+    {
+      const q = bare([{ id: 0, alliance: 'red' }]);
+      const qb = q.biobuzz;
+      if (!qb) return;
+      place(q, 0, -40, 20); // clear of the wall and the LOADING ZONE: no LEAVE, no PARK
+      // a bare cell tips at BB_TIP_POLLEN[0]; load it to exactly that and leave it UNSWUNG
+      intoCell(q, 'red', Array.from({ length: BB_TIP_POLLEN[0] }, () => 'yellow' as ArtifactColor));
+      const held = qb.hives.red.contents.length;
+      q.match.phase = 'post';
+      const before = bbScoreWorld(q).red;
+      check(
+        'PENDING TIP: a tray over its calibrated load is paid its 20 when the match is called',
+        before.tipPts === BB_PTS.tip,
+        `tip points ${before.tipPts} on ${held} in the tray, swing not started (tipping ${qb.hives.red.tipping})`,
+      );
+      check(
+        'PENDING TIP (§10.5 C): its load is NOT also paid as remaining in the up-CELL',
+        before.cellPts === 0,
+        `cell points ${before.cellPts} on ${held} elements`,
+      );
+      // ...and it is ONE tip, not two: mid-swing `contents` still holds the load, so the
+      // pending test must not fire on top of the swinging one.
+      qb.hives.red.tipping = BB_TIP_SWING_S - 0.5;
+      check(
+        'PENDING TIP: a swing already moving is still ONE tip, not two',
+        bbScoreWorld(q).red.tipPts === BB_PTS.tip,
+        `tip points ${bbScoreWorld(q).red.tipPts} while swinging with the load still aboard`,
+      );
+      // a tray UNDER its load is not a tip, and its contents are scored as contents
+      const u = bare([{ id: 0, alliance: 'red' }]);
+      const ub = u.biobuzz;
+      if (!ub) return;
+      place(u, 0, -40, 20);
+      intoCell(u, 'red', Array.from({ length: BB_TIP_POLLEN[0] - 1 }, () => 'yellow' as ArtifactColor));
+      u.match.phase = 'post';
+      const under = bbScoreWorld(u).red;
+      check(
+        'PENDING TIP: one element short is NOT a tip, and its load still counts in the CELL',
+        under.tipPts === 0 && under.cellPts > 0,
+        `tip ${under.tipPts}, cell ${under.cellPts} on ${BB_TIP_POLLEN[0] - 1} elements`,
+      );
+    }
+
+    // and both halves of the rule, read straight off the score on a hand-built HIVE
+    const t = bare([{ id: 0, alliance: 'red' }]);
+    const tb = t.biobuzz;
+    if (!tb) return;
+    place(t, 0, -40, 20);
+    tb.hives.red.tips = 2;
+    intoCell(t, 'red', ['yellow', 'yellow', 'yellow']);
+    tb.hives.red.tipping = BB_TIP_SWING_S - 0.5; // moving, not yet level
+    tb.hives.red.released = false;
+    t.match.phase = 'teleop';
+    const live = bbScoreWorld(t).red;
+    check(
+      'BUZZER TIP: MID-MATCH a swing pays nothing yet and the tray readout stays live',
+      live.tips === 2 && live.cellCount === 3 && live.cellPts === 0,
+      `tips=${live.tips} count=${live.cellCount} pts=${live.cellPts}`,
+    );
+    t.match.phase = 'post';
+    const held = bbScoreWorld(t).red;
+    check(
+      'BUZZER TIP (§10.5 A+C): at the buzzer that same swing is a TIP, and its load is not in the tray',
+      held.tips === 3 && held.cellCount === 0,
+      `tips=${held.tips} count=${held.cellCount}`,
+    );
+    // past LEVEL, `contents` is the INCOMING tray's load — that one really is left in the cell
+    tb.hives.red.tipping = BB_TIP_RELEASE_S - 0.5;
+    tb.hives.red.released = true;
+    const after = bbScoreWorld(t).red;
+    check(
+      'BUZZER TIP (§10.5 C): past LEVEL the tray holds the INCOMING load, which does remain in the CELL',
+      after.tips === 3 && after.cellCount === 3 && after.cellPts === 3 * BB_PTS.cell,
+      `tips=${after.tips} count=${after.cellCount} pts=${after.cellPts}`,
+    );
   }
 }
 
@@ -764,8 +1265,8 @@ function penaltyChecks(check: Check): void {
      *
      * y = 40 keeps the whole run clear of the HIVE frame bars (|y| ≤ `BB_FRAME_Y` = 19.4), so a
      * 30 in/s herd cannot also trip G417 and pollute the event list; x runs −40 → −10, clear of
-     * both DECODE loading-zone rects (blue’s is x ≥ 49, and it is DECODE’s that the shared
-     * CONTROL test reads — see `bbControlled`) and of every wall.
+     * every wall and of BOTH loading-zone rectangles — this field’s `BB_LZ` (which is what
+     * carve-out C now reads, see `BB_CONTROL_GEOMETRY`) and DECODE’s, which it used to.
      */
     const stagePile = (n: number): Artifact[] => {
       w.balls = [];
@@ -876,6 +1377,123 @@ function penaltyChecks(check: Check): void {
       `${Object.keys(w.penalties.ballHold).length}/${Object.keys(w.penalties.ballAnchor).length}`);
   }
 
+  // ── G407: CARVE-OUT C is THIS field's LOADING ZONE, not DECODE's ──────────
+  /**
+   * The shared CONTROL test carries three pieces of geometry that used to be DECODE's by
+   * default, and this is the one a BIOBUZZ driver meets every restock cycle: carve-out C,
+   * "inadvertent contact with a SCORING ELEMENT while attempting to acquire a SCORING ELEMENT
+   * FROM THE LOADING ZONE". `controlledArtifacts` read `loadZone(a)` — DECODE's 23 x 23
+   * audience corner — so on this field the exemption was granted in a corner where BIOBUZZ has
+   * open tiles and withheld in the 11 x 24 strip where its own human player actually hands
+   * elements in. `BB_CONTROL_GEOMETRY.carveOut` supplies `BB_LZ` instead.
+   *
+   * ── WHY THE SCENE IS 2 CARRIED + 3 HERDED AND NOT 5 HERDED ────────────────
+   * `BB_LZ.blue` is ELEVEN inches wide. A row of five POLLEN spread across a 17 in bumper is
+   * twelve, so five abreast cannot be inside the zone at all and a check that staged them
+   * there would be asserting something the field cannot hold. Two in the hopper are clause A
+   * (fully supported), which no carve-out touches, so the count is still five and the only
+   * thing the zone can change is the three on the bumper.
+   *
+   * `autoIntake` stays OFF. The mouth exemption would excuse one more and has its own checks
+   * above; what is under test here is the ZONE and nothing else.
+   *
+   * ── AND THE OPEN-FLOOR TWIN IS THE NON-VACUITY PROOF, KEPT ────────────────
+   * Both scenes are the same five elements herded the same way for the same time. The only
+   * difference is where on the field it happens, so a carve-out that reads the wrong rectangle
+   * cannot pass both. The BLUE scene also sits clear of DECODE's blue LOADING ZONE
+   * (`loadZone('blue')`, the y <= -49 corner), asserted below — with the old geometry every
+   * element here is outside the excusing rectangle and the zone scene warns.
+   */
+  {
+    const w = bare([{ id: 0, alliance: 'blue' }]);
+    w.match.phase = 'teleop';
+    w.match.phaseTimeLeft = 90;
+    const r = w.robots[0];
+    r.autoIntake = false;
+    const warnings = () => w.events.filter((e) => e.includes('G407')).length;
+
+    /**
+     * TWO IN THE HOPPER, THREE ON THE FRONT BUMPER, nose pointing +y.
+     *
+     * The row is laid from the robot's centre TOWARD +x at one diameter's pitch rather than
+     * centred on it, because the zone hugs the +x wall: a 17 in bumper centred inside an 11 in
+     * strip overhangs it on both sides, and an element off the near end would sit outside the
+     * rectangle, escape the carve-out, and re-enter through the transitive chain. Every element
+     * still meets the FRONT FACE (the face spans the full width and the row is inset from both
+     * corners), which `contactPush` requires — it refuses a convex corner outright.
+     */
+    const restock = (cx: number, cy: number): Artifact[] => {
+      w.balls = [];
+      w.events.length = 0;
+      r.pos = { x: cx, y: cy };
+      r.heading = Math.PI / 2;
+      r.vel = { x: 0, y: 0 };
+      r.hopper = ['yellow', 'yellow'];
+      w.penalties.ballHold = {};
+      w.penalties.ballAnchor = {};
+      w.penalties.ballCarry = {};
+      const bb = w.biobuzz;
+      if (bb) bb.foulEdge = {};
+      const e = footprintExtents(r.spec);
+      const pile: Artifact[] = [];
+      for (let i = 0; i < 3; i++) {
+        const b = el('yellow', { kind: 'ground' }, cx + i * BB_POLLEN_R * 2, cy + e.front + BB_POLLEN_R);
+        w.balls.push(b);
+        pile.push(b);
+      }
+      return pile;
+    };
+
+    /** the `herd` above, turned 90 degrees: robot and row travel +y together at `v`. */
+    const herdY = (pile: Artifact[], s: number, v: number): void => {
+      r.vel = { x: 0, y: v };
+      for (const b of pile) b.vel = { x: 0, y: v };
+      for (let i = 0; i < ticks(s); i++) {
+        r.pos = { x: r.pos.x, y: r.pos.y + v * SIM_DT };
+        for (const b of pile) b.pos = { x: b.pos.x, y: b.pos.y + v * SIM_DT };
+        updateBiobuzzPenalties(w, SIM_DT, NO_CMD);
+      }
+    };
+
+    /**
+     * 23 in/s for 0.7 s is 16.1 in of travel — over `POSSESSION_HERD_SPEED` (22), past
+     * `POSSESSION_CARRY_DIST` (5 in) in the first fifth of a second and then `POSSESSION_CONFIRM`
+     * (0.45 s) with room to spare. It is deliberately the SLOWEST shove that still qualifies,
+     * because the zone is only 24 in deep in y and the row has to still be inside it when the
+     * count lands.
+     */
+    const HERD_S = 0.7;
+    const HERD_V = 23;
+
+    // OPEN FLOOR: clear of both LOADING ZONES, both GARDENS and the HIVE frame bars.
+    const open = restock(-50, 20);
+    herdY(open, HERD_S, HERD_V);
+    check('G407: two carried and three herded is five, and in open floor that warns',
+      warnings() === 1, String(warnings()));
+
+    // ...and the SAME five, the same shove, inside blue's own LOADING ZONE.
+    const zone = restock(63.5, -53.9);
+    herdY(zone, HERD_S, HERD_V);
+    check('G407: collecting the restock inside the own LOADING ZONE is not herding',
+      warnings() === 0, String(warnings()));
+
+    // the fixture is only worth anything if it really is in the zone at the end of the shove
+    const lz = BB_LZ.blue;
+    const inLz = (b: Artifact): boolean =>
+      b.pos.x >= lz.x0 && b.pos.x <= lz.x1 && b.pos.y >= lz.y0 && b.pos.y <= lz.y1;
+    check('G407: ...and every element of it was inside BB_LZ.blue when the shove ended',
+      zone.every(inLz), zone.map((b) => `${b.pos.x.toFixed(1)},${b.pos.y.toFixed(1)}`).join(' '));
+    check('G407: ...while the ROBOT overlapped the zone too, which carve-out C also requires',
+      robotIntersectsRect(r, { x0: lz.x0, x1: lz.x1, y0: lz.y0, y1: lz.y1 }));
+
+    // ...and NONE of it was inside DECODE's blue LOADING ZONE, which is what the shared test
+    // read before `BB_CONTROL_GEOMETRY`. So the silence above is this field's rectangle.
+    const dz = loadZone('blue');
+    check('G407: ...and none of it is inside DECODE’s blue LOADING ZONE, so the pass is BB_LZ’s',
+      zone.every((b) => !(b.pos.x >= dz.x0 && b.pos.x <= dz.x1 && b.pos.y >= dz.y0 && b.pos.y <= dz.y1)),
+      zone.map((b) => `${b.pos.x.toFixed(1)},${b.pos.y.toFixed(1)}`).join(' '));
+  }
+
   // ── G417: ramming the HIVE frame — STRATEGIC, so a MAJOR on the FIRST hit ─
   /**
    * The escalation condition is STRATEGIC, **not** REPEATED (manual-distilled §11 item 4).
@@ -906,66 +1524,36 @@ function penaltyChecks(check: Check): void {
   };
   const fe = footprintExtents(bare([{ id: 0, alliance: 'blue' }]).robots[0].spec);
   {
-    const w = bare([{ id: 0, alliance: 'blue' }]);
-    w.match.phase = 'teleop';
-    w.match.phaseTimeLeft = 60;
-    const r = w.robots[0];
-    // OUTSIDE the +x frame bar, its rear flush on the bar's outer face (x = +25), driving INTO it
-    place(w, 0, BB_FRAME_BAR_OUT + fe.rear, 0);
-    r.vel = { x: -(BB_FRAME_RAM_SPEED + 10), y: 0 };
-    const first = bill(w, 20);
-    check('G417: the FIRST high-speed ram is STRATEGIC — a MAJOR, not a free warning',
-      first.major.blue === 1, String(first.major.blue));
-    check(`G417: red is +${BB_PTS.foulMajor}`, first.pts.red === BB_PTS.foulMajor, String(first.pts.red));
-    check('G417: and it names itself STRATEGIC on the event feed',
-      w.events.some((e) => e.includes('G417') && e.includes('STRATEGIC')),
-      w.events.filter((e) => e.includes('G417')).join(' | '));
-
-    // back off, then ram again — the tariff is PER MATCH, so it is not paid twice
-    r.vel = { x: 0, y: 0 };
-    bill(w, 5);
-    r.vel = { x: -(BB_FRAME_RAM_SPEED + 10), y: 0 };
-    const second = bill(w, 20);
-    check('G417: a SECOND ram bills nothing more — the tariff is per MATCH',
-      second.major.blue === 1, String(second.major.blue));
-    check('G417: so red is still +20 and not +40', second.pts.red === BB_PTS.foulMajor, String(second.pts.red));
-
-    // driving ALONG the structure at the same speed is not ramming (on the INNER face, between
-    // the bars, where G409 says robots drive under the hives)
-    const innerX = BB_FRAME_BAR_IN - fe.front; // front flush on the +x bar's inner face (x = +24)
-    const q = ramWorld(innerX, 0, 0, BB_FRAME_RAM_SPEED + 40);
-    check('G417: driving ALONG a frame bar is not ramming', bill(q, 20).major.blue === 0);
-    // ...and a gentle nudge is the manual's own likely-NOT-STRATEGIC case ("accidentally
-    // bumping the frame while attempting to pick up POLLEN"), so it is not a foul either
-    q.robots[0].vel = { x: BB_FRAME_RAM_SPEED - 10, y: 0 };
-    check('G417: contact below the ram threshold is not STRATEGIC, and not a foul',
-      bill(q, 20).major.blue === 0);
-
     /**
-     * EXAMPLE A NAMES NO FACE. A ram from BETWEEN the bars into the INNER face, and a ram along y
-     * into a bar END, are the same act as the outside-in ram above — and the old closing speed
-     * (`-sign * vel.x`) read the first as driving AWAY and the second as zero.
+     * G417 IS OFF (`BB_G417_ENABLED`, owner ruling 2026-09-13), so what these cases assert is
+     * that NONE of them bills. They are the same five geometries the rule used to be measured
+     * on — outside-in, inner face, bar end, the mirrored bar, and the along-the-bar and gentle
+     * cases that never billed — kept rather than deleted because they are what proves the
+     * rule is off everywhere it used to be on, and because they come straight back if the
+     * HIVE ever becomes something a robot can tip.
      */
-    const inner = ramWorld(innerX, 0, BB_FRAME_RAM_SPEED + 10, 0);
-    check('G417: a high-speed ram on the INNER face (from under the hives) bills a MAJOR',
-      bill(inner, 20).major.blue === 1, String(inner.match.fouls.blue.major));
-    const away = ramWorld(innerX, 0, -(BB_FRAME_RAM_SPEED + 10), 0);
-    check('G417: driving fast AWAY from the inner face while touching it is not a ram',
-      bill(away, 20).major.blue === 0, String(away.match.fouls.blue.major));
-    // off the +y END of the +x bar, centred on the bar's width, its −y face flush on y = +BB_FRAME_Y
+    check('G417: the rule is disabled', BB_G417_ENABLED === false);
+    const innerX = BB_FRAME_BAR_IN - fe.front;
     const endX = (BB_FRAME_BAR_IN + BB_FRAME_BAR_OUT) / 2;
-    const end = ramWorld(endX, BB_FRAME_Y + fe.half, 0, -(BB_FRAME_RAM_SPEED + 10));
-    check('G417: a high-speed ram into a bar END along y bills a MAJOR',
-      bill(end, 20).major.blue === 1, String(end.match.fouls.blue.major));
-    const brush = ramWorld(endX, BB_FRAME_Y + fe.half, 0, -(BB_FRAME_RAM_SPEED - 10));
-    check('G417: a slow brush on a bar END is not a foul',
-      bill(brush, 20).major.blue === 0, String(brush.match.fouls.blue.major));
-    // and the −x bar is the mirror: outside it at x < −25, driving +x
-    const mirror = ramWorld(-BB_FRAME_BAR_OUT - fe.front, 0, BB_FRAME_RAM_SPEED + 10, 0);
-    mirror.robots[0].heading = Math.PI; // rear toward the bar, as on the +x side
-    mirror.robots[0].pos.x = -BB_FRAME_BAR_OUT - fe.rear;
-    check('G417: the outside-in ram on the −x bar still bills',
-      bill(mirror, 20).major.blue === 1, String(mirror.match.fouls.blue.major));
+    const cases: [string, World][] = [
+      ['an outside-in ram on the +x bar', ramWorld(BB_FRAME_BAR_OUT + fe.rear, 0, -(BB_FRAME_RAM_SPEED + 10), 0)],
+      ['a ram on the INNER face', ramWorld(innerX, 0, BB_FRAME_RAM_SPEED + 10, 0)],
+      ['a ram into a bar END along y', ramWorld(endX, BB_FRAME_Y + fe.half, 0, -(BB_FRAME_RAM_SPEED + 10))],
+      ['driving ALONG a frame bar', ramWorld(innerX, 0, 0, BB_FRAME_RAM_SPEED + 40)],
+      ['a gentle brush', ramWorld(endX, BB_FRAME_Y + fe.half, 0, -(BB_FRAME_RAM_SPEED - 10))],
+    ];
+    for (const [what, q] of cases) {
+      const out = bill(q, 20);
+      check(`G417: ${what} bills nothing`, out.major.blue === 0 && out.pts.red === 0,
+        `major=${out.major.blue} red=${out.pts.red}`);
+      check(`G417: ${what} writes no event`, !q.events.some((e) => e.includes('G417')),
+        q.events.filter((e) => e.includes('G417')).join(' | '));
+    }
+    // the mirrored bar, staged the way the +x side is (rear toward the bar)
+    const mirror = ramWorld(-BB_FRAME_BAR_OUT - fe.rear, 0, BB_FRAME_RAM_SPEED + 10, 0);
+    mirror.robots[0].heading = Math.PI;
+    check('G417: the -x bar bills nothing either', bill(mirror, 20).major.blue === 0,
+      String(mirror.match.fouls.blue.major));
   }
 
   // ── the edge memory is CLEARED outside the played periods ─────────────────
@@ -1035,6 +1623,51 @@ function pinChecks(check: Check): void {
     return w;
   };
   const press = new Map<number, RobotCommand>([[0, driveX(1)]]);
+
+  /**
+   * THE PIN TEST READS *THIS* FIELD'S SOLIDS, AND THAT CHANGES THE VERDICT.
+   *
+   * `isPinning` throws out a pin whose AGGRESSOR is itself backed against something solid — a
+   * robot with a wall behind it and an opponent in front is the one being HELD, and pressing
+   * forward is its only way out. That test probes a point behind the aggressor, and left to
+   * its default it probes DECODE's field: the perimeter, the two GOAL WEDGES and the two
+   * CLASSIFIER CHANNELS.
+   *
+   * BIOBUZZ has OPEN FLOOR in both of those corners. So an aggressor standing where DECODE
+   * keeps a goal reads as cornered, reads as escaping, and the pin it is holding bills
+   * NOTHING — on a quarter of this field, silently.
+   *
+   * (62, 62) is the witness: inside DECODE's red goal wedge, empty tiles on this field. The
+   * scene backs the aggressor up so its rear probe lands exactly there, and the check is that
+   * a MAJOR is billed anyway. With the solids left at DECODE's, this is 0.
+   *
+   * The victim is IDLE on purpose — the aggressor-cornered test runs BEFORE the victim is ever
+   * asked anything, so an idle victim isolates it.
+   */
+  {
+    const WITNESS = { x: 62, y: 62 };
+    check(
+      'G421: the DECODE goal wedge that would cancel this pin is OPEN FLOOR on the BIOBUZZ field',
+      bbPinSolid(WITNESS) === false,
+      'if this is true the scene below proves nothing',
+    );
+    const w = bare([
+      { id: 0, alliance: 'red' },
+      { id: 1, alliance: 'blue' },
+    ]);
+    w.match.phase = 'teleop';
+    w.match.phaseTimeLeft = 90;
+    // rear probe = centre + footprint reach (10.5) + PIN_WALL_SLOP, straight away from the victim
+    const aggX = WITNESS.x - 10.5 - PIN_WALL_SLOP;
+    place(w, 0, aggX, WITNESS.y); // red, its BACK where DECODE keeps a goal
+    place(w, 1, aggX - 20.5, WITNESS.y); // blue, idle, held in front of it
+    const out = bill(w, ticks(3.3), new Map<number, RobotCommand>([[0, driveX(-1)]]));
+    check(
+      'G421: an aggressor standing where DECODE keeps a GOAL is not "cornered" here — the pin bills',
+      out.major.red === 1,
+      `${out.major.red} MAJORs (0 means the pin test is reading DECODE's field)`,
+    );
+  }
 
   {
     const w = frame();
@@ -1317,10 +1950,19 @@ function cueChecks(check: Check): void {
     // Robot 1 is still flat against the far wall, so it does neither.
     //
     // ⚠️ BOTH POSES ARE MEASURED OFF THE FOOTPRINT, WHICH IS 21 × 17, NOT THE 15 × 17 CHASSIS:
-    // `robotExtents` adds the sweeper's reach to each end. At x = −63 robot 0's corner is at
-    // −73.5, i.e. THROUGH the wall, and a robot that is not inside the field has not left it.
-    place(m, 0, -59, 45);
+    // `robotExtents` adds the sweeper's reach to each end, so robot 0's corner is 10.5 in from
+    // its centre and a pose that looks clear by an inch is not.
+    //
+    // ⚠️ AND IT IS DERIVED FROM THE WALL, NOT TYPED. It used to be the literal x = −59, which
+    // put that corner at −69.5 — a comfortable 2.5 in inside the old ±72 wall, and 1.17 in
+    // inside the CAD wall at −70.674, i.e. WITHIN `START_TOUCH_TOL`. The robot therefore still
+    // counted as against the wall it started on and never LEFT. `CLEAR_MARGIN` is the slack past
+    // the tolerance; the pose still overlaps `BB_LZ.red` (whose inner edge is at −59.101) by
+    // more than four inches, which is what PARK needs.
+    const CLEAR_MARGIN = 2;
+    place(m, 0, -BB_HALF_X + 10.5 + START_TOUCH_TOL + CLEAR_MARGIN, (BB_LZ.red.y0 + BB_LZ.red.y1) / 2);
     place(m, 1, BB_HALF_X - 10.5, 0);
+    markStarts(m);
     const none = new Map();
     check('ASSESS: nothing is latched before the instant', Object.keys(bb.leave).length === 0);
     biobuzzStep(m, SIM_DT, none);
@@ -1364,9 +2006,26 @@ function sceneChecks(check: Check): void {
       const parked = w.robots.filter((r) => bbParkedNow(r)).map((r) => r.id);
       check('SCENE park-examples: robots 0, 1 and 3 park; robot 2 does not',
         parked.join(',') === '0,1,3', parked.join(','));
+      // the scene sits in TELEOP, so the LIVE PARK predicate is what drives the COUNT — which
+      // is what the picture illustrates. The POINTS wait for the end-of-match instant (§10.5 G),
+      // so mid-match the line is a count of 2 worth 0, and `pendingPts` is the 10 it will pay.
       const score = bbScoreWorld(w);
-      check('SCENE park-examples: two RED park at 5 each, live in TELEOP',
-        score.red.parkTele === 2 * BB_PTS.parkTele, String(score.red.parkTele));
+      check('SCENE park-examples: two RED park, counted live in TELEOP and worth 0 until the buzzer',
+        score.red.parkTeleCount === 2 &&
+          score.red.parkTele === 0 &&
+          score.red.pendingPts === 2 * BB_PTS.parkTele,
+        `count=${score.red.parkTeleCount} pts=${score.red.parkTele} pending=${score.red.pendingPts}`);
+      // ...and the 10 the label promises still lands, on the same world, once the instant has
+      // passed. Robots 0 and 1 are the scene's RED pair, and both are in the parked list above.
+      const bb = w.biobuzz;
+      if (bb) {
+        bb.parkTele[0] = true;
+        bb.parkTele[1] = true;
+        w.match.phase = 'post';
+        check('SCENE park-examples: the two RED PARKs pay 5 each at the buzzer',
+          bbScoreWorld(w).red.parkTele === 2 * BB_PTS.parkTele,
+          String(bbScoreWorld(w).red.parkTele));
+      }
     }
   }
 
@@ -1411,10 +2070,95 @@ function sceneChecks(check: Check): void {
   }
 }
 
+/**
+ * THE MATCH IS FINALIZED WHEN THE FIELD HAS SETTLED (`src/sim/settle.ts`), and BIOBUZZ decides
+ * what "settled" means (`bbSettled`). §10.5 A assesses TIPS "until all SCORING ELEMENTS and
+ * ROBOTS have come to rest", and §10.5 C what REMAINS in a CELL after that — so a swing, an
+ * element in the air and one still rolling toward a GARDEN all hold the finalize open.
+ */
+function settleChecks(check: Check): void {
+  const w = bbSettleWorld('match', 5);
+  for (const b of w.balls) b.vel = { x: 0, y: 0 };
+  const bb = w.biobuzz;
+  check('SETTLE: a quiet BIOBUZZ field is settled', bbSettled(w));
+  if (bb) {
+    bb.hives.red.tipping = 1.5;
+    check('SETTLE (§10.5 A): a HIVE still swinging is not settled — its TIP has not paid yet', !bbSettled(w));
+    bb.hives.red.tipping = 0;
+  }
+  const g = w.balls.find((b) => b.state.kind === 'ground');
+  check('SETTLE: the quiet field had a ground element to test with', !!g);
+  if (g) {
+    g.vel = { x: 25, y: 0 };
+    check('SETTLE: a ROLLING element is not settled (a GARDEN counts where it stops)', !bbSettled(w));
+    g.vel = { x: 0, y: 0 };
+    const keep = g.state;
+    g.state = { kind: 'flight', target: 'red', by: 'red' };
+    g.vel = { x: 60, y: 0 };
+    check('SETTLE: an element in FLIGHT is not settled (a CELL can still take it)', !bbSettled(w));
+    g.vel = { x: 0, y: 0 };
+    g.vz = -40;
+    check('SETTLE: an element FALLING is not settled even with no ground speed', !bbSettled(w));
+    g.vz = 0;
+    g.state = keep;
+  }
+  w.robots[0].angVel = 1;
+  check('SETTLE: a robot still turning is not settled', !bbSettled(w));
+  w.robots[0].angVel = 0;
+
+  // ── E1 (owner report 2026-09-18: "'Waiting for the field to settle' takes forever when
+  //    nothing is moving"). Both halves of `bbSettled` used to answer a question that is not
+  //    about motion, and under 3D physics both answered "still moving" forever. See the two
+  //    warning blocks in `src/games/biobuzz/settle.ts` for the measured runs.
+  {
+    const f = bbSettleWorld('match', 5);
+    for (const b of f.balls) {
+      b.vel = { x: 0, y: 0 };
+      b.vz = 0;
+    }
+    const shelf = f.balls.find((b) => b.state.kind === 'ground');
+    if (shelf) {
+      // `derive.ts` tags anything off the tiles and outside a cell/tube as `flight`, so an
+      // element AT REST on the hive frame is permanently `flight`. It must not hold the clock.
+      shelf.state = { kind: 'flight', target: 'red', by: 'red' };
+      shelf.z = 43.9;
+      check(
+        'E1 SETTLE: an element at REST off the tiles (tagged `flight` by derive) is settled',
+        bbSettled(f),
+      );
+      shelf.state = { kind: 'ground' };
+      shelf.z = 0;
+    }
+    const bbf = f.biobuzz;
+    if (bbf) {
+      // THE DYNAMIC TRAY answers with its own angular speed, never with the timer's load table.
+      const red = bbf.hives.red;
+      const loaded = [...f.balls].slice(0, BB_TIP_POLLEN[0]).map((b) => b.id);
+      bbf.hives.red = { ...red, contents: loaded, angle: 0.5236, angVel: 0 };
+      check(
+        'E1 SETTLE: a DYNAMIC tray resting on its stop is settled, whatever the load table says',
+        bbSettled(f),
+        `n=${loaded.length}`,
+      );
+      bbf.hives.red = { ...bbf.hives.red, angVel: 1 };
+      check('E1 SETTLE: a DYNAMIC tray still swinging is not settled', !bbSettled(f));
+      // ...and the TIMER tray (no `angle` — a 2D world, a 2D-era replay, a snapshot) still
+      // waits for the swing the load table says is coming.
+      bbf.hives.red = { up: red.up, contents: loaded, tips: red.tips, tipping: 0, released: false };
+      check(
+        'E1 SETTLE: a TIMER tray loaded past its threshold is still not settled (a swing is due)',
+        !bbSettled(f),
+      );
+      bbf.hives.red = red;
+    }
+  }
+}
+
 export function rulesChecks(check: Check): void {
   scoringChecks(check);
   penaltyChecks(check);
   pinChecks(check);
   cueChecks(check);
   sceneChecks(check);
+  settleChecks(check);
 }

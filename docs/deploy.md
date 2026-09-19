@@ -170,6 +170,45 @@ works the same way.
 
 ---
 
+## Deploy ORDER when the wire protocol moved — client first, then server
+
+Normally the two deploys are independent and the order does not matter: the server accepts
+every client build it has ever shipped, and a client that is one server behind still plays.
+**The 2026-09-19 publish of `alpha` to `main` is not that case**, and the same shape will
+recur whenever a server starts REFUSING clients that lack a capability.
+
+The new server runs every BIOBUZZ room in 3D physics (`serverPhysics`, owner ruling
+2026-09-18) and refuses a client that does not advertise `bb3d` in its `caps`
+(`BB3D_REFUSAL`, `server/index.ts`). Every production client built before this publish
+lacks it. So:
+
+- **Fly before Vercel** locks every production BIOBUZZ player out of every BIOBUZZ room
+  until Vercel catches up and their tab reloads. DECODE and Chain Reaction are unaffected.
+- **Vercel before Fly** (the right order) leaves a window in which a NEW client plays a
+  BIOBUZZ solo record on the OLD server. That run is 2D, is accepted and shown a rank, and
+  becomes board-invisible the moment the new server boots, because every pre-existing
+  record row is stamped `physics = '2d'` by migration `0039` and BIOBUZZ boards are
+  filtered to `'3d'` by `boardPhysics` (`server/db/repo.ts`). The window is as long as you
+  make it: minutes if the Fly deploy follows the Vercel one directly.
+
+The order, then:
+
+1. Merge to `main`. Vercel builds it automatically; wait for the deployment to be READY
+   and load `playdsim.com` once to confirm the new client is what it serves.
+2. From a **main** worktree (never the alpha tree — `fly-deploy.sh` builds whatever tree it
+   runs in): `./scripts/fly-deploy.sh`, or the announce-first `announce-deploy.sh` if
+   `/api/presence` shows anyone online.
+3. Watch `/health` and the Fly logs for the first BIOBUZZ room to open in 3D.
+
+⚠️ **Every BIOBUZZ record and personal best set before this publish disappears from the
+boards** — not deleted, filtered: they are `'2d'` rows on a board that now shows `'3d'`.
+There is no 2D BIOBUZZ board any more. That is the owner's ruling, not a bug; if it is
+not wanted, `boardPhysics` is the one predicate to change, before the deploy.
+
+If a zero-window deploy is ever needed, the alternative is an env flag in front of
+`serverPhysics`/`boardPhysics`/`stagedPhysics` (deploy dark, flip after Vercel). It was
+NOT built for this publish; the reversed order above is the whole mitigation.
+
 ## 1. Game server → Fly.io (reference)
 
 The server is a single stateless process (all match state lives in memory). Files:
@@ -237,8 +276,11 @@ matchmaking + a fair-midpoint host via `fly-replay`; see `docs/netcodeplan.md` P
 ```bash
 ./scripts/fly-deploy.sh                        # ship the image (NOT a bare `fly deploy` — see VM sizes below)
 fly scale count 1 --region iad -a dohun-sim-decode   # one machine PER region
+fly scale count 1 --region ord -a dohun-sim-decode
 fly scale count 1 --region sjc -a dohun-sim-decode
 fly scale count 1 --region lhr -a dohun-sim-decode
+fly scale count 1 --region gru -a dohun-sim-decode   # São Paulo
+fly scale count 1 --region jnb -a dohun-sim-decode   # Johannesburg
 fly scale count 1 --region syd -a dohun-sim-decode
 fly scale count 1 --region nrt -a dohun-sim-decode
 fly secrets set MATCHMAKER_REGION=iad -a dohun-sim-decode   # holds the global ranked queue
@@ -258,13 +300,18 @@ fly secrets set MATCHMAKER_REGION=iad -a dohun-sim-decode   # holds the global r
 - **Per-region VM sizes + the deploy reset (IMPORTANT).** `iad` runs `shared-cpu-4x`
   /1024MB (the always-warm matchmaker; 4 shared vCPUs give the 60 Hz loop ample headroom
   without a dedicated vCPU's cost — see fly.toml's COST-PASS note); EVERY other region —
-  `sjc` (joined 2026-07-20) plus the far satellites `lhr`/`syd`/`nrt` — runs the much cheaper
-  `shared-cpu-1x`/1024MB. fly.toml has only ONE `[[vm]]`, and **`fly deploy` re-applies it
+  `ord`/`sjc` plus the far satellites `lhr`/`gru`/`jnb`/`syd`/`nrt` — runs the much cheaper
+  `shared-cpu-1x`/512MB. fly.toml has only ONE `[[vm]]`, and **`fly deploy` re-applies it
   (`shared-cpu-4x`) to every machine — silently UPSIZING the satellites off their cheap
-  size.** So always deploy with **`scripts/fly-deploy.sh`** (deploy + re-shrink the
-  satellites) rather than a bare `fly deploy`. Verify after: `fly machine list -a
-  dohun-sim-decode` should show `iad` at `shared-cpu-4x:1024MB` and `sjc/lhr/syd/nrt` at
-  `shared-cpu-1x:1024MB`.
+  size.** A region added with `fly scale count` inherits that same `[[vm]]`, so a NEW
+  satellite is born at `shared-cpu-4x` too and is only shrunk once it is listed in the
+  script's `SATELLITES`. So always deploy with **`scripts/fly-deploy.sh`** (deploy +
+  re-shrink the satellites) rather than a bare `fly deploy`. Verify after: `fly machine
+  list -a dohun-sim-decode` should show `iad` at `shared-cpu-4x:1024MB` and every other
+  region at `shared-cpu-1x:512MB`.
+- **There is NO Middle East region on Fly** (`fly platform regions` is the authority, and
+  Africa has only `jnb`). The nearest machine for those players is `lhr`; `fra` would be
+  marginally closer and is the one to add if it ever matters.
 - **Calibrating `INTER_REGION_MS`** (`server/regions.ts`): measure machine-to-machine RTT over
   Fly's 6PN mesh — from each region's machine, TCP-connect to another region's hallpass
   (`<region>.<app>.internal:22`, since the app binds IPv4-only so port 8080 isn't on 6PN) and
@@ -415,6 +462,99 @@ npm run server      # tsx watch on ws://localhost:8787
 npm run dev         # Vite on http://localhost:5173
 ```
 
+## 4. Auth — password reset, email verification, terms (OWNER dashboard work)
+
+The three flows are BUILT and deployed with the client and the game server. Two of them do
+nothing at all until the Neon Auth project is configured, and that configuration is not in
+this repo — it is clicking, in the Neon console, by whoever owns the project. This section is
+the checklist, in the order it has to happen.
+
+**What is already live without touching anything:** the "Forgot password?" link, the
+`/account/reset` and `/account/verify` screens, the terms checkbox on sign-up, and the
+blocking terms dialog. The terms half needs only the game server (migration `0040` applies at
+boot) and works today.
+
+**What needs the dashboard:** anything that sends an email. Better Auth generates the token
+and calls its mailer; Neon Auth's hosted project owns the mailer, so with no sender configured
+`requestPasswordReset` / `sendVerificationEmail` still answer `200` and no mail is ever sent.
+That failure is SILENT by design (see `src/lib/authFlows.ts` on enumeration), so do not read a
+green form as proof that mail works — send yourself one.
+
+### Step 1 — a sender domain
+
+1. Neon console → the project → **Auth** → **Emails** (or **Settings → Email**).
+2. Set the **sender address** to an address on a domain you control, then add the DNS records
+   the console gives you (SPF, DKIM, and a DMARC record if it asks). Mail from an unverified
+   domain lands in spam or is dropped outright, which looks exactly like the flow being broken.
+3. Send the console's **test email** to yourself and confirm it arrives in an inbox, not a
+   spam folder.
+
+### Step 2 — the two templates and where they land
+
+Both emails contain a link the auth server generates; the app supplies where that link should
+come back to, so there is nothing to type here except the wording.
+
+- **Reset password** — the client passes `redirectTo` = `<origin>/account/reset`, and the auth
+  server appends `?token=…`. On a Vercel PREVIEW the origin is that preview's own host, so a
+  preview's reset links come back to the preview. Under Electron there is no usable origin and
+  the link points at `https://www.playdsim.com/account/reset` (`appUrl` in
+  `src/lib/authFlows.ts`).
+- **Verify email** — same shape, `callbackURL` = `<origin>/account/verify`.
+
+⚠️ **If the console has an allow-list of redirect URLs, every origin has to be on it**:
+`https://www.playdsim.com`, the alpha/beta hosts, and `http://localhost:5173` for dev.
+A redirect the auth server does not recognise is refused, and the person sees a link that
+goes nowhere.
+
+### Step 3 — require verification (optional, and do it LAST)
+
+Neon console → **Auth** → sign-in methods → **require email verification** for
+email/password. This stops an unverified account from signing in at all — it is the provider's
+switch, not ours.
+
+### Step 4 — the server-side gate (a Fly secret, and it is OFF by default)
+
+```bash
+flyctl secrets set REQUIRE_VERIFIED_EMAIL=1 -a dohun-sim-decode
+```
+
+Off, `emailGateRefusal` (`server/auth.ts`) always passes. On, an account whose address is not
+verified is refused three things and nothing else:
+
+| refused | where | what they see |
+|---|---|---|
+| ranked queueing | `queue`, the fourth door in `server/index.ts` | "Verify your email to play ranked…" |
+| joining a record room | the join door, `server/index.ts` | "Verify your email to save a record run…" |
+| `POST /api/practice` (saving a run) | `server/api.ts`, 403 | the same sentence |
+
+Casual rooms, free drive, practice PLAY, spectating and the whole single-player game stay
+open, signed in or not.
+
+⚠️ **SET IT ONLY AFTER STEP 1 WORKS.** Verification has never existed here, so every
+email/password account on the live site is currently unverified. Turning the gate on before
+mail is deliverable refuses ranked to all of them at once and the Resend button on their
+Profile page cannot help. Order: deploy → mail works → let people verify → set the secret.
+Google sign-ins are unaffected throughout (the provider vouched for the address, so they
+arrive verified).
+
+⚠️ **AND CHECK THE TOKEN CARRIES THE CLAIM FIRST.** The gate reads `email_verified` (or
+`emailVerified`) off the verified JWT. Whether Better Auth's JWT plugin puts it there is a
+property of the project's configuration, and if it is absent the server falls back to ONE
+cached `GET /get-session` per token — which may itself answer nothing, in which case the
+verified state is `null` and the gate PASSES (deliberately: a gate that refuses what it
+cannot read would take ranked down silently). So before trusting the switch, sign in as a
+test account and read `/token`'s payload; if neither the claim nor the session lookup
+answers, the secret is a no-op and turning it on proves nothing.
+
+### Step 5 — when the legal text changes
+
+`LEGAL_VERSION` in `src/legalText.ts` is derived from `LEGAL_UPDATED`. Move that date and
+every signed-in account is asked to accept once, on their next load, by a blocking dialog
+whose only other button is Sign out. That is the intent — but it is a prompt in front of
+every player, so move it for a material change and not for a typo. It is a CLIENT change
+(Vercel) and a SERVER change (the route records the server's own constant), so deploy both or
+the dialog will keep coming back.
+
 ## Transport note — WebSocket now, WebTransport later
 
 Phase 0/1 ship on **WebSocket** (universal, works everywhere including Safari and
@@ -431,3 +571,33 @@ Note: today's snapshots are delta-encoded but assume the **ordered, reliable**
 WebSocket (no per-packet ack). WebTransport datagrams are unreliable, so adding it also
 means acking snapshots (the `ackInputTick` field is already plumbed for this) and
 keying deltas off the last **acked** tick instead of the last **sent** tick.
+
+---
+
+## Vercel deployments: only `main` and `alpha` build
+
+Every push to every branch used to create a Vercel deployment and a preview build. On a Hobby
+project builds run one at a time and deployments count against a daily limit, so a day of pushes
+to feature branches queued the ALPHA build behind previews nobody opened — and 500+ old preview
+deployments had accumulated by 2026-09-18.
+
+`vercel.json` now does two things:
+
+- **`ignoreCommand`** skips the build for any branch other than `main` and `alpha` (exit 0 = skip,
+  exit 1 = build; Vercel's "ignored build step"). A skipped push still creates a deployment
+  record marked canceled, which costs no build minutes.
+- **`git.deploymentEnabled`** turns auto-deployment OFF entirely for the branches we push most
+  (`biobuzz-3d`, the `feat/*` branches, …). The map takes exact branch names only — add a new
+  long-lived branch there when you create it.
+
+**Pruning what already accumulated** — the owner runs it, with a token from vercel.com → Account →
+Tokens passed through the environment (never on the command line, never in the repo):
+
+```bash
+VERCEL_TOKEN=… node scripts/vercel-prune.mjs --project dsim --days 14          # dry run: lists
+VERCEL_TOKEN=… node scripts/vercel-prune.mjs --project dsim --days 14 --yes    # deletes
+```
+
+It never deletes a production deployment, anything still carrying an alias, or the newest
+deployment of any branch. Deleting is permanent. To see which build a site is serving:
+`curl https://alpha.playdsim.com/version.json`.

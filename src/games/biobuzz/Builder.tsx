@@ -1,6 +1,17 @@
 import type { RobotSpec } from '../../types';
 import { rangeFill } from '../../ui/rangeFill';
-import { BB_HOOD_DEFAULT_DEG, BB_STORAGE_MIN } from './config';
+import {
+  BB3_HEIGHT_MAX,
+  BB3_HEIGHT_MIN,
+  BB3_STOW_MAX,
+  BB_DUMP_MAX_DIST,
+  BB_HOOD_DEFAULT_DEG,
+  BB_SIZE_STEP,
+  BB_STORAGE_MIN,
+  bbDeployedHeightIn,
+  bbStowHeightIn,
+  bbStowLegal,
+} from './config';
 import {
   BB_MOUNT_POSITIONS,
   BB_SCORE_MODES,
@@ -75,6 +86,20 @@ export interface BiobuzzBuilderProps {
   setSpec(patch: Partial<RobotSpec>): void;
 }
 
+/**
+ * A DIAL'S VALUE, AT ITS OWN STEP'S PRECISION — the belt to `coerceBiobuzzSpec`'s braces.
+ *
+ * The coercer snaps every size onto its slider's grid, which is where the 15-digit width was
+ * actually fixed (owner re-report, 2026-09-18). This is the second line of defence: a value that
+ * reaches this component off-grid anyway — a hand-edited save, a spec from a peer running an
+ * older coercer — prints as `16.3` rather than as `16.331227996399747`. A slider can never mean
+ * more precision than one step, so printing more is never right.
+ */
+function dialText(v: number, step: number): string {
+  const decimals = step >= 1 ? 0 : String(step).split('.')[1]?.length ?? 1;
+  return v.toFixed(decimals);
+}
+
 /** hover text for a double turret's cell that cannot take `which` turret, or undefined. */
 function twinCellBlock(m: BbMountPos, at: BbMountPos, other: BbMountPos, otherName: string): string | undefined {
   if (m === 'center') return 'A double turret can’t use the centre: it neighbours every cell';
@@ -126,6 +151,12 @@ export function BiobuzzBuilder({ spec, setSpec }: BiobuzzBuilderProps) {
   const lift = bbLiftOf(spec);
   const dials = bbDials(spec);
   const store = Math.min(spec.ballStorage ?? dials.storage.max, dials.storage.max);
+  // THE HEIGHT PAIR (R105.A's expanded height and R102's starting cube). Read through the
+  // resolvers rather than off the raw fields, same rule as the launcher above: `bbStowHeightIn`
+  // is where "a build over the cube folds to exactly it unless it declares otherwise" is decided.
+  const deployed = bbDeployedHeightIn(spec);
+  const stow = bbStowHeightIn(spec);
+  const folds = deployed > BB3_STOW_MAX;
 
   // ── WHY EVERY EDIT RE-SENDS `scoreMode`/`shooterMount` ALONGSIDE `bbMech` ──────────────
   // The container is what `coerceBbMech` (`./coerce.ts`) resolves, and the two flat fields are
@@ -168,9 +199,6 @@ export function BiobuzzBuilder({ spec, setSpec }: BiobuzzBuilderProps) {
   }
 
   /** HOOD angle — a dumper's only dial. */
-  function setHood(hoodDeg: number) {
-    send({ ...launcher, hoodDeg }, lift);
-  }
 
   /** BOX TUBE pick: none, or a tube. A new tube starts at the back when that is free, else at
    * the first free perimeter cell — the same fallback `coerceBbMech` itself uses. Re-picking the
@@ -262,30 +290,13 @@ export function BiobuzzBuilder({ spec, setSpec }: BiobuzzBuilderProps) {
           ))}
         </div>
       )}
-      {/* HOOD vs PITCH: a dumper's elevation is a fixed piece of hardware, so it gets a slider,
-          and the range is where a dumper can still reach the HIVE (`BB_HOOD_DEFAULT_DEG`). A
-          turret solves its own elevation per shot, so a slider would offer a control the sim
-          never reads; one line says why there is none. */}
+      {/* NO ELEVATION DIAL FOR EITHER. A turret solves its own elevation per shot, and a dumper
+          lobs each dump for its distance (owner, 2026-09-13 — `bbLobThrow`), so a Hood slider
+          would offer a control the sim never reads. One line says what each does instead. */}
       {bbIsTurreted(launcher) ? (
         <p className="ds-hint">A turret sets its own elevation for every shot.</p>
       ) : (
-        <div className="ds-fields">
-          <label className="ds-field">
-            <span className="cap">
-              Hood <span className="val">{launcher.hoodDeg}&deg;</span>
-            </span>
-            <input
-              className="ds-range"
-              type="range"
-              min={dials.hood.min}
-              max={dials.hood.max}
-              step={1}
-              value={launcher.hoodDeg}
-              style={rangeFill(launcher.hoodDeg, dials.hood.min, dials.hood.max)}
-              onChange={(e) => setHood(Number(e.target.value))}
-            />
-          </label>
-        </div>
+        <p className="ds-hint">A dumper lobs its load from up to {BB_DUMP_MAX_DIST} in away.</p>
       )}
 
       {/* ---- FLOWER SCORING: the Box Tube ---- */}
@@ -354,14 +365,14 @@ export function BiobuzzBuilder({ spec, setSpec }: BiobuzzBuilderProps) {
       <div className="ds-fields">
         <label className="ds-field">
           <span className="cap">
-            Length <span className="val">{spec.length}&quot;</span>
+            Length <span className="val">{dialText(spec.length, BB_SIZE_STEP)}&quot;</span>
           </span>
           <input
             className="ds-range"
             type="range"
             min={dials.length.min}
             max={dials.length.max}
-            step={0.5}
+            step={BB_SIZE_STEP}
             value={spec.length}
             style={rangeFill(spec.length, dials.length.min, dials.length.max)}
             onChange={(e) => setSpec({ length: Number(e.target.value) })}
@@ -369,14 +380,14 @@ export function BiobuzzBuilder({ spec, setSpec }: BiobuzzBuilderProps) {
         </label>
         <label className="ds-field">
           <span className="cap">
-            Width <span className="val">{spec.width}&quot;</span>
+            Width <span className="val">{dialText(spec.width, BB_SIZE_STEP)}&quot;</span>
           </span>
           <input
             className="ds-range"
             type="range"
             min={dials.width.min}
             max={dials.width.max}
-            step={0.5}
+            step={BB_SIZE_STEP}
             value={spec.width}
             style={rangeFill(spec.width, dials.width.min, dials.width.max)}
             onChange={(e) => setSpec({ width: Number(e.target.value) })}
@@ -384,7 +395,7 @@ export function BiobuzzBuilder({ spec, setSpec }: BiobuzzBuilderProps) {
         </label>
         <label className="ds-field">
           <span className="cap">
-            Mass <span className="val">{spec.massLb} lb</span>
+            Mass <span className="val">{dialText(spec.massLb, 0.1)} lb</span>
           </span>
           <input
             className="ds-range"
@@ -420,7 +431,85 @@ export function BiobuzzBuilder({ spec, setSpec }: BiobuzzBuilderProps) {
             onChange={(e) => setSpec({ ballStorage: Number(e.target.value) })}
           />
         </label>
+        {/* HEIGHT, the third chassis dimension — R105.A's own vertical one, and the last of the
+            three to become real (the 2D pipeline never asked; the 3D chassis collider is
+            extruded to it, and the 3D preview stands this tall). It sits with LENGTH and WIDTH
+            because it is the same kind of number, and it is the one dial on this panel with a
+            RULE hanging off it: over 18 in the build has to fold to start, which is the row
+            below and the note under it. */}
+        <label className="ds-field">
+          <span className="cap">
+            Height <span className="val">{dialText(deployed, 1)}&quot;</span>
+          </span>
+          <input
+            className="ds-range"
+            type="range"
+            min={BB3_HEIGHT_MIN}
+            max={BB3_HEIGHT_MAX}
+            step={1}
+            value={deployed}
+            style={rangeFill(deployed, BB3_HEIGHT_MIN, BB3_HEIGHT_MAX)}
+            onChange={(e) => setSpec({ heightIn: Number(e.target.value) })}
+          />
+        </label>
+        {/* THE DECLARED STOW HEIGHT (R102) — only for a build that is over the cube, because for
+            anything at or under 18 in the answer is its own height and a slider that can only be
+            set to the value it already has is chrome. A build over the cube is MODELLED as
+            folding to exactly 18 unless it says otherwise (`bbStowHeightIn`), so that is where
+            this starts; declaring more than 18 is allowed and is REFUSED by the rule rather than
+            clamped away, which is what makes the note below able to say no. */}
+        {folds && (
+          <label className="ds-field">
+            <span className="cap">
+              Stow height <span className="val">{dialText(stow, 1)}&quot;</span>
+            </span>
+            <input
+              className="ds-range"
+              type="range"
+              min={BB3_HEIGHT_MIN}
+              max={deployed}
+              step={1}
+              value={stow}
+              style={rangeFill(stow, BB3_HEIGHT_MIN, deployed)}
+              onChange={(e) => setSpec({ stowHeightIn: Number(e.target.value) })}
+            />
+          </label>
+        )}
       </div>
+      <StowHeightNote spec={spec} />
     </>
+  );
+}
+
+/**
+ * THE R102 STOW CHECK — the builder's half of the height rule (`docs/biobuzz/plan-3d.md` §3.3).
+ *
+ * R105.A lets a ROBOT stand 29 in once the MATCH has started; R102 limits the STARTING
+ * CONFIGURATION to an 18-in cube. So a tall build is legal only because it FOLDS, and the moment
+ * a robot has a height at all (`heightIn`, which the 3D physics extrudes its collider to) that
+ * stops being a detail: a build that cannot get under the cube cannot start, and `startLegal`
+ * refuses its ready-up (`sim.ts`). This is where a player finds that out — at the dial, not at
+ * the lobby.
+ *
+ * A build INSIDE the cube says nothing at all. A line that appears under every robot to report
+ * that 18 is not more than 18 is chrome, and the one thing a warning may not be is routine.
+ */
+function StowHeightNote({ spec }: { spec: RobotSpec }) {
+  const deployed = bbDeployedHeightIn(spec);
+  if (deployed <= BB3_STOW_MAX) return null;
+  const stow = bbStowHeightIn(spec);
+  if (!bbStowLegal(spec)) {
+    return (
+      <p className="ds-hint">
+        Can’t start: this build stands {deployed}&quot; and stows to {stow}&quot;, over R102’s{' '}
+        {BB3_STOW_MAX}&quot; starting cube. Lower it, or declare a stow under {BB3_STOW_MAX}&quot;.
+      </p>
+    );
+  }
+  return (
+    <p className="ds-hint">
+      {deployed}&quot; deployed — stows to {stow}&quot; to start (R102), and deploys when the match
+      begins.
+    </p>
   );
 }

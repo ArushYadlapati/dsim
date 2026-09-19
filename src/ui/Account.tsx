@@ -7,15 +7,20 @@ import {
   deleteMyAccount,
   fetchEntitlements,
   fetchProfile,
+  fetchReplaysPublic,
+  saveReplaysPublic,
   updateHandle,
   updateUsername,
   type Entitlements,
 } from '../net/api';
+import { AuthDisabled } from './AuthDisabled';
 import { AuthPanel } from './AuthPanel';
+import { copyText } from './copyText';
 import { DesktopUpdate } from './DesktopUpdate';
 import { fmtDay } from './fmtDate';
 import { ServerMenu } from './ServerMenu';
 import { UsernameInput, useUsernameCheck, usernameHintColor } from './UsernameField';
+import { VerifyEmailBanner } from './VerifyEmailBanner';
 import { APP_NAME } from '../seasons';
 import { SUPPORT_ENABLED } from '../net/env';
 import { LEGAL_CONTACT } from '../legalText';
@@ -48,6 +53,10 @@ export function Account({
       <p className="ds-eyebrow">{APP_NAME} · Profile</p>
       <h1 className="ds-h1">Profile</h1>
 
+      {/* ABOVE the identity panel, because it is about the address that panel shows,
+          and because this is the page the ranked refusal sends people to. */}
+      {authEnabled && <VerifyEmailBanner />}
+
       {authEnabled ? <Identity onHandleSaved={onHandleSaved} /> : <IdentityDisabled />}
 
       {multiServer() && (
@@ -68,6 +77,8 @@ export function Account({
 
       <DesktopUpdate />
 
+      {authEnabled && <ReplayPrivacy />}
+
       {authEnabled && SUPPORT_ENABLED && <Membership onDonate={onDonate} />}
 
       <div className="ds-panel">
@@ -78,10 +89,12 @@ export function Account({
           <button
             className="ds-btn"
             onClick={() => {
-              if (confirm(
+              if (
+                confirm(
                   'Reset every setting? This clears your robot build, saved robots, imported autos, ' +
                     'saved start positions, key bindings, audio and mobile layout. It cannot be undone.',
-                )) {
+                )
+              ) {
                 onChange(defaultSettings());
               }
             }}
@@ -93,6 +106,100 @@ export function Account({
 
       {authEnabled && <DeleteAccount />}
     </>
+  );
+}
+
+/**
+ * REPLAY PRIVACY — the one account setting that changes what STRANGERS can see.
+ *
+ * Match replays are private by default (migration 0037). A replay is an input log
+ * re-simulated at full fidelity, so it is not a highlight, it is the game plan: where you
+ * start, what you go for first, when you leave for the endgame. That is scouting material,
+ * and it used to be one click from any leaderboard row.
+ *
+ * ⚠️ THE COPY MUST SAY THAT ONE PLAYER CANNOT PUBLISH A MATCH. A toggle labelled "make my
+ * replays public" that quietly does nothing for most matches is worse than no toggle — the
+ * release rule is unanimous consent, because the log shows the opponent's half too. Nobody
+ * will infer that from a switch, so the panel states it.
+ *
+ * It does NOT cover record runs. Those are leaderboard submissions whose replay is the proof
+ * behind the number, so they stay watchable and this setting never claims otherwise.
+ */
+function ReplayPrivacy() {
+  const session = authClient!.useSession();
+  const userId = session.data?.user?.id ?? null;
+  const [value, setValue] = useState<boolean | null>(null);
+  const [status, setStatus] = useState<'idle' | 'saving' | 'error'>('idle');
+
+  useEffect(() => {
+    if (!userId) {
+      setValue(null);
+      return;
+    }
+    let cancelled = false;
+    void fetchReplaysPublic()
+      .then((r) => {
+        if (!cancelled) setValue(r.replaysPublic);
+      })
+      .catch(() => {
+        if (!cancelled) setValue(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [userId]);
+
+  if (!userId) return null;
+
+  const toggle = (next: boolean): void => {
+    // OPTIMISTIC, and it rolls back on failure. The alternative is a switch that does not
+    // move until a round trip lands, which reads as a dead control.
+    const prev = value;
+    setValue(next);
+    setStatus('saving');
+    void saveReplaysPublic(next)
+      .then(() => setStatus('idle'))
+      .catch(() => {
+        setValue(prev);
+        setStatus('error');
+      });
+  };
+
+  return (
+    <div className="ds-panel">
+      <div className="ds-panel-h">
+        <span className="ds-panel-title">Privacy</span>
+      </div>
+      <div className="ds-panel-body stack start">
+        <p className="ds-hint">
+          Your match replays are private. Only the people who played in a match can watch it
+          back — your results, scores and rating stay on your public profile either way.
+        </p>
+        {value === null ? (
+          <p className="ds-hint">Checking…</p>
+        ) : (
+          <>
+            <label className="ds-checkline">
+              <input
+                type="checkbox"
+                checked={value}
+                disabled={status === 'saving'}
+                onChange={(e) => toggle(e.target.checked)}
+              />
+              <span>Let anyone watch my match replays</span>
+            </label>
+            <p className="ds-hint">
+              A replay shows both alliances, so a match only becomes public when everyone who
+              played in it has turned this on. Turning it off again hides every match of yours
+              that was shared this way.
+            </p>
+          </>
+        )}
+        {status === 'error' && (
+          <p className="ds-hint warn">Couldn’t save that. Check your connection and try again.</p>
+        )}
+      </div>
+    </div>
   );
 }
 
@@ -175,7 +282,14 @@ function Membership({ onDonate }: { onDonate?: () => void }) {
  * everything would be a lie, since a completed match's result still involves the
  * other players and financial records have to outlive the account.
  */
-function DeleteAccount() {
+/**
+ * ⚠️ EXPORTED, and rendered in TWO places: here, and in the privacy page's "Your data" panel
+ * (`src/ui/YourData.tsx`). Deliberately the same component rather than a second button that
+ * posts to the same route: the typed confirmation and the paragraph about what SURVIVES a
+ * deletion are the load-bearing parts, and two copies of that copy would drift — which is the
+ * exact failure the storage registry exists to stop one file over.
+ */
+export function DeleteAccount() {
   const session = authClient!.useSession();
   const [confirm, setConfirm] = useState('');
   const [busy, setBusy] = useState(false);
@@ -255,7 +369,20 @@ function Identity({ onHandleSaved }: { onHandleSaved?: (handle: string) => void 
   const client = authClient!;
   const session = client.useSession();
   const [open, setOpen] = useState(false);
+  const [copied, setCopied] = useState(false);
   const user = session.data?.user;
+
+  /** the flash is driven by whether the text ACTUALLY landed — see `copyText`: the
+   *  clipboard API is absent on a plain-http LAN page, and "Copied" over a copy that
+   *  never happened is worse than no button. */
+  const copyId = (): void => {
+    if (!user?.id) return;
+    copyText(user.id, (ok) => {
+      if (!ok) return;
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1600);
+    });
+  };
 
   return (
     <div className="ds-panel">
@@ -276,14 +403,24 @@ function Identity({ onHandleSaved }: { onHandleSaved?: (handle: string) => void 
           <Username userId={user.id} />
           <div className="ds-acct-id">
             <p className="ds-hint">Account ID</p>
-            {/* --ds-mut, not the --muted bridge: that one belongs to the in-match HUD */}
-            <code
-              className="ds-acct-uuid"
-              title="Click to copy"
-              onClick={() => void navigator.clipboard?.writeText(user.id)}
-            >
-              {user.id}
-            </code>
+            <div className="ds-field-row">
+              <code
+                className="ds-acct-uuid"
+                title="Click to copy"
+                onClick={copyId}
+              >
+                {user.id}
+              </code>
+              <button
+                type="button"
+                className="ds-btn ghost small"
+                onClick={copyId}
+                title="Copy Account ID"
+                aria-label="Copy Account ID"
+              >
+                {copied ? 'Copied' : 'Copy'}
+              </button>
+            </div>
           </div>
         </div>
       ) : (
@@ -465,16 +602,7 @@ function Username({ userId }: { userId: string }) {
   );
 }
 
+/** the same panel the reset and verify screens show — see `AuthDisabled`. */
 function IdentityDisabled() {
-  return (
-    <div className="ds-panel">
-      <div className="ds-panel-h">
-        <span className="ds-panel-title">Account</span>
-      </div>
-      <div className="ds-empty">
-        <div className="big">Accounts are off in this build</div>
-        Set <code>VITE_NEON_AUTH_URL</code> to enable sign-in, saved records, and ranked ELO.
-      </div>
-    </div>
-  );
+  return <AuthDisabled />;
 }

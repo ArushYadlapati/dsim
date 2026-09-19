@@ -8,7 +8,8 @@
 #
 # Sizing policy: iad (matchmaker + always-warm primary) runs shared-cpu-4x (from
 # fly.toml — 4 shared vCPUs, ample headroom for the 60Hz loop without a dedicated
-# vCPU's cost). EVERY other region, INCLUDING sjc, runs shared-cpu-1x — much cheaper,
+# vCPU's cost). [SUPERSEDED 2026-09-13: see LAUNCH SIZING below — iad is performance-2x and
+# each satellite has its own size in SATELLITE_SIZES.] EVERY other region, INCLUDING sjc, runs shared-cpu-1x — much cheaper,
 # but SHARED: a sustained match there can burn burst
 # credits and throttle the 60Hz loop (the flap risk fly.toml warns about). They rarely
 # host a match and auto-stop when idle, so the cost win outweighs it; bump back to a
@@ -78,66 +79,65 @@ FLEET_REGIONS=(iad ord sjc lhr syd nrt gru jnb)
 # EVERY region except the always-warm primary (iad) runs the cheap shared size.
 # sjc joined this list 2026-07-20 (cost pass): US West is redundant with iad for
 # the ~75% of games that are solo record runs, and it auto-stops when idle anyway.
+# ord (US Central) joined 2026-09-06 for the same reason it is cheap to have: a
+# satellite costs nothing while it is stopped, and it only wakes when somebody in
+# the middle of the country actually hosts a room there.
+# gru (Sao Paulo) and jnb (Johannesburg) joined the same day, on the same logic:
+# both continents were >200ms from EVERY existing region, which is the difference
+# between playable and not. There is NO Middle East region on Fly - the nearest
+# option for those players stays lhr, or fra if it is ever added here.
 #
-# ord joined 2026-09-13, on the same argument sjc joined on, and to close a gap rather
-# than to save money: ord is the ONLY host candidate that was never deliberately sized.
-# Being absent from this list does not leave it alone — it leaves it on fly.toml's
-# `[[vm]]`, which `fly deploy` re-applies to every machine, so it has been quietly
-# running the primary's shared-cpu-4x (and, per the default below, MAX_ROOMS 24) by
-# omission. ord↔iad is 22ms, i.e. near-duplicate coverage of the always-warm primary,
-# which is word for word the case made for sjc above. Memory needs no verification here:
-# SATELLITE_MEMORY and fly.toml both say 1024, so moving ord in changes the CPU size and
-# the room cap and nothing else. Revert this one line if ord ever starts flapping.
+# WARNING: EVERY SATELLITE STAYS IN SATELLITE_SIZES. Omitting a region here does not
+# leave it ALONE, it leaves it to fly.toml, whose single [[vm]] is the PRIMARY's size
+# (performance-2x). So a region missing from the list is UPSIZED to that on the next
+# deploy, which is the exact bug this wrapper exists to prevent.
 #
-# ⚠️ gru/jnb are still NOT here, and the repo disagrees with itself about why. The note
-# that used to sit here (and the one in server/regions.ts) says they run at 512MB, under
-# the 1024 Node+Rapier needs — but this script's own header says `fly deploy` re-applies
-# fly.toml's 1024mb to EVERY machine, and they are not exempt from that. Both cannot be
-# true unless they were created outside this script and have never been deployed to. So
-# the 512 premise is UNVERIFIED, and it points the wrong way if it is wrong: if they have
-# been through a deploy they are already 4x/1024 and adding them here DOWNSIZES them.
-# TO FINISH 4.4:
-#   1. `fly machine list -a dohun-sim-decode --json` — read their real size/memory/state.
-#   2. add them here, and DEPLOY THAT ALONE. The re-shrink loop runs only after
-#      `fly deploy` returns (minutes, it waits on health checks), so this list must land
-#      one deploy AHEAD of DEPLOY_REGIONS — and `fly machine update --vm-memory` REBOOTS
-#      the machine, which kills any room `bestHost` staged there in the meantime.
-#   3. only then add gru/jnb to DEPLOY_REGIONS in server/regions.ts (and drop the stale
-#      512MB note above the gru row there). That is the latency win: today a São Paulo
-#      player's match hosts in iad at 118ms and a Johannesburg player's in lhr at 155ms,
-#      on machines that exist in their own city.
-# The mmsmoke row check is already written against RTT_UNKNOWN rather than a literal 300,
-# so the four genuinely-long pairs that appear then (syd↔jnb 395, nrt↔jnb 355, gru↔jnb
-# 340, syd↔gru 315) stay green instead of reading as missing rows.
-SATELLITES=(ord sjc lhr syd nrt)
-SATELLITE_SIZE=shared-cpu-1x
-SATELLITE_MEMORY=1024 # MB — shared-cpu-1x defaults to 256MB, too tight for Node+tsx+Rapier
-# MAX_ROOMS for a satellite. The default (server/index.ts) is 24 for EVERY region with
-# FLY_REGION set, and it was sized for iad: fly.toml's own COST PASS note says the size
-# that used to flap was shared-cpu-**1x**, "whose sustained baseline is a fraction of a
-# core ≈ ONE busy room", and docs/deploy.md's table gives shared-cpu-1x 3–5 driven rooms
-# with margin. 24 on a 1x machine is not a guard, it is no cap at all.
-# 6 is above both figures on purpose, so it stays a RUNAWAY GUARD (see server/index.ts)
-# and not an admission limit: most rooms are PARKED (0.031 cores) rather than driven
-# (0.075), and 6 parked rooms is ~0.19 cores. It IS a tighter guard than 24 was — 24 is
-# 3–4.8× iad's 5–8 band, 6 is only 1.2–2× the satellites' 3–5 band. If satellites start
-# refusing players with `region_full` while `/api/perf` shows headroom, the next step is
-# 8–10, not back to 24.
+# LAUNCH SIZING (2026-09-13, BIOBUZZ + the alpha promotion). PER-REGION now, because the
+# regions are not alike. Each entry is region:size:memoryMB. Reasoning, from docs/capacity.md:
+#   · one server process uses ~one core (Node is single-threaded), so the only size step
+#     that buys ROOMS is a DEDICATED core: ~8-10 driven rooms on performance-1x against 3-5 on
+#     shared-cpu-1x, whose sustained baseline (~6% of a core) is about ONE busy room. A bigger
+#     shared size barely helps; shared-cpu-1x is what flapped /health under a single match.
+#   · US Central, US West and Europe carry real traffic, so they get the dedicated core.
+#   · Sydney, Tokyo, São Paulo and Johannesburg rarely host, so they get shared-cpu-4x: four
+#     shared vCPUs of baseline headroom (it sustained 2 rooms / 8 players at 0.244 cores).
+#   · every satellite AUTO-STOPS, and a stopped machine bills only its rootfs, so a bigger
+#     satellite costs money only while somebody is playing on it.
+# The primary (iad) is not listed: it takes fly.toml's [[vm]], performance-2x/4096.
+# performance-* enforces a 2048MB-per-core memory floor and shared-cpu-4x a 1024MB one, so
+# the memory column is the floor, not a choice. Change a size HERE — a manual
+# `fly machine update` is undone by the next deploy.
+SATELLITE_SIZES=(
+  ord:performance-1x:2048
+  sjc:performance-1x:2048
+  lhr:performance-1x:2048
+  gru:shared-cpu-4x:1024
+  jnb:shared-cpu-4x:1024
+  syd:shared-cpu-4x:1024
+  nrt:shared-cpu-4x:1024
+)
+SATELLITES=()
+for entry in "${SATELLITE_SIZES[@]}"; do SATELLITES+=("${entry%%:*}"); done
+
+# MAX_ROOMS for a satellite, applied to EVERY size above. The default (server/index.ts) is
+# 24 for EVERY region with FLY_REGION set, sized for iad's dedicated performance-2x core —
+# far more than any satellite here, dedicated-core or shared, is meant to carry alone.
+# 6 is a RUNAWAY GUARD (see server/index.ts), not an admission limit: most rooms are PARKED
+# (0.031 cores) rather than driven (0.075). If satellites start refusing players with
+# `region_full` while `/api/perf` shows headroom, raise this to 8-10, not back to 24 — and
+# raise it PER SIZE if the dedicated-core satellites (ord/sjc/lhr) are the ones refusing
+# while the shared-cpu-4x ones are not.
 # ⚠️ IT MUST BE APPLIED HERE, NOT IN fly.toml. `fly deploy` regenerates machine config
-# from fly.toml — the same mechanism this script's header documents for the VM size — so
-# a hand-run `fly machine update --env` reverts on the next deploy, silently. A fly.toml
-# `[env]` block is the wrong fix in the other direction: it would cap iad at 6 too.
+# from fly.toml, so a hand-run `fly machine update --env` reverts on the next deploy,
+# silently. A fly.toml `[env]` block is the wrong fix in the other direction: it would
+# cap iad at 6 too.
 # ⚠️ THE COST OF A CAP THAT BITES, stated because the matchmaker cannot see it. A staged
 # RANKED match is created through the same `join` path this cap gates (server/index.ts), and
 # the matchmaker is NOT load-aware — so a satellite already at its cap refuses the room with
 # `region_full`, nobody connects, `RANKED_JOIN_GRACE_MS` lapses, and `cancelPending` charges
-# the innocent players a NO-SHOW dodge. That is true at 24 as well; 6 makes it reachable
-# sooner. It is still the right trade: 24 driven rooms on a shared-cpu-1x is the flapping this
-# whole loop exists to prevent, and a flap drops EVERY room on the machine, not one. If
-# `/api/perf` ever shows a satellite refusing at 6 with headroom to spare, raise this to 8-10
-# — do NOT go back to 24, and do not "fix" it by exempting staged rooms from the cap unless
-# the exemption is verified against `pending_matches` (a room CODE is client-supplied, so
-# trusting its shape would be an admission bypass).
+# the innocent players a NO-SHOW dodge. Do not "fix" it by exempting staged rooms from the cap
+# unless the exemption is verified against `pending_matches` (a room CODE is client-supplied,
+# so trusting its shape would be an admission bypass).
 SATELLITE_MAX_ROOMS=6
 
 echo "==> fly deploy ($APP)"
@@ -160,7 +160,7 @@ deploy_rc=0
 fly deploy --remote-only --ha=false -a "$APP" "$@" || deploy_rc=$?
 [ "$deploy_rc" -ne 0 ] && echo "!! fly deploy exited $deploy_rc — re-applying VM sizes anyway, then failing"
 
-echo "==> re-applying per-region VM sizes (satellites -> $SATELLITE_SIZE/${SATELLITE_MEMORY}MB, MAX_ROOMS=$SATELLITE_MAX_ROOMS)"
+echo "==> re-applying per-region VM sizes (satellites: ${SATELLITE_SIZES[*]}, MAX_ROOMS=$SATELLITE_MAX_ROOMS)"
 ids=$(fly machine list -a "$APP" --json | node -e '
   const data = JSON.parse(require("fs").readFileSync(0, "utf8"));
   const want = new Set(process.argv.slice(1));
@@ -183,18 +183,31 @@ ids=$(fly machine list -a "$APP" --json | node -e '
 
 while read -r region id; do
   [ -z "$id" ] && continue
+  size=""
+  memory=""
+  for entry in "${SATELLITE_SIZES[@]}"; do
+    if [ "${entry%%:*}" = "$region" ]; then
+      rest="${entry#*:}"
+      size="${rest%%:*}"
+      memory="${rest#*:}"
+    fi
+  done
+  if [ -z "$size" ] || [ -z "$memory" ]; then
+    echo "!! no size listed for $region ($id), leaving it alone"
+    continue
+  fi
   # --env is safe to pass alongside the size flags only because fly.toml has NO `[env]`
   # block, so there is nothing else in machine env for it to clobber (Fly SECRETS are a
   # separate mechanism and are untouched). Re-check that if an `[env]` block is ever added.
   # ⚠️ TOLERATE A FAILURE HERE, for the same reason the `fly deploy` line above is guarded.
   # `set -euo pipefail` is on (line 21), so an unguarded non-zero exit on the FIRST satellite
-  # aborts the script and leaves EVERY remaining satellite on shared-cpu-4x with MAX_ROOMS 24
+  # aborts the script and leaves EVERY remaining satellite on fly.toml's size with MAX_ROOMS 24
   # — which is verbatim the failure observed 2026-07-20 and the whole reason this loop exists.
   # `--env` is the newest flag on this line and the one most likely to be renamed or dropped by
   # a flyctl upgrade; a CLI change must degrade to a loud line, not to a silently half-resized
   # fleet. The mmsmoke check reads this SCRIPT, not the CLI, so it gives no signal here.
-  if fly machine update "$id" --vm-size "$SATELLITE_SIZE" --vm-memory "$SATELLITE_MEMORY" --env MAX_ROOMS="$SATELLITE_MAX_ROOMS" -a "$APP" -y >/dev/null; then
-    echo "   $region ($id) -> $SATELLITE_SIZE/${SATELLITE_MEMORY}MB, MAX_ROOMS=$SATELLITE_MAX_ROOMS"
+  if fly machine update "$id" --vm-size "$size" --vm-memory "$memory" --env MAX_ROOMS="$SATELLITE_MAX_ROOMS" -a "$APP" -y >/dev/null; then
+    echo "   $region ($id) -> $size/${memory}MB, MAX_ROOMS=$SATELLITE_MAX_ROOMS"
   else
     update_rc=1
     echo "!! $region ($id) UPDATE FAILED — it may still be on fly.toml's size/MAX_ROOMS. Check: fly machine list -a $APP"

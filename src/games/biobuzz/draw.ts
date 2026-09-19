@@ -1,5 +1,7 @@
 import type { Artifact, ArtifactColor, Vec2, World } from '../../types';
-import { BB_POLLEN_R } from './config';
+import { BB_HIVE_BOTTOM_Z, BB_POLLEN_R } from './config';
+import { drawHiveCanopy } from './drawField';
+import { drawBiobuzzReachCue, drawBiobuzzShotPath } from './drawShot';
 
 /**
  * BIOBUZZ element renderer (the `drawBalls` slot — drawn AFTER the robots, so an element at
@@ -30,6 +32,16 @@ import { BB_POLLEN_R } from './config';
  * filled and stroked once, so a full field is three draw calls rather than two per element.
  * `moveTo` before each `arc` is what keeps the subpaths disjoint — without it the arcs are
  * joined by a chord and the fill bleeds between neighbours.
+ *
+ * TWO PASSES AROUND THE HIVE CANOPY (owner feedback, 2026-09-13). This slot is the LAST thing
+ * drawn, after the robots, so it is also where the HIVE structure gets put back on top of
+ * whatever drove under it: everything on or near the tiles — ground elements, and airborne
+ * ones still below the underside of the down cell (`BB_HIVE_BOTTOM_Z`) — is drawn first, then
+ * `drawHiveCanopy` (`drawField.ts`) repaints the assembly translucently over its own
+ * footprint, then the elements that are genuinely above the structure go on last. A spilled
+ * POLLEN under the down cell reads as under it; a lob on its way to the up cell reads as over
+ * it. The split is by HEIGHT alone: the canopy covers only its footprint, so a low element out
+ * in the open is drawn before it and covered by nothing.
  */
 
 /** Fixed rather than themed: the mat token already flips between light and dark, and an
@@ -37,10 +49,30 @@ import { BB_POLLEN_R } from './config';
  * shared — one dark outline reads against the mat in both themes and against all three
  * fills. */
 export const ELEMENT_LINE = 'rgba(28,22,6,0.6)';
+/**
+ * OWNER BUG 12 (2026-09-19): "the blue alliance looks too purple — are you sure that is the
+ * exact colour AndyMark uses?" Measured, the complaint is right and BOTH answers the repo had
+ * were wrong. In OKLCH: the old `#4d8fe2`/`#0a5cff`/`C.COLORS.blue` family sits at hue 255-262°,
+ * and the field CAD's own hive Goal Ribs are `plastic#0000ff` — hue 264.1°, which is 1.7° off the
+ * most violet blue sRGB can express and the WORST answer available. A STEP assembly carrying
+ * pure `#ff0000` and pure `#0000ff` is carrying PLACEHOLDER part colours, not a paint spec, and
+ * `renderFieldGlb.ts` already overrides the same file's `#e6e6e6` "white plastic" placeholder for
+ * exactly that reason. No authoritative AndyMark blue was found, so this is not one.
+ *
+ * `#007be1` is a PERCEPTUAL CORRECTION and APPROX: hue 252.9°, which is the least violet a
+ * saturated blue gets before it starts reading cyan, at the maximum chroma sRGB has there
+ * (0.179) and L 0.583 — within 0.002 of the red tape's own lightness, so the two alliances read
+ * at the same weight. It is 11.2° off the CAD's rib colour, and that gap is deliberate.
+ *
+ * ⚠️ ONE BIOBUZZ BLUE. Tape, NECTAR, hive accents, the constants-built fallback scene, the GLB's
+ * ribs and the robot silhouette all take this value; there is no second approximation left.
+ */
+export const BB_ALLIANCE_BLUE = '#007be1';
+
 export const ELEMENT_FILL: Record<ArtifactColor, string> = {
   yellow: '#f2d14b', // POLLEN
   red: '#e2564d', // red NECTAR
-  blue: '#4d8fe2', // blue NECTAR
+  blue: BB_ALLIANCE_BLUE, // blue NECTAR
   // DECODE's two, unreachable in a BIOBUZZ world but the record has to be total
   purple: '#9b6bd6',
   green: '#59c08a',
@@ -66,6 +98,7 @@ export function drawBiobuzzBalls(
   ctx: CanvasRenderingContext2D,
   world: World,
   screenUp: Vec2,
+  localRobotId?: number,
 ): void {
   // SHADOWS FIRST, all of them, so a shadow never lands on top of an element that is lower
   // than the one casting it.
@@ -78,13 +111,38 @@ export function drawBiobuzzBalls(
     ctx.fill();
   }
 
+  // BELOW THE STRUCTURE / ABOVE IT — split on HEIGHT alone, never on the tag. Under 3D physics
+  // `ground` means "loose and at rest", which includes an element parked on the HIVE frame 39 in
+  // up (`sim3d/derive.ts`); keying the lower pass on the tag drew that one UNDER the canopy it
+  // is sitting on top of.
+  drawLoose(ctx, world, screenUp, (b) => b.z < BB_HIVE_BOTTOM_Z);
+  drawHiveCanopy(ctx, world);
+  drawLoose(ctx, world, screenUp, (b) => b.z >= BB_HIVE_BOTTOM_Z);
+
+  // ...then the two DRIVER INSTRUMENTS, over the canopy and every element, in the order the 3D
+  // twin stacks them (`scene/renderReticle.ts`: the collar is renderOrder 9, the path 10). They
+  // answer two unrelated questions — can I place into that FLOWER, and would this shot enter the
+  // HIVE — so the one that is a field MARKING goes under the one that is a TRAJECTORY.
+  drawBiobuzzReachCue(ctx, world, localRobotId);
+  // Drawn only when the shot would actually go in (`drawShot.ts` / `shotPath.ts`). It is an
+  // instrument, so nothing on the field is allowed to sit on top of it.
+  drawBiobuzzShotPath(ctx, world, screenUp, localRobotId);
+}
+
+/** the batched colour passes over every loose element `pick` admits — see the header. */
+function drawLoose(
+  ctx: CanvasRenderingContext2D,
+  world: World,
+  screenUp: Vec2,
+  pick: (b: Artifact) => boolean,
+): void {
   ctx.strokeStyle = ELEMENT_LINE;
   ctx.lineWidth = 0.35;
   for (const color of BATCH_ORDER) {
     let any = false;
     ctx.beginPath();
     for (const b of world.balls) {
-      if (b.color !== color || !isLoose(b)) continue;
+      if (b.color !== color || !isLoose(b) || !pick(b)) continue;
       const r = radiusOf(b);
       const lift = b.state.kind === 'flight' ? b.z * 0.12 : 0;
       const x = b.pos.x + screenUp.x * lift;

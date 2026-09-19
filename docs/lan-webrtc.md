@@ -86,6 +86,16 @@ retransmit. On a clean LAN this is a small win. On congested venue Wi-Fi it is t
 between a hitch and a freeze, and it is the exact failure `docs/netcodeplan.md` was written to
 remove.
 
+⚠️ **"Superseded by the next one" is only true once the deltas are keyed to the ACK.** A
+snapshot is not a whole world — it carries only the balls that changed since a baseline, and the
+room's default baseline is *the frame it last sent*. Under that baseline a lost frame is not
+superseded by the next one, it is erased by it: the next frame says nothing about the ball that
+moved in the lost one, the guest patches a baseline that is wrong about it, and then ACKS that
+world as healthy — so the `ACK_STALE_TICKS` resync never fires and the ball is still in the
+wrong place at the buzzer. `hostWorker` therefore marks every guest seat `lossy`, which makes
+the room cut that seat's delta against the tick the guest has CONFIRMED. Anything else added to
+the hot lane has to answer the same question: what does the receiver definitely still hold?
+
 ⚠️ **This is not the P2P mesh that was deleted.** `netcodeplan.md` §25 killed a full mesh of
 lockstep peers over a shared TURN server, where any one failing edge wedged the match. This is
 a **star**: one authoritative room, N client links, all on the same subnet, no TURN, no
@@ -366,6 +376,39 @@ Two more decisions came out of it: `start()` no longer resolves until the Worker
 exists (it was publishing a code for a room that might never have been built — a Worker that
 fails to load is silent), and the room RESERVES its host seat, because the tab that runs the
 room joins LAST and `Room.add` had handed the crown to a guest.
+
+### First field report (2026-09-13, alpha, one host + guests on one Wi-Fi)
+
+Three things were wrong, two of them in the flow the probe never exercises — a host who has
+already STARTED the room and then moves around the app:
+
+1. **READY UP did nothing for a BIOBUZZ host.** The tab room was built with the protocol
+   default config, which has no game, so it was a DECODE room; the host's lobby joined it as
+   BIOBUZZ and the room cleared `ready` on every press because the pose was illegal under
+   DECODE's start rules. The room is now built for the host's game (`LanPanel` →
+   `LanHost.start(code, { kind: 'versus', game })`), the join frame's config reaches the
+   Worker, and a joiner set to a different game is REFUSED with the cloud's sentence. The
+   lobby no longer overwrites that sentence with "Lost connection" when the host closes the
+   refused link a beat later.
+2. **Back out of the lobby, back into LAN, and the room was unusable.** Alone, the room
+   emptied and `LanHost` stopped itself on `empty`, but `hostKeeper` still handed the dead
+   host back: a stale code, a Stop that returned early, a GO TO THE ROOM that threw on a null
+   transport. With guests present the loopback was closed for good and `Room.detach` had
+   passed the crown to a guest. Now: an empty room stays hosted (it is idle, not stepping —
+   the loop runs only during a match), the keeper drops a host that is not `live`, `transport`
+   hands out a fresh loopback after the last was disposed, and a `reserveHost` seat keeps the
+   crown across the host stepping out. Verified between three tabs on `npm run lan:tab`:
+   host → lobby → Back → LAN (code still shown, "Waiting for players…") → GO TO THE ROOM →
+   host again; guest joins; host steps out (guest sees 1/4, no crown change) and back in
+   (2/4, "You are the host"); a Chain Reaction guest is refused by name.
+3. **Guests on OTHER machines sat on CONNECTING.** Alpha runs one Fly machine, so this is not
+   rendezvous routing; it is the ICE leg, which only the probe (two windows, ONE machine) had
+   ever run, and which the `.local` mDNS candidates make dependent on multicast working
+   between two real hosts and on each browser being allowed inbound UDP by its firewall.
+   Not reproducible on one machine. The guest's timeout now says WHICH leg failed — no
+   answer / no remote candidates / candidates but ICE never paired (with the ICE state and
+   candidate counts) — and both ends log the same to the console (`[lan] could not
+   connect…`), so the next two-machine run reports a cause and not a spinner.
 
 ⚠️ **NOT yet verified end-to-end between two machines THROUGH THE CLOUD**, and it cannot be
 until the server carrying `lanSignal.ts` is deployed — hosting claims a code through the cloud

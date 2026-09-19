@@ -88,6 +88,57 @@ const rtcConfig: RTCConfiguration = {
 };
 
 /**
+ * WHAT THE HANDSHAKE SAW, so a failure can say WHICH leg never happened.
+ *
+ * "Could not reach the host on this network" covered three different failures and named none
+ * of them: the offer never came back answered (signalling), the answer carried no addresses
+ * (gathering), or addresses were swapped and ICE still could not pair them (the network
+ * itself — Wi-Fi with client isolation, or a firewall that drops the browser's mDNS traffic so
+ * a `<uuid>.local` candidate never resolves). The first two are bugs in this code path; the
+ * third is the venue. A player staring at the message, and whoever is asked about it later,
+ * needs to know which, and the full read goes to the console for the second person.
+ */
+interface HandshakeDiag {
+  /** the other side's SDP arrived (an offer at the host, an answer at the guest) */
+  answered: boolean;
+  /** ICE candidates gathered for ourselves */
+  local: number;
+  /** ICE candidates the other side sent */
+  remote: number;
+  /** …of which were `<uuid>.local` mDNS names rather than addresses */
+  remoteMdns: number;
+}
+
+function watchHandshake(pc: RTCPeerConnection): HandshakeDiag {
+  const d: HandshakeDiag = { answered: false, local: 0, remote: 0, remoteMdns: 0 };
+  pc.addEventListener('icecandidate', (e) => {
+    if (e.candidate) d.local++;
+  });
+  return d;
+}
+
+function noteRemoteCandidate(d: HandshakeDiag, c: RTCIceCandidateInit): void {
+  d.remote++;
+  if (/\.local\b/.test(c.candidate ?? '')) d.remoteMdns++;
+}
+
+function explainNoConnect(pc: RTCPeerConnection, d: HandshakeDiag, who: 'host' | 'player'): string {
+  const state = `ICE ${pc.iceConnectionState}, gathering ${pc.iceGatheringState}, ${d.local} local / ${d.remote} remote candidates (${d.remoteMdns} mDNS)`;
+  console.warn(`[lan] could not connect to the ${who}: ${d.answered ? 'answered' : 'NO ANSWER'}; ${state}`);
+  if (!d.answered) {
+    return who === 'host'
+      ? 'The host never answered. Check that the room is still open on their screen, then try again.'
+      : 'That player never sent a connection request.';
+  }
+  if (d.remote === 0) return `The ${who} answered but sent no network address to connect to.`;
+  return (
+    `Found the ${who} but couldn’t connect over this network. Wi-Fi that keeps devices apart ` +
+    `(school, guest and hotel networks) blocks this, and so does a firewall that stops the browser ` +
+    `from finding devices nearby. (${state})`
+  );
+}
+
+/**
  * A live pair of channels to one peer, plus the connection they ride on.
  *
  * `control` and `hot` are both open by the time this resolves — a half-open pair is exactly the
@@ -182,6 +233,7 @@ export async function connectToLanHost(
   const takeEarly = bufferEarly(control, hot);
 
   wireIce(pc, bus, hostId);
+  const diag = watchHandshake(pc);
   /* Candidates can arrive before the answer has been applied, and `addIceCandidate` throws if
      there is no remote description yet. Queue until there is one — this is ordinary trickle-ICE
      bookkeeping, not a workaround. */
@@ -197,6 +249,7 @@ export async function connectToLanHost(
       return;
     }
     if (frame.k === 'answer') {
+      diag.answered = true;
       void pc
         .setRemoteDescription({ type: 'answer', sdp: frame.sdp })
         .then(() => {
@@ -205,6 +258,7 @@ export async function connectToLanHost(
         })
         .catch(() => {});
     } else if (frame.k === 'ice') {
+      noteRemoteCandidate(diag, frame.candidate);
       if (remoteSet) void pc.addIceCandidate(frame.candidate).catch(() => {});
       else pending.push(frame.candidate);
     }
@@ -220,7 +274,7 @@ export async function connectToLanHost(
   const timeoutMs = opts.timeoutMs ?? LAN_CONNECT_TIMEOUT_MS;
   let timer: ReturnType<typeof setTimeout> | undefined;
   const timeout = new Promise<never>((_, reject) => {
-    timer = setTimeout(() => reject(new Error('Could not reach the host on this network.')), timeoutMs);
+    timer = setTimeout(() => reject(new Error(explainNoConnect(pc, diag, 'host'))), timeoutMs);
   });
 
   try {
@@ -252,6 +306,7 @@ export async function acceptLanGuest(
 ): Promise<LanLink> {
   const pc = new RTCPeerConnection(rtcConfig);
   wireIce(pc, bus, guestId);
+  const diag = watchHandshake(pc);
 
   const pending: RTCIceCandidateInit[] = [];
   let remoteSet = false;
@@ -303,6 +358,7 @@ export async function acceptLanGuest(
       return;
     }
     if (frame.k === 'offer') {
+      diag.answered = true;
       void (async () => {
         await pc.setRemoteDescription({ type: 'offer', sdp: frame.sdp });
         remoteSet = true;
@@ -312,6 +368,7 @@ export async function acceptLanGuest(
         bus.signal(guestId, JSON.stringify({ k: 'answer', sdp: answer.sdp ?? '' } satisfies SignalFrame));
       })().catch(() => {});
     } else if (frame.k === 'ice') {
+      noteRemoteCandidate(diag, frame.candidate);
       if (remoteSet) void pc.addIceCandidate(frame.candidate).catch(() => {});
       else pending.push(frame.candidate);
     }
@@ -329,7 +386,7 @@ export async function acceptLanGuest(
   const timeoutMs = opts.timeoutMs ?? LAN_CONNECT_TIMEOUT_MS;
   let timer: ReturnType<typeof setTimeout> | undefined;
   const timeout = new Promise<never>((_, reject) => {
-    timer = setTimeout(() => reject(new Error('That player could not be reached.')), timeoutMs);
+    timer = setTimeout(() => reject(new Error(explainNoConnect(pc, diag, 'player'))), timeoutMs);
   });
 
   try {

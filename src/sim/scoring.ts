@@ -3,6 +3,7 @@ import * as C from '../config';
 import { baseZone, inDepot, inRect, launchSegments, other } from './field';
 import { robotCorners, wheelContacts } from './physics';
 import { distToSegment, hyp } from '../math';
+import { cardEventText, foulEventText } from './penaltyLog';
 
 export function emptyScore(): ScoreBreakdown {
   return {
@@ -55,7 +56,7 @@ export function awardFoul(
   const tally = world.match.fouls[offender];
   if (severity === 'major') tally.major += 1;
   else tally.minor += 1;
-  world.events.push(`${severity === 'major' ? 'MAJOR' : 'MINOR'} FOUL - ${victim.toUpperCase()} +${pts} (${rule})`);
+  world.events.push(foulEventText(severity, victim, pts, rule));
 }
 
 /**
@@ -87,7 +88,7 @@ export function awardCard(world: World, robot: RobotState, rule: string): CardCo
     tally.yellow += 1;
   }
   const who = robot.spec.teamNumber ? `#${robot.spec.teamNumber}` : robot.spec.name || `robot ${robot.id}`;
-  world.events.push(`${colour.toUpperCase()} CARD - ${robot.alliance.toUpperCase()} ${who} (${rule})`);
+  world.events.push(cardEventText(colour, robot.alliance, who, rule));
   return colour;
 }
 

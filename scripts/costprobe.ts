@@ -45,6 +45,7 @@
  */
 import { constants, createDeflateRaw } from 'node:zlib';
 import { initPhysics } from '../src/sim/physicsEngine';
+import { initPhysics3d } from '../src/games/biobuzz/sim3d/engine';
 import { simModuleFor } from '../src/games/sim';
 // `RobotSetup` lives beside the coercer, not in `src/types` — it was imported from there below
 // and only ever used behind an `as` cast, so nothing failed and `tsx` (which strips types
@@ -63,7 +64,7 @@ import * as C from '../src/config';
 // BIOBUZZ is alpha-only and this script is not a product surface.
 import { BB_DEFAULT_SPEC } from '../src/games/biobuzz/coerce';
 import { BB_HOOD_DEFAULT_DEG } from '../src/games/biobuzz/config';
-import type { Artifact, GameId, RobotCommand, RobotSpec, World } from '../src/types';
+import type { Artifact, GameId, Physics, RobotCommand, RobotSpec, World } from '../src/types';
 
 // ---- published rates (checked 2026-09-11) -----------------------------------
 const RATES = {
@@ -141,6 +142,17 @@ interface Scenario {
    * declared but never reaches a client.
    */
   fields?: readonly string[];
+  /**
+   * WHICH SOLVE this room runs on. Absent ⇒ `'2d'`, which is every scenario that existed
+   * before the 3D port and is what keeps their numbers comparable with the ones already
+   * quoted in `docs/capacity.md`.
+   *
+   * It is a SCENARIO axis rather than a second game because it is the same game: `physics` is
+   * the fifth argument to `createWorld`, and pricing the two side by side is the only way to
+   * answer "what does the 3D solve cost per room", which is the question the budget in
+   * `docs/biobuzz/plan-3d.md` §3.10 is written against.
+   */
+  physics?: Physics;
 }
 
 /**
@@ -203,7 +215,46 @@ const SCENARIOS: Scenario[] = [
     bits: bbBits,
     fields: BB_MECH_FIELDS,
   },
+  /**
+   * THE SAME GAME ON THE 3D SOLVE — the pair the budget is written against
+   * (`docs/biobuzz/plan-3d.md` §3.10: ≤ 0.10 cores/room, ≤ 10,000 B per 2v2 snapshot).
+   *
+   * Identical robots, identical commands, identical fields priced — the ONLY variable is
+   * `physics`. That is what makes the comparison with the two rows above mean something: the
+   * difference between them is the cost of the solve and of the `z`/`vz` the wire now carries,
+   * and nothing else. A separate "3D scenario" with its own spec or its own command pattern
+   * would have measured a different match and called it a delta.
+   *
+   * The scene is PRIMED the same way every other scenario is — the busy-robot command drives,
+   * intakes and fires throughout, so elements are being pushed, shots are in flight and the
+   * cells take what lands in them. `Measured.loaded` / `airborne` print what it actually
+   * reached, because a snapshot measured over an idle field would flatter every number here.
+   */
+  {
+    key: 'biobuzz3d-solo',
+    game: 'biobuzz',
+    robots: 1,
+    label: 'BIOBUZZ 3D solo (double turret+box tube)',
+    spec: BB_EQUIPPED,
+    bits: bbBits,
+    fields: BB_MECH_FIELDS,
+    physics: '3d',
+  },
+  {
+    key: 'biobuzz3d-2v2',
+    game: 'biobuzz',
+    robots: 4,
+    label: 'BIOBUZZ 3D 2v2 (double turret+box tube)',
+    spec: BB_EQUIPPED,
+    bits: bbBits,
+    fields: BB_MECH_FIELDS,
+    physics: '3d',
+  },
 ];
+
+/** the plan's §3.10 budgets, quoted here so the report can print MEASURED vs BUDGET rather
+ *  than a number the reader has to go and look up. */
+const BUDGET = { coresPerRoom: 0.1, snapBytes2v2: 10000 } as const;
 
 interface Measured {
   cores: number;
@@ -220,6 +271,29 @@ interface Measured {
   /** the named fields that were actually PRESENT on a robot at the end of the run. A field
    * nothing writes is absent here, which is why the report prints this rather than `fields`. */
   fieldsSeen: string[];
+  /**
+   * HOW LOADED THE SCENE ACTUALLY GOT — elements resting in a hive CELL at the end of the run,
+   * across both alliances, and how many were in flight on the final tick.
+   *
+   * Printed rather than asserted, because this is a measurement script and nothing here fails.
+   * It exists so the numbers above can be READ honestly: a "primed tip" scenario whose robots
+   * never landed a shot is measuring an idle field with four robots driving on it, which is a
+   * different and much cheaper thing than what the budget is about. 0 for a game with no hive.
+   */
+  loaded: number;
+  airborne: number;
+}
+
+/**
+ * Elements resting in a hive cell, both alliances. Read off `world.biobuzz.hives[a].contents`,
+ * which is the SAME list `score.ts` counts and `derive.ts` fills every tick from the 3D body
+ * positions — so this asks the game's own question rather than re-deriving one from geometry,
+ * and it stays correct when the field constants move under it.
+ */
+function hiveLoad(world: World): number {
+  const hives = (world as { biobuzz?: { hives?: Record<string, { contents?: unknown[] }> } }).biobuzz?.hives;
+  if (!hives) return 0;
+  return Object.values(hives).reduce((n, h) => n + (h.contents?.length ?? 0), 0);
 }
 
 /**
@@ -300,9 +374,9 @@ async function measure(s: Scenario): Promise<Measured> {
       human: true,
     } as RobotSetup);
   }
-  const world = mod.createWorld('match', 424242, setups) as World;
+  const world = mod.createWorld('match', 424242, setups, undefined, s.physics) as World;
   world.match.preCountdown = C.PRE_COUNTDOWN;
-  const rec = new ReplayRecorder(424242, setups, 'match', s.game);
+  const rec = new ReplayRecorder(424242, setups, 'match', s.game, s.physics);
 
   /**
    * THE DIFF THE SERVER ACTUALLY SHIPS, not the shared codec.
@@ -400,6 +474,8 @@ async function measure(s: Scenario): Promise<Measured> {
     fieldBytes: priced.length ? (snapBytes - bareBytes) / snaps : 0,
     fieldWire: (wire - bareWire) / wallS,
     fieldsSeen: priced.filter((f) => fieldsSeen.has(f)),
+    loaded: hiveLoad(world),
+    airborne: world.balls.filter((b) => b.state.kind === 'flight').length,
   };
 }
 
@@ -409,6 +485,10 @@ const n = (v: number, d = 2): string =>
 const i = (v: number): string => Math.round(v).toLocaleString('en-US');
 
 await initPhysics();
+// ...and the 3D module when any selected scenario steps it. Awaited for the same reason the
+// server awaits it at boot: `step3d` throws if the wasm has not resolved, and the first tick
+// of a `'3d'` world is a step.
+if (SCENARIOS.some((s) => s.physics === '3d')) await initPhysics3d();
 
 console.log(`\nMEASURED — ${TICKS} ticks (${n(TICKS * C.SIM_DT, 0)}s of match) per scenario, this machine\n`);
 console.log('  scenario                    cores/room   B/snap    raw/client   wire/client   up/client    replay');
@@ -428,6 +508,51 @@ console.log(
     `  Ground elements at the end: ` +
     SCENARIOS.map((s) => `${s.key} ${results.get(s.key)!.elements}`).join(', '),
 );
+
+// ---- BIOBUZZ 3D against its budget -----------------------------------------
+//
+// Printed as a comparison and not as a test: nothing in this file fails, and the right
+// response to a number over budget is a decision (worker_threads, freezing far elements
+// kinematic) rather than a red CI run. The 2D row is beside it because the useful question is
+// never "is 0.07 a lot" — it is "what did the second solve cost".
+{
+  const rows: { key: string; label: string; budget: number; unit: 'cores' | 'bytes' }[] = [
+    { key: 'biobuzz3d-solo', label: 'cores/room', budget: BUDGET.coresPerRoom, unit: 'cores' },
+    { key: 'biobuzz3d-2v2', label: 'cores/room', budget: BUDGET.coresPerRoom, unit: 'cores' },
+    { key: 'biobuzz3d-2v2', label: 'B/snapshot', budget: BUDGET.snapBytes2v2, unit: 'bytes' },
+  ].filter((r) => results.has(r.key));
+  if (rows.length) {
+    console.log(`\nBIOBUZZ 3D vs THE BUDGET — docs/biobuzz/plan-3d.md §3.10\n`);
+    for (const r of rows) {
+      const m = results.get(r.key)!;
+      const got = r.unit === 'cores' ? m.cores : m.snapBytes;
+      const budgetStr = r.unit === 'cores' ? n(r.budget, 2) : i(r.budget);
+      const gotStr = r.unit === 'cores' ? n(got, 4) : i(got);
+      console.log(
+        `  ${r.key.padEnd(16)}${r.label.padEnd(12)}${gotStr.padStart(9)} / ${budgetStr.padStart(7)}   ` +
+          `${got <= r.budget ? 'WITHIN' : 'OVER'} (${n((got / r.budget) * 100, 0)}% of budget)`,
+      );
+    }
+    const two = ['biobuzz-solo', 'biobuzz3d-solo', 'biobuzz-2v2', 'biobuzz3d-2v2'];
+    if (two.every((k) => results.has(k))) {
+      const r2 = (a: string, b: string, f: (m: Measured) => number): string =>
+        `${n(f(results.get(b)!) / Math.max(1e-9, f(results.get(a)!)), 2)}x`;
+      console.log(
+        `\n  3D vs 2D, same robots and the same commands: ` +
+          `solo ${r2('biobuzz-solo', 'biobuzz3d-solo', (m) => m.cores)} cores, ` +
+          `2v2 ${r2('biobuzz-2v2', 'biobuzz3d-2v2', (m) => m.cores)} cores, ` +
+          `${r2('biobuzz-2v2', 'biobuzz3d-2v2', (m) => m.snapBytes)} bytes/snapshot.`,
+      );
+    }
+    console.log(
+      `  Scene reached: ` +
+        SCENARIOS.filter((s) => s.game === 'biobuzz')
+          .map((s) => `${s.key} ${results.get(s.key)!.loaded} in cells / ${results.get(s.key)!.airborne} airborne`)
+          .join(', ') +
+        `\n  A snapshot measured over an idle field would flatter every number above.\n`,
+    );
+  }
+}
 
 // ---- what a named per-tick RobotState field costs ---------------------------
 // Printed only for the scenarios that asked. This is the one number the header calls out as

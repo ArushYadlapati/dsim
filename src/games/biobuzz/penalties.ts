@@ -2,14 +2,19 @@ import type { Alliance, RobotCommand, RobotState, Vec2, World } from '../../type
 import { hyp } from '../../math';
 import { PIN_END_S, PIN_ESCAPE_DIST, PIN_SECONDS, PIN_STUCK_SPEED } from '../../config';
 import { robotCorners } from '../../sim/physics';
-import { controlledArtifacts, isPinning } from '../../sim/penalties';
+import { foulEventText, warningEventText } from '../../sim/penaltyLog';
+import { type ControlGeometry, controlledArtifacts, isPinning } from '../../sim/penalties';
+import { bbPinSolid } from './colliders';
 import {
   BB_FLOWER_UNLOCK_S,
   BB_FOUL_SLOP,
   BB_FRAME_BAR_IN,
   BB_FRAME_BAR_OUT,
   BB_FRAME_Y,
+  BB_LZ,
+  BB_POLLEN_R,
   BB_PTS,
+  bbHopperCap,
 } from './config';
 import { bbKindOf } from './score';
 
@@ -92,7 +97,7 @@ export function bbAwardFoul(
   // A WARNING IS NOT A FOUL. No points, no tally — it leaves the score exactly where it was,
   // which is the whole difference between the owner's G407 ruling and the cap it replaced.
   if (severity === 'warning') {
-    world.events.push(`WARNING - ${offender.toUpperCase()} (${rule})`);
+    world.events.push(warningEventText(offender, rule));
     return;
   }
   const victim: Alliance = offender === 'red' ? 'blue' : 'red';
@@ -101,9 +106,33 @@ export function bbAwardFoul(
   const tally = world.match.fouls[offender];
   if (severity === 'major') tally.major += 1;
   else tally.minor += 1;
-  world.events.push(
-    `${severity === 'major' ? 'MAJOR' : 'MINOR'} FOUL - ${victim.toUpperCase()} +${pts} (${rule})`,
-  );
+  world.events.push(foulEventText(severity, victim, pts, rule));
+}
+
+/**
+ * **G409** — "ROBOTS may not catch SCORING ELEMENTS spilling from a TIPPED HIVE" (Table 10-4:
+ * VERBAL WARNING; YELLOW CARD if STRATEGIC). Called by `sim3d/contacts3d.ts` on the tick a
+ * spilling element's FIRST non-tray contact turns out to be a robot.
+ *
+ * ── A WARNING, AND ONLY A WARNING ───────────────────────────────────────────
+ * The base sanction in Table 10-4 is verbal, and the escalation is a CARD rather than a FOUL —
+ * and BIOBUZZ has no card machinery at all (`bbAwardFoul`'s own note). So there is no points
+ * branch here to get wrong: a caught spill costs nothing and says so, which is exactly what a
+ * referee saying "blue, don't catch that" across the field is worth.
+ *
+ * `offender` is the alliance whose HIVE spilled the element, and the ROBOT is what the line
+ * names — a robot may perfectly well catch the OPPONENT's spill, and the rule does not care
+ * whose hive it fell out of. Billed once PER ELEMENT, by construction: `contacts3d.ts` deletes
+ * the tag in the same breath, and an element has exactly one first contact.
+ *
+ * ⚠️ 3D ONLY. The 2D pipeline hands a spill straight to the tiles (`spillPoses`), so there is no
+ * flight and no first contact to catch — `penalties.ts` has always recorded G409 as "not
+ * modelled (spill lands on tiles)" and that stays true for that pipeline.
+ */
+export function bbBillG409(world: World, spilledBy: Alliance, robotId: number): void {
+  const robot = world.robots.find((r) => r.id === robotId);
+  if (!robot) return;
+  bbAwardFoul(world, robot.alliance, 'warning', `G409 caught ${spilledBy.toUpperCase()}'s spilling SCORING ELEMENT`);
 }
 
 /**
@@ -118,6 +147,14 @@ export function bbAwardFoul(
 export const BB_CONTROL_LIMIT = 4;
 
 /**
+ * IS G417 ENFORCED AT ALL? No, by owner ruling (2026-09-13). The rule is about TIPPING the
+ * HIVE, which no robot in this sim can do, so the loop that awarded it (`updateBiobuzzPenalties`)
+ * reads this and stops. Kept as a named constant rather than commented-out code: the rule is a
+ * decision with a reason attached, and turning it back on is one word.
+ */
+export const BB_G417_ENABLED = false;
+
+/**
  * HOW MANY SCORING ELEMENTS THIS ROBOT IS CONTROLLING (G407) — HOPPER **PLUS HERDED**.
  *
  * `controlledArtifacts` landed as an export on `alpha` `ea2cba4` (the field-plan §6 request-5
@@ -127,40 +164,41 @@ export const BB_CONTROL_LIMIT = 4;
  * distance, a re-station rule, an intake-mouth carve-out and a transitive contact chain — and
  * duplicating any of it here would have been a second opinion about the same sentence.
  *
- * ── THREE CONSTANTS IT READS ARE DECODE’S, AND ONE OF THEM MATTERS ──────────
- * The shared function is written against DECODE’s field and DECODE’s artifact, and BIOBUZZ
- * borrows it whole. Measured, the divergences are:
+ * ── THE THREE DECODE CONSTANTS IT USED TO READ ARE NOW PASSED IN ────────────
+ * `ControlGeometry` is the field-plan §6 request this lane filed, and all three divergences it
+ * named are closed. What they were, so the sizes are on record:
  *
- *  1. ⚠️ **`C.BALL_RADIUS` is 2.5 in; a BIOBUZZ element is simulated at `BB_POLLEN_R` = 1.4.**
- *     So `reach` (touching) is 2.9 in rather than 1.8, and the transitive `chain` is 5.4 in
- *     rather than 3.2 — nearly two element DIAMETERS of gap still links two elements. This is
- *     the one that can bill a robot for a pile it is not touching, and it is the field-plan §6
- *     request this change adds: **`controlledArtifacts` should read the artifact’s own `r`**
- *     (every `Artifact` already carries one) instead of the module constant. Until it does, the
- *     count errs HARSH on a loose scatter, which for a rule whose only sanction is a warning is
- *     the survivable direction — but it is still wrong, and the smoke pins the gap so the day
- *     the shared function takes `b.r` the numbers here move visibly rather than quietly.
- *  2. `C.HOPPER_CAPACITY` is 3 and a BIOBUZZ hopper holds 4, so the intake-mouth carve-out
- *     (`room = HOPPER_CAPACITY - hopper.length`) is already spent at 3 elements and a BIOBUZZ
- *     robot carrying its legal four gets none of it. Harsh again, and small: the carve-out is
- *     worth one element for the second or so an intake takes.
- *  3. `loadZone(r.alliance)` is DECODE’s driver-side rect, not `BB_LZ` — which in BIOBUZZ is a
- *     23 × 11 strip against the SIDE wall at a different place entirely. So the real BIOBUZZ
- *     LOADING ZONE gets no carve-out (a robot collecting its restock is counted), and a strip
- *     of BIOBUZZ floor that is not a loading zone gets one. Both halves are wrong; neither is
- *     reachable from this lane, because the carve-out is chosen inside the shared function.
- *
- * All three are one request — a per-game geometry for the shared CONTROL test — and all three
- * are named in the handoff. None of them is a reason to keep hand-rolling the rule: a slightly
- * generous radius on a real detector beats an exact hopper count that cannot see herding at all.
+ *  1. **`C.BALL_RADIUS` 2.5 in against a BIOBUZZ element simulated at 1.4.** TOUCHING was
+ *     2.9 in rather than 1.8 and the transitive chain 5.4 rather than 3.2 — nearly two element
+ *     DIAMETERS of gap still linked two elements, which bills a robot for a pile it is not
+ *     touching. The shared function now reads each artifact's OWN `r` and falls back to
+ *     `radius`, so this game's two sizes (POLLEN 2.8, NECTAR 3.6) each measure against their
+ *     own skin.
+ *  2. **`C.HOPPER_CAPACITY` 3 against a BIOBUZZ hopper of 4**, so the intake-MOUTH carve-out
+ *     was already spent at 3 and a robot carrying its legal four got none of it. `hopperCap`
+ *     is `bbHopperCap`, the same function the intake and the HUD read.
+ *  3. **`loadZone(r.alliance)` is DECODE's driver-side rect, not `BB_LZ`** — a 23 × 11 strip
+ *     against the SIDE wall, somewhere else entirely. Both halves were wrong at once: a robot
+ *     collecting its own restock was counted, and a strip of ordinary BIOBUZZ floor was
+ *     excused. `carveOut` is `BB_LZ`.
  *
  * ⚠️ AND ONE CONSEQUENCE OF A SETTLED RULING: the owner ruled the 4-element hopper cap FINAL
  * (2026-09-12), so `bbHopperCap` clamps every hopper to 4 for good. The HOPPER half therefore can
  * never exceed the limit on its own in a driven match; the HERDED half can, and does, which is
  * the whole point of counting it.
  */
+const BB_CONTROL_GEOMETRY: ControlGeometry = {
+  // the REAL LOADING ZONE, so a robot collecting its own restock is not billed for herding it.
+  carveOut: (a) => BB_LZ[a],
+  // the fallback for an element that carries no `r` of its own; POLLEN is the common case.
+  radius: BB_POLLEN_R,
+  // the same cap the intake and the HUD read, so the carve-out closes exactly when the hopper
+  // is actually full rather than one element early.
+  hopperCap: (r) => bbHopperCap(r.spec),
+};
+
 function bbControlled(world: World, r: RobotState, dt: number, intaking: boolean): number {
-  return controlledArtifacts(world, r, dt, intaking);
+  return controlledArtifacts(world, r, dt, intaking, BB_CONTROL_GEOMETRY);
 }
 
 /**
@@ -387,6 +425,52 @@ export function updateBiobuzzPenalties(
    * threshold is `APPROX` and belongs on the 09-14 field-test list.
    */
   for (const r of world.robots) {
+    /**
+     * G417 IS OFF, AND IT IS OFF DELIBERATELY (owner ruling, 2026-09-13).
+     *
+     * The rule exists to stop a robot TIPPING THE HIVE, and in this sim no robot can. The
+     * structure is not a body a chassis can topple: nothing a driver does with a drivetrain
+     * moves it, and the only way to disturb what sits on it at all is a shot fired underneath
+     * a CELL, which is not ramming and is not what G417 describes. So every award this loop
+     * could make was a major charged for an outcome the simulation cannot produce, to a
+     * driver who clipped a bar while doing something else.
+     *
+     * A penalty that cannot be earned and can only be suffered is worse than an unmodelled
+     * one, so it does not fire. The measurement below (`frameRam`, `BB_FRAME_RAM_SPEED`) is
+     * LEFT INTACT rather than deleted: if the HIVE ever becomes tippable the rule comes back
+     * by flipping one flag, and re-deriving a closing-speed test against the right bar face
+     * is the expensive half to lose. The `bb.foulEdge` / `flags.g417billed` keys simply stop
+     * being written, which is inert: nothing else reads them.
+     */
+    /**
+     * ✅ **AND IT IS BACK ON IN 3D, FOR THE REASON IT WAS TURNED OFF.** The ruling above is not
+     * "G417 is unfair", it is "no robot in this sim can move the HIVE". Under the DYNAMIC
+     * see-saw (`BB3_HIVE_DYNAMIC`, plan §3.6) the tray IS a body a 29-in chassis reaches and
+     * shoves, so the outcome the rule exists to prevent is one a driver can now produce — and a
+     * rule that can be earned is a rule that may be billed.
+     *
+     * The evidence is `bb.hiveRam`, written by `sim3d/contacts3d.ts` from the 3D solve's own
+     * contact pairs: robot id → the closing speed along the contact normal, already filtered at
+     * `BB_FRAME_RAM_SPEED`. That is the SAME test `frameRam` makes below, asked of a real
+     * contact instead of of a guess at which bar face the robot is against.
+     *
+     * A 2D world never writes the field, so this branch is absent there and the 2D pipeline is
+     * byte-identical — which is why the rule comes back as a READ of physics rather than as a
+     * flag flip on `BB_G417_ENABLED`, whose ruling still stands for the pipeline it was made for.
+     */
+    if (!r.passive && bb.hiveRam && bb.hiveRam[r.id] !== undefined) {
+      const key3d = `g417-${r.id}`;
+      if (!bb.foulEdge[key3d]) {
+        const flags = (bb.held[r.id] ??= {});
+        if (!flags.g417billed) {
+          flags.g417billed = true;
+          bbAwardFoul(world, r.alliance, 'major', 'G417 STRATEGIC ramming of the HIVE');
+        }
+      }
+      seen[key3d] = true;
+      continue;
+    }
+    if (!BB_G417_ENABLED) continue;
     if (r.passive) continue;
     const ram = frameRam(r);
     if (ram === null) continue;
@@ -555,6 +639,12 @@ function bbUpdatePins(world: World, dt: number, commands: Map<number, RobotComma
           robotsContact(pinner, pinned),
           commands.get(pinned.id),
           commands.get(pinner.id),
+          // THIS field's solids. Left to its default the test reads DECODE's goal wedges and
+          // classifier channels, which on this field are open floor in two corners and say
+          // nothing about the FLOWER feet and HIVE frame bars a robot is actually held
+          // against — and a victim wrongly read as cornered is read as ESCAPING, so the pin
+          // it is in bills nothing. See `bbPinSolid`.
+          bbPinSolid,
         ),
       );
     }

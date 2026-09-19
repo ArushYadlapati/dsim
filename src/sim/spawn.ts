@@ -77,7 +77,7 @@ import {
 import { nextRandom, wrapAngle, rot, clamp } from '../math'; // Import wrapAngle
 import { butterflyTankRpmLimits, lengthLimits, massLimits, rpmLimits, widthLimits } from './drivetrain';
 import { heldSlotPos } from './physics';
-import { flywheelSpinTarget, loadPreStage, mirrorStartPose, snapStartToLegal, spikeMarkBalls, startPose } from './field';
+import { flywheelSpinTarget, loadPreStage, spikeMarkBalls, startPose } from './field';
 import { emptyScore } from './scoring';
 
 export const MOTIFS: Motif[] = [
@@ -491,6 +491,13 @@ export function coerceSpec(raw: unknown, base: RobotSpec = DEFAULT_SPEC, game?: 
     // must NOT default — `undefined` and `{ launcher: null }` mean different things to that
     // function (a legacy spec to migrate vs. a robot with genuinely no launcher).
     out.bbMech = sp.bbMech as RobotSpec['bbMech'];
+    // the SAME carry-across for heightIn -- coerceBiobuzzSpec clamps it (BB3_HEIGHT_MIN..MAX)
+    // off this field by name, and nothing in the shared passes above reads it, so without this
+    // line every real caller (settings load, server ingress, createWorld) silently dropped a
+    // spec's heightIn before the biobuzz clamp ever saw it -- see this lane's final report.
+    out.heightIn = sp.heightIn as RobotSpec['heightIn'];
+    // and the declared stow height (R102), read structurally downstream -- same reason
+    out.stowHeightIn = sp.stowHeightIn as RobotSpec['stowHeightIn'];
     return coerceBiobuzzSpec(out, base);
   }
   return out;
@@ -625,38 +632,41 @@ export function coerceStartPose(raw: unknown): StartPose | null {
 }
 
 export function coerceSetup(s: RobotSetup, game?: GameId): RobotSetup {
-  const autoPath = s.autoPath !== undefined ? coerceAutoPath(s.autoPath) : null;
-  const alliance = s.alliance === 'red' || s.alliance === 'blue' ? s.alliance : 'blue';
+  // EVERY per-game answer this function needs comes off the module, not off `game ===`:
+  // the anchor count, whether start legality exists, whether paths run at all. An
+  // absent/unknown game resolves to DECODE, like every other module lookup.
   const mod = simModuleFor(game);
-  // ⚠️ THE GAME IS THREADED FOR THE SIZE ENVELOPE ONLY, AND THAT NARROWNESS IS DELIBERATE.
-  // `coerceSpec` with no game clamps LENGTH/WIDTH against DECODE's intake-preset limits, so a
-  // legal 17" CR chassis arriving through this chokepoint (a replay, a staged match) was cut to
-  // 15" and re-simulated as a robot nobody built. Passing 'chain' resolves the CR envelope.
-  //
-  // DECODE and BIOBUZZ keep passing `undefined`, i.e. exactly today's behaviour, ON PURPOSE:
-  // an explicit `'decode'` also arms the mount-reset branch in `coerceSpec`, which rewrites
-  // `intakeMount` to 'front'. `intakeMount` is PHYSICS — `footprintExtents` grows the collider
-  // on the mounted edge and `worldHash` mixes robot positions — so arming it here would make
-  // every stored replay carrying a non-front mount re-simulate as a different robot, i.e. a
-  // SIM_VERSION bump that retires the whole archive.
-  // The stale-`intakeMount` leak that branch exists to close therefore STAYS OPEN on this path.
-  // It is a separate pre-existing bug and wants its own fix at a deliberate version boundary —
-  // do NOT "complete" the threading by passing `game` straight through.
-  const spec = coerceSpec(s.spec, DEFAULT_SPEC, game === 'chain' ? 'chain' : undefined);
+  // A PATH A GAME CANNOT RUN IS DROPPED HERE. Only DECODE's step drives path traversal
+  // (`autoPaths`), so for the others this was state that survived localStorage, the wire,
+  // the world and the replay while doing nothing — and an `autoPathActive` robot whose
+  // game never advances the path is the one shape `pathTraversal` has no answer for.
+  const autoPath = mod.autoPaths && s.autoPath !== undefined ? coerceAutoPath(s.autoPath) : null;
+  const alliance = s.alliance === 'red' || s.alliance === 'blue' ? s.alliance : 'blue';
+  // THE GAME IS PASSED ON, EXCEPT FOR DECODE — narrowed on purpose. `coerceSpec`'s per-game
+  // arms (CR's mount fits, BIOBUZZ's own clamps) were being skipped at this chokepoint, which
+  // is supposed to be the last line of defence, so CR and BIOBUZZ both pass `game` straight
+  // through. An explicit `'decode'` is different: it also arms the mount-reset branch in
+  // `coerceSpec`, which rewrites `intakeMount` to 'front'. `intakeMount` is PHYSICS —
+  // `footprintExtents` grows the collider on the mounted edge and `worldHash` mixes robot
+  // positions — so arming it for DECODE here would make every stored replay carrying a
+  // non-front mount re-simulate as a different robot, i.e. a SIM_VERSION bump that retires
+  // the whole archive. The stale-`intakeMount` leak that branch exists to close therefore
+  // STAYS OPEN on this path for DECODE. It is a separate pre-existing bug and wants its own
+  // fix at a deliberate version boundary — do NOT "complete" the threading for DECODE.
+  const spec = coerceSpec(s.spec, DEFAULT_SPEC, game === 'decode' ? undefined : game);
   // a custom pose overrides the preset; snap it G304-legal for THIS spec+alliance
   // so no spawn path (localStorage, wire, staged match) can place an illegal robot.
-  // ⚠️ G304 IS DECODE'S RULE — gate it on the module. CR poses are snapped by
-  // `chainSnapStartPose` and BIOBUZZ's by its own spawn; running DECODE's launch-line /
-  // touching-a-surface snap over a CR pose first moves it somewhere CR never asked for
-  // (`sanitizeReplay` → `coerceSetup(…, 'chain')` is the live path that did this).
+  //
+  // ONLY THROUGH THE GAME'S OWN SNAP (`startSnap`). `snapStartToLegal` is G304 geometry —
+  // launch lines, goal faces, DECODE's alliance halves, an x-mirror between alliances — so
+  // it is DECODE's slot and nobody else's. It used to be gated on `startLegality`, which
+  // BIOBUZZ also sets, so a BIOBUZZ pose was seated against DECODE's field and mirrored the
+  // wrong way (BIOBUZZ is point-symmetric). A game without the slot keeps the structurally
+  // validated, field-clamped pose and supplies its own fit pass if it has one, as BIOBUZZ's
+  // spawn does.
   let startPose: StartPose | undefined;
   const raw = coerceStartPose(s.startPose);
-  if (raw) {
-    const actual = mod.startLegality
-      ? snapStartToLegal(spec, mirrorStartPose(raw, alliance), alliance)
-      : mirrorStartPose(raw, alliance);
-    startPose = mirrorStartPose(actual, alliance); // store back canonical
-  }
+  if (raw) startPose = mod.startSnap ? mod.startSnap(spec, alliance, raw) : raw;
   return {
     id: s.id,
     alliance,
@@ -837,6 +847,7 @@ export function createWorld(mode: GameMode, seed: number, setups: RobotSetup[], 
       currentPathSegmentIndex: 0,
       pathSegmentProgress: 0,
       pathWaitTimer: 0,
+      pathWaitedBefore: -1,
       pathSequenceIndex: 0,
       pathTargetPoint: null,
       pathTargetHeading: null,

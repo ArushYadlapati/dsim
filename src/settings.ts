@@ -19,7 +19,8 @@ const startPoseCount = (game: GameId): number => simModuleFor(game).startPoseCou
 import { cloneBindings, DEFAULT_BINDINGS, mergeBindings } from './input/bindings';
 import { clamp } from './math';
 
-const STORAGE_KEY = 'decodesim.settings.v1';
+// the key itself comes from the registry every privacy surface reads (src/storageKeys.ts)
+import { SETTINGS_KEY as STORAGE_KEY } from './storageKeys';
 
 /** default touch-control layout (centres as viewport fractions), tuned for landscape:
  * drive stick bottom-left, turn stick bottom-right, action buttons clustered on the
@@ -54,6 +55,13 @@ export function defaultSettings(): GameSettings {
     // GATE (index 0, close) + AUDIENCE (index 1, far) are the default per-category picks
     startMemory: { close: { index: 0, pose: null }, far: { index: 1, pose: null } },
     practiceDummies: false,
+    // solo practice defaults to the 3D physics (Day 1 seam, `docs/biobuzz/plan-3d.md` §2.1);
+    // the player picks '2d' for a casual or low-end run.
+    practicePhysics: '3d',
+    // OFF by default (plan §6). Practice is where people go to drive their own robot, and a
+    // field with three strangers on it is a different exercise from the one they asked for —
+    // opting in is one button, opting out of a surprise is a support question.
+    practiceBots: 'off',
     audio: {
       volume: { master: 1, game: 1, shoot: 1, intake: 1, gate: 1, beep: 1, alert: 1, voice: 1 },
       sounds: true,
@@ -111,6 +119,19 @@ function defaultLoadout(game: GameId): GameLoadout {
   };
 }
 
+/** clamp one remembered start SELECTION (a preset index or a custom pose) for `game`.
+ * Module-scope because BOTH readers need it — `coerceSettings` for the active game and
+ * `coerceLoadout` for an archived one, which used to drop the stored value on the floor. */
+function coerceStartSel(raw: unknown, fallback: StartSel, game: GameId): StartSel {
+  if (typeof raw !== 'object' || raw === null) return fallback;
+  const r = raw as Record<string, unknown>;
+  const index = typeof r.index === 'number' && Number.isFinite(r.index)
+    ? clamp(Math.round(r.index), -1, startPoseCount(game) - 1)
+    : fallback.index;
+  const pose = r.pose == null ? null : coerceStartPose(r.pose);
+  return { index, pose };
+}
+
 /** validate an archived loadout (spec + saved robots clamped for THAT game; start fields
  * light-checked). Written from already-clean data, so this mostly guards a hand-edited store. */
 function coerceLoadout(raw: unknown, game: GameId): GameLoadout {
@@ -138,7 +159,18 @@ function coerceLoadout(raw: unknown, game: GameId): GameLoadout {
     startPose: r.startPose == null ? null : coerceStartPose(r.startPose),
     startCat: r.startCat === 'far' ? 'far' : 'close',
     savedStartPoses: { close: saves(sp.close), far: saves(sp.far) },
-    startMemory: d.startMemory,
+    // the STORED memory, coerced — not the default. Returning `d.startMemory` here threw the
+    // archived game's remembered start away on every load: switch to it and its close/far
+    // picks were back at anchors 0 and 1, whatever the player had left them on.
+    startMemory: (() => {
+      const m = typeof r.startMemory === 'object' && r.startMemory !== null
+        ? (r.startMemory as Record<string, unknown>)
+        : {};
+      return {
+        close: coerceStartSel(m.close, d.startMemory.close, game),
+        far: coerceStartSel(m.far, d.startMemory.far, game),
+      };
+    })(),
   };
 }
 
@@ -241,21 +273,12 @@ export function coerceSettings(raw: unknown): GameSettings {
       const sp = s.savedStartPoses as Record<string, unknown>;
       out.savedStartPoses = { close: coerceSaves(sp.close), far: coerceSaves(sp.far) };
     }
-    // per-category memory: clamp index, coerce pose
-    const coerceSel = (raw: unknown, fallback: StartSel): StartSel => {
-      if (typeof raw !== 'object' || raw === null) return fallback;
-      const r = raw as Record<string, unknown>;
-      const index = typeof r.index === 'number' && Number.isFinite(r.index)
-        ? clamp(Math.round(r.index), -1, startPoseCount(out.game) - 1)
-        : fallback.index;
-      const pose = r.pose == null ? null : coerceStartPose(r.pose);
-      return { index, pose };
-    };
+    // per-category memory: clamp index, coerce pose (see `coerceStartSel`)
     if (typeof s.startMemory === 'object' && s.startMemory !== null) {
       const m = s.startMemory as Record<string, unknown>;
       out.startMemory = {
-        close: coerceSel(m.close, out.startMemory.close),
-        far: coerceSel(m.far, out.startMemory.far),
+        close: coerceStartSel(m.close, out.startMemory.close, out.game),
+        far: coerceStartSel(m.far, out.startMemory.far, out.game),
       };
     }
     // the NON-active games' archived loadouts (robot + saved robots + start positions), so a
@@ -270,6 +293,31 @@ export function coerceSettings(raw: unknown): GameSettings {
       out.loadouts = archive;
     }
     if (typeof s.practiceDummies === 'boolean') out.practiceDummies = s.practiceDummies;
+    if (s.practicePhysics === '2d' || s.practicePhysics === '3d') out.practicePhysics = s.practicePhysics;
+    /**
+     * THE BOT TIER IS COERCED BY THE GAME THAT HAS ONE — and PRESERVED by the game that does not.
+     *
+     * `tiers` is opaque on the seam so a game can rename a difficulty without a shared edit, so
+     * the only honest validation is the active module's own `coerceTier`, which also answers for
+     * a tier that was legal when it was saved and is not any more.
+     *
+     * ⚠️ **A GAME WITH NO DRIVER MUST NOT FOLD IT TO `'off'`.** Measured in a browser: set
+     * Opponents to Hard in BIOBUZZ, visit DECODE (which has no AI), come back — and the setting
+     * was gone, because every load coerces against the ACTIVE game and DECODE's answer for any
+     * tier is "there is no such thing". `switchGame` deliberately does not archive this field
+     * per game (it is a practice preference, not part of a loadout), so the round trip has to be
+     * lossless. Keeping the string costs nothing: it is unreachable while the active game has no
+     * driver, and the two places that USE it — `GameController.makeWorld` and the Practice
+     * control — resolve it through that game's own `coerceTier` at the point of use, which is
+     * where the question can actually be answered.
+     *
+     * Bounded rather than trusted: this is localStorage and a synced account blob, so a
+     * megabyte of junk must not ride in a field nothing will ever read.
+     */
+    if (typeof s.practiceBots === 'string' && s.practiceBots.length <= 32) {
+      const bot = simModuleFor(out.game).bot;
+      out.practiceBots = s.practiceBots === 'off' || !bot ? s.practiceBots : bot.coerceTier(s.practiceBots);
+    }
     if (typeof s.audio === 'object' && s.audio !== null) {
       const au = s.audio as Record<string, unknown>;
       const vol = au.volume;

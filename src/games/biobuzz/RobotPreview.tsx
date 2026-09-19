@@ -9,7 +9,7 @@ import {
 } from './config';
 import { bbLauncherOf, bbLiftOf } from './mechs';
 import { BB_MODE_LABELS } from './labels';
-import { BB_PLACE_MARK_R, bbBoxTubeGlyph } from './parts';
+import { BB_BOX_TUBE_OVERLAP, BB_PLACE_MARK_R, bbBoxTubeGlyph } from './parts';
 import { EDGE_ANGLE, type BbMountPos, bbMouthFrame, bbShooterEdgeOf, edgeGeom, turretLocal, turretRadius } from './mounts';
 import { bbFootprint, bbMouths, bbPlacePointLocal } from './robot';
 
@@ -74,7 +74,7 @@ export function BiobuzzRobotPreview({
   const place = bbPlacePointLocal(spec);
   const markSX = place ? -place.y : 0;
   const markSY = place ? -place.x : 0;
-  const markR = BB_PLACE_MARK_R + 0.9; // the ring plus its crosshair ticks
+  const markR = BB_PLACE_MARK_R + 0.3; // the ring plus half its stroke and a hair of margin
 
   // viewBox spans the widest of chassis/intake/marker plus a margin. The dimension label is
   // centred and can be WIDER than a narrow chassis, so it has to be measured in too — an <svg>
@@ -300,49 +300,33 @@ export function BiobuzzRobotPreview({
 
   /**
    * THE BOX TUBE — the same hollow rectangle the sprite draws (`bbBoxTubeGlyph`, `parts.ts`), in
-   * the robot frame, plus the reach line and the placement-point marker at `bbPlacePointLocal`.
-   * The marker is always hollow here: "in reach of a FLOWER" is a state of a match, and this
-   * preview has none.
+   * the robot frame, carried out as the same hollow section to a plain ring at
+   * `bbPlacePointLocal`, exactly as the sprite's `drawPlaceMarker` does. The ring is always hollow
+   * here: "in reach of a FLOWER" is a state of a match, and this preview has none.
    */
   const liftEl = (() => {
     if (!lift || !place) return null;
-    const g = bbBoxTubeGlyph(spec, lift.mount);
+    const g = bbBoxTubeGlyph(spec, lift.mount, place);
     const R = BB_PLACE_MARK_R;
-    const dist = Math.hypot(place.x - g.outer.x, place.y - g.outer.y);
-    const k = dist > R ? (dist - R) / dist : 0;
+    const dx = place.x - g.outer.x;
+    const dy = place.y - g.outer.y;
+    const dist = Math.hypot(dx, dy);
+    const x0 = -BB_BOX_TUBE_OVERLAP;
+    const x1 = dist - R + 0.1;
+    const reach = dist > 0 && x1 > x0;
+    const glyphT = `translate(${g.cx},${g.cy}) rotate(${deg(Math.atan2(g.uy, g.ux))})`;
+    const reachT = `translate(${g.outer.x},${g.outer.y}) rotate(${deg(Math.atan2(dy, dx))})`;
     return (
       <g transform={ROBOT_FRAME}>
-        <g transform={`translate(${g.cx},${g.cy}) rotate(${deg(Math.atan2(g.uy, g.ux))})`}>
-          <rect x={-g.len / 2} y={-g.w / 2} width={g.len} height={g.w} fill={stroke} opacity={0.85} />
-          <rect x={-g.len / 2 + 0.28} y={-g.w / 2 + 0.28} width={g.len - 0.56} height={g.w - 0.56} fill="var(--ds-bg)" />
+        {/* walls first, as ONE translucent group so the overlap where glyph and reach meet is
+            not painted twice; then both hollows on top */}
+        <g opacity={0.85}>
+          <rect x={-g.len / 2} y={-g.w / 2} width={g.len} height={g.w} fill={stroke} transform={glyphT} />
+          {reach && <rect x={x0} y={-g.w / 2} width={x1 - x0} height={g.w} fill={stroke} transform={reachT} />}
         </g>
-        <line
-          x1={g.outer.x}
-          y1={g.outer.y}
-          x2={g.outer.x + (place.x - g.outer.x) * k}
-          y2={g.outer.y + (place.y - g.outer.y) * k}
-          stroke={accent}
-          strokeWidth={0.28}
-          strokeLinecap="round"
-        />
+        <rect x={-g.len / 2 + 0.28} y={-g.w / 2 + 0.28} width={g.len - 0.56} height={g.w - 0.56} fill="var(--ds-bg)" transform={glyphT} />
+        {reach && <rect x={x0} y={-g.w / 2 + 0.28} width={x1 - x0} height={g.w - 0.56} fill="var(--ds-bg)" transform={reachT} />}
         <circle cx={place.x} cy={place.y} r={R} fill="none" stroke={accent} strokeWidth={0.3} />
-        {[
-          [1, 0],
-          [-1, 0],
-          [0, 1],
-          [0, -1],
-        ].map(([dx, dy]) => (
-          <line
-            key={`${dx}_${dy}`}
-            x1={place.x + dx * (R + 0.2)}
-            y1={place.y + dy * (R + 0.2)}
-            x2={place.x + dx * (R + 0.75)}
-            y2={place.y + dy * (R + 0.75)}
-            stroke={accent}
-            strokeWidth={0.28}
-            strokeLinecap="round"
-          />
-        ))}
       </g>
     );
   })();

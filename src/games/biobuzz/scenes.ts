@@ -82,6 +82,23 @@ export interface Scene {
    * robot has hit it.
    */
   stills: number[];
+  /**
+   * WHICH 3D CAMERA the gallery frames this scene's stills from, when 3D stills are on
+   * (`Gallery.tsx`, Day 3 — `docs/biobuzz/plan-3d.md` §4.3's own note that orbit is the
+   * spectator/gallery camera). Absent ⇒ `orbit`, which is the right default for a contact
+   * sheet: it needs no local robot and it frames the whole field.
+   *
+   * ⚠️ THIS IS THE ONE PRESENTATION HINT IN THIS TYPE, and it is here rather than in the
+   * gallery because it is a fact about the SITUATION, not about the grid — a scene staged to
+   * show what a driver sees over their own wall (`field-labelled`, the start-anchor scenes) is
+   * worth looking at from `driver`, and only the scene knows that. It is a plain string union
+   * rather than `SceneCamera` from `games/module.ts` so this file keeps importing nothing that
+   * a headless smoke lane would have to resolve.
+   *
+   * It does NOT change what the scene simulates, so `bbSceneAt` and every smoke hash are
+   * untouched by adding one.
+   */
+  camera3d?: 'driver' | 'overhead' | 'chase' | 'orbit';
 }
 
 /**

@@ -6,6 +6,9 @@ import { LobbyClient, type MatchStart } from '../net/lobbyClient';
 import { ServerSession } from '../net/serverSession';
 import type { NetSession } from '../net/session';
 import type { RecordKind } from '../net/protocol';
+import { moduleFor } from '../games';
+import { serverPhysics } from '../games/types';
+import { initPhysics3d, physics3dReady } from '../games/biobuzz/sim3d/engine';
 import { APP_NAME } from '../seasons';
 import { Logo } from './Logo';
 import { useEscape } from './useEscape';
@@ -43,66 +46,108 @@ export function RecordRun({
       setError('The game server isn’t configured.');
       return;
     }
-    const room = 'rec-' + Math.random().toString(36).slice(2, 9); // private, ephemeral
-    // route to the picked region (one-app multi-region); solo, so no cross-region concern
-    const region = selectedServer()?.region ?? '';
-    const url = multiServer() && region ? gameServerUrlWith({ region }) : gameServerUrl();
-    let transport: WebSocketTransport;
-    try {
-      transport = new WebSocketTransport(url);
-    } catch {
-      setError('Couldn’t reach the game server.');
-      return;
-    }
-    const lobby = new LobbyClient(transport);
-    let tries = 0;
-    let timer: number | undefined;
+    /**
+     * A RECORD RUN NEVER FALLS BACK TO 2D — it refuses (owner ruling, 2026-09-18).
+     *
+     * Solo practice degrades when the 3D chunk will not load: `GameView` catches it and plays
+     * the session on the 2D physics, because a practice reaches no board and a player on a
+     * flaky connection should still get to drive. A record run is the opposite case — its
+     * score IS the board — so the same failure has to stop it, and it has to stop it HERE,
+     * before a room is opened and a seat spent on a client that cannot step the world the
+     * server will build (`Room.physics`).
+     *
+     * Only for a game whose server rooms are 3D; DECODE and Chain Reaction never enter this
+     * branch and their record runs start exactly as they always did. Idempotent — a second run
+     * in the same tab finds `physics3dReady()` and connects with no await at all.
+     */
+    let cancelled = false;
+    /** whatever `connect()` opened, so the effect's own cleanup can close it — the connect may
+     *  land AFTER this effect returns (the await above), so it cannot be the returned value. */
+    let close: (() => void) | null = null;
 
-    const tryStart = (): void => {
-      if (startedRef.current) return;
-      lobby.start();
-      // keep nudging: a cold-booted server refuses 'start' until physics is ready
-      if (++tries < 25) timer = window.setTimeout(tryStart, 700);
-      else setError('The server took too long to start. Try again.');
+    const connect = (): void => {
+      if (cancelled) return;
+      setStatus('Connecting to the record server…');
+      const room = 'rec-' + Math.random().toString(36).slice(2, 9); // private, ephemeral
+      // route to the picked region (one-app multi-region); solo, so no cross-region concern
+      const region = selectedServer()?.region ?? '';
+      const url = multiServer() && region ? gameServerUrlWith({ region }) : gameServerUrl();
+      let transport: WebSocketTransport;
+      try {
+        transport = new WebSocketTransport(url);
+      } catch {
+        setError('Couldn’t reach the game server.');
+        return;
+      }
+      const lobby = new LobbyClient(transport);
+      let tries = 0;
+      let timer: number | undefined;
+
+      const tryStart = (): void => {
+        if (startedRef.current) return;
+        lobby.start();
+        // keep nudging: a cold-booted server refuses 'start' until physics is ready
+        if (++tries < 25) timer = window.setTimeout(tryStart, 700);
+        else setError('The server took too long to start. Try again.');
+      };
+
+      lobby.on('roster', () => {
+        if (!startedRef.current && tries === 0) {
+          setStatus('Starting your run…');
+          tryStart();
+        }
+      });
+      lobby.on('matchStart', (m: MatchStart) => {
+        startedRef.current = true;
+        if (timer) window.clearTimeout(timer);
+        onStart(new ServerSession(transport, lobby.isHost(), m, lobby.clientId, room));
+      });
+      lobby.on('error', (msg) => {
+        if (!/starting up/i.test(msg)) setError(msg); // startup ⇒ the retry loop handles it
+      });
+      lobby.on('closed', () => {
+        if (!startedRef.current) setError('Lost connection to the game server.');
+      });
+
+      lobby.join(
+        room,
+        {
+          name: settings.spec.teamName || 'Player',
+          teamName: settings.spec.teamName,
+          teamNumber: settings.spec.teamNumber,
+          alliance: 'blue', // record runs are forced to one alliance server-side
+          startIndex: settings.startIndex,
+          startPose: settings.startPose ?? null,
+          ready: true,
+          spec: settings.spec,
+          assists: settings.assists,
+        },
+        { kind: 'record', record: mode, game: settings.game },
+      );
+
+      close = () => {
+        if (timer) window.clearTimeout(timer);
+        if (!startedRef.current) lobby.dispose();
+      };
     };
 
-    lobby.on('roster', () => {
-      if (!startedRef.current && tries === 0) {
-        setStatus('Starting your run…');
-        tryStart();
-      }
-    });
-    lobby.on('matchStart', (m: MatchStart) => {
-      startedRef.current = true;
-      if (timer) window.clearTimeout(timer);
-      onStart(new ServerSession(transport, lobby.isHost(), m, lobby.clientId, room));
-    });
-    lobby.on('error', (msg) => {
-      if (!/starting up/i.test(msg)) setError(msg); // startup ⇒ the retry loop handles it
-    });
-    lobby.on('closed', () => {
-      if (!startedRef.current) setError('Lost connection to the game server.');
-    });
-
-    lobby.join(
-      room,
-      {
-        name: settings.spec.teamName || 'Player',
-        teamName: settings.spec.teamName,
-        teamNumber: settings.spec.teamNumber,
-        alliance: 'blue', // record runs are forced to one alliance server-side
-        startIndex: settings.startIndex,
-        startPose: settings.startPose ?? null,
-        ready: true,
-        spec: settings.spec,
-        assists: settings.assists,
-      },
-      { kind: 'record', record: mode, game: settings.game },
-    );
+    if (serverPhysics(moduleFor(settings.game)) === '3d' && !physics3dReady()) {
+      setStatus('Loading 3D physics…');
+      void initPhysics3d().then(connect, (err: unknown) => {
+        if (cancelled) return;
+        // eslint-disable-next-line no-console
+        console.warn('BIOBUZZ 3D physics failed to load; refusing to start a record run.', err);
+        setError(
+          'Couldn’t load the 3D physics. Record runs are played on it — check your connection and try again.',
+        );
+      });
+    } else {
+      connect();
+    }
 
     return () => {
-      if (timer) window.clearTimeout(timer);
-      if (!startedRef.current) lobby.dispose();
+      cancelled = true;
+      close?.();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);

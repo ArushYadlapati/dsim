@@ -1,0 +1,117 @@
+<!-- governs: src/ads/**, server/kofi.ts, src/legalText.ts, src/analytics.ts, src/analyticsPref.ts, src/storageKeys.ts -->
+# Monetization — ads and the supporter tier
+
+Perks are cosmetic or convenience ONLY — never anything affecting how a robot drives or scores.
+
+*Split out of `CLAUDE.md` on 2026-09-16, **verbatim** — CLAUDE.md is loaded into every
+session and this is not needed by most of them. The `governs:` line above is read by
+`scripts/docaudit.mjs` and by the editor hook, so keep it accurate when paths move.*
+
+---
+
+## Monetization (branch `monetization`) — ads + supporter tier
+
+Not yet deployed. `HANDOFF.md` has the full write-up; the load-bearing rules:
+
+- **`src/ads/adsense.ts` is the single gate.** Ads are OFF unless `VITE_ADSENSE_CLIENT`
+  is set, and are suppressed unconditionally in the Electron build (AdSense forbids app
+  wrappers), on touch, and for supporters. `AdsProvider` FAILS CLOSED — ads stay off
+  until the entitlement check settles, so a supporter never sees a flash of them.
+- **Ads are NON-PERSONALIZED by default and tagged TFUAC.** DSIM simulates FTC
+  (grades 7–12) and the sim is fully playable SIGNED OUT, so most impressions carry no
+  age signal. `VITE_ADSENSE_PERSONALIZED=1` is a deliberate opt-in. TFCD (COPPA) stays
+  off: the terms set 13+, so asserting child-directed would be inaccurate, not cautious.
+- **A CMP (Google Funding Choices) is REQUIRED, not optional** — without a certified CMP
+  Google serves EEA/UK/CH users no ads at all. It loads with the client id; the message
+  itself is authored in the AdSense dashboard. The footer "Privacy & cookie settings"
+  link must keep existing (consent you can't withdraw isn't consent).
+- **Three ad units, each with its own slot id**: `menu` (shell pages) and `results`
+  (post-match) are SAFE; `game` (columns flanking the live field) is the risky one —
+  60 Hz canvas + AdSense's 150px game-clearance rule. **Do not enable
+  `VITE_ADSENSE_SLOT_GAME` without first comparing p95 frame time via `?perf=1`**
+  (`GameController.getFrameStats`).
+- **`/ads.txt` is GENERATED** from `VITE_ADSENSE_CLIENT` in `vite.config.ts` — never
+  commit one, it would drift.
+- **Supporter tier is Ko-fi.** `server/kofi.ts` is a PURE policy module (no DB, no
+  import-time env) deciding what a payment buys: a subscription payment is always
+  exactly 1 month; a one-off buys `floor(amount/price)` months, capped; a foreign
+  currency buys nothing. Months are priced ONCE at webhook time and stored on the row.
+- **`profiles.kofi_email` is what makes a membership RENEW.** The first manual claim
+  links the payer address; every later webhook from it grants automatically. The UNIQUE
+  index is also the only thing stopping one subscription covering many accounts.
+- **Every write to `supporter_until` logs a `supporter_grants` audit row** (source =
+  kofi/admin/revoke). Two actors can move that column; "why does this account have a
+  membership?" has to stay answerable.
+- **Perks are cosmetic/convenience ONLY** — never anything affecting how a robot drives
+  or scores. That is a product rule AND a statement in the terms. All four advertised
+  perks are BUILT (badge, ads-off, 6 saved starts, chassis colours); **do not list a
+  perk on the Donate page before it exists.**
+- **The saved-start PERSIST cap is the SUPPORTER ceiling**
+  (`MAX_SAVED_STARTS_SUPPORTER`), in `coerceSettings` AND `saveStart`. Only the editor's
+  Save button applies the free cap. Sanitizing to the free cap would DELETE a supporter's
+  poses before the entitlement resolved, and on every lapse.
+- **The chassis colour is an ALLOWLIST key** (`CHASSIS_COLORS`), never a free colour
+  string on the wire, and it recolours only the FILL — alliance identity is the OUTLINE.
+- **`LobbyPlayer.supporter` is SERVER-AUTHORED** (set at join). `sanitizePlayer` is an
+  allowlist and `PlayerPatch` is a `Pick`, so a client cannot self-declare a paid badge.
+- **`LEGAL_VERSION` is DERIVED from `LEGAL_UPDATED`** (`legalVersionOf`), not written beside it:
+  two hand-kept spellings of one date is how the version everybody re-accepts ends up disagreeing
+  with the date on the page they are accepting. ⚠️ **Moving `LEGAL_UPDATED` prompts EVERY
+  signed-in account to accept again, once** (`termsGateState`, `src/ui/TermsGate.tsx`) — that is
+  the point of it, so move it for a material change and not for a typo. It is a CLIENT change AND
+  a SERVER change (the accept route records the server’s own constant), so deploy both.
+- ⚠️ **`LEGAL_OPERATOR`/`LEGAL_JURISDICTION` in `src/legalText.ts` are PLACEHOLDERS.**
+  Until filled, the Terms page shows a visible warning to every visitor. Fill them
+  before taking a payment; do not guess them from a timezone or an email domain.
+- Analytics (`src/analytics.ts`, `VITE_ANALYTICS=1`, Vercel Web Analytics — cookieless).
+  **Rule: no identifiers in any event payload** — counts and enums only.
+  It has an **OFF SWITCH**, `src/analyticsPref.ts`, read by `trackEvent` on EVERY call
+  (not cached: it is an opt-OUT, so a second tab turning it off must stop a session already
+  running). DEFAULT ON, and storage that THROWS answers on — failing closed would mute every
+  locked-down browser and bias the numbers the sponsor report is read off. It lives in its own
+  leaf module because `analytics.ts` reads `import.meta.env` at module scope and therefore
+  cannot be imported from `scripts/smoke.ts` at all.
+
+---
+
+## Privacy: the storage registry, "Your data", and the export
+
+Built on branch `feat/privacy-cookies` for roadmap item 8.
+
+- ⚠️ **`src/storageKeys.ts` IS THE ONLY PLACE A `decodesim.` KEY MAY BE WRITTEN DOWN**, and
+  `npm test` enforces exactly that: no such literal anywhere in `src/` outside that file
+  (comments stripped), every storage call site naming its key by identifier or a documented
+  `…Key(id)` accessor, every file touching storage importing from the registry, and no dead
+  entries. It exists because `PRIVACY_MD` used to enumerate the keys in prose and had drifted
+  to FOUR names that did not exist plus SEVEN keys missing — undetectable by reading, because
+  the list and the code were different files.
+- **`PRIVACY_MD` NAMES NO KEY, and must not start again.** It describes the three categories
+  (`necessary` / `preference` / `analytics`) and points at the live table, which
+  `src/ui/YourData.tsx` renders off `STORAGE_KEYS`. The `analytics` group is printed EMPTY
+  on purpose: "none" is the most reassuring line on the page and it stays true by construction.
+- **ONE LITERAL LIVES OUTSIDE THE REGISTRY**: `index.html`'s blocking theme stamp, which runs
+  before any module loads. A smoke check pins it to `THEME_KEY`.
+- ⚠️ **THE FOOTER CONSENT LINK MUST NEVER DELETE ITSELF.** `ConsentLink` used to `return null`
+  once `showConsentSettings()` answered false — the NORMAL case outside the EEA/UK/CH — so the
+  one control the privacy policy names by name vanished for most of the world. It now falls back
+  to `/privacy#your-data`, where the row says why no dialog opened. A smoke check greps for the
+  early return coming back.
+- **`GET /api/user/export`** (`exportAccount` in `server/db/repo.ts`, written NEXT TO
+  `deleteAccount` so a table added to one list and not the other is one screenful apart).
+  Rate-limited to **one per minute per account** — seventeen queries on compute that bills by
+  the minute. **Only rows keyed to the caller**, plus a match's own facts: the other players in
+  a versus match are absent entirely, and `dbtest` asserts that against the SERIALIZED
+  document, because the leak to fear is a join somebody adds later for a good reason. Replay
+  BODIES are out (ids and metadata only); no email address is selected at all. A missing profile
+  row is a **404**, which is what a just-deleted account gets.
+- ⚠️ **AN OLD SERVER ANSWERS `/api/user/export` WITH A 200.** That path also matches the older
+  build's `/api/user/<id>` profile route, which cheerfully reports a profile for the user id
+  `"export"`. One Fly app serves every client version, so `fetchMyExport` guards on the
+  payload (`format`), not on the status — handing that object to somebody as their personal
+  data would be the worst failure this route has available to it.
+- **`DeleteAccount` is ONE component rendered in two places** (Profile and "Your data"). The
+  typed confirmation and the paragraph about what SURVIVES a deletion are the load-bearing
+  parts; two copies of that copy would drift.
+
+---
+

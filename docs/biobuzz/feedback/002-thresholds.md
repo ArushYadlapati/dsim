@@ -157,3 +157,128 @@ nectar that fit:   __                     (derived 5)
 ```
 
 Anything measured here comes off `APPROX` and stops being this lane's guess.
+
+---
+
+# APPENDIX — the rest of the `APPROX` list
+
+**This is an appendix to the two asks above, not a replacement for them.** §1 and §2 are the two
+numbers worth a trip; everything below is the standing list of every other constant in the game
+that is a guess, transcribed so somebody on a field can work from a document instead of from a
+grep. If there is only time for §1 and §2, do those.
+
+`config.ts` says at its lines 18–20 and 103–104 that `grep APPROX src/games/biobuzz/config.ts`
+IS the 09-14 tape-measure list. Counted: **34 live markers over 43 constants**, of which **25
+markers / 33 constants** are in `config.ts` and the rest are not.
+
+⚠️ **THE CONFIG-ONLY GREP MISSES TEN CONSTANTS, AND TWO OF THEM ARE §1 ABOVE.** The convention is
+written as if `config.ts` held every guess, and it does not. Outside it:
+
+| file | constants carrying a live `APPROX` |
+|---|---|
+| `flower.ts` | `BB_FLOWER_FLOOR_Z`, `BB_FLOWER_MID_Z`, `BB_FLOWER_VOL_Z`, `BB_FLOWER_ENTRY_MARGIN` |
+| `hive.ts` | `BB_HIVE_ACCEPT_MARGIN`, `BB_SPILL_SPEED`, `BB_SPILL_FAN` |
+| `penalties.ts` | `BB_FRAME_RAM_SPEED` |
+| `play.ts` | `NECTAR_ENTRY_JITTER` (module-local) |
+| `elements.ts` | `CELL_ACCEPT_R` (module-local) |
+
+`BB_FLOWER_MID_Z` and `BB_FLOWER_VOL_Z` — the subject of §1, and two of the four the field
+handoff calls load-bearing for a scoring outcome — live in `flower.ts`, so the documented grep
+returns neither. The honest grep is `grep -rn APPROX src/games/biobuzz/`. Either widen the
+sentence in `config.ts` or move the ten constants into it; today the convention promises a list
+it does not produce.
+
+## A. THE FOUR TO MEASURE FIRST
+
+A tape measure settles each of these, and each one changes whether something SCORES.
+
+| constant(s) | today | derived from (the marker's own words) | what it decides |
+|---|---|---|---|
+| `BB_FLOWER_MID_Z` · `BB_FLOWER_VOL_Z` (`flower.ts`) | **3.98** · **[3.98, 21.5]** | "3.98 is the retrieval opening 3.55 plus the lower ring 0.43 … it is the RING'S UNDERSIDE" | the scoring floor, the NECTAR seat, both capacities. **§1 above is this row.** |
+| `BB_FLOWER_FLOOR_Z` (`flower.ts`) | **0.43** in | "Fig 9-12: lower ring 0.43 tall on the tiles … APPROX — Fig 9-12 pixel read" | the base of the POLLEN stack. A lone bottom POLLEN tops at 3.23 and scores nothing because of this number and §1's TOGETHER — move either and that outcome flips. Same trip, same column. |
+| `BB_GARDEN` | red x[−72, −49] y[−72, −70] — a **2 in** strip | "Fig 9-2/9-3 — strip depth off the drawing" | GARDEN points. `bbInGarden` scores a ground element within one radius of this rect, and the strip is 2 in deep against a 2.8-in POLLEN, so the drawn depth is most of the test. Measure the strip depth and where its outside edge sits. |
+| `BB_LZ` | red x[−72, −61] y[24, 48] | "Fig 9-2/9-3 — ±0.5 in on the tape edge" | G426/G427 foul points, where a human-entered NECTAR lands, and whether start anchor 1 is legal. Foul points are score. |
+
+`BB_HIVE_X` (**12.75**, "APPROX: Fig 9-2 — that the PAIR is centred on the field") is the fifth
+if the tape is still out: one pull confirms the 25.5 in pivot-to-pivot pitch sits centred on
+x = 0. Fifth and not fourth because no RULE reads it — it moves every launcher solution and the
+G417 frame geometry, but nothing scores or fails to score on it directly.
+
+## B. LOAD-BEARING, BUT A TAPE MEASURE WILL NOT SETTLE THEM
+
+These change a scoring outcome. None of them is a length. Each needs a loaded HIVE, a test shot,
+or an owner ruling.
+
+| constant(s) | today | derived from (the marker's own words) | what it decides |
+|---|---|---|---|
+| `BB_SPILL_SPEED` · `BB_SPILL_FAN` (`hive.ts`) | **[35, 62]** in/s · **±18°** | "BOTH STILL APPROX, and MORE approx than the pair they replace … a ruling about FEEL that moves the landing distance with it" | where a tipped CELL's contents land, and so who can collect them. Tip a loaded cell and mark the landing lines; `001-spill-kinematics.md` has the numbers either side of the change. |
+| `BB_HIVE_ACCEPT_MARGIN` (`hive.ts`) · `CELL_ACCEPT_R` (`elements.ts`) | **2.0** in · **8** in | "the opening is 14 in tall (§9.6.2) and a lob arrives from above" · "the opening is a 20 x 10.43 rect … 8 is the inscribed-ish compromise" | whether a launched element ENTERS the up-CELL at all, so whether a HIVE ever tips. `CELL_ACCEPT_R` is a disc standing in for a rect — replace it with the rect when `ScoreTarget` grows one, rather than re-tuning the radius. |
+| `BB_FLOWER_ENTRY_MARGIN` (`flower.ts`) | **3.0** in | "the backstop is 1.25 in tall, and a lob arrives from above" | whether a descending element counts as entering a FLOWER. |
+| `BB_PLACE_TOL` | **2.0** in | "the slop of a real tube lining up on a 4.0-in ring; a placement should not need the pixel" | whether a Box Tube placement succeeds. This is the real guess in the placement geometry — see `BB_PLACE_REACH` below. |
+| `BB_DUMP_MIN_DIST` · `BB_DUMP_MAX_DIST` · `BB_DUMP_APEX_ABOVE` | **1** · **36** · **4** in | "A DUMPER'S RANGE (owner, 2026-09-13) … APPROX all three" | whether a dumper reaches the cell it is aimed at. An owner ruling about feel, re-decided once already; not a field measurement. |
+| `BB_FRAME_RAM_SPEED` (`penalties.ts`) | **30** in/s | "the manual says 'don't meddle with the HIVE' and prints no number, so this is the field-plan's §4.4 guess" | a G417 MAJOR. Its own comment already puts it on the 09-14 list. It needs a referee's judgement, not a tape. |
+| `BB_START_POSES` | (34, 61.5) · (46, −61.5) | "APPROX, AND IN ONE PLACE: THE FRONTAGE … the ±72 walls, the x = 0 seam and the FLOWER centres are measured and are not APPROX" | start legality only, and it is derived from `BB_LZ` and `BB_FLOWER_FOOT`. **Measuring row A4 settles this one too** — nothing separate to do on the field. |
+
+## C. FEEL — launcher, robot and timing tuning
+
+Nothing here changes whether something scores. These change how a robot feels to drive and how
+fast it cycles, and a tape measure has nothing to say about any of them. Listed so the count is
+honest, not because they are field work.
+
+| constant(s) | today | derived from (the marker's own words) |
+|---|---|---|
+| `BB_TURRET_SLEW` | 7 rad/s | "CR's tuned value, and turret hardware has not changed" |
+| `BB_TURRET_PITCH_SLEW` | 1.6 rad/s | "APPROX, and deliberately slower than the yaw slew" |
+| `BB_TURRET_PITCH_MIN` · `_MAX` | 0 · 80° (1.396 rad) | "the pitch envelope a turret can actually reach … APPROX both ends" |
+| `BB_AIM_TOL` · `BB_AIM_GAIN` | 0.14 rad · 4.5 | "Only turretless archetypes use these: the fire button steers the chassis. APPROX." |
+| `BB_FIRE_INTERVAL` | 1/13 s | "the long-run rate averages exactly 13/s instead of tick-quantizing to 12 or 15. APPROX." |
+| `BB_FIRE_BURST_MAX` | 6 | "this only bounds a pathological catch-up. APPROX." |
+| `BB_LAUNCH_SPEED_MAX` | 260 in/s | "APPROX, like every launcher number here — see the risks in `docs/biobuzz/plan-mechanisms.md`" |
+| `BB_LAUNCH_SPEED_DEFAULT` | 175 in/s | "the old drum's tuned speed, kept as a neutral number" |
+| `BB_LAUNCH_LINE_FRAC` | 0.92 | "Slightly under 1 so the outermost POLLEN of a burst is not born exactly on the frame line. APPROX." |
+| `BB_LAUNCH_PLATE_GAP` · `_OVERHANG` | 3.1 · 1.2 in | "GAP is `BB_POLLEN_R * 2` plus a working clearance … APPROX with the element" |
+| `BB_DUMP_RELOAD_S` | 0.75 s | "a tray swinging back down. It is what stops a held fire button re-dumping on every capture" |
+| `BB_FLOWER_RETRIEVE_S` | 0.35 s | "one element worked out from under the stack through a 3.55-in hole, not a roller sweeping loose elements off the tiles" |
+| `BB_FLOWER_RETRIEVE_PAD` | 1.0 in | "the contact slop of a compliant roller" |
+| `BB_LIFT_MASS_FLOOR` | 2.0 lb | "extra lb on the chassis mass FLOOR for carrying a Box Tube. APPROX." |
+| `BB_POLLEN_WALL_REST` | 0.35 | "a guess about a 3-in foam ball, and only a picture judges it (`launch-wall-bounce` in the gallery)" — FLIGHT only |
+| `BB_MIN_LENGTH` · `BB_MAX_LENGTH` · `BB_MIN_WIDTH` · `BB_MAX_WIDTH` | 13.5 · 17 · 14.5 · 17 in | "The FLOORS are DECODE's per-intake floors, because there is no BIOBUZZ rule to argue a different one from … All four are APPROX." |
+| `BB_STORE_AREA_PER_BALL` | 12 in² | "a one-layer packing model, ~12 in² of hopper floor per 3-in POLLEN" — inert while `BB_STORAGE_MAX` 4 binds first |
+| `NECTAR_ENTRY_JITTER` (`play.ts`) | 4.0 in | "A human putting five elements on the same tile does not stack them. APPROX." |
+| `BB_POLLEN_SIM` | 60 | "60 is a placeholder chosen to LOOK like a field worth driving on" — **and nothing reads it; see below** |
+
+Two more markers sit on the StarterBot preset in `presets.ts` — `length` 15 / `width` 16 ("kit
+side rails are ~15 in; no kit publishes a width") and `flywheelInertia` 0.5 ("a direct-drive
+flywheel"). They describe a robot card, not the field, and no field measurement moves them.
+
+## ALREADY CLOSED — DO NOT RE-MEASURE
+
+Three markers in `config.ts` say `APPROX` only in the past tense. All three are now measured off
+the owner's CAD and the field guide (2026-09-12 / 09-13), and all three are excluded from every
+count above:
+
+- `BB_FLOWER_D` **2.54** in — was `APPROX` 3.0 off Fig 9-12.
+- `BB_FLOWER_FOOT` **6 × 4.9** in — was an `APPROX` 2.6-in disc; it is a rectangle.
+- `BB_TIP_POLLEN[0]` **8** — was an extrapolation of the 7/6 trend; the Event Field Setup Guide
+  §12.3 confirms it (§2 above). The other five rows of that table are still the owner's single
+  measurement, and §2 still asks for a second reading of them.
+
+## WHERE THE MARKER AND THE CODE DISAGREE
+
+Four, found while transcribing. None is urgent; each one would mislead somebody working from the
+grep alone.
+
+1. **`BB_POLLEN_SIM` is dead and still carries a live marker.** Its comment says "how many POLLEN
+   the shell scatters", but nothing in `src/` reads it — the only other mention in the repo is an
+   unused import in `scripts/smoke-biobuzz/field.ts`. Staging is `BB_POLLEN_COUNT` 40, a manual
+   count. It is a shell leftover sitting on the tape-measure list, and it cannot be measured
+   because there is no such thing on a real field.
+2. **`BB_PLACE_REACH` is marked `APPROX` but is now fully derived from two MEASURED numbers.**
+   `BB_FLOWER_FOOT.deep − BB_FLOWER_D` = 4.9 − 2.54 = 2.36, and both of those came off the
+   owner's CAD on 2026-09-12 (see ALREADY CLOSED). The guess in that pair is `BB_PLACE_TOL`
+   alone. The marker should come off the reach and stay on the tolerance.
+3. **`BB_LAUNCH_PLATE_GAP` is only a third `APPROX`.** It is `BB_POLLEN_R * 2 + 0.3` = 3.1, and
+   `BB_POLLEN_R` 1.4 is a printed manual dimension (§9.8). Only the 0.3 in of working clearance
+   is a guess.
+4. **`BB_TURRET_PITCH_MIN` is 0, and 0 is a definition.** The marker says "APPROX both ends"; the
+   lower end is "level", which is exact. `BB_TURRET_PITCH_MAX` 80° is the guess.

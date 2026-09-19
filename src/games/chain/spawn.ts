@@ -142,6 +142,7 @@ function makeChainRobot(setup: RobotSetup, nth: number): RobotState {
     currentPathSegmentIndex: 0,
     pathSegmentProgress: 0,
     pathWaitTimer: 0,
+    pathWaitedBefore: -1,
     pathSequenceIndex: 0,
     pathTargetPoint: null,
     pathTargetHeading: null,

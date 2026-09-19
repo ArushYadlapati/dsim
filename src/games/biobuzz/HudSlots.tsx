@@ -7,7 +7,6 @@ import { BiobuzzBuilder } from './Builder';
 import { BB_PTS, BB_RP } from './config';
 import type { BbCellHud, BbPinHud, BiobuzzFieldHud } from './hud';
 import type { BiobuzzHud } from './hudRobot';
-import { BB_MODE_LABELS } from './labels';
 import type { BbAllianceScore, BbRankPoints } from './score';
 
 /**
@@ -116,6 +115,32 @@ const pinLine = (p: BbPinHud): string =>
   (p.billed > 0 ? ` · ${p.billed * BB_PTS.foulMajor} BILLED` : '');
 
 /**
+ * THE PENDING LINE — what this alliance has SATISFIED but has not been AWARDED yet.
+ *
+ * §10.5 assesses LEAVE and AUTO PARK at the end of AUTO (F), TELEOP PARK at the end of the
+ * MATCH (G), and the up-CELL contents and the GARDEN once everything has come to rest (C, E).
+ * `score.ts` pays each of those exactly zero until its instant has passed (owner ruling,
+ * 2026-09-19) — before that, a robot clear of the perimeter and sitting in its own LOADING
+ * ZONE moves the score bar by nothing at all.
+ *
+ * Which is correct and, on its own, unreadable: a driver who has just done the right thing
+ * sees no acknowledgement, and a bar that never moves reads as broken. So the amount the
+ * instants still owe gets a chip of its own, in the muted chip row rather than in the panel,
+ * because the one thing it must never look like is part of the total. `+` and PENDING both say
+ * so; `score.ts` guarantees `total + pendingPts` is the same number all match for a field that
+ * stops changing, so the chip is a promise the score will keep.
+ *
+ * Empty at 0, like every other chip in this row — nothing satisfied, nothing to say. The ROW
+ * is what is always mounted (see the band note in `BiobuzzScoreBar`); the spans inside it come
+ * and go, which is the pattern the row's reserved `min-height` exists for.
+ */
+const pendingLine = (f: BiobuzzFieldHud | undefined, a: Alliance): string => {
+  const n = f?.score[a].pendingPts ?? 0;
+  return n > 0 ? `+${n} PENDING` : '';
+};
+
+
+/**
  * A CHIP THAT HAS TO OUTLIVE ITS FACT.
  *
  * `warnings` is a monotonic COUNT — G407 moves it by one on the tick a robot takes CONTROL of
@@ -169,18 +194,16 @@ function useHeldBump(count: number, timeLeft: number, phase: string, hold: numbe
  *  • FLOWER IN REACH — the Box Tube's placement point is on a FLOWER, so a place button will do
  *    something. Proximity is hard to judge top-down.
  *
- * G410 IS DELIBERATELY IN BOTH this row and the bar. `GameView` suppresses this whole row on a
- * coarse pointer, so on a phone the bar's chip is the only NECTAR LOCKED there is — and a MAJOR
- * 20 per NECTAR entered one second early is not a rule to leave to a cue the device does not
- * render. The bar's chip carries the countdown, because it is the field-wide cue; this one is
- * the driver's own state.
+ * G410 LIVES ON THE BAR, NOT HERE. `GameView` suppresses this whole row on a coarse pointer,
+ * so a chip on it is not a place a phone can read a rule from — and a MAJOR 20 per NECTAR
+ * entered one second early is not a rule to leave to a cue the device does not render. The
+ * bar's row states the lock and carries the countdown; this row keeps only the CROSSING, the
+ * one instant of it that is news.
  */
 export function BiobuzzHudChips({ hud }: GameHudProps) {
   const s = sliceOf(hud);
   const f = s?.field;
   const r = s?.robot;
-  const cell = f?.cells[hud.alliance];
-  const due = f?.nectarDue[hud.alliance] ?? 0;
   const pin = soonestPin(f?.pins);
   // G407. The hook runs on every sample, including the ones where an absent slice reads 0, so
   // the hold is measured against the same clock the rest of the row is drawn from.
@@ -190,12 +213,37 @@ export function BiobuzzHudChips({ hud }: GameHudProps) {
     hud.phase,
     BB_WARN_HOLD_S,
   );
+  /**
+   * G410, FROM THE OTHER SIDE: the moment the FLOWERS OPEN.
+   *
+   * The bar's NECTAR LOCKED line simply stops being drawn at the 1:00 cue, and a line that
+   * vanishes is not a cue — a driver watching the field rather than the strip has nothing that
+   * says the rule just changed. `step.ts` already pushes `FLOWER OWNERSHIP UNLOCKED` on the crossing
+   * tick, but the event log is the muted left edge and this is a fact worth a beat in the
+   * driver's own row.
+   *
+   * HELD, NOT PERMANENT, and that is the whole design: FLOWERS OPEN is true for the last
+   * minute of every match, so a chip bound to the state itself would sit there as noise for
+   * exactly as long as it was useless — which is the same objection that took the standing
+   * NECTAR LOCKED chip off this row. It reuses `useHeldBump` off the match clock, like the
+   * G407 warning, so it costs the row width for `BB_WARN_HOLD_S` and then gives it back.
+   *
+   * `nectarLocked` IS A STATE, so it is turned into the monotonic count the hook wants: 0 while
+   * the FLOWERS are shut, 1 once they open. Inside TELEOP the cue is one-way, so it only ever
+   * counts up; the re-lock at the buzzer is a PHASE change, which the hook already refuses to
+   * read as a bump.
+   */
+  const opened = useHeldBump(f?.nectarLocked === false ? 1 : 0, hud.timeLeft, hud.phase, BB_WARN_HOLD_S);
   const held = r?.held ?? [];
   const free = r ? Math.max(0, r.cap - held.length) : 0;
   const said = heldPhrase(held);
   return (
     <>
-      {r && <span className="chip">{BB_MODE_LABELS[r.mode].toUpperCase()}</span>}
+      {/* NO ARCHETYPE CHIP. The launcher's name is a thing the driver CHOSE in the builder and
+          cannot change mid-match, so it told them nothing they did not already know while
+          costing the width of the longest label in `BB_MODE_LABELS` ("DOUBLE TURRET") on a
+          `nowrap` row. What the launcher's rules actually DO to the controls is already in the
+          controls themselves; the hopper row beside it is the part that changes. */}
       {r && (
         <div className="hopper" role="img" aria-label={said} title={said}>
           {[...held].reverse().map((c, i) => (
@@ -207,28 +255,32 @@ export function BiobuzzHudChips({ hud }: GameHudProps) {
         </div>
       )}
       {r?.flowerInReach && <span className="chip on">FLOWER IN REACH</span>}
-      {cell &&
-        (cell.tipping > 0 ? (
-          <span className="chip prompt">CELL TIPPING</span>
-        ) : (
-          <span className="chip">CELL {cell.needed} MORE</span>
-        ))}
-      {/* STOCK AND DUE ON ONE CHIP, because they are one fact: what the human player can
-          still enter. Two chips cost ~130px on a row that is `nowrap`, right-anchored and
-          grows LEFTWARD into the sponsor mark — measured at 1440px with the alpha pose
-          readout on, a sixth chip put the archetype behind the mark. */}
-      {f && (
-        <span className={`chip ${due > 0 ? 'on' : ''}`}>
-          NECTAR {f.nectarStock[hud.alliance]}
-          {due > 0 ? ` · ${due} DUE` : ''}
-        </span>
-      )}
-      {f?.nectarLocked && <span className="chip warn">NECTAR LOCKED</span>}
-      {/* TODO(A6a): `nectarWhy: 'ok' | 'locked' | 'none-owed' | 'none-left'` is not on the
-          slice yet (grepped at a68401f — the human-player button is still in the field lane).
-          When it lands, the NECTAR chip says WHY a press did nothing instead of leaving the
-          driver to infer it from the stock and the lock, and NONE OWED stops reading as a
-          broken button. */}
+      {/* NO CELL CHIP. `BiobuzzScoreBar` already prints this alliance's up-CELL line under its
+          own score panel — `cellLine`, the same two states ("n MORE TO TIP" / "TIPPING") the
+          chips carried, in the place a driver already watches for the score. Two readouts of
+          one number is one readout too many on a row that grows leftward into the sponsor
+          mark. */}
+      {/* NO NECTAR STOCK CHIP (owner, 2026-09-19: "get rid of ... the top right corner display
+          that shows the number of nectar remaining"). The count was said TWICE on screen — here
+          and on a billboard over the human player's box in the 3D world — and the box itself,
+          which now stands where the drive team can see it, is the thing that actually holds the
+          NECTAR. A count beside it is a second copy of a number you can look at.
+          ⚠️ THE REFUSAL REASONS WENT WITH IT. `NECTAR_CHIP` carried `none-owed` / `none-left` /
+          `locked` in its text, which is the only place the HUD said WHY a press would do
+          nothing. If that turns out to be missed, it belongs on the bar's own rule row
+          (`BiobuzzScoreBar`), not back on this right-anchored `nowrap` row — the comment below
+          records what a sixth chip costs here. */}
+      {/* NO NECTAR LOCKED CHIP HERE. The lock is TRUE for all of AUTO and the first minute of
+          TELEOP — most of a match — so as a chip it was a permanent fixture rather than a cue,
+          and a chip that is always on is read as furniture. The bar's row above the score
+          panels still states it AND carries the countdown (`BiobuzzScoreBar`), which is the
+          version that survives a coarse pointer anyway; the cue worth a beat on this row is
+          the CROSSING, below. */}
+      {/* ...the moment the lock lifts — see `opened` above. `on` rather than a colour of
+          its own: `npm run contrast` audits the palette pair by pair, so a token invented for
+          one chip is a new pair to justify, and the meaning here is the same one `FLOWER IN
+          REACH` already uses — a thing you may now do. */}
+      {opened && <span className="chip on">FLOWERS OPEN</span>}
       {/* G407 — CONTROL of a fifth SCORING ELEMENT. The owner's ruling makes this a WARNING
           worth no points and no card, which is exactly why it needs a chip: a sanction that
           moves no number is invisible on a scoreboard unless the HUD says it happened. Held
@@ -270,6 +322,11 @@ const PHASE_LABEL: Record<HudSnapshot['phase'], string> = {
  * a driver who plays two games reads the same bar in both. The one addition is the sub-line,
  * which is `.score-panel.bb` stacking its children instead of centring one.
  *
+ * `data-hud-band` on the bar and the chip row: this game has a 3D view, and a camera fitted to
+ * the whole canvas frames the far wall underneath this bar (owner's re-test, 2026-09-18). The
+ * attribute is what `GameController.refreshHudInsets` measures; it changes nothing visually, and
+ * a game that fills the `scoreBar` slot and forgets it simply gets the old, overlapping fit.
+ *
  * The panels show the alliance TOTAL, read from the shared `ScoreBreakdown` rather than from
  * `score[a].total`: the shared number already folds in foul points and already reads 0 for a
  * VOIDED alliance, and a bar that disagreed with the results screen about who is winning
@@ -278,12 +335,15 @@ const PHASE_LABEL: Record<HudSnapshot['phase'], string> = {
 export function BiobuzzScoreBar({ hud }: GameHudProps) {
   const f = sliceOf(hud)?.field;
   const pin = soonestPin(f?.pins);
+  // the VIEWER's alliance: PENDING is a driver's own readout, and two of them on one chip row
+  // would be a scoreboard the row is not.
+  const pending = pendingLine(f, hud.alliance);
   const red = hud.alliance === 'red' ? hud.score.total : hud.oppTotal;
   const blue = hud.alliance === 'blue' ? hud.score.total : hud.oppTotal;
   const urgent = hud.timeLeft <= 10 && (hud.phase === 'auto' || hud.phase === 'teleop');
   if (hud.mode !== 'match') {
     return (
-      <div className="scorebar">
+      <div className="scorebar" data-hud-band>
         <div className="timer-panel">
           <span className="timer-phase">FREE DRIVE</span>
         </div>
@@ -302,15 +362,27 @@ export function BiobuzzScoreBar({ hud }: GameHudProps) {
           be read — and 20 points every three seconds is not a tariff to leave to a cue the
           device does not render. `.warn` because it is a clock running against somebody, not a
           state of the field like the lock beside it. */}
-      {(f?.nectarLocked || pin) && (
-        <div className="breakdown-row">
-          {f?.nectarLocked && (
-            <span>NECTAR LOCKED{f.nectarIn === null ? '' : ` ${fmtTime(f.nectarIn)}`}</span>
-          )}
-          {pin && <span className="warn">{pinLine(pin)}</span>}
-        </div>
-      )}
-      <div className="scorebar">
+      {/* ⚠️ THE ROW IS ALWAYS MOUNTED, AND ITS CONTENTS ARE WHAT COME AND GO.
+          It used to be `{(nectarLocked || pin) && <div data-hud-band>…}`, so the band
+          DISAPPEARED on the tick the FLOWERS opened — and a band is what the 3D camera fits
+          the field around (`GameController.refreshHudInsets`). Measured at 1431×649: the
+          bottom inset dropped 98px → 73px at the 1:00 cue and the whole field jumped
+          (owner report, 2026-09-18). A band's box must be a function of the VIEWPORT, never
+          of match state, so the slot is reserved (`.breakdown-row` has a min extent) and
+          only the spans inside it are conditional. An empty row draws nothing. */}
+      {/* PENDING rides this row for the third time the same reason the two above do: it is a
+          number the field draws nowhere, it belongs to the driver rather than to the field, and
+          this row is the only one a coarse-pointer device renders. It is deliberately NOT in
+          the alliance panel — the panel is the score, and the whole point of this figure is
+          that it is not in the score yet (§10.5 C/E/F/G). */}
+      <div className="breakdown-row" data-hud-band>
+        {f?.nectarLocked && (
+          <span>NECTAR LOCKED{f.nectarIn === null ? '' : ` ${fmtTime(f.nectarIn)}`}</span>
+        )}
+        {pending && <span>{pending}</span>}
+        {pin && <span className="warn">{pinLine(pin)}</span>}
+      </div>
+      <div className="scorebar" data-hud-band>
         <div className={`score-panel bb red ${hud.alliance === 'red' ? 'mine' : ''}`}>
           {hud.alliance === 'red' && <span className="you-tag">YOU</span>}
           <span className="panel-score">{red}</span>
@@ -376,20 +448,30 @@ export function biobuzzResultsRows(hud: HudSnapshot): readonly ResultsSection[] 
     [
       'AUTONOMOUS',
       [
+        // the COUNT rows are the live, provisional readout and the POINTS rows wait for the
+        // instant §10.5 names, so the label carries the instant — the same thing the up-CELL
+        // row below has always done, and the only way a 0 beside a 2 in the count column reads
+        // as the rule rather than as a bug.
         row('LEAVE (robots)', 'leaveCount'),
-        row('LEAVE (points)', 'leave'),
+        row('LEAVE (points at the end of AUTO)', 'leave'),
         row('PARK (robots)', 'parkAutoCount'),
-        row('PARK (points)', 'parkAuto'),
+        row('PARK (points at the end of AUTO)', 'parkAuto'),
       ],
     ],
-    ['END OF MATCH', [row('PARK (robots)', 'parkTeleCount'), row('PARK (points)', 'parkTele')]],
+    [
+      'END OF MATCH',
+      [row('PARK (robots)', 'parkTeleCount'), row('PARK (points at the end of the MATCH)', 'parkTele')],
+    ],
     [
       'HIVE',
       [
         row('TIPS (count)', 'tips'),
         row('TIPS (points)', 'tipPts'),
         row('Up CELL contents (elements)', 'cellCount'),
-        row('Up CELL contents (points)', 'cellPts'),
+        // 0 for the whole match — Table 10-2 pays for what is LEFT IN the cell at the buzzer
+        // (owner ruling, 2026-09-12), so the label says when the number arrives rather than
+        // leaving a driver to read a permanent 0 beside a tray with four elements in it.
+        row('Up CELL contents (points at the buzzer)', 'cellPts'),
       ],
     ],
     [
@@ -401,7 +483,10 @@ export function biobuzzResultsRows(hud: HudSnapshot): readonly ResultsSection[] 
         row('Bottom NECTAR Bonus (points)', 'bottomPts'),
       ],
     ],
-    ['GARDEN', [row('GARDEN (elements)', 'gardenCount'), row('GARDEN (points)', 'gardenPts')]],
+    // §10.5 E is word for word §10.5 C's instant — "at the end of TELEOP when all ROBOTS and
+    // SCORING ELEMENTS have come to rest" — so the GARDEN line waits exactly as the CELL line
+    // does, and says so in the same words.
+    ['GARDEN', [row('GARDEN (elements)', 'gardenCount'), row('GARDEN (points at the buzzer)', 'gardenPts')]],
     // points AWARDED to each alliance, i.e. earned from the OPPONENT's violations — the same
     // direction the shared breakdown prints, so the two reconcile against their totals.
     ['PENALTIES', [row('Fouls awarded (points)', 'foul')]],

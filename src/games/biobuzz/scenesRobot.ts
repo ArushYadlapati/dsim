@@ -316,8 +316,8 @@ export const BB_ROBOT_SCENES: readonly Scene[] = [
      * WHERE A TURRET POINTS, as a picture — and WHICH TARGET IT CHOSE.
      *
      * A launcher aims at HIVE CELLS only (owner ruling 2026-09-12: nothing launched ever enters a
-     * FLOWER, so a FLOWER is never a turret target). `bbPickTarget` then keeps a CELL only when it
-     * is this robot's OWN alliance's and the robot stands on its OPEN side (`ScoreTarget.mouth`).
+     * FLOWER, so a FLOWER is never a turret target). `bbAimTarget` (Aim Assist) then takes the
+     * NEARER cell of this robot's OWN HIVE, whichever way that HIVE is tilted.
      *
      * The BLUE robot stands at (−45, 25), which makes the two filters visible:
      *  • RED's up-CELL (−12.75, −13.37) is NEARER — about 50 in against 59 — so nearest-by-

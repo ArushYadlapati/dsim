@@ -1,0 +1,826 @@
+import * as THREE from 'three';
+import type { GameScene, GameSceneFactory, SceneCamera, SceneFrame, SceneOptions } from '../../module';
+import type { World } from '../../../types';
+import { BB_HALF_X, BB_HALF_Y, BB_VIEW_MARGIN } from '../config';
+import {
+  CAMERA_PREFS,
+  getCameraPref,
+  setCameraPref,
+  setViewPref,
+  subscribeCameraPref,
+  type CameraPref,
+} from '../graphics/store';
+import {
+  GFX_PRESETS,
+  effectivePixelRatio,
+  frameIntervalMs,
+  getGraphics,
+  msaaSamples,
+  shadowBlurRadius,
+  shadowMapSize,
+  subscribeGraphics,
+  type GraphicsSettings,
+  type GraphicsTier,
+} from '../graphics/settings';
+import { applyFirstGuess, createQualityGovernor, probeAdapter, type QualityGovernor } from '../graphics/auto';
+import { installViewKey } from '../graphics/viewKey';
+import { buildBiobuzzField, updateBiobuzzField, type BbFieldHandles } from './renderField';
+import { buildBiobuzzElements, setElementShadows, updateBiobuzzElements, type BbElements } from './renderElements';
+import { buildBiobuzzRobots, updateBiobuzzRobots, type BbRobots } from './renderRobots';
+import { buildBiobuzzReticle, updateBiobuzzReticle, type BbReticle } from './renderReticle';
+import { createCameras, setCameraTuning, type BbCameras } from './renderCameras';
+import { createEnvironment, type BbEnvironment } from './renderEnvironment';
+import { createStats, type BbStats } from './renderStats';
+import {
+  SCENE_HEMI_INTENSITY,
+  SCENE_HEMI_INTENSITY_NO_IBL,
+  SceneUnsupportedError,
+  createSceneLights,
+  createSceneRenderer,
+  watchContextLoss,
+  disposeObject3D,
+  gpuProbe,
+  readBackdropColor,
+} from './renderCore';
+
+/**
+ * THE CHUNK'S TWO ENTRY POINTS, BOTH REACHED THROUGH THIS ONE MODULE SPECIFIER.
+ *
+ * `src/games/biobuzz/index.ts` fills two module slots — `scene` (the match view, below) and
+ * `previewScene` (the robot-builder turntable, `renderPreview.ts`) — and BOTH of them write
+ * `import('./scene/renderScene')`. That is deliberate: one dynamic specifier is ONE Rollup
+ * chunk, so `bundleaudit`'s `scene` route stays one measurable file. Two specifiers would make
+ * three.js a hoisted shared chunk with a facade either side, and a facade carries none of the
+ * marker strings that route says `scene` by — both would land in `other` and fail the audit for
+ * a reason that has nothing to do with size. The re-export is what makes the second slot
+ * reachable without a second entry.
+ *
+ * `SceneUnsupportedError` is re-exported for a plainer reason: it used to be DECLARED here, and
+ * a host catching it imports it from here.
+ */
+export { SceneUnsupportedError } from './renderCore';
+export { createRobotPreviewScene, type RobotPreviewScene } from './renderPreview';
+
+/**
+ * ⚠️ `SceneQuality` / `QUALITY` ARE GONE. They were a module CONSTANT at "Medium", with a header
+ * saying the Day 3 Graphics section would replace the literal. It has: the sixteen settings of
+ * `docs/biobuzz/plan-3d.md` §4.4 live in `graphics/settings.ts`, per device, and this file
+ * SUBSCRIBES to them. Everything below that used to read `QUALITY.shadows` now reads
+ * `this.settings`, and `applyQuality` is the one place a change lands.
+ *
+ * The rule the whole section is built on: **a setting is applied LIVE, without rebuilding the
+ * scene**, and the two that genuinely cannot be are named as such in the UI rather than
+ * silently deferred (mesh detail, which is a different GLB, and anti-aliasing's OWN reason for
+ * existing here — see `syncTarget`).
+ */
+
+/** `castShadow`/`receiveShadow` on the static field, set ONCE after the meshes exist — not
+ * per-object at construction, because a GLB-backed field builder (plan-3d.md §8) returns the
+ * same `BbFieldHandles` shape but should not have to know this scene's shadow policy itself.
+ * The ELEMENTS' own flags are `setElementShadows`'s (they are a settings row of their own) and
+ * robots set theirs in `buildRobotGroup`. */
+function applyShadowFlags(field: BbFieldHandles): void {
+  field.floor.receiveShadow = true;
+  field.walls.traverse((o) => {
+    if ((o as THREE.Mesh).isMesh) {
+      o.castShadow = true;
+      o.receiveShadow = true;
+    }
+  });
+  for (const a of ['red', 'blue'] as const) {
+    field.hives[a].traverse((o) => {
+      if ((o as THREE.Mesh).isMesh) {
+        o.castShadow = true;
+        o.receiveShadow = true;
+      }
+    });
+  }
+  for (const f of field.flowers) {
+    f.traverse((o) => {
+      if ((o as THREE.Mesh).isMesh) o.castShadow = true;
+    });
+  }
+}
+
+/**
+ * BIOBUZZ 3D SCENE — the lazily loaded renderer chunk (Day 1, `docs/biobuzz/plan-3d.md` §2.3,
+ * §2.5, §4). This is the ONE file `three` is imported by that the rest of the game reaches: the
+ * seam is `src/games/biobuzz/index.ts`'s `scene: () => import('./scene/renderScene').then(m =>
+ * m.createBiobuzzScene)`, a dynamic `import()` so Vite emits everything under `scene/` as its
+ * own chunk, never touched by a player who stays on the 2D view.
+ *
+ * COORDINATES, EVERYWHERE IN THIS DIRECTORY: field INCHES, z UP — x right, y up-field
+ * (audience-away), z up. No axis conversion happens anywhere in `scene/`; every camera's `up`
+ * is `(0,0,1)` (`renderCameras.ts`). This mirrors the field frame the rest of BIOBUZZ already
+ * uses (`config.ts`'s header: "origin at the centre, +x = audience right, +y = away from the
+ * audience"), so a position read straight off `World` needs no transform to become a Three.js
+ * position.
+ */
+
+/** the PiP minimap's size as a fraction of the canvas's short edge, and its margin. §4.4 offers
+ * it on Low/Medium, where the 3D shot is the least legible and a top-down aid earns its second
+ * pass over the scene. */
+const PIP_FRACTION = 0.26;
+const PIP_MARGIN = 12;
+const PIP_MIN_PX = 120;
+const PIP_MAX_PX = 260;
+
+class BiobuzzScene implements GameScene {
+  /** A GETTER, not a field. The canvas is stable for the life of the scene today, but the
+   * contract's `readonly element` is satisfied either way and the host (`game.ts`) reads it at
+   * mount and teardown — keeping it a getter is what would let a future renderer rebuild swap
+   * the canvas without breaking that contract. */
+  get element(): HTMLCanvasElement {
+    return this.canvas;
+  }
+  private readonly canvas: HTMLCanvasElement;
+  private readonly renderer: THREE.WebGLRenderer;
+  private readonly scene = new THREE.Scene();
+  private readonly cameras: BbCameras;
+  private readonly field: BbFieldHandles;
+  private readonly elements: BbElements;
+  private readonly robots: BbRobots;
+  private readonly reticle: BbReticle;
+  /** does the device's `effects` setting want the shot path at all (see `applyQuality`)? */
+  private reticleOn = true;
+  private readonly env: BbEnvironment;
+  private readonly stats: BbStats;
+  private readonly governor: QualityGovernor;
+  private readonly hemi: THREE.HemisphereLight;
+  private readonly sun: THREE.DirectionalLight;
+  private readonly host: HTMLElement;
+  private readonly onQualityEvent?: (line: string) => void;
+  /** a FIXED tier (exports run at High regardless of the device) — when set, the settings store
+   * is not read and not subscribed to at all. */
+  private readonly fixedTier: GraphicsTier | null;
+
+  // ── graphics state ────────────────────────────────────────────────────────────────────────
+  private settings: GraphicsSettings;
+  private tier: GraphicsTier;
+  /** the MSAA render target, or null when anti-aliasing is off (which renders straight to the
+   * canvas and costs no blit at all). */
+  private target: THREE.WebGLRenderTarget | null = null;
+  private readonly blitScene = new THREE.Scene();
+  private readonly blitCamera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
+  private readonly blitMesh: THREE.Mesh<THREE.PlaneGeometry, THREE.MeshBasicMaterial>;
+  /** the dedicated PiP camera — NOT `cameras.overhead`, which carries the main shot's
+   * `setViewOffset` window and would render the minimap through the HUD's safe rect. */
+  private readonly pipCamera = new THREE.OrthographicCamera(-1, 1, 1, -1, 1, 4000);
+  private frameInterval = 0;
+  private lastDraw = 0;
+  /** how many children the robot group had when material tuning was last applied. Robots are
+   * built lazily per spec, so anisotropy and reflections have to be re-applied when one appears
+   * — a cheap integer compare per frame instead of a traverse. */
+  private robotChildren = -1;
+
+  private cssW = 1;
+  private cssH = 1;
+  private hostDpr = 1;
+
+  private cameraPref: CameraPref = getCameraPref();
+  private readonly teardown: (() => void)[] = [];
+  private lastW = 1;
+  private lastH = 1;
+  private readonly projScratch = new THREE.Vector3();
+  private lastCamera: SceneCamera = 'driver';
+  private dragging = false;
+  private dragX = 0;
+  private dragY = 0;
+
+  constructor(canvas: HTMLCanvasElement, field: BbFieldHandles, host: HTMLElement, opts: SceneOptions) {
+    this.canvas = canvas;
+    this.host = host;
+    this.onQualityEvent = opts.onQualityEvent;
+    this.fixedTier = (opts.quality as GraphicsTier | undefined) ?? null;
+    const gfx = getGraphics();
+    this.tier = this.fixedTier ?? gfx.tier;
+    this.settings = this.fixedTier ? { ...GFX_PRESETS[this.fixedTier] } : gfx.settings;
+
+    /**
+     * ⚠️ `antialias: false`, ALWAYS, AND THAT IS WHAT MAKES THE AA SETTING LIVE.
+     *
+     * The context's `antialias` attribute is fixed for the life of the context and WebGL gives
+     * no way to ask the default framebuffer for a PARTICULAR sample count — you get "some" MSAA
+     * or none. An implementation built on it could offer neither §4.4's "MSAA 2x" nor a change
+     * without recreating the canvas. So the scene renders into a multisampled render target of
+     * its own (`syncTarget`) and blits, which makes the sample count a number this scene owns
+     * and can change between two frames.
+     */
+    // `antialias: false` HERE, ALWAYS — the reason is the paragraph above, and the target that
+    // replaces it is `syncTarget` below. Tone mapping, the output colour space and the shadow
+    // filter come with the shared factory (`renderCore.ts`), which the builder preview builds
+    // its renderer from too — so the same robot cannot come out two different colours in the
+    // two places this game draws it.
+    this.renderer = createSceneRenderer(canvas, { antialias: false, alpha: false });
+    /**
+     * A LOST CONTEXT TAKES THE SAME EXIT AS AN UNSUPPORTED ONE — `setViewPref('2d')` plus an
+     * event-log line, exactly what the factory below does for a failed WebGL2 probe or a
+     * software renderer. One host path, because a player cannot tell the three apart and
+     * neither answer is "keep looking at this canvas": see `watchContextLoss` for why a lost
+     * context is otherwise INVISIBLE (no throw, no error — the calls just stop doing anything).
+     *
+     * The scene is not disposed from in here. The host owns the mount, `dispose` is its call to
+     * make when it swaps the view, and disposing a scene from inside its own canvas's event
+     * handler would free the renderer under the frame that is running.
+     */
+    this.teardown.push(
+      watchContextLoss(canvas, () => {
+        setViewPref('2d');
+        this.onQualityEvent?.('Lost the graphics context. Showing the 2D view.');
+      }),
+    );
+
+    // HEMISPHERE FILL — a lighter, less blue-shifted ground term (`0x4b525c`, up from a near-navy
+    // `0x404048`) so light bounced off the (dark) tile floor still lifts the underside of the
+    // robots and the hive trays instead of leaving them silhouetted. Its INTENSITY is a function
+    // of the environment-lighting setting (`applyQuality`): with the IBL off it is most of the
+    // ambient term there is and has to carry more.
+    const lights = createSceneLights();
+    this.hemi = lights.hemi;
+    this.sun = lights.sun;
+    this.sun.position.set(60, -80, 140);
+    // the shadow camera is an orthographic frustum sized to cover the field plus the hive's
+    // height — a frustum sized to the whole 260-in room would waste most of its depth/texel
+    // budget on backdrop that never casts anything.
+    {
+      const cam = this.sun.shadow.camera;
+      const half = BB_HALF_X + 20;
+      cam.left = -half;
+      cam.right = half;
+      cam.top = half;
+      cam.bottom = -half;
+      cam.near = 1;
+      cam.far = 260;
+      cam.updateProjectionMatrix();
+      // BIAS and NORMAL-BIAS are `createSceneLights`' (`renderCore.ts`), shared with the builder
+      // preview — that file carries the note on why the two have to be tuned as a pair.
+    }
+    this.scene.add(this.hemi, this.sun);
+
+    this.field = field;
+    this.scene.add(this.field.group);
+    this.elements = buildBiobuzzElements();
+    this.scene.add(this.elements.group);
+    this.robots = buildBiobuzzRobots();
+    this.scene.add(this.robots.group);
+    this.reticle = buildBiobuzzReticle();
+    this.scene.add(this.reticle.group);
+    applyShadowFlags(this.field);
+
+    // IMAGE-BASED LIGHTING (plan-3d.md §4.5) — the procedural `RoomEnvironment` PMREM, or one of
+    // the two CC0 HDRIs, owned by `renderEnvironment.ts`. It is what makes a metal turret ring or
+    // a glossy chassis read as a physical material instead of a flat-shaded polygon: a
+    // `MeshStandardMaterial` with no environment has nothing to reflect.
+    this.env = createEnvironment(this.renderer, this.scene, readBackdropColor());
+
+    this.blitMesh = new THREE.Mesh(
+      new THREE.PlaneGeometry(2, 2),
+      // `depthTest`/`depthWrite` off: it is a full-screen copy, there is nothing to sort against.
+      // `toneMapped` is left TRUE on purpose — the scene renders into a linear half-float target
+      // with tone mapping SKIPPED (three applies it only when the destination is the canvas), so
+      // this copy is where ACES and the sRGB conversion actually happen, on the full HDR range.
+      new THREE.MeshBasicMaterial({ depthTest: false, depthWrite: false }),
+    );
+    this.blitMesh.frustumCulled = false;
+    this.blitScene.add(this.blitMesh);
+
+    this.pipCamera.up.set(0, 0, 1);
+
+    this.cameras = createCameras();
+    this.stats = createStats(host, this.settings.perfOverlay);
+    // the clock this scene's own frame loop already reads — `graphics/auto.ts` takes it as a
+    // parameter rather than reading one itself (see its note on the determinism guard)
+    this.governor = createQualityGovernor(() => performance.now(), this.onQualityEvent);
+
+    this.applyQuality();
+    this.bindTheme();
+    this.bindPrefs();
+    if (opts.interactive !== false) {
+      this.bindPointer();
+      this.bindKeys();
+      this.teardown.push(installViewKey());
+    }
+  }
+
+  // ───────────────────────────────────────────────────────── the settings, applied live (Day 3) ──
+
+  /**
+   * Push `this.settings` into the renderer, the lights, the meshes and the cameras. Called at
+   * construction and on every change from the settings store; idempotent, and cheap enough
+   * (a few property writes plus at most one scene traverse) that nothing here diffs.
+   *
+   * Every row of §4.4's table is handled here or named as an exception:
+   *   render scale + budget → `syncSize`      max frame rate → `frameInterval`
+   *   anti-aliasing         → `syncTarget`    shadows        → below
+   *   element shadows       → `setElementShadows`
+   *   ambient occlusion     → NOT OFFERED (`GFX_NOT_OFFERED`, and the UI says so)
+   *   anisotropy            → `tuneMaterials` reflections    → `tuneMaterials`
+   *   mesh detail           → the ONE setting that needs a rebuild: it selects which GLB
+   *                           `buildBiobuzzField` loads, and the field is built before the scene
+   *                           exists. It takes effect on the next 3D view; the UI says that.
+   *   environment + env lighting → `renderEnvironment.ts`
+   *   effects               → reticle + rolling spin
+   *   FOV + camera motion   → `setCameraTuning`
+   *   PiP minimap + overlay → read per frame by `render`
+   */
+  private applyQuality(): void {
+    const s = this.settings;
+    this.frameInterval = frameIntervalMs(s.maxFps);
+
+    // ── shadows ────────────────────────────────────────────────────────────────────────────
+    const on = s.shadows !== 'off';
+    this.renderer.shadowMap.enabled = on;
+    this.sun.castShadow = on;
+    if (on) {
+      const size = shadowMapSize(s.shadows);
+      if (this.sun.shadow.mapSize.x !== size) {
+        this.sun.shadow.mapSize.set(size, size);
+        // A SHADOW MAP IS ALLOCATED ONCE, AT ITS FIRST SIZE. Changing `mapSize` on a light whose
+        // map already exists does nothing at all until the old render target is thrown away —
+        // this is the line that makes "low ⇄ high" a live change rather than a stored setting
+        // that only applies after a reload.
+        this.sun.shadow.map?.dispose();
+        this.sun.shadow.map = null;
+      }
+      this.sun.shadow.radius = shadowBlurRadius(s.shadows);
+    }
+    this.renderer.shadowMap.needsUpdate = true;
+    setElementShadows(this.elements, s.elementShadows);
+
+    // ── effects ────────────────────────────────────────────────────────────────────────────
+    this.elements.rollingSpin = s.effects !== 'minimal';
+    // ⚠️ A FLAG, NOT `group.visible`. `updateBiobuzzReticle` writes `visible` every frame, so a
+    // value set here was overwritten on the next one and `minimal` never actually turned the shot
+    // path off.
+    this.reticleOn = s.effects !== 'minimal';
+
+    // ── environment and its lighting ───────────────────────────────────────────────────────
+    // With the IBL off there is no ambient term but the hemisphere light, so it carries more.
+    this.hemi.intensity = s.envLighting ? SCENE_HEMI_INTENSITY : SCENE_HEMI_INTENSITY_NO_IBL;
+    if (!s.envLighting) {
+      // and no HDRI is fetched at all — an environment map that is not lighting anything is a
+      // 1.7 MB download for a backdrop, which is not a trade this setting is offering
+      void this.env.apply('room', this.onQualityEvent);
+      this.scene.environment = null;
+    } else {
+      void this.env.apply(s.environment, this.onQualityEvent);
+    }
+
+    this.tuneMaterials();
+    setCameraTuning(s.fov, s.cameraMotion);
+    this.stats.setMode(s.perfOverlay);
+    this.syncTarget();
+    this.syncSize();
+  }
+
+  /**
+   * ANISOTROPY and REFLECTIONS, the two rows that live on the MATERIALS.
+   *
+   * Anisotropic filtering is a per-TEXTURE sampler setting: it is what keeps the tile seams and
+   * the tape lines from turning to mush where the floor runs away from a driver-station camera,
+   * which is the single most grazing-angle surface in this scene and therefore the one the
+   * setting was put in the table for. Clamped to the GPU's own maximum — asking for 16 on a part
+   * that offers 2 is silently ignored by WebGL and would leave the UI claiming something untrue.
+   *
+   * Reflections are `envMapIntensity` on the METAL-ish materials only. A diffuse plastic chassis
+   * gets its environment contribution from the same map and turning that off would just make the
+   * scene darker, which is the `envLighting` row's job; what a player switching "reflections"
+   * off wants back is the specular sheen on the frame rails and the turret ring.
+   */
+  private tuneMaterials(): void {
+    const max = this.renderer.capabilities.getMaxAnisotropy();
+    const aniso = Math.min(this.settings.anisotropy, max);
+    const refl = this.settings.reflections ? 1 : 0;
+    this.scene.traverse((o) => {
+      const mesh = o as THREE.Mesh;
+      if (!mesh.isMesh) return;
+      const mats = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
+      for (const m of mats) {
+        const std = m as THREE.MeshStandardMaterial;
+        if (std.map && std.map.anisotropy !== aniso) {
+          std.map.anisotropy = aniso;
+          std.map.needsUpdate = true;
+        }
+        if (typeof std.metalness === 'number' && std.metalness >= 0.3) std.envMapIntensity = refl;
+      }
+    });
+    this.robotChildren = this.robots.group.children.length;
+  }
+
+  /** create/resize/destroy the multisampled target for the current AA setting. */
+  private syncTarget(): void {
+    const samples = msaaSamples(this.settings.aa);
+    if (samples === 0) {
+      if (this.target) {
+        this.target.dispose();
+        this.target = null;
+        this.blitMesh.material.map = null;
+      }
+      return;
+    }
+    const w = Math.max(1, Math.round(this.cssW * this.renderer.getPixelRatio()));
+    const h = Math.max(1, Math.round(this.cssH * this.renderer.getPixelRatio()));
+    if (this.target && this.target.samples === samples) {
+      this.target.setSize(w, h);
+      return;
+    }
+    this.target?.dispose();
+    this.target = new THREE.WebGLRenderTarget(w, h, {
+      samples,
+      // HALF FLOAT so the scene keeps its HDR range until the blit tone-maps it. An 8-bit target
+      // would clip every highlight ACES exists to roll off, and the whole point of the filmic
+      // curve is what happens ABOVE 1.0.
+      type: THREE.HalfFloatType,
+      depthBuffer: true,
+      stencilBuffer: false,
+    });
+    // the working colour space: three skips the output conversion when the destination is a
+    // render target, so what lands here is linear and the blit converts it
+    this.target.texture.colorSpace = THREE.LinearSRGBColorSpace;
+    this.blitMesh.material.map = this.target.texture;
+    this.blitMesh.material.needsUpdate = true;
+  }
+
+  /** the backbuffer size for the current render scale and the tier's pixel budget. */
+  private syncSize(): void {
+    const pr = effectivePixelRatio(this.settings, this.tier, this.cssW, this.cssH, this.hostDpr);
+    this.renderer.setPixelRatio(pr);
+    this.renderer.setSize(this.cssW, this.cssH, false);
+    if (this.target) this.target.setSize(Math.max(1, Math.round(this.cssW * pr)), Math.max(1, Math.round(this.cssH * pr)));
+  }
+
+  // ─────────────────────────────────────────────────────────────────── live inputs (Day 2) ──
+
+  /** THE THEME. `applyTheme` stamps `data-theme` on `<html>`, so one `MutationObserver` on that
+   * one attribute is the whole subscription — and it catches an OS-driven change too, which
+   * `theme.ts` resolves in JS before stamping (CSS never sees `system`). */
+  private bindTheme(): void {
+    if (typeof MutationObserver !== 'function' || typeof document === 'undefined') return;
+    const obs = new MutationObserver(() => this.env.refreshBackdrop(readBackdropColor()));
+    obs.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+    this.teardown.push(() => obs.disconnect());
+  }
+
+  private bindPrefs(): void {
+    this.teardown.push(
+      subscribeCameraPref((pref) => {
+        this.cameraPref = pref;
+      }),
+    );
+    // A FIXED-TIER SCENE DOES NOT SUBSCRIBE. A replay export runs at High by contract (§4.7), and
+    // a player who opened the Graphics section in another tab mid-encode must not change the
+    // resolution of a video that is halfway written.
+    if (this.fixedTier) return;
+    this.teardown.push(
+      subscribeGraphics((state) => {
+        this.settings = state.settings;
+        this.tier = state.tier;
+        this.applyQuality();
+      }),
+    );
+  }
+
+  /**
+   * ORBIT INPUT — drag to swing the turntable, wheel to zoom. MOUSE ONLY, and only while the
+   * orbit camera is the one on screen: a touch drag over the field is the driving control on a
+   * phone, and a wheel that swallowed the page's scroll on every other camera would be a
+   * regression for a view that has no zoom to give.
+   */
+  private bindPointer(): void {
+    const host = this.host;
+    const onMove = (e: PointerEvent): void => {
+      if (!this.dragging) return;
+      this.cameras.orbitDrag(e.clientX - this.dragX, e.clientY - this.dragY);
+      this.dragX = e.clientX;
+      this.dragY = e.clientY;
+    };
+    const endDrag = (): void => {
+      this.dragging = false;
+    };
+    const onDown = (e: PointerEvent): void => {
+      if (e.pointerType !== 'mouse' || e.button !== 0 || this.lastCamera !== 'orbit') return;
+      this.dragging = true;
+      this.dragX = e.clientX;
+      this.dragY = e.clientY;
+    };
+    const onWheel = (e: WheelEvent): void => {
+      if (this.lastCamera !== 'orbit') return;
+      e.preventDefault();
+      this.cameras.orbitZoom(e.deltaY);
+    };
+    host.addEventListener('pointerdown', onDown);
+    window.addEventListener('pointermove', onMove);
+    window.addEventListener('pointerup', endDrag);
+    window.addEventListener('pointercancel', endDrag);
+    // `passive: false` or `preventDefault()` is ignored and the page scrolls under the zoom
+    host.addEventListener('wheel', onWheel, { passive: false });
+    this.teardown.push(() => {
+      host.removeEventListener('pointerdown', onDown);
+      window.removeEventListener('pointermove', onMove);
+      window.removeEventListener('pointerup', endDrag);
+      window.removeEventListener('pointercancel', endDrag);
+      host.removeEventListener('wheel', onWheel);
+    });
+  }
+
+  /**
+   * THE CAMERA KEYS (plan §4.3: `i`/`o` eye height, plus `c` for the camera itself).
+   *
+   * ⚠️ `t` IS NO LONGER ONE OF THEM. It lives in `graphics/viewKey.ts` now, installed above and
+   * reference-counted, because a listener owned by the scene can only ever go 3D → 2D: the scene
+   * is torn down the moment the view becomes 2D and there is then nothing left listening to take
+   * it back. That was this file's own note on Day 2 and it is what Day 3 fixed.
+   *
+   * The rest stay here, on `window`, rather than going through `src/input/bindings.ts` — a
+   * `KeyAction` there is read by `InputManager` into a `RobotCommand` and acted on by
+   * `GameController`, which is another lane's file, and it would also mean a `ControlsSection`
+   * row and a settings migration for a key whose only effect is on a renderer that may not be
+   * mounted. `i` and `o` are unbound in `DEFAULT_BINDINGS`; `c` is Chain Reaction's CATALYST,
+   * which BIOBUZZ has no mechanism for, so it is free here too.
+   */
+  private bindKeys(): void {
+    if (typeof window === 'undefined') return;
+    const onKey = (e: KeyboardEvent): void => {
+      if (e.ctrlKey || e.metaKey || e.altKey) return;
+      const t = e.target as HTMLElement | null;
+      // typing in a chat box, a team-name field or a rebind capture is never a camera command
+      if (t && (t.isContentEditable || /^(input|textarea|select)$/i.test(t.tagName))) return;
+      switch (e.key.toLowerCase()) {
+        case 'c': {
+          const i = CAMERA_PREFS.indexOf(this.cameraPref);
+          setCameraPref(CAMERA_PREFS[(i + 1) % CAMERA_PREFS.length]);
+          break;
+        }
+        case 'i':
+          this.cameras.nudgeEye(1);
+          break;
+        case 'o':
+          this.cameras.nudgeEye(-1);
+          break;
+        default:
+          return;
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    this.teardown.push(() => window.removeEventListener('keydown', onKey));
+  }
+
+  /** the camera actually rendered this frame: the device preference WINS over the one the host
+   * asked for, and `'auto'` (the default) is "whatever the host asked for". */
+  private resolvedCamera(hostPick: SceneCamera): SceneCamera {
+    return this.cameraPref === 'auto' ? hostPick : this.cameraPref;
+  }
+
+  render(world: World, frame: SceneFrame): void {
+    const t0 = performance.now();
+    // ── the frame cap (§4.4 row 2) ─────────────────────────────────────────────────────────
+    // A SKIPPED FRAME RETURNS BEFORE ANY WORK, including the mesh updates: they are the other
+    // half of the cost, and a cap that still posed 56 instances and every robot would save the
+    // GPU and not the CPU. The world is read fresh on the next frame that does draw, so nothing
+    // goes stale — this is a render cap, not a simulation one.
+    if (this.frameInterval > 0 && t0 - this.lastDraw < this.frameInterval) return;
+    this.lastDraw = t0;
+
+    updateBiobuzzField(this.field, world);
+    updateBiobuzzElements(this.elements, world);
+    updateBiobuzzRobots(this.robots, world);
+    updateBiobuzzReticle(this.reticle, world, frame.localRobotId, this.reticleOn);
+    // a robot appeared or its spec changed: its materials are new and have never been tuned
+    if (this.robots.group.children.length !== this.robotChildren) this.tuneMaterials();
+
+    this.lastW = Math.max(1, frame.width);
+    this.lastH = Math.max(1, frame.height);
+    this.lastCamera = this.resolvedCamera(frame.camera);
+    const camera = this.cameras.update(frame, world, this.lastCamera);
+
+    // ONE scene pass, into the MSAA target when anti-aliasing is on and straight to the canvas
+    // when it is off (which costs no blit at all — that is the whole reason `off` is a real
+    // setting here rather than a 1-sample target).
+    this.renderer.setRenderTarget(this.target);
+    this.renderer.render(this.scene, camera);
+    // THE SCENE'S OWN COUNTS, READ HERE — `info.render` is reset at the START of every
+    // `render()` call, and up to two more follow (the blit, the minimap), so a read taken after
+    // them reports the blit's two triangles.
+    const calls = this.renderer.info.render.calls;
+    const tris = this.renderer.info.render.triangles;
+    if (this.target) {
+      this.renderer.setRenderTarget(null);
+      this.renderer.render(this.blitScene, this.blitCamera);
+    }
+
+    if (this.settings.minimap) this.renderMinimap(frame);
+
+    /**
+     * WHAT THE GOVERNOR IS FED, AND WHY IT IS NOT THE FRAME PERIOD.
+     *
+     * The obvious measurement — the wall-clock gap between two `render` calls — is the DISPLAY's
+     * period on any machine that is keeping up, because rAF is vsync-locked. On a 60 Hz panel
+     * that is 16.67 ms with jitter, so its p95 would sit just OVER §4.6's 16.7 ms threshold on
+     * every healthy machine in the world and Auto would walk everybody down to Low.
+     *
+     * What §4.6 is actually asking is "does a frame COST more than a 60 Hz budget", so that is
+     * what is measured: this function's own span. It is CPU submit time, which under-reports a
+     * purely GPU-bound frame — but only for one frame, because the driver's own backpressure
+     * stalls the NEXT frame's submission inside this same span. A machine that cannot draw the
+     * scene shows it here within a frame or two, which is all a two-second warm-up needs.
+     */
+    const cost = performance.now() - t0;
+    this.governor.sample(cost);
+    this.stats.frame(cost, this.governor.p95Ms, calls, tris);
+  }
+
+  /**
+   * THE PiP MINIMAP (§4.4's last-but-one row) — the overhead shot, in a corner, over the main
+   * one. Drawn straight to the CANVAS (never through the MSAA target): it goes on top of the
+   * finished image, and a second pass through the target would mean a second blit.
+   *
+   * It is a second full pass over the scene, which is why the table has it ON at Low and Medium
+   * and OFF at High and Ultra — the machines that want a top-down aid are the ones whose 3D shot
+   * is hardest to read, and the ones that do not want a second pass are the ones already drawing
+   * a good one.
+   */
+  private renderMinimap(frame: SceneFrame): void {
+    const short = Math.min(this.lastW, this.lastH);
+    const size = Math.max(PIP_MIN_PX, Math.min(PIP_MAX_PX, short * PIP_FRACTION));
+    /**
+     * ⚠️ CSS PIXELS, NOT DRAWING-BUFFER PIXELS — and the origin is BOTTOM-left (the GL
+     * convention), not the top-left the rest of the app measures in.
+     *
+     * `WebGLRenderer.setViewport`/`setScissor` store what they are given and multiply by the
+     * renderer's own pixel ratio when they reach `gl.viewport`. Passing a figure that was
+     * already multiplied therefore squares the ratio: at Low (render scale 75 %) the whole
+     * scene rendered into 56 % of the canvas, tucked into the bottom-left corner with the rest
+     * of the frame left as backdrop — and it looked like a CAMERA bug, because the field was
+     * small and low, which is exactly what a bad fit looks like. It was this line.
+     */
+    const w = size;
+    const h = size;
+    const x = PIP_MARGIN;
+    const y = PIP_MARGIN;
+
+    // the fit: the whole field plus its view margin, squared off so a round minimap window shows
+    // the same extent on both axes whatever the main camera is doing
+    const ext = Math.max(BB_HALF_X, BB_HALF_Y) + BB_VIEW_MARGIN;
+    this.pipCamera.left = -ext;
+    this.pipCamera.right = ext;
+    this.pipCamera.top = ext;
+    this.pipCamera.bottom = -ext;
+    this.pipCamera.position.set(0, 0, 300);
+    // `up` is the driver's own screen-up in world space (`rot({0,1}, -viewAngle)`), so the
+    // minimap is oriented exactly like the 2D map the same player sees when they press `t`
+    const theta = -frame.viewAngle;
+    this.pipCamera.up.set(-Math.sin(theta), Math.cos(theta), 0);
+    this.pipCamera.lookAt(0, 0, 0);
+    this.pipCamera.updateProjectionMatrix();
+
+    const r = this.renderer;
+    r.setScissorTest(true);
+    r.setScissor(x, y, w, h);
+    r.setViewport(x, y, w, h);
+    // clear only inside the scissor — `clear()` respects it, which is what makes this an inset
+    // rather than a wipe of the frame that was just drawn
+    r.autoClear = false;
+    r.clear(true, true, false);
+    r.render(this.scene, this.pipCamera);
+    r.setScissorTest(false);
+    r.autoClear = true;
+    r.setViewport(0, 0, this.cssW, this.cssH);
+  }
+
+  /**
+   * FIELD POINT → CSS PIXELS on the overlay canvas, through the camera this scene last
+   * rendered (`GameScene.project`, `games/module.ts` — read its contract first).
+   *
+   * Projects manually rather than through `Vector3.project()` so a point BEHIND the camera can
+   * be rejected: the perspective divide flips the sign of x and y behind the eye, so a robot
+   * two feet behind a driver's shoulder projects to a perfectly plausible on-screen position,
+   * mirrored. Camera space is checked first (`z > 0` is behind, three.js cameras look down
+   * their own −z), then the projection matrix — WHICH ALREADY CARRIES `setViewOffset`, so the
+   * NDC that comes out maps to the WHOLE canvas, exactly the pixels the overlay draws in.
+   */
+  project(x: number, y: number, z: number, out: { x: number; y: number; visible: boolean }): void {
+    const cam = this.cameras.active;
+    const v = this.projScratch.set(x, y, z);
+    v.applyMatrix4(cam.matrixWorldInverse);
+    if (v.z > -1e-3) {
+      out.visible = false;
+      return;
+    }
+    v.applyMatrix4((cam as THREE.PerspectiveCamera).projectionMatrix);
+    out.x = (v.x * 0.5 + 0.5) * this.lastW;
+    out.y = (-v.y * 0.5 + 0.5) * this.lastH;
+    out.visible = v.x >= -1 && v.x <= 1 && v.y >= -1 && v.y <= 1 && v.z <= 1;
+  }
+
+  resize(width: number, height: number, dpr: number): void {
+    this.cssW = Math.max(1, width);
+    this.cssH = Math.max(1, height);
+    // the DEVICE ratio is capped at 2 before the settings see it: past 2× the difference is
+    // below the resolving power of the panel and the cost is quadratic. The render-scale
+    // setting can still push past it deliberately (§4.4 offers up to 200 %), which is the
+    // difference between "the browser said 3" and "the player asked for it".
+    this.hostDpr = Math.min(dpr, 2);
+    this.syncSize();
+  }
+
+  dispose(): void {
+    for (const off of this.teardown) off();
+    this.teardown.length = 0;
+    this.governor.dispose();
+    this.stats.dispose();
+    this.reticle.dispose();
+    this.env.dispose();
+    this.target?.dispose();
+    this.blitMesh.geometry.dispose();
+    this.blitMesh.material.dispose();
+    /**
+     * ⚠️ **THE ROBOTS COME OUT OF THE SCENE BEFORE THE BLANKET WALK, AND ARE FREED THEIR OWN
+     * WAY.** `disposeObject3D` frees every geometry and material it touches, and
+     * `renderRobots.ts` SHARES most of a robot's geometry and material between robots, between
+     * scenes and with the builder's preview (`SHARED_GEO` / `SHARED_MAT`, and that file's header
+     * says exactly this). Walking them from here frees the frame geometry, the roller texture
+     * and every solid material out from under a preview that is still mounted and under the next
+     * 3D view the player opens — three re-uploads and recompiles whatever it can, so the symptom
+     * is a frame hitch and a warning, not a crash, which is how it survives review.
+     * `renderPreview.ts`'s own `dispose` has always done it this way.
+     *
+     * Only the robots need this. The field builds its meshes per scene (its caches are local to
+     * the build function), and the elements, the reticle and the blit mesh are this scene's own.
+     */
+    this.scene.remove(this.robots.group);
+    this.robots.dispose();
+    disposeObject3D(this.scene);
+    this.renderer.dispose();
+    this.element.parentElement?.removeChild(this.element);
+  }
+}
+
+/**
+ * AUTO, RUN ONCE PER PAGE (plan §4.6).
+ *
+ * The probe creates a real WebGL2 context and the WebGPU adapter query is a permission-shaped
+ * async call, so neither belongs on the path of every scene the gallery mounts. The result is
+ * cached here for the life of the document; the WARM-UP, which is the half that actually
+ * measures anything, runs per scene inside the governor.
+ */
+let detected = false;
+// `gpuProbe()` (the once-per-document WebGL2 probe) is `renderCore.ts`'s now: the builder
+// preview needs the same answer, and a second probe would cost a real WebGL context.
+
+function detectOnce(onEvent?: (line: string) => void): void {
+  if (detected) return;
+  detected = true;
+  const probe = gpuProbe();
+  applyFirstGuess(probe, '', onEvent);
+  // the WebGPU adapter is a SECOND opinion and arrives late; it refines the guess only while
+  // the warm-up has not yet had its say
+  void probeAdapter().then((adapter) => {
+    if (adapter) applyFirstGuess(probe, adapter, onEvent);
+  });
+}
+
+/**
+ * Builds a `GameScene` inside `host`. Creates its own `<canvas>` (per the seam contract) and
+ * appends it. Requires WebGL2 — probed before anything else touches the canvas — so the caller
+ * can fall back to the 2D view on a software renderer or an old browser without this module
+ * having thrown mid-construction.
+ *
+ * ⚠️ A SOFTWARE RENDERER IS REFUSED HERE, AND THE VIEW PREFERENCE IS SET TO 2D BEFORE THE
+ * THROW (plan §4.6: "a software renderer string or a failed WebGL2 probe selects the 2D view
+ * with an event-log line; the 3D view stays one click away for retry"). Setting the preference
+ * is what makes the fallback stick — the host's own catch only logs, so without this the scene
+ * would be retried on every remount and the player would sit in front of a canvas that never
+ * appears. Nothing is disabled: the Graphics section's 3D button is still one click away, which
+ * is the retry §4.6 asks for.
+ *
+ * ASYNC (the CAD switch-over, §8): `buildBiobuzzField` awaits the GLB (or falls back to the
+ * constants field on any failure, logging its own warning) BEFORE the `BiobuzzScene` is
+ * constructed, so the scene never exists half-built.
+ */
+export const createBiobuzzScene: GameSceneFactory = async (host: HTMLElement, options?: SceneOptions): Promise<GameScene> => {
+  const opts = options ?? {};
+  if (!opts.quality) detectOnce(opts.onQualityEvent);
+
+  const probe = gpuProbe();
+  if (!probe.webgl2) {
+    setViewPref('2d');
+    opts.onQualityEvent?.('This browser has no WebGL2. Showing the 2D view.');
+    throw new SceneUnsupportedError('WebGL2 unavailable');
+  }
+  if (probe.software) {
+    setViewPref('2d');
+    opts.onQualityEvent?.(`No GPU acceleration here (${probe.renderer || 'software renderer'}). Showing the 2D view.`);
+    throw new SceneUnsupportedError(`software renderer: ${probe.renderer}`);
+  }
+
+  const canvas = document.createElement('canvas');
+  canvas.style.display = 'block';
+  canvas.style.width = '100%';
+  canvas.style.height = '100%';
+  const detail = (opts.quality ? GFX_PRESETS[opts.quality as GraphicsTier] : getGraphics().settings).meshDetail;
+  const field = await buildBiobuzzField(detail);
+  host.appendChild(canvas);
+  // `host` is handed on: the orbit camera's pointer listeners live on it (see the class's own
+  // note — the 2D overlay canvas is above this one and would otherwise swallow every press).
+  return new BiobuzzScene(canvas, field, host, opts);
+};

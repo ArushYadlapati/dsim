@@ -22,7 +22,9 @@ import { useNewVersion } from '../net/version';
 import { useServerNotice } from '../net/notice';
 import { Admin } from './Admin';
 import { Announcements } from './Announcements';
+import { AccountReset } from './AccountReset';
 import { AccountSync } from './AccountSync';
+import { AccountVerify } from './AccountVerify';
 import { GameView } from './GameView';
 import { Lobby } from './Lobby';
 import { WatchLive } from './WatchLive';
@@ -47,6 +49,7 @@ import { Privacy, Terms } from './Legal';
 import { Donate } from './Donate';
 import { Changelog } from './Changelog';
 import { Profile } from './Profile';
+import { TermsGate } from './TermsGate';
 import { UsernameGate } from './UsernameGate';
 import { Account } from './Account';
 import { authEnabled } from '../lib/authClient';
@@ -57,8 +60,10 @@ import { ServerMenu } from './ServerMenu';
 import type { MatchResultInfo, NetSession } from '../net/session';
 import { ServerSession } from '../net/serverSession';
 import { WebSocketTransport } from '../net/transport';
-import { encodeMsg } from '../net/protocol';
+import { CLIENT_CAPS, encodeMsg } from '../net/protocol';
 import { loadActiveGame, saveActiveGame, clearActiveGame, type ActiveGameRef } from '../net/activeGame';
+import { loadStagedMatch } from '../net/stagedMatch';
+import type { ResumedRoom } from './roomReturn';
 import { recordScore, type Replay, type ReplayResult } from '../sim/replay';
 import {
   savePracticeRun,
@@ -99,6 +104,12 @@ type Screen =
   | 'changelogs'
   | 'profile'
   | 'account'
+  /** `/account/reset` and `/account/verify` — the two screens an auth email lands
+   *  on. Separate screens rather than a `sub` of `account`, because neither is a tab
+   *  of the Profile page: they are reached once, from a link, by someone who may not
+   *  be signed in at all. */
+  | 'accountreset'
+  | 'accountverify'
   | 'admin'
   /** a game's own alpha-only dev route (`GameModule.devRoutes`) */
   | 'dev';
@@ -200,6 +211,10 @@ function screenSuffix(screen: Screen, a: RouteArgs): string {
       return '/changelogs';
     case 'account':
       return '/account';
+    case 'accountreset':
+      return '/account/reset';
+    case 'accountverify':
+      return '/account/verify';
     case 'admin':
       return '/admin';
     case 'dev':
@@ -252,6 +267,9 @@ function parseScreen(rest: string): { screen: Screen } & RouteArgs {
   if (rest.startsWith('/terms')) return at('terms');
   if (rest.startsWith('/donate')) return at('donate');
   if (rest.startsWith('/changelogs')) return at('changelogs');
+  // BEFORE the bare `/account`, which is a prefix of both
+  if (rest.startsWith('/account/reset')) return at('accountreset');
+  if (rest.startsWith('/account/verify')) return at('accountverify');
   if (rest.startsWith('/account')) return at('account');
   if (rest.startsWith('/admin')) return at('admin');
   // /play (a live game) can't be restored without a session ⇒ home
@@ -328,6 +346,8 @@ function navFor(screen: Screen): ShellNav {
     case 'records':
       return 'records';
     case 'account':
+    case 'accountreset':
+    case 'accountverify':
       return 'profile';
     case 'admin':
       return 'admin';
@@ -382,7 +402,21 @@ export function App() {
   const start = isWebHistory
     ? parsePath(window.location.pathname, settings.game)
     : { screen: 'home' as Screen, game: settings.game, ...NO_ARGS };
-  const [screen, setScreen] = useState<Screen>(start.screen);
+  /**
+   * A PAGE LOAD WITH A RANKED MATCH STILL WAITING GOES STRAIGHT TO IT.
+   *
+   * `stagedMatch` is only ever written between the assignment and the first tick, and it
+   * expires with the server clocks that bound that window — so if it is here and fresh,
+   * there is a room holding this account's seat right now and the alternative to going
+   * back to it is a dodge. The matchmaking screen adopts it on mount.
+   *
+   * It overrides the URL rather than deferring to it, and that is the point: the URL a
+   * reload restores is whatever screen the player was on, and none of them is the one
+   * with twenty seconds left on it. The path is rewritten to match below (the canonical
+   * -path effect reads `screen`), so the address bar does not lie about where they are.
+   */
+  const startScreen: Screen = loadStagedMatch() ? 'matchmaking' : start.screen;
+  const [screen, setScreen] = useState<Screen>(startScreen);
   const [route, setRoute] = useState<RouteArgs>(start);
   const [session, setSession] = useState<NetSession | null>(null);
   // read by the match-found takeover, which must fire on `found` alone — depending on
@@ -408,6 +442,17 @@ export function App() {
   // their own driver station instead of whichever alliance is first on the roster
   // (the camera flips a full 180° between alliances — see `replayViewpoint`).
   const [replayRobot, setReplayRobot] = useState<number | null>(null);
+  /**
+   * The MATCH a replay opened from a moderation surface belongs to, so the viewer can offer
+   * the score editor beside it.
+   *
+   * In-memory state rather than a route argument, deliberately, and it is the same shape
+   * `replayObj` uses: a replay URL is shareable and a match id in it would be an invitation
+   * to anyone who has the link. This only ever comes from the admin panel, in this tab, this
+   * session — and the server re-checks the admin gate on every call regardless, so the worst
+   * a forged one could do is show a moderator's panel to somebody the API then refuses.
+   */
+  const [replayMatch, setReplayMatch] = useState<string | null>(null);
   // one-time "this simulation isn't realistic" disclaimer (shown the first time CR is
   // the selected game, on this device; dismissal persists in localStorage)
   const [showChainDisclaimer, setShowChainDisclaimer] = useState(false);
@@ -423,8 +468,19 @@ export function App() {
   useEffect(() => {
     if (!isWebHistory) return;
     saveSettings(settingsRef.current);
-    const canonical = pathFor(start.screen, start, settingsRef.current.game);
-    if (window.location.pathname !== canonical) window.history.replaceState(null, '', canonical);
+    // `startScreen`, not `start.screen` — a staged ranked match overrides the restored
+    // URL (see above), and the address bar has to say where the player actually is
+    const canonical = pathFor(startScreen, start, settingsRef.current.game);
+    // ⚠️ COMPARE THE SEARCH TOO, not just the pathname. `pathFor` never emits a query,
+    // so anything in one is consumed-and-finished — including the `?token=` a reset or
+    // verification link arrives with. Comparing pathnames alone meant a token sitting on
+    // an ALREADY-canonical path was never stripped: it stayed in the address bar, in the
+    // history entry, and in anything that reads `location.href` (a copied link, a
+    // referrer, an analytics beacon). Stripping it here is safe because `entryToken.ts`
+    // captured it at MODULE LOAD, which is exactly why that file exists.
+    if (window.location.pathname + window.location.search !== canonical) {
+      window.history.replaceState(null, '', canonical);
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -464,7 +520,10 @@ export function App() {
     const a: RouteArgs = { ...NO_ARGS, ...args };
     setScreen(next);
     setRoute(a);
-    if (next !== 'replay') setReplayObj(null); // leaving the viewer drops the in-memory replay
+    if (next !== 'replay') {
+      setReplayObj(null); // leaving the viewer drops the in-memory replay
+      setReplayMatch(null); // ...and the moderation context it may have been opened with
+    }
     if (isWebHistory) {
       const path = pathFor(next, a, settingsRef.current.game);
       if (window.location.pathname !== path) window.history.pushState(null, '', path);
@@ -473,7 +532,12 @@ export function App() {
 
   /** open a player's public profile page (/profile/<username>) */
   const openProfile = (username: string): void => navigate('profile', { username });
-  const watchReplay = (replayId: string): void => navigate('replay', { replayId });
+  /** open a replay. `matchId` is passed only from the admin panel, where the match behind the
+   *  replay is known and a moderator may need to correct what it scored. */
+  const watchReplay = (replayId: string, matchId?: string): void => {
+    setReplayMatch(matchId ?? null);
+    navigate('replay', { replayId });
+  };
 
   // a friend's room invite, waiting to be auto-joined by the Lobby screen it
   // navigates to. One-shot: Lobby clears it once its mount effect consumes it
@@ -679,6 +743,12 @@ export function App() {
           setups: s.setups,
           yourRobotId: s.localRobotId,
           game: s.game,
+          // ⚠️ THE ROOM'S PHYSICS, and it has to be here. This object is the handshake a REJOIN
+          // rebuilds its whole session from, and it is written out field by field — so a field
+          // that is missing is a room the returning client silently plays on the wrong solve.
+          // Measured: rejoining a 3D room built a 2D world, predicted a different game from the
+          // one the server was scoring, and never latched `physicsPending`.
+          physics: s.physics,
           ranked: s.ranked,
           intros: s.intros,
           region: s.region,
@@ -716,7 +786,19 @@ export function App() {
     }
     // send `rejoin` on the FIRST open (ServerSession only re-sends it on reconnects);
     // the server reattaches our held slot and a snapshot resyncs us
-    transport.onOpen(() => transport.send(encodeMsg({ t: 'rejoin', room: ref.room, clientId: ref.clientId })));
+    /**
+     * ⚠️ `caps` IS NOT OPTIONAL ON A REJOIN, AND LEAVING IT OFF LOCKED PLAYERS OUT OF 3D ROOMS.
+     *
+     * The server gates a `'3d'`-physics room on `'bb3d'` at every door it has, and `rejoin` is
+     * one of them (`physicsAllowed(r.physics, msg.caps)`). This frame advertised nothing, so a
+     * current client returning to its own live 3D match was answered with "Update DSIM to play
+     * this room." — measured in a browser on 2026-09-18, and invisible in the smoke suite
+     * because the lane tests the SERVER's four doors and this is the client's side of one.
+     * The field has existed on the message type since Day 2 for exactly this; nothing sent it.
+     */
+    transport.onOpen(() =>
+      transport.send(encodeMsg({ t: 'rejoin', room: ref.room, clientId: ref.clientId, caps: CLIENT_CAPS })),
+    );
     const s = new ServerSession(transport, false, ref.start, ref.clientId, ref.room);
     // A rejoin the server REFUSES (the match ended, the grace lapsed) leaves a record that
     // would keep offering the same dead match every time Home is opened. Forget it as soon
@@ -775,6 +857,23 @@ export function App() {
     setEditMobileLayout(true);
     navigate('game');
   };
+
+  /**
+   * START THE TUTORIAL (roadmap item 6) — from the Modes page's first-run card, or from Controls.
+   *
+   * `settings` is NOT touched: `GameView` forces free drive for the run itself and leaves the
+   * player's Practice setup exactly as they left it. The flag lives in React state rather than in
+   * settings, so it does not persist, does not sync to the account, and does not survive a reload
+   * onto a screen that has no idea which step was staged.
+   *
+   * GUARDED like every other way into a run (`guardStart`): a stale build or a scheduled restart
+   * blocks a tutorial the same as it blocks a ranked match.
+   */
+  const startTutorial = (): void =>
+    guardStart(() => {
+      setTutorialRun(true);
+      navigate('game');
+    });
 
   /**
    * A SOLO PRACTICE run finished — keep it.
@@ -933,6 +1032,26 @@ export function App() {
    * RecordRun connects on mount, so this costs one reconnect, not a menu trip.
    */
   const restartRun = (): void => {
+    /**
+     * ⚠️ TELL THE SERVER THE OLD RUN IS OVER, AND FORGET IT LOCALLY — both halves used to
+     * be missing, and both became visible the moment the single-game lock started actually
+     * holding (it was released at match start by `startLoop`'s old `stop()` call, so for
+     * months it bound nothing).
+     *
+     * The server half: the new run is a join on a BRAND-NEW `rec-` code, so the old room's
+     * lock is still registered against this account until its own socket close is processed.
+     * `abandon` is the same frame the you-have-a-game-in-progress card sends and it needs no
+     * reply. It is sent on the LIVE session's socket before it is disposed, so it cannot race
+     * the new connection. The server also yields a solo record hold at the door now, so this
+     * is belt and braces rather than the only defence — but it is the half that keeps the old
+     * room from sitting on a lock it no longer has any use for.
+     *
+     * The local half: `activeGame` still named the run we are walking away from, so Home went
+     * on offering to rejoin a match that no longer exists.
+     */
+    session?.abandonSlot?.();
+    clearActiveGame();
+    setActiveGame(null);
     session?.dispose();
     setSession(null);
     setSessionKind(null);
@@ -968,7 +1087,9 @@ export function App() {
 
   useEffect(() => {
     if (!parkedQueue?.found) return;
-    if (screenRef.current === 'matchmaking') return; // already there; it will adopt
+    // already there: the screen adopts any parked search reactively, not only on mount
+    // (`Matchmaking`'s adopt effect), so there is nothing for this to do
+    if (screenRef.current === 'matchmaking') return;
     sessionRef.current?.dispose();
     setSession(null);
     setSessionKind(null);
@@ -991,6 +1112,57 @@ export function App() {
     screenRef.current = screen;
   }, [screen]);
 
+  /**
+   * ---- BACK TO THE ROOM'S OWN LOBBY ----------------------------------------------
+   *
+   * A custom room used to be worth exactly one game. Everything about the ROOM was frozen
+   * at the first start: a rematch replays that roster, so a group that lost a player, or
+   * wanted to swap sides, had to mint a new code and all re-join it. The room is now
+   * recycled in place instead — the server clears its world and puts it back in the lobby
+   * state, keeping every seat.
+   *
+   * WHICH MEANS THE SOCKET MUST SURVIVE THE SCREEN CHANGE. We hold a seat the server is
+   * still counting; closing the connection would give it up and make everyone re-join the
+   * room they never left (and lose it outright if it filled in between). So the session
+   * `release()`s the transport rather than disposing it, and the Lobby adopts the same
+   * connection — the mirror image of the handover `Lobby.handleStart` makes on the way in.
+   */
+  const [resumedRoom, setResumedRoom] = useState<ResumedRoom | null>(null);
+
+  const backToRoomLobby = (): void => {
+    const s = session;
+    if (!s?.release || !s.room || !s.clientId) return;
+    const transport = s.release();
+    setEditMobileLayout(false);
+    setSession(null);
+    setSessionKind(null);
+    setSessionCoop(false);
+    // the match is over and the room no longer holds one: there is nothing to rejoin, and
+    // leaving the record behind would offer Home a "rejoin your match" that cannot work.
+    clearActiveGame();
+    setActiveGame(null);
+    setResumedRoom({ transport, code: s.room, region: s.region, clientId: s.clientId });
+    navigate('lobby');
+  };
+
+  /**
+   * EVERY MEMBER FOLLOWS THE ROOM, not just whoever pressed the button.
+   *
+   * `requestLobby` only ASKS; the room answers all of its clients at once (`t: 'lobby'`), and
+   * that answer is what moves each of them. Driving the screen change off the press instead
+   * would leave the rest of the room staring at a results screen for a match the server no
+   * longer has — and would move the host even on a request the server refused (a rated room,
+   * a result still being written, a member too old to understand the recycle).
+   *
+   * ⚠️ RE-REGISTERED ON EVERY SESSION, never mount-only: `onLobby` REPLACES, and a callback
+   * captured on the first render reads the session that render had. That is the same trap
+   * `onPracticeRun` fell into.
+   */
+  useEffect(() => {
+    session?.onLobby?.(() => backToRoomLobby());
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [session]);
+
   /** tear the session down without deciding where to go next */
   const leaveSession = (): void => {
     setEditMobileLayout(false);
@@ -1005,6 +1177,7 @@ export function App() {
 
   const exitGame = (): void => {
     leaveSession();
+    setTutorialRun(false);
     navigate('home');
   };
 
@@ -1030,6 +1203,8 @@ export function App() {
   // the player STARTS a run (never mid-run), so they aren't stuck on a stale version
   const newVersion = useNewVersion();
   const [pendingStart, setPendingStart] = useState<(() => void) | null>(null);
+  /** the next `/game` mount runs the TUTORIAL (see `startTutorial`), cleared on the way out. */
+  const [tutorialRun, setTutorialRun] = useState(false);
   // a scheduled server restart is live (admin notice): don't let anyone START a new
   // game / queue — they'd just get dropped by the restart. People already in a game
   // are untouched (this only guards the start actions). Info notices don't block.
@@ -1063,9 +1238,41 @@ export function App() {
     else go();
   };
 
-  /** abandon the in-progress game: forget it locally (its server slot then coasts +
-   * drops after the grace) so the player is free to start something new. */
+  /**
+   * ABANDON THE IN-PROGRESS GAME — and say so to the server, which is the half that
+   * used to be missing.
+   *
+   * This only ever cleared the BROWSER's record. That was harmless for as long as the
+   * server's single-game lock was inert, and it is not inert any more: the lock is
+   * registered when a match begins and released at finalize, drop or stop, so a slot
+   * abandoned from the menu went on holding it for the rest of the reconnect grace.
+   * The player pressed a button that said the game was gone and the next thing they
+   * started was refused — "you already have a game in progress, rejoin or leave it
+   * first" — advice about a game the UI had just told them did not exist.
+   *
+   * One frame on a throwaway socket, and nothing waited on: the local record is
+   * dropped either way, because a player who cannot reach the server is not helped by
+   * being kept in a room they have left. The socket closes as soon as the frame is out
+   * (`abandon` is answered with nothing by design — see the protocol note).
+   */
   const abandonActiveGame = (): void => {
+    const ref = loadActiveGame();
+    if (ref) {
+      const params: Record<string, string> = { room: ref.room };
+      if (ref.region) params.region = ref.region;
+      try {
+        const t = new WebSocketTransport(gameServerUrlWith(params));
+        t.onOpen(() => {
+          t.send(encodeMsg({ t: 'abandon', room: ref.room, clientId: ref.clientId }));
+          // let the frame leave before the socket does
+          window.setTimeout(() => t.close(), 250);
+        });
+        // never leave a socket dialling forever on a server that is not answering
+        window.setTimeout(() => t.close(), 5000);
+      } catch {
+        /* no reachable server — the local record still goes */
+      }
+    }
     clearActiveGame();
     setActiveGame(null);
     setBlockedByActive(false);
@@ -1190,6 +1397,7 @@ export function App() {
         onExit={exitGame}
         onSettingsChange={update}
         editLayout={editMobileLayout}
+        tutorial={tutorialRun}
         onRestartRun={sessionKind === 'record' && !sessionCoop ? restartRun : undefined}
         onWatchReplay={(r) => {
           setReplayObj(r);
@@ -1199,6 +1407,15 @@ export function App() {
         }}
         onPracticeRun={keepPracticeRun}
         onQueueAgain={queueAgain}
+        /* CUSTOM ROOMS ONLY. A ranked room is the matchmaker's pairing and re-opening it
+           would hand a rated match a roster nobody was matched into; a record run already
+           restarts into a fresh room of its own. `requestLobby` is also absent on an older
+           session, so this is undefined rather than a button that does nothing. */
+        onBackToLobby={
+          sessionKind === 'custom' && session?.requestLobby
+            ? () => session.requestLobby?.()
+            : undefined
+        }
       />
     );
   }
@@ -1208,8 +1425,16 @@ export function App() {
       <Lobby
         settings={settings}
         onSettingsChange={update}
-        onStart={(s) => beginSession(s, 'custom')}
-        onCancel={() => navigate('modes')}
+        /* Both exits from the lobby drop the handed-over socket reference, so a later,
+           ordinary visit to this screen cannot re-adopt a room the player has left. */
+        onStart={(s) => {
+          setResumedRoom(null);
+          beginSession(s, 'custom');
+        }}
+        onCancel={() => {
+          setResumedRoom(null);
+          navigate('modes');
+        }}
         config={auto?.config}
         signedIn={signedIn}
         displayName={handle}
@@ -1220,6 +1445,7 @@ export function App() {
         autoJoin={auto?.room}
         autoJoinRegion={auto?.region}
         onAutoJoinConsumed={() => setPendingAutoJoin(null)}
+        resume={resumedRoom ?? undefined}
       />
     );
   }
@@ -1274,6 +1500,7 @@ export function App() {
         replayId={route.replayId ?? undefined}
         preloadReplay={replayObj ?? undefined}
         viewerRobotId={replayObj ? replayRobot : null}
+        adminMatchId={isAdmin ? replayMatch : null}
         onClose={() => (replayObj ? navigate('home') : navigate('records'))}
       />
     );
@@ -1305,6 +1532,8 @@ export function App() {
 
   const configureSection: ConfigureSection = isConfigureSection(route.sub) ? route.sub : 'robot';
   const recordsTab: RecordsTab = isRecordsTab(route.sub) ? route.sub : 'leaderboard';
+  /** the two public legal screens — the blocking gates below suspend on them */
+  const legalScreen = screen === 'privacy' || screen === 'terms';
 
   return (
     <FriendsProvider
@@ -1338,7 +1567,22 @@ export function App() {
         game={settings.game}
       >
       {authEnabled && <AccountSync onUser={onSyncUser} onLoad={onSyncLoad} seed={onSyncSeed} />}
-      {authEnabled && <UsernameGate />}
+      {/* THE BLOCKING GATES, NESTED RATHER THAN STACKED. A brand-new account trips both
+          (an OAuth sign-up has no username AND no acceptance), and two
+          `.ds-modal-backdrop`s at once double-darken the page and show one dialog dimmed
+          behind the other. `TermsGate` renders its children only once it is satisfied, so
+          the order is structural: agree to the service, then pick a name inside it. */}
+      {/* ⚠️ BOTH GATES STAND DOWN ON THE LEGAL PAGES. They are full-viewport backdrops
+          rendered BESIDE the routed screen, so on `/terms` and `/privacy` they covered
+          the documents themselves — including the new tab the gate's own links open.
+          Those two screens are public by design (see the render site below), so a
+          signed-in account that has not accepted yet can still go and read them; the
+          gate is back the moment the route is anything else. */}
+      {authEnabled && (
+        <TermsGate suspended={legalScreen}>
+          <UsernameGate suspended={legalScreen} />
+        </TermsGate>
+      )}
 
       {screen === 'home' && (
         <HomeMenu
@@ -1383,6 +1627,10 @@ export function App() {
           onCustomRoom={() => guardStart(() => navigate('lobby'))}
           onWatch={() => navigate('watch')}
           onLan={() => navigate('lan')}
+          /* THE FIRST-RUN OFFER. Absent once the device flag is set, and absent for a game with
+             no tutorial — `ModeSelect` renders nothing for it either way, so the page loses a
+             section rather than gaining a disabled tile. */
+          onTutorial={moduleFor(settings.game).tutorial ? startTutorial : undefined}
         />
       )}
       {/* one-time "this sim isn't realistic" disclaimer for Chain Reaction */}
@@ -1506,6 +1754,7 @@ export function App() {
           section={configureSection}
           onSection={(s) => navigate('configure', { sub: s })}
           onEditTouchControls={editTouchControls}
+          onTutorial={moduleFor(settings.game).tutorial ? startTutorial : undefined}
         />
       )}
 
@@ -1546,7 +1795,8 @@ export function App() {
       {lanOn && screen === 'lan' && (
         <LanPanel
           signedIn={signedIn}
-          onConnected={(code) =>
+          game={settings.game}
+          onConnected={(code, game) =>
             guardStart(() => {
               /* A WEBRTC ROOM IS ALREADY OPEN BY THE TIME WE GET HERE, so the lobby must
                  JOIN it rather than offer a create/join form. Without this the player lands
@@ -1554,7 +1804,7 @@ export function App() {
                  transport waiting in `pending.ts` would then be adopted by whatever they
                  typed, which need not be the room it is connected to. Same one-shot
                  `pendingAutoJoin` an accepted invite uses; the Lobby clears it on consume. */
-              if (code) setPendingAutoJoin({ room: code, config: { kind: 'versus', game: settings.game } });
+              if (code) setPendingAutoJoin({ room: code, config: { kind: 'versus', game: game ?? settings.game } });
               navigate('lobby');
             })
           }
@@ -1577,6 +1827,8 @@ export function App() {
           onDonate={() => navigate('donate')}
         />
       )}
+      {screen === 'accountreset' && <AccountReset onAccount={() => navigate('account')} />}
+      {screen === 'accountverify' && <AccountVerify onAccount={() => navigate('account')} />}
       {screen === 'admin' && isAdmin && <Admin onWatch={spectateRoom} onWatchReplay={watchReplay} />}
       {screen === 'dev' &&
         (() => {

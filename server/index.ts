@@ -4,12 +4,13 @@ import { randomUUID } from 'node:crypto';
 import { monitorEventLoopDelay } from 'node:perf_hooks';
 import v8 from 'node:v8';
 import { Room, type Client } from './room';
-import { decodeClientMsg, encodeMsg, DEFAULT_ROOM_CONFIG, RATED_FORMATS, SERVER_CAPS, type ClientMsg, type LiveRoom, type RoomConfig, type ServerMsg } from '../src/net/protocol';
+import { coerceCaps, decodeClientMsg, encodeMsg, BB3D_REFUSAL, DEFAULT_ROOM_CONFIG, physicsAllowed, RATED_FORMATS, SERVER_CAPS, type ClientMsg, type LiveRoom, type RoomConfig, type ServerMsg } from '../src/net/protocol';
 import { sanitizePlayer } from '../src/net/sanitize';
-import { authConfigured, verifyAuthToken } from './auth';
+import { authConfigured, emailGateRefusal, verifyAuthToken } from './auth';
 import { initPhysics } from '../src/sim/physicsEngine';
+import { initPhysics3d } from '../src/games/biobuzz/sim3d/engine';
 import { migrate } from './db/migrate';
-import { persistMatch, persistDodges } from './persist';
+import { persistMatch, persistDodges, persistBehaviour } from './persist';
 import { routeTarget } from './routing';
 import { SERVER_CHANNEL, isAlphaServer } from './channel';
 import { LAN_MODE, enforceLanPolicy } from './lanMode';
@@ -26,7 +27,8 @@ import { Matchmaker } from './matchmaking';
 import { MATCHMAKER_REGION } from './regions';
 import { BALANCE_VERSION } from '../src/config';
 import { periodLabel } from '../src/seasons';
-import { coerceGameId, isGameId } from '../src/games/types';
+import { coerceGameId, isGameId, serverPhysics } from '../src/games/types';
+import { simModuleFor } from '../src/games/sim';
 import { dbEnabled } from './db/pool';
 import {
   currentSeasonNumber,
@@ -60,6 +62,9 @@ import {
   listReportedUsers,
   listReportsFor,
   listScoreReports,
+  matchScoreDetail,
+  correctMatchScore,
+  adminEditStanding,
   resolveScoreReport,
   submitScoreReport,
   setReportsStatus,
@@ -294,6 +299,64 @@ const activeElsewhere = (userId: string, code: string): boolean => {
     return false;
   }
   return true;
+};
+
+/**
+ * A SOLO RECORD RUN NEVER BLOCKS ITS OWN OWNER FROM STARTING ANOTHER ONE.
+ *
+ * ⚠️ THIS IS WHAT MAKES THE RESTART BUTTON WORK, and it is needed because restarting a
+ * record run is a full TEARDOWN: the client disposes its session and opens a BRAND-NEW
+ * `rec-` room (see `restartRun`), so the new run arrives as a join from an account the
+ * old room is still holding a lock for. Whether the old lock has been let go by then is
+ * a race the client cannot win — its close frame and the new socket's handshake are two
+ * different connections — and the old room can legitimately still be holding on anyway,
+ * because a run decided at the buzzer is kept alive (`finishing`) until the field settles
+ * and the score is written. Either way the player pressed restart and got "You already
+ * have a game in progress", about a run they had just ended.
+ *
+ * The lock exists to stop one account occupying two seats or two RATED games at once. A
+ * solo record run has no opponent, no alliance and no rating: the only person it can ever
+ * be in the way of is the person who started it. So it yields, and it is the ONLY kind of
+ * room that does — versus, duo and ranked all still refuse, because there the lock is
+ * protecting somebody else.
+ *
+ * Only the LOCK is released (`releaseSeatLock`), never the room: a run already decided
+ * must still finish settling and write its score, with nobody watching.
+ */
+const releaseSoloRecordHold = (userId: string): boolean => {
+  const held = userRoom.get(userId);
+  if (!held) return false;
+  const hr = rooms.get(held);
+  if (!hr) {
+    userRoom.delete(userId); // stale entry for a room that is already gone
+    return true;
+  }
+  if (!hr.soloRecord) return false;
+  hr.releaseSeatLock(userId);
+  userRoom.delete(userId); // belt and braces: the room may never have registered it
+  return true;
+};
+
+/**
+ * Is this user supposed to be LOADING INTO a ranked match right now?
+ *
+ * A pairing the matchmaker staged holds the same single-game lock a live match does
+ * (`Room.applyPending`), so this reads the same map — but it answers the narrower
+ * question the ranked queue needs: not "is there a game somewhere" but "is the server
+ * already counting down `RANKED_JOIN_GRACE_MS` on this account". That window is the one
+ * a player can walk back into the queue during — a refresh loses the room client-side
+ * while the room keeps its clock — and the one where being let back in earns them a
+ * no-show charge for the match they were re-queueing away from.
+ */
+const stagedElsewhere = (userId: string): boolean => {
+  const code = userRoom.get(userId);
+  if (!code) return false;
+  const r = rooms.get(code);
+  if (!r) {
+    userRoom.delete(userId);
+    return false;
+  }
+  return r.staging() && r.stagedFor(userId);
 };
 
 /**
@@ -1050,6 +1113,145 @@ const httpServer = createServer((req, res) => {
         const reports = await listScoreReports({ status: u.searchParams.get('status') ?? undefined });
         res.writeHead(200, { ...cors, 'content-type': 'application/json' });
         res.end(JSON.stringify({ reports }));
+        return;
+      }
+      /**
+       * GET/POST /api/admin/match — READ or CORRECT one finished match's score.
+       *
+       *   GET  ?id=<matchId>                       who played, what it says, what has been done
+       *   POST ?id=<matchId>&red=N&blue=N&note=…   correct it
+       *
+       * This is the half the misscore queue was missing. Upholding a claim recorded that the
+       * sim got a result wrong and then left the wrong number on the match, in both players'
+       * history, in front of the person who filed the claim. A moderator watches the replay,
+       * which re-simulates the match and shows what it should have scored, and sets it.
+       *
+       * THE RATING IS NOT RE-DERIVED — see `correctMatchScore`. Glicko-2 is sequential, so
+       * re-rating one match in the middle means re-rating every match since for everyone in
+       * it. The result is corrected, `won` follows it, the ratings stand, and the console
+       * says so rather than leaving a moderator to assume either way.
+       */
+      if (u.pathname === '/api/admin/match') {
+        if (!isAdmin) {
+          res.writeHead(403, cors);
+          res.end('forbidden');
+          return;
+        }
+        const id = u.searchParams.get('id');
+        if (!id || !dbEnabled) {
+          res.writeHead(dbEnabled ? 400 : 503, cors);
+          res.end(dbEnabled ? 'bad request' : 'database disabled');
+          return;
+        }
+        if (req.method === 'POST') {
+          const red = Number(u.searchParams.get('red'));
+          const blue = Number(u.searchParams.get('blue'));
+          // A SCORE IS A NON-NEGATIVE INTEGER and nothing else. `Number('')` is 0 and
+          // `Number('x')` is NaN, and either one written into a published result silently is
+          // worse than a 400 — this endpoint exists precisely because the number was wrong.
+          if (!Number.isFinite(red) || !Number.isFinite(blue) || red < 0 || blue < 0) {
+            res.writeHead(400, cors);
+            res.end('bad score');
+            return;
+          }
+          const done = await correctMatchScore(
+            id,
+            { red, blue },
+            user?.userId ?? 'admin',
+            u.searchParams.get('note') ?? undefined,
+          );
+          if (done) {
+            console.log(
+              `[admin] match ${id} score corrected by ${user?.userId ?? 'admin'}: ` +
+                `${done.redBefore}-${done.blueBefore} -> ${done.redAfter}-${done.blueAfter}`,
+            );
+          }
+          res.writeHead(done ? 200 : 404, { ...cors, 'content-type': 'application/json' });
+          res.end(JSON.stringify(done ? { ok: true, ...done } : { error: 'no such match' }));
+          return;
+        }
+        const match = await matchScoreDetail(id);
+        res.writeHead(match ? 200 : 404, { ...cors, 'content-type': 'application/json' });
+        res.end(JSON.stringify(match ? { match } : { error: 'no such match' }));
+        return;
+      }
+      /**
+       * GET/POST /api/admin/standing — read or EDIT one account's standing.
+       *
+       *   GET  ?user=<id>
+       *   POST ?user=<id>&score=N&pardon=all|<id,id>&lock=clear|<minutes>&note=…
+       *
+       * Standing is charged entirely by a server watching sockets (server/standing.ts), and
+       * some of those readings are wrong: a router died mid-match, a room crashed and billed
+       * everyone in it, a brigade moved someone two tiers before anybody read the reports.
+       * Until this endpoint the honest answer to "that penalty was not mine" was a shrug.
+       *
+       * A PARDON VOIDS RATHER THAN DELETES (migration 0036): the offence stops counting toward
+       * escalation and stops costing points, and stays on the record with who forgave it. Both
+       * halves matter — a pardon that left the ladder intact is a pardon in name only, and one
+       * that erased the row leaves the next moderator unable to see this is the fourth.
+       */
+      if (u.pathname === '/api/admin/standing') {
+        if (!isAdmin) {
+          res.writeHead(403, cors);
+          res.end('forbidden');
+          return;
+        }
+        const target = u.searchParams.get('user');
+        if (!target || !dbEnabled) {
+          res.writeHead(dbEnabled ? 400 : 503, cors);
+          res.end(dbEnabled ? 'bad request' : 'database disabled');
+          return;
+        }
+        if (req.method === 'POST') {
+          const rawScore = u.searchParams.get('score');
+          const score = rawScore === null || rawScore === '' ? undefined : Number(rawScore);
+          if (score !== undefined && (!Number.isFinite(score) || score < 0 || score > STANDING_MAX)) {
+            res.writeHead(400, cors);
+            res.end('bad score');
+            return;
+          }
+          const pardon = u.searchParams.get('pardon');
+          const rawLock = u.searchParams.get('lock');
+          // THREE-VALUED on purpose: absent leaves a cooldown somebody is legitimately serving
+          // alone, `clear` lifts it, a number sets one. Folding absent into "clear" would make
+          // every unrelated edit — a note, a single pardon — quietly unlock the queue.
+          const lock =
+            rawLock === null || rawLock === ''
+              ? undefined
+              : rawLock === 'clear'
+                ? (false as const)
+                : Math.max(0, Math.round(Number(rawLock) || 0));
+          const out = await adminEditStanding(target, user?.userId ?? 'admin', {
+            score,
+            pardonAll: pardon === 'all',
+            pardonIds: pardon && pardon !== 'all' ? pardon.split(',').filter(Boolean) : undefined,
+            lock,
+            note: u.searchParams.get('note') ?? undefined,
+          });
+          console.log(
+            `[standing] ${target} edited by ${user?.userId ?? 'admin'}: ` +
+              `${out.scoreBefore} -> ${out.scoreAfter}` +
+              `${out.pardoned ? `, ${out.pardoned} offence(s) voided` : ''}` +
+              `${lock === false ? ', lock cleared' : ''}`,
+          );
+          res.writeHead(200, { ...cors, 'content-type': 'application/json' });
+          res.end(JSON.stringify({ ok: true, ...out }));
+          return;
+        }
+        const [standings, events, profile] = await Promise.all([
+          standingsFor([target]),
+          listStandingEvents(target, 50),
+          getProfile(target),
+        ]);
+        res.writeHead(200, { ...cors, 'content-type': 'application/json' });
+        res.end(JSON.stringify({
+          userId: target,
+          handle: profile?.handle ?? null,
+          username: profile?.username ?? null,
+          standing: standings[target] ?? null,
+          events,
+        }));
         return;
       }
       /**
@@ -1972,6 +2174,19 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
    * socket nobody is holding. See `joinRoom`.
    */
   let closed = false;
+  /**
+   * Which ranked-queue ATTEMPT is the live one.
+   *
+   * Entering the queue is four awaits deep (token, standing, party, profile) and none of
+   * them can be cancelled, so a player who pressed CANCEL — or whose socket closed, or who
+   * pressed SEARCH a second time — still had the original attempt finish and call
+   * `matchmaker.enqueue` unconditionally. `matchmaker.remove` at that moment removes an
+   * entry that does not exist yet, so the cancel does nothing and the pool keeps a ghost:
+   * an entry whose socket is gone, which is then paired and staged into a ranked match the
+   * player never sees. Every attempt takes a generation here and re-checks it after each
+   * await; a bump makes the in-flight one a no-op.
+   */
+  let queueGen = 0;
   /** true once this socket is attached as a SPECTATOR, so the global tally can be
    *  decremented exactly once on close (a spectator never becomes a driver — the
    *  `spectate` branch is only reachable while `room` is null, and it sets it). */
@@ -2092,6 +2307,15 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
     const cfg: RoomConfig = {
       ...(msg.config ?? DEFAULT_ROOM_CONFIG),
       game: coerceGameId(msg.config?.game),
+      // the untrusted physics, forced to the enum. Anything that is not the one known
+      // non-default value becomes ABSENT, i.e. `'2d'` — a room is a thing the server has to
+      // be able to step, so an unrecognised string must not reach `createWorld`.
+      //
+      // ⚠️ `Room.physics` NO LONGER READS THIS (owner ruling, 2026-09-18: every server room of
+      // a 3D-capable game is 3D). It is still coerced rather than dropped because old clients
+      // keep sending it and the config is echoed back in the operator snapshot; nothing
+      // downstream may treat it as the room's answer.
+      physics: msg.config?.physics === '3d' ? '3d' : undefined,
     };
     if (!r && MAX_ROOMS > 0 && rooms.size >= MAX_ROOMS) {
       // AT CAPACITY. Refuse to HOST anything new; joining a room that already exists
@@ -2120,6 +2344,9 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
           if (userRoom.get(uid) === code) userRoom.delete(uid);
         },
         persistDodges,
+        // AFK / leave / card charges and the clean-match heal. Omitted here for months, so
+        // every one of them was dead in production while the DB-off dev path ran them fine.
+        (b) => void persistBehaviour(b),
       );
       rooms.set(code, r);
       created = true;
@@ -2168,6 +2395,23 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
       const pending = await takePendingMatch(code).catch(() => null);
       if (pending) r.applyPending(pending);
     }
+    /**
+     * THE `'bb3d'` GATE — asked here, after the room's physics is knowable and before a seat
+     * is spent on a client that cannot simulate it.
+     *
+     * After `applyPending`, because a matchmaker-staged room is `'3d'` by virtue of its
+     * staged roster and reads `'2d'` until that roster has been claimed — gating before it
+     * would let an old client into the one kind of room that must never contain one.
+     *
+     * `abandon()` on the way out for the same reason every other early return here calls it:
+     * this attempt may have created the room, and a room nobody ever joined would otherwise
+     * be counted against `MAX_ROOMS` for the life of the process.
+     */
+    if (!physicsAllowed(r.physics, coerceCaps(msg.caps))) {
+      send({ t: 'error', message: BB3D_REFUSAL });
+      abandon();
+      return;
+    }
     let user: Awaited<ReturnType<typeof verifyAuthToken>> = null;
     if (msg.authToken) user = await verifyAuthToken(msg.authToken).catch(() => null);
     // the socket went away mid-join, or a concurrent frame already placed it — either
@@ -2187,10 +2431,84 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
       abandon();
       return;
     }
+    /**
+     * ONE ACCOUNT, ONE SEAT IN THIS ROOM — ASKED BEFORE `canJoin`, because the answer is
+     * sometimes "you already have a seat here" and that outranks "the room is full".
+     *
+     * The single-game guard below compares room CODES, so it has never had an opinion about
+     * the same person arriving at the SAME code twice (`other === code` reads as "this is
+     * your room", which it is). Two tabs on one account therefore took two seats, and in a
+     * 1v1 ranked room that is the entire room: capacity 2, both seats spent on one person,
+     * and the real opponent refused at the door and charged a no-show for a match they were
+     * standing outside of.
+     *
+     * THE SEAT IS TAKEN OVER RATHER THAN THE JOINER REFUSED, which is the same rule
+     * `reattach` already applies to `rejoin` and for the same reason: the three ways to get
+     * here are indistinguishable from the outside. A reload (the client id is gone with the
+     * page, so `rejoin` is not available to them), a reconnect (`join` is re-sent on every
+     * `onReopen`, and a partitioned socket outlives the client that gave up on it, so the
+     * old seat can still read as connected), and a genuine second tab all arrive as one
+     * authenticated `join` from an account that already holds a seat. Handing the seat to
+     * the newest socket serves all three: the first two get their own seat back, and the
+     * third gets the match while the tab it displaced is told so instead of being left on a
+     * session that has been silently unplugged.
+     *
+     * Reclaiming keeps the HELD CLIENT ID, which is what `slotOf` and `robotOf` are keyed
+     * by — so the returning player lands on their own roster slot and their own robot. That
+     * is what makes refreshing during the ranked strategy window survivable; see the
+     * matching seat-hold in `Room.detach`.
+     */
+    if (user) {
+      const seat = r.seatFor(user.userId);
+      if (seat) {
+        const nc = r.reattach(seat, send, sendRaw, backlog);
+        if (nc !== null) {
+          liveSockets.delete(id);
+          id = seat; // adopt the reclaimed identity on this socket
+          liveSockets.set(id, { authed: true });
+          room = r;
+          conn = nc;
+          markAuthed(user.userId);
+          // the lock follows the seat: this room owns it again (registration is by user
+          // id, so re-asserting it here is idempotent)
+          userRoom.set(user.userId, code);
+          r.maybeStartRanked(); // they may have been the last one missing
+          return;
+        }
+      }
+    }
     if (!r.canJoin()) {
       send({ t: 'error', message: 'Room is full or a match is already in progress.' });
       abandon(); // don't leave an empty just-created room behind
       return;
+    }
+    /**
+     * A RECORD RUN IS A LEADERBOARD SUBMISSION, so it wants the same confirmed email
+     * address ranked does — and it is refused AT THE DOOR rather than at the end.
+     * Dropping the row silently would be the cruel version: somebody drives a personal
+     * best and only then learns it was never going to count.
+     *
+     * ONLY A SIGNED-IN JOINER CAN TRIP THIS. An anonymous one was never reaching the
+     * board anyway (`persistMatch` keeps authed participants only), so refusing them
+     * would take away a practice mode they are entitled to — and on a LAN server
+     * nobody is authenticated at all, so the gate cannot reach one.
+     *
+     * Here rather than in `Room.startMatch`, beside the duo-record 'both drivers must
+     * be signed in' guard it otherwise belongs with, because room.ts is bundled into
+     * the browser worker that hosts a LAN game and may not import this module.
+     * Off unless REQUIRE_VERIFIED_EMAIL=1 (server/auth.ts says why).
+     */
+    if (r.config.kind === 'record' && user) {
+      const refusal = emailGateRefusal(user);
+      if (refusal) {
+        send({
+          t: 'error',
+          message:
+            'Verify your email to save a record run. Open the link we sent you, or resend it from your Profile page.',
+        });
+        abandon();
+        return;
+      }
     }
     // one live game per user: refuse a second game while one is in progress (they
     // rejoin/leave it from Home). Reconnects use `rejoin`, so this never blocks
@@ -2209,6 +2527,8 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
     if (user && activeElsewhere(user.userId, code)) {
       if (r.stagedFor(user.userId)) {
         userRoom.delete(user.userId);
+      } else if (releaseSoloRecordHold(user.userId)) {
+        /* a solo run of their own was in the way; it is not any more — see below */
       } else {
         send({ t: 'error', message: 'You already have a game in progress - rejoin or leave it first.' });
         abandon();
@@ -2222,13 +2542,18 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
       sendRaw,
       backlog,
       // NEVER trust the wire spec: sanitize the whole player to legal ranges
-      // before it lands on the roster (a spoofed devtools spec is clamped here)
-      player: { ...sanitizePlayer(msg.player, cfg.game), clientId: id },
+      // before it lands on the roster (a spoofed devtools spec is clamped here).
+      // ⚠️ WITH THE ROOM'S GAME, not the joiner's claim. A matchmaker-staged room's game
+      // comes from `applyPending`, and the client joins it with NO config — so `cfg.game`
+      // read 'decode', and a BIOBUZZ driver's spec was coerced as a DECODE one on the way
+      // in: `bbMech` dropped and the mounts reset, i.e. a default robot in every ranked
+      // BIOBUZZ match. For a custom room the two agree (a mismatched joiner is refused above).
+      player: { ...sanitizePlayer(msg.player, r.gameId), clientId: id },
       connected: true,
       disconnectAt: 0,
       // protocol capabilities this client build understands (mixed-version safe:
       // the room only opens the strategy window if EVERY member supports it)
-      caps: Array.isArray(msg.caps) ? msg.caps : [],
+      caps: coerceCaps(msg.caps),
       // release channel: alpha rooms are segregated + never persisted (in-dev)
       channel: typeof msg.channel === 'string' ? msg.channel : undefined,
     };
@@ -2331,6 +2656,14 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
           send({ t: 'error', message: 'This match already has as many spectators as it can carry. Try again in a moment.' });
           return;
         }
+        // A WATCHER STEPS THE WORLD TOO. A spectator session has no robot to predict, but it
+        // still advances the world between snapshots off the authoritative commands (see
+        // `stepServer`'s spectator arm), so a build that cannot run this room's physics cannot
+        // watch it either — and the honest answer is the same sentence a driver gets.
+        if (!physicsAllowed(r.physics, coerceCaps(msg.caps))) {
+          send({ t: 'error', message: BB3D_REFUSAL });
+          return;
+        }
         const spec = {
           id,
           send,
@@ -2339,7 +2672,7 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
           player: { ...sanitizePlayer(undefined, r.config.game), clientId: id },
           connected: true,
           disconnectAt: 0,
-          caps: Array.isArray(msg.caps) ? msg.caps : [],
+          caps: coerceCaps(msg.caps),
         };
         room = r; // route this socket's close → r.detach (drops the spectator)
         // HIDDEN OBSERVER: an admin may watch without moving the spectator count.
@@ -2361,6 +2694,14 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
       } else if (msg.t === 'rejoin') {
         if (room) return;
         const r = rooms.get(msg.room.toLowerCase());
+        // THE THIRD DOOR. A seat in a `'3d'` room can only have been taken by a client that
+        // passed the gate on `join`, so this refuses almost nothing — but it refuses it with
+        // the sentence that explains it, instead of a bare `rejoined: ok=false` that reads as
+        // "your slot expired".
+        if (r && !physicsAllowed(r.physics, coerceCaps(msg.caps))) {
+          send({ t: 'error', message: BB3D_REFUSAL });
+          return;
+        }
         // hand over EVERY sender, not just `send` — see the note in `Room.reattach`
         const nc = r ? r.reattach(msg.clientId, send, sendRaw, backlog) : null;
         if (r && nc !== null) {
@@ -2372,6 +2713,18 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
         } else {
           send({ t: 'rejoined', ok: false });
         }
+      } else if (msg.t === 'abandon') {
+        /**
+         * ABANDON A HELD SLOT FROM OUTSIDE THE ROOM. One frame, no reply: the client has
+         * already left as far as it is concerned, and the only thing left is to stop the
+         * server holding a lock on its behalf for the rest of the reconnect grace.
+         *
+         * Not gated on `room` being null, and not on an auth token: the client id is the
+         * secret, the same one `rejoin` accepts as proof, and a wrong one simply finds no
+         * slot. Answering nothing at all is what keeps it from being a probe for which
+         * rooms and which client ids exist.
+         */
+        rooms.get(msg.room.toLowerCase())?.abandonSlot(msg.clientId);
       } else if (msg.t === 'reportScore') {
         /**
          * A MISSCORE claim from this room. No target to resolve — see the protocol note —
@@ -2437,17 +2790,87 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
         send({ t: 'reported', ok: true });
       } else if (msg.t === 'queue') {
         if (room) return; // already in a room/match
+        /**
+         * THE FOURTH DOOR, and the only one that refuses before a room exists.
+         *
+         * Every matchmade BIOBUZZ room is staged `'3d'` (the server decides — see
+         * `stagedPhysics` in matchmaking.ts and `Room.physics`), so a client that cannot step
+         * it must be turned away HERE rather than at the door of the room it is about to be
+         * paired into. Refusing at the door instead would cancel a staged pairing and charge
+         * three other people for a dodge that was a version skew.
+         *
+         * ⚠️ BIOBUZZ IS PUBLIC ON THE STABLE CHANNEL, so this refusal is not a corner case:
+         * every production client built before the `'bb3d'` cap existed hits it, for every
+         * BIOBUZZ queue, until it reloads. That makes DEPLOY ORDER part of the feature — ship
+         * and verify the CLIENT (Vercel) before the server (Fly) — and a tab held open across
+         * the deploy stays refused until the version gate reloads it.
+         *
+         * Asked of the GAME MODULE (`serverPhysics`) rather than by naming BIOBUZZ, so a third
+         * game that gains a 3D solve is gated the day it declares one.
+         */
+        if (
+          serverPhysics(simModuleFor(coerceGameId(msg.game))) === '3d' &&
+          !physicsAllowed('3d', coerceCaps(msg.caps))
+        ) {
+          send({ t: 'error', message: BB3D_REFUSAL });
+          return;
+        }
+        const gen = ++queueGen;
+        /** has this queue attempt been overtaken — cancelled, closed, re-issued, or already
+         *  seated in a room — while one of its awaits was outstanding? */
+        const stale = (): boolean => closed || room !== null || gen !== queueGen;
         // ranked REQUIRES a verified account (ELO/leaderboard only make sense with
         // an identity). Anonymous players can still use custom rooms, just not
         // ranked. Verify the JWT, then enqueue; on a match the matchmaker sets our
         // `room` so subsequent input routes there.
         verifyAuthToken(msg.authToken).then((u) => {
+          if (stale()) return;
           if (!u) {
             send({ t: 'error', message: 'Sign in to play ranked.' });
             return;
           }
+          /**
+           * ...AND THE ADDRESS BEHIND THAT ACCOUNT IS CONFIRMED.
+           *
+           * Ranked is the one mode where an account is not just a name on a board: it
+           * carries a rating other people are measured against, and a throwaway address
+           * is what makes a fresh one free. Casual rooms, free drive and practice PLAY
+           * stay open to anyone signed in or not — this is the narrowest gate that
+           * makes a smurf cost something.
+           *
+           * Refused HERE, at the same door as the sign-in check, for the reason that
+           * door exists: refusing after the matchmaker has staged a pairing would
+           * charge three other people for it. Off unless REQUIRE_VERIFIED_EMAIL=1
+           * (server/auth.ts says why).
+           */
+          {
+            const refusal = emailGateRefusal(u);
+            if (refusal) {
+              send({ t: 'error', message: refusal });
+              return;
+            }
+          }
           if (lockedOut(u.userId)) {
             send({ t: 'error', message: lockoutMessage() });
+            return;
+          }
+          /**
+           * ALREADY IN A RANKED MATCH THAT IS LOADING IN — its own refusal, and its own
+           * sentence.
+           *
+           * `Room.applyPending` takes the single-game lock the moment a pairing is staged,
+           * so the generic guard below would already catch this. It is called out first
+           * because the two states are not the same thing to the person reading the
+           * message: "rejoin or leave it first" describes a game they can go back to, and
+           * a staged match that has not started is not that — there is nothing to rejoin
+           * and leaving it costs standing. Saying so plainly is the difference between a
+           * player waiting out the twenty seconds and a player pressing FIND MATCH again.
+           *
+           * It is also the backstop that does not depend on the lock: a room is staged
+           * for this user, and that is checked directly.
+           */
+          if (stagedElsewhere(u.userId)) {
+            send({ t: 'error', message: 'You are already in a ranked match - go back and load into it.' });
             return;
           }
           // one live game per user: can't queue ranked while another game is live
@@ -2457,7 +2880,9 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
           }
           markAuthed(u.userId);
           const enqueueNow = (): void => {
+          if (stale()) return;
           void verifyParty(u.userId, msg).then(async (party) => {
+            if (stale()) return;
             if (party === 'bad-token') {
               // Never silently fall back to the OPEN queue here. The player asked
               // to play one specific person; quietly matching them against a
@@ -2470,6 +2895,9 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
             // does not even send a real one — `Matchmaking.tsx` sends the ROBOT's
             // `teamName` — so this read is the only thing that can name the player.
             const prof = dbEnabled ? await getProfile(u.userId).catch(() => null) : null;
+            // LAST GAP, and the one that matters: nothing may await between here and
+            // `enqueue`, or the entry outlives the cancel that was meant to stop it.
+            if (stale()) return;
             matchmaker.enqueue({
             id,
             send,
@@ -2490,7 +2918,7 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
             homeRegion: msg.homeRegion || edgeRegion || REGION,
             accessMs: msg.accessMs ?? 0,
             noWiden: msg.noWiden ?? false,
-            caps: Array.isArray(msg.caps) ? msg.caps : [],
+            caps: coerceCaps(msg.caps),
             // segregate the queue by GAME (a CR queuer never pairs into a DECODE room)
             game: coerceGameId(msg.game),
             channel: typeof msg.channel === 'string' ? msg.channel : undefined,
@@ -2515,12 +2943,13 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
           // requeued, which costs the wrong people their minutes. Fails OPEN (see
           // `rankedLock`): a database that cannot answer must not lock everybody out.
           void rankedLock(u.userId).then((lock) => {
+            if (stale()) return;
             if (!lock) {
               enqueueNow();
               return;
             }
             const tier = tierOf(lock.score);
-            if ((Array.isArray(msg.caps) ? msg.caps : []).includes('standing')) {
+            if (coerceCaps(msg.caps).includes('standing')) {
               // a lock is a state with a CLOCK, so the client is sent the deadline and
               // counts it down itself rather than being handed a sentence that is wrong
               // thirty seconds later
@@ -2538,6 +2967,7 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
       } else if (msg.t === 'expandSearch') {
         matchmaker.expand(id);
       } else if (msg.t === 'leaveQueue') {
+        queueGen++; // cancels an attempt still working through its awaits
         matchmaker.remove(id);
       } else if (room) {
         room.onMessage(id, msg);
@@ -2547,7 +2977,7 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
     }
   });
 
-  ws.on('close', () => {
+  ws.on('close', (code: number) => {
     closed = true; // an in-flight async join must stop and hand its room back
     onlineCount--;
     if (spectating) {
@@ -2560,11 +2990,15 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
       if (n <= 0) authedUsers.delete(authedUserId);
       else authedUsers.set(authedUserId, n);
     }
+    queueGen++; // an in-flight queue attempt must not enqueue a socket that is gone
     matchmaker.remove(id); // drop from any ranked queue
     lanSignals.release(signalId); // a LAN host going away takes its room's guests with it
     // lobby ⇒ leave; mid-match ⇒ hold the slot for a reconnect. `conn` lets the room
     // ignore this close if a newer socket already reclaimed the slot (fast reconnect).
-    room?.detach(id, conn);
+    // 1000/1005 is the client closing on purpose (`transport.close()`: a restart, back to
+    // the menu); a dropped network is 1006 and a closing tab 1001, both of which keep the
+    // grace — a phone that backgrounds the tab may send 1001 and come straight back.
+    room?.detach(id, conn, code === 1000 || code === 1005);
   });
 
   ws.on('error', () => {
@@ -2598,8 +3032,23 @@ console.log(
   }`,
 );
 });
-initPhysics()
-  .then(() => console.log('[server] Rapier physics ready - matches enabled'))
+/**
+ * BOTH physics backends, resolved before any room can be started.
+ *
+ * `initPhysics()` is the shared Rapier 2D solve every game runs; `initPhysics3d()` is
+ * BIOBUZZ's deterministic Rapier 3D one, which a ranked/matchmade/record BIOBUZZ room steps on
+ * its very first tick. Awaited TOGETHER and treated as one gate, for the reason the 2D one has
+ * always exited on failure: a server that accepts joins it cannot simulate is worse than a
+ * server that is not there — the room opens, four people are seated, and the first tick throws
+ * into a loop nobody is watching.
+ *
+ * It costs a wasm compile at boot on a deploy where no 3D room may ever be opened. That is
+ * accepted deliberately: the alternative is loading it lazily on the first 3D room, i.e. an
+ * await on the path that stages a ranked match, where a slow or failed load becomes a
+ * cancelled pairing and a dodge charge for four people who did nothing.
+ */
+Promise.all([initPhysics(), initPhysics3d()])
+  .then(() => console.log('[server] Rapier physics ready (2D + BIOBUZZ 3D) - matches enabled'))
   .catch((e) => {
     console.error('[server] failed to init physics:', e);
     process.exit(1);

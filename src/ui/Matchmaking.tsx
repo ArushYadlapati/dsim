@@ -11,14 +11,22 @@ import { MatchStrategy } from './MatchStrategy';
 import { MatchAudio } from '../audio';
 import { DODGE_REASON, type DodgeVerdict } from '../dodge';
 import { STANDING_MAX, WINDOW_HOURS, lockRemaining, tierOf } from '../standing';
+import { BB3D_CAP, RANKED_JOIN_GRACE_MS, STRATEGY_DURATION_MS } from '../net/protocol';
+import { serverCaps } from '../net/api';
+import { moduleFor } from '../games';
 import { widenHint, queuesFor } from './queueDepth';
-import { parkQueue, takeQueue, updateQueue, dropQueue, elapsedSeconds, type ParkedQueue } from './queueKeeper';
+import {
+  parkQueue, takeQueue, updateQueue, dropQueue, elapsedSeconds,
+  type ParkedQueue, type ParkedStrategy,
+} from './queueKeeper';
+import { useParkedQueue } from './QueueBar';
 import { usePresence } from './usePresence';
 import { useServerNotice } from '../net/notice';
 import { APP_NAME } from '../seasons';
 import { Logo } from './Logo';
 import { useEscape } from './useEscape';
 import { formatLabel, type PendingChallenge } from './challenge';
+import { clearStagedMatch, loadStagedMatch, saveStagedMatch } from '../net/stagedMatch';
 
 /**
  * ONE string for the one fact, on both waiting screens.
@@ -32,6 +40,38 @@ import { formatLabel, type PendingChallenge } from './challenge';
 const BACKGROUND_QUEUE_TIP = (
   <>
     <b>← Back</b> keeps you in the queue.
+  </>
+);
+
+/**
+ * WHAT QUEUEING COMMITS YOU TO, said before you queue.
+ *
+ * Both ranked clocks are short and strict (`server/room.ts`: connect inside
+ * `RANKED_JOIN_GRACE_MS`, ready up inside `STRATEGY_DURATION_MS`, or the match is cancelled
+ * for everyone in it and the miss is charged to your account standing as a dodge). Nothing
+ * said so until the charge arrived, so the first time a player learned the rule was the
+ * screen telling them they had broken it. That is a bad way to publish a rule and it is the
+ * complaint this fixes.
+ *
+ * The numbers are READ from the same constants the server counts on, so the sentence cannot
+ * go stale if either window is tuned. It is shown on the queue screen and again while
+ * searching, because the second one is where people walk away.
+ *
+ * AND IT NAMES THE RELOAD. "Stay at your keyboard" does not cover the one action that
+ * turns a twenty-second grace into an instant charge: a queue lives in memory
+ * (`queueKeeper` is a module singleton) and a staged match has no rejoin record — that is
+ * only written once a match actually starts (`App.beginSession`) — so a refresh between
+ * "match found" and "match playing" cannot be recovered from on either side. The server
+ * reads the closed socket as a player who left and bills it cause-blind, by design
+ * (`server/room.ts`: "a closed tab and a pulled cable are the same event"). A rule with
+ * no way back has to be said out loud.
+ */
+const READY_WINDOW_NOTE = (
+  <>
+    Once a match is found: <b>{Math.round(RANKED_JOIN_GRACE_MS / 1000)}s</b> to load in, then{' '}
+    <b>{Math.round(STRATEGY_DURATION_MS / 1000)}s</b> to ready up. Miss either and the match is
+    cancelled and your standing drops. <b>Don’t refresh or close the tab</b> — that counts as
+    leaving.
   </>
 );
 
@@ -104,6 +144,34 @@ export function Matchmaking({
    *  a rating drop the player is not told about is the thing that makes a penalty feel
    *  arbitrary. `null` for a player who was NOT at fault, which is worth saying out loud. */
   const [dodge, setDodge] = useState<{ yours: DodgeVerdict | null; others: DodgeVerdict[] } | null>(null);
+  /**
+   * DOES THIS SERVER STAGE 3D RANKED ROOMS? (plan §7, the per-server cutover.)
+   *
+   * `null` until the one-shot capability read lands, so nothing flickers between two sentences
+   * on a screen somebody is about to commit ELO on. Only read for a game that HAS two solves;
+   * for DECODE and Chain Reaction there is no cutover and no line.
+   */
+  const [ranked3d, setRanked3d] = useState<boolean | null>(null);
+  const twoPhysics = !!moduleFor(settings.game).physicsOptions?.includes('3d');
+  useEffect(() => {
+    if (!twoPhysics) return;
+    let alive = true;
+    void serverCaps().then((c) => {
+      if (alive) setRanked3d(c.includes(BB3D_CAP));
+    });
+    return () => {
+      alive = false;
+    };
+  }, [twoPhysics]);
+  const rankedPhysicsNote =
+    !twoPhysics || ranked3d === null ? null : ranked3d ? (
+      <p className="ds-hint">Ranked matches run on the 3D physics.</p>
+    ) : (
+      <p className="ds-form-err">
+        ⚠ This server hasn’t been updated for 3D ranked matches yet. Custom rooms and practice
+        still work.
+      </p>
+    );
   // the ranked queue refused us on ACCOUNT STANDING (a live clock, so `tick` re-renders it)
   const [lock, setLock] = useState<{ until: number; score: number } | null>(null);
   const [tick, setTick] = useState(() => Date.now());
@@ -131,10 +199,56 @@ export function Matchmaking({
   // prop that vanishes mid-search would otherwise silently turn a private
   // challenge into an open queue entry on any reconnect.
   const challengeRef = useRef<PendingChallenge | null>(challenge ?? null);
+  /**
+   * WHAT THIS SCREEN KNOWS ABOUT A MATCH THAT HAS ALREADY BEEN FOUND.
+   *
+   * `teardown` runs from the FIRST render's closure and used to hand the keeper a brand-new
+   * search — `found: false`, every payload `null` — however far things had actually got. So an
+   * unmount anywhere between "match found" and "match playing" threw the match away: the
+   * events that carried it fire exactly once and are then gone, the staged room went on
+   * holding a seat nobody arrived at, and the player was billed a dodge for a match their own
+   * client had quietly forgotten. Reported as "instead of being sent to the match prep menu, I
+   * was sent to the queuing menu, and I was unable to ready up, which dropped my standing".
+   *
+   * These are what a re-park hands back instead. Refs and not state for the usual reason: the
+   * unmount cleanup reads what is true NOW, not what was true on the first render.
+   */
+  const foundRef = useRef(false);
+  const assignedRoomRef = useRef<string | null>(null);
+  const strategyRef = useRef<ParkedStrategy | null>(null);
+  /** `lobbyRef` holds the MATCH ROOM's socket (our seat), not the matchmaker's */
+  const joinedRef = useRef(false);
+  /** the CURRENT player info, for the sockets that outlive this render. A parked socket joins
+   *  its room after the screen is gone, and it must join with the robot the player queued
+   *  with rather than whatever the first render happened to see. */
+  const playerInfoRef = useRef<() => Omit<LobbyPlayer, 'clientId'>>(() => ({}) as never);
+  /** a match has been found and is not playing yet — the screen says so instead of going on
+   *  claiming to be searching, which is the state the report above describes */
+  const [found, setFound] = useState(false);
 
   // Esc backs out, same as ← Back — but NOT once a match has paired: MatchStrategy
   // owns the screen then, and its ← Leave forfeits. A stray Esc must not do that.
   useEscape(onCancel, !strategy);
+
+  /** the parked shape, built from what is true RIGHT NOW. Everything about a match already
+   *  found travels with it — see `foundRef` for what the alternative cost. */
+  const parkedState = (lobby: LobbyClient, joined: boolean): ParkedQueue => ({
+    lobby,
+    mode: challengeRef.current?.mode ?? modeRef.current,
+    // the game this search was QUEUED for, not the one the player wanders into
+    game: challengeRef.current?.game ?? gameRef.current,
+    // a private challenge stays a private challenge across a park/adopt
+    challenge: challengeRef.current,
+    since: startedAtRef.current,
+    size: queueRef.current.size,
+    need: queueRef.current.need,
+    assignedRoom: assignedRoomRef.current,
+    start: null, // a started match never reaches here: `startedRef` returns above
+    strategy: strategyRef.current,
+    found: foundRef.current,
+    joined,
+    error: null,
+  });
 
   const teardown = (): void => {
     const lobby = lobbyRef.current;
@@ -146,27 +260,22 @@ export function Matchmaking({
     // untouched, which is what keeps the blast radius small on a path that costs
     // real ELO when it goes wrong.
     //
-    // Two cases still tear down for real rather than park: a match that has already
-    // STARTED (the session owns the transport now) and a reconnect to the assigned
-    // host region already in flight (`assigning`) — parking either would leave a
-    // socket nobody is going to come back for.
+    // A match that has already STARTED is the one case that tears down for real: the
+    // session owns the transport from then on.
+    if (joinedRef.current) {
+      /**
+       * A SEAT IN A STAGED ROOM IS NOT A SOCKET TO THROW AWAY. This used to dispose it —
+       * "parking it would leave a socket nobody is going to come back for" — which was true
+       * before the takeover existed and is exactly backwards now: closing it during
+       * `connecting` or the strategy window is a DISCONNECT, i.e. a cancelled match and a
+       * dodge charged to this player. Parked, the seat is held, the room's clocks run
+       * normally, and whatever the room sends next brings a screen back to it.
+       */
+      wireRoomLobby(lobby, assignedRoomRef.current ?? '', false);
+      parkQueue(parkedState(lobby, true));
+      return;
+    }
     if (searchingRef.current && !assigningRef.current) {
-      const parkedState: ParkedQueue = {
-        lobby,
-        mode: challengeRef.current?.mode ?? modeRef.current,
-        // the game this search was QUEUED for, not the one the player wanders into
-        game: challengeRef.current?.game ?? gameRef.current,
-        // a private challenge stays a private challenge across a park/adopt
-        challenge: challengeRef.current,
-        since: startedAtRef.current,
-        size: queueRef.current.size,
-        need: queueRef.current.need,
-        assignedRoom: null,
-        start: null,
-        strategy: null,
-        found: false,
-        error: null,
-      };
       // REBIND to keeper-owned handlers: the ones registered below close over this
       // component's state, and calling them after unmount would write into a tree
       // that is gone. `on()` replaces, so this is a straight hand-over.
@@ -176,9 +285,20 @@ export function Matchmaking({
       // they are gone, so anything dropped here is unrecoverable and the player
       // waits forever on a match that has already started.
       lobby.on('queued', (_m, size, need) => updateQueue({ size, need }));
+      /**
+       * ⚠️ AN ASSIGNMENT IS ACTED ON WHERE IT ARRIVES, NOT RECORDED FOR LATER.
+       *
+       * It used to be written into the keeper and the JOIN left to whichever screen the
+       * takeover managed to mount — with `RANKED_JOIN_GRACE_MS` already running. Every hitch
+       * between the two spent that budget (a React tree tearing down a live practice match, a
+       * navigation landing elsewhere, an exception anywhere in the chain), and running it out
+       * is a cancelled match and a dodge on this player's standing for one they were never
+       * connected to. `parkAssignedRoom` takes the seat immediately; the screen that comes
+       * back has only the prep window left to show.
+       */
       lobby.on('matchAssigned', (room) => {
         matchFound();
-        updateQueue({ assignedRoom: room, found: true });
+        parkAssignedRoom(lobby, room);
       });
       lobby.on('matchStart', (m) => {
         matchFound();
@@ -193,13 +313,42 @@ export function Matchmaking({
       });
       lobby.on('error', (msg) => updateQueue({ error: msg }));
       lobby.on('closed', () => updateQueue({ error: 'Lost connection to the game server.' }));
-      parkQueue(parkedState);
+      parkQueue(parkedState(lobby, false));
       return;
     }
     lobby.leaveQueue();
     lobby.dispose();
   };
   useEffect(() => teardown, []); // cleanup on unmount
+
+  /**
+   * ASK BEFORE A RELOAD THAT WOULD COST A DODGE.
+   *
+   * Armed only between "match found" and "match playing", which is the one stretch with
+   * no way back. A queue survives a screen change (it parks) but nothing survives a page
+   * load: the keeper is a module singleton, and a staged room has no rejoin record — that
+   * is written at `beginSession`, i.e. once the match has actually started. So a refresh
+   * here loses the seat with the server's clock still running, and the server charges the
+   * closed socket cause-blind.
+   *
+   * The browser shows its own generic wording — `preventDefault` is the whole API, and
+   * custom text has been ignored for a decade — so the sentence that actually explains
+   * this lives in `READY_WINDOW_NOTE`, on screen at the same moment. This is the seatbelt,
+   * not the explanation.
+   *
+   * NOT armed while merely searching. A search is genuinely abandonable, costs nothing to
+   * lose, and a prompt on every idle queue is how people learn to dismiss the prompt.
+   */
+  useEffect(() => {
+    if (!found && !strategy) return;
+    const warn = (e: BeforeUnloadEvent): void => {
+      e.preventDefault();
+      // legacy form, still required by some engines to trigger the dialog at all
+      e.returnValue = '';
+    };
+    window.addEventListener('beforeunload', warn);
+    return () => window.removeEventListener('beforeunload', warn);
+  }, [found, strategy]);
 
   useEffect(() => {
     searchingRef.current = searching;
@@ -251,25 +400,43 @@ export function Matchmaking({
     setSearching(true);
     searchingRef.current = true;
     if (p.error) setError(p.error);
-    // take the handlers back off the keeper
-    lobby.on('queued', (_m, size, need) => setQueue({ size, need }));
-    wireStrategy(lobby);
-    lobby.on('matchStart', (m: MatchStart) => {
-      startedRef.current = true;
-      matchFound();
-      onStart(new ServerSession(lobby.transport, lobby.isHost(), m, lobby.clientId, 'ranked'));
-    });
-    lobby.on('matchAssigned', (room) => {
-      matchFound();
-      joinAssignedMatch(room);
-    });
-    lobby.on('dodgeVerdict', (yours, others) => setDodge({ yours, others }));
-    lobby.on('standingLock', (until, score) => { setLock({ until, score }); setSearching(false); });
-    lobby.on('error', (msg) => strategyCancelled(msg));
-    lobby.on('closed', () => {
-      if (!startedRef.current && !assigningRef.current)
-        setError('Lost connection to the game server.');
-    });
+    // whatever the search had already achieved comes back with it
+    foundRef.current = p.found;
+    setFound(p.found);
+    assignedRoomRef.current = p.assignedRoom;
+    strategyRef.current = p.strategy;
+    if (p.joined) {
+      /**
+       * THE SEAT IS ALREADY TAKEN — this socket is IN the match room, not in the queue
+       * (`ParkedQueue.joined`). Re-point its events at this screen and nothing else: joining
+       * again would seat a second client under one user, and the events that matter from here
+       * are the room's own.
+       */
+      assigningRef.current = true;
+      joinedRef.current = true;
+      wireRoomLobby(lobby, p.assignedRoom ?? '', true);
+    } else {
+      // take the handlers back off the keeper
+      lobby.on('queued', (_m, size, need) => setQueue({ size, need }));
+      wireStrategy(lobby);
+      lobby.on('matchStart', (m: MatchStart) => {
+        startedRef.current = true;
+        clearStagedMatch();
+        matchFound();
+        onStart(new ServerSession(lobby.transport, lobby.isHost(), m, lobby.clientId, 'ranked'));
+      });
+      lobby.on('matchAssigned', (room) => {
+        matchFound();
+        joinAssignedMatch(room);
+      });
+      lobby.on('dodgeVerdict', (yours, others) => setDodge({ yours, others }));
+      lobby.on('standingLock', (until, score) => { setLock({ until, score }); setSearching(false); });
+      lobby.on('error', (msg) => strategyCancelled(msg));
+      lobby.on('closed', () => {
+        if (!startedRef.current && !assigningRef.current)
+          setError('Lost connection to the game server.');
+      });
+    }
     // REPLAY whatever landed WHILE PARKED. These events have already fired and will
     // not fire again for the handlers just registered above, so acting on the
     // recorded payload is the only way the adopted screen ever learns about them.
@@ -277,7 +444,11 @@ export function Matchmaking({
     // the strategy window that preceded it, which supersedes a bare assignment.
     if (p.start) {
       startedRef.current = true;
-      onStart(new ServerSession(lobby.transport, lobby.isHost(), p.start, lobby.clientId, 'ranked'));
+      clearStagedMatch();
+      // the room code when the match is running in one, `'ranked'` on the single-region path
+      onStart(
+        new ServerSession(lobby.transport, lobby.isHost(), p.start, lobby.clientId, p.assignedRoom ?? 'ranked'),
+      );
     } else if (p.strategy) {
       const s = p.strategy;
       setStrategy({
@@ -288,7 +459,8 @@ export function Matchmaking({
         mode: s.mode,
         intros: s.intros,
       });
-    } else if (p.assignedRoom) {
+    } else if (p.assignedRoom && !p.joined) {
+      // an assignment recorded by a build that parked before taking the seat
       joinAssignedMatch(p.assignedRoom);
     }
     return true;
@@ -300,6 +472,28 @@ export function Matchmaking({
   // button they'd have to press to start waiting.
   useEffect(() => {
     if (adoptParked()) return; // already in the queue — do not enter it twice
+    /**
+     * THE WAY BACK FROM A RELOAD. Nothing is parked — a page load takes the keeper with
+     * it — but `stagedMatch` survives in storage, and the server is still holding this
+     * account's seat in that room (`Room.detach` holds it, `seatFor` hands it back on
+     * the account rather than on a client id the reload destroyed).
+     *
+     * Rejoining, not offering to: the clocks did not pause while the page was loading,
+     * and a card the player has to find costs them the seconds this exists to save. It
+     * is the same call the assignment itself makes, so the screen that comes up is the
+     * one they were looking at.
+     *
+     * Signed-out is a dead end by construction — the seat is keyed to the account — so
+     * a stale record is dropped rather than acted on.
+     */
+    const staged = loadStagedMatch();
+    if (staged) {
+      if (signedIn) {
+        joinAssignedMatch(staged.room);
+        return;
+      }
+      clearStagedMatch();
+    }
     if (!challengeRef.current || !signedIn) return;
     onChallengeConsumed?.();
     void find();
@@ -307,6 +501,26 @@ export function Matchmaking({
     // and re-running would double-queue
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  /**
+   * ADOPTION IS NOT A MOUNT EVENT — it is "a parked search exists and nothing here owns it".
+   *
+   * App's takeover says `if (screenRef.current === 'matchmaking') return; // already there; it
+   * will adopt`, and with a mount-only adopt that was simply untrue: a screen that is already
+   * up never mounts again, so a search parked while it is showing would sit in the keeper
+   * forever with a match found and nobody acting on it. Watching the store costs one
+   * subscription and makes the takeover's assumption true.
+   *
+   * It cannot double-queue: `takeQueue` hands a search back exactly once, and the challenge
+   * auto-queue stays where it is, in the mount effect.
+   */
+  const parked = useParkedQueue();
+  useEffect(() => {
+    if (!parked || lobbyRef.current) return; // nothing to adopt / this screen has its own socket
+    adoptParked();
+    // `adoptParked` reads refs and setters, all stable for this screen's life
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [parked]);
 
   /** "your match is ready" chime. Its own MatchAudio because the game controller is
    *  not up yet on this screen, and a ref-guard so a search fires it exactly once —
@@ -324,7 +538,7 @@ export function Matchmaking({
     a.sfxMatchFound();
   };
 
-  const playerInfo = () => ({
+  const playerInfo = (): Omit<LobbyPlayer, 'clientId'> => ({
     name: settings.spec.teamName || 'Player',
     teamName: settings.spec.teamName,
     teamNumber: settings.spec.teamNumber,
@@ -335,6 +549,9 @@ export function Matchmaking({
     spec: settings.spec,
     assists: settings.assists,
   });
+  // the sockets that outlive this render read it from here, so it is refreshed every render
+  // rather than frozen into whichever closure happened to create them.
+  playerInfoRef.current = playerInfo;
 
   /** attach the pre-match strategy handlers to a lobby socket (dev mm-socket path
    * AND the production reconnected host-room path both open a strategy window). */
@@ -342,7 +559,15 @@ export function Matchmaking({
     lobby.on('roster', (players) =>
       setStrategy((s) => (s ? { ...s, players, myClientId: lobby.clientId } : s)),
     );
-    lobby.on('strategyStart', (deadline, _yourRobotId, m, intros) =>
+    lobby.on('strategyStart', (deadline, yourRobotId, m, intros) => {
+      // REMEMBERED, not just rendered: if this screen goes away before the window closes, the
+      // re-park has to be able to put it back up (`foundRef`). A prep window the client forgot
+      // is a match the player cannot ready up for and is then billed for missing.
+      foundRef.current = true;
+      setFound(true);
+      strategyRef.current = {
+        deadline, yourRobotId, mode: m, intros, players: lobby.players, myClientId: lobby.clientId,
+      };
       setStrategy({
         lobby,
         players: lobby.players,
@@ -350,16 +575,129 @@ export function Matchmaking({
         deadline,
         mode: m,
         intros,
-      }),
-    );
+      });
+    });
+  };
+
+  /**
+   * EVERY EVENT A MATCH-ROOM SOCKET CAN RAISE, wired either to THIS SCREEN or to the KEEPER.
+   *
+   * One function for both because the two must not drift: the parked half exists precisely so
+   * that a room socket with nobody watching still behaves — it holds the seat, records the prep
+   * window, and lets the takeover bring a screen to it. A handler present in one list and
+   * missing from the other is a signal that is silently lost on whichever side forgot it, and
+   * every signal here decides whether a rated match happens.
+   */
+  const wireRoomLobby = (lobby: LobbyClient, room: string, live: boolean): void => {
+    if (live) {
+      wireStrategy(lobby);
+      lobby.on('matchStart', (m: MatchStart) => {
+        startedRef.current = true;
+        clearStagedMatch();
+        onStart(new ServerSession(lobby.transport, lobby.isHost(), m, lobby.clientId, room));
+      });
+      lobby.on('dodgeVerdict', (yours, others) => setDodge({ yours, others }));
+      lobby.on('standingLock', (until, score) => { setLock({ until, score }); setSearching(false); });
+      lobby.on('error', (msg) => strategyCancelled(msg));
+      lobby.on('closed', () => {
+        if (!startedRef.current) strategyCancelled('Lost connection to the match server.');
+      });
+      return;
+    }
+    // PARKED: record what arrives and let the takeover act on it. `found` is what wakes it.
+    //
+    // ⚠️ EVERY event this screen wired LIVE is re-registered here, including the three that
+    // have nothing to do while parked. `on()` REPLACES, so an event left alone keeps the live
+    // handler — which is a closure over a tree that no longer exists. `dodgeVerdict` is the
+    // one real loss: a match cancelled while parked still reports its `error`, which the queue
+    // bar shows, but not the itemised "what it cost you" notice, because the keeper has no slot
+    // to carry one.
+    lobby.on('roster', () => {});
+    lobby.on('dodgeVerdict', () => {});
+    lobby.on('standingLock', () => {});
+    lobby.on('strategyStart', (deadline, yourRobotId, m, intros) => {
+      matchFound();
+      updateQueue({
+        strategy: { deadline, yourRobotId, mode: m, intros, players: lobby.players, myClientId: lobby.clientId },
+        found: true,
+      });
+    });
+    lobby.on('matchStart', (m) => {
+      matchFound();
+      updateQueue({ start: m, found: true });
+    });
+    lobby.on('error', (msg) => updateQueue({ error: msg }));
+    lobby.on('closed', () => updateQueue({ error: 'Lost connection to the match server.' }));
+  };
+
+  /**
+   * OPEN THE ASSIGNED ROOM AND TAKE THE SEAT.
+   *
+   * `gameServerUrlWith({ room })` is region-coded (`fly-replay` routes on the code), so this
+   * lands on the host machine wherever the player is. `live` says whether a screen is watching
+   * — see `wireRoomLobby`.
+   */
+  const openAssignedRoom = (room: string, live: boolean): LobbyClient | null => {
+    let transport: WebSocketTransport;
+    try {
+      transport = new WebSocketTransport(gameServerUrlWith({ room }));
+    } catch {
+      return null;
+    }
+    /**
+     * WRITE THE WAY BACK BEFORE ANYTHING CAN GO WRONG, not after the join succeeds. From
+     * here until the match starts there is a server clock running on this account and no
+     * other record of which room it belongs to — so this is the one line that makes a
+     * reload recoverable rather than a dodge. Both callers (the live screen and the
+     * parked handler) come through here, which is why it is here and not in either.
+     */
+    saveStagedMatch(room);
+    const lobby = new LobbyClient(transport);
+    wireRoomLobby(lobby, room, live);
+    lobby.join(room, playerInfoRef.current());
+    return lobby;
+  };
+
+  /**
+   * THE SAME JOIN, WITH NOBODY WATCHING — called from the PARKED `matchAssigned` handler.
+   *
+   * ⚠️ The matchmaker socket is disposed here rather than left open, and that is not just
+   * tidiness: `LobbyClient.queue` re-sends its queue frame on EVERY reconnect
+   * (`transport.onReopen`), so a parked matchmaker socket that blips would put the player back
+   * in the pool while the room they have already been staged into is waiting for them.
+   */
+  const parkAssignedRoom = (mm: LobbyClient, room: string): void => {
+    const lobby = openAssignedRoom(room, false);
+    mm.dispose();
+    if (!lobby) {
+      updateQueue({ assignedRoom: room, found: true, error: 'Couldn’t reach the match server.' });
+      return;
+    }
+    updateQueue({ lobby, assignedRoom: room, joined: true, found: true });
   };
 
   /** a cancel/close arrived (deadline lapsed, opponent left): drop the strategy
    * screen back to the queue with the reason shown. */
   const strategyCancelled = (msg: string): void => {
+    clearStagedMatch(); // there is no room to go back to
+    // THE MATCH IS OVER — forget it. A socket still marked as a seat in a staged room would be
+    // parked on the way out (`teardown`) and the takeover would drag the player back into a
+    // room that no longer wants them.
+    clearFound();
     setStrategy(null);
     setSearching(false);
     setError(msg);
+  };
+
+  /** forget a found match: nothing left to hand back, nothing left to come back to. */
+  const clearFound = (): void => {
+    clearStagedMatch();
+    foundRef.current = false;
+    joinedRef.current = false;
+    assigningRef.current = false;
+    assignedRoomRef.current = null;
+    strategyRef.current = null;
+    setFound(false);
   };
 
   /** "30 minutes" / "2 hours" / "7 days" — a lock length in the biggest unit that stays exact */
@@ -394,7 +732,7 @@ export function Matchmaking({
           <span>
             You {DODGE_REASON[y.kind]}. That is your {nth} in {WINDOW_HOURS.dodge} hours
             {st && st.cooldownMin > 0
-              ? ` — ranked is locked for ${minutesText(st.cooldownMin)}.`
+              ? `. Ranked is locked for ${minutesText(st.cooldownMin)}.`
               : '.'}
           </span>
           {/* TELL THEM WHAT THE NEXT ONE COSTS. Both systems this is patterned on publish the
@@ -417,7 +755,7 @@ export function Matchmaking({
         <b>Nothing was charged to you</b>
         <span>
           {who > 0
-            ? `${who === 1 ? 'A player' : `${who} players`} didn’t make it to the match. You were ready — this one is on them.`
+            ? `${who === 1 ? 'A player' : `${who} players`} didn’t make it to the match. You were ready, so this one is on them.`
             : 'The match was cancelled before it started.'}
         </span>
       </div>
@@ -453,10 +791,32 @@ export function Matchmaking({
       setError('Server is restarting shortly - try again in a minute.');
       return;
     }
+    /**
+     * THE RANKED CUTOVER GATE (plan §7). A BIOBUZZ ranked room is a 3D-physics room — the server
+     * decides that, in `Room.physics` — but only on a server that has been DEPLOYED with that
+     * code. This app is served to every client version from one Fly app and the cutover is per
+     * server, so a client can be newer than the machine it is queueing on, and the failure is
+     * SILENT in the worst direction: the old server stages an ordinary 2D room, the match plays,
+     * and its result lands on the same board and moves the same ELO as everybody's 3D ones.
+     *
+     * So the client asks first. `serverCaps()` is a one-shot, page-lifetime-cached read, and it
+     * is checked HERE rather than on render because it is about the moment a rated match is
+     * committed to. Nothing else is gated: custom rooms, practice, records against this game's
+     * own board and every other game's queue are untouched.
+     */
+    const queueGame = challengeRef.current?.game ?? gameRef.current;
+    if (moduleFor(queueGame).physicsOptions?.includes('3d')) {
+      const caps = await serverCaps().catch(() => [] as string[]);
+      if (!caps.includes(BB3D_CAP)) {
+        setError('This server hasn’t been updated for 3D ranked matches yet. Try again later, or play a custom room.');
+        return;
+      }
+    }
     setError('');
     setElapsed(0);
     setBumps(0);
     alertedRef.current = false;
+    clearFound(); // a new search knows nothing about the last one
     startedAtRef.current = Date.now();
     setSearching(true);
     searchingRef.current = true;
@@ -478,6 +838,7 @@ export function Matchmaking({
     wireStrategy(lobby);
     lobby.on('matchStart', (m: MatchStart) => {
       startedRef.current = true;
+      clearStagedMatch();
       matchFound();
       onStart(new ServerSession(transport, lobby.isHost(), m, lobby.clientId, 'ranked'));
     });
@@ -524,28 +885,17 @@ export function Matchmaking({
    * the region-coded room (fly-replay routes it to the fair host region). */
   const joinAssignedMatch = (room: string): void => {
     assigningRef.current = true;
-    lobbyRef.current?.dispose();
-    let transport: WebSocketTransport;
-    try {
-      transport = new WebSocketTransport(gameServerUrlWith({ room }));
-    } catch {
+    foundRef.current = true;
+    setFound(true);
+    assignedRoomRef.current = room;
+    lobbyRef.current?.dispose(); // the matchmaker socket's whole job is done
+    const lobby = openAssignedRoom(room, true);
+    if (!lobby) {
       setError('Couldn’t reach the match server.');
       return;
     }
-    const lobby = new LobbyClient(transport);
+    joinedRef.current = true;
     lobbyRef.current = lobby;
-    wireStrategy(lobby);
-    lobby.on('matchStart', (m: MatchStart) => {
-      startedRef.current = true;
-      onStart(new ServerSession(transport, lobby.isHost(), m, lobby.clientId, room));
-    });
-    lobby.on('dodgeVerdict', (yours, others) => setDodge({ yours, others }));
-    lobby.on('standingLock', (until, score) => { setLock({ until, score }); setSearching(false); });
-    lobby.on('error', (msg) => strategyCancelled(msg));
-    lobby.on('closed', () => {
-      if (!startedRef.current) strategyCancelled('Lost connection to the match server.');
-    });
-    lobby.join(room, playerInfo());
   };
 
   /**
@@ -564,8 +914,10 @@ export function Matchmaking({
 
   const cancel = (): void => {
     // explicit cancel is NOT a park: pressing cancel means leave the queue, so drop
-    // the search here rather than letting `teardown` hand it to the keeper
+    // the search here rather than letting `teardown` hand it to the keeper. `clearFound`
+    // first, or a socket holding a seat would be parked instead of dropped.
     searchingRef.current = false;
+    clearFound();
     teardown();
     dropQueue();
     setSearching(false);
@@ -635,11 +987,42 @@ export function Matchmaking({
         settings={settings}
         onSettingsChange={onSettingsChange}
         onLeave={() => {
+          // LEAVING IS LEAVING. Forget the match FIRST: otherwise `teardown` parks the seat
+          // (it is a live room socket now) and the takeover drags the player straight back
+          // into the window they just walked out of.
+          searchingRef.current = false;
+          clearFound();
           teardown();
+          dropQueue();
           setStrategy(null);
           setSearching(false);
         }}
       />
+    );
+  }
+
+  /**
+   * A MATCH HAS BEEN FOUND AND IS NOT PLAYING YET — a different fact from searching, and it has
+   * to look like one.
+   *
+   * With only "Finding a match…" to fall back on, every way of ending up here without a prep
+   * window looked identical to still being in the queue — which is the report this screen state
+   * comes from: "instead of being sent to the match prep menu, I was sent to the queuing menu".
+   * A player who can see that a match was found knows the 20-second clocks are running and that
+   * leaving now costs standing.
+   */
+  if (found) {
+    return page(
+      <>
+        Match <span className="accent">found</span>
+      </>,
+      `${mode.toUpperCase()} · loading into the match`,
+      <>
+        <p className="ds-hint">{READY_WINDOW_NOTE}</p>
+        {error && <p className="ds-form-err">⚠ {error}</p>}
+        {dodgeNote()}
+        {lockNote()}
+      </>,
     );
   }
 
@@ -694,6 +1077,7 @@ export function Matchmaking({
           </p>
         )}
         <p className="ds-tip">{BACKGROUND_QUEUE_TIP}</p>
+        <p className="ds-hint">{READY_WINDOW_NOTE}</p>
         {error && <p className="ds-form-err">⚠ {error}</p>}
         {dodgeNote()}
         {lockNote()}
@@ -755,6 +1139,12 @@ export function Matchmaking({
           </button>
         </div>
       )}
+      {/* THE CUTOVER, STATED BEFORE IT IS ENFORCED (plan §7). `find()` refuses a BIOBUZZ ranked
+          queue on a server that has not been deployed with the 3D code; saying so here means the
+          player reads it while they are deciding rather than after they have pressed the button.
+          Null while the capability read is in flight, so neither sentence flickers. */}
+      {rankedPhysicsNote}
+      <p className="ds-hint">{READY_WINDOW_NOTE}</p>
       {error && <p className="ds-form-err">⚠ {error}</p>}
       {dodgeNote()}
       {lockNote()}

@@ -9,6 +9,17 @@ primary_region = 'iad'
 [build]
   dockerfile = 'Dockerfile'
 
+[env]
+  # LAN PLAY IS ON IN PRODUCTION (owner, 2026-09-13). Either flag makes the server advertise
+  # the `lan` capability on /api/presence, which is what lights the client's LAN entry points,
+  # so no Vercel change is needed (docs/lan-webrtc.md, "Which flag turns the LAN screen on").
+  #   · LAN_UPLOADS mounts /api/lan: a self-hosted match filed by its signed-in host lands in
+  #     `lan_runs`, which no board, record, rank or rating reads (server/lanUploads.ts).
+  #   · LAN_SIGNALLING introduces two browsers so one can host the room in a TAB. It touches no
+  #     data. Production sets NEON_AUTH_URL, so an anonymous host is still refused (`lanAnon`).
+  LAN_UPLOADS = '1'
+  LAN_SIGNALLING = '1'
+
 [http_service]
   internal_port = 8080
   force_https = true
@@ -61,6 +72,34 @@ primary_region = 'iad'
 # EVERY other region runs shared-cpu-1x/1024MB via scripts/fly-deploy.sh — sjc joined the
 # satellites in the same pass. `fly deploy` re-applies THIS block to every machine, which
 # is why that script must always re-shrink them afterward.
+# COST PASS (2026-09-06): nothing moves here, and BOTH halves are measured.
+#
+# CPU stays at 4x. `/api/perf` on the live primary with TWO rooms and 8 players read
+# 0.244 cores, against a shared-cpu-4x sustained baseline of ~0.25 (4 × 6.25%). Two
+# concurrent matches already sit ON the baseline and run on burst credits, with loop
+# lag p99 at 11.4ms of the 16.67ms step budget. Down from here is the throttle-flap
+# described above, not a saving. If concurrency grows, this goes UP.
+#
+# ⚠️ MEMORY CANNOT COME DOWN EITHER, and not for a reason you can see from the RSS.
+# RSS is only 111MB under that same load, so 512 looked free — but Fly REFUSED it:
+#   invalid config.guest.memory_mb, minimum required 1024 MiB
+# A shared size carries a memory FLOOR equal to its default, so RAM is not an
+# independent dial: 512 requires dropping to shared-cpu-2x, which the paragraph above
+# rules out. The satellites are a different story — they run shared-cpu-1x, whose
+# floor is 256, and scripts/fly-deploy.sh puts them on 512.
+#
+# LAUNCH SIZING (2026-09-13, BIOBUZZ + the alpha promotion): shared-cpu-4x/1024 →
+# performance-2x/4096, on the owner's "safer than sorry", from docs/capacity.md:
+#   · iad is the always-warm primary AND the matchmaker AND the presence heartbeat AND the
+#     HTTP API, and US East is the biggest share of players. On a shared size the 60 Hz loop
+#     rides burst credits past ~0.25 cores; two rooms already sat on that line (2026-09-06).
+#   · the FIRST dedicated core is what adds rooms (~8-10 driven, never throttled).
+#   · the SECOND buys headroom off the loop's core for GC/JIT and for permessage-deflate, which
+#     runs on the libuv threadpool for every socket on the machine. Past this size the answer
+#     is SIM_WORKERS (docs/scaling-multicore.md), not a bigger VM: one process is one core.
+#   · performance-* floors memory at 2048MB per core, so 4096 is the floor, not a choice.
+# This block is applied to EVERY machine by `fly deploy`; scripts/fly-deploy.sh then puts each
+# satellite back on its own size. Never a bare `fly deploy`.
 [[vm]]
-  size = 'shared-cpu-4x'
-  memory = '1024mb'
+  size = 'performance-2x'
+  memory = '4096mb'

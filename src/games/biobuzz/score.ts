@@ -10,6 +10,7 @@ import {
   BB_RP,
 } from './config';
 import { bbElementRadius, flowerScore, type BbElementKind } from './flower';
+import { hiveLoad, hiveWillTip } from './hive';
 import type { BiobuzzState } from './state';
 
 /**
@@ -29,18 +30,34 @@ import type { BiobuzzState } from './state';
  * paper, which is what `scripts/smoke-biobuzz/rules.ts` does for every line of the table.
  *
  * ── THE TWO KINDS OF LINE, AND WHY LATCHES EXIST AT ALL ─────────────────────
- * Most lines are CONTINUOUS: cell contents, flowers, gardens. They are read live and they are
- * whatever they are when the buzzer goes, which is exactly what "at rest after the match"
- * (§10.5.C/E) means for a sim that stops stepping at the buzzer.
+ * §10.5 splits Table 10-2 in two, and the split is the whole of this file's bookkeeping.
  *
- * LEAVE and PARK are not. They are assessed at an INSTANT — the end of AUTO, and the end of
- * the MATCH (Table 10-2) — and a robot that drives back to the wall after that keeps its
- * points. So those three are LATCHED into `world.biobuzz` by `step.ts` at the phase boundary,
- * and this file reads the latch once the instant has passed. BEFORE the instant it reads the
- * live predicate instead, so a HUD shows a provisional value that moves while a driver can
- * still change it, and freezes when the rule says it freezes. `bbLeftNow` / `bbParkedNow` are
- * exported so `step.ts` latches with the same predicate this scores with — one definition, or
- * the HUD and the final score disagree by exactly the bug nobody finds until a real match.
+ * CONTINUOUS lines are assessed "throughout the MATCH": the HIVE TIP (§10.5 A) and both FLOWER
+ * lines — elements in a FLOWER you OWN and the Bottom NECTAR Bonus (§10.5 D, "throughout the
+ * MATCH with final assessment…"). They are read live, they are paid live, and latching one of
+ * them would be this same bug pointing the other way.
+ *
+ * INSTANT lines are assessed at a MOMENT and at no other:
+ *   • LEAVE and AUTO PARK — the end of AUTO (§10.5 F)
+ *   • TELEOP PARK — the end of the MATCH (§10.5 G)
+ *   • POLLEN/NECTAR remaining in an upward-facing CELL — after everything comes to rest at the
+ *     conclusion of the MATCH (§10.5 C)
+ *   • POLLEN/NECTAR at least partially in a GARDEN — the end of TELEOP, all ROBOTS and SCORING
+ *     ELEMENTS at rest (§10.5 E)
+ *
+ * ⚠️ **AN INSTANT LINE IS WORTH ZERO POINTS UNTIL ITS INSTANT HAS PASSED** (owner ruling,
+ * 2026-09-19). The live predicate feeds the COUNT — the driver's readout — and `pendingPts`,
+ * and it never reaches `total`. It used to reach `total`, and the measured consequence was a
+ * score bar reading 4 BEFORE the match started (a free-placed robot clear of the perimeter with
+ * one POLLEN in its GARDEN) and 9 one second into AUTO, 29 s before anything on it had been
+ * assessed. The FINAL score is unchanged — every harvest happens at or after `post` — so this
+ * moves the running total and nothing that was ever banked.
+ *
+ * LEAVE and PARK also have to survive the robot moving afterwards: a robot that drives back to
+ * the wall keeps its 3. So the three are LATCHED into `world.biobuzz` by `step.ts` at the phase
+ * boundary and read from the latch from then on. `bbLeftNow` / `bbParkedNow` are exported so
+ * `step.ts` latches with the same predicate this scores with — one definition, or the HUD and
+ * the final score disagree by exactly the bug nobody finds until a real match.
  *
  * ── FOULS ARE NOT IN HERE ───────────────────────────────────────────────────
  * `foul` on the breakdown is READ from `world.match.scores[a].foulPoints`, which `penalties.ts`
@@ -84,22 +101,57 @@ export function bbKindIndex(world: World): (id: number) => BbElementKind {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
- * LEAVE (Table 10-2): the ROBOT is "no longer contacting the perimeter wall".
+ * THE FOUR PERIMETER WALLS, as bits.
  *
- * Every corner of the footprint strictly inside the wall planes, by the shared
- * `START_TOUCH_TOL` of slack. The slack is the same 1.25 in the START rules use for "touching
- * the wall" (`spawn.ts`), and it is on this side of the test on purpose: a robot that has
- * pulled away by a millimetre has not LEFT in any sense a referee would recognise, and
- * without the tolerance the achievement would flicker for a robot resting against the wall as
- * the solve nudges it.
+ * A BITMASK rather than a list of booleans because it is stored per robot on the state bag,
+ * which is plain JSON on every snapshot and every replay: one small integer per robot, and the
+ * "did it start on any of these" test is one `&`.
  */
-export function bbLeftNow(r: RobotState): boolean {
+export const BB_WALL = { xPos: 1, xNeg: 2, yPos: 4, yNeg: 8, all: 15 } as const;
+
+/**
+ * WHICH PERIMETER WALLS THE ROBOT IS CONTACTING, as a bitmask.
+ *
+ * A corner of the footprint within the shared `START_TOUCH_TOL` of a wall plane counts as
+ * touching that wall. The slack is the same 1.25 in the START rules use for "touching the
+ * wall" (`spawn.ts`), and it is on this side of the test on purpose: a robot that has pulled
+ * away by a millimetre has not LEFT in any sense a referee would recognise, and without the
+ * tolerance the reading would flicker for a robot resting against the wall as the solve
+ * nudges it (measured: a settled chassis sits 0.2 in THROUGH the plane).
+ */
+export function bbWallsTouched(r: RobotState): number {
   const lim = BB_HALF_X - START_TOUCH_TOL;
   const limY = BB_HALF_Y - START_TOUCH_TOL;
+  let walls = 0;
   for (const c of robotCorners(r)) {
-    if (Math.abs(c.x) > lim || Math.abs(c.y) > limY) return false;
+    if (c.x > lim) walls |= BB_WALL.xPos;
+    if (c.x < -lim) walls |= BB_WALL.xNeg;
+    if (c.y > limY) walls |= BB_WALL.yPos;
+    if (c.y < -limY) walls |= BB_WALL.yNeg;
   }
-  return true;
+  return walls;
+}
+
+/**
+ * LEAVE (Table 10-2): the ROBOT is "no longer contacting the perimeter wall".
+ *
+ * ⚠️ **THE perimeter wall — the article is the rule.** `walls` is the mask of walls the ROBOT STARTED
+ * AGAINST (`BiobuzzState.startWalls`), and LEAVE is being clear of THOSE. Written against all
+ * four instead — which is how it shipped, and what `field-plan` §2.3 guessed pre-kickoff — the
+ * achievement is unreachable in ordinary play: the HIVE, the FLOWERS and both GARDENS are all
+ * at the perimeter, so a robot that crosses the field and ends AUTO somewhere useful is
+ * "contacting the perimeter wall" and is charged for a journey it plainly made. Measured on a
+ * solo practice match: 3 points live for the whole of AUTO, 0 from the buzzer on.
+ *
+ * A robot that started clear of the perimeter (`walls` 0) has nothing to stop contacting and
+ * has LEFT wherever it ends up — free start placement is legal in this game, and the
+ * alternative reading would make the achievement unearnable for those poses instead.
+ *
+ * `walls` DEFAULTS TO ALL FOUR, so a caller with no start latch in hand (an older snapshot, a
+ * scene that spawns a robot mid-tick) gets the literal reading rather than a free 3.
+ */
+export function bbLeftNow(r: RobotState, walls: number = BB_WALL.all): boolean {
+  return (bbWallsTouched(r) & walls) === 0;
 }
 
 /**
@@ -160,11 +212,18 @@ export interface BbAllianceScore {
   /** robots PARKED at the end of the MATCH, and 5 each */
   parkTeleCount: number;
   parkTele: number;
-  /** completed HIVE TIPS, and 20 each */
+  /** completed HIVE TIPS, and 20 each — plus, once the match is over, a swing that was still
+   * moving at the buzzer, which will certainly settle (see `bbScoreWorld`) */
   tips: number;
   tipPts: number;
-  /** elements in this alliance's upward-facing CELL, and 2 each */
+  /** elements in this alliance's upward-facing CELL right now — LIVE, a readout and not a
+   * score. What is in a tray is on its way to being tipped out of it. The ONE exception is a
+   * tray caught mid-swing at the buzzer, whose load is counted as the TIP it is about to
+   * complete rather than twice (see `bbScoreWorld`). */
   cellCount: number;
+  /** 2 for each of those, **and 0 until the match is over** (owner ruling, 2026-09-12): Table
+   * 10-2 pays for an element LEFT IN the cell, which is a state of the field at the buzzer.
+   * Lands once, at `post`; never in freeplay, which has no buzzer. */
   cellPts: number;
   /** elements inside a FLOWER this alliance OWNS, and 2 each */
   ownedCount: number;
@@ -172,13 +231,29 @@ export interface BbAllianceScore {
   /** FLOWERS whose bottom-most scoring NECTAR is this alliance's, and 5 each */
   bottomCount: number;
   bottomPts: number;
-  /** elements at least partially in this alliance's GARDEN, and 1 each */
+  /** elements at least partially in this alliance's GARDEN, and 1 each — **and 0 points until
+   * the match is over**, by §10.5 E, which is word for word §10.5 C's instant: "at the end of
+   * TELEOP when all ROBOTS and SCORING ELEMENTS have come to rest". Same treatment as the CELL
+   * line it sits beside; the COUNT stays live because a driver pushing pollen into the strip
+   * still needs to see it land. */
   gardenCount: number;
   gardenPts: number;
   /** points from the OPPONENT's fouls — read from `world.match`, never written here */
   foul: number;
   /** the sum of every line above EXCEPT `foul` */
   total: number;
+  /**
+   * What the instants still ahead WOULD pay if every one of them were assessed right now —
+   * LEAVE + AUTO PARK before the end of AUTO; TELEOP PARK + up-CELL + GARDEN before the buzzer.
+   *
+   * **NOT in `total`, ever**, and that is the point of it existing. Once an instant line pays
+   * nothing until its instant, a driver who clears the perimeter sees no change at all, and a
+   * bar that never moves reads as broken in the other direction. This is the number the HUD
+   * shows separately, so the score promises nothing it does not already have while the driver
+   * can still see that the achievement is satisfied. `total + pendingPts` is invariant across
+   * the whole match for a field that does not change, which is what makes it honest.
+   */
+  pendingPts: number;
 }
 
 /** the RANKING POINTS an alliance has earned so far (Tables 10-2/10-3). */
@@ -218,6 +293,7 @@ const zero = (): BbAllianceScore => ({
   gardenPts: 0,
   foul: 0,
   total: 0,
+  pendingPts: 0,
 });
 
 /**
@@ -253,27 +329,132 @@ export function bbScoreWorld(world: World): BbScore {
   const kindOf = bbKindIndex(world);
   const phase = world.match.phase;
 
-  // ── LEAVE / PARK — live while the instant is still ahead, latched once it has passed ──
+  /**
+   * THE TWO INSTANTS, as booleans, hoisted because four lines below need them.
+   *
+   * `autoAssessed` deliberately reads TRUE in `freeplay`: free drive has no AUTO buzzer, so the
+   * latch it then reads was never written and every instant line scores 0. That is the same
+   * answer freeplay already gave for PARK and for the CELL line, and it is the honest one — a
+   * practice session has no moment at which anything was assessed.
+   */
+  const autoAssessed = phase !== 'pre' && phase !== 'auto';
+  const matchOver = phase === 'post';
+
+  // ── LEAVE / PARK — a live COUNT while the instant is still ahead, the LATCH once it has
+  //    passed. The POINTS wait for the instant either way; see the arithmetic at the bottom. ──
   for (const r of world.robots) {
     if (r.passive) continue; // a practice dummy is not a competitor and scores nothing
     const s = out[r.alliance];
-    const left = phase === 'pre' || phase === 'auto' ? bbLeftNow(r) : (bb.leave[r.id] ?? false);
+    const left = autoAssessed
+      ? (bb.leave[r.id] ?? false)
+      : bbLeftNow(r, bb.startWalls[r.id] ?? BB_WALL.all);
     if (left) s.leaveCount++;
-    const parkA = phase === 'auto' ? bbParkedNow(r) : (bb.parkAuto[r.id] ?? false);
+    const parkA = autoAssessed ? (bb.parkAuto[r.id] ?? false) : bbParkedNow(r);
     if (parkA) s.parkAutoCount++;
     // PARK is assessed a second time at the END OF THE MATCH, so before TELEOP there is
     // nothing provisional to show — a robot parked in AUTO has not yet earned the teleop 5.
-    const parkT = phase === 'teleop' ? bbParkedNow(r) : (bb.parkTele[r.id] ?? false);
+    const parkT = matchOver ? (bb.parkTele[r.id] ?? false) : phase === 'teleop' && bbParkedNow(r);
     if (parkT) s.parkTeleCount++;
   }
 
-  // ── HIVE TIP, and the elements left in the up-CELL ─────────────────────────
+  // ── HIVE TIP, and the elements LEFT in the up-CELL at the END ─────────────
+  /**
+   * ⚠️ THE CELL LINE IS SCORED AT THE END OF THE MATCH, NOT LIVE (owner ruling, 2026-09-12;
+   * confirmed by §10.5 C, 2026-09-13: "Assessment of POLLEN and NECTAR remaining in the CELL
+   * will occur after all SCORING ELEMENTS and ROBOTS have come to rest at the conclusion of the
+   * MATCH").
+   *
+   * Table 10-2 pays 2 for an element "left in" the up-CELL, and LEFT IN is a state of the
+   * field at the buzzer, not a running total: everything in a cell is on its way to being
+   * TIPPED out, and the ones that tip earn the 20 and then stop being worth anything. Counting
+   * them live made the score bar tick up 2 at a time while the load built and then drop by ten
+   * or twelve the instant the bar swung, which reads as a penalty for doing the one thing the
+   * HIVE is for.
+   *
+   * So `cellCount` — the driver's readout, what is in the tray right now — stays LIVE, and it
+   * is the POINTS that wait. `cellPts` is 0 for the whole match and lands once at `post`.
+   *
+   * `cellCount` is the UP cell's by construction: `hiveStep` empties the tray as the bar passes
+   * level and hands the swing over to the cell coming up, so there is never a down-cell's load
+   * in here.
+   *
+   * FREEPLAY never reaches `post` and therefore never banks the line. That is the same answer
+   * PARK already gives in freeplay (its latch is never written), and it is the honest one: a
+   * practice session has no buzzer, so there is no instant at which anything was "left in".
+   */
   for (const a of ALLIANCES) {
     const hive = bb.hives[a];
-    out[a].tips = hive.tips;
-    // `contents` is the UP cell's, by construction: `hiveStep` empties it as the bar passes
-    // level and the new up-cell starts empty, so there is never a down-cell's load in here.
-    out[a].cellCount = hive.contents.length;
+    /**
+     * ⚠️ A SWING ALREADY UNDER WAY AT THE BUZZER IS A TIP, AND ITS LOAD IS NOT ALSO LEFT IN THE
+     * TRAY. Reported from a solo record run (2026-09-13): “sometimes when I get a tip at the end
+     * of the game it deducts points from me rather than adding the points for the tip … the tip
+     * doesn't count and the points get deducted”.
+     *
+     * Two clocks made that inevitable: the swing is `BB_TIP_SWING_S` 4.0 s and the window the
+     * results screen and the server both harvest the final score on is `MATCH_SETTLE_S` 2.8 s,
+     * so a TIP triggered in the last four seconds of TELEOP never reached `hive.tips` before the
+     * score was captured. The bar passes level half way through, and that is the half that hurt:
+     * a swing that started in the last two seconds paid its load 2 apiece at the buzzer and then
+     * had the tray emptied under it, so the saved number came in BELOW the one on screen by the
+     * whole cell line with the 20 nowhere. Measured on the smoke scene: 16 at the buzzer, 0
+     * harvested. Tipping — the one thing the HIVE is for — cost points.
+     *
+     * ── THE RULE SAYS SO IN AS MANY WORDS (§10.5 A and C) ─────────────────
+     *   A. "Assessment of HIVE TIPS occurs throughout the MATCH **and continues until all
+     *      SCORING ELEMENTS and ROBOTS have come to rest at the conclusion of the MATCH**."
+     *   C. "Assessment of POLLEN and NECTAR **remaining in the CELL** will occur **after** all
+     *      SCORING ELEMENTS and ROBOTS have come to rest at the conclusion of the MATCH."
+     *
+     * So the state that is scored is the one at REST, not the one at 0:00 — a swing still moving
+     * when the buzzer goes is assessed as the TIP it becomes, and the load it is dumping is not
+     * remaining in the CELL by the time C is asked. That is both halves of this fix, and the two
+     * clauses are also why the answer is not "wait for the swing": the sim CANNOT wait, because
+     * `MATCH_SETTLE_S` is fixed at 2.8 s and a swing takes 4.0. Predicting it is exact rather
+     * than optimistic — nothing cancels a swing (`hiveStep` counts one down to zero and has no
+     * other exit), so a bar that is moving at the buzzer WILL come to rest tipped, and the
+     * number this pays at 0:00 is the number the field settles on.
+     *
+     * Paying both lines would bill one tray twice; paying neither is the bug.
+     *
+     * `released` tells the two trays apart. Before the bar passes level, `contents` is the load
+     * about to be dumped — counted as the tip, so 0 here. After it, `contents` is the INCOMING
+     * tray's load (`hiveStep` carries it through the settle), which really is left in the
+     * up-CELL and is counted as ever.
+     *
+     * This can never cost anyone points. The largest load that has NOT tipped is 7 elements —
+     * `BB_TIP_POLLEN` tips a bare cell at 8 POLLEN, and at 5 NECTAR on their own — i.e. 14
+     * points against the tip's 20, so an element that lands during the settle window and tips a
+     * cell only ever adds.
+     */
+    const swinging = hive.tipping > 0;
+    /**
+     * ⚠️ A CELL OVER ITS CALIBRATED LOAD OWES A TIP, AND AT THE END OF THE MATCH IT IS ONE.
+     *
+     * Reported as "last tips are not counted": the balls settle in the HIVE, the field goes
+     * still, the score is taken — and the 20 for the TIP that follows is not in it.
+     *
+     * `hiveStep` starts the swing on the tick AFTER the load crosses `BB_TIP_POLLEN`, and
+     * `bbSettled` holds the settle clock open for BOTH states, so in the ordinary case the
+     * clock waits and the swing completes into `hive.tips`. What it cannot wait through is
+     * the CAP: `MATCH_SETTLE_MAX_S` finalizes whatever the field looks like at 10 s, and a
+     * capture that lands on a loaded-but-not-yet-swinging tray used to pay NOTHING for it —
+     * and then pay its load a second time as elements remaining in the CELL, which is worth a
+     * few points against the tip's 20.
+     *
+     * §10.5 A assesses TIPS "until all SCORING ELEMENTS and ROBOTS have come to rest at the
+     * conclusion of the MATCH". A tray sitting over its tip load has come to rest in the only
+     * state it has: the swing is the animation, not the event, and the calibrated load is what
+     * decides. So a pending tip is paid exactly like one already in motion.
+     *
+     * `!swinging` guards the double count — `contents` still holds the load until the tray
+     * releases at LEVEL, so mid-swing both predicates are true and the tip is owed ONCE.
+     */
+    const pending = !swinging && hiveWillTip(hiveLoad(hive.contents, kindOf));
+    out[a].tips = hive.tips + (matchOver && (swinging || pending) ? 1 : 0);
+    // ...and a load being paid as a TIP is NOT ALSO remaining in the CELL (§10.5 C) — the same
+    // split the swinging case already made, now made for the pending one too.
+    out[a].cellCount =
+      matchOver && (pending || (swinging && !hive.released)) ? 0 : hive.contents.length;
   }
 
   // ── FLOWERS: 2 per element to the OWNER, 5 to the bottom NECTAR's alliance ─
@@ -303,19 +484,32 @@ export function bbScoreWorld(world: World): BbScore {
   // ── the arithmetic, once ──────────────────────────────────────────────────
   for (const a of ALLIANCES) {
     const s = out[a];
-    s.leave = s.leaveCount * BB_PTS.leave;
-    s.parkAuto = s.parkAutoCount * BB_PTS.parkAuto;
-    s.parkTele = s.parkTeleCount * BB_PTS.parkTele;
+    // the INSTANT lines: each one is 0 until the moment §10.5 assesses it has passed.
+    s.leave = autoAssessed ? s.leaveCount * BB_PTS.leave : 0; // §10.5 F, end of AUTO
+    s.parkAuto = autoAssessed ? s.parkAutoCount * BB_PTS.parkAuto : 0; // §10.5 F, end of AUTO
+    s.parkTele = matchOver ? s.parkTeleCount * BB_PTS.parkTele : 0; // §10.5 G, end of the MATCH
+    s.cellPts = matchOver ? s.cellCount * BB_PTS.cell : 0; // §10.5 C — see the CELL block above
+    s.gardenPts = matchOver ? s.gardenCount * BB_PTS.garden : 0; // §10.5 E, the same instant as C
+    // the CONTINUOUS ones: §10.5 A for the TIP, §10.5 D for both FLOWER lines ("throughout the
+    // MATCH"). `ownedPts` and `bottomPts` were summed above, live, and stay live.
     s.tipPts = s.tips * BB_PTS.tip;
-    s.cellPts = s.cellCount * BB_PTS.cell;
-    s.gardenPts = s.gardenCount * BB_PTS.garden;
     s.foul = world.match.scores[a].foulPoints;
     s.total =
       s.leave + s.parkAuto + s.parkTele + s.tipPts + s.cellPts + s.ownedPts + s.bottomPts + s.gardenPts;
+    // what the instants still ahead owe, for the HUD alone — exactly the lines zeroed above.
+    s.pendingPts =
+      (autoAssessed ? 0 : s.leaveCount * BB_PTS.leave + s.parkAutoCount * BB_PTS.parkAuto) +
+      (matchOver
+        ? 0
+        : s.parkTeleCount * BB_PTS.parkTele +
+          s.cellCount * BB_PTS.cell +
+          s.gardenCount * BB_PTS.garden);
     out.rp[a] = {
       // SWARM counts the LEAVE and PARK lines only — 16 is exactly both robots LEAVE and both
       // PARK in AUTO (3+3+5+5), which is why it is a threshold on those four numbers and not
-      // on the match total.
+      // on the match total. It therefore reads false until the end of AUTO now, which is right:
+      // an RP is awarded at the end of the MATCH, and a flag that flickered true mid-AUTO was
+      // showing a driver an award nothing had assessed.
       swarm: s.leave + s.parkAuto + s.parkTele >= BB_RP.swarm,
       pollinator1: s.tips >= BB_RP.pollinator1,
       pollinator2: s.tips >= BB_RP.pollinator2,

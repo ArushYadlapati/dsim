@@ -1,12 +1,18 @@
-import type { GameId, StartCat } from '../types';
+import type { Alliance, GameId, StartCat } from '../types';
 import { chainRoleLabel } from '../games/chain/config';
+import { simModuleFor } from '../games/sim';
 import type { RoleSwap } from './useRoleSwap';
 
 // role labels are game-specific: DECODE splits CLOSE/FAR (distance to goal), Chain
-// Reaction splits TOP/BOTTOM (which Lab corner). `useRoleSwap` still carries the two
-// abstract StartCat slots; only the wording differs per game.
-const roleLabel = (r: StartCat | undefined, game?: GameId) =>
-  game === 'chain' ? chainRoleLabel(r) : r === 'close' ? 'CLOSE' : r === 'far' ? 'FAR' : '-';
+// Reaction splits TOP/BOTTOM (which Lab corner), and a game with its own roles names them
+// through its module (BIOBUZZ: TOP/BOTTOM). `useRoleSwap` still carries the two abstract
+// StartCat slots; only the wording differs per game.
+const roleLabel = (r: StartCat | undefined, game?: GameId, alliance?: Alliance) => {
+  if (game === 'chain') return chainRoleLabel(r);
+  const byModule = simModuleFor(game).startRoleLabel;
+  if (byModule) return byModule(r, alliance);
+  return r === 'close' ? 'CLOSE' : r === 'far' ? 'FAR' : '-';
+};
 
 /**
  * The 2v2 start-ROLE bar: shows this robot's role (Close/Far for DECODE, Top/Bottom
@@ -21,6 +27,7 @@ export function RoleSwapBar({
   dismissed,
   onDismiss,
   game,
+  alliance,
 }: {
   role: StartCat | undefined;
   partnerName: string;
@@ -28,11 +35,13 @@ export function RoleSwapBar({
   dismissed: boolean;
   onDismiss: () => void;
   game?: GameId;
+  /** this robot's alliance — a point-symmetric field names the same role differently per side */
+  alliance?: Alliance;
 }) {
   return (
     <div className="ds-roleswap">
       <span className="ds-roleswap-role">
-        You are the <b>{roleLabel(role, game)}</b> robot
+        You are the <b>{roleLabel(role, game, alliance)}</b> robot
       </span>
       <div className="ds-roleswap-ctl">
         {rs.swapping ? (

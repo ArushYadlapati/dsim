@@ -52,6 +52,9 @@ export const WINDOW_HOURS: Record<StandingEventKind, number> = {
   // a week, like walking out of matches: one card is a bad match, cards on two weekends
   // running is how someone plays
   card: 24 * 7,
+  // never read: an adjustment does not escalate anything (see COOLDOWN_LADDER below), so the
+  // window has nothing to count. Present because the record is exhaustive by type.
+  adjustment: 24,
 };
 
 export type StandingEventKind =
@@ -81,7 +84,21 @@ export type StandingEventKind =
    * results screen, and in the replay. "Getting a yellow card in a game should decrease
    * someone's account standing."
    */
-  | 'card';
+  | 'card'
+  /**
+   * A MODERATOR moved this account's standing by hand.
+   *
+   * Every other kind here is something that HAPPENED and the server priced. This one is the
+   * pricing itself being overruled: a pardon for a penalty that was not the player's fault, a
+   * correction after an appeal, or a charge for something no rule in this file can see. It
+   * carries a SIGNED cost — negative points are standing GIVEN BACK — which nothing else here
+   * does, and it is the only kind that never escalates, never locks the queue and never
+   * touches rating, because a human already decided the whole of it.
+   *
+   * It lands in the ordinary ledger on purpose. A moderator's correction the player cannot
+   * see is indistinguishable, from their side, from the number moving for no reason.
+   */
+  | 'adjustment';
 
 /**
  * BASE COST of each event, in standing points.
@@ -95,10 +112,13 @@ export type StandingEventKind =
  *   report 3  — RAW, unreviewed, per distinct reporter and capped (see REPORT_CAP). It is
  *               the weakest evidence here — one person's opinion, filed in a temper as often
  *               as not — so it moves the number a little and nothing more.
- *   afk   12  — present, connected, not driving. The others played a live match a robot down
- *               with no requeue and no refund. Costs more than twice a dodge because it
- *               destroys a match rather than postponing one.
- *   leave  15 — quit a live match. AFK plus taking the robot away.
+ *   afk    8  — present, connected, not driving. The others played a live match a robot down
+ *               with no requeue and no refund, so it costs more than a dodge — but only a
+ *               little more (owner, 2026-09-14): at 12 a single bad match took a player most
+ *               of the way to Warning.
+ *   leave  8  — quit a live match. The same price as AFK (owner, 2026-09-14): to the partner
+ *               left driving alone they are the same match. And in a 1v1 it is not charged at
+ *               all — see `chargedForParticipation`.
  *   upheld 25 — a MODERATOR reviewed the reports and upheld them. The only event here backed
  *               by a human looking at the evidence, so it is the only one big enough to move
  *               a player two tiers on its own.
@@ -106,8 +126,8 @@ export type StandingEventKind =
 export const STANDING_COST: Record<StandingEventKind, number> = {
   dodge: 5,
   report: 3,
-  afk: 12,
-  leave: 15,
+  afk: 8,
+  leave: 8,
   reportUpheld: 25,
   /**
    * upheld 25 / FALSE 40 — the heaviest, and heavier than being upheld against.
@@ -121,15 +141,24 @@ export const STANDING_COST: Record<StandingEventKind, number> = {
    */
   falseReport: 40,
   /**
-   * card 20 — between an AFK (12) and a walk-out (15) at the low end and an upheld report
-   * (25) at the top, and that is the right neighbourhood: it is worse than wasting one
-   * match's worth of other people's time, because a carded robot has usually been taking
-   * artifacts out of the game or interfering with someone, and it is not as heavy as a
-   * moderator's verdict, because no human has looked at it. A RED costs more than a yellow —
-   * the caller passes the amount, since the sim decides which colour it was.
+   * card 5 — a YELLOW; a RED is `RED_CARD_MULT` times it (15). Owner, 2026-09-14: "Yellow
+   * card should only take away 5. Red card take away 15." It was 20 and 40, priced as if a
+   * card were worse than walking out of a match; but a card has already cost the alliance
+   * points (a red voids the whole score), so the standing charge is the lesser half of the
+   * punishment, not the main one.
    */
-  card: 20,
+  card: 5,
+  /**
+   * adjustment 0 — a moderator always states the amount. There is no base cost to scale
+   * because there is no offence to price: the number IS the judgement.
+   */
+  adjustment: 0,
 };
+
+/** a RED card costs this many yellows (5 × 3 = 15). The sim decides the colour, so the
+ *  caller passes it as `severity` — and it still rides the repeat multiplier like any other
+ *  offence, where the old flat `points` override silently skipped it. */
+export const RED_CARD_MULT = 3;
 
 /** how many distinct reporters can charge one player for a single match. Raw reports are
  *  unreviewed by definition, so an uncapped total is a licence for a stack of friends to
@@ -192,6 +221,10 @@ export const COOLDOWN_LADDER: Record<StandingEventKind, readonly number[]> = {
   // point and locking someone out for one is a second punishment for one act. A repeat is
   // where it starts to bite.
   card: [0, 60, 240, 1440],
+  // a manual adjustment NEVER locks the queue. Clearing a lock and setting one are separate
+  // deliberate acts in the admin console; an adjustment that silently added a cooldown would
+  // make a pardon punish someone.
+  adjustment: [0],
 };
 
 /** ranked rating charged for the n-th offence of a kind. Zero everywhere it should be. */
@@ -209,6 +242,9 @@ export const RATING_LADDER: Record<StandingEventKind, readonly number[]> = {
   falseReport: [0, 10, 20, 30],
   // a card is a match-conduct finding, not a driving one, so rating only enters on repeats
   card: [0, 0, 10, 20],
+  // and never rating. Rating is the skill number; a behaviour correction has no business
+  // moving it, and a moderator who wants to move a rating has the record tools for that.
+  adjustment: [0],
 };
 
 /**
@@ -275,7 +311,7 @@ export const STANDING_TIERS: readonly StandingTier[] = [
     name: 'Warning',
     floor: 60,
     bump: 0,
-    blurb: 'Nothing extra is being applied — but the next one escalates.',
+    blurb: 'Nothing extra is applied yet. The next one escalates.',
   },
   {
     key: 'restricted',
@@ -296,7 +332,7 @@ export const STANDING_TIERS: readonly StandingTier[] = [
     name: 'Suspended',
     floor: 0,
     bump: 3,
-    blurb: 'Every offence lands at the top of the ladder — day-long ranked locks.',
+    blurb: 'Every offence lands at the top of the ladder: day-long ranked locks.',
   },
 ];
 
@@ -358,6 +394,24 @@ export function judgeParticipation(p: {
   return null;
 }
 
+/**
+ * Is a participation finding CHARGED in this mode?
+ *
+ * LEAVING A 1v1 IS ALLOWED (owner, 2026-09-14). The only person a 1v1 walk-out affects is the
+ * opponent, and they are handed the win: the departed robot stays in the world and the match
+ * is still rated (`Room.departed`), so the leaver already pays in rating for what they did. In
+ * a 2v2 the partner is left to drive the rest of a rated match alone, which nothing refunds —
+ * that is the one that costs standing.
+ *
+ * AFK is charged in both: a driver who stays connected and does nothing has not conceded, so
+ * the match cannot be read as a forfeit.
+ *
+ * An excused leaver is NOT credited as clean either — the caller must tell the two apart,
+ * which is why this is not folded into `judgeParticipation` as a null.
+ */
+export const chargedForParticipation = (kind: 'afk' | 'leave', mode: '1v1' | '2v2'): boolean =>
+  kind === 'afk' || mode === '2v2';
+
 export interface StandingState {
   score: number;
   /** epoch ms the ranked queue reopens, or null */
@@ -405,14 +459,16 @@ export interface StandingVerdict {
 export function applyStandingEvent(
   state: StandingState,
   kind: StandingEventKind,
-  opts: { now: number; priorSameKind?: number; count?: number },
+  /** `severity` scales the base cost (a red card is `RED_CARD_MULT`); non-finite or below 1 reads as 1 */
+  opts: { now: number; priorSameKind?: number; count?: number; severity?: number },
 ): StandingVerdict {
   const scoreBefore = clampScore(state.score);
   const tierBefore = tierOf(scoreBefore);
   const prior = Math.max(0, Math.floor(opts.priorSameKind ?? 0));
   const mult = repeatMult(prior + 1);
   const units = kind === 'report' ? Math.max(1, Math.min(opts.count ?? 1, REPORT_CAP)) : 1;
-  const points = Math.round(STANDING_COST[kind] * mult * units);
+  const severity = Number.isFinite(opts.severity) ? Math.max(1, opts.severity as number) : 1;
+  const points = Math.round(STANDING_COST[kind] * mult * units * severity);
   const scoreAfter = clampScore(scoreBefore - points);
   const landed = tierOf(scoreAfter);
 
@@ -469,4 +525,33 @@ export const STANDING_EVENT_LABEL: Record<StandingEventKind, string> = {
   reportUpheld: 'A moderator upheld reports against you',
   falseReport: 'A moderator found a report you filed to be false',
   card: 'Carded by the referee during a match',
+  // the neutral wording; `standingEventLabel` picks the credit/charge phrasing from the sign
+  adjustment: 'A moderator adjusted your standing',
 };
+
+/**
+ * What ONE ledger row is called, given its SIGN.
+ *
+ * `adjustment` is the only kind that can go either way, and "A moderator adjusted your
+ * standing" over a +20 credit reads like a penalty — which is the opposite of what happened
+ * and exactly the confusion a pardon is supposed to end. Everything else has one meaning and
+ * falls through to the table.
+ */
+export function standingEventLabel(kind: string, points: number): string {
+  if (kind === 'adjustment') {
+    return points < 0
+      ? 'A moderator restored standing points'
+      : points > 0
+        ? 'A moderator took standing points'
+        : 'A moderator reviewed your standing';
+  }
+  return STANDING_EVENT_LABEL[kind as StandingEventKind] ?? kind;
+}
+
+/**
+ * A ledger row's cost as a SIGNED string. Every other kind only ever subtracts, so the ledger
+ * hard-coded a minus sign in front of the number — which prints "−-20" the first time a
+ * moderator gives points back.
+ */
+export const standingDelta = (points: number): string =>
+  points > 0 ? `−${points}` : points < 0 ? `+${-points}` : '±0';

@@ -1,7 +1,8 @@
-import type { Alliance, GameId, GameMode, RobotCommand, RobotSpec, World, AutoPathData, StartPose } from '../types';
+import type { Alliance, GameId, GameMode, MatchPhase, Physics, RobotCommand, RobotSpec, World, AutoPathData, StartPose } from '../types';
 import * as C from '../config';
 import { DEFAULT_ASSISTS, type RobotSetup } from './spawn';
 import { simModuleFor } from '../games/sim';
+import { MATCH_SETTLE_MAX_S } from './settle';
 import {
   dequantizeCommand,
   localizeCommand,
@@ -72,6 +73,14 @@ export interface Replay {
   /** which game this replay is of — picks the sim module to re-simulate it (createWorld
    * + step). Absent on old replays ⇒ DECODE. */
   game?: GameId;
+  /**
+   * WHICH PHYSICS BACKEND THIS REPLAY WAS RECORDED UNDER (Day 1 seam,
+   * `docs/biobuzz/plan-3d.md`). Re-simulating a replay must step the SAME physics it was
+   * recorded with, or a re-sim of a `'3d'` match against `step2d` produces a different game
+   * from the one that was played. Absent ⇒ `'2d'` — every replay recorded before the 3D solve
+   * existed, which is the only physics any of them could have run.
+   */
+  physics?: Physics;
   mode: GameMode;
   seed: number;
   setups: RobotSetup[];
@@ -109,6 +118,9 @@ export class ReplayRecorder {
     readonly setups: RobotSetup[],
     readonly mode: GameMode = 'match',
     readonly game: GameId = 'decode',
+    /** which physics backend the run being recorded is stepping (`Replay.physics`). Default
+     *  `'2d'` so every existing caller records exactly what it always did. */
+    readonly physics: Physics = '2d',
   ) {}
 
   /** record the command map applied at `tick` (1-based, == world.tick after the
@@ -139,6 +151,11 @@ export class ReplayRecorder {
       balanceVersion: C.BALANCE_VERSION,
       sim: C.SIM_VERSION,
       game: this.game,
+      // OMITTED when it is `'2d'`, never written as the string: absent already READS `'2d'`
+      // everywhere, and a container that gained a key would no longer be byte-identical to
+      // the one this build produced yesterday — which is exactly what the 2D-regression half
+      // of the NET3D lane compares.
+      physics: this.physics === '3d' ? '3d' : undefined,
       mode: this.mode,
       seed: this.seed,
       setups: this.setups.map((s) => ({
@@ -155,8 +172,10 @@ export class ReplayRecorder {
 }
 
 /**
- * WHY a container was refused — five genuinely different situations, and the viewer has to
- * tell them apart because they mean different things to the person who clicked the link.
+ * WHAT is different about a container — five genuinely different situations, and the viewer
+ * has to tell them apart because they mean different things to the person who clicked the
+ * link. Three of them are FATAL and two are merely a DRIFT; `replayFidelity` below is what
+ * sorts them, and this type carries only the reason.
  *
  *  • `future`     — recorded by a build NEWER than this one; the reader cannot parse it.
  *  • `balance`    — a different BALANCE_VERSION, i.e. robots perform differently now.
@@ -169,24 +188,32 @@ export class ReplayRecorder {
 export type ReplayRefusal = 'future' | 'balance' | 'behaviour' | 'unstamped' | 'tank';
 
 /**
- * Can THIS build re-simulate that container at all — and if not, WHICH of the above is it?
+ * WHAT, if anything, differs between that container and this build — the ONE authority.
+ * `replayFidelity` and `replayPlayable` are both derived from it, so there is never a second
+ * description of this rule to disagree with.
  *
  * Two different questions, kept apart on purpose:
  *  • can we PARSE it — any format up to ours, since the reader still understands the older
  *    strides. A newer one from a future build we cannot read.
- *  • can we REPRODUCE it — the balance + sim versions have to match, or `step()` produces a
+ *  • can we REPRODUCE it — the balance version has to match, or `step()` produces a
  *    different game than the one that was played.
  *
  * Plus one honest refusal: a FORMAT-1 replay of a tank-steered robot never had its drive
  * input recorded at all (the container had nowhere to put `ld`/`rd`). It parses and it
- * re-simulates, but it re-simulates a robot that sits still — so it is refused as stale
- * rather than played back looking broken, which is indistinguishable from a bug in the sim.
+ * re-simulates, but it re-simulates a robot that sits still — so it is refused rather than
+ * played back looking broken, which is indistinguishable from a bug in the sim.
+ *
+ * ⚠️ **THE FATAL TESTS COME FIRST, AND `tank` MUST PRECEDE THE SIM TEST.** A SIM mismatch is
+ * only a drift (see `replayFidelity`), so if it were checked first then a format-1 tank replay
+ * that ALSO predates the current SIM_VERSION — which is every one of them, format 1 being the
+ * older container — would be reported as a drift and PLAYED, showing a robot that sits still.
+ * The order is load-bearing, not stylistic.
  *
  * `unstamped` is a MESSAGE distinction, never a policy one: the version test stays exactly
- * `(r.sim ?? 0) !== simVersion`, so an absent stamp is refused on any build past SIM_VERSION 0
- * and accepted by one running 0, which is what it has always done. Splitting it into its own
- * REFUSAL would change that — what it changes is only whether the viewer can say "recorded
- * before we tracked this" instead of naming a version the recorder never claimed.
+ * `(r.sim ?? 0) !== simVersion`, so an absent stamp reads as a drift on any build past
+ * SIM_VERSION 0 and as an exact match on one running 0, which is what it has always done.
+ * Splitting it out changes only whether the viewer can say "recorded before we tracked this"
+ * instead of naming a version the recorder never claimed.
  */
 export function replayRefusal(
   r: Pick<Replay, 'format' | 'balanceVersion' | 'sim' | 'setups'>,
@@ -195,18 +222,67 @@ export function replayRefusal(
 ): ReplayRefusal | null {
   if (r.format > REPLAY_FORMAT) return 'future';
   if (r.balanceVersion !== balanceVersion) return 'balance';
-  if ((r.sim ?? 0) !== simVersion) return r.sim === undefined ? 'unstamped' : 'behaviour';
   if (r.format < 2 && r.setups.some((s) => tankSteered(s.spec.drivetrain))) return 'tank';
+  if ((r.sim ?? 0) !== simVersion) return r.sim === undefined ? 'unstamped' : 'behaviour';
   return null;
 }
 
-/** the same decision as a yes/no — the gate everything except the message reads */
+/**
+ * How faithfully can this build re-run that container?
+ *
+ *  • `'ok'`     re-simulates exactly as recorded.
+ *  • `'drift'`  PLAYS, but the sim has changed since it was recorded, so the ending may not
+ *                land on precisely the saved score.
+ *  • `'stale'`  cannot be played at all.
+ *
+ * **THE MIDDLE CASE IS THE POINT, and it was learned the hard way.** Gating playback on
+ * SIM_VERSION as well as the season once marked every DECODE match of a whole live season
+ * unavailable over a float-level determinism fix — a correction worth a point or two of drift
+ * took away every replay on the board. A changed SIM_VERSION moves what `step()` produces,
+ * which over a three-minute match can move a score, but the recording is still a valid input
+ * log against the same physics, the same field and the same season: it is not a different
+ * match, only a slightly different rounding of the same one. Showing it with a note is
+ * strictly better than refusing it.
+ *
+ * A REFUSAL is therefore reserved for the cases where playback would be MEANINGLESS rather
+ * than merely imprecise: a container this build cannot parse, a different SEASON
+ * (BALANCE_VERSION) where the tuning constants themselves differ, and the format-1 tank
+ * replay whose drive input was never recorded at all.
+ *
+ * The leaderboard figure always remains the authority — the server stored the score it
+ * computed at the time and never re-derives it from a replay — so a drifting playback can
+ * never restate a record.
+ */
+export type ReplayFidelity = 'ok' | 'drift' | 'stale';
+
+/** the two situations that are a DRIFT rather than a refusal — both of them "the sim moved" */
+const DRIFT_REASONS: ReadonlySet<ReplayRefusal> = new Set<ReplayRefusal>([
+  'behaviour',
+  'unstamped',
+]);
+
+export function replayFidelity(
+  r: Pick<Replay, 'format' | 'balanceVersion' | 'sim' | 'setups'>,
+  balanceVersion: number,
+  simVersion: number,
+): ReplayFidelity {
+  const why = replayRefusal(r, balanceVersion, simVersion);
+  if (!why) return 'ok';
+  return DRIFT_REASONS.has(why) ? 'drift' : 'stale';
+}
+
+/**
+ * Can it be PLAYED at all — exactly or with drift? This is the gate the viewer and BOTH
+ * exports read, so a drifting replay can still be watched and still be downloaded. That is
+ * deliberate: the video export is the one form that outlives the sim, so the moment a replay
+ * starts to drift is exactly when saving it matters most.
+ */
 export function replayPlayable(
   r: Pick<Replay, 'format' | 'balanceVersion' | 'sim' | 'setups'>,
   balanceVersion: number,
   simVersion: number,
 ): boolean {
-  return replayRefusal(r, balanceVersion, simVersion) === null;
+  return replayFidelity(r, balanceVersion, simVersion) !== 'stale';
 }
 
 /** drivetrains commanded through the TANK AXES — the ones a format-1 replay lost. Butterfly
@@ -218,15 +294,57 @@ const tankSteered = (dt: RobotSpec['drivetrain']): boolean => dt === 'tank' || d
  * feeding the recorded (hold-last) commands. `world` is live for rendering; the
  * UI replay viewer drives this at 60 Hz, the verifier runs it to completion.
  */
+/** one line the sim emitted, with WHEN — see `ReplayPlayer.log` */
+export interface ReplayLogEntry {
+  tick: number;
+  text: string;
+  phase: MatchPhase;
+  /** seconds left in that phase when it landed */
+  timeLeft: number;
+}
+
 export class ReplayPlayer {
   readonly world: World;
+  /**
+   * Every line the sim emitted, with the TICK it landed on — fouls, cards, the phase
+   * transitions, LEAVE credits, all of it. `world.events` is the same list, but it is only a
+   * list of strings: the live game drains it each frame into toasts and nothing ever needed
+   * to know WHEN one of them happened. A replay does. "MINOR FOUL - BLUE +5 (G424)" with no
+   * time against it cannot be seeked to, and a watcher asking why the score jumped at 1:12 is
+   * asking exactly that question.
+   *
+   * Recorded here rather than in the viewer because both of the viewer's step loops — play
+   * and seek — would otherwise have to wrap the call and stay in step with each other, and a
+   * seek that stepped 4,000 ticks in one synchronous burst would stamp all 4,000 ticks'
+   * events with the moment the seek finished.
+   *
+   * `world.events` is NOT drained: the world is the replay's own, nobody else reads it, and
+   * emptying an array the sim owns to keep a local index tidy is a side effect this class has
+   * no business having.
+   */
+  readonly log: ReplayLogEntry[] = [];
+  private logged = 0; // how much of world.events has been stamped
   private readonly cursor: Record<number, number> = {}; // robotId -> next entry index
   private readonly current = new Map<number, RobotCommand>();
   private readonly mod; // CR vs DECODE re-sim module (createWorld/step)
 
   constructor(private readonly replay: Replay) {
     this.mod = simModuleFor(replay.game);
-    this.world = this.mod.createWorld(replay.mode, replay.seed, replay.setups);
+    // THE CONTAINER'S physics, not this build's preference — re-simulating a `'3d'` log
+    // against `step2d` reproduces a different match from the same inputs, which is the one
+    // thing a replay may never do. Absent reads `'2d'`, which every pre-Day-2 container is.
+    //
+    // ⚠️ A `'3d'` replay needs the 3D physics module RESOLVED before this constructor runs —
+    // `createWorld` only stages it, but `stepOnce` steps it on the very next call. The viewer
+    // awaits `initPhysics3d()` (see `ReplayView`); a headless caller awaits it at the top of
+    // its script, exactly as it already awaits `initPhysics()`.
+    this.world = this.mod.createWorld(
+      replay.mode,
+      replay.seed,
+      replay.setups,
+      undefined,
+      replay.physics ?? '2d',
+    );
     if (replay.mode === 'match') this.world.match.preCountdown = C.PRE_COUNTDOWN;
     for (const s of this.replay.setups) this.current.set(s.id, { ...ZERO_CMD });
   }
@@ -263,6 +381,18 @@ export class ReplayPlayer {
       this.cursor[s.id] = ei;
     }
     this.mod.step(this.world, C.SIM_DT, this.current);
+    const evs = this.world.events;
+    for (; this.logged < evs.length; this.logged++) {
+      // the PHASE and the clock are stamped with it, because "1:23 into the file" is not how
+      // anybody reads a match — a call lands in AUTO with 4 seconds left, or in the last ten
+      // of ENDGAME, and that is the sentence a watcher wants back
+      this.log.push({
+        tick: this.world.tick,
+        text: evs[this.logged],
+        phase: this.world.match.phase,
+        timeLeft: Math.max(0, Math.round(this.world.match.phaseTimeLeft)),
+      });
+    }
     return true;
   }
 }
@@ -398,10 +528,11 @@ export interface RecordRun {
   result: ReplayResult;
 }
 
-/** upper bound on a full match's ticks (+ slack), so a runaway can't spin forever */
+/** upper bound on a full match's ticks (+ slack), so a runaway can't spin forever. The settle
+ *  after the buzzer ends when the field comes to rest, so the bound carries its CAP. */
 export function maxMatchTicks(): number {
   const secs =
-    C.PRE_COUNTDOWN + C.AUTO_DURATION + C.TRANSITION_DURATION + C.TELEOP_DURATION + C.MATCH_SETTLE_S + 2;
+    C.PRE_COUNTDOWN + C.AUTO_DURATION + C.TRANSITION_DURATION + C.TELEOP_DURATION + MATCH_SETTLE_MAX_S + 2;
   return Math.ceil(secs / C.SIM_DT);
 }
 
@@ -415,14 +546,15 @@ export function runRecordMatch(
   seed: number,
   setups: RobotSetup[],
   src: CommandSource,
-  opts: { mode?: GameMode; stopTick?: number; game?: GameId } = {},
+  opts: { mode?: GameMode; stopTick?: number; game?: GameId; physics?: Physics } = {},
 ): RecordRun {
   const mode = opts.mode ?? 'match';
   const game = opts.game ?? 'decode';
+  const physics = opts.physics ?? '2d';
   const mod = simModuleFor(game);
-  const world = mod.createWorld(mode, seed, setups);
+  const world = mod.createWorld(mode, seed, setups, undefined, physics);
   if (mode === 'match') world.match.preCountdown = C.PRE_COUNTDOWN;
-  const rec = new ReplayRecorder(seed, setups, mode, game);
+  const rec = new ReplayRecorder(seed, setups, mode, game, physics);
   const cap = opts.stopTick ?? maxMatchTicks();
   while (world.match.phase !== 'post' && world.tick < cap) {
     const tick = world.tick + 1;

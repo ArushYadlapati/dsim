@@ -14,7 +14,7 @@
  * `'system'` is resolved here, so an explicit choice can override the OS without
  * duplicating the palette inside a `@media (prefers-color-scheme)` block.
  */
-export const THEME_KEY = 'decodesim.theme';
+import { THEME_KEY } from './storageKeys';
 
 export type ThemePref = 'system' | 'light' | 'dark';
 export type ResolvedTheme = 'light' | 'dark';

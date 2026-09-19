@@ -1,4 +1,4 @@
-import type { Alliance, Vec2 } from '../../types';
+import type { Alliance, Physics, Vec2, World } from '../../types';
 import type { BbEdge } from './mounts';
 
 /**
@@ -146,6 +146,38 @@ export interface BbHiveState {
    * invariant. `false` whenever `tipping` is 0, and reset at the end of every swing.
    */
   released: boolean;
+  /**
+   * HOW FAST THE SWING IN PROGRESS IS RUNNING, as a multiple of the nominal rate.
+   *
+   * A heavier tray tips faster (owner feedback, 2026-09-13): `hiveSwingRate` (`hive.ts`) reads
+   * it off how far the load is OVER the tip threshold, and the cell keeps taking elements
+   * through the first half of the swing, so the rate can rise mid-swing. It has to be STATE
+   * because the second half of the swing runs after the load has left the tray — the bar
+   * carries the momentum the load gave it, and nothing else in the state remembers what that
+   * load was. `tipping` stays in NOMINAL seconds (the renderer maps it to an angle), and this
+   * is what the countdown is multiplied by. Absent or 1 when settled; absent on any snapshot
+   * recorded before it existed, which reads as the nominal rate.
+   */
+  swingRate?: number;
+  /**
+   * THE TRAY'S LIVE TILT, radians about the world x axis — written ONLY by the 3D pipeline's
+   * readback when `BB3_HIVE_DYNAMIC` is on, and ABSENT everywhere else.
+   *
+   * Under the dynamic see-saw the tray's pose is a REVOLUTE JOINT's, not a timer's: nothing in
+   * the JSON can reproduce it, because it is the result of a solve over whatever is sitting in
+   * the cell. So it is serialised, rounded to 1e-4 like every other readback number, and
+   * `sim3d/hive3d.ts`'s `hiveTiltAngle` — the ONE authority both renderers read — returns it
+   * when it is there and computes the timer's own angle when it is not. A 2D world, a 2D-era
+   * replay and a kinematic-tray 3D world all fall into that second case unchanged.
+   *
+   * It is also what lets a CLIENT rebuild a prediction world with the tray seated where the
+   * server has it (`sim3d/predict.ts`), which a `tipping` countdown alone cannot do.
+   */
+  angle?: number;
+  /** the tray's live ANGULAR VELOCITY about the same axis (rad/s) — same rule as `angle`: the
+   * dynamic path writes it, everything else leaves it absent. A prediction world needs both to
+   * seat a tray that is mid-swing rather than at a stop. */
+  angVel?: number;
 }
 
 /**
@@ -261,6 +293,37 @@ export interface BiobuzzState {
    * staging, so `contents` is empty here and `spawn.ts` fills it.
    */
   hives: Record<Alliance, BbHiveState>;
+  /**
+   * **G409's TAG**: element id → the alliance whose HIVE spilled it, for as long as it is still
+   * falling out of a tipping CELL and has touched nothing but that tray.
+   *
+   * "A ROBOT may not catch SCORING ELEMENTS spilling from a TIPPED HIVE" (Table 10-4) — so the
+   * rule is about ONE MOMENT in one element's life, between leaving the cell and reaching
+   * whatever it reaches first, and nothing in the rest of the state records that moment.
+   * `sim3d/hive3d.ts` writes the tag the tick an element leaves the tipping cell, and
+   * `sim3d/step3d.ts` clears it on that element's FIRST non-tray contact, billing G409 if that
+   * contact was a ROBOT.
+   *
+   * ⚠️ **3D ONLY, AND ABSENT IN 2D, WHICH IS NOT AN OVERSIGHT.** The 2D pipeline's spill is
+   * `spillPoses` — a scatter of positions and velocities the tray HANDS to the tiles, with no
+   * flight against the structure and therefore no "first contact" to catch. Nothing there can
+   * answer the rule's question. `penalties.ts` reads this map and finds it absent under 2D, so
+   * the 2D pipeline is byte-identical, exactly as it is for `physics` itself.
+   */
+  spill?: Record<number, Alliance>;
+  /**
+   * **G417's CONTACT LIST**: robot ids that touched a HIVE's tray or frame HARD this tick, with
+   * the closing speed that made it count. Rebuilt from the 3D solve's own contact pairs every
+   * tick, so it is a transient read rather than a latch — the "once per MATCH per ROBOT" half of
+   * the rule lives in `bb.held[robot].g417billed`, where it always has.
+   *
+   * ⚠️ **3D ONLY, same rule as `spill`.** G417 has been OFF since 2026-09-13 because no robot in
+   * the 2D sim can move the HIVE, and a penalty that can only be suffered is worse than an
+   * unmodelled one (`penalties.ts`'s own comment). Under the DYNAMIC see-saw a robot CAN move
+   * it — the tray is a body a 29-in chassis reaches — so the rule comes back, for that pipeline
+   * only, driven by this list. A 2D world never writes it and never bills it.
+   */
+  hiveRam?: Record<number, number>;
   /** the four FLOWERS, in `BB_FLOWERS` order (F1…F4). A fixed-length tuple because there are
    * exactly four and the index IS the id everywhere else — a variable-length array would let
    * a bug produce a fifth flower that renders and scores. DRAFT. */
@@ -294,9 +357,25 @@ export interface BiobuzzState {
    * the current situation, so a stale value is a lie the HUD would print.
    */
   nectarWhy: Record<Alliance, BbNectarWhy>;
-  /** per robot id: did it LEAVE (stop contacting the perimeter) by the end of AUTO? Latched at
-   * that instant and never recomputed, because the achievement is assessed once (Table 10-2)
-   * and a robot that drives back to the wall in TELEOP keeps its 3. DRAFT. */
+  /**
+   * per robot id: WHICH PERIMETER WALLS IT STARTED AGAINST, as a `BbWall` bitmask.
+   *
+   * LEAVE is "no longer contacting the perimeter wall" (§10.5.4), and THE is the whole word:
+   * the wall in question is the one the ROBOT began the MATCH on. Tested against all four
+   * instead, the achievement is unreachable in ordinary play — the HIVE, the FLOWERS and both
+   * GARDENS are all at the perimeter, so a robot that drives the length of the field and ends
+   * AUTO anywhere useful is "contacting the perimeter wall" and scores nothing for a journey
+   * it plainly made. Measured: 3 points live all through AUTO, gone at the buzzer.
+   *
+   * WRITTEN EVERY TICK OF `pre`, so it is whatever pose the robot actually starts from — start
+   * poses are free-placed in this game (`startLegality: false`) and the anchors sit on three
+   * different walls — and FROZEN from the moment AUTO begins. 0 is a legal value: a robot
+   * placed clear of the perimeter has nothing to stop contacting and has LEFT by definition.
+   */
+  startWalls: Record<number, number>;
+  /** per robot id: did it LEAVE (stop contacting the wall it started on) by the end of AUTO?
+   * Latched at that instant and never recomputed, because the achievement is assessed once
+   * (Table 10-2) and a robot that drives back to the wall in TELEOP keeps its 3. DRAFT. */
   leave: Record<number, boolean>;
   /** per robot id: PARK at end of AUTO / end of MATCH, the two separate 5-point assessments.
    * Two maps rather than one because they are two achievements that can disagree. DRAFT. */
@@ -312,6 +391,26 @@ export interface BiobuzzState {
    * an absent key is the honest way to say "no scene asked for this".
    */
   labels?: boolean;
+  /**
+   * WHICH PHYSICS BACKEND THIS WORLD STEPS ON (Day 1 seam, `docs/biobuzz/plan-3d.md` §2.1) —
+   * set ONLY when `'3d'`. A 2D world always OMITS this field rather than writing `'2d'`, so
+   * `createBiobuzzWorld`'s output for the pipeline that has always run is byte-identical to
+   * before this field existed, which is what keeps every stored 2D hash, snapshot and replay
+   * unchanged. Read through `biobuzzPhysics(world)` below — never this field directly.
+   */
+  physics?: Physics;
+}
+
+/**
+ * THE ONE READ OF `world.biobuzz.physics` — every caller asks this, never the raw field.
+ *
+ * Absent reads `'2d'`: the pipeline that predates the 3D port, and the only one a DECODE/Chain
+ * Reaction world (which has no `world.biobuzz` at all) or an old BIOBUZZ snapshot could ever
+ * have run. A second call site spelling `world.biobuzz?.physics ?? '2d'` by hand is exactly how
+ * that default would drift the day this one changes and the other is forgotten.
+ */
+export function biobuzzPhysics(world: World): Physics {
+  return world.biobuzz?.physics ?? '2d';
 }
 
 /**
@@ -350,6 +449,7 @@ export function emptyBiobuzzState(): BiobuzzState {
     // 'none-left' rather than 'ok': a fresh state has no stock (`spawn.ts` stages it), and the
     // honest answer for a world nobody has staged is the one the tick would compute for it.
     nectarWhy: { red: 'none-left', blue: 'none-left' },
+    startWalls: {},
     leave: {},
     parkAuto: {},
     parkTele: {},

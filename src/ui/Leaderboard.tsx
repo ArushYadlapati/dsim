@@ -15,6 +15,7 @@ import {
 import { gameServerConfigured } from '../net/env';
 import { periodLabel } from '../seasons';
 import { moduleFor } from '../games';
+import { serverPhysics } from '../games/types';
 import { PeriodPicker } from './PeriodPicker';
 import { SupporterBadge, type StaffRole } from './SupporterBadge';
 import { PLACEMENT_GAMES } from '../config';
@@ -238,6 +239,25 @@ export function Leaderboard({
   const [recMode, setRecMode] = useState<RecordMode>('solo');
   const [eloMode, setEloMode] = useState<EloMode>('1v1');
   const [board, setBoard] = useState<Board>('overall'); // record boards only
+  /**
+   * THE ERA FILTER IS GONE (owner ruling, 2026-09-18), and so is the 2D/3D chip per row.
+   *
+   * There was an All / 3D / 2D segmented control here, because the two eras shared this board.
+   * They do not share it: every server-connected match of a game that can step 3D runs 3D
+   * (`serverPhysics`), so this board is the 3D board and the server filters it (`boardPhysics`
+   * in server/db/repo.ts) — a client-side picker could only ask for a second board that nothing
+   * new can ever be added to.
+   *
+   * ── WHAT HAPPENED TO THE 2D ROWS ──────────────────────────────────────────────────────────
+   * Nothing. They keep their row, their replay and their place in the player's own match
+   * history; a season was NOT reset over this (the owner's standing rule), and the column
+   * migration 0039 added is what makes hiding them possible without wiping anything.
+   *
+   * `threeD` is what `twoEras` became: it no longer gates a filter, only the one line of copy
+   * that says which solve the board is made of, which is worth saying for a game whose players
+   * can also practise on the other one.
+   */
+  const threeD = serverPhysics(moduleFor(game)) === '3d';
 
   const [rows, setRows] = useState<(RecordRow | EloRow)[]>([]);
   const [me, setMe] = useState<EloStanding | null>(null);
@@ -279,7 +299,18 @@ export function Leaderboard({
     const s = season ?? undefined;
     const req =
       kind === 'records'
-        ? fetchRecords(recMode, board, s, game).then((r) => ({ rows: r.rows, me: null as EloStanding | null }))
+        ? fetchRecords(recMode, board, s, game).then((r) => ({
+            /**
+             * TOLERATING AN OLDER SERVER. One Fly app serves every client version and the
+             * reverse is just as true — this page can be talking to a deploy that predates
+             * the ruling and still returns both eras. Such a response is filtered HERE, where
+             * the field is present; a row that carries no `physics` at all is older still and
+             * is kept, because dropping it would blank the board for a game whose rows are all
+             * 2D anyway (DECODE, Chain Reaction) and for pre-0039 rows that are what they are.
+             */
+            rows: threeD ? r.rows.filter((x) => x.physics !== '2d') : r.rows,
+            me: null as EloStanding | null,
+          }))
         : fetchElo(eloMode, s, myUserId, game);
     req
       .then(({ rows, me }) => {
@@ -296,7 +327,7 @@ export function Leaderboard({
     return () => {
       alive = false;
     };
-  }, [kind, recMode, eloMode, board, season, configured, myUserId, game]);
+  }, [kind, recMode, eloMode, board, threeD, season, configured, myUserId, game]);
 
   const isRecords = kind === 'records';
   const valueLabel = isRecords ? 'Score' : 'ELO';
@@ -359,6 +390,10 @@ export function Leaderboard({
               ))}
             </div>
           </div>
+        )}
+
+        {isRecords && threeD && (
+          <p className="ds-panel-foot ds-hint">Record runs are played on the 3D physics.</p>
         )}
 
         {!isRecords && status === 'ok' && me && <MyStanding me={me} />}
@@ -433,6 +468,9 @@ export function Leaderboard({
                             </>
                           )}
                           {isMe && <span className="ds-dt lb-you-tag">YOU</span>}
+                          {/* NO ERA CHIP. There was a 2D/3D tag here while the two eras shared
+                              this board; every row on it is now 3D, and a chip whose value never
+                              varies is furniture beside a name that has two real ones. */}
                         </span>
                       </td>
                       {isRecords && (

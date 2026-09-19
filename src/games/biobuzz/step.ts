@@ -8,7 +8,9 @@ import { BB_FLOWER_UNLOCK_S, BB_HALF_X, BB_HALF_Y } from './config';
 import { biobuzzColliders } from './colliders';
 import { bbAimAssist, updateBiobuzz } from './play';
 import { updateBiobuzzPenalties } from './penalties';
-import { bbApplyScore, bbLeftNow, bbParkedNow, bbScoreWorld } from './score';
+import { BB_WALL, bbApplyScore, bbLeftNow, bbParkedNow, bbScoreWorld, bbWallsTouched } from './score';
+import { biobuzzPhysics } from './state';
+import { step3d } from './sim3d/step3d';
 
 /**
  * BIOBUZZ step — a playable, unscored match.
@@ -83,7 +85,14 @@ const ZERO_CMD: RobotCommand = {
   fire: false,
 };
 
-export function biobuzzStep(world: World, dt: number, commands: Map<number, RobotCommand>): void {
+/**
+ * THE 2D PIPELINE — everything above this function's header describes it, and it is
+ * UNTOUCHED (Day 1 seam, `docs/biobuzz/plan-3d.md`). `biobuzzStep` below is now the exported
+ * entry point every caller uses; it dispatches here for a `'2d'`-physics world (absent physics
+ * included, which is every world before this seam existed) and to `sim3d/step3d.ts`'s `step3d`
+ * for a `'3d'` one.
+ */
+function step2d(world: World, dt: number, commands: Map<number, RobotCommand>): void {
   world.time += dt;
   world.tick++;
 
@@ -100,12 +109,24 @@ export function biobuzzStep(world: World, dt: number, commands: Map<number, Robo
   for (const r of world.robots) from.set(r.id, { x: r.pos.x, y: r.pos.y, heading: r.heading });
   for (const r of world.robots) {
     let cmd = enabled ? (commands.get(r.id) ?? ZERO_CMD) : ZERO_CMD;
-    // 2. AIM HOOK — turretless launchers turn the whole robot to face their target while the
-    // fire button is held. Null when this build aims some other way (a turret slews itself)
-    // or when there is nothing to aim at, which in the shell is always: `scoreTargets()` is
-    // empty until Section 9 exists.
+    // 2. AIM HOOK — holding fire on a DUMPER turns the whole robot onto the cell Aim Assist is on
+    // (`bbAimAssist`), and `bbLaunch` dumps once it is lined up and the dump would land — the
+    // same feel as Chain Reaction's dumper. Null when this build aims some other way (a turret
+    // slews itself).
+    //
+    // ⚠️ A TANK TURNS ONLY FROM ITS SIDE DRIVES. The shared drive model takes a tank's yaw from
+    // `rightDrive − leftDrive` and ignores `rotate` (`src/sim/robot.ts`), so overriding `rotate`
+    // alone left a tank dumper — the StarterBot — facing wherever the driver left it. The turn is
+    // written into both: `rotate` for every other drivetrain (`omega = rotate · maxTurn`), and the
+    // side drives as the driver's own forward (their mean) ∓ the turn (`omega = (rd − ld) ·
+    // maxTurn / 2`, the same rate), with the forward trimmed so the turn always gets its share.
     const aim = bbAimAssist(world, r, cmd, enabled);
-    if (aim !== null) cmd = { ...cmd, rotate: aim };
+    if (aim !== null) {
+      const fwd = ((cmd.leftDrive ?? 0) + (cmd.rightDrive ?? 0)) / 2;
+      const room = 1 - Math.abs(aim);
+      const f = Math.max(-room, Math.min(room, fwd));
+      cmd = { ...cmd, rotate: aim, leftDrive: f - aim, rightDrive: f + aim };
+    }
     actual.set(r.id, cmd);
     // 3. DRIVETRAIN
     drive.set(r.id, updateRobot(world, r, cmd, dt));
@@ -132,6 +153,21 @@ export function biobuzzStep(world: World, dt: number, commands: Map<number, Robo
 }
 
 /**
+ * THE BIOBUZZ TICK — the dispatch seam (Day 1, `docs/biobuzz/plan-3d.md`). Every existing
+ * caller (the client, the server, the smoke suite) imports THIS name unchanged; it reads the
+ * world's own physics tag once and hands the tick to the pipeline that actually understands
+ * it. A `'2d'` world (including every world from before this seam existed, which carries no
+ * tag at all) is byte-identical to what `biobuzzStep` always did.
+ */
+export function biobuzzStep(world: World, dt: number, commands: Map<number, RobotCommand>): void {
+  if (biobuzzPhysics(world) === '3d') {
+    step3d(world, dt, commands);
+  } else {
+    step2d(world, dt, commands);
+  }
+}
+
+/**
  * LATCH one assessment instant (Table 10-2) — which achievements are true RIGHT NOW, frozen.
  *
  * LEAVE and PARK are the only lines in the table assessed at a MOMENT rather than continuously
@@ -151,7 +187,7 @@ function bbAssess(world: World, at: 'auto' | 'match'): void {
   for (const r of world.robots) {
     if (r.passive) continue;
     if (at === 'auto') {
-      bb.leave[r.id] = bbLeftNow(r);
+      bb.leave[r.id] = bbLeftNow(r, bb.startWalls[r.id] ?? BB_WALL.all);
       bb.parkAuto[r.id] = bbParkedNow(r);
     } else {
       bb.parkTele[r.id] = bbParkedNow(r);
@@ -183,9 +219,17 @@ function bbAssess(world: World, at: 'auto' | 'match'): void {
  * can disagree with the clock, and the clock is already authoritative for the rule itself
  * (`bbNectarLocked` reads `phaseTimeLeft`, not the flag).
  */
-function biobuzzStepMatch(world: World, dt: number): void {
+export function biobuzzStepMatch(world: World, dt: number): void {
   const m = world.match;
   if (m.phase === 'pre') {
+    // WHICH WALLS EACH ROBOT IS STARTING AGAINST, re-read every tick until the match begins.
+    // LEAVE is measured against these (`bbLeftNow`), start poses are free-placed in this game,
+    // and a pose can still change while the field is frozen — so the last `pre` tick is the
+    // one that counts. `spawn.ts` seeds the same masks, for a world that is started with no
+    // `pre` tick at all (`startMatch` straight off `createWorld`, which is the headless path).
+    if (world.biobuzz) {
+      for (const r of world.robots) world.biobuzz.startWalls[r.id] = bbWallsTouched(r);
+    }
     if (m.preCountdown == null) return; // solo: the controller starts the match
     m.preCountdown -= dt;
     if (m.preCountdown <= 0) {
@@ -219,7 +263,11 @@ function biobuzzStepMatch(world: World, dt: number): void {
     case 'transition':
       m.phase = 'teleop';
       m.phaseTimeLeft = C.TELEOP_DURATION;
-      world.events.push('TELEOP');
+      // DRIVER-CONTROLLED, not TELEOP. `world.events` is one of the three surfaces the
+      // terminology ruling names (with the live HUD and the burned-in video overlay), and
+      // `src/sim/match.ts:64` already says it for the other games. A season pushing its own
+      // word here puts two names for one phase into the same event log.
+      world.events.push('DRIVER-CONTROLLED');
       break;
     case 'teleop':
       // TELEOP PARK, the second of the two assessments. Same instant rule as AUTO's.

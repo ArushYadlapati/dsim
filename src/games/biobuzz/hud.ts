@@ -4,6 +4,7 @@ import { BB_FLOWER_UNLOCK_S, BB_TIP_POLLEN } from './config';
 import { BB_TIP_SWING_S } from './hive';
 import { bbNectarLocked } from './penalties';
 import { bbKindIndex, bbScoreWorld, type BbAllianceScore, type BbRankPoints } from './score';
+import type { BbNectarWhy } from './state';
 
 /**
  * The FIELD half of the BIOBUZZ HUD slice (`docs/biobuzz-contract.md` §5, Lane A).
@@ -33,7 +34,9 @@ import { bbKindIndex, bbScoreWorld, type BbAllianceScore, type BbRankPoints } fr
  *    is about to become a load on the floor and then an empty cell on the other side.
  *  • `nectarLocked` / `nectarIn` — G410. Entering a NECTAR one second early is a MAJOR 20, and
  *    the cue that unlocks it is an audio one on a real field.
- *  • `nectarStock` / `nectarDue` — what the human player still has and what they are owed.
+ *  • `nectarStock` / `nectarDue` / `nectarWhy` — what the human player still has, what they are
+ *    owed, and what a press of the button would actually do. The third is not derivable from
+ *    the first two: a full stock with no entitlement looks identical to a full stock with one.
  *  • `flowerOwners` — ownership is the alliance of the TOP-most NECTAR, which the stack shows
  *    but does not announce.
  *  • `score` / `rp` — the whole of Table 10-2 per alliance, so the score bar and the results
@@ -56,7 +59,8 @@ export interface BbCellHud {
   /** POLLEN still needed to TIP, from the measured table indexed by `nectar`. 0 ⇒ it is about
    * to go, or is already going. */
   needed: number;
-  /** completed TIPS this match */
+  /** completed TIPS this match — the SCORED count, so once the match is over it includes a
+   * swing that was still moving at the buzzer (`score.ts`) */
   tips: number;
   /** seconds left in the swing, 0 when settled. The CELL accepts nothing while this is > 0. */
   tipping: number;
@@ -105,6 +109,20 @@ export interface BiobuzzFieldHud {
   nectarStock: Record<Alliance, number>;
   /** entries EARNED by TIPS and not yet made (G426), per alliance. */
   nectarDue: Record<Alliance, number>;
+  /**
+   * WHAT THE HUMAN PLAYER BUTTON WOULD DO RIGHT NOW, per alliance.
+   *
+   * The stock and the debt are two numbers and the answer is a THIRD fact neither of them
+   * gives: `none-owed` is a full stock the alliance is not yet entitled to spend, and it looks
+   * from the outside exactly like `ok`. A driver who presses and sees nothing happen has no way
+   * to tell a refusal from a broken button, and the refusal is the common case for most of a
+   * match — so the chip says which refusal it was.
+   *
+   * `locked` here is the FROZEN FIELD (`pre`, the auto→teleop transition, after the buzzer),
+   * NOT G410. G410 is `nectarLocked` above and is about NECTAR entering a FLOWER, which is a
+   * different rule about a different act; the two must not be folded into one chip.
+   */
+  nectarWhy: Record<Alliance, BbNectarWhy>;
   /** G410: may a NECTAR legally enter a FLOWER right now? */
   nectarLocked: boolean;
   /** seconds until the 1:00 cue, or 0 once it has passed. `null` outside TELEOP, where the
@@ -153,6 +171,7 @@ function emptyHud(): BiobuzzFieldHud {
     gardenPts: 0,
     foul: 0,
     total: 0,
+    pendingPts: 0,
   };
   const rp: BbRankPoints = { swarm: false, pollinator1: false, pollinator2: false };
   return {
@@ -164,6 +183,9 @@ function emptyHud(): BiobuzzFieldHud {
     flowerDepth: [0, 0, 0, 0],
     nectarStock: { red: 0, blue: 0 },
     nectarDue: { red: 0, blue: 0 },
+    // an EMPTY world has entered nothing and owes nothing; `none-left` is what `state.ts` seeds
+    // the world's own field with, so the empty slice agrees with an empty match.
+    nectarWhy: { red: 'none-left', blue: 'none-left' },
     nectarLocked: true,
     nectarIn: null,
     pins: [],
@@ -248,7 +270,10 @@ export function biobuzzFieldHud(world: World): BiobuzzFieldHud {
       pollen,
       nectar,
       needed: Math.max(0, want - pollen),
-      tips: hive.tips,
+      // the SCORE's count, not the raw counter: at the buzzer a swing still in progress is
+      // already being paid as a TIP (`score.ts`), and a chip reading one fewer than the points
+      // beside it is the kind of disagreement a driver reports as a scoring bug.
+      tips: s[a].tips,
       tipping: hive.tipping,
       tipProgress: hive.tipping > 0 ? 1 - hive.tipping / BB_TIP_SWING_S : 0,
       up: hive.up,
@@ -258,6 +283,7 @@ export function biobuzzFieldHud(world: World): BiobuzzFieldHud {
     out.rp[a] = s.rp[a];
     out.nectarStock[a] = bb.nectarStock[a];
     out.nectarDue[a] = bb.nectarDue[a];
+    out.nectarWhy[a] = bb.nectarWhy[a];
   }
   out.flowerOwners = s.flowerOwners;
   out.flowerDepth = bb.flowers.map((f) => f.stack.length);

@@ -27,6 +27,8 @@
  * not "be careful".
  */
 import { track } from '@vercel/analytics';
+// the opt-out is its own leaf module — see the note there for why it is not in this file
+import { analyticsAllowed } from './analyticsPref';
 
 /** OFF unless explicitly enabled, matching how ads and auth are gated. A
  *  self-hosted or Electron build should not be firing beacons at a host it does
@@ -46,18 +48,34 @@ export type AnalyticsEvent =
   | 'ads_shown' // an ad unit actually rendered
   | 'account_deleted'
   // ---- presenting sponsor (src/sponsor.ts) -------------------------------
-  // These three ARE the monthly attribution report. `docs/sponsor.md` names the
+  // These ARE the monthly attribution report. `docs/sponsor.md` names the
   // dashboard filter that turns each into a number, so the report is read off
   // the same events the app fires rather than assembled by hand.
-  | 'sponsor_shown' // a sponsor placement rendered (`placement`) — the denominator
+  //
+  // ⚠️ `sponsor_shown` MEANS VIEWABLE, NOT MOUNTED. It fires once the mark has
+  // been at least half on screen for a continuous second (`src/ui/Sponsor.tsx`),
+  // which is the industry definition of an impression and the only one a sponsor
+  // can check. Counting mounts instead would bill the footer of every page a
+  // visitor never scrolled to, i.e. inflate the denominator the click rate is
+  // divided by — a number that flatters us is worse than no number, because it is
+  // the one the renewal is argued over.
+  //
+  // `sponsor_dwell` carries a BUCKET string (`<5s`, `5-15s`, …), never raw
+  // seconds: the dashboard groups by property VALUE, so a continuous number would
+  // render as thousands of one-count rows and tell nobody anything.
+  | 'sponsor_shown' // a sponsor placement was SEEN (`placement`) — the denominator
   | 'sponsor_click' // somebody clicked through to the sponsor (`placement`)
+  | 'sponsor_dwell' // how long a placement stayed on screen (`placement`, `dwell`)
+  | 'desktop_download' // a desktop build was taken (`os`) — the splash's only proxy
   | 'player_joined'; // a NEW account finished signing up — "new players"
 
 export function trackEvent(
   event: AnalyticsEvent,
   props?: Record<string, string | number | boolean>,
 ): void {
-  if (!ENABLED) return;
+  // `ENABLED` first, because it is a build constant: a build with analytics off never
+  // touches storage at all.
+  if (!ENABLED || !analyticsAllowed()) return;
   try {
     track(event, props);
   } catch {

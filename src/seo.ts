@@ -74,7 +74,7 @@ const ROUTE_META: Record<string, RouteMeta> = {
   lan: {
     title: 'LAN play',
     description:
-      'Host a DSIM game on your own computer and play over one network. LAN matches are unofficial — not rated and never on a leaderboard.',
+      'Host a DSIM match on your own computer and play with everyone on the same network.',
   },
   download: {
     title: 'Download the desktop app',
@@ -82,7 +82,7 @@ const ROUTE_META: Record<string, RouteMeta> = {
   },
   contributors: {
     title: 'Contributors',
-    description: 'The people who build DSIM.',
+    description: 'The people, sponsor and open-source projects behind DSIM.',
   },
   changelogs: {
     title: 'Changelog',

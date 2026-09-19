@@ -6,6 +6,7 @@ import type {
   AssistConfig,
   BallState,
   GameId,
+  Physics,
   RobotCommand,
   RobotSpec,
   RobotState,
@@ -87,6 +88,49 @@ export function quantizeCommand(c: RobotCommand): QCommand {
   };
 }
 
+/** the wire range of a packed axis — `int8`, and exactly what `quantizeCommand` can emit */
+const Q_AXIS_MAX = 127;
+/**
+ * Force an UNTRUSTED `q` payload into a QCommand, or refuse it outright.
+ *
+ * `dequantizeCommand` divides by 127 and masks bits; it does not type-check, because the
+ * packet it was written for came from `quantizeCommand` one function above. A packet off a
+ * WebSocket did not: `{}` dequantizes to `driveX: NaN`, and `{ ld: 1e9 }` to a left track
+ * running at 7,874,015 — both inside the SERVER-OWNED world every other member of the room
+ * is watching, so the poisoned pose is broadcast to them as authoritative truth.
+ *
+ * REFUSED, not clamped. Every honest sender is `quantizeCommand`, which rounds and clamps
+ * already, so anything out of range was hand-made — and a clamp would answer it with a legal
+ * command the driver never gave. Dropping the frame costs the sender their own input for one
+ * tick and costs nobody else anything.
+ */
+export function sanitizeQCommand(raw: unknown): QCommand | null {
+  if (raw === null || typeof raw !== 'object') return null;
+  const q = raw as Record<string, unknown>;
+  const axis = (v: unknown): number | null =>
+    typeof v === 'number' && Number.isInteger(v) && v >= -Q_AXIS_MAX && v <= Q_AXIS_MAX ? v : null;
+  const dx = axis(q.dx);
+  const dy = axis(q.dy);
+  const rot = axis(q.rot);
+  if (dx === null || dy === null || rot === null) return null;
+  if (typeof q.buttons !== 'number' || !Number.isInteger(q.buttons) || q.buttons < 0 || q.buttons > 255) {
+    return null;
+  }
+  // ld/rd stay OPTIONAL (a pre-tank client sends neither and means zero), but a present
+  // one must still be a legal axis — absent and malformed are not the same packet.
+  const ld = q.ld === undefined ? undefined : axis(q.ld);
+  const rd = q.rd === undefined ? undefined : axis(q.rd);
+  if (ld === null || rd === null) return null;
+  // `buttons` is kept WHOLE rather than masked to the bits this build knows: `buttons` is a
+  // uint8 and every one of its eight bits is now a button, so a mask here is either a no-op or
+  // — once the field widens — a silent way to drop a newer client's action. `dequantizeCommand`
+  // reads the bits it understands and ignores the rest, which is the back-compat rule already.
+  const out: QCommand = { dx, dy, rot, buttons: q.buttons };
+  if (ld !== undefined) out.ld = ld;
+  if (rd !== undefined) out.rd = rd;
+  return out;
+}
+
 export function dequantizeCommand(q: QCommand): RobotCommand {
   return {
     driveX: q.dx / 127,
@@ -116,6 +160,18 @@ export function localizeCommand(c: RobotCommand): RobotCommand {
 /** max drivers per room (2v2) */
 export const ROOM_CAPACITY = 4;
 
+/**
+ * The two clocks a staged ranked match runs on, and the reason they live out here.
+ *
+ * They are the SERVER's rules (`server/room.ts` owns both timers), but the queue screen has
+ * to state them before a player joins the queue: missing either one is a dodge, and a dodge
+ * costs account standing. A player who finds that out by being charged was never told the
+ * rule. Quoting one number from the wire module keeps the screen and the timer in step; a
+ * second copy in the UI would drift the first time either is tuned.
+ */
+export const RANKED_JOIN_GRACE_MS = 20000;
+export const STRATEGY_DURATION_MS = 20000;
+
 /** who runs the service — the staff badge beside a name. Lives here rather than
  * in the UI because it travels on the wire (`LobbyPlayer`, the leaderboard rows,
  * the entitlements payload) and `src/net` must not depend on `src/ui`. */
@@ -138,6 +194,32 @@ export interface RoomConfig {
   /** which game the room plays. Absent ⇒ 'decode' (old clients / back-compat).
    * The server resolves the game module from this; matchmaking buckets by it. */
   game?: GameId;
+  /**
+   * WHICH PHYSICS BACKEND THIS ROOM'S WORLD RUNS ON — ⚠️ **NO LONGER READ BY THE SERVER**
+   * (owner ruling, 2026-09-18).
+   *
+   * `Room.physics` now answers from the GAME alone: a game that can step `'3d'` runs `'3d'` for
+   * every server-connected match — record, ranked, matchmade, custom, spectated, LAN — because
+   * the record board is one solve. There is no host choice left for this field to carry.
+   *
+   * It stays on the wire as the room's DECLARED solve, and it is omitted entirely for a game
+   * with no 3D solve, which keeps DECODE and Chain Reaction's handshake byte-identical.
+   *
+   * ⚠️ IT IS NOT A BACK-COMPAT PATH. An older server does not read this field at all — the
+   * `RoomConfig` on main has no `physics` key and the decoder drops config keys it does not
+   * know — so sending it to a server a deploy behind is inert, not compatible. The
+   * compatibility that has to be managed runs the OTHER way and it is a DEPLOY ORDER: BIOBUZZ
+   * is public on the stable channel, and every production client built before the `'bb3d'` cap
+   * existed is refused from every BIOBUZZ room until it reloads. Ship and verify the CLIENT
+   * (Vercel) FIRST, then the server (Fly); a tab held open across the deploy is refused with
+   * `BB3D_REFUSAL` until the version gate reloads it.
+   *
+   * It is a ROOM property and not a per-client one: a room has one authoritative world, so a
+   * client whose build cannot step `'3d'` cannot be in it at all. That is what the `'bb3d'`
+   * capability gate below is for — and since a bare BIOBUZZ join now yields a 3D room rather
+   * than a 2D one, that gate is where an old client is turned away instead of downgraded.
+   */
+  physics?: Physics;
 }
 
 export const DEFAULT_ROOM_CONFIG: RoomConfig = { kind: 'versus' };
@@ -200,6 +282,21 @@ export interface LobbyPlayer {
    * driver's name in a lobby is an impersonation primitive, not a cosmetic.
    */
   role?: StaffRole;
+  /**
+   * THIS SEAT IS A BOT, and the string is its TIER (plan §6).
+   *
+   * Server-authored on exactly the same terms as `supporter` and `role` — `sanitizePlayerPatch`
+   * builds an allowlisted object and `PlayerPatch` is a `Pick` that does not name it, so a
+   * client cannot put it on the wire. That matters here for a reason the badges do not have: a
+   * bot seat makes a room UNRATED, so a self-declared one would be a way to ask for that, and a
+   * self-declared ABSENCE would be a way to hide it.
+   *
+   * Optional, and an OLD CLIENT IS UNHARMED BY IT: it renders the roster row as an ordinary
+   * driver named "Medium bot", ready, on an alliance — which is exactly what the seat is. The
+   * only thing it cannot do is remove one, and removing one is a host action an old client has
+   * no button for anyway.
+   */
+  bot?: string;
 }
 
 /** a driver's pre-match ranked intro data (ELO, keyed by the robot id the server
@@ -243,7 +340,47 @@ export type PlayerPatch = Partial<
  * client is never stranded waiting for a `strategyStart` it can't render. Absent/old
  * clients send nothing ⇒ treated as no caps. Add new capability strings here as the
  * protocol grows. */
-export const CLIENT_CAPS: string[] = ['strategy', 'startpose', 'game', 'standing'];
+export const CLIENT_CAPS: string[] = ['strategy', 'startpose', 'game', 'standing', 'recycle', 'bb3d'];
+
+/**
+ * THE ONE CAPABILITY THAT IS A HARD GATE RATHER THAN A FEATURE FLAG.
+ *
+ * Every other entry in `CLIENT_CAPS` degrades: a client without `'strategy'` skips the
+ * pre-match window, one without `'recycle'` never sees a room go back to its lobby. `'bb3d'`
+ * cannot degrade, because it is about whether the client can SIMULATE the room at all — a
+ * `'3d'`-physics world steps through `step3d`, and a build that predates `sim3d/` has no code
+ * for it. Such a client in such a room would not render a worse match; it would throw on its
+ * first tick, or (worse) fall through to the 2D pipeline and predict a different game from the
+ * one the server is scoring.
+ *
+ * So the server REFUSES the join instead, with the sentence below. Named here, beside the
+ * capability, because three call sites send it (`join`, `rejoin`, `spectate`) and a fourth
+ * refuses a `queue` for a BIOBUZZ format — four spellings of one rule is how a refusal ends up
+ * saying something different depending on which door you came through.
+ */
+export const BB3D_CAP = 'bb3d';
+export const BB3D_REFUSAL = 'Update DSIM to play this room.';
+
+/** may a client advertising `caps` be seated in a room running `physics`? A `'2d'` room
+ *  admits everyone, exactly as it always did — that is the back-compat rule this whole gate
+ *  is written around. Absent caps (an old client that sends none) ⇒ no capabilities. */
+export function physicsAllowed(physics: Physics | undefined, caps: readonly string[] | undefined): boolean {
+  return (physics ?? '2d') !== '3d' || !!caps?.includes(BB3D_CAP);
+}
+
+/**
+ * The `caps` off a client frame, as a list of strings and nothing else.
+ *
+ * ONE coercion for every door, because `caps` is attacker-controlled and `Array.isArray` alone
+ * is not a validation: it admits `[{…}, 5, null]`, which is then STORED on the client record
+ * and compared by every feature gate, and it admits an array of any LENGTH — a free per-socket
+ * allocation on a frame that arrives before anything is authenticated. Strings only, and the
+ * first 16 of them; `CLIENT_CAPS` has six, so the cap is slack rather than a limit anyone can
+ * reach honestly.
+ */
+export function coerceCaps(x: unknown): string[] {
+  return Array.isArray(x) ? x.filter((c): c is string => typeof c === 'string').slice(0, 16) : [];
+}
 
 /**
  * Capabilities the SERVER advertises, reported on `GET /api/presence`.
@@ -259,7 +396,36 @@ export const CLIENT_CAPS: string[] = ['strategy', 'startpose', 'game', 'standing
  * So the rated challenge formats stay hidden until the server says it can honour
  * them. No `caps` in the response at all (an older deploy) ⇒ no capabilities.
  */
-export const SERVER_CAPS: string[] = ['party'];
+export const SERVER_CAPS: string[] = [
+  'party',
+  /**
+   * `'bb3d'` — THIS DEPLOY RUNS EVERY BIOBUZZ ROOM ON THE 3D SOLVE.
+   *
+   * (It said "ranked and record rooms" until the 2026-09-18 ruling made it all of them. The
+   * capability's job is unchanged: it is how a client tells a deployed server from one that is
+   * still behind. A CUSTOM room no longer needs it either way — the client sends
+   * `physics: '3d'` and an older server honours that — but a RANKED queue does, because the
+   * matchmaker stages the room and no client field reaches it.)
+   *
+   * The mirror of the client capability of the same name, and it exists because the cutover is
+   * PER SERVER (plan §7: alpha on Day 3, production when the owner says so). A client build that
+   * can play 3D rooms says so on `join`; a SERVER that will stage them says so here. Without it
+   * the client cannot tell a server that has not been deployed yet from one that has, and the
+   * two answers matter in opposite directions: a BIOBUZZ ranked queue against an old server
+   * stages a 2D match whose result lands on the same board as everybody's 3D ones, silently.
+   * So the client refuses to queue BIOBUZZ ranked on a server that does not advertise this, and
+   * says why. Nothing else is gated on it — 2D rooms, custom rooms and practice are untouched.
+   */
+  'bb3d',
+  /**
+   * `'bots'` — THIS DEPLOY UNDERSTANDS `addBot` / `removeBot`.
+   *
+   * An older server ignores an unknown client message rather than refusing it, so "Add a bot"
+   * would be a button that does nothing at all. Same reasoning as `party` directly above, and
+   * the same remedy: the control is not offered until the server says it can honour it.
+   */
+  'bots',
+];
 
 /** the formats a "play a friend" challenge can be issued in. Shared so the API's
  * allowlist, the matchmaker's gate, and the picker's tiles can't drift apart. */
@@ -306,7 +472,25 @@ export type ClientMsg =
     }
   // reclaim an in-match slot after a transient socket drop (within the grace
   // window) — the server rebinds the robot to the new connection and resyncs
-  | { t: 'rejoin'; room: string; clientId: string }
+  // `caps` is the same advertisement `join` carries, re-sent because a reclaim is a fresh
+  // socket and the server gates a `'3d'` room on it at every door. Absent (older clients) ⇒
+  // no capabilities, which is what they had before this field and refuses them only from the
+  // rooms they could never have joined in the first place.
+  | { t: 'rejoin'; room: string; clientId: string; caps?: string[] }
+  /**
+   * GIVE UP A HELD SLOT ON PURPOSE — the "Abandon" on the game-in-progress card.
+   *
+   * Sent on a throwaway socket by a client that is NOT in the room: the point is to be
+   * usable from the menu, after a reload, by a browser whose only memory of the match is
+   * the `activeGame` record. Owning the client id is the proof, exactly as it is for
+   * `rejoin` — the server minted it and told nobody else.
+   *
+   * Without it, Abandon cleared the browser's record and nothing else, so the server's
+   * single-game lock outlived the button by the length of the reconnect grace and the
+   * next thing the player started was refused by advice about a game the UI had just
+   * told them was gone.
+   */
+  | { t: 'abandon'; room: string; clientId: string }
   // SPECTATE a live match: join a room read-only. The server adds a spectator (no
   // robot slot, never counted toward capacity/roster/persistence), sends the current
   // `matchStart`, and streams the same `snapshot`s the drivers get. Input is ignored.
@@ -332,8 +516,35 @@ export type ClientMsg =
    */
   | { t: 'reportScore'; detail: string }
   | { t: 'update'; patch: PlayerPatch }
+  /**
+   * HOST ONLY: seat an AI driver on an empty slot, or give one back (plan §6).
+   *
+   * ⚠️ **CAP-GATED ON `SERVER_CAPS` `'bots'`, AND THAT GATE IS NOT OPTIONAL** — it is the same
+   * failure shape as `party`. One Fly app serves every client build, so a new client can be
+   * talking to a server that predates this message; an older server's `onMessage` falls through
+   * its switch and IGNORES it. The button would then appear, be pressed, and do nothing, with
+   * no error anywhere. So the client only offers "Add a bot" when the server says it can seat
+   * one (`serverCaps()`), exactly as the rated challenge formats stay hidden without `party`.
+   *
+   * `tier` is the game's own opaque difficulty string (`GameSimModule.bot.tiers`); absent or
+   * unknown folds to that driver's `defaultTier`, server-side, because a tier list is a
+   * property of the game module and not of the client that names one.
+   */
+  | { t: 'addBot'; tier?: string }
+  /** HOST ONLY: remove the bot seat with this roster `clientId` (the synthetic id the server
+   *  minted for it and put in the roster). */
+  | { t: 'removeBot'; seat: string }
   | { t: 'start' } // host only: build + broadcast the match world
   | { t: 'restart' } // host only: re-author the match with a fresh seed
+  /**
+   * HOST ONLY: send a FINISHED room back to its lobby so it can host another game.
+   *
+   * A rematch replays the roster frozen at the first start; this recycles the room
+   * instead — the world is torn down, everyone un-readies, and the next `start`
+   * rebuilds setups from whoever is in the room THEN. That is what lets a group
+   * switch alliances, or replace a player who left, without minting a new code.
+   */
+  | { t: 'lobby' }
   /**
    * DUO RECORD rematch vote — a TOGGLE, not a trigger.
    *
@@ -349,10 +560,12 @@ export type ClientMsg =
   // reliable WebSocket the happy-path delta is still against the last broadcast;
   // the ack only drives a self-healing keyframe when a client's CONFIRMED baseline
   // falls too far behind (a wedged/way-behind client resyncs instead of drifting).
-  // It is ALSO the seam the future unreliable (QUIC-datagram) lane needs: there a
-  // dropped snapshot means last-sent != last-received, so the delta must be keyed
-  // to this ack. Absent from older clients ⇒ the server simply never force-resyncs
-  // them (unchanged behaviour).
+  // On an UNRELIABLE lane it carries the whole scheme: a tab-hosted LAN guest takes
+  // snapshots over an unordered `maxRetransmits: 0` DataChannel, so last-sent is no
+  // longer last-received and the server keys that client's delta to this ack (see
+  // `lossy` in server/room.ts). The server refuses an ack that names a tick the world
+  // has not reached — it is a baseline, not a claim. Absent from older clients ⇒ they
+  // are never force-resynced and never treated as lossy (unchanged behaviour).
   // `gen` is the MATCH GENERATION this input was produced for (see `matchStart`).
   // A rematch rebuilds the world at tick 0, so inputs still in flight from the old
   // match carry tick numbers the NEW match will eventually reach — and would then be
@@ -473,6 +686,20 @@ export type ServerMsg =
   | { t: 'welcome'; clientId: string }
   | { t: 'roster'; players: LobbyPlayer[]; hostId: string }
   /**
+   * THE ROOM IS A LOBBY AGAIN — tear down the match view and show the roster.
+   *
+   * Sent to every member when the host recycles a finished room. A `roster` follows
+   * immediately, so the client that adopts the socket back into a `LobbyClient` has
+   * the players without asking for them. `clientId` is re-sent because the adopting
+   * lobby never sends a `join` (it is already in the room) and so never gets a
+   * `welcome` of its own.
+   *
+   * Gated on the 'recycle' capability: the room only offers this when EVERY member
+   * advertises it, because a client that ignores this message would sit on a dead
+   * results screen while the room restarted around it.
+   */
+  | { t: 'lobby'; clientId: string }
+  /**
    * `message` is human-readable and every client since the first build shows it.
    *
    * `code` is OPTIONAL and machine-readable, added so the connection HUD can tell
@@ -520,6 +747,18 @@ export type ServerMsg =
       /** which game to build the world for. Absent ⇒ 'decode' (old servers); the
        * client also falls back to the first snapshot's `world.game`. */
       game?: GameId;
+      /**
+       * WHICH PHYSICS THE ROOM'S WORLD RUNS ON (`RoomConfig.physics`). Absent ⇒ `'2d'` — an
+       * older server, or any room that is not a 3D one.
+       *
+       * The client must build its predicted world with THIS, not with its own settings: it is
+       * the only thing in the handshake that says which pipeline the authoritative loop is
+       * stepping. A joiner or a reconnecting client that missed it can also read
+       * `world.biobuzz.physics` off the first keyframe, which is why the tag rides the world
+       * bag as well — two independent ways to learn one fact, because a spectator arriving
+       * mid-match gets `matchStart` and a snapshot in the same breath.
+       */
+      physics?: Physics;
       ranked?: boolean;
       intros?: PlayerIntro[];
       /**
@@ -686,8 +925,13 @@ export const decodeServerMsg = (s: string): ServerMsg => JSON.parse(s) as Server
  *
  * Sending the order every frame is what keeps it deterministic: array position
  * drives collision/scoring iteration + `worldHash`, so it must match exactly.
- * (Over the reliable+ordered WebSocket no ack is needed — the client's baseline
- * is always the previous snapshot. A reconnect re-primes with a full keyframe.)
+ *
+ * "Since the last snapshot" is the server's choice of BASELINE, not a property of
+ * the format: `upd` always carries each listed ball's CURRENT data, so a delta cut
+ * against any older baseline the client genuinely holds is equally correct, just
+ * larger. That is what the lossy WebRTC lane uses — over the reliable+ordered
+ * WebSocket the baseline is simply the previous snapshot, and a reconnect re-primes
+ * with a full keyframe. See `broadcastSnapshot` in server/room.ts.
  */
 export type SlimWorld = Omit<World, 'balls' | 'robots'> & {
   robots: Omit<RobotState, 'spec'>[];

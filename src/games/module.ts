@@ -12,6 +12,7 @@ import type {
 } from '../types';
 import type { HudSnapshot } from '../game';
 import type { GameId, GameSimModule, GameUiSpec } from './types';
+import type { TutorialSpec } from '../tutorial/types';
 
 /**
  * The FULL (client) game module: the DOM-free `GameSimModule` plus the browser
@@ -53,14 +54,41 @@ export interface GameModule extends GameSimModule {
     ctx: CanvasRenderingContext2D,
     r: RobotState,
     intakeOn: boolean,
-    held: Artifact[],
+    held: readonly Artifact[],
     screenUp?: Vec2,
     world?: World,
   ): void;
   /** scoring-elements renderer, drawn after the robots (DECODE: balls; CR: particles
-   * + catalysts + endgame badges). `screenUp` is world-space "up" for z-lift. */
-  drawBalls(ctx: CanvasRenderingContext2D, world: World, screenUp: Vec2): void;
+   * + catalysts + endgame badges). `screenUp` is world-space "up" for z-lift.
+   *
+   * `localRobotId` is the LAST thing drawn over the field, and it is optional for the reason
+   * every other slot argument here is: DECODE and Chain Reaction ignore it and are unchanged.
+   * BIOBUZZ needs it because its shot path is a per-DRIVER instrument — whose shot it is is not
+   * on `World` — and this is the only per-frame hook that is drawn after the robots AND carries
+   * `screenUp`, which a path with a height has to have. Absent for a spectator or a replay of
+   * somebody else's match. */
+  drawBalls(ctx: CanvasRenderingContext2D, world: World, screenUp: Vec2, localRobotId?: number): void;
   ui: GameUiSpec;
+  /**
+   * THE LAZY 3D SCENE (Day 1 seam, `docs/biobuzz/plan-3d.md` §2.3/§2.5) — absent ⇒ this game
+   * has no 3D renderer, which is DECODE and Chain Reaction today. A FUNCTION rather than the
+   * factory itself, so the Three.js chunk is only ever `import()`-ed the moment a 3D view is
+   * actually mounted: a player who never opens a 3D BIOBUZZ view never downloads it, exactly
+   * like `sim3d/engine.ts`'s `initPhysics3d()` on the physics side.
+   */
+  scene?: () => Promise<GameSceneFactory>;
+  /**
+   * THE ROBOT PREVIEW'S 3D SCENE (`docs/roadmap.md` item 1) — absent ⇒ this game's builder has
+   * only its 2D schematic, which is DECODE and Chain Reaction today.
+   *
+   * A SECOND loader beside `scene` rather than a field on it, for the reason `scene` is a
+   * function at all: a player who never opens the 3D preview never downloads Three.js. It is
+   * declared here, and filled in the game's own `index.ts`, so that ALL of a game's dynamic
+   * `import()`s of its renderer live in one file — which is the property `scripts/smoke-biobuzz/
+   * render.ts` asserts, and the reason a builder component can reach the chunk without an import
+   * that would drag it into the main bundle.
+   */
+  previewScene?: () => Promise<RobotPreviewFactory>;
 
   // ---------------------------------------------------------------- UI slots --
 
@@ -92,6 +120,10 @@ export interface GameModule extends GameSimModule {
   /** extra touch action buttons. Each one's POSITION comes from
    * `GameSettings.mobileLayout`, so a genuinely new action needs a key there too. */
   mobileButtons?: readonly GameMobileButton[];
+  /** `false` when this game has no auto-fire assist, which hides `Menu`'s Auto fire toggle. The
+   * game's sim must also ignore the flag (BIOBUZZ forces it false at spawn). Absent means the
+   * toggle is offered, as it is for DECODE and Chain Reaction. */
+  offersAutoFire?: boolean;
   /** the game's start-position editor, used in place of the
    * `isDecode ? StartPositionEditor : ChainStartEditor` branch. */
   startEditor?: ComponentType<StartEditorProps>;
@@ -128,6 +160,20 @@ export interface GameModule extends GameSimModule {
    * drift it.
    */
   statTiles?(spec: RobotSpec): readonly GameStatTile[];
+  /**
+   * THE BODY OF ONE SAVED-ROBOT CARD — under the name and team, where `Menu.tsx` prints the
+   * one-line build summary.
+   *
+   * It is a COMPONENT rather than a second string slot because what belongs there is no longer
+   * always a string: BIOBUZZ shows a 3D thumbnail of the saved build when the device is on the 3D
+   * view and the summary sentence when it is not (`docs/roadmap.md` item 1). The choice is the
+   * GAME's, not the menu's — the menu does not know what a 3D view is, and a `showThumbnail`
+   * boolean threaded through it would be the shared screen learning one game's rendering model.
+   *
+   * A game that fills it also owns printing its own summary, which it already has: the slot's
+   * filler and `labels.configSummary` read the same vocabulary module.
+   */
+  savedCard?: ComponentType<GameSavedCardProps>;
   /**
    * The game's PRESET ROBOTS — the cards the builder's `Presets` section offers.
    *
@@ -170,6 +216,20 @@ export interface GameModule extends GameSimModule {
    * build must not carry a URL that opens one.
    */
   devRoutes?: readonly GameDevRoute[];
+  /**
+   * THIS GAME'S TUTORIAL — a scripted solo practice; absent means the game offers none, and
+   * every tutorial surface (the Modes card, the Controls entry) hides itself for it.
+   *
+   * On `GameModule` and not on `GameSimModule`, deliberately. The sim module is defined as
+   * "everything the authoritative server and the headless sim need", and a tutorial is neither:
+   * no room runs one, no replay contains one, and the server would never read it. What it DOES
+   * need is the player's `ControlBindings`, so that every hint names the keys they actually
+   * bound — and that is a client fact.
+   *
+   * `TutorialSpec` is itself DOM-free (`src/tutorial/types.ts`), so the headless TUTORIAL lane
+   * imports a game's tutorial module directly and drives the same steps the browser does.
+   */
+  tutorial?: TutorialSpec;
 }
 
 /** props for `GameModule.Builder` */
@@ -185,6 +245,29 @@ export interface GamePreviewProps {
   spec: RobotSpec;
   /** rendered edge length in px */
   size?: number;
+  /**
+   * Whose robot this is. A 2D schematic has no use for it (both current ones draw in neutral
+   * `ds-*` tokens), but a 3D preview does: the alliance is the chassis outline and the sign
+   * panel, so a preview without one would be the only place this game draws a robot with no
+   * alliance at all. Absent ⇒ the game's own default.
+   */
+  alliance?: Alliance;
+  /**
+   * MAY this host mount a live 3D scene? Opt-IN, and it is a statement about the HOST, not a
+   * preference: the builder hero is one preview on screen at a time and can afford a WebGL
+   * context, while the 2v2 strategy screen renders FOUR preview cards at once and a context each
+   * would put it near the browser's own cap for no gain — that screen wants a picture of a robot,
+   * not a turntable. Absent ⇒ no live scene, which is every host that existed before this.
+   */
+  allow3d?: boolean;
+}
+
+/**
+ * props for `GameModule.savedCard` — the BODY of one saved-robot card in the builder's garage.
+ */
+export interface GameSavedCardProps {
+  spec: RobotSpec;
+  alliance: Alliance;
 }
 
 /** props for the live-HUD slots (`hudChips`, `scoreBar`) */
@@ -264,6 +347,13 @@ export interface StartEditorProps {
   onCategory: (cat: StartCat) => void;
   onSave: (pose: StartPose) => void;
   onDeleteSaved: (cat: StartCat, i: number) => void;
+  /**
+   * how many saved poses per role this player may keep (`savedStartCap`, the supporter perk).
+   * Passed in by the HOST screen rather than read in the editor: the perk comes from the ads
+   * context, and `src/ads/adsense.ts` reads `import.meta.env` at load, which a game module's
+   * editor must not drag into the headless test suites. Absent ⇒ the free cap.
+   */
+  maxSaved?: number;
   size?: number;
 }
 
@@ -280,3 +370,187 @@ export interface GameDevRoute {
   path: string;
   Component: ComponentType;
 }
+
+// ---------------------------------------------------------------- 3D scene contract --
+//
+// The CLIENT-SIDE half of the 3D renderer seam (Day 1, `docs/biobuzz/plan-3d.md` §2.3):
+// declared additively here so a later renderer lane can fill `GameModule.scene` and a
+// later controller lane can drive it, without either waiting on the other. DECODE and
+// Chain Reaction register no `scene` and are untouched by any of this.
+
+/**
+ * Which camera a 3D scene renders for (`docs/biobuzz/plan-3d.md` §4.3).
+ *
+ * `driver` is the driver's own station view and `overhead` the fixed orthographic shot (the 2D
+ * fit) — the two the controller itself picks between. `chase` and `orbit` are DAY 2 additions
+ * and the controller never names them: they are reached through the device's own camera
+ * preference (`src/games/biobuzz/graphics/store.ts`), which the scene resolves against the
+ * `camera` the frame carries. Adding them here rather than keeping them scene-private is what
+ * lets a host (the scene gallery, a replay screen, a later Graphics section) ask for one
+ * directly without a second vocabulary for the same four cameras.
+ *
+ * A scene that cannot honour one falls back rather than throwing — `chase` with no
+ * `localRobotId` (a spectator, a replay of someone else's match) has nothing to chase, and
+ * BIOBUZZ's scene renders `overhead` instead.
+ */
+export type SceneCamera = 'driver' | 'overhead' | 'chase' | 'orbit';
+
+/**
+ * The HUD's OCCUPIED BANDS over the render surface, in CSS pixels, measured off the live DOM
+ * (`GameController.refreshHudInsets`).
+ *
+ * The 3D canvas fills the whole `.game-viewport`, but the score bar, the breakdown chips, the
+ * status chips and the MENU/RESET buttons are absolutely positioned ON TOP of it — so "fit the
+ * field to the canvas" frames part of the field underneath chrome that hides it. That is the
+ * owner's report of 2026-09-18 ("the scoreboard overlaps the field"). These four numbers are how
+ * much of each edge is spoken for; the SAFE RECT the field must fit into is
+ * `[left, width − right] × [top, height − bottom]`.
+ *
+ * ABSENT (or all-zero) READS AS NO CHROME, which is what keeps this additive: a scene written
+ * before this existed, or a host that does not measure (the scene gallery, a preview harness),
+ * fits to the full canvas exactly as it did.
+ *
+ * ⚠️ These are bands, NOT a per-element occlusion map. An element in a CORNER reserves a band
+ * across the whole edge it is nearest — cheap, stable, and it cannot leave a gap the way a
+ * per-element solve would when the HUD relayouts mid-frame.
+ */
+export interface SceneInsets {
+  top: number;
+  right: number;
+  bottom: number;
+  left: number;
+}
+
+/**
+ * One frame's render inputs — everything a `GameScene` needs that is not already on `world`.
+ * `alpha` is the interpolation fraction between the last two authoritative ticks (the same
+ * fixed-timestep smoothing the 2D renderer does); `localRobotId` is absent for a spectator.
+ */
+export interface SceneFrame {
+  alpha: number;
+  viewAngle: number;
+  camera: SceneCamera;
+  localRobotId?: number;
+  width: number;
+  height: number;
+  dpr: number;
+  /**
+   * The HUD's occupied bands (see `SceneInsets`) — absent ⇒ none, fit to the whole canvas.
+   *
+   * The OBJECT IS REUSED across frames by the controller (zero per-frame allocation at 144 Hz),
+   * so a scene must read the four numbers during `render` and never retain the reference.
+   */
+  insets?: SceneInsets;
+}
+
+/**
+ * A persistent 3D scene over one canvas, owned by the controller for as long as a 3D view is
+ * mounted. The renderer lane fills an implementation (Three.js); the controller lane calls
+ * `render`/`resize`/`dispose` from its own loop. It reads `World`, it never writes it.
+ */
+export interface GameScene {
+  readonly element: HTMLCanvasElement;
+  render(world: World, frame: SceneFrame): void;
+  resize(width: number, height: number, dpr: number): void;
+  dispose(): void;
+  /**
+   * PROJECT a field point through the scene's ACTIVE camera, into CSS pixels on the 2D overlay
+   * canvas above it (Day 2, `docs/biobuzz/plan-3d.md` §4.7).
+   *
+   * The 2D canvas stays mounted over a live scene and keeps drawing the cheap overlays — the
+   * name/team labels, an auto path, the replay burn-in — but its own `Camera` is the TOP-DOWN
+   * one, so in a 3D view every one of those lands where the robot would have been on the flat
+   * map: metres away from the robot on screen, and with no notion of "behind the camera" at
+   * all. This is the one number the overlay pass cannot work out for itself, because only the
+   * scene knows the live camera, its `setViewOffset` window and which of its four cameras is
+   * currently active.
+   *
+   * `x`/`y` are field inches, `z` is height above the tiles (the same frame `World` uses).
+   * `out` is written IN PLACE and is the caller's own object, reused across every label in a
+   * frame — a projection that allocated a vector per call would allocate one per robot per
+   * frame at up to 144 Hz. `visible` is false when the point is behind the camera or outside
+   * the frustum, and `x`/`y` are then meaningless (the caller skips the draw).
+   *
+   * OPTIONAL, so this stays additive: a scene that does not implement it leaves the overlay
+   * drawing exactly what it drew before, through the 2D camera.
+   */
+  project?(x: number, y: number, z: number, out: { x: number; y: number; visible: boolean }): void;
+}
+
+/**
+ * What a HOST can tell a scene at construction (Day 3, additive — every field is optional and a
+ * factory called with no options behaves exactly as it did before this existed).
+ *
+ * There are three hosts and they want different things: the live game view wants a scene that
+ * takes the keyboard and reports quality changes into the match's event log; a replay export
+ * wants a fixed quality and no input at all; the gallery wants a still.
+ */
+export interface SceneOptions {
+  /**
+   * ONE LINE for the player, from the renderer.
+   *
+   * The scene has no access to `world.events` — it takes a `World` and never writes it, which
+   * is the contract that keeps a renderer out of the simulation — but §4.6 asks for an
+   * event-log line in three situations it is the only thing that can detect: Auto picking a
+   * preset, the in-match slip rule lowering one, and a software renderer or a failed HDRI
+   * sending the view back to 2D. So it hands the line OUT and the host decides where a line
+   * goes. Absent ⇒ the scene stays silent (and still logs a real failure to the console).
+   */
+  onQualityEvent?(line: string): void;
+  /**
+   * FIX the quality tier, ignoring (and not subscribing to) the device's own graphics
+   * preference. A video export is the case this exists for: §4.7 fixes exports at High so the
+   * file does not come out at whatever the machine that made it happened to be set to, and so
+   * that a settings change mid-encode cannot change the resolution of a video halfway through.
+   */
+  quality?: 'low' | 'medium' | 'high' | 'ultra';
+  /**
+   * `false` for a scene nobody is driving — an export, a still, a thumbnail. It binds no keys
+   * and no pointer handlers, which matters because those are WINDOW-level: an off-screen export
+   * scene that installed the view key would have the player's `t` press swap a view they cannot
+   * see while their video encoded.
+   */
+  interactive?: boolean;
+}
+
+/** builds a `GameScene` inside `host` (the DOM node the controller mounts it in). May be
+ * async because a real implementation loads the Three.js chunk + HDRI on first use.
+ *
+ * `options` is ADDITIVE (Day 3): an existing caller passing only `host` is unchanged. */
+export type GameSceneFactory = (host: HTMLElement, options?: SceneOptions) => GameScene | Promise<GameScene>;
+
+/**
+ * What a HOST can tell a ROBOT PREVIEW scene at construction. Same additive rule as
+ * `SceneOptions`: a factory called with only `host` behaves as it did before any of this existed.
+ */
+export interface RobotPreviewOptions {
+  /** FIX the quality tier, ignoring the device's graphics preference — a cached thumbnail must
+   * not change because a settings screen was opened somewhere else. */
+  quality?: 'low' | 'medium' | 'high' | 'ultra';
+  /** `false` binds no pointer handlers: a scene nobody is driving (a thumbnail). */
+  interactive?: boolean;
+  /** `false` runs no frame loop at all — the scene draws only when `capture()` asks it to. */
+  animate?: boolean;
+}
+
+/**
+ * A persistent preview of ONE robot over one canvas, owned by the component that mounted it.
+ *
+ * It takes a SPEC, never a `World`: a builder has no match, and the point of the seam is that the
+ * same generator draws the same robot in both places (`scene/renderPreview.ts`'s header).
+ */
+export interface RobotPreviewScene {
+  readonly element: HTMLCanvasElement;
+  /** show this build. Cheap to call on every render — an unchanged build rebuilds nothing. */
+  setSpec(spec: RobotSpec, alliance: Alliance): void;
+  /** fix or release the quality tier (`null` follows the device preference again). */
+  setQuality(tier: 'low' | 'medium' | 'high' | 'ultra' | null): void;
+  resize(width: number, height: number, dpr: number): void;
+  /** ONE frame at `size`x`size` CSS pixels, synchronously, as a PNG data URL. */
+  capture(size: number): string;
+  dispose(): void;
+}
+
+/** builds a `RobotPreviewScene` inside `host`. Synchronous: unlike the match scene it loads no
+ * GLB, so once the chunk is here there is nothing left to await. */
+export type RobotPreviewFactory = (host: HTMLElement, options?: RobotPreviewOptions) => RobotPreviewScene;

@@ -23,16 +23,9 @@ export const TELEOP_DURATION = 120;
 export const ENDGAME_START = 20; // s left in teleop
 /** announcer countdown after pressing start ("Match begins in" + 3,2,1) */
 export const PRE_COUNTDOWN = 4;
-/** delay from match end (phase 'post') to the "match_result" fanfare/whoosh.
- * The results screen holds its score reveal until this exact moment so the
- * count-up + winner slam land on the whoosh. Shared by the audio (game.ts) and
- * the reveal animation (GameView). */
-export const MATCH_RESULT_REVEAL_MS = 2800;
-/** seconds the SERVER keeps stepping the sim in phase 'post' before it captures
- * the authoritative final score + saves the record — long enough for balls still
- * flowing down the ramp/gate to settle and score. Matched to the reveal delay so
- * the number saved to the leaderboard is exactly the one shown at the whoosh. */
-export const MATCH_SETTLE_S = MATCH_RESULT_REVEAL_MS / 1000;
+// WHEN A MATCH IS OVER after the buzzer is decided by the field coming to rest, not by a fixed
+// delay — see `src/sim/settle.ts` (`MATCH_SETTLE_HOLD_S`, `MATCH_SETTLE_MAX_S`). The old
+// `MATCH_SETTLE_S` / `MATCH_RESULT_REVEAL_MS` 2.8 s timer is gone on purpose.
 
 // --------------------------------------------------------------- season ----
 /** Balance / season version. Leaderboards (Phase 3) are keyed to this: it is
@@ -52,6 +45,23 @@ export const BALANCE_VERSION = 4; // 2: real-motor drivetrain retune (torque–s
 //    head-to-head outcome moves, and the stiffer robot contact moves solo record scores too.
 // Bumping this INVALIDATES older replays for playback (they only re-sim exactly under their own
 // version's build): ReplayView gates on it and shows "recorded on an older version" instead.
+//
+// ⚠️ **THE BUMP TO 5 WAS DECLINED AT THE MERGE, AND THE SEASON RUNS ON** (owner, 2026-09-17).
+// The alpha batch merged into main on that date WITHOUT a bump: the score-moving changes below
+// are live on 4, deliberately, because bumping archives the standings for everyone on the one
+// Fly app and the owner chose to keep the season rather than reset it over them. So a record
+// set before this merge and one set after share a board although the scoring moved under them
+// — that is the accepted cost, not an oversight. The list stands as the record of what moved,
+// and a later bump starts its season from here rather than re-litigating any of it.
+// 2026-09-15, superseded: the batch DOES move scores, so by the rule above it had earned one:
+//   · BIOBUZZ — a TIP still swinging at the buzzer is scored as the TIP it becomes and its load
+//     is no longer also paid as left in the CELL (§10.5 A/C, `games/biobuzz/score.ts`);
+//   · every game — a match is finalized when the FIELD COMES TO REST rather than at a fixed
+//     2.8 s (`sim/settle.ts`), so anything still scoring after the buzzer now lands.
+// What it has NOT earned is a new SEASON, which is the other thing this number does. That was
+// the reason to hold the bump while the changes were alpha-only, and at the merge it became the
+// reason to decline it outright. Add to the list above rather than bumping; if a later change
+// makes the accumulated drift unshippable without a reset, that is the moment to reconsider.
 
 /**
  * SIM BEHAVIOUR version — "which builds can re-simulate a replay", which is a
@@ -70,13 +80,23 @@ export const BALANCE_VERSION = 4; // 2: real-motor drivetrain retune (torque–s
  * output. Never reset it. Leaderboards, ELO and seasons DO NOT read it — only
  * replay playback does (`ReplayView` refuses a mismatch and says so).
  *
- * ALPHA HOLDS AT 2 AND STAYS THERE. Alpha's whole divergence from main is ONE unreleased
- * batch, so it is ONE step past main's 1 — bumping again for each change inside that batch
- * just churns a number nobody can act on, and invalidates alpha replays for no gain. Bump
- * this again only when MAIN moves, or when alpha ships.
+ * ALPHA SHIPS AS 3. The old rule here was "hold at 2 until MAIN moves or alpha ships"; BOTH
+ * happened. Main took 2 for its own batch, and alpha kept stamping 2 for a DIFFERENT batch —
+ * so for a while two builds stamped the same number over two behaviours, which is the exact
+ * failure this constant exists to prevent. 3 is alpha's, and the same rule applies to it:
+ * everything inside one unreleased batch rides one number, and the next bump is the next
+ * time main moves or alpha ships again.
  *
- * 1: sim-reachable Math.hypot -> hyp (engine-independent; see src/math.ts) — MAIN is here.
- * 2: the alpha batch, everything below, which all moves `step()` output:
+ * ⚠️ A BUMP RETIRES NOTHING. `replayRefusal` (`src/sim/replay.ts`) compares this int and
+ * returns `behaviour`, which is a DRIFT — the replay still plays, labelled "the ending may
+ * land differently". Only the SEASON (`BALANCE_VERSION`) and an unreadable container refuse.
+ * That is why bumping for a physics batch is cheap and leaving it un-bumped is not.
+ *
+ * 1: sim-reachable Math.hypot -> hyp (engine-independent; see src/math.ts).
+ * 2: TWO DIFFERENT BATCHES SHARE THIS NUMBER, one on each branch — main's and alpha's below.
+ *    Alpha's is everything listed under this entry; main is at 2 with its own. A container
+ *    stamped 2 therefore does not say which behaviour recorded it, which is why alpha moved
+ *    on rather than re-using it. Alpha's 2, all of which moves `step()` output:
  *    · CR butterfly drivetrain / twin turret / catalyst mechanisms / corner geometry /
  *      start legality;
  *    · DECODE's G418.B fix — a gate tap no longer bills the standing ramp column;
@@ -153,8 +173,37 @@ export const BALANCE_VERSION = 4; // 2: real-motor drivetrain retune (torque–s
  *      top-down silhouette, which is what G424 alone already did. Both moved which contacts
  *      draw fouls, hence this entry; BASE PARKING is untouched and still counts wheel support,
  *      because that award is defined by what the TILE holds up, not by occupancy.
+ * 3: THE BIOBUZZ 2D BATCH — alpha's `step()` output for `{seed, setups, commands}` already
+ *    differed from main's for a BIOBUZZ world while both stamped 2. None of it was ever
+ *    listed here (the hive-feel work of 2026-09-13 landed without an entry, which is the
+ *    honesty hole this entry closes), so the list below is written from the code rather
+ *    than from the commit messages:
+ *    · THE SPILL DRAWS SIX RNG VALUES PER ELEMENT, not four (`spillPoses`, hive.ts): x, y,
+ *      speed, fan angle, then the KICK's direction and magnitude. The rng chain is shared and
+ *      CONSUMED, so two extra draws per spilled element move every later draw in the match —
+ *      this alone is enough to make two builds disagree from the first spill onward. The
+ *      count now has its own tripwire in the FIELD lane; see the note there before changing it;
+ *    · `hiveDeflect` — a missed shot bounces off the structure and drops beside it instead of
+ *      passing through, so a miss now writes a position and a velocity where it wrote nothing;
+ *    · LOAD-DRIVEN `hiveSwingRate` — a heavier tray tips faster, so `tipping` decrements at a
+ *      rate that depends on the cell's contents and the spill happens on a different tick;
+ *    · FIELD GEOMETRY RE-POINTED AT THE CAD (owner ruling 2026-09-17, `fieldDims.gen.ts`):
+ *      `BB_HALF_X`/`BB_HALF_Y` 72 -> 70.674, `BB_FLOWER_TOP_Z` 21.5 -> 21.404, and with them
+ *      `BB_FLOWER_MID_Z`, `BB_FLOWER_FLOOR_Z`, `BB_FLOWER_D`, `BB_FLOWER_OPEN_R`,
+ *      `BB_HIVE_CELL_DY`, `BB_HIVE_LEN`, and `BB_HIVE_BOTTOM_Z` 25.5 -> 31.981. Every wall
+ *      bounce, every flight test and every stack height is a different number;
+ *    · THE 2D INTAKE REWRITTEN — `intakeTick` / `bbIntakeAct`'s pull phase draws an element in
+ *      over ticks against a force model instead of teleporting it on the capture tick;
+ *    · `bbSnapSize` — a chassis dimension is SNAPPED to the builder slider's grid rather than
+ *      merely clamped to it, so a setup carrying an off-grid length simulates at a different
+ *      footprint than it did on 2.
+ *    ⚠️ REPLAYS RECORDED BETWEEN 2026-09-13 AND 2026-09-17 ARE MIS-STAMPED. They say 2 and
+ *    they ran the six-draw spill (and, depending on the day, some of the rest of this list),
+ *    because the behaviour moved and the number did not. A v3 build reads them as `behaviour`
+ *    and plays them as DRIFT, which is the right outcome — it cannot tell them apart from a
+ *    genuine 2, and drift is the label that says "the ending may land differently".
  */
-export const SIM_VERSION = 2;
+export const SIM_VERSION = 3;
 
 /** Ranked PLACEMENT: a player is "in placements" until they've completed this
  * many ranked games on a board (counted per mode).

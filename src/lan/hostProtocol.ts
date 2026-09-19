@@ -30,8 +30,23 @@ export const HOST_SEAT = 'host-local';
 export type HostIn =
   /** start a room. Sent once, before anything else. */
   | { k: 'open'; code: string; config: RoomConfig }
-  /** a player arrived (the host itself included, as a loopback peer) */
-  | { k: 'add'; id: string; player: Omit<LobbyPlayer, 'clientId'>; caps?: string[]; channel?: string; userId?: string }
+  /**
+   * A player arrived (the host itself included, as a loopback peer).
+   *
+   * `config` is what the joiner's `join` frame asked for. The cloud refuses a joiner whose
+   * game differs from the room's ("That code is for a different game mode.") and the Worker
+   * does the same — without it a DECODE player was seated in a BIOBUZZ room, and the two
+   * halves then disagreed about every start pose.
+   */
+  | {
+      k: 'add';
+      id: string;
+      player: Omit<LobbyPlayer, 'clientId'>;
+      config?: RoomConfig;
+      caps?: string[];
+      channel?: string;
+      userId?: string;
+    }
   /** one encoded ClientMsg from that player */
   | { k: 'msg'; id: string; raw: string }
   /** that player's link is gone */
@@ -64,7 +79,28 @@ export type HostOut =
    * page: a throttled timer in a backgrounded context does not announce itself, it just
    * produces a match that runs slowly for everyone. See `docs/lan-webrtc.md` §6.
    */
-  | { k: 'health'; tickHz: number; behind: number };
+  | { k: 'health'; tickHz: number; behind: number }
+  /**
+   * This peer was NOT seated, and here is what to tell it.
+   *
+   * The room has a capacity (`roomCapacity`, 4 drivers) and the Worker used to seat every
+   * `add` without asking about it, so signalling — which admits eight guests — could put
+   * more drivers in a tab-hosted room than the protocol has slots for: an oversized
+   * `matchStart` and a replay `POST /api/lan` then refuses. And a refusal that is merely
+   * silent is the same bug as no refusal: the guest waits forever on a `welcome`.
+   */
+  | { k: 'refused'; id: string; message: string };
 
 /** how often the Worker reports `health` */
 export const HEALTH_INTERVAL_MS = 2000;
+
+/**
+ * How long a refused guest's link is left open after its refusal is sent.
+ *
+ * Closing the `RTCPeerConnection` in the same turn as the send can discard a frame that has
+ * not reached the wire yet, and the frame is the whole point — a guest that is dropped
+ * without one has no way to tell "the room is full" from "the network died". One small
+ * reliable frame on a LAN needs nothing like this long; the guest usually tears the link
+ * down itself first, on reading the error.
+ */
+export const REFUSE_CLOSE_MS = 250;

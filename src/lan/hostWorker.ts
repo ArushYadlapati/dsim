@@ -37,6 +37,9 @@
 import { Room, type Client } from '../../server/room';
 import { decodeClientMsg, encodeMsg, type ClientMsg, type ServerMsg } from '../net/protocol';
 import { initPhysics } from '../sim/physicsEngine';
+import { initPhysics3d } from '../games/biobuzz/sim3d/engine';
+import { coerceGameId, serverPhysics } from '../games/types';
+import { simModuleFor } from '../games/sim';
 import { HEALTH_INTERVAL_MS, HOST_SEAT, type HostIn, type HostOut } from './hostProtocol';
 
 const post = (m: HostOut): void => {
@@ -76,6 +79,15 @@ function seat(id: string, player: HostIn & { k: 'add' }): Client {
        is not the bottleneck. If a real backlog ever shows up on venue Wi-Fi, the fix is for the
        page to push `bufferedAmount` across on the health tick, not to block this thread. */
     player: { ...player.player, clientId: id },
+    /* ⚠️ THE LANE THIS SEAT'S SNAPSHOTS TAKE CAN DROP THEM. `isHot` above puts every snapshot
+       on the guest's unordered `maxRetransmits: 0` channel, which is the right trade for a
+       frame the next one supersedes — but it means the room may NOT assume a snapshot it sent
+       was received, and the room's default delta is cut against exactly that assumption. A
+       guest that loses one frame would otherwise apply the next on top of a baseline that is
+       wrong about whatever moved in the lost one, ack it as fine, and keep that error until
+       the match ended. Telling the room makes it key this seat's deltas to the ack instead;
+       see `broadcastSnapshot`. A cloud WebSocket sets nothing here and is unaffected. */
+    lossy: true,
     connected: true,
     disconnectAt: 0,
     caps: player.caps ?? [],
@@ -101,7 +113,32 @@ self.addEventListener('message', (e: MessageEvent) => {
        hits the `if (!room) return` below. The host still gets a room code (the rendezvous
        claim succeeded) and every guest that connects then waits on a `welcome` nothing will
        ever send. Measured once, diagnosed slowly; it must never be silent again. */
-    void initPhysics().then(
+    /* THE 3D PHYSICS IS FETCHED ONLY FOR A 3D ROOM. A tab-hosted room is the one place `Room`
+       runs inside a browser and the host is on a laptop at a venue, so a 2D room must never
+       pull the ~1.1 MB rapier3d chunk across the venue's Wi-Fi.
+
+       The laziness lives INSIDE `initPhysics3d`, which reaches the package through a dynamic
+       `import()`; this branch is simply the only thing in the worker that ever calls it. That
+       matters more than it looks: `engine.ts` is already in this worker's module graph
+       (`Room` → `simModuleFor` → the BIOBUZZ module → `step.ts` → `step3d` → `engineFor`),
+       but `initPhysics3d` itself was TREE-SHAKEN out of it, because nothing on that path
+       referenced the one function that contains the `import()`. Naming it here is what puts
+       the physics chunk on the worker's map at all — and it is why `worker.format` had to
+       become `'es'` (see vite.config.ts): an IIFE worker bundle cannot be code-split, so the
+       first dynamic import inside a worker fails the build outright.
+
+       Awaited BESIDE the 2D module rather than after it, inside one promise, because `room`
+       must not exist until BOTH are in hand: the host reads the code out and guests start
+       arriving the moment `ready` is posted, and a room that can be joined but not stepped is
+       the failure this whole `then` was written around. */
+    /* ⚠️ ASK THE SAME QUESTION `Room` ASKS, not the config. A LAN room is an ordinary `Room`
+       and its physics is decided by the GAME (`serverPhysics`) since the 2026-09-18 ruling —
+       a BIOBUZZ room hosted here is 3D whatever the page put in the config. Reading
+       `config.physics` meant this branch skipped the chunk for exactly the room that needs it,
+       and the first `step3d` then threw inside the worker, which is the silent-`ready` failure
+       the comment above is about. */
+    const needs3d = serverPhysics(simModuleFor(coerceGameId(m.config?.game))) === '3d';
+    void Promise.all([initPhysics(), needs3d ? initPhysics3d() : null]).then(
       () => {
         /* No persistence callbacks — see the header. The room empties itself when the last
            member leaves, and the page decides whether that ends the session. */
@@ -119,6 +156,26 @@ self.addEventListener('message', (e: MessageEvent) => {
   if (!room) return;
 
   if (m.k === 'add') {
+    /* CAPACITY IS ENFORCED HERE, BECAUSE SIGNALLING DOES NOT ENFORCE IT.
+       The rendezvous will introduce far more guests than a room has seats for (it knows
+       nothing about `roomCapacity`), and this used to seat every one of them: a fifth driver
+       joined a 2v2, `matchStart` went out with a roster the protocol has no slots for, and
+       the replay upload afterwards refused the oversized match. `canSeat` is the room's own
+       answer — capacity, mid-match, the strategy window, and the seat this room's host has
+       reserved but not yet taken (they join last; see `reserveHost`). */
+    if (!room.canSeat(m.id)) {
+      post({ k: 'refused', id: m.id, message: 'Room is full or a match is already in progress.' });
+      return;
+    }
+    /* THE SAME GAME, OR NOT SEATED — the cloud's rule (`joinRoom`, server/index.ts), with the
+       cloud's sentence. The rendezvous introduces anyone holding the code; it knows nothing
+       about games. Seating a joiner whose client is set to a different game than the room
+       runs put a BIOBUZZ lobby in front of a DECODE room: the room judged every start pose
+       by DECODE's rules, cleared `ready` each time it was pressed, and nothing said why. */
+    if (m.config && coerceGameId(m.config.game) !== room.gameId) {
+      post({ k: 'refused', id: m.id, message: 'That code is for a different game mode.' });
+      return;
+    }
     room.add(seat(m.id, m));
     members.add(m.id);
     return;

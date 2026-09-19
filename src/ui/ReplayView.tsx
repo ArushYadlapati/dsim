@@ -1,16 +1,23 @@
 import { useEffect, useRef, useState } from 'react';
-import { fetchReplay } from '../net/api';
+import { fetchReplay, ReplayPrivateError } from '../net/api';
 import {
   ReplayPlayer,
+  replayFidelity,
   replayRefusal,
   replayViewpoint,
   type Replay,
   type ReplayRefusal,
 } from '../sim/replay';
 import { moduleFor } from '../games';
+import type { GameScene, SceneCamera } from '../games/module';
+import { getViewPref } from '../games/biobuzz/graphics/store';
+// the lazy 3D physics chunk — fetched only for a `'3d'` container (see `ensurePhysics`)
+import { initPhysics3d, physics3dReady } from '../games/biobuzz/sim3d/engine';
 import { Renderer } from '../render/renderer';
 import { rangeFill } from './rangeFill';
 import { drawReplayHud, fieldScreenBottom, HUD_RESERVE, loadSponsorMark } from './replayOverlay';
+import { trackEvent } from '../analytics';
+import { sponsorActive } from '../sponsor';
 import {
   availableVideoFormats,
   videoFormat,
@@ -23,11 +30,26 @@ import {
   type VideoFormatId,
 } from './replayVideo';
 import { SIM_DT, BALANCE_VERSION, SIM_VERSION } from '../config';
+import { parsePenaltyEvent } from '../sim/penaltyLog';
+import { PenaltyLog, ScoreEditor, type PenaltyEntry } from './ReplayRail';
 import type { MatchPhase } from '../types';
 
 /** how many times faster than real time the WebCodecs path encodes, measured across VP9, VP8
  *  and H.264 at a 1920 long edge (5.2-5.7×; the low end is the honest one to quote) */
 const FAST_ENCODE_SPEED = 5;
+
+/** one alliance's sanctions SO FAR: what it committed, what its opponent's fouls handed it,
+ *  and its cards. `awarded` is the points term of the total, which is the half a watcher is
+ *  usually trying to account for. */
+interface FoulTally {
+  minor: number;
+  major: number;
+  awarded: number;
+  yellow: number;
+  red: number;
+}
+const NO_FOULS: FoulTally = { minor: 0, major: 0, awarded: 0, yellow: 0, red: 0 };
+const EMPTY_FOULS: Record<'red' | 'blue', FoulTally> = { red: NO_FOULS, blue: NO_FOULS };
 
 /** m:ss from seconds. Rounds ONCE, before splitting — rounding the two halves separately
  *  prints "1:00" for 119.7 s, because the minutes half floors the unrounded value. */
@@ -65,6 +87,22 @@ const REFUSAL_TEXT: Record<ReplayRefusal, (r: Replay) => string> = {
 };
 
 /**
+ * ...and WHY a replay that still plays may not finish on the number beside it. Only the two
+ * “the sim moved” reasons reach this — the fatal three take the stale screen above — and each
+ * says which one it is, because “we know the sim changed” and “we have no idea what it ran”
+ * are different admissions. Every one of them ends on the same sentence: the leaderboard
+ * figure is the authority, so nothing here can restate a record.
+ */
+const DRIFT_TEXT: Record<'behaviour' | 'unstamped', (r: Replay) => string> = {
+  behaviour: (r) =>
+    `Recorded on sim v${r.sim}; this build runs v${SIM_VERSION}. It plays, but the ending may ` +
+    'not land on exactly the saved score. The leaderboard figure is the real one.',
+  unstamped: () =>
+    'Recorded before DSIM tracked which sim version produced a replay. It plays, but the ' +
+    'ending may not land on exactly the saved score. The leaderboard figure is the real one.',
+};
+
+/**
  * Replay viewer: fetches a deterministic input-log replay and re-simulates it in
  * the browser, drawing with the same Renderer the live game uses. Physics WASM is
  * already inited (main.tsx) before any screen renders, so `ReplayPlayer` is safe.
@@ -75,6 +113,7 @@ export function ReplayView({
   replayId,
   preloadReplay,
   viewerRobotId,
+  adminMatchId,
   onClose,
 }: {
   replayId?: string;
@@ -84,13 +123,28 @@ export function ReplayView({
    * station rather than whichever alliance happens to be first on the roster.
    * See `replayViewpoint` — getting this wrong mirrors the whole field. */
   viewerRobotId?: number | null;
+  /**
+   * The MATCH this replay belongs to, when an admin opened it from a moderation surface.
+   *
+   * Present ⇒ the rail offers the score editor. It is passed IN rather than looked up, because
+   * "which match is this" is only knowable from where the replay was opened: a replay id is
+   * the only thing the viewer's own URL carries, and the same replay reached from a player's
+   * own history is not an invitation to edit a result. The server re-checks the admin gate on
+   * every call regardless — this decides what is OFFERED, never what is allowed.
+   */
+  adminMatchId?: string | null;
   onClose: () => void;
 }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const [status, setStatus] = useState<'loading' | 'ready' | 'error' | 'stale'>('loading');
+  const [status, setStatus] = useState<'loading' | 'ready' | 'error' | 'stale' | 'private'>(
+    'loading',
+  );
   const [error, setError] = useState('');
   // WHICH refusal, so the stale screen can give the real reason instead of one guess
   const [refusal, setRefusal] = useState<ReplayRefusal | null>(null);
+  /** set when the replay PLAYS but the sim has moved under it, so the note can name which of
+   *  the two “the sim moved” reasons it is. Null while it re-simulates exactly. */
+  const [drift, setDrift] = useState<'behaviour' | 'unstamped' | null>(null);
   /** a real-time canvas capture is running; playback controls are locked while it is */
   const [recording, setRecording] = useState(false);
   const recorder = useRef<MediaRecorder | null>(null);
@@ -110,6 +164,21 @@ export function ReplayView({
   const [score, setScore] = useState({ red: 0, blue: 0 });
   const [phase, setPhase] = useState<MatchPhase>('pre');
   const [timeLeft, setTimeLeft] = useState(0);
+  /**
+   * PENALTIES, ON EVERY REPLAY AND FOR EVERYBODY.
+   *
+   * The viewer used to draw the fouls on the field and name none of them: a score that moved
+   * nine points in one second had no explanation anywhere on the screen. This is the summary
+   * (always on) and, in the rail, the timeline. It was never an admin feature — the driver
+   * reviewing their own match is the person most entitled to know which rule they broke.
+   */
+  const [fouls, setFouls] = useState(EMPTY_FOULS);
+  const [penalties, setPenalties] = useState<PenaltyEntry[]>([]);
+  /** how much of the player's log has been parsed, so the 10 Hz readout does not re-parse an
+   *  unchanged list — and so a REBUILD (which resets the log to empty) is noticed */
+  const logLen = useRef(-1);
+  /** the rail: the penalty timeline, and the score editor when an admin opened a match */
+  const [railOpen, setRailOpen] = useState(false);
 
   const renderer = useRef<Renderer | null>(null);
   const player = useRef<ReplayPlayer | null>(null);
@@ -127,6 +196,19 @@ export function ReplayView({
   const [capturing, setCapturing] = useState<VideoFormatId | null>(null);
   /** set to stop a fast capture between frames */
   const abortCapture = useRef(false);
+  /**
+   * WHAT THE VIDEO IS OF (`docs/roadmap.md` item 2, `docs/biobuzz/plan-3d.md` §4.7): the flat
+   * map, or the 3D scene, and from which camera.
+   *
+   * The default follows the DEVICE's own view preference, because the one thing a person
+   * exporting a clip of their own match almost always wants is the picture they were just
+   * looking at. 3D is offered only where the game HAS a scene and this browser can run one —
+   * a menu entry that produced a black video would be worse than no entry.
+   */
+  const [exportView, setExportView] = useState<'2d' | '3d'>('2d');
+  const [exportCam, setExportCam] = useState<SceneCamera>('driver');
+  /** measured when the menu opens — see `probe3d`. */
+  const [can3d, setCan3d] = useState(false);
   /** re-fits the canvas backing store to its box; owned by the render loop, called by the
    *  recording effect (see it for why the canvas stops matching) */
   const refit = useRef<(() => void) | null>(null);
@@ -136,24 +218,60 @@ export function ReplayView({
     let dead = false;
     setStatus('loading');
     setError('');
+    /**
+     * A `'3d'` CONTAINER NEEDS ITS PHYSICS BEFORE THE PLAYER IS CONSTRUCTED, not before the
+     * first frame is drawn.
+     *
+     * `ReplayPlayer`'s constructor builds the world and the render loop steps it on the very
+     * next tick, so the await has to sit between the container arriving and the player being
+     * made — which is what this wrapper is. The header above says "physics WASM is already
+     * inited (main.tsx)", and that is still true of the 2D module; the 3D one is a lazy chunk
+     * by design (a viewer watching a DECODE replay must never pay for it), so it is fetched
+     * here, once, on the one kind of container that needs it.
+     *
+     * A FAILED load becomes the `error` state rather than a silent 2D re-simulation: re-running
+     * a 3D log against the 2D pipeline would produce a different match from the same inputs and
+     * show something that never happened, which is the exact failure `replayRefusal` exists to
+     * prevent for a version mismatch.
+     */
+    const ensurePhysics = (r: Replay): Promise<void> =>
+      (r.physics ?? '2d') !== '3d' || physics3dReady() ? Promise.resolve() : initPhysics3d();
     const use = (r: Replay): void => {
       replay.current = r;
-      // A replay is a deterministic INPUT log — it only re-simulates to its original
-      // outcome under the exact sim build that recorded it. `replayRefusal` owns the whole
-      // decision (see it for the container-vs-behaviour split): an OLDER container is still
-      // readable and still plays, a mismatched balance/sim version cannot, and a format-1
-      // replay of a tank robot is refused because its drive input was never stored.
+      // A replay is a deterministic INPUT log, and whether this build can re-run it —
+      // exactly, approximately, or not at all — is `replayFidelity`, which is deliberately
+      // three-valued. A SIM_VERSION move must NOT make every match recorded before it
+      // vanish: it means only that the ending may not land on precisely the saved number,
+      // so it PLAYS, with a note, and both exports stay available. A refusal is reserved
+      // for a container this build cannot parse, a different SEASON, and the format-1 tank
+      // replay whose drive input was never stored. `replayRefusal` supplies the reason for
+      // whichever of the two it turns out to be.
       const why = replayRefusal(r, BALANCE_VERSION, SIM_VERSION);
-      if (why) {
+      if (replayFidelity(r, BALANCE_VERSION, SIM_VERSION) === 'stale') {
         setRefusal(why);
         setStatus('stale');
         return;
       }
-      player.current = new ReplayPlayer(r);
-      renderer.current = new Renderer();
-      setTotal(Math.max(1, r.ticks));
-      setTick(0);
-      setStatus('ready');
+      setDrift(why === 'behaviour' || why === 'unstamped' ? why : null);
+      ensurePhysics(r).then(
+        () => {
+          if (dead) return;
+          player.current = new ReplayPlayer(r);
+          renderer.current = new Renderer();
+          setTotal(Math.max(1, r.ticks));
+          setTick(0);
+          setStatus('ready');
+        },
+        (e: unknown) => {
+          if (dead) return;
+          setError(
+            e instanceof Error
+              ? `Couldn’t load the 3D physics this replay needs. ${e.message}`
+              : 'Couldn’t load the 3D physics this replay needs. Check your connection and try again.',
+          );
+          setStatus('error');
+        },
+      );
     };
     if (preloadReplay) {
       use(preloadReplay);
@@ -170,6 +288,16 @@ export function ReplayView({
       })
       .catch((e: unknown) => {
         if (dead) return;
+        // A REFUSAL IS NOT A FAILURE. "Couldn't load the replay - Server returned 403" says
+        // the link is broken, which is the one thing it is not; the replay is fine and the
+        // people in it have not published it.
+        if (e instanceof ReplayPrivateError) {
+          // the SERVER says which refusal it is (`replayRefusalMessage`) — a private match,
+          // somebody else's practice run and a self-hosted event are three different answers
+          setError(e.message);
+          setStatus('private');
+          return;
+        }
         setError(e instanceof Error ? e.message : String(e));
         setStatus('error');
       });
@@ -266,7 +394,7 @@ export function ReplayView({
   useEffect(() => {
     if (recorder.current) return;
     refit.current?.();
-  }, [recording, status]);
+  }, [recording, status, railOpen]);
 
   /**
    * A RECORDING MUST NOT OUTLIVE THE SCREEN THAT STARTED IT. Leaving the viewer mid-capture
@@ -319,12 +447,41 @@ export function ReplayView({
   /** pull tick + scoreboard off the sim in one go, so seeking/restarting can't
    *  leave the score showing a different moment than the field does. */
   const sync = (): void => {
-    const w = player.current?.world;
-    if (!w) return;
+    const p = player.current;
+    const w = p?.world;
+    if (!p || !w) return;
     setTick(w.tick);
     setScore({ red: w.match.scores.red.total, blue: w.match.scores.blue.total });
     setPhase(w.match.phase);
     setTimeLeft(Math.max(0, Math.round(w.match.phaseTimeLeft)));
+    const cards = w.match.cards;
+    setFouls({
+      red: {
+        ...w.match.fouls.red,
+        awarded: w.match.scores.red.foulPoints,
+        yellow: cards?.red.yellow ?? 0,
+        red: cards?.red.red ?? 0,
+      },
+      blue: {
+        ...w.match.fouls.blue,
+        awarded: w.match.scores.blue.foulPoints,
+        yellow: cards?.blue.yellow ?? 0,
+        red: cards?.blue.red ?? 0,
+      },
+    });
+    // LENGTH, not content: the log only ever grows within one player, and a seek backwards
+    // builds a NEW player whose log starts empty — which this catches as a length that went
+    // down. Re-parsing an unchanged list ten times a second would be the only cost of not
+    // checking, and the list is re-rendered from state either way.
+    if (p.log.length !== logLen.current) {
+      logLen.current = p.log.length;
+      const out: PenaltyEntry[] = [];
+      for (const e of p.log) {
+        const line = parsePenaltyEvent(e.text);
+        if (line) out.push({ tick: e.tick, phase: e.phase, timeLeft: e.timeLeft, line });
+      }
+      setPenalties(out);
+    }
   };
 
   const setPlay = (v: boolean): void => {
@@ -337,6 +494,14 @@ export function ReplayView({
     if (!replay.current) return;
     player.current = new ReplayPlayer(replay.current);
     sync();
+  };
+  /** run it out to the recorded end — how a moderator gets the FINAL score the misscore claim
+   *  is about, and what the seek bar's right edge does anyway */
+  const playToEnd = (): void => {
+    if (!player.current) return;
+    seek(total);
+    playingRef.current = false;
+    setPlaying(false);
   };
   const seek = (target: number): void => {
     const r = replay.current;
@@ -369,6 +534,24 @@ export function ReplayView({
    * re-playable in-sim at full fidelity by any build whose versions match, and the shape the
    * server stores. A video cannot be stepped, seeked in-sim, or verified.
    */
+  /**
+   * A VIDEO CARRYING THE SPONSOR'S BURN-IN LEFT THE APP.
+   *
+   * The `replay` placement was declared from the start and counted nothing, so
+   * the one surface with reach BEYOND our own traffic — a clip posted to Discord
+   * or YouTube, watched by people who never opened DSIM — was the only placement
+   * missing from the report. It is not an on-screen impression and `docs/sponsor.md`
+   * reports it on its own line: this counts FILES PRODUCED with the mark in them,
+   * which is a floor on the views they go on to earn, not an estimate of them.
+   *
+   * `sponsorActive()` is re-checked because `drawSponsorMark` is what actually
+   * decides whether the frames carry the mark — counting an export made after the
+   * term ended would bill Offset for a file with no Offset in it.
+   */
+  const countBurnIn = (ext: string): void => {
+    if (sponsorActive()) trackEvent('sponsor_shown', { placement: 'replay', format: ext });
+  };
+
   const filename = (ext: string): string => {
     const r = replay.current;
     const id = replayId ?? r?.seed ?? 0;
@@ -477,6 +660,96 @@ export function ReplayView({
       solo: soloSide,
     };
 
+    /**
+     * THE 3D CAPTURE (`docs/roadmap.md` item 2, `docs/biobuzz/plan-3d.md` §4.7).
+     *
+     * A whole second scene, on a HOST OF ITS OWN that is in the document but off-screen. Off
+     * -screen because a WebGL canvas in the layout would be a second live renderer competing
+     * with the viewer's for the GPU; in the document rather than fully detached because the
+     * scene reads `--ds-bg` off `documentElement` at construction and a node outside the tree
+     * still resolves it, but an attached host is the case every other code path exercises.
+     *
+     * `quality: 'high'` FIXES the preset (§4.7): a video must not come out at whatever the
+     * machine that made it happened to be set to, and — just as important — a settings change
+     * made while the encode runs cannot change the resolution of a file that is half written.
+     * `interactive: false` binds no keys and no pointer handlers: an off-screen scene that
+     * installed the view key would have the player's `t` press swap a view they cannot see.
+     */
+    let scene: GameScene | null = null;
+    let sceneHost: HTMLDivElement | null = null;
+    /**
+     * ⚠️ THE OVERLAY GETS ITS OWN CANVAS, AND IT HAS TO.
+     *
+     * `Renderer.render(..., overlayOnly = true)` opens with `clearRect` over the WHOLE canvas —
+     * correct in the live game, where the 2D canvas is a separate transparent sheet ABOVE the
+     * WebGL one and has to be wiped every frame. In an export both passes would be aiming at
+     * the same canvas, so the overlay pass erased the 3D frame that had just been drawn onto
+     * it and every exported frame came out black. (Measured exactly that way: a composite whose
+     * average luminance was 0.)
+     *
+     * So the labels and auto paths are drawn onto a transparent sheet of their own and
+     * composited, which is the same stack the live view has, one canvas later.
+     */
+    let overlay: HTMLCanvasElement | null = null;
+    let overlayCtx: CanvasRenderingContext2D | null = null;
+    const sceneFn = exportView === '3d' ? moduleFor(r.game).scene : undefined;
+    if (sceneFn) {
+      try {
+        sceneHost = document.createElement('div');
+        sceneHost.style.position = 'fixed';
+        sceneHost.style.left = '-20000px';
+        sceneHost.style.top = '0';
+        sceneHost.style.width = `${cssW}px`;
+        sceneHost.style.height = `${cssH}px`;
+        sceneHost.setAttribute('aria-hidden', 'true');
+        document.body.appendChild(sceneHost);
+        const factory = await sceneFn();
+        scene = await factory(sceneHost, { quality: 'high', interactive: false });
+        // CSS units are the viewer's, the DPR carries it up to the encode size — the same two
+        // numbers `rend.camera` was retargeted with above, so the scene's pixels and the 2D
+        // overlay's land on exactly the same grid and `scene.project` reports CSS pixels the
+        // overlay can draw in without a second scale factor.
+        scene.resize(cssW, cssH, rend.camera.dpr);
+        rend.setScene(scene);
+        overlay = document.createElement('canvas');
+        overlay.width = width;
+        overlay.height = height;
+        overlayCtx = overlay.getContext('2d');
+      } catch (err) {
+        // a scene that will not build is not a failed export: fall through to the 2D path,
+        // which is what the menu would have written a minute ago
+        // eslint-disable-next-line no-console
+        console.warn('3D export unavailable; writing the 2D view instead.', err);
+        scene?.dispose();
+        scene = null;
+        sceneHost?.remove();
+        sceneHost = null;
+      }
+    }
+
+    /**
+     * WHAT THE FIELD IS FITTED INTO, when there is a 3D scene.
+     *
+     * The roadmap's design note says "insets are 0 (the burn-in reserves its own band)". That
+     * is true of the 2D path, where the CAMERA reserved the band by being shorter than the
+     * frame (`cssH` above is grown past `camera.h` precisely so the scoreboard has clear space
+     * under the field). A 3D camera has no such notion: it fits the field into whatever
+     * rectangle it is given, so handed the full frame it would put the field UNDER the burn-in.
+     * `SceneInsets` is the mechanism that already exists for exactly this, so the bottom band
+     * is declared as one and the framing comes out matching the 2D export's.
+     */
+    const sceneInsets = { top: 0, right: 0, bottom: Math.max(0, cssH - rend.camera.h), left: 0 };
+    const sceneFrame = {
+      alpha: 0,
+      viewAngle: rend.camera.viewAngle,
+      camera: exportCam,
+      localRobotId: localId,
+      width: cssW,
+      height: cssH,
+      dpr: rend.camera.dpr,
+      insets: sceneInsets,
+    };
+
     let blob: Blob | null = null;
     try {
       blob = await recordFast({
@@ -488,17 +761,36 @@ export function ReplayView({
         source: frame,
         draw: () => {
           shot.stepOnce();
-          rend.render(ctx, shot.world, null, localId);
+          if (scene && overlayCtx && overlay) {
+            // THE ORDER IS THE COMPOSITE (§4.7): the scene, then the overlay pass on its own
+            // sheet, then both flattened onto the export canvas IN THE SAME TASK (no
+            // `preserveDrawingBuffer` — a WebGL backbuffer is only guaranteed readable before
+            // the next paint, and `recordFast`'s `draw` is synchronous, which is what makes
+            // this legal), then the burn-in on top.
+            scene.render(shot.world, sceneFrame);
+            rend.render(overlayCtx, shot.world, null, localId, true);
+            ctx.setTransform(1, 0, 0, 1, 0, 0);
+            ctx.clearRect(0, 0, width, height);
+            ctx.drawImage(scene.element, 0, 0, width, height);
+            ctx.drawImage(overlay, 0, 0);
+          } else {
+            rend.render(ctx, shot.world, null, localId);
+          }
           // the scoreboard is DOM in the viewer, so the canvas alone carries no score, no
           // clock and no match start — see `drawReplayHud`. It draws in CSS units, which is
           // why the transform is left where the camera put it.
-          drawReplayHud(ctx, shot.world, view);
+          drawReplayHud(ctx, shot.world, { ...view, final: shot.done });
         },
         onProgress: setCapturePct,
         cancelled: () => abortCapture.current,
       });
     } catch {
       blob = null;
+    } finally {
+      // the scene outlives neither a finished export nor a cancelled one
+      rend.setScene(null);
+      scene?.dispose();
+      sceneHost?.remove();
     }
 
     setCapturing(null);
@@ -510,7 +802,10 @@ export function ReplayView({
       return;
     }
     // a cancelled capture is not a failure and must not claim to be one
-    if (blob) saveBlob(blob, filename(fmt.ext));
+    if (blob) {
+      saveBlob(blob, filename(fmt.ext));
+      countBurnIn(fmt.ext);
+    }
     else if (!abortCapture.current) downloadData();
     // playback is left exactly where the viewer had it — it was never taken away
   };
@@ -542,7 +837,10 @@ export function ReplayView({
       stopVisibility.current = null;
       setRecording(false);
       setCapturing(null);
-      if (!discard.current && parts.length) saveBlob(new Blob(parts, { type: mime }), filename(fmt.ext));
+      if (!discard.current && parts.length) {
+        saveBlob(new Blob(parts, { type: mime }), filename(fmt.ext));
+        countBurnIn(fmt.ext);
+      }
     };
     /**
      * HIDE THE TAB AND A REAL-TIME CAPTURE STARVES — so pause the encoder with it.
@@ -582,12 +880,45 @@ export function ReplayView({
     setPlaying(false);
   };
 
+  /**
+   * CAN THIS REPLAY BE EXPORTED IN 3D? Two independent questions, both cheap, both answered on
+   * the frame the menu opens rather than on every render.
+   *
+   *   1. Does the GAME have a scene at all (`GameModule.scene`)? DECODE and Chain Reaction do
+   *      not, and never will from this menu — they have no 3D renderer.
+   *   2. Will this browser give us WebGL2? The probe is a throwaway canvas that is never
+   *      attached; `loseContext` hands the context straight back, so opening the menu twenty
+   *      times does not exhaust the page's context budget.
+   *
+   * Deliberately NOT the same probe `renderScene.ts` runs: that one lives in the renderer chunk
+   * and importing it here would drag Three.js into the main bundle to answer a yes/no question.
+   */
+  const probe3d = (): boolean => {
+    const r = replay.current;
+    if (!r || !moduleFor(r.game).scene) return false;
+    try {
+      const c = document.createElement('canvas');
+      const gl = c.getContext('webgl2');
+      if (!gl) return false;
+      gl.getExtension('WEBGL_lose_context')?.loseContext();
+      return true;
+    } catch {
+      return false;
+    }
+  };
+
   /** Measure the container ONCE, on open. Stringifying it is cheap, but this component
    *  re-renders 10 times a second off the progress readout, and a menu that re-serializes the
    *  whole replay on every one of those is a menu that stutters while it is open. */
   const openMenu = (): void => {
     const r = replay.current;
-    if (r && !menuOpen) setDataBytes(new Blob([JSON.stringify(r)]).size);
+    if (r && !menuOpen) {
+      setDataBytes(new Blob([JSON.stringify(r)]).size);
+      const can3d = probe3d();
+      setCan3d(can3d);
+      // the device's own view preference is the default, but only where it is possible
+      setExportView(can3d && getViewPref() === '3d' ? '3d' : '2d');
+    }
     setMenuOpen((v) => !v);
   };
   const pick = (fn: () => void): void => {
@@ -600,7 +931,9 @@ export function ReplayView({
   const alliances = new Set((replay.current?.setups ?? []).map((s) => s.alliance));
   const solo = alliances.size < 2;
   const soloSide = solo ? ([...alliances][0] ?? 'blue') : null;
-  const done = phase === 'post' || (player.current?.done ?? false);
+  // FINAL only at the recorded end: a replay runs up to the tick its match was FINALIZED, and
+  // between the buzzer and that tick the score can still change
+  const done = player.current?.done ?? false;
   const clock = `${Math.floor(timeLeft / 60)}:${String(timeLeft % 60).padStart(2, '0')}`;
   // the REAL-TIME capture runs at 1×, so what is left of the replay is what is left of it
   const runtime = total * SIM_DT;
@@ -678,6 +1011,57 @@ export function ReplayView({
                 {/* Each option states its COST as well as its name — the formats differ by how
                     long they take and where they will play, and a menu of bare nouns hides
                     exactly the difference that decides which you want. */}
+                {/* WHAT THE VIDEO IS OF, before what file it goes into. Two compact rows rather
+                    than two more full-width options: they modify every format below them, and a
+                    card that looked like the MP4 card would read as a third thing to download.
+                    The 3D button is DISABLED, not hidden, where it is unavailable — its title
+                    then says which of the two reasons it is, because "this game has no 3D
+                    renderer" and "this browser has no WebGL2" want different answers from the
+                    person reading it. */}
+                <div className="ds-dl-row">
+                  <span className="rl">View</span>
+                  <div className="ds-dl-seg">
+                    <button
+                      className={exportView === '2d' ? 'on' : ''}
+                      aria-pressed={exportView === '2d'}
+                      onClick={() => setExportView('2d')}
+                    >
+                      2D
+                    </button>
+                    <button
+                      className={exportView === '3d' ? 'on' : ''}
+                      aria-pressed={exportView === '3d'}
+                      disabled={!can3d}
+                      title={
+                        can3d
+                          ? undefined
+                          : replay.current && moduleFor(replay.current.game).scene
+                            ? 'This browser has no WebGL2.'
+                            : 'This season has no 3D renderer.'
+                      }
+                      onClick={() => setExportView('3d')}
+                    >
+                      3D
+                    </button>
+                  </div>
+                </div>
+                {exportView === '3d' && (
+                  <div className="ds-dl-row">
+                    <span className="rl">Camera</span>
+                    <div className="ds-dl-seg">
+                      {(['driver', 'chase', 'orbit'] as const).map((c) => (
+                        <button
+                          key={c}
+                          className={exportCam === c ? 'on' : ''}
+                          aria-pressed={exportCam === c}
+                          onClick={() => setExportCam(c)}
+                        >
+                          {c[0].toUpperCase() + c.slice(1)}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
                 {formats.length === 0 && <p className="ds-dl-note">This browser can’t save video.</p>}
                 {formats.map((f) => (
                   <button
@@ -724,6 +1108,16 @@ export function ReplayView({
           {error}
         </div>
       )}
+      {status === 'private' && (
+        <div className="ds-empty">
+          <div className="big">This replay is private</div>
+          {error}
+          {/* only the MATCH case has a setting behind it, so only that one points at it */}
+          {error.includes('played in the match') &&
+            ' A replay shows both alliances’ strategy, so it stays with the people who played' +
+              ' it. You can publish your own from Profile › Privacy.'}
+        </div>
+      )}
       {status === 'stale' && (
         <div className="ds-empty">
           <div className="big">Replay unavailable</div>
@@ -732,6 +1126,9 @@ export function ReplayView({
               for something a refresh fixes */}
           {refusal !== 'future' && ' The score on the leaderboard still stands.'}
         </div>
+      )}
+      {status === 'ready' && drift && replay.current && (
+        <p className="ds-replay-drift">{DRIFT_TEXT[drift](replay.current)}</p>
       )}
       {status === 'ready' && (
         <div className={`ds-replay-score${done ? ' final' : ''}`}>
@@ -744,15 +1141,60 @@ export function ReplayView({
             <>
               <span className="rs-side red">RED</span>
               <b className="rs-num">{score.red}</b>
-              <span className="rs-mid">{done ? 'FINAL' : clock}</span>
+              <span className="rs-mid">{done ? 'FINAL' : phase === 'post' ? 'MATCH OVER' : clock}</span>
               <b className="rs-num">{score.blue}</b>
               <span className="rs-side blue">BLUE</span>
             </>
           )}
-          {solo && <span className="rs-mid">{done ? 'FINAL' : clock}</span>}
+          {solo && <span className="rs-mid">{done ? 'FINAL' : phase === 'post' ? 'MATCH OVER' : clock}</span>}
         </div>
       )}
-      <canvas ref={canvasRef} className="ds-replay-canvas" style={{ display: status === 'ready' ? 'block' : 'none' }} />
+      {/* PENALTIES, ON THE FACE OF IT. One always-present row under the scoreboard, mirroring
+          its RED · middle · BLUE order, saying what each alliance has been called for and what
+          those calls are worth. A clean match says so — "no fouls" is an answer, and hiding
+          the row when there are none would mean a watcher could never tell the difference
+          between a clean match and a viewer that does not show fouls. The TIMELINE is behind
+          the button, because a list of calls does not need to cost the field its height. */}
+      {status === 'ready' && (
+        <div className="ds-replay-pen">
+          {/* A RECORD RUN HAS ONE ALLIANCE ON THE FIELD, and its fouls are "awarded" to an
+              opponent that never existed — the same phantom the score strip already refuses
+              to print a 0 for. So a solo replay gets ONE chip, and what it reports is what
+              those fouls COST: the record screen's net score is exactly this subtraction. */}
+          {solo ? (
+            <FoulChip side={soloSide as 'red' | 'blue'} t={fouls[soloSide as 'red' | 'blue']} cost={fouls[soloSide === 'red' ? 'blue' : 'red'].awarded} />
+          ) : (
+            <FoulChip side="red" t={fouls.red} />
+          )}
+          <button
+            // NOT `ghost primary`: `.ds-btn.ghost` is declared after `.ds-btn.primary` and
+            // wins on `background: none` while primary's white `color` stays, so the label
+            // goes invisible on a light bar. One or the other, never both.
+            className={railOpen ? 'ds-btn small primary' : 'ds-btn ghost small'}
+            onClick={() => setRailOpen((v) => !v)}
+            aria-expanded={railOpen}
+          >
+            {railOpen ? 'Hide details' : 'Details'}
+            {penalties.length > 0 && ` (${penalties.length})`}
+          </button>
+          {!solo && <FoulChip side="blue" t={fouls.blue} />}
+        </div>
+      )}
+
+      {/* the field and the rail share a row, so opening the rail narrows the canvas instead of
+          shortening it — the camera fits the field to the SHORTER of its two spans, and height
+          is the one the HUD bands are already eating into */}
+      <div className="ds-replay-stage">
+        <canvas ref={canvasRef} className="ds-replay-canvas" style={{ display: status === 'ready' ? 'block' : 'none' }} />
+        {status === 'ready' && railOpen && (
+          <aside className="ds-replay-rail">
+            <PenaltyLog entries={penalties} done={done} solo={solo} onSeek={seek} />
+            {adminMatchId && (
+              <ScoreEditor matchId={adminMatchId} live={score} onSeekEnd={playToEnd} />
+            )}
+          </aside>
+        )}
+      </div>
 
       {/* THE REAL-TIME FALLBACK REPLACES THE TRANSPORT ROW rather than greying it out: it is
           filming this canvas, so scrubbing mid-record would scrub the file, and a row of dead
@@ -801,5 +1243,42 @@ export function ReplayView({
         </div>
       )}
     </div>
+  );
+}
+
+/**
+ * One alliance's penalty chip.
+ *
+ * It reports TWO different things and has to keep them apart, because they belong to opposite
+ * alliances: the fouls this alliance COMMITTED (a count) and the points its opponent's fouls
+ * AWARDED it (part of its own total). Printing one number would be printing whichever of the
+ * two the reader did not mean.
+ */
+function FoulChip({ side, t, cost }: { side: 'red' | 'blue'; t: FoulTally; cost?: number }) {
+  // on a SOLO run there is no opponent to award anything to, so `awarded` is always 0 and the
+  // number that matters is what this alliance's own fouls took OFF its net
+  const solo = cost !== undefined;
+  const clean =
+    t.minor === 0 && t.major === 0 && t.yellow === 0 && t.red === 0 && t.awarded === 0 && !cost;
+  return (
+    <span className="pen-chip">
+      <span className={`pen-side ${side}`}>{side === 'red' ? 'RED' : 'BLUE'}</span>
+      {clean ? (
+        <span className="pen-clean">No fouls</span>
+      ) : (
+        <>
+          {(t.minor > 0 || t.major > 0) && (
+            <span className="pen-count">
+              {t.minor} MIN · {t.major} MAJ
+            </span>
+          )}
+          {solo
+            ? (cost as number) > 0 && <span className="pen-awarded">−{cost} from the score</span>
+            : t.awarded > 0 && <span className="pen-awarded">+{t.awarded} awarded</span>}
+          {t.yellow > 0 && <span className="pen-card yellow">■ {t.yellow}</span>}
+          {t.red > 0 && <span className="pen-card red">■ {t.red}</span>}
+        </>
+      )}
+    </span>
   );
 }

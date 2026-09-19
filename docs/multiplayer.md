@@ -1,3 +1,7 @@
+> HISTORICAL — this describes the pre-Phase-0 P2P design that was removed. The
+> current architecture is `docs/multiplayer-architecture.md` and
+> `docs/area/netcode.md`.
+
 # Multiplayer (Phase D) — WebRTC lockstep over a Supabase lobby
 
 Real-people 1–4 human multiplayer (up to 2v2). Empty slots spawn no robot. The

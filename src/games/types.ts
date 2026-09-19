@@ -1,4 +1,14 @@
-import type { Artifact, GameMode, GameSettings, RobotCommand, RobotState, World } from '../types';
+import type {
+  Alliance,
+  Artifact,
+  GameMode,
+  GameSettings,
+  RobotCommand,
+  RobotSpec,
+  RobotState,
+  StartPose,
+  World,
+} from '../types';
 import type { RobotSetup } from '../sim/spawn';
 import type { RobotSolids } from '../sim/artifactSolids';
 import type { IntakeStyle } from '../types';
@@ -57,6 +67,41 @@ export function isGameId(x: unknown): x is GameId {
  */
 export function coerceGameId(x: unknown, fallback: GameId = 'decode'): GameId {
   return isGameId(x) ? x : fallback;
+}
+
+/**
+ * WHICH PHYSICS BACKEND A WORLD STEPS ON — the shared Rapier 2D solve every game runs today
+ * (`'2d'`), or the deterministic Rapier 3D solve BIOBUZZ's Day 1 seam adds (`'3d'`,
+ * `docs/biobuzz/plan-3d.md`). Declared here — the DOM-free seam file the server imports —
+ * because a room's physics choice is a server/matchmaking fact, not a rendering one.
+ *
+ * Absent everywhere (a world, a spec, a setting) reads as `'2d'`: the 2D pipeline is
+ * PERMANENT and every stored world/snapshot/replay predates this field.
+ */
+export type Physics = '2d' | '3d';
+
+/**
+ * WHICH PHYSICS EVERY SERVER-CONNECTED MATCH OF THIS GAME RUNS ON (owner ruling, 2026-09-18).
+ *
+ * A game that can step `'3d'` runs `'3d'` for everything that reaches the server: record runs,
+ * ranked, matchmade, custom rooms, spectators, LAN. Nobody chooses — not the host, not a
+ * client's settings, not a query param. The reason is the record board: two solves feeding one
+ * board is two boards wearing one hat, and the alternative (split the eras into two seasons)
+ * archives everybody's standings over a physics change they did not ask for.
+ *
+ * A game with no `'3d'` option is `'2d'` and is therefore byte-identical to what it always was,
+ * which is DECODE and Chain Reaction.
+ *
+ * OFFLINE is the exception and is not this function's business: solo practice and free drive
+ * still honour `GameSettings.practicePhysics`, because the 2D pipeline is permanent and a
+ * low-end machine has to be able to drive. Nothing offline reaches a board.
+ *
+ * Takes the MODULE rather than a `GameId` so both registries can call it — the server-safe one
+ * (`games/sim.ts`) and the client's full one (`games/index.ts`) — without this file importing
+ * either and closing a cycle.
+ */
+export function serverPhysics(mod: Pick<GameSimModule, 'physicsOptions'> | undefined): Physics {
+  return mod?.physicsOptions?.includes('3d') ? '3d' : '2d';
 }
 
 /** one static cuboid collider, as plain numbers (Rapier-independent). Moved out
@@ -144,9 +189,99 @@ export interface GameSimModule {
    * miss.
    */
   startPoseCount: number;
+  /**
+   * Is this CANONICAL start pose legal for a robot of this spec on this alliance?
+   *
+   * THE PREDICATE, where `startLegality` above is the ENFORCEMENT FLAG — a game may answer
+   * this and still not have the server refuse a ready-up on it (Chain Reaction does exactly
+   * that: its editor checks G04 live, and the server gate stays off). Absent ⇒ the game has
+   * no start rule and every pose is legal.
+   *
+   * It exists because both readers had grown a hand-written branch over the game id, which is
+   * the failure mode CLAUDE.md's seam section names: `startSelectionLegal` was
+   * `game === 'chain' ? chainStartLegal(…) : activeStartLegal(…)`, so a THIRD game fell into
+   * DECODE's arm and had its poses judged against DECODE's launch lines and goal triangles.
+   * That is a worse answer than no answer, and it is what kept BIOBUZZ's `startLegality` down
+   * after G304 was already modelled.
+   *
+   * THE POSE IS CANONICAL, not the one the robot will spawn on: every caller holds what is in
+   * `RobotSetup.startPose` / `GameSettings.startPose`, and each game mirrors that onto the
+   * actual alliance its own way (DECODE reflects in x, BIOBUZZ rotates 180° about the origin).
+   * An implementation that forgets to mirror judges red's pose in blue's frame and is wrong on
+   * exactly half the field, silently — so mirror first, then assess.
+   *
+   * A null/absent pose is the game's named anchor, which every game seats legally by
+   * construction: answer `true` rather than making each caller special-case it.
+   */
+  startLegal?(spec: RobotSpec, a: Alliance, startPose: StartPose | null | undefined): boolean;
+  /**
+   * SEAT a custom CANONICAL start pose legal for this spec + alliance, returning it canonical.
+   *
+   * `coerceSetup` calls it at the spawn chokepoint, so no path (localStorage, the wire, a staged
+   * match, a replay) spawns an illegal robot. Absent ⇒ the pose is kept as structurally
+   * validated and field-clamped, and the game's own spawn may fit it further (BIOBUZZ does).
+   * It used to be DECODE's `snapStartToLegal` for any game with `startLegality`, which seated a
+   * BIOBUZZ pose against DECODE's field and mirrored it in x.
+   */
+  startSnap?(spec: RobotSpec, a: Alliance, startPose: StartPose): StartPose;
+  /**
+   * THE START ROLES, for a game whose roles are not DECODE's CLOSE / FAR table. The shared
+   * `StartCat` slots ('close' / 'far') carry whatever a game's two roles are; these say which
+   * anchor belongs to which, which anchor a role defaults to, and what the roles and anchors are
+   * called on screen. Absent ⇒ DECODE's `START_POSES` table and CLOSE / FAR words.
+   *
+   * They exist for the same reason `startLegal` does: `startPositions.ts`, the role-swap bar and
+   * the lobby/strategy start chips each branched `game === 'chain' ? … : <DECODE>`, so BIOBUZZ got
+   * DECODE's anchor categories, DECODE's anchor names and CLOSE / FAR for its TOP / BOTTOM roles.
+   * Chain Reaction's existing branches are left as they are.
+   */
+  startAnchorCategory?(index: number): import('../types').StartCat;
+  startDefaultIndex?(cat: import('../types').StartCat): number;
+  /** `alliance` matters on a point-symmetric field, where the same role slot is drawn at the top
+   * for one alliance and the bottom for the other (BIOBUZZ). */
+  startRoleLabel?(cat: import('../types').StartCat | undefined, alliance?: Alliance): string;
+  startAnchorName?(index: number, alliance?: Alliance): string;
+  /**
+   * DOES THIS GAME RUN AUTO PATHS?
+   *
+   * Only DECODE's step drives path traversal — `initializePathTraversal` /
+   * `updatePathTraversal` are called from `src/sim/world.ts` and nowhere else, and Chain
+   * Reaction and BIOBUZZ have steps of their own. So a `.pp` path imported while one of
+   * those games was selected was accepted by the builder, saved to the library, reported
+   * "Auto path ON", rode the wire into the match — and then the robot sat still for the
+   * whole autonomous period with nothing anywhere saying why.
+   *
+   * Two readers, and they are the two ends of that path: the builder hides the section for
+   * a game that cannot run one (`MatchSetup`), and the spawn chokepoint drops `autoPath` /
+   * `autoPathEnabled` for it (`coerceSetup`) so a path already sitting in localStorage or
+   * arriving off the wire never reaches a world, a snapshot or a replay.
+   */
+  autoPaths: boolean;
   bounds: FieldBounds;
   colliders: FieldColliders;
-  createWorld(mode: GameMode, seed: number, setups: RobotSetup[], settings?: GameSettings): World;
+  /**
+   * BUILD THE WORLD. `physics` is the ROOM's (or the replay's) backend choice — see `Physics`.
+   *
+   * ── WHY IT IS A FIFTH PARAMETER AND NOT A FIELD ON `settings` ──────────────
+   * Day 1 routed solo practice's pick through `GameSettings.practicePhysics`, which is right
+   * for practice and wrong for everything else: a ROOM is not a practice, and the world an
+   * authoritative server builds must not depend on a player-owned settings bag at all (the
+   * server holds no `GameSettings`, and a client's copy is whatever that client last saved).
+   * A room's physics is decided once at room creation, rides `RoomConfig.physics` and
+   * `matchStart.physics`, and reaches the builder HERE — one explicit argument, sourced from
+   * the room on both ends, so the server and every client in it build the same world.
+   *
+   * Absent ⇒ the game decides for itself (BIOBUZZ falls back to `settings.practicePhysics`,
+   * then `'2d'`). A game with no `physicsOptions` ignores it entirely, which is DECODE and
+   * Chain Reaction — their builders take four parameters and stay assignable to this type.
+   */
+  createWorld(
+    mode: GameMode,
+    seed: number,
+    setups: RobotSetup[],
+    settings?: GameSettings,
+    physics?: Physics,
+  ): World;
   step(world: World, dt: number, commands: Map<number, RobotCommand>): void;
   /**
    * This game's own HUD slice, read once per HUD poll and carried on
@@ -163,6 +298,16 @@ export interface GameSimModule {
    * that forwards a snapshot.
    */
   hud?(world: World, robotId: number): unknown;
+  /**
+   * NOTHING LEFT ON THE FIELD CAN CHANGE THE SCORE — read in phase `post` by the shared settle
+   * clock (`src/sim/settle.ts`), which finalizes the match once this has held for
+   * `MATCH_SETTLE_HOLD_S` (or at `MATCH_SETTLE_MAX_S`, whatever it says). The server saves the
+   * score then, and the results screen reveals only on that saved score.
+   *
+   * A PURE READ of world state — it decides the tick a match is captured on, so it must answer
+   * the same on every machine. Absent ⇒ the field counts as settled at once.
+   */
+  settled?(world: World): boolean;
   /**
    * WHAT ON THIS GAME'S ROBOT IS SOLID TO A GROUND ARTIFACT — the game-owned override of
    * `robotSolids` (`src/sim/artifactSolids.ts`).
@@ -188,4 +333,82 @@ export interface GameSimModule {
    * solve collides on, what its pin test would measure against, and what its sprite must draw.
    */
   artifactSolids?(r: RobotState, heldBalls: readonly Artifact[], radius: number): RobotSolids;
+  /**
+   * WHICH PHYSICS BACKENDS THIS GAME'S UI MAY OFFER, for a room or practice setup — absent ⇒
+   * only `'2d'`, which is every game before BIOBUZZ's Day 1 seam. BIOBUZZ fills
+   * `['2d', '3d']` once `sim3d/` exists to step the second one; DECODE and Chain Reaction leave
+   * this empty rather than advertise a physics their `step` cannot run.
+   */
+  physicsOptions?: readonly Physics[];
+  /**
+   * A DETERMINISTIC, SCRIPTED DRIVER this game offers as an AI seat — absent ⇒ none. See
+   * `BotDriver` below. Nothing implements this yet; the slot exists so the three Day 1 lanes
+   * can build toward it without a later type edit.
+   */
+  bot?: BotDriver;
+}
+
+/**
+ * ONE SEATED BOT — the object a caller holds for one robot for one match.
+ *
+ * ⚠️ **THE MEMORY LIVES HERE, AND NEVER ON THE `World`** (`docs/biobuzz/plan-3d.md` §6). A bot
+ * has hysteresis: it re-decides on a cadence, holds the decision in between, and remembers
+ * what it was doing so it does not oscillate between two equally good targets every tick. All
+ * of that is STATE, and the one place it must not be is `world` — a world is snapshotted,
+ * delta-encoded to every client 30 times a second, reconciled, and replayed, so a bot field on
+ * it would be wire cost on every tick, a thing a reconcile could rewind, and a thing a replay
+ * would have to carry to play back. The caller owns the bot; the world stays exactly as wide as
+ * it was.
+ *
+ * `step` returns the command for ONE tick and is called ONCE per tick per seat, by whoever owns
+ * the seat: `GameController` in solo practice, `Room` on the server, the host worker on LAN.
+ * **The command is RECORDED like a human driver's** — the replay recorder records every setup's
+ * command per tick (`docs/area/netcode.md`), so a bot seat's command rides the same array and a
+ * replay of a match with a bot in it re-simulates without needing the bot at all.
+ *
+ * `dispose` releases anything the bot allocated. Optional, because a policy that is pure state
+ * has nothing to release; a caller must still call it when the match ends.
+ */
+export interface BotSeat {
+  step(world: World): RobotCommand;
+  dispose?(): void;
+}
+
+/**
+ * A DETERMINISTIC, SCRIPTED DRIVER — an AI seat a room or solo practice can fill instead of a
+ * human player.
+ *
+ * DOM-free and on the SIM module for the same reason `hud` is: the authoritative server needs
+ * to run it too, for a room with an empty seat. `tiers` names the DIFFICULTY LEVELS this
+ * game's bot offers as opaque strings, so a game can add or rename one without a shared type
+ * edit. A driver must read only `world` — the same determinism contract as the rest of
+ * `src/sim/` and `src/games/<id>/`: no DOM, no clock, no `Math.random` — and it must NOT read
+ * `world.rngState` either, because a bot drawing from the world's own seeded chain would move
+ * every later draw in the match (a spill's scatter, a human player's jitter) and a client
+ * predicting a tick without the bot would diverge from the server that ran it.
+ *
+ * ── `create`, NOT `drive` ──────────────────────────────────────────────────
+ * `drive(world, id, tier)` — one-shot, memoryless — is still declared, and it is OPTIONAL and
+ * deprecated. A driver with hysteresis cannot answer it honestly: it would have to re-decide
+ * every tick, which is a different policy from the one `create` runs, so a server calling one
+ * and a client predicting with the other would disagree about what the bot did. BIOBUZZ does
+ * not implement it; a caller that reaches for it gets a compile error pointing here.
+ */
+export interface BotDriver {
+  readonly tiers: readonly string[];
+  /** the tier a UI should preselect and an absent/unknown wire value folds to. */
+  readonly defaultTier: string;
+  /** force an untrusted tier (localStorage, the wire, a URL) onto `tiers`. */
+  coerceTier(x: unknown): string;
+  /**
+   * SEAT a bot on `robotId`. `seed` is the caller's: the plan's §6 rule is `(matchSeed, seat)`,
+   * so every peer that seats the same bot on the same robot of the same match gets the same
+   * driver, and two seats of one match get different ones.
+   *
+   * `world` is the world at seat time — a policy may read the field it is about to play on
+   * (which alliance, which spec) but must not keep a reference that outlives the match.
+   */
+  create(world: World, robotId: number, tier: string, seed: number): BotSeat;
+  /** @deprecated memoryless one-shot — see above. Prefer `create`. */
+  drive?(world: World, robotId: number, tier: string): RobotCommand;
 }

@@ -106,6 +106,29 @@ const namesOf = (m: PendingMatch | undefined): string =>
   check('allianceOrder: no parties ⇒ FIFO untouched', allianceOrder(g) === g);
 }
 
+// ---- a staging write that FAILS must not swallow the pairing ----------------
+// `tryMatch` takes the group out of the queue synchronously and stages it asynchronously.
+// When the stage rejected, the entries were simply gone: nobody was in the pool, nobody had
+// a room, and both players sat on a search screen that could never end.
+{
+  const mm = new Matchmaker({ now: () => 0, stage: async () => { throw new Error('db down'); } });
+  mm.enqueue(entry('a', '1v1'));
+  mm.enqueue(entry('b', '1v1'));
+  await new Promise((r) => setTimeout(r, 0));
+  check('stage failure: both players are back in the queue, still searching',
+    mm.queueSizes()['1v1'] === 2, String(mm.queueSizes()['1v1']));
+
+  // ...but somebody who LEFT while the write was in flight stays gone — restoring them
+  // would mint exactly the ghost entry this is meant to prevent.
+  const mm2 = new Matchmaker({ now: () => 0, stage: async () => { throw new Error('db down'); } });
+  mm2.enqueue(entry('c', '1v1'));
+  mm2.enqueue(entry('d', '1v1'));
+  mm2.remove('c'); // the pairing is already in flight — this is the cancel/close path
+  await new Promise((r) => setTimeout(r, 0));
+  check('stage failure: a player who left mid-stage is NOT resurrected',
+    mm2.queueSizes()['1v1'] === 1, String(mm2.queueSizes()['1v1']));
+}
+
 // ---- open queue: the pre-existing behaviour must not have moved -------------
 {
   const { staged } = await pair([entry('a', '1v1')]);
@@ -851,6 +874,66 @@ const namesOf = (m: PendingMatch | undefined): string =>
   ]);
   check('balance: an unrated 2v2 is staged untouched', staged.length === 1 &&
     (staged[0]?.roster ?? []).length === 4, `${staged.length}`);
+}
+
+// ---- WHICH PHYSICS A STAGED ROOM RUNS ON -----------------------------------
+//
+// Ranked is one population per game, so every staged match of a game must run the same solve.
+// The failure mode is SILENT in exactly the way this whole file exists for: a leaderboard fed
+// by two different solves looks like a leaderboard, and nothing on screen says otherwise.
+//
+// `stagedPhysics` is asserted as the RULE (off the game module's own `physicsOptions`) and
+// then again through a real pairing, because the rule being right and the staging call site
+// reading it are two different things — `assign` builds the roster entries and the
+// `PendingMatch` separately, and the host recovers the value from the roster jsonb.
+{
+  check('physics: a BIOBUZZ pairing stages a 3D room', Matchmaker.stagedPhysics('biobuzz') === '3d',
+    Matchmaker.stagedPhysics('biobuzz'));
+  check('physics: DECODE stages 2D — it has no 3D solve to offer',
+    Matchmaker.stagedPhysics('decode') === '2d', Matchmaker.stagedPhysics('decode'));
+  check('physics: Chain Reaction stages 2D, same reason',
+    Matchmaker.stagedPhysics('chain') === '2d', Matchmaker.stagedPhysics('chain'));
+  check('physics: an ABSENT game stages 2D (an old client that advertises none is a DECODE queuer)',
+    Matchmaker.stagedPhysics(undefined) === '2d', Matchmaker.stagedPhysics(undefined));
+}
+{
+  const { staged } = await pair([
+    entry('bb1', '1v1', { game: 'biobuzz' }),
+    entry('bb2', '1v1', { game: 'biobuzz' }),
+  ]);
+  const m = staged[0];
+  check('physics: a staged BIOBUZZ match carries physics on the PendingMatch', m?.physics === '3d',
+    `physics=${m?.physics}`);
+  // the host recovers it from the roster jsonb (`takePendingMatch`), so it is not enough for
+  // the top-level field to be right — every entry has to carry it too, or a claimed row comes
+  // back as '2d' and the host builds the wrong world from a correctly-staged pairing
+  check('physics: ...and every roster entry carries it, which is what survives the DB round-trip',
+    (m?.roster ?? []).length === 2 && (m?.roster ?? []).every((r) => r.physics === '3d'),
+    (m?.roster ?? []).map((r) => String(r.physics)).join(','));
+  check('physics: the staged match still names its game', m?.game === 'biobuzz', `game=${m?.game}`);
+}
+{
+  // DECODE and Chain Reaction are UNTOUCHED, and that is the half worth checking: this
+  // change reaches every staged room on the server, and the two games that have played every
+  // ranked match to date must come out of it exactly as they went in.
+  const dec = await pair([entry('d1', '1v1'), entry('d2', '1v1')]);
+  check('physics: a DECODE pairing stages 2D', dec.staged[0]?.physics === '2d',
+    `physics=${dec.staged[0]?.physics}`);
+  check('physics: ...and its roster entries do too',
+    (dec.staged[0]?.roster ?? []).every((r) => r.physics === '2d'),
+    (dec.staged[0]?.roster ?? []).map((r) => String(r.physics)).join(','));
+  const cr = await pair([entry('c1', '1v1', { game: 'chain' }), entry('c2', '1v1', { game: 'chain' })]);
+  check('physics: a Chain Reaction pairing stages 2D', cr.staged[0]?.physics === '2d',
+    `physics=${cr.staged[0]?.physics}`);
+}
+{
+  // THE BUCKET IS UNCHANGED BY ANY OF THIS. A BIOBUZZ queuer and a DECODE queuer were never
+  // pairable (`bucketKey` splits on game) and they must not become pairable now that the two
+  // stage different physics — which would be the worst version of this bug, since the room
+  // would be built once, on one solve, for two clients expecting different ones.
+  const { staged } = await pair([entry('x1', '1v1', { game: 'biobuzz' }), entry('x2', '1v1')]);
+  check('physics: a BIOBUZZ queuer and a DECODE queuer still never pair', staged.length === 0,
+    `${staged.length} staged`);
 }
 
 // ---- report ----------------------------------------------------------------

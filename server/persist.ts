@@ -10,7 +10,7 @@ import {
   saveReplay,
   submitRecord,
 } from './db/repo';
-import { STANDING_COST } from '../src/standing';
+import { RED_CARD_MULT } from '../src/standing';
 import { chargeStanding, creditCleanMatch } from './standing';
 import { persistVersusMatch } from './ranked';
 // scrubSpecNames used to live HERE. It moved to `./moderation` when `saveReplay` started
@@ -19,6 +19,7 @@ import { persistVersusMatch } from './ranked';
 import { scrubSpecNames } from './moderation';
 import { recordScore } from '../src/sim/replay';
 import { simModuleFor } from '../src/games/sim';
+import { serverPhysics } from '../src/games/types';
 import type { BehaviourReport, DodgeReport, MatchOutcome, PersistOutcome } from './room';
 import { type DodgeVerdict } from '../src/dodge';
 import { WINDOW_HOURS } from '../src/standing';
@@ -32,7 +33,9 @@ import * as C from '../src/config';
  *
  * - RECORD room → leaderboard row (solo = 1 player, duo = primary + partner).
  * - VERSUS room → ranked ELO + match history.
- * Both save the recorded replay first (public, watchable, re-simulatable).
+ * Both save the recorded replay first. It is re-simulatable but NOT public: a versus replay
+ * is watchable by the people in it (and by staff) unless every one of them has opted in, while
+ * a record run's stays public as the board's proof. See `replayAccess` (migration 0038).
  */
 export async function persistMatch(o: MatchOutcome): Promise<PersistOutcome> {
   const authed = o.participants.filter((p) => p.userId);
@@ -90,6 +93,28 @@ export async function persistMatch(o: MatchOutcome): Promise<PersistOutcome> {
     ).catch((e: unknown) => console.error('[persist] activity write failed:', e));
 
     if (o.config.kind === 'record') {
+      /**
+       * THE RECORD BOARD IS ONE SOLVE (owner ruling, 2026-09-18). A record room of a game that
+       * can step 3D IS 3D (`Room.physics`), so this cannot fire in a coherent deploy — it
+       * fires when one process is mid-upgrade and another is not, which is precisely the case
+       * that would otherwise put an unbeatable 2D row on a 3D board.
+       *
+       * Read off the REPLAY, never off anything a client said — `o.replay.physics` is stamped
+       * by the recorder the authoritative room owns. `submitRecord` refuses the same case at
+       * the table; this is the same rule said early, so the ordinary path logs a sentence
+       * instead of throwing through the whole write.
+       *
+       * The replay is already saved above and the activity already credited: the match was
+       * played and is watchable, it just does not reach the board.
+       */
+      const wantPhysics = serverPhysics(simModuleFor(game));
+      if ((o.replay.physics ?? '2d') !== wantPhysics) {
+        console.warn(
+          `[persist] SKIP record — ${game} boards run on ${wantPhysics} physics, this run is ` +
+            `${o.replay.physics ?? '2d'} (stale process mid-deploy?)`,
+        );
+        return {};
+      }
       const primary = authed[0];
       const partner = authed[1];
       const mode = o.config.record ?? 'solo';
@@ -116,6 +141,11 @@ export async function persistMatch(o: MatchOutcome): Promise<PersistOutcome> {
         balanceVersion: bv,
         replayId,
         game,
+        // WHICH SOLVE produced this score (0039), taken off the replay the room recorded so
+        // the row and its own log can never disagree. Every record room is `'3d'` for a game
+        // that offers it, which is the point: a board fed by two different solves is two
+        // boards, and this is what lets one be told from the other without a season reset.
+        physics: o.replay.physics,
         // each driver brings their OWN robot; a duo stores both so the board can
         // show both drivetrains (partner absent ⇒ solo run)
         config: { spec: primarySpec, assists: primary.assists, partnerSpec },
@@ -239,15 +269,15 @@ export async function persistBehaviour(b: BehaviourReport): Promise<void> {
      *
      * The referee in the sim issues it for a rule broken hard enough to be sanctioned —
      * excessive over-possession, or a second offence escalating to red — and it is already in
-     * the match record, on the results screen and in the replay. A RED costs more than a
-     * yellow because it is the second one, and because it voids the alliance's score.
+     * the match record, on the results screen and in the replay. A yellow costs 5 and a RED
+     * three times that (15), because it is the second card and it voids the alliance's score.
      */
     for (const c of b.carded ?? []) {
       await chargeStanding(c.userId, 'card', {
         game: b.game,
         mode: b.mode,
         roomCode: b.roomCode,
-        points: c.colour === 'red' ? STANDING_COST.card * 2 : undefined,
+        severity: c.colour === 'red' ? RED_CARD_MULT : undefined,
       });
     }
     // ...and a carded driver did NOT play it clean, whatever else the participation test

@@ -1,4 +1,4 @@
-import { useEffect, type ReactNode } from 'react';
+import { useEffect, useRef, type ReactNode, type RefObject } from 'react';
 import {
   SPONSOR,
   sponsorActive,
@@ -40,8 +40,13 @@ import { trackEvent } from '../analytics';
  *  light theme, exactly like every other HUD chip). Pinning the light-ink cut there
  *  "because the field is dark" puts a white wordmark on a white card. The one
  *  surface that genuinely does not theme is the burned-in replay mark, whose plate
- *  is painted dark by `replayOverlay.ts` — and that one is canvas, not this. */
-function SponsorLogo({ h }: { h: number }) {
+ *  is painted dark by `replayOverlay.ts` — and that one is canvas, not this.
+ *
+ *  EXPORTED for `Contributors.tsx`'s "Presented by" credit: that page is not one of
+ *  `SPONSOR_PLACEMENTS`, so it renders the artwork through this pure component
+ *  rather than through `SponsorMark`, which is the ONE thing allowed to fire the
+ *  impression/click events for a contracted placement — see the note there. */
+export function SponsorLogo({ h }: { h: number }) {
   const w = sponsorLogoWidth(h);
   const alt = `${SPONSOR.name} logo`;
   return (
@@ -58,6 +63,133 @@ function SponsorLogo({ h }: { h: number }) {
       <img className="sponsor-logo on-dark" src={SPONSOR_LOGO_DARK} width={w} height={h} alt="" />
     </span>
   );
+}
+
+/* ------------------------------------------------- measuring the placement ---- */
+
+/** Half the mark on screen, for a continuous second — the MRC display standard,
+ *  and the one Offset's own ad vendor will quote back at us. Anything looser and
+ *  the denominator stops meaning "seen". */
+const VIEWABLE_RATIO = 0.5;
+const VIEWABLE_MS = 1000;
+
+/** dwell as a BUCKET, never a raw second count: the dashboard groups events by
+ *  property VALUE, so a continuous number would render as one row per session. */
+function dwellBucket(ms: number): string {
+  const s = ms / 1000;
+  if (s < 5) return '<5s';
+  if (s < 15) return '5-15s';
+  if (s < 60) return '15-60s';
+  if (s < 300) return '1-5m';
+  return '5m+';
+}
+
+/**
+ * THE IMPRESSION, AND HOW LONG IT LASTED.
+ *
+ * ⚠️ AN IMPRESSION IS NOT A MOUNT, and the difference is the whole number. The
+ * footer mark is in the DOM of every shell page whether or not the visitor ever
+ * scrolls far enough to see it, and the home lockup is below a 64px title on a
+ * short phone. Firing on mount therefore counts views that did not happen, and it
+ * inflates exactly the figure the click rate is divided by — so the one number we
+ * would be overstating is the one the renewal is argued over. Better to under-count
+ * honestly: this fires only after the mark has been at least `VIEWABLE_RATIO` on
+ * screen for `VIEWABLE_MS` unbroken, and a backgrounded tab is not on screen.
+ *
+ * DWELL IS THE SECOND HALF OF THE ANSWER. One impression on a twenty-minute
+ * practice session and one on a three-second bounce are the same row in a count of
+ * impressions, and they are not the same thing to a sponsor. The in-game chip is
+ * the longest-exposure placement in the app and had no way of showing it.
+ * Accumulated visible time flushes ONCE per mount — at unmount, or at `pagehide`
+ * for the surfaces (the footer) that never unmount because the tab just closed.
+ *
+ * PRIVACY IS UNCHANGED: the payload is a placement name and a bucket string. No
+ * user, no session, no page, no timestamp (`src/analytics.ts`).
+ */
+function useSponsorExposure(
+  ref: RefObject<HTMLAnchorElement | null>,
+  placement: SponsorPlacement,
+): void {
+  useEffect(() => {
+    const el = ref.current;
+    let counted = false; // the impression has fired — once per mount
+    let flushed = false; // the dwell has fired — once per mount
+    let since = 0; // timestamp the current visible stretch began, 0 when hidden
+    let total = 0; // visible ms banked from earlier stretches
+    let timer: ReturnType<typeof setTimeout> | undefined;
+
+    const impression = (): void => {
+      if (counted) return;
+      counted = true;
+      trackEvent('sponsor_shown', { placement });
+    };
+
+    const enter = (): void => {
+      if (since) return;
+      since = Date.now();
+      // the clock starts on ENTRY, not on the impression: a mark that leaves at
+      // 900ms was never seen, and one that stays is credited from when it arrived.
+      if (!counted) timer = setTimeout(impression, VIEWABLE_MS);
+    };
+
+    const leave = (): void => {
+      if (timer !== undefined) {
+        clearTimeout(timer);
+        timer = undefined;
+      }
+      if (since) {
+        total += Date.now() - since;
+        since = 0;
+      }
+    };
+
+    /** the only place dwell is reported. Guarded because `pagehide` and unmount
+     *  both fire on a normal tab close, and a double count is a wrong number. */
+    const flush = (): void => {
+      leave();
+      if (flushed || !counted || total <= 0) return;
+      flushed = true;
+      trackEvent('sponsor_dwell', { placement, dwell: dwellBucket(total) });
+    };
+
+    let onScreen = false;
+    const onVisibility = (): void => {
+      // a tab in the background is not an impression, however long it sits there
+      if (document.visibilityState === 'hidden') leave();
+      else if (onScreen) enter();
+    };
+
+    let io: IntersectionObserver | undefined;
+    if (el && typeof IntersectionObserver !== 'undefined') {
+      io = new IntersectionObserver(
+        (entries) => {
+          for (const e of entries) {
+            onScreen = e.isIntersecting && e.intersectionRatio >= VIEWABLE_RATIO;
+            if (onScreen && document.visibilityState !== 'hidden') enter();
+            else leave();
+          }
+        },
+        { threshold: [0, VIEWABLE_RATIO, 1] },
+      );
+      io.observe(el);
+    } else {
+      // NO OBSERVER (an old browser, a test renderer): fall back to the old
+      // behaviour rather than reporting nothing. Under-reporting a placement
+      // somebody paid for is the one failure mode worth avoiding here, and this
+      // path cannot tell whether the mark is on screen at all.
+      onScreen = true;
+      enter();
+    }
+
+    document.addEventListener('visibilitychange', onVisibility);
+    window.addEventListener('pagehide', flush);
+    return () => {
+      document.removeEventListener('visibilitychange', onVisibility);
+      window.removeEventListener('pagehide', flush);
+      io?.disconnect();
+      flush();
+    };
+  }, [ref, placement]);
 }
 
 /**
@@ -78,15 +210,11 @@ function SponsorMark({
   className: string;
   children?: ReactNode;
 }) {
-  // ONE impression per mount, per placement. The property is the placement name
-  // and nothing else — no user, no session, no page id (the privacy rule stated
-  // in src/analytics.ts). This is the denominator the click rate is measured
-  // against; without it "12 clicks" is a number with no scale attached to it.
-  useEffect(() => {
-    trackEvent('sponsor_shown', { placement });
-  }, [placement]);
+  const ref = useRef<HTMLAnchorElement>(null);
+  useSponsorExposure(ref, placement);
   return (
     <a
+      ref={ref}
       className={className}
       href={sponsorLink(placement)}
       target="_blank"

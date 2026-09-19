@@ -1,6 +1,6 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { GameId } from '../src/types';
-import { coerceGameId, isGameId } from '../src/games/types';
+import { coerceGameId, isGameId, serverPhysics } from '../src/games/types';
 import { simModuleFor } from '../src/games/sim';
 import { BALANCE_VERSION, SIM_DT } from '../src/config';
 import { monthsFor, policyFromEnv, whyNoMonths } from './kofi';
@@ -47,12 +47,20 @@ import {
   getProfile,
   getProfileByUsername,
   getReplay,
+  getReplaysPublic,
+  isStaffUser,
+  replayAccess,
+  replayRefusalMessage,
+  setReplaysPublic,
   getUserSettings,
   getUserStats,
   getSupporter,
+  getTermsAcceptance,
+  acceptTerms,
   claimKofiPayment,
   recordKofiPayment,
   deleteAccount,
+  exportAccount,
   listSeasons,
   recordLeaderboard,
   saveUserSettings,
@@ -62,7 +70,8 @@ import {
   usernameAvailable,
   UsernameTakenError,
 } from './db/repo';
-import { verifyAuthToken } from './auth';
+import { emailGateRefusal, verifyAuthToken } from './auth';
+import { LEGAL_VERSION } from '../src/legalText';
 import { DEPLOY_REGIONS, interRegionMs } from './regions';
 
 /**
@@ -85,7 +94,10 @@ import { DEPLOY_REGIONS, interRegionMs } from './regions';
  *   GET  /api/profile/<username>/stats?season=<n> — one user's stats, by username
  *   GET  /api/user/settings                  — your synced settings (Bearer JWT)
  *   POST /api/user/settings {settings}       — save your settings (Bearer JWT)
- *   GET  /api/replay/<id>
+ *   GET  /api/user/privacy                   — your replay-visibility setting (Bearer JWT)
+ *   POST /api/user/privacy {replaysPublic}   — set it (Bearer JWT)
+ *   GET  /api/user/export                    — everything we hold about you (Bearer JWT)
+ *   GET  /api/replay/<id>                    — 403 when the people in it have not published it
  *
  *   GET  /api/friends                        — friends + requests + presence (Bearer JWT)
  *   POST /api/friends/request  {username}    — send (or auto-accept a reciprocal) request
@@ -220,9 +232,13 @@ const lanRate = new Map<string, { n: number; until: number }>();
 function uploadRateOk(bucket: string, userId: string): boolean {
   const key = `${bucket}:${userId}`;
   const now = Date.now();
-  // sweep on the way past, so an idle server does not keep a map of everyone who ever posted.
-  // Cheap: this route is rate-limited, so the map cannot be large enough for this to matter.
-  if (lanRate.size > 1000) for (const [k, v] of lanRate) if (v.until <= now) lanRate.delete(k);
+  // Sweep on the way past, so an idle server does not keep a map of everyone who ever posted.
+  // UNCONDITIONAL, and that is the point: gating the sweep on `size > 1000` made the map grow
+  // to 1000 before anything was ever collected, and 1001 DISTINCT accounts inside one window is
+  // exactly the case where no entry is expired yet and the sweep frees nothing anyway. Sweeping
+  // every call keeps the map to "accounts seen in the last minute", which is small enough that
+  // the O(n) walk is cheaper than the branch was worth.
+  for (const [k, v] of lanRate) if (v.until <= now) lanRate.delete(k);
   const hit = lanRate.get(key);
   if (!hit || hit.until <= now) {
     lanRate.set(key, { n: 1, until: now + LAN_WINDOW_MS });
@@ -232,10 +248,53 @@ function uploadRateOk(bucket: string, userId: string): boolean {
   return hit.n <= LAN_MAX_PER_WINDOW;
 }
 
+/**
+ * ONE DATA EXPORT PER MINUTE PER ACCOUNT (`GET /api/user/export`).
+ *
+ * Built to the shape of `lanRateOk` above rather than a generic limiter, because the two
+ * limits are the same kind of thing — an authenticated route whose real cost is database
+ * compute, bounded per ACCOUNT — and one more four-line function is cheaper to read than an
+ * abstraction over two call sites.
+ *
+ * `EXPORT_WINDOW_MS` is the whole limit: there is no burst allowance, because there is no
+ * legitimate reason to ask twice in a minute. The map is swept on the way past for the same
+ * reason the LAN one is, so an idle server does not keep a row per account that ever exported.
+ */
+const EXPORT_WINDOW_MS = 60_000;
+const exportRate = new Map<string, number>();
+
+function exportRateOk(userId: string): boolean {
+  const now = Date.now();
+  // unconditional, for the reason spelled out in `lanRateOk`: a size-gated sweep never runs
+  // until 1000 rows have accumulated, and the one burst that would justify it — 1001 distinct
+  // accounts inside a single window — is the burst in which nothing has expired to sweep.
+  for (const [k, t] of exportRate) if (t <= now) exportRate.delete(k);
+  const until = exportRate.get(userId);
+  if (until && until > now) return false;
+  exportRate.set(userId, now + EXPORT_WINDOW_MS);
+  return true;
+}
+
 /** the Bearer token from an Authorization header, if it looks like one */
 function bearer(req: IncomingMessage): string | undefined {
   const auth = req.headers['authorization'];
   return typeof auth === 'string' && auth.startsWith('Bearer ') ? auth.slice(7) : undefined;
+}
+
+/**
+ * OPTIONAL auth, for a PUBLIC route whose answer narrows when it knows who is asking — the
+ * replay gate and the match history it feeds (migration 0038). A token that is absent,
+ * expired or bogus is anonymous, exactly as if none had been sent; nothing 401s.
+ *
+ * ⚠️ It short-circuits on a missing header rather than letting `verifyAuthToken(undefined)`
+ * answer null, because that function LOGS on the way out. These are the routes a signed-out
+ * leaderboard visitor hits, and a line per replay view is the log bill the friends-poll
+ * silence was won back from.
+ */
+async function viewerId(req: IncomingMessage): Promise<string | null> {
+  const token = bearer(req);
+  if (!token) return null;
+  return (await verifyAuthToken(token))?.userId ?? null;
 }
 
 /**
@@ -279,23 +338,37 @@ async function saveLanUpload(
   // user-supplied name does, and it carries no user ids — see the migration for why
   // attributing a LAN match to an account on this server's say-so is not on the table.
   const rawRoster = Array.isArray(body.participants) ? body.participants.slice(0, 8) : [];
-  const participants: LanParticipant[] = [];
-  for (const raw of rawRoster) {
-    if (!raw || typeof raw !== 'object') continue;
-    const p = raw as Record<string, unknown>;
-    const teamNumber = typeof p.teamNumber === 'number' && Number.isFinite(p.teamNumber)
-      ? Math.max(0, Math.min(999999, Math.round(p.teamNumber)))
-      : undefined;
-    participants.push({
-      name: await scrubName(typeof p.name === 'string' ? p.name : '', 'Player'),
-      teamName: typeof p.teamName === 'string'
-        ? await scrubName(p.teamName, 'Team')
-        : undefined,
-      teamNumber,
-      alliance: p.alliance === 'blue' ? 'blue' : 'red',
-      drivetrain: typeof p.drivetrain === 'string' ? p.drivetrain.slice(0, 24) : undefined,
-    });
-  }
+  /**
+   * CONCURRENTLY, because `scrubName` is a round trip to a hosted moderation API with its own
+   * timeout (`MODERATION_TIMEOUT_MS`, 4s). Awaited one at a time inside the loop this used to
+   * be, a full roster was up to 16 sequential calls — eight players, a name and a team name
+   * each — so one upload's worst case was the timeout SIXTEEN times over while the request sat
+   * open. The names are independent of each other and the service is the same one either way;
+   * nothing here needed to be sequential. `Promise.all` preserves roster order, and the
+   * in-process decision cache still short-circuits repeats.
+   */
+  const participants: LanParticipant[] = (
+    await Promise.all(
+      rawRoster.map(async (raw): Promise<LanParticipant | null> => {
+        if (!raw || typeof raw !== 'object') return null;
+        const p = raw as Record<string, unknown>;
+        const teamNumber = typeof p.teamNumber === 'number' && Number.isFinite(p.teamNumber)
+          ? Math.max(0, Math.min(999999, Math.round(p.teamNumber)))
+          : undefined;
+        const [name, teamName] = await Promise.all([
+          scrubName(typeof p.name === 'string' ? p.name : '', 'Player'),
+          typeof p.teamName === 'string' ? scrubName(p.teamName, 'Team') : Promise.resolve(undefined),
+        ]);
+        return {
+          name,
+          teamName,
+          teamNumber,
+          alliance: p.alliance === 'blue' ? 'blue' : 'red',
+          drivetrain: typeof p.drivetrain === 'string' ? p.drivetrain.slice(0, 24) : undefined,
+        };
+      }),
+    )
+  ).filter((p): p is LanParticipant => p !== null);
 
   await ensureProfile(user.userId, user.handle);
   const season = await currentSeasonNumber(BALANCE_VERSION, replay.game as GameId);
@@ -420,6 +493,38 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse): Prom
       return json(200, { valid: true, available, username }), true;
     }
 
+    /**
+     * ---- per-account PRIVACY (read + write your own) ------------------------
+     *
+     * Its own route rather than a field in `/api/user/settings`, and that is the point of it.
+     * That blob is client-shaped, client-validated and opaque to the server — nothing in SQL
+     * reads it — so a privacy bit living there could be enforced only by the client being
+     * asked about it, which is not enforcement. This is a real column
+     * (`profiles.replays_public`, 0038) that `replayAccess` and `userMatchHistory` join
+     * against, and it is written here from the token's own subject and never from the body.
+     */
+    if (url.pathname === '/api/user/privacy' && (req.method === 'GET' || req.method === 'POST')) {
+      const user = await verifyAuthToken(bearer(req));
+      if (!user) return json(401, { error: 'sign in required' }), true;
+      if (!dbEnabled) return json(200, { replaysPublic: false }), true;
+
+      if (req.method === 'GET') {
+        return json(200, { replaysPublic: await getReplaysPublic(user.userId) }), true;
+      }
+      let body: Record<string, unknown>;
+      try {
+        body = JSON.parse(await readBody(req)) as Record<string, unknown>;
+      } catch {
+        return json(400, { error: 'bad json' }), true;
+      }
+      if (typeof body.replaysPublic !== 'boolean') {
+        return json(400, { error: 'replaysPublic must be true or false' }), true;
+      }
+      await ensureProfile(user.userId, user.handle);
+      await setReplaysPublic(user.userId, body.replaysPublic);
+      return json(200, { replaysPublic: body.replaysPublic }), true;
+    }
+
     // ---- per-account settings (read + write your own) ----------------------
     if (url.pathname === '/api/user/settings' && (req.method === 'GET' || req.method === 'POST')) {
       const auth = req.headers['authorization'];
@@ -434,7 +539,11 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse): Prom
       // POST: save the whole settings blob
       let settings: unknown;
       try {
-        settings = JSON.parse(await readBody(req)).settings;
+        // 64 KB, not `readBody`'s 512 KB default. This blob is keybinds, toggles and a colour
+        // or two — a few KB at the outside — and it is stored per account, so the default cap
+        // let a signed-in client park half a megabyte of anything in Postgres under the name
+        // "settings". The limit is the shape of the data, not the shape of the transport.
+        settings = JSON.parse(await readBody(req, 64 * 1024)).settings;
       } catch {
         return json(400, { error: 'bad request' }), true;
       }
@@ -448,6 +557,41 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse): Prom
       return json(200, { ok: true }), true;
     }
 
+    /**
+     * ---- TERMS ACCEPTANCE (write your own) ---------------------------------
+     *
+     * ⚠️ THE VERSION IS NOT IN THE BODY. It is the server's own `LEGAL_VERSION`,
+     * derived from the legal text this deployment is serving — so a client cannot
+     * claim to have accepted a revision that does not exist, and cannot pre-accept
+     * the NEXT one to opt out of the gate forever. There is nothing for the caller
+     * to send, which is why the route takes no body at all.
+     *
+     * The account is identified from the token's own subject, like every other write
+     * here. `ensureProfile` first, because an OAuth account can reach this before
+     * anything else has created its row — accepting the terms is plausibly the very
+     * first authenticated thing a new sign-up does.
+     */
+    if (url.pathname === '/api/user/accept-terms' && req.method === 'POST') {
+      const user = await verifyAuthToken(bearer(req));
+      if (!user) return json(401, { error: 'sign in required' }), true;
+      if (!dbEnabled) {
+        return json(503, { error: 'recording an acceptance needs the database' }), true;
+      }
+      // ALREADY ON THIS REVISION ⇒ ANSWER FROM THE ROW, WRITE NOTHING. The client's gate calls
+      // this on mount whenever its cached answer is stale, and `acceptTerms` is an UPDATE that
+      // overwrites `terms_accepted_at` with `now()` — so a re-post was silently MOVING the
+      // recorded consent date forward, which is the one field a dispute would read. It also put
+      // two writes (ensureProfile + the update) on a route that had nothing to record. The read
+      // is a single-row lookup by primary key; the response shape is byte-identical.
+      const prior = await getTermsAcceptance(user.userId);
+      if (prior.version === LEGAL_VERSION) {
+        return json(200, { termsVersion: prior.version, termsAcceptedAt: prior.acceptedAt }), true;
+      }
+      await ensureProfile(user.userId, user.handle);
+      const a = await acceptTerms(user.userId, LEGAL_VERSION);
+      return json(200, { termsVersion: a.version, termsAcceptedAt: a.acceptedAt }), true;
+    }
+
     // ---- supporter entitlements --------------------------------------------
     // Read your OWN entitlement. The client uses this only to decide whether to
     // draw ads and perk UI; every perk that actually matters is enforced
@@ -456,7 +600,19 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse): Prom
       const user = await verifyAuthToken(bearer(req));
       if (!user) return json(401, { error: 'sign in required' }), true;
       if (!dbEnabled) {
-        return json(200, { supporter: false, supporterUntil: null, autoRenews: false }), true;
+        return (
+          json(200, {
+            supporter: false,
+            supporterUntil: null,
+            autoRenews: false,
+            // NULL, not the current version: with no database nothing was recorded, and
+            // saying otherwise would tell the gate an acceptance exists that does not.
+            // (A local dev server without Postgres therefore shows the dialog, and its
+            // Accept answers 503 — correct, and visible, rather than quietly fine.)
+            termsVersion: null,
+          }),
+          true
+        );
       }
       // the price is served alongside the entitlement so the Donate page can state
       // it without a second round trip, and so it can never drift from the number
@@ -466,6 +622,20 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse): Prom
         json(200, {
           ...(await getSupporter(user.userId)),
           price: { amount: policy.monthlyPrice, currency: policy.currency },
+          /**
+           * THE ACCEPTED TERMS RIDE ALONG HERE rather than on a route of their own.
+           * This is the one call the client already makes once per signed-in session
+           * for its own account, and the gate needs the answer at exactly that moment;
+           * a second route would be a second round trip on every load to learn one
+           * string. A second single-row lookup by primary key on the same table is the
+           * cheaper half of that trade.
+           *
+           * It is kept OUT of `getSupporter`'s own return: that function is the
+           * supporter predicate the ad gate, the cosmetics and the badge all read, and
+           * an unrelated legal field inside it would invite somebody to fold a terms
+           * check into a paid-perk decision.
+           */
+          termsVersion: (await getTermsAcceptance(user.userId)).version,
         }),
         true
       );
@@ -508,6 +678,18 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse): Prom
         return json(429, { error: 'too many practice uploads — try again in a minute' }), true;
       }
 
+      /**
+       * PERSISTENCE, not play. Practice itself runs on the local sim and is open to
+       * everyone including signed-out visitors; what needs a confirmed address is
+       * WRITING a run to an account, because that row carries a score and a replay
+       * under somebody’s name. The GET above is deliberately outside this gate: an
+       * unverified account must still be able to read back what it saved before the
+       * gate was switched on.
+       */
+      {
+        const refusal = emailGateRefusal(user);
+        if (refusal) return json(403, { error: refusal }), true;
+      }
       let body: Record<string, unknown>;
       try {
         body = JSON.parse(await readBody(req)) as Record<string, unknown>;
@@ -520,9 +702,20 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse): Prom
       // render as anything but a plausible score
       const raw = typeof body.score === 'number' && Number.isFinite(body.score) ? body.score : 0;
       const score = Math.max(0, Math.min(9999, Math.round(raw)));
+      /**
+       * THE VIEW IS SANITIZED TO THE ENUM; THE PHYSICS IS NOT TAKEN FROM THE BODY AT ALL.
+       *
+       * `view` is a cosmetic fact only the client can know (which renderer was on this
+       * screen), so it is accepted — forced to '2d' | '3d', absent otherwise, because it is a
+       * column and not free text. `physics` is NOT read from `body`: `sanitizeReplay` already
+       * carried it off the container, and the container is what a re-simulation will actually
+       * run. Taking it from a second place would let a client file a 2D run tagged as a 3D
+       * one, which is the only tag here anybody would have a reason to lie about.
+       */
+      const view = body.view === '2d' || body.view === '3d' ? body.view : undefined;
       await ensureProfile(user.userId, user.handle);
       const season = await currentSeasonNumber(BALANCE_VERSION, replay.game as GameId);
-      const run = await savePracticeRun(user.userId, replay, score, season, replay.game as GameId);
+      const run = await savePracticeRun(user.userId, replay, score, season, replay.game as GameId, view);
       /**
        * PLAYTIME + GAMES PLAYED. Practice is playing the game — it is the mode most people
        * spend most of their time in — and a "games played" that ignored it read as broken
@@ -575,7 +768,10 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse): Prom
       if (!uploadRateOk('lan', user.userId)) {
         return json(429, { error: 'too many LAN uploads — try again in a minute' }), true;
       }
-      const game: GameId = url.searchParams.get('game') === 'chain' ? 'chain' : 'decode';
+      // THE ALLOWLIST, not a two-valued ternary. This read `=== 'chain' ? 'chain' : 'decode'`,
+      // which is the exact shape `coerceGameId` exists to replace: a THIRD id degraded to
+      // DECODE silently, so a BIOBUZZ host's LAN match was listed and filed under DECODE.
+      const game: GameId = coerceGameId(url.searchParams.get('game'));
 
       if (req.method === 'GET') {
         return json(200, { runs: await listLanRuns(user.userId, game) }), true;
@@ -684,6 +880,43 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse): Prom
         json(200, { ok: true, supporterUntil: r.until ?? null, months: r.months ?? 0 }),
         true
       );
+    }
+
+    /**
+     * ---- DATA PORTABILITY: everything we hold about you, as one file ---------
+     *
+     * The other half of the promise `/api/user/delete` keeps. The privacy policy claims a
+     * right of portability for anyone under UK/EU-comparable law, and until this existed the
+     * only way to exercise it was to email a person and wait — which is a promise, not a
+     * feature.
+     *
+     * RATE LIMITED TO ONE PER MINUTE PER ACCOUNT, and that limit is about cost rather than
+     * abuse. This is the most expensive read in the whole API: seventeen queries, several of
+     * them unbounded scans of the caller's own history, on Neon compute that bills by the
+     * wall-clock minute it is kept awake. One per minute is far more than a human downloading
+     * a file needs and far less than a loop could spend. Per ACCOUNT, not per IP, for the same
+     * reason `/api/lan` is: the route is authenticated before it is reached, and a school's
+     * whole network shares one address.
+     *
+     * A 404 for an account with no profile row. That is the honest answer for a DELETED
+     * account — the token can outlive the row it named, and an empty document with a 200 on it
+     * would read as "we hold nothing about you", which is a claim rather than a fact.
+     */
+    if (url.pathname === '/api/user/export' && req.method === 'GET') {
+      const user = await verifyAuthToken(bearer(req));
+      if (!user) return json(401, { error: 'sign in required' }), true;
+      if (!dbEnabled) return json(503, { error: 'an export needs the database' }), true;
+      if (!exportRateOk(user.userId)) {
+        return (
+          json(429, {
+            error: 'One export a minute. Try again shortly — the file you already asked for is the same one.',
+          }),
+          true
+        );
+      }
+      const data = await exportAccount(user.userId);
+      if (!data) return json(404, { error: 'no account data' }), true;
+      return json(200, data), true;
     }
 
     // ---- delete your own account -------------------------------------------
@@ -1006,6 +1239,20 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse): Prom
       result: url.searchParams.get('result') ?? undefined,
     };
     const emptyHistory = { rows: [], total: 0, offset: historyOpts.offset, limit: historyOpts.limit ?? 25 };
+    /** the same opts plus WHO IS READING, which decides whether each versus row carries its
+     * `replayId` (migration 0038). Resolved per route rather than folded into `historyOpts`
+     * above: that object is built for every `/api/*` GET, and verifying a JWT for a
+     * leaderboard poll that will never look at a replay is work for nothing. */
+    const historyOptsFor = async (
+      r: IncomingMessage,
+    ): Promise<typeof historyOpts & { viewerId: string | null; viewerIsStaff: boolean }> => {
+      const vid = await viewerId(r);
+      return {
+        ...historyOpts,
+        viewerId: vid,
+        viewerIsStaff: !!vid && dbEnabled && (await isStaffUser(vid)),
+      };
+    };
 
     // recent announcements (patch notes / new season / new act) — public, cheap;
     // the client fetches this on load and shows any it hasn't marked seen locally.
@@ -1050,10 +1297,26 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse): Prom
     if (url.pathname === '/api/records') {
       const mode = url.searchParams.get('mode') === 'duo' ? 'duo' : 'solo';
       const drivetrain = url.searchParams.get('drivetrain') ?? 'overall';
+      /**
+       * ⚠️ THE `physics` QUERY PARAMETER IS IGNORED (owner ruling, 2026-09-18).
+       *
+       * It briefly existed as an era picker — All / 3D / 2D — back when the two eras shared
+       * this board. They do not: every server-connected match of a game that can step 3D is a
+       * 3D match, so the board is the 3D board and `recordLeaderboard` decides that itself
+       * (`boardPhysics` in repo.ts). Accepting the parameter would leave a URL anyone can type
+       * that returns a second, unadvertised board of runs nothing new can be added to, and the
+       * response would have to explain which one it was.
+       *
+       * READ AND DROPPED rather than deleted, so an older client that still appends
+       * `&physics=2d` gets the live board instead of an error — and `physics` is echoed back
+       * as what the board actually IS, not as what was asked for, so such a client's chip and
+       * its rows cannot disagree.
+       */
       const rows = dbEnabled
         ? await recordLeaderboard({ mode, drivetrain, balanceVersion: season, limit, game })
         : [];
-      return json(200, { season, mode, drivetrain, rows, game }), true;
+      const physics = serverPhysics(simModuleFor(game));
+      return json(200, { season, mode, drivetrain, physics, rows, game }), true;
     }
 
     if (url.pathname === '/api/elo') {
@@ -1083,7 +1346,7 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse): Prom
       const username = decodeURIComponent(profMatchesMatch[1]).toLowerCase();
       const profile = dbEnabled ? await getProfileByUsername(username) : null;
       if (!profile) return json(404, { error: 'no such user' }), true;
-      const page = await userMatchHistory(profile.userId, historyOpts);
+      const page = await userMatchHistory(profile.userId, await historyOptsFor(req));
       return json(200, page), true;
     }
 
@@ -1107,7 +1370,9 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse): Prom
     const matchesMatch = url.pathname.match(/^\/api\/user\/([^/]+)\/matches$/);
     if (matchesMatch) {
       const userId = decodeURIComponent(matchesMatch[1]);
-      const page = dbEnabled ? await userMatchHistory(userId, historyOpts) : emptyHistory;
+      const page = dbEnabled
+        ? await userMatchHistory(userId, await historyOptsFor(req))
+        : emptyHistory;
       return json(200, page), true;
     }
 
@@ -1128,7 +1393,26 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse): Prom
 
     const replayMatch = url.pathname.match(/^\/api\/replay\/([\w-]+)$/);
     if (replayMatch) {
-      const replay = dbEnabled ? await getReplay(replayMatch[1]) : null;
+      if (!dbEnabled) return json(404, { error: 'not found' }), true;
+      // THE GATE RUNS BEFORE THE READ (migration 0038). `getReplay` pulls two jsonb blobs
+      // the size of a whole match, and a refused viewer should never cost that — nor should
+      // a private replay be loaded into this process to be thrown away.
+      const access = await replayAccess(replayMatch[1], await viewerId(req));
+      if (access.access === 'missing') return json(404, { error: 'not found' }), true;
+      if (access.access === 'private') {
+        return (
+          json(403, {
+            error: 'private',
+            // WHICH refusal it is, in words — the same discipline `replayRefusal` follows for
+            // a version mismatch. A private match, somebody else's practice run and a
+            // self-hosted event are three different answers, and a client that printed one
+            // sentence for all of them would be wrong about two.
+            message: replayRefusalMessage(access.kind),
+          }),
+          true
+        );
+      }
+      const replay = await getReplay(replayMatch[1]);
       if (!replay) return json(404, { error: 'not found' }), true;
       return json(200, replay), true;
     }

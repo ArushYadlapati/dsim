@@ -3,8 +3,8 @@ import { eloMode } from './eloMode';
 import type { MatchOutcome, MatchParticipant } from './room';
 import {
   actForSeason,
-  addMatchParticipant,
-  getRatingFull,
+  addMatchParticipants,
+  getRatingsFull,
   saveMatch,
   upsertEloHistory,
   upsertRating,
@@ -184,7 +184,16 @@ export async function persistVersusMatch(
   const reds = authed.filter((p) => p.alliance === 'red');
   const blues = authed.filter((p) => p.alliance === 'blue');
   if (!reds.length || !blues.length) return []; // not a two-sided match
-  const mode = eloMode(authed.length);
+  /**
+   * THE ROOM'S OWN FORMAT FIRST, a head-count only as the fallback.
+   *
+   * `eloMode(authed.length)` asks how many people were still in it at the end, which is a
+   * different question from what was played: a 2v2 that finished with three participants was
+   * filed AND RATED as a 1v1 — wrong row in the history, and a 2v2 result moving somebody's
+   * 1v1 rating. `MatchOutcome.mode` is the room's answer (the staged queue bucket, else the
+   * roster it fielded); absent only for a LAN upload or a caller that predates the field.
+   */
+  const mode = outcome.mode ?? eloMode(authed.length);
   const { red, blue } = outcome.result.score;
 
   let updates: EloBoardUpdate[] = [];
@@ -192,39 +201,52 @@ export async function persistVersusMatch(
   if (ranked) {
     // ELO is keyed by ACT (persists across seasons); resolve this season's act once.
     const act = await actForSeason(balanceVersion, game);
-    const parts: EloParticipant[] = [];
-    for (const p of authed) {
-      parts.push({
-        userId: p.userId!,
-        alliance: p.alliance,
-        rating: await getRatingFull(p.userId!, mode, act, game),
-      });
-    }
-    updates = computeGlicko(parts, outcome.result.score);
-    for (const u of updates) {
-      const games = await upsertRating(u.userId, mode, act, u.state.rating, u.state.rd, u.state.vol, game);
-      gamesAfter.set(u.userId, games);
-      // snapshot the post-match rating for THIS SEASON — freezes into the season's final
-      // standings once it rolls (the live act board keeps evolving in elo_ratings).
-      await upsertEloHistory(u.userId, mode, balanceVersion, u.state.rating, u.state.rd, u.state.vol, games, game);
-    }
-  }
-
-  const matchId = await saveMatch(mode, balanceVersion, replayId, ranked, game);
-  if (out) out.matchId = String(matchId);
-  for (const p of authed) {
-    const u = ranked ? updates.find((x) => x.userId === p.userId) : undefined;
-    await addMatchParticipant({
-      matchId,
+    // ONE query for every player's rating, not one per player. Glicko-2's sequencing lives in
+    // `computeGlicko`, which takes the whole set at once — the READS feeding it were never
+    // order-dependent, and issuing them serially cost a round trip per player at the end of
+    // every ranked match, on the path the players are watching for their rating change.
+    const ratingsBefore = await getRatingsFull(authed.map((p) => p.userId!), mode, act, game);
+    const parts: EloParticipant[] = authed.map((p) => ({
       userId: p.userId!,
       alliance: p.alliance,
-      drivetrain: p.drivetrain,
-      score: p.score,
-      won: p.alliance === 'red' ? red > blue : blue > red,
-      ratingBefore: u ? u.before : null,
-      ratingAfter: u ? u.after : null,
-    });
+      rating: ratingsBefore.get(p.userId!)!,
+    }));
+    updates = computeGlicko(parts, outcome.result.score);
+    // Each player's two writes stay ORDERED against each other — `upsertEloHistory` records
+    // the games count `upsertRating` returns — but different players share no row, so the
+    // pairs run concurrently instead of 2N round trips end to end.
+    await Promise.all(
+      updates.map(async (u) => {
+        const games = await upsertRating(u.userId, mode, act, u.state.rating, u.state.rd, u.state.vol, game);
+        gamesAfter.set(u.userId, games);
+        // snapshot the post-match rating for THIS SEASON — freezes into the season's final
+        // standings once it rolls (the live act board keeps evolving in elo_ratings).
+        await upsertEloHistory(u.userId, mode, balanceVersion, u.state.rating, u.state.rd, u.state.vol, games, game);
+      }),
+    );
   }
+
+  // TAGGED WITH THE SOLVE THAT PRODUCED IT (0039), read off the replay the room just recorded
+  // rather than from a room flag: the container is what a later re-simulation will run, so
+  // taking both facts from one place means the row can never disagree with its own replay.
+  const matchId = await saveMatch(mode, balanceVersion, replayId, ranked, game, outcome.replay.physics);
+  if (out) out.matchId = String(matchId);
+  // one multi-row insert rather than one per player — same rows, same conflict handling
+  await addMatchParticipants(
+    matchId,
+    authed.map((p) => {
+      const u = ranked ? updates.find((x) => x.userId === p.userId) : undefined;
+      return {
+        userId: p.userId!,
+        alliance: p.alliance,
+        drivetrain: p.drivetrain,
+        score: p.score,
+        won: p.alliance === 'red' ? red > blue : blue > red,
+        ratingBefore: u ? u.before : null,
+        ratingAfter: u ? u.after : null,
+      };
+    }),
+  );
 
   // the rating change per player, for the results-screen reveal (ranked only;
   // custom returns nothing so no reveal fires)

@@ -38,9 +38,9 @@
  * empty field, because it would look finished.
  */
 
-import type { Alliance, AssistConfig, RobotSpec, StartCat, Vec2 } from '../../types';
+import type { Alliance, AssistConfig, RobotSpec, StartCat, Vec2, World } from '../../types';
 import { INTAKE_PRESETS, ROBOT_MAX_SIZE } from '../../config';
-import { wrapAngle } from '../../math';
+import { dcos, wrapAngle } from '../../math';
 import { lengthLimits, massLimits, widthLimits } from '../../sim/drivetrain';
 import {
   BB_DEFAULT_INTAKE_MOUNT,
@@ -52,6 +52,31 @@ import {
 // `mechs.ts` is a LEAF over `types` + `mounts`, so this import adds no cycle — the same reason
 // `mounts.ts` itself is safe to import here.
 import { bbLauncherOf, bbLiftOf } from './mechs';
+// THE FIELD'S DIMENSIONS ARE GENERATED FROM THE CAD, NOT TYPED HERE (owner ruling, 2026-09-18:
+// "the CAD is authoritative for dimensions"). `fieldDims.gen.ts` is written by `npm run
+// field-cad` out of `public/models/biobuzz/field-measurements.json`, and its header states the
+// derivation and the residual of every value. Nothing in it is hand-editable, and the SIM3D
+// smoke lane re-renders it and diffs it so it cannot drift from the measurements.
+//
+// The CONSTANT NAMES below are unchanged — every caller still imports `BB_HALF_X`, `BB_FLOWERS`
+// and the rest — and each one's comment now cites the CAD and keeps the manual figure it
+// replaced, because the figure is the history of why the number used to be what it was.
+import {
+  FIELD_HALF,
+  FLOWERS,
+  FLOWER_D,
+  FLOWER_FOOT,
+  FLOWER_RETRIEVAL_Z,
+  FLOWER_RING_D,
+  FLOWER_RING_Z,
+  GARDEN,
+  HIVE,
+  LZ,
+  TAPE,
+  TAPE_W,
+  TILE_PITCH,
+  TILE_SEAMS,
+} from './fieldDims.gen';
 
 /** millimetres → inches (the sim's world unit). The manual dimensions arrive in mm, so this
  * is the conversion every element constant is written THROUGH rather than pre-multiplied,
@@ -62,10 +87,32 @@ export const mm = (v: number): number => v / 25.4;
 // FIELD
 // ─────────────────────────────────────────────────────────────────────────────
 
-/** field half-extents (in). A 12 ft × 12 ft FTC field is 144" square ⇒ ±72 from centre.
- * NOT approximate: every FTC field is this size, and R102's 18" cube is stated against it. */
-export const BB_HALF_X = 72;
-export const BB_HALF_Y = 72;
+/**
+ * field half-extents (in) — the perimeter wall's INNER FACE, measured off FIRST's own field CAD.
+ *
+ * ⚠️ **NOT 72.** A "12 ft field" is the nominal description, not the dimension: the CAD's four
+ * inner faces sit at ±70.674 (residual 0.000 — they are symmetric), so the clear span is 141.35
+ * in, not 144. It follows from the tiles, which are `BB_TILE_PITCH` 23.528 in on centre and not
+ * 24; six of them close on 141.17 and the perimeter closes on that plus its own clearance. The
+ * manual never prints an interior span, so there is nothing here the CAD contradicts — the 144
+ * was inherited from DECODE's `C.TILE`-based field and was wrong by 1.87 %.
+ *
+ * Owner ruling, 2026-09-18: "The CAD is authoritative for dimensions." See `fieldDims.gen.ts`.
+ */
+export const BB_HALF_X = FIELD_HALF;
+export const BB_HALF_Y = FIELD_HALF;
+
+/**
+ * soft-tile pitch on centre (in) — CAD (`fieldDims.gen.ts`), and the reason the field is not 144
+ * wide. BIOBUZZ draws its own grid from this and from `BB_TILE_SEAMS`; `C.TILE` (24) stays
+ * DECODE's and Chain Reaction's, because their fields are still modelled on the nominal tile.
+ *
+ * The seams are NOT evenly spaced — a tile body is 24.312 in with its interlock tabs, and the
+ * measured gaps run 23.176…23.986 — so anything DRAWING the grid uses `BB_TILE_SEAMS`, the seven
+ * measured lines, and this constant is their mean, for the places that need one number.
+ */
+export const BB_TILE_PITCH = TILE_PITCH;
+export const BB_TILE_SEAMS = TILE_SEAMS;
 
 /** perimeter wall collider half-thickness (in). Deliberately far thicker than a real wall:
  * these cuboids sit entirely OUTSIDE the play area, and a thick static is what stops a fast
@@ -118,16 +165,19 @@ export interface BbRect {
 }
 
 /**
- * LOADING ZONE — ~23 wide × 11 deep against the side wall, bounded by tape and the wall, tape
- * included (§9.3, Fig 9-2 p65 / Fig 9-3 p66). The width is set by the TILE seams at rows 4
- * and 5; the zone belongs to the alliance whose ALLIANCE AREA it adjoins.
+ * LOADING ZONE — 11.57 wide × 22.69 deep against the side wall, bounded by tape and the wall,
+ * tape included (§9.3, Fig 9-2 p65 / Fig 9-3 p66). The zone belongs to the alliance whose
+ * ALLIANCE AREA it adjoins.
+ *
+ * CAD (`fieldDims.gen.ts`), no longer `APPROX`: the CAD carries the three real gaffer strips, so
+ * the rectangle is the union of their outer faces with the WALL edge as the fourth side — the
+ * wall-bounded edge carries no tape, which is why there are three strips and not four. The old
+ * figure read (x −72…−61, y 24…48) is off by 1.33 at the wall, 1.90 at the inner edge and up to
+ * 1.40 in y; all of it is the field-size finding, not a misread of the drawing.
  *
  * RED IS AT y > 0. That is the half of the field an x-mirror gets wrong.
  */
-export const BB_LZ: Record<Alliance, BbRect> = {
-  red: { x0: -72, x1: -61, y0: 24, y1: 48 }, // APPROX: Fig 9-2/9-3 — ±0.5 in on the tape edge
-  blue: { x0: 61, x1: 72, y0: -48, y1: -24 }, // point symmetry, Fig 9-2
-};
+export const BB_LZ: Record<Alliance, BbRect> = { red: LZ.red, blue: LZ.blue };
 
 /**
  * WHERE AN ELEMENT ENTERS THE FIELD FROM A HUMAN PLAYER'S HAND — the centre of `a`'s LOADING
@@ -150,26 +200,42 @@ export function bbLoadingZoneSpot(a: Alliance, r: number = BB_POLLEN_R): Vec2 {
  * tape", two 1-in tapes (§9.3, §10.5.3, Fig 9-2/9-3). Red's runs along the AUDIENCE wall from
  * the red corner; blue's along the REAR wall from the blue corner. Not protected (G411 note).
  */
-export const BB_GARDEN: Record<Alliance, BbRect> = {
-  red: { x0: -72, x1: -49, y0: -72, y1: -70 }, // APPROX: Fig 9-2/9-3 — strip depth off the drawing
-  blue: { x0: 49, x1: 72, y0: 70, y1: 72 }, // point symmetry, Fig 9-2
-};
+export const BB_GARDEN: Record<Alliance, BbRect> = { red: GARDEN.red, blue: GARDEN.blue };
 
-/** tape widths (in): 1-in gaffer for the LOADING ZONE bound, a 2-in strip for the GARDEN
- * (§9.3). Red / electric-blue — the one thing on this field that is NOT a theme token,
- * because the tape colour is what tells a driver whose zone it is. */
-export const BB_TAPE_1 = 1;
-export const BB_TAPE_2 = 2;
+/**
+ * THE TAPE STRIPS THEMSELVES — what a renderer draws, as opposed to the zone rectangles above.
+ *
+ * CAD (`fieldDims.gen.ts`): 16 parts, every one 1.000 in wide, and the layout is the rule the
+ * owner stated and the CAD confirms part for part — **a zone edge that is a WALL carries no
+ * tape**. A LOADING ZONE has three strips (two depth edges and the inner, field-side edge); a
+ * GARDEN has two laid side by side, which IS the 2-in band, with nothing across its ends; the
+ * ALLIANCE AREA has three, on the gym floor outside the perimeter, open on the field side.
+ *
+ * Outlining `BB_LZ`/`BB_GARDEN` instead — which both renderers used to do — paints tape onto the
+ * wall and turns the garden's solid band into two thin lines with mat between them.
+ */
+export const BB_TAPE = TAPE;
+
+/** tape width (in) — CAD: 1.000 in gaffer, and there is NO other width on this field. `BB_TAPE_2`
+ * is gone: the GARDEN's "2-in strip" (§9.3) is two of these laid side by side, which `BB_TAPE`
+ * carries as two rectangles. Red / electric-blue — the one thing on this field that is NOT a
+ * theme token, because the tape colour is what tells a driver whose zone it is. */
+export const BB_TAPE_1 = TAPE_W;
 
 // ── HIVE STRUCTURE (§9.6, Figs 9-7…9-11, pp69–73) ────────────────────────────
 
 /** pivot x of each HIVE (in): the pair is 25.5 in centre to centre (Fig 9-10), red at −x.
- * APPROX: Fig 9-2 — that the PAIR is centred on the field, which the plan view shows. */
-export const BB_HIVE_X = 12.75;
+ * CAD (`fieldDims.gen.ts`) — the measured pivots are ±12.750 with a 0.000 residual, which
+ * CONFIRMS Fig 9-10's spacing and the `APPROX` assumption that the pair is centred on the
+ * field. No longer approximate. */
+export const BB_HIVE_X = HIVE.PIVOT_X;
 
 /**
  * the BAR's tilt off level at either stable end (degrees) — the ±30° of a bi-stable see-saw
- * (§9.6, Figs 9-7…9-11; owner CAD, 2026-09-12; `docs/biobuzz-reference.md` §2.2).
+ * (§9.6, Figs 9-7…9-11; `docs/biobuzz-reference.md` §2.2). CAD-CONFIRMED to 0.000°: un-tilting
+ * the tray by exactly this angle collapses the 0.020-in back skin to its own thickness, and by
+ * any other angle spreads it over inches (audit §4.1). That is the one measurement that proves
+ * the whole tray export is in the frame it claims to be.
  *
  * It is already baked into every PLAN length below as a cos 30° — `BB_HIVE_CELL_DY`,
  * `BB_HIVE_CELL_LEN` and `BB_HIVE_LEN` are the projected numbers, not the true ones. The
@@ -177,30 +243,59 @@ export const BB_HIVE_X = 12.75;
  * foreshortening is 1 and the assembly reaches its true length, and a renderer animating that
  * needs the angle the projection came from rather than a second copy of 30 typed into it.
  */
-export const BB_HIVE_TILT_DEG = 30;
+export const BB_HIVE_TILT_DEG = HIVE.TILT_DEG;
+
+/** the plan projection at the rest tilt — every PLAN length below is a true CAD length times
+ * this. Written once so the three of them cannot drift apart.
+ *
+ * `dcos`, not `Math.cos`: this value is baked into staged element positions and into the hive
+ * footprint the scorer reads, so it is sim state, and `scripts/smoke.ts`'s source guard bans
+ * engine-defined trig anywhere under `src/games` for exactly that reason. */
+const HIVE_PROJ = dcos((HIVE.TILT_DEG * Math.PI) / 180);
 
 /** horizontal projection (in) of a CELL centre from its pivot, along the HIVE axis (y) —
- * 15.44 · cos 30°. MEASURED (owner CAD, 2026-09-12; `docs/biobuzz-reference.md` §2.2). */
-export const BB_HIVE_CELL_DY = 13.37;
+ * `HIVE.ARM` (15.519) · cos 30°. CAD (`fieldDims.gen.ts`); the earlier owner-CAD read was
+ * 15.44 · cos 30° = 13.37, 0.07 in short. */
+export const BB_HIVE_CELL_DY = HIVE.ARM * HIVE_PROJ;
 
-/** a CELL's depth along the HIVE axis IN PLAN (in) — the 12.04-in prism projected, 12.04 ·
- * cos 30°. MEASURED (owner CAD, 2026-09-12; reference §2.2). */
-export const BB_HIVE_CELL_LEN = 10.43;
+/** a CELL's depth along the HIVE axis IN PLAN (in) — `HIVE.CELL_D` (11.750) projected. CAD; the
+ * earlier read was 12.04 true → 10.43 in plan, 0.25 in long. */
+export const BB_HIVE_CELL_LEN = HIVE.CELL_D * HIVE_PROJ;
 
-/** the up-CELL opening's bottom and top above the tiles (in) — Fig 9-10. This is the window a
- * LAUNCH has to arrive through, and what `releasePollen` solves its arc against. */
-export const BB_HIVE_OPEN_Z: readonly [number, number] = [53.5, 65.6];
+/** the up-CELL opening's bottom and top above the tiles (in). This is the window a LAUNCH has to
+ * arrive through, and what `releasePollen` solves its arc against.
+ *
+ * CAD (`fieldDims.gen.ts`), measured at the mouth face of whichever cell is UP at rest. Fig 9-10
+ * prints [53.5, 65.6] and the CAD says [53.375, 65.497] — agreement to 0.13 in, so this one is a
+ * CONFIRMATION of the figure rather than a correction of it. (The "[47.05, 68.85]" once logged as
+ * an open finding was a collider-export bug, audit §4.4, and is long closed.) */
+export const BB_HIVE_OPEN_Z: readonly [number, number] = HIVE.OPEN_Z;
 
-/** bottom of the DOWN hive above the tiles (in) — Fig 9-10. The space under the structure is
- * drivable, which G409 assumes; the 2D sim simply puts no collider there. */
-export const BB_HIVE_BOTTOM_Z = 25.5;
+/**
+ * bottom of the DOWN hive above the tiles (in). The space under the structure is drivable, which
+ * G409 assumes; the 2D sim simply puts no collider there.
+ *
+ * ⚠️ **CAD 31.981, NOT Fig 9-10's 25.5** — the one place the CAD and the manual genuinely
+ * disagree, and the owner ruled on 2026-09-18 that the CAD wins. It is not a measurement error on
+ * either side: ONE RIGID BAR at 30° cannot put the up cell's mouth at 53.4 and the down cell's
+ * floor at 25.5 at the same time on this tray's own dimensions, and the CAD's up-cell opening
+ * matches the manual to 0.13 in, so the figure that has to give is this one. The lowest hive
+ * structure of ANY kind at rest is the Goal Rib's lower corner at 30.652, so a 29-in robot — the
+ * legal maximum — still clears the whole assembly, which is what G409 actually needs.
+ */
+export const BB_HIVE_BOTTOM_Z = HIVE.DOWN_FLOOR_Z;
+
+/** the lowest point of the hive assembly at rest (in) — CAD, the down-mouth Goal Rib's own lower
+ * corner, which is below the down CELL's floor. The real headroom under a hive, and the number
+ * that says a legal 29-in robot drives under it. */
+export const BB_HIVE_LOWEST_Z = HIVE.LOWEST_Z;
 
 /** the up-CELL's ACCEPT FOOTPRINT (in): `w` across the HIVE, `d` along it.
  *
  * MEASURED (reference §2.2). The 20-in opening WIDTH is perpendicular to the tilt axis, so it
  * is NOT foreshortened; the DEPTH is, and is `BB_HIVE_CELL_LEN` — the same 10.43 the cell is
  * drawn at, because the launch window and the cell footprint are the same rectangle. */
-export const BB_CELL_OPEN = { w: 20, d: BB_HIVE_CELL_LEN };
+export const BB_CELL_OPEN = { w: HIVE.CELL_W, d: BB_HIVE_CELL_LEN };
 
 /**
  * the CELL assembly end to end IN PLAN, along y (in) — 42.91 true · cos 30°. MEASURED
@@ -211,11 +306,12 @@ export const BB_CELL_OPEN = { w: 20, d: BB_HIVE_CELL_LEN };
  * Drawing the up cell at full length and the down cell short says the bar bends, and it makes
  * the hive 42.91 long in a view where nothing on it is.
  */
-export const BB_HIVE_LEN = 37.16;
+export const BB_HIVE_LEN = HIVE.LEN * HIVE_PROJ;
 
-/** the CELL assembly across, along x (in) — the 20-in opening width, which is PERPENDICULAR to
- * the tilt axis and so is not foreshortened (reference §2.2). */
-export const BB_HIVE_W = 20;
+/** the CELL assembly across, along x (in) — the opening width, which is PERPENDICULAR to the
+ * tilt axis and so is not foreshortened. CAD 20.141 (`HIVE.CELL_W`, the mean of the four measured
+ * cells); the manual's round 20 was within 0.15. */
+export const BB_HIVE_W = HIVE.CELL_W;
 
 /**
  * frame BASE BAR, inner and outer x (in) — MEASURED (owner CAD, 2026-09-12; reference §2.2):
@@ -254,17 +350,26 @@ export const BB_HIVE_UP_STAGED: Record<Alliance, 'north' | 'south'> = { red: 'so
 
 // ── FLOWERS (§9.7, Fig 9-12, pp72–73) ────────────────────────────────────────
 
-/** stand-off of a FLOWER's ring centre from its WALL FACE (in). MEASURED (owner CAD,
- * 2026-09-12; reference §2.3) — it was `APPROX` 3.0 off Fig 9-12. */
-export const BB_FLOWER_D = 2.54;
+/** stand-off of a FLOWER's ring centre from its WALL FACE (in). CAD (`fieldDims.gen.ts`):
+ * `FIELD_HALF` minus the least-squares centre of the top ring's own bore, 2.629, over four
+ * flowers with a 0.000 residual. The earlier owner-CAD read of 2.54 was within 0.09 — this
+ * figure was never the problem; the WALL it is measured from was 1.33 in out. */
+export const BB_FLOWER_D = FLOWER_D;
 
 /**
  * The four FLOWERS, one per perimeter wall, on the tile seam one tile off centre.
  *
- * MEASURED (owner CAD, 2026-09-12; reference §2.3): each one sits EXACTLY on the centreline of
- * its tile seam — ±24.000, not offset to one side of it — and its ring centre is BB_FLOWER_D
- * off the wall face. `nearest` is the alliance whose half of the wall it sits on, NOT
- * ownership: a FLOWER is owned at run time by whoever holds the top-most NECTAR (§10.5.2).
+ * CAD (`fieldDims.gen.ts`): each position is the least-squares centre of that flower's own TOP
+ * RING BORE — the hole an element is deposited through — re-expressed point-symmetrically as
+ * `BB_FLOWER_D` off its wall face and `FLOWER_ALONG` (23.392) along it. `nearest` is the
+ * alliance whose half of the wall it sits on, NOT ownership: a FLOWER is owned at run time by
+ * whoever holds the top-most NECTAR (§10.5.2).
+ *
+ * THE ±24 WAS THE TILE SEAM, AND THE TILE SEAM MOVED. The earlier table put each flower on the
+ * ±24.000 seam of a nominal 24-in tile. Real tiles are `BB_TILE_PITCH` 23.528 on centre, so that
+ * seam is really at 23.392 — one tile's worth of accumulated pitch error — and the wall it is
+ * measured from is at 70.674, not 72. Both deltas are the SAME finding, and together they are
+ * the ~1.5 in the CAD audit reported for these four points.
  */
 export const BB_FLOWERS: readonly {
   id: string;
@@ -272,12 +377,7 @@ export const BB_FLOWERS: readonly {
   x: number;
   y: number;
   nearest: Alliance;
-}[] = [
-  { id: 'F1', wall: 'left', x: -72 + BB_FLOWER_D, y: -24, nearest: 'red' },
-  { id: 'F2', wall: 'rear', x: -24, y: 72 - BB_FLOWER_D, nearest: 'red' },
-  { id: 'F3', wall: 'right', x: 72 - BB_FLOWER_D, y: 24, nearest: 'blue' },
-  { id: 'F4', wall: 'audience', x: 24, y: -72 + BB_FLOWER_D, nearest: 'blue' },
-];
+}[] = FLOWERS;
 
 /**
  * WHICH WAY A FLOWER'S MOUTH FACES — out of the wall it stands against, into the field.
@@ -299,27 +399,107 @@ export const FLOWER_MOUTH: Record<(typeof BB_FLOWERS)[number]['wall'], Vec2> = {
   audience: { x: 0, y: 1 }, // F4 stands on −y, opens toward +y
 };
 
-/** top ring height above the tiles (in) — Fig 9-12. The z a deposit arc solves for. */
-export const BB_FLOWER_TOP_Z = 21.5;
+/**
+ * ── THE FLOWER TUBE, BOTTOM TO TOP — five CAD bands, no APPROX left ─────────────────────────
+ *
+ *   `BB_FLOWER_LOW_Z`   0.354   the LOWER plate's top face: the column's floor
+ *   the RETRIEVAL OPENING          0.354 → 3.904, 3.550 in of clear gap on the field side
+ *   `BB_FLOWER_MID_Z`   3.904   the MID plate's underside: where the scoring volume starts
+ *   the SCORING VOLUME             3.904 → 21.404 (§10.5.2, "between the top and middle rings")
+ *   `BB_FLOWER_TOP_Z`  21.404   the TOP plate's top face: the z a deposit arc solves for
+ *
+ * All four were hand-typed manual or APPROX figures until 2026-09-18 (Day 2 lane A):
+ * `field-measurements.json` carried the flower's whole assembly extent (−0.649 … 22.654, which
+ * tops out at the purple backstop) but never separated the three ring PLATES, so there was
+ * nothing in the generated file to read. `convert.py` measures each plate's own band now.
+ *
+ * ⚠️ **THE 3.550-IN RETRIEVAL OPENING IS DERIVED, NOT MEASURED, AND IT LANDS ON FIG 9-12
+ * EXACTLY.** Nothing in the STEP is the hole; it is `mid[0] − lower[1]`, and the manual prints
+ * "3.55 in tall". Two independently measured plate bands reproducing a printed figure to three
+ * decimals is the strongest evidence in this file that the flower export is in the right frame.
+ */
 
-/** top ring opening RADIUS (in) — 4.0 in diameter, Fig 9-12. A 2.8 POLLEN and a 3.6 NECTAR both
- * pass it; only the POLLEN passes the 3.55 retrieval opening at the bottom (G418). */
-export const BB_FLOWER_OPEN_R = 2.0;
+/** top ring height above the tiles (in) — the TOP plate's own top face, CAD
+ * (`fieldDims.gen.ts`, `FLOWER_RING_Z.top`, residual 0 over four flowers). Fig 9-12's 21.5 was
+ * 0.096 high; the audit's §6 hand read of 20.254…21.404 is now the generated number. */
+export const BB_FLOWER_TOP_Z = FLOWER_RING_Z.top[1];
+
+/**
+ * the MIDDLE plate's UNDERSIDE (in) — where the SCORING VOLUME starts, and, in the 2D pipeline's
+ * stack model, where a NECTAR seats. CAD (`FLOWER_RING_Z.mid[0]`, residual 0).
+ *
+ * It was 3.98 `APPROX` in `flower.ts` (the retrieval opening 3.55 plus a 0.43 lower ring), and
+ * the CAD says 3.904 — the same quantity, 0.076 lower, with the same meaning, so every outcome
+ * the sorter ruling produces survives the move (checked: the capacities are still 8 POLLEN and
+ * 5 NECTAR, and every Fig 10-5 case A–H reads the same).
+ *
+ * ⚠️ **THE CAD'S MIDDLE BORE DOES NOT SORT.** `BB_FLOWER_MID_HOLE` measures 3.896 and a NECTAR
+ * is 3.6, so the real plate passes one — which the 2D pipeline's own sorter ruling (owner,
+ * 2026-09-12: "a NECTAR cannot pass the middle ring and SEATS on it") says it does not. The
+ * ruling is a GAMEPLAY decision and it stands for the 2D model; the 3D tube is real geometry and
+ * does what the geometry does. See `BB_FLOWER_LOW_HOLE` for which ring actually sorts, and
+ * `docs/biobuzz/field-cad-audit.md` §11 for the measurement and the consequence.
+ */
+export const BB_FLOWER_MID_Z = FLOWER_RING_Z.mid[0];
+
+/** the LOWER plate's TOP FACE (in) — the column's floor in the 2D stack model. CAD
+ * (`FLOWER_RING_Z.lower[1]`); it was 0.43 `APPROX`, a Fig 9-12 pixel read, 0.076 high. */
+export const BB_FLOWER_LOW_Z = FLOWER_RING_Z.lower[1];
+
+/** the RETRIEVAL OPENING's own z span (in) — the clear gap between the lower plate's top face
+ * and the mid plate's underside, on the FIELD side (the wall side is the backstop extrusion).
+ * 3.550 in tall, which is Fig 9-12's printed figure to three decimals. G418.B's bottom-pop and
+ * the 3D intake sensor both read this band. */
+export const BB_FLOWER_RETRIEVE_Z: readonly [number, number] = FLOWER_RETRIEVAL_Z;
+
+/**
+ * the MIDDLE and LOWER bore DIAMETERS (in) — CAD least-squares fits (`FLOWER_RING_D`), residual
+ * 0 over four flowers, rms 0.052 / 0.038 on the fit itself.
+ *
+ * ⚠️ **THE SORTER IS THE LOWER RING, NOT THE MIDDLE ONE.** A 2.8-in POLLEN passes all three
+ * bores; a 3.6-in NECTAR passes the top (4.171) and the middle (3.896) and is stopped by the
+ * lower (3.222). So the manual's INTENT survives — "POLLEN out of the bottom and nothing else"
+ * (G418), because a nectar clears neither the lower bore nor the 3.55-in retrieval opening — but
+ * the ring that delivers it is the bottom one, and a nectar dropped into a real FLOWER falls to
+ * the bottom of the tube rather than seating half way up it. Measured, not assumed, and NOT
+ * fudged to match the 2D model: see `BB_FLOWER_MID_Z`.
+ */
+export const BB_FLOWER_MID_HOLE = FLOWER_RING_D.mid;
+export const BB_FLOWER_LOW_HOLE = FLOWER_RING_D.lower;
+
+/** the three PLATE bands themselves, re-exported so `sim3d/flowerTube.ts` and the FLOWER3D lane
+ * read the geometry through `config.ts` like every other BIOBUZZ constant rather than reaching
+ * into the generated module. The five named `BB_FLOWER_*_Z` constants above are the faces the
+ * RULES care about; this is the raw pair per plate, which is what a COLLIDER needs. */
+export { FLOWER_RING_Z };
+
+/** top ring opening RADIUS (in) — CAD (`fieldDims.gen.ts`, `FLOWER_RING_D.top` 4.171 measured by
+ * a least-squares circle fit to the plate's own inner cylindrical surface, rms 0.049). Fig 9-12's
+ * round 4.0 was 0.17 under. A 2.8 POLLEN and a 3.6 NECTAR both pass it; only the POLLEN passes
+ * the retrieval opening at the bottom (`FLOWER_RING_D.lower` 3.222, G418). */
+export const BB_FLOWER_OPEN_R = FLOWER_RING_D.top / 2;
 
 /**
  * the FLOWER's FOOTPRINT on the tiles (in) — `along` the wall by `deep` into the field, flush
  * against the wall face. MEASURED (owner CAD, 2026-09-12; reference §2.3).
  *
  * A RECTANGLE, NOT A DISC. The first pass read Fig 9-12's ring plate as an `APPROX` 2.6-in
- * circle; the solid a robot actually meets is a 6 × 4.9 box with the 4.0-in ring opening
- * inside it, BB_FLOWER_D off the wall. The difference matters at both ends — it is wider along
- * the wall than a 2.6 disc (a robot running the wall hits it sooner) and shallower into the
- * field (it protrudes 4.9, not 5.2, and its corners are square).
+ * circle; the solid a robot actually meets is a 6 × 4.9 box with the ring opening inside it,
+ * BB_FLOWER_D off the wall. The difference matters at both ends — it is wider along the wall
+ * than a 2.6 disc (a robot running the wall hits it sooner) and shallower into the field (it
+ * protrudes 4.9, not 5.2, and its corners are square).
+ *
+ * ✅ GENERATED SINCE 2026-09-18 (Day 2 lane A): `FLOWER_FOOT` is the union of the three ring
+ * PLATES' own footprints, 5.951 × 5.013, residual 0 over four flowers. It could not be read off
+ * `flowers[].extent` — that carries the under-field bracket reaching BEHIND the wall plane and
+ * the backstop above the top plate — which is why the hand-typed 6 × 4.9 survived this long. It
+ * was within 0.05 along and 0.11 deep, so this is a confirmation with a small correction, not a
+ * move.
  *
  * The COLLIDER is `colliders.ts` (biobuzz-field-staging); this is the number it and the
  * drawing share.
  */
-export const BB_FLOWER_FOOT = { along: 6, deep: 4.9 };
+export const BB_FLOWER_FOOT = FLOWER_FOOT;
 
 /**
  * THE HIVE TIP TABLE. Indexed by the number of NECTAR in the up-CELL; the value is how many
@@ -413,8 +593,11 @@ export const BB_RP = {
 export const BB_POLLEN_R = 1.4;
 
 /** NECTAR radius (in) — 3.6 in diameter, §9.8 (am-5852). The second element size, and the
- * reason the shared solve needs a per-artifact radius: today a nectar is SIMULATED at
- * `BB_POLLEN_R` (see `docs/biobuzz/field-plan.md` §6 request 1) and only drawn at this one. */
+ * reason the shared solve grew a per-artifact radius: it is now SIMULATED at this value too,
+ * not only drawn at it. Every site reads `b.r ?? radius` (field-plan §6 request 1, LANDED),
+ * so a resting NECTAR sits 1.8 in off a wall instead of 1.4 and no longer puts 0.4 in of
+ * itself outside the field. ⚠️ `bbRobotSolids` is the one holdout — it still builds every
+ * held plug at its `radius` argument, so a CARRIED nectar collides as a POLLEN. */
 export const BB_NECTAR_R = 1.8;
 
 /** how many POLLEN are on the field at staging — §10.3.1: 16 in the four FLOWERS, 4 in each
@@ -494,6 +677,107 @@ export const BB_INTAKES: Record<BbIntakeStyle, BbIntakeGeom> = {
 };
 export const BB_DEFAULT_INTAKE: BbIntakeStyle = 'sweeper';
 
+/**
+ * ⚠️ **THE ONE INTAKE REACH** — how far past the frame the roller line sits, in inches.
+ *
+ * Every BIOBUZZ reader of "how far does the sweeper stick out" goes through this: `bbMouths`
+ * (the capture area AND what both renderers draw), `bbFootprint` (the collision extent),
+ * `bbRobotSolids` (the side plates a POLLEN meets) and the intake model in `bbIntakeAct`.
+ * It is deliberately the SHARED preset's own number — 3.0 / 3.5 / 5.0 in for sloped / vector /
+ * triangle, which is the 3–5 in an over-bumper intake really reaches — because
+ * `footprintExtents` (`src/sim/field.ts`) grows the hitbox from that same preset, and a BIOBUZZ
+ * number here would put the drawn roller and the collider an inch apart.
+ *
+ * Naming it anyway is the point: four files used to spell `INTAKE_PRESETS[spec.intake].reach`
+ * independently, which is exactly how the drawn mouth and the capture zone drift.
+ */
+export function bbIntakeReach(spec: Pick<RobotSpec, 'intake'>): number {
+  return INTAKE_PRESETS[spec.intake].reach;
+}
+
+/**
+ * THE ROLLER MODEL — what the intake does to a loose element, rather than which rect swallows
+ * one. Read only by `bbIntakeAct` (`robot.ts`), which is the single implementation for BOTH
+ * physics backends.
+ *
+ * ⚠️ NONE OF THESE IS A GROUND-POLLEN PHYSICS CONSTANT (`docs/biobuzz-contract.md` §1). They
+ * describe HARDWARE — how fast a roller surface moves, how wide its feed throat is, how many
+ * elements a minute it can pass — the same class as `BB_INTAKES`' own geometry, and the same
+ * class DECODE keeps in `INTAKE_PRESETS.mouth`. Friction, restitution, rest speed and mass
+ * still belong to the shared solve, and nothing here touches an element's POSITION: the pull is
+ * a VELOCITY contribution written before the solve (2D) or before the next sync (3D), exactly
+ * as DECODE's `intakeSuction` is, and the solve is still the only writer of where a POLLEN is.
+ *
+ * All APPROX — there is no published intake in the manual to measure.
+ */
+/** roller surface speed (in/s): how fast the rollers walk an element they have hold of toward
+ * the throat. Above the ~40 in/s a robot drives at, so a robot driving INTO a pile still draws
+ * elements in rather than plowing them; well under a launch speed, so nothing is flung.
+ * WAS 52. Raised to 84 (owner: intake cadence "way faster") — ceiling check 1: 84 <
+ * `C.BALL_MAX_SPEED` (90) still holds, but the margin shrinks from 38 to 6 in/s (RULES lane
+ * asserts this explicitly now, so a future bump that clips in 2D only and diverges the two
+ * backends is caught rather than shipped quietly). */
+export const BB_INTAKE_DRAW_IN = 84;
+/** how much of the draw-in goes into CENTRING an off-centre element, as a fraction of the
+ * inboard pull. A full-width sweeper takes an element mostly straight back over the bumper; the
+ * compliant wheels' funnel is a secondary effect, not the main one.
+ * WAS 0.5. Raised to 0.6 alongside the `BB_INTAKE_DRAW_IN` bump — ceiling check 2:
+ * `DRAW_IN * CENTRE_FRAC` = 84*0.6 = 50.4, comfortably under `BB_INTAKE_CROSS_MAX` (80), same
+ * margin shape as before (was 52*0.5=26/80). This is the exact self-trip class of bug the
+ * funnel's own lateral pull can cause against its own `CROSS_MAX` on the next tick — keep the
+ * product well clear of the ceiling whenever either constant moves again. */
+export const BB_INTAKE_CENTRE_FRAC = 0.6;
+/** NEW. Acceleration (in/s²) an element's grip velocity ramps toward `BB_INTAKE_DRAW_IN` at, in
+ * `bbIntakeAct`. Fixes a units bug: that function used to pass `BB_INTAKE_DRAW_IN` straight into
+ * `approach()`'s per-tick `maxDelta`, i.e. a velocity as if it were a per-TICK displacement cap —
+ * effectively 52 in/s ÷ (1/60 s) = 3120 in/s² of acceleration, reaching full draw-in speed from
+ * rest in exactly one tick (instant velocity, reads as a teleport/jerk). 1200 in/s² gives a
+ * 0.043–0.07 s (2.6–4.2 tick) ramp to today's/tomorrow's `BB_INTAKE_DRAW_IN`, well under one feed
+ * period, so it smooths the motion without becoming the new bottleneck. APPROX — no published
+ * intake spec exists to measure the real number against, same caveat this file already carries
+ * for `BB3_ELEMENT_MASS`. */
+export const BB_INTAKE_GRIP_ACCEL = 1200;
+/** the FEED THROAT, as a fraction of the mouth's lateral half-span. An element has to be drawn
+ * into this band to be swallowed — everything else is the funnel's job, and it costs TIME. */
+export const BB_INTAKE_THROAT_FRAC = 0.72;
+/** how far past the roller line an element's CENTRE may be (on top of its own radius) and still
+ * count as touching the rollers. A contact tolerance, not extra reach: in 3D the chassis
+ * collider is `robotExtents` — the roller line itself — so an element resting on it sits within
+ * a hair of the rect bound and a strict test missed it entirely (measured: 0/1 at the mouth's
+ * lateral edge, and 35–70 ticks where 2D took 15). */
+export const BB_INTAKE_LIP = 0.35;
+/** how far INBOARD of the frame face an element must have been drawn to be swallowed — the
+ * throat depth. With `BB_INTAKE_DRAW_IN` this is what makes a capture a SHORT TRANSIT (~3–6
+ * ticks from the roller line) instead of a teleport out of the whole mouth rect. */
+export const BB_INTAKE_SEAT = 1.1;
+/** seconds per element through the feed: `MIN` dead centre on the roller, `MAX` at its lateral
+ * edge or on a wall grab. One real FTC intake passes an element every 0.15–0.3 s.
+ * WAS 0.15 / 0.3. Halved to 0.06 / 0.12 (owner: cadence "way faster") — MEASURED against the
+ * live gate (`world.time - lastIntakeAt < period`, `bbIntakeAct`), not just the doc comment:
+ * today's real cadence, driven through the actual pipeline, is 0.10–0.19 s/element parked dead
+ * centre and 0.10–0.13 s driving in with the closing bonus — already close to the old MIN, so
+ * halving both bounds is the direct, verified lever. New range with the closing bonus applied:
+ * 0.0375 s (driving in hard) to 0.06 s (parked dead centre) per lane-burst; new worst case
+ * (lateral edge / wall grab) is 0.075–0.12 s, still faster than the OLD best case (0.09375 s),
+ * so the whole range strictly improves. */
+export const BB_INTAKE_PERIOD_MIN = 0.06;
+export const BB_INTAKE_PERIOD_MAX = 0.12;
+/** inches of roller per FEED LANE. A bar wide enough for two paths into the hopper can take two
+ * elements side by side in one cycle; a narrow one takes one. */
+export const BB_INTAKE_LANE_W = 9;
+/** driving INTO an element helps: the period is divided by up to `1 + BONUS` as the element's
+ * inboard closing speed relative to the robot reaches `CLOSE_REF` in/s. */
+export const BB_INTAKE_CLOSE_REF = 30;
+export const BB_INTAKE_CLOSE_BONUS = 0.6;
+/** an element crossing the mouth SIDEWAYS faster than this (in/s, relative to the robot) is not
+ * gripped at all — the rollers spin under it and it carries on past. */
+export const BB_INTAKE_CROSS_MAX = 80;
+/** wall clearance (in, past the element's own skin) under which an element counts as PINNED and
+ * is taken wherever it lies across the roller, at the slow end of the timing. A funnel cannot
+ * centre something a wall is holding — DECODE learned this as "I can't intake a ball in the
+ * corner anymore" and `INTAKE_WALL_GRAB` is the same rule. */
+export const BB_INTAKE_WALL_GRAB = 1.2;
+
 // ─────────────────────────────────────────────────────────────────────────────
 // ROBOT — launcher geometry (the four archetypes)
 // ─────────────────────────────────────────────────────────────────────────────
@@ -536,12 +820,15 @@ export const BB_LAUNCH_Z0 = 10;
  *
  * FLOWER scoring is a PROXIMITY action (owner ruling 2026-09-12), not a raise: there is no
  * carriage height and no travel. `bbPlacePointLocal` (`robot.ts`) is the one geometry, and it is
- * sized against the FLOWER solid (`BB_FLOWER_FOOT`, 4.9 deep, ring `BB_FLOWER_D` = 2.54 off the
- * wall): a chassis face flush on the flower is 4.9 − 2.54 = 2.36 in past the ring centre. The
- * reach is DERIVED as exactly that, so a robot pressed square against a FLOWER foot has its
- * placement point dead on the ring.
+ * sized against the FLOWER solid (`BB_FLOWER_FOOT`, CAD-regenerated `deep` 5.013, ring
+ * `BB_FLOWER_D` = 2.629 off the wall): a chassis face flush on the flower is 5.013 − 2.629 =
+ * 2.384 in past the ring centre. The reach is DERIVED as exactly that, so a robot pressed square
+ * against a FLOWER foot has its placement point dead on the ring.
+ *
+ * WAS cited as 4.9 / 2.54 / 2.36 before the CAD regeneration (`fieldDims.gen.ts`); the VALUE was
+ * always derived and correct, only this prose had drifted.
  */
-export const BB_PLACE_REACH = BB_FLOWER_FOOT.deep - BB_FLOWER_D; // 2.36 — flush on the foot = dead centre
+export const BB_PLACE_REACH = BB_FLOWER_FOOT.deep - BB_FLOWER_D; // 2.384 — flush on the foot = dead centre
 /** how close the placement point must be to a FLOWER ring centre to place (in). APPROX — the
  * slop of a real tube lining up on a 4.0-in ring; a placement should not need the pixel. */
 export const BB_PLACE_TOL = 2.0;
@@ -556,20 +843,54 @@ export const BB_FLOWER_RETRIEVE_PAD = 1.0;
 export const BB_LIFT_MASS_FLOOR = 2.0;
 
 /**
- * The hood elevation a DUMPER is built at, in DEGREES above level, and the range the builder
- * offers. APPROX all three.
+ * NEW. THE BOX TUBE'S OWN HARDWARE GEOMETRY — named here, not in the renderer, because the
+ * RENDER lane forbids `renderRobots.ts` naming a mechanism constant of its own (the same rule
+ * that keeps the intake's geometry here rather than in the file that draws it).
  *
- * THE RANGE IS WHERE A DUMPER CAN STILL REACH THE HIVE FROM ITS OPEN SIDE. A dump's speed is
- * solved per element for the built hood (`bbDumpSolution`, `robot.ts`) and capped at
- * `BB_LAUNCH_SPEED_MAX`, and the up-CELL only accepts an element that is DESCENDING and
- * travelling toward the pivot (`hiveAccepts`). A robot squarely in front of its cell with its
- * back to the wall has only ~41–45 in of stand-off, so a shallow hood (60° needs ≥ ~54 in to
- * arrive descending) cannot score from the obvious spot. Simulated accepted edge-to-cell
- * distances under a 260 cap: 70°: 32–90 · 75°: 23–71 · 80°: 14–49 · 85°: 7–25. So a steep hood
- * is a short-range dumper and a shallower one a long-range one, and every hood in this range
- * scores from somewhere on the open side (smoke asserts it).
+ * `BB_BOX_TUBE_SECTIONS` (in, outer to inner): a real FTC box tube is 1.5×1.5 outer with a
+ * 0.125-in wall, giving a 1.25-in clear bore, with a 1×1 tube nested inside that — three genuine
+ * telescoping sections, measured hardware rather than APPROX. `BB_BOX_TUBE_WALL` is the wall
+ * thickness that makes the nest close exactly: 1.5 − 2×0.125 = 1.25 is the next section's outer
+ * dimension, and it is also how much each stage must be hollowed by in the mesh to read as a
+ * tube rather than a bar.
+ */
+export const BB_BOX_TUBE_SECTIONS = [1.5, 1.25, 1.0] as const;
+export const BB_BOX_TUBE_WALL = 0.125;
+/** how much of each telescoping stage stays captured inside the one outboard of it at full
+ * extension (in). APPROX — sized as one section width so a fully extended tube never draws as
+ * two boxes with a visible gap between them; it sets per-stage travel,
+ * `(bbTubeReach - (n-1) * BB_BOX_TUBE_STAGE_OVERLAP) / n`. */
+export const BB_BOX_TUBE_STAGE_OVERLAP = 1.25;
+/** seconds for the Box Tube to fully extend or retract, in the RENDERER only. APPROX — a RENDER
+ * rate with NO sim consequence: the Box Tube has no sim travel (placement is a proximity action,
+ * not a raise — see `BB_PLACE_REACH`'s header), so this can never change what scores. Shared by
+ * both renderers so the 2D and 3D views ease identically. */
+export const BB_BOX_TUBE_EXTEND_S = 0.35;
+
+/**
+ * A DUMPER'S RANGE (owner, 2026-09-13) — how far from the cell it is dumping into a dumper can
+ * throw from, measured horizontally from each element's release point on the dumper's edge to
+ * the cell centre (in). APPROX all three.
  *
- * ⚠️ CHANGING THE DEFAULT RE-HASHES EVERY SCENE IN WHICH A DUMPER FIRES.
+ * A DUMP IS A LOB, NOT A FIXED-HOOD SHOT. Each element is thrown to peak `BB_DUMP_APEX_ABOVE`
+ * over the cell's aim height and drop onto it (`bbLobThrow`, `robot.ts`), so it arrives
+ * DESCENDING — which `hiveAccepts` requires — from any distance, and the minimum is geometry
+ * alone: `BB_DUMP_MIN_DIST` is only the floor below which a throw has no direction. The fixed hood
+ * this replaced made a dumper stand far off (23–71 in at the default 75°, since a flat-ish arc
+ * only descends past its apex) and also reach far; the owner ruled both wrong, so the MAXIMUM is
+ * a strict cap rather than whatever `BB_LAUNCH_SPEED_MAX` happens to allow (~108 in).
+ */
+export const BB_DUMP_MIN_DIST = 1;
+export const BB_DUMP_MAX_DIST = 36;
+export const BB_DUMP_APEX_ABOVE = 4;
+
+/**
+ * The hood elevation a DUMPER used to be built at, in DEGREES above level.
+ *
+ * ⚠️ NO LONGER READ BY THE SIM (owner, 2026-09-13). A dump is solved as a lob for its distance
+ * (`BB_DUMP_MAX_DIST` above), so the builder offers no Hood dial and no label prints one. The
+ * field stays on `BbLauncherSpec` and the coercer still clamps it to this range, so saved robots,
+ * presets and replays keep round-tripping unchanged.
  */
 export const BB_HOOD_DEFAULT_DEG = 75;
 export const BB_HOOD_MIN_DEG = 70;
@@ -579,15 +900,32 @@ export const BB_HOOD_MAX_DEG = 85;
  * what stops a held fire button re-dumping on every capture. */
 export const BB_DUMP_RELOAD_S = 0.75;
 
+/**
+ * how long a STAGGERED dump waits between elements (s) — the 3D pipeline only, via
+ * `BbShot.perDump` (`robot.ts`). APPROX: a tray pouring, not four balls teleported out on one
+ * tick.
+ *
+ * 2D never reads it, because 2D never sets `perDump`. In 3D the elements are real bodies and
+ * `bbDumpSolution` converges ALL of them on ONE cell-centre point, so a simultaneous dump is a
+ * four-way pile-up in the opening.
+ *
+ * ⚠️ **IT IS MEASURED, AND THE CURVE IS A KNEE, NOT A SLOPE.** Swept on the 28-pose tutorial
+ * grid (`shoot`, BLUE, the Box-Tube dumper, dx 0/3/6/9 in and dy 14..38 in off the cell), with
+ * the birth clearance of `syncElement` already in: 0.05 s → 3/28, 0.1 → 11, 0.2 → 17, **0.3 →
+ * 20**, and 0.35/0.4/0.5/0.7 → 20. So 0.3 is the point at which the previous element is clear of
+ * the opening before the next arrives, and paying more buys nothing but a slower pour. The
+ * dumper's own lob is ~0.67 s in the air, which is why the knee sits where it does.
+ *
+ * A four-element hopper therefore takes 0.9 s to empty. That is a tray tipping, and the re-dump
+ * cost a driver feels is still `BB_DUMP_RELOAD_S` — the stagger only applies while the hopper
+ * still has load.
+ */
+export const BB_DUMP_STAGGER_S = 0.3;
+
 /** the most elements one turret feed can release in a single tick — the burst bound on the
  * accumulated cadence clock (`bbLaunch`). With `BB_FIRE_INTERVAL` above a tick it is normally 1;
  * this only bounds a pathological catch-up. APPROX. */
 export const BB_FIRE_BURST_MAX = 6;
-
-/** how close a turret's yaw AND pitch must be to its HIVE solution for AUTO-FIRE to count it as
- * ON TARGET (rad). Manual fire never waits for it — a turret fired mid-slew misses honestly.
- * APPROX. */
-export const BB_ON_TARGET_TOL = 0.05;
 
 /**
  * ⚠️ THE HOOD IS THE ONLY ANGLE IN THIS GAME MEASURED IN DEGREES, AND ONLY ON THE SPEC.
@@ -730,6 +1068,13 @@ export const BB_MAX_WIDTH = 17;
  * range simply widens to term 1 the moment term 2 stops binding. The intersection is also
  * what keeps `BB_PRESETS` a coercer no-op, which is what makes a preset card highlight as
  * selected — smoke asserts it.
+ *
+ * ⚠️ THE PRISM-DERIVED MAXIMUMS ARE FLOORED TO `BB_SIZE_STEP`. A corner Box Tube reaches
+ * `BB_PLACE_REACH · √½` (1.669…) along each axis, so `18 − reach` is 16.331227996399747, and the
+ * coercer clamped a chassis to exactly that, which the builder printed as a 15-digit width
+ * (owner report, 2026-09-13). Flooring keeps the limit inside the prism, keeps coercion
+ * idempotent, lands every clamped size on the slider's own grid, and re-coerces a robot already
+ * saved with the long number onto it.
  */
 export function bbSizeLimits(spec: RobotSpec): {
   minLength: number;
@@ -761,6 +1106,37 @@ export function bbEnvelopeReach(spec: RobotSpec): { length: number; width: numbe
   };
 }
 
+/** the Frame sliders' step (in) — and the grid a size LIMIT derived from the prism is floored to
+ * (`bbSizeLimits`), so a clamped chassis is never a 15-digit number. The builder reads this. */
+export const BB_SIZE_STEP = 0.5;
+
+/** `v` floored to `BB_SIZE_STEP`, with a hair of tolerance so a limit that is already on the
+ * grid (17, 16.5) is not knocked a whole step down by float noise. */
+function floorToSizeStep(v: number): number {
+  return Math.floor(v / BB_SIZE_STEP + 1e-9) * BB_SIZE_STEP;
+}
+
+/**
+ * A CHASSIS SIZE ON THE SLIDER'S OWN GRID — `v` to the NEAREST `BB_SIZE_STEP`.
+ *
+ * ⚠️ THE 2026-09-13 FIX WAS HALF OF ONE, AND THE OWNER RE-REPORTED IT (2026-09-18). Flooring the
+ * prism-derived LIMITS stopped the coercer from *creating* 16.331227996399747 — but nothing ever
+ * snapped the VALUE, so a robot saved with that width before the fix keeps it forever: the
+ * default build's width ceiling is 17, the clamp has nothing to do, and the builder prints all
+ * fifteen digits. Measured: `coerceBiobuzzSpec({…, width: 16.331227996399747})` returned it
+ * unchanged. Snapping in the coercer is what HEALS a stored spec, and because the coercer is the
+ * one chokepoint every spec passes — localStorage, the wire, `createWorld`, the server's own
+ * pass — the client and the server land on the same number, so `bbSpecKey` still agrees.
+ *
+ * Rounding, not flooring: this is a value a player chose, and the nearest legal dial position is
+ * the honest repair. It is IDEMPOTENT (a grid value rounds to itself) and it cannot leave the
+ * legal range, because every limit `bbSizeLimits` reports is already on this grid (smoke asserts
+ * that separately) and the caller re-clamps anyway.
+ */
+export function bbSnapSize(v: number): number {
+  return Math.round(v / BB_SIZE_STEP) * BB_SIZE_STEP;
+}
+
 /** the resolved envelope: which rectangle of R105.A was picked (`lengthLong` — the 24 runs along
  * the chassis LENGTH), the slider limits inside it, and whether its minimum chassis fits the
  * prism at all. See `bbSizeLimits` for the rule. */
@@ -779,9 +1155,9 @@ function bbEnvelope(spec: RobotSpec): {
     const capW = lengthLong ? BB_PRISM_NARROW : BB_PRISM;
     const limits = {
       minLength,
-      maxLength: Math.min(BB_MAX_LENGTH, capL - ext.length, shL.max),
+      maxLength: Math.min(BB_MAX_LENGTH, floorToSizeStep(capL - ext.length), shL.max),
       minWidth,
-      maxWidth: Math.min(BB_MAX_WIDTH, capW - ext.width, shW.max),
+      maxWidth: Math.min(BB_MAX_WIDTH, floorToSizeStep(capW - ext.width), shW.max),
     };
     // THE MINIMUM CHASSIS, not the max: the coercer widens an inverted range UP to the floor,
     // so the floor is the size a build actually gets when nothing else fits, and it has to be
@@ -927,7 +1303,10 @@ export function bbMassFloorBump(spec: RobotSpec): number {
 // ─────────────────────────────────────────────────────────────────────────────
 
 export interface BbStartAnchor {
+  /** the anchor's name in the CANONICAL (blue) frame — see `bbAnchorName` for what a player sees */
   name: string;
+  /** which perimeter wall the robot backs onto, in the canonical frame */
+  wall: 'rear' | 'audience' | 'side';
   pos: { x: number; y: number };
   heading: number;
 }
@@ -950,31 +1329,44 @@ export interface BbStartAnchor {
  *
  * So they moved to the two walls an alliance shares with nobody's zone:
  *
- *   index 0  REAR wall     (34, 61.5) facing −y.  x = 34 keeps the footprint clear of blue's
- *                          GARDEN strip (x ≥ 49) and of F2, which is on RED's half at x = −24.
- *   index 1  AUDIENCE wall (46, −61.5) facing +y. x = 46 clears F4's foot (x ∈ [21, 27]) by
- *                          seven inches on one side and blue's LOADING ZONE (x ≥ 61) by three
- *                          on the other.
+ *   index 0  REAR wall     (34, wall−10.5) facing −y.  x = 34 keeps the footprint clear of
+ *                          blue's GARDEN strip (x ≥ 47.4) and of F2, on RED's half at x = −23.4.
+ *   index 1  AUDIENCE wall (46, −(wall−10.5)) facing +y. x = 46 clears F4's foot (x ∈ [20.4,
+ *                          26.4]) by seven inches on one side and blue's LOADING ZONE
+ *                          (x ≥ 59.1) by thirteen on the other.
  *
- * `y = ±61.5` is ±72 less a default chassis half-extent of 10.5, so the footprint CONTACTS its
- * wall rather than hovering off it. Spec-dependent by nature — a deeper sweeper reaches
- * further — so `bbSnapStart` still re-seats per build; it now has a hair to move, not a foot.
+ * THE WALL-NORMAL COORDINATE IS WRITTEN AS `BB_HALF_* − CHASSIS_HALF`, NOT AS A LITERAL. It used
+ * to be ±61.5, i.e. ±72 less a default chassis half-extent of 10.5, and the ±72 was wrong: the
+ * CAD wall is at ±70.674, so a literal would now hover 1.33 in off the wall and G304.C wants the
+ * robot TOUCHING it. Spec-dependent by nature — a deeper sweeper reaches further — so
+ * `bbSnapStart` still re-seats per build; it has a hair to move, not a foot.
  *
- * ⚠️ **APPROX, AND IN ONE PLACE: THE FRONTAGE.** The CLAUSES are verbatim, but two of the
- * shapes they are measured against are figure-derived — `BB_LZ` is a Fig 9-2/9-3 read with
- * ±0.5 in of slop on the tape edge, and `BB_FLOWER_FOOT` is owner CAD rather than a printed
- * dimension. The three-inch margin at the LOADING ZONE end of anchor 1 is deliberate cover for
- * exactly that: at ±0.5 in of tape error the pose is still plainly legal. The ±72 walls, the
- * x = 0 seam and the FLOWER centres are measured and are not APPROX.
+ * ⚠️ **NO LONGER APPROX.** Both shapes these poses are measured against are now CAD: `BB_LZ` is
+ * the union of three measured tape strips and `BB_FLOWER_FOOT` is CAD-confirmed to 0.05 in
+ * (audit §6). The generous along-wall margins stay as they are — they were cover for the tape
+ * slop, and the zones moving inward by ~1.9 in only widened them.
  *
  * ORDER IS LOAD-BEARING: a 2-robot alliance defaults to anchors 0 and 1, so index 0 must be
  * the TOP (y ≥ 0) anchor and index 1 the BOTTOM one (`bbAnchorCat`). They are 123 in apart —
  * opposite ends of the field — so two robots of one alliance cannot reach each other at the
  * buzzer, which is the whole reason there are two.
  */
+/** the default build's chassis half-extent along its own facing axis (in) — what seats an anchor
+ * against the wall it names. `bbSnapStart` re-seats per spec; this only has to be close. */
+const START_CHASSIS_HALF = 10.5;
+const START_SEAT_X = BB_HALF_X - START_CHASSIS_HALF;
+const START_SEAT_Y = BB_HALF_Y - START_CHASSIS_HALF;
 export const BB_START_POSES: readonly BbStartAnchor[] = [
-  { name: 'START · REAR', pos: { x: 34, y: 61.5 }, heading: -Math.PI / 2 },
-  { name: 'START · AUDIENCE', pos: { x: 46, y: -61.5 }, heading: Math.PI / 2 },
+  { name: 'TOP · REAR WALL', wall: 'rear', pos: { x: 34, y: START_SEAT_Y }, heading: -Math.PI / 2 },
+  { name: 'BOTTOM · AUDIENCE WALL', wall: 'audience', pos: { x: 46, y: -START_SEAT_Y }, heading: Math.PI / 2 },
+  // THE SIDE-WALL PAIR (owner, 2026-09-13: "come up with some default positions"). The start
+  // editor offers each role two anchors, like Chain Reaction's corners. Both back onto the
+  // alliance's OWN side wall (facing into the field) on either side of its LOADING ZONE
+  // (y ∈ [−46.6, −23.9], G304.E): TOP at y = 45 clears the zone and F3's foot (y ∈ [20.4, 26.4]),
+  // BOTTOM at y = −60 sits between the zone and the audience corner. Indices 0 and 1 are still
+  // the TOP / BOTTOM defaults a 2-robot alliance spreads onto; these are the alternatives.
+  { name: 'TOP · SIDE WALL', wall: 'side', pos: { x: START_SEAT_X, y: 45 }, heading: Math.PI },
+  { name: 'BOTTOM · SIDE WALL', wall: 'side', pos: { x: START_SEAT_X, y: -60 }, heading: Math.PI },
 ];
 
 /** how many start anchors this game offers — read by the shared per-game start-index clamp
@@ -992,8 +1384,31 @@ export const bbDefaultIndex = (cat: StartCat): number => {
   const i = BB_START_POSES.findIndex((_, idx) => bbAnchorCat(idx) === cat);
   return i >= 0 ? i : 0;
 };
-export const bbRoleLabel = (cat: StartCat | undefined): string =>
-  cat === 'close' ? 'TOP' : cat === 'far' ? 'BOTTOM' : '-';
+/**
+ * THE ROLE AS A PLAYER READS IT — TOP means the pair of anchors drawn at the TOP of the field for
+ * THIS alliance.
+ *
+ * ⚠️ IT DEPENDS ON THE ALLIANCE, because this field is POINT-symmetric. The role slots are
+ * canonical (close = the blue-frame y ≥ 0 anchors), and red's anchors are those rotated 180°, so
+ * red's `close` anchors are drawn at the BOTTOM. Chain Reaction mirrors in x and never meets this;
+ * labelling red by the canonical slot put "TOP · REAR WALL" on the audience wall at the bottom of
+ * red's editor. Only the WORDS flip — the stored slot, the anchor indices and the 2v2 role split
+ * are unchanged.
+ */
+export const bbRoleLabel = (cat: StartCat | undefined, alliance: Alliance = 'blue'): string => {
+  if (cat !== 'close' && cat !== 'far') return '-';
+  return (cat === 'close') === (alliance === 'blue') ? 'TOP' : 'BOTTOM';
+};
+
+/** an anchor's name as `alliance` sees it: its role (`bbRoleLabel`) and the wall it is really on —
+ * red's rear-wall anchor is on the AUDIENCE wall once rotated, and a side wall stays a side wall. */
+export function bbAnchorName(index: number, alliance: Alliance = 'blue'): string {
+  const p = BB_START_POSES[index];
+  if (!p) return '-';
+  const wall =
+    alliance === 'blue' || p.wall === 'side' ? p.wall : p.wall === 'rear' ? 'audience' : 'rear';
+  return `${bbRoleLabel(bbAnchorCat(index), alliance)} · ${wall.toUpperCase()} WALL`;
+}
 
 /** a field point, optionally with a heading (radians). What `bbMirror` maps. */
 export interface BbPoint {
@@ -1047,7 +1462,7 @@ const BB_PRESET_ASSISTS: AssistConfig = {
   fieldCentric: false,
   aimAssist: true,
   autoIntake: true,
-  autoFire: true,
+  autoFire: false, // BIOBUZZ has no auto-fire — Aim Assist gates the driver's own fire (robot.ts `bbLaunch`)
 };
 
 /**
@@ -1122,3 +1537,615 @@ export const BB_PRESETS: readonly RobotSpec[] = BB_PRESET_BUILDS.map((s) => ({
 /** the default mount for a build that arrives without one (re-exported so the builder and the
  * coercer read the same constant the leaf module defines). */
 export { BB_DEFAULT_INTAKE_MOUNT };
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 3D PHYSICS (Day 1 seam, `docs/biobuzz/plan-3d.md`) — everything below is new for the 3D
+// physics port and is not read by the 2D pipeline at all. NOT APPROX: R102/R105.A already
+// print all three chassis dimensions (see `BB_PRISM`'s header above for the two horizontal
+// ones); this is the first place BIOBUZZ names the VERTICAL one.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** `RobotSpec.heightIn` floor (in) — well under any real build; a robot has to be tall enough
+ * to hold a drivetrain and a hopper at all. */
+export const BB3_HEIGHT_MIN = 12;
+/**
+ * `RobotSpec.heightIn` default (in) when absent.
+ *
+ * ⚠️ **14, NOT 18** (owner, 2026-09-18, off the 3D robot playtest: "robot is way too tall for no
+ * apparent reason"). 18 was chosen as "a plausible mid-size chassis" before anything drew a robot
+ * in three dimensions, and it happens to be R102's stow cube — but nothing a preset build CARRIES
+ * needs it. The drivetrain is 4.6 in (`renderRobots.ts`), a launcher releases at `BB_LAUNCH_Z0`
+ * = 10, and the tallest mechanism geometry on any preset tops out around 12.1 in. 14 clears the
+ * whole shooter with an inch or two of air, stays legal at stow (`BB3_STOW_MAX` is 18, so a
+ * default build still folds inside the cube by construction) and still drives under the HIVE
+ * (`BB_HIVE_BOTTOM_Z` 31.98). It is the 3D COLLIDER height for a spec that names none, so it
+ * matters to the sim, not to the picture — which is why it is a number here and not a mast.
+ */
+export const BB3_HEIGHT_DEFAULT = 14;
+/** `RobotSpec.heightIn` ceiling (in) — R105.A's 29-in EXPANDED sizing volume: "a 18 in. by 24
+ * in. by 29 in. tall sizing volume when fully expanded", where the manual fixes the 29 as the
+ * vertical dimension (see `BB_PRISM`'s header for why the other two are not fixed to an axis
+ * the same way). */
+export const BB3_HEIGHT_MAX = 29;
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 3D PHYSICS — DAY 1 SIM CONSTANTS (`docs/biobuzz/plan-3d.md` §10/§13.1), appended below the
+// height section above. Every value not cited to the manual is `APPROX` — CAD colliders and a
+// weighed element set replace these on a later day; nothing here is read by the 2D pipeline.
+//
+// NOTE: this file does NOT redeclare `BB_HIVE_TILT_DEG` (30°, already above, under HIVE
+// STRUCTURE) for the tray's rest tilt — `sim3d/hive3d.ts` imports that one constant rather than
+// carrying a second copy of the same number under a `BB3_` name.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Day 1's kinematic tray vs. Day 2's DYNAMIC SEE-SAW on a revolute joint (plan §3.6, §11).
+ *
+ * ✅ **STILL TRUE — 2026-09-19, RELEASE PREDICATE REPLACED, NOT THE TRAY.** The tray body, the
+ * joint, the CAD geometry, the damping-fitted ~4 s swing, the physical spill and G409's
+ * `bb.spill` tag all work and all depend on this being `true`.
+ *
+ * ⚠️ **WHAT CHANGED: THE TRIGGER IS NOW THE TABLE, NOT A TORQUE.** A torque threshold was fit
+ * against the Event Field Setup Guide's §12.3 rows and looked right at one packing per row —
+ * but one COUNT does not determine one TORQUE. MEASURED at the fitted hold (5915): 8 POLLEN in
+ * the same cell spans torque 4644 (piled at the back wall) to 9355 (a two-wide line), and 7
+ * POLLEN spans 4204 to 7769 — the two counts' torque ranges overlap almost entirely, so no
+ * `BB3_HIVE_DETENT`/`BB3_HIVE_BALLAST` pair can separate them. Worse, the guide's own rows were
+ * violated in BOTH directions under the torque trigger: 8 POLLEN piled at the back wall did not
+ * tip, and 7 POLLEN in a two-wide line did. `sim3d/hive3d.ts`'s `hiveDetentHold` now releases on
+ * `hiveWillTip(hiveLoad(hives[a].contents, kindOf))` — the SAME `BB_TIP_POLLEN` list the HUD
+ * counts — so the HUD's "0 more to tip" and the tray's own release agree BY CONSTRUCTION on every
+ * row and every packing, which a torque number could not promise. `BB3_HIVE_DETENT` is
+ * unchanged and still reported (see its header) — it is a diagnostic now, not the release.
+ *
+ * Setting it back to `false` is **NOT** "a one-word change that stays proven" (that used to be
+ * true and no longer is): `bb.spill` — G409's whole tag — is written in exactly one place,
+ * `hiveDynamicTick`, on the DYNAMIC path only. The kinematic path never writes it, so flipping
+ * this word silently turns G409 off in 3D. If it is ever flipped, the HIVE3D lane's four G409
+ * blocks must move out from under `if (BB3_HIVE_DYNAMIC)` first, or the lane stays green while
+ * G409 stops firing.
+ */
+export const BB3_HIVE_DYNAMIC = true;
+
+/**
+ * CAD-DERIVED FIELD COLLIDERS (`docs/biobuzz/plan-3d.md` §8) vs. the Day 1 constants-built
+ * geometry, for the STATICS (walls' inner face/height, the hive frame legs, the flower supports)
+ * and the hive TRAY (`sim3d/bodies.ts`'s `buildHiveTray3d`/`hiveCellLocalBox`).
+ *
+ * `true` here is the switch-over: `sim3d/bodies.ts` reads `public/models/biobuzz/field-
+ * colliders.json` (via `sim3d/fieldColliders.ts`, generated into `fieldColliders.gen.ts` by
+ * `npm run field-cad`) when this is `true`, falling back to the analytic box/bar/foot geometry
+ * per part whenever the CAD set is missing that part (an empty hull list, an absent static) —
+ * so flipping this to `false` (or the CAD files ever being pulled per their own README's
+ * one-commit-revert plan) restores the Day 1 geometry exactly, with no other code change.
+ */
+export const BB3_FIELD_COLLIDERS = true;
+
+/** the HIVE pivot's height above the tiles (in) — CAD (`fieldDims.gen.ts`, `hive.pivotZ`
+ * 43.9497). The manual's 43.95 was exact. */
+export const BB3_HIVE_PIVOT_Z = HIVE.PIVOT_Z;
+
+/** distance from the pivot to a CELL's centre, ALONG THE BAR (in, true length, not the plan
+ * projection `BB_HIVE_CELL_DY` already carries) — CAD, the midpoint of the measured cell's own
+ * near and far faces. `BB3_HIVE_ARM · cos(BB_HIVE_TILT_DEG)` IS `BB_HIVE_CELL_DY`, by
+ * construction now rather than by a pair of hand-typed numbers agreeing. Was 15.44. */
+export const BB3_HIVE_ARM = HIVE.ARM;
+
+/** a CELL's TRUE depth along the bar (in) — CAD (far − near over the four measured cells);
+ * `BB_HIVE_CELL_LEN` is this number's plan projection at 30°. Was 12.04. */
+export const BB3_HIVE_CELL_LEN = HIVE.CELL_D;
+
+/** the CELL assembly end to end, TRUE length along the bar (in) — CAD (2 × the far face);
+ * `BB_HIVE_LEN` is this number's plan projection at 30°. Was 42.91. */
+export const BB3_HIVE_LEN = HIVE.LEN;
+
+/**
+ * one CELL's interior box, in the tray-local frame `sim3d/bodies.ts` defines (`w` across the
+ * bar / world x, `d` along the bar, `h` floor to open top).
+ *
+ * CAD (`fieldDims.gen.ts`), no longer APPROX: the three numbers are the four measured cells'
+ * mean width, depth and floor-to-roof height. The Day 1 guesses were `{20, 14, 12.04}` — the
+ * depth was a true length "rounded up to a plausible box depth" and was 2.25 in too deep, and
+ * the height reused the DEPTH figure and was 1.96 in too short.
+ */
+export const BB3_HIVE_CELL = { w: HIVE.CELL_W, d: HIVE.CELL_D, h: HIVE.CELL_H };
+
+/** cell wall thickness (in) — APPROX, CAD settles it; used for the five-box kinematic tray
+ * (floor, back, two sides, divider). */
+export const BB3_HIVE_CELL_WALL = 0.25;
+
+/** perimeter wall collider height (in) — APPROX, tall enough that nothing legal on this field
+ * clears it (a robot tops out at `BB3_HEIGHT_MAX` 29 in). */
+export const BB3_WALL_H = 40;
+
+/** one element's mass (lb) — APPROX until a set is weighed (owner action; plan §3.6). */
+export const BB3_ELEMENT_MASS = 0.2;
+
+/** NECTAR's mass as a multiple of POLLEN's — APPROX (plan §3.6: "the field guide says three
+ * pollen plus three nectar mass less than eight pollen", which rules out volume scaling). */
+export const BB3_NECTAR_MASS_RATIO = 1.6;
+
+/** ground element friction / restitution / angular (roll) damping — APPROX, tuned Day 4+.
+ * `_ROLL_DAMP` is `setAngularDamping` on the sphere body: a free rolling sphere has no analogue
+ * of the 2D artifact world's `BALL_ROLL_FRICTION` velocity-pass (Rapier's own rolling contact
+ * would otherwise let a struck element roll forever), so this is what brings one to rest. */
+export const BB3_ELEMENT_FRICTION = 0.6;
+export const BB3_ELEMENT_RESTITUTION = 0.45;
+export const BB3_ELEMENT_ROLL_DAMP = 0.4;
+
+/**
+ * NEW. Contact stiffness (`contact_natural_frequency`, Hz) for the whole BIOBUZZ 3D world
+ * (`sim3d/engineImpl.ts` and `sim3d/predict.ts` — BOTH must read this constant, or the client's
+ * predicted world and the authoritative one solve contacts at different stiffness and reconcile-
+ * snap on every landed shot). Was: absent — the 3D world inherited the shared `PHYS_CONTACT_FREQ`
+ * (12 Hz, `src/config.ts`), which is tuned for the 2D DECODE robot world and is explicitly NOT
+ * higher there because 15 Hz broke the classifier-jitter ratchet and 25 Hz broke two G408
+ * possession checks and the wall-ram torque bound — none of which exists in this world, so the
+ * shared constant cannot move and BIOBUZZ 3D needs its own.
+ *
+ * MEASURED, two independent overlap problems the same stiffness governs, both improving with
+ * frequency per the closed-form soft-contact sag `g/(2·π·f)²`:
+ *  • a settled element's penetration into the HIVE cell floor: 0.061–0.067 in at 12 Hz, 0.025–
+ *    0.030 in at 25 Hz (closed form 0.068 / 0.0157 in — the measurement is the model).
+ *  • a stacked POLLEN column's worst pollen-pollen overlap in a FLOWER tube (4-stack / 8-stack,
+ *    the FLOWER's own POLLEN capacity): 12→0.406/0.948 in, 20→0.146/0.341, 30→0.065/0.152,
+ *    45→0.029/0.068, 60→0.016/0.038 (bare-Rapier control).
+ * 30 is the first value where an 8-high FLOWER column overlaps by less than a 16th of a diameter,
+ * and it is 1.5× the shared robot-world value rather than 4×, which keeps robot-robot/robot-wall
+ * contacts near where the drive-parity checks measured them. It also improves the HIVE floor case
+ * beyond what 25 Hz gave it (closed-form sag at 30 Hz ≈ 0.0109 in, better than 25 Hz's 0.0157),
+ * so one value serves both measurements — a separate diagnosis proposed 25 Hz (parity with the
+ * 2D pipeline's `PHYS_BALL_CONTACT_FREQ`) for the HIVE case alone; 30 Hz is taken instead because
+ * it is evidenced across both hive-floor and flower-stack measurements and dominates 25 Hz on
+ * both. `normalizedAllowedLinearError` and `numSolverIterations` were swept and ruled out as
+ * levers for either problem (bit-identical / very slightly worse) — see `sim3d/engineImpl.ts`.
+ */
+export const BB3_CONTACT_FREQ = 30;
+
+/** CCD switches on above this speed (in/s) — APPROX, sized so a full-speed launch
+ * (`BB_LAUNCH_SPEED_MAX` 260) never tunnels a 0.25-in cell wall. */
+export const BB3_CCD_SPEED = 60;
+
+/** how close an element's BOTTOM must be to the tiles (in) to count as rolling ON them —
+ * the floor-contact test `groundRoll3d` applies the shared Coulomb rolling law through. Above
+ * it the element is on structure or in the air and gets no rolling law at all. APPROX: a hair
+ * over the readback rounding and the solver's own resting penetration. */
+export const BB3_ROLL_FLOOR_Z = 0.25;
+
+/**
+ * THE ROLLING DECELERATION `groundRoll3d` ADDS (in/s²) — and it is DELIBERATELY NOT the 2D
+ * pipeline's `BALL_ROLL_FRICTION` (32), because in 3D it is not the whole of the law.
+ *
+ * A 2D ground artifact is solved in a plane with no gravity and no floor, so `stepGroundBall`'s
+ * 32 in/s² IS its entire rolling resistance. A 3D element is a real sphere resting on a real
+ * floor with `BB3_ELEMENT_FRICTION` and `BB3_ELEMENT_ROLL_DAMP` already taking speed out of it
+ * every step; adding 32 on top stopped it in half the distance. Measured roll-out at 20/40/60
+ * in/s — 2D 6.9 / 28.2 / 63.7 in against 3D 3.8 / 15.1 / 33.8 at a deceleration of 32, and
+ * 7.9 / 29.3 / 61.2 at 12, which is inside 15% of 2D across the range. The SIM3D lane asserts
+ * that agreement rather than the constant, so re-tuning Rapier's own element friction or roll
+ * damping fails there rather than silently drifting the two pipelines apart.
+ */
+export const BB3_ROLL_DECEL = 12;
+
+/** an element counts as AT REST below this speed (in/s), for `BB3_REST_TICKS` consecutive
+ * ticks — `sim3d/derive.ts`'s cell-membership test. APPROX. */
+export const BB3_REST_SPEED = 2;
+export const BB3_REST_TICKS = 6;
+
+/* `BB3_CAPTURE_TICKS` (a 3-tick consecutive-overlap dwell before a 3D capture) is GONE. The
+ * roller model (`bbIntakeAct`) is shared by both backends now and does that job better and in
+ * both of them: a fast pass-through is refused by `BB_INTAKE_CROSS_MAX` rather than by a dwell,
+ * and the delay before a swallow is the feed cadence plus the transit to the throat. A constant
+ * with no reader is a number documenting an intention nothing implements. */
+
+/** the intake's reach above the tiles (in) — an element whose BOTTOM is below this height,
+ * inside a mouth rect, is eligible for capture. APPROX: a sweeper roller sits low enough to
+ * catch a resting element and a shallow bounce, not a lobbed one passing overhead. */
+export const BB3_INTAKE_Z = 5;
+
+/**
+ * THE INTAKE MOUTH'S SLOT HEIGHT (in) — how far up the 3D chassis compound's mouth pocket is
+ * OPEN (`chassis3dShapes`, `sim3d/bodies.ts`). One NECTAR diameter, the tallest element there
+ * is, so every element rolls in under the roller bar and nothing else does: a wall, a robot,
+ * the HIVE and a FLOWER all meet the lintel above it at exactly the distance the old
+ * single-cuboid collider put them at.
+ */
+export const BB3_MOUTH_SLOT_Z = 2 * BB_NECTAR_R;
+
+/**
+ * ⚠️ **HOW FAR CLEAR OF A CHASSIS SOLID A FLIGHT BODY IS BORN (in)** — `syncElement`
+ * (`sim3d/engineImpl.ts`), 3D only.
+ *
+ * A launch point is a point on the MECHANISM, and a mechanism is inside the robot. On the default
+ * 15x17 frame with a `frontback` mount, `launchLine` releases a dump at `mountOrigin('back')`
+ * x = −7.50, z = `BB_LAUNCH_Z0` = 10 — which straddles both the frame box (x[−7.50,7.50],
+ * z[0,18]) and the back mouth LINTEL (x[−10.50,−7.50], z[3.60,18.00]). In 2D that is harmless: a
+ * flight element collides with nothing. In 3D it is a body created inside a closed 3-inch pocket,
+ * and the measurement is unambiguous — all four elements of a dump rose ~2 in, jammed, and rode
+ * the chassis at z≈12 without ever entering flight. 0/28 on the tutorial pose grid.
+ *
+ * ⚠️ **SIZED OFF `BB_NECTAR_R`, NOT `BB_POLLEN_R`.** The clearance a body needs is its OWN radius
+ * plus this margin, and the march that finds it has to be able to cross the widest pocket the
+ * biggest element can be born in. A margin cut to the POLLEN radius is one a NECTAR-carrying build
+ * (a twin turret, a Box Tube dumper) sits inside of — the same bug, surviving in exactly the
+ * builds that carry the bigger ball.
+ */
+export const BB3_LAUNCH_CLEAR_SLOP = BB_NECTAR_R / 2;
+
+/** how far `syncElement` will march a newly created FLIGHT body along its own velocity looking
+ * for clear air (in), and the step it marches in. The bound is generous — the deepest pocket on a
+ * legal build is an intake reach plus two NECTAR diameters — and a body that finds no clear point
+ * inside it is left exactly where the release put it rather than teleported somewhere arbitrary. */
+export const BB3_LAUNCH_CLEAR_MAX = 24;
+export const BB3_LAUNCH_CLEAR_STEP = BB_NECTAR_R / 4;
+
+/** the readback rounding (in / rad) every dynamic body's JSON is written at (plan §3.1 step 6)
+ * — see `sim3d/math3.ts`'s `round4`. */
+export const BB3_ROUND = 1e-4;
+
+/**
+ * how many even angular steps a FLOWER ring plate's bore is tessellated into
+ * (`sim3d/flowerTube.ts`; the four rectangle corners are inserted on top, so a plate is 36 rays
+ * and 288 triangles).
+ *
+ * 32 is where the INSCRIBED polygon's error stops mattering: `r·(1 − cos(π/32))` is 0.010 in on
+ * the 2.086-in top bore, against the 0.148-in clearance a NECTAR has through the middle bore and
+ * the 0.211-in a POLLEN has through the lower one. Doubling it would buy 0.0025 in and cost 288
+ * more triangles per plate across twelve plates, every one of which is in the broad phase for
+ * the whole match.
+ */
+export const BB3_FLOWER_RING_SEGMENTS = 32;
+
+// ── THE DYNAMIC HIVE SEE-SAW (plan §3.6) — calibrated block below ────────────────────────────
+
+/**
+ * THREE TERMS MAKE A BAR ON A HINGE BEHAVE LIKE THE REAL HIVE, and `scripts/hive-calibrate.ts`
+ * solves all three against the Event Field Setup Guide's own load rows. They live in the
+ * GENERATED BLOCK below so a re-run replaces the values (and their derivation) without touching
+ * a word of this comment, which is the part a human wrote.
+ *
+ *  • **BALLAST** `BB3_HIVE_BALLAST` (lb) at `BB3_HIVE_BALLAST_AT` = `[v, w]` in the tray's own
+ *    un-tilted local frame, `w` NEGATIVE (below the bar). This is what makes an EMPTY tray
+ *    BI-STABLE: without it the tray is a symmetric bar on a frictionless hinge, it has no
+ *    preferred pose, and the first element to land anywhere decides everything. Its sign is
+ *    taken from the tray's own geometry at run time, not here (`sim3d/hive3d.ts`). The real hive
+ *    is calibrated with ballast WASHERS (Event Field Setup Guide §12) — same hardware, same name.
+ *  • **DETENT** `BB3_HIVE_DETENT` (torque, lb·in²/s²) — ⚠️ AS OF 2026-09-19 THIS IS A PIN THE
+ *    TABLE LIFTS, NOT A BREAKAWAY THE LOAD BEATS. The release predicate is `BB_TIP_POLLEN` now
+ *    (see `BB3_HIVE_DYNAMIC`'s header: one COUNT does not determine one TORQUE, measured across
+ *    packings). This constant is still live as a DIAGNOSTIC — `hiveHoldTorque` and the HIVE3D
+ *    lane still report it, and it is the measurement of how far the see-saw's own torque sits
+ *    from the published table — but nothing releases on it any more.
+ *  • **DAMPING** `BB3_HIVE_DAMPING` (angular damping, 1/s): the term that sets the SWING TIME.
+ *    `BB_TIP_SWING_S` (4.0 s, owner ruling) is what the kinematic tray's timer plays back and
+ *    what the dynamic tray has to REPRODUCE stop to stop under gravity alone. It is not a free
+ *    choice once the other two are fixed: a see-saw released at one stop accelerates under the
+ *    ballast's own torque, and the damping is the only thing between "four seconds" and "half a
+ *    second and a bang".
+ */
+
+/** the tray assembly's own mass (lb) — APPROX. The CAD carries no density, so this is the
+ * measured part VOLUMES times the materials they are made of: the two 20.1 × 11.75 × 14.0 cells
+ * are 0.020-in ACM skin (≈ 2.7 g/cm³ over ≈ 3,900 in² of sheet ⇒ ≈ 7.7 lb), the 42.8-in aluminium
+ * base tube and the ribs ≈ 4 lb, the AprilTag plates and hardware ≈ 1 lb. Flagged APPROX and
+ * owner-weighable, exactly like `BB3_ELEMENT_MASS`; the calibration is run AGAINST it, so a real
+ * weight is a re-run of `npm run hive-calibrate`, not an edit here. */
+export const BB3_HIVE_TRAY_MASS = 13;
+
+/** the joint is AT its stop when the tilt is within this of `BB_HIVE_TILT_DEG`, and the swing
+ * is OVER when the bar is that close AND turning slower than `BB3_HIVE_REST_W` (rad/s). The
+ * manual scores a TIP when the damper contacts the frame (§10.5.1 B), which is this. */
+export const BB3_HIVE_STOP_DEG = 29;
+export const BB3_HIVE_REST_W = 0.15;
+
+// ── BEGIN GENERATED: hive-calibrate ─────────────────────────────────────────────────────────
+// Written by `npm run hive-calibrate`. DO NOT HAND-EDIT the four values below — edit the
+// sweep, or the targets, and re-run. Everything outside these two markers is hand-written.
+//
+// DERIVATION. Every row was WEIGHED on the real tray — staged against the back wall in a line
+//   per the field guide, four seconds to settle, the tray pinned at its stop so nothing tipped
+//   while it was being weighed — and its settled contents' torque about the pivot read off the
+//   bodies. One POLLEN is worth 909 of torque at the arm those rows settle at (8p minus 7p).
+//   The rows that must NOT tip topped out at 5635; the rows that MUST tip bottomed out at 6197;
+//   the threshold is that window's midpoint, 5916, i.e. ±0.31 element-weights of margin.
+//   At a stop the ballast and the detent are DEGENERATE (both are terms in that one threshold),
+//   so the lever arm was swept over w ∈ [-24, 0] and a 49/51 split taken: restoring
+//   2874, detent 3041. The damping was fitted by bisection against a REAL 8-POLLEN
+//   tip, stop to stop, at 4.00s against BB_TIP_SWING_S 4s.
+//   Rows, through the real step3d pipeline (MISS = an owner-measured row a torque model cannot
+//   reach at one nectar mass; see VALIDATION in the script for why that is expected):
+//     OK   7p+0n   expect NO TIP got NO TIP margin +0.31 element-weights  [field guide §12.3]
+//     OK   8p+0n   expect TIP    got TIP    margin +0.69 element-weights  [field guide §12.3]
+//     OK   2p+3n   expect NO TIP got NO TIP margin +0.75 element-weights  [field guide §12.3]
+//     OK   3p+3n   expect TIP    got TIP    margin +0.31 element-weights  [field guide §12.3]
+//     MISS 6p+1n   expect NO TIP got TIP    margin -0.24 element-weights  [owner 2026-09-12 (1n needs 7p)]
+//     OK   7p+1n   expect TIP    got TIP    margin +1.24 element-weights  [owner 2026-09-12]
+//     MISS 5p+2n   expect NO TIP got TIP    margin -0.79 element-weights  [owner 2026-09-12 (2n needs 6p)]
+//     OK   6p+2n   expect TIP    got TIP    margin +1.79 element-weights  [owner 2026-09-12]
+//     OK   0p+4n   expect NO TIP got NO TIP margin +1.30 element-weights  [owner 2026-09-12 (4n needs 1p)]
+//     MISS 1p+4n   expect TIP    got NO TIP margin -0.24 element-weights  [owner 2026-09-12]
+//     OK   0p+5n   expect TIP    got TIP    margin +0.41 element-weights  [owner 2026-09-12 (5n tips alone)]
+export const BB3_HIVE_BALLAST = 6;
+export const BB3_HIVE_BALLAST_AT: readonly [number, number] = [0, -9.5];
+export const BB3_HIVE_DETENT = 3041;
+export const BB3_HIVE_DAMPING = 4.466;
+// ── END GENERATED: hive-calibrate ───────────────────────────────────────────────────────────
+
+// ── CLIENT-SIDE PREDICTION (plan §5) ─────────────────────────────────────────────────────────
+
+/**
+ * How far from the LOCAL robot a FULL prediction world carries elements as dynamic bodies (in).
+ *
+ * APPROX, and sized by what prediction is FOR: the thing a driver feels through the stick is
+ * their own chassis meeting something, and at 82 in/s a 40-tick (0.67 s) reconcile window is
+ * about 55 in of travel. Anything further away cannot reach the robot inside the window, so
+ * carrying it would be paying wasm for a body that changes nothing. Elements outside the radius
+ * are simply absent from the prediction world; the server's own snapshot corrects anything the
+ * omission got wrong, which is the whole contract prediction runs under.
+ */
+export const PREDICT_ELEMENT_RADIUS = 36;
+
+/**
+ * The budget one FULL reconcile of 40 ticks may cost (ms) — plan §3.10 and §5's Auto decision.
+ *
+ * It is a DECISION THRESHOLD, not an assertion: `probeFullReconcileMs` times one real reconcile
+ * during the pre-match countdown and Auto picks Full when the measurement lands under this and
+ * Light when it does not. 8 ms is a sixth of a 60 Hz frame on the phone the plan sizes against,
+ * which leaves the rest of the frame for the renderer.
+ */
+export const PREDICT_FULL_BUDGET_MS = 8;
+
+/** the budget one LIGHT reconcile of 40 ticks may cost (ms). It has no wasm, no contacts and one
+ * body, so this is a sanity floor rather than a threshold anything chooses on. */
+export const PREDICT_LIGHT_BUDGET_MS = 1;
+
+/** how many ticks a reconcile re-steps at most — `MAX_PREDICT_LEAD` in `src/game.ts`, named here
+ * because both predictors and the Auto probe are sized against it and neither may import the
+ * controller (it is DOM-adjacent and Lane C's). */
+export const PREDICT_MAX_TICKS = 40;
+
+// ─────────────────────────────────────────────────────────────────────────────
+// R102: THE STARTING CUBE, AND THE DEPLOY LATCH (Day 3, `docs/biobuzz/plan-3d.md` §3.3)
+//
+// `BB3_HEIGHT_MAX` above is R105.A's EXPANDED 29 in. R102 is the other half of the same pair:
+// the STARTING CONFIGURATION is an 18-inch cube, so a build that stands taller than 18 in has
+// to fold to get under it and unfold once the match starts. Nothing in the 2D pipeline has ever
+// asked; the 3D robot is a cuboid `length × width × heightIn`, so the day the height became
+// real the start height became real with it.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * R102's starting cube, vertical dimension (in) — the height a ROBOT must be inside at the
+ * start of the MATCH. `ROBOT_MAX_SIZE` is the same 18 the two horizontal dimensions are capped
+ * at (`BB_EXPANSION` is written against it), so this NAMES the vertical one rather than
+ * declaring a second 18 that could drift from it.
+ */
+export const BB3_STOW_MAX = ROBOT_MAX_SIZE;
+
+/** the height this build stands at once it has DEPLOYED (in) — `heightIn`, with the absent
+ * default spelled once. */
+export function bbDeployedHeightIn(spec: RobotSpec): number {
+  return spec.heightIn ?? BB3_HEIGHT_DEFAULT;
+}
+
+/**
+ * THE HEIGHT THIS BUILD STARTS THE MATCH AT (in) — its STOWED height.
+ *
+ * ⚠️ **IT IS DERIVED, AND THAT IS A DECISION WITH A DATE ON IT.** `RobotSpec` carries no
+ * `stowHeightIn` field: adding one is a `src/types.ts` edit plus a carry-across in the shared
+ * `coerceSpec` (`src/sim/spawn.ts`), both of which are outside this game's tree. So until that
+ * field lands, a build is MODELLED as folding to exactly R102's cube — which is the honest
+ * default for this game, because every BIOBUZZ build carries a DEPLOYING sweeper (see
+ * `bbSizeLimits`' header: the sweeper is the reason chassis + reach is judged against R105's
+ * prism and not against R102's cube) and a tall mechanism folds onto the deck the same way.
+ *
+ * A DECLARED stow WINS, and it is read STRUCTURALLY — `spec.stowHeightIn` if it is a finite
+ * number — so the rule binds the day the field exists without a second edit here. That is also
+ * what makes `bbStowLegal` REFUSABLE today rather than true by construction: a spec off the
+ * wire that declares a 22-in stow on a 29-in robot is refused, and the smoke lane pins it.
+ *
+ * Never above the deployed height: a robot cannot stow TALLER than it stands.
+ */
+export function bbStowHeightIn(spec: RobotSpec): number {
+  const deployed = bbDeployedHeightIn(spec);
+  const declared = (spec as { stowHeightIn?: unknown }).stowHeightIn;
+  if (typeof declared === 'number' && Number.isFinite(declared)) return Math.min(declared, deployed);
+  return Math.min(deployed, BB3_STOW_MAX);
+}
+
+/** R102: does this build start inside the 18-in cube? The BUILD half of start legality — it is
+ * a property of the robot, not of the pose, which is why `startLegal` answers it for an absent
+ * pose too (a named anchor seats a legal POSE; it cannot seat a legal HEIGHT). */
+export function bbStowLegal(spec: RobotSpec): boolean {
+  return bbStowHeightIn(spec) <= BB3_STOW_MAX + 1e-9;
+}
+
+/**
+ * IS THE ROBOT DEPLOYED RIGHT NOW — a READ of `world.match`, not a latch (plan §3.3).
+ *
+ * A latch would be a fourth thing that can disagree with the phase clock, and it would have to
+ * ride `BiobuzzState` onto the wire, into every snapshot and into every replay to say something
+ * the phase already says. Deployment happens once, at the edge out of `pre`, and never comes
+ * back — so "has the match started" IS "is the robot deployed", and `freeplay` (free drive,
+ * which never has a `pre`) is deployed by the same reading.
+ */
+export function bbDeployed(world: World): boolean {
+  return world.match.phase !== 'pre';
+}
+
+/** the height the 3D chassis collider is built to RIGHT NOW: stowed before the match, deployed
+ * after. The one reader is `sim3d/`, which rebuilds the collider at the edge. */
+export function bbHeightNow(world: World, spec: RobotSpec): number {
+  return bbDeployed(world) ? bbDeployedHeightIn(spec) : bbStowHeightIn(spec);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// AI DRIVERS (Day 3, `docs/biobuzz/plan-3d.md` §6) — the tuning `src/games/biobuzz/ai/` reads.
+//
+// EVERY NUMBER HERE IS `APPROX` AND NONE OF IT IS A RULE. These are a scripted driver's habits:
+// how often it re-decides, how far off a wall it squares up, where it stands to shoot. Nothing
+// in the manual constrains any of them, nothing else in the sim reads them, and changing one
+// changes how well a bot plays and NOTHING ELSE — no score, no foul, no geometry. They live in
+// this file rather than in `ai/` so the whole game's tuning is greppable in one place.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * How often a bot RE-DECIDES, in ticks (plan §6: "re-decides every 6 ticks").
+ *
+ * Between decisions it HOLDS the command it last returned, which is what makes a bot seat's
+ * recorded track hold-last friendly: a replay's command array compresses runs, and a driver
+ * that emitted a fresh float every tick would be many times the bytes of a human's for no
+ * benefit. It is also the right time constant for the job — 100 ms is about a human driver's
+ * reaction, and a policy that re-solved a ballistic arc 60 times a second would chatter its
+ * own aim.
+ */
+export const BB_AI_DECIDE_TICKS = 6;
+
+/** how close to a perimeter wall (in) a bot squares its chassis up to it instead of steering
+ * freely. Inside this band a diagonal approach catches a corner and wedges; square to the wall
+ * it slides. APPROX. */
+export const BB_AI_WALL_NEAR = 10;
+
+/** how near the goal (in) counts as arrived — the bot stops translating and works the
+ * mechanism. APPROX. */
+export const BB_AI_ARRIVE_TOL = 2.5;
+
+/**
+ * ARRIVAL: inside this radius (in) a bot eases off the stick, down to `BB_AI_SLOW_FLOOR` of its
+ * tier's cap at the goal itself.
+ *
+ * ⚠️ **WITHOUT IT, THE FASTEST TIER IS THE WORST ONE.** A bot holds one command for
+ * `BB_AI_DECIDE_TICKS`, which at a legal top speed is about 8 in of travel — more than the 2.5-in
+ * arrival tolerance — so a bot that drives at full stick right up to its firing spot sails past
+ * it, turns around, and sails past it again, and never spends a decision window lined up. It was
+ * measured: HARD (cap 1.0) scored 50.8 mean against an idle opponent while MEDIUM (cap 0.8)
+ * scored 68.7, purely on overshoot. APPROX.
+ */
+export const BB_AI_SLOW_RADIUS = 12;
+export const BB_AI_SLOW_FLOOR = 0.3;
+
+/**
+ * How near the COLLECT goal (in) counts as arrived — far tighter than `BB_AI_ARRIVE_TOL`,
+ * because the collect goal is not a place, it is an ALIGNMENT.
+ *
+ * ⚠️ **THE ORDINARY TOLERANCE DEADLOCKS THE INTAKE.** The goal is the pose that puts the mouth
+ * RECT's centre on the element, and the rect is only a few inches deep (`bbMouths`: `depth`
+ * inside the frame, `reach` outside it). Stop 2.5 in short of that and the element is outside
+ * the rect, `rectContains` says no, the bot reports "arrived", stops driving, and both sit there
+ * — measured, for 140 seconds of one match, with the hopper at 2 and an element 2.5 in from the
+ * roller. APPROX.
+ */
+export const BB_AI_GRAB_TOL = 0.5;
+
+/**
+ * How many DECISIONS a bot ignores an element it has given up on.
+ *
+ * A COOLDOWN rather than a permanent ban, because the field moves: a spill, a shove or the
+ * opponent driving through can free what was wedged. How LONG a bot tries before giving up is a
+ * TIER knob (`BbAiTierSpec.patience`) — it is the most expensive habit a weak driver has — but
+ * how long it then stays away is the same for everyone. APPROX.
+ */
+export const BB_AI_TARGET_COOLDOWN = 120;
+
+/**
+ * How far around a given-up element (in) the bot writes off its NEIGHBOURS too.
+ *
+ * ⚠️ **WITHOUT IT, GIVING UP ON ONE ELEMENT IS GIVING UP ON NOTHING.** Elements that cannot be
+ * reached are almost never alone — they are a PILE, in a corner, behind a FLOWER foot, against
+ * the perimeter, because whatever put one there put its neighbours there too. A bot that writes
+ * off exactly one then picks the element six inches to its left and spends the same patience on
+ * it, and the one after that. Measured: a HARD bot ground through a corner pile for 90 seconds
+ * of a 150-second match — pressed against the wall the whole time, never captured anything,
+ * finished on 34 points against its own 110-point solo average. APPROX.
+ */
+export const BB_AI_GIVEUP_RADIUS = 8;
+
+/**
+ * COMMITMENT: how much closer a NEW element has to be, as a fraction of the distance to the one
+ * the bot is already going for, before it is worth switching.
+ *
+ * ⚠️ **A GREEDY NEAREST-ELEMENT RULE RE-EVALUATED EVERY DECISION DOES NOT CONVERGE.** Halfway to
+ * an element, the nearest one is usually a DIFFERENT element — the bot has moved, the field has
+ * moved, and whichever it now turns toward will be beaten by a third a moment later. The bot
+ * arrives nowhere, and the effect is WORST for the tier that re-decides most, which is the tier
+ * that is meant to be best: the same policy with hesitation (a tier that skips most decisions and
+ * therefore keeps last window's plan) out-collected the one without it. Hysteresis is the fix,
+ * and it belongs in the policy rather than in a tier's hands. APPROX.
+ */
+export const BB_AI_SWITCH_FRAC = 0.6;
+
+/** P gain on a bot's heading error, per radian, before the ±1 clamp. 2.2 settles a chassis
+ * inside a decision window without overshooting into a hunt. APPROX. */
+export const BB_AI_TURN_GAIN = 2.2;
+
+/**
+ * VERTICAL CLEARANCE a bot keeps under the HIVE (in), on top of its own height.
+ *
+ * `BB_HIVE_LOWEST_Z` (30.652, CAD) is the lowest structure on the assembly, so a 29-in robot
+ * clears it by 1.65 in on paper and by nothing at all once its mechanism, its held elements or
+ * a tilted tray are in the way. A bot that is `heightIn + this` or taller stays out of the
+ * footprint entirely — plan §6's "stay clear of the hive footprint when tall". APPROX.
+ */
+export const BB_AI_HIVE_CLEARANCE = 2;
+
+/** how far outside the HIVE's own footprint (in) the keep-out reaches for a tall bot. APPROX. */
+export const BB_AI_HIVE_KEEPOUT_PAD = 6;
+
+/**
+ * Where a bot STANDS to shoot, measured OUTBOARD of the up CELL's mouth (in).
+ *
+ * Outboard, not anywhere: `hiveAccepts` takes an element only over the cell's open outer lip
+ * (`hiveApproachSign`), so a stand-off on the pivot side is a shot that bounces off the closed
+ * back. Two numbers because the two launchers have opposite failure modes — a TURRET too CLOSE
+ * runs out of elevation (the arc to a 59-in cell from 15 in away wants 81°, past
+ * `BB_TURRET_PITCH_MAX`), a DUMPER too FAR runs out of `BB_DUMP_MAX_DIST`. Both APPROX.
+ */
+export const BB_AI_TURRET_STANDOFF = 36;
+export const BB_AI_DUMP_STANDOFF = 20;
+
+/** how close to its own LOADING ZONE (in) a bot has to be before it spends a NECTAR entry
+ * (`bbNectar`). A NECTAR sitting in the zone is one the opponent can drive to, so the entry is
+ * spent when the robot is there to collect it — the same thing a drive team does. APPROX. */
+export const BB_AI_LZ_GUARD = 42;
+
+/**
+ * How much room (in) a bot keeps around ANOTHER ROBOT, on top of the two half-diagonals.
+ *
+ * ⚠️ **THIS IS A FOUL AVOIDANCE NUMBER, NOT A DRIVING STYLE.** Measured before it existed: a
+ * full-speed bot routing straight through an opponent parked on the same line collected G421
+ * PINNING majors four times in one match (80 points, handed to the opponent) plus a G417 for
+ * shouldering the HIVE, and LOST head-to-head to a tier that drove at half speed and therefore
+ * never reached anybody. The faster tier has to be the cleaner one or "harder" just means "gives
+ * away more points". APPROX.
+ */
+export const BB_AI_ROBOT_CLEAR = 6;
+
+/**
+ * How many DECISIONS of sustained contact with another ROBOT before a bot backs off — the
+ * G421 clock, read from the bot's side.
+ *
+ * ⚠️ **A FAST BOT THAT DOES NOT DO THIS LOSES TO A SLOW ONE.** G421 bills a MAJOR (20 points, to
+ * the robot being leaned on) for PINNING an opponent for more than 3 seconds, and it re-bills
+ * every three seconds after that. Measured before this existed: the HARD tier — 2.5x the EASY
+ * tier's solo score — LOST 12 of 20 head-to-heads, because the matches it lost were the ones
+ * where EASY's total ran to 83, 88, 112 and 123 points, almost all of it fouls HARD had handed
+ * it. 12 decisions is 1.2 s, comfortably inside the rule's 3. APPROX.
+ */
+export const BB_AI_PIN_DECISIONS = 12;
+
+/**
+ * The speed cap (fraction of stick) a bot uses inside the HIVE footprint.
+ *
+ * G417 bills a MAJOR for STRATEGIC ramming of the HIVE, and the 3D rule reads the CLOSING SPEED
+ * of the contact — so the fix for a bot that drives under the assembly is not to keep it out (the
+ * space under the trays is the shortest path across the field, and G409's drive-under is legal)
+ * but to make it arrive slowly enough that brushing the frame is not a ram. APPROX.
+ */
+export const BB_AI_HIVE_CREEP = 0.45;
+
+/** speed (in/s) under which a bot that is COMMANDING full drive counts as stuck, and how many
+ * consecutive decisions of it before the bot backs out. APPROX. */
+export const BB_AI_STUCK_SPEED = 4;
+export const BB_AI_STUCK_DECISIONS = 5;
+/** how many decisions a stuck bot spends reversing and turning before it re-plans. APPROX. */
+export const BB_AI_ESCAPE_DECISIONS = 3;

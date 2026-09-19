@@ -22,8 +22,10 @@ import {
   BB_HIVE_W,
   BB_HIVE_X,
   BB_LZ,
+  BB_NECTAR_R,
   BB_POLLEN_R,
-  BB_TAPE_1,
+  BB_TAPE,
+  BB_TILE_SEAMS,
   FLOWER_MOUTH,
   type BbRect,
 } from './config';
@@ -37,6 +39,7 @@ import {
   type BbElementKind,
 } from './flower';
 import { BB_TIP_SWING_S, hiveTakingSide } from './hive';
+import { BB_BOX_SLOTS, BB_BOX_T, bbNectarBoxRect, bbNectarBoxSlot } from './nectarBox';
 
 /**
  * BIOBUZZ field renderer — THE MAT, THE ZONES, THE HIVE STRUCTURE, THE FLOWERS, THE WALL.
@@ -44,8 +47,10 @@ import { BB_TIP_SWING_S, hiveTakingSide } from './hive';
  * This file used to draw an empty 12-ft square and say so at length, because Section 9 (ARENA)
  * of the V0 pre-season manual was one page promising Kickoff. Kickoff happened. Everything
  * drawn below is the V1 manual, distilled in `docs/biobuzz-reference.md` §2 with a figure
- * number against every value, and EVERY dimension on this canvas is an import from
- * `./config` — there is not one literal field number in here. That is the whole discipline:
+ * number against every value, and EVERY dimension on this canvas is an import — from
+ * `./config` for the FIELD, and from `./nectarBox` for the one piece of furniture that stands
+ * outside the perimeter — there is not one literal field number in here. That is the whole
+ * discipline:
  * `grep APPROX src/games/biobuzz/config.ts` is the tape-measure list, and a dimension typed
  * into a renderer is a dimension that list cannot find.
  *
@@ -84,6 +89,26 @@ import { BB_TIP_SWING_S, hiveTakingSide } from './hive';
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
+ * OWNER BUG 12 (2026-09-19): "the blue alliance looks too purple — are you sure that is the
+ * exact colour AndyMark uses?" Measured, the complaint is right and BOTH answers the repo had
+ * were wrong. In OKLCH: the old `#4d8fe2`/`#0a5cff`/`C.COLORS.blue` family sits at hue 255-262°,
+ * and the field CAD's own hive Goal Ribs are `plastic#0000ff` — hue 264.1°, which is 1.7° off the
+ * most violet blue sRGB can express and the WORST answer available. A STEP assembly carrying
+ * pure `#ff0000` and pure `#0000ff` is carrying PLACEHOLDER part colours, not a paint spec, and
+ * `renderFieldGlb.ts` already overrides the same file's `#e6e6e6` "white plastic" placeholder for
+ * exactly that reason. No authoritative AndyMark blue was found, so this is not one.
+ *
+ * `#007be1` is a PERCEPTUAL CORRECTION and APPROX: hue 252.9°, which is the least violet a
+ * saturated blue gets before it starts reading cyan, at the maximum chroma sRGB has there
+ * (0.179) and L 0.583 — within 0.002 of the red tape's own lightness, so the two alliances read
+ * at the same weight. It is 11.2° off the CAD's rib colour, and that gap is deliberate.
+ *
+ * ⚠️ ONE BIOBUZZ BLUE. Tape, NECTAR, hive accents, the constants-built fallback scene, the GLB's
+ * ribs and the robot silhouette all take this value; there is no second approximation left.
+ */
+const ALLIANCE_BLUE = '#007be1';
+
+/**
  * THE ZONE TAPE IS THE ONE THING HERE THAT IS NOT A THEME TOKEN.
  *
  * §9.3 specifies red and electric-blue gaffer, and on this field the tape COLOUR is the
@@ -91,7 +116,8 @@ import { BB_TIP_SWING_S, hiveTakingSide } from './hive';
  * at. A token that flipped with the light/dark theme would be drawing a different field in
  * one of the two. So these two are fixed, and everything else on this canvas is `C.COLORS`.
  */
-const TAPE_GAFFER: Record<Alliance, string> = { red: '#e02020', blue: '#0a5cff' };
+const TAPE_GAFFER: Record<Alliance, string> = { red: '#e02020', blue: ALLIANCE_BLUE };
+
 
 /** frame BASE BAR thickness and centreline x (in) — both DERIVED from the two measured edges
  * so the bar's INNER edge stays exactly on the ±24 tile seam, which is the measured fact. */
@@ -174,7 +200,7 @@ function elementType(color: ArtifactColor): 0 | 1 | 2 {
 
 function elementInk(color: ArtifactColor): string {
   const t = elementType(color);
-  return t === 1 ? C.COLORS.red : t === 2 ? C.COLORS.blue : POLLEN_INK;
+  return t === 1 ? C.COLORS.red : t === 2 ? ALLIANCE_BLUE : POLLEN_INK;
 }
 
 /** the same classification as `elementType`, in the vocabulary `flower.ts` scores in. Both
@@ -260,7 +286,7 @@ export function bbFlowerSectionBox(f: (typeof BB_FLOWERS)[number]): BbRect {
 // ─────────────────────────────────────────────────────────────────────────────
 
 function allianceColor(a: Alliance): string {
-  return a === 'blue' ? C.COLORS.blue : C.COLORS.red;
+  return a === 'blue' ? ALLIANCE_BLUE : C.COLORS.red;
 }
 
 /** an element's drawn radius. `r` is optional on `Artifact` (DECODE has one size and never
@@ -269,11 +295,19 @@ function elementR(b: Artifact): number {
   return b.r ?? BB_POLLEN_R;
 }
 
-function strokeRect(ctx: CanvasRenderingContext2D, r: BbRect, stroke: string, w: number): void {
+/**
+ * A TAPE STRIP — a FILLED rectangle of the width and position the CAD puts it at.
+ *
+ * It replaced a `strokeRect` of the ZONE, and that is the whole tape fix (owner, 2026-09-18):
+ * outlining a zone paints all four of its edges, including the one that is a WALL and carries no
+ * tape on the real field, and it turns the GARDEN's solid 2-in band into a 1-in outline of a 2-in
+ * rectangle — two thin lines with mat showing between them. `BB_TAPE` carries the 16 measured
+ * strips; this draws them.
+ */
+function fillStrip(ctx: CanvasRenderingContext2D, r: BbRect, fill: string): void {
   ctx.save();
-  ctx.strokeStyle = stroke;
-  ctx.lineWidth = w;
-  ctx.strokeRect(r.x0, r.y0, r.x1 - r.x0, r.y1 - r.y0);
+  ctx.fillStyle = fill;
+  ctx.fillRect(r.x0, r.y0, r.x1 - r.x0, r.y1 - r.y0);
   ctx.restore();
 }
 
@@ -345,10 +379,11 @@ function text(
   ctx.restore();
 }
 
-/** tile-centre coordinate of column/row `i` (0..5) — derived from `C.TILE` so a 24-in tile
- * stays the only place the field's module is written down. */
+/** tile-centre coordinate of column/row `i` (0..5) — the midpoint of the two CAD seams that
+ * bound it, because real tiles are not evenly spaced (`BB_TILE_SEAMS`, and see `BB_TILE_PITCH`).
+ * `C.TILE`'s even 24 would put the F column's letter 0.6 in off its own tile. */
 function tileCentre(i: number): number {
-  return (i - 2.5) * C.TILE;
+  return (BB_TILE_SEAMS[i] + BB_TILE_SEAMS[i + 1]) / 2;
 }
 
 /**
@@ -625,6 +660,191 @@ function drawFlowerSection(
 // THE RENDERER
 // ─────────────────────────────────────────────────────────────────────────────
 
+/**
+ * THE CONTENTS — ONE ROW OF DISCS HUGGING THE OPEN EDGE, INSIDE THE BOX.
+ *
+ * At element scale and in element colours, oldest at the −x end, so the row grows the same
+ * way every time and a NECTAR arriving at the far end is visibly the newest thing in the
+ * cell. Against the OPEN edge (`outerY`, the box's outer short edge; `s` is +1 for the north
+ * cell) because that is the end everything came in through; against the closed back it would
+ * read as the far wall of a container nothing can reach.
+ *
+ * A full cell holds more diameters than the 20-in width has room for (3 NECTAR and 8 POLLEN
+ * is 30.8 in of ball), so when the row runs long the PITCH closes up and the discs overlap
+ * while their RADII stay true. Shrinking the balls instead would make a NECTAR and a POLLEN
+ * the same size, which is the one distinction the row exists to carry; overlapping reads as
+ * packed, which is what a full cell is.
+ *
+ * `alpha` is the cell's own fill weight through the swing (`tipProjection`'s `up`, 1 at rest),
+ * so the row fades with the tray it is in. Shared with `drawHiveCanopy`, which repaints it over
+ * whatever drove under the structure.
+ */
+function drawCellContents(
+  ctx: CanvasRenderingContext2D,
+  x0: number,
+  x1: number,
+  outerY: number,
+  s: number,
+  contents: readonly Artifact[],
+  alpha: number,
+): void {
+  if (contents.length === 0) return;
+  const rMax = contents.reduce((m, b) => Math.max(m, elementR(b)), 0);
+  const rowY = outerY - s * (rMax + CELL_ROW_IN);
+  const span = x1 - x0 - 2 * CELL_ROW_PAD;
+  const want = contents.reduce((t, b) => t + 2 * elementR(b), 0);
+  const pitch = want > span ? span / want : 1;
+  let t = x0 + CELL_ROW_PAD + Math.max(0, (span - want) / 2);
+  ctx.save();
+  ctx.globalAlpha = alpha;
+  ctx.strokeStyle = 'rgba(12,14,18,0.65)';
+  ctx.lineWidth = 0.3;
+  for (const b of contents) {
+    const r = elementR(b);
+    t += r * pitch;
+    ctx.fillStyle = elementInk(b.color);
+    ctx.beginPath();
+    ctx.arc(t, rowY, r, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.stroke();
+    t += r * pitch;
+  }
+  ctx.restore();
+}
+
+/**
+ * HOW MUCH OF THE HIVE SHOWS THROUGH WHATEVER IS UNDER IT — the canopy's opacity.
+ *
+ * The robot and the pollen beneath the structure are drawn at full strength and the canopy is
+ * laid over them at this alpha, so what a driver sees is the robot at `1 − CANOPY_A` of itself
+ * through the assembly, only where the assembly actually is. "Slightly translucent" (owner,
+ * 2026-09-13): the robot has to stay readable enough to drive by, and the structure has to
+ * read as overhead rather than as a stain on the deck. 0.42 is the wash at which both hold in
+ * both themes; the up cell's own fill rides on top at its usual weight times this.
+ */
+const CANOPY_A = 0.42;
+
+/**
+ * THE CANOPY — the HIVE assembly repainted, TRANSLUCENTLY, over everything that was drawn after
+ * the field (owner feedback, 2026-09-13: "make the robot and pollen that are below the hive
+ * slightly translucent… only the portion that is below the hive").
+ *
+ * The HIVE hangs 25.5 in over the tiles and G409 assumes robots drive under it, but the field
+ * is drawn FIRST and the robots and the ground elements after it, so a robot under the
+ * structure was painted ON TOP of a thing that is physically above it. This pass, called from
+ * the element renderer (`draw.ts`, the last of the three drawing slots) once the robots and the
+ * ground elements are down and before the airborne ones go on, puts the assembly back on top:
+ * the body, the up cell's fill and its contents row, at `CANOPY_A`, over exactly the assembly's
+ * own footprint and nothing else. A robot half under the hive is half dimmed; a POLLEN spilled
+ * under the down cell is dimmed; the rest of both is untouched, because there is nothing over
+ * them.
+ *
+ * It is NOT a `globalAlpha` on the robot sprite. That fades the whole robot — the part in the
+ * open as much as the part under the structure — and the ruling is specifically the portion
+ * below the hive. Clipping the robot instead would need every game's sprite to know about this
+ * field. Repainting the structure is the one place the footprint is already known.
+ *
+ * ⚠️ **IT COMPOSITES THROUGH AN OFFSCREEN LAYER, AND THAT IS NOT AN OPTIMISATION — IT IS THE
+ * ONLY WAY TO GET THE BLEND RIGHT.** The first version painted the structure's parts straight
+ * onto the field with each part's alpha pre-multiplied by `CANOPY_A`, and that is not the same
+ * arithmetic: the body wash took 42% of the CELL's colour away and the cell was added back at
+ * only `0.45 × 0.42` of it, so the tray came out muted and the whole assembly read as a haze
+ * over the field where nothing was under it at all. Measured on the `under-hive` cell, the mat
+ * and both trays changed colour even where no robot overlapped them, which is exactly what the
+ * pass must not do. Drawn into a transparent layer at FULL field-pass weight and blitted once
+ * at `CANOPY_A`, the result is exactly `CANOPY_A × structure + (1 − CANOPY_A) × whatever is
+ * beneath` — so a pixel with only the mat under it is repainted with the same structure that is
+ * already there and does not change at all, and only a pixel with a robot or a POLLEN under it
+ * is dimmed. The layer is cached and re-used; it is resized only when the canvas is.
+ *
+ * Reads the same state the field pass reads, through the same helpers (`tipProjection`,
+ * `cellSpan`, `drawCellContents`), so the canopy swings with the swing and its contents row is
+ * the field's row: two drawings of one hive that cannot disagree about where it is. The down
+ * cell's dashed outline and the edge marks are not repainted — lines that thin over a robot
+ * are noise, and the body wash already says "structure here".
+ */
+/** the canopy's compositing layer, kept between frames — see `drawHiveCanopy`. */
+let canopyLayer: HTMLCanvasElement | null = null;
+
+/**
+ * THE STRUCTURE ITSELF, at full weight — the body, each cell's fill, and the taking cell's
+ * contents row. Shared by the canopy layer; the FIELD pass draws the same shapes inline with
+ * its own edge marks and dashed outline, which are lines too fine to repaint over a robot.
+ */
+function paintHiveAssembly(ctx: CanvasRenderingContext2D, world: World): void {
+  const bb = world.biobuzz;
+  const byId = new Map<number, Artifact>();
+  for (const b of world.balls) byId.set(b.id, b);
+  for (const a of ALLIANCES) {
+    const h = bb?.hives?.[a];
+    const up = h?.up ?? BB_HIVE_UP_STAGED[a];
+    const taking = h ? hiveTakingSide(h) : BB_HIVE_UP_STAGED[a];
+    const px = a === 'red' ? -BB_HIVE_X : BB_HIVE_X;
+    const x0 = px - BB_HIVE_W / 2;
+    const x1 = px + BB_HIVE_W / 2;
+    const { proj, up: f } = tipProjection(h?.tipping ?? 0);
+    const bodyHalf = (BB_HIVE_LEN / 2) * proj;
+
+    ctx.save();
+    roundRectPath(ctx, x0, -bodyHalf, x1, bodyHalf, HIVE_R);
+    ctx.fillStyle = C.COLORS.tile;
+    ctx.fill();
+    ctx.strokeStyle = C.COLORS.wall;
+    ctx.lineWidth = 0.8;
+    ctx.stroke();
+    ctx.restore();
+
+    for (const side of ['north', 'south'] as const) {
+      const s = side === 'north' ? 1 : -1;
+      const { y0, y1 } = cellSpan(s, proj);
+      const k = up === side ? f : 1 - f;
+      if (k > 0.01) {
+        ctx.save();
+        roundRectPath(ctx, x0, y0, x1, y1, HIVE_R);
+        ctx.globalAlpha = k * CELL_FILL_A;
+        ctx.fillStyle = allianceColor(a);
+        ctx.fill();
+        ctx.globalAlpha = k;
+        ctx.strokeStyle = allianceColor(a);
+        ctx.lineWidth = 0.8;
+        ctx.stroke();
+        ctx.restore();
+      }
+      if (side !== taking) continue;
+      const outerY = s > 0 ? y1 : y0;
+      const contents = (h?.contents ?? []).map((id) => byId.get(id)).filter((b): b is Artifact => b !== undefined);
+      drawCellContents(ctx, x0, x1, outerY, s, contents, k);
+    }
+  }
+}
+
+export function drawHiveCanopy(ctx: CanvasRenderingContext2D, world: World): void {
+  const { canvas } = ctx;
+  const w = canvas.width;
+  const h = canvas.height;
+  if (w <= 0 || h <= 0) return;
+  // a canvas that has not been laid out is 0x0 and `getContext` on the layer would be useless
+  if (!canopyLayer) canopyLayer = document.createElement('canvas');
+  if (canopyLayer.width !== w || canopyLayer.height !== h) {
+    canopyLayer.width = w;
+    canopyLayer.height = h;
+  }
+  const lc = canopyLayer.getContext('2d');
+  if (!lc) return;
+  lc.setTransform(1, 0, 0, 1, 0, 0);
+  lc.clearRect(0, 0, w, h);
+  // the SAME camera transform the field was drawn under, so the layer's structure lands exactly
+  // on top of the structure already on the field
+  lc.setTransform(ctx.getTransform());
+  paintHiveAssembly(lc, world);
+
+  ctx.save();
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.globalAlpha = CANOPY_A;
+  ctx.drawImage(canopyLayer, 0, 0);
+  ctx.restore();
+}
+
 export function drawBiobuzzField(
   ctx: CanvasRenderingContext2D,
   world: World,
@@ -663,20 +883,25 @@ export function drawBiobuzzField(
   ctx.fillStyle = C.COLORS.mat;
   ctx.fillRect(-hx, -hy, 2 * hx, 2 * hy);
 
-  // TILE GRID — every 24" tile. Not decoration: the tile grid is how a driver judges distance
-  // on an FTC field, and §9.3 says every tape line stays inside one tile, so the seams are
-  // also what the zone rectangles below were measured against.
+  // TILE GRID — the six real soft tiles per axis, at the CAD's own measured SEAM POSITIONS
+  // (`BB_TILE_SEAMS`). Not decoration: the tile grid is how a driver judges distance on an FTC
+  // field, and §9.3 says every tape line stays inside one tile, so the seams are also what the
+  // zone rectangles below are measured against — which only works if they are the same seams.
+  //
+  // ⚠️ NOT `C.TILE`. That is 24, DECODE's nominal tile; a real FTC soft tile is `BB_TILE_PITCH`
+  // 23.528 on centre and the six of them close on 141.17, not 144. Stepping by 24 from the wall
+  // drew a grid that drifted almost half an inch per tile away from the tape, the flowers and the
+  // GLB, and the seven lines here are the measured positions rather than a pitch multiplied out,
+  // because the tabbed tile bodies make the real gaps uneven (23.176 … 23.986).
   ctx.save();
   ctx.strokeStyle = C.COLORS.tile;
   ctx.lineWidth = 0.6;
   ctx.beginPath();
-  for (let x = -hx; x <= hx + 0.01; x += C.TILE) {
-    ctx.moveTo(x, -hy);
-    ctx.lineTo(x, hy);
-  }
-  for (let y = -hy; y <= hy + 0.01; y += C.TILE) {
-    ctx.moveTo(-hx, y);
-    ctx.lineTo(hx, y);
+  for (const s of BB_TILE_SEAMS) {
+    ctx.moveTo(s, -hy);
+    ctx.lineTo(s, hy);
+    ctx.moveTo(-hx, s);
+    ctx.lineTo(hx, s);
   }
   ctx.stroke();
   ctx.restore();
@@ -706,22 +931,27 @@ export function drawBiobuzzField(
   //
   // ⚠️ TAPE, NOT STRUCTURE (owner ruling, 2026-09-12). Nothing collides with a zone — robots
   // drive over it and elements roll across it, and `colliders.ts` has never had an entry for
-  // one. So it is drawn as the 1-in tape line it is, with the MAT showing through. A filled
-  // bar reads as a wall, which is a drawing that tells a driver something false about what
-  // they can drive on.
-  for (const a of ALLIANCES) strokeRect(ctx, BB_LZ[a], TAPE_GAFFER[a], BB_TAPE_1);
-
-  // GARDENS (§9.3, §10.5.3) — a 23 × 2 strip in the alliance's own corner, "defined by the
-  // outside edge of tape", TWO 1-IN TAPES. Same ruling as the LOADING ZONE above: TAPE, never
-  // a filled bar.
+  // one. So it is drawn as the 1-in tape it is, with the MAT showing through. A filled bar
+  // reads as a wall, which is a drawing that tells a driver something false about what they
+  // can drive on.
   //
-  // Stroked at BB_TAPE_1, not at the 2-in strip depth. The depth is `BB_GARDEN`'s own — the
-  // rect IS the strip — so stroking it at 2 paints the whole thing solid and puts back
-  // exactly the filled bar the ruling removed. At the tape's own width the two long edges
-  // come out as the two 1-in tapes they are, with the mat between them, which is what a
-  // driver sees. The wall-side edge is overdrawn by the perimeter at the end of this
-  // function, and that is correct: that edge IS the wall.
-  for (const a of ALLIANCES) strokeRect(ctx, BB_GARDEN[a], TAPE_GAFFER[a], BB_TAPE_1);
+  // ⚠️ AND IT IS THE STRIPS, NOT AN OUTLINE OF THE ZONE (owner, 2026-09-18; audit §5). A LOADING
+  // ZONE has THREE tapes — two depth edges and the inner, field-side edge — because its fourth
+  // side is the perimeter wall, and a wall-bounded edge carries no tape. A GARDEN has TWO, laid
+  // side by side, which IS its 2-in band: nothing across its ends, nothing on the two walls it
+  // sits in the corner of. Stroking `BB_LZ`/`BB_GARDEN` instead drew tape on the wall and turned
+  // the garden's solid band into a 1-in outline of a 2-in rectangle. `BB_TAPE` is the CAD's own
+  // 16 strips and the 3D renderer draws exactly the same rectangles.
+  //
+  // `gardenSupplement` is the one strip per alliance that is NOT in the CAD: the measured band
+  // stops 0.573 in clear of the corner wall, while `BB_GARDEN` — the SCORED zone — snaps that
+  // edge onto it, so the band as drawn stopped short of the corner it is defined to reach. See
+  // `fieldDims.gen.ts`'s header for why it is a separate group.
+  for (const a of ALLIANCES) {
+    for (const strip of BB_TAPE.loadingZone[a]) fillStrip(ctx, strip, TAPE_GAFFER[a]);
+    for (const strip of BB_TAPE.garden[a]) fillStrip(ctx, strip, TAPE_GAFFER[a]);
+    for (const strip of BB_TAPE.gardenSupplement[a]) fillStrip(ctx, strip, TAPE_GAFFER[a]);
+  }
 
   // HIVE FRAME (§9.6.1, Fig 9-8) — two triangular structures joined at the apex. Top-down,
   // each triangle is its BASE BAR, the only part of it a robot can actually hit, so it is the
@@ -891,29 +1121,7 @@ export function drawBiobuzzField(
        * NECTAR and a POLLEN the same size, which is the one distinction the row exists to
        * carry; overlapping reads as packed, which is what a full cell is.
        */
-      const contents = elements(bb?.hives?.[a]?.contents);
-      if (contents.length === 0) continue;
-      const rMax = contents.reduce((m, b) => Math.max(m, elementR(b)), 0);
-      const rowY = outerY - s * (rMax + CELL_ROW_IN);
-      const span = x1 - x0 - 2 * CELL_ROW_PAD;
-      const want = contents.reduce((t, b) => t + 2 * elementR(b), 0);
-      const pitch = want > span ? span / want : 1;
-      let t = x0 + CELL_ROW_PAD + Math.max(0, (span - want) / 2);
-      ctx.save();
-      ctx.globalAlpha = k;
-      ctx.strokeStyle = 'rgba(12,14,18,0.65)';
-      ctx.lineWidth = 0.3;
-      for (const b of contents) {
-        const r = elementR(b);
-        t += r * pitch;
-        ctx.fillStyle = elementInk(b.color);
-        ctx.beginPath();
-        ctx.arc(t, rowY, r, 0, Math.PI * 2);
-        ctx.fill();
-        ctx.stroke();
-        t += r * pitch;
-      }
-      ctx.restore();
+      drawCellContents(ctx, x0, x1, outerY, s, elements(bb?.hives?.[a]?.contents), k);
     }
   }
 
@@ -955,6 +1163,61 @@ export function drawBiobuzzField(
      */
     drawFlowerSection(ctx, f, elements(bb?.flowers?.[i]?.stack));
   });
+
+  /**
+   * THE HUMAN PLAYER'S NECTAR HOLDING BOX (owner, 2026-09-19: "Add the same andymark box in the
+   * 2d game as well").
+   *
+   * The SAME box the 3D field builds — `am-5706 Artifact Tray`, at the same field position, from
+   * the same `./nectarBox.ts`. Not a second drawing of a similar thing: a driver who switches
+   * views must find the supply in the same place, and two copies of the footprint is exactly how
+   * that stops being true.
+   *
+   * IN THE 2D IDIOM, which here means the same three moves the FLOWER FOOT and the HIVE CELLS
+   * already make — a solid for the structure, a 1:1 outline for the part you interact with, and
+   * the contents as DISCS AT ELEMENT SCALE rather than a number (§2.5: nothing on this field is
+   * a letter or a digit). The tray reads as its dark interior inside an alliance-coloured rim,
+   * which is what the 3D tray is: a dark slab inside bright side walls, seen from above.
+   *
+   * OUTSIDE THE PERIMETER, in the camera's own view margin, like the tile ruler and the flower
+   * sections. `BB_BOX_GAP + BB_BOX_DEPTH` is 11.75 against `BB_VIEW_MARGIN`'s 12 — see
+   * `nectarBox.ts`, where that quarter inch is the reason the gap is the number it is.
+   *
+   * THE COUNT IS READ OFF `world.balls`, never stored, exactly as the 3D box and `hud.ts` read
+   * it — one pass for `stock` elements of this alliance. Over six (there are five) simply
+   * under-draws beads; the supply is still whatever the world says it is.
+   *
+   * DRAWN BEFORE THE PERIMETER AND LONG BEFORE THE LABELS, on purpose. The tile ruler's last row
+   * digit sits at `-hx - WALL_INSET` on this same wall and its centre falls inside the tray's
+   * length, so in LABELLED stills (the gallery only — a match draws no labels at all) the digit
+   * lands on the tray. Over the dark interior it stays legible; under it, it would not.
+   */
+  for (const a of ALLIANCES) {
+    const box = bbNectarBoxRect(a);
+    ctx.save();
+    ctx.fillStyle = C.COLORS.tile;
+    ctx.fillRect(box.x0, box.y0, box.x1 - box.x0, box.y1 - box.y0);
+    ctx.strokeStyle = allianceColor(a);
+    ctx.lineWidth = BB_BOX_T;
+    // inset by half the wall thickness, so the stroke's OUTER face is the tray's real outline
+    // rather than straddling it — the same rule the HIVE frame bar is drawn by above.
+    ctx.strokeRect(
+      box.x0 + BB_BOX_T / 2,
+      box.y0 + BB_BOX_T / 2,
+      box.x1 - box.x0 - BB_BOX_T,
+      box.y1 - box.y0 - BB_BOX_T,
+    );
+    let stock = 0;
+    for (const b of world.balls) if (b.state.kind === 'stock' && b.state.alliance === a) stock++;
+    ctx.fillStyle = allianceColor(a);
+    for (let i = 0; i < Math.min(stock, BB_BOX_SLOTS); i++) {
+      const slot = bbNectarBoxSlot(a, i);
+      ctx.beginPath();
+      ctx.arc(slot.x, slot.y, BB_NECTAR_R, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.restore();
+  }
 
   // PERIMETER — drawn last, so it sits over the grid lines and the garden tape that run into
   // it.

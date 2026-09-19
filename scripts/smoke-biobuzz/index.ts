@@ -1,9 +1,18 @@
 import { initPhysics } from '../../src/sim/physicsEngine';
+import { initPhysics3d } from '../../src/games/biobuzz/sim3d/engine';
 import { fieldChecks, roomChecks } from './field';
 import { rulesChecks } from './rules';
 import { robotChecks } from './robot';
 import { coreChecks } from './core';
+import { sim3dChecks } from './sim3d';
+import { hive3dChecks } from './hive3d';
+import { flower3dChecks } from './flower3d';
+import { predictChecks } from './predict';
+import { aiChecks } from './ai';
 import { sponsorChecks } from './sponsor';
+import { renderChecks } from './render';
+import { tutorialChecks } from './tutorial';
+import { net3dChecks } from './net3d';
 import type { Check } from './harness';
 
 /**
@@ -54,6 +63,15 @@ import type { Check } from './harness';
 
 const LANES: { name: string; fn: (c: Check) => void }[] = [
   { name: 'CORE', fn: coreChecks },
+  { name: 'SIM3D', fn: sim3dChecks },
+  // Day 2 lane A: the DYNAMIC see-saw, the real FLOWER tube, and the two prediction worlds.
+  { name: 'HIVE3D', fn: hive3dChecks },
+  { name: 'FLOWER3D', fn: flower3dChecks },
+  { name: 'PREDICT', fn: predictChecks },
+  // Day 3 lane A: the deterministic AI drivers — the seam, determinism under BOTH physics, the
+  // read list, the quantized command, R102's stow/deploy, and that a bot can actually score.
+  // The STATISTICAL tier-ordering claim is `npm run test:ai`, outside `npm test` (see ai.ts).
+  { name: 'AI', fn: aiChecks },
   { name: 'FIELD', fn: fieldChecks },
   // Table 10-2 scoring, the Section 11 fouls, the 1:00 cue, the HUD slice. Its own lane
   // because a RULES failure and a PHYSICS failure are different mornings, and because two
@@ -63,6 +81,16 @@ const LANES: { name: string; fn: (c: Check) => void }[] = [
   { name: 'ROBOT', fn: robotChecks },
   // app-level, not a game lane — see the header of sponsor.ts for why it rides this suite
   { name: 'SPONSOR', fn: sponsorChecks },
+  // the 3D scene chunk's import-boundary rules (Day 1 lane B) — pure source checks, no DOM
+  { name: 'RENDER', fn: renderChecks },
+  // the SEAM between the 3D solve and everything that carries it: room physics, the cap gate,
+  // the wire codec, and the replay container (Day 2 lane C). See net3d.ts's header for why it
+  // is its own lane and not more checks in SERVER.
+  { name: 'NET3D', fn: net3dChecks },
+  // roadmap item 6: the tutorial engine (`src/tutorial/`) and BIOBUZZ's step content. Its own
+  // lane because a TUTORIAL failure and a PHYSICS failure are different mornings, and because it
+  // is the only lane that drives a staged world to a goal rather than asserting a number.
+  { name: 'TUTORIAL', fn: tutorialChecks },
 ];
 
 const KNOWN_FLAGS = ['--lane', '--grep', '--list', '--help'];
@@ -113,6 +141,10 @@ const grep = args.grep ? args.grep.toLowerCase() : '';
 
 const bootStart = Date.now();
 await initPhysics();
+// Day 1 seam (`docs/biobuzz/plan-3d.md`): awaited right after the 2D module, same reasoning,
+// so a lane can build a `'3d'`-physics world without adding its own boot step. `step3d` still
+// throws (Day 1 lane A has not landed), so no lane below steps a `'3d'` world yet.
+await initPhysics3d();
 const bootMs = Date.now() - bootStart;
 
 let failures = 0;

@@ -14,7 +14,10 @@ import { drawBiobuzzRobot } from './drawRobot';
 import { biobuzzHud, type BiobuzzHud } from './hudRobot';
 import { biobuzzStep } from './step';
 import { BiobuzzRobotPreview } from './RobotPreview';
+import { bbKindOf } from './score';
 import { BB_SCENES, bbScene, bbSceneStills, type Scene } from './scenes';
+import { moduleFor } from '../index';
+import type { GameScene } from '../module';
 
 /**
  * `/biobuzz/gallery` — the VISUAL FEEDBACK LOOP's front end.
@@ -176,8 +179,113 @@ function bbHudLine(hud: BiobuzzHud): string {
   return `${cell('red')} · ${cell('blue')}`;
 }
 
+/**
+ * 3D STILLS — ONE SCENE, REUSED FOR EVERY CELL.
+ *
+ * ── WHY ONE AND NOT ONE PER CELL ───────────────────────────────────────────────────────────
+ * A browser caps how many live WebGL contexts a page may hold (Chrome around 16, and it drops
+ * the OLDEST when you pass it); this grid is 30-odd cells. So there is a single scene on one
+ * hidden host, and every cell renders ITS world into that scene and copies the frame onto its
+ * own 2D canvas. The copy has to happen in the SAME TASK as the render — a WebGL backbuffer is
+ * only guaranteed readable before the next paint, and there is no `preserveDrawingBuffer` here
+ * — which is exactly what an effect body does.
+ *
+ * ── AND WHY THE STILLS ARE NOT A SECOND RENDERER ───────────────────────────────────────────
+ * The same rule the rest of this file obeys: the cell is drawn by the REAL `GameModule.scene`,
+ * through the real factory, at the real quality (`'high'`). A 3D still is therefore a picture
+ * of the game's own renderer, and a difference between the 2D and 3D cell for one scene is
+ * always a real difference between the two renderers, which is the entire point of putting
+ * them beside each other.
+ */
+function use3dStillScene(enabled: boolean): GameScene | null {
+  const [scene, setScene] = useState<GameScene | null>(null);
+  useEffect(() => {
+    if (!enabled) return;
+    const factory = moduleFor('biobuzz').scene;
+    if (!factory) return;
+    let dead = false;
+    let live: GameScene | null = null;
+    const host = document.createElement('div');
+    host.style.position = 'fixed';
+    host.style.left = '-20000px';
+    host.style.top = '0';
+    host.style.width = `${CELL_PX}px`;
+    host.style.height = `${CELL_PX}px`;
+    host.setAttribute('aria-hidden', 'true');
+    document.body.appendChild(host);
+    void factory()
+      .then((f) => f(host, { quality: 'high', interactive: false }))
+      .then((sc) => {
+        if (dead) {
+          sc.dispose();
+          return;
+        }
+        // 1:1 with the cell canvas, so the copy below is a blit and not a resample
+        sc.resize(CELL_PX, CELL_PX, 1);
+        live = sc;
+        setScene(sc);
+      })
+      .catch((err: unknown) => {
+        // no WebGL2, a software renderer, a failed chunk — the 2D cells still stand
+        // eslint-disable-next-line no-console
+        console.warn('BIOBUZZ gallery: no 3D stills on this machine.', err);
+      });
+    return () => {
+      dead = true;
+      setScene(null);
+      live?.dispose();
+      host.remove();
+    };
+  }, [enabled]);
+  return scene;
+}
+
+/** one cell's 3D still, drawn through the shared scene. */
+function Still3d({ scene, world, camera }: { scene: GameScene; world: World; camera: Scene['camera3d'] }) {
+  const ref = useRef<HTMLCanvasElement | null>(null);
+  useEffect(() => {
+    const canvas = ref.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+    scene.render(world, {
+      alpha: 0,
+      viewAngle: VIEW_ANGLE,
+      // ORBIT by default (plan §4.3 names it the gallery camera): it needs no local robot and
+      // it frames the whole field, which is what a contact sheet is for. A scene that is about
+      // what a DRIVER sees says so with `camera3d`.
+      camera: camera ?? 'orbit',
+      localRobotId: world.robots[0]?.id,
+      width: CELL_PX,
+      height: CELL_PX,
+      dpr: 1,
+    });
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.clearRect(0, 0, CELL_PX, CELL_PX);
+    ctx.drawImage(scene.element, 0, 0, CELL_PX, CELL_PX);
+  }, [scene, world, camera]);
+  return <canvas ref={ref} width={CELL_PX} height={CELL_PX} style={CANVAS_STYLE} />;
+}
+
+/** a cell's two canvases, side by side, when 3D stills are on. Flex rather than the grid: the
+ * two pictures are one comparison and must wrap together or not at all. */
+const STILL_PAIR: CSSProperties = { display: 'flex', gap: '8px', width: '100%' };
+const STILL_HALF: CSSProperties = { flex: '1 1 0', minWidth: 0 };
+
 /** one still of one scene. */
-function SceneCell({ scene, tick, world, onOpen }: { scene: Scene; tick: number; world: World; onOpen(): void }) {
+function SceneCell({
+  scene,
+  tick,
+  world,
+  scene3d,
+  onOpen,
+}: {
+  scene: Scene;
+  tick: number;
+  world: World;
+  scene3d: GameScene | null;
+  onOpen(): void;
+}) {
   const ref = useRef<HTMLCanvasElement | null>(null);
   useEffect(() => {
     if (ref.current) drawCell(ref.current, world);
@@ -185,19 +293,40 @@ function SceneCell({ scene, tick, world, onOpen }: { scene: Scene; tick: number;
   const hud = biobuzzHud(world, world.robots[0]?.id ?? -1);
   return (
     <button className="ds-opt" onClick={onOpen} title={scene.title}>
-      <canvas ref={ref} width={CELL_PX} height={CELL_PX} style={CANVAS_STYLE} />
+      {/* ⚠️ THE 2D CANVAS IS ALWAYS IN THIS SAME WRAPPER, whether or not there is a 3D half.
+          It started as a ternary — a bare `<canvas>` when 3D stills were off, a wrapped one when
+          they were on — and toggling the switch REMOUNTED it: React swaps in a fresh element at
+          that position, the draw effect does not re-run because `world` has not changed, and
+          every 2D cell went black beside a perfectly good 3D one. One wrapper, one canvas
+          element, one identity; with a single child the flex row is the full-width layout it
+          always was. */}
+      <div style={STILL_PAIR}>
+        <div style={STILL_HALF}>
+          <canvas ref={ref} width={CELL_PX} height={CELL_PX} style={CANVAS_STYLE} />
+        </div>
+        {scene3d && (
+          <div style={STILL_HALF}>
+            <Still3d scene={scene3d} world={world} camera={scene.camera3d} />
+          </div>
+        )}
+      </div>
       {/* THE CAPTION IS `<scene>@<tick>`, and it is the same string `shots.cjs` names its PNG
           with and a human quotes in a feedback dump. One identifier for a picture, wherever the
           picture is looked at. */}
       <span className="ot">
         {scene.id}@{tick}
       </span>
-      {/* the numbers that explain a cell you are confused by: how many POLLEN are on the field
-          at all, how full the first robot's hopper is, and where each HIVE stands. A pile that
-          looks empty is a different bug from a pile that got collected, and the count is the
-          difference. */}
+      {/* the numbers that explain a cell you are confused by: what is on the field at all, how
+          full the first robot's hopper is, and where each HIVE stands. A pile that looks empty
+          is a different bug from a pile that got collected, and the count is the difference.
+
+          COUNTED BY KIND, because there are two element sizes now and calling all of them
+          "pollen" mislabelled every mixed cell — `hive-tip`'s load is 3 NECTAR over 3 POLLEN
+          and the caption read `6 pollen`, which is the one line a reader checks a picture
+          against. The nectar half is omitted when there is none, so the single-element scenes
+          keep the shorter caption they had. */}
       <span className="om">
-        {world.balls.length} pollen · {hud.robot ? `${hud.robot.hopper}/${hud.robot.cap} held · ${hud.robot.mode}` : 'no robot'}
+        {elementLine(world)} · {hud.robot ? `${hud.robot.hopper}/${hud.robot.cap} held · ${hud.robot.mode}` : 'no robot'}
       </span>
       <span className="om">{bbHudLine(hud)}</span>
     </button>
@@ -278,11 +407,14 @@ function LaneSection({
   title,
   scenes,
   stills,
+  scene3d,
   onOpen,
 }: {
   title: string;
   scenes: readonly Scene[];
   stills: Map<string, { tick: number; world: World }[]>;
+  /** the shared 3D scene, or null while it loads / where the machine has no WebGL2. */
+  scene3d: GameScene | null;
   onOpen(id: string): void;
 }) {
   if (!scenes.length) return null;
@@ -310,6 +442,7 @@ function LaneSection({
               scene={scene}
               tick={s.tick}
               world={s.world}
+              scene3d={scene3d}
               onOpen={() => onOpen(scene.id)}
             />
           ));
@@ -476,6 +609,15 @@ function sceneIdOf(pathname: string): string | null {
   return m ? m[1] : null;
 }
 
+/** the cell caption's element count, BY KIND. `bbKindOf` is the same classifier the score
+ * uses, so a caption can never disagree with what the rules think is on the field. */
+export function elementLine(world: World): string {
+  let pollen = 0;
+  let nectar = 0;
+  for (const b of world.balls) (bbKindOf(b) === 'pollen' ? pollen++ : nectar++);
+  return nectar === 0 ? `${pollen} pollen` : `${pollen} pollen · ${nectar} nectar`;
+}
+
 export function BiobuzzGallery() {
   // THE SELECTION IS REACT STATE, MIRRORED TO THE URL — not read from it every render.
   // Deliberate: it means a cell click works whether or not the host router knows the
@@ -514,11 +656,31 @@ export function BiobuzzGallery() {
     return m;
   }, []);
 
+  /**
+   * 3D STILLS, OFF BY DEFAULT and a per-GALLERY toggle rather than the device's view pref.
+   *
+   * Off by default because this page's job is the contact sheet `shots.cjs` screenshots, and a
+   * WebGL scene that has to load a GLB before it draws anything would put half-empty cells in
+   * every shot. A toggle rather than `getViewPref()` because the two pictures are shown SIDE BY
+   * SIDE — the question this page answers is "do the two renderers agree about this situation",
+   * which is not a question about what you would rather drive in.
+   */
+  const [show3d, setShow3d] = useState(false);
+  const scene3d = use3dStillScene(show3d);
+
   const live = sceneId ? bbScene(sceneId) : undefined;
   if (sceneId && live) return <LiveScene scene={live} onBack={() => open(null)} />;
 
   return (
     <>
+      <div className="ds-opts two">
+        <button className={`ds-opt ${show3d ? 'on' : ''}`} aria-pressed={show3d} onClick={() => setShow3d((v) => !v)}>
+          <span className="ot">3D stills {show3d ? 'ON' : 'OFF'}</span>
+          <span className="od">
+            {show3d && !scene3d ? 'Loading the scene…' : 'The same world through the real 3D renderer, beside the 2D one'}
+          </span>
+        </button>
+      </div>
       {/* An UNKNOWN id is said out loud rather than silently redirected to the grid: it almost
           always means a feedback dump quotes a scene that has since been renamed, and knowing
           that is more useful than a page that looks like it worked. */}
@@ -527,12 +689,14 @@ export function BiobuzzGallery() {
         title="Field"
         scenes={BB_SCENES.filter((s) => s.lane === 'field')}
         stills={stills}
+        scene3d={scene3d}
         onOpen={open}
       />
       <LaneSection
         title="Robot"
         scenes={BB_SCENES.filter((s) => s.lane === 'robot')}
         stills={stills}
+        scene3d={scene3d}
         onOpen={open}
       />
     </>

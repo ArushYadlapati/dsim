@@ -16,21 +16,28 @@ import { parseLanAddress } from './lanAddress';
  *
  * The conditions are deliberately narrow, and between them they mean this never fires
  * anywhere it should not:
- *   - `http:` only. The deployed site is https, so it is skipped there outright.
- *   - a PRIVATE host only, so a page served from a public http origin is not adopted.
+ *   - a PRIVATE host only, so a page served from a public origin is not adopted.
+ *   - THE SCHEME MUST BE THE ONE THAT ADDRESS ANSWERS ON. That is `http:` for every LAN
+ *     address, and `https:` for exactly one: a bare Tailscale MagicDNS name, which holds a
+ *     real certificate (see `parseLanAddress`). The deployed site is https on a PUBLIC host,
+ *     so it is still skipped — by the private-host test, which is the one that was always
+ *     doing that work.
  *   - `/health` must answer. A static file server, a dev server or a proxy does not.
  *
- * The desktop shell is skipped by the first condition either way: it loads the live https
- * site when it can and a `file://` bundle when it cannot, and a host playing on their own
- * machine connects through the Host panel instead.
+ * The desktop shell is skipped either way: it loads the live https site when it can and a
+ * `file://` bundle when it cannot, and a host playing on their own machine connects through
+ * the Host panel instead.
  */
 export async function adoptLanFromOrigin(): Promise<boolean> {
   if (typeof window === 'undefined') return false;
   const { protocol, host, origin } = window.location;
-  if (protocol !== 'http:') return false;
 
   const hit = parseLanAddress(host);
   if (!hit.ok) return false; // not a private address — not a LAN host
+  // `tls` is the parser's answer to "does this address speak https", and a page served over
+  // the other scheme is not the server this address names — a tailnet name on plain port 80
+  // included, which `tailscale serve` does not produce.
+  if (protocol !== (hit.value.tls ? 'https:' : 'http:')) return false;
   if (lanServerUrl() === hit.value.url) return true; // already pointed here
 
   try {

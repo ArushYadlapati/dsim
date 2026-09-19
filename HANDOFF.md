@@ -1,5376 +1,2268 @@
-> **2026-09-12f — BIOBUZZ builder feedback (branch `biobuzz-robot`, UNCOMMITTED).** The launcher
-> is mandatory (Single turret POLLEN-only / Double turret with a POLLEN and a NECTAR turret /
-> Dumper that reaches the HIVE; the Drum is gone). Launchers aim at the HIVE only. "Vertical
-> slide" is the OFFSET™ Box Tube, which scores a FLOWER by PROXIMITY placement (`z` POLLEN, `x`
-> NECTAR on protocol **bit 32, formerly `bbLift`**). The intake refuses opponent NECTAR. The
-> `Menu.tsx` Customize section now gives BIOBUZZ its drivetrain picker. Gates: `npm test` ALL
-> PASS twice (921 BIOBUZZ checks), `build`, `server:check`, `uiaudit` at baseline, `contrast`
-> 223, `shiftaudit` 0 shifts in 514. ⚠️ **Needs a server deploy** (`server/room.ts`
-> `countParticipation` plus the authoritative BIOBUZZ sim) via `./scripts/fly-deploy.sh`, never
-> a bare `flyctl deploy`. Full write-up, the cross-lane edits table and the gotchas are in
-> **`docs/biobuzz/HANDOFF-robot.md` → "READ FIRST — 2026-09-12, night"**.
+# HANDOFF — 2026-09-19 (alpha: THE OWNER'S TWELVE-ITEM PASS — the hive tip, scoring instants, flower
+and tile contact, the shooter/swerve/box-tube rebuild, intake cadence, one alliance blue)
 
-> **2026-09-12e — the SAVED-ROBOT line reads the `labels.configSummary` slot.** The third
-> site of the seam bug the preset LIST and the hero STAT TILES had, and the last one in
-> `Menu.tsx`: the `.om` detail line under each saved robot was `isDecode ? … : …`, an `else`
-> rather than a default, so a BIOBUZZ slot was described in Chain Reaction’s words off
-> `scoreMode` — the lossy legacy mirror — printing a launcher-less build as a turret and
-> never mentioning the lift. No new slot: BIOBUZZ already filled `labels.configSummary` and
-> `buildSummary` already read it. DECODE’s and CR’s inline arms are byte-identical.
-> Audited the rest of the file with it: the PRESET card body has no equivalent gap (its slot
-> test is the same slot that picks the list — now pinned), and every other `isDecode` is
-> either non-printing or inside the `Builder ? … : (…)` else-branch BIOBUZZ never renders.
-> Its smoke section sits directly after the stat-tiles one in `scripts/smoke-biobuzz/core.ts`
-> and pins the WIRING at the source — a correct `bbConfigSummary` no screen reads is
-> invisible to any check that calls it directly. Merged with alpha (both sections kept);
-> `npm test` ALL PASS twice, `npm run build` clean, `npm run uiaudit` at baseline.
+**READ FIRST.** Eight commits plus the merge of `origin/alpha` they sit on. Twelve items, all
+from playing the running 3D game. Nine were diagnosed read-only first and then implemented under
+one-owner-per-file, which is what kept nine concurrent agents off each other.
 
-# HANDOFF — 2026-09-12d (the sync-engine review, verified and rewritten)
+⚠️ **THIS LANDED ON TOP OF THE PRE-PUBLISH MERGE BELOW, AND THAT SECTION'S PUBLISH STILL HOLDS.**
+`alpha` still contains `main`, so `git checkout main && git merge --ff-only alpha` is still a
+fast-forward, and the deploy ORDER that section gives — Vercel builds `main` and serves it FIRST,
+`./scripts/fly-deploy.sh` from a `main` worktree SECOND — is unchanged and still load-bearing.
+Nothing here was deployed.
 
-> **2026-09-12d — alpha IS deployed, and LAN no longer needs a Vercel edit.** The alpha Fly app
-> now runs the rendezvous (verified by protocol, not by `/health`, which answers the literal
-> string `ok` and cannot tell you which build is running). The client gate moved from the
-> build-time `VITE_LAN_ENABLED` to the server's `lan` capability, because the two halves were
-> held by different people and had silently drifted apart. Cost: +6.1 KB brotli, measured.
-> Branch **alpha**, 7 commits, all pushed. `npm test` **ALL PASS**, `npm run dbtest` **ALL PASS**,
-> `npm run server:check` clean, `npm run test:mm` **184 checks** (was 58 at the last handoff).
+Four files conflicted with what had landed on alpha meanwhile. Three were mine to keep; the fourth
+was not: **`scene/renderElements.ts` took the upstream resolution whole.** That lane found the same
+bug from the other end and its answer is a superset of mine — one `bottom = biobuzzPhysics(world)
+=== '3d'` deciding whether `b.z` is an underside, applied to the FLOWER branch as well as the hive
+one, and it also catches that my earlier "lift by `r` unconditionally" fix had leaked into the 2D
+pipeline it was never about.
 
-Branch **alpha**, **no code changes since the above** — one doc rewritten. `npm run test:mm`
-184 checks re-run and green; nothing else re-run, nothing to deploy.
+## 1 · The HIVE tips on the table it promises
 
-## `docs/multiplayer-sync-engine-review.md` was audited and is now 494 lines, was 985
+⚠️ **THE DYNAMIC TRAY'S TRIGGER IS `BB_TIP_POLLEN`, NOT A TORQUE** (`sim3d/hive3d.ts`). The owner's
+report was "it says 0 more to tip and it does not tip", staged as 1 POLLEN + 4 NECTAR: the load
+weighed 5701 against a hold of 5915 and the tray sat on its stop for the rest of the match.
 
-Every claim a RECOMMENDATION rests on was re-read at HEAD `593ac86` and at the review's own
-`8cd4d61`. The measurement half holds and is kept verbatim — it is the only place the corrected
-wire rates, the 32.0 µs/artifact figure and the per-room memory table exist. What changed:
+No calibration could have fixed it, and that is the part worth keeping. **ONE COUNT DOES NOT
+DETERMINE ONE TORQUE.** Measured in one cell at the shipped hold, staging the same count four ways:
 
-- **Finding #9 (`onBehaviour` never wired) was FALSE, and was false when written.** It is now a
-  struck-through row that says so. `server/matchmaking.ts` passes `persistBehaviour` as the 8th
-  `Room` argument and did at `8cd4d61` (line 363 then, 621 now); the first pass read only the
-  custom-room construction in `index.ts`, and those rooms never set `Room.ranked`, which
-  `reportBehaviour` guards on. **Nothing to fix — do not "wire" it.** It carried the ✔ that
-  marks an adversarially-verified row, so that mark is worth less than it looks.
-- **The client-side ball aliasing (was #11, now #5) is promoted and SEQUENCED FIRST.**
-  `applyBallDelta` returns the objects it stores, `ServerSession` keeps them as `baseBalls`, and
-  the controller steps them — so a ball absent from `upd` is never corrected. The review's own
-  safety case for 3 dp rounding ("the client re-anchors every snapshot") is only true for balls
-  the server re-sends, which is exactly what rounding shrinks. **Clone in `applyBallDelta`
-  before rounding anything.**
-- **The 3 dp safety argument was leaning on the wrong prop.** `worldHash` quantizing at 1e-3
-  proves replay COMPARISON is blind below it, not that `step()` is. Accumulated clocks read
-  against `world.time` (`fireReadyAt`) would round independently of it. §5 now carries a
-  `TIME_KEYS` exemption in the replacer — one `Set`, no measurable cost.
-- **The fleet numbers were stale.** `DEPLOY_REGIONS` is 6 since `ade7d60`, so the ceiling is
-  **144 rooms, 11.3× short**, not 120/13.5×. And `MAX_ROOMS` already reads `process.env`, so the
-  per-machine cap is `-e MAX_ROOMS=N` in `fly-deploy.sh`'s satellite loop, not new code.
-  `gru`/`jnb` are +2 regions for the price of a memory resize.
-- **`autoPath` (was #3, now #6) is not the amplifier it was billed as** — `Room.beginMatch`
-  strips it from every setup — but `coerceAutoPath` is still unbounded and also guards settings
-  load and the practice-run upload into `replays`. Bound the coercer, then delete the wire field.
-- **#5 overstated "no retention at all"**: `purgeSeasonReplays` is an existing per-season lever.
-  The `matches.replay_id` gap in `deleteAccount` is real and stays Critical.
-- **The Rapier 48× figure is a property of the rebuild-per-round design**, which is deliberate
-  for reconcile safety. Said out loud now, so nobody re-measures against a persistent world and
-  concludes the review was wrong.
-- Also: `#13` is sharper (`sanitizeReplay` DOES take a `game` and simply never passes it on),
-  `world.events` has 15 push sites not 11, `#16`/`spectateRoom` dropped to Low (a spectator gets
-  "no such room", not a second lobby), citations are by SYMBOL because every line number in
-  `room.ts`/`index.ts`/`protocol.ts` drifted with the LAN work, `costprobe`'s baseline is `:220`
-  and `worldHash` is in `src/net/`.
+| load | crammed 2-wide up the back | guide staging | 2-wide line down the tray |
+|---|---|---|---|
+| 8 POLLEN | 4560 (no tip) | 7284 | 8051 |
+| 7 POLLEN | 4146 (no tip) | 5647 | 6769 (tips) |
+| 3P + 3N | 4933 (no tip) | 6869 | 8407 |
 
-Cut: the end-to-end ASCII path diagram (it duplicates `multiplayer-architecture.md`) and the
-template phases that concluded "does not apply" — folded into one §4 table. The six findings
-had been restated in six places; they are stated once, and the plan and dev spec are what is
-left.
+The two counts' ranges overlap over most of their length, so no value of `BB3_HIVE_DETENT` separates
+them — and both halves of field guide §12.3 were being violated at once on the shipped numbers. The
+lane never saw it because every fixture staged one packing. The detent is a PIN THE TABLE LIFTS now;
+everything after the release is still the free see-saw. `hiveContentsTorque`/`hiveRestoringTorque`
+stay exported because they are how the lane and `scripts/hive-calibrate.ts` MEASURE the tray.
 
-**Nothing here is deployed or deployable — it is a document.** The work it describes starts at
-Stage 0 (`costprobe.ts:220`, one line) and Stage 1 item 3 (`applyBallDelta`, one line).
+⚠️ **`BB3_HIVE_DYNAMIC = false` IS NOT A ONE-WORD REVERT, AND HAS NOT BEEN SINCE G409 LANDED.**
+`bb.spill` — G409's whole tag — is written in exactly one place, inside `hiveDynamicTick`. The
+kinematic path never writes it, and all four G409 checks live inside `if (BB3_HIVE_DYNAMIC)` blocks,
+so flipping the word kills G409 in 3D **and the lane stays green**. The comments that claimed
+otherwise are corrected.
 
-## `ord` was not in the region table, and it is your US Central
+## 2 · A scored line waits for the instant §10.5 assesses it at
 
-The worst thing found this session, and it was live. `DEPLOY_REGIONS` listed five regions while
-EIGHT machines were running (iad ord sjc lhr syd nrt gru jnb). `interRegionMs` answers a
-RADIUS_MAX-sized 300 for any region it has no row for — so a missing region does not read as
-FAR, it reads as UNPAIRABLE until the radius saturates six seconds later, and never at all for a
-`noWiden` player. Measured before the fix:
+⚠️ **AN INSTANT LINE IS WORTH ZERO UNTIL ITS INSTANT HAS PASSED.** Measured before the fix: the
+score bar read 4 before the match started and 9 one second into AUTO, 29 s before anything on it had
+been assessed.
+
+| line | instant | §10.5 |
+|---|---|---|
+| LEAVE, AUTO PARK | end of AUTO | F |
+| TELEOP PARK | end of the MATCH | G |
+| POLLEN/NECTAR in the up-CELL | everything at rest, end of MATCH | C |
+| POLLEN/NECTAR in a GARDEN | end of TELEOP, all at rest | E |
+| the HIVE TIP, both FLOWER lines | continuous | A, D |
+
+The COUNT stays live — a driver still sees the achievement land — and `BbAllianceScore.pendingPts`
+carries what the instants still owe, shown as a `+N PENDING` chip in the muted row, deliberately not
+in the panel. `total + pendingPts` is invariant for a field that stops changing. **The FINAL score is
+unchanged**: every harvest happens at or after `post`. This is shared rules code, so it moved the 2D
+pipeline too — correct for a rules bug, and no version was bumped.
+
+## 3 · The shooter, the swerve pods and the box tube
+
+The shooter plate had been "fixed" twice and kept digging into the chassis, because both fixes
+measured the plate AT REST. ⚠️ **THE CONSTRAINT IS THE SWEPT ENVELOPE, NOT THE POSE.** Elevation
+rotates the whole pitching head, so `BB_HEAD_RHO_MAX` is the new invariant: nothing on the head may
+exceed ρ = `BB_LAUNCH_Z0 − BB_DECK_Z − 0.2`. At rest the old head cleared the deck by 0.45 in and
+looked right; at 45° of elevation the feed ramp swept the deck, the belly pan and the wheels and
+stopped 0.04 in off the tile. `minHeadWorldZ` is the closed form the RENDER lane samples.
+
+- **Swerve is a pod**: top plate, azimuth ring, fork, 3-in wheel, belt drive, all of it under the
+  deck plate's 4.34 in of headroom and inside the frame (`BB_POD_INSET`). A 4-in wheel does not fit
+  — it leaves 0.34 in for plate, ring and bearing — which is why COTS FTC pods are 3-in.
+- **The flywheel motor** is behind the hood at 205° about the axle, between the plates, driving a
+  belt over a 0.68/0.54 pulley pair. It is not beside the flywheel any more.
+- **The box tube** telescopes over `BB_BOX_TUBE_EXTEND_S`, off `bbFlowerInReach` — the SIM's own
+  predicate, not a second reach model.
+- **The in-reach cue** is one predicate and two drawings, the rule the shot path already follows:
+  `scene/renderReticle.ts` in 3D and `drawShot.ts`'s `drawBiobuzzReachCue` in 2D, both reading
+  `bbFlowerInReach`. The 2D call site is in `draw.ts`, under the shot path, matching the 3D render
+  order.
+
+## 4 · Flower and tile contact
+
+A FLOWER column is a physical pile now, not computed heights: four POLLEN settle at gaps
+2.735/2.757/2.778 against an ideal 2.8, and a dropped POLLEN's bottom lands at −0.011 in at all four
+tubes with `containmentFixes` still 0. A NECTAR is still stopped by the 3.222 bore, so G418 holds.
+`BB3_CONTACT_FREQ` 30 (the shared default is 12) is what stopped elements sinking into the tray
+floor. The tiles bounce slightly more: `TILE_RESTITUTION` 0.05, which under Rapier's Average rule
+makes the element/tile coefficient 0.25 rather than 0.225. `sim3d/predict.ts` took the same number,
+or the drawn shot path would lie.
+
+## 5 · The intake
+
+The cadence gate is 0.06–0.12 s per element (was 0.15–0.3). ⚠️ **AND THE GRIP WAS A UNITS BUG**:
+`approach(from, to, maxDelta)` was being handed `BB_INTAKE_DRAW_IN` — a SPEED — as a per-TICK
+displacement cap, i.e. 3120 in/s² of effective acceleration, so an element reached full draw-in
+speed from rest in one tick. `BB_INTAKE_GRIP_ACCEL` (1200 in/s², APPROX) times `dt` replaces it, and
+`BB_INTAKE_DRAW_IN` is 84 (was 52).
+
+## 6 · One alliance blue, and it is not the CAD's
+
+⚠️ **THE CAD IS AUTHORITATIVE FOR DIMENSIONS AND IS NOT AUTHORITATIVE FOR THIS COLOUR.** The STEP
+gives the hive Goal Ribs `plastic#0000ff`. Pure `#0000ff` is OKLCH hue 264.1° — 1.7° off the most
+violet blue sRGB can express, and the worst available answer to "it looks too purple". An assembly
+carrying pure `#ff0000` AND pure `#0000ff` is carrying placeholder part colours, the same way its
+`#e6e6e6` "white plastic" is one, which `renderFieldGlb.ts` has overridden since the clear-panel
+pass.
+
+Every BIOBUZZ blue is **`#007be1`** now — tape, NECTAR, hive accents, the constants-built fallback
+scene, the GLB's ribs and the robot silhouette. Hue 252.9°, the least violet a saturated blue gets
+before it reads cyan, at the most chroma sRGB has there, and L 0.583, within 0.002 of the red tape's
+own lightness. APPROX: **no authoritative AndyMark blue was found**, so this is a perceptual
+correction and not a sourced value. RED is untouched — a pure red still reads as red, and the owner
+named only blue.
+
+## Open, and deliberately so
+
+- **`BB_INTAKE_LANE_W` stays at 9.** Moving it to 8 gives the default 17-in build a second feed lane
+  — a balance change rather than a feel change, and the owner has not ruled on it.
+- **`src/config.ts`'s `COLORS.blue` (`#3b82f6`, hue 259.8°) is unchanged.** It is DECODE's and Chain
+  Reaction's too; BIOBUZZ no longer reaches for it.
+- A staged FLOWER column is born one radius high in 3D — `spawn.ts` writes `flowerStackZ`, which
+  returns CENTRES (the one exception to `b.z` being a bottom), and `syncElement` adds another
+  radius. It settles correctly on tick 1 now that the column is physical, so it is a first-tick
+  drop rather than a wrong resting height.
+- A vz −200 shot still peaks at 0.154 in of penetration into the tray floor on the landing tick at
+  30 Hz. Settled penetration is what item 3 was about and that is fixed; the transient is not, and
+  no check pins it.
+# HANDOFF — 2026-09-19 (alpha: PRE-PUBLISH AUDIT — main merged INTO alpha, so alpha → main is a fast-forward)
+
+`alpha` was ready to publish at this commit. `origin/main` has been merged into it here, with the
+five conflicts resolved (below), so the publish is a **fast-forward**, no hand-merge:
 
 ```
-bestHost(two players both in ord) = { hostRegion: iad, cost: 310, spread: 300 }   # ceiling is 90
+git checkout main
+git merge --ff-only alpha
+git push origin main
+```
 
-Two people in Chicago could not be matched to each other for six seconds, then played in
-Virginia. In the 2000-concurrent population sim this alone moved peak queue depth 35 -> 4 and
-wait p99 10s -> 3s.
+Then deploy **in this order and no other**: let Vercel build `main` and confirm the site serves
+it, THEN `./scripts/fly-deploy.sh` from a `main` worktree. `docs/deploy.md` → "Deploy ORDER when
+the wire protocol moved" says why: the new server refuses every pre-`bb3d` client from every
+BIOBUZZ room, and the reverse order locks production BIOBUZZ players out until Vercel catches up.
 
-`ord` is now deployed and hostable. `gru`/`jnb` got RTT rows but stay OUT of `DEPLOY_REGIONS`
-deliberately: both run at 512MB, under the 1024 the deploy script says Node+Rapier needs. **Size
-them, then move them in.** Their rows alone fix their players — far beats unpairable.
+Gates on the tree this merge commit carries: `build` · `server:check` · `docaudit` · `uiaudit` ·
+`contrast` (221) · `test:mm` (197) · `dbtest` · `bundleaudit` (re-measured: `main` DOWN 6 KB gz, a
+new `gallery` route) all green; `npm test` is **1878** shared, all green, and **2380** BIOBUZZ with
+**three wall-clock `step3d` perf checks red on the audit machine** — the same three are red on the
+PRE-fix tree there (A/B, alternated), and green in the 2026-09-19 render-pass HANDOFF below on the
+owner's. Every other BIOBUZZ check passes. `npm test` now runs BOTH suites unconditionally
+(`scripts/test-all.mjs`). `shiftaudit` was not run this round.
 
-⚠️ **The ord/gru/jnb distances are ESTIMATED, not measured.** The other five were taken
-machine-to-machine over Fly's 6PN mesh. Re-measure on a deploy that can reach it.
+## What the audit was
 
-**The test for this had to be written twice.** Iterating `DEPLOY_REGIONS` cannot catch a region
-missing from it — the loop just runs one fewer time, and a mutation run confirmed it passed
-unchanged. The fleet is now declared in `scripts/fly-deploy.sh` (`FLEET_REGIONS`) and mmsmoke
-asserts the code agrees. **Add a region to both files in the same change.**
+Eight read-only audits of the alpha-vs-main delta (202 commits, 245 files) by lane — main-only
+drift, server/net, security, sim core + versioning, BIOBUZZ 3D, UI, docs/hygiene, tests — then
+the findings triaged and fixed in four disjoint batches. Findings the owner has to rule on are
+listed at the end; nothing there was decided silently.
 
-## Skill-based pairing is in
+## Fixed — things main had and alpha lacked (cherry-picked: `63bc806` `882fda6` `eaf5a71`)
 
-Pairing was latency-only since it shipped; Glicko-2 was computed after every match and never
-consulted before one. Now: latency PRIMARY, skill as a second gate plus a tiebreak, never a
-partition.
+- `applyBallDelta` returns COPIES — a spectator's stationary elements (flower stacks, hive
+  cells) were never corrected again. `f52b175`.
+- A reconnecting spectator re-spectates instead of claiming a driver slot. `747dae0`, hand-merged
+  so the rejoin frame keeps alpha's `caps: CLIENT_CAPS` (a `'3d'` room re-gates a reclaim).
+- Restarting a solo record run works — `releaseSeatLock` / `abandonSlot` /
+  `releaseSoloRecordHold`. `aca358e`; this was the regression main's 2026-09-17b section is about,
+  and alpha never had the fix.
 
-- Band opens at ±200 rating points, 500 at 3s, **unbounded at 6s** — same clock as the radius,
-  saturating at the same instant, so neither gate can outlive the other and anti-starvation is a
-  theorem rather than a hope.
-- **Unrated means DO NOT GATE**, never "assume 1000". DB off, dev box, fresh act, or inside
-  placement games all degrade to exactly the latency-only pairing that shipped before.
-- Closed parties (friend challenges) are never gated — structurally outside the branch.
-- 2v2 alliances are evened after the group is chosen, never splitting a premade.
+Everything else on main was already on alpha by content. Main's `ff5044c` (revert of the
+HIVE-feel batch) is the ONE intentional divergence and the merge resolved it to alpha — see the
+versioning entry below for why that is now safe.
 
-Measured, 2000 concurrent (`scripts/zz-mm-quality.ts`): spread p90 **439 -> 322**, p99 636 -> 516,
-for two seconds at p99 wait. The median was already fine by luck (the pool clusters at the 1000
-default); the tail was the harm.
+## Fixed — replay fidelity
 
-⚠️ **`SKILL_BASE` is the dial that binds. `SKILL_OPEN_STEPS` does not** — swept, moving it 2->4
-changes no percentile of anything, because the queue drains long before six seconds. Do not tune
-it against today's numbers.
+- **`SIM_VERSION` 2 → 3.** Main and alpha both stamped 2 over DIFFERENT `step()` behaviour for a
+  BIOBUZZ world (six-draw spill, `hiveDeflect`, load-driven swing rate, CAD geometry, the 2D
+  intake rewrite, `bbSnapSize`). The ledger in `src/config.ts` now lists all of it under 3, and
+  says plainly that replays recorded 2026-09-13→17 are mis-stamped 2 and will play as `behaviour`
+  DRIFT on a v3 build, which is the correct label. A bump is a drift, not a refusal.
+- Main's spill draw-count tripwire is ported to the FIELD lane, retargeted to **6**. The next
+  change to that number comes with another bump, in the same commit.
 
-## Performance
+## Fixed — server
 
-- `broadcastStatus` re-scanned the whole queue PER RECIPIENT, building `bucketKey` strings on
-  both sides inside the inner term. 134.80ms -> 0.53ms at depth 1000; 46% off the whole join.
-- `bestHost` is skipped for a trial whose members all share a deployed region (spread is
-  provably 0 there). Profiled: bestHost is **76%** of a candidate's cost, allocations only 9% —
-  a rewrite aimed at the allocations would have been aimed at the wrong tenth.
-- Reading one rating was THREE sequential queries; `actFor` memoizes the act per game. And
-  `introElo` now reads the stamp instead of re-querying, which removed **12 sequential queries**
-  sitting between "match found" and the match appearing in a 2v2.
+- `verifiedFromSession` (the email-verified fallback) is deduplicated per token and has a 2 s
+  timeout; it was an unbounded, un-timed HTTP call on the join hot path, made even when the gate
+  it feeds is off.
+- A ranked / matchmade room cannot start before the 3D wasm has resolved
+  (`physicsReadyForRoom`): custom rooms waited, `startRankedImmediate` / `beginRanked` did not.
+- `Room.stop()` frees the match's Rapier 3D world (`disposePhysics3dFor`). The engine map is a
+  `WeakMap`, so dropping the World dropped the only handle without `free()`, and wasm linear
+  memory never shrinks — a few hundred 3D matches would have held every one.
+- `addBot` mints unique seat ids (`bot-<seq>-<code>`); remove-then-add reused an id.
+- `caps` off the wire is coerced (`coerceCaps`: strings only, ≤16) at all eight sites.
+- `lanRateOk` / `exportRateOk` sweep unconditionally; `POST /api/user/settings` body capped at
+  64 KB (was 512 KB, unlimited calls); `accept-terms` short-circuits when the version is already
+  accepted.
 
-⚠️ **I oversold the original problem.** The 278ms-at-depth-1000 join needs ~1000 mutually
-incompatible entries, which is a benchmark shape. At 2000 concurrent the queue self-drains to
-depth ~35. It still matters, because narrowing the eligible pool deepens the queue fast (1/30 of
-the pool -> depth 125) and a skill window is exactly such a narrowing.
+## Fixed — client / UI
 
-## Tools left behind
+- `TermsGate` and `UsernameGate` STAND DOWN on `/terms` and `/privacy` (`suspended`). They are
+  full-viewport backdrops beside the routed screen, so the gate's own "read the terms" link opened
+  a tab with the same gate over the document. The acceptance fetch still runs.
+- Results: `solo` is "no opposing roster", not "no session" — a BIOBUZZ practice against bots
+  showed a one-sided screen for a match that had an opponent and a winner. The eyebrow still says
+  SOLO PRACTICE for any local run. The record run's net score is animated once (it was tweened
+  twice, and the inner tween restarted every frame).
+- `AuthPanel` is a real dialog (`role="dialog"`, labelled, Escape closes); auth errors are
+  described, not dumped (`describeAuthError`). The prediction picker has group semantics and a
+  focus ring; Results overlay buttons have a visible focus ring on the field surface.
+- The analytics beacon strips the QUERY STRING, and URL canonicalization compares
+  `pathname + search` — a reset / verification `?token=` on an already-canonical path was never
+  cleaned and left the device inside a pageview.
+- `safeHref` no longer admits protocol-relative (`//evil`) links in admin markdown.
+- `vercel.json` sends `X-Frame-Options: DENY`, `frame-ancestors 'none'`, `Referrer-Policy`,
+  `nosniff` — the one-click consent controls were frameable.
 
-- `scripts/zz-mm-fuzz.ts` — differential fuzz, 20,000 randomised queues, compares staged output
-  INCLUDING roster order (it drives `allianceOrder` and the red/blue split). `--save` writes the
-  baseline. **Mutation-check it before trusting it**: reverting nearest-first diverges 663/20,000.
-- `scripts/zz-mm-quality.ts` — population sim: wait times and per-match rating spread.
-- `scripts/zz-mm-marginal.ts`, `zz-mm-breakdown.ts` — join cost, and where in the join it goes.
+## Fixed — BIOBUZZ 3D
+
+- `renderElements.ts` branches the parked-element z convention on the PHYSICS
+  (`biobuzzPhysics(world)`), never on `state.kind`: 3D writes a bottom for every ball, 2D writes a
+  centre for a parked one. Both mistakes had shipped, one per branch (hive floating 1.4 in in 2D,
+  flower sunk a radius in 3D). Pinned numerically in the FLOWER3D lane against the real body.
+- The FULL predictor stands its robots at `bbHeightNow` (stowed before the match, deployed after)
+  and re-fits across the R102 deploy edge, reading back against the height it actually built. It
+  used `robotHeightIn` — deployed whatever the phase. **Its chassis stays ONE `robotExtents`
+  cuboid, deliberately**: giving it the authority's open-mouth compound was built, measured
+  (forty-tick reconcile 3–6 ms → 9–11 ms on the local robot alone, 16–17 ms on all four, A/B
+  alternated against the tree without it) and taken back out, because Auto reads that probe
+  against `PREDICT_FULL_BUDGET_MS = 8` and would have picked LIGHT everywhere. Written down above
+  `makeRobotBody` in `predict.ts`; owner decision 11.
+- `GameController.adoptWorld` frees the outgoing world's 3D solve on every swap (five sites) and
+  on `dispose`; `bufferSnapshot` reads the physics off `snap.world`, not the previous world (the
+  first snapshot of a 3D room dropped its ball poses); both `initPhysics3d()` continuations check
+  `disposed`.
+- WebGL context loss is watched (`watchContextLoss`): the match scene falls back to the 2D view
+  with an event-log line, the builder preview tears itself down. Without it a lost context is a
+  frozen field that still takes input.
+- `renderScene.dispose()` frees robots through `BbRobots.dispose()` BEFORE the blanket walk, which
+  was freeing `SHARED_GEO`/`SHARED_MAT` out from under the builder preview.
+- The scene gallery is `React.lazy` (`GalleryRoute.tsx`) — a gated dev route was still a static
+  import, 6 KB gz in `main` for every player of every game.
+- The RENDER lane's `three` boundary check now catches subpath imports and scans all of `src/`.
+
+## Fixed — docs and hygiene
+
+- `CLAUDE.md`: BIOBUZZ is a full scored ranked game, not alpha-only; the repo map gains
+  `src/tutorial`, `src/lib`, `src/lan`, `src/games/biobuzz`, `api/`, `electron/`; counts current.
+  26,896 of the 27,000-byte docaudit budget — the next addition must cut something first.
+- `README.md` rewritten: DSIM, three games, playdsim.com. It described a DECODE-only 2D sim.
+- `src/seasons.ts` header said "DohunSim, only DECODE is playable". Fixed.
+- `docs/area/netcode.md` governs `api/**` (the `api/download.ts` Vercel function had no owner and
+  was invisible to `docaudit`). `docs/multiplayer.md` carries a HISTORICAL banner.
+- `docs/area/biobuzz.md`: the alpha-only paragraph and the "kinematic tray, `BB3_HIVE_DYNAMIC =
+  false`" sentence rewritten to the shipped config.
+- `docs/deploy.md`: the deploy-order section above.
+
+## The merge of main into alpha — how the five conflicts went
+
+| file | resolution |
+|---|---|
+| `HANDOFF.md` | alpha's sections on top; main's 2026-09-17b and 2026-09-17 sections kept verbatim in their date order (the 17b one is the only record of the record-restart cause AND of the still-open "account in a live versus is admitted to a new solo record room" gap) |
+| `src/games/biobuzz/hive.ts`, `state.ts` | **alpha** — the physics-agnostic `hiveTimerStep` the 3D pipeline depends on; `angle`/`angVel` are the dynamic-tray readback |
+| `src/net/serverSession.ts` | **alpha** — it already carries main's `if (!spectator)` guard (cherry-pick `882fda6`) plus `caps` on the rejoin frame |
+| `scripts/smoke-biobuzz/field.ts` | **alpha** — its 12 hive-feel checks plus main's draw-count tripwire at 6 |
+| `src/games/biobuzz/play.ts` | NOT flagged by git, auto-merged to main's REVERTED text; restored to alpha's (`hiveDeflect` in the flight loop). A merge algorithm was making a gameplay decision |
+
+`SIM_VERSION = 3` is what makes "take alpha" honest here: main's replays at 2 play as drift on
+3, labelled.
+
+## Owner decisions — nothing below was decided for you
+
+1. **Deploy order** is the mitigation for the `bb3d` lockout; the zero-window alternative is an
+   env flag in front of `serverPhysics`/`boardPhysics`/`stagedPhysics`. Not built. Say so if wanted.
+2. **Every production BIOBUZZ record row is `'2d'` and vanishes from the boards** the moment the
+   new server boots (`boardPhysics`). Filtered, not deleted. Your ruling of 2026-09-18 implies it;
+   confirm you want it, or change the one predicate before deploying.
+3. `jwtVerify` (`server/auth.ts`) is called with no `issuer` / `audience` / `algorithms`. Pinning
+   them needs a live Neon Auth token to read the claims off; not done blind.
+4. `ADMIN_SECRET` is accepted as a URL query parameter (pre-existing). Header-only would be a
+   one-line change plus your own bookmarks.
+5. `cm.pdf` (9.2 MB, the competition manual) is tracked with no licence; the FIRST courtesy note
+   for the field CAD is unsent. Both are yours.
+6. `LEGAL_UPDATED` (`src/legalText.ts`) drives `LEGAL_VERSION`. The privacy text changed (CCPA
+   paragraph, Your-data panel); if that is a material change, move the date so everyone
+   re-accepts. If not, leave it.
+7. `flowerScoreZ` ships unused — 3D flower scoring runs on the 2D stacking model. Ruling needed.
+8. `package.json` is `0.1.3`; this publish is the largest since it was set.
+9. `migrate()` (`server/index.ts`) is not awaited before `listen`, and a migration failure is
+   non-fatal while the new code hard-depends on 0037–0040's columns. Worth an `await` and a
+   fatal exit — but that reverses a deliberate "a DB failure must not take the game server down".
+10. Neon Auth `trustedOrigins` — confirm no wildcard on the production project (dashboard only).
+11. **The FULL predictor's mouth is solid where the authority's is open.** A predicted element
+    can bounce off a mouth the real one rolls into, and the reconcile snaps it. Fixing it costs
+    2× the reconcile (numbers above). Options: accept as is; raise `PREDICT_FULL_BUDGET_MS` and
+    accept Full on fewer machines; or make the compound cheaper (fewer boxes: arms only, no
+    lintel, for the predictor). Not decided here.
+12. Follow-ups, not blockers: a golden `worldHash` table so cross-build sim drift fails a test;
+    `.gitattributes` (`* text=auto eol=lf`) for the CRLF checkout; dead `spike3d` / `scene-preview`
+    scripts; no 404 route.
+
+## Gotchas found on the way
+
+- `rg` is not on the Bash PATH under the rtk hook; `git grep` is.
+- Three BIOBUZZ perf checks (`PREDICT_FULL_BUDGET_MS`, `step3d p95`, room-tick ratio) are
+  wall-clock and fail under CPU contention from parallel agents. They pass on an idle machine;
+  do not "fix" them by widening the budget.
+- The CLAUDE.md byte ratchet is at 99.6%.
+
+---
+
+# HANDOFF — 2026-09-19 (alpha: THREE ABANDONED LANES FINISHED, plus the owner's render pass)
+
+Four commits on top of `8d3cde4`, every gate green:
+`build` · `server:check` · `docaudit` · `uiaudit` · `contrast` (221) · `dbtest` · `test:mm` (197) ·
+`bundleaudit` (re-measured) · `npm test` (**2375** BIOBUZZ + **1861** shared) · **`shiftaudit`**
+(576 state changes, 0 shifts — the first run in three rounds, and its route list now covers
+`/privacy`, `/terms` and `/contributors`).
+
+Three lanes had been left UNCOMMITTED in the worktree `.claude/worktrees/alpha-main-divergence-7a6134`
+(branch `claude/3d-field-visuals-855bd5`, sitting on `56e5836`, two commits behind alpha). They were
+replayed onto alpha's tip with `git apply --3way` and finished here. **The originating worktree was not
+touched** — it still holds the abandoned copy, so it is safe to delete once these land.
+
+Two other dirty worktrees were left alone on the owner's instruction:
+- `.claude/worktrees/alpha-ui` (detached at `dada8a0`, **396 commits behind**) holds a home-menu
+  redesign — the eyebrow merged into one subtitle, the season moved onto the cards that pick it, the
+  outbound links moved below the menu. It was applied here by mistake and then **fully reverted**. The
+  owner does not want it.
+- `.claude/worktrees/main-deploy` (branch `main`) holds staged-match / `copyText.ts` / contributors work
+  with **two files still carrying unresolved index entries** (`src/ui/App.tsx`, `src/ui/Matchmaking.tsx`).
+
+## The three lanes
+
+**1. BIOBUZZ field visuals + one shot-path predictor.** `src/games/biobuzz/shotPath.ts` is the one
+predictor; `drawShot.ts` (2D) and `scene/renderReticle.ts` (3D) are two drawings of it, and neither
+works anything out for itself. It is NOT under `scene/`, because nothing outside `scene/` may import
+from there. A path is drawn only for a shot that is MADE, dotted, no landing ring; "made" is
+`hiveAccepts` against the REAL hive, not Aim Assist's pretend-up copy. `bbFlightEnters` gained an
+optional `BbFlightTrace` out-parameter, which is what retired `scene/renderLanding.ts` — that file
+carried a COPY of the integrator and its own header said the copy would drift.
+⚠️ **A TURRET'S YAW AND ELEVATION ARE SEPARATE NODES** (`bb-turret-head` → `bb-turret-pitch`). Both on
+one node is what "the shooter is not automatically aiming" looked like: a `THREE.Euler` defaults to
+order `XYZ`, so elevation was applied about the UN-yawed axis, and at the 160° yaw / 80° elevation hive
+range asks for, the barrel came out 67.7° BELOW horizontal and 44.5° off in azimuth while the SIM's
+turret was dead on target.
+
+**2. One board is one physics (owner ruling 2026-09-18).** Every server-connected match of a 3D-capable
+game runs 3D; nobody picks. `Room.physics` is one line (`serverPhysics`); `RoomConfig.physics` still
+rides the wire and is still sanitized but no current server reads it, and the lobby's 3D/2D picker is
+gone. `boardPhysics` (`server/db/repo.ts`) is the single predicate, applied by the DATA LAYER and read
+by `recordLeaderboard`, `personalBest`, `recordRank` and `getUserStats`; it sits INSIDE the per-player
+`best` CTE, because filtering after it would find a player's 2D personal best, reject it, and leave them
+off a board they have a legitimate 3D score on. Pre-ruling 2D rows are KEPT, not deleted; no season was
+reset. An old client without the `'bb3d'` cap is REFUSED (`BB3D_REFUSAL`), not silently downgraded.
+
+**3. The broadcast Results screen.** `src/ui/Results.tsx`, 1,064 lines, split out of `GameView.tsx`
+(which loses ~700). ⚠️ **FIXED-DARK, like the field canvas**: `--ds-stage-bg` (new) and the
+`--ds-on-field*` family are CANVAS-GROUND tokens, never re-valued in the dark block.
+
+## What the lanes had left broken, and what fixed it
+
+| where | what was wrong |
+|---|---|
+| `scene/renderFieldGlb.ts` | three type errors from a half-done refactor; `addPanelEdges` written and never wired |
+| `scene/renderField.ts` | the clear-panel re-tune reached the CAD path only, so the fallback kept the rejected 0.22 / 0.3 / `DoubleSide` while its comments claimed parity |
+| `sim3d/elements3d.ts` | a dumper fired on the first tick fire was held, at any heading — the 2D pipeline has gated this since stage 5b existed |
+| `sim3d/contacts3d.ts` | G409's spill tag died while the element was still riding the tray it was leaving (seed 871: 8 tags at tick 13, all gone by tick 16 at z≈48) |
+| `scripts/smoke.ts` | four `recycle/biobuzz` checks measured NOTHING — a BIOBUZZ room will not tick until `physics3dReady()`, and the shared suite never called `initPhysics3d()` |
+| `scene/renderElements.ts` | every hive element drew one radius LOW. `syncElement` puts the body at `b.z + r`, so `b.z` is the BOTTOM for every ball the sim solves; the hive branch alone read it as a centre. Visible as a drop the tick `derive.ts` retags a landing shot from `flight` to `element` |
+
+⚠️ **The settle check no longer pins a magic tick count.** It settles 3,600 ticks and asserts BIT
+equality plus exactly-zero velocity, and a sibling check asserts the residual contact relaxation DECAYS
+(each 600-tick window drifts at most half the last). The old 900-tick / 1e-3 form reported the machine.
+
+## FIXED — a 3D dumper could not score into a hive cell
+
+`drive: shoot (3d, blue|red, box tube)` in the TUTORIAL lane. Measured over 28 stationary firing poses
+(dx 0/3/6/9 in, dy 14–38 in from the cell): a clean HEAD tree scores from **13**, this tree from **0**.
+
+⚠️ **THE FIX IS IN TWO PARTS AND BOTH HAD TO BE 3D-ONLY** (the 2D pipeline is permanent): a
+`flight` body is born CLEAR of the robot that threw it, walked out along its own parabola at
+body-creation time in `sim3d/engineImpl.ts`; and a 3D dump is STAGGERED one element at a time
+(`BbShot.perDump`, set only by `sim3d/elements3d.ts`), because `bbDumpSolution` converges every
+element on one point — free in 2D, a four-way pile-up at the mouth in 3D. **0/28 → 20/28**, 2D
+byte-identical at 28/28. A shared `launchClearance()` in `robot.ts` was tried first and reverted:
+3/28, and it broke two 2D checks. A straight-ray nudge was also tried and measured at 3/28 — a
+dumper's lob leaves at 80.6°, so raising the release without advancing the solved `vz` overshoots
+the opening. The eight remaining misses are the two CLOSEST rows, where the lob clips the hive
+underside; that is the CAD ruling's own documented consequence, and 2D scores there only because
+a 2D flight element passes through the hive.
+
+The cause was NOT the tutorial. `bbLaunch` throws the hopper from the release line at the bare FRAME face
+(`mountOrigin` = `spec.length/2`). Until this lane the 3D chassis collider was `robotExtents(r)` — the
+footprint, 3 in wider on a mouthed edge — so a dumped element was **born inside its own robot's
+collider** and depenetration flung the four arcs apart; one happened to settle in the cell. The collider
+is now `chassis3dShapes`, whose base box is the bare frame, so the release sits on the collider face and,
+on a mouthed edge, inside the `BB3_MOUTH_SLOT_Z` lintel, where the four elements jam and rest on the
+roof. **The old behaviour was an accident and the new collider is correct; do not restore the accident.**
+Pushing the release out to `bbFootprint` was tried: 2/28. The deeper cause is that `bbLobThrow` /
+`bbDumpSolution` throw a near-vertical lob at a cell whose mouth normal is HORIZONTAL, so the element
+arrives dropping onto the lip rather than travelling into the opening.
+
+## The owner's render pass (2026-09-19, from looking at the running game)
+
+Landed or in flight, in order received:
+
+1. the human player's nectar container should be the STANDARD HOLDING BOX, on the GROUND — not the
+   bespoke shelf-on-legs at `RACK_SHELF_Z = 30`;
+2. the shooter's side plates end in a sharp radial point — the front should terminate flat, and there
+   should be BRACING between the two plates. ⚠️ **Follow-up: the bracing must sit CLOSE TO THE
+   FLYWHEELS, and the plate does not need to be as big as it is;**
+3. swerve is not rendered at all — one squat cylinder per corner at deck height, not a module.
+   ⚠️ **Follow-up: NO MOTOR ON TOP of the swerve module;**
+4. the intake wants a much faster draw-in and a real force model; its sides must not be solid aluminium
+   plate; the roller stays but elements must pass UNDER it; and the roller is too low.
+   ⚠️ **Measured: `BB_ROLLER_R` 1.0 at `BB_ROLLER_Z` 1.15 puts the roller's bottom 0.15 in off the
+   floor, against a 2.8 in pollen and a 3.6 in nectar — while `BB3_MOUTH_SLOT_Z` (= `2 * BB_NECTAR_R`)
+   says the collider leaves a 3.6 in clear slot under that same intake. The picture blocks a gap the
+   physics says is open, by 3.45 in.**
+
+### The intake design (measured 2026-09-19; NOT yet implemented)
+
+⚠️ **GRIP AND PASS-UNDER CANNOT BOTH HOLD FOR A RIGID ROLLER.** Gripping a POLLEN needs the roller
+bottom below its 2.8 in crown; letting a NECTAR through needs it at or above 3.6. One roller still
+does both if the low part is the COMPLIANT part: a rigid HUB that clears the slot, and flaps that
+reach into it and yield. Compliance IS "grip when driven, yield when not", which is both requirements
+in one part. Put these in `config.ts` beside `BB_INTAKES` — they are hardware geometry, and the RENDER
+lane already forbids `renderRobots.ts` owning intake constants:
+
+    BB_ROLLER_HUB_R  = 0.75                                   // 1.5-in hub on a 0.5-in hex shaft
+    BB_ROLLER_FLAP_R = 2.0                                    // a 4-in compliant wheel
+    BB_ROLLER_Z      = BB3_MOUTH_SLOT_Z + BB_ROLLER_HUB_R + 0.15   // = 4.50; hub bottom 3.75
+    BB_ROLLER_SPIN   = BB_INTAKE_DRAW_IN / BB_ROLLER_FLAP_R        // the picture ran at HALF the
+                                                              // sim's speed: 26 rad/s x 1.0 in
+                                                              // = 26 in/s against a 52 in/s draw-in
+
+⚠️ **THE "UNREALISTIC INTAKE" IS A UNITS BUG, NOT AN ANIMATION ONE.** `robot.ts` calls
+`approach(from, to, maxDelta)` with `BB_INTAKE_DRAW_IN` as `maxDelta`. `approach` caps the per-CALL
+change and it is called once per tick, so the cap is 52 in/s PER TICK = 3120 in/s²: an element at
+rest reaches full draw-in in ONE tick. It reads as a teleport in velocity space because it is one.
+The fix is an acceleration — `BB_INTAKE_GRIP_ACCEL` (APPROX, ~1200 in/s²) times `dt` — shared by both
+backends. The measurement that would settle the number: weigh a POLLEN and a NECTAR (`BB3_ELEMENT_MASS`
+is already flagged APPROX, plan-3d §3.6, owner action).
+
+⚠️ **TWO HARD CEILINGS ON `BB_INTAKE_DRAW_IN`, both of which must become smoke arithmetic.**
+(1) `C.BALL_MAX_SPEED` is 90 and the 2D solve clamps every ground artifact to it; the 3D pipeline does
+not, so a draw-in above 90 is clipped in 2D ONLY and the backends diverge. (2)
+`BB_INTAKE_DRAW_IN * BB_INTAKE_CENTRE_FRAC < BB_INTAKE_CROSS_MAX`, or the intake's own funnelling trips
+its own grip test and it drops every element it funnels — the failure `bbIntakeAct`'s header already
+records ("0/1 captured, 66 in of plow"). And do NOT raise `CROSS_MAX` to buy margin: a robot-lane check
+stages `vel.y = CROSS_MAX + 40`, which the 2D solve clamps to 90.
+
+Proposed speed set (owner asked for "WAY faster"; the LANE_W change is the one with real balance
+weight, because the default 17-in build goes from ONE feed lane to two): `PERIOD_MIN` 0.15 → 0.06,
+`PERIOD_MAX` 0.3 → 0.12, `LANE_W` 9 → 8, `DRAW_IN` 52 → 84, `CENTRE_FRAC` 0.5 → 0.6, `THROAT_FRAC`
+0.72 → 0.85, `SEAT` 1.1 → 1.4, `CROSS_MAX` unchanged.
+
+**PASS-UNDER NEEDS NO SIM CHANGE.** `chassis3dShapes` puts nothing between the floor and 3.6 in
+between the mouth's two arms, and the sim3d lane already asserts that pocket is open. The roller is not
+a collider in either backend. It is the PICTURE that intersects, so flap deflection in the renderer is
+what makes pass-under true — and it must run whether or not the roller is spinning.
+
+**THE SIDES** are two `platePlane(armLen, 2.8, 0.3, 2)` solid plates per mouth — a 4.1 x 2.8 in wall in
+front of the mechanism, 3D only (the 2D sprite already draws open rails). Replace each with a
+three-member open truss (bottom rail, axle boss, diagonal), no member thicker than `INTAKE_RAIL_T` 0.5,
+which is what the COLLIDER claims — the drawn arm must never claim more solid than the collider has.
+
+**ONE MORE CONTRADICTION IN THE SAME AREA:** `BB3_INTAKE_Z` is 5 (an element-BOTTOM ceiling for
+capture) while the proposed flap tip is 2.50, so an element at 4.9 would be eligible in the sim and
+untouchable in the picture. `BB3_INTAKE_Z = BB_ROLLER_Z` closes it; it is a 0.5-in tightening that only
+bites on 3D low-flight captures.
+
+### The shooter bracing constraint (owner follow-up)
+The ribs sit at radius ~4.9 against a flywheel radius of 2.0, so "way too far out" is right. But a rib
+CANNOT move in to the flywheel: the annulus between `BB_FLYWHEEL_R` and `BB_HOOD_R` IS the element's
+channel through the hood, and the brace angles all lie inside the wrap. What can be done is shrink the
+plate (`rOut = BB_HOOD_R + 0.5` today) and keep the ribs flush on the hood face. Both are pinned by
+checks in `scripts/smoke-biobuzz/render.ts`, so they move together.
+5. elements teleported slightly downwards on landing in the hive — FIXED, see the table above.
+
+## Gates
+
+`build` · `server:check` · `docaudit` · `uiaudit` (baseline: `off-grid-gap` 155) · `contrast` (221) ·
+`dbtest` · `test:mm` (197) · shared `npm test` — all green. `bundleaudit` needs its `scene` baseline
+re-measured (192.28 → ~199 KB gz, inside the 250 KB spec ceiling). **`shiftaudit` was RUN** — the first
+time in three rounds — 576 state changes, 0 shifts, and its route list now covers `/privacy`, `/terms`
+and `/contributors`, which rounds 1–2 added without ever adding them here.
+
+`.impeccable`'s design hook reports 38 findings in `src/ui/styles.css`; **every one is on a
+pre-existing line** and none on anything this work added. Two that WERE this work's are fixed: the
+Results screen's win-banner and total-punch keyframes already overshoot and settle, so an overshooting
+timing function on top rubber-banded each segment — both are ease-out-quint now.
+
+---
+
+# HANDOFF — 2026-09-19 (alpha: ROADMAP ROUND 2 LANDED — privacy & cookie settings, the 3D robot creator; alpha server redeployed for the export route)
+
+**(Previously READ FIRST.)** Branch **`alpha`** (worktree `.claude/worktrees/pr-alpha`), pushed; every gate green on the
+merged tree (counts in the log). `dsim-alpha` was redeployed after the privacy merge (`GET /api/user/export`
+is a server route). The section directly below is the 3D builder's own handoff from `biobuzz-3d`; the
+ones after it are round 1 (auth, tutorial, contributors, plans) and the BIOBUZZ 3D days. All eight
+roadmap items are now either landed or a plan awaiting the owner's decisions:
+
+| # | item | state |
+|---|---|---|
+| 1 | 3D robot creator | landed (`feat/3d-builder` → `biobuzz-3d` → alpha): `Preview3D.tsx` on the `Preview` slot, `scene/renderPreview.ts` turntable built by the match's own `buildRobotGroup`, height + stow controls, saved-robot thumbnails; the chassis colour finally draws in 3D (fill = `chassisFill`, alliance = edge silhouette + sign panel), which also fixed the live match; three match render bugs fixed (mechanisms built inside the chassis, `specKey` missing `drivetrain`, group disposal) |
+| 2 | replay download 2D/3D | landed with BIOBUZZ Day 3 |
+| 3 | cosmetics | PLAN `docs/cosmetics-plan.md` — owner decisions pending |
+| 4 | rewards | PLAN `docs/rewards-plan.md` — owner decisions pending |
+| 5 | auth: reset, verification, terms | landed round 1; server gate off until `REQUIRE_VERIFIED_EMAIL=1` (`docs/deploy.md` §4) |
+| 6 | tutorial | landed round 1 (BIOBUZZ + DECODE) |
+| 7 | contributors | landed round 1; owner fills the `TODO` handles |
+| 8 | privacy & cookies | landed round 2: `src/storageKeys.ts` registry (17 keys; the privacy page renders from it; a smoke check forbids unregistered keys — the old prose listed four keys that never existed), analytics opt-out incl. the pageview beacon (`src/analyticsPref.ts`, `beforeSend`), `GET /api/user/export` (authed, one per minute, own rows only, ids-only for replays, no email column; 404 after deletion; 24 dbtest checks), the Your-data panel on `/privacy` with the existing typed-`DELETE` account deletion surfaced, a footer consent link that explains itself when the CMP offers no revocation entry; legal text changes (CCPA/CPRA paragraph, Poly Haven added to the processors, storage prose by category) with `LEGAL_VERSION` deliberately NOT bumped — bumping re-prompts every account; the owner decides |
+
+## Owner actions (consolidated)
+- Legal: review the round-1/round-2 wording (terms acceptance, CCPA line, Poly Haven processor, storage
+  categories); decide whether to bump `LEGAL_VERSION`.
+- Neon Auth: sender domain, "require email verification", then `REQUIRE_VERIFIED_EMAIL=1`.
+- Contributors' handles/avatars; the cosmetics and rewards decisions; test the 3D builder, the privacy
+  panel (export needs a signed-in session) and the tutorial on `alpha.playdsim.com`.
+- BIOBUZZ 3D rulings still open: lone-nectar flower scoring; weigh an element set; AI 59/100.
+
+## Gotchas (new)
+- An OLD server answers `/api/user/export` with a 200 from its `/api/user/<id>` profile route — guard
+  on the payload, not the status. `analytics.ts` reads `import.meta.env` at module scope, so the
+  pref lives in `analyticsPref.ts` (importable by `smoke.ts`).
+- `index.ts` fills `scene` and `previewScene` from ONE dynamic specifier on purpose: two would hoist
+  three.js into a shared chunk behind two facades that carry none of `bundleaudit`'s marker strings.
+  `specKey` moved out of the scene chunk (`src/games/biobuzz/specKey.ts`) so the thumbnail cache can
+  key on it without loading `three`. Thumbnails follow the device quality tier on purpose (pinning
+  High fetched a 1.7 MB HDRI to draw three 96-px cards).
+- Merging `biobuzz-3d` into `alpha` conflicts on `scripts/bundleaudit.mjs` (baselines) and
+  `scripts/vercel-prune.mjs` (alpha's has the rate-limit fix): take alpha's, then re-measure.
+
+---
+
+# HANDOFF — 2026-09-18 (feat/3d-builder: roadmap item 1, A PROPER 3D ROBOT CREATOR MENU — landed, not merged)
+
+**(Previously READ FIRST.)** Branch **`feat/3d-builder`**, off `biobuzz-3d` at `cf794b6`, five commits, **not
+pushed and not merged**. Every gate green: `build` · `bundleaudit` · `npm test` (both suites) ·
+`uiindex`+`uiaudit` · `docaudit` · `server:check`. The section below is the whole of it; the
+Day 3 handoff it sits on top of follows underneath.
+
+## What landed (`docs/roadmap.md` item 1)
+
+- **`scene/renderPreview.ts`** — `createRobotPreviewScene(host, opts)` → `{ element, setSpec(spec,
+  alliance), setQuality(tier|null), resize, capture(size), dispose }`. A turntable over ONE robot on
+  a disc of field tile: slow auto-rotate (0.28 rad/s, off under `prefers-reduced-motion`), drag to
+  swing and wheel to zoom at the match orbit camera's own rates and signs, the shared light rig, the
+  same environment map at the device's own quality, transparent buffer so the card's themed surface
+  is the background.
+- **`scene/renderCore.ts`** — factored OUT of `renderScene.ts`: the renderer factory, the light-rig
+  constants (`SCENE_EXPOSURE`, the hemisphere pair, the sun, the shadow bias pair), the
+  once-per-document WebGL2 probe, `readBackdropColor`, `SceneUnsupportedError`, `disposeObject3D`.
+  Both scenes build a renderer through it, so the same robot cannot come out two colours.
+  `antialias: false` stays at `renderScene`'s own call site (a decision, not plumbing); the preview
+  passes `true` — a 190px card recreated on every mount does not earn a render target and a blit.
+- **`Preview3D.tsx`** (main chunk, no `three`, no `scene/` import) — the `Preview` slot. Without the
+  host's `allow3d` it IS the 2D schematic, unchanged, which is what the four strategy cards get.
+  The builder hero passes it and gets the turntable, a 2D/3D segmented toggle on the device's own
+  `decodesim.view`, a `Stowed` toggle for a build over the cube, and a one-line fallback to the
+  schematic when the scene cannot start (the 3D button doubles as the retry). It reaches the chunk
+  through `moduleFor('biobuzz').previewScene()`.
+- **Chassis colour in 3D** — fill = `chassisFill(spec.chassisColor)`, alliance = the silhouette
+  `LineSegments` plus the sign panel. **This fixes the live match too**: the 3D chassis was
+  alliance-filled and `chassisColor` was not rendered in 3D at all.
+- **Height pair in the Frame section** — `heightIn` 12–29, and (only over the 18-in cube) the
+  declared `stowHeightIn`, beside the R102 note that was already there.
+- **Saved-robot thumbnails** — rendered once per build+alliance through the same scene, in place of
+  the summary line on the 3D view, cached in memory and never persisted.
+
+## The three bugs the preview exposed, all fixed in `renderRobots.ts`
+
+Looking at a BIOBUZZ robot from close up for the first time found three things the match view had
+been hiding at driver range. All three are fixed for the MATCH, not only the preview.
+
+1. **The turret and the Box Tube were built INSIDE the chassis box** (z 1 and 0.6·height). Every
+   robot in the 3D view was a featureless slab whatever launcher it carried. Both sit on the deck.
+2. **`specKey` left out `drivetrain`**, so swapping mecanum for tank never rebuilt the wheels.
+3. **A group thrown away on a rebuild was never disposed** — and a blanket traverse would have
+   freed the module caches every other robot is still using. `SHARED_GEO`/`SHARED_MAT` register what
+   is shared and `disposeRobotGroup` frees the rest; the match's own sync uses it too.
+
+## Decisions worth knowing before touching this
+
+- ⚠️ **BOTH module slots write `import('./scene/renderScene')`.** `previewScene` resolves the
+  preview factory through a re-export rather than importing `./scene/renderPreview` by its own path.
+  One dynamic specifier is ONE Rollup chunk; two would hoist three.js into a shared chunk behind two
+  facades, and a facade carries none of the marker strings `bundleaudit` routes the `scene` budget
+  by — both would land in `other` and fail that audit for a reason unrelated to size.
+- **`bbSpecKey` (`src/games/biobuzz/specKey.ts`) is the one rebuild key.** It has readers on both
+  sides of the lazy boundary: the generator, and the thumbnail cache in the main chunk, which cannot
+  load the scene chunk to ask. Two copies is how a cached thumbnail shows the previous build.
+- **The camera frames a bounding sphere MEASURED off the built group** (`Box3.setFromObject`), not
+  one derived from `length × width × heightIn`: a turret stands above the deck and its barrel
+  reaches past the frame rail, and the spec-derived fit cropped it off the top of the card. The
+  distance is aspect-aware — a `PerspectiveCamera`'s `fov` is the VERTICAL one and the builder's
+  220px column is taller than it is wide.
+- **Thumbnails follow the DEVICE tier and are deliberately not pinned to High**, which is the
+  opposite of what a replay export does. Two reasons pointing the same way: a thumbnail sits on the
+  same screen as the live turntable, so one drawn at another tier is a second picture that does not
+  match the first; and High selects the `school-hall` HDRI, so pinning it would fetch 1.7 MB to draw
+  three 96px cards for somebody whose own setting asked for the procedural room.
+- **The preview does NOT set the view preference to 2D when it fails.** `createBiobuzzScene` does,
+  because there the fallback has to stick or the scene is retried on every remount. A menu card with
+  a toggle directly above it is not that.
+- **One WebGL context per thumbnail BATCH**, drained on a microtask and disposed immediately —
+  not one per card (`Gallery.tsx` shares one scene across thirty cells for the same reason).
+
+## Deviations from the roadmap's design, and what was not done
+
+- The roadmap said "a `BiobuzzPreview3D` component fills the `Preview` slot" and left the loader
+  unspecified; it is a new `GameModule.previewScene` slot so that ALL of a game's dynamic renderer
+  imports stay in its `index.ts` (the property the RENDER lane asserts).
+- The saved-robot card needed a second new slot, `GameModule.savedCard`: what belongs under the name
+  is no longer always a sentence, and the choice between a thumbnail and a summary is the GAME's,
+  not the shared menu's.
+- `buildRobotGroup` now takes `(spec, id, alliance)` rather than a `RobotState` — a preview has no
+  pose, no hopper and no world.
+- **Not done: a Gallery still of the preview.** The Gallery's robot cells still draw the 2D
+  schematic. The anti-drift claim is covered structurally instead (one generator, one rebuild key,
+  both asserted in the RENDER lane), which is stronger than a picture.
+- **Not done: `shiftaudit`.** It needs a build plus `vite preview` in a second shell; the new
+  controls are `.ds-seg` (weight constant across states by design) and a fixed-size preview box, so
+  there is nothing new that moves layout — but it has not been RUN on this tree.
+
+## Numbers
+
+- `npm test` — both suites green; the BIOBUZZ suite is 1800+ checks with the new RENDER-lane block
+  (one generator, one rebuild key, the colour split, the import boundary, the height pair).
+- `bundleaudit` — main 918.72 → **919.99 KB gz** (+1.27: the toggle, the thumbnail batcher, the two
+  dials, the Menu wiring — inside §10's "+≤ 2 KB" because the component holds no renderer); scene
+  192.28 → **194.67 KB gz** (+2.39: the turntable plus `renderCore`, which is a MOVE), 55 KB inside
+  the §2.5 ceiling.
+- Browser (dev server, this machine): the toggle, wheels by drivetrain, the two deck turrets, the
+  sign panel, live follow on preset / height / colour changes, drag-to-orbit, the stow toggle, a
+  saved thumbnail, back to 2D (zero canvases left mounted), both themes, 375px with no horizontal
+  overflow, console clean of anything but the pre-existing AdSense 403s. A solo practice in View 3D
+  shows the same rust chassis with the same blue outline as the card.
+
+---
+
+# HANDOFF — 2026-09-19 (alpha: ROADMAP ROUND 1 LANDED — auth flows, tutorial, contributors, cosmetics/rewards plans, Vercel policy; alpha server redeployed)
+
+**(Previously READ FIRST.)** Branch **`alpha`** (worktree `.claude/worktrees/pr-alpha`), pushed, every gate green on
+the merged tree: `build` · `bundleaudit` · `server:check` · `docaudit` · `uiaudit` · `contrast` ·
+`test:mm` · `dbtest` · `npm test` (counts in the log). The ALPHA game server (`dsim-alpha`) was redeployed
+from this tree (`./scripts/fly-deploy.sh --alpha`) because auth adds migration `0040` and server routes.
+The four sections below this one are each branch's own handoff, written by the agent that built it;
+their "NOT merged / NOT pushed" lines are stale — all four ARE merged here. Production is untouched.
+
+## What landed on alpha (each on its own branch, merged in this order)
+- `feat/plans-cosmetics-rewards` → `docs/cosmetics-plan.md`, `docs/rewards-plan.md` (roadmap items 3–4;
+  the owner approves before code). Two code facts they surfaced: the 3D chassis ignores `chassisColor`
+  (paints alliance fill), and `coerceSpec` checks only that a colour KEY is legal, never that the account
+  is entitled — enforcement is UI-only today.
+- `feat/contributors` → real sections (core team, contributors from `CONTRIBUTORS.md` incl. a missing
+  signer, presented-by via `sponsorLink`, third-party credits with versions baked from `package.json`
+  at build time, get involved). Owner still fills the `TODO(fill in)` handles/avatars.
+- `feat/tutorial` → `src/tutorial/` engine (DOM-free runner, `GameModule.tutorial` slot), BIOBUZZ six
+  steps + DECODE four, the step card in the HUD band, a first-run offer on Modes and a Controls entry,
+  per-device flag `decodesim.tutorial.v1`; TUTORIAL lane 318 checks (non-vacuous AND completable, both
+  physics, both alliances). Runs as FREE DRIVE so nothing is recorded (a staged world is not
+  reconstructible from `{seed, setups}`); `startMatch` refuses while a tutorial is live.
+- `feat/auth-flows` → `src/lib/authFlows.ts` (one wrapper over the Neon/Better-Auth SDK, pinned exactly
+  at 0.4.2-beta): forgot password (`/account/reset`), email verification (banner, resend,
+  `/account/verify`), terms acceptance (`LEGAL_VERSION`, migration `0040_terms_acceptance.sql`,
+  `POST /api/user/accept-terms`, a blocking `TermsGate` on version mismatch incl. OAuth first sessions).
+  ⚠️ The email-verification SERVER GATE (ranked queue, record-room join, `/api/practice`) is OFF until
+  `REQUIRE_VERIFIED_EMAIL=1` — every existing password account is unverified and no sender domain is
+  configured; the owner's Neon dashboard steps are in `docs/deploy.md` §4. Also fixed in passing:
+  `uiaudit`'s component-index staleness check compared CRLF against LF (failed on every fresh Windows
+  checkout).
+- Vercel: `vercel.json` builds ONLY `main` and `alpha` (`ignoreCommand`) and disables auto-deploy for the
+  feature branches; `scripts/vercel-prune.mjs` (owner-run, token via env, dry run by default, waits out
+  the 200-deletions-per-10-minutes limit) took the project from 501 to 113 deployments on 2026-09-18.
+  Feature-branch pushes had been queueing previews ahead of the alpha build.
+
+## Owner actions
+- Neon Auth: sender domain + "require email verification", then `REQUIRE_VERIFIED_EMAIL=1` on the alpha
+  app (`docs/deploy.md` §4). Review the terms/privacy copy touched by the acceptance flow.
+- Fill the contributors' handles; decide the cosmetics and rewards plans' numbered decisions.
+- Test on alpha: sign-up with the terms box, forgot-password screen, the tutorial from Modes, Contributors.
+
+## Next (roadmap)
+`feat/privacy-cookies` (item 8; shares `LEGAL_VERSION`), the 3D robot creator (item 1, on
+`biobuzz-3d`), replay 2D/3D export is DONE (Day 3), cosmetics/rewards builds after approval. BIOBUZZ 3D
+follow-ups are in the Day 3 section: nectar-in-flower scoring ruling, weigh an element set, AI 59/100.
+
+## Gotchas (new)
+- The Neon adapter THROWS on any non-2xx (`AuthApiError` with lower_snake codes); the `{data,error}`
+  union's `error` is essentially never populated — classify the throw.
+- Read the emailed `?token=` at module load (`src/ui/entryToken.ts`): App canonicalises the address bar
+  before any screen renders. Spend a verification token once (a ref, not state — StrictMode).
+- A tutorial predicate that is already true on the staged world is invisible; the lane's non-vacuity
+  check is the only guard. A hand-written `held` ball state without `lx/ly/side` is a NaN into Rapier —
+  stage through `capturePollen`. `TutorialRunner.abandon()` is not `finish()` (the recorder check counts
+  `.finish()` calls in `game.ts`).
+- Vite's dev server refuses to serve files whose real path is outside the worktree (junctioned
+  `node_modules` → font 403s in dev only); builds are fine.
+
+---
+
+# HANDOFF — 2026-09-18 (`feat/auth-flows`: password reset, email verification, terms acceptance — roadmap item 5, BUILT, NOT PUSHED)
+
+**(Previously READ FIRST.)** Branch **`feat/auth-flows`**, off `alpha` at `76034a9`. Seven commits, not pushed
+and not merged. Gates green on the branch: `build` · `server:check` · `npm test` (1840 shared +
+1780 BIOBUZZ) · `dbtest` (ALL PASS, +12 for migration 0040) · `uiindex` then `uiaudit` (all rules
+at baseline) · `docaudit` · `contrast` (223, unchanged — no new colour, the banner's tint is
+`color-mix` over `--ds-warn`) · `bundleaudit` (main +0.9 KB gz, hostWorker unchanged).
+
+⚠️ **NOTHING IS LIVE UNTIL THE OWNER DOES THE NEON DASHBOARD WORK.** `docs/deploy.md` §4 is the
+checklist. The terms half works the moment the game server is deployed (migration 0040 applies at
+boot); the two email flows send nothing until a sender domain is configured, and that failure is
+SILENT — the forms answer 200 and no mail leaves. Send yourself one before believing it works.
+
+## What is on the branch
+
+- **`src/lib/authFlows.ts`** — the ONE module that calls the SDK. Four functions, each returning a
+  discriminated `AuthFlowResult` and never throwing at a component:
+  `requestPasswordReset(email)`, `completePasswordReset(token, pw)`,
+  `requestEmailVerification(email)`, `completeEmailVerification(token)`. `@neondatabase/auth` is
+  pinned to the exact installed `0.4.2-beta` (no `^`).
+- **Forgot password** — a `.ds-linkbtn` under the sign-in password field opens a third form in the
+  same modal; `/account/reset` handles the emailed link (and offers the request form when it
+  arrives without a token).
+- **Email verification** — sign-up asks for the email; a per-session banner on Profile with Resend;
+  `/account/verify` spends the token on mount, exactly once, and clears the cached JWT.
+- **Terms** — `LEGAL_VERSION` derived from `LEGAL_UPDATED`, migration `0040_terms_acceptance.sql`,
+  `POST /api/user/accept-terms`, a required checkbox on sign-up and a blocking `TermsGate` that
+  WRAPS `UsernameGate`.
+- **`REQUIRE_VERIFIED_EMAIL`** gates ranked queueing, joining a record room, and `POST /api/practice`.
+
+## The five things worth knowing before touching any of it
+
+1. ⚠️ **THE SDK THROWS ITS FAILURES.** The Neon adapter installs its own `customFetchImpl` which
+   throws a normalized `AuthApiError` on any non-2xx, so the `{data, error}` union the `.d.mts`
+   advertises is real but `error` is essentially never populated. The first cut classified every
+   throw as `network` and told somebody with an expired reset link to check their connection. The
+   throw carries `status` and a lower_snake `code` (`bad_jwt`, `weak_password`,
+   `over_email_send_rate_limit` — the adapter's own vocabulary, NOT Better Auth's SCREAMING_SNAKE),
+   and `classifySdkError` now speaks both. Rate limiting is tested before the address, because
+   EMAIL is a substring of that last code.
+2. ⚠️ **`forgetPassword` IS NOT A TOP-LEVEL METHOD** on this build — only `forgetPassword.emailOtp`
+   is, and that is a different flow. The top-level request is `requestPasswordReset`. The roadmap
+   named the old one; the wrapper's header cites all four real `.d.mts` signatures with line
+   numbers.
+3. ⚠️ **THE EMAILED TOKEN IS READ AT MODULE LOAD** (`src/ui/entryToken.ts`). `App`'s mount effect
+   canonicalizes the address bar with `history.replaceState(pathFor(...))`, and `pathFor` builds a
+   path with NO query string on it — so `?token=` is gone before any screen component renders.
+4. ⚠️ **THE RECORD-RUN GATE IS AT THE JOIN DOOR IN `server/index.ts`**, not in `Room.startMatch`
+   beside the duo-record "both drivers must be signed in" guard it otherwise belongs with.
+   `server/room.ts` is bundled into the LAN host worker (`src/lan/hostWorker`) and must not import
+   `jose` or read `process.env` — that is why it goes through `./runtimeEnv` for everything.
+5. ⚠️ **`REQUIRE_VERIFIED_EMAIL` IS OFF BY DEFAULT AND MUST STAY OFF UNTIL MAIL WORKS.** Every
+   email/password account on the live site is unverified today, and the Resend button cannot help
+   until the sender domain exists. Deploy → mail works → let people verify → set the secret.
+   `emailGateRefusal` is the single predicate; extend it rather than adding a second check.
+   `null` (nobody told us) counts as VERIFIED, deliberately — a gate whose unknown case refuses
+   would take ranked down silently the first time an upstream stopped sending a field.
+
+## Open, for the owner
+
+- **The dashboard steps are `docs/deploy.md` §4**: sender domain + DNS, the redirect allow-list
+  (every origin: prod, alpha, beta, `localhost:5173`), the provider's "require email verification"
+  switch, then the Fly secret LAST.
+- **Confirm the JWT carries `email_verified` before trusting the gate.** The server reads that
+  claim (or `emailVerified`) off the verified token and falls back to ONE cached
+  `GET /get-session` per token; if neither answers, the state is `null` and the gate PASSES. Sign
+  in as a test account and read `/token`'s payload once.
+- **The legal wording is the owner's to review.** One line was added to the Terms' `## Changes`
+  section, because continued use after a change now genuinely does require re-acceptance and the
+  document did not say so.
+- **The three email flows are NOT end-to-end tested** — no mail can be sent from here. What was
+  driven in a browser against a stub auth endpoint: the link and the checkbox, the refusal copy,
+  the neutral confirmation, `/account/reset?token=fake` and `/account/verify?token=fake` on their
+  error paths, the banner and both variants of the terms dialog (forced locally, reverted), light
+  and dark, 375px.
 
 ## Next
 
-1. **Deploy it.** None of the above is live.
-2. `balanceAlliances` and the skill gate have never seen two real accounts. Both docs already
-   note the matchmaker is unvalidated end to end; this did not change that.
-3. The staleness guard from the design (skip `tick()` while the legality relation is provably
-   frozen) is NOT done. It does not bind at today's depth — measured 0.02 ms/s — but is worth it
-   before the population grows.
-4. Capacity work proper: `docs/scaling-multicore.md` is written against 8 regions; at 2000
-   concurrent in THREE US regions, multi-core alone caps around 400 CCU and machine-granular
-   routing (`fly-replay: instance=`) becomes the blocking item, not an amendment.
-
-## HANDOFF — 2026-09-12b (a tab-hosted LAN match, proven end to end between two real peers)
-
-Branch **alpha**. `npm test` **ALL PASS**, `npm run build` green, `npm run server:check` green,
-`npx tsc --noEmit` clean, `npm run uiaudit` at baseline, `npm run test:mm` 58 checks, and the
-new `npm run lan:probe` **15/15 ALL PASS**, five runs in a row.
-
-## READ FIRST — LAN in a tab now actually works, locally, with no terminal on the guest side
-
-Two commands, two machines (or two windows):
-
-npm run lan:tab      # builds the client with LAN on + a private-IP rendezvous, then serves it
-npm run lan:probe    # drives two REAL browser windows through the whole feature
-npx electron scripts/lanprobe.cjs --guests 3   # the same, as a FULL 2v2 room
-
-The probe takes a match from START HOSTING to a clock ticking down on the GUEST's HUD:
-handshake → room code → guest joins by code → both seated → ready up → START MATCH → snapshots
-crossing the DataChannel at 30 Hz. That last leg is the honest measurement, because the guest
-simulates nothing authoritative: a clock that moves on the guest's screen is a clock being
-stepped in the host's Worker and delivered over WebRTC.
-
-### Four bugs it found that `npm test` structurally could not
-
-Every one is ORDERING BETWEEN TWO CONTEXTS. Source shape cannot see any of them, and neither
-can a single-page harness — which is exactly why the feature measured "done" while both screens
-sat waiting for each other.
-
-1. **The host tore down the link that had just succeeded.** `joinLanRoom` closes its rendezvous
-   socket the moment both channels open, so the server reports that guest GONE seconds after it
-   arrived. Fixed in two places, because the report can land on either side of the moment the
-   link is stored: `acceptLanGuest` disarms its `peerGone` rejection once channels exist
-   (`channelsSeen`), and `hostRuntime` keeps any link that is still open — the DataChannel is
-   the authority for a guest being present, the rendezvous only ever knew about the
-   introduction.
-2. **A DataChannel buffers nothing for a listener that attaches later**, and `join` is the first
-   frame of the protocol, sent the instant the channel opens. `bufferEarly`/`takeEarly` in
-   `lanPeer.ts` buffers from the moment the channel objects exist; the handover is ONE
-   synchronous block (take, attach, replay) on both ends. Measured `early=0` on the runs after
-   bug 3 was fixed — the race is real but narrow, and the buffer is what makes it not matter.
-3. **⚠️ `open` is a STATE on a LAN transport, not an event.** This was the one that actually
-   held everything up. `LobbyClient.join` sends its `join` frame from `onOpen` and from nowhere
-   else — correct for a `WebSocketTransport`, which is handed over still dialling, and wrong for
-   both LAN transports: the WebRTC handshake finished on the LAN screen, and the loopback opened
-   when the Worker said the room was ready, so by the time the lobby adopts either and registers
-   anything, the event has already happened. Both `DataChannelTransport.onOpen` and
-   `LoopbackTransport.onOpen` now latch and fire immediately if already open.
-4. **Going to the room stopped the room.** The LAN screen's unmount cleanup calls
-   `tabHost.stop()` — right for a host wandering off, fatal on the host's own way INTO the
-   match, which unmounts the same component. A handed-off room is parked in the new
-   `src/lan/hostKeeper.ts` (the trick `queueKeeper.ts` uses for a live ranked queue) and the
-   cleanup reads a `handedOff` flag; coming back to the LAN screen adopts it again and
-   re-points its events, so the host still has a Stop hosting button.
-
-### Three decisions that came out of the same session
-
-- **`LanHost.start()` does not resolve until the room exists.** It resolved on the rendezvous
-  CLAIM, so a code was published for a room that might never have been built — and a Worker
-  that fails to load is completely silent (`open` is async because Rapier's wasm loads there, so
-  a failure is an unhandled rejection, not an `error` event). The Worker now posts
-  `{k:'failed'}`, the page listens for `error`/`messageerror`, and `ROOM_BOOT_TIMEOUT_MS` makes
-  the wait terminate in the cases neither covers.
-- **The room RESERVES its host seat** (`Room.reserveHost`, called from the Worker with
-  `HOST_SEAT`). `Room.add` gives the crown to the first client through the door, which is right
-  everywhere the cloud runs; tab hosting inverts it — the host reads the code out while guests
-  join and takes its own seat LAST, so the crown went to a guest and the host arrived at its own
-  room to be told it was waiting for the host to start. Reserving only ever claims an EMPTY
-  slot, and nothing in the cloud path calls it.
-- **The room can end.** A guest leaving arrives as a closed DataChannel; the HOST leaving is a
-  `close()` on a transport with no network under it, so `LoopbackTransport` now tells the runtime
-  and the seat is dropped. A room that goes `empty` stops hosting, instead of a parked Worker
-  stepping an empty room for the rest of the tab's life.
-
-### Still to do, in order
-
-1. ~~**Deploy**~~ **DONE 2026-09-12.** `dsim-alpha` is deployed and the rendezvous answers:
-   `node scripts/lanping.mjs wss://dsim-alpha.fly.dev` → `lanError auth`, i.e. switched on and
-   asking hosts to sign in. Production still correctly answers `lanError closed`.
-   **No Vercel step any more** — the client lights its own LAN entry points when the server
-   advertises `lan` on `/api/presence`, so `LAN_SIGNALLING`/`LAN_UPLOADS` on the Fly app is the
-   whole switch (see "Which flag turns the LAN screen on" in `docs/lan-webrtc.md`). From
-   Windows, `scripts/deploy-alpha.ps1` wraps the deploy: it installs flyctl, handles
-   `fly auth login`, and probes the rendezvous afterwards.
-2. **The first two-machine signed-in test THROUGH THE CLOUD.** Everything above ran with the
-   rendezvous local and nobody signed in, so the auth handshake and the upload are the two legs
-   still unproven. A match hosted this way stays in the device backlog and drains later.
-3. A FULL 2v2 passes too (`--guests 3`: three simultaneous peer connections off one Worker,
-   four seats, three snapshot streams, every clock moving), and so does a BACKGROUND-THROTTLED
-   host: `--throttle --soak 150` held **30.0 Hz at the guest on every sample**, with one guest
-   and with three. The page being throttled does not starve the match — it only forwards
-   already-encoded frames, and the 60 Hz loop is in the Worker where the throttle cannot reach.
-   ⚠️ Still unmeasured: the INTENSIVE throttling regime, which needs five minutes hidden and so
-   cannot be reached inside a 2:30 match. A host who tabs away for ten minutes mid-session is
-   the remaining unknown, and the health readout is where it would show up.
-# HANDOFF — 2026-09-12 (SHIPPED: alpha is in production, and both games are on Act 2 · Season 1)
-
-**Production is live on `4d2917f`.** The alpha→main promotion, the prod server deploy, both act
-rolls and both patch notes are all done. `origin/main` and `origin/alpha` are converged apart
-from work landed on alpha after the merge point.
-
-## What is live
-
-| | |
-|---|---|
-| `origin/main` | `4d2917f` (merge of alpha into main) |
-| client | `https://www.playdsim.com`, `/version.json` → `{"build":"4d2917f"}` |
-| game server | `dohun-sim-decode`, `/health` ok, 8 machines, satellites back on `shared-cpu-1x`/512MB |
-| DECODE season | **7** — act 2, season 1, active, 0 records / 0 matches |
-| Chain season | **5** — act 2, season 1, active, 0 records / 0 matches |
-| `BALANCE_VERSION` | 4 · `SIM_VERSION` 2 · `REPLAY_FORMAT` 2 |
-
-Announcements published: two `act` reveals (auto, from the season roll) and two `patch` notes,
-`DECODE · Act 2` (`ae1de1d5`) and `Chain Reaction · Act 2` (`04270719`).
-
-## Order it was done in, and why
-
-1. All seven gates on the promotion branch (smoke, build, server:check, dbtest, contrast,
-   uiaudit, test:mm) — all green.
-2. Prod config asserted before anything shipped: none of `LAN_UPLOADS`, `LAN_SIGNALLING`,
-   `VITE_LAN_ENABLED` in `fly.toml`; `DEPLOY_REGIONS` still all 8; `SATELLITES` still all 7.
-3. Restart notice broadcast, then `scripts/fly-deploy.sh` from the promotion worktree.
-   **SERVER FIRST, client second**, so the authoritative sim is never older than the clients
-   predicting against it.
-4. `git push origin promote-alpha-to-main:main` → Vercel.
-5. Both acts rolled, then verified.
-6. Both patch notes published, then verified (stored UTF-8 confirmed by unicode-escape, not by
-   eye — a Windows console renders `·` as `Â·` and that is the console, not the data).
-
-⚠️ **The owner cut the 300 s warning to zero mid-deploy** ("DEPLOY NOW"). The announce curl had
-already fired, so players did get the banner, just without the wait. 17 were online when the
-window opened; 6 after. If that ordering matters next time, the wait is the second argument to
-`announce-deploy.sh`.
-
-⚠️ **AND IT DEPLOYED TWICE, because `pkill -f` DOES NOT KILL A BACKGROUNDED SCRIPT HERE.**
-`announce-deploy.sh` had been started in the background with the 300 s wait. When the wait was
-cancelled, `pkill -f "announce-deploy.sh"` and `pkill -f "sleep 300"` both reported success and
-neither matched anything: on Git Bash the process does not carry that command line. So the
-manual `fly-deploy.sh` ran immediately, and then the background job woke five minutes later and
-deployed the identical image AGAIN, restarting every machine a second time. No data harm — the
-act rolls and the announcements are DB rows and survived — but players reconnected twice, and
-the second restart landed AFTER the post-deploy verification, so everything had to be
-re-verified afterwards (it was, and it was correct).
-
-**Use the harness's own task-stop for a backgrounded command, never `pkill -f`.** And do not
-background a script whose whole purpose is a timed wait you might want to cancel: fire the
-announce with `curl` and run `fly-deploy.sh` separately, which is the shape that is actually
-controllable.
-
-## What changed for players
-
-`BALANCE_VERSION` 3 → 4 retires every replay recorded before this build; the records themselves
-are untouched, because the server stores the score it computed and never re-derives it. The ACT
-reset (not merely a season reset) also wipes ranked ratings — see `0013_elo_by_act`, which is the
-distinction the patch notes are careful about.
-
-## LAN is in production and CLOSED, by three independent fail-closed gates
-
-LAN shipped in the merge but is reachable nowhere:
-
-- `VITE_LAN_ENABLED` — client. Hides the Play tile, `/lan` (the route does not even parse), the
-  banner, and the Career rows.
-- `LAN_UPLOADS` — server. `/api/lan` is not mounted; it 404s.
-- `LAN_SIGNALLING` — server. The WebRTC rendezvous is closed, so no tab-hosted rooms.
-
-All three are set in `fly.alpha.toml` and deliberately absent from `fly.toml`. Turning LAN on for
-production means setting all three, on the Vercel project AND the Fly app.
-
-## Also shipped in this promotion
-
-- **X-drive wheels are a diamond, not an X**, at ordinary wheel size, in both games and in both
-  builder previews. They were drawn radially, which is a machine that could translate and never
-  yaw.
-- **`/api/admin/maintenance` now accepts `ADMIN_SECRET`**, like the four routes that already did.
-  ⚠️ It could NOT be used for this deploy, because the prod server did not have the code yet;
-  it is available from the next one, which makes the whole sequence scriptable.
-- **An artifact is not a foam ball.** The claim had spread from a comment into CLAUDE.md,
-  HANDOFF, two `physicsEngine` comments and the patch-notes guide. Fixed where it was flavour.
-
-## Open, and worth a decision
-
-1. ⚠️ **`src/config.ts` still justifies two constants against a foam ball**:
-   `BALL_ROLL_FRICTION` 28 ("still inside the 0.05–0.15g a foam ball on field tile plausibly
-   has") and the restitution pair ("a light foam-ball value is kept for physical honesty").
-   Those are calibration rationale, not wording. If an artifact is a hollow plastic shell rather
-   than foam, both constants were tuned against the wrong reference and want re-checking. Left
-   deliberately untouched so the question stays visible.
-2. **`docs/patch-notes.md` is the guide**, written and then corrected three times from owner
-   review in one session: write for an FTC team and do not simplify their vocabulary; no em
-   dashes at all; the AI sentence shapes to avoid; never invent a physical description of a game
-   element.
-3. **Moderation is inert.** `MODERATION_API_KEY` is set on both Fly apps and the key
-   authenticates, but the OpenAI account has no credits, so every call 429s and the filter fails
-   open. Nothing is broken; the guardrail simply is not armed.
-4. **`src/ui/styles.css` design drift** (~20 off-scale radii, ~50 literal colours) against
-   `DESIGN.md`. Pre-existing, partially migrated already (`e633a92`), and deliberately not
-   touched during a release. Best done as its own ratchet pass, like `uiaudit`.
-5. `Room.onInput` still buffers future-tick inputs unboundedly (capacity.md §7). A fix exists
-   uncommitted on the `perf-load` worktree and is NOT in this release.
+Roadmap item 8 (`feat/privacy-cookies`) shares `LEGAL_VERSION` and should pick it up from here
+rather than re-deriving it. If the terms text moves, `LEGAL_UPDATED` is the only line to change —
+and moving it prompts every signed-in account once, so it is a deploy of BOTH halves (Vercel for
+the dialog, Fly for the route that records the server's own constant).
 
 ---
 
-# HANDOFF — 2026-09-12 (hosting a LAN match from a browser tab: no download, no terminal)
+# HANDOFF — 2026-09-18 (feat/tutorial: ROADMAP ITEM 6 LANDED — the game tutorial, engine + BIOBUZZ + DECODE)
 
-Branch **alpha**, merged from `lan-webrtc`. `npm test` **ALL PASS**, `npm run build` green,
-`npm run server:check` green, `npx tsc --noEmit` clean, `npm run uiaudit` at baseline,
-`npm run test:mm` 58 checks. Pushed as `a3ff8f4`.
+**(Previously READ FIRST.)** Branch **`feat/tutorial`**, off `origin/alpha` at 76034a9. NOT pushed, NOT merged.
+Every gate green: `build` · `npm test` (1806 shared across 12 shards + 2098 in the BIOBUZZ suite,
+which now includes the new `TUTORIAL` lane) · `uiindex` then `uiaudit` (all rules at or under
+baseline) · `docaudit` (CLAUDE.md 26,855 / 27,000 bytes) · `server:check`. `shiftaudit` was NOT run
+(it needs Electron + a `vite preview` in another shell) — the card's pressables move by
+`transform` / `box-shadow` only, which is the rule it enforces.
 
-## The server has NOT been deployed, and that is the only thing left
+## What a tutorial IS here
 
-./scripts/fly-deploy.sh --alpha
+A scripted SOLO PRACTICE. `src/tutorial/` is the shared, DOM-free engine; the CONTENT is per game
+on the new `GameModule.tutorial` slot (`src/games/biobuzz/tutorial.ts`, `src/games/decode/tutorial.ts`).
+`docs/area/ui.md` carries the rules — read that section before touching any of it. The one that
+shapes everything:
 
-That deploys the PREVIEW app (`dsim-alpha`, from `fly.alpha.toml`), which is where
-`LAN_UPLOADS` and the new `LAN_SIGNALLING` are set. **flyctl is not installed on this
-machine**, which is why the session stopped here. Never a bare `flyctl deploy`, and never
-prod for this — `fly.toml` deliberately sets neither flag.
+⚠️ **A STEP'S SITUATION IS STAGED AT WORLD CONSTRUCTION, NEVER INTO A RUNNING WORLD.** Solo practice
+is recorded and a replay rebuilds from `{seed, setups, commands}` alone (`docs/area/netcode.md`), so
+`TutorialStep.stage(world)` runs at tick 0 on a freshly built world and moving to the next step
+REBUILDS it (`GameController.rebuildForTutorial`, which is `restart()` minus the abort cue and the
+harvest). The tutorial runs as FREE DRIVE, which is drivable from tick 0, bills no BIOBUZZ fouls,
+and is **never recorded** — the honest answer to "could a replay reproduce a staged world": it
+could not, so none is kept.
 
-Until it runs, the alpha server has no `server/lanSignal.ts` and no `LAN_SIGNALLING`, so a
-tab cannot claim a room code and **two machines have never done this**. Hosting claims its
-code through the CLOUD rendezvous and verifies an auth token there, so the first real
-host-and-guest test is necessarily a post-deploy one. After the deploy: check `/health`,
-confirm the alpha Vercel project sets `VITE_LAN_ENABLED` (a hidden button and an open route
-are each half a gate), then host from one machine, read the six-character code out, join from
-a second, play a match, and check it lands in Career.
+## Files
 
-## What landed
+- `src/tutorial/{types,runner,hints,flag,index}.ts` — the engine. `TutorialRunner` is a state
+  machine the caller drives: `stage` → `tick` per sim tick → `advance` (the caller rebuilds).
+  `hints.ts` composes every hint from the player's LIVE `ControlBindings`, naming a pad button when
+  a pad is connected and an on-screen button on a coarse pointer. `flag.ts` is
+  `decodesim.tutorial.v1`, per device, fail-open both ways (the `chainDisclaimer.ts` pattern).
+- `src/ui/TutorialCard.tsx` + `src/ui/tutorial.css` (imported from `main.tsx`, its own file for the
+  reason `predict.css` is) — the step card. A `data-hud-band` element at bottom centre, so the 3D
+  camera reframes the field above it and it gets the 3D view's dark scrim.
+- `src/game.ts` — `tutorial` constructor option, `getTutorial()` on the HUD snapshot, `tutorialSkip`
+  / `tutorialReplay` / `tutorialExit`, the per-tick predicate inside `stepSolo`, and the `startMatch`
+  guard.
+- Surfaces: the first-run card on `/modes` (hidden once the flag is set), a permanent
+  "Run the tutorial" block at the top of Controls, and `GameView`'s `tutorial` prop.
+- `scripts/smoke-biobuzz/tutorial.ts` — the `TUTORIAL` lane, 318 checks, 1.4 s.
 
-`docs/lan-webrtc.md` is complete — all five steps. A browser tab now runs the authoritative
-room and is reached over a WebRTC DataChannel, so hosting a LAN match needs no download, no
-terminal and no Node. That is the whole point: the machine this feature is for is a school
-Chromebook, and both previous host paths asked for `git clone` and `npm ci`.
+## The content
 
-- **`src/lan/hostWorker.ts`** — the room, in a dedicated Worker. Imports the same
-  `server/room.ts` the cloud runs. **No persistence callbacks are passed**, so a tab-hosted
-  match structurally cannot write a leaderboard row, move ELO or touch standing.
-- **`src/lan/hostRuntime.ts`** — the page half: signalling socket, one `RTCPeerConnection` per
-  guest, the host's own seat through a `LoopbackTransport`, the wake lock. The host is an
-  ordinary client of its own room; no client code branches on being the host.
-- **`src/net/lanPeer.ts` / `src/net/lanSignalClient.ts`** — two lanes (ordered control,
-  unordered `maxRetransmits: 0` hot) and the offer/answer/ICE dance, `iceServers: []`.
-- **`server/lanSignal.ts`** — the rendezvous. Routing comes from the registry, never from the
-  message; it never parses a payload.
-- **`src/lan/hosting.ts`** — see the first bug below.
+**BIOBUZZ, six steps** (five for a build without the hardware for the NECTAR one): drive to your
+garden · pick up a pollen · shoot into your hive · tip the hive (the cell is staged with the three
+NECTAR the field gives it plus two POLLEN, so the measured table's third POLLEN is the shot the
+player takes) · place a nectar in a flower **or** take a pollen from a flower · park in your loading
+zone. **DECODE, four steps**: drive into your launch zone · pick up an artifact · score in your goal
+· return to your base.
 
-## The two bugs found after the feature already "worked"
+⚠️ **THE TWO FLOWER STEPS ARE A PARTITION, and the lane asserts it.** `TutorialStep.applies(spec)`
+is resolved once when the runner is built. Placing a NECTAR needs a Box Tube **and** a launcher that
+carries NECTAR (`bbCarriesNectar` — a single turret feeds POLLEN only, so **no shipped preset can do
+it**); every other build is asked to retrieve a POLLEN instead. Every build is offered exactly one.
 
-**1. Nothing kept a tab-hosted match.** `App.tsx`'s `keepLanRun` gated on `lanActive()`, which
-is the flag for a LAN room reached by ADDRESS. A WebRTC room sets no LAN server, so that
-condition was false, every condition after it went unevaluated, and — with the Worker room
-deliberately persisting nothing — the match existed nowhere. Silently: no error, no warning,
-nothing missing on screen, just nothing in your history the next morning.
+## Gotchas this shipped against
 
-`src/lan/hosting.ts` is the missing predicate, in its own LEAF module for the same reason
-`roomRegion.ts` is one: the rule fails with no symptom, so it has to be testable headlessly.
-Smoke walks `src/` and asserts exactly ONE screen can raise the flag — a second raiser would
-file a match twice.
+- ⚠️ **A PREDICATE THAT IS TRUE ON THE STAGED WORLD TEACHES NOTHING, AND IT IS INVISIBLE** — the card
+  flashes past. The SHOOT step shipped as `contents.length > 0`; the field stages three NECTAR in
+  every up CELL, so it was true at tick 0 for both alliances. It is `cellPollen(...) > 0` now, and
+  the lane asserts non-vacuity for every step of both games under both physics and both alliances.
+- ⚠️ **A hand-written `held` ball state is a NaN that reaches Rapier.** `{ kind:'held', robot, slot }`
+  omits `lx/ly/side`, `positionHeldBalls` puts `undefined` through `rot()`, and the collider
+  translation throws out of the solve. Staging goes through `capturePollen`, which is also what
+  enforces the hopper cap, G408 and the NECTAR-capacity rule.
+- ⚠️ **A staged pose derived from the CHASSIS is wrong for half the builds.** Both FLOWER steps act
+  through a mechanism whose edge is a builder choice, so the pose is derived from
+  `bbPlacePointLocal` / `bbMouths` and the robot is turned until that offset points along the wall.
+  A front-assumed pose put a relocated Box Tube 10 in off the ring, pointing at open floor.
+- ⚠️ **`TutorialRunner.abandon()` is not called `finish()`** — `npm test` counts `.finish()` calls in
+  `src/game.ts` and requires exactly one, because the replay RECORDER may only be closed inside
+  `harvestPracticeRun`. A second `.finish()` in that file reads as a second save policy to the grep,
+  and the grep is the check.
+- **Hive frame bars are at x = ±24…25, y = ±19.4.** Three staged poses had to move off them; a pose
+  overlapping a static does not throw, it explodes the solve and reads as a position in the hundreds.
+- **DECODE's penalty engine runs in `freeplay`** (BIOBUZZ's does not), so a DECODE step staged near
+  the gate can bill the player in the one mode where nothing is meant to count against them. The lane
+  asserts every scripted DECODE run ends with zero fouls.
 
-**2. The rendezvous was a third door into production.** The owner's standing call is that LAN
-ships nowhere near prod, held there by `VITE_LAN_ENABLED` (hides the entry points) and
-`LAN_UPLOADS` (decides whether `/api/lan` is mounted at all). Neither covers INTRODUCING two
-browsers to each other: that touches no database, which is exactly why the upload flag is
-scoped away from it. Deployed as it was, prod would have mounted no upload route and still let
-anyone host a LAN match. Now **`LAN_SIGNALLING`** in `server/lanUploads.ts` — same shape,
-fails closed, its own variable rather than folded into the other, and it does NOT read
-`SERVER_CHANNEL` (a release channel is not a feature switch; alpha is where this is being
-tested, not what makes it allowed). Verified at runtime in both states against a locally
-booted server: closed → all three signalling messages answered `closed` with nothing
-registered; open → the real logic runs (`auth` for an anonymous host, `nohost` for an
-unhosted code, `nopeer` for an unknown peer).
+## Next steps
 
-## Offline matches now reach the account on their own
+- Push and merge to `alpha` (not done — the branch is local).
+- Chain Reaction has no tutorial and registers none; the slot is there when somebody wants one.
+- `shiftaudit` on the card, from an Electron shell with `npx vite preview --port 4173` running.
+- Worth considering: an in-match entry point (the tutorial is currently only reachable before a run),
+  and a step that teaches the human-player NECTAR entry, which free drive cannot host (`bbHumanPlayerTick`
+  is gated to TELEOP).
 
-The LAN upload backlog (`saveLanRunLocal` → `pendingLanUploads` → `uploadLanRun`) already
-existed but drained only on a sign-in or at the END of a LATER match. Self-hosted play exists
-for venues the internet does not reach, so the match that most needs uploading is the one
-played with no connection at all — a host who played a scrimmage in a gym and opened the
-laptop at home had to play ANOTHER match before the first one uploaded. It now also drains on
-the `window` `online` event, alongside the practice backlog.
+---
 
-That signal is coarse (it reports a network interface, not reachability — a captive portal
-fools it), so it is an EXTRA trigger and never the only one. Both flushes are sequential and
-stop on the first failure, leaving the backlog intact.
+# HANDOFF — 2026-09-18/19 (biobuzz-3d: DAY 3 LANDED — bots, graphics settings, HDRI, 3D export, prediction modes, cutover; merged to ALPHA and the alpha server deployed)
 
-## §6 was right, and the first measurement of it was wrong
+**READ FIRST.** Branch **`biobuzz-3d`** was merged into **`alpha`** at the merge commit named in the
+log and the ALPHA game server (`dsim-alpha`, `fly.alpha.toml`, one machine) was deployed from the
+alpha worktree with `./scripts/fly-deploy.sh --alpha` for proper testing (owner instruction). Every
+gate green on the merged tree: `build` · `bundleaudit` · `server:check` · `docaudit` · `uiaudit` ·
+`test:mm` (197) · `dbtest` (266) · `npm test` (1798 shared + the BIOBUZZ suite, count in the log).
+Production (`main`, `dohun-sim-decode`) is untouched; promotion is the owner's call (spec §12 q7).
 
-Timer throttling decides the architecture, so it was measured rather than assumed. Page thread
-vs dedicated Worker, same hidden tab, 7 minutes:
+## Day 3 (spec §10) — landed, three OPUS lanes
+- **Lane A, bots** (`src/games/biobuzz/ai/`): `GameSimModule.bot = { tiers, defaultTier, coerceTier,
+  create(world, robotId, tier, seed) → { step(world): RobotCommand; dispose?() } }` — the caller owns
+  the memory, steps a seat once per tick BEFORE the sim step, records the (already quantized) command
+  like a driver's; nothing is written to `World`; reads positions and the derived lists only (a Proxy
+  check forbids `rngState`; source greps forbid DOM, clocks, `process.`, `import.meta`, `sim3d/` except
+  `tilt`). Tiers easy/medium/hard differ in execution only (hesitation, speed cap, aim tolerance, verdict
+  strictness, placing, defending, patience, park time). AI lane 47 checks in `npm test` (determinism
+  over 3,600 ticks under both physics with equal hashes AND command logs). `npm run test:ai` (150
+  matches, ~8 min, outside `npm test`): hard vs idle 102 pts mean (1.93× easy); **hard beats easy 59/100
+  head-to-head, NOT the plan's 90** — a BIOBUZZ 1v1 is decided in 20-point tip lumps from one shared
+  element pool; the check is a ratchet at the measured rate (`BB_AI_WIN_RATE_FLOOR` 0.55) with the target
+  named; levers: fouls (~6 pts/match), element denial, the 99-in drive after a hive flip. Perf with four
+  bots: `step3d` 2v2 median 0.345 ms, p95 0.498 — no tuning needed; bots cost 0.004 ms. R102: `bbStowHeightIn`
+  (declared `stowHeightIn` or `min(heightIn, 18)`), refused at `startLegal`, deploy = a read of
+  `world.match`, the collider rebuilt at the edge with `z` continuous.
+- **Lane B, graphics** (`graphics/{settings,auto,environments,viewKey}.ts`, `scene/renderEnvironment.ts`,
+  `renderStats.ts`, Configure's Graphics section): presets Auto/Low/Medium/High/Ultra/Custom over the
+  sixteen settings, per device (`decodesim.graphics`), 14 live, mesh detail needs a rebuild, SMAA and
+  SSAO NOT offered (chunk cost; the UI says why). AA is a scene-owned MSAA target (the renderer is created
+  `antialias:false`). Auto: GPU string + cores/memory/DPR → first guess, 2 s warm-up p95 (down > 16.7,
+  up < 6), slip ≥ 25 ms sustained 3 s lowers once with one event line; `STALL_MS` 500 discards samples
+  after a throttled gap (an alt-tabbed player must not come back to Low). This machine: Ultra. Two CC0
+  Poly Haven HDRIs (School Hall; Monochrome Studio 02), 1k `.hdr` on demand via `HDRLoader` + PMREM,
+  never bundled; `src/contributors.ts` DERIVES the credits from `BB_ENVIRONMENTS` (a check pins the
+  count). Replay export View 2D/3D + camera (roadmap item 2): scene → its own overlay sheet → export
+  canvas → burn-in; 3D costs 1.96× the 2D export at 1920; insets = the bottom band. Gallery draws 2D | 3D
+  per cell with ONE shared scene (Chrome caps contexts). Phone: overhead default, a 2D/3D button; the
+  view key `t` is armed by `InputManager.attach/detach` (`installViewKey`). Scene chunk 192 KB gz; a
+  `graphics` route (5.6 KB) in bundleaudit.
+- **Lane C, integration**: prediction Off/Light/Full/Auto (`src/net/predictionPref.ts`, Controls
+  section + in-match panel): in a 3D online room the client no longer steps the world — the local robot
+  advances through the predictor and the reconcile replays through it; measured Light 0.9 in / Full 0.16 in
+  headless, Full reconcile p95 0.3–0.4 ms live; Auto picked LIGHT on the dev build (a 45.8 ms cold probe
+  vs 0.3 ms steady — re-measure on a production build before tuning `PREDICT_FULL_BUDGET_MS`). Bot seats:
+  solo practice (`GameSettings.practiceBots`, "Opponents"), custom lobbies (host `addBot`/`removeBot`,
+  roster rows with `bot: tier`, refused in staged/ranked/record rooms, `unrated` latched), LAN via the
+  same `Room`; `SERVER_CAPS` `bb3d` + `bots`; the online "Loading 3D physics" panel via
+  `onPhysicsPending`; leaderboard era chip + All/3D/2D filter (`/api/records?physics=`), practice runs
+  carry `physics`/`view` with the comparability note; the client refuses BIOBUZZ ranked on a server
+  without `bb3d`. Migration renumbered **`0039_physics.sql`** (alpha took 0038 for replay privacy;
+  idempotent, disjoint). Two Day 2 rejoin bugs fixed (caps and `physics` on `rejoin`). costprobe 2v2 with
+  bots: 0.047 cores/room, 7,556 B/snapshot.
+- Coordinator: `game.ts` routes `SceneOptions.onQualityEvent` into `world.events`; `RobotSpec.stowHeightIn`
+  + its `coerceSpec` carry-across; the main-chunk bundleaudit baseline re-measured (the `ai/` policy is
+  in the main chunk by design — a tier is offered before any physics loads).
 
-| elapsed, hidden | page thread | Worker |
+## Owner actions and rulings pending
+- Test on alpha: online 3D rooms (custom lobby, physics 3D, both views), bots in a lobby and in practice,
+  prediction modes, the Graphics section, a 3D replay export (one human MP4 export closes the only
+  unexercised path), ranked BIOBUZZ (3D) on the alpha server.
+- Rulings: the lone-nectar flower score (CAD 3.597 vs floor 3.904); the CAD lower bore 3.222 vs the
+  manual's 2.79; weigh a real element set; the AI head-to-head target (59/100 measured vs 90).
+- Production promotion when satisfied (`main` from a main worktree; `./scripts/fly-deploy.sh`).
+
+## Next (roadmap) — `docs/roadmap.md`
+Own branches off `alpha`: `feat/auth-flows` (password reset, email verification, terms acceptance —
+the SDK already exposes the calls), `feat/privacy-cookies`, `feat/contributors`, `feat/tutorial`; on
+`biobuzz-3d`: the 3D robot creator (item 1); plans for cosmetics and rewards (items 3–4) for approval.
+BIOBUZZ 3D days 4–14: play-testing, tuning, weighing a set, `MAX_SAVED_ROBOTS` 3 → 4, promotion.
+
+## Gotchas (new)
+- `setViewport`/`setScissor` take CSS pixels (they multiply by the pixel ratio); `shadow.map` must be
+  disposed and nulled for a live map-size change; `renderer.info.render` resets at the START of `render()`.
+- A `process.env` read in `ai/` is green in Node and fatal in a browser (the first bot decision unmounts
+  the game screen) — the AI lane now greps for it.
+- `coerceSettings` must not fold `practiceBots` to `'off'` for a game with no driver (a DECODE visit
+  erased a BIOBUZZ tier); coerce at the point of use.
+- `Renderer.render(overlayOnly)` clears the whole canvas — right for the live view, fatal for a
+  composite export (every frame black); the export draws the overlay on its own sheet.
+- A perf watch pinned at 0.75 ms failed at 0.778 the moment the suite ran beside anything else —
+  thresholds that close to the measurement report the machine's load, not the code (gate at 1.5 ms).
+- `git merge-tree --write-tree` previews conflicts read-only; alpha and a feature branch both prepending
+  HANDOFF always conflict there — keep the feature sections on top; regenerate `docs/ui-components.md`.
+
+---
+
+# HANDOFF — 2026-09-18, night (biobuzz-3d: CAD-authoritative dimensions + DAY 2 LANDED — 3D rooms online, dynamic hive, flower tubes, prediction, cameras)
+
+**(Previously READ FIRST.)** Branch **`biobuzz-3d`**, worktree `.claude/worktrees/biobuzz-3d`, clean at the merge
+commit named in the log; every gate green there: `build` · `bundleaudit` · `server:check` ·
+`docaudit` · `uiaudit` · `test:mm` (197) · `dbtest` (263) · `npm test` (1798 shared + 1615 BIOBUZZ;
+lanes CORE/SIM3D/HIVE3D/FLOWER3D/PREDICT/NET3D/RENDER + the 2D lanes).
+
+⚠️ **THE OWNER MUST DEPLOY THE ALPHA APP before anyone joins a 3D room online**: this day adds a
+migration (`0038_physics.sql`), a protocol field (`RoomConfig.physics`, `matchStart.physics`, the
+`'bb3d'` cap) and a replay header field — three server changes. `./scripts/fly-deploy.sh` (the
+owner's wrapper; NEVER a bare `flyctl deploy`), then verify `/health` and `fly machine list`.
+Production later from a `main` worktree. Backward compatibility held: `physics` is omitted (never
+written as `'2d'`) on the wire and in containers; old clients still join 2D rooms; pre-0038 rows
+read `'2d'`; no version bumped.
+
+## Owner rulings this day
+- **"The CAD is authoritative for dimensions."** `BB_*` geometry is GENERATED: `npm run field-cad` →
+  `scripts/field-cad/emit-dims.mjs` → `src/games/biobuzz/fieldDims.gen.ts` (STEP version + sha, the
+  derivation and residual of every value); `config.ts` imports it under the old names. The field is
+  141.35 in inside the walls (`BB_HALF_X` 70.674), tiles 23.528 in on centre (`BB_TILE_PITCH`,
+  `BB_TILE_SEAMS`), flowers at their bore-fit centres, hive `BB_HIVE_BOTTOM_Z` 31.981, opening
+  [53.375, 65.497], tape as 16 CAD strips (`BB_TAPE`). 2D collider = 3D collider = GLB wall to
+  0.0000 in (asserted). The manual's figures are history where they differ
+  (`docs/biobuzz-reference.md` carries the dated note). `C.TILE`/`src/config.ts` untouched.
+  Pre-2026-09-18 BIOBUZZ replays diverge on re-sim (alpha-only, unranked; no version bump).
+- Better agents: rounds after the first play-test ran on OPUS with an analysis phase first.
+
+## Day 2 (spec §10) — landed
+- **Lane C, online** (`6ac687c`…`4ae3663`): `await initPhysics3d()` at server boot and lazily in
+  the LAN host worker (`vite.config.ts` `worker.format = 'es'` was REQUIRED — an IIFE worker cannot
+  code-split, and `initPhysics3d` had been tree-shaken out of the worker); `createWorld` gains a
+  FIFTH optional `physics` parameter (a room is not a practice); `Room.physics` decided once
+  (ranked/record/staged → `'3d'`, host option in the lobby, absent → `'2d'`); `'bb3d'` cap refused
+  at `join`/`spectate`/`rejoin`/BIOBUZZ `queue` with "Update DSIM to play this room."; matchmaking
+  stages BIOBUZZ `'3d'`; migration 0038 (`physics` on records/matches/replays/practice_runs, `view`
+  on practice_runs, `butterfly` in the drivetrain check); recorder/player stamp and honour `physics`
+  (`ReplayView` awaits the wasm); `displayWorld` interpolates elements and remote `z` in 3D worlds
+  only; `costprobe` `biobuzz3d-*`: 2v2 0.026 cores/room, 7,231 B/snapshot (72 % of budget; 3D is
+  cheaper than 2D). Verified locally: two clients, one 2D-view one 3D-view, same room, identical
+  scores/positions at the same tick, the replay re-simulated to the server's score exactly.
+- **Lane A, sim** (`366e3ce`…`506a890`): **dynamic see-saw ON** (`BB3_HIVE_DYNAMIC = true`): CAD
+  tray hulls on a revolute joint (limits via `.setLimits` on the instance), mass 13 lb APPROX with
+  the CoM 5.53 in above the pivot (that is the bi-stability), the detent is a HOLD at the stop
+  released when the contents' torque beats `restoring + BB3_HIVE_DETENT` (Rapier has no joint
+  friction; a capped motor keeps pulling), `npm run hive-calibrate` swept it: detent 3041, ballast
+  6 lb at w −9.5, damping 4.466 → 4.00 s swing; all four §12.3 target rows hold with ±0.31
+  element-weights of margin (the whole window is 0.60 wide at nectar ratio 1.6 — weighing a real
+  set is what widens it); validation 4/7 (no linear weighting fits the owner-measured rows, as the
+  reference already says). `hives[a].angle`/`angVel` ride the JSON; `hiveTiltAngle` reads them.
+  **Flower tubes** from the CAD plates (lower bore 3.222 at z −0.2…0.35, mid 3.896 at 3.90…5.25,
+  top 4.171 at 20.25…21.40; retrieval opening derives to 3.550 = Fig 9-12); elements fall to the
+  tiles inside the bottom bore (nothing seats on a ring); G418's intent holds (only pollen exits
+  the bottom). G409 (`bb.spill`) and G417 (`bb.hiveRam`, 3D only; the 2D "no robot can move the
+  hive" ruling stands) bill from real contacts. **Predictors** in `sim3d/predict.ts`:
+  `createLightPredictor(world, localId)` / `createFullPredictor(world, localId)` with
+  `reset/step/dispose`, `probeFullReconcileMs(world, id, now)`; convergence 0.57/0.22 in open
+  floor, 2.12/0.19 in on a push; Light < 1 ms, Full 2 ms (budget 8). `step3d` 2v2 median 0.255 ms.
+- **Lane B, render** (`a0557e1`…`5ec9d40`): reticle at the sim's own landing (`renderLanding.ts`
+  duplicates `bbFlightEnters`'s integrator on purpose — matching the sim beats being "accurate");
+  fixed dark HUD scrim in 3D (`.game-root.view-3d`, tracks a LIVE scene via a MutationObserver);
+  chase and orbit cameras (drag/wheel on the host; pref `decodesim.camera`, keys `c`/`i`/`o`/`t`
+  handled inside the scene while mounted); `GameScene.project` + `Renderer.setScene` so labels and
+  auto paths project through the scene camera (wired in `game.ts` by the coordinator, `8f7300b`);
+  theme change followed live. Scene chunk 187 KB gz.
+- Roadmap: `docs/roadmap.md` now leads with the owner's eight priorities (auth, privacy, contributors,
+  tutorial, replay 2D/3D export, 3D builder, cosmetics plan, rewards plan) with branches and order.
+
+## Owner rulings PENDING (raised by this day's measurements; nothing moved)
+1. **A lone NECTAR in a flower does not reach the scoring floor by the CAD geometry** (tops out at
+   3.597 vs `BB_FLOWER_VOL_Z` floor 3.904): by the 2D model it always scored. 0.30 in, worth 7
+   points and an ownership. `flowerScoreZ` is the extraction that measures it. The 2026-09-12
+   sorter ruling is what a change would overturn.
+2. The CAD lower bore is 3.222, the manual's Fig 9-12 says 2.79 — CAD wins by the standing ruling;
+   noted because the manual's sorting story (nectar seats on the middle ring) is not what the CAD
+   does.
+3. Weigh a real element set: `BB3_ELEMENT_MASS` 0.2 and the nectar ratio 1.6 are APPROX and the
+   tip margin depends on them.
+
+## Next: Day 3 (spec §10) — not started
+A: perf tuning, heights in coercion, AI policy and tiers (`GameSimModule.bot`), bots in practice and
+lobbies. B: Graphics section with presets and Auto detection (`SceneQuality` is ready), HDRI
+environments, export compositing (roadmap item 2), gallery 3D stills, the mobile overhead default,
+the 2D→3D key. C: wire the predictors into `game.ts`'s reconcile with the Off/Light/Full/Auto
+setting (Lane A's API above), the online-room "Loading 3D physics" panel (`GameView` `need3d` is
+`!session && …`; the controller latches `physicsPending` meanwhile), leaderboard `physics` badge and
+filter, ranked cutover on the alpha server, smoke lanes filled, docs. Then the alpha ship.
+DONE at the end of Day 2 (`20d0194`, `634d749`): `sim3d/` loads ONLY through `initPhysics3d()` —
+`sim3d/engine.ts` is the light loader, `sim3d/tilt.ts` the light `hiveTiltAngle`/`hiveTrayRefTheta`
+seam the scene imports, `sim3d/step3d.ts` a thin gate over `step3dImpl`, and `sim3d/impl.ts` the
+heavy re-export the loader `import()`s (predictors included: `physics3dImpl().createFullPredictor`
+after init). Main chunk 917 → 907.88 KB gz (seam 904.17 + the loader/tilt), hostWorker 700.84,
+physics3d 1123 (the impl rides with the wasm), scene 187.27; bundleaudit baselines re-measured; a
+CORE check forbids static imports of heavy sim3d modules outside `sim3d/` (only `engine` and `tilt`).
+
+## Gotchas (new)
+- `setAdditionalMassProperties` on a BODY is discarded by the collider mass recompute — set it on
+  the desc; `body.mass()` is stale until the first step. A pinned tray SLEEPS and gravity does not
+  wake it: `wakeUp()` at breakaway. The tray and its frame overlap at the bearing: separate
+  collision groups; the joint limits are the damper.
+- `atan2` is (−π, π]: wrap corner rays into [0, 2π) before sorting an annulus, or the ring closes
+  across its bore. A convex hull of a C-bracket fills the C (visual-only parts stay visual-only).
+- A `Date.now` DEFAULT PARAMETER trips the sim source guard, and should.
+- `Client.send` hands out a live view of the world (`slimWorld` spreads one level): a test sink
+  must encode/decode as the transport does. `physics: cond ? '3d' : undefined` CREATES the key:
+  test "absent" on `JSON.stringify`, not `in`.
+- `w.balls.length = 0` does not clear `rob.hopper`; a fired-out robot ends with an EMPTY hopper
+  (measure the peak).
+- `npm run dev` was broken by a Day 0 spike file importing an uninstalled package (`scripts/
+  spike3d-browser/noncompat.*`, deleted). Orphaned `esbuild.exe`/`node.exe` from a dead Vite lock
+  `npm ci` (taskkill first). Never `Remove-Item -Recurse` a directory containing a junction.
+
+---
+
+# HANDOFF — 2026-09-18, later (biobuzz-3d: play-test round 2 — true CAD geometry, CAD colours and tape, HUD-safe framing)
+
+**(Previously READ FIRST.)** Branch **`biobuzz-3d`**, worktree `.claude/worktrees/biobuzz-3d`, clean at the merge
+commit named in the log; all gates green there (`npm test` 1798 + the BIOBUZZ suite with a 105-check
+SIM3D lane). This round was done by OPUS agents with an analysis phase first, at the owner's request;
+the audit is `docs/biobuzz/field-cad-audit.md` — read it before touching the field pipeline.
+
+## The owner's five sentences → root cause → fix (all verified)
+1. *Balls on a different plane than the hive bottom* — `convert.py` exported tray hulls as WORLD-frame
+   bounding boxes at the 30° tilt and the sim read them as tray-LOCAL; the collider floor sat 3.26 in
+   above the mesh floor. Now every tray point is un-tilted about the pivot before export
+   (`captureTheta` ±30.000° exactly), `hiveTrayRefTheta` is 0, the body rotation is plain
+   `hiveTiltAngle`, and a headless check plus a dev-only raycast at GLB load assert the mesh and
+   collider floors coincide (Δ ≤ 0.017 in) with a resting element 1.275 in above the plane.
+2. *Hive back gone* — `convert.py`'s `other` group (25 parts: ACM logo panel, A-frame top bar, top
+   corners, axle holders, feet, AprilTag plates) was never emitted. Unknown parts now go to a `misc`
+   node and are printed; `assemble-gltf.mjs` refuses to finish with an unclaimed STL.
+3. *Support structures missing* — the fastener regex matched the word "rivet" and dropped the 24
+   perimeter rails and 16 corner hinges. `RE_FASTENER` is an explicit list of fastener families.
+4. *Flowers wrong colour* — `XCAFDoc_ColorTool` returns nothing on this STEP; the colours live in the
+   styled-item chain, now parsed from the STEP text and carried in the glTF material name
+   `<finish>#<rrggbb>` (flowers: amber top ring, green HIPS pipes, purple backstop; the hive's
+   alliance colour is the RIBS, not the white skins). Runtime overrides only surface params, forces
+   `glass` transparent, and forces `tile` to `COLORS.mat` (the CAD tile grey is a placeholder).
+5. *Tape wrong* — the GLB's 16 real tape strips were hidden behind procedural `strokeRect` outlines.
+   The CAD tape is shown: all strips 1.000 in wide; loading zones taped on three edges (wall edge
+   bare), gardens are two side-by-side 1-in strips, alliance areas on the gym floor; every on-tile
+   strip stops 0.573 in clear of the wall face (asserted).
+Also: the scoreboard/field overlap — `GameController.refreshHudInsets()` measures every
+`data-hud-band` element (score bar, breakdown, status, buttons, BIOBUZZ's own score bar) into
+`SceneFrame.insets`; both 3D cameras fit the field into the safe rect via `setViewOffset`; the 2D
+camera already reserved matching bands (unchanged). A game that fills the `scoreBar` slot must mark
+it `data-hud-band` or it gets the old overlapping fit.
+
+## Physics now
+Statics are true per-part convex hulls incl. the frame's diagonal legs, uprights, dampers and
+crossbar (73 hulls); tray colliders are planar-facet oriented boxes (a hull of an open shell fills
+the cell; the perforated Goal Rib gets none). 18-in AND 29-in robots pass under the down cell (CAD
+floor 31.98; a 34.98-in robot is stopped); retention 20/20 at 24/48/72 in; the load table matches;
+containment 0; two-run hash equal; perf median 0 ms / p95 1 ms. Sizes: `field.glb` 474 KB br,
+`field-low.glb` 137 KB, colliders 31 KB; scene chunk 184 KB gz.
+
+## OPEN findings (owner ruling pending; in the coordinator's memory) — now TWO facts, not four
+- The real field is **141.35 in inside the walls** (tiles 23.528 in on centre): that one fact is the
+  wall delta (±70.67 vs 72) AND the flower delta (~1.54 in vs `BB_FLOWERS`; `BB_FLOWER_D` itself is
+  right to 0.09 in). Deciding the sim's field size is a 2D gameplay change — the owner's call.
+- `BB_HIVE_BOTTOM_Z` 25.5 vs the CAD's 31.98.
+- CLOSED: the up-cell opening matches the manual within 0.13 in (the old delta was the bbox artifact).
+
+## Gotchas (new)
+- **Never `Remove-Item -Recurse` a directory that contains a junction** — it follows the junction; an
+  agent deleted 12 entries of this worktree's `node_modules` that way and restored them by copy;
+  `npm ci` was re-run afterwards.
+- A flat CAD face tessellates to its corners only: measure meshes by triangle/raycast, never by
+  vertex scan. `MeshoptSimplifier.compactMesh` rewrites indices in place and returns `[remap, n]`.
+  The LOW LOD needs `simplifySloppy` (honeycomb plates plateau). The determinism guard greps
+  `sim3d/` by TEXT — do not name a trig function even in a comment.
+- The scene preview's `scene.render` is what rotates the trays; a frozen frame loop draws them
+  level, which looks exactly like the tilt bug.
+- The near wall-top corners pin the driver FOV at 95° below ~21:9; the field fills the safe rect
+  horizontally and leaves vertical slack at 16:9 (inherent).
+
+---
+
+# HANDOFF — 2026-09-18 (biobuzz-3d: owner's first 3D play-test fixes — hive tilt/spill, visuals, driver POV)
+
+**(Previously READ FIRST.)** Branch **`biobuzz-3d`**, worktree `.claude/worktrees/biobuzz-3d`, clean at the merge
+commit named in the log; all gates green there (`npm test` 1798 + 1413, SIM3D lane 83). The owner
+reported four things after playing the Day 1 build; all four are fixed and verified:
+
+1. **Hive visually tilted more than the physics.** The GLB tray node is captured at its rest pose, and
+   the scene applied the ABSOLUTE tilt on top of it (double tilt). The scene now imports the physics'
+   `hiveTiltAngle(world, a)` (`sim3d/hive3d.ts`) and `hiveTrayRefTheta(a)` (`sim3d/bodies.ts`) and
+   rotates the tray by `hiveTiltAngle − hiveTrayRefTheta` — 0 at rest, 60° after a tip — the same
+   expression `engine.ts`'s `applyHiveTilt` gives the kinematic body. ONE angle authority; never
+   re-derive it in a renderer.
+2. **Elements spilled out of the up cell.** Root cause in the PHYSICS: the CAD-sized tray collider was
+   built from the box captured at the tray's own tilt without re-inclining it, so at rest the up-cell
+   floor was FLAT (mouth and divider at the same z) and every landed element rolled out. Fix:
+   `obliqueBoxCollider` bakes the capture angle into each collider's fixed local rotation (never a
+   per-tick collider rotation — that destabilises the kinematic body); tray colliders use a `Min`
+   restitution combine rule (floor/sides 0.15, back 0). Retention 20/20 at 24/48/72 in; the load table
+   (3, 7, 3+2 stay; 8, 3+3 tip) now matches the manual in physics; an unchanged kinematic target does
+   not wake resting elements. Consequence: the down-cell clearance is now ~22.7–29.8 in (mid 26.2, vs
+   the manual's 25.5) so a 29-in robot IS stopped; the up-cell opening top reads 68.85 vs the manual's
+   65.6 — a new OPEN finding beside the bottom one (see below).
+3. **Rendering too dark, bad shadows, opaque panels, grey flowers.** ACES exposure 1.2, hemisphere
+   1.3 + key 1.9, `RoomEnvironment` IBL via PMREM, `VSMShadowMap` (PCFSoft is deprecated in three
+   0.186) with a shadow camera fitted to ±92 in, bias −0.0012 / normalBias 0.035 / radius 3; walls and
+   station panels are transparent polycarbonate (opacity 0.22, depthWrite off, DoubleSide, renderOrder
+   10); room backdrop lightened to gym grey. The GLB now carries one primitive PER PART CLASS with a
+   named material (`flower_ring/pipe/base`, `hive_frame_metal`, `tray_metal`, `tray_panel_red/blue`,
+   `wall_panel/extrusion`, `tile`, `tape_*`); `renderFieldGlb.ts` assigns PBR by material NAME.
+   `convert.py` writes one STL per class per node; `assemble-gltf.mjs` builds the primitives.
+   Colliders/measurements stayed byte-identical through the regeneration.
+4. **Driver POV missed the near edge.** `fitDriverCamera(alliance, viewAngle, aspect)` in
+   `renderCameras.ts` solves pitch analytically and the setback by search so all four corners, both
+   wall tops and the hive tops fit with a 4 % margin: 16:9 → eye 72 in, setback 24 in, pitch 37.5°,
+   FOV 95° (the near corners pin the FOV at `DRIVER_FOV_MAX`; raising the eye is preferred over
+   pulling back). If it reads too wide in play, `DRIVER_EYE_H_*`/`DRIVER_SETBACK_*`/`DRIVER_FOV_MAX`
+   are the knobs.
+
+**OPEN findings (owner ruling pending, move nothing; in the coordinator's memory):** flower ring
+centres ~1.4 in off `BB_FLOWERS`/`BB_FLOWER_D`; wall inner faces ±70.67 vs 72 (3D walls stay at 72);
+hive up-cell opening [47.05, 68.85] vs `BB_HIVE_OPEN_Z` [53.5, 65.6] and down-cell clearance ~26.2
+vs 25.5. The measurements check prints them under wide, commented tolerances.
+
+**Gotchas added:** `PCFSoftShadowMap` is gone in three 0.186 (use `VSMShadowMap`); in the app the
+`computer` tool's key presses may not reach the game's listeners (dispatch a synthetic
+`KeyboardEvent`); `coerceAssists` forces `aimAssist` on, so a synthetic firing test sets
+`r.aimAssist = false` on the spawned robot; `releasePollen`/`takeHeld` need a matching `held` ball
+in `world.balls`, not just a hopper entry; the "Goal Rib" parts are treated as tray metal and only
+the Top/Back/Bottom skins as the alliance panel (a judgement from part names, unverified against a
+photo). Day 2 (spec §10) remains next; see the section below for the plan.
+
+**Owner re-test 2026-09-18, after these fixes: STILL WRONG.** Elements sit on a different plane than the
+tray floor; the hive's back and some support structures are missing from the GLB; flower colours still
+wrong; tape layout and widths incorrect (wall-bounded zones carry no tape on the wall side; tape widths
+are documented); the scoreboard overlaps the field. Diagnosis: the collider export used per-part AABB
+corners (so the physics tray floor is not the mesh floor and the frame legs were dropped), the GLB
+assembly drops/mis-classes structural parts, and colours/tape/tiles were procedural guesses. Round 2 is
+running on OPUS agents (owner asked for better agents and more thorough analysis): a CAD audit doc,
+true per-part hull colliders in each tray's un-tilted local frame, CAD (XCAF) colours and CAD tape,
+and HUD-safe camera framing.
+
+---
+
+# HANDOFF — 2026-09-17, night (biobuzz-3d: Day 1 LANDED — 3D physics, 3D renderer, CAD field)
+
+**(Previously READ FIRST.)** Branch **`biobuzz-3d`**, worktree `.claude/worktrees/biobuzz-3d`. Tree clean at the
+merge commit named in the log; every gate green at that commit: `build` · `server:check` · `docaudit`
+(CLAUDE.md 26,850 / 27,000 bytes) · `uiaudit` · `bundleaudit` · `npm test` (1798 shared + the
+BIOBUZZ suite incl. the SIM3D and RENDER lanes, count in the log). The owner play-tested the first
+3D view mid-day, found field parts misplaced and the graphics too plain, and ruled "the field should be
+CAD derived" — both are addressed below. Day 2 (spec §10) is next; nothing of it is started.
+
+## What Day 1 delivered (spec `docs/biobuzz/plan-3d.md` §10, all three lanes, merged)
+
+- **Seam** (`941a598`): `Physics` type; `World.biobuzz.physics` + `biobuzzPhysics()`; `step2d`/`step3d`
+  dispatch; `RobotState.z/vz`; `RobotSpec.heightIn` (+ the `coerceSpec` carry-across fix in
+  `src/sim/spawn.ts`); `GameSettings.practicePhysics` (default `'3d'`); `GameModule.scene` and the
+  `GameScene`/`SceneFrame` contract; `GameSimModule.bot?`/`physicsOptions`; `sim3d/engine.ts` loader
+  (`initPhysics3d()`, dynamic import of the wasm); `graphics/store.ts` view pref; `worldHash` mixes `r.z`.
+- **Lane A, sim** (`src/games/biobuzz/sim3d/`): persistent Rapier 3D world per `World` (WeakMap),
+  id-ordered bodies, sync-before/readback-after, robots on the SHARED wrench (parity 1.000 in open
+  field), elements with CCD, capture/launch/place/human player reusing the 2D bookkeeping (pure
+  extractions: `hiveTimerStep`, `bbHumanPlayerTick`, exported `placeInFlower`/`biobuzzStepMatch`),
+  KINEMATIC tray on the shared timer with PHYSICAL spill, `derive.ts` (contents/stacks/tags), containment
+  net with `containmentFixes === 0` asserted. SIM3D lane: 34+ checks incl. two-run hash and perf
+  (`step3d` 2v2 median ≈ 0 ms, p95 1 ms vs the 1.5 ms gate).
+- **Lane B, renderer** (`scene/render*.ts`, lazy chunk 182 KB gz of 250): field, robots generated from
+  spec (chamfered chassis, drivetrain wheels, sweepers, mechanisms, team sign), 56 instanced spheres
+  with rolling spin, driver-station + overhead cameras, ACES + sRGB, PCF-soft 2048 shadows, procedural
+  room. Geometry proven against `drawField.ts` with a side-by-side page (`scripts/scene-preview`, in-page
+  named-object check) — four real errors fixed (flower pipes sideways, up-cell 3 in high, wall
+  thickness, flower-parked element height); conventions (y direction, heading, alliance walls) were right.
+- **Lane C, client**: Practice setup gains **Physics 2D/3D** (`practicePhysics`) and **View 2D/3D**
+  (per device); `GameView` awaits `initPhysics3d()` before a 3D practice (fallback to 2D with an
+  event-log line); the scene mounts UNDER the 2D canvas (`renderer.ts` `overlayOnly`), created/disposed
+  live on view switch; `scripts/bundleaudit.mjs` ratchet (main, hostWorker, physics3d, scene).
+- **CAD field** (owner decision): `npm run field-cad` → `public/models/biobuzz/` (`field.glb` 359 KB br,
+  `field-low.glb` 242 KB, `field-colliders.json` 23 KB, `field-measurements.json`, README with source,
+  sha256 and node names). Scene draws the CAD walls, hive frames, trays and flowers over the procedural
+  tile/tape floor (constants fallback on any load failure). Physics: floor and walls analytic at the
+  CONSTANTS; tray cells sized from the CAD cell; flower supports CAD trimesh (`FIX_INTERNAL_EDGES`);
+  hive-frame legs/uprights EXCLUDED (their hulls are loose AABBs that sealed the drive-under). Twelve
+  probe points agree between the CAD and constants engines.
+- **Verified in the real app** (Physics 3D): drive, capture (HUD pips), a real parabolic shot, tray tip
+  with physical spill, View 2D↔3D mid-match, resize; console clean.
+
+## OPEN findings — owner ruling pending; MOVE NOTHING (also in the coordinator's memory)
+
+CAD vs constants: flower ring centres ~1.4 in off `BB_FLOWERS`/`BB_FLOWER_D` (pipe-centroid proxy;
+a bore fit would settle it); wall inner faces ±70.67 vs `BB_HALF_X` 72 (3D walls kept at 72 for
+parity with the 2D pipeline and the staging); hive up-cell opening [47.05, 65.65] vs `BB_HIVE_OPEN_Z`
+[53.5, 65.6] and down-cell lowest point 31.96 vs `BB_HIVE_BOTTOM_Z` 25.5 (one rigid bar cannot meet
+both manual figures; the CAD says 25.5 is not the tray floor). The measurements check prints all of
+them under wide, commented tolerances.
+
+## Next: Day 2 (spec §10)
+
+A: dynamic see-saw on a revolute joint + `scripts/hive-calibrate.ts` against the field-guide rows
+(`BB3_HIVE_DYNAMIC` flips to true; kinematic stays the fallback); flower TUBES (the CAD rings are
+excluded from the collider file because a hull of an annulus fills its hole — export ring trimeshes
+from `convert.py`); derived flower stacks by z; G409/G417 tags; Light/Full prediction worlds + Auto
+probe. B: reticle, HUD scrim, chase/orbit cameras, interpolation of balls and remotes (the scene
+ignores `frame.alpha` today), labels through the scene camera, theme change mid-scene (backdrop read
+once). C: `await initPhysics3d()` at server boot, `RoomConfig.physics`, `'bb3d'` cap gate, matchmaking
+`3d`, the `physics` migration, `costprobe` scenarios, replay header + re-sim check, LAN lazy init.
+Cleanups queued: move `sim3d/` behind `initPhysics3d()` (it is statically imported by `step.ts`, so
+the main chunk carries ≈ +4.5 KB gz); tight per-part hulls for the hive frame in `convert.py`; Aim
+Assist's landing prediction is an alignment gate under 3D; elements can marginally perturb a robot
+(collision groups); the GLB's tiles/tape node is unused (no per-region colour); courtesy note to FIRST
+(owner sends). Days 4-14: weigh a real element set (`BB3_ELEMENT_MASS` is APPROX).
+
+## Gotchas (new this day)
+
+- **Sonnet subagents obey the session's cwd over the prompt** when the Edit/Write tools refuse
+  cross-worktree paths: two of six lanes worked in the session's own worktree. State the path in every
+  command and check `git log` for where a commit landed. Lane worktrees shared ONE `node_modules`
+  through junctions (`New-Item -ItemType Junction`; remove with `cmd /c rmdir`, never `rm -rf`).
+- **Never route base64 image data through a tool call** (a `toDataURL` write blew the 64k output
+  limit twice). Describe screenshots; the browser pane is visible to the owner anyway.
+- **The in-app browser pane**: `requestAnimationFrame` only advances when a paint is forced
+  (alternate `wait` and `screenshot`); the pane is shared between concurrent agents (always
+  `tabs_create` and pass `tabId`); Enter does advance the countdown. Fastest way to drive the game
+  from a script: walk the React fiber from the canvas to `GameView`'s third ref (the `GameController`)
+  and edit `world` JSON directly — the next tick reconciles the bodies.
+- **Rapier 3D**: forces persist across steps (`resetForces`/`resetTorques` per tick); a collider's
+  `setTranslation` offset rotates with the BODY, so a per-collider rotation offset needs its
+  translation rotated too; `RigidBodyDesc.enabledRotations`; `TriMeshFlags.FIX_INTERNAL_EDGES`.
+- **CAD pipeline**: `BRepMesh_IncrementalMesh` caches on the shape (call `BRepTools.Clean_s`
+  first); flat STL normals block meshoptimizer's simplifier (drop normals, recompute in the loader);
+  GLTFLoader strips `/` from node names (use `userData.name`); `.cmd` shims cannot be `execFileSync`'d
+  on Windows (call `node <cli.js>`); the standalone `scene-preview` needed its own `vite.config.ts`
+  (`publicDir`) to serve `/models/biobuzz/*`.
+- Pre-existing: `uiaudit` `stale-component-index` after a merge — `npm run uiindex`; `smoke.ts` is 1798
+  checks, not the 1765 CLAUDE.md still says; a dev-only "Invalid hook call" cascade in `AdsProvider`
+  on cold loads (both physics; not investigated).
+
+---
+
+# HANDOFF — 2026-09-17, later (biobuzz-3d: Day 0 physics spike results)
+
+**(Previously READ FIRST.)** Branch **`biobuzz-3d`**, worktree `.claude/worktrees/biobuzz-3d`. Tree is clean
+except for the files this session adds/commits: `scripts/spike3d.ts` (new, throwaway CLI),
+`scripts/spike3d-browser/` (new, throwaway browser+Electron harness), `docs/biobuzz/spike3d-
+results.md` (new), this HANDOFF section, and `package.json`/`package-lock.json` (three new
+pinned installs, `src/` and `docs/area/` untouched). `npm ci` ran clean (560 packages). `npm run
+docaudit` passes (CLAUDE.md 26,670 / 27,000 bytes, unchanged).
+
+## Installed this session (all pinned `-E`, `@dimforge/rapier2d-compat` untouched at 0.19.3)
+
+`@dimforge/rapier3d-deterministic-compat@0.20.0` (dependencies), `three@0.186.0` +
+`@types/three@0.186.0` (devDependencies). `@dimforge/rapier3d-deterministic@0.20.0` (the
+non-compat build) was installed once with `--no-save` to probe it and is **not** in
+`package.json`/`package-lock.json` — confirmed by grep after the probe.
+
+## Results: the Day 0 spike PASSED the gate
+
+Full numbers, the runtime matrix, and the tray/joint gotcha are in
+`docs/biobuzz/spike3d-results.md`. Summary:
+
+- **Hashes equal across two Node runs** (`1971098706` both times) — the mandatory check.
+  **Also equal in Chromium (Electron)** — `1971098706` there too, which the gate did not
+  require but the plan hoped for. The deterministic build's cross-platform promise held on
+  this scene, this machine.
+- **Step time far under budget**: 0.020 ms median, 0.046 ms p95 against a ≤ 1.5 ms target — but
+  this scene (4 robots, 56 elements, 2 tray bodies, no CAD trimesh, no real gameplay reads) is
+  smaller than a real 2v2 room will be, so treat this as a floor, not a prediction; re-run with
+  `costprobe`'s `biobuzz3d-*` scenarios once `step3d` is real.
+- **Runtime matrix**: `-deterministic-compat` initialises and matches hashes in both Node/tsx
+  and browser (Vite dev + Electron). The non-compat `-deterministic` package **fails in both**
+  Node/tsx and Vite/browser as published on this Vite version (6.4.3) — it has no `init()` and
+  its glue does a bare `import * as wasm from "*.wasm"`, which Vite explicitly rejects without
+  `vite-plugin-wasm` and Node's ESM resolver rejects on the extensionless imports before it even
+  gets that far. **Stay on compat, as the plan already defaults to** — do not spend Day 1/2 time
+  trying to swap packages without adding a wasm plugin, which is a separate decision.
+- **Tray/joint gotcha, worth remembering for the real `sim3d/`**: `JointData.limitsEnabled` /
+  `.limits` set before `createImpulseJoint` were **not enough** — the tray span past the
+  intended ±30° to ~177° before something else stopped it. Fix: call `.setLimits(min, max)` on
+  the `ImpulseJoint` **instance** `createImpulseJoint` returns. With that, both trays sat
+  exactly at `30.0000448913582°` for the full run (the ballast pins the empty/lightly-loaded
+  tray at one stop, matching the intended start condition) — not a calibrated see-saw yet,
+  which is `hive-calibrate.ts`'s job on a later day per plan §3.6.
+- **Chunk size**: the physics chunk is 2,891,032 B raw / 1,089,268 B gzip-9 (matches the plan's
+  ~1.1 MB gzip estimate); the main chunk grows by a noise-level 110 B raw when the loader is
+  merely reachable. **Methodology gotcha**: an exported-but-never-referenced function is
+  tree-shaken away entirely before Rollup code-splits it — the first attempt (exactly what the
+  spec asked for) produced a byte-identical build and no new chunk at all. Had to add one
+  module-scope side-effecting reference (`globalThis.__x = theFn`) to keep the declaration alive
+  for the measurement, then revert everything (`git checkout --`) and rebuild to confirm the
+  tree was clean again (it was — byte-identical to the pre-spike baseline). Worth remembering
+  for whoever writes `bundleaudit` (spec §2.5/§7): it needs the same trick, or a real call site,
+  to measure an as-yet-unused dynamic import honestly.
+
+## Next: Day 1 (spec §10) — the whole game on 3D physics in the 2D view
+
+Not started. Per the spec: `sim3d/engine.ts` (persistent Rapier world, `initPhysics3d()` behind
+a dynamic import), `step3d` (§3.1's nine-step tick), `derive.ts` (§3.5, fills
+`hives[a].contents`/`flowers[i].stack` from body positions so `score.ts`/`hud.ts`/the 2D
+renderers work unchanged), the real hive frame + tray (§3.6, starting from this spike's geometry
+but calibrated against the manual's two published tip rows via `hive-calibrate.ts`), flowers
+(§3.7), and the `World.biobuzz.physics: '2d' | '3d'` dispatch in `biobuzzStep`. Also queued at
+Day 0 but not run by this session: the CAD pipeline (`scripts/field-cad.mjs` +
+`scripts/field-cad/convert.py`) and the courtesy note to FIRST (owner sends it; draft is in the
+demoted section below).
+
+## Gotchas (carried forward + new)
+
+- **`JointData`'s `limitsEnabled`/`limits` fields alone did not clamp a revolute joint** in
+  `@dimforge/rapier3d-deterministic-compat` 0.20.0 — call `.setLimits(min, max)` on the created
+  `ImpulseJoint` instance too. Untested whether this is a compat-wrapper quirk or true of raw
+  Rapier 0.35; did not have time to check upstream, and it does not block Day 1 since the
+  workaround is one line.
+- **An exported function with no call site or reference is dead-code-eliminated**, `import()`
+  inside it and all — do not trust "add an unused export, build, measure" for a chunk-size
+  check without also keeping the declaration reachable (see above).
+- Two Rapier packages coexist on purpose: 2D on `rapier2d-compat` 0.19.3, 3D on
+  `rapier3d-deterministic-compat` 0.20.0. Never upgrade the 2D package as a side effect.
+- The 3D wasm must load through a **dynamic import** inside `initPhysics3d()`, same reasoning
+  as before — this spike's own chunk-size measurement is the number that makes that concrete
+  (≈1.09 MB gzip if it ever leaked into a chunk every player loads).
+- Other sessions have worktrees here (`main-merge`, `alpha-ui`, `nice-morse-…`, a
+  `claude/biobuzz-3d-worktree-…` that is unrelated). Do not `cd` into them; the stash stack is
+  shared.
+- CLAUDE.md still has headroom (26,670 / 27,000 bytes) — unchanged this session, nothing here
+  touched it.
+
+---
+
+# HANDOFF — 2026-09-17, late (biobuzz-3d: Day 0 begun, alpha carries the split, PAUSED before the physics spike)
+
+**(Previously READ FIRST.)** Branch **`biobuzz-3d`**, worktree `.claude/worktrees/biobuzz-3d`, now based on
+**`alpha` 7e268dd**. The branch carries `docs/biobuzz/plan-3d.md` (draft 3 with the owner's eleven
+decisions, §12) and this HANDOFF. **No code has been written.** The owner asked for cheap
+subagents and a pause with a detailed handoff before any step that could use a whole session;
+this is that pause.
+
+## Done this session (Day 0, part 1)
+
+- **`efficiency-audit` merged into `alpha`** (1ecc3f2; the owner's Q10). No conflicts: the two
+  branches touched disjoint files (`git merge-tree` preview, then the merge). `npm run uiindex`
+  regenerated the component index alpha's six UI commits had outdated (7e268dd). **Every gate on
+  the merged alpha is green**: `build` · `docaudit` (CLAUDE.md 26,670 / 27,000 bytes) · `uiaudit`
+  · `npm test` **1765 + 1321 ALL PASS**. Pushed to `origin/alpha`.
+  ⚠️ **Migration 0037 is a SERVER change**: until the alpha app is redeployed (owner's wrapper,
+  `fly-deploy.sh --alpha`), its six indexes do not exist in production. Same for main later.
+- `biobuzz-3d` merged with the new alpha. HANDOFF conflict resolved by keeping the biobuzz-3d
+  sections on top of alpha's log. The spec's status line records the base.
+- `npm ci` ran in `.claude/worktrees/pr-alpha` (it has `node_modules` now); **the biobuzz-3d
+  worktree still has none**, and neither do the other worktrees.
+
+## PAUSED HERE: the next step is the Day 0 physics spike (spec §10)
+
+Run it as **one sonnet subagent** in the biobuzz-3d worktree. Estimated: 30 to 60 minutes wall,
+moderate tokens, no shared-file edits. The plan, in order, with the acceptance it must report:
+
+1. `npm ci` in the worktree (a few minutes; Electron is a dependency).
+2. Install, pinned exactly like the 2D physics: `npm i -E @dimforge/rapier3d-deterministic-compat@0.20.0`
+   (in `dependencies`: the server needs it) and `npm i -D -E three@0.186.0 @types/three@0.186.0`.
+   Nothing imports them yet except the spike. (Registry checked 2026-09-17: all three at those
+   versions; the compat package unpacks to 10.3 MB, wasm about 2.05 MB / 767 KB gz.)
+3. `scripts/spike3d.ts` (throwaway, run with `tsx`, never in `npm test`): `await import(...)` the
+   compat module and `init()`; build a z-up world (gravity `{x:0, y:0, z:-386}` in inches);
+   statics: floor, four walls at ±72, two frame base bars (x in [24,25] and [-25,-24], y ±19.4);
+   four dynamic 18-in boxes with yaw-only rotation (`setEnabledRotations(false,false,true)`),
+   z free; 56 dynamic spheres (40 × r 1.4, 16 × r 1.8, mass 0.2 lb, CCD on); one dynamic tray per
+   hive on a revolute joint about x at (±12.75, 0, 43.95) with limits ±30° and a trial ballast
+   (or kinematic first if the joint fights); a scripted push on one box for 600 ticks; step 3,600
+   ticks at 1/60. Every 60 ticks hash all positions rounded to 1e-4 (FNV-1a, the `worldHash`
+   shape). Print: median and p95 ms/step, body count, sleeping count, the final hash.
+4. **Run it twice in Node**: the two final hashes must be equal (the deterministic build's whole
+   promise). If they differ, stop and report; do not tune.
+5. Cross-runtime: run the same spike in Chromium (a throwaway Vite page or the Electron shot
+   runner) and compare the final hash with Node's. Report equal / not equal.
+6. Try the non-compat `@dimforge/rapier3d-deterministic@0.20.0` with the raw `.wasm` (Vite `?url`
+   in browser and worker; `fs.readFileSync` in Node and `tsx`). Record which of the four runtimes
+   initialise; if all four, it saves about 300 KB gzipped per §2.5. Do not switch packages in
+   this spike; just report.
+7. Add a dynamic `import()` of the compat module behind an unused function, `npm run build`, and
+   record the emitted chunk sizes (`dist/assets`), then remove it. `bundleaudit` does not exist
+   yet; this is the baseline number for it.
+8. Commit the spike script and a `docs/biobuzz/spike3d-results.md` (numbers only, the runtime
+   matrix, the hash outcome) on `biobuzz-3d`; prepend a HANDOFF section.
+
+**Gate (spec §10 Day 0):** hashes equal across two runs; median step at or under 1.5 ms for the
+2v2-equivalent world. **Kill/adjust:** step over 3 ms after enabling sleeping and limiting CCD to
+fast bodies → the "freeze far elements" fallback in spec §11; hashes unequal on the deterministic
+build → stop, the vendor's promise failed, report before anything else is written.
+
+Also on Day 0, as separate cheap agents once the spike passes: **the CAD pipeline**
+(`scripts/field-cad.mjs` + `scripts/field-cad/convert.py`; needs Python and `pip install cadquery`,
+a heavy install: run it in its own agent and report the measurements file first, the GLB second),
+and the **courtesy note to FIRST** (the owner sends it; draft below).
+
+## Draft note to FIRST (for the owner to send)
+
+> Hello. I run DSIM (playdsim.com), a free driver-practice simulator for FTC teams. For the
+> BIOBUZZ season I am building a 3D mode and would like to use the published field CAD (the STEP
+> release on ftc-resources) as the source for a simplified, decimated field mesh and collision
+> geometry, served from the site and committed to the project's public repository, with
+> attribution to FIRST and the manual's CAD credit. Your terms of use grant personal use; could
+> you confirm this use is acceptable, or tell me what attribution or limits you would want?
+> Thank you for publishing the CAD; it is what makes an accurate simulator possible.
+
+## Gotchas
+
+- **Two Rapier packages coexist**: 2D on `rapier2d-compat` 0.19.3, 3D on
+  `rapier3d-deterministic-compat` 0.20.0 (Rapier 0.35: new sleeping, sweep CCD on for fixed
+  colliders, changed contact defaults). Never upgrade the 2D package as a side effect.
+- The 3D wasm must load through a **dynamic import** inside `initPhysics3d()`; a static import
+  anywhere reachable from `src/games/index.ts` or the LAN `hostWorker` puts about 1.1 MB gzipped
+  into chunks every player pays for. `bundleaudit` (to write) is the ratchet.
+- CLAUDE.md has **330 bytes of headroom**: the spec's two sentences (game table row, the
+  client-bundle rule) must fit or the rule moves to `docs/area/biobuzz.md` with a pointer.
+- Other sessions have worktrees here (`main-merge`, `alpha-ui`, `nice-morse-…`, a
+  `claude/biobuzz-3d-worktree-…` that is a main-merge branch unrelated to this work). Do not
+  `cd` into them; the stash stack is shared.
+- The spec compares against a comparable third-party 3D sim only generically; keep it that way.
+- The CAD-derived field files SHIP by owner decision (Q9); keep the constants fallback complete.
+
+---
+
+# HANDOFF — 2026-09-17, night (biobuzz-3d: draft 3 of the spec, ONE game with a 3D deterministic authority)
+
+**(Previously READ FIRST.)** Branch **`biobuzz-3d`**, a worktree at `.claude/worktrees/biobuzz-3d`, based on
+`alpha` **1ecc3f2** (`efficiency-audit` merged into alpha on 2026-09-17, the first Day 0 step). The branch carries only **`docs/biobuzz/plan-3d.md`** and this HANDOFF. No
+code has been written. Every gate is alpha's, unchanged.
+
+⚠️ **Drafts 1 and 2 were REJECTED by the owner.** Draft 1 kept the 2D sim authoritative under a
+3D view; draft 2 made 3D a separate `biobuzz3d` game. The owner's direction (2026-09-17, verbatim
+in spirit): BIOBUZZ stays ONE game; every ranked or record match runs on a 3D deterministic
+server; players render in 2D or 3D and the 2D path stays very fast; practice offers the old 2D
+physics, 3D physics with a 2D view, or 3D physics with 3D rendering, each with or without AI;
+prediction is a player option; graphics have presets and detailed settings; GPU acceleration is
+on automatically. Draft 3 is that. Read it, not the commit history.
+
+## What draft 3 decides
+
+- **One game id.** `World.biobuzz.physics: '2d' | '3d'` (absent `'2d'`); `biobuzzStep` dispatches.
+  The 2D pipeline is untouched and stays selectable for practice and casual rooms; deleting it
+  later is one branch of one function (owner Q11).
+- **Rapier 3D, deterministic build** (`@dimforge/rapier3d-deterministic-compat` 0.20) in
+  `src/games/biobuzz/sim3d/`, authoritative for ranked, record and matchmade rooms and their
+  replays. Persistent server world, JSON readback each tick, spill and flower stacking from
+  physics, the manual's tip table kept.
+- **Derived lists** (`sim3d/derive.ts`) fill `hives[a].contents` and `flowers[i].stack` from body
+  positions, so the shared `score.ts`, HUD, results and the 2D renderers work under both physics.
+- **Same wire for 2D and 3D clients** (robots gain `z/vz`; elements already carry them). Two
+  renderers over one world: the canvas (no WebGL, no wasm) and a lazy Three.js chunk.
+- **Prediction: Off / Light / Full** (Light = drive model + walls, no wasm, the 2D default).
+- **Graphics: Auto / Low / Medium / High / Ultra / Custom** over sixteen settings, per device;
+  Auto = GPU detection + a 2 s warm-up; software GL → 2D view; `high-performance` power
+  preference; hardware acceleration never disabled in the app.
+- **Practice**: physics 2D/3D, view 2D/3D, AI opponents off or a tier. Runs upload with
+  `physics` + `view` tags. One migration adds `physics` to records/matches/replays/practice_runs
+  (default `'2d'`), no season reset (owner rule).
+- **CAD import**: `scripts/field-cad.mjs` (STEP → CadQuery → glTF + collider meshes +
+  measurements); constants fallback; licence unresolved (ask FIRST, owner Q9).
+- **Build plan in days**: Day 0 spike gate (hash equal across runtimes, 2v2 step ≤ 1.5 ms);
+  Day 1 the whole game on 3D physics in the 2D view; Day 2 3D rooms online; Day 3 the 3D
+  renderer, graphics settings and the alpha ranked cutover. Three lanes.
+
+## Owner decisions (2026-09-17, recorded in §12)
+
+Lobbies/LAN default 3D with a host 2D option · deterministic build everywhere (Day 0 speed gate) ·
+robots yaw-only now, pitch/roll designed for later (3.3) · **dynamic see-saw calibrated to the
+field-guide rows** (3.6; kinematic fallback) · realism then rulebook for opponent shots · prediction
+Auto-calibrated (5) · ranked cutover on alpha Day 3, production when the owner says · Force-GPU
+toggle offered, off by default, auto-cleared after a GPU crash · **ship the CAD-derived field files**
+(owner accepts the licence risk; courtesy note to FIRST) · merge `efficiency-audit` first · **the 2D
+physics is a permanent light practice option, never deleted**.
+
+## Next steps
+
+1. Merge `efficiency-audit` into `alpha` (a real merge, +14/+6), rebase `biobuzz-3d`.
+2. Day 0 per §10: deterministic 3D package spike (hash across runtimes, 2v2 step ≤ 1.5 ms),
+   CAD pipeline run, courtesy note to FIRST.
+3. Weigh a real element set when possible; mass and the nectar ratio are APPROX until then.
+
+## Gotchas
+
+- The base now carries the CLAUDE.md split: `docs/area/` guides, `npm run docaudit`, the sharded
+  `npm test` and migration 0037. CLAUDE.md is at 26,670 of its 27,000-byte budget, so the spec's
+  two sentences must fit or move to a guide. Spec line refs are as of `efficiency-audit` e0ce598.
+- The spec compares against a comparable third-party 3D sim only generically; keep it that way.
+- The CAD-derived field files SHIP by owner decision (Q9); keep the constants fallback complete so they can be pulled in one commit.
+- `V` is Chain Reaction's `fling`; the view-cycle key is `t`.
+- Under 3D physics, `state.kind === 'element'` means "a body inside a structure", not "not
+  solved": the 2D readers only read the tag; do not port the 2D assumption into `sim3d/`.
+
+---
+
+# HANDOFF — 2026-09-17b (main: the record-restart regression, fixed and deployed)
+
+**READ FIRST.** The alpha merge (below) shipped a regression: **restarting a record run was
+refused** with "You already have a game in progress - rejoin or leave it first". Fixed,
+deployed, `/health` ok, one image across all 8 machines.
+
+**The cause is worth knowing, because it was latent for months.** `startLoop` used to open
+with `stop()`, which releases every single-game lock `startMatch` had just taken — so the
+one-game-per-user guard bound NOTHING. `0857745` split `stopLoop()` out and made the guard
+real, and the restart path had always quietly depended on it being inert: restarting is a
+full teardown (dispose the session, join a BRAND-NEW `rec-` room), so the new run arrives
+while the old room still holds the account's lock.
+
+**⚠️ IT ONLY APPEARS ON AN AUTHENTICATED JOIN** (`if (user && activeElsewhere(...))`), which
+is why nothing caught it. Every ad-hoc socket test run against it was anonymous — the join
+field is `authToken`, not `token`, and a wrong field name reads as a signed-out player and
+passes vacuously. If you are testing a lock, assert the lock was TAKEN first.
+
+**The fix**: a solo record run yields at the door and is the only room kind that does — no
+opponent, no alliance, no rating, so the only person it can be in the way of is its owner.
+Versus, duo and ranked still refuse. Only the LOCK is released (`releaseSeatLock`), never the
+room, because a run decided at the buzzer is kept alive by `finishing` until the field settles
+and its score is written. Client half: `restartRun` sends `abandon` on the live socket before
+disposing, and clears `activeGame` (which still named the abandoned run, so Home went on
+offering to rejoin a match that no longer existed). 8 checks in `npm test`.
+
+## Still open
+
+- **A REJOIN COMPLAINT I COULD NOT REPRODUCE** ("can't move, can't see anyone else move").
+  Driven end to end against the real server — 2-player versus, one player dropped with a 1006,
+  rejoined, both drove: the rejoined player moved exactly as far as the one who never dropped,
+  both saw the same positions, snapshots kept flowing. `reattach` is fine on this evidence.
+  Needs specifics before it can be chased: which mode (ranked / custom / record duo), and which
+  "rejoin" — the Home card, a page refresh, or a network drop that recovered by itself.
+- **A PRE-EXISTING GAP, found while testing and NOT fixed**: an account in a LIVE VERSUS match
+  is admitted into a new solo record room. It reproduces with the fix reverted, so it predates
+  all of this — the guard simply does not fire on that path. Worth a look; it is the same guard
+  the record restart was tripping over, pointed the other way.
+- The season-4 drift from the merge below is unchanged and still the owner's call.
+
+# HANDOFF — 2026-09-17 (main: alpha merged whole and deployed, season HELD at 4)
+
+**Superseded by the section above.** `alpha` is merged into `main` as a single merge commit and deployed to Fly.
+The branches are level: everything that was on alpha is on main, and main's two spectator
+fixes (`applyBallDelta` COPIES, a reconnecting spectator re-spectating) survived the merge —
+their four smoke checks are asserted present in the merged tree.
+
+**⚠️ NO VERSION BUMP WAS TAKEN.** `BALANCE_VERSION` stays **4** and `SIM_VERSION` stays **2**
+(both were already equal on the two branches, so the merge moved neither). The owner declined
+the owed bump to 5 on 2026-09-17: the batch does move scores — settle-based finalize, and the
+BIOBUZZ buzzer-TIP — but bumping archives the standings for everyone on the one Fly app, and
+holding the season was the call. The consequence is on the record in `src/config.ts`: records
+set before and after this deploy share a board although the scoring moved under them. That is
+accepted, not an oversight. Do not "fix" it by bumping later without asking.
+
+## The five conflicts and how they went
+
+| file | hunks | resolution |
 |---|---|---|
-| 0–30 s | 59.1 → 59.7 Hz | 58.5 Hz |
-| 30–45 s | **3.6 Hz** | 58.9 Hz |
-| 45 s – 5 min | **1.1–2.4 Hz** | 50.4–62.3 Hz |
-| 5–6 min | **0.017 Hz** (one wake per minute) | 60.9 Hz |
-| whole run | — | **60.08 Hz**, 25,236 ticks / 420.0 s |
+| `src/standing.ts` | 1 | **alpha's `card: 5`** — main's `20` contradicted the docstring directly above it, and the 2026-09-16 backport HANDOFF had already written down that alpha's side wins here next time |
+| `server/room.ts` | 2 | alpha's — `passCrown` on a host leaving a finished match, and `stopLoop()`, which alpha split out of `stop()` and main never had |
+| `scripts/smoke.ts` | 1 | alpha's — the HEAD side was empty; purely additive room-recycle tests |
+| `src/ui/Matchmaking.tsx` | 6 | alpha's — all six HEAD sides empty (`saveStagedMatch`/`clearStagedMatch` calls) |
+| `HANDOFF.md` | 1 | alpha's, then this section prepended |
 
-⚠️ **A SHORT SAMPLE INVERTS THE CONCLUSION.** The first attempt was a 5-second A/B and
-reported the page thread AHEAD (304 ticks vs 277) — that entire window sits inside the
-un-throttled grace period. Anything under about a minute hidden is measuring the wrong regime.
-**The loop cannot move back to the page thread**; that is not thread hygiene, it is the
-feature working or not.
+None of the five needed a judgement the repo had not already recorded.
 
-## Verified live, not only by source shape
+## Gates, all green on the merge commit
 
-Smoke here is mostly source-shape (`lan signal:` / `lan rtc:` / `lan host:` / `lan tab:` /
-`lan keep:` / `lan gate:`) because Node has no `Worker`, no `RTCPeerConnection` and no DOM. So
-these were run in a real browser instead:
+`npm test` **ALL PASS twice** (shared + BIOBUZZ 1321) · `npm run test:mm` 186 ·
+`npm run dbtest` ALL PASS · `build` · `server:check` · `uiaudit` at/under baseline ·
+`contrast` 223.
 
-- `Room` + Rapier WASM booting inside a Worker → `ready` at **230 ms**.
-- A full match stepping there: `matchStart`, then **29.4 Hz** snapshots over 5 s (design rate
-  30 Hz), **every one on the hot lane**, `welcome`/`roster` on control. Health `tickHz`
-  48.7 → 62.4, drift **11 ms → 2 ms**.
-- A real `RTCPeerConnection` handshake, both ends in one page through a faked rendezvous: both
-  lanes open in 2.5 s, and the succeeded candidate pair is a **`host` candidate over udp** —
-  direct, no relay, which is what `iceServers: []` is for. Lane routing correct (`join` →
-  control, `{reliable:false}` → hot), both delivered.
-
-## Smaller things in the same pass
-
-- `.ds-panelbox + .ds-panelbox` / `.ds-panel + .ds-panel` get a 16px gap. `--ds-block` is a 4px
-  offset shadow and the cards carry no margin of their own, so two stacked cards had the upper
-  one's shadow painting onto the lower's border — the same defect stacked LABELS had, and the
-  LAN page now stacks cards twice.
-- The terminal-host block no longer claims "a browser tab can't be a server": it said that
-  directly underneath a panel where a tab is hosting. It is re-framed as the **no-internet-at-
-  all** path, which is the true distinction — the tab path needs a rendezvous and about a
-  second of internet, and a gym with none is a real place. A smoke check pinned the old
-  sentence; it now pins the new distinction instead.
-- ⚠️ One smoke regex matched a literal `\n` between two source lines and so passed on the LF
-  worktree and failed on the CRLF one. Use `\s*` in source-shape checks — this repo has
-  worktrees checked out both ways.
-- ⚠️ **Strip comments before a grep-style source assertion.** Hit for the third time: the
-  `lan gate:` check for "does not key off the release channel" was `!/SERVER_CHANNEL/`, and it
-  matched the PROSE explaining why the channel is the wrong key.
-# HANDOFF — 2026-09-12, sponsor session (DSIM presented by Offset Robotics)
-
-Branch **biobuzz**, on top of `139f727`. Everything below is UNCOMMITTED work in this
-worktree at the time of writing, then committed on `biobuzz-sponsor`. `npm test` **ALL PASS**
-+ **447 CHECKS, ALL PASS**, `npm run build` green, `npm run server:check` green,
-`npm run uiaudit` AT OR UNDER BASELINE, `npm run contrast` ALL PASS (221).
-
-## READ FIRST — the app now carries a presenting sponsor
-
-Offset Robotics (<https://offsetrobotics.com>) sponsors the APP for the BIOBUZZ season.
-`docs/sponsor.md` is the operational half of the deal and CLAUDE.md has the rules section;
-this entry is only what a next session needs to know that those two do not say.
-
-**The archetype preset the sponsor asked for was deliberately NOT built** — the owner's call,
-because the BIOBUZZ manual does not exist yet and a box-tube preset would be invented
-geometry. Everything else they asked for is in.
-
-### What was built
-
-- `src/sponsor.ts` (term, link, footprint) + `src/ui/Sponsor.tsx` (every placement) +
-  `src/ui/sponsorAssets.ts` (the artwork imports, split so the headless suite can import
-  `sponsor.ts`).
-- Placements: home menu, shell footer, download page, the in-game top-right chip, the
-  Electron splash (`electron/splash.html`, new, plus the `showSplash`/`closeSplash` handover
-  in `main.cjs`), the loading screen line in `index.html`, and the mark BURNED INTO exported
-  replay video (`replayOverlay.ts` + the `loadSponsorMark()` await in `ReplayView`).
-- Analytics: `sponsor_shown`, `sponsor_click`, `player_joined`.
-- `scripts/smoke-biobuzz/sponsor.ts`, wired as the `SPONSOR` lane.
-
-### Gotchas a next session will hit
-
-- **The in-game chip must never be routed through `src/ads/`** — that is contract text, not
-  taste, and the smoke lane greps for it. See CLAUDE.md.
-- **`--ds-hud` INVERTS.** The first cut of the chip forced the dark artwork on the theory
-  that "the field is hardcoded dark"; in light theme a HUD card is WHITE, so that would have
-  been light ink on white. The chip takes the ordinary swap; only the replay burn-in (whose
-  plate is painted dark at every theme) always takes the dark cut.
-- **`replayOverlay.ts` imports the artwork DYNAMICALLY**, inside `loadSponsorMark()`. It is
-  imported by `scripts/smoke.ts` for `hudLabels`, under `tsx` with no bundler, and a
-  top-level image import crashes the whole suite with `ERR_UNKNOWN_FILE_EXTENSION`.
-- **Artwork naming collides with itself.** Offset ships `OffsetLogoLight.png` (a BLACK
-  wordmark — named by surface) and calls that same file "the dark logo" (named by ink). The
-  repo spells them `on-light` / `on-dark` and a replacement is placed BY LOOKING AT THE
-  PIXELS.
-- **Four artwork files, not two** — the Electron pair is duplicated because a `file://` page
-  cannot resolve a Vite hash.
-
-### Not verified, and not verifiable from here
-
-- **The replay burn-in has not been seen in an actual exported file.** The wiring, the
-  pre-decode ordering and the text fallback are smoke-checked, and the overlay was not
-  exercised through a real capture. Record one match export and look at the top-right corner.
-- **The Electron splash has not been run** (`npm run electron`). Same class: the file, the
-  window and the handover are checked statically.
-- **The Discord logo is not a repo change.** Somebody has to put it on the server.
-
-### Left for the owner
-
-- Vercel Analytics has to be ON in the deploy (`VITE_ANALYTICS=1`) or the monthly report
-  has no numbers to read.
-- The term in `src/sponsor.ts` is `2026-09-12` → `2027-09-12`. Change it if the signed dates
-  differ.
-
----
-
-# HANDOFF — 2026-09-11, sixth session (the intake grabs at the roller, and reaches only what has landed on it)
-
-Branch **alpha**, rebased onto `71e4316`. `npm test` **ALL PASS — 1451 checks (16 new)**. `npm run build` green,
-`npm run server:check` green. `SIM_VERSION` stays **2**, recorded in that version's batch
-list per the block's own alpha rule. **NOT YET DEPLOYED** — see Deploy.
-
-## The request, and the trap in the middle of it
-
-> "Make the intaking speed extremely fast, but decrease the effective intaking area. Like I
-> said before, the intake is a circular compliant wheel spinning. This means that the ball
-> that I am intaking should be directly below or very slightly in front of the center of the
-> wheel for it to be properly intook. Right now, the range is way too big."
-
-⚠️ **THE GRAB IS NOT THE RANGE, AND DOING ONLY THE GRAB LOOKS LIKE A FIX AND ISN'T.** The
-obvious change — shrink the three capture windows to a band about the roller axle — was made
-first, and measured afterwards it moved NOTHING the player can see: on a stationary robot
-every preset still captured out to `tip + BALL_RADIUS`, because `intakeSuction` reaches that
-far and walks anything touching the intake into the band in 1-4 ticks, and with `drawIn`
-raised it walked it there FASTER than before. Both halves were needed. If this is revisited,
-measure the effective envelope (a sweep of parked artifacts, stationary robot, intake held),
-not the predicate.
-
-## 1. The grab: one band, derived from the roller
-
-`intakeNip(spec)` about `intakeAxleX(spec)` (config.ts) is now the whole fore-aft test, shared
-by all three branches (`atThroat` · `cornered` · `onRollerRow`); they differ only in their
-LATERAL bounds and their gates, which is where their identity actually lives.
-
-The derivation was already in the file and the capture code had never read it. `intakeLidZ`
-puts the roller's underside at exactly `2·BALL_RADIUS` — the APEX of an artifact on the floor
-— so the axle is at `z = 2R + Rr`, the vertical separation from a floored artifact's centre is
-exactly `S = R + Rr`, and **a rigid roller grazes it at ONE point, directly under the axle.**
-Every inch of grab is tread flex: `|dx| <= sqrt(c·(2S + c))` with `c = INTAKE_TREAD_FRAC·Rr`,
-and `front = back + c` because ahead of the nip the loaded lobe flexes into the approaching
-artifact. That is the owner's sentence as arithmetic, and it is why the 72mm funnel roller
-grabs over a longer band than the vector's 48mm one without anyone asserting that it should.
-
-| roller | back | front | forward limit |
-|---|---|---|---|
-| 72mm (sloped, triangle) | 1.517 | 1.800 | `tip + 0.383` |
-| 48mm (vector) | 1.157 | 1.346 | `tip + 0.401` |
-
-Every branch used to end at `tip + BALL_RADIUS` — an artifact's SKIN merely touching the
-roller's FRONT FACE, centre a full radius out in front of the wheel — and start at `hl − 1`,
-which on a triangle is 3.5in INSIDE the chassis. Triangle's `atThroat` ended 0.58in BEHIND its
-own axle, so that preset never grabbed at its roller at all.
-
-⚠️ **`INTAKE_TREAD_FRAC` HAS A FLOOR AT ~0.135 AND BELOW IT TRIANGLE STOPS INTAKING.** A free
-ground artifact's centre can never get behind `hl + BALL_RADIUS` — the chassis is a LIVE
-collider against a CLAIMED artifact (physicsEngine.ts; the claim's only surviving effect is
-`skipChassis` in `pinnedArtifacts`) and `intakeSuction` pulls toward `(hl, 0)` — so everything
-the intake has hold of rests with its skin flush on the front face. That seat is
-`BALL_RADIUS − reach + intakeRollerDia/2` from the axle, CHASSIS-INDEPENDENT: **+0.917 sloped ·
-−0.055 vector · −1.083 triangle**, and the band must CONTAIN it. Measured settle 9.759 / 9.757
-/ 9.016 against an `hl + R` of 9.750 / 9.750 / 9.000, to five decimals over 40 ticks at both
-throttles. Smoke names those numbers.
-
-**The suction target stays `(hl, 0)` and must not move to the axle** — inert on sloped (axle
-1.58in behind the face) and vector (0.055in ahead, inside the 0.3in dead zone), and on TRIANGLE
-the axle is 1.08in in FRONT of the seat, so it would push a seated artifact out of the throat.
-
-## 2. The range: the reach is the LANDING rule's own bound
-
-`intakeSuction`'s `ahead` went from `tip + BALL_RADIUS` (+ `INTAKE_LIP + INTAKE_CAPTURE_BAND`
-on a wedge, which put it PAST `overIntakeRoof`) to **`tip + BALL_RADIUS − INTAKE_CATCH_LENIENCE`**
-— the furthest out an artifact can legally BE on the intake, since that constant is how much
-of itself one may overlap the roller face and still count as having landed. Measured
-effective centreline capture, stationary robot:
-
-| preset | before | after the nip alone | after the reach trim |
-|---|---|---|---|
-| sloped | `tip + 3.60` | `tip + 2.50` | **`tip + 1.25`** |
-| vector | `tip + 2.50` | `tip + 2.50` | **`tip + 1.25`** |
-| triangle | `tip + 3.60` | `tip + 2.50` | **`tip + 1.25`** |
-
-At `tip + 1.25` the artifact's skin is 1.2in BEHIND the roller's front face — overlapping the
-wheel. Capture is 1-2 ticks across the whole range. The drop rule and the suction had to agree
-for gate-drain intaking to work at all and previously agreed only by accident, with 1.2in of
-unexplained slack; they are one expression now.
-
-## 3. The speed
-
-Intervals are on the half-tick grid `(n − 0.5)/60`, never an exact multiple of `SIM_DT` — the
-gate compares against an ACCUMULATED `world.time`, so a tick-boundary interval is a float coin
-toss. sloped 1t centre / 4t edge / 1t clump · triangle 1t / 3t / 1t + `dual` · vector 2t / 8t
-and no clump bonus. Ticks to fill a 3-hopper off the seat: triangle 4 · sloped 7 · vector 16.
-
-⚠️ **`drawIn` had to rise with them (26→40, 21→32, 46→70)**: the wedge presets are
-TRAVEL-limited, not interval-limited. The measured back-to-back gap on sloped was 0.133s
-against a `clumpInterval` of 0.04, which is exactly why the 2026-09-10 bisection found
-`clumpInterval` 0.04→0.02 with `capMax` 0.09→0.05 BYTE-IDENTICAL.
-
-## 4. THE THIRD BALL — found, and it was the ball you had already intaken
-
-The intake work above does NOT fix it, and correctly so: `49d0926` bisected the symptom to a
-restitution violation and `4c4ab27` to `BALL_ROLL_FRICTION`, and `4c4ab27` recorded that this
-exact experiment was already inert — *"moving the capture window out to the rollers, and then
-widening it across the whole mouth, changed the numbers by nothing at all."* All true. The
-cause was somewhere none of those passes looked.
-
-Owner: *"the first and second balls get intaked so quickly that they don't transfer any
-momentum to the next ball in a vertical straight line intaking test"* — which is what real,
-well-designed fast robots do.
-
-Measured, sloped, touching file (5.02in pitch), full throttle:
-
-```
-t38  ball1 x11.73 v0        ball2 x16.75 v0     ball3 x21.77 v0
-t39  ball1 CAPTURED         ball2 x15.56 v0     ball3 x20.58 v0   held#1 @x9.23  d(b2)=6.33
-t40                         ball2 x14.36 v0     ball3 x19.38 v0   held#1 @x8.48  d(b2)=5.88
-t41                         ball2 ---- v73      ball3 ---- v73    held#1 @x7.73  d(b2)=5.71
-```
-
-Ball 1 goes in without ever moving — exactly as the owner says it should. Then two ticks later
-balls 2 and 3 leave TOGETHER at 73 in/s, with ball 2 sitting 3.9in clear of the roller tip and
-`robotPenetration` reporting no contact with the chassis at all.
-
-**The striker is ball 1.** A held artifact is SOLID to ground artifacts (`robotSolids.held`) and
-is still in FRONT of the chassis face while it slides to its slot. `HELD_SLIDE_SPEED` was 45
-against a robot driving 85, so in the WORLD frame the swallowed artifact was still advancing at
-40 in/s. It closed on ball 2 (through the artifact world's look-ahead, at 0.71in of clearance —
-which is why `robotPenetration` saw nothing) and ball 2, still touching ball 3, chained it on.
-
-**Fix: `HELD_SLIDE_SPEED` 45 → 150**, above the fastest legal chassis (`driveParams().maxSpeed`
-peaks at ~121-130 in/s depending on the coerced envelope), so a held artifact can never advance
-through the world on any build. After:
-
-| preset | captured @ | worst shove | peak artifact speed |
-|---|---|---|---|
-| sloped | 39 / 43 / 47 | **0.0in** | **0 in/s** |
-| vector | 39 / 43 / 47 | **0.0in** | **0 in/s** |
-| triangle | 39 / 43 / 49 | 1.1in | 74 in/s, re-caught in 2 ticks — see 4b |
-
-## 4b. …and then TRIANGLE's storage slots, which were the last thing still clipping
-
-Triangle was the one preset still knocking the third artifact away (74 in/s, 1.1in of shove)
-after the slide fix, because it parks its front row 2in PROUD of the chassis face — riding out
-near the mouth at chassis speed, where it meets the next artifact before the intake can. Owner:
-*"For triangle intake, let's hold the balls like 2 inches further into the chassis."*
-
-`heldSlotPos` (physics.ts): front row `hl + 2` → **`hl`**, deep `hl − 4` → **`hl − 6`**. Its
-front skin now sits at `hl + BALL_RADIUS`, 2.5in inside the roller line.
-
-⚠️ **BOTH slots move, not just the front row.** The front row alone closes the deep-to-front
-spacing to `hypot(4, 2.7) = 4.83in`, under the 5in sum of radii, and draws the stored artifacts
-overlapping each other. The deep one still clears the chassis rear by 3.0in at the 11in length
-floor.
-
-**Triangle was simply never moved off `hl + 2`** — the other two presets were corrected long
-ago, for a related reason recorded right below it in `heldSlotPos`: a held artifact parked proud
-of the chassis face sits inside the wall plane when the robot is tip-on to a wall, and holds a
-shoved pile 4in off its own footprint, out of reach of the G408 contact test. Triangle carried
-that defect too.
-
-After: **every preset takes a touching file of three 3/3 at ticks 39 / 43 / 47 with peak
-artifact speed 0 in/s and 0.0in of shove**, at both 5.02in and 8in pitch. The file-of-three
-check's triangle exemption is gone and its bounds are now `shove < 1in` and `peak < 5 in/s` for
-all three.
-
-Smoke asserts the RELATION rather than the number — `HELD_SLIDE_SPEED > max
-driveParams().maxSpeed` swept over every drivetrain × rpm × mass × intake — so raising the rpm
-ceiling later fires the check instead of resurrecting the bug. The file-of-three check now
-asserts peak speed and shove, not just the 3/3 count; the old 45in bound would have passed the
-broken behaviour.
-
-⚠️ **The capture instant is NOT observable from outside a tick**, and two checks were written
-wrong before this was understood: within one `step` the order is suction (a velocity) → the
-solve (which moves the artifact) → `updateIntake` (which tests the nip), so a PRE-step reading
-is up to `drawIn * SIM_DT` too far out and a POST-step reading is `HELD_SLIDE_SPEED * SIM_DT`
-too far in. The check allows exactly that slack and says so.
-
-## 5. Four checks moved, and one of them is a GAMEPLAY change, not a test detail
-
-- **`pushing a clump across open floor fouls even with the intake held` re-baselined (5,6) →
-  (6,8).** G408's carry test is net distance ALONG the push direction, and with a shorter reach
-  the artifacts the robot has not swallowed are no longer held on the bumper — they squirt
-  sideways, covering no ground where the robot is driving them. Swept at 0.2 throttle:
-  `3:0 4:0 5:0 6:1 7:0 8:2 9:6`. **A 5-clump herd used to bill a MINOR and now costs nothing.**
-  That is the rule working as it was rewritten to ("running into things is free and taking them
-  somewhere is not"), but it does mean ploughing a small pile with the intake held is free now.
-  Flagged to the owner. ⚠️ Do NOT rescue it by slowing the intake or widening the reach.
-- **`a vector intake does not strand artifacts…`** — its probe DEFINED stranded as the old
-  capture window written out by hand, so it measured the diff rather than the defect. Rewritten
-  as the behaviour: still inside the SUCTION region at scene end with hopper room. 8 before the
-  roller row, 3 after, **0 now**.
-- **`vector intake swallows a CENTER ball faster than an EDGE ball`** parked its ball at
-  `tip + 2`, now outside the reach — both ends read the 120-tick cap and the check was
-  comparing two misses. Scene moved inside the reach; the ratio assertion is unchanged.
-- **`an artifact at the edge of the mouth is swallowed promptly`** 0.33s → 0.53s (budget 0.5 →
-  0.65). A shorter reach means the funnel engages later on a full-throttle approach. Its
-  companion `pushedOut < 7.5` — the one that actually detects the chassis/funnel oscillation —
-  is unmoved, so the thing it guards is intact.
-
-## 6. Also done in passing
-
-- **`INTAKE_WHEEL_STICKOUT` DELETED.** Grep-verified dead (zero readers), and its doc comment
-  stated a competing and wrong model of this exact geometry ("the ball hitbox is
-  `reach − INTAKE_WHEEL_STICKOUT` deep", matching none of the three presets' real `wedgeFront`).
-  It had to go WITH this change, not later.
-- **ONE AXLE AUTHORITY.** `drawRobot`'s `wedgeTip`/`axis` and `artifactSolids`' `wedgeFront`
-  both call `intakeAxleX` now instead of recomputing it. No visual change (identical value on
-  every legal chassis); smoke asserts the agreement at both chassis extremes.
-- **`intakeClaims`' lateral widened** to `mouthHalf + BALL_RADIUS*0.25`, matching the suction's
-  own outer band — it was a bare `mouthHalf`, so an artifact at exactly 7.0in off a mouthHalf-7
-  sloped was being sucked while the chassis was still allowed to fight it.
-- **`overIntakeRoof`'s comment corrected.** It claimed to cover "exactly what the intake can
-  CAPTURE from", which was already loose and is now false — it is the HARDWARE footprint, and
-  is deliberately wider than the grab. `goal.ts`'s outflow test reads it for that reason.
-- ⚠️ `capture ⊆ suction` is NOT an invariant and asserting it was wrong: `onRollerRow` grabs a
-  flat preset's artifact WHERE IT LIES, wider than the suction pulls. Both sit inside the CLAIM,
-  and that is what smoke asserts.
-
-## Deploy — NOT DONE
-
-`updateIntake` / `intakeSuction` / `intakeClaims` are in `src/sim/`, which the Fly app runs
-authoritatively for lobby, matchmaking, ranked AND record runs; only Free Drive runs the client
-bundle's sim. **An un-deployed change here looks like it did nothing in every mode the owner is
-likely to test in** — HANDOFF records that confusion costing half a session. Run
-`./scripts/fly-deploy.sh` (NEVER a bare `flyctl deploy` — fly.toml carries one `[[vm]]` size
-and a bare deploy silently upsizes every satellite), then verify `/health` and
-`fly machine list -a dohun-sim-decode`.
-
----
-
-# HANDOFF — 2026-09-11, fifth session (the zone fouls test the zone the manual defines)
-
-Branch **alpha**, rebased onto `6d4dd25` (this session pulled `06dd5bd`; PRs #38 and #39
-merged upstream while it ran). `npm test` **ALL PASS** (1336 checks, 8 new), `npm run build`
-green, `npm run server:check` green. `SIM_VERSION` stays **2** — recorded in that version's
-batch list, per the block's own rule that alpha holds at 2 while its divergence from main is
-one unreleased batch. **Alpha server DEPLOYED** (see Deploy).
-
-## What moved, and the one judgement call inside it (2026-09-11)
-
-The owner's hypothesis was that the gate / secret-tunnel / loading-zone fouls were measuring
-the WHEELBASE rather than the robot's top-down outline. Checked against the real manual —
-the archived DECODE book at `ftc-resources.firstinspires.org/ftc/archive/2026/game/manual`
-(note: the live `/ftc/game/manual` URL now serves the **2026-27 BIOBUZZ V0 pre-season**
-manual, which has no game section — do not grab that one by reflex again).
-
-**The premise was right and the code was already doing it.** Every DECODE zone is defined in
-Section 9 and the glossary as an *"infinitely tall volume"* (GATE 2.75x10, SECRET TUNNEL
-46.5x6.125, LOADING 23x23, BASE 18x18) and each rule asks whether a ROBOT "is in" one, so
-occupancy is the top-down silhouette. `penalties.ts` already tested `robotCorners` →
-`footprintExtents`, i.e. chassis + intake. No penalty has ever read `wheelContacts`. The
-misleading part was the helper's own doc comment, which claimed "any wheel-corner or its
-center" — it never was the wheelbase.
-
-**But the audit that question forced turned up two real defects**, and those are what landed:
-
-1. **G424 was not testing the GATE ZONE.** It used `gateZone()`, the deliberately generous
-   rect that decides whether a robot can WORK the gate — 10x5 measured from the WALL
-   (x 62..72, y -2..3). The rulebook zone is 2.75 wide and starts at the CLASSIFIER EDGE
-   (x 56..66), the same anchor `gateTapeSegments` draws from. They share about 4in of the
-   zone's 10in length: the foul ran 6in into the classifier CHANNEL (structure, not floor)
-   and did not cover the outer 6in of the real zone at all. New `gateZoneTape()` in field.ts
-   is the rule's rect; `gateZone()` keeps its job unchanged.
-2. **Three of the four rules asked a weaker question than "is in".** `robotInRect` was
-   "center inside OR one of four corners inside", which is not overlap: a robot whose BODY
-   lies across a zone with its corners straddling it reads as outside. G424 alone already
-   used the SAT test, for exactly the reason CLAUDE.md records. Now all of them do, through
-   one predicate, `robotInZone`.
-
-**The judgement call**: the rename also moved G408's LOADING-ZONE carve-out onto the same
-predicate. That is the same "in the LOADING ZONE" wording so one predicate is right, but note
-the direction — it makes that carve-out slightly MORE generous (more robots count as in there
-collecting a restock, so more artifacts are excused). Smoke is green on it. If it should keep
-the stricter containment test, that is a deliberate revert of one call site, not of the rule.
-
-**Explicitly NOT changed: BASE PARKING still counts `wheelContacts`**, and must. The manual
-defines that award by SUPPORT — "A ROBOT fully returned to BASE must only be supported ... by
-the TILE in the BASE ZONE" — not by occupancy. G427 protects the ZONE (footprint), the BASE
-award measures what the TILE holds up (wheels). The manual draws that line itself; the
-asymmetry is correct and there are already checks on it around smoke.ts:5324.
-
-### Tests
-
-8 new checks: the zone's 2.75x10 dimensions, its classifier-edge anchor, that the two gate
-rects are distinct, that contact at the field-side end of the real zone NOW fouls (the
-interaction rect never reached it), that contact beside the gate outside the 2.75in band does
-NOT, and the overlap case asserted explicitly — `noCornerIn=true centerOut=true` with the
-G427 firing, which is precisely the configuration the old predicate returned false for.
-
-Two EXISTING fixtures were corrected rather than the code, and the reason matters: the
-G424xG425 scenario-2 pose described as "clear of the tunnel" had a chassis reaching past the
-wall and genuinely overlapping the strip — the corner test simply could not see it. It moved
-to the inner end of the gate zone, and both scenarios now PIN the headings, because those
-poses are only meaningful with a fixed footprint orientation.
-
-Gotcha for the next person writing one of these: `sideRect` normalizes x0<x1, so for BLUE
-(goalSide -1) the WALL-ward end of a zone rect is `x0`, not `x1`. One new assertion was
-written the other way round and failed on the first run. And a pose "beside the gate" has to
-be on the GOAL side of the tape band — the other side is the SECRET TUNNEL, where the robot
-correctly draws a G425 and would pass a G424-absence check for the wrong reason.
-
-### One environment note, not a code problem
-
-A confirmation `npm test` hung at 96% CPU for 12+ minutes on a tree whose only uncommitted
-delta was block comments. Killed it; a clean re-run on the identical tree was ALL PASS. Put
-it down to contention from several concurrent `npm test` invocations. If it recurs on a
-single run, it is real and worth chasing — it was not reproducible here.
-
-## Deploy
-
-Alpha server DEPLOYED with the wrapper (`./scripts/fly-deploy.sh --alpha`) at the start of
-this session, after pulling `06dd5bd` — `dsim-alpha`, image
-`deployment-01M28HWY6Y0PYAJHMRQA5NQ5HZ`, one `shared-cpu-2x` machine in iad, checks 1/1;
-`/health` answered `ok`. **That deploy PREDATES the penalty fix in this section**, so the
-alpha server is running the old zone hitboxes — redeploy with the same wrapper to pick these
-up, since fouls are computed server-side. Production (`dohun-sim-decode`) NOT touched.
-
-**`flyctl` cannot read its own stored credentials on this box.** `flyctl auth whoami` says
-"no access token available" although `~/.fly/config.yml` holds a valid token; passing that
-same value through `FLY_API_TOKEN` authenticates fine, which is how the deploy ran. Either
-re-run `flyctl auth login` or export the token before the wrapper.
-
----
-
-# HANDOFF — 2026-09-11, fourth session (the external review, answered end to end and merged)
-
-Branch **`alpha`**, pushed. Both open feature PRs are **merged into it**: #39 `perf-load-v2`
-and #38 `lan-selfhost`. `npm test` **ALL PASS**, `npm run dbtest` **ALL PASS**,
-`npm run server:check` exit 0, `npm run build` `✓ built in 3.06s` — all four re-run on the
-merged trunk, not inherited from the branches. `SIM_VERSION` stays **2**; `BALANCE_VERSION`
-stays 4. **Nothing deployed.**
-
-## What this session was
-
-An external code review returned ~40 findings across five scopes with the verdict *request
-changes*. Every one was triaged, and the ones that were real were fixed on the branch that owns
-them: perf/server on `perf-load-v2`, LAN/security on `lan-selfhost`, game geometry on `biobuzz`,
-and two on `alpha` directly. Then both server branches were merged here.
-
-**Four findings did not survive contact with the code, and saying so is part of the work.** Each
-was checked against the source before being set aside, and the check is recorded where the code
-is, not only here.
-
-1. *"BIOBUZZ pollen still uses DECODE's 2.5in radius while the renderer draws 1.5in"* — the call
-   already passed `BB_POLLEN_R` to both `robotSolids` and `solveArtifacts`. The review read the
-   defaults in the signatures rather than the call site. A regression test now pins it, because
-   nothing did.
-2. *"Physics changed but `SIM_VERSION` remains 2"* — see below; this is branch policy, written
-   into the constant.
-3. *"Pin/support search can reach O(B³) with 60 pollen"* — `pinnedArtifacts` is imported by
-   `src/sim/world.ts` and by nothing else, so BIOBUZZ never reaches it. Recorded for the owner
-   rather than "fixed".
-4. *"Idle room resumes when one driver reconnects"* — the match clock PAUSES, it does not jump:
-   `phaseTimeLeft` counts down per tick and no tick runs while the room is frozen. The policy is
-   now written down in `startLoop`.
-
-## `SIM_VERSION` is NOT bumped, and that is the documented answer
-
-The review called this blocking. `src/config.ts` answers it at the constant: *"ALPHA HOLDS AT 2
-AND STAYS THERE. Alpha's whole divergence from main is ONE unreleased batch … Bump this again
-only when MAIN moves, or when alpha ships."* Bumping per-change inside one unreleased batch
-churns a number nobody can act on and invalidates alpha replays for nothing.
-
-What WAS missing is the batch's own contents list, which exists so the batch can be read without
-a git log: the owner's two friction commits (`a97f03c` 0.45 → 0.2, then `914bc1b` robot-on-robot
-0.15 with `PHYS_WALL_FRICTION` 0.35 → 0.65 compensating, holding robot↔wall at 0.40) had landed
-without an entry. Added. No constant touched.
-
-## The practice save policy had the bug the review said it had
-
-`practiceSaveDecision` tested the nothing-driven guard BEFORE `completed`, so a run that reached
-`post` with zero driven ticks came back `{keep: false, reason: 'nothing-driven'}` — the exact
-opposite of the module's own docstring. The old order justified itself with "a completed match
-cannot land here", which is an assumption about phase layout, not a guarantee.
-
-The smoke check covering it asserted the BUG (*'nothing driven is dropped even if the caller says
-completed'*), which is how it shipped. It now asserts the contract, and a second check pins the
-branch ORDER directly, so the two cannot be transposed again silently.
-
-## PR #39 — perf/server
-
-Room-leak guard on the async join path (a socket that opened, sent `join` and closed could burn a
-`MAX_ROOMS` slot per second, permanently); spectator caps and a 256 KB snapshot-backlog coalesce
-that also clears `snapPrimed` so the next frame is a keyframe; `WS_COMPRESS` parsed properly;
-inbound `maxPayload` and per-socket rate limits; `Number.isSafeInteger(tick) && tick >= 0`; the
-60 Hz deflate probe actually running at 60 Hz on Windows.
-
-**`threshold: 1024` was doing nothing, and the reason is in `ws`, not in us.** `ws` consults
-`_threshold` only inside a branch gated on the peer's no-context-takeover parameter
-(`node_modules/ws/lib/sender.js:371-383`), and this server runs `serverNoContextTakeover: false`
-deliberately — that line is the whole point of the extension here. The option stays (it is live
-if a peer asks for no-context-takeover) and the real decision moved to `write()`, the one place a
-frame reaches the socket, as `{ compress: s.length >= COMPRESS_THRESHOLD }`. Per-message RSV1 is
-what RFC 7692 allows.
-
-**A regression this PR itself introduced was found while testing it, and is the most user-visible
-thing in the whole session.** `Room.reattach` swapped only `c.send`, not `c.sendRaw`. Since
-`d32a2d7` — the encode-once commit — broadcasts and snapshots go through `sendRaw`, so a
-reconnecting player kept a closure over the socket they had just lost. That closure checks
-`readyState === OPEN`, so it fails SILENTLY: you get `welcome`, `rejoined` and one keyframe, then
-nothing forever, on a socket that looks healthy.
-
-## PR #38 — LAN self-hosting, undrafted and merged
-
-All four High findings fixed, and in three of them the obvious fix was the wrong one:
-
-- **The cloud JWT is stripped at the transport SEND boundary**, not at the two call sites that
-  attach one. Per-call-site is correct until somebody writes a third lobby message using `join`
-  as their example — and nothing would fail. `trustedFor` also asks "is this one of the CLOUD
-  servers this build was configured with", not "is this a LAN address", so an unclassified
-  destination gets the safe answer rather than the convenient one.
-- **`servableFile` canonicalises BOTH sides with `realpath`.** The lexical check proves what a
-  path spells, not where it leads, and `dist/` is built on the host's own laptop. Missing,
-  unreadable, broken-link and escaped all return the same `null`, so a 404 leaks nothing.
-- **`SERVE_CLIENT` without `LAN_MODE` now fails closed** — exit 1, naming the variable. Inferring
-  `LAN_MODE` from `SERVE_CLIENT` was rejected: the dangerous case is exactly the one where
-  somebody thought they were starting an ordinary server, and silently dropping the database out
-  from under a real deployment is a worse surprise than refusing to boot. `pool.ts` reads
-  `LAN_MODE` in its own module body, because ESM evaluates module bodies before any boot sequence
-  could scrub the environment.
-- **`matchId` is a capability, not a result field** — sent to the host socket alone as
-  `matchArchive`; `saveLanRun` scopes idempotency by host and `/api/lan` answers **409** to
-  anyone else, on both the existing-row path and the unique-violation race.
-
-Migration `0033` was amended in place rather than superseded, after confirming it is unreleased:
-`git ls-tree` finds it on `lan-selfhost` only, and on none of `main`, `alpha`, `perf-load-v2` or
-`biobuzz`. The file records that `migrate.ts` tracks by filename with **no checksum**, and says to
-add `0034` instead if it has shipped by the time anyone reads it.
-
-## Merge conflicts, and the one that would have passed silently
-
-Three merges, four conflicts, all of them additive. The one worth knowing about: merging `alpha`
-into `perf-load-v2`, both sides had appended a bare `{ … }` block to the end of `scripts/smoke.ts`.
-Keeping both is right — but the conflict region ended BEFORE this branch's closing brace, so that
-brace sat in shared trailing context and, with both blocks kept, closed the wrong one. The file
-ran off the end of itself (`esbuild`: `Unexpected end of file` at 17245).
-
-That one announced itself. **The one that would not have** is a resolution that silently dropped a
-block — the suite would still print `ALL PASS`. So each merge was verified by counting checks per
-area in the actual run, not by reading the diff. On the final LAN merge: deflate 5, save policy 21,
-archive 3, LAN_MODE 2, credentials 13, static 13, spectator 8, total **1425 PASS / 0 FAIL**.
-
-## State of every branch
-
-| branch | where it is |
-|---|---|
-| `main` | untouched, as always |
-| `alpha` | everything above, pushed. Not deployed. |
-| `perf-load-v2` | merged (#39). Safe to delete. |
-| `lan-selfhost` | merged (#38). Safe to delete. |
-| `biobuzz` | its own review pass, plus `alpha` merged in. Pushed. |
-| `biobuzz-field`, `biobuzz-robot` | fast-forwarded to `biobuzz`; both were pure ancestors. Ready for kickoff. |
-
-## Open — read before deploying or before kickoff
-
-1. **Nothing is deployed.** The server changes need `./scripts/fly-deploy.sh`, never a bare
-   `flyctl deploy` — `fly.toml` carries one `[[vm]]` size and a bare deploy would upsize every
-   satellite.
-2. **The LAN upload half has never run against a live cloud.** `/api/lan` is covered by `dbtest`
-   against PGlite; the 409 ownership path is proven at the repo layer, not end to end with two
-   real accounts. This is the feature's payload, so it is the gap that matters.
-3. **Nothing has been packaged** — `npm run dist` has not run since `server:bundle` was added.
-4. **The launcher's stop/start ordering has unit coverage for `childEnv` only.** Press Stop then
-   Host quickly on a real build before this reaches anyone.
-5. **Spectator caps and `SNAP_BACKLOG_BYTES` are plausible-crowd numbers, not measured ones.** No
-   Linux measurement of spectator cost exists; `docs/capacity.md` says so too.
-6. **Latency and resident memory under compression are still unmeasured on Linux.**
-7. **Six shared-physics observations are waiting for the owner** in
-   `docs/biobuzz/feedback/000-solver-observations.md` (items 10–15), including two found while
-   verifying the review rather than from it: pollen bounce is degraded to an effective `e` of
-   0.015–0.211 against a configured 0.68 because `bounceFirstContacts` is DECODE-only, and pollen
-   share `C.BALL_MASS` with 5" artifacts. **None of them was touched** — the owner owns physics,
-   and the day before kickoff is not when a shared solver changes.
-
-
-# HANDOFF — 2026-09-11 (external review of the Phase 0.5 merge: findings fixed)
-
-> ⚠️ SUPERSEDED ON THE PUSH LINE ONLY by the section above: `biobuzz` IS pushed (`54263eb`),
-> and `biobuzz-field` / `biobuzz-robot` are fast-forwarded to it. Everything else here stands.
-
-Branch **`biobuzz`** (worktree `dsim-biobuzz`), 5 commits on top of `6c31142`. **NOT pushed,
-not deployed, no PR.** `SIM_VERSION` and `BALANCE_VERSION` untouched. No physics constant was
-added, moved or changed, shared or BIOBUZZ.
-
-## READ FIRST — state
-
-| gate | result |
-|---|---|
-| `npm test` | exit 0 · **1733 `PASS` lines, 0 `FAIL`** — suite 1 `ALL PASS` (**1328 checks, the same list as before**), suite 2 `405 CHECKS, ALL PASS` (was 366) |
-| `npm run build` | `✓ built in 4.12s` (chunk-size warning only) |
-| `npm run server:check` | green, exit 0 |
-| `npx tsc --noEmit` | clean |
-
-**DECODE is byte-identical, and the argument is mechanical.** The only SHARED files this pass
-touched are `src/games/types.ts` — two `import type` lines and one OPTIONAL interface member,
-all three erased at runtime — and `src/sim/spawn.ts`, which is a comment-only change.
-`src/sim/artifactSolids.ts`, `src/sim/world.ts`, `src/sim/physicsEngine.ts` and `src/config.ts`
-are not touched at all. Suite 1's check count is unchanged at 1328 and the whole 405 of suite 2
-is BIOBUZZ's own file set.
-
-## The eight review findings, and what each one actually was
-
-1. **Pollen solved at DECODE's radius — NOT A BUG.** `play.ts` already passed `BB_POLLEN_R` to
-   both `robotSolids` and `solveArtifacts`; the reviewer read the DEFAULT parameter
-   (`C.BALL_RADIUS`) in the signature and not the call. Every call site was grepped. The
-   regression test asked for was added anyway, because nothing pinned it: a solved contact rests
-   at 2.990" and a pushed pollen sits 1.354" off the face, both the 3" element the renderer draws.
-2. **`robotSolids` builds DECODE's funnel — CONFIRMED, fixed** (`14b61a6`). New optional
-   `GameSimModule.artifactSolids` slot; BIOBUZZ fills it with `bbRobotSolids`, derived FROM
-   `bbMouths` so the drawn mouth and the solid mouth cannot drift. DECODE and CR leave it empty.
-3. **Custom start poses validated on the CENTRE only — CONFIRMED, fixed** (`a807e68`).
-   `bbFitPose` fits the ROTATED FOOTPRINT inside the perimeter AFTER the alliance mirror, and
-   slides rather than rejects. Custom poses stay ENABLED. Anchors go through it too (a no-op).
-4. **The tick-start sweep fell back to the END pose — CONFIRMED, fixed** (`14b61a6`). The
-   parameter is required; `NO_SWEEP` is gone. Cost of the old fallback, now measured: 0.588"
-   of penetration swept against **7.872"** unswept.
-5. **BIOBUZZ coercion runs after the CR pass — CONFIRMED as a fact, NOT fixed, documented**
-   (`bdbe4e8`). Reordering would re-add the CR fields the arm exists to strip. The real hazard
-   is different and is now written at both ends: the arm receives `out`, not raw `sp`, so the
-   first `bb*` field will need carrying across at the call site.
-6. **Containment observed after the local clamp — CONFIRMED, fixed** (`a6ee66d`). Escape is now
-   measured BETWEEN the solve and the clamp, pollen restored each tick, with a 2.5" budget.
-7. **Coverage gaps — CONFIRMED, fixed** (`a6ee66d`). Per-mount solids, the seam itself, radius
-   propagation end to end, pollen mass and restitution as an ENVELOPE, the real sweep path.
-8. **Perf compared independent minima — CONFIRMED, fixed** (`a6ee66d`). Paired per-round ratios
-   with a median, list printed.
-
-The four owner items (wall clamp vs the FLIGHT-ONLY comment, heading not read back from Rapier,
-array-order iteration, O(B³) pin search) went to `docs/biobuzz/feedback/000-solver-observations.md`
-as items 10–13 with two of the four readings CORRECTED, plus two new ones found while verifying:
-14 (pollen barely bounce — `bounceFirstContacts` is DECODE-only, effective e 0.015–0.211 against
-a configured 0.68) and 15 (the clamp hides 0.999"/1.744" per tick; a pollen and an artifact are
-the same mass).
-
-## What a kickoff session should know
-
-- `bbRobotSolids` is the shape a POLLEN meets, and it is deliberately thin: chassis box, two side
-  plates per mounted edge, mouth OPEN. When the manual lands and the real intake is known, that
-  function is the one place to change — the renderer and the solver both read `bbMouths`.
-- The suite now pins BIOBUZZ physics as ENVELOPES (`0 <= e <= C.BALL_BALL_RESTITUTION`, escape
-  `<= 2.5"`), not as values, precisely so the owner can close observations 14 and 15 without
-  turning this suite red.
-- `npm run test:bb` is still the inner loop (2 s). Nothing here goes in `scripts/smoke.ts`.
-
-# HANDOFF — 2026-09-11 (integration: `biobuzz-sandbox` + `origin/alpha` merged in)
-
-Branch **`biobuzz`** (worktree `dsim-biobuzz`) = previous `biobuzz` + `biobuzz-sandbox` +
-`origin/alpha` @ `914bc1b`. **PUSHED to origin** (the branch is public by decision 1; the
-SEASON stays private behind `channels: ['alpha']`). **Nothing deployed** — the deflate change
-that came in with alpha is a SERVER change and is inert until the owner runs
-`./scripts/fly-deploy.sh`. `SIM_VERSION` and `BALANCE_VERSION` untouched by the merge itself;
-alpha's own commits moved three friction constants (below).
-
-## State at 2026-09-11 (integration; was READ FIRST)
-
-Everything is green, on the merged tree, in this worktree.
-
-| gate | result |
-|---|---|
-| `npm test` | exit 0 · **1694 `PASS` lines, 0 `FAIL`** — suite 1 `ALL PASS`, suite 2 `366 CHECKS, ALL PASS` |
-| `npm run build` | `✓ built in 3.83s` (chunk-size warning only) |
-| `npm run server:check` | green, exit 0 |
-| `npm run test:mm` | `✓ matchmaker: 58 checks passed` |
-
-`biobuzz-field` and `biobuzz-robot` were fast-forwarded to this tip and pushed, so both lanes
-start kickoff on the same code. `biobuzz-shell` and `biobuzz-core` were already fully merged
-(behind `biobuzz` with a zero-file diff) and can be retired.
-
-## What came in from `biobuzz-sandbox` (7 commits)
-
-Phase 0.5: **BIOBUZZ owns no ground-ball integrator.** `solveArtifacts`/`robotSolids` took a
-trailing artifact-radius parameter — DECODE passes nothing and is byte-identical — the
-`BB_BALL_SOLVER` switch and `separatePollen` are gone, and POLLEN ride the owner's shared solve
-at `BB_POLLEN_R`. The pollen checks were rewritten for the one solver rather than deleted
-(349 → 366). `docs/biobuzz/feedback/000-solver-observations.md` is the owner-facing write-up;
-its "For the owner" list has three items that change how BIOBUZZ plays and none of them is
-fixable inside `src/games/biobuzz/`.
-
-## What came in from `origin/alpha` (9 commits)
-
-- **permessage-deflate is ON** (`e287c0e` + `41e346d`) at `windowBits` 15 / `memLevel` 8 with
-  `serverNoContextTakeover: false`, which is the load-bearing line. Measured on the WIRE, not
-  on the app payload: −88% solo, −86% 1v1, −83% 2v2. It is negotiated per connection in the
-  HTTP upgrade, so it is NOT a protocol change and needs no `CLIENT_CAPS` gate — a client that
-  does not offer it gets today's exact bytes. `WS_COMPRESS=0` is NOT on this branch; that kill
-  switch lives on `perf-load-v2` and has not landed on alpha yet.
-- **Three friction constants moved**, all the owner's: rolling friction 28 (`84162e1`), robot
-  bumper 0.45 → 0.2 (`a97f03c`), then bumper-on-bumper 0.15 with bumper-on-wall left at 0.40
-  (`914bc1b`). Both suites are green against them here.
-- **`npm run costprobe`** (`scripts/costprobe.ts`) — prices a room off the real `step()` and
-  the real `slimWorld`/`encodeBallDelta` codec. ⚠️ It measures the PAYLOAD, so it cannot see
-  permessage-deflate. `scripts/zz-deflate-cost.ts` is the one that counts TCP `bytesRead` and
-  is the authoritative probe for anything compression-related.
-- **The practice replay save policy** (`src/replaySavePolicy.ts`, `605857d`). Game-agnostic —
-  it lives in `GameController`, so BIOBUZZ practice runs are covered the moment the season is
-  playable. A completed run is always kept; an ABANDONED one is kept if it carries at least
-  `PRACTICE_SAVE_MIN_S` (15) of DRIVING, counted as ticks where `robotsEnabled` so the
-  pre-match countdown cannot pad it. Leaving the game screen used to lose the run silently.
-
-## Merge resolutions — two conflicts, both docs
-
-1. **`docs/biobuzz-plan.md` Decisions.** The sandbox branch's warning that copy-and-own has an
-   exception (ground pollen physics is not copied and not owned) is KEPT, attached to decision
-   3. Its restatement of decision 4 is dropped: it ended "nothing is pushed or deployed until
-   decision 1 resolves", and decision 1 was resolved by the owner on 2026-09-10. The kept
-   decision 4 also says more — the owner owns PHYSICS, and gallery observations go to him as
-   HANDOFF notes, never as BIOBUZZ-local constant tweaks.
-2. **`HANDOFF.md`.** Two branches each prepending a dated section is not a disagreement. Both
-   are kept, newest first.
+No new migrations — the admin-panel pair (0035/0036) was already on main from the backport,
+so this deploy needed no schema step.
 
 ## Next
 
-1. **The owner deploys.** The measured egress saving is real and currently unrealised, and a
-   season kickoff is exactly when concurrency spikes. `./scripts/fly-deploy.sh`, never a bare
-   `flyctl deploy` — `fly.toml` carries one `[[vm]]` size and a bare deploy upsizes every
-   satellite.
-2. **Kickoff, 2026-09-12 12:00 ET.** Both lanes start here. `docs/biobuzz-contract.md` is the
-   lane contract; `docs/biobuzz-reference.md` gets written on kickoff day from the manual.
-3. ⚠️ **`BB_POLLEN_RADIUS` does not exist** — the constant is `BB_POLLEN_R`. The plan and the
-   prompts use the longer name; the code uses the real one.
-4. Still unowned and not on this branch: the `Room.onInput` unbounded future-tick buffer (a
-   latent DoS). A fix exists on `perf-load-v2`, which is the perf chat's to land.
-
----
-
-# HANDOFF — 2026-09-11 (BIOBUZZ Phase 0.5: pollen on the shared artifact solver)
-
-Branch **`biobuzz-sandbox`** (worktree `dsim-bb-sandbox`), off `biobuzz`. **NOT pushed, nothing
-deployed** — the repo is public and the 2026–27 season is private until further notice.
-`SIM_VERSION` and `BALANCE_VERSION` untouched. No physics constant, shared or BIOBUZZ, was
-changed by this session.
-
-## READ FIRST — state
-
-**Everything is green. BIOBUZZ has one ball solver and it is the owner's.**
-
-| gate | result |
-|---|---|
-| `npm test` | exit 0 · **1674 `PASS` lines, 0 `FAIL`** — suite 1 (`scripts/smoke.ts`) `ALL PASS`, suite 2 (`scripts/smoke-biobuzz/index.ts`) `366 CHECKS, ALL PASS` (was 349) |
-| DECODE alone | `1308 PASS / 0 FAIL`, `ALL PASS` — **identical check-name list to the pre-item-1 baseline** (see the byte-identity proof below) |
-| `npm run test:mm` | `✓ matchmaker: 58 checks passed` |
-| `npm run build` | `✓ built in 7.74s` · `dist/assets/index-k3qkyn3n.js 2,411.50 kB` (chunk-size warning only) |
-| `npm run server:check` | green (no output) |
-| `npm run uiaudit` | `ALL RULES AT OR UNDER BASELINE` (inline-spacing 29/29, off-grid-gap 165/165, the three hard rules 0/0) |
-| `npm run contrast` | `ALL PASS — 221 contrast checks across light + dark` |
-| `npx tsc --noEmit -p .` | `TypeScript: No errors found` |
-| gallery contact sheet | 140 PNGs, 70 cells × 2 themes, `scratch/shots/2b622f7-dirty/` — **all 70 light cells distinct** (they were not before, see the runner gotcha) |
-
-## What changed, and why it is small
-
-The owner's artifact rework made `solveArtifacts` the **ONE POSITION AUTHORITY** for every
-ground artifact. BIOBUZZ had grown a second one — a `BB_BALL_SOLVER` switch with a bespoke arm
-(CR's ground integrator copied, plus `separatePollen`) beside a `'rapier'` arm. That is exactly
-the defect the rework exists to end, so the bespoke arm is gone and POLLEN ride the shared
-solve. BIOBUZZ's entire contribution to pollen physics is now a **number**.
-
-| item | commit | |
-|---|---|---|
-| 1 | `fb71b1c` | `refactor(sim): solveArtifacts and robotSolids take the artifact radius` |
-| 2 | `2591786` | `refactor(biobuzz): one solver — POLLEN ride the shared artifact solve` |
-| 3 | `2b622f7` | `test(biobuzz): the pollen checks are rewritten for the one solver, not deleted` |
-| 4 | `8e0b20f` | `docs(biobuzz): gallery observations for pollen on the shared solver` (+ the `shots.cjs` fix) |
-| — | `5b5bbce` | `test(biobuzz): interleave the perf windows so the ratio measures code, not load` (found by the gate run) |
-| 5 | *(this one)* | the docs pass + this handoff |
-
-1. **The radius is ADDITIVE.** `solveArtifacts(...)` and `robotSolids(r, heldBalls)` gained a
-   trailing `radius: number = C.BALL_RADIUS`, used where they read `C.BALL_RADIUS` to build the
-   artifact collider and the held-ball circles. **Every DECODE call site passes nothing.**
-   `pinnedArtifacts`/`supported` (physicsEngine.ts ~781/790/844) deliberately still read
-   `C.BALL_RADIUS` outright, because BIOBUZZ does not call them — parameterizing an unreachable
-   path would be a change with no reader.
-2. **`play.ts` has no ball integrator.** `separatePollen` deleted, the copied ground integrator
-   deleted, the `BB_BALL_SOLVER` switch and `BB_POLLEN_FRICTION` / `BB_POLLEN_REST_SPEED` /
-   `BB_POLLEN_SEP_ITERS` deleted from `config.ts`. `interact()` lost its PLOW branch and only
-   CAPTURES. What runs now, in order: the shared `stepGroundBall` rolling pass → capture →
-   `solveArtifacts(world, dt, biobuzzColliders, NO_IDS, NO_IDS, solids, from, BB_POLLEN_R)` with
-   `robotSolids(rob, heldBalls, BB_POLLEN_R)` → `clampPollenToWalls`. `step.ts`'s pre-solve
-   ordering (start-of-tick pose for `from`) is unchanged.
-3. **Two things the bespoke arm did that the shared solve does not**, both resolved without
-   re-implementing anything:
-   - **Bringing a pollen to rest.** The solve runs in a plane with no gravity and no floor, so
-     nothing stops a rolling pollen. Measured, a plowed pile was still travelling at
-     **18.98 in/s five seconds after the robot stopped**. Fixed by calling the ALREADY-SHARED,
-     already-exported `stepGroundBall` (`src/sim/physics.ts`, velocity-only rolling friction +
-     rest snap) — not by porting BIOBUZZ's deleted 42 / 1.5 constants. `settle [*]: the pile is
-     actually AT REST` is the check that fails if this is ever dropped again.
-   - **Keeping a pollen in the field.** `clampPollenToWalls` was going to be deleted as
-     redundant; it is not. Measured with it removed, a pollen went **2.02" past the wall plane**
-     (`wall-row-sweep`, tick 105) and 1.52" (`pile-fast`), because BIOBUZZ runs no pin/round
-     loop (owner note 1). Kept unchanged, re-documented as THE CONTAINMENT INVARIANT with those
-     numbers, and asserted on **every tick** of seven scenes.
-   Nothing else was missing: wall restitution for a GROUND pollen and a speed cap both exist on
-   the shared side (`BB_POLLEN_WALL_REST` is FLIGHT-only; the cap is `C.BALL_MAX_SPEED`, which
-   is an owner question rather than a gap — see note 3).
-4. **Smoke was rewritten, not deleted.** The checks that read the dead switch now read the one
-   solver: count conserved over 600 ticks of a sweeping robot; every pollen inside `bounds` on
-   EVERY tick of `pile-slow/med/fast`, `wall-row-sweep`, `corner-pile`, `squeeze-2robots`,
-   `settle-60` (through `bbSceneStills`, the one stepping path, so these check the run the
-   gallery draws); no two RESTING pollen overlapping past 0.1"; the pile actually at rest; a
-   full-throttle robot never posting the `pin-wall` pollen through the wall on any of 300 ticks;
-   every scene hashing deterministically. 349 → 366 checks.
-
-## The DECODE byte-identity proof
-
-Item 1's claim is that DECODE is unchanged. The suite is **not bit-reproducible run to run**,
-so "identical output" had to be defined before it could be proved: `server/room.ts:836` seeds a
-Room with `(Date.now() ^ (Math.random() * 0xffffffff)) >>> 0`, so the five `Room`-driven replay
-checks print different hashes and scores on every run **with no code change at all** — two runs
-of the same code differ on four of those lines.
-
-So the proof is: **the check-NAME lists are identical** (detail suffix after ` — ` stripped),
-1308 `PASS` / 0 `FAIL` on both sides, and every line-level difference is one of those five
-Room-seeded lines. Artifacts are in the session scratchpad (`smoke-before.txt`,
-`smoke-after1.txt`, `smoke-after1b.txt`, `smoke-final.txt`); re-derive with
-`grep '^PASS' f | sed 's/ — .*$//'` and `diff`.
-
-## ⚠️ THE GALLERY RUNNER WAS PHOTOGRAPHING THE WRONG CELLS
-
-`scripts/shots.cjs` slept a flat 120 ms after `scrollIntoView` before `capturePage`. That held
-for a 12-cell filtered run and **failed silently on the full 70**: the files named
-`wall-row-sweep@60`, `@150` and `@300` came out **byte-identical to the `pile-fast@30`, `@60`
-and `@120` CELLS** — four cells of compositor lag on a hidden BrowserWindow — while
-`pile-slow`, four cells earlier, was correct. Every PNG was a plausible BIOBUZZ scene, so
-nothing looked broken; it was caught only because two files that should have differed had the
-same md5 and the captions inside them named a third scene.
-
-Fixed in `8e0b20f`: wait for two `requestAnimationFrame`s, then capture twice and discard the
-first (`capturePage` itself pumps a frame). Verified by re-running: zero duplicates across all
-70 light cells, and the full run now matches a filtered run byte for byte.
-
-**Any feedback dump written against a contact sheet from before `8e0b20f` may be describing the
-wrong cell.** Re-shoot before trusting one.
-
-## ⚠️ THE PREVIEW PORT GOTCHA, HIT AGAIN
-
-`npx vite preview` moved itself to **4174** because a sibling worktree's preview held 4173, and
-`shots.cjs` defaults to 4173 — so the default invocation would have photographed *another
-branch's build*. Confirmed rather than assumed: `netstat -ano | findstr 4173` showed PID 18408
-listening, and the two ports served different bundles (`curl -s localhost:4173/ | grep index-`
-gave `index-DTDXycuZ.js`, 4174 gave `index-CHgC59C_.js`, which is what `dist/` actually held).
-Always read the port `vite preview` prints and pass `--port` explicitly.
-
-## Next steps
-
-1. **The owner reads `docs/biobuzz/feedback/000-solver-observations.md`** — specifically the
-   "For the owner" list. The three that change how BIOBUZZ plays are: no pin/round loop
-   (a chassis drives through pollen it presses on a wall), a persistent ~2.1" overlap under a
-   pressing chassis that does not relax when the robot stops, and a struck pollen reaching
-   `C.BALL_MAX_SPEED` (90) while the robot that hit it is slower. All three are shared-physics
-   decisions; none is fixable inside `src/games/biobuzz/`.
-2. **Nothing in this sprint is a rules decision.** Kickoff is 2026-09-12; `docs/biobuzz-plan.md`
-   Phase 0.5 is now marked done and points at the observations file.
-3. **`BB_POLLEN_RADIUS` does not exist** — the constant is `BB_POLLEN_R`. The plan and prompts
-   use the longer name; the code and docs use the real one.
-4. ✅ **RESOLVED by the integration merge at the top of this file** (2026-09-11): the commit
-   was merged, Decisions item 1 and this header are reconciled, and `biobuzz` is pushed. The
-   original note, kept because its reasoning still explains the resolution:
-   ⚠️ **THIS BRANCH WAS ONE COMMIT BEHIND `biobuzz`, AND THE MISSING COMMIT CONTRADICTED THE
-   HEADER ABOVE.** `biobuzz` has `63fffd9` "docs(biobuzz): the branch is public and physics
-   belongs to the owner" (2026-09-10, owner-revised), which says `biobuzz` and the lane branches
-   DO push to `origin` with the season hidden behind `channels: ['alpha']` — where
-   `docs/biobuzz-plan.md` Decisions item 1 on this branch still says LOCAL ONLY, and the header
-   of this section says "NOT pushed". Both are true of THIS session (the brief said push
-   nothing, and nothing was pushed), and neither is the current policy.
-   It was left unmerged deliberately: syncing branches was not in this session's brief, and
-   `63fffd9` edits `docs/biobuzz-plan.md`, which item 5 also rewrote, so the merge needs a human
-   to resolve the Decisions/Phase-0.5 overlap rather than a guess. Merge it before the next
-   session and reconcile Decisions item 1 and this header. Its OTHER half — "BIOBUZZ does not
-   own a ball integrator, POLLEN rides the shared `solveArtifacts`" — is exactly what this
-   session implemented, so the two branches agree on the substance.
-
----
-
-# HANDOFF — 2026-09-10 (BIOBUZZ: core + shell merged into biobuzz)
-
-Branch **`biobuzz`** (worktree `dsim-biobuzz`), = `origin/alpha` + `biobuzz-core` + `biobuzz-shell`,
-now integrated. **NOT pushed, nothing deployed** — the repo is public and the 2026–27 season is
-private until further notice. `SIM_VERSION` and `BALANCE_VERSION` untouched.
-
-## State at 2026-09-10 (was READ FIRST)
-
-**Everything is green, and `npm test` now means both suites.**
-
-| gate | result |
-|---|---|
-| `npm test` | exit 0 · **1657 `PASS` lines, 0 `FAIL`** — suite 1 (`scripts/smoke.ts`) `ALL PASS`, suite 2 (`scripts/smoke-biobuzz/index.ts`) `349 CHECKS, ALL PASS` |
-| `npm run test:mm` | `✓ matchmaker: 58 checks passed` |
-| `npm run build` | green (2,413.22 kB bundle, chunk-size warning only) |
-| `npm run server:check` | green (no output) |
-| `npm run uiaudit` | `ALL RULES AT OR UNDER BASELINE` (inline-spacing 29/29, off-grid-gap 165/165, the three hard rules 0/0) |
-| `npm run contrast` | `ALL PASS — 221 contrast checks across light + dark` |
-| `npx tsc --noEmit -p .` | clean |
-| gallery contact sheet | 140 PNGs, 70 cells × 2 themes, `scratch/shots/9a51bb7/` |
-
-The one error the merge left (`play.ts` importing the deleted `solveBalls`) is gone, and
-`docs/biobuzz/baseline-alpha.md` is rewritten: there is no accepted-failure list any more, so
-**any `FAIL` line is a regression**.
-
-## What the seven items did
-
-| item | commit | |
-|---|---|---|
-| 1 | `76cff4a` | `fix(biobuzz): the rapier pollen arm calls solveArtifacts, swept from the tick's start pose` |
-| 2 | `894be27` | `feat(biobuzz): the real game module replaces P0-core's placeholder` |
-| 3 | `9729702` | `refactor(core): the shell's three requests — optional catalystRail, a real biobuzz coerceSpec arm` |
-| 4 | `fe71d8e` | `fix(server): the start-pose de-conflict loop reads the room's game's anchor count` |
-| 5 | `9a51bb7` | `docs: the npm test gate is GREEN, and it now runs both suites` |
-| 6 | — | gates + the visual check. **No commit: nothing was visibly wrong.** Evidence is this section. |
-| 7 | *(this one)* | the handoff |
-
-1. **`BB_BALL_SOLVER`'s `'rapier'` arm calls `solveArtifacts`.** `claimed` and `doorway` are
-   both EMPTY sets, and that is a fact about this game rather than a stub: BIOBUZZ's `interact()`
-   either captures a pollen outright (straight to `held`) or plows it, so there is no
-   mid-capture ground pollen for a claim to name and no gate to expel one. `solids` is
-   `robotSolids(rob, heldBalls)` per robot, and `from` is each robot's pose at the START of the
-   tick, captured in `step.ts` as stage 0 of the pipeline exactly the way `world.ts` records
-   `sweepFrom` — a kinematic robot swept from where it actually was, not from where the drive
-   left it. Both arms still conserve pollen count and keep every pollen in `bounds` (asserted).
-2. **The real `GameSimModule` / `GameModule`.** `sim.ts` is `scored: false`,
-   `startLegality: false`, `initialAct: 2`, `startPoseCount: BB_START_POSE_COUNT` (2),
-   `createWorld: createBiobuzzWorld`, `step: biobuzzStep`, `hud: biobuzzHud`; `index.ts` fills
-   the three renderers, `Builder`, `Preview`, `hudChips`, `scoreBar`, `resultsRows`,
-   `labels.configSummary` and `devRoutes`. `state.ts` is the shell's, unchanged, and
-   `World.biobuzz?: BiobuzzState` imports from it.
-3. The shell's three requests — (a) `RobotState.catalystRail` is optional, (b) `coerceSpec` has a
-   real `game === 'biobuzz'` arm, (c) the `GameController` seam is NOT built; see the written
-   request below.
-4. **`server/room.ts` reads the room's own anchor count.** Both de-conflict loops (the lobby
-   assign at ~line 799 and the match-start pass at ~line 1102) take
-   `simModuleFor(this.game).startPoseCount` instead of `START_POSES.length`; the
-   `START_POSES` import is gone. The BIOBUZZ smoke suite asserts a 4-robot alliance is only ever
-   handed anchors `0..startPoseCount-1` — observed `startPoseCount=2 assigned=[0, 1, 0, 0]`.
-5. `docs/biobuzz/baseline-alpha.md` rewritten around a GREEN gate; `HANDOFF.md`'s and
-   `CLAUDE.md`'s `&&`-chaining paragraphs corrected (the chaining is still deliberate, and
-   `test:bb` stays as the fast loop).
-
-## ⚠️ THE SOLVER-COMPARISON CAVEAT — `solveArtifacts` hard-codes `C.BALL_RADIUS`
-
-`solveArtifacts` builds its artifact collider, its speed cap and `robotSolids`' held-artifact
-circles at **`C.BALL_RADIUS` (2.5", DECODE's artifact)**. **BIOBUZZ POLLEN is 1.5"**
-(`BB_POLLEN_R`). So the `'rapier'` arm of `BB_BALL_SOLVER` separates pollen at the wrong
-diameter: count is conserved and nothing leaves `bounds` (both asserted), but a pile settles
-looser than it is drawn, and a held-pollen circle is a DECODE artifact.
-
-This was left alone deliberately — fixing it costs a change to `src/sim/physicsEngine.ts` +
-`src/sim/artifactSolids.ts`, i.e. shared core that no BIOBUZZ lane owns, and the default arm
-(`'bespoke'`, which uses `BB_POLLEN_R`) is unaffected. It is the **P0.5 solver-comparison
-caveat**: whoever compares the two solvers has to parameterize the radius first, or the
-comparison is measuring the radius rather than the solver. Documented in `play.ts`'s header and
-in `docs/biobuzz/baseline-alpha.md`.
-
-## The written request core still owes the shell — a world seam on `GameController`
-
-The third of the shell's three requests, **deliberately NOT built** (item 3c). `GameController`
-builds its own world from `moduleFor(gameId).createWorld` with no injection point, so the
-gallery's drivable cell (`LiveScene` in `Gallery.tsx`) runs the shared `Renderer` + shared
-`InputManager` over a scene world it steps itself, and prints the module's `hud()` slice as
-text where the real HUD would be.
-
-Why it was skipped rather than added: the constructor change is small, but it has **no caller**
-in this branch and cannot get one cheaply. `LiveScene` is frozen after Phase 0, and making it
-the real game screen means mounting the canvas, the audio, the rAF loop and the global input
-handlers inside a dev-route cell — a real piece of work, and a seam with no consumer is worse
-than a written request, because the next reader cannot tell whether it is load-bearing.
-
-**The request, for whoever does it:** accept an optional prepared `World` (or a
-`createWorld` override) on `GameController`'s options, take that path instead of
-`moduleFor(...).createWorld` when present, and leave `session: null` behaviour otherwise
-bit-identical — `game.ts`'s solo path is the one thing a replay depends on. Then port
-`LiveScene` onto it and the gallery's scene cells become the real game screen on a scene world,
-which is what the cell was always for.
-
-## What the gallery shots showed (item 6)
-
-`scratch/shots/9a51bb7/` — clean tree, so no `-dirty` suffix. Recipe: `VITE_APP_CHANNEL=alpha
-npm run build`, `npx vite preview`, then
-`env -u ELECTRON_RUN_AS_NODE npx electron scripts/shots.cjs --port <port>`. Cells READ as
-images, and what was seen:
-
-- **`field-empty@0`** (light) — four walls, the tile grid, the centre cross. `0 pollen · no robot`.
-- **`spawn-default@0`** (light AND dark) — 60 pollen scattered, four robots in the four corners,
-  `0/9 held`. No pollen inside a chassis. Both themes correct: the mat keeps its light outline
-  in dark, the card chrome inverts, the caption stays legible.
-- **`pile-fast@30`** (light) — 12 pollen bunched at the intake mouth of a driving robot, none
-  behind the sweeper line, none inside the frame.
-- **`corner-pile@120`** (light) — 16 pollen wedged in the bottom-right corner with the robot on
-  them; the pile is 2D, not a line along the wall.
-- **`archetype-drum-right@0`** (light) — three chassis sizes, drum column on the robot's RIGHT in
-  the in-match canvas AND in all three builder previews. The mount and the sprite agree.
-- **`archetype-turret-backleft@0`** (light AND dark) — turret ring at back-left in both
-  renderers at all three sizes. Dark is correct too.
-- **`settle-60@300`** (light) — 60 pollen at rest, spread across the field, nothing overlapping,
-  nothing against a wall in a line.
-- **`pile-slow@30`** (dark, re-shot) — the 3×4 grid still tidy in front of the intake.
-
-**Nothing was fixed, because nothing was wrong** — and note that the two bugs a shot run found
-last time (the plow gaining on a pollen, every launcher mount collapsing to the front) both stay
-fixed through the real `coerceSpec` arm: the 26 archetype sheets are 26 different pictures.
-
-Pollen containment was checked numerically rather than by eye as well: a small PNG reader over
-`wall-row-sweep@60`, `corner-pile@240`, `pin-wall@300` and `settle-60@300` found **zero** pollen
-pixels outside the mat box (±1px for antialiasing at the wall).
-
-**Pollen physics was NOT retuned** — that is the next chat's job, and the solver caveat above is
-the first thing it has to decide about.
-
-## Gotchas this session earned
-
-- ⚠️ **The dev route needs the ALPHA channel AT BUILD TIME.** `devRoutesEnabled()` is
-  `appChannel() === 'alpha'` and `appChannel()` reads `import.meta.env.VITE_APP_CHANNEL`, which
-  Vite BAKES IN. A plain `npm run build` therefore serves a preview where `/biobuzz/gallery`
-  falls through to `parseScreen` and goes home, and `shots.cjs` reports the route is not
-  mounted. Build with **`VITE_APP_CHANNEL=alpha npm run build`** for a shot run.
-- ⚠️ **`devRoutes` paths are matched against the GAME-STRIPPED remainder**, so BIOBUZZ's gallery
-  is `'/gallery/*'`, NOT `'/biobuzz/gallery'`. `devRouteFor` in `src/ui/App.tsx` now honours a
-  trailing `/*` (`rest === base || rest.startsWith(base + '/')`), which is what makes a pasted
-  `/biobuzz/gallery/<scene>` link open the scene instead of the home screen. Seventy scenes is
-  not seventy route entries.
-- ⚠️ **`npx vite preview --port 4173` SILENTLY MOVES TO 4174** if another worktree's preview
-  already holds 4173 — it prints `Port 4173 is in use, trying another one...` and serves
-  anyway. `shots.cjs` defaults to 4173, so a run against a stale sibling build looks like a
-  successful run of the wrong code. Check the log line and pass `--port` to match.
-- ⚠️ **`shots.cjs` can capture ONE cell at the wrong scroll offset.** Two dark shots
-  (`pile-slow@30`, `pile-slow@60`) came back framed on `field-empty` / `field-labelled` — a
-  scroll/layout race inside `capturePage(rect)`, which clips silently. Re-running with
-  `--scene pile-slow --theme dark` produced correct frames, so it is a runner flake, not a
-  render bug. **If a cell looks like a neighbour, re-shoot it before believing it.**
-- **`tsconfig.json` is `"include": ["src"]`** — `npx tsc --noEmit -p .` does NOT cover
-  `scripts/` or `server/`. A broken `updateBiobuzz(...)` call in `scripts/smoke-biobuzz/field.ts`
-  passed tsc and only showed up under `npx tsx`. Server is `npm run server:check`; the scripts
-  are covered only by running them.
-- ⚠️ **`DEFAULT_SPEC` now lives in the LEAF `src/sim/specDefaults.ts`** and `src/sim/spawn.ts`
-  re-exports it, so every `import { DEFAULT_SPEC } from './spawn'` is unchanged. It had to move:
-  BIOBUZZ's real module put a MODULE-EVAL-TIME read of it inside the registry import cycle
-  (`games/sim` → `biobuzz/sim` → `biobuzz/spawn` → the coercer's top-level
-  `{ ...DEFAULT_SPEC, ...BB_PRESETS[0] }`), and ES modules evaluate dependencies before the
-  importer's body, so it read `DEFAULT_SPEC` in its TDZ: a hard
-  `ReferenceError: Cannot access 'DEFAULT_SPEC' before initialization` at import time. The
-  placeholder module never reached a file with a top-level read, which is why the cycle looked
-  safe. **Keep `specDefaults.ts` a leaf** — an import there that reaches `spawn.ts`,
-  `physicsEngine.ts` or a game module puts the cycle back.
-- **`src/games/biobuzz/coerce.ts` is a leaf for the same reason** (`../../types`, `../../math`,
-  `../../sim/drivetrain`, `../../sim/specDefaults`, `./config`, `./mounts` and nothing else).
-  `robotConfig.ts` is now just `bbCoerceSpec` = `coerceSpec(raw, base, 'biobuzz')` plus
-  `bbDials`, and `scripts/smoke-biobuzz/harness.ts`'s `bbCoerce` is that same one call.
-- **`catalystRail` absent means 0.** `worldHash` (`src/net/checksum.ts`) mixes only
-  tick/rngState/robot pose+turret/ball pos+z/scores/goal counts, and `backfillRobot`
-  (`src/net/protocol.ts`) re-seeds a different field list, so the shell's stated fear (a NaN in
-  the hash) was not reachable. Only the three Chain Reaction readers needed `?? 0` —
-  `chain/play.ts`, `chain/state.ts`, `chain/drawRobot.ts`.
-- **Giving a game a `scoreBar` used to hide its `hudChips`.** `GameView.tsx` had an
-  `if (GameScoreBar) return ...` early return that dropped the whole `.status-wrap`; and its
-  DECODE-specific chrome (motif dots, the four-way breakdown, the hopper strip) was gated on
-  `!cr`, which put DECODE's furniture on BIOBUZZ. Both are now `hud.game === 'decode'` / a
-  ternary around the bar. DECODE and Chain Reaction render byte-identically — the whole main
-  suite stayed at 1308 PASS / 0 FAIL across items 2, 3 and 4.
-- **`drawOverlays` is deliberately absent** from `BIOBUZZ_MODULE`, unlike the other slots. The
-  slot draws between the field and the robots (DECODE's ramp strips) and BIOBUZZ has no
-  published structure to underlay — Section 9 (ARENA) is a Kickoff placeholder. A no-op costs a
-  call per frame and tells the next reader there is something to see. It lands with the geometry.
-  `mobileButtons` and `startEditor` are absent for the reasons written in `index.ts`.
-
----
-
-# HANDOFF — 2026-09-10 (BIOBUZZ Phase 0: the shared core is game-agnostic)
-
-Branch **`biobuzz-core`** (worktree `dsim-bb-core`, cut from `biobuzz`, itself cut from
-`origin/alpha`). **NOT pushed and must not be** — the repo is public and the 2026–27 season
-is private until further notice. Nothing was deployed.
-
-`npm run build` / `server:check` / `uiaudit` / `contrast` green. `npm test` is **1289 PASS
-and 7 FAILURES — the same 7, and the same pass count, as the baseline** as of this section's
-date. The new BIOBUZZ suite is ALL PASS. `SIM_VERSION` and `BALANCE_VERSION` untouched.
-
-⚠️ **SUPERSEDED — that is no longer true.** `alpha` has since fixed all seven
-(the artifact-collision rewrite), so the gate is now simply **green** and `npm test`'s `&&`
-chain REACHES the BIOBUZZ suite: one command proves both. See the integration section at the
-top of this file and the rewritten `docs/biobuzz/baseline-alpha.md`. What was true on
-2026-09-09 and is worth keeping: the chaining is deliberate (a red `npm test` must keep
-meaning "physics broke"), and while the seven stood the second suite never ran under
-`npm test` at all — no `registry integrity` line appeared in any `npm test` log that day.
-**`npm run test:bb` stays**, now as a convenience rather than as the only way: it is the fast
-loop while working inside `src/games/biobuzz/`, and the way to run the BIOBUZZ suite when the
-first one is red for an unrelated reason.
-
-## What that Phase-0 refactor was and what it was not
-
-Phase 0 items 1–8 of `docs/biobuzz-plan.md`: make the shared core GAME-AGNOSTIC so that a
-third game is **a registry entry plus a module directory**, with no two-valued literal left
-anywhere. It is a **REFACTOR** — `decode` and `chain` behaviour is byte-identical, and that
-was the binding constraint on every decision below.
-
-Two things were deliberately NOT done, and both are stated in the code:
-
-- **DECODE's and CR's inline UI branches are untouched.** The new `GameModule` slots are
-  wired in FRONT of them (`mod.X ? <slot> : <existing branch, unchanged>`). Rewriting the
-  two games people are actually playing to route through the slots would put a behaviour
-  change inside a commit whose only job is to make room for a third game.
-- **The never-read `GameUiSpec` (`ui`) is left alone.** Removing it is a separate change and
-  it is not in anybody's way.
-
-Also NOT done, on purpose: `coerceSpec` was not threaded with `game` inside `coerceSetup`.
-The chassis envelope is per-game too, and switching which envelope a DECODE spec is clamped
-against is a behaviour change, not a refactor. Only the start-index clamp moved.
-
-## The baseline gate
-
-`npm test` on `alpha` is not green, so the gate is **"no NEW failures"** against a recorded
-list, not "green". Recorded before any edit in `docs/biobuzz/baseline-alpha.md`: `alpha` SHA
-`3054f59c7518b75ce1ed339618e203bd785a631c`, **1289 PASS / 7 FAILURES**, all seven in
-`src/sim` contact physics, which Phase 0 does not touch:
-
-1. `a robot resting against something does not turn while the driver does nothing`
-2. `...and how far grows with how far off centre you hit it, without ever spinning you round`
-3. `a SIDE hit on the gate arm turns the robot INTO the corner`
-4. `...and a closed arm gives where one at its stop does not`
-5. `ramming a wall at speed never snaps the chassis round — it squares it`
-6. `an OFF-CENTRE ram spins the robot it lands on`
-7. `an artifact pinned in the doorway settles instead of buzzing back and forth`
-
-Re-check with `npm test 2>&1 | grep '^FAIL'`. Any line not in that list fails the gate.
-`node_modules` did not exist in this worktree; `npm install` was run first, and it rewrote
-the lockfile's Rapier range from `^0.19.3` to the exact `0.19.3` already in `package.json`
-(CLAUDE.md requires the exact pin — kept, committed separately as `3fa6a90`).
-
-## What landed, one commit per plan item
-
-| item | commit | what |
-|---|---|---|
-| 0 | `5c5dc45` | `docs/biobuzz/baseline-alpha.md` — the gate |
-| 1 | `72a67de` | `GAME_IDS` / `isGameId` / `coerceGameId`; `GameSimModule.initialAct` + `startPoseCount` |
-| 2 | `fa1379c` | every two-valued game literal replaced by the registry helpers |
-| 3 | `8a68e61` | the start-index clamp is per-game |
-| 4 | `3cf8df2` | `Season.channels` + the pure channel→visibility rule, wired at every enumerating surface |
-| 5 | `f7e4fd7` | the optional UI slots on `GameModule` |
-| 7 | `0c49c02` | the placeholder `src/games/biobuzz/` + all four registrations |
-| 6 | `2bba683` | `scripts/smoke-biobuzz/` and the `npm test` script |
-| 8 | (this commit) | CLAUDE.md + HANDOFF |
-
-Items 6 and 7 are committed in the other order: item 6's suite asserts that every id in
-`GAME_IDS` is registered, so it cannot be green until item 7's module exists.
-
-**"Adding a game" is now written down** — CLAUDE.md's seam section lists the four
-registrations and every slot with its consumer. The four are `GAMES`, `SIM_GAMES`, `SEASONS`
-and `GameId`/`GAME_IDS`, and **all four fail SILENTLY when missed**, which is why they are a
-list rather than a sentence.
-
-## Gotchas, in the order they will bite
-
-- ⚠️ **`SIM_GAMES`' entries are GETTERS, and that is load-bearing.** `src/sim/spawn.ts`
-  imports `simModuleFor` (item 3's clamp) and every game module imports `spawn`, so there is
-  a real import cycle through `src/games/sim.ts`. A cycle is safe only when nothing is read
-  at module-eval time, and `{ decode: DECODE_SIM }` IS such a read — so whether the file
-  worked depended on which module the process loaded first. Entering through `spawn`
-  (`scripts/smoke.ts` does) resolved; entering through a game module (the new
-  `scripts/smoke-biobuzz` does) threw `Cannot access 'DECODE_SIM' before initialization`.
-  Add a new game as a getter too.
-- ⚠️ **`public/robots.txt` and `public/sitemap.xml` are STATIC hand-written files.** They do
-  not read the registry: robots.txt has a per-game `Disallow:` block written out for
-  `/decode/...` and `/chain/...`, and sitemap.xml lists `/`, `/decode`, `/chain` and six
-  `/decode/...` routes. A season flipping to `stable` needs BOTH edited by hand. The new
-  smoke suite pins that per VISIBLE season (and pins that a hidden one is absent from both).
-  The same applies to `index.html`, which hard-codes the home description in three meta tags
-  and the JSON-LD because they ship before any JS runs — that string is now pinned against
-  the registry-built `HOME_DESC`, so a newly public season fails the suite until all of them
-  move together.
-- ⚠️ **The channel read lives in exactly ONE place**, `src/seasonVisibility.ts`. The RULE is
-  pure and lives in `src/seasons.ts` (which the server compiles, via `periodLabel`, so it
-  must stay free of `import.meta.env`) and takes the channel as an argument — the same split
-  `roomJoinRegion` uses, for the same reason: `src/net/env.ts` reads `import.meta.env` at
-  load, so the headless smoke run cannot import it at all, and this rule fails silently.
-  A new UI surface that enumerates games reads `visibleGames()` / `visibleGameIds()`, never
-  `registeredGames()` / `SEASONS`.
-- An **unknown channel string** sees only unrestricted seasons. That is the safe direction:
-  a typo'd `VITE_APP_CHANNEL` hides the private season rather than publishing it.
-- **DECODE's URLs are byte-identical** because `src/net/api.ts` omits the `game` query
-  parameter entirely for DECODE (`needsGameParam`) — DECODE is the server's default for a
-  missing game. Do not "tidy" that into always sending it: an older deployed server and a
-  newer client have to agree.
-- **`devRoutes` are ALPHA-ONLY** (`devRoutesEnabled()`), gated inside `devRouteFor` in
-  `App.tsx` rather than at the render site, so on a stable build the path does not route AND
-  does not render — it falls through to `parseScreen`, which sends an unknown path home.
-- A hidden game's URL prefix **keeps its screen**: `/biobuzz/records` on a stable build lands
-  on the saved game's records, not on home, and the mount effect then canonicalizes the URL.
-- ⚠️ **A hidden game had to be dropped from SAVED SETTINGS too, not just from the URL.**
-  Found in the by-hand channel check: `coerceSettings` validates `game` as a `GameId` and
-  knows nothing about channels, so a stored `biobuzz` (an alpha build on the same origin —
-  Electron, or a preview deploy) opened a STABLE build straight onto the season, eyebrow
-  reading "BIOBUZZ presented by RTX" and the URL canonicalizing to `/biobuzz`, on a build
-  whose picker does not list it. `App.tsx`'s settings initializer now `switchGame`s an
-  invisible saved game back to DECODE. The guard is in the initializer rather than in
-  `coerceSettings` on purpose: `settings.ts` is imported by the headless smoke run, and
-  `seasonVisibility.ts` pulls in `src/net/env.ts`, which cannot be imported there at all.
-- **`GameSettings.savedStartPoses` is still ONE shared list across games** (the CR note in
-  CLAUDE.md). BIOBUZZ inherits that problem; namespacing the setting is the fix when a third
-  game wants a pose library.
-- Game checks go in `scripts/smoke-biobuzz/`, **never appended to `scripts/smoke.ts`** — its
-  PASS/FAIL list is what the baseline gate diffs.
-
-## `src/games/biobuzz/` is a PLACEHOLDER
-
-Three files (`sim.ts`, `index.ts`, `state.ts`), each saying so at the top, and the P0-shell
-chat REPLACES all three. It is an empty 72×72in box with four walls, two start anchors,
-`scored: false`, `startLegality: false`, `initialAct: 2`, `startPoseCount: 2`, and a step
-that runs the shared drivetrain + Rapier solve + wall square-up and nothing else. No
-geometry is invented: the rules land at kickoff on **2026-09-12**, and CR's `APPROX`
-convention says an unflagged guess is worse than an empty field.
-
-`docs/biobuzz-contract.md` is the ownership map (Lane A the field, Lane B the robot, the
-integration chat everything outside `src/games/biobuzz/`). Per that contract, everything
-this session touched outside that directory is **integration-chat property** — a lane that
-needs a change there writes the request into its own handoff file.
-
-## The channel check, done by hand
-
-Both channels were verified against a real build (`.env.local` + `npm run build` +
-`vite preview`, since `npm run dev` bakes the channel at build time — the file was deleted
-afterwards and is `.gitignore`d anyway):
-
-- **alpha**: BIOBUZZ appears on the home picker; `/biobuzz` loads and selects it (eyebrow
-  "BIOBUZZ presented by RTX"), `/biobuzz/modes` works, and Free Drive renders the shell —
-  the empty 72×72in box with its tile grid and perimeter, one robot on anchor 0 at
-  (48, 36) heading 180°, no console errors.
-- **stable**: BIOBUZZ is absent from the picker, `/biobuzz` canonicalizes to `/decode`, and
-  `/biobuzz/records` lands on `/decode/records` (the screen is kept, the game falls back).
-
-The shell's DRIVE was verified headlessly rather than through the browser (86.4 in/s after
-1 s of full forward from the anchor). Synthetic key events from the automation harness do
-not reach the game at all — DECODE's Free Drive does not move under them either, so that is
-the harness, not the shell.
-
-## Next steps
-
-1. P0-shell replaces `src/games/biobuzz/`; the lanes start against
-   `docs/biobuzz-contract.md`.
-2. Plan item 7 in the plan's own numbering — `scripts/manual.mjs` (download a manual, run
-   `pdftotext -layout`, dump figures) — was NOT part of this brief and is still open. It
-   saves Lane A the first hour on kickoff day.
-3. Nothing here may be pushed until the season is public.
-# HANDOFF — 2026-09-11, third session (LAN self-hosting: the security review)
-
-Branch **`lan-selfhost`**, still stacked on `perf-load-v2`. Eight new commits, `cdad8a8`
-… `61373cf` and this one. `npm test` **ALL PASS**, `npm run dbtest` **ALL PASS**,
-`server:check` and `build` clean. `SIM_VERSION` and `BALANCE_VERSION` untouched, no physics
-touched. **Nothing pushed, nothing deployed, no PR opened.**
-
-## READ FIRST — an external security review of this branch, and what it changed
-
-Eight findings, four of them HIGH and gating the PR leaving draft. **All eight were verified
-against the real code first and all eight were real**; none was a false positive. All eight are
-fixed on this branch. In review order:
-
-1. **A guest was sending its cloud JWT to the LAN host.** `LobbyClient` attaches the Neon Auth
-   token to `join` and `spectate` unconditionally and `Lobby.tsx` is the one connect site that
-   follows a LAN address, so joining a classmate's laptop handed that laptop a bearer
-   credential for the guest's real account. Stripped at the **transport send boundary**
-   (`src/net/credentials.ts` + `WebSocketTransport.send`), never at the call sites — a rule
-   enforced per call site grows a hole every time somebody adds a message. The allowlist asks
-   "is this a CONFIGURED CLOUD SERVER", so an unclassified destination defaults safe.
-2. **The static path check was lexical and followed links.** It proved what a path spells out
-   to, not where it leads, and the root is a `dist/` on somebody's laptop. `servableFile`
-   canonicalises BOTH sides with `realpath` and `send` opens the resolved path. A miss and an
-   escape return the same thing on purpose.
-3. **The "unofficial, no cloud DB" policy lived only in the Electron launcher.**
-   `dist-server/lan.mjs` is an ordinary Node bundle anybody can run by hand, so it was a
-   guarantee about ONE way of starting the server. `server/lanMode.ts` moves it in-process.
-4. **Any player or spectator could claim the host's archive row.** `matchId` rode the
-   `matchResult` BROADCAST, and the cloud cannot tell who hosted a LAN match, so the first
-   poster took the row and the real host's upload was answered with a stranger's match. The id
-   is now a capability (`matchArchive`, host socket only) and the ownership check answers a
-   non-owner with **409**.
-5. `/api/lan`'s body cap rejected but kept buffering. Now destroys the request; plus per-user
-   rate and in-flight concurrency limits.
-6. The spawned server inherited the parent environment minus a denylist. Now an allowlist.
-7. Stop/start could race the old child's shutdown. `stop()` now settles on real exit and
-   `start()` awaits it.
-8. `lan_runs.match_id` was freeform text and `game` was unconstrained. Both are CHECK
-   constraints now, amended INTO 0033 — see the caveat below.
-
-## The three decisions somebody will want to re-litigate
-
-- ⚠️ **`SERVE_CLIENT` WITHOUT `LAN_MODE` REFUSES TO BOOT** (exit 1, naming the variable).
-  Serving the client is the one thing only a self-hosted server does, so the pair is one
-  decision. Inferring `LAN_MODE` from `SERVE_CLIENT` was rejected: the dangerous configuration
-  is the one where somebody believed they were starting an ordinary server, and a process that
-  quietly dropped the database out from under a real deployment is a worse surprise than one
-  that will not start. Documented in `.env.example` and `docs/lan-selfhost.md`.
-- **`LAN_MODE` is read in `pool.ts` and `auth.ts` THEMSELVES**, not applied by the boot-time
-  scrub alone. ESM evaluates a module body before the importing module's first statement, so a
-  pool built at import time would be built before any boot sequence could stop it. A policy
-  that depends on import order is not a policy. `enforceLanPolicy()` still runs before
-  `server/index.ts` reads `ADMIN_USER_IDS`/`OWNER_USER_ID` into consts; do not move it down.
-- **A 409 retires the upload locally** (`markLanRefused`). `pendingLanUploads` drains in order
-  and stops on the first failure, so a permanently-refused item would park the whole backlog.
-  The match stays on the device and in the host's list; only the backlog stops offering it.
-
-## Caveats and what is NOT proven
-
-- ⚠️ **MIGRATION 0033 WAS AMENDED IN PLACE.** That is safe only because it has never run
-  anywhere: it exists on `lan-selfhost` alone and is absent from `main`, `alpha` and
-  `perf-load-v2`, checked with `git ls-tree` at the time. `server/db/migrate.ts` tracks applied
-  migrations by FILENAME with no checksum, so a machine that already ran the old 0033 keeps the
-  unconstrained table silently. **If this has shipped by the time you read it, add an 0034.**
-- **The desktop launcher changes are covered by unit checks, not by a real Host press.**
-  `childEnv` is asserted directly in `npm test`; the stop/start ordering is reasoned and
-  reviewed but NOT exercised against a real Electron child. Press Stop then Host quickly on a
-  real build before this ships.
-- **The 409 path is proven at the repo layer** (`npm run dbtest`), not end to end against a
-  live cloud server with two accounts.
-- `npm run test:mm`, `uiaudit` and `contrast` were not re-run this session — nothing here
-  touches the matchmaker, a stylesheet or a colour token.
-- ⚠️ **`npm test` teed through a redirect truncated its own log twice on this machine**
-  (the run completed, the tail of the output did not reach the file). If a gate log ends
-  without `ALL PASS`, check the process exit before believing a failure: the canonical run here
-  was `npx tsx scripts/smoke.ts` piped to `tee`, which printed `ALL PASS`.
-
-# HANDOFF — 2026-09-11, second session (LAN self-hosting, end to end)
-
-Branch **`lan-selfhost`**, stacked on `perf-load-v2` (which is stacked on `alpha`). Nine
-commits, `42a6751` … `d00a4b1`. `npm test` **ALL PASS**, `test:mm` 58, `dbtest` ALL PASS,
-`server:check`, `build`, `uiaudit` (at baseline) and `contrast` (221) all green. `SIM_VERSION`
-untouched. **Nothing pushed, nothing deployed.**
-
-## What this is, and the one thing that decides its whole shape
-
-A team can host a DSIM game server on their own laptop and everyone on the same network plays
-on it, with **no terminal and no Node install** — the desktop app spawns the server itself.
-The design and every decision behind it is `docs/lan-selfhost.md`; read that before touching
-any of this.
-
-⚠️ **AN `https` PAGE CANNOT OPEN A `ws://` SOCKET.** The browser drops it as mixed content
-with no catchable error, so a guest who types a LAN address into `playdsim.com` watches it
-fail forever with nothing to go on. `localhost` is exempt. That single fact is why the LAN
-host SERVES THE CLIENT on the same origin as the socket (`server/static.ts`, `SERVE_CLIENT`),
-why the join instruction is a URL on a projector rather than a field in a panel, and why
-`mixedContentBlock` diagnoses the case BEFORE storing an address instead of letting the
-connection hang.
-
-## The trust boundary, which is the part to not break
-
-A LAN server is somebody's laptop and its operator can patch it. `lan_runs` (migration 0033)
-is its own table and `record_leaderboard` is a view over `records`, so **nothing written from
-a LAN match is reachable from any board, PB, rank or ELO query** — by construction, not by
-convention. Same pattern as `practice_runs` (0032). `/api/lan` also deliberately omits
-`addActivity`, so a LAN match does not even credit games-played.
-
-The second half is the URL split, and it is where this went wrong once already:
-
-- **`roomServerUrl()` / `roomServerUrlWith()` / `roomServerConfigured()`** follow a LAN
-  connection. `src/ui/Lobby.tsx` is their ONLY caller.
-- **`gameServerUrl()` / `gameServerHttpUrl()`** are ALWAYS the cloud, including mid-LAN-match.
-
-The first draft had `gameServerUrl()` return `lanUrl || cloud`, which is the obvious reading
-and silently pointed RANKED, RECORDS and SPECTATE at a laptop in the same room. `env.ts`
-carries a ⚠️ header block saying so. **Do not add a third LAN-following accessor.**
-
-## What is committed
-
-| commit | what |
-|---|---|
-| `42a6751` | `matchId` minted at `finalizeMatch`, carried on `matchResult` (optional on the wire) |
-| `9bf2cf7` | migration 0033 `lan_runs` + repo functions + `dbtest` coverage |
-| `f2e227c` | `POST`/`GET /api/lan`, `uploadLanRun`/`fetchLanRuns`, and the cloud-vs-LAN URL split |
-| `43b5982` | `server/static.ts` — the game server can serve the client, off unless `SERVE_CLIENT` |
-| `1c6645d` | `electron/lanHost.cjs` — the desktop app spawns the server itself |
-| `19a1cfd` | the LAN screen, the banner, origin adoption, the build-skew warning |
-| `c4b0e90` | `keepLanRun`/`flushLanRuns` — the host keeps the match; results-screen copy |
-| `d00a4b1` | `LanReplays` — the host's own list, on Career beside the practice one |
-
-## Things that are easy to get wrong here
-
-- **`ELECTRON_RUN_AS_NODE=1` is what makes hosting work on a machine with no Node.** It turns
-  `process.execPath` into a plain Node runtime. Spawning `node` would work on a developer's
-  laptop and fail silently on a team's.
-- **The desktop server bundle is FULLY BUNDLED**, unlike the Fly one (`--packages=external`):
-  a packaged Electron app has no `node_modules` to resolve from. It needs the `createRequire`
-  ESM banner in `package.json`'s `server:bundle`.
-- **A bundle cannot be spawned from inside `app.asar`**, so `serverScript` copies it out to
-  `userData` — and RE-copies when the sizes differ, which is what makes an app update take
-  effect instead of the host running last version's server all season.
-- **The child's environment is blanked, not merely empty**: `DATABASE_URL`, `ADMIN_SECRET` and
-  the rest are set to `''` explicitly, so a developer with a real `.env` in their environment
-  cannot host a match straight into production.
-- **`server/static.ts` reads `SERVE_CLIENT` PER CALL.** Reading it at module load made the
-  module untestable — an ES import hoists above a test that sets the variable first — and the
-  one security-relevant function in it, `filePath(ROOT, url)`, is exported with the root as an
-  ARGUMENT for exactly that reason. The containment check is on the RESOLVED path against
-  `ROOT + sep`, never on the URL text. Pinned in smoke against `/../`, `%2e%2e%2f`, `..%5c`,
-  nested, `%00` and `%zz`.
-- **`parseLanAddress` checks SHAPE BEFORE POLICY.** `isPrivateHost` answers false for a public
-  address and for garbage alike, so `!!!` used to be reported as "not on this network".
-- **`adoptLanFromOrigin` is a PROBE, not an assumption.** `npm run dev` on `localhost:5173`
-  passes every other test it applies; `/health` answering `ok` is what separates them.
-- **Build skew is the hazard specific to this feature.** The desktop shell loads the LIVE site
-  while the server it starts serves the `dist/` from the installer, and a CODE-JOINED room has
-  no build segregation to catch the mismatch. `checkSkew` warns and offers the one-click fix
-  (play through `http://localhost:<port>`). It is a warning, not a block — see the panel.
-
-## Verified, and how
-
-- The server bundle boots with no database (`[server] channel=stable db=none`), answers
-  `/health`, and serves `/` as `text/html`.
-- The Electron host lifecycle, headlessly with a stubbed `app`: address enumeration (Wi-Fi
-  private first, Tailscale `100.x` after), start→health, `db=none` with a real DSN in the
-  environment, an idempotent second start, a clean stop.
-- **The whole guest path in a real browser against a real LAN server**: origin adoption stored
-  `ws://127.0.0.1:8787`, the banner rendered, the SPA fallback served `/decode/lobby`, and
-  CREATE ROOM produced a real room over the LAN WebSocket.
-- **A full 9,892-tick DECODE match played through to the final whistle**, whose result landed
-  on the host's device as a `lanruns` row carrying the server-minted UUID, the real score, the
-  roster and a complete replay container — with no `remoteId`, correct for a signed-out run
-  with the backlog holding. It fired while the tab was BACKGROUNDED and the render loop was
-  throttled to a stop, because `onMatchResult` rides the socket rather than rAF.
-
-## What is NOT done
-
-- **The upload half has never run against a live cloud.** `/api/lan` is covered by `dbtest`
-  against PGlite and `uploadLanRun` is covered by nothing — it needs a signed-in host on a
-  LAN server with the real game server reachable. That is the last gap, and it is the
-  feature's payload.
-- **Nothing has been packaged.** `npm run dist` has not been run since `server:bundle` was
-  added, so the asar copy-out path in `serverScript` is reasoned-about, not observed.
-- **No reachability check on the HOST's firewall.** The panel says which addresses exist; it
-  does not say whether anything outside the machine can reach them, and a Windows firewall
-  prompt on first host is the single most likely support issue.
-- The dated `perf-load-v2` section is still missing from this file — it was lost to an
-  `--ours` conflict resolution and belongs in the `dsim-bb-load` worktree, not this one.
-
-# HANDOFF — 2026-09-11 (permessage-deflate is ON, and the wire is measured)
-
-Branch **alpha**, commits `e287c0e` + `41e346d`. `npm test` **ALL PASS**, `npm run build` green,
-`npm run server:check` green. `SIM_VERSION` untouched. **Production not touched and NOT DEPLOYED
-— this is a server change and it needs `./scripts/fly-deploy.sh` to take effect.**
-
-## READ FIRST — what changed and what is still unproven
-
-`server/index.ts` no longer sets `perMessageDeflate: false`. WebSocket compression is on, with
-context takeover kept (`serverNoContextTakeover: false`, the load-bearing line) and a 15/8 window.
-Requested by the owner after the load investigation; the reasoning and the numbers are in both
-commit messages and in the block comment at the `WebSocketServer` construction.
-
-**It is not a protocol change and needs no `CLIENT_CAPS` gate.** The extension is negotiated per
-connection in the HTTP upgrade (RFC 7692), so a client that does not offer it keeps receiving
-byte-for-byte what it receives today. Verified against the running server: offering yields
-`permessage-deflate; client_no_context_takeover; server_max_window_bits=15`, not offering yields
-no extension header at all. That is what makes this safe to deploy while one Fly app serves every
-client version.
-
-### Measured, end to end, per client downstream at steady state
-
-| shape | today | with deflate | saving |
-|---|---|---|---|
-| decode-solo | 100.5 KB/s | 12.5 KB/s | -88% |
-| decode-1v1 | 184.7 KB/s | 26.0 KB/s | -86% |
-| decode-2v2 | 283.2 KB/s | 48.9 KB/s | -83% |
-| chain-solo | 387.8 KB/s | 68.8 KB/s | -82% |
-
-Weighted on the stated 6/8 solo, 1/8 1v1, 1/8 2v2 split, 1,000 concurrent goes from 647 GB/hour
-to 99, i.e. a 3-hour peak from **$38.80 to $5.94** at an ASSUMED $0.02/GB.
-
-### Two corrections to `docs/capacity.md` (which lives on `perf-load`, not here)
-
-1. **§5 understated today's egress by ~40%.** It modelled 125 KB/s per client weighted; the wire
-   measures 175. So the uncompressed 3-hour peak is $39, not $26, and the compressed $3.17 row is
-   not reachable at any window size measured here.
-2. **§6's 13/6 knee was priced against a machine that cannot exist.** It costed 1,000 sockets at
-   250 MB of zlib windows, while §3 of the same document proves one process is one core and a core
-   carries ~13 rooms. At 20 sockets the choice is 5 MB against 1.3 MB. 13/6 measured -67% on a
-   2v2 — the saving DEGRADED as the room got busier, because a bigger frame does not fit a 64 KB
-   window twice — so the knee was trading the ratio away in the most expensive room to save
-   192 KB. Hence 15/8.
-
-### `scripts/zz-deflate-cost.ts` is the new probe, and why it had to exist
-
-`scripts/loadtest.ts` (on `perf-load`) counts bytes in its `message` handler, and ws hands that
-handler the DECOMPRESSED payload — its figure is identical compressed or not, and it says so
-itself. Right for "how big is a snapshot", useless for "what does egress cost". The probe counts
-TCP `bytesRead` off the socket, runs each shape twice varying only whether the client offers the
-extension, and asserts the extension really was negotiated on one run and absent on the other.
-It spawns the real server itself: `npx tsx scripts/zz-deflate-cost.ts`.
-
-### STILL UNVERIFIED — all of it about latency, none of it measurable on Windows
-
-- **Does the added per-message time show in the SNAPSHOT GAP?** Jitter is the choppiness signal
-  players feel, not mean RTT, and this is exactly what the original `perMessageDeflate: false`
-  comment was worried about. Needs a Linux run.
-- **Resident memory at full population.** 15/8 is 256 KB of window per socket plus ws's own send
-  buffers. Bounded by CPU (tens of sockets per machine), but unmeasured on a real machine.
-- **Where the CPU lands.** Node runs permessage-deflate's zlib on the libuv THREADPOOL, not the
-  event loop, so the cost should sit beside the room loop rather than inside it. `capacity.md` §6
-  priced it as if it were on-loop (~+5% on a solo room). This is the assumption most worth
-  checking, because if it holds, compression is cheaper than §6 claimed as well as less effective.
-
-### Next steps
-
-1. Deploy (`./scripts/fly-deploy.sh`, owner only), then re-run the probe against the deployed
-   server with `--url` and compare the snapshot gap to a pre-deploy baseline.
-2. `docs/capacity.md` §5/§6 need the two corrections above folded in. That file is on `perf-load`
-   and is that chat's to edit.
-3. **Unrelated and still open, from `capacity.md` §7: `Room.onInput` buffers future-tick inputs in
-   a per-robot map pruned only once the world reaches that tick, so a client stamping huge tick
-   numbers grows server memory without bound.** A latent DoS, flagged there as the one item that
-   should not wait on the capacity review. A fix exists UNCOMMITTED in the `perf-load` worktree
-   (`MAX_INPUT_LEAD_TICKS`), owned by that chat — it is not on alpha.
-
----
-
-# HANDOFF — 2026-09-10, fourth session (a struck artifact may not outrun the robot)
-
-Branch **alpha**. `npm test` **ALL PASS — 1307 checks (one new: nothing a robot pushes ends up faster than the robot)**. `npm run build` green, `npm run server:check` green.
-`SIM_VERSION` untouched at **2**. Production not touched. Alpha deployed at `49d0926`; /health ok.
-
-## READ FIRST — the report, and what it was
-
-"If I drive in full speed, third ball bumps with the second ball and doesn't get intaked." It is
-a real physics violation, not intake tuning.
-
-Two equal masses with restitution `e <= 1` hand the struck body `((1+e)/2)*v`, never more than
-the striker's own `v`. The artifact solve broke that whenever the striker was itself pressed
-against a KINEMATIC chassis and re-driven every tick: unable to recoil, it read as infinite mass
-and the solver delivered `(1+e)*v`. Measured on a full-speed ram into an offset pile of four, the
-artifact beyond the pushed one left at exactly **90 in/s** — `BALL_MAX_SPEED` clamping a
-collision that wanted more — against a robot doing **85**. A line of six was **90 against 75**. A
-ball faster than the robot can never be caught again, which is the whole report.
-
-**The fix** (world.ts, after the round loop): a ground artifact's speed is bounded by what could
-physically have driven it — its own start-of-tick speed, the start speed of everything in its
-start-of-tick contact CLUMP, and the speed of any robot touching that clump. Measured after,
-both scenes sit at exactly **1.00x** the robot's own speed.
-
-- a CLUMP, not one hop. A chassis pushes a chain in a single pass by design; capping a ball on
-  its immediate neighbour's start speed alone freezes the back of a pile for a tick and brings
-  back the burial the speculative look-ahead exists to prevent.
-- every velocity pre-pass runs BEFORE the snapshot, so `bounceFirstContacts`, `scatterBalls`,
-  `clumpDrag` and `intakeSuction` are already inside the bound. Only the solver's excess is cut.
-- a PINNED artifact is EXEMPT. A wedge a few degrees off square must throw the ball `1/tan(theta)`
-  times the robot's own advance to keep it clear of the closing gap; holding it to the robot's
-  speed shuts the wedge and parks the robot on the ball, which is the failure the pin work fixed.
-- `BALL_BALL_RESTITUTION` is UNCHANGED at 0.68 and still measures 0.67. Lowering it also fixes
-  the symptom and was rejected: it is what makes a drain disperse instead of the artifacts
-  travelling as merged pairs, and it turns out to have almost no other test coverage (dropping it
-  breaks exactly one check, and that check is tautological — it asserts the constant).
-
-## Bisection that pinned the cause, so it is not re-done
-
-| change | third capture restored | what it proves |
-|---|---|---|
-| disable `bounceFirstContacts`, restitution left at 0.68 | no | the pre-solve first-contact bounce is NOT the culprit |
-| artifact collider restitution -> 0, bounce pass kept | yes | it IS the solver's restitution on a SUSTAINED contact |
-| `BALL_BALL_RESTITUTION` -> 0 or 0.3 | yes | same mechanism from the constant end; rejected above |
-| `BALL_MAX_SPEED` -> 40 | yes | only by putting the ceiling under drive speed; a symptom fix |
-| `PHYS_BALL_FRICTION` -> 0.3 | yes | by bleeding drift; breaks 4 checks incl. the gate drain |
-| `clumpInterval` 0.04 -> 0.02, `capMax` 0.09 -> 0.05 | no | byte-identical. The intake cadence is NOT involved |
-
-## Two things found in passing, NOT yet fixed
-
-- **`sideTouch` can never fire.** The flank grab in `updateIntake` (robot.ts) requires
-  `m.mouthHalf > width/2 + 0.5`, and no legal robot satisfies it: `intakeMouth` sets the VECTOR
-  preset's `mouthHalf` to exactly `width/2`, and sloped/triangle have a fixed 7in mouth against a
-  minimum half-width of 7.25. It is documented as the vector preset's flank capture and it is
-  unreachable code.
-- **`INTAKE_STRUCT_FRICTION` (0.05) is zero in effect.** The robot solids in `solveArtifacts` set
-  the `Min` friction combine rule, `Min` outranks the ball collider's default `Average`, and
-  `min(0, 0.05) = 0`. The intake wedges and the held artifacts are frictionless to a ground
-  artifact. Verified directly against Rapier, along with the matching fact that the field statics
-  name NO rule, so `PHYS_BALL_WALL_FRICTION` would combine by AVERAGE and be **halved** if it
-  were ever raised from 0.
-
-## Wall friction was tried and is not the lever (for "artifacts move too quickly")
-
-Raising `PHYS_BALL_WALL_FRICTION` makes a wedge self-lock below `atan(mu_effective)`, and that
-landed to the degree at every value tried (nominal 0.1 through 1.0, effective half of each). Two
-expected costs did NOT appear: the wall bounce is untouched at every value (impacts are bounced
-by the pre-solve pass, which is normal-only, so the constant reaches sustained contact and
-nothing else), and the drain still disperses (spread ratio 0.59-0.69 against a 0.63 baseline).
-But every value breaks a check, and which one flips partway up: below ~0.35 it is G408
-over-possession re-billing (a leaned-on pile cannot squirt free, so it creeps and keeps re-arming
-the carry distance); from 0.35 up it is the wall-squeeze squirt (at 8 degrees the robot stops
-reaching the wall). That flip is not tunable — a ball that does not fly out and a robot that
-drives through are the same event, and friction only moves the angle at which the choice flips.
-
-## Deploy
-
-Alpha server DEPLOYED with the wrapper after `49d0926`; /health answered ok. The Vercel alpha
-client rebuilds from the push. Production untouched.
-
-# HANDOFF — 2026-09-10, third session (piles, pins and squeezes, gate intaking)
-
-Branch **alpha**. `npm test` **ALL PASS — 1306 checks (four new: the pile, the squeeze, and gate intaking at two standoffs; the G408 lean scene, the drain-spread check and the outflow-shove tolerance restated)**. `npm run build` green, `npm run server:check`
-green. `SIM_VERSION` untouched at **2**. Production not touched. Alpha deploy: see **Deploy**.
-
-## READ FIRST — the three reports, and what each turned out to be
-
-1. "Artifact-chassis overlap still happens." Two real sources. A CLAIMED artifact (one the intake
-   had hold of) dropped the chassis from its collision filter, so a pile behind pushed it 2.6in
-   through the bumper while its capture timer ran; claimed artifacts meet the chassis now, and
-   the chassis lists `A_CLAIMED` in its own filter (a Rapier pair needs both sides). And the
-   default look-ahead the second session left the artifact world on made every ball-ball contact
-   form a tick late, so a pile pushed by a chassis became a chain of burials (0.6in in the
-   chassis, 1.7in ball in ball). The 3.5in speculative look-ahead is BACK, and the bounce Rapier
-   drops on a speculative contact is restored exactly by `bounceFirstContacts` (below).
-2. "Artifacts act like they are fixed in place." The pin. A fixed pin circle stopped the robot
-   dead the moment a squeezed ball was still a fraction inside it, the round re-solve then threw
-   away the squirt the round had just found, and the next tick repeated it — a ball creeping at
-   5 in/s under a robot parked on it. The pinned circle is a KINEMATIC body now, carrying the
-   artifact's velocity (`PinnedCircle`), and a re-run round keeps artifact velocities (positions
-   still restored). A stuck ball is the wall it always was; a sliding one is a wall the robot
-   follows. What remains "fixed" is genuine: a DEAD-SQUARE push of a ball into a wall. At 8° and
-   15° off square the ball squirts out along the wall and the robot drives on, whether it meets
-   the flat back of the chassis (smoke-checked) or a funnel intake with a full hopper.
-3. "Going into a pile, the robot should intake three as the rest are pushed aside; they act
-   like a barrier." The pin test's chain support was direction-blind, so a pile touching a wall
-   anywhere counted as immovable, and the robot stuttered to 6 in/s on it. With one-pass
-   speculative pushes the solve itself decides what could move, and an empty robot at full
-   throttle into a pile of eight now takes three and never drops below 60 in/s.
-
-## The design, as it stands (CLAUDE.md Physics is the reference)
-
-- Artifact contacts are FRICTIONLESS (`PHYS_BALL_FRICTION` 0 / `PHYS_BALL_WALL_FRICTION` 0):
-  at 0.05 the solver's penetration-recovery normal impulse in a squeeze, times a twentieth,
-  cancelled 165 in/s of sideways speed — a friction cone around a ball that would roll.
-- `PHYS_BALL_PREDICTION` 0.35 (3.5in, speculative). `bounceFirstContacts` runs before the solve:
-  a pair not yet touching (`BALL_FIRST_CONTACT_GAP`) that will meet within
-  `BALL_FIRST_CONTACT_LOOKAHEAD` = 1.5 ticks gets the exact equal-mass restitution impulse; the
-  field via `clampBallPosToStatics`. 1.5 because the speculative constraint clips a closing pair
-  the tick before they touch (0.49 for a set 0.68 at one tick). Measured 0.67 / 0.47.
-- No chassis skin (`PHYS_BALL_CHASSIS_SKIN` is gone), no direction cone (`ARTIFACT_PIN_COS`
-  gone), no escaping exemption (`ARTIFACT_PIN_ESCAPE` gone). All three were tried today and each
-  failed a scene the others passed; see the pin comment in `pinnedArtifacts` for the two that
-  were the most tempting.
-- `PinnedCircle` {x, y, vx, vy}: start-of-tick position, the artifact solve's velocity, zeroed
-  under `BALL_REST_SPEED` (the solver's jitter carried into the circle walked a stalled robot 13°
-  in two seconds). `PHYS_PIN_FRICTION` 0.15 stays: this is the ball that could NOT roll.
-- **A ball on the field has no velocity INTO it** (world.ts, beside the containment clamp): the
-  squeeze between a kinematic chassis and a static wall leaves the solver's compromise velocity
-  pointing into the wall (58 in/s measured); kept across rounds it bounced the ball back off the
-  wall at 29 in/s and the robot off the ball. The sideways squirt is kept.
-- `bounceFirstContacts` never bounces a ball already ON the static it heads for (a probe
-  `BALL_FIRST_CONTACT_GAP` along its velocity is clamped): that is a sustained contact.
-- `BALL_MAX_SPEED` 90 in/s (a chassis at full speed) on what the artifact solve hands back: a squeeze can demand 300+,
-  which is faster than the look-ahead per tick — a 5in artifact went through a 2.7in corner gap.
-- `clumpDrag` reads the shared `artifactSolids` (`BALL_PUSH_CONTACT`); the per-contact scatter
-  kick is gone and the coincident kick cannot stack.
-
-## Gate intaking (the follow-up report)
-
-"When gate intaking, the balls that come down should not be pushing the robot away." Measured
-with the robot's flank on the wall and its mouth over the exit, intake on, the ramp draining: with
-the tip 6in below the exit the drain shoved the robot **0.80in** (peak 6.6 in/s). Cause: every
-arrival that piled against the held artifacts became a pin, and the pinned circle was the full
-inflated ball carrying the ball's velocity — a moving immovable pointed at the robot. Three
-changes, all under one rule, **a pin may undo the robot's own advance and nothing more**:
-
-- the circle is sized against the robot's START pose and all of its solids (`robotPenetration`
-  with nothing skipped — the pin test skips held shapes for the doorway ball and the chassis for a
-  claimed one, and a circle tangent to the wrong shape overlapped the right one): tangent to the
-  nearest solid, plus `PHYS_PIN_INFLATE` only for a robot DRIVING into it (`driveIntent` along the
-  pin normal), capped at the full inflated ball. The inflation is what the soft contact compresses
-  under the drive force — re-tangenting each tick to the compressed pose let a driving robot creep
-  0.14in a tick into the ball and the ball 0.2in into the wall. A robot that drove into a pinned
-  ball is re-solved from where it started and stops at the inflation (no more 0.8in forming-tick
-  overshoot); a robot not driving toward it is not moved;
-- the circle moves only when the robot is DRIVING into the ball (`ARTIFACT_PIN_DRIVE`, 5% of
-  stick along the pin normal — intent, not measured advance: a robot stopped on its pin advances
-  nothing and is still pushing, and reading that as not-pushing killed the squirt), and then only
-  across or away from the robot's CENTRE — the first version clipped along
-  the one contact normal the pin test reported (a held artifact's diagonal), and what was left
-  still ran into the chassis face at 24 in/s.
-- a pinned artifact under a robot that is not pushing it goes back to where it began the tick,
-  at rest: the squeeze between a kinematic chassis and the field has no solver answer (position
-  or velocity), and the smoke jitter scene (an idle robot parked 1.25in onto the human-player
-  column) buzzed at 40 Hz once the robot stopped being shoved off it. Zeroing the velocity alone
-  did not stop it — the position corrections alternate on their own.
-- NOT a velocity clip against the robot the ball touches (tried, removed): projected along a
-  wedge slope's diagonal normal it turned a squeezed ball's compromise velocity into a sideways
-  drift (6.7in along the wall under a stalled robot) and a 40 Hz jitter. The wall clip is
-  axis-aligned and has no such failure.
-
-Result: **0.00in** displaced at either standoff, empty or full hopper; smoke pins it at 0.1in and
-the old outflow-shove check went from a 1.5in tolerance to 0.25.
-
-## Measurements (the pile probe, deleted)
-
-| scene | before today | now |
-|---|---|---|
-| empty robot, full throttle, pile of 8 in open field: held / slowest in the next 0.8s | 3 / 0 in/s (stall) | 3 / 69.6 in/s |
-| same, worst ball-in-ball overlap | 1.7in | 0.3in |
-| vector intake, same pile: deepest chassis burial | 5.6in (claimed ball through the face) | 0.5-0.7in, at the face, during a capture |
-| pile of 8 against the far wall, square on | stutter 73→6→25→9, yawed 30° | pushes in, jams in the funnel with 3 taken (legit), no yaw |
-| one wall ball, flat back of the chassis 8° / 15° off square | robot parked on it | ball squirts 20-100in along the wall, robot reaches the wall |
-| one wall ball, funnel intake, full hopper, 8° / 15° | parked on it | ball pops out across the wedge, robot reaches the wall |
-| one wall ball, funnel intake, EMPTY hopper, 0 / 8 / 15° | — | taken, every time |
-| holding a pinned wall ball at full throttle: steady overlap | −0.16in | −0.16in |
-
-## Gotchas
-
-- **The G408 lean scene bills the ARRIVAL once now.** A full-throttle ram into a six-pile on the
-  wall swallows three and squeezes the other three out along the wall; that push is a herd and
-  is billed, like the wall-row ram. Holding afterwards still costs nothing (checked over 6.5s).
-  Under the old friction the pile jammed and nothing moved, which is why the check used to see 0.
-- **Never edit a probe with `node -e` in bash when the JS has template literals.** Twice today a
-  patch printed "done" with the console.log arguments stripped out. Write the .mjs with the file
-  tool and run it.
-- **A kinematic circle at rest is not a fixed collider** unless its velocity is exactly zero — the
-  jitter the solver leaves on a squeezed ball moved it.
-- **Keeping velocities across rounds can hand a ball a speed the next tick cannot see**; hence
-  `BALL_MAX_SPEED`.
-- **Off-field ball positions are an invalid staging.** Anything at (300,300) is clamped back into
-  the field onto ONE point and kicked apart every tick; five suite scenes did this and one of them
-  put nine balls in the wall-ram robot's path. They now truncate `w.balls`; the drain scenes keep
-  `RAMP_SLOTS + 1` because they re-purpose those.
-- **The human player collects from the audience corner and splices the ball out of the world**;
-  a scene holding references sees it frozen where it was. The drain-spread check filters on
-  `w.balls.includes(b)` now.
-- **The captured ball's collider appears at its slot on the tick of capture** and can overlap the
-  next artifact in the mouth by ~1in for a few ticks. It reads as the capture animation; the
-  smoke pile check measures the chassis box only for that reason. Worth smoothing some day.
-
-## Next steps
-
-1. Play-test on alpha: piles, gate intaking with an empty and a full hopper (the drain must not
-   move the robot at any standoff), pushing a wall ball at an angle, and parking an idle robot on
-   a column of artifacts (nothing may buzz).
-2. A pile jammed in a FULL funnel against a wall stops the robot (three taken, the rest boxed in
-   by the wedge, the wall and each other). That is what a funnel does; if it reads as wrong on the
-   alpha, the honest change is in `artifactSolids` (the wedge geometry), not in the pin.
-3. Slice 3 (auto-path robot as a dynamic body) still not started.
-
-## Deploy
-
-Alpha server DEPLOYED with the wrapper after each sim commit — 4f9ffd5 (piles, pins, squeezes) and 32cd777 (gate intaking: a pin may undo the robot's own advance and nothing more); /health answered ok both times. The Vercel alpha client rebuilds from the push. Production untouched.
-
-# HANDOFF — 2026-09-10, second session (artifacts collide like balls)
-
-Branch **alpha**. `npm test` **ALL PASS — 1302 checks (seven new, pinning the artifact contact model)**. `npm run build` green, `npm run server:check`
-green. `SIM_VERSION` untouched at **2**. Production not touched. Alpha deploy: see **Deploy**.
-
-## (earlier today, second session) Two defects in the artifact CONTACT MODEL — friction and restitution; the look-ahead and skin decisions there are SUPERSEDED by the third session above
-
-The report: "Artifacts feel like they are stuck to each other or stuck to the wall. They don't
-leave their semi-linear formation they form when they come out of the gate. They don't
-disperse." and "The artifacts do not behave like a 2d collision." Both true, both measured,
-both fixed in the artifact world's contact parameters rather than with a pass. CLAUDE.md's
-**Physics** section carries the reference (ARTIFACTS COLLIDE LIKE BALLS); the short version:
-
-1. **In-plane friction on a rotation-locked circle is a drag that on a real rolling ball would
-   be spin.** Ball bodies are rotation-locked circles in a top-down plane; a tangential friction
-   impulse had nowhere to go but their translation. At `PHYS_BALL_FRICTION` 0.7 / wall 0.5 a
-   glancing hit sent the struck ball off at 3° where the contact normal was at 30°, a 45° wall
-   bounce kept a quarter of its along-wall speed, and 70% of the moving contacts in a gate
-   drain were pairs travelling together. Now 0.05 / 0.05 (ball-ball, ball-wall, ball-bumper).
-2. **Rapier applies NO restitution on a speculative contact.** The artifact world looked 3.5in
-   ahead (`PHYS_BALL_PREDICTION` 0.35 × lengthUnit 10), and Rapier closes a speculative gap as a
-   velocity clip, computing the bounce from whatever approach is left — measured e ≈ 0.14 for
-   a set 0.68 (ball) and 0.14-0.20 for 0.5 (wall), at every speed; stiffer contacts made it
-   worse (0.03); CCD changed nothing. So a ball rear-ending the one ahead merged with it — the
-   train. The look-ahead is Rapier's default now (0.002, bounce measured 0.67 / 0.47) and the
-   CHASSIS carries a contact SKIN (`PHYS_BALL_CHASSIS_SKIN` 0.35in) so a full-speed sweep still
-   catches an artifact before burying it. No skin on the intake (a skin on the wedge narrows the
-   throat and squeezed what was in it: 1.44in burial, a ball ejected at 161 in/s).
-
-Three things had to follow:
-- **The pin needs something behind the artifact** (`pinnedArtifacts`): with real contacts a
-  full-speed ram buries the first ball of a clump for a tick, and the old entry clause pinned
-  any deep overlap with no support — the robot stopped dead on 0.2 lb of artifact. Support is now a
-  chain through OTHER artifacts to a static or robot, or the field — and **the field only pins
-  what is pushed INTO it** (`ARTIFACT_PIN_COS` 0.85, ~32° of square; `fieldPushback` gives the
-  direction). A corner catching a ball against a wall pushes it at an angle; a round ball
-  pushed at an angle rolls out along the wall. Reading that as a pin had parked the robot
-  behind a ball it was not touching (the inflated pin circle + the release hysteresis left a
-  dead band: "corner-hit wall ball is nudged aside" measured 0.1in).
-- **`clumpDrag` reads the same `artifactSolids` the solve does, at the skin** — a pushed
-  artifact rides 0.35in off the bumper and the bare-surface contact test never saw it (the
-  clump test read 0/0/0%). The robot solids are built once, before the pre-passes, in
-  `world.ts`.
-- **The per-contact scatter kick is gone** (`scatterBalls` keeps only the coincident-pair kick,
-  which also no longer stacks: a pile of many coincident artifacts used to explode). It was
-  standing in for collisions that did not work; with them honest it made the drain's spread
-  WORSE (axis ratio 0.53 with it, 0.73 without) and kept balls jittering. The owner's ask
-  behind it ("spread out more") is served better by the real collisions.
-
-## Measurements (throwaway probe, deleted)
-
-| scene | before | after |
-|---|---|---|
-| glancing hit, impact parameter R: struck ball's angle off the contact normal | 26° | 3° |
-| same, tangential speed of the struck ball | 9 in/s | 1.3 in/s |
-| 45° wall bounce, (−30, 30) in | (4.0, 8.8) | (13.9, 25.8); ideal (15, 30) |
-| head-on ball-ball restitution at 40 in/s (set 0.68) | 0.14 | 0.67 |
-| ball-wall restitution at 40 in/s (set 0.5) | 0.20 | 0.47 |
-| nine-ball gate drain at 10 s: minor/major axis ratio | 0.01 | 0.73 |
-| …balls touching the wall / touching pairs | 9 / 8 | 4 / 3 |
-| …co-moving contact ticks (moving pairs with matching velocity) | 70% | 33% |
-| …all nine at rest | never | 3.5 s |
-| full-throttle ram into a free 3-clump, slowest speed in the next 0.5 s | 0 (stalled) | 69.6 in/s |
-| 60 in/s artifact squeezed between wall and a parked robot's flank: robot displaced | — | 0.30 in |
-
-Experiment ladder that found the restitution defect (prediction is normalized × lengthUnit 10):
-prediction 0.35 → e 0.14 at every speed; 0.02 → 0.14/0.29/0.68 rising with speed; 0.002 →
-0.77/0.67/0.68 (ball) and 0.42/0.47/0.49 (wall); freq 25 → 120 Hz at 0.35 → 0.03/0.00; CCD on
-→ identical to CCD off. The clip-then-bounce mechanism fits all of it.
-
-## Gotchas
-
-- **`normalizedPredictionDistance` is × lengthUnit.** 0.35 was 3.5 INCHES, not 0.35 — the config
-  comment said so and it still read as small.
-- **The exit drift experiments are chaotic.** `EXIT_DRIFT` 2.5 / 3 / 4 / 5 gave axis ratios
-  0.73 / 0.78 / 0.65 / 0.69 on one seed — no monotone benefit, so it stays at the owner's 2.5.
-  If the wall-hugging is still too much on the alpha, this is the dial (the release lands the
-  artifact immediately; a real drop off the lip would scatter it more).
-- **Balls resting on a wall can carry a micro-velocity** (< 0.01 in/s) from the soft contact's
-  position correction; the pre-solve rest snap cannot see it. Harmless, but "all at rest" in a
-  probe can read as "never" because of it.
-- **The keep clause of the pin is still direction-agnostic** (a pinned artifact stays pinned
-  within `ARTIFACT_PIN_RELEASE` while anything supports it). Entry is directional, so the
-  corner dead-band cannot form, but a pin that formed square and then slid can outlast the
-  geometry by up to half an inch.
-- **The parked-robot shove is 0.30in** at 60 in/s on the flank: the inflated pin circle pushing
-  the robot out of a 0.21in burial. Real bumpers give about that. If it reads as a shove on the
-  alpha, the pin circle would need to be placed tangent to the chassis surface for a robot that
-  did not move into the ball.
-- The suite's `{ kind: 'held', robot: 99 }` idiom (see the earlier section) is still in the
-  rail scenes; none failed.
-
-## Next steps
-
-1. Play-test on alpha: the drain, pushing a clump, gate intaking with a full hopper.
-2. If artifacts read as floating off the bumper, `PHYS_BALL_CHASSIS_SKIN` 0.35 → 0.25 (the
-   catch distance for a full-speed sweep shrinks with it; scene F in the probe measured 0.80in
-   burial with NO skin at 70 in/s).
-3. Slice 3 (auto-path robot as a dynamic body) still not started.
-
-## Deploy
-
-Alpha server DEPLOYED with the wrapper after the sim commit (254d24e); /health answered ok. The Vercel alpha client rebuilds from the push. Production untouched.
-
-# HANDOFF — 2026-09-10 (collisions rebuilt: one position authority per element)
-
-Branch **alpha**. `npm test` **ALL PASS — 1296 checks** (7 failures at session start, 20 the
-moment the rewrite landed, 0 now). `npm run build` green, `npm run server:check` green.
-`SIM_VERSION` untouched at **2** (alpha policy: the bump is relative to MAIN). Production
-(`dohun-sim-decode`) NOT touched. Alpha server: see **Deploy** at the bottom of this section.
-
-## (earlier today) The seam is gone, not patched — still the reference for the engine's shape
-
-The request was "fundamentally fix collisions and the physics engine; there should never be a
-case where there is nowhere to go for some elements". Read as an invariant: **every element
-ends every tick somewhere it is allowed to be, with ONE position authority per element.** The
-previous section's three-faced fault (artifact/robot interaction faked at the seam between two
-solves that could not see each other) is closed by removing the seam. CLAUDE.md's **Physics**
-section is rewritten and is the reference; the short version:
-
-- **`src/sim/artifactSolids.ts` (NEW) is the one geometry authority** for what on a robot is
-  solid to an artifact: chassis box, funnel wedge quads with a compliant lip (`INTAKE_LIP`),
-  vector flank rails (`INTAKE_RAIL_T`), held balls. `robotSolids` / `robotPenetration`
-  (with a `floor` so near-misses are reported for the keep test). The mouth is open in it.
-- **`solveRobots`** now takes the PINNED artifacts as fixed, inflated, low-friction circles
-  (`R_PIN`, `PHYS_PIN_INFLATE`, `PHYS_PIN_FRICTION`) against density-0 chassis solids on
-  each dynamic robot body (`R_CSOL`). The lateral clip after the solve distinguishes
-  "stopped by a contact" from "slung sideways" — it used to restore a strafe a contact had
-  just refused (a stationary robot reported −34 in/s and crept into pinned artifacts).
-- **`solveArtifacts`** replaces `solveBalls` (and `artifactMomentum`, `ballRobotFeedback`):
-  balls dynamic, every robot a `kinematicPositionBased` body swept from `sweepFrom` (the pose
-  at the top of the tick; a path jump resets it) to where the robot solve put it, carrying the
-  `artifactSolids` shapes as colliders (chassis / structure / held, distinct groups so a
-  claimed or doorway ball can ignore the right ones). Restitution AND friction combine `Min`.
-  `normalizedPredictionDistance` (`PHYS_BALL_PREDICTION`) gives speculative contacts.
-- **The round loop** in `world.ts` `step`: snapshot → `solveRobots` with the current pin set →
-  `solveArtifacts` → containment clamp (INSIDE the loop, `BALL_CONTAIN_SLOP`) →
-  `pinnedArtifacts`; if the set grew, restore and go again, up to `PHYS_PIN_ROUNDS` (4).
-  `world.pinnedArtifacts` carries the set tick to tick (in the world JSON — `types.ts`, both
-  spawns init it) so the pin has hysteresis: enter past `ARTIFACT_PIN_SLOP`, release only once
-  clear by `ARTIFACT_PIN_RELEASE`. Support is TRANSITIVE (`supported`: BFS over touching balls
-  to a static or another robot) — a free clump is not support; it froze when it was.
-  `lastTickRounds` is the only diagnostic left (the per-tick `lastPinReport` was removed).
-- **Velocity-only pre-passes**, all before the solve: `scatterBalls` (pair scatter, plus a
-  hashed-direction kick for a COINCIDENT pair — `BALL_COINCIDENT_KICK`; the doorway buzz was two
-  artifacts a test had parked on one point), `clumpDrag`, and `intakeSuction` — split out of
-  `updateIntake` (now capture-only) and moved BEFORE the solve, because G408 reads artifact
-  velocity and a post-solve nudge herded 120in for 0 fouls.
-- **Buried artifacts** (centre inside a robot solid) are re-placed by `placeGroundArtifact`,
-  which flight landings use too.
-- **Deleted**: the ~110-line artifact stall in `robot.ts`; `solveBalls` / `artifactMomentum`;
-  the ground-pass functions `separateBalls`, `collideBallHeld`, `evictBallFromRobot`,
-  `ballWedgedInRobot`, `ballRobotPenetration`, `clampGroundBall`, `footprintCornersOf`,
-  `inflatedRect`; and the constants `BALL_EVICT_MAX_STEP`, `BALL_SQUISH_SLOP`,
-  `BALL_FREEZE_MAX_OVERLAP`, `BALL_RELAX_PASSES`, `BALL_PIN_SLOP`, `BALL_PIN_PUSH_MIN_SPEED`,
-  `BALL_JAM_SLOP`, `BALL_SETTLE_SLOP`, `BALL_ESCAPE_*`, `BALL_SEPARATION_RELAX`, `EXIT_PIN_FRAC`,
-  `CONTACT_MU`, `CONTACT_RESTITUTION`, `CONTACT_PAIR_SPIN`, `CONTACT_SLIP_RELIEF`. A few smoke
-  comments still NARRATE those names as history — grep before reintroducing any of them.
-- Still bespoke by design: flight, basin, rail, gate, and all of Chain Reaction's particles.
-  `collideBallRobot` / `collideBallBall` survive ONLY for low FLIGHT balls.
-
-## Rotation is the solver's alone (the angular half)
-
-With the two halves measured separately, the bespoke additions were double-counting:
-
-| what | old | new | measured |
-|---|---|---|---|
-| `CONTACT_IMPACT_SPIN` | 0.05 | **0** | the flick was pure double-count |
-| `CONTACT_ALIGN_RATE_MAX` | 0.05 | **0.015** | 0.05 added 2.9°/tick to a wall ram |
-| `MOTOR_SHOVE_BRAKE` (NEW) | — | on a shoved robot's yaw | a drivetrain resists being spun |
-| wall ram peak ω | 1.5 asserted | 2.64 rad/s | = v·sin20°/half-diagonal, the corner pivot |
-| off-centre ram, 2/4/8/12in | ">2° each" | 0.66/1.54/3.91/7.85° | graded by the lever arm |
-| sustained push 4/8/12in, 10s→15s | ≤1° growth | 2.16→2.74 / 5.40→6.19 / 19.05→21.84 | a corner keeps a small arm |
-| gate arm, 2/4/6/8in off centre | ">3° each" | 2.5/5.8/10.5/21.4° | monotonic |
-| gate arm side hit y=−12/−9/−6/−3 | ">2° each" | 0/0/23.2/2.9° | the first two never reach the stub |
-| closed arm vs at its stop | stop > 2×shut | 30.5° vs 23.2° | the longer stub turns you more |
-
-Six smoke checks (210, 212, 213, 214, 260, 263) were re-derived to those physical values with
-the derivation in each test comment; 221 (corner capture on the diagonal) now runs at 40° —
-dead on 45° both front corners meet both walls at once, a symmetric wedge with no torque.
-**A test that wants "more turn" is asking for the double-count back.**
-
-## Friction — an OWNER-VISIBLE calibration
-
-`PHYS_FRICTION` 0.7 → **0.45**, `PHYS_WALL_FRICTION` 0.5 → **0.35** on the ROBOT world (bumper
-rubber on polycarbonate); the artifact world keeps 0.7/0.5 as `PHYS_BALL_FRICTION` /
-`PHYS_BALL_WALL_FRICTION`. Why: with honest Coulomb friction a stalled motor pushes with full
-stall force at ANY throttle, so at 0.7 a full-throttle press by an equal or heavier robot held a
-strafing victim outright. G422's `held()` scene now uses the weakest legal holder (18 lb x-drive
-at 200 rpm, `weakHolder`). If pushes feel too easy to escape on the alpha, these two are the
-dial — but they only MOVE the stick/slip threshold.
-
-## The "nowhere" probe, final numbers
-
-A throwaway probe (deleted; scenes A–G) of every "nowhere to go" shape: flank strafe onto a
-wall artifact at throttle 1 and 0.3 then 4s idle, 0/20/30° rams into a wall row, a 4s corner
-pack, a robot bridging 4.0/4.6/5.5in gaps, an artifact squeezed between two robots, a two-deep
-flank push, and a full hopper's mouth onto a wall artifact. Worst squish **0.13in** (the
-two-robot squeeze), zero centre-inside ticks anywhere, drift after release ≤ 0.05in, no
-tunnelling through any gap under 5in, corner pack drift 0.00in, full-hopper mouth 0.00in.
-
-## Gotchas that cost real time
-
-- **The shell.** `node -e "..."` with backticks or `\n` inside bash double quotes silently
-  applied nothing or threw ("bad substitution"), and a quoted heredoc with apostrophes in it
-  failed to parse in this harness. Write scripts with the Write tool, run them with node, and
-  grep afterwards. Three batches were "applied" and were not.
-- **`{ kind: 'held', robot: 99 }` does NOT clear the field.** `positionHeldBalls` drops a held
-  ball whose robot is gone back to the FLOOR on tick one, at its spawn (the spike marks). Three
-  gate-arm scenes were spawning ON a spike-mark ball and one was driving a ball into the wall
-  and measuring THAT as "the gate arm turned me". Cleared with `w.balls.length = 0` + empty
-  `humanPlayers[a].box`. The idiom is still at smoke.ts lines ~2298, 2374, 2715, 2831, 2883,
-  3577, 5094, 5151, 5218 (rail / drain / gate scenes whose robots sit at the wall, away from the
-  spike rows) — not verified individually; sweep them.
-- **A convex hull of the funnel fills the notch** and turns the outer corner into a forward
-  wall (a 7in ball rode it, corner capture failed). The wedge is an explicit quad with the lip.
-- **A pin was missed on its forming tick** because the solver split the squeeze into the wall
-  (0.4in) and the clamp ran after the test — hence the clamp inside the loop and `inField`.
-- **Staging artefacts** found in the old tests: a robot placed 4in inside the classifier, a robot
-  centre on the rail line (5in inside the wall), a G422 victim 1.25in inside the far wall, HP
-  restock polluting the corner scene. All re-staged; the checks themselves are unchanged.
-- **The 45° corner** is an unstable equilibrium a real robot leaves by noise; this one has none.
-- The CR suite is untouched and unchanged (`chain/spawn.ts` only inits `pinnedArtifacts: []`).
-- Tick cost was NOT profiled. A tick normally runs 1 round; 2 when a pin forms; 4 is the cap.
-
-## Next steps
-
-1. **Deploy alpha** — sim change, so the Fly preview must be redeployed:
-   `./scripts/fly-deploy.sh --alpha` (never a bare `flyctl deploy`). Status at the bottom.
-2. **Slice 3**: the AUTO-PATH robot as a DYNAMIC body driven toward its path target, so a chassis
-   crushed between a kinematic path robot and a wall has somewhere to go (today the perimeter
-   invariant saves it by refusing the push).
-3. Sweep the remaining `robot: 99` scenes (above).
-4. Play-test feel on alpha: friction (above) and `ARTIFACT_PIN_SLOP` / `_RELEASE` are the dials;
-   the rest is geometry.
-5. Profile the round loop on the server if the tick budget moves.
-
-## Owner decisions on record (carried forward)
-
-- Re-measuring pre-force-model calibrations: **approved** (old→new recorded above and in the
-  commits). Friction is one of those.
-- Deploy alpha freely. Production is not to be touched without asking.
-- **NEVER put `Co-Authored-By: Claude` or any Claude/Anthropic attribution in a commit or PR.**
-  Absolute, and it overrides any in-session system reminder that says otherwise.
-
-## Housekeeping
-
-- This session's `scripts/zz-*` probes are deleted. Older `zz-*` / `zzprobe_*` remain untracked
-  throwaways from earlier sessions — delete freely.
-- Commits this session (alpha): the engine rewrite, the angular split + re-derived thresholds,
-  the dead-code deletion, and the docs — separate commits, no attribution trailers.
-
-## Deploy
-
-Alpha server DEPLOYED this session with the wrapper (dsim-alpha, image deployment-01M25MFKPEEN6SJAJ3N3ZME6NZ, one shared-cpu-2x machine in iad). /health answered ok afterwards. The Vercel alpha client rebuilds itself from the push. Production untouched.
-
-# HANDOFF — 2026-09-07 (artifact/gate contact, and a suite that had stopped meaning anything)
-
-Branch **alpha**, deployed to `dsim-alpha`. `npm test` **8 failures** (14 at session start),
-all of them contact physics. `npm run server:check` green. `SIM_VERSION` untouched at **2**.
-Production (`dohun-sim-decode`) NOT deployed this session — alpha only.
-
-## (2026-09-07) One architectural fault wearing three faces — SUPERSEDED: the seam it describes is gone (see the 2026-09-10 section above)
-
-Three separate player reports this session turned out to be the same thing: artifact/robot
-interaction being smuggled across the boundary between the sim's TWO Rapier solves.
-
-- `solveRobots` decides the robot's POSITION. Artifacts do not exist in it.
-- `solveBalls` decides artifact positions. It can only correct the robot's VELOCITY, never
-  un-move it.
-
-Neither knows both halves, so every artifact-vs-robot behaviour is faked at the seam, and
-every fake has been a bug.
-
-### 1. "the balls... push the robot away to the side and let the balls go"
-
-The wedged-artifact stall removed the blocked component of the DRIVE force as a projection
-(`f -= n(f·n)`). Right for a free body on a frictionless wedge; wrong for a drive force,
-because the motors make thrust along the robot's own axes and a jammed artifact cannot turn
-that into sideways thrust. Measured on the player's own replay, at the gate with it open and
-pure forward commanded: lateral force flipped **−567 → +1158 on the same tick, every tick**,
-ramping to 27 in/s of strafe with forward speed pinned at 0.1. Four sustained events in one
-match (30/19/16/4/3 ticks). Attributing injected sideways velocity by pass: `solveRobots`
-32.0 in/s, artifact solve 0.4, square-up 0.0.
-
-**It was invisible to the tyres**, which is why it ran away: the stall runs BEFORE
-`wantX/wantY` are computed, so the strafe was handed to the solver as the velocity the drive
-ASKED FOR, and the per-wheel traction model saw no slip to resist.
-
-### 2. "I'm still getting pushed around by artifacts against the wall"
-
-Same term, second face. Capping the stall's lateral MAGNITUDE was not enough — a sign flip
-with a smaller magnitude passes a magnitude cap untouched. And what it flipped matters: with
-a pure forward command the pre-stall lateral force is the drivetrain BRAKING its own sideways
-slide, so the stall turned the robot's attempt to stop sliding into a push the other way.
-Driving into five artifacts on a wall vs the same drive into the BARE wall: 20° **29.83in vs
-0.98in**, 30° **42.59in vs 1.89in**. Now 4.39 and 7.50.
-
-Second cause, same bug: `artifactMomentum` was read AFTER the solve, so the bound included
-the speed the robot had just given the artifacts — a bound the bounded party can inflate.
-
-### 3. "I should not be getting pushed away from the gate when unpowered"
-
-The handle PIVOTS at the classifier edge, so its stub sits there at every open fraction. A
-chassis nosed into the gate mouth (legal floor below the channel — where you stand to collect
-the outflow) contains that pivot whatever the arm does, so `gateRobotRest` returned 1 and the
-fully retracted stub was STILL inside it. Measured with NO command: **1.16in drift, 1.59°
-turn**, against 0.15in / 0.03° for a robot touching nothing. Now identical to touching
-nothing. `gateOverrun` is directional on purpose — a robot approaching head-on never gets
-past the pivot, so the gate stays a gate (GATE INTAKING 7/9 and 9/9).
-
-## Gotchas that cost real time — do not re-learn these
-
-- **STAGE, THEN VERIFY THE STAGE, THEN MEASURE.** Five probes running produced confident
-  wrong conclusions: a chassis spawned inside the classifier channel (measuring its own
-  ejection), a window that closed before the ramp drained, a robot covering the outflow mouth
-  entirely, a robot that never left `pre` because `preCountdown` was unset, and a "gate" pose
-  that was really a classifier overlap. Assert what you believe — `robotIntersectsRect(r,
-  gateArmRect(a))`, `in classifier: false`, artifacts actually drained — and print it beside
-  the number.
-- **ALWAYS RUN THE NULL CONTROL.** "Artifacts push me 29.83in sideways" means nothing until
-  the same drive into a bare wall gives 0.98in. Two earlier conclusions died on this.
-- **`heading` LIVES IN (−π, π] — WRAP BEFORE SUBTRACTING.** A smoke check reported an idle
-  robot "spinning 359.6°" whose angular velocity was 0.001 rad/s and whose contact response
-  contributed zero torque (`press` was 0 at every contact, so `contactTorqueDelta` took its
-  "no load, no torque" early-out). Pure arithmetic, red for a long time.
-- **A SUITE AT 13 RED STOPS MEANING "PHYSICS BROKE".** That is the cost of the two points
-  above. Of the 14 failures at session start, **7 were bad test scenes, not bugs.**
-
-## The suite: 14 → 8, and seven of those were the tests
-
-Two worktree-isolated subagents diagnosed the non-physics clusters, both verifying against
-the PRE-REWORK tree rather than assuming.
-
-- **Five penalty scenes (G422 ×2, G408 ×3) staged motion the sim no longer has.**
-  `src/sim/penalties.ts` NOT touched. A G422 scene silently asserted the stationary case
-  because the slip relief now stops a sliding contact steering its victim; a "victim goes
-  nowhere" check reported `moved 52.1in` (it self-contradicted, which is how it was caught);
-  a "clipping in passing" scene actually drove dead centre at full throttle and ploughed four
-  artifacts 48in downfield. Restaged, plus 3 NEW checks so they cannot pass for the wrong
-  reason.
-- **Two replay guards measured the wrong axis.** `startPose('blue', 0)` is hard against the
-  side wall and the scene is robot-centric, so travel is in −y (~68in) while the guard read x
-  — which is only sideways squirt off that wall (31in when written, 0.67in now). Now
-  `hyp(dx, dy)`; thresholds unchanged (5in vs 67.7in).
-
-## Still red (8) — all contact physics, all honest
-
-1. idle turn 2.32° at a resting pose (threshold 1°)
-2. gate-arm off-centre turn profile — wants monotonic, gives 3/7/10/6°
-3. gate-arm SIDE hit — 25° outlier at one of four offsets
-4. closed arm vs one at its stop — 28.5° / 24.6°
-5. wall ram — 5.4°/tick and 3.24 rad/s against thresholds of 4° and 1.5
-6. off-centre ram spins the victim only 0.7°/1.3° at 2in/4in (wants >2°)
-7. sustained off-centre push — tilt grows 5.7°→6.9° instead of settling
-8. artifact pinned in the doorway buzzes — 25 reversals in 2s, peak 235 in/s
-
-**NEITHER FEEL DIAL IS THE LEVER — both were swept and neither moves these numbers.**
-`CONTACT_PAIR_SPIN` 0.6 → 1.0 → 1.4 leaves #6 byte-identical; slice B's per-wheel lateral
-traction refuses the spin downstream. `CONTACT_IMPACT_SPIN` 0.05 → 0.03 → 0.02 moves #5 from
-3.24 to 3.02 rad/s against a 1.5 bar. Since slice A unlocked rotation, this rotation comes
-out of Rapier's own contact resolution, not the heuristic terms. **Do not "tune" these** —
-find where the traction force cancels the impulse.
-
-**#8 is a regression from the fix for bug 2, and the trade is measured:** an artifact lateral
-bound of ZERO fixes #8 and the gate-arm shove but lets an artifact tunnel a 4.4in gap it
-cannot fit; the momentum bound stops the tunnelling but lets the doorway ring. The right
-answer is neither — it is the unification below.
-
-## Unifying the two solves was TRIED IN FULL and is NOT the fix - measured
-
-This was the standing recommendation - one world a tick, all positions taken from it,
-deleting the whole smuggling layer. It has now been BUILT AND MEASURED, and should not be
-built again without new information.
-
-**The blocker everyone expects is not the real one.** Contact stiffness is stated on the Rapier
-WORLD, not the collider (there is no per-collider stiffness in the API), and robots and
-artifacts want different values. Swept, whole-suite:
-
-| single stiffness | failures | what breaks |
-|---|---|---|
-| split, as shipped | 8 | - |
-| ARTIFACT setting 25 / 0.001 for both | 10 | two marginal gate-lift numbers |
-| ROBOT setting 12 / 0.01 for both | 13 | drivetrain side-slip ORDER inverts, tank peak 5.0% to 35.7% |
-
-So one stiffness (the artifact one) does serve both, and the documented fear - that a stiff
-contact flings a robot, which can legally begin a step deep inside a wall via its intake reach
-- no longer applies, because slices A and B made the drive a FORCE rather than a velocity
-written onto the chassis. Unification is therefore VIABLE. It is just not worth it.
-
-**Built in full** (artifacts in `solveRobots` behind the group scheme below, positions taken
-from that solve, `solveBalls` deleted, the drive-force stall deleted, one stiffness at
-25 / 0.001): **18 failures against the split's 8, and it breaks Chain Reaction** - a mecanum
-strafing into a beam left the field, y = -8 to y = 61.
-
-**AND THE DECISIVE RESULT: unification does NOT remove the need for the geometric invariant.**
-With the solve unified and the eviction pass removed, artifacts still buried **5.15in of a
-2.5in radius** and sat with their centres inside a chassis for 58 and 63 ticks. The cause is
-not the architecture - it is the MASS RATIO. An 0.2lb artifact between a chassis carrying a
-`shoveMass` in the teens and a STATIC wall is tens-to-one terminating in an immovable body,
-which a fixed iteration budget cannot propagate through in time. No arrangement of worlds
-fixes that. That was the entire argument for unifying, so it is gone: `evictFromArtifacts` is
-required in EITHER architecture, and with the split it is cheaper.
-
-The group scheme, for anyone who revisits it: `U_FIELD 0x0001001a`, `U_FOOT 0x00020023`,
-`U_PROXY 0x00040008` (chassis-only, massless, artifacts only - this is what keeps the intake
-mouth open), `U_ART 0x0008001d`, `U_CLAIM 0x00100019`, `U_ARM 0x00200002`. It typechecks and
-runs; every number above came from it.
-
-**`cap = 0` plus the eviction was also tried** (zero artifact-to-robot lateral transfer, the
-literal form of "balls do not have the force to move the chassis"): 11 failures, artifact
-tunnelling returns at a 4.4in gap, and the doorway still rings. Not it either.
-
-**Five restructures have now been tried and ALL measured worse** (13 → 17, 19, 17, 17, and the full unification at 18):
-
-1. Full footprint solid to artifacts in `solveBalls` (mouth open only to claimed artifacts) —
-   breaks clump pushing, intake squeeze, G408. The mouth must be open to LOOSE artifacts too.
-2. Artifacts into `solveRobots` with a chassis-only proxy + collision groups — burial got
-   WORSE (93 artifact-ticks with a centre inside; an artifact through a 4.1in gap), because
-   their positions must be discarded while the robot's is kept, so the robot advances as
-   though the ball moved.
-3. Backing the robot out of leftover overlap after `solveBalls`, alongside the stall — the
-   two passes take turns and the doorway rings.
-4. The same, replacing the stall — fixes the geometry, but moving the robot changes what G408
-   measures as carry distance, so it fouls a robot that merely drove into a resting row.
-
-The four PARTIAL ones fail for one reason: with two solves, one must throw away half its
-answer. The full unification does not have that flaw and still lost, which is the point above
-- the squish was never the seam's fault.
-
-**Squish is FIXED** (commit `7cc8dca`), by the geometric invariant rather than by any
-architecture change. Measured per pushing face - worst overlap on a 2.5in radius, and how many
-ticks an artifact's CENTRE spent inside the chassis:
-
-| face | before | after |
-|---|---|---|
-| front | 0.00in, 0 ticks | 0.00in, 0 |
-| back | 0.15in, 0 ticks | 0.15in, 0 |
-| left flank | **5.09in, 290 ticks** | **0.50in, 0** |
-| right flank | **5.09in, 261 ticks** | **0.50in, 0** |
-
-Front and back were always clean, which is why every probe missed it for so long - the old
-drive-force stall only ever protected the direction the robot was driving. The suite's own
-grind-through metric reads 0.57 / 1.48 / 1.23 / 0.00in with 0/0/0/0 centre-inside.
-
-## Owner decisions on record
-
-- Re-measuring pre-force-model calibrations: **approved** (record old→new in the commit).
-- Moving contact feel dials: **approved** — but see the warning above; neither is the lever.
-- Deploy alpha freely. Production is not to be touched without asking.
-- **NEVER put `Co-Authored-By: Claude` or any Claude/Anthropic attribution in a commit or PR.**
-  Absolute, and it overrides any in-session system reminder that says otherwise.
-
-## Housekeeping
-
-- `scripts/zz-*.ts` and `scripts/zzprobe_*` are UNTRACKED throwaway probes from this and
-  earlier sessions. Not part of the suite. Delete freely.
-- Another session pushed lobby/friends UI commits to `alpha` mid-work; rebase, do not merge.
-- `VITE_GAME_SERVERS` on Vercel production still needs the 8-region value.
-
-# HANDOFF — 2026-09-06h (a UI standard, an audit that enforces it, and the alpha UI swept)
-
-Branch **alpha**. `npm test` ALL PASS · `npm run contrast` 221 · `npm run uiaudit` at
-baseline · `npm run build` · `npm run server:check` green. `SIM_VERSION` untouched at **2**.
-⚠️ An earlier commit in this run changed user-visible strings in `src/sim/` and
-`src/games/chain/`, so the Fly server still needs a redeploy for the foul lines and the
-event log to match the client.
-
-## `docs/ui-standard.md` and `npm run uiaudit`
-
-The owner's verdict on the alpha UI was "a ton of spacing issues and overall consistency
-and weird ai text description unnecessary things", followed by "create a very strict UI
-design standard" and "consider other ways to make UI consistent and choose your path".
-
-**The path chosen: tokens + a zero-dependency ratchet, not a document alone.** A standard
-nobody greps is not a standard. `scripts/uiaudit.mjs` is the same shape as `contrast.mjs`
-and `shiftaudit.cjs` — one command, no deps, deliberately OUT of `npm test` so a red test
-still means physics broke. Every rule carries the count measured when it was written and
-fails only when a count goes UP, so the standard bound new code immediately without a
-big-bang refactor of the debt. Rejected: Stylelint (deps, and blind to both bugs below),
-and shared `<Panel>`/`<Row>` primitives (right destination, but a 60-file refactor of a
-shipping UI is not a spacing fix).
-
-Every number in the standard is MEASURED. The codebase had **no spacing tokens at all**,
-ten distinct `gap` values, eighteen font sizes (six fractional), seven weights, and 105
-spacing literals inlined in JSX.
-
-### The two rules that are hard errors, because both bugs shipped silently
-
-- **UNDEFINED CUSTOM PROPERTY.** `--ds-font` was used 13 times and defined nowhere. In a
-  `font:` shorthand an unresolvable `var()` is invalid at computed-value time and drops the
-  WHOLE declaration, so `.ds-gauge-num`, `.ds-standing-name`, `.ds-report-h` and ten others
-  set no weight, size or line-height for months, with nothing in the console. `--accent` was
-  the same bug wearing a `#literal` fallback, which is why those are banned too.
-- **DUPLICATE SELECTOR.** `.ds-dl` was declared twice for two unrelated components — the
-  replay export menu and the download page — and the later block won, laying the export menu
-  out as an 18px-gap column. Both stylesheets are one cascade; source order is the only
-  tiebreak and nothing warns you.
-
-### ⚠️ A LINTER WITH FALSE POSITIVES CAUSES BUGS
-
-The duplicate-selector rule originally matched `^sel {` on a single line. A selector LIST
-spans lines, so it read the last line of
-
-```
-.fr-empty,
-.fr-note,
-.fr-error {
-```
-
-as a standalone rule and reported `.fr-error` as a duplicate of itself. I believed it and
-merged the two blocks — which folded `.fr-error`'s red into the SHARED base and **turned
-`.fr-empty` red**. It shipped in `525092f` and was caught only when a later agent asked
-about that block.
-
-Two lessons, both now in the code: the parser accumulates the prelude across lines, and
-**only a single-selector rule owns a name** — `.a, .b { }` followed by `.a { }` is a base
-plus a per-variant override, which is the normal shape, not the bug. And when verifying a
-CSS merge by computed style, probe every selector in the group, not the one you changed.
-
-## What the sweep actually changed
-
-Four report-only auditors, then four edit agents partitioned by FILE (CSS stayed with me,
-since all four slices share `shell.css`). Highlights:
-
-- **`.ds-panel` had no margin and `.ds-main` no gap**, so every page hand-typed panel
-  spacing — 0, 16, 18, 22, 28. Donate typed nothing, so a signed-in supporter saw four cards
-  meeting border-on-border. One rule owns it now, plus the `.ds-panel-body` class that had
-  been written out as `style={{ padding: 16 }}` twelve times.
-- **`.ds-panel + .ds-panel` only fires between two panels.** In Career the practice-replay
-  panel is followed by the period picker, which is not one, so it had no gap below it at
-  all. Panels in the page column carry the trailing half too; `.ds-main` is a block, so it
-  COLLAPSES rather than doubling.
-- **Layout shifts fixed**: Matchmaking jumped ~54px on FIND MATCH; the Chain start editor
-  moved its inputs ~27px MID-DRAG; the top bar re-flowed a second after every page load;
-  the Ranked tile grew then collapsed as `signedIn` resolved; the report dialogs' six option
-  cards made a dialog into a page (537px → 366px at the same width).
-- **Two inert properties**: `grid-column` on a flex child (the 3×3 catapult map never got
-  its full-width row) and `.ds-opts` without `card4` (the four-card Catalyst picker wrapped
-  3+1).
-- **`.num` was in the practice-replay table five times and defined NOWHERE.**
-- **HomeMenu used two NEGATIVE margins whose only job was to cancel its own flex gap.**
-- Type debt cleared: 46 fractional px sizes → 0. The weight rule was AMENDED rather than
-  enforced — `shell.css:164` documents both families as VARIABLE cuts, so 750 is real type
-  and I had written that rule without reading the comment.
-
-## Deliberately NOT done
-
-- **Spacing CLUSTERS.** 6px (22 uses), 10px (24) and 14px (16) are 2px moves across many
-  surfaces at once — a design decision, not a lint fix. Same for the 14 `10px` radii, which
-  sit between `--ds-round` and `--ds-round-md`. Recorded as debt with counts.
-- **ModeSelect's `.k` tile kickers** — the owner explicitly overruled deleting them.
-- **`Select.tsx` migration.** 2 consumers against 5 raw `<select className="ds-select">`,
-  1 `ds-input` and 3 unstyled in Admin. Product call.
-- **"Rated 1v1" vs "Ranked 2v2"** for one concept (both are ELO). They ARE different
-  formats — a closed party vs a premade in the open pool — so collapsing the words is a
-  product decision.
-- **The misscore queue's WATCH button still cannot work** — it passes a match id to a
-  replay lookup, and those are different id spaces. Server-side fix, needs a deploy.
-- The builder's nested gap ladder is still EIGHT values (`.ds-robot` 22 → `.ds-sec` 11 →
-  `.ds-subh` ±4 → `.ds-opts` 12 → `.ds-panelbox` 15/14 → `.ds-fields` 18 → `.ds-field` 7 →
-  `.ds-opt` 4). Collapsing it to five is the natural next pass, and the five sub-pickers
-  that were just un-margined now depend on `.ds-panelbox`'s gap being the only separator.
-
-## Next steps
-
-- **Deploy** — `./scripts/fly-deploy.sh --alpha`, still outstanding for the sim strings.
-- `fly secrets set` for `ADMIN_USER_IDS` is DONE on both apps; @ace (Dohun) is `owner` on
-  each, verified through the public board. ⚠️ `OWNER_USER_ID` is NOT set explicitly on
-  either app, so ownership still depends on list ORDER — `server/index.ts:249` falls back to
-  `ADMIN_LIST[0]`, and `ADMIN_IDS` is built ONLY from `ADMIN_USER_IDS`, so naming an owner
-  who is not in that list gives them the badge and no access.
-- Untracked debris: `scripts/zz-probe-*`, `scripts/zzprobe_*`, `scratch_penalties_backup.ts`.
-- Still open: two-account cross-region challenge check, an end-to-end practice upload from a
-  signed-in account, Rapier slice 2 (balls), the DECODE penalty HITBOX audit, CR `APPROX`
-  constants.
-
----
-
-# HANDOFF — 2026-09-06g (a seven-slice UI audit: consistency + anti-AI-slop)
-
-Branch **alpha**. `npm test` **ALL PASS (1286)** · `npm run contrast` 221 · `npm run build` ·
-`npm run server:check` green. `SIM_VERSION` untouched at **2**.
-⚠️ **NOT client-only: `src/sim/penalties.ts`, `src/sim/match.ts` and
-`src/games/chain/penalties.ts` carry user-visible strings that changed, so the Fly server
-needs a redeploy for the foul lines and the event log to match the client.**
-
-## Previously
-
-Seven subagents audited every user-visible string and both stylesheets, one slice each,
-report-only; the rulings and the application were done centrally so the seven could not
-contradict each other. The house rules they settled are now written down in CLAUDE.md
-under **UI COPY** — read those before touching copy, because the two arguments that keep
-recurring (dash style, failure-message shape) are decided there with the counts.
-
-### The one ruling worth arguing with
-
-The hyphen-vs-em-dash split was **50/50** app-wide, so it was drift, not a convention. The
-tempting fix — normalise everything to `—` — is wrong for a brief that is explicitly
-anti-slop, because a dash-joined appositive is the most-cited tell of machine-written
-prose. Almost every one of them was two sentences. So: **full stop or colon by default,
-`—` only where a dash is genuinely the right mark.** That reduces the count of BOTH glyphs.
-
-An `Admin.tsx` comment claimed "Hyphen, not an em dash, per main's site-wide copy pass."
-There is no such pass: `7a1c112` ("Polish controls and legal/footer UI copy") touched
-control cards, the footer and legal casing and changed no dashes at all. The comment is
-corrected.
-
-### Real bugs the audit turned up (not copy)
-
-- **`--ds-font` is used 13 times in `shell.css` and defined nowhere.** In a `font:`
-  shorthand that is invalid at computed-value time, so the whole declaration is dropped:
-  `.ds-gauge-num`, `.ds-standing-name`, `.ds-report-h` and ten others were setting no
-  weight, size or line-height at all. Fixed to `--ds-font-ui`; verified in the browser that
-  they now compute to 750/26px, 750/17px and 800/15px in Plus Jakarta Sans. **This is a
-  visible change** — those rules start applying.
-- **`.ds-dl` was declared twice** for the replay export menu and the download page, so the
-  later rule turned the export menu into an 18px-gap column. Download page is `.ds-dlpage`;
-  verified `.ds-dl` now computes `inline-flex / flex-end / 90px`.
-- **`--accent` is defined nowhere**, so `var(--accent, #6ea8ff)` always used the literal —
-  a pre-redesign blue on a themed HUD chip.
-- **`.ping-graph` was the one HUD surface still hardcoded dark** (`rgba(20,24,30,.94)` +
-  `--ds-line`) while its thirteen siblings use `--ds-hud`/`--ds-hud-line`.
-- **`prefers-reduced-motion` capped duration but not iteration count**, so five infinite
-  animations kept looping at 0.01ms each.
-- **`AdminReports`' "Mark reviewed" is the punishment button.** It posts `status=reviewed`,
-  which `server/index.ts:727` turns into `chargeStanding(target,'reportUpheld')`: 25
-  standing, a ranked lock of 2 hours to 7 days, and 20-80 rating — while "Dismiss" beside
-  it deliberately does nothing. It said "Mark reviewed", with no confirm. Now **Uphold (n)**
-  with a confirm naming the charge. The three-rung SMITE got a confirm too; −100 is a
-  player's entire standing.
-- **`Matchmaking` rendered "That is your 3th in 24 hours."**
-- **`InviteFlyout` passes `format: null`**, so an invite from a Duo Record room reaches the
-  friend as "wants to play · Casual 1v1". **NOT FIXED** — needs a decision about what a
-  room's format actually resolves to; it is a behaviour change, not a copy fix.
-
-### ⚠️ STILL BROKEN, deliberately left alone
-
-**The misscore queue's WATCH button can never work.** `AdminReports:288` calls
-`onWatchReplay(r.matchId)`, but `matchId` comes from `score_reports.match_id references
-matches(id)`, and the viewer looks up `replays where id = $1`. They are different id
-spaces — `matches.replay_id` is its own column, which `MatchHistory` uses correctly. The
-fix is server-side (project `replay_id` in `listScoreReports`) and needs a deploy, so it is
-a separate change rather than something to bury in a copy pass. The button is relabelled
-but still misfires.
-
-### Also reported and NOT applied
-
-Each is a judgement call rather than a defect, and they are listed with line numbers in
-`audit-*.md` (scratchpad):
-
-- **"Rated 1v1" vs "Ranked 2v2"** sit adjacent in the challenge picker for one concept
-  (both are ELO). They ARE different formats — a closed party vs a premade in the open
-  pool — so collapsing the words is a product decision, not a copy fix. ("Team up" →
-  "Casual" WAS applied: that one was a second name for a format `formatLabel` already
-  names.)
-- Deleting the dead `.server-picker/.server-list/.server-row/.ping-dot*` families (~77
-  lines) also orphans four pairs in `contrast.mjs`, so the audit count moves. Coupled
-  change, left for a deliberate one. NOTE `.server-notice*` IS live — do not sweep the
-  whole prefix.
-- The six palette tokens with no call sites are still audited by `contrast.mjs`.
-- 20 interactive elements have `:hover` and no `:focus-visible` (`.game-btn`,
-  `.overlay-buttons button`, `button.ds-key` — the keybinding capture control, which is a
-  keyboard-only flow). Only `.ds-dl-opt` was fixed here.
-- `RobotPreview`'s `aria-label` reads raw enums to screen readers ("twinturret scorer").
-- `RobotPreview`'s entire `chain` branch is dead, and is where the only read of the
-  deprecated `spec.shooterRear` lives, against CLAUDE.md's "never read them".
-- The snap tooltip is byte-identical in both start editors and is factually WRONG in CR,
-  where snapping is live during the drag rather than on release.
-- `PracticeReplays` uses a `num` class defined nowhere in the CSS (5 sites), so its score
-  and length columns render in body type while every other score column is mono/tabular.
-
-## Next steps
-
-- **Deploy** — `./scripts/fly-deploy.sh --alpha`. Still outstanding from before this
-  session too: alpha has not been redeployed since `0baeaa7`.
-- The two `fly secrets set` admin lines are **still outstanding** (blocked for me):
-  - `fly secrets set -a dohun-sim-decode ADMIN_USER_IDS='e3d73282-ac91-4940-bd5c-4778ca34212c,0c9c1654-c720-40f5-9352-1b0cde1c465a,5baefc21-e1e8-43b0-9278-4af2ea150882'`
-  - `fly secrets set -a dsim-alpha ADMIN_USER_IDS='0c9c1654-c720-40f5-9352-1b0cde1c465a,5baefc21-e1e8-43b0-9278-4af2ea150882'`
-- Untracked debris: `scripts/zz-probe-*`, `scripts/zzprobe_*`, `scratch_penalties_backup.ts`.
-- Still open: two-account cross-region challenge check, an end-to-end practice upload from a
-  signed-in account, Rapier slice 2 (balls), the DECODE penalty HITBOX audit, CR `APPROX`
-  constants.
-
----
-
-# HANDOFF — 2026-09-06f (the save reports itself honestly and stops reflowing the viewer)
-
-Branch **alpha**. `npm test` **ALL PASS** · `npm run contrast` 221 · `npm run build` ·
-`npm run server:check` green. Client-only. `SIM_VERSION` untouched at **2**.
-
-## Previously
-
-Three follow-ups on the background save, all reported together and all separate causes.
-
-### "at 100% it doesn't show the save popup right away"
-
-Two things, and the second was much bigger than I expected.
-
-The readout ROUNDED UP: `Math.round` hits 100% while the last ~0.5% of frames are still going,
-so the bar claimed to be done before it was. It floors now, caps at 99, and the frame loop only
-owns `ENCODE_SHARE` (0.94) of the bar because the flush, the muxer and handing the browser a
-multi-megabyte blob all come after it. Past that point the label reads **Finishing**.
-
-Then the real one: the encoder queue was UNBOUNDED. The loop yielded once per frame when the
-queue got deep, which never actually drains it, so the submit loop raced ahead and everything
-left over was paid for in `flush()` — **measured, 3.6s of a 5.8s save**, all of it after the
-bar had stopped moving. Waiting until the queue is under `MAX_QUEUE` puts that cost back inside
-the loop where it is reported. The tail is now ~0.8s and the total is 7.0s for the same clip:
-slightly longer overall, and the dead stretch at the end is gone. It also bounds memory, which
-an unbounded queue of encoded frames does not.
-
-### The field got squished while saving
-
-The progress strip was its own row above the transport row, so it stole height from the canvas,
-which re-fitted to a shorter box mid-recording. The strip now lives in the HEADER, replacing
-the title: that row is already there and its height comes from the buttons in it, so nothing
-below it moves. Measured across a whole save: header 64px, canvas box 545px, canvas backing
-1280×545, all constant. **A background job must not reflow the thing it is running behind.**
-
-### The replay jittered
-
-Two sources, both addressed:
-
-- the capture yielded only when its own queue was deep, so it could hold the main thread for
-  long synchronous stretches and `requestAnimationFrame` cannot run inside one. It now yields
-  on a TIME budget (`SLICE_MS` 8), leaving roughly half of each frame to the page.
-- the playback loop accumulated unpayable debt: `n < 8` caps the steps per frame but the
-  arrears keep growing, so a late frame makes the next one later. That is the classic spiral
-  and it looks like judder, not like slowness. The accumulator is clamped to a few ticks, so a
-  loaded machine runs the replay a hair slow instead of lurching.
-
-⚠️ **I could not measure the smoothness itself.** The browser pane reports `document.hidden`,
-which throttles `requestAnimationFrame` to 1 Hz, so frame gaps are meaningless there — and a
-MessageChannel ticker fast enough to sample main-thread stalls starves the encoder it is
-measuring (the same 7s save took 35.6s with the probe running). Both fixes are sound by
-construction and the stall is bounded by `SLICE_MS`, but the "does it still stutter" question
-needs a real visible tab.
-
-### Copy
-
-The menu, recording notes and refusal messages were rewritten short in the previous commit;
-nothing further here.
-
-## Next steps
-
-- Client-only, so Vercel picks it up. **Still pending:** alpha has not been redeployed since
-  `0baeaa7` ("a pin no longer needs a wall"), which IS sim code the server runs.
-- The two `fly secrets set` admin lines are **still outstanding** — `flyctl secrets set` is
-  blocked for me:
-  - `fly secrets set -a dohun-sim-decode ADMIN_USER_IDS='e3d73282-ac91-4940-bd5c-4778ca34212c,0c9c1654-c720-40f5-9352-1b0cde1c465a,5baefc21-e1e8-43b0-9278-4af2ea150882'`
-  - `fly secrets set -a dsim-alpha ADMIN_USER_IDS='0c9c1654-c720-40f5-9352-1b0cde1c465a,5baefc21-e1e8-43b0-9278-4af2ea150882'`
-- Untracked debris: `scripts/zz-probe-*`, `scripts/zzprobe_*`, `scratch_penalties_backup.ts`.
-- Still open: two-account cross-region challenge check, an end-to-end practice upload from a
-  signed-in account, Rapier slice 2 (balls), the DECODE penalty HITBOX audit, CR `APPROX`
-  constants.
-
----
-
-# HANDOFF — 2026-09-06e (the save runs in the background; MP4 is the default everywhere)
-
-Branch **alpha**. `npm test` **ALL PASS** · `npm run contrast` 221 · `npm run build` ·
-`npm run server:check` green. Client-only. `SIM_VERSION` untouched at **2**.
-
-## Previously
-
-Four asks, all in the replay export.
-
-### The scoreboard no longer covers the field
-
-The camera reserves a bottom band, but that is not a promise: `HUD_BOTTOM` collapses to 4px on
-a short or touch layout, and the field is centred in whatever is left, so how much clear space
-sits under it depends entirely on the viewer's aspect ratio. On a tall window there was room;
-on a short one the bar sat on the match.
-
-The capture now asks `fieldScreenBottom` where the field actually ENDS and gives the FRAME
-`HUD_RESERVE` more height when there is not already room. Measured: a 1000×295 viewer exports
-1920×676 where the unreserved frame would have been 1920×566, and the field is fully clear in
-both. Growing the frame is the right move and sliding the bar onto the field is not — extra
-letterbox costs nothing. The countdown centres on `fieldHeight` rather than the frame, or it
-drifts toward the bar whenever the frame is extended.
-
-### MP4 is the default, on every platform
-
-`availableVideoFormats` preserves the table's order and the top entry is what people take, so
-if that entry varies by browser then so does everybody's archive. MP4/H.264 is the one format
-every platform can both produce and play, so it leads. VP9 and VP8 stay for the people who
-want them, but a phone or a video editor is where these end up, and neither WebM belongs at the
-top for that.
-
-### The save runs in the background
-
-Owning its own player, renderer and canvas means the fast path has nothing on screen to
-disturb — so there was never a reason to lock playback, and now it does not. The match keeps
-playing, seeking and pausing while the file encodes, with a slim progress strip above a
-transport row that stays live. Verified mid-save: transport row present, seek enabled, Pause
-showing, playback advanced to tick 203, strip reading "SAVING MP4 · H.264 | 98% | Cancel".
-
-Only the REAL-TIME fallback still takes the screen, and it has to: it films the visible canvas
-through `captureStream`, so scrubbing mid-record would scrub the file. Two consequences worth
-keeping straight — the re-fit effect skips while `recorder.current` is live, and a finished
-fast save does NOT `rebuild()`, because restarting the match under someone who is watching it
-is the one thing a background job must not do.
-
-### Plainer copy
-
-The download menu, the recording notes and the five refusal messages were rewritten short. They
-had drifted into explaining themselves at length, in a register that reads as machine-written:
-"Sharpest for the file size", "re-playable in DSIM at full fidelity", "which is why it can be
-saved now". The information survives; the essay does not. Code comments were left alone — that
-voice is the house style the rest of this file is written in.
-
-## Next steps
-
-- Client-only, so Vercel picks it up. **Still pending:** alpha has not been redeployed since
-  `0baeaa7` ("a pin no longer needs a wall"), which IS sim code the server runs.
-- The two `fly secrets set` admin lines are **still outstanding** — `flyctl secrets set` is
-  blocked for me:
-  - `fly secrets set -a dohun-sim-decode ADMIN_USER_IDS='e3d73282-ac91-4940-bd5c-4778ca34212c,0c9c1654-c720-40f5-9352-1b0cde1c465a,5baefc21-e1e8-43b0-9278-4af2ea150882'`
-  - `fly secrets set -a dsim-alpha ADMIN_USER_IDS='0c9c1654-c720-40f5-9352-1b0cde1c465a,5baefc21-e1e8-43b0-9278-4af2ea150882'`
-- Untracked debris: `scripts/zz-probe-*`, `scripts/zzprobe_*`, `scratch_penalties_backup.ts`.
-- Still open: two-account cross-region challenge check, an end-to-end practice upload from a
-  signed-in account, Rapier slice 2 (balls), the DECODE penalty HITBOX audit, CR `APPROX`
-  constants.
-
----
-
-# HANDOFF — 2026-09-06d (the capture stops fighting the viewer for the canvas; the video gets a scoreboard)
-
-Branch **alpha**. `npm test` **ALL PASS** · `npm run build` · `npm run server:check` green.
-Client-only. `SIM_VERSION` untouched at **2**.
-
-## Previously
-
-**I broke this in 2026-09-06c and the report was exact: "the field became smaller when I
-started recording, and the final recording file also has a small field. Additionally, the
-quality is still horrible."** One cause for all three.
-
-The capture resized the VISIBLE canvas to the encode size. That put it in a tug-of-war it can
-only lose:
-
-1. the click sets `recording`;
-2. React swaps the transport row for the taller recording bar, so the canvas's BOX shrinks;
-3. the re-fit effect I had just added fires and resets the backing store to that box —
-   **mid-capture**;
-4. the encoder was configured ONCE, at 1920×818, so every frame after that is a ~1280×430
-   canvas scaled up into the same file.
-
-Hence a field that visibly shrinks the moment recording starts, a file with a small field, and
-quality no better than before. **The capture now owns a detached canvas nobody else can
-touch**, which removes the class rather than the instance. The viewer's own canvas is still
-re-fitted when `recording` flips (the recording bar really is a different height), and that
-effect now skips while a real-time capture is filming it.
-
-Verified by measuring the FILE's pixels, which is what I should have done the first time —
-last session I checked the output's dimensions and duration and both were right while the
-content was wrong. Decoding frame 600 and scoring it against the scene re-rendered at 1920:
-**41.2 dB**, against 35.5 dB for the old path. The visible canvas now reads 1280×516 in a
-1280×516 box throughout the recording and 1280×545 after it.
-
-### The video has a scoreboard now
-
-Asked for mid-session: a live score, a final score, and the match-start lead-in. The viewer's
-scoreboard is React DOM sitting ABOVE the canvas, so a canvas capture never had any of it —
-which is invisible on screen, where the page supplies the other half, and leaves a file nobody
-can read. `src/ui/replayOverlay.ts` draws:
-
-- the live bar, red | phase + clock | blue, in the bands `camera.ts` already reserves so it
-  cannot cover the field;
-- **MATCH BEGINS IN** and the counting digit, off the sim's own `match.preCountdown`, so a
-  replay reproduces the real lead-in rather than approximating it;
-- END GAME split out of teleop on the same 20s the live HUD uses;
-- a FINAL frame naming the winner, with a tie saying so.
-
-⚠️ **It sets its own transform.** `Renderer.render` leaves the context in FIELD INCHES, so the
-first version drew its scoreboard off in the field's coordinate space and produced a video with
-nothing on it at all — the encode was fine, the overlay was simply somewhere else. It works in
-CSS units, which is also what keeps the bar the same size relative to the field at every encode
-resolution.
-
-The words are `hudLabels`, deliberately split out of the drawing so they can be checked without
-a canvas: four new checks cover the endgame split, the ceiling clock (a flooring one reads 0:00
-for the whole last second of every phase), the tie, and a solo run having no winner.
-
-### Measured end state
-
-Through the real `ReplayView`, 15s of match, 1920×818, correct duration, scoreboard burned in:
-
-| format | encode | size |
-|---|---|---|
-| WebM · VP9 | 3.0s (5×) | 2.56 MB |
-| MP4 · H.264 | 3.0s (5×) | 1.49 MB |
-
-### Note to self
-
-The browser pane reports a **zero-height viewport when it is not displayed**, which collapses
-every element to 0×0 — the capture then hits `recordFast`'s size guard and quietly downloads
-the JSON instead. `resize_window` with an explicit size restores layout without needing the
-pane in front. Two verification rounds went sideways on this before I noticed.
-
-## Next steps
-
-- Client-only, so Vercel picks it up. **Still pending from before:** alpha has not been
-  redeployed since `0baeaa7` ("a pin no longer needs a wall"), which IS sim code the server
-  runs.
-- The two `fly secrets set` admin lines are **still outstanding** — `flyctl secrets set` is
-  blocked for me, so they have to be run by hand:
-  - `fly secrets set -a dohun-sim-decode ADMIN_USER_IDS='e3d73282-ac91-4940-bd5c-4778ca34212c,0c9c1654-c720-40f5-9352-1b0cde1c465a,5baefc21-e1e8-43b0-9278-4af2ea150882'`
-  - `fly secrets set -a dsim-alpha ADMIN_USER_IDS='0c9c1654-c720-40f5-9352-1b0cde1c465a,5baefc21-e1e8-43b0-9278-4af2ea150882'`
-- Untracked debris: `scripts/zz-probe-*`, `scripts/zzprobe_*`, `scratch_penalties_backup.ts`.
-- Still open: two-account cross-region challenge check, an end-to-end practice upload from a
-  signed-in account, Rapier slice 2 (balls), the DECODE penalty HITBOX audit, CR `APPROX`
-  constants.
-
----
-
-# HANDOFF — 2026-09-06c (replay video: MP4 stops being slow, and the quality problem was resolution)
-
-Branch **alpha**. `npm test` **ALL PASS** · `npm run build` · `npm run server:check` green.
-Client-only — no sim, no server, no migration. `SIM_VERSION` untouched at **2**.
-
-## Previously
-
-Two complaints, and they turned out to have one cause between them and one cause apart.
-
-### "MP4 downloads are way too slow" — it had no CONTAINER, not a slow encoder
-
-MP4 was the last format still going through `MediaRecorder`, which cannot beat real time (it
-stamps frames by when they ARRIVE, not by the stamp the frame carries), so a 2:42 match took
-2:42 to save. The reason it was still there was stated as "muxing H.264 is a second CONTAINER,
-not a second encoder" — true, and the answer was simply to write the container.
-
-`src/ui/mp4.ts` is that: a minimal ISO-BMFF muxer, one H.264 track, no fragments, no audio, the
-twin of `webm.ts`. **MP4 now encodes at exactly the same 5× as WebM** — measured through the
-real `ReplayView`, 15s of match in 3.0s, in all three formats, each reading back at the right
-duration and decoding.
-
-Two things in that file are easy to get wrong and silent when you do, so they are asserted
-headlessly in `npm test` (the muxer is pure — it needs no browser even though the encoder
-feeding it does):
-
-- `stco` holds ABSOLUTE FILE OFFSETS, so `moov` cannot be written until its own length is
-  known. It is built TWICE — measure, then write — which is safe only because the offset is a
-  fixed-width field. Off by one byte and you get a file that opens, reports the right duration
-  and decodes garbage.
-- Chunks arrive in DECODE order. Today's browser encoders emit no B-frames, but writing the
-  file as though none could is a different claim, so `ctts` is emitted when (and only when)
-  presentation and decode order actually differ.
-
-### "video quality for the two webms is horrible" — it was RESOLUTION, and I nearly fixed the wrong thing
-
-The obvious suspects were the rate control and the `latencyMode: 'realtime'` that shipped. I
-built a bench that encodes the same 7s of real match and scores each result as PSNR against the
-scene re-rendered at 1920. Both suspects are nearly irrelevant:
-
-| | bitrate | PSNR |
-|---|---|---|
-| **old path** (render 2496×1074 → `drawImage` to 1280, realtime) | 1.84 Mbps | **35.5 dB** |
-| 1920 native, quantizer 34 | 1.52 Mbps | 42.25 dB |
-| 1920 native, quantizer 22 | 1.88 Mbps | 42.40 dB |
-| 1920 native, quantizer 10 | 2.47 Mbps | 42.55 dB |
-
-**Nearly seven dB, all of it from drawing the frame at the size it is encoded at.** Sweeping
-the quantizer across its whole useful range moves 0.3 dB and 1.6× the file size. (The ~42.5 dB
-ceiling is 4:2:0 chroma subsampling; no encoder setting buys it back.) A >2× canvas downscale
-is a cheap bilinear filter and it lands on exactly the thin tape lines and the small scoreboard
-type.
-
-So `encodeSize` is now a RENDER size, not a downsample target: the capture retargets
-`camera.dpr` and draws straight into a canvas of that size. `MAX_EDGE` is 1920 — the same
-encoder that accepted 1920 for H.264 refused 2496.
-
-⚠️ **Three things I got wrong on the way, all worth keeping:**
-
-1. **`encodeSize` clamped the scale at 1×**, so on a 1280-wide window it produced a 1280-wide
-   video — precisely the resolution being blamed. It has to scale UP to the target too. Caught
-   only because I checked the output dimensions of a real download rather than assuming.
-2. **The quantizer option is CODEC-SCOPED** — `{ vp9: { quantizer } }`, not `{ quantizer }`. A
-   flat one is accepted silently and ignored, which reads exactly like an encoder that does not
-   honour the setting. It cost a whole measurement round; the giveaway was three identical file
-   sizes across a q sweep.
-3. **The canvas was left stale after a capture** (drawing a 1280×516 field into a 1280×545 box,
-   stretched 5%). Two causes, neither of which fires a window resize: the capture leaves the
-   backing store at the video's resolution, and the recording bar replaces the transport row at
-   a different height. Re-fitted in an effect on `recording` — NOT a per-frame check, which
-   would force a layout flush 60 times a second for something that changes twice a match.
-
-Also: `availableVideoFormats` is now **async**, because the honest question is not "is there a
-`VideoEncoder`" but "will it take this codec at this size" — and that is what decides whether
-MP4 saves in seconds or has to be filmed, which the menu states. `videoFormat(id)` still
-answers synchronously off the static table, because the download filename is built from
-`fmt.ext` before the probe lands. The menu's cost label is computed from the match length now
-instead of a hardcoded "~10s" that was a lie about anything longer than the clip it was
-written against.
-
-### Measured end state
-
-Through the real `ReplayView`, 15s of match, all at 1920×818 and correct duration:
-
-| format | encode | size |
-|---|---|---|
-| WebM · VP9 | 3.0s (5×) | 2.5 MB |
-| WebM · VP8 | 3.0s (5×) | 4.0 MB |
-| MP4 · H.264 | 3.0s (5×) | 1.45 MB |
-
-## Next steps
-
-- **Nothing here needs a deploy** — it is all client-side, so Vercel picks it up. The pending
-  server work from the previous session still stands: alpha has not been redeployed since
-  `0baeaa7` ("a pin no longer needs a wall"), which IS sim code the server runs.
-- The two `fly secrets set` admin lines are **still outstanding** — `flyctl secrets set` is
-  blocked for me by the permission classifier, so they have to be run by hand:
-  - `fly secrets set -a dohun-sim-decode ADMIN_USER_IDS='e3d73282-ac91-4940-bd5c-4778ca34212c,0c9c1654-c720-40f5-9352-1b0cde1c465a,5baefc21-e1e8-43b0-9278-4af2ea150882'`
-  - `fly secrets set -a dsim-alpha ADMIN_USER_IDS='0c9c1654-c720-40f5-9352-1b0cde1c465a,5baefc21-e1e8-43b0-9278-4af2ea150882'`
-- Untracked debris still in the tree: `scripts/zz-probe-*`, `scripts/zzprobe_*`,
-  `scratch_penalties_backup.ts`.
-- Still open from earlier: two-account cross-region challenge check, an end-to-end practice
-  upload from a signed-in account, Rapier slice 2 (balls), the DECODE penalty HITBOX audit,
-  CR `APPROX` constants.
-
----
-
-# HANDOFF — 2026-09-06b (the pusher stops steering itself; pins stop needing a struggle)
-
-Branch **alpha**, pushed + deployed. `npm test` **1272, ALL PASS** · build · `server:check` green.
-`SIM_VERSION` stays **2** (alpha is ONE unreleased batch past main; both changes are inside it).
-
-## Previously
-
-**"I turn with them and follow them" was literally true, and it was the SETTLING term.**
-`squareUpPair` turns BOTH chassis flush to the SHARED contact normal. The normal belongs to the
-PAIR, so a turning victim rotated it and the pusher was turned to keep up. Measured: a pusher
-commanding nothing but straight forward copied its victim's heading at **102-110%** and rode it
-72in across the field still touching.
-
-Fix is the one `CONTACT_PAIR_SPIN`'s own note already named — "a contact that can slip". The
-settling `align` is scaled by `1 / (1 + slip / CONTACT_SLIP_RELIEF)`, slip measured at the
-contact point WITH ω×r (a pivoting chassis slips without either centre moving). The two cases
-are nowhere near each other, which is why this works cleanly:
-
-| pair state | slip | settling |
-|---|---|---|
-| held / idle (settling SHOULD work) | **0.0 in/s** | untouched |
-| victim strafing off | 5.7 avg | faded |
-| victim turning + strafing | 9.6 avg (peak 36.6) | faded |
-
-Tracking **105% → 21%**. ω×r is safe HERE and not in `press` because it enters as a MAGNITUDE
-that only attenuates — no sign to flip, so it cannot cause the documented limit cycle.
-
-**G422 no longer needs the victim to be struggling.** Reading "attempting to move" as "the
-stick is deflected this tick" is what kept the foul rare — people held against a wall stop
-working the stick long before they stop being held, and a ref cannot see a stick. The guard
-that REPLACES it is on the pinner (`PIN_PRESS_COS`): it must be driving INTO the victim, since
-`rrContacts` is overlap-only and says nothing about who holds whom. Idle victim **0 → 3 MINORs
-/ 12 s**; an idle opponent, one strafing past, and a self-trapping victim all still draw 0.
-⚠️ This is a deliberate DEVIATION from the rule text, like `POSSESSION_REBILL_S`.
-
-## Gotchas
-
-- One existing check asserted the OPPOSITE ("a victim commanding nothing at all is not being
-  pinned"). Rewritten, with the pinner-side guards added beside it — do not "restore" it.
-- Still true from 06a: **a tank pusher given only `driveY` does not move** (it reads the side
-  sticks), which silently turns "held against a wall" into "standing near a wall".
-
-## Next steps
-
-1. Drive it and see whether the pusher still feels sticky — `CONTACT_SLIP_RELIEF` (4) is the
-   dial; LOWER lets go sooner. A pure pivot still drags the pusher ~88%, which is arguably real
-   but is the next thing to look at if it feels wrong.
-2. The into-wall escape cliff from 06a is untouched and is Coulomb stick/slip, not a bug.
-3. Still open: the two `fly secrets set` admin lines, the two-account cross-region challenge
-   check, an end-to-end practice upload, Rapier slice 2, penalty HITBOX audit, CR `APPROX`.
-
----
-
-## HANDOFF — 2026-09-06a (G422 wall pin + what the push measurements actually say)
-
-Branch **alpha**, pushed. `npm test` **1269, ALL PASS** · build · `server:check` green.
-`SIM_VERSION` stays **2** on purpose (see its note: alpha is ONE unreleased batch past main).
-
-## READ FIRST
-
-**Two reported claims, both measured on BOTH branches rather than reasoned about.**
-
-1. *"a pushed robot cannot escape, even strafing"* — TRUE on main, largely FIXED on alpha by
-   the shove rework. Equal chassis, victim against a wall, pure strafe for 6 s:
-   **main 6.8in → alpha 37.2in**. What remains on alpha is real Coulomb stick/slip: the
-   victim's OWN into-wall command adds to the normal force, so escape collapses
-   **37in (0 forward) → 23.6in (0.1) → 1.9in (0.2) → 0in (1.0)**. Lowering wall friction only
-   MOVES that threshold (swept 0.5/0.3/0.15/0.05), it does not remove it. Left alone — pressing
-   yourself into the wall making it worse is honest; tell me if it should be softened.
-2. *"pinning penalties almost never fire"* — TRUE, and alpha was WORSE THAN MAIN. Fixed.
-
-**The G422 bug: the obstruction test only understood a straight reverse.** It asked whether the
-PINNER lay along where the victim was trying to go — true of reversing, false of every SIDEWAYS
-exit. Every existing test had the victim reverse, so nothing caught it. A victim held flat on
-the wall and strafing billed **0** where main billed **1**. It now tests the VICTIM'S intent
-(`PIN_INTO_TRAP_COS`): the only excluded case is driving further INTO the trap, which is the
-self-pinning scene the original test existed for (that check still passes). Success is then
-measured by `PIN_STUCK_SPEED` + criteria A/B — prevention is an outcome, not a stick direction.
-After: heavy tank holding a victim on the wall **6 MINORs / 20 s**; weak x-drive it strafes
-clear of **2**.
-
-## Gotchas hit (both cost real time)
-
-- **A TANK PUSHER GIVEN ONLY `driveY` DOES NOT MOVE.** Tank reads `leftDrive`/`rightDrive`
-  only, so half my first probe measured a victim nobody was holding and reported a free
-  escape. Any pin/push scene with a tank must drive the side sticks.
-- **`git worktree remove --force` FOLLOWED A DIRECTORY JUNCTION** I had made inside the
-  worktree to share `node_modules`, and emptied the real one. Recovered with `npm ci` (no
-  lockfile churn). Do not junction node_modules into a worktree you intend to remove.
-- `PHYS_FRICTION` is NOT the walls — `statics()` never called `setFriction`, so walls ran on
-  Rapier's default 0.5 (effective 0.6 by the AVERAGE combine rule) while the constant's comment
-  claimed it covered them. Now stated as `PHYS_WALL_FRICTION` at the same value; verified a
-  no-op by the full suite.
-
-## Next steps
-
-1. Decide whether the into-wall escape cliff should be softened — it is a balance call, and the
-   lever is `PHYS_WALL_FRICTION` (moves the threshold) not a bug fix.
-2. Still open: the two `fly secrets set` admin lines, the two-account cross-region challenge
-   check, an end-to-end practice upload from a signed-in account, Rapier slice 2, the penalty
-   HITBOX audit, CR `APPROX` values.
-
----
-
-## HANDOFF — 2026-09-05b (solo practice runs are kept and rewatchable)
-
-Branch **alpha**, at `1cc016d`, pushed. `npm test` **1264, ALL PASS** · `npm run dbtest` ALL PASS
-(+9 practice checks) · `npm run build` · `npm run server:check` · `npm run contrast` 221 ·
-`npm run test:mm` 58 — all green. `SIM_VERSION` stays **2**, `BALANCE_VERSION` stays 4.
-
-Do not merge to main. Standing rule.
-
-## READ FIRST
-
-**"Solo practice" is the OFFLINE FULL MATCH (`mode: 'match'`, `session: null`), not Free
-Drive.** I spent a whole round assuming Free Drive and asking questions about where an endless
-session begins and ends. It is the `Solo Practice` tile in `ModeSelect`; Free Drive is the tile
-next to it. Solo practice has a real end (`post`), which is why none of that mattered.
-
-**It could not just be recorded.** `replay.ts` states the invariant: a run must be fully
-SIM-DRIVEN (preCountdown → auto → … → post) so `{seed, setups, commands}` alone reproduce it.
-Solo practice started from the CONTROLLER (`countdownStart` vs `world.time`, calling
-`startMatch(world)` directly), so the tick auto began on depended on a keypress the container
-cannot store — a recording would have diverged from tick 0. `startMatch()` now rebuilds the
-world at tick 0 and sets `preCountdown`; the rebuild is invisible (`robotsEnabled` is false in
-`pre`) and reuses the seed. Solo also steps on `localizeCommand(cmd)` now, since a replay
-stores quantized commands.
-
-## What landed (`1cc016d`)
-
-- `src/game.ts` — sim-driven solo countdown, `ReplayRecorder` over `stepSolo`, finalize at
-  `post` → `onPracticeRun`. `getPracticeRun()` is deliberately separate from `getMatchResult()`,
-  which is documented as the SERVER's authoritative payload.
-- `src/net/practiceRuns.ts` — localStorage ring (index + one body per run), cap 10, evicts and
-  retries on quota. Works signed out.
-- migration `0032_practice_runs.sql` + `savePracticeRun`/`listPracticeRuns`/`PRACTICE_KEEP`,
-  `POST|GET /api/practice` (owner-only), `sanitizeReplay` on ingress.
-- `src/ui/PracticeReplays.tsx` in Career (self-only, via `Stats`' `head` slot like
-  `StandingCard`), ▶ WATCH REPLAY on the solo results screen.
-
-## Verified
-
-Headless: 4 new smoke checks pin that the sim-driven shape reproduces (world hash AND match
-clock) and that the old controller-driven shape does NOT. 9 dbtest checks pin the prune, the
-orphaned-replay cleanup, account deletion, and — the load-bearing one — that a practice run
-never appears on the record leaderboard.
-
-In-browser: drove `GameController` directly (the pane starves rAF, so a real 2:30 match will
-not run there) — `startMatch` opens the recorder at tick 0, reaching `post` yields a replay,
-the local save lands in localStorage, Career lists it, and ▶ Watch opens the viewer.
-
-## Gotchas hit
-
-- **Two ways to write a VACUOUS replay check**, both hit here: `DEFAULT_ASSISTS.fieldCentric`
-  is TRUE so a steer-and-drive-forward scene parks in a corner and any two runs then agree; and
-  `worldHash` does NOT cover `match.phase`/`phaseTimeLeft`, so runs that started 200 ticks
-  apart hash the same. Assert movement + score, and compare the clock.
-- The Browser pane starves `requestAnimationFrame` when it is not painting — `world.tick` sat
-  at 0 and it looked exactly like a bug in the countdown change. A screenshot forces one burst
-  of frames; `document.visibilityState` still reads "visible", so that is not the tell.
-- Synthetic `KeyboardEvent`s do not reach `InputManager`; use `computer` `key`.
-
-## Next steps
-
-1. Confirm an upload end-to-end once alpha is redeployed (the route + 0032 shipped with this;
-   deploy was started at the end of this session — verify `/api/practice` returns 401 signed
-   out rather than 404).
-2. Still open: the two `fly secrets set` admin lines from the previous section, the two-account
-   cross-region challenge check, Rapier slice 2, the penalty HITBOX audit, CR `APPROX` values.
-3. The `scripts/zz-probe-*` files and `scratch_penalties_backup.ts` are untracked G408 debris.
-
----
-
-## HANDOFF — 2026-09-05 (replay downloads + the cross-region room split)
-
-Branch **alpha**, at `b52fca0`, pushed. `npm test` **1260 checks, ALL PASS** · `npm run build`
-green · `npm run server:check` green · `npm run contrast` 221 green · `npm run dbtest` **green
-again** (it had been red — see below). `SIM_VERSION` stays **2**; `BALANCE_VERSION` stays 4.
-
-Do not merge to main. Standing rule.
-
-## READ FIRST
-
-**"Replay unavailable" on the deployed alpha server was a MISSING DEPLOY, not a code bug.**
-`dsim-alpha` was last released **Aug 26** (v11) — before `8b046dc`, which added migration
-`0031_replay_behaviour_version.sql`. So the live `getReplay` had no `behaviour_version` column
-to read, could not populate `Replay.sim`, an absent `sim` read as 0, and every replay was
-refused. Deployed via `./scripts/fly-deploy.sh --alpha`; `/api/replay/<id>` now returns 200 with
-the column in the select, so 0031 ran. **A replay change is a SERVER change.**
-
-**That fixes NEW runs only, and that is correct.** Every replay currently on the alpha board was
-recorded at `BALANCE_VERSION` **3** (July–August, format 1, no `sim` stamp); alpha is on **4**
-since `7ea642b` reworked the shove. Those stay refused because the balance really did change —
-what changed is that the viewer now says so instead of "recorded on an older version of the sim
-(Season 3)". Runs recorded from now on stamp `bv 4 / sim 2` and play and download normally.
-
-## OPEN — the admin change could not be applied
-
-The user asked to drop **baron** as an admin and add **`5baefc21-e1e8-43b0-9278-4af2ea150882`**
-(solver / @featurescript) on both servers. `flyctl secrets set` is REFUSED by the Claude Code
-auto-mode classifier, so this is still to do BY HAND:
-
-```
-fly secrets set -a dohun-sim-decode ADMIN_USER_IDS='e3d73282-ac91-4940-bd5c-4778ca34212c,0c9c1654-c720-40f5-9352-1b0cde1c465a,5baefc21-e1e8-43b0-9278-4af2ea150882'
-fly secrets set -a dsim-alpha       ADMIN_USER_IDS='0c9c1654-c720-40f5-9352-1b0cde1c465a,5baefc21-e1e8-43b0-9278-4af2ea150882'
-```
-
-Resolved from the live lists (`fly ssh console -C "printenv ADMIN_USER_IDS"` + `/api/user/<id>`):
-`e3d73282`=Fe/@felix, `0c9c1654`=Dohun Kim/@ace (owner), `a509c53d`=**baron** (dropped).
-Baron was an admin on MAIN ONLY — alpha's list was just the owner, so alpha only gains solver.
-`OWNER_USER_ID` is set explicitly on both, so list ORDER carries no meaning here.
-
-Two things to check afterwards: `syncStaffRoles` runs once per boot and the sweep is SYMMETRIC,
-so a restart is what actually strips baron's badge and perks — confirm with
-`/api/user/a509c53d-dc89-4dae-99de-2c6e30e537d9` returning no `role`. And a secrets set restarts
-machines, which on MAIN can re-apply fly.toml's single `[[vm]]` to every one of them; sizes
-before the change were **iad shared-4x/1024, lhr+sjc+syd+nrt shared-1x/1024**, so re-shrink with
-`scripts/fly-deploy.sh`'s satellite loop if `fly machine list -a dohun-sim-decode` disagrees.
-There were 7 players online (1 queued) when this was attempted; `scripts/announce-deploy.sh`
-needs an `ADMIN_SECRET` this session is not allowed to read.
+- `alpha` is now behind `main` by this merge commit. Fast-forward it before doing more work
+  there, or the branches re-diverge immediately.
+- The season-4 drift above is the open question, not a task. It gets settled the next time
+  someone is willing to reset standings.
+
+# HANDOFF — 2026-09-16, later (efficiency audit: the test loop, the indexes, the render path)
+
+**READ FIRST.** Branch **`efficiency-audit`** off `alpha`, 12 commits, **not merged and not
+deployed**. Every gate green: `npm test` ALL PASS ×2 (1765 + 1321) · `test:mm` 186 · `dbtest`
+ALL PASS · `build` · `server:check` · `uiaudit` · `contrast` · **`docaudit`** (new).
+
+⚠️ **The DB migration (0037) is a SERVER change and needs a deploy** to take effect, like
+0035/0036 before it. Until then the indexes do not exist in production.
 
 ## What landed
 
-- **`replayRefusal`** (`src/sim/replay.ts`) names WHICH refusal: `future` (they are behind —
-  refresh) · `balance` · `behaviour` · `unstamped` · `tank`. `replayPlayable` is `=== null` over
-  it, so the yes/no policy is byte-identical — `unstamped` is a MESSAGE split, the test stays
-  `(r.sim ?? 0) !== simVersion`, and smoke pins that a build on SIM_VERSION 0 still accepts an
-  unstamped log (which is what keeps the format-1 mecanum case playable).
-  **The old copy was wrong three ways at once**: it printed `balanceVersion` as "Season N" (in
-  `replays`, the SEASON is the `balance_version` COLUMN and that number is in `sim_version`), it
-  called a FUTURE container old, and it asserted a specific mismatch for an unknown one.
-- **The exports are a header MENU** (`.ds-dl`), not two ghost buttons in the transport row —
-  they are actions on the replay, not on playback. Each option states its COST, which is the
-  thing that decides between them: the video takes the full match in real time (the menu prints
-  the actual figure), the JSON is instant and prints its size. No `MediaRecorder` ⇒ the video
-  option renders DISABLED with a reason, instead of silently falling back.
-- **Recording replaces the transport row** (`.ds-replay-rec`): red dot, progress bar, real time
-  remaining, the "keep this tab in front" warning, Cancel. Locking four controls and showing
-  "● REC 12%" did not explain why they were locked.
-- **`npm run dbtest` was RED** and had been since the interim readable/exact design was reverted
-  — `scripts/dbtest.ts` still called `replayReadable`, and because it is a dynamic
-  `await import`, tsc never saw it. Now uses `replayPlayable`/`replayRefusal`, and the pre-0031
-  row check asserts `unstamped` against a REAL row.
+| # | commit | what |
+|---|---|---|
+| 1 | `test:` | **`npm test` 237s → 39s.** `smoke.ts` sharded across 12 processes by `scripts/smokeshard.mjs`. |
+| 2 | `db:` | migration **0037**: six missing indexes, two dead ones dropped, and the two RULES asserted in `dbtest`. |
+| 3 | `render:` | held-artifact grouping, the per-ball highlight hoisted, `useCoarsePointer`. |
+| 4 | `docs:` | HANDOFF archived, and the check counts in CLAUDE.md corrected. |
+| 5 | `server:` | LAN roster moderation parallelised, `/api/stats` memoized. |
+| 6 | `docs:` | HANDOFF entry for the session. |
+| 7 | `docs:` | search with `rg`, not `grep -r` — `.claude/worktrees/` is 810 MB of repo copies. |
+| 8 | `docs:` | **CLAUDE.md split: 43.7k tokens → 6.6k**, plus `docaudit` and the area hook. |
 
-## Verified in the browser (pane, not Electron)
+### 0. CLAUDE.md is now a routed core, and the routing is enforced
 
-Stubbed `window.fetch` for `/api/replay/` with a container generated by `runRecordMatch` on this
-build, then routed to `/decode/replay/<id>`. Menu + recording bar in **both themes**; outside
-click and Escape close the menu; all four refusal texts render and the Download button is absent
-on the stale screen; at **375×812** the popover is 339px with no horizontal overflow and the
-recording bar wraps to three rows. Cancel discards and restores the transport row.
+It was 2,206 lines (~43,700 tokens) and it is loaded into EVERY session, so a session fixing a
+button paid in full for DECODE's gate-lever geometry and the Ko-fi webhook policy. It is now
+~6,600 tokens: what is true everywhere, plus a routing table to ten guides in `docs/area/`
+read on demand.
 
-## Gotchas hit
+**Nothing was rewritten.** 2,035 of the original 2,042 non-trivial lines are byte-identical in
+their new homes; the 7 that differ are the reworded opening blockquote and five
+cross-references that pointed at sections now in another file. Verified by a line-level diff
+against git HEAD, not by assertion.
 
-- A Bash **heredoc** carrying the whole TSX truncated silently mid-file (CRLF terminator). Write
-  the file with the Write tool and convert endings with python instead.
-- `CLAUDE.md` and `scripts/smoke.ts` had drifted to **LF**; `core.autocrlf=true` normalizes on
-  commit, but re-CRLF the working copy or every later diff warns.
-- `git status --short --cached` is not a thing (`--cached` is a `diff` flag) and it aborted a
-  chained commit — the commit silently did not run.
+⚠️ **The risk here is not size, it is SILENCE** — a rule in a guide nobody opens has been
+deleted, not relocated. Two defences:
+- **`npm run docaudit`** — every guide routed, every link resolving, every `governs:` glob
+  still matching real files (catches a RENAME, which otherwise leaves a guide governing
+  nothing), every source file owned, and CLAUDE.md inside a token budget that is a **RATCHET**
+  (only ever lowered, so the file cannot grow back). All five rules were tested by breaking
+  them. Writing it found a `governs:` line already wrong and sixteen unowned top-level modules.
+- **`scripts/areahook.mjs`** — a PostToolUse hook naming the guide for the file just edited,
+  once per area per session. Reminder, never a block; always exit 0.
 
-## Also landed — the cross-region room split (`a71af95`)
+**If you add a rule to CLAUDE.md, the test is whether a session working somewhere else needs
+it.** If not, it belongs in the guide for the path it governs.
 
-**Two friends on different servers who accepted the same challenge got two rooms with one
-code.** A custom room code is BARE (a staged room is `iad-abc123`; a shared code carries
-nothing), so a socket with no `?region=` hint lands on the machine nearest to the JOINER, which
-has no such room and opens an empty one with the same code. Neither side is told.
+### 1. The test loop was the single biggest thing wrong with this repo to work in
 
-The invite has carried the host's region since migration `0029` and `App.onJoinInvite` passed
-it on. Two client paths dropped it:
-- `InviteFlyout` — the accept button you use while ALREADY in the lobby — called
-  `onJoinRoom(code)` with no region, so the join used our own server.
-- `Lobby` read the region from a `useState` seeded at mount, and accepting from that flyout
-  does not remount it, so a correct prop would not have been re-read either.
-- ...and inviting a friend from inside a room stamped NO region on the invite (the 7th arg was
-  simply omitted) — the same split from the other side.
+`scripts/smoke.ts` was **220s** of the 237s `npm test` took, and CLAUDE.md called it "fast".
+Everything else combined is 12.5s (`tsc` 6.3 · `vite build` 3.8 · `server:check` 2.3 ·
+`uiaudit` 0.1 · `contrast` 0.07). The memory note "don't run full npm test" is what that had
+already cost.
 
-Now `Lobby.join(code, hostRegion?)` takes it as an argument, `roomJoinRegion` (`src/net/
-roomRegion.ts`, a leaf so smoke can import it — `env.ts` reads `import.meta.env` at load) is
-the rule, and the auto-join guard keys on the CODE instead of a never-reset `useRef(false)`
-that silently swallowed a second accept. 5 smoke checks. Server side needed nothing.
+It turned out to be trivially parallel. `smoke.ts`'s top level is 360 statements, **257 of them
+bare blocks** — closed scopes declaring nothing anyone else sees — over a 103-statement
+preamble whose only mutable is `failures`, which every block writes and none reads.
+`smokeshard.mjs` parses it with the TypeScript parser, copies the preamble verbatim into each
+shard, deals the blocks out, and bin-packs them longest-first from a measured cost table keyed
+by block CONTENT. **smoke.ts is untouched.**
 
-**Verified**: the URL builder returns `wss://…?region=lhr` for a host on lhr while our own pick
-is iad, and creating a room still opens a real socket on the picker's region (live, dev pane).
-**NOT verified end-to-end** — that needs two signed-in accounts on two regions. Existing invite
-rows have `region` NULL and will still split, but `INVITE_TTL_S` is 10 min, so that clears
-itself.
+Proved rather than assumed: serial and sharded produce **the same 1765 check names with the
+same outcomes**. The only three textual differences are a UUID and two world hashes that
+`Room` seeds from `Date.now() ^ Math.random()` (room.ts:1281) — different on every run either
+way.
+
+⚠️ **The guard matters more than the speed.** A shard runner that loses a block still prints
+ALL PASS. So: the assignment is asserted to be a partition (set equality, not a count), a shard
+that dies without a verdict fails the run, and an **independence guard** refuses to shard at
+all if smoke.ts grows a top-level `let` or a stray side effect. `npm run test:serial` is the
+way out; `npm run test:calibrate` re-measures.
+
+**~22s is the floor at any width** — one block costs 22.4s alone and a block cannot be split.
+4 shards 54.6s · 8 28.6s · 12 23.4s · 16 24.5s.
+
+### 2. The indexes, and the rule that found one the sweep had missed
+
+`records.replay_id` and `matches.replay_id` are `references replays(id) on delete set null`
+and **neither was indexed since 0001**, so every replay delete scanned both tables in full —
+and the practice/LAN prunes that delete replays run on **every upload**. Same for
+`records.partner_id` and `kofi_payments.claimed_by`. The pattern was already understood here:
+`practice_replay_idx` (0032) and `lan_replay_idx` (0033) exist for exactly this reason. The two
+oldest tables missed out.
+
+Also: `recentMatches` unions all of `matches` and all of `records` and orders by `created_at`
+with nothing indexed on it; `challengeParty` filters `room_invites` on an unindexed `room`,
+and that gates every rated friend match. Dropped two indexes that can never be chosen
+(`user_activity(user_id)` and `friend_requests(from_user_id)`, each already a prefix of a
+constraint's index).
+
+**`dbtest` now asserts the RULES, not the columns** — every FK indexed, no index a dead prefix
+of another — against the live schema after every migration. That is not decoration: **the FK
+rule found a fifth unindexed key on its first run** (`score_reports.match_id`) that the manual
+sweep had missed.
+
+### 3. Render, server, docs
+
+`renderer.ts` filtered `world.balls` for held artifacts **inside** the per-robot loop —
+O(robots × balls) per frame, ~173,000 predicate calls/s in a 2v2 CR room at 144 Hz. Grouped
+once. `drawBalls` rebuilt an `rgb(...)` string per artifact per frame for one of two possible
+colours. `GameView` called `matchMedia('(pointer: coarse)')` five times per render at the 10 Hz
+poll — and reading a media query during render is **not subscribing to it**, so a 2-in-1 that
+changed pointer kept whichever controls it booted with. `useCoarsePointer` fixes both; verified
+live in both layouts.
+
+Server: the LAN roster moderated names **one at a time** against a hosted API with a 4s timeout
+— up to 16 sequential calls per upload. `/api/stats` is public and ran three unbounded
+aggregates per homepage load; memoized 60s, with dbtest asserting it is a memo and not a
+freeze.
+
+Docs: HANDOFF.md was **5,888 lines (~97k tokens)** with "read at session start" beside it. The
+29 oldest sections moved **unedited** to `docs/handoff-archive.md`; all 37 survive. CLAUDE.md
+said smoke was "~1240 checks" (1765), `test:mm` 36 (186), `dbtest` ~61 and elsewhere 36 (232).
 
 ## Next steps
 
-1. Apply the two `fly secrets set` lines above (see the OPEN section).
-2. Confirm the challenge fix with two accounts on two different regions — the one link the
-   dev-pane check cannot reach.
-3. Watch for the first NEW alpha record run and confirm its replay plays + downloads end to end.
-   That is the one link still only verified by `dbtest` and the 200 from `/api/replay`, not live.
-4. The `scripts/zz-probe-*` files and `scratch_penalties_backup.ts` are untracked G408 debris
-   from the previous session; delete when nothing else needs them.
-5. Still open from before: Rapier slice 2 (balls), the DECODE penalty HITBOX audit (zone geometry
-   vs the manual figures — G408 and G422 text are done), CR `APPROX` constants.
+1. **Merge to `alpha`**, then promote + deploy from a `main` worktree — 0037 applies at boot.
+2. `npm run test:calibrate` after adding or deleting an expensive block.
+
+## Found and NOT fixed — ranked, all verified, none started
+
+1. **The client bundle is 2.54 MB and 1.57 MB of it is base64-inlined WASM** (62%), duplicated
+   again in `hostWorker` (1.89 MB). `@dimforge/rapier2d-compat` inlines its wasm, and base64
+   costs 33% over the raw binary. The non-compat `@dimforge/rapier2d` loads a separate,
+   cacheable `.wasm`. ⚠️ **But Rapier is pinned EXACTLY on purpose** — a different physics
+   build changes `step()` with no version bump, making every replay stamp a lie — so this is a
+   SIM_VERSION-bump decision, not a dependency swap. And note `main.tsx` awaits `initPhysics()`
+   before the first render, so code-splitting alone buys nothing without reordering boot.
+2. ~~`persistVersusMatch` is 16 sequential round trips~~ — **FIXED.** Batched to about four.
+3. ~~`getStanding` is a write transaction on a read path~~ — **FIXED** with a read-only fast
+   path. Note the SURROUNDING item is still open: `chargeStanding` is still ~7 round trips per
+   offender and still serialized ACROSS offenders in `persist.ts:220`.
+4. **`broadcastSnapshot` stringifies every ball individually just to detect change** (30×/s per
+   room, 300 balls in CR), then stringifies the changed ones again into the body. A dirty
+   epoch stamped by the sim would remove the first pass. The broadcast itself is already well
+   optimized — this is the remaining hot allocation.
+5. **`matchStart` and `strategyStart` are encoded per recipient** though they vary only in
+   `yourRobotId` — the shared-prefix trick `broadcastSnapshot` already uses.
+6. **`MobileControls` re-renders at touch-event rate** (60–120 Hz while a thumb is on a stick,
+   on the device class with the least headroom) and has no `memo`/`useCallback` anywhere:
+   every render rebuilds the button array and 4 fresh closures per button.
+7. **`useCountUp` drives React state at rAF** for ~1s after every match, three concurrently,
+   each re-render rebuilding the whole `sections` structure in `Results`.
+8. **`GameView.tsx:259` builds a full `HudSnapshot` 4×/s to read two booleans**, and the timer
+   is created even in solo where its body can never do anything.
+9. **`App.tsx:740` creates a 400ms interval outside an effect** — the only timer in `src/ui/`
+   or `src/net/` with no unmount cleanup. Self-limiting at 30s.
+10. **`profileEnsured` (repo.ts:288) is never pruned** — bounded only by Fly's scale-to-zero
+    restarting the process, which is not a bound on a machine that stays warm.
+11. **Correlated per-row subqueries in both moderation queues** (repo.ts:2138, :2421); the
+    second aggregates the entire `player_reports` table with no `WHERE` at all.
+12. **47 exports with zero importers and zero string references**, incl. `simGameOf`,
+    `adminRefundPayment` (a whole HTTP client call), `useAnyoneQueued` (a whole React hook),
+    and the `listPresets`/`savePreset`/`deletePreset` trio with no route. `chain/config.ts:633`
+    says outright "Nothing reads these at runtime any more".
+13. **Large duplication between `chain/` and `biobuzz/`**: `parts.ts` (120 identical lines, doc
+    comments included), `mounts.ts` (9 same-named functions), `drawRobot.ts`,
+    `RobotPreview.tsx`. Three near-identical start editors; `specKey` defined 4 times with 4
+    different field sets.
+14. ⚠️ **Four m:ss formatters, and two disagree** — `replayOverlay.ts:67` uses `Math.ceil`,
+    `ReplayView.tsx:52` uses `Math.round`. The clock burned into an exported video and the one
+    in the viewer header can therefore read a second apart for the same frame. Smallest real
+    bug in this list.
+15. **`ago()` is byte-identical in three files** (`AdminLive`, `AdminReports`, `StandingCard`)
+    while `src/ui/fmtDate.ts` exists and is the obvious owner.
+16. **`scripts/zz-accept.ts` is superseded by `zz-accept-clean.ts`** by its own header — the
+    original measures against artifacts it thinks it removed. Both say "throwaway".
+    `zz-mm-quality.ts:4` references a `zz-mm-marginal.ts` that does not exist.
+
+### The game engine: measured, and deliberately left alone
+
+Profiled per game and then actually tried an optimization, which is how I know not to ship
+one. Inside `step()`: Rapier's rebuild-per-tick is ~23% of CPU, `separateParticles` (CR only)
+7.6%, the possession/control penalty passes ~4.4%, everything else diffuse.
+
+The 23% is the stateless Rapier world, which is a deliberate architecture choice — rebuilt
+every tick so reconcile and determinism hold — so it is not available without the port CLAUDE.md
+already has on the roadmap.
+
+`separateParticles` rebuilds its whole spatial grid (a `Map` plus one array per occupied cell)
+twice a tick for 300 particles, so pooling the memory looked free. **It was bit-identical and
+21% SLOWER** — 0.222 → 0.267 ms/tick for CR, three runs each, low variance, verified
+bit-identical by `worldHash` over 3,000 ticks across all three games before the timing was
+even taken. V8's nursery beats manual pooling for short-lived small objects. Reverted.
+
+The conclusion to carry forward: **the sim has no cheap safe win left.** Its allocation
+pattern is not the bottleneck, and the thing that is, is deliberate.
+
+⚠️ **Snapshot change detection was measured and deliberately NOT changed.** The per-ball
+`JSON.stringify` in `broadcastSnapshot` is 45% of a Chain Reaction snapshot's cost (0.093 of
+0.208 ms), but that is only ~0.28% of a core per room, and the alternative — a hand-written
+field comparator — fails by MISSING a change, which is a silent client desync. The payoff does
+not cover that failure mode.
+
+Measured for reference, per-tick `step()` cost (32-thread box, 2v2): DECODE 0.50ms
+(cores/room 0.030) · CR 0.28ms (0.017) · BIOBUZZ 0.37ms (0.022). Inside `step`, Rapier's
+rebuild-per-tick is ~23% of CPU, `separateParticles` (CR only) 7.6%, the possession/control
+penalty passes ~4.4%.
 
 ---
 
-## HANDOFF — 2026-08-25 (the mouth carve-out vs the player's own assists) — alpha only
+# HANDOFF — 2026-09-16 (alpha: the admin panel merged, five PRs merged, main backported)
 
-Branch **alpha**. `npm test` **1167 checks, ALL PASS** · `npm run build` green ·
-`npm run server:check` green · `npm run test:mm` 58 green. `SIM_VERSION` 8 → **9**.
+**(Superseded as READ FIRST by the efficiency-audit session above; still the state of
+`alpha` itself, which that branch has not been merged into.)** `alpha` and `main` are both
+green and both pushed. **NOTHING IS DEPLOYED.**
 
-Do not merge to main. Standing rule.
+`npm test` prints **ALL PASS twice** for the first time in a while — PR #69 fixed the stale
+lan-gate asserts that had been failing on a clean tree since LAN went on in production on
+2026-09-13, which (because the suites chain with `&&`) meant the BIOBUZZ suite had not been
+running at all.
 
-## READ FIRST
+## Merged into alpha
 
-**Every G408 scene in smoke used `DEFAULT_ASSISTS`. Real players use `PLAYER_ASSISTS`, which has
-auto-intake AND auto-fire ON.** The rule behaved completely differently there, and that gap is
-why four rounds of "still not getting the penalty" kept coming back negative.
-
-Nine-clump herded in open space, identical push:
-
-| assists | fouls | artifacts excused per tick |
-|---|---|---|
-| auto-intake OFF | **15** | 0 |
-| auto-intake ON (the default) | **2** | **3** |
-
-The mouth carve-out was bounded by hopper **ROOM**. Auto-fire keeps all three slots empty and
-auto-intake keeps `intaking` true, so three artifacts were excused on every tick, forever — the
-exact failure the constant's own doc comment warned about and believed `POSSESSION_ACQUIRE_S`
-had fixed. It had not: that window is keyed on the herding clock, which barely advances in open
-space, so the excused artifacts never aged out.
-
-**Now capped at what the rollers take in one cycle** — one artifact, two for a triangle's twin
-slots — which is what the exemption was ever meant to model.
-
-## The honest remaining behaviour
-
-A robot with auto-intake still controls FEWER artifacts than one without, because it is eating
-the pile as it pushes. That is the count being truthful, not a bug. It is also exactly why the
-perimeter is where players notice the rule at all: against a wall the artifacts pile up faster
-than the intake can swallow them, so four or more stay in contact.
-
-If open-space herding should bite harder for an intaking robot, the lever is NOT G408 — it is
-that a robot pushing a clump in this sim also consumes it. Changing that is an intake/feel
-change, not a penalty change.
-
-## The whole chain of causes, for the record
-
-Four rounds, four different faults, none of them the rule text:
-1. the model was built on FRC definitions not in the DECODE manual (2026-08-25a);
-2. it was too eager about artifacts already at a wall (2026-08-25b);
-3. an artifact only counted on ticks it was touching, so steering killed it (2026-08-25c);
-4. penalties did not run in Free Drive at all (2026-08-25d);
-5. and the mouth carve-out was permanently open for anyone using the default assists (this one).
-
-**Lesson: reproduce with the PLAYER'S configuration before tuning.** `DEFAULT_ASSISTS` is the
-neutral sim/wire fallback; `PLAYER_ASSISTS` is what a person actually drives with, and the two
-differ on auto-intake and auto-fire. A smoke suite written entirely against the former can be
-green while the feature is dead in play.
-
----
-
-## 2026-08-25d — penalties were OFF in Free Drive (superseded as READ FIRST)
-
-Branch **alpha**. `npm test` **1166 checks, ALL PASS** · `npm run build` green ·
-`npm run server:check` green · `npm run test:mm` 58 green. `SIM_VERSION` 7 → **8**.
-
-Do not merge to main. Standing rule.
-
-## READ FIRST — the actual answer to three rounds of "I'm not getting the penalty"
-
-**The entire penalty engine was switched off in Free Drive.** `updatePenalties` returned early
-for any phase that is not `auto` or `teleop`, and Free Drive runs in `freeplay`. Measured on an
-identical six-clump herd:
-
-| mode | phase | fouls |
-|---|---|---|
-| Free Drive | `freeplay` | **0** |
-| Match | `teleop` | **13** |
-
-`freeplay` is a live phase everywhere ELSE in the sim — `robotsEnabled` includes it, the human
-player restocks in it, the shooter fires in it. Penalties were the one subsystem that excluded
-it. So every round of G408 tuning was invisible to anyone practising in Free Drive, which is
-exactly where you would go to practise pushing a clump around.
-
-Now assessed in `freeplay` too. Phase-specific rules stay correctly inert on their own terms:
-G402 tests `phase === 'auto'`, `endgame` tests `phase === 'teleop'`. CR is untouched —
-`updateChainPenalties` gates on `isAuto`/`isTeleop` explicitly, which is right for G05/G06.
-
-**Checked for spam**: 45 s of ordinary free driving with practice dummies drew 0 fouls on the
-player. A passive dummy can never be PINNED either, since G422 needs the victim attempting to
-move and a passive robot issues no command. The only event was a G426 against a dummy parked in
-a loading zone, which is correct.
-
-## Lesson for next time
-
-Three sessions were spent tuning a rule that could not fire in the mode it was being tested in.
-**Before tuning a sim rule, confirm the rule RUNS in the mode the report came from.** The
-phase gate at the top of `updatePenalties` is the first thing to check, and `robotsEnabled`
-(`src/sim/match.ts`) is the list of phases the rest of the sim considers live — any subsystem
-whose phase list disagrees with it is a suspect.
-
----
-
-## 2026-08-25c — making CONTROL reachable again (superseded as READ FIRST)
-
-Branch **alpha**. `npm test` **1165 checks, ALL PASS** · `npm run build` green ·
-`npm run server:check` green · `npm run test:mm` 58 green. `SIM_VERSION` 6 → **7**.
-
-Do not merge to main. Standing rule.
-
-## READ FIRST
-
-The leniency pass below (2026-08-25b) went too far the other way: *"when I just push a clump in
-open space it doesn't give me [the penalty]"*. Fixed, and the cause was not a threshold.
-
-### An artifact only counted on the ticks it was TOUCHING
-
-Artifacts do not RIDE a bumper in this sim — they bounce off it and are re-struck — so a herded
-pile is in contact only intermittently. `held.add()` happened solely on touching ticks, so the
-count collapsed to whatever was in the hopper between bounces. Measured, with a six-clump in
-open space:
-
-| driving | ticks controlling >3 | fouls |
-|---|---|---|
-| dead straight | 89% | 9 |
-| gentle steer (±0.15) | **4%** | **0** |
-| hard weave (±0.3 @2 Hz) | **0%** | **0** |
-
-So the rule worked only if you drove perfectly straight. **An established hold now keeps
-counting while it DRAINS**, so a re-struck artifact stays controlled between bounces; the drain
-is what bounds it (an artifact stops counting a couple of confirm windows after the robot really
-has left it, and one that never established has nothing to drain). `POSSESSION_CARRY_DIST` is
-now sticky too — across re-stations and across the hold dying — because ground already covered
-does not un-happen. `POSSESSION_CONFIRM` 0.8 → **0.65**.
-
-Neither `POSSESSION_LEAK` nor `POSSESSION_CONFIRM` could fix this on their own; both were swept
-(0.12–0.5 and 0.35–0.8) and the steering cases stayed at zero. It was never a threshold.
-
-### Where the line sits now
-
-Clean: nosing into an open clump however deep · driving into 5 artifacts already on the wall,
-even leaning 20 s · nosing a 9-row at the wall at half throttle · collecting 3 with an empty
-hopper · driving past artifacts strung along a lane · parked among artifacts.
-
-Fouls: herding 5–6 across open floor straight, steering, or with the throttle wobbling ·
-driving a pile INTO the wall and leaning · spinning a corralled pile · **ramming a 9-row at full
-throttle and scattering it 40 in**.
-
-That last pair is one boundary, and both sides are pinned in smoke: a half-throttle press
-displaces the outer artifacts 33–39 in and draws NOTHING, because they squirt sideways out of
-the squeeze rather than covering ground in the push direction; the full-throttle ram carries
-four of them past the carry distance and costs three MINORs.
-
-### Known limit
-
-A robot WEAVING hard while pushing bats the clump apart and then genuinely controls only its own
-three, so it draws nothing. That is the count being honest rather than the rule failing — but it
-does mean a flailing robot is cheaper than a tidy one. If that ever matters, the fix is in the
-ball–robot contact feel (how far a turning bumper flings artifacts), not in G408.
-
-### Gotcha that cost time here
-
-A `sed` on `cmd({ driveY: 1, intake })` matched an identical line inside an unrelated `gateHold`
-helper and broke the suite at check 538. **`npm test` printing no FAIL is not proof it passed** —
-it can die partway. Check the count, or the `ALL PASS` line at the end.
-
----
-
-## 2026-08-25b — making CONTROL lenient about running into things (superseded as READ FIRST)
-
-Branch **alpha**. `npm test` **1162 checks, ALL PASS** · `npm run build` green ·
-`npm run server:check` green · `npm run test:mm` 58 green. `SIM_VERSION` 5 → **6**.
-
-Do not merge to main. Standing rule.
-
-## READ FIRST
-
-The CONTROL rewrite below (2026-08-25a) was right about the definition and too eager in play.
-Two false positives were reported and both are fixed:
-
-* *"if you drive into a pile to intake, you get a penalty if you go in too far"*
-* *"you get a penalty if you drive into five balls that are ALREADY at the wall"*
-
-### The fix: "MOVING the SCORING ELEMENT" is a DISTANCE, and it is DIRECTIONAL
-
-Clause B's verb is about the artifact, so it has to have actually gone somewhere. The new
-`POSSESSION_CARRY_DIST` (5 in, one artifact diameter) accumulates per tick as
-`max(0, b.vel · pushDir) * dt`, where `pushDir` is the direction the robot's contact point is
-travelling.
-
-**The projection is the whole trick.** A row already resting on the perimeter squirts SIDEWAYS
-out of the squeeze — fast, but covering no ground in the direction the robot is driving it. A
-herded pile covers it steadily. So running into things is free and taking them somewhere is not,
-and a pile the robot DROVE to the wall still counts through the latch.
-
-Two things that do NOT work, both measured before landing this:
-
-* **an instantaneous speed floor** (what main used, and the obvious first try). Artifacts do not
-  RIDE a bumper in this sim — they bounce off and are re-struck — so a jammed pile reads as
-  moving quickly while going nowhere. At the ball's own rest threshold it still billed 6 MINORs
-  for driving into a wall row.
-* **undirected net travel.** A wall row scatters sideways plenty; only the projection separates
-  it from a herd.
-
-`POSSESSION_CONFIRM` also went 0.35 → 0.8 s. Contact plus a fifth of a second cannot tell
-"taking these somewhere" from "arriving among them". Swept over the thirteen scenes in the probe,
-**0.8 s with a 5 in carry is the only pair where every case comes out right** — 0.35 fouls the
-intake cases, and a longer carry starts letting real herding through.
-
-### Where the line now sits
-
-| scene | fouls |
+| PR | what |
 |---|---|
-| nose into an open clump to intake, however deep | no |
-| drive into 5 artifacts already on the wall, even leaning 20 s | no |
-| nose into a 9-row on the wall with the intake held | no |
-| parked among artifacts, never pushed | no |
-| herd a 5- or 6-pile across open floor | **yes** |
-| drive a pile INTO the wall and lean on it | **yes** (the latch) |
-| corral a pile and spin in place | **yes** |
-| RAM a wall row from 40 in away, scattering it | **yes** — see below |
-
-That last one is a deliberate judgement call: it covers the carry distance in the push direction
-because it really did move those artifacts 40 in. The line is displacement, not intent.
-
-### Smoke scenes: two more were unsound
-
-The `clump` helper parked unused artifacts at (900,900). Anything outside the perimeter is
-dragged back in by the containment pass in world.ts, so they reappeared on the field and the
-robot met them later — a THREE-artifact clump was drawing a foul off a stray. Unused artifacts
-are now REMOVED from `world.balls`, and the squirting-ball scene clears the field too. Scene
-durations are now derived from the gates (`acquireSecs`/`acquireTicks`) instead of hard-coded
-from the old constants.
-
-### Gotcha
-
-`world.penalties` still has no `unslimWorld` backfill. `ballCarry` is therefore declared
-**optional** and read through `??=`; a snapshot from an older server arrives without it and the
-first index would otherwise throw. Any future `PenaltyState` field needs the same treatment.
-
----
-
-## 2026-08-25a — what CONTROL actually is (superseded as READ FIRST)
-
-Branch **alpha**, commit `9f8e633`, pushed. Working tree CLEAN (bar the untracked `zz-probe-*`
-scratch scripts). `npm test` **1159 checks, ALL PASS** · `npm run build` green ·
-`npm run server:check` green · `npm run test:mm` 58 green.
-**Deployed to the alpha preview** (`dsim-alpha`, `deployment-01M0WAB0NBK0E3FQD9FWX8A59Q`,
-1/1 checks, `/health` ok). Production untouched.
-
-Do not merge to main. Standing rule.
-
-## READ FIRST — where this session ended
-
-G408 over-possession, rewritten from the manual's own text. `SIM_VERSION` 4 → **5**.
-`BALANCE_VERSION` left at **4** (see *Open*).
-
-### The finding: the engine was built on two definitions that are not in the DECODE manual
-
-`controlledArtifacts` was written against an FRC-style **POSSESSION** ("as the ROBOT moves or
-changes ORIENTATION ... the object remains in approximately the same position relative to the
-ROBOT") and a **TRAPPING** ("preventing the movement of a SCORING ELEMENT against a FIELD
-element"), both quoted in the code as if they were DECODE's. Verified by extracting Sections 11
-and 16 of the archived manual and grepping both:
-
-* there is **no POSSESSION glossary entry**; the only occurrence of the word in Section 11 is
-  G404's "pre-load possession limit";
-* there is **no TRAPPING glossary entry**, and the word does not appear in Section 11 at all.
-  The quoted definition is DECODE's **PIN/PINNING** with "opponent ROBOT" swapped for "SCORING
-  ELEMENT";
-* "bulldozing" and "deflecting" are not glossary terms either — they exist only as G408's own
-  non-CONTROL examples.
-
-DECODE defines exactly one term, **CONTROL**, and the rewrite is written against it clause by
-clause. See the G408 bullet in CLAUDE.md for the full mapping.
-
-### What changed behaviourally
-
-| | before | after |
-|---|---|---|
-| a pile CREPT below 1.5 in/s | 0 fouls over 12 s | controlled (no speed floor in the definition) |
-| a pile driven into a wall and held | 4 MINORs, then free all match | keeps billing (the LATCH) |
-| a robot parked near a wall, never pushed anything | fouled by the invented TRAPPING rule | clean |
-| artifacts off a convex CORNER | counted | not control (clause B names the face) |
-| anything inside your own loading zone | never counted, robot anywhere | only while the ROBOT is in there |
-| an artifact excused at the mouth | re-added by the transitive chain | conducts, not counted |
-| first continuing tariff | 2 × REBILL_S (measured 6.02 s) | one interval after the violation opens |
-| per-(robot,artifact) clocks | leaked forever, ids recycle | swept, and cleared outside auto/teleop |
-| the acquire carve-out | raw intake button only | `cmd.intake \|\| r.autoIntake`, as robot.ts does |
-
-### ⚠️ ONE DELIBERATE DEVIATION, now labelled as one
-
-`POSSESSION_REBILL_S` — the "another tariff every 3 s" rule — **is not in G408**. Its violation
-line is one assessment. The same manual writes the continuing clause three times (G422, G423,
-G434) at exactly this interval, and G434's is the identical per-artifact shape, so the omission
-from G408 reads as deliberate. It is kept because you asked for it ("the over-possession penalty
-is way too lenient") and because billed once the whole tariff for hoarding six artifacts was
-three MINORs and then free. **Set `POSSESSION_REBILL_S` to `Infinity` for the rule as written.**
-Measured cost of keeping it: leaning a six-pile on a wall for 30 s now bills **40 MINORs**
-(200 pts). That is the dial to turn if it reads as too harsh.
-
-### Two smoke scenes were mislabelled and are now fixed
-
-Both were passing for the wrong reason, and both hid behind the invented TRAPPING rule:
-
-* *"pushing a clump across open floor"* drove at full throttle, swallowed three artifacts, and
-  spent 6.5 of its 8 seconds **parked against the far wall** with exactly three in the hopper —
-  which is at the limit and not a violation. It now herds at a third throttle from the bottom
-  of the field, which is what the name says.
-* *"...with a FULL robot"* never had one: the `clump` helper always emptied the hopper. It now
-  takes the hopper as an argument.
-
-### Gotchas worth keeping
-
-* **Get DECODE rule text from `/ftc/archive/2026/game/manual-NN`.** The live `/ftc/game/manual`
-  serves the 2026-27 pre-season manual and `manual-11` 404s there. WebFetch's own PDF extractor
-  returns binary garbage on these — download and run `pdftotext -layout`, and **without**
-  `-layout` for the glossary, whose two columns interleave otherwise.
-* **Check every quoted definition against the real glossary.** This rule shipped for months
-  against two that do not exist.
-* **Do not snap a contact to a face by nearest distance.** The first cut of `contactPush` picked
-  the nearest face plane; on a square-ish chassis an artifact dead ahead is exactly equidistant
-  from the front face and a flank, and a 1e-11 rounding sent it to the flank — which zeroed the
-  push for a robot driving straight at it. The direction now comes from the contact itself.
-* **`world.penalties` has no `unslimWorld` backfill.** Nothing was added this session, so
-  nothing breaks — but any NEW `PenaltyState` field will be `undefined` on a client talking to
-  the older Fly server, and the sim indexes these maps directly. Backfill or read defensively.
-  (`ballTrap` was REMOVED, which is safe in both directions: nothing ever read it.)
-
-## Open
-
-* **`BALANCE_VERSION` stays at 4.** It went to 4 yesterday for the push rewrite, and that season
-  has only ever existed on the alpha preview, so the standings a second bump would archive are
-  empty. G422 and G408 both land inside that same fresh season. Bump it if alpha standings start
-  being treated as real.
-* Two pre-existing bugs, still unfixed and still not requested: `saveReplay` never stores
-  `replay.sim` (so the `SIM_VERSION` gate refuses every DB-served replay — and that gate now
-  matters more, since 4 → 5 changes foul totals), and Free Drive with an auto path enabled
-  freezes the robot.
-
----
-
-## 2026-08-24 — robots pushing robots, and what counts as pinning (superseded as READ FIRST)
-
-Branch **alpha**, commit `fd05c68`, pushed. Working tree CLEAN.
-`npm test` ALL PASS · `npm run build` green · `npm run server:check` green ·
-`npm run test:mm` green. **Deployed to the alpha preview** (`dsim-alpha`), production untouched.
-
-Do not merge to main. Standing rule.
-
-## READ FIRST — where this session ended
-
-An audit of every live path for robot-on-robot pushing found eight defects; all eight are
-fixed. `SIM_VERSION` 2 → **3**. **`BALANCE_VERSION` was NOT bumped — that decision is still
-open** (see *Open* below). `SIM_VERSION` is now **4** — the pinning rewrite below moved it
-again — and the ALPHA PREVIEW is deployed on it.
-
-### The one that mattered: the shove was a mass, and it should have been a force
-
-The sim pushes by **setting velocity**, not by applying force. So the momentum a robot injects
-per tick is `collider mass × accel × dt`, and the force it delivers is `mass × accel`. The old
-`shoveMass = massLb · pushMult · rpmPush · (1−powerDraw)` was written as if it were the answer
-on its own — but `driveParams().accel` already carries `REF_MASS_LB/massLb`,
-`REF_DRIVE_RPM/rpm` and `1−powerDraw`. Measured consequences:
-
-| factor | intended | actual before |
-|---|---|---|
-| `massLb` | push ∝ weight | **cancelled outright** — 20 lb and 42 lb both delivered 5591 |
-| `rpmPush` | clamped 2.48× spread | **7.45×**, the clamp defeated by the second application |
-| `powerDraw` | ×0.80 at the cap | **×0.64** (squared) |
-| `pushMult` | tank:xdrive 4.9× | 12.1×, because `accelMult` rode along |
-
-Verified empirically, not just algebraically: pairs with equal predicted force stalemate, pairs
-with unequal force rout. The headline symptom was an inversion — **a 250 rpm minimum-weight
-mecanum out-pushed a 42 lb 435 rpm tank**, i.e. the rpm slider was a stronger pushing lever
-than the drivetrain pick, which is the opposite of every word in `DRIVETRAIN_PRESETS`.
-
-Now `src/sim/drivetrain.ts` states the force and derives the mass:
-
-```ts
-pushForce = massLb · BASE_DRIVE_ACCEL · pushMult · rpmPush · (1 − powerDraw)   // traction-limited
-shoveMass = pushForce / (driveParams(spec, tankMode).accel · (1 − powerDraw))  // what delivers it
-```
-
-`powerDraw` cancels between the two today. It is written out anyway, on purpose: the identity
-must hold whatever `accel` happens to contain. **Never add a term to `pushForce` without
-checking whether `accel` already has it.**
-
-**The tradeoff this forces, and why it was taken.** Because `accel ∝ 1/massLb`, `shoveMass`
-comes out ∝ massLb². Rapier's one `mass` also decides a ram's momentum split and the positional
-split of an overlap, so a 2:1 weight difference now separates ~4:1 there. That is the price of
-`accel` staying motor-limited (heavy = sluggish, the point of the mass slider) while push stays
-traction-limited (heavy = stronger, which is real). One number cannot be both; it is the pushing
-one, because that is what a match turns on. The alternative — dropping `REF_MASS_LB/massLb` from
-`accel` — makes both correct at once but removes mass's only downside, and everyone would build
-max-mass.
-
-### A shoved robot could not turn AT ALL
-
-Rapier locks robot rotation, so the solve produces no angular response; the only other source
-was the heuristic `spin` flick, scaled by the robot's **own** press — zero for anybody who is
-not driving. Measured, ramming an idle robot at y-offsets 0/4/8/12 in (the last grazing a corner
-of a 16.5 in chassis) left the victim at heading **0.00° and angVel 0.000 every single time**,
-while the aggressor yawed 3.5°. Cornering an opponent to spin them is the most basic defensive
-move in FTC and it could not happen.
-
-`squareUpPair` now runs the real two-body point impulse — the same model `squareUpStatics`
-already used for the gate handle, extended to a second movable body — and takes **only the
-rotation** (Rapier owns the linear half; adding it back would bounce apart a pair whose
-restitution is deliberately 0). Coulomb `J_t` is in it, which is what makes a flank hit turn you
-INTO what you caught. Now: 0 in → 0.00°, 2 in → 4.7°, 4 in → 9.4°, 8 in → 19.1°, 12 in → 27.9°,
-and it **settles** rather than running away (checked to 15 s).
-
-### The press was absolute velocity, so contacts carrying no load still torqued
-
-Each robot's press was its own velocity on the normal — a load reading that does not need the
-other robot to be there. Two robots cruising side by side in contact, nothing compressed,
-squared each other up at 0.45 rad/s; a pair actively **separating** (gap 14.7 → 19.5 in) still
-had the trailing one snapped from 11.46° to flush. It is the pair's **closing** velocity now,
-shared by both. `contactTorqueDelta`'s "no load, no torque" rule was right all along; the input
-was wrong.
-
-### ...and a robot held against a wall by an opponent never squared up
-
-Same root cause on the static side: `pressAlong` reads only the robot's own drive. A 42 lb tank
-rammed an idle robot into the field corner and the victim sat at its 22.9° arrival angle for
-four seconds. `pressOn` now takes `max(own drive-in, load transmitted through the chassis)`,
-with the transmitted part carried from the pair pass in `ContactAcc.ext`. Four tilts (±20°,
-±11.5°) all come flush inside 2° now.
-
-### Four more, smaller
-
-- **An auto-path robot was a GHOST.** `solveRobots` skipped body creation entirely for
-  `autoPathActive`, so for the whole 30 s of AUTO an opponent drove clean through it (measured:
-  end to end, the path robot never moved a thousandth of an inch) and it passed through walls
-  too. It gets a **kinematic** body now: solid to everyone, pushed by nobody, path still owns
-  the pose. CR never sets the flag, so this is DECODE-only in practice.
-- **The pair pass wrote before the statics read.** It rotated both chassis before the walls /
-  goal faces / classifier / gate arm worked out their geometry — the exact path-dependence
-  `sumTurn` exists to kill, with the robot-robot half left outside it. `ContactAcc` accumulates
-  everything and each robot is turned once. Pinned by a check: identical geometry with the robot
-  ids permuted now gives bit-identical headings. (Rapier's own body order still follows
-  `world.robots`; that is inherent to the solver and stays deterministic.)
-- **Penetration.** A max-push tank holding an opponent against the wall buried it ~2.4 in.
-  Halving the force fixed most of it; `PHYS_CONTACT_FREQ` 8 → **12** took it to 0.57 in.
-- **Dead code.** `collideRobots` and `constrainRobot` (zero call sites) and `CONTACT_BIAS`
-  (superseded by `CONTACT_COMPLIANCE`) are gone. `driveSummary()`'s `push` column now prints the
-  real force instead of the raw `pushMult`, which had quietly disagreed with the shipped model.
-
-### G422 pinning, read against the manual instead of paraphrased from it
-
-The rule was verified verbatim from the ARCHIVED DECODE manual (Team Update 32, Section 11 V15,
-p.112 — note `ftc-resources.../ftc/game/manual` now serves the 2026-27 BIOBUZZ pre-season manual
-and `manual-11` 404s; DECODE is only at `/ftc/archive/2026/game/manual-NN`). What it says:
-
-> A ROBOT is PINNING if it is **preventing the movement** of an opponent ROBOT by contact, either
-> direct or transitive (such as against a FIELD element) and the opponent ROBOT is **attempting to
-> move**. A PIN count ends once any of: **A.** separated by 2 ft for more than 3 seconds, **B.**
-> either ROBOT has moved 2 ft from where the PIN initiated for more than 3 seconds, or **C.** the
-> PINNING ROBOT gets PINNED. [A and B **pause** the count and it **resumes**.]
-> Violation: **MINOR FOUL and an additional MINOR FOUL for every 3 seconds** in which the
-> situation is not corrected.
-
-Five divergences, all fixed:
-
-1. **"Preventing" was not tested at all.** Any contact counted. So a robot driving ITSELF into a
-   wall fouled whoever was behind it — contact, attempting to move, going nowhere, trapped, and
-   the opponent preventing nothing. Measured, the WEAKEST legal build "pinned" a default chassis
-   that way. `isPinning` now requires the pinner to lie along the victim's attempted direction
-   (`PIN_OBSTRUCT_COS`, ~70° either side).
-2. **A tank could not be pinned AT ALL.** "Attempting to move" read `driveX/driveY/rotate`, which
-   a Traditional-tank driver on separate sticks never fills — G422 simply did not protect it.
-   `attemptDir` decodes the command the way `updateRobot` does, side-drive and field-centric
-   included.
-3. **The count died on any lapse.** `PIN_BREAK_S` 0.6 s ended a pin outright when the hold
-   flickered for any reason, so a pinner could wipe a 2.5 s count by easing off for 0.7 s. Only
-   criteria A/B/C end one now, and A/B PAUSE and RESUME — stated twice in the rule.
-4. **Criterion C did not exist.** A mutual hold is nobody's foul.
-5. **The bill was wrong in both directions.** One MINOR however long you held it, plus a
-   MINOR→MAJOR escalation that appears nowhere in G422. It is a MINOR every 3 s now. (G211 lets a
-   Head Referee card egregious repeats — judgement, not this rule.)
-
-**`pinnedAgainstWall` is NOT in the rule and is kept anyway.** A FIELD element is offered as an
-example ("such as"); direct contact alone can pin. It stays because it is the only thing breaking
-the SYMMETRY of a shove, and the cost is small: criterion B ends any pin that travels 2 ft, so the
-only open-field pin the rule sustains is a stationary stalemate — and a stationary stalemate is
-mutual, which criterion C ends. What is left uncovered is narrow: a robot wedged on another robot
-with open field behind it.
-
-**Measured after** (10 s scenes): a static hold bills at 3.05/6.05/9.03 s; a 2 s break pauses and
-resumes; a 3.4 s break ends it and the count restarts; a swerve pinner walking the victim 69 in
-along the wall bills once and stops (criterion B); a tank victim on side-drive alone now bills
-identically to arcade; the drive-into-a-wall scene bills nothing, including against the weakest
-legal pinner.
-
-**Test-scene gotcha this exposed:** several pin checks read `w.match.fouls.blue.minor`, which
-counts EVERY minor foul blue commits. A pin scene that travels drives through protected zones and
-picks up G424/G425 of its own — one probe read 7 "pins" that were 1 pin and 6 zone fouls. Count
-G422 events (`pins()` in smoke.ts), and park the artifacts or the pair ploughs a spike-mark pile
-along with it and you are testing G408.
-
-### Round two: eight more, found by attacking the fixes
-
-The first pass was reviewed adversarially and the review found real defects in it. Everything
-below was introduced (or newly exposed) by the round-one work and is now fixed, with a check
-each. Worth knowing that the review's own second pass died on a usage limit with every verifier
-agent unrun — its "0 confirmed" was an artifact of missing verdicts, not a clean bill. All seven
-of its findings were checked by hand and three were real.
-
-1. **A shoved robot could not turn under its own power.** The pair impulse is recomputed at full
-   strength every tick, and for a sustained contact `press` is a constant 8.49 in/s (most of it
-   the victim's own braking), giving a permanent −0.7 rad/s that exactly cancelled the wheels'
-   +0.6. At full rotate stick a victim managed 87° of a possible 2748 in five seconds; a tank
-   managed −13°. The damning part was the sweep: **an x-drive 4.5× WEAKER than its victim held
-   it to 103°, the same as a tank 6× stronger.** A torque that ignores how hard it is applied is
-   not a torque. `CONTACT_PAIR_SPIN` 0.6 scales the impulse's rotation — the weak pusher now
-   holds it to nothing (820°) while an equal or stronger one still pins you. It costs the ram
-   (near-corner spin 28° → 17.5°, still clearly offset-graded). The real fix is a contact that
-   can SLIP; this is a dial, and it says so.
-2. **A moving auto-path robot buried and passed through a bystander.** The kinematic body had no
-   linvel, so the solver saw a stationary thing that had teleported 1.56 in — overlap grew to
-   15.2in on a 17.5in pair, the SAT min axis flipped, the bystander was ejected sideways, and
-   the path robot went through. `world.ts` now sets `r.vel` from the pose delta (which is also
-   simply the truth — the HUD, shot-lead and the G422 speed gate were all being told zero).
-   Carrying is now perfect: a 1.4in GAP, never touching.
-3. **...but a jump is not a sweep.** `initializePathTraversal` teleports the chassis onto the
-   path's start point, and dividing that by `dt` gave thousands of in/s that blasted a bystander
-   60in. Displacement beyond `maxSpeed × 1.5` reports no velocity at all.
-4. **The gate handle wrote straight onto an auto-path robot.** `applyAcc` skips path robots, but
-   the gate's point impulse writes `vel`/`heading`/`angVel` directly and bypassed it — newly
-   REACHABLE because `pressOn`'s transmitted load gave a non-driving robot a press it never had.
-   An opponent ramming a path robot parked on the blue gate handle rotated it 7.4° off the
-   heading its path commands, permanently (a `wait` segment never rewrites heading). The whole
-   static pass is skipped for a path robot now.
-5. **A pair contact VETOED the wall square-up.** `sumTurn` clamps the summed alignment to the
-   tightest `flushErr` any contributor reports — right for a static face, wrong for an opponent,
-   who will simply slide. Two parallel chassis put the pair's flushErr at ~0, so a robot pinned
-   face-to-face had the wall's own −2.86°/tick correction thrown away every tick and sat 18–40°
-   off flush. `noVeto()` reports `Infinity` outward while keeping the pair's own capped align.
-   The existing pin check could not see it: at exactly π/2 the two normals agree.
-6. **A robot crushed between a wall and a kinematic path robot left the step at 959 in/s** — six
-   field widths a second. `PHYS_MAX_ROBOT_SPEED` bounds it, applied both on solve write-back and
-   at the end of `applyAcc` (the gate impulse adds velocity after the solve).
-7. **...and that guard's first form fired in ORDINARY play.** It was `maxSpeed × 2`, scaled to
-   the victim's own top speed when what sets a shoved robot's velocity is the PUSHER's. The legal
-   envelope runs 30.1 to 120.9 in/s, so the slowest build's ceiling sat BELOW what the fastest
-   could legitimately shove it to: 27 of 65 ticks of a plain open-field push were clamped,
-   throttling it 12% and putting a discontinuity in the rpm slider with no physical cause. It is
-   an absolute 300 in/s now — ~2.5× anything that can exist here.
-8. **A robot could be pushed clean out of the field.** No speed guard can see this: Rapier's
-   positional correction does not feed velocity, so the victim's `r.vel` read 0.00 for every tick
-   it was travelling through the wall. `FieldColliders.bounds` + `outsideBy`/`grewOut` in
-   `solveRobots` hold the invariant, and hold it as GROWTH: a robot that began the tick inside
-   cannot be pushed out, while one already outside is left alone — DECODE's outflow mouth sits
-   at x = −69 and the drain probes park a whole chassis past the wall plane on purpose.
-   `PHYS_CONTAIN_SLOP` 0.75in keeps it off ordinary resting penetration (0.57in at the worst
-   shove); without that slop the wall square-up lost flush by 1.4° and artifacts began jittering
-   against the classifier again — the two-passes-taking-turns failure, exactly as advertised.
-
-**Also from round one, and worth keeping in mind:** two REAL findings were pre-existing and are
-NOT fixed here — (a) Free Drive with an auto path enabled freezes the robot completely
-(`world.ts` runs path traversal only in `auto` but skips `updateRobot` whenever `autoPathActive`,
-and `free` never reaches `auto`); (b) `server/db/repo.ts` `saveReplay` never stores
-`replay.sim`, so the `SIM_VERSION` gate refuses every DB-served replay. (b) matters more now that
-`SIM_VERSION` moved.
-
-### The stiffness sweep, so nobody re-litigates it
-
-`PHYS_CONTACT_FREQ` was 8 Hz on the reasoning that SOFT contacts let a body starting deep inside
-a wall bleed out instead of being ejected. Swept 8/15/20/25/30/40/60 Hz against both hazard
-cases (a robot seeded 2 in inside a wall; two robots seeded 6 in overlapped): **recovery velocity
-was 0.0 in/s at every single setting** — Rapier's positional correction here does not feed
-velocity, so there is no explosion to buy off. Penetration under a max shove: 1.22 in at 8 Hz,
-0.59 at 12, 0.55 at 15, 0.49 at 25, then it creeps back up. **12 was chosen, not 25**, because
-15 Hz broke the classifier-jitter ratchet and 25 Hz also broke two G408 possession checks and
-the wall-ram torque bound. 12 is the largest step with zero collateral.
-
-### Test coverage
-
-`npm test` gained ~20 checks and lost nothing. The three that changed MEANING:
-
-- `heavier robot yields less (42 vs 21 lb ≈ 1:2 push)` → `(42 vs 21 lb, by shove mass)`, ratio
-  now >2 rather than ≈2. It seeds two robots OVERLAPPING at rest and steps ONCE, which measures
-  the solver's positional split — **not** a pushing match. That is exactly why the double-counts
-  survived so long: under this test 20 lb and 42 lb looked 1:2 apart while delivering identical
-  force. The real coverage is the new `pushContest()` helper (both robots driving, 3 s).
-- `geared-for-speed (600 rpm) robot yields more than a torquey (300 rpm) one` — deleted and
-  replaced by a driven contest. Shove mass is rpm-INDEPENDENT inside the clamp band now
-  (`rpmPush · rpm = 435`), so the seeded-overlap version could not express it; the force is not,
-  and the driven version rules on it decisively.
-- `chain endgame: ascended a ring stand` placed the robot at `ringStands()[3]`, i.e. **inside**
-  the solid post — the thing `CHAIN_START_POSES`' own comment says the stand anchors exist to
-  avoid. It only ever passed because the contact was soft enough that 0.1 s of ejection stayed
-  under `endgameOf`'s 12 in/s gate. It uses the anchor now.
-
-## Open
-
-- **`BALANCE_VERSION` 3 → 4 — DECIDED, a fresh ranked season.** Every head-to-head outcome
-  moves and the stiffer contact moves solo record scores too, so the current DECODE and Chain
-  Reaction standings are archived and the boards start over. `SIM_VERSION` 2 → 3 handles replay
-  invalidation on its own axis.
-- **DEPLOYED to the ALPHA PREVIEW** — `./scripts/fly-deploy.sh --alpha` → `dsim-alpha`, image
-  `deployment-01M0V3KPC6YEPRQ9JBH2B2Q3KW`, one machine in `iad`, `/health` returns `ok`. Its own
-  database, no live players. (It reports `stopped` between requests; the preview auto-stops when
-  idle and Fly starts it on the first connection — that is normal for the single-region app.)
-- ⚠️ **Production `dohun-sim-decode` is still on the OLD physics.** A production client built
-  from this branch would predict the new sim against a server stepping the old one — constant
-  reconcile snap-back. Ship it with `ADMIN_SECRET=… scripts/announce-deploy.sh` when the season
-  reset is wanted for real; that is a separate decision from this preview.
-- Gotcha for next time: the `flyctl` token in `~/.fly/config.yml` had expired (well-formed
-  `fm2_` macaroon, `last_login` six weeks earlier), and flyctl reports that as
-  *"no access token available"* rather than a 401 — it reads as a missing credential, not a
-  stale one. `flyctl auth login` is the fix.
-- The **residual order-dependence is Rapier's own body order** (`world.robots` order), not the
-  bespoke pass. It is deterministic and identical for identical inputs; it only shows if you
-  permute which robot holds which id, which never happens in a real match.
-- CR's **ring-stand colliders still get no contact-torque square-up** — `squareUpRobotsWalls`
-  aligns to the four perimeter walls only. Out of scope here; worth a look if a robot leaning on
-  a stand feels wrong.
-
-## Gotchas earned here
-
-- **Probe worlds are full of field geometry.** A "two robots travelling together" check placed at
-  x=−60 has both chassis reaching past x=−66 into the classifier channel, and one catching it and
-  the other not IS relative motion — the check failed for a real reason that had nothing to do
-  with what it was testing. Stay mid-field, and park the artifacts
-  (`state = { kind: 'held', robot: 99 }`).
-- **`flywheelInertia: 0` for any two-robot symmetry check.** The flywheel's power draw ramps with
-  distance to your own goal, so two robots at different positions otherwise have different accels
-  — real relative motion that will be mistaken for a contact bug.
-- **`PHYS_SOLVER_ITERS` is SHARED with the ball world** (`makeWorld` takes freq/error as
-  parameters but not iterations). Raising it 8 → 12 moved two artifact-possession checks; the
-  robot-only levers are freq and allowed-error.
-
-## (older) HANDOFF — 2026-08-22 (contact geometry: the closest FEATURE, and one turn per tick) — alpha only
-
-Branch **alpha**, commit `fb75a83`. Working tree **CLEAN**. `npm test` ALL PASS ·
-`npm run build` green · `npm run server:check` green. **Not deployed.**
-
-Do not merge to main. Standing rule.
-
-**MERGED IN (this session):** `df4b085` *hosted name moderation* off the long-lived
-`moderation` branch. Server is the authority for every user-supplied NAME (username,
-display handle, robot/team names on the public leaderboard + live roster) via
-`server/moderation.ts` — a HOSTED endpoint (default OpenAI's free `/v1/moderations`),
-NOT a hand-rolled wordlist (the user rejected that; a deleted `nameFilter.ts` — do not
-resurrect it). Env-gated on `MODERATION_API_KEY` like `DATABASE_URL` gates records:
-absent ⇒ disabled, every name allowed, ZERO network. FAILS OPEN on outage/timeout;
-`/admin` forced-rename is the human backstop.
-**DEPLOY:** this is a SERVER change — `./scripts/fly-deploy.sh` (NEVER a bare
-`flyctl deploy`) AND `fly secrets set MODERATION_API_KEY='sk-…' -a dohun-sim-decode`.
-Backward-compatible: no key ⇒ no-op, and the `reason:'inappropriate'` field is additive
-so old clients ignore it. No CSS/colour change (reused `--ds-danger`).
-
-### (older) Where that session ended
-
-*"Collision with the gate/corner of the gate is still very weird."* Three structural
-things, all in `src/sim/physics.ts`:
-
-1. **The normal at a corner.** The gate handle and the classifier both took their normal
-   from SAT's least-overlap axis (the handle, from a snap to whichever axis the centre was
-   furthest along). Both treat a rectangle as all FACE, so near a corner the normal jumps
-   between axes as the robot crosses the diagonal — the push direction, and which way you
-   are turned, flips within a fraction of an inch. Now: clamp the centre onto the rect; one
-   coordinate moved is a face, both moved is a CORNER and the normal runs from it.
-   Continuous everywhere.
-2. **Surfaces are summed, then the chassis turns once.** Each surface used to write
-   `heading` as it was processed, so the gate arm computed its geometry against a robot the
-   classifier had already rotated. `contactTorqueDelta` is pure, `squareUpStatics` sums, and
-   the flush cap that survives is the tightest any FACE imposes.
-3. **The arm's manifold is both bodies' features**, unioned, not three fallbacks in priority
-   order (which one answered depended on which side you hit from).
-
-**Measured** (drive into the arm, 2in steps across it): centred 0 deg; off-centre from the
-tunnel side 7/7/7/11 deg; from the channel side 0-15 depending on where you meet it. The
-channel-side spread is **not** a discontinuity — instrumented, one surface acts there and
-contributes a steady 0.19 deg/tick — it is how far the chassis turns before it slides off a
-2.5in stub. Bounded by a smoke check that prints both sides.
-
-### Still open here
-
-- **The response is a heuristic, not tau = sum(r x F) / I.** A full physical rewrite was
-  tried and REVERTED this session: 20 deg hits were perfect, small angles rocked +/-9 deg,
-  10 checks red. Findings kept: mass cancels; the impulse denominator is
-  `1 + (r x n)^2 / (I/m)` with `I/m = (l^2 + w^2)/12`; `press` reads as a FORCE, not an
-  impulse; and the torque must turn the CHASSIS, not integrate `angVel`.
-- One squeeze still rings: an artifact between a driving intake and two walls, 1.48in at
-  4/s. Bounded, not gone.
-
-### Two traps that cost real time this session
-
-- **Heading wrap.** Raw `heading` deltas read as full 360 turns. Three separate "it spins me
-  round" diagnoses were my own probes, not the sim. Unwrap, or measure mod 90.
-- **Parking probe artifacts at (300,300) does not remove them** — the ground clamp snaps
-  them back into the field, and the robot then pivots on a pinned ball. Use
-  `state = { kind: 'held', robot: 99 }`.
-
-## (older) HANDOFF — 2026-08-18 (the ramp: a stalled column, and the overflow lane) — alpha only
-
-Branch **alpha**, commit `3aa4697`. Working tree **CLEAN**. `npm test` ALL PASS ·
-`npm run build` green · `npm run server:check` green. **Not deployed** — production
-`dohun-sim-decode` is still on an older build and still owes the migrations listed
-further down.
-
-Do not merge to main. Standing rule.
-
-## Where this session ended
-
-Fourteen reports: the DECODE classifier ramp and gate, the intake at its outflow and in a corner, and one Chain Reaction terrain bug. The first two trace to the same kind of
-thing:
-a constant (or the absence of one) that was correct against the OLD `RAIL_ACCEL` of 80 and
-was not rescaled when the ramp became 25 and lost its capped flow speed (`57a308e`).
-
-### A stalled column no longer winds up (`a653810`)
-
-*"after ball flow resumes after being stalled, it shoots down extremely quickly"* — a
-blocked artifact went on accumulating `RAIL_ACCEL` into `v` every tick it stood still. The
-only cap on a blocked artifact's speed was the floor's, and an OPEN gate declares "no cap"
-(`exitFloorV = -Infinity`), so an open-but-blocked drain — a robot parked on the outflow,
-or the doorway busy — pinned the column in place while `v` marched -5, -10, -15 … to the
-`RAIL_TERMINAL` **safety** cap of 120 in/s in 4.8 s. The instant the block cleared they left
-at up to **86 in/s** and the whole ramp emptied in one burst.
-
-The fix is one line: `wasV` — the artifact's speed BEFORE this tick's gravity — is a cap in
-its own right alongside the floor's, so `st.v = Math.max(st.v, floorV, wasV)`. Whatever
-holds an artifact up pushes back exactly as hard as gravity pulls, so being held is never an
-acceleration; it still keeps the momentum it ARRIVED with, which is what the exit lip has
-always done. A FLOWING drain is untouched — an artifact in a moving column is in contact for
-a tick at a time, because the one ahead has more runway and opens the gap itself.
-
-**Capping at the DOORWAY artifact's speed was tried first and is a different bug**: that
-queue is nudged along at ~22 in/s, so the whole ramp is throttled to it — mean release gap
-0.58 s against 0.32 s, and a held gate stopped emptying the ramp. The note in `updateRails`
-records it so it is not re-attempted.
-
-### The overflow lane flows again (`1f95735`)
-
-*"ball flow for overflow is weird and slightly slow"* — it was both, from two constants:
-
-- **`OVERFLOW_DRAG` → `OVERFLOW_ROLL_LOSS`.** A 2.2/s velocity drag pins the ride at a
-  terminal of `RAIL_ACCEL / 2.2`: 36 in/s under the old ramp, **11 in/s** under this one,
-  against a ramp lane running 17..54. It is now a CONSTANT deceleration (9 in/s²) for the
-  same reason `RAIL_ACCEL`'s own note gives — rolling resistance does not grow with speed,
-  so there is no terminal and speed is a consequence of distance travelled. Both lanes are
-  one physics again and the ratio is readable: `sqrt((RAIL_ACCEL − loss) / RAIL_ACCEL)` = 0.8.
-- **`OVERFLOW_BUMP` 40 → 12.** At 40 the scallop was 1.6× the pull meant to drive the ride,
-  which stops being a texture and becomes a TRAP: four riders dropped onto a full column,
-  three stuck on it forever (one held at **v = +5 in/s**, pushed steadily back UP the ramp)
-  and the fourth creeping out at 16 in/s after four seconds. The invariant is arithmetic —
-  `RAIL_ACCEL − OVERFLOW_ROLL_LOSS − OVERFLOW_BUMP × OVERFLOW_SLOPE_MAX > 0` — and swept
-  over 26 starting states the strandings begin the tick it goes negative (bump 19). At 12
-  the ride gains speed at 4..28 in/s² and every rider comes off: exits 18..29 in/s in
-  1.4..2.9 s.
-
-**A bump strong enough to make the rider DECELERATE on a crest is strong enough to strand
-it** on the uphill shoulder of the topmost artifact, where nothing above can push it back
-on. The old "loses speed cresting each artifact" check was passing off the velocity drag,
-not the geometry; it now asserts the SWING in the rate of gain, plus the invariant itself.
-
-### Checks added
-
-- `a column held against a block does not accumulate speed while it waits` (2 s vs 6 s into
-  a stall, no growth) and `...and it resumes at ramp speed rather than shooting out of the
-  gate` (under the ramp's own `sqrt(2as)` ceiling).
-- `every overflow artifact clambers off the column instead of parking on it` (9 starting
-  heights) and `...and leaves the ramp slower than the ramp lane but far above the old drag
-  crawl`.
-- The `LURCHES` + invariant pair replacing the old crest-deceleration check.
-- The ramp-height check is sampled PER ARTIFACT now: its half-inch `s` buckets spanned two
-  inches of `z`, and a column that comes to REST part way out of the mouth (which it now
-  legitimately does) made the aliasing visible.
-
-### The exit goes straight down (`fb286db`)
-
-*"All the balls keep coming out of the gate at the same angle."* The release leaned every
-artifact 5-15 degrees off the wall, and the jitter varied the lean's MAGNITUDE and never
-its SIGN — so the whole drain left on the same diagonal. A wider or narrower fan only
-changes how wide that one diagonal is, so the fan is gone rather than retuned.
-
-The channel runs down the wall and the artifact rolls off the END of it, so it leaves in
-the direction it was already going. The only sideways motion it has a claim to is the
-weave it was doing across the groove, and `railWanderRate` (new, in field.ts) is exactly
-that — how far the groove carries it per inch travelled, so times its own speed it IS
-that artifact's lateral velocity. Signed, a couple of in/s, different per artifact.
-Measured over a nine-artifact drain: **2.5, -3.0, 1.7, 0.5, -2.4, 3.0, -1.9, -0.2, 2.2
-degrees**. `TUNNEL_EXIT_VEL` keeps only its speed (the doorway nudge's).
-
-### A ball coming out lifts the arm, and pays for it (`7d4239d`)
-
-*"A tap only lets out one ball now… a ball coming out is not lifting the gate back up."*
-Two things, and the second is the interesting one.
-
-- **The knock was gated on `GATE_PASS_FRAC`**, which is where an artifact gets THROUGH, not
-  where it can reach the paddle from underneath. An arm a hair below the pass line was a
-  wall. The threshold is now `gateRestOn` at the moment of contact — the height the paddle
-  sits at when resting on that artifact's surface. A FLAT arm is still a wall at any speed,
-  so retention is untouched.
-- **The knock was FREE.** The arm was thrown up at no cost to the artifact, so a knock hard
-  enough to reopen a sagging arm was also one that could never run out — the yield was a
-  cliff (one artifact, or all nine, decided by a fifth of a second on the lever). A
-  collision moves momentum; it does not mint it. **`GATE_STRIKE_LOSS` (new, 0.45)** charges
-  the lift to the striker, so the arm's weight is what the flow spends itself against and a
-  drain gives out when the column can no longer pay. A LATCHED arm is touching nothing, so
-  holding it still costs the flow nothing.
-
-`GATE_KNOCK` 0.06 → 0.12 with that loss. Packed nine-column, tap length → drained:
-**0.10s 2 · 0.12s 2 · 0.15s 2 · 0.18s 2 · 0.20s 3 · 0.25s 7 · 0.30s 8 · 0.40s 9**, against
-1/1/1/2/2/2/4/9 before. The 27-condition sweep spans every value 1..9.
-
-**The knock-scaling check was measuring two speeds that both saturate the arm** from
-`GATE_RIDE_FRAC` and reported 1.00 twice. It now measures from a SAGGING arm, which is
-where a drain is actually decided: from 0.31, 5 in/s reaches 0.35 and stays shut, 10 in/s
-reaches 0.46 and reopens it, 18 in/s reaches 0.75.
-
-**A note for the next tuning pass.** `RAIL_ACCEL` 80 → 25 (`57a308e`) doubled the time a
-resting column needs to deliver its next artifact — `sqrt(2·RAIL_PITCH/a)` went 0.36s →
-0.64s — while the arm's fall from full lift to the pass line stayed at 0.45s
-(`GATE_GRAVITY` 6). That race is why short taps went bimodal in the first place. The
-strike now bridges it; if it ever needs revisiting, `GATE_GRAVITY` is the constant that
-was never re-derived against the ramp it meters.
-
-### The arm's fall is set against the ramp it meters (`d963c05`)
-
-*"A tap lets out 1 or 2"* — still, after the strike fix, and this is the structural half.
-A tap on a RESTING column is a race between two times:
-
-| | |
-|---|---|
-| the arm's fall from fully open to the pass line | `sqrt(2·(1−GATE_PASS_FRAC)/GATE_GRAVITY)` |
-| the column's delivery of its next artifact | `sqrt(2·RAIL_PITCH/RAIL_ACCEL)` |
-
-The second **doubled** when the ramp stopped running at a capped flow speed (`RAIL_ACCEL`
-80 → 25, `57a308e`): 0.36 s → 0.64 s. `GATE_GRAVITY` stayed at 6, a 0.45 s fall. The arm
-was therefore always shut before the second artifact could arrive, and **no knock can fix
-that** — the first gap is covered by nothing at all.
-
-- **`GATE_GRAVITY` 6 → 4**: fall 0.55 s against the column's 0.64 s. Marginal is the point,
-  and the ratio has a CEILING as well as a floor — at 2.9 the fall matches the delivery and
-  the yield is 9 of 9 in **every one of 50** tap conditions, i.e. the drain can no longer
-  give out at all.
-- **`GATE_KNOCK` 0.12 → 0.07**: with the strike loss a flowing column sits at a fixed-point
-  arrival speed (~19 in/s), so the rise per knock is a constant compared against a constant
-  fall between arrivals. Set high, every drain that survives its first gap runs the whole
-  ramp: at 0.12 the sweep was 9-or-nothing (12 ones, 36 nines, nothing between). At 0.07 it
-  spans 1..9, mean 5.
-
-Packed column, tap length → drained: **0.10s 2 · 0.15s 3 · 0.20s 5 · 0.25s 9**. Loosen the
-column to +5in and a quick tap is worth 1 again, which is the situational answer it is
-supposed to have. Checks: a 0.12 s bump is worth more than one artifact at three packings,
-and the fall/pace RATIO itself, so the next `RAIL_ACCEL` change trips in the suite rather
-than in a play session.
-
-### Where the sim actually runs, which cost half a session
-
-Worth stating because it looked like the fixes were not landing: **a record run is a server
-room** (`RecordRun.tsx` joins a `LobbyClient` room with `kind: 'record'`), as are lobby,
-matchmaking and ranked. In all of those the authoritative sim is the Fly app — `dsim-alpha`
-for the alpha site — so classifier changes are invisible until that app is redeployed. Only
-**Free Drive** (`session: null`) runs the client bundle's sim. `flyctl` on this box has no
-usable token (`fly auth whoami` → "no access token available", both shells; `~/.fly/
-config.yml` dates from 11 Jul), so a deploy needs `fly auth login` first, then
-`./scripts/fly-deploy.sh --alpha` — never a bare `fly deploy`.
-
-### Nothing on the ramp outruns the ramp (`519f69e`)
-
-*"Sometimes balls come down the ramp extremely fast. Only sometimes. And way too fast."*
-
-An artifact boarded the rail carrying whatever `vel.y` the BASIN had given it, and
-`BASIN_FUNNEL_ACCEL` is 1150 in/s² — three times gravity, a scripted drain aid so the basin
-does not clog, not a slope. Measured over six seeds of a firing robot: **boarding up to
-52 in/s, peaking at 75 on the ramp, 12 of 18 over 60**, against a ramp whose own free-fall
-ceiling over its whole length is 54. The *"sometimes"* was simply whether an artifact dived
-straight at the entrance or jumbled in the basin first.
-
-The channel entrance is a THROAT, not a launcher. Boarding is capped at what the ramp
-itself could have produced by that point — `sqrt(2·RAIL_ACCEL·(RAIL_S_MAX − s))` — floored
-at the new `RAIL_ENTRY_V` (8) so a dribbler still gets under way. After: boarding 8 flat,
-peak 47..55, none over 60. **Throughput is unchanged** (18 scored either way, worst basin
-backlog 3 either way), so the cap costs the drain nothing.
-
-The invariant is now a check: *nothing on the ramp is faster than an artifact released at
-the top of it.* That is the property that makes the flow legible, and it is worth keeping —
-any future "the classifier feels wrong" report should be tested against it first.
-
-### The intake has a roof (`ac774db`)
-
-*"The intake should not intake if a ball drops on top of it."*
-
-The mouth is open at BALL HEIGHT on purpose — that is what lets an artifact roll in under
-the rollers, and it is why `ballRobotContact` returns no contact in the centre of the mouth
-("the wheels ride high in z, so balls pass under them"). **That fact has an unstated other
-half: what rides high in z is solid to anything coming DOWN.** Without it the mouth was open
-from above as well, and an artifact dropped on the intake fell through the rollers into the
-throat and was swallowed — 11 of 18 drops from 24in across the three presets.
-
-`intakeLidZ` is the height the mouth geometry already implies: the roller's underside must
-clear a full artifact for one to pass beneath it, so an artifact landing ON the roller sits
-a diameter, plus the roller, plus its own radius up. `INTAKE_LID_THROW` sends it forward
-along the robot's axis — a roller's axis runs ACROSS the robot, so forward or back is all
-there is, and back is the chassis.
-
-**The roof's BACK edge is load-bearing, not padding.** An artifact dropped on the CHASSIS is
-ejected out of its nearest face by the contact code, and near the front that face is the
-front — which puts it in the throat, a radius forward, still falling. Before the roof was
-extended back a radius (to exactly `updateIntake`'s own capture window) every funnel preset
-still swallowed a chassis-front drop. After: **0 of 18 taken, 18 of 18 on the floor forward
-of the roller line**, where a running intake may then take them the way it is supposed to.
-
-Note what was deliberately NOT done: the CHASSIS did not get a roof at `ROBOT_HEIGHT`. Shots
-pass over robots today (nothing collides above `BALL_RADIUS*4`), and a chassis roof would
-start intercepting them — which would break "the shooter never misses". A ball resting on
-top of a robot also needs a state that does not exist.
-
-### Parking on the outflow blocks it (`b37f3ba`)
-
-*"Once I open the gate and then stand directly in front of where the balls come out, there
-is no space for the balls to drop, so it would drop on top of the intake. However, it is
-being intaked, still."*
-
-The intake roof from `ac774db` did not cover this, because **the outflow does not FALL**: an
-artifact leaving the ramp is LOWERED from ramp height to the floor over the last couple of
-inches of rail and then released as a ground artifact. With a robot parked on the drop point
-that lowering ran straight through its intake and set the artifact down INSIDE the mouth, at
-floor level — the one place it could not have reached on its own.
-
-`railBlock`'s chassis test is deliberately not the footprint (a robot holding the gate open
-must not read as blocking the drain it is opening). But *"the mouth is open at ball height"*
-only answers for an artifact that IS at ball height, and the outflow is not — the ramp
-discharges at `RAMP_SURFACE_Z` ≈ where an intake's roof sits. So **the roof blocks the column
-exactly as the chassis does**. It is a far tighter region than the footprint (the mouth, not
-the whole front), and the rail line runs 3in from the wall while the gate arm is at the
-classifier EDGE, so a robot working the lever is never over it.
-
-Parked on the drop point: **0 taken, 9 left on the ramp** (3 taken before). Backed off three
-inches: 3 taken — that is gate intaking and it must keep working; both are checks now.
-
-**Releasing onto the roof instead was tried and is worse** — it makes a flight artifact at
-ramp height carrying the roller's throw speed, and a flight artifact is exactly what can sail
-through a gap it does not fit through. The existing gap check caught it. Noted so it is not
-re-attempted.
-
-One condition of the nine-way tap sweep moves with this: at the closest standoff the robot's
-own intake covers the outflow, so it holds its own drain shut for the length of the tap
-(9 → 3). That is the rule working, and the check says so rather than being tuned around.
-
-### The paddle is a stick resting on a sphere (`fb562e1`)
-
-*"The amount and the point at which the gate opens when a ball forces it open is very off.
-Remember that the gate is a stick that is riding on top of a sphere."*
-
-It was modelled as a **plunger** — the paddle's edge coming straight down the vertical at the
-gate line, reading the artifact's surface height there (`R + sqrt(R² − d²)`) and mapping it
-linearly onto a free constant. The paddle is hinged off to one side of the channel, so it
-meets the artifact at a **tangent**, and a tangent's angle is both larger and a different
-shape. `gateRestAngle` (config.ts) is the algebra:
-
-    hypot(xb, W) · cos(t + atan2(W, xb)) = sqrt(xb² + d² + W² − R²),   W = GATE_PIVOT_Z − R
-
-**The hinge height is the only free number, and the MANUAL picks it.** 9.8.3 puts the gate's
-contact area 3.75–5.5in above the ramp, which is exactly where this stick touches this
-sphere; the height that lands the apex contact mid-band is **3.5in**. A ramp-level hinge
-contacts at 2.95in — below the band — which is what rules out the reading where a 5in
-artifact stands a 6in stick almost vertical (that reading gives an apex rest of 1.03).
-
-| d from the gate line | 0 | 1 | 2 | 2.29 |
-|---|---|---|---|---|
-| plunger (was) | 0.340 | 0.326 | 0.272 | 0.238 |
-| tangency (now) | **0.437** | 0.362 | 0.128 | 0.000 |
-
-The reach is no longer the artifact's radius: the tangency answers **2.29in**, and
-`GATE_LINE_S` is now DERIVED from it so a column still rests packed at `GATE_STOP_S` exactly
-as before.
-
-**`GATE_SEAT_FRAC` and `GATE_PASS_FRAC` are now one derived value.** The 0.34/0.40 gap was a
-fudge doing a job — "seated under the arm is not past it" — and it was needed because the old
-gateway window was 8.5in against a 5.1in artifact pitch, so something was ALWAYS under the
-arm. The stick's own window is 4.58in, less than one pitch, so the geometry does that job:
-the stick rides highest at the apex, and clearing the apex IS passing.
-
-Behaviour holds — a shut gate retains at every arrival speed 10..60 in/s (stopping at exactly
-`GATE_STOP_S`), and the tap sweep still spans 1..9, mean 5.8.
-
-**Still scripted, and the next thing to look at if this is revisited:** an artifact does not
-yet WEDGE the arm up along the tangency as it advances (the arm's rise is still the
-`GATE_KNOCK` impulse). The geometric version is `rest'(d) · v`, needs no constant at all, and
-would make "a ball forces it open" a kinematic consequence — but it also needs the paddle's
-FACE modelled (below the artifact's equator the edge blocks rather than wedges), or a fast
-artifact levers a shut gate open.
-
-### Pressing the lever is not parking on the outflow (`f82044a`)
-
-*"I only get one or two balls from a tap way too often."* It was worse than that: a driver
-who bumped the gate and **stayed** — which is what a driver does — got **nothing**. Measured
-across five tap lengths pressed in close: **0 of 9 every time**, against 2/3/9/9/9 for the
-same taps if the robot backed away.
-
-The cause was the outflow block from `b37f3ba`. Its region carried a radius of slop around
-the mouth, and at the gate that radius is exactly the difference between a robot whose MOUTH
-is over the drain and one merely pressing the lever with the TIP of its intake — the chassis
-front sits at the classifier edge, the intake reaches the rail line, and the padded roof then
-covered the drop point. The standard technique read as parking on your own outflow.
-
-The padding is right for LANDING (an artifact perched on the lip really does overlap the
-roof) and wrong for asking whether the roof is in the way of something else, so
-`intakeRoofAt` takes it as a parameter and the rail block passes **zero**. Parking the mouth
-ON the drop point still blocks (0 taken, 9 left); pressing the lever no longer does (9 at
-every tap length). Both are checks.
-
-Also added: **above the mouth's opening the intake is not open.** `ballRobotContact` leaves
-the mouth's centre clear because the rollers ride high and artifacts pass UNDER them — true
-only of an artifact at ball height. One riding the ROOF is above the opening, where the
-structure is solid; `ballRobotFrontContact` is that case. It matters because a roof-riding
-artifact is in FLIGHT, and flight artifacts are not in the ground solve.
-
-**Do not "release onto the roof" instead of blocking up-ramp.** Tried twice this session. It
-makes a flight artifact beside a robot, and one drifted through a 4.6in gap between a robot's
-corner and the wall — which is a bug report of its own, with a check. The note is in the
-release code.
-
-### The ramp is a 10-degree chute now, and 5-9 per tap is a BENCHMARK (`5fa9c18`)
-
-*"I feel like the initial balls are too slow (or perhaps all of them, in general)."* They
-were, and the first one worst of all: `RAIL_ACCEL` 25 is a **5.2-degree** ramp, so a column
-starting from rest took **0.70s** to put its first artifact out, at 18 in/s. That value was
-set when the ramp stopped running at a capped flow speed — the cap used to hide the slow
-start.
-
-`RAIL_ACCEL` **50** is a 10.5-degree chute, the sort of slope you would build for a gravity
-feed that has to start a stationary ball reliably. First artifact out at **0.48s at 24 in/s**,
-all nine clear in **1.65s** (was 2.37s), arrival gaps 0.25 → 0.10s.
-
-**Three constants that were sized against the old ramp are now DERIVED from it**, so the next
-slope change carries them instead of silently breaking the balance:
-
-| | |
-|---|---|
-| `OVERFLOW_ROLL_LOSS` | `0.36 · RAIL_ACCEL` — the ride keeps its 0.8 speed ratio |
-| `OVERFLOW_BUMP` | `0.48 · RAIL_ACCEL` — the scallop stays under the net pull |
-| `GATE_GRAVITY` | `(1 − PASS) · RAIL_ACCEL / (0.74 · RAIL_PITCH)` |
-
-That last one is the fall-to-pass vs one-pitch-from-rest relation the suite already checks,
-solved for gravity: the ratio stays **0.86 at any slope**, which is what keeps a tap worth
-something.
-
-**THE BENCHMARK — "on a gate tap, 5 to 9 balls must release" — is a check now**, over 30 taps
-(three packings × five tap lengths × two standoffs): worst 6, best 9, mean 8.8. `GATE_KNOCK`
-0.06 → **0.05** is what puts the spread inside the band rather than pinned at 9; at 0.04 the
-worst case falls to 4 and it fails. **Do not tune the gate without re-running it.**
-
-The packing-variety check it replaces asked the yield to depend on how tightly the column was
-packed — true on a 5-degree ramp where the flow was marginal enough for spacing to decide
-whether it sustained. At 10.5 degrees a firm tap carries any column (loosening the pitch by
-8in changes nothing) and what varies is the tap.
-
-### Three from one session's play (`0ae0db6`, `1f8b612`, `907a90f`)
-
-**A funnel intake collects a corner artifact** (`0ae0db6`). A wedge preset only swallows at
-the THROAT and the suction walks the artifact there — which works in open field and cannot
-work in a corner. An artifact tucked against two walls sits 2.5in off each, and what decides
-how close the robot can get is its own chassis half-width (9in), so it ends up ~6.5in off the
-mouth's centre: outside a 3in throat, unmovable. Putting the throat on it means putting the
-chassis through a wall. A real funnel pressed into a corner does collect it, so a wedge now
-takes an artifact inside its MOUTH (not merely its throat) that is pinned against the field
-boundary, at the slow end of the timing. `INTAKE_WALL_GRAB` is deliberately tiny — this is
-"against the wall", not "near the wall". Measured in the audience corner: sloped 0.35s /
-triangle 0.30s along the wall, 1.18s / 2.87s on the diagonal. Vector is unchanged (its wheels
-already span the mouth; its answer to an off-centre artifact is the flank grab).
-
-**An artifact needs ground to drop onto** (`1f8b612`). The outflow block tested the mouth
-UNPADDED, so an artifact only needed its CENTRE outside the intake — it could be set down half
-inside one and taken. The rule is about the artifact's own footprint: the drop point needs a
-full RADIUS of clearance, exactly as it already needs from a chassis. The lenience is the
-front of the rollers and nowhere else (`INTAKE_CATCH_LENIENCE`, "if the ball drops on the very
-front edge of the intake rollers, they can suck them in due to compliance"). Swept by tip-to-
-drop-point distance it is a clean step: **1.0in clear → 0 taken, 9 left on the ramp; 1.5in
-clear → they land and feed.** That front lenience is also what keeps a lever-pressing robot
-from plugging its own drain.
-
-**The beam curb no longer teleports** (`907a90f`). Measured, a mecanum driving diagonally over
-a beam: **3.44in of position in ONE tick** against the 0.45in its velocity could account for;
-8 of the swept crossings jumped, all mecanum (the only drivetrain with the strafe curb). Two
-causes, both in `strafeCurb`/`beamStrafeBlock`:
-
-- the straddle guard wanted a wheel a full WHEEL RADIUS past the far face (3in past centre).
-  Mid-crossing `side` flips as the BODY passes the centre, the wheels behind become far-side
-  wheels with a small negative `rel`, and the curb fired on a robot half way over and shoved
-  it the rest of the way. **A wheel past the far face** is the honest test.
-- the correction was unbounded, though its own note calls it a slop clamp. `CHAIN_BEAM_CURB_SLOP`
-  caps it at **0.35in per tick**. Worst overshoot after: 0.16in, and the curb still parks the
-  leading wheel exactly at the near face — over three ticks, which is what a clamp looks like.
-
-### Four more from play, and one question left open
-
-**A robot has a TOP** (`6f10fb5`). *"If an artifact lands on top of the robot and I move away,
-they jolt."* The intake got a roof earlier; the CHASSIS did not, so an artifact coming down on
-one fell into it and was ejected out the nearest FACE — measured, dropped on the middle of an
-18in chassis it moved **9.8in sideways in ONE tick** and was then shovelled along to 76 in/s.
-`robotTopZ` is the top (roller structure over the intake, robot height over the chassis). The
-throw was also floored against the artifact's WORLD velocity, which says the roof is the field;
-flooring the RELATIVE velocity makes it an artifact on a moving surface, so nothing steps when
-the roof runs out. `ROBOT_TOP_SHED` walks it off the side it landed nearest — a FLOOR, never an
-addition (adding per tick is 360 in/s² dressed as a nudge). Shots are unaffected: a robot
-anywhere in the lane still lets 3 of 3 through.
-
-**Overflow rides the column** (`c147af5`). *"They ride on top of the balls already in the
-classifier, so it would move kinda like in steps, and it would get extra momentum from the
-balls if the gate is open."* The rider had no idea what it was on — it took the RAMP's gravity
-less a rolling loss and arrived faster than the column it was riding. `OVERFLOW_CARRY` is
-rolling contact: its speed is dragged toward the speed of the artifact beneath it. Shut gate ⇒
-stationary column ⇒ dragged to a crawl, and only the small leftover pull walks it over the
-crests (the stepping). Open gate ⇒ the column's momentum is handed to it. `OVERFLOW_ROLL_LOSS`
-0.36 → 0.88 of RAIL_ACCEL and `OVERFLOW_BUMP` 0.48 → 0.10 set that leftover. **0.0in of travel
-in 2s shut, 10.2in open.** Three checks had to be told which case they ask about.
-
-**Jitter** (`6de591c`). Swept the contact situations where it hides, measuring reversals/s on
-anything with under 2in of net movement and visible amplitude. **Robots are clean everywhere.**
-Artifacts were not, and the cause was correction SIZE: separation took out an overlap entirely
-in one pass, which overshoots whenever another constraint disagrees — against a wall, always.
-`BALL_SEPARATION_RELAX` (half per pass, `BALL_RELAX_PASSES` 4 → 6) plus `BALL_SETTLE_SLOP` (a
-resting artifact away from robots that ends the tick within 0.2in of where it started, ends it
-there). Six of seven scenes clean at 0.8/s.
-
-⚠️ **STILL OPEN**: an artifact squeezed between a driving robot's INTAKE and two walls rings at
-1.48in, 4 reversals/s (down from 15). Three narrower fixes all made something else worse and
-are recorded in the check: extending the jam rule to any solid part of the robot let artifacts
-through a corner gap they cannot fit; rate-limiting the eviction took it to 25/s; reverting
-resting artifacts near a robot lets a robot creep through one. Bounded so it cannot regress.
-
-### The gate torque, answered — and the square-up bug it uncovered (`b422a7e`)
-
-*"The intake is part of the contact area."* That settled it, and wiring it up turned out to
-depend on a second, larger bug.
-
-**The intake is contact area.** Every contact test in `squareUpStatics` was built from
-`robotCorners` — the CHASSIS — and the gate is pressed with the INTAKE: the chassis's
-front-most corner stops half an inch short of the stub the robot leans on. The handle now
-reads the FOOTPRINT (`footprintCornersOf`, `footprintMTV`), grown by the touch epsilon because
-Rapier leaves a hair of separation and a strict overlap test fires never. Where a robot's front
-EDGE rests on the 2.5in stub with no corner in it, the contact is the stub's own corner digging
-into that edge — the nearest point ON the stub sits dead ahead of the robot's centre, where the
-lever arm is zero and the torque with it, which is why the first attempt measured identical to
-having no code at all.
-
-**And the bug that made it look like a trade-off.** *"Even when I ram with the back of the
-chassis where there is no intake, the robot only turns if I impact it at certain specific
-angles, weird."* The classifier passed `contacts.length > 1` as its square-to flag, so a
-single-corner press took `applyContactTorque`'s PIVOT mode — which has no flush cap and spins
-instead of settling. A flat face aligns a chassis whether one corner is on it or two; the walls
-have always passed `true`. **Across ten approach angles, front and back, the classifier now ends
-0.0° off flush at every one.**
-
-With that fixed the gate torque costs nothing: the tap benchmark is back to **worst 6 / best 9**
-and GATE INTAKING drains **9 of 9** with the hopper full — they were 4 and 1 when the torque was
-first tried against the pivoting classifier. So the "arm can push you straight OR you can gate
-intake" trade-off recorded in the previous handoff entry was an artifact of the pivot bug, not
-a real choice.
-
-⚠️ The 360° turns this first appeared as were a MEASUREMENT artifact: the sim wraps the heading,
-so a raw delta reads as a full turn. Measure the remaining tilt mod 90 instead — the check does.
-
-### The gate torque, actually applied — and the SAT normal that hid it (`73b3ac7`)
-
-*"Still no torque being applied at gate."* The contacts were being found: torque 0.26, press
-5.9, and the heading did not move a hundredth of a degree in four seconds.
-
-**The reason is the NORMAL.** SAT returns whichever of its four candidate axes overlaps least,
-and two of those are the ROBOT'S OWN. When it picks one, the normal comes back aligned with the
-chassis — and `applyContactTorque` measures "how far from flush" against that normal, so the
-answer is **zero by construction**. The stub is axis-aligned, so its face normal is the axis
-from its centre to the robot's, snapped to the dominant component. Pressing the gate at ten
-tilts from −20° to +20°: **every one ends 0° off flush**, where before nothing under 12° moved.
-
-Each contact also carries its **own depth** now. Handing both stub corners `mtv.depth` makes
-them symmetric about a robot pressing square-on, the cross products cancel, and the torque is
-zero — which is why it only ever turned at big tilts, where one corner falls outside the band
-and stops cancelling the other.
-
-**Worth remembering generally:** a torque built on a SAT normal is measuring against a
-direction that may be the robot's own. Any future contact-torque surface needs the STRUCTURE's
-normal, like the walls have always used.
-
-### A pile outside the gate no longer throttles the ramp (`73b3ac7`)
-
-*"Ball flow gets slowed down if there are balls right outside the gate. Don't let it slow
-down."* The doorway artifact was part of `canLeave`, so what was already on the floor gated the
-discharge:
-
-| artifacts piled outside | 0 | 6 | 10 | 14 |
-|---|---|---|---|---|
-| nine out, before | 1.65s | 1.88s | 2.07s | **2.20s** |
-| after | 1.47s | 1.48s | 1.48s | **1.48s** |
-
-A chute does not ask the heap whether it may discharge — what comes out shoves what is there,
-which is what the exit nudge is for. The mouth is clear unless a ROBOT is across it. **The
-invariant that mattered is untouched**: the solver and the release still agree about what stops
-the column (the robot, and nothing else), so nothing can descend past an exit that then refuses
-it.
-
-### One check changed MEANING, not value
-
-Pressed hard on the lever at 19° — the pose reported verbatim from play — the arm now squares
-the robot to 0° and its mouth lands over the drop point, where the drop-space rule holds the
-ramp. Backing off enough to clear the drop point also stops holding the lever (gatePos 0.22 at
-2in back, 0.00 at 4in). **That is two requested rules meeting, not a regression**, and the
-check says so at length rather than being deleted. Gate intaking itself is alive: the other
-gate-intaking check drains **9 of 9 at a 0.119s mean gap**.
-
-### ...at the arm's pace, not the field's (`ec806b8`)
-
-*"The gate applies way too much torque way too fast."* Measured: **20° off flush to square in
-167ms**, which is a whip, not a lever.
-
-The rate was the WALL's. A wall is the field and may square a chassis as fast as it likes; the
-handle is a 2.5in hinged bar. `GATE_ARM_TORQUE_MULT` was scaling the PRESS term — which only
-feeds the pressure gain and barely moved the result — and now scales the RATE, which is the
-thing that was wrong. Direction and the flush cap are geometry and are untouched. At **0.12**,
-20° comes square in **1.25s**: a firm nudge you can drive against.
-
-Two checks moved to the measured behaviour rather than around it:
-
-- the arm holds contact for a second and a half while it turns you, over which the chassis
-  settles **1.30in** further out as the rotation resolves. That is the rotation, not a shove —
-  the shove that check was written for was 3.85in — so its bound went 1.0 → 1.5.
-- the 19° GATE INTAKING pose discharges into the angle it still has while the arm works on it,
-  so **one** artifact gets out before the mouth closes over the drop point. What must not
-  happen is the ramp emptying, and that is what it asserts now.
-
-### A contact squares you up; it does not snap you round (`bfa0a26`)
-
-*"It is still WAY too fast. It spins me around like 90 degrees instantly."* Two things were
-doing it and **neither was the gate**:
-
-- **The align ceiling.** `CONTACT_PRESS_GAIN` scales the align rate with how hard you press, up
-  to `CONTACT_ALIGN_RATE_MAX` — which was 0.12 rad, **6.9° in ONE TICK, 412 deg/s**. A firm
-  press quadrupled the base rate into a snap, on every structure in the game. At **0.05** the
-  worst single tick ramming a wall at speed is 2.9° (174 deg/s) — about what a robot turns
-  itself — and 20° still comes flush in well under a second.
-- **The flick.** `CONTACT_IMPACT_SPIN` adds angular VELOCITY on a fast angled hit and, unlike
-  the alignment, is NOT capped at the remaining tilt — it keeps turning the chassis after the
-  contact is done. Wall ram peak spin **3.23 → 0.80 rad/s**.
-
-It was also not scaled by the surface's rate multiplier, so slowing the gate arm's alignment
-left its flick at the field's rate — the one part of the arm that could still whip you was the
-only part still running full strength.
-
-*"If I hit with the gate opener the robot doesn't turn, if I hit with the intake it turns
-insanely fast"* — both halves gone: hitting the arm at five offsets across the mouth turns
-17–20° and ends flush, worst single tick 3.2°.
-
-The classifier grind-jitter bound went 15 → 20 jump-frames, which its own note anticipates
-("legitimately shifts when contact tuning changes") — a robot that squares up more slowly
-grinds at an angle for longer. Worst single jump unchanged at 2.45in against a 2.5in bound.
-
-### The wrong-way turning: analysed, and it was the load sharing (`2de7310`)
-
-*"It's turning me the other way sometimes. Fundamentals. Analyse."*
-
-**One line.** The contact list is every corner within `CONTACT_TOUCH_EPS` (half an inch) of the
-surface, and the load was shared as `depth + CONTACT_BIAS`. **That floor is a vote for corners
-that are not touching.**
-
-It reverses the torque because the two front corners are NOT mirror images — the intake extends
-the front, so a tilted chassis presents corners with different lever arms. Measured at 3° off
-square against a wall: the bearing corner's lever is **7.70**, the corner half an inch clear is
-**8.78**. Weighted 0.6 and 0.2 by the floor, the fabricated vote takes 40% of a longer arm, and
-past some tilt the sum points the wrong way. *Sometimes.*
-
-`CONTACT_COMPLIANCE` replaces the floor: bumpers squash, so the share is how far each corner is
-compressed relative to the deepest — full load there, nothing beyond half an inch of it. A
-corner that is not touching carries no load, which is not a modelling choice. Square on, the
-bearing corners compress equally, the moments cancel, and the robot settles — the same
-equilibrium, now for a reason.
-
-| approach | result |
-|---|---|
-| wall, every tilt −6°…+12° | **0.0° off flush** |
-| gate, every tilt −12°…+12° | **0.0° off flush** |
-| gate, hit 5in off centre with one side | **0.0° off flush** |
-
-**The gate cases are the ones that used to do nothing at all**, and it was the same bug: its
-contact set is the STUB's two corners, symmetric about the robot's centre line, and the floor
-weighted them so evenly they cancelled to a torque of **0.003** — "no torque at the gate" —
-while a hair more tilt let one escape the band and it snapped. Both complaints, one cause.
-
-### ⚠️ The response is STILL a heuristic — the physical model, measured, not yet in
-
-Separate from the above, and still true: `applyContactTorque` scales a "torque" by a tuned
-gain, caps it at a tuned ceiling, WRITES the heading, and clamps against a mod-90 target. The
-physical model was built this session and reverted; keep these findings:
-
-    tau = sum r_i x F_i ;  alpha = tau / I ,  I/m = (l^2+w^2)/12 ;  |j_t| <= mu*j_n
-
-1. **Mass cancels** — impulse `m·press`, inertia `m·(l²+w²)/12`. How far a hit turns you is the
-   geometry of the hit, not your weight.
-2. **The impulse that stops the CONTACT POINT** is `m·v_n/(1 + (r×n)²/(I/m))`; without the
-   `moment²` term a 40 in/s ram peaked at 9.6 rad/s.
-3. **`press` is a force reading, not an impulse** — a robot held at a wall reads 22 in/s of
-   approach every tick, i.e. 3.4 g sustained. It must be `(postVel − preVel)·n̂`.
-4. **The torque must turn the CHASSIS, not `angVel`** — `updateRobot` servos `angVel` to the
-   commanded yaw, so the two cancel.
-
-With 2+3 fixed a 20° wall hit squares perfectly. It was reverted because small angles rock:
-the eps-banded list picks ONE corner, a firm impact rotates 4.6° against a 3° error, the far
-corner takes over, ±9°. **The fix is the contact SET, not the response** — both corners with
-true signed depths, a proper 2-point solve. The compression weighting above is the first half
-of exactly that.
-
-### The ramp has a delivery speed, and a hard hit is an impulse (`52ac706`, `19ee488`)
-
-**"The balls get supercharged and dash down if I gate intake — since the torque change."** It
-was: the same commit stopped the pile outside the gate throttling the discharge, and with
-nothing taking anything back the last artifacts off a full column ran all 59in of ramp
-unopposed and left at **69 in/s**.
-
-`RAIL_ACCEL`'s note is right that ROLLING resistance does not grow with speed — but rolling is
-not all that happens. The channel is a 6in groove around a 5in artifact, so it weaves down it
-(`railWander`), and the faster it goes the harder it works the walls. **That** loss grows with
-speed, and it is what gives a chute a delivery speed. `RAIL_RATTLE_DRAG` 1.1/s puts it at
-`RAIL_ACCEL/1.1` ≈ 45 in/s.
-
-| | before | after |
-|---|---|---|
-| exits off a full column | 24..**69** in/s | 20..**39** in/s |
-| first artifact out | 0.53s | **0.53s** (untouched) |
-| all nine clear | 1.9s | 1.9s |
-
-The START is untouched because it is a DRAG, not a cap — an artifact at rest has no speed for
-it to take. An ELEVATED artifact is exempt: it rides the column, not the channel.
-`GATE_KNOCK` 0.05 → **0.085**, because a slower flow hands the arm less momentum and the tap
-benchmark fell to a worst of 3; at 0.085 it is worst 6, best 9, mean 8.8.
-
-**"Even if I hit it with a large impact it doesn't turn me."** The impulse a collision hands
-the chassis lived inside an `else if (flushErr > 0.05)` — so arriving fast and nearly straight,
-the case where a hit is most obvious, produced nothing. It is its own term now, with two
-guards that are both the alignment cap's own argument (*a surface cannot turn a robot into
-itself*): the ALIGNMENT may only reduce the tilt, and the IMPULSE is guarded against the TILT
-rather than against `align` — comparing it to `align` passes trivially whenever `align` has
-been zeroed for pointing the wrong way, which is exactly when it is needed.
-
-Run-up rams at −20, −8, −3, +3, +8, +20° now all end **0.0° off flush**, wall and gate. Worst
-single tick 3.0°, peak spin ~1 rad/s.
-
-⚠️ **Tried and reverted within the hour**: reading `press` as the momentum the solve actually
-removed, rather than the approach the drive is holding. It is the better measure of an IMPACT,
-and it is **zero exactly when the settling torque is needed** — a robot already resting on a
-wall has no approach left to take — so a robot leaning at an angle just stayed there. The note
-in `pressAlong` records it.
-
-⚠️ **A probe hazard worth remembering**: parking artifacts "out of play" at (300,300) does not
-work — the ground clamp snaps them back inside the field, often right where the robot under
-test is about to ram. Two wrong-way diagnoses this session were pinned artifacts, not the
-surface. Set them `held` instead.
-
-### The gate handle is a POINT, so it pivots you (`fea5c1a`)
-
-*"When I hit the gate with the leftmost or rightmost side of the robot, I should be turning but
-I square up instead."*
-
-Every other surface in the square-up pass is a **face** — wall, goal face, classifier side — and
-a chassis pressed on one bears on two corners whose moments cancel when it is flat against it.
-Flush is where it settles; that is why they pass `squareTo = true`. **The gate handle is 2.5in
-of bar.** Nothing about it can align an 18in chassis, and asking it to was the bug.
-
-A point contact has an equilibrium of its own and needs no cap to find it: the moment is
-`r × n`, which vanishes when the contact comes to lie on the line through the robot's centre
-along the push. Lean on the arm off-centre and you turn about it until it is dead ahead;
-arrive centred on it and you are not turned at all.
-
-| arm off the robot's centre line | 0in | 3in | 6in | 8in |
-|---|---|---|---|---|
-| turn | **0°** | 24° | 57° | 57° |
-
-**This is the general rule the pass was missing**: ask a FACE about flush, ask a POINT about its
-moment arm. Two checks were asking the gate about flush and are now one check about the pivot;
-a third pinned a blocking robot's position but not its heading, and an unpinned robot now
-pivots off the arm and stops blocking the outflow it was put there to block.
-
-### No load, no torque (`3aa4697`)
-
-*"Torque is being applied with me not doing anything."*
-
-The response's gain was `1 + press * CONTACT_PRESS_GAIN`. **That floor of 1 means the geometric
-torque alone rotates a chassis at ZERO press** — touch a surface and it turns you, with nothing
-pushing.
-
-Against a FACE it hides: the flush cap stops the rotation the moment the robot is square, so it
-reads as settling. Against the gate handle it does not hide at all, because a point contact has
-no flush to stop at. Measured: a robot **parked beside the arm and never given a command turned
-359.6°** on its own; one that had driven in and let go turned another 35°.
-
-The gain is `press * CONTACT_PRESS_GAIN` now, and zero press returns before anything is
-written. Worst idle turn over four resting poses (parked at the gate, driven into the gate and
-released, the same at a wall and at the classifier): **0.0°**.
-
-**The GATE INTAKING pose has been through three states this session** and the current one is
-the physical one — the check says so at length rather than being re-tuned:
-
-| | ramp discharge |
-|---|---|
-| arm applied no torque, robot held 19° | 9 of 9 |
-| arm SQUARED the robot → mouth over the drop point | **0 of 9** |
-| arm PIVOTS (it is a stub, not a face) → robot keeps its angle | 4 of 9, hopper filling |
+| #69 | the lan-gate asserts follow the config that moved under them — **this is what unblocked the second suite** |
+| #58 | `stageBiobuzz` is idempotent: the hopper is cleared with the ball array, so a re-stage stops refusing its own preloads |
+| #61 | a lossy LAN guest's snapshot delta is keyed to its **ACK**, not the last broadcast — **server** |
+| #68 | a rematch cannot field a seat nobody is in; the format comes from the room, not a head count — **server** |
+| #67 | a backgrounded ranked queue cannot lose the match it was given — client only |
+
+Plus the **admin-panel** batch (its own section below).
+
+Gates on alpha: `npm test` ALL PASS ×2 (BIOBUZZ 1317) · `test:mm` 186 · `dbtest` ALL PASS ·
+`build` · `server:check` · `uiaudit` · `contrast`.
+
+## main was CHERRY-PICKED, not promoted
+
+`main` took those six changes only and is still **~28 commits behind alpha** (settle-based
+finalize, the standing repricing, room recycle, the LAN tab host, the BIOBUZZ hive work). Same
+gates, all green there (BIOBUZZ 1299 — fewer checks because main lacks the alpha-only features
+those checks cover).
+
+⚠️ **`src/standing.ts` conflicted and the two branches now price behaviour DIFFERENTLY ON
+PURPOSE.** main keeps `afk: 12` / `leave: 15` / `card: 20`; alpha has the repricing (8 / 8,
+yellow 5 with `RED_CARD_MULT` for red). Only the new `adjustment` kind was backported. **On the
+next promotion this file will conflict again and ALPHA should win** — the repricing is the later
+decision.
 
 ## Next steps
 
-1. Play-test the drain by hand — both fixes are measured headlessly, and the feel of a
-   tapped gate against a packed column is the thing worth eyeballing.
-2. The rest of the standing list below is unchanged.
+1. **Deploy the game server** from a **main** worktree (`./scripts/fly-deploy.sh`, never a bare
+   `flyctl deploy`). Migrations 0035/0036 apply at boot; until then the admin panel's two new
+   endpoints 404 and #61/#68 are inert.
+2. Vercel picks up the client half on push (#67, the replay penalties).
+3. Still outstanding: clear every infraction on `018fdc59-4e80-4a16-908c-682be86bfee8` —
+   after the deploy, one press of CLEAR ALL INFRACTIONS in Admin → Moderation.
+4. Neither #61's LAN path nor #68's rematch gate has been exercised against a live server; both
+   are covered by driven smoke checks only.
 
 ---
 
-# HANDOFF — 2026-08-15 (superseded) (the classifier: possession, the gate, and the ramp) — alpha only
-
-Branch **alpha**, commit `94e08ae` + UNCOMMITTED gate-cadence work (see "Drain cadence, part 2").
-`npm test` ALL PASS (~237 checks) · `npm run build` green · **working tree DIRTY** — the
-gate-cadence work is unstaged, awaiting review.
-**Not deployed.** Production `dohun-sim-decode` is still on the pre-session build and
-still owes the migrations listed under "Still pending".
-
-Do not merge to main. Standing rule.
-
-## Where the session ended
-
-The last three fixes are all in the DECODE classifier, and the last one closes the loop
-the user opened with *"make a FUNDAMENTAL change and make it correct FUNDAMENTALLY."*
-
-### The ramp is now ONE physics (`20b97a1`)
-
-`OVERFLOW_FLOW_SPEED` is gone. It handed overflow artifacts a fixed 16 in/s down a
-separate code path, which is why they crawled and why an opening gate could not reach
-them. Every artifact on the ramp now runs the same solver — gravity `RAIL_ACCEL`,
-contact stacking, one queue — and `overflow` means only two things:
-
-1. the scoring flag, still decided at first contact (unchanged), and
-2. **height**. An artifact is `elevated` while anything retained sits below it. That
-   costs it `OVERFLOW_DRAG` rolling resistance (terminal ride ≈ `RAIL_ACCEL /
-   OVERFLOW_DRAG`, ~36 in/s against the clear ramp's 46) and exempts it from the gate.
-
-It sinks the moment there is nothing left to ride on — so an opening gate drains the
-column out from under it and it simply follows, at ramp speed, on the ramp. Nothing
-about it was ever special except its height.
-
-**The trap, which cost most of a session.** The rail solver has TWO constraints and they
-are not the same kind of thing:
-
-- the artifact **AHEAD** — unconditional, artifacts cannot pass through each other;
-- the **BASE** (the gate, or an occupied mouth) — a floor only for artifacts *above* it.
-
-Conflating them broke this twice. Both unconditional, and a base that MOVES (`canLeave`
-flips as a robot turns near the mouth) dragged the whole column back UP the ramp in time
-with the steering. Both gated on "was it above this last tick", and an artifact dipping a
-hair below its neighbour free-fell through the entire column and out through a shut gate
-(measured: id 906 passing s=2.5 at 46 in/s with its floor at 7.1). **That second failure
-survived a full session of a green suite** — smoke never checked that a closed gate
-retains anything. It does now: three checks that nine artifacts stay put for five
-seconds, packed at exactly `RAIL_PITCH` against the gate, scoring nothing.
-
-### The exit: where the ramp ends, and nothing more (`c65209a`, `d3442fb`)
-
-An artifact leaving the ramp used to be handed a flat floor velocity on the tick it
-crossed the exit, on a fan 10–29° off the wall — nine of them left on the same diagonal
-at 46 in/s and ran out across the floor. That was *"hyper accelerated and all going
-diagonally in one direction"*.
-
-**Two attempts at the drop are recorded here because both are instructive.** The manual
-puts the gate's contact area 3.75–5.5 in up (9.8.3), so releasing it as a `flight`
-artifact off a lip is the honest geometry — and it is wrong at 1:1. 3.75 in of fall plus
-the bounces is **0.32 s of every artifact hanging in the air on the way out**, which does
-not read as a ramp discharging; it reads as artifacts floating out of the wall. Charging
-the drop's cost up front instead (multiply the horizontal by what a bounce keeps) puts
-them on the floor but costs them **16 in/s on the tick they arrive** — precisely the
-sudden step at ground contact that the release was rebuilt to remove, and there is a
-smoke check for it.
-
-So neither. The artifact lands immediately and keeps the speed the ramp gave it;
-`BALL_ROLL_FRICTION` takes it out over the tunnel. Worst transition step is now
-**1.33 in/s, exactly one tick of gravity**. The exit is not an event that does something
-to the artifact — it is just where the ramp ends. `TUNNEL_EXIT_VEL.inward` stays at 4
-(5–15°, down from 8) and the spread comes from artifacts caroming off whichever stopped
-first. Measured over a full drain: within the **wall corridor** — gate, tunnel, or
-loading zone — and 3–18 in off a 6.1 in tunnel.
-
-`GATE_LIP_Z` is gone with the lip. If it comes back, note that `flight` requires a
-`target`, which is meaningless for something falling off a ramp; it is read only by
-`checkGoalEntry`, which also needs an UPWARD crossing of `GOAL_OPENING_Z` within
-`GOAL_OPENING_RADIUS`, so an exiting artifact cannot re-enter.
-
-### A robot's BODY is where the column stops (`d3442fb`)
-
-Reported as *"balls can STILL pass through the robot when the robot is slightly blocking
-the classifier"*, and it was one cause with the floating: **the classifier knew about
-robots through a single point.** `exitMouth` tested `railPos(a, RAIL_EXIT_S)` and returned
-a boolean, so a robot parked on the outflow stopped the flow while the column's floor
-stayed at that fixed point — 7.3 in of artifacts sitting INSIDE the chassis, 1182 frames
-of it. A robot 9 in to the side, touching nothing, blocked the whole ramp for the same
-reason.
-
-`railBlock` walks the rail line and returns the `s` a robot's body actually reaches; that
-is the column's floor, for the elevated lane too (overflow rides over the retained column,
-not over a robot). A robot WITH hopper room still collects the drain, now at its own
-bumper — handing it over at `RAIL_EXIT_S` made the artifact travel the length of the
-robot's footprint to get there, through the chassis.
-
-Two things about that walk cost real time and should not be re-derived:
-
-- **Its ceiling comes from the ROBOT's collision extents, not from the channel.** Bounding
-  it at the classifier's gate end (s = 1) looks reasonable and is badly wrong: a robot on
-  the mouth reaches s = 6.5, so the walk began already inside the chassis, stopped there,
-  and put the floor 5 in inside the robot.
-- **The floor is the sample the walk PROVED clear**, not the deepest blocked sample plus a
-  radius — a radius along the rail is not a radius along the surface normal of a robot
-  sitting at an angle, and that version still left 0.75 in of overlap.
-
-Measured across five coverages from dead-centre to clear: **0.00 in, every one.**
-
-### The rail is not a hole in the field (`3eb8521`)
-
-*"They still often go past the field wall then teleport back in."* They did. The state
-column is the whole diagnosis:
-
-```
-tick 223  rail    pos 69.0 -71.0     already past the wall (field half is 72)
-tick 228  rail    pos 69.0 -74.8     still marching, still on the rail
-tick 229  ground  pos 69.0 -75.6     released six inches outside the field
-tick 230  ground  pos 64.9 -69.5     ground clamp snaps it back: a 394 in/s teleport
-```
-
-The rail is a scripted 1D flow with **no wall awareness** — the rail line simply runs on
-past the audience wall — so nothing about being off the field stops an artifact. It got
-there because the solver and the release disagreed about whether it could leave: an open
-gate dropped the floor to `-Infinity` while the release refused on an occupied doorway,
-and the `wasS >= base` exemption then freed it permanently. `mouthClear` decides that
-once now, doorway included, for both; the release lets **one** artifact out per tick,
-since the one it just released is the next doorway.
-
-**The exemption was too broad**, and this is the part to remember. It exists for exactly
-one case: a shut GATE must not reach back up for an overflow artifact that legitimately
-dropped in below the gate line. Two floors have no legitimate "already past it" — *below
-the exit* (off the field) and *inside a robot* (7.2in inside the chassis, the very thing
-the body floor was added to prevent). Those two are solid and unconditional. Correcting
-them means moving an artifact UP, which the solver refuses on purpose, so it is
-rate-limited to `RAIL_PUSH_RATE`: a robot leaning into the channel shoves the column up
-its ramp visibly instead of teleporting it.
-
-Sealing the exit made the queue rate **real**, and it was bad: `EXIT_NUDGE` 0.5 crept the
-doorway artifact out at 11 in/s, 0.9 s to clear its own diameter, a nine-artifact drain
-taking 12 s. That throttle was always there — it was hidden because artifacts queued
-BELOW the exit, off the field, and burst out together once it cleared, which is what
-*"disperse outward at insane speeds"* was. At 1.0 the queue moves at the speed of the
-flow pushing it (the only non-arbitrary value) and the drain takes 8 s.
-
-## Slice 2 (scoped): the chassis is in the ball solve — DONE (`8d184f6`)
-
-An artifact squeezed between a bumper and the classifier used to be resolved by two
-position writes taking turns — the bespoke robot push drove it in (3.13 in), the static
-eviction shoved it back out (3.70 in), on an artifact whose velocity was **zero**.
-Neither pass was wrong alone; they could not see each other. Reordering and interleaving
-them each bought under 0.2 in, because **a squeeze is precisely a constraint with no
-one-contact-at-a-time answer.**
-
-The chassis is now a **kinematic** body in `solveBalls`, so bumper, channel wall and the
-other artifacts resolve together. Kinematic also hands you product decision #7's
-"gate outflow can't shove a parked robot" for free. The **intake stays bespoke** — its
-mouth is open by design (#10) and its funnel geometry is per-preset.
-
-Measured, robot grinding a pile into the classifier corner over 8 s:
-
-| | baseline | after |
-| --- | --- | --- |
-| corner pile | 2.88 in worst, **41** jump-frames / 480 | 1.84 in, **4** |
-| mid-wall | 4.50 in, 6 frames | 4.50 in, 6 frames |
-| open field | 0.00 in, 0 | 0.00 in, 0 |
-
-**Three earlier attempts failed and are worth not repeating.** Kinematic chassis with the
-feedback still running *after* the solve: the stall never fires, and a dead-centre
-artifact squirts 34 in along the wall with the robot sailing through at 30 in/s. Heavy
-**dynamic** chassis, reading back the velocity delta so the stall is emergent: it is not
-— an artifact is ~0.3 lb against 20–42 lb and the drivetrain restores the loss the same
-tick. Feedback moved before the solve but probing the pin at a **full radius**: nine
-checks broke at once (intake capture, gate drain, G417/G418 counts, clump stacking),
-because a radius-wide probe calls anything within 2.5 in of a wall pinned and robots stop
-driving into things at all.
-
-What made it work:
-
-- `ballRobotFeedback` moves **nothing** — only `r.vel` — and runs **before** the solve. A
-  kinematic body cannot be told it is blocked, so the robot has to be stopped before the
-  solver ever sees the squeeze.
-- It probes the pin against **this tick's push** (`approach·dt`), not a fixed distance:
-  *can it move as far as I am about to push it?*
-- **`clampBallPosToStatics` now includes the classifier channel.** Its absence is why the
-  stall never fired there: the clamp knew only the perimeter walls and goal faces, so an
-  artifact pressed on the channel was never seen as trapped. **Anything solid an artifact
-  can be pinned against must be in that clamp, or the pin test cannot see it.**
-
-### What is left
-
-A rare spike at the channel **entrance** — 6 frames of 480, 4.50 in — on an artifact that
-begins a tick already embedded in the channel, where there is no entry path to walk back
-and the eviction falls through to pushing it out the nearest face by depth+radius. Not the
-continuous jitter, which is gone. Fixing it properly means the artifact should never be
-embedded at the start of a tick, i.e. finding what still places it there (it is not
-`separateBalls` — disabling that changed nothing).
-
-Still genuinely deferred: flight/basin/rail artifacts remain scripted, and the intake
-funnel geometry is still bespoke. Porting the intake would mean re-expressing the capture
-model, which assumes artifacts can occupy the chassis-front region a collider makes solid.
-
-## G408: two things were counted that the robot does not control (`7470c0c`)
-
-Reported as *"I get overpossession penalties when I am just intaking from a clump"* —
-*"clump against a wall, specifically"*. Reproduced at **five MINOR fouls** for driving
-into a wall clump with the intake running, while the hopper ended with a legal three.
-
-- **What the FIELD holds, the robot does not control.** A pile jammed between a bumper
-  and a wall goes nowhere, and the manual names the case: BULLDOZING is explicitly not
-  control. Excluded when the field refuses the push — **transitively**, because a jam is
-  (the front row touches the row that touches the wall), and from the **chain** as well as
-  the seeds, since the chain clause asks for contact and nothing else.
-- **An artifact being drawn in is not a fourth artifact.** `POSSESSION_LIMIT` and
-  `HOPPER_CAPACITY` are the same 3, so a full robot cannot keep what is in its mouth —
-  counting it charges the same limit twice. 173 of 272 confirmed frames in the reported
-  scenario were artifacts queued in the mouth. Gated on the intake actually running; with
-  it off, artifacts in the mouth are being scooped and still count.
-
-5 MINORs → 0, hopper still filling, and every existing G408 check still passes.
-
-### ...and then it never fired at all (uncommitted)
-
-*"I never get overpossession pen anymore."* The mouth carve-out above is right in principle
-and was written as a **REGION**: everything anywhere in front of the chassis, unbounded in
-count, for as long as the intake button was held. Drivers hold that button essentially all
-the time, so the rule stopped existing. Measured, identical drive into an identical
-six-artifact pile on open floor:
-
-| | intake OFF | intake ON |
-| --- | --- | --- |
-| full hopper, 6 artifacts | 7 MINORs | **0** |
-| empty hopper, 9 artifacts | — | **0** |
-
-The carve-out is about the artifact being **ACQUIRED**, and the reasoning that justifies it
-("HOPPER_CAPACITY and POSSESSION_LIMIT are the same 3, so the slot already charges it")
-justifies exactly as many artifacts as there are slots. So it is capped at
-`HOPPER_CAPACITY − hopper.length`, nearest the chassis first (deterministic, id breaks
-ties). A FULL robot with the intake spinning has room 0 and is excused nothing — which is
-correct and is the clearest over-possession there is: it has nowhere to put any of it.
-
-Now 7 / 5 respectively, wall-clump-with-intake still 0, and every earlier G408 check still
-green. **That block ran green through the whole regression** because every G408 check either
-had the intake off or put the clump on a wall; the distinguishing case — full hopper, open
-floor, button held — is now checked both ways and asserted equal.
-
-**A velocity test was tried FIRST and is wrong** — worth knowing, since it is the obvious
-idea and the user suggested it. "Moves with the robot ⇒ controlled" gets both cases
-backwards: a wall clump slips a median **3.5 in/s** against the robot while a **herded**
-one slips **15.6**, because pressing a jammed pile stalls the robot (both near zero) while
-a clump actually being pushed rolls and squirms the whole way. Artifact speed and distance
-travelled separate them no better (open clump travels 43–68in, herding 49–66in).
-
-## Drain cadence, part 1 (`dcaf1f5`)
-
-*"The balls flow out at a weird slow cadence"* — 0.77 s between releases, mean-abs-dev
-0.10 s. A metronome. Two halves: gravity over one `RAIL_PITCH` (~0.33 s, real) and the
-doorway wait (~0.5 s). `EXIT_CLEARANCE` was 4.5 — nearly two diameters — swept honestly
-but for bespoke ground artifacts, where releasing at one diameter left a 2.8 in overlap
-spike. Re-swept now that artifacts are Rapier bodies: **worst clump overlap is 0.12 in at
-4.5 / 2.0 / 1.0 / 0.0 alike.** At 1.0, releases are 0.60 s apart and a nine-artifact
-column drains in 5.2 s instead of 6.3 s.
-
-## Drain cadence, part 2: the paddle has weight (uncommitted)
-
-*"When the gate is held open, there shouldn't be a cadence. When the gate is not held open
-but was left open (e.g. tapped open), it would have a semi uniform cadence but it would
-randomly stop if the momentum is not enough to keep the gate open."*
-
-Measured before touching anything, and the reading is the whole diagnosis: **held open and
-tapped open drained at 0.596 s and 0.598 s.** The same metronome either way. Whatever the
-gate was doing, it was not the thing metering the flow — and it was not doing anything at
-all, because a ball in the gateway simply FROZE `gatePos` wherever it happened to be,
-which meant a tapped gate hovered at 1.0 (fully lifted, 77°) with artifacts rolling under
-it touching nothing.
-
-### What was actually metering it (`floorV`, seeded at zero)
-
-Traced per tick, the cycle was entirely artificial and repeated exactly once per artifact:
-
-```
-0.533  front s=-3.87 v=-41.2   arriving at the exit at speed
-0.550  front s=-4.00 v=  0.0   clamped — st.v = max(st.v, floorV) with floorV = 0
-0.617  released                 speed = |v| = ZERO
-0.617..0.950   doorway distance pinned at 0.02 in    it never moved
-0.950  next artifact reaches the exit, EXIT_NUDGE creeps the dead one out at 22 in/s
-```
-
-`rampFloorV` starts at 0 for the frontmost artifact, and it is not resting on a wall — it
-is resting on **another artifact that is rolling away down the tunnel at 30 in/s.** Zero
-said otherwise, so every artifact after the first was stopped dead, released motionless,
-became the obstruction for the next, and the column re-ran 0.33 s of gravity down one
-`RAIL_PITCH` from rest, every single cycle. The floor now moves at the speed of whatever
-is on it (`exitFloorV` = the doorway artifact's `vel.y`, and only while the gate is OPEN —
-against a shut gate the floor is the paddle, which is going nowhere).
-
-### The arm cannot hover (`GATE_RIDE_FRAC`)
-
-Everything the user described falls out of one physical fact, with no special cases: an
-unheld arm falls until it **lands on something**, and an artifact is a ball's worth of
-lift and no more.
-
-- **HELD** — a robot latches it at 1.0, clear of the flow. No contact, no drag, no cadence.
-- **TAPPED** — the arm settles onto the stream at `GATE_RIDE_FRAC` and rides it. Its weight
-  drags each artifact passing under (`GATE_PADDLE_DRAG`, scaled by `1 − gatePos`, which is
-  why a held arm costs the flow exactly nothing), and it sags in the gaps, so the next one
-  must shoulder it back up.
-- **GIVES OUT** — the height an artifact can hold the paddle to is proportional to its
-  speed (`GATE_SHOULDER_LIFT`). A column that has spread out can no longer lift it past
-  `GATE_PASS_FRAC`, the arm settles, and the drain stops. Deterministic (no RNG — the sim
-  cannot have any here) but scenario-dependent enough to feel like it just gave up.
-
-Measured, nine-artifact column: **held 0.323 s mean / 0.073 mad, all 9 out in 3.0 s
-(was 5.2 s); tapped 0.376 s / 0.144 mad, 8 of 9 out, arm riding at 0.449–0.62, then shut.**
-A second tap clears the rest — it is a stall, never a deadlock, and there is a check for
-that. Six new smoke checks cover the pair.
-
-`gatewaySpeed` is deliberately a LOCAL in `updateGates`, not a `GoalState` field: goal
-state rides the network snapshot, and a new numeric field is the exact shape of the
-stale-server NaN bug in memory. It is recomputed from world state every tick anyway.
-
-**`EXIT_CLEARANCE` was left at 1.0.** At 0.0 the held drain is smoother still (0.260 s /
-0.048) — but the tapped drain then never gives out, and that is the behaviour being asked
-for. It is a swept value from the previous session; do not churn it to buy cadence that
-the paddle model should be providing.
-
-### The arm rests ON an artifact, never between two (uncommitted)
-
-*"When the classifier flow is stopped by the robot, the gate is always in between two
-artifacts. This does not have to be that way."*
-
-It was not a preference the arm had — it had **no idea what was underneath it.** With the
-flow halted it fell straight to 0 THROUGH whatever sat in the gateway, measured at every
-offset from +4 to −2.4 in: `0.000` every time. The ride model above was keyed on SPEED
-alone, so a stopped artifact held it up not at all.
-
-The paddle's edge descends the vertical at `GATE_LINE_S` (= `GATE_STOP_S − BALL_RADIUS`)
-and lands where that meets the artifact's surface: height `R + sqrt(R² − d²)`. A full
-diameter of clearance IS the pass height, so it maps onto `GATE_PASS_FRAC` with no constant
-of its own — dead on top is exactly the pass line, the equator is half of it, and past the
-artifact's edge the paddle misses entirely (which is why a column packed at `GATE_STOP_S`,
-one radius clear, still reads as fully shut — that existing check was the load-bearing one).
-
-**Which side it landed on is the whole outcome**, and measured it comes out clean:
-
-| d (centre − gate line) | arm rests at | once the robot is gone |
-| --- | --- | --- |
-| +2.0 (not through) | 0.338 | wedged, stuck at s=1.31 |
-| +1.2 | 0.383 | wedged, stuck at s=0.51 |
-| −1.2 (mostly through) | — | **squeezed out**, arm shuts behind it |
-| −2.0 | — | **squeezed out** |
-| ±2.6 (beyond the edge) | 0.000 | paddle misses it |
-
-`d > 0` is a wedge and needs its own clamp: the solver's gate floor sits at `GATE_STOP_S`
-and an artifact the arm has landed ON is *below* it, hence exempted by `wasS >= base` — so
-without it the thing rolled out from under a paddle resting on it. `d < 0` gets
-`GATE_PADDLE_SHOVE`, the horizontal component of the paddle's weight, scaled by `d/R`. Only
-the downhill half is applied; an up-ramp force would fight the solver's "never push it back
-UP" invariant, and the block already does that job.
-
-**The trap, which cost a red suite of fourteen unrelated checks.** `gateRestOn` returns 0
-for *two different reasons* — "the arm is flat on the ramp" and "this artifact is nowhere
-near the gate" — so `gatePos <= gateRestOn(d)` alone calls every artifact on the rail a
-contact whenever the gate is shut. That froze the entire rail the instant the gate closed:
-nothing reached the stack, nothing classified, and point-blank shots "stopped entering the
-goal". The reach test (`|d| < R`) has to come first; `paddleBearsOn` exists so there is one
-place that can be got wrong.
-
-Also fixed a check that was measuring the wrong thing: comparing *mean gaps* between held
-and tapped is a trap, because the tapped run gives out early so its mean covers only the
-opening (fast) releases while the held mean is dragged up by the later ones, where a pile
-has built outside the gate — it read as the tapped gate being FASTER. Do not restate the
-claim that way.
-
-### "The gate always empties all. I told you it shouldn't." (uncommitted)
-
-It did, and the 9-stack check that "passed" was hiding it. Swept by column depth, a tap
-drained **every column up to six artifacts** — and real ramps hold a handful, so in play it
-always emptied. Two causes, and the second is the one that mattered:
-
-**1. The tap latch pinned the arm at maximum lift for 0.5 s with nothing touching it.** A
-hinged arm cannot do that. `GATE_OPEN_LATCH_S` is now the arm's mechanical OVERSWING (0.08 s)
-and the arm is pinned only while a robot is genuinely on it; "stays open a beat" comes from
-the FALL instead — ~0.23 s from full lift to the pass line, artifacts flowing the whole way.
-Touch-hold is untouched and is what legitimately pins it. **This changes a documented product
-decision** (CLAUDE.md updated): a tap still commits the arm fully open and you still do not
-have to keep pressing.
-
-**2. `GATE_SEAT_FRAC` — seated under the arm is NOT past it.** The geometry originally mapped
-"paddle resting dead on top of an artifact" to *exactly* `GATE_PASS_FRAC`, on the reasoning
-that a full diameter of clearance is the pass height. That is off by precisely the amount
-that matters: resting on top is the MARGINAL contact — clearance is the ball and no more —
-so with the arm's weight on it, it does not roll through. And because the gateway window
-(8.5 in) is wider than the artifact pitch (5.1 in), a packed column ALWAYS has something
-under the arm — so if being under it holds the gate exactly passable, a dense column keeps
-itself flowing forever, which is what it did.
-
-Seat is now 0.34 against a pass of 0.4, and getting past takes momentum:
-`GATE_SHOULDER_LIFT` 0.045 → **0.016**, putting the threshold at ~25 in/s, inside the 20–46
-in/s band the ramp actually produces. At 0.045 the threshold was 8.9 in/s — below anything
-on the ramp, so every artifact cleared it and the rule never bit.
-
-**`GATE_RIDE_FRAC` swept 0.44 → 0.62 changed nothing**, which is what pointed at the seat
-height rather than the ride height. Don't re-sweep it.
-
-Measured now: **hold drains 9/9; one tap drains 3 and gives out at every depth 5–9**, and
-what a tap is worth varies with packing (3/3/2/2 at +0/1.5/3/5 in extra spacing) rather than
-being a fixed dose. Both are checked, the depth sweep explicitly — a 9-stack stalling proves
-nothing on its own.
-
-### Earlier in the session
-
-- **G408 over-possession** rebuilt on the manual's actual POSSESSION test (position in
-  the robot frame, transitive chain from confirmed seeds) plus the real card model —
-  MINOR **5** / MAJOR **15**, yellow at simultaneous 5 or three instances of 4+. The rule
-  had been fouling the wrong robot and was switched off by a threshold set below its own
-  signal.
-- **The classifier ends AT the gate** — the rect used to run three inches past it and was
-  drawn as a wall on the short end. Stroked on three sides now.
-- **The mouth is a PLACE** — artifacts stop teleporting into a parked robot, and the
-  doorway nudge sets a FLOOR on outward speed rather than adding every tick (it compounded
-  to 91 in/s).
-- **Chain Reaction**: flywheel launcher straddling the turret feed hole, beams apply yaw
-  torque, mobile THROW button (hidden when the assist owns the action).
-
-## Gotchas earned here
-
-- **`npm test` passing is not evidence for anything it does not check.** Two of this
-  session's three worst bugs were invisible to a green suite. Every behaviour the user
-  reports twice now has a check; keep that up.
-- **Probe, then change.** Several reports were refuted by measurement rather than fixed:
-  the flick-shuttle carried 18 in for zero fouls where a shove carried 9 for three; chassis
-  penetration by an artifact measured 0.00 in over 0 frames.
-- The human player **restocks during teleop**, so any probe that measures "where the balls
-  ended up" must filter to the ids it spawned. An earlier "max 148 in" reading was three
-  loading-zone restocks, not drain artifacts.
-- `Math.hypot` is banned in sim source by the smoke guard — use `hyp` from `src/math`.
-  `Math.max/min/sign/PI` are fine.
-
-## Open, not started
-
-- **Ball/robot pass-through** — the classifier case is fixed and watched (`d3442fb`).
-  The earlier "2.77 in penetration" reading was the intake mouth, which `ballRobotContact`
-  leaves open *by design*; chassis penetration measures 0.00 in. If it is reported again,
-  get the specific scenario rather than re-measuring the mouth.
-- **Penalty hitbox audit** (roadmap #1) — the rules are right, the trigger volumes have
-  never been checked against the manual figures.
-- **Production deploy**: prod is on migration 0024; 0025–0029 plus the 08-07 spectating
-  batch are pending. `./scripts/fly-deploy.sh` — **never a bare `flyctl deploy`**.
-- Red cards are unreachable (G408 is the only card source and cannot issue a second
-  yellow).
-- "Replays for tank drive dont seem to be working" — `eb45f01` fixed recording; unverified
-  end to end.
-- `CLASSIFIER_W` 6 in vs `TUNNEL_W` 6.125 in — ⅛ in mismatch, noted, not changed.
-- **At the alpha→main merge**: start a new Chain Reaction season from the admin menu.
-  DECODE does NOT roll. Do not bump `BALANCE_VERSION`.
+# HANDOFF — 2026-09-15 (the admin-panel batch: misscore replays, score editing, replay penalties, standing edits)
+
+**(MERGED into `alpha` and cherry-picked onto `main` on 2026-09-16 — see the section above.
+Still NOT deployed.)** It is a SERVER change AND a MIGRATION change — two new migrations
+(0035, 0036) that apply at game-server boot, so nothing here works until the Fly server is
+redeployed.
+
+Build green: `npm run build`, `npm run server:check`, `npm run contrast`, `npm run uiaudit`,
+`npm run dbtest` (ALL PASS, +29 checks). `scripts/smoke.ts` passes +23 new checks.
+
+⚠️ ~~**`npm test` is RED on alpha already, and not from this work.**~~ **FIXED by PR #69**,
+merged 2026-09-16. Left below because the reasoning is why it mattered. Two stale checks —
+`lan gate: alpha opens it; production does not mention it at all` and `lan gate: and
+production still opens neither door` — assert that production's `fly.toml` mentions neither
+`LAN_UPLOADS` nor `LAN_SIGNALLING`. Both were deliberately turned ON in production on
+2026-09-13 (see that section below), and nobody updated the checks. They fail on `alpha` with
+no changes at all. **The consequence is the one CLAUDE.md warns about: while the first suite
+is red the BIOBUZZ suite never runs.** Either update the two checks to the fleet as deployed
+or revert the config; it is a policy call, not a bug fix, so it was left alone here.
+
+## What landed
+
+1. **The misscore queue's WATCH button 404'd on every claim.** `listScoreReports` returned a
+   MATCH id and the button passed it to `/api/replay/<id>`, which serves `replays.id`. It now
+   carries `replayId`, joined through `matches.replay_id`; a claim with no stored match says
+   "no replay" rather than offering a dead button. `onWatchReplay` is
+   `(replayId, matchId?) => void` everywhere (`WatchReplay` in `AdminReports.tsx`).
+2. **Score correction** — `GET/POST /api/admin/match`, `correctMatchScore`, migration
+   **0035** (`match_score_corrections`). `won` is re-derived; **ratings are deliberately not**
+   (Glicko-2 is sequential). The editor is `ScoreEditor` in `src/ui/ReplayRail.tsx`, offered
+   only when `ReplayView` gets an `adminMatchId`, which only ever comes from the admin panel
+   via in-memory state in `App.tsx` — never from the URL, which is shareable.
+3. **Penalties on every replay, for everyone.** `src/sim/penaltyLog.ts` is the ONE place a
+   sanction line is written and read (`awardFoul`/`awardCard` and BIOBUZZ's tariff wrapper
+   both format through it); `ReplayPlayer.log` stamps each line with its tick and phase clock.
+   The viewer has an always-on summary row and a seekable timeline in the rail. A solo record
+   run shows one chip and reads its fouls as a deduction.
+4. **Standing editing** — `GET/POST /api/admin/standing`, `adminEditStanding`, migration
+   **0036** (`voided_at`/`voided_by`/`admin_id`/`note` on `standing_events`). A pardon VOIDS:
+   `recentStandingCount` filters voided rows so escalation forgets them, and the row stays on
+   the record. `src/standing.ts` gained an `adjustment` kind with a SIGNED cost — render every
+   ledger row through `standingDelta`, never a hard-coded minus.
+
+## Next steps
+
+- **Nothing is deployed.** Merge to `alpha`, then promote and deploy the Fly server from a
+  **main** worktree (see the 2026-09-13 note). The migrations run at boot.
+- **Not yet exercised against a live server**: the two new admin endpoints have unit coverage
+  in `dbtest` and typecheck against the server, but no request has been made to a running
+  instance. First deploy, then open `/admin` → Moderation → search a player → STANDING.
+- The owner asked to clear every infraction on `018fdc59-4e80-4a16-908c-682be86bfee8`. **Not
+  done** — production DB and production HTTP reads are blocked in this environment, and the
+  admin endpoint that would do it is on this undeployed branch. Once deployed it is one press
+  of CLEAR ALL INFRACTIONS on that uuid.
+
+## Gotchas found on the way
+
+- **`ghost` + `primary` on one `.ds-btn` makes the label white on the page's own surface.**
+  `.ds-btn.ghost` is declared after `.ds-btn.primary`, so it wins on `background: none` while
+  primary's `color: var(--ds-accent-ink)` survives. It reads as a missing control. There is a
+  `uiaudit` rule for it now at baseline 0.
+- A replay's penalty list is built from `world.events`, so **the foul strings are now parsed,
+  not just displayed** — changing one is still a server change, and now also breaks a reader.
+  `npm test` round-trips the formatter against the parser.
+- The default robot's start anchor faces its own goal: a full-throttle `driveX: 1` holds it
+  flush against the goal for the whole match. Crossing the field from anchor 0 is `driveX: -1`.
+  Cost several throwaway scenes before it was noticed; worth knowing when writing any headless
+  scene that needs the robot to actually go somewhere.
+
+---
+
+# HANDOFF — 2026-09-14, later (account standing: behaviour charges WIRED, repriced — alpha only)
+
+**(superseded as READ FIRST by the 2026-09-15 section above; still current for its own subject.)** On `alpha`, NOT deployed, NOT on `main`. It is a SERVER change: it does nothing
+until the Fly game server is redeployed (from a main worktree — see below).
+
+- **`persistBehaviour` was never wired into production rooms** (`server/index.ts` passed 7 of
+  `Room`'s 8 args; `docs/multiplayer-architecture.md` §17.1 had flagged it). So in production
+  the clean-match heal (+2), AFK, leave and card standing charges had NEVER fired — only dodges
+  did. Now wired. ⚠️ Deploying it turns ALL of those on at once, for the first time against real
+  matches.
+- **Repriced (owner):** AFK 8 (was 12), leave 8 (was 15), yellow card 5 (was 20), red card 15
+  (was a flat 40 override). A red is now `severity: RED_CARD_MULT` (3) through the ladder, so it
+  rides the repeat multiplier like every other kind (a 2nd red in the week costs 23, a 2nd
+  yellow 8). Cooldown/rating ladders unchanged.
+- **Leaving a 1v1 is not charged** (`chargedForParticipation`, `src/standing.ts`); leaving a 2v2
+  is. AFK is charged in both. An excused 1v1 leaver is NOT credited clean either. The 1v1 match
+  is still rated, so the leaver still takes the loss.
+- Verified: `server:check` and client `tsc` clean; the changed standing checks run green through
+  the real functions in a scratch script. Full `npm test` NOT run (owner preference); the smoke
+  checks in `scripts/smoke.ts` were updated to the new values.
+
+---
+
+# HANDOFF — 2026-09-14, early (settle-based finalize LIVE, PR 65 landed, all night fixes shipped)
+
+**What production is running.** Fly release **v111** = `main` @ `b09f12e`, deployed
+from a main WORKTREE (never this alpha tree — `fly-deploy.sh` builds whatever tree it runs in).
+Everything below the line is on BOTH `main` and `alpha`.
+
+- **LIVE: a match is finalized when the field comes to rest, and the score is shown only then**
+  (`34bf3a2` main / `6326a6b` alpha). New `src/sim/settle.ts`: `settleStep` finalizes once the
+  game's `GameSimModule.settled` has held for `MATCH_SETTLE_HOLD_S` 0.5 s, capped at
+  `MATCH_SETTLE_MAX_S` **10 s — the owner's absolute maximum, do not raise it**. DECODE
+  (`decodeSettled`): nothing in flight, nothing pending or moving on a rail, ground/basin
+  artifacts and robots at rest. CR (`chainSettled`): no non-staged particle in flight, ground
+  particles and robots at rest. BIOBUZZ (`bbSettled`, `src/games/biobuzz/settle.ts`): nothing in
+  flight, no hive swinging or loaded past its tip, ground elements and robots at rest. The server
+  (`room.ts` `stepOnce`) and solo practice (`game.ts`) share the clock, in ticks.
+  `MATCH_SETTLE_S` / `MATCH_RESULT_REVEAL_MS` are DELETED. Client: the results screen reveals only
+  on `HudSnapshot.resultFinal` (online = the server's `matchResult` arrived; practice = its own
+  settle) and shows the SERVER's totals; the live HUD, replay viewer and burned-in video say
+  MATCH OVER until then and FINAL only on the finalized score; `resultLost` says so if the result
+  never comes. `maxMatchTicks` carries the 10 s cap. Measured: an idle DECODE or CR run finalizes
+  on the 0.5 s hold (no jitter); a rolling artifact held it to 116 ticks.
+  ⚠️ **Known to bind:** a BIOBUZZ tip that sets off a SECOND tip can outlast 10 s; PR 65's rule
+  (below) still pays a swing the cap cuts off.
+- **LIVE: PR 65, a BIOBUZZ tip caught by the buzzer scores and its load is not deducted**
+  (`7d0331c` main / `04ce456` alpha; its check moved onto the settle clock in `b09f12e` /
+  `41865e7`). Landed as CLEAN commits and the PR CLOSED, not merged: its own commits were
+  authored `Claude <noreply@anthropic.com>` with `Co-Authored-By`/`Claude-Session` trailers, and
+  the owner wants no attribution anywhere. No `BALANCE_VERSION` bump (owner's call).
+- **LIVE (since v110): a cancelled ranked match cannot be cancelled again** — no longer held; see
+  the section below. **LIVE: a solo record run left after the buzzer is still saved** (the room
+  keeps stepping with nobody connected until it finalizes).
+- ⚠️ **A gated shell chain lied once tonight:** `grep -c` exits 1 on a count of 0, so
+  `X=$(… | grep -c …) && cd worktree && …` stopped before the `cd` and the "main" tests ran on
+  alpha. The push gate caught it. Use `|| true` on counts and guard every `cd`.
+- `npm test`'s shared suite still ends at the 2 pre-existing `lan gate` failures. Alpha still
+  carries unreviewed BIOBUZZ commits that are not on main (see the review note below).
+
+# HANDOFF — 2026-09-13, night (production hotfixes: record-room reap LIVE, dodge double-cancel shipped in v110)
+
+Superseded by the section above. Deploys go from a MAIN worktree, never this alpha tree; killing
+a background deploy does NOT kill its `flyctl` child, so run deploys in the foreground. (v108,
+built from alpha by mistake, was live for about 5 minutes around 01:19Z and was replaced.)
+
+- **LIVE: a solo record run closed on purpose frees its room at once** (`f0e0430` main /
+  `df5872d` alpha, `server/room.ts` `detach(id, conn, clean)`, `server/index.ts` close code).
+  Record-run restarts used to hold the old `rec-` room for the 45 s reconnect grace, still
+  simulating. At the BIOBUZZ launch spike iad sat at 24/24 with 8-12 real runs and refused new
+  ones as `region_full`, which the Record Run screen shows as "Couldn’t start". A close with
+  code 1000/1005 on a solo record room now reaps immediately. 1006 (network) and 1001 (tab)
+  keep the grace, and so does every room with a second driver.
+- **SHIPPED in v110 (was held earlier that night): a cancelled ranked match can no longer be
+  cancelled a second time** (`28575be` on alpha, `406f506` on main).
+  `cancelPending` left `pendingMatch`/`phase` set, and a socket's `room` is never cleared. So
+  the first player to leave the cancelled screen re-ran the cancel from `detach` and was billed
+  a STRATEGY BAIL. The innocent driver was shown "Nothing was charged to you" and then lost
+  standing anyway; the player who never readied was billed twice. Smoke reproduces it: 3
+  charges without the fix, 1 with it. **Standing already lost this way is not refunded:** the
+  false rows are `standing_events` kind `dodge` whose `room_code` also carries a legitimate
+  charge to the other player.
+- `npm test`'s shared suite still ends at the 2 pre-existing `lan gate` failures (below).
+- Unreviewed alpha content not on main (review summary): BIOBUZZ hive tip rate / spill / miss
+  bounce and LEAVE-from-start-wall change scoring and RNG draw counts with no `SIM_VERSION`
+  bump; `startWalls` is read without a guard, so an alpha client against a main server throws in
+  online BIOBUZZ. Deploy the server before clients, or guard it, before promoting.
+
+# HANDOFF — 2026-09-13, later (BIOBUZZ hive feel: tip rate, spill scatter, miss bounce, canopy)
+
+Branch **`claude/hive-physics-rendering-tjz7mj`**. Four owner-reported HIVE items, all inside
+`src/games/biobuzz/` (nothing shared touched). Gates: `npx tsc --noEmit -p .` clean,
+`server:check` clean, `test:bb` **1289 ALL PASS**, `npm run build` ok. Full `npm test` run to the
+end: the shared suite reports **2 FAILURES, both PRE-EXISTING and not this branch's** — `lan gate:
+alpha opens it; production does not mention it at all` and `lan gate: and production still opens
+neither door`. They assert `fly.toml` carries no `LAN_UPLOADS` / `LAN_SIGNALLING`, and the
+2026-09-13 promotion (below) deliberately put both in `fly.toml [env]` to turn LAN on for
+production. The check is stale against that owner decision; the files it reads are untouched by
+this commit. Whoever owns the LAN policy should either retire those two checks or drop the flags.
+
+**MERGED INTO `alpha`** (`f3f74dc`), no conflicts: alpha's own `state.ts` change adds `startWalls`
+to `BiobuzzState` while this one adds `swingRate` to `BbHiveState`, and alpha's HUD change only
+moves the `tipping > 0` readout from a chip to the score bar's `cellLine`, which this preserves.
+Gates on the MERGED tree: `tsc` / `server:check` / `build` / `uiaudit` clean, `test:bb` **1294 ALL
+PASS**.
+
+⚠️ **A SEPARATE ALPHA BUG WAS FIXED TO GET A GATE AT ALL** (`scripts/smoke.ts`, own commit). Alpha's
+LAN commit `d14895b` added a check reading `roomSrc` ~126 lines ABOVE the `const roomSrc` in the same
+block, so it threw `ReferenceError: Cannot access 'roomSrc' before initialization` and **aborted the
+whole shared suite** — which, being `&&`-chained, also meant the BIOBUZZ suite never ran under
+`npm test` at all. The read is hoisted to its first use. The two checks involved now run and pass,
+and the shared suite completes at its 2 pre-existing LAN gate failures. Nothing else moved.
+
+- **A heavier tray tips faster** (`hive.ts` `hiveSwingRate`, `hiveSurplus`). The 4 s swing is
+  the swing of a tray at EXACTLY its tip-table threshold; each element over the threshold adds
+  `BB_TIP_RATE_PER_EXTRA` 0.35 to the rate, capped at `BB_TIP_RATE_MAX` 3. The surplus is
+  measured against `BB_TIP_POLLEN`, so every row's threshold load still takes 4.0 s and every
+  existing timing check is untouched. Pre-release the rate reads the live contents (the cell
+  keeps taking, so feeding a swinging tray speeds it up — measured: 2 pollen dropped in at
+  0.5 s settle it at 2.57 s instead of 4.0); post-release the rate is carried in the NEW
+  optional `BbHiveState.swingRate` (absent when settled and on old snapshots = nominal).
+  `tipping` stays in nominal seconds, so `tipProjection` / `tipProgress` are unchanged.
+- **Spill scatter** (`hive.ts`): `BB_SPILL_SPEED` [35,62] → **[30,62]**, `BB_SPILL_FAN` 18° →
+  **40°**, plus a new all-directions **`BB_SPILL_KICK`** 12 in/s. Every pose still leaves
+  outboard by construction (23 in/s outboard minimum vs a 12 kick). `spillPoses` now draws SIX
+  rng values per pose. `docs/biobuzz/feedback/001-spill-kinematics.md` has the addendum.
+- **A miss bounces off the structure** (`hive.ts` `hiveDeflect`, called from `play.ts` after
+  the capture loop for BOTH hives). The assembly is an APPROX box (`BB_HIVE_W` × `BB_HIVE_LEN`,
+  `BB_HIVE_BOTTOM_Z`..`BB_HIVE_OPEN_Z[1]`) with: the two long sides, the DOWN cell's outer end
+  and the underside solid; an interior PIVOT PLANE (y = 0) solid; **no top** (a descent from
+  above is the capture test's business, and a top is a shelf a ball could rest on); and the
+  **TAKING cell's outer end OPEN at every height** (`hiveTakingSide`, so it follows the
+  release). ⚠️ That mouth exemption is load-bearing: with the face solid, the dumper parked at
+  the lip and Aim Assist's flat lobs (which cross the lip a hair before apex, still climbing)
+  were ALL refused — 8 checks red. Bounce is `BB_HIVE_MISS_REST` 0.3 on the normal,
+  `BB_HIVE_MISS_TANGENT` 0.5 on the rest, vz kept on a side hit. Measured: a 150 in/s shot into
+  the red hive's flank lands 18.8 in short of the face on the side it came from; the same shot
+  at 70 in clears the top and lands downrange.
+- **Translucent canopy** (`drawField.ts` `drawHiveCanopy`, called from `draw.ts` between the
+  low and high element passes). The renderer draws field → robots → elements, so a robot under
+  the hive was painted OVER it. The canopy repaints the body, the up cell's fill and its
+  contents row at `CANOPY_A` 0.42 over the assembly's own footprint, after the robots and the
+  ground/low-flight elements and before the airborne ones (split at `BB_HIVE_BOTTOM_Z`). The
+  contents row is now `drawCellContents`, shared by the field pass and the canopy. Not a
+  `globalAlpha` on the sprite — the ruling is the PORTION under the hive, not the robot.
+- No `SIM_VERSION` bump was made (owner's standing call on this branch); spill RNG draw count
+  and the miss bounce both change sim output for the same inputs.
+
+---
+
+# HANDOFF — 2026-09-13, late (DEPLOYED: alpha is production, BIOBUZZ is public)
+
+- **`main` is `088addb`** (alpha fast-forwarded onto it and pushed; this handoff note is on alpha
+  only, so a docs commit does not rebuild the site). Vercel production serves it
+  (`https://www.playdsim.com/version.json` → `088addb`, `/biobuzz` in the sitemap).
+- **BIOBUZZ is public**: `src/seasons.ts` has no `channels` for it. The crawler files were edited to
+  match (`public/sitemap.xml`, `public/robots.txt`, the static nav and the four home-description
+  copies in `index.html`), as the BIOBUZZ suite requires. `test:bb` 1272 PASS, `npm run build` ok.
+- **Production game server deployed** with `./scripts/fly-deploy.sh` (the owner said to skip the
+  in-game warning; the countdown was cancelled before it deployed anything). Verified after:
+  every machine on one image; iad `performance-2x`/4096; ord, sjc, lhr `performance-1x`/2048;
+  gru, jnb, syd, nrt `shared-cpu-4x`/1024 (stopped until someone connects); `/health` ok;
+  `/api/perf` `admitting:true` on every started machine; `/api/presence` caps `party,lan`;
+  `/api/seasons`: DECODE Act 2 · S1 (bv 7), Chain Reaction Act 2 · S1 (bv 5), BIOBUZZ Act 1 · S1 (bv 4).
+- **Alpha preview deployed** too (`--alpha`), healthy, caps `party,lan`.
+- **Announcements published** from `docs/announcements/biobuzz-act1-season1.md`: a `season` reveal
+  and the `patch` notes.
+- The room-leak fix (`8e2ea2b`) is now live in production, so `iad` should no longer need restarts.
+- `ADMIN_SECRET` lives in `D:\Projects\2ddecodesim\.env`; load it into one command, never print it.
+
+---
+
+# HANDOFF — 2026-09-13 (preparing the alpha → production promotion)
+
+Branch **alpha**, pushed. `npm run server:check` clean; the new room-leak smoke check was run in
+isolation and mutation-checked (fails without the fix). The full `npm test` was NOT run (owner).
+**Nothing deployed to production — the owner said not to until the promotion is ready.**
+
+## (was READ FIRST) — production `iad` was refusing every new room
+
+`/api/perf` on the always-warm primary read `rooms: 0, admitting: false`, and its log was a wall
+of `[admit] refused room rec-…: at cap (24/24)` from at least 04:53 UTC. US-East players could not
+start a record run or a custom room at all.
+
+**Cause:** `finalizeMatch` stops the room's loop and keeps the room for the results screen, but
+the reconnect grace is only ever checked BY that loop. A driver who closed the tab from the
+results screen was held forever and the room never deleted — one leaked room per finished match
+someone walked away from. Satellites auto-stop and start clean; `iad` never does, so only it
+filled up.
+
+- **Mitigated:** `iad` (6836e6dc0e2348) restarted 2026-09-13 with the owner's go; it read
+  `admitting: true` 43 s later.
+- **Fixed on alpha only:** `8e2ea2b` (`Room.armGraceReap`). The owner chose to ship it WITH the
+  promotion, so **production will leak again until then.** If `/api/perf` on `iad` shows
+  `admitting: false` with few live `rooms`, restart that machine (ask first). The scheduled
+  checkup below flags exactly this as URGENT.
+
+## Update, later the same day: PRs merged, main merged, LAN on, launch fleet sized
+
+All on alpha, **still not deployed**.
+
+- **main merged into alpha** (`a335bb0`). One conflict, the HUD chip block in `GameView.tsx`,
+  kept as alpha had it. `fly-deploy.sh`, `fly.toml` and `.env.example` now carry main's fleet.
+- **PRs #45, #60 and #57 merged** (`a4dd082`, `7d301f5`, `3b1d3c9`). #57's three conflicts kept
+  both sides. Its replay start-pose snap was gated on `startLegality`, which BIOBUZZ sets too, so
+  it became a per-game hook, **`GameSimModule.startSnap`**: DECODE fills it with the same G304
+  snap; BIOBUZZ and Chain Reaction keep their field-clamped pose. **No `SIM_VERSION` bump**
+  (owner): some pre-deploy replays may play back differently from what happened.
+- **LAN is ON for production**: `LAN_UPLOADS` and `LAN_SIGNALLING` in `fly.toml [env]`. The client
+  lights LAN from the server's `lan` capability, so Vercel needs nothing. Migration
+  **`0034_lan_runs_biobuzz.sql`** widens `lan_runs.game` to accept BIOBUZZ, which 0033 refused.
+- **Launch fleet, from `docs/capacity.md`** (one machine per region is a hard rule, and one
+  process uses about one core, so a dedicated core is the only size step that adds rooms):
+
+  | region | size | why | $/mo if never stopped |
+  |---|---|---|---|
+  | iad (primary, matchmaker, API) | `performance-2x` / 4096 | dedicated core for the loop; 2nd core for GC and every socket's deflate | 64.39 |
+  | ord, sjc, lhr | `performance-1x` / 2048 | real traffic; ~8–10 driven rooms, never throttled | 32.19 each |
+  | gru, jnb, syd, nrt | `shared-cpu-4x` / 1024 | rarely host; 4x's baseline held 2 rooms / 8 players | 8.08 each |
+
+  Satellites auto-stop and bill only rootfs while stopped, so their real cost is only while
+  someone plays. Worst case, all eight never stopping: **~$193/mo** (today's worst case ~$31).
+  Rough ceiling with margin: ~60 driven rooms fleet-wide, roughly 90 concurrent players at the
+  real solo/1v1/2v2 mix, ~130 at redline. Past that, the fix is `SIM_WORKERS`
+  (`docs/scaling-multicore.md`), not bigger VMs or a second machine per region.
+  `fly.toml [[vm]]` is the primary's size; `scripts/fly-deploy.sh` `SATELLITE_SIZES` puts each
+  satellite on its own after the deploy. Checked with `bash -n` and a dry run of the lookup.
+- ⚠️ **gru and jnb still do not host CROSS-region matches** (`DEPLOY_REGIONS` unchanged). Adding
+  them failed 8 `test:mm` checks: their real distances to syd/nrt and to each other (315–395 ms)
+  are above `RTT_UNKNOWN` (300), so a real far pair looked like a missing row. They do host every
+  room their own players open.
+- Gates run for this: `npx tsc --noEmit -p .` clean, `server:check` clean, `test:bb` 1270 PASS,
+  `test:mm` 186 PASS, `uiaudit` at baseline, `dbtest` ALL PASS (0034 applied). Full `npm test` NOT run (owner).
+
+## Promotion checklist
+
+1. **BIOBUZZ is still hidden on stable.** `src/seasons.ts` has `channels: ['alpha']` and the blurb
+   "Rules land at kickoff on 2026-09-12." Both must change for it to appear in production. The
+   CLAUDE.md BIOBUZZ section still describes a placeholder, alpha-only, unscored shell — stale.
+2. **Open PRs to alpha** (reviewed 2026-09-13, nothing merged):
+   | PR | verdict | why |
+   |---|---|---|
+   | #45 | **URGENT** | any socket can send a malformed `input` (NaN, `ld: 1e9`) into the authoritative world broadcast to the room. Server-only, merges clean, `test:mm` 186 pass on a trial merge |
+   | #57 | recommended | real client/sim fixes (auto-path waits, replay `coerceSetup`); CONFLICTS in 3 files (trivial). Changes sim output for two narrow inputs without a `SIM_VERSION` bump — decide. Its `coerceSetup` gate keys on `startLegality`, which BIOBUZZ now sets, so BIOBUZZ replays still get DECODE's snap |
+   | #60 | recommended | solo practice saves its score before the 2.8 s settle; practice-only, clean |
+   | #58 | defer | `stageBiobuzz` idempotency; no shipped path calls it twice |
+   | #61 | defer | LAN guest ack-keyed deltas; LAN is off in production; the shared WebSocket path measured byte-identical |
+3. **Merge `origin/main` into alpha before promoting.** main has 10 commits alpha lacks (the
+   ord/gru/jnb fleet, satellites at 512 MB, `fly-deploy.sh` re-shrinking all 7 satellites, fly.toml
+   notes, the 8-region `.env.example`, a replay fix, controls copy). ⚠️ Deploying production from
+   alpha's current `scripts/fly-deploy.sh` would re-shrink only 4 satellites, leaving ord/gru/jnb on
+   fly.toml's `shared-cpu-4x`, and put the rest back on 1024 MB. A trial merge has ONE conflict:
+   the HUD chip block in `src/ui/GameView.tsx` (both sides removed the pose readout) — take alpha's.
+4. **Seasons.** Production: DECODE Act 2 · Season 1 (bv 7), Chain Reaction Act 2 · Season 1 (bv 5).
+   `BALANCE_VERSION` is 4 on both branches and `currentSeasonNumber` returns each game's existing
+   max, so **the deploy does not advance DECODE or Chain Reaction.** BIOBUZZ has no production rows
+   (today's prod server coerces `biobuzz` to DECODE, so `/api/seasons?game=biobuzz` shows DECODE's
+   list); the new server seeds `(biobuzz, 4, act 1)` on first use — alpha's database already holds
+   exactly that. **Do not use the admin season/act roll for this launch.**
+5. **Migrations:** none differ between main and alpha. `lan_runs` has `check (game in ('decode',
+   'chain'))`, harmless while LAN is off in production, but it refuses a BIOBUZZ LAN upload on alpha.
+6. **Announcements:** `docs/announcements/biobuzz-act1-season1.md` (a `season` reveal + `patch`
+   notes), with a pre-publish checklist. Publish only after the deploy is verified.
+7. **Order:** merge #45 (and any other chosen PRs) → merge main into alpha → full gates (`npm test`,
+   `test:mm`, `dbtest`, `build`, `server:check`, `uiaudit`) → alpha into main →
+   `scripts/announce-deploy.sh` (players are online) → verify `/health`, `fly machine list` sizes,
+   `/api/perf` `admitting` on every started machine, `/api/seasons` per game → Vercel production →
+   publish the announcements.
+
+## Capacity — recommendation, NOT applied
+
+Load today is tiny: 3 online; `iad` 0.02–0.04 cores; alpha ran 2 rooms / 8 players at 0.17 cores.
+`npm run costprobe` (sim-only, laptop): a BIOBUZZ solo room costs 0.0245 cores (same as DECODE), a
+2v2 0.0345; 10.2 / 38.4 KiB/s per client on the wire. Size on `docs/capacity.md`'s driven 0.075.
+
+- **`iad`: `shared-cpu-4x`/1024 ($8.08/mo) → `performance-1x`/2048 ($32.19/mo).** The only size step
+  that adds rooms: a dedicated core never throttles (~8–10 driven rooms against 5–8), and two rooms
+  with 8 players already sat on the 4x sustained baseline (0.244 of ~0.25 cores, 2026-09-06).
+  `shared-cpu-8x` buys nothing — one process uses one core.
+- **`ord` and `sjc`: `shared-cpu-1x`/512 → `shared-cpu-4x`/1024 for the launch.** A 1x baseline is
+  about one busy room. They auto-stop, so the extra ~$4.76/mo each is only paid while awake.
+  Needs per-region sizes in `scripts/fly-deploy.sh` (today one `SATELLITE_SIZE` for all seven).
+- Everything else stays `shared-cpu-1x`/512. Never a second machine in a region (room codes route
+  by region); past `performance-2x` the fix is `SIM_WORKERS` (`docs/scaling-multicore.md`).
+
+**Scheduled checkup:** the Claude desktop task `dsim-capacity-checkup` runs every 3 hours while the
+app is open. It is read-only (machine list, `/api/perf` per started machine via
+`fly-force-instance-id`, presence, log signals), recommends only, and keeps a history in
+`C:\Users\geniu\.claude\scheduled-tasks\dsim-capacity-checkup\history.jsonl` so a downscale is only
+ever suggested after 7 days of low readings.
+
+---
+
+
+---
+
+# Older sessions
+
+Sessions before 2026-09-12g are in **`docs/handoff-archive.md`** — moved there on
+2026-09-16, unedited. This file had reached 5,888 lines and is read at the start of every
+session; the archive keeps the history without charging every session for it.

@@ -9,6 +9,7 @@ import { AdsProvider } from './ads/AdsProvider';
 import { loadCmp } from './ads/adsense';
 import { Analytics } from '@vercel/analytics/react';
 import { analyticsEnabled } from './analytics';
+import { analyticsAllowed } from './analyticsPref';
 import { adoptLanFromOrigin } from './net/lanAdopt';
 // Self-hosted (not a CDN <link>): the Electron build runs from file:// with
 // vite `base: './'`, so fingerprinted woff2 must be bundled to resolve offline.
@@ -17,6 +18,13 @@ import '@fontsource-variable/plus-jakarta-sans';
 import '@fontsource-variable/space-grotesk';
 import './ui/styles.css';
 import './ui/shell.css';
+// the in-match prediction control (`docs/biobuzz/plan-3d.md` §5). Its own file, LAST, so its
+// additive `.pred-*` rules sit at the end of one cascade — see its header for why it is not in
+// styles.css.
+import './ui/predict.css';
+// the tutorial step card (roadmap item 6). Its own file for the same reason `predict.css` is:
+// `styles.css`/`shell.css` are one large, actively-edited cascade and these rules are additive.
+import './ui/tutorial.css';
 
 // The inline script in index.html already stamped data-theme for the first paint.
 // This re-stamps from the same key and, when the pref is 'system', arms the
@@ -48,8 +56,26 @@ Promise.all([initPhysics(), lanReady]).then(() => {
       <ServerNoticeBanner />
       <NoticePoller />
       {/* Cookieless page views. Gated on VITE_ANALYTICS so a self-hosted or
-          Electron build never beacons a host it does not run on. */}
-      {analyticsEnabled() && <Analytics />}
+          Electron build never beacons a host it does not run on.
+
+          ⚠️ `beforeSend` IS WHAT MAKES THE OPT-OUT TRUE. This component sends its own page
+          views; they do not go through `trackEvent`, so guarding only that function left the
+          privacy page's switch claiming "stops every beacon" while the pageview beacon carried
+          on — which is the kind of false statement a privacy control must not make. `beforeSend`
+          is consulted per send, so `analyticsAllowed()` is read fresh and the switch takes
+          effect with no reload, exactly as it does for events. Returning null drops the beacon
+          before it leaves the page.
+
+          ⚠️ IT ALSO STRIPS THE QUERY STRING. A password-reset or email-verification link
+          arrives as `/account/reset?token=…`, and the first pageview fires on that URL — so
+          without this the one-time token leaves the device inside an analytics beacon. Nothing
+          this app measures is keyed on a query parameter, so there is no route detail to lose:
+          the path alone is the page. */}
+      {analyticsEnabled() && (
+        <Analytics
+          beforeSend={(e) => (analyticsAllowed() ? { ...e, url: e.url.split('?')[0] } : null)}
+        />
+      )}
     </StrictMode>,
   );
 });
