@@ -25,8 +25,15 @@ import {
   BB_LZ,
   BB_NECTAR_R,
   BB_TAPE,
+  BB_TAPE_W,
   BB_VIEW_MARGIN,
 } from '../../src/games/biobuzz/config';
+import { drawBiobuzzField } from '../../src/games/biobuzz/drawField';
+// the CAD loader's own DOM-free exports — the AprilTag bitmap, the ID table the manual sets, and
+// the creased-normal pass. Importing a `scene/` module here is fine: this is a script, not the
+// bundle, and the chunk-boundary checks above read the SOURCE rather than the module graph.
+import { CREASE_ANGLE_DEG, TAG_IDS as BB_TAG_IDS, apriltag36h11Cells, computeCreasedNormals } from '../../src/games/biobuzz/scene/renderFieldGlb';
+import { COLORS as SHARED_COLORS } from '../../src/config';
 import {
   BB_BOX_DEPTH,
   BB_BOX_H,
@@ -45,28 +52,26 @@ import {
   BB_BOX_TUBE_SECTIONS,
   BB_BOX_TUBE_STAGE_OVERLAP,
   BB_BOX_TUBE_WALL,
+  BB_BRACE_PROUD,
   BB_DECK_Z,
-  BB_FEED_SHOE_FAR,
-  BB_FEED_SHOE_R,
+  BB_FEED_WALL_T,
   BB_FLYWHEEL_CLEAR,
   BB_FLYWHEEL_D_MM,
   BB_FLYWHEEL_R,
+  bbHead,
   BB_HOOD_ARM_INSET,
   BB_HOOD_ARM_T,
-  BB_HOOD_PATH_R,
-  BB_HOOD_R,
   BB_HOOD_T,
   BB_HOOD_WRAP,
-  BB_LAUNCH_PLATE_GAP,
   BB_LAUNCH_Z0,
-  BB_POLLEN_R,
+  BB_SHOOTER_PLATE_T,
   BB_SIDE_PLATE_BOTTOM_Z,
   BB_SIDE_PLATE_FRONT_X,
   BB_SIDE_PLATE_TOP_Z,
   BB_TURRET_AXLE_Z,
   BB_TURRET_BRACE_R,
   BB_TURRET_BRACES,
-  BB_TURRET_MOTOR,
+  BB_TURRET_MOTOR_R,
   BB_TURRET_PITCH_MAX,
   BB_TURRET_PITCH_MIN,
   BB_TURRET_PLATE_TOP_Z,
@@ -79,14 +84,14 @@ import {
 // not bundled, and `buildTurret` touches no DOM. It is here because five passes of shooter
 // geometry were signed off by a lane that could only grep the source — see its own header, and
 // the SHOOTER block below.
-import { buildTurret, disposeRobotGroup } from '../../src/games/biobuzz/scene/renderRobots';
+import { buildSwervePod, buildTurret, disposeRobotGroup } from '../../src/games/biobuzz/scene/renderRobots';
 import { bbMuzzleLocal } from '../../src/games/biobuzz/robot';
 import { INTAKE_RAIL_T } from '../../src/config';
 import { BB_DEFAULT_SPEC } from '../../src/games/biobuzz/coerce';
 import { bbCoerceSpec } from '../../src/games/biobuzz/robotConfig';
 import { SHOT, SHOT_ARC_MAX, shotArc, solveShotPath } from '../../src/games/biobuzz/shotPath';
 import { drawBiobuzzShotPath } from '../../src/games/biobuzz/drawShot';
-import { CAMERA_PREFS, getCameraPref } from '../../src/games/biobuzz/graphics/store';
+import { CAMERA_PREFS, getCameraPref, resolveSceneCamera } from '../../src/games/biobuzz/graphics/store';
 import {
   GFX_PIXEL_BUDGET,
   GFX_PRESETS,
@@ -348,7 +353,196 @@ export function renderChecks(check: Check): void {
         code.length === 0,
         code.map((r) => `${rel}:${r.i + 1}`).join(', '),
       );
+      // ...and it does not reach for DECODE's tape width either. `C.TAPE_W` and `BB_TAPE_W` are
+      // both 1 in by coincidence -- one is DECODE's field, one is the BIOBUZZ CAD's -- and a
+      // BIOBUZZ width with two homes is a width that can drift in one of them (owner, 2026-09-19:
+      // "tape mark widths are inconsistent").
+      const tapeW = codeLines(join(root, rel)).map((l, i) => ({ l, i })).filter((r) => /\bC\.TAPE_W\b/.test(r.l));
+      check(
+        `${rel} does NOT read the shared C.TAPE_W (this field's width is BB_TAPE_W, from the CAD)`,
+        tapeW.length === 0,
+        tapeW.map((r) => `${rel}:${r.i + 1}`).join(', '),
+      );
     }
+
+    // THE TWO RENDERERS DRAW THE SAME LIST OF MARKS. Derived from the source rather than stated,
+    // so a group added to one and not the other fails here instead of in a screenshot.
+    const groupsOf = (rel: string): string =>
+      [...new Set([...codeLines(join(root, rel)).join('\n').matchAll(/BB_TAPE\.([A-Za-z]+)/g)].map((m) => m[1]))]
+        .sort()
+        .join(',');
+    const twoD = groupsOf('src/games/biobuzz/drawField.ts');
+    const threeD = groupsOf('src/games/biobuzz/scene/renderField.ts');
+    check('the 2D and 3D renderers draw the SAME tape groups', twoD === threeD, `2D=${twoD} 3D=${threeD}`);
+    check(
+      'and that list is the field guide\'s: the LOADING ZONES, the GARDENS, and the corner supplement',
+      twoD === 'garden,gardenSupplement,loadingZone',
+      twoD,
+    );
+  }
+
+  // ---- ONE TAPE WIDTH, AND IT IS THE CAD'S --------------------------------------------------
+  //
+  // Event Field Guide V1.0 §8.1 (p13): the field may be taped with EITHER 1 in or 2 in ProGaff,
+  // "the outside perimeter of each zone should be consistent with the specifications, but the tape
+  // width may vary". §8.3's figure draws the LOADING ZONE both ways; §8.4's draws the GARDEN as
+  // [2] 1-in pieces OR [1] 2-in piece. The CAD ships the 1-in build -- `tape.widthsIn` is a
+  // ONE-element list -- so that is the build the sim draws, and `BB_TAPE_W` is the one name for it.
+  //
+  // This is the data half of the owner's "tape mark widths are inconsistent": every rectangle a
+  // renderer fills has to BE that width, not merely come from the same file.
+  {
+    for (const group of ['loadingZone', 'garden', 'allianceArea'] as const) {
+      for (const a of ['red', 'blue'] as const) {
+        const strips = BB_TAPE[group][a];
+        const wrong = strips.filter((s) => Math.abs(Math.min(s.x1 - s.x0, s.y1 - s.y0) - BB_TAPE_W) > 1e-6);
+        check(
+          `${group}/${a}: every strip is exactly BB_TAPE_W across`,
+          strips.length > 0 && wrong.length === 0,
+          `${strips.length} strips, ${wrong.length} off ${BB_TAPE_W}in`,
+        );
+      }
+    }
+    // the GARDEN's "approximately 2 in." (§8.4) is TWO of them laid side by side with no mat
+    // between -- the band is solid, which is the difference between a band and an outline.
+    for (const a of ['red', 'blue'] as const) {
+      const band = BB_TAPE.garden[a];
+      const lo = Math.min(...band.map((s) => s.y0));
+      const hi = Math.max(...band.map((s) => s.y1));
+      const edges = [...band.map((s) => s.y0), ...band.map((s) => s.y1)].sort((p, q) => p - q);
+      check(`garden/${a}: the band is exactly 2 x BB_TAPE_W deep`, Math.abs(hi - lo - 2 * BB_TAPE_W) < 1e-6, `${(hi - lo).toFixed(3)}in`);
+      check(`garden/${a}: ...and the two tapes TOUCH, so the band is solid`, band.length === 2 && Math.abs(edges[1] - edges[2]) < 1e-6, edges.join(','));
+    }
+  }
+
+  // ---- NO CENTRE CROSS: THE FIELD HAS NO MARKING AT THE ORIGIN ------------------------------
+  //
+  // Owner, 2026-09-19: "centre cross tape mark does not exist, I think. Check manual." It does
+  // not. Event Field Guide V1.0 §8 "Tape Placement" installs exactly three things -- §8.3 LOADING
+  // ZONES, §8.4 GARDENS, §8.5 ALLIANCE AREAS -- and manual Fig 9-2 (p65) shows no marking at the
+  // centre. It could not have one: guide §9.1 has you REMOVE the four centre tiles for the
+  // frame's under-tile strips, so the origin is bare tile under the HIVE structure.
+  //
+  // Both renderers drew a white cross 8 in across at tape width there, for the gallery's benefit.
+  // The 2D half is checked by RUNNING it (the calls are the behaviour, the same way the shot path
+  // is checked below): every tape-coloured rectangle has to be one of the CAD's strips, and the
+  // only WHITE line inside the perimeter has to be the perimeter itself.
+  {
+    interface Rect { x: number; y: number; w: number; h: number; fill: string }
+    interface Seg { x0: number; y0: number; x1: number; y1: number; stroke: string }
+    const rects: Rect[] = [];
+    const segs: Seg[] = [];
+    let fillStyle = '';
+    let strokeStyle = '';
+    let tx = 0;
+    let ty = 0;
+    let scale = 1;
+    let rotated = false;
+    const stack: [number, number, number, boolean][] = [];
+    let cur: [number, number] | null = null;
+    const pending: Seg[] = [];
+    const ctx = {
+      save() { stack.push([tx, ty, scale, rotated]); },
+      restore() { const p = stack.pop(); if (p) { [tx, ty, scale, rotated] = p; } },
+      translate(x: number, y: number) { tx += scale * x; ty += scale * y; },
+      scale(sx: number) { scale *= sx; },
+      rotate() { rotated = true; },
+      transform() { rotated = true; },
+      setTransform() { rotated = true; },
+      getTransform() { return { a: 1, b: 0, c: 0, d: 1, e: 0, f: 0 }; },
+      fillRect(x: number, y: number, w: number, h: number) {
+        if (!rotated) rects.push({ x: tx + scale * x, y: ty + scale * y, w: scale * w, h: scale * h, fill: fillStyle });
+      },
+      strokeRect() {},
+      beginPath() { cur = null; pending.length = 0; },
+      moveTo(x: number, y: number) { cur = [tx + scale * x, ty + scale * y]; },
+      lineTo(x: number, y: number) {
+        const p: [number, number] = [tx + scale * x, ty + scale * y];
+        if (cur && !rotated) pending.push({ x0: cur[0], y0: cur[1], x1: p[0], y1: p[1], stroke: strokeStyle });
+        cur = p;
+      },
+      stroke() { for (const s of pending) segs.push({ ...s, stroke: strokeStyle }); pending.length = 0; },
+      closePath() { cur = null; },
+      fill() { pending.length = 0; },
+      clip() {}, rect() {}, arc() {}, arcTo() {}, ellipse() {}, setLineDash() {}, drawImage() {},
+      fillText() {}, strokeText() {}, measureText() { return { width: 0 }; },
+      set fillStyle(v: string) { fillStyle = v; },
+      get fillStyle() { return fillStyle; },
+      set strokeStyle(v: string) { strokeStyle = v; },
+      get strokeStyle() { return strokeStyle; },
+      set lineWidth(_v: number) {}, set lineCap(_v: string) {}, set lineJoin(_v: string) {},
+      set font(_v: string) {}, set textAlign(_v: string) {}, set textBaseline(_v: string) {},
+      set globalAlpha(_v: number) {},
+    } as unknown as CanvasRenderingContext2D;
+
+    drawBiobuzzField(ctx, mkWorld('solo', 7), { x: 0, y: 1 });
+
+    // the two gaffer colours this renderer uses -- read off the source rather than re-typed, so a
+    // palette edit cannot make this check blind instead of red.
+    const drawSrcTape = readFileSync(join(root, 'src/games/biobuzz/drawField.ts'), 'utf8');
+    const gaffer = [...drawSrcTape.matchAll(/TAPE_GAFFER[^=]*=\s*\{[^}]*\}/g)]
+      .flatMap((m) => [...m[0].matchAll(/'(#[0-9a-fA-F]{6})'/g)].map((c) => c[1].toLowerCase()));
+    const blueTape = /const ALLIANCE_BLUE = '(#[0-9a-fA-F]{6})'/.exec(drawSrcTape)?.[1].toLowerCase();
+    if (blueTape) gaffer.push(blueTape);
+    check('the 2D renderer names two gaffer colours', new Set(gaffer).size === 2, gaffer.join(','));
+
+    const expected = (['loadingZone', 'garden', 'gardenSupplement'] as const).flatMap((g) =>
+      (['red', 'blue'] as const).flatMap((a) => BB_TAPE[g][a].map((s) => `${s.x0.toFixed(3)},${s.y0.toFixed(3)},${(s.x1 - s.x0).toFixed(3)},${(s.y1 - s.y0).toFixed(3)}`)),
+    );
+    const painted = rects
+      .filter((r) => gaffer.includes(String(r.fill).toLowerCase()))
+      .map((r) => `${r.x.toFixed(3)},${r.y.toFixed(3)},${r.w.toFixed(3)},${r.h.toFixed(3)}`);
+    check(
+      'the 2D field paints exactly the CAD strips it claims, and nothing else in a tape colour',
+      painted.length === expected.length && [...painted].sort().join('|') === [...expected].sort().join('|'),
+      `${painted.length} painted vs ${expected.length} expected`,
+    );
+    // every painted mark is BB_TAPE_W across -- the same statement as the data check above, but
+    // made against what actually reached the canvas.
+    const tapeRects = rects.filter((r) => gaffer.includes(String(r.fill).toLowerCase()));
+    const offWidth = tapeRects.filter((r) => Math.abs(Math.min(Math.abs(r.w), Math.abs(r.h)) - BB_TAPE_W) > 1e-6);
+    check(
+      'every painted STRIP is exactly one tape wide',
+      tapeRects.length > 0 && offWidth.length === 2,
+      `${tapeRects.length} marks, ${offWidth.length} not one tape across`,
+    );
+    // the two exceptions are the garden corner PATCHES, and they are the band's own 2 x depth by a
+    // length shorter than a tape -- a bridge to the wall, not a marking with a width of its own.
+    check(
+      '...and the two that are not are the garden corner patches: 2 x deep, under a tape long',
+      offWidth.length === 2 &&
+        offWidth.every(
+          (r) => Math.abs(Math.max(Math.abs(r.w), Math.abs(r.h)) - 2 * BB_TAPE_W) < 1e-6 && Math.min(Math.abs(r.w), Math.abs(r.h)) < BB_TAPE_W,
+        ),
+      offWidth.map((r) => `${r.w.toFixed(3)}x${r.h.toFixed(3)}`).join(' '),
+    );
+
+    // THE CENTRE CROSS ITSELF: no white line anywhere inside the perimeter. The cross was two
+    // 8-in white segments through the origin; the perimeter, the only other white line on this
+    // canvas, sits ON the wall.
+    const inside = segs.filter(
+      (s) =>
+        String(s.stroke).toLowerCase() === SHARED_COLORS.white.toLowerCase() &&
+        Math.max(Math.abs(s.x0), Math.abs(s.x1)) < BB_HALF_X - 1e-6 &&
+        Math.max(Math.abs(s.y0), Math.abs(s.y1)) < BB_HALF_Y - 1e-6,
+    );
+    check(
+      'the 2D field draws NO white line inside the perimeter (there is no centre mark on this field)',
+      inside.length === 0,
+      inside.map((s) => `(${s.x0.toFixed(1)},${s.y0.toFixed(1)})->(${s.x1.toFixed(1)},${s.y1.toFixed(1)})`).join(' '),
+    );
+    check('...and the probe was not vacuous -- the renderer did stroke and fill', segs.length > 0 && rects.length > 0, `${segs.length} segs, ${rects.length} rects`);
+
+    // the 3D half is a source check, because the floor texture needs a DOM canvas.
+    const floorSrc = readFileSync(join(root, 'src/games/biobuzz/scene/renderField.ts'), 'utf8');
+    const at = floorSrc.indexOf('function buildFloorTexture(');
+    const body = at < 0 ? '' : floorSrc.slice(at, floorSrc.indexOf('function buildFloor(', at));
+    const originAnchored = /toTex\(0,\s*0\)/.test(body.replace(/\/\/.*$/gm, ''));
+    check(
+      'the 3D floor texture paints the seam grid and the tape, and nothing at the origin',
+      body.length > 0 && !originAnchored,
+      body.length === 0 ? 'buildFloorTexture not found' : originAnchored ? 'toTex(0, 0) is back' : `${body.length} chars scanned`,
+    );
   }
 
   // ---- the seam itself: GameModule.scene is a function ------------------------------------
@@ -677,6 +871,29 @@ export function renderChecks(check: Check): void {
         CAMERA_PREFS.slice(1).every((p) => moduleSrc.includes(`'${p}'`)) &&
         CAMERA_PREFS.length === 5,
       CAMERA_PREFS.join('|'),
+    );
+    /**
+     * A NON-INTERACTIVE SCENE IS FULLY HOST-CONTROLLED (owner report: picking Chase in the
+     * replay download menu exported Driver instead). `resolveSceneCamera` is what
+     * `resolvedCamera` above delegates to — an INTERACTIVE scene (the live match, a Graphics
+     * preview) still defers to the device's own camera preference except when it is `'auto'`,
+     * but an export or a still (`interactive: false` — `ReplayView`'s `startCapture`,
+     * `Gallery.tsx`'s stills) ignores the stored preference entirely and renders exactly the
+     * camera its host asked for, whatever a player last cycled to while driving.
+     */
+    check(
+      'resolveSceneCamera: an interactive scene defers to the device pref, except auto',
+      resolveSceneCamera(true, 'chase', 'driver') === 'driver' &&
+        resolveSceneCamera(true, 'chase', 'auto') === 'chase' &&
+        resolveSceneCamera(true, 'orbit', 'orbit') === 'orbit',
+    );
+    check(
+      'resolveSceneCamera: a non-interactive scene (an export, a still) ignores the device pref',
+      resolveSceneCamera(false, 'chase', 'driver') === 'chase' &&
+        resolveSceneCamera(false, 'orbit', 'chase') === 'orbit' &&
+        resolveSceneCamera(false, 'driver', 'orbit') === 'driver' &&
+        // even 'auto' does not fall through to anything but the host's own pick here
+        resolveSceneCamera(false, 'overhead', 'auto') === 'overhead',
     );
   }
 
@@ -1013,9 +1230,19 @@ function graphicsChecks(check: Check, allFiles: string[]): void {
     );
 
     const css = readFileSync(join(root, 'src', 'ui', 'styles.css'), 'utf8');
+    // THE 3D OVERLAY IS NOT A SECOND READ-OUT ANY MORE. `.bb-gfxstat` sat at `top: 48px;
+    // left: 12px` \u2014 on top of the event log at `top: 52px; left: 14px` \u2014 so the scene's
+    // counters now go to `src/perfStats.ts` and are printed by the ONE display, `.perf-hud`,
+    // in the opposite corner. The scrim clause is still the point of the check: this card
+    // floats over a lit 3D background and takes the bands' own token rather than a literal.
     check(
-      'the performance overlay has a style, and takes the HUD scrim\u2019s token rather than a second literal',
-      css.includes('.bb-gfxstat') && css.includes('.game-root.view-3d .bb-gfxstat'),
+      'the performance read-out has a style, and takes the HUD scrim\u2019s token rather than a second literal',
+      css.includes('.perf-hud') && css.includes('.game-root.view-3d .status-wrap') && !css.includes('.bb-gfxstat {'),
+    );
+    check(
+      'the 3D scene publishes its counters instead of drawing its own corner div over the event log',
+      readFileSync(join(BIOBUZZ_DIR, 'scene', 'renderStats.ts'), 'utf8').includes('publishRenderStats') &&
+        !readFileSync(join(BIOBUZZ_DIR, 'scene', 'renderStats.ts'), 'utf8').includes('createElement'),
     );
     // THE GALLERY'S 3D STILLS share ONE scene across every cell. A browser caps live WebGL
     // contexts (Chrome at about 16) and this grid is 30-odd cells, so a scene per cell would
@@ -1257,31 +1484,36 @@ function graphicsChecks(check: Check, allFiles: string[]): void {
       // ── THE SHOOTER: BUILT, POSED AND MEASURED — NOT GREPPED ────────────────────────────
       //
       // ⚠️ **EVERYTHING BELOW USED TO BE A STRING CHECK OVER `renderRobots.ts`, AND IT PASSED
-      // FIVE TIMES ON GEOMETRY THE OWNER REJECTED** (report of 2026-09-19, items a–e). It
-      // asserted `head.position.z = BB_LAUNCH_Z0 - BB_DECK_Z;`, `const cz = -BB_HOOD_PATH_R;` and
-      // `export const BB_SHOOTER_MUZZLE_Z = BB_LAUNCH_Z0;` — three literals that were all present,
-      // all consistent with each other, and all describing a machine with the flywheel hung three
-      // inches in the air, side plates reaching over the hood, and a flap on the back. A lane that
-      // greps cannot see a shape. This one BUILDS the real `buildTurret` group, poses
+      // FIVE TIMES ON GEOMETRY THE OWNER REJECTED.** It asserted three literals that were all
+      // present, all consistent with each other, and all describing a machine with the flywheel
+      // hung three inches in the air, side plates reaching over the hood, and a flap on the back.
+      // A lane that greps cannot see a shape. This one BUILDS the real `buildTurret` group, poses
       // `bb-turret-pitch` through the whole elevation envelope, and measures VERTICES.
+      //
+      // ⚠️ AND IT MEASURES **BOTH HEADS**. Owner item (d) of 2026-09-19 is that a NECTAR shooter
+      // is a different size from a POLLEN one, so every measurement here runs twice against the
+      // head's own `bbHead(which)` rather than once against a single set of constants. A check
+      // that only ever sees turret 0 cannot see a NECTAR head at all.
       //
       // That is why this file imports `three` — the only script in the lane that does. The
       // chunk-boundary rules at the top of this function are about `src/`; a Node smoke script is
       // not bundled, and `buildTurret` touches no DOM (the sign texture, which does, is in
       // `buildRobotGroup` and is not on this path).
-      {
-        const turret = buildTurret({ ...BB_DEFAULT_SPEC }, 'center');
+      for (const which of [0, 1] as const) {
+        const H = bbHead(which);
+        const tag = which === 1 ? 'nectar' : 'pollen';
+        const turret = buildTurret({ ...BB_DEFAULT_SPEC }, 'center', which);
         const root = new THREE.Group();
         root.add(turret);
-        const head = turret.userData.head as THREE.Group;
+        const axleNode = turret.userData.axle as THREE.Group;
         const pitchNode = turret.userData.pitch as THREE.Group;
         const exitNode = pitchNode.getObjectByName('bb-turret-exit');
-        const headInv = new THREE.Matrix4();
+        const axleInv = new THREE.Matrix4();
         /** put the turret at elevation `p` and refresh both frames we measure in. */
         const pose = (p: number): void => {
           pitchNode.rotation.y = -p;
           root.updateMatrixWorld(true);
-          headInv.copy(head.matrixWorld).invert();
+          axleInv.copy(axleNode.matrixWorld).invert();
         };
         const meshes: THREE.Mesh[] = [];
         turret.traverse((o) => {
@@ -1289,17 +1521,19 @@ function graphicsChecks(check: Check, allFiles: string[]): void {
         });
         const named = (n: string): THREE.Mesh[] => meshes.filter((m) => m.name === n);
         const scratch = new THREE.Vector3();
-        /** every vertex of `m`, in the ROBOT frame — z is height off the tiles. */
+        /** every vertex of `m`, in the ROBOT frame — z is height off the tiles, x is measured from
+         *  the turret's own ROTATION AXIS (the group is built at `turretLocal('center')`). */
         const robotVerts = (m: THREE.Mesh): THREE.Vector3[] => {
           const pos = m.geometry.getAttribute('position') as THREE.BufferAttribute;
           const out: THREE.Vector3[] = [];
           for (let i = 0; i < pos.count; i++) out.push(scratch.fromBufferAttribute(pos, i).applyMatrix4(m.matrixWorld).clone());
           return out;
         };
-        /** …and in the AXLE frame, which is the yaw node's own frame and the one every θ in
-         *  `config.ts` is measured in. */
+        /** …and in the AXLE frame, which is the fixed node's own frame and the one every θ in
+         *  `config.ts` is measured in. It is NOT the yaw node's any more — the axle sits `axleX`
+         *  forward of the rotation axis, which is the whole of owner item (b). */
         const axleVerts = (m: THREE.Mesh): THREE.Vector3[] =>
-          robotVerts(m).map((v) => v.clone().applyMatrix4(headInv));
+          robotVerts(m).map((v) => v.clone().applyMatrix4(axleInv));
         /**
          * ⚠️ THE TOLERANCE EVERY MEASUREMENT BELOW IS PAID AT, AND WHY IT IS NOT 1e-9. A
          * `BufferAttribute`'s positions are FLOAT32 — that is what goes to the GPU, so it is what
@@ -1314,38 +1548,49 @@ function graphicsChecks(check: Check, allFiles: string[]): void {
           BB_TURRET_PITCH_MIN + ((BB_TURRET_PITCH_MAX - BB_TURRET_PITCH_MIN) * i) / (PITCHES - 1);
 
         pose(BB_TURRET_PITCH_MIN);
+        /**
+         * ⚠️ **AN EXACT LIST, NOT A SUBSET.** Owner item (c) of 2026-09-19 was "there is still a
+         * weird flap in the back of the shooter that does nothing" — reported for the SECOND time,
+         * against a part (the feed shoe) a previous pass had added on purpose. A check that only
+         * asks "is every part I expect present" cannot see a part nobody can explain, so this one
+         * also asks the other way round: every mesh on the shooter is on this list, and each name
+         * says what the thing is for.
+         */
         const PARTS = [
+          'bb-turret-ring',
           'bb-turret-plate',
           'bb-turret-side-plate',
           'bb-turret-flywheel',
-          'bb-turret-axle',
+          'bb-turret-shaft',
           'bb-turret-brace',
+          'bb-turret-throat',
           'bb-turret-motor',
           'bb-turret-belt',
-          'bb-turret-feed-shoe',
-          'bb-turret-feed',
           'bb-turret-hood',
           'bb-turret-hood-arm',
         ] as const;
         check(
-          'the shooter is an ASSEMBLY of named parts, and every one of them was built',
+          `${tag}: the shooter is an ASSEMBLY of named parts, and every one of them was built`,
           PARTS.every((n) => named(n).length > 0) && named('bb-turret-side-plate').length === 2 && named('bb-turret-hood-arm').length === 2,
           PARTS.map((n) => `${n}×${named(n).length}`).join(' '),
         );
+        check(
+          `${tag}: ...and NOTHING ELSE is on it — no part without a job (the "weird flap", twice reported)`,
+          meshes.every((m) => (PARTS as readonly string[]).includes(m.name)),
+          [...new Set(meshes.map((m) => m.name).filter((n) => !(PARTS as readonly string[]).includes(n)))].join(', ') || 'clean',
+        );
 
-        // ══ (d) ONLY THE HOOD AND ITS ARMS MOVE WITH PITCH ══════════════════════════════════
+        // ══ ONLY THE HOOD AND ITS ARMS MOVE WITH PITCH ══════════════════════════════════════
         //
-        // ⚠️ **THIS IS OWNER ITEM (d), AND IT IS THE CHECK THE LANE NEVER HAD.** "When the hood is
-        // changing angle, the flywheel should be fixed and the parallel plates should be fixed.
-        // Only the hood, a central arc in the back, should be moving up and down." Before this
-        // restructure `bb-turret-pitch` carried the WHOLE shooter — wheel, plates, braces, motor
-        // and belt all swung with elevation — and nothing said otherwise, because the only thing
-        // ever checked was where the pivot was written down.
+        // ⚠️ **THIS IS THE OWNER RULING THE LANE NEVER HAD.** "When the hood is changing angle,
+        // the flywheel should be fixed and the parallel plates should be fixed. Only the hood, a
+        // central arc in the back, should be moving up and down." Before the restructure
+        // `bb-turret-pitch` carried the WHOLE shooter, and nothing said otherwise because the only
+        // thing ever checked was where the pivot was written down.
         //
         // A part's fingerprint is its vertex extent in the ROBOT frame. Sampled over 41 pitches:
-        // eight parts must not move by so much as a float, and three must.
+        // everything but the hood must not move by so much as a float, and the hood must.
         {
-          const FIXED = ['bb-turret-plate', 'bb-turret-side-plate', 'bb-turret-flywheel', 'bb-turret-axle', 'bb-turret-brace', 'bb-turret-motor', 'bb-turret-belt', 'bb-turret-feed-shoe', 'bb-turret-feed'];
           const MOVES = ['bb-turret-hood', 'bb-turret-hood-arm'];
           const print = (m: THREE.Mesh): THREE.Box3 => new THREE.Box3().setFromPoints(robotVerts(m));
           pose(BB_TURRET_PITCH_MIN);
@@ -1359,20 +1604,20 @@ function graphicsChecks(check: Check, allFiles: string[]): void {
               drift.set(m, Math.max(drift.get(m) ?? 0, b.min.distanceTo(b0.min) + b.max.distanceTo(b0.max)));
             }
           }
-          const worstFixed = Math.max(...meshes.filter((m) => FIXED.includes(m.name)).map((m) => drift.get(m) ?? 0));
+          const worstFixed = Math.max(...meshes.filter((m) => !MOVES.includes(m.name)).map((m) => drift.get(m) ?? 0));
           const leastMoved = Math.min(...meshes.filter((m) => MOVES.includes(m.name)).map((m) => drift.get(m) ?? 0));
           check(
-            'ONLY the hood moves with elevation: wheel, both plates, braces, motor, belt, shoe and chute do not',
+            `${tag}: ONLY the hood moves with elevation — wheel, plates, braces, motor, belt and throat do not`,
             worstFixed === 0,
             `worst drift ${worstFixed.toFixed(6)} in over ${PITCHES} pitches`,
           );
           check(
-            '...and the hood and its two arms DO — they are on the pitch node, so this is not vacuous',
+            `${tag}: ...and the hood and its two arms DO — they are on the pitch node, so this is not vacuous`,
             leastMoved > 1,
             `least-moved hood part travels ${leastMoved.toFixed(3)} in`,
           );
           check(
-            '...and the pitch node carries NOTHING ELSE (three meshes: the arc and two arms)',
+            `${tag}: ...and the pitch node carries NOTHING ELSE (three meshes: the arc and two arms)`,
             pitchNode.children.filter((c) => (c as THREE.Mesh).isMesh).length === 3,
             pitchNode.children.map((c) => c.name || c.type).join(', '),
           );
@@ -1380,11 +1625,11 @@ function graphicsChecks(check: Check, allFiles: string[]): void {
 
         // ══ THE CONTRACT: THE DRAWN LIP IS THE SIM'S MUZZLE, AT EVERY ELEVATION ═════════════
         //
-        // ⚠️ THE WHOLE POINT OF MOVING THE DIMENSION CHAIN INTO `config.ts`. `bbMuzzleLocal`
-        // (`robot.ts`) is the ONE function; the sim releases from it and this node is placed by
-        // it, so the picture and the physics agree by construction rather than by two people
-        // keeping two numbers in step. The old arrangement agreed at ONE pitch — which is exactly
-        // what the check it replaces asserted, and why five rounds of disagreement got through.
+        // ⚠️ THE WHOLE POINT OF THE DIMENSION CHAIN LIVING IN `config.ts`. `bbMuzzleLocal` is the
+        // ONE function; the sim releases from it and this node is placed by it, so the picture and
+        // the physics agree by construction rather than by two people keeping two numbers in step.
+        // The old arrangement agreed at ONE pitch — which is exactly what the check it replaces
+        // asserted, and why five rounds of disagreement got through.
         {
           let worst = 0;
           let where = '';
@@ -1393,15 +1638,16 @@ function graphicsChecks(check: Check, allFiles: string[]): void {
             pose(p);
             const w = new THREE.Vector3();
             (exitNode as THREE.Object3D).getWorldPosition(w);
-            const m = bbMuzzleLocal(p);
-            // `back` is measured along the turret's heading, which at zero yaw is +x
+            const m = bbMuzzleLocal(p, which);
+            // `back` is measured along the turret's heading from the ROTATION AXIS, which at zero
+            // yaw is +x, so the drawn lip's x must be exactly `−back`
             const err = Math.hypot(w.x - -m.back, w.y, w.z - m.z);
             if (err > worst) {
               worst = err;
               where = `${((p * 180) / Math.PI).toFixed(1)}° drawn (${w.x.toFixed(4)}, ${w.z.toFixed(4)}) vs sim (${(-m.back).toFixed(4)}, ${m.z.toFixed(4)})`;
             }
           }
-          check('the DRAWN hood lip is at bbMuzzleLocal(pitch) at EVERY elevation, not just at rest', worst < 1e-9, `worst ${worst.toExponential(2)} in — ${where}`);
+          check(`${tag}: the DRAWN hood lip is at bbMuzzleLocal(pitch) at EVERY elevation, not just at rest`, worst < 1e-9, `worst ${worst.toExponential(2)} in — ${where}`);
           pose(BB_TURRET_PITCH_MIN);
           const rest = new THREE.Vector3();
           (exitNode as THREE.Object3D).getWorldPosition(rest);
@@ -1409,27 +1655,53 @@ function graphicsChecks(check: Check, allFiles: string[]): void {
           const top = new THREE.Vector3();
           (exitNode as THREE.Object3D).getWorldPosition(top);
           check(
-            '...and it is not a constant any more — the lip DROPS and sets BACK as the hood elevates',
-            rest.z - top.z > 2 && top.x < -2 && Math.abs(rest.z - BB_LAUNCH_Z0) > 0.3,
-            `${rest.z.toFixed(3)} → ${top.z.toFixed(3)} (was a flat ${BB_LAUNCH_Z0} at every pitch)`,
+            `${tag}: ...and it is not a constant — the lip DROPS and comes BACK toward the axis as the hood elevates`,
+            rest.z - top.z > 2 && rest.x > 2 && top.x < rest.x && top.x > -F32,
+            `(${rest.x.toFixed(3)}, ${rest.z.toFixed(3)}) → (${top.x.toFixed(3)}, ${top.z.toFixed(3)}) — it was a flat ${BB_LAUNCH_Z0} over the mount at every pitch, which is what a DUMPER still has`,
           );
         }
 
-        // ══ (b) THE HOOD IS PROUD OF THE SIDE PLATES, BY CONSTRUCTION ══════════════════════
+        // ══ (b) THE ELEMENT COMES UP THE ROTATION AXIS AND MEETS THE WHEEL THERE ════════════
+        //
+        // ⚠️ **OWNER ITEM (b), 2026-09-19: "the flywheel should come forward more so that the
+        // location where the balls contact the flywheel initially as it comes up is roughly in the
+        // center of the turret".** Measured off the DRAWN wheel, not off the constant: the axle's
+        // own x in the robot frame, and the pinch it puts on the axis.
+        {
+          pose(BB_TURRET_PITCH_MIN);
+          const wheelVs = named('bb-turret-flywheel').flatMap((m) => robotVerts(m));
+          const axleX = (Math.min(...wheelVs.map((v) => v.x)) + Math.max(...wheelVs.map((v) => v.x))) / 2;
+          check(
+            `${tag}: the DRAWN flywheel's axle is pathR FORWARD of the rotation axis`,
+            Math.abs(axleX - H.axleX) < F32 && Math.abs(H.axleX - H.pathR) < 1e-12 && H.axleX > 2,
+            `drawn axle x ${axleX.toFixed(4)} vs pathR ${H.pathR.toFixed(4)}`,
+          );
+          check(
+            `${tag}: ...so the element, rising on x = 0, pinches on the axis and first touches the rim below it`,
+            Math.abs(H.axleX - H.pathR) < 1e-12 && (BB_FLYWHEEL_R + H.elemR) ** 2 > H.axleX ** 2,
+            `first contact ${(BB_TURRET_AXLE_Z - Math.sqrt((BB_FLYWHEEL_R + H.elemR) ** 2 - H.axleX ** 2)).toFixed(3)} in off the tiles, pinch at ${BB_TURRET_AXLE_Z.toFixed(3)}`,
+          );
+          // ...and the plate under it is CUT THROUGH, or the feed path is a claim and not a shape
+          const plateVs = robotVerts(named('bb-turret-plate')[0]);
+          const holeMin = Math.min(...plateVs.filter((v) => Math.abs(v.y) < H.slotHalfW - 0.3).map((v) => Math.hypot(v.x, v.y)));
+          check(
+            `${tag}: the turret plate is CUT THROUGH on the axis — the feed is a hole, not a claim`,
+            holeMin > 0.5 && plateVs.some((v) => Math.abs(v.x - H.slotBackX) < F32) && plateVs.some((v) => Math.abs(v.x - H.slotFrontX) < F32),
+            `nearest plate material to the axis ${holeMin.toFixed(3)}, slot x [${H.slotBackX.toFixed(2)}, ${H.slotFrontX.toFixed(2)}] ±${H.slotHalfW.toFixed(2)}`,
+          );
+        }
+
+        // ══ THE HOOD IS PROUD OF THE SIDE PLATES, BY CONSTRUCTION ══════════════════════════
         //
         // "The arc in the parallel plates of the shooter reaches too high. The hood extends above
         // the supporting parallel plates." The plate's outer boundary is `config.ts`'s profile —
-        // an arc at `BB_HOOD_R` cut by a flat top, a flat front and a flat bottom — and the hood
-        // occupies `BB_HOOD_R … +BB_HOOD_T`, so the hood is the outermost part at every angle in
-        // the wrap and at every elevation, with no offset anybody can drift.
-        //
-        // The arithmetic is over sampled ANGLES × sampled PITCHES, and it is bound to the DRAWING
-        // by the two measurements under it: the hood's own drawn radii, and the plate's drawn
-        // boundary sampled off its vertices.
+        // an arc at the head's own `hoodR` cut by a flat top, a flat front and a flat bottom — and
+        // the hood occupies `hoodR … +BB_HOOD_T`, so the hood is the outermost part at every angle
+        // in the wrap and at every elevation, with no offset anybody can drift.
         const plateR = (th: number): number => {
           const st = Math.sin(th);
           const ct = Math.cos(th);
-          let r = BB_HOOD_R;
+          let r = H.hoodR;
           if (st > 1e-9) r = Math.min(r, BB_SIDE_PLATE_TOP_Z / st);
           if (st < -1e-9) r = Math.min(r, BB_SIDE_PLATE_BOTTOM_Z / st);
           if (ct > 1e-9) r = Math.min(r, BB_SIDE_PLATE_FRONT_X / ct);
@@ -1445,7 +1717,7 @@ function graphicsChecks(check: Check, allFiles: string[]): void {
             const p = pitchAt(i);
             for (let j = 0; j <= NA; j++) {
               const th = Math.PI / 2 + (BB_HOOD_WRAP * j) / NA;
-              const proud = BB_HOOD_R + BB_HOOD_T - plateR(th + p);
+              const proud = H.hoodR + BB_HOOD_T - plateR(th + p);
               if (proud < worst) {
                 worst = proud;
                 worstAt = `p=${((p * 180) / Math.PI).toFixed(1)}° θ=${(((th + p) * 180) / Math.PI).toFixed(1)}°`;
@@ -1455,7 +1727,7 @@ function graphicsChecks(check: Check, allFiles: string[]): void {
             }
           }
           check(
-            'the hood stands PROUD of the plate at every angle in the wrap, at rest AND at full elevation',
+            `${tag}: the hood stands PROUD of the plate at every angle in the wrap, at rest AND at full elevation`,
             worst >= BB_HOOD_T - 1e-9 && rest > 3 && top >= BB_HOOD_T - 1e-9,
             `worst +${worst.toFixed(4)} (${worstAt}); rest +${rest.toFixed(3)}, 80° +${top.toFixed(3)}`,
           );
@@ -1463,8 +1735,8 @@ function graphicsChecks(check: Check, allFiles: string[]): void {
           // the DRAWN hood: its vertices live in exactly the band the arithmetic above assumes
           const hoodR = axleVerts(named('bb-turret-hood')[0]).map((v) => Math.hypot(v.x, v.z));
           check(
-            '...and the DRAWN hood really does occupy BB_HOOD_R … +BB_HOOD_T (the arithmetic is about this mesh)',
-            Math.min(...hoodR) > BB_HOOD_R - 1e-6 && Math.max(...hoodR) < BB_HOOD_R + BB_HOOD_T + 1e-6,
+            `${tag}: ...and the DRAWN hood really does occupy hoodR … +BB_HOOD_T (the arithmetic is about this mesh)`,
+            Math.min(...hoodR) > H.hoodR - 1e-6 && Math.max(...hoodR) < H.hoodR + BB_HOOD_T + 1e-6,
             `${Math.min(...hoodR).toFixed(4)} … ${Math.max(...hoodR).toFixed(4)}`,
           );
           // the DRAWN plate: no vertex outside the profile, and the profile is actually reached
@@ -1477,38 +1749,38 @@ function graphicsChecks(check: Check, allFiles: string[]): void {
             reach = Math.max(reach, r);
           }
           check(
-            '...and the DRAWN side plate IS that profile: nothing outside it, and its arc is reached',
-            over < 1e-6 && Math.abs(reach - BB_HOOD_R) < 1e-6,
-            `worst overshoot ${over.toExponential(2)}, max r ${reach.toFixed(4)} vs BB_HOOD_R ${BB_HOOD_R.toFixed(4)}`,
+            `${tag}: ...and the DRAWN side plate IS that profile: nothing outside it, and its arc is reached`,
+            over < 1e-6 && Math.abs(reach - H.hoodR) < 1e-6,
+            `worst overshoot ${over.toExponential(2)}, max r ${reach.toFixed(4)} vs hoodR ${H.hoodR.toFixed(4)}`,
           );
         }
 
         // ══ THE PLATE'S TOP IS BELOW THE HOOD'S TOP ════════════════════════════════════════
-        // The rest pose, deliberately: that is the configuration owner item (b) is about and the
-        // one a robot sits in between shots. At full elevation the hood has swung BACK and DOWN,
-        // so the fixed plate is legitimately the taller of the two — the all-elevation statement
-        // is the RADIAL one above, which holds at every pitch.
+        // The rest pose, deliberately: that is the configuration the ruling is about and the one a
+        // robot sits in between shots. At full elevation the hood has swung BACK and DOWN, so the
+        // fixed plate is legitimately the taller of the two — the all-elevation statement is the
+        // RADIAL one above, which holds at every pitch.
         {
           pose(BB_TURRET_PITCH_MIN);
           const plateTop = Math.max(...robotVerts(named('bb-turret-side-plate')[0]).map((v) => v.z));
           const hoodTop = Math.max(...robotVerts(named('bb-turret-hood')[0]).map((v) => v.z));
           check(
-            'at rest the plate’s highest point is well below the hood’s',
+            `${tag}: at rest the plate’s highest point is well below the hood’s`,
             plateTop < hoodTop - 3,
             `plate ${plateTop.toFixed(3)} vs hood ${hoodTop.toFixed(3)}`,
           );
           check(
-            '...and the plate’s own top is the flat cut BB_SIDE_PLATE_TOP_Z, not an arc that outran it',
+            `${tag}: ...and the plate’s own top is the flat cut BB_SIDE_PLATE_TOP_Z, not an arc that outran it`,
             Math.abs(plateTop - (BB_TURRET_AXLE_Z + BB_SIDE_PLATE_TOP_Z)) < 1e-6,
             `${plateTop.toFixed(4)} vs ${(BB_TURRET_AXLE_Z + BB_SIDE_PLATE_TOP_Z).toFixed(4)}`,
           );
         }
 
-        // ══ (c) (e) THE FLYWHEEL IS 72 mm AND IT SITS ON THE TURRET PLATE ═══════════════════
+        // ══ THE FLYWHEEL IS 72 mm AND IT SITS ON THE TURRET PLATE ══════════════════════════
         // "The flywheel can be situated much lower. It just needs to be right above the turret
         // plate." — and "a standard flywheel is 72 mm diameter". Both are measurements now, and
         // the radius is checked by converting it BACK: a decimal literal that had drifted would
-        // not come out at 72.
+        // not come out at 72. It is the SAME wheel on both heads.
         {
           pose(BB_TURRET_PITCH_MIN);
           const wheel = named('bb-turret-flywheel');
@@ -1516,18 +1788,18 @@ function graphicsChecks(check: Check, allFiles: string[]): void {
           const rim = Math.max(...vs.map((v) => Math.hypot(v.x, v.z)));
           const bottom = Math.min(...wheel.flatMap((m) => robotVerts(m)).map((v) => v.z));
           check(
-            'the flywheel’s drawn radius back-converts to 72 mm',
+            `${tag}: the flywheel’s drawn radius back-converts to 72 mm`,
             Math.abs(rim * 25.4 * 2 - BB_FLYWHEEL_D_MM) < 0.5,
             `${(rim * 25.4 * 2).toFixed(2)} mm (drawn as a 14-segment wheel, so the rim reads a hair under)`,
           );
           check(
-            '...and its lowest point is BB_FLYWHEEL_CLEAR above the turret plate, not hung in the air',
+            `${tag}: ...and its lowest point is BB_FLYWHEEL_CLEAR above the turret plate, not hung in the air`,
             Math.abs(bottom - (BB_TURRET_PLATE_TOP_Z + BB_FLYWHEEL_CLEAR)) < 1e-6,
             `${bottom.toFixed(3)} vs plate top ${BB_TURRET_PLATE_TOP_Z.toFixed(3)} + ${BB_FLYWHEEL_CLEAR}`,
           );
           // ...and it is JOURNALLED: everywhere the plate's flat top does not cut across it, the
-          // plate is behind the wheel's rim. The old band left a bare annulus between its hub and
-          // its rim with the rim sitting in it — owner: "the flywheel looks like it is not
+          // plate is behind the wheel's rim. An earlier band left a bare annulus between its hub
+          // and its rim with the rim sitting in it — owner: "the flywheel looks like it is not
           // constrained to the plate anymore".
           let gaps = 0;
           for (let i = 0; i < 720; i++) {
@@ -1535,40 +1807,58 @@ function graphicsChecks(check: Check, allFiles: string[]): void {
             if (Math.sin(th) * BB_FLYWHEEL_R > BB_SIDE_PLATE_TOP_Z) continue; // the flat top, where the hood is
             if (plateR(th) < BB_FLYWHEEL_R) gaps++;
           }
-          check('...and the plate covers the wheel’s rim everywhere its flat top does not cut it', gaps === 0, `${gaps} of 720 sampled angles uncovered`);
+          check(`${tag}: ...and the plate covers the wheel’s rim everywhere its flat top does not cut it`, gaps === 0, `${gaps} of 720 sampled angles uncovered`);
           // …which needs the plate SOLID. A bore would show as drawn material stopping at some
           // radius INSIDE the profile's own smallest value; with no bore the closest the plate
           // ever comes to the axle is the profile itself, which is its flat top at θ = 90°.
           let profileMin = Infinity;
           for (let i = 0; i < 3600; i++) profileMin = Math.min(profileMin, plateR((Math.PI * 2 * i) / 3600));
           const bore = Math.min(...axleVerts(named('bb-turret-side-plate')[0]).map((v) => Math.hypot(v.x, v.z)));
-          check('...which needs the plate SOLID, with no bore for the rim to show through', bore >= profileMin - F32, `closest drawn radius ${bore.toFixed(4)} vs the profile's own minimum ${profileMin.toFixed(4)}`);
+          check(`${tag}: ...which needs the plate SOLID, with no bore for the rim to show through`, bore >= profileMin - F32, `closest drawn radius ${bore.toFixed(4)} vs the profile's own minimum ${profileMin.toFixed(4)}`);
         }
 
-        // ══ NOTHING SWEEPS BELOW THE DECK, AT ANY ELEVATION ════════════════════════════════
+        // ══ NOTHING SWEEPS BELOW THE DECK, AND NOTHING THROUGH THE TURRET PLATE ════════════
         //
         // ⚠️ THE FAILURE THIS REPLACES WAS REAL AND IT WAS INVISIBLE AT REST: with the whole head
         // on the pitch node, the side plate's rear corner went 1.10 in INSIDE the drivetrain at
-        // ~44° and the feed ramp swept to 0.04 in off the tile. The old lane re-derived a closed
-        // form (`minHeadWorldZ`) to catch it. There is nothing left to derive — the plates do not
-        // elevate any more — so this is the direct measurement: every vertex of every mesh, at 41
-        // elevations, against the deck it stands on.
+        // ~44° and the feed ramp swept to 0.04 in off the tile.
+        //
+        // The second half is new and it is the NECTAR head's: a bigger hood dips 0.26 in below the
+        // turret plate at full elevation. That is allowed only because it happens inside the FEED
+        // SLOT, which is a rounded rectangle and not a bore for exactly this reason — so the rule
+        // is not "nothing goes below the plate" but "nothing goes below it anywhere but through
+        // the hole", and it is measured per vertex.
         {
           let lowest = Infinity;
           let who = '';
+          let throughPlate = 0;
+          let worstThrough = '';
           for (let i = 0; i < PITCHES; i++) {
             pose(pitchAt(i));
             for (const m of meshes) {
+              if (m.name === 'bb-turret-plate' || m.name === 'bb-turret-ring') continue;
               for (const v of robotVerts(m)) {
                 if (v.z < lowest) {
                   lowest = v.z;
-                  who = `${m.name || 'slew ring'} @${((pitchAt(i) * 180) / Math.PI).toFixed(0)}°`;
+                  who = `${m.name} @${((pitchAt(i) * 180) / Math.PI).toFixed(0)}°`;
+                }
+                if (v.z >= BB_TURRET_PLATE_TOP_Z - F32) continue;
+                const inSlot =
+                  v.x >= H.slotBackX - F32 && v.x <= H.slotFrontX + F32 && Math.abs(v.y) <= H.slotHalfW + F32;
+                if (!inSlot) {
+                  throughPlate++;
+                  worstThrough = `${m.name} (${v.x.toFixed(3)}, ${v.y.toFixed(3)}, ${v.z.toFixed(3)}) @${((pitchAt(i) * 180) / Math.PI).toFixed(0)}°`;
                 }
               }
             }
           }
-          check('NOTHING on the turret reaches below the deck, at any elevation', lowest >= BB_DECK_Z - F32, `lowest ${lowest.toFixed(4)} (${who}) vs deck ${BB_DECK_Z}`);
-          // …and the things that ELEVATE keep a real margin, not a rounding one
+          check(`${tag}: NOTHING on the turret reaches below the deck, at any elevation`, lowest >= BB_DECK_Z - F32, `lowest ${lowest.toFixed(4)} (${who}) vs deck ${BB_DECK_Z}`);
+          check(
+            `${tag}: ...and whatever goes below the turret plate goes through its SLOT and nowhere else`,
+            throughPlate === 0,
+            worstThrough || `slot x [${H.slotBackX.toFixed(2)}, ${H.slotFrontX.toFixed(2)}] ±${H.slotHalfW.toFixed(2)}`,
+          );
+          // …and the things that ELEVATE keep a real margin over the drivetrain, not a rounding one
           let swept = Infinity;
           for (let i = 0; i < PITCHES; i++) {
             pose(pitchAt(i));
@@ -1576,25 +1866,28 @@ function graphicsChecks(check: Check, allFiles: string[]): void {
               for (const m of named(n)) for (const v of robotVerts(m)) swept = Math.min(swept, v.z);
             }
           }
-          check('...and the hood and its arms clear it by the design’s own 0.2 in margin', swept >= BB_DECK_Z + 0.2, `hood sweep bottoms out at ${swept.toFixed(3)}`);
+          check(`${tag}: ...and the hood and its arms clear the deck by the design’s own 0.2 in margin`, swept >= BB_DECK_Z + 0.2, `hood sweep bottoms out at ${swept.toFixed(3)}`);
         }
 
-        // ══ THE BRACES AND THE MOTOR ═══════════════════════════════════════════════════════
+        // ══ THE BRACES, THE MOTOR AND THE BELT ═════════════════════════════════════════════
         //
-        // Sites come from `BB_TURRET_BRACES` / `BB_TURRET_MOTOR`, which are MEASURED lists in
-        // `config.ts`. RESIDUAL 2 is already in the constant — the −40° brace was 0.044 in inside
-        // the turret plate and moved to −37° — and this is what holds it there.
+        // Sites come from `BB_TURRET_BRACES` and `BbHeadDims.motorR`, both derived in `config.ts`.
+        // ⚠️ **OWNER ITEM (a) IS THE MOTOR ONE: "the motor should be on the other side of the
+        // flywheel, behind the hood."** It sat at θ = −15°, forward and under the wheel. "Behind
+        // the hood" is measured here as a fact about the DRAWN meshes — the can's front face is
+        // behind the rear-most point the hood reaches at ANY elevation — rather than as an angular
+        // window, because the hood sweeps a whole disc over the pitch envelope.
         {
           pose(BB_TURRET_PITCH_MIN);
           const braceVs = robotVerts(named('bb-turret-brace')[0]);
-          const plateOuterY = BB_LAUNCH_PLATE_GAP / 2 + 0.22;
+          const plateOuterY = H.plateGap / 2 + BB_SHOOTER_PLATE_T;
           check(
-            'the two plates are TIED together: the braces span the channel and stand proud of both outer faces',
+            `${tag}: the two plates are TIED together: the braces span the channel and stand proud of both outer faces`,
             BB_TURRET_BRACES.length >= 2 && Math.max(...braceVs.map((v) => v.y)) > plateOuterY && Math.min(...braceVs.map((v) => v.y)) < -plateOuterY,
             `${BB_TURRET_BRACES.length} standoffs, y ±${Math.max(...braceVs.map((v) => v.y)).toFixed(3)} vs plate face ±${plateOuterY.toFixed(3)}`,
           );
           check(
-            '...and every one of them stands ABOVE the turret plate it is bolted over (residual 2)',
+            `${tag}: ...and every one of them stands ABOVE the turret plate it is bolted over`,
             Math.min(...braceVs.map((v) => v.z)) >= BB_TURRET_PLATE_TOP_Z - 1e-9,
             `lowest ${Math.min(...braceVs.map((v) => v.z)).toFixed(4)} vs plate top ${BB_TURRET_PLATE_TOP_Z.toFixed(3)}`,
           );
@@ -1602,82 +1895,103 @@ function graphicsChecks(check: Check, allFiles: string[]): void {
             const deg = ((site.th * 180) / Math.PI).toFixed(0);
             const inside = plateR(site.th) - (site.r + BB_TURRET_BRACE_R);
             const rim = site.r - BB_TURRET_BRACE_R - BB_FLYWHEEL_R;
-            check(`brace @${deg}°: inside the plate profile it bolts to, and clear of the wheel it sits beside`, inside > 0 && rim >= 0.2 && rim <= 1.0, `inside ${inside.toFixed(3)}, off the rim ${rim.toFixed(3)}`);
+            check(`${tag}: brace @${deg}°: inside the plate profile it bolts to, and clear of the wheel it sits beside`, inside > 0 && rim >= 0.2 - 1e-9 && rim <= 1.0, `inside ${inside.toFixed(3)}, off the rim ${rim.toFixed(3)}`);
           }
           const mv = robotVerts(named('bb-turret-motor')[0]);
-          const mInside = plateR(BB_TURRET_MOTOR.th) - (BB_TURRET_MOTOR.r + BB_TURRET_MOTOR.bodyR);
           check(
-            'the flywheel motor is BETWEEN the plates, not outboard of one',
-            Math.max(...mv.map((v) => Math.abs(v.y))) < BB_LAUNCH_PLATE_GAP / 2,
-            `±${Math.max(...mv.map((v) => Math.abs(v.y))).toFixed(2)} in a ±${(BB_LAUNCH_PLATE_GAP / 2).toFixed(2)} channel`,
+            `${tag}: the flywheel motor's can is BETWEEN the plates, not outboard of one`,
+            Math.max(...mv.map((v) => Math.abs(v.y))) <= H.plateGap / 2 + F32,
+            `±${Math.max(...mv.map((v) => Math.abs(v.y))).toFixed(2)} in a ±${(H.plateGap / 2).toFixed(2)} channel`,
+          );
+          let hoodBack = Infinity;
+          for (let i = 0; i < PITCHES; i++) {
+            pose(pitchAt(i));
+            for (const n of ['bb-turret-hood', 'bb-turret-hood-arm']) {
+              for (const m of named(n)) for (const v of robotVerts(m)) hoodBack = Math.min(hoodBack, v.x);
+            }
+          }
+          pose(BB_TURRET_PITCH_MIN);
+          const motorFront = Math.max(...mv.map((v) => v.x));
+          check(
+            `${tag}: ...and it is BEHIND THE HOOD (owner item a) — its whole can is past the hood's rear-most sweep`,
+            motorFront < hoodBack - 0.2 && motorFront < 0,
+            `can front ${motorFront.toFixed(3)} vs hood rear-most over the sweep ${hoodBack.toFixed(3)}`,
           );
           check(
-            '...BEHIND the hood: outside the wrap at every elevation the hood can reach',
-            (() => {
-              let clear = true;
-              const th = ((BB_TURRET_MOTOR.th % (Math.PI * 2)) + Math.PI * 2) % (Math.PI * 2);
-              const half = Math.asin(Math.min(1, BB_TURRET_MOTOR.bodyR / BB_TURRET_MOTOR.r));
-              for (let i = 0; i < PITCHES; i++) {
-                const p = pitchAt(i);
-                if (th + half > Math.PI / 2 + p && th - half < Math.PI / 2 + p + BB_HOOD_WRAP) clear = false;
-              }
-              return clear;
-            })(),
-            `${((BB_TURRET_MOTOR.th * 180) / Math.PI).toFixed(0)}° vs a wrap that sweeps 90°…${(((Math.PI / 2 + BB_TURRET_PITCH_MAX + BB_HOOD_WRAP) * 180) / Math.PI).toFixed(0)}°`,
+            `${tag}: ...bolted to the feed wall's ears rather than floating, and over the turret plate`,
+            Math.min(...mv.map((v) => v.z)) >= BB_TURRET_PLATE_TOP_Z - F32 &&
+              Math.abs(motorFront - (H.axleX - H.wallR - BB_FEED_WALL_T - 0.05)) < F32,
+            `can front ${motorFront.toFixed(3)} vs wall rear face ${(H.axleX - H.wallR - BB_FEED_WALL_T).toFixed(3)}, bottom ${Math.min(...mv.map((v) => v.z)).toFixed(3)}`,
           );
-          check('...inside the plate that carries it, and clear of the wheel it drives', mInside > 0 && BB_TURRET_MOTOR.r - BB_TURRET_MOTOR.bodyR > BB_FLYWHEEL_R + 0.1, `inside ${mInside.toFixed(3)}, off the rim ${(BB_TURRET_MOTOR.r - BB_TURRET_MOTOR.bodyR - BB_FLYWHEEL_R).toFixed(3)}`);
           const bv = robotVerts(named('bb-turret-belt')[0]);
           check(
-            'the drive is a BELT, and it runs in the flywheel’s own centre gap',
-            Math.max(...bv.map((v) => Math.abs(v.y))) <= 0.25 + 1e-9,
-            `belt ±${Math.max(...bv.map((v) => Math.abs(v.y))).toFixed(3)} in a ±0.25 gap`,
+            `${tag}: the drive is a BELT, and it runs OUTBOARD of a side plate — the hood's shell crosses every line inside`,
+            Math.min(...bv.map((v) => Math.abs(v.y))) >= H.plateGap / 2 + BB_SHOOTER_PLATE_T &&
+              Math.min(...bv.map((v) => Math.abs(v.y))) > H.plateGap / 2 + BB_SHOOTER_PLATE_T + BB_BRACE_PROUD - 0.06,
+            `belt inner face ${Math.min(...bv.map((v) => Math.abs(v.y))).toFixed(3)} vs plate face ${(H.plateGap / 2 + BB_SHOOTER_PLATE_T).toFixed(3)} and brace ends ${(H.plateGap / 2 + BB_SHOOTER_PLATE_T + BB_BRACE_PROUD).toFixed(3)}`,
+          );
+          check(
+            `${tag}: ...and it reaches BOTH pulleys, so it is a drive and not a decal`,
+            Math.abs(Math.min(...bv.map((v) => v.x)) - (H.axleX - H.motorR - 0.54)) < 0.1 &&
+              Math.max(...bv.map((v) => v.x)) > H.axleX + 0.6,
+            `belt x [${Math.min(...bv.map((v) => v.x)).toFixed(2)}, ${Math.max(...bv.map((v) => v.x)).toFixed(2)}]`,
           );
         }
 
-        // ══ (a) THE FEED SHOE IS FIXED, AND IT IS THE REAR TIE ═════════════════════════════
+        // ══ (c) THE FEED THROAT IS FIXED, AND IT IS THE REAR TIE ═══════════════════════════
         //
-        // "There is a weird flap in the back of the shooter." The flap is GONE, and what stands
-        // where it stood is structure: the wrap came down to 31.9° because a hood that pivots on
-        // the axle carries its own feed mouth round with it, so the ENTRY is a FIXED arc outboard
-        // of the hood's sweep, bolted to both plates. Its invariance under pitch is proved by the
-        // (d) block above; what is proved here is that it is the tie and that the hood clears it.
+        // "There is still a weird flap in the back of the shooter that does nothing." — reported
+        // TWICE, the second time against the FEED SHOE a previous pass had put there. What stands
+        // there now is the back of the channel the element rises through: a flat vertical wall on
+        // the turret plate, one hood-sweep radius plus a slide behind the rising element, spanning
+        // the whole channel and both plates. Its invariance under pitch is proved by the block
+        // above; what is proved here is that it is the tie, that it stands on the plate, and that
+        // the hood clears it at every elevation.
         {
           pose(BB_TURRET_PITCH_MIN);
-          const shoe = named('bb-turret-feed-shoe')[0];
-          const sv = robotVerts(shoe);
-          const plateOuterY = BB_LAUNCH_PLATE_GAP / 2 + 0.22;
+          const throat = named('bb-turret-throat')[0];
+          const tv = robotVerts(throat);
+          const plateOuterY = H.plateGap / 2 + BB_SHOOTER_PLATE_T;
           check(
-            'the FEED SHOE ties both plates — it spans the channel and both plate thicknesses',
-            Math.max(...sv.map((v) => v.y)) > plateOuterY && Math.min(...sv.map((v) => v.y)) < -plateOuterY,
-            `y ±${Math.max(...sv.map((v) => v.y)).toFixed(3)} vs plate face ±${plateOuterY.toFixed(3)}`,
-          );
-          const sr = axleVerts(shoe).map((v) => Math.hypot(v.x, v.z));
-          check(
-            '...outboard of the hood’s own sweep, so the two never touch at any elevation',
-            Math.min(...sr) >= BB_HOOD_R + BB_HOOD_T,
-            `shoe from ${Math.min(...sr).toFixed(4)}, hood out to ${(BB_HOOD_R + BB_HOOD_T).toFixed(4)} — ${(Math.min(...sr) - BB_HOOD_R - BB_HOOD_T).toFixed(3)} of slide`,
+            `${tag}: the FEED THROAT ties both plates — it spans the channel and both plate thicknesses`,
+            Math.max(...tv.map((v) => v.y)) > plateOuterY && Math.min(...tv.map((v) => v.y)) < -plateOuterY,
+            `y ±${Math.max(...tv.map((v) => v.y)).toFixed(3)} vs plate face ±${plateOuterY.toFixed(3)}`,
           );
           check(
-            '...and the hood’s wrap is the SHORT one the fixed entry made possible',
+            `${tag}: ...and it STANDS ON the turret plate, at the back of the rising element`,
+            Math.abs(Math.min(...tv.map((v) => v.z)) - BB_TURRET_PLATE_TOP_Z) < F32 &&
+              Math.max(...tv.map((v) => v.x)) < -H.elemR,
+            `bottom ${Math.min(...tv.map((v) => v.z)).toFixed(3)} on a plate at ${BB_TURRET_PLATE_TOP_Z}, front face ${Math.max(...tv.map((v) => v.x)).toFixed(3)} behind an element of radius ${H.elemR}`,
+          );
+          // the hood sweeps a DISC about the axle, so a vertical plane outside that radius clears
+          // it at EVERY elevation — measured rather than reasoned about
+          let hoodBack = Infinity;
+          for (let i = 0; i < PITCHES; i++) {
+            pose(pitchAt(i));
+            for (const n of ['bb-turret-hood', 'bb-turret-hood-arm']) {
+              for (const m of named(n)) for (const v of robotVerts(m)) hoodBack = Math.min(hoodBack, v.x);
+            }
+          }
+          pose(BB_TURRET_PITCH_MIN);
+          check(
+            `${tag}: ...and the hood sweeps INSIDE it, so the two never touch at any elevation`,
+            Math.max(...tv.map((v) => v.x)) <= hoodBack - 0.05,
+            `wall front ${Math.max(...tv.map((v) => v.x)).toFixed(3)}, hood rear-most ${hoodBack.toFixed(3)} — ${(hoodBack - Math.max(...tv.map((v) => v.x))).toFixed(3)} of slide`,
+          );
+          check(
+            `${tag}: ...and the hood’s wrap is the SHORT one a fixed entry made possible`,
             BB_HOOD_WRAP < 0.6,
             `${((BB_HOOD_WRAP * 180) / Math.PI).toFixed(1)}° (was 60°, and a 60° hood’s mouth is 80° out of line at full elevation)`,
           );
-          const chute = robotVerts(named('bb-turret-feed')[0]);
-          check(
-            'the FEED CHUTE stands on the deck and reaches the shoe’s mouth — both ends derived, neither typed',
-            Math.abs(Math.min(...chute.map((v) => v.z)) - BB_DECK_Z) < F32 &&
-              Math.abs(Math.max(...chute.map((v) => v.z)) - (BB_TURRET_AXLE_Z + Math.sin(BB_FEED_SHOE_FAR) * BB_FEED_SHOE_R)) < F32,
-            `${Math.min(...chute.map((v) => v.z)).toFixed(3)} … ${Math.max(...chute.map((v) => v.z)).toFixed(3)}`,
-          );
         }
 
-        // ══ RESIDUAL 1: THE HOOD HANGS OFF SOMETHING ═══════════════════════════════════════
+        // ══ THE HOOD HANGS OFF SOMETHING ═══════════════════════════════════════════════════
         //
         // The plates stop at `BB_SIDE_PLATE_TOP_Z` and the hood's arc is three inches above that,
         // so without arms the hood is a floating band. Each arm reaches the axle, carries the arc,
         // and stays in the lateral strip between the element and the side plate — which is the
         // only place it can be: in the x–z PROJECTION the element fills every path from the axle
-        // to the hood, and a POLLEN is a sphere, so at lateral offset `BB_POLLEN_R` it has no
+        // to the hood, and an element is a sphere, so at lateral offset `elemR` it has no
         // cross-section left to foul.
         {
           pose(BB_TURRET_PITCH_MIN);
@@ -1687,27 +2001,27 @@ function graphicsChecks(check: Check, allFiles: string[]): void {
           // its spokes run to the axle and out to the hood's OUTER face; the outermost vertex is
           // a spoke's own end CORNER, half a thickness off that centreline, so both bounds carry
           // the arm's own section rather than pretending it is a line.
-          const corner = Math.hypot(BB_HOOD_R + BB_HOOD_T, BB_HOOD_ARM_T / 2);
+          const corner = Math.hypot(H.hoodR + BB_HOOD_T, BB_HOOD_ARM_T / 2);
           check(
-            'each hood ARM reaches from the axle out to the arc it carries',
+            `${tag}: each hood ARM reaches from the axle out to the arc it carries`,
             Math.min(...rs) <= BB_HOOD_ARM_T / 2 + F32 &&
-              Math.max(...rs) >= BB_HOOD_R + BB_HOOD_T - F32 &&
+              Math.max(...rs) >= H.hoodR + BB_HOOD_T - F32 &&
               Math.max(...rs) <= corner + F32,
-            `r ${Math.min(...rs).toFixed(3)} … ${Math.max(...rs).toFixed(4)} (hood face ${(BB_HOOD_R + BB_HOOD_T).toFixed(4)}, spoke corner ${corner.toFixed(4)})`,
+            `r ${Math.min(...rs).toFixed(3)} … ${Math.max(...rs).toFixed(4)} (hood face ${(H.hoodR + BB_HOOD_T).toFixed(4)}, spoke corner ${corner.toFixed(4)})`,
           );
           const ys = av.flat().map((v) => Math.abs(v.y));
           check(
-            '...inboard of the side plate by BB_HOOD_ARM_INSET, and never inside the element’s own width',
-            Math.min(...ys) >= BB_POLLEN_R - F32 && Math.abs(Math.max(...ys) - (BB_LAUNCH_PLATE_GAP / 2 - BB_HOOD_ARM_INSET)) < F32,
-            `|y| ${Math.min(...ys).toFixed(3)} … ${Math.max(...ys).toFixed(3)}; element ±${BB_POLLEN_R}, plate face ${(BB_LAUNCH_PLATE_GAP / 2).toFixed(3)}`,
+            `${tag}: ...inboard of the side plate by BB_HOOD_ARM_INSET, and never inside the element’s own width`,
+            Math.min(...ys) >= H.elemR - F32 && Math.abs(Math.max(...ys) - (H.plateGap / 2 - BB_HOOD_ARM_INSET)) < F32,
+            `|y| ${Math.min(...ys).toFixed(3)} … ${Math.max(...ys).toFixed(3)}; element ±${H.elemR}, plate face ${(H.plateGap / 2).toFixed(3)}`,
           );
           check(
-            '...so they do not read as a third plate: both are inside the plates they hide between',
-            Math.max(...ys) < BB_LAUNCH_PLATE_GAP / 2,
-            `${Math.max(...ys).toFixed(3)} vs ${(BB_LAUNCH_PLATE_GAP / 2).toFixed(3)}`,
+            `${tag}: ...so they do not read as a third plate: both are inside the plates they hide between`,
+            Math.max(...ys) < H.plateGap / 2,
+            `${Math.max(...ys).toFixed(3)} vs ${(H.plateGap / 2).toFixed(3)}`,
           );
           check(
-            '...and they clear the flywheel they straddle',
+            `${tag}: ...and they clear the flywheel they straddle`,
             Math.min(...ys) - Math.max(...named('bb-turret-flywheel').flatMap((m) => axleVerts(m)).map((v) => Math.abs(v.y))) > 0.1,
             `${(Math.min(...ys) - Math.max(...named('bb-turret-flywheel').flatMap((m) => axleVerts(m)).map((v) => Math.abs(v.y)))).toFixed(3)} in`,
           );
@@ -1715,16 +2029,15 @@ function graphicsChecks(check: Check, allFiles: string[]): void {
 
         // ══ THE EXIT CORRIDOR IS UNOBSTRUCTED, AT EVERY ELEVATION ══════════════════════════
         //
-        // The element leaves the lip along the hood's own tangent and flies a POLLEN-wide tube out
-        // of the machine. Every member that SPANS THE CHANNEL has to stay out of it — and unlike
-        // everything else here, the elevation makes this one WORSE in places, because the corridor
-        // swings up across the fixed feed shoe.
+        // The element leaves the lip along the hood's own tangent and flies an element-wide tube
+        // out of the machine. Every member that SPANS THE CHANNEL has to stay out of it.
         //
         // ⚠️ MEASURED ON THE DRAWN MESHES, projected into the axle plane. A part whose lateral
-        // extent never reaches the element (the side plates, the hood arms) cannot obstruct it at
-        // all and is excluded by that test rather than by a list; the hood and the wheel ARE the
-        // mechanism that throws it, so they are excluded too. `CHORD` is the sagitta a 10-segment
-        // standoff loses to its own faceting — this is a clearance measurement, so it is paid.
+        // extent never reaches the element (the side plates, the hood arms, the belt) cannot
+        // obstruct it at all and is excluded by that test rather than by a list; the hood and the
+        // wheel ARE the mechanism that throws it, so they are excluded too. `CHORD` is the sagitta
+        // a 10-segment standoff loses to its own faceting — this is a clearance measurement, so it
+        // is paid.
         {
           const CHORD = 0.02;
           const EXCLUDE = ['bb-turret-hood', 'bb-turret-hood-arm', 'bb-turret-flywheel', 'bb-turret-side-plate'];
@@ -1733,9 +2046,9 @@ function graphicsChecks(check: Check, allFiles: string[]): void {
           for (let i = 0; i < PITCHES; i++) {
             const p = pitchAt(i);
             pose(p);
-            const m = bbMuzzleLocal(p);
-            const ox = -m.back;
-            const oz = m.z - BB_TURRET_AXLE_Z; // the lip, in the axle frame
+            const m = bbMuzzleLocal(p, which);
+            const ox = -m.back - H.axleX; // the lip, in the AXLE frame
+            const oz = m.z - BB_TURRET_AXLE_Z;
             const dx = Math.cos(p);
             const dz = Math.sin(p);
             for (const mesh of meshes) {
@@ -1747,11 +2060,11 @@ function graphicsChecks(check: Check, allFiles: string[]): void {
               // straight through y = 0 — and the braces, the motor and the belt all dropped out of
               // this sweep unmeasured. The interval is what spans the channel.
               const ys = vs.map((v) => v.y);
-              if (Math.min(...ys) >= BB_POLLEN_R - F32 || Math.max(...ys) <= -BB_POLLEN_R + F32) continue;
+              if (Math.min(...ys) >= H.elemR - F32 || Math.max(...ys) <= -H.elemR + F32) continue;
               for (const v of vs) {
                 const s = (v.x - ox) * dx + (v.z - oz) * dz;
                 if (s < 0 || s > 8) continue;
-                const perp = Math.abs((v.x - ox) * dz - (v.z - oz) * dx) - BB_POLLEN_R - CHORD;
+                const perp = Math.abs((v.x - ox) * dz - (v.z - oz) * dx) - H.elemR - CHORD;
                 if (perp < worst) {
                   worst = perp;
                   who = `${mesh.name || 'slew ring'} @${((p * 180) / Math.PI).toFixed(0)}°`;
@@ -1759,59 +2072,65 @@ function graphicsChecks(check: Check, allFiles: string[]): void {
               }
             }
           }
-          check('the EXIT CORRIDOR is unobstructed at every elevation', worst > 0, `worst clearance ${worst.toFixed(3)} in (${who})`);
-          // RESIDUAL 3, as a RATCHET. The +20° brace leaves 0.133, and it stays: the side plate's
-          // own flat top is the binding part at that height and clears the corridor by 0.150 BY
-          // DEFINITION (`BB_SIDE_PLATE_TOP_Z` is one element radius plus 0.15 under the corridor's
-          // centre line), so nothing fixed up there can do better. What must not happen is the
-          // margin shrinking further, and this is what says so.
+          check(`${tag}: the EXIT CORRIDOR is unobstructed at every elevation`, worst > 0, `worst clearance ${worst.toFixed(3)} in (${who})`);
+          // A RATCHET. The +20° brace leaves 0.164 and it stays: the side plate's own flat top is
+          // the binding part at that height and clears the corridor by 0.150 BY DEFINITION
+          // (`BB_SIDE_PLATE_TOP_Z` is one element radius plus 0.15 under the corridor's centre
+          // line), so nothing fixed up there can do better. What must not happen is the margin
+          // shrinking, and this is what says so.
           check(
-            '...with the margin the design measured, not less',
-            worst >= 0.05,
-            `${worst.toFixed(3)} after the ${CHORD} chord pad — the design's own binding pair are the feed shoe at 0.100 and the +20° brace at 0.133`,
+            `${tag}: ...with the margin the design measured, not less`,
+            worst >= 0.15,
+            `${worst.toFixed(3)} after the ${CHORD} chord pad — the binding part is the +20° brace at 0.164`,
           );
           check(
-            '...and the plate’s flat top is the ceiling anything fixed can reach (residual 3’s reason)',
-            Math.abs(BB_HOOD_PATH_R - BB_POLLEN_R - BB_SIDE_PLATE_TOP_Z - 0.15) < 1e-9,
-            `${(BB_HOOD_PATH_R - BB_POLLEN_R - BB_SIDE_PLATE_TOP_Z).toFixed(3)} in under the corridor floor`,
-          );
-        }
-
-        // ══ AND THE CHAIN IS NOT DUPLICATED HERE ═══════════════════════════════════════════
-        //
-        // ⚠️ THE ORIGINAL SIN, ASSERTED GONE. The renderer owned `BB_FLYWHEEL_R`, `BB_HOOD_R`,
-        // `BB_HOOD_PATH_R`, `BB_HOOD_WRAP` and the plate profile as local `const`s and the sim
-        // owned `BB_LAUNCH_Z0`; six passes of feedback each moved one of them. A second copy of
-        // any of them is the bug, so it is named.
-        {
-          const dupes = ['BB_FLYWHEEL_R', 'BB_HOOD_R', 'BB_HOOD_PATH_R', 'BB_HOOD_COMPRESSION', 'BB_HOOD_WRAP', 'BB_HOOD_T', 'BB_TURRET_AXLE_Z', 'BB_DECK_Z', 'BB_TURRET_BRACE_R']
-            .filter((n) => new RegExp(`^const ${n}\\b`, 'm').test(robotsCode));
-          check('renderRobots.ts declares NO second copy of a shooter dimension', dupes.length === 0, dupes.join(', '));
-          check(
-            '...and the retired pieces of the muzzle-pivot era are gone with it',
-            !/BB_HEAD_RHO_MAX|minHeadWorldZ|plateOuterR|BB_PLATE_R_OUT|BB_PLATE_TAIL|BB_SHOOTER_MUZZLE_Z/.test(robotsCode),
-          );
-          check(
-            'the muzzle node is placed by the SIM’s own function, imported, not by a local formula',
-            robotsCode.includes('bbMuzzleLocal') &&
-              robotsCode.includes('const rest = bbMuzzleLocal(BB_TURRET_PITCH_MIN);') &&
-              robotsCode.includes('exit.position.set(-rest.back, 0, rest.z - BB_TURRET_AXLE_Z);'),
-            'the lip is read off bbMuzzleLocal at rest; the node’s own rotation carries it to every other pitch',
-          );
-          check(
-            'the node names are still the interface the sync writes to',
-            robotsCode.includes("head.name = 'bb-turret-head'") &&
-              robotsCode.includes("pitch.name = 'bb-turret-pitch'") &&
-              robotsCode.includes("exit.name = 'bb-turret-exit'") &&
-              robotsCode.includes('pitches[0].rotation.y = -(r.bbTurretPitch ?? 0);') &&
-              robotsCode.includes('heads[0].rotation.z = r.turretHeading - r.heading;'),
-          );
-          check(
-            '...and the pitch node pivots on the AXLE, which is what makes the lip move',
-            robotsCode.includes('head.position.z = BB_TURRET_AXLE_Z - BB_DECK_Z;') && !/head\.position\.z = BB_LAUNCH_Z0/.test(robotsCode),
+            `${tag}: ...and the plate’s flat top is the ceiling anything fixed can reach`,
+            Math.abs(H.pathR - H.elemR - BB_SIDE_PLATE_TOP_Z - 0.15) < 1e-9,
+            `${(H.pathR - H.elemR - BB_SIDE_PLATE_TOP_Z).toFixed(3)} in under the corridor floor`,
           );
         }
         disposeRobotGroup(turret);
+      }
+
+      // ══ THE CHAIN IS NOT DUPLICATED IN THE RENDERER ═════════════════════════════════════
+      //
+      // ⚠️ THE ORIGINAL SIN, ASSERTED GONE. The renderer owned `BB_FLYWHEEL_R`, `BB_HOOD_R`,
+      // `BB_HOOD_PATH_R`, `BB_HOOD_WRAP` and the plate profile as local `const`s and the sim owned
+      // `BB_LAUNCH_Z0`; six passes of feedback each moved one of them. A second copy of any of
+      // them is the bug, so it is named.
+      {
+        const dupes = ['BB_FLYWHEEL_R', 'BB_HOOD_R', 'BB_HOOD_PATH_R', 'BB_HOOD_COMPRESSION', 'BB_HOOD_WRAP', 'BB_HOOD_T', 'BB_TURRET_AXLE_Z', 'BB_DECK_Z', 'BB_TURRET_BRACE_R', 'BB_SHOOTER_PLATE_T', 'BB_BRACE_PROUD']
+          .filter((n) => new RegExp(`^const ${n}\\b`, 'm').test(robotsCode));
+        check('renderRobots.ts declares NO second copy of a shooter dimension', dupes.length === 0, dupes.join(', '));
+        check(
+          '...and the retired pieces of the muzzle-pivot and feed-shoe eras are gone with them',
+          !/BB_HEAD_RHO_MAX|minHeadWorldZ|plateOuterR|BB_PLATE_R_OUT|BB_PLATE_TAIL|BB_SHOOTER_MUZZLE_Z|BB_FEED_SHOE|BB_FEED_TILT/.test(robotsCode),
+        );
+        check(
+          'the muzzle node is placed by the SIM’s own function, imported, not by a local formula',
+          robotsCode.includes('bbMuzzleLocal') &&
+            robotsCode.includes('const rest = bbMuzzleLocal(BB_TURRET_PITCH_MIN, which);') &&
+            robotsCode.includes('exit.position.set(-rest.back - H.axleX, 0, rest.z - BB_TURRET_AXLE_Z);'),
+          'the lip is read off bbMuzzleLocal at rest; the node’s own rotation carries it to every other pitch',
+        );
+        check(
+          'the node names are still the interface the sync writes to',
+          robotsCode.includes("head.name = 'bb-turret-head'") &&
+            robotsCode.includes("pitch.name = 'bb-turret-pitch'") &&
+            robotsCode.includes("exit.name = 'bb-turret-exit'") &&
+            robotsCode.includes('pitches[0].rotation.y = -(r.bbTurretPitch ?? 0);') &&
+            robotsCode.includes('heads[0].rotation.z = r.turretHeading - r.heading;'),
+        );
+        check(
+          '...and the YAW node is on the ROTATION AXIS with the axle offset INSIDE it, which is what lets the axle orbit',
+          robotsCode.includes("axle.position.set(H.axleX, 0, BB_TURRET_AXLE_Z - BB_DECK_Z);") &&
+            !/head\.position\.z = BB_TURRET_AXLE_Z/.test(robotsCode) &&
+            !/head\.position\.z = BB_LAUNCH_Z0/.test(robotsCode),
+        );
+        check(
+          'a DOUBLE turret builds its NECTAR head as turret 1, so the picture and bbMuzzleLocal pick the same one',
+          robotsCode.includes('buildTurret(spec, launcher.mount, 0)') && robotsCode.includes('buildTurret(spec, launcher.mount2, 1)'),
+        );
       }
       // ── 2026-09-19 OWNER PLAYTEST: "SWERVE IS NOT RENDERED PROPERLY AT ALL" ───────────────
       // It was one squat cylinder per corner floating at deck height with the wheel left behind
@@ -1849,6 +2168,55 @@ function graphicsChecks(check: Check, allFiles: string[]): void {
           robotsCode.includes('pod.position.set((Math.sign(x) || 1) * (hl - BB_POD_INSET), sy * (hw - BB_POD_INSET), 0);') &&
             robotsCode.includes('wheel.position.set(0, 0, BB_POD_WHEEL_R);'),
         );
+        // ══ (2) THE WHEEL READS AS A WHEEL — BUILT AND MEASURED, NOT GREPPED ═══════════════
+        //
+        // ⚠️ **OWNER, 2026-09-19: "the swerve wheel has two rectangular plates blocking the wheel,
+        // so it looks like it is just a rectangular cylinder as the wheel. Fix this. Remove those
+        // plates or make it smaller."** The fork was a 3.2 × 3.5 rectangle either side of a 3.0-in
+        // wheel, from z 0.40 up to the top plate — in side view it covered the tyre completely,
+        // end to end and top to bottom, so all that was left of the wheel was a dark band under
+        // the plate's lower edge.
+        //
+        // The rule that answers it is a SILHOUETTE rule, so it is measured on the built pod: at
+        // the fork's own lateral plane, what fraction of the wheel's circle does the fork cover?
+        // The fork is shorter than the wheel and stops at a boss around the axle, so the tyre's
+        // whole lower half and both ends of its circle are in plain sight.
+        {
+          const pod = buildSwervePod();
+          pod.updateMatrixWorld(true);
+          const podMeshes: THREE.Mesh[] = [];
+          pod.traverse((o) => {
+            if ((o as THREE.Mesh).isMesh) podMeshes.push(o as THREE.Mesh);
+          });
+          const box = (m: THREE.Mesh): THREE.Box3 => new THREE.Box3().setFromObject(m);
+          const wheelBox = box(podMeshes.find((m) => m.name === 'bb-pod-wheel') as THREE.Mesh);
+          const hubBox = box(podMeshes.find((m) => m.name === 'bb-pod-hub') as THREE.Mesh);
+          // the fork is the STRUCT part — the only unnamed mesh that reaches down beside the wheel
+          const struct = podMeshes.filter((m) => !m.name).map(box).reduce((a, b) => a.union(b), new THREE.Box3());
+          const wheelR = (wheelBox.max.z - wheelBox.min.z) / 2;
+          check(
+            'a swerve POD WHEEL is a wheel: the fork is shorter than the tyre and stops at a boss, not a shroud',
+            struct.max.x - struct.min.x < wheelBox.max.x - wheelBox.min.x - 0.6 && struct.min.z > wheelR * 0.6,
+            `fork ${(struct.max.x - struct.min.x).toFixed(2)} long over a ${(wheelBox.max.x - wheelBox.min.x).toFixed(2)} tyre, bottom ${struct.min.z.toFixed(2)} vs an axle at ${wheelR.toFixed(2)}`,
+          );
+          check(
+            '...so most of the tyre’s own circle is unobstructed — it was 0% of it before',
+            // the fork covers a chord of the circle; the visible fraction is what is left of the
+            // disc's bounding square once the fork's own box is taken out of it
+            1 - ((struct.max.x - struct.min.x) * (Math.min(struct.max.z, wheelBox.max.z) - struct.min.z)) / ((wheelR * 2) ** 2) > 0.55,
+            `${((1 - ((struct.max.x - struct.min.x) * (Math.min(struct.max.z, wheelBox.max.z) - struct.min.z)) / ((wheelR * 2) ** 2)) * 100).toFixed(0)}% of the tyre’s square left clear`,
+          );
+          check(
+            '...and the HUB shows through the gap the boss leaves, so it reads as a hub and not a disc',
+            hubBox.max.x - hubBox.min.x > 1.2 && hubBox.max.x - hubBox.min.x < wheelR * 2 - 0.6 && hubBox.max.y > wheelBox.max.y,
+            `hub ${(hubBox.max.x - hubBox.min.x).toFixed(2)} across, ${(hubBox.max.y - wheelBox.max.y).toFixed(3)} proud of each tyre face`,
+          );
+          check(
+            '...and the pod’s wheel is plain TRACTION, not one of the mecanum rollers the loop hands every other drivetrain',
+            robotsCode.includes("new THREE.Mesh(wheelGeometry(BB_POD_WHEEL_R, BB_WHEEL_W), solidMat(TREAD, 0.95, 0))"),
+          );
+          disposeRobotGroup(pod);
+        }
         // ⚠️ THE STEER COMES OUT OF THE SIM, AND NOTHING WAS ADDED TO THE SIM TO FEED IT.
         // `RobotState.moduleAngles` is a REQUIRED field that has existed since the shared
         // drivetrain landed — the 2D map has always read it — and the 3D view was simply
@@ -2504,7 +2872,194 @@ function graphicsChecks(check: Check, allFiles: string[]): void {
     // part; the constants fallback had no backstop at all, so a fallback field and a CAD field
     // disagreed about a surface a lob comes off.
     check('the constants fallback builds the flower backstop', fieldSrc.includes(':backstop') && /FLOWER_BACKSTOP_H = 1\.25/.test(fieldSrc));
+
+    // == THE 2026-09-19 PLAYTEST, OWNER ITEMS 3, 4, 11 AND 13 ==============================
+
+    // ITEM 3 -- NO OUTLINE PASS ON A CLEAR PANEL. `addPanelEdges` ran `EdgesGeometry(geo, 25)`
+    // over a tray's merged, welded, per-primitive-decimated `plastic#e6e6e6` soup and drew 3,552
+    // segments, 2,811 of them 0.01in or shorter and the LONGEST 0.84in -- on skins 20in wide.
+    // Every one of them was a tessellation crease, which is the owner's "stray lines on the
+    // transparent panels of the hives". Nothing replaces it: the CELL's shape is drawn by its two
+    // opaque alliance-coloured GOAL RIBS, at both ends.
+    // ⚠️ AGAINST THE CODE, NOT THE FILE. Both headers below NAME the thing they forbid, at
+    // length, because the measurement that killed it is the reason it is forbidden — a file-wide
+    // grep would fail on its own explanation.
+    const glbCode = codeLines(join(SCENE_DIR, 'renderFieldGlb.ts')).join('\n');
+    const fieldCode = codeLines(join(SCENE_DIR, 'renderField.ts')).join('\n');
+    check('the loader runs no edge/outline pass at all', !/EdgesGeometry|LineSegments/.test(glbCode));
+    check('and the constants fallback does not either', !/EdgesGeometry|LineSegments/.test(fieldCode));
+    check(
+      'the CAD asset still files the goal ribs as tray parts (they are what draws the cell now)',
+      /PartRule\(r"goal rib", "hive_tray"/.test(readFileSync(join(root, 'scripts', 'field-cad', 'convert.py'), 'utf8')),
+    );
+
+    // ITEM 4 -- CREASED, NEVER SMOOTH. Neither GLB carries a NORMAL attribute, so the loader
+    // computes one; computing it SMOOTH over a soup of merged hard-edged CAD parts put 63-75% of
+    // triangles more than 45 degrees off their own face and left 15 normals at length zero, which
+    // on a `metalness: 0.7` near-black bracket reads as the owner's "white artifacts".
+    check('the loader computes CREASED normals', glbSrc.includes('computeCreasedNormals(obj.geometry, CREASE_ANGLE_DEG)'));
+    check(
+      'and never the smooth pass on a loaded mesh (the plain call survives only as the un-indexed fallback)',
+      (glbCode.match(/computeVertexNormals\(\)/g) ?? []).length === 1,
+      `${(glbCode.match(/computeVertexNormals\(\)/g) ?? []).length}`,
+    );
+    {
+      // A WELDED CUBE. 8 shared vertices, 12 triangles: the split has to hand every corner three
+      // normals and every triangle its own exact face normal.
+      const cube = new THREE.BufferGeometry();
+      const P: number[] = [];
+      for (const z of [-1, 1]) for (const y of [-1, 1]) for (const x of [-1, 1]) P.push(x, y, z);
+      cube.setAttribute('position', new THREE.BufferAttribute(new Float32Array(P), 3));
+      // faces, wound outward: -x +x -y +y -z +z
+      cube.setIndex([
+        0, 4, 6, 0, 6, 2, 1, 3, 7, 1, 7, 5, 0, 1, 5, 0, 5, 4, 2, 6, 7, 2, 7, 3, 0, 2, 3, 0, 3, 1, 4, 5, 7, 4, 7, 6,
+      ]);
+      computeCreasedNormals(cube, CREASE_ANGLE_DEG);
+      const cn = cube.getAttribute('normal');
+      check('a welded cube splits into 3 normals per corner', cn.count === 24, `${cn.count}`);
+      let axisAligned = 0;
+      const v = new THREE.Vector3();
+      for (let i = 0; i < cn.count; i++) {
+        v.fromBufferAttribute(cn, i);
+        const s = [Math.abs(v.x), Math.abs(v.y), Math.abs(v.z)].sort((a, b) => b - a);
+        if (Math.abs(s[0] - 1) < 1e-5 && s[1] < 1e-5) axisAligned++;
+      }
+      check('every one of them is an exact face normal, not an average', axisAligned === cn.count, `${axisAligned}/${cn.count}`);
+    }
+    {
+      // ⚠️ THE REGRESSION THAT COSTS THE MOST TO REDISCOVER. The first version grouped a vertex's
+      // faces by UNION-FIND, which is transitive: on a finely tessellated cone every face is
+      // within the crease angle of its neighbour, so one group spans 360 degrees and its
+      // area-weighted average is the ZERO VECTOR. This fixture is a NEEDLE cone -- 24 faces whose
+      // normals sweep the full turn nearly perpendicular to the axis -- and it is the shape that
+      // separates the two: per corner the apex normal follows the cone's surface, per group it
+      // collapses onto the axis (or to nothing).
+      const N = 24;
+      const cone = new THREE.BufferGeometry();
+      const pos: number[] = [0, 0, 20];
+      for (let i = 0; i < N; i++) pos.push(Math.cos((2 * Math.PI * i) / N), Math.sin((2 * Math.PI * i) / N), 0);
+      cone.setAttribute('position', new THREE.BufferAttribute(new Float32Array(pos), 3));
+      const idx: number[] = [];
+      for (let i = 0; i < N; i++) idx.push(0, 1 + i, 1 + ((i + 1) % N));
+      cone.setIndex(idx);
+      computeCreasedNormals(cone, CREASE_ANGLE_DEG);
+      const nn = cone.getAttribute('normal');
+      let short = 0;
+      let axial = 0;
+      const v = new THREE.Vector3();
+      for (let i = 0; i < nn.count; i++) {
+        v.fromBufferAttribute(nn, i);
+        if (Math.abs(v.length() - 1) > 1e-4) short++;
+        if (Math.abs(v.z) > 0.5) axial++;
+      }
+      check('a needle cone leaves no degenerate normal (the union-find version left the apex at zero)', short === 0, `${short}`);
+      check('and its apex normals follow the surface rather than collapsing onto the axis', axial === 0, `${axial}/${nn.count}`);
+    }
+
+    // ITEM 11 -- THE FLOWER STANDOFFS. `am-1696: Nylon Spacer ... 1.000in Long` x2 per flower is
+    // in the STEP and is swallowed by `convert.py`'s RE_FASTENER, which matches the bare words
+    // `nylon spacer` -- the same defect audit section 2.2 records for the 24 perimeter rails
+    // ("FTC Rail with Rivet Holes"). The loader rebuilds them at the CAD's own dimensions, and
+    // the gap it stands them in is measurable straight off the measurements file.
+    {
+      const measurements = JSON.parse(readFileSync(join(root, 'public', 'models', 'biobuzz', 'field-measurements.json'), 'utf8')) as {
+        flowers: { id: string; rings: { top: { z: [number, number] } }; backstopZ: [number, number] }[];
+      };
+      check('the measurements carry all four flowers', measurements.flowers.length === 4, `${measurements.flowers.length}`);
+      for (const f of measurements.flowers) {
+        const gap = f.backstopZ[0] - f.rings.top.z[1];
+        check(
+          `${f.id}: the purple backstop stands exactly one 1.000-in spacer off the top ring`,
+          Math.abs(gap - 1) < 0.01,
+          `${gap.toFixed(4)}in`,
+        );
+      }
+      check(
+        'the CAD still drops the spacer as a fastener (the defect this works around)',
+        /nylon spacer/.test(readFileSync(join(root, 'scripts', 'field-cad', 'convert.py'), 'utf8')),
+      );
+      check('the standoff is built at the part number own OD', /STANDOFF_OD_IN = 0\.375/.test(glbSrc));
+      check('its length is MEASURED between the two plates, not typed', /const height = plate\.min\.z - ring\.max\.z;/.test(glbSrc));
+    }
+
+    // ITEM 13 -- THE APRILTAG CLUSTERS AND THE BANNER. Both plates are already in the GLB as
+    // `decal#ffffff` -- blank white, because a STEP carries no artwork. The IDs are section 9.9
+    // p76, read off the page raster (that page's text layer drops the digits -- see
+    // `docs/biobuzz/manual-distilled.md`'s own defect list), and the code table is
+    // AprilRobotics/apriltag's `tag36h11.c`.
+    {
+      const seen = new Set<number>();
+      for (const a of ['red', 'blue'] as const) {
+        for (const side of ['north', 'south'] as const) {
+          for (const id of BB_TAG_IDS[a][side]) seen.add(id);
+        }
+      }
+      check('sixteen distinct tags, one cluster of four per CELL', seen.size === 16, `${seen.size}`);
+      check('and every one of them is in the manual 30..45', [...seen].every((id) => id >= 30 && id <= 45));
+      // the AUDIENCE is at -y (F4 is on the audience wall), so "opposite the audience" is +y
+      check('red FAR (opposite the audience) is 30 31 32 33', BB_TAG_IDS.red.north.join(' ') === '30 31 32 33');
+      check('red AUDIENCE is 34 35 36 37', BB_TAG_IDS.red.south.join(' ') === '34 35 36 37');
+      check('blue AUDIENCE is 38 39 40 41', BB_TAG_IDS.blue.south.join(' ') === '38 39 40 41');
+      check('blue FAR is 42 43 44 45', BB_TAG_IDS.blue.north.join(' ') === '42 43 44 45');
+
+      // THE BITMAP, round-tripped. A tag is 10 cells including a 1-cell white quiet zone around
+      // an 8-cell black border; the inner 6x6 carries the 36 code bits MSB first. Reading them
+      // back out of the rendered grid has to reproduce `codedata[id]` exactly -- a mirrored or
+      // transposed layout would still LOOK like a tag and would detect as nothing.
+      const cells = [...seen].map((id) => ({ id, grid: apriltag36h11Cells(id) }));
+      let wellFormed = 0;
+      for (const { grid } of cells) {
+        let ok = true;
+        for (let k = 0; k < 10; k++) {
+          if (grid[k] !== 1 || grid[90 + k] !== 1 || grid[k * 10] !== 1 || grid[k * 10 + 9] !== 1) ok = false;
+        }
+        // the black border ring, inside the quiet zone: row 1, row 8, col 1, col 8
+        for (let k = 1; k < 9; k++) {
+          if (grid[10 + k] !== 0 || grid[80 + k] !== 0 || grid[k * 10 + 1] !== 0 || grid[k * 10 + 8] !== 0) ok = false;
+        }
+        if (ok) wellFormed++;
+      }
+      check('every tag has a white quiet zone and a closed black border', wellFormed === 16, `${wellFormed}/16`);
+      check(
+        'and its 36 data bits read back as `tag36h11.c` own codedata (ID 30 = 0x0e2cfda160)',
+        readTagCode(apriltag36h11Cells(30)) === 0x0e2cfda160 && readTagCode(apriltag36h11Cells(45)) === 0x0fbb59375d,
+        `${readTagCode(apriltag36h11Cells(30)).toString(16)}`,
+      );
+      const keys = new Set(cells.map((c) => c.grid.join('')));
+      check('the sixteen bitmaps are all different', keys.size === 16, `${keys.size}`);
+
+      // the manual's own figures, and the one place this pass could not honour Fig 9-15
+      check('a tag is the 3.25in square section 9.9 states', /TAG_SIZE_IN = 3\.25/.test(glbSrc));
+      check(
+        'the row pitch clears a tag (Fig 9-15 distilled 2.75in centres would overlap two by half an inch)',
+        /TAG_PITCH_IN = 3\.5/.test(glbSrc),
+      );
+      check('and the pitch is flagged APPROX with the reason', /APPROX -- THE MANUAL'S OWN PITCH CANNOT BE RIGHT|APPROX — THE MANUAL/.test(glbSrc));
+
+      // the PLATES are measured, not typed -- the CAD is authoritative for dimensions
+      check('the plate rectangles come off the CAD mesh (`facetFrame`), not out of this file', /function facetFrame\(/.test(glbSrc));
+      check('no plate rectangle is hard-coded', !/17\.0005|5\.0009/.test(glbCode));
+      check('the banner is TEXT, with no FIRST or RTX logo artwork fetched or embedded', !/data:image|logo|\.svg|\.png/i.test(glbCode));
+
+      // THE TIER GATE. Nothing above is built, no canvas is allocated and no texture is uploaded
+      // on the LOW LOD, which is the `meshDetail` row of the preset table and therefore the LOW
+      // tier alone.
+      check('the markings are built on the HIGH LOD only', /quality === 'high' \? buildFieldMarkings\(/.test(glbSrc));
+      check('...and the low LOD gets a zeroed record rather than a partial one', /: NO_MARKINGS;/.test(glbSrc));
+      check('mesh detail is `low` on the LOW tier alone', GFX_PRESETS.low.meshDetail === 'low' && (['medium', 'high', 'ultra'] as const).every((t) => GFX_PRESETS[t].meshDetail === 'high'));
+    }
   }
+}
+
+/** read the 36 code bits back out of a rendered 36h11 grid, MSB first at the published
+ * `bit_x`/`bit_y` offsets — the inverse of `apriltag36h11Cells`, written out longhand here so the
+ * round-trip is not checked against the same table that produced it. */
+function readTagCode(grid: Uint8Array): number {
+  const bitX = [1, 2, 3, 4, 5, 2, 3, 4, 3, 6, 6, 6, 6, 6, 5, 5, 5, 4, 6, 5, 4, 3, 2, 5, 4, 3, 4, 1, 1, 1, 1, 1, 2, 2, 2, 3];
+  const bitY = [1, 1, 1, 1, 1, 2, 2, 2, 3, 1, 2, 3, 4, 5, 2, 3, 4, 3, 6, 6, 6, 6, 6, 5, 5, 5, 4, 6, 5, 4, 3, 2, 5, 4, 3, 4];
+  let code = 0;
+  for (let i = 0; i < 36; i++) code += grid[(bitY[i] + 1) * 10 + (bitX[i] + 1)] * 2 ** (35 - i);
+  return code;
 }
 
 /**

@@ -105,9 +105,20 @@ export class ServerSession implements NetSession {
    * the ordered WebSocket, required once snapshots can arrive out of order on the
    * unreliable QUIC lane). Reset to -1 on a host restart (new world, tick 0). */
   private appliedTick = -1;
-  /** the MATCH GENERATION this session is playing, echoed on every input so the
-   *  server can drop anything produced for a match a rematch has replaced */
-  private gen = 0;
+  /**
+   * The MATCH GENERATION this session is playing, echoed on every input so the server can
+   * drop anything produced for a match a rematch has replaced.
+   *
+   * PUBLIC because the rejoin record has to carry it: a session rebuilt from a saved
+   * `matchStart` that had no generation sends 0, the server drops every input stamped with
+   * it, and the returning robot never moves. Written here from the handshake, from a
+   * rematch's `matchStart`, and from the `rejoined` that hands a slot back — the server is
+   * the authority on it at all three doors.
+   */
+  gen = 0;
+  /** the server refused to hand our held slot back (`rejoined: ok=false`) — the match ended
+   *  or the grace lapsed. Distinct from `failed`, which a plain connection loss also sets. */
+  private refused = false;
 
   // ---- connection-quality diagnostics (for the HUD net readout) --------------
   private pingTimer: ReturnType<typeof setInterval> | null = null;
@@ -263,6 +274,18 @@ export class ServerSession implements NetSession {
 
   spectatorCount(): number {
     return this.spectators;
+  }
+
+  /**
+   * DID THE SERVER REFUSE TO GIVE THIS SEAT BACK? — the one failure a rejoin can recover
+   * from, and the reason it is told apart from an ordinary drop.
+   *
+   * `failed` covers both, so a caller reading it alone cannot tell "the match you saved is
+   * gone" (go back to the menu and forget it) from "the connection died mid-match" (stay
+   * put, the player is in a real game). The Home rejoin card needs the first.
+   */
+  slotRefused(): boolean {
+    return this.refused;
   }
 
   rematchVote(): RematchVote {
@@ -465,13 +488,25 @@ export class ServerSession implements NetSession {
        */
       this.connected = false;
       this.lobbyCb?.(m.clientId);
-    } else if (m.t === 'rejoined' && !m.ok) {
-      // the grace window lapsed / the match is gone — the held slot can't be
-      // reclaimed. Surface it as a hard failure so the HUD shows the "connection
-      // lost" panel (MENU/refresh) instead of spinning "reconnecting" forever.
-      this.connected = false;
-      this.failed = true;
-      this.transport.close();
+    } else if (m.t === 'rejoined') {
+      if (!m.ok) {
+        // the grace window lapsed / the match is gone — the held slot can't be
+        // reclaimed. Surface it as a hard failure so the HUD shows the "connection
+        // lost" panel (MENU/refresh) instead of spinning "reconnecting" forever.
+        this.connected = false;
+        this.failed = true;
+        this.refused = true;
+        this.transport.close();
+      } else if (typeof m.gen === 'number') {
+        /**
+         * ADOPT THE ROOM'S GENERATION. A session rebuilt from a SAVED `matchStart` holds
+         * whatever that record carried, which is a generation behind the moment the room
+         * has rematched — and an input stamped with a stale one is dropped by the server,
+         * so the robot stops responding entirely. The room states it on the way back in;
+         * an older server sends nothing and we keep what we had.
+         */
+        this.gen = m.gen;
+      }
     }
     // 'drop' is reflected in the next snapshot already; nothing to do here
   }

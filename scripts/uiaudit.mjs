@@ -50,17 +50,26 @@ const BASELINE = {
   'duplicate-selector': 0,
   'var-literal-fallback': 0,
   'ghost-primary': 0,
-  'inline-spacing': 29,
+  // 29 → 5, 2026-09-19: the admin console rebuild took its 24 out. `.admin-card` is a flex
+  // column with a gap of its own and eleven of its children carried an inline margin too,
+  // so the space between a status line and the buttons above it was the gap PLUS a number
+  // somebody typed; §2's "one owner per gap" now holds there. The rest became `.adm-sub`,
+  // `.adm-gap` and `.adm-sec`.
+  'inline-spacing': 5,
   'fractional-font-size': 0,
   'banned-font-weight': 0,
-  'off-grid-gap': 155,
+  // 155 → 152, 2026-09-19: the three HUD read-outs became one. `.ping-graph`'s `8px 10px`
+  // and `18px 0`, its `5px` margin and its `6px` gap went with the graph that opened on a
+  // click that never landed; `.perf-hud` is on the token scale.
+  'off-grid-gap': 152,
   // measured 2026-09-16, when these three rules were written. §4's own ruling ("10px … rounds
   // to --ds-round-md") was executed in the same commit, which is why radius starts at 17 and
   // not the 31 first measured. The other two start where they stand: paying them down needs a
   // visual decision per site, and a baseline is how that gets paid off in any order without
   // being able to grow back.
   'off-scale-font-size': 46,
-  'literal-radius': 14,
+  // 14 → 13, 2026-09-19: `.perf-readout`'s `border-radius: 6px` went with the `?perf=1` line.
+  'literal-radius': 13,
   'shadow-sprawl': 14,
   'stale-component-index': 0,
 };

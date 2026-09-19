@@ -4,7 +4,11 @@ import {
   type GameSettings,
   type HudSnapshot,
   type IntroPlayer,
+  type PerfSnapshot,
 } from '../game';
+import { PerfHud } from './PerfHud';
+import { PERF_DISPLAY_LEVELS } from '../settings';
+import type { PerfDisplay } from '../types';
 import { keyLabel, padButtonLabel } from '../input/bindings';
 import { ENDGAME_START, POWER_DRAW_MAX } from '../config';
 import { MobileControls } from './MobileControls';
@@ -13,7 +17,7 @@ import { SponsorGameChip } from './Sponsor';
 import { Results } from './Results';
 
 import { DEFAULT_MOBILE_LAYOUT } from '../settings';
-import type { NetSession, NetStatus } from '../net/session';
+import type { NetSession } from '../net/session';
 import { clearActiveGame } from '../net/activeGame';
 import { TutorialCard } from './TutorialCard';
 import type { Replay, ReplayResult } from '../sim/replay';
@@ -32,92 +36,20 @@ import {
   type PredictionPref,
 } from '../net/predictionPref';
 
-/** top-right connection-quality readout (multiplayer only): a coloured signal dot
- * + live RTT / snapshot-rate / jitter, so a laggy player can see AT A GLANCE whether
- * it's their link (high ping/jitter) or the game. Colour tracks `net.quality`; the
- * tooltip spells the three numbers out. */
-function NetQuality({ net, open, onToggle }: { net: NetStatus; open: boolean; onToggle: () => void }) {
-  const q = net.quality; // 'good' | 'fair' | 'poor' | null (measuring)
-  const cls = q === 'good' ? 'on' : q === 'fair' ? 'warn' : q === 'poor' ? 'off' : '';
-  const dot = q === 'good' ? '#3ad17a' : q === 'fair' ? '#e5b567' : q === 'poor' ? '#e5636b' : '#93a1ad';
-  const label =
-    q === 'good' ? 'SMOOTH' : q === 'fair' ? 'OK' : q === 'poor' ? 'CHOPPY' : 'MEASURING';
-  const ping = net.rttMs === null ? '-' : `${net.rttMs}ms`;
-  const hz = net.snapHz === null ? '-' : `${net.snapHz}Hz`;
-  const jit = net.jitterMs === null ? '-' : `±${net.jitterMs}ms`;
-  const title =
-    `Connection: ${label.toLowerCase()}\n` +
-    `Round-trip ping: ${ping} (you ↔ server)\n` +
-    `Server updates: ${hz} (target 30)\n` +
-    // the four MEASUREMENTS only. That it opens a graph is already said by the 📈
-    // caret, the pointer cursor, role="button" and the `.active` border state.
-    `Jitter: ${jit} (unevenness - the main cause of choppiness)`;
-  return (
-    <span
-      className={`chip net-quality clickable ${cls} ${open ? 'active' : ''}`}
-      title={title}
-      onClick={onToggle}
-      role="button"
-    >
-      <span className="net-dot" style={{ background: dot, boxShadow: `0 0 6px ${dot}` }} />
-      {ping} · {hz} · {jit} <span className="net-caret">📈</span>
-    </span>
-  );
-}
-
-/** expandable ping GRAPH — a sparkline of the RAW round-trip samples so spikes the
- * smoothed number hides are visible. min/avg/max + a spike count over the window. */
-function PingGraph({ net }: { net: NetStatus }) {
-  const data = net.rttHistory ?? [];
-  const W = 240;
-  const H = 64;
-  if (data.length < 2) {
-    return (
-      <div className="ping-graph">
-        <div className="ping-graph-empty">measuring ping…</div>
-      </div>
-    );
-  }
-  const min = Math.min(...data);
-  const max = Math.max(...data);
-  const avg = data.reduce((a, b) => a + b, 0) / data.length;
-  // a "spike" = a sample well above the running average (jitter, not steady latency)
-  const spikeThresh = Math.max(avg * 1.8, avg + 40);
-  const spikes = data.filter((v) => v > spikeThresh).length;
-  // scale to the graph box (pad the top so the peak isn't clipped)
-  const top = Math.max(max * 1.1, 20);
-  const x = (i: number): number => (i / (data.length - 1)) * W;
-  const y = (v: number): number => H - (v / top) * H;
-  const pts = data.map((v, i) => `${x(i).toFixed(1)},${y(v).toFixed(1)}`).join(' ');
-  const avgY = y(avg);
-  const spikeColor = spikes > 0 ? '#e5636b' : '#3ad17a';
-  return (
-    <div className="ping-graph">
-      <div className="ping-graph-head">
-        <span>PING (ms)</span>
-        <span className="ping-graph-stats">
-          <span>min {Math.round(min)}</span>
-          <span>avg {Math.round(avg)}</span>
-          <span>max {Math.round(max)}</span>
-          <span style={{ color: spikeColor }}>spikes {spikes}</span>
-        </span>
-      </div>
-      <svg
-        className="ping-graph-svg"
-        viewBox={`0 0 ${W} ${H}`}
-        preserveAspectRatio="none"
-        width={W}
-        height={H}
-      >
-        <line x1="0" y1={avgY} x2={W} y2={avgY} className="ping-graph-avg" />
-        <polyline points={pts} className="ping-graph-line" />
-      </svg>
-      <div className="ping-graph-foot">
-        last {data.length} samples · newest → right
-      </div>
-    </div>
-  );
-}
+/**
+ * ── WHERE THE CONNECTION CHIP AND THE PING GRAPH WENT ──────────────────────────────────────
+ *
+ * Into `PerfHud`, with the frame rate (owner, 2026-09-19: "the ping display should be combined
+ * with the performance display … with the fps and other things").
+ *
+ * The chip (`NetQuality`) printed ping · Hz · jitter and doubled as a toggle for a ping GRAPH
+ * (`PingGraph`). The toggle never worked, in any game, in any view: `.hud` is
+ * `pointer-events: none` so the canvas keeps a drag, and every OTHER clickable thing inside it
+ * re-enables them on itself (`.game-btn`, `.sponsor-chip`, `.mobile-btn` all say so in
+ * styles.css) — the chip did not, so its `onClick` never received a click and the graph could
+ * not be opened. Rather than re-enable them, the graph moved to the `graphs` level of the
+ * display setting, which is what the owner asked for and costs the HUD no click target at all.
+ */
 
 /**
  * THE IN-MATCH PREDICTION CONTROL (`docs/biobuzz/plan-3d.md` §5).
@@ -323,17 +255,26 @@ export function GameView({
   // exactly where it was. GameController watches the canvas with a ResizeObserver,
   // so the camera re-fits the moment this flips.
   const ads = useAdUnitActive('game');
-  // `?perf=1` — a frame-time readout, off by default and never chrome a player
-  // sees by accident. It is how the in-game ad columns get signed off: measure
-  // p95 with them off, then on. Read ONCE (not per render) since a query string
-  // cannot change without a reload.
   // one subscription, not five MediaQueryList constructions per render at the 10 Hz HUD poll
   // — and, unlike reading the query during render, this actually updates when it changes
   const coarsePointer = useCoarsePointer();
-  const [perf] = useState(
-    () => typeof location !== 'undefined' && new URLSearchParams(location.search).has('perf'),
-  );
-  const [frames, setFrames] = useState<{ p50: number; p95: number; fps: number } | null>(null);
+  /**
+   * HOW MUCH OF THE PERFORMANCE READ-OUT TO DRAW — the setting, with `?perf` as an override.
+   *
+   * `?perf=1` used to be the ONLY way to see a frame time, which made the ad sign-off a query
+   * string somebody had to remember. It is a setting now (`GameSettings.perfDisplay`, default
+   * `simple`), and the flag survives as a shortcut to the level that sign-off actually wants:
+   * `?perf` forces `detailed`, `?perf=graphs` (or any level name) asks for that one. Read ONCE,
+   * since a query string cannot change without a reload.
+   */
+  const [perfOverride] = useState<PerfDisplay | null>(() => {
+    if (typeof location === 'undefined') return null;
+    const q = new URLSearchParams(location.search).get('perf');
+    if (q === null) return null;
+    return PERF_DISPLAY_LEVELS.includes(q as PerfDisplay) ? (q as PerfDisplay) : 'detailed';
+  });
+  const perfLevel = perfOverride ?? settings.perfDisplay;
+  const [perfStats, setPerfStats] = useState<PerfSnapshot | null>(null);
   /**
    * BIOBUZZ 3D SEAM: does STARTING this practice need the 3D physics chunk loaded first?
    *
@@ -392,7 +333,6 @@ export function GameView({
 
     let hudTimer = 0;
     let clearTimer = 0;
-    let perfTimer = 0;
     let onKey: ((e: KeyboardEvent) => void) | null = null;
 
     async function boot(): Promise<void> {
@@ -469,10 +409,6 @@ export function GameView({
         const h = controller.getHud();
         if (h && (h.phase === 'post' || h.net?.failed)) clearActiveGame();
       }, 250);
-      // sampled at 2 Hz, and ONLY when the flag is on — a per-frame React state
-      // update to display a frame-time number would itself be the slowest thing on
-      // the page, which is a memorably useless way to measure performance.
-      perfTimer = perf ? window.setInterval(() => setFrames(controller.getFrameStats()), 500) : 0;
     }
 
     void boot();
@@ -481,7 +417,6 @@ export function GameView({
       cancelled = true;
       window.clearInterval(hudTimer);
       window.clearInterval(clearTimer);
-      if (perfTimer) window.clearInterval(perfTimer);
       if (onKey) window.removeEventListener('keydown', onKey);
       const controller = controllerRef.current;
       if (controller) {
@@ -498,6 +433,35 @@ export function GameView({
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  /**
+   * THE PERFORMANCE READ-OUT'S POLL — 4 Hz, and only while something is drawing it.
+   *
+   * Its OWN effect, not a line in the mount effect above, for two reasons: the level can
+   * change (it is a prop, and the `?perf` override resolves at mount), and a read-out set to
+   * `off` must cost exactly one `clearInterval` rather than a timer that samples into a state
+   * nobody renders.
+   *
+   * 4 Hz is the ceiling, deliberately. A per-frame React update to display a frame-time number
+   * would itself be the slowest thing on the page, which is a memorably useless way to measure
+   * performance; a quarter of a second is also about as fast as a number can change and still
+   * be readable. `getPerfStats` returns ONE object, so `PerfHud` (memoized) re-renders on this
+   * beat rather than on the HUD's 10 Hz one. The series is only built for `graphs`.
+   *
+   * `controllerRef.current` is null until `boot()` resolves — the poll simply reads null and
+   * React bails out on an unchanged value, so there is no coordination to get wrong.
+   */
+  useEffect(() => {
+    if (perfLevel === 'off') {
+      setPerfStats(null);
+      return;
+    }
+    const wantSeries = perfLevel === 'graphs';
+    const tick = (): void => setPerfStats(controllerRef.current?.getPerfStats(wantSeries) ?? null);
+    tick();
+    const t = window.setInterval(tick, 250);
+    return () => window.clearInterval(t);
+  }, [perfLevel]);
 
   // Keep the restart binding pointed at the CURRENT callback. The controller is
   // built in a mount-only effect, so registering it there would capture a stale
@@ -614,12 +578,6 @@ export function GameView({
           it tracks a live scene rather than the view preference, and the `.game-root.view-3d`
           block in styles.css for what it actually changes. */}
       <div className={scene3d ? 'game-root view-3d' : 'game-root'} ref={rootRef}>
-      {perf && frames && (
-        <div className="perf-readout" role="status">
-          {frames.fps.toFixed(0)} fps · p50 {frames.p50.toFixed(1)}ms · p95{' '}
-          {frames.p95.toFixed(1)}ms · ads {ads ? 'ON' : 'off'}
-        </div>
-      )}
       {/* BIOBUZZ 3D SEAM: the box a live scene mounts its own canvas into, UNDER this one
           (`docs/biobuzz/plan-3d.md` §4.1/§4.7) — see `.game-viewport` in styles.css. Every
           game/session with no `scene` module renders exactly the plain `.game-canvas` this
@@ -693,7 +651,14 @@ export function GameView({
           </div>
         </div>
       )}
-      {hud && <Hud hud={hud} showEventLog={settings.showEventLog} />}
+      {hud && (
+        <Hud
+          hud={hud}
+          showEventLog={settings.showEventLog}
+          perfLevel={perfLevel}
+          perfStats={perfStats}
+        />
+      )}
       {/* THE TUTORIAL STEP CARD — a HUD band, never an overlay over the field
           (`docs/area/ui.md`). It is a sibling of `<Hud>` rather than a child because `.hud` is
           `pointer-events: none` and this card has buttons; see `TutorialCard.tsx` for why
@@ -888,8 +853,17 @@ const PHASE_LABEL: Record<string, string> = {
 };
 
 /** styled after the FTC live scoring audience display: red panel | timer | blue panel */
-function Hud({ hud, showEventLog }: { hud: HudSnapshot; showEventLog: boolean }) {
-  const [pingGraph, setPingGraph] = useState(false);
+function Hud({
+  hud,
+  showEventLog,
+  perfLevel,
+  perfStats,
+}: {
+  hud: HudSnapshot;
+  showEventLog: boolean;
+  perfLevel: PerfDisplay;
+  perfStats: PerfSnapshot | null;
+}) {
   const coarsePointer = useCoarsePointer();
   // MODULE UI SLOTS. Neither current game fills either, so both branches below are
   // the ones that were already there.
@@ -997,12 +971,27 @@ function Hud({ hud, showEventLog }: { hud: HudSnapshot; showEventLog: boolean })
       )}
 
       {(!coarsePointer) && (
-        <div className="status-wrap" data-hud-band>
+        /**
+         * ⚠️ `data-hud-band` IS ON THE CHIP ROW, NOT ON THE WRAPPER.
+         *
+         * It used to be on `.status-wrap`, which also holds whatever is stacked UNDER the
+         * chips — and a band's rect is what `GameController.refreshHudInsets` reserves for the
+         * 3D camera. So opening the old ping graph, or the prediction panel, grew the band and
+         * reframed the field; `.breakdown-row`'s own note records what that looks like
+         * (measured: a 25px inset change visibly jumped the field). The chips are the part that
+         * actually covers the corner, so they are the part that is measured, and the read-out
+         * below them is deliberately NOT — a diagnostic that changed the shot would ruin every
+         * before/after comparison somebody turned it on to make.
+         *
+         * The 3D scrim still reaches everything in here: `.game-root.view-3d .status-wrap`
+         * redefines the tokens for the whole cluster (styles.css).
+         */
+        <div className="status-wrap">
           {/* ONE LINE: the status card and the presenting sponsor's mark, right-
               aligned together. The mark used to sit in its own line above and push
               the whole cluster down, which read as a floating badge over the field
               rather than as part of the HUD chrome. */}
-          <div className="status-row">
+          <div className="status-row" data-hud-band>
             <div className="robot-status">
               {GameChips && <GameChips hud={hud} />}
               {dec && (
@@ -1072,21 +1061,25 @@ function Hud({ hud, showEventLog }: { hud: HudSnapshot; showEventLog: boolean })
                   👁 {hud.spectators}
                 </span>
               )}
-              {hud.net && !hud.net.waitingFor && (
-                <NetQuality
-                  net={hud.net}
-                  open={pingGraph}
-                  onToggle={() => setPingGraph((v) => !v)}
-                />
-              )}
+              {/* NO CONNECTION CHIP. Ping, jitter and the snapshot rate are on the
+                  performance read-out below, beside the frame rate — see the note at the top
+                  of this file. What stays on the chip row is the two things that are NOT
+                  measurements: somebody is missing, or the link has gone wrong. */}
               {hud.net?.waitingFor && (
                 <span className="chip warn">WAITING · {hud.net.waitingFor}</span>
               )}
               {hud.net?.desync && <span className="chip off">⚠ DESYNC</span>}
             </div>
           </div>
-          {hud.net && pingGraph && <PingGraph net={hud.net} />}
-          {hud.prediction && pingGraph && (
+          <PerfHud level={perfLevel} stats={perfStats} />
+          {/* THE PREDICTION PICKER, whenever the setting would do something (a 3D-physics room
+              and nothing else — `hud.prediction` is null everywhere it is inert).
+              It used to be behind the connection chip's click, which means it was never
+              reachable: that click never landed (see the top of this file). It is a CONTROL, so
+              it is not part of the read-out above — a `pointer-events: none` card cannot hold
+              one — and it is not gated on the display level either, because hiding a control
+              behind a diagnostic's setting is the same mistake in a different place. */}
+          {hud.prediction && (
             <PredictionPanel stats={hud.prediction} onPick={setPredictionPref} />
           )}
         </div>

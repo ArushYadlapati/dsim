@@ -13,6 +13,7 @@ import {
 import { SEASONS } from '../seasons';
 import { windowLabel } from './MaintenanceBanner';
 import { adminFail } from './adminCopy';
+import { AccountName, When, downloadCsv, shortId, usePolled } from './adminBits';
 
 /**
  * The operator's live view: who is connected, what each of them is doing, which
@@ -41,32 +42,21 @@ function roomKind(r: { ranked: boolean; kind?: 'versus' | 'record' }): string {
 export function AdminLive({
   onWatch,
   onWatchReplay,
+  onOpenUser,
 }: {
   /** spectate a LIVE room (read-only, hidden from the spectator count) */
   onWatch?: (room: string, region?: string) => void;
   /** open a FINISHED game's replay — the only way to review one after the fact */
   onWatchReplay?: (replayId: string) => void;
+  /** open the account behind a session, in the Users tab */
+  onOpenUser?: (userId: string) => void;
 }) {
-  const [data, setData] = useState<AdminPresence | null>(null);
-  const [err, setErr] = useState(false);
   const [filter, setFilter] = useState('');
-
-  useEffect(() => {
-    let alive = true;
-    const load = (): void => {
-      void adminFetchPresence().then((d) => {
-        if (!alive) return;
-        setErr(d === null);
-        if (d) setData(d);
-      });
-    };
-    load();
-    const t = window.setInterval(load, REFRESH_MS);
-    return () => {
-      alive = false;
-      window.clearInterval(t);
-    };
-  }, []);
+  // PAUSES WHILE THE TAB IS HIDDEN (see `usePolled`). This used to be a bare
+  // `setInterval(load, 5000)` that ran forever: an admin tab left open behind an editor was
+  // by itself enough to keep the game server — which auto-stops when idle — permanently
+  // awake, at a database round trip every five seconds for a screen nobody was looking at.
+  const { data, err } = usePolled(adminFetchPresence, REFRESH_MS);
 
   if (err && !data) {
     return (
@@ -137,8 +127,7 @@ export function AdminLive({
       </div>
 
       <input
-        className="adm-filter"
-        style={{ marginTop: 20 }}
+        className="adm-filter adm-gap"
         placeholder="Filter every session by name, id, room or region…"
         value={filter}
         onChange={(e) => setFilter(e.target.value)}
@@ -146,15 +135,41 @@ export function AdminLive({
 
       <h3 className="adm-h3">
         Signed in <span className="ds-muted">({shownPlayers.length})</span>
+        {shownPlayers.length > 0 && (
+          <button
+            className="ds-btn ghost small adm-h3-act"
+            onClick={() =>
+              downloadCsv(
+                'sessions.csv',
+                ['userId', 'handle', 'username', 'doing', 'game', 'queue', 'queuedS', 'room', 'region', 'sockets'],
+                shownPlayers.map((p) => [
+                  p.userId, p.handle ?? '', p.username ?? '', p.act, p.game ?? '',
+                  p.queue ?? '', p.queuedS ?? '', p.room ?? '', p.region, p.sessions ?? 1,
+                ]),
+              )
+            }
+          >
+            Export CSV
+          </button>
+        )}
       </h3>
       <SessionTable
         rows={shownPlayers.map((p) => ({
           key: p.userId + p.region,
           who: (
             <>
-              <span className="adm-name">{p.handle ?? '(no profile)'}</span>
-              {p.username && <span className="ds-muted"> @{p.username}</span>}
-              {(p.sessions ?? 1) > 1 && <span className="adm-pill" style={{ marginLeft: 6 }}>×{p.sessions}</span>}
+              {/* ⚠️ ONE function decides what a nameless account reads as — see `AccountName`.
+                  This line used to be `p.handle ?? '(no profile)'`, which said the same
+                  wrong thing about three different situations. */}
+              <AccountName
+                userId={p.userId}
+                handle={p.handle}
+                username={p.username}
+                known={p.known}
+                role={p.role}
+                onOpen={onOpenUser}
+              />
+              {(p.sessions ?? 1) > 1 && <span className="adm-pill">×{p.sessions}</span>}
             </>
           ),
           act: p.act,
@@ -247,25 +262,7 @@ export function AdminLive({
  * player's own match history to open.
  */
 function RecentGames({ onWatchReplay }: { onWatchReplay?: (replayId: string) => void }) {
-  const [rows, setRows] = useState<AdminMatchRow[] | null>(null);
-  const [err, setErr] = useState(false);
-
-  useEffect(() => {
-    let alive = true;
-    const load = (): void => {
-      void adminFetchMatches(40).then((m) => {
-        if (!alive) return;
-        setErr(m === null);
-        if (m) setRows(m);
-      });
-    };
-    load();
-    const t = window.setInterval(load, 30_000);
-    return () => {
-      alive = false;
-      window.clearInterval(t);
-    };
-  }, []);
+  const { data: rows, err } = usePolled(() => adminFetchMatches(40), 30_000);
 
   return (
     <>
@@ -286,7 +283,8 @@ function RecentGames({ onWatchReplay }: { onWatchReplay?: (replayId: string) => 
                 <b>{rosterLabel(m)}</b>
                 <span className="ds-muted">
                   {' '}
-                  · {gameName(m.game)} · {matchKind(m)} {m.mode} · {scoreLabel(m)} · {ago(m.createdAt)}
+                  · {gameName(m.game)} · {matchKind(m)} {m.mode} · {scoreLabel(m)} ·{' '}
+                  <When at={m.createdAt} />
                   {' · s'}
                   {m.balanceVersion}
                 </span>
@@ -324,15 +322,6 @@ function matchKind(m: AdminMatchRow): string {
 function scoreLabel(m: AdminMatchRow): string {
   if (m.kind === 'record') return `${m.score ?? 0} pts`;
   return `${m.redScore ?? 0}–${m.blueScore ?? 0}`;
-}
-
-/** coarse "how long ago" — the operator wants recency, not a timestamp */
-function ago(iso: string): string {
-  const s = Math.max(0, Math.round((Date.now() - new Date(iso).getTime()) / 1000));
-  if (s < 60) return 'just now';
-  if (s < 3600) return `${Math.floor(s / 60)}m ago`;
-  if (s < 86400) return `${Math.floor(s / 3600)}h ago`;
-  return `${Math.floor(s / 86400)}d ago`;
 }
 
 /** one shared table for both kinds of session, so a guest row and an account row
@@ -422,19 +411,17 @@ function MaintenancePanel() {
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState<string | null>(null);
 
-  const load = (): void => {
-    void adminFetchMaintenance().then((r) => {
-      if (!r) return;
-      setW(r.maintenance);
-      setBiting(r.biting);
-      if (r.maintenance.message) setMsg(r.maintenance.message);
-    });
-  };
+  // also visibility-aware — a lockdown window changes when somebody sets one, which is a
+  // couple of times a month, and the panel was asking every five seconds forever
+  const { data: served, reload: load } = usePolled(adminFetchMaintenance, REFRESH_MS);
   useEffect(() => {
-    load();
-    const t = window.setInterval(load, REFRESH_MS);
-    return () => window.clearInterval(t);
-  }, []);
+    if (!served) return;
+    setW(served.maintenance);
+    setBiting(served.biting);
+    // the message box is SEEDED from the server, not BOUND to it: overwriting it on every
+    // poll would wipe what an admin is halfway through typing.
+    if (served.maintenance.message) setMsg((cur) => (cur === 'Scheduled maintenance' ? served.maintenance.message : cur));
+  }, [served]);
 
   const apply = async (next: MaintenanceWindow, okMsg: string): Promise<void> => {
     setBusy(true);
@@ -464,7 +451,7 @@ function MaintenancePanel() {
         </span>
       </div>
       {live && w && (
-        <p className="ds-hint" style={{ margin: 0 }}>
+        <p className="ds-hint">
           {w.message || 'Maintenance'} · {windowLabel({ ...w, biting }) || 'no window set'}
         </p>
       )}
@@ -487,12 +474,12 @@ function MaintenancePanel() {
           LIFT LOCKDOWN
         </button>
       </div>
-      <p className="ds-hint" style={{ margin: 0 }}>
+      <p className="ds-hint">
         Blocks new matches, ranked queueing and custom rooms for everyone except admins — enforced
         on the server, not just hidden in the UI. Matches already running are left alone to finish.
         Set “starts in” above 0 so players get told before it bites.
       </p>
-      {status && <p className="ds-hint" style={{ margin: 0 }}>{status}</p>}
+      {status && <p className="ds-hint">{status}</p>}
     </div>
   );
 }
@@ -506,12 +493,41 @@ function Stat({ label, value, hint }: { label: string; value: number; hint?: str
   );
 }
 
-/** the DB aggregate plus THIS machine's own row, deduped by machine id */
+/**
+ * The DB aggregate plus THIS machine's own row, deduped by machine id.
+ *
+ * ⚠️ THE LOCAL ROW WINS ON NUMBERS AND THE DATABASE ROW WINS ON NAMES, and getting that
+ * backwards is the whole of the "(no profile)" bug. `local` is assembled from live socket
+ * state, so it is the FRESHER of the two — a session that connected two seconds ago is in it
+ * and not yet in the heartbeat — which is why it replaces the database row outright. But the
+ * heartbeat is where handles are resolved (`adminPresence` joins `profiles` over it), so
+ * replacing the row threw every name on this machine away. On a single-region deploy that is
+ * every signed-in session, all the time.
+ *
+ * The server now names its own snapshot, so on a current server this loop finds nothing to
+ * fill in. It stays because ONE FLY APP SERVES EVERY CLIENT VERSION: a console loaded from a
+ * newer Vercel deploy talks to whatever server is live, and against an older one `local`
+ * still arrives nameless. `known` is only ever trusted from the row that actually carries a
+ * name, so an old server's silence never asserts "this account has no profile".
+ */
 function mergeMachines(d: AdminPresence): AdminPresence['machines'] {
   const out = [...d.machines];
   const i = out.findIndex((m) => m.machine === d.local.machine);
-  if (i >= 0) out[i] = d.local;
-  else if (d.local.online > 0 || d.local.players.length > 0 || (d.local.guests ?? []).length > 0) out.push(d.local);
+  if (i >= 0) {
+    const fromDb = new Map(out[i].players.map((p) => [p.userId, p]));
+    out[i] = {
+      ...d.local,
+      players: d.local.players.map((p) => {
+        if (p.handle) return p;
+        const known = fromDb.get(p.userId);
+        return known
+          ? { ...p, handle: known.handle, username: known.username, role: known.role, known: known.known }
+          : p;
+      }),
+    };
+  } else if (d.local.online > 0 || d.local.players.length > 0 || (d.local.guests ?? []).length > 0) {
+    out.push(d.local);
+  }
   return out;
 }
 
@@ -523,11 +539,6 @@ function actLabel(p: AdminPresencePlayer | AdminPresenceGuest): string {
 
 function waitLabel(s: number): string {
   return s < 60 ? `${s}s` : `${Math.floor(s / 60)}m ${s % 60}s`;
-}
-
-/** enough of a connection id to tell two rows apart without printing a UUID */
-function shortId(id: string): string {
-  return id.length > 10 ? `${id.slice(0, 8)}…` : id;
 }
 
 function beatAge(iso?: string): string {

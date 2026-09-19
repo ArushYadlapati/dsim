@@ -78,6 +78,7 @@ import {
   loadLanReplay,
 } from '../net/lanRuns';
 import { applyRouteMeta } from '../seo';
+import { trackPageview } from '../pageviews';
 import type { GameId } from '../games/types';
 import { chainDisclaimerSeen, markChainDisclaimerSeen } from '../chainDisclaimer';
 import { startSelectionLegal } from './startPositions';
@@ -506,7 +507,14 @@ export function App() {
   // static tags in index.html describe the homepage (all a social scraper ever
   // gets); this is the rendering-crawler + browser-tab half of the same job.
   useEffect(() => {
-    applyRouteMeta(screen, pathFor(screen, route, settings.game), settings.game, ENTRY_HAS_GAME);
+    const path = pathFor(screen, route, settings.game);
+    applyRouteMeta(screen, path, settings.game, ENTRY_HAS_GAME);
+    // The page view rides the SAME effect, because it answers the same question this one
+    // does — when a route becomes the current one — and a second effect on the same deps
+    // would be a second place for that answer to drift. `pathFor` never emits a query string
+    // and `trackPageview` scrubs the ids out of what it is given anyway; both halves are in
+    // `src/pageviews.ts`, along with every gate that decides whether anything is sent at all.
+    trackPageview(path, settings.game);
   }, [screen, route, settings.game]);
 
   // surface the one-time Chain Reaction disclaimer the first time CR is selected
@@ -723,6 +731,9 @@ export function App() {
   // the multiplayer game this browser is currently in (persisted to localStorage), so
   // the player can REJOIN it after navigating away and is stopped from starting a 2nd.
   const [activeGame, setActiveGame] = useState<ActiveGameRef | null>(() => loadActiveGame());
+  // the server refused to give a saved seat back — the match ended or its grace lapsed.
+  // Declared here rather than with the other overlays below because `rejoinGame` sets it.
+  const [rejoinGone, setRejoinGone] = useState(false);
   // A backgrounded ranked search that PAIRED. The match will not wait — the server
   // holds the slot for RANKED_JOIN_GRACE_MS and then forfeits it — so this takes the
   // screen back rather than offering a choice, and a solo run in flight is discarded
@@ -748,6 +759,13 @@ export function App() {
           // Measured: rejoining a 3D room built a 2D world, predicted a different game from the
           // one the server was scoring, and never latched `physicsPending`.
           physics: s.physics,
+          // ⚠️ AND THE MATCH GENERATION, for the same reason and with a worse symptom. The
+          // server drops an `input` stamped with a stale generation, so a session rebuilt
+          // without this one came back as 0 against a room on 1 and EVERY command was
+          // discarded: prediction moved the robot, each snapshot snapped it back, and the
+          // returning driver could not move at all. Measured against a local server on
+          // 2026-09-19 — 0.000 in of travel without it, 38.7 in with it.
+          gen: s.gen,
           ranked: s.ranked,
           intros: s.intros,
           region: s.region,
@@ -795,16 +813,35 @@ export function App() {
       transport.send(encodeMsg({ t: 'rejoin', room: ref.room, clientId: ref.clientId, caps: CLIENT_CAPS })),
     );
     const s = new ServerSession(transport, false, ref.start, ref.clientId, ref.room);
-    // A rejoin the server REFUSES (the match ended, the grace lapsed) leaves a record that
-    // would keep offering the same dead match every time Home is opened. Forget it as soon
-    // as the refusal lands — the session itself already fails hard, and the controller
-    // freezes rather than predicting on (see `stepServer`).
+    /**
+     * A REJOIN THE SERVER REFUSES GOES BACK TO THE MENU, IT DOES NOT PARK ON A DEAD CARD.
+     *
+     * The record was already forgotten here — otherwise Home offers the same dead match
+     * every time it opens — but the player was left on the game screen behind the
+     * "connection lost" panel, which is a screen about a connection that is fine. They
+     * pressed Rejoin and the answer is that the match is over; say that and put them
+     * where they can start another one.
+     *
+     * ⚠️ ON THE REFUSAL, NOT ON `failed`. `failed` is also how an ordinary mid-match drop
+     * ends (the retry budget ran out), and yanking somebody out of a real game they are
+     * still in would be much worse than the dead card. `slotRefused` is `rejoined: ok=false`
+     * and nothing else. The ref still goes on either, because a match we cannot reach is
+     * not one to keep offering.
+     */
     const watch = window.setInterval(() => {
-      if (s.status().failed) {
-        window.clearInterval(watch);
-        clearActiveGame();
-        setActiveGame(null);
-      }
+      const st = s.status();
+      if (!st.failed) return;
+      window.clearInterval(watch);
+      clearActiveGame();
+      setActiveGame(null);
+      if (!s.slotRefused()) return;
+      setEditMobileLayout(false);
+      s.dispose();
+      setSession(null);
+      setSessionKind(null);
+      setSessionCoop(false);
+      setRejoinGone(true);
+      navigate('home');
     }, 400);
     window.setTimeout(() => window.clearInterval(watch), 30_000);
     setSession(s);
@@ -1160,6 +1197,19 @@ export function App() {
   /** tear the session down without deciding where to go next */
   const leaveSession = (): void => {
     setEditMobileLayout(false);
+    /**
+     * ⚠️ A SOLO RECORD RUN YOU WALK OUT OF IS OVER, SO STOP OFFERING TO REJOIN IT.
+     *
+     * `dispose()` is a CLEAN close (1000/1005), and `Room.detach` reaps a solo record room
+     * on one rather than holding it for the reconnect grace — the room is gone before the
+     * menu has finished rendering. Keeping the record left Home offering a Rejoin that the
+     * server answers `rejoined: ok=false` to, which is a button whose only outcome is an
+     * error. Every OTHER kind holds its seat for the grace, so their record stays and the
+     * offer is real: a custom or ranked match is still there to go back to, and in ranked
+     * going back is what stops the away ticks accruing against your standing.
+     */
+    const soloRecord = sessionKind === 'record' && !sessionCoop;
+    if (soloRecord) clearActiveGame();
     session?.dispose();
     setSession(null);
     setSessionKind(null);
@@ -1439,6 +1489,13 @@ export function App() {
         mode="solo"
         onStart={(s) => beginSession(s, 'record')}
         onCancel={() => navigate('modes')}
+        /* the launcher only offers this when the server refused with `active_game`, so the
+           record is the match that refusal is about — go there instead of dead-ending. */
+        onRejoinActive={() => {
+          const ref = loadActiveGame();
+          if (ref) rejoinGame(ref);
+          else navigate('modes');
+        }}
       />
     );
   }
@@ -1669,6 +1726,23 @@ export function App() {
               <button className="ghost" onClick={abandonActiveGame}>
                 Abandon
               </button>
+            </div>
+          </div>
+        </div>
+      )}
+      {/* the saved seat could not be reclaimed — see the refusal watcher in `rejoinGame`.
+          One sentence on the menu, instead of the "connection lost" panel on a game screen
+          for a match that no longer exists. */}
+      {rejoinGone && (
+        <div className="overlay">
+          <div className="overlay-panel">
+            <h2>That match is over</h2>
+            <p className="ds-sub overlay-sub">
+              It finished, or it was held open too long for you to get back into. Start a new one
+              when you’re ready.
+            </p>
+            <div className="overlay-buttons ds-dialog-actions">
+              <button onClick={() => setRejoinGone(false)}>Got it</button>
             </div>
           </div>
         </div>

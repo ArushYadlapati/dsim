@@ -135,7 +135,10 @@ export function step3d(world: World, dt: number, commands: Map<number, RobotComm
   //     just resolved (`contacts3d.ts`). BEFORE derive, because `derive.ts` is about to re-tag
   //     every element and a spilled one has to be judged against the contact that actually
   //     happened rather than against the state it ends the tick in.
-  if (world.biobuzz) hiveContactPass(world, engine);
+  //     ⚠️ It takes `preVels3d` for the same reason 8b does: G417's test is the CLOSING speed of
+  //     a ram, and by the time this runs the collision has already absorbed it (measured 69.6
+  //     in/s on approach, 21.5 read back) — see `contacts3d.ts`.
+  if (world.biobuzz) hiveContactPass(world, engine, preVels3d);
 
   // 10. derive.
   deriveTick(world, engine);

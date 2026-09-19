@@ -43,6 +43,7 @@ import { robotsEnabled } from './sim/match';
 import { ReplayRecorder, worldResult, type Replay, type ReplayResult } from './sim/replay';
 import { MATCH_SETTLE_MAX_S, newSettleClock, settleStep } from './sim/settle';
 import { practiceSaveDecision } from './replaySavePolicy';
+import { readRenderStats } from './perfStats';
 import { robotInLaunchZone } from './sim/robot';
 import { InputManager } from './input/input';
 import { Renderer } from './render/renderer';
@@ -150,6 +151,112 @@ export interface IntroPlayer {
   elo: number | null;
   isLocal: boolean;
 }
+
+/**
+ * A FIXED SAMPLE WINDOW that never allocates after construction.
+ *
+ * The frame loop pushes into three of these on EVERY frame for every player, whatever the
+ * read-out is set to, so `push` has to be one typed-array write and an index bump — no
+ * `Array.shift` (which is O(n) and was what the old single window did), no object per sample.
+ * The sorting a percentile needs happens in `quantile`, which only the 4 Hz HUD poll calls.
+ */
+class PerfRing {
+  private readonly buf: Float64Array;
+  /** scratch for `quantile`, allocated once — sorting a copy at 4 Hz is fine, allocating one
+   *  240-element array per poll per percentile is the kind of thing this class exists to avoid */
+  private readonly scratch: Float64Array;
+  private n = 0;
+  private i = 0;
+  constructor(size: number) {
+    this.buf = new Float64Array(size);
+    this.scratch = new Float64Array(size);
+  }
+  push(v: number): void {
+    this.buf[this.i] = v;
+    this.i = (this.i + 1) % this.buf.length;
+    if (this.n < this.buf.length) this.n++;
+  }
+  get count(): number {
+    return this.n;
+  }
+  mean(): number {
+    if (this.n === 0) return 0;
+    let sum = 0;
+    for (let k = 0; k < this.n; k++) sum += this.buf[k];
+    return sum / this.n;
+  }
+  max(): number {
+    let m = 0;
+    for (let k = 0; k < this.n; k++) if (this.buf[k] > m) m = this.buf[k];
+    return m;
+  }
+  quantile(q: number): number {
+    if (this.n === 0) return 0;
+    const s = this.scratch.subarray(0, this.n);
+    s.set(this.buf.subarray(0, this.n));
+    s.sort();
+    return s[Math.min(this.n - 1, Math.floor(this.n * q))];
+  }
+  /** oldest→newest, for a sparkline. Allocates, so it is only called at the 4 Hz poll and only
+   *  when the read-out is actually drawing graphs. */
+  series(max: number): number[] {
+    const take = Math.min(this.n, max);
+    const out: number[] = [];
+    for (let k = take; k > 0; k--) out.push(this.buf[(this.i - k + this.buf.length) % this.buf.length]);
+    return out;
+  }
+}
+
+/** what `GameController.getPerfStats()` hands the in-match performance read-out. Every field
+ * that cannot be measured on this run is null, never 0 — see the method's header. */
+export interface PerfSnapshot {
+  fps: number;
+  /** frame PERIOD percentiles over the window, ms (the gap between presented frames) */
+  p50: number;
+  p95: number;
+  p99: number;
+  /** the single worst frame in the window, ms */
+  worst: number;
+  /** mean cost of one frame's fixed-timestep stepping, ms */
+  simMs: number;
+  /** mean sim steps per frame over the window — see `stepCounts` on why it is not the last
+   *  frame's count */
+  stepsPerFrame: number;
+  /** mean cost of one frame's drawing (the 3D scene, if any, plus the 2D pass), ms */
+  renderMs: number;
+  /** which solve this world runs on */
+  physics: Physics;
+  /** is a 3D scene actually drawing (not merely preferred)? */
+  view3d: boolean;
+  /** the live 3D renderer's own counters, or null in a 2D view */
+  scene: ReturnType<typeof readRenderStats>;
+  /** canvas CSS size and the device pixel ratio behind it */
+  width: number;
+  height: number;
+  dpr: number;
+  /** the connection, or null in solo */
+  net: NetStatus | null;
+  /** how far behind the newest snapshot remotes are drawn, ms (online only) */
+  interpMs: number | null;
+  /** render clock vs the newest authoritative tick, in ticks (online only) */
+  behindTicks: number | null;
+  /** corrections applied this match (online only) */
+  reconciles: number | null;
+  /** the last correction's distance, inches (online only) */
+  correctionIn: number | null;
+  prediction: ReturnType<GameController['getPredictionStats']>;
+  /** recent frame periods, oldest→newest, for the sparkline. Empty unless the caller asked —
+   *  see `getPerfStats`, which only builds it for the `graphs` level. */
+  frameSeries: readonly number[];
+}
+
+/** how many frame samples a sparkline draws. ~1.7 s at 60 fps: long enough to show a stutter
+ * in context, short enough that one bad frame is still visible as a spike rather than a pixel. */
+const PERF_SERIES_LEN = 100;
+
+/** the ONE empty array every non-`graphs` poll hands back, so a 4 Hz poll that draws no
+ * sparkline allocates nothing at all. */
+const EMPTY_SERIES: readonly number[] = [];
 
 export interface HudSnapshot {
   /** which game is being played — drives which score HUD GameView renders */
@@ -1410,8 +1517,14 @@ export class GameController {
     this.lastCmd = cmd;
 
     this.acc += Math.min(dtMs / 1000, 0.25);
+    // TWO `performance.now()` CALLS AND ONE RING WRITE, always on. This is the number the
+    // read-out's SIM row prints, and it is the only way to tell "my machine cannot draw this"
+    // from "my machine cannot step this" — which are the two completely different answers a
+    // player reporting a slow match needs. See `PerfRing` on why it costs what it costs.
+    const simT0 = performance.now();
     if (this.session) this.stepServer(cmd);
     else this.stepSolo(cmd);
+    this.simTimes.push(performance.now() - simT0);
 
     this.hudCountdown = this.updateCountdown();
     this.handlePhaseAudio();
@@ -1444,6 +1557,9 @@ export class GameController {
     // solo renders the predicted world directly; the networked path renders remote
     // robots + balls INTERPOLATED (smooth) with the local robot predicted
     const world = this.session ? this.displayWorld(dtMs) : this.world;
+    // the DRAW half of the read-out's split (the sim half is timed in `frameLogic`) — the 3D
+    // pass, if there is one, plus the 2D pass that always runs.
+    const drawT0 = performance.now();
     if (this.scene) {
       try {
         // ONE DOM READ, and only when something moved — see `refreshHudInsets`. It sits here
@@ -1478,39 +1594,92 @@ export class GameController {
     // a live scene draws the field/robots/balls beneath this canvas — the 2D pass then
     // stays transparent and draws only its cheap overlay (name labels), never the field.
     this.renderer.render(this.ctx, world, this.lastCmd, this.localRobotId, !!this.scene);
+    this.renderTimes.push(performance.now() - drawT0);
     this.sampleFrame(dtMs);
     this.raf = requestAnimationFrame(this.loop);
   };
 
   /**
-   * Rolling frame-time samples, surfaced by `?perf=1`.
+   * Rolling FRAME, SIM and RENDER samples — everything the in-match performance read-out
+   * prints, and the thing an ad sign-off is measured with.
    *
-   * Exists to answer one question with a number instead of a guess: what does an
-   * AdSense creative parked beside a 60 Hz canvas actually cost? An ad iframe can
-   * run video, and "it feels fine" is not a measurement you can compare before
-   * and after. Load the game with `?perf=1`, drive for ten seconds with the ad
-   * columns off, then again with them on, and compare p95 — that is the sign-off
-   * the in-game unit needs before `VITE_ADSENSE_SLOT_GAME` is ever set on a live
-   * deploy.
+   * It began as one array behind `?perf=1`, to answer one question with a number instead of a
+   * guess: what does an AdSense creative parked beside a 60 Hz canvas actually cost? An ad
+   * iframe can run video, and "it feels fine" is not a measurement you can compare before and
+   * after. Drive for ten seconds with the ad columns off, then again with them on, and compare
+   * p95 — that is the sign-off the in-game unit needs before `VITE_ADSENSE_SLOT_GAME` is ever
+   * set on a live deploy. The read-out is on by default now, so the comparison is a settings
+   * change rather than a query string somebody has to remember.
    *
-   * One array write per frame and nothing else when the flag is off, so it ships
-   * always-on rather than being a rebuild somebody has to remember how to do.
+   * ⚠️ **THREE RINGS AND NO ALLOCATION PER FRAME.** The sampling runs always-on, in the frame
+   * loop, for every player — so it has to cost three `Float64Array` writes and two
+   * `performance.now()` calls, and nothing else. The sorting a percentile needs happens in
+   * `getPerfStats`, which the HUD polls at 4 Hz.
    */
-  private frames: number[] = [];
+  private readonly frames = new PerfRing(240); // ~4 s at 60 fps
+  private readonly simTimes = new PerfRing(240);
+  private readonly renderTimes = new PerfRing(240);
+  /**
+   * Steps the fixed-timestep loop ran, per frame.
+   *
+   * A WINDOW AND NOT THE LAST FRAME'S COUNT, because on any machine above 60 fps most frames
+   * step ZERO times and the occasional one steps once — a display bound to the last frame
+   * flickered between "0 steps" and "1 step" and told a reader nothing. The mean is the
+   * number that means something: 1.0 is keeping up exactly, below 1 is a display faster than
+   * the sim, and above 1 is a frame loop catching up on ticks it owes.
+   */
+  private readonly stepCounts = new PerfRing(240);
+  /** reconciles applied this match — a correction COUNT, which is the thing that says whether
+   * prediction is fighting the server or agreeing with it */
+  private reconciles = 0;
   private sampleFrame(dtMs: number): void {
-    // ~4s at 60fps: long enough for a stable p95, short enough to react to a
-    // creative that only starts misbehaving once it has finished loading.
-    if (this.frames.length >= 240) this.frames.shift();
     this.frames.push(dtMs);
   }
 
-  /** p50 / p95 frame time in ms, or null until enough samples exist */
-  getFrameStats(): { p50: number; p95: number; fps: number } | null {
-    if (this.frames.length < 30) return null;
-    const s = [...this.frames].sort((a, b) => a - b);
-    const at = (q: number): number => s[Math.min(s.length - 1, Math.floor(s.length * q))];
-    const p50 = at(0.5);
-    return { p50, p95: at(0.95), fps: p50 > 0 ? 1000 / p50 : 0 };
+  /**
+   * EVERYTHING THE PERFORMANCE READ-OUT PRINTS, in one object, sampled at 4 Hz.
+   *
+   * ONE call rather than a method per number, because the display is memoized on the identity
+   * of what it is handed: the HUD around it re-renders at 10 Hz off `getHud()`, and a read-out
+   * that re-rendered with it would be a frame-time counter that costs frame time. Null until
+   * there are enough samples for a percentile to mean anything.
+   *
+   * Rows the display cannot draw are null rather than 0 — a 0 ms ping and an unmeasured one
+   * look identical on screen, and the whole value of this thing is that its numbers are real.
+   */
+  getPerfStats(withSeries = false): PerfSnapshot | null {
+    if (this.frames.count < 30) return null;
+    const p50 = this.frames.quantile(0.5);
+    const net = this.session ? this.session.status() : null;
+    const scene = readRenderStats();
+    const canvas = this.canvas;
+    return {
+      fps: p50 > 0 ? 1000 / p50 : 0,
+      p50,
+      p95: this.frames.quantile(0.95),
+      p99: this.frames.quantile(0.99),
+      worst: this.frames.max(),
+      simMs: this.simTimes.mean(),
+      stepsPerFrame: this.stepCounts.mean(),
+      renderMs: this.renderTimes.mean(),
+      physics: this.interp3d() ? '3d' : '2d',
+      view3d: !!this.scene,
+      scene,
+      width: canvas.clientWidth,
+      height: canvas.clientHeight,
+      dpr: typeof window === 'undefined' ? 1 : window.devicePixelRatio || 1,
+      net,
+      /** the interpolation delay is a CONSTANT, but it is the one number that explains why a
+       *  remote robot is where it is rather than where the newest snapshot says, so it prints */
+      interpMs: net ? INTERP_DELAY_TICKS * C.SIM_DT * 1000 : null,
+      /** how far the render clock is behind the newest authoritative tick, in ticks. The
+       *  interpolation delay is the floor; anything much above it is a snapshot stall. */
+      behindTicks: net && this.gotSnapshot ? Math.max(0, Math.round(this.lastServerTick - this.renderTick)) : null,
+      reconciles: net ? this.reconciles : null,
+      correctionIn: net ? this.lastCorrection : null,
+      prediction: this.getPredictionStats(),
+      frameSeries: withSeries ? this.frames.series(PERF_SERIES_LEN) : EMPTY_SERIES,
+    };
   }
 
   /** multiplayer sim driver — a timer (not rAF) so a backgrounded tab keeps
@@ -1582,6 +1751,7 @@ export class GameController {
         return;
       }
     }
+    this.stepCounts.push(steps);
     if (steps === C.MAX_STEPS_PER_FRAME) this.acc = 0;
   }
 
@@ -1801,6 +1971,7 @@ export class GameController {
       this.acc -= C.SIM_DT;
       steps++;
     }
+    this.stepCounts.push(steps);
     // bound the buffer (only recent, unacked inputs ever matter)
     if (this.inputBuf.length > 600) this.inputBuf.splice(0, this.inputBuf.length - 600);
   }
@@ -2263,6 +2434,10 @@ export class GameController {
 
   private reconcile(snap: Snapshot): void {
     const firstSnap = !this.gotSnapshot;
+    // counted for the read-out's CORRECTIONS row. A count on its own says little; beside the
+    // last correction's DISTANCE it is what separates "the server agrees with me 30 times a
+    // second" from "the server is dragging me back 30 times a second".
+    this.reconciles++;
     // VISUAL error smoothing (rubberbanding fix): capture where the LOCAL robot is
     // currently rendered (predicted pos + the decaying offset). After we snap to
     // the authoritative world below, we set `localSmooth` so the RENDERED position

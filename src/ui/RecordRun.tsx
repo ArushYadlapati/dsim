@@ -5,7 +5,8 @@ import { WebSocketTransport } from '../net/transport';
 import { LobbyClient, type MatchStart } from '../net/lobbyClient';
 import { ServerSession } from '../net/serverSession';
 import type { NetSession } from '../net/session';
-import type { RecordKind } from '../net/protocol';
+import type { ErrorCode, RecordKind } from '../net/protocol';
+import { loadActiveGame } from '../net/activeGame';
 import { moduleFor } from '../games';
 import { serverPhysics } from '../games/types';
 import { initPhysics3d, physics3dReady } from '../games/biobuzz/sim3d/engine';
@@ -26,14 +27,29 @@ export function RecordRun({
   mode,
   onStart,
   onCancel,
+  onRejoinActive,
 }: {
   settings: GameSettings;
   mode: RecordKind;
   onStart: (s: NetSession) => void;
   onCancel: () => void;
+  /** go to the game this account is already in — offered only when the server refuses
+   *  with `active_game` AND this browser still knows which match that is. Optional so
+   *  nothing breaks for a caller that does not wire it. */
+  onRejoinActive?: () => void;
 }) {
   const [status, setStatus] = useState('Connecting to the record server…');
   const [error, setError] = useState('');
+  /** the server's machine-readable reason, when it gave one (older servers give none —
+   *  see the message fallback where this is set) */
+  const [errorCode, setErrorCode] = useState<ErrorCode | ''>('');
+  /**
+   * EVERY FAILURE HERE USED TO BE A DEAD END. The card offered one control — BACK TO HOME —
+   * so a cold-boot timeout, a busy region and a dropped connection all cost a trip through
+   * the menu to try the same thing again. Bumping this re-runs the connect effect, which is
+   * the whole of a retry: the room code is minted inside it.
+   */
+  const [attempt, setAttempt] = useState(0);
   const startedRef = useRef(false);
 
   useEscape(onCancel); // Esc backs out, same as ← Back
@@ -102,11 +118,25 @@ export function RecordRun({
         if (timer) window.clearTimeout(timer);
         onStart(new ServerSession(transport, lobby.isHost(), m, lobby.clientId, room));
       });
-      lobby.on('error', (msg) => {
-        if (!/starting up/i.test(msg)) setError(msg); // startup ⇒ the retry loop handles it
+      lobby.on('error', (msg, code) => {
+        if (/starting up/i.test(msg)) return; // startup ⇒ the retry loop handles it
+        /**
+         * NAME THE REFUSAL WE CAN ACT ON. `active_game` is the single-game lock — the
+         * account is in a match somewhere — and it is the one refusal with a way out that
+         * is not "try the same thing again". Falling back to the sentence keeps that true
+         * against a server deployed before the code existed, which is most of the fleet on
+         * the day this ships; the two are read together, never one or the other.
+         */
+        const active = code === 'active_game' || /already have a game in progress/i.test(msg);
+        setErrorCode(active ? 'active_game' : (code ?? ''));
+        setError(msg);
       });
       lobby.on('closed', () => {
-        if (!startedRef.current) setError('Lost connection to the game server.');
+        // NEVER OVERWRITE A REASON WITH A SYMPTOM. A refusal is followed by the socket
+        // going away, so this fired second and replaced "you already have a game in
+        // progress" with "lost connection" — a different card, about a connection that
+        // was fine, with the wrong way out on it.
+        if (!startedRef.current) setError((e) => e || 'Lost connection to the game server.');
       });
 
       lobby.join(
@@ -149,8 +179,18 @@ export function RecordRun({
       cancelled = true;
       close?.();
     };
+    // `attempt` is the retry: bumping it tears this effect down and dials again with a
+    // fresh room code. Nothing else here may go in the deps — the rest is read once.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [attempt]);
+
+  /** dial again from the top: clear the card, mint a new room, reset the nudge loop. */
+  const retry = (): void => {
+    startedRef.current = false;
+    setError('');
+    setErrorCode('');
+    setAttempt((n) => n + 1);
+  };
 
   /** the console scaffold every full-screen setup surface shares (Lobby,
    * Matchmaking, MatchStrategy) — back control + brand mark, then a titled panel. */
@@ -180,6 +220,20 @@ export function RecordRun({
   const kind = mode === 'duo' ? 'Duo 2v0' : 'Solo 1v0';
 
   if (error) {
+    /**
+     * THE CARD HAS TO OFFER A WAY FORWARD, and which one depends on the refusal.
+     *
+     * `active_game` is the only one where trying again is pointless — the lock is held by
+     * a match that is really there, and the way out is to go to it. That offer is made
+     * only when this browser still holds the record of which match it is; with no record
+     * (a cleared storage, another device, an expired entry) there is nothing to go to, so
+     * the card says so and stops rather than promising a button that does nothing.
+     *
+     * Everything else — a cold-boot timeout, a busy region, a dropped connection — retries
+     * in place. It used to be BACK TO HOME or nothing.
+     */
+    const stuckInAnother = errorCode === 'active_game';
+    const canRejoin = stuckInAnother && !!onRejoinActive && !!loadActiveGame();
     return page(
       <>
         Couldn’t <span className="accent">start</span>
@@ -187,7 +241,23 @@ export function RecordRun({
       kind,
       <>
         <p className="ds-form-err">⚠ {error}</p>
+        {stuckInAnother && !canRejoin && (
+          <p className="ds-hint">
+            Open that game from wherever you left it, or wait a minute for it to end on its own.
+          </p>
+        )}
         <div className="ds-actions">
+          {canRejoin ? (
+            <button className="ds-cta" onClick={onRejoinActive}>
+              GO TO THAT GAME
+            </button>
+          ) : (
+            !stuckInAnother && (
+              <button className="ds-cta" onClick={retry}>
+                TRY AGAIN
+              </button>
+            )
+          )}
           <button className="ds-cta ghost" onClick={onCancel}>
             BACK TO HOME
           </button>

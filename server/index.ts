@@ -79,6 +79,14 @@ import {
   challengeParty,
   syncStaffRoles,
   type GlobalPresence,
+  // the admin console's own layer (migration 0041)
+  profileNames,
+  writeAudit,
+  listAudit,
+  auditActions,
+  adminUserDetail,
+  addAdminNote,
+  deleteAdminNote,
 } from './db/repo';
 
 /**
@@ -497,6 +505,18 @@ function coresInUse(): number {
 const MACHINE = process.env.FLY_MACHINE_ID || REGION || 'local';
 
 /**
+ * WHICH BUILD IS THIS MACHINE RUNNING? — reported as `x-build` on `GET /health`.
+ *
+ * `/health` answered a bare `ok`, so there was no way to tell a deployed fix from an
+ * undeployed one from outside: "is this bug in the code or in the running image" cost a
+ * day of argument over the record-restart report (2026-09-19), and `/api/presence`'s
+ * capability list only moves when a capability does. `FLY_MACHINE_VERSION` is set by the
+ * platform and changes on EVERY release, which is exactly the question being asked; set
+ * `BUILD_REF` in the deploy if you want the git sha instead of an opaque id.
+ */
+const BUILD_REF = process.env.BUILD_REF || process.env.FLY_MACHINE_VERSION || 'dev';
+
+/**
  * ADMISSION CONTROL — the maximum number of rooms this machine will HOST.
  *
  * There was no limit at all: every `join` for an unknown code created a room, so a
@@ -848,10 +868,14 @@ const httpServer = createServer((req, res) => {
     res.writeHead(200, {
       'content-type': 'text/plain',
       'access-control-allow-origin': '*',
-      'access-control-expose-headers': 'x-region',
+      'access-control-expose-headers': 'x-region, x-build',
       'cache-control': 'no-store',
       ...(REGION ? { 'x-region': REGION } : {}),
+      'x-build': BUILD_REF,
     });
+    // THE BODY STAYS EXACTLY `ok`. The platform health check and `docs/deploy.md` both
+    // read it, so the build stamp is a HEADER: adding a word here would be a protocol
+    // change dressed as a diagnostic.
     res.end('ok');
     return;
   }
@@ -877,6 +901,15 @@ const httpServer = createServer((req, res) => {
       const token = typeof auth === 'string' && auth.startsWith('Bearer ') ? auth.slice(7) : undefined;
       const user = await verifyAuthToken(token);
       const isAdmin = !!user && ADMIN_IDS.has(user.userId);
+      /**
+       * WHO THE AUDIT LOG ATTRIBUTES THIS CALL TO.
+       *
+       * `'secret'` rather than a made-up person for the `ADMIN_SECRET` query path: that path
+       * is a deploy script (`scripts/announce-deploy.sh`) and has no human behind it, and a
+       * log that names one is worse than a log that says so. The five routes that accept the
+       * secret are the only ones that can produce it.
+       */
+      const actor = user?.userId ?? 'secret';
 
       if (req.method === 'GET' && u.pathname === '/api/admin/status') {
         res.writeHead(200, { ...cors, 'content-type': 'application/json' });
@@ -908,6 +941,36 @@ const httpServer = createServer((req, res) => {
         }
         const machines = dbEnabled ? await adminPresence() : [];
         const local = operatorSnapshot();
+        /**
+         * ⚠️ NAME THE LOCAL SNAPSHOT'S PLAYERS. This is the whole of the "(no profile)" bug.
+         *
+         * `adminPresence()` resolves handles by joining `profiles` over the heartbeat rows,
+         * so every machine's players come back named — except this one's, which is assembled
+         * here from live socket state and carries ONLY ids (`PresencePlayer` has no name
+         * field at all, deliberately: a name copied onto a 5-second heartbeat would go stale
+         * the first time somebody is renamed). The client then REPLACES the database row for
+         * this machine with `local`, because `local` is fresher — and in doing so threw away
+         * the only names it had. On a single-region deploy that is EVERY signed-in session,
+         * every time, reported as "signed in sessions often say no profile".
+         *
+         * So the same lookup runs here, over the same ids, and `known` distinguishes the two
+         * situations the label conflated: an account with no `profiles` row yet (real, and
+         * normal for seconds after a first sign-in — `ensureProfile` runs on the API routes a
+         * client hits, not on the socket) versus a name we simply never looked up.
+         */
+        const names = dbEnabled
+          ? await profileNames(local.players.map((p) => p.userId)).catch(() => new Map())
+          : new Map();
+        const namedLocal = local.players.map((p) => {
+          const n = names.get(p.userId);
+          return {
+            ...p,
+            handle: n?.handle ?? null,
+            username: n?.username ?? null,
+            role: n?.role ?? null,
+            known: n?.known ?? false,
+          };
+        });
         // EVERY region and EVERY kind. The operator list used to be this machine's
         // rooms only, which on a multi-region deploy meant "Live matches" answered
         // with whatever happened to be hosted next to the admin — the same bug
@@ -924,7 +987,7 @@ const httpServer = createServer((req, res) => {
             machines,
             // this machine's own numbers too, so a single-region/dev deploy — and
             // the gap between a socket opening and the next beat — still reads true
-            local: { machine: MACHINE, region: REGION, online: onlineCount, ...local },
+            local: { machine: MACHINE, region: REGION, online: onlineCount, ...local, players: namedLocal },
             rooms: liveRooms,
             queues: matchmaker.queueSizes(),
           }),
@@ -961,6 +1024,108 @@ const httpServer = createServer((req, res) => {
         );
         res.writeHead(200, { ...cors, 'content-type': 'application/json' });
         res.end(JSON.stringify({ matches: rows }));
+        return;
+      }
+      /**
+       * GET /api/admin/audit — every admin action, newest first (migration 0041).
+       *
+       * `?action=&admin=&user=&q=&limit=&offset=`, all optional, the page hard-capped in the
+       * data layer. `?actions=1` answers the filter menu's list of distinct keys instead.
+       *
+       * This is the tab that makes the rest of the console accountable, so it is READ-ONLY by
+       * construction: there is no route that edits or deletes a row here, and adding one would
+       * defeat the point of the table existing. Rows outlive their targets on purpose (no
+       * foreign key either side, see 0041), so deleting an account does not erase what was
+       * done to it.
+       */
+      if (req.method === 'GET' && u.pathname === '/api/admin/audit') {
+        if (!isAdmin) {
+          res.writeHead(403, cors);
+          res.end('forbidden');
+          return;
+        }
+        if (!dbEnabled) {
+          res.writeHead(200, { ...cors, 'content-type': 'application/json' });
+          res.end(JSON.stringify({ rows: [], more: false, actions: [] }));
+          return;
+        }
+        if (u.searchParams.get('actions')) {
+          res.writeHead(200, { ...cors, 'content-type': 'application/json' });
+          res.end(JSON.stringify({ actions: await auditActions() }));
+          return;
+        }
+        const page = await listAudit({
+          action: u.searchParams.get('action') ?? undefined,
+          adminId: u.searchParams.get('admin') ?? undefined,
+          targetUser: u.searchParams.get('user') ?? undefined,
+          query: u.searchParams.get('q') ?? undefined,
+          limit: Number(u.searchParams.get('limit')) || 50,
+          offset: Number(u.searchParams.get('offset')) || 0,
+        });
+        res.writeHead(200, { ...cors, 'content-type': 'application/json' });
+        res.end(JSON.stringify(page));
+        return;
+      }
+      /**
+       * GET /api/admin/user?id=<userId> — EVERYTHING about one account, in one request.
+       *
+       * The console had a name in the live table, counts in the report queue, the ledger in
+       * the standing editor and the membership in the user search, and no page that held all
+       * four — so "what do I do about this person" meant opening four panels and keeping the
+       * answer in your head. One read, `adminUserDetail`, nine bounded queries in parallel.
+       *
+       * An id with NO PROFILE ROW still answers, with `known: false`. That is not an error
+       * case to hide: it is a real state (an account seconds after its first sign-in, before
+       * anything has called `ensureProfile`) and it is the state the operator view used to
+       * mislabel. See `profileNames`.
+       *
+       * POST /api/admin/user/note?id=&note=   pin a private moderator note
+       * POST /api/admin/user/note?id=&delete=<noteId>   remove one
+       */
+      if (u.pathname === '/api/admin/user' || u.pathname === '/api/admin/user/note') {
+        if (!isAdmin) {
+          res.writeHead(403, cors);
+          res.end('forbidden');
+          return;
+        }
+        const target = u.searchParams.get('id');
+        if (!target || !dbEnabled) {
+          res.writeHead(dbEnabled ? 400 : 503, cors);
+          res.end(dbEnabled ? 'bad request' : 'database disabled');
+          return;
+        }
+        if (u.pathname === '/api/admin/user/note') {
+          if (req.method !== 'POST') {
+            res.writeHead(405, cors);
+            res.end('method not allowed');
+            return;
+          }
+          const del = u.searchParams.get('delete');
+          if (del) {
+            const gone = await deleteAdminNote(target, del);
+            if (gone) {
+              await writeAudit({ adminId: actor, action: 'user.note.delete', targetUser: target, targetId: del });
+            }
+            res.writeHead(200, { ...cors, 'content-type': 'application/json' });
+            res.end(JSON.stringify({ ok: gone }));
+            return;
+          }
+          const row = await addAdminNote(target, actor, u.searchParams.get('note') ?? '');
+          if (!row) {
+            res.writeHead(400, cors);
+            res.end('empty note');
+            return;
+          }
+          // the note's TEXT is not copied into the audit detail: it is already stored, once,
+          // in the row this points at, and a second copy is a second thing to redact.
+          await writeAudit({ adminId: actor, action: 'user.note.add', targetUser: target, targetId: row.id });
+          res.writeHead(200, { ...cors, 'content-type': 'application/json' });
+          res.end(JSON.stringify({ ok: true, note: row }));
+          return;
+        }
+        const detail = await adminUserDetail(target);
+        res.writeHead(200, { ...cors, 'content-type': 'application/json' });
+        res.end(JSON.stringify({ user: detail }));
         return;
       }
       /**
@@ -1008,6 +1173,12 @@ const httpServer = createServer((req, res) => {
               console.error('[standing] upheld charge failed:', e),
             );
           }
+          await writeAudit({
+            adminId: actor,
+            action: status === 'reviewed' ? 'report.uphold' : 'report.dismiss',
+            targetUser: target,
+            detail: { reports: n },
+          });
           res.writeHead(200, { ...cors, 'content-type': 'application/json' });
           res.end(JSON.stringify({ ok: true, updated: n }));
           return;
@@ -1081,6 +1252,18 @@ const httpServer = createServer((req, res) => {
               points: smite,
             }).catch((e) => console.error('[standing] smite failed:', e));
           }
+          if (done) {
+            // the TARGET of this row is the REPORTER, not the match: a misscore claim is
+            // resolved against a person only when it is smitten, and "what has been done to
+            // this account" has to surface that alongside their standing ledger.
+            await writeAudit({
+              adminId: actor,
+              action: `misscore.${verdict}`,
+              targetUser: smite > 0 ? done.reporterId : null,
+              targetId: id,
+              detail: { verdict, smite, roomCode: done.roomCode },
+            });
+          }
           res.writeHead(200, { ...cors, 'content-type': 'application/json' });
           res.end(JSON.stringify({ ok: Boolean(done) }));
           return;
@@ -1140,6 +1323,16 @@ const httpServer = createServer((req, res) => {
               `[admin] match ${id} score corrected by ${user?.userId ?? 'admin'}: ` +
                 `${done.redBefore}-${done.blueBefore} -> ${done.redAfter}-${done.blueAfter}`,
             );
+            await writeAudit({
+              adminId: actor,
+              action: 'match.rescore',
+              targetId: id,
+              detail: {
+                before: `${done.redBefore}-${done.blueBefore}`,
+                after: `${done.redAfter}-${done.blueAfter}`,
+              },
+              note: u.searchParams.get('note') ?? undefined,
+            });
           }
           res.writeHead(done ? 200 : 404, { ...cors, 'content-type': 'application/json' });
           res.end(JSON.stringify(done ? { ok: true, ...done } : { error: 'no such match' }));
@@ -1210,6 +1403,18 @@ const httpServer = createServer((req, res) => {
               `${out.pardoned ? `, ${out.pardoned} offence(s) voided` : ''}` +
               `${lock === false ? ', lock cleared' : ''}`,
           );
+          await writeAudit({
+            adminId: actor,
+            action: 'standing.edit',
+            targetUser: target,
+            detail: {
+              scoreBefore: out.scoreBefore,
+              scoreAfter: out.scoreAfter,
+              pardoned: out.pardoned,
+              lock: lock === false ? 'cleared' : lock,
+            },
+            note: u.searchParams.get('note') ?? undefined,
+          });
           res.writeHead(200, { ...cors, 'content-type': 'application/json' });
           res.end(JSON.stringify({ ok: true, ...out }));
           return;
@@ -1271,6 +1476,12 @@ const httpServer = createServer((req, res) => {
             message: (u.searchParams.get('msg') ?? '').slice(0, 200),
           });
           await refreshMaintenance(true); // this machine stops/starts enforcing NOW
+          await writeAudit({
+            adminId: actor,
+            action: next.active ? 'maintenance.schedule' : 'maintenance.lift',
+            detail: { startsAt: next.startsAt, endsAt: next.endsAt },
+            note: next.message || undefined,
+          });
           res.writeHead(200, { ...cors, 'content-type': 'application/json' });
           res.end(JSON.stringify({ ok: true, maintenance: next }));
           return;
@@ -1292,6 +1503,7 @@ const httpServer = createServer((req, res) => {
           currentNotice = { t: 'serverNotice', kind: 'info', message: '' }; // empty => clear on client
           const n = broadcastAll(currentNotice);
           currentNotice = null;
+          await writeAudit({ adminId: actor, action: 'notice.cancel', detail: { notified: n } });
           res.writeHead(200, { ...cors, 'content-type': 'application/json' });
           res.end(JSON.stringify({ ok: true, cancelled: true, notified: n }));
           return;
@@ -1301,6 +1513,12 @@ const httpServer = createServer((req, res) => {
         currentNotice = { t: 'serverNotice', kind: 'restart', message, until: Date.now() + seconds * 1000 };
         const notified = broadcastAll(currentNotice);
         console.log(`[admin] restart notice in ${seconds}s -> ${notified} clients: "${message}"`);
+        await writeAudit({
+          adminId: actor,
+          action: 'notice.restart',
+          detail: { seconds, notified },
+          note: message,
+        });
         res.writeHead(200, { ...cors, 'content-type': 'application/json' });
         res.end(JSON.stringify({ ok: true, notified, until: currentNotice.until }));
         return;
@@ -1337,6 +1555,11 @@ const httpServer = createServer((req, res) => {
           console.log(
             `[admin] started new ${bumpAct ? 'act' : 'season'}: bv=${season} (${label})`,
           );
+          await writeAudit({
+            adminId: actor,
+            action: bumpAct ? 'season.newAct' : 'season.start',
+            detail: { game: adminGame, season, act, seasonNo, label },
+          });
           // auto-publish a cinematic announcement (editable/retire-able from the
           // admin console). `announce=0` opts out for a silent roll.
           if (u.searchParams.get('announce') !== '0') {
@@ -1367,6 +1590,11 @@ const httpServer = createServer((req, res) => {
           for (let s = 1; s < current; s++) freed += await purgeSeasonReplays(s, adminGame);
         }
         console.log(`[admin] purged ${freed} archived-season replays`);
+        await writeAudit({
+          adminId: actor,
+          action: 'season.purgeReplays',
+          detail: { game: adminGame, season: seasonArg ?? `every season before ${current}`, freed },
+        });
         res.writeHead(200, { ...cors, 'content-type': 'application/json' });
         res.end(JSON.stringify({ ok: true, freed }));
         return;
@@ -1423,6 +1651,15 @@ const httpServer = createServer((req, res) => {
           }
           const deleted = await deleteRecordById(id);
           console.log(`[admin] delete record ${id} -> ${deleted}`);
+          if (deleted) {
+            await writeAudit({
+              adminId: actor,
+              action: 'record.delete',
+              targetUser: u.searchParams.get('userId') || null,
+              targetId: id,
+              note: u.searchParams.get('note') ?? undefined,
+            });
+          }
           jsonOut(deleted ? 200 : 404, { ok: deleted });
           return;
         }
@@ -1435,14 +1672,28 @@ const httpServer = createServer((req, res) => {
           }
           const removed = await deleteUserRecords(uid);
           console.log(`[admin] cleared ${removed} records for user ${uid}`);
+          await writeAudit({
+            adminId: actor,
+            action: 'record.clearAll',
+            targetUser: uid,
+            detail: { removed },
+            note: u.searchParams.get('note') ?? undefined,
+          });
           jsonOut(200, { ok: true, removed });
           return;
         }
         // GET /api/admin/users?q= — find profiles to rename/moderate
         if (req.method === 'GET' && u.pathname === '/api/admin/users') {
           const query = (u.searchParams.get('q') ?? '').trim();
-          const users = query ? await searchProfiles(query) : [];
-          jsonOut(200, { users });
+          // PAGED AND CAPPED. It was a bare `searchProfiles(query)` behind a box with no
+          // way to ask for the rest, so a common name silently showed its first 25 matches
+          // as though they were all of them — which for a moderation search is not a
+          // cosmetic limit, it is the wrong answer to "is this account here".
+          const limit = Math.min(50, Math.max(1, Number(u.searchParams.get('limit')) || 25));
+          const offset = Math.max(0, Math.min(5000, Number(u.searchParams.get('offset')) || 0));
+          // one row past the page, so "is there more" needs no second count(*)
+          const found = query ? await searchProfiles(query, limit + 1, offset) : [];
+          jsonOut(200, { users: found.slice(0, limit), more: found.length > limit });
           return;
         }
         // POST /api/admin/user/rename?userId=&handle= — force a clean display name
@@ -1464,6 +1715,16 @@ const httpServer = createServer((req, res) => {
           }
           await setHandle(uid, handle);
           console.log(`[admin] renamed ${uid}: "${profile.handle}" -> "${handle}"`);
+          // BOTH names in the detail. A forced rename is the one moderation action whose
+          // evidence it destroys: after it runs, nothing anywhere still says what the name
+          // was that made somebody reach for the button.
+          await writeAudit({
+            adminId: actor,
+            action: 'user.rename',
+            targetUser: uid,
+            detail: { from: profile.handle, to: handle },
+            note: u.searchParams.get('note') ?? undefined,
+          });
           jsonOut(200, { ok: true, userId: uid, handle });
           return;
         }
@@ -1501,6 +1762,13 @@ const httpServer = createServer((req, res) => {
             `by ${user?.userId ?? 'secret'}${note ? `: ${note}` : ''}`,
           );
           console.log(`[admin] supporter +${months}mo for ${uid} -> ${until}`);
+          await writeAudit({
+            adminId: actor,
+            action: 'supporter.grant',
+            targetUser: uid,
+            detail: { months, until },
+            note: note || undefined,
+          });
           jsonOut(200, { ok: true, userId: uid, until });
           return;
         }
@@ -1518,6 +1786,13 @@ const httpServer = createServer((req, res) => {
             `by ${user?.userId ?? 'secret'}${note ? `: ${note}` : ''}`,
           );
           console.log(`[admin] supporter revoked for ${uid} -> ${revoked}`);
+          await writeAudit({
+            adminId: actor,
+            action: 'supporter.revoke',
+            targetUser: uid,
+            detail: { revoked },
+            note: note || undefined,
+          });
           jsonOut(200, { ok: true, userId: uid, revoked });
           return;
         }
@@ -1533,6 +1808,9 @@ const httpServer = createServer((req, res) => {
           }
           const flagged = await refundKofiPayment(txn);
           console.log(`[admin] payment ${txn} flagged refunded -> ${flagged}`);
+          if (flagged) {
+            await writeAudit({ adminId: actor, action: 'supporter.refund', targetId: txn });
+          }
           jsonOut(flagged ? 200 : 404, { ok: flagged });
           return;
         }
@@ -1579,6 +1857,9 @@ const httpServer = createServer((req, res) => {
           }
           const deleted = await deleteAnnouncement(id);
           console.log(`[admin] retire announcement ${id} -> ${deleted}`);
+          if (deleted) {
+            await writeAudit({ adminId: actor, action: 'announcement.retire', targetId: id });
+          }
           jsonOut(deleted ? 200 : 404, { ok: deleted });
           return;
         }
@@ -1600,6 +1881,12 @@ const httpServer = createServer((req, res) => {
           const tagline = (payload.tagline ?? '').trim().slice(0, 80) || null;
           const row = await createAnnouncement({ kind: payload.kind ?? 'patch', title, body, tagline });
           console.log(`[admin] published ${row.kind} announcement "${row.title}"`);
+          await writeAudit({
+            adminId: actor,
+            action: 'announcement.publish',
+            targetId: row.id,
+            detail: { kind: row.kind, title: row.title },
+          });
           // a live-info banner nudges connected players to look — the feed itself
           // shows on their NEXT load (localStorage "seen" gate), but this makes it
           // feel immediate for anyone already online.
@@ -2485,7 +2772,14 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
       } else if (releaseSoloRecordHold(user.userId)) {
         /* a solo run of their own was in the way; it is not any more — see below */
       } else {
-        send({ t: 'error', message: 'You already have a game in progress - rejoin or leave it first.' });
+        // CODED, because this is one of the few refusals a client can do something about:
+        // the record launcher turns it into "go to that game" instead of a dead card. The
+        // sentence stays self-sufficient for every build that predates the code.
+        send({
+          t: 'error',
+          message: 'You already have a game in progress - rejoin or leave it first.',
+          code: 'active_game',
+        });
         abandon();
         return;
       }

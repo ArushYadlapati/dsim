@@ -88,6 +88,28 @@ the diagonal opposites.
 Tape is 1 or 2 in red / electric-blue gaffer (§9.3). GARDENS are **not protected** (§10.5.3,
 G411 note). LOADING ZONE belongs to the alliance whose ALLIANCE AREA it adjoins.
 
+**THE TAPE, FROM THE EVENT FIELD GUIDE V1.0 §8 (pp13–15) — the setup document, not the manual.**
+ProGaff Premium Professional Grade Gaffer Tape or comparable, red and electric blue, `am-5850_tape`
+(parts list p5). §8.1: the field "is designed such that the tape can be either 1 in. (2.50 cm) wide
+or 2 in. (5.1 cm) wide. The outside perimeter of each zone should be consistent with the
+specifications, but the tape width may vary" — so the ZONE is fixed and the width is the event's
+choice; §8.3's figure draws the LOADING ZONE at both widths side by side and §8.4's draws the
+GARDEN as [2] 1-in pieces OR [1] 2-in piece. §8 installs exactly three things and no others:
+
+| § | mark | segments | how it is placed |
+|---|---|---|---|
+| 8.3 | LOADING ZONE ×2 (red tile A5, blue F2) | [3] | two 11 in ±0.125 depth edges on the tile side seams, joined by a third; starts at the outer edge of the tile tabs — the wall edge carries none |
+| 8.4 | GARDEN ×2 (red tile A1, blue F6) | [1] or [2] | ~2 in total width; starts and ends at the inside edge of the tile A1/F6 seams |
+| 8.5 | ALLIANCE AREA ×2 | [3] | 54 in ±1 deep, ~97 in outside-outside; the tape's INSIDE edge on the outside of Seams 1 and 5; open on the field side |
+
+⚠️ **There is no centre mark of any kind.** §8 has no fourth install, Fig 9-2 (p65) shows nothing at
+the origin, and guide §9.1 removes the four centre tiles for the frame's under-tile strips — the
+centre of the field is bare tile under the HIVE structure. Both renderers drew a white cross there
+at tape width until 2026-09-19; it was a gallery orientation aid, not a field marking.
+
+The CAD ships the 1-in build (`tape.widthsIn` is a one-element list, 16 parts), so that is what the
+sim draws, and `BB_TAPE_W` is the single name for it.
+
 ### 2.2 HIVE Structure (§9.6, Figs 9-7…9-11, pp69–73)
 
 Frame: two triangular metal structures joined at the apex by a crossbar, on mounting strips

@@ -678,7 +678,12 @@ export interface LiveRoom {
 export type ErrorCode =
   /** this machine is at its room cap — the same code can be joined elsewhere, so the
    *  client should offer a different region rather than just reporting a failure */
-  | 'region_full';
+  | 'region_full'
+  /** the single-game lock refused this join: the account is already in a match somewhere.
+   *  The client can act on it — rejoin that game or leave it — so it is worth a code
+   *  instead of a screen that only reads the sentence back. Older servers send no code,
+   *  so a handler must still recognise the message (see `RecordRun`). */
+  | 'active_game';
 
 export type ServerMsg =
   | { t: 'welcome'; clientId: string }
@@ -710,7 +715,17 @@ export type ServerMsg =
   | { t: 'error'; message: string; code?: ErrorCode }
   // reply to a 'rejoin': ok ⇒ slot reclaimed (a snapshot follows); !ok ⇒ the
   // grace window lapsed / slot is gone, stop trying
-  | { t: 'rejoined'; ok: boolean }
+  /**
+   * ⚠️ `gen` IS THE MATCH GENERATION THE ROOM IS ON, AND A REJOIN THAT DOES NOT ADOPT IT
+   * IS A ROBOT THAT DOES NOT MOVE.
+   *
+   * The server drops any `input` stamped with a stale generation (see `matchStart.gen`),
+   * and a client that came back through the Home rejoin card rebuilds its session from a
+   * SAVED `matchStart` — which may be a generation behind, or may never have carried one.
+   * So the reply that hands the slot back also states which match the slot is in. Optional
+   * and additive: an older server sends none and the client keeps what it had.
+   */
+  | { t: 'rejoined'; ok: boolean; gen?: number }
   /** a `report` was accepted (or was a duplicate, which is reported the same way — the
    *  reporter does not need to know which, and telling them would leak prior reports) */
   | { t: 'reported'; ok: boolean }

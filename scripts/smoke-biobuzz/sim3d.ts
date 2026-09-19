@@ -9,10 +9,10 @@ import { cadTrayRefTheta, fieldColliders3d } from '../../src/games/biobuzz/sim3d
 import { hiveCellLocalBox, hivePivotX, hiveTrayRefTheta, __setFieldCollidersOverrideForTests } from '../../src/games/biobuzz/sim3d/bodies';
 import { hiveTiltAngle } from '../../src/games/biobuzz/sim3d/hive3d';
 import { rotate2 } from '../../src/games/biobuzz/sim3d/math3';
-import { rot } from '../../src/math';
+import { rot, wrapAngle } from '../../src/math';
 import { worldHash } from '../../src/net/checksum';
 import { bbScoreWorld } from '../../src/games/biobuzz/score';
-import { bbFootprint, bbSolveShot } from '../../src/games/biobuzz/robot';
+import { bbFootprint, bbMouths, bbSolveShot } from '../../src/games/biobuzz/robot';
 import { robotExtents } from '../../src/sim/physics';
 import { chassis3dShapes } from '../../src/games/biobuzz/sim3d/bodies';
 import { solveShotPath } from '../../src/games/biobuzz/shotPath';
@@ -571,6 +571,66 @@ export function sim3dChecks(check: Check): void {
         "intake: the engine's element body count dropped by one",
         engineAfter.elements.size === bodiesBefore - (capturedAtTick >= 0 ? 1 : 0),
         `${bodiesBefore} -> ${engineAfter.elements.size}`,
+      );
+    }
+  }
+
+  // ---- the SIDE of the intake is an obstacle, not a mouth (owner item 7, 2026-09-19) --------
+  /**
+   * "If the side of the intake comes in contact with a pollen very gently, then a very weird
+   * behavior happens where the pollen and the robot are stuck together and the robot turns by
+   * itself."
+   *
+   * ⚠️ THIS IS THE LANE THE BUG LIVED IN. `bbIntakeAct`'s lateral window was `half + er`, so an
+   * element whose CENTRE sat up to one radius OUTBOARD of the roller's end — on the far side of
+   * the side plate `bbRobotSolids` makes solid — was gripped and commanded `DRAW_IN ·
+   * CENTRE_FRAC` (50.4 in/s) straight INTO that plate, every tick. In 2D a ground element cannot
+   * push a robot, so it merely sat there; here it is a real dynamic body against a real collider,
+   * and that injected momentum was delivered to the chassis at an OFF-CENTRE point. MEASURED,
+   * robot parked, no command but the intake: heading drifted **0.335 rad (19.2°) in 6.7 s** at a
+   * steady −0.035 rad/s, the chassis walked 1.6 in, and the element was dragged 5.1 in along with
+   * it. The same scene with the intake OFF drifted 0.001 rad, which is what this check pins to.
+   *
+   * The sweep covers the whole band an element can rest in against the plate, because the failure
+   * was at every offset in it. It also BACKS AWAY at the end: a gripped element followed the robot.
+   */
+  {
+    for (const frac of [0.3, 0.6, 0.9] as const) {
+      const w = mkWorld3d('free', 26);
+      const r = w.robots[0];
+      for (const b of w.balls) {
+        if (b.state.kind === 'held' && b.state.robot === r.id) b.state = { kind: 'ground' };
+      }
+      r.hopper = [];
+      r.pos = { x: 0, y: -30 };
+      r.heading = 0;
+      r.vel = { x: 0, y: 0 };
+      r.angVel = 0;
+      const m = bbMouths(r.spec).find((x) => x.edge === 'front') ?? bbMouths(r.spec)[0];
+      const reach = bbFootprint(r.spec).front - r.spec.length / 2;
+      const ball: Artifact = {
+        id: 9100 + Math.round(frac * 10),
+        color: 'yellow',
+        state: { kind: 'ground' },
+        pos: { x: r.pos.x + r.spec.length / 2 + reach / 2, y: r.pos.y + m.y1 + BB_POLLEN_R * frac },
+        vel: { x: 0, y: 0 },
+        z: 0,
+        vz: 0,
+      };
+      w.balls.push(ball);
+      const h0 = r.heading;
+      let worstDrift = 0;
+      for (let t = 0; t < 400; t++) {
+        step3d(w, 1 / 60, new Map([[0, cmd({ intake: true })]]));
+        worstDrift = Math.max(worstDrift, Math.abs(wrapAngle(r.heading - h0)));
+      }
+      const stuck = ball.state.kind !== 'ground';
+      for (let t = 0; t < 90; t++) step3d(w, 1 / 60, new Map([[0, cmd({ driveY: -0.5 })]]));
+      const sep = Math.hypot(ball.pos.x - r.pos.x, ball.pos.y - r.pos.y);
+      check(
+        `intake side: a POLLEN against the side plate (+${frac}r outboard) is pushed, not gripped — no free yaw`,
+        !stuck && worstDrift < 0.01 && sep > 40,
+        `state=${ball.state.kind} worst drift ${worstDrift.toFixed(5)} rad (was 0.335 before the fix) · separation ${sep.toFixed(1)}in`,
       );
     }
   }
@@ -1976,14 +2036,24 @@ export function sim3dChecks(check: Check): void {
       return apex;
     };
     // A 24in drop arrives at 141in/s. The rebound HEIGHT is e^2 * drop, so this band is really a
-    // band on e: 1.30..1.70in is e 0.233..0.266 around the measured 1.485in (e 0.249). It fails
-    // LOW at the old restitution-0 tiles (1.19in, e 0.223) and it fails HIGH by a mile if anyone
-    // gives the pair a MAX combine rule instead of the average (e 0.45 -> 4.9in) -- the tempting
-    // one-word version of this change, and not what "very slightly more" asked for.
+    // band on e: 6.9..9.0in is e 0.536..0.612, the hard-plastic-ball-on-foam-tile band, around
+    // the measured 7.68in (e 0.566).
+    //
+    // ⚠️ IT WAS 1.30-1.70in (e ~= 0.25) UNTIL 2026-09-19, and that is the owner's item 21: "in
+    // real life the balls bounce and disperse a lot more after the hive tips and it hits the
+    // field tiles". At e 0.25 a POLLEN arriving off the tray at 160in/s rebounded 1.0-2.1in --
+    // not a bounce anybody can see. The lever is `BB3_ELEMENT_RESTITUTION` and the floor's
+    // MULTIPLY rule (`sim3d/bodies.ts` `TILE_RESTITUTION`), which is what lets the element carry
+    // the real pair while a chassis still reads zero against the same collider; both ends of
+    // that are measured in those two headers.
+    //
+    // It still fails HIGH if anyone gives the ELEMENT a MAX combine rule, which is the tempting
+    // one-word version and the wrong one: MAX outranks the tray's MIN, so it would take the
+    // cell's own low restitution with it and a shot would bounce back out.
     const drift = reboundApex(20, 24);
     check(
-      'tiles: a POLLEN dropped 24in with planar drift rebounds 1.30-1.70in (e ~= 0.25)',
-      drift >= 1.3 && drift <= 1.7,
+      'tiles: a POLLEN dropped 24in with planar drift rebounds 6.9-9.0in (e ~= 0.57, foam tile)',
+      drift >= 6.9 && drift <= 9.0,
       `apex ${drift.toFixed(4)}in, e=${Math.sqrt(Math.max(drift, 0) / 24).toFixed(3)}`,
     );
     // THE SAME BALL, STRAIGHT DOWN. Before `groundRoll3d` stopped taking `vz` with the planar
@@ -1993,7 +2063,7 @@ export function sim3dChecks(check: Check): void {
     const straight = reboundApex(0, 24);
     check(
       'tiles: a POLLEN dropped STRAIGHT DOWN bounces the same as one with drift (the rest snap does not eat vz)',
-      straight >= 1.3 && straight <= 1.7 && Math.abs(straight - drift) <= 0.05,
+      straight >= 6.9 && straight <= 9.0 && Math.abs(straight - drift) <= 0.05,
       `straight ${straight.toFixed(4)}in vs drift ${drift.toFixed(4)}in`,
     );
   }

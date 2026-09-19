@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { Suspense, lazy, useCallback, useEffect, useState } from 'react';
 import {
   adminAnnounce,
   adminCancelNotice,
@@ -8,12 +8,7 @@ import {
   adminDeleteRecord,
   adminClearUserRecords,
   adminSearchUsers,
-  adminRenameUser,
-  adminGrantSupporter,
-  adminRevokeSupporter,
-  adminSupporterHistory,
   type AdminUserRow,
-  type SupporterGrantRow,
   adminPublishAnnouncement,
   adminDeleteAnnouncement,
   fetchAnnouncements,
@@ -24,16 +19,53 @@ import {
 import { Markdown } from './markdown';
 import { AdminLive } from './AdminLive';
 import { AdminReports, type WatchReplay } from './AdminReports';
-import { StandingEditor } from './AdminStanding';
+import { AdminAudit } from './AdminAudit';
+import { AdminUser } from './AdminUser';
 import { adminFail } from './adminCopy';
+import { AccountName, When, confirmed, downloadCsv } from './adminBits';
 
-type AdminTab = 'live' | 'server' | 'content' | 'moderation';
+const AdminAnalytics = lazy(() => import('./AdminAnalytics').then((m) => ({ default: m.AdminAnalytics })));
+
+type AdminTab = 'live' | 'users' | 'moderation' | 'content' | 'server' | 'audit' | 'analytics';
+/* ⚠️ APPEND, DO NOT REORDER. The tab order is the order of an incident: Live is what you
+   open when something is happening, Users is where you land from every name on the page,
+   and the deliberate, unhurried jobs follow. Audit sits last because it is read after the
+   fact. A new tab goes on the end. */
 const TABS: { id: AdminTab; label: string }[] = [
   { id: 'live', label: 'Live' },
-  { id: 'server', label: 'Server' },
-  { id: 'content', label: 'Content' },
+  { id: 'users', label: 'Users' },
   { id: 'moderation', label: 'Moderation' },
+  { id: 'content', label: 'Content' },
+  { id: 'server', label: 'Server' },
+  { id: 'audit', label: 'Audit' },
+  { id: 'analytics', label: 'Analytics' },
 ];
+const TAB_IDS = new Set<string>(TABS.map((t) => t.id));
+
+/**
+ * THE CONSOLE'S OWN URL STATE, IN THE HASH.
+ *
+ * `#tab=moderation&user=<id>` — so a tab and an open account survive a refresh, go Back
+ * correctly, and above all can be PASTED to another moderator. "Look at this person" was a
+ * uuid in a message and an instruction to go and paste it into a search box.
+ *
+ * The HASH specifically, not the path: `src/ui/App.tsx` owns routing, canonicalizes the
+ * address bar on mount and compares `pathname + search` when it does. A query string here
+ * would be stripped on the next canonicalize and a path segment would need a route parser
+ * this component does not own. The hash is ignored by all of it.
+ */
+function readHash(): { tab: AdminTab; user: string | null } {
+  const p = new URLSearchParams(window.location.hash.replace(/^#/, ''));
+  const t = p.get('tab');
+  return { tab: TAB_IDS.has(t ?? '') ? (t as AdminTab) : 'live', user: p.get('user') };
+}
+function writeHash(tab: AdminTab, user: string | null): void {
+  const p = new URLSearchParams();
+  p.set('tab', tab);
+  if (user) p.set('user', user);
+  const next = `#${p.toString()}`;
+  if (window.location.hash !== next) window.history.replaceState(null, '', next);
+}
 
 /** the console's title + tab bar. Split out so the Live tab (which renders a very
  *  different body) shares exactly the same chrome instead of a near-copy of it. */
@@ -81,8 +113,40 @@ export function Admin({
   onWatchReplay?: WatchReplay;
 }) {
   // LIVE first: it is the tab you open during an incident, and the panel's other
-  // jobs are all deliberate, unhurried ones you go looking for.
-  const [tab, setTab] = useState<AdminTab>('live');
+  // jobs are all deliberate, unhurried ones you go looking for. Both this and the open
+  // account are seeded from the hash, so a pasted link lands where it says it does.
+  const [tab, setTabState] = useState<AdminTab>(() => readHash().tab);
+  const [openUser, setOpenUser] = useState<string | null>(() => readHash().user);
+  const setTab = useCallback((t: AdminTab): void => {
+    setTabState(t);
+    // LEAVING the Users tab closes the account with it. Keeping it open would mean coming
+    // back to Users later and finding somebody you looked at an hour ago already loaded,
+    // which reads as the panel having decided who you are moderating.
+    setOpenUser((cur) => (t === 'users' ? cur : null));
+  }, []);
+  /** every name in the console routes through here — the Live table, the report queue, the
+   *  audit log — so "open this person" means the same thing from all three */
+  const openAccount = useCallback((userId: string): void => {
+    setTabState('users');
+    setOpenUser(userId);
+  }, []);
+  useEffect(() => {
+    writeHash(tab, openUser);
+  }, [tab, openUser]);
+  // A LINK PASTED INTO AN ALREADY-OPEN CONSOLE. `writeHash` uses `replaceState`, which fires
+  // nothing, so this only ever hears a hash the PERSON changed — pasting a colleague's
+  // `#tab=users&user=…` into the address bar of a tab that is already on /admin. Without it
+  // the URL changes and the page does not, which reads as the link being broken.
+  useEffect(() => {
+    const onHash = (): void => {
+      const h = readHash();
+      setTabState(h.tab);
+      setOpenUser(h.user);
+    };
+    window.addEventListener('hashchange', onHash);
+    return () => window.removeEventListener('hashchange', onHash);
+  }, []);
+
   const [minutes, setMinutes] = useState(5);
   const [message, setMessage] = useState('Scheduled server update');
   const [status, setStatus] = useState<string | null>(null);
@@ -108,18 +172,13 @@ export function Admin({
   const [annStatus, setAnnStatus] = useState<string | null>(null);
   const [annBusy, setAnnBusy] = useState(false);
 
-  // moderation — user display names
+  // USERS — the search that feeds the detail panel. It used to be six controls per row
+  // (rename, months, grant, revoke, history, standing) stacked in the Moderation tab, which
+  // is how a search result ended up being the place every account action lived. The row is
+  // now a result; the actions are on the account.
   const [userQuery, setUserQuery] = useState('');
   const [users, setUsers] = useState<AdminUserRow[]>([]);
-  const [rename, setRename] = useState<Record<string, string>>({});
-  // supporter memberships — comps and chargebacks, on the same rows as the name
-  // moderation above (one search, two jobs; a second search box would just be a
-  // second place to paste the same user id).
-  const [grantMonths, setGrantMonths] = useState<Record<string, string>>({});
-  const [history, setHistory] = useState<Record<string, SupporterGrantRow[]>>({});
-  /** which searched player's standing panel is open. One at a time: it is a tall panel and
-   *  two of them open at once is a page you scroll rather than a decision you make. */
-  const [standingFor, setStandingFor] = useState<string | null>(null);
+  const [userMore, setUserMore] = useState(false);
   const [userStatus, setUserStatus] = useState<string | null>(null);
   const [userBusy, setUserBusy] = useState(false);
 
@@ -132,7 +191,14 @@ export function Admin({
   };
 
   const deleteRecord = async (row: AdminRecordRow): Promise<void> => {
-    if (!window.confirm(`Delete ${row.handle}'s ${row.score}-pt ${row.drivetrain} run? This removes the run + its replay and cannot be undone.`)) return;
+    if (
+      !confirmed(
+        'Delete the',
+        `${row.score}-pt ${row.drivetrain} run by ${row.handle}`,
+        'The run and its replay go. This cannot be undone.',
+      )
+    )
+      return;
     setRecBusy(true);
     const ok = await adminDeleteRecord(row.recordId);
     setRecBusy(false);
@@ -141,7 +207,14 @@ export function Admin({
   };
 
   const clearUser = async (row: AdminRecordRow): Promise<void> => {
-    if (!window.confirm(`Delete ALL of ${row.handle}'s record runs (every mode/drivetrain)? For a confirmed cheater. Cannot be undone.`)) return;
+    if (
+      !confirmed(
+        'Delete every record run by',
+        row.handle,
+        'Every mode and drivetrain, plus their replays. For a confirmed cheater. This cannot be undone.',
+      )
+    )
+      return;
     setRecBusy(true);
     const removed = await adminClearUserRecords(row.userId);
     setRecBusy(false);
@@ -153,80 +226,25 @@ export function Admin({
     );
   };
 
-  const searchUsers = async (): Promise<void> => {
+  /**
+   * FIND AN ACCOUNT. Paged — a common display name matched more people than one page holds
+   * and the box silently showed the first 25 as though they were everybody, which for a
+   * moderation search is not a cosmetic limit but the wrong answer to "is this account here".
+   */
+  const searchUsers = async (next = 0): Promise<void> => {
+    const query = userQuery.trim();
+    if (!query) return;
     setUserBusy(true);
-    const found = await adminSearchUsers(userQuery);
+    const found = await adminSearchUsers(query, { limit: 25, offset: next });
     setUserBusy(false);
-    setUsers(found);
-    setRename(Object.fromEntries(found.map((u) => [u.userId, u.handle])));
-    setUserStatus(found.length ? `${found.length} match${found.length === 1 ? '' : 'es'}.` : 'No matches. If you expected some, check that you are still signed in as an admin.');
-  };
-
-  const renameUser = async (userId: string, current: string): Promise<void> => {
-    const next = (rename[userId] ?? '').trim();
-    if (next === current) return;
-    if (next.length < 2 || next.length > 24) {
-      setUserStatus('Name must be 2–24 characters.');
-      return;
-    }
-    if (!window.confirm(`Rename "${current}" to "${next}"?`)) return;
-    setUserBusy(true);
-    const saved = await adminRenameUser(userId, next);
-    setUserBusy(false);
-    if (saved) setUsers((us) => us.map((u) => (u.userId === userId ? { ...u, handle: saved } : u)));
-    setUserStatus(saved ? `Renamed to "${saved}".` : adminFail('rename the player'));
-  };
-
-  /** comp a membership. Confirmed because it costs real money to honour. */
-  const grantSupporter = async (u: AdminUserRow): Promise<void> => {
-    const months = Math.floor(Number(grantMonths[u.userId] ?? '1'));
-    if (!Number.isFinite(months) || months < 1 || months > 60) {
-      setUserStatus('Months must be 1–60.');
-      return;
-    }
-    const reason = window.prompt(`Give ${u.handle} ${months} month(s) of supporter. Reason?`, '');
-    if (reason === null) return;
-    setUserBusy(true);
-    const r = await adminGrantSupporter(u.userId, months, reason);
-    setUserBusy(false);
-    if (!r) {
-      setUserStatus(adminFail('grant the membership'));
-      return;
-    }
-    setUsers((us) =>
-      us.map((x) =>
-        x.userId === u.userId ? { ...x, supporter: true, supporterUntil: r.until } : x,
-      ),
-    );
+    setUsers((cur) => (next > 0 ? [...cur, ...found.users] : found.users));
+    setUserMore(found.more);
+    const total = next + found.users.length;
     setUserStatus(
-      `${u.handle} is a supporter until ${r.until ? new Date(r.until).toLocaleDateString() : '-'}.`,
+      total
+        ? `${total} match${total === 1 ? '' : 'es'}${found.more ? ', more available' : ''}.`
+        : 'No matches. If you expected some, check that you are still signed in as an admin.',
     );
-    void loadHistory(u.userId);
-  };
-
-  /** end a membership now — a chargeback, or a comp given in error */
-  const revokeSupporter = async (u: AdminUserRow): Promise<void> => {
-    const reason = window.prompt(`Revoke ${u.handle}'s supporter membership. Reason?`, 'chargeback');
-    if (reason === null) return;
-    setUserBusy(true);
-    const r = await adminRevokeSupporter(u.userId, reason);
-    setUserBusy(false);
-    if (!r) {
-      setUserStatus(adminFail('revoke the membership'));
-      return;
-    }
-    setUsers((us) =>
-      us.map((x) =>
-        x.userId === u.userId ? { ...x, supporter: false, supporterUntil: null } : x,
-      ),
-    );
-    setUserStatus(r.revoked ? `Revoked ${u.handle}'s membership.` : 'Nothing to revoke.');
-    void loadHistory(u.userId);
-  };
-
-  const loadHistory = async (userId: string): Promise<void> => {
-    const grants = await adminSupporterHistory(userId);
-    setHistory((h) => ({ ...h, [userId]: grants }));
   };
 
   const run = async (fn: () => Promise<boolean>, okMsg: string): Promise<void> => {
@@ -320,7 +338,7 @@ export function Admin({
     return (
       <div className="ds-section adm-wide">
         <AdminHeader tab={tab} setTab={setTab} />
-        <AdminLive onWatch={onWatch} onWatchReplay={onWatchReplay} />
+        <AdminLive onWatch={onWatch} onWatchReplay={onWatchReplay} onOpenUser={openAccount} />
       </div>
     );
   }
@@ -329,9 +347,134 @@ export function Admin({
     <div className="ds-section adm-wide">
       <AdminHeader tab={tab} setTab={setTab} />
 
+      {/* USERS. The search is a way IN to an account, not a place to act on one — every
+          action moved onto the detail panel, where the standing, the reports and the
+          matches that decide which button to press are on the same screen. */}
+      {tab === 'users' && (
+        <>
+          {openUser ? (
+            <AdminUser userId={openUser} onClose={() => setOpenUser(null)} onWatchReplay={onWatchReplay} />
+          ) : (
+            <>
+              <h2 className="ds-h2">Find an account</h2>
+              <p className="ds-sub adm-sub">
+                Search by display name, @username, or an exact account id. Open one for its
+                standing, reports, matches, records, membership and moderation history.
+              </p>
+              <div className="adm-toolbar">
+                <input
+                  type="search"
+                  className="adm-grow"
+                  value={userQuery}
+                  placeholder="Name, @username or account id"
+                  onChange={(e) => setUserQuery(e.target.value)}
+                  onKeyDown={(e) => e.key === 'Enter' && void searchUsers(0)}
+                />
+                <button className="ds-btn small" disabled={userBusy || !userQuery.trim()} onClick={() => void searchUsers(0)}>
+                  Search
+                </button>
+                {users.length > 0 && (
+                  <button
+                    className="ds-btn ghost small"
+                    onClick={() =>
+                      downloadCsv(
+                        'accounts.csv',
+                        ['userId', 'handle', 'username', 'role', 'supporter', 'supporterUntil'],
+                        users.map((u) => [
+                          u.userId,
+                          u.handle,
+                          u.username ?? '',
+                          u.role ?? '',
+                          u.supporter ? 'yes' : 'no',
+                          u.supporterUntil ?? '',
+                        ]),
+                      )
+                    }
+                  >
+                    Export CSV
+                  </button>
+                )}
+              </div>
+              {users.length === 0 ? (
+                <div className="ds-empty">
+                  <div className="big">No account open</div>
+                  {userStatus ?? 'Search above, or open a name from the Live, Moderation or Audit tab.'}
+                </div>
+              ) : (
+                <div className="adm-table-wrap">
+                  <table className="adm-table">
+                    <thead>
+                      <tr>
+                        <th>Account</th>
+                        <th>Membership</th>
+                        <th />
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {users.map((u) => (
+                        <tr key={u.userId}>
+                          <td>
+                            <AccountName
+                              userId={u.userId}
+                              handle={u.handle}
+                              username={u.username}
+                              role={u.role}
+                              known
+                              onOpen={openAccount}
+                            />
+                          </td>
+                          <td className="ds-muted">
+                            {u.supporter ? (
+                              <>
+                                Supporter until{' '}
+                                {u.supporterUntil ? new Date(u.supporterUntil).toLocaleDateString() : '—'}
+                                {u.autoRenews ? ' · auto-renews' : ''}
+                              </>
+                            ) : u.role ? (
+                              'Perks by role'
+                            ) : (
+                              <>No paid membership{u.autoRenews ? ' · Ko-fi linked (lapsed)' : ''}</>
+                            )}
+                          </td>
+                          <td>
+                            <button className="ds-btn ghost small" onClick={() => openAccount(u.userId)}>
+                              Open
+                            </button>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+              {userMore && (
+                <div className="adm-more">
+                  <button className="ds-btn ghost small" disabled={userBusy} onClick={() => void searchUsers(users.length)}>
+                    {userBusy ? 'Loading…' : 'Load more'}
+                  </button>
+                </div>
+              )}
+              {users.length > 0 && userStatus && <p className="ds-hint">{userStatus}</p>}
+            </>
+          )}
+        </>
+      )}
+
+      {tab === 'audit' && <AdminAudit onOpenUser={openAccount} />}
+
+      {/* LAZY, unlike every other tab here, and for the reason `GraphicsSection` is:
+          the dashboard and its hand-rolled SVG charts are ~20 KB that only an admin who
+          opens this tab will ever look at, and the client bundle is meant to stay React +
+          Rapier 2D. One extra request behind the `.ds-loading` line every list already has. */}
+      {tab === 'analytics' && (
+        <Suspense fallback={<p className="ds-loading">Loading analytics…</p>}>
+          <AdminAnalytics />
+        </Suspense>
+      )}
+
       {tab === 'server' && (
         <>
-      <p className="ds-sub" style={{ margin: '0 0 20px' }}>
+      <p className="ds-sub adm-sub">
         Announce a restart to every connected player with a live countdown, then deploy the
         server when it hits zero. Players see a banner; anyone already playing gets warned.
       </p>
@@ -368,9 +511,9 @@ export function Admin({
             CANCEL NOTICE
           </button>
         </div>
-        {status && <p className="ds-hint" style={{ marginTop: 12 }}>{status}</p>}
+        {status && <p className="ds-hint">{status}</p>}
       </div>
-      <p className="ds-hint" style={{ marginTop: 16 }}>
+      <p className="ds-hint adm-gap">
         Reminder: this only warns players. It doesn’t restart the server. Run your deploy when
         the countdown reaches 0.
       </p>
@@ -380,7 +523,7 @@ export function Admin({
       {tab === 'content' && (
         <>
       <h2 className="ds-h2">Announcements</h2>
-      <p className="ds-sub" style={{ margin: '0 0 20px' }}>
+      <p className="ds-sub adm-sub">
         Publish patch notes, bug-fix summaries, or a new season / act. Each player sees it once -
         the first time they open the app after you publish. A new season or act plays a full-screen
         cinematic reveal; patch notes show in a “What’s new” panel.
@@ -426,7 +569,7 @@ export function Admin({
             placeholder={'## Gate & Intake\n- Fixed the gate lever swinging closed on a **resting** robot\n- Faster basin drain\n\n## Drivetrain\n- New swerve pod wobble tuning - see [the notes](https://example.com)'}
             onChange={(e) => setAnnBody(e.target.value)}
           />
-          <span className="ds-hint" style={{ marginTop: 4 }}>
+          <span className="ds-hint">
             Supports Markdown: <code>## headings</code>, <code>**bold**</code>, <code>- bullets</code>{' '}
             (indent to nest), <code>[links](url)</code>, <code>---</code> rules.
           </span>
@@ -444,9 +587,9 @@ export function Admin({
             PUBLISH
           </button>
         </div>
-        {annStatus && <p className="ds-hint" style={{ marginTop: 12 }}>{annStatus}</p>}
+        {annStatus && <p className="ds-hint">{annStatus}</p>}
         {announcements.length > 0 && (
-          <div className="admin-list" style={{ marginTop: 12 }}>
+          <div className="admin-list">
             {announcements.map((a) => (
               <div key={a.id} className="admin-row">
                 <span className={`ann-badge ${a.kind}`}>{a.kind}</span>
@@ -463,8 +606,8 @@ export function Admin({
         )}
       </div>
 
-      <h2 className="ds-h2" style={{ marginTop: 32 }}>Acts &amp; Seasons</h2>
-      <p className="ds-sub" style={{ margin: '0 0 20px' }}>
+      <h2 className="ds-h2 adm-sec">Acts &amp; Seasons</h2>
+      <p className="ds-sub adm-sub">
         Competitive periods are grouped Act → Season (both 1-indexed; Act 0 is the beta).
         A <b>new season</b> resets the boards within the current act; a <b>new act</b> also
         rolls the act and restarts the season count at 1, firing the “A NEW ACT” cinematic.
@@ -493,7 +636,7 @@ export function Admin({
             PURGE ARCHIVED REPLAYS
           </button>
         </div>
-        {seasonStatus && <p className="ds-hint" style={{ marginTop: 12 }}>{seasonStatus}</p>}
+        {seasonStatus && <p className="ds-hint">{seasonStatus}</p>}
       </div>
 
         </>
@@ -501,16 +644,15 @@ export function Admin({
 
       {tab === 'moderation' && (
         <>
-      {/* REPORTS FIRST. The records and display-name tools below are things a moderator
-          goes looking for; the report queue is the thing that arrives on its own and has
-          people waiting on it. */}
-      <AdminReports onWatchReplay={onWatchReplay} />
+      {/* REPORTS FIRST. The records tool below is something a moderator goes looking for;
+          the report queue is the thing that arrives on its own and has people waiting on it. */}
+      <AdminReports onWatchReplay={onWatchReplay} onOpenUser={openAccount} />
       <hr className="adm-sep" />
       <h2 className="ds-h2">Moderation · records</h2>
-      <p className="ds-sub" style={{ margin: '0 0 20px' }}>
+      <p className="ds-sub adm-sub">
         Inspect a leaderboard bucket (live season) and remove cheated or invalid runs. Deleting a
         run also deletes its replay. “Clear all” wipes every run by that player, for confirmed
-        cheaters.
+        cheaters. Both are written to the audit log.
       </p>
       <div className="admin-card">
         <div className="admin-field">
@@ -527,16 +669,40 @@ export function Admin({
           <button className="ds-btn" disabled={recBusy} onClick={loadRecords}>
             LOAD
           </button>
+          {records.length > 0 && (
+            <button
+              className="ds-btn ghost small"
+              onClick={() =>
+                downloadCsv(
+                  `records-${recMode}-${recDt}.csv`,
+                  ['rank', 'userId', 'handle', 'score', 'drivetrain', 'recordId', 'replayId', 'createdAt'],
+                  records.map((r, i) => [
+                    i + 1, r.userId, r.handle, r.score, r.drivetrain, r.recordId, r.replayId ?? '', r.createdAt,
+                  ]),
+                )
+              }
+            >
+              Export CSV
+            </button>
+          )}
         </div>
         {records.length > 0 && (
-          <div className="admin-list" style={{ marginTop: 12 }}>
+          <div className="admin-list adm-gap">
             {records.map((r, i) => (
               <div key={r.recordId} className="admin-row">
                 <span className="admin-rank">{i + 1}</span>
                 <span className="admin-grow">
-                  <strong>{r.handle}</strong> · {r.score} pts · {r.drivetrain}
-                  <span className="ds-hint"> · {new Date(r.createdAt).toLocaleDateString()}</span>
+                  <AccountName userId={r.userId} handle={r.handle} known onOpen={openAccount} />
+                  <span className="ds-hint">
+                    {' '}
+                    · {r.score} pts · {r.drivetrain} · <When at={r.createdAt} />
+                  </span>
                 </span>
+                {r.replayId && onWatchReplay && (
+                  <button className="ds-btn ghost small" onClick={() => onWatchReplay(r.replayId as string)}>
+                    WATCH
+                  </button>
+                )}
                 <button className="ds-btn ghost small" disabled={recBusy} onClick={() => deleteRecord(r)}>
                   DELETE
                 </button>
@@ -547,132 +713,7 @@ export function Admin({
             ))}
           </div>
         )}
-        {recStatus && <p className="ds-hint" style={{ marginTop: 12 }}>{recStatus}</p>}
-      </div>
-
-      {/* main's heading was "Moderation - display names"; this section now does
-          memberships too. */}
-      <h2 className="ds-h2" style={{ marginTop: 32 }}>Players · names, memberships &amp; standing</h2>
-      <p className="ds-sub" style={{ margin: '0 0 20px' }}>
-        Find a player by display name, username, or exact user id. Force an inappropriate name to
-        something clean, comp or revoke a supporter membership, or open their account standing to
-        pardon penalties the server got wrong. Every membership change and every standing edit is
-        written to an audit trail with your account id and your reason.
-      </p>
-      <div className="admin-card">
-        <div className="admin-field">
-          <span>Search</span>
-          <input
-            type="text"
-            value={userQuery}
-            placeholder="name or user id"
-            onChange={(e) => setUserQuery(e.target.value)}
-            onKeyDown={(e) => e.key === 'Enter' && searchUsers()}
-          />
-          <button className="ds-btn" disabled={userBusy} onClick={searchUsers}>
-            SEARCH
-          </button>
-        </div>
-        {users.length > 0 && (
-          <div className="admin-list" style={{ marginTop: 12 }}>
-            {users.map((u) => (
-              <div key={u.userId} className="admin-user">
-                <div className="admin-row">
-                  <input
-                    type="text"
-                    className="admin-grow"
-                    maxLength={24}
-                    value={rename[u.userId] ?? ''}
-                    onChange={(e) => setRename((m) => ({ ...m, [u.userId]: e.target.value }))}
-                  />
-                  <button
-                    className="ds-btn ghost small"
-                    disabled={userBusy || (rename[u.userId] ?? '').trim() === u.handle}
-                    onClick={() => renameUser(u.userId, u.handle)}
-                  >
-                    RENAME
-                  </button>
-                </div>
-                <div className="admin-row admin-sub">
-                  <span className="ds-hint admin-grow">
-                    {/* Staff first, and stated separately from the membership:
-                        this row is where months get granted, and `supporter` here
-                        is deliberately the PAID predicate (see AdminUserRow), so a
-                        colleague reads as "not a supporter" while still holding
-                        every perk by role. Saying so avoids granting them months
-                        they do not need. */}
-                    {u.role && (
-                      <>
-                        <strong>{u.role === 'owner' ? 'Owner' : 'Admin'}</strong> · perks by role
-                        {' · '}
-                      </>
-                    )}
-                    {u.supporter ? (
-                      <>
-                        <strong>Supporter</strong> until{' '}
-                        {u.supporterUntil ? new Date(u.supporterUntil).toLocaleDateString() : '-'}
-                        {u.autoRenews ? ' · auto-renews' : ' · manual claims only'}
-                      </>
-                    ) : (
-                      <>No paid membership{u.autoRenews ? ' · Ko-fi linked (lapsed)' : ''}</>
-                    )}
-                  </span>
-                  <input
-                    type="number"
-                    min={1}
-                    max={60}
-                    className="admin-months"
-                    aria-label={`Months to grant ${u.handle}`}
-                    value={grantMonths[u.userId] ?? '1'}
-                    onChange={(e) =>
-                      setGrantMonths((m) => ({ ...m, [u.userId]: e.target.value }))
-                    }
-                  />
-                  <button className="ds-btn ghost small" disabled={userBusy} onClick={() => grantSupporter(u)}>
-                    GRANT
-                  </button>
-                  <button
-                    className="ds-btn ghost small"
-                    disabled={userBusy || !u.supporter}
-                    onClick={() => revokeSupporter(u)}
-                  >
-                    REVOKE
-                  </button>
-                  <button className="ds-btn ghost small" disabled={userBusy} onClick={() => loadHistory(u.userId)}>
-                    HISTORY
-                  </button>
-                  {/* STANDING on the same row as the name and the membership, for the reason
-                      the membership tools are there: this is the one search in the console
-                      that takes an exact user id, and "someone sent me a uuid and says their
-                      penalties are wrong" is the errand it gets used for. */}
-                  <button
-                    className={standingFor === u.userId ? 'ds-btn small primary' : 'ds-btn ghost small'}
-                    onClick={() => setStandingFor(standingFor === u.userId ? null : u.userId)}
-                  >
-                    STANDING
-                  </button>
-                </div>
-                {standingFor === u.userId && <StandingEditor userId={u.userId} handleHint={u.handle} />}
-                {history[u.userId] && (
-                  <div className="admin-history">
-                    {history[u.userId].length === 0 ? (
-                      <p className="ds-hint">No membership changes recorded.</p>
-                    ) : (
-                      history[u.userId].map((g, i) => (
-                        <p key={i} className="ds-hint">
-                          {new Date(g.createdAt).toLocaleString()} · <strong>{g.source}</strong>
-                          {g.months ? ` +${g.months}mo` : ''}
-                          {g.note ? ` · ${g.note}` : ''}
-                        </p>
-                      ))
-                    )}
-                  </div>
-                )}
-              </div>
-            ))}
-          </div>
-        )}
-        {userStatus && <p className="ds-hint" style={{ marginTop: 12 }}>{userStatus}</p>}
+        {recStatus && <p className="ds-hint">{recStatus}</p>}
       </div>
         </>
       )}

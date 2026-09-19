@@ -5,6 +5,7 @@ import { BB_HALF_X, BB_HALF_Y, BB_VIEW_MARGIN } from '../config';
 import {
   CAMERA_PREFS,
   getCameraPref,
+  resolveSceneCamera,
   setCameraPref,
   setViewPref,
   subscribeCameraPref,
@@ -153,6 +154,9 @@ class BiobuzzScene implements GameScene {
   /** a FIXED tier (exports run at High regardless of the device) — when set, the settings store
    * is not read and not subscribed to at all. */
   private readonly fixedTier: GraphicsTier | null;
+  /** false for a scene nobody is driving (an export, a still, a thumbnail) — see
+   *  `resolvedCamera` and `graphics/store.ts`'s `resolveSceneCamera`. */
+  private readonly interactive: boolean;
 
   // ── graphics state ────────────────────────────────────────────────────────────────────────
   private settings: GraphicsSettings;
@@ -192,6 +196,7 @@ class BiobuzzScene implements GameScene {
     this.host = host;
     this.onQualityEvent = opts.onQualityEvent;
     this.fixedTier = (opts.quality as GraphicsTier | undefined) ?? null;
+    this.interactive = opts.interactive !== false;
     const gfx = getGraphics();
     this.tier = this.fixedTier ?? gfx.tier;
     this.settings = this.fixedTier ? { ...GFX_PRESETS[this.fixedTier] } : gfx.settings;
@@ -295,7 +300,7 @@ class BiobuzzScene implements GameScene {
     this.applyQuality();
     this.bindTheme();
     this.bindPrefs();
-    if (opts.interactive !== false) {
+    if (this.interactive) {
       this.bindPointer();
       this.bindKeys();
       this.teardown.push(installViewKey());
@@ -566,9 +571,10 @@ class BiobuzzScene implements GameScene {
   }
 
   /** the camera actually rendered this frame: the device preference WINS over the one the host
-   * asked for, and `'auto'` (the default) is "whatever the host asked for". */
+   * asked for on an INTERACTIVE scene (`'auto'`, the default, is "whatever the host asked
+   * for") — but an export or a still is fully host-controlled. See `resolveSceneCamera`. */
   private resolvedCamera(hostPick: SceneCamera): SceneCamera {
-    return this.cameraPref === 'auto' ? hostPick : this.cameraPref;
+    return resolveSceneCamera(this.interactive, hostPick, this.cameraPref);
   }
 
   render(world: World, frame: SceneFrame): void {

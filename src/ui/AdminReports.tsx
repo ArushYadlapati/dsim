@@ -11,6 +11,7 @@ import { REPORT_LABELS, type ReportedUser, type ReportReason } from '../report';
 import { STANDING_COST, STANDING_MAX, tierOf } from '../standing';
 import { StandingEditor } from './AdminStanding';
 import { SEASONS } from '../seasons';
+import { AccountName, When, ago, confirmed, downloadCsv } from './adminBits';
 
 /**
  * The REPORT QUEUE — who has been reported, how often, for what, by how many people, and
@@ -40,10 +41,19 @@ const GAME_LABEL: Record<string, string> = Object.fromEntries(SEASONS.map((s) =>
  */
 export type WatchReplay = (replayId: string, matchId?: string) => void;
 
-export function AdminReports({ onWatchReplay }: { onWatchReplay?: WatchReplay }) {
+export function AdminReports({
+  onWatchReplay,
+  onOpenUser,
+}: {
+  onWatchReplay?: WatchReplay;
+  onOpenUser?: (userId: string) => void;
+}) {
   const [users, setUsers] = useState<ReportedUser[] | null>(null);
   const [err, setErr] = useState(false);
   const [open, setOpen] = useState<string | null>(null);
+  /** OPEN FIRST, because the queue is a queue. A moderator working it wants the rows with
+   *  somebody waiting on them; the rest is history and is one click away. */
+  const [onlyOpen, setOnlyOpen] = useState(true);
 
   const load = (): void => {
     void adminFetchReports().then((u) => {
@@ -53,16 +63,65 @@ export function AdminReports({ onWatchReplay }: { onWatchReplay?: WatchReplay })
   };
   useEffect(load, []);
 
+  /**
+   * TRIAGE UPDATES THE ROW IN PLACE rather than re-fetching the whole queue.
+   *
+   * It used to call `load()` on every verdict, which re-read every reported player on the
+   * service to change one number on one row — and, because the list re-sorts on recency, the
+   * row you had just judged moved under the cursor while the next one slid into its place.
+   * Working a queue of six was six full queue reads and six chances to press Uphold on
+   * somebody you had not looked at.
+   */
+  const applyTriage = (userId: string): void =>
+    setUsers((cur) => (cur ? cur.map((x) => (x.userId === userId ? { ...x, open: 0 } : x)) : cur));
+
+  const shown = (users ?? []).filter((u) => !onlyOpen || u.open > 0);
+
   return (
     <>
-      <ScoreReportQueue onWatchReplay={onWatchReplay} />
+      <ScoreReportQueue onWatchReplay={onWatchReplay} onOpenUser={onOpenUser} />
 
       <h2 className="ds-h2">Moderation · reports</h2>
-      <p className="ds-sub" style={{ margin: '0 0 16px' }}>
+      <p className="ds-sub adm-sub">
         Players other players have reported, most recently reported first. Open one to read the
         reports and watch their recent matches — a cheating or throwing report is only
         judgeable from the replay.
       </p>
+
+      <div className="adm-toolbar">
+        <button
+          className={onlyOpen ? 'ds-btn small primary' : 'ds-btn ghost small'}
+          onClick={() => setOnlyOpen(true)}
+        >
+          Open only
+        </button>
+        <button
+          className={onlyOpen ? 'ds-btn ghost small' : 'ds-btn small primary'}
+          onClick={() => setOnlyOpen(false)}
+        >
+          Everything
+        </button>
+        <span className="adm-grow" />
+        <button className="ds-btn ghost small" disabled={!users || users.length === 0} onClick={load}>
+          Refresh
+        </button>
+        <button
+          className="ds-btn ghost small"
+          disabled={shown.length === 0}
+          onClick={() =>
+            downloadCsv(
+              'reports.csv',
+              ['userId', 'handle', 'username', 'open', 'total', 'reporters', 'standing', 'latest', 'reasons'],
+              shown.map((u) => [
+                u.userId, u.handle, u.username ?? '', u.open, u.total, u.reporters,
+                u.standing ?? '', u.latest, u.reasons.map((r) => `${r.reason}x${r.n}`).join(' '),
+              ]),
+            )
+          }
+        >
+          Export CSV
+        </button>
+      </div>
 
       {err && !users ? (
         <div className="ds-empty">
@@ -71,21 +130,24 @@ export function AdminReports({ onWatchReplay }: { onWatchReplay?: WatchReplay })
         </div>
       ) : !users ? (
         <div className="ds-loading">Loading reports…</div>
-      ) : users.length === 0 ? (
+      ) : shown.length === 0 ? (
         <div className="ds-empty">
-          <div className="big">No reports</div>
-          Nobody has been reported yet.
+          <div className="big">{onlyOpen ? 'Queue is clear' : 'No reports'}</div>
+          {onlyOpen && users.length > 0
+            ? 'Nothing is waiting on a decision. Switch to Everything for the history.'
+            : 'Nobody has been reported yet.'}
         </div>
       ) : (
         <div className="adm-reports">
-          {users.map((u) => (
+          {shown.map((u) => (
             <ReportedRow
               key={u.userId}
               u={u}
               expanded={open === u.userId}
               onToggle={() => setOpen(open === u.userId ? null : u.userId)}
               onWatchReplay={onWatchReplay}
-              onTriaged={load}
+              onOpenUser={onOpenUser}
+              onTriaged={() => applyTriage(u.userId)}
             />
           ))}
         </div>
@@ -99,12 +161,14 @@ function ReportedRow({
   expanded,
   onToggle,
   onWatchReplay,
+  onOpenUser,
   onTriaged,
 }: {
   u: ReportedUser;
   expanded: boolean;
   onToggle: () => void;
   onWatchReplay?: WatchReplay;
+  onOpenUser?: (userId: string) => void;
   onTriaged: () => void;
 }) {
   const [detail, setDetail] = useState<Awaited<ReturnType<typeof adminFetchReportedUser>>>(null);
@@ -118,9 +182,11 @@ function ReportedRow({
   const triage = async (status: 'reviewed' | 'dismissed'): Promise<void> => {
     if (
       status === 'reviewed' &&
-      !window.confirm(
-        `Uphold the reports against ${u.handle}? That costs ${STANDING_COST.reportUpheld} standing, ` +
-          'locks them out of ranked, and takes rating — more each time it happens.',
+      !confirmed(
+        'Uphold the reports against',
+        u.handle,
+        `That costs ${STANDING_COST.reportUpheld} standing, locks them out of ranked, and takes ` +
+          'rating — more each time it happens.',
       )
     )
       return;
@@ -172,7 +238,8 @@ function ReportedRow({
                   <div className="adm-report-item" key={r.id}>
                     <span className="adm-pill">{REPORT_LABELS[r.reason] ?? r.reason}</span>
                     <span className="adm-report-by ds-muted">
-                      by {r.reporterUsername ? `@${r.reporterUsername}` : r.reporterHandle} · {ago(r.createdAt)}
+                      by {r.reporterUsername ? `@${r.reporterUsername}` : r.reporterHandle} ·{' '}
+                      <When at={r.createdAt} />
                       {r.roomCode && ` · room ${r.roomCode}`}
                       {r.status !== 'open' && ` · ${r.status}`}
                     </span>
@@ -180,6 +247,18 @@ function ReportedRow({
                   </div>
                 ))}
               </div>
+
+              {onOpenUser && (
+                <div className="adm-toolbar">
+                  {/* THE WAY OUT TO THE WHOLE ACCOUNT. The drill-down answers "what are they
+                      accused of"; the questions it cannot — is this their first week, have
+                      they filed forty reports of their own, has somebody already warned them
+                      — live on the account, and there was no link to it from here. */}
+                  <button className="ds-btn ghost small" onClick={() => onOpenUser(u.userId)}>
+                    Open full account
+                  </button>
+                </div>
+              )}
 
               {/* WHAT THE SERVER SAW, and the controls to overrule it, in one place.
                   This used to be a read-only list: a moderator could see that someone had
@@ -198,7 +277,8 @@ function ReportedRow({
                     <div className="adm-report-item row" key={m.matchId}>
                       <span className="ds-muted">
                         {GAME_LABEL[m.game] ?? m.game} · {m.ranked ? 'Ranked' : 'Custom'} {m.mode} ·{' '}
-                        {m.score} pts · {m.won === null ? '—' : m.won ? 'won' : 'lost'} · {ago(m.createdAt)}
+                        {m.score} pts · {m.won === null ? '—' : m.won ? 'won' : 'lost'} ·{' '}
+                        <When at={m.createdAt} />
                       </span>
                       {m.replayId && onWatchReplay ? (
                         <button
@@ -233,14 +313,6 @@ function ReportedRow({
   );
 }
 
-function ago(iso: string): string {
-  const s = Math.max(0, Math.round((Date.now() - new Date(iso).getTime()) / 1000));
-  if (s < 60) return 'just now';
-  if (s < 3600) return `${Math.floor(s / 60)}m ago`;
-  if (s < 86400) return `${Math.floor(s / 3600)}h ago`;
-  return `${Math.floor(s / 86400)}d ago`;
-}
-
 /**
  * The MISSCORE queue — claims about a RESULT rather than about a person.
  *
@@ -256,7 +328,13 @@ function ago(iso: string): string {
  * as real, which is what stops the filer's rejected-count from growing and is the record that
  * the sim got something wrong.
  */
-function ScoreReportQueue({ onWatchReplay }: { onWatchReplay?: WatchReplay }) {
+function ScoreReportQueue({
+  onWatchReplay,
+  onOpenUser,
+}: {
+  onWatchReplay?: WatchReplay;
+  onOpenUser?: (userId: string) => void;
+}) {
   const [rows, setRows] = useState<ScoreReport[] | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const load = (): void => {
@@ -268,9 +346,10 @@ function ScoreReportQueue({ onWatchReplay }: { onWatchReplay?: WatchReplay }) {
   const resolve = (id: string, verdict: 'upheld' | 'rejected', smite: number): void => {
     if (
       smite > 0 &&
-      !window.confirm(
-        `Reject this report and take ${smite} standing from the player who filed it? ` +
-          'Only for a claim made in bad faith.',
+      !confirmed(
+        'Reject this claim and take',
+        `${smite} standing from the player who filed it`,
+        'Only for a claim made in bad faith.',
       )
     )
       return;
@@ -284,7 +363,7 @@ function ScoreReportQueue({ onWatchReplay }: { onWatchReplay?: WatchReplay }) {
   return (
     <>
       <h2 className="ds-h2">Moderation · misscores</h2>
-      <p className="ds-sub" style={{ margin: '0 0 16px' }}>
+      <p className="ds-sub adm-sub">
         Claims that a match scored wrong. Open the replay and check it: UPHELD records that the
         sim got it wrong, REJECTED closes it. Smite only a claim that was made in bad faith —
         the count beside each filer is how many of theirs have been rejected before.
@@ -293,7 +372,13 @@ function ScoreReportQueue({ onWatchReplay }: { onWatchReplay?: WatchReplay }) {
         {rows.map((r) => (
           <div key={r.id} className="sr-row">
             <div className="sr-head">
-              <span className="adm-name">{r.reporterUsername ?? r.reporterHandle}</span>
+              <AccountName
+                userId={r.reporterId}
+                handle={r.reporterHandle}
+                username={r.reporterUsername}
+                known
+                onOpen={onOpenUser}
+              />
               <span className="adm-pill">{GAME_LABEL[r.game] ?? r.game}</span>
               {r.reporterRejected > 0 && (
                 <span className="adm-pill standing">

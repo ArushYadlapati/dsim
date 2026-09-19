@@ -788,6 +788,24 @@ export class Room {
       this.activeUserIds.delete(c.userId);
       this.onUserInactive?.(c.userId);
     }
+    /**
+     * ⚠️ A DECIDED SOLO RUN IS NOT A SLOT TO GIVE UP — IT IS A SCORE TO WRITE.
+     *
+     * `detach` already knows this: a solo record room inside `inFinishWindow` is kept alive
+     * by `finishing` until the field settles and `finalizeMatch` writes the PB, because the
+     * loop FREEZES a room nobody is connected to. This frame bypasses detach entirely and
+     * deletes the client outright — so pressing RESTART or Abandon in the seconds after the
+     * buzzer took the room down before its own score was saved, which is the unsaved-PB bug
+     * (`f1fc93a`) coming back through a door that did not exist when it was fixed.
+     *
+     * The LOCK is already gone above, which is the whole of what the caller needs: they are
+     * starting another run and this one can no longer be in their way. The seat is left for
+     * the close that is about to follow, where detach does the right thing with it.
+     */
+    if (this.soloRecord && this.inFinishWindow()) {
+      this.broadcastRoster();
+      return true;
+    }
     // mid-match this is a departure like any other: the match stays rated and the
     // leaver takes the loss (`departed` is what keeps their result on the board).
     const rid = this.robotOf.get(c.id);
@@ -1307,7 +1325,12 @@ export class Room {
     this.snapPrimed.delete(id); // lost its baseline — force a full keyframe
     this.snapAck.delete(id); // drop its stale pre-drop ack so it doesn't re-keyframe
     send({ t: 'welcome', clientId: id });
-    send({ t: 'rejoined', ok: true });
+    // SAY WHICH MATCH THE SLOT IS IN. A client returning through the Home rejoin card
+    // built its session from a SAVED matchStart, so its generation is whatever that
+    // record held — and an input stamped with a stale one is dropped by `onInput`, which
+    // reads on screen as a robot that will not move. The room is the authority on this,
+    // so it answers with it rather than hoping the client's copy is current.
+    send({ t: 'rejoined', ok: true, gen: this.matchGen });
     if (this.world) this.sendSnapshotTo(c); // immediate full resync (re-primes)
     /**
      * A SEAT RECLAIMED INSIDE THE STRATEGY WINDOW HAS TO BE TOLD WHAT IT CAME BACK TO.

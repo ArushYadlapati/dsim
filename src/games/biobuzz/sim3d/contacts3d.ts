@@ -1,4 +1,4 @@
-import type { Alliance, World } from '../../../types';
+import type { Alliance, Vec2, World } from '../../../types';
 import { BB3_REST_SPEED } from '../config';
 import { BB_FRAME_RAM_SPEED, bbBillG409 } from '../penalties';
 import { GROUP_FRAME, GROUP_TRAY } from './bodies';
@@ -58,7 +58,7 @@ function isHiveCollider(groups: number): boolean {
  * the step just resolved, and the JSON positions it is read against are the ones the readback
  * just wrote, so the two halves of every judgement are from the same instant.
  */
-export function hiveContactPass(world: World, engine: Engine3d): void {
+export function hiveContactPass(world: World, engine: Engine3d, preVels?: Map<number, Vec2>): void {
   const bb = world.biobuzz;
   if (!bb) return;
 
@@ -71,6 +71,22 @@ export function hiveContactPass(world: World, engine: Engine3d): void {
     if (r.passive) continue;
     const body = engine.robots.get(r.id);
     if (!body) continue;
+    /**
+     * ⚠️ **THE APPROACH VELOCITY, NOT THE ONE THE COLLISION LEFT BEHIND.** This pass runs after
+     * the step and after the readback, so `r.vel` is what the robot has AFTER the frame stopped
+     * it — and a ram is precisely the event that destroys the number it is measured by. Driven
+     * headlessly (2026-09-19): a swerve chassis crossing open floor into the HIVE frame arrived
+     * at **69.6 in/s**, and the tick the contact resolved read back **21.5**; on the next tick it
+     * was 0.5. Against `BB_FRAME_RAM_SPEED`'s 30 that is never a ram, at any speed the field is
+     * long enough to reach, so `bb.hiveRam` was never written and **G417 could not be billed in
+     * 3D at all** — the one pipeline the rule is turned on for.
+     *
+     * `preVels` is the same pre-solve snapshot stage 8b hands `squareUpRobotsWalls`, and the 2D
+     * solve's own contact bookkeeping (`squareUpPair`, `src/sim/physics.ts`) measures its press
+     * from exactly that quantity for exactly this reason. Absent, this falls back to `r.vel`,
+     * which is only right for a caller that has not stepped yet.
+     */
+    const v = preVels?.get(r.id) ?? r.vel;
     let worst = 0;
     for (let i = 0; i < body.numColliders(); i++) {
       const own = body.collider(i);
@@ -87,11 +103,26 @@ export function hiveContactPass(world: World, engine: Engine3d): void {
         engine.world3d.contactPair(own, other, (manifold, flipped) => {
           if (manifold.numContacts() === 0) return;
           const n = manifold.normal();
-          // `normal` points out of the FIRST shape; `flipped` says the pair was stored the other
-          // way round. Either way we want it pointing out of the ROBOT, so a robot moving ALONG
-          // it is moving away and scores zero.
-          const s = flipped ? -1 : 1;
-          const closing = -(r.vel.x * n.x * s + r.vel.y * n.y * s);
+          /**
+           * ⚠️ **THE NORMAL MUST END UP POINTING OUT OF THE *HIVE*, TOWARD THE ROBOT** — the
+           * convention the 2D `frameRam` states in as many words ("n points OUT of the bar
+           * toward the robot") and the one `closing = −v·n` is written against. `normal()` is
+           * expressed for the pair AS STORED in the narrow phase, pointing out of its first
+           * collider, and `flipped` says the two arguments arrived the other way round from how
+           * it is stored. So when `flipped` is TRUE the stored first collider is `other` — the
+           * hive — and the normal is ALREADY the one we want; it is the UNflipped case that
+           * needs negating.
+           *
+           * This read `flipped ? -1 : 1`, which is that backwards, and the field colliders are
+           * built before the robots so their handles are lower and every robot-hive pair is
+           * stored hive-first: `flipped` is true for all of them. Measured on a full-speed run
+           * at the red frame (2026-09-19): normal (−1, 0, 0), robot approaching at +69.6 in/s,
+           * `closing` computed as **−69.6**. `worst` starts at 0 and only ever rises, so a
+           * negative never registered and `bb.hiveRam` was never written — G417 could not fire
+           * in 3D from any direction at any speed. With the sign right it reads +69.6.
+           */
+          const s = flipped ? 1 : -1;
+          const closing = -(v.x * n.x * s + v.y * n.y * s);
           if (closing > worst) worst = closing;
         });
       });

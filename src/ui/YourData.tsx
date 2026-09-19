@@ -173,6 +173,13 @@ function AnalyticsRow() {
           presenting sponsor’s monthly numbers are read off. Turning it off stops every beacon
           from this browser immediately.
         </p>
+        <p className="ds-hint">
+          A visit is counted without your browser being given anything to remember: our server
+          mixes your address and browser with a secret that is regenerated every day, keeps a
+          short one-way fingerprint, and destroys the secret two days later. The same person on
+          two days is two visitors, and nothing we hold can join them. Your browser’s Do Not
+          Track or Global Privacy Control signal switches this off on its own.
+        </p>
         {!built && (
           <p className="ds-hint">
             This build sends no analytics at all, so the switch above does nothing here. The

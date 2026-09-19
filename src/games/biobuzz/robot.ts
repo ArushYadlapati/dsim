@@ -14,7 +14,7 @@ import {
   BB_FIRE_BURST_MAX,
   BB_FIRE_INTERVAL,
   BB_FLOWERS,
-  BB_HOOD_PATH_R,
+  bbHead,
   BB_INTAKES,
   BB_LAUNCH_LINE_FRAC,
   BB_LAUNCH_SPEED_DEFAULT,
@@ -406,13 +406,26 @@ export function bbIntakeAct(world: World, r: RobotState, opts: BbIntakeOpts = {}
       // inboard and lateral bounds stay the drawn rect's, so no edge can ever swallow something
       // behind or beside the chassis.
       if (!(u > g.uIn && u < g.uOut + er + BB_INTAKE_LIP)) continue;
-      // ...and LATERALLY, the element's DISK has to overlap the roller — so the bound is the
-      // bar's own half-span plus one element radius. That is a grab, not a swallow: the
-      // THROAT below is what it has to be drawn into to be taken, and the throat is never
-      // wider than the bar. Tightened to `half + er * 0.25` (DECODE's convention) this test
-      // sat within hundredths of an inch of where an element rides the front corner, so the
-      // same approach captured or bulldozed depending on the robot's own lateral drift.
-      if (!(Math.abs(v) < g.half + er)) continue;
+      // ...and LATERALLY, the element's CENTRE has to be UNDER THE BAR — `|v| < half`, the
+      // roller's own span and not an inch more.
+      //
+      // ⚠️ IT USED TO BE `half + er`, AND THAT IS WHERE "IT TOUCHED THE SIDE OF MY INTAKE AND
+      // THE ROBOT SPUN" CAME FROM (owner report 2026-09-19, item 7). `bbRobotSolids` puts a
+      // SIDE PLATE at each lateral end of the mouth, so an element whose centre is outboard of
+      // `half` is on the far side of a solid the roller cannot reach through. The old bound
+      // gripped it anyway and commanded it `DRAW_IN * CENTRE_FRAC` (50.4 in/s) straight INTO
+      // that plate, every tick, for as long as the intake ran. In 2D the element simply sat
+      // there fighting the clamp; in 3D — every server match — it is a real body against a real
+      // collider, so the injected momentum was delivered to the chassis at an off-centre point:
+      // a free force and a free torque with no command. MEASURED, robot parked, intake held, a
+      // POLLEN resting against the plate: heading drifted 0.335 rad (19.2°) in 6.7 s at a steady
+      // −0.035 rad/s and the robot walked 1.6 in, dragging the element with it. With the intake
+      // OFF the same scene drifts 0.001 rad. An element the bar cannot reach is now just an
+      // obstacle, which is what it is.
+      //
+      // The bound is the mouth's OWN half-span, so it moves with the geometry: the sweeper is
+      // `widthFrac` 1.0, which puts it on the chassis sides — exactly where the plates are.
+      if (!(Math.abs(v) < g.half)) continue;
       // GRIP: the relative motion across the rollers. Too fast and they spin under it.
       const relU = (vLocal.x - velRobot.x) * g.n.x + (vLocal.y - velRobot.y) * g.n.y;
       const relV = (vLocal.x - velRobot.x) * g.p.x + (vLocal.y - velRobot.y) * g.p.y;
@@ -553,10 +566,12 @@ function turretPitchOf(r: RobotState, which: 0 | 1): number {
  * three readers need the same answer: `bbLaunch` releases it, stage 5b runs it forward to ask
  * whether it will score, and `shotPath.ts` draws it.
  *
- * ⚠️ **`origin` IS NO LONGER THE TURRET'S BOLT POINT, AND `z` IS NO LONGER A CONSTANT.** The
- * muzzle FOLLOWS THE HOOD (owner, 2026-09-19): the hood lip swings about the axle, so as the
- * barrel elevates the release drops and RETREATS along the turret's own heading. Both halves come
- * out of `bbMuzzleLocal`, which is the one place the dimension chain is read.
+ * ⚠️ **`origin` IS NOT THE TURRET'S BOLT POINT AND `z` IS NOT A CONSTANT.** The muzzle FOLLOWS
+ * THE HOOD (owner, 2026-09-19): the hood lip swings about the flywheel axle, which itself sits
+ * `axleX` in FRONT of the turret's rotation axis, so the release starts well ahead of the bolt
+ * point and creeps back toward it as the barrel elevates, dropping as it goes. Both halves come
+ * out of `bbMuzzleLocal`, which is the one place the dimension chain is read — and it is read
+ * with `which`, because a DOUBLE turret's NECTAR head is a bigger machine than its POLLEN one.
  */
 export function bbTurretRelease(
   r: RobotState,
@@ -565,12 +580,12 @@ export function bbTurretRelease(
 ): { origin: Vec2; z: number; vel: Vec3 } {
   const h = which === 1 ? (r.bbTurret2Heading ?? r.turretHeading) : r.turretHeading;
   const pitch = turretPitchOf(r, which);
-  const m = bbMuzzleLocal(pitch);
+  const m = bbMuzzleLocal(pitch, which);
   const o = bbTurretOrigin(r, which);
   const vh = dcos(pitch);
   return {
     origin: { x: o.x - dcos(h) * m.back, y: o.y - dsin(h) * m.back },
-    z: bbMuzzleZ(r.spec, pitch),
+    z: bbMuzzleZ(r.spec, pitch, which),
     vel: { x: dcos(h) * speed * vh, y: dsin(h) * speed * vh, z: speed * dsin(pitch) },
   };
 }
@@ -646,11 +661,20 @@ export interface BbShot {
  *  • turret      — one element every `BB_FIRE_INTERVAL`, from the turret ring, along
  *                  `turretHeading`. A SINGLE turret only ever holds POLLEN (its intake refuses
  *                  NECTAR — `bbIntakeAccepts`).
- *  • twinturret  — TWO INDIVIDUAL turrets on one feed. The next element is the LIFO top of
- *                  `r.hopper`: a POLLEN leaves turret 0 (`mount`, `turretHeading`,
- *                  `bbTurretPitch`) and a NECTAR leaves turret 1 (`mount2`, `bbTurret2Heading`,
- *                  `bbTurret2Pitch`), each at its own solved speed, on the SHARED
- *                  `BB_FIRE_INTERVAL` clock.
+ *  • twinturret  — TWO INDIVIDUAL turrets, each with its OWN feed off the shared hopper and
+ *                  BOTH FIRING ON THE SAME BEAT. A POLLEN leaves turret 0 (`mount`,
+ *                  `turretHeading`, `bbTurretPitch`) and a NECTAR leaves turret 1 (`mount2`,
+ *                  `bbTurret2Heading`, `bbTurret2Pitch`), each at its own solved speed.
+ *                  ⚠️ IT USED TO ALTERNATE (owner report 2026-09-19, item 5: "double turret
+ *                  shooter should start shooting pollen and nectar at the same time"). One LIFO
+ *                  `r.hopper` top chose ONE exit per beat, so with two POLLEN and two NECTAR
+ *                  loaded the measured release order was NECTAR at tick 0, POLLEN at tick 4,
+ *                  NECTAR at 9, POLLEN at 13 — the second turret's first shot always a whole
+ *                  cadence interval behind the first's. Worse, the gate read the top element's
+ *                  exit ALONE: a NECTAR on top with turret 1 still slewing refused the fire
+ *                  outright and the loaded, aimed POLLEN turret sat idle behind it. Each turret
+ *                  now takes the LIFO-top element OF ITS OWN KIND, and an exit that is empty or
+ *                  off target is simply skipped rather than blocking the other one.
  *  • dumper      — the WHOLE hopper at once, each element thrown from its own point across the
  *                  firing edge along its own CONVERGING arc into the target cell
  *                  (`bbDumpSolution`), then `BB_DUMP_RELOAD_S` to re-arm.
@@ -666,16 +690,38 @@ export interface BbShot {
  * misses, which is what the driver would get on a real field. With aim assist off, fire is fire.
  *
  * CADENCE IS ACCUMULATED, not re-anchored (`fireReadyAt += interval`), so the long-run turret
- * rate is exactly 13/s. The idle guard (clamp forward when the hopper is empty) stops a burst
- * catch-up on refill; `BB_FIRE_BURST_MAX` bounds any that remains. DETERMINISM: no jitter.
+ * rate is exactly 13/s. The BEAT is shared — one `fireReadyAt`, one wire field, and a shared
+ * feed is what a shared hopper physically is — but every exit that is loaded and on target
+ * fires on it, so the two turrets of a double start together and each keeps its own 13/s
+ * afterwards. The idle guard (clamp forward when the hopper is empty) stops a burst catch-up on
+ * refill; `BB_FIRE_BURST_MAX` bounds any that remains. DETERMINISM: no jitter.
  */
 export function bbLaunch(world: World, r: RobotState, cmd: RobotCommand, enabled: boolean, shot?: BbShot): void {
   const launcher = bbLauncherOf(r.spec, BB_HOOD_DEFAULT_DEG);
   const dumper = launcher.kind === 'dumper';
-  const top = r.hopper.length > 0 ? r.hopper[r.hopper.length - 1] : undefined;
-  const nextExit = dumper || top === undefined ? 0 : bbTurretFor(launcher, isNectarColour(top));
+  /** the exits this launcher has: both turrets of a double, one for everything else. */
+  const exits: readonly (0 | 1)[] = launcher.kind === 'twinturret' ? [0, 1] : [0];
+  /**
+   * THE LIFO-TOP ELEMENT `which` IS FED, or `undefined` when that exit has nothing to fire.
+   *
+   * For a single turret and a dumper `bbTurretFor` answers 0 for every colour, so this is the
+   * hopper's top and every line below is what it always was. For a DOUBLE it is the top POLLEN
+   * for turret 0 and the top NECTAR for turret 1 — two feeds off one hopper, which is what lets
+   * both fire on one beat.
+   */
+  const feed = (which: 0 | 1): (typeof r.hopper)[number] | undefined => {
+    for (let i = r.hopper.length - 1; i >= 0; i--) {
+      const c = r.hopper[i];
+      if (bbTurretFor(launcher, isNectarColour(c)) === which) return c;
+    }
+    return undefined;
+  };
   const lands = (which: number): boolean => !r.aimAssist || (shot?.lands[which] ?? false);
-  const want = enabled && cmd.fire && lands(nextExit);
+  // ARMED IF *ANY* EXIT IS. A dumper heaves the whole hopper out of exit 0, so it asks about
+  // that one; a launcher with two turrets is not blocked by the one that is empty or still
+  // slewing.
+  const armed = dumper ? lands(0) : exits.some((w) => feed(w) !== undefined && lands(w));
+  const want = enabled && cmd.fire && armed;
   if (!want || r.hopper.length === 0) {
     // IDLE GUARD: hold the cadence clock at "now" while there is nothing to fire, so a robot
     // that sat empty for ten seconds does not empty its hopper in one tick on refill.
@@ -724,19 +770,29 @@ export function bbLaunch(world: World, r: RobotState, cmd: RobotCommand, enabled
   // TURRETS: from the ring, along that turret's own heading and pitch, at the speed its arc
   // solution asked for. Speed and elevation travel TOGETHER — `bbSolveShot` returns a matched
   // pair — so a turret still swinging fires the stale pair and misses.
-  let fired = 0;
-  while (r.fireReadyAt <= world.time && r.hopper.length > 0 && fired < BB_FIRE_BURST_MAX) {
-    const colour = r.hopper[r.hopper.length - 1];
-    const which = bbTurretFor(launcher, isNectarColour(colour));
-    if (!lands(which)) break; // a double turret's next element leaves the OTHER turret
-    const rel = bbTurretRelease(r, which, shot?.speed[which] ?? BB_LAUNCH_SPEED_DEFAULT);
-    // THE HEIGHT TRAVELS WITH THE POINT. `rel.z` is the hood lip at this turret's CURRENT pitch,
-    // not `BB_LAUNCH_Z0` — a turret at full elevation releases ~2.1 in lower than one at rest.
-    releasePollen(world, r, rel.vel, undefined, rel.origin, colour, rel.z);
+  //
+  // EVERY LOADED, ON-TARGET EXIT FIRES ON THE BEAT. `beats` counts BEATS of the cadence clock,
+  // not elements: a double turret releases up to two on one beat and that is the point. An exit
+  // with nothing of its kind in the hopper, or one still slewing, is SKIPPED — never a `break`,
+  // which is what used to stall a loaded turret behind its partner.
+  let beats = 0;
+  while (r.fireReadyAt <= world.time && beats < BB_FIRE_BURST_MAX) {
+    let released = false;
+    for (const which of exits) {
+      const colour = feed(which);
+      if (colour === undefined || !lands(which)) continue;
+      const rel = bbTurretRelease(r, which, shot?.speed[which] ?? BB_LAUNCH_SPEED_DEFAULT);
+      // THE HEIGHT TRAVELS WITH THE POINT. `rel.z` is the hood lip at this turret's CURRENT
+      // pitch, not `BB_LAUNCH_Z0` — a turret at full elevation releases ~2.1 in lower than one
+      // at rest.
+      releasePollen(world, r, rel.vel, undefined, rel.origin, colour, rel.z);
+      released = true;
+    }
+    if (!released) break; // nothing left either exit can fire: stop, and leave the clock alone
     r.fireReadyAt += BB_FIRE_INTERVAL;
-    fired++;
+    beats++;
   }
-  if (fired > 0) r.lastFireAt = world.time;
+  if (beats > 0) r.lastFireAt = world.time;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -827,15 +883,23 @@ export function bbDumpSolution(r: RobotState, target: ScoreTarget, n: number): B
 /**
  * ⚠️ **THE MUZZLE — THE ONE FUNCTION THE PICTURE AND THE PHYSICS BOTH READ.**
  *
- * Where the hood lip is at elevation `pitch`, in the TURRET FRAME: `z` off the tiles, and `back`
- * how far BEHIND the turret's bolt point along the turret's own heading. The lip rides the
- * element's path circle about the flywheel axle, so it is one rotation of `BB_HOOD_PATH_R`:
+ * Where the hood lip is at elevation `pitch`, in the TURRET FRAME (origin on the turret's
+ * ROTATION AXIS): `z` off the tiles, and `back` how far BEHIND that axis the lip sits along the
+ * turret's own heading. The lip rides the element's path circle about the FLYWHEEL AXLE, and the
+ * axle is `axleX` FORWARD of the rotation axis, so it is one rotation of `pathR` less that
+ * offset:
  *
- *     back = BB_HOOD_PATH_R · sin p        z = BB_TURRET_AXLE_Z + BB_HOOD_PATH_R · cos p
+ *     back = pathR · sin p − axleX        z = BB_TURRET_AXLE_Z + pathR · cos p
  *
- * At rest that is (0, 9.634); at `BB_TURRET_PITCH_MAX` it is (2.479, 7.554). The old geometry
- * put it at a flat 10 in at every elevation, which is what a fixed exit means, and a fixed exit
- * is not what an adjustable-hood shooter has.
+ * ⚠️ **`back` IS NORMALLY NEGATIVE, AND THAT IS THE CHANGE.** `axleX = pathR` (the element comes
+ * up the rotation axis and pinches there), so the lip is a full `pathR` FORWARD of the axis at
+ * rest and creeps back toward it as the hood elevates — it never gets behind it. POLLEN: (−2.517,
+ * 9.635) level, (−0.038, 7.554) at the 80° cap. NECTAR is a bigger head and a higher one:
+ * (−2.917, 10.035) and (−0.044, 7.624).
+ *
+ * ⚠️ **AND `which` PICKS THE HEAD.** Turret 0 throws POLLEN on every build and turret 1 is the
+ * DOUBLE turret's NECTAR exit; a 3.6-in element wants a bigger hood, a wider channel and a
+ * further-forward axle than a 2.8-in one (`BbHeadDims`, `config.ts`), so the two muzzles differ.
  *
  * ⚠️ **IT LIVES HERE, NOT IN THE RENDERER.** Nothing outside `scene/` may import from `scene/`,
  * so a formula that lived there could only ever have had one reader — which is exactly how the
@@ -845,9 +909,10 @@ export function bbDumpSolution(r: RobotState, target: ScoreTarget, n: number): B
  *
  * Deterministic trig (`dsin`/`dcos`), because this is sim code on the release path.
  */
-export function bbMuzzleLocal(pitch: number): { back: number; z: number } {
+export function bbMuzzleLocal(pitch: number, which: 0 | 1 = 0): { back: number; z: number } {
+  const h = bbHead(which);
   const p = clamp(pitch, BB_TURRET_PITCH_MIN, BB_TURRET_PITCH_MAX);
-  return { back: BB_HOOD_PATH_R * dsin(p), z: BB_TURRET_AXLE_Z + BB_HOOD_PATH_R * dcos(p) };
+  return { back: h.pathR * dsin(p) - h.axleX, z: BB_TURRET_AXLE_Z + h.pathR * dcos(p) };
 }
 
 /**
@@ -864,11 +929,11 @@ export function bbMuzzleLocal(pitch: number): { back: number; z: number } {
  * directly, and this returns it unchanged for a turretless build whatever `pitch` says.
  *
  * `pitch` defaults to the rest pose (`BB_TURRET_PITCH_MIN`), which is the muzzle a caller with no
- * elevation in hand means.
+ * elevation in hand means; `which` defaults to the POLLEN turret, which every turreted build has.
  */
-export function bbMuzzleZ(spec: RobotSpec, pitch: number = BB_TURRET_PITCH_MIN): number {
+export function bbMuzzleZ(spec: RobotSpec, pitch: number = BB_TURRET_PITCH_MIN, which: 0 | 1 = 0): number {
   if (!bbIsTurreted(bbLauncherOf(spec, BB_HOOD_DEFAULT_DEG))) return BB_LAUNCH_Z0;
-  return bbMuzzleLocal(pitch).z;
+  return bbMuzzleLocal(pitch, which).z;
 }
 
 /**
@@ -913,16 +978,19 @@ export function bbTurretSolution(
   const dx = target.pos.x - o.x;
   const dy = target.pos.y - o.y;
   const d0 = hyp(dx, dy);
-  // PASS 1 is the level muzzle (`back` is 0 there, so it is also the old one-shot solve); each
-  // later pass re-reads the muzzle at the pitch the previous one produced.
+  // PASS 1 starts from the LEVEL muzzle and every later pass re-reads it at the pitch the
+  // previous one produced. It used to skip the `back` term on the first pass, on the grounds
+  // that a level lip sat exactly over the bolt point; it does not any more — the lip is a full
+  // `axleX` in FRONT of the rotation axis at rest — so the first pass reads the muzzle like the
+  // rest and the loop is one shape.
   let pitch = BB_TURRET_PITCH_MIN;
-  let sol = bbSolveShot(d0, target.z - bbMuzzleZ(r.spec, pitch));
-  pitch = clamp(sol.angle, BB_TURRET_PITCH_MIN, BB_TURRET_PITCH_MAX);
+  let sol = bbSolveShot(d0 + bbMuzzleLocal(pitch, which).back, target.z - bbMuzzleZ(r.spec, pitch, which));
   for (let i = 1; i < BB_TURRET_SOLVE_PASSES; i++) {
-    const m = bbMuzzleLocal(pitch);
-    sol = bbSolveShot(d0 + m.back, target.z - bbMuzzleZ(r.spec, pitch));
     pitch = clamp(sol.angle, BB_TURRET_PITCH_MIN, BB_TURRET_PITCH_MAX);
+    const m = bbMuzzleLocal(pitch, which);
+    sol = bbSolveShot(d0 + m.back, target.z - bbMuzzleZ(r.spec, pitch, which));
   }
+  pitch = clamp(sol.angle, BB_TURRET_PITCH_MIN, BB_TURRET_PITCH_MAX);
   return {
     yaw: datan2(dy, dx),
     pitch,

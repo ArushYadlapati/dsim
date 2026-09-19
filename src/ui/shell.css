@@ -2663,6 +2663,14 @@ tr.lb-detail td {
   border-bottom: 1px solid var(--ds-line);
   background: var(--ds-bar);
 }
+/* the view toggle (`docs/roadmap.md` item 2) sits beside the download menu, not as a fourth
+   `.ds-replay-top` child — that would unbalance the `space-between` the title's centring
+   depends on. One flex group, so the header's column count is unchanged. */
+.ds-replay-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
 /* live scoreboard over the replay. Mirrors the in-match HUD order (red · clock ·
    blue) so it reads the same way. It sits on the BAR surface, not the canvas, so
    --ds-ink/--ds-line are the correct tokens here (not the --ds-on-field set). */
@@ -2706,10 +2714,14 @@ tr.lb-detail td {
 .ds-replay-score.final .rs-mid {
   color: var(--ds-accent);
 }
-.ds-replay-canvas {
+/* BIOBUZZ 3D SEAM for the replay viewer (`docs/roadmap.md` item 2), mirroring `.game-viewport`
+   (styles.css) one screen over: the flex item that used to be the canvas itself is now this
+   box, so a live scene's own canvas can sit UNDER `.ds-replay-canvas` at the same size —
+   `.game-viewport`'s own rule makes both of them `position:absolute;inset:0`. */
+.ds-replay-viewport {
   flex: 1;
-  /* BOTH minimums, because the canvas is now a flex item in a ROW (`.ds-replay-stage`) as well
-     as filling a column. Without `min-width: 0` a flex item refuses to shrink below its
+  /* BOTH minimums, because the box is a flex item in a ROW (`.ds-replay-stage`) as well as
+     filling a column. Without `min-width: 0` a flex item refuses to shrink below its
      intrinsic width, so opening the rail would push the field off the side instead of
      narrowing it. */
   min-width: 0;
@@ -6015,4 +6027,445 @@ button.ds-key:active {
 }
 .yd-keep {
   color: var(--ds-mut);
+}
+
+/* =====================================================================
+   ANALYTICS (src/ui/AdminAnalytics.tsx + adminCharts.tsx) — the `an-` family
+   ---------------------------------------------------------------------
+   A dense operator surface built from the anatomy that already exists:
+   `.ds-panel` for every box, `.ds-table` for every table, `.ds-segs` for
+   the range picker. Nothing here re-declares a token or a component; the
+   only new shapes are the ones a chart genuinely needs.
+
+   The whole block is loaded by every page, unlike the JS it styles — CSS
+   has no lazy chunk here — so it is kept to the shapes and no more.
+
+   TWO COMPONENTS MUST NOT SHARE A CONTAINER CLASS: `an-` is this feature
+   and nothing else (the console's own chrome is `adm-`/`admin-`), and the
+   chart's horizontal rules are `.an-gridline` rather than `.an-grid`,
+   which is the breakdown panel grid. `.ds-dl` was declared twice for two
+   unrelated components and the later block silently re-laid-out the first.
+   ===================================================================== */
+.an-root {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ds-s-5);
+}
+
+/* ---- the toolbar ---- */
+.an-bar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--ds-s-3);
+}
+.an-bar-spacer {
+  flex: 1 1 auto;
+}
+.an-dates,
+.an-date {
+  display: flex;
+  align-items: center;
+  gap: var(--ds-s-2);
+}
+.an-dash {
+  color: var(--ds-mut);
+}
+
+/* A LABEL FOR A SCREEN READER AND NOT FOR THE EYE. The date inputs and the game
+   select are self-evident in a row headed by the range picker, and a visible
+   "From"/"To" would be helper text restating its own control (ui-standard §8).
+   The name still has to exist for anybody not looking at it. */
+.an-sr {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+/* ---- filter chips ---- */
+.an-filters {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--ds-s-2);
+}
+.an-filters-label {
+  font-family: var(--ds-font-mono);
+  font-size: var(--ds-t-xs);
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--ds-mut);
+}
+.an-chip {
+  font-family: inherit;
+  font-size: var(--ds-t-sm);
+  font-weight: 500;
+  line-height: 1;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--ds-s-1);
+  padding: var(--ds-s-1) var(--ds-s-2);
+  border-radius: var(--ds-round-full);
+  border: 1px solid var(--ds-line-strong);
+  background: var(--ds-tile);
+  color: var(--ds-ink);
+  cursor: pointer;
+  /* colour and shadow only, never a border width or a margin — ui-standard §1.4 */
+  transition: background 120ms, box-shadow 120ms;
+}
+.an-chip:hover,
+.an-chip:active {
+  background: var(--ds-panel);
+  box-shadow: var(--ds-block-sm);
+}
+.an-chip:focus-visible {
+  outline: 2px solid var(--ds-accent);
+  outline-offset: 2px;
+}
+
+/* ---- the headline tiles ---- */
+.an-tiles {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: var(--ds-s-3);
+}
+.an-tile {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ds-s-1);
+  padding: var(--ds-s-4);
+  border: 1px solid var(--ds-line);
+  border-radius: var(--ds-round-md);
+  background: var(--ds-panel);
+  box-shadow: var(--ds-block-sm);
+}
+.an-tile-label {
+  font-family: var(--ds-font-mono);
+  font-size: var(--ds-t-xs);
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--ds-mut);
+}
+/* TABULAR FIGURES: these six sit in a row and a proportional `1` makes the column
+   ragged as the numbers change under an auto-refresh. */
+.an-tile-value {
+  font-size: var(--ds-t-xl);
+  font-weight: 750;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+  color: var(--ds-ink);
+}
+.an-tile-foot {
+  display: flex;
+  align-items: baseline;
+  gap: var(--ds-s-2);
+  font-size: var(--ds-t-xs);
+}
+.an-tile-sub {
+  color: var(--ds-mut);
+}
+/* THE `-ink` SIBLINGS, never the fills: `--ds-ok` and `--ds-red` are FILL tokens and
+   land near 3:1 as 11px type, which is the large-text bar, not the body one. */
+.an-delta {
+  font-variant-numeric: tabular-nums;
+  color: var(--ds-mut);
+}
+.an-delta.up {
+  color: var(--ds-ok-ink);
+}
+.an-delta.down {
+  color: var(--ds-red-ink);
+}
+
+/* ---- the time series ---- */
+.an-chart {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ds-s-2);
+}
+.an-svg {
+  width: 100%;
+  height: auto;
+  display: block;
+  border-radius: var(--ds-round);
+}
+.an-svg:focus-visible {
+  outline: 2px solid var(--ds-accent);
+  outline-offset: 2px;
+}
+.an-gridline {
+  stroke: var(--ds-line-soft);
+  stroke-width: 1;
+}
+.an-axis {
+  font-family: var(--ds-font-mono);
+  font-size: var(--ds-t-xs);
+  fill: var(--ds-mut);
+}
+.an-line {
+  fill: none;
+  stroke-width: 2;
+  stroke-linejoin: round;
+  stroke-linecap: round;
+}
+.an-line.views {
+  stroke: var(--ds-accent);
+}
+/* DASHED, not merely a second hue. Two solid lines are told apart by colour alone,
+   which is the one channel a reader may not have. */
+.an-line.visitors {
+  stroke: var(--ds-purple-ink);
+  stroke-dasharray: 4 3;
+}
+.an-cursor {
+  stroke: var(--ds-mut);
+  stroke-width: 1;
+}
+.an-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--ds-s-3);
+  font-size: var(--ds-t-sm);
+  color: var(--ds-mut);
+}
+.an-key {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--ds-s-1);
+}
+.an-key::before {
+  content: '';
+  width: 12px;
+  height: 2px;
+  border-radius: var(--ds-round-full);
+  background: currentColor;
+}
+/* a series that supplies its own swatch does not want the generic dash as well */
+.an-key .an-swatch {
+  width: 10px;
+  height: 10px;
+  border-radius: var(--ds-round-sm);
+}
+.an-key:has(.an-swatch)::before {
+  display: none;
+}
+.an-key.views {
+  color: var(--ds-accent);
+}
+.an-key.visitors {
+  color: var(--ds-purple-ink);
+}
+.an-readout {
+  margin: 0;
+  font-family: var(--ds-font-mono);
+  font-size: var(--ds-t-sm);
+  color: var(--ds-mut);
+  /* RESERVED HEIGHT: this line changes as the pointer moves, and a line that grew from
+     nothing on hover would move every panel below it (ui-standard §1.4). */
+  min-height: 1.45em;
+}
+
+/* ---- the breakdown grid ---- */
+.an-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+  gap: var(--ds-s-4);
+}
+.an-grid.two {
+  grid-template-columns: repeat(auto-fit, minmax(340px, 1fr));
+}
+/* `.ds-panel + .ds-panel` carries a top margin for a vertical stack; inside a grid the
+   gap owns that space, and two owners for one gap is what ui-standard §2 forbids. */
+.an-grid .ds-panel + .ds-panel {
+  margin-top: 0;
+}
+.an-panel {
+  display: flex;
+  flex-direction: column;
+}
+.an-panel .ds-panel-body {
+  flex: 1 1 auto;
+}
+
+.an-bars {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--ds-s-0);
+}
+.an-bar-hit {
+  position: relative;
+  display: grid;
+  grid-template-columns: 1fr auto auto;
+  align-items: center;
+  gap: var(--ds-s-2);
+  width: 100%;
+  padding: var(--ds-s-1) var(--ds-s-2);
+  border: 1px solid transparent;
+  border-radius: var(--ds-round-sm);
+  background: none;
+  font: inherit;
+  font-size: var(--ds-t-md);
+  color: var(--ds-ink);
+  text-align: left;
+  cursor: pointer;
+}
+/* a row that cannot filter does not pretend it can — see `BarList`'s note on `entry` */
+.an-bar-hit.static {
+  cursor: default;
+}
+.an-bar-hit:hover {
+  border-color: var(--ds-line);
+}
+.an-bar-hit.static:hover {
+  border-color: transparent;
+}
+.an-bar-hit:focus-visible {
+  outline: 2px solid var(--ds-accent);
+  outline-offset: -2px;
+}
+.an-bar.on .an-bar-hit {
+  border-color: var(--ds-accent);
+}
+/* THE BAR IS THE ROW'S OWN BACKGROUND rather than a column beside it: it costs no
+   horizontal space on a phone, and the label never moves as the ranking changes. */
+.an-bar-fill {
+  position: absolute;
+  inset: 0 auto 0 0;
+  border-radius: var(--ds-round-sm);
+  background: color-mix(in srgb, var(--ds-accent) 16%, transparent);
+  transition: width 150ms;
+}
+.an-bar-name,
+.an-bar-share,
+.an-bar-num {
+  position: relative;
+}
+.an-bar-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.an-bar-share {
+  font-family: var(--ds-font-mono);
+  font-size: var(--ds-t-xs);
+  font-variant-numeric: tabular-nums;
+  color: var(--ds-mut);
+}
+.an-bar-num {
+  font-family: var(--ds-font-mono);
+  font-size: var(--ds-t-sm);
+  font-variant-numeric: tabular-nums;
+  min-width: 44px;
+  text-align: right;
+}
+
+/* ---- stacked columns ---- */
+.an-cols {
+  position: relative;
+  display: flex;
+  align-items: flex-end;
+  gap: var(--ds-s-0);
+}
+.an-col {
+  flex: 1 1 0;
+  min-width: 0;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  gap: var(--ds-s-1);
+}
+.an-col-stack {
+  display: flex;
+  flex-direction: column-reverse;
+  justify-content: flex-start;
+  height: 100%;
+  border-radius: var(--ds-round-sm);
+  overflow: hidden;
+}
+.an-col-part {
+  width: 100%;
+}
+.an-col-label {
+  font-family: var(--ds-font-mono);
+  font-size: var(--ds-t-xs);
+  color: var(--ds-mut);
+  text-align: center;
+  overflow: hidden;
+  white-space: nowrap;
+}
+.an-cols-total {
+  position: absolute;
+  inset: 0 0 auto auto;
+  font-family: var(--ds-font-mono);
+  font-size: var(--ds-t-xs);
+  color: var(--ds-mut);
+}
+
+/* ---- tables ---- */
+/* `.ds-panel` clips for its rounded corners, so a table wider than a phone needs its
+   own scroller or its right-hand columns are simply gone — the fix `.mh-scroll` and
+   `.yd-scroll` already carry. */
+.an-scroll {
+  overflow-x: auto;
+}
+.an-table {
+  min-width: 420px;
+}
+.an-subrow td {
+  color: var(--ds-mut);
+  background: var(--ds-tile);
+}
+.an-prop-key {
+  font-family: var(--ds-font-mono);
+  font-size: var(--ds-t-xs);
+  color: var(--ds-ink-dim);
+}
+.an-cell-act {
+  text-align: right;
+}
+
+/* ---- headings and prose inside the tab ---- */
+.an-h2 {
+  margin-bottom: var(--ds-s-2);
+}
+.an-sub {
+  margin-top: 0;
+}
+.an-foot {
+  border-top: 1px solid var(--ds-line);
+  padding-top: var(--ds-s-3);
+}
+/* every list state shares the body's padding, so a panel does not change height between
+   loading, empty and populated (ui-standard §6) */
+.an-empty {
+  padding: var(--ds-s-4) 0;
+}
+
+/* Below the tablet breakpoint the breakdown grid is one column, and the columns chart
+   drops every other label rather than shrinking the type below the scale. */
+@media (max-width: 640px) {
+  .an-grid,
+  .an-grid.two {
+    grid-template-columns: 1fr;
+  }
+  .an-col:nth-child(even) .an-col-label {
+    visibility: hidden;
+  }
+  .an-bar-hit {
+    font-size: var(--ds-t-sm);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .an-bar-fill,
+  .an-chip {
+    transition: none;
+  }
 }

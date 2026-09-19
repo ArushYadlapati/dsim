@@ -7,7 +7,7 @@ import { simModuleFor } from '../../src/games/sim';
 import {
   STANDING_MAX, HEAL_PER_DAY, HEAL_PER_CLEAN_MATCH, clampScore, type StandingVerdict,
 } from '../../src/standing';
-import { q, tx } from './pool';
+import { dbEnabled, q, tx } from './pool';
 
 /** every board/period is keyed by game; old callers/rows default to DECODE. */
 type Game = GameId;
@@ -1827,6 +1827,9 @@ export async function deleteUserRecords(userId: string): Promise<number> {
 export async function searchProfiles(
   query: string,
   limit = 25,
+  /** rows to skip — the console pages through a name that matches a lot of people
+   *  rather than silently showing the first 25 and pretending that is all of them */
+  offset = 0,
 ): Promise<
   {
     userId: string;
@@ -1850,9 +1853,15 @@ export async function searchProfiles(
             supporter_until as "supporterUntil",
             (kofi_email is not null) as "autoRenews"
        from profiles
-      where handle ilike $1 or user_id = $2 or username = lower($2)
-      order by handle limit $3`,
-    [`%${query}%`, query, limit],
+      where handle ilike $1 escape '\\' or user_id = $2 or username = lower($2)
+      order by handle, user_id limit $3 offset $4`,
+    // ESCAPED. A bare `%` in the box matched every profile on the service in one
+    // request — the same hole `searchPublicProfiles` closed on the public side, and a
+    // worse one here because these rows carry the membership and the staff role.
+    // `order by` is tie-broken on `user_id` so paging cannot show one row twice and skip
+    // another: `handle` is not unique and two people called "Player" have no stable order
+    // between pages without it.
+    [`%${query.replace(/[\\%_]/g, '\\$&')}%`, query, limit, Math.max(0, Math.floor(offset))],
   );
 }
 
@@ -4349,7 +4358,14 @@ export interface AdminPresenceRow {
   region: string;
   online: number;
   updatedAt: string;
-  players: (PresencePlayer & { handle: string | null; username: string | null })[];
+  players: (PresencePlayer & {
+    handle: string | null;
+    username: string | null;
+    role: StaffRole | null;
+    /** a `profiles` row exists for this id — see `profileNames` for why the two
+     *  cases have to be told apart rather than both rendering as "no profile" */
+    known: boolean;
+  })[];
   guests: PresenceGuest[];
   anon: PresenceAnon;
 }
@@ -4362,15 +4378,9 @@ export async function adminPresence(freshSeconds = 20): Promise<AdminPresenceRow
       where updated_at > now() - $1::interval order by region`,
     [`${Math.max(1, Math.floor(freshSeconds))} seconds`],
   );
-  const ids = [...new Set(rows.flatMap((r) => (Array.isArray(r.players) ? r.players : []).map((p) => p.userId)))];
-  const names = new Map<string, { handle: string; username: string | null }>();
-  if (ids.length) {
-    const profs = await q<{ user_id: string; handle: string; username: string | null }>(
-      `select user_id, handle, username from profiles where user_id = any($1::text[])`,
-      [ids],
-    );
-    for (const p of profs) names.set(p.user_id, { handle: p.handle, username: p.username });
-  }
+  const names = await profileNames(
+    rows.flatMap((r) => (Array.isArray(r.players) ? r.players : []).map((p) => p.userId)),
+  );
   return rows.map((r) => ({
     machine: r.machine,
     region: r.region,
@@ -4380,6 +4390,8 @@ export async function adminPresence(freshSeconds = 20): Promise<AdminPresenceRow
       ...p,
       handle: names.get(p.userId)?.handle ?? null,
       username: names.get(p.userId)?.username ?? null,
+      role: names.get(p.userId)?.role ?? null,
+      known: names.get(p.userId)?.known ?? false,
     })),
     guests: Array.isArray(r.guests) ? r.guests : [],
     anon:
@@ -5190,4 +5202,371 @@ export async function searchUsersByName(query: string, limit = 20): Promise<Publ
     [esc + '%', '% ' + esc + '%', Math.min(Math.max(1, limit), 50)],
   );
   return rows.map(shapeProfile);
+}
+
+// ============================================================ admin console ==
+//
+// The console's own data layer (migration 0041). Three jobs that the per-feature tables
+// above could not do between them: one AUDIT LOG every mutating route writes to, private
+// moderator NOTES on an account, and the single USER DETAIL read that every place a name
+// appears can now open.
+//
+// ⚠️ EVERY LIST HERE IS PAGINATED AND HARD-CAPPED. An admin list is the one place in this
+// codebase where "just fetch them all" looks harmless — there are only ever a handful of
+// admins — and it is exactly where it is not: these tables grow with the SITE, not with the
+// caller, so an unbounded `select … order by at desc` is a query whose cost rises forever and
+// whose first slow day is an incident. The cap is applied HERE rather than by the route, for
+// the reason `boardPhysics` is: a default in the data layer is the only version a new call
+// site cannot forget.
+
+/** one row of the audit log */
+export interface AuditRow {
+  id: string;
+  adminId: string;
+  action: string;
+  targetUser: string | null;
+  /** the target account's display name, resolved at read time (never stored — a name
+   *  copied into the log would go stale the first time somebody is renamed) */
+  targetHandle: string | null;
+  targetUsername: string | null;
+  targetId: string | null;
+  detail: Record<string, unknown>;
+  note: string | null;
+  at: string;
+}
+
+export interface AuditEntry {
+  adminId: string;
+  action: string;
+  targetUser?: string | null;
+  targetId?: string | null;
+  detail?: Record<string, unknown>;
+  note?: string | null;
+}
+
+/**
+ * Record one admin action.
+ *
+ * NEVER THROWS INTO A ROUTE — the same rule `server/standing.ts` states for the same reason.
+ * The audit is bookkeeping about an action, not part of performing it: a moderator who has
+ * just pardoned somebody must not see the pardon fail because a logging insert did. A failed
+ * write is logged loudly to the console and swallowed.
+ *
+ * `detail` is server-authored in every caller. Nothing a client sends reaches it, which is
+ * what keeps a jsonb column from becoming an injection surface for whatever a rename form
+ * was talked into posting.
+ */
+export async function writeAudit(e: AuditEntry): Promise<void> {
+  if (!dbEnabled) return;
+  try {
+    await q(
+      `insert into admin_audit (admin_id, action, target_user, target_id, detail, note)
+       values ($1, $2, $3, $4, $5::jsonb, $6)`,
+      [
+        e.adminId || 'unknown',
+        e.action,
+        e.targetUser ?? null,
+        e.targetId ?? null,
+        JSON.stringify(e.detail ?? {}),
+        e.note ? e.note.slice(0, 500) : null,
+      ],
+    );
+  } catch (err) {
+    console.error('[audit] FAILED recording', e.action, 'by', e.adminId, err);
+  }
+}
+
+/** the audit tab's read. Every filter is optional; the page is capped at 200. */
+export async function listAudit(
+  opts: {
+    action?: string;
+    adminId?: string;
+    targetUser?: string;
+    /** free text over the action, the note and the target id */
+    query?: string;
+    limit?: number;
+    offset?: number;
+  } = {},
+): Promise<{ rows: AuditRow[]; more: boolean }> {
+  const limit = Math.min(200, Math.max(1, Math.floor(opts.limit ?? 50)));
+  const offset = Math.max(0, Math.min(100_000, Math.floor(opts.offset ?? 0)));
+  const where: string[] = [];
+  const params: unknown[] = [];
+  const add = (clause: string, value: unknown): void => {
+    params.push(value);
+    where.push(clause.replace('$?', `$${params.length}`));
+  };
+  if (opts.action) add('a.action = $?', opts.action);
+  if (opts.adminId) add('a.admin_id = $?', opts.adminId);
+  if (opts.targetUser) add('a.target_user = $?', opts.targetUser);
+  if (opts.query?.trim()) {
+    // escaped for the same reason `searchPublicProfiles` escapes: a bare `%` typed into the
+    // box would otherwise match every row and turn a filter into a full scan. ONE parameter
+    // reused across five columns — `add` fills only the first `$?`, so the placeholder is
+    // resolved here and the clause handed over already complete.
+    params.push(`%${opts.query.trim().replace(/[\\%_]/g, '\\$&')}%`);
+    const n = `$${params.length}`;
+    where.push(
+      `(a.action ilike ${n} escape '\\' or a.note ilike ${n} escape '\\'` +
+        ` or a.target_id ilike ${n} escape '\\' or a.target_user ilike ${n} escape '\\'` +
+        ` or p.handle ilike ${n} escape '\\' or p.username ilike ${n} escape '\\')`,
+    );
+  }
+  // one row more than asked for, so "is there another page" costs no second query
+  params.push(limit + 1, offset);
+  const rows = await q<{
+    id: string; admin_id: string; action: string; target_user: string | null;
+    handle: string | null; username: string | null;
+    target_id: string | null; detail: Record<string, unknown> | null; note: string | null; at: string;
+  }>(
+    `select a.id::text as id, a.admin_id, a.action, a.target_user, a.target_id,
+            a.detail, a.note, a.at, p.handle, p.username
+       from admin_audit a
+       left join profiles p on p.user_id = a.target_user
+      ${where.length ? `where ${where.join(' and ')}` : ''}
+      order by a.at desc, a.id desc
+      limit $${params.length - 1} offset $${params.length}`,
+    params,
+  );
+  return {
+    rows: rows.slice(0, limit).map((r) => ({
+      id: r.id,
+      adminId: r.admin_id,
+      action: r.action,
+      targetUser: r.target_user,
+      targetHandle: r.handle,
+      targetUsername: r.username,
+      targetId: r.target_id,
+      detail: (r.detail ?? {}) as Record<string, unknown>,
+      note: r.note,
+      at: r.at,
+    })),
+    more: rows.length > limit,
+  };
+}
+
+/** every distinct action seen in the log, for the filter menu. Bounded by the number of
+ *  dotted keys the code can emit (a couple of dozen), not by the table's size. */
+export async function auditActions(): Promise<string[]> {
+  const rows = await q<{ action: string }>(
+    `select distinct action from admin_audit order by action limit 100`,
+  );
+  return rows.map((r) => r.action);
+}
+
+// ------------------------------------------------------------ admin notes ---
+
+export interface AdminNoteRow {
+  id: string;
+  adminId: string;
+  note: string;
+  at: string;
+}
+
+/** pin a private note to an account. Returns the stored row. */
+export async function addAdminNote(
+  userId: string,
+  adminId: string,
+  note: string,
+): Promise<AdminNoteRow | null> {
+  const text = note.trim().slice(0, 1000);
+  if (!text) return null;
+  const rows = await q<{ id: string; admin_id: string; note: string; at: string }>(
+    `insert into admin_notes (user_id, admin_id, note) values ($1, $2, $3)
+     returning id::text as id, admin_id, note, at`,
+    [userId, adminId, text],
+  );
+  const r = rows[0];
+  return r ? { id: r.id, adminId: r.admin_id, note: r.note, at: r.at } : null;
+}
+
+export async function listAdminNotes(userId: string, limit = 50): Promise<AdminNoteRow[]> {
+  const rows = await q<{ id: string; admin_id: string; note: string; at: string }>(
+    `select id::text as id, admin_id, note, at from admin_notes
+      where user_id = $1 order by at desc limit $2`,
+    [userId, Math.min(200, Math.max(1, Math.floor(limit)))],
+  );
+  return rows.map((r) => ({ id: r.id, adminId: r.admin_id, note: r.note, at: r.at }));
+}
+
+/** delete one note. Scoped by `user_id` as well as `id` so a mistyped id from one account's
+ *  panel can never reach another's row. */
+export async function deleteAdminNote(userId: string, id: string): Promise<boolean> {
+  const rows = await q<{ id: string }>(
+    `delete from admin_notes where user_id = $1 and id = $2::bigint returning id`,
+    [userId, id],
+  );
+  return rows.length > 0;
+}
+
+// ------------------------------------------------------------ user detail ---
+
+/**
+ * NAMES FOR A SET OF ACCOUNT IDS — the fix for "(no profile)".
+ *
+ * ⚠️ AN ACCOUNT WITH NO `profiles` ROW IS NOT A MISSING NAME, IT IS A DIFFERENT SITUATION,
+ * and the admin console printed both as "(no profile)". `profiles` is created LAZILY —
+ * `ensureProfile` runs on the API routes a signed-in client hits, so an account that has
+ * authenticated and opened a socket but not yet reached one genuinely has no row — and the
+ * operator view had no way to say which of the two it was looking at. `known` is that bit:
+ * false means "this account really has no profile row yet", and every caller renders that as
+ * the account id plus "no username yet", never as a missing lookup.
+ */
+export interface ProfileName {
+  handle: string | null;
+  username: string | null;
+  role: StaffRole | null;
+  /** a `profiles` row exists for this id */
+  known: boolean;
+}
+export async function profileNames(userIds: string[]): Promise<Map<string, ProfileName>> {
+  const out = new Map<string, ProfileName>();
+  const ids = [...new Set(userIds.filter(Boolean))];
+  if (!ids.length || !dbEnabled) return out;
+  const rows = await q<{ user_id: string; handle: string; username: string | null; role: string | null }>(
+    `select user_id, handle, username, role from profiles where user_id = any($1::text[])`,
+    [ids],
+  );
+  for (const r of rows) {
+    out.set(r.user_id, {
+      handle: r.handle,
+      username: r.username,
+      role: asRole(r.role) ?? null,
+      known: true,
+    });
+  }
+  return out;
+}
+
+export interface AdminUserDetail {
+  userId: string;
+  /** false ⇒ no `profiles` row at all (see `profileNames`) */
+  known: boolean;
+  handle: string | null;
+  username: string | null;
+  role: StaffRole | null;
+  /** the PAID membership, deliberately — see `searchProfiles` for why the admin console
+   *  never shows staff as supporters on a row where months get granted */
+  supporter: boolean;
+  supporterUntil: string | null;
+  autoRenews: boolean;
+  replaysPublic: boolean;
+  termsVersion: string | null;
+  termsAcceptedAt: string | null;
+  createdAt: string | null;
+  standing: StandingSnapshot | null;
+  standingEvents: StandingEventRow[];
+  /** reports filed AGAINST this account, and BY it — the second half is what tells a
+   *  pattern from somebody working the report button */
+  reportsAgainst: { total: number; open: number; reporters: number };
+  reportsFiled: { total: number; rejected: number };
+  scoreReportsFiled: { total: number; rejected: number };
+  notes: AdminNoteRow[];
+  grants: SupporterGrantRow[];
+  recentMatches: Awaited<ReturnType<typeof userRecentMatches>>;
+  records: { recordId: string; game: string; mode: string; drivetrain: string; score: number; replayId: string | null; createdAt: string }[];
+  audit: AuditRow[];
+}
+
+/**
+ * EVERYTHING ABOUT ONE ACCOUNT, IN ONE REQUEST.
+ *
+ * The console used to answer "who is this person" from four places that did not know about
+ * each other: the Live table had a name, the report queue had counts, the standing editor had
+ * the ledger, and the user search had the membership. A moderator deciding what to do about
+ * somebody had to open all four and hold the answer in their head.
+ *
+ * Every query here is bounded, and they run CONCURRENTLY rather than in sequence — this is one
+ * page load, not a pipeline, and nine round trips at 30ms each is a third of a second of
+ * staring at a spinner for no reason. An id with no profile row still answers (with `known:
+ * false`), because "this session says it is signed in and there is no account behind it" is
+ * precisely the thing an operator needs to be shown rather than protected from.
+ */
+export async function adminUserDetail(userId: string): Promise<AdminUserDetail> {
+  const [prof, standings, events, against, filed, scoreFiled, notes, grants, matches, records, audit] =
+    await Promise.all([
+      q<{
+        handle: string; username: string | null; role: string | null; supporter: boolean;
+        supporter_until: string | null; auto_renews: boolean; replays_public: boolean;
+        terms_version: string | null; terms_accepted_at: string | null; created_at: string | null;
+      }>(
+        `select handle, username, role,
+                (supporter_until is not null and supporter_until > now()) as supporter,
+                supporter_until, (kofi_email is not null) as auto_renews,
+                coalesce(replays_public, false) as replays_public,
+                terms_version, terms_accepted_at, created_at
+           from profiles where user_id = $1`,
+        [userId],
+      ),
+      standingsFor([userId]),
+      listStandingEvents(userId, 50),
+      q<{ total: number; open: number; reporters: number }>(
+        `select count(*)::int as total,
+                count(*) filter (where status = 'open')::int as open,
+                count(distinct reporter_id)::int as reporters
+           from player_reports where reported_id = $1`,
+        [userId],
+      ),
+      q<{ total: number; rejected: number }>(
+        `select count(*)::int as total,
+                count(*) filter (where status = 'dismissed')::int as rejected
+           from player_reports where reporter_id = $1`,
+        [userId],
+      ),
+      q<{ total: number; rejected: number }>(
+        `select count(*)::int as total,
+                count(*) filter (where status = 'rejected')::int as rejected
+           from score_reports where reporter_id = $1`,
+        [userId],
+      ),
+      listAdminNotes(userId, 50),
+      listSupporterGrants(userId, 20),
+      userRecentMatches(userId, 20),
+      q<{ id: string; game: string; mode: string; drivetrain: string; score: number; replay_id: string | null; created_at: string }>(
+        `select id::text as id, game, mode, drivetrain, score, replay_id::text as replay_id, created_at
+           from records where user_id = $1 order by created_at desc limit 20`,
+        [userId],
+      ),
+      listAudit({ targetUser: userId, limit: 25 }),
+    ]);
+  const p = prof[0];
+  return {
+    userId,
+    known: !!p,
+    handle: p?.handle ?? null,
+    username: p?.username ?? null,
+    role: asRole(p?.role ?? null) ?? null,
+    supporter: !!p?.supporter,
+    supporterUntil: p?.supporter_until ?? null,
+    autoRenews: !!p?.auto_renews,
+    replaysPublic: !!p?.replays_public,
+    termsVersion: p?.terms_version ?? null,
+    termsAcceptedAt: p?.terms_accepted_at ?? null,
+    createdAt: p?.created_at ?? null,
+    standing: standings[userId] ?? null,
+    standingEvents: events,
+    reportsAgainst: {
+      total: Number(against[0]?.total ?? 0),
+      open: Number(against[0]?.open ?? 0),
+      reporters: Number(against[0]?.reporters ?? 0),
+    },
+    reportsFiled: { total: Number(filed[0]?.total ?? 0), rejected: Number(filed[0]?.rejected ?? 0) },
+    scoreReportsFiled: {
+      total: Number(scoreFiled[0]?.total ?? 0),
+      rejected: Number(scoreFiled[0]?.rejected ?? 0),
+    },
+    notes,
+    grants,
+    recentMatches: matches,
+    records: records.map((r) => ({
+      recordId: r.id,
+      game: r.game,
+      mode: r.mode,
+      drivetrain: r.drivetrain,
+      score: r.score,
+      replayId: r.replay_id,
+      createdAt: r.created_at,
+    })),
+    audit: audit.rows,
+  };
 }

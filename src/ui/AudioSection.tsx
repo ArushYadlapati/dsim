@@ -2,6 +2,8 @@ import { useRef, useState } from 'react';
 import type { GameSettings } from '../game';
 import { MatchAudio } from '../audio';
 import { loadThemePref, setThemePref, type ThemePref } from '../theme';
+import { PERF_DISPLAY_LEVELS } from '../settings';
+import type { PerfDisplay } from '../types';
 import { rangeFill } from './rangeFill';
 
 /**
@@ -55,6 +57,28 @@ const THEMES: { id: ThemePref; title: string }[] = [
   { id: 'light', title: 'Light' },
   { id: 'dark', title: 'Dark' },
 ];
+
+/** the performance read-out's four levels. Sentence case, like every other `ds-opt`. */
+const PERF_DISPLAY_LABEL: Record<PerfDisplay, string> = {
+  off: 'Off',
+  simple: 'Simple',
+  detailed: 'Detailed',
+  graphs: 'Graphs',
+};
+
+/**
+ * ...and what each one actually adds.
+ *
+ * These blurbs survive `docs/ui-standard.md` §8 ("descriptions are deleted, not shortened")
+ * because they are the only thing that distinguishes four tiles whose labels are adjectives:
+ * "Detailed" cannot say what it details, and picking between them IS the task.
+ */
+const PERF_DISPLAY_BLURB: Record<PerfDisplay, string> = {
+  off: 'Nothing over the field',
+  simple: 'Frame rate, and ping when online',
+  detailed: 'Frame, sim and draw times, 3D counters, link',
+  graphs: 'Detailed, plus frame-time and ping traces',
+};
 
 /**
  * Audio and Visual preferences.
@@ -203,6 +227,35 @@ export function AudioSection({
               <span className="ot">In-match messages {settings.showEventLog ? 'ON' : 'OFF'}</span>
               <span className="od">Scoring and penalty notices in the field’s top-left corner</span>
             </button>
+          </div>
+          {/**
+            * THE PERFORMANCE READ-OUT'S LEVEL — beside the messages toggle, because they are
+            * the two read-outs a match draws over the field and they sit in opposite corners
+            * of it.
+            *
+            * HERE AND NOT IN GRAPHICS. Every control in that section is per DEVICE
+            * (`localStorage['decodesim.graphics']`) and 3D-only; this is a `GameSettings`
+            * field that syncs per account and applies to all three games in both views. It
+            * replaces the 3D-only "Performance overlay" row that used to live there.
+            *
+            * Four tiles rather than a switch and a checkbox: the whole point of the change is
+            * that ONE setting decides what is drawn, with nothing to click on the field.
+            */}
+          <div className="ds-field">
+            <span className="cap">Performance read-out</span>
+            <div className="ds-opts four">
+              {PERF_DISPLAY_LEVELS.map((lv) => (
+                <button
+                  key={lv}
+                  className={`ds-opt ${settings.perfDisplay === lv ? 'on' : ''}`}
+                  aria-pressed={settings.perfDisplay === lv}
+                  onClick={() => onChange({ ...settings, perfDisplay: lv })}
+                >
+                  <span className="ot">{PERF_DISPLAY_LABEL[lv]}</span>
+                  <span className="od">{PERF_DISPLAY_BLURB[lv]}</span>
+                </button>
+              ))}
+            </div>
           </div>
         </div>
       </section>

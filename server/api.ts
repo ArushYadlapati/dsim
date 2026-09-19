@@ -70,6 +70,27 @@ import {
   usernameAvailable,
   UsernameTakenError,
 } from './db/repo';
+import {
+  analyticsReport,
+  classify,
+  clientIp,
+  countryForTimezone,
+  currentSalt,
+  dimColumn,
+  ensureAnalyticsJobs,
+  headerCountry,
+  insertEvent,
+  insertPageview,
+  isBot,
+  parseEvent,
+  parsePageview,
+  primaryLang,
+  productReport,
+  rateOk,
+  visitorHash,
+  ADDRESS_LIMIT,
+  VISITOR_LIMIT,
+} from './analytics';
 import { emailGateRefusal, verifyAuthToken } from './auth';
 import { LEGAL_VERSION } from '../src/legalText';
 import { DEPLOY_REGIONS, interRegionMs } from './regions';
@@ -113,6 +134,11 @@ import { DEPLOY_REGIONS, interRegionMs } from './regions';
  *   POST /api/friends/invite/decline {id}    — decline one sent to you (sender is told)
  *   POST /api/friends/invite/cancel  {id}    — withdraw one you sent
  *   GET  /api/users/search?q=<prefix>        — public username-PREFIX search
+ *
+ *   POST /api/a/pv                           — one cookieless page view (public beacon)
+ *   POST /api/a/ev                           — one named event (public beacon)
+ *   GET  /api/analytics?from&to&game&grain&f — the traffic dashboard (staff only)
+ *   GET  /api/analytics/product?from&to&game — matches, retention, ranked, … (staff only)
  */
 
 /** Public usernames: lowercase letters + digits only, 4–20 chars. Kept in sync
@@ -397,6 +423,123 @@ async function saveLanUpload(
   }
 }
 
+/**
+ * ANALYTICS — the public beacon (`POST /api/a/pv`, `/api/a/ev`) and the admin read
+ * (`GET /api/analytics`, `/api/analytics/product`).
+ *
+ * ⚠️ THE TWO HALVES HAVE OPPOSITE THREAT MODELS and are in one function so that stays
+ * visible. The beacon is the only unauthenticated WRITE this server accepts and it answers 204
+ * to everything — a refusal that says WHY would tell a script which of the four limits it
+ * tripped, and there is nothing a real client could do with the answer anyway. The read is
+ * staff-only and says so plainly, because an admin who is signed in wrong needs to know.
+ *
+ * ⚠️ `isStaffUser` IS THE GATE, not a second copy of `ADMIN_IDS`. `profiles.role` is the
+ * projection of `ADMIN_USER_IDS` that exists so exactly this kind of question can be answered
+ * in SQL (`docs/area/accounts.md`), it is reconciled at every boot, and the sweep is symmetric
+ * — an id removed from the env loses the dashboard with everything else. A second env read
+ * here would be a second thing to keep in step.
+ */
+async function handleAnalytics(
+  req: IncomingMessage,
+  url: URL,
+  json: (code: number, body: unknown) => void,
+): Promise<boolean> {
+  const p = url.pathname;
+
+  // ---- ingest ------------------------------------------------------------
+  if (req.method === 'POST' && (p === '/api/a/pv' || p === '/api/a/ev')) {
+    // 202 WHATEVER HAPPENS: no database, a bot, over a limit, or a body that is not a beacon
+    // all look identical from outside. `sendBeacon` discards the response, a real client has
+    // nothing it could do with a reason, and a probe should not be able to learn which of the
+    // four limits it tripped. "Accepted" is also the honest status — the row is written after
+    // the response on every path that writes one.
+    const done = (): boolean => (json(202, {}), true);
+    if (!dbEnabled) return done();
+    const ua = (req.headers['user-agent'] as string | undefined) ?? '';
+    if (isBot(ua)) return done();
+
+    let body: unknown;
+    try {
+      // 4 KiB, not the 512 KiB default. A beacon is a few hundred bytes and the cap is the
+      // first thing standing between a public POST and somebody's idea of a fun afternoon.
+      body = JSON.parse(await readBody(req, 4096));
+    } catch {
+      return done();
+    }
+
+    const salt = await currentSalt();
+    const ip = clientIp(req);
+    // The HOST HEADER, not `url.host` — `handleApi` parses the request against a fixed
+    // `http://localhost` base, so that would be the same constant for every deployment and the
+    // `site` term in the hash would do nothing at all.
+    const site = (req.headers.host ?? '').slice(0, 64);
+    const visitor = visitorHash(salt, ip, ua, site);
+    // The per-ADDRESS key is a hash under the same rotating salt, so the limiter never becomes
+    // the one place raw addresses are kept. `ip:` keeps the two key spaces apart.
+    const addr = 'ip:' + visitorHash(salt, ip, '', site);
+    if (!rateOk(visitor, VISITOR_LIMIT) || !rateOk(addr, ADDRESS_LIMIT)) return done();
+
+    ensureAnalyticsJobs();
+    if (p === '/api/a/ev') {
+      const ev = parseEvent(body);
+      if (ev) await insertEvent(ev, visitor);
+      return done();
+    }
+    const pv = parsePageview(body);
+    if (!pv) return done();
+    const { device, os, browser } = classify(ua);
+    await insertPageview(pv, {
+      visitor,
+      // The header when the edge gives us one, the browser's coarse timezone otherwise. The
+      // timezone string is used for this line and then dropped; it is never a column.
+      country: headerCountry(req) || countryForTimezone(pv.timezone),
+      device,
+      os,
+      browser,
+      lang: primaryLang(req.headers['accept-language']),
+    });
+    return done();
+  }
+
+  // ---- the dashboard -----------------------------------------------------
+  if (req.method !== 'GET') return json(405, { error: 'method not allowed' }), true;
+  const user = await verifyAuthToken(bearer(req));
+  if (!user || !dbEnabled || !(await isStaffUser(user.userId))) {
+    return json(403, { error: 'forbidden' }), true;
+  }
+
+  // A range is two instants and both are clamped: an unbounded `from` is a full-table scan on
+  // a route somebody will leave open in a tab with auto-refresh on.
+  const now = Date.now();
+  const at = (key: string, fallback: number): Date => {
+    const raw = Date.parse(url.searchParams.get(key) ?? '');
+    return new Date(Number.isFinite(raw) ? Math.min(Math.max(raw, now - 730 * 86_400_000), now + 86_400_000) : fallback);
+  };
+  const to = at('to', now);
+  const from = at('from', to.getTime() - 7 * 86_400_000);
+  if (from >= to) return json(400, { error: 'empty range' }), true;
+  const game = url.searchParams.get('game') ?? '*';
+  const grain = url.searchParams.get('grain') === 'hour' ? 'hour' : 'day';
+
+  if (p === '/api/analytics/product') {
+    return json(200, await productReport(from, to, game)), true;
+  }
+  if (p !== '/api/analytics') return json(404, { error: 'unknown endpoint' }), true;
+
+  // `f=<dim>:<value>`, repeatable — the click-to-filter chips. Capped at six: the panel cannot
+  // produce more, and an URL that could would be a way to ask for an arbitrarily long `where`.
+  const filters = url.searchParams
+    .getAll('f')
+    .slice(0, 6)
+    .map((raw) => {
+      const i = raw.indexOf(':');
+      return i < 0 ? { dim: raw, val: '' } : { dim: raw.slice(0, i), val: raw.slice(i + 1).slice(0, 128) };
+    })
+    .filter((f) => dimColumn(f.dim) !== null);
+
+  return json(200, await analyticsReport({ from, to, game, filters, grain })), true;
+}
+
 export async function handleApi(req: IncomingMessage, res: ServerResponse): Promise<boolean> {
   const url = new URL(req.url ?? '/', 'http://localhost');
   if (!url.pathname.startsWith('/api/')) return false;
@@ -414,6 +557,13 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse): Prom
   }
 
   try {
+    // ---- analytics: the public beacon, and the admin read -------------------
+    // FIRST in the chain because it is the most frequent request this server answers and the
+    // cheapest to refuse. See `server/analytics.ts` for what is and is not recorded.
+    if (url.pathname.startsWith('/api/a/') || url.pathname.startsWith('/api/analytics')) {
+      return await handleAnalytics(req, url, json);
+    }
+
     // ---- authenticated write: set your own display name --------------------
     if (req.method === 'POST' && url.pathname === '/api/user/handle') {
       const auth = req.headers['authorization'];

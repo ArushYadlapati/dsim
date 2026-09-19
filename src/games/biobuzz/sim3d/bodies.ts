@@ -160,29 +160,41 @@ const FRAME_COUNT = 2;
 const FLOOR_HALF_T = 10;
 
 /**
- * THE TILES' OWN RESTITUTION — the owner's "make the balls bounce very slightly more from the
- * field tiles" (2026-09-19), and it is deliberately a SMALL number rather than a big one.
+ * THE TILES' RESTITUTION IS A **MULTIPLIER**, NOT A COEFFICIENT — which is what lets an element
+ * bounce off the tiles like a hard ball off foam while a chassis resting on the same collider
+ * reads exactly zero.
  *
- * Rapier combines a pair's restitution with the default AVERAGE rule unless one side asks for
- * something stronger, and the element collider (`engineImpl.ts`'s `syncElement`) asks only for
- * MAX FRICTION, not max restitution. So the element/tile coefficient is `(0.45 + floor) / 2`:
- * MEASURED at floor 0, a POLLEN dropped 24 in with planar drift rebounds to 1.19 in, i.e. an
- * effective e of 0.223, which is exactly `BB3_ELEMENT_RESTITUTION / 2`. At 0.05 that becomes
- * 0.25 and the same drop rebounds to ~1.50 in — a quarter more bounce height, which is the
- * "very slightly" the request asks for, and a tenth of what handing the pair a MAX rule would
- * have done (e 0.45, a 4.9-in rebound off the same drop).
+ * ── WHY THE RULE AND NOT THE NUMBER ────────────────────────────────────────
+ * Rapier resolves a pair's restitution by taking the HIGHER-PRIORITY of the two colliders' rules
+ * (Average 0 < Min 1 < Multiply 2 < Max 3) and applying it to the two values. Under the default
+ * AVERAGE the floor's number is shared by everything that rests on it, and the three things that
+ * rest on it want three different answers:
  *
- * APPROX: no coefficient for a real BIOBUZZ element on FTC's foam tiles has been measured —
- * `BB3_ELEMENT_RESTITUTION` itself is flagged APPROX in `../config` for the same reason — so
- * this is sized to the owner's report, not to an instrument.
+ *  · an ELEMENT wants the real pair — `BB3_ELEMENT_RESTITUTION`, a hard plastic ball on foam;
+ *  · a CHASSIS wants ZERO, because a robot never leaves the tiles and any rebound there is a
+ *    numerical term on top of the drive model, which the SIM3D lane's parity checks measure;
+ *  · the element/TRAY pair wants the TRAY's own low number (`TRAY_RESTITUTION_COMBINE`, Min),
+ *    and Min has to keep winning or a shot bounces back out of the cell.
  *
- * ⚠️ It is the SAME collider the robots rest on, and the pair is averaged there too: a chassis
- * sets restitution 0, so robot/tile is 0.025 rather than 0. That is inert in practice — a
- * BIOBUZZ robot never leaves the tiles, so there is no approach velocity for a restitution to
- * act on — and the SIM3D lane's drive-feel parity checks measure it. Give this a MAX combine
- * rule and that stops being true.
+ * MULTIPLY gives all three from one line. `e_pair = e_a · e_b`, so with this at **1.0** an
+ * element reads its OWN coefficient against the tiles (`0.55 · 1.0`) and a chassis reads
+ * `0 · 1.0` = 0 exactly. The tray is untouched: this rule is on the FLOOR, which the tray never
+ * meets, and every element/tray pair is still the element's Average against the tray's Min, so
+ * Min wins there as it always did. Handing the ELEMENT a Max rule instead would have been the
+ * obvious move and is the wrong one: it travels with the element to EVERY pair, Max outranks
+ * Min, and it would have taken the cell's own low restitution with it.
+ *
+ * ⚠️ 1.0 IS NOT "A PERFECTLY ELASTIC FLOOR". Nothing ever reads it as a coefficient; it is the
+ * identity of the multiply. Changing the BOUNCE means changing `BB3_ELEMENT_RESTITUTION`.
+ *
+ * WAS 0.05 under the AVERAGE rule, which made the element/tile pair `(0.45 + 0.05)/2 = 0.25`
+ * and a robot/tile pair of 0.025. Measured on a real 8-POLLEN tip: elements arriving at 160 in/s
+ * rebounded **1.0–2.1 in**, which on a 30-in drop is not a bounce anybody can see, and the owner
+ * reported it as such ("in real life the balls bounce and disperse a lot more after the hive tips
+ * and it hits the field tiles", 2026-09-19). See `BB3_ELEMENT_RESTITUTION` for the band it is
+ * sized to now and the dispersal the change bought.
  */
-const TILE_RESTITUTION = 0.05;
+const TILE_RESTITUTION = 1.0;
 
 /**
  * ⚠️ **THE TRAY AND ITS OWN FRAME DO NOT COLLIDE**, and under the DYNAMIC see-saw that is the
@@ -264,7 +276,10 @@ export function buildStatics3d(
     RAPIER.ColliderDesc.cuboid(1000, 1000, FLOOR_HALF_T)
       .setFriction(0)
       .setFrictionCombineRule(RAPIER.CoefficientCombineRule.Min)
-      .setRestitution(TILE_RESTITUTION),
+      // MULTIPLY, and the value is the identity — see `TILE_RESTITUTION`. Each body that rests
+      // here reads its own coefficient against the tiles and a chassis reads zero.
+      .setRestitution(TILE_RESTITUTION)
+      .setRestitutionCombineRule(RAPIER.CoefficientCombineRule.Multiply),
     ground,
   );
 

@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import type { Alliance, Artifact, ArtifactColor, RobotCommand, World } from '../../src/types';
+import type { Alliance, Artifact, ArtifactColor, RobotCommand, RobotSpec, World } from '../../src/types';
 import { PIN_WALL_SLOP, SIM_DT, START_TOUCH_TOL } from '../../src/config';
 import { MATCH_SETTLE_MAX_S, newSettleClock, settleStep } from '../../src/sim/settle';
 import { bbPinSolid } from '../../src/games/biobuzz/colliders';
@@ -46,6 +46,7 @@ import {
   BB_G417_ENABLED,
   bbAwardFoul,
   bbFootprintGap,
+  bbIntrusion,
   bbNectarLocked,
   updateBiobuzzPenalties,
 } from '../../src/games/biobuzz/penalties';
@@ -966,6 +967,292 @@ function driveX(dir: 1 | -1): RobotCommand {
   return cmd({ driveY: dir, leftDrive: dir, rightDrive: dir });
 }
 
+/**
+ * ─────────────────────────────────────────────────────────────────────────────
+ * G402 ON A ROBOT THAT ACTUALLY DRIVES — THE SCENARIO MATRIX, BOTH PIPELINES
+ * ─────────────────────────────────────────────────────────────────────────────
+ *
+ * ⚠️ **THIS BLOCK DELIBERATELY BREAKS THIS LANE'S OWN "DO NOT DRIVE" DOCTRINE**, and the bug
+ * it exists for is exactly why. Every hand-placed G402 fixture above puts the crosser where
+ * the rule's author imagined it — squarely inside the opponent's half, nothing in its way —
+ * and eighteen of them passed green against an engine that, on a robot that had to DRIVE
+ * there, billed almost nothing. Owner report 2026-09-19: "crossing half and colliding is not
+ * giving penalties a lot of the times. Both 2d and 3d." Measured before the fix, red driving
+ * into a parked blue:
+ *
+ *   · victim 10 in past the line  — first contact tick 36, foul tick 73 (0.6 s of shoving)
+ *   · victim at 0.3 throttle      — contact 71, foul 137
+ *   · a full-speed hit that bounces off after 12 ticks — **no foul, ever**
+ *   · a 20 lb mecanum on a 42 lb tank, 449 ticks of contact — **no foul, ever**
+ *
+ * The cause was geometric and invisible to a placed fixture: `fullyCrossed` wanted EVERY
+ * corner of a 21-in footprint past the line, i.e. the REAR bumper 10.5 in inside the opponent's
+ * half — which is 10.5 in a robot nose-to-nose with its victim can only get by bulldozing them
+ * there first. A rule can only be tested for that by making a robot earn its pose.
+ *
+ * So the runs below are SHORT (2 s or less), they assert TIMING as well as tallies, and they
+ * run on BOTH physics pipelines because the owner reported both. A failure here means the
+ * RULE stopped firing on a robot that drove; the placed fixtures above still say what the rule
+ * means on a robot that did not.
+ */
+type DuelOut = {
+  redMajor: number;
+  blueMajor: number;
+  contactAt: number;
+  contactTicks: number;
+  redFoulAt: number;
+  blueFoulAt: number;
+};
+
+/**
+ * Drive red (id 0) against blue (id 1) on the REAL pipeline and report what was billed to whom
+ * and when. `cmds` is asked per tick and may read `contactAt`, which is how the bounce scenario
+ * releases the stick a fixed number of ticks after the hit the SIM found rather than after a
+ * tick number hand-copied from one run of one solver.
+ *
+ * The foul tick is read from `world.events`, whose line names the VICTIM ("MAJOR FOUL - BLUE"
+ * is a foul BY red) — the same string the HUD toast shows, so a check cannot pass by reading a
+ * counter the engine also writes.
+ */
+function duel(opts: {
+  physics: '2d' | '3d';
+  phase: 'auto' | 'teleop';
+  red: [number, number, number?];
+  blue: [number, number, number?];
+  specR?: Partial<RobotSpec>;
+  specB?: Partial<RobotSpec>;
+  seconds: number;
+  cmds: (tick: number, contactAt: number) => Map<number, RobotCommand>;
+}): DuelOut {
+  const w = createBiobuzzWorld(
+    'match',
+    1234,
+    [setup(0, 'red', opts.specR, 0), setup(1, 'blue', opts.specB, 1)],
+    undefined,
+    opts.physics,
+  );
+  w.balls = [];
+  const bb = w.biobuzz;
+  if (bb) {
+    bb.flowers.forEach((f) => {
+      f.stack = [];
+    });
+    bb.hives.red.contents = [];
+    bb.hives.blue.contents = [];
+    bb.nectarStock.red = 0;
+    bb.nectarStock.blue = 0;
+  }
+  w.match.phase = opts.phase;
+  w.match.phaseTimeLeft = opts.phase === 'auto' ? 30 : 120;
+  place(w, 0, opts.red[0], opts.red[1], opts.red[2] ?? 0);
+  place(w, 1, opts.blue[0], opts.blue[1], opts.blue[2] ?? 180);
+
+  const out: DuelOut = {
+    redMajor: 0,
+    blueMajor: 0,
+    contactAt: -1,
+    contactTicks: 0,
+    redFoulAt: -1,
+    blueFoulAt: -1,
+  };
+  const n = Math.round(opts.seconds / SIM_DT);
+  for (let i = 0; i < n; i++) {
+    const before = w.events.length;
+    biobuzzStep(w, SIM_DT, opts.cmds(i, out.contactAt));
+    for (let k = before; k < w.events.length; k++) {
+      const e = w.events[k];
+      if (!e.includes('G402')) continue;
+      // the line names the VICTIM, so "- BLUE" is red's foul
+      if (e.includes('- BLUE') && out.redFoulAt < 0) out.redFoulAt = i;
+      if (e.includes('- RED') && out.blueFoulAt < 0) out.blueFoulAt = i;
+    }
+    if (w.rrContacts.length > 0) {
+      out.contactTicks++;
+      if (out.contactAt < 0) out.contactAt = i;
+    }
+  }
+  out.redMajor = w.match.fouls.red.major;
+  out.blueMajor = w.match.fouls.blue.major;
+  return out;
+}
+
+/** the lane a crosser can actually use: the HIVE frame bars stand on the centre line out to
+ * |y| = `BB_FRAME_Y`, so a robot driving along y = 0 is stopped by a field element and never
+ * reaches the opponent at all. Every duel below runs well clear of them. */
+const DUEL_Y = -40;
+
+function g402DrivenChecks(check: Check): void {
+  for (const physics of ['2d', '3d'] as const) {
+    const p = physics.toUpperCase();
+
+    // 1. THE PLAIN RAM: red drives across the line into a blue parked on its own side.
+    {
+      const d = duel({
+        physics,
+        phase: 'auto',
+        red: [-40, DUEL_Y],
+        blue: [10, DUEL_Y],
+        seconds: 2,
+        cmds: () => new Map([[0, driveX(1)]]),
+      });
+      check(`G402 ${p}: a driven crosser IS billed`, d.redMajor === 1, String(d.redMajor));
+      check(`G402 ${p}: ...and the rammed robot on its own side is billed nothing`,
+        d.blueMajor === 0, String(d.blueMajor));
+      check(`G402 ${p}: ...within half a second of the hit, not after bulldozing the victim`,
+        d.redFoulAt >= 0 && d.contactAt >= 0 && d.redFoulAt - d.contactAt <= ticks(0.5),
+        `contact ${d.contactAt} foul ${d.redFoulAt}`);
+    }
+
+    // 2. THE BOUNCE: contact lasts a handful of ticks and the crosser backs off. This billed
+    //    NOTHING before the fix — the crosser never got its rear bumper across.
+    {
+      const d = duel({
+        physics,
+        phase: 'auto',
+        red: [-40, DUEL_Y],
+        blue: [10, DUEL_Y],
+        seconds: 2,
+        // ten ticks of press, then hard reverse. Not seven: measured, the crosser's frame is
+        // 1.97 in past the line at seven and 2.13 at eight, which straddles `BB_G402_CROSS_IN`
+        // and would leave this check reading a threshold rather than a rule.
+        cmds: (t, contactAt) =>
+          new Map([[0, driveX(contactAt >= 0 && t >= contactAt + 10 ? -1 : 1)]]),
+      });
+      check(`G402 ${p}: a HIT-AND-BOUNCE is billed`, d.redMajor === 1, String(d.redMajor));
+      check(`G402 ${p}: ...and it really was brief — well under a second of contact`,
+        d.contactTicks > 0 && d.contactTicks < ticks(1), String(d.contactTicks));
+      check(`G402 ${p}: ...the victim still pays nothing for being hit`, d.blueMajor === 0,
+        String(d.blueMajor));
+    }
+
+    /**
+     * 3. THE VICTIM THAT WILL NOT MOVE — the FALSE-POSITIVE guard, and the reason the depth is
+     *    measured on the FRAME. A 20 lb mecanum leaning on a 42 lb tank parked at x = 8 cannot
+     *    shift it, so nobody's chassis crosses; what DID cross, on the footprint, was the
+     *    tank's own 2.5 in of sweeper overhang, which made the VICTIM the deeper of the two and
+     *    billed it the MAJOR for being rammed.
+     */
+    {
+      const d = duel({
+        physics,
+        phase: 'auto',
+        red: [-40, DUEL_Y],
+        blue: [8, DUEL_Y],
+        specR: { drivetrain: 'mecanum', massLb: 20, driveRpm: 435 },
+        specB: { drivetrain: 'tank', massLb: 42, driveRpm: 312 },
+        seconds: 2,
+        cmds: () => new Map([[0, driveX(1)]]),
+      });
+      check(`G402 ${p}: a robot rammed on its OWN side is never the offender`,
+        d.blueMajor === 0 && d.blueFoulAt < 0, `${d.blueMajor} at ${d.blueFoulAt}`);
+      check(`G402 ${p}: ...and the scene really did make contact`, d.contactTicks > ticks(1),
+        String(d.contactTicks));
+    }
+
+    /**
+     * 4. SHOVED ACROSS — G402's own exception ("deflected across the line by another object
+     *    will likely not be penalized"). Blue drives a command-less red 30 in into blue's own
+     *    half. Blue crossed and pays; red was carried and does not. Before the fix red was
+     *    billed a MAJOR at tick 51 for a journey it did not make.
+     */
+    {
+      const d = duel({
+        physics,
+        phase: 'auto',
+        red: [-6, DUEL_Y],
+        blue: [-32, DUEL_Y, 0],
+        seconds: 2,
+        cmds: () => new Map([[1, driveX(1)]]),
+      });
+      check(`G402 ${p}: the robot that drove into the opponent's half pays`, d.blueMajor === 1,
+        String(d.blueMajor));
+      check(`G402 ${p}: ...and the one it SHOVED across does not`, d.redMajor === 0,
+        String(d.redMajor));
+    }
+
+    // 5. ...and none of it is a TELEOP rule, however hard the ram.
+    {
+      const d = duel({
+        physics,
+        phase: 'teleop',
+        red: [-40, DUEL_Y],
+        blue: [10, DUEL_Y],
+        seconds: 2,
+        cmds: () => new Map([[0, driveX(1)]]),
+      });
+      check(`G402 ${p}: the same ram in TELEOP bills nothing`,
+        d.redMajor === 0 && d.blueMajor === 0, `${d.redMajor}/${d.blueMajor}`);
+    }
+  }
+}
+
+/**
+ * ─────────────────────────────────────────────────────────────────────────────
+ * G417 — RAMMING THE HIVE, WHICH IS A 3D RULE AND WAS NOT FIRING AT ALL
+ * ─────────────────────────────────────────────────────────────────────────────
+ *
+ * The rule is OFF in 2D by owner ruling (2026-09-13: nothing a 2D chassis does moves the HIVE)
+ * and ON in 3D, where the tray is a jointed dynamic body a 29-in robot reaches. It is billed
+ * from `bb.hiveRam`, which `sim3d/contacts3d.ts` writes from the solve's own contact pairs —
+ * and it was never written, for two independent reasons that each hid the other:
+ *
+ *   1. the closing speed was read from `r.vel` AFTER the step and the readback, i.e. after the
+ *      collision had already absorbed it. Measured: 69.6 in/s on approach, 21.5 read back on
+ *      the contact tick, 0.5 the tick after, against a 30 in/s threshold;
+ *   2. the contact normal was negated the wrong way round. The field colliders are built before
+ *      the robots, so every robot-hive pair is stored hive-first and `flipped` is always true —
+ *      the branch that was wrong was the only branch ever taken, and a full-speed ram computed
+ *      a closing speed of **−69.6**.
+ *
+ * So these checks drive a real chassis at the real frame. There is no hand-built fixture that
+ * could have caught either: both are properties of the contact the SOLVER produces.
+ */
+function hiveRamChecks(check: Check): void {
+  /** one robot, driven at the red HIVE frame's foot bar (x ≈ −24, |y| ≤ 19.4). */
+  const ram = (
+    physics: '2d' | '3d',
+    x0: number,
+    cmds: (tick: number) => RobotCommand,
+    seconds: number,
+  ): { majors: number; lines: string[] } => {
+    const w = createBiobuzzWorld('match', 7, [setup(0, 'red', {}, 0)], undefined, physics);
+    w.match.phase = 'teleop';
+    w.match.phaseTimeLeft = 90;
+    place(w, 0, x0, 5);
+    const n = Math.round(seconds / SIM_DT);
+    for (let i = 0; i < n; i++) biobuzzStep(w, SIM_DT, new Map([[0, cmds(i)]]));
+    return {
+      majors: w.match.fouls.red.major,
+      lines: w.events.filter((e) => e.includes('G417')),
+    };
+  };
+  const go = (): RobotCommand => driveX(1);
+
+  const fast = ram('3d', -62, go, 1.5);
+  check('G417 3D: a full-speed run at the HIVE frame IS a ram', fast.majors === 1, String(fast.majors));
+  check('G417 3D: ...and the line names the act',
+    fast.lines[0] === `MAJOR FOUL - BLUE +${BB_PTS.foulMajor} (G417 STRATEGIC ramming of the HIVE)`,
+    fast.lines.join(' | '));
+
+  // the manual's own "likely NOT STRATEGIC" example — "accidentally bumping the frame while
+  // attempting to pick up POLLEN". A quarter-throttle approach peaks at 20.6 in/s, well under
+  // `BB_FRAME_RAM_SPEED`, and must say nothing at all.
+  const slow = ram('3d', -40, () => cmd({ driveY: 0.25, leftDrive: 0.25, rightDrive: 0.25 }), 2);
+  check('G417 3D: a slow bump into the frame is not a ram', slow.majors === 0, String(slow.majors));
+
+  // "MAJOR FOUL and YELLOW CARD **per MATCH**" (Table 10-4), in deliberate contrast with G416's
+  // per-instance: back off and run it down again and the team still owes exactly one.
+  const twice = ram('3d', -62, (t) => driveX(t >= 60 && t < 150 ? -1 : 1), 5);
+  check('G417 3D: a SECOND ram is still one MAJOR — the tariff is per MATCH',
+    twice.majors === 1, String(twice.majors));
+
+  // ...and none of it in 2D, where the rule is off by owner ruling because nothing a chassis
+  // does there can move the HIVE. `BB_G417_ENABLED` is the switch; this is the behaviour.
+  const flat = ram('2d', -62, go, 1.5);
+  check('G417 2D: the same ram bills nothing — the rule is off in that pipeline',
+    flat.majors === 0 && !BB_G417_ENABLED, `${flat.majors}`);
+}
+
 function penaltyChecks(check: Check): void {
   // ── the tariff itself — MAJOR is 20 here, not DECODE's 15 ─────────────────
   check(`TARIFF: MINOR ${BB_PTS.foulMinor} / MAJOR ${BB_PTS.foulMajor} (Table 10-4)`,
@@ -1177,7 +1464,43 @@ function penaltyChecks(check: Check): void {
     place(t, 0, 20, 0);
     place(t, 1, 32, 0);
     check('G402: crossing in TELEOP is legal', bill(t, 30).major.red === 0);
+
+    /**
+     * ── THE DEPTH TEST ITSELF, ON ITS OWN ──────────────────────────────────
+     * `bbIntrusion` is how far a robot's CHASSIS FRAME is into the opponent's half, and the
+     * word CHASSIS is the load-bearing one: `robotCorners` — what everything else in the file
+     * measures — carries the intake reach, and a sweeper hanging over the seam is a MECHANISM
+     * over the line, not a robot that has gone anywhere. Pinned here rather than only through
+     * the foul, because the foul reads a DIFFERENCE of two depths and a uniform error in both
+     * would cancel.
+     */
+    const g = bare([
+      { id: 0, alliance: 'red' },
+      { id: 1, alliance: 'blue' },
+    ]);
+    const half = g.robots[0].spec.length / 2;
+    const reach = footprintExtents(g.robots[0].spec).front - half;
+    check('G402 DEPTH: the fixture HAS a sweeper, or the frame/footprint split proves nothing',
+      reach > 0.5, String(reach));
+    place(g, 0, -40, 0);
+    check('G402 DEPTH: a robot on its own side reads 0', bbIntrusion(g.robots[0]) === 0,
+      String(bbIntrusion(g.robots[0])));
+    place(g, 0, 3, 0);
+    check('G402 DEPTH: a red robot 3 in past the line is in by 3 + its half-length',
+      Math.abs(bbIntrusion(g.robots[0]) - (3 + half)) < 1e-6, String(bbIntrusion(g.robots[0])));
+    // the SWEEPER over the line, the FRAME not: depth 0, where the footprint would read `reach`
+    place(g, 1, half + reach / 2, 0);
+    check('G402 DEPTH: a sweeper over the line is not the ROBOT over the line',
+      bbIntrusion(g.robots[1]) === 0, String(bbIntrusion(g.robots[1])));
+    // ...and it is the rotated box, not the axis-aligned one: at 90° the WIDTH faces the line
+    place(g, 0, 0, 0, 90);
+    check('G402 DEPTH: at 90° the depth is the half-WIDTH, not the half-length',
+      Math.abs(bbIntrusion(g.robots[0]) - g.robots[0].spec.width / 2) < 1e-6,
+      String(bbIntrusion(g.robots[0])));
   }
+
+  g402DrivenChecks(check);
+  hiveRamChecks(check);
 
   // ── G407: CONTROL of a fifth element — a WARNING, and only a warning ──────
   /**

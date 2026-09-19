@@ -177,7 +177,13 @@ newest-first — it is never ranked, which is what keeps the two eras from meeti
   "stay at 72 for parity" exception is GONE — the constants ARE the CAD — and the SIM3D lane's
   `one field` check asserts the 2D collider faces, the 3D collider faces and the CAD/GLB faces
   agree within 0.05 in. Tape is the CAD's 16 measured strips in BOTH renderers (`BB_TAPE`), never
-  an outline of a zone rectangle. A `fieldDims.gen.ts` that drifts from the measurements JSON
+  an outline of a zone rectangle, all of them **one width, `BB_TAPE_W`** (the CAD's 1.000 in, NOT
+  the shared `C.TAPE_W`, which is DECODE's field and equal by coincidence) — and **there is no
+  centre mark**: Event Field Guide V1.0 §8 tapes the LOADING ZONES, the GARDENS and the ALLIANCE
+  AREAS and nothing else, and guide §9.1 has the four centre tiles come OUT for the frame, so the
+  origin is bare tile under the HIVE. Both renderers drew a white cross there at tape width; the
+  RENDER lane now runs `drawBiobuzzField` against a recording context and fails on any white line
+  inside the perimeter. A `fieldDims.gen.ts` that drifts from the measurements JSON
   fails the SIM3D lane, which re-renders it and diffs byte for byte. `docs/biobuzz-reference.md`
   carries the ruling and the full before/after table.
 - **GRAPHICS SETTINGS ARE PER DEVICE, AND THE SCENE SUBSCRIBES TO THEM** (Day 3, plan §4.4–§4.6).

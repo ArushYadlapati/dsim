@@ -1,7 +1,7 @@
 import type { Alliance, RobotCommand, RobotState, Vec2, World } from '../../types';
-import { hyp } from '../../math';
+import { dcos, dsin, hyp } from '../../math';
 import { PIN_END_S, PIN_ESCAPE_DIST, PIN_SECONDS, PIN_STUCK_SPEED } from '../../config';
-import { robotCorners } from '../../sim/physics';
+import { driveIntent, robotCorners } from '../../sim/physics';
 import { foulEventText, warningEventText } from '../../sim/penaltyLog';
 import { type ControlGeometry, controlledArtifacts, isPinning } from '../../sim/penalties';
 import { bbPinSolid } from './colliders';
@@ -41,8 +41,9 @@ import { bbKindOf } from './score';
  *
  * ── WHAT IS ENFORCED, AND WHAT IS DELIBERATELY NOT ──────────────────────────
  * HERE: **G410** (NECTAR into a FLOWER before the 1:00 cue), **G402** (AUTO interference
- * across the field's halves), **G417** (ramming the HIVE frame), **G421** (PINNING) and
- * **G407** (CONTROL of more than 4 SCORING ELEMENTS — a WARNING, not a foul).
+ * across the field's halves), **G417** (ramming the HIVE frame), **G421** (PINNING),
+ * **G407** (CONTROL of more than 4 SCORING ELEMENTS — a WARNING, not a foul) and **G409**
+ * (catching a spilling element — a WARNING, and 3D only; see `bbBillG409`).
  *
  * G421 IS THE ONE RULE HERE THAT IS NOT EDGE-TRIGGERED, and it is not an exception to the
  * paragraph above — it is the ONLY rule in Section 11 that carries a per-3-seconds clause
@@ -57,8 +58,11 @@ import { bbKindOf } from './score';
  * See `bbControlled` for what this can and cannot yet count.
  *
  * NOT HERE, each for a stated reason rather than an oversight:
- *  • **G405 / G409 / G411 / G418 / G426 / G427** are structural (nothing leaves the field, the
- *    sim's human player obeys its own timing) or referee judgement a 2D sim cannot see.
+ *  • **G405 / G411 / G418 / G419 / G420 / G426 / G427** are structural (nothing leaves the
+ *    field, no chassis tips another, the sim's human player obeys its own timing) or referee
+ *    judgement a sim cannot see. G409 used to be on this list and is off it: the 3D spill is a
+ *    real flight with a real first contact, so it is billed (as a WARNING) by `bbBillG409`,
+ *    and it stays unmodelled in 2D, where the spill is handed straight to the tiles.
  *
  * RUNS BEFORE gameplay (`step.ts`, stage 7), so a foul awarded this tick folds into the
  * alliance total the score pass writes at the end of the same tick.
@@ -488,22 +492,52 @@ export function updateBiobuzzPenalties(
   // ── G402 — AUTO interference across the halves. MAJOR on the crosser. ─────
   // Every pair of OPPOSING robots in contact. Same-alliance pairs are skipped: no FTC contact
   // rule has ever penalised touching your own partner.
-  for (let i = 0; i < world.robots.length; i++) {
+  //
+  // ⚠️ THE PHASE TEST COMES FIRST. It used to sit AFTER `robotsContact`, so every opposing pair
+  // paid two `robotCorners` allocations and a four-axis SAT on every tick of the two-minute
+  // TELEOP for an answer the next line threw away. G421 asks the same question for itself.
+  for (let i = 0; isAuto && i < world.robots.length; i++) {
     for (let j = i + 1; j < world.robots.length; j++) {
       const A = world.robots[i];
       const B = world.robots[j];
       if (A.alliance === B.alliance) continue;
+      // `passive` robots — free-drive dummies — draw no sanction, the same way G407, G417 and
+      // the pin accumulator skip them. Billing a MAJOR to whichever colour a dummy was spawned
+      // as is a foul awarded to nobody. This loop was the one place that did not skip them.
+      if (A.passive || B.passive) continue;
       if (!robotsContact(A, B)) continue;
-      if (!isAuto) continue;
       /**
        * G402: during AUTO, red plays columns A–C (x < 0) and blue D–F (x > 0). The foul is on
-       * the robot that CROSSED — fully across the centre line, in contact with an opponent.
+       * the robot that CROSSED — reaching into the opponent's half, in contact with an opponent.
        *
-       * FULLY across, by every corner, and that is the difference between this and a foul for
-       * touching the line: a robot straddling the centre with its own partner on its own side
-       * has not left its columns, and Fig 9-5's split (columns A–C / D–F) is about which HALF
-       * of the field a robot is playing in. Both crossing at once is two fouls, which is still correct — two
-       * CROSSERS are two offenders, and the cap below is per offender.
+       * ── ⚠️ "FULLY ACROSS, BY EVERY CORNER" WAS THE BUG, AND IT WAS A BIG ONE ──
+       * This used to require EVERY corner of the crosser's footprint past the centre line
+       * (`fullyCrossed`). A robot is about 21 in long with its sweepers, so that asks for the
+       * REAR bumper to be 10.5 in inside the opponent's half — which, in the only situation the
+       * rule is ever about, is 10.5 in the crosser does not have: it is nose-to-nose with the
+       * opponent it just hit, and the only way further in is to bulldoze them there first.
+       *
+       * Measured headlessly, both pipelines, red driving across into a parked blue (owner
+       * report 2026-09-19, "crossing half and colliding is not giving penalties a lot of the
+       * times"):
+       *   · victim 10 in past the line — first contact tick 36, foul tick 73. 0.6 s of shoving,
+       *     and 21 in of the victim's own half given away, before the rule said anything.
+       *   · victim at 0.3 throttle — contact 31, foul 137. Over a second and a half.
+       *   · a 20 lb mecanum ramming a 42 lb tank that will not move — 449 ticks of continuous
+       *     contact, the crosser's nose 4.1 in inside the opponent's half, **NO FOUL EVER**.
+       *   · a full-speed hit that bounces off (12 ticks of contact) — **NO FOUL EVER**.
+       * The last two are the ordinary case. A robot that cannot push its victim can never earn
+       * a rule written as "push your victim a chassis-length".
+       *
+       * So the test is now DEPTH, and the offender is the one who reached FURTHER across:
+       * `bbIntrusion` is how far a robot's CHASSIS FRAME is into the opponent's half (read its
+       * header — the frame and not the collision footprint is what stops the VICTIM of a ram
+       * being billed for its own sweeper overhang), and the robot with the greater depth is the
+       * one that came over. That makes it fire on the FIRST tick of contact for a robot that
+       * actually crossed, and it keeps a robot wholly on its own side — depth 0 — unbillable no
+       * matter how hard it is rammed. Both crossing at once (equal depth, the head-on meeting
+       * at the line) is two fouls, which is still correct: two CROSSERS are two offenders, and
+       * the cap below is per offender.
        *
        * ── "PER MATCH", WHICH THIS RULE ALSO CARRIES — AND USED TO IGNORE ──────
        * Table 10-4's G402 row reads "**MAJOR FOUL per MATCH.** MAJOR FOUL and YELLOW CARD per
@@ -519,16 +553,32 @@ export function updateBiobuzzPenalties(
        * is "a TEAM", and an FTC team is one robot, so the latch is per ROBOT — which is also
        * why two crossers still pay separately.
        */
-      for (const [x, y] of [
-        [A, B],
-        [B, A],
+      const depthA = bbIntrusion(A);
+      const depthB = bbIntrusion(B);
+      for (const [x, y, dx, dy] of [
+        [A, B, depthA, depthB],
+        [B, A, depthB, depthA],
       ] as const) {
-        if (!fullyCrossed(x)) continue;
+        // NOT ACROSS, or not the one who came over.
+        if (dx <= BB_G402_CROSS_IN || dx < dy) continue;
         const key = `g402-${x.id}-${y.id}`;
-        if (!bb.foulEdge[key]) {
-          const flags = (bb.held[x.id] ??= {});
-          if (!flags.g402billed) {
-            flags.g402billed = true;
+        if (!bb.held[x.id]?.g402billed) {
+          /**
+           * ...AND A ROBOT SHOVED ACROSS BY ITS OPPONENT HAS NOT CROSSED.
+           *
+           * G402's own notes say elements "deflected across the line by another object will
+           * likely not be penalized", and the subject of the rule is a TEAM disrupting AUTO —
+           * a robot bulldozed into the opponent's half by the opponent disrupted nothing. It
+           * is asked here rather than above so the edge trigger records CROSSINGS only: an
+           * excused tick must not mark the key seen, or a shove that turns into a genuine
+           * drive-in a second later is swallowed by its own edge.
+           *
+           * Measured before this: blue driving a parked, command-less red 30 in into blue's
+           * own half billed RED a MAJOR at tick 51, on top of blue's own (correct) one.
+           */
+          if (bbShovedAcross(x, y, commands)) continue;
+          if (!bb.foulEdge[key]) {
+            (bb.held[x.id] ??= {}).g402billed = true;
             bbAwardFoul(world, x.alliance, 'major', 'G402 crossing into the opponent’s half in AUTO');
           }
         }
@@ -868,14 +918,83 @@ function rectTouchesRobot(r: RobotState, rect: { x0: number; x1: number; y0: num
   return true;
 }
 
-/** is EVERY corner of this robot on the opponent's side of the centre line? (G402, Fig 9-5:
- * red is columns A–C at x < 0, blue D–F at x > 0). */
-function fullyCrossed(r: RobotState): boolean {
+/**
+ * HOW FAR THIS ROBOT'S FRAME IS INTO THE OPPONENT'S HALF (in) — 0 if no part of it is across.
+ *
+ * G402, Fig 9-5: red plays columns A–C (x < 0) and blue D–F (x > 0), so the OPPONENT's half is
+ * the positive-x side for red and the negative-x side for blue.
+ *
+ * ── ⚠️ THE CHASSIS BOX, NOT THE COLLISION FOOTPRINT, AND THAT IS THE WHOLE ──
+ * ── DIFFERENCE BETWEEN THIS RULE AND ONE THAT BILLS THE VICTIM ──────────────
+ * `robotCorners` is `spec` PLUS the intake reach, which is what two robots collide with; every
+ * other test in this file uses it and should. Crossing is a different question. A sweeper
+ * hanging 3 in over the seam is a MECHANISM over the line, and a robot parked on its own side
+ * with its intake across it has not gone anywhere — but it is in contact the moment an opponent
+ * arrives, and it is then, by a hair, the DEEPER of the two. Measured: a 42 lb tank parked at
+ * x = 8 (its own half by every part of its frame) rammed by a 20 lb mecanum was billed the
+ * MAJOR, on the footprint, for 2.5 in of sweeper overhang — the victim paying for the hit.
+ * On the frame its depth is 0 and it is unbillable, which is the right answer and needs no
+ * tunable threshold to get there: the ROBOT is its frame.
+ *
+ * The support function of the rotated chassis rectangle along ±x, closed form: no corner array
+ * and no allocation at all, where the `fullyCrossed` it replaces built four `Vec2`s per call.
+ *
+ * Exported for the rules lane, which drives the depth directly on rotated boxes as well as
+ * through the foul.
+ */
+/**
+ * HOW FAR A ROBOT'S FRAME MUST BE PAST THE CENTRE LINE TO HAVE CROSSED IT (in).
+ *
+ * `APPROX` — the manual draws a line and prints no tolerance, so this is the width of the
+ * band in which the sim declines to have an opinion. Two reasons it cannot be zero, and both
+ * are measurements rather than taste:
+ *
+ *  · `robotsContact` calls two frames touching while they are still `BB_FOUL_SLOP` apart, so a
+ *    robot can be RECORDED in contact with its own frame an inch short of the other's, and the
+ *    solver's resting penetration moves the same boundary the other way;
+ *  · a chassis on the diagonal reaches `hypot`-far from its centre, not half-length — 11.3 in
+ *    for the default 15 × 17 build against a 7.5-in nose. In a full 3D bot match a blue robot
+ *    sitting at x = 10, its own side by every square measure, presented a corner **1.3 in**
+ *    over the line and was billed the MAJOR when a red robot drove up to it.
+ *
+ * Two inches is past both. It costs the real crosser almost nothing — measured over the driven
+ * matrix, the foul lands within a handful of ticks either way — and it is what keeps the rule
+ * about crossing the field rather than about grazing a line.
+ */
+export const BB_G402_CROSS_IN = 2; // APPROX
+
+export function bbIntrusion(r: RobotState): number {
   const want = r.alliance === 'red' ? 1 : -1; // the sign of x that is the OPPONENT's half
-  for (const c of robotCorners(r)) {
-    if (c.x * want <= 0) return false;
-  }
-  return true;
+  const reach =
+    Math.abs((r.spec.length / 2) * dcos(r.heading)) + Math.abs((r.spec.width / 2) * dsin(r.heading));
+  const deepest = r.pos.x * want + reach;
+  return deepest > 0 ? deepest : 0;
+}
+
+/**
+ * IS `x` IN THE OPPONENT'S HALF ONLY BECAUSE `y` PUT IT THERE? — G402's one exception.
+ *
+ * The rule's own notes exempt what is "deflected across the line by another object", and the
+ * sentence it qualifies is about a TEAM disrupting AUTO: a robot driven into the opponent's
+ * half by that opponent disrupted nothing and is the victim of the contact, not its author.
+ *
+ * The test is INTENT, not velocity, and that is the whole reason it works. A shoved robot's
+ * velocity points into the opponent's half exactly like a crosser's — it is being pushed that
+ * way — so a velocity test cannot tell them apart. What can is that the shoved robot is not
+ * ASKING to go there while the one behind it is: `driveIntent` is the same decode of a stick
+ * the drivetrain itself runs (`src/sim/physics.ts`), tank side-drives included.
+ *
+ * Deliberately NOT "x is not driving": a robot that drove itself across and then let go of the
+ * stick is still across, and a command-less fixture — every rules check in the lane — must
+ * still bill the robot it placed in the opponent's half. Something has to be actively driving
+ * the pair the wrong way for the excuse to apply.
+ */
+function bbShovedAcross(x: RobotState, y: RobotState, commands: Map<number, RobotCommand>): boolean {
+  const want = x.alliance === 'red' ? 1 : -1;
+  // asking to go there itself? then it is there under its own power, whatever else is pushing.
+  if (driveIntent(x, commands.get(x.id)).x * want > 0) return false;
+  // ...and the opponent is driving the pair that way, i.e. deeper into the opponent's own half.
+  return driveIntent(y, commands.get(y.id)).x * want > 0;
 }
 
 /**

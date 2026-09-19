@@ -1,4 +1,4 @@
-<!-- governs: src/ads/**, server/kofi.ts, src/legalText.ts, src/analytics.ts, src/analyticsPref.ts, src/storageKeys.ts -->
+<!-- governs: src/ads/**, server/kofi.ts, src/legalText.ts, src/analytics.ts, src/analyticsPref.ts, src/pageviews.ts, src/storageKeys.ts -->
 # Monetization — ads and the supporter tier
 
 Perks are cosmetic or convenience ONLY — never anything affecting how a robot drives or scores.
@@ -63,6 +63,51 @@ Not yet deployed. `HANDOFF.md` has the full write-up; the load-bearing rules:
 - ⚠️ **`LEGAL_OPERATOR`/`LEGAL_JURISDICTION` in `src/legalText.ts` are PLACEHOLDERS.**
   Until filled, the Terms page shows a visible warning to every visitor. Fill them
   before taking a payment; do not guess them from a timezone or an email domain.
+- **FIRST-PARTY ANALYTICS — the admin console's Analytics tab.** DSIM measures itself now
+  (`server/analytics.ts`, migration `0042`, `src/pageviews.ts`, `src/ui/AdminAnalytics.tsx`),
+  in ADDITION to the host's dashboard below, because the thing a third party structurally
+  cannot do is put traffic beside the PRODUCT tables — matches per game × mode × physics,
+  signups, D1/D7/D30 retention, the ranked distribution, replay storage, moderation load,
+  Ko-fi conversions. Every one of those is a query over tables that already existed; the
+  feature added no column to any of them.
+  - **COLLECTED, per page view**: the scrubbed path, the game, the referrer's HOST, the three
+    UTM parameters, a two-letter country, device/OS/browser family, a screen BUCKET
+    (`sm`/`md`/`lg`/`xl`), the primary language subtag, `web`/`electron`, the release channel
+    and the build id. Named events land beside them with at most four bounded properties.
+  - ⚠️ **NEVER COLLECTED, and this is a SCHEMA guarantee rather than a discipline**: no IP
+    address, no full user agent, no account id, no exact viewport, no click or input. `dbtest`
+    asserts against `information_schema` that no `analytics_*` table has such a column, because
+    a column somebody adds later for a good reason is exactly how this would be lost.
+  - **THE VISITOR KEY IS `sha256(daily salt || ip || ua || site)` truncated to 16 hex**, and
+    the salt is DESTROYED at two days (`analytics_salt`). That deletion is the guarantee: past
+    it, nobody can recompute yesterday's hash from an address. The consequence is stated on the
+    dashboard and in the policy rather than hidden — **a visitor count over a range is a SUM OF
+    DAILY UNIQUES**, and the same person on two days is two visitors. Sessions are DERIVED in
+    SQL from a 30-minute gap; there is no session identifier to store.
+  - **COUNTRY** comes from `fly-client-country` (or `cf-ipcountry` / `x-vercel-ip-country`)
+    when the edge sets one, else from the browser's coarse IANA timezone mapped by a table in
+    `server/analytics.ts`. The timezone string is used for that line and discarded. **Never a
+    third-party geo-IP service.**
+  - **SCRUBBING HAPPENS ON THE CLIENT**, in `normalizePath`: the query string goes
+    unconditionally (`?token=` is how a password reset arrives) and `/replay/<id>`,
+    `/profile/<name>` and room codes become placeholders, so an id never leaves the browser.
+    `npm test` exercises the scrubbers headlessly, which is why `src/pageviews.ts` reads
+    `import.meta.env` through a guard and reaches `net/env` by dynamic import.
+  - **RETENTION**: raw rows 30 days, `analytics_hourly` 35 days, `analytics_daily` kept,
+    `analytics_concurrency` 120 days, the salt 2 days. The rollup and the sweep run on a
+    five-minute interval under `pg_try_advisory_lock`, so exactly one Fly machine does the
+    work — and the interval is **started by the first beacon**, never at boot, because Neon
+    bills the wall-clock time the compute is awake and an unconditional timer costs the month.
+  - **GATES**: `VITE_ANALYTICS=1` **and** a configured cloud game server, plus
+    `analyticsAllowed()`, plus `doNotTrack`/GPC. A self-hosted, LAN or offline build sends
+    nothing. The ingest route needs `DATABASE_URL` on the Fly side and nothing else.
+  - **The dashboard is a LAZY chunk** and is gated on `isStaffUser` — `profiles.role`, the
+    projection of `ADMIN_USER_IDS`, not a second env read. A range inside the raw window is
+    exact and cross-filterable; one reaching further back is served from the daily rollups and
+    the panel SAYS so rather than silently degrading.
+  - ⚠️ **`LEGAL_UPDATED` HAS NOT BEEN MOVED.** The policy describes this already; the date is
+    to move in the deploy that sets `VITE_ANALYTICS=1`, because moving it asks every signed-in
+    account to accept the terms again.
 - Analytics (`src/analytics.ts`, `VITE_ANALYTICS=1`, Vercel Web Analytics — cookieless).
   **Rule: no identifiers in any event payload** — counts and enums only.
   It has an **OFF SWITCH**, `src/analyticsPref.ts`, read by `trackEvent` on EVERY call

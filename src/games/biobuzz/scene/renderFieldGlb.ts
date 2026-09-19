@@ -59,6 +59,8 @@ export interface FieldGroups {
    * two trays — see that function's header. Non-zero on the shipped asset; zero once the pipeline
    * files the braces as tray parts itself. */
   braceTris: number;
+  /** what the PRINTED FIELD MARKINGS block built — all zero on the LOW LOD, by design. */
+  markings: FieldMarkings;
 }
 
 let sharedLoader: GLTFLoader | null = null;
@@ -189,25 +191,37 @@ const TILE_TONE = 0x2a2e33;
  *    the other two: the value is a placeholder, not intent.
  *  - `envMapIntensity`. At 1.0 a glossy panel mirrors the environment; the warm practice HDRI is
  *    exactly where the "beige" came from. 0.15 keeps a glancing highlight and nothing else.
- * What is LEFT to read the shape off is the EDGE — `addPanelEdges` draws a faint outline on the
- * cell skins, which is how a real clear panel reads. The perimeter needs none: its own rails and
- * link plates are opaque and already draw the frame.
+ *
+ * ⚠️ AND THE OUTLINE PASS THAT USED TO FINISH THIS OFF IS GONE — IT DREW NO OUTLINE (owner bug 3,
+ * 2026-09-19: "there are stray lines on the transparent panels of the hives").
+ *
+ * `addPanelEdges` ran `THREE.EdgesGeometry(mesh.geometry, 25)` over a tray's `plastic#e6e6e6`
+ * mesh, which is ONE merged, welded and per-primitive-decimated soup of SIX cell skins. Measured
+ * on the shipped `field.glb`, red tray: **3,552 segments, 2,811 of them 0.01 in or shorter, and
+ * the LONGEST is 0.84 in** — on skins that are 20 in wide and 11.75 in deep. Not one segment in
+ * it is a panel boundary. The mesh has no boundary edge at all (each skin is a closed 0.020-in
+ * slab), so every segment came from the 2,994 tessellation creases the decimator left plus 317
+ * non-manifold edges: 125 in of sub-inch dashes sprayed over the panel in `#b9c6d2`. That is the
+ * report, exactly.
+ *
+ * Nothing replaces it, because nothing needs to: a CELL's shape is drawn by its two opaque
+ * alliance-coloured GOAL RIBS (`plastic#ff0000`/`#0000ff`, 46 k triangles, a perforated frame
+ * plate at the divider end AND at the mouth — the audit's §4.2), and the mouth-end rib IS the
+ * aperture outline a driver aims at. The skins carry a touch more alpha instead.
  *
  * `depthWrite: false` + a `renderOrder` past every opaque object stays: three.js sorts transparent
  * objects by render order, not per triangle, so two clear panels must never fight over a pixel.
  */
 const WALL_PANEL_OPACITY = 0.08;
 /** the hive CELL skins sit a hair denser than the perimeter — they are what a driver reads the
- * cell's shape off, and there are fewer of them in any one line of sight. */
-const CELL_PANEL_OPACITY = 0.1;
+ * cell's shape off, and there are fewer of them in any one line of sight. Raised from 0.10 when
+ * the outline pass came out. */
+const CELL_PANEL_OPACITY = 0.13;
 /** how much of the environment map a clear panel gathers. */
 const CLEAR_ENV_INTENSITY = 0.15;
 /** the tone every clear panel is forced to, overriding the STEP's `#e6e6e6` placeholder: a cool
  * neutral that disappears into whatever is behind it instead of hazing it white. */
 const CLEAR_PANEL_TINT = 0x7d8b96;
-/** the faint outline that makes a nearly-invisible panel's shape readable. */
-const PANEL_EDGE_TINT = 0xb9c6d2;
-
 /**
  * ⚠️ THE FOURTH DELIBERATE CAD OVERRIDE (owner bug 12, 2026-09-19: "the blue alliance looks too
  * purple — are you sure that is the exact colour AndyMark uses?").
@@ -227,7 +241,6 @@ const PANEL_EDGE_TINT = 0xb9c6d2;
  */
 const CAD_ALLIANCE_BLUE = 0x0000ff;
 const ALLIANCE_BLUE_TINT = 0x007be1;
-const PANEL_EDGE_OPACITY = 0.3;
 /** matches `renderField.ts`'s `WALL_RENDER_ORDER` — drawn after every opaque object so two
  * transparent walls (or a wall and a robot) never fight over which one occludes the other. */
 const WALL_RENDER_ORDER = 10;
@@ -247,24 +260,6 @@ function clearPanelMaterial(opacity: number): THREE.Material {
     side: THREE.FrontSide,
     envMapIntensity: CLEAR_ENV_INTENSITY,
   });
-}
-
-/** the outline pass — a child of the panel mesh, so it inherits every transform for free (a cell
- * skin rides the tray, which swings). `thresholdAngle` 25° keeps the panel boundaries and the
- * brake-formed chamfers and drops the tessellation's own interior triangulation. */
-function addPanelEdges(mesh: THREE.Mesh, renderOrder: number): void {
-  const edges = new THREE.LineSegments(
-    new THREE.EdgesGeometry(mesh.geometry, 25),
-    new THREE.LineBasicMaterial({
-      color: PANEL_EDGE_TINT,
-      transparent: true,
-      opacity: PANEL_EDGE_OPACITY,
-      depthWrite: false,
-    }),
-  );
-  edges.name = `${mesh.name || 'panel'}:edges`;
-  edges.renderOrder = renderOrder;
-  mesh.add(edges);
 }
 
 /** the tape and the AprilTag/sticker decals are painted ON a surface that is already there (the
@@ -333,6 +328,189 @@ function materialFor(finish: Finish, rawHex: number, family: NodeFamily): THREE.
   }
 }
 
+/**
+ * ⚠️ `computeVertexNormals()` IS THE WRONG PASS FOR THIS ASSET, AND IT IS WHAT PUT WHITE
+ * ARTIFACTS ON THE BLACK BRACKETS (owner bug 4, 2026-09-19: "all of the black linking components
+ * that hold the support beams of the center structure are rendered weirdly — it looks like it has
+ * white artifacts").
+ *
+ * Neither GLB carries a `NORMAL` attribute, and that is deliberate (`assemble-gltf.mjs`'s header:
+ * flat per-triangle normals stop meshoptimizer collapsing any edge on a mesh built from many
+ * merged parts). So the loader has to compute them — and it computed them SMOOTH, over a soup in
+ * which every part of a hive frame sharing one CAD colour is one welded primitive. Measured on
+ * the shipped `field.glb`:
+ *
+ * | mesh | tris | triangles with a vertex normal > 45° off the face | zero-length normals |
+ * |---|---|---|---|
+ * | `hive_red/frame` `metal#303030` | 19,674 | 71 % | 0 |
+ * | `hive_blue/frame` `metal#303030` | 19,672 | 71 % | 3 |
+ * | `walls` `metal#303030` | 18,480 | 64 % | 12 |
+ * | `flower_*` `metal#303030` | 1,332 | 75 % | 0 |
+ *
+ * Worst case 180°: a vertex where two parts meet back to back averages to nothing, `normalize()`
+ * of a zero vector is NaN, and the shader's specular term goes undefined. It shows up on the BLACK
+ * parts first because `metal` is `metalness: 0.7` — on a `#303030` base the reflection IS the
+ * picture, so a wrong normal samples the bright environment and the bracket flashes white.
+ *
+ * This is the same pass with a CREASE ANGLE: a corner's normal averages only the faces around
+ * that vertex within `creaseDeg` OF ITS OWN, so a box corner keeps three hard normals while a
+ * tessellated cylinder stays round. Measured on `field.glb`: 63–75 % of triangles over-smoothed
+ * before and **0.07 %** after — 141 triangles out of 208,172, every one of them a sliver of under
+ * 1.5e-11 in² that covers no pixel at any camera — with 0 degenerate normals, in 149 ms once at
+ * load.
+ *
+ * ⚠️ THE GROUPING IS PER CORNER AND IS NOT TRANSITIVE, AND THAT IS THE WHOLE TRICK. The first
+ * version union-found a vertex's faces into smoothing GROUPS, which is the obvious reading of
+ * "group by angle" and is wrong on exactly the shape this field is full of: on a 12-sided
+ * tessellated cylinder every face is 30° from its neighbour, so at a 40° crease the union chains
+ * all the way round the ring, one group spans 360°, and its area-weighted average is the ZERO
+ * VECTOR. It took the over-smoothed count from 68 % to 7.5 % and left the worst case at a full
+ * 180° — the same artifact, just rarer. Per corner there is nothing to chain: each one averages
+ * itself plus its two neighbours and comes out normal to the ring.
+ *
+ * It keeps the INDEX, deduplicating corners that agree on a normal. Three's own
+ * `BufferGeometryUtils.toCreasedNormals` (which does the same per-corner average) de-indexes
+ * instead — 624,516 vertices on this field against the 243,547 the dedupe needs.
+ *
+ * ⚠️ EVERY ATTRIBUTE IS COPIED THROUGH `getX/getY/getZ/getW`, for the `KHR_mesh_quantization`
+ * reason `partitionTrianglesWorld` documents below.
+ */
+export const CREASE_ANGLE_DEG = 40;
+
+/** exported for the RENDER lane, which runs it over the real `field.glb` in Node. */
+export function computeCreasedNormals(geo: THREE.BufferGeometry, creaseDeg: number): void {
+  const index = geo.getIndex();
+  const pos = geo.getAttribute('position');
+  // a NON-indexed geometry already has one vertex per corner, so the plain pass is exact there.
+  if (!index || !pos) {
+    geo.computeVertexNormals();
+    return;
+  }
+  const triCount = index.count / 3;
+  const vertCount = pos.count;
+  const faceN = new Float32Array(triCount * 3);
+  const faceArea = new Float32Array(triCount);
+  const a = new THREE.Vector3();
+  const b = new THREE.Vector3();
+  const c = new THREE.Vector3();
+  const e1 = new THREE.Vector3();
+  const e2 = new THREE.Vector3();
+  for (let t = 0; t < triCount; t++) {
+    a.fromBufferAttribute(pos, index.getX(t * 3));
+    b.fromBufferAttribute(pos, index.getX(t * 3 + 1));
+    c.fromBufferAttribute(pos, index.getX(t * 3 + 2));
+    e1.subVectors(c, b);
+    e2.subVectors(a, b);
+    e1.cross(e2);
+    const twiceArea = e1.length();
+    faceArea[t] = twiceArea / 2;
+    if (twiceArea > 0) e1.divideScalar(twiceArea);
+    faceN[t * 3] = e1.x;
+    faceN[t * 3 + 1] = e1.y;
+    faceN[t * 3 + 2] = e1.z;
+  }
+
+  // vertex -> incident corners, as CSR (one array of 100k sub-arrays is the slow way to say this)
+  const start = new Uint32Array(vertCount + 1);
+  for (let i = 0; i < index.count; i++) start[index.getX(i) + 1]++;
+  for (let v = 0; v < vertCount; v++) start[v + 1] += start[v];
+  const cursor = start.slice(0, vertCount);
+  const incFace = new Uint32Array(index.count);
+  const incCorner = new Uint32Array(index.count);
+  for (let t = 0; t < triCount; t++) {
+    for (let k = 0; k < 3; k++) {
+      const slot = cursor[index.getX(t * 3 + k)]++;
+      incFace[slot] = t;
+      incCorner[slot] = t * 3 + k;
+    }
+  }
+
+  const cosCrease = Math.cos((creaseDeg * Math.PI) / 180);
+  const newIndex = new Uint32Array(index.count);
+  const srcOf: number[] = [];
+  const outN: number[] = [];
+  /** corners of one vertex whose normals agree to within this dot share an output vertex — a
+   * vertex has a handful of corners, so the scan is cheaper than hashing 624 k strings. */
+  const SAME_NORMAL_DOT = 1 - 1e-6;
+  const mine: number[] = [];
+  for (let v = 0; v < vertCount; v++) {
+    const lo = start[v];
+    const hi = start[v + 1];
+    if (lo === hi) {
+      // an unreferenced vertex: keep it (the index never names it) so every attribute stays aligned
+      srcOf.push(v);
+      outN.push(0, 0, 1);
+      continue;
+    }
+    mine.length = 0;
+    for (let i = lo; i < hi; i++) {
+      const fi = incFace[i] * 3;
+      // ⚠️ A DEGENERATE FACE HAS NO NORMAL, AND `KHR_mesh_quantization` MAKES THEM: snapping a
+      // position to the 16-bit grid collapses a sliver to zero area. Its own dot with anything is
+      // 0, so an angle test would exclude every face INCLUDING itself and leave the corner with a
+      // zero-length normal — the exact defect this function exists to remove. Such a corner takes
+      // the flat average of the vertex's real faces instead; the triangle draws no pixels either
+      // way, but nothing leaves here un-normalised.
+      const flat = faceArea[incFace[i]] === 0;
+      let nx = 0;
+      let ny = 0;
+      let nz = 0;
+      for (let j = lo; j < hi; j++) {
+        const f = incFace[j];
+        const w = faceArea[f];
+        if (w === 0) continue;
+        const fj = f * 3;
+        if (!flat) {
+          const dot = faceN[fi] * faceN[fj] + faceN[fi + 1] * faceN[fj + 1] + faceN[fi + 2] * faceN[fj + 2];
+          if (dot < cosCrease) continue;
+        }
+        nx += faceN[fj] * w;
+        ny += faceN[fj + 1] * w;
+        nz += faceN[fj + 2] * w;
+      }
+      const len = Math.hypot(nx, ny, nz);
+      if (len > 0) {
+        nx /= len;
+        ny /= len;
+        nz /= len;
+      } else {
+        nz = 1;
+      }
+      let out = -1;
+      for (const cand of mine) {
+        if (outN[cand * 3] * nx + outN[cand * 3 + 1] * ny + outN[cand * 3 + 2] * nz >= SAME_NORMAL_DOT) {
+          out = cand;
+          break;
+        }
+      }
+      if (out < 0) {
+        out = srcOf.length;
+        mine.push(out);
+        srcOf.push(v);
+        outN.push(nx, ny, nz);
+      }
+      newIndex[incCorner[i]] = out;
+    }
+  }
+
+  const outCount = srcOf.length;
+  const normals = Float32Array.from(outN);
+  const get = (src: THREE.BufferAttribute | THREE.InterleavedBufferAttribute, i: number, k: number): number =>
+    k === 0 ? src.getX(i) : k === 1 ? src.getY(i) : k === 2 ? src.getZ(i) : src.getW(i);
+  for (const name of Object.keys(geo.attributes)) {
+    const src = geo.getAttribute(name);
+    const size = src.itemSize;
+    const dst = new Float32Array(outCount * size);
+    for (let i = 0; i < outCount; i++) {
+      const s = srcOf[i];
+      for (let k = 0; k < size; k++) dst[i * size + k] = get(src, s, k);
+    }
+    geo.setAttribute(name, new THREE.BufferAttribute(dst, size));
+  }
+  geo.setAttribute('normal', new THREE.BufferAttribute(normals, 3));
+  geo.setIndex(new THREE.BufferAttribute(newIndex, 1));
+}
+
 /** `<finish>#<rrggbb>` -> `{finish, colorHex}`; `null` for anything that is not in that shape. */
 function parseMaterialName(name: string | undefined): { finish: Finish; colorHex: number } | null {
   if (!name) return null;
@@ -352,7 +530,8 @@ function parseMaterialName(name: string | undefined): { finish: Finish; colorHex
  *
  * The assembled glb ships NO vertex normals (see `assemble-gltf.mjs`'s header — meshoptimizer's
  * simplifier cannot collapse a flat-shaded mesh's edges, since every triangle boundary then looks
- * like a hard attribute seam), so this also computes smooth vertex normals once here.
+ * like a hard attribute seam), so this also computes them once here — CREASED, never smooth; see
+ * `computeCreasedNormals`, whose header carries the measurement that made it necessary.
  *
  * ⚠️ THE CACHE KEY IS `<material>@<node family>`, NOT THE MATERIAL NAME. One glTF material name
  * can want two different surfaces — `plastic#e6e6e6` is a clear CELL skin in a tray node and an
@@ -368,8 +547,9 @@ function styleScene(root: THREE.Object3D): void {
     if (obj instanceof THREE.Mesh) {
       obj.castShadow = true;
       obj.receiveShadow = true;
+      // the four flower nodes share ONE geometry, so the guard is what keeps this to one pass
       if (obj.geometry && !obj.geometry.getAttribute('normal')) {
-        obj.geometry.computeVertexNormals();
+        computeCreasedNormals(obj.geometry, CREASE_ANGLE_DEG);
       }
       const src = Array.isArray(obj.material) ? obj.material[0] : obj.material;
       const name = src?.name;
@@ -389,9 +569,6 @@ function styleScene(root: THREE.Object3D): void {
         // the single most obvious way to say "this is not actually transparent".
         obj.castShadow = false;
         obj.renderOrder = parsed.finish === 'glass' ? WALL_RENDER_ORDER : CELL_RENDER_ORDER;
-        // the outline goes on the CELL SKINS only. The perimeter draws its own frame with
-        // opaque rails and link plates, so a second outline there just doubles every edge.
-        if (parsed.finish !== 'glass') addPanelEdges(obj, CELL_RENDER_ORDER);
       }
     }
     for (const child of obj.children) walk(child, here);
@@ -527,7 +704,10 @@ function partitionTrianglesWorld(
       }
       g.setAttribute(name, new THREE.BufferAttribute(dst, size));
     }
-    if (!g.getAttribute('normal')) g.computeVertexNormals();
+    // the same pass the rest of the field gets. `rebuild` emits a NON-indexed geometry (one
+    // vertex per corner), so this resolves to flat per-face normals — right for a 0.37-in churro
+    // and, more to the point, the one normal pass in this file stays the one function.
+    if (!g.getAttribute('normal')) computeCreasedNormals(g, CREASE_ANGLE_DEG);
     return g;
   };
 
@@ -591,10 +771,433 @@ function reparentTrayBraces(root: THREE.Object3D, hives: { red: FieldHiveGroup; 
   return moved;
 }
 
+// ── PRINTED FIELD MARKINGS — the HIGH LOD only ────────────────────────────────────────────────
+//
+// 2026-09-19 playtest, owner items 11 and 13: "the flower's purple top guard part does not have
+// standoffs rendered in game. For higher graphics settings, it should be rendered", and "April
+// tags and FTC Biobuzz banner in the center structure should be rendered for higher graphics
+// settings."
+//
+// All three are CAD parts the pipeline either drops or ships BLANK:
+//
+//  - THE TAG CLUSTERS. `am-5888-{red,blue}{1,2}: Goal April Tag` ×4 ARE in both GLBs, as
+//    `decal#ffffff` plates measuring 17.0005 × 5.0009 × 0.0105 in on the UNDERSIDE of each cell
+//    floor (tray-local w −1.4976…−1.4872, against the floor skin's own outer face at −1.4884) —
+//    four blank white rectangles, because a STEP file carries no artwork. §9.9 (p74) says what
+//    goes on them and `docs/biobuzz/manual-distilled.md` §5.5 has it distilled; `TAG_IDS` below
+//    carries the IDs and the placement rule.
+//  - THE BANNER. `am-5883: Panel Sticker` ×2, likewise `decal#ffffff`, on the two outward faces
+//    of the `am-5877 ACM Panel` logo board that spans both hives — a 29.0 × 5.44 in face leaning
+//    24° back, at z 34.5…39.6. Also blank.
+//  - THE FLOWER STANDOFFS. `am-1696: Nylon Spacer, 0.194in ID, 0.375in OD, 1.000in Long` ×2 per
+//    flower, the spacers the purple `am-5884: Flower Backstop` stands on. These are not blank —
+//    they are ABSENT, swallowed by `convert.py`'s `RE_FASTENER`, which matches the bare words
+//    `nylon spacer`. Exactly the class of bug §2.2 of the audit records for the 24 perimeter
+//    rails ("FTC Rail with **Rivet** Holes"). Measured in the STEP (flower F4, mm, min corner):
+//    (652.3, 543.7, 1739.3) and (526.5, 543.7, 1739.3), i.e. sim z 21.406 → 22.406 — the gap
+//    between the amber top ring's top face (21.404) and the backstop's underside (22.404), which
+//    is the spacer's own stated 1.000 in. THE ONE-LINE REAL FIX IS IN `PART_RULES`; it is not
+//    made here, for the reason `reparentTrayBraces` states above (re-running `npm run field-cad`
+//    rewrites `fieldColliders.gen.ts`, which is a sim change and not this lane's).
+//
+// HIGH LOD ONLY, which is `GraphicsSettings.meshDetail` and therefore MEDIUM and up: nothing
+// below is built, no canvas is allocated and no texture is uploaded when `quality` is `'low'`.
+// Every texture hangs off a material under the field group, so `renderCore.ts`'s
+// `disposeObject3D` frees it with the scene (it disposes `material.map`).
+
+/**
+ * THE 36h11 CODE TABLE, for the sixteen IDs BIOBUZZ uses and no others.
+ *
+ * Source: `tag36h11.c` from AprilRobotics/apriltag (BSD-2-Clause), `codedata[]` entries 30–45 and
+ * the `bit_x`/`bit_y` layout verbatim. A tag is `total_width` 10 cells — a 1-cell white quiet
+ * zone around an 8-cell (`width_at_border`) black square, whose inner 6×6 carries the 36 code
+ * bits MSB first at `(bit_x[i], bit_y[i])`, `reversed_border` false. Generating the bitmap beats
+ * shipping sixteen PNGs: 16 numbers and 72 offsets against ~16 KB of image.
+ */
+const TAG_BIT_X = [1, 2, 3, 4, 5, 2, 3, 4, 3, 6, 6, 6, 6, 6, 5, 5, 5, 4, 6, 5, 4, 3, 2, 5, 4, 3, 4, 1, 1, 1, 1, 1, 2, 2, 2, 3] as const;
+const TAG_BIT_Y = [1, 1, 1, 1, 1, 2, 2, 2, 3, 1, 2, 3, 4, 5, 2, 3, 4, 3, 6, 6, 6, 6, 6, 5, 5, 5, 4, 6, 5, 4, 3, 2, 5, 4, 3, 4] as const;
+/** `codedata[30]` … `codedata[45]`. 36-bit integers — exact as doubles, so no BigInt. */
+const TAG_CODES: Readonly<Record<number, number>> = {
+  30: 0x0e2cfda160,
+  31: 0x02ff497c63,
+  32: 0x047240671b,
+  33: 0x05047a2e55,
+  34: 0x0635ca87c7,
+  35: 0x0691254166,
+  36: 0x068f43d94a,
+  37: 0x06ef24bdb6,
+  38: 0x08cdd8f886,
+  39: 0x09de96b718,
+  40: 0x0aff6e5a8a,
+  41: 0x0bae46f029,
+  42: 0x0d225b6d59,
+  43: 0x0df8ba8c01,
+  44: 0x0e3744a22f,
+  45: 0x0fbb59375d,
+};
+
+/** one tag as a 10×10 grid, row-major from the TOP, `1` = white. Exported for the RENDER lane,
+ * which has no DOM and so cannot look at the texture. */
+export function apriltag36h11Cells(id: number): Uint8Array {
+  const code = TAG_CODES[id];
+  if (code === undefined) throw new Error(`apriltag36h11Cells: no code for tag ${id} (BIOBUZZ uses 30..45)`);
+  const cells = new Uint8Array(100).fill(1);
+  const off = 1; // (total_width 10 − width_at_border 8) / 2
+  for (let r = 0; r < 8; r++) for (let c = 0; c < 8; c++) cells[(r + off) * 10 + (c + off)] = 0;
+  for (let i = 0; i < 36; i++) {
+    const bit = Math.floor(code / 2 ** (35 - i)) % 2;
+    cells[(TAG_BIT_Y[i] + off) * 10 + (TAG_BIT_X[i] + off)] = bit;
+  }
+  return cells;
+}
+
+/**
+ * WHICH CLUSTER GOES ON WHICH CELL — §9.9 p76, read off the page raster (that page's text layer
+ * drops most of the digits; `docs/biobuzz/manual-distilled.md`'s header lists it as a known
+ * defect). The AUDIENCE is at −y, which is the side F4 sits on.
+ */
+export const TAG_IDS: Readonly<Record<Alliance, Readonly<Record<'north' | 'south', readonly number[]>>>> = {
+  // "red CELL on the side of the FIELD opposite the audience" / "red CELL on the audience side"
+  red: { north: [30, 31, 32, 33], south: [34, 35, 36, 37] },
+  // "blue CELL on the audience side" / "blue CELL on the side opposite the audience"
+  blue: { north: [42, 43, 44, 45], south: [38, 39, 40, 41] },
+};
+/** what Fig 9-16's sticker prints on itself, per cell. */
+const TAG_LABEL: Readonly<Record<Alliance, Readonly<Record<'north' | 'south', string>>>> = {
+  red: { north: 'RED FAR', south: 'RED AUDIENCE' },
+  blue: { north: 'BLUE FAR', south: 'BLUE AUDIENCE' },
+};
+
+/** §9.9 p74: "AprilTags for BIOBUZZ are 3.25 in. (8.25 cm) square targets from the 36h11 tag
+ * family." That is the black-bordered square; the quiet zone is the white plate around it. */
+const TAG_SIZE_IN = 3.25;
+/**
+ * ⚠️ APPROX — THE MANUAL'S OWN PITCH CANNOT BE RIGHT AS DISTILLED. `docs/biobuzz-reference.md`
+ * §2.2 reads Fig 9-15 as "tags on 2.75-in centres in two pairs 7.0 in apart", and
+ * `manual-distilled.md` §9 already flags that line as measured off a drawing rather than stated:
+ * 2.75-in centres would overlap two 3.25-in tags by half an inch. 3.5 is the smallest pitch that
+ * clears, and it makes the two PAIR centres exactly the 7.0 in the same figure calls out. The
+ * row lands 13.75 in wide on the CAD's 17.0005-in plate, 1.63 in clear at each end.
+ */
+const TAG_PITCH_IN = 3.5;
+/** px per tag CELL — the tag is drawn on integer cell boundaries so `NearestFilter` keeps the
+ * bits square. 12 puts a 3.25-in tag at 120 px. */
+const TAG_CELL_PX = 12;
+
+function tagClusterTexture(ids: readonly number[], label: string, plateW: number, plateH: number): THREE.CanvasTexture {
+  const pxPerIn = (TAG_CELL_PX * 10) / TAG_SIZE_IN;
+  const canvas = document.createElement('canvas');
+  canvas.width = Math.round(plateW * pxPerIn);
+  canvas.height = Math.round(plateH * pxPerIn);
+  const ctx = canvas.getContext('2d');
+  if (!ctx) throw new Error('tagClusterTexture: no 2d context');
+  ctx.fillStyle = '#ffffff';
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  // ⚠️ THE ROW SITS LOW ON THE CANVAS, AND THAT IS THE ORIENTATION RULE, NOT A MARGIN CHOICE.
+  // §9.9 p75: the cluster faces down "with its bottom edge oriented towards the center of the
+  // FIELD". The quad this paints has its +y (canvas TOP, v = 1) pointing AWAY from the field
+  // centre, so canvas-down IS field-centre-ward and an upright tag's bottom edge already points
+  // the right way. The label takes the wider margin that leaves.
+  const tagPx = TAG_CELL_PX * 10;
+  const top = Math.round(canvas.height - 0.4 * pxPerIn - tagPx);
+  for (let k = 0; k < ids.length; k++) {
+    const cells = apriltag36h11Cells(ids[k]);
+    const left = Math.round((plateW / 2 + (k - (ids.length - 1) / 2) * TAG_PITCH_IN) * pxPerIn - tagPx / 2);
+    ctx.fillStyle = '#000000';
+    for (let r = 0; r < 10; r++) {
+      for (let c = 0; c < 10; c++) {
+        if (cells[r * 10 + c] === 0) ctx.fillRect(left + c * TAG_CELL_PX, top + r * TAG_CELL_PX, TAG_CELL_PX, TAG_CELL_PX);
+      }
+    }
+  }
+  ctx.fillStyle = '#3c4450';
+  ctx.font = `600 ${Math.round(0.6 * pxPerIn)}px system-ui, sans-serif`;
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(`${label} · 36h11 · ${ids.join(' ')}`, canvas.width / 2, top / 2);
+  const tex = new THREE.CanvasTexture(canvas);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.magFilter = THREE.NearestFilter;
+  tex.minFilter = THREE.LinearMipmapLinearFilter;
+  tex.needsUpdate = true;
+  return tex;
+}
+
+/**
+ * The centre structure's banner. TEXT ONLY, in the field's own colours — no FIRST or RTX logo
+ * artwork is drawn or shipped, and the wording is what the manual's field drawings letter across
+ * this panel.
+ */
+function bannerTexture(wIn: number, hIn: number): THREE.CanvasTexture {
+  const pxPerIn = 32;
+  const canvas = document.createElement('canvas');
+  canvas.width = Math.round(wIn * pxPerIn);
+  canvas.height = Math.round(hIn * pxPerIn);
+  const ctx = canvas.getContext('2d');
+  if (!ctx) throw new Error('bannerTexture: no 2d context');
+  ctx.fillStyle = '#ffffff';
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  const cx = canvas.width / 2;
+  ctx.fillStyle = '#5a6270';
+  ctx.font = `600 ${Math.round(0.72 * pxPerIn)}px system-ui, sans-serif`;
+  ctx.fillText('F I R S T   T E C H   C H A L L E N G E', cx, canvas.height * 0.26);
+  ctx.fillStyle = '#1b1f24';
+  ctx.font = `800 ${Math.round(2.1 * pxPerIn)}px system-ui, sans-serif`;
+  ctx.fillText('BIOBUZZ', cx, canvas.height * 0.62);
+  // the flower's own amber (`am-5857 Flower Layer C`, CAD #ffba52) as the rule under it
+  ctx.fillStyle = '#ffba52';
+  const ruleW = Math.round(canvas.width * 0.34);
+  ctx.fillRect(cx - ruleW / 2, Math.round(canvas.height * 0.86), ruleW, Math.max(2, Math.round(0.16 * pxPerIn)));
+  const tex = new THREE.CanvasTexture(canvas);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.minFilter = THREE.LinearMipmapLinearFilter;
+  tex.needsUpdate = true;
+  return tex;
+}
+
+function decalMaterial(map: THREE.Texture): THREE.MeshStandardMaterial {
+  return new THREE.MeshStandardMaterial({
+    map,
+    metalness: 0,
+    roughness: 0.85,
+    polygonOffset: true,
+    polygonOffsetFactor: DECAL_POLYGON_OFFSET,
+    polygonOffsetUnits: DECAL_POLYGON_OFFSET,
+  });
+}
+
+interface FacetFrame {
+  centre: THREE.Vector3;
+  quaternion: THREE.Quaternion;
+  width: number;
+  height: number;
+}
+
+/**
+ * The OUTERMOST planar face of `mesh` among the triangles `keep` accepts, as a world-space frame:
+ * +z is that face's outward normal, +y is `up` projected into it, +x = y × z (right-handed, so a
+ * texture mapped onto a quad in this frame reads unmirrored from outside). `width`/`height` are
+ * the face's own extents along +x/+y.
+ *
+ * Measuring instead of hard-coding is the point: the plate rectangles and the banner's 24° lean
+ * are CAD, and the CAD is authoritative for dimensions (owner ruling 2026-09-18). A field
+ * revision that moves a sticker moves the artwork with it.
+ */
+function facetFrame(
+  mesh: THREE.Mesh,
+  keep: (cx: number, cy: number, cz: number) => boolean,
+  outward: THREE.Vector3,
+  up: THREE.Vector3,
+): FacetFrame | null {
+  const geo = mesh.geometry;
+  const pos = geo.getAttribute('position');
+  if (!pos) return null;
+  mesh.updateWorldMatrix(true, false);
+  const pts: THREE.Vector3[] = [];
+  const v = new THREE.Vector3();
+  for (let i = 0; i < pos.count; i++) pts.push(v.fromBufferAttribute(pos, i).applyMatrix4(mesh.matrixWorld).clone());
+  const idx = geo.getIndex();
+  const triCount = idx ? idx.count / 3 : pos.count / 3;
+  const n = new THREE.Vector3();
+  const e1 = new THREE.Vector3();
+  const e2 = new THREE.Vector3();
+  const face = new THREE.Vector3();
+  const used = new Set<number>();
+  for (let t = 0; t < triCount; t++) {
+    const a = idx ? idx.getX(t * 3) : t * 3;
+    const b = idx ? idx.getX(t * 3 + 1) : t * 3 + 1;
+    const c = idx ? idx.getX(t * 3 + 2) : t * 3 + 2;
+    const pa = pts[a];
+    const pb = pts[b];
+    const pc = pts[c];
+    if (!keep((pa.x + pb.x + pc.x) / 3, (pa.y + pb.y + pc.y) / 3, (pa.z + pb.z + pc.z) / 3)) continue;
+    e1.subVectors(pc, pb);
+    e2.subVectors(pa, pb);
+    face.copy(e1).cross(e2);
+    const twiceArea = face.length();
+    if (twiceArea <= 0) continue;
+    face.divideScalar(twiceArea);
+    if (face.dot(outward) < 0.7) continue;
+    n.addScaledVector(face, twiceArea / 2);
+    used.add(a);
+    used.add(b);
+    used.add(c);
+  }
+  if (used.size === 0 || n.lengthSq() === 0) return null;
+  n.normalize();
+  const y = up.clone().addScaledVector(n, -up.dot(n));
+  if (y.lengthSq() === 0) return null;
+  y.normalize();
+  const x = new THREE.Vector3().crossVectors(y, n);
+  let uMin = Infinity;
+  let uMax = -Infinity;
+  let vMin = Infinity;
+  let vMax = -Infinity;
+  let d = -Infinity;
+  for (const i of used) {
+    const p = pts[i];
+    uMin = Math.min(uMin, p.dot(x));
+    uMax = Math.max(uMax, p.dot(x));
+    vMin = Math.min(vMin, p.dot(y));
+    vMax = Math.max(vMax, p.dot(y));
+    d = Math.max(d, p.dot(n));
+  }
+  const centre = new THREE.Vector3()
+    .addScaledVector(x, (uMin + uMax) / 2)
+    .addScaledVector(y, (vMin + vMax) / 2)
+    .addScaledVector(n, d);
+  return {
+    centre,
+    quaternion: new THREE.Quaternion().setFromRotationMatrix(new THREE.Matrix4().makeBasis(x, y, n)),
+    width: uMax - uMin,
+    height: vMax - vMin,
+  };
+}
+
+/** the glTF material name `styleScene` was handed, recovered from the `<material>@<family>` key
+ * it renamed the runtime material to. */
+function glbMaterialName(obj: THREE.Mesh): string {
+  const m = Array.isArray(obj.material) ? obj.material[0] : obj.material;
+  const name = m && !Array.isArray(m) ? (m.name ?? '') : '';
+  const at = name.lastIndexOf('@');
+  return at > 0 ? name.slice(0, at) : name;
+}
+
+function meshesUnder(node: THREE.Object3D, material: string): THREE.Mesh[] {
+  const out: THREE.Mesh[] = [];
+  node.traverse((o) => {
+    if (o instanceof THREE.Mesh && glbMaterialName(o) === material) out.push(o);
+  });
+  return out;
+}
+
+/** how far a printed quad floats off the surface it is printed on, in. Small enough to be inside
+ * the CAD's own 0.0105-in plate; `DECAL_POLYGON_OFFSET` does the rest. */
+const MARKING_LIFT_IN = 0.01;
+
+/** `am-1696`'s own outside diameter. */
+const STANDOFF_OD_IN = 0.375;
+/**
+ * How far a standoff's axis sits inside the backstop plate's field-side edge and inside each of
+ * its ends. Measured on flower F4: spacer centres at sim (25.868, −68.663) and (20.915, −68.663)
+ * against a backstop spanning x 20.650…26.138, y −70.453…−68.398 — 0.265, 0.273 and 0.262 in
+ * from the three edges, i.e. one inset, three times.
+ */
+const STANDOFF_INSET_IN = 0.265;
+
+export interface FieldMarkings {
+  /** 4 at the high LOD (one per CELL), 0 at the low one. */
+  tagPlates: number;
+  /** 2 — the ACM panel's two outward faces. */
+  banners: number;
+  /** 8 — two under each flower's backstop. */
+  standoffs: number;
+}
+
+const NO_MARKINGS: FieldMarkings = { tagPlates: 0, banners: 0, standoffs: 0 };
+
+function buildFieldMarkings(
+  root: THREE.Object3D,
+  hives: { red: FieldHiveGroup; blue: FieldHiveGroup },
+  flowers: readonly THREE.Object3D[],
+): FieldMarkings {
+  const out: FieldMarkings = { tagPlates: 0, banners: 0, standoffs: 0 };
+  const DOWN = new THREE.Vector3(0, 0, -1);
+
+  // ── the four AprilTag clusters, on the underside of each cell floor ──
+  for (const alliance of ['red', 'blue'] as const) {
+    const tray = hives[alliance].tray;
+    for (const mesh of meshesUnder(tray, 'decal#ffffff')) {
+      for (const sideSign of [1, -1] as const) {
+        const side = sideSign > 0 ? 'north' : 'south';
+        // the tray is loaded UN-TILTED (`refTheta` 0), so world y is the cell's own +v here.
+        const frame = facetFrame(mesh, (_cx, cy) => Math.sign(cy) === sideSign, DOWN, new THREE.Vector3(0, sideSign, 0));
+        if (!frame) continue;
+        const ids = TAG_IDS[alliance][side];
+        const quad = new THREE.Mesh(
+          new THREE.PlaneGeometry(frame.width, frame.height),
+          decalMaterial(tagClusterTexture(ids, TAG_LABEL[alliance][side], frame.width, frame.height)),
+        );
+        quad.name = `bb-apriltags:${alliance}:${side}`;
+        quad.position.copy(frame.centre).addScaledVector(DOWN, MARKING_LIFT_IN);
+        quad.quaternion.copy(frame.quaternion);
+        quad.castShadow = false;
+        quad.receiveShadow = true;
+        tray.attach(quad);
+        out.tagPlates++;
+      }
+      mesh.visible = false;
+    }
+  }
+
+  // ── the two banner faces on the shared ACM panel ──
+  const sharedFrame = findOptional(root, 'hive_shared/frame');
+  if (sharedFrame) {
+    for (const mesh of meshesUnder(sharedFrame, 'decal#ffffff')) {
+      for (const sideSign of [1, -1] as const) {
+        const outward = new THREE.Vector3(0, sideSign, 0);
+        const frame = facetFrame(mesh, (_cx, cy) => Math.sign(cy) === sideSign, outward, new THREE.Vector3(0, 0, 1));
+        if (!frame) continue;
+        const quad = new THREE.Mesh(
+          new THREE.PlaneGeometry(frame.width, frame.height),
+          decalMaterial(bannerTexture(frame.width, frame.height)),
+        );
+        quad.name = `bb-banner:${sideSign > 0 ? 'north' : 'south'}`;
+        quad.position.copy(frame.centre).addScaledVector(new THREE.Vector3(0, 0, 1).applyQuaternion(frame.quaternion), MARKING_LIFT_IN);
+        quad.quaternion.copy(frame.quaternion);
+        quad.castShadow = false;
+        quad.receiveShadow = true;
+        sharedFrame.attach(quad);
+        out.banners++;
+      }
+      mesh.visible = false;
+    }
+  }
+
+  // ── the eight flower standoffs ──
+  let standoffGeo: THREE.BufferGeometry | null = null;
+  let standoffMat: THREE.Material | null = null;
+  for (let k = 0; k < flowers.length; k++) {
+    const backstop = meshesUnder(flowers[k], 'plastic#641c65')[0];
+    const topRing = meshesUnder(flowers[k], 'plastic#ffba52')[0];
+    if (!backstop || !topRing) continue;
+    const plate = new THREE.Box3().setFromObject(backstop);
+    const ring = new THREE.Box3().setFromObject(topRing);
+    const height = plate.min.z - ring.max.z;
+    // the spacer is a 1.000-in part; anything else means the CAD moved and the inset below is a
+    // guess about a plate that is no longer there.
+    if (!(height > 0.5 && height < 2)) continue;
+    if (!standoffGeo) {
+      standoffGeo = new THREE.CylinderGeometry(STANDOFF_OD_IN / 2, STANDOFF_OD_IN / 2, height, 12);
+      standoffGeo.rotateX(Math.PI / 2); // three builds a cylinder +y up; this field is +z up
+      standoffMat = materialFor('plastic', 0xe6e6e6, 'flower');
+    }
+    // the plate's LONG horizontal axis runs along the wall; the short one crosses it, and its
+    // edge nearer the field centre is the flower's field side.
+    const long: 'x' | 'y' = plate.max.x - plate.min.x >= plate.max.y - plate.min.y ? 'x' : 'y';
+    const short: 'x' | 'y' = long === 'x' ? 'y' : 'x';
+    const inner = Math.abs(plate.min[short]) < Math.abs(plate.max[short]) ? plate.min[short] : plate.max[short];
+    const across = inner + Math.sign(inner) * STANDOFF_INSET_IN;
+    const z = (ring.max.z + plate.min.z) / 2;
+    for (const along of [plate.min[long] + STANDOFF_INSET_IN, plate.max[long] - STANDOFF_INSET_IN]) {
+      const post = new THREE.Mesh(standoffGeo, standoffMat!);
+      post.name = `bb-flower-standoff:${k}`;
+      post.position.set(long === 'x' ? along : across, long === 'x' ? across : along, z);
+      post.castShadow = true;
+      post.receiveShadow = true;
+      flowers[k].attach(post);
+      out.standoffs++;
+    }
+  }
+  return out;
+}
+
 /**
  * Loads one detail level of the CAD field and returns its named parts. `quality` selects
  * `field.glb` (high) or `field-low.glb` (low) — see `docs/biobuzz/plan-3d.md` §8 for the two
- * LODs' size budgets.
+ * LODs' size budgets, and the PRINTED FIELD MARKINGS block above for what only the high one gets.
  */
 export async function loadFieldGlb(url: string, quality: 'high' | 'low' = 'high'): Promise<FieldGroups> {
   const resolved = resolveGlbUrl(url, quality);
@@ -617,10 +1220,11 @@ export async function loadFieldGlb(url: string, quality: 'high' | 'low' = 'high'
   const flowers = [0, 1, 2, 3].map((k) => mustFind(root, `flower_${k}`));
 
   const braceTris = reparentTrayBraces(root, hives);
+  const markings = quality === 'high' ? buildFieldMarkings(root, hives, flowers) : NO_MARKINGS;
 
   checkTrayFloorAgreement(hives);
 
-  return { floor, walls, tape, sharedFrame, stations, hives, flowers, root, braceTris };
+  return { floor, walls, tape, sharedFrame, stations, hives, flowers, root, braceTris, markings };
 }
 
 /** how far the drawn tray floor may sit from the collider floor before the picture and the

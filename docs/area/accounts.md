@@ -37,6 +37,50 @@ the server enforces every action independently). **VERSION GATE**: a new build i
 (`__BUILD_ID__` → `/version.json` poll) and forces a refresh when a player STARTS a run
 (never mid-run) — no "play anyway", everyone must be on the same version for multiplayer.
 
+### The admin console's own rules
+
+Six tabs — Live, Users, Moderation, Content, Server, Audit — and the order is the order of an
+incident. **APPEND a new tab, never reorder.** Tab + open account live in the URL HASH
+(`#tab=users&user=<id>`), not the path or the query: `App.tsx` owns routing and
+canonicalizes `pathname + search` on mount, so anything put there is stripped.
+
+- ⚠️ **"(no profile)" WAS THREE DIFFERENT SITUATIONS WEARING ONE LABEL, and it is now one
+  function** — `AccountName` (`src/ui/adminBits.tsx`), fed by `profileNames` in repo.ts. The
+  bug: `adminPresence()` resolves handles by joining `profiles` over the HEARTBEAT rows, but
+  `operatorSnapshot()` in `server/index.ts` assembles this machine's own snapshot from live
+  socket state and `PresencePlayer` carries no name field at all (deliberately — a name on a
+  5-second heartbeat goes stale the first time somebody is renamed). `mergeMachines` then
+  REPLACES the database row for the local machine with that fresher, nameless one, throwing
+  away the only names it had. On a single-region deploy that is every signed-in session, all
+  the time. The route now resolves names for the local snapshot too, `known: false` says "there
+  genuinely is no `profiles` row yet" (it is created lazily by `ensureProfile` on the API
+  routes a client hits, not when its socket authenticates), and the client merge keeps the
+  database row's names as a fallback for an OLDER SERVER — one Fly app serves every client.
+- **EVERY MUTATING ADMIN ROUTE WRITES TO `admin_audit`** (migration 0041), in addition to
+  whatever domain record it already keeps (`supporter_grants`, `standing_events.voided_by`,
+  `match_score_corrections`, `player_reports.reviewed_by`). Those four carry the before/after a
+  reversal needs; this one answers "what has this moderator done", "what has been done to this
+  account", "what happened on Tuesday". No foreign key either side — an admin is an env id and
+  a target may be deleted — so the log outlives the account it names. `writeAudit` NEVER
+  THROWS into a route (same rule as `server/standing.ts`), the tab is read-only by
+  construction, and the `secret` actor is the `ADMIN_SECRET` deploy-script path, not a person.
+- **`admin_notes`** is a moderator's private note on an account. It could not go in
+  `standing_events`, which is read BACK to the player (0036).
+- **`GET /api/admin/user?id=` is the one read behind the user detail** — nine bounded queries
+  in parallel. It answers for an id with NO profile row (`known: false`) rather than 404ing:
+  that is the state somebody is looking at when they arrive from a session that said it was
+  signed in.
+- **EVERY LIST IS PAGED AND HARD-CAPPED IN THE DATA LAYER**, not by the route (the
+  `boardPhysics` argument: a default a new call site cannot forget). `listAudit` caps at 200;
+  `searchProfiles` takes an offset and is tie-broken on `user_id`, because `handle` is not
+  unique and two people called "Player" otherwise page one row twice. Both `ilike` searches
+  ESCAPE `% _ \` — a bare `%` used to enumerate every account on the service, and those rows
+  carry the membership and the staff role.
+- **POLLING PAUSES WHILE THE TAB IS HIDDEN** (`usePolled`). The console polled presence and
+  maintenance at 5s and matches at 30s on bare intervals, forever: an admin tab left open
+  behind an editor was by itself enough to keep the game server — which auto-stops when idle —
+  permanently awake.
+
 **STAFF ROLES — owner + admin badges, and perks, DONE.** `profiles.role`
 (`0020_staff_roles.sql`) is null | 'owner' | 'admin'. It is a **PROJECTION** of
 `ADMIN_USER_IDS` / `OWNER_USER_ID` (`OWNER_USER_ID` defaults to the FIRST id in

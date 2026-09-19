@@ -114,6 +114,16 @@ export interface NetSession {
   setups: RobotSetup[];
   /** ranked matchmaking match? gates the pre-match ELO intro overlay */
   ranked: boolean;
+  /**
+   * THE MATCH GENERATION THIS SESSION IS PLAYING (`matchStart.gen`; absent ⇒ 0).
+   *
+   * Here for one reason: the rejoin record is built field by field from a live session, and
+   * the server DROPS an input stamped with a stale generation. A record that omitted this
+   * came back as generation 0 against a room on 1, every input was discarded, and the robot
+   * sat still while the client predicted it moving — see `ActiveGameRef`. Optional because a
+   * LAN session has no generation to report.
+   */
+  readonly gen?: number;
   /** per-driver ELO for the intro overlay (empty unless ranked) */
   intros: PlayerIntro[];
   /** per-driver overall-ELO change for the results screen (populated shortly

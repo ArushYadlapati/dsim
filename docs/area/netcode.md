@@ -40,6 +40,41 @@ The old P2P lockstep/mesh/TURN/Supabase-lobby is DELETED. Full roadmap: `docs/ne
   choppiness signal** — surface it when diagnosing lag reports.
 - **RECONNECTION**: the server holds a dropped slot `RECONNECT_GRACE_MS` (`detach`/`reattach`/
   `checkGrace`), the transport auto-reconnects, the session re-sends `rejoin`.
+- ⚠️ **A REJOIN MUST CARRY THE MATCH GENERATION, OR THE ROBOT DOES NOT MOVE AND NOTHING LOOKS
+  BROKEN.** `Room.onInput` drops any input stamped with a stale `gen` — that is what lets a
+  rematch rebuild a world in place — and the Home rejoin card builds a FRESH `ServerSession`
+  out of a SAVED `matchStart`. `ActiveGameRef.start` is written field by field and `gen` was
+  not one of the fields, so a returning driver sent generation 0 at a room that has been on 1
+  since its first tick: every command discarded, prediction moving the robot locally, every
+  snapshot snapping it back. Reported as a rejoin that leaves the game stuck; measured at
+  0.000 in of travel against 38.7 in. Same failure class as the `physics` field above it, and
+  the third time this object has lost a field nobody thought to copy.
+  **BOTH HALVES, because either alone still leaves a hole**: the record carries `gen` (works
+  against every deployed server), and `Room.reattach` states the live generation on
+  `rejoined` (`{ok: true, gen}`), which corrects a record that is merely STALE — a rematch
+  moved the room on after it was written. Both additive and optional on the wire.
+- **WHETHER A LEAVE KEEPS YOUR SEAT IS PER ROOM KIND, and the rejoin offer must agree with it.**
+  Custom, ranked and duo-record hold the seat for the grace, so their offer is real (and in
+  ranked, going back is what stops away ticks accruing against standing). A SOLO RECORD room is
+  reaped on a clean close — one driver, no opponent, and holding it kept an empty room
+  simulating for 45 s — so there is nothing to come back to and `leaveSession` clears the
+  record on the way out. A refusal (`rejoined: ok=false`) clears it and returns to the MENU with
+  a sentence; it must be told apart from `failed`, which an ordinary mid-match drop also sets —
+  yanking somebody out of a game they are still in is worse than the dead card
+  (`ServerSession.slotRefused`).
+- **`abandon` IS NOT A WAY TO LOSE A DECIDED RUN.** `detach` keeps a solo record room alive
+  through `finishing` until the field settles and the PB is written; `abandon` is a second door
+  into the same situation and it bypassed detach, deleting the client and taking the room with
+  it. RESTART pressed in the seconds after the buzzer therefore lost the score. The LOCK still
+  goes — that is all the caller needs — and the seat is left for the close that follows.
+- **THE ONE-GAME REFUSAL CARRIES `code: 'active_game'`.** It is one of the few a client can act
+  on, so the record launcher offers the way back into that match instead of a dead card; the
+  sentence stays self-sufficient and the launcher matches on it too, because most of the fleet
+  predates the code.
+- **`GET /health` REPORTS `x-build`** (`BUILD_REF`, else Fly's `FLY_MACHINE_VERSION`, else
+  `dev`). The body is still exactly `ok` — the platform probe reads it. It exists because "is
+  this bug in the code or in the running image" had no answer from outside: `/api/presence`'s
+  capability list only moves when a capability does.
 - **REPLAY COVERAGE IS PER-ARCHETYPE, not just per-drivetrain.** A replay is `{seed, setups,
   command log}`, so anything that changes what a robot DOES with the same commands has to be
   carried by the container — and each such axis needs its own recorded-and-replayed check, or a

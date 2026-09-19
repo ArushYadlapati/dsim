@@ -21,6 +21,8 @@ import {
   BB3_HIVE_REST_W,
   BB3_HIVE_STOP_DEG,
   BB3_HIVE_TRAY_MASS,
+  BB_HALF_X,
+  BB_HALF_Y,
   BB_HIVE_OPEN_Z,
   BB_HIVE_TILT_DEG,
   BB_NECTAR_R,
@@ -362,7 +364,12 @@ export function hive3dChecks(check: Check): void {
           continue;
         }
         if (!leftCell.has(id)) leftCell.set(id, t);
-        if (!landed.has(id) && b.z <= 0.25 && Math.abs(b.vz) < 2) landed.set(id, t);
+        // ⚠️ FIRST TOUCH, NOT FIRST SETTLE. This used to also require `|vz| < 2`, which on the
+        // old dead tiles was the same tick and since the bounce landed (owner item 21, e 0.25 →
+        // 0.57) is not: an element that touches down at 160 in/s now leaves again at 90 and does
+        // not have `|vz| < 2` near the floor until it has finished bouncing, ~0.9 s later. The
+        // check below is about the FALL — see its own header — so it measures the fall.
+        if (!landed.has(id) && b.z <= 0.25) landed.set(id, t);
       }
       if (emptied < 0 && stillIn === 0) emptied = t;
     }
@@ -402,6 +409,69 @@ export function hive3dChecks(check: Check): void {
     );
     const stillListed = ids.filter((id) => world.biobuzz!.hives[A].contents.includes(id));
     check('after the swing the cell reads empty', stillListed.length === 0, `${stillListed.length} still listed`);
+  });
+
+  // ---- THE SPILL DISPERSES, AND IT STILL COMES TO REST (owner item 21, 2026-09-19) ----------
+  /**
+   * "In real life, the balls bounce and disperse a lot more after the hive tips and it hits the
+   * field tiles."
+   *
+   * The lever is the element/TILE restitution — `BB3_ELEMENT_RESTITUTION` plus the floor's
+   * MULTIPLY rule (`sim3d/bodies.ts` `TILE_RESTITUTION`), which is what lets an element carry the
+   * real pair while a chassis still reads zero on the same collider. Both of those headers carry
+   * the derivation; what is asserted here is the OUTCOME on a real tip, in both directions:
+   *
+   *  · a FLOOR, so a future change that deadens the tiles again puts the pile back under the hive
+   *    and this fails. ON THIS EXACT FIXTURE the pile's 90th-percentile radius about its own
+   *    centroid is **17.8 in at the old e 0.25 and 22.9 in at e 0.57** — the floor of 20 sits
+   *    between them, and reverting either constant turns this check red. It is ONE fixture and
+   *    the landing is chaotic, so the number is a ratchet rather than a tolerance: across four
+   *    packings the mean went 29.7 → 33.4 in and individual packings moved both ways.
+   *  · a CEILING on both the spread and the SETTLE, because a bouncier world is one that can stop
+   *    settling. Every scoring instant §10.5 assesses waits for "all at rest", so an unbounded
+   *    settle is a score that never lands. Measured here: **6.60 s before, 6.62 s after**, from
+   *    the tick the tray is staged — the bounce cost 0.02 s, because the 4.0 s swing dominates.
+   *    Worst over four packings 9.17 s before / 9.00 s after. Nothing left the field either way
+   *    (`containmentFixes`, pinned by the SIM3D lane, is 0).
+   */
+  withTray(true, () => {
+    const { world, ids } = loaded(845, 8, 0);
+    const pivotX = hivePivotX(A);
+    let restAt = -1;
+    const TICKS = 1200; // 20 s — comfortably past the 4.0 s swing plus the roll
+    for (let t = 0; t < TICKS; t++) {
+      step3d(world, 1 / 60, new Map());
+      const bs = ids.map((id) => world.balls.find((b) => b.id === id)).filter((b): b is Artifact => !!b);
+      const moving = bs.filter((b) => Math.hypot(b.vel.x, b.vel.y) > 1 || Math.abs(b.vz) > 1 || b.z > 0.5);
+      if (moving.length === 0 && world.biobuzz!.hives[A].tips > 0) {
+        if (restAt < 0) restAt = t;
+      } else {
+        restAt = -1;
+      }
+    }
+    const bs = ids.map((id) => world.balls.find((b) => b.id === id)).filter((b): b is Artifact => !!b);
+    const cx = bs.reduce((s, b) => s + b.pos.x, 0) / bs.length;
+    const cy = bs.reduce((s, b) => s + b.pos.y, 0) / bs.length;
+    const rc = bs.map((b) => Math.hypot(b.pos.x - cx, b.pos.y - cy)).sort((a, b) => a - b);
+    const r90 = rc[Math.ceil(0.9 * rc.length) - 1];
+    const fromCell = bs.map((b) => Math.hypot(b.pos.x - pivotX, b.pos.y)).sort((a, b) => a - b);
+    const nearest = fromCell[0];
+    const farthest = fromCell[fromCell.length - 1];
+    const inField = bs.every((b) => Math.abs(b.pos.x) <= BB_HALF_X && Math.abs(b.pos.y) <= BB_HALF_Y);
+    console.log(
+      `[smoke-bb hive3d] spill dispersal: pile r90 ${r90.toFixed(1)}in about its centroid, ` +
+        `${nearest.toFixed(1)}..${farthest.toFixed(1)}in from the pivot, everything at rest at ${(restAt / 60).toFixed(2)}s`,
+    );
+    check(
+      'the spill DISPERSES — the pile is 20..60 in wide, not a heap under the hive',
+      r90 >= 20 && r90 <= 60,
+      `90th-percentile radius ${r90.toFixed(1)}in (17.8 at the old dead tiles)`,
+    );
+    check(
+      'the spill still comes to REST, inside the field, within 12 s',
+      restAt >= 0 && restAt / 60 <= 12 && inField,
+      `rest at ${restAt < 0 ? 'never' : `${(restAt / 60).toFixed(2)}s`}, in field ${inField}`,
+    );
   });
 
   // ---- the trigger is the TABLE, and the torque is only the measurement ----------------------

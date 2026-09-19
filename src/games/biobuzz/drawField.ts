@@ -133,6 +133,7 @@ const FRAME_BAR_MID = (BB_FRAME_BAR_IN + BB_FRAME_BAR_OUT) / 2;
 const HIVE_R = 2; // rounded-rect corner radius on a HIVE body and its CELLS
 const DASH: readonly number[] = [3.2, 2.4]; // crossbar dash pitch, in WORLD INCHES
 const WALL_INSET = 2.5; // how far OUTSIDE a wall a tile letter/number sits, in the view margin
+const PERIMETER_W = 1; // stroke on the wall line, in WORLD INCHES — a schematic edge, NOT tape
 // how far out a FLOWER section's NEAR bore wall sits, from the wall FACE. Balanced between two
 // neighbours it must not touch: the tile ruler, which sits WALL_INSET out and whose glyphs
 // reach about 0.9 further, and the edge of the camera at BB_VIEW_MARGIN — see
@@ -906,22 +907,17 @@ export function drawBiobuzzField(
   ctx.stroke();
   ctx.restore();
 
-  // CENTRE MARK — a small cross at the origin. The tile grid alone has a LINE through the
-  // centre of the field (144" is six 24" tiles, so x=0 and y=0 are both grid lines), which
-  // means "the middle" is a crossing indistinguishable from five others. The mark is what
-  // makes a still self-orienting: it says where the origin is, so a reviewer can tell whether
-  // a scatter is centred and whether a robot's pose is where the scene claims.
-  const MARK = 4;
-  ctx.save();
-  ctx.strokeStyle = C.COLORS.white;
-  ctx.lineWidth = C.TAPE_W;
-  ctx.beginPath();
-  ctx.moveTo(-MARK, 0);
-  ctx.lineTo(MARK, 0);
-  ctx.moveTo(0, -MARK);
-  ctx.lineTo(0, MARK);
-  ctx.stroke();
-  ctx.restore();
+  // ⚠️ NO CENTRE MARK (owner, 2026-09-19: "centre cross tape mark does not exist, I think").
+  // It does not. Event Field Guide V1.0 §8 "Tape Placement" installs exactly three things —
+  // §8.3 LOADING ZONES, §8.4 GARDENS, §8.5 ALLIANCE AREAS — and Fig 9-2 (manual p65) shows no
+  // marking at the origin. It could not have one: §9.1 of the guide has you REMOVE the four
+  // centre tiles for the frame's under-tile strips, so the origin is under the HIVE structure,
+  // which this file already draws as the two base bars and the dashed crossbar.
+  //
+  // What was here was a white cross 8 in across at `C.TAPE_W`, added to make a gallery still
+  // self-orienting. That is a reason to want a mark, not a reason for the field to have one, and
+  // drawn in tape's own width it read as tape. The stills are oriented by the tile seams, the
+  // frame bars and the two hives, all of which are real.
 
   // LOADING ZONES (§9.3, Fig 9-2/9-3) — ~23 × 11 against the side wall, bounded by tape and
   // the wall, tape included. The layout is POINT-SYMMETRIC, so red's is at y > 0 on the LEFT
@@ -1220,10 +1216,13 @@ export function drawBiobuzzField(
   }
 
   // PERIMETER — drawn last, so it sits over the grid lines and the garden tape that run into
-  // it.
+  // it. `PERIMETER_W` and not a tape width: this is the WALL, and no tape on this field runs
+  // onto the perimeter (Field Guide §8.3/§8.4 start every strip at a tile seam). It read as
+  // `C.TAPE_W` for the coincidence that both are 1 in, which made the wall line move whenever
+  // the tape width did.
   ctx.save();
   ctx.strokeStyle = C.COLORS.white;
-  ctx.lineWidth = C.TAPE_W;
+  ctx.lineWidth = PERIMETER_W;
   ctx.strokeRect(-hx, -hy, 2 * hx, 2 * hy);
   ctx.restore();
 

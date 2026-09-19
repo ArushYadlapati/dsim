@@ -37,6 +37,7 @@ import { startMatch } from '../src/sim/match';
 import { availableVideoFormats, videoFormat, videoBitrate } from '../src/ui/replayVideo';
 import { muxMp4 } from '../src/ui/mp4';
 import { hudLabels } from '../src/ui/replayOverlay';
+import { resolveReplayView } from '../src/ui/replayViewMode';
 import { gateColliderPos, gateRestOn, pushingGate } from '../src/sim/goal';
 import { chassisCorners } from '../src/sim/physics';
 import { pointDepthInChassis } from '../src/sim/physics';
@@ -166,6 +167,7 @@ import {
   chassisFill,
   PLACEMENT_GAMES,
   ENDGAME_START,
+  PRE_COUNTDOWN,
 } from '../src/config';
 import {
   pointDepthInRobot,
@@ -176,7 +178,7 @@ import {
 } from '../src/sim/physics';
 import { beamBlock, beamDrag, beamDragFactor, beamStrafeBlock, beamForwardness, beamRide, canCrossBeams, cogFactor, wheelsOnBeam, CHAIN_BEAMS } from '../src/games/chain/beams';
 import { butterflyTankRpmLimits, driveParams, massLimits, rpmLimits, motorStep, driveSummary, widthLimits, pushForce, shoveMass } from '../src/sim/drivetrain';
-import { coerceSettings, defaultSettings, switchGame, syncAudioMirrors } from '../src/settings';
+import { PERF_DISPLAY_LEVELS, coerceSettings, defaultSettings, switchGame, syncAudioMirrors } from '../src/settings';
 import {
   authFlowsForTesting,
   classifySdkError,
@@ -201,6 +203,7 @@ import {
   THEME_KEY,
 } from '../src/storageKeys';
 import { analyticsAllowed, setAnalyticsAllowed } from '../src/analyticsPref';
+import { normalizePath, refHost, screenBucket, utmOf } from '../src/pageviews';
 import type { RobotSetup } from '../src/sim/spawn';
 import { DEFAULT_BINDINGS, KEY_ACTIONS, PAD_ACTIONS, mergeBindings } from '../src/input/bindings';
 import { quantizeCommand, dequantizeCommand, localizeCommand, sanitizeQCommand, slimWorld, unslimWorld, encodeBallDelta, applyBallDelta } from '../src/net/protocol';
@@ -6951,6 +6954,26 @@ function pushContest(A: Partial<RobotSpec>, B: Partial<RobotSpec>, seconds = 3):
   check('defaultSettings starts with empty libraries', coerceSettings({}).savedRobots.length === 0 && coerceSettings({}).savedAutos.length === 0);
 }
 
+// ---- the performance read-out's level ------------------------------------------
+// ONE setting decides the whole in-match read-out (fps, ping, the 3D counters, the
+// sparklines) — it replaced a `?perf=1` flag, a 3D-only Graphics row and a ping graph
+// behind a click that never landed. It syncs per ACCOUNT, so every settings blob written
+// before it existed has to land on the DEFAULT rather than on nothing, and the default is
+// `simple` because the owner asked for fps + ping out of the box (2026-09-19).
+{
+  check('perfDisplay defaults to simple (fps + ping)', defaultSettings().perfDisplay === 'simple');
+  check('a settings blob from before the field takes the default', coerceSettings({ showEventLog: true }).perfDisplay === 'simple');
+  for (const lv of PERF_DISPLAY_LEVELS) {
+    check(`perfDisplay keeps a stored '${lv}'`, coerceSettings({ perfDisplay: lv }).perfDisplay === lv);
+  }
+  check('perfDisplay refuses a level it does not know', coerceSettings({ perfDisplay: 'everything' }).perfDisplay === 'simple');
+  // the read-out's ancestors were SWITCHES, so a boolean that round-trips through an older
+  // client means on/off rather than "reset me to the default".
+  check('a stored true is the simple level', coerceSettings({ perfDisplay: true }).perfDisplay === 'simple');
+  check('a stored false is off, not the default', coerceSettings({ perfDisplay: false }).perfDisplay === 'off');
+  check('the four levels are ordered least to most', PERF_DISPLAY_LEVELS.join() === 'off,simple,detailed,graphs');
+}
+
 // ---- audio volumes: migration off the legacy booleans + the old-client mirrors -
 // Settings sync per ACCOUNT and one account is shared across client versions, so
 // the two legacy switches have to keep meaning what they meant — a mute set on a
@@ -13589,6 +13612,20 @@ function pinScene(
         videoBitrate('webm-vp8', 1600, 688, 60) > videoBitrate('webm-vp9', 1600, 688, 60),
     );
     /**
+     * WHICH RENDERER A REPLAY OPENS IN (`docs/roadmap.md` item 2: a replay used to hardcode the
+     * 2D map regardless of the device's own view preference). `resolveReplayView` is what both
+     * the on-screen viewer (`ReplayView`'s render-loop effect) and the download menu's own
+     * default (`openMenu`) resolve through, so the whole 2×2 table — the stored preference
+     * crossed with whether 3D is reachable at all here — is one pure, canvas-free check.
+     */
+    check(
+      'replay view: opens in 3D only when the device asked for it AND a 3D view is reachable',
+      resolveReplayView('3d', true) === '3d' &&
+        resolveReplayView('3d', false) === '2d' &&
+        resolveReplayView('2d', true) === '2d' &&
+        resolveReplayView('2d', false) === '2d',
+    );
+    /**
      * THE MP4 SAMPLE TABLE, checked headlessly — the muxer is pure, so it does not need a
      * browser even though the encoder feeding it does.
      *
@@ -15109,6 +15146,182 @@ for (const game of ['decode', 'chain', 'biobuzz'] as const) {
   check('reconnect: the current socket close is honoured (roster broadcast)', b1.some((m) => m.t === 'roster'));
 
   check('reconnect: reattach on an unknown/gone slot returns null (→ rejoined:false)', room.reattach('ghost', () => {}) === null);
+}
+
+/* ---------------------------------------- REJOINING A GAME YOU LEFT: the MATCH GENERATION ----
+   ⚠️ **A REJOIN THAT DOES NOT CARRY THE ROOM'S GENERATION IS A ROBOT THAT DOES NOT MOVE, AND
+   NOTHING ABOUT IT LOOKS BROKEN.** `onInput` drops any input stamped with a stale `gen` — that
+   is what lets a rematch rebuild a world in place — and the Home rejoin card builds a fresh
+   `ServerSession` out of a SAVED `matchStart`. `ActiveGameRef.start` is written field by field,
+   `gen` was not one of the fields, so a returning driver sent generation 0 at a room that has
+   been on 1 since its first tick: every command discarded, prediction moving the robot locally,
+   every snapshot snapping it back. Reported as a rejoin that leaves the game "stuck".
+
+   Two independent halves, because either one alone still leaves a hole: the CLIENT carries the
+   generation in its record (fixes the common case against any server, including deployed ones),
+   and the ROOM states the live generation in the `rejoined` that hands the slot back (fixes a
+   record that is merely STALE — a rematch moved the room on after it was written — and is what
+   makes the client self-correcting). Both are additive and optional on the wire. */
+{
+  const msgs: ServerMsg[] = [];
+  const mkC = (id: string, alliance: 'red' | 'blue', sink: ServerMsg[]): Client => ({
+    id,
+    send: (m) => sink.push(m),
+    player: { clientId: id, name: id, teamName: 'T', teamNumber: 1, alliance, startIndex: 0, ready: true, spec: { ...DEFAULT_SPEC }, assists: { ...DEFAULT_ASSISTS, fieldCentric: false } },
+    connected: true,
+    disconnectAt: 0,
+    userId: `u-${id}`,
+  });
+  const room = new Room('smoke-rejoin-gen', () => {}, { kind: 'versus' });
+  room.add(mkC('a', 'red', []));
+  room.add(mkC('b', 'blue', []));
+  room.onMessage('a', { t: 'start' });
+  room.advanceForTest(20);
+
+  // a DELIBERATE leave (a clean close), then the Home card dials back in on a fresh socket
+  room.detach('a', undefined, true);
+  const back = room.reattach('a', (m) => msgs.push(m));
+  check('rejoin: a deliberate leave of a VERSUS room holds the seat for the grace', back !== null);
+  const rejoined = msgs.find((m) => m.t === 'rejoined') as Extract<ServerMsg, { t: 'rejoined' }> | undefined;
+  check('rejoin: the room states which match generation the slot is in', typeof rejoined?.gen === 'number' && rejoined.gen >= 1);
+
+  // past the pre-match countdown (`robotsEnabled` is false in `pre`, so a drive measured
+  // inside it proves nothing about the generation and everything about the clock)
+  room.advanceForTest(Math.round(PRE_COUNTDOWN * 60) + 30);
+
+  /** drive robot 0 straight forward for `rounds` batches, stamping every input `gen` */
+  const driveWith = (gen: number, rounds: number): number => {
+    const w0 = room.worldForTest();
+    const r0 = w0?.robots.find((r) => r.id === 0);
+    const from = r0 ? { x: r0.pos.x, y: r0.pos.y } : { x: 0, y: 0 };
+    const q = quantizeCommand(cmd({ driveY: 1 }));
+    for (let i = 0; i < rounds; i++) {
+      room.onMessage('a', { t: 'input', tick: room.tickForTest() + 1, q, gen });
+      room.advanceForTest(10);
+    }
+    const w1 = room.worldForTest();
+    const r1 = w1?.robots.find((r) => r.id === 0);
+    return r1 ? Math.hypot(r1.pos.x - from.x, r1.pos.y - from.y) : -1;
+  };
+
+  // THE BUG ITSELF: the generation an un-carried record produces. A tolerance rather than
+  // an exact zero — the solver settles a standing chassis by a fraction of an inch — and it
+  // is two orders of magnitude below what the same drive covers when it is accepted.
+  const stale = driveWith(0, 12);
+  check('rejoin: an input stamped with a STALE generation moves the robot not at all', stale < 0.5);
+  // and the same drive with what the room just told us
+  const live = driveWith(rejoined?.gen ?? 0, 12);
+  check('rejoin: the generation the room stated on reattach drives the robot', live > 5);
+
+  // the record the client saves has to carry it too — an older server states nothing, so the
+  // saved value is the only thing a returning client has against the fleet as deployed today
+  const appSrc = readFileSync('src/ui/App.tsx', 'utf8');
+  const ref = appSrc.slice(appSrc.indexOf('const ref: ActiveGameRef = {'), appSrc.indexOf('savedAt: Date.now(),'));
+  check('rejoin: the saved active-game record carries the match generation', /\bgen:\s*s\.gen\b/.test(ref));
+  const sessSrc = readFileSync('src/net/serverSession.ts', 'utf8');
+  check(
+    'rejoin: ...and the session adopts the generation the server states over its own',
+    /m\.t === 'rejoined'/.test(sessSrc) && /this\.gen = m\.gen;/.test(sessSrc),
+  );
+}
+
+/* ------------------------------------------ LEAVING A SOLO RECORD RUN: there is no way back ----
+   A solo record room is REAPED on a clean close (`detach`, above) — it is one driver with no
+   opponent, and holding it for the reconnect grace kept an empty room simulating for 45 s. So
+   the seat is genuinely gone the moment the player presses MENU, and the browser must stop
+   offering to rejoin it: the offer's only possible outcome is `rejoined: ok=false`, which the
+   client renders as a "connection lost" panel on a game screen for a match that does not exist.
+   Every other room kind holds its seat, so their offer is real and stays. */
+{
+  const room = new Room('smoke-solorec-leave', () => {}, { kind: 'record', record: 'solo' });
+  room.add({
+    id: 'a',
+    send: () => {},
+    player: { clientId: 'a', name: 'a', teamName: 'T', teamNumber: 1, alliance: 'blue', startIndex: 0, ready: true, spec: { ...DEFAULT_SPEC }, assists: { ...DEFAULT_ASSISTS } },
+    connected: true,
+    disconnectAt: 0,
+    userId: 'u-a',
+  });
+  room.onMessage('a', { t: 'start' });
+  room.advanceForTest(20);
+  room.detach('a', undefined, true); // MENU / Esc — a clean close
+  check('solo record: a deliberate leave gives the seat up (nothing to rejoin)', room.reattach('a', () => {}) === null);
+
+  const appSrc = readFileSync('src/ui/App.tsx', 'utf8');
+  const leave = appSrc.slice(appSrc.indexOf('const leaveSession = (): void => {'), appSrc.indexOf('const exitGame = (): void => {'));
+  check(
+    'solo record: ...so the client forgets it on the way out instead of offering a dead rejoin',
+    /sessionKind === 'record' && !sessionCoop/.test(leave) && leave.includes('clearActiveGame();'),
+  );
+  check(
+    'rejoin: a refusal is told apart from an ordinary drop, so only it bounces to the menu',
+    appSrc.includes('s.slotRefused()') && appSrc.includes('setRejoinGone(true);'),
+  );
+}
+
+/* ------------------------------------- ABANDON MUST NOT UNDO A DECIDED RUN'S SCORE ----
+   `detach` already knows that a solo record room inside its finish window is kept alive by
+   `finishing` until the field settles and the PB is written. `abandon` is a second door into
+   the same situation and it bypassed detach entirely — it deletes the client, and the last
+   client leaving stops the room. So RESTART pressed in the seconds after the buzzer took the
+   room down before its own score was saved, which is the unsaved-PB bug arriving through a
+   door that did not exist when it was fixed. The LOCK still goes (that is all the caller
+   needs); the seat is left for the close that follows. */
+{
+  let emptied = false;
+  const room = new Room('smoke-abandon-finish', () => { emptied = true; }, { kind: 'record', record: 'solo' });
+  room.add({
+    id: 'a',
+    send: () => {},
+    player: { clientId: 'a', name: 'a', teamName: 'T', teamNumber: 1, alliance: 'blue', startIndex: 0, ready: true, spec: { ...DEFAULT_SPEC }, assists: { ...DEFAULT_ASSISTS } },
+    connected: true,
+    disconnectAt: 0,
+    userId: 'u-a',
+  });
+  room.onMessage('a', { t: 'start' });
+  room.advanceForTest(20);
+  const w = room.worldForTest();
+  if (w) {
+    w.match.phase = 'post'; // the buzzer has gone; the field is still settling
+    w.match.phaseTimeLeft = 0;
+  }
+  check('abandon: a decided solo run keeps its room, so its score still saves', room.abandonSlot('a') && !emptied);
+  // a run that is NOT decided is an ordinary abandon: the seat goes and the room with it
+  let emptied2 = false;
+  const live = new Room('smoke-abandon-live', () => { emptied2 = true; }, { kind: 'record', record: 'solo' });
+  live.add({
+    id: 'a',
+    send: () => {},
+    player: { clientId: 'a', name: 'a', teamName: 'T', teamNumber: 1, alliance: 'blue', startIndex: 0, ready: true, spec: { ...DEFAULT_SPEC }, assists: { ...DEFAULT_ASSISTS } },
+    connected: true,
+    disconnectAt: 0,
+    userId: 'u-a',
+  });
+  live.onMessage('a', { t: 'start' });
+  live.advanceForTest(20);
+  check('abandon: a run still being played is abandoned outright, exactly as before', live.abandonSlot('a') && emptied2);
+}
+
+/* ------------------------------------------- THE ONE-GAME REFUSAL IS MACHINE-READABLE ----
+   "You already have a game in progress" was a sentence and nothing else, so the record
+   launcher could only render it and stop — a dead card with one control on it, BACK TO HOME.
+   It is one of the few refusals a client can act on, so it carries `code: 'active_game'` now
+   and the launcher offers the way out. Additive: `message` stays self-sufficient, and the
+   launcher reads the SENTENCE too, because most of the fleet predates the code. */
+{
+  const idxSrc = readFileSync('server/index.ts', 'utf8');
+  const recSrc = readFileSync('src/ui/RecordRun.tsx', 'utf8');
+  const protoSrc = readFileSync('src/net/protocol.ts', 'utf8');
+  check("one-game refusal: the server codes it 'active_game'", /code: 'active_game',/.test(idxSrc));
+  check('one-game refusal: ...and the code is a declared ErrorCode', /\|\s*'active_game';/.test(protoSrc));
+  check(
+    'one-game refusal: the launcher reads the code AND the sentence (older servers send none)',
+    recSrc.includes("code === 'active_game'") && /already have a game in progress/i.test(recSrc),
+  );
+  check(
+    'record launcher: every other failure retries in place instead of dead-ending',
+    recSrc.includes('const retry = (): void => {') && recSrc.includes('TRY AGAIN'),
+  );
 }
 
 // ---- SPECTATING: a read-only watcher gets the stream, affects nothing -----------
@@ -21819,6 +22032,77 @@ const mkMM = () => {
     check(
       'analytics: trackEvent short-circuits on the preference, not just on the build flag',
       /if \(!ENABLED \|\| !analyticsAllowed\(\)\) return;/.test(an),
+    );
+  }
+
+  // 7b. ⚠️ THE PAGE-VIEW SCRUBBERS (`src/pageviews.ts`).
+  //
+  // The privacy promise DSIM's own analytics makes is that an id never leaves the browser —
+  // not that it is deleted once it arrives, which is a different and weaker promise. That
+  // makes these four pure functions the load-bearing part of the feature on this side of the
+  // wire, and "verified by reading" is exactly what is not good enough for them.
+  //
+  // The module is importable here ONLY because it reads `import.meta.env` through a guard and
+  // reaches `net/env` by dynamic import; a static import of that module throws under tsx. Same
+  // constraint that put the opt-out in its own leaf, and the reason is written at the top of
+  // both files.
+  {
+    check(
+      '⚠️ pageviews: the QUERY STRING is dropped unconditionally — `?token=` is a password-reset link',
+      normalizePath('/decode/account/reset?token=abc123&x=1') === '/decode/account/reset' &&
+        normalizePath('/privacy#your-data') === '/privacy',
+    );
+    check(
+      '⚠️ pageviews: a replay id and a username become placeholders, so neither is ever sent',
+      normalizePath('/decode/replay/3f2b9c10-1111-4222-8333-444455556666') === '/decode/replay/:id' &&
+        normalizePath('/chain/profile/dohun') === '/chain/profile/:name',
+    );
+    check(
+      'pageviews: a static route survives intact, or every page would be `:id`',
+      normalizePath('/decode/records/career') === '/decode/records/career' && normalizePath('/') === '/',
+    );
+    check(
+      'pageviews: the general net catches an id nobody named — a room code, a uuid, a long hex',
+      normalizePath('/x/iad-abc123') === '/x/:id' &&
+        normalizePath('/x/deadbeefcafe01') === '/x/:id' &&
+        normalizePath('/x/' + 'y'.repeat(40)) === '/x/:id',
+    );
+    check(
+      'pageviews: the path is length-capped, whatever it is handed',
+      normalizePath('/' + 'a/'.repeat(300)).length <= 128,
+    );
+    check(
+      '⚠️ pageviews: a referrer is reduced to a HOST, and a SAME-ORIGIN one is not a referrer at all',
+      refHost('https://www.google.com/search?q=ftc+sim', 'playdsim.com') === 'google.com' &&
+        refHost('https://playdsim.com/decode', 'playdsim.com') === '' &&
+        refHost('', 'playdsim.com') === '' &&
+        refHost('not a url', 'playdsim.com') === '',
+    );
+    check(
+      '⚠️ pageviews: the screen is a BUCKET, never a pixel size (an exact viewport is a fingerprint)',
+      screenBucket(390) === 'sm' && screenBucket(700) === 'md' && screenBucket(1024) === 'lg' && screenBucket(2560) === 'xl',
+    );
+    check(
+      'pageviews: exactly the three UTM parameters, lowercased and capped',
+      (() => {
+        const u = utmOf('?utm_source=REDDIT&utm_medium=social&utm_campaign=' + 'x'.repeat(80) + '&utm_term=nope');
+        return u.s === 'reddit' && u.m === 'social' && u.c.length <= 48 && !('t' in u);
+      })(),
+    );
+    // The module must not be able to acquire a client-side identifier by accident. Check 2 of
+    // the storage registry already forbids a `decodesim.` literal anywhere but the registry;
+    // this says the stronger thing for this one file — it does not touch storage AT ALL, so
+    // there is no key for it to be given later.
+    // A CALL, not the word: the header of that file explains at length that it sets no
+    // localStorage key and no cookie, and a grep for the bare noun matches the explanation.
+    const pv = readFileSync(joinPath('src', 'pageviews.ts'), 'utf8');
+    check(
+      '⚠️ pageviews: the beacon touches no browser storage — it has no identifier and must not gain one',
+      !/\b(local|session)Storage\s*\./.test(pv) && !/document\s*\.\s*cookie/.test(pv),
+    );
+    check(
+      '⚠️ pageviews: doNotTrack and Global Privacy Control are honoured, not merely available',
+      /globalPrivacyControl/.test(pv) && /doNotTrack/.test(pv),
     );
   }
 

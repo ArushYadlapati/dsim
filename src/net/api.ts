@@ -832,6 +832,22 @@ export interface AdminPresencePlayer {
   sessions?: number;
   handle: string | null;
   username: string | null;
+  /** owner/admin, so the console can tell a colleague's session from a player's */
+  role?: 'owner' | 'admin' | null;
+  /**
+   * A `profiles` row EXISTS for this account.
+   *
+   * ⚠️ `handle: null` means two completely different things and the console printed
+   * both as "(no profile)". The row is created lazily — `ensureProfile` runs on the
+   * API routes a signed-in client hits, not when its socket authenticates — so an
+   * account can genuinely have auth and no profile for a few seconds after signing
+   * up. That is `known: false`, and it renders as the account id plus "no username
+   * yet". `known: true` with a null handle would be a bug worth seeing.
+   *
+   * OPTIONAL because a server older than this field does not send it, and the
+   * client's own merge fills the names in from the database row in that case.
+   */
+  known?: boolean;
   act: 'menu' | 'lobby' | 'match';
   room?: string;
   queue?: '1v1' | '2v2';
@@ -1435,17 +1451,29 @@ export interface AdminUserRow {
   role?: StaffRole | null;
 }
 
-/** search profiles by handle (substring), exact userId, or exact username */
-export async function adminSearchUsers(query: string): Promise<AdminUserRow[]> {
+/**
+ * Search profiles by handle (substring), exact userId, or exact username.
+ *
+ * PAGED. `more` says there is at least one row past this page, which the server answers by
+ * fetching one extra rather than by counting — a count over a `ilike '%…%'` is the same scan
+ * twice. An older server sends no `more` field and the page simply never offers "load more".
+ */
+export async function adminSearchUsers(
+  query: string,
+  opts: { limit?: number; offset?: number } = {},
+): Promise<{ users: AdminUserRow[]; more: boolean }> {
   const base = gameServerHttpUrl();
   const token = await getAuthToken();
-  if (!base || !token || !query.trim()) return [];
-  const res = await fetch(base + '/api/admin/users?q=' + encodeURIComponent(query.trim()), {
+  if (!base || !token || !query.trim()) return { users: [], more: false };
+  const q = new URLSearchParams({ q: query.trim() });
+  if (opts.limit) q.set('limit', String(opts.limit));
+  if (opts.offset) q.set('offset', String(opts.offset));
+  const res = await fetch(base + '/api/admin/users?' + q.toString(), {
     headers: { authorization: `Bearer ${token}` },
   });
-  if (!res.ok) return [];
-  const data = (await res.json().catch(() => ({}))) as { users?: AdminUserRow[] };
-  return data.users ?? [];
+  if (!res.ok) return { users: [], more: false };
+  const data = (await res.json().catch(() => ({}))) as { users?: AdminUserRow[]; more?: boolean };
+  return { users: data.users ?? [], more: data.more === true };
 }
 
 /** POST to an admin route with the signed-in token; null when not authorized */
@@ -1931,4 +1959,135 @@ export async function claimKofiPayment(
     { method: 'POST', body: JSON.stringify({ transactionId }) },
   );
   return { ok: !!r.ok, supporterUntil: r.supporterUntil ?? null, months: r.months ?? 0 };
+}
+
+// ======================================================== admin: audit + user ==
+//
+// The two reads behind the console's Audit tab and its user detail panel (server:
+// migration 0041). Both are GETs with the signed-in admin token, both are paged, and
+// both answer an EMPTY page rather than null when the server is older than the route —
+// one Fly app serves every client version, so a console loaded from a newer Vercel
+// deploy has to degrade to "nothing to show" instead of an error the admin cannot act on.
+
+/** one row of the admin audit log */
+export interface AuditRow {
+  id: string;
+  adminId: string;
+  /** a dotted key: `user.rename`, `record.delete`, `season.start`, … */
+  action: string;
+  targetUser: string | null;
+  targetHandle: string | null;
+  targetUsername: string | null;
+  targetId: string | null;
+  detail: Record<string, unknown>;
+  note: string | null;
+  at: string;
+}
+
+export async function adminFetchAudit(
+  opts: { action?: string; admin?: string; user?: string; q?: string; limit?: number; offset?: number } = {},
+): Promise<{ rows: AuditRow[]; more: boolean } | null> {
+  const base = gameServerHttpUrl();
+  const token = await getAuthToken();
+  if (!base || !token) return null;
+  const q = new URLSearchParams();
+  for (const [k, v] of Object.entries(opts)) if (v) q.set(k, String(v));
+  try {
+    const res = await fetch(base + '/api/admin/audit?' + q.toString(), {
+      headers: { authorization: `Bearer ${token}` },
+      cache: 'no-store',
+    });
+    // 404 is an OLD SERVER, not a failure: the tab shows its empty state rather than
+    // "couldn't load", which would send an admin looking for a problem that is a deploy.
+    if (res.status === 404) return { rows: [], more: false };
+    if (!res.ok) return null;
+    const body = (await res.json()) as { rows?: AuditRow[]; more?: boolean };
+    return { rows: body.rows ?? [], more: body.more === true };
+  } catch {
+    return null;
+  }
+}
+
+/** the distinct action keys present in the log — the filter menu's options */
+export async function adminFetchAuditActions(): Promise<string[]> {
+  const base = gameServerHttpUrl();
+  const token = await getAuthToken();
+  if (!base || !token) return [];
+  try {
+    const res = await fetch(base + '/api/admin/audit?actions=1', {
+      headers: { authorization: `Bearer ${token}` },
+      cache: 'no-store',
+    });
+    if (!res.ok) return [];
+    return ((await res.json()) as { actions?: string[] }).actions ?? [];
+  } catch {
+    return [];
+  }
+}
+
+export interface AdminNote {
+  id: string;
+  adminId: string;
+  note: string;
+  at: string;
+}
+
+/** everything the console knows about one account, in one request */
+export interface AdminUserDetail {
+  userId: string;
+  /** false ⇒ there is no `profiles` row for this id — see `AdminPresencePlayer.known` */
+  known: boolean;
+  handle: string | null;
+  username: string | null;
+  role: StaffRole | null;
+  supporter: boolean;
+  supporterUntil: string | null;
+  autoRenews: boolean;
+  replaysPublic: boolean;
+  termsVersion: string | null;
+  termsAcceptedAt: string | null;
+  createdAt: string | null;
+  standing: StandingInfo | null;
+  standingEvents: StandingEvent[];
+  reportsAgainst: { total: number; open: number; reporters: number };
+  reportsFiled: { total: number; rejected: number };
+  scoreReportsFiled: { total: number; rejected: number };
+  notes: AdminNote[];
+  grants: SupporterGrantRow[];
+  recentMatches: ModMatch[];
+  records: {
+    recordId: string;
+    game: string;
+    mode: string;
+    drivetrain: string;
+    score: number;
+    replayId: string | null;
+    createdAt: string;
+  }[];
+  audit: AuditRow[];
+}
+
+export async function adminFetchUser(userId: string): Promise<AdminUserDetail | null> {
+  const base = gameServerHttpUrl();
+  const token = await getAuthToken();
+  if (!base || !token) return null;
+  try {
+    const res = await fetch(base + '/api/admin/user?id=' + encodeURIComponent(userId), {
+      headers: { authorization: `Bearer ${token}` },
+      cache: 'no-store',
+    });
+    if (!res.ok) return null;
+    return ((await res.json()) as { user: AdminUserDetail }).user ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/** pin a private moderator note to an account (never shown to the player) */
+export function adminAddNote(userId: string, note: string): Promise<{ note: AdminNote } | null> {
+  return adminPost('/api/admin/user/note', { id: userId, note });
+}
+
+export function adminDeleteNote(userId: string, noteId: string): Promise<{ ok: boolean } | null> {
+  return adminPost('/api/admin/user/note', { id: userId, delete: noteId });
 }

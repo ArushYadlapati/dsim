@@ -136,8 +136,8 @@ function mat(color: string, opacity = 1): THREE.MeshStandardMaterial {
   });
 }
 
-// ── the floor texture: the tile SEAM GRID and the centre mark, on `drawField.ts`'s own colour
-// tokens. Generated ONCE at scene creation, never per frame. ──────────────────────────────────
+// ── the floor texture: the tile SEAM GRID, and the tape on the fallback path, on
+// `drawField.ts`'s own colour tokens. Generated ONCE at scene creation, never per frame. ──────
 //
 // ⚠️ NO TAPE HERE ON THE CAD PATH. The previous version painted `strokeRectTex(BB_LZ[a], …)` and
 // `strokeRectTex(BB_GARDEN[a], …)` — a full four-sided outline of each zone rectangle — which is
@@ -287,18 +287,11 @@ function buildFloorTexture(withTape: boolean): THREE.CanvasTexture {
   }
   ctx.stroke();
 
-  // centre mark, same purpose as the 2D renderer's: a still that is off-centre should be
-  // visible as such rather than indistinguishable from five other tile crossings
-  const [cx, cy] = toTex(0, 0);
-  const mark = 4 * TEX_SCALE;
-  ctx.strokeStyle = C.COLORS.white;
-  ctx.lineWidth = Math.max(1, C.TAPE_W * TEX_SCALE);
-  ctx.beginPath();
-  ctx.moveTo(cx - mark, cy);
-  ctx.lineTo(cx + mark, cy);
-  ctx.moveTo(cx, cy - mark);
-  ctx.lineTo(cx, cy + mark);
-  ctx.stroke();
+  // ⚠️ NO CENTRE MARK — the 2D renderer's reasoning, and the same removal (owner, 2026-09-19).
+  // Event Field Guide V1.0 §8 tapes the LOADING ZONES, the GARDENS and the ALLIANCE AREAS and
+  // nothing else, and the four centre tiles come OUT (§9.1) for the frame's under-tile strips,
+  // so the origin is bare tile under the HIVE. Both floor texture paths therefore paint the
+  // seam grid and the tape, full stop; this was a white cross at tape width on both.
 
   if (withTape) for (const a of ALLIANCES) drawZoneTape(ctx, a);
   // the supplement is painted on the fallback only; the CAD path gets it as geometry, beside the
@@ -352,7 +345,7 @@ const WALL_OPACITY = 0.08;
  * which are polycarbonate on the real field. A hair denser than the perimeter because a cell is
  * what a driver reads a shape and its contents off, and there are fewer of them in any one line
  * of sight; the CAD path uses the same number (`renderFieldGlb.ts`'s `CELL_PANEL_OPACITY`). */
-const CELL_OPACITY = 0.1;
+const CELL_OPACITY = 0.13;
 /** how much of the IBL environment a clear panel gathers. At the default 1.0 a glossy near-white
  * panel mirrors the room and reads as a sheet of solid white — that, more than the alpha, is the
  * 2026-09-18 report's "opaque white that is too strong", and the warm practice HDRI is where the

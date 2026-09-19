@@ -40,7 +40,7 @@
 
 import type { Alliance, AssistConfig, RobotSpec, StartCat, Vec2, World } from '../../types';
 import { INTAKE_PRESETS, ROBOT_MAX_SIZE } from '../../config';
-import { datan2, dcos, wrapAngle } from '../../math';
+import { dcos, wrapAngle } from '../../math';
 import { lengthLimits, massLimits, widthLimits } from '../../sim/drivetrain';
 import {
   BB_DEFAULT_INTAKE_MOUNT,
@@ -216,11 +216,26 @@ export const BB_GARDEN: Record<Alliance, BbRect> = { red: GARDEN.red, blue: GARD
  */
 export const BB_TAPE = TAPE;
 
-/** tape width (in) — CAD: 1.000 in gaffer, and there is NO other width on this field. `BB_TAPE_2`
- * is gone: the GARDEN's "2-in strip" (§9.3) is two of these laid side by side, which `BB_TAPE`
- * carries as two rectangles. Red / electric-blue — the one thing on this field that is NOT a
- * theme token, because the tape colour is what tells a driver whose zone it is. */
-export const BB_TAPE_1 = TAPE_W;
+/**
+ * THE ONE TAPE WIDTH ON THIS FIELD (in) — CAD, via `fieldDims.gen.ts`: all 16 strips measure
+ * 1.000, and `field-measurements.json` carries `tape.widthsIn` as a one-element list.
+ *
+ * The Event Field Guide V1.0 §8.1 (p13) allows the field to be taped with **either** 1 in or 2 in
+ * ProGaff, "the outside perimeter of each zone should be consistent with the specifications, but
+ * the tape width may vary" — §8.3's figure draws the LOADING ZONE both ways and §8.4's draws the
+ * GARDEN as [2] 1-in pieces OR [1] 2-in piece. A renderer has to pick one build, and the build the
+ * CAD ships is 1 in, so that is the one the sim draws.
+ *
+ * ⚠️ NOT `C.TAPE_W`. The shared constant of the same value is DECODE's field, arrived at
+ * independently; both renderers used to reach for it and a BIOBUZZ tape width therefore had two
+ * homes. There is one, it is this, and it is the CAD's.
+ *
+ * ⚠️ AND IT IS NOT A LINE WIDTH. Every tape mark is a FILLED rectangle out of `BB_TAPE`, which
+ * already carries the measured width; this constant is the CONTRACT those rectangles are checked
+ * against (the field lane proves every strip is exactly this wide, and the garden band exactly
+ * two of them), not a number a renderer multiplies by. `BB_TAPE_2` is gone for the same reason.
+ */
+export const BB_TAPE_W = TAPE_W;
 
 // ── HIVE STRUCTURE (§9.6, Figs 9-7…9-11, pp69–73) ────────────────────────────
 
@@ -929,9 +944,10 @@ export const BB_DUMP_RELOAD_S = 0.75;
  */
 export const BB_DUMP_STAGGER_S = 0.3;
 
-/** the most elements one turret feed can release in a single tick — the burst bound on the
- * accumulated cadence clock (`bbLaunch`). With `BB_FIRE_INTERVAL` above a tick it is normally 1;
- * this only bounds a pathological catch-up. APPROX. */
+/** the most BEATS of the accumulated cadence clock one tick may serve (`bbLaunch`). With
+ * `BB_FIRE_INTERVAL` above a tick it is normally 1; this only bounds a pathological catch-up. A
+ * DOUBLE turret releases up to one element PER EXIT per beat, so the element bound is twice this
+ * for that build — and the hopper cap is well under either. APPROX. */
 export const BB_FIRE_BURST_MAX = 6;
 
 /**
@@ -988,11 +1004,10 @@ export const BB_LAUNCH_SPEED_MAX = 260;
  * APPROX: the old drum's tuned speed, kept as a neutral number. */
 export const BB_LAUNCH_SPEED_DEFAULT = 175;
 
-/** the launcher's plate channel, in inches — `GAP` is the clear width between the two plates
- * a POLLEN passes between, `OVERHANG` how far they reach past the flywheel. GAP is
- * `BB_POLLEN_R * 2` plus a working clearance, which is why it tracks the element size rather
- * than being an independent number. APPROX with the element. */
-export const BB_LAUNCH_PLATE_GAP = BB_POLLEN_R * 2 + 0.3;
+/** how far a turretless launcher's plates reach past the flywheel (in). APPROX. (The GAP that
+ * used to sit beside it is `BbHeadDims.plateGap` now — it is per HEAD, because a NECTAR channel
+ * is not a POLLEN channel. `BB_LAUNCH_PLATE_GAP` below is the POLLEN one, kept for the 2D
+ * sprite.) */
 export const BB_LAUNCH_PLATE_OVERHANG = 1.2;
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1011,48 +1026,43 @@ export const BB_LAUNCH_PLATE_OVERHANG = 1.2;
  * sim and the 3D scene read that function. Same rule the shot path already follows: ONE
  * PREDICTOR, TWO DRAWINGS.
  *
- * Every length is in INCHES, every angle in RADIANS. The frame the angles are in is THE AXLE
- * FRAME: origin on the flywheel axle, +x the shot direction at rest, +z up, θ measured CCW from
- * +x. That frame is why the numbers below read oddly at first — the exit is at θ = 90° (straight
- * up over the wheel), not at θ = 0.
+ * Every length is in INCHES, every angle in RADIANS. There are TWO frames and the difference
+ * matters at every line below:
+ *
+ *  · the **TURRET frame** — origin on the turret's ROTATION AXIS (the slew ring's bore, which is
+ *    where the feed comes up), +x the shot direction at rest, +z up. `turretLocal` puts this on
+ *    the chassis and `bbMuzzleLocal` answers in it.
+ *  · the **AXLE frame** — the same axes, origin moved forward to the FLYWHEEL AXLE by
+ *    `BbHeadDims.axleX`. θ is measured CCW from +x, so the exit is at θ = 90° (straight up over
+ *    the wheel) and the feed pinch at θ = 180° (dead behind it). Every (θ, r) here is this one.
+ *
+ * ⚠️ **THE TWO FRAMES USED TO BE ONE, AND THE OWNER'S SECOND ITEM OF 2026-09-19 IS WHAT
+ * SEPARATED THEM:** "the flywheel should come forward more so that the location where the balls
+ * contact the flywheel initially as it comes up is roughly in the center of the turret". A real
+ * hooded shooter is fed THROUGH the ring bearing: the element rises vertically up the rotation
+ * axis, meets the wheel at its back, and is pinched between wheel and hood. That puts the
+ * element's centre at the pinch on the turret axis, and the element's centre at the pinch is
+ * exactly `pathR` from the axle — so `axleX = pathR`, and the whole head moved forward by it.
  */
 
 /**
- * FLYWHEEL DIAMETER, IN MILLIMETRES — **72 mm, MEASURED HARDWARE** (owner, 2026-09-19 item e).
+ * FLYWHEEL DIAMETER, IN MILLIMETRES — **72 mm, MEASURED HARDWARE** (owner, 2026-09-19).
  *
  * Recorded as the millimetres it actually is and converted here, once. A 72 mm wheel is
  * 2.8346 in, and writing that as a decimal literal would lose the only thing about it that is
- * not a judgement call.
- *
- * ⚠️ THE HEADER THIS REPLACES ARGUED FOR 1.5 ON A MOTOR-POCKET GROUND — "it came down from 2.0
- * because of `BB_HEAD_RHO_MAX`… at a 4-in wheel the axle sits 3.1 in below the muzzle, which
- * leaves 2.1 in of ρ budget". That whole argument is void. `BB_HEAD_RHO_MAX` existed because the
- * pitch node pivoted about the MUZZLE, which it did because `bbMuzzleZ` was a constant; the head
- * pivots about the AXLE now (owner item d — the flywheel and the plates are FIXED, only the hood
- * moves), the axle is a fixed height off the turret plate, and there is no ρ budget to spend.
- * The wheel is 72 mm because that is the wheel, not because it fits.
+ * not a judgement call. ONE wheel drives both heads: a bigger element does not want a bigger
+ * flywheel, it wants a bigger hood.
  */
 export const BB_FLYWHEEL_D_MM = 72;
 export const BB_FLYWHEEL_R = BB_FLYWHEEL_D_MM / 2 / 25.4;
 
-/** how much a POLLEN is squeezed between the wheel and the hood (in). APPROX — a compliant
+/** how much an element is squeezed between the wheel and the hood (in). APPROX — a compliant
  * wheel against a polycarb hood; it is what makes a shooter grip rather than jam. */
 export const BB_HOOD_COMPRESSION = 0.3;
 
-/**
- * the hood's INNER radius about the axle: wheel + one element diameter, less the compression.
- * A 2.8-in POLLEN (`BB_POLLEN_R` 1.4, MEASURED — AndyMark am-5851) has to fit through it, so
- * changing the element moves the hood and everything hung off it.
- */
-export const BB_HOOD_R = BB_FLYWHEEL_R + BB_POLLEN_R * 2 - BB_HOOD_COMPRESSION; // 3.91732
-
-/** the radius the element's CENTRE travels at. This is the one that sets the muzzle, because the
- * muzzle is where that centre leaves the wrap — see `bbMuzzleLocal`. */
-export const BB_HOOD_PATH_R = BB_HOOD_R - BB_POLLEN_R; // 2.51732
-
 /** hood wall thickness (in). It is what makes the hood stand PROUD of the side plates: the
- * plates' outer arc is exactly `BB_HOOD_R` and the hood occupies `BB_HOOD_R … +BB_HOOD_T`, so
- * the hood is the outermost part BY CONSTRUCTION at every pitch, never by a tuned offset. */
+ * plates' outer arc is exactly the head's own `hoodR` and the hood occupies `hoodR … +BB_HOOD_T`,
+ * so the hood is the outermost part BY CONSTRUCTION at every pitch, never by a tuned offset. */
 export const BB_HOOD_T = 0.28;
 
 /**
@@ -1061,63 +1071,53 @@ export const BB_HOOD_T = 0.28;
  * ⚠️ **WAS 1.05 (60°), AND IT SHRANK BECAUSE THE HOOD MOVES NOW.** A hood that pivots on the
  * axle carries its own feed mouth round with it: at `BB_TURRET_PITCH_MAX` the mouth has gone 80°
  * round the wheel and no longer lines up with anything the chassis can feed. So the hood keeps
- * only the arc it needs to turn the element and let go of it, and a FIXED `BB_FEED_SHOE_*` takes
- * over the entry (below). The old header's two bounds — the ρ budget and the motor pocket — are
- * both void with the pivot moved to the axle.
+ * only the arc it needs to turn the element and let go of it, and the FIXED FEED THROAT (below)
+ * takes over the entry.
  */
 export const BB_HOOD_WRAP = 0.556;
 
 /**
  * THE HOOD'S ARMS — how it hangs off the axle, since the side plates deliberately do not reach
- * it (owner item b: the plates stop well below the hood).
+ * it (the plates stop well below the hood).
  *
  * A real adjustable hood is an arc on two side arms that pivot on the shooter axle, and that is
  * what this is: `_T` is an arm's thickness in the arc's own plane, `_INSET` how far inboard of
  * each side plate's inner face the arm runs, so the pair reads as the hood's own linkage and not
  * as a third pair of plates. They go on the PITCH node with the arc — they ARE the hood — which
- * keeps owner item d exact: the flywheel and the plates never move.
+ * keeps the "only the hood moves" ruling exact: the flywheel and the plates never move.
  *
- * APPROX both: sized off the arc they carry (an arm spanning `BB_HOOD_R` of reach wants roughly
- * a quarter inch of section) and off `BB_LAUNCH_PLATE_GAP`'s working clearance.
+ * APPROX both: sized off the arc they carry and off the channel's working clearance. An arm's
+ * lateral WIDTH is derived from them and comes out at 0.09 in for EITHER element, because the
+ * channel and the hood both track the element by the same 0.15 a side.
  */
 export const BB_HOOD_ARM_T = 0.26;
 export const BB_HOOD_ARM_INSET = 0.06;
 
 /**
- * THE FEED SHOE — the FIXED outer wall of the entry, and the rear tie between the two plates.
+ * THE FEED THROAT — the fixed channel the element rises through, and the rear tie between the
+ * two side plates.
  *
- * ⚠️ **IT IS WHAT REPLACES THE OWNER'S "WEIRD FLAP IN THE BACK" (item a), RATHER THAN MERELY
- * DELETING IT.** With the wrap cut to `BB_HOOD_WRAP` the hood no longer reaches the feed at any
- * elevation, so something fixed has to hold the element against the wheel on the way in. The shoe
- * spans θ ∈ [`BB_FEED_SHOE_LEAD`, `BB_FEED_SHOE_FAR`] ≈ [146°, 202°] at radius `BB_FEED_SHOE_R`,
- * which is one hood thickness plus a sliding clearance outboard of the hood's own arc — so the
- * hood sweeps INSIDE it and the two never touch. It bolts to BOTH side plates, which is the rear
- * structure the flap was pretending to be.
+ * ⚠️ **THIS IS WHAT FINALLY ANSWERS "THERE IS STILL A WEIRD FLAP IN THE BACK OF THE SHOOTER
+ * THAT DOES NOTHING"** (owner, 2026-09-19 — the SECOND time it was reported). The pass before
+ * this replaced a loose plank with a FEED SHOE: an arc at `hoodR + BB_HOOD_T + slide` spanning
+ * 146°–202°, outboard of everything else on the machine and touching nothing you could see. It
+ * was structure on paper and a floating curved flap on screen, which is why the same complaint
+ * came back unchanged.
  *
- * MEASURED, on the design sweep: the entering element's bottom clears the deck at 4.601 against
- * a 4.600 deck, the shoe's own lowest point is 5.398, and the outgoing corridor clears the shoe
- * by 0.100 at the worst pitch.
+ * What stands there now is the thing the element actually needs, in the place the new geometry
+ * put it: the feed comes up the ROTATION AXIS, so the two side plates already ARE the throat's
+ * cheeks and the only part missing is its BACK — one flat vertical wall, `BB_FEED_WALL_T` thick,
+ * standing on the turret plate at the back of the rising element. It spans the whole channel and
+ * both plate thicknesses, so it is also the rear tie; the motor bolts to its two rearward ears;
+ * and the turret plate is cut through beneath it, which is what makes the path visible.
+ *
+ * `BB_FEED_SLIDE` is how far its FRONT FACE stands outboard of the hood's own outermost swept
+ * radius. The hood sweeps a disc of radius `hoodR + BB_HOOD_T` about the axle, so a vertical
+ * plane that clears that radius clears the hood at EVERY elevation — no angular bookkeeping, and
+ * nothing to re-derive when `BB_TURRET_PITCH_MAX` moves.
  */
-export const BB_FEED_SHOE_SLIDE = 0.2;
-export const BB_FEED_SHOE_R = BB_HOOD_R + BB_HOOD_T + BB_FEED_SHOE_SLIDE; // 4.39732
-export const BB_FEED_SHOE_T = 0.22;
-/**
- * where the shoe STARTS, derived rather than chosen: the angle at which its inner face has risen
- * clear of the hood's outermost swept position (`BB_HOOD_R` + 0.10 of slide), measured from the
- * hood lip at full elevation. Moving `BB_TURRET_PITCH_MAX` or the wrap moves this with it.
- *
- * ⚠️ `datan2(√(1−u²), u)`, NOT `Math.acos(u)`. This is sim source, and `smoke.ts`'s
- * determinism guard bans every engine-defined `Math` transcendental by name: `acos` is one of
- * them, and its result is the JS engine's choice. The identity is exact, `Math.sqrt` is
- * IEEE-exact, and `datan2` is the deterministic wrapper the rest of the sim uses.
- */
-const SHOE_LEAD_COS = (BB_HOOD_R + 0.1) / BB_FEED_SHOE_R;
-export const BB_FEED_SHOE_LEAD =
-  Math.PI / 2 +
-  BB_TURRET_PITCH_MAX -
-  datan2(Math.sqrt(1 - SHOE_LEAD_COS * SHOE_LEAD_COS), SHOE_LEAD_COS); // ≈ 146.0°
-/** and where it ENDS — the mouth, one full wrap past the fully elevated lip. */
-export const BB_FEED_SHOE_FAR = Math.PI / 2 + BB_TURRET_PITCH_MAX + BB_HOOD_WRAP; // ≈ 201.856°
+export const BB_FEED_SLIDE = 0.1;
+export const BB_FEED_WALL_T = 0.25;
 
 /**
  * THE DECK — the top of the drivetrain, where every mechanism is bolted (in off the tiles).
@@ -1130,86 +1130,208 @@ export const BB_DECK_Z = 4.6;
 
 /** the slew ring the turret stands on, and the turret plate on top of it (in). A real turret is a
  * toothed ring bearing with a plate bolted to its inner race; APPROX both, sized as ordinary FTC
- * ring-bearing hardware. */
+ * ring-bearing hardware. Both are BORED: the feed comes up through them. */
 export const BB_TURRET_RING_H = 0.55;
 export const BB_TURRET_PLATE_T = 0.25;
 /** the top face of the turret plate — the surface everything on the turret stands on. */
 export const BB_TURRET_PLATE_TOP_Z = BB_DECK_Z + BB_TURRET_RING_H + BB_TURRET_PLATE_T; // 5.40
-/** the turret plate's own radius. It has to cover the side plates' footprint, which reaches
- * `BB_SIDE_PLATE_FRONT_X` forward and 3.521 back — 3.70 covers both with a rim to bolt through. */
-export const BB_TURRET_PLATE_R = 3.7;
 
 /**
  * clearance between the turret plate and the bottom of the flywheel (in).
  *
- * ⚠️ **THIS IS OWNER ITEM (c) — "the flywheel can be situated much lower, it just needs to be
- * right above the turret plate".** The flywheel used to hang wherever the muzzle-pivot geometry
- * left it; it now sits one bearing block above the plate, which is what a flywheel shooter looks
+ * ⚠️ **THIS IS THE OWNER'S "the flywheel can be situated much lower, it just needs to be right
+ * above the turret plate".** The flywheel used to hang wherever the muzzle-pivot geometry left
+ * it; it now sits one bearing block above the plate, which is what a flywheel shooter looks
  * like. Everything above it follows: the axle is plate + clearance + radius, and the muzzle is
- * axle + `BB_HOOD_PATH_R` rotated by the hood's angle. APPROX — a pillow block's own height.
+ * axle + `pathR` rotated by the hood's angle. APPROX — a pillow block's own height.
  */
 export const BB_FLYWHEEL_CLEAR = 0.3;
-/** the flywheel axle's height off the tiles (in) — the pivot the hood swings about, and the
- * origin of the AXLE FRAME every θ on this page is measured in. Wheel bottom lands at 5.70. */
+/** the flywheel axle's HEIGHT off the tiles (in) — the pivot the hood swings about, and the
+ * origin of the AXLE FRAME every θ on this page is measured in. Wheel bottom lands at 5.70, and
+ * it is the same for both heads: one wheel, one bearing block, one plate. */
 export const BB_TURRET_AXLE_Z = BB_TURRET_PLATE_TOP_Z + BB_FLYWHEEL_CLEAR + BB_FLYWHEEL_R; // 7.11732
 
 /**
  * THE SIDE PLATE — an ARC INTERSECTED WITH A BOX, in the axle frame:
  *
- *     r(θ) = min( BB_HOOD_R,
+ *     r(θ) = min( hoodR,
  *                 BB_SIDE_PLATE_TOP_Z    / sin θ   (sin θ > 0),
  *                 BB_SIDE_PLATE_BOTTOM_Z / sin θ   (sin θ < 0),
  *                 BB_SIDE_PLATE_FRONT_X  / cos θ   (cos θ > 0) )
  *
- * cut by a FLAT TOP, a FLAT FRONT and a FLAT BOTTOM that lands on the turret plate. The four
- * angles where the binding constraint CHANGES are 15.040° (front↔top), 165.704° (top↔arc),
- * 206.001° (arc↔bottom) and 334.497° (bottom↔front), so the plate is at the FULL `BB_HOOD_R`
- * over θ ∈ [165.70°, 206.00°] — **40.3°, at the BACK, and nowhere else**. Everything from
- * 15° to 166° is governed by the flat top, which is the whole of owner item (b).
+ * cut by a FLAT TOP, a FLAT FRONT and a FLAT BOTTOM that lands on the turret plate. Only the ARC
+ * is per-head; the three flats are shared, and the top one is the same number for either element
+ * by construction rather than by coincidence — see below.
  *
- * That is also why the hood-proud figure is 3.23 at rest and 0.280 at full elevation rather than
- * one number: at rest the hood sits at θ 90…122°, where the plate is down on its flat top and
- * the hood rides its ARMS well clear of it; at 80° of pitch the hood has swung round to 170…202°,
- * which is exactly the arc stretch, and the gap closes to the hood's own thickness.
- *
- * ⚠️ **THE FLAT TOP IS OWNER ITEM (b) — "the arc in the parallel plates reaches too high; the
- * hood extends above the supporting plates".** It is not a taste offset: it is one element radius
- * plus 0.15 below the outgoing corridor's own centre line, i.e. the highest a fixed plate can
- * reach without fouling a flat shot. Measured over 9 pitches × 9 hood angles the hood stands
- * proud by **+0.280 everywhere, never negative**, and by +3.23 at rest — which is the complaint,
- * answered by construction rather than by a number someone chose.
+ * ⚠️ **THE FLAT TOP IS THE OWNER'S "the arc in the parallel plates reaches too high; the hood
+ * extends above the supporting plates".** It is not a taste offset: it is one element radius plus
+ * 0.15 below the outgoing corridor's own centre line, i.e. the highest a fixed plate can reach
+ * without fouling a flat shot. `pathR − elemR` is `BB_FLYWHEEL_R − BB_HOOD_COMPRESSION` whatever
+ * the element is, so the corridor floor — and therefore this cut — is the SAME height for a
+ * POLLEN head and a NECTAR head. That is why the number below has no element in it.
  */
-export const BB_SIDE_PLATE_TOP_Z = BB_HOOD_PATH_R - BB_POLLEN_R - 0.15; // +0.96732 above the axle
-export const BB_SIDE_PLATE_FRONT_X = 3.6;
+export const BB_SIDE_PLATE_TOP_Z = BB_FLYWHEEL_R - BB_HOOD_COMPRESSION - 0.15; // +0.96732 above the axle
+/**
+ * the flat FRONT cut, in the axle frame.
+ *
+ * ⚠️ **IT CAME DOWN FROM 3.6, AND WHAT SETS IT IS THE FRONT BRACES.** With the axle on the turret
+ * axis a 3.6-in front was free; with the axle `pathR` forward of it, every inch of front reach is
+ * an inch of head hanging past the turntable, so the plate is cut back to the smallest front that
+ * still carries the front standoffs — `BB_TURRET_BRACES`' own outer edge at ±20°, 2.076, plus a
+ * bolt rim.
+ */
+export const BB_SIDE_PLATE_FRONT_X = 2.2;
 export const BB_SIDE_PLATE_BOTTOM_Z = BB_TURRET_PLATE_TOP_Z - BB_TURRET_AXLE_Z; // −1.71732 = the plate
 
 /**
- * THE FLYWHEEL MOTOR AND THE CROSS BRACES, as angle/radius sites in the axle frame.
+ * THE CROSS BRACES, as angle/radius sites in the axle frame.
  *
- * Every site has to miss four things at once — the turret plate below, the flywheel rim inboard,
- * the element's outgoing corridor, and the side plate's own clipped profile — and all four are
- * measurements, not opinions. The numbers in each comment are from the design sweep.
+ * ⚠️ **THERE IS ONLY ONE PLACE LEFT FOR THEM, AND IT IS THE FRONT.** The element now rises up the
+ * rotation axis and is carried from θ = 180° round to the lip, so the whole rear and upper half of
+ * the interior is swept by either the element or the hood; below the wheel there is 0.30 in to the
+ * turret plate. What is left is the front quadrant between the wheel's rim and the plate's own
+ * flats, and all three sites sit in it at one radius, 0.200 clear of the rim.
  *
- * ⚠️ **THE −40° BRACE MOVED TO −37°.** At −40° its bottom sat at 5.356 against a turret plate
- * whose top is 5.400: it was 0.044 in INSIDE the plate. −37° puts it at 5.450, clear by 0.050,
- * and its margin inside the plate profile improves from 0.089 to 0.271 at the same time.
- *
- * The +20° brace is the tightest thing near the shot, at 0.133 in of corridor clearance, and it
- * STAYS: the binding part there is the side plate's own flat top, which clears the corridor by
- * 0.150 by definition (`BB_SIDE_PLATE_TOP_Z`). Nothing fixed at that height can do better than
- * 0.150, so 0.133 is not a brace that wandered into the shot — it is a brace sitting as high as
- * the design allows anything to sit.
+ * The +20° site is the one near the shot. Its top lands at 0.933 against a corridor floor of
+ * 1.117 — 0.184 of clearance, where the old +20° brace had 0.133 — and nothing fixed can do
+ * better than the side plate's own flat top, which clears by 0.150 by definition
+ * (`BB_SIDE_PLATE_TOP_Z`). The −44° site is the low one: its bottom lands 0.091 above the plate.
  */
 export const BB_TURRET_BRACE_R = 0.283;
 export const BB_TURRET_BRACES: readonly { th: number; r: number }[] = [
-  { th: -37 * BB_DEG, r: 2.3 }, // under the wheel, front-bottom: 0.050 over the plate, 2.31 of corridor
-  { th: 8 * BB_DEG, r: 2.2 }, //   front, under the corridor: 0.528 of corridor
-  { th: 20 * BB_DEG, r: 2.05 }, // front-top, hard under the corridor: 0.133 — see above
+  { th: 20 * BB_DEG, r: 1.91 }, //  front-top, under the corridor: 0.161
+  { th: -20 * BB_DEG, r: 1.91 }, // front, 0.148 inside the plate profile
+  { th: -44 * BB_DEG, r: 1.91 }, // front-bottom: 0.084 over the turret plate
 ];
-/** the flywheel motor: a 1.42-in can belt-driven off the wheel, in the one pocket that clears the
- * plate (0.334), the wheel (0.473), the corridor (1.080) and the element's run in (1.950).
- * APPROX — the can is an ordinary FTC motor diameter; the site is derived. */
-export const BB_TURRET_MOTOR = { th: -15 * BB_DEG, r: 2.6, bodyR: 0.71 } as const;
+
+/**
+ * THE FLYWHEEL MOTOR — its can, and the gap left between the can's front face and the feed wall
+ * it bolts to.
+ *
+ * ⚠️ **IT IS BEHIND THE HOOD NOW, AND THAT IS OWNER ITEM (a) OF 2026-09-19: "the motor should be
+ * on the other side of the flywheel, behind the hood".** It used to sit at θ = −15°, forward and
+ * under the wheel. Its SITE is not a choice any more — it is the only pocket the machine has
+ * left. The hood sweeps a disc of radius `hoodR + BB_HOOD_T` from θ = 90° to 202°; the element
+ * sweeps the annulus inside that from θ = 90° to 180° and then straight down the rotation axis;
+ * the turret plate is 0.30 in under the wheel. So a motor at the BACK has to clear the hood's
+ * whole swept disc, which puts it at θ = 180° (level with the axle, dead behind it) just outboard
+ * of the feed wall — and its belt has to run OUTBOARD OF A SIDE PLATE, because the hood's own
+ * shell lies across every line from the axle to it.
+ */
+export const BB_TURRET_MOTOR_R = 0.71;
+export const BB_TURRET_MOTOR_GAP = 0.05;
+
+/** side-plate thickness, and how far every cross member stands PROUD of each plate's outer face
+ * (owner, 2026-09-19: "i dont see the bracing" — a standoff the plate can occlude is a standoff
+ * reported as missing). APPROX both: ordinary 1/4-in FTC plate and a washer stack. They are in
+ * the chain rather than in the renderer because the TIE SPAN they add up to is what the turret
+ * plate has to be wide enough to carry. */
+export const BB_SHOOTER_PLATE_T = 0.22;
+export const BB_BRACE_PROUD = 0.15;
+
+/**
+ * ONE HEAD'S DIMENSIONS — everything in the chain that depends on WHICH ELEMENT it throws.
+ *
+ * ⚠️ **OWNER ITEM (d), 2026-09-19: "the size of the shooter should be different for the pollen
+ * shooter and the nectar shooter".** A hooded flywheel is sized by the thing that goes through
+ * it: the hood stands one element DIAMETER off the wheel, the element's centre rides half that,
+ * the channel between the plates is one element WIDE, and the axle sits forward of the rotation
+ * axis by exactly the radius that centre path is drawn at. A 3.6-in NECTAR therefore gets a
+ * visibly bigger head than a 2.8-in POLLEN, and so does its muzzle: 10.035 in at rest against
+ * 9.635, which moves the arcs it solves.
+ *
+ * `bbTurretFor` (`mechs.ts`) is what decides which one a shot leaves from — turret 0 is the
+ * POLLEN exit on every build, turret 1 is the DOUBLE turret's NECTAR exit and exists nowhere
+ * else — so `which` is all a caller ever needs to pass.
+ */
+export interface BbHeadDims {
+  /** the element this head is built around (in). */
+  readonly elemR: number;
+  /** the hood's INNER radius about the axle: wheel + one element diameter, less the compression. */
+  readonly hoodR: number;
+  /** the radius the element's CENTRE travels at — the one that sets the muzzle. */
+  readonly pathR: number;
+  /** how far FORWARD of the turret's rotation axis the flywheel axle sits. Equal to `pathR`, so
+   *  the element pinches on the axis it came up. */
+  readonly axleX: number;
+  /** the clear width between the two side plates, one element wide plus a working clearance. */
+  readonly plateGap: number;
+  /** the feed wall's FRONT face, as a radius from the axle (the hood's swept disc plus slide). */
+  readonly wallR: number;
+  /** the flywheel motor's axis, as a radius from the axle, at θ = 180° — dead behind the wheel,
+   *  level with it, and outboard of everything the hood sweeps. */
+  readonly motorR: number;
+  /** what every member that ties the two side plates together spans: the channel, both plate
+   *  thicknesses and the proud ends. */
+  readonly tieSpan: number;
+  /** the turret plate, in the TURRET frame — a rounded rectangle, not a disc. It reaches from
+   *  behind the motor mount to just past the wheel and is one tie span plus a rim wide, which is
+   *  the shape of the thing standing on it; a disc big enough to do the same job would be 8.4 in
+   *  across on a 14.5-in robot and would sweep further than the shooter itself at some yaw. */
+  readonly plateBackX: number;
+  readonly plateFrontX: number;
+  readonly plateHalfW: number;
+  /** the plate's feed slot: a rounded rectangle about the rotation axis, in the TURRET frame. */
+  readonly slotBackX: number;
+  readonly slotFrontX: number;
+  readonly slotHalfW: number;
+  /** the head's own fore-aft extent in the TURRET frame — the motor's rear face and the side
+   *  plate's nose. What a mount has to find room for. */
+  readonly backX: number;
+  readonly frontX: number;
+}
+
+function bbHeadDims(elemR: number): BbHeadDims {
+  const hoodR = BB_FLYWHEEL_R + elemR * 2 - BB_HOOD_COMPRESSION;
+  const pathR = hoodR - elemR;
+  const axleX = pathR;
+  const wallR = hoodR + BB_HOOD_T + BB_FEED_SLIDE;
+  const motorR = wallR + BB_FEED_WALL_T + BB_TURRET_MOTOR_GAP + BB_TURRET_MOTOR_R;
+  const backX = axleX - motorR - BB_TURRET_MOTOR_R;
+  const plateGap = elemR * 2 + 0.3;
+  const tieSpan = plateGap + 2 * BB_SHOOTER_PLATE_T + 2 * BB_BRACE_PROUD;
+  return {
+    elemR,
+    hoodR,
+    pathR,
+    axleX,
+    plateGap,
+    wallR,
+    motorR,
+    tieSpan,
+    // it carries the motor's mount, the feed wall and the whole wheel's footprint; only the side
+    // plates' NOSE cantilevers past it, and the plate's own rounded corner stays inside that nose
+    // so the widest thing on a slewing head is the shooter and not its turntable
+    plateBackX: backX - 0.15,
+    plateFrontX: axleX + BB_FLYWHEEL_R + 0.15,
+    plateHalfW: tieSpan / 2 + 0.2,
+    slotBackX: axleX - wallR, // = −(elemR + BB_HOOD_T + BB_FEED_SLIDE): the wall's own front face
+    slotFrontX: elemR + 0.25,
+    slotHalfW: elemR + 0.25,
+    backX,
+    frontX: axleX + BB_SIDE_PLATE_FRONT_X,
+  };
+}
+
+/** the POLLEN head — turret 0 on every turreted build. */
+export const BB_HEAD_POLLEN = bbHeadDims(BB_POLLEN_R);
+/** the NECTAR head — turret 1, which only a DOUBLE turret has. */
+export const BB_HEAD_NECTAR = bbHeadDims(BB_NECTAR_R);
+/** the head turret `which` is built to. */
+export function bbHead(which: 0 | 1): BbHeadDims {
+  return which === 1 ? BB_HEAD_NECTAR : BB_HEAD_POLLEN;
+}
+
+/** the POLLEN head's channel, in inches — the 2D sprite's, and the one number the rest of the
+ * app means when it says "the launcher's plate gap". The 3D scene reads `BbHeadDims.plateGap`
+ * per head instead, because a NECTAR channel is 0.8 in wider. */
+export const BB_LAUNCH_PLATE_GAP = BB_HEAD_POLLEN.plateGap;
+
+/** the hood's inner radius and the element's path radius, for the POLLEN head. Named exports
+ * because the 2D sprite, the smoke lanes and the docs all speak of "the" hood radius, and a
+ * single turret is always the POLLEN head. */
+export const BB_HOOD_R = BB_HEAD_POLLEN.hoodR; // 3.91732
+export const BB_HOOD_PATH_R = BB_HEAD_POLLEN.pathR; // 2.51732
 
 /**
  * how many fixed-point passes `bbTurretSolution` makes over the pitch (see `bbMuzzleLocal`).
@@ -1229,11 +1351,15 @@ export const BB_TURRET_MOTOR = { th: -15 * BB_DEG, r: 2.6, bodyR: 0.71 } as cons
  */
 export const BB_TURRET_SOLVE_PASSES = 4;
 /** the mass floor a DOUBLE turret's second turret assembly adds (lb on the chassis mass FLOOR).
- * Its two turrets share one feed and one cadence clock (`BB_FIRE_INTERVAL`), so there is no
- * throughput bonus — the second turret is what lets it launch NECTAR, not a faster stream. */
+ * Its two turrets share one hopper and one cadence BEAT (`BB_FIRE_INTERVAL`), and since
+ * 2026-09-19 both fire on that beat (owner item 5) — so a double CAN put two elements out where
+ * a single puts one, when it is holding one of each kind. It is still not a faster stream of
+ * POLLEN: turret 0's own rate is unchanged. */
 export const BB_TWIN_MASS_FLOOR = 2.5;
 
-/** shooter cadence (s between shots) — 13 elements/s, shared by both turrets of a double. The turret ACCUMULATES this
+/** shooter cadence (s between shots) — 13 elements/s PER TURRET EXIT. The clock is one beat
+ * shared by both turrets of a double (one `fireReadyAt`, one wire field, one hopper), and every
+ * exit that is loaded and on target releases on it. The turret ACCUMULATES this
  * interval rather than re-anchoring to `world.time`, so the sub-tick remainder carries and
  * the long-run rate averages exactly 13/s instead of tick-quantizing to 12 or 15. APPROX. */
 export const BB_FIRE_INTERVAL = 1 / 13;
@@ -1917,7 +2043,27 @@ export const BB3_NECTAR_MASS_RATIO = 1.6;
  * of the 2D artifact world's `BALL_ROLL_FRICTION` velocity-pass (Rapier's own rolling contact
  * would otherwise let a struck element roll forever), so this is what brings one to rest. */
 export const BB3_ELEMENT_FRICTION = 0.6;
-export const BB3_ELEMENT_RESTITUTION = 0.45;
+/**
+ * ⚠️ **IT IS THE ELEMENT/TILE PAIR NOW, NOT HALF OF IT** (owner report 2026-09-19: "in real life
+ * the balls bounce and disperse a lot more after the hive tips and it hits the field tiles").
+ *
+ * The tiles carry a MULTIPLY rule at the identity (`sim3d/bodies.ts` `TILE_RESTITUTION`), so this
+ * number IS what an element bounces off the floor at, instead of being averaged with a floor
+ * coefficient into `(0.45 + 0.05)/2 = 0.25`. A hard plastic ball on FTC foam is ~0.5–0.6; 0.55 is
+ * the middle of that band. Still APPROX — no element has been dropped on a real tile with an
+ * instrument — but the band is a real one rather than a number sized to a screenshot.
+ *
+ * MEASURED, a staged 8-POLLEN tip, the elements arriving at ~160 in/s off the ~30-in tray:
+ * first rebound 1.0–2.1 in BEFORE, 8.6–11.0 in AFTER, and the spread about the pile's own
+ * centroid went from a 17.8-in cluster to a 33.9-in one — inside the 2D pipeline's own 28–32 in,
+ * which is what keeps a record set on one solve comparable with a record set on the other.
+ *
+ * It is also the element/element coefficient (both sides Average, so `(0.55+0.55)/2`), which was
+ * 0.45 and is part of why a landing pile now scatters instead of pooling. The element/TRAY pair
+ * is UNCHANGED — the tray's `Min` rule outranks Average and still hands back the tray's own 0/0.15,
+ * which is what keeps a shot in the cell.
+ */
+export const BB3_ELEMENT_RESTITUTION = 0.55;
 export const BB3_ELEMENT_ROLL_DAMP = 0.4;
 
 /**

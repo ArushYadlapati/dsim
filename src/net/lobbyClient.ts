@@ -34,6 +34,19 @@ export interface MatchStart {
    * latched `physicsPending`. Measured in a browser on 2026-09-18.
    */
   physics?: Physics;
+  /**
+   * THE MATCH GENERATION (`matchStart.gen`; absent ⇒ 0) — and it is on this type for
+   * EXACTLY the reason `physics` above it is.
+   *
+   * ⚠️ **IT WAS ALWAYS ON THE WIRE AND MISSING FROM THIS TYPE, AND IT COST THE SAME BUG
+   * TWICE OVER.** `App.beginSession` rebuilds this object field by field for the rejoin
+   * record, and a field the type does not name is a field nobody copies — so a rejoin came
+   * back stamped generation 0 while the room was on 1, and `Room.onInput` drops a stale
+   * generation outright. The returning driver's robot did not respond to a single command:
+   * prediction moved it, every snapshot snapped it back. Measured against a local server on
+   * 2026-09-19 (0.000 in of travel with the field absent, 38.7 in with it present).
+   */
+  gen?: number;
   /** ranked rooms only: drives the pre-match ELO intro overlay */
   ranked?: boolean;
   intros?: PlayerIntro[];
