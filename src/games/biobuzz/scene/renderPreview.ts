@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import type { Alliance, RobotSpec } from '../../../types';
 import * as C from '../../../config';
-import { BB_TILE_PITCH } from '../config';
+import { BB_TILE_PITCH, bbDeployedHeightIn } from '../config';
 import {
   GFX_PRESETS,
   effectivePixelRatio,
@@ -384,6 +384,48 @@ export const createRobotPreviewScene: RobotPreviewFactory = (host, options) => {
     return (fitRadius / Math.max(0.05, Math.min(halfV, halfH))) * zoom;
   }
 
+  /**
+   * THE DECLARED HEIGHT, AS A MEASUREMENT — dashed uprights at the four chassis corners and a
+   * dashed rectangle at `heightIn`. BUILDER ONLY.
+   *
+   * ⚠️ It is deliberately not hardware and it is deliberately not in `buildRobotGroup`. The first
+   * answer to "robot is way too tall for no apparent reason" put a solid two-post mast at the
+   * declared height on the robot itself, which is the same complaint in a thinner shape. A robot's
+   * visual height is whatever its mechanisms reach; `heightIn` is a COLLIDER extent (R105.A's
+   * sizing volume), so the one place it is shown is the panel where a player is dragging the
+   * dial, drawn as a dashed envelope nobody could mistake for a part. The match view shows
+   * nothing. `bbDeployedHeightIn` is the same resolver the rule reads, so the Stowed toggle —
+   * which hands this scene a spec whose `heightIn` IS the stow height — moves the envelope free.
+   */
+  function buildHeightEnvelope(spec: RobotSpec): THREE.LineSegments {
+    const hl = spec.length / 2;
+    const hw = spec.width / 2;
+    const h = bbDeployedHeightIn(spec);
+    const corners: [number, number][] = [
+      [hl, hw],
+      [hl, -hw],
+      [-hl, -hw],
+      [-hl, hw],
+    ];
+    const pts: number[] = [];
+    corners.forEach(([x, y], i) => {
+      pts.push(x, y, 0, x, y, h); // the upright
+      const [nx, ny] = corners[(i + 1) % 4];
+      pts.push(x, y, h, nx, ny, h); // the top rail
+    });
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.Float32BufferAttribute(pts, 3));
+    const line = new THREE.LineSegments(
+      geo,
+      // the scene's own machined-aluminium tone (`ALU` in `renderRobots.ts`) — a WebGL material
+      // colour, which cannot be a CSS token
+      new THREE.LineDashedMaterial({ color: '#98a3b2', dashSize: 0.9, gapSize: 0.7, transparent: true, opacity: 0.5 }),
+    );
+    line.name = 'bb-height-envelope';
+    line.computeLineDistances();
+    return line;
+  }
+
   function rebuild(spec: RobotSpec): void {
     if (group) {
       scene.remove(group);
@@ -395,6 +437,10 @@ export const createRobotPreviewScene: RobotPreviewFactory = (host, options) => {
     // ⚠️ id 1: the sign panel's texture is cached per (id, alliance) and a preview has no slot
     // number, so it borrows the first rather than minting a cache entry per saved robot.
     group = buildRobotGroup(spec, 1, alliance);
+    // the measurement envelope rides ALONG with the group rather than inside the generator, so
+    // it is framed by the same `Box3`, removed by the same `scene.remove` and freed by the same
+    // `disposeRobotGroup` walk (its geometry and material are this preview's, not shared caches)
+    group.add(buildHeightEnvelope(spec));
     scene.add(group);
     measure(group);
     tuneMaterials();

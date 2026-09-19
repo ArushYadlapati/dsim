@@ -677,6 +677,80 @@ export const BB_INTAKES: Record<BbIntakeStyle, BbIntakeGeom> = {
 };
 export const BB_DEFAULT_INTAKE: BbIntakeStyle = 'sweeper';
 
+/**
+ * ⚠️ **THE ONE INTAKE REACH** — how far past the frame the roller line sits, in inches.
+ *
+ * Every BIOBUZZ reader of "how far does the sweeper stick out" goes through this: `bbMouths`
+ * (the capture area AND what both renderers draw), `bbFootprint` (the collision extent),
+ * `bbRobotSolids` (the side plates a POLLEN meets) and the intake model in `bbIntakeAct`.
+ * It is deliberately the SHARED preset's own number — 3.0 / 3.5 / 5.0 in for sloped / vector /
+ * triangle, which is the 3–5 in an over-bumper intake really reaches — because
+ * `footprintExtents` (`src/sim/field.ts`) grows the hitbox from that same preset, and a BIOBUZZ
+ * number here would put the drawn roller and the collider an inch apart.
+ *
+ * Naming it anyway is the point: four files used to spell `INTAKE_PRESETS[spec.intake].reach`
+ * independently, which is exactly how the drawn mouth and the capture zone drift.
+ */
+export function bbIntakeReach(spec: Pick<RobotSpec, 'intake'>): number {
+  return INTAKE_PRESETS[spec.intake].reach;
+}
+
+/**
+ * THE ROLLER MODEL — what the intake does to a loose element, rather than which rect swallows
+ * one. Read only by `bbIntakeAct` (`robot.ts`), which is the single implementation for BOTH
+ * physics backends.
+ *
+ * ⚠️ NONE OF THESE IS A GROUND-POLLEN PHYSICS CONSTANT (`docs/biobuzz-contract.md` §1). They
+ * describe HARDWARE — how fast a roller surface moves, how wide its feed throat is, how many
+ * elements a minute it can pass — the same class as `BB_INTAKES`' own geometry, and the same
+ * class DECODE keeps in `INTAKE_PRESETS.mouth`. Friction, restitution, rest speed and mass
+ * still belong to the shared solve, and nothing here touches an element's POSITION: the pull is
+ * a VELOCITY contribution written before the solve (2D) or before the next sync (3D), exactly
+ * as DECODE's `intakeSuction` is, and the solve is still the only writer of where a POLLEN is.
+ *
+ * All APPROX — there is no published intake in the manual to measure.
+ */
+/** roller surface speed (in/s): how fast the rollers walk an element they have hold of toward
+ * the throat. Above the ~40 in/s a robot drives at, so a robot driving INTO a pile still draws
+ * elements in rather than plowing them; well under a launch speed, so nothing is flung. */
+export const BB_INTAKE_DRAW_IN = 52;
+/** how much of the draw-in goes into CENTRING an off-centre element, as a fraction of the
+ * inboard pull. A full-width sweeper takes an element mostly straight back over the bumper; the
+ * compliant wheels' funnel is a secondary effect, not the main one. */
+export const BB_INTAKE_CENTRE_FRAC = 0.5;
+/** the FEED THROAT, as a fraction of the mouth's lateral half-span. An element has to be drawn
+ * into this band to be swallowed — everything else is the funnel's job, and it costs TIME. */
+export const BB_INTAKE_THROAT_FRAC = 0.72;
+/** how far past the roller line an element's CENTRE may be (on top of its own radius) and still
+ * count as touching the rollers. A contact tolerance, not extra reach: in 3D the chassis
+ * collider is `robotExtents` — the roller line itself — so an element resting on it sits within
+ * a hair of the rect bound and a strict test missed it entirely (measured: 0/1 at the mouth's
+ * lateral edge, and 35–70 ticks where 2D took 15). */
+export const BB_INTAKE_LIP = 0.35;
+/** how far INBOARD of the frame face an element must have been drawn to be swallowed — the
+ * throat depth. With `BB_INTAKE_DRAW_IN` this is what makes a capture a SHORT TRANSIT (~3–6
+ * ticks from the roller line) instead of a teleport out of the whole mouth rect. */
+export const BB_INTAKE_SEAT = 1.1;
+/** seconds per element through the feed: `MIN` dead centre on the roller, `MAX` at its lateral
+ * edge or on a wall grab. One real FTC intake passes an element every 0.15–0.3 s. */
+export const BB_INTAKE_PERIOD_MIN = 0.15;
+export const BB_INTAKE_PERIOD_MAX = 0.3;
+/** inches of roller per FEED LANE. A bar wide enough for two paths into the hopper can take two
+ * elements side by side in one cycle; a narrow one takes one. */
+export const BB_INTAKE_LANE_W = 9;
+/** driving INTO an element helps: the period is divided by up to `1 + BONUS` as the element's
+ * inboard closing speed relative to the robot reaches `CLOSE_REF` in/s. */
+export const BB_INTAKE_CLOSE_REF = 30;
+export const BB_INTAKE_CLOSE_BONUS = 0.6;
+/** an element crossing the mouth SIDEWAYS faster than this (in/s, relative to the robot) is not
+ * gripped at all — the rollers spin under it and it carries on past. */
+export const BB_INTAKE_CROSS_MAX = 80;
+/** wall clearance (in, past the element's own skin) under which an element counts as PINNED and
+ * is taken wherever it lies across the roller, at the slow end of the timing. A funnel cannot
+ * centre something a wall is holding — DECODE learned this as "I can't intake a ball in the
+ * corner anymore" and `INTAKE_WALL_GRAB` is the same rule. */
+export const BB_INTAKE_WALL_GRAB = 1.2;
+
 // ─────────────────────────────────────────────────────────────────────────────
 // ROBOT — launcher geometry (the four archetypes)
 // ─────────────────────────────────────────────────────────────────────────────
@@ -770,6 +844,28 @@ export const BB_HOOD_MAX_DEG = 85;
 /** how long a DUMPER takes to re-arm after a dump (s). APPROX — a tray swinging back down. It is
  * what stops a held fire button re-dumping on every capture. */
 export const BB_DUMP_RELOAD_S = 0.75;
+
+/**
+ * how long a STAGGERED dump waits between elements (s) — the 3D pipeline only, via
+ * `BbShot.perDump` (`robot.ts`). APPROX: a tray pouring, not four balls teleported out on one
+ * tick.
+ *
+ * 2D never reads it, because 2D never sets `perDump`. In 3D the elements are real bodies and
+ * `bbDumpSolution` converges ALL of them on ONE cell-centre point, so a simultaneous dump is a
+ * four-way pile-up in the opening.
+ *
+ * ⚠️ **IT IS MEASURED, AND THE CURVE IS A KNEE, NOT A SLOPE.** Swept on the 28-pose tutorial
+ * grid (`shoot`, BLUE, the Box-Tube dumper, dx 0/3/6/9 in and dy 14..38 in off the cell), with
+ * the birth clearance of `syncElement` already in: 0.05 s → 3/28, 0.1 → 11, 0.2 → 17, **0.3 →
+ * 20**, and 0.35/0.4/0.5/0.7 → 20. So 0.3 is the point at which the previous element is clear of
+ * the opening before the next arrives, and paying more buys nothing but a slower pour. The
+ * dumper's own lob is ~0.67 s in the air, which is why the knee sits where it does.
+ *
+ * A four-element hopper therefore takes 0.9 s to empty. That is a tray tipping, and the re-dump
+ * cost a driver feels is still `BB_DUMP_RELOAD_S` — the stagger only applies while the hopper
+ * still has load.
+ */
+export const BB_DUMP_STAGGER_S = 0.3;
 
 /** the most elements one turret feed can release in a single tick — the burst bound on the
  * accumulated cadence clock (`bbLaunch`). With `BB_FIRE_INTERVAL` above a tick it is normally 1;
@@ -963,6 +1059,27 @@ export const BB_SIZE_STEP = 0.5;
  * grid (17, 16.5) is not knocked a whole step down by float noise. */
 function floorToSizeStep(v: number): number {
   return Math.floor(v / BB_SIZE_STEP + 1e-9) * BB_SIZE_STEP;
+}
+
+/**
+ * A CHASSIS SIZE ON THE SLIDER'S OWN GRID — `v` to the NEAREST `BB_SIZE_STEP`.
+ *
+ * ⚠️ THE 2026-09-13 FIX WAS HALF OF ONE, AND THE OWNER RE-REPORTED IT (2026-09-18). Flooring the
+ * prism-derived LIMITS stopped the coercer from *creating* 16.331227996399747 — but nothing ever
+ * snapped the VALUE, so a robot saved with that width before the fix keeps it forever: the
+ * default build's width ceiling is 17, the clamp has nothing to do, and the builder prints all
+ * fifteen digits. Measured: `coerceBiobuzzSpec({…, width: 16.331227996399747})` returned it
+ * unchanged. Snapping in the coercer is what HEALS a stored spec, and because the coercer is the
+ * one chokepoint every spec passes — localStorage, the wire, `createWorld`, the server's own
+ * pass — the client and the server land on the same number, so `bbSpecKey` still agrees.
+ *
+ * Rounding, not flooring: this is a value a player chose, and the nearest legal dial position is
+ * the honest repair. It is IDEMPOTENT (a grid value rounds to itself) and it cannot leave the
+ * legal range, because every limit `bbSizeLimits` reports is already on this grid (smoke asserts
+ * that separately) and the caller re-clamps anyway.
+ */
+export function bbSnapSize(v: number): number {
+  return Math.round(v / BB_SIZE_STEP) * BB_SIZE_STEP;
 }
 
 /** the resolved envelope: which rectangle of R105.A was picked (`lengthLong` — the 24 runs along
@@ -1376,9 +1493,20 @@ export { BB_DEFAULT_INTAKE_MOUNT };
 /** `RobotSpec.heightIn` floor (in) — well under any real build; a robot has to be tall enough
  * to hold a drivetrain and a hopper at all. */
 export const BB3_HEIGHT_MIN = 12;
-/** `RobotSpec.heightIn` default (in) when absent — a plausible mid-size chassis, and the
- * height the 2D pipeline has always implicitly assumed by never asking. */
-export const BB3_HEIGHT_DEFAULT = 18;
+/**
+ * `RobotSpec.heightIn` default (in) when absent.
+ *
+ * ⚠️ **14, NOT 18** (owner, 2026-09-18, off the 3D robot playtest: "robot is way too tall for no
+ * apparent reason"). 18 was chosen as "a plausible mid-size chassis" before anything drew a robot
+ * in three dimensions, and it happens to be R102's stow cube — but nothing a preset build CARRIES
+ * needs it. The drivetrain is 4.6 in (`renderRobots.ts`), a launcher releases at `BB_LAUNCH_Z0`
+ * = 10, and the tallest mechanism geometry on any preset tops out around 12.1 in. 14 clears the
+ * whole shooter with an inch or two of air, stays legal at stow (`BB3_STOW_MAX` is 18, so a
+ * default build still folds inside the cube by construction) and still drives under the HIVE
+ * (`BB_HIVE_BOTTOM_Z` 31.98). It is the 3D COLLIDER height for a spec that names none, so it
+ * matters to the sim, not to the picture — which is why it is a number here and not a mast.
+ */
+export const BB3_HEIGHT_DEFAULT = 14;
 /** `RobotSpec.heightIn` ceiling (in) — R105.A's 29-in EXPANDED sizing volume: "a 18 in. by 24
  * in. by 29 in. tall sizing volume when fully expanded", where the manual fixes the 29 as the
  * vertical dimension (see `BB_PRISM`'s header for why the other two are not fixed to an axis
@@ -1488,20 +1616,78 @@ export const BB3_ELEMENT_ROLL_DAMP = 0.4;
  * (`BB_LAUNCH_SPEED_MAX` 260) never tunnels a 0.25-in cell wall. */
 export const BB3_CCD_SPEED = 60;
 
+/** how close an element's BOTTOM must be to the tiles (in) to count as rolling ON them —
+ * the floor-contact test `groundRoll3d` applies the shared Coulomb rolling law through. Above
+ * it the element is on structure or in the air and gets no rolling law at all. APPROX: a hair
+ * over the readback rounding and the solver's own resting penetration. */
+export const BB3_ROLL_FLOOR_Z = 0.25;
+
+/**
+ * THE ROLLING DECELERATION `groundRoll3d` ADDS (in/s²) — and it is DELIBERATELY NOT the 2D
+ * pipeline's `BALL_ROLL_FRICTION` (32), because in 3D it is not the whole of the law.
+ *
+ * A 2D ground artifact is solved in a plane with no gravity and no floor, so `stepGroundBall`'s
+ * 32 in/s² IS its entire rolling resistance. A 3D element is a real sphere resting on a real
+ * floor with `BB3_ELEMENT_FRICTION` and `BB3_ELEMENT_ROLL_DAMP` already taking speed out of it
+ * every step; adding 32 on top stopped it in half the distance. Measured roll-out at 20/40/60
+ * in/s — 2D 6.9 / 28.2 / 63.7 in against 3D 3.8 / 15.1 / 33.8 at a deceleration of 32, and
+ * 7.9 / 29.3 / 61.2 at 12, which is inside 15% of 2D across the range. The SIM3D lane asserts
+ * that agreement rather than the constant, so re-tuning Rapier's own element friction or roll
+ * damping fails there rather than silently drifting the two pipelines apart.
+ */
+export const BB3_ROLL_DECEL = 12;
+
 /** an element counts as AT REST below this speed (in/s), for `BB3_REST_TICKS` consecutive
  * ticks — `sim3d/derive.ts`'s cell-membership test. APPROX. */
 export const BB3_REST_SPEED = 2;
 export const BB3_REST_TICKS = 6;
 
-/** ticks an element must sit inside an intake mouth before it is captured (`sim3d/
- * elements3d.ts`) — APPROX, long enough that a fast pass-through does not get swallowed by a
- * single-tick overlap. */
-export const BB3_CAPTURE_TICKS = 3;
+/* `BB3_CAPTURE_TICKS` (a 3-tick consecutive-overlap dwell before a 3D capture) is GONE. The
+ * roller model (`bbIntakeAct`) is shared by both backends now and does that job better and in
+ * both of them: a fast pass-through is refused by `BB_INTAKE_CROSS_MAX` rather than by a dwell,
+ * and the delay before a swallow is the feed cadence plus the transit to the throat. A constant
+ * with no reader is a number documenting an intention nothing implements. */
 
 /** the intake's reach above the tiles (in) — an element whose BOTTOM is below this height,
  * inside a mouth rect, is eligible for capture. APPROX: a sweeper roller sits low enough to
  * catch a resting element and a shallow bounce, not a lobbed one passing overhead. */
 export const BB3_INTAKE_Z = 5;
+
+/**
+ * THE INTAKE MOUTH'S SLOT HEIGHT (in) — how far up the 3D chassis compound's mouth pocket is
+ * OPEN (`chassis3dShapes`, `sim3d/bodies.ts`). One NECTAR diameter, the tallest element there
+ * is, so every element rolls in under the roller bar and nothing else does: a wall, a robot,
+ * the HIVE and a FLOWER all meet the lintel above it at exactly the distance the old
+ * single-cuboid collider put them at.
+ */
+export const BB3_MOUTH_SLOT_Z = 2 * BB_NECTAR_R;
+
+/**
+ * ⚠️ **HOW FAR CLEAR OF A CHASSIS SOLID A FLIGHT BODY IS BORN (in)** — `syncElement`
+ * (`sim3d/engineImpl.ts`), 3D only.
+ *
+ * A launch point is a point on the MECHANISM, and a mechanism is inside the robot. On the default
+ * 15x17 frame with a `frontback` mount, `launchLine` releases a dump at `mountOrigin('back')`
+ * x = −7.50, z = `BB_LAUNCH_Z0` = 10 — which straddles both the frame box (x[−7.50,7.50],
+ * z[0,18]) and the back mouth LINTEL (x[−10.50,−7.50], z[3.60,18.00]). In 2D that is harmless: a
+ * flight element collides with nothing. In 3D it is a body created inside a closed 3-inch pocket,
+ * and the measurement is unambiguous — all four elements of a dump rose ~2 in, jammed, and rode
+ * the chassis at z≈12 without ever entering flight. 0/28 on the tutorial pose grid.
+ *
+ * ⚠️ **SIZED OFF `BB_NECTAR_R`, NOT `BB_POLLEN_R`.** The clearance a body needs is its OWN radius
+ * plus this margin, and the march that finds it has to be able to cross the widest pocket the
+ * biggest element can be born in. A margin cut to the POLLEN radius is one a NECTAR-carrying build
+ * (a twin turret, a Box Tube dumper) sits inside of — the same bug, surviving in exactly the
+ * builds that carry the bigger ball.
+ */
+export const BB3_LAUNCH_CLEAR_SLOP = BB_NECTAR_R / 2;
+
+/** how far `syncElement` will march a newly created FLIGHT body along its own velocity looking
+ * for clear air (in), and the step it marches in. The bound is generous — the deepest pocket on a
+ * legal build is an intake reach plus two NECTAR diameters — and a body that finds no clear point
+ * inside it is left exactly where the release put it rather than teleported somewhere arbitrary. */
+export const BB3_LAUNCH_CLEAR_MAX = 24;
+export const BB3_LAUNCH_CLEAR_STEP = BB_NECTAR_R / 4;
 
 /** the readback rounding (in / rad) every dynamic body's JSON is written at (plan §3.1 step 6)
  * — see `sim3d/math3.ts`'s `round4`. */

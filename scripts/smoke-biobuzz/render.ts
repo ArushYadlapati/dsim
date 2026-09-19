@@ -13,10 +13,36 @@ import { dirname, join, relative, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { moduleFor } from '../../src/games';
 import { hiveCellTarget } from '../../src/games/biobuzz/elements';
-import { bbSolveShot } from '../../src/games/biobuzz/robot';
-import { BB_LAUNCH_Z0 } from '../../src/games/biobuzz/config';
-import { GRAVITY } from '../../src/config';
-import { ARC_MAX, arcBuffer, LANDING, solveLanding } from '../../src/games/biobuzz/scene/renderLanding';
+import { bbAimHeading, bbTurretSolution } from '../../src/games/biobuzz/robot';
+import { bbAimTarget } from '../../src/games/biobuzz/play';
+import { BB_AIM_TOL, BB_CELL_OPEN, BB_HIVE_OPEN_Z, BB_HOOD_DEFAULT_DEG } from '../../src/games/biobuzz/config';
+// -- LANE A (FIELD RENDER) imports, kept in their own block beside lane B's --------------
+import {
+  BB_GARDEN,
+  BB_HALF_X,
+  BB_HALF_Y,
+  BB_LZ,
+  BB_NECTAR_R,
+  BB_TAPE,
+  BB_VIEW_MARGIN,
+} from '../../src/games/biobuzz/config';
+import {
+  BB_BOX_DEPTH,
+  BB_BOX_H,
+  BB_BOX_LEN,
+  BB_BOX_SLOTS,
+  bbNectarBoxRect,
+  bbNectarBoxSlot,
+} from '../../src/games/biobuzz/nectarBox';
+// ── LANE B (ROBOT RENDER) imports — the 3D robot model's own checks, kept in their own block so
+// they are easy to see and easy to move. ───────────────────────────────────────────────────────
+import type { RobotSpec } from '../../src/types';
+import { bbFootprint, bbMouths } from '../../src/games/biobuzz/robot';
+import { BB_LAUNCH_Z0, BB_POLLEN_R, BB3_HEIGHT_DEFAULT, BB3_HEIGHT_MIN } from '../../src/games/biobuzz/config';
+import { BB_DEFAULT_SPEC } from '../../src/games/biobuzz/coerce';
+import { bbCoerceSpec } from '../../src/games/biobuzz/robotConfig';
+import { SHOT, SHOT_ARC_MAX, shotArc, solveShotPath } from '../../src/games/biobuzz/shotPath';
+import { drawBiobuzzShotPath } from '../../src/games/biobuzz/drawShot';
 import { CAMERA_PREFS, getCameraPref } from '../../src/games/biobuzz/graphics/store';
 import {
   GFX_PIXEL_BUDGET,
@@ -48,8 +74,8 @@ import {
 import { BB_ENVIRONMENTS, environmentDef, hdriEnvironments } from '../../src/games/biobuzz/graphics/environments';
 import { THIRD_PARTY } from '../../src/contributors';
 import { Renderer } from '../../src/render/renderer';
-import type { ScoreTarget } from '../../src/games/biobuzz/state';
-import type { Check } from './harness';
+import type { World } from '../../src/types';
+import { mkWorld, type Check } from './harness';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const BIOBUZZ_DIR = join(root, 'src', 'games', 'biobuzz');
@@ -279,103 +305,284 @@ export function renderChecks(check: Check): void {
 
   // ══ DAY 2 ═══════════════════════════════════════════════════════════════════════════════
 
-  // ---- THE RETICLE'S BALLISTICS, IN NUMBERS ----------------------------------------------
+  // ---- THE SHOT PATH (Lane C, owner playtest feedback 2026-09-18 items 5 + 6) -------------
   //
-  // `renderLanding.ts` is a duplicate of `play.ts`'s `bbFlightEnters` integrator, because that
-  // one answers a BOOLEAN and a ring needs a POSITION (see its header). A duplicate that drifts
-  // is invisible on screen — the ring looks equally convincing wherever it is drawn, and a
-  // driver aims by it — so it is checked here against closed-form ballistics and against the
-  // field's own geometry instead.
+  // ⚠️ THIS BLOCK REPLACES THE DAY 2 "RETICLE'S BALLISTICS" CHECKS, and the seven that went are
+  // not a coverage loss — they pinned a LANDING RING that no longer exists, and the integrator
+  // they were guarding against drift is gone too. `scene/renderLanding.ts` carried a COPY of
+  // `play.ts`'s `bbFlightEnters` loop (a boolean cannot be asked for a position), and its own
+  // header said the copy would drift; `bbFlightEnters` now records its arc into a caller-owned
+  // buffer, so there is ONE loop and `src/games/biobuzz/shotPath.ts` is the only predictor. What
+  // is worth checking therefore changed shape: not "where does the ring go" but "is the verdict
+  // right, and does the drawn path end where the element does".
   //
-  // The tolerances are the EULER error the sim itself carries: both loops step at `SIM_DT` with
-  // explicit Euler, so a 45° lob lands ~3% long compared with the exact parabola. That is the
-  // sim's answer, and matching the sim is the whole requirement — a "more accurate" reticle
-  // would be a reticle that disagrees with where the element goes.
+  // THE CONTRACT: a path is produced ONLY for a shot that goes in. Out of range, aimed away,
+  // barrel short of the arc, cell mid-swing ⇒ `false`, and BOTH renderers then draw nothing.
   {
-    /** a target the arc can never reach, so the solve runs to the FLOOR branch. */
-    const noTarget: ScoreTarget = { id: 'none', alliance: null, pos: { x: 1e4, y: 1e4 }, z: 1e4, r: 0 };
+    const cell = hiveCellTarget('blue', 'north');
 
-    check(
-      'reticle: a straight-up shot lands back where it left (floor branch, exact in x/y)',
-      solveLanding(7, -3, 10, 0, 0, 100, noTarget) &&
-        Math.abs(LANDING.x - 7) < 1e-9 &&
-        Math.abs(LANDING.y + 3) < 1e-9 &&
-        LANDING.z === 0,
-      `${LANDING.x.toFixed(3)}, ${LANDING.y.toFixed(3)}, ${LANDING.z.toFixed(3)}`,
-    );
+    /** a blue turret parked at `(x, y)` with its turret and pitch already ON the solution — i.e.
+     * a robot that is lined up and ready, which is the only state a path is ever drawn in.
+     *
+     * ⚠️ A CELL OPENS ALONG ±y, so a shot has to ARRIVE along y (`hiveAccepts` refuses anything
+     * not travelling inboard). Parking the fixture out along +x from the north cell instead was
+     * the first version of these checks and every shot correctly reported NOT MADE. */
+    const aimed = (x: number, y: number): World => {
+      const w = mkWorld('practice', 11);
+      const r = w.robots[0];
+      r.pos.x = x;
+      r.pos.y = y;
+      r.heading = 0.4;
+      w.biobuzz!.hives.blue.up = 'north';
+      w.biobuzz!.hives.blue.tipping = 0;
+      const sol = bbTurretSolution(r, bbAimTarget(w, r), 0)!;
+      r.turretHeading = sol.yaw;
+      r.bbTurretPitch = sol.pitch;
+      r.hopper.push('yellow');
+      return w;
+    };
 
-    const v = 100;
-    const ang = Math.PI / 4;
-    const vh = Math.cos(ang) * v;
-    const vz = Math.sin(ang) * v;
-    const z0 = 6;
-    solveLanding(0, 0, z0, vh, 0, vz, noTarget);
-    const eulerRange = LANDING.x;
-    const exact = (vh * (vz + Math.sqrt(vz * vz + 2 * GRAVITY * z0))) / GRAVITY;
+    // 40 in OUT along +y from the north cell, so the arc comes back down the way the cell opens
+    const w = aimed(cell.pos.x, cell.pos.y + 40);
+    const made = solveShotPath(w, w.robots[0]);
     check(
-      'reticle: a 45° lob lands within 5% of the closed-form range (the sim’s own Euler error)',
-      LANDING.ok && Math.abs(eulerRange - exact) / exact < 0.05,
-      `euler ${eulerRange.toFixed(2)} vs exact ${exact.toFixed(2)}`,
+      'shot path: a lined-up turret in range reports MADE, with a drawable path',
+      made && SHOT.made && SHOT.points >= 2 && SHOT.points <= SHOT_ARC_MAX,
+      `made=${made} points=${SHOT.points} of ${SHOT_ARC_MAX}`,
     );
-    const arcAt = LANDING.arc - 1;
+    // the LAST point is where the element is accepted — inside the cell's opening footprint, at
+    // opening height. This is what ties the drawn line to `hiveAccepts` rather than to a radius
+    // the renderer invented.
+    const k = (SHOT.points - 1) * 3;
+    const endDx = Math.abs(shotArc[k] - cell.pos.x);
+    const endDy = Math.abs(shotArc[k + 1] - cell.pos.y);
+    const endZ = shotArc[k + 2];
     check(
-      'reticle: the arc’s LAST vertex is the landing point, and the count is inside the buffer',
-      LANDING.arc >= 2 &&
-        LANDING.arc <= ARC_MAX &&
-        Math.abs(arcBuffer[arcAt * 3] - LANDING.x) < 1e-6 &&
-        Math.abs(arcBuffer[arcAt * 3 + 2] - LANDING.z) < 1e-6,
-      `arc ${LANDING.arc} of ${ARC_MAX}`,
+      'shot path: it ENDS inside the CELL’s opening footprint, at opening height',
+      endDx <= BB_CELL_OPEN.w / 2 && endDy <= BB_CELL_OPEN.d / 2 && endZ >= BB_HIVE_OPEN_Z[0],
+      `end (${shotArc[k].toFixed(2)}, ${shotArc[k + 1].toFixed(2)}, ${endZ.toFixed(2)}) vs cell (${cell.pos.x.toFixed(2)}, ${cell.pos.y.toFixed(2)}, ${BB_HIVE_OPEN_Z[0]})`,
     );
-
-    solveLanding(0, 0, z0, -vh, 0, vz, noTarget);
     check(
-      'reticle: the mirrored shot lands mirrored (no sign asymmetry in the integrator)',
-      Math.abs(LANDING.x + eulerRange) < 1e-9,
-      LANDING.x.toFixed(4),
-    );
-
-    // THE SHOT THE SIM WOULD TAKE, at the cell it would take it at: `bbSolveShot`'s minimum-speed
-    // pair aimed at a real `hiveCellTarget` has to come down THROUGH that cell's opening plane,
-    // inside its accept radius — this is the check that ties the ring to the game's own aiming.
-    const cell = hiveCellTarget('red', 'north');
-    const d = 60;
-    const sol = bbSolveShot(d, cell.z - BB_LAUNCH_Z0);
-    const hit = solveLanding(
-      cell.pos.x + d,
-      cell.pos.y,
-      BB_LAUNCH_Z0,
-      -Math.cos(sol.angle) * sol.speed,
-      0,
-      Math.sin(sol.angle) * sol.speed,
-      cell,
-    );
-    const miss = Math.hypot(LANDING.x - cell.pos.x, LANDING.y - cell.pos.y);
-    check(
-      'reticle: the sim’s own solved shot lands ON the CELL’s opening plane, inside its radius',
-      hit && LANDING.z === cell.z && miss <= cell.r,
-      `z ${LANDING.z.toFixed(2)} vs ${cell.z.toFixed(2)}, miss ${miss.toFixed(2)} of r ${cell.r}`,
+      'shot path: the FIRST point is one tick out of the muzzle, not at the target',
+      Math.hypot(shotArc[0] - w.robots[0].pos.x, shotArc[1] - w.robots[0].pos.y) < 12,
+      `${shotArc[0].toFixed(2)}, ${shotArc[1].toFixed(2)}`,
     );
 
-    // HALF that speed cannot reach it: the ring has to fall on the FLOOR short of the hive, not
-    // stay pinned to the target. A reticle that always shows the target is not a reticle.
-    const short = solveLanding(
-      cell.pos.x + d,
-      cell.pos.y,
-      BB_LAUNCH_Z0,
-      -Math.cos(sol.angle) * sol.speed * 0.5,
-      0,
-      Math.sin(sol.angle) * sol.speed * 0.5,
-      cell,
-    );
+    // A TURRET STILL SLEWING IS NOT A SHOT. Swing the barrel 40° off its solution and the path has
+    // to vanish — this is item 5, and it is the half that is easy to get wrong, because the arc
+    // still integrates perfectly well, it just does not arrive.
+    const w2 = aimed(cell.pos.x, cell.pos.y + 40);
+    w2.robots[0].turretHeading += 0.7;
     check(
-      'reticle: an under-speed shot falls SHORT, on the floor, not on the target',
-      short && LANDING.z === 0 && LANDING.x > cell.pos.x + 1,
-      `landed x ${LANDING.x.toFixed(2)} (cell x ${cell.pos.x.toFixed(2)}), z ${LANDING.z}`,
+      'shot path: a turret 40° off its solution reports NOT MADE (nothing is drawn)',
+      !solveShotPath(w2, w2.robots[0]) && !SHOT.made && SHOT.points === 0,
+      `points=${SHOT.points}`,
     );
 
+    // THE FAR CORNER: the turret has the range (`reachable`), and the shot still does not arrive —
+    // it crosses the hive axis from the wrong side, so it never comes down INBOARD through the
+    // opening. The verdict is the sim's own `hiveAccepts`, not a distance test, and this is the
+    // case that tells the two apart.
+    const w3 = aimed(-60, -60);
+    const far = solveShotPath(w3, w3.robots[0]);
     check(
-      'reticle: a shot still airborne after four seconds reports NO landing (nothing is drawn)',
-      !solveLanding(0, 0, 10, 0, 0, 900, noTarget) && !LANDING.ok,
+      'shot path: a reachable arc that still misses the opening reports NOT MADE',
+      !far && !SHOT.made,
+      `reachable=${bbTurretSolution(w3.robots[0], bbAimTarget(w3, w3.robots[0]), 0)?.reachable}, made=${far}`,
+    );
+
+    // AND THE CLOSED SIDE: parked between the two cells, the nearer one is the one facing away.
+    const w3b = aimed(cell.pos.x, 5);
+    check(
+      'shot path: from between the cells (the nearer one faces away) reports NOT MADE',
+      !solveShotPath(w3b, w3b.robots[0]) && !SHOT.made,
+    );
+
+    // THE REAL HIVE, NOT AIM ASSIST'S PRETEND-UP COPY: flip the aimed cell DOWN and the same shot
+    // that was made a moment ago is not made any more.
+    const w4 = aimed(cell.pos.x, cell.pos.y + 40);
+    w4.biobuzz!.hives.blue.up = 'south';
+    check(
+      'shot path: the same shot at a cell that is DOWN reports NOT MADE (the REAL hive is read)',
+      !solveShotPath(w4, w4.robots[0]) && !SHOT.made,
+    );
+
+    // ---- THE OTHER MECHANISM: A DUMPER ---------------------------------------------------
+    //
+    // `solveShotPath` has two arms and everything above exercises one of them. A dumper does not
+    // slew: it throws its WHOLE hopper on converging arcs and it turns the CHASSIS to aim, so its
+    // "still lining up" case is a heading outside `BB_AIM_TOL` rather than a barrel off its
+    // solution, and its verdict is EVERY throw landing rather than one. Same three questions as
+    // the turret — made, where the drawn arc ends, where it starts — plus that gate.
+    {
+      /** a blue DUMPER at `(x, y)` with the chassis already ON `bbAimHeading` and three elements
+       * loaded: a dumper that is lined up and ready, the only state a path is drawn in. The arc
+       * drawn for a dump is the MIDDLE throw of the spread. */
+      const dumper = (x: number, y: number): World => {
+        const w = mkWorld('practice', 11, {
+          scoreMode: 'dumper',
+          shooterMount: 'back',
+          bbMech: { launcher: { kind: 'dumper', mount: 'back', hoodDeg: BB_HOOD_DEFAULT_DEG }, lift: null },
+        });
+        const r = w.robots[0];
+        r.pos.x = x;
+        r.pos.y = y;
+        w.biobuzz!.hives.blue.up = 'north';
+        w.biobuzz!.hives.blue.tipping = 0;
+        r.hopper.push('yellow', 'yellow', 'yellow');
+        // a dumper's aim IS its heading — `bbTurretSolution` returns nothing for one
+        r.heading = bbAimHeading(r, bbAimTarget(w, r))!;
+        return w;
+      };
+
+      // 30 in out along +y, inside a dumper's much shorter reach (the turret fixture's 40 is past
+      // it — a lob is not a flywheel)
+      const wd = dumper(cell.pos.x, cell.pos.y + 30);
+      const dMade = solveShotPath(wd, wd.robots[0]);
+      check(
+        'shot path: a lined-up DUMPER in range reports MADE, with a drawable path',
+        dMade && SHOT.made && SHOT.points >= 2 && SHOT.points <= SHOT_ARC_MAX,
+        `made=${dMade} points=${SHOT.points} of ${SHOT_ARC_MAX}`,
+      );
+      const dk = (SHOT.points - 1) * 3;
+      check(
+        'shot path (dumper): it ENDS inside the CELL’s opening footprint, at opening height',
+        Math.abs(shotArc[dk] - cell.pos.x) <= BB_CELL_OPEN.w / 2 &&
+          Math.abs(shotArc[dk + 1] - cell.pos.y) <= BB_CELL_OPEN.d / 2 &&
+          shotArc[dk + 2] >= BB_HIVE_OPEN_Z[0],
+        `end (${shotArc[dk].toFixed(2)}, ${shotArc[dk + 1].toFixed(2)}, ${shotArc[dk + 2].toFixed(2)}) vs cell (${cell.pos.x.toFixed(2)}, ${cell.pos.y.toFixed(2)}, ${BB_HIVE_OPEN_Z[0]})`,
+      );
+      check(
+        'shot path (dumper): the FIRST point is one tick off the LIP, not at the target',
+        Math.hypot(shotArc[0] - wd.robots[0].pos.x, shotArc[1] - wd.robots[0].pos.y) < 12,
+        `${shotArc[0].toFixed(2)}, ${shotArc[1].toFixed(2)}`,
+      );
+
+      // THE HEADING GATE — the dumper's own "still lining up". Stage 5b will not fire a dumper
+      // whose chassis is outside `BB_AIM_TOL` of its aim heading, so a path promised for one
+      // would be a promise about a shot that does not happen. 0.7 rad is well outside 0.14.
+      const wd2 = dumper(cell.pos.x, cell.pos.y + 30);
+      wd2.robots[0].heading += 0.7;
+      check(
+        'shot path: a DUMPER turned off its aim heading reports NOT MADE (nothing is drawn)',
+        !solveShotPath(wd2, wd2.robots[0]) && !SHOT.made && SHOT.points === 0 && 0.7 > BB_AIM_TOL,
+        `points=${SHOT.points}, tol=${BB_AIM_TOL}`,
+      );
+
+      // and the same two negatives the turret has: the REAL hive is read, and range is not the
+      // test — the far corner is a dump that cannot arrive at all.
+      const wd3 = dumper(cell.pos.x, cell.pos.y + 30);
+      wd3.biobuzz!.hives.blue.up = 'south';
+      check(
+        'shot path (dumper): the same dump at a cell that is DOWN reports NOT MADE',
+        !solveShotPath(wd3, wd3.robots[0]) && !SHOT.made,
+      );
+      const wd4 = dumper(-60, -60);
+      check('shot path (dumper): from the far corner, out of a lob’s reach, reports NOT MADE', !solveShotPath(wd4, wd4.robots[0]) && !SHOT.made);
+    }
+
+    // and the buffer is never grown by a solve — the 3D line wraps it ONCE
+    check(
+      'shot path: the arc buffer is exactly SHOT_ARC_MAX points and is never reallocated',
+      shotArc.length === SHOT_ARC_MAX * 3,
+      `${shotArc.length} floats`,
+    );
+
+    // ---- WHAT EACH RENDERER ACTUALLY DRAWS (items 5 + 6) ---------------------------------
+    //
+    // The verdict is checked above; this is the other half of the owner's two rules — NOTHING for
+    // a shot that is not made, and a DOTTED line with no end marker for one that is. The 2D half
+    // is exercised through a stub context (the calls ARE the behaviour); the 3D half is a source
+    // check, because a `three` import is not allowed in this lane.
+    interface Op { op: string; arg?: unknown }
+    const stubCtx = (ops: Op[]): CanvasRenderingContext2D => {
+      const rec = (op: string) => (arg?: unknown) => { ops.push({ op, arg }); };
+      return {
+        save: rec('save'),
+        restore: rec('restore'),
+        beginPath: rec('beginPath'),
+        moveTo: rec('moveTo'),
+        lineTo: rec('lineTo'),
+        setLineDash: rec('setLineDash'),
+        stroke: rec('stroke'),
+        fill: rec('fill'),
+        arc: rec('arc'),
+      } as unknown as CanvasRenderingContext2D;
+    };
+    const up = { x: 0, y: 1 };
+
+    const madeOps: Op[] = [];
+    const wm = aimed(cell.pos.x, cell.pos.y + 40);
+    drawBiobuzzShotPath(stubCtx(madeOps), wm, up, 0);
+    const dash = madeOps.find((o) => o.op === 'setLineDash');
+    check(
+      'shot path (2D): a MADE shot strokes a DOTTED polyline',
+      madeOps.filter((o) => o.op === 'lineTo').length >= 1 &&
+        madeOps.some((o) => o.op === 'stroke') &&
+        Array.isArray(dash?.arg) &&
+        (dash!.arg as number[]).length === 2 &&
+        (dash!.arg as number[])[0] > 0,
+      `lineTo=${madeOps.filter((o) => o.op === 'lineTo').length} dash=${JSON.stringify(dash?.arg)}`,
+    );
+    check(
+      'shot path (2D): ...and NO end marker — the renderer draws no arc and fills nothing',
+      !madeOps.some((o) => o.op === 'arc' || o.op === 'fill'),
+      madeOps.map((o) => o.op).join(','),
+    );
+
+    const missOps: Op[] = [];
+    const wn = aimed(cell.pos.x, cell.pos.y + 40);
+    wn.robots[0].turretHeading += 0.7;
+    drawBiobuzzShotPath(stubCtx(missOps), wn, up, 0);
+    check(
+      'shot path (2D): a shot that is NOT made draws nothing at all',
+      missOps.length === 0,
+      missOps.map((o) => o.op).join(','),
+    );
+
+    const spectatorOps: Op[] = [];
+    drawBiobuzzShotPath(stubCtx(spectatorOps), wm, up, undefined);
+    check('shot path (2D): a spectator (no local robot) draws nothing', spectatorOps.length === 0);
+
+    // comments stripped: both greps below are for words this file's own header NAMES in order to
+    // explain why they are absent
+    const reticleSrc = codeLines(join(SCENE_DIR, 'renderReticle.ts')).join('\n');
+    check(
+      'shot path (3D): the path is a LineDashedMaterial — dotted, the same pattern the 2D map uses',
+      reticleSrc.includes('LineDashedMaterial') && reticleSrc.includes('SHOT_DASH') && reticleSrc.includes('SHOT_GAP'),
+    );
+    check(
+      'shot path (3D): the landing RING is gone, mesh and geometry both (not merely hidden)',
+      !/RingGeometry|CircleGeometry/.test(reticleSrc) && !/\bring\b/i.test(reticleSrc),
+    );
+    check(
+      'shot path (3D): the line wraps shotPath.ts’s own buffer — no per-frame allocation',
+      reticleSrc.includes('new THREE.BufferAttribute(shotArc, 3)') && reticleSrc.includes('setDrawRange'),
+    );
+    check(
+      'shot path (3D): ...and it never calls computeLineDistances(), which reallocates every frame',
+      !reticleSrc.includes('computeLineDistances'),
+    );
+  }
+
+  // ---- THE 3D TURRET'S YAW AND ELEVATION ARE SEPARATE NODES ------------------------------
+  //
+  // ⚠️ THIS SHIPPED, AND IT IS WHAT "THE SHOOTER IS NOT AIMING" LOOKED LIKE (owner playtest
+  // feedback 2026-09-18, item 4). The sync set BOTH `rotation.z` (yaw) and `rotation.y`
+  // (elevation) on ONE node. A `THREE.Euler`'s default order is `XYZ`, which composes as
+  // `Rx·Ry·Rz`, so the elevation was applied about the UN-YAWED y axis: at a turret yaw of 160°
+  // off the chassis and the 80° elevation `bbSolveShot` actually asks for at hive range, the
+  // barrel came out pointing 67.7° BELOW horizontal and 44.5° off in azimuth — through the deck,
+  // while the sim's own turret was dead on target. Measured, both orders, in `three` itself.
+  //
+  // The fix is structural rather than an Euler-order flag: yaw on `bb-turret-head`, elevation on
+  // `bb-turret-pitch` UNDER it, which composes in the only order a real turret can.
+  {
+    const robotsSrc = readFileSync(join(SCENE_DIR, 'renderRobots.ts'), 'utf8');
+    check(
+      'renderRobots.ts aims the 3D turret through SEPARATE yaw and elevation nodes',
+      robotsSrc.includes('turretHeads') && robotsSrc.includes('turretPitches'),
+      'a single node composes yaw and pitch in the wrong order — see this block’s comment',
     );
   }
 
@@ -433,6 +640,7 @@ export function renderChecks(check: Check): void {
   }
 
   graphicsChecks(check, allFiles);
+  hudBandChecks(check);
 }
 
 /**
@@ -894,12 +1102,808 @@ function graphicsChecks(check: Check, allFiles: string[]): void {
       );
     }
 
+    // ══ LANE B — THE ROBOT MODEL (owner playtest 2026-09-18: #9 too tall, #16 the drivetrain,
+    // #10 the launcher, #14 the intake reach) ═════════════════════════════════════════════════
+    //
+    // All four complaints were the same mistake: the COLLIDER was being drawn instead of the
+    // robot. The checks below pin the four statements that stop it coming back. Three are source
+    // greps (this lane has no DOM and may not import `three`); the fourth is real arithmetic over
+    // the sim's own geometry, which is where the intake reach actually lives.
+    {
+      const robotsSrc = readFileSync(join(SCENE_DIR, 'renderRobots.ts'), 'utf8');
+      const robotsCode = codeLines(join(SCENE_DIR, 'renderRobots.ts')).join('\n');
+
+      // ── #9 / #16: A LOW DRIVETRAIN, NOT A FULL-HEIGHT SLAB ───────────────────────────────
+      const plateH = Number(/const BB_PLATE_H = ([\d.]+);/.exec(robotsSrc)?.[1] ?? NaN);
+      check(
+        'the drivetrain has its own height, and it is a drivetrain height',
+        plateH > 3 && plateH < 6 && plateH < BB3_HEIGHT_MIN / 2,
+        String(plateH),
+      );
+      // the slab is gone: nothing extrudes or boxes a solid of `height` any more, and the wheels
+      // no longer scale with it (they used to be `min(2.5, height * 0.25)`)
+      check(
+        '...and nothing builds a solid the height of the robot',
+        !/chassisGeometry\(/.test(robotsCode) && !/height \* 0\.25/.test(robotsCode),
+      );
+      check(
+        'buildWheels reads the SPEC only — a taller robot does not get bigger wheels',
+        /function buildWheels\(spec: RobotSpec\): BbWheels/.test(robotsSrc),
+      );
+      // ⚠️ A ROBOT'S VISUAL HEIGHT IS WHATEVER ITS MECHANISMS REACH (owner, 2026-09-18). The first
+      // answer to #9 carried `heightIn` as an open two-post mast, which is the same complaint in a
+      // thinner shape — a goalpost standing on the deck for no apparent reason. The generator now
+      // reads no height at all, and the ONE place the declared height is shown is the builder
+      // turntable, as a dashed envelope that is visibly a measurement rather than a part.
+      check(
+        'the generator reads no height at all — it cannot draw one',
+        !/heightIn/.test(robotsCode) && !/BB3_HEIGHT_DEFAULT/.test(robotsCode),
+      );
+      // ...AND THE VISUAL STILL FITS INSIDE THE COLLIDER. The tallest thing the generator builds
+      // is the shooter's side plate, whose top is fixed by the muzzle height and the hood chain —
+      // it does not vary with the chassis — so one sum covers every build, and it is checked
+      // against the SHORTEST legal robot rather than against the default. (The built group is at
+      // rest pitch, which is what this measures; a hood ELEVATED past level legitimately swings
+      // above the frame, the same way real hardware does inside R105's expanded volume.)
+      {
+        const num = (name: string): number => Number(new RegExp(`const ${name} = ([\\d.]+);`).exec(robotsSrc)?.[1] ?? NaN);
+        const fw = num('BB_FLYWHEEL_R');
+        const comp = num('BB_HOOD_COMPRESSION');
+        const hoodR = fw + BB_POLLEN_R * 2 - comp;
+        const shooterTop = BB_LAUNCH_Z0 - (hoodR - BB_POLLEN_R) + hoodR + 0.5; // axle z + plate radius
+        check(
+          'the tallest drawn part still fits inside the SHORTEST legal collider',
+          Number.isFinite(shooterTop) && shooterTop <= BB3_HEIGHT_MIN,
+          `${shooterTop.toFixed(2)} in vs ${BB3_HEIGHT_MIN}`,
+        );
+        check(
+          '...and the default height leaves air above it rather than being the reason for it',
+          shooterTop < BB3_HEIGHT_DEFAULT,
+          `${shooterTop.toFixed(2)} in vs ${BB3_HEIGHT_DEFAULT}`,
+        );
+      }
+      {
+        const previewCode = codeLines(join(SCENE_DIR, 'renderPreview.ts')).join('\n');
+        check(
+          'the BUILDER shows it instead, as a dashed envelope off the same resolver the rule reads',
+          previewCode.includes('bbDeployedHeightIn(spec)') &&
+            previewCode.includes('LineDashedMaterial') &&
+            previewCode.includes("line.name = 'bb-height-envelope'"),
+        );
+        check(
+          '...and it is framed, removed and freed with the group rather than by a second path',
+          previewCode.includes('group.add(buildHeightEnvelope(spec));'),
+        );
+      }
+
+      // ── #16: TWO PARALLEL PLATES A SIDE, WHEELS BETWEEN THEM, FOOTPRINT UNCHANGED ────────
+      check(
+        'the OUTER plate face is the frame line, so the footprint is still length x width',
+        robotsCode.includes('const outerY = hw - BB_PLATE_T / 2;') &&
+          robotsCode.includes('const innerY = hw - BB_PLATE_T * 1.5 - BB_PLATE_GAP;'),
+      );
+      check(
+        'the wheels sit in the channel BETWEEN the two plates',
+        robotsCode.includes('const wheelY = spec.width / 2 - BB_PLATE_T - BB_PLATE_GAP / 2;') &&
+          /const BB_PLATE_GAP = BB_WHEEL_W \+ /.test(robotsCode),
+      );
+      check('cross members, a belly pan and a deck — a frame, not a box', /CROSS MEMBERS/.test(robotsSrc) && /BELLY PAN/.test(robotsSrc));
+
+      // ── #10: THE HOODED FLYWHEEL LEAVES WHERE THE SIM SAYS IT DOES ───────────────────────
+      // `bbMuzzleZ` is `BB_LAUNCH_Z0` at every elevation, so the visible exit has to be too. The
+      // yaw node sits AT that height and the pitch node under it pivots about the exit — put the
+      // pivot anywhere else and the picture and the physics agree at one angle only.
+      check(
+        'the turret head is placed at the sim’s own muzzle height',
+        robotsCode.includes('head.position.z = BB_LAUNCH_Z0 - BB_DECK_Z;'),
+      );
+      check(
+        '...and the muzzle is a named node at the pitch pivot',
+        robotsCode.includes("exit.name = 'bb-turret-exit'") && robotsCode.includes('const cz = -BB_HOOD_PATH_R;'),
+      );
+      // the node names are an INTERFACE: the sync, the reticle and any auto-aim rotate these two
+      check(
+        'the yaw and pitch pivots are named groups (bb-turret-head / bb-turret-pitch)',
+        robotsCode.includes("head.name = 'bb-turret-head'") && robotsCode.includes("pitch.name = 'bb-turret-pitch'"),
+      );
+      check(
+        'the hood clears ONE element diameter, read from BB_POLLEN_R rather than typed',
+        /const BB_HOOD_R = BB_FLYWHEEL_R \+ BB_POLLEN_R \* 2 - BB_HOOD_COMPRESSION;/.test(robotsCode),
+      );
+      check('the shooter is an arc hood over a flywheel, not a barrel', /absarc\(0, 0, BB_HOOD_R/.test(robotsCode) && !/TURRET_BARREL[\s\S]{0,80}BoxGeometry\(ring/.test(robotsCode));
+
+      // ── 2026-09-19 OWNER PLAYTEST: THE SIDE PLATE'S OPEN END, AND THE BRACING ─────────────
+      // "The shooter's parallel plates have this sharp corner that looks ugly and serves no
+      // purpose. The front should be like flat or something and there should be bracing between
+      // the two plates."
+      //
+      // The band stays a "C" (a full disc hid the mechanism and read as a spool — see the
+      // generator's own header), so what changed is how it ENDS and what ties the two plates
+      // together. Both halves are checked here, and the bracing half is ARITHMETIC over the
+      // sim's own element dimensions rather than a grep, because the one thing a standoff may
+      // not do is stand in the element's way.
+      {
+        const num = (name: string): number => Number(new RegExp(`const ${name} = ([\\d.]+);`).exec(robotsSrc)?.[1] ?? NaN);
+        const flywheelR = num('BB_FLYWHEEL_R');
+        const hoodR = flywheelR + BB_POLLEN_R * 2 - num('BB_HOOD_COMPRESSION');
+        const pathR = hoodR - BB_POLLEN_R;
+        const wrap = num('BB_HOOD_WRAP');
+        const thExit = Math.PI / 2;
+        const thFeed = thExit + wrap;
+        const rIn = flywheelR * 0.52;
+        const rOut = hoodR + 0.5; // `BB_PLATE_R_OUT`
+        const endR = num('BB_PLATE_END_R');
+
+        // ── THE END FACE. A fillet at the outer corner and a straight radial edge inboard of
+        // it: a FLAT, SQUARE end, not a taper to a point. The old bare `absarc`-to-`absarc`
+        // sector is what produced the corner, so its exact form is asserted GONE.
+        check(
+          'the side plate ends in a square face with a radiused outer corner',
+          robotsCode.includes('band.lineTo(cx(rIn, th1), cy(rIn, th1));') &&
+            robotsCode.includes('const dth = BB_PLATE_END_R / rOut;') &&
+            /band\.quadraticCurveTo\(cx\(rOut, th1\)/.test(robotsCode),
+        );
+        check(
+          '...and the bare radial cut that made the corner is gone',
+          !/band\.absarc\(0, 0, rOut, thExit - 0\.5, thFeed \+ 0\.55, false\);/.test(robotsCode),
+        );
+        // THE OPENING SURVIVES. The band is still a "C" and still leaves the FRONT-BOTTOM
+        // QUADRANT open, which is the constraint the generator's header sets — a full disc hid
+        // the mechanism. The fillet only ever removes material; the TAIL behind the feed did
+        // grow, because that is the one sector with plate and no element in it and the bracing
+        // has to bolt to something. So this is arithmetic on the open sector, not a grep for
+        // two literals: what matters is the quadrant, not the number that produces it.
+        const th0 = thExit - 0.5;
+        const th1 = thFeed + num('BB_PLATE_TAIL');
+        const openFrom = ((th1 % (Math.PI * 2)) + Math.PI * 2) % (Math.PI * 2); // where the plate ends
+        const openTo = th0 + Math.PI * 2; // ...and where it starts again
+        check(
+          'the band is still a C, not a disc',
+          robotsCode.includes('const th0 = thExit - 0.5;') && openTo - openFrom > Math.PI / 2,
+          `${(((openTo - openFrom) * 180) / Math.PI).toFixed(1)}° open`,
+        );
+        check(
+          '...and the whole FRONT-BOTTOM QUADRANT is inside the opening',
+          openFrom <= (Math.PI * 3) / 2 + 0.02 && openTo >= Math.PI * 2,
+          `open ${((openFrom * 180) / Math.PI).toFixed(1)}°..${((openTo * 180) / Math.PI).toFixed(1)}°`,
+        );
+        // ⚠️ AND IT MUST NOT DIP INTO THE CHASSIS IT STANDS ON (owner, 2026-09-19: "the plate
+        // is meshing with the chassis, the plate should not be going downwards"). Past `thFeed`
+        // the rim's height falls away fast: a 0.55-rad tail put it at 2.75 against a 4.6-in
+        // deck, 1.85 in INSIDE the drivetrain. This is the arithmetic, not a pin on the tail,
+        // because it is the DECK that decides how much tail there is room for.
+        {
+          const axleZ = BB_LAUNCH_Z0 - pathR;
+          let lowest = Infinity;
+          for (let i = 0; i <= 64; i++) {
+            const th = th0 + ((th1 - th0) * i) / 64;
+            lowest = Math.min(lowest, axleZ + Math.sin(th) * rOut);
+          }
+          check(
+            'no part of the side plate hangs below the deck',
+            lowest >= num('BB_PLATE_H'),
+            `lowest rim ${lowest.toFixed(2)} vs deck ${num('BB_PLATE_H')}`,
+          );
+        }
+        check(
+          '...and the end face survives the fillet (the plate is deeper than the corner radius)',
+          Number.isFinite(endR) && endR > 0.2 && endR < (rOut - rIn) / 2,
+          `end radius ${endR} vs plate depth ${(rOut - rIn).toFixed(2)}`,
+        );
+
+        // ── THE BRACING. Ribs strapped over the back of the hood, listed as plain angles so
+        // this lane can do the geometry the generator's comment claims. The element's path is
+        // THREE regions — the WRAP (an annulus of `pathR ± BB_POLLEN_R` over `[thExit, thFeed]`),
+        // the OUTGOING CORRIDOR (the same band of heights running out along +x from the muzzle)
+        // and the FEED APPROACH (the run up the ramp) — and a brace may enter none of them.
+        const braceT = num('BB_BRACE_T');
+        const braceLen = num('BB_BRACE_LEN');
+        const braceRad = rOut + braceT / 2; // the rule `BB_BRACE_RADIUS` is written as
+        const anglesSrc = /const BB_BRACE_ANGLES[^=]*=\s*\[([^\]]*)\];/.exec(robotsSrc)?.[1] ?? '';
+        const sites = [...anglesSrc.matchAll(/-?[\d.]+/g)].map((m) => Number(m[0]));
+        // a conservative disc round each rib, for the distance tests that are not purely radial
+        const eff = Math.hypot(braceLen / 2, braceT / 2);
+        check('the two plates are tied together at all', sites.length >= 3 && braceT > 0 && braceLen > 0, `${sites.length} ribs`);
+        check(
+          '...as ONE merged, cached part rather than a mesh per rib',
+          robotsCode.includes("framePart('shooterBrace'") &&
+            robotsCode.includes('const BB_BRACE_RADIUS = BB_PLATE_R_OUT + BB_BRACE_T / 2;'),
+        );
+        check(
+          '...spanning the WHOLE channel, flush with both plate outer faces',
+          robotsCode.includes('BB_HOOD_W + 0.44') && robotsCode.includes('s * (BB_HOOD_W / 2 + 0.11)'),
+        );
+        // and VISIBLE: a brace buried in the chassis answers the complaint with nothing anyone
+        // can see. The muzzle is at `BB_LAUNCH_Z0`, the axle `pathR` below it, and the deck is
+        // the top of the drivetrain — so every rib has to clear that.
+        const deckZ = num('BB_PLATE_H');
+        for (const th of sites) {
+          const z = BB_LAUNCH_Z0 - pathR + Math.sin(th) * braceRad;
+          check(`brace @${th}rad: stands above the deck, where it can be seen`, z - eff > deckZ, `z ${z.toFixed(2)} vs deck ${deckZ}`);
+        }
+        // the FEED APPROACH, as a ray: the element runs up the ramp into the wrap's far end, so
+        // the ray starts at the path's own feed point and heads back down the ramp. The ramp's
+        // tilt is read from the generator rather than assumed (`rotation.y = -a` maps the box's
+        // long axis to `(cos a, sin a)` in this x–z frame).
+        const rampTilt = Number(/ramp\.rotation\.y = -([\d.]+);/.exec(robotsCode)?.[1] ?? NaN);
+        const feed = { x: Math.cos(thFeed) * pathR, z: Math.sin(thFeed) * pathR };
+        const feedDir = { x: -Math.cos(rampTilt), z: -Math.sin(rampTilt) };
+        check('the feed ramp’s tilt is readable, so the approach ray is the drawn one', Number.isFinite(rampTilt), `${rampTilt}`);
+
+        for (const th of sites) {
+          const label = `brace @${th}rad`;
+          const r = braceRad;
+          // (a) ⚠️ SEATED ON THE PLATE RIM AND PROUD OF IT, not buried inside it. Tucked
+          // under `rOut` the rib was occluded by the very plate it ties, from every side view —
+          // owner, 2026-09-19: "i dont see the bracing". Its INNER face must touch the rim (so
+          // it is bolted to plate, not hanging in air) and its outer face must clear it (so it
+          // can be seen). RADIAL extent is half the thickness: the rib is a chord, so its
+          // corners are FARTHER from the axle than its inner face, never nearer.
+          check(
+            `${label}: is seated on the plate rim and stands proud of it`,
+            Math.abs(r - braceT / 2 - rOut) < 1e-6 && r + braceT / 2 > rOut,
+            `${(r - braceT / 2).toFixed(2)}..${(r + braceT / 2).toFixed(2)} vs rim ${rOut.toFixed(2)}`,
+          );
+          // ...and ON it ANGULARLY, which is the half that is easy to miss: a site in the
+          // OPENING has no plate to bolt to and the rib floats.
+          const halfAng = braceLen / 2 / r;
+          check(`${label}: ...and lands on plate ANGULARLY (not in the opening)`, th - halfAng > th0 && th + halfAng < th1, `${th} vs [${th0.toFixed(3)}, ${th1.toFixed(3)}]`);
+          // (b) clear of the FLYWHEEL, which spins in the same channel
+          check(`${label}: clears the flywheel`, r - braceT / 2 > flywheelR, `${(r - braceT / 2).toFixed(2)} vs ${flywheelR}`);
+          // (c) outside the WRAP — the sector the element is pinched round. These ribs ARE over
+          // the wrap, so this passes on the RADIAL clearance: outboard of the hood shell.
+          const norm = ((th % (Math.PI * 2)) + Math.PI * 2) % (Math.PI * 2);
+          const inWrap = norm > thExit - halfAng && norm < thFeed + halfAng;
+          const radialClear = r + braceT / 2 < pathR - BB_POLLEN_R || r - braceT / 2 > pathR + BB_POLLEN_R;
+          check(`${label}: outside the element's wrap round the flywheel`, !inWrap || radialClear, `inner face ${(r - braceT / 2).toFixed(2)} vs element outer ${(pathR + BB_POLLEN_R).toFixed(2)}`);
+          // (d) clear of the OUTGOING CORRIDOR — the muzzle fires along +x at `pathR` above the
+          // axle, and an element is `BB_POLLEN_R` fat. This is the one that rules out the
+          // obvious nose standoff at the plate's forward end face.
+          const bx = Math.cos(th) * r;
+          const bz = Math.sin(th) * r;
+          const inCorridor = bx + eff > 0 && Math.abs(bz - pathR) < BB_POLLEN_R + eff;
+          check(`${label}: clear of the muzzle's outgoing corridor`, !inCorridor, `(${bx.toFixed(2)}, ${bz.toFixed(2)}) vs exit z ${pathR.toFixed(2)}`);
+          // (e) clear of the FEED APPROACH — the run up the ramp into the wrap's far end
+          const t = Math.max(0, (bx - feed.x) * feedDir.x + (bz - feed.z) * feedDir.z);
+          const near = { x: feed.x + feedDir.x * t, z: feed.z + feedDir.z * t };
+          const feedGap = Math.hypot(bx - near.x, bz - near.z);
+          check(`${label}: clear of the element's run up the feed ramp`, feedGap > BB_POLLEN_R + eff, `${feedGap.toFixed(2)} in vs ${(BB_POLLEN_R + eff).toFixed(2)}`);
+        }
+      }
+
+      // ── 2026-09-19 OWNER PLAYTEST: "SWERVE IS NOT RENDERED PROPERLY AT ALL" ───────────────
+      // It was one squat cylinder per corner floating at deck height with the wheel left behind
+      // pointing forward — a puck, not a module, and unable to steer. A pod is a group whose
+      // ORIGIN is the contact patch (the steering axis), carrying the wheel, a twin-plate fork,
+      // a kingpin and a toothed slew ring.
+      //
+      // ⚠️ AND NOTHING ABOVE THE RING (owner follow-up, same day: "the motor for swerve does NOT
+      // go on top of the swerve module"). The first pass stood a motor can on the slew ring. A
+      // swerve steering motor lives on the DECK and drives the ring through the belt or gear the
+      // ring is toothed for; the ring is already what says the pod is driven.
+      {
+        check(
+          'a swerve pod is a real assembly: fork + kingpin, slew ring',
+          robotsCode.includes("framePart('swervePod:struct'") &&
+            robotsCode.includes("framePart('swervePod:ring'") &&
+            /TWIN FORK PLATES/.test(robotsSrc) &&
+            /THE KINGPIN/.test(robotsSrc),
+        );
+        check(
+          '...and NOTHING is stood on top of it',
+          !robotsCode.includes("framePart('swervePod:motor'") && !/BB_POD_MOTOR_/.test(robotsCode),
+        );
+        check(
+          '...and the floating deck-height puck is gone',
+          !/BB_DECK_Z \+ 1\.1/.test(robotsCode) && !/CylinderGeometry\(1\.1, 1\.1, 2\.2, 10\)/.test(robotsCode),
+        );
+        // THE POD TURNS ABOUT THE CONTACT PATCH. The group sits at (x, y, 0) and the wheel is at
+        // the group's own origin lifted by its radius, so `rotation.z` is a zero-scrub-radius
+        // steer — put the pivot anywhere else and the wheel sweeps a circle on the floor.
+        check(
+          'the pod pivots about the wheel’s contact patch',
+          robotsCode.includes('pod.position.set(x, sy * wheelY, 0);') &&
+            robotsCode.includes('wheel.position.set(0, 0, BB_WHEEL_R);'),
+        );
+        // ⚠️ THE STEER COMES OUT OF THE SIM, AND NOTHING WAS ADDED TO THE SIM TO FEED IT.
+        // `RobotState.moduleAngles` is a REQUIRED field that has existed since the shared
+        // drivetrain landed — the 2D map has always read it — and the 3D view was simply
+        // ignoring it. Same for `butterflyTank`. If either ever stops being declared there, the
+        // picture is being fed by a field invented for it, and this fails.
+        const typesSrc = readFileSync(join(root, 'src', 'types.ts'), 'utf8');
+        check(
+          'the pod steers off the sim’s own moduleAngles (a pre-existing, required field)',
+          /^\s*moduleAngles: number\[\];$/m.test(typesSrc) &&
+            robotsCode.includes('pods[i].rotation.z = r.moduleAngles[i] ?? 0'),
+        );
+        check(
+          '...in the SAME corner order the 2D map reads it in — [FL, FR, BL, BR]',
+          /FL, FR, BL, BR/.test(robotsSrc) && /moduleAngles/.test(typesSrc),
+        );
+        // the pod still has to fit the collider. With the motor gone the ring's own flange is
+        // the top of it, which is well clear -- the check stays because the NEXT thing anyone
+        // stacks on a pod is what would break it.
+        const num = (name: string): number => Number(new RegExp(`const ${name} = ([\\d.]+);`).exec(robotsSrc)?.[1] ?? NaN);
+        const podTop =
+          num('BB_PLATE_H') + 0.3 + num('BB_POD_RING_H') + 0.16;
+        check(
+          'the whole pod fits inside the SHORTEST legal collider',
+          Number.isFinite(podTop) && podTop < BB3_HEIGHT_MIN,
+          `${podTop.toFixed(2)} in vs ${BB3_HEIGHT_MIN}`,
+        );
+      }
+
+      // ── ALL FIVE DRIVETRAINS, AND THE ONE THAT WAS ACTUALLY WRONG ────────────────────────
+      // `xdrive` and `butterfly` both used to fall through to the mecanum wheel. X-DRIVE was a
+      // BUG: `drawWheels` (the 2D map, shared by all three games) cants its omnis across their
+      // corners so the four read as a diamond, and its header explains why that is the machine
+      // this sim models — a radial X could never yaw. Drawing them pointing forward in 3D made
+      // the same robot a different machine depending on which view key was pressed, so the 3D
+      // cant is now THE SAME EXPRESSION. BUTTERFLY was only under-drawn, and now carries both
+      // sets with `butterflyTank` deciding which is down.
+      {
+        const wheelsSrc = readFileSync(join(root, 'src', 'render', 'drawRobot.ts'), 'utf8');
+        check(
+          'the 2D map still cants its X-drive omnis across their corners',
+          /px \* py >= 0 \? -Math\.PI \/ 4 : Math\.PI \/ 4/.test(wheelsSrc),
+        );
+        check(
+          '...and the 3D view cants them by the same rule, not straight ahead',
+          /x \* sy >= 0 \? -Math\.PI \/ 4 : Math\.PI \/ 4/.test(robotsCode),
+        );
+        check(
+          'a mecanum roller and an omni roller are drawn as different wheels (45° vs 90°)',
+          robotsCode.includes("getRollerMat(dt === 'xdrive' ? 'omni' : 'mecanum')") &&
+            robotsCode.includes("kind === 'mecanum' ? i - size : i"),
+        );
+        const typesSrc = readFileSync(join(root, 'src', 'types.ts'), 'utf8');
+        check(
+          'butterfly draws BOTH sets and drops the one the sim says is down',
+          /^\s*butterflyTank: boolean;$/m.test(typesSrc) &&
+            robotsCode.includes("if (dt === 'butterfly')") &&
+            robotsCode.includes('r.butterflyTank ? 0 : BB_BUTTERFLY_LIFT'),
+        );
+        // and none of the five is left sharing another's drawing
+        for (const dt of ['mecanum', 'tank', 'swerve', 'xdrive', 'butterfly'] as const) {
+          check(`buildWheels branches on ${dt}`, new RegExp(`'${dt}'`).test(robotsCode), dt);
+        }
+      }
+
+      // ── #14: THE INTAKE REACHES THE SIM'S OWN FOOTPRINT ─────────────────────────────────
+      // Read from `bbMouths`, never a literal and never a copy of the reach constant: Lane D may
+      // lengthen the reach and the model has to follow it without an edit here.
+      check(
+        'the 3D intake is built from bbMouths/bbMouthFrame, the capture rects themselves',
+        robotsCode.includes('for (const m of bbMouths(spec))') && robotsCode.includes('bbMouthFrame(m, hl, hw)'),
+      );
+      check(
+        '...and renderRobots names no intake constant of its own',
+        !/INTAKE_PRESETS/.test(robotsCode) && !/\.reach/.test(robotsCode),
+      );
+      // ARITHMETIC, not a grep: for every mount, the mouth the model is built in reaches exactly
+      // the collision extent of that edge, and reaches PAST the frame — which is the complaint.
+      {
+        const mk = (over: Partial<RobotSpec>): RobotSpec => bbCoerceSpec({ ...BB_DEFAULT_SPEC, ...over } as RobotSpec);
+        for (const mount of ['front', 'back', 'side', 'frontback'] as const) {
+          const spec = mk({ intakeMount: mount });
+          const fx = bbFootprint(spec);
+          const hl = spec.length / 2;
+          const hw = spec.width / 2;
+          for (const m of bbMouths(spec)) {
+            const outer =
+              m.edge === 'front' ? m.x1 : m.edge === 'back' ? -m.x0 : m.edge === 'left' ? m.y1 : -m.y0;
+            const want = m.edge === 'front' ? fx.front : m.edge === 'back' ? fx.rear : fx.half;
+            const frame = m.edge === 'front' || m.edge === 'back' ? hl : hw;
+            check(
+              `intake ${mount}/${m.edge}: the drawn mouth reaches the collision extent`,
+              Math.abs(outer - want) < 1e-9,
+              `${outer.toFixed(3)} vs ${want.toFixed(3)}`,
+            );
+            check(
+              `intake ${mount}/${m.edge}: and it reaches PAST the frame (else nothing sticks out)`,
+              outer - frame > 1,
+              `${(outer - frame).toFixed(3)} in`,
+            );
+          }
+        }
+      }
+      // the 2D sprite is built from the same rects and puts its outer roller just inside the tip,
+      // so the two views cannot under-draw the reach differently
+      const spriteSrc = readFileSync(join(BIOBUZZ_DIR, 'drawRobot.ts'), 'utf8');
+      check(
+        'the 2D sprite draws the same mouths, out to the same tip',
+        spriteSrc.includes('for (const m of bbMouths(r.spec))') && spriteSrc.includes('const outer = d - 0.95;'),
+      );
+      check('the muzzle height both renderers use is the sim’s release height', BB_LAUNCH_Z0 > 0 && robotsCode.includes('BB_LAUNCH_Z0'));
+
+      // ── #15: THE DRAWN MUZZLE ADDS UP TO THE SIM'S RELEASE HEIGHT ──────────────────────
+      // `renderRobots.ts` exports `BB_DRIVETRAIN_H` and `BB_SHOOTER_MUZZLE_Z` so anything that
+      // has to reason about the deck or the exit can do it without importing `three`; the
+      // invariant the exports CLAIM is that the drawn muzzle sits at `BB_LAUNCH_Z0`, and that
+      // is a chain of three statements, not one constant. So walk the chain and add it up —
+      // a `three` import is not allowed in this lane, so the heights come out of the source and
+      // the total is compared against the sim's own number, imported for real.
+      {
+        const num = (re: RegExp): number => {
+          const m = re.exec(robotsCode);
+          return m ? Number(m[1]) : NaN;
+        };
+        const plateH = num(/const BB_PLATE_H = ([\d.]+);/);
+        check(
+          'the deck is the top of the drivetrain, and BB_DRIVETRAIN_H is that number',
+          plateH > 0 && /const BB_DECK_Z = BB_PLATE_H;/.test(robotsCode) && /export const BB_DRIVETRAIN_H = BB_PLATE_H;/.test(robotsCode),
+          `BB_PLATE_H=${plateH}`,
+        );
+        // the three links: turret bolted to the DECK, yaw head lifted to the muzzle height, and
+        // the `bb-turret-exit` empty left at the head's LOCAL ORIGIN (never re-positioned — that
+        // is what makes the head's own z the muzzle's z).
+        const exitAt = robotsCode.indexOf("exit.name = 'bb-turret-exit'");
+        const untouched = exitAt > 0 && !/exit\.position/.test(robotsCode.slice(exitAt, robotsCode.indexOf('head.add(exit)', exitAt)));
+        const drawn = /group\.position\.set\(local\.x, local\.y, BB_DECK_Z\);/.test(robotsCode) && /head\.position\.z = BB_LAUNCH_Z0 - BB_DECK_Z;/.test(robotsCode)
+          ? plateH + (BB_LAUNCH_Z0 - plateH)
+          : NaN;
+        check(
+          'the DRAWN muzzle (deck + head lift + exit at the head origin) IS BB_LAUNCH_Z0',
+          untouched && Math.abs(drawn - BB_LAUNCH_Z0) < 1e-9,
+          `drawn ${drawn} vs BB_LAUNCH_Z0 ${BB_LAUNCH_Z0}, exit-at-origin=${untouched}`,
+        );
+        check(
+          '...and that is what BB_SHOOTER_MUZZLE_Z exports (the exports are not a second source of truth)',
+          /export const BB_SHOOTER_MUZZLE_Z = BB_LAUNCH_Z0;/.test(robotsCode),
+        );
+      }
+    }
+
     const statsSrc = readFileSync(join(SCENE_DIR, 'renderStats.ts'), 'utf8');
     // the ATTRIBUTE, not the word: the file's own header explains at length why it does not
     // carry one, and a grep for the bare string finds that explanation
     check(
       'the overlay is NOT a HUD band (a diagnostic must not reframe the shot)',
       !/setAttribute\(\s*['"]data-hud-band/.test(statsSrc),
+    );
+  }
+
+  // == LANE A (FIELD RENDER) -- the 2026-09-18 playtest's field items =======================
+  //
+  // Source + data checks only: this lane has no DOM and no `three`, and every one of these
+  // guards a thing that is invisible until somebody looks at the field from the right angle.
+  {
+    const glbSrc = readFileSync(join(SCENE_DIR, 'renderFieldGlb.ts'), 'utf8');
+    const fieldSrc = readFileSync(join(SCENE_DIR, 'renderField.ts'), 'utf8');
+    const drawSrc = readFileSync(join(BIOBUZZ_DIR, 'drawField.ts'), 'utf8');
+
+    // ITEM 1 -- CLEAR PLASTIC. The STEP paints clear polycarbonate the same placeholder white it
+    // paints solid white parts, so the decision is a per-(node, material) rule in the loader. The
+    // regression to catch is someone keying it on the material name alone: `plastic#e6e6e6` is a
+    // clear CELL skin in a tray node and an opaque ACM logo board in the shared frame, and one
+    // shared cache entry would hand both the same answer.
+    check(
+      'the clear-plastic rule is keyed on the NODE as well as the material (one glTF material name, two answers)',
+      /function isClearPanel\([^)]*family: NodeFamily\)/.test(glbSrc) && glbSrc.includes("family === 'hive_tray'"),
+    );
+    check('the material cache key carries the node family', glbSrc.includes('@${here}'));
+    // THE 2026-09-19 RE-TUNE. A clear panel is what the LAYERS sum to, so `FrontSide` is the
+    // policy on BOTH paths — the first pass's `DoubleSide` doubled every surface in a line of
+    // sight and the cell skins read as white boards. Read out of `clearPanelMaterial` ITSELF,
+    // not out of the whole file: both files build opaque-ish decorations (`mat()`, the holding-box
+    // sign) that are legitimately `DoubleSide`, and a file-wide grep cannot tell them apart.
+    const panelMat = (src: string): string => {
+      const at = src.indexOf('function clearPanelMaterial');
+      const end = src.indexOf('\n}', at);
+      return at < 0 || end < 0 ? '' : src.slice(at, end);
+    };
+    for (const [rel, src] of [
+      ['scene/renderFieldGlb.ts', glbSrc],
+      ['scene/renderField.ts', fieldSrc],
+    ] as const) {
+      const body = panelMat(src);
+      // a clear panel is four things, not just a low opacity -- see the policy header
+      check(`${rel}: a clear panel damps the environment map (what made these read as solid white)`, body.includes('CLEAR_ENV_INTENSITY'), rel);
+      check(
+        `${rel}: a clear panel is FrontSide with depthWrite off (the 2026-09-19 re-tune)`,
+        /depthWrite: false/.test(body) && /side: THREE\.FrontSide/.test(body) && !/side: THREE\.DoubleSide/.test(body),
+        rel,
+      );
+    }
+    // THE TWO PATHS AGAINST EACH OTHER, not against a literal: a literal is exactly what went
+    // stale here — the CAD path was re-tuned and the checks kept pinning the rejected number,
+    // so they passed on the old value and failed on the new one. What matters is that a driver
+    // who falls back to the constants path sees the same field.
+    {
+      const num = (src: string, name: string): number => {
+        const m = new RegExp(`const ${name} = ([\\d.]+);`).exec(src);
+        return m ? Number(m[1]) : NaN;
+      };
+      for (const [what, glbName, fieldName] of [
+        ['cell-panel opacity', 'CELL_PANEL_OPACITY', 'CELL_OPACITY'],
+        ['wall-panel opacity', 'WALL_PANEL_OPACITY', 'WALL_OPACITY'],
+        ['clear-panel env intensity', 'CLEAR_ENV_INTENSITY', 'CLEAR_ENV_INTENSITY'],
+      ] as const) {
+        const a = num(glbSrc, glbName);
+        const b = num(fieldSrc, fieldName);
+        check(`the two paths use the same ${what}`, Number.isFinite(a) && a === b, `glb ${a} vs fallback ${b}`);
+      }
+      // and the re-tune's DIRECTION, so nobody walks both files back to the first pass together:
+      // a cell skin is denser than the perimeter, and both are far below the rejected 0.22.
+      const cell = num(glbSrc, 'CELL_PANEL_OPACITY');
+      const wall = num(glbSrc, 'WALL_PANEL_OPACITY');
+      check(
+        'a clear panel is nearly invisible face-on, and a cell skin is the denser of the two',
+        wall > 0 && wall <= 0.12 && cell > wall && cell <= 0.15,
+        `wall ${wall}, cell ${cell}`,
+      );
+    }
+
+    // ITEM 3 -- THE STALE TRAY BRACES. `convert.py` files all eight `10.5in Churro Lite` as
+    // `hive_frame`, but they ride the tray: in `field-colliders.json` they sit at the tray's own
+    // 30-degree capture pose in a mirrored pair, which a static part cannot do. The loader moves
+    // them back onto the tray; these checks prove the CLAIM about the data, so the day the
+    // pipeline files them correctly this fails loudly rather than the reparent quietly doing
+    // nothing.
+    check(
+      'the loader reparents the tray braces onto the tray group',
+      glbSrc.includes('function reparentTrayBraces') && glbSrc.includes('braceTris'),
+    );
+    {
+      const colliders = JSON.parse(readFileSync(join(root, 'public', 'models', 'biobuzz', 'field-colliders.json'), 'utf8')) as {
+        statics: { name: string; points: number[] }[];
+      };
+      const braces = colliders.statics.filter((s) => s.name.includes('churro'));
+      check('the CAD still files the eight tray braces as hive_frame statics (the defect this works around)', braces.length === 8, `${braces.length}`);
+      let inBand = 0;
+      let others = 0;
+      for (const s of colliders.statics) {
+        if (!s.name.startsWith('hive_')) continue;
+        let hit = false;
+        for (let i = 0; i < s.points.length; i += 3) {
+          const y = s.points[i + 1];
+          const z = s.points[i + 2];
+          if (z >= 46 || (Math.abs(y) >= 11.5 && z >= 36)) hit = true;
+        }
+        if (s.name.includes('churro')) {
+          if (hit) inBand++;
+        } else if (hit) others++;
+      }
+      check('all eight braces fall inside the loader selector band', inBand === 8, `${inBand}/8`);
+      check('and no other hive_frame static does (the selector cannot take a leg or a bracket)', others === 0, `${others}`);
+    }
+
+    // ITEM 8 -- THE HUMAN PLAYER'S NECTAR HOLDING BOX. The unlabelled CAD box in the drive team
+    // area is hidden and the STANDARD HOLDING BOX (`am-5706 Artifact Tray`, the same part, at its
+    // own CAD dimensions, drawn the way DECODE draws its human-player box) stands ON THE FLOOR
+    // outside the perimeter instead, reading its count off `world.balls` (the same balls the HUD
+    // counts) rather than storing one. 2026-09-19: it replaced a bespoke shelf on legs at table
+    // height -- "it should use the standard holding box instead of this table thing".
+    //
+    // 2026-09-19, second pass -- the owner's three: the box MOVED clear of the score bar, the 3D
+    // count plate over it is GONE, and the 2D field draws the same box. The dimensions and the
+    // place now live in `src/games/biobuzz/nectarBox.ts` so both renderers read one copy; these
+    // checks are against THAT module's exported geometry, not against a literal in either
+    // renderer, because a literal is what let the two views disagree in the first place.
+    check('the unlabelled CAD `stations` tray is hidden on the GLB path', fieldSrc.includes('fg.stations.visible = false'));
+    check('the NECTAR box reads its count off the world own `stock` balls', /b\.state\.kind === 'stock' && b\.state\.alliance === a/.test(fieldSrc));
+    check('and it is refreshed every frame from `updateBiobuzzField`', fieldSrc.includes('updateNectarBoxes(handles.boxes, world)'));
+    {
+      // the CAD part's own footprint, off `docs/biobuzz/field-cad-audit.md`'s bbox for
+      // `am-5706 Artifact Tray` (71.650, -7.875, -0.589 -> 81.900, 7.875, 2.411). Checked on the
+      // SHARED module's exports, which is what both renderers build from.
+      for (const [name, got, want] of [
+        ['depth', BB_BOX_DEPTH, 10.25],
+        ['length', BB_BOX_LEN, 15.75],
+        ['height', BB_BOX_H, 3],
+      ] as const) {
+        check(`the holding box uses the CAD tray's ${name} (${want} in)`, Math.abs(got - want) < 1e-9, `${got}`);
+      }
+      // ON THE GROUND. The shelf sat at z = 30 on legs; the box's floor slab is half its own
+      // thickness off the tiles and the beads rest on that slab, so nothing floats.
+      check('the holding box floor slab sits ON the tiles', fieldSrc.includes('floorSlab.position.set(cx, cy, BB_BOX_T / 2)'));
+      check('and the nectar rest on the box floor, not at table height', fieldSrc.includes('BB_BOX_T + BB_NECTAR_R'));
+      for (const gone of ['RACK_SHELF_Z', 'RACK_SHELF_T', 'RACK_DEPTH', ':leg', ':lip']) {
+        check(`the shelf-on-legs geometry is gone (${gone})`, !fieldSrc.includes(gone), gone);
+      }
+    }
+
+    // ITEM 8a -- THE 3D "NECTAR LEFT" BILLBOARD IS GONE (owner, 2026-09-19: "Get rid of the
+    // in-game 3d display"). A canvas plate hung over the box and was repainted whenever the
+    // count changed. Deleting the MESH alone would have left a live `CanvasTexture` on the box
+    // handle, which `disposeObject3D` never reaches because it only walks what is still in the
+    // graph -- so the checks are that the plate, its canvas, its texture and the handle field
+    // are all gone, not just that the mesh stopped being added.
+    for (const gone of ['drawBoxSign', 'BOX_SIGN_W', 'BOX_SIGN_H', ':sign']) {
+      check(`the holding box's 3D count plate is gone (${gone})`, !fieldSrc.includes(gone), gone);
+    }
+    {
+      // scoped to the BUILDER, not the file: `buildFloorTexture` legitimately makes a canvas
+      // texture for the tile seam grid, and a file-wide grep cannot tell the two apart.
+      const at = fieldSrc.indexOf('function buildNectarBox(');
+      const body = at < 0 ? '' : fieldSrc.slice(at, fieldSrc.indexOf('function buildNectarBoxes', at));
+      check(
+        'the box builder makes no canvas, no texture and no billboard at all',
+        body.length > 0 && !/canvas|Texture|PlaneGeometry|lookAt/i.test(body),
+      );
+      check(
+        'and `BbNectarBox` is the group and the beads, with nothing left to leak',
+        /export interface BbNectarBox \{[^}]*beads: THREE\.Mesh\[\];\s*\}/.test(fieldSrc) && !/sign/.test(fieldSrc.slice(fieldSrc.indexOf('export interface BbNectarBox'), fieldSrc.indexOf('export interface BbNectarBox') + 400)),
+      );
+    }
+
+    // ITEM 8b -- WHERE IT STANDS. Three things, all of them the reason it moved.
+    {
+      const area = BB_TAPE.allianceArea;
+      for (const a of ['red', 'blue'] as const) {
+        const r = bbNectarBoxRect(a);
+        const outward = Math.min(Math.abs(r.x0), Math.abs(r.x1)); // the edge nearest the wall
+        const far = Math.max(Math.abs(r.x0), Math.abs(r.x1));
+        check(`the ${a} nectar box stands outside the perimeter face`, outward > BB_HALF_X, `${outward.toFixed(2)} > ${BB_HALF_X}`);
+        // (1) IT FITS IN WHAT THE 2D CAMERA SHOWS. `Camera.configure` fits exactly
+        // `halfX + viewMargin`, so a box past that is cut off at the BOTTOM of the driver's 2D
+        // screen -- which is the strip the score bar occupies. This is the check that keeps the
+        // 2D copy honest; nothing else in the renderer can see it.
+        check(
+          `the ${a} nectar box fits inside BB_VIEW_MARGIN, so the 2D view cannot clip it`,
+          far <= BB_HALF_X + BB_VIEW_MARGIN,
+          `${far.toFixed(2)} <= ${BB_HALF_X + BB_VIEW_MARGIN}`,
+        );
+        // (2) IT IS OUTBOARD OF THE DRIVE TEAM AREA, on the DRIVER'S LEFT -- "place the human
+        // player box off to the left side of the drive team box". Driver-left is +y for red and
+        // -y for blue (red's driver stands at x < 0 looking along +x, so the camera's right
+        // vector is -y; blue is the 180-degree rotation of that, NOT the x-mirror). Stated as
+        // "the same side of the centreline as this alliance's own LOADING ZONE", which is a
+        // point-symmetric statement and therefore cannot be got right for one alliance and
+        // wrong for the other.
+        const lzY = (BB_LZ[a].y0 + BB_LZ[a].y1) / 2;
+        const near = Math.sign(lzY) > 0 ? r.y0 : r.y1;
+        const tape = Math.max(...area[a].map((s) => Math.abs(s.y1)));
+        check(`the ${a} nectar box is on its own driver's LEFT`, Math.sign(near) === Math.sign(lzY), `${near.toFixed(2)} vs LZ ${lzY.toFixed(2)}`);
+        check(
+          `the ${a} nectar box is clear of the drive team area (it used to sit in the middle of it)`,
+          Math.abs(near) >= tape,
+          `${Math.abs(near).toFixed(2)} >= ${tape}`,
+        );
+        // and it stays inside the field's own y footprint -- a box past the corner reads as
+        // furniture belonging to nothing.
+        check(
+          `the ${a} nectar box stays within the field's y span`,
+          Math.max(Math.abs(r.y0), Math.abs(r.y1)) <= BB_HALF_Y,
+          `${Math.max(Math.abs(r.y0), Math.abs(r.y1)).toFixed(2)}`,
+        );
+      }
+      // (3) POINT SYMMETRY, not a mirror. Blue's box is red's rotated 180 degrees about the
+      // origin -- which is what puts it on blue's driver's left too.
+      const red = bbNectarBoxRect('red');
+      const blue = bbNectarBoxRect('blue');
+      check(
+        'blue nectar box is the POINT mirror of red (the x-mirror lands on the wrong half)',
+        Math.abs(blue.x0 + red.x1) < 1e-9 && Math.abs(blue.y0 + red.y1) < 1e-9,
+        `${JSON.stringify(blue)} vs ${JSON.stringify(red)}`,
+      );
+      for (const a of ['red', 'blue'] as const) {
+        const r = bbNectarBoxRect(a);
+        for (let i = 0; i < BB_BOX_SLOTS; i++) {
+          const s = bbNectarBoxSlot(a, i);
+          check(
+            `${a} slot ${i} sits inside the tray, a nectar clear of its walls`,
+            s.x - BB_NECTAR_R >= r.x0 && s.x + BB_NECTAR_R <= r.x1 && s.y - BB_NECTAR_R >= r.y0 && s.y + BB_NECTAR_R <= r.y1,
+            `${s.x.toFixed(2)},${s.y.toFixed(2)}`,
+          );
+        }
+      }
+      // the 2 x 3 slot grid is DECODE's, and at this pitch two nectar clear each other on both
+      // axes -- the five `spawn.ts` stages in one row inside a 15.75-in box would overlap.
+      const d = 2 * BB_NECTAR_R;
+      check('the slot pitch clears a nectar across the box depth', BB_BOX_DEPTH / 2 >= d, `${(BB_BOX_DEPTH / 2).toFixed(2)} >= ${d}`);
+      check('and along it', BB_BOX_LEN / 3 >= d, `${(BB_BOX_LEN / 3).toFixed(2)} >= ${d}`);
+      check('six slots hold the five staged nectar', BB_BOX_SLOTS >= 5, `${BB_BOX_SLOTS}`);
+    }
+
+    // ITEM 8c -- THE 2D FIELD DRAWS THE SAME BOX (owner, 2026-09-19: "Add the same andymark box
+    // in the 2d game as well"). SOURCE, because there is no canvas in this lane: what matters is
+    // that it comes from the SHARED module rather than from a second copy of the numbers, and
+    // that it counts the same `stock` balls the 3D box and the HUD count.
+    check(
+      'the 2D field draws the holding box from the shared module',
+      drawSrc.includes("from './nectarBox'") && /bbNectarBoxRect\(a\)/.test(drawSrc),
+    );
+    check('the 2D box draws its beads at the shared slot centres', drawSrc.includes('bbNectarBoxSlot(a, i)'));
+    check('the 2D box counts the same `stock` balls', /b\.state\.kind === 'stock' && b\.state\.alliance === a/.test(drawSrc));
+    check('and it prints no number on the field (nothing here is a letter or a digit)', !drawSrc.includes('NECTAR LEFT'));
+
+    // ITEM 11 -- THE GARDEN'S CORNER. The CAD band stops 0.573in clear of the wall at the
+    // alliance corner while `BB_GARDEN` -- the SCORED zone -- snaps that edge onto it, so the
+    // drawn band stopped short of the corner it is defined to reach.
+    for (const [rel, src] of [
+      ['src/games/biobuzz/drawField.ts', drawSrc],
+      ['src/games/biobuzz/scene/renderField.ts', fieldSrc],
+    ] as const) {
+      check(`${rel} draws the garden corner supplement as well as the CAD strips`, src.includes('BB_TAPE.gardenSupplement'), rel);
+    }
+    check('the CAD path draws the supplement as geometry (the GLB tape is real, so a painted copy would double it)', fieldSrc.includes('buildSupplementalTape'));
+    for (const a of ['red', 'blue'] as const) {
+      const patches = BB_TAPE.gardenSupplement[a];
+      check(`${a}: exactly one garden supplement strip`, patches.length === 1, `${patches.length}`);
+      const p = patches[0];
+      const band = BB_TAPE.garden[a];
+      const bandY0 = Math.min(...band.map((s) => s.y0));
+      const bandY1 = Math.max(...band.map((s) => s.y1));
+      check(`${a}: the supplement spans the band full 2-in width`, Math.abs(p.y0 - bandY0) < 1e-6 && Math.abs(p.y1 - bandY1) < 1e-6, `${p.y0}..${p.y1} vs ${bandY0}..${bandY1}`);
+      check(`${a}: it reaches the perimeter face`, Math.abs(Math.max(Math.abs(p.x0), Math.abs(p.x1)) - BB_HALF_X) < 1e-3, `${p.x0}..${p.x1} vs ${BB_HALF_X}`);
+      check(`${a}: and it is short -- a bridge, not a new marking`, p.x1 - p.x0 < 1, `${(p.x1 - p.x0).toFixed(3)}in`);
+      const drawnX = [...band, p].flatMap((s) => [s.x0, s.x1]);
+      const gardenX = Math.max(Math.abs(BB_GARDEN[a].x0), Math.abs(BB_GARDEN[a].x1));
+      check(`${a}: the drawn band now reaches BB_GARDEN own corner`, Math.abs(Math.max(...drawnX.map(Math.abs)) - gardenX) < 1e-3, `${Math.max(...drawnX.map(Math.abs))} vs ${gardenX}`);
+      check(`${a}: and BB_GARDEN is unchanged by it (the zone is built from TAPE.garden alone)`, BB_GARDEN[a].y1 - BB_GARDEN[a].y0 > 2 && BB_GARDEN[a].x1 - BB_GARDEN[a].x0 > 20);
+    }
+
+    // ITEM 2 -- THE FLOWER'S BACKSTOP (section 9.7, 1.25in tall). The CAD path draws the real
+    // part; the constants fallback had no backstop at all, so a fallback field and a CAD field
+    // disagreed about a surface a lob comes off.
+    check('the constants fallback builds the flower backstop', fieldSrc.includes(':backstop') && /FLOWER_BACKSTOP_H = 1\.25/.test(fieldSrc));
+  }
+}
+
+/**
+ * E1 — THE FIELD'S ON-SCREEN RECT IS A FUNCTION OF THE VIEWPORT, NEVER OF MATCH STATE.
+ *
+ * `GameController.refreshHudInsets` measures every `[data-hud-band]` and the 3D camera frames
+ * the field into what is left, so a band that mounts, unmounts or resizes mid-match moves the
+ * field under the driver. BIOBUZZ's cue row did exactly that — it was `{(nectarLocked || pin) &&
+ * <div data-hud-band>…}` and vanished at the 1:00 cue. Measured in Electron at 1431×649: the
+ * bottom inset fell from 98px to 73px on the unlock tick (owner report, 2026-09-18).
+ *
+ * SOURCE checks, like the rest of this lane: the rule is about the MARKUP, and the two things
+ * that hold it are the row being unconditional and the slot being reserved in both axes (an
+ * empty flex row measures 0 on one of them, and a zero-sized band is skipped).
+ */
+function hudBandChecks(check: Check): void {
+  const hud = readFileSync(join(BIOBUZZ_DIR, 'HudSlots.tsx'), 'utf8');
+  const css = readFileSync(join(root, 'src', 'ui', 'styles.css'), 'utf8');
+  check(
+    'E1 HUD BAND: the BIOBUZZ cue row is rendered unconditionally (its CONTENTS come and go)',
+    /\n      <div className="breakdown-row" data-hud-band>/.test(hud),
+  );
+  check(
+    'E1 HUD BAND: no `data-hud-band` in HudSlots.tsx sits behind a `&& (` guard',
+    !/&&\s*\(\s*\n\s*<div[^>]*data-hud-band/.test(hud),
+  );
+  const rule = css.slice(css.indexOf('\n.breakdown-row {'), css.indexOf('\n.breakdown-row span'));
+  check(
+    'E1 HUD BAND: `.breakdown-row` reserves its slot in BOTH axes, so an empty row is still measured',
+    /min-height:\s*24px/.test(rule) && /min-width:\s*24px/.test(rule),
+    rule.replace(/\s+/g, ' ').slice(0, 120),
+  );
+  const game = readFileSync(join(root, 'src', 'game.ts'), 'utf8');
+  check(
+    'E1 HUD BAND: within one layout the safe rect only ever shrinks (`hudInsetsEpoch`)',
+    game.includes('hudInsetsEpoch') && /ins\.bottom = Math\.min\(Math\.max\(bottom, keep \? ins\.bottom : 0\)/.test(game),
+  );
+
+  // ── 2026-09-19 OWNER REPORT: "ONCE BALLS LAND INSIDE THE HIVE, THEY TELEPORT SLIGHTLY DOWNWARDS"
+  //
+  // ⚠️ `b.z` IS THE BALL'S BOTTOM. THERE IS ONE EXCEPTION AND IT IS NOT THE HIVE.
+  // `syncElement` (sim3d/engineImpl.ts) creates every element body at `b.z + r`, so that is the
+  // sim's convention for everything it solves. `renderElements.ts`'s hive branch was drawing at a
+  // bare `b.z`, which put every hive element one radius low — 1.4 in for a POLLEN, 1.8 for a
+  // NECTAR. It was only VISIBLE on a landing shot, because a shot arrives tagged `flight` (drawn
+  // at `b.z + r`) and `derive.ts` retags it `element` the tick it settles: one frame, one radius,
+  // straight down.
+  //
+  // The FLOWER branch genuinely is a centre — `flowerStackZ` returns "Centre heights (in) of every
+  // element in the stack" — so it alone draws raw. These two checks pin which is which, because a
+  // comment in this file used to claim the hive shared the flower's convention and it did not.
+  {
+    const els = readFileSync(join(root, 'src', 'games', 'biobuzz', 'scene', 'renderElements.ts'), 'utf8');
+    const engine = readFileSync(join(root, 'src', 'games', 'biobuzz', 'sim3d', 'engineImpl.ts'), 'utf8');
+    check(
+      'the hive branch lifts by the element RADIUS, like the body the sim creates',
+      /poseAt\(mesh, idx, b\.pos\.x \+ t \* span, b\.pos\.y, b\.z \+ r\)/.test(els),
+    );
+    check(
+      '...and that IS the sim convention — `syncElement` places the body at `b.z + r`',
+      /const centreZ = b\.z \+ r;/.test(engine) && /setTranslation\(b\.pos\.x, b\.pos\.y, centreZ\)/.test(engine),
+    );
+    check(
+      'the FLOWER branch stays raw, because `flowerStackZ` really does return centres',
+      /out\.push\(seat \+ r\);/.test(readFileSync(join(root, 'src', 'games', 'biobuzz', 'flower.ts'), 'utf8')),
     );
   }
 }

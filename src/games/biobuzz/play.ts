@@ -36,6 +36,7 @@ import {
   bbAimHeading,
   bbDumpSolution,
   bbFlowerInReach,
+  bbIntakeAct,
   bbLaunch,
   bbMouths,
   bbSlewTurret,
@@ -205,40 +206,35 @@ function clearOfStatics(x: number, y: number, r: number): Vec2 {
 }
 
 /**
- * Resolve one ground POLLEN against one robot: CAPTURE IT, OR LEAVE IT ALONE.
+ * ONE ROBOT'S INTAKE, THIS TICK — the rollers PULL, then whatever has arrived at the throat is
+ * swallowed.
  *
- * Capture and nothing else. There used to be a PLOW branch here — if the POLLEN was inside the
- * footprint and not collected, this pushed it out along the minimum-penetration axis by the
- * whole penetration depth and gave it the robot's speed. That was a SECOND POSITION WRITER for
- * a ground pollen, fighting the shared solve for the same element on the same tick, which is
- * the one thing the artifact rework on `alpha` forbids. It is gone. The chassis, the intake
- * structure and the held pollen are all colliders in `solveArtifacts` (via `robotSolids`), so
- * everything the plow was reaching for — a pollen shoved ahead of a driving frame, a pollen
- * squeezed against a wall popping out sideways — is the solve's own answer, computed from the
- * chassis sweep rather than from a normal guessed off a box.
+ * The decision is `bbIntakeAct`'s (`robot.ts`), because it is GEOMETRY and hardware and because
+ * the 3D pipeline has to make exactly the same one (`sim3d/elements3d.ts` calls it too). This
+ * function is the 2D APPLICATION of it, and it writes exactly two kinds of thing:
  *
- * A POLLEN AT THE ROLLER IS STILL COLLECTED BEFORE THE FRAME REACHES IT, because this runs
- * BEFORE the solve in `updateBiobuzz`'s stage order. Driving into a pile collects it instead of
- * scattering it, which is the single biggest difference between an intake that feels real and
- * one that feels like a bulldozer.
+ *  · a VELOCITY on a ground element the rollers have hold of. Not a position — the shared solve
+ *    is still the one position authority (`docs/biobuzz-contract.md` §1), and this runs BEFORE
+ *    it, so the pull is simply the speed the element is trying to move at and what it actually
+ *    does is what the solve leaves behind. DECODE's `intakeSuction` is the same shape at the
+ *    same point in the tick, and its own header says why writing it AFTER the solve is a lie.
+ *  · a CAPTURE, through `capturePollen`, which is still what enforces the hopper cap and G408.
+ *
+ * There used to be a PLOW branch here — if the POLLEN was inside the footprint and not
+ * collected, it was pushed out along the minimum-penetration axis and given the robot's speed.
+ * That was a second POSITION writer for a ground pollen and it is gone for good; the chassis,
+ * the intake structure and the held pollen are all colliders in `solveArtifacts`.
  */
-function interact(
+function intakeTick(
   world: World,
-  b: Artifact,
   rob: RobotState,
   cmd: RobotCommand | undefined,
   enabled: boolean,
-): 'collected' | 'none' {
-  const intakeActive = enabled && (rob.autoIntake || (cmd?.intake ?? false));
-  if (!intakeActive) return 'none';
-  const local = rot({ x: b.pos.x - rob.pos.x, y: b.pos.y - rob.pos.y }, -rob.heading);
-  // ANY mounted edge grabs: one mouth for front/back, two for `side` (both flanks) and
-  // `frontback` (both ends). `capturePollen` is what enforces the hopper cap, so a full robot
-  // simply leaves the POLLEN on the floor for the solve to push around.
-  for (const m of bbMouths(rob.spec)) {
-    if (rectContains(m, local.x, local.y, BB_POLLEN_R) && capturePollen(world, rob, b)) return 'collected';
-  }
-  return 'none';
+): void {
+  if (!(enabled && (rob.autoIntake || (cmd?.intake ?? false)))) return;
+  const act = bbIntakeAct(world, rob);
+  for (const p of act.pull) p.ball.vel = p.vel;
+  for (const b of act.take) capturePollen(world, rob, b);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -619,14 +615,12 @@ export function updateBiobuzz(
    */
   for (const b of world.balls) if (b.state.kind === 'ground') stepGroundBall(b, dt);
 
-  // CAPTURE. Nothing here moves a POLLEN — stage 4 is the one position authority, and this runs
-  // first so a POLLEN at the roller is taken before the frame reaches it.
-  for (const b of world.balls) {
-    if (b.state.kind !== 'ground') continue;
-    for (const rob of world.robots) {
-      if (interact(world, b, rob, cmds.get(rob.id), enabled) === 'collected') break;
-    }
-  }
+  // THE INTAKES: the rollers PULL, then swallow whatever has arrived at the throat. Nothing
+  // here moves a POLLEN — the pull is a VELOCITY, handed to the solve below, which is still the
+  // one position authority. Per ROBOT in array order (a captured element is `held` and cannot
+  // be taken twice), and BEFORE the solve so an element at the roller is drawn in rather than
+  // plowed by the frame arriving behind it.
+  for (const rob of world.robots) intakeTick(world, rob, cmds.get(rob.id), enabled);
 
   // ── 4b. INTAKE OFF A FLOWER (G418.B) ──────────────────────────────────────
   // After the ground capture, so a robot that took a loose element this tick has spent its
@@ -1034,7 +1028,8 @@ export function bbCellSideOf(t: ScoreTarget): 'north' | 'south' {
  * ballistics would be a second answer to "did it go in", and Aim Assist would release shots that
  * miss the cell it is aimed at.
  *
- * Pure: the element is copied, nothing in the world is written.
+ * Pure: the element is copied, nothing in the world is written. `trace` is the ONE exception and
+ * it is an OUT-PARAMETER the caller owns — see `BbFlightTrace`.
  */
 export function bbFlightEnters(
   hive: BiobuzzState['hives'][Alliance],
@@ -1043,6 +1038,7 @@ export function bbFlightEnters(
   z: number,
   vel: Vec3,
   dt: number,
+  trace?: BbFlightTrace,
 ): boolean {
   if (!(dt > 0)) return false;
   const b = { pos: { x: pos.x, y: pos.y }, vel: { x: vel.x, y: vel.y } } as Artifact;
@@ -1050,16 +1046,56 @@ export function bbFlightEnters(
   let vz = vel.z;
   // four seconds of flight is well past any arc a legal launch speed can make
   const steps = Math.ceil(4 / dt);
+  if (trace) trace.n = 0;
   for (let i = 0; i < steps; i++) {
     b.pos.x += b.vel.x * dt;
     b.pos.y += b.vel.y * dt;
     zz += vz * dt;
     vz -= C.GRAVITY * dt;
     clampPollenToWalls(b);
-    if (hiveAccepts(hive, owner, b.pos, zz, { x: b.vel.x, y: b.vel.y, z: vz })) return true;
-    if (zz <= 0) return false;
+    if (trace && i % trace.every === 0) traceWrite(trace, b.pos.x, b.pos.y, zz);
+    if (hiveAccepts(hive, owner, b.pos, zz, { x: b.vel.x, y: b.vel.y, z: vz })) {
+      if (trace) traceWrite(trace, b.pos.x, b.pos.y, zz);
+      return true;
+    }
+    if (zz <= 0) {
+      if (trace) traceWrite(trace, b.pos.x, b.pos.y, zz);
+      return false;
+    }
   }
   return false;
+}
+
+/**
+ * THE ARC A PREDICTED FLIGHT ACTUALLY FLEW — the optional out-parameter of `bbFlightEnters`, and
+ * the reason the shot-path preview is not a second set of ballistics.
+ *
+ * `renderLanding.ts` used to carry a COPY of the loop above, because that one answers a boolean
+ * and a drawn path needs positions; its own header said in as many words that the two would drift.
+ * They are one loop again: a caller that wants the path hands in a buffer it owns, the sim writes
+ * every `every`-th step into it plus the terminal point, and a caller that does not (every call in
+ * the 2D and 3D pipelines) passes nothing and the branch is never taken.
+ *
+ * `pts` is `[x, y, z]` per point and is NEVER reallocated here — a short buffer simply stops being
+ * written, so a preview cannot make the sim allocate. `n` is written back.
+ */
+export interface BbFlightTrace {
+  /** caller-owned `[x,y,z]` triples, written in place */
+  pts: Float32Array;
+  /** record one point per `every` integration steps (≥ 1) */
+  every: number;
+  /** how many points were written (OUT) */
+  n: number;
+}
+
+/** append one point to a trace, if its buffer still has room. */
+function traceWrite(t: BbFlightTrace, x: number, y: number, z: number): void {
+  const i = t.n * 3;
+  if (i + 3 > t.pts.length) return;
+  t.pts[i] = x;
+  t.pts[i + 1] = y;
+  t.pts[i + 2] = z;
+  t.n++;
 }
 
 /**

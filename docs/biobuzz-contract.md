@@ -181,6 +181,10 @@ export function bbFootprint(spec: RobotSpec): { front: number; rear: number; hal
 export function bbAimHeading(r: RobotState, target: ScoreTarget): number | null; // dumper aim; null for a turret
 export function bbLaunch(world: World, r: RobotState, cmd: RobotCommand, enabled: boolean, shot?: BbShot): void;
 export function bbRobotSolids(r: RobotState, held: readonly Artifact[], radius?: number): RobotSolids;
+// the ROLLER: what the intake pulls and what it has drawn to the throat this tick. PURE — the
+// caller applies both halves. `play.ts` (2D) and `sim3d/elements3d.ts` (3D) are its only readers,
+// which is what keeps one intake model across two physics backends.
+export function bbIntakeAct(world: World, r: RobotState, opts?: BbIntakeOpts): BbIntakeAct;
 // aim (stage 5b calls these; `which` 0 = a turret / the POLLEN turret, 1 = the NECTAR turret)
 export function bbTurretOrigin(r: RobotState, which?: 0 | 1): Vec2;
 export function bbTurretSolution(r: RobotState, target: ScoreTarget, which?: 0 | 1):
@@ -195,6 +199,8 @@ export function bbFlowerInReach(world: World, r: RobotState): number | null; // 
 
 // src/games/biobuzz/config.ts
 export function bbHopperCap(spec: RobotSpec): number;
+export function bbIntakeReach(spec: RobotSpec): number; // THE ONE intake reach — the mouth, the
+// footprint, the solids and the roller model are all built from it (3..5 in, per intake preset)
 // src/games/biobuzz/play.ts
 export function bbPickTarget(world: World, r: RobotState): ScoreTarget | null; // own HIVE cell, open side only
 ```

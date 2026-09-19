@@ -27,6 +27,9 @@ import {
   BB_WALL_T,
 } from '../config';
 import { biobuzzColliders, BB_WALL_COUNT } from '../colliders';
+import { INTAKE_RAIL_T } from '../../../config';
+import { BB3_MOUTH_SLOT_Z, bbIntakeReach } from '../config';
+import { bbMouths } from '../robot';
 import { cadCellBox, cadStatics, cadTrayHulls } from './fieldColliders';
 import { buildFlowerTubes3d } from './flowerTube';
 import { tiltQuatX, yawQuat } from './math3';
@@ -682,10 +685,98 @@ function buildTrayColliders(
 }
 
 // ---- ROBOTS -----------------------------------------------------------------
-// a dynamic cuboid, `length x width x heightIn`, yaw-only.
+// a dynamic COMPOUND, yaw-only: the bare frame `length x width x heightIn` plus the sweeper's
+// side arms out to `bbIntakeReach`. See `chassis3dShapes`.
 
 export function robotHeightIn(spec: RobotSpec): number {
   return spec.heightIn ?? 18;
+}
+
+/** one box of the chassis compound, in the robot frame (+x forward, +y left, z measured from
+ * the chassis mid-height). */
+export interface Chassis3dShape {
+  cx: number;
+  cy: number;
+  /** box centre in z, relative to the CHASSIS mid-height (the body's own origin) */
+  cz: number;
+  hx: number;
+  hy: number;
+  hz: number;
+}
+
+/**
+ * ⚠️ **THE 3D CHASSIS IS A COMPOUND WITH AN OPEN INTAKE MOUTH** — the bare frame plus the
+ * sweeper's two SIDE ARMS per mounted edge, and it is the SAME shape list `bbRobotSolids`
+ * (`robot.ts`) hands the 2D artifact solve. Derived from `bbMouths` here too, so the drawn
+ * mouth, the 2D collision geometry and the 3D collider cannot drift apart.
+ *
+ * IT USED TO BE ONE `robotExtents` CUBOID, which is the 2D SOLVE's footprint — correct for
+ * robot-vs-wall and robot-vs-robot (that is the bug it was introduced to fix; see the note in
+ * `addChassisCollider`) and wrong for an ELEMENT, because it fills the mouth with solid. With a
+ * closed mouth an element can never get nearer than the roller line, so `bbIntakeAct` had
+ * nothing to draw it in ACROSS: measured on the intake lane's scenario set, a six-element
+ * cluster gave 10/18 and a strafe past a line 1/4, and every element near the mouth's lateral
+ * edge was deflected by the collider corner before the funnel reached it.
+ *
+ * ⚠️ **THE ARM TIPS END EXACTLY WHERE `robotExtents` ENDED** (`hl + reach` on a mounted end,
+ * `hw + reach` on a mounted flank), so flat-wall contact distance, a wall-flush start position
+ * and start legality do not move — they are what the single cuboid existed for. What changes is
+ * only the POCKET between the arms, which is now open to an element and closed to nothing else:
+ * a wall, another chassis and the HIVE underside all still meet the same outermost surfaces at
+ * the same distances and the same height.
+ *
+ * MASS AND INERTIA ARE UNTOUCHED: every collider is built at density 0 and the body's mass
+ * properties are set explicitly each tick (`syncRobot`), so drive parity with 2D is not a
+ * function of how many boxes the compound has.
+ */
+export function chassis3dShapes(spec: RobotSpec, heightIn: number): Chassis3dShape[] {
+  const hl = spec.length / 2;
+  const hw = spec.width / 2;
+  const half = heightIn / 2;
+  const out: Chassis3dShape[] = [{ cx: 0, cy: 0, cz: 0, hx: hl, hy: hw, hz: half }];
+  const reach = bbIntakeReach(spec);
+  if (reach <= 1e-6) return out;
+  // never thicker than the frame it is bolted to — `bbRobotSolids`' own clamp, for the same
+  // reason (a degenerate or inverted box is a collider Rapier cannot build).
+  const t = Math.max(1e-3, Math.min(INTAKE_RAIL_T, hw / 2, hl / 2));
+  /**
+   * ⚠️ **THE POCKET IS OPEN ONLY BELOW ELEMENT HEIGHT, AND THE LINTEL ABOVE IT IS WHAT KEEPS
+   * EVERY OTHER CONTACT WHERE IT WAS.** The mouth is an OVER-BUMPER intake: the roller bar spans
+   * it at roller height and an element rolls in UNDER the bar — which is exactly what
+   * `bbRobotSolids` says in 2D ("THE MOUTH ITSELF IS OPEN... a POLLEN rolls in under it").
+   *
+   * Leaving the pocket open all the way up was measured and is wrong in a way that has nothing
+   * to do with elements: with only two thin arms out front, the FRAME face sits `reach` further
+   * back than the old cuboid's did, so a robot driving at a low field static reached 3 in past
+   * where it used to stop, caught the static's top edge on its frame's bottom edge and CLIMBED
+   * it — parked 2.14 in in the air, stalled, for the rest of the match (scenario `f turn onto a
+   * ball`, 3D: captured at tick 24 before, never after).
+   *
+   * With the lintel, anything taller than `BB3_MOUTH_SLOT_Z` — a wall, another robot, the HIVE
+   * structure, a FLOWER — meets the same outermost surface at the same distance as the single
+   * `robotExtents` cuboid did, and only an ELEMENT fits through the slot.
+   */
+  const slot = Math.min(BB3_MOUTH_SLOT_Z, heightIn - 0.1);
+  const lintelHz = Math.max(1e-3, (heightIn - slot) / 2);
+  const lintelCz = slot / 2;
+  for (const m of bbMouths(spec)) {
+    if (m.edge === 'front' || m.edge === 'back') {
+      const cx = (m.edge === 'front' ? 1 : -1) * (hl + reach / 2);
+      for (const s of [1, -1]) {
+        const outer = s > 0 ? m.y1 : m.y0;
+        out.push({ cx, cy: outer - (s * t) / 2, cz: 0, hx: reach / 2, hy: t / 2, hz: half });
+      }
+      out.push({ cx, cy: (m.y0 + m.y1) / 2, cz: lintelCz, hx: reach / 2, hy: (m.y1 - m.y0) / 2, hz: lintelHz });
+    } else {
+      const cy = (m.edge === 'left' ? 1 : -1) * (hw + reach / 2);
+      for (const s of [1, -1]) {
+        const outer = s > 0 ? m.x1 : m.x0;
+        out.push({ cx: outer - (s * t) / 2, cy, cz: 0, hx: t / 2, hy: reach / 2, hz: half });
+      }
+      out.push({ cx: (m.x0 + m.x1) / 2, cy, cz: lintelCz, hx: (m.x1 - m.x0) / 2, hy: reach / 2, hz: lintelHz });
+    }
+  }
+  return out;
 }
 
 // ---- ELEMENTS -----------------------------------------------------------------

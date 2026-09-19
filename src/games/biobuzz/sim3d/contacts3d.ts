@@ -116,12 +116,16 @@ export function hiveContactPass(world: World, engine: Engine3d): void {
       continue;
     }
     let touched = false;
+    let onTray = false;
     let caughtBy: number | null = null;
     for (let i = 0; i < body.numColliders(); i++) {
       const own = body.collider(i);
       engine.world3d.contactPairsWith(own, (other) => {
         // the TRAY is not a "first contact": the element is still in the cell it is leaving.
-        if (groupsOf(other) === GROUP_TRAY) return;
+        if (groupsOf(other) === GROUP_TRAY) {
+          onTray = true;
+          return;
+        }
         const parent = other.parent();
         const robot = parent ? byBody.get(parent.handle) : undefined;
         if (robot !== undefined) {
@@ -148,10 +152,21 @@ export function hiveContactPass(world: World, engine: Engine3d): void {
      * static keeps its tag for the rest of the match, and a robot that drives into it a minute
      * later is billed for catching a spill that finished falling long ago. "Spilling" is a
      * moment, and this is where the moment ends.
+     *
+     * ⚠️ **EXCEPT WHILE IT IS STILL ON THE TRAY** — the same fact that makes the tray not a
+     * first contact makes it not a resting place: an element sitting in the cell it is leaving
+     * has not finished spilling, it has not started. And it reads AT REST there, twice over:
+     * the tag is written on the tick the detent breaks, when the load is still stacked against
+     * the back wall at a dead stop, and `groundRoll3d`'s off-floor snap then pins anything that
+     * dips under `BB3_REST_SPEED` mid-swing to exactly zero in the WORLD frame while the tray
+     * rotates under it. Measured on seed 871 (8 POLLEN, dynamic tray): all eight tags were
+     * written on tick 13 and every one of them was deleted by tick 16, with the elements still
+     * 48 in up and ~35 ticks from the tiles — so G409 could not be billed by any robot, wherever
+     * it parked. Tray contact holds the moment open until the element is actually clear of it.
      */
     const el = world.balls.find((b) => b.id === key);
     const atRest = el ? Math.abs(el.vel.x) + Math.abs(el.vel.y) + Math.abs(el.vz) < BB3_REST_SPEED : true;
-    if (!touched && !atRest) continue;
+    if (!touched && (onTray || !atRest)) continue;
     if (caughtBy !== null) bbBillG409(world, alliance, caughtBy);
     delete spill[key];
   }

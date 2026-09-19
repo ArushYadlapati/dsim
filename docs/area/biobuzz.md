@@ -197,6 +197,22 @@ The 2D pipeline is PERMANENT (owner rule): every existing check must stay byte-i
   `t`. Looking at a robot close up also found the TURRET and the BOX TUBE built INSIDE the chassis
   box, `specKey` missing `drivetrain`, and a discarded group never disposed — all three were the
   MATCH's bugs and all three are fixed there.
+- **THE SHOT PATH IS ONE PREDICTOR AND TWO DRAWINGS** (owner playtest feedback 2026-09-18, items
+  5–6). `src/games/biobuzz/shotPath.ts` — NOT under `scene/`, because nothing outside `scene/` may
+  import from it — answers "would this shot go in, and what does it fly through". `drawShot.ts`
+  draws it on the 2D map and `scene/renderReticle.ts` in 3D, and neither works anything out for
+  itself. The rules: a path ONLY for a shot that is MADE, drawn DOTTED, with no landing ring at the
+  end. "Made" is `hiveAccepts` against the REAL hive (not Aim Assist's pretend-up copy), so a cell
+  that is down or mid-swing draws nothing. `bbFlightEnters` now takes an optional `BbFlightTrace`
+  out-parameter and records the arc into a caller-owned buffer, which is what retired
+  `scene/renderLanding.ts` — that file carried a COPY of the integrator, and its own header said
+  the copy would drift.
+  - ⚠️ **A TURRET'S YAW AND ELEVATION ARE SEPARATE NODES** (`bb-turret-head` → `bb-turret-pitch`).
+    Both on ONE node is what "the shooter is not automatically aiming" looked like: a `THREE.Euler`
+    defaults to order `XYZ`, so the elevation was applied about the UN-yawed axis, and at the 160°
+    turret yaw and 80° elevation hive range actually asks for, the barrel came out 67.7° BELOW
+    horizontal and 44.5° off in azimuth while the SIM's turret was dead on target. The sim aims
+    correctly under both physics — measured, converging in 41–52 ticks with no button held.
 - **Verification:** `scripts/smoke-biobuzz/sim3d.ts` (SIM3D lane: seam, drive parity, two-run
   hash, conservation, containment with `containmentFixes === 0`, CCD, capture, launch into either
   up cell, 18/29-in clearance, tip/spill, perf ≤ 1.5 ms, CAD probe agreement) and `render.ts`

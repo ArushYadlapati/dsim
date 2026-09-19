@@ -120,7 +120,7 @@ export class Renderer {
         const held = heldBy.get(r.id) ?? NO_HELD;
         (mod.drawRobot ?? drawRobot)(ctx, r, intakeOn, held, screenUp, world);
       }
-      mod.drawBalls(ctx, world, screenUp);
+      mod.drawBalls(ctx, world, screenUp, localRobotId);
     }
 
     // THE OVERLAY, THROUGH THE SCENE'S OWN CAMERA (`docs/biobuzz/plan-3d.md` §4.7). A live 3D

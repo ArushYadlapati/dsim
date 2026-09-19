@@ -5,6 +5,7 @@ import { worldHash } from '../../src/net/checksum';
 import { defaultSettings, switchGame } from '../../src/settings';
 import { DEFAULT_ASSISTS, DEFAULT_SPEC } from '../../src/sim/spawn';
 import {
+  BB_PRESETS,
   BB_SIZE_STEP,
   bbSizeLimits,
   BB_AIM_TOL,
@@ -22,6 +23,10 @@ import {
   BB_DUMP_MIN_DIST,
   BB_LAUNCH_SPEED_MAX,
   BB_LAUNCH_Z0,
+  BB_HALF_X,
+  BB_HALF_Y,
+  BB_INTAKE_CROSS_MAX,
+  bbIntakeReach,
   BB_PLACE_REACH,
   BB_POLLEN_R,
   BB_PRISM,
@@ -29,6 +34,7 @@ import {
   BB_PTS,
   BB_START_POSE_COUNT,
   BB_TURRET_PITCH_MAX,
+  BB_TURRET_SLEW,
   bbStorageMax,
 } from '../../src/games/biobuzz/config';
 import { biobuzzColliders } from '../../src/games/biobuzz/colliders';
@@ -618,6 +624,43 @@ export function robotChecks(check: Check): void {
       }
       check(`R105.A: every build's maximum length and width is a multiple of ${BB_SIZE_STEP} in`, off === 0, first);
     }
+    // ── E1: THE LIMIT BEING ON THE GRID WAS ONLY HALF THE FIX, and the owner re-reported it
+    //    (2026-09-18). A clamp never touches a value that is already IN range, so a robot saved
+    //    with the old 16.331227996399747 kept it: the default build's width ceiling is 17. The
+    //    coercer SNAPS now (`bbSnapSize`), which is what heals a stored spec on load.
+    {
+      const long = 18 - 2.36 * Math.SQRT1_2; // exactly what the old coercer wrote: 16.331227996399747
+      const healed = bbCoerce({ ...BB_DEFAULT_SPEC, length: long, width: long });
+      check(
+        'E1 R105.A: a robot SAVED with the 15-digit width is healed onto the grid on load',
+        onGrid(healed.width) && onGrid(healed.length),
+        `${healed.length} × ${healed.width}`,
+      );
+      const again = bbCoerce(healed);
+      check(
+        'E1 R105.A: snapping is idempotent (a second coercion moves nothing)',
+        again.length === healed.length && again.width === healed.width,
+        `${again.length} × ${again.width}`,
+      );
+      // the HEIGHT PAIR has the same shape of hole — clamped to whole inches, never snapped.
+      const h = bbCoerce({ ...BB_DEFAULT_SPEC, heightIn: 20.3333333333, stowHeightIn: 17.7777 } as RobotSpec);
+      const hs = (h as { stowHeightIn?: number }).stowHeightIn;
+      check(
+        'E1 R105.A: the height dials snap to their own 1-in step too',
+        Number.isInteger(h.heightIn ?? 0) && Number.isInteger(hs ?? 0),
+        `${h.heightIn} / ${hs}`,
+      );
+      // ...and a PRESET must still be a coercer no-op, which is what makes its card highlight.
+      let moved = '';
+      for (const p of BB_PRESETS) {
+        const c = bbCoerce({ ...BB_DEFAULT_SPEC, ...p });
+        if (c.length !== (p.length ?? BB_DEFAULT_SPEC.length) || c.width !== (p.width ?? BB_DEFAULT_SPEC.width)) {
+          moved = `${p.name ?? '?'}: ${c.length} × ${c.width}`;
+          break;
+        }
+      }
+      check('E1 R105.A: snapping leaves every preset a coercer no-op', moved === '', moved);
+    }
 
     const builds: RobotSpec[] = [];
     const lifts = [null, ...BB_MOUNT_POSITIONS.filter((m) => m !== 'center')];
@@ -926,13 +969,160 @@ export function robotChecks(check: Check): void {
       const m = bbMouths(r.spec)[0];
       const b: Artifact = { ...bbPollen(nextId(w), (m.x0 + m.x1) / 2, 0), color: colour };
       w.balls.push(b);
-      run(w, cmd({ intake: true }), 0.1);
+      // 0.35 s, not 0.1: an intake is a ROLLER now, not a trigger rect — one element per
+      // `BB_INTAKE_PERIOD_MIN`..`_MAX` through the feed (`bbIntakeAct`), so a tenth of a second
+      // is less than one cadence and this check was asserting the old instant swallow.
+      run(w, cmd({ intake: true }), 0.35);
       const want = colour === 'yellow' || (colour === 'blue' && kind !== 'turret');
       const what = colour === 'yellow' ? 'POLLEN' : colour === 'blue' ? 'own NECTAR' : 'OPPONENT NECTAR';
       check(
         `intake [${kind}] ${what}: ${want ? 'taken' : 'left on the floor'}`,
         (b.state.kind === 'held') === want && (want || b.state.kind === 'ground'),
         `state=${b.state.kind} hopper=${r.hopper.join(',')}`,
+      );
+    }
+  }
+
+  // ── THE ROLLER INTAKE (`bbIntakeAct`) ─────────────────────────────────────
+  /**
+   * The intake is a ROLLER, not a trigger rect: it PULLS what it has hold of toward the throat
+   * (a velocity the solve integrates — never a position), swallows only what has arrived, one
+   * element per feed cadence, and refuses outright when the hopper is full. Every check below
+   * is a case the old one-tick rect test got wrong, measured before it was replaced.
+   */
+  {
+    const frontSpec: Partial<RobotSpec> = { intakeMount: 'front' };
+    /** a fresh one-robot world, hopper emptied and the robot parked where the check wants it */
+    const staged = (seed: number, x: number, y: number, heading = 0, spec: Partial<RobotSpec> = frontSpec) => {
+      const w = mkWorld('free', seed, spec);
+      const r = w.robots[0];
+      emptyHopper(w, r);
+      park(r, x, y, heading);
+      r.autoIntake = false;
+      r.autoFire = false;
+      return { w, r };
+    };
+    const heldCount = (w: World, r: RobotState): number =>
+      w.balls.filter((b) => b.state.kind === 'held' && b.state.robot === r.id).length;
+
+    // ONE REACH. Everything that asks how far the sweeper sticks out must get the same answer.
+    {
+      let worst = '';
+      for (const s of everyBuild()) {
+        const reach = bbIntakeReach(s);
+        const hl = s.length / 2;
+        const front = bbMouths(s).find((m) => m.edge === 'front');
+        const ok =
+          reach >= 3 &&
+          reach <= 5 &&
+          (!front || Math.abs(front.x1 - (hl + reach)) < 1e-9) &&
+          Math.abs(bbFootprint(s).front - (hl + (front ? reach : 0))) < 1e-9;
+        if (!ok && !worst) worst = `${s.intake}/${s.intakeMount} reach=${reach} x1=${front?.x1} front=${bbFootprint(s).front}`;
+      }
+      check('roller: bbIntakeReach is the ONE reach — 3..5 in, and the mouth and the footprint are both built from it', worst === '', worst);
+    }
+
+    // A POLLEN ON A WALL IS COLLECTED, not wedged — the most common real complaint.
+    {
+      const { w, r } = staged(41, BB_HALF_X - bbFootprint(BB_DEFAULT_SPEC).front - 16, 8);
+      w.balls.push(bbPollen(nextId(w), BB_HALF_X - BB_POLLEN_R, 8));
+      const b = w.balls[w.balls.length - 1];
+      run(w, cmd({ driveY: 0.7, intake: true }), 3);
+      check('roller: a POLLEN pinned on a wall is captured, not wedged', b.state.kind === 'held', `state=${b.state.kind}`);
+    }
+
+    // ...AND IN A CORNER, taken square on, which is how a driver reaches one.
+    {
+      const f = bbFootprint(BB_DEFAULT_SPEC);
+      const { w, r } = staged(42, BB_HALF_X - f.front - 16, BB_HALF_Y - f.half);
+      void r;
+      w.balls.push(bbPollen(nextId(w), BB_HALF_X - BB_POLLEN_R, BB_HALF_Y - BB_POLLEN_R));
+      const b = w.balls[w.balls.length - 1];
+      run(w, cmd({ driveY: 0.7, intake: true }), 3);
+      check('roller: a POLLEN in a corner is captured square on', b.state.kind === 'held', `state=${b.state.kind}`);
+    }
+
+    // THE FUNNEL: an off-centre POLLEN is WALKED toward the throat before it is taken, and the
+    // walk takes ticks — a stationary robot proves it is the rollers doing it and not the drive.
+    {
+      const { w, r } = staged(43, 0, -30);
+      const m = bbMouths(r.spec)[0];
+      const off = m.y1 * 0.9;
+      w.balls.push(bbPollen(nextId(w), (m.x0 + m.x1) / 2, -30 + off));
+      const b = w.balls[w.balls.length - 1];
+      const y0 = b.pos.y;
+      run(w, cmd({ intake: true }), 0.05); // three ticks: not enough to have arrived
+      const movedIn = Math.abs(b.pos.y - (-30)) < Math.abs(y0 - (-30));
+      const notYet = b.state.kind === 'ground';
+      run(w, cmd({ intake: true }), 0.6);
+      check(
+        'roller: an off-centre POLLEN is funnelled inboard before it is swallowed (not teleported)',
+        movedIn && notYet && b.state.kind === 'held',
+        `movedIn=${movedIn} afterThreeTicks=${notYet ? 'ground' : 'held'} end=${b.state.kind}`,
+      );
+    }
+
+    // A FULL HOPPER DOES NOT PULL — it pushes. The element stays on the floor and is bulldozed.
+    {
+      const { w, r } = staged(44, -40, -30);
+      give(w, r, ['yellow', 'yellow', 'yellow', 'yellow']);
+      const m = bbMouths(r.spec)[0];
+      w.balls.push(bbPollen(nextId(w), -40 + (m.x0 + m.x1) / 2, -30));
+      const b = w.balls[w.balls.length - 1];
+      const x0 = b.pos.x;
+      run(w, cmd({ driveY: 0.6, intake: true }), 1.5);
+      check(
+        'roller: a FULL hopper refuses — the POLLEN is not pulled in, it is pushed',
+        r.hopper.length === bbHopperCap(r.spec) && b.state.kind === 'ground' && b.pos.x - x0 > 4,
+        `hopper=${r.hopper.length} state=${b.state.kind} pushed=${(b.pos.x - x0).toFixed(1)}in`,
+      );
+    }
+
+    // NOTHING IS TAKEN THROUGH THE SIDES OR THE BACK of a front-only intake, however long it runs.
+    {
+      const { w, r } = staged(45, 0, -30);
+      const hl = r.spec.length / 2;
+      const hw = r.spec.width / 2;
+      const beside = bbPollen(nextId(w), 0, -30 + hw + BB_POLLEN_R + 1);
+      w.balls.push(beside);
+      const behind = bbPollen(nextId(w), -(hl + BB_POLLEN_R + 1), -30);
+      w.balls.push(behind);
+      run(w, cmd({ intake: true }), 2);
+      check(
+        'roller: a front-only intake never takes a POLLEN beside or behind the chassis',
+        beside.state.kind === 'ground' && behind.state.kind === 'ground' && heldCount(w, r) === 0,
+        `beside=${beside.state.kind} behind=${behind.state.kind} held=${heldCount(w, r)}`,
+      );
+    }
+
+    // THROUGHPUT: a wide bar feeds two lanes side by side, and it is still a CADENCE — four
+    // POLLEN across the throat are not swallowed on one tick the way the rect test swallowed them.
+    {
+      const { w, r } = staged(46, 0, -30);
+      const hl = r.spec.length / 2;
+      for (const y of [-6, -2, 2, 6]) w.balls.push(bbPollen(nextId(w), hl + 1, -30 + y));
+      run(w, cmd({ intake: true }), 1 / 60);
+      const firstTick = heldCount(w, r);
+      run(w, cmd({ intake: true }), 1.2);
+      check(
+        'roller: four POLLEN across the throat feed a lane at a time, and all four are in within 1.2 s',
+        firstTick <= 2 && heldCount(w, r) === 4,
+        `tick1=${firstTick} end=${heldCount(w, r)}`,
+      );
+    }
+
+    // A POLLEN CROSSING THE ROLLERS AT SPEED IS NOT GRIPPED — the rect test took it instantly.
+    {
+      const { w, r } = staged(47, 0, -30);
+      const m = bbMouths(r.spec)[0];
+      const fast = bbPollen(nextId(w), (m.x0 + m.x1) / 2, -30 - 6);
+      fast.vel = { x: 0, y: BB_INTAKE_CROSS_MAX + 40 };
+      w.balls.push(fast);
+      run(w, cmd({ intake: true }), 0.25);
+      check(
+        'roller: a POLLEN crossing the mouth faster than BB_INTAKE_CROSS_MAX is not gripped',
+        fast.state.kind === 'ground',
+        `state=${fast.state.kind}`,
       );
     }
   }
@@ -952,7 +1142,8 @@ export function robotChecks(check: Check): void {
     const m = bbMouths(r.spec)[0];
     for (const colour of ['yellow', r.alliance] as const) {
       w.balls.push({ ...bbPollen(nextId(w), (m.x0 + m.x1) / 2, 0), color: colour });
-      run(w, cmd({ intake: true }), 0.1);
+      run(w, cmd({ intake: true }), 0.35); // one feed cadence per element — see the note above
+
     }
     const hud = biobuzzHud(w, r.id).robot;
     check('hud: held lists both elements of a mixed intake, in hopper order', r.hopper.join(',') === `yellow,${r.alliance}` && hud?.held.join(',') === r.hopper.join(','), `hopper=${r.hopper.join(',')} held=${hud?.held.join(',')}`);
@@ -1767,6 +1958,71 @@ export function robotChecks(check: Check): void {
     const h1 = worldHash(bbSceneAt(scene, last));
     const h2 = worldHash(bbSceneAt(scene, last));
     check(`scene [${scene.id}@${last}]: hashes deterministically`, h1 === h2, `${h1} vs ${h2}`);
+  }
+
+  // ── LANE C: THE TURRET AIMS ITSELF, WITHOUT BEING ASKED ───────────────────
+  /**
+   * Owner playtest feedback 2026-09-18, item 4: "the shooter is not automatically aiming at the
+   * target". The SIM was measured first and it aims — a turret converges on `bbTurretSolution`'s
+   * yaw AND pitch in ~45-52 ticks from the staged bearing, under both physics, with no button
+   * held and with the robots not even enabled. The failure was in the 3D RENDERER (see the RENDER
+   * lane's turret-node block for the measurement). These checks pin the sim half so a change to
+   * stage 5b cannot quietly take the tracking away and leave the picture right.
+   *
+   * ⚠️ NO COMMAND IS HELD. A turret that only tracked while fire was down would pass an aim test
+   * written with `fire: true` and still look dead to a driver lining up, which is exactly what the
+   * feedback describes.
+   */
+  {
+    const AIM_C = mech({ launcher: { kind: 'turret', mount: 'center', hoodDeg: 75 }, lift: null });
+    /** where a converging turret's error stands after `secs` of idle stepping, and after how many
+     * ticks it first got inside `BB_AIM_TOL` on both axes. */
+    const converge = (x: number, y: number, secs: number): { yaw: number; pitch: number; ticks: number } => {
+      const w = mkWorld('free', 131, AIM_C);
+      const r = w.robots[0];
+      park(r, x, y, 0.7);
+      let ticks = -1;
+      const n = Math.round(secs / C.SIM_DT);
+      for (let i = 0; i < n; i++) {
+        tick(w, cmd({}));
+        const s = bbTurretSolution(r, bbAimTarget(w, r), 0);
+        if (
+          ticks < 0 &&
+          s &&
+          Math.abs(wrapAngle(s.yaw - r.turretHeading)) < BB_AIM_TOL &&
+          Math.abs(s.pitch - (r.bbTurretPitch ?? 0)) < BB_AIM_TOL
+        ) {
+          ticks = i + 1;
+        }
+      }
+      const s = bbTurretSolution(r, bbAimTarget(w, r), 0)!;
+      return {
+        yaw: Math.abs(wrapAngle(s.yaw - r.turretHeading)),
+        pitch: Math.abs(s.pitch - (r.bbTurretPitch ?? 0)),
+        ticks,
+      };
+    };
+    for (const [x, y] of [[0, 0], [30, 20], [-20, -40], [50, -30], [10, 55]] as const) {
+      const c = converge(x, y, 2);
+      check(
+        `aim: a turret at (${x}, ${y}) converges on its own solution with NO button held`,
+        c.ticks > 0 && c.ticks <= 90 && c.yaw < 1e-3 && c.pitch < 1e-3,
+        `ticks=${c.ticks} yawErr=${c.yaw.toFixed(5)} pitchErr=${c.pitch.toFixed(5)}`,
+      );
+    }
+    // and it SLEWS rather than snapping: one tick can never move the yaw more than the slew rate
+    {
+      const w = mkWorld('free', 133, AIM_C);
+      const r = w.robots[0];
+      park(r, -40, -50, 0.7);
+      const before = r.turretHeading;
+      tick(w, cmd({}));
+      check(
+        'aim: the turret SLEWS — one tick moves it at most BB_TURRET_SLEW · dt',
+        Math.abs(wrapAngle(r.turretHeading - before)) <= BB_TURRET_SLEW * C.SIM_DT + 1e-9,
+        `${Math.abs(wrapAngle(r.turretHeading - before)).toFixed(5)} vs ${(BB_TURRET_SLEW * C.SIM_DT).toFixed(5)}`,
+      );
+    }
   }
 
   // ── AND NOTHING IN THIS LANE READS THE CLOCK ──────────────────────────────

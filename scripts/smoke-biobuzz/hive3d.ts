@@ -332,8 +332,10 @@ export function hive3dChecks(check: Check): void {
 
   // ---- G409: the spill tag, with and without a robot under -----------------------------------
   if (BB3_HIVE_DYNAMIC) {
-    /** run a tip and report whether anything was tagged, and how many G409 lines were written. */
-    function tipWithRobot(under: boolean, seed: number): { tagged: number; g409: number } {
+    /** run a tip and report whether anything was tagged, how many G409 lines were written, and
+     * the LOWEST z any element reached while it was still tagged (the tag's reach: see the
+     * "survives the fall" check below). */
+    function tipWithRobot(under: boolean, seed: number): { tagged: number; g409: number; lowestTagged: number } {
       const { world } = loaded(seed, 8, 0);
       if (under) {
         /**
@@ -359,14 +361,17 @@ export function hive3dChecks(check: Check): void {
         world.robots[0].pos.y = 60;
       }
       let tagged = 0;
+      let lowestTagged = Infinity;
       const before = world.events.length;
       for (let t = 0; t < 600; t++) {
         step3d(world, 1 / 60, new Map());
-        const n = Object.keys(world.biobuzz!.spill ?? {}).length;
+        const spill = world.biobuzz!.spill ?? {};
+        const n = Object.keys(spill).length;
         if (n > tagged) tagged = n;
+        for (const b of world.balls) if (spill[b.id] !== undefined && b.z < lowestTagged) lowestTagged = b.z;
       }
       const g409 = world.events.slice(before).filter((e) => e.includes('G409')).length;
-      return { tagged, g409 };
+      return { tagged, g409, lowestTagged };
     }
     const away = tipWithRobot(false, 870);
     const beneath = tipWithRobot(true, 871);
@@ -387,6 +392,24 @@ export function hive3dChecks(check: Check): void {
       'G409: a robot under the down CELL catches the spill and is billed',
       beneath.g409 > 0,
       `${beneath.g409} lines`,
+    );
+    /**
+     * ⚠️ **THE TAG HAS TO OUTLIVE THE TRAY, AND IT DID NOT.** `contacts3d.ts` expires a spill
+     * tag when the element comes to rest — but an element still sitting in the cell it is
+     * leaving reads AT REST twice over: the tag is written on the tick the detent breaks, while
+     * the load is still stacked against the back wall at a dead stop, and `groundRoll3d`'s
+     * off-floor snap then pins anything that dips under `BB3_REST_SPEED` mid-swing to exactly
+     * zero in the WORLD frame while the tray rotates under it. Measured on seed 871: all eight
+     * tags written on tick 13, all eight deleted by tick 16, elements still 48 in up — G409 was
+     * unbillable by a robot parked anywhere, which is what the check above was really reporting.
+     * The fix is that TRAY CONTACT holds the moment open, and THIS is the check that pins it:
+     * with no robot to catch anything the tag may only die on the TILES, so a tagged element
+     * has to have got all the way down. The 46-in reading is the failure mode, not a near miss.
+     */
+    check(
+      'G409: the spill tag outlives the TRAY — it dies on the tiles, not in the cell',
+      away.lowestTagged < 1,
+      `lowest z reached while still tagged ${away.lowestTagged.toFixed(2)} (cell floor is ~46)`,
     );
     const { world: w2 } = loaded(872, 8, 0);
     for (let t = 0; t < 900; t++) step3d(w2, 1 / 60, new Map());

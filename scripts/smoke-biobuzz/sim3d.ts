@@ -9,25 +9,32 @@ import { cadTrayRefTheta, fieldColliders3d } from '../../src/games/biobuzz/sim3d
 import { hiveCellLocalBox, hivePivotX, hiveTrayRefTheta, __setFieldCollidersOverrideForTests } from '../../src/games/biobuzz/sim3d/bodies';
 import { hiveTiltAngle } from '../../src/games/biobuzz/sim3d/hive3d';
 import { rotate2 } from '../../src/games/biobuzz/sim3d/math3';
+import { rot } from '../../src/math';
 import { worldHash } from '../../src/net/checksum';
 import { bbScoreWorld } from '../../src/games/biobuzz/score';
-import { bbSolveShot } from '../../src/games/biobuzz/robot';
+import { bbFootprint, bbSolveShot } from '../../src/games/biobuzz/robot';
+import { robotExtents } from '../../src/sim/physics';
+import { chassis3dShapes } from '../../src/games/biobuzz/sim3d/bodies';
+import { solveShotPath } from '../../src/games/biobuzz/shotPath';
 import {
   BB3_HEIGHT_MAX,
   BB3_ROUND,
   BB3_HIVE_PIVOT_Z,
-  BB3_CAPTURE_TICKS,
+  BB3_MOUTH_SLOT_Z,
+  BB_INTAKE_PERIOD_MAX,
   BB_FLOWERS,
   BB_FLOWER_D,
   BB_FLOWER_OPEN_R,
   BB_FLOWER_TOP_Z,
   BB_FRAME_BAR_IN,
   BB_FRAME_BAR_OUT,
+  BB_DUMP_STAGGER_S,
   BB_GARDEN,
   BB_HALF_X,
   BB_HALF_Y,
   BB_HIVE_BOTTOM_Z,
   BB_HIVE_LOWEST_Z,
+  BB_HIVE_CELL_DY,
   BB_HIVE_OPEN_Z,
   BB_HIVE_X,
   BB_POLLEN_R,
@@ -361,31 +368,96 @@ export function sim3dChecks(check: Check): void {
 
   // ---- a resting element stays at rest ------------------------------------------------------
   {
+    /**
+     * WHAT "AT REST" MEANS UNDER A SOFT-CONTACT SOLVER, and why the tick count kept moving.
+     *
+     * A garden row settles into a COLUMN pressed against the audience wall — on this seed,
+     * elements 29/26/30 end up at y 28.47 / 31.26 / 34.06, i.e. 2.79 in apart against a 2.80-in
+     * diameter, so the column is a few thou interpenetrated. Their VELOCITY is exactly zero from
+     * the moment the roll law snaps it (measured: `vel` and `vz` are hard 0 at tick 900 and stay
+     * 0), and they are not translating under any dynamics. What is left is Rapier resolving that
+     * residual overlap, ~2e-6 in per tick, in the POSITION channel only — invisible to every
+     * gameplay predicate and to `bbSettled`, but not to an exact position compare.
+     *
+     * It DECAYS, and that is the load-bearing fact. Worst drift over consecutive 600-tick
+     * windows, seed 23: 3.91e-2 → 4.20e-3 → 8.0e-4 → 2.0e-4 → 1.0e-4 → EXACTLY 0 from tick 3600.
+     * So 900 settle ticks (the old number, raised from 600 once already when the CAD wall's
+     * inner face moved ~1.33 in inward) does not buy stillness, it buys a smaller number: at 900
+     * ball 26 still relaxes 4.3e-3 in y over the next 600 ticks. Chasing it with a third magic
+     * constant is a treadmill, so the pair below asserts the two things that are actually true:
+     * relaxation CONVERGES (the check after this one), and once it has converged the field is
+     * BIT-STILL — not within a tolerance, not a single unit of the 1e-4 position quantum.
+     */
     const w = mkWorld3d('free', 23);
-    // settle everything first (900 ticks idle -- raised from 600 by the CAD switch-over: the
-    // audience wall's inner face moved ~1.33in inward to the CAD's own measured face (from the
-    // Day 1 constant 72 to ~70.674, `cadWallExtents`), which nudges a couple of this seed's
-    // scattered pollen into a slightly different rest approach; one (id 18) was measured still
-    // rolling at ~2.07 in/s -- just over `BB3_REST_SPEED` (2) -- at the OLD 600-tick mark and
-    // crossing under it (and snapping to rest) around tick ~698. 900 ticks clears that with
-    // margin without changing any physics constant), then snapshot and run 600 more.
-    for (let t = 0; t < 900; t++) step3d(w, 1 / 60, new Map());
+    for (let t = 0; t < 3600; t++) step3d(w, 1 / 60, new Map());
     const ground = w.balls.filter((b) => b.state.kind === 'ground');
     const before = new Map(ground.map((b) => [b.id, { x: b.pos.x, y: b.pos.y, z: b.z }]));
     for (let t = 0; t < 600; t++) step3d(w, 1 / 60, new Map());
     let ok = true;
     let detail = '';
+    let moving = '';
     for (const b of w.balls) {
       if (b.state.kind !== 'ground') continue;
       const was = before.get(b.id);
       if (!was) continue; // was not ground before settling; not part of this check
-      if (Math.abs(was.x - b.pos.x) > 1e-3 || Math.abs(was.y - b.pos.y) > 1e-3 || Math.abs(was.z - b.z) > 1e-3) {
+      // AND ITS VELOCITY IS EXACTLY ZERO, which is the statement `bbSettled` and the HUD read.
+      if (b.vel.x !== 0 || b.vel.y !== 0 || b.vz !== 0) {
+        moving = `ball ${b.id} vel (${b.vel.x},${b.vel.y},${b.vz})`;
+        break;
+      }
+      if (was.x !== b.pos.x || was.y !== b.pos.y || was.z !== b.z) {
         ok = false;
         detail = `ball ${b.id} moved from (${was.x},${was.y},${was.z}) to (${b.pos.x},${b.pos.y},${b.z})`;
         break;
       }
     }
-    check('a settled resting element stays at rest for 600 further ticks', ok, detail);
+    check(
+      'a settled resting element is BIT-still for 600 further ticks, and its velocity is exactly zero',
+      ok && moving === '',
+      detail || moving,
+    );
+  }
+
+  // ---- and the relaxation that gets it there decays, rather than creeping forever -----------
+  {
+    /**
+     * THE CHECK THAT DOES NOT NEED A MAGIC TICK COUNT. Contact-overlap relaxation is allowed —
+     * it is how a soft solver un-jams a packed column — but it has to DIE OUT. A creep that
+     * held its rate, or grew, is the signature of a jitter loop or a pair of colliders fighting
+     * each other, and the fixed-tolerance check above cannot tell that apart from "needs a few
+     * hundred more ticks". So: worst per-axis drift over consecutive 600-tick windows must at
+     * least HALVE each window while it is still above the 1e-3 tolerance, and once under it may
+     * never climb back. Measured ratios on seed 23: 0.107, 0.190, 0.250, 0.500, 0.
+     */
+    const w = mkWorld3d('free', 23);
+    const take = (): Map<number, { x: number; y: number; z: number }> =>
+      new Map(w.balls.filter((b) => b.state.kind === 'ground').map((b) => [b.id, { x: b.pos.x, y: b.pos.y, z: b.z }]));
+    for (let t = 0; t < 600; t++) step3d(w, 1 / 60, new Map());
+    let snap = take();
+    const drifts: number[] = [];
+    for (let win = 0; win < 5; win++) {
+      for (let t = 0; t < 600; t++) step3d(w, 1 / 60, new Map());
+      let worst = 0;
+      for (const b of w.balls) {
+        if (b.state.kind !== 'ground') continue;
+        const was = snap.get(b.id);
+        if (!was) continue;
+        worst = Math.max(worst, Math.abs(was.x - b.pos.x), Math.abs(was.y - b.pos.y), Math.abs(was.z - b.z));
+      }
+      drifts.push(worst);
+      snap = take();
+    }
+    let ok = true;
+    for (let i = 1; i < drifts.length; i++) {
+      const prev = drifts[i - 1];
+      const now = drifts[i];
+      if (prev > 1e-3 ? now > prev / 2 : now > 1e-3) ok = false;
+    }
+    check(
+      'the residual contact relaxation DECAYS — each 600-tick window drifts at most half the last',
+      ok && drifts[0] > 0,
+      `worst drift per window: ${drifts.map((d) => d.toExponential(2)).join(' -> ')}`,
+    );
   }
 
   // ---- CCD: a 260 in/s shot does not tunnel a 0.25-in cell wall ----------------------------
@@ -447,12 +519,16 @@ export function sim3dChecks(check: Check): void {
       target.z = 0;
       target.vel = { x: 0, y: 0 };
       target.vz = 0;
-      // put the ball just IN FRONT of the chassis face, inside the front mouth's rect --
-      // dropping it dead on the robot's own centre (the chassis origin) misses every mouth,
-      // which spans from `hl - depth` outward.
+      // put the ball ON THE ROLLER LINE -- resting against the front of the robot's own
+      // collider, which in 3D is `robotExtents` (intake reach INCLUDED), so this is the
+      // nearest an element can physically get. It used to be dropped at `hl + 1`, i.e. 2 in
+      // INSIDE that collider, which the old instant-capture rule swallowed before the
+      // penetration recovery could fire; the roller model draws it in from where it can
+      // actually be instead (`bbIntakeAct`).
       r.heading = 0;
-      r.pos.x = target.pos.x - (hl + 1);
+      r.pos.x = target.pos.x - (bbFootprint(r.spec).front + BB_POLLEN_R + 0.2);
       r.pos.y = target.pos.y;
+      void hl;
       // EMPTY THE HOPPER FIRST -- a freshly-staged robot already carries its 4 preloaded
       // POLLEN (section 10.3.4), which is exactly `bbHopperCap`'s ceiling for this build, so
       // capture would otherwise refuse for a reason this check is not testing.
@@ -464,7 +540,11 @@ export function sim3dChecks(check: Check): void {
       const engine = engineFor(w);
       const bodiesBefore = engine.elements.size;
       let capturedAtTick = -1;
-      const maxTicks = BB3_CAPTURE_TICKS + 3;
+      // ONE FEED CADENCE, not a fixed dwell: an intake passes one element every
+      // `BB_INTAKE_PERIOD_MIN`..`_MAX` (`bbIntakeAct`), so the budget is the slow end of that
+      // plus a few ticks of transit rather than a fixed dwell, which no longer exists as a
+      // capture rule.
+      const maxTicks = Math.ceil(BB_INTAKE_PERIOD_MAX * 60) + 6;
       for (let t = 0; t < maxTicks; t++) {
         step3d(w, 1 / 60, new Map([[0, cmd({ intake: true })]]));
         const now = w.balls.find((b) => b.id === target.id)!;
@@ -491,6 +571,218 @@ export function sim3dChecks(check: Check): void {
         "intake: the engine's element body count dropped by one",
         engineAfter.elements.size === bodiesBefore - (capturedAtTick >= 0 ? 1 : 0),
         `${bodiesBefore} -> ${engineAfter.elements.size}`,
+      );
+    }
+  }
+
+  // ---- rolling resistance, the rest snap, and the honest tag for an element on structure ---
+  /**
+   * `groundRoll3d` (`engineImpl.ts`) + `derive.ts`'s tagging. Three behaviours, each a bug that
+   * held the post-match settle clock open or put an element permanently out of play.
+   */
+  {
+    const roll = (phys: '2d' | '3d', v0: number): { d: number; s: number } => {
+      const w = phys === '3d' ? mkWorld3d('free', 31) : mkWorld('free', 31);
+      w.balls.length = 0;
+      w.robots[0].hopper.length = 0;
+      w.robots[0].pos = { x: 0, y: 60 };
+      w.robots[0].vel = { x: 0, y: 0 };
+      const b: Artifact = { id: 991, color: 'yellow', r: BB_POLLEN_R, state: { kind: 'ground' }, pos: { x: -60, y: -40 }, vel: { x: v0, y: 0 }, z: 0, vz: 0 };
+      w.balls.push(b);
+      let t = 0;
+      for (; t < 1200; t++) {
+        biobuzzStep(w, 1 / 60, new Map());
+        if (Math.hypot(b.vel.x, b.vel.y) === 0) break;
+      }
+      return { d: b.pos.x + 60, s: t / 60 };
+    };
+    let worst = 0;
+    let detail = '';
+    for (const v0 of [20, 40, 60]) {
+      const a = roll('2d', v0);
+      const c = roll('3d', v0);
+      const err = Math.abs(c.d - a.d) / a.d;
+      if (err > worst) worst = err;
+      detail += `${v0}: 2D ${a.d.toFixed(1)}in/${a.s.toFixed(2)}s vs 3D ${c.d.toFixed(1)}in/${c.s.toFixed(2)}s  `;
+      // AND IT STOPS. Exponential damping never reaches zero; the 2D rest snap does, and so
+      // must this — a ground element still creeping is what held the settle clock open for 8 s.
+      check(`roll 3d: an element launched at ${v0} in/s comes to a HARD stop`, c.s < 20, `${c.s.toFixed(2)}s`);
+    }
+    check('roll 3d: the 3D roll-out matches the 2D pipeline within 15%', worst < 0.15, `worst ${(worst * 100).toFixed(1)}% — ${detail}`);
+
+    // AT REST ON STRUCTURE IS `ground`, NOT `flight` FOREVER. `capturePollen` and the AI's
+    // element scan both read `ground` only, so the old tag put such an element out of play.
+    {
+      const w = mkWorld3d('free', 31);
+      w.balls.length = 0;
+      w.robots[0].hopper.length = 0;
+      w.robots[0].pos = { x: 0, y: -60 };
+      const b: Artifact = { id: 992, color: 'yellow', r: BB_POLLEN_R, state: { kind: 'flight', target: 'blue' }, pos: { x: 12.3, y: -5.6 }, vel: { x: 0, y: 0 }, z: 60, vz: 0 };
+      w.balls.push(b);
+      run3d(w, new Map(), 5);
+      check(
+        'roll 3d: an element at rest ON the HIVE frame reads ground (not flight forever), and is in no cell',
+        b.state.kind === 'ground' && b.z > 1 && Math.hypot(b.vel.x, b.vel.y) === 0 &&
+          !w.biobuzz!.hives.blue.contents.includes(b.id) && !w.biobuzz!.hives.red.contents.includes(b.id),
+        `state=${b.state.kind} z=${b.z.toFixed(2)} |v|=${Math.hypot(b.vel.x, b.vel.y).toFixed(3)}`,
+      );
+    }
+
+    // ...AND AN ELEMENT AT REST INSIDE A CELL STILL COUNTS. The scoring half of the same rule:
+    // membership waits for rest, so anything that breaks the rest test loses the points.
+    {
+      const w = mkWorld3d('free', 31);
+      w.balls.length = 0;
+      w.robots[0].hopper.length = 0;
+      w.robots[0].pos = { x: 0, y: -60 };
+      const up = w.biobuzz!.hives.blue.up;
+      const sign: 1 | -1 = up === 'north' ? 1 : -1;
+      const theta = hiveTiltAngle(w, 'blue');
+      const box = hiveCellLocalBox(sign, 'blue');
+      const p = hiveWorldPoint('blue', sign, theta, 0, (box.vMin + box.vMax) / 2, box.wMin + 2);
+      const b: Artifact = { id: 993, color: 'yellow', r: BB_POLLEN_R, state: { kind: 'flight', target: 'blue' }, pos: { x: p.x, y: p.y }, vel: { x: 0, y: 0 }, z: p.z - BB_POLLEN_R + 2, vz: 0 };
+      w.balls.push(b);
+      run3d(w, new Map(), 3);
+      check(
+        'roll 3d: an element at rest INSIDE a cell is counted in that hive contents list',
+        b.state.kind === 'element' && w.biobuzz!.hives.blue.contents.includes(b.id),
+        `state=${b.state.kind} contents=${JSON.stringify(w.biobuzz!.hives.blue.contents)}`,
+      );
+    }
+
+    // ...AND NOTHING FREEZES IN MID-AIR. The snap's discriminator is CONTACT, not speed: an
+    // element at the apex of a lob is slower than any rest threshold for a tick.
+    {
+      const w = mkWorld3d('free', 31);
+      w.balls.length = 0;
+      w.robots[0].hopper.length = 0;
+      w.robots[0].pos = { x: 0, y: -60 };
+      const b: Artifact = { id: 994, color: 'yellow', r: BB_POLLEN_R, state: { kind: 'flight', target: 'blue' }, pos: { x: -40, y: 30 }, vel: { x: 0, y: 0 }, z: 30, vz: 0 };
+      w.balls.push(b);
+      run3d(w, new Map(), 2);
+      check('roll 3d: an element dropped from 30 in reaches the tiles (the rest snap never freezes one in the air)', b.z < 0.5, `z=${b.z.toFixed(2)}`);
+    }
+  }
+
+  // ---- the ROLLER intake, under 3D physics (`bbIntakeAct`, the SAME model 2D runs) ---------
+  /**
+   * The three cases the 2D lane pins, re-run here because the 3D pipeline reaches the model
+   * from a different place (`elements3d.ts`, after readback) and against a chassis collider
+   * that is `robotExtents` rather than the bare frame — which is exactly the difference
+   * `BbIntakeOpts.seat` exists for, and the one that made every 3D capture un-arrivable when
+   * it was missing.
+   */
+  {
+    const stage = (seed: number, x: number, y: number) => {
+      const w = mkWorld3d('free', seed);
+      const r = w.robots[0];
+      for (const b of w.balls) if (b.state.kind === 'held' && b.state.robot === r.id) b.state = { kind: 'stock', alliance: r.alliance };
+      r.hopper = [];
+      r.pos = { x, y };
+      r.heading = 0;
+      r.vel = { x: 0, y: 0 };
+      r.angVel = 0;
+      r.autoIntake = false;
+      r.autoFire = false;
+      return { w, r };
+    };
+    const pollen = (w: World, x: number, y: number): Artifact => {
+      const id = w.balls.reduce((m, b) => Math.max(m, b.id), 0) + 1;
+      const b: Artifact = { id, color: 'yellow', r: BB_POLLEN_R, state: { kind: 'ground' }, pos: { x, y }, vel: { x: 0, y: 0 }, z: 0, vz: 0 };
+      w.balls.push(b);
+      return b;
+    };
+
+    // THE COMPOUND'S OUTER ENVELOPE IS STILL `robotExtents`. This is the whole safety argument
+    // for opening the mouth: the arm tips and the lintel end exactly where the single cuboid
+    // ended, so wall contact, the wall-flush start pose and start legality cannot have moved.
+    {
+      let bad = '';
+      for (const mount of ['front', 'back', 'side', 'frontback'] as const) {
+        const w = mkWorld3d('free', 71, { intakeMount: mount });
+        const r = w.robots[0];
+        const h = 18;
+        const boxes = chassis3dShapes(r.spec, h);
+        const fe = robotExtents(r);
+        const front = Math.max(...boxes.map((b) => b.cx + b.hx));
+        const rear = -Math.min(...boxes.map((b) => b.cx - b.hx));
+        const half = Math.max(...boxes.map((b) => Math.max(b.cy + b.hy, -(b.cy - b.hy))));
+        const top = Math.max(...boxes.map((b) => b.cz + b.hz));
+        const bottom = Math.min(...boxes.map((b) => b.cz - b.hz));
+        const ok =
+          Math.abs(front - fe.front) < 1e-9 &&
+          Math.abs(rear - fe.rear) < 1e-9 &&
+          Math.abs(half - fe.half) < 1e-9 &&
+          Math.abs(top - h / 2) < 1e-9 &&
+          Math.abs(bottom + h / 2) < 1e-9;
+        if (!ok && !bad) bad = `${mount}: ${front}/${rear}/${half} vs ${fe.front}/${fe.rear}/${fe.half}, z ${bottom}..${top}`;
+      }
+      check('roller 3d: the chassis compound spans exactly robotExtents — the arm tips and the lintel end where the single cuboid did', bad === '', bad);
+    }
+
+    // ...AND THE POCKET IS OPEN ONLY UNDER AN ELEMENT. Nothing covers the mouth below the slot;
+    // above it the lintel does, which is what keeps a wall, a robot and the HIVE where they were.
+    {
+      const w = mkWorld3d('free', 72, { intakeMount: 'front' });
+      const r = w.robots[0];
+      const boxes = chassis3dShapes(r.spec, 18);
+      const probe = (x: number, z: number): boolean =>
+        boxes.some((b) => Math.abs(x - b.cx) < b.hx && Math.abs(0 - b.cy) < b.hy && Math.abs(z - b.cz) < b.hz);
+      const inMouth = r.spec.length / 2 + 1;
+      const low = probe(inMouth, -9 + BB3_MOUTH_SLOT_Z / 2);
+      const high = probe(inMouth, -9 + BB3_MOUTH_SLOT_Z + 1);
+      check(
+        'roller 3d: the mouth pocket is OPEN below one element height and CLOSED above it',
+        !low && high,
+        `low=${low} high=${high} slot=${BB3_MOUTH_SLOT_Z}`,
+      );
+    }
+
+    {
+      const { w } = stage(61, BB_HALF_X - bbFootprint(mkWorld3d('free', 61).robots[0].spec).front - 16, -30);
+      const b = pollen(w, BB_HALF_X - BB_POLLEN_R, -30);
+      run3d(w, new Map([[0, cmd({ driveY: 0.7, intake: true })]]), 3);
+      check('roller 3d: a POLLEN pinned on a wall is captured, not wedged', b.state.kind === 'held', `state=${b.state.kind}`);
+    }
+
+    {
+      const { w, r } = stage(62, -40, -30);
+      const hl = r.spec.length / 2;
+      const hw = r.spec.width / 2;
+      const beside = pollen(w, -40, -30 + hw + BB_POLLEN_R + 1.5);
+      const behind = pollen(w, -40 - (bbFootprint(r.spec).rear + BB_POLLEN_R + 1.5), -30);
+      void hl;
+      run3d(w, new Map([[0, cmd({ intake: true })]]), 2);
+      check(
+        'roller 3d: a parked robot takes nothing from beside or behind its mouths',
+        beside.state.kind === 'ground' && behind.state.kind === 'ground' && r.hopper.length === 0,
+        `beside=${beside.state.kind} behind=${behind.state.kind} hopper=${r.hopper.length}`,
+      );
+    }
+
+    {
+      const { w, r } = stage(63, -40, -30);
+      const cap = r.hopper.length;
+      void cap;
+      const b0 = pollen(w, -40 + bbFootprint(r.spec).front + BB_POLLEN_R + 0.2, -30);
+      // fill the hopper to its cap through the real capture path, then meet one more
+      run3d(w, new Map([[0, cmd({ intake: true })]]), 0.5);
+      const filler: Artifact[] = [];
+      while (r.hopper.length < 4) {
+        const f = pollen(w, -40 + bbFootprint(r.spec).front + BB_POLLEN_R + 0.2, -30);
+        filler.push(f);
+        run3d(w, new Map([[0, cmd({ intake: true })]]), 0.5);
+        if (filler.length > 6) break;
+      }
+      const extra = pollen(w, -40 + bbFootprint(r.spec).front + BB_POLLEN_R + 0.2, -30);
+      const x0 = extra.pos.x;
+      run3d(w, new Map([[0, cmd({ driveY: 0.6, intake: true })]]), 0.8);
+      // NOT `=== 'ground'`: `derive.ts` tags a bouncing element `flight`, and a bulldozed one
+      // bounces. What this asserts is that it was never TAKEN, and that it was shoved.
+      check(
+        'roller 3d: a FULL hopper refuses — the extra POLLEN is pushed, not pulled in',
+        b0.state.kind === 'held' && r.hopper.length === 4 && extra.state.kind !== 'held' && extra.pos.x - x0 > 3,
+        `first=${b0.state.kind} hopper=${r.hopper.length} extra=${extra.state.kind} pushed=${(extra.pos.x - x0).toFixed(1)}in`,
       );
     }
   }
@@ -554,6 +846,201 @@ export function sim3dChecks(check: Check): void {
       w.biobuzz!.hives.red.contents.includes(id),
       `contents=${JSON.stringify(w.biobuzz!.hives.red.contents)}`,
     );
+  }
+
+  // ---- LANE C: A ROBOT'S OWN SOLVED SHOT LANDS IN THE CELL, UNDER 3D PHYSICS -----------------
+  //
+  // The two checks above stage an element at the mouth on purpose, to keep the tray's own
+  // geometry separate from robot aiming. THESE close the other half: no injected artifact, no
+  // hand-built velocity -- a real turret build parked on the field, left to aim ITSELF (no button
+  // held), then fire held. Owner playtest feedback 2026-09-18 item 4 was "the shooter is not
+  // automatically aiming"; this is the 3D end of the measurement that answered it.
+  //
+  // ONE element in the hopper, deliberately: a full hopper tips the cell and empties it, and a
+  // check reading `contents` would then see nothing and call a perfect volley a miss.
+  {
+    const TURRET_C = { bbMech: { launcher: { kind: 'turret' as const, mount: 'center' as const, hoodDeg: 75 }, lift: null } };
+    // out along +y from blue's north cell, which is the side that cell OPENS on
+    for (const [x, y] of [[BB_HIVE_X, 53.4], [BB_HIVE_X, 38.4], [BB_HIVE_X + 25, 48.4], [-30, 55]] as const) {
+      const w = createBiobuzzWorld('free', 41, [setup(0, 'blue', TURRET_C)], undefined, '3d');
+      const r = w.robots[0];
+      r.pos.x = x;
+      r.pos.y = y;
+      r.heading = 0.7;
+      r.vel = { x: 0, y: 0 };
+      r.hopper.length = 1;
+      const shot = r.hopper.length;
+      const idle = new Map([[0, cmd({})]]);
+      for (let t = 0; t < 90; t++) step3d(w, 1 / 60, idle); // the turret slews onto its solution
+      // WHAT THE DRIVER IS SHOWN, on the tick before the trigger (items 5 + 6). The path is
+      // predicted with the 2D ballistic model; the flight below is RAPIER 3D. The two agreeing is
+      // what makes the preview honest in the 3D view, and it is not free — so it is measured here
+      // rather than assumed, in the same worlds that measure the shot.
+      const preview = solveShotPath(w, r);
+      const fire = new Map([[0, cmd({ fire: true })]]);
+      for (let t = 0; t < 60; t++) step3d(w, 1 / 60, fire);
+      for (let t = 0; t < 240; t++) step3d(w, 1 / 60, idle); // ...and the flight lands
+      const cell = w.biobuzz!.hives.blue;
+      const landed = shot === 1 && r.hopper.length === 0 && cell.contents.length >= 4;
+      check(
+        `aim: a self-aimed turret shot from (${x.toFixed(1)}, ${y}) lands in the own CELL under 3D physics`,
+        landed,
+        `hopper=${r.hopper.length} contents=${JSON.stringify(cell.contents)} up=${cell.up} tipping=${cell.tipping.toFixed(2)}`,
+      );
+      check(
+        `shot path: ...and the preview promised that shot from (${x.toFixed(1)}, ${y})`,
+        preview === landed,
+        `preview=${preview} landed=${landed}`,
+      );
+    }
+  }
+
+  // ---- LANE D: A DUMPER SCORES UNDER 3D PHYSICS ----------------------------------------------
+  //
+  // ⚠️ **THIS LANE HAD NO DUMPER COVERAGE AT ALL, WHICH IS WHY A DUMPER THAT COULD NOT SCORE
+  // SHIPPED.** Every check above fires a TURRET, or stages an element at the cell mouth by hand.
+  // A dumper fails in two ways neither of those can see, and both were live in 3D — which is
+  // every server-connected match:
+  //
+  //   (a) its release point is INSIDE its own chassis. `launchLine` releases at
+  //       `mountOrigin('back')` (x = −7.50 on a 15-in frame) at `BB_LAUNCH_Z0` = 10, which on the
+  //       default `frontback` mount straddles the frame box AND the back mouth lintel — a closed
+  //       3-in pocket. A 2D flight element collides with nothing, so 2D never noticed; in 3D all
+  //       four elements rose ~2 in, jammed, and rode the chassis. `syncElement`'s `birthClear`
+  //       fixes it, along the element's own arc so the solved trajectory survives.
+  //   (b) `bbDumpSolution` converges EVERY element on ONE cell-centre point, so a simultaneous
+  //       dump is a four-way pile-up in the opening. `BbShot.perDump` staggers it in 3D only.
+  //
+  // Measured on the 28-pose tutorial grid (`shoot`, dx 0/3/6/9 in, dy 14..38 in off the cell):
+  // 0/28 before, 20/28 after — every pose from 22 in out. The four that still miss are the two
+  // closest rows, where the lob clips the HIVE underside; that is the 2026-09-18 CAD ruling's own
+  // documented consequence and not this bug, so this lane stands the robot back.
+  {
+    const DUMPER = { bbMech: { launcher: { kind: 'dumper' as const, mount: 'back' as const, hoodDeg: 45 }, lift: null } };
+    /** the element's clearance from every chassis solid of every robot, in inches; < 0 is inside. */
+    function chassisGap(w: World, b: Artifact): number {
+      let worst = Infinity;
+      const radius = b.r ?? BB_POLLEN_R;
+      for (const rob of w.robots) {
+        const h = rob.spec.heightIn ?? 18;
+        const l = rot({ x: b.pos.x - rob.pos.x, y: b.pos.y - rob.pos.y }, -rob.heading);
+        const lz = b.z + radius - ((rob.z ?? 0) + h / 2);
+        for (const s of chassis3dShapes(rob.spec, h)) {
+          const dx = Math.max(Math.abs(l.x - s.cx) - s.hx, 0);
+          const dy = Math.max(Math.abs(l.y - s.cy) - s.hy, 0);
+          const dz = Math.max(Math.abs(lz - s.cz) - s.hz, 0);
+          worst = Math.min(worst, Math.sqrt(dx * dx + dy * dy + dz * dz) - radius);
+        }
+      }
+      return worst;
+    }
+
+    // Parked on the open side of blue's up (north) CELL, back edge to the hive, hopper full.
+    // Three standoffs across the range the grid says a dumper owns.
+    for (const dy of [22, 30, 38]) {
+      const w = createBiobuzzWorld('free', 44, [setup(0, 'blue', DUMPER)], undefined, '3d');
+      const r = w.robots[0];
+      r.pos = { x: BB_HIVE_X, y: BB_HIVE_CELL_DY + dy };
+      r.heading = Math.PI / 2; // back edge (−x robot) faces the hive
+      r.vel = { x: 0, y: 0 };
+      r.angVel = 0;
+      const load = r.hopper.length;
+      // ONLY THIS ROBOT'S OWN LOAD is measured. `world.balls` also carries the field's elements
+      // and the SPILL a tipping cell drops, and both pass through `flight` next to the chassis —
+      // counting those would make every number here about somebody else's element.
+      const mine = new Set(
+        w.balls.filter((b) => b.state.kind === 'held' && b.state.robot === 0).map((b) => b.id),
+      );
+      const fire = new Map([[0, cmd({ fire: true })]]);
+      const born = new Set<number>();
+      const pending = new Set<number>();
+      const peak = new Map<number, number>();
+      let minGap = Infinity;
+      let bestPollen = 0;
+      const releaseTicks: number[] = [];
+      let hopper = load;
+      for (let t = 0; t < 420; t++) {
+        step3d(w, 1 / 60, fire);
+        if (r.hopper.length < hopper) {
+          releaseTicks.push(t);
+          hopper = r.hopper.length;
+        }
+        for (const b of w.balls) {
+          if (b.state.kind !== 'flight' || !mine.has(b.id)) continue;
+          // ⚠️ MEASURED ONE TICK LATE, ON PURPOSE. `bbLaunch` runs in the GAMEPLAY stage at the
+          // end of a tick, so the tick an element first reads `flight` is the tick its JSON was
+          // written and BEFORE any body exists for it; `birthClear` runs in the NEXT tick's sync.
+          // Sampling the release tick would measure the raw muzzle point, which is inside the
+          // chassis by construction and is the thing being fixed rather than the thing to assert.
+          if (pending.has(b.id)) {
+            minGap = Math.min(minGap, chassisGap(w, b));
+            pending.delete(b.id);
+          } else if (!born.has(b.id)) pending.add(b.id);
+          born.add(b.id);
+          peak.set(b.id, Math.max(peak.get(b.id) ?? 0, b.z));
+        }
+        // LIVE, not at the end: the CELL empties itself when it tips, so a run that scored
+        // perfectly reads zero afterwards.
+        const kinds = new Map(w.balls.map((b) => [b.id, b.color]));
+        bestPollen = Math.max(
+          bestPollen,
+          w.biobuzz!.hives.blue.contents.filter((id) => kinds.get(id) === 'yellow').length,
+        );
+      }
+      const cell = w.biobuzz!.hives.blue;
+      check(
+        `dump 3d: a dumper parked ${dy} in off its own CELL empties its hopper`,
+        load >= 1 && r.hopper.length === 0 && born.size === load,
+        `load=${load} hopper=${r.hopper.length} flew=${born.size}`,
+      );
+      check(
+        `dump 3d: ...and every element is BORN CLEAR of the chassis that threw it (${dy} in)`,
+        minGap > 0,
+        `worst gap ${minGap === Infinity ? 'n/a' : `${minGap.toFixed(2)}in`}`,
+      );
+      // THE BUG'S OWN SIGNATURE, and the reason this is a height and not a score: an element born
+      // in the pocket apexed at z ≈ 12 and rode the chassis. Reaching the bottom of the opening
+      // band means it genuinely flew.
+      const apex = Math.min(...[...peak.values()]);
+      check(
+        `dump 3d: ...and every one of them reaches the CELL opening band (${dy} in)`,
+        apex >= BB_HIVE_OPEN_Z[0],
+        `lowest apex ${apex.toFixed(1)}in, band starts ${BB_HIVE_OPEN_Z[0].toFixed(1)}in`,
+      );
+      // ONE ELEMENT PER RELEASE, `BB_DUMP_STAGGER_S` apart — `perDump`. Simultaneous releases
+      // would show up here as a single tick in `releaseTicks`.
+      const gaps = releaseTicks.slice(1).map((t, i) => t - releaseTicks[i]);
+      check(
+        `dump 3d: ...released ONE at a time, ${BB_DUMP_STAGGER_S}s apart (${dy} in)`,
+        releaseTicks.length === load && gaps.every((g) => g >= Math.round(BB_DUMP_STAGGER_S * 60) - 1),
+        `ticks=${JSON.stringify(releaseTicks)}`,
+      );
+      check(
+        `dump 3d: ...and POLLEN lands in blue's own CELL (${dy} in)`,
+        bestPollen > 0,
+        `most POLLEN held at once=${bestPollen} tips=${cell.tips}`,
+      );
+    }
+
+    // ⚠️ THE 2D PIPELINE IS PERMANENT, AND `perDump` IS WHAT COULD HAVE BROKEN IT. Nothing in 2D
+    // sets the field, so the dumper branch must still throw the WHOLE hopper on ONE tick. A
+    // shared `launchClearance()` was tried for (a) and reverted for exactly this reason (it took
+    // 3D to 3/28 and 2D to 24/28), so the claim is asserted rather than remembered.
+    {
+      const w = createBiobuzzWorld('free', 44, [setup(0, 'blue', DUMPER)], undefined, '2d');
+      const r = w.robots[0];
+      r.pos = { x: BB_HIVE_X, y: BB_HIVE_CELL_DY + 30 };
+      r.heading = Math.PI / 2;
+      r.vel = { x: 0, y: 0 };
+      const load = r.hopper.length;
+      check('dump 2d: the fixture is really the 2D pipeline', biobuzzPhysics(w) === '2d', biobuzzPhysics(w));
+      biobuzzStep(w, 1 / 60, new Map([[0, cmd({ fire: true })]]));
+      check(
+        'dump 2d: with no perDump the WHOLE hopper still leaves on one tick',
+        load >= 2 && r.hopper.length === 0,
+        `load=${load} → ${r.hopper.length}`,
+      );
+    }
   }
 
   // ---- height clearance under the down cell, against the CAD's OWN measured clearance --------

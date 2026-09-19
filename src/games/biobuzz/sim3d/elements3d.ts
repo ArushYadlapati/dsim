@@ -1,11 +1,11 @@
 import type { Alliance, Artifact, RobotCommand, RobotState, World } from '../../../types';
-import { rot, wrapAngle } from '../../../math';
-import { BB3_CAPTURE_TICKS, BB3_INTAKE_Z, BB_POLLEN_R, BB_HOOD_DEFAULT_DEG, BB_AIM_TOL } from '../config';
+import { wrapAngle } from '../../../math';
+import { BB_HOOD_DEFAULT_DEG, BB_AIM_TOL } from '../config';
 import { capturePollen } from '../elements';
 import { bbAimTarget, bbHumanPlayerTick } from '../play';
-import { bbLaunch, bbMouths, bbSlewTurret, bbTurretSolution, type BbShot } from '../robot';
+import { bbAimHeading, bbIntakeAct, bbLaunch, bbSlewTurret, bbTurretSolution, type BbShot } from '../robot';
 import { bbIsTurreted, bbLauncherOf } from '../mechs';
-import { rectContains, type BiobuzzState } from '../state';
+import { type BiobuzzState } from '../state';
 import { flowerPlace3d, flowerRetrieve3d } from './flower3d';
 import type { Engine3d } from './engineImpl';
 import { bbKindIndex } from '../score';
@@ -43,11 +43,28 @@ import { bbKindIndex } from '../score';
 const ALLIANCES: readonly Alliance[] = ['red', 'blue'];
 
 /**
- * CAPTURE: for each robot (ascending id) with intake held/auto and hopper room, for each
- * `bbMouths(spec)` rect, an eligible ground/slow-flight element whose BOTTOM is below
- * `BB3_INTAKE_Z` for `BB3_CAPTURE_TICKS` consecutive ticks is taken via the SAME `capturePollen`
- * the 2D `interact()` calls (same kind/eligibility rules, same hopper cap). The body disappears
- * on the next sync once its state flips to `held`.
+ * CAPTURE: the SAME roller model the 2D pipeline runs — `bbIntakeAct` (`robot.ts`) decides,
+ * for each robot in id order with its intake held/auto, which elements the rollers have hold of
+ * and which have been drawn to the throat, and the ones that have are taken through the SAME
+ * `capturePollen` (same kind/eligibility rules, same hopper cap, same feed cadence off
+ * `r.lastIntakeAt`). The body disappears on the next sync once its state flips to `held`.
+ *
+ * ⚠️ THE PULL IS A VELOCITY EDIT ON THE JSON, NOT A FORCE. Gameplay runs AFTER readback (stage
+ * 11), so what is written here is what next tick's `syncElement` diffs — it sees the velocity
+ * change and calls `setLinvel` on the body. A force would have had to be applied per tick and
+ * reset per tick (forces PERSIST in Rapier 3D — `docs/area/biobuzz.md`), and a pull that is
+ * really "the roller surface is moving at this speed" is a velocity in the first place.
+ *
+ * `lowFlight` is TRUE here and false in 2D, and it is now the ONLY difference: in 3D a shallow
+ * bounce is a real body passing through the mouth, and `BB3_INTAKE_Z` is the roller's reach above
+ * the tiles. The old `BB3_CAPTURE_TICKS` consecutive-overlap dwell is gone — the transit to the
+ * throat and `BB_INTAKE_CROSS_MAX` do that job now, for both backends.
+ *
+ * ⚠️ `seat` IS THE DEFAULT (`'chassis'`) AGAIN, because the 3D chassis collider is a COMPOUND
+ * with an OPEN intake mouth (`chassis3dShapes`). While it was one `robotExtents` cuboid the mouth
+ * was solid, an element could never get nearer than the roller line, and this call had to pass
+ * `seat: 'footprint'` to have an arrivable throat at all. Both backends now let an element ride
+ * into the pocket and seat on the frame face, so both run the same geometry.
  */
 export function elements3dCapture(
   world: World,
@@ -55,35 +72,18 @@ export function elements3dCapture(
   cmds: Map<number, RobotCommand>,
   enabled: boolean,
 ): void {
+  // `engine` is kept in the signature (and unused) because this is the stage-11 slot `step3d`
+  // calls; the roller model reads the WORLD's JSON and nothing else, which is what lets 2D and
+  // 3D run the same function.
+  void engine;
   const robots = [...world.robots].sort((a, b) => a.id - b.id);
-  const captured = new Set<number>();
   for (const rob of robots) {
     if (rob.passive) continue;
     const cmd = cmds.get(rob.id);
-    const intakeActive = enabled && (rob.autoIntake || (cmd?.intake ?? false));
-    if (!intakeActive) continue;
-    const mouths = bbMouths(rob.spec);
-    for (const b of world.balls) {
-      if (captured.has(b.id)) continue;
-      if (b.state.kind !== 'ground' && b.state.kind !== 'flight') continue;
-      if (b.z > BB3_INTAKE_Z) continue; // too high off the tiles for a sweeper to reach
-      const local = rot({ x: b.pos.x - rob.pos.x, y: b.pos.y - rob.pos.y }, -rob.heading);
-      const pad = b.r ?? BB_POLLEN_R;
-      let inMouth = false;
-      for (const m of mouths) {
-        if (rectContains(m, local.x, local.y, pad)) {
-          inMouth = true;
-          break;
-        }
-      }
-      const prev = engine.captureTicks.get(b.id) ?? 0;
-      const ticks = inMouth ? prev + 1 : 0;
-      engine.captureTicks.set(b.id, ticks);
-      if (inMouth && ticks >= BB3_CAPTURE_TICKS && capturePollen(world, rob, b)) {
-        captured.add(b.id);
-        engine.captureTicks.delete(b.id);
-      }
-    }
+    if (!(enabled && (rob.autoIntake || (cmd?.intake ?? false)))) continue;
+    const act = bbIntakeAct(world, rob, { lowFlight: true });
+    for (const p of act.pull) p.ball.vel = p.vel;
+    for (const b of act.take) capturePollen(world, rob, b);
   }
 }
 
@@ -134,10 +134,27 @@ export function elements3dAimAndLaunch(
       }
       shots.set(rob.id, { target, speed, lands });
     } else {
-      // a dumper's own chassis-aim hook lives in step3d.ts (mirroring step.ts's stage 2 for the
-      // 2D pipeline); here it only needs somewhere to fire once it is on target, which
-      // `bbLaunch` itself re-checks via `bbDumpSolution`.
-      shots.set(rob.id, { target, speed: [], lands: [true] });
+      // ⚠️ A DUMPER IS GATED ON ITS CHASSIS HEADING, exactly as a turret is gated on its yaw and
+      // pitch. `bbLaunch`'s own re-check is `bbDumpSolution`, which answers REACHABLE, not AIMED —
+      // so an unconditional `lands: [true]` here let a dumper empty its whole hopper on the first
+      // tick fire was held, at whatever heading it happened to be sitting at. The 2D pipeline has
+      // always gated it (`play.ts` stage 5b); 3D did not, and 3D is now every server-connected
+      // match. The chassis-aim hook in `step3dImpl.ts` steers it here while fire is held.
+      //
+      // The LANDING half of stage 5b (`bbFlightEnters` on every throw) is deliberately NOT copied:
+      // this file gates on ALIGNMENT rather than a ballistic prediction -- see the header -- and
+      // the 3D solve is what decides where a throw actually lands.
+      //
+      // ⚠️ AND IT POURS, ONE ELEMENT AT A TIME (`BbShot.perDump`, `robot.ts`). 2D throws the whole
+      // hopper on one tick because a 2D flight element collides with nothing; here every one is a
+      // real body and `bbDumpSolution` converges all of them on the SAME cell-centre point, so a
+      // four-element dump is a four-way pile-up in the opening. Measured on the tutorial's own
+      // 28-pose grid, with the birth clearance in: four at once 3/28, one every
+      // `BB_DUMP_STAGGER_S` 20/28. This is the ONLY caller that sets the field, and 2D's dumper
+      // branch is untouched by its existence.
+      const want = bbAimHeading(rob, target);
+      const aligned = want !== null && Math.abs(wrapAngle(want - rob.heading)) < BB_AIM_TOL;
+      shots.set(rob.id, { target, speed: [], lands: [aligned], perDump: 1 });
     }
   }
   for (const rob of world.robots) {

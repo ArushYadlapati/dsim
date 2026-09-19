@@ -1839,11 +1839,64 @@ function settleChecks(check: Check): void {
     g.vel = { x: 0, y: 0 };
     const keep = g.state;
     g.state = { kind: 'flight', target: 'red', by: 'red' };
+    g.vel = { x: 60, y: 0 };
     check('SETTLE: an element in FLIGHT is not settled (a CELL can still take it)', !bbSettled(w));
+    g.vel = { x: 0, y: 0 };
+    g.vz = -40;
+    check('SETTLE: an element FALLING is not settled even with no ground speed', !bbSettled(w));
+    g.vz = 0;
     g.state = keep;
   }
   w.robots[0].angVel = 1;
   check('SETTLE: a robot still turning is not settled', !bbSettled(w));
+  w.robots[0].angVel = 0;
+
+  // ── E1 (owner report 2026-09-18: "'Waiting for the field to settle' takes forever when
+  //    nothing is moving"). Both halves of `bbSettled` used to answer a question that is not
+  //    about motion, and under 3D physics both answered "still moving" forever. See the two
+  //    warning blocks in `src/games/biobuzz/settle.ts` for the measured runs.
+  {
+    const f = bbSettleWorld('match', 5);
+    for (const b of f.balls) {
+      b.vel = { x: 0, y: 0 };
+      b.vz = 0;
+    }
+    const shelf = f.balls.find((b) => b.state.kind === 'ground');
+    if (shelf) {
+      // `derive.ts` tags anything off the tiles and outside a cell/tube as `flight`, so an
+      // element AT REST on the hive frame is permanently `flight`. It must not hold the clock.
+      shelf.state = { kind: 'flight', target: 'red', by: 'red' };
+      shelf.z = 43.9;
+      check(
+        'E1 SETTLE: an element at REST off the tiles (tagged `flight` by derive) is settled',
+        bbSettled(f),
+      );
+      shelf.state = { kind: 'ground' };
+      shelf.z = 0;
+    }
+    const bbf = f.biobuzz;
+    if (bbf) {
+      // THE DYNAMIC TRAY answers with its own angular speed, never with the timer's load table.
+      const red = bbf.hives.red;
+      const loaded = [...f.balls].slice(0, BB_TIP_POLLEN[0]).map((b) => b.id);
+      bbf.hives.red = { ...red, contents: loaded, angle: 0.5236, angVel: 0 };
+      check(
+        'E1 SETTLE: a DYNAMIC tray resting on its stop is settled, whatever the load table says',
+        bbSettled(f),
+        `n=${loaded.length}`,
+      );
+      bbf.hives.red = { ...bbf.hives.red, angVel: 1 };
+      check('E1 SETTLE: a DYNAMIC tray still swinging is not settled', !bbSettled(f));
+      // ...and the TIMER tray (no `angle` — a 2D world, a 2D-era replay, a snapshot) still
+      // waits for the swing the load table says is coming.
+      bbf.hives.red = { up: red.up, contents: loaded, tips: red.tips, tipping: 0, released: false };
+      check(
+        'E1 SETTLE: a TIMER tray loaded past its threshold is still not settled (a swing is due)',
+        !bbSettled(f),
+      );
+      bbf.hives.red = red;
+    }
+  }
 }
 
 export function rulesChecks(check: Check): void {

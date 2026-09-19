@@ -140,6 +140,8 @@ class BiobuzzScene implements GameScene {
   private readonly elements: BbElements;
   private readonly robots: BbRobots;
   private readonly reticle: BbReticle;
+  /** does the device's `effects` setting want the shot path at all (see `applyQuality`)? */
+  private reticleOn = true;
   private readonly env: BbEnvironment;
   private readonly stats: BbStats;
   private readonly governor: QualityGovernor;
@@ -329,7 +331,10 @@ class BiobuzzScene implements GameScene {
 
     // ── effects ────────────────────────────────────────────────────────────────────────────
     this.elements.rollingSpin = s.effects !== 'minimal';
-    this.reticle.group.visible = s.effects !== 'minimal';
+    // ⚠️ A FLAG, NOT `group.visible`. `updateBiobuzzReticle` writes `visible` every frame, so a
+    // value set here was overwritten on the next one and `minimal` never actually turned the shot
+    // path off.
+    this.reticleOn = s.effects !== 'minimal';
 
     // ── environment and its lighting ───────────────────────────────────────────────────────
     // With the IBL off there is no ambient term but the hemisphere light, so it carries more.
@@ -561,7 +566,7 @@ class BiobuzzScene implements GameScene {
     updateBiobuzzField(this.field, world);
     updateBiobuzzElements(this.elements, world);
     updateBiobuzzRobots(this.robots, world);
-    updateBiobuzzReticle(this.reticle, world, frame.localRobotId);
+    updateBiobuzzReticle(this.reticle, world, frame.localRobotId, this.reticleOn);
     // a robot appeared or its spec changed: its materials are new and have never been tuned
     if (this.robots.group.children.length !== this.robotChildren) this.tuneMaterials();
 

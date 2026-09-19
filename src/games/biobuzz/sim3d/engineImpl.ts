@@ -14,9 +14,9 @@ import { rapier3d, type Rapier3d } from './engine';
 import type { Alliance, Artifact, BallState, RobotState, World } from '../../../types';
 import { chassisInertia } from '../../../sim/robot';
 import { shoveMass } from '../../../sim/drivetrain';
-import { robotExtents } from '../../../sim/physics';
-import { PHYS_FRICTION, PHYS_WALL_FRICTION, GRAVITY, PHYS_SOLVER_ITERS, PHYS_CONTACT_FREQ, PHYS_ALLOWED_ERROR } from '../../../config';
-import { BB3_CCD_SPEED, BB_POLLEN_R, bbHeightNow } from '../config';
+import { BALL_REST_SPEED, PHYS_FRICTION, PHYS_WALL_FRICTION, GRAVITY, PHYS_SOLVER_ITERS, PHYS_CONTACT_FREQ, PHYS_ALLOWED_ERROR } from '../../../config';
+import { BB3_CCD_SPEED, BB3_LAUNCH_CLEAR_MAX, BB3_LAUNCH_CLEAR_SLOP, BB3_LAUNCH_CLEAR_STEP, BB3_REST_SPEED, BB3_REST_TICKS, BB3_ROLL_DECEL, BB3_ROLL_FLOOR_Z, BB_POLLEN_R, bbHeightNow } from '../config';
+import { chassis3dShapes, type Chassis3dShape } from './bodies';
 import {
   buildHiveTray3d,
   buildStatics3d,
@@ -29,7 +29,7 @@ import {
   ELEMENT_ROLL_DAMP,
 } from './bodies';
 import { hyp3, QUAT_IDENTITY, round4, yawQuat, yawOfQuat } from './math3';
-import { datan2 } from '../../../math';
+import { datan2, rot } from '../../../math';
 
 /** the LAST JSON a robot body was synced to -- what `syncRobot` diffs the CURRENT `RobotState`
  * against to decide "did something outside the solve move this" (see plan section 3.2). */
@@ -75,11 +75,6 @@ export interface Engine3d {
   /** element id -> consecutive ticks under `BB3_REST_SPEED` (`derive.ts`'s cell-membership
    * timer). Reset to 0 the instant an element is faster than that, off by any writer. */
   restTicks: Map<number, number>;
-  /** ballId -> consecutive ticks inside an eligible intake mouth (`elements3d.ts`'s
-   * capture timer, `BB3_CAPTURE_TICKS`). Separate from `restTicks`: a fast-moving element can
-   * still be captured (a slow flight ball), and a resting one outside every mouth never starts
-   * this clock. */
-  captureTicks: Map<number, number>;
   lastRobot: Map<number, LastRobot>;
   lastElement: Map<number, LastElement>;
   /**
@@ -150,7 +145,6 @@ function buildEngine(world: World): Engine3d {
     hiveJoints,
     hiveHeld: { red: true, blue: true },
     restTicks: new Map(),
-    captureTicks: new Map(),
     lastRobot: new Map(),
     lastElement: new Map(),
     robotHeights: new Map(),
@@ -162,7 +156,7 @@ function buildEngine(world: World): Engine3d {
   for (const r of [...world.robots].sort((a, b) => a.id - b.id)) {
     syncRobot(RAPIER, engine, r, bbHeightNow(world, r.spec));
   }
-  for (const b of [...world.balls].sort((a, b) => a.id - b.id)) syncElement(RAPIER, engine, b);
+  for (const b of [...world.balls].sort((a, b) => a.id - b.id)) syncElement(RAPIER, engine, world, b);
   return engine;
 }
 
@@ -205,15 +199,19 @@ function addChassisCollider(
   r: RobotState,
   heightIn: number,
 ): void {
-  const fe = robotExtents(r);
-  const hx = (fe.front + fe.rear) / 2;
-  const forward = (fe.front - fe.rear) / 2;
-  const collider = RAPIER.ColliderDesc.cuboid(hx, fe.half, heightIn / 2)
-    .setTranslation(forward, 0, 0)
-    .setDensity(0) // mass comes ENTIRELY from `setAdditionalMassProperties`, every tick
-    .setFriction(PHYS_FRICTION)
-    .setRestitution(0);
-  engine.world3d.createCollider(collider, body);
+  // A COMPOUND WITH AN OPEN MOUTH, not one `robotExtents` cuboid — see `chassis3dShapes`
+  // (`bodies.ts`) for what it is and for why the outermost surfaces are unchanged. Every box is
+  // density 0; the body's real mass and inertia are written below, every tick.
+  for (const s of chassis3dShapes(r.spec, heightIn)) {
+    engine.world3d.createCollider(
+      RAPIER.ColliderDesc.cuboid(s.hx, s.hy, s.hz)
+        .setTranslation(s.cx, s.cy, s.cz)
+        .setDensity(0)
+        .setFriction(PHYS_FRICTION)
+        .setRestitution(0),
+      body,
+    );
+  }
 }
 
 /** the height a robot's collider is CURRENTLY built to — the recorded one, falling back to the
@@ -384,7 +382,113 @@ function removeElementBody(engine: Engine3d, id: number): void {
  * body outright, since a Rapier body's type is fixed at creation. Otherwise this is the same
  * create-once / diff-teleport-or-leave-alone rule `syncRobot` uses.
  */
-function syncElement(RAPIER: Rapier3d, engine: Engine3d, b: Artifact): void {
+/** the distance from a point to a `Chassis3dShape` box, both in the SAME robot frame; 0 inside. */
+function boxGap(s: Chassis3dShape, lx: number, ly: number, lz: number): number {
+  const dx = Math.max(Math.abs(lx - s.cx) - s.hx, 0);
+  const dy = Math.max(Math.abs(ly - s.cy) - s.hy, 0);
+  const dz = Math.max(Math.abs(lz - s.cz) - s.hz, 0);
+  return hyp3(dx, dy, dz);
+}
+
+/** one robot's chassis compound, plus what it takes to put a world point into its frame. */
+interface BirthSolid {
+  px: number;
+  py: number;
+  /** the chassis MID-height in world z — `Chassis3dShape.cz` is measured from here */
+  pz: number;
+  heading: number;
+  shapes: readonly Chassis3dShape[];
+}
+
+/** is this world-frame sphere centre clear of every chassis solid by at least `need`? */
+function clearOfSolids(solids: readonly BirthSolid[], x: number, y: number, z: number, need: number): boolean {
+  for (const s of solids) {
+    const l = rot({ x: x - s.px, y: y - s.py }, -s.heading);
+    const lz = z - s.pz;
+    for (const box of s.shapes) if (boxGap(box, l.x, l.y, lz) < need) return false;
+  }
+  return true;
+}
+
+/**
+ * ⚠️ **A FLIGHT BODY IS BORN CLEAR OF THE ROBOT THAT THREW IT.** 3D only, by construction: this
+ * runs at the moment `syncElement` CREATES a body, and 2D never creates one.
+ *
+ * A launch point is a point on the MECHANISM, and a mechanism lives inside the robot. On the
+ * default 15x17 frame with the default `frontback` mount, `launchLine` releases a dump at
+ * `mountOrigin('back')` x = −7.50, z = `BB_LAUNCH_Z0` = 10 — straddling BOTH the frame box
+ * (x[−7.50,7.50], z[0,18]) and the back mouth LINTEL (x[−10.50,−7.50], z[3.60,18.00]), which is
+ * a closed 3-inch pocket. 2D does not care: a flight element there collides with nothing. In 3D
+ * every one of those elements is a real sphere inside a real compound, and the measurement was
+ * total — all four rose ~2 in, jammed, and rode the chassis at z≈12 without ever entering
+ * flight. **0/28 on the 28-pose tutorial grid; a dumper could not score at all, and 3D is every
+ * server-connected match.**
+ *
+ * The fix belongs HERE and not in the shared release. A shared `launchClearance()` in `robot.ts`
+ * was tried and reverted: it took 3D to 3/28 and regressed 2D to 24/28, because it moves the
+ * release point every 2D check measures from. The sync rule — a body is teleported only when its
+ * JSON differs from what the last readback wrote — is what makes a one-time nudge at CREATION
+ * stick instead of being undone on the next tick.
+ *
+ * ⚠️ **THE MARCH IS ALONG THE ELEMENT'S OWN BALLISTIC ARC, AND THE VELOCITY IS ADVANCED WITH
+ * IT** — the body is born a few milliseconds further down the parabola it was solved onto, not
+ * translated off it. That distinction is the whole difference between a fix and a different
+ * miss, and the measurement says so: a dumper's lob leaves at 80.6° (vh 33.6, vz 203.1 in/s),
+ * so the only cheap way out of the pocket is UP, and a straight-ray nudge of 8.9 in raises the
+ * RELEASE 8.9 in while leaving the solved `vz` alone. The arc then apexes at 68.5 instead of
+ * 63.4, clears the top of the opening band (65.5) and hits the structure above it: 3/28 on the
+ * grid, a fix that scored barely better than the bug. Advancing `vz` by `g·t` over the same path
+ * puts the apex back at 63.4 and the element back through the opening, descending and inboard,
+ * because it is quite literally the same throw — just started `t` later.
+ *
+ * The JSON is written back so the 2D map, the 3D scene and the body all agree about where the
+ * element is. A body that finds no clear point inside `BB3_LAUNCH_CLEAR_MAX` of path is left
+ * exactly where the release put it.
+ *
+ * It runs on EVERY flight body this engine creates, not only on a fresh launch, so an engine
+ * REBUILD (`engineFor`: a tick going backwards, a robot joining or leaving) that happens to
+ * re-create a mid-air element while it is against a chassis nudges that one too. That is wanted
+ * rather than tolerated: creating a body inside a solid is the failure being prevented, whatever
+ * put it there, and the nudge is a pure function of the world JSON, so every peer that rebuilds
+ * from the same state makes the same one.
+ */
+function birthClear(engine: Engine3d, world: World, b: Artifact, radius: number): void {
+  const sp = hyp3(b.vel.x, b.vel.y, b.vz);
+  if (!(sp > 1e-9)) return;
+  const solids: BirthSolid[] = [];
+  for (const rob of world.robots) {
+    const h = builtHeight(engine, rob);
+    solids.push({
+      px: rob.pos.x,
+      py: rob.pos.y,
+      pz: (rob.z ?? 0) + h / 2,
+      heading: rob.heading,
+      shapes: chassis3dShapes(rob.spec, h),
+    });
+  }
+  if (solids.length === 0) return;
+  const need = radius + BB3_LAUNCH_CLEAR_SLOP;
+  const z0 = b.z + radius;
+  if (clearOfSolids(solids, b.pos.x, b.pos.y, z0, need)) return;
+  // the march is in TIME, one `BB3_LAUNCH_CLEAR_STEP` of path per sample at the release speed —
+  // which is the same thing as stepping along the velocity over these distances (the parabola
+  // drops 0.37 in over the 9 in a default dumper needs) while staying exactly on the arc.
+  const dt = BB3_LAUNCH_CLEAR_STEP / sp;
+  const tMax = BB3_LAUNCH_CLEAR_MAX / sp;
+  for (let t = dt; t <= tMax; t += dt) {
+    const x = b.pos.x + b.vel.x * t;
+    const y = b.pos.y + b.vel.y * t;
+    const z = z0 + b.vz * t - 0.5 * GRAVITY * t * t;
+    if (clearOfSolids(solids, x, y, z, need)) {
+      b.pos = { x, y };
+      b.z = z - radius;
+      b.vz = b.vz - GRAVITY * t;
+      return;
+    }
+  }
+}
+
+function syncElement(RAPIER: Rapier3d, engine: Engine3d, world: World, b: Artifact): void {
   const existing = engine.elements.get(b.id);
 
   if (!wantsDynamicBody(b.state)) {
@@ -394,8 +498,10 @@ function syncElement(RAPIER: Rapier3d, engine: Engine3d, b: Artifact): void {
 
   const last = engine.lastElement.get(b.id);
   const r = b.r ?? BB_POLLEN_R;
-  const centreZ = b.z + r;
   const isNectar = b.color === 'red' || b.color === 'blue';
+
+  if (!existing && b.state.kind === 'flight') birthClear(engine, world, b, r);
+  const centreZ = b.z + r;
 
   if (!existing) {
     const body = engine.world3d.createRigidBody(
@@ -448,7 +554,7 @@ function syncElement(RAPIER: Rapier3d, engine: Engine3d, b: Artifact): void {
 /** sync every artifact in `world.balls`. */
 export function syncElements(world: World, engine: Engine3d): void {
   const RAPIER = rapier3d();
-  for (const b of world.balls) syncElement(RAPIER, engine, b);
+  for (const b of world.balls) syncElement(RAPIER, engine, world, b);
 }
 
 import { BB_HALF_X, BB_HALF_Y } from '../config';
@@ -632,5 +738,75 @@ export function containmentPass(world: World, engine: Engine3d): void {
       body.setLinvel({ x: 0, y: 0, z: 0 }, true);
     }
     engine.containmentFixes++;
+  }
+}
+
+/**
+ * ⚠️ **ROLLING RESISTANCE IS COULOMB, NOT EXPONENTIAL — AND WITHOUT IT A 3D ELEMENT NEVER
+ * STOPS.** Rapier bleeds a rolling sphere's speed with `setAngularDamping`, which is a
+ * PROPORTIONAL law: the speed halves, and halves again, and is never zero. The 2D pipeline
+ * stops a POLLEN with the shared `stepGroundBall` — a CONSTANT deceleration
+ * (`BALL_ROLL_FRICTION`) plus a hard snap under `BALL_REST_SPEED` — which is what a ball on
+ * carpet actually does and what gives it a finite roll-out.
+ *
+ * The cost of the difference was not physical realism, it was the MATCH CLOCK: an element
+ * coasting at a speed no player can see held the settle predicate open for seconds after the
+ * buzzer (measured by the settle lane before this pass: 6.60 / 7.02 / 8.13 s to finalize on
+ * seeds 7 / 21 / 99, against 2D's 0.52 s, every one of them held by a ground element still
+ * reading as "moving").
+ *
+ * WHAT IT DOES, in three cases, and the third is the one that is easy to get wrong:
+ *  1. **ON THE TILES** — the shared constant deceleration and the shared rest snap, applied to
+ *     the BODY (linear AND angular: a sphere whose spin survived the snap simply rolls off
+ *     again on the next tick's contact).
+ *  2. **AT REST ON SOMETHING ELSE** — a hive frame bar, a tray floor, a FLOWER's ring plate, a
+ *     pile of other elements. No rolling law (it may be on a slope and entitled to slide), but
+ *     once it has read at rest for `BB3_REST_TICKS` it is snapped the same way, which is what
+ *     stops the damping creep that the JSON-side snap in `derive.ts` could never reach: that one
+ *     is gated on the element's TAG, and an element on structure is tagged `flight`.
+ *  3. **IN THE AIR** — nothing, ever. An element at the apex of a lob is momentarily slower than
+ *     any rest threshold there is, and snapping it would freeze it in mid-air. The
+ *     discriminator is CONTACT, asked of the narrow phase, not height or speed.
+ */
+export function groundRoll3d(world: World, engine: Engine3d, dt: number): void {
+  for (const b of world.balls) {
+    if (!wantsDynamicBody(b.state)) continue;
+    const body = engine.elements.get(b.id);
+    if (!body) continue;
+    const speed = Math.sqrt(b.vel.x * b.vel.x + b.vel.y * b.vel.y);
+    const onFloor = b.z <= BB3_ROLL_FLOOR_Z;
+
+    if (onFloor) {
+      // the 2D law, verbatim: constant deceleration, then the hard snap.
+      let ns = speed - BB3_ROLL_DECEL * dt;
+      if (ns <= 0 || ns < BALL_REST_SPEED) ns = 0;
+      const k = speed > 1e-9 ? ns / speed : 0;
+      b.vel.x *= k;
+      b.vel.y *= k;
+      if (ns === 0) b.vz = 0;
+      body.setLinvel({ x: b.vel.x, y: b.vel.y, z: ns === 0 ? 0 : b.vz }, true);
+      // THE SPIN GOES WITH IT. Scaled by the same factor while it is rolling, zeroed with it at
+      // rest — a stopped sphere still spinning re-accelerates itself through floor contact.
+      const w = body.angvel();
+      body.setAngvel({ x: w.x * k, y: w.y * k, z: w.z * k }, true);
+      continue;
+    }
+
+    // OFF THE FLOOR: only an element that is TOUCHING something and has read at rest for a
+    // while, and only to stop the creep — never a rolling law, and never in mid-air.
+    const still = speed < BB3_REST_SPEED && Math.abs(b.vz) < BB3_REST_SPEED;
+    if (!still || (engine.restTicks.get(b.id) ?? 0) < BB3_REST_TICKS) continue;
+    let touching = false;
+    for (let i = 0; i < body.numColliders() && !touching; i++) {
+      engine.world3d.contactPairsWith(body.collider(i), () => {
+        touching = true;
+      });
+    }
+    if (!touching) continue;
+    b.vel.x = 0;
+    b.vel.y = 0;
+    b.vz = 0;
+    body.setLinvel({ x: 0, y: 0, z: 0 }, true);
+    body.setAngvel({ x: 0, y: 0, z: 0 }, true);
   }
 }

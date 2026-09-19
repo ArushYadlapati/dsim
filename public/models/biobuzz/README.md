@@ -191,6 +191,14 @@ Three things make it trustworthy rather than merely convenient:
   file committed without re-running the emitter, or a hand-edit of the generated constants, is a
   red test rather than a silent divergence.
 
+One group in `TAPE` is NOT a measurement and says so in its own name: **`TAPE.gardenSupplement`**,
+a 0.573 × 2.000 in patch per alliance. The CAD's GARDEN band stops 0.573 in clear of the wall at the
+alliance corner (no tape on this field runs onto the perimeter) while `GARDEN` — the SCORED zone —
+snaps that edge onto the wall, so the drawn band stopped short of the corner it is defined to reach.
+It is a separate group on purpose: the zone rectangles are built from `TAPE.garden` alone, so the
+patch cannot move a rule, and the SIM3D lane's "no drawn strip runs onto a wall" check still binds
+the 16 real strips. Both renderers draw it beside them.
+
 A dimension the measurements file does NOT carry is left in `config.ts` and flagged there; today
 that is `BB_FLOWER_TOP_Z` and `BB_FLOWER_FOOT`, both of which need `convert.py` to emit the
 flower's per-ring z bands and its on-tile plate footprint. `docs/biobuzz/field-cad-audit.md` §6

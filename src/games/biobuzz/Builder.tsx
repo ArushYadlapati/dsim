@@ -86,6 +86,20 @@ export interface BiobuzzBuilderProps {
   setSpec(patch: Partial<RobotSpec>): void;
 }
 
+/**
+ * A DIAL'S VALUE, AT ITS OWN STEP'S PRECISION — the belt to `coerceBiobuzzSpec`'s braces.
+ *
+ * The coercer snaps every size onto its slider's grid, which is where the 15-digit width was
+ * actually fixed (owner re-report, 2026-09-18). This is the second line of defence: a value that
+ * reaches this component off-grid anyway — a hand-edited save, a spec from a peer running an
+ * older coercer — prints as `16.3` rather than as `16.331227996399747`. A slider can never mean
+ * more precision than one step, so printing more is never right.
+ */
+function dialText(v: number, step: number): string {
+  const decimals = step >= 1 ? 0 : String(step).split('.')[1]?.length ?? 1;
+  return v.toFixed(decimals);
+}
+
 /** hover text for a double turret's cell that cannot take `which` turret, or undefined. */
 function twinCellBlock(m: BbMountPos, at: BbMountPos, other: BbMountPos, otherName: string): string | undefined {
   if (m === 'center') return 'A double turret can’t use the centre: it neighbours every cell';
@@ -351,7 +365,7 @@ export function BiobuzzBuilder({ spec, setSpec }: BiobuzzBuilderProps) {
       <div className="ds-fields">
         <label className="ds-field">
           <span className="cap">
-            Length <span className="val">{spec.length}&quot;</span>
+            Length <span className="val">{dialText(spec.length, BB_SIZE_STEP)}&quot;</span>
           </span>
           <input
             className="ds-range"
@@ -366,7 +380,7 @@ export function BiobuzzBuilder({ spec, setSpec }: BiobuzzBuilderProps) {
         </label>
         <label className="ds-field">
           <span className="cap">
-            Width <span className="val">{spec.width}&quot;</span>
+            Width <span className="val">{dialText(spec.width, BB_SIZE_STEP)}&quot;</span>
           </span>
           <input
             className="ds-range"
@@ -381,7 +395,7 @@ export function BiobuzzBuilder({ spec, setSpec }: BiobuzzBuilderProps) {
         </label>
         <label className="ds-field">
           <span className="cap">
-            Mass <span className="val">{spec.massLb} lb</span>
+            Mass <span className="val">{dialText(spec.massLb, 0.1)} lb</span>
           </span>
           <input
             className="ds-range"
@@ -425,7 +439,7 @@ export function BiobuzzBuilder({ spec, setSpec }: BiobuzzBuilderProps) {
             below and the note under it. */}
         <label className="ds-field">
           <span className="cap">
-            Height <span className="val">{deployed}&quot;</span>
+            Height <span className="val">{dialText(deployed, 1)}&quot;</span>
           </span>
           <input
             className="ds-range"
@@ -447,7 +461,7 @@ export function BiobuzzBuilder({ spec, setSpec }: BiobuzzBuilderProps) {
         {folds && (
           <label className="ds-field">
             <span className="cap">
-              Stow height <span className="val">{stow}&quot;</span>
+              Stow height <span className="val">{dialText(stow, 1)}&quot;</span>
             </span>
             <input
               className="ds-range"

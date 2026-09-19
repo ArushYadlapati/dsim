@@ -7,7 +7,7 @@ import { updateBiobuzzPenalties } from '../penalties';
 import { bbApplyScore, bbScoreWorld } from '../score';
 import { biobuzzStepMatch } from '../step';
 import { BB_HALF_X, BB_HALF_Y } from '../config';
-import { engineFor, syncElements, syncRobots, applyHiveTilt, stepWorld3d, readback, containmentPass } from './engineImpl';
+import { engineFor, syncElements, syncRobots, applyHiveTilt, stepWorld3d, readback, containmentPass, groundRoll3d } from './engineImpl';
 import { applyRobotWrench } from './robot3d';
 import { deriveTick } from './derive';
 import { hiveContactPass } from './contacts3d';
@@ -124,6 +124,12 @@ export function step3d(world: World, dt: number, commands: Map<number, RobotComm
 
   // 9. containment safety net.
   containmentPass(world, engine);
+
+  // 9a. ROLLING RESISTANCE + THE REST SNAP — the Coulomb law the 2D pipeline gets from the
+  //     shared `stepGroundBall`, which Rapier's exponential damping is not. BEFORE `derive`, so
+  //     the tags and `restTicks` are read off the velocities an element actually has, and AFTER
+  //     readback, so it is the step's own answer being damped rather than last tick's.
+  groundRoll3d(world, engine, dt);
 
   // 9b. THE CONTACT RULES -- G409's spill tag and G417's hive ram, read off the pairs the step
   //     just resolved (`contacts3d.ts`). BEFORE derive, because `derive.ts` is about to re-tag

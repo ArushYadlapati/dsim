@@ -1,46 +1,48 @@
 import * as THREE from 'three';
 import type { RobotState, World } from '../../../types';
-import { ARC_MAX, arcBuffer, LANDING, solveShotLanding } from './renderLanding';
+import {
+  SHOT,
+  SHOT_ARC_MAX,
+  SHOT_DASH,
+  SHOT_GAP,
+  SHOT_PATH_COLOR,
+  shotArc,
+  solveShotPath,
+} from '../shotPath';
 
 /**
- * BIOBUZZ 3D SCENE — THE RETICLE (Day 2, `docs/biobuzz/plan-3d.md` §4.2: "a reticle at the
- * solved landing").
+ * BIOBUZZ 3D SCENE — THE SHOT PATH.
  *
- * WHAT IT DRAWS: a ring on the field at the point the LOCAL robot's shot would actually arrive,
- * plus a faint line along the arc that gets it there. Not a laser down the barrel and not a
- * circle on the target — the ring is where the element LANDS, so a turret still slewing sweeps
- * the ring across the tiles onto the CELL, and a robot out of range watches it fall short on the
- * floor. That is the whole point of it: the 2D view puts range in the driver's head for free (a
- * top-down map makes distance obvious) and a 3D view takes it away, because depth on a screen is
- * exactly what a perspective camera flattens.
+ * WHAT IT DRAWS: a DOTTED line along the arc the local robot's next shot would fly, and ONLY when
+ * that shot goes in. Nothing else — no landing ring, no marker, no faint line for a shot that
+ * misses (owner playtest feedback 2026-09-18, items 5 and 6).
  *
- * THE MATHS IS `renderLanding.ts`'s — read that file's header for where each number comes from
- * and what it must be kept in step with. This file is meshes only.
+ * ── WHY THE RING IS GONE ────────────────────────────────────────────────────────────────────
+ * It was a ring at the solved landing point, drawn for EVERY solvable shot, so a robot out of
+ * range watched it fall short on the tiles and a turret mid-slew swept it across the field. That
+ * is a range instrument, and the owner's ruling replaces it with a yes/no one: a path that is
+ * there means the shot is made, and a path that is absent means it is not. A ring at the end of a
+ * path that is only ever drawn for a shot that goes in says nothing the path has not already
+ * said, and it sits inside the CELL where it reads as a second, different target.
  *
- * ZERO PER-FRAME ALLOCATION: one ring mesh, one `BufferGeometry` wrapping `renderLanding`'s
- * preallocated arc buffer and rewritten through `setDrawRange`.
+ * THE VERDICT AND THE ARC ARE `../shotPath.ts`'s — read that file's header. This one is meshes.
+ *
+ * ZERO PER-FRAME ALLOCATION: one `BufferGeometry` wrapping `shotPath`'s preallocated point buffer
+ * plus a `lineDistance` buffer of its own, both rewritten through `setDrawRange`.
  */
 
-const RING_INNER = 3.4;
-const RING_OUTER = 4.6;
-/** how far above whatever it is drawn on the ring floats. Depth testing is OFF (so the ring
- * reads through the tray's own lip and the hive frame, which is the case that matters — a shot
- * into a CELL lands inside a box), but the lift still keeps it clear of z-fighting the tiles in
- * the common floor case if a future pass ever turns depth back on. */
-const RING_LIFT = 0.25;
+/** how far above the arc's own height the line floats, so it never z-fights the tiles at the two
+ * ends where the flight is near the floor. */
+const PATH_LIFT = 0.25;
 
-/** the on-field accent, read ONCE. Category 3 in `docs/area/ui.md`'s theming note — its ground
- * is the CANVAS, which never themes, so unlike the scene backdrop this needs no theme
- * subscription and is deliberately absent from the dark block in `shell.css`. */
-const RETICLE_FALLBACK = 0x5fb597;
-function readReticleColor(): number {
+function readPathColor(): number {
   try {
     const raw = getComputedStyle(document.documentElement).getPropertyValue('--ds-on-field-accent').trim();
     if (/^#[0-9a-fA-F]{6}$/.test(raw)) return parseInt(raw.slice(1), 16);
   } catch {
     // a detached / pre-layout document — the literal is the same value
   }
-  return RETICLE_FALLBACK;
+  return parseInt(SHOT_PATH_COLOR.slice(1), 16);
 }
 
 export interface BbReticle {
@@ -52,70 +54,65 @@ export function buildBiobuzzReticle(): BbReticle {
   const group = new THREE.Group();
   group.name = 'bb-reticle';
   group.visible = false;
-  const color = readReticleColor();
 
-  const ringGeo = new THREE.RingGeometry(RING_INNER, RING_OUTER, 40);
-  const ringMat = new THREE.MeshBasicMaterial({
-    color,
-    transparent: true,
-    opacity: 0.85,
-    // ⚠️ NO DEPTH TEST (the brief's own requirement): a ring at a CELL's opening plane is INSIDE
-    // the hive's tray, and a depth-tested ring would be hidden by the tray lip in front of it —
-    // the one place the reticle is needed most. `depthWrite: false` keeps it from punching a
-    // hole in whatever is drawn after it, and a high `renderOrder` puts it last.
-    depthTest: false,
-    depthWrite: false,
-    side: THREE.DoubleSide,
-  });
-  const ring = new THREE.Mesh(ringGeo, ringMat);
-  ring.name = 'bb-reticle:ring';
-  ring.renderOrder = 10;
-  group.add(ring);
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.BufferAttribute(shotArc, 3));
+  // ⚠️ `LineDashedMaterial` reads a `lineDistance` attribute that `Line.computeLineDistances()`
+  // REBUILDS (and reallocates) on every call. This buffer is allocated once and filled in place
+  // by `updateBiobuzzReticle` instead, which is the same bargain the position buffer makes.
+  const dists = new Float32Array(SHOT_ARC_MAX);
+  geo.setAttribute('lineDistance', new THREE.BufferAttribute(dists, 1));
+  geo.setDrawRange(0, 0);
 
-  const arcGeo = new THREE.BufferGeometry();
-  arcGeo.setAttribute('position', new THREE.BufferAttribute(arcBuffer, 3));
-  arcGeo.setDrawRange(0, 0);
-  const arcMat = new THREE.LineBasicMaterial({
-    color,
+  const mat = new THREE.LineDashedMaterial({
+    color: readPathColor(),
+    // FIELD INCHES, the same pattern the 2D map dots with (`shotPath.ts`)
+    dashSize: SHOT_DASH,
+    gapSize: SHOT_GAP,
     transparent: true,
-    opacity: 0.32,
+    opacity: 0.92,
+    // ⚠️ NO DEPTH TEST: the last stretch of a made shot is INSIDE the hive's tray, behind its own
+    // lip and the hive frame — the one place the path is needed most. `depthWrite: false` keeps it
+    // from punching a hole in whatever is drawn after it, and a high `renderOrder` puts it last.
     depthTest: false,
     depthWrite: false,
   });
-  const arc = new THREE.Line(arcGeo, arcMat);
-  arc.name = 'bb-reticle:arc';
-  arc.renderOrder = 9;
-  // the arc's vertices are field-absolute, so the line must never inherit a transform — and it
-  // must never be frustum-culled against its bounding sphere, which was computed when the buffer
-  // was empty and is never recomputed.
-  arc.frustumCulled = false;
-  group.add(arc);
 
-  group.userData.ring = ring;
-  group.userData.arc = arc;
-  void ARC_MAX; // the buffer's own bound, owned by renderLanding.ts — named here for the reader
+  const line = new THREE.Line(geo, mat);
+  line.name = 'bb-reticle:path';
+  line.renderOrder = 10;
+  line.position.z = PATH_LIFT;
+  // the points are field-absolute, so the line must never inherit a transform beyond that lift —
+  // and it must never be frustum-culled against a bounding sphere computed when the buffer was
+  // empty and never recomputed.
+  line.frustumCulled = false;
+  group.add(line);
+  group.userData.path = line;
+  group.userData.dists = dists;
 
   return {
     group,
     dispose(): void {
-      ringGeo.dispose();
-      ringMat.dispose();
-      arcGeo.dispose();
-      arcMat.dispose();
+      geo.dispose();
+      mat.dispose();
     },
   };
 }
 
 /**
- * Pose the reticle for this frame, or hide it.
+ * Pose the shot path for this frame, or hide it.
  *
- * HIDDEN when: there is no local robot (a spectator, a replay of somebody else's match), the
- * robot is a passive practice dummy, or there is no solvable shot. A reticle left on a stale
- * answer is worse than none — the driver would aim by it.
+ * HIDDEN when: `effects` is `minimal`, there is no local robot (a spectator, a replay of somebody
+ * else's match), the robot is a passive practice dummy, or the shot would not be made.
  */
-export function updateBiobuzzReticle(ret: BbReticle, world: World, localRobotId: number | undefined): void {
+export function updateBiobuzzReticle(
+  ret: BbReticle,
+  world: World,
+  localRobotId: number | undefined,
+  enabled = true,
+): void {
   const group = ret.group;
-  if (localRobotId === undefined) {
+  if (!enabled || localRobotId === undefined) {
     group.visible = false;
     return;
   }
@@ -126,14 +123,25 @@ export function updateBiobuzzReticle(ret: BbReticle, world: World, localRobotId:
       break;
     }
   }
-  if (!robot || robot.passive || !solveShotLanding(world, robot)) {
+  if (!robot || robot.passive || !solveShotPath(world, robot) || SHOT.points < 2) {
     group.visible = false;
     return;
   }
-  const ring = group.userData.ring as THREE.Mesh;
-  const arc = group.userData.arc as THREE.Line;
-  ring.position.set(LANDING.x, LANDING.y, LANDING.z + RING_LIFT);
-  arc.geometry.setDrawRange(0, LANDING.arc);
-  (arc.geometry.getAttribute('position') as THREE.BufferAttribute).needsUpdate = true;
+  const line = group.userData.path as THREE.Line;
+  const dists = group.userData.dists as Float32Array;
+  // cumulative arc length, in field inches, so the dash pattern is a real length and not a
+  // function of how many points the flight happened to produce
+  dists[0] = 0;
+  for (let i = 1; i < SHOT.points; i++) {
+    const a = (i - 1) * 3;
+    const b = i * 3;
+    const dx = shotArc[b] - shotArc[a];
+    const dy = shotArc[b + 1] - shotArc[a + 1];
+    const dz = shotArc[b + 2] - shotArc[a + 2];
+    dists[i] = dists[i - 1] + Math.sqrt(dx * dx + dy * dy + dz * dz);
+  }
+  line.geometry.setDrawRange(0, SHOT.points);
+  (line.geometry.getAttribute('position') as THREE.BufferAttribute).needsUpdate = true;
+  (line.geometry.getAttribute('lineDistance') as THREE.BufferAttribute).needsUpdate = true;
   group.visible = true;
 }

@@ -22,6 +22,7 @@ import {
   BB_HIVE_W,
   BB_HIVE_X,
   BB_LZ,
+  BB_NECTAR_R,
   BB_POLLEN_R,
   BB_TAPE,
   BB_TILE_SEAMS,
@@ -38,6 +39,7 @@ import {
   type BbElementKind,
 } from './flower';
 import { BB_TIP_SWING_S, hiveTakingSide } from './hive';
+import { BB_BOX_SLOTS, BB_BOX_T, bbNectarBoxRect, bbNectarBoxSlot } from './nectarBox';
 
 /**
  * BIOBUZZ field renderer — THE MAT, THE ZONES, THE HIVE STRUCTURE, THE FLOWERS, THE WALL.
@@ -45,8 +47,10 @@ import { BB_TIP_SWING_S, hiveTakingSide } from './hive';
  * This file used to draw an empty 12-ft square and say so at length, because Section 9 (ARENA)
  * of the V0 pre-season manual was one page promising Kickoff. Kickoff happened. Everything
  * drawn below is the V1 manual, distilled in `docs/biobuzz-reference.md` §2 with a figure
- * number against every value, and EVERY dimension on this canvas is an import from
- * `./config` — there is not one literal field number in here. That is the whole discipline:
+ * number against every value, and EVERY dimension on this canvas is an import — from
+ * `./config` for the FIELD, and from `./nectarBox` for the one piece of furniture that stands
+ * outside the perimeter — there is not one literal field number in here. That is the whole
+ * discipline:
  * `grep APPROX src/games/biobuzz/config.ts` is the tape-measure list, and a dimension typed
  * into a renderer is a dimension that list cannot find.
  *
@@ -917,9 +921,15 @@ export function drawBiobuzzField(
   // sits in the corner of. Stroking `BB_LZ`/`BB_GARDEN` instead drew tape on the wall and turned
   // the garden's solid band into a 1-in outline of a 2-in rectangle. `BB_TAPE` is the CAD's own
   // 16 strips and the 3D renderer draws exactly the same rectangles.
+  //
+  // `gardenSupplement` is the one strip per alliance that is NOT in the CAD: the measured band
+  // stops 0.573 in clear of the corner wall, while `BB_GARDEN` — the SCORED zone — snaps that
+  // edge onto it, so the band as drawn stopped short of the corner it is defined to reach. See
+  // `fieldDims.gen.ts`'s header for why it is a separate group.
   for (const a of ALLIANCES) {
     for (const strip of BB_TAPE.loadingZone[a]) fillStrip(ctx, strip, TAPE_GAFFER[a]);
     for (const strip of BB_TAPE.garden[a]) fillStrip(ctx, strip, TAPE_GAFFER[a]);
+    for (const strip of BB_TAPE.gardenSupplement[a]) fillStrip(ctx, strip, TAPE_GAFFER[a]);
   }
 
   // HIVE FRAME (§9.6.1, Fig 9-8) — two triangular structures joined at the apex. Top-down,
@@ -1132,6 +1142,61 @@ export function drawBiobuzzField(
      */
     drawFlowerSection(ctx, f, elements(bb?.flowers?.[i]?.stack));
   });
+
+  /**
+   * THE HUMAN PLAYER'S NECTAR HOLDING BOX (owner, 2026-09-19: "Add the same andymark box in the
+   * 2d game as well").
+   *
+   * The SAME box the 3D field builds — `am-5706 Artifact Tray`, at the same field position, from
+   * the same `./nectarBox.ts`. Not a second drawing of a similar thing: a driver who switches
+   * views must find the supply in the same place, and two copies of the footprint is exactly how
+   * that stops being true.
+   *
+   * IN THE 2D IDIOM, which here means the same three moves the FLOWER FOOT and the HIVE CELLS
+   * already make — a solid for the structure, a 1:1 outline for the part you interact with, and
+   * the contents as DISCS AT ELEMENT SCALE rather than a number (§2.5: nothing on this field is
+   * a letter or a digit). The tray reads as its dark interior inside an alliance-coloured rim,
+   * which is what the 3D tray is: a dark slab inside bright side walls, seen from above.
+   *
+   * OUTSIDE THE PERIMETER, in the camera's own view margin, like the tile ruler and the flower
+   * sections. `BB_BOX_GAP + BB_BOX_DEPTH` is 11.75 against `BB_VIEW_MARGIN`'s 12 — see
+   * `nectarBox.ts`, where that quarter inch is the reason the gap is the number it is.
+   *
+   * THE COUNT IS READ OFF `world.balls`, never stored, exactly as the 3D box and `hud.ts` read
+   * it — one pass for `stock` elements of this alliance. Over six (there are five) simply
+   * under-draws beads; the supply is still whatever the world says it is.
+   *
+   * DRAWN BEFORE THE PERIMETER AND LONG BEFORE THE LABELS, on purpose. The tile ruler's last row
+   * digit sits at `-hx - WALL_INSET` on this same wall and its centre falls inside the tray's
+   * length, so in LABELLED stills (the gallery only — a match draws no labels at all) the digit
+   * lands on the tray. Over the dark interior it stays legible; under it, it would not.
+   */
+  for (const a of ALLIANCES) {
+    const box = bbNectarBoxRect(a);
+    ctx.save();
+    ctx.fillStyle = C.COLORS.tile;
+    ctx.fillRect(box.x0, box.y0, box.x1 - box.x0, box.y1 - box.y0);
+    ctx.strokeStyle = allianceColor(a);
+    ctx.lineWidth = BB_BOX_T;
+    // inset by half the wall thickness, so the stroke's OUTER face is the tray's real outline
+    // rather than straddling it — the same rule the HIVE frame bar is drawn by above.
+    ctx.strokeRect(
+      box.x0 + BB_BOX_T / 2,
+      box.y0 + BB_BOX_T / 2,
+      box.x1 - box.x0 - BB_BOX_T,
+      box.y1 - box.y0 - BB_BOX_T,
+    );
+    let stock = 0;
+    for (const b of world.balls) if (b.state.kind === 'stock' && b.state.alliance === a) stock++;
+    ctx.fillStyle = allianceColor(a);
+    for (let i = 0; i < Math.min(stock, BB_BOX_SLOTS); i++) {
+      const slot = bbNectarBoxSlot(a, i);
+      ctx.beginPath();
+      ctx.arc(slot.x, slot.y, BB_NECTAR_R, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.restore();
+  }
 
   // PERIMETER — drawn last, so it sits over the grid lines and the garden tape that run into
   // it.

@@ -40,6 +40,7 @@ import {
   bbDeployedHeightIn,
   bbHopperCap,
   bbLoadingZoneSpot,
+  BB3_INTAKE_Z,
 } from '../config';
 import { hiveCellTarget } from '../elements';
 import { bbElementRadius, flowerFits } from '../flower';
@@ -840,6 +841,11 @@ function nearestElement(
   let heldD = Infinity;
   for (const b of world.balls) {
     if (b.state.kind !== 'ground') continue;
+    // ...AND LOW ENOUGH TO REACH. `ground` means "loose on the field, at rest", which under 3D
+    // physics includes an element sitting on the HIVE frame 39 in up (`sim3d/derive.ts`). The
+    // sweeper's reach is `BB3_INTAKE_Z`; anything above it is scenery, and a bot that routes to
+    // one spends the match parked under it.
+    if (b.z > BB3_INTAKE_Z) continue;
     const nectar = b.color === 'red' || b.color === 'blue';
     if (nectar && !wantNectar) continue;
     if (!bbIntakeAccepts(r.spec, r.alliance, b.color)) continue;

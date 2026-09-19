@@ -260,11 +260,19 @@ export function updateBiobuzzElements(els: BbElements, world: World): void {
       const row = hiveIndex.get(b.id);
       const span = row && row.n > 1 ? Math.min(HIVE_CELL_ROW_SPAN, (row.n - 1) * HIVE_ROW_PAD) : 0;
       const t = row && row.n > 1 ? row.i / (row.n - 1) - 0.5 : 0;
-      poseAt(mesh, idx, b.pos.x + t * span, b.pos.y, b.z);
+      // ⚠️ `+ r`, THE SAME AS THE ground/flight BRANCH BELOW. `b.z` is the BOTTOM for a hive
+      // element too -- `syncElement` (sim3d/engineImpl.ts) places its BODY at `b.z + r`, which is
+      // the sim's one convention for every ball it solves. Drawing it raw put every hive element
+      // one radius low, and you could WATCH it happen: a shot arrives as `flight` (drawn at
+      // `b.z + r`), `derive.ts` tags it `element` the tick it settles, and the picture dropped by
+      // a pollen's 1.4 in in one frame. Owner report: "once balls land inside the HIVE, they
+      // teleport slightly downwards."
+      poseAt(mesh, idx, b.pos.x + t * span, b.pos.y, b.z + r);
     } else if (b.state.kind === 'element') {
       // FLOWER stack (`el` is `flower:<index>`, not `hive:...`). `flowerStackZ` (`flower.ts`)
       // already returns a CENTRE height ("Centre heights (in) of every element in the stack"),
-      // the same convention the hive branch above reads `b.z` at directly.
+      // so this one IS drawn raw -- and it is the exception, not the rule. Every other branch
+      // here, the hive one included, reads `b.z` as a BOTTOM and lifts it by `r`.
       //
       // ⚠️ BUG FOUND AND FIXED HERE: this used to fall into the `ground`/`flight` branch below
       // and get `+ r` added on top of that already-a-centre height, so every pollen and nectar

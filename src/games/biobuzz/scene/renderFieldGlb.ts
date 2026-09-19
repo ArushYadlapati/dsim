@@ -15,7 +15,7 @@ import * as THREE from 'three';
 import { GLTFLoader, type GLTF } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { MeshoptDecoder } from 'three/examples/jsm/libs/meshopt_decoder.module.js';
 import type { Alliance } from '../../../types';
-import { cadCellBox, fieldColliders3d } from '../sim3d/fieldColliders';
+import { cadCaptureTheta, cadCellBox, fieldColliders3d } from '../sim3d/fieldColliders';
 
 export interface FieldHiveGroup {
   /** static — the triangular base + uprights + damper hardware. World-absolute pose. */
@@ -55,6 +55,10 @@ export interface FieldGroups {
    * (including the raw hive/flower nodes before `attach()` reparenting) rather than the
    * individually-typed groups above. Most callers want the typed groups instead. */
   root: THREE.Group;
+  /** how many triangles `reparentTrayBraces` moved out of the static frame nodes and into the
+   * two trays — see that function's header. Non-zero on the shipped asset; zero once the pipeline
+   * files the braces as tray parts itself. */
+  braceTris: number;
 }
 
 let sharedLoader: GLTFLoader | null = null;
@@ -142,14 +146,105 @@ type Finish = (typeof FINISHES)[number];
 const TILE_TONE = 0x2a2e33;
 
 /**
- * TRANSPARENT POLYCARBONATE WALL — the SAME optical policy as `renderField.ts`'s `wallMaterial()`
- * (the constants-built fallback), duplicated rather than imported for the same cycle reason.
- * Keep the two numbers in step by hand if the policy changes.
+ * ⚠️ CLEAR PLASTIC IS A POLICY, NOT A COLOUR — and the CAD cannot tell you which parts want it.
+ *
+ * The STEP paints every clear polycarbonate panel on this field the same placeholder white
+ * (`#e6e6e6`) it paints the solid white parts, so "is this see-through?" has to be decided PART
+ * BY PART, here, against the real field. 2026-09-18 playtest: "many completely transparent /
+ * semi-transparent panels are rendered as white or opaque white that is too strong."
+ *
+ * The classification, made from the GLB's own node × material inventory
+ * (`docs/biobuzz/field-cad-audit.md` §3 has the measured CAD colour of every part):
+ *
+ *  CLEAR  `glass#*`  in `walls`                — `FTC Field Side Glass`, the perimeter panels.
+ *  CLEAR  `plastic#e6e6e6` in a `hive_<a>` tray    — `Hive Goal {Top,Back,Bottom} Skin`, the three
+ *                                                polycarbonate skins that make a CELL. They are
+ *                                                the ONLY `plastic#e6e6e6` in a tray node (the
+ *                                                `Basket Base Tube` is the `metal` finish and
+ *                                                the ribs are `plastic#ff0000`/`#0000ff`), so
+ *                                                the node+material pair names them exactly.
+ *  OPAQUE `plastic#e6e6e6` in `hive_shared/frame` — `am-5877 ACM Panel`, an aluminium-composite
+ *                                                logo board. Same material name, opposite answer:
+ *                                                this is why the rule is keyed on the NODE too.
+ *  OPAQUE `plastic#641c65` (flower backstop), `#5fa73d` (HIPS pipes), `#ffba52` (top ring),
+ *         `#303030`, every `metal#*`, `decal#*`, `tape#*` — solid parts with a real CAD colour.
+ *
+ * ⚠️ AND A CLEAR PANEL IS NOT A PER-MATERIAL NUMBER — IT IS WHAT THE LAYERS SUM TO.
+ *
+ * The first pass set a "reasonable" 0.22 / 0.3 and looked right on a single panel from four feet
+ * away. From the DRIVER camera it was not (2026-09-19 re-test: "the HIVE cell skins still read as
+ * WHITE BOARDS… the far and side walls read as solid beige bands"), because four things stack:
+ *  - LAYER COUNT. A cell puts floor + roof + back between the eye and a ball, a look across the
+ *    field puts the near wall and the far wall in the way, and `DoubleSide` doubled every one of
+ *    them. At 0.22 each, six surfaces sum to 1 − 0.78⁶ = **78 % opaque**. `FrontSide` is right for
+ *    every one of these parts — each is a closed SOLID (the 0.020-in skins tessellate as a slab;
+ *    the raycast in `checkTrayFloorAgreement` hits both of a floor's faces), so the near surface
+ *    is always front-facing whichever side the camera is on, and the count halves.
+ *  - ALPHA. 0.08 for a wall panel, 0.10 for a cell skin. Through the worst stack that is still
+ *    only ~27 %, which is what clear polycarbonate actually does: near-invisible face-on.
+ *  - BASE COLOUR. `#e6e6e6` is the STEP's placeholder for "white plastic", and a near-white base
+ *    under any lighting is a white haze however low the alpha goes. Overridden to a cool neutral
+ *    (`CLEAR_PANEL_TINT`) — the third deliberate CAD override in this file, for the same reason as
+ *    the other two: the value is a placeholder, not intent.
+ *  - `envMapIntensity`. At 1.0 a glossy panel mirrors the environment; the warm practice HDRI is
+ *    exactly where the "beige" came from. 0.15 keeps a glancing highlight and nothing else.
+ * What is LEFT to read the shape off is the EDGE — `addPanelEdges` draws a faint outline on the
+ * cell skins, which is how a real clear panel reads. The perimeter needs none: its own rails and
+ * link plates are opaque and already draw the frame.
+ *
+ * `depthWrite: false` + a `renderOrder` past every opaque object stays: three.js sorts transparent
+ * objects by render order, not per triangle, so two clear panels must never fight over a pixel.
  */
-const WALL_PANEL_OPACITY = 0.22;
+const WALL_PANEL_OPACITY = 0.08;
+/** the hive CELL skins sit a hair denser than the perimeter — they are what a driver reads the
+ * cell's shape off, and there are fewer of them in any one line of sight. */
+const CELL_PANEL_OPACITY = 0.1;
+/** how much of the environment map a clear panel gathers. */
+const CLEAR_ENV_INTENSITY = 0.15;
+/** the tone every clear panel is forced to, overriding the STEP's `#e6e6e6` placeholder: a cool
+ * neutral that disappears into whatever is behind it instead of hazing it white. */
+const CLEAR_PANEL_TINT = 0x7d8b96;
+/** the faint outline that makes a nearly-invisible panel's shape readable. */
+const PANEL_EDGE_TINT = 0xb9c6d2;
+const PANEL_EDGE_OPACITY = 0.3;
 /** matches `renderField.ts`'s `WALL_RENDER_ORDER` — drawn after every opaque object so two
  * transparent walls (or a wall and a robot) never fight over which one occludes the other. */
 const WALL_RENDER_ORDER = 10;
+/** the cell skins are INSIDE the field, so they draw before the perimeter and after everything
+ * opaque. Matches `renderField.ts`'s `CELL_RENDER_ORDER`. */
+const CELL_RENDER_ORDER = 5;
+
+/** the one clear-plastic material this file builds, for both the perimeter and the cell skins. */
+function clearPanelMaterial(opacity: number): THREE.Material {
+  return new THREE.MeshPhysicalMaterial({
+    color: CLEAR_PANEL_TINT,
+    metalness: 0,
+    roughness: 0.08,
+    transparent: true,
+    opacity,
+    depthWrite: false,
+    side: THREE.FrontSide,
+    envMapIntensity: CLEAR_ENV_INTENSITY,
+  });
+}
+
+/** the outline pass — a child of the panel mesh, so it inherits every transform for free (a cell
+ * skin rides the tray, which swings). `thresholdAngle` 25° keeps the panel boundaries and the
+ * brake-formed chamfers and drops the tessellation's own interior triangulation. */
+function addPanelEdges(mesh: THREE.Mesh, renderOrder: number): void {
+  const edges = new THREE.LineSegments(
+    new THREE.EdgesGeometry(mesh.geometry, 25),
+    new THREE.LineBasicMaterial({
+      color: PANEL_EDGE_TINT,
+      transparent: true,
+      opacity: PANEL_EDGE_OPACITY,
+      depthWrite: false,
+    }),
+  );
+  edges.name = `${mesh.name || 'panel'}:edges`;
+  edges.renderOrder = renderOrder;
+  mesh.add(edges);
+}
 
 /** the tape and the AprilTag/sticker decals are painted ON a surface that is already there (the
  * tiles, the hive's skins), 0.010 in proud of it. At a driver camera's depth precision that is
@@ -158,18 +253,32 @@ const WALL_RENDER_ORDER = 10;
  * the whole class of bug this pass exists to remove. */
 const DECAL_POLYGON_OFFSET = -2;
 
-function materialFor(finish: Finish, colorHex: number): THREE.Material {
+/** the top-level GLB node a mesh hangs off — the second half of the clear-plastic key above. */
+type NodeFamily = 'tiles' | 'walls' | 'tape' | 'stations' | 'hive_tray' | 'hive_frame' | 'flower' | 'other';
+
+function nodeFamilyOf(name: string | undefined): NodeFamily | null {
+  if (!name) return null;
+  if (name === 'tiles' || name === 'walls' || name === 'tape' || name === 'stations') return name;
+  if (/^hive_(red|blue)\/tray$/.test(name)) return 'hive_tray';
+  if (/^hive_(red|blue|shared)\/frame$/.test(name)) return 'hive_frame';
+  if (/^flower_\d+$/.test(name)) return 'flower';
+  return null;
+}
+
+/** TRUE for the parts that are clear polycarbonate on the real field — see the policy header. */
+function isClearPanel(finish: Finish, colorHex: number, family: NodeFamily): boolean {
+  if (finish === 'glass') return true;
+  return finish === 'plastic' && colorHex === 0xe6e6e6 && family === 'hive_tray';
+}
+
+function materialFor(finish: Finish, colorHex: number, family: NodeFamily): THREE.Material {
+  if (isClearPanel(finish, colorHex, family)) {
+    return clearPanelMaterial(finish === 'glass' ? WALL_PANEL_OPACITY : CELL_PANEL_OPACITY);
+  }
   switch (finish) {
     case 'glass':
-      return new THREE.MeshPhysicalMaterial({
-        color: colorHex,
-        metalness: 0,
-        roughness: 0.1,
-        transparent: true,
-        opacity: WALL_PANEL_OPACITY,
-        depthWrite: false,
-        side: THREE.DoubleSide,
-      });
+      // unreachable while `isClearPanel` claims every `glass`; kept so the switch stays total
+      return clearPanelMaterial(WALL_PANEL_OPACITY);
     case 'metal':
       return new THREE.MeshStandardMaterial({ color: colorHex, metalness: 0.7, roughness: 0.35 });
     case 'plastic':
@@ -220,31 +329,50 @@ function parseMaterialName(name: string | undefined): { finish: Finish; colorHex
  * The assembled glb ships NO vertex normals (see `assemble-gltf.mjs`'s header — meshoptimizer's
  * simplifier cannot collapse a flat-shaded mesh's edges, since every triangle boundary then looks
  * like a hard attribute seam), so this also computes smooth vertex normals once here.
+ *
+ * ⚠️ THE CACHE KEY IS `<material>@<node family>`, NOT THE MATERIAL NAME. One glTF material name
+ * can want two different surfaces — `plastic#e6e6e6` is a clear CELL skin in a tray node and an
+ * opaque ACM logo board in the shared frame — so keying on the name alone hands whichever node
+ * loads first its answer to both. See the clear-plastic policy header.
  */
 function styleScene(root: THREE.Object3D): void {
   const cache = new Map<string, THREE.Material>();
   const unknown = new Set<string>();
-  root.traverse((obj) => {
-    if (!(obj instanceof THREE.Mesh)) return;
-    obj.castShadow = true;
-    obj.receiveShadow = true;
-    if (obj.geometry && !obj.geometry.getAttribute('normal')) {
-      obj.geometry.computeVertexNormals();
+  const walk = (obj: THREE.Object3D, family: NodeFamily): void => {
+    const own = nodeFamilyOf((obj.userData as { name?: string } | undefined)?.name ?? obj.name);
+    const here = own ?? family;
+    if (obj instanceof THREE.Mesh) {
+      obj.castShadow = true;
+      obj.receiveShadow = true;
+      if (obj.geometry && !obj.geometry.getAttribute('normal')) {
+        obj.geometry.computeVertexNormals();
+      }
+      const src = Array.isArray(obj.material) ? obj.material[0] : obj.material;
+      const name = src?.name;
+      const parsed = parseMaterialName(name);
+      const key = `${parsed ? name : '__unrecognised__'}@${here}`;
+      let mat = cache.get(key);
+      if (!mat) {
+        if (!parsed) unknown.add(String(name));
+        mat = parsed ? materialFor(parsed.finish, parsed.colorHex, here) : materialFor('misc', 0x9aa1ab, here);
+        mat.name = key; // debuggable from a console walk of the live scene; nothing reads it
+        cache.set(key, mat);
+      }
+      obj.material = mat;
+      if (parsed?.finish === 'tile') obj.castShadow = false; // the floor never casts, only receives
+      if (parsed && isClearPanel(parsed.finish, parsed.colorHex, here)) {
+        // a clear panel casts no shadow: a see-through sheet that throws a solid black shadow is
+        // the single most obvious way to say "this is not actually transparent".
+        obj.castShadow = false;
+        obj.renderOrder = parsed.finish === 'glass' ? WALL_RENDER_ORDER : CELL_RENDER_ORDER;
+        // the outline goes on the CELL SKINS only. The perimeter draws its own frame with
+        // opaque rails and link plates, so a second outline there just doubles every edge.
+        if (parsed.finish !== 'glass') addPanelEdges(obj, CELL_RENDER_ORDER);
+      }
     }
-    const src = Array.isArray(obj.material) ? obj.material[0] : obj.material;
-    const name = src?.name;
-    const parsed = parseMaterialName(name);
-    const key = parsed ? name : '__unrecognised__';
-    let mat = cache.get(key);
-    if (!mat) {
-      if (!parsed) unknown.add(String(name));
-      mat = parsed ? materialFor(parsed.finish, parsed.colorHex) : materialFor('misc', 0x9aa1ab);
-      cache.set(key, mat);
-    }
-    obj.material = mat;
-    if (parsed?.finish === 'tile') obj.castShadow = false; // the floor never casts, only receives
-    if (parsed?.finish === 'glass') obj.renderOrder = WALL_RENDER_ORDER;
-  });
+    for (const child of obj.children) walk(child, here);
+  };
+  walk(root, 'other');
   if (unknown.size > 0) {
     // eslint-disable-next-line no-console
     console.warn(
@@ -267,6 +395,176 @@ function buildTrayGroup(root: THREE.Object3D, alliance: Alliance): THREE.Group {
   rawTray.parent?.add(pivotGroup);
   pivotGroup.attach(rawTray);
   return pivotGroup;
+}
+
+// ── THE TRAY BRACES THE PIPELINE FILED AS FRAME ───────────────────────────────────────────────
+//
+// 2026-09-18 playtest: "some weird lines remain after the HIVE is tipped."
+//
+// `convert.py`'s PART_RULES sends `am-5867: 10.5in Churro Lite` to `hive_frame` (STATIC), but all
+// EIGHT of them ride the TRAY: un-tilting each one by its alliance's own `captureTheta` about the
+// pivot collapses it to a segment at a constant tray-local `w ≈ 6.2` (the floor/roof seam) and
+// `|x_local| ≈ 9.5` (the cell's two sides), running the cell's full depth `|v| 10.05 … 20.84` —
+// measured off `field-colliders.json`'s own per-instance hulls. A static part could not sit at
+// ±30° in a mirrored pair like that. So the GLB bakes them into the frame node at the captured
+// pose, and when the tray swings they stay: four 10.5-in tubes 0.37 in wide, left hanging in the
+// air. They are exactly the "weird lines".
+//
+// THE REAL FIX IS ONE LINE IN `PART_RULES`, and it is not made here: re-running `npm run field-cad`
+// rewrites the GLBs, `field-colliders.json` and `fieldColliders.gen.ts`, which moves a physics
+// static into the kinematic tray. That is a sim change and it is not this lane's. This reparents
+// them at load instead, and is a no-op on a future asset that files them correctly (the selector
+// simply finds nothing).
+//
+// THE SELECTOR is world-space and stated as measurements, because the braces are merged into one
+// triangle soup per material and there is no name left to ask:
+//  - nothing else in a hive FRAME node reaches z 46: the tallest static part is the Goal Pivot
+//    Bracket at 45.70, and the raised pair of braces spans 54.27 … 59.85.
+//  - the lowered pair spans z 38.83 … 44.40 at |y| 11.85 … 21.11, and at |y| ≥ 11.5 the only other
+//    frame part with any material is the A-Frame Leg — a diagonal strut from its foot (|y| 19.07,
+//    z 0.22) to the apex (y 0, z 41.40), which at |y| = 11.5 is down at z ≈ 16.
+const BRACE_HIGH_Z = 46;
+const BRACE_MIN_ABS_Y = 11.5;
+const BRACE_MIN_Z = 36;
+
+function isTrayBracePoint(y: number, z: number): boolean {
+  return z >= BRACE_HIGH_Z || (Math.abs(y) >= BRACE_MIN_ABS_Y && z >= BRACE_MIN_Z);
+}
+
+/**
+ * Partitions `mesh`'s triangles by a WORLD-space test on each triangle's centroid: each labelled
+ * group comes back as a new geometry already baked into WORLD coordinates, and `mesh` is left
+ * with everything `classify` returned `null` for. One pass, not one per label — a second pass
+ * over a mesh this has already rewritten would read back what it wrote, which is how the first
+ * version of this produced coordinates in the millions.
+ *
+ * ⚠️ EVERY ATTRIBUTE IS COPIED THROUGH `getX/getY/getZ/getW`, NEVER OFF `.array`. The field GLB
+ * uses `KHR_mesh_quantization`, so a position attribute is a NORMALIZED Int16Array and its raw
+ * array holds counts, not inches: copying the buffer verbatim into a plain Float32Array is the
+ * bug just described, and it is silent until you look at a bounding box.
+ */
+function partitionTrianglesWorld(
+  mesh: THREE.Mesh,
+  classify: (cx: number, cy: number, cz: number) => string | null,
+): Map<string, THREE.BufferGeometry> {
+  const out = new Map<string, THREE.BufferGeometry>();
+  const geo = mesh.geometry;
+  const pos = geo.getAttribute('position');
+  if (!pos) return out;
+  mesh.updateWorldMatrix(true, false);
+  const v = new THREE.Vector3();
+  const worldPos = new Float32Array(pos.count * 3);
+  for (let i = 0; i < pos.count; i++) {
+    v.fromBufferAttribute(pos, i).applyMatrix4(mesh.matrixWorld);
+    worldPos[i * 3] = v.x;
+    worldPos[i * 3 + 1] = v.y;
+    worldPos[i * 3 + 2] = v.z;
+  }
+  const idx = geo.getIndex();
+  const triCount = idx ? idx.count / 3 : pos.count / 3;
+  const groups = new Map<string, number[]>();
+  const kept: number[] = [];
+  for (let t = 0; t < triCount; t++) {
+    const a = idx ? idx.getX(t * 3) : t * 3;
+    const b = idx ? idx.getX(t * 3 + 1) : t * 3 + 1;
+    const c = idx ? idx.getX(t * 3 + 2) : t * 3 + 2;
+    const cx = (worldPos[a * 3] + worldPos[b * 3] + worldPos[c * 3]) / 3;
+    const cy = (worldPos[a * 3 + 1] + worldPos[b * 3 + 1] + worldPos[c * 3 + 1]) / 3;
+    const cz = (worldPos[a * 3 + 2] + worldPos[b * 3 + 2] + worldPos[c * 3 + 2]) / 3;
+    const label = classify(cx, cy, cz);
+    if (label === null) {
+      kept.push(a, b, c);
+    } else {
+      const bucket = groups.get(label);
+      if (bucket) bucket.push(a, b, c);
+      else groups.set(label, [a, b, c]);
+    }
+  }
+  if (groups.size === 0) return out;
+
+  const names = Object.keys(geo.attributes);
+  const get = (src: THREE.BufferAttribute | THREE.InterleavedBufferAttribute, i: number, k: number): number =>
+    k === 0 ? src.getX(i) : k === 1 ? src.getY(i) : k === 2 ? src.getZ(i) : src.getW(i);
+  const rebuild = (order: number[], world: boolean): THREE.BufferGeometry => {
+    const g = new THREE.BufferGeometry();
+    for (const name of names) {
+      const src = geo.getAttribute(name);
+      const size = src.itemSize;
+      const dst = new Float32Array(order.length * size);
+      for (let i = 0; i < order.length; i++) {
+        const s = order[i];
+        if (world && name === 'position') {
+          dst[i * 3] = worldPos[s * 3];
+          dst[i * 3 + 1] = worldPos[s * 3 + 1];
+          dst[i * 3 + 2] = worldPos[s * 3 + 2];
+        } else {
+          for (let k = 0; k < size; k++) dst[i * size + k] = get(src, s, k);
+        }
+      }
+      g.setAttribute(name, new THREE.BufferAttribute(dst, size));
+    }
+    if (!g.getAttribute('normal')) g.computeVertexNormals();
+    return g;
+  };
+
+  for (const [label, order] of groups) out.set(label, rebuild(order, true));
+  const keptGeo = rebuild(kept, false);
+  geo.dispose();
+  mesh.geometry = keptGeo;
+  return out;
+}
+
+/**
+ * Moves the eight tray braces out of the three hive FRAME nodes and into the alliance's own tray
+ * pivot group, so they swing with the cell they belong to. Returns how many triangles moved,
+ * which the RENDER lane asserts is not zero on the shipped asset.
+ */
+function reparentTrayBraces(root: THREE.Object3D, hives: { red: FieldHiveGroup; blue: FieldHiveGroup }): number {
+  const pivots: Record<Alliance, number> = {
+    red: fieldColliders3d().trays.red.pivot[0],
+    blue: fieldColliders3d().trays.blue.pivot[0],
+  };
+  let moved = 0;
+  for (const nodeName of ['hive_red/frame', 'hive_blue/frame', 'hive_shared/frame']) {
+    const node = findOptional(root, nodeName);
+    if (!node) continue;
+    const meshes: THREE.Mesh[] = [];
+    node.traverse((o) => {
+      if (o instanceof THREE.Mesh) meshes.push(o);
+    });
+    for (const mesh of meshes) {
+      // ONE pass, labelled by alliance — `hive_shared/frame` holds two of red's braces and two of
+      // blue's, so the split has to name both in the same sweep. A brace belongs to whichever
+      // pivot it is nearer: they sit at the cell's own |x_local| ≈ 9.5, half the hive spacing.
+      const parts = partitionTrianglesWorld(mesh, (cx, cy, cz) => {
+        if (!isTrayBracePoint(cy, cz)) return null;
+        return Math.abs(cx - pivots.red) < Math.abs(cx - pivots.blue) ? 'red' : 'blue';
+      });
+      for (const [label, geo] of parts) {
+        const alliance = label as Alliance;
+        // ⚠️ UN-TILT BEFORE PARENTING, or the brace is rotated TWICE. The tray MESH is exported in
+        // the pivot-local UN-TILTED frame (`convert.py` rotates every tray point out of the STEP's
+        // capture pose, which is why `refTheta` is 0 and `updateBiobuzzField` applies the absolute
+        // `hiveTiltAngle`) — but a FRAME node is world-absolute, so these braces come off the disc
+        // already sitting at ±30°. Parenting them as-is and then applying the tilt puts them at
+        // `captureTheta + hiveTiltAngle`: they swing, at double the angle, which looks worse than
+        // the bug being fixed. `world = pivot + Rot_x(captureTheta)·(x, v, w)`, so the inverse is
+        // exactly this.
+        const tray = fieldColliders3d().trays[alliance];
+        const toLocal = new THREE.Matrix4()
+          .makeRotationX(-cadCaptureTheta(alliance))
+          .multiply(new THREE.Matrix4().makeTranslation(-tray.pivot[0], -tray.pivot[1], -tray.pivot[2]));
+        geo.applyMatrix4(toLocal);
+        const braces = new THREE.Mesh(geo, mesh.material);
+        braces.name = `hive_${alliance}/tray-brace`;
+        braces.castShadow = true;
+        braces.receiveShadow = true;
+        moved += geo.getAttribute('position').count / 3;
+        hives[alliance].tray.add(braces);
+      }
+    }
+  }
+  return moved;
 }
 
 /**
@@ -294,9 +592,11 @@ export async function loadFieldGlb(url: string, quality: 'high' | 'low' = 'high'
 
   const flowers = [0, 1, 2, 3].map((k) => mustFind(root, `flower_${k}`));
 
+  const braceTris = reparentTrayBraces(root, hives);
+
   checkTrayFloorAgreement(hives);
 
-  return { floor, walls, tape, sharedFrame, stations, hives, flowers, root };
+  return { floor, walls, tape, sharedFrame, stations, hives, flowers, root, braceTris };
 }
 
 /** how far the drawn tray floor may sit from the collider floor before the picture and the

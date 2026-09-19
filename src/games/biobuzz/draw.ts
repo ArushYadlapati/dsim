@@ -1,6 +1,7 @@
 import type { Artifact, ArtifactColor, Vec2, World } from '../../types';
 import { BB_HIVE_BOTTOM_Z, BB_POLLEN_R } from './config';
 import { drawHiveCanopy } from './drawField';
+import { drawBiobuzzShotPath } from './drawShot';
 
 /**
  * BIOBUZZ element renderer (the `drawBalls` slot — drawn AFTER the robots, so an element at
@@ -77,6 +78,7 @@ export function drawBiobuzzBalls(
   ctx: CanvasRenderingContext2D,
   world: World,
   screenUp: Vec2,
+  localRobotId?: number,
 ): void {
   // SHADOWS FIRST, all of them, so a shadow never lands on top of an element that is lower
   // than the one casting it.
@@ -89,11 +91,18 @@ export function drawBiobuzzBalls(
     ctx.fill();
   }
 
-  // below the structure: on the tiles, or in the air but under the down cell's underside
-  drawLoose(ctx, world, screenUp, (b) => b.state.kind === 'ground' || b.z < BB_HIVE_BOTTOM_Z);
+  // BELOW THE STRUCTURE / ABOVE IT — split on HEIGHT alone, never on the tag. Under 3D physics
+  // `ground` means "loose and at rest", which includes an element parked on the HIVE frame 39 in
+  // up (`sim3d/derive.ts`); keying the lower pass on the tag drew that one UNDER the canopy it
+  // is sitting on top of.
+  drawLoose(ctx, world, screenUp, (b) => b.z < BB_HIVE_BOTTOM_Z);
   drawHiveCanopy(ctx, world);
-  // above it
-  drawLoose(ctx, world, screenUp, (b) => b.state.kind === 'flight' && b.z >= BB_HIVE_BOTTOM_Z);
+  drawLoose(ctx, world, screenUp, (b) => b.z >= BB_HIVE_BOTTOM_Z);
+
+  // ...and LAST of all, over the canopy and every element, the local driver's SHOT PATH — drawn
+  // only when the shot would actually go in (`drawShot.ts` / `shotPath.ts`). It is an instrument,
+  // so nothing on the field is allowed to sit on top of it.
+  drawBiobuzzShotPath(ctx, world, screenUp, localRobotId);
 }
 
 /** the batched colour passes over every loose element `pick` admits — see the header. */

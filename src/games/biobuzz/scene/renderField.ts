@@ -15,12 +15,22 @@ import {
   BB_HIVE_OPEN_Z,
   BB_HIVE_TILT_DEG,
   BB_HIVE_X,
+  BB_NECTAR_R,
   BB_WALL_T,
   BB_TAPE,
   BB_TILE_SEAMS,
   FLOWER_MOUTH,
 } from '../config';
 import { BB_FLOWER_FLOOR_Z, BB_FLOWER_MID_Z } from '../flower';
+import {
+  BB_BOX_DEPTH,
+  BB_BOX_H,
+  BB_BOX_LEN,
+  BB_BOX_SLOTS,
+  BB_BOX_T,
+  bbNectarBoxCentre,
+  bbNectarBoxSlot,
+} from '../nectarBox';
 import { hiveTiltAngle, hiveTrayRefTheta } from '../sim3d/tilt';
 import { loadFieldGlb, type FieldGroups } from './renderFieldGlb';
 
@@ -104,6 +114,15 @@ const FLOWER_MID_RING_R = 3.2 / 2; // APPROX — `BB3_FLOWER_MID_HOLE` (plan-3d.
 const FLOWER_TUBE_R = 0.3; // APPROX — ring material thickness, undocumented
 const FLOWER_PIPE_R = 0.35; // APPROX — support pipe radius, undocumented
 const FLOWER_FOOT_H = 2; // APPROX — foot slab height, undocumented
+/** the BACKSTOP on top of each flower (§9.7). Height is the manual's own 1.25 in; the CAD plate
+ * (`am-5884`, audit §6) is 0.25 in thick, 5.49 in across and purple `#641c65` — its measured
+ * colour, which is why this is a literal and not a theme token (the CAD path reads the same hex
+ * out of the glTF material). Width is APPROX: the fallback's ring is built at `BB_FLOWER_OPEN_R`,
+ * not at the CAD's plate outline. */
+const FLOWER_BACKSTOP_H = 1.25;
+const FLOWER_BACKSTOP_T = 0.25;
+const FLOWER_BACKSTOP_W = 5.49; // APPROX — the CAD plate's span, on this path's own ring
+const FLOWER_BACKSTOP_COLOR = '#641c65';
 
 const ALLIANCES: readonly Alliance[] = ['red', 'blue'];
 
@@ -177,6 +196,45 @@ function drawZoneTape(ctx: CanvasRenderingContext2D, a: Alliance): void {
   for (const strip of BB_TAPE.garden[a]) fillStripTex(ctx, strip.x0, strip.y0, strip.x1, strip.y1, colour);
 }
 
+/**
+ * THE ONE STRIP THAT IS NOT IN THE CAD — drawn on BOTH paths, which is why it is its own pass.
+ *
+ * The GARDEN's measured band stops 0.573 in clear of the wall at the alliance's corner (no tape
+ * on this field runs onto the perimeter), while `BB_GARDEN` — the zone a GARDEN element scores in
+ * — snaps that edge ONTO the wall. So the band visibly stopped short of the corner it is defined
+ * to reach (2026-09-18 playtest: "you might need to add a very tiny short section of tape on the
+ * bounds"). `TAPE.gardenSupplement` is the 0.573 × 2.000 in patch that closes it; see
+ * `fieldDims.gen.ts`'s header for why it is generated into a group of its own and cannot move a
+ * rule. On the CAD path the 16 real strips are GEOMETRY from the GLB, so this patch has to be
+ * geometry too rather than a second painted layer — `buildSupplementalTape` below.
+ */
+function drawSupplementalTape(ctx: CanvasRenderingContext2D, a: Alliance): void {
+  for (const strip of BB_TAPE.gardenSupplement[a]) {
+    fillStripTex(ctx, strip.x0, strip.y0, strip.x1, strip.y1, TAPE_GAFFER[a]);
+  }
+}
+
+/** the CAD path's copy of the same patch, as real geometry at the CAD tape's own height (the
+ * strips sit z 0.000–0.010 on the tiles). */
+function buildSupplementalTape(): THREE.Group {
+  const group = new THREE.Group();
+  group.name = 'tape:supplement';
+  for (const a of ALLIANCES) {
+    for (const [i, s] of BB_TAPE.gardenSupplement[a].entries()) {
+      const geo = new THREE.PlaneGeometry(s.x1 - s.x0, s.y1 - s.y0);
+      const mesh = new THREE.Mesh(
+        geo,
+        new THREE.MeshStandardMaterial({ color: TAPE_GAFFER[a], roughness: 0.8, metalness: 0 }),
+      );
+      mesh.name = `tape:supplement:${a}:${i}`;
+      mesh.position.set((s.x0 + s.x1) / 2, (s.y0 + s.y1) / 2, 0.01);
+      mesh.receiveShadow = true;
+      group.add(mesh);
+    }
+  }
+  return group;
+}
+
 function buildFloorTexture(withTape: boolean): THREE.CanvasTexture {
   const canvas = document.createElement('canvas');
   canvas.width = TEX_SIZE;
@@ -220,6 +278,9 @@ function buildFloorTexture(withTape: boolean): THREE.CanvasTexture {
   ctx.stroke();
 
   if (withTape) for (const a of ALLIANCES) drawZoneTape(ctx, a);
+  // the supplement is painted on the fallback only; the CAD path gets it as geometry, beside the
+  // GLB's own real tape (a painted copy under real strips would double every line).
+  if (withTape) for (const a of ALLIANCES) drawSupplementalTape(ctx, a);
 
   const tex = new THREE.CanvasTexture(canvas);
   tex.colorSpace = THREE.SRGBColorSpace;
@@ -245,31 +306,61 @@ function buildFloor(withTape: boolean): THREE.Mesh {
 /**
  * TRANSPARENT POLYCARBONATE WALLS (2026-09-18 playtest, issue 3: "the field wall should be
  * transparent"). The Day 1 wall was `mat(C.COLORS.wall, 0.35)` — a `FrontSide` material at 35%
- * opacity, which is nowhere near see-through and (being `FrontSide`) does not even show its own
- * far face, so a wall between the camera and the field read as a solid, faintly-tinted slab
- * rather than the polycarbonate panel it is. This matches the real material's actual optical
- * behaviour more closely: low opacity (0.22, inside the 0.18–0.28 the brief asks for), low
- * roughness (a clear plastic panel is glossy), `DoubleSide` (both faces visible, since the camera
- * can end up on either side of a near wall), and `depthWrite: false` + a `renderOrder` past every
- * opaque object — a transparent object that WRITES depth can incorrectly occlude something drawn
- * after it at a similar distance (here, another transparent wall on the far side of the field),
- * and Three.js does not sort transparent objects by triangle depth, only by render order.
+ * opacity, which is nowhere near see-through, so a wall between the camera and the field read as
+ * a solid, faintly-tinted slab rather than the polycarbonate panel it is.
+ *
+ * ⚠️ THE NUMBERS BELOW ARE THE 2026-09-19 RE-TUNE, NOT THE FIRST PASS. This path and the CAD path
+ * MUST agree: they draw the same field, and a driver who falls back to this one (a missing or
+ * corrupt `field.glb`) must not get a different field. `renderFieldGlb.ts`'s policy header carries
+ * the measurement in full; the short version is that a clear panel is what the LAYERS sum to, not
+ * a per-material number. The first pass's 0.22 / 0.3 / `DoubleSide` put six surfaces at 22 % each
+ * between the eye and a ball (1 − 0.78⁶ = 78 % opaque) and the cell skins read as white boards.
+ * `FrontSide` halves the layer count and is correct here for the same reason it is correct there —
+ * every panel this builds is a closed box, so its near surface always faces the camera — and the
+ * alphas drop to what clear polycarbonate actually does face-on.
+ *
+ * `depthWrite: false` + a `renderOrder` past every opaque object stays: a transparent object that
+ * WRITES depth can incorrectly occlude something drawn after it at a similar distance (here,
+ * another transparent wall on the far side of the field), and Three.js does not sort transparent
+ * objects by triangle depth, only by render order.
  */
-const WALL_OPACITY = 0.22;
-function wallMaterial(): THREE.MeshStandardMaterial {
+const WALL_OPACITY = 0.08;
+/** the HIVE CELL's own skins — the fallback's stand-in for `Hive Goal {Top,Back,Bottom} Skin`,
+ * which are polycarbonate on the real field. A hair denser than the perimeter because a cell is
+ * what a driver reads a shape and its contents off, and there are fewer of them in any one line
+ * of sight; the CAD path uses the same number (`renderFieldGlb.ts`'s `CELL_PANEL_OPACITY`). */
+const CELL_OPACITY = 0.1;
+/** how much of the IBL environment a clear panel gathers. At the default 1.0 a glossy near-white
+ * panel mirrors the room and reads as a sheet of solid white — that, more than the alpha, is the
+ * 2026-09-18 report's "opaque white that is too strong", and the warm practice HDRI is where the
+ * "beige bands" came from. Same number as the CAD path's `CLEAR_ENV_INTENSITY`. */
+const CLEAR_ENV_INTENSITY = 0.15;
+
+function clearPanelMaterial(color: string, opacity: number): THREE.MeshStandardMaterial {
   return new THREE.MeshStandardMaterial({
-    color: C.COLORS.wall,
+    color,
     transparent: true,
-    opacity: WALL_OPACITY,
-    roughness: 0.1,
+    opacity,
+    roughness: 0.12,
     metalness: 0,
     depthWrite: false,
-    side: THREE.DoubleSide,
+    // FrontSide, NOT DoubleSide — see the header: every clear panel this file builds is a closed
+    // box, so the near face is always the front-facing one whichever side the camera is on, and
+    // drawing the far face as well only doubles what the eye has to look through.
+    side: THREE.FrontSide,
+    envMapIntensity: CLEAR_ENV_INTENSITY,
   });
+}
+
+function wallMaterial(): THREE.MeshStandardMaterial {
+  return clearPanelMaterial(C.COLORS.wall, WALL_OPACITY);
 }
 /** drawn well after the field/robots/elements (all at the default `renderOrder` 0) so a
  * transparent wall never fights another transparent wall or a robot for a pixel. */
 const WALL_RENDER_ORDER = 10;
+/** the cell skins are INSIDE the field, so they draw after everything opaque and before the
+ * perimeter. Same number as the CAD path's `CELL_RENDER_ORDER`. */
+const CELL_RENDER_ORDER = 5;
 
 function buildWalls(): THREE.Group {
   const group = new THREE.Group();
@@ -358,7 +449,12 @@ function buildCrossbar(): THREE.Mesh {
 function buildCell(s: 1 | -1, accent: string, alliance: Alliance): THREE.Group {
   const group = new THREE.Group();
   group.name = `hive:${alliance}:cell:${s > 0 ? 'north' : 'south'}`;
-  const structure = mat('#5c6676');
+  // CLEAR POLYCARBONATE, not a grey box (2026-09-18 playtest, issue 1). The three CAD skins a
+  // CELL is made of are see-through; painting them solid hides every element in the cell and is
+  // the fallback's half of "transparent panels rendered as opaque white". The FLOOR keeps the
+  // alliance accent and stays solid — it is the one surface an element rests on and the one that
+  // says whose hive this is.
+  const structure = clearPanelMaterial('#cfd8e3', CELL_OPACITY);
   const accentMat = mat(accent, 0.85);
   const cellY = s * HIVE_ARM;
   const w = HIVE_CELL_WALL;
@@ -388,6 +484,17 @@ function buildCell(s: 1 | -1, accent: string, alliance: Alliance): THREE.Group {
   ceiling.name = `${group.name}:ceiling`;
   ceiling.position.set(0, cellY, zTop - w / 2);
   group.add(ceiling);
+
+  for (const panel of [back, ceiling]) {
+    panel.renderOrder = CELL_RENDER_ORDER;
+    panel.castShadow = false; // a see-through sheet that throws a solid shadow is not see-through
+  }
+  for (const child of group.children) {
+    if (child.name.includes(':side')) {
+      child.renderOrder = CELL_RENDER_ORDER;
+      child.castShadow = false;
+    }
+  }
 
   return group;
 }
@@ -437,6 +544,23 @@ function buildFlower(f: (typeof BB_FLOWERS)[number], idx: number): THREE.Group {
   topRing.name = `${base}:ring`;
   topRing.position.set(f.x, f.y, BB_FLOWER_TOP_Z);
   group.add(topRing);
+
+  // THE BACKSTOP (§9.7: "a backstop on top of each FLOWER to help guide POLLEN and NECTAR into
+  // the FLOWER … 1.25 in tall"). It was missing from this path entirely — the CAD path draws the
+  // real part (`am-5884 Flower Backstop`, CAD purple `#641c65`, a 0.25-in plate standing on the
+  // top ring), so a fallback field had no backstop at all while the CAD field did. It stands on
+  // the WALL side of the bore, which is where a lob comes off: `FLOWER_MOUTH[f.wall]` is the
+  // inward normal, so the plate sits one ring-radius the OTHER way.
+  const n = FLOWER_MOUTH[f.wall];
+  const onY = f.wall === 'left' || f.wall === 'right';
+  const stand = BB_FLOWER_OPEN_R + FLOWER_TUBE_R;
+  const backstop = new THREE.Mesh(
+    new THREE.BoxGeometry(onY ? FLOWER_BACKSTOP_T : FLOWER_BACKSTOP_W, onY ? FLOWER_BACKSTOP_W : FLOWER_BACKSTOP_T, FLOWER_BACKSTOP_H),
+    mat(FLOWER_BACKSTOP_COLOR),
+  );
+  backstop.name = `${base}:backstop`;
+  backstop.position.set(f.x - n.x * stand, f.y - n.y * stand, BB_FLOWER_TOP_Z - FLOWER_TUBE_R + FLOWER_BACKSTOP_H / 2);
+  group.add(backstop);
 
   const midRing = new THREE.Mesh(new THREE.TorusGeometry(FLOWER_MID_RING_R, FLOWER_TUBE_R * 0.8, 8, 24), ringMat);
   midRing.name = `${base}:midring`;
@@ -527,6 +651,109 @@ function buildHive(alliance: Alliance): { group: THREE.Group; tray: THREE.Group 
   return { group, tray };
 }
 
+// ── THE HUMAN PLAYER'S NECTAR HOLDING BOX ─────────────────────────────────────────────────────
+//
+// 2026-09-18 playtest: "there is a box in the drive team area. I don't know what that is.
+// Honestly, it should be closer to the loading zone and should show how many nectar can be
+// placed." 2026-09-19: "it should use the standard holding box instead of this table thing you
+// created" — the first pass answered the complaint with a bespoke shelf on legs at table height,
+// which is furniture this game does not have.
+//
+// THE BOX'S DIMENSIONS AND ITS PLACE LIVE IN `../nectarBox.ts`, not here, because `drawField.ts`
+// draws the same footprint in the 2D view and the two must be the same box. Read that file for
+// the CAD part it is (`am-5706 Artifact Tray`), for why it stands where it stands (the owner's
+// 2026-09-19 note about the score bar), and for the point-symmetry rule. What is left below is
+// purely how it is BUILT in three.js.
+//
+// THE COUNT IS READ OFF THE WORLD, never stored: `spawn.ts` stages five `stock` NECTAR per
+// alliance and `play.ts` flips one to `ground` on each entry, so counting them here and counting
+// them in `hud.ts` cannot drift.
+//
+// ⚠️ THERE IS NO SIGN OVER IT ANY MORE (owner, 2026-09-19: "Get rid of the in-game 3d display").
+// A canvas plate reading "NECTAR LEFT 5" used to hang over the box, repainted whenever the count
+// changed. It is gone — plate, canvas, `CanvasTexture` and repaint — and the HUD is the only
+// place a number appears. If it ever comes back it comes back as HUD, not as scenery: a billboard
+// standing in the field is the one piece of furniture a driver cannot look past.
+
+export interface BbNectarBox {
+  group: THREE.Group;
+  /** the nectar spheres, shown/hidden by the remaining count. */
+  beads: THREE.Mesh[];
+}
+
+/** one alliance's holding box, OUTSIDE the perimeter face beside its own drive team area. */
+function buildNectarBox(a: Alliance): BbNectarBox {
+  const group = new THREE.Group();
+  group.name = `nectar-box:${a}`;
+  const { x: cx, y: cy } = bbNectarBoxCentre(a);
+
+  // DECODE's box is a dark backing inside a bright alliance frame. Here that is a floor slab
+  // plus four low side walls — an OPEN-TOPPED tray, so the balls in it are visible from the
+  // driver's camera and from straight above.
+  const backingMat = mat('#191d24'); // `src/render/drawField.ts`'s own backing fill
+  const floorSlab = new THREE.Mesh(
+    new THREE.BoxGeometry(BB_BOX_DEPTH, BB_BOX_LEN, BB_BOX_T),
+    backingMat,
+  );
+  floorSlab.name = `${group.name}:floor`;
+  floorSlab.position.set(cx, cy, BB_BOX_T / 2);
+  floorSlab.receiveShadow = true;
+  group.add(floorSlab);
+
+  const frameMat = mat(a === 'blue' ? C.COLORS.blue : C.COLORS.red);
+  const wallZ = BB_BOX_H / 2;
+  for (const s of [1, -1] as const) {
+    // the two long sides (across the depth, facing the wall / facing the driver)
+    const long = new THREE.Mesh(new THREE.BoxGeometry(BB_BOX_T, BB_BOX_LEN, BB_BOX_H), frameMat);
+    long.name = `${group.name}:side${s > 0 ? 'Out' : 'In'}`;
+    long.position.set(cx + s * (BB_BOX_DEPTH / 2 - BB_BOX_T / 2), cy, wallZ);
+    group.add(long);
+    // and the two ends (along the wall)
+    const end = new THREE.Mesh(new THREE.BoxGeometry(BB_BOX_DEPTH, BB_BOX_T, BB_BOX_H), frameMat);
+    end.name = `${group.name}:end${s > 0 ? 'N' : 'S'}`;
+    end.position.set(cx, cy + s * (BB_BOX_LEN / 2 - BB_BOX_T / 2), wallZ);
+    group.add(end);
+  }
+
+  const beadMat = new THREE.MeshStandardMaterial({
+    color: a === 'blue' ? 0x4d8fe2 : 0xe2564d, // `renderElements.ts`'s `NECTAR_COLORS`
+    roughness: 0.4,
+    metalness: 0.05,
+  });
+  const beads: THREE.Mesh[] = [];
+  for (let i = 0; i < BB_BOX_SLOTS; i++) {
+    const slot = bbNectarBoxSlot(a, i);
+    const bead = new THREE.Mesh(new THREE.SphereGeometry(BB_NECTAR_R, 12, 8), beadMat);
+    bead.name = `${group.name}:nectar${i}`;
+    // resting ON the box floor, not floating over it
+    bead.position.set(slot.x, slot.y, BB_BOX_T + BB_NECTAR_R);
+    bead.castShadow = true;
+    beads.push(bead);
+    group.add(bead);
+  }
+
+  return { group, beads };
+}
+
+function buildNectarBoxes(): Record<Alliance, BbNectarBox> {
+  return { red: buildNectarBox('red'), blue: buildNectarBox('blue') };
+}
+
+/** how many NECTAR are left in `a`'s human-player supply — the same balls `hud.ts` counts. */
+function stockLeft(world: World, a: Alliance): number {
+  let n = 0;
+  for (const b of world.balls) if (b.state.kind === 'stock' && b.state.alliance === a) n++;
+  return n;
+}
+
+function updateNectarBoxes(boxes: Record<Alliance, BbNectarBox>, world: World): void {
+  for (const a of ALLIANCES) {
+    const box = boxes[a];
+    const left = stockLeft(world, a);
+    for (let i = 0; i < box.beads.length; i++) box.beads[i].visible = i < left;
+  }
+}
+
 export interface BbFieldHandles {
   /** everything, for a single `scene.add()`. */
   group: THREE.Group;
@@ -541,6 +768,9 @@ export interface BbFieldHandles {
    * dig `hives[a].getObjectByName('tray')` out every frame) because `updateBiobuzzField` sets a
    * rotation on it every tick and that is a hot, tiny lookup worth keeping direct. */
   trays: Record<Alliance, THREE.Group>;
+  /** the human players' NECTAR holding boxes, on the floor beside each LOADING ZONE outside the
+   * wall — `updateBiobuzzField` refills them from `world.balls`. */
+  boxes: Record<Alliance, BbNectarBox>;
 }
 
 /**
@@ -574,7 +804,10 @@ function buildBiobuzzFieldConstants(): BbFieldHandles {
     return g;
   });
 
-  return { group, floor, walls, hives, flowers, trays };
+  const boxes = buildNectarBoxes();
+  for (const a of ALLIANCES) group.add(boxes[a].group);
+
+  return { group, floor, walls, hives, flowers, trays, boxes };
 }
 
 /**
@@ -612,6 +845,15 @@ function glbFieldToHandles(fg: FieldGroups): BbFieldHandles {
   const floor = buildFloor(false);
   group.add(floor);
 
+  // the GLB's tape is the real thing; the ONE strip the CAD does not carry is added beside it.
+  group.add(buildSupplementalTape());
+
+  // ⚠️ `stations` IS THE UNLABELLED BOX. It is `am-5706 Artifact Tray` ×2 — a bare slab outside
+  // each wall at y = 0, with nothing in it and nothing to say what it is ("there is a box in the
+  // drive team area. I don't know what that is", 2026-09-18). Hidden, and the SAME BOX is rebuilt
+  // below at the CAD's own dimensions beside the LOADING ZONE, carrying the supply actually left.
+  if (fg.stations) fg.stations.visible = false;
+
   // the walls ARE used from the GLB (a real trimesh visual, not a flat token-coloured floor) —
   // `renderFieldGlb.ts` already assigns `walls` the same polycarbonate-look material the
   // constants path's `mat(C.COLORS.wall, 0.35)` was standing in for.
@@ -647,7 +889,10 @@ function glbFieldToHandles(fg: FieldGroups): BbFieldHandles {
     return node as THREE.Group;
   });
 
-  return { group, floor, walls, hives, flowers, trays };
+  const boxes = buildNectarBoxes();
+  for (const a of ALLIANCES) group.add(boxes[a].group);
+
+  return { group, floor, walls, hives, flowers, trays, boxes };
 }
 
 /**
@@ -695,4 +940,7 @@ export function updateBiobuzzField(handles: BbFieldHandles, world: World): void 
     const angle = hiveTiltAngle(world, a) - hiveTrayRefTheta(a);
     handles.trays[a].rotation.set(angle, 0, 0);
   }
+  // the NECTAR holding boxes: one pass over `world.balls` and a visibility flip per bead. No
+  // canvas, no texture upload — the count plate that used to be repainted here is gone.
+  updateNectarBoxes(handles.boxes, world);
 }
