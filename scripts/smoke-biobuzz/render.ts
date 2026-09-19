@@ -2181,6 +2181,17 @@ function graphicsChecks(check: Check, allFiles: string[]): void {
         // the fork's own lateral plane, what fraction of the wheel's circle does the fork cover?
         // The fork is shorter than the wheel and stops at a boss around the axle, so the tyre's
         // whole lower half and both ends of its circle are in plain sight.
+        //
+        // ⚠️ A BOUNDING BOX OVER THE WHOLE STRUCT MESH MEASURES THE WRONG THING, AND DID. `podParts()`
+        // merges the two fork plates, the TOP PLATE (`BB_POD_L` = 3.2 long, sitting at
+        // `BB_POD_PLATE_Z` − 0.3 to `BB_POD_PLATE_Z`, i.e. z 3.60–3.90 — entirely ABOVE the wheel's
+        // own crown at z 3.00) and the kingpin into one unnamed geometry, so a box around all of it
+        // reported the TOP PLATE's own length as "the fork" and multiplied it by the full height down
+        // to the boss, when the top plate stands over the tyre and obstructs nothing. So this instead
+        // walks the struct mesh's own WORLD-SPACE TRIANGLES, keeps only the ones that reach the
+        // wheel's crown or below it (the only geometry that can stand in front of the tyre at all),
+        // and RASTERISES that subset onto the wheel's own x-z plane to measure the silhouette
+        // directly — a fixed grid and a deterministic point-in-triangle test, no randomness.
         {
           const pod = buildSwervePod();
           pod.updateMatrixWorld(true);
@@ -2191,20 +2202,75 @@ function graphicsChecks(check: Check, allFiles: string[]): void {
           const box = (m: THREE.Mesh): THREE.Box3 => new THREE.Box3().setFromObject(m);
           const wheelBox = box(podMeshes.find((m) => m.name === 'bb-pod-wheel') as THREE.Mesh);
           const hubBox = box(podMeshes.find((m) => m.name === 'bb-pod-hub') as THREE.Mesh);
-          // the fork is the STRUCT part — the only unnamed mesh that reaches down beside the wheel
-          const struct = podMeshes.filter((m) => !m.name).map(box).reduce((a, b) => a.union(b), new THREE.Box3());
+          // `podParts()` pushes struct, then ring, then drive, in that order, and only the struct
+          // reaches anywhere near the wheel (the ring sits up at the top plate and the drive's
+          // pulleys sit outboard of the fork) — none of the three carries a `.name`, so the first
+          // of them in traversal order is the struct.
+          const structMesh = podMeshes.filter((m) => !m.name)[0];
           const wheelR = (wheelBox.max.z - wheelBox.min.z) / 2;
+          const crownZ = wheelBox.max.z;
+          // the struct's geometry is guaranteed non-indexed (`framePart` flattens every input
+          // first — see its own comment), so every run of 3 position entries is one triangle
+          const pos = structMesh.geometry.getAttribute('position') as THREE.BufferAttribute;
+          const tris: [THREE.Vector3, THREE.Vector3, THREE.Vector3][] = [];
+          for (let i = 0; i + 2 < pos.count; i += 3) {
+            const a = new THREE.Vector3().fromBufferAttribute(pos, i).applyMatrix4(structMesh.matrixWorld);
+            const b = new THREE.Vector3().fromBufferAttribute(pos, i + 1).applyMatrix4(structMesh.matrixWorld);
+            const c = new THREE.Vector3().fromBufferAttribute(pos, i + 2).applyMatrix4(structMesh.matrixWorld);
+            // keep a triangle if any corner reaches the crown or below it — a straddling triangle
+            // still occupies some of the space in front of the tyre
+            if (a.z <= crownZ || b.z <= crownZ || c.z <= crownZ) tris.push([a, b, c]);
+          }
+          const belowVerts = tris.flat().filter((v) => v.z <= crownZ);
+          const forkMinX = Math.min(...belowVerts.map((v) => v.x));
+          const forkMaxX = Math.max(...belowVerts.map((v) => v.x));
+          const forkMinZ = Math.min(...belowVerts.map((v) => v.z));
+          const forkLen = forkMaxX - forkMinX;
           check(
             'a swerve POD WHEEL is a wheel: the fork is shorter than the tyre and stops at a boss, not a shroud',
-            struct.max.x - struct.min.x < wheelBox.max.x - wheelBox.min.x - 0.6 && struct.min.z > wheelR * 0.6,
-            `fork ${(struct.max.x - struct.min.x).toFixed(2)} long over a ${(wheelBox.max.x - wheelBox.min.x).toFixed(2)} tyre, bottom ${struct.min.z.toFixed(2)} vs an axle at ${wheelR.toFixed(2)}`,
+            forkLen < wheelBox.max.x - wheelBox.min.x - 0.6 && forkMinZ > wheelR * 0.6,
+            `fork ${forkLen.toFixed(2)} long over a ${(wheelBox.max.x - wheelBox.min.x).toFixed(2)} tyre, bottom ${forkMinZ.toFixed(2)} vs an axle at ${wheelR.toFixed(2)}`,
           );
+          // project the below-crown triangles onto the x-z plane and sample a fixed grid over the
+          // wheel's own bounding square; a per-triangle bounding box skips most of the point-in-
+          // triangle tests, but changes no result, since it is only ever a cheap reject before it.
+          const sameSide = (px: number, pz: number, ax: number, az: number, bx: number, bz: number): number =>
+            (px - bx) * (az - bz) - (ax - bx) * (pz - bz);
+          const inTri = (px: number, pz: number, t: [THREE.Vector3, THREE.Vector3, THREE.Vector3]): boolean => {
+            const [a, b, c] = t;
+            const d1 = sameSide(px, pz, a.x, a.z, b.x, b.z);
+            const d2 = sameSide(px, pz, b.x, b.z, c.x, c.z);
+            const d3 = sameSide(px, pz, c.x, c.z, a.x, a.z);
+            const neg = d1 < 0 || d2 < 0 || d3 < 0;
+            const pos2 = d1 > 0 || d2 > 0 || d3 > 0;
+            return !(neg && pos2);
+          };
+          const candidates = tris.map((t) => ({
+            t,
+            minX: Math.min(t[0].x, t[1].x, t[2].x),
+            maxX: Math.max(t[0].x, t[1].x, t[2].x),
+            minZ: Math.min(t[0].z, t[1].z, t[2].z),
+            maxZ: Math.max(t[0].z, t[1].z, t[2].z),
+          }));
+          const GRID = 200;
+          let coveredCells = 0;
+          for (let gx = 0; gx < GRID; gx++) {
+            const px = wheelBox.min.x + ((wheelBox.max.x - wheelBox.min.x) * (gx + 0.5)) / GRID;
+            for (let gz = 0; gz < GRID; gz++) {
+              const pz = wheelBox.min.z + ((wheelBox.max.z - wheelBox.min.z) * (gz + 0.5)) / GRID;
+              if (
+                candidates.some(
+                  (c) => px >= c.minX && px <= c.maxX && pz >= c.minZ && pz <= c.maxZ && inTri(px, pz, c.t),
+                )
+              )
+                coveredCells++;
+            }
+          }
+          const clearFraction = 1 - coveredCells / (GRID * GRID);
           check(
             '...so most of the tyre’s own circle is unobstructed — it was 0% of it before',
-            // the fork covers a chord of the circle; the visible fraction is what is left of the
-            // disc's bounding square once the fork's own box is taken out of it
-            1 - ((struct.max.x - struct.min.x) * (Math.min(struct.max.z, wheelBox.max.z) - struct.min.z)) / ((wheelR * 2) ** 2) > 0.55,
-            `${((1 - ((struct.max.x - struct.min.x) * (Math.min(struct.max.z, wheelBox.max.z) - struct.min.z)) / ((wheelR * 2) ** 2)) * 100).toFixed(0)}% of the tyre’s square left clear`,
+            clearFraction > 0.55,
+            `${(clearFraction * 100).toFixed(0)}% of the tyre’s square left clear`,
           );
           check(
             '...and the HUB shows through the gap the boss leaves, so it reads as a hub and not a disc',

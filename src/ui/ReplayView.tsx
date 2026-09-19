@@ -10,7 +10,13 @@ import {
 } from '../sim/replay';
 import { moduleFor } from '../games';
 import type { GameScene, SceneCamera, SceneFrame } from '../games/module';
-import { getViewPref, subscribeViewPref, type ViewPref } from '../games/biobuzz/graphics/store';
+import {
+  getCameraPref,
+  getViewPref,
+  resolveSceneCamera,
+  subscribeViewPref,
+  type ViewPref,
+} from '../games/biobuzz/graphics/store';
 import { installViewKey, toggleViewPref } from '../games/biobuzz/graphics/viewKey';
 // the lazy 3D physics chunk — fetched only for a `'3d'` container (see `ensurePhysics`)
 import { initPhysics3d, physics3dReady } from '../games/biobuzz/sim3d/engine';
@@ -207,6 +213,10 @@ export function ReplayView({
    * exporting a clip of their own match almost always wants is the picture they were just
    * looking at. 3D is offered only where the game HAS a scene and this browser can run one —
    * a menu entry that produced a black video would be worse than no entry.
+   *
+   * The CAMERA default follows the same rule, one level down: whichever of the four the
+   * on-screen scene is actually rendering right now. Both are set together in `openMenu`, off
+   * the same read — see it for where the camera value comes from.
    */
   const [exportView, setExportView] = useState<'2d' | '3d'>('2d');
   const [exportCam, setExportCam] = useState<SceneCamera>('driver');
@@ -1054,6 +1064,18 @@ export function ReplayView({
     }
   };
 
+  /**
+   * WHAT THE ON-SCREEN SCENE WOULD PICK IF LEFT TO THE DEVICE (`mqCoarse` in the render-loop
+   * effect, reproduced here rather than shared through a ref: it's one `matchMedia` read, and
+   * the render-loop effect only exists while a scene might be mounted). This is the `hostPick`
+   * half of `resolveSceneCamera` — the other half, the device's own camera preference, is
+   * `getCameraPref()` below.
+   */
+  const hostCameraPick = (): SceneCamera =>
+    typeof matchMedia === 'function' && matchMedia('(pointer: coarse)').matches
+      ? 'overhead'
+      : 'driver';
+
   /** Measure the container ONCE, on open. Stringifying it is cheap, but this component
    *  re-renders 10 times a second off the progress readout, and a menu that re-serializes the
    *  whole replay on every one of those is a menu that stutters while it is open. */
@@ -1065,6 +1087,19 @@ export function ReplayView({
       setCan3d(can3d);
       // the device's own view preference is the default, but only where it is possible
       setExportView(resolveReplayView(getViewPref(), can3d));
+      /**
+       * THE CAMERA DEFAULTS TO WHAT THE ON-SCREEN SCENE IS ACTUALLY SHOWING, not a hardcoded
+       * literal. `renderScene.ts`'s own `resolvedCamera` runs exactly this — `resolveSceneCamera
+       * (this.interactive, hostPick, this.cameraPref)` — every frame, against the SAME
+       * `graphics/store.ts` camera preference the scene reads at construction and rewrites on
+       * every `c` key press (`setCameraPref`). Reading that store here, rather than asking the
+       * mounted `GameScene` for its camera (the interface has no such getter, and adding one
+       * would mean editing `games/module.ts` and the scene's own file, both outside this fix),
+       * means there is still exactly one owner of "which camera" — the store — and this menu
+       * just reads it the same way the scene does. The on-screen scene is always constructed
+       * interactive (see the render-loop effect), so `interactive` is `true` here too.
+       */
+      setExportCam(resolveSceneCamera(true, hostCameraPick(), getCameraPref()));
     }
     setMenuOpen((v) => !v);
   };
