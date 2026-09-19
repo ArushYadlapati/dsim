@@ -1,9 +1,15 @@
 import type { Alliance, Artifact, RobotCommand, RobotState, World } from '../../../types';
-import { wrapAngle } from '../../../math';
-import { BB_HOOD_DEFAULT_DEG, BB_AIM_TOL } from '../config';
+import { BB_HOOD_DEFAULT_DEG } from '../config';
 import { capturePollen } from '../elements';
-import { bbAimTarget, bbHumanPlayerTick } from '../play';
-import { bbAimHeading, bbIntakeAct, bbLaunch, bbSlewTurret, bbTurretSolution, type BbShot } from '../robot';
+import {
+  bbAimTarget,
+  bbCellSideOf,
+  bbDumpShotEnters,
+  bbHumanPlayerTick,
+  bbPretendHive,
+  bbTurretShotEnters,
+} from '../play';
+import { bbIntakeAct, bbLaunch, bbSlewTurret, bbTurretSolution, type BbShot } from '../robot';
 import { bbIsTurreted, bbLauncherOf } from '../mechs';
 import { type BiobuzzState } from '../state';
 import { flowerPlace3d, flowerRetrieve3d } from './flower3d';
@@ -30,14 +36,18 @@ import { bbKindIndex } from '../score';
  * whichever cell an element comes to rest in is the one it counts for. hiveDeflect's "a miss
  * bounces off the structure" is also unnecessary: the tray's own solid walls already do that.
  *
- * Aim Assist's LANDING PREDICTION (bbFlightEnters run against a pretend-up copy of the hive) is
- * also NOT reproduced. It is a pure ballistic heuristic gating WHEN a held fire button releases,
- * not a correctness requirement -- the plan explicitly allows keeping or dropping it ("a pure
- * ballistic heuristic"). Day 1 keeps the SHAPE (a turret still slews to its solution and a
- * dumper still turns to face its target) but gates release on ALIGNMENT (is the mechanism
- * actually pointed at its solution right now) rather than a forward-simulated landing check,
- * which needs a pretend hive state that has no 3D meaning. Reported as a DEVIATION, not a
- * silent cut: a driver holding fire may see a slightly less precise "wait for it" than 2D's.
+ * Aim Assist's LANDING PREDICTION (bbFlightEnters run against a pretend-up copy of the hive) was
+ * NOT reproduced on Day 1: release was gated on ALIGNMENT (is the mechanism pointed at its
+ * solution right now) instead, and the deviation was reported rather than silently cut.
+ *
+ * ⚠️ **THAT DEVIATION IS CLOSED (2026-09-19), AND IT WAS A DOTTED LINE THAT CLOSED IT.** The
+ * drawn shot path (`shotPath.ts`) is the SAME forward-simulated landing check the 2D gate runs,
+ * so with 3D gating on alignment the picture and the trigger were two different verdicts — the
+ * owner's "the dotted lines still appear when the shot is not able to be made". The pretend hive
+ * is plain JSON (`bbPretendHive`) and has exactly as much meaning here as it does in 2D. Both
+ * pipelines now read `bbTurretShotEnters` / `bbDumpShotEnters` (`play.ts`), which is the one
+ * predicate `shotPath.ts` draws off. What 3D still does NOT copy is the CAPTURE test: a shot that
+ * arrives over the open face is a real body meeting a real open box.
  */
 
 const ALLIANCES: readonly Alliance[] = ['red', 'blue'];
@@ -99,10 +109,11 @@ const ZERO_CMD3D: RobotCommand = Object.freeze({
 
 /**
  * AIM + LAUNCH: slew each robot's mechanism toward its own hive (`bbAimTarget`, the nearer own
- * cell, exactly as 2D picks it), gate release on ALIGNMENT rather than a ballistic landing
- * prediction (see this file's header), and fire through the SAME `bbLaunch` the 2D pipeline
- * calls -- `releasePollen` writes the new flight element's JSON, and the very next sync creates
- * its body at the muzzle with that velocity, CCD on once its speed clears `BB3_CCD_SPEED`.
+ * cell, exactly as 2D picks it), gate release on the SAME forward-simulated landing check 2D
+ * runs (`bbTurretShotEnters` / `bbDumpShotEnters`, `play.ts` — and see this file's header for the
+ * Day 1 deviation that closed), and fire through the SAME `bbLaunch` the 2D pipeline calls --
+ * `releasePollen` writes the new flight element's JSON, and the very next sync creates its body
+ * at the muzzle with that velocity, CCD on once its speed clears `BB3_CCD_SPEED`.
  */
 export function elements3dAimAndLaunch(
   world: World,
@@ -110,11 +121,16 @@ export function elements3dAimAndLaunch(
   cmds: Map<number, RobotCommand>,
   enabled: boolean,
 ): void {
+  const bb = world.biobuzz;
   const shots = new Map<number, BbShot>();
   for (const rob of world.robots) {
     if (rob.passive) continue;
     const launcher = bbLauncherOf(rob.spec, BB_HOOD_DEFAULT_DEG);
     const target = bbAimTarget(world, rob);
+    // THE SAME LANDING GATE THE 2D PIPELINE RUNS (`play.ts` stage 5b) — see this file's header,
+    // where Day 1's alignment-only deviation was reported.
+    const pretend = bb ? bbPretendHive(bb.hives[rob.alliance], bbCellSideOf(target)) : null;
+    const asking = enabled && (cmds.get(rob.id)?.fire ?? false) && rob.hopper.length > 0;
     if (bbIsTurreted(launcher)) {
       const speed: (number | undefined)[] = [];
       const lands: boolean[] = [];
@@ -123,38 +139,27 @@ export function elements3dAimAndLaunch(
         const sol = bbTurretSolution(rob, target, which);
         bbSlewTurret(rob, sol?.yaw ?? null, sol?.pitch ?? null, dt, which);
         speed[which] = sol?.speed;
-        const heading = which === 1 ? (rob.bbTurret2Heading ?? rob.turretHeading) : rob.turretHeading;
-        const pitch = which === 1 ? (rob.bbTurret2Pitch ?? 0) : (rob.bbTurretPitch ?? 0);
-        const aligned =
-          !!sol &&
-          sol.reachable &&
-          Math.abs(wrapAngle(sol.yaw - heading)) < BB_AIM_TOL &&
-          Math.abs(sol.pitch - pitch) < BB_AIM_TOL;
-        lands[which] = aligned;
+        lands[which] = asking && !!pretend && !!sol && sol.reachable && bbTurretShotEnters(pretend, rob, which, sol.speed, dt);
       }
       shots.set(rob.id, { target, speed, lands });
     } else {
-      // ⚠️ A DUMPER IS GATED ON ITS CHASSIS HEADING, exactly as a turret is gated on its yaw and
-      // pitch. `bbLaunch`'s own re-check is `bbDumpSolution`, which answers REACHABLE, not AIMED —
-      // so an unconditional `lands: [true]` here let a dumper empty its whole hopper on the first
-      // tick fire was held, at whatever heading it happened to be sitting at. The 2D pipeline has
-      // always gated it (`play.ts` stage 5b); 3D did not, and 3D is now every server-connected
-      // match. The chassis-aim hook in `step3dImpl.ts` steers it here while fire is held.
+      // ⚠️ A DUMPER IS A CATAPULT: ONE FLING, THE WHOLE BUCKET (owner, 2026-09-19 — "a dumper
+      // should not shoot one at a time. It holds four in a small 'hopper' and it would fling it
+      // like a catapult"). `BbShot.cluster` is what picks `bbDumpCluster` over 2D's converging
+      // `bbDumpSolution` at the release, and this file is its only caller.
       //
-      // The LANDING half of stage 5b (`bbFlightEnters` on every throw) is deliberately NOT copied:
-      // this file gates on ALIGNMENT rather than a ballistic prediction -- see the header -- and
-      // the 3D solve is what decides where a throw actually lands.
-      //
-      // ⚠️ AND IT POURS, ONE ELEMENT AT A TIME (`BbShot.perDump`, `robot.ts`). 2D throws the whole
-      // hopper on one tick because a 2D flight element collides with nothing; here every one is a
-      // real body and `bbDumpSolution` converges all of them on the SAME cell-centre point, so a
-      // four-element dump is a four-way pile-up in the opening. Measured on the tutorial's own
-      // 28-pose grid, with the birth clearance in: four at once 3/28, one every
-      // `BB_DUMP_STAGGER_S` 20/28. This is the ONLY caller that sets the field, and 2D's dumper
-      // branch is untouched by its existence.
-      const want = bbAimHeading(rob, target);
-      const aligned = want !== null && Math.abs(wrapAngle(want - rob.heading)) < BB_AIM_TOL;
-      shots.set(rob.id, { target, speed: [], lands: [aligned], perDump: 1 });
+      // ⚠️ IT USED TO POUR — `perDump: 1` and a 0.3 s stagger between elements — because the
+      // CONVERGING solve aims every element of a dump at the SAME cell-centre point, and four
+      // real spheres converging meet in the opening (3/28 on the tutorial grid against 20/28
+      // staggered). That treated the symptom with the wrong machine. A catapult's four seats
+      // leave on ONE velocity and fly PARALLEL, so they arrive with the bucket's own footprint
+      // and never touch each other; `BB_DUMP_BUCKET`'s header carries the geometry.
+      shots.set(rob.id, {
+        target,
+        speed: [],
+        lands: [asking && !!pretend && bbDumpShotEnters(pretend, rob, target, rob.hopper.length, true, dt)],
+        cluster: true,
+      });
     }
   }
   for (const rob of world.robots) {

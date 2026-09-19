@@ -34,6 +34,7 @@ import { bbIsTurreted, bbLauncherOf, bbLiftOf } from './mechs';
 import {
   type BbShot,
   bbAimHeading,
+  bbDumpCluster,
   bbDumpSolution,
   bbFlowerInReach,
   bbIntakeAct,
@@ -697,7 +698,7 @@ export function updateBiobuzz(
     // how many elements are already on their way. The real capture (stage 2) still reads the real
     // HIVE, so a shot at a down or swinging cell misses.
     const target = bbAimTarget(world, rob);
-    const pretend: BiobuzzState['hives'][Alliance] = { ...bb.hives[rob.alliance], up: bbCellSideOf(target), tipping: 0, released: false };
+    const pretend = bbPretendHive(bb.hives[rob.alliance], bbCellSideOf(target));
     // `lands` is read only while the driver is holding fire, so only then is it predicted.
     const asking = enabled && (cmds.get(rob.id)?.fire ?? false) && rob.hopper.length > 0;
     if (bbIsTurreted(launcher)) {
@@ -709,36 +710,19 @@ export function updateBiobuzz(
         const sol = bbTurretSolution(rob, target, which);
         bbSlewTurret(rob, sol?.yaw ?? null, sol?.pitch ?? null, dt, which);
         speed[which] = sol?.speed;
-        // WILL IT LAND: the release this turret would make NOW — its current yaw and pitch, at the
-        // speed `bbLaunch` will use — run forward through the flight stage into the pretend-up
-        // cell. A turret still slewing predicts a miss, so the shot waits for it.
-        let land = false;
-        if (asking && sol && sol.reachable) {
-          const rel = bbTurretRelease(rob, which, sol.speed);
-          // FROM `rel.z`, NOT `BB_LAUNCH_Z0`: a turret's muzzle is the hood lip and it drops as
-          // the barrel elevates. Predicting from the wrong height is predicting a different shot.
-          land = bbFlightEnters(pretend, rob.alliance, rel.origin, rel.z, rel.vel, dt);
-        }
-        lands[which] = land;
+        // WILL IT LAND — `bbTurretShotEnters`, the ONE predicate `shotPath.ts` draws off.
+        lands[which] = asking && !!sol && sol.reachable && bbTurretShotEnters(pretend, rob, which, sol.speed, dt);
       }
       shots.set(rob.id, { target, speed, lands });
     } else {
       // A DUMPER lands when the chassis is within `BB_AIM_TOL` of its aim heading (the assist
       // steers it there while fire is held — step.ts) AND every throw of the dump runs forward
-      // into the pretend-up cell.
-      let land = false;
-      if (asking) {
-        const want = bbAimHeading(rob, target);
-        const throws =
-          want !== null && Math.abs(wrapAngle(want - rob.heading)) < BB_AIM_TOL
-            ? bbDumpSolution(rob, target, rob.hopper.length)
-            : null;
-        land =
-          throws !== null &&
-          // A DUMPER STAYS FLAT — no hood, no swing, so `BB_LAUNCH_Z0` is still its lip.
-          throws.every((t) => bbFlightEnters(pretend, rob.alliance, t.origin, BB_LAUNCH_Z0, t.vel, dt));
-      }
-      shots.set(rob.id, { target, speed: [], lands: [land] });
+      // into the pretend-up cell. 2D's dump CONVERGES (`cluster` false) — see `BbShot.cluster`.
+      shots.set(rob.id, {
+        target,
+        speed: [],
+        lands: [asking && bbDumpShotEnters(pretend, rob, target, rob.hopper.length, false, dt)],
+      });
     }
   }
 
@@ -1018,6 +1002,93 @@ export function bbAimTarget(world: World, r: RobotState): ScoreTarget {
 /** which cell of its HIVE a `hiveCellTarget` is — its mouth opens along its own side. */
 export function bbCellSideOf(t: ScoreTarget): 'north' | 'south' {
   return (t.mouth?.y ?? t.pos.y) < 0 ? 'south' : 'north';
+}
+
+/**
+ * ⚠️ **THE HIVE AS AIM ASSIST BELIEVES IT** — a copy of `hive` with `side` up and settled.
+ *
+ * The assist knows where the cells are, not which way the HIVE will be tilted when the shot
+ * arrives and not how many elements are already on their way (owner, 2026-09-13). The REAL
+ * capture reads the real HIVE, so a shot at a down or swinging cell is released and misses,
+ * which is what a driver would get on a real field.
+ *
+ * ⚠️ AND IT IS THE ONE PLACE THE FIRE GATE AND THE DRAWN PATH DELIBERATELY DIFFER: the gate asks
+ * this copy, `shotPath.ts` asks the REAL hive. That difference is ONE-DIRECTIONAL by construction
+ * — `hiveAccepts` reads a hive only through `hiveTakingSide`, and this copy's taking side is
+ * `side` by definition, so REAL-accepts implies PRETEND-accepts and never the other way. A path
+ * is therefore never drawn for a shot the gate would refuse.
+ */
+export function bbPretendHive(hive: BiobuzzState['hives'][Alliance], side: 'north' | 'south'): BiobuzzState['hives'][Alliance] {
+  return { ...hive, up: side, tipping: 0, released: false };
+}
+
+/**
+ * ⚠️ **WOULD TURRET `which`'S SHOT GO IN — THE ONE PREDICATE, THREE READERS.**
+ *
+ * The release this turret would make RIGHT NOW (its CURRENT yaw and pitch, the muzzle's own
+ * inherited velocity, at the speed `bbLaunch` will use), run forward through the flight stage.
+ * A turret still slewing predicts a miss, so Aim Assist holds the shot; that is the whole of the
+ * "wait for it" behaviour, and with the lead solve it is also what holds a shot through a
+ * direction reversal, when the solution jumps faster than the barrel can follow.
+ *
+ * Stage 5b (2D), `sim3d/elements3d.ts` (3D) and `shotPath.ts` all call THIS — which is what makes
+ * the dotted path and the fire gate one verdict rather than two that agree by inspection.
+ */
+export function bbTurretShotEnters(
+  hive: BiobuzzState['hives'][Alliance],
+  r: RobotState,
+  which: 0 | 1,
+  speed: number,
+  dt: number,
+  trace?: BbFlightTrace,
+): boolean {
+  const rel = bbTurretRelease(r, which, speed);
+  // FROM `rel.z`, NOT `BB_LAUNCH_Z0`: a turret's muzzle is the hood lip and it drops as the
+  // barrel elevates. Predicting from the wrong height is predicting a different shot.
+  return bbFlightEnters(hive, r.alliance, rel.origin, rel.z, rel.vel, dt, trace);
+}
+
+/**
+ * WOULD THIS DUMP GO IN — every element of it, which is the same verdict a dump gets when it is
+ * fired: one arc short is a dump that drops elements on the tiles.
+ *
+ * `cluster` picks the 3D CATAPULT solve (one fling, one velocity, parallel arcs) over the 2D
+ * CONVERGING one, exactly as `BbShot.cluster` picks it at the release — see `bbDumpCluster`.
+ * `traceMid` records the middle arc for the drawn path.
+ */
+export function bbDumpShotEnters(
+  hive: BiobuzzState['hives'][Alliance],
+  r: RobotState,
+  target: ScoreTarget,
+  n: number,
+  cluster: boolean,
+  dt: number,
+  traceMid?: BbFlightTrace,
+): boolean {
+  // A DUMPER TURNS THE WHOLE ROBOT, and nothing fires until the chassis is there.
+  const want = bbAimHeading(r, target);
+  if (want === null || Math.abs(wrapAngle(want - r.heading)) >= BB_AIM_TOL) return false;
+  if (cluster) {
+    const fling = bbDumpCluster(r, target, n);
+    if (!fling) return false;
+    const mid = (fling.seats.length - 1) >> 1;
+    for (let i = 0; i < fling.seats.length; i++) {
+      // A DUMPER STAYS FLAT — no hood, no swing — but the BUCKET is two high, so the seat's own
+      // release height is what each element of the cluster is predicted from.
+      const st = fling.seats[i];
+      const ok = bbFlightEnters(hive, r.alliance, st.pos, st.z, fling.vel, dt, i === mid ? traceMid : undefined);
+      if (!ok) return false;
+    }
+    return true;
+  }
+  const throws = bbDumpSolution(r, target, n);
+  if (!throws || throws.length === 0) return false;
+  const mid = (throws.length - 1) >> 1;
+  for (let i = 0; i < throws.length; i++) {
+    const ok = bbFlightEnters(hive, r.alliance, throws[i].origin, BB_LAUNCH_Z0, throws[i].vel, dt, i === mid ? traceMid : undefined);
+    if (!ok) return false;
+  }
+  return true;
 }
 
 /**
