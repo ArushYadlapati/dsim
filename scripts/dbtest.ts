@@ -996,6 +996,197 @@ async function main(): Promise<void> {
   }
 
   /**
+   * ------------------------------------------- THE PHYSICS TAG (0039) -------
+   *
+   * BIOBUZZ gains a second deterministic solve and stays ONE game on ONE board (the owner's
+   * rule: never reset a season). So a 2D-era row and a 3D-era row are told apart by a column,
+   * and everything below is the round-trip of that column through the REAL repo functions.
+   *
+   * The pre-0039 half is the one worth having. `physics` is `not null default '2d'`, and a row
+   * written before the column existed IS a 2D-solve row — so it has to read back as one rather
+   * than as null, or every consumer grows a `?? '2d'` and one of them eventually forgets.
+   * There is no way to write a genuinely pre-0039 row here (the migration has already run), so
+   * the closest honest thing is asserted instead: an insert that names no `physics` at all, i.e.
+   * exactly the statement an older server build would send against the new schema.
+   */
+  {
+    const { REPLAY_FORMAT } = await import('../src/sim/replay');
+    const bb = (physics?: '2d' | '3d') => ({
+      format: REPLAY_FORMAT,
+      balanceVersion: 4,
+      sim: 7,
+      game: 'biobuzz' as const,
+      physics,
+      mode: 'match' as const,
+      seed: 4242,
+      ticks: 300,
+      setups: [] as never[],
+      tracks: { 0: [1, 2, 3, 4, 5, 6, 7] },
+    });
+
+    // ---- replays: the tag playback DISPATCHES on -------------------------------------
+    const id3d = await repo.saveReplay(bb('3d'), SEASON, 'biobuzz');
+    const back3d = await repo.getReplay(id3d);
+    check('physics: a 3D replay round-trips its physics tag', back3d?.physics === '3d', `physics=${String(back3d?.physics)}`);
+    const id2d = await repo.saveReplay(bb('2d'), SEASON, 'biobuzz');
+    const back2d = await repo.getReplay(id2d);
+    check(
+      'physics: a 2D replay comes back ABSENT, not as the string — absent already reads 2d everywhere',
+      back2d?.physics === undefined,
+      `physics=${String(back2d?.physics)}`,
+    );
+    const idNone = await repo.saveReplay(bb(undefined), SEASON, 'biobuzz');
+    check(
+      'physics: an UNTAGGED container is stored as 2d (the column is not null)',
+      ((await db.query(`select physics from replays where id = $1`, [idNone])).rows[0] as { physics: string }).physics === '2d',
+    );
+    // the pre-0039 row: an insert naming no `physics`, which is the statement an OLDER SERVER
+    // BUILD sends against this schema — one Fly app serves every client, and a rollback is a
+    // deploy away, so this is a live case and not a historical one.
+    const legacy = await db.query(
+      `insert into replays (format, balance_version, sim_version, behaviour_version, seed, ticks, setups, tracks, game)
+       values (2, 1, 1, 1, 7, 10, '[]'::jsonb, '{}'::jsonb, 'biobuzz') returning id, physics`,
+    );
+    check(
+      'physics: a row written WITHOUT the column reads back 2d, never null',
+      (legacy.rows[0] as { physics: string }).physics === '2d',
+      `physics=${String((legacy.rows[0] as { physics: string | null }).physics)}`,
+    );
+
+    // ---- records: the board row ------------------------------------------------------
+    await repo.ensureProfile('phys-a', 'Physicist');
+    const rec3d = await repo.submitRecord({
+      userId: 'phys-a', mode: 'solo', drivetrain: 'mecanum', score: 123,
+      balanceVersion: SEASON, replayId: id3d, game: 'biobuzz', physics: '3d',
+    });
+    const recRow = await db.query(`select physics from records where id = $1`, [rec3d]);
+    check('physics: a record run stores its solve', (recRow.rows[0] as { physics: string }).physics === '3d');
+    const recLegacy = await repo.submitRecord({
+      userId: 'phys-a', mode: 'solo', drivetrain: 'mecanum', score: 45,
+      balanceVersion: SEASON, replayId: id2d, game: 'biobuzz',
+    });
+    check(
+      'physics: a record run with no tag is 2d',
+      ((await db.query(`select physics from records where id = $1`, [recLegacy])).rows[0] as { physics: string }).physics === '2d',
+    );
+
+    // ---- the drivetrain CHECK finally knows about butterfly ---------------------------
+    //
+    // It was a hand-written list that never learned the fifth drivetrain, so a butterfly
+    // record run was refused by the DATABASE after the match had been played and scored —
+    // silent to the player, who simply never appeared on the board.
+    let butterfly = '';
+    try {
+      await repo.submitRecord({
+        userId: 'phys-a', mode: 'solo', drivetrain: 'butterfly', score: 66,
+        balanceVersion: SEASON, replayId: id3d, game: 'biobuzz', physics: '3d',
+      });
+    } catch (e) {
+      butterfly = e instanceof Error ? e.message : String(e);
+    }
+    check('physics: a BUTTERFLY record run is accepted (0039 widened records_drivetrain_check)',
+      butterfly === '', butterfly);
+    // ...and the constraint still REFUSES a name that is not a drivetrain, or it would have
+    // been widened into nothing at all
+    let bogus = '';
+    try {
+      await repo.submitRecord({
+        userId: 'phys-a', mode: 'solo', drivetrain: 'hovercraft', score: 1,
+        balanceVersion: SEASON, replayId: id3d, game: 'biobuzz',
+      });
+    } catch (e) {
+      bogus = e instanceof Error ? e.message : String(e);
+    }
+    check('physics: ...and the constraint still refuses a drivetrain that does not exist', bogus !== '');
+
+    /**
+     * ---- the BOARD read path: the badge and the era filter (Day 3) --------------------
+     *
+     * The column existing and the board SHOWING it are different facts, and the gap between
+     * them is the kind that ships: a `select` that simply does not project two columns still
+     * compiles and still renders, only bare — which is how the ranked board once sat badge-less
+     * (`docs/area/accounts.md`). So the projection is asserted, and so is the filter.
+     *
+     * ⚠️ **THE FILTER IS INSIDE `best`, AND THIS IS THE CHECK THAT SAYS SO.** `best` is one row
+     * per player. `phys-a` above has a 3D run of 123 and a 2D run of 45, so their overall best
+     * is the 3D one — and a filter applied AFTER `best` would find that row, reject it, and
+     * leave the player off a 2D board they demonstrably have a 2D score on. Filtering first is
+     * what makes "3D" mean "each player's best 3D run" instead of "players whose best run
+     * happens to be 3D".
+     */
+    {
+      const all = await repo.recordLeaderboard({ mode: 'solo', balanceVersion: SEASON, game: 'biobuzz' });
+      const mine = all.find((r) => r.userId === 'phys-a');
+      check('physics/board: an unfiltered board projects the era of each row', mine?.physics === '3d', String(mine?.physics));
+      const only3d = await repo.recordLeaderboard({ mode: 'solo', balanceVersion: SEASON, game: 'biobuzz', physics: '3d' });
+      check('physics/board: the 3D filter keeps the 3D run', only3d.find((r) => r.userId === 'phys-a')?.score === 123,
+        String(only3d.find((r) => r.userId === 'phys-a')?.score));
+      const only2d = await repo.recordLeaderboard({ mode: 'solo', balanceVersion: SEASON, game: 'biobuzz', physics: '2d' });
+      const mine2d = only2d.find((r) => r.userId === 'phys-a');
+      check(
+        'physics/board: ...and the 2D filter finds the player’s best 2D run, not nothing',
+        mine2d?.score === 45 && mine2d?.physics === '2d',
+        `${String(mine2d?.score)}/${String(mine2d?.physics)}`,
+      );
+    }
+
+    // ---- matches: the history row ----------------------------------------------------
+    const m3d = await repo.saveMatch('2v2', SEASON, id3d, true, 'biobuzz', '3d');
+    check(
+      'physics: a versus match stores its solve',
+      ((await db.query(`select physics from matches where id = $1`, [m3d])).rows[0] as { physics: string }).physics === '3d',
+    );
+    const mLegacy = await repo.saveMatch('1v1', SEASON, id2d, false, 'decode');
+    check(
+      'physics: an untagged match is 2d — which is what every DECODE match is',
+      ((await db.query(`select physics from matches where id = $1`, [mLegacy])).rows[0] as { physics: string }).physics === '2d',
+    );
+
+    // ---- practice runs: physics AND the view it was watched in ------------------------
+    //
+    // The two are different KINDS of fact and are sourced differently, which is the thing to
+    // pin: `physics` is read off the container (so it cannot disagree with the log), `view` is
+    // the only thing the client tells us, and it is nullable because an old row genuinely does
+    // not know rather than being 2D.
+    await repo.ensureProfile('phys-b', 'Watcher');
+    const run3d = await repo.savePracticeRun('phys-b', bb('3d'), 210, SEASON, 'biobuzz', '3d');
+    check('physics: a practice run carries the solve it ran on', run3d.physics === '3d', String(run3d.physics));
+    check('physics: ...and the view it was watched in', run3d.view === '3d', String(run3d.view));
+    const runMixed = await repo.savePracticeRun('phys-b', bb('3d'), 44, SEASON, 'biobuzz', '2d');
+    check(
+      'physics: 3D physics WATCHED in the 2D view is a real combination and is stored as one',
+      runMixed.physics === '3d' && runMixed.view === '2d',
+      `${String(runMixed.physics)}/${String(runMixed.view)}`,
+    );
+    const runNoView = await repo.savePracticeRun('phys-b', bb(undefined), 5, SEASON, 'biobuzz');
+    check(
+      'physics: no view stated ⇒ null, not a guess',
+      runNoView.view === null && runNoView.physics === '2d',
+      `${String(runNoView.physics)}/${String(runNoView.view)}`,
+    );
+    const back = await repo.listPracticeRuns('phys-b', 'biobuzz');
+    const listed3d = back.find((r) => r.id === run3d.id);
+    check(
+      'physics: the LIST path returns both columns (the Career panel reads this one)',
+      listed3d?.physics === '3d' && listed3d?.view === '3d',
+      `${String(listed3d?.physics)}/${String(listed3d?.view)}`,
+    );
+    // a garbage `view` off the wire must not reach the column: it is an enum, not free text
+    const runJunk = await repo.savePracticeRun('phys-b', bb('3d'), 6, SEASON, 'biobuzz', 'vr-headset');
+    check('physics: an unknown view is stored as null rather than passed through', runJunk.view === null,
+      String(runJunk.view));
+
+    // AND THE INVARIANT THAT MATTERS MOST: none of this made a practice run reachable from a
+    // board. The tag is a label on a row; it must not become a second way in.
+    const board = await repo.recordLeaderboard({ mode: 'solo', balanceVersion: SEASON, game: 'biobuzz' });
+    check(
+      'physics: a 3D practice run still never appears on the record leaderboard',
+      !board.some((r) => r.userId === 'phys-b'),
+      `${board.length} board rows`,
+    );
+  }
+
+  /**
    * --------------------------------------------- self-hosted LAN matches ----
    *
    * The SECOND table a client writes to, and the less trusted of the two: a practice run at
@@ -1145,6 +1336,814 @@ async function main(): Promise<void> {
     check('lan: deleting the HOST account deletes its LAN replays too', (await repo.getReplay(live.replayId!)) === null);
     const rows = await db.query(`select count(*)::int as n from lan_runs where host_user_id = 'lan-host'`);
     check('lan: ...and its matches', (rows.rows[0] as { n: number }).n === 0);
+  }
+
+  /* ========================================================================
+     THE MISSCORE PATH, END TO END: open the replay, correct the score.
+     ========================================================================
+
+     Two halves, and the first one is a bug this suite would have caught the day it shipped.
+     `listScoreReports` handed the queue a MATCH id and the WATCH button passed it to
+     `/api/replay/<id>`, which serves `replays.id` — so every misscore claim's replay 404'd,
+     which is the one thing the queue exists to let a moderator do. The row carries the replay
+     now, joined through `matches.replay_id`, and a claim with no match still has to appear.
+  */
+  {
+    await repo.ensureProfile('mis-red', 'Red Driver');
+    await repo.ensureProfile('mis-blue', 'Blue Driver');
+    await repo.ensureProfile('mis-filer', 'Filer Two');
+
+    const replayId = await repo.saveReplay(
+      { format: 2, balanceVersion: SEASON, sim: 3, game: 'decode', mode: 'match', seed: 7, ticks: 10, setups: [], tracks: {} },
+      SEASON,
+      'decode',
+    );
+    const mid = await repo.saveMatch('1v1', SEASON, replayId, true, 'decode');
+    await repo.addMatchParticipant({
+      matchId: mid, userId: 'mis-red', alliance: 'red', drivetrain: 'tank',
+      score: 40, won: false, ratingBefore: 1000, ratingAfter: 980,
+    });
+    await repo.addMatchParticipant({
+      matchId: mid, userId: 'mis-blue', alliance: 'blue', drivetrain: 'mecanum',
+      score: 55, won: true, ratingBefore: 1000, ratingAfter: 1020,
+    });
+
+    await repo.submitScoreReport({ reporterId: 'mis-filer', matchId: mid, roomCode: 'MIS1', detail: 'red scored 48' });
+    const q = await repo.listScoreReports({ status: 'open' });
+    const row = q.find((r) => r.matchId === String(mid));
+    check(
+      'misscore: the queue row carries the REPLAY id, not just the match id',
+      row?.replayId === String(replayId) && row?.matchId === String(mid),
+      `replay=${row?.replayId} match=${row?.matchId}`,
+    );
+    check(
+      'misscore: ...and that id is the one /api/replay actually serves',
+      (await repo.getReplay(row!.replayId as string)) !== null,
+    );
+    // a claim about a result that never finished writing has no match and no replay, and must
+    // still reach the queue rather than being joined away
+    await repo.submitScoreReport({ reporterId: 'mis-filer', roomCode: 'MIS2', detail: 'the room crashed at the buzzer' });
+    const q2 = await repo.listScoreReports({ status: 'open' });
+    check(
+      'misscore: a claim with no stored match still appears, with a null replay',
+      q2.some((r) => r.roomCode === 'MIS2' && r.matchId === null && r.replayId === null),
+    );
+
+    // ---- the correction itself -------------------------------------------------
+    const detail = await repo.matchScoreDetail(String(mid));
+    check(
+      'score edit: the editor reads the alliance totals off the participants',
+      detail?.red === 40 && detail?.blue === 55 && detail?.participants.length === 2,
+      `${detail?.red}-${detail?.blue}`,
+    );
+    check('score edit: ...and no corrections yet', detail?.corrections.length === 0);
+
+    const done = await repo.correctMatchScore(String(mid), { red: 62, blue: 55 }, 'admin-1', 'two artifacts uncounted');
+    check(
+      'score edit: the correction reports both sides of the change',
+      done?.redBefore === 40 && done?.redAfter === 62 && done?.blueBefore === 55 && done?.blueAfter === 55,
+      JSON.stringify(done),
+    );
+    const after = await repo.matchScoreDetail(String(mid));
+    check('score edit: every participant on the alliance carries the new total', after?.red === 62);
+    check(
+      'score edit: the WIN is re-derived, so the record cannot say someone won a match they lost',
+      after?.participants.find((x) => x.userId === 'mis-red')?.won === true &&
+        after?.participants.find((x) => x.userId === 'mis-blue')?.won === false,
+    );
+    // RATINGS DO NOT MOVE. Glicko-2 is sequential; re-rating one match in the middle means
+    // re-rating every match since, for everyone in it. The console says so and this pins it.
+    check(
+      'score edit: the ratings the players left the match with are untouched',
+      after?.participants.find((x) => x.userId === 'mis-blue')?.ratingAfter === 1020 &&
+        after?.participants.find((x) => x.userId === 'mis-red')?.ratingAfter === 980,
+    );
+    check(
+      'score edit: the change is audited with both scores and the reason',
+      after?.corrections.length === 1 &&
+        after.corrections[0].redBefore === 40 &&
+        after.corrections[0].redAfter === 62 &&
+        after.corrections[0].note === 'two artifacts uncounted' &&
+        after.corrections[0].adminId === 'admin-1',
+      JSON.stringify(after?.corrections[0]),
+    );
+    // a TIE is `won = false` on both sides, which is what the sim records too
+    await repo.correctMatchScore(String(mid), { red: 55, blue: 55 }, 'admin-1');
+    const tied = await repo.matchScoreDetail(String(mid));
+    check(
+      'score edit: a tie leaves nobody marked as the winner',
+      tied?.participants.every((x) => x.won === false) === true,
+    );
+    check('score edit: ...and both corrections are on the record', tied?.corrections.length === 2);
+    check(
+      'score edit: an id that names no match is refused rather than writing nothing quietly',
+      (await repo.correctMatchScore('00000000-0000-0000-0000-000000000000', { red: 1, blue: 1 }, 'admin-1')) === null &&
+        (await repo.matchScoreDetail('00000000-0000-0000-0000-000000000000')) === null,
+    );
+  }
+
+  /* ========================================================================
+     STANDING, EDITED BY A MODERATOR — the pardon and what it does to escalation.
+     ========================================================================
+
+     The point of voiding rather than deleting is that BOTH things have to be true afterwards:
+     the offence stops counting toward the next penalty's rung, and it is still on the record.
+     `recentStandingCount` is the function escalation reads, so it is the one that has to
+     forget — a pardon that only gave the points back would leave the player's next dodge
+     priced as their third.
+  */
+  {
+    await repo.ensureProfile('st-user', 'Penalised');
+
+    const charge = async (kind: string, points: number, cooldownMin = 0): Promise<void> => {
+      const before = (await repo.getStanding('st-user')).score;
+      await repo.writeStandingEvent('st-user', {
+        kind: kind as never,
+        points,
+        scoreBefore: before,
+        scoreAfter: Math.max(0, before - points),
+        tierBefore: 'good',
+        tierAfter: 'good',
+        rung: 0,
+        cooldownMin,
+        restrictedUntil: cooldownMin ? Date.now() + cooldownMin * 60_000 : null,
+        ratingCharge: 0,
+        nextCooldownMin: 0,
+      });
+    };
+    await charge('dodge', 5);
+    await charge('dodge', 8);
+    await charge('leave', 8, 30);
+
+    check(
+      'standing: the ledger counts what the server saw',
+      (await repo.recentStandingCount('st-user', 'dodge', 24)) === 2,
+    );
+    const locked = await repo.getStanding('st-user');
+    check('standing: ...and the walk-out locked the queue', locked.restrictedUntil !== null);
+
+    // ONE OFFENCE pardoned: the points are a separate decision, so the score is untouched
+    const events = await repo.listStandingEvents('st-user', 20);
+    const oneDodge = events.find((e) => e.kind === 'dodge');
+    const one = await repo.adminEditStanding('st-user', 'admin-1', { pardonIds: [oneDodge!.id] });
+    check('standing: pardoning one offence voids exactly one row', one.pardoned === 1);
+    check(
+      'standing: ...and escalation immediately stops counting it',
+      (await repo.recentStandingCount('st-user', 'dodge', 24)) === 1,
+    );
+    const stillThere = await repo.listStandingEvents('st-user', 20);
+    check(
+      'standing: ...while the row itself stays on the record, marked',
+      stillThere.some((e) => e.id === oneDodge!.id && !!e.voidedAt),
+    );
+    check(
+      'standing: the edit writes ONE adjustment row, so the player sees why the number moved',
+      stillThere.filter((e) => e.kind === 'adjustment').length === 1,
+    );
+
+    // CLEAR EVERYTHING — the one-press pardon the console leads with
+    const cleared = await repo.adminEditStanding('st-user', 'admin-1', {
+      pardonAll: true,
+      score: 100,
+      lock: false,
+      note: 'room crashed, not their fault',
+    });
+    check(
+      'standing: clearing voids every offence still counting',
+      cleared.pardoned === 3,
+      `${cleared.pardoned}`,
+    );
+    const open = await repo.getStanding('st-user');
+    check('standing: ...puts the score back', open.score === 100, `${open.score}`);
+    check('standing: ...and lifts the ranked lock', open.restrictedUntil === null);
+    check(
+      'standing: ...and nothing escalates any more',
+      (await repo.recentStandingCount('st-user', 'dodge', 24)) === 0 &&
+        (await repo.recentStandingCount('st-user', 'leave', 168)) === 0,
+    );
+    const ledger = await repo.listStandingEvents('st-user', 20);
+    const credit = ledger.find((e) => e.kind === 'adjustment' && e.points < 0);
+    check(
+      'standing: a restoration is a NEGATIVE cost, which is how the player is shown a credit',
+      credit !== undefined && credit.points < 0,
+      `${credit?.points}`,
+    );
+    check(
+      'standing: the moderator\'s reason comes back on the row the player reads',
+      ledger.some((e) => e.kind === 'adjustment' && e.note === 'room crashed, not their fault'),
+      JSON.stringify(ledger.find((e) => e.kind === 'adjustment' && e.points < 0)),
+    );
+
+    // AN UNRELATED EDIT MUST NOT UNLOCK THE QUEUE. `lock` is three-valued on purpose: absent
+    // leaves a cooldown somebody is legitimately serving exactly where it is.
+    await charge('leave', 8, 30);
+    const relocked = await repo.getStanding('st-user');
+    check('standing: a fresh walk-out locks the queue again', relocked.restrictedUntil !== null);
+    await repo.adminEditStanding('st-user', 'admin-1', { score: 90 });
+    const after = await repo.getStanding('st-user');
+    check(
+      'standing: setting the SCORE alone leaves the lock alone',
+      after.restrictedUntil !== null && after.score === 90,
+      `score=${after.score} lock=${after.restrictedUntil}`,
+    );
+    check(
+      'standing: ...and setting a score is not a pardon — the offence still escalates',
+      (await repo.recentStandingCount('st-user', 'leave', 168)) === 1,
+    );
+    // an account with no standing row at all is still editable — a moderator can be looking at
+    // somebody who has simply never offended
+    await repo.ensureProfile('st-clean', 'Spotless');
+    const fresh = await repo.adminEditStanding('st-clean', 'admin-1', { score: 100, pardonAll: true });
+    check(
+      'standing: an account with no row yet is created rather than failing',
+      fresh.scoreAfter === 100 && fresh.pardoned === 0,
+    );
+  }
+
+  /* ---- standing HEALING, and the read-only fast path in front of it ---------------------
+     `getStanding` was a write transaction on a read path — `BEGIN`, an ensure-row INSERT, a
+     healing UPDATE, a SELECT, `COMMIT` — and it is called by `GET /api/standing` and by
+     `rankedLock` on every ranked queue attempt. A fast path now answers from one SELECT when
+     the UPDATE would have changed nothing.
+
+     That is only safe if healing still happens when it IS due, and healing had NO coverage at
+     all, so the fast path would have been an untested behaviour change to the one case that
+     matters. Both sides are pinned here. */
+  {
+    await repo.ensureProfile('heal-me', 'HealMe');
+    // an account that has lost standing and last healed two days ago
+    await repo.getStanding('heal-me'); // creates the row
+    await db.query(
+      `update account_standing set score = 80, healed_at = now() - interval '2 days' where user_id = 'heal-me'`,
+    );
+    const healed = await repo.getStanding('heal-me');
+    check(
+      'standing/heal: a heal that is DUE still happens through the fast path check',
+      healed.score > 80,
+      `80 -> ${healed.score}`,
+    );
+
+    // ...and the clock advanced with it, so asking again does not heal a second time
+    const twice = await repo.getStanding('heal-me');
+    check('standing/heal: ...and asking again does not heal twice', twice.score === healed.score);
+
+    // a full-score account is the FAST path: the UPDATE would be a no-op, so the answer must
+    // match and nothing must move
+    await repo.ensureProfile('heal-full', 'HealFull');
+    await repo.getStanding('heal-full');
+    const beforeAt = (await db.query<{ healed_at: string }>(
+      `select healed_at from account_standing where user_id = 'heal-full'`,
+    )).rows[0].healed_at;
+    const full = await repo.getStanding('heal-full');
+    const afterAt = (await db.query<{ healed_at: string }>(
+      `select healed_at from account_standing where user_id = 'heal-full'`,
+    )).rows[0].healed_at;
+    check('standing/heal: a full-score account reads clean and is not touched',
+      full.score === 100 && String(beforeAt) === String(afterAt));
+
+    // a row that does not exist yet must still be created — that is the other case the
+    // transaction is for, and the fast path has to fall through to it
+    await repo.ensureProfile('heal-never-seen', 'NeverSeen');
+    const fresh = await repo.getStanding('heal-never-seen');
+    check('standing/heal: an account with no row is still created by the slow path',
+      fresh.score === 100);
+    const exists = await db.query<{ n: string }>(
+      `select count(*) as n from account_standing where user_id = 'heal-never-seen'`,
+    );
+    check('standing/heal: ...and the row is really there afterwards', Number(exists.rows[0].n) === 1);
+  }
+
+  /* ---- the batched writes on the ranked match-end path ----------------------------------
+     `persistVersusMatch` used to issue 16 sequential round trips for a 2v2: a rating read per
+     player, two writes per update, and an insert per participant. The reads and the inserts
+     are now batched. Both new functions are the kind that fail at RUNTIME rather than at
+     typecheck — an `unnest` with a wrong column cast, or a default that silently differs from
+     the per-row version — and they sit on the path a player is watching for their rating, so
+     they are exercised against the real schema here. */
+  {
+    const mid = await repo.saveMatch('2v2', SEASON, null as unknown as string, true, 'decode');
+    for (const id of ['batch-a', 'batch-b', 'batch-c', 'batch-d']) await repo.ensureProfile(id, id);
+    await repo.addMatchParticipants(mid, [
+      { userId: 'batch-a', alliance: 'red', drivetrain: 'tank', score: 90, won: true, ratingBefore: 1000, ratingAfter: 1012 },
+      { userId: 'batch-b', alliance: 'red', drivetrain: 'mecanum', score: 90, won: true, ratingBefore: 980, ratingAfter: 991 },
+      // an UNRANKED participant carries nulls — the array cast has to survive them
+      { userId: 'batch-c', alliance: 'blue', drivetrain: 'swerve', score: 40, won: false, ratingBefore: null, ratingAfter: null },
+      { userId: 'batch-d', alliance: 'blue', drivetrain: 'xdrive', score: 40, won: false, ratingBefore: 1100, ratingAfter: 1088 },
+    ]);
+    const rows = await db.query<{ n: string }>(`select count(*) as n from match_participants where match_id = $1`, [mid]);
+    check('batch: addMatchParticipants writes every row in one insert', Number(rows.rows[0].n) === 4, `${rows.rows[0].n} rows`);
+
+    const one = await db.query<{ drivetrain: string; score: number; won: boolean; rating_after: number | null }>(
+      `select drivetrain, score, won, rating_after from match_participants where match_id = $1 and user_id = 'batch-c'`,
+      [mid],
+    );
+    const c = one.rows[0];
+    check(
+      'batch: ...with each column landing on the right row, nulls included',
+      c.drivetrain === 'swerve' && Number(c.score) === 40 && c.won === false && c.rating_after === null,
+      JSON.stringify(c),
+    );
+
+    // the per-row version is `on conflict do nothing`; the batch must be too, or a retried
+    // persist after a partial failure would throw instead of being a no-op
+    await repo.addMatchParticipants(mid, [
+      { userId: 'batch-a', alliance: 'red', drivetrain: 'tank', score: 999, won: false, ratingBefore: 1, ratingAfter: 2 },
+    ]);
+    const again = await db.query<{ score: number }>(
+      `select score from match_participants where match_id = $1 and user_id = 'batch-a'`, [mid],
+    );
+    check('batch: ...and a repeat is a no-op, not a throw or an overwrite', Number(again.rows[0].score) === 90);
+
+    check('batch: an empty participant list writes nothing and does not throw',
+      await repo.addMatchParticipants(mid, []).then(() => true).catch(() => false));
+
+    // getRatingsFull must agree with getRatingFull for a player WITH a row and for one
+    // without — a default that drifted between them would silently re-place a rated player
+    await repo.upsertRating('batch-a', '2v2', 1, 1234, 40, 0.05, 'decode');
+    const many = await repo.getRatingsFull(['batch-a', 'batch-nobody'], '2v2', 1, 'decode');
+    const single = await repo.getRatingFull('batch-a', '2v2', 1, 'decode');
+    const singleMissing = await repo.getRatingFull('batch-nobody', '2v2', 1, 'decode');
+    check('batch: getRatingsFull matches getRatingFull for a rated player',
+      many.get('batch-a')?.rating === single.rating && many.get('batch-a')?.rd === single.rd);
+    check('batch: ...and uses the SAME defaults for a player with no row',
+      many.get('batch-nobody')?.rating === singleMissing.rating && many.get('batch-nobody')?.rd === singleMissing.rd,
+      `${many.get('batch-nobody')?.rating} vs ${singleMissing.rating}`);
+  }
+
+  /* ---- the homepage stats memo ---------------------------------------------------------
+     `/api/stats` is public and unauthenticated, and `getGlobalStats` is three unbounded
+     aggregates — so the memo is the only thing standing between a homepage and one full scan
+     of `profiles`, `records` and `matches` per visitor. Both halves are asserted: that it
+     actually serves a second call from cache, and that it is not a permanent cache. */
+  {
+    await repo.ensureProfile('stats-a', 'StatsA');
+    const t0 = 1_000_000;
+    const first = await repo.getGlobalStats(t0);
+    const usersAtFirst = first.users;
+
+    // a new account inside the TTL must NOT change the answer — that IS the cache working
+    await repo.ensureProfile('stats-b', 'StatsB');
+    const cached = await repo.getGlobalStats(t0 + 30_000);
+    check('stats: a second call inside the TTL is served from the memo', cached.users === usersAtFirst);
+
+    // ...and the memo is a memo, not a freeze: past the TTL the new account appears
+    const later = await repo.getGlobalStats(t0 + 120_000);
+    check('stats: past the TTL it re-queries, so the memo cannot go permanently stale', later.users === usersAtFirst + 1, `${usersAtFirst} then ${later.users}`);
+
+    // and an explicit drop is honoured, which is what an admin wanting the real number uses
+    await repo.ensureProfile('stats-c', 'StatsC');
+    repo.clearStatsCache();
+    const cleared = await repo.getGlobalStats(t0 + 120_000);
+    check('stats: clearStatsCache drops it regardless of the clock', cleared.users === usersAtFirst + 2);
+  }
+
+  /* ---- SCHEMA HYGIENE, asked of the live schema rather than of the migration files -------
+     Two invariants that fail SILENTLY — nothing errors, nothing returns a wrong answer, the
+     database just does progressively more work as the tables grow — so neither shows up in any
+     other check here. Both are asked of `pg_index`/`pg_constraint` AFTER every migration has
+     run, so a later migration that reintroduces the problem is caught by the same assertion.  */
+  {
+    /* EVERY FOREIGN KEY NEEDS AN INDEX ON ITS REFERENCING COLUMNS. Without one, each delete of
+       a parent row scans the whole child table to apply ON DELETE. This is what migration 0037
+       fixed on `records.replay_id`, `matches.replay_id`, `records.partner_id` and
+       `kofi_payments.claimed_by` — all four unindexed since 0001, and the replay prunes that
+       walk them run on every practice and LAN upload. The RULE is stated here rather than the
+       four columns, so the next unindexed foreign key is caught by the migration that adds it. */
+    const unindexed = await db.query<{ tbl: string; col: string }>(`
+      select c.conrelid::regclass::text as tbl,
+             (select string_agg(a.attname, ',' order by k.ord)
+                from unnest(c.conkey) with ordinality as k(attnum, ord)
+                join pg_attribute a on a.attrelid = c.conrelid and a.attnum = k.attnum) as col
+        from pg_constraint c
+       where c.contype = 'f'
+         and not exists (
+           select 1 from pg_index i
+            where i.indrelid = c.conrelid
+              and (i.indkey::int2[])[0:array_length(c.conkey,1)-1] = c.conkey
+         )
+       order by 1, 2`);
+    check(
+      'schema: every foreign key has an index leading with its own columns',
+      unindexed.rows.length === 0,
+      unindexed.rows.map((r) => `${r.tbl}(${r.col})`).join(' | ') || 'none',
+    );
+
+    /* NO INDEX IS A STRICT PREFIX OF ANOTHER ON THE SAME TABLE. Such an index can never be
+       chosen — the longer one serves everything it could — and it costs a write on every insert
+       and update. 0037 dropped the two that existed (`user_activity(user_id)`, already the PK's
+       leading column; `friend_requests(from_user_id)`, already the unique constraint's).
+       Redundancy is easy to add back by hand and impossible to notice. */
+    const redundant = await db.query<{ tbl: string; dup: string; covered_by: string }>(`
+      with ix as (
+        select i.indrelid::regclass::text as tbl, i.indexrelid::regclass::text as name,
+               i.indkey::int2[] as cols, i.indisunique as uniq, i.indpred is not null as partial
+          from pg_index i
+          join pg_class c on c.oid = i.indrelid
+          join pg_namespace n on n.oid = c.relnamespace
+         where n.nspname = 'public'
+      )
+      select a.tbl, a.name as dup, b.name as covered_by
+        from ix a join ix b
+          on a.tbl = b.tbl and a.name <> b.name
+         and array_length(b.cols,1) > array_length(a.cols,1)
+         and b.cols[0:array_length(a.cols,1)-1] = a.cols
+       -- a UNIQUE or PARTIAL index is not redundant even as a prefix: it carries a constraint,
+       -- or covers a different subset of rows, that the longer one does not.
+       where not a.uniq and not a.partial
+       order by 1, 2`);
+    check(
+      'schema: no index is a dead prefix of another on the same table',
+      redundant.rows.length === 0,
+      redundant.rows.map((r) => `${r.dup} < ${r.covered_by}`).join(' | ') || 'none',
+    );
+  }
+
+  /* ---- TERMS ACCEPTANCE (migration 0040) -----------------------------------
+     Two nullable columns and one write, and the part worth testing is the NULLS: a profile
+     that predates the migration must read "never accepted" rather than being silently
+     back-filled with whatever revision is current, because that is the difference between
+     a consent record and a fabricated one. The version is the SERVER’S constant at every
+     call site, so the round trip here is also what proves `acceptTerms` writes what it was
+     given and a timestamp Postgres produced.
+  */
+  {
+    /** timestamptz comes back from the driver as a Date (the same shape`supporter_until`
+     *  already has here) and JSON-serializes to an ISO string on the wire. Compare the
+     *  INSTANT, never the object. */
+    const ms = (v: string | null): number => (v ? new Date(v).getTime() : 0);
+    const cols0040 = (
+      await db.query<{ column_name: string; is_nullable: string }>(
+        `select column_name, is_nullable from information_schema.columns
+           where table_name = 'profiles' and column_name like 'terms%'`,
+      )
+    ).rows;
+    const col = (n: string) => cols0040.find((c) => c.column_name === n);
+    check(
+      'terms: 0040 added profiles.terms_version and terms_accepted_at',
+      !!col('terms_version') && !!col('terms_accepted_at'),
+      cols0040.map((c) => c.column_name).join(', ') || 'neither',
+    );
+    check(
+      'terms: both are NULLABLE, so "never asked" is representable',
+      col('terms_version')?.is_nullable === 'YES' && col('terms_accepted_at')?.is_nullable === 'YES',
+    );
+
+    // A PROFILE THAT NEVER ACCEPTED reads null on both — no default, no backfill. This is
+    // every account that exists today and every OAuth sign-up, and it is what turns into a
+    // dialog client-side (`termsGateState(null) === 'never'`).
+    await repo.ensureProfile('terms-a', 'TermsA');
+    const fresh = await repo.getTermsAcceptance('terms-a');
+    check(
+      'terms: a profile created without accepting reads null, not the current version',
+      fresh.version === null && fresh.acceptedAt === null,
+      JSON.stringify(fresh),
+    );
+    check(
+      'terms: and so does an account with no profile row at all',
+      (await repo.getTermsAcceptance('terms-nobody')).version === null,
+    );
+
+    // ACCEPT, THEN READ IT BACK.
+    const v1 = '2026-08-04';
+    const wrote = await repo.acceptTerms('terms-a', v1);
+    check(
+      'terms: accepting returns the version it wrote',
+      wrote.version === v1,
+      wrote.version ?? 'null',
+    );
+    check(
+      'terms: ...with a timestamp Postgres produced, not a client clock',
+      !!wrote.acceptedAt && Math.abs(Date.now() - new Date(wrote.acceptedAt).getTime()) < 60_000,
+      wrote.acceptedAt ?? 'null',
+    );
+    const readBack = await repo.getTermsAcceptance('terms-a');
+    check(
+      'terms: a separate read sees the same row',
+      readBack.version === v1 && ms(readBack.acceptedAt) === ms(wrote.acceptedAt),
+      JSON.stringify(readBack),
+    );
+
+    // A LATER REVISION OVERWRITES, and moves the instant with it — the gate compares one
+    // value, so a stale version left behind beside a new one would be the bug.
+    const v2 = '2027-01-01';
+    const again = await repo.acceptTerms('terms-a', v2);
+    check(
+      'terms: a new revision overwrites the old one rather than accumulating',
+      again.version === v2 &&
+        (await repo.getTermsAcceptance('terms-a')).version === v2,
+    );
+    check(
+      'terms: the recorded instant moved with it',
+      !!again.acceptedAt && !!wrote.acceptedAt && ms(again.acceptedAt) >= ms(wrote.acceptedAt),
+    );
+
+    // ACCEPTING FOR AN ACCOUNT WITH NO PROFILE WRITES NOTHING. The route calls
+    // `ensureProfile` first for exactly this reason; the repo function must not invent a
+    // row, or an unauthenticated id could seed `profiles` one UPDATE at a time.
+    const ghost = await repo.acceptTerms('terms-ghost', v1);
+    check(
+      'terms: accepting for a non-existent profile records nothing',
+      ghost.version === null &&
+        (
+          await db.query<{ n: string }>(
+            `select count(*)::text as n from profiles where user_id = 'terms-ghost'`,
+          )
+        ).rows[0].n === '0',
+    );
+
+    // ⚠️ AND NOTHING ELSE ON THE ROW MOVED. `acceptTerms` writes `updated_at` too, so the
+    // check that matters is that it did not touch the one column on this table that costs
+    // money to get wrong.
+    await repo.grantSupporter('terms-a', 1, 'admin', 'dbtest: terms block');
+    const untilBefore = (await repo.getSupporter('terms-a')).supporterUntil;
+    await repo.acceptTerms('terms-a', v1);
+    check(
+      'terms: accepting does not disturb the supporter expiry on the same row',
+      ms((await repo.getSupporter('terms-a')).supporterUntil) === ms(untilBefore),
+    );
+  }
+
+  /* ---- REPLAY PRIVACY (migration 0038) -------------------------------------
+     Match replays are private by default: watchable by everyone who PLAYED in the match, and
+     by nobody else unless every one of them opts in. Every assertion below was written to
+     FAIL on the code before the migration, where `/api/replay/<id>` served any row to
+     anyone — so this block is also the regression test for the default itself, which is the
+     part a later refactor can silently flip.
+  */
+  {
+    const SEA = 1037;
+    await repo.ensureSeason(SEA, 'decode', 7);
+    for (const [id, name] of [
+      ['rp-red', 'Red'], ['rp-red2', 'Red Two'],
+      ['rp-blue', 'Blue'], ['rp-blue2', 'Blue Two'],
+      ['rp-nosy', 'Nosy'], ['rp-mod', 'Mod'], ['rp-host', 'Host'],
+    ] as [string, string][]) {
+      await repo.ensureProfile(id, name);
+    }
+    await repo.syncStaffRoles('rp-mod', ['rp-mod']);
+
+    /** `replayAccess` reports the refusal KIND alongside the verdict; most checks only care
+     * about the verdict, so this keeps them readable. */
+    const acc = async (id: string, viewer: string | null): Promise<string> =>
+      (await repo.replayAccess(id, viewer)).access;
+
+    const mkReplay = (seed: number): Promise<string> =>
+      repo.saveReplay(
+        { format: 2, balanceVersion: SEA, sim: 3, game: 'decode', mode: 'match', seed, ticks: 10, setups: [], tracks: {} },
+        SEA,
+        'decode',
+      );
+
+    const vsReplay = await mkReplay(1);
+    const mid = await repo.saveMatch('1v1', SEA, vsReplay, true, 'decode');
+    await repo.addMatchParticipant({
+      matchId: mid, userId: 'rp-red', alliance: 'red', drivetrain: 'tank',
+      score: 40, won: false, ratingBefore: 1000, ratingAfter: 980,
+    });
+    await repo.addMatchParticipant({
+      matchId: mid, userId: 'rp-blue', alliance: 'blue', drivetrain: 'mecanum',
+      score: 55, won: true, ratingBefore: 1000, ratingAfter: 1020,
+    });
+
+    // THE DEFAULT. A fresh profile publishes nothing, and that is a column default rather
+    // than a code path, so it survives an account created by any of the `ensureProfile`
+    // callers without each of them remembering to pass it.
+    check(
+      'privacy: a new account does not publish its replays',
+      (await repo.getReplaysPublic('rp-red')) === false,
+    );
+    check('privacy: a stranger cannot watch a versus replay', (await acc(vsReplay, 'rp-nosy')) === 'private');
+    check('privacy: ...nor can a signed-out visitor', (await acc(vsReplay, null)) === 'private');
+
+    // EVERYONE WHO PLAYED IN IT, FROM EITHER SIDE. It is as much the opponent's match as the
+    // subject's, and they watched the whole thing live — there is nothing left to withhold.
+    check('privacy: a PARTICIPANT always can — it is their own match', (await acc(vsReplay, 'rp-red')) === 'ok');
+    check('privacy: ...the OPPONENT too, not just the one whose history it is', (await acc(vsReplay, 'rp-blue')) === 'ok');
+
+    // MODERATION MUST NOT BE LOCKED OUT. The report queue reaches a match through this exact
+    // call, so a gate that refuses staff quietly breaks score corrections and misscore claims.
+    check('privacy: staff can watch anything — the report queue depends on it', (await acc(vsReplay, 'rp-mod')) === 'ok');
+    // ...and it is the ROLE doing that, not the account being special, so a demoted admin loses it
+    // an env that names SOMEBODY ELSE — `syncStaffRoles` keeps its first argument as the
+    // owner, so clearing the list alone would leave `rp-mod` staff by that route
+    await repo.syncStaffRoles('rp-gone', ['rp-gone']);
+    check(
+      'privacy: ...and a demoted admin loses it again — the sweep is symmetric',
+      (await acc(vsReplay, 'rp-mod')) === 'private',
+    );
+    await repo.syncStaffRoles('rp-mod', ['rp-mod']);
+
+    // UNANIMITY. One player opting in must NOT publish the match, because the log shows the
+    // other alliance's strategy too. This is the assertion that makes the setting honest.
+    await repo.setReplaysPublic('rp-red', true);
+    check('privacy: ONE participant opting in does not publish the match', (await acc(vsReplay, 'rp-nosy')) === 'private');
+    await repo.setReplaysPublic('rp-blue', true);
+    check('privacy: ...and once everyone has, anyone may watch it', (await acc(vsReplay, 'rp-nosy')) === 'ok');
+    check('privacy: ...including a signed-out visitor, so a shared link works', (await acc(vsReplay, null)) === 'ok');
+    // and it is REVOCABLE, or the setting is a one-way publish button
+    await repo.setReplaysPublic('rp-blue', false);
+    check('privacy: turning it back off hides the match again', (await acc(vsReplay, 'rp-nosy')) === 'private');
+    await repo.setReplaysPublic('rp-blue', true);
+
+    /* ⚠️ UNANIMITY IS OVER THE ROSTER, NOT OVER THE SURVIVING ROWS.
+       `match_participants` holds a row only for an AUTHED player and cascades away with a
+       deleted profile, so "every row says yes" is not "everyone who played said yes". Both
+       cases below would publish a match against somebody who was never asked. */
+    let anonMid = '';
+    {
+      const anonReplay = await mkReplay(10);
+      anonMid = String(await repo.saveMatch('1v1', SEA, anonReplay, true, 'decode'));
+      await repo.addMatchParticipant({
+        matchId: anonMid, userId: 'rp-red', alliance: 'red', drivetrain: 'tank',
+        score: 30, won: true, ratingBefore: 1000, ratingAfter: 1010,
+      });
+      check(
+        'privacy/roster: a 1v1 against a SIGNED-OUT opponent never publishes — they were never asked',
+        (await acc(anonReplay, 'rp-nosy')) === 'private',
+        'rp-red has opted in and is the only stored participant',
+      );
+      check(
+        'privacy/roster: ...and the one player in it can still watch it',
+        (await acc(anonReplay, 'rp-red')) === 'ok',
+      );
+
+      // a 2v2 needs FOUR, so three consenting players is still not the roster
+      const duoReplay = await mkReplay(11);
+      const duoMid = await repo.saveMatch('2v2', SEA, duoReplay, true, 'decode');
+      for (const [uid, side] of [['rp-red', 'red'], ['rp-red2', 'red'], ['rp-blue', 'blue']] as [string, string][]) {
+        await repo.addMatchParticipant({
+          matchId: duoMid, userId: uid, alliance: side as 'red' | 'blue', drivetrain: 'tank',
+          score: 50, won: false, ratingBefore: 1000, ratingAfter: 1000,
+        });
+      }
+      await repo.setReplaysPublic('rp-red2', true);
+      check(
+        'privacy/roster: a 2v2 with only three stored players never publishes',
+        (await acc(duoReplay, 'rp-nosy')) === 'private',
+      );
+      await repo.addMatchParticipant({
+        matchId: duoMid, userId: 'rp-blue2', alliance: 'blue', drivetrain: 'tank',
+        score: 50, won: true, ratingBefore: 1000, ratingAfter: 1000,
+      });
+      await repo.setReplaysPublic('rp-blue2', true);
+      check(
+        'privacy/roster: ...and does once the fourth is there and has opted in',
+        (await acc(duoReplay, 'rp-nosy')) === 'ok',
+      );
+      // DELETING an account is the same shape from the other end: it cannot consent any more,
+      // and its row going away must not be read as the roster shrinking to fit.
+      await repo.deleteAccount('rp-blue2');
+      check(
+        'privacy/roster: a DELETED participant un-publishes the match rather than consenting by absence',
+        (await acc(duoReplay, 'rp-nosy')) === 'private',
+      );
+    }
+
+    // A RECORD RUN IS PROOF, NOT STRATEGY — it stays public whatever the flag says, or the
+    // leaderboard stops being checkable by the people it ranks.
+    const recReplay = await mkReplay(2);
+    await repo.submitRecord({
+      userId: 'rp-blue', mode: 'solo', drivetrain: 'tank', score: 120,
+      balanceVersion: SEA, replayId: recReplay, game: 'decode',
+    });
+    await repo.setReplaysPublic('rp-blue', false);
+    check(
+      'privacy: a RECORD run replay stays public — it is the board proof',
+      (await acc(recReplay, 'rp-nosy')) === 'ok',
+      'rp-blue has replays_public = false at this point',
+    );
+
+    // A PRACTICE run is an unverified offline log its own list endpoint never shows anyone
+    // else. Only the unguessable uuid was protecting it.
+    const prac = await repo.savePracticeRun(
+      'rp-red',
+      { format: 2, balanceVersion: SEA, sim: 3, game: 'decode', mode: 'match', seed: 3, ticks: 10, setups: [], tracks: {} },
+      50,
+      SEA,
+      'decode',
+    );
+    const pracReplay = String(prac.replayId);
+    check(
+      'privacy: a PRACTICE replay is owner-only, even with the flag ON',
+      (await acc(pracReplay, 'rp-red')) === 'ok' && (await acc(pracReplay, 'rp-nosy')) === 'private',
+      'rp-red has replays_public = true',
+    );
+
+    /* A LAN RUN IS THE HOST'S OWN EVENT. `lan_runs` exposes exactly one read path (one host's
+       own matches, 0033) and its drivers are NAMES rather than accounts, so there is nobody
+       else `replays_public` could speak for — which argues for keeping it shut, not open. It
+       still lands in the database, where staff can reach it. */
+    {
+      const lanRun = await repo.saveLanRun(
+        'rp-host',
+        '11111111-2222-3333-4444-555555555555',
+        { format: 2, balanceVersion: SEA, sim: 3, game: 'decode', mode: 'match', seed: 20, ticks: 10, setups: [], tracks: {} },
+        { red: 40, blue: 50 },
+        [{ name: 'Guest One', alliance: 'red' }, { name: 'Guest Two', alliance: 'blue' }],
+        SEA,
+        'decode',
+      );
+      const lanReplay = String(lanRun.replayId);
+      check('privacy/lan: the HOST who uploaded it can watch it', (await acc(lanReplay, 'rp-host')) === 'ok');
+      check('privacy/lan: a stranger cannot', (await acc(lanReplay, 'rp-nosy')) === 'private');
+      check('privacy/lan: ...nor can a signed-out visitor', (await acc(lanReplay, null)) === 'private');
+      check(
+        'privacy/lan: ...and the host opting in does NOT publish it — the drivers are names, not accounts',
+        (await (async () => {
+          await repo.setReplaysPublic('rp-host', true);
+          return acc(lanReplay, 'rp-nosy');
+        })()) === 'private',
+      );
+      check('privacy/lan: the database still has it, and staff can see it', (await acc(lanReplay, 'rp-mod')) === 'ok');
+      check(
+        'privacy/lan: the refusal says it is a self-hosted match, not that a setting is off',
+        repo.replayRefusalMessage((await repo.replayAccess(lanReplay, 'rp-nosy')).kind).includes('self-hosted'),
+        repo.replayRefusalMessage('lan'),
+      );
+    }
+
+    // THE REFUSAL NAMES ITSELF. Three owners refuse for three different reasons, and one
+    // generic sentence would be wrong about two of them.
+    check(
+      'privacy: a private MATCH refusal points at the setting behind it',
+      repo.replayRefusalMessage('versus').includes('played in the match'),
+      repo.replayRefusalMessage('versus'),
+    );
+    check(
+      'privacy: a PRACTICE refusal does not — there is no setting that would open it',
+      !repo.replayRefusalMessage('practice').includes('allow it'),
+      repo.replayRefusalMessage('practice'),
+    );
+
+    // A DEAD LINK IS NOT A SECRET. A season purge deletes replays, and telling somebody their
+    // bookmark is private would send them asking a player to publish something that is gone.
+    check(
+      'privacy: an unknown replay id reads MISSING, not private',
+      (await acc('00000000-0000-0000-0000-000000000000', 'rp-red')) === 'missing',
+    );
+    // ...and an ORPHAN is the other way round: the replay is there, nothing claims it, deny.
+    check(
+      'privacy: a replay nothing points at is DENIED rather than defaulting open',
+      (await acc(await mkReplay(30), 'rp-nosy')) === 'private',
+    );
+
+    // THE MATCH HISTORY HALF. The list stays public — results, scores and rating deltas are
+    // the leaderboard's substance — but a row a reader may not watch must not hand out a
+    // replay id, or the Watch button is drawn and answers 403 when pressed.
+    await repo.setReplaysPublic('rp-red', false);
+    const hist = (subject: string, viewer: string | null, staff = false): Promise<repo.MatchHistoryPage> =>
+      repo.userMatchHistory(subject, {
+        balanceVersion: SEA, game: 'decode', viewerId: viewer, viewerIsStaff: staff,
+      });
+
+    const asStranger = await hist('rp-red', 'rp-nosy');
+    const strangerRow = asStranger.rows.find((r) => r.id === String(mid));
+    check('privacy/history: a stranger still SEES the match', !!strangerRow && strangerRow.score === 40);
+    check(
+      'privacy/history: ...with no replay id on it, so no Watch button is drawn',
+      strangerRow?.replayId === null,
+    );
+    check(
+      'privacy/history: a participant keeps the replay id on their own row',
+      (await hist('rp-red', 'rp-red')).rows.find((r) => r.id === String(mid))?.replayId === String(vsReplay),
+    );
+    // THE OPPONENT BROWSING THE SUBJECT'S PROFILE — the case the roster rule is really about.
+    // It is their match too, so the Watch button has to survive being reached from somebody
+    // else's history page rather than only from their own.
+    check(
+      'privacy/history: the OPPONENT sees Watch on that match from the subject’s profile',
+      (await hist('rp-red', 'rp-blue')).rows.find((r) => r.id === String(mid))?.replayId === String(vsReplay),
+    );
+    check(
+      'privacy/history: staff keep it too',
+      (await hist('rp-red', 'rp-mod', true)).rows.find((r) => r.id === String(mid))?.replayId === String(vsReplay),
+    );
+    check(
+      'privacy/history: an anonymous read is treated as a stranger, not as the subject',
+      (await hist('rp-red', null)).rows.find((r) => r.id === String(mid))?.replayId === null,
+    );
+    // a RECORD row in the same feed keeps its replay for everyone, matching `replayAccess`
+    check(
+      'privacy/history: a record run keeps its replay id for a stranger',
+      (await hist('rp-blue', 'rp-nosy')).rows.find((r) => r.kind === 'record')?.replayId === String(recReplay),
+    );
+    // ⚠️ THE LIST MUST APPLY THE ROSTER RULE, NOT UNANIMITY ALONE. rp-red is the ONLY stored
+    // participant of that 1v1 and is about to opt in, so a gate that asked only "did every
+    // stored row say yes" would draw a Watch button here — on a match whose other driver was
+    // signed out and never asked, and which `replayAccess` then answers 403 to.
+    await repo.setReplaysPublic('rp-red', true);
+    check(
+      'privacy/history: a roster-incomplete 1v1 draws no Watch button even with every stored row opted in',
+      (await hist('rp-red', 'rp-nosy')).rows.find((r) => r.id === anonMid)?.replayId === null,
+    );
+    // the positive half, so the gate is not just answering no to everything: the full 1v1
+    // roster has both players opted in, so a stranger DOES get the id.
+    await repo.setReplaysPublic('rp-blue', true);
+    check(
+      'privacy/history: a fully released match hands a stranger the replay id',
+      (await hist('rp-red', 'rp-nosy')).rows.find((r) => r.id === String(mid))?.replayId === String(vsReplay),
+      'rp-red and rp-blue are both public here',
+    );
   }
 
   await db.close();

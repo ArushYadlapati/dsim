@@ -5,6 +5,10 @@ import type { AssistConfig, GameId, RobotSpec } from '../types';
 import { gameServerHttpUrl, setLanFromServer } from './env';
 import { getAuthToken } from '../lib/authClient';
 import { DISCORD_REGION } from './discordActivity';
+// the per-DEVICE view preference (localStorage, never `GameSettings`) — the one thing a
+// practice upload can say that the replay container structurally cannot. It is a leaf module
+// with no React and no DOM beyond `localStorage`, guarded against storage being unavailable.
+import { getViewPref } from '../games/biobuzz/graphics/store';
 
 /**
  * Boards + periods are per-game. DECODE is the server's default for a MISSING
@@ -66,6 +70,13 @@ export interface RecordRow extends BadgeFields {
   replayId: string | null;
   createdAt: string;
   config: RecordConfig | null;
+  /**
+   * WHICH SOLVE PRODUCED THIS RUN — `'2d'` | `'3d'` (migration 0039). Absent from an older
+   * server's response, and a pre-0039 row reads `'2d'`, so the chip is drawn only where the
+   * value is actually known to be `'3d'` — a board that claimed "2D" for every row an old
+   * deploy served would be stating something it was never told.
+   */
+  physics?: string;
 }
 
 export interface EloRow extends BadgeFields {
@@ -98,14 +109,59 @@ async function getJson<T>(path: string): Promise<T> {
   return (await res.json()) as T;
 }
 
+/** thrown when the server has the replay but will not serve it to this viewer — everyone who
+ * played in it has to opt in (migration 0037). Its own type because the viewer shows a real
+ * explanation for it rather than an HTTP status, and because a 403 here is not a failure. */
+export class ReplayPrivateError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'ReplayPrivateError';
+  }
+}
+
+/**
+ * A PUBLIC read that answers differently once it knows who is asking.
+ *
+ * `getJson` sends no Authorization header and `authedJson` throws without a token, and a
+ * replay needs neither: signed out you may still watch a public one, and signed in you may
+ * also watch your own. So the token rides along WHEN THERE IS ONE and its absence is not an
+ * error. Nothing here retries on 401 — anonymous is a valid answer, not a stale session.
+ *
+ * ⚠️ COST, accepted knowingly: `getAuthToken` caches a token it HAS but does not remember a
+ * miss, so a signed-out visitor pays one `/token` round trip per call — on the public profile
+ * and career pages, and again on each page of history. It is small and it is off the
+ * leaderboard path (that still uses `getJson`), so it is not worth a negative cache in shared
+ * auth, where a stale "no session" would delay a real sign-in. Fix it THERE, with a few
+ * seconds' TTL that `force` bypasses, if the profile page ever gets heavy anonymous traffic.
+ */
+async function maybeAuthedJson<T>(path: string): Promise<T> {
+  const base = gameServerHttpUrl();
+  if (!base) throw new Error('Leaderboards need the game server (VITE_GAME_SERVER_URL).');
+  const token = await getAuthToken().catch(() => null);
+  const res = await fetch(base + path, {
+    headers: token ? { authorization: `Bearer ${token}` } : {},
+  });
+  if (res.status === 403) {
+    const body = (await res.json().catch(() => ({}))) as { error?: string; message?: string };
+    throw new ReplayPrivateError(body.message ?? 'This replay is private.');
+  }
+  if (!res.ok) throw new Error(`Server returned ${res.status}`);
+  return (await res.json()) as T;
+}
+
 export function fetchRecords(
   mode: RecordMode,
   drivetrain: Board,
   season?: number,
   game?: GameId,
+  /** the ERA filter (0039): `'2d'` or `'3d'`, or omitted for every row. An older server
+   *  ignores the parameter and answers with the whole board, which is the right degradation —
+   *  the filter narrows a board, so failing open shows MORE rather than an empty page. */
+  physics?: '2d' | '3d',
 ): Promise<{ rows: RecordRow[] }> {
   const s = season != null ? `&season=${season}` : '';
-  return getJson(`/api/records?mode=${mode}&drivetrain=${drivetrain}${s}${gameParam(game)}`);
+  const ph = physics ? `&physics=${physics}` : '';
+  return getJson(`/api/records?mode=${mode}&drivetrain=${drivetrain}${s}${ph}${gameParam(game)}`);
 }
 
 export function fetchElo(
@@ -392,20 +448,25 @@ function historyQuery(o: MatchHistoryOpts): string {
   return s ? `?${s}` : '';
 }
 
-/** a signed-in user's paginated match history (by user id — "my Career") */
+/** a signed-in user's paginated match history (by user id — "my Career").
+ * OPTIONALLY AUTHED: a row's `replayId` is null unless the reader may watch it, so the
+ * Watch button on your own matches depends on the server knowing they are yours. */
 export function fetchUserMatches(
   userId: string,
   opts: MatchHistoryOpts = {},
 ): Promise<MatchHistoryPage> {
-  return getJson(`/api/user/${encodeURIComponent(userId)}/matches${historyQuery(opts)}`);
+  return maybeAuthedJson(`/api/user/${encodeURIComponent(userId)}/matches${historyQuery(opts)}`);
 }
 
-/** a public player's paginated match history (by username — profile page) */
+/** a public player's paginated match history (by username — profile page). Same reason for
+ * the optional token: a stranger's page still shows YOUR shared matches as watchable. */
 export function fetchUserMatchesByUsername(
   username: string,
   opts: MatchHistoryOpts = {},
 ): Promise<MatchHistoryPage> {
-  return getJson(`/api/profile/${encodeURIComponent(username)}/matches${historyQuery(opts)}`);
+  return maybeAuthedJson(
+    `/api/profile/${encodeURIComponent(username)}/matches${historyQuery(opts)}`,
+  );
 }
 
 /** Public username format: 4–20 lowercase letters/digits. Mirrors the server
@@ -493,7 +554,24 @@ export async function updateHandle(handle: string): Promise<{ userId: string; ha
 }
 
 export function fetchReplay(id: string): Promise<Replay> {
-  return getJson(`/api/replay/${id}`);
+  // sends the token when there is one: a participant may watch their own match whatever
+  // anybody has opted into, and signed out you may still watch a public one
+  return maybeAuthedJson(`/api/replay/${id}`);
+}
+
+// ---- replay privacy (your own account setting) ------------------------------
+
+/** may anyone watch your versus match replays? Default FALSE, and retroactively so — see
+ * migration 0037. A match is released only when EVERY player in it has this on. */
+export function fetchReplaysPublic(): Promise<{ replaysPublic: boolean }> {
+  return authedJson('/api/user/privacy');
+}
+
+export function saveReplaysPublic(replaysPublic: boolean): Promise<{ replaysPublic: boolean }> {
+  return authedJson('/api/user/privacy', {
+    method: 'POST',
+    body: JSON.stringify({ replaysPublic }),
+  });
 }
 
 // ---- solo practice replays (own account only) ------------------------------
@@ -506,6 +584,10 @@ export interface PracticeRun {
   ticks: number;
   replayId: string | null;
   createdAt: string;
+  /** which solve ran it ('2d' | '3d'; migration 0039). Older servers omit it. */
+  physics?: string;
+  /** which renderer it was watched in, or null/absent when unknown */
+  view?: string | null;
 }
 
 /**
@@ -527,10 +609,22 @@ export async function uploadPracticeRun(
   const token = await getAuthToken();
   if (!base || !token) return null;
   try {
+    /**
+     * `view` RIDES THE POST; `physics` DOES NOT, and the asymmetry is the point.
+     *
+     * The physics is already inside the container (`Replay.physics`, stamped by the recorder),
+     * and the server reads it from there — so it cannot be restated here, cannot drift from
+     * the log it describes, and cannot be claimed. The VIEW is the one fact the container has
+     * no room for, because it is a property of the screen rather than of the simulation: it is
+     * read from the device preference the player was actually watching in.
+     *
+     * An older server ignores the extra key entirely, which is what makes this safe to send
+     * unconditionally — one Fly app serves every client version.
+     */
     const res = await fetch(`${base}/api/practice?game=${game ?? 'decode'}`, {
       method: 'POST',
       headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
-      body: JSON.stringify({ replay, score }),
+      body: JSON.stringify({ replay, score, view: getViewPref() }),
     });
     if (!res.ok) return null;
     return ((await res.json()) as { run: PracticeRun }).run ?? null;
@@ -902,12 +996,19 @@ export async function adminFetchMatches(limit = 40, game?: GameId): Promise<Admi
 export interface StandingEvent {
   id: string;
   kind: string;
+  /** SIGNED: positive is points taken, negative is points given back by a moderator's
+   *  adjustment. Render it through `standingDelta`, never with a hard-coded minus sign. */
   points: number;
   scoreAfter: number;
   cooldownMin: number;
   ratingCharge: number;
   game: string | null;
   at: string;
+  /** set when a moderator pardoned this offence — it no longer counts toward escalation and
+   *  no longer costs points, and is shown struck through rather than hidden */
+  voidedAt?: string | null;
+  /** a moderator's stated reason for a manual adjustment */
+  note?: string | null;
 }
 
 export interface StandingInfo {
@@ -1018,6 +1119,9 @@ export async function adminSetReportStatus(
 export interface ScoreReport {
   id: string;
   matchId: string | null;
+  /** the match's REPLAY — what the WATCH button opens. A match id is not a replay id, and
+   *  passing one where the other belongs is what made every WATCH here 404. */
+  replayId: string | null;
   roomCode: string;
   game: string;
   detail: string;
@@ -1073,6 +1177,150 @@ export async function adminResolveScoreReport(
     return res.ok;
   } catch {
     return false;
+  }
+}
+
+/** one finished match, as the score editor reads it */
+export interface AdminMatch {
+  matchId: string;
+  replayId: string | null;
+  game: string;
+  mode: string;
+  ranked: boolean | null;
+  createdAt: string;
+  red: number;
+  blue: number;
+  participants: {
+    userId: string;
+    handle: string;
+    username: string | null;
+    alliance: 'red' | 'blue';
+    drivetrain: string;
+    score: number;
+    won: boolean | null;
+    ratingBefore: number | null;
+    ratingAfter: number | null;
+  }[];
+  corrections: {
+    id: string;
+    adminId: string;
+    redBefore: number;
+    blueBefore: number;
+    redAfter: number;
+    blueAfter: number;
+    note: string | null;
+    at: string;
+  }[];
+}
+
+/** who played a match, what it scored, and every correction already applied to it */
+export async function adminFetchMatch(matchId: string): Promise<AdminMatch | null> {
+  const base = gameServerHttpUrl();
+  const token = await getAuthToken();
+  if (!base || !token) return null;
+  try {
+    const res = await fetch(`${base}/api/admin/match?id=${encodeURIComponent(matchId)}`, {
+      headers: { authorization: `Bearer ${token}` },
+      cache: 'no-store',
+    });
+    if (!res.ok) return null;
+    return ((await res.json()) as { match: AdminMatch }).match ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Set a finished match's alliance scores.
+ *
+ * The win/loss flag is re-derived by the server from the new numbers; the RATINGS are not
+ * touched, because Glicko-2 is sequential and re-rating one match in the middle means
+ * re-rating every match since. Returns the before/after pair, or null if it did not land.
+ */
+export async function adminCorrectMatchScore(
+  matchId: string,
+  red: number,
+  blue: number,
+  note?: string,
+): Promise<{ redBefore: number; blueBefore: number; redAfter: number; blueAfter: number } | null> {
+  const base = gameServerHttpUrl();
+  const token = await getAuthToken();
+  if (!base || !token) return null;
+  const q = new URLSearchParams({
+    id: matchId,
+    red: String(Math.max(0, Math.round(red))),
+    blue: String(Math.max(0, Math.round(blue))),
+  });
+  if (note) q.set('note', note);
+  try {
+    const res = await fetch(`${base}/api/admin/match?${q.toString()}`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${token}` },
+    });
+    if (!res.ok) return null;
+    return (await res.json()) as { redBefore: number; blueBefore: number; redAfter: number; blueAfter: number };
+  } catch {
+    return null;
+  }
+}
+
+/** one account's standing as a MODERATOR reads it — the same ledger the player sees, plus
+ *  the name, so the console never shows a bare uuid next to a punishment */
+export interface AdminStanding {
+  userId: string;
+  handle: string | null;
+  username: string | null;
+  standing: StandingInfo | null;
+  events: StandingEvent[];
+}
+
+export async function adminFetchStanding(userId: string): Promise<AdminStanding | null> {
+  const base = gameServerHttpUrl();
+  const token = await getAuthToken();
+  if (!base || !token) return null;
+  try {
+    const res = await fetch(`${base}/api/admin/standing?user=${encodeURIComponent(userId)}`, {
+      headers: { authorization: `Bearer ${token}` },
+      cache: 'no-store',
+    });
+    if (!res.ok) return null;
+    return (await res.json()) as AdminStanding;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Edit one account's standing.
+ *
+ * Every field is OPTIONAL and an absent one changes nothing — `lock` especially: leaving it
+ * out keeps a cooldown somebody is legitimately serving, `false` lifts it, a number sets one
+ * that many minutes out. A pardon VOIDS the offences rather than deleting them, so escalation
+ * forgets them while the record does not.
+ */
+export async function adminEditStanding(
+  userId: string,
+  opts: { score?: number; pardonAll?: boolean; pardonIds?: string[]; lock?: false | number; note?: string },
+): Promise<{ scoreBefore: number; scoreAfter: number; pardoned: number } | null> {
+  const base = gameServerHttpUrl();
+  const token = await getAuthToken();
+  if (!base || !token) return null;
+  const q = new URLSearchParams({ user: userId });
+  if (opts.score !== undefined) q.set('score', String(Math.round(opts.score)));
+  if (opts.pardonAll) q.set('pardon', 'all');
+  else if (opts.pardonIds?.length) q.set('pardon', opts.pardonIds.join(','));
+  if (opts.lock === false) q.set('lock', 'clear');
+  else if (typeof opts.lock === 'number') q.set('lock', String(Math.max(0, Math.round(opts.lock))));
+  if (opts.note) q.set('note', opts.note);
+  try {
+    const res = await fetch(`${base}/api/admin/standing?${q.toString()}`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${token}` },
+    });
+    if (!res.ok) return null;
+    return (await res.json()) as { scoreBefore: number; scoreAfter: number; pardoned: number };
+  } catch {
+    return null;
   }
 }
 
@@ -1556,6 +1804,17 @@ export interface Entitlements {
   autoRenews: boolean;
   /** absent when talking to a server older than the pricing route */
   price?: TierPrice;
+  /**
+   * The revision of the Terms of Use this account has accepted — the key
+   * `src/legalText.ts` derives from `LEGAL_UPDATED` (migration 0040).
+   *
+   * THREE-VALUED, and every value means something different to `termsGateState`:
+   * a STRING is what was accepted, `null` is "never asked", and `undefined` is "this
+   * server did not say" — which is what a server older than the route answers, and
+   * what `fetchEntitlements` falls back to when it swallows a failure. Only the
+   * first two may put a dialog in front of anybody.
+   */
+  termsVersion?: string | null;
 }
 
 const NO_ENTITLEMENTS: Entitlements = {
@@ -1580,10 +1839,32 @@ export async function fetchEntitlements(): Promise<Entitlements> {
       role: r.role === 'owner' || r.role === 'admin' ? r.role : undefined,
       autoRenews: !!r.autoRenews,
       price: r.price,
+      // PASSED THROUGH UNTOUCHED, including `undefined`. Coercing it to null here
+      // would turn "this server never told us" into "never accepted" and show a
+      // blocking dialog to everybody on a stale server.
+      termsVersion: r.termsVersion,
     };
   } catch {
     return NO_ENTITLEMENTS;
   }
+}
+
+/**
+ * Accept the current Terms of Use, for the signed-in account.
+ *
+ * ⚠️ IT SENDS NO VERSION. The server records its OWN `LEGAL_VERSION`, so a client
+ * cannot accept a revision that does not exist or pre-accept the next one to escape
+ * the gate for good. The answer is the version that was actually written, which is
+ * what the gate then compares.
+ *
+ * Unlike `fetchEntitlements` this DOES throw: somebody is waiting on a button, and a
+ * silent failure would leave a dialog that closes and comes straight back.
+ */
+export async function acceptTerms(): Promise<{ termsVersion: string | null }> {
+  const r = await authedJson<{ termsVersion?: string | null }>('/api/user/accept-terms', {
+    method: 'POST',
+  });
+  return { termsVersion: r.termsVersion ?? null };
 }
 
 /** the tier price for a SIGNED-OUT visitor. Same never-throws contract: the

@@ -1,6 +1,8 @@
+import { useState } from 'react';
 import { APP_NAME } from '../seasons';
 import { QueueCounts } from './QueueCounts';
 import { useLanEnabled } from './useLanEnabled';
+import { tutorialSeen } from '../tutorial/flag';
 
 /**
  * Game-mode select — reached from PLAY. These are the tiles that used to live on
@@ -21,6 +23,7 @@ export function ModeSelect({
   onCustomRoom,
   onWatch,
   compete = true,
+  onTutorial,
 }: {
   multiplayer: boolean;
   signedIn: boolean;
@@ -40,8 +43,24 @@ export function ModeSelect({
   onWatch: () => void;
   /** host or join a game on this network (docs/lan-selfhost.md) */
   onLan: () => void;
+  /**
+   * START THE TUTORIAL — absent when the active game has no tutorial, in which case this page
+   * shows nothing about one.
+   *
+   * The CARD below is offered only to a device that has not been through it (`tutorialSeen`,
+   * per-device and fail-open like `chainDisclaimer`). It is not a permanent tile: once you have
+   * played, an offer to be taught is clutter on the page you go through to start every run, and
+   * Controls keeps an entry that runs it again for anybody who wants it.
+   */
+  onTutorial?: () => void;
 }) {
   const lanOn = useLanEnabled();
+  /**
+   * READ ONCE, at mount. A lazy initializer rather than a call in the render body: the flag is
+   * set by the tutorial itself, so re-reading it on every render would make the card vanish
+   * mid-interaction if this page happened to re-render while a run was finishing elsewhere.
+   */
+  const [seen] = useState(() => tutorialSeen());
   return (
     <>
       <p className="ds-eyebrow">{APP_NAME} · Play</p>
@@ -52,6 +71,27 @@ export function ModeSelect({
           <b>You’re already in a game.</b>
           <button className="ds-btn primary" onClick={onRejoin}>
             Rejoin match →
+          </button>
+        </div>
+      )}
+
+      {/* THE FIRST-RUN TUTORIAL OFFER, above the modes and below the rejoin banner.
+          Above them because it is the thing a new player should do first and the modes are what
+          they would otherwise guess at; a single card rather than a tile in the Practice set,
+          because it disappears for good once the device has been through it and a grid that
+          changes shape is harder to learn than a banner that goes away. */}
+      {onTutorial && !seen && (
+        <div className="ds-rejoin ds-tut-offer">
+          <b>New to {APP_NAME}?</b>
+          {/* NO STEP COUNT. It was "Six steps", which is BIOBUZZ’s number: DECODE’s tutorial has
+              four, and a build with no Box Tube is asked five. The count is resolved per game and
+              per ROBOT (`TutorialStep.applies`), so the only honest place it can be printed is the
+              card itself, which does print it. */}
+          <span className="ds-tut-offer-sub">
+            Learn the controls on the real field — drive, collect, score, park.
+          </span>
+          <button className="ds-btn primary" onClick={onTutorial}>
+            Start the tutorial →
           </button>
         </div>
       )}

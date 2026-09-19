@@ -1,9 +1,9 @@
 import type { ControlBindings } from './input/bindings';
-import type { GameId } from './games/types';
+import type { GameId, Physics } from './games/types';
 import type { ChainState } from './games/chain/state';
 import type { BiobuzzState } from './games/biobuzz/state';
 import type { BbMechSpec } from './games/biobuzz/mechs';
-export type { GameId } from './games/types';
+export type { GameId, Physics } from './games/types';
 
 export type Alliance = 'red' | 'blue';
 /** DECODE artifacts are purple/green; BIOBUZZ POLLEN is yellow and NECTAR carries its alliance
@@ -197,6 +197,21 @@ export interface RobotSpec {
    * server (which drops fields it does not know) returns as the nearest hardware it can name.
    */
   bbMech?: BbMechSpec;
+  /**
+   * BIOBUZZ 3D PHYSICS ONLY (Day 1 seam, `docs/biobuzz/plan-3d.md` §2.4/§3.3): the robot's
+   * height in inches (12..29, absent 18) — see `BB3_HEIGHT_MIN`/`_DEFAULT`/`_MAX` in
+   * `src/games/biobuzz/config.ts`, R105.A's vertical dimension of the expansion prism. The 2D
+   * pipeline ignores it entirely; `sim3d/robot3d.ts` extrudes the chassis collider to it.
+   * Clamped (and dropped when not a finite number) in `coerceBiobuzzSpec`.
+   */
+  heightIn?: number;
+  /**
+   * BIOBUZZ 3D ONLY (Day 3, R102): the height the robot STOWS to at the start, when it is built
+   * taller than the 18-in cube. Optional and DECLARED — `bbStowHeightIn` reads it structurally,
+   * `coerceBiobuzzSpec` normalises it to [BB3_HEIGHT_MIN, heightIn] and deliberately does not
+   * clamp it to 18 (the RULE refuses at `startLegal`; clamping would make it true by construction).
+   */
+  stowHeightIn?: number;
 }
 
 /** Chain Reaction scoring archetype (see `RobotSpec.scoreMode`).
@@ -342,6 +357,15 @@ export interface RobotState {
   pos: Vec2;
   heading: number; // field frame, radians, 0 = +x, CCW positive
   vel: Vec2; // field frame, in/s
+  /**
+   * 3D PHYSICS ONLY (Day 1 seam, `docs/biobuzz/plan-3d.md` §2.4/§3.3): height above the tile
+   * plane and its rate of change, in inches / inches per second. Written by `sim3d/step3d.ts`'s
+   * readback every tick a `'3d'`-physics world steps; the 2D pipeline (`step2d`, DECODE, Chain
+   * Reaction) never writes either field. Absent reads 0 (on the floor, no vertical motion) —
+   * which is exactly right for every robot that has never run the 3D solve.
+   */
+  z?: number;
+  vz?: number;
   /**
    * WHAT A CONTACT DID TO THIS CHASSIS LAST TICK — the velocity (and spin) the solver produced
    * that the drivetrain did not ask for. Written by `solveRobots`, read one tick later by the
@@ -748,6 +772,33 @@ export interface GameSettings {
    * flat fields above are always the ACTIVE game's copy; `switchGame` swaps them. */
   loadouts?: Partial<Record<GameId, GameLoadout>>;
   practiceDummies: boolean;
+  /**
+   * SOLO PRACTICE ONLY (Day 1 seam, `docs/biobuzz/plan-3d.md` §2.1): which physics backend a
+   * solo BIOBUZZ practice world steps on — the player's own pick, defaulting `'3d'`. Ranked,
+   * matchmade and record rooms are NOT decided by this field; the server always stages those
+   * `'3d'`. Absent (every non-BIOBUZZ settings blob, and every save from before this field
+   * existed) reads `'2d'` wherever the physics itself is read (`biobuzzPhysics`), but
+   * `coerceSettings` fills the default below so a fresh settings object already reads `'3d'`.
+   * Persists + syncs like every other `GameSettings` field (the account sync sends the whole
+   * blob, so this rides along with no protocol change).
+   */
+  practicePhysics?: Physics;
+  /**
+   * SOLO PRACTICE OPPONENTS (plan §6): `'off'`, or a TIER from the active game's own
+   * `GameSimModule.bot.tiers`. Absent reads `'off'`, which is every settings blob that predates
+   * this field and every game that has no AI driver.
+   *
+   * ⚠️ **THE TIER IS AN OPAQUE STRING, DELIBERATELY.** The seam declares `tiers` as
+   * `readonly string[]` so a game can add or rename a difficulty without a shared type edit, and
+   * typing this field as a union of BIOBUZZ's three would be the shared type edit that rule
+   * exists to avoid. It is validated the only way it honestly can be — against the live module's
+   * own `coerceTier` — in `coerceSettings`, which is the same chokepoint every other untrusted
+   * settings field goes through.
+   *
+   * Practice only. A ROOM's bots are the host's choice, seated server-side (`addBot`), and a
+   * ranked or record room refuses them outright.
+   */
+  practiceBots?: string;
   /** the ACTIVE resolved driver assists (what spawns + goes on the wire).
    * MIRRORED from `spec.assists`, which is where the preference is actually STORED — the
    * robot owns its assists, so loading a saved robot / preset / the other game's loadout

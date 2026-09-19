@@ -1363,7 +1363,11 @@ path. See §7.5 / §17.6.
 
 ## 17. Risks
 
-### 17.1 HIGH — `onBehaviour` is never wired in production **[C]**
+### 17.1 FIXED (2026-09-14) — `onBehaviour` was never wired in production **[C]**
+
+`server/index.ts` now passes `(b) => void persistBehaviour(b)`. The same change repriced the
+events it fires (AFK 8, leave 8, yellow 5, red 15) and excused walking out of a 1v1
+(`chargedForParticipation`). The original finding follows.
 
 `Room`'s constructor takes **8** parameters (`room.ts:398-426`), the 8th being `onBehaviour`.
 `server/index.ts:1907-1917` — the **only** production room-creation site — passes **7**:
@@ -1386,6 +1390,47 @@ in production. The whole `persistBehaviour` path (`persist.ts:216-246`) and the
 and is wired.
 
 **Fix:** add `(b) => void persistBehaviour(b)` as the 8th argument at `index.ts:1917`.
+
+### 17.1b FIXED (2026-09-15) — a backgrounded queue could lose a match it had been given **[C]**
+
+Reported from ranked 2v2: *"when 4/4 people had queued for the match, instead of being sent to
+the match prep menu, i was sent to the queuing menu, and i was unable to ready up for the match,
+which dropped my standing … i tried the same sequence of actions for 1v1s and the appearance of
+the match prep menu was sporadic."* Four `Left before the match started` charges, a 30-minute
+ranked lock, standing 67. The sequence each time: queue, go and play a practice match, get
+paired while parked.
+
+Three ways the CLIENT could drop a match the SERVER had already staged. The server's answer to a
+player who does not turn up is a dodge, so each of them is billed standing:
+
+1. **The assignment was recorded, not acted on.** `matchAssigned` on a parked socket wrote
+   `{assignedRoom, found: true}` into the keeper and left the JOIN to whichever screen the
+   takeover managed to mount — with `RANKED_JOIN_GRACE_MS` (20 s) already counting. Everything
+   between the two spent that budget: a React tree tearing down a live practice match, a
+   navigation landing elsewhere, an exception anywhere in the chain. Now the parked socket joins
+   the room itself (`parkAssignedRoom`) and hands the ROOM's socket to the keeper
+   (`ParkedQueue.joined`); the screen that comes back has only the prep window left to show.
+2. **A re-park demoted a found match to a fresh search.** `Matchmaking`'s `teardown` hard-coded
+   `found: false` with every payload `null`, so ANY unmount between "match found" and "match
+   playing" threw it away — the events fire exactly once — and disposed the room socket outright
+   while assigning, which during `connecting`/`strategy` is a disconnect, i.e. a cancelled match.
+   The parked shape is now built from `foundRef`/`assignedRoomRef`/`strategyRef`, and a socket
+   holding a seat is parked rather than closed.
+3. **"Already there; it will adopt" was not true.** App's takeover returns early when the screen
+   is already `matchmaking`, but adoption was a MOUNT effect, so a search parked while that
+   screen was up would have sat in the keeper with a match found and nobody acting on it.
+   Adoption now watches the store.
+
+Also: the matchmaker socket is disposed as soon as it has assigned, because `LobbyClient.queue`
+re-sends its queue frame on every `transport.onReopen` — a parked matchmaker socket that blipped
+would put the player back in the pool while the room they were staged into waited for them.
+
+And the screen no longer says **Finding a match…** when a match has been found: `found` is its
+own state, checked above `searching`, so the state the report describes cannot look identical to
+being in the queue again.
+
+Covered by the keeper store lane and nine source checks in `scripts/smoke.ts`
+(`ranked queue: …`), mutation-checked. **Still unvalidated end-to-end** — see 17.11.
 
 ### 17.2 MEDIUM — `spectateRoom` bypasses `roomJoinRegion` **[C]**
 

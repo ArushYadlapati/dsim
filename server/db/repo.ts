@@ -904,8 +904,8 @@ export async function refundKofiPayment(transactionId: string): Promise<boolean>
  * this replay belongs to (DECODE vs Chain Reaction). */
 export async function saveReplay(replay: Replay, season: number, game?: Game): Promise<string> {
   const rows = await q<{ id: string }>(
-    `insert into replays (format, balance_version, sim_version, behaviour_version, seed, ticks, setups, tracks, game)
-     values ($1, $2, $3, $4, $5, $6, $7, $8, $9) returning id`,
+    `insert into replays (format, balance_version, sim_version, behaviour_version, seed, ticks, setups, tracks, game, physics)
+     values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) returning id`,
     [
       replay.format,
       season, // balance_version = SEASON (purge key + index, see 0004)
@@ -919,6 +919,10 @@ export async function saveReplay(replay: Replay, season: number, game?: Game): P
       JSON.stringify(replay.setups),
       JSON.stringify(replay.tracks),
       g(game),
+      // ...and WHICH PHYSICS recorded it (0039). The column is `not null default '2d'`, so an
+      // absent tag is written as the string that default already means rather than as null —
+      // playback DISPATCHES on this, and one nullable spelling of '2d' is one too many.
+      replay.physics ?? '2d',
     ],
   );
   return rows[0].id;
@@ -935,8 +939,9 @@ export async function getReplay(id: string): Promise<Replay | null> {
     ticks: number;
     setups: Replay['setups'];
     tracks: Replay['tracks'];
+    physics: string | null;
   }>(
-    `select format, balance_version, sim_version, behaviour_version, game, seed, ticks, setups, tracks
+    `select format, balance_version, sim_version, behaviour_version, game, seed, ticks, setups, tracks, physics
        from replays where id = $1`,
     [id],
   );
@@ -954,12 +959,251 @@ export async function getReplay(id: string): Promise<Replay | null> {
     // naming a version the recorder never claimed. Undefined, not 0, is what carries that.
     sim: r.behaviour_version ?? undefined,
     game: r.game ?? 'decode', // picks the sim module to re-simulate (CR vs DECODE)
+    // WHICH SOLVE to re-simulate it on. Left UNDEFINED for anything that is not the one known
+    // non-default value — a pre-0039 row, a null, or a string this build does not know — every
+    // one of which reads '2d' downstream, which is what such a row actually ran.
+    physics: r.physics === '3d' ? '3d' : undefined,
     mode: 'match',
     seed: Number(r.seed),
     ticks: r.ticks,
     setups: r.setups,
     tracks: r.tracks,
   };
+}
+
+// ---------------------------------------------------- replay privacy --------
+/**
+ * WHO MAY WATCH A STORED REPLAY (migration 0038).
+ *
+ * A replay is an input log re-simulated at full fidelity, so it does not show a score — it
+ * shows the whole game plan. `/api/replay/<id>` used to serve any of them to anyone, and the
+ * public profile hands out the ids, so every stranger's match history was a scouting feed.
+ *
+ * The rule, per owner:
+ *   versus   — EVERYONE WHO PLAYED IN IT, always, from either side. It is as much their match
+ *              as anybody's, and they already watched the whole thing live. Outside that
+ *              roster, only when EVERY participant has opted in: the replay shows both
+ *              alliances, so a unilateral opt-in would publish the opponent's strategy as
+ *              surely as the opter's own, and an opt-out your opponent can defeat is not one.
+ *   record   — public. A record run is a leaderboard submission and its replay is the PROOF;
+ *              the board is self-policing precisely because anyone can re-simulate the log
+ *              behind a number, and a score-attack run has no opponent in it to expose.
+ *   practice — its owner only, matching `/api/practice`, which is self-scoped on both verbs.
+ *              Unverified offline runs were never meant to be readable by anyone else; the
+ *              unguessable uuid was the only thing that made that true.
+ *   lan      — THE HOST ONLY. A self-hosted match is somebody's own event on somebody's own
+ *              machine, and `lan_runs` already exposes exactly one read path (one host's own
+ *              matches, 0033). Its drivers are NAMES rather than accounts, so there is nobody
+ *              else to grant it to and `replays_public` cannot speak for them — which is the
+ *              argument for keeping it shut rather than for leaving it open. It still lands in
+ *              the database, where staff can reach it.
+ *
+ * STAFF may watch anything. Score corrections and report adjudication reach a replay through
+ * this same route (`AdminReports` → `watchReplay` → `/replay/<id>`), and moderation that
+ * cannot see the match is not moderation. `profiles.role` is the projection of
+ * `ADMIN_USER_IDS` that exists so exactly this kind of question can be answered in SQL.
+ *
+ * ⚠️ **UNANIMITY IS OVER THE WHOLE ROSTER, NOT OVER THE ROWS THAT HAPPEN TO SURVIVE.**
+ * `match_participants` holds a row only for an AUTHED player (`persistMatch` drops the rest)
+ * and cascades away with a deleted profile, so "every row says yes" is NOT the same question
+ * as "everyone who played said yes". A 1v1 against a signed-out opponent stores ONE row, and
+ * publishing on that row alone would publish a match against somebody who was never asked and
+ * has no account to ask with. So the count is checked against what `matches.mode` says the
+ * roster was: 2 for a 1v1, 4 for a 2v2. Short of that, the match never goes public — a
+ * departed or anonymous player is a permanent no, which is the safe direction for a consent
+ * check to fail in.
+ *
+ * DEFAULT DENY. A replay nothing points at is refused: every table with a `replay_id` is
+ * named above (`grep replay_id server/db/migrations/`), so an unrecognised owner means an
+ * orphan — and a privacy gate whose unknown case is "allow" is one a later migration opens
+ * by accident.
+ */
+export type ReplayOwnerKind = 'versus' | 'record' | 'practice' | 'lan';
+export interface ReplayAccessResult {
+  access: 'ok' | 'private' | 'missing';
+  /** what KIND of thing refused, so the refusal can say the right sentence. A private versus
+   * match, somebody else's practice run and a self-hosted event are three different answers
+   * to "why can I not watch this", and one generic line is wrong about two of them. Null for
+   * an orphan, which has nothing true to say. */
+  kind: ReplayOwnerKind | null;
+}
+
+/** how many accounts SHOULD be on a versus roster — see the roster note above */
+const ROSTER_SIZE: Record<string, number> = { '1v1': 2, '2v2': 4 };
+
+export async function replayAccess(
+  replayId: string,
+  viewerId: string | null,
+): Promise<ReplayAccessResult> {
+  // the owner fan-out and "does this id exist at all" are separate questions, and both are
+  // primary-key lookups. Asking them together lets a MISSING replay come back as 404 rather
+  // than as a privacy refusal — a purged season's dead link is not somebody keeping a secret.
+  const [present, owners] = await Promise.all([
+    q<{ ok: number }>(`select 1 as ok from replays where id = $1`, [replayId]),
+    q<{ kind: ReplayOwnerKind; user_id: string | null; mode: string | null; is_public: boolean }>(
+      `with owners as (
+         select mp.user_id as user_id, 'versus' as kind, m.mode as mode
+           from matches m join match_participants mp on mp.match_id = m.id
+          where m.replay_id = $1
+         union all
+         select r.user_id, 'record', null from records r where r.replay_id = $1
+         union all
+         select r.partner_id, 'record', null from records r
+          where r.replay_id = $1 and r.partner_id is not null
+         union all
+         select p.user_id, 'practice', null from practice_runs p where p.replay_id = $1
+         union all
+         select l.host_user_id, 'lan', null from lan_runs l where l.replay_id = $1
+       )
+       select o.kind, o.user_id, o.mode, coalesce(p.replays_public, false) as is_public
+         from owners o left join profiles p on p.user_id = o.user_id`,
+      [replayId],
+    ),
+  ]);
+  if (!present.length) return { access: 'missing', kind: null };
+  // an orphan — see DEFAULT DENY above
+  if (!owners.length) return { access: 'private', kind: null };
+
+  const kind = owners[0].kind;
+  // YOU PLAYED IN IT. True for either alliance of a versus match, for the owner of a practice
+  // run, and for the host of a LAN upload — one predicate, because in each case the row IS
+  // the claim that this person was there.
+  if (viewerId && owners.some((o) => o.user_id === viewerId)) return { access: 'ok', kind };
+
+  if (kind === 'record') return { access: 'ok', kind };
+  if (
+    kind === 'versus' &&
+    versusReleased(
+      owners[0].mode,
+      owners.length,
+      owners.every((o) => o.is_public),
+    )
+  ) {
+    return { access: 'ok', kind };
+  }
+
+  // Everything below here is a refusal for an ordinary viewer, so the staff lookup is the
+  // only branch that costs a second round trip — and it runs for a signed-in caller who has
+  // just been told no, not for every replay anybody watches.
+  if (viewerId && (await isStaffUser(viewerId))) return { access: 'ok', kind };
+  return { access: 'private', kind };
+}
+
+/** has a versus match been released to the public? Every stored participant opted in AND the
+ * stored participants are the whole roster — see the roster note on `replayAccess`.
+ *
+ * ⚠️ TWO CALLERS, AND THAT IS WHY IT TAKES SCALARS. `replayAccess` enforces it on the fetch;
+ * `userMatchHistory` reads it to decide whether to hand the row a `replayId` at all. They ran
+ * on two copies of the rule for one round and the copies disagreed about the roster count, so
+ * a 1v1 against a signed-out opponent drew a Watch button the fetch then answered 403 — a
+ * button that fails is worse than no button. One function, both callers. */
+function versusReleased(mode: string | null, stored: number, unanimous: boolean): boolean {
+  return unanimous && stored === (ROSTER_SIZE[mode ?? ''] ?? Number.POSITIVE_INFINITY);
+}
+
+/** the sentence a refusal says. Lives beside the rule rather than in the route, so a new owner
+ * kind cannot be added without an answer to "why can I not watch this". */
+export function replayRefusalMessage(kind: ReplayOwnerKind | null): string {
+  switch (kind) {
+    case 'versus':
+      return 'This replay is private. Everyone who played in the match has to allow it.';
+    case 'practice':
+      return 'That is somebody else’s solo practice run.';
+    case 'lan':
+      return 'This match was played on a self-hosted server. Only the host who uploaded it can watch it back.';
+    default:
+      return 'This replay is private.';
+  }
+}
+
+/** `profiles.role` is a projection of `ADMIN_USER_IDS` (0020) — the env is still the source
+ * of truth, this is just the copy a query can join against. */
+export async function isStaffUser(userId: string): Promise<boolean> {
+  const rows = await q<{ role: string | null }>(
+    `select role from profiles where user_id = $1 and role in ('owner', 'admin')`,
+    [userId],
+  );
+  return rows.length > 0;
+}
+
+// ------------------------------------------------- terms acceptance ---------
+/**
+ * WHICH REVISION OF THE TERMS THIS ACCOUNT ACCEPTED (migration 0040).
+ *
+ * Two nullable columns on `profiles`, read and written by primary key only — see the
+ * migration for why there is no index and why null means "never asked" rather than
+ * being back-filled with the current revision.
+ */
+export interface TermsAcceptance {
+  /** the `LEGAL_VERSION` key that was accepted, or null if never */
+  version: string | null;
+  /**
+   * The instant it was recorded, or null if never.
+   *
+   * TYPED AS THE WIRE SHAPE, like `SupporterState.supporterUntil` beside it: the driver
+   * hands a `timestamptz` back as a Date, and `JSON.stringify` on the route turns that
+   * into an ISO string, which is the only form any caller of this ever sees. Anything
+   * comparing it in-process has to compare the INSTANT, not the object.
+   */
+  acceptedAt: string | null;
+}
+
+const NEVER_ACCEPTED: TermsAcceptance = { version: null, acceptedAt: null };
+
+/** what this account has accepted (never-accepted for an unknown account, which is
+ *  the same answer and the same consequence: the client's gate asks). */
+export async function getTermsAcceptance(userId: string): Promise<TermsAcceptance> {
+  const rows = await q<{ terms_version: string | null; terms_accepted_at: string | null }>(
+    `select terms_version, terms_accepted_at from profiles where user_id = $1`,
+    [userId],
+  );
+  if (!rows[0]) return NEVER_ACCEPTED;
+  return { version: rows[0].terms_version, acceptedAt: rows[0].terms_accepted_at };
+}
+
+/**
+ * Record an acceptance of `version`.
+ *
+ * ⚠️ THE TIMESTAMP IS `now()` IN POSTGRES, never a client clock and never a Node one:
+ * the five regional machines do not share a clock, and a consent record whose date came
+ * off the accepting browser is evidence of nothing. Same rule the supporter expiry reads
+ * by.
+ *
+ * ⚠️ THE VERSION IS THE SERVER’S OWN CONSTANT, not a string off the wire — the route
+ * passes `LEGAL_VERSION`, so a client cannot claim to have accepted a revision that does
+ * not exist (or the NEXT one, pre-emptively, to skip the gate forever).
+ *
+ * OVERWRITES rather than appending. A history of every revision somebody accepted would
+ * be a second table and its own retention question; what the gate needs is the latest,
+ * and what a dispute needs is that the latest was accepted and when.
+ */
+export async function acceptTerms(userId: string, version: string): Promise<TermsAcceptance> {
+  const rows = await q<{ terms_version: string | null; terms_accepted_at: string | null }>(
+    `update profiles
+        set terms_version = $2, terms_accepted_at = now(), updated_at = now()
+      where user_id = $1
+      returning terms_version, terms_accepted_at`,
+    [userId, version],
+  );
+  if (!rows[0]) return NEVER_ACCEPTED; // no such profile ⇒ nothing was recorded
+  return { version: rows[0].terms_version, acceptedAt: rows[0].terms_accepted_at };
+}
+
+/** does this account let anyone watch its versus replays? (false for an unknown account) */
+export async function getReplaysPublic(userId: string): Promise<boolean> {
+  const rows = await q<{ replays_public: boolean }>(
+    `select replays_public from profiles where user_id = $1`,
+    [userId],
+  );
+  return !!rows[0]?.replays_public;
+}
+
+/** set it. The profile row is ensured by the caller, as with every other settings write. */
+export async function setReplaysPublic(userId: string, value: boolean): Promise<void> {
+  await q(`update profiles set replays_public = $2, updated_at = now() where user_id = $1`, [
+    userId,
+    value,
+  ]);
 }
 
 // ------------------------------------------------- solo practice runs -------
@@ -980,6 +1224,12 @@ export interface PracticeRunRow {
   ticks: number;
   replayId: string | null;
   createdAt: string;
+  /** which solve ran it ('2d' | '3d'). Stored rather than inferred from the date: only a
+   *  3D-physics run is comparable with a ranked result, and the date stops meaning that the
+   *  first time somebody replays an old container. */
+  physics?: string;
+  /** which renderer it was watched in, or null for a run recorded before the column */
+  view?: string | null;
 }
 
 /**
@@ -1001,12 +1251,18 @@ export async function savePracticeRun(
   score: number,
   season: number,
   game?: Game,
+  /** which RENDERER the player watched it in ('2d' | '3d'), or undefined if unstated. Purely
+   *  descriptive; `physics` — what was SIMULATED — is read off the replay container itself,
+   *  so the two can never disagree about the same run. */
+  view?: string,
 ): Promise<PracticeRunRow> {
   const replayId = await saveReplay(replay, season, game);
+  const physics = replay.physics ?? '2d';
+  const viewCol = view === '2d' || view === '3d' ? view : null;
   const rows = await q<{ id: string; created_at: string }>(
-    `insert into practice_runs (user_id, game, balance_version, score, ticks, replay_id)
-     values ($1, $2, $3, $4, $5, $6) returning id, created_at`,
-    [userId, g(game), season, Math.max(0, Math.round(score)), replay.ticks, replayId],
+    `insert into practice_runs (user_id, game, balance_version, score, ticks, replay_id, physics, view)
+     values ($1, $2, $3, $4, $5, $6, $7, $8) returning id, created_at`,
+    [userId, g(game), season, Math.max(0, Math.round(score)), replay.ticks, replayId, physics, viewCol],
   );
 
   // PRUNE, and delete the pruned runs' replays with them. A replay has no back-reference to
@@ -1033,6 +1289,8 @@ export async function savePracticeRun(
     ticks: replay.ticks,
     replayId,
     createdAt: rows[0].created_at,
+    physics,
+    view: viewCol,
   };
 }
 
@@ -1049,8 +1307,10 @@ export async function listPracticeRuns(
     ticks: number;
     replay_id: string | null;
     created_at: string;
+    physics: string | null;
+    view: string | null;
   }>(
-    `select id, game, score, ticks, replay_id, created_at
+    `select id, game, score, ticks, replay_id, created_at, physics, view
        from practice_runs
       where user_id = $1 and game = $2
       order by created_at desc
@@ -1064,6 +1324,8 @@ export async function listPracticeRuns(
     ticks: r.ticks,
     replayId: r.replay_id,
     createdAt: r.created_at,
+    physics: r.physics ?? '2d',
+    view: r.view,
   }));
 }
 
@@ -1270,12 +1532,14 @@ export interface RecordSubmit {
   replayId: string;
   config?: RecordConfig;
   game?: Game;
+  /** which physics solve produced this run (0039). Absent ⇒ '2d'. */
+  physics?: string;
 }
 
 export async function submitRecord(r: RecordSubmit): Promise<string> {
   const rows = await q<{ id: string }>(
-    `insert into records (user_id, partner_id, mode, drivetrain, score, balance_version, replay_id, config, game)
-     values ($1, $2, $3, $4, $5, $6, $7, $8, $9) returning id`,
+    `insert into records (user_id, partner_id, mode, drivetrain, score, balance_version, replay_id, config, game, physics)
+     values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) returning id`,
     [
       r.userId,
       r.partnerId ?? null,
@@ -1286,6 +1550,7 @@ export async function submitRecord(r: RecordSubmit): Promise<string> {
       r.replayId,
       r.config ? JSON.stringify(r.config) : null,
       g(r.game),
+      r.physics === '3d' ? '3d' : '2d',
     ],
   );
   return rows[0].id;
@@ -1311,6 +1576,9 @@ export interface BoardRow {
    *  names are printed, so both names carry their own badge. */
   partnerSupporter?: boolean;
   partnerRole?: StaffRole;
+  /** which solve produced this run (0039). A pre-0039 row reads `'2d'` because that is what it
+   *  was; the board shows it as a chip beside the name so two eras on one board are legible. */
+  physics?: string;
 }
 
 /** best score per player within a season × mode × drivetrain, ranked. Pass
@@ -1322,6 +1590,16 @@ export async function recordLeaderboard(opts: {
   balanceVersion: number;
   limit?: number;
   game?: Game;
+  /**
+   * WHICH ERA (migration 0039). Absent ⇒ every row, which is what the board shows by default
+   * and what every caller before Day 3 asked for.
+   *
+   * ⚠️ **THE FILTER IS INSIDE `best`, NOT OUTSIDE IT**, and that placement is the whole point:
+   * `best` is one row per player, so filtering after it would show a player's 2D personal best
+   * and then hide it, leaving them off a 3D board they have a legitimate 3D score on. Filtering
+   * first makes the board "each player's best 3D run", which is what a player picking 3D means.
+   */
+  physics?: '2d' | '3d';
 }): Promise<BoardRow[]> {
   const params: unknown[] = [opts.balanceVersion, opts.mode, g(opts.game)];
   let dtFilter = '';
@@ -1329,20 +1607,25 @@ export async function recordLeaderboard(opts: {
     params.push(opts.drivetrain);
     dtFilter = `and r.drivetrain = $${params.length}`;
   }
+  let physFilter = '';
+  if (opts.physics) {
+    params.push(opts.physics);
+    physFilter = `and r.physics = $${params.length}`;
+  }
   params.push(opts.limit ?? 100);
   return q<BoardRow>(
     `with best as (
        select distinct on (r.user_id)
-         r.user_id, r.partner_id, r.score, r.replay_id, r.created_at, r.config
+         r.user_id, r.partner_id, r.score, r.replay_id, r.created_at, r.config, r.physics
        from records r
-       where r.balance_version = $1 and r.mode = $2 and r.game = $3 ${dtFilter}
+       where r.balance_version = $1 and r.mode = $2 and r.game = $3 ${dtFilter} ${physFilter}
        order by r.user_id, r.score desc, r.created_at asc
      )
      select b.user_id as "userId", p.handle, p.username, ${badgeCols('p.')},
             b.partner_id as "partnerId",
             pp.handle as "partnerHandle", pp.username as "partnerUsername",
             ${badgeCols('pp.', 'partner')},
-            b.score, b.replay_id as "replayId", b.created_at as "createdAt", b.config
+            b.score, b.replay_id as "replayId", b.created_at as "createdAt", b.config, b.physics
      from best b
        join profiles p on p.user_id = b.user_id
        left join profiles pp on pp.user_id = b.partner_id
@@ -1690,6 +1973,37 @@ export async function getRating(
 
 /** the full Glicko-2 state (rating + deviation + volatility). Defaults are a
  * fresh, maximally-uncertain player: 1000 / RD 350 / vol 0.06. */
+/**
+ * Every named player's rating on one board, in ONE query.
+ *
+ * `getRatingFull` is per-user, and `persistVersusMatch` called it in a loop — four sequential
+ * round trips at the end of a 2v2 before anything else could happen. The reads are completely
+ * independent of each other (Glicko-2's sequencing is in the COMPUTE, which takes the whole
+ * set at once and runs after this), so there was never a reason for them to be serial.
+ *
+ * Returns the same defaults `getRatingFull` does for a player with no row yet — a placement
+ * player and an absent row are the same thing here, and the caller cannot tell them apart in
+ * the per-user version either.
+ */
+export async function getRatingsFull(
+  userIds: string[],
+  mode: '1v1' | '2v2',
+  act: number,
+  game?: Game,
+): Promise<Map<string, { rating: number; rd: number; vol: number }>> {
+  const out = new Map<string, { rating: number; rd: number; vol: number }>();
+  const ids = [...new Set(userIds.filter(Boolean))];
+  for (const id of ids) out.set(id, { rating: 1000, rd: 350, vol: 0.06 });
+  if (!ids.length) return out;
+  const rows = await q<{ user_id: string; rating: number; rd: number; vol: number }>(
+    `select user_id, rating, rd, vol from elo_ratings
+      where user_id = any($1::text[]) and mode = $2 and act = $3 and game = $4`,
+    [ids, mode, act, g(game)],
+  );
+  for (const r of rows) out.set(r.user_id, { rating: r.rating, rd: r.rd, vol: r.vol });
+  return out;
+}
+
 export async function getRatingFull(
   userId: string,
   mode: '1v1' | '2v2',
@@ -1821,6 +2135,31 @@ const snap = (r: { score: number; restricted_until: string | null } | undefined)
  * a full score, and seeding it here means every later write is a plain update.
  */
 export async function getStanding(userId: string): Promise<StandingSnapshot> {
+  /**
+   * READ-ONLY FAST PATH, because this is not really a write.
+   *
+   * The transaction below exists for two rare cases: an account with no row yet, and one
+   * whose healing is actually due. In the ordinary case — a row that exists, at full score or
+   * healed within the day — the INSERT and the UPDATE are both no-ops and the whole thing
+   * collapses to the SELECT at the end. Paying `BEGIN` + three statements + `COMMIT` for that
+   * is five round trips holding a pooled connection, and `DB_POOL_MAX` defaults to 5.
+   *
+   * It matters because this is on a READ path in two places: `GET /api/standing`, and
+   * `rankedLock` — which runs on every ranked queue attempt, i.e. the moment a burst of
+   * players all press the same button.
+   *
+   * `heal_due` is computed by the same predicate the UPDATE uses, so the fast path is taken
+   * only when that UPDATE would have changed nothing. It is no more raceable than the
+   * transaction was: a concurrent charge could always land between the read and its caller.
+   */
+  const fast = await q<{ score: number; restricted_until: string | null; heal_due: boolean }>(
+    `select score, restricted_until,
+            (score < $2::int and now() - healed_at >= interval '1 day') as heal_due
+       from account_standing where user_id = $1`,
+    [userId, STANDING_MAX],
+  );
+  if (fast.length && !fast[0].heal_due) return snap(fast[0]);
+
   return tx(async (query) => {
     await query(
       `insert into account_standing (user_id) values ($1) on conflict (user_id) do nothing`,
@@ -1864,8 +2203,11 @@ export async function standingsFor(userIds: string[]): Promise<Record<string, St
  *  mid-window, and switching between the 1v1 and 2v2 queues does not reset it. */
 export async function recentStandingCount(userId: string, kind: string, hours: number): Promise<number> {
   const rows = await q<{ n: number }>(
+    // VOIDED ROWS DO NOT COUNT. A pardon that left the escalation intact would be a pardon in
+    // name only: the points come back and the next offence of that kind is still priced as a
+    // second one, with the longer lock and the rating charge that go with it (migration 0036).
     `select count(*)::int as n from standing_events
-      where user_id = $1 and kind = $2 and at > now() - $3::interval`,
+      where user_id = $1 and kind = $2 and at > now() - $3::interval and voided_at is null`,
     [userId, kind, `${Math.max(1, Math.floor(hours))} hours`],
   );
   return Number(rows[0]?.n ?? 0);
@@ -1934,8 +2276,11 @@ export async function listStandingEvents(userId: string, limit = 20): Promise<St
   const rows = await q<{
     id: string; kind: string; points: number; score_after: number;
     cooldown_min: number; rating_charge: number; game: string | null; at: string;
+    voided_at: string | null; note: string | null;
   }>(
-    `select id, kind, points, score_after, cooldown_min, rating_charge, game, at
+    // VOIDED ROWS ARE STILL RETURNED, and shown struck through. A pardoned player needs to see
+    // that their appeal was acted on, and the next moderator needs to see that it was.
+    `select id, kind, points, score_after, cooldown_min, rating_charge, game, at, voided_at, note
        from standing_events where user_id = $1 order by at desc limit $2`,
     [userId, Math.min(100, Math.max(1, Math.floor(limit)))],
   );
@@ -1948,6 +2293,8 @@ export async function listStandingEvents(userId: string, limit = 20): Promise<St
     ratingCharge: Number(r.rating_charge),
     game: r.game,
     at: r.at,
+    voidedAt: r.voided_at,
+    note: r.note,
   }));
 }
 
@@ -1960,6 +2307,106 @@ export interface StandingEventRow {
   ratingCharge: number;
   game: string | null;
   at: string;
+  /** set when a moderator pardoned this offence: it no longer escalates and is shown struck
+   *  through, but it is still on the record (migration 0036) */
+  voidedAt?: string | null;
+  /** a moderator's reason for a manual adjustment. Shown to the PLAYER — an edit they cannot
+   *  see the reason for is the arbitrary moderation this whole system is written against. */
+  note?: string | null;
+}
+
+/**
+ * MODERATOR EDITS to one account's standing — the manual half of a system that is otherwise
+ * charged entirely by a server watching sockets.
+ *
+ * ONE function rather than three endpoints, because the three things a moderator does here are
+ * one fact: void the offences, put the score back, lift the lock. Split apart, a pardon can
+ * land half-applied — points restored while the queue stays shut, or a lock lifted that the
+ * next offence immediately reinstates at the old rung because the ledger still counts what was
+ * supposedly forgiven.
+ *
+ * `score` is an ABSOLUTE target rather than a delta, because that is the decision actually
+ * being made ("put them back to 100"). The ledger row then records the SIGNED difference,
+ * which is the form the player reads (src/standing.ts `standingDelta`).
+ */
+export async function adminEditStanding(
+  userId: string,
+  adminId: string,
+  opts: {
+    /** absolute target 0..STANDING_MAX; omitted leaves the score where it is */
+    score?: number;
+    /** void every offence still counting, so escalation forgets them */
+    pardonAll?: boolean;
+    /** void exactly these ledger rows */
+    pardonIds?: string[];
+    /** false clears the ranked lock; a number sets one that many minutes out; omitted
+     *  leaves a cooldown somebody is legitimately serving alone */
+    lock?: false | number;
+    /** why, in the moderator's own words — stored on the ledger row the player reads */
+    note?: string;
+  },
+): Promise<{ scoreBefore: number; scoreAfter: number; restrictedUntil: string | null; pardoned: number }> {
+  return tx(async (query) => {
+    // a player who has never offended has no row, and a moderator can still be looking at one
+    await query(`insert into account_standing (user_id) values ($1) on conflict (user_id) do nothing`, [userId]);
+    const before = (
+      await query<{ score: number; restricted_until: string | null }>(
+        `select score, restricted_until from account_standing where user_id = $1 for update`,
+        [userId],
+      )
+    )[0];
+    const scoreBefore = Number(before?.score ?? STANDING_MAX);
+
+    let pardoned: { id: string }[] = [];
+    if (opts.pardonAll) {
+      pardoned = await query<{ id: string }>(
+        `update standing_events set voided_at = now(), voided_by = $2
+          where user_id = $1 and voided_at is null returning id`,
+        [userId, adminId],
+      );
+    } else if (opts.pardonIds?.length) {
+      pardoned = await query<{ id: string }>(
+        `update standing_events set voided_at = now(), voided_by = $3
+          where user_id = $1 and id = any($2::bigint[]) and voided_at is null returning id`,
+        [userId, opts.pardonIds, adminId],
+      );
+    }
+
+    const scoreAfter =
+      opts.score === undefined
+        ? scoreBefore
+        : Math.max(0, Math.min(STANDING_MAX, Math.round(opts.score)));
+    const until =
+      opts.lock === undefined
+        ? before?.restricted_until ?? null
+        : opts.lock === false
+          ? null
+          : new Date(Date.now() + Math.max(0, Math.round(opts.lock)) * 60_000).toISOString();
+
+    await query(
+      // `healed_at` moves with the score for the same reason an offence resets it: healing
+      // credits elapsed time since it was last written, and banking idle days across an edit
+      // then spending them a second later is exactly what that column exists to stop.
+      `update account_standing
+          set score = $2, restricted_until = $3, healed_at = now(), updated_at = now()
+        where user_id = $1`,
+      [userId, scoreAfter, until],
+    );
+
+    // ONE ledger row for the whole edit, carrying the SIGNED difference — negative points are
+    // standing given back. Written even when the score did not move, because voiding offences
+    // and lifting a lock are themselves the act, and a player whose queue reopened with
+    // nothing in the ledger to explain it is back to the arbitrary system 0027 set out to
+    // avoid.
+    await query(
+      `insert into standing_events
+         (user_id, kind, points, score_after, cooldown_min, rating_charge, note, admin_id)
+       values ($1, 'adjustment', $2, $3, 0, 0, $4, $5)`,
+      [userId, scoreBefore - scoreAfter, scoreAfter, (opts.note ?? '').slice(0, 120) || null, adminId],
+    );
+
+    return { scoreBefore, scoreAfter, restrictedUntil: until, pardoned: pardoned.length };
+  });
 }
 
 // -------------------------------------------------------- score reports ------
@@ -1967,6 +2414,15 @@ export interface StandingEventRow {
 export interface ScoreReportRow {
   id: string;
   matchId: string | null;
+  /**
+   * The REPLAY of that match, which is the only thing that can settle a misscore claim.
+   *
+   * It has to be carried here rather than derived by the caller, and that is the whole bug
+   * this column fixes: the queue passed `matchId` to `/api/replay/<id>` and every WATCH
+   * button in the misscore queue 404'd. A match id and a replay id are different rows —
+   * `matches.replay_id` is the join — and nothing about the two being uuids says so.
+   */
+  replayId: string | null;
   roomCode: string;
   game: string;
   detail: string;
@@ -2007,17 +2463,23 @@ export async function submitScoreReport(r: {
 export async function listScoreReports(opts: { status?: string; limit?: number } = {}): Promise<ScoreReportRow[]> {
   const limit = Math.min(200, Math.max(1, Math.floor(opts.limit ?? 50)));
   const rows = await q<{
-    id: string; match_id: string | null; room_code: string; game: string; detail: string;
+    id: string; match_id: string | null; replay_id: string | null; room_code: string;
+    game: string; detail: string;
     status: string; smite: number; created_at: string; reporter_id: string;
     handle: string; username: string | null; filed: string; rejected: string;
   }>(
-    `select sr.id::text as id, sr.match_id::text as match_id, sr.room_code, sr.game, sr.detail,
+    // LEFT JOIN, because `score_reports.match_id` is nullable on purpose: a player looking at
+    // a result that never finished writing is exactly the case worth hearing about, and it
+    // must not drop out of the queue for having no match to point at.
+    `select sr.id::text as id, sr.match_id::text as match_id, m.replay_id::text as replay_id,
+            sr.room_code, sr.game, sr.detail,
             sr.status, sr.smite, sr.created_at, sr.reporter_id, p.handle, p.username,
             (select count(*) from score_reports x where x.reporter_id = sr.reporter_id) as filed,
             (select count(*) from score_reports x
               where x.reporter_id = sr.reporter_id and x.status = 'rejected') as rejected
        from score_reports sr
        join profiles p on p.user_id = sr.reporter_id
+       left join matches m on m.id = sr.match_id
       where ($1::text is null or sr.status = $1::text)
       order by sr.created_at desc
       limit $2`,
@@ -2026,6 +2488,7 @@ export async function listScoreReports(opts: { status?: string; limit?: number }
   return rows.map((x) => ({
     id: x.id,
     matchId: x.match_id,
+    replayId: x.replay_id,
     roomCode: x.room_code,
     game: x.game,
     detail: x.detail,
@@ -2066,6 +2529,170 @@ export async function resolveScoreReport(
   );
   if (!rows.length) return null;
   return { reporterId: rows[0].reporter_id, roomCode: rows[0].room_code, game: rows[0].game };
+}
+
+// ------------------------------------------------- match score corrections ---
+
+export interface MatchScoreRow {
+  matchId: string;
+  replayId: string | null;
+  game: string;
+  mode: string;
+  ranked: boolean | null;
+  createdAt: string;
+  /** the alliance totals as they stand. Every participant on an alliance carries that
+   *  alliance's total (see `persistVersusMatch`), so the pair below IS the stored result. */
+  red: number;
+  blue: number;
+  participants: {
+    userId: string;
+    handle: string;
+    username: string | null;
+    alliance: 'red' | 'blue';
+    drivetrain: string;
+    score: number;
+    won: boolean | null;
+    ratingBefore: number | null;
+    ratingAfter: number | null;
+  }[];
+  /** every correction ever applied to this match, newest first */
+  corrections: MatchScoreCorrectionRow[];
+}
+
+export interface MatchScoreCorrectionRow {
+  id: string;
+  adminId: string;
+  redBefore: number;
+  blueBefore: number;
+  redAfter: number;
+  blueAfter: number;
+  note: string | null;
+  at: string;
+}
+
+/** everything the score editor needs about one match: who played, what it says now, and what
+ *  has already been done to it. Null when the id is not a match. */
+export async function matchScoreDetail(matchId: string): Promise<MatchScoreRow | null> {
+  const head = await q<{
+    id: string; replay_id: string | null; game: string; mode: string;
+    ranked: boolean | null; created_at: string;
+  }>(
+    `select m.id::text as id, m.replay_id::text as replay_id, m.game, m.mode, m.ranked, m.created_at
+       from matches m where m.id = $1::uuid`,
+    [matchId],
+  );
+  const m = head[0];
+  if (!m) return null;
+  const parts = await q<{
+    user_id: string; handle: string; username: string | null; alliance: 'red' | 'blue';
+    drivetrain: string; score: number; won: boolean | null;
+    rating_before: number | null; rating_after: number | null;
+  }>(
+    `select mp.user_id, p.handle, p.username, mp.alliance, mp.drivetrain, mp.score, mp.won,
+            mp.rating_before, mp.rating_after
+       from match_participants mp
+       join profiles p on p.user_id = mp.user_id
+      where mp.match_id = $1::uuid
+      order by mp.alliance, p.handle`,
+    [matchId],
+  );
+  const corrections = await listScoreCorrections(matchId);
+  const sideOf = (a: 'red' | 'blue'): number => parts.find((x) => x.alliance === a)?.score ?? 0;
+  return {
+    matchId: m.id,
+    replayId: m.replay_id,
+    game: m.game,
+    mode: m.mode,
+    ranked: m.ranked,
+    createdAt: m.created_at,
+    red: sideOf('red'),
+    blue: sideOf('blue'),
+    participants: parts.map((x) => ({
+      userId: x.user_id,
+      handle: x.handle,
+      username: x.username,
+      alliance: x.alliance,
+      drivetrain: x.drivetrain,
+      score: Number(x.score),
+      won: x.won,
+      ratingBefore: x.rating_before === null ? null : Number(x.rating_before),
+      ratingAfter: x.rating_after === null ? null : Number(x.rating_after),
+    })),
+    corrections,
+  };
+}
+
+export async function listScoreCorrections(matchId: string): Promise<MatchScoreCorrectionRow[]> {
+  const rows = await q<{
+    id: string; admin_id: string; red_before: number; blue_before: number;
+    red_after: number; blue_after: number; note: string | null; at: string;
+  }>(
+    `select id::text as id, admin_id, red_before, blue_before, red_after, blue_after, note, at
+       from match_score_corrections where match_id = $1::uuid order by at desc`,
+    [matchId],
+  );
+  return rows.map((r) => ({
+    id: r.id,
+    adminId: r.admin_id,
+    redBefore: Number(r.red_before),
+    blueBefore: Number(r.blue_before),
+    redAfter: Number(r.red_after),
+    blueAfter: Number(r.blue_after),
+    note: r.note,
+    at: r.at,
+  }));
+}
+
+/**
+ * Correct a finished match's score.
+ *
+ * WHAT MOVES: every participant's `score` (to their alliance's new total) and their `won`
+ * flag, which is re-derived rather than passed in — a correction that left a player recorded
+ * as the winner of a match they are now shown losing would be a worse record than the wrong
+ * number it replaced. A TIE sets `won` false on both sides, which is what the sim does too.
+ *
+ * WHAT DOES NOT MOVE: the RATING. Glicko-2 is sequential — every match since this one was
+ * rated against the numbers it produced — so re-rating one match in the middle means
+ * re-rating every match after it for everyone involved, and a moderation panel is not where
+ * that decision belongs. `rating_before`/`rating_after` therefore stay exactly as they were
+ * and the console says so out loud.
+ *
+ * Returns the before/after pair, or null when the id names no match.
+ */
+export async function correctMatchScore(
+  matchId: string,
+  next: { red: number; blue: number },
+  adminId: string,
+  note?: string,
+): Promise<{ redBefore: number; blueBefore: number; redAfter: number; blueAfter: number } | null> {
+  const red = Math.max(0, Math.round(next.red));
+  const blue = Math.max(0, Math.round(next.blue));
+  return tx(async (query) => {
+    const rows = await query<{ alliance: 'red' | 'blue'; score: number }>(
+      `select mp.alliance, mp.score from match_participants mp
+         join matches m on m.id = mp.match_id
+        where mp.match_id = $1::uuid for update of mp`,
+      [matchId],
+    );
+    if (!rows.length) return null;
+    const redBefore = rows.find((r) => r.alliance === 'red')?.score ?? 0;
+    const blueBefore = rows.find((r) => r.alliance === 'blue')?.score ?? 0;
+
+    await query(
+      `update match_participants
+          set score = case when alliance = 'red' then $2::int else $3::int end,
+              won   = case when alliance = 'red' then $2::int > $3::int else $3::int > $2::int end
+        where match_id = $1::uuid`,
+      [matchId, red, blue],
+    );
+    await query(
+      `insert into match_score_corrections
+         (match_id, admin_id, red_before, blue_before, red_after, blue_after, note)
+       values ($1::uuid, $2, $3, $4, $5, $6, $7)`,
+      [matchId, adminId, redBefore, blueBefore, red, blue, (note ?? '').slice(0, 300) || null],
+    );
+    return { redBefore: Number(redBefore), blueBefore: Number(blueBefore), redAfter: red, blueAfter: blue };
+  });
 }
 
 // ------------------------------------------------------- player reports ------
@@ -2411,7 +3038,30 @@ export interface GlobalStats {
  * by category (solo/duo record runs + 1v1/2v2 PvP matches — the server-tracked
  * games) AND by game (DECODE vs Chain Reaction, recorded separately). The
  * headline `games` COMBINES every game. Cheap COUNT/GROUP BY over indexed tables. */
-export async function getGlobalStats(): Promise<GlobalStats> {
+/**
+ * MEMOIZED, because this is a PUBLIC, UNAUTHENTICATED endpoint (`/api/stats`, api.ts) that
+ * every homepage load hits, and the three queries below are unbounded aggregates: a
+ * `count(*)` over all of `profiles`, and a `group by` over the whole of `records` and the
+ * whole of `matches`. The group-bys can index-only-scan, but they still read every entry,
+ * so the cost grows with total site history forever while the ANSWER moves by a handful of
+ * rows a minute — a number rendered as "12,431 games played" does not need to be current to
+ * the second.
+ *
+ * Same shape as `actCache` above and `userRoomCache` below: a module-level `{at, val}` with
+ * a millisecond constant. 60s rather than something longer because this is what the
+ * homepage's liveness reads as; the point is to stop N concurrent visitors becoming N full
+ * scans, and that is already won at one second.
+ */
+const STATS_TTL_MS = 60_000;
+let statsCache: { at: number; val: GlobalStats } | null = null;
+
+/** drop the memo — for tests, and for an admin who wants the real number now */
+export function clearStatsCache(): void {
+  statsCache = null;
+}
+
+export async function getGlobalStats(now = Date.now()): Promise<GlobalStats> {
+  if (statsCache && now - statsCache.at < STATS_TTL_MS) return statsCache.val;
   const [users, recRows, matchRows] = await Promise.all([
     q<{ n: string }>(`select count(*) as n from profiles`),
     q<{ game: Game; mode: string; n: string }>(`select game, mode, count(*) as n from records group by game, mode`),
@@ -2430,7 +3080,9 @@ export async function getGlobalStats(): Promise<GlobalStats> {
     if (gk in byGame) byGame[gk] += n;
   }
   const games = byCategory.solo + byCategory.duo + byCategory['1v1'] + byCategory['2v2'];
-  return { users: Number(users[0]?.n ?? 0), games, byCategory, byGame };
+  const val: GlobalStats = { users: Number(users[0]?.n ?? 0), games, byCategory, byGame };
+  statsCache = { at: now, val };
+  return val;
 }
 
 // ---------------------------------------------------------- per-user stats --
@@ -2655,10 +3307,12 @@ export async function saveMatch(
   replayId: string,
   ranked: boolean,
   game?: Game,
+  /** which physics solve the authoritative loop ran (0039). Absent ⇒ '2d'. */
+  physics?: string,
 ): Promise<string> {
   const rows = await q<{ id: string }>(
-    `insert into matches (mode, balance_version, replay_id, ranked, game) values ($1, $2, $3, $4, $5) returning id`,
-    [mode, balanceVersion, replayId, ranked, g(game)],
+    `insert into matches (mode, balance_version, replay_id, ranked, game, physics) values ($1, $2, $3, $4, $5, $6) returning id`,
+    [mode, balanceVersion, replayId, ranked, g(game), physics === '3d' ? '3d' : '2d'],
   );
   return rows[0].id;
 }
@@ -2680,6 +3334,47 @@ export async function addMatchParticipant(p: {
      values ($1, $2, $3, $4, $5, $6, $7, $8)
      on conflict (match_id, user_id) do nothing`,
     [p.matchId, p.userId, p.alliance, p.drivetrain, p.score, p.won, p.ratingBefore, p.ratingAfter],
+  );
+}
+
+/**
+ * Every participant of one match in ONE insert, the same `unnest` shape `addActivity` uses.
+ *
+ * The per-row version above stays: it is the readable one and nothing else calls it in a
+ * loop. This exists because `persistVersusMatch` did, and four inserts issued one after
+ * another at the end of every match is three round trips of pure latency on the path a
+ * player is watching for their rating change.
+ */
+export async function addMatchParticipants(
+  matchId: string,
+  ps: readonly {
+    userId: string;
+    alliance: 'red' | 'blue';
+    drivetrain: string;
+    score: number;
+    won: boolean;
+    ratingBefore: number | null;
+    ratingAfter: number | null;
+  }[],
+): Promise<void> {
+  if (!ps.length) return;
+  await q(
+    `insert into match_participants
+       (match_id, user_id, alliance, drivetrain, score, won, rating_before, rating_after)
+     select $1, u, a, d, s, w, rb, ra
+       from unnest($2::text[], $3::text[], $4::text[], $5::int[], $6::bool[], $7::real[], $8::real[])
+            as t(u, a, d, s, w, rb, ra)
+     on conflict (match_id, user_id) do nothing`,
+    [
+      matchId,
+      ps.map((p) => p.userId),
+      ps.map((p) => p.alliance),
+      ps.map((p) => p.drivetrain),
+      ps.map((p) => p.score),
+      ps.map((p) => p.won),
+      ps.map((p) => p.ratingBefore),
+      ps.map((p) => p.ratingAfter),
+    ],
   );
 }
 
@@ -2736,6 +3431,12 @@ export async function userMatchHistory(
     type?: string;
     result?: string;
     game?: Game;
+    /** WHO IS READING — not who is being read. A versus row's `replayId` is nulled for a
+     * viewer who may not watch it (migration 0038), so the Watch button is simply absent
+     * rather than present and answering 403. Anonymous when omitted. */
+    viewerId?: string | null;
+    /** staff see every Watch button, because the report queue is how they reach a match */
+    viewerIsStaff?: boolean;
   },
 ): Promise<MatchHistoryPage> {
   const limit = Math.min(100, Math.max(1, opts.limit ?? 25));
@@ -2805,6 +3506,10 @@ export async function userMatchHistory(
   // both alliances' final totals per match (score is the alliance total, so any
   // participant on a side carries it — see room.ts scores[alliance].total)
   const scoreByMatch = new Map<string, { red: number | null; blue: number | null }>();
+  // the replay gate, per versus match: did EVERY participant opt in, and is the reader one
+  // of them? (0038 — unanimity, because the log shows both alliances.)
+  const publicByMatch = new Map<string, boolean>();
+  const mineByMatch = new Set<string>();
   if (versusIds.length) {
     const parts = await q<{
       id: string;
@@ -2815,14 +3520,20 @@ export async function userMatchHistory(
       username: string | null;
       role: string | null;
       supporter: boolean;
+      replays_public: boolean;
     }>(
+      // `replays_public` rides along on a profile row this query already joins, so the
+      // replay gate costs nothing here — see `watchable` below.
       `select mp.match_id::text as id, mp.user_id, mp.alliance, mp.score, p.handle, p.username,
+              coalesce(p.replays_public, false) as replays_public,
               ${badgeCols('p.')}
        from match_participants mp join profiles p on p.user_id = mp.user_id
        where mp.match_id = any($1::uuid[])`,
       [versusIds],
     );
     for (const p of parts) {
+      publicByMatch.set(p.id, (publicByMatch.get(p.id) ?? true) && p.replays_public);
+      if (p.user_id === opts.viewerId) mineByMatch.add(p.id);
       const list = byMatch.get(p.id) ?? [];
       list.push({
         userId: p.user_id,
@@ -2878,6 +3589,17 @@ export async function userMatchHistory(
     }
   }
 
+  /** may THIS reader open this row's replay? This half only decides whether the button is
+   * DRAWN; `replayAccess` is what the fetch enforces — so the release test is literally the
+   * same function, called with this page's already-joined numbers. A record run's replay
+   * stays public (it is the leaderboard's proof); a versus one needs the reader to have
+   * played in it, or the whole roster to have opted in. */
+  const watchable = (r: { kind: string; id: string; mode: string }): boolean =>
+    r.kind !== 'versus' ||
+    !!opts.viewerIsStaff ||
+    mineByMatch.has(r.id) ||
+    versusReleased(r.mode, byMatch.get(r.id)?.length ?? 0, publicByMatch.get(r.id) ?? false);
+
   return {
     rows: rows.map((r) => ({
       kind: r.kind,
@@ -2886,7 +3608,7 @@ export async function userMatchHistory(
       ranked: r.ranked,
       drivetrain: r.drivetrain,
       createdAt: r.created_at,
-      replayId: r.replay_id,
+      replayId: watchable(r) ? r.replay_id : null,
       score: r.score,
       redScore: r.kind === 'versus' ? scoreByMatch.get(r.id)?.red ?? null : null,
       blueScore: r.kind === 'versus' ? scoreByMatch.get(r.id)?.blue ?? null : null,
@@ -3058,6 +3780,9 @@ export async function takePendingMatch(code: string): Promise<PendingMatch | nul
     // entries share one, so read them off the first
     channel: r.roster[0]?.channel,
     game: r.roster[0]?.game,
+    // ...and the physics, stashed the same way (0039 added no column for it: a staged row
+    // lives for seconds, so a jsonb field that older rows simply lack is the whole migration)
+    physics: r.roster[0]?.physics,
   };
 }
 

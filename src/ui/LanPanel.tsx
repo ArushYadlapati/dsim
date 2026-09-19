@@ -12,6 +12,7 @@ import { serverCaps } from '../net/api';
 import { useEscape } from './useEscape';
 import { appBuild, clearLanServer, lanActive, lanServerUrl, setLanServer } from '../net/env';
 import { LAN_DEFAULT_PORT, mixedContentBlock, parseLanAddress } from '../net/lanAddress';
+import { copyText } from './copyText';
 
 /**
  * LAN PLAY — host a game on this machine, or join one on this network.
@@ -236,7 +237,7 @@ export function LanPanel({
   const [host, setHost] = useState<LanHostStatus | null>(null);
   const [hostBusy, setHostBusy] = useState(false);
   const [hostErr, setHostErr] = useState('');
-  const [addr, setAddr] = useState(() => lanServerUrl().replace(/^ws:\/\//, ''));
+  const [addr, setAddr] = useState(() => lanServerUrl().replace(/^wss?:\/\//, ''));
   const [joinErr, setJoinErr] = useState('');
   /** the URL a blocked guest must open in a browser instead — see constraint 2 above */
   const [openInstead, setOpenInstead] = useState('');
@@ -318,57 +319,22 @@ export function LanPanel({
   };
 
   /**
-   * ⚠️ `navigator.clipboard` DOES NOT EXIST ON THE PAGE THIS SCREEN MATTERS MOST ON.
+   * ⚠️ THIS IS THE PAGE WHERE THE CLIPBOARD API IS NOT THERE.
    *
-   * The Clipboard API is gated on a SECURE CONTEXT. A LAN guest is served from
-   * `http://192.168.x.x:8787`, which is plain http and not `localhost`, so it is not secure and
-   * `navigator.clipboard` is `undefined` there — measured, not assumed. The optional chain meant
-   * the whole call evaporated and every copy button on this page was a button that did nothing,
-   * silently, with no error to notice. It is exactly the wrong page for that: the join URL and
-   * the host commands are the two things anyone comes here to copy.
+   * A LAN guest is served from `http://192.168.x.x:8787` — plain http, not `localhost`, so not
+   * a secure context and `navigator.clipboard` is `undefined`. The join URL and the host
+   * commands are the two things anyone comes to this screen to copy, so the fallback matters
+   * here more than anywhere else. It lives in `copyText` now, which every copy button shares;
+   * the host's own window is on `localhost`, which IS exempt, so it takes the modern path.
    *
-   * So there is a fallback, and it is the old `execCommand('copy')` one. It is deprecated and it
-   * is also the only thing that works without a secure context, which is the situation. The
-   * textarea is off-screen rather than `display:none` because a hidden element cannot be
-   * selected, and `readOnly` keeps a mobile keyboard from opening over the page.
-   *
-   * The host's own window is on `localhost`, which IS exempt and secure, so the modern path is
-   * the normal one and this is the guest's path.
+   * The flash is keyed to whether the text ACTUALLY landed, not to the click.
    */
   const flash = (text: string): void => {
     setCopied(text);
     window.setTimeout(() => alive.current && setCopied(''), 1600);
   };
-  const copyFallback = (text: string): boolean => {
-    try {
-      const ta = document.createElement('textarea');
-      ta.value = text;
-      ta.setAttribute('readonly', '');
-      ta.style.position = 'fixed';
-      ta.style.top = '-1000px';
-      document.body.appendChild(ta);
-      ta.select();
-      const ok = document.execCommand('copy');
-      document.body.removeChild(ta);
-      return ok;
-    } catch {
-      return false;
-    }
-  };
   const copy = (text: string): void => {
-    if (navigator.clipboard?.writeText) {
-      void navigator.clipboard.writeText(text).then(
-        () => flash(text),
-        // a rejection here is usually "the document is not focused" rather than "not allowed",
-        // and the fallback copes with both — so try it before giving up.
-        () => {
-          if (copyFallback(text)) flash(text);
-          else setCopied('');
-        },
-      );
-      return;
-    }
-    if (copyFallback(text)) flash(text);
+    copyText(text, (ok) => (ok ? flash(text) : setCopied('')));
   };
 
   /**
@@ -440,7 +406,7 @@ export function LanPanel({
       {active && (
         <div className="ds-panelbox">
           <p className="ds-lan-state">
-            Connected to <b>{lanServerUrl().replace(/^ws:\/\//, '')}</b>
+            Connected to <b>{lanServerUrl().replace(/^wss?:\/\//, '')}</b>
           </p>
           <div className="ds-actions">
             <button className="ds-btn" onClick={leave}>

@@ -1,12 +1,12 @@
 import { useEffect, useState } from 'react';
 import { fetchStanding, type StandingEvent, type StandingInfo } from '../net/api';
 import {
-  STANDING_EVENT_LABEL,
   STANDING_MAX,
   STANDING_TIERS,
   lockRemaining,
+  standingDelta,
+  standingEventLabel,
   tierOf,
-  type StandingEventKind,
 } from '../standing';
 
 /**
@@ -205,18 +205,24 @@ export function StandingCard({ compact = false }: { compact?: boolean }) {
         <>
           <span className="ds-standing-cap">What happened</span>
           <ul className="ds-standing-log">
+            {/* A PARDON HAS TO BE VISIBLE HERE or it is not a pardon, it is a number that
+                moved. A voided row keeps its place struck through and says so, and an
+                ADJUSTMENT is signed — `standingDelta`, never a hard-coded minus, because a
+                moderator giving points back prints "−-20" through one. */}
             {data.events.slice(0, 6).map((e) => (
-              <li key={e.id}>
-                <span className="ds-standing-what">
-                  {STANDING_EVENT_LABEL[e.kind as StandingEventKind] ?? e.kind}
-                </span>
+              <li key={e.id} className={e.voidedAt ? 'voided' : ''}>
+                <span className="ds-standing-what">{standingEventLabel(e.kind, e.points)}</span>
                 <span className="ds-standing-cost ds-muted">
-                  −{e.points}
+                  {standingDelta(e.points)}
                   {e.cooldownMin > 0 && ` · ${e.cooldownMin}min queue lock`}
                   {e.ratingCharge > 0 && ` · −${e.ratingCharge} rating`}
                   {' · '}
                   {ago(e.at)}
+                  {e.voidedAt && ' · removed by a moderator'}
                 </span>
+                {/* the REASON, where the penalty is. A moderator's edit a player can see but
+                    not understand is the same arbitrary act as one they cannot see. */}
+                {e.note && <span className="ds-standing-note">{e.note}</span>}
               </li>
             ))}
           </ul>

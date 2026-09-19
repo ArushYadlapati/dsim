@@ -408,6 +408,99 @@ npm run server      # tsx watch on ws://localhost:8787
 npm run dev         # Vite on http://localhost:5173
 ```
 
+## 4. Auth — password reset, email verification, terms (OWNER dashboard work)
+
+The three flows are BUILT and deployed with the client and the game server. Two of them do
+nothing at all until the Neon Auth project is configured, and that configuration is not in
+this repo — it is clicking, in the Neon console, by whoever owns the project. This section is
+the checklist, in the order it has to happen.
+
+**What is already live without touching anything:** the "Forgot password?" link, the
+`/account/reset` and `/account/verify` screens, the terms checkbox on sign-up, and the
+blocking terms dialog. The terms half needs only the game server (migration `0040` applies at
+boot) and works today.
+
+**What needs the dashboard:** anything that sends an email. Better Auth generates the token
+and calls its mailer; Neon Auth's hosted project owns the mailer, so with no sender configured
+`requestPasswordReset` / `sendVerificationEmail` still answer `200` and no mail is ever sent.
+That failure is SILENT by design (see `src/lib/authFlows.ts` on enumeration), so do not read a
+green form as proof that mail works — send yourself one.
+
+### Step 1 — a sender domain
+
+1. Neon console → the project → **Auth** → **Emails** (or **Settings → Email**).
+2. Set the **sender address** to an address on a domain you control, then add the DNS records
+   the console gives you (SPF, DKIM, and a DMARC record if it asks). Mail from an unverified
+   domain lands in spam or is dropped outright, which looks exactly like the flow being broken.
+3. Send the console's **test email** to yourself and confirm it arrives in an inbox, not a
+   spam folder.
+
+### Step 2 — the two templates and where they land
+
+Both emails contain a link the auth server generates; the app supplies where that link should
+come back to, so there is nothing to type here except the wording.
+
+- **Reset password** — the client passes `redirectTo` = `<origin>/account/reset`, and the auth
+  server appends `?token=…`. On a Vercel PREVIEW the origin is that preview's own host, so a
+  preview's reset links come back to the preview. Under Electron there is no usable origin and
+  the link points at `https://www.playdsim.com/account/reset` (`appUrl` in
+  `src/lib/authFlows.ts`).
+- **Verify email** — same shape, `callbackURL` = `<origin>/account/verify`.
+
+⚠️ **If the console has an allow-list of redirect URLs, every origin has to be on it**:
+`https://www.playdsim.com`, the alpha/beta hosts, and `http://localhost:5173` for dev.
+A redirect the auth server does not recognise is refused, and the person sees a link that
+goes nowhere.
+
+### Step 3 — require verification (optional, and do it LAST)
+
+Neon console → **Auth** → sign-in methods → **require email verification** for
+email/password. This stops an unverified account from signing in at all — it is the provider's
+switch, not ours.
+
+### Step 4 — the server-side gate (a Fly secret, and it is OFF by default)
+
+```bash
+flyctl secrets set REQUIRE_VERIFIED_EMAIL=1 -a dohun-sim-decode
+```
+
+Off, `emailGateRefusal` (`server/auth.ts`) always passes. On, an account whose address is not
+verified is refused three things and nothing else:
+
+| refused | where | what they see |
+|---|---|---|
+| ranked queueing | `queue`, the fourth door in `server/index.ts` | "Verify your email to play ranked…" |
+| joining a record room | the join door, `server/index.ts` | "Verify your email to save a record run…" |
+| `POST /api/practice` (saving a run) | `server/api.ts`, 403 | the same sentence |
+
+Casual rooms, free drive, practice PLAY, spectating and the whole single-player game stay
+open, signed in or not.
+
+⚠️ **SET IT ONLY AFTER STEP 1 WORKS.** Verification has never existed here, so every
+email/password account on the live site is currently unverified. Turning the gate on before
+mail is deliverable refuses ranked to all of them at once and the Resend button on their
+Profile page cannot help. Order: deploy → mail works → let people verify → set the secret.
+Google sign-ins are unaffected throughout (the provider vouched for the address, so they
+arrive verified).
+
+⚠️ **AND CHECK THE TOKEN CARRIES THE CLAIM FIRST.** The gate reads `email_verified` (or
+`emailVerified`) off the verified JWT. Whether Better Auth's JWT plugin puts it there is a
+property of the project's configuration, and if it is absent the server falls back to ONE
+cached `GET /get-session` per token — which may itself answer nothing, in which case the
+verified state is `null` and the gate PASSES (deliberately: a gate that refuses what it
+cannot read would take ranked down silently). So before trusting the switch, sign in as a
+test account and read `/token`'s payload; if neither the claim nor the session lookup
+answers, the secret is a no-op and turning it on proves nothing.
+
+### Step 5 — when the legal text changes
+
+`LEGAL_VERSION` in `src/legalText.ts` is derived from `LEGAL_UPDATED`. Move that date and
+every signed-in account is asked to accept once, on their next load, by a blocking dialog
+whose only other button is Sign out. That is the intent — but it is a prompt in front of
+every player, so move it for a material change and not for a typo. It is a CLIENT change
+(Vercel) and a SERVER change (the route records the server's own constant), so deploy both or
+the dialog will keep coming back.
+
 ## Transport note — WebSocket now, WebTransport later
 
 Phase 0/1 ship on **WebSocket** (universal, works everywhere including Safari and
@@ -424,3 +517,33 @@ Note: today's snapshots are delta-encoded but assume the **ordered, reliable**
 WebSocket (no per-packet ack). WebTransport datagrams are unreliable, so adding it also
 means acking snapshots (the `ackInputTick` field is already plumbed for this) and
 keying deltas off the last **acked** tick instead of the last **sent** tick.
+
+---
+
+## Vercel deployments: only `main` and `alpha` build
+
+Every push to every branch used to create a Vercel deployment and a preview build. On a Hobby
+project builds run one at a time and deployments count against a daily limit, so a day of pushes
+to feature branches queued the ALPHA build behind previews nobody opened — and 500+ old preview
+deployments had accumulated by 2026-09-18.
+
+`vercel.json` now does two things:
+
+- **`ignoreCommand`** skips the build for any branch other than `main` and `alpha` (exit 0 = skip,
+  exit 1 = build; Vercel's "ignored build step"). A skipped push still creates a deployment
+  record marked canceled, which costs no build minutes.
+- **`git.deploymentEnabled`** turns auto-deployment OFF entirely for the branches we push most
+  (`biobuzz-3d`, the `feat/*` branches, …). The map takes exact branch names only — add a new
+  long-lived branch there when you create it.
+
+**Pruning what already accumulated** — the owner runs it, with a token from vercel.com → Account →
+Tokens passed through the environment (never on the command line, never in the repo):
+
+```bash
+VERCEL_TOKEN=… node scripts/vercel-prune.mjs --project dsim --days 14          # dry run: lists
+VERCEL_TOKEN=… node scripts/vercel-prune.mjs --project dsim --days 14 --yes    # deletes
+```
+
+It never deletes a production deployment, anything still carrying an alias, or the newest
+deployment of any branch. Deleting is permanent. To see which build a site is serving:
+`curl https://alpha.playdsim.com/version.json`.

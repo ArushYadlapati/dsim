@@ -19,6 +19,86 @@
 /** last substantive revision — shown on both pages */
 export const LEGAL_UPDATED = 'August 4, 2026';
 
+/**
+ * THE SAME REVISION, AS A SORTABLE KEY — what an acceptance is recorded against.
+ *
+ * DERIVED from `LEGAL_UPDATED` rather than written out beside it, because two hand-kept
+ * spellings of one date is a way for the version everybody re-accepts to disagree with the
+ * date on the page they are re-accepting. Change the line above and this follows; a smoke
+ * check pins the pair so a reformat of the human date cannot silently change the key and
+ * prompt every account in the app for nothing.
+ *
+ * ⚠️ A CHANGE HERE MAKES EVERY SIGNED-IN ACCOUNT ACCEPT AGAIN, once (see
+ * `termsGateState` and `src/ui/TermsGate.tsx`). That is the point of it — continued use
+ * after a material change has to be a decision somebody made — so move it when the terms
+ * materially change and not for a typo.
+ */
+const MONTHS = [
+  'january',
+  'february',
+  'march',
+  'april',
+  'may',
+  'june',
+  'july',
+  'august',
+  'september',
+  'october',
+  'november',
+  'december',
+];
+
+/**
+ * `'August 4, 2026'` → `'2026-08-04'`. Parsed by hand rather than with `new Date()`:
+ * that constructor is implementation-defined for a non-ISO string, and this value keys a
+ * database column on five machines in different regions.
+ *
+ * An unparseable date falls back to the string itself, lowercased with the spaces
+ * squeezed out — still stable, still unique per revision, just uglier. A legal gate must
+ * not be able to throw at module load.
+ */
+export function legalVersionOf(updated: string): string {
+  const m = /^([A-Za-z]+)\s+(\d{1,2}),\s*(\d{4})$/.exec(updated.trim());
+  const month = m ? MONTHS.indexOf(m[1].toLowerCase()) : -1;
+  if (!m || month < 0) return updated.trim().toLowerCase().replace(/\s+/g, '-');
+  return `${m[3]}-${String(month + 1).padStart(2, '0')}-${m[2].padStart(2, '0')}`;
+}
+
+/** the revision an acceptance is stored as (`profiles.terms_version`, migration 0040) */
+export const LEGAL_VERSION = legalVersionOf(LEGAL_UPDATED);
+
+/**
+ * SHOULD THIS ACCOUNT BE ASKED TO ACCEPT THE TERMS? A pure function, so the one rule
+ * that decides whether a blocking dialog appears is testable without a browser, a
+ * session or a database (`npm test` covers all four answers).
+ *
+ *   `undefined` ⇒ **unknown**, and it does NOT block. The version rides along with the
+ *     entitlements fetch, which never throws and answers nothing at all against a server
+ *     older than the route — one Fly app serves every client version. A gate that blocked
+ *     on "not told" would put an un-dismissable dialog in front of every player the
+ *     moment that route hiccuped.
+ *   `null` ⇒ **never** accepted. This is the Google-OAuth first session and every account
+ *     that predates the checkbox: they have to accept once.
+ *   a different string ⇒ **stale**. The terms changed; accept the new ones.
+ *
+ * A recorded version NEWER than this build’s is `stale` too, deliberately: it means a
+ * client is running behind the deployed legal text, and asking again is harmless where
+ * guessing which way time runs is not.
+ */
+export type TermsGateState = 'ok' | 'unknown' | 'never' | 'stale';
+
+export function termsGateState(
+  recorded: string | null | undefined,
+  current: string = LEGAL_VERSION,
+): TermsGateState {
+  if (recorded === undefined) return 'unknown';
+  if (recorded === null || recorded === '') return 'never';
+  return recorded === current ? 'ok' : 'stale';
+}
+
+/** the two states that put a dialog in front of somebody */
+export const termsGateBlocks = (s: TermsGateState): boolean => s === 'never' || s === 'stale';
+
 /** where privacy / data-deletion requests go */
 export const LEGAL_CONTACT = 'genius0412.tech@gmail.com';
 
@@ -346,8 +426,10 @@ the protections of the law where you live - you can always bring a claim there.
 ## Changes
 
 Material changes to these terms are announced in the app, and the date at the top of
-the page changes. If a change affects a live membership, it takes effect for that
-membership only when it next renews.
+the page changes. When that happens you are asked to accept the new version the next
+time you sign in, and continuing to use your account means accepting it. If a change
+affects a live membership, it takes effect for that membership only when it next
+renews.
 
 ## Contact
 

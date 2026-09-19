@@ -43,6 +43,10 @@ interface Row {
   replayId: string | null;
   /** the local id, when this device still holds the log */
   localId: string | null;
+  /** which solve ran it (`'2d'` | `'3d'`), or null when the run predates the tag */
+  physics: string | null;
+  /** which renderer it was watched in, or null when unknown */
+  view: string | null;
 }
 
 /** merge the account's runs with this device's, newest first, without double-counting one
@@ -60,6 +64,10 @@ function mergeRuns(remote: PracticeRun[], local: PracticeRunMeta[]): Row[] {
       ticks: m.ticks,
       replayId: match?.replayId ?? null,
       localId: m.id,
+      // the DEVICE's copy leads, and the account's fills a gap: a run kept before the local
+      // fields existed still has them on the server if it was uploaded after the column landed
+      physics: m.physics ?? match?.physics ?? null,
+      view: m.view ?? match?.view ?? null,
     });
   }
   for (const r of remote) {
@@ -71,6 +79,8 @@ function mergeRuns(remote: PracticeRun[], local: PracticeRunMeta[]): Row[] {
       ticks: r.ticks,
       replayId: r.replayId,
       localId: null,
+      physics: r.physics ?? null,
+      view: r.view ?? null,
     });
   }
   return rows.sort((a, b) => b.at - a.at);
@@ -144,6 +154,10 @@ export function PracticeReplays({
                   <th>Played</th>
                   <th className="num">Score</th>
                   <th className="num">Length</th>
+                  {/* the two tags, one column: what was SIMULATED and what it was WATCHED in.
+                      They answer different questions and only the first one decides whether the
+                      score means anything against ranked play (the note under the table). */}
+                  <th>Physics</th>
                   <th className="r" />
                 </tr>
               </thead>
@@ -153,6 +167,23 @@ export function PracticeReplays({
                     <td>{fmtDay(r.at)}</td>
                     <td className="num">{r.score}</td>
                     <td className="num">{runLength(r.ticks)}</td>
+                    <td>
+                      {r.physics ? (
+                        <span className="ds-dt" title={`Simulated on the ${r.physics.toUpperCase()} physics`}>
+                          {r.physics.toUpperCase()}
+                        </span>
+                      ) : (
+                        // ABSENT, not '2D'. A run kept before the tag existed genuinely does not
+                        // know, and writing a default here would state something nobody measured
+                        // — the same reasoning migration 0039 gives for `practice_runs.view`.
+                        <span className="ds-muted">-</span>
+                      )}{' '}
+                      {r.view && (
+                        <span className="ds-dt" title={`Watched in the ${r.view.toUpperCase()} view`}>
+                          {r.view.toUpperCase()} view
+                        </span>
+                      )}
+                    </td>
                     {/* NOT `.num` — this cell holds buttons, and `.ds-btn` is
                         inline-block, so JSX stripping the whitespace between the two
                         of them left them touching at 0px. The flex wrapper owns the
@@ -197,7 +228,13 @@ export function PracticeReplays({
           <p className="ds-panel-foot ds-hint">
             {signedIn
               ? `Last ${MAX_LOCAL_RUNS} runs are saved.`
-              : `Last ${MAX_LOCAL_RUNS} runs are saved on this device. Sign in to keep them on your account.`}
+              : `Last ${MAX_LOCAL_RUNS} runs are saved on this device. Sign in to keep them on your account.`}{' '}
+            {/* THE COMPARABILITY NOTE (plan §6/§7). Ranked and record rooms run the 3D solve, so
+                a 2D-physics practice score is a score in a different game — close, but not the
+                same field. Saying so here is what stops somebody reading a practice number as a
+                board number. The VIEW is deliberately not part of that sentence: it changes what
+                you see and nothing about what is simulated. */}
+            Only 3D-physics runs are comparable with ranked play.
           </p>
         </>
       )}

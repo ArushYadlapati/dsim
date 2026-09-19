@@ -1,4 +1,5 @@
-import type { GameId, RobotCommand, World } from '../types';
+import type { Transport } from './transport';
+import type { Physics, GameId, RobotCommand, World } from '../types';
 import type { RobotSetup } from '../sim/spawn';
 import type { Replay, ReplayResult } from '../sim/replay';
 import type { EloDelta, PlayerIntro, RecordKind, RecordRankInfo, RoomKind } from './protocol';
@@ -87,6 +88,15 @@ export interface NetSession {
   /** which game the match plays (from matchStart / the first snapshot; DECODE by
    * default). The GameController builds its initial predicted world for this game. */
   readonly game: GameId;
+  /**
+   * WHICH PHYSICS THE ROOM RUNS ON (`matchStart.physics`; absent ⇒ '2d').
+   *
+   * The controller builds its predicted world with THIS and not with the player's own
+   * settings: a client whose Practice pick says '2d' still has to predict the '3d' world the
+   * room is authoritative over, or every snapshot is a correction against a different game.
+   * Mutable for the same reason `game` is — a host restart re-authors the match.
+   */
+  physics: Physics;
   /** the local player's robot id (assigned by the server at match start; -1 when
    * spectating — there is no local robot) */
   readonly localRobotId: number;
@@ -147,5 +157,27 @@ export interface NetSession {
   rematchVote?(): RematchVote;
   /** toggle our rematch vote — the server restarts only on unanimity */
   setRematch?(on: boolean): void;
+  /**
+   * ---- BACK TO THE ROOM'S OWN LOBBY -----------------------------------------------
+   *
+   * A rematch replays the roster frozen at the first start. These three are the other
+   * exit from a finished match: the room clears its world, everyone lands back in the
+   * lobby they came from, and the NEXT start is built from whoever is in the room then —
+   * so a group can re-pick sides, or carry on without the player who left, on the code
+   * they already have.
+   *
+   * All optional: a solo practice run has no session at all, a record run does not
+   * recycle, and a build older than the feature simply never offers the control.
+   */
+  /** host only: ask the server to send this finished room back to its lobby */
+  requestLobby?(): void;
+  /** the room went back to its lobby; `clientId` is ours on the socket being handed over */
+  onLobby?(cb: (clientId: string) => void): void;
+  /**
+   * Give up the socket WITHOUT closing it, so the lobby can adopt the same connection.
+   * The caller must re-point the transport's `onMessage` immediately — see
+   * `LobbyClient.resume`.
+   */
+  release?(): Transport;
   dispose(): void;
 }

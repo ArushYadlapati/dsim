@@ -47,6 +47,8 @@ export interface OffenceContext {
    * it lands in the same ledger, on the same tier ladder, with the same cooldown rung.
    */
   points?: number;
+  /** scales the base cost without bypassing the ladder — a red card is `RED_CARD_MULT` */
+  severity?: number;
 }
 
 /**
@@ -75,6 +77,7 @@ export async function chargeStanding(
       now: Date.now(),
       priorSameKind,
       count: ctx.count,
+      severity: ctx.severity,
     });
 
     // RATING IS CHARGED ON A REAL BOARD OR NOT AT ALL. Most offences arrive with the mode

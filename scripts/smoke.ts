@@ -178,6 +178,21 @@ import {
 import { beamBlock, beamDrag, beamDragFactor, beamStrafeBlock, beamForwardness, beamRide, canCrossBeams, cogFactor, wheelsOnBeam, CHAIN_BEAMS } from '../src/games/chain/beams';
 import { butterflyTankRpmLimits, driveParams, massLimits, rpmLimits, motorStep, driveSummary, widthLimits, pushForce, shoveMass } from '../src/sim/drivetrain';
 import { coerceSettings, defaultSettings, switchGame, syncAudioMirrors } from '../src/settings';
+import {
+  authFlowsForTesting,
+  classifySdkError,
+  PASSWORD_MIN,
+  RESET_PATH,
+  VERIFY_PATH,
+  type AuthFlowsClient,
+} from '../src/lib/authFlows';
+import {
+  LEGAL_UPDATED,
+  LEGAL_VERSION,
+  legalVersionOf,
+  termsGateBlocks,
+  termsGateState,
+} from '../src/legalText';
 import type { RobotSetup } from '../src/sim/spawn';
 import { DEFAULT_BINDINGS, KEY_ACTIONS, PAD_ACTIONS, mergeBindings } from '../src/input/bindings';
 import { quantizeCommand, dequantizeCommand, localizeCommand, sanitizeQCommand, slimWorld, unslimWorld, encodeBallDelta, applyBallDelta } from '../src/net/protocol';
@@ -198,9 +213,16 @@ import {
   type CommandSource,
   replayViewpoint,
   replayFidelity,
+  ReplayPlayer,
   type Replay,
   type ReplayResult,
 } from '../src/sim/replay';
+import {
+  cardEventText,
+  foulEventText,
+  parsePenaltyEvent,
+  warningEventText,
+} from '../src/sim/penaltyLog';
 import { EMPTY_ACTIVITY, averageMatch, playtimeLong, playtimeText } from '../src/playtime';
 import { routeTarget } from '../server/routing';
 import { roomPersists } from '../server/channel';
@@ -219,6 +241,7 @@ import {
   COOLDOWN_LADDER, RATING_LADDER, WINDOW_HOURS, ladderRung,
   tierOf, healed, clampScore, repeatMult, applyStandingEvent, queueLocked, lockRemaining,
   judgeParticipation, MIN_JUDGED_TICKS, AFK_DRIVE_FRACTION, LEAVE_AWAY_FRACTION,
+  RED_CARD_MULT, chargedForParticipation,
   type StandingEventKind, type StandingState,
 } from '../src/standing';
 import type { ServerMsg, QueueMode } from '../src/net/protocol';
@@ -3444,10 +3467,9 @@ function queueTenth(w: World): void {
  * sanctioned for it, which is a behaviour finding with the evidence already attached: it is
  * in the match record, on the results screen and in the replay.
  *
- * Priced between a walk-out (15) and a moderator's upheld verdict (25): worse than wasting
- * one match's worth of other people's time, lighter than a human's judgement, because no
- * human has looked at it. A RED is charged double — it is the second card, and it voids the
- * alliance's score on top.
+ * Owner, 2026-09-14: "Yellow card should only take away 5. Red card take away 15." The card
+ * has already cost the alliance points (a red voids the score), so the standing charge is
+ * the lesser half. A red still rides the repeat multiplier — `severity`, not a flat override.
  *
  * No cooldown for a first one, deliberately: the card already cost the alliance the match, so
  * locking the driver out of the queue for it is a second punishment for one act.
@@ -3455,10 +3477,15 @@ function queueTenth(w: World): void {
 {
   const clean = { score: STANDING_MAX, restrictedUntil: null };
   const yellow = applyStandingEvent(clean, 'card', { now: 0, priorSameKind: 0 });
+  const red = applyStandingEvent(clean, 'card', { now: 0, priorSameKind: 0, severity: RED_CARD_MULT });
   check(
-    'a card costs standing, between a walk-out and an upheld report',
-    yellow.points > STANDING_COST.leave && yellow.points < STANDING_COST.reportUpheld,
-    `${yellow.points} points (leave ${STANDING_COST.leave}, upheld ${STANDING_COST.reportUpheld})`,
+    'a yellow card costs 5 standing and a red 15',
+    yellow.points === 5 && red.points === 15,
+    `yellow ${yellow.points}, red ${red.points}`,
+  );
+  check(
+    '...and a red is still escalated by a repeat inside the window',
+    applyStandingEvent(clean, 'card', { now: 0, priorSameKind: 1, severity: RED_CARD_MULT }).points > red.points,
   );
   check(
     '...and a FIRST card does not lock the queue — the match already paid for it',
@@ -7123,6 +7150,64 @@ function pushContest(A: Partial<RobotSpec>, B: Partial<RobotSpec>, seconds = 3):
       'lan addr: a PUBLIC address is refused — v1 is scoped to the network you are on',
       err('8.8.8.8') === 'not-private' && err('example.com') === 'not-private',
     );
+    /**
+     * THE TAILNET RANGE, and the two addresses either side of it.
+     *
+     * 100.64.0.0/10 is RFC 6598 shared address space — where Tailscale puts a tailnet — and it
+     * is allowed because it is NOT publicly routable, so it cannot become a way to dial an
+     * arbitrary server (see `isPrivateHost`). The boundary is the whole check: the second octet
+     * decides, and `100.63` / `100.128` are ordinary public addresses that must stay refused.
+     * Matching on `100.` alone would hand out a /8, three quarters of which is the public
+     * internet.
+     */
+    check(
+      'lan addr: the TAILNET range 100.64.0.0/10 is reachable (a stable address when DHCP churns)',
+      ['100.64.0.1', '100.100.100.100', '100.127.255.254'].every(isPrivateHost),
+    );
+    check(
+      'lan addr: ...and its EDGES are public — 100.63 and 100.128 are not a tailnet',
+      !isPrivateHost('100.63.255.255') &&
+        !isPrivateHost('100.128.0.0') &&
+        err('100.63.255.255') === 'not-private' &&
+        err('100.128.0.0') === 'not-private',
+    );
+    check(
+      'lan addr: a tailnet address parses like any other host',
+      ok('100.101.102.103')?.url === 'ws://100.101.102.103:8787' &&
+        ok('100.101.102.103:9000')?.port === 9000,
+    );
+    /**
+     * THE MAGICDNS NAME, which is the only address in this module that speaks https.
+     *
+     * `tailscale serve` terminates TLS on 443 with a real certificate for
+     * `machine.tailnet.ts.net` and proxies to the game server's plain-HTTP port. So the BARE
+     * name is `wss://` and a NAMED PORT is the raw server behind it, which has no certificate
+     * and must stay `ws://` — answering `wss://host:8787` would hand back a URL that cannot
+     * connect, which is the exact failure this module exists to prevent.
+     */
+    check(
+      'lan addr: a bare tailnet name is wss:// on 443 — the one LAN host with a real certificate',
+      ok('machine.example-tailnet.ts.net')?.url === 'wss://machine.example-tailnet.ts.net' &&
+        ok('machine.example-tailnet.ts.net')?.httpUrl === 'https://machine.example-tailnet.ts.net' &&
+        ok('machine.example-tailnet.ts.net')?.port === 443 &&
+        ok('machine.example-tailnet.ts.net')?.tls === true,
+    );
+    check(
+      'lan addr: ...but a NAMED port is the raw server behind the proxy, so it stays ws://',
+      ok('machine.example-tailnet.ts.net:8787')?.url === 'ws://machine.example-tailnet.ts.net:8787' &&
+        ok('machine.example-tailnet.ts.net:8787')?.tls === false,
+    );
+    check(
+      'lan addr: every OTHER address is tls:false — the certificate is not assumed anywhere else',
+      ok('192.168.1.5')?.tls === false && ok('localhost')?.tls === false && ok('100.64.0.1')?.tls === false,
+    );
+    check(
+      'lan addr: the LEADING DOT decides — `evilts.net` and a bare `ts.net` are not a tailnet',
+      !isPrivateHost('evilts.net') &&
+        !isPrivateHost('ts.net') &&
+        err('evilts.net') === 'not-private' &&
+        err('ts.net') === 'not-private',
+    );
     check('lan addr: nothing typed is `empty`, not a crash', err('') === 'empty' && err('   ') === 'empty');
     check(
       'lan addr: a TYPO is malformed, not "not on this network" — they are different problems',
@@ -7152,6 +7237,12 @@ function pushContest(A: Partial<RobotSpec>, B: Partial<RobotSpec>, seconds = 3):
     check(
       'mixed content: a file:// page (the desktop shell offline) is not blocked either',
       mixedContentBlock(lan, 'file:') === null,
+    );
+    check(
+      'mixed content: a bare tailnet name is exempt from the https page too — wss:// is not mixed',
+      mixedContentBlock(ok('machine.example-tailnet.ts.net')!, 'https:') === null &&
+        mixedContentBlock(ok('machine.example-tailnet.ts.net:8787')!, 'https:') ===
+          'http://machine.example-tailnet.ts.net:8787',
     );
   }
 
@@ -7328,18 +7419,45 @@ function pushContest(A: Partial<RobotSpec>, B: Partial<RobotSpec>, seconds = 3):
         launcher.includes('Number(y.private) - Number(x.private)'),
     );
 
-    // ---- the clipboard fallback
+    /**
+     * ---- THE CLIPBOARD FALLBACK, WHEREVER A COPY BUTTON IS
+     *
+     * The Clipboard API is gated on a secure context and a LAN guest is served over plain
+     * http, so `navigator.clipboard` is `undefined` there and a bare optional chain makes
+     * the button a no-op that reports success. That bug shipped on this screen once and
+     * then shipped AGAIN on the account-id button (PR #71), which is what moved the
+     * fallback into `copyText` — so these check the shared helper and then check that no
+     * call site has quietly grown its own copy path back.
+     */
+    const copyMod = readFileSync('src/ui/copyText.ts', 'utf8');
     check(
-      'lan copy: there is an execCommand fallback for the non-secure LAN origin',
-      lan.includes("document.execCommand('copy')"),
+      'copy: there is an execCommand fallback for the non-secure LAN origin',
+      copyMod.includes("document.execCommand('copy')"),
     );
     check(
-      'lan copy: the old unguarded `navigator.clipboard?.writeText(` no-op is gone',
-      !/void navigator\.clipboard\?\.writeText/.test(lan),
+      'copy: a rejected clipboard promise still tries the fallback',
+      /\.then\([\s\S]{0,300}?\(\) => done\(copyFallback\(text\)\)/.test(copyMod),
     );
     check(
-      'lan copy: a rejected clipboard promise still tries the fallback',
-      /\.then\([\s\S]{0,400}?copyFallback\(text\)/.test(lan),
+      'copy: the flash is driven by whether the text LANDED, not by the click',
+      /onDone\?\.\(ok\)/.test(copyMod) && /done\(copyFallback\(text\)\)/.test(copyMod),
+    );
+    /**
+     * NO CALL SITE MAY REINVENT IT. `void navigator.clipboard?.writeText(x)` is the exact
+     * shape of both bugs: on a non-secure origin the whole expression evaporates and
+     * nothing throws. Every screen with a copy button goes through `copyText`.
+     */
+    for (const f of ['src/ui/LanPanel.tsx', 'src/ui/Account.tsx', 'src/ui/Lobby.tsx']) {
+      const src = readFileSync(f, 'utf8');
+      check(
+        `copy: ${f.split('/').pop()} has no unguarded navigator.clipboard no-op`,
+        !/void navigator\.clipboard\?\.writeText/.test(src),
+      );
+    }
+    check('copy: LanPanel copies through the shared helper', /copyText\(/.test(lan));
+    check(
+      'copy: the account id copies through the shared helper',
+      /copyText\(/.test(readFileSync('src/ui/Account.tsx', 'utf8')),
     );
   }
 
@@ -7570,17 +7688,28 @@ function pushContest(A: Partial<RobotSpec>, B: Partial<RobotSpec>, seconds = 3):
         'lan gate: a closed server ANSWERS rather than hanging the client to its timeout',
         /reason: 'closed'/.test(idx),
       );
-      // LAN PLAY IS ON IN PRODUCTION (owner, 2026-09-13 — the note at the top of
-      // fly.toml's [env]). Both doors are open on BOTH deployments now; these two used
-      // to assert production did not mention either flag, from when LAN was held back.
-      check(
-        'lan gate: alpha opens it, and so does production (owner, 2026-09-13)',
-        /LAN_SIGNALLING = '1'/.test(flyAlpha) && /LAN_SIGNALLING = '1'/.test(flyProd),
-      );
-      check(
-        'lan gate: and production opens the upload door with it',
-        /LAN_UPLOADS = '1'/.test(flyProd),
-      );
+      /* LAN IS ON IN PRODUCTION SINCE 2026-09-13 (see the prose in `fly.toml`'s [env]).
+         These two checks used to read "alpha opens it; production does not mention it at all",
+         which was the correct assertion right up until the deployment decision changed and then
+         became a suite that fails on a clean tree — the config moved and the test did not.
+
+         The property worth pinning was never "production is closed". It is that EACH CHANNEL
+         DECLARES THE FLAG ITSELF, explicitly, as the exact string the gate fails closed against.
+         Nothing here may be inherited, implied by the release channel, or left to a default: the
+         checks above already prove `lanUploads.ts` treats absent-or-anything-but-'1' as shut, so
+         a config that merely *mentions* the flag is a config that closed the door by accident.
+         Pinning the literal `= '1'` in both files is what keeps "on" a decision somebody wrote
+         down rather than a state a deploy drifted into. */
+      for (const [label, toml] of [['production', flyProd], ['alpha', flyAlpha]] as const) {
+        check(
+          `lan gate: ${label} opens signalling EXPLICITLY — declared, not inherited or implied`,
+          /LAN_SIGNALLING = '1'/.test(toml),
+        );
+        check(
+          `lan gate: ...and ${label} opens uploads the same explicit way`,
+          /LAN_UPLOADS = '1'/.test(toml),
+        );
+      }
 
       /* ---- HOSTING SIGNED OUT, on the ONE server that cannot ask for an account.
          `claim` requires a user id and keeps requiring it (the behavioural check above still
@@ -8518,7 +8647,7 @@ function pushContest(A: Partial<RobotSpec>, B: Partial<RobotSpec>, seconds = 3):
     const mk = (over: Partial<Parameters<typeof parkQueue>[0]> = {}) => ({
       lobby: fakeLobby(), mode: '1v1' as const, game: 'decode' as const, challenge: null,
       since: 1000, size: 1, need: 2,
-      assignedRoom: null, start: null, strategy: null, found: false, error: null, ...over,
+      assignedRoom: null, start: null, strategy: null, found: false, joined: false, error: null, ...over,
     });
 
     // THE GAME TRAVELS WITH THE SEARCH. Parking exists so the player can go and do
@@ -8572,10 +8701,45 @@ function pushContest(A: Partial<RobotSpec>, B: Partial<RobotSpec>, seconds = 3):
     });
     check('queue keeper: a late strategyStart keeps its deadline', peekQueue()?.strategy?.deadline === 42);
 
+    /**
+     * ⚠️ A SEAT IN THE STAGED ROOM, HELD BY THE PARKED SOCKET ITSELF (`joined`).
+     *
+     * `RANKED_JOIN_GRACE_MS` starts running the moment a match is staged, and it used to be
+     * spent waiting for the UI: the assignment was recorded here and the JOIN left to whichever
+     * screen the takeover managed to mount. Anything in between — a React tree tearing down a
+     * live practice match, a navigation that lands elsewhere, an exception in the chain — came
+     * out of that budget, and running it out is a cancelled match and a dodge charged to a
+     * player who never saw a thing. So the assignment is acted on where it arrives, and what is
+     * parked from then on is the ROOM's socket. The adopting screen has to be able to tell the
+     * two apart: joining again would seat a second client under one user.
+     */
+    updateQueue({ joined: true });
+    check('queue keeper: a parked socket can BE the match room, not the queue', peekQueue()?.joined === true);
+
     const taken = takeQueue();
     check('queue keeper: taking hands back the same search', taken?.assignedRoom === 'iad-abc');
+    check('queue keeper: ...and the seat comes back with it', taken?.joined === true);
     check('queue keeper: ...and only once', takeQueue() === null);
     check('queue keeper: taking does NOT close the socket (the screen adopts it)', disposed === 0);
+
+    /**
+     * A RE-PARK MUST NOT DEMOTE A FOUND MATCH BACK TO A SEARCH.
+     *
+     * The screen's own `teardown` builds the parked shape, and it used to hard-code
+     * `found: false` with every payload `null` however far things had got — so an unmount
+     * anywhere between "match found" and "match playing" threw the match away, silently, and
+     * the player was billed for missing it. This is the store half of that contract; the
+     * source checks below pin the screen half.
+     */
+    parkQueue(mk({ found: true, joined: true, assignedRoom: 'iad-xyz', strategy: {
+      deadline: 99, yourRobotId: 1, mode: '2v2', intros: [], players: [], myClientId: 'c2',
+    } }));
+    const re = takeQueue();
+    check(
+      'queue keeper: a re-parked search hands back the match it had already found',
+      re?.found === true && re?.joined === true && re?.assignedRoom === 'iad-xyz' && re?.strategy?.deadline === 99,
+      `found=${re?.found} joined=${re?.joined} room=${re?.assignedRoom} deadline=${re?.strategy?.deadline}`,
+    );
 
     parkQueue(mk());
     dropQueue();
@@ -8584,6 +8748,76 @@ function pushContest(A: Partial<RobotSpec>, B: Partial<RobotSpec>, seconds = 3):
     updateQueue({ size: 9 });
     check('queue keeper: updating nothing is a no-op, not a crash', peekQueue() === null);
     un();
+  }
+
+  /**
+   * ---- THE SCREEN HALF OF THE BACKGROUND QUEUE ---------------------------------
+   *
+   * Reported (2026-09-14, ranked 2v2): "when 4/4 people had queued for the match, instead of
+   * being sent to the match prep menu, i was sent to the queuing menu, and i was unable to
+   * ready up for the match, which dropped my standing … i tried the same sequence of actions
+   * for 1v1s and the appearance of the match prep menu was sporadic." Four
+   * `Left before the match started` charges, a 30-minute ranked lock, standing 67.
+   *
+   * Every one of these is a path where the CLIENT loses a match the SERVER has already staged
+   * — and the server's answer to a player who does not turn up is a dodge on their standing.
+   * They are grepped rather than driven because this screen is React and the suite is not: the
+   * store contract above is exercised for real, and these pin the three places the screen has
+   * to agree with it. Each is one line, and each one shipped broken.
+   */
+  {
+    const mm = readFileSync('src/ui/Matchmaking.tsx', 'utf8');
+    check(
+      'ranked queue: an assignment is ACTED ON where it arrives — the parked socket takes the seat',
+      /lobby\.on\('matchAssigned', \(room\) => \{\s*\n\s*matchFound\(\);\s*\n\s*parkAssignedRoom\(lobby, room\);/.test(mm),
+    );
+    check(
+      'ranked queue: ...and the matchmaker socket is dropped, so a blip cannot re-queue a staged player',
+      /const parkAssignedRoom[\s\S]{0,800}?mm\.dispose\(\);/.test(mm),
+    );
+    check(
+      'ranked queue: a seat in the staged room is PARKED, not disposed, when the screen goes away',
+      /if \(joinedRef\.current\) \{[\s\S]{0,900}?parkQueue\(parkedState\(lobby, true\)\);/.test(mm),
+    );
+    check(
+      'ranked queue: the parked shape carries what was already found, instead of a fresh search',
+      /assignedRoom: assignedRoomRef\.current,[\s\S]{0,240}?strategy: strategyRef\.current,\s*\n\s*found: foundRef\.current,/.test(mm),
+    );
+    check(
+      'ranked queue: the prep window is REMEMBERED as it opens, so a re-park can put it back up',
+      /strategyRef\.current = \{\s*\n\s*deadline, yourRobotId, mode: m, intros/.test(mm),
+    );
+    check(
+      'ranked queue: adopting a socket that already has a seat re-points it instead of joining twice',
+      /if \(p\.joined\) \{[\s\S]{0,700}?wireRoomLobby\(lobby, p\.assignedRoom \?\? '', true\);/.test(mm) &&
+        /\} else if \(p\.assignedRoom && !p\.joined\) \{/.test(mm),
+    );
+    check(
+      'ranked queue: adoption watches the STORE, so "already there; it will adopt" is true',
+      /const parked = useParkedQueue\(\);[\s\S]{0,400}?adoptParked\(\);/.test(mm),
+    );
+    /**
+     * LEAVING HAS TO REALLY LEAVE. Both of these hold a live room socket by the time they run,
+     * and parking one is how the takeover would drag a player back into the match they just
+     * walked out of.
+     */
+    check(
+      'ranked queue: cancelling forgets the found match before tearing down',
+      /searchingRef\.current = false;\s*\n\s*clearFound\(\);\s*\n\s*teardown\(\);/.test(mm),
+    );
+    check(
+      'ranked queue: ...and so does leaving the prep window, which also drops the parked search',
+      /clearFound\(\);\s*\n\s*teardown\(\);\s*\n\s*dropQueue\(\);/.test(mm),
+    );
+    /**
+     * AND THE SCREEN MUST NOT CLAIM TO BE SEARCHING WHEN IT IS NOT. "Finding a match…" is what
+     * the report saw while a staged room counted down the join grace behind it; a found match
+     * gets its own state, above `searching`, so the two can never again look identical.
+     */
+    check(
+      'ranked queue: a found match has its own screen, and it is checked before "searching"',
+      mm.indexOf('if (found) {') > 0 && mm.indexOf('if (found) {') < mm.indexOf('if (searching) {'),
+    );
   }
 
   {
@@ -8609,7 +8843,7 @@ function pushContest(A: Partial<RobotSpec>, B: Partial<RobotSpec>, seconds = 3):
     };
     parkQueue({
       lobby: {} as never, mode: '1v1', game: 'chain', challenge: ch, since: 1, size: 1, need: 2,
-      assignedRoom: null, start: null, strategy: null, found: false, error: null,
+      assignedRoom: null, start: null, strategy: null, found: false, joined: false, error: null,
     });
     check('queue keeper: a parked search remembers its CHALLENGE', peekQueue()?.challenge?.opponent === 'bob');
     const back = takeQueue();
@@ -13998,6 +14232,290 @@ function pinScene(
   const stally = [...solo].reverse().find((m) => m.t === 'rematch') as Extract<ServerMsg, { t: 'rematch' }> | undefined;
   check('versus rematch: a ONE-driver room reports need 1, so the client shows no vote',
     stally?.need === 1, String(stally?.need));
+
+  /**
+   * ---- ⚠️ THE GHOST MATCH: A REMATCH MAY NOT FIELD A SEAT NOBODY IS IN ----------------
+   *
+   * Reported (ranked, 2026-09-14): "I play a game, I win it and after a few minutes of just
+   * training my elo goes down and another match appears in my history which I never played. On
+   * replay, the enemy bot appears and moves but mine simply doesn't move at all." Two of them
+   * in the screenshot, and one is a 2v2 filed as `RANKED 1V1` with three names on it.
+   *
+   * A rematch REPLAYS `matchSetups` frozen at the first start, so it cannot drop a robot whose
+   * driver has gone — `returnToLobby` already says the same thing about its own cleanup ("would
+   * spawn a robot with no driver, which is the exact failure a rematch has today"). The vote was
+   * gated on CONNECTED drivers alone, and `detach` calls `refreshRematch` precisely so that a
+   * drop cannot strand a vote — so the SEQUENCE BELOW needed nobody to do anything malicious or
+   * even unusual: the opponent asks for a rematch while both are still reading the results, the
+   * winner leaves to go and practise, and their own departure makes the standing vote unanimous
+   * and starts a RATED match around the chassis they just walked away from. `this.ranked` is a
+   * room flag and `beginMatch` clears `finalized`, so it persisted, rated, and landed in their
+   * history as a loss.
+   *
+   * The SEAT is the thing to test, not the vote.
+   */
+  const gh: Record<string, ServerMsg[]> = { g1: [], g2: [] };
+  const mkG = (id: string): Client => ({ ...mkD(id), send: (m) => gh[id].push(m) });
+  const groom = new Room('smoke-ghost-rematch', () => {}, { kind: 'versus' });
+  groom.add(mkG('g1'));
+  groom.add(mkG('g2'));
+  groom.onMessage('g1', { t: 'start' });
+  groom.advanceForTest(30);
+  const gtally = (id: string) =>
+    [...gh[id]].reverse().find((m) => m.t === 'rematch') as Extract<ServerMsg, { t: 'rematch' }> | undefined;
+
+  // the opponent asks for a rematch, as anyone might from the results screen
+  groom.onMessage('g2', { t: 'rematch', on: true });
+  check('ghost rematch: one standing vote, as before', gtally('g2')?.votes === 1 && gtally('g2')?.need === 2);
+
+  // ...and THEN the other player leaves. Their client is held on its reconnect grace, so it is
+  // still in the room and still owns robot 0 — it is simply not going to drive it.
+  gh.g2.length = 0;
+  const beforeTick = groom.tick;
+  groom.detach('g1');
+  check(
+    'ghost rematch: the departure does NOT start a match around the chassis they left',
+    !gh.g2.some((m) => m.t === 'matchStart') && groom.tick >= beforeTick,
+    `tick ${beforeTick} → ${groom.tick}, matchStart=${gh.g2.some((m) => m.t === 'matchStart')}`,
+  );
+  check(
+    'ghost rematch: ...and the tally says why — 1/2, where it used to read a complete 1/1',
+    gtally('g2')?.votes === 1 && gtally('g2')?.need === 2,
+    `${gtally('g2')?.votes}/${gtally('g2')?.need}`,
+  );
+
+  // they come back to the results screen: the seat is held again, but a rematch is still THEIR
+  // call — the standing vote is the opponent's alone.
+  groom.reattach('g1', (m) => gh.g1.push(m));
+  check(
+    'ghost rematch: coming back does not start it either — the returning player has not voted',
+    groom.tick > 0,
+    String(groom.tick),
+  );
+  gh.g2.length = 0;
+  groom.onMessage('g1', { t: 'rematch', on: true });
+  check(
+    'ghost rematch: ...and with both seats held and both votes in, it restarts as it always did',
+    gh.g2.some((m) => m.t === 'matchStart') && groom.tick === 0,
+    String(groom.tick),
+  );
+
+  /**
+   * THE 2v2 CASE, which is the one in the report: three drivers cannot rematch a four-robot
+   * roster. `need` is the roster the rematch would field, so it reads 4 and not 3 — the vote
+   * is visibly short a driver instead of looking complete and doing nothing.
+   */
+  const q: Record<string, ServerMsg[]> = { q1: [], q2: [], q3: [], q4: [] };
+  const mkQ = (id: string, alliance: Alliance): Client => ({
+    ...mkD(id),
+    send: (m) => q[id].push(m),
+    player: { ...mkD(id).player, alliance },
+  });
+  const qroom = new Room('smoke-ghost-2v2', () => {}, { kind: 'versus' });
+  qroom.add(mkQ('q1', 'red'));
+  qroom.add(mkQ('q2', 'red'));
+  qroom.add(mkQ('q3', 'blue'));
+  qroom.add(mkQ('q4', 'blue'));
+  qroom.onMessage('q1', { t: 'start' });
+  qroom.advanceForTest(30);
+  qroom.detach('q4');
+  q.q1.length = 0;
+  for (const id of ['q1', 'q2', 'q3']) qroom.onMessage(id, { t: 'rematch', on: true });
+  const qtally = [...q.q1].reverse().find((m) => m.t === 'rematch') as
+    | Extract<ServerMsg, { t: 'rematch' }>
+    | undefined;
+  check(
+    'ghost rematch: three of four cannot restart a 2v2 — the fourth robot has no driver',
+    !q.q1.some((m) => m.t === 'matchStart') && qroom.tick > 0,
+    `tick ${qroom.tick}`,
+  );
+  check(
+    'ghost rematch: ...and the tally counts the ROSTER, so it reads 3/4',
+    qtally?.votes === 3 && qtally?.need === 4,
+    `${qtally?.votes}/${qtally?.need}`,
+  );
+
+  /**
+   * AND THE MATCH'S FORMAT COMES FROM THE ROOM, not from a head-count of the survivors.
+   *
+   * `persistVersusMatch` derived it as `eloMode(authed.length)`, so the reporter's 2v2 — which
+   * ended with three participants, one player having left before it even started — was FILED
+   * and RATED as a 1v1. Source-checked rather than driven: proving it end to end means running
+   * a full four-robot match to `finalizeMatch` for one string.
+   */
+  const roomSrcMode = readFileSync('server/room.ts', 'utf8');
+  const rankedSrc = readFileSync('server/ranked.ts', 'utf8');
+  check(
+    'ghost rematch: the room tells the persist layer which format it played',
+    /mode: this\.pendingMatch\?\.mode \?\? \(this\.matchSetups\.length \? eloMode\(this\.matchSetups\.length\) : undefined\)/.test(
+      roomSrcMode,
+    ),
+  );
+  check(
+    'ghost rematch: ...and the persist layer prefers it to counting who was left at the end',
+    /const mode = outcome\.mode \?\? eloMode\(authed\.length\);/.test(rankedSrc),
+  );
+}
+
+// ---- RECYCLING A FINISHED ROOM ---------------------------------------------
+// A room used to be single-use: `world` was set once and never cleared, so after one
+// match `canJoin` refused every later joiner and the `start` gate refused every later
+// match. The only way on was a rematch, which REPLAYS the roster frozen at the first
+// start — so a group that lost a player, or wanted to re-pick sides, had to mint a new
+// code and all re-join it. These checks are that whole loop: play, leave, recycle,
+// re-pick, play again.
+{
+  const sink: Record<string, ServerMsg[]> = { a: [], b: [], c: [] };
+  const lastRoster = (ms: ServerMsg[]) =>
+    [...ms].reverse().find((m) => m.t === 'roster') as Extract<ServerMsg, { t: 'roster' }> | undefined;
+  const mkR = (id: string, alliance: Alliance): Client => ({
+    id,
+    send: (m) => sink[id].push(m),
+    player: { clientId: id, name: id, teamName: 'T', teamNumber: 1, alliance, startIndex: 0, ready: true, spec: { ...DEFAULT_SPEC }, assists: { ...DEFAULT_ASSISTS } },
+    connected: true,
+    disconnectAt: 0,
+    caps: ['recycle'],
+    userId: 'u-' + id,
+  });
+  const room = new Room('smoke-recycle', () => {}, { kind: 'versus' });
+  room.add(mkR('a', 'red'));
+  room.add(mkR('b', 'blue'));
+  room.add(mkR('c', 'blue'));
+  room.onMessage('a', { t: 'start' });
+  room.advanceForTest(maxMatchTicks() + 5);
+  check('recycle: the match actually finished (everything below is about a FINISHED room)',
+    room.worldForTest()?.match.phase === 'post', String(room.worldForTest()?.match.phase));
+
+  // THE OLD BEHAVIOUR, asserted so the reason for the feature stays on the record:
+  // a room that has played is shut to everyone until its world is cleared.
+  check('recycle: a played room admits nobody while its world stands', !room.canJoin());
+
+  // one player leaves from the results screen — their slot is HELD, because a finished
+  // match is still something you can reconnect to and read
+  room.detach('c');
+  check('recycle: a player who leaves a finished match still holds their slot',
+    (lastRoster(sink.a)?.players.length ?? 0) === 3);
+
+  // a non-host may not tear the results screen out from under everyone else
+  room.onMessage('b', { t: 'lobby' });
+  check('recycle: a NON-host asking for the lobby is ignored', room.worldForTest() !== null);
+
+  room.onMessage('a', { t: 'lobby' });
+  check('recycle: the host sends the room back to its lobby', room.worldForTest() === null);
+  check('recycle: ...and every member is TOLD, with their own id (no `join`, so no `welcome`)',
+    sink.a.some((m) => m.t === 'lobby' && m.clientId === 'a') &&
+    sink.b.some((m) => m.t === 'lobby' && m.clientId === 'b'));
+  check('recycle: the held slot of the player who left is released',
+    (lastRoster(sink.a)?.players.length ?? 0) === 2);
+  check('recycle: ...so the room takes new players again', room.canJoin());
+  check('recycle: nobody carries a READY into the next game',
+    (lastRoster(sink.a)?.players ?? []).every((p) => !p.ready));
+
+  // THE POINT OF ALL OF IT: re-pick sides, and play a full game the new roster authored.
+  room.onMessage('b', { t: 'update', patch: { alliance: 'red' } });
+  room.onMessage('a', { t: 'start' });
+  const start2 = [...sink.b].reverse().find((m) => m.t === 'matchStart') as Extract<ServerMsg, { t: 'matchStart' }> | undefined;
+  check('recycle: the second match is built from the roster that is here NOW, not the frozen one',
+    start2?.setups.length === 2, String(start2?.setups.length));
+  check('recycle: ...and it honours the alliance somebody switched to after the first game',
+    start2?.setups.every((s) => s.alliance === 'red') === true,
+    JSON.stringify(start2?.setups.map((s) => s.alliance)));
+
+  // the generation must keep climbing, or an input still in flight from match 1 would be
+  // accepted by match 2 as fresh (a rebuild starts at tick 0)
+  const gens = sink.b
+    .filter((m) => m.t === 'matchStart')
+    .map((m) => (m as Extract<ServerMsg, { t: 'matchStart' }>).gen ?? 0);
+  check('recycle: the match generation never rewinds across a recycle',
+    gens.length >= 2 && gens[gens.length - 1] > gens[0], JSON.stringify(gens));
+}
+
+// ...AND IT IS THE SAME LOOP IN EVERY GAME. Nothing in the recycle is game-shaped — the
+// room's `config.game` is readonly and untouched, and `startMatch`/`beginMatch` resolve
+// `simModuleFor(this.game)` on each call — but "should be game-agnostic" is exactly the
+// claim that goes stale, and BIOBUZZ has FEWER start anchors than DECODE, which is the one
+// place a rebuilt roster could pick an index its game cannot resolve.
+for (const game of ['decode', 'chain', 'biobuzz'] as const) {
+  const sink: Record<string, ServerMsg[]> = { p1: [], p2: [] };
+  const mk = (id: string, alliance: Alliance): Client => ({
+    id,
+    send: (m) => sink[id].push(m),
+    player: { clientId: id, name: id, teamName: 'T', teamNumber: 1, alliance, startIndex: 0, ready: true, spec: { ...DEFAULT_SPEC }, assists: { ...DEFAULT_ASSISTS } },
+    connected: true, disconnectAt: 0, caps: ['recycle'], userId: 'u-' + id + '-' + game,
+  });
+  const room = new Room('smoke-recycle-' + game, () => {}, { kind: 'versus', game });
+  room.add(mk('p1', 'red'));
+  room.add(mk('p2', 'blue'));
+  room.onMessage('p1', { t: 'start' });
+  room.advanceForTest(maxMatchTicks() + 5);
+  check(`recycle/${game}: the match finished`, room.worldForTest()?.match.phase === 'post');
+  // ⚠️ A DECODE WORLD CARRIES NO `game` AT ALL — that absence IS how an old world reads as
+  // DECODE (`simModuleFor` falls back), so the expectation has to be written the way every
+  // reader of the field writes it, or this check fails on the one game it cannot fail for.
+  check(`recycle/${game}: ...in THIS game, not DECODE by fallback`,
+    (room.worldForTest()?.game ?? 'decode') === game, String(room.worldForTest()?.game));
+
+  room.detach('p2'); // somebody leaves from the results screen
+  room.onMessage('p1', { t: 'lobby' });
+  check(`recycle/${game}: the room goes back to its lobby`, room.worldForTest() === null);
+  check(`recycle/${game}: ...and admits players again`, room.canJoin());
+
+  room.onMessage('p1', { t: 'start' });
+  const w = room.worldForTest();
+  check(`recycle/${game}: the second match is built, and still in this game`,
+    w !== null && (w.game ?? 'decode') === game, String(w?.game));
+  check(`recycle/${game}: ...from the roster that is left, not the frozen one`,
+    w?.robots.length === 1, String(w?.robots.length));
+}
+
+// A MIXED-VERSION ROOM MUST NOT RECYCLE. One Fly app serves every client build, so a
+// client that predates `t: 'lobby'` would ignore it and sit on a results screen for a
+// match the room no longer has — the same discipline the strategy window uses.
+{
+  const sink: Record<string, ServerMsg[]> = { h: [], old: [] };
+  const mk = (id: string, caps: string[]): Client => ({
+    id,
+    send: (m) => sink[id].push(m),
+    player: { clientId: id, name: id, teamName: 'T', teamNumber: 1, alliance: id === 'h' ? 'red' : 'blue', startIndex: 0, ready: true, spec: { ...DEFAULT_SPEC }, assists: { ...DEFAULT_ASSISTS } },
+    connected: true, disconnectAt: 0, caps, userId: 'u-' + id,
+  });
+  const room = new Room('smoke-recycle-mixed', () => {}, { kind: 'versus' });
+  room.add(mk('h', ['recycle']));
+  room.add(mk('old', [])); // a build from before this feature
+  room.onMessage('h', { t: 'start' });
+  room.advanceForTest(maxMatchTicks() + 5);
+  room.onMessage('h', { t: 'lobby' });
+  check('recycle: a room holding ONE old client stays put rather than stranding it',
+    room.worldForTest() !== null);
+}
+
+// THE CROWN HAS TO MOVE, or the feature is unreachable in the case that motivates it.
+// Host migration used to live in `detach`'s LOBBY branch alone, so a host who left during
+// or after a match was never replaced: `hostId` went on naming a client no longer in the
+// room, and every host-only control — `start`, and now `lobby` — was dead for everyone left.
+{
+  const sink: Record<string, ServerMsg[]> = { h: [], g: [] };
+  const lastRoster = (ms: ServerMsg[]) =>
+    [...ms].reverse().find((m) => m.t === 'roster') as Extract<ServerMsg, { t: 'roster' }> | undefined;
+  const mk = (id: string): Client => ({
+    id,
+    send: (m) => sink[id].push(m),
+    player: { clientId: id, name: id, teamName: 'T', teamNumber: 1, alliance: id === 'h' ? 'red' : 'blue', startIndex: 0, ready: true, spec: { ...DEFAULT_SPEC }, assists: { ...DEFAULT_ASSISTS } },
+    connected: true, disconnectAt: 0, caps: ['recycle'], userId: 'u-' + id,
+  });
+  const room = new Room('smoke-recycle-crown', () => {}, { kind: 'versus' });
+  room.add(mk('h'));
+  room.add(mk('g'));
+  check('recycle: the first player through the door is host', lastRoster(sink.g)?.hostId === 'h');
+  room.onMessage('h', { t: 'start' });
+  room.advanceForTest(maxMatchTicks() + 5);
+  room.detach('h'); // the host closes the tab on the results screen
+  check('recycle: the crown passes when the host leaves a FINISHED match',
+    lastRoster(sink.g)?.hostId === 'g', String(lastRoster(sink.g)?.hostId));
+  room.onMessage('g', { t: 'lobby' });
+  check('recycle: ...so whoever is left can actually take the room back to its lobby',
+    room.worldForTest() === null);
+  check('recycle: ...and start a game of their own', room.canJoin());
 }
 
 // ---- MAINTENANCE LOCKDOWN: when the window actually bites -------------------
@@ -14678,6 +15196,72 @@ function pinScene(
   check('ack channel: an ack-less legacy client is never force-keyframed', legacyDeltas);
 }
 
+// ---- LOSSY LANE (tab-hosted LAN): a DROPPED snapshot must not corrupt the guest ----
+// A tab host's guests take their snapshots over an unordered `maxRetransmits: 0` DataChannel
+// (`src/net/lanPeer.ts`), so a frame does not merely arrive late — it can vanish. That is why
+// `src/lan/hostWorker.ts` marks those seats `lossy`, and it is the whole of what the flag buys:
+// the delta after a lost frame is keyed to what the guest has ACKED rather than to what was
+// last broadcast. Keyed to the last broadcast it would say nothing about the ball that moved in
+// the lost frame — the server already counted that ball as sent — so the guest patches a
+// baseline that is wrong about it and then ACKS the result as healthy, which means the
+// ACK_STALE_TICKS resync never fires and the wrong ball is still wrong at the buzzer.
+//
+// The loss is STAGED rather than simulated (the room is the thing under test) and the ball is
+// nudged through `worldForTest` so exactly ONE frame carries it: if it kept moving, the next
+// delta would mention it again and the bug would hide.
+{
+  const gMsgs: ServerMsg[] = [];
+  const mkLan = (id: string, alliance: 'red' | 'blue', sink: ServerMsg[], lossy: boolean): Client => ({
+    id,
+    send: (m) => sink.push(m),
+    player: { clientId: id, name: id, teamName: 'T', teamNumber: 1, alliance, startIndex: 0, ready: true, spec: { ...DEFAULT_SPEC }, assists: { ...DEFAULT_ASSISTS } },
+    connected: true,
+    disconnectAt: 0,
+    userId: `u-${id}`,
+    lossy,
+  });
+  const room = new Room('smoke-lan-drop', () => {}, { kind: 'versus' });
+  room.add(mkLan('guest', 'red', gMsgs, true)); // a WebRTC guest: its snapshot lane drops frames
+  room.add(mkLan('host', 'blue', [], false)); // the host seat, in-process, loses nothing
+  room.onMessage('guest', { t: 'start' });
+
+  // the guest's own world, rebuilt from the wire exactly as `serverSession` rebuilds it.
+  // Deep-copied on the way in: the object send path hands out the room's LIVE artifacts, so
+  // aliasing them would make the guest agree with the server no matter what was sent.
+  const guestBalls = new Map<number, Artifact>();
+  let acked = -1;
+  const drain = (): void => {
+    for (const m of gMsgs) {
+      if (m.t !== 'snapshot') continue;
+      applyBallDelta(guestBalls, JSON.parse(JSON.stringify(m.balls)) as typeof m.balls);
+      acked = m.serverTick;
+    }
+    gMsgs.length = 0;
+  };
+  room.advanceForTest(4);
+  drain(); // in sync, and it tells the room so
+  room.onMessage('guest', { t: 'input', tick: room.tickForTest() + 1, q: quantizeCommand(cmd({})), ack: acked });
+
+  // ONE artifact moves, on ONE frame — and that frame is the one the lane eats
+  const victim = (room.worldForTest() as World).balls.find(
+    (b) => b.vel.x === 0 && b.vel.y === 0 && b.vz === 0 && b.z === 0,
+  ) as Artifact;
+  victim.pos.x += 0.5;
+  gMsgs.length = 0;
+  room.advanceForTest(2);
+  gMsgs.length = 0; // LOST IN FLIGHT: never applied, never acked
+  room.advanceForTest(2);
+  drain(); // the only frame the guest actually receives after the loss
+
+  const rebuilt = [...guestBalls.values()].sort((a, b) => a.id - b.id);
+  const live = (room.worldForTest() as World).balls.slice().sort((a, b) => a.id - b.id);
+  check(
+    'lan delta: a lossy guest survives a dropped snapshot (delta keyed to its ACK, not the last broadcast)',
+    JSON.stringify(rebuilt) === JSON.stringify(live),
+    `artifact ${victim?.id} moved on the lost frame only`,
+  );
+}
+
 // ---- future-tick input buffer is BOUNDED (memory-exhaustion guard) ----------
 // `pending` is keyed by the exact tick an input applies to, and `frameCommands` only
 // ever deletes keys the world has REACHED. A tick the world will never reach is
@@ -15168,6 +15752,8 @@ function pinScene(
 {
   const active: string[] = [];
   const inactive: string[] = [];
+  /** the NET of the two callbacks — i.e. what `server/index.ts`'s `userRoom` would hold */
+  const held = new Set<string>();
   const msgs: ServerMsg[] = [];
   const client: Client = {
     id: 'c1',
@@ -15192,12 +15778,27 @@ function pinScene(
     () => {},
     { kind: 'versus' },
     undefined,
-    (uid) => active.push(uid),
-    (uid) => inactive.push(uid),
+    (uid) => {
+      active.push(uid);
+      held.add(uid);
+    },
+    (uid) => {
+      inactive.push(uid);
+      held.delete(uid);
+    },
   );
   room.add(client);
   room.onMessage('c1', { t: 'start' });
   check('single-game lock registered for an authed driver at match begin', active.includes('user-1'));
+  /**
+   * AND STILL HELD A STATEMENT LATER — the assertion above cannot see the bug it was
+   * written to catch. It reads a CALL LOG, so it passes as long as `onUserActive` fired
+   * at some point, and for the life of this suite `startMatch` fired it and then called
+   * `startLoop`, which opened with a `stop()` that released every lock it had just taken.
+   * The lock existed for the handful of statements in between. `held` is the net of the
+   * two callbacks, which is what the server actually consults (`userRoom`).
+   */
+  check('single-game lock is still HELD once the match is running', held.has('user-1'));
 
   // restart is DISABLED in multiplayer — it must NOT re-author the live match
   const startsBefore = msgs.filter((m) => m.t === 'matchStart').length;
@@ -15208,6 +15809,65 @@ function pinScene(
   // run to the end → the lock is released at finalize so the user can start again
   room.advanceForTest(maxMatchTicks() + 5);
   check('single-game lock released when the match finalizes', inactive.includes('user-1'));
+  check('single-game lock is actually clear after finalize', !held.has('user-1'));
+}
+
+/**
+ * ---- A STAGED RANKED MATCH HOLDS THE LOCK BEFORE IT STARTS -----------------------
+ *
+ * Reported as "you should also not be able to re-enter queue if you're entering a match".
+ * The lock used to be taken at `startMatch`, so between the matchmaker assigning a room
+ * and the world being built a paired player held nothing: `activeElsewhere` answered
+ * false and the ranked queue took them back. That is reachable by refreshing the tab on
+ * "Match found" — the reload loses the room client-side, FIND MATCH re-enters the pool,
+ * and the abandoned room still charges a no-show when its grace lapses.
+ */
+{
+  const held = new Set<string>();
+  const room = new Room(
+    'smoke-staged-lock',
+    () => {},
+    { kind: 'versus' },
+    undefined,
+    (uid) => held.add(uid),
+    (uid) => held.delete(uid),
+  );
+  const roster = [
+    { userId: 'u-red', name: 'red', teamName: 'T', teamNumber: 111, spec: { ...DEFAULT_SPEC }, assists: { ...DEFAULT_ASSISTS }, startIndex: 0, alliance: 'red' as const, introElo: 1200 },
+    { userId: 'u-blue', name: 'blue', teamName: 'T', teamNumber: 222, spec: { ...DEFAULT_SPEC }, assists: { ...DEFAULT_ASSISTS }, startIndex: 0, alliance: 'blue' as const, introElo: 1300 },
+  ];
+  check('staged lock: nothing held before the pairing is staged', held.size === 0);
+  room.applyPending({ code: 'iad-lock', hostRegion: 'iad', mode: '1v1', seed: 3, ranked: true, roster });
+  // NOBODY HAS CONNECTED YET, and that is the entire point: the server has committed
+  // these two accounts to this match, so the queue must already refuse them.
+  check('staged lock: both roster members are locked the moment the match is staged', held.has('u-red') && held.has('u-blue'));
+  check('staged lock: the room reports itself as staging (pre-world)', room.staging());
+  check('staged lock: stagedFor names the roster', room.stagedFor('u-red') && !room.stagedFor('u-other'));
+}
+
+/** and a staging that is CANCELLED gives the locks back — or a no-show would leave both
+ *  accounts unable to queue again for as long as the process lives. */
+{
+  const held = new Set<string>();
+  const room = new Room(
+    'smoke-staged-cancel',
+    () => {},
+    { kind: 'versus' },
+    undefined,
+    (uid) => held.add(uid),
+    (uid) => held.delete(uid),
+  );
+  room.applyPending({
+    code: 'iad-cancel', hostRegion: 'iad', mode: '1v1', seed: 4, ranked: true,
+    roster: [
+      { userId: 'u-a', name: 'a', teamName: 'T', teamNumber: 1, spec: { ...DEFAULT_SPEC }, assists: { ...DEFAULT_ASSISTS }, startIndex: 0, alliance: 'red', introElo: 1200 },
+      { userId: 'u-b', name: 'b', teamName: 'T', teamNumber: 2, spec: { ...DEFAULT_SPEC }, assists: { ...DEFAULT_ASSISTS }, startIndex: 0, alliance: 'blue', introElo: 1200 },
+    ],
+  });
+  check('staged lock: held while the grace runs', held.has('u-a') && held.has('u-b'));
+  room.forceJoinGraceForTest();
+  check('staged lock: released when the staging is cancelled', held.size === 0);
+  check('staged lock: the room is no longer staging after a cancel', !room.staging());
 }
 
 // ---- a driver who leaves a FINISHED match is reaped, and the room with them -----
@@ -15343,11 +16003,13 @@ function pinScene(
   // 2. SEVERITY ORDER, in points. These events are not comparable and must not cost the
   //    same: a dodge postpones a match, an AFK destroys one, and a moderator upholding a
   //    report is the only event backed by a human looking at the evidence.
+  //    AFK and LEAVE cost the same 8 (owner, 2026-09-14): to the partner left alone they are
+  //    the same match.
   check(
-    'standing: severity is ordered report < dodge < afk < leave < upheld',
+    'standing: severity is ordered report < dodge < afk = leave (8) < upheld',
     STANDING_COST.report < STANDING_COST.dodge &&
       STANDING_COST.dodge < STANDING_COST.afk &&
-      STANDING_COST.afk < STANDING_COST.leave &&
+      STANDING_COST.afk === 8 && STANDING_COST.leave === 8 &&
       STANDING_COST.leave < STANDING_COST.reportUpheld,
     kinds.map((k) => `${k} ${STANDING_COST[k]}`).join(' · '),
   );
@@ -15627,6 +16289,15 @@ function pinScene(
       judgeParticipation({ liveTicks: NaN, driveTicks: 0, awayTicks: 0 }) === null &&
         judgeParticipation({ liveTicks: -5, driveTicks: 0, awayTicks: 0 }) === null,
     );
+    // LEAVING A 1v1 IS ALLOWED; leaving a partner in a 2v2 is not. AFK is charged in both.
+    check(
+      'standing: walking out of a 1v1 is not charged, walking out on a 2v2 partner is',
+      !chargedForParticipation('leave', '1v1') && chargedForParticipation('leave', '2v2'),
+    );
+    check(
+      'standing: AFK is charged in a 1v1 and a 2v2 alike',
+      chargedForParticipation('afk', '1v1') && chargedForParticipation('afk', '2v2'),
+    );
   }
 }
 
@@ -15839,6 +16510,153 @@ function pinScene(
   }
 }
 
+/**
+ * ---- A RELOAD DURING THE STRATEGY WINDOW IS RECOVERABLE ---------------------------
+ *
+ * The window used to die on the first closed socket: refresh the tab and the match was
+ * cancelled, you were billed a bail, and the other players lost their queue time. A page
+ * load is not a decision — it is also what a phone does to a backgrounded tab — so the
+ * seat is HELD, and the ACCOUNT is what it is handed back on, because a reload destroys
+ * the client id `rejoin` would have needed.
+ */
+{
+  const rec: Record<string, ServerMsg[]> = { red: [], blue: [], back: [] };
+  const mkC = (id: string, userId: string): Client => ({
+    id,
+    send: (m) => rec[id].push(m),
+    player: { clientId: id, name: id, teamName: 'T', teamNumber: 1, alliance: 'red', startIndex: 0, ready: false, spec: { ...DEFAULT_SPEC }, assists: { ...DEFAULT_ASSISTS } },
+    connected: true,
+    disconnectAt: 0,
+    userId,
+    caps: ['strategy'],
+  });
+  const room = new Room('smoke-strat-reload', () => {}, { kind: 'versus' });
+  room.applyPending({ code: 'iad-rl', hostRegion: 'iad', mode: '1v1', seed: 9, ranked: true, roster: [
+    { userId: 'u-red', name: 'red', teamName: 'T', teamNumber: 1, spec: { ...DEFAULT_SPEC }, assists: { ...DEFAULT_ASSISTS }, startIndex: 0, alliance: 'red', introElo: null },
+    { userId: 'u-blue', name: 'blue', teamName: 'T', teamNumber: 2, spec: { ...DEFAULT_SPEC }, assists: { ...DEFAULT_ASSISTS }, startIndex: 0, alliance: 'blue', introElo: null },
+  ] });
+  room.add(mkC('red', 'u-red'));
+  room.add(mkC('blue', 'u-blue'));
+  room.maybeStartRanked();
+  const ss0 = rec.blue.find((m) => m.t === 'strategyStart');
+  check('strategy reload: the window opened (else the checks below prove nothing)', ss0?.t === 'strategyStart');
+  const deadline0 = ss0?.t === 'strategyStart' ? ss0.deadline : 0;
+  const slot0 = ss0?.t === 'strategyStart' ? ss0.yourRobotId : -1;
+
+  // BLUE RELOADS. A reload is 1001 and a dropped network 1006 — both reach `detach` as
+  // clean=false, because neither is a decision.
+  room.detach('blue', undefined, false);
+  check('strategy reload: the match is NOT cancelled', !rec.red.some((m) => m.t === 'error'));
+  check('strategy reload: the seat is still held for them', room.seatFor('u-blue') === 'blue');
+  room.onMessage('red', { t: 'update', patch: { ready: true } });
+  check('strategy reload: …and no match starts with a seat nobody is in', !rec.red.some((m) => m.t === 'matchStart'));
+
+  // THEY COME BACK — on the ACCOUNT, which is all a reloaded page still knows.
+  const seat = room.seatFor('u-blue');
+  const nc = seat ? room.reattach(seat, (m) => rec.back.push(m)) : null;
+  check('strategy reload: the seat is handed back on a fresh socket', nc !== null);
+  const ss1 = rec.back.find((m) => m.t === 'strategyStart');
+  check('strategy reload: the returning socket is re-sent strategyStart', ss1?.t === 'strategyStart');
+  check(
+    'strategy reload: …with the SAME robot id (the held client id is what slotOf is keyed by)',
+    ss1?.t === 'strategyStart' && ss1.yourRobotId === slot0,
+  );
+  check(
+    'strategy reload: …and the ORIGINAL deadline, which did not pause while the page loaded',
+    ss1?.t === 'strategyStart' && ss1.deadline === deadline0,
+  );
+  room.onMessage('blue', { t: 'update', patch: { ready: true } });
+  check('strategy reload: the match then starts, and nothing was charged', rec.red.some((m) => m.t === 'matchStart'));
+  room.advanceForTest(1); // stop the real-time loop this started
+}
+
+/** …but a CLEAN close is a player who DECIDED to leave (`transport.close()` — Back), and
+ *  making the others wait out the deadline for them would be the same unfairness pointed
+ *  the other way. That one still bails on the spot. */
+{
+  const rec: Record<string, ServerMsg[]> = { red: [], blue: [] };
+  const mkC = (id: string, userId: string): Client => ({
+    id,
+    send: (m) => rec[id].push(m),
+    player: { clientId: id, name: id, teamName: 'T', teamNumber: 1, alliance: 'red', startIndex: 0, ready: false, spec: { ...DEFAULT_SPEC }, assists: { ...DEFAULT_ASSISTS } },
+    connected: true,
+    disconnectAt: 0,
+    userId,
+    caps: ['strategy'],
+  });
+  const room = new Room('smoke-strat-bail', () => {}, { kind: 'versus' });
+  room.applyPending({ code: 'iad-bl', hostRegion: 'iad', mode: '1v1', seed: 9, ranked: true, roster: [
+    { userId: 'u-red', name: 'red', teamName: 'T', teamNumber: 1, spec: { ...DEFAULT_SPEC }, assists: { ...DEFAULT_ASSISTS }, startIndex: 0, alliance: 'red', introElo: null },
+    { userId: 'u-blue', name: 'blue', teamName: 'T', teamNumber: 2, spec: { ...DEFAULT_SPEC }, assists: { ...DEFAULT_ASSISTS }, startIndex: 0, alliance: 'blue', introElo: null },
+  ] });
+  room.add(mkC('red', 'u-red'));
+  room.add(mkC('blue', 'u-blue'));
+  room.maybeStartRanked();
+  room.detach('blue', undefined, true); // clean = the player pressed Back
+  check('strategy bail: a deliberate leave still cancels the match immediately', rec.red.some((m) => m.t === 'error'));
+}
+
+/**
+ * ---- ONE ACCOUNT, ONE SEAT, AND THE TAB IT DISPLACES IS TOLD ----------------------
+ *
+ * `seatFor` is what the join path asks BEFORE `canJoin`, because two tabs on one account
+ * used to take two seats at the same room code — the single-game guard compares room
+ * CODES and reads that as "this is your room". In a 1v1 that is the whole room, and the
+ * real opponent was refused at the door and charged a no-show for a match they were
+ * standing outside of. The seat is taken OVER rather than the joiner refused: a
+ * reconnect, a reload and a second tab are one indistinguishable frame from here.
+ */
+{
+  const rec: Record<string, ServerMsg[]> = { a: [], b: [] };
+  const room = new Room('smoke-two-tabs', () => {}, { kind: 'versus' });
+  room.add({
+    id: 'tab-a',
+    send: (m) => rec.a.push(m),
+    player: { clientId: 'tab-a', name: 'a', teamName: 'T', teamNumber: 1, alliance: 'red', startIndex: 0, ready: false, spec: { ...DEFAULT_SPEC }, assists: { ...DEFAULT_ASSISTS } },
+    connected: true,
+    disconnectAt: 0,
+    userId: 'u-1',
+  });
+  check('two tabs: the room can name the seat this account holds', room.seatFor('u-1') === 'tab-a');
+  check('two tabs: and has no opinion about an account with no seat', room.seatFor('u-2') === null);
+  const nc = room.reattach('tab-a', (m) => rec.b.push(m));
+  check('two tabs: the second tab takes the seat over', nc !== null);
+  check(
+    'two tabs: …and the first is TOLD, rather than left on a silently unplugged session',
+    rec.a.some((m) => m.t === 'error' && /another tab/i.test(m.message)),
+  );
+  check('two tabs: one account is still exactly one seat', room.seatFor('u-1') === 'tab-a');
+}
+
+/**
+ * ---- ABANDON MEANS IT ------------------------------------------------------------
+ *
+ * The button only ever cleared the browser's own record, which was harmless for exactly
+ * as long as the single-game lock was inert. It is not inert any more, so abandoning and
+ * starting something else met a refusal about a game the UI had just said was gone.
+ */
+{
+  const held = new Set<string>();
+  const room = new Room(
+    'smoke-abandon', () => {}, { kind: 'versus' }, undefined,
+    (uid) => held.add(uid),
+    (uid) => held.delete(uid),
+  );
+  room.add({
+    id: 'c1',
+    send: () => {},
+    player: { clientId: 'c1', name: 'a', teamName: 'T', teamNumber: 1, alliance: 'red', startIndex: 0, ready: false, spec: { ...DEFAULT_SPEC }, assists: { ...DEFAULT_ASSISTS } },
+    connected: true,
+    disconnectAt: 0,
+    userId: 'u-1',
+  });
+  room.onMessage('c1', { t: 'start' });
+  check('abandon: the lock is held while the match runs', held.has('u-1'));
+  check('abandon: the slot is given up on request', room.abandonSlot('c1'));
+  check('abandon: …and the single-game lock goes with it, now, not after the grace', !held.has('u-1'));
+  check('abandon: an unknown client id is a no-op, not an error', !room.abandonSlot('nobody'));
+}
+
 // strict deadline: if not everyone readies in time, the match CANCELS
 {
   const rec: Record<string, ServerMsg[]> = { red: [], blue: [] };
@@ -15984,10 +16802,13 @@ function pinScene(
     );
   }
 
-  // 2. STRATEGY BAIL — both connect, then blue's socket goes during the window.
+  // 2. STRATEGY BAIL — both connect, then blue LEAVES during the window. Clean, i.e.
+  //    `transport.close()`: a player who pressed Back, not a reload. An unclean close is
+  //    a held seat now and is charged at the deadline instead, as a no-show (see
+  //    "strategy reload").
   {
     const { room, reports } = staged('smoke-dodge-bail', ['red', 'blue']);
-    room.detach('blue');
+    room.detach('blue', undefined, true);
     check(
       'dodge: a drop during the strategy window is billed to the player who left',
       culpritsOf(reports) === 'u-blue:bail',
@@ -16067,8 +16888,8 @@ function pinScene(
     { userId: 'u-red', name: 'red', teamName: 'T', teamNumber: 1, spec: { ...DEFAULT_SPEC }, assists: { ...DEFAULT_ASSISTS }, startIndex: 0, alliance: 'red', introElo: null },
     { userId: 'u-blue', name: 'blue', teamName: 'T', teamNumber: 1, spec: { ...DEFAULT_SPEC }, assists: { ...DEFAULT_ASSISTS }, startIndex: 0, alliance: 'blue', introElo: null },
   ] });
-  room.detach('blue');
-  check('strategy drop: cancels the match (error to the remaining driver)', rec.red.some((m) => m.t === 'error'));
+  room.detach('blue', undefined, true); // clean: they left on purpose (a reload holds the seat)
+  check('strategy drop: a deliberate leave cancels the match (error to the remaining driver)', rec.red.some((m) => m.t === 'error'));
   check('strategy drop: no match started', !rec.red.some((m) => m.t === 'matchStart'));
 }
 
@@ -20170,6 +20991,474 @@ const mkMM = () => {
     resets === 3,
     `${resets} resets`,
   );
+}
+
+/* ============================================================================
+   PENALTY LINES — the one text a sanction reaches a human as, written and read
+   back by the same module (`src/sim/penaltyLog.ts`).
+   ============================================================================
+
+   The replay viewer now names every foul it can, FOR EVERYBODY — a score that moved nine
+   points in one second used to have no explanation anywhere in the viewer. It gets them by
+   reading `world.events` back apart, which makes the emitter's wording load-bearing in a way
+   it never was when the only consumer was a toast that flashed for two seconds. So the
+   formatter and the parser live in one leaf module, and this round-trips them: change the
+   template and this fails, instead of the penalty list silently emptying.
+*/
+{
+  const foulTrip = parsePenaltyEvent(foulEventText('minor', 'blue', 5, 'G424 contact in the gate zone'));
+  check(
+    'penalty line: a MINOR foul reads back with its rule, its points and BOTH alliances',
+    foulTrip?.kind === 'foul' &&
+      foulTrip.severity === 'minor' &&
+      foulTrip.awardedTo === 'blue' &&
+      // the OFFENDER is derived: the sim's line names who GAINED the points, and "who
+      // committed it" is the half a watcher is actually asking about
+      foulTrip.offender === 'red' &&
+      foulTrip.points === 5 &&
+      foulTrip.rule === 'G424 contact in the gate zone',
+    JSON.stringify(foulTrip),
+  );
+
+  const major = parsePenaltyEvent(foulEventText('major', 'red', 20, 'G06 contact in the alliance section'));
+  check(
+    "penalty line: a MAJOR at BIOBUZZ's 20-point tariff reads back intact",
+    major?.kind === 'foul' && major.severity === 'major' && major.points === 20 && major.offender === 'blue',
+    JSON.stringify(major),
+  );
+
+  // `G408 over-possession (continuing)` is a REAL rule name with brackets in it. A lazy match
+  // cuts it in half and prints a stray close-bracket, so the rule group is greedy to the last.
+  const nested = parsePenaltyEvent(foulEventText('minor', 'red', 5, 'G408 over-possession (continuing)'));
+  check(
+    'penalty line: a rule name containing brackets survives the round trip',
+    nested?.kind === 'foul' && nested.rule === 'G408 over-possession (continuing)',
+    nested?.kind === 'foul' ? nested.rule : String(nested),
+  );
+
+  const card = parsePenaltyEvent(cardEventText('yellow', 'red', '#4239', 'G408 excessive control'));
+  check(
+    'penalty line: a CARD reads back with its colour, its team and its rule',
+    card?.kind === 'card' &&
+      card.colour === 'yellow' &&
+      card.alliance === 'red' &&
+      card.who === '#4239' &&
+      card.rule === 'G408 excessive control',
+    JSON.stringify(card),
+  );
+
+  const warn = parsePenaltyEvent(warningEventText('blue', 'G407 hive contact'));
+  check(
+    "penalty line: BIOBUZZ's verbal WARNING is a third kind, not a zero-point foul",
+    warn?.kind === 'warning' && warn.alliance === 'blue' && warn.rule === 'G407 hive contact',
+    JSON.stringify(warn),
+  );
+
+  // everything else in world.events is not a sanction and must not be read as one
+  check(
+    'penalty line: an ordinary event is not mistaken for a sanction',
+    parsePenaltyEvent('LEAVE +3') === null &&
+      parsePenaltyEvent('DRIVER-CONTROLLED') === null &&
+      parsePenaltyEvent('GATE OPEN') === null,
+  );
+
+  // THROUGH THE REAL EMITTER, not just the formatter: this is the pairing the viewer depends
+  // on, and a template that drifted inside `awardFoul` would pass every check above.
+  {
+    const w = createWorld('match', 0x9001, [
+      { id: 0, alliance: 'red', spec: coerceSpec({ ...DEFAULT_SPEC }, DEFAULT_SPEC, 'decode'), assists: { ...DEFAULT_ASSISTS }, startIndex: 0 },
+      { id: 1, alliance: 'blue', spec: coerceSpec({ ...DEFAULT_SPEC }, DEFAULT_SPEC, 'decode'), assists: { ...DEFAULT_ASSISTS }, startIndex: 0 },
+    ]);
+    w.events.length = 0;
+    awardFoul(w, 'red', 'major', 'G417 touching an opponent gate');
+    const real = parsePenaltyEvent(w.events[w.events.length - 1]);
+    check(
+      'penalty line: a foul the SIM actually awarded reads back, and names red as the offender',
+      real?.kind === 'foul' &&
+        real.offender === 'red' &&
+        real.awardedTo === 'blue' &&
+        real.severity === 'major' &&
+        real.points === w.match.scores.blue.foulPoints,
+      `${w.events[w.events.length - 1]}`,
+    );
+    awardCard(w, w.robots[0], 'G408 excessive control');
+    const realCard = parsePenaltyEvent(w.events[w.events.length - 1]);
+    check(
+      'penalty line: a card the SIM actually issued reads back on the carded alliance',
+      realCard?.kind === 'card' && realCard.alliance === 'red' && realCard.colour === 'yellow',
+      `${w.events[w.events.length - 1]}`,
+    );
+  }
+
+  /* THE EMITTERS GO THROUGH THE FORMATTER — both of them. The shared `awardFoul`/`awardCard`
+     and BIOBUZZ's own tariff wrapper, which mirrors the same text for its 20-point majors. A
+     hand-rolled template in either file is a penalty list that empties for that game only,
+     which is the kind of failure nobody notices until somebody asks. */
+  const scoringSrc = readFileSync('src/sim/scoring.ts', 'utf8');
+  const bbPenSrc = readFileSync('src/games/biobuzz/penalties.ts', 'utf8');
+  check(
+    'penalty line: the shared emitter formats through penaltyLog, not a local template',
+    scoringSrc.includes('foulEventText(severity, victim, pts, rule)') &&
+      scoringSrc.includes('cardEventText(colour, robot.alliance, who, rule)'),
+  );
+  check(
+    "penalty line: BIOBUZZ's own tariff emitter formats through penaltyLog too",
+    bbPenSrc.includes('foulEventText(severity, victim, pts, rule)') &&
+      bbPenSrc.includes('warningEventText(offender, rule)'),
+  );
+}
+
+/* ---- the replay's own event log, with WHEN ---------------------------------
+   `ReplayPlayer.log` is what the viewer's penalty timeline is built from. It stamps each line
+   with the tick AND the phase clock inside `stepOnce`, because the alternative is the viewer
+   wrapping both of its step loops — and a seek that steps four thousand ticks in one
+   synchronous burst would stamp all four thousand with the moment the seek finished. */
+{
+  const setup: RobotSetup = {
+    id: 0,
+    alliance: 'blue',
+    spec: coerceSpec({ ...DEFAULT_SPEC }, DEFAULT_SPEC, 'decode'),
+    assists: { ...DEFAULT_ASSISTS, fieldCentric: false },
+    startIndex: 0,
+  };
+  const drive: CommandSource = (tick) =>
+    new Map([[0, cmd({ driveX: tick % 90 < 45 ? 0.6 : -0.3, intake: true, fire: true })]]);
+  const run = runRecordMatch(0x9002, [setup], drive, { stopTick: 900 });
+
+  const p1 = new ReplayPlayer(run.replay);
+  check('replay log: nothing is stamped before the first step', p1.log.length === 0);
+  while (!p1.done) p1.stepOnce();
+  // NOT VACUOUS: a match that emitted nothing would pass every assertion below on an empty
+  // list. The phase machine alone guarantees at least the AUTO line.
+  check(
+    'replay log: the run actually emitted something to stamp',
+    p1.log.length > 0,
+    `${p1.log.length} lines`,
+  );
+  check(
+    'replay log: every line the sim emitted is stamped, and with a REAL tick',
+    p1.log.length === p1.world.events.length &&
+      p1.log.every((e) => e.tick >= 1 && e.tick <= run.replay.ticks),
+    `${p1.log.length} lines, ${p1.world.events.length} events`,
+  );
+  check(
+    'replay log: ticks are non-decreasing, so the timeline is already in order',
+    p1.log.every((e, i) => i === 0 || e.tick >= p1.log[i - 1].tick),
+  );
+  // the phase stamp is what lets a row read "AUTO 0:12" rather than an offset into the file
+  check(
+    'replay log: each line carries the phase and the clock it landed on',
+    p1.log.every((e) => typeof e.phase === 'string' && e.timeLeft >= 0),
+  );
+
+  // A REBUILD IS A NEW PLAYER: the viewer seeks backwards by constructing one, and the log has
+  // to come back identically or the timeline would grow duplicates every time somebody dragged
+  // the seek bar to the left.
+  const p2 = new ReplayPlayer(run.replay);
+  while (!p2.done) p2.stepOnce();
+  check(
+    'replay log: a re-built player reproduces the same log, so seeking cannot duplicate it',
+    JSON.stringify(p1.log) === JSON.stringify(p2.log),
+  );
+}
+
+/* ---- the replay viewer shows penalties to EVERYONE --------------------------
+   The request this was built for was explicit that the penalty list is not an admin feature.
+   It is easy to regress into one by accident — the score editor beside it IS gated, and both
+   live in the same rail — so the gate is pinned here: the summary row renders on `status ===
+   'ready'` with no admin term in it, and only the editor reads `adminMatchId`. */
+{
+  const rv = readFileSync('src/ui/ReplayView.tsx', 'utf8');
+  const rail = readFileSync('src/ui/ReplayRail.tsx', 'utf8');
+  check(
+    'replay penalties: the summary row is ungated — no admin condition on it',
+    /status === 'ready' && \(\s*<div className="ds-replay-pen">/.test(rv),
+  );
+  check(
+    'replay penalties: the timeline renders for every watcher, the score editor only with a match',
+    /<PenaltyLog entries=\{penalties\}[^/]*\/>/.test(rv) && rv.includes('{adminMatchId && ('),
+  );
+  check(
+    'replay penalties: the timeline component itself knows nothing about admin',
+    !/admin/i.test(rail.slice(rail.indexOf('export function PenaltyLog'), rail.indexOf('THE SCORE EDITOR'))),
+  );
+}
+
+/* ---- AUTH FLOWS: the terms gate's rule, and the four wrappers' result shapes --------------
+   Two things pure enough to test here and expensive enough to get wrong in a browser.
+
+   THE GATE puts an un-dismissable dialog in front of a signed-in player, so the case that
+   matters most is the one where NOTHING blocks: `undefined` means the server did not say,
+   which is what a build older than `/api/user/accept-terms` answers and what
+   `fetchEntitlements` falls back to when it swallows a failure. If that blocked, one
+   hiccuping route would lock every account out of the whole app.
+
+   THE WRAPPERS talk to a BETA SDK and promise never to throw at a component. So they run
+   against a stub client here — no network, no bundler, no `import.meta.env`, which is exactly
+   why `authFlows.ts` resolves the real client through a dynamic import and this file can
+   import it at all. What is asserted is the CLASSIFICATION, not the copy. */
+{
+  type StubAnswer = { data?: unknown; error?: { code?: string; status?: number } | null } | 'throw';
+  const stub = (answer: StubAnswer): AuthFlowsClient => {
+    const reply = async (): Promise<unknown> => {
+      if (answer === 'throw') throw new Error('offline');
+      return { data: answer.data ?? null, error: answer.error ?? null };
+    };
+    return {
+      requestPasswordReset: reply,
+      resetPassword: reply,
+      sendVerificationEmail: reply,
+      verifyEmail: reply,
+    } as unknown as AuthFlowsClient;
+  };
+  const ok = stub({ data: { status: true } });
+  const F = authFlowsForTesting;
+
+  /* ---- the terms gate ------------------------------------------------------ */
+  check(
+    'terms gate: LEGAL_VERSION is the ISO form of LEGAL_UPDATED',
+    LEGAL_VERSION === '2026-08-04',
+    LEGAL_UPDATED + ' -> ' + LEGAL_VERSION,
+  );
+  check(
+    'terms gate: the key is DERIVED, so a reworded date cannot drift from what was accepted',
+    legalVersionOf('January 1, 2027') === '2027-01-01' &&
+      legalVersionOf('December 31, 2026') === '2026-12-31',
+  );
+  check(
+    'terms gate: an unparseable date still yields a stable key rather than throwing',
+    legalVersionOf('sometime soon') === 'sometime-soon',
+  );
+  check("terms gate: the current version accepted is 'ok'", termsGateState(LEGAL_VERSION) === 'ok');
+  check("terms gate: never accepted is 'never'", termsGateState(null) === 'never');
+  check('terms gate: an empty string is never, not a version', termsGateState('') === 'never');
+  check("terms gate: an older accepted version is 'stale'", termsGateState('2025-01-01') === 'stale');
+  check(
+    "terms gate: a version NEWER than this build's is stale too (ask, don't guess which way time ran)",
+    termsGateState('2099-01-01') === 'stale',
+  );
+  check(
+    "⚠️ terms gate: 'the server did not say' is UNKNOWN, and must never block",
+    termsGateState(undefined) === 'unknown' && !termsGateBlocks(termsGateState(undefined)),
+  );
+  check(
+    'terms gate: exactly the two answers that block, block',
+    [null, '2025-01-01'].every((v) => termsGateBlocks(termsGateState(v))) &&
+      [undefined, LEGAL_VERSION].every((v) => !termsGateBlocks(termsGateState(v))),
+  );
+
+  /* ---- the wrappers -------------------------------------------------------- */
+  check(
+    'authFlows: a well-formed address gets ok, whether or not an account exists for it',
+    (await F.passwordReset(ok, 'someone@example.com')).ok,
+  );
+  {
+    const r = await F.passwordReset(stub({ data: null }), 'not-an-email');
+    check(
+      'authFlows: a malformed address is refused locally, with no round trip',
+      !r.ok && r.reason === 'invalid-email',
+      r.ok ? 'ok' : r.reason,
+    );
+  }
+  {
+    const r = await F.completeReset(ok, '', 'longenough123');
+    check(
+      "authFlows: an empty reset token is 'invalid-token' before the call",
+      !r.ok && r.reason === 'invalid-token',
+    );
+  }
+  {
+    const r = await F.completeReset(ok, 'tok', 'short');
+    check(
+      "authFlows: a password under PASSWORD_MIN is 'weak-password' before the call",
+      !r.ok && r.reason === 'weak-password' && PASSWORD_MIN === 8,
+    );
+  }
+  check('authFlows: a good reset returns ok', (await F.completeReset(ok, 'tok', 'longenough123')).ok);
+  {
+    const r = await F.completeReset(
+      stub({ error: { code: 'INVALID_TOKEN', status: 400 } }),
+      'tok',
+      'longenough123',
+    );
+    check(
+      "authFlows: the SDK's INVALID_TOKEN maps to invalid-token, with copy attached",
+      !r.ok && r.reason === 'invalid-token' && r.message.length > 0,
+    );
+  }
+  {
+    const r = await F.completeReset(
+      stub({ error: { code: 'PASSWORD_TOO_SHORT', status: 400 } }),
+      'tok',
+      'longenough123',
+    );
+    check(
+      'authFlows: a server-side password complaint maps to weak-password, not to the token',
+      !r.ok && r.reason === 'weak-password',
+      r.ok ? 'ok' : r.reason,
+    );
+  }
+  {
+    const r = await F.sendVerification(stub({ error: { status: 429 } }), 'a@b.co');
+    check('authFlows: a 429 with no code maps to rate-limited', !r.ok && r.reason === 'rate-limited');
+  }
+  {
+    const r = await F.completeVerification(stub({ error: { status: 503 } }), 'tok');
+    check('authFlows: a 5xx maps to network', !r.ok && r.reason === 'network', r.ok ? 'ok' : r.reason);
+  }
+  {
+    const r = await F.completeVerification(stub({ error: { status: 400 } }), 'tok');
+    check(
+      'authFlows: a bare 400 on these four routes means the TOKEN was rejected',
+      !r.ok && r.reason === 'invalid-token',
+    );
+  }
+  {
+    const r = await F.completeReset(stub({ error: { status: 418 } }), 'tok', 'longenough123');
+    check(
+      'authFlows: an unrecognised status is a failure WITH copy, never a silent success',
+      !r.ok && r.reason === 'unknown' && r.message.length > 0,
+      r.ok ? 'ok' : r.reason,
+    );
+  }
+  check(
+    'authFlows: no error object at all classifies as unknown; a status of 0 is network',
+    classifySdkError(null) === 'unknown' && classifySdkError({ status: 0 }) === 'network',
+  );
+  {
+    // ⚠️ THE ONE PROMISE THE UI IS WRITTEN AGAINST: a thrown fetch must not reach a component.
+    const results = await Promise.all([
+      F.passwordReset(stub('throw'), 'a@b.co'),
+      F.completeReset(stub('throw'), 'tok', 'longenough123'),
+      F.sendVerification(stub('throw'), 'a@b.co'),
+      F.completeVerification(stub('throw'), 'tok'),
+    ]);
+    check(
+      '⚠️ authFlows: a THROWN SDK call becomes a network result — none of the four ever throws',
+      results.every((r) => !r.ok && r.reason === 'network'),
+      results.map((r) => (r.ok ? 'ok' : r.reason)).join(','),
+    );
+  }
+  check(
+    'authFlows: verifyEmail answering void (no body) still reads as success',
+    (await F.completeVerification(stub({ data: undefined }), 'tok')).ok,
+  );
+
+  /* ---- the SDK THROWS its failures, and that is the whole bug ---------------
+     The Neon adapter's `customFetchImpl` throws a normalized `AuthApiError` on any non-2xx
+     instead of letting `{data, error}` carry it, so on this build `error` is essentially
+     never populated. The first cut of `authFlows` classified every throw as `network` and
+     duly told somebody holding an expired reset link to check their connection — caught in
+     the browser, pinned here. The codes below are the adapter's own lower_snake vocabulary
+     (`BETTER_AUTH_ERROR_MAP`), not Better Auth's. */
+  {
+    const thrower = (err: unknown): AuthFlowsClient => {
+      const reply = async (): Promise<unknown> => {
+        throw err;
+      };
+      return {
+        requestPasswordReset: reply,
+        resetPassword: reply,
+        sendVerificationEmail: reply,
+        verifyEmail: reply,
+      } as unknown as AuthFlowsClient;
+    };
+    /** what the adapter throws: an Error carrying `status` and its normalized `code` */
+    const apiError = (status: number, code: string): Error =>
+      Object.assign(new Error('nope'), { status, code });
+
+    check(
+      "⚠️ authFlows: a THROWN bad_jwt is the expired-link answer, not 'network'",
+      await (async () => {
+        const r = await F.completeReset(thrower(apiError(400, 'bad_jwt')), 'tok', 'longenough123');
+        return !r.ok && r.reason === 'invalid-token';
+      })(),
+    );
+    check(
+      'authFlows: a thrown weak_password is a password complaint',
+      await (async () => {
+        const r = await F.completeReset(
+          thrower(apiError(400, 'weak_password')),
+          'tok',
+          'longenough123',
+        );
+        return !r.ok && r.reason === 'weak-password';
+      })(),
+    );
+    check(
+      'authFlows: a thrown over_email_send_rate_limit is rate limiting, not a bad address',
+      await (async () => {
+        const r = await F.sendVerification(
+          thrower(apiError(429, 'over_email_send_rate_limit')),
+          'a@b.co',
+        );
+        return !r.ok && r.reason === 'rate-limited';
+      })(),
+      'EMAIL is a substring of that code — order matters in classifySdkError',
+    );
+    check(
+      'authFlows: a thrown email_address_invalid is a bad address',
+      await (async () => {
+        const r = await F.sendVerification(thrower(apiError(400, 'email_address_invalid')), 'a@b.co');
+        return !r.ok && r.reason === 'invalid-email';
+      })(),
+    );
+    check(
+      'authFlows: a throw with neither status nor code is the transport, i.e. network',
+      await (async () => {
+        const r = await F.completeVerification(thrower(new Error('Failed to fetch')), 'tok');
+        return !r.ok && r.reason === 'network';
+      })(),
+    );
+    check(
+      'authFlows: thrownAsSdkError keeps a status/code pair and drops a bare Error',
+      F.thrownAsSdkError(apiError(429, 'x'))?.status === 429 &&
+        F.thrownAsSdkError(new Error('x')) === null &&
+        F.thrownAsSdkError(undefined) === null,
+    );
+
+    // ⚠️ THE ENUMERATION GUARD. Better Auth answers the reset request with success for an
+    // unknown address, but a deployment or a later version could answer USER_NOT_FOUND —
+    // and surfacing that turns this form into "tell me whether this person has an account".
+    check(
+      '⚠️ authFlows: a reset request for an unknown address still reports SUCCESS',
+      await (async () => {
+        const r = await F.passwordReset(thrower(apiError(404, 'user_not_found')), 'a@b.co');
+        return r.ok;
+      })(),
+    );
+    check(
+      'authFlows: ...but the same code on a DIFFERENT flow is still a failure',
+      await (async () => {
+        const r = await F.completeReset(
+          thrower(apiError(404, 'user_not_found')),
+          'tok',
+          'longenough123',
+        );
+        return !r.ok;
+      })(),
+      'only the bare-email flow swallows it',
+    );
+  }
+
+  /* ---- the two emailed links point at routes that exist -------------------- */
+  {
+    const app = readFileSync('src/ui/App.tsx', 'utf8');
+    const reset = app.indexOf("rest.startsWith('/account/reset')");
+    const verify = app.indexOf("rest.startsWith('/account/verify')");
+    const bare = app.indexOf("rest.startsWith('/account')) return at('account')");
+    check(
+      'authFlows: RESET_PATH and VERIFY_PATH are routes App actually parses',
+      RESET_PATH === '/account/reset' && VERIFY_PATH === '/account/verify' && reset > 0 && verify > 0,
+    );
+    // ⚠️ ORDER IS LOAD-BEARING: '/account' is a prefix of both, so the bare test placed first
+    // would swallow them, render the Profile page, and throw the emailed token away.
+    check(
+      '⚠️ authFlows: both sub-routes are matched BEFORE the bare /account that prefixes them',
+      bare > 0 && reset < bare && verify < bare,
+      reset + ',' + verify + ' < ' + bare,
+    );
+  }
 }
 
 console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILURES`);

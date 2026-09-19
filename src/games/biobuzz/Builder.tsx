@@ -1,6 +1,15 @@
 import type { RobotSpec } from '../../types';
 import { rangeFill } from '../../ui/rangeFill';
-import { BB_DUMP_MAX_DIST, BB_HOOD_DEFAULT_DEG, BB_SIZE_STEP, BB_STORAGE_MIN } from './config';
+import {
+  BB3_STOW_MAX,
+  BB_DUMP_MAX_DIST,
+  BB_HOOD_DEFAULT_DEG,
+  BB_SIZE_STEP,
+  BB_STORAGE_MIN,
+  bbDeployedHeightIn,
+  bbStowHeightIn,
+  bbStowLegal,
+} from './config';
 import {
   BB_MOUNT_POSITIONS,
   BB_SCORE_MODES,
@@ -401,6 +410,40 @@ export function BiobuzzBuilder({ spec, setSpec }: BiobuzzBuilderProps) {
           />
         </label>
       </div>
+      <StowHeightNote spec={spec} />
     </>
+  );
+}
+
+/**
+ * THE R102 STOW CHECK — the builder's half of the height rule (`docs/biobuzz/plan-3d.md` §3.3).
+ *
+ * R105.A lets a ROBOT stand 29 in once the MATCH has started; R102 limits the STARTING
+ * CONFIGURATION to an 18-in cube. So a tall build is legal only because it FOLDS, and the moment
+ * a robot has a height at all (`heightIn`, which the 3D physics extrudes its collider to) that
+ * stops being a detail: a build that cannot get under the cube cannot start, and `startLegal`
+ * refuses its ready-up (`sim.ts`). This is where a player finds that out — at the dial, not at
+ * the lobby.
+ *
+ * A build INSIDE the cube says nothing at all. A line that appears under every robot to report
+ * that 18 is not more than 18 is chrome, and the one thing a warning may not be is routine.
+ */
+function StowHeightNote({ spec }: { spec: RobotSpec }) {
+  const deployed = bbDeployedHeightIn(spec);
+  if (deployed <= BB3_STOW_MAX) return null;
+  const stow = bbStowHeightIn(spec);
+  if (!bbStowLegal(spec)) {
+    return (
+      <p className="ds-hint">
+        Can’t start: this build stands {deployed}&quot; and stows to {stow}&quot;, over R102’s{' '}
+        {BB3_STOW_MAX}&quot; starting cube. Lower it, or declare a stow under {BB3_STOW_MAX}&quot;.
+      </p>
+    );
+  }
+  return (
+    <p className="ds-hint">
+      {deployed}&quot; deployed — stows to {stow}&quot; to start (R102), and deploys when the match
+      begins.
+    </p>
   );
 }

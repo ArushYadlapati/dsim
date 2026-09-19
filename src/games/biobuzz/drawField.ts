@@ -23,7 +23,8 @@ import {
   BB_HIVE_X,
   BB_LZ,
   BB_POLLEN_R,
-  BB_TAPE_1,
+  BB_TAPE,
+  BB_TILE_SEAMS,
   FLOWER_MOUTH,
   type BbRect,
 } from './config';
@@ -269,11 +270,19 @@ function elementR(b: Artifact): number {
   return b.r ?? BB_POLLEN_R;
 }
 
-function strokeRect(ctx: CanvasRenderingContext2D, r: BbRect, stroke: string, w: number): void {
+/**
+ * A TAPE STRIP — a FILLED rectangle of the width and position the CAD puts it at.
+ *
+ * It replaced a `strokeRect` of the ZONE, and that is the whole tape fix (owner, 2026-09-18):
+ * outlining a zone paints all four of its edges, including the one that is a WALL and carries no
+ * tape on the real field, and it turns the GARDEN's solid 2-in band into a 1-in outline of a 2-in
+ * rectangle — two thin lines with mat showing between them. `BB_TAPE` carries the 16 measured
+ * strips; this draws them.
+ */
+function fillStrip(ctx: CanvasRenderingContext2D, r: BbRect, fill: string): void {
   ctx.save();
-  ctx.strokeStyle = stroke;
-  ctx.lineWidth = w;
-  ctx.strokeRect(r.x0, r.y0, r.x1 - r.x0, r.y1 - r.y0);
+  ctx.fillStyle = fill;
+  ctx.fillRect(r.x0, r.y0, r.x1 - r.x0, r.y1 - r.y0);
   ctx.restore();
 }
 
@@ -345,10 +354,11 @@ function text(
   ctx.restore();
 }
 
-/** tile-centre coordinate of column/row `i` (0..5) — derived from `C.TILE` so a 24-in tile
- * stays the only place the field's module is written down. */
+/** tile-centre coordinate of column/row `i` (0..5) — the midpoint of the two CAD seams that
+ * bound it, because real tiles are not evenly spaced (`BB_TILE_SEAMS`, and see `BB_TILE_PITCH`).
+ * `C.TILE`'s even 24 would put the F column's letter 0.6 in off its own tile. */
 function tileCentre(i: number): number {
-  return (i - 2.5) * C.TILE;
+  return (BB_TILE_SEAMS[i] + BB_TILE_SEAMS[i + 1]) / 2;
 }
 
 /**
@@ -709,13 +719,34 @@ const CANOPY_A = 0.42;
  * below the hive. Clipping the robot instead would need every game's sprite to know about this
  * field. Repainting the structure is the one place the footprint is already known.
  *
+ * ⚠️ **IT COMPOSITES THROUGH AN OFFSCREEN LAYER, AND THAT IS NOT AN OPTIMISATION — IT IS THE
+ * ONLY WAY TO GET THE BLEND RIGHT.** The first version painted the structure's parts straight
+ * onto the field with each part's alpha pre-multiplied by `CANOPY_A`, and that is not the same
+ * arithmetic: the body wash took 42% of the CELL's colour away and the cell was added back at
+ * only `0.45 × 0.42` of it, so the tray came out muted and the whole assembly read as a haze
+ * over the field where nothing was under it at all. Measured on the `under-hive` cell, the mat
+ * and both trays changed colour even where no robot overlapped them, which is exactly what the
+ * pass must not do. Drawn into a transparent layer at FULL field-pass weight and blitted once
+ * at `CANOPY_A`, the result is exactly `CANOPY_A × structure + (1 − CANOPY_A) × whatever is
+ * beneath` — so a pixel with only the mat under it is repainted with the same structure that is
+ * already there and does not change at all, and only a pixel with a robot or a POLLEN under it
+ * is dimmed. The layer is cached and re-used; it is resized only when the canvas is.
+ *
  * Reads the same state the field pass reads, through the same helpers (`tipProjection`,
  * `cellSpan`, `drawCellContents`), so the canopy swings with the swing and its contents row is
  * the field's row: two drawings of one hive that cannot disagree about where it is. The down
  * cell's dashed outline and the edge marks are not repainted — lines that thin over a robot
  * are noise, and the body wash already says "structure here".
  */
-export function drawHiveCanopy(ctx: CanvasRenderingContext2D, world: World): void {
+/** the canopy's compositing layer, kept between frames — see `drawHiveCanopy`. */
+let canopyLayer: HTMLCanvasElement | null = null;
+
+/**
+ * THE STRUCTURE ITSELF, at full weight — the body, each cell's fill, and the taking cell's
+ * contents row. Shared by the canopy layer; the FIELD pass draws the same shapes inline with
+ * its own edge marks and dashed outline, which are lines too fine to repaint over a robot.
+ */
+function paintHiveAssembly(ctx: CanvasRenderingContext2D, world: World): void {
   const bb = world.biobuzz;
   const byId = new Map<number, Artifact>();
   for (const b of world.balls) byId.set(b.id, b);
@@ -730,7 +761,6 @@ export function drawHiveCanopy(ctx: CanvasRenderingContext2D, world: World): voi
     const bodyHalf = (BB_HIVE_LEN / 2) * proj;
 
     ctx.save();
-    ctx.globalAlpha = CANOPY_A;
     roundRectPath(ctx, x0, -bodyHalf, x1, bodyHalf, HIVE_R);
     ctx.fillStyle = C.COLORS.tile;
     ctx.fill();
@@ -746,17 +776,48 @@ export function drawHiveCanopy(ctx: CanvasRenderingContext2D, world: World): voi
       if (k > 0.01) {
         ctx.save();
         roundRectPath(ctx, x0, y0, x1, y1, HIVE_R);
-        ctx.globalAlpha = k * CELL_FILL_A * CANOPY_A;
+        ctx.globalAlpha = k * CELL_FILL_A;
         ctx.fillStyle = allianceColor(a);
         ctx.fill();
+        ctx.globalAlpha = k;
+        ctx.strokeStyle = allianceColor(a);
+        ctx.lineWidth = 0.8;
+        ctx.stroke();
         ctx.restore();
       }
       if (side !== taking) continue;
       const outerY = s > 0 ? y1 : y0;
       const contents = (h?.contents ?? []).map((id) => byId.get(id)).filter((b): b is Artifact => b !== undefined);
-      drawCellContents(ctx, x0, x1, outerY, s, contents, k * CANOPY_A);
+      drawCellContents(ctx, x0, x1, outerY, s, contents, k);
     }
   }
+}
+
+export function drawHiveCanopy(ctx: CanvasRenderingContext2D, world: World): void {
+  const { canvas } = ctx;
+  const w = canvas.width;
+  const h = canvas.height;
+  if (w <= 0 || h <= 0) return;
+  // a canvas that has not been laid out is 0x0 and `getContext` on the layer would be useless
+  if (!canopyLayer) canopyLayer = document.createElement('canvas');
+  if (canopyLayer.width !== w || canopyLayer.height !== h) {
+    canopyLayer.width = w;
+    canopyLayer.height = h;
+  }
+  const lc = canopyLayer.getContext('2d');
+  if (!lc) return;
+  lc.setTransform(1, 0, 0, 1, 0, 0);
+  lc.clearRect(0, 0, w, h);
+  // the SAME camera transform the field was drawn under, so the layer's structure lands exactly
+  // on top of the structure already on the field
+  lc.setTransform(ctx.getTransform());
+  paintHiveAssembly(lc, world);
+
+  ctx.save();
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.globalAlpha = CANOPY_A;
+  ctx.drawImage(canopyLayer, 0, 0);
+  ctx.restore();
 }
 
 export function drawBiobuzzField(
@@ -797,20 +858,25 @@ export function drawBiobuzzField(
   ctx.fillStyle = C.COLORS.mat;
   ctx.fillRect(-hx, -hy, 2 * hx, 2 * hy);
 
-  // TILE GRID — every 24" tile. Not decoration: the tile grid is how a driver judges distance
-  // on an FTC field, and §9.3 says every tape line stays inside one tile, so the seams are
-  // also what the zone rectangles below were measured against.
+  // TILE GRID — the six real soft tiles per axis, at the CAD's own measured SEAM POSITIONS
+  // (`BB_TILE_SEAMS`). Not decoration: the tile grid is how a driver judges distance on an FTC
+  // field, and §9.3 says every tape line stays inside one tile, so the seams are also what the
+  // zone rectangles below are measured against — which only works if they are the same seams.
+  //
+  // ⚠️ NOT `C.TILE`. That is 24, DECODE's nominal tile; a real FTC soft tile is `BB_TILE_PITCH`
+  // 23.528 on centre and the six of them close on 141.17, not 144. Stepping by 24 from the wall
+  // drew a grid that drifted almost half an inch per tile away from the tape, the flowers and the
+  // GLB, and the seven lines here are the measured positions rather than a pitch multiplied out,
+  // because the tabbed tile bodies make the real gaps uneven (23.176 … 23.986).
   ctx.save();
   ctx.strokeStyle = C.COLORS.tile;
   ctx.lineWidth = 0.6;
   ctx.beginPath();
-  for (let x = -hx; x <= hx + 0.01; x += C.TILE) {
-    ctx.moveTo(x, -hy);
-    ctx.lineTo(x, hy);
-  }
-  for (let y = -hy; y <= hy + 0.01; y += C.TILE) {
-    ctx.moveTo(-hx, y);
-    ctx.lineTo(hx, y);
+  for (const s of BB_TILE_SEAMS) {
+    ctx.moveTo(s, -hy);
+    ctx.lineTo(s, hy);
+    ctx.moveTo(-hx, s);
+    ctx.lineTo(hx, s);
   }
   ctx.stroke();
   ctx.restore();
@@ -840,22 +906,21 @@ export function drawBiobuzzField(
   //
   // ⚠️ TAPE, NOT STRUCTURE (owner ruling, 2026-09-12). Nothing collides with a zone — robots
   // drive over it and elements roll across it, and `colliders.ts` has never had an entry for
-  // one. So it is drawn as the 1-in tape line it is, with the MAT showing through. A filled
-  // bar reads as a wall, which is a drawing that tells a driver something false about what
-  // they can drive on.
-  for (const a of ALLIANCES) strokeRect(ctx, BB_LZ[a], TAPE_GAFFER[a], BB_TAPE_1);
-
-  // GARDENS (§9.3, §10.5.3) — a 23 × 2 strip in the alliance's own corner, "defined by the
-  // outside edge of tape", TWO 1-IN TAPES. Same ruling as the LOADING ZONE above: TAPE, never
-  // a filled bar.
+  // one. So it is drawn as the 1-in tape it is, with the MAT showing through. A filled bar
+  // reads as a wall, which is a drawing that tells a driver something false about what they
+  // can drive on.
   //
-  // Stroked at BB_TAPE_1, not at the 2-in strip depth. The depth is `BB_GARDEN`'s own — the
-  // rect IS the strip — so stroking it at 2 paints the whole thing solid and puts back
-  // exactly the filled bar the ruling removed. At the tape's own width the two long edges
-  // come out as the two 1-in tapes they are, with the mat between them, which is what a
-  // driver sees. The wall-side edge is overdrawn by the perimeter at the end of this
-  // function, and that is correct: that edge IS the wall.
-  for (const a of ALLIANCES) strokeRect(ctx, BB_GARDEN[a], TAPE_GAFFER[a], BB_TAPE_1);
+  // ⚠️ AND IT IS THE STRIPS, NOT AN OUTLINE OF THE ZONE (owner, 2026-09-18; audit §5). A LOADING
+  // ZONE has THREE tapes — two depth edges and the inner, field-side edge — because its fourth
+  // side is the perimeter wall, and a wall-bounded edge carries no tape. A GARDEN has TWO, laid
+  // side by side, which IS its 2-in band: nothing across its ends, nothing on the two walls it
+  // sits in the corner of. Stroking `BB_LZ`/`BB_GARDEN` instead drew tape on the wall and turned
+  // the garden's solid band into a 1-in outline of a 2-in rectangle. `BB_TAPE` is the CAD's own
+  // 16 strips and the 3D renderer draws exactly the same rectangles.
+  for (const a of ALLIANCES) {
+    for (const strip of BB_TAPE.loadingZone[a]) fillStrip(ctx, strip, TAPE_GAFFER[a]);
+    for (const strip of BB_TAPE.garden[a]) fillStrip(ctx, strip, TAPE_GAFFER[a]);
+  }
 
   // HIVE FRAME (§9.6.1, Fig 9-8) — two triangular structures joined at the apex. Top-down,
   // each triangle is its BASE BAR, the only part of it a robot can actually hit, so it is the

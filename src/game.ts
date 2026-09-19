@@ -8,6 +8,7 @@ import type {
   GameMode,
   MatchPhase,
   Motif,
+  Physics,
   RobotCommand,
   RobotState,
   ScoreBreakdown,
@@ -17,7 +18,22 @@ import type {
 import * as C from './config';
 import { DEFAULT_ASSISTS, DEFAULT_SPEC, type RobotSetup } from './sim/spawn';
 import { moduleFor, gameOf } from './games';
+import { TutorialRunner } from './tutorial/runner';
+import { markTutorialSeen } from './tutorial/flag';
+import type { TutorialHintCtx, TutorialSpec, TutorialView } from './tutorial/types';
 import type { GameModule } from './games';
+import type { GameScene, SceneCamera, SceneFrame, SceneInsets } from './games/module';
+import { getViewPref, subscribeViewPref } from './games/biobuzz/graphics/store';
+import { initPhysics3d, physics3dReady, physics3dImpl } from './games/biobuzz/sim3d/engine';
+import { PREDICT_FULL_BUDGET_MS } from './games/biobuzz/config';
+import {
+  getPredictionPref,
+  markOffNoticeShown,
+  offNoticeShown,
+  subscribePredictionPref,
+  type PredictionMode,
+  type PredictionPref,
+} from './net/predictionPref';
 import { accelMultiplier as chainAccelMultiplier, type EndgameState } from './games/chain/state';
 import { chainCatalystGeom, chainHopperCap } from './games/chain/config';
 import { chainCatalystPrompt } from './games/chain/play';
@@ -71,6 +87,30 @@ const INTERP_EASE_HALFLIFE = 0.11; // s
 // instead of building a replay bomb. ~667ms of headroom covers legitimately high
 // latency; beyond it the link is unplayable anyway.
 const MAX_PREDICT_LEAD = 40; // ticks
+
+/**
+ * HOW MANY RECONCILES AUTO WATCHES BEFORE IT DECIDES FULL IS TOO SLOW (plan §5's slip rule).
+ *
+ * Snapshots arrive at 30 Hz, so 60 of them is two seconds of evidence. Short enough that a
+ * machine that cannot hold the budget is dropped early in the match rather than at the buzzer;
+ * long enough that one GC pause, one tab focus change or one ad creative finishing its load
+ * cannot move a p95 on its own. Auto steps down ONCE and then stops measuring — see
+ * `autoDropped`.
+ */
+const PREDICT_SLIP_WINDOW = 60;
+
+/**
+ * The 3D predictor's shape, WITHOUT importing `sim3d/predict`.
+ *
+ * ⚠️ `docs/area/biobuzz.md`: only `sim3d/engine` and `sim3d/tilt` may be imported from outside
+ * `sim3d/`, and the RENDER lane enforces that by GREPPING for the module name — an `import type`
+ * would trip it just as a value import would, and rightly so, since the rule is about what the
+ * bundler can see reaching the main chunk. So the type is derived from the loader's own
+ * `physics3dImpl()` return type instead: one source of truth, zero imports.
+ */
+type Predictor = ReturnType<ReturnType<typeof physics3dImpl>['createLightPredictor']>;
+type PredictedPose = ReturnType<Predictor['step']>;
+
 const lerp = (a: number, b: number, t: number): number => a + (b - a) * t;
 /** shortest-arc angle lerp */
 const lerpAngle = (a: number, b: number, t: number): number =>
@@ -113,6 +153,15 @@ export interface IntroPlayer {
 export interface HudSnapshot {
   /** which game is being played — drives which score HUD GameView renders */
   game: GameId;
+  /**
+   * WHICH SOLVE THIS WORLD IS RUNNING ON (`'2d'` | `'3d'`), read off the world rather than off
+   * the session so a spectator and a mid-match joiner answer it too. The in-match connection
+   * panel hides the Prediction control on a 2D room, because there it would do nothing.
+   */
+  physics: Physics;
+  /** the prediction readout for the in-match panel, or null where the setting is inert
+   *  (solo, a 2D-physics room, a spectator) — see `GameController.getPredictionStats`. */
+  prediction: ReturnType<GameController['getPredictionStats']>;
   /**
    * The ACTIVE game module's own HUD slice (`GameSimModule.hud`), or undefined for
    * a game that doesn't supply one.
@@ -217,6 +266,16 @@ export interface HudSnapshot {
   /** DUO RECORD rematch tally, or null when this run has no vote (solo, versus).
    *  `need > 1` is what tells the UI a vote is even in play. */
   rematch: { votes: number; need: number; mine: boolean } | null;
+  /**
+   * THE TUTORIAL'S CURRENT STEP CARD, or null when this run is not a tutorial.
+   *
+   * It rides the HUD snapshot rather than being read off the controller directly for the reason
+   * every other HUD value does: `GameView` polls `getHud()` at 10 Hz and re-renders from ONE
+   * object, so a card read separately would be a second source of truth that updates on a
+   * different beat. The hint string is composed here, against the live bindings and the live
+   * gamepad state, so a pad plugged in mid-step changes the line within 100 ms.
+   */
+  tutorial: TutorialView | null;
 }
 
 export class GameController {
@@ -333,12 +392,39 @@ export class GameController {
   /** last vote count we played a cue for — a vote landing is the thing worth
    *  hearing, and only when the number actually moved */
   private lastRematchVotes = 0;
-  /** authoritative REMOTE-robot poses per received snapshot, for interpolating them
-   * between snapshots. Captured BEFORE reconcile mutates the snapshot world. (Balls
-   * are NOT interpolated — see displayWorld.) */
+  /**
+   * Authoritative poses per received snapshot, for interpolating between snapshots. Captured
+   * BEFORE reconcile mutates the snapshot world.
+   *
+   * ── WHY `balls` IS HERE FOR 3D-PHYSICS WORLDS AND NOT FOR 2D ONES ─────────
+   * The 2D rule stands and is written down in `docs/area/netcode.md`: DECODE's and Chain
+   * Reaction's artifacts SPAWN AND DESPAWN (a launch mints one, a capture removes one), so
+   * lerping them ghost-clones a fresh ball between its predicted position and a past one it
+   * never occupied, and blends two colliding balls through each other. Predicted balls are
+   * more accurate than interpolated ones there, so they are rendered straight from the sim.
+   *
+   * A BIOBUZZ 3D-physics world has neither property. Its 56 elements are created once at
+   * spawn and never destroyed — a captured element becomes `held` and a stocked one becomes
+   * `stock`, both of which keep the id and only change `state.kind` — so the id set is stable
+   * and the count is conserved BY CONSTRUCTION, not by luck. What is left is a body whose
+   * position moves continuously between two snapshots, which is exactly the thing
+   * interpolation is for, and at 30 Hz the difference is visible: an element rolling across
+   * the tiles steps twice as coarsely as the robot pushing it.
+   *
+   * A `kind` change still SNAPS rather than lerps (see `displayWorld`): an element going into
+   * or out of a hopper teleports in the sim, and easing it there would draw it travelling
+   * through the chassis.
+   *
+   * `z` rides both halves for the same reason the wire carries it: in a 3D world the height
+   * is a real degree of freedom, and interpolating x and y while snapping z produces a body
+   * that glides horizontally and stutters vertically.
+   */
   private snapBuf: {
     tick: number;
-    robots: { id: number; x: number; y: number; heading: number }[];
+    robots: { id: number; x: number; y: number; z: number; heading: number }[];
+    /** element poses + their `state.kind`, only for a 3D-physics world (empty otherwise, so
+     *  a 2D room allocates nothing it did not allocate before) */
+    balls: { id: number; x: number; y: number; z: number; kind: string }[];
   }[] = [];
   /** the interpolation render clock (in server ticks), lagging the latest snapshot
    * by ~INTERP_DELAY_TICKS; eased forward each frame for smooth playback */
@@ -363,13 +449,227 @@ export class GameController {
    * (before it, the sim-driven pre-match countdown must predict freely from tick 0) */
   private gotSnapshot = false;
 
+  // ------------------------------------------------------- CLIENT PREDICTION (plan §5) --
+  //
+  // ⚠️ EVERYTHING IN THIS BLOCK IS INERT UNLESS `predicted3d()` IS TRUE. A 2D-physics room —
+  // every DECODE room, every Chain Reaction room, every BIOBUZZ room an older server hosts —
+  // reconciles by replaying `mod.step`, exactly as it always has. The owner's rule that the 2D
+  // pipeline is permanent applies to the netcode half as much as to the sim half, and `npm test`
+  // pins the 2D hashes either way.
+  //
+  // WHAT CHANGES IN A 3D ROOM: the client stops stepping the WORLD at all. The world is the
+  // authoritative one and advances only when a snapshot lands; the LOCAL ROBOT advances every
+  // tick through a predictor and its pose is written back onto that world. Everything else on
+  // screen — remote robots, the 56 elements — is already interpolated from `snapBuf` there (see
+  // its header), so nothing was relying on the client's own forward step to animate it. That is
+  // what makes `step3d` a cost the client never pays in a room, and it is why the reconcile
+  // budget is 8 ms rather than the ~10 ms forty `step3d` calls measure.
+
+  /** the player's stored pick. `'auto'` until they choose otherwise; never overridden. */
+  private predictionPref: PredictionPref = 'auto';
+  /** what is actually RUNNING — `auto` resolved by the countdown probe, or by the slip rule. */
+  private predictionMode: PredictionMode = 'light';
+  /** the live predictor, or null (2D room, spectator, Off, or the chunk is not in hand yet). */
+  private predictor: Predictor | null = null;
+  /** which kind `this.predictor` is, so a mode change rebuilds and a repeat does not. */
+  private predictorKind: PredictionMode | null = null;
+  /** Auto has run its one probe for this match. */
+  private autoProbed = false;
+  /** what that probe measured, in ms — shown in the in-match panel, null before it runs. */
+  private autoProbeMs: number | null = null;
+  /** Auto has already stepped Full down to Light once. It does not step back up: a machine
+   *  that missed the budget under load will miss it again, and flapping is worse than Light. */
+  private autoDropped = false;
+  /** recent reconcile costs in ms (Full only), the window the slip rule takes a p95 over. */
+  private reconcileMs: number[] = [];
+  /**
+   * THE INPUT CLOCK IN A PREDICTED 3D ROOM.
+   *
+   * `world.tick` is the input clock everywhere else, because the world IS stepped forward there.
+   * In a 3D room it is not — the world sits at `lastServerTick` between snapshots — so the tick
+   * an input is stamped with, the lead cap, and the buffer's cut-off all read this instead. It
+   * is reset to `serverTick` by every reconcile and advanced one per predicted tick, which is
+   * exactly what `world.tick` does in the 2D path.
+   */
+  private predictTick = 0;
+  /** the last reconcile's correction distance in inches (before the SNAP clamp) — the number
+   *  the in-match panel prints and the one a verification run reads. */
+  private lastCorrection = 0;
+  /** the last reconcile's cost in ms, Full or Light. */
+  private lastReconcileMs = 0;
+  private unsubscribePredictionPref: () => void = () => {};
+
+  // ─────────────────────────────────────────────────── SOLO PRACTICE BOTS (plan §6) --
+  //
+  // The client's half of the bot contract, and the mirror of `Room`'s: the seats are built when
+  // the world is, stepped once per tick BEFORE the sim step, and their commands go into the
+  // SAME map the recorder is handed — so a practice run against bots re-simulates from its log
+  // without needing a bot at all, exactly as a server match does (`docs/area/netcode.md`: "the
+  // recorder records every setup's command").
+  //
+  // ⚠️ **THE MEMORY IS THE CALLER'S, NEVER THE WORLD'S** (`BotSeat`'s own header). A bot field
+  // on `World` would be snapshotted, reconciled and replayed; these live here, are disposed on
+  // every rebuild, and nothing downstream knows they exist.
+
+  /** live AI drivers for the solo world, keyed by robot id. Empty online, in free drive, and
+   *  whenever `practiceBots` is `'off'` — which is the default. */
+  private readonly bots = new Map<number, { step(w: World): RobotCommand; dispose?(): void }>();
+  /**
+   * THE TUTORIAL IN FLIGHT, or null — which is every other run this controller has ever done.
+   *
+   * Set from the constructor's `tutorial` option, and it is the ONE thing that makes this a
+   * tutorial: there is no `GameSettings.tutorial` flag. That was the alternative, and it is
+   * wrong for a reason the settings file states about itself — `GameSettings` persists to
+   * localStorage and SYNCS TO POSTGRES per account, so a transient "I am in the tutorial right
+   * now" bit would follow the account to another machine and survive a reload into a screen that
+   * has no idea what step it was on. A run is not a preference.
+   *
+   * It is also why the tutorial does not survive a refresh, which is the honest behaviour: the
+   * staged world it was on cannot be rebuilt from a URL.
+   */
+  private tutorial: TutorialRunner | null = null;
+  /** told to the view (GameView's loading panel) whenever `physicsPending` flips. */
+  private readonly onPhysicsPending: ((pending: boolean) => void) | null;
+
+  /**
+   * THE 3D PHYSICS CHUNK IS STILL LOADING, SO NOTHING MAY BE STEPPED YET.
+   *
+   * A `'3d'`-physics world routes into `step3d` on its very first tick, and `physics3d()`
+   * THROWS if `initPhysics3d()` has not resolved — so a controller built for a 3D room before
+   * the wasm lands would take the whole render loop down on frame one.
+   *
+   * ── WHY THE LATCH IS HERE AND NOT AT THE SCREEN THAT OPENS THE MATCH ──────
+   * Solo practice can await the load before constructing anything, and `GameView` does
+   * exactly that (Day 1). A ROOM cannot: `matchStart` arrives on a socket, a `ServerSession`
+   * is built from it synchronously, and there are six places in the UI that do so — a lobby,
+   * three matchmaking paths, a record run, a spectate, and the rejoin that resumes a match
+   * after a reload. Gating each of them is six chances to miss one, and the one that would be
+   * missed is the rejoin, because it is the only path where the player is already mid-match.
+   *
+   * So the controller gates ITSELF. While this is true `stepServer` and `stepSolo` return
+   * without stepping and without reconciling, the accumulator is drained so nothing
+   * burst-catches-up when it clears, and the first snapshot after the load simply snaps the
+   * world to the server's. The cost is that the local view holds at tick 0 for the length of
+   * the load, which against a warm cache is a frame or two.
+   */
+  private physicsPending = false;
+
+  // ---------------------------------------------------------------- 3D scene (Day 1 seam) --
+  //
+  // `docs/biobuzz/plan-3d.md` §4.1/§4.7. A game with no `scene` (DECODE, Chain Reaction, and
+  // BIOBUZZ until Lane B lands one) or a controller built with no `sceneHost` never loads
+  // anything past these fields staying null — see `syncScene`.
+
+  /** the element the 3D scene mounts its own canvas into — one box shared with the 2D
+   * canvas (GameView's `.game-viewport`). Null for every caller that hasn't been wired
+   * for one (every call site before this seam, and a replay/spectate screen today). */
+  private readonly sceneHost: HTMLElement | null;
+  /** the live 3D scene, or null on the 2D view / no scene module / a failed load. Owned
+   * entirely by this controller — created and disposed here, never by GameView. */
+  private scene: GameScene | null = null;
+  /** bumped on every teardown so a `factory()`/`render()` that resolves AFTER the view
+   * has switched away, or after a second load started (rapid toggling), is dropped
+   * instead of replacing the scene the current state actually wants. */
+  private sceneEpoch = 0;
+  private unsubscribeViewPref: () => void = () => {};
+  /** read every render frame — cached so a 3D scene's camera pick doesn't construct a
+   * fresh `MediaQueryList` up to 144 times a second (`useCoarsePointer`'s complaint about
+   * the old per-render `matchMedia()` calls, at render-loop frequency instead of 10 Hz). */
+  private mqCoarse: MediaQueryList | null = null;
+
+  // ------------------------------------------------------------ HUD-SAFE CAMERA FRAMING --
+  //
+  // The 3D canvas fills the WHOLE `.game-viewport`, and every piece of HUD chrome is
+  // absolutely positioned over it — so a camera fitted to the canvas frames the field's far
+  // edge underneath the score bar. Owner's re-test, 2026-09-18: "make sure that the scoreboard
+  // and the field can both fit in the screen without overlap." These four numbers (CSS px) are
+  // what the scene fits into instead; see `refreshHudInsets` for how they are measured and
+  // `SceneInsets` in `games/module.ts` for the contract.
+  //
+  // The 2D path needs nothing here: `Camera.configure` has always reserved its own top/bottom
+  // bands (`HUD_TOP` / `HUD_BOTTOM` in `render/camera.ts`) and letterboxes the field inside
+  // them. This is the same idea, MEASURED rather than hardcoded, because a 3D camera has to
+  // solve a pitch and an FOV against it rather than just scale a square.
+
+  /** the element the HUD's own chrome is mounted in (GameView's `.game-root`) — the subtree
+   * `[data-hud-band]` is queried from. Null ⇒ no measurement, insets stay zero. */
+  private readonly hudHost: HTMLElement | null;
+  /** the live bands. ONE object, mutated in place and handed to the scene every frame —
+   * `SceneFrame.insets` documents that a scene must not retain it. */
+  private readonly hudInsets: SceneInsets = { top: 0, right: 0, bottom: 0, left: 0 };
+  /** set by the observers below (and by `onResize`), cleared by `refreshHudInsets`. The
+   * measurement is a DOM read, so it happens at most once per rendered frame and only when
+   * something has actually moved — never unconditionally per frame. */
+  private hudInsetsDirty = true;
+  /** fires when a HUD band changes SIZE (a chip row wrapping to a second line, the scorebar
+   * switching to its compact layout) without anything mounting or unmounting. */
+  private hudBandObserver: ResizeObserver | null = null;
+  /** fires when a band MOUNTS or UNMOUNTS (the scorebar appears with the first HUD poll, the
+   * chip row is suppressed on a coarse pointer, a game's `scoreBar` slot swaps in). */
+  private hudBandMutations: MutationObserver | null = null;
+  /** what `hudBandObserver` currently watches, so the set can be reconciled rather than torn
+   * down and rebuilt on every measurement. */
+  private readonly observedBands = new Set<Element>();
+
   constructor(
     private readonly canvas: HTMLCanvasElement,
     private settings: GameSettings,
     session: NetSession | null = null,
+    opts?: {
+      /** the element the 3D scene mounts into — GameView's `.game-viewport`, which
+       * already contains the 2D canvas at the same box. Absent ⇒ never load a scene,
+       * whatever the view preference says. */
+      sceneHost?: HTMLElement;
+      /**
+       * The element the HUD chrome is mounted in — GameView's `.game-root`, the containing
+       * block every absolutely-positioned overlay is laid out against. Every band inside it
+       * carries `data-hud-band`; `refreshHudInsets` measures those against `sceneHost` and
+       * hands the result to the 3D scene as `SceneFrame.insets`.
+       *
+       * Absent ⇒ no measurement and no insets, which is every call site that has not been
+       * wired for one. A scene then fits to the whole canvas, exactly as before.
+       */
+      hudHost?: HTMLElement;
+      /**
+       * A ONE-LINE EVENT pushed into the freshly built world (Day 1 seam): GameView
+       * awaits `initPhysics3d()` before constructing a 3D solo practice and passes this
+       * when that load REJECTED, so the run falls back to 2D physics for the session —
+       * announced through the existing toast/event-log path (`world.events` →
+       * `HudSnapshot.toasts`), the one `docs/area/ui.md` allows ("no popup toasts over
+       * the field" — the muted left-edge log is exactly that path, not a new surface).
+       */
+      physicsFallbackNotice?: string;
+      /**
+       * THE 3D PHYSICS CHUNK IS LOADING — show (or hide) the "Loading 3D physics" panel.
+       *
+       * `GameView` can decide this for itself in SOLO practice: it awaits `initPhysics3d()`
+       * before it constructs anything. It cannot for a ROOM, and the `physicsPending` header
+       * says why — six UI paths build a `ServerSession` synchronously from a `matchStart` that
+       * arrived on a socket, so the controller is the only place that knows. So the controller
+       * TELLS the view, at construction and again when the load settles, instead of the view
+       * guessing.
+       *
+       * Called synchronously from the constructor when the latch starts true, which is safe:
+       * `GameView` builds the controller inside an async `boot()`, never during a render.
+       */
+      onPhysicsPending?: (pending: boolean) => void;
+      /**
+       * RUN THE TUTORIAL (roadmap item 6) — this game's `GameModule.tutorial`, handed in by
+       * `GameView` so the controller never has to decide whether a run is a lesson.
+       *
+       * The caller is expected to have put `settings` into FREE DRIVE with no dummies and no
+       * bots; `src/games/biobuzz/tutorial.ts` explains why free drive is the right mode (no
+       * countdown, no fouls outside the played periods, and no recorder — so a staged world
+       * cannot be filed as a replay that would play back something else).
+       */
+      tutorial?: TutorialSpec;
+    },
   ) {
     this.ctx = canvas.getContext('2d')!;
     this.session = session;
+    this.sceneHost = opts?.sceneHost ?? null;
+    this.hudHost = opts?.hudHost ?? null;
+    this.onPhysicsPending = opts?.onPhysicsPending ?? null;
     // which game this controller builds its INITIAL world for. A networked
     // session's game is authoritative (from matchStart); solo uses the setting.
     // Once running, STEP/DRAW/HUD resolve from this.world.game (this.mod).
@@ -394,7 +694,49 @@ export class GameController {
     // robot is doing that job itself: a mobile player could never get either button back.
     // Mobile still STARTS with the assists on, because everyone does (`PLAYER_ASSISTS`).
 
+    // BEFORE the first `makeWorld`, which is what stages step 1: the runner resolves its step
+    // list against THIS robot's spec (`TutorialStep.applies`), so a build that cannot do a step
+    // is never asked to. A networked session is never a tutorial — there is nothing to stage a
+    // step onto but an authoritative world somebody else owns.
+    if (opts?.tutorial && !session) {
+      this.tutorial = new TutorialRunner(opts.tutorial, settings.spec);
+    }
     this.world = this.makeWorld();
+    // the physics-3d fallback notice (see the constructor's `opts` doc) rides the same
+    // path as every other match event — the first `frameLogic()` drains it into a toast.
+    if (opts?.physicsFallbackNotice) this.world.events.push(opts.physicsFallbackNotice);
+    /**
+     * A 3D ROOM WHOSE PHYSICS IS NOT LOADED YET: latch, load, and step nothing meanwhile.
+     *
+     * `interp3d()` reads the world that was just built, so this covers every route a 3D world
+     * can arrive by — `matchStart.physics`, a rejoin's stored handshake, and a solo practice
+     * whose `GameView` await was skipped or failed. Idempotent: a second match in the same tab
+     * finds `physics3dReady()` already true and never enters the branch at all.
+     *
+     * A REJECTED load is not retried. It means the chunk is unreachable (offline, or a stale
+     * build whose asset 404s), and retrying on a timer would spin while the player watches a
+     * frozen field; the event-log line says what happened, and the connection HUD already says
+     * the rest.
+     */
+    if (this.interp3d() && !physics3dReady()) {
+      this.setPhysicsPending(true);
+      void initPhysics3d().then(
+        () => {
+          this.setPhysicsPending(false);
+        },
+        (err: unknown) => {
+          this.setPhysicsPending(false);
+          // eslint-disable-next-line no-console
+          console.warn('BIOBUZZ 3D physics failed to load for this match.', err);
+          this.world.events.push('Couldn’t load 3D physics — reload the page to rejoin this match.');
+        },
+      );
+    }
+    // PREDICTION (plan §5). Read once here and again on every change made anywhere in this tab
+    // (Controls, the in-match connection panel), exactly like the view preference above. Inert
+    // for a 2D room and for a spectator — see `predicted3d`.
+    this.resolvePredictionPref(getPredictionPref(), true);
+    this.unsubscribePredictionPref = subscribePredictionPref((p) => this.resolvePredictionPref(p, false));
     this.prevPhase = this.world.match.phase;
     this.seedActionAudio();
     session?.onRestart(() => this.rebuildFromNet());
@@ -410,7 +752,37 @@ export class GameController {
       this.canvasObserver = new ResizeObserver(() => this.onResize());
       this.canvasObserver.observe(this.canvas);
     }
+    this.mqCoarse = typeof matchMedia === 'function' ? matchMedia('(pointer: coarse)') : null;
+    // HUD-SAFE FRAMING: two observers, because a band changes in two unrelated ways and
+    // neither event implies the other. A `ResizeObserver` catches a band that changes SIZE in
+    // place (the chip row wrapping, the compact scorebar); a `MutationObserver` on the HUD
+    // subtree catches one MOUNTING or unmounting (the scorebar arrives with the first 10 Hz
+    // HUD poll, ~100 ms after this constructor runs, and would otherwise never be measured).
+    // Both only set a dirty flag — the DOM read itself happens once, in the render loop.
+    if (this.hudHost) {
+      if (typeof ResizeObserver === 'function') {
+        this.hudBandObserver = new ResizeObserver(() => {
+          this.hudInsetsDirty = true;
+        });
+      }
+      if (typeof MutationObserver === 'function') {
+        this.hudBandMutations = new MutationObserver(() => {
+          this.hudInsetsDirty = true;
+        });
+        // `childList` + `subtree` ONLY — deliberately not `characterData`, which the timer
+        // digits and every score change would fire several times a second for a band whose
+        // BOX never moves (the panels are min-width'd and tabular-nums). `attributeFilter` is
+        // likewise left off: a class flip that actually changes a band's size shows up on the
+        // ResizeObserver above, which is the cheaper of the two signals.
+        this.hudBandMutations.observe(this.hudHost, { childList: true, subtree: true });
+      }
+    }
     this.onResize();
+    // BIOBUZZ 3D SEAM: pick up the device's current view preference now, and again on
+    // every change (a live switch from Configure or a future in-match toggle) — see
+    // `syncScene`. A no-op whenever `this.mod.scene` or `sceneHost` is absent.
+    this.unsubscribeViewPref = subscribeViewPref(() => this.syncScene());
+    this.syncScene();
     // Multiplayer must keep simulating + producing inputs even when the tab is
     // unfocused (else every peer stalls waiting on it), so drive the sim from a
     // timer (+ audio keepalive to defeat background throttling) and use rAF for
@@ -445,7 +817,12 @@ export class GameController {
     // on the same tick for every peer — no controller-local start/seed)
     const build = moduleFor(this.gameId).createWorld;
     if (this.session) {
-      const w = build('match', this.session.seed, this.session.setups, this.settings);
+      // THE ROOM'S physics, from `matchStart` — never `settings.practicePhysics`. The room is
+      // authoritative over which pipeline is being stepped, and a client that built its
+      // predicted world from its own Practice pick would be corrected on every snapshot by a
+      // server running a different game. Absent on the session ⇒ '2d', which is every room an
+      // older server hosts.
+      const w = build('match', this.session.seed, this.session.setups, this.settings, this.session.physics);
       w.match.preCountdown = C.PRE_COUNTDOWN;
       return w;
     }
@@ -491,13 +868,273 @@ export class GameController {
         dummy(3, opp, 1),
       );
     }
+    /**
+     * OPPONENTS (plan §6): fill the empty seats of the format with bots of the chosen tier.
+     *
+     * The format is the one a room has — a 2v2 — so three seats: a partner and two opponents,
+     * ids 1..3, on the anchors the player is not using. SOLO PRACTICE ONLY (`mode: 'match'`),
+     * because a bot plays a MATCH: it reads the phase, the clock and the derived lists, and in
+     * free drive there is no match for it to play. Free drive keeps `practiceDummies`, which is
+     * a different thing on purpose — those are inert obstacles (`passive: true`), and the whole
+     * point of them is that they do nothing.
+     */
+    const botDriver = moduleFor(this.gameId).bot;
+    // COERCED AT THE POINT OF USE, by the driver that owns the tier list. `coerceSettings` keeps
+    // a stored tier verbatim while the active game has no driver (see its note), so the string
+    // reaching here may be another game's word for a difficulty — or one this game has since
+    // renamed. This is the place that can answer.
+    const stored = s.mode === 'match' ? (s.practiceBots ?? 'off') : 'off';
+    const botTier = stored === 'off' || !botDriver ? 'off' : botDriver.coerceTier(stored);
+    if (botTier !== 'off' && botDriver) {
+      const opp: Alliance = s.alliance === 'blue' ? 'red' : 'blue';
+      const anchors = moduleFor(this.gameId).startPoseCount;
+      const seat = (id: number, alliance: Alliance, startIndex: number): RobotSetup => ({
+        id,
+        alliance,
+        spec: { ...DEFAULT_SPEC, name: `${botTier} bot`, teamName: 'AI', teamNumber: 0 },
+        assists: { ...DEFAULT_ASSISTS },
+        startIndex,
+      });
+      setups.push(
+        // the partner takes the anchor the player is NOT on, so the two never overlap
+        seat(1, s.alliance, s.startIndex === 1 ? 0 : 1),
+        seat(2, opp, 0),
+        seat(3, opp, Math.min(1, anchors - 1)),
+      );
+    }
     this.soloSetups = setups;
-    return build(s.mode, seed, setups, this.settings);
+    const world = build(s.mode, seed, setups, this.settings);
+    this.seatBots(world, seed, botTier);
+    /**
+     * THE TUTORIAL STAGES ITS STEP HERE, AND NOWHERE ELSE — tick 0, on a world nothing has
+     * stepped, before the recorder could exist.
+     *
+     * That placement IS the replay invariant (`docs/area/netcode.md`, and
+     * `src/tutorial/types.ts` restates it): a run has to be reproducible from
+     * `{seed, setups, commands}`, so a step cannot reach into a world that is already running.
+     * Every step change goes back through this function, which is the same rebuild
+     * `startMatch` and `restart` do.
+     */
+    this.tutorial?.stage(world, this.localRobotId);
+    return world;
+  }
+
+  /**
+   * SEAT (or clear) the solo AI drivers for a freshly built world.
+   *
+   * Seeded `(matchSeed, seat)` exactly as `Room` seeds its own, with the same mix, so a practice
+   * run and a room run of the same seed put the same driver on the same robot. Called from
+   * `makeWorld` and nowhere else, which is the one place a world is replaced — so a rebuild can
+   * never leave a driver pointed at a world that no longer exists.
+   */
+  private seatBots(world: World, seed: number, tier: string): void {
+    for (const b of this.bots.values()) {
+      try {
+        b.dispose?.();
+      } catch {
+        /* a policy that throws disposing must not take the match down with it */
+      }
+    }
+    this.bots.clear();
+    const drv = moduleFor(this.gameId).bot;
+    if (tier === 'off' || !drv) return;
+    for (const r of world.robots) {
+      if (r.id === this.localRobotId) continue;
+      this.bots.set(r.id, drv.create(world, r.id, tier, (seed ^ ((r.id + 1) * 0x9e3779b1)) >>> 0));
+    }
   }
 
   private onResize = (): void => {
     this.renderer.camera.configure(this.canvas, this.viewAlliance(), this.mod.bounds);
+    this.hudInsetsDirty = true;
+    this.scene?.resize(this.canvas.clientWidth, this.canvas.clientHeight, window.devicePixelRatio || 1);
   };
+
+  /**
+   * MEASURE THE HUD'S OCCUPIED BANDS off the live DOM — the safe rectangle a 3D camera fits
+   * the field into (`SceneInsets`, `games/module.ts`). Owner's re-test, 2026-09-18: "make sure
+   * that the scoreboard and the field can both fit in the screen without overlap."
+   *
+   * Called at most ONCE PER RENDERED FRAME and only when `hudInsetsDirty` is set (a resize, a
+   * band resizing in place, a band mounting/unmounting, a view switch) — a `getBoundingClientRect`
+   * is a layout read and this runs at up to 144 Hz. Writes into `this.hudInsets` in place, so
+   * there is no per-frame allocation either.
+   *
+   * ── WHICH EDGE DOES A BAND CLAIM? ─────────────────────────────────────────────────────
+   * Each band claims the edge it intrudes LEAST far from, measured as a FRACTION of that axis
+   * (not in pixels): a 52 px top band on a 900 px viewport is a 5.8 % bite, while the same
+   * element's right-edge intrusion could be 300 px of a 1600 px width — 19 %, and reserving
+   * THAT would throw away a fifth of the field for a corner chip cluster. Comparing fractions
+   * is what makes the choice scale-fair on a 21:9 desktop and a portrait phone alike.
+   *
+   * This matters because the chrome MOVES: on a landscape phone the score bar and the
+   * breakdown chips leave the bottom entirely and dock into the left and right gutters (see the
+   * landscape block in `styles.css`). Nothing here names a side — the geometry decides, so that
+   * layout is fitted correctly without this method knowing it exists.
+   *
+   * ── WHAT IS DELIBERATELY NOT A BAND ───────────────────────────────────────────────────
+   * The EVENT LOG (`.eventlog`) and the touch controls. The log is the toast surface — it grows
+   * and empties several times a match, and reserving a band that breathes would re-fit the
+   * camera every time a foul was announced. The touch sticks are drawn OVER the field on
+   * purpose (they are translucent, repositionable, and the 2D camera does not reserve for them
+   * either). Full-screen overlays (the pre-match panel, the results screen, a net overlay) are
+   * not bands either: they cover the field completely and briefly, and reserving for one would
+   * collapse the safe rect to nothing.
+   */
+  private refreshHudInsets(): void {
+    this.hudInsetsDirty = false;
+    const ins = this.hudInsets;
+    const host = this.sceneHost ?? this.canvas;
+    const root = this.hudHost;
+    if (!root) {
+      ins.top = ins.right = ins.bottom = ins.left = 0;
+      return;
+    }
+    const box = host.getBoundingClientRect();
+    if (box.width < 1 || box.height < 1) return; // mid-teardown / display:none — keep the last fit
+    const bands = root.querySelectorAll<HTMLElement>('[data-hud-band]');
+    let top = 0;
+    let right = 0;
+    let bottom = 0;
+    let left = 0;
+    for (let i = 0; i < bands.length; i++) {
+      const el = bands[i];
+      const r = el.getBoundingClientRect();
+      if (r.width < 1 || r.height < 1) continue; // rendered but empty (a chip row with no chips)
+      // clip to the render surface — a band docked in a gutter can hang outside it, and the
+      // part that does is not covering any field
+      const l = Math.max(r.left, box.left);
+      const rr = Math.min(r.right, box.right);
+      const t = Math.max(r.top, box.top);
+      const b = Math.min(r.bottom, box.bottom);
+      if (rr - l < 1 || b - t < 1) continue;
+      const dTop = b - box.top;
+      const dBottom = box.bottom - t;
+      const dLeft = rr - box.left;
+      const dRight = box.right - l;
+      const fTop = dTop / box.height;
+      const fBottom = dBottom / box.height;
+      const fLeft = dLeft / box.width;
+      const fRight = dRight / box.width;
+      const best = Math.min(fTop, fBottom, fLeft, fRight);
+      if (best === fTop) top = Math.max(top, dTop);
+      else if (best === fBottom) bottom = Math.max(bottom, dBottom);
+      else if (best === fLeft) left = Math.max(left, dLeft);
+      else right = Math.max(right, dRight);
+    }
+    // A BAND MAY NEVER EAT THE VIEWPORT. Two of these can only ever be measured together
+    // mid-relayout or on a viewport too small to play on, and a safe rect at or past zero would
+    // hand the scene an infinite aspect. 45 % a side leaves at least a tenth of each axis.
+    const capH = box.height * 0.45;
+    const capW = box.width * 0.45;
+    ins.top = Math.min(top, capH);
+    ins.bottom = Math.min(bottom, capH);
+    ins.left = Math.min(left, capW);
+    ins.right = Math.min(right, capW);
+    this.syncBandObserver(bands);
+  }
+
+  /** reconcile `hudBandObserver` to the bands that exist NOW — bands mount and unmount as the
+   * HUD relayouts, and an observer left pointing at a detached node neither fires nor frees. */
+  private syncBandObserver(bands: ArrayLike<Element>): void {
+    const obs = this.hudBandObserver;
+    if (!obs) return;
+    const seen = this.observedBands;
+    for (let i = 0; i < bands.length; i++) {
+      const el = bands[i];
+      if (seen.has(el)) continue;
+      seen.add(el);
+      obs.observe(el);
+    }
+    if (seen.size === bands.length) return; // nothing left
+    const live = new Set<Element>();
+    for (let i = 0; i < bands.length; i++) live.add(bands[i]);
+    for (const el of seen) {
+      if (live.has(el)) continue;
+      obs.unobserve(el);
+      seen.delete(el);
+    }
+  }
+
+  /**
+   * RECONCILE the live 3D scene to (a) whether this game HAS one and (b) the device's
+   * current view preference — called once at construction and again every time
+   * `setViewPref` fires (Day 1 seam, `docs/biobuzz/plan-3d.md` §4.1/§4.7). A game with no
+   * `scene` (DECODE, Chain Reaction, BIOBUZZ until Lane B lands one) or a controller built
+   * with no `sceneHost` (GameView only supplies one when `mod.scene` exists) never loads
+   * anything.
+   */
+  private syncScene(): void {
+    const sceneFn = this.mod.scene;
+    const want = !!sceneFn && !!this.sceneHost && getViewPref() === '3d';
+    if (!want || !sceneFn) {
+      this.teardownScene();
+      return;
+    }
+    if (this.scene) return; // already showing one
+    const host = this.sceneHost!;
+    const epoch = ++this.sceneEpoch;
+    (async () => {
+      const factory = await sceneFn();
+      // Auto's preset line, the slip line and an HDRI failure go to the event log, like
+      // every other thing the match wants the player to know (plan §4.6).
+      const scene = await factory(host, { onQualityEvent: (line) => this.world.events.push(line) });
+      // the view may have switched away, the controller may have been disposed, or a
+      // second load may have started (rapid toggling) WHILE this one was in flight —
+      // whichever result loses the race is disposed unused rather than replacing the
+      // scene the current state actually wants.
+      if (this.disposed || epoch !== this.sceneEpoch) {
+        scene.dispose();
+        return;
+      }
+      // UNDER the 2D canvas: inserted FIRST, so DOM order decides the stack (both
+      // position:absolute, z-index:auto — see `.game-viewport > canvas` in styles.css).
+      // Sized before its first `render()`, never after.
+      host.insertBefore(scene.element, host.firstChild);
+      scene.resize(this.canvas.clientWidth, this.canvas.clientHeight, window.devicePixelRatio || 1);
+      // A VIEW SWITCH IS A RE-FIT. The HUD did not move, but this scene has never measured it
+      // — and the 2D view it replaces may have been mounted long enough for the last reading
+      // to be stale (the chip row grew, an ad column collapsed).
+      this.hudInsetsDirty = true;
+      this.scene = scene;
+      // the 2D overlay projects labels and auto paths through the scene's camera from here on
+      this.renderer.setScene(scene);
+    })().catch((err: unknown) => {
+      if (epoch !== this.sceneEpoch) return;
+      // ONE console warning, per plan §4.7 ("a rejected renderer import() falls back to the
+      // 2D view") — never a blank canvas, and never anything the 2D game screen shows.
+      // eslint-disable-next-line no-console
+      console.warn('BIOBUZZ 3D scene failed to load; staying on the 2D view.', err);
+    });
+  }
+
+  /** drop the live scene (view switched to 2D, the controller is disposing, or a render
+   * threw). Bumps the epoch FIRST so an in-flight `syncScene()` load cannot land after. */
+  private teardownScene(): void {
+    this.sceneEpoch++;
+    if (!this.scene) return;
+    const scene = this.scene;
+    this.scene = null;
+    this.renderer.setScene(null);
+    try {
+      scene.element.remove();
+    } catch {
+      /* not attached, or already gone — either way there is nothing left to remove */
+    }
+    try {
+      scene.dispose();
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.warn('BIOBUZZ 3D scene threw disposing; continuing on the 2D view.', err);
+    }
+  }
+
+  /** which camera a 3D scene renders for — the touch/phone layout gets the overhead shot
+   * (the 2D fit), everyone else the driver's-eye view (plan §4.3), mirroring the same
+   * `(pointer: coarse)` query `useCoarsePointer` uses to pick `MobileControls`. */
+  private sceneCameraFor(): SceneCamera {
+    return this.mqCoarse?.matches ? 'overhead' : 'driver';
+  }
 
   private handlePhaseAudio(): void {
     const phase = this.world.match.phase;
@@ -742,7 +1379,40 @@ export class GameController {
     // solo renders the predicted world directly; the networked path renders remote
     // robots + balls INTERPOLATED (smooth) with the local robot predicted
     const world = this.session ? this.displayWorld(dtMs) : this.world;
-    this.renderer.render(this.ctx, world, this.lastCmd, this.localRobotId);
+    if (this.scene) {
+      try {
+        // ONE DOM READ, and only when something moved — see `refreshHudInsets`. It sits here
+        // rather than in the observers themselves so the read happens at a known point in the
+        // frame (before anything has written to the DOM this tick), never interleaved with a
+        // React commit where it would force a synchronous relayout.
+        if (this.hudInsetsDirty) this.refreshHudInsets();
+        const frame: SceneFrame = {
+          // the fixed-timestep accumulator's leftover fraction — the same interpolation
+          // alpha a fixed-timestep renderer uses between authoritative steps. The 2D
+          // renderer does not need it (solo renders `this.world` as last stepped; the
+          // networked path already interpolates remotes its own way), so the 3D scene is
+          // its first reader.
+          alpha: clamp(this.acc / C.SIM_DT, 0, 1),
+          viewAngle: this.renderer.camera.viewAngle,
+          camera: this.sceneCameraFor(),
+          localRobotId: this.spectator ? undefined : this.localRobotId,
+          width: this.canvas.clientWidth,
+          height: this.canvas.clientHeight,
+          dpr: window.devicePixelRatio || 1,
+          // the SAME object every frame (its contract says a scene reads it and does not
+          // retain it) — a fresh literal here would allocate 144 times a second
+          insets: this.hudInsets,
+        };
+        this.scene.render(world, frame);
+      } catch (err) {
+        // eslint-disable-next-line no-console
+        console.warn('BIOBUZZ 3D scene failed to render; falling back to the 2D view.', err);
+        this.teardownScene();
+      }
+    }
+    // a live scene draws the field/robots/balls beneath this canvas — the 2D pass then
+    // stays transparent and draws only its cheap overlay (name labels), never the field.
+    this.renderer.render(this.ctx, world, this.lastCmd, this.localRobotId, !!this.scene);
     this.sampleFrame(dtMs);
     this.raf = requestAnimationFrame(this.loop);
   };
@@ -790,6 +1460,11 @@ export class GameController {
 
   /** solo stepping: local keypress start/restart, one local command per tick */
   private stepSolo(cmd: RobotCommand): void {
+    // nothing may be stepped until the 3D wasm is in hand — see `physicsPending`
+    if (this.physicsPending) {
+      this.acc = 0;
+      return;
+    }
     if (this.input.startPressed) this.startMatch();
     if (this.input.restartPressed) this.restart();
 
@@ -810,6 +1485,13 @@ export class GameController {
     let steps = 0;
     const commands = new Map<number, RobotCommand>([[this.localRobotId, local]]);
     while (this.acc >= C.SIM_DT && steps < C.MAX_STEPS_PER_FRAME) {
+      /**
+       * THE BOTS DECIDE BEFORE THE STEP, once per tick, into the SAME map the recorder is
+       * handed. That ordering is the whole contract: a command produced after the step would
+       * be a tick late, and one produced outside this map would not be recorded — and an
+       * unrecorded bot command makes the replay a different match from the run.
+       */
+      for (const [id, seat] of this.bots) commands.set(id, localizeCommand(seat.step(this.world)));
       this.mod.step(this.world, C.SIM_DT, commands);
       this.recorder?.record(this.world.tick, commands);
       // counted HERE, beside the record call, because it must measure exactly the ticks that
@@ -818,8 +1500,118 @@ export class GameController {
       if (this.recorder && robotsEnabled(this.world)) this.drivenTicks++;
       this.acc -= C.SIM_DT;
       steps++;
+      /**
+       * THE TUTORIAL'S PREDICATE, EVERY TICK, RIGHT AFTER THE STEP THAT COULD HAVE SATISFIED IT.
+       *
+       * Per tick rather than at the 10 Hz HUD poll, because several of the things a step asks for
+       * are CLEANED UP by the ticks that follow them: an up CELL is emptied by the tip it caused
+       * (`hiveStep`), and a spill tag clears on its element's first contact. A predicate read six
+       * ticks late can look at a field where the thing it was watching for has already been tidied
+       * away, and the symptom is a step that never completes however well it was played.
+       *
+       * Advancing REPLACES the world, so the loop has to stop here — `advanceTutorial` zeroes the
+       * accumulator, and the next frame steps the newly staged world from its own tick 0.
+       */
+      if (this.tutorial && this.tutorial.tick(this.world, this.localRobotId)) {
+        this.advanceTutorial(true);
+        return;
+      }
     }
     if (steps === C.MAX_STEPS_PER_FRAME) this.acc = 0;
+  }
+
+  /**
+   * MOVE THE TUTORIAL ON — from a completed step (`completed`) or from Skip.
+   *
+   * One path for both, because the world is rebuilt either way and a skipped step is not a failed
+   * one. The event line goes onto the NEW world, so it drains through the ordinary
+   * `world.events` → toast path (`docs/area/ui.md`: the muted left-edge log, never a popup over
+   * the field).
+   */
+  private advanceTutorial(completed: boolean): void {
+    const t = this.tutorial;
+    if (!t) return;
+    const was = t.step?.title ?? '';
+    const more = t.advance();
+    this.rebuildForTutorial();
+    if (completed && was) this.world.events.push(`STEP DONE — ${was.toUpperCase()}`);
+    if (!more) {
+      // FINISHED: the device flag is set here rather than on the way out of the screen, because
+      // this is the moment it becomes true, and a player who closes the tab on the sign-off card
+      // has still been through it.
+      markTutorialSeen();
+      this.world.events.push('TUTORIAL COMPLETE');
+    }
+  }
+
+  /**
+   * A QUIET REBUILD, for a step change / replay / exit.
+   *
+   * Everything `restart()` does except the two things that would be wrong here: it does not play
+   * the ABORT cue (nothing was aborted), and it does not harvest a practice run (a tutorial is
+   * free drive, so there is no recorder — see `startMatch`).
+   */
+  private rebuildForTutorial(): void {
+    this.world = this.makeWorld();
+    this.prevPhase = this.world.match.phase;
+    this.acc = 0;
+    this.warningPlayed = false;
+    this.matchOverAt = null;
+    this.settle = newSettleClock();
+    this.settleDone = false;
+    this.hudCountdown = null;
+    this.frontFlipped = false;
+    this.parked = false;
+    this.seedActionAudio();
+    this.toasts = [];
+  }
+
+  /**
+   * The live binding / device context every hint is composed against.
+   *
+   * `mqCoarse` is the media query this controller already keeps for the mobile layout, read
+   * LIVE rather than latched: a tablet that has a keyboard folded behind it can go either way
+   * mid-session, and the card re-renders at 10 Hz anyway.
+   */
+  private hintCtx(): TutorialHintCtx {
+    return {
+      bindings: this.settings.bindings,
+      gamepad: this.input.gamepadConnected,
+      touch: this.mqCoarse?.matches ?? false,
+    };
+  }
+
+  /** the tutorial's current card, or null when this run is not a tutorial. */
+  getTutorial(): TutorialView | null {
+    return this.tutorial ? this.tutorial.view(this.hintCtx()) : null;
+  }
+
+  /** SKIP this step — the next one is staged on a fresh world, exactly as a completed one is. */
+  tutorialSkip(): void {
+    if (this.tutorial && !this.tutorial.isFinished) this.advanceTutorial(false);
+  }
+
+  /** REPLAY this step — rebuild and re-stage it, with the nudge clock back at zero. */
+  tutorialReplay(): void {
+    if (!this.tutorial) return;
+    this.tutorial.replay();
+    this.rebuildForTutorial();
+  }
+
+  /**
+   * EXIT the tutorial: drop the runner, set the device flag, and rebuild into an ordinary free
+   * drive on the same screen.
+   *
+   * The flag is set on the way out as well as on completion, and that is deliberate: somebody who
+   * has decided they do not want the tutorial should not be offered it again on every Practice.
+   * Controls keeps an entry that runs it, which is where they get it back.
+   */
+  tutorialExit(): void {
+    if (!this.tutorial) return;
+    this.tutorial.abandon();
+    this.tutorial = null;
+    markTutorialSeen();
+    this.rebuildForTutorial();
   }
 
   /** server-authoritative stepping (predict + reconcile): every tick we apply
@@ -829,6 +1621,17 @@ export class GameController {
    * only our own robot is predicted, remote robots are corrected by snapshots. */
   private stepServer(cmd: RobotCommand): void {
     const s = this.session!;
+    /**
+     * Held BEFORE the snapshot is taken, deliberately. Reconcile REPLAYS buffered inputs
+     * through `mod.step`, so consuming a snapshot while the physics is missing would throw on
+     * exactly the path that is meant to be safe. Leaving the snapshot unconsumed costs
+     * nothing: the session keeps only the freshest one, and the first reconcile after the
+     * load snaps straight to the server's authoritative world.
+     */
+    if (this.physicsPending) {
+      this.acc = 0;
+      return;
+    }
     // NOTE: no IN-PLACE restart in multiplayer — a local or host-authored rebuild
     // desynced everyone (post-restart stuck/jitter). Players return to the lobby to
     // start a fresh match instead.
@@ -896,26 +1699,40 @@ export class GameController {
       return;
     }
 
+    // AUTO's one measurement, taken in the countdown and nowhere else (plan §5).
+    this.maybeProbeAuto();
+
     // predict a small amount ahead in real time (the local robot stays responsive;
     // the server accepts our slightly-late inputs by applying our latest command,
     // so we do NOT fast-forward the whole world — that flung the balls around)
     if (this.acc > 0.25) this.acc = 0.25;
     let steps = 0;
+    // A 3D ROOM PREDICTS ONE ROBOT, NOT A WORLD — see the prediction block's header.
+    const pred = this.predicted3d();
     while (this.acc >= C.SIM_DT && steps < 30) {
       // LEAD CAP: don't predict more than MAX_PREDICT_LEAD ticks past the newest
       // authoritative tick. During a snapshot stall this holds the local robot at
       // the lead edge instead of building an unbounded input buffer that reconcile
       // then replays in one giant hitch (the "everything flies on recovery" bug).
       // Drain the accumulator so we don't burst-catch-up when snapshots resume.
-      if (this.gotSnapshot && this.world.tick - this.lastServerTick >= MAX_PREDICT_LEAD) {
+      // THE CLOCK IS `predictTick` in a 3D room, because `world.tick` does not move there.
+      const lead = pred ? this.predictTick : this.world.tick;
+      if (this.gotSnapshot && lead - this.lastServerTick >= MAX_PREDICT_LEAD) {
         this.acc = 0;
         break;
       }
-      const tick = this.world.tick + 1;
+      const tick = lead + 1;
       const local = localizeCommand(cmd);
       s.sendInput(tick, cmd);
       this.inputBuf.push({ tick, cmd: local });
-      this.mod.step(this.world, C.SIM_DT, this.cmdMap(local));
+      if (pred) {
+        this.predictTick = tick;
+        // Off writes no pose; the local robot then renders interpolated, like a remote.
+        const pose = this.predictor?.step(local);
+        if (pose) this.applyPredictedPose(pose);
+      } else {
+        this.mod.step(this.world, C.SIM_DT, this.cmdMap(local));
+      }
       this.acc -= C.SIM_DT;
       steps++;
     }
@@ -937,9 +1754,303 @@ export class GameController {
     const w = snap.world;
     this.snapBuf.push({
       tick: snap.serverTick,
-      robots: w.robots.map((r) => ({ id: r.id, x: r.pos.x, y: r.pos.y, heading: r.heading })),
+      robots: w.robots.map((r) => ({
+        id: r.id,
+        x: r.pos.x,
+        y: r.pos.y,
+        z: r.z ?? 0,
+        heading: r.heading,
+      })),
+      // ONLY for a 3D-physics world — see the field's own header. `interp3d()` is a read of
+      // `this.world`, which is the world this snapshot was reconciled into, so the two can
+      // never disagree about which pipeline is running.
+      balls: this.interp3d()
+        ? w.balls.map((b) => ({
+            id: b.id,
+            x: b.pos.x,
+            y: b.pos.y,
+            z: b.z,
+            kind: b.state.kind,
+          }))
+        : [],
     });
     if (this.snapBuf.length > INTERP_BUFFER) this.snapBuf.shift();
+  }
+
+  /**
+   * DOES THIS WORLD'S ELEMENTS GET INTERPOLATED? Only a 3D-physics BIOBUZZ world does.
+   *
+   * Read off `world.biobuzz.physics` rather than off the session, because it has to answer
+   * for a spectator and a mid-match joiner too — both of which learn the room's physics from
+   * the keyframe rather than from a `matchStart` they were not sent. One read, used by the
+   * buffer and by `displayWorld`, so the two halves cannot disagree about a frame.
+   */
+  private interp3d(): boolean {
+    const bb = (this.world as { biobuzz?: { physics?: string } }).biobuzz;
+    return bb?.physics === '3d';
+  }
+
+  // ─────────────────────────────────────────────────── prediction (plan §5) ──
+
+  /**
+   * IS THE LOCAL ROBOT PREDICTED BY `sim3d/predict` RATHER THAN BY THE WHOLE GAME STEP?
+   *
+   * Three conditions, and all three are load-bearing. A SESSION, because prediction is what a
+   * client does about a server it cannot hear from yet — solo has no lag to hide. NOT A
+   * SPECTATOR, because a spectator has no robot of its own and its path deliberately steps the
+   * world so its balls animate. And a 3D-PHYSICS world, read off the world itself rather than
+   * off the session, for the same reason `interp3d` is: a mid-match joiner learns the room's
+   * physics from the keyframe, not from a `matchStart` it was never sent.
+   */
+  private predicted3d(): boolean {
+    return !!this.session && !this.spectator && this.interp3d();
+  }
+
+  /** flip the chunk-loading latch and tell the view, in one place so the two cannot disagree. */
+  private setPhysicsPending(pending: boolean): void {
+    this.physicsPending = pending;
+    this.onPhysicsPending?.(pending);
+  }
+
+  /**
+   * ADOPT A STORED PREFERENCE. `auto` resolves at the countdown probe, so it starts as Light —
+   * the safe answer, and the one Auto falls back to anyway.
+   *
+   * `initial` distinguishes construction from a live change: the two differ only in the event
+   * log line Off earns, which is about a CHOICE and would be a strange thing to print at
+   * kickoff for a preference somebody set weeks ago... except that it is exactly then that it
+   * is useful. So both paths print it, once ever, and `initial` only decides whether the line
+   * can reach a log at all (there is no log before the first frame drains one — `netEvents` is
+   * drained in `frameLogic`, which has not run yet, so an early push simply waits).
+   */
+  private resolvePredictionPref(pref: PredictionPref, initial: boolean): void {
+    this.predictionPref = pref;
+    if (pref === 'auto') {
+      // a live switch BACK to Auto re-arms the probe: the player has asked the game to decide
+      // again, and refusing to re-measure would leave them on whatever the last explicit pick was
+      if (!initial) {
+        this.autoProbed = false;
+        this.autoDropped = false;
+      }
+      this.setPredictionMode(this.autoProbed ? this.predictionMode : 'light');
+      return;
+    }
+    this.setPredictionMode(pref);
+  }
+
+  /** switch what is running. Rebuilds the predictor, clears the slip window, and earns Off its
+   *  one-time explanation. A no-op when the mode is already the one asked for. */
+  private setPredictionMode(mode: PredictionMode): void {
+    if (this.predictionMode === mode && (mode === 'off') === (this.predictor === null)) {
+      this.ensurePredictor();
+      return;
+    }
+    this.predictionMode = mode;
+    this.reconcileMs.length = 0;
+    this.ensurePredictor();
+    /**
+     * OFF'S ONE-TIME EXPLANATION (plan §5). A driver who turns prediction off and then finds
+     * their robot answering the stick a tenth of a second late has been handed a bug, not a
+     * setting, unless somebody tells them. It goes to the event log — `docs/area/ui.md`'s
+     * "no popup toasts over the field" names that log as the surface — and only in a room where
+     * the setting does anything at all.
+     */
+    if (mode === 'off' && this.predicted3d() && !offNoticeShown()) {
+      markOffNoticeShown();
+      this.netEvents.push('Prediction off — your robot is drawn from the server, about 80 ms behind your stick.');
+    }
+  }
+
+  /** build (or drop) the predictor the current mode wants. Idempotent: called on every
+   *  reconcile, and returns immediately when the live one is already the right kind. */
+  private ensurePredictor(): void {
+    const want = this.predictionMode;
+    if (want === 'off' || !this.predicted3d()) {
+      this.disposePredictor();
+      return;
+    }
+    if (this.predictorKind === want && this.predictor) return;
+    this.disposePredictor();
+    // NOT AN ERROR, just early: the chunk is still in flight and `physicsPending` is holding
+    // every step anyway. The next reconcile after it lands builds this.
+    if (!physics3dReady()) return;
+    try {
+      const impl = physics3dImpl();
+      this.predictor =
+        want === 'full'
+          ? impl.createFullPredictor(this.world, this.localRobotId)
+          : impl.createLightPredictor(this.world, this.localRobotId);
+      this.predictorKind = want;
+    } catch (err) {
+      // A FULL predictor builds ~80 Rapier colliders and can fail where Light cannot. Fall to
+      // Light rather than to nothing: a room with no prediction at all is a worse answer than
+      // the cheaper one, and Off is a choice the player makes, never an outcome they are given.
+      // eslint-disable-next-line no-console
+      console.warn('BIOBUZZ 3D prediction failed to build; falling back to Light.', err);
+      this.predictor = null;
+      this.predictorKind = null;
+      if (want === 'full') {
+        this.predictionMode = 'light';
+        this.ensurePredictor();
+      }
+    }
+  }
+
+  private disposePredictor(): void {
+    const p = this.predictor;
+    this.predictor = null;
+    this.predictorKind = null;
+    try {
+      p?.dispose();
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.warn('BIOBUZZ 3D predictor threw disposing.', err);
+    }
+  }
+
+  /** write a predicted pose onto the local robot of the authoritative world. Six fields, the
+   *  same six `step3d`'s readback writes — a partial write would leave the drive model reading
+   *  a velocity that does not belong to the position beside it. */
+  private applyPredictedPose(pose: PredictedPose): void {
+    const r = this.world.robots.find((x) => x.id === this.localRobotId);
+    if (!r) return;
+    r.pos.x = pose.pos.x;
+    r.pos.y = pose.pos.y;
+    r.vel.x = pose.vel.x;
+    r.vel.y = pose.vel.y;
+    r.heading = pose.heading;
+    r.angVel = pose.angVel;
+    r.z = pose.z;
+    r.vz = pose.vz;
+  }
+
+  /**
+   * THE 3D RECONCILE: re-step every buffered input through the predictor, not through the game.
+   *
+   * `reset` adopts the authoritative world, `step` re-runs one buffered input, and the LAST
+   * pose is the one written back — the intermediate ones are never rendered, so there is
+   * nothing to do with them. The whole window is `MAX_PREDICT_LEAD` (40) inputs at the very
+   * most, which is the number `PREDICT_FULL_BUDGET_MS` was measured against.
+   *
+   * Off still runs the clock (`predictTick`) and still buffers, so switching prediction ON
+   * mid-match has a buffer to replay rather than a gap; it simply writes no pose, leaving the
+   * local robot at the server's own position for `displayWorld` to interpolate like a remote.
+   */
+  private replayThroughPredictor(serverTick: number): void {
+    this.ensurePredictor();
+    this.predictTick = serverTick + this.inputBuf.length;
+    const p = this.predictor;
+    if (!p) return; // Off, or the chunk has not landed yet
+    // THE CLOCK IS ALLOWED HERE. `sim3d/` may not read one (the source guard greps for it, and
+    // a sim that can read a clock is a sim that can make a replay diverge) — this is client
+    // code measuring client code, which is the reason `probeFullReconcileMs` takes `now` as an
+    // argument rather than defaulting it.
+    const t0 = performance.now();
+    p.reset(this.world, serverTick);
+    let pose: PredictedPose | null = null;
+    for (const b of this.inputBuf) pose = p.step(b.cmd);
+    if (pose) this.applyPredictedPose(pose);
+    this.notePredictionCost(performance.now() - t0);
+  }
+
+  /**
+   * AUTO'S ONE MEASUREMENT (plan §5), taken during the pre-match countdown.
+   *
+   * `probeFullReconcileMs` builds a real Full predictor, resets it to the real world and
+   * re-steps a real forty-tick window, which is the exact work a reconcile does — so the answer
+   * is about THIS machine and THIS match rather than about a synthetic benchmark. Under
+   * `PREDICT_FULL_BUDGET_MS` takes Full; anything else takes Light. Off is never chosen here.
+   *
+   * It runs in `pre` because that is the one moment in a match with nothing else happening and
+   * a guaranteed few seconds of it. A client that arrives past the countdown — a rejoin, a
+   * mid-match join — takes Light without probing: probing inside a live match would spend the
+   * budget it is trying to protect, at the worst possible time.
+   */
+  private maybeProbeAuto(): void {
+    if (this.autoProbed || this.predictionPref !== 'auto' || !this.predicted3d()) return;
+    if (this.world.match.phase !== 'pre') {
+      if (this.gotSnapshot) {
+        this.autoProbed = true;
+        this.setPredictionMode('light');
+      }
+      return;
+    }
+    if (!physics3dReady()) return; // still loading; the countdown is 3 s and this is idempotent
+    this.autoProbed = true;
+    let ms = Number.POSITIVE_INFINITY;
+    try {
+      ms = physics3dImpl().probeFullReconcileMs(this.world, this.localRobotId, () => performance.now());
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.warn('BIOBUZZ 3D prediction probe threw; taking Light.', err);
+    }
+    this.autoProbeMs = Number.isFinite(ms) ? ms : null;
+    this.setPredictionMode(ms <= PREDICT_FULL_BUDGET_MS ? 'full' : 'light');
+  }
+
+  /**
+   * THE SLIP RULE (plan §5): if Full's reconcile p95 climbs past the budget in a match, Auto
+   * drops to Light ONCE and says so.
+   *
+   * ⚠️ **ONLY WHEN THE MODE WAS AUTO'S TO PICK.** A player who chose Full explicitly keeps it,
+   * however slow it gets — the plan's words are "the player's explicit choice is never
+   * overridden", and silently undoing a setting somebody opened a menu to change is worse than
+   * a few dropped frames. The window is `PREDICT_SLIP_WINDOW` reconciles (~2 s at 30 Hz) so one
+   * GC pause cannot trigger it, and it never steps back up: a machine that missed the budget
+   * under load will miss it again, and a mode that flaps is worse than the cheaper one.
+   */
+  private notePredictionCost(ms: number): void {
+    this.lastReconcileMs = ms;
+    if (this.predictorKind !== 'full') return;
+    const w = this.reconcileMs;
+    w.push(ms);
+    if (w.length > PREDICT_SLIP_WINDOW) w.shift();
+    if (this.autoDropped || this.predictionPref !== 'auto') return;
+    if (w.length < PREDICT_SLIP_WINDOW) return;
+    const sorted = [...w].sort((a, b) => a - b);
+    const p95 = sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * 0.95))];
+    if (p95 <= PREDICT_FULL_BUDGET_MS) return;
+    this.autoDropped = true;
+    this.setPredictionMode('light');
+    this.netEvents.push('Prediction stepped down to Light — full prediction is too slow here.');
+  }
+
+  /**
+   * What the in-match panel prints, and what a verification run reads.
+   *
+   * Null for every match where the setting does nothing (solo, a 2D room, a spectator), so the
+   * control can hide itself on the one fact that decides whether it would do anything.
+   */
+  getPredictionStats(): {
+    pref: PredictionPref;
+    mode: PredictionMode;
+    /** ms the Auto probe measured on this machine, or null (not Auto, or not probed yet) */
+    probeMs: number | null;
+    /** the last reconcile's correction distance, inches */
+    correctionIn: number;
+    /** the last reconcile's cost, ms */
+    reconcileMs: number;
+    /** p95 reconcile cost over the recent window, or null before the window fills */
+    reconcileP95: number | null;
+    /** Auto stepped Full down to Light this match */
+    stepped: boolean;
+  } | null {
+    if (!this.predicted3d()) return null;
+    const w = this.reconcileMs;
+    let p95: number | null = null;
+    if (w.length >= 8) {
+      const sorted = [...w].sort((a, b) => a - b);
+      p95 = sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * 0.95))];
+    }
+    return {
+      pref: this.predictionPref,
+      mode: this.predictionMode,
+      probeMs: this.autoProbeMs,
+      correctionIn: this.lastCorrection,
+      reconcileMs: this.lastReconcileMs,
+      reconcileP95: p95,
+      stepped: this.autoDropped,
+    };
   }
 
   /** the world to RENDER (networked path): the local robot stays predicted (+ eased
@@ -953,11 +2064,27 @@ export class GameController {
         pos: { x: r.pos.x + this.localSmooth.x, y: r.pos.y + this.localSmooth.y },
         heading: r.heading + this.localSmooth.heading,
       });
+    // `z` is NOT smoothed: `localSmooth` is a 2D correction offset and a height error is not
+    // a rubberbanding artifact — a robot pressed under a descending tray is where the server
+    // says it is, and easing that would draw it inside the geometry.
+
+    /**
+     * PREDICTION `off` RENDERS THE LOCAL ROBOT LIKE A REMOTE (plan §5's first row).
+     *
+     * Not a special case in the interpolator — the ABSENCE of one. Everything below already
+     * knows how to draw a robot from the two snapshots bracketing the render clock; all Off
+     * does is stop exempting the local robot from it. That is what buys the mode its honesty:
+     * what is on screen is what the server said, ~5 ticks ago, and nothing is guessed.
+     */
+    const predictLocal = !(this.predicted3d() && this.predictionMode === 'off');
 
     const buf = this.snapBuf;
     if (buf.length < 2) {
       // not enough history to interpolate yet — just apply local smoothing
-      return { ...this.world, robots: this.world.robots.map((r) => (r.id === this.localRobotId ? local(r) : r)) };
+      return {
+        ...this.world,
+        robots: this.world.robots.map((r) => (predictLocal && r.id === this.localRobotId ? local(r) : r)),
+      };
     }
 
     // advance the interpolation clock at real-time rate, then gently pull it toward
@@ -989,22 +2116,57 @@ export class GameController {
     const r0 = new Map(s0.robots.map((r) => [r.id, r] as const));
     const r1 = new Map(s1.robots.map((r) => [r.id, r] as const));
 
-    // ONLY remote robots interpolate. Balls are rendered straight from the predicted
-    // sim: they're fast, spawn/despawn (launches), and collide — interpolating them
-    // ghosts a freshly-spawned ball between its predicted and past positions and lerps
-    // colliding balls THROUGH each other (the "blend"). Predicted balls stay accurate.
+    // ONLY remote robots interpolate in a 2D-physics world. Balls there are rendered
+    // straight from the predicted sim: they're fast, spawn/despawn (launches), and collide —
+    // interpolating them ghosts a freshly-spawned ball between its predicted and past
+    // positions and lerps colliding balls THROUGH each other (the "blend"). Predicted balls
+    // stay accurate. A 3D-physics world is the exception, and `snapBuf`'s header says why.
     const robots = this.world.robots.map((r) => {
-      if (r.id === this.localRobotId) return local(r); // predicted, responsive
+      if (r.id === this.localRobotId && predictLocal) return local(r); // predicted, responsive
       const p = r0.get(r.id);
       const q = r1.get(r.id);
       if (!p || !q) return r; // just spawned/left the buffer — fall back to predicted
       return {
         ...r,
         pos: { x: lerp(p.x, q.x, a), y: lerp(p.y, q.y, a) },
+        // `z` only where the world HAS one. Writing `z: 0` into a 2D world's robots would put
+        // a key on every rendered robot that the 2D path never carried, which is a change to
+        // what `drawRobot` sees for a game that has nothing to do with this.
+        ...(this.interp3d() ? { z: lerp(p.z, q.z, a) } : null),
         heading: lerpAngle(p.heading, q.heading, a),
       };
     });
-    return { ...this.world, robots };
+    if (!this.interp3d()) return { ...this.world, robots };
+
+    /**
+     * ELEMENTS, in a 3D-physics world only.
+     *
+     * Three guards, each of which is a bug if it is missing:
+     *  · an id absent from either bracketing snapshot falls back to the predicted ball. It
+     *    cannot happen while the count is conserved, which is exactly why it must not be
+     *    ASSUMED — a future rule that spawns one would otherwise draw it at the origin.
+     *  · a `state.kind` CHANGE SNAPS to the newer pose. An element entering a hopper or
+     *    leaving a human player's hand teleports in the sim, and easing it there draws it
+     *    travelling through a chassis.
+     *  · `held` and `stock` elements are left ALONE. Their position is written every tick by
+     *    the thing carrying them, not by the solve, so the predicted value is the correct one
+     *    and a stale snapshot pose would drag them behind their own robot.
+     */
+    const b0 = new Map(s0.balls.map((b) => [b.id, b] as const));
+    const b1 = new Map(s1.balls.map((b) => [b.id, b] as const));
+    const balls = this.world.balls.map((ball) => {
+      if (ball.state.kind === 'held' || ball.state.kind === 'stock') return ball;
+      const p = b0.get(ball.id);
+      const q = b1.get(ball.id);
+      if (!p || !q) return ball;
+      if (p.kind !== q.kind) return { ...ball, pos: { x: q.x, y: q.y }, z: q.z };
+      return {
+        ...ball,
+        pos: { x: lerp(p.x, q.x, a), y: lerp(p.y, q.y, a) },
+        z: lerp(p.z, q.z, a),
+      };
+    });
+    return { ...this.world, robots, balls };
   }
 
   /** adopt the authoritative world, discard inputs it already reflects, and
@@ -1050,15 +2212,24 @@ export class GameController {
     if (this.inputBuf.length > MAX_PREDICT_LEAD) {
       this.inputBuf.splice(0, this.inputBuf.length - MAX_PREDICT_LEAD);
     }
-    for (const b of this.inputBuf) {
-      this.mod.step(this.world, C.SIM_DT, this.cmdMap(b.cmd));
-    }
+    /**
+     * THE ONE LINE THIS WHOLE DAY IS ABOUT.
+     *
+     * 2D room ⇒ replay the buffered inputs through the WHOLE game step, exactly as before, so
+     * every existing hash and every existing feel is untouched. 3D room ⇒ re-step them through
+     * the chosen predictor instead, which answers the only question a reconcile asks (where is
+     * MY robot now) at a fraction of forty `step3d` calls. Everything downstream — the
+     * `localSmooth` correction below, `displayWorld`, the render loop — is identical either way.
+     */
+    if (this.predicted3d()) this.replayThroughPredictor(snap.serverTick);
+    else for (const b of this.inputBuf) this.mod.step(this.world, C.SIM_DT, this.cmdMap(b.cmd));
 
     const post = this.world.robots.find((r) => r.id === this.localRobotId);
     if (pre && post) {
       let dx = preX - post.pos.x;
       let dy = preY - post.pos.y;
       let dh = Math.atan2(Math.sin(preH - post.heading), Math.cos(preH - post.heading));
+      this.lastCorrection = Math.hypot(dx, dy);
       // a genuinely large correction (desync/teleport) should SNAP, not float far
       // behind for a beat — only smooth sub-robot-scale errors
       if (Math.hypot(dx, dy) > SMOOTH_MAX_DIST) {
@@ -1066,7 +2237,17 @@ export class GameController {
         dy = 0;
         dh = 0;
       }
-      this.localSmooth = { x: dx, y: dy, heading: dh };
+      /**
+       * OFF SMOOTHS NOTHING, because there is nothing to smooth: the local robot is not
+       * predicted, so `pre` and `post` are two consecutive AUTHORITATIVE positions and their
+       * difference is real movement, not error. Carrying it as an offset would drag the robot
+       * a snapshot behind where it is already being drawn a snapshot behind.
+       */
+      if (this.predicted3d() && this.predictionMode === 'off') {
+        this.localSmooth = { x: 0, y: 0, heading: 0 };
+      } else {
+        this.localSmooth = { x: dx, y: dy, heading: dh };
+      }
     }
   }
 
@@ -1092,6 +2273,17 @@ export class GameController {
     this.snapBuf = [];
     this.renderTick = 0;
     this.localSmooth = { x: 0, y: 0, heading: 0 };
+    // A REMATCH IS A NEW MATCH, so it gets a new probe and a new slip window. The predictor is
+    // dropped rather than reset: `reset` re-seats bodies against a world, and the world it was
+    // built from has just been replaced.
+    this.predictTick = 0;
+    this.lastCorrection = 0;
+    this.reconcileMs.length = 0;
+    this.autoProbed = false;
+    this.autoProbeMs = null;
+    this.autoDropped = false;
+    this.disposePredictor();
+    if (this.predictionPref === 'auto') this.predictionMode = 'light';
     this.seedActionAudio();
     this.toasts = [];
   }
@@ -1136,6 +2328,16 @@ export class GameController {
    */
   startMatch(): void {
     if (this.session) return; // the room's host owns the start
+    /**
+     * A TUTORIAL IS NEVER RECORDED, and this is the belt to the braces.
+     *
+     * It runs in free drive, whose phase is `freeplay`, so the guard below already returns — but
+     * the reason matters enough to be stated where somebody would change it: a step's situation is
+     * STAGED onto the world, and a replay rebuilds a run from `{seed, setups, commands}` alone.
+     * Recording a staged world would produce a replay that plays back a different situation from
+     * the one the player drove, which is worse than keeping nothing.
+     */
+    if (this.tutorial) return;
     if (this.world.match.phase !== 'pre') return;
     if (this.world.match.preCountdown != null) return; // already counting down
     this.world = this.makeWorld(false);
@@ -1143,7 +2345,18 @@ export class GameController {
     this.prevPhase = this.world.match.phase;
     this.practice = null;
     // free drive never reaches `pre`, so this is a solo PRACTICE match by construction
-    this.recorder = new ReplayRecorder(this.soloSeed, this.soloSetups, 'match', this.gameId);
+    // STAMPED WITH WHAT THE REBUILT WORLD ACTUALLY RUNS ON, read off the world rather than
+    // off `settings.practicePhysics`: the two can differ for one whole run, because a failed
+    // 3D chunk load falls the session back to 2D without touching the stored setting (see
+    // `physicsFallbackNotice`). Stamping the setting would file that run as a 3D one and it
+    // would re-simulate into a different match than the player played.
+    this.recorder = new ReplayRecorder(
+      this.soloSeed,
+      this.soloSetups,
+      'match',
+      this.gameId,
+      this.interp3d() ? '3d' : '2d',
+    );
     this.drivenTicks = 0;
     this.settle = newSettleClock();
     this.settleDone = false;
@@ -1293,6 +2506,8 @@ export class GameController {
     const mod = gameOf(w);
     return {
       game: w.game ?? 'decode',
+      physics: this.interp3d() ? '3d' : '2d',
+      prediction: this.getPredictionStats(),
       gameHud: mod.hud?.(w, this.localRobotId),
       chain,
       mode: w.mode,
@@ -1340,6 +2555,7 @@ export class GameController {
       net: this.session ? this.session.status() : null,
       spectators: this.session?.spectatorCount?.() ?? 0,
       rematch: this.rematchTally(),
+      tutorial: this.getTutorial(),
     };
   }
 
@@ -1385,10 +2601,21 @@ export class GameController {
     this.harvestPracticeRun(false);
     this.audio.stopSpeech();
     this.audio.stopKeepAlive();
+    // the solo AI seats: the caller owns their memory, so the caller gives it back
+    this.seatBots(this.world, this.soloSeed, 'off');
     cancelAnimationFrame(this.raf);
     if (this.simTimer) window.clearInterval(this.simTimer);
     this.input.detach();
     window.removeEventListener('resize', this.onResize);
     this.canvasObserver?.disconnect();
+    this.hudBandObserver?.disconnect();
+    this.hudBandMutations?.disconnect();
+    this.observedBands.clear();
+    this.unsubscribeViewPref();
+    this.unsubscribePredictionPref();
+    // a FULL predictor owns a Rapier world; leaking one per match leaks wasm memory for the
+    // life of the tab, which is exactly as long as somebody plays
+    this.disposePredictor();
+    this.teardownScene();
   }
 }

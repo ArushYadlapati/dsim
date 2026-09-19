@@ -11,6 +11,15 @@ import {
   type PadAction,
 } from '../input/bindings';
 import { rangeFill } from './rangeFill';
+import {
+  PREDICTION_BLURBS,
+  PREDICTION_LABELS,
+  PREDICTION_PREFS,
+  getPredictionPref,
+  setPredictionPref,
+  subscribePredictionPref,
+  type PredictionPref,
+} from '../net/predictionPref';
 
 const KEY_LABELS: Record<KeyAction, string> = {
   driveUp: 'Drive forward (Tank: left side)',
@@ -78,10 +87,26 @@ interface Props {
   onChange: (b: ControlBindings) => void;
   /** launch Free Drive with the on-screen touch-control layout editor open */
   onEditTouchControls: () => void;
+  /** run the tutorial (roadmap item 6) — absent when the active game has no tutorial, and the
+   *  block below is then not rendered at all rather than shown disabled. */
+  onTutorial?: () => void;
 }
 
-export function ControlsSection({ bindings, onChange, onEditTouchControls }: Props) {
+export function ControlsSection({ bindings, onChange, onEditTouchControls, onTutorial }: Props) {
   const [capture, setCapture] = useState<Capture | null>(null);
+  /**
+   * CLIENT PREDICTION (`docs/biobuzz/plan-3d.md` §5). Per DEVICE, so it is NOT a `GameSettings`
+   * field and does not arrive through `props` — it has its own store and its own subscription,
+   * the same shape the view preference uses, because a machine's speed is not a property of an
+   * account (`src/net/predictionPref.ts`).
+   *
+   * Shown unconditionally rather than gated on the active game. It is a NETCODE setting, and
+   * the screen it lives on is not in a match: the room whose physics decides whether it does
+   * anything has not been joined yet, and hiding a control that will matter in five minutes is
+   * how a player never finds it. The blurbs say where it applies.
+   */
+  const [prediction, setPrediction] = useState<PredictionPref>(() => getPredictionPref());
+  useEffect(() => subscribePredictionPref(setPrediction), []);
 
   // keyboard capture: next keydown becomes the binding; Escape cancels
   useEffect(() => {
@@ -151,11 +176,46 @@ export function ControlsSection({ bindings, onChange, onEditTouchControls }: Pro
   return (
     <section className="ds-sec">
       <h2>Controls</h2>
+      {/* FIRST, above the bindings: this is the screen somebody lands on when the controls are
+          the thing they do not understand, and the tutorial is the answer to that. It stays here
+          for EVERYONE, unlike the Modes page's first-run card — a player who skipped it, or who
+          rebound half their keys and wants to practise the new map, has no other way back in. */}
+      {onTutorial && (
+        <div className="ds-bind-block">
+          <h3>Tutorial</h3>
+          <button className="ds-btn" onClick={onTutorial}>
+            Run the tutorial
+          </button>
+          {/* same reason the Modes card prints no count: it is per game and per robot. */}
+          <p className="ds-hint">
+            A few steps on the real field. The hints name whichever keys and buttons you have bound.
+          </p>
+        </div>
+      )}
       <div className="ds-bind-block">
         <h3>Touch controls</h3>
         <button className="ds-btn" onClick={onEditTouchControls}>
           Customize touch controls
         </button>
+      </div>
+      <div className="ds-bind-block">
+        <h3>Prediction</h3>
+        <div className="ds-opts">
+          {PREDICTION_PREFS.map((p) => (
+            <button
+              key={p}
+              className={`ds-opt mini ${prediction === p ? 'on' : ''}`}
+              onClick={() => setPredictionPref(p)}
+            >
+              <span className="ot">{PREDICTION_LABELS[p]}</span>
+              <span className="od">{PREDICTION_BLURBS[p]}</span>
+            </button>
+          ))}
+        </div>
+        <p className="ds-hint">
+          How much your machine works out for itself while it waits for the server. Saved on this
+          device, and used only in 3D-physics rooms.
+        </p>
       </div>
       <div className="ds-binds">
         <div className="ds-bind-block">

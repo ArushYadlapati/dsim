@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import type { GameSettings } from '../game';
-import type { Alliance, GameSettings as GS, RobotSpec } from '../types';
+import type { Alliance, GameSettings as GS, Physics, RobotSpec } from '../types';
 import { START_POSES } from '../config';
 import { CHAIN_START_POSES } from '../games/chain/config';
 import { StartPositionEditor } from './StartPositionEditor';
@@ -17,6 +17,7 @@ import { DRIVETRAIN_LABELS, buildSummary } from './robotLabels';
 import { gameServers, lanActive, multiServer, roomServerUrl, roomServerUrlWith, selectedServer } from '../net/env';
 import { roomJoinRegion } from '../net/roomRegion';
 import { takePendingLanRoom } from '../lan/pending';
+import type { ResumedRoom } from './roomReturn';
 import { WebSocketTransport, type Transport } from '../net/transport';
 import { LobbyClient, type MatchStart } from '../net/lobbyClient';
 import { ServerSession } from '../net/serverSession';
@@ -27,10 +28,12 @@ import { generateRoomCode, normalizeRoomCode, isValidRoomCode, ROOM_CODE_LENGTH 
 import { APP_NAME } from '../seasons';
 import { Logo } from './Logo';
 import { useEscape } from './useEscape';
-import { copyText } from './clipboard';
 import { DISCORD_REGION } from '../net/discordActivity';
+import { serverCaps } from '../net/api';
+import { botLabel } from './MatchSetup';
 import type { RoomInvite } from '../net/api';
 import { FriendsPanel, type RoomInviteTarget } from './FriendsPanel';
+import { copyText } from './copyText';
 
 interface Props {
   settings: GameSettings;
@@ -49,6 +52,14 @@ interface Props {
   onOpenProfile: (username: string) => void;
   onJoinInvite: (invite: RoomInvite) => void;
   onSpectate: (room: string, region?: string) => void;
+  /**
+   * A LIVE SOCKET COMING BACK FROM A FINISHED MATCH, rather than a code to dial.
+   *
+   * The host recycled the room: the server cleared its world, kept everyone's seat, and
+   * told each client so. This screen adopts that connection instead of joining — see
+   * `ResumedRoom`. Consumed once, on mount.
+   */
+  resume?: ResumedRoom;
   /** a room code to join automatically on mount (a friend's invite, clicked
    * from elsewhere in the app) — calls the exact same `join()` a manual code
    * entry does, just triggered once at mount instead of by a button click. */
@@ -133,6 +144,7 @@ export function Lobby({
   onOpenProfile,
   onJoinInvite,
   onSpectate,
+  resume,
   autoJoin,
   autoJoinRegion,
   onAutoJoinConsumed,
@@ -145,6 +157,22 @@ export function Lobby({
   const [code, setCode] = useState('');
   // entry sub-mode: pick whether you're creating a fresh room or joining a code
   const [entryMode, setEntryMode] = useState<'create' | 'join'>('create');
+  /**
+   * THE ROOM'S PHYSICS, and it is a CREATE-time choice only.
+   *
+   * A room's physics is fixed when the room is made (`RoomConfig.physics`), so this control
+   * belongs on the entry screen next to Create room and nowhere else — by the time the roster
+   * arrives and `isHost` is knowable, the world it describes has already been decided. A
+   * joiner's value is ignored by the server, which is right: the room they are dialling into
+   * already has one, and the code carries no way to negotiate.
+   *
+   * Defaults `'3d'` for a game that offers it (plan §2.1). The control is hidden entirely for
+   * a game whose `physicsOptions` lack `'3d'`, which is DECODE and Chain Reaction — offering a
+   * choice their `step` cannot honour would be offering a choice that does not exist.
+   */
+  const roomGame = config.game ?? settings.game;
+  const physicsOffered = !!moduleFor(roomGame).physicsOptions?.includes('3d');
+  const [roomPhysics, setRoomPhysics] = useState<Physics>('3d');
   const [copied, setCopied] = useState(false);
   // One app, several regions: a shared room code only lands two people on the same machine
   // if they connect to the same one. JOINING an invite, that is not a choice — it is
@@ -163,6 +191,31 @@ export function Lobby({
   const [name, setName] = useState((displayName ?? settings.spec.teamName) || 'Player');
   const [players, setPlayers] = useState<LobbyPlayer[]>([]);
   const [hostId, setHostId] = useState('');
+  /**
+   * BOT SEATS (plan §6). Two independent conditions, and the control needs both:
+   *  · the GAME has an AI driver at all (`GameSimModule.bot`), which is a fact about the build;
+   *  · the SERVER understands `addBot` (`SERVER_CAPS` `'bots'`), which is a fact about the
+   *    deploy. One Fly app serves every client version, so a new client can be talking to a
+   *    server that predates the message — and that server IGNORES it rather than refusing, so
+   *    an ungated button would be pressed and do nothing at all. Same shape, same reason, as
+   *    the rated challenge formats' `'party'` gate.
+   * Until the capability read lands this is false, so the button appears a beat late rather
+   * than under a cursor already moving toward it.
+   */
+  const botTiers = moduleFor(roomGame).bot?.tiers;
+  const [serverBots, setServerBots] = useState(false);
+  useEffect(() => {
+    let alive = true;
+    void serverCaps().then((c) => {
+      if (alive) setServerBots(c.includes('bots'));
+    });
+    return () => {
+      alive = false;
+    };
+  }, []);
+  /** the tier the host's next "Add a bot" seats. Remembered for the session only: it is a
+   *  property of the room being set up, not of the account. */
+  const [botTier, setBotTier] = useState<string>(() => moduleFor(roomGame).bot?.defaultTier ?? '');
   const [myId, setMyId] = useState('');
   // block starting a custom match while a server restart is scheduled
   const notice = useServerNotice();
@@ -223,12 +276,23 @@ export function Lobby({
   const enoughPlayers = !isRecord || players.length >= capacity;
   const canStart = allReady && enoughPlayers && !restartPending;
 
-  function handleStart(m: MatchStart): void {
+  /**
+   * ⚠️ THE ROOM CODE IS AN ARGUMENT, NEVER THE `code` STATE.
+   *
+   * This handler is registered ONCE, inside `wire`, so it closes over the render that
+   * connected — and for a room we CREATED that render had not seen `setCode` yet, because
+   * `createRoom` mints the code and joins in the same tick. So `code` read '' and the
+   * session was built with no room at all: silently, since everything that needs it is a
+   * capability rather than a step. The rejoin record (`beginSession` skips a session with
+   * no `room`) and the way back to the room's own lobby both went missing for exactly the
+   * player who made the room. Same discipline as `Lobby.join`'s region argument.
+   */
+  function handleStart(m: MatchStart, roomCode: string): void {
     const lobby = lobbyRef.current;
     if (!lobby) return;
     startedRef.current = true;
     // pass the identity + room so the session can reclaim its slot on a reconnect
-    onStart(new ServerSession(lobby.transport, lobby.isHost(), m, lobby.clientId, code.trim()));
+    onStart(new ServerSession(lobby.transport, lobby.isHost(), m, lobby.clientId, roomCode));
   }
 
   /** create a brand-new room with a freshly generated code (you host it) */
@@ -314,6 +378,48 @@ export function Lobby({
         return;
       }
     }
+    // tag the room with the Discord Activity group (if any) so it shows in this
+    // activity's lobby browser. The server only applies it when CREATING the room;
+    // an existing room keeps its creator's group.
+    wire(transport, roomCode).join(roomCode, myPlayer(), roomConfig(), group || undefined);
+  }
+
+  /** the player fields this client advertises — the same on a fresh join and on a resume */
+  function myPlayer(): Omit<LobbyPlayer, 'clientId'> {
+    return {
+      name,
+      teamName: settings.spec.teamName,
+      teamNumber: settings.spec.teamNumber,
+      // record runs are opponent-free (one alliance) — force blue, matching the server
+      alliance: isRecord ? 'blue' : settings.alliance,
+      startIndex: settings.startIndex,
+      startPose: settings.startPose ?? null,
+      ready: false,
+      spec: settings.spec,
+      assists: settings.assists,
+    };
+  }
+
+  /** carry the selected game so the room builds the right world (defaults to the caller's
+   *  config game if it pinned one, else the player's setting) */
+  function roomConfig(): RoomConfig {
+    return {
+      ...config,
+      game: config.game ?? settings.game,
+      // OMITTED unless this game offers 3D and the host picked it. Sending `physics: '2d'`
+      // and sending nothing mean the same thing to the server, and sending nothing is what
+      // keeps a DECODE or Chain Reaction join byte-identical to what it was before Day 2.
+      physics: physicsOffered && roomPhysics === '3d' ? '3d' : undefined,
+    };
+  }
+
+  /**
+   * Attach this screen to a transport. Split out of `join` so the two ways INTO a room —
+   * dialling a code, and adopting the socket a recycled room handed back — share one set of
+   * handlers rather than drifting apart. The difference between them is only the frame sent
+   * afterwards: `join` for a seat we do not have, `resume` for one we already do.
+   */
+  function wire(transport: Transport, roomCode: string): LobbyClient {
     const lobby = new LobbyClient(transport);
     lobbyRef.current = lobby;
 
@@ -323,7 +429,7 @@ export function Lobby({
       setMyId(lobby.clientId);
       setPhase((p) => (p === 'connecting' ? 'room' : p));
     });
-    lobby.on('matchStart', handleStart);
+    lobby.on('matchStart', (m) => handleStart(m, roomCode));
     lobby.on('error', (msg, code) => {
       refusedRef.current = true;
       setError(msg);
@@ -349,29 +455,42 @@ export function Lobby({
       }
     });
 
-    lobby.join(
-      roomCode,
-      {
-        name,
-        teamName: settings.spec.teamName,
-        teamNumber: settings.spec.teamNumber,
-        // record runs are opponent-free (one alliance) — force blue, matching the server
-        alliance: isRecord ? 'blue' : settings.alliance,
-        startIndex: settings.startIndex,
-        startPose: settings.startPose ?? null,
-        ready: false,
-        spec: settings.spec,
-        assists: settings.assists,
-      },
-      // carry the selected game so the room builds the right world (defaults to
-      // the caller's config game if it pinned one, else the player's setting)
-      { ...config, game: config.game ?? settings.game },
-      // tag the room with the Discord Activity group (if any) so it shows in this
-      // activity's lobby browser. The server only applies it when CREATING the room;
-      // an existing room keeps its creator's group.
-      group || undefined,
-    );
+    return lobby;
   }
+
+  /**
+   * COME BACK FROM A FINISHED MATCH INTO THE ROOM WE NEVER LEFT.
+   *
+   * Straight to `'room'` when the handed-over socket is still open: there is nothing to
+   * connect, because it is the one that just played the match. The region is the host's by
+   * definition — it is where the room IS — so the picker locks as it does for an invite.
+   *
+   * ⚠️ AND A PLAIN JOIN WHEN IT IS NOT. The socket can be gone by the time this runs: it is
+   * closed on the way out of any lobby that did not start a match, and React's development
+   * StrictMode exercises exactly that (mount → cleanup → mount) on this screen's own
+   * teardown effect. Re-joining BY CODE is the honest recovery and not a workaround — the
+   * room is a lobby again, so `canJoin` is true again, which is the whole point of the
+   * recycle. It costs one reconnect and lands in the same place.
+   *
+   * Deliberately NOT guarded by a ref: a ref survives that simulated unmount, so a guarded
+   * effect would skip the second pass and leave the screen holding a closed socket.
+   */
+  useEffect(() => {
+    if (!resume) return;
+    setCode(resume.code);
+    if (resume.region) {
+      setRegion(resume.region);
+      setRegionLocked(true);
+    }
+    if (!resume.transport.isOpen) {
+      join(resume.code, resume.region);
+      return;
+    }
+    setPhase('room');
+    setMyId(resume.clientId);
+    wire(resume.transport, resume.code).resume(resume.code, myPlayer(), resume.clientId, roomConfig());
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [resume]);
 
   // Auto-join when a friend's invite / Discord Activity carried a room code — the same
   // `join()` a manual code entry calls, just triggered without a button click, and carrying
@@ -583,6 +702,34 @@ export function Lobby({
                 <span className="ot">Join room</span>
               </button>
             </div>
+            {/* THE PHYSICS IS THE HOST'S TO PICK AND ONLY AT CREATION — see `roomPhysics`.
+                Hidden for a game with no 3D solve, and hidden on the JOIN side, where the
+                room already has one and this control would imply a negotiation that does not
+                exist. The sentence under it states the consequence rather than restating the
+                labels: which one is compared with ranked is the whole reason to choose. */}
+            {entryMode === 'create' && physicsOffered && (
+              <>
+                <div className="ds-opts two">
+                  <button
+                    className={`ds-opt ${roomPhysics === '3d' ? 'on' : ''}`}
+                    onClick={() => setRoomPhysics('3d')}
+                  >
+                    <span className="ot">3D physics</span>
+                  </button>
+                  <button
+                    className={`ds-opt ${roomPhysics === '2d' ? 'on' : ''}`}
+                    onClick={() => setRoomPhysics('2d')}
+                  >
+                    <span className="ot">2D physics</span>
+                  </button>
+                </div>
+                <p className="ds-hint">
+                  {roomPhysics === '3d'
+                    ? 'The same solve ranked matches run on. Everyone in the room loads it.'
+                    : 'The lighter solve, for a low-end machine. Not comparable with ranked.'}
+                </p>
+              </>
+            )}
             {entryMode === 'join' && (
               <label className="ds-field">
                 <span className="cap">Room code</span>
@@ -710,13 +857,19 @@ export function Lobby({
           </span>
           <button
             className="ds-chip"
-            onClick={() => {
-              void copyText(code).then((ok) => {
-                if (!ok) return; // blocked (e.g. a locked-down embed) — the code is still shown in the title
+            // through `copyText`, and the tick only on a copy that actually happened:
+            // this lobby is reachable over a plain-http LAN origin, where the Clipboard
+            // API does not exist and the optional chain used to make this a no-op that
+            // still said '✓ Copied'. Same story in a locked-down embed (the Discord
+            // Activity iframe) — a blocked copy shows no tick, and the code is still
+            // visible in the title.
+            onClick={() =>
+              copyText(code, (ok) => {
+                if (!ok) return;
                 setCopied(true);
                 window.setTimeout(() => setCopied(false), 1500);
-              });
-            }}
+              })
+            }
           >
             {copied ? '✓ Copied' : '⧉ Copy code'}
           </button>
@@ -741,6 +894,11 @@ export function Lobby({
                   <span className="ptm">
                     {p.spec.name} · {p.teamNumber || '-'}
                   </span>
+                  {/* A BOT SEAT IS NAMED AS ONE, beside the name and not inside it — the same
+                      rule the supporter badge follows. Without it a roster row reading
+                      "Medium bot · READY" is indistinguishable from a driver who picked that
+                      name, and the difference is whether the match rates. */}
+                  {p.bot && <span className="ds-chip">🤖 BOT</span>}
                   {p.clientId === hostId && (
                     <span className="ds-chip on">★ HOST</span>
                   )}
@@ -761,6 +919,47 @@ export function Lobby({
               );
             })}
           </div>
+          {/* ADD A BOT (plan §6) — host only, versus only, and only when both the game and the
+              deploy can do it. A record run is excluded on purpose: its replay is leaderboard
+              PROOF, and a bot partner in a duo record would be a submission nobody drove. */}
+          {isHost && !isRecord && botTiers && botTiers.length > 0 && serverBots && (
+            <>
+              <div className="ds-opts fill">
+                {botTiers.map((t) => (
+                  <button
+                    key={t}
+                    className={`ds-opt mini ${botTier === t ? 'on' : ''}`}
+                    onClick={() => setBotTier(t)}
+                  >
+                    <span className="ot">{botLabel(t)}</span>
+                  </button>
+                ))}
+                <button
+                  className="ds-opt mini"
+                  disabled={players.length >= capacity}
+                  onClick={() => lobbyRef.current?.addBot(botTier)}
+                >
+                  <span className="ot">＋ Add a bot</span>
+                </button>
+                {players.some((p) => p.bot) && (
+                  <button
+                    className="ds-opt mini"
+                    onClick={() => {
+                      // the LAST one, which is the one the button just added — removing from the
+                      // end is what makes pressing add and remove alternately a no-op
+                      const last = [...players].reverse().find((p) => p.bot);
+                      if (last) lobbyRef.current?.removeBot(last.clientId);
+                    }}
+                  >
+                    <span className="ot">－ Remove a bot</span>
+                  </button>
+                )}
+              </div>
+              <p className="ds-hint">
+                A room with a bot in it is unrated and its result is not saved.
+              </p>
+            </>
+          )}
         </section>
 
         {/* In-room identity editing is DISCORD-ONLY: an activity auto-join skips the

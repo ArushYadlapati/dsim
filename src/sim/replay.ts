@@ -1,4 +1,4 @@
-import type { Alliance, GameId, GameMode, RobotCommand, RobotSpec, World, AutoPathData, StartPose } from '../types';
+import type { Alliance, GameId, GameMode, MatchPhase, Physics, RobotCommand, RobotSpec, World, AutoPathData, StartPose } from '../types';
 import * as C from '../config';
 import { DEFAULT_ASSISTS, type RobotSetup } from './spawn';
 import { simModuleFor } from '../games/sim';
@@ -73,6 +73,14 @@ export interface Replay {
   /** which game this replay is of — picks the sim module to re-simulate it (createWorld
    * + step). Absent on old replays ⇒ DECODE. */
   game?: GameId;
+  /**
+   * WHICH PHYSICS BACKEND THIS REPLAY WAS RECORDED UNDER (Day 1 seam,
+   * `docs/biobuzz/plan-3d.md`). Re-simulating a replay must step the SAME physics it was
+   * recorded with, or a re-sim of a `'3d'` match against `step2d` produces a different game
+   * from the one that was played. Absent ⇒ `'2d'` — every replay recorded before the 3D solve
+   * existed, which is the only physics any of them could have run.
+   */
+  physics?: Physics;
   mode: GameMode;
   seed: number;
   setups: RobotSetup[];
@@ -110,6 +118,9 @@ export class ReplayRecorder {
     readonly setups: RobotSetup[],
     readonly mode: GameMode = 'match',
     readonly game: GameId = 'decode',
+    /** which physics backend the run being recorded is stepping (`Replay.physics`). Default
+     *  `'2d'` so every existing caller records exactly what it always did. */
+    readonly physics: Physics = '2d',
   ) {}
 
   /** record the command map applied at `tick` (1-based, == world.tick after the
@@ -140,6 +151,11 @@ export class ReplayRecorder {
       balanceVersion: C.BALANCE_VERSION,
       sim: C.SIM_VERSION,
       game: this.game,
+      // OMITTED when it is `'2d'`, never written as the string: absent already READS `'2d'`
+      // everywhere, and a container that gained a key would no longer be byte-identical to
+      // the one this build produced yesterday — which is exactly what the 2D-regression half
+      // of the NET3D lane compares.
+      physics: this.physics === '3d' ? '3d' : undefined,
       mode: this.mode,
       seed: this.seed,
       setups: this.setups.map((s) => ({
@@ -278,15 +294,57 @@ const tankSteered = (dt: RobotSpec['drivetrain']): boolean => dt === 'tank' || d
  * feeding the recorded (hold-last) commands. `world` is live for rendering; the
  * UI replay viewer drives this at 60 Hz, the verifier runs it to completion.
  */
+/** one line the sim emitted, with WHEN — see `ReplayPlayer.log` */
+export interface ReplayLogEntry {
+  tick: number;
+  text: string;
+  phase: MatchPhase;
+  /** seconds left in that phase when it landed */
+  timeLeft: number;
+}
+
 export class ReplayPlayer {
   readonly world: World;
+  /**
+   * Every line the sim emitted, with the TICK it landed on — fouls, cards, the phase
+   * transitions, LEAVE credits, all of it. `world.events` is the same list, but it is only a
+   * list of strings: the live game drains it each frame into toasts and nothing ever needed
+   * to know WHEN one of them happened. A replay does. "MINOR FOUL - BLUE +5 (G424)" with no
+   * time against it cannot be seeked to, and a watcher asking why the score jumped at 1:12 is
+   * asking exactly that question.
+   *
+   * Recorded here rather than in the viewer because both of the viewer's step loops — play
+   * and seek — would otherwise have to wrap the call and stay in step with each other, and a
+   * seek that stepped 4,000 ticks in one synchronous burst would stamp all 4,000 ticks'
+   * events with the moment the seek finished.
+   *
+   * `world.events` is NOT drained: the world is the replay's own, nobody else reads it, and
+   * emptying an array the sim owns to keep a local index tidy is a side effect this class has
+   * no business having.
+   */
+  readonly log: ReplayLogEntry[] = [];
+  private logged = 0; // how much of world.events has been stamped
   private readonly cursor: Record<number, number> = {}; // robotId -> next entry index
   private readonly current = new Map<number, RobotCommand>();
   private readonly mod; // CR vs DECODE re-sim module (createWorld/step)
 
   constructor(private readonly replay: Replay) {
     this.mod = simModuleFor(replay.game);
-    this.world = this.mod.createWorld(replay.mode, replay.seed, replay.setups);
+    // THE CONTAINER'S physics, not this build's preference — re-simulating a `'3d'` log
+    // against `step2d` reproduces a different match from the same inputs, which is the one
+    // thing a replay may never do. Absent reads `'2d'`, which every pre-Day-2 container is.
+    //
+    // ⚠️ A `'3d'` replay needs the 3D physics module RESOLVED before this constructor runs —
+    // `createWorld` only stages it, but `stepOnce` steps it on the very next call. The viewer
+    // awaits `initPhysics3d()` (see `ReplayView`); a headless caller awaits it at the top of
+    // its script, exactly as it already awaits `initPhysics()`.
+    this.world = this.mod.createWorld(
+      replay.mode,
+      replay.seed,
+      replay.setups,
+      undefined,
+      replay.physics ?? '2d',
+    );
     if (replay.mode === 'match') this.world.match.preCountdown = C.PRE_COUNTDOWN;
     for (const s of this.replay.setups) this.current.set(s.id, { ...ZERO_CMD });
   }
@@ -323,6 +381,18 @@ export class ReplayPlayer {
       this.cursor[s.id] = ei;
     }
     this.mod.step(this.world, C.SIM_DT, this.current);
+    const evs = this.world.events;
+    for (; this.logged < evs.length; this.logged++) {
+      // the PHASE and the clock are stamped with it, because "1:23 into the file" is not how
+      // anybody reads a match — a call lands in AUTO with 4 seconds left, or in the last ten
+      // of ENDGAME, and that is the sentence a watcher wants back
+      this.log.push({
+        tick: this.world.tick,
+        text: evs[this.logged],
+        phase: this.world.match.phase,
+        timeLeft: Math.max(0, Math.round(this.world.match.phaseTimeLeft)),
+      });
+    }
     return true;
   }
 }
@@ -476,14 +546,15 @@ export function runRecordMatch(
   seed: number,
   setups: RobotSetup[],
   src: CommandSource,
-  opts: { mode?: GameMode; stopTick?: number; game?: GameId } = {},
+  opts: { mode?: GameMode; stopTick?: number; game?: GameId; physics?: Physics } = {},
 ): RecordRun {
   const mode = opts.mode ?? 'match';
   const game = opts.game ?? 'decode';
+  const physics = opts.physics ?? '2d';
   const mod = simModuleFor(game);
-  const world = mod.createWorld(mode, seed, setups);
+  const world = mod.createWorld(mode, seed, setups, undefined, physics);
   if (mode === 'match') world.match.preCountdown = C.PRE_COUNTDOWN;
-  const rec = new ReplayRecorder(seed, setups, mode, game);
+  const rec = new ReplayRecorder(seed, setups, mode, game, physics);
   const cap = opts.stopTick ?? maxMatchTicks();
   while (world.match.phase !== 'post' && world.tick < cap) {
     const tick = world.tick + 1;

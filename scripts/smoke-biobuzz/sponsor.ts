@@ -48,7 +48,7 @@ const read = (rel: string): string => readFileSync(join(ROOT, rel), 'utf8');
 const code = (rel: string): string =>
   read(rel)
     .replace(/\/\*[\s\S]*?\*\//g, '')
-    .split('\n')
+    .split(/\r?\n/)
     .filter((l) => !/^\s*(\/\/|\*)/.test(l))
     .join('\n');
 
