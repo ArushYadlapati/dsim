@@ -27,6 +27,8 @@
  * not "be careful".
  */
 import { track } from '@vercel/analytics';
+// the opt-out is its own leaf module — see the note there for why it is not in this file
+import { analyticsAllowed } from './analyticsPref';
 
 /** OFF unless explicitly enabled, matching how ads and auth are gated. A
  *  self-hosted or Electron build should not be firing beacons at a host it does
@@ -71,7 +73,9 @@ export function trackEvent(
   event: AnalyticsEvent,
   props?: Record<string, string | number | boolean>,
 ): void {
-  if (!ENABLED) return;
+  // `ENABLED` first, because it is a build constant: a build with analytics off never
+  // touches storage at all.
+  if (!ENABLED || !analyticsAllowed()) return;
   try {
     track(event, props);
   } catch {
