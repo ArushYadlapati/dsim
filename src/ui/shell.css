@@ -1160,7 +1160,7 @@
   background: var(--ds-blurple);
   color: var(--ds-blurple-ink);
   font: inherit;
-  font-size: 14px;
+  font-size: var(--ds-t-lg);
   font-weight: 700;
   letter-spacing: 0.01em;
   cursor: pointer;
@@ -1172,7 +1172,7 @@
 }
 .ds-discord-join:hover {
   transform: translateY(1px);
-  box-shadow: 0 2px 0 color-mix(in srgb, var(--ds-blurple) 55%, #000);
+  box-shadow: 0 2px 0 var(--ds-line);
 }
 .ds-discord-join:active {
   transform: translateY(3px);

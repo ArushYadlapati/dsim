@@ -172,7 +172,9 @@ export function watchDiscordParticipants(cb: (people: DiscordParticipant[]) => v
   let unsub: (() => void) | null = null;
   void (async () => {
     try {
-      const { DiscordSDK } = await import('@discord/embedded-app-sdk');
+      // via the facade so the lazy chunk is named `discordSdk-*`, not `index-*`
+      // (bundleaudit routes by filename — see src/net/discordSdk.ts)
+      const { DiscordSDK } = await import('./discordSdk');
       const clientId = window.location.hostname.split('.')[0];
       const sdk = new DiscordSDK(clientId);
       await sdk.ready();
