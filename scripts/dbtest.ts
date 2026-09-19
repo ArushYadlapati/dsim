@@ -2510,10 +2510,15 @@ async function main(): Promise<void> {
       );
       // DELETING an account is the same shape from the other end: it cannot consent any more,
       // and its row going away must not be read as the roster shrinking to fit.
+      //
+      // ⚠️ `deleteAccount` also sweeps this VERSUS match's replay outright (it is reachable
+      // only through a participant, and the account being deleted is one) — a stronger
+      // refusal than the roster falling incomplete, but not a weaker one: 'missing' still
+      // fails every `=== 'ok'` check a false "consent by absence" would need to pass.
       await repo.deleteAccount('rp-blue2');
       check(
-        'privacy/roster: a DELETED participant un-publishes the match rather than consenting by absence',
-        (await acc(duoReplay, 'rp-nosy')) === 'private',
+        'privacy/roster: a DELETED participant takes the match replay with it, rather than consenting by absence',
+        (await acc(duoReplay, 'rp-nosy')) === 'missing',
       );
     }
 
@@ -2661,8 +2666,6 @@ async function main(): Promise<void> {
       'privacy/history: a fully released match hands a stranger the replay id',
       (await hist('rp-red', 'rp-nosy')).rows.find((r) => r.id === String(mid))?.replayId === String(vsReplay),
       'rp-red and rp-blue are both public here',
-    );
-  }
     );
   }
 

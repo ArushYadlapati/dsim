@@ -174,8 +174,6 @@ const REGION_LABELS: Record<string, string> = {
   jnb: 'Africa',
   syd: 'Australia',
   nrt: 'Asia',
-  gru: 'South America',
-  jnb: 'Africa',
 };
 export const regionLabel = (code: string): string =>
   REGION_LABELS[code] ?? (code ? code.toUpperCase() : '');

@@ -1258,8 +1258,11 @@ export function App() {
   const abandonActiveGame = (): void => {
     const ref = loadActiveGame();
     if (ref) {
+      // the HOST's region if the ref recorded one, ours otherwise — the same rule every
+      // other room-opening path uses (see `rejoinGame`).
+      const region = roomJoinRegion(ref.region, selectedServer()?.region ?? '');
       const params: Record<string, string> = { room: ref.room };
-      if (ref.region) params.region = ref.region;
+      if (region) params.region = region;
       try {
         const t = new WebSocketTransport(gameServerUrlWith(params));
         t.onOpen(() => {
