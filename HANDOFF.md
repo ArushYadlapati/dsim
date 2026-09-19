@@ -1,6 +1,132 @@
+# HANDOFF — 2026-09-19 (alpha: THE OWNER'S TWELVE-ITEM PASS — the hive tip, scoring instants, flower
+and tile contact, the shooter/swerve/box-tube rebuild, intake cadence, one alliance blue)
+
+**READ FIRST.** Five commits, every gate green: `npm test` (**2531** BIOBUZZ + 1861 shared) ·
+`build` · `server:check` · `docaudit` · `uiaudit` · `contrast` (221) · `dbtest` · `test:mm` (197) ·
+`bundleaudit` (scene re-measured 199.48 → 201.44) · `shiftaudit` (576 state changes, 0 shifts).
+
+Twelve items, all from playing the running 3D game. Nine were diagnosed read-only first and then
+implemented under one-owner-per-file, which is what kept nine concurrent agents off each other.
+
+## 1 · The HIVE tips on the table it promises
+
+⚠️ **THE DYNAMIC TRAY'S TRIGGER IS `BB_TIP_POLLEN`, NOT A TORQUE** (`sim3d/hive3d.ts`). The owner's
+report was "it says 0 more to tip and it does not tip", staged as 1 POLLEN + 4 NECTAR: the load
+weighed 5701 against a hold of 5915 and the tray sat on its stop for the rest of the match.
+
+No calibration could have fixed it, and that is the part worth keeping. **ONE COUNT DOES NOT
+DETERMINE ONE TORQUE.** Measured in one cell at the shipped hold, staging the same count four ways:
+
+| load | crammed 2-wide up the back | guide staging | 2-wide line down the tray |
+|---|---|---|---|
+| 8 POLLEN | 4560 (no tip) | 7284 | 8051 |
+| 7 POLLEN | 4146 (no tip) | 5647 | 6769 (tips) |
+| 3P + 3N | 4933 (no tip) | 6869 | 8407 |
+
+The two counts' ranges overlap over most of their length, so no value of `BB3_HIVE_DETENT` separates
+them — and both halves of field guide §12.3 were being violated at once on the shipped numbers. The
+lane never saw it because every fixture staged one packing. The detent is a PIN THE TABLE LIFTS now;
+everything after the release is still the free see-saw. `hiveContentsTorque`/`hiveRestoringTorque`
+stay exported because they are how the lane and `scripts/hive-calibrate.ts` MEASURE the tray.
+
+⚠️ **`BB3_HIVE_DYNAMIC = false` IS NOT A ONE-WORD REVERT, AND HAS NOT BEEN SINCE G409 LANDED.**
+`bb.spill` — G409's whole tag — is written in exactly one place, inside `hiveDynamicTick`. The
+kinematic path never writes it, and all four G409 checks live inside `if (BB3_HIVE_DYNAMIC)` blocks,
+so flipping the word kills G409 in 3D **and the lane stays green**. The comments that claimed
+otherwise are corrected.
+
+## 2 · A scored line waits for the instant §10.5 assesses it at
+
+⚠️ **AN INSTANT LINE IS WORTH ZERO UNTIL ITS INSTANT HAS PASSED.** Measured before the fix: the
+score bar read 4 before the match started and 9 one second into AUTO, 29 s before anything on it had
+been assessed.
+
+| line | instant | §10.5 |
+|---|---|---|
+| LEAVE, AUTO PARK | end of AUTO | F |
+| TELEOP PARK | end of the MATCH | G |
+| POLLEN/NECTAR in the up-CELL | everything at rest, end of MATCH | C |
+| POLLEN/NECTAR in a GARDEN | end of TELEOP, all at rest | E |
+| the HIVE TIP, both FLOWER lines | continuous | A, D |
+
+The COUNT stays live — a driver still sees the achievement land — and `BbAllianceScore.pendingPts`
+carries what the instants still owe, shown as a `+N PENDING` chip in the muted row, deliberately not
+in the panel. `total + pendingPts` is invariant for a field that stops changing. **The FINAL score is
+unchanged**: every harvest happens at or after `post`. This is shared rules code, so it moved the 2D
+pipeline too — correct for a rules bug, and no version was bumped.
+
+## 3 · The shooter, the swerve pods and the box tube
+
+The shooter plate had been "fixed" twice and kept digging into the chassis, because both fixes
+measured the plate AT REST. ⚠️ **THE CONSTRAINT IS THE SWEPT ENVELOPE, NOT THE POSE.** Elevation
+rotates the whole pitching head, so `BB_HEAD_RHO_MAX` is the new invariant: nothing on the head may
+exceed ρ = `BB_LAUNCH_Z0 − BB_DECK_Z − 0.2`. At rest the old head cleared the deck by 0.45 in and
+looked right; at 45° of elevation the feed ramp swept the deck, the belly pan and the wheels and
+stopped 0.04 in off the tile. `minHeadWorldZ` is the closed form the RENDER lane samples.
+
+- **Swerve is a pod**: top plate, azimuth ring, fork, 3-in wheel, belt drive, all of it under the
+  deck plate's 4.34 in of headroom and inside the frame (`BB_POD_INSET`). A 4-in wheel does not fit
+  — it leaves 0.34 in for plate, ring and bearing — which is why COTS FTC pods are 3-in.
+- **The flywheel motor** is behind the hood at 205° about the axle, between the plates, driving a
+  belt over a 0.68/0.54 pulley pair. It is not beside the flywheel any more.
+- **The box tube** telescopes over `BB_BOX_TUBE_EXTEND_S`, off `bbFlowerInReach` — the SIM's own
+  predicate, not a second reach model.
+- **The in-reach cue** is one predicate and two drawings, the rule the shot path already follows:
+  `scene/renderReticle.ts` in 3D and `drawShot.ts`'s `drawBiobuzzReachCue` in 2D, both reading
+  `bbFlowerInReach`. The 2D call site is in `draw.ts`, under the shot path, matching the 3D render
+  order.
+
+## 4 · Flower and tile contact
+
+A FLOWER column is a physical pile now, not computed heights: four POLLEN settle at gaps
+2.735/2.757/2.778 against an ideal 2.8, and a dropped POLLEN's bottom lands at −0.011 in at all four
+tubes with `containmentFixes` still 0. A NECTAR is still stopped by the 3.222 bore, so G418 holds.
+`BB3_CONTACT_FREQ` 30 (the shared default is 12) is what stopped elements sinking into the tray
+floor. The tiles bounce slightly more: `TILE_RESTITUTION` 0.05, which under Rapier's Average rule
+makes the element/tile coefficient 0.25 rather than 0.225. `sim3d/predict.ts` took the same number,
+or the drawn shot path would lie.
+
+## 5 · The intake
+
+The cadence gate is 0.06–0.12 s per element (was 0.15–0.3). ⚠️ **AND THE GRIP WAS A UNITS BUG**:
+`approach(from, to, maxDelta)` was being handed `BB_INTAKE_DRAW_IN` — a SPEED — as a per-TICK
+displacement cap, i.e. 3120 in/s² of effective acceleration, so an element reached full draw-in
+speed from rest in one tick. `BB_INTAKE_GRIP_ACCEL` (1200 in/s², APPROX) times `dt` replaces it, and
+`BB_INTAKE_DRAW_IN` is 84 (was 52).
+
+## 6 · One alliance blue, and it is not the CAD's
+
+⚠️ **THE CAD IS AUTHORITATIVE FOR DIMENSIONS AND IS NOT AUTHORITATIVE FOR THIS COLOUR.** The STEP
+gives the hive Goal Ribs `plastic#0000ff`. Pure `#0000ff` is OKLCH hue 264.1° — 1.7° off the most
+violet blue sRGB can express, and the worst available answer to "it looks too purple". An assembly
+carrying pure `#ff0000` AND pure `#0000ff` is carrying placeholder part colours, the same way its
+`#e6e6e6` "white plastic" is one, which `renderFieldGlb.ts` has overridden since the clear-panel
+pass.
+
+Every BIOBUZZ blue is **`#007be1`** now — tape, NECTAR, hive accents, the constants-built fallback
+scene, the GLB's ribs and the robot silhouette. Hue 252.9°, the least violet a saturated blue gets
+before it reads cyan, at the most chroma sRGB has there, and L 0.583, within 0.002 of the red tape's
+own lightness. APPROX: **no authoritative AndyMark blue was found**, so this is a perceptual
+correction and not a sourced value. RED is untouched — a pure red still reads as red, and the owner
+named only blue.
+
+## Open, and deliberately so
+
+- **`BB_INTAKE_LANE_W` stays at 9.** Moving it to 8 gives the default 17-in build a second feed lane
+  — a balance change rather than a feel change, and the owner has not ruled on it.
+- **`src/config.ts`'s `COLORS.blue` (`#3b82f6`, hue 259.8°) is unchanged.** It is DECODE's and Chain
+  Reaction's too; BIOBUZZ no longer reaches for it.
+- A staged FLOWER column is born one radius high in 3D — `spawn.ts` writes `flowerStackZ`, which
+  returns CENTRES (the one exception to `b.z` being a bottom), and `syncElement` adds another
+  radius. It settles correctly on tick 1 now that the column is physical, so it is a first-tick
+  drop rather than a wrong resting height.
+- A vz −200 shot still peaks at 0.154 in of penetration into the tray floor on the landing tick at
+  30 Hz. Settled penetration is what item 3 was about and that is fixed; the transient is not, and
+  no check pins it.
+
 # HANDOFF — 2026-09-19 (alpha: THREE ABANDONED LANES FINISHED, plus the owner's render pass)
 
-**READ FIRST.** Four commits on top of `8d3cde4`, every gate green:
+Four commits on top of `8d3cde4`, every gate green:
 `build` · `server:check` · `docaudit` · `uiaudit` · `contrast` (221) · `dbtest` · `test:mm` (197) ·
 `bundleaudit` (re-measured) · `npm test` (**2375** BIOBUZZ + **1861** shared) · **`shiftaudit`**
 (576 state changes, 0 shifts — the first run in three rounds, and its route list now covers

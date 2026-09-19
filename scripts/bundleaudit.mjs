@@ -233,7 +233,12 @@ const BASELINE = {
   main: { gzip: 933.94 * 1000 },
   hostWorker: { gzip: 706.26 * 1000 },
   physics3d: { gzip: 1125.06 * 1000 },
-  scene: { gzip: 199.48 * 1000, budgetCeiling: 250 * 1000 },
+  // 2026-09-19: 199.48 -> 201.44 (+1.96). The owner's render pass made three meshes REAL —
+  // a swerve pod that is a pod (top plate, azimuth ring, fork, 3-in wheel, belt drive)
+  // instead of a squat box, a flywheel motor behind the hood driving through a belt, and a
+  // telescoping box tube — plus the in-reach collar. It crept in under the 4 KB tolerance,
+  // which is exactly the overhang this header warns about, so it is measured here instead.
+  scene: { gzip: 201.44 * 1000, budgetCeiling: 250 * 1000 },
   graphics: { gzip: 4.01 * 1000 },
   other: { gzip: 1 * 1000 },
 };

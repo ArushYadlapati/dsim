@@ -97,11 +97,33 @@ newest-first — it is never ranked, which is what keeps the two eras from meeti
   what the last readback wrote — no thresholds), READBACK rounded to 1e-4 after. Robots are
   cuboids `length × width × heightIn` (yaw-only, z free; `RobotState.z` = chassis BOTTOM height,
   0 while driving); elements are spheres with CCD when fast; `held`/`stock` have no body; an
-  `element` in a flower is a fixed body at its 2D-parked position (tubes are Day 2). The hive
-  tray is a KINEMATIC body swung by the shared timer (`hiveTimerStep`, split out of `hiveStep`
-  with no 2D change; `BB3_HIVE_DYNAMIC = false` until Day 2 calibrates the see-saw) and the spill
-  is PHYSICAL. `derive.ts` fills `hives[a].contents` / `flowers[i].stack` and the `element` tags
-  from body positions every tick, so `score.ts`, `hud.ts` and the 2D renderers run unchanged.
+  `element` in a flower FALLS and seats where the real bores let it (`flowerTube.ts`, Day 2 —
+  it is not parked at a computed height and it is not a fixed body). The hive tray is a DYNAMIC
+  see-saw on a revolute joint (`BB3_HIVE_DYNAMIC = true`) and the spill is PHYSICAL. `derive.ts`
+  fills `hives[a].contents` / `flowers[i].stack` and the `element` tags from body positions every
+  tick, so `score.ts`, `hud.ts` and the 2D renderers run unchanged.
+- ⚠️ **THE HIVE TIPS ON `BB_TIP_POLLEN`, NOT ON A TORQUE** (owner report 2026-09-19: "it says 0
+  more to tip and it does not tip"). The dynamic tray used to release when the load out-torqued
+  the detent, and no calibration can make that agree with a COUNT: measured at the shipped hold,
+  8 POLLEN weigh 4560 crammed against the back wall and 8051 in a two-wide line, 7 POLLEN weigh
+  4146 to 6769 — the ranges OVERLAP, so no detent value separates the rows, and the guide's §12.3
+  was being violated in both directions at once. The published table is the rule, `hud.ts` and
+  `HudSlots.tsx` promise it in as many words, so `hiveDetentHold` is a PIN THAT THE TABLE LIFTS.
+  Everything after the release is still the free see-saw. `hiveContentsTorque` /
+  `hiveRestoringTorque` remain exported: they are how the HIVE3D lane and `hive-calibrate.ts`
+  MEASURE the tray, not what triggers it.
+- ⚠️ **`BB3_HIVE_DYNAMIC = false` IS NOT THE ONE-WORD REVERT IT IS DOCUMENTED AS.** `bb.spill` —
+  G409's entire tag — is written only inside `hiveDynamicTick`; the kinematic path never writes
+  it, and all four G409 checks sit inside `if (BB3_HIVE_DYNAMIC)` blocks, so flipping the word
+  kills G409 in 3D **and leaves the lane green**. Restoring the kinematic tray means porting the
+  spill tagging and un-gating those checks first.
+- ⚠️ **A LINE §10.5 ASSESSES AT AN INSTANT IS WORTH ZERO UNTIL THAT INSTANT PASSES** (owner
+  ruling, 2026-09-19; shared rules code, so it binds both pipelines). LEAVE and AUTO PARK at the
+  end of AUTO (F), TELEOP PARK at the end of the MATCH (G), the up-CELL contents at rest at the
+  conclusion (C), the GARDEN at the end of TELEOP at rest (E). The TIP and both FLOWER lines are
+  continuous (A, D) and are paid live. The COUNT stays live either way — that is the driver's
+  readout — and `BbAllianceScore.pendingPts` carries what the instants still owe, shown as its
+  own chip and never inside `total`. Before this, the bar read 9 one second into AUTO.
 - **Determinism:** the source guard in `scripts/smoke.ts` scans `sim3d/`; `dsin/dcos/datan2/hyp`
   only; the SIM3D lane hashes two runs. Renderer files MUST be `scene/render*.ts` (the guard
   exempts `draw*`/`render*`, and the RENDER lane asserts `three` is imported nowhere else).
