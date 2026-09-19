@@ -11,9 +11,17 @@
  * code fences — keep to that subset or it renders as literal text.
  *
  * ACCURACY IS LOAD-BEARING. The data inventory below was written against the real
- * schema (`server/db/migrations/`) and the real localStorage keys. If you add a
- * table, a synced field, or a third-party service, update the matching section —
- * a policy that misdescribes what you collect is worse than no policy at all.
+ * schema (`server/db/migrations/`). If you add a table, a synced field, or a
+ * third-party service, update the matching section — a policy that misdescribes what
+ * you collect is worse than no policy at all.
+ *
+ * ⚠️ THIS FILE NO LONGER NAMES A SINGLE STORAGE KEY, and must not start again. It used
+ * to list four of them, and by the time anyone checked, all four names were wrong and
+ * seven real keys were missing — because the list and the code were in different files
+ * and nothing could tell them apart. The keys now live in `src/storageKeys.ts`, the
+ * privacy page renders the table off that registry (`src/ui/YourData.tsx`), and
+ * `npm test` fails on a `decodesim.` literal written anywhere else in `src/`,
+ * INCLUDING here. The prose below describes the CATEGORIES and points at the table.
  */
 
 /** last substantive revision — shown on both pages */
@@ -142,14 +150,23 @@ and saved records. If you never sign in, nothing below about accounts applies to
 
 ## What is stored on your own device
 
-These live in your browser’s local storage and are never transmitted unless you
-sign in and enable account sync:
+DSIM sets no cookies. What it uses instead is your browser’s own storage, and none of
+it is transmitted unless you sign in and your settings sync to your account. There are
+three kinds:
 
-- **Settings** (\`decodesim.settings.v1\`) - robot builds, control bindings, assists,
-  audio and start-position preferences.
-- **Theme** (\`decodesim.theme\`) - light or dark.
-- **Session scratch** (\`decodesim.active\`, \`decodesim.chain\`, \`decodesim.friends\`,
-  \`decodesim.seen\`) - which match you were in, and which announcements you have read.
+- **Needed to play** - the match you are in, so a reload rejoins it instead of
+  abandoning your alliance; your settings, robot builds and control bindings; the
+  practice runs and self-hosted matches waiting to reach your account, with the input
+  logs that reproduce them.
+- **Your preferences** - theme, 2D or 3D, graphics quality, prediction, which
+  announcements you have read, whether a panel is open. None of these is needed to
+  play.
+- **Analytics** - nothing at all. The measurement described below is cookieless and
+  writes nothing to this device.
+
+**Every key is listed on this page**, under “Your data” below, with what it holds and
+when it goes away. That table is generated from the list the app itself uses, so it
+cannot drift out of step with the code the way a hand-written list does.
 
 Clearing your browser data removes all of it. There is no recovery, and we keep no
 copy unless you were signed in.
@@ -227,9 +244,11 @@ publicly spectatable by anyone, so this changes who is *visible*, not what is.
 
 ## Cookies and similar technologies
 
-DSIM itself sets **no cookies**. Your settings live in your browser’s local
-storage (listed above), and signing in uses a token held by our authentication
-provider - neither is used to track you between sites.
+DSIM itself sets **no cookies**. Your settings live in your browser’s own storage
+(every key is listed under “Your data” below), and signing in uses a token held by our
+authentication provider. Neither is used to track you between sites. Our usage
+analytics is cookieless and stores nothing on your device either; there is a switch for
+it under “Your data”.
 
 Where the web version shows advertising, **Google AdSense** and its partners may
 set cookies or read device identifiers to serve and measure ads and to limit how
@@ -248,7 +267,9 @@ also tagged as being for users below the age of consent for advertising purposes
 If you are in the UK, the EEA, or Switzerland you will be asked for your
 advertising choices through a Google-certified consent tool before any ads are
 personalised, and you can reopen that choice at any time from the "Privacy &
-cookie settings" link in the site footer.
+cookie settings" link in the site footer or from “Your data” below. Outside those
+regions the tool has no consent to withdraw, so it does not open; the page says so
+rather than leaving you clicking at nothing.
 
 You can also review and change Google’s ad settings at
 [Google’s Ads Settings](https://adssettings.google.com), and read how Google uses
@@ -278,11 +299,25 @@ We use a small number of infrastructure providers, each acting on our behalf:
 
 - **Neon** - database and authentication.
 - **Fly.io** - the multiplayer game servers.
-- **Vercel** - hosting for the website.
-- **Google AdSense** - advertising on the web version.
+- **Vercel** - hosting for the website, and the cookieless usage analytics above.
+- **Google AdSense**, and **Google Funding Choices** as the consent tool - advertising
+  on the web version.
 - **Ko-fi** and **PayPal** - payments.
+- **Poly Haven** - the content network that serves the optional 3D lighting
+  environments. One is fetched only if you choose it in the graphics settings, and that
+  request reveals your IP address to their network, as a request to any server does. The
+  procedural default fetches nothing.
 
 We do not sell your data, and we do not share it with anyone else.
+
+**If you are in California, or another US state with comparable law:** we do not sell
+personal information, and we do not share it for cross-context behavioural advertising
+beyond the Google AdSense use described above. Ads are non-personalised by default,
+which is the setting that decides that, and where the consent tool applies you can
+change it yourself from “Your data” below. We do not offer financial incentives in
+exchange for personal information. You have the same rights of access, deletion and
+portability set out below, exercised the same way - the buttons on this page, or the
+mailbox at the bottom of it - and we will not treat you differently for using them.
 
 ## How long it is kept
 
@@ -299,11 +334,20 @@ to export or delete after you disconnect.
 
 - **See or correct your data** - most of it is visible on your profile and settings
   pages.
-- **Delete everything** - there is a **Delete account** button on your Profile
-  page. It removes your profile, username, settings, robot presets, records and
-  their replays, rating and rating history, and all friendships, blocks, and
-  invites, immediately and permanently. If that button is unavailable for any
-  reason, email us and we will do exactly the same thing by hand.
+- **Take a copy** - there is an **Export my data** button under “Your data” below. It
+  downloads one file holding everything the servers have for your account: profile,
+  synced settings, robot presets, records, practice runs, self-hosted matches, rating
+  and rating history, a summary of every match you played, your standing and playtime,
+  friends, blocks, invites, and the payment rows behind your membership. Replays are
+  listed by id, because an input log is tens of kilobytes and each one is already
+  downloadable on its own. Other players are left out of it deliberately.
+- **Delete everything** - there is a **Delete account** button on your Profile page, and
+  the same one under “Your data” below. It removes your profile, username, settings,
+  robot presets, records and their replays, rating and rating history, and all
+  friendships, blocks, and invites, immediately and permanently. If that button is
+  unavailable for any reason, email us and we will do exactly the same thing by hand.
+- **Turn analytics off** - a switch under “Your data” below. It stops every beacon from
+  this browser as soon as you set it.
 - **Advertising choices** - see the Advertising section above.
 - **Play anonymously** - do not sign in.
 
@@ -314,8 +358,9 @@ payment records are retained, with your email removed, because they are financia
 records.
 
 If you are in the UK, EU, or a jurisdiction with comparable law, you have rights of
-access, correction, deletion, and portability. The delete button covers deletion;
-for anything else, email us and we will action the request.
+access, correction, deletion, and portability. The delete button covers deletion and the
+export button covers access and portability, both without asking anyone; for correction
+or anything else, email us and we will action the request.
 
 ## Age
 
