@@ -1,6 +1,152 @@
+# HANDOFF — 2026-09-19e (alpha: THE FLOWER LANE FINISHED, plus the owner's second playtest pass — intake front, shooter head, turret lead, catapult dumper, tape, hive sheets, G417 out / G407 per the manual, FPS slider, game-specific keybinds on top of PR 81)
+
+**READ FIRST.** Twelve owner items, run as parallel lanes and merged here. Every gate below was run
+on the MERGED tree. The one thing that needed the coordinator rather than a lane is the first
+section: the lanes each wrote a real 2x room-tick regression off as "machine load".
+
+## ⚠️ A RESTING ELEMENT NEVER SLEPT, AND SCATTER IS WHAT MADE THAT EXPENSIVE
+
+`perf: a 2v2 BIOBUZZ ROOM tick costs <= 1.2x a 2v2 Chain Reaction room tick` read **1.41–1.92 in
+ISOLATION** on the merged tree against 0.77–0.96 at `f17395f` on the same machine, same hour (bb
+0.29 → 0.55 ms). Three lanes saw it, and each blamed contention — because this file says that
+check is load-sensitive. It is; and it was also really broken. **If it fails, run the same check
+in isolation on a baseline worktree before believing either story.**
+
+Bisected by toggling: not the flower cage, not the chassis contact skin, not the pocket filler
+(each removed alone: no change). It was the STAGED SCATTER — but only as the trigger. The cause is
+older: every element at rest in a FLOWER or a CELL was woken EVERY TICK, by two zeroing writes with
+`wakeUp: true` (`groundRoll3d`'s floor-band branch, which the BOTTOM element of a flower column
+sits in, and `syncElement`'s diff-teleport, which fired on every `derive.ts` rest snap). Measured,
+idle 3D world, tick 900: 16/16 FLOWER and 6/6 CELL elements awake at `vmax` 0, against 0/16 on the
+tiles. Nearly free while a column stood dead on the bore axis (an element touches two neighbours);
+scattered, every leaning element is a standing wall contact: idle step 0.168 → 0.302 ms.
+
+Fixed in `sim3d/engineImpl.ts`, three edits, each with its measurement in the comment: a rest snap
+zeroes WITHOUT waking; the floor-band write wakes only what is moving; and READBACK calls
+`wakeUp()` on any element whose rounded position moved more than `RELAX_EPS` (5e-4 in) that tick —
+without that last one a scattered column fell asleep MID-SEPARATION (interpenetration 0.13 → 0.69
+in). `RELAX_EPS` is a measured knee (table on the constant). After: idle step **0.124 ms** (below
+the pre-scatter 0.168), room tick back to bb 0.29–0.33 ms; CELL elements stay awake (they touch the
+jointed tray). The SIM3D "relaxation DECAYS" check now accepts all-zero drift, which is the
+expected reading; its comment says why.
+
+## What landed
+
+- **THE FLOWER LANE (the item this branch was opened for).** The jam was the TUBE, not the balls:
+  between the mid plate (5.254) and the top plate (20.254) a flower has NO WALL, only four round
+  pipes with open gaps — a POLLEN centre reaches 0.53 in toward a pipe and 1.05 in into a gap, so
+  two shoulder and the column arches (stranded 10/24 at n=4, 22–24/24 at n=7). `buildFlowerCage3d`
+  (`flowerTube.ts`) is ONE circumscribed trimesh prism per flower on the middle bore's own CAD
+  radius (1.948) — the 12-cuboid fan failed the AI lane's p95 (1.86–1.95 ms vs 1.5), the prism
+  does not (1.25–1.44); fewer than 10 sides puts a vertex past the pipes. Jam 0/360, drain 0/64
+  (n = 1..8 × 8 seeds, real retrieval), NECTAR still locks. SCATTER: `flowerPlace3d` and, in 3D
+  worlds only, the pre-match STAGED columns, offset by a hash of `(tick, id, flower, rngState)` —
+  `rngState` READ, never advanced; the bound is `bbFlowerDropSlack` × `BB3_FLOWER_SCATTER_FRAC`
+  (the tightest BORE, not the cage — against the cage a drop landed inside the peanut supports
+  and was ejected 8–28 in). **2D is byte-identical, proven**: 30 worlds built through today's and
+  `f17395f`'s spawn code, whole-JSON + `worldHash`, 0 divergences. The old "DO NOT JITTER IT"
+  table was re-measured flat once the wall existed; both headers say so.
+- **THE INTAKE FRONT IS A RECTANGLE (owner: "the intake plates stick out further than the rollers
+  so the hitboxes are weird").** Two earlier passes answered the wrong question (arms end at
+  `uOut`; true, irrelevant). The compound's outer prism had exactly ONE hole — between the arm
+  tips, floor to `BB3_MOUTH_SLOT_Z` — and eight statics fit under the lintel (six hive base
+  bars/feet at 2.13–2.15 in, two flower base plates; never a robot, `BB3_HEIGHT_MIN` is 12). A
+  hive bar's end sat **2.03 in inside the robot's own `robotExtents` box** and yawed it 128°.
+  `chassis3dPocketShapes` adds one FILLER per mouth that everything meets EXCEPT elements
+  (`GROUP_ELEMENT` / `GROUP_POCKET`; the masks table is in `bodies.ts`). After: 0.15 in. Capture
+  counts, flat-wall rest, start legality, no-climb: unchanged. Cost 1.049x step (8 paired rounds;
+  an earlier "+20 %" was contention; lifting the filler off the floor bought nothing and would
+  have re-opened the hole — the shortest reachable static is 0.24 in). Also kept: a 0.125-in edge
+  break as a CONTACT SKIN (`chassisBoxDesc`; a `roundCuboid` cost 1.065x), mirrored in
+  `predict.ts`. Drawn: a front BRACE across the tips + rounded plate noses, 3D and the 2D sprite.
+  ⚠️ **Every corner probe the stopped lane left in `scratch/` drove `driveX: 1`, which is STRAFE.**
+- **THE SHOOTER HEAD (owner: "the parallel plates became ugly … the arc does not need to be big";
+  "the flywheel looks like two wheels").** The fixed plate is the compact pre-`f17395f` outline
+  again; the HOOD carries its own sector CHEEKS on `bb-turret-pitch` (boss on the axle, span =
+  `BB_HOOD_WRAP`, inboard of the plates), so it is one hinged assembly at every pitch and nothing
+  is left standing at the 80° cap. ONE flywheel mesh at y = 0 with bare shaft and collars (it was
+  two meshes at ±0.7). Muzzle chain BYTE-IDENTICAL: sha256 over 62,447 rows of `bbMuzzleLocal` +
+  `bbTurretSolution` equals `f17395f`'s.
+- **SHOOTING ON THE MOVE (`feat/bb-turret-lead`).** A release leaves with `v + ω×r` at the muzzle
+  (turret AND dumper, both pipelines — there was NO inheritance before, so nothing to lead).
+  `bbTurretSolution` leads inside the same fixed `BB_TURRET_SOLVE_PASSES`; parked it is
+  byte-identical (289 poses, deviation 0). `bbSlewTurret` is rate + ACCELERATION (`BB_TURRET_ACCEL`
+  70, `BB_TURRET_PITCH_ACCEL` 12): 90° in 0.333 s, overshoot 0. `turretHeading` is WORLD-frame and
+  the rate window is centred on `r.angVel`. Flat out past the hive 75–100 % of released shots
+  score; a hard reversal leaves it 22–24° behind for 0.60–0.75 s and the gate releases NOTHING
+  meanwhile. New optional `bbTurret*Vel` fields: +2.5 % snapshot (7,826 → 8,021 B of 10,000).
+  ⚠️ **3D's release gate is now the ballistic landing check, not alignment — an outcome change in
+  every server match, owner-authorised by the instruction.**
+- **THE DOTTED PATH.** Six causes of a path with no score, closed: empty hopper, wrong phase,
+  passive robot, a dumper mid re-arm, 3D gating on alignment while the path ran a landing
+  prediction (ONE predicate now: `bbTurretShotEnters` / `bbDumpShotEnters`), and a MID-SWING hive
+  (28 of the last 28). Before 24.6 % (2D) / 53.8 % (3D) false paths over 1,600 cases; after 0.
+  The cost: a shot that WOULD score into a swinging cell draws nothing.
+- **THE DUMPER IS A CATAPULT.** `bbDumpCluster`: four seats, two across × two high, ONE velocity,
+  parallel arcs; the whole hopper on one tick. The 3D stagger (`perDump`, `BB_DUMP_STAGGER_S`) is
+  deleted; 2D keeps the converging solve (`BbShot.cluster` is the switch). 20/28 poses score
+  (equals the stagger), 16/28 all four. At 22 in the bottom row clips the structure — pinned.
+  `bb-dump-arm` snaps off `lastFireAt`; no wire field.
+- **TAPE WIDTHS — THE FIFTH REPORT, AND IT WAS NEVER THE DATA.** All 16 strips are 1.000 in. The
+  map draws at 2–6 device px/in, so where a 3.1-px strip's edges fell inside a pixel decided its
+  look. `snapTapeGroup` (`drawField.ts`) snaps a zone's strips as a GROUP to one whole-pixel
+  width, corners exact; the fallback floor texture uses it too. The recorder ctx (no `canvas`)
+  still gets world rects, so the CAD-strip check is intact. The GARDEN is two 1-in tapes BY THE
+  MANUAL (Fig 9-3); it is drawn as one band of exactly two widths.
+- **THE HIVE'S CLEAR SHEETS WERE BACK-FACE CULLED.** Three shading passes moved the owner's view by
+  under 0.1 of a level because the back of a cell was not being rasterised from behind. NO clear
+  surface in `field.glb` is a closed slab — single-sided sheets wound INWARD (two-faced area 0.0 %
+  walls, 0.4 % trays). The earlier "not culling" proof binned ±x/±y normals only; a cell's back is
+  a gable at (0.54, 0, ±0.84). `DoubleSide` draws a SHEET once from either side, so the layer
+  count does not double (the old header assumed slabs). Back skin alone from behind 12 → 35;
+  `PANEL_VEIL` 0.018, alphas unchanged (0.08 / 0.13). The RENDER lane parses the real GLB and
+  fails on a side/geometry mismatch. The perimeter walls had it too (culled from outside).
+- **G417 IS GONE, G407 FOLLOWS THE MANUAL.** Hive-ramming billing, `frameRam`, `bb.hiveRam`,
+  `BB_FRAME_RAM_SPEED` deleted in both pipelines; a check rams the frame under both physics and
+  asserts nothing is awarded. G407: warning at 5+, and ONE MAJOR per robot per match when 6+ is
+  held past MOMENTARY (3 s, manual §10.6) or on the second >MOMENTARY instance of 5+. New line
+  `G407 STRATEGIC CONTROL of 5+ elements` — **a foul STRING, so this is a SERVER change.**
+- **X-DRIVE.** A 45° omni reaches 1.945 in on both axes and sat in the mecanum channel (1.17 in
+  inside the frame): 0.78 in proud. Inset by its own reach; the inner side plate drops, as swerve.
+- **MAX FRAME RATE** is a slider (24–360) + number box (to 1000); the top stop is "Display rate"
+  on the web (Unlimited is never offered there — rAF is the ceiling) and VSync/Unlimited on
+  desktop. A stored `-1` on the web displays as Display rate and is not rewritten.
+- **GAME-SPECIFIC KEYBINDS, ON TOP OF PR 81** (`ArushYadlapati/gamepad-combo-keybinds`, merged
+  here via `feat/game-keybinds`). `ControlBindings.perGame` is a SIBLING field (old clients keep
+  working); an action present there is CUSTOM for that season, absent = SYNCED; `effectiveBindings`
+  is the one resolver. Two actions conflict only if some season uses both (`ACTION_GAMES`). A
+  main edit that collides with an override: the override loses the bind. `BIND_SLOTS_MAX` 8.
+  PR 81's rule-4 TAP lasted one rAF frame and was lost ~2 in 3 at 165 Hz; `PAD_TAP_HOLD_MS` 34.
+
+## Gates (merged tree)
+
+`npm test` **ALL PASS** (shared PASS; biobuzz 3,095) · `build` 0 · `server:check` 0 · `uiaudit`
+at/under · `docaudit` ALL PASS · `contrast` ALL PASS · `bundleaudit` ALL ROUTES AT/UNDER ·
+`test:mm` PASS. `dbtest` not run (nothing under `server/db` moved). `shiftaudit` not run.
+`test:ai`: **ALL PASS** (150 matches, 535 s) — HARD beats EASY 95/100, mean margin 52.5; idle means easy 33.2 / medium 79.1 / hard 101.9. It notes the plan's 90 % is now met and `BB_AI_WIN_RATE_FLOOR` could be raised; left alone, one run.
+
+## Open, and owner decisions pending
+
+- Reset-to-defaults wipes per-season overrides too; the scope switch always opens on All games.
+- A mid-swing cell draws no path even for a shot that would score.
+- 3D still slides past a tall post at 0.4 in of overlap where 2D manages 1.0 — a box chassis in
+  the 3D solve; no corner treatment closes it (a cylinder does 1.6).
+- `MODERATION_API_KEY`: `scratch/modtest.ts` is ready; the session could not read the owner's
+  `.env` (permission layer). Owner's ruling: `fly secrets set` immediately on `dsim-alpha`,
+  `--stage` on production.
+- The models README records the single-sided clear sheets as an asset defect for `field-cad`.
+
+## Next steps
+
+1. Push `alpha`; redeploy `dsim-alpha` (`./scripts/fly-deploy.sh --alpha`) — the sim, a foul
+   string and `RobotState` fields all moved.
+2. Production (`main`, `dohun-sim-decode`) untouched; promotion is the owner's call.
+
+---
+
 # HANDOFF — 2026-09-19d (branch `ArushYadlapati/gamepad-combo-keybinds` off alpha: GAMEPAD COMBOS + add/remove binding slots, PR into alpha)
 
-**READ FIRST.** One commit on the owner's fork, rebased onto alpha `f17395f` and opened as a PR
+**(Previously READ FIRST.)** One commit on the owner's fork, rebased onto alpha `f17395f` and opened as a PR
 into `alpha` with the owner's go-ahead (the only conflicts on the rebase were this file and the
 generated class inventory). `npm run build` is green, `npm test`'s shared suite is green
 (51 new checks in the `gamepad COMBOS` block), `uiaudit`, `docaudit`, `contrast` and
