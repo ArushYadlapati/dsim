@@ -59,6 +59,9 @@ export interface FieldGroups {
    * two trays — see that function's header. Non-zero on the shipped asset; zero once the pipeline
    * files the braces as tray parts itself. */
   braceTris: number;
+  /** the same count for the PIVOT ROCKER (the two Goal Pivot Bracket plates, the damper holders
+   * and the dampers) — see THE PIVOT ROCKER THE PIPELINE ALSO FILED AS FRAME. */
+  rockerTris: number;
   /** what the PRINTED FIELD MARKINGS block built — all zero on the LOW LOD, by design. */
   markings: FieldMarkings;
 }
@@ -1153,7 +1156,7 @@ function isTrayBracePoint(y: number, z: number): boolean {
  */
 function partitionTrianglesWorld(
   mesh: THREE.Mesh,
-  classify: (cx: number, cy: number, cz: number) => string | null,
+  classify: (cx: number, cy: number, cz: number, tri: number) => string | null,
 ): Map<string, THREE.BufferGeometry> {
   const out = new Map<string, THREE.BufferGeometry>();
   const geo = mesh.geometry;
@@ -1179,7 +1182,7 @@ function partitionTrianglesWorld(
     const cx = (worldPos[a * 3] + worldPos[b * 3] + worldPos[c * 3]) / 3;
     const cy = (worldPos[a * 3 + 1] + worldPos[b * 3 + 1] + worldPos[c * 3 + 1]) / 3;
     const cz = (worldPos[a * 3 + 2] + worldPos[b * 3 + 2] + worldPos[c * 3 + 2]) / 3;
-    const label = classify(cx, cy, cz);
+    const label = classify(cx, cy, cz, t);
     if (label === null) {
       kept.push(a, b, c);
     } else {
@@ -1225,18 +1228,183 @@ function partitionTrianglesWorld(
   return out;
 }
 
+// ── THE PIVOT ROCKER THE PIPELINE ALSO FILED AS FRAME ─────────────────────────────────────────
+//
+// 2026-09-20 playtest: "Support bracket for the hive is artifacting & is behind/desynced
+// sometimes (does not tip with the hive)."
+//
+// The braces above were not the only tray parts in a FRAME node. SIX MORE per alliance ride the
+// see-saw and are filed static: `am-5872 Goal Pivot Bracket` ×2 (the plates the owner's "support
+// bracket" names — they sandwich the tray's own `Basket Base Tube` spine), `am-5874 Pivot Damper
+// Holder` ×2 and `blumotion-970a Damper` ×2. The proof is the hive's OWN SYMMETRY: every part of
+// this assembly is mirror-symmetric about y = 0 in whichever body it is rigid in, and these six
+// are symmetric only AFTER un-tilting. Measured off `field-colliders.json`'s per-instance hulls,
+// blue (`captureTheta` +30°):
+//
+//   | part | world y centre | tray-local v, w after un-tilt |
+//   |---|---|---|
+//   | goal_pivot_bracket ×2   | +1.10 (NOT 0)     | v **0.01**, w −0.92 — self-symmetric |
+//   | pivot_damper_holder     | +3.57             | v **+3.34**, w −1.31 |
+//   | pivot_damper_holder_2   | −2.15             | v **−3.34**, w −1.24 |
+//   | blumotion_damper        | −1.94             | v **−3.21**, w **−1.62** |
+//   | blumotion_damper_2      | +3.47             | v **+3.16**, w **−1.62** |
+//
+// Red's six sit at DIFFERENT world y and z and land on the same tray-local numbers. A static part
+// of a symmetric frame cannot do that; every genuinely static part here already is symmetric in
+// world (`a_frame_leg` ±9.5, `frame_foot` ±18.3, `axle_holder`/`a_frame_top_corner`/`top_bar` at 0).
+//
+// WHAT THE OWNER SEES IS ONE FACT SEEN TWICE. `|captureTheta|` IS `BB_HIVE_TILT_DEG` (30°), so at
+// the rest pose the tray was exported at, the frozen rocker is exactly where it belongs and the
+// picture is right — which is the "sometimes". Away from it the assembly is left behind: measured
+// against where it belongs, **0.00 in at the captured rest, 3.77 in level, 7.28 in at the OTHER
+// rest**, and between the two its arms sweep straight THROUGH the tray arms and into the cell,
+// which is the "artifacting". Ruled out as separate causes, on the shipped `field.glb`: bad
+// normals (the creased pass leaves 3–4 triangles per hive-frame mesh over 45°, all sub-pixel
+// slivers), open sheeting (two-faced fraction 0.004–0.094, the same band as the solid A-frame leg
+// and the churro tubes, so `DoubleSide` is not wanted and `isClearPanel` never claims them), and
+// z-fighting anywhere but the captured rest, where the CAD genuinely bolts the plates face-to-face
+// against the spine.
+//
+// THE REAL FIX IS AGAIN ONE LINE IN `convert.py`'s `PART_RULES`; the reasoning for not making it
+// here is `reparentTrayBraces`'s above, unchanged.
+//
+// ⚠️ THE SELECTOR CANNOT BE A TRIANGLE-CENTROID TEST LIKE THE BRACES'. The braces are alone in
+// their corner of space; the rocker is not. Everything in it lies within 0.60 in of the tray's own
+// centreline plane (it bolts to a single central spine), but `a_frame_top_corner` straddles that
+// plane and `a_frame_leg` starts 0.45 in from it, so a per-triangle test slices pieces out of two
+// static parts. A WHOLE CONNECTED COMPONENT is the unit: the rocker's six reach at most 0.60 in
+// from the pivot plane and the nearest static component reaches 2.24, on both GLBs.
+//
+// The constants-built fallback (`renderField.ts`'s `buildHiveFrame`) needs nothing: its frame is a
+// base bar and two uprights, and it models no pivot hardware at all.
+const ROCKER_HALF_SPAN_IN = 1.25;
+
 /**
- * Moves the eight tray braces out of the three hive FRAME nodes and into the alliance's own tray
- * pivot group, so they swing with the cell they belong to. Returns how many triangles moved,
- * which the RENDER lane asserts is not zero on the shipped asset.
+ * The connected components of `mesh`, welded by EXACT vertex POSITION, with each one's reach in
+ * WORLD x. Used to decide whole parts rather than triangles — see the block above.
+ *
+ * ⚠️ WELDING BY INDEX IS WRONG HERE, and the reason is a fix three headers up.
+ * `computeCreasedNormals` splits a vertex into one output per distinct normal, so once it has run
+ * a plain box is six index-disjoint quads and a union-find over the index buffer calls one part
+ * six components. Those split copies carry the position through verbatim, bit for bit, so welding
+ * on the position triple recovers exactly the topology the asset shipped with — no tolerance, and
+ * none needed. 12–20 ms over all eight hive-frame meshes of `field.glb`, once at load, beside the
+ * 149 ms the normal pass already costs there.
  */
-function reparentTrayBraces(root: THREE.Object3D, hives: { red: FieldHiveGroup; blue: FieldHiveGroup }): number {
-  const pivots: Record<Alliance, number> = {
-    red: fieldColliders3d().trays.red.pivot[0],
-    blue: fieldColliders3d().trays.blue.pivot[0],
+function weldedComponents(mesh: THREE.Mesh): { ofTriangle: Int32Array; spans: Map<number, { tris: number; xMin: number; xMax: number }> } {
+  const geo = mesh.geometry;
+  const pos = geo.getAttribute('position');
+  const idx = geo.getIndex();
+  const triCount = idx ? idx.count / 3 : pos.count / 3;
+  const ofTriangle = new Int32Array(triCount).fill(-1);
+  const spans = new Map<number, { tris: number; xMin: number; xMax: number }>();
+  if (!pos || triCount === 0) return { ofTriangle, spans };
+  mesh.updateWorldMatrix(true, false);
+  const v = new THREE.Vector3();
+  const site = new Map<string, number>();
+  const rep = new Int32Array(pos.count);
+  const worldX: number[] = [];
+  for (let i = 0; i < pos.count; i++) {
+    const key = `${pos.getX(i)},${pos.getY(i)},${pos.getZ(i)}`;
+    let r = site.get(key);
+    if (r === undefined) {
+      r = site.size;
+      site.set(key, r);
+      worldX.push(v.fromBufferAttribute(pos, i).applyMatrix4(mesh.matrixWorld).x);
+    }
+    rep[i] = r;
+  }
+  const parent = new Int32Array(site.size);
+  for (let i = 0; i < parent.length; i++) parent[i] = i;
+  const find = (a: number): number => {
+    while (parent[a] !== a) {
+      parent[a] = parent[parent[a]];
+      a = parent[a];
+    }
+    return a;
   };
-  let moved = 0;
-  for (const nodeName of ['hive_red/frame', 'hive_blue/frame', 'hive_shared/frame']) {
+  const at = (t: number, k: number): number => (idx ? idx.getX(t * 3 + k) : t * 3 + k);
+  for (let t = 0; t < triCount; t++) {
+    const a = find(rep[at(t, 0)]);
+    const b = find(rep[at(t, 1)]);
+    const c = find(rep[at(t, 2)]);
+    if (a !== b) parent[b] = a;
+    if (find(c) !== find(a)) parent[find(c)] = find(a);
+  }
+  for (let t = 0; t < triCount; t++) {
+    const r = find(rep[at(t, 0)]);
+    ofTriangle[t] = r;
+    let s = spans.get(r);
+    if (!s) {
+      s = { tris: 0, xMin: Infinity, xMax: -Infinity };
+      spans.set(r, s);
+    }
+    s.tris++;
+    for (let k = 0; k < 3; k++) {
+      const x = worldX[rep[at(t, k)]];
+      if (x < s.xMin) s.xMin = x;
+      if (x > s.xMax) s.xMax = x;
+    }
+  }
+  return { ofTriangle, spans };
+}
+
+/** one connected part of a hive FRAME node, and how far it reaches from the NEARER tray's
+ *  centreline plane. Exported for the RENDER lane, which parses the shipped GLBs in Node and has
+ *  no `loadFieldGlb` to call. */
+export interface HiveFrameComponent {
+  node: string;
+  material: string;
+  tris: number;
+  alliance: Alliance;
+  /** `max |x − pivot.x|` over the component's own vertices — `≤ ROCKER_HALF_SPAN_IN` means it
+   *  bolts to that tray's spine and rides it. */
+  spanFromPivot: number;
+  rides: boolean;
+}
+
+/** every connected component of the three hive FRAME nodes, classified. */
+export function hiveFrameComponents(root: THREE.Object3D): HiveFrameComponent[] {
+  const pivots = trayPivotX();
+  const out: HiveFrameComponent[] = [];
+  for (const node of HIVE_FRAME_NODES) {
+    const obj = findOptional(root, node);
+    if (!obj) continue;
+    obj.traverse((o) => {
+      if (!(o instanceof THREE.Mesh)) return;
+      const material = (Array.isArray(o.material) ? o.material[0] : o.material)?.name ?? '';
+      for (const s of weldedComponents(o).spans.values()) {
+        const red = Math.max(Math.abs(s.xMin - pivots.red), Math.abs(s.xMax - pivots.red));
+        const blue = Math.max(Math.abs(s.xMin - pivots.blue), Math.abs(s.xMax - pivots.blue));
+        const alliance: Alliance = red < blue ? 'red' : 'blue';
+        const spanFromPivot = Math.min(red, blue);
+        out.push({ node, material, tris: s.tris, alliance, spanFromPivot, rides: spanFromPivot <= ROCKER_HALF_SPAN_IN });
+      }
+    });
+  }
+  return out;
+}
+
+const HIVE_FRAME_NODES = ['hive_red/frame', 'hive_blue/frame', 'hive_shared/frame'] as const;
+
+function trayPivotX(): Record<Alliance, number> {
+  return { red: fieldColliders3d().trays.red.pivot[0], blue: fieldColliders3d().trays.blue.pivot[0] };
+}
+
+/**
+ * Moves the eight tray braces AND the two pivot rockers out of the three hive FRAME nodes and
+ * into the alliance's own tray pivot group, so they swing with the cell they belong to. Returns
+ * how many triangles moved of each, which the RENDER lane asserts is not zero on the shipped
+ * asset.
+ */
+function reparentTrayBraces(
+  root: THREE.Object3D,
+  hives: { red: FieldHiveGroup; blue: FieldHiveGroup },
+): { braceTris: number; rockerTris: number } {
+  const pivots = trayPivotX();
+  let braceTris = 0;
+  let rockerTris = 0;
+  for (const nodeName of HIVE_FRAME_NODES) {
     const node = findOptional(root, nodeName);
     if (!node) continue;
     const meshes: THREE.Mesh[] = [];
@@ -1244,15 +1412,27 @@ function reparentTrayBraces(root: THREE.Object3D, hives: { red: FieldHiveGroup; 
       if (o instanceof THREE.Mesh) meshes.push(o);
     });
     for (const mesh of meshes) {
+      // the ROCKER is decided per whole component, the BRACES per triangle centroid — see the two
+      // blocks above for why each selector is the shape it is.
+      const { ofTriangle, spans } = weldedComponents(mesh);
+      const rockerOf = new Map<number, Alliance>();
+      for (const [id, s] of spans) {
+        for (const a of ['red', 'blue'] as const) {
+          if (Math.max(Math.abs(s.xMin - pivots[a]), Math.abs(s.xMax - pivots[a])) <= ROCKER_HALF_SPAN_IN) rockerOf.set(id, a);
+        }
+      }
       // ONE pass, labelled by alliance — `hive_shared/frame` holds two of red's braces and two of
       // blue's, so the split has to name both in the same sweep. A brace belongs to whichever
       // pivot it is nearer: they sit at the cell's own |x_local| ≈ 9.5, half the hive spacing.
-      const parts = partitionTrianglesWorld(mesh, (cx, cy, cz) => {
+      const parts = partitionTrianglesWorld(mesh, (cx, cy, cz, tri) => {
+        const rocker = rockerOf.get(ofTriangle[tri]);
+        if (rocker) return `rocker:${rocker}`;
         if (!isTrayBracePoint(cy, cz)) return null;
-        return Math.abs(cx - pivots.red) < Math.abs(cx - pivots.blue) ? 'red' : 'blue';
+        return `brace:${Math.abs(cx - pivots.red) < Math.abs(cx - pivots.blue) ? 'red' : 'blue'}`;
       });
       for (const [label, geo] of parts) {
-        const alliance = label as Alliance;
+        const [kind, side] = label.split(':');
+        const alliance = side as Alliance;
         // ⚠️ UN-TILT BEFORE PARENTING, or the brace is rotated TWICE. The tray MESH is exported in
         // the pivot-local UN-TILTED frame (`convert.py` rotates every tray point out of the STEP's
         // capture pose, which is why `refTheta` is 0 and `updateBiobuzzField` applies the absolute
@@ -1266,16 +1446,18 @@ function reparentTrayBraces(root: THREE.Object3D, hives: { red: FieldHiveGroup; 
           .makeRotationX(-cadCaptureTheta(alliance))
           .multiply(new THREE.Matrix4().makeTranslation(-tray.pivot[0], -tray.pivot[1], -tray.pivot[2]));
         geo.applyMatrix4(toLocal);
-        const braces = new THREE.Mesh(geo, mesh.material);
-        braces.name = `hive_${alliance}/tray-brace`;
-        braces.castShadow = true;
-        braces.receiveShadow = true;
-        moved += geo.getAttribute('position').count / 3;
-        hives[alliance].tray.add(braces);
+        const part = new THREE.Mesh(geo, mesh.material);
+        part.name = `hive_${alliance}/tray-${kind}`;
+        part.castShadow = true;
+        part.receiveShadow = true;
+        const tris = geo.getAttribute('position').count / 3;
+        if (kind === 'rocker') rockerTris += tris;
+        else braceTris += tris;
+        hives[alliance].tray.add(part);
       }
     }
   }
-  return moved;
+  return { braceTris, rockerTris };
 }
 
 // ── PRINTED FIELD MARKINGS — the HIGH LOD only ────────────────────────────────────────────────
@@ -1877,8 +2059,18 @@ function buildFieldMarkings(
 export async function loadFieldGlb(url: string, quality: 'high' | 'low' = 'high'): Promise<FieldGroups> {
   const resolved = resolveGlbUrl(url, quality);
   const gltf: GLTF = await loader().loadAsync(resolved);
-  const root = gltf.scene;
+  return assembleFieldGroups(gltf.scene, quality);
+}
 
+/**
+ * Everything `loadFieldGlb` does once the bytes are decoded: materials, normals, the two tray
+ * pivot groups, the parts the pipeline mis-filed, and the printed markings.
+ *
+ * Exported because the RENDER lane parses the shipped `.glb` in Node, where there is no fetch to
+ * hand `loadFieldGlb` — and because a check that rebuilt this sequence itself would be checking
+ * its own copy. `quality` is `'low'` there: only the HIGH path allocates a canvas.
+ */
+export function assembleFieldGroups(root: THREE.Group, quality: 'high' | 'low'): FieldGroups {
   styleScene(root);
 
   const floor = mustFind(root, 'tiles');
@@ -1894,12 +2086,12 @@ export async function loadFieldGlb(url: string, quality: 'high' | 'low' = 'high'
 
   const flowers = [0, 1, 2, 3].map((k) => mustFind(root, `flower_${k}`));
 
-  const braceTris = reparentTrayBraces(root, hives);
+  const { braceTris, rockerTris } = reparentTrayBraces(root, hives);
   const markings = quality === 'high' ? buildFieldMarkings(root, hives, flowers) : NO_MARKINGS;
 
   checkTrayFloorAgreement(hives);
 
-  return { floor, walls, tape, sharedFrame, stations, hives, flowers, root, braceTris, markings };
+  return { floor, walls, tape, sharedFrame, stations, hives, flowers, root, braceTris, rockerTris, markings };
 }
 
 /** how far the drawn tray floor may sit from the collider floor before the picture and the

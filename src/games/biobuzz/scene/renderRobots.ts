@@ -2,13 +2,19 @@ import * as THREE from 'three';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import type { Alliance, RobotSpec, RobotState, World } from '../../../types';
 import { chassisFill, INTAKE_RAIL_T } from '../../../config';
+import { robotsEnabled } from '../../../sim/match';
 import {
   BB3_MOUTH_SLOT_Z,
   BB_BOX_TUBE_EXTEND_S,
   BB_BOX_TUBE_SECTIONS,
-  BB_BOX_TUBE_STAGE_OVERLAP,
+  BB_BOX_TUBE_TIP_CLEAR,
   BB_BOX_TUBE_WALL,
+  BB_BOX_TUBE_Z,
+  bbBoxTubeAim,
+  bbBoxTubeStages,
   BB_DECK_Z,
+  BB_FLOWERS,
+  BB_FLOWER_TOP_Z,
   BB_DUMP_RELOAD_S,
   BB_DUMP_SEAT_PITCH,
   BB_FEED_WALL_T,
@@ -1896,7 +1902,7 @@ export function buildRobotGroup(spec: RobotSpec, id: number, alliance: Alliance)
     const tube = buildBoxTube(spec, lift.mount, id);
     group.add(tube.node);
     group.userData.tubeStages = tube.stages;
-    group.userData.tubeTravel = tube.travel;
+    group.userData.tube = tube.rig;
   }
 
   return group;
@@ -1926,33 +1932,82 @@ export function buildRobotGroup(spec: RobotSpec, id: number, alliance: Alliance)
  * nothing in the world to read but the reach PREDICATE. The stages ease toward
  * `bbFlowerInReach(world, r) !== null` over `BB_BOX_TUBE_EXTEND_S`, off the WORLD clock, and
  * nothing about it is written back.
+ *
+ * ⚠️ **IT REACHES THE OPENING, WHICH IS 16.854 IN UP AND 1.08…8.08 IN OUT** (owner, 2026-09-20:
+ * "the boxtube extension should be reaching towards the opening in the flower, not extending
+ * horizontally"). The arm therefore PITCHES, and takes a small base SWIVEL because the ring may
+ * sit `BB_PLACE_TOL` off the mount's own aim line. Both come out of `bbBoxTubeAim` against the
+ * flower `bbFlowerInReach` actually returned, per frame; the ranges are measured in the RENDER
+ * lane, which sweeps every in-reach pose of every legal build and asserts the tip lands on the
+ * opening rather than assuming it.
+ *
+ * ⚠️ **THE SHOULDER IS AT THE FRAME RAIL, AND THAT IS WHAT KEEPS THE ARM OUT OF THE TURRET.** The
+ * first pass at this rotated the WHOLE stack about its inboard end, which lands 4.9…5.3 in inside
+ * the rail — under a `center` turret's ring on every legal chassis — and the mast then rose
+ * straight through the head: measured, its axis passed within **0.000 in** of the drawn turret
+ * belt and 0.001 of the feed throat. So the node stays exactly where it was, at `glyph.outer`;
+ * **section 0 is a CRADLE that never moves**, and only the four stages pitch, sliding out along an
+ * axis anchored at the rail and sweeping over the robot's own bumper, where nothing is built.
+ * A stage's tail sits behind the shoulder while it is still retracted and therefore dips toward
+ * the deck — bounded by `(sectionLen − ext)·sin(pitch)` and measured in the RENDER lane.
  */
 function buildBoxTube(
   spec: RobotSpec,
   mount: BbMountPos,
   id: number,
-): { node: THREE.Group; stages: THREE.Object3D[]; travel: number } {
+): { node: THREE.Group; stages: THREE.Object3D[]; rig: BbTubeRig } {
   const place = bbPlacePointLocal(spec);
   const glyph = bbBoxTubeGlyph(spec, mount, place);
   const reach = place ? Math.hypot(place.x - glyph.outer.x, place.y - glyph.outer.y) : 0;
+  const stageTable = bbBoxTubeStages(reach);
+  const sectionLen = stageTable.sectionLen;
   const node = new THREE.Group();
   node.name = `robot:${id}:tube`;
-  node.position.set(glyph.outer.x, glyph.outer.y, BB_DECK_Z + 0.95);
+  node.position.set(glyph.outer.x, glyph.outer.y, BB_BOX_TUBE_Z);
   // THE ONE LINE THAT FIXES THE SIDE AND CORNER MOUNTS: the assembly is aimed along the glyph's
   // own outward unit vector, which `bbBoxTubeGlyph` has already turned toward the placement point.
   node.rotation.z = Math.atan2(glyph.uy, glyph.ux);
 
-  // n moving stages each travel the same distance, so the tip lands at `reach` at full extension
-  // and every stage keeps `BB_BOX_TUBE_STAGE_OVERLAP` captured inside the one outboard of it.
-  const n = BB_BOX_TUBE_SECTIONS.length - 1;
-  const travel = reach / n;
-  const sectionLen = travel + BB_BOX_TUBE_STAGE_OVERLAP;
+  // THE SHOULDER BRACKET, on the base node so it never moves: a clevis straddling the cradle with
+  // a pin on its axis, standing on the deck. Without it the arm reads as a stick floating off
+  // nothing, and it is also the one part of the rig a camera outside the robot can see.
+  const w0 = BB_BOX_TUBE_SECTIONS[0];
+  const bracket = cast(
+    new THREE.Mesh(
+      framePart(`tube:pivot|${w0}`, () => {
+        const t = 0.15;
+        const deck = BB_DECK_Z - BB_BOX_TUBE_Z; // the deck, in this node's own frame
+        const h = w0 / 2 + 0.25 - deck;
+        const parts: THREE.BufferGeometry[] = [];
+        for (const s of [1, -1] as const) {
+          // one clevis cheek per side, standing on the deck and rising just past the tube
+          parts.push(boxAt(w0 + 0.3, t, h, -w0 / 2, (s * (w0 + t)) / 2, deck + h / 2));
+          parts.push(boxAt(w0 + 0.9, 0.5, 0.2, -w0 / 2, s * (w0 / 2 + 0.25), deck + 0.1)); // its foot
+        }
+        parts.push(boxAt(0.3, w0 + t * 2, 0.3, 0, 0, 0)); // the PIN, on the tube's own axis
+        return parts;
+      }),
+      solidMat(ALU_DK, 0.55, 0.35),
+    ),
+  );
+  bracket.name = `robot:${id}:tube:pivot`;
+  node.add(bracket);
+
+  // PITCH hangs off the shoulder and carries the four MOVING stages; the base SWIVEL is its
+  // parent, so a yaw correction turns the arm about the bracket rather than bending it.
+  const swivel = new THREE.Group();
+  swivel.name = `robot:${id}:tube:swivel`;
+  node.add(swivel);
+  const pitch = new THREE.Group();
+  pitch.name = `robot:${id}:tube:pitch`;
+  swivel.add(pitch);
+
   const mat = solidMat(ALU, 0.4, 0.4);
   const stages: THREE.Object3D[] = [];
   for (let i = 0; i < BB_BOX_TUBE_SECTIONS.length; i++) {
     const w = BB_BOX_TUBE_SECTIONS[i];
     // each section spans [−sectionLen, 0] in its OWN frame, so a stage at offset d has its front
-    // face at d — which is what makes the last stage's front face the tip
+    // face at d — which is what makes the last stage's front face the tip, `moving · ext` out
     const geo = framePart(`tube:${w}|${sectionLen.toFixed(3)}`, () => {
       const wall = BB_BOX_TUBE_WALL;
       const parts: THREE.BufferGeometry[] = [];
@@ -1966,10 +2021,32 @@ function buildBoxTube(
     });
     const mesh = cast(new THREE.Mesh(geo, mat));
     mesh.name = `robot:${id}:tube:s${i}`;
-    node.add(mesh);
-    if (i > 0) stages.push(mesh); // section 0 is the fixed base, bolted across the frame rail
+    // section 0 is the CRADLE, bolted flat across the frame rail and never posed; it hangs off
+    // the base node so no rotation the sync applies can reach it
+    (i === 0 ? node : pitch).add(mesh);
+    if (i > 0) stages.push(mesh);
   }
-  return { node, stages, travel };
+  return {
+    node,
+    stages,
+    rig: {
+      swivel,
+      pitch,
+      baseYaw: node.rotation.z,
+      pivot: { x: glyph.outer.x, y: glyph.outer.y, z: BB_BOX_TUBE_Z },
+      stages: stageTable,
+    },
+  };
+}
+
+/** what `sync` needs to pose one Box Tube: the two nodes it turns, the mount's own aim (so a
+ * swivel is a DIFFERENCE), the shoulder in the robot frame, and the stage table. */
+interface BbTubeRig {
+  swivel: THREE.Group;
+  pitch: THREE.Group;
+  baseYaw: number;
+  pivot: { x: number; y: number; z: number };
+  stages: { sectionLen: number; travel: number; moving: number; full: number };
 }
 
 /** THE VISUAL HEIGHT OF THE DRIVETRAIN — where the DECK is, for anything that has to reason
@@ -1990,6 +2067,12 @@ interface RobotEntry {
   /** how far the Box Tube is out, 0..1. On the ENTRY and not on `userData`, so a `bbSpecKey`
    *  rebuild (which changes the reach) resets it instead of easing from a stale fraction. */
   tubeEase: number;
+  /** the POSE `tubeEase` is easing toward — base swivel, pitch and per-stage extension, solved
+   *  against the flower `bbFlowerInReach` named and HELD while it names none, so a retraction
+   *  runs back down the path it came up. Same reason as `tubeEase`: it belongs to this build. */
+  tubeYaw: number;
+  tubePitch: number;
+  tubeExt: number;
 }
 
 export interface BbRobots {
@@ -2026,7 +2109,7 @@ export function buildBiobuzzRobots(): BbRobots {
           disposeRobotGroup(entry.group);
         }
         const g = buildRobotGroup(r.spec, r.id, r.alliance);
-        entry = { group: g, key, tubeEase: 0 };
+        entry = { group: g, key, tubeEase: 0, tubeYaw: 0, tubePitch: 0, tubeExt: 0 };
         entries.set(r.id, entry);
         group.add(g);
       }
@@ -2038,7 +2121,12 @@ export function buildBiobuzzRobots(): BbRobots {
       // that took an element in the last fraction of a second, which is the driver-held case.
       const rollers = entry.group.userData.intakeRollers as BbRoller[] | undefined;
       if (rollers && rollers.length > 0) {
-        const running = (r.autoIntake || world.time - r.lastIntakeAt < 0.4) && r.hopper.length < bbHopperCap(r.spec);
+        // ...and the robots are ENABLED — auto-intake is a standing assist, so without the gate the
+        // roller kept turning through the auto→teleop transition while the sim captured nothing.
+        const running =
+          robotsEnabled(world) &&
+          (r.autoIntake || world.time - r.lastIntakeAt < 0.4) &&
+          r.hopper.length < bbHopperCap(r.spec);
         for (const roller of rollers) {
           if (running) roller.phase += BB_ROLLER_SPIN * dt;
           roller.hub.rotation.y = -roller.phase;
@@ -2069,22 +2157,48 @@ export function buildBiobuzzRobots(): BbRobots {
         for (const m of sets.roller) m.position.z = BB_WHEEL_R + (r.butterflyTank ? BB_BUTTERFLY_LIFT : 0);
       }
 
-      // THE BOX TUBE EXTENDS WHEN A FLOWER IS IN REACH. `bbFlowerInReach` is the SIM's own
-      // predicate — the same one the sprite's placement marker and the HUD chip read — so the
-      // three cues can never disagree about whether this robot can place. The easing is the
-      // renderer's, because a rate is a function of frame history and no pure sim query can
-      // answer it; it runs off the same clamped WORLD clock the roller does, which is what keeps
-      // a replay scrub that jumps backwards from unwinding the tube.
+      // THE BOX TUBE REACHES THE FLOWER'S OPENING WHEN ONE IS IN REACH. `bbFlowerInReach` is the
+      // SIM's own predicate — the same one the sprite's placement marker and the HUD chip read —
+      // so the three cues can never disagree about whether this robot can place, and the flower
+      // it NAMES is the one the arm is aimed at, per frame. The easing is the renderer's, because
+      // a rate is a function of frame history and no pure sim query can answer it; it runs off
+      // the same clamped WORLD clock the roller does, which is what keeps a replay scrub that
+      // jumps backwards from unwinding the tube.
       const stages = entry.group.userData.tubeStages as THREE.Object3D[] | undefined;
-      if (stages && stages.length > 0) {
-        const want = bbFlowerInReach(world, r) !== null ? 1 : 0;
+      const rig = entry.group.userData.tube as BbTubeRig | undefined;
+      if (stages && stages.length > 0 && rig) {
+        const flower = bbFlowerInReach(world, r);
+        const want = flower !== null ? 1 : 0;
+        if (flower !== null) {
+          // the opening, brought into the robot's own frame: the group already carries `heading`
+          // and `r.z`, so the pose below is solved in the frame the nodes actually live in
+          const f = BB_FLOWERS[flower];
+          const dx = f.x - r.pos.x;
+          const dy = f.y - r.pos.y;
+          const c = Math.cos(-r.heading);
+          const s = Math.sin(-r.heading);
+          const aim = bbBoxTubeAim(
+            rig.pivot,
+            { x: dx * c - dy * s, y: dx * s + dy * c, z: BB_FLOWER_TOP_Z + BB_BOX_TUBE_TIP_CLEAR - (r.z ?? 0) },
+            rig.stages,
+          );
+          // KEPT so the retraction runs back down the path it came up, rather than snapping to
+          // a rest bearing the moment the predicate goes false
+          entry.tubeYaw = aim.yaw - rig.baseYaw;
+          entry.tubePitch = aim.pitch;
+          entry.tubeExt = aim.ext;
+        }
         const step = BB_BOX_TUBE_EXTEND_S > 0 ? dt / BB_BOX_TUBE_EXTEND_S : 1;
         entry.tubeEase =
           want > entry.tubeEase
             ? Math.min(want, entry.tubeEase + step)
             : Math.max(want, entry.tubeEase - step);
-        const travel = (entry.group.userData.tubeTravel as number | undefined) ?? 0;
-        for (let i = 0; i < stages.length; i++) stages[i].position.x = entry.tubeEase * travel * (i + 1);
+        // ONE ease drives the whole pose, so the tip travels a straight-ish line from the rest
+        // stack to the opening instead of pitching and extending on two schedules
+        const e = entry.tubeEase;
+        rig.swivel.rotation.z = e * entry.tubeYaw;
+        rig.pitch.rotation.y = -e * entry.tubePitch;
+        for (let i = 0; i < stages.length; i++) stages[i].position.x = e * entry.tubeExt * (i + 1);
       }
 
       const heads = entry.group.userData.turretHeads as THREE.Group[] | undefined;

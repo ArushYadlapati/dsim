@@ -40,7 +40,7 @@
 
 import type { Alliance, AssistConfig, RobotSpec, StartCat, Vec2, World } from '../../types';
 import { INTAKE_PRESETS, ROBOT_MAX_SIZE } from '../../config';
-import { dcos, wrapAngle } from '../../math';
+import { datan2, dcos, hyp, wrapAngle } from '../../math';
 import { lengthLimits, massLimits, widthLimits } from '../../sim/drivetrain';
 import {
   BB_DEFAULT_INTAKE_MOUNT,
@@ -906,24 +906,97 @@ export const BB_LIFT_MASS_FLOOR = 2.0;
  * that keeps the intake's geometry here rather than in the file that draws it).
  *
  * `BB_BOX_TUBE_SECTIONS` (in, outer to inner): a real FTC box tube is 1.5×1.5 outer with a
- * 0.125-in wall, giving a 1.25-in clear bore, with a 1×1 tube nested inside that — three genuine
- * telescoping sections, measured hardware rather than APPROX. `BB_BOX_TUBE_WALL` is the wall
- * thickness that makes the nest close exactly: 1.5 − 2×0.125 = 1.25 is the next section's outer
- * dimension, and it is also how much each stage must be hollowed by in the mesh to read as a
- * tube rather than a bar.
+ * 0.125-in wall, giving a 1.25-in clear bore, and every nested stage repeats the same subtraction
+ * — 1.5 → 1.25 → 1.0 → 0.75 → 0.5. Measured hardware rather than APPROX. `BB_BOX_TUBE_WALL` is
+ * the wall thickness that makes the nest close exactly: 1.5 − 2×0.125 = 1.25 is the next
+ * section's outer dimension, and it is also how much each stage must be hollowed by in the mesh
+ * to read as a tube rather than a bar.
+ *
+ * ⚠️ **FIVE SECTIONS, NOT THREE, AND THE COUNT IS A MEASUREMENT** (owner, 2026-09-20: "the
+ * boxtube extension should be reaching towards the opening in the flower, not extending
+ * horizontally"). The tip has to arrive at a FLOWER's top plate, `BB_FLOWER_TOP_Z` 21.404 in up,
+ * from a shoulder at `BB_BOX_TUBE_Z` 5.55 — 16.854 in of rise against 1.08…8.08 in of horizontal
+ * run, so the arm needs **17.6…18.7 in of length**, where three sections gave it `bbTubeReach`
+ * (3.08…6.08) and pointed it flat at the wall. The section LENGTH is also how far back into the
+ * frame the stowed stack runs, and that is what fixes the count: over the 128 legal (mount ×
+ * intake × size-extreme) builds, 2 moving stages want an **8.8…9.3-in** cradle, 3 want 5.9…6.2,
+ * and **4 want 5.65…5.92**, which is the first count that fits inside the shortest legal chassis
+ * (13.5 in) with the shoulder 0.7 in inside the rail. A sixth section would be 0.25 in outer over
+ * a 0.125 wall, i.e. no bore at all, so five is also the last honest one.
  */
-export const BB_BOX_TUBE_SECTIONS = [1.5, 1.25, 1.0] as const;
+export const BB_BOX_TUBE_SECTIONS = [1.5, 1.25, 1.0, 0.75, 0.5] as const;
 export const BB_BOX_TUBE_WALL = 0.125;
 /** how much of each telescoping stage stays captured inside the one outboard of it at full
  * extension (in). APPROX — sized as one section width so a fully extended tube never draws as
- * two boxes with a visible gap between them; it sets per-stage travel,
- * `(bbTubeReach - (n-1) * BB_BOX_TUBE_STAGE_OVERLAP) / n`. */
+ * two boxes with a visible gap between them; it is the difference between a section's LENGTH and
+ * its per-stage TRAVEL, which is what `bbBoxTubeStages` solves for. */
 export const BB_BOX_TUBE_STAGE_OVERLAP = 1.25;
 /** seconds for the Box Tube to fully extend or retract, in the RENDERER only. APPROX — a RENDER
  * rate with NO sim consequence: the Box Tube has no sim travel (placement is a proximity action,
- * not a raise — see `BB_PLACE_REACH`'s header), so this can never change what scores. Shared by
- * both renderers so the 2D and 3D views ease identically. */
-export const BB_BOX_TUBE_EXTEND_S = 0.35;
+ * not a raise — see `BB_PLACE_REACH`'s header), so this can never change what scores.
+ *
+ * WAS 0.35, which the owner called out on 2026-09-20 ("it should also be a lot faster"). One
+ * ease drives the whole pose — pitch, base swivel and the four stages together — so the deploy
+ * is 0.12 s end to end, about 7 frames at 60 Hz. */
+export const BB_BOX_TUBE_EXTEND_S = 0.12;
+/** how far above a FLOWER's TOP PLATE (`BB_FLOWER_TOP_Z`) the extended tip parks (in). APPROX —
+ * a tube that stops level with the plate reads as resting ON it; `flower3d.ts` drops a placed
+ * element at the top ring, so the tip belongs just clear of the hole it drops through. */
+export const BB_BOX_TUBE_TIP_CLEAR = 1.0;
+
+/**
+ * THE STAGE TABLE — a CRADLE of `sectionLen` lying flat in the frame, `moving` stages nested in
+ * it, each with `travel`, and a SHOULDER at the cradle's OUTBOARD end (`glyph.outer`).
+ *
+ * ⚠️ **THE SHOULDER IS AT THE FRAME RAIL AND THAT IS WHAT KEEPS THE ARM OUT OF THE TURRET.** The
+ * first pass pivoted the whole mast about its INBOARD end, which lands 4.9…5.3 in inside the rail
+ * — i.e. under a `center` turret's ring on every chassis — so the mast rose straight through the
+ * head: MEASURED, its axis came within **0.000 in** of the drawn turret belt and 0.001 of the
+ * feed throat, at ease 0.92 and 0.33. Anchoring the rotation at `outer` instead leaves the cradle
+ * FIXED and flat (unchanged from the drawing that shipped) and sweeps only the stages, which slide
+ * out along an axis that pitches up over the robot's own bumper, where nothing is built. The price
+ * is that stage 1's tail sits behind the shoulder while it is still mostly retracted and dips
+ * toward the deck; that is bounded and measured in `renderRobots.ts`.
+ *
+ * Sizing is the WORST pose `bbFlowerInReach` calls in reach: the ring sits `reach ± BB_PLACE_TOL`
+ * out from the shoulder horizontally and `BB_FLOWER_TOP_Z + BB_BOX_TUBE_TIP_CLEAR −
+ * BB_BOX_TUBE_Z` up, and `moving · travel` has to cover the far end of that. So the drawn tip
+ * meets the opening BY CONSTRUCTION at every legal build rather than by a tolerance — the same
+ * bargain the tip already made with the placement point when it only had to reach horizontally.
+ */
+export function bbBoxTubeStages(reach: number): { sectionLen: number; travel: number; moving: number; full: number } {
+  const n = BB_BOX_TUBE_SECTIONS.length - 1;
+  const k = BB_BOX_TUBE_STAGE_OVERLAP;
+  const dz = BB_FLOWER_TOP_Z + BB_BOX_TUBE_TIP_CLEAR - BB_BOX_TUBE_Z;
+  const travel = hyp(reach + BB_PLACE_TOL, dz) / n;
+  return { sectionLen: travel + k, travel, moving: n, full: n * travel };
+}
+
+/**
+ * WHERE THE ARM POINTS AND HOW FAR IT IS OUT, for one shoulder and one target — the ONE solve the
+ * 3D pose and the RENDER lane's tip check both run, so a check that says the tip is on the
+ * opening is measuring the drawn arm and not a second derivation of it.
+ *
+ * `yaw` is absolute in the robot frame (the caller subtracts the mount's own aim to get the base
+ * SWIVEL), `pitch` is above horizontal, `ext` is per stage and the TIP sits `moving · ext` from
+ * the shoulder. The length is CLAMPED to what the stages can give, so no stage can ever leave its
+ * parent even for a pose the sizing did not anticipate (an airborne robot, say) — it falls short
+ * instead of coming apart.
+ */
+export function bbBoxTubeAim(
+  pivot: { x: number; y: number; z: number },
+  target: { x: number; y: number; z: number },
+  stages: { travel: number; moving: number },
+): { yaw: number; pitch: number; ext: number; len: number } {
+  const dx = target.x - pivot.x;
+  const dy = target.y - pivot.y;
+  const dz = target.z - pivot.z;
+  // `hyp`/`datan2`, not `Math.hypot`/`Math.atan2`: this file is under `src/games/`, which the
+  // determinism source guard greps, and the rule is "don't write the engine-defined call here".
+  const flat = hyp(dx, dy);
+  const len = Math.min(stages.moving * stages.travel, hyp(flat, dz));
+  return { yaw: datan2(dy, dx), pitch: datan2(dz, flat), ext: len / stages.moving, len };
+}
 
 /**
  * A DUMPER'S RANGE (owner, 2026-09-13) — how far from the cell it is dumping into a dumper can
@@ -1174,6 +1247,12 @@ export const BB_FEED_WALL_T = 0.25;
  * business. Anything that draws the drivetrain should read this rather than retyping it.
  */
 export const BB_DECK_Z = 4.6;
+
+/** the Box Tube's own AXIS height (in) — one bracket's worth above the deck. It was a bare
+ * `BB_DECK_Z + 0.95` literal inside `renderRobots.ts`; `bbBoxTubeStages` has to size the mast
+ * against the FLOWER's 21.404-in top plate from exactly this height, so it is a named number
+ * both the solver and the drawing read rather than two copies of one offset. */
+export const BB_BOX_TUBE_Z = BB_DECK_Z + 0.95;
 
 /** the slew ring the turret stands on, and the turret plate on top of it (in). A real turret is a
  * toothed ring bearing with a plate bolted to its inner race; APPROX both, sized as ordinary FTC

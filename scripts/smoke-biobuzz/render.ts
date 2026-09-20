@@ -48,7 +48,10 @@ import {
   computeCreasedNormals,
   sheetFacingBalance,
   CLEAR_SHEETS_ARE_SINGLE_SIDED,
+  assembleFieldGroups,
+  hiveFrameComponents,
 } from '../../src/games/biobuzz/scene/renderFieldGlb';
+import { cadCaptureTheta, fieldColliders3d } from '../../src/games/biobuzz/sim3d/fieldColliders';
 import { COLORS as SHARED_COLORS } from '../../src/config';
 import {
   BB_BOX_DEPTH,
@@ -61,15 +64,24 @@ import {
 // ── LANE B (ROBOT RENDER) imports — the 3D robot model's own checks, kept in their own block so
 // they are easy to see and easy to move. ───────────────────────────────────────────────────────
 import type { RobotSpec } from '../../src/types';
-import { bbFootprint, bbMouths, bbPlacePointLocal } from '../../src/games/biobuzz/robot';
+import { bbFlowerInReach, bbFootprint, bbMouths, bbPlacePointLocal } from '../../src/games/biobuzz/robot';
 import { bbBoxTubeGlyph } from '../../src/games/biobuzz/parts';
 import { bbLiftOf } from '../../src/games/biobuzz/mechs';
 import {
+  BB_BOX_TUBE_EXTEND_S,
   BB_BOX_TUBE_SECTIONS,
   BB_BOX_TUBE_STAGE_OVERLAP,
+  BB_BOX_TUBE_TIP_CLEAR,
   BB_BOX_TUBE_WALL,
+  BB_BOX_TUBE_Z,
+  bbBoxTubeAim,
+  bbBoxTubeStages,
   BB_BRACE_PROUD,
   BB_DECK_Z,
+  BB_FLOWERS,
+  BB_FLOWER_OPEN_R,
+  BB_FLOWER_TOP_Z,
+  BB_PLACE_TOL,
   BB_FEED_WALL_T,
   BB_FLYWHEEL_CLEAR,
   BB_FLYWHEEL_D_MM,
@@ -182,20 +194,24 @@ const SCENE_DIR = join(BIOBUZZ_DIR, 'scene');
  * wasm has to come up before a single triangle exists. ~1 s, once, and it is what lets the
  * back-face check below measure the REAL geometry instead of a belief about it.
  */
-const FIELD_GLB_SCENE: THREE.Object3D | null = await (async (): Promise<THREE.Object3D | null> => {
+async function parseShippedGlb(file: string): Promise<THREE.Group | null> {
   try {
     const here = dirname(fileURLToPath(import.meta.url));
-    const buf = readFileSync(join(here, '..', '..', 'public', 'models', 'biobuzz', 'field.glb'));
+    const buf = readFileSync(join(here, '..', '..', 'public', 'models', 'biobuzz', file));
     const ab = buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength) as ArrayBuffer;
     const loader = new GLTFLoader();
     loader.setMeshoptDecoder(MeshoptDecoder);
-    return await new Promise<THREE.Object3D | null>((resolve) => {
+    return await new Promise<THREE.Group | null>((resolve) => {
       loader.parse(ab, '', (g) => resolve(g.scene), () => resolve(null));
     });
   } catch {
     return null;
   }
-})();
+}
+const FIELD_GLB_SCENE: THREE.Object3D | null = await parseShippedGlb('field.glb');
+/** the LOW LOD too — the hive's mis-filed parts have to be found on BOTH, and it is the one the
+ *  `assembleFieldGroups` check can run end to end, because only the HIGH path wants a canvas. */
+const FIELD_LOW_GLB_SCENE: THREE.Group | null = await parseShippedGlb('field-low.glb');
 
 function walkTs(dir: string): string[] {
   const out: string[] = [];
@@ -3491,7 +3507,7 @@ function graphicsChecks(check: Check, allFiles: string[]): void {
             const tipX = glyph.outer.x + glyph.ux * reach;
             const tipY = glyph.outer.y + glyph.uy * reach;
             check(
-              `box tube ${mount}/${intakeMount}: the extended TIP is the sim's placement point`,
+              `box tube ${mount}/${intakeMount}: the arm's own AIM LINE runs through the sim's placement point`,
               Math.abs(tipX - place.x) < 1e-9 && Math.abs(tipY - place.y) < 1e-9,
               `(${tipX.toFixed(3)}, ${tipY.toFixed(3)}) vs (${place.x.toFixed(3)}, ${place.y.toFixed(3)})`,
             );
@@ -3506,29 +3522,196 @@ function graphicsChecks(check: Check, allFiles: string[]): void {
             );
             // and the stage table is physical: n equal travels, each stage keeping one overlap
             // captured inside the one outboard of it, and nothing poking out when retracted
-            const n = BB_BOX_TUBE_SECTIONS.length - 1;
-            const travel = reach / n;
-            const sectionLen = travel + BB_BOX_TUBE_STAGE_OVERLAP;
+            const st = bbBoxTubeStages(reach);
             check(
-              `box tube ${mount}/${intakeMount}: the stages nest, and n travels sum to the reach`,
-              Math.abs(n * travel - reach) < 1e-9 && sectionLen - travel >= BB_BOX_TUBE_STAGE_OVERLAP - 1e-9 && travel > 0,
-              `${n} × ${travel.toFixed(2)} = ${reach.toFixed(2)}, section ${sectionLen.toFixed(2)}`,
+              `box tube ${mount}/${intakeMount}: the stages nest, and n travels sum to the full arm`,
+              st.moving === BB_BOX_TUBE_SECTIONS.length - 1 &&
+                Math.abs(st.moving * st.travel - st.full) < 1e-9 &&
+                st.sectionLen - st.travel >= BB_BOX_TUBE_STAGE_OVERLAP - 1e-9 &&
+                st.travel > 0,
+              `${st.moving} × ${st.travel.toFixed(2)} = ${st.full.toFixed(2)}, section ${st.sectionLen.toFixed(2)}`,
             );
           }
         }
         check(
           'the tube EXTENDS off the sim’s own reach predicate, and eases on the WORLD clock',
-          robotsCode.includes('bbFlowerInReach(world, r) !== null ? 1 : 0') &&
+          robotsCode.includes('const flower = bbFlowerInReach(world, r);') &&
             robotsCode.includes('dt / BB_BOX_TUBE_EXTEND_S') &&
             robotsCode.includes('const dt = Math.max(0, Math.min(0.2, world.time - lastTime));'),
         );
         check(
           '...and the ease is on the ENTRY, so a specKey rebuild resets it rather than easing from a stale reach',
-          /tubeEase: number;/.test(robotsCode) && robotsCode.includes('entry = { group: g, key, tubeEase: 0 };'),
+          /tubeEase: number;/.test(robotsCode) && /entry = \{ group: g, key, tubeEase: 0[,}]/.test(robotsCode),
         );
         check(
           '...and NOTHING about it is written back to the world (placement has no sim travel)',
           !/r\.(bbTube|tubeEase)/.test(robotsCode),
+        );
+      }
+
+      // ── 2026-09-20 OWNER: "REACHING TOWARDS THE OPENING IN THE FLOWER, NOT EXTENDING
+      //    HORIZONTALLY. IT SHOULD ALSO BE A LOT FASTER." ────────────────────────────────────
+      //
+      // The arm used to slide flat along the mount direction to `bbPlacePointLocal` — a point on
+      // the TILES — while the thing it places into is a hole 21.404 in up. The pose is solved per
+      // frame now (`bbBoxTubeAim` against the flower `bbFlowerInReach` returned), so this block
+      // sweeps every in-reach pose of every legal build and asserts the DRAWN tip lands on the
+      // opening, that no stage leaves its parent doing it, and that the retracted arm is still
+      // the segment the old drawing occupied.
+      {
+        check(
+          `the deploy is ${BB_BOX_TUBE_EXTEND_S} s, not the 0.35 the owner called slow`,
+          BB_BOX_TUBE_EXTEND_S >= 0.1 && BB_BOX_TUBE_EXTEND_S <= 0.15,
+          `${BB_BOX_TUBE_EXTEND_S}`,
+        );
+        check(
+          'the arm is posed from the SIM’s flower, not a canned angle — one solver, two drawings',
+          robotsCode.includes('const aim = bbBoxTubeAim(') &&
+            robotsCode.includes('const f = BB_FLOWERS[flower];') &&
+            robotsCode.includes('BB_FLOWER_TOP_Z + BB_BOX_TUBE_TIP_CLEAR'),
+        );
+        check(
+          '...pitching about a SHOULDER at the frame rail, with a drawn bracket on it',
+          /node\.position\.set\(glyph\.outer\.x, glyph\.outer\.y, BB_BOX_TUBE_Z\);/.test(robotsCode) &&
+            robotsCode.includes('`robot:${id}:tube:pivot`') &&
+            robotsCode.includes('`robot:${id}:tube:pitch`') &&
+            robotsCode.includes('`robot:${id}:tube:swivel`'),
+        );
+        check(
+          '...and the CRADLE (section 0) hangs off the base node, so no pose can move it',
+          robotsCode.includes('(i === 0 ? node : pitch).add(mesh);'),
+        );
+        check(
+          '...and ONE ease drives pitch, swivel and extension together',
+          /rig\.swivel\.rotation\.z = e \* entry\.tubeYaw;/.test(robotsCode) &&
+            /rig\.pitch\.rotation\.y = -e \* entry\.tubePitch;/.test(robotsCode) &&
+            /stages\[i\]\.position\.x = e \* entry\.tubeExt \* \(i \+ 1\);/.test(robotsCode),
+        );
+
+        // ARITHMETIC, over the whole legal build space and a grid of in-reach poses.
+        const TIP_Z = BB_FLOWER_TOP_Z + BB_BOX_TUBE_TIP_CLEAR;
+        const tubeMounts = ['front', 'back', 'left', 'right', 'frontleft', 'frontright', 'backleft', 'backright'] as const;
+        let poses = 0;
+        let worstTip = 0;
+        let worstOverlap = Infinity;
+        let pitchLo = Infinity;
+        let pitchHi = -Infinity;
+        let swivelHi = 0;
+        let short = 0;
+        let restOff = 0;
+        let lowTail = Infinity;
+        for (const mount of tubeMounts) {
+          for (const intakeMount of ['front', 'side', 'frontback'] as const) {
+            const spec = bbCoerceSpec({
+              ...BB_DEFAULT_SPEC,
+              bbMech: { lift: { kind: 'boxtube', mount } },
+              intakeMount,
+            } as unknown as RobotSpec);
+            const lift = bbLiftOf(spec);
+            const place = bbPlacePointLocal(spec);
+            if (!lift || !place) continue;
+            const glyph = bbBoxTubeGlyph(spec, lift.mount, place);
+            const reach = Math.hypot(place.x - glyph.outer.x, place.y - glyph.outer.y);
+            const st = bbBoxTubeStages(reach);
+            // THE RETRACTED ARM IS THE OLD REST POSE: every section spans [−sectionLen, 0] from
+            // `glyph.outer` along the glyph's own unit vector, which is where the pre-2026-09-20
+            // stack sat. Nothing pokes past the rail and nothing leaves the frame.
+            const tail = { x: glyph.outer.x - glyph.ux * st.sectionLen, y: glyph.outer.y - glyph.uy * st.sectionLen };
+            if (Math.abs(tail.x) > spec.length / 2 + 1e-9 || Math.abs(tail.y) > spec.width / 2 + 1e-9) restOff++;
+
+            const world = mkWorld('match', 11, spec);
+            const r = world.robots[0];
+            const pivot = { x: glyph.outer.x, y: glyph.outer.y, z: BB_BOX_TUBE_Z };
+            const baseYaw = Math.atan2(glyph.uy, glyph.ux);
+            for (let fi = 0; fi < BB_FLOWERS.length; fi++) {
+              const f = BB_FLOWERS[fi];
+              for (let h = 0; h < 12; h++) {
+                const heading = (h * Math.PI * 2) / 12;
+                const c = Math.cos(heading);
+                const s = Math.sin(heading);
+                const px = place.x * c - place.y * s;
+                const py = place.x * s + place.y * c;
+                for (const off of [0, 0.9, 1.9]) {
+                  for (let a = 0; a < 6; a++) {
+                    const th = (a * Math.PI * 2) / 6;
+                    r.heading = heading;
+                    r.pos.x = f.x + Math.cos(th) * off - px;
+                    r.pos.y = f.y + Math.sin(th) * off - py;
+                    if (bbFlowerInReach(world, r) !== fi) continue;
+                    poses++;
+                    // the opening in the ROBOT's frame — the frame the drawn nodes live in
+                    const dx = f.x - r.pos.x;
+                    const dy = f.y - r.pos.y;
+                    const ci = Math.cos(-heading);
+                    const si = Math.sin(-heading);
+                    const target = { x: dx * ci - dy * si, y: dx * si + dy * ci, z: TIP_Z - (r.z ?? 0) };
+                    const aim = bbBoxTubeAim(pivot, target, st);
+                    const need = Math.hypot(target.x - pivot.x, target.y - pivot.y, target.z - pivot.z);
+                    if (aim.len < need - 1e-9) short++;
+                    pitchLo = Math.min(pitchLo, aim.pitch);
+                    pitchHi = Math.max(pitchHi, aim.pitch);
+                    swivelHi = Math.max(swivelHi, Math.abs(((aim.yaw - baseYaw + Math.PI * 3) % (Math.PI * 2)) - Math.PI));
+                    // the DRAWN tip at full ease: the last stage's front face, `moving · ext` out
+                    const L = st.moving * aim.ext;
+                    const tip = {
+                      x: pivot.x + Math.cos(aim.pitch) * Math.cos(aim.yaw) * L,
+                      y: pivot.y + Math.cos(aim.pitch) * Math.sin(aim.yaw) * L,
+                      z: pivot.z + Math.sin(aim.pitch) * L,
+                    };
+                    worstTip = Math.max(worstTip, Math.hypot(tip.x - target.x, tip.y - target.y, tip.z - target.z));
+                    // NO STAGE LEAVES ITS PARENT, at any ease: consecutive stages are one `ext`
+                    // apart and each is `sectionLen` long, so the capture is `sectionLen − ext`.
+                    // The same walk measures the TAIL DIP — stage 1's back end is behind the
+                    // shoulder while it is still retracted, so it swings down toward the deck.
+                    for (let e = 0; e <= 1.0001; e += 0.05) {
+                      worstOverlap = Math.min(worstOverlap, st.sectionLen - e * aim.ext);
+                      lowTail = Math.min(lowTail, BB_BOX_TUBE_Z + (e * aim.ext - st.sectionLen) * Math.sin(e * aim.pitch));
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+        check('box tube pose sweep: it found in-reach poses to measure at all', poses > 2000, `${poses} poses`);
+        check(
+          'box tube: at full ease the drawn TIP is the flower opening, for every in-reach pose',
+          worstTip < 1e-6,
+          `worst ${worstTip.toExponential(2)} in over ${poses} poses`,
+        );
+        check(
+          '...and the arm is never asked for more length than the stages have',
+          short === 0,
+          `${short} poses short`,
+        );
+        check(
+          '...and no stage ever leaves its parent (capture never drops below one overlap)',
+          worstOverlap >= BB_BOX_TUBE_STAGE_OVERLAP - 1e-9,
+          `worst capture ${worstOverlap.toFixed(3)} vs overlap ${BB_BOX_TUBE_STAGE_OVERLAP}`,
+        );
+        check(
+          '...and the retracted arm still sits inside the frame, where the old rest pose was',
+          restOff === 0,
+          `${restOff} builds stow outside the chassis`,
+        );
+        check(
+          'box tube: the arm REACHES UP — every in-reach pose asks for a steep pitch, never a flat one',
+          pitchLo > Math.PI / 4,
+          `${((pitchLo * 180) / Math.PI).toFixed(1)}° … ${((pitchHi * 180) / Math.PI).toFixed(1)}°`,
+        );
+        check(
+          '...and the base SWIVEL stays small — the ring is at most BB_PLACE_TOL off the mount line',
+          swivelHi < Math.PI / 4,
+          `worst ${((swivelHi * 180) / Math.PI).toFixed(2)}° (tol ${BB_PLACE_TOL}, opening r ${BB_FLOWER_OPEN_R.toFixed(2)})`,
+        );
+        // ⚠️ THE ONE COST OF PIVOTING AT THE RAIL: stage 1's tail is still behind the shoulder
+        // while the arm is mostly retracted, so mid-deploy it swings DOWN. It is bounded, it is
+        // inside the frame behind the rail, and it never reaches the belly pan (0.85) — a RATCHET,
+        // so a change that makes the arm dig deeper has to move this number on purpose.
+        check(
+          'box tube: the mid-deploy TAIL DIP is bounded and stays inside the frame',
+          lowTail > 3.0,
+          `lowest tail z ${lowTail.toFixed(3)} (deck top ${BB_DECK_Z}, belly pan 0.96)`,
         );
       }
 
@@ -4562,5 +4745,108 @@ function hudBandChecks(check: Check): void {
       '...while 2D really does write a CENTRE — `flowerStackZ` returns seat + r',
       /out\.push\(seat \+ r\);/.test(readFileSync(join(root, 'src', 'games', 'biobuzz', 'flower.ts'), 'utf8')),
     );
+  }
+
+  /**
+   * ── THE HIVE'S PIVOT ROCKER RIDES THE TRAY ─────────────────────────────────────────────────
+   *
+   * Owner, 2026-09-20: "Support bracket for the hive is artifacting & is behind/desynced
+   * sometimes (does not tip with the hive)." The six parts per alliance that bolt to the tray's
+   * spine — the two Goal Pivot Bracket plates, the two damper holders and the two dampers — ship
+   * inside `hive_<a>/frame`, which is STATIC, so they sat still while the see-saw swung. The
+   * autopsy is in `renderFieldGlb.ts`'s own THE PIVOT ROCKER THE PIPELINE ALSO FILED AS FRAME.
+   *
+   * Two things are pinned here, because the bug needed both to be true to ship:
+   *  · the SELECTOR still separates. A whole connected component that reaches no further than
+   *    `ROCKER_HALF_SPAN_IN` from a tray's centreline plane is rocker hardware; measured, the six
+   *    reach 0.60 in and the nearest STATIC component (`axle_holder` / `a_frame_top_corner`)
+   *    reaches 2.26, on both LODs. A field revision that closes that gap fails here rather than
+   *    silently freezing a part again — or silently tipping the A-frame.
+   *  · the reparented geometry is RIGID on the tray. At every tilt its world position is the
+   *    rotation about the pivot of where the CAD captured it. That is what "does not tip with
+   *    the hive" failed at, by up to 7.28 in at the opposite rest and 0.00 at the captured one —
+   *    the whole of the owner's "sometimes", because `|captureTheta|` IS `BB_HIVE_TILT_DEG`.
+   */
+  {
+    const ROCKER_PER_ALLIANCE = 6;
+    const SELECTOR_FLOOR_IN = 2.2; // the nearest STATIC component; measured 2.26
+    const SELECTOR_CEIL_IN = 0.65; // the furthest ROCKER component; measured 0.60
+    for (const [file, scene] of [
+      ['field.glb', FIELD_GLB_SCENE],
+      ['field-low.glb', FIELD_LOW_GLB_SCENE],
+    ] as const) {
+      check(`${file} parses, so the rocker checks below are not vacuous`, scene !== null);
+      if (!scene) continue;
+      const comps = hiveFrameComponents(scene);
+      for (const a of ['red', 'blue'] as const) {
+        const rides = comps.filter((c) => c.rides && c.alliance === a);
+        check(
+          `${file}: ${a}'s tray carries all ${ROCKER_PER_ALLIANCE} pivot-rocker parts (2 brackets, 2 damper holders, 2 dampers)`,
+          rides.length === ROCKER_PER_ALLIANCE,
+          `${rides.length}: ${rides.map((c) => `${c.tris}t@${c.spanFromPivot.toFixed(2)}`).join(' ')}`,
+        );
+        check(`${file}: ...and every one of them is real geometry`, rides.every((c) => c.tris > 0));
+      }
+      const worstRocker = Math.max(...comps.filter((c) => c.rides).map((c) => c.spanFromPivot));
+      const nearestStatic = Math.min(...comps.filter((c) => !c.rides).map((c) => c.spanFromPivot));
+      check(
+        `${file}: the rocker/frame split has room to be wrong in — rocker reaches ${worstRocker.toFixed(2)} in, the nearest static ${nearestStatic.toFixed(2)}`,
+        worstRocker <= SELECTOR_CEIL_IN && nearestStatic >= SELECTOR_FLOOR_IN,
+        `${worstRocker.toFixed(3)} / ${nearestStatic.toFixed(3)}`,
+      );
+    }
+
+    if (FIELD_LOW_GLB_SCENE) {
+      const fg = assembleFieldGroups(FIELD_LOW_GLB_SCENE, 'low');
+      check('the loader moves the braces AND the rocker off the static frame nodes', fg.braceTris > 0 && fg.rockerTris > 0, `${fg.braceTris} brace / ${fg.rockerTris} rocker tris`);
+      // nothing rocker-shaped may be LEFT behind in a frame node, or half of it would still freeze
+      const leftBehind = hiveFrameComponents(fg.root).filter((c) => c.rides);
+      check(
+        'nothing within the rocker span is left in a hive FRAME node after the reparent',
+        leftBehind.length === 0,
+        leftBehind.map((c) => `${c.node}:${c.tris}t`).join(', '),
+      );
+      for (const a of ['red', 'blue'] as const) {
+        const tray = fg.hives[a].tray;
+        const moved: THREE.Mesh[] = [];
+        tray.traverse((o) => {
+          if (o instanceof THREE.Mesh && /tray-(rocker|brace)$/.test(o.name)) moved.push(o);
+        });
+        check(`${a}: every reparented part hangs off the TILTING group, not the frame`, moved.length > 0, `${moved.length} meshes`);
+        const pivot = fieldColliders3d().trays[a].pivot;
+        // the reference pose is the one the CAD captured — the single tilt at which the frozen
+        // rocker used to look right.
+        const rest = cadCaptureTheta(a);
+        const sample = (theta: number): THREE.Vector3[] => {
+          tray.rotation.set(theta, 0, 0);
+          tray.updateMatrixWorld(true);
+          const out: THREE.Vector3[] = [];
+          for (const m of moved) {
+            const pos = m.geometry.getAttribute('position');
+            const step = Math.max(1, Math.floor(pos.count / 40));
+            for (let i = 0; i < pos.count; i += step) out.push(new THREE.Vector3().fromBufferAttribute(pos, i).applyMatrix4(m.matrixWorld));
+          }
+          return out;
+        };
+        const at0 = sample(rest);
+        let worst = 0;
+        let spread = 0;
+        for (const theta of [-0.5236, -0.2618, 0, 0.2618, 0.5236]) {
+          const now = sample(theta);
+          const rot = new THREE.Matrix4()
+            .makeTranslation(pivot[0], pivot[1], pivot[2])
+            .multiply(new THREE.Matrix4().makeRotationX(theta - rest))
+            .multiply(new THREE.Matrix4().makeTranslation(-pivot[0], -pivot[1], -pivot[2]));
+          for (let i = 0; i < now.length; i++) {
+            const want = at0[i].clone().applyMatrix4(rot);
+            worst = Math.max(worst, now[i].distanceTo(want));
+            spread = Math.max(spread, now[i].distanceTo(at0[i]));
+          }
+        }
+        check(`${a}: the rocker is RIGID on the tray — its pose at any tilt is the captured pose rotated about the pivot`, worst < 1e-3, `${worst.toFixed(5)} in`);
+        check(`${a}: ...and it really does move (a frozen part would pass the line above trivially)`, spread > 6, `${spread.toFixed(2)} in over the full swing`);
+        tray.rotation.set(rest, 0, 0);
+      }
+    }
   }
 }

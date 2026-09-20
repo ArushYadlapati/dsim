@@ -375,6 +375,23 @@ newest-first — it is never ranked, which is what keeps the two eras from meeti
     lip; it does not swing about a flywheel axle. `bbLobThrow`, `bbDumpSolution` and `bbLaunch`'s
     dumper branch all still read it directly, and the ROBOT lane has a leak guard: a dumper's release
     stays flat at every pitch while a turret on the same chassis follows its hood down.
+  - ⚠️ **THE BOX TUBE REACHES THE FLOWER'S OPENING, AND IT PIVOTS AT THE FRAME RAIL** (owner,
+    2026-09-20: "the boxtube extension should be reaching towards the opening in the flower, not
+    extending horizontally. It should also be a lot faster"). Placement is still a PROXIMITY action
+    with no sim travel, so this is entirely `scene/renderRobots.ts` — but it was sliding flat to
+    `bbPlacePointLocal`, a point on the TILES, while the hole it places into is `BB_FLOWER_TOP_Z`
+    21.404 in up. The arm now solves its pose per frame against the flower `bbFlowerInReach`
+    returned (`bbBoxTubeAim`), which asks for **64.5°–86.2° of pitch**, a base swivel of at most
+    **39°** (the ring may sit `BB_PLACE_TOL` off the mount's aim line) and **16.9–18.7 in** of arm.
+    Two rules hold it up, and both are measured in the RENDER lane rather than assumed: the stage
+    table is DERIVED from the worst in-reach pose (`bbBoxTubeStages`, five nested sections 1.5 →
+    0.5 at one `BB_BOX_TUBE_WALL` per step, giving 17.6–18.7 in) so the tip lands on the opening to
+    4e-8 in and no stage ever leaves its parent; and the **SHOULDER IS AT `glyph.outer`**, the
+    frame rail. Pivoting the whole stack about its INBOARD end instead — the obvious reading of
+    "the arm pivots at its base" — puts the pivot 4.9–5.3 in inside the rail, under a `center`
+    turret's ring on every legal chassis, and the mast then rose straight through the head: its
+    axis came within **0.000 in** of the drawn turret belt. Section 0 is a CRADLE bolted to the base
+    node and never posed, so the retracted arm is byte-identical to the drawing that shipped.
   - **The hood's own feed mouth rotates away from the feed at elevation**, which is why the wrap is
     0.556 rad and not the 1.05 it was: a FIXED feed shoe at `BB_FEED_SHOE_R` spans 146°–202° and
     takes over the entry. It bolts to both side plates, so it is also the rear tie.
