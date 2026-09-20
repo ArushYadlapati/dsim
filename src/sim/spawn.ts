@@ -75,6 +75,7 @@ import {
   shooterMountOf,
 } from '../games/chain/mounts';
 import { nextRandom, wrapAngle, rot, clamp } from '../math'; // Import wrapAngle
+import { COSMETIC_AXES, clampCosmetics, type Cosmetics } from '../cosmetics';
 import { butterflyTankRpmLimits, lengthLimits, massLimits, rpmLimits, widthLimits } from './drivetrain';
 import { heldSlotPos } from './physics';
 import { flywheelSpinTarget, loadPreStage, spikeMarkBalls, startPose } from './field';
@@ -251,11 +252,35 @@ export function coerceSpec(raw: unknown, base: RobotSpec = DEFAULT_SPEC, game?: 
   out.chainIntake = (CHAIN_INTAKE_STYLES as readonly string[]).includes(sp.chainIntake as string)
     ? (sp.chainIntake as RobotSpec['chainIntake'])
     : (base.chainIntake ?? CHAIN_DEFAULT_INTAKE);
-  // SUPPORTER COSMETIC: an allowlisted key, never a free colour string, so a
-  // spoofed spec can only ever select one of the vetted fills (or the default).
-  out.chassisColor = (C.CHASSIS_COLOR_KEYS as readonly string[]).includes(sp.chassisColor as string)
-    ? (sp.chassisColor as string)
-    : base.chassisColor;
+  // COSMETICS: chassisColor/accent/decal/plate — four closed axes, `src/cosmetics.ts`. SHAPE
+  // ONLY, never entitlement (plan §3.3, docs/cosmetics-plan.md): this coercer also runs over
+  // REPLAY RE-SIMULATION, which must always reproduce the look a run was recorded with,
+  // whoever is watching it today or what their supporter/earned status is now — baking a tier
+  // check in here would silently downgrade an old replay's cosmetics the first time a
+  // membership lapses or a key gets re-tiered. Entitlement is enforced only at the server's
+  // live ingress (`server/room.ts`, `stripUnentitledCosmetics`), strictly after this clamp.
+  // Per axis: an allowlisted raw value wins; otherwise fall back to `base`'s own value for
+  // that axis IF IT IS ITSELF a legal key (never propagate an invalid/spoofed base forward);
+  // `clampCosmetics` then folds whatever survives onto its closed set, defaulting anything
+  // still unrecognised — the same "unknown falls back to base, else default" rule the old
+  // single-axis chassisColor clamp used, now shared by all four. Idempotent: re-running this
+  // on its own output changes nothing, since every surviving value is already a legal key.
+  const cosmeticIn: Cosmetics = {};
+  for (const axis of Object.keys(COSMETIC_AXES) as (keyof Cosmetics)[]) {
+    const v = sp[axis];
+    const bv = base[axis];
+    cosmeticIn[axis] =
+      typeof v === 'string' && COSMETIC_AXES[axis].includes(v)
+        ? v
+        : typeof bv === 'string' && COSMETIC_AXES[axis].includes(bv)
+          ? bv
+          : undefined;
+  }
+  const cosmetics = clampCosmetics(cosmeticIn);
+  out.chassisColor = cosmetics.chassisColor;
+  out.accent = cosmetics.accent;
+  out.decal = cosmetics.decal;
+  out.plate = cosmetics.plate;
   // MECHANISM MOUNTS. Enum-checked, with the legacy `intakeSide`/`shooterRear` booleans as the
   // fallback so old saves + older peers migrate (see games/chain/mounts.ts). `intakeMountOf`/
   // `shooterMountOf` do exactly that resolution, so run them on the RAW input first, then fall

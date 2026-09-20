@@ -775,8 +775,12 @@ export const BB_INTAKE_SEAT = 1.1;
  * 0.0375 s (driving in hard) to 0.06 s (parked dead centre) per lane-burst; new worst case
  * (lateral edge / wall grab) is 0.075–0.12 s, still faster than the OLD best case (0.09375 s),
  * so the whole range strictly improves. */
-export const BB_INTAKE_PERIOD_MIN = 0.06;
-export const BB_INTAKE_PERIOD_MAX = 0.12;
+export const BB_INTAKE_PERIOD_MIN = 0.03;
+export const BB_INTAKE_PERIOD_MAX = 0.06;
+/* HALVED AGAIN 2026-09-20 (owner: "intaking cadence still needs to be way faster") — 0.06 / 0.12 →
+ * 0.03 / 0.06, i.e. two to four elements a tick-pair through one lane, 17–33 per second per lane.
+ * The transit (`BB_INTAKE_DRAW_IN`, capped under `C.BALL_MAX_SPEED` by the RULES lane) is now the
+ * larger share of a capture's time, not the feed. */
 /** inches of roller per FEED LANE. A bar wide enough for two paths into the hopper can take two
  * elements side by side in one cycle; a narrow one takes one. */
 export const BB_INTAKE_LANE_W = 9;
@@ -893,7 +897,9 @@ export const BB_PLACE_TOL = 2.0;
 /** how often a running intake pulls one POLLEN out of a FLOWER's retrieval opening (G418.B), in
  * seconds. APPROX — one element worked out from under the stack through a 3.55-in hole, not a
  * roller sweeping loose elements off the tiles, so it is slower than a ground pickup. */
-export const BB_FLOWER_RETRIEVE_S = 0.35;
+export const BB_FLOWER_RETRIEVE_S = 0.15;
+/* WAS 0.35. Cut to 0.15 with the ground cadence (owner, 2026-09-20: "way faster"): a column of
+ * eight empties in 1.2 s instead of 2.8. */
 // `BB_FLOWER_RETRIEVE_PAD` (the old flat-rect padding this constant used to be) is GONE: the
 // gate below is archetype-aware and asks an actual overlap (`BB_FLOWER_BITE`) instead of a
 // padded rect, so there is nothing left for a slop constant to pad.
@@ -937,8 +943,12 @@ export interface BbFlowerReach {
    * the tip, inside the mouth. */
   out: readonly [number, number];
   /** how far off the mouth's centreline the POLLEN's centre may sit and still be gripped (in).
-   * `null` ⇒ anywhere across the mouth (a full-width part). */
+   * `null` ⇒ anywhere across the mouth (a full-width part), unless `edgeGrip` is set. */
   half: number | null;
+  /** EDGE-MOUNTED hardware (the side rollers): the part sits at `±bbSideRollerY(mouthHalf)` off
+   * the centreline, and grips a POLLEN whose centre is within this distance of EITHER one (in).
+   * The lateral test is then per wheel, not a band about the centreline. */
+  edgeGrip?: number;
   /** the hardware's z band off the tiles (in). */
   z: readonly [number, number];
 }
@@ -948,13 +958,24 @@ export interface BbFlowerReach {
  * face or a ramp's lip under a ball, i.e. contact and not a graze. */
 export const BB_FLOWER_BITE = 0.5;
 
-/** the SIDE ROLLERS (`siderollers`): two vertical-axis compliant wheels, one each side of the
- * mouth's centreline, hung from the front brace. APPROX — sized to STRADDLE a POLLEN in the
- * opening with the chassis flush on the foot: at `BB_SIDE_ROLLER_OUT` past the tip the pair sits
- * 0.48 in short of the POLLEN's centre and ±`BB_SIDE_ROLLER_Y` off it, so each wheel's face is
- * 0.19 in INTO the POLLEN's skin (the compression that grips), the pair spans ±2.65 in (inside
- * the plate's ±2.97), tops out at 2.5 in (under the 3.904 ceiling) and reaches 2.65 in past the
- * plate edge (short of the supports at 3.57). */
+/**
+ * the SIDE ROLLERS (`siderollers`): two vertical-axis compliant wheels AT THE INTAKE'S EDGES,
+ * one at each end of the mouth, hung from the front brace (owner, 2026-09-20: "situated on the
+ * edges of the robot, not near the center. It is to funnel things from the edge"). A wheel's axis
+ * is `bbSideRollerY(mouthHalf)` off the centreline — its outer face 0.1 in inside the side arm's
+ * plane — so the pair is as wide as the chassis and a ground POLLEN met at the mouth's end is
+ * walked inward toward the roller.
+ *
+ * AT A FLOWER that means ONE wheel does the work: the pair is 12–17 in apart and cannot straddle
+ * a 2.8-in ball, so the driver lines an END of the intake up on the opening — the chassis
+ * `bbSideRollerY` off the flower's centreline — and that wheel enters the opening beside the
+ * POLLEN. APPROX, sized for that: at `BB_SIDE_ROLLER_OUT` past the tip the wheel sits 0.48 in
+ * short of the POLLEN's centre, and with the ball within `BB_SIDE_ROLLER_GRIP` of its axis the
+ * wheel's face is ≥ 0.15 in INTO the ball's skin (the compression that grips, against the bore
+ * behind it); the wheel spans ±0.75 about its axis (inside the plate's ±2.97 when the ball is
+ * within grip), tops out at 2.5 in (under the 3.904 ceiling) and reaches 2.65 in past the plate
+ * edge (short of the supports at 3.57).
+ */
 export const BB_SIDE_ROLLER_R = 0.75;
 /** the wheel's height (in): a 2-in compliant wheel stack. */
 export const BB_SIDE_ROLLER_H = 2.0;
@@ -962,13 +983,21 @@ export const BB_SIDE_ROLLER_H = 2.0;
 export const BB_SIDE_ROLLER_Z = 1.5;
 /** the wheel's axis, past the tip line (in). */
 export const BB_SIDE_ROLLER_OUT = 1.9;
-/** the wheel's axis, off the mouth's centreline (in). */
-export const BB_SIDE_ROLLER_Y = 1.9;
+/** how far INBOARD of the mouth's lateral edge a wheel's axis sits (in): its own radius plus a
+ * 0.1-in clearance to the side arm's plane. */
+export const BB_SIDE_ROLLER_EDGE_INSET = BB_SIDE_ROLLER_R + 0.1;
+/** a wheel's axis off the mouth's centreline, for a mouth of half-width `mouthHalf` (in) — the
+ * ONE placement both renderers, the collider and the retrieval gate read. */
+export function bbSideRollerY(mouthHalf: number): number {
+  return mouthHalf - BB_SIDE_ROLLER_EDGE_INSET;
+}
+/** how far off a wheel's axis a POLLEN's centre may be, laterally, for that wheel's face to have
+ * hold of it (in): the two radii less 0.15 in of compression. */
+export const BB_SIDE_ROLLER_GRIP = BB_SIDE_ROLLER_R + BB_POLLEN_R - 0.15;
 export const BB_SIDE_ROLLER_REACH: BbFlowerReach = {
   out: [BB_SIDE_ROLLER_OUT - BB_SIDE_ROLLER_R, BB_SIDE_ROLLER_OUT + BB_SIDE_ROLLER_R],
-  // between the wheels: a POLLEN further off-centre than the inner faces meets one wheel's face
-  // square-on and is pushed, not gripped
-  half: BB_SIDE_ROLLER_Y - BB_SIDE_ROLLER_R,
+  half: null,
+  edgeGrip: BB_SIDE_ROLLER_GRIP,
   z: [BB_SIDE_ROLLER_Z - BB_SIDE_ROLLER_H / 2, BB_SIDE_ROLLER_Z + BB_SIDE_ROLLER_H / 2],
 };
 
@@ -982,26 +1011,31 @@ export const BB_SIDE_ROLLER_REACH: BbFlowerReach = {
  *
  *   pivot   `BB_RAMP_PIVOT_BACK` behind the tip line (the sweeper's own axle line, so the folded
  *           rails stand round the roller), `BB_RAMP_PIVOT_Z` up
- *   rails   `BB_RAMP_L` long: folded, the crossbar is at 6.7 in, above the 6.5-in flap sweep
+ *   rails   `BB_RAMP_L` long: folded, the crossbar is at 7.5 in, above the 6.5-in flap sweep
  *   tip     `BB_RAMP_TIP_Z` off the tiles: clears the lower plate's 0.354 rim on the way in, and
  *           is under a POLLEN's centre by 0.9 in, which is the wedge
  *
- * Deployed, the crossbar is `BB_RAMP_OUT` = 2.17 in past the tip line (into the opening, 1.4 in
- * short of the supports; 2.84 in off the wall) and the surface past the tip line runs 0.5 → 1.39
- * in high — every part of it under a POLLEN's centre. The rails span the mouth's width, so they
- * pass either side of the 5.95-in foot on open tiles.
+ * ⚠️ **LENGTHENED 2026-09-20 (owner: "the ramp might need to reach further out")**: at the old
+ * `BB_RAMP_L` = 4.5 / `BB_RAMP_ANGLE` = 0.3875 (22.2°), the deployed crossbar's face landed 0.21
+ * in SHORT of a flush FLOWER POLLEN's own centre (`BB_PLACE_REACH` 2.384) — close enough to nudge
+ * the ball's front face but not to get under it. The pivot is UNCHANGED (`BB_RAMP_TIP_Z` still
+ * solves to 0.50), so only the rail length and angle move: `BB_RAMP_L` = 5.3, `BB_RAMP_ANGLE` =
+ * 0.3266 (18.7°). Deployed, the crossbar is `BB_RAMP_OUT` ≈ 3.02 in past the tip line — 0.64 in
+ * PAST the POLLEN's centre now, 0.55 in short of the peanut supports (3.57) and 1.99 in off the
+ * wall when flush — and the surface past the tip line runs 0.50 → 1.52 in high. The rails span
+ * the mouth's width, so they pass either side of the 5.95-in foot on open tiles.
  */
-export const BB_RAMP_L = 4.5;
+export const BB_RAMP_L = 5.3;
 export const BB_RAMP_PIVOT_BACK = 2.0;
 export const BB_RAMP_PIVOT_Z = 2.2;
-/** how far below level the deployed rails lie (rad) — 22.2°, TYPED, so the tip height and the
+/** how far below level the deployed rails lie (rad) — 18.7°, TYPED, so the tip height and the
  * reach below are `dsin`/`dcos` of it rather than an inverse function this file may not call
  * (the determinism guard: an engine's `asin` is not required to be correctly rounded). */
-export const BB_RAMP_ANGLE = 0.3875;
+export const BB_RAMP_ANGLE = 0.3266;
 /** the deployed crossbar's height off the tiles (in): `pivotZ − L·sin(angle)` = 0.50, above the
  * lower plate's 0.354 rim. */
 export const BB_RAMP_TIP_Z = BB_RAMP_PIVOT_Z - BB_RAMP_L * dsin(BB_RAMP_ANGLE);
-/** the deployed crossbar's reach past the tip line (in): `L·cos(angle) − pivotBack` = 2.17. */
+/** the deployed crossbar's reach past the tip line (in): `L·cos(angle) − pivotBack` ≈ 3.02. */
 export const BB_RAMP_OUT = BB_RAMP_L * dcos(BB_RAMP_ANGLE) - BB_RAMP_PIVOT_BACK;
 /** how long the ramp takes to swing between its two poses (s). APPROX — a servo-driven drop;
  * the sim credits the ramp only once it has arrived (`bbRampSettled`), and the renderer eases
@@ -1012,6 +1046,32 @@ export const BB_RAMP_REACH: BbFlowerReach = {
   half: null, // the full mouth width
   z: [BB_RAMP_TIP_Z, BB_RAMP_TIP_Z + (BB_RAMP_OUT * dsin(BB_RAMP_ANGLE)) / dcos(BB_RAMP_ANGLE)],
 };
+
+/**
+ * ⚠️ **HOW FAR OFF THE MOUTH'S CENTRELINE A FLOWER'S BOTTOM POLLEN IS RELEASED, WHEN A RAMP
+ * PULLS IT OUT PHYSICALLY** (`flowerRetrieve3d`, 3D only — see that function's own header for
+ * why the release is a `ground` element rather than a straight `capturePollen`).
+ *
+ * MEASURED, not guessed: the release point — `BB_RAMP_OUT − 0.3 − BB_POLLEN_R` past the mouth's
+ * own tip line, i.e. just behind the crossbar's inner face — sits `BB_RAMP_OUT − 0.3 − BB_POLLEN_R
+ * − BB_PLACE_REACH` ≈ **−1.06 in** from the FLOWER's own axis along the mouth's outward direction
+ * (negative: the ramp's short reach past the pollen's centre, 0.64 in, is not enough to clear the
+ * axis outward — see `BB_RAMP_OUT`'s own header). `derive.ts`'s tube-membership test
+ * (`flowerTubeOf`) is a plain radius from that axis, `BB_FLOWER_OPEN_R` (2.086 in), so a release
+ * on the flower's own y — dead centre, `v = 0` — sits only 1.06 in from the axis, INSIDE that
+ * radius, and gets re-tagged `element`/`flower:i` on the very next `deriveTick` before the
+ * gameplay stage ever sees it as `ground`. Measured directly against `flowerTubeOf`.
+ *
+ * The fix is LATERAL, not further out along `u` (the ramp physically cannot reach further out
+ * without leaving the U): offset the release sideways, under the crossbar (which spans the whole
+ * mouth width, `BB_RAMP_REACH.half` is `null`), by enough to clear `BB_FLOWER_OPEN_R` — solved
+ * algebraically for the `u` offset above, plus 0.3 in of margin.
+ */
+export const BB_RAMP_RELEASE_V: number = (() => {
+  const uOffAxis = BB_RAMP_OUT - 0.3 - BB_POLLEN_R - BB_PLACE_REACH;
+  const clear2 = BB_FLOWER_OPEN_R * BB_FLOWER_OPEN_R - uOffAxis * uOffAxis;
+  return (clear2 > 0 ? Math.sqrt(clear2) : 0) + 0.3;
+})();
 
 /**
  * WHAT THIS ARCHETYPE CAN REACH IN A FLOWER'S OPENING RIGHT NOW, or `null` for nothing: the

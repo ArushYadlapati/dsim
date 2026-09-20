@@ -470,6 +470,88 @@ newest-first — it is never ranked, which is what keeps the two eras from meeti
     (`BTN_BBRAMP` = 256, `src/net/protocol.ts`), and `packKey` (`src/sim/replay.ts`) carries the
     buttons ALONGSIDE the packed axes rather than inside them — packed in, bit 256 masked to 0 and
     a ramp press was invisible to the replay recorder.
+  - ⚠️ **THE RAMP IS SOLID TO AN ELEMENT NOW, NOT JUST TO A ROBOT** (owner report 2026-09-20: "the
+    pollen should be getting intaked from the deployable ramp BECAUSE it collides with the ramp
+    and slides down... right now, it just looks like the pollen is passing through the ramp").
+    The crossbar and rails `chassis3dReachShapes` builds (above) carried `GROUP_POCKET`
+    unconditionally, which is the group an ELEMENT never meets — so a deployed ramp was solid to
+    a robot and a wall and invisible to the one thing it exists to catch. `Chassis3dShape` grew an
+    `elementSolid` flag (`bodies.ts`): the ramp's crossbar and rails set it (default groups, meets
+    an element, plus the chassis boxes' own edge break via `chassisBoxDesc` so a ball meeting the
+    bar behaves like meeting the frame); side rollers do not (still `GROUP_POCKET` — compliant
+    wheels a POLLEN passes BETWEEN, not a bar it meets square on). `reachColliderDesc` (shared by
+    the authority and the FULL predictor) picks the group and the collider builder off that one
+    flag. **MEASURED**: a ground POLLEN fired at 30 in/s into the deployed bar's plane stops/
+    bounces, never crosses it, across the whole tested lateral spread.
+  - ⚠️ **THE INTAKE'S OWN PULL REACHES `BB_RAMP_OUT` FURTHER OUT, ONCE DEPLOYED AND SETTLED.**
+    `bbIntakeAct` (`robot.ts`) gained `BbIntakeOpts.extraReach`, added only to the eligibility
+    bound (`g.uOut + extraReach + er + BB_INTAKE_LIP`) — an element sitting anywhere inside the
+    ramp's U, on the tiles or resting on the crossbar, is now something the rollers can grip and
+    draw in, not just something the bar can shove. `bbIntakeExtraReach(r, time)` is the ONE
+    predicate both `play.ts`'s `step2d` and `sim3d/elements3d.ts`'s `elements3dCapture` compute it
+    from (`bbIntakeKindOf(spec) === 'ramp' && bbRampSettled(r, time) ? BB_RAMP_OUT : 0`), so 2D and
+    3D cannot disagree about how far the pull reaches. **2D has no ramp collider at all** ("2D
+    stays DRAWING-ONLY" above still holds) — nothing is solid there, so the extended reach simply
+    pulls a ground POLLEN in from further out; a real bar's PUSH is 3D-only.
+  - ⚠️ **A `ramp` BUILD'S FLOWER RETRIEVAL IS A TWO-STEP RELEASE IN 3D, NOT A TELEPORT INTO THE
+    HOPPER.** MEASURED (10 runs, seeds 5001–5010, standoff 10–25 in, stick 0.35–1.0): driving a
+    real `ramp` build into a FLOWER's foot with the intake held, the PROXIMITY GATE
+    (`bbFlowerAtIntakeMouth` + the Z-bite) always fires before the physical push has a tick to act
+    — the ball's centre moves under 0.6 in before the old code would have swallowed it whole. So
+    `flowerRetrieve3d` (`sim3d/flower3d.ts`) does not `capturePollen` for a `ramp`: it releases the
+    bottom POLLEN as a `ground` element under the crossbar — position `ax.uOut + BB_RAMP_OUT −
+    0.3 − r` outward (just behind the bar's inner face) and `BB_RAMP_RELEASE_V` sideways
+    (`config.ts`), `z` at the lower plate's own rim, a small nudge inward — tags it `ground`,
+    splices it off `flowers[i].stack`, and lets the extended pull (above) sweep it the rest of the
+    way in. **THE LATERAL OFFSET IS LOAD-BEARING, NOT COSMETIC**: `derive.ts`'s tube-membership
+    test (`flowerTubeOf`) is a bare radius from the FLOWER's own axis (`BB_FLOWER_OPEN_R`, 2.086
+    in) — a release dead on the flower's own y sits only ≈1.06 in from that axis (the ramp's own
+    reach past the POLLEN's centre is only 0.64 in) and gets re-tagged `element`/`flower:i` on the
+    very next `deriveTick`, before gameplay ever sees `ground`. `BB_RAMP_RELEASE_V` solves for the
+    sideways distance (under the crossbar, which spans the whole mouth width) that clears the
+    radius, plus margin. MEASURED transit (release tick to swallow): 8–13 ticks (0.13–0.22 s),
+    never instant, never a second tunnel through the bar. Every other archetype (`siderollers`,
+    and the direct proximity path in general) is unchanged: still a straight `capturePollen`.
+  - ⚠️ **THE RAMP SWING GUARD: A DEPLOY OR FOLD THAT WOULD CARRY THE RAMP INTO A STATIC REVERSES**
+    (owner, 2026-09-20: deploying into a FLOWER should be refused, "same with un-deploying").
+    `bbRampSwingProgress(r, time)` (`robot.ts`) is the ONE eased curve (smoothstep,
+    `t²(3−2t)` over `t = elapsed / BB_RAMP_DEPLOY_S`) both the guard and the renderer's own ease
+    read, `e ∈ [0,1]` (0 folded, 1 deployed) — `null` when no swing is in flight. **3D**:
+    `bbRampSwingShapes(spec, heightIn, e)` (`sim3d/bodies.ts`) builds the crossbar + rails at ANY
+    progress `e` about the FIXED PIVOT (`φ(e) = e·(π/2 + BB_RAMP_ANGLE)` from straight up),
+    verified to reduce EXACTLY to `chassis3dReachShapes`'s own deployed numbers at `e = 1`;
+    `rampSwingHitsStatic` is a free-floating Rapier shape-intersection query (never a collider on
+    any body) filtered to `collider.parent()?.isFixed()` — walls, flower plates/supports and the
+    hive FRAME, never the hive tray, a robot or an element. **2D** (`bbRampSwingStep2d`, `play.ts`)
+    has no z or partial-swing geometry, so it tests the FULL DEPLOYED FOOTPRINT rect (SAT) against
+    the 2D field's own static rects (`biobuzzColliders.statics`, all `rot: 0`) every tick a swing
+    is in flight — which covers "at the press" for free. A hit calls `bbRampReverse`: flips
+    `bbRampOut` and re-stamps `bbRampAt` so the SAME curve runs backward from the CURRENT angle
+    (symmetric — no snap), and sets `RobotState.bbRampBlocked` so the guard does not re-test for
+    the REST of that one swing (it can only retrace ground already proven clear); a fresh press
+    clears the flag. ⚠️ **A RIGID ARM ROTATING PAST 90° OVERSHOOTS ITS OWN FINAL REACH MID-SWING**:
+    `sin(φ)` peaks at `φ = 90°`, which is BEFORE the arm's resting angle (`90° + BB_RAMP_ANGLE`),
+    so the swing's outward reach exceeds the settled footprint's by
+    `BB_RAMP_L·(1 − cos(BB_RAMP_ANGLE))` at the peak — MEASURED, a standoff that clears the
+    SETTLED footprint's own clearance margin (0 in flush) can still be caught mid-swing (3 in off
+    the foot still refused; 4 in and up settle clean). The guard is catching a real transient
+    collision a final-pose-only check cannot see.
+  - ⚠️ **SIDE ROLLERS RELOCATED TO THE MOUTH'S OWN EDGES** (owner, 2026-09-20: "situated on the
+    edges of the robot, not near the center. It is to funnel things from the edge"). A wheel's
+    axis is `bbSideRollerY(mouthHalf)` = `mouthHalf − BB_SIDE_ROLLER_EDGE_INSET`, not the old fixed
+    `BB_SIDE_ROLLER_Y` — `chassis3dReachShapes` places the pair at `±bbSideRollerY(axes.half)`.
+    `BbFlowerReach` grew `edgeGrip` (`BB_SIDE_ROLLER_REACH` sets `half: null, edgeGrip:
+    BB_SIDE_ROLLER_GRIP`): the pair is 12+ in apart on a real chassis and cannot straddle a 2.8-in
+    POLLEN, so `bbFlowerAtIntake`'s lateral test becomes "is the POLLEN within `edgeGrip` of
+    EITHER wheel's own axis" (`min(|v−wy|, |v+wy|) ≤ edgeGrip`) instead of a centreline band — a
+    driver lines an END of the intake up on the opening, never the middle. **A wide (realistic)
+    chassis's wheel sits far outside a FLOWER's own plate half-width** (measured: `bbSideRollerY`
+    ≈6.4–7.65 in against a 2.976-in plate half-width, at every buildable chassis width) — reaching
+    one still works because the ROBOT, not the wheel, is what gets driven off-centre to line it up
+    (the flush pose's HEADING absorbs the offset — see `mouthPoint`, `tutorial.ts` — never the
+    stage position's `y`), but a few CAD-derived numbers that assumed the wheel sat near the
+    chassis centreline (drive-in standoff, the FULL-predictor wall-standoff comparison) now read a
+    wider but still-passing tolerance; their own comments carry the measurement.
 - **Verification:** `scripts/smoke-biobuzz/sim3d.ts` (SIM3D lane: seam, drive parity, two-run
   hash, conservation, containment with `containmentFixes === 0`, CCD, capture, launch into either
   up cell, 18/29-in clearance, tip/spill, perf ≤ 1.5 ms, CAD probe agreement) and `render.ts`

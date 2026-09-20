@@ -4,6 +4,7 @@ import * as C from '../config';
 import { createWorld, DEFAULT_ASSISTS } from '../sim/spawn';
 import { footprintExtents } from '../sim/field';
 import { drawRobot } from '../render/drawRobot';
+import { clampCosmetics } from '../cosmetics';
 
 /** clear space around the robot, as a fraction of its longest side */
 const PAD = 0.16;
@@ -145,8 +146,10 @@ function onFieldAccent(): string {
 
 /** the BUILD, not the identity: renaming a robot must not respawn a world */
 function specKey(s: RobotSpec): string {
+  const cosm = clampCosmetics(s);
   return [
     s.length, s.width, s.intake, s.drivetrain, s.driveRpm,
     s.massLb, s.flywheelInertia, s.canSort, s.chassisColor,
+    cosm.accent, cosm.decal, cosm.plate,
   ].join('|');
 }

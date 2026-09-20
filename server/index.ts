@@ -6,6 +6,7 @@ import v8 from 'node:v8';
 import { Room, type Client } from './room';
 import { coerceCaps, decodeClientMsg, encodeMsg, BB3D_REFUSAL, DEFAULT_ROOM_CONFIG, physicsAllowed, RATED_FORMATS, SERVER_CAPS, type ClientMsg, type LiveRoom, type RoomConfig, type ServerMsg } from '../src/net/protocol';
 import { sanitizePlayer } from '../src/net/sanitize';
+import { stripUnentitledCosmetics } from '../src/cosmetics';
 import { authConfigured, emailGateRefusal, verifyAuthToken } from './auth';
 import { initPhysics } from '../src/sim/physicsEngine';
 import { initPhysics3d } from '../src/games/biobuzz/sim3d/engine';
@@ -3052,17 +3053,30 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
       // ONE READ FOR NAME + BADGES, resolved once at join rather than per broadcast. A
       // lapse mid-match therefore keeps the badge until the next join, which is the right
       // trade: the alternative is a database read on every roster frame. `getProfile`
-      // carries the handle, the supporter predicate and the staff role, so this is the
-      // same single query the supporter lookup already cost.
+      // carries the handle, the supporter predicate, the staff role AND this account's
+      // earned cosmetic unlocks, so this is the same single query the supporter lookup
+      // already cost.
       // Never fatal — a DB hiccup costs a badge, not a join.
       if (dbEnabled) {
         const p = await getProfile(user.userId).catch(() => null);
         if (p?.handle) client.player.name = p.handle;
         if (p?.supporter) client.player.supporter = true;
         if (p?.role) client.player.role = p.role;
+        client.earnedCosmetics = p?.cosmetics ?? [];
       }
       markAuthed(user.userId);
     }
+    // ENTITLEMENT STRIP (docs/cosmetics-plan.md §3.3), AFTER the badge fields above are
+    // known and AFTER `sanitizePlayer` above only shape-clamped the spec (`coerceSpec`
+    // never checks entitlement — see its header) — a hand-edited or spoofed join can ask
+    // for any allowlisted key, gold chassis included, and an anonymous guest owns nothing
+    // at all. Never runs over replay re-simulation or `createWorld`, neither of which
+    // reaches this handler.
+    client.player.spec = stripUnentitledCosmetics(
+      client.player.spec,
+      !!client.player.supporter,
+      client.earnedCosmetics ?? [],
+    );
     // LAST GAP: the supporter lookup above is another await, and a socket that went away
     // inside it would be added to a room that will never hear its close (detach finds no
     // client and returns before `onEmpty`). Nothing may await between here and `add`.
@@ -3399,12 +3413,24 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
             // LAST GAP, and the one that matters: nothing may await between here and
             // `enqueue`, or the entry outlives the cancel that was meant to stop it.
             if (stale()) return;
+            // sanitize the ranked player's spec/assists too (same clamp as join), THEN the
+            // same entitlement strip (docs/cosmetics-plan.md §3.3) — this spec is what the
+            // roster's strategy-window build preview shows to teammates and opponents
+            // BEFORE this player's own `join` lands on the staged room, so an unstripped
+            // one would leak an unentitled cosmetic there even though the later join would
+            // have corrected it. `prof` (fetched above) carries supporter + earned in one
+            // query, same as the join path.
+            const queuedPlayer = sanitizePlayer(msg.player, coerceGameId(msg.game));
+            queuedPlayer.spec = stripUnentitledCosmetics(
+              queuedPlayer.spec,
+              !!prof?.supporter,
+              prof?.cosmetics ?? [],
+            );
             matchmaker.enqueue({
             id,
             send,
-            // sanitize the ranked player's spec/assists too (same clamp as join)
             player: {
-              ...sanitizePlayer(msg.player, coerceGameId(msg.game)),
+              ...queuedPlayer,
               name: prof?.handle || u.handle || msg.player.name,
             },
             userId: u.userId,

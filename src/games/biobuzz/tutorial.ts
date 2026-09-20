@@ -11,8 +11,9 @@ import {
   BB_HIVE_X,
   BB_NECTAR_R,
   bbMirror,
+  bbSideRollerY,
 } from './config';
-import { bbFootprint, bbHopperCap, bbMouths, bbPlacePointLocal } from './robot';
+import { bbFootprint, bbHopperCap, bbMouths, bbPlacePointLocal, mouthAxes } from './robot';
 import { bbCarriesNectar, bbIntakeKindOf, bbLauncherOf, bbLiftOf } from './mechs';
 import { bbIndexElements } from './spawn';
 import { capturePollen } from './elements';
@@ -254,13 +255,21 @@ function stageAtFlower(world: World, robotId: number, local: Vec2, standoff: num
 
 /** where a build's FIRST intake mouth reaches, in the robot frame — the `local` `stageAtFlower`
  *  wants for the retrieval step. An edge's outward direction times that edge's own footprint
- *  extent, so a side-mounted sweeper is staged on the side. */
+ *  extent, so a side-mounted sweeper is staged on the side.
+ *
+ * ⚠️ **SIDE ROLLERS ARE `edgeGrip`, NOT THE CENTRELINE** (owner, 2026-09-20: "situated on the
+ * edges of the robot, not near the center"). This step always ends up with a `siderollers` build
+ * (its own, or lent — see `stage`, this function's one caller), so the staged point is offset by
+ * `bbSideRollerY` along the mouth's LATERAL axis so the lesson's pose actually has a wheel on the
+ * opening rather than resting on a line neither wheel reaches. */
 function mouthPoint(spec: RobotSpec): Vec2 {
   const f = bbFootprint(spec);
-  const edge = bbMouths(spec)[0]?.edge ?? 'front';
-  if (edge === 'front') return { x: f.front, y: 0 };
-  if (edge === 'back') return { x: -f.rear, y: 0 };
-  return { x: 0, y: edge === 'left' ? f.half : -f.half };
+  const m = bbMouths(spec)[0];
+  const edge = m?.edge ?? 'front';
+  const lateral = m && bbIntakeKindOf(spec) === 'siderollers' ? bbSideRollerY(mouthAxes(m, spec.length / 2, spec.width / 2).half) : 0;
+  if (edge === 'front') return { x: f.front, y: lateral };
+  if (edge === 'back') return { x: -f.rear, y: lateral };
+  return { x: lateral, y: edge === 'left' ? f.half : -f.half };
 }
 
 const steps: TutorialStep[] = [
@@ -377,7 +386,7 @@ const steps: TutorialStep[] = [
     // the lesson lends a sweeper-only build SIDE ROLLERS (see `stage`), and says so: the robot on
     // screen grows a pair for this step, and the driver should know why their own build cannot
     hint: (c) =>
-      `Drive square into the FLOWER’s foot with ${control(c, 'intake', 'intake')} held. POLLEN come out of the bottom — only an intake that reaches into the opening can take them, so this lesson lends you side rollers.`,
+      `Drive square into the FLOWER’s foot with ${control(c, 'intake', 'intake')} held. POLLEN come out of the bottom — only an intake that reaches into the opening can take them, so this lesson lends you side rollers. Line an END of the intake up on the opening — the pair is too far apart to straddle it.`,
     stage: (w, id) => {
       const r = me(w, id);
       if (!r) return;

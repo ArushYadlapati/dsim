@@ -23,6 +23,7 @@ import {
   BB_LAUNCH_Z0,
   BB_PLACE_REACH,
   BB_RAMP_DEPLOY_S,
+  BB_RAMP_OUT,
   BB_TURRET_AXLE_Z,
   BB_TURRET_SOLVE_PASSES,
   BB_PLACE_TOL,
@@ -371,12 +372,25 @@ export interface BbIntakeOpts {
    * lane's own dt-sweep check) does not have to fork the function to pass one in.
    */
   dt?: number;
+  /**
+   * ⚠️ **HOW FAR PAST THE ROLLER LINE THIS MOUTH REACHES RIGHT NOW** (owner report 2026-09-20:
+   * "it just looks like the pollen is passing through the ramp and somehow still getting sucked
+   * in by the intake"). Zero for every build but a DEPLOYED, SETTLED `ramp` (`bbRampExtraReach`,
+   * below — both callers, `play.ts`'s `step2d` and `sim3d/elements3d.ts`'s `elements3dCapture`,
+   * compute it from the SAME predicate so the two backends cannot disagree about which elements
+   * the pull reaches). Added to the eligibility bound only (`g.uOut + extraReach + er +
+   * BB_INTAKE_LIP`), never to the seat/throat: an element sitting inside the ramp's U or on its
+   * crossbar is now ELIGIBLE for the pull, and is drawn the same distance toward the frame face
+   * everything else is — it does not get a shorter transit for starting further out.
+   */
+  extraReach?: number;
 }
 
 export function bbIntakeAct(world: World, r: RobotState, opts: BbIntakeOpts = {}): BbIntakeAct {
   const lowFlight = opts.lowFlight ?? false;
   const atRoller = opts.seat === 'footprint';
   const dt = opts.dt ?? SIM_DT;
+  const extraReach = opts.extraReach ?? 0;
   const cap = bbHopperCap(r.spec);
   const room = cap - r.hopper.length;
   // A FULL HOPPER DOES NOT PULL. The element is left to the solve and the chassis pushes it,
@@ -419,7 +433,7 @@ export function bbIntakeAct(world: World, r: RobotState, opts: BbIntakeOpts = {}
       // element's OWN radius (a NECTAR is 1.8 where a POLLEN is 1.4) plus the contact lip; the
       // inboard and lateral bounds stay the drawn rect's, so no edge can ever swallow something
       // behind or beside the chassis.
-      if (!(u > g.uIn && u < g.uOut + er + BB_INTAKE_LIP)) continue;
+      if (!(u > g.uIn && u < g.uOut + extraReach + er + BB_INTAKE_LIP)) continue;
       // ...and LATERALLY, the element's CENTRE has to be UNDER THE BAR — `|v| < half`, the
       // roller's own span and not an inch more.
       //
@@ -1458,8 +1472,51 @@ export function bbRampStep(r: RobotState, cmd: RobotCommand | undefined, enabled
   if (wants && !r.bbRampHeld) {
     r.bbRampOut = !(r.bbRampOut ?? false);
     r.bbRampAt = time;
+    // A FRESH PRESS RE-ARMS THE SWING GUARD (owner, 2026-09-20: a swing that would carry the
+    // ramp into a static reverses, and — once reversed — does not test again for the REST of
+    // that one swing, because it is retracing a path already proven clear). This new press is a
+    // DIFFERENT swing, so it gets to test again.
+    r.bbRampBlocked = false;
   }
   r.bbRampHeld = wants;
+}
+
+/**
+ * THE RAMP'S DEPLOY FRACTION RIGHT NOW, `e` in `[0, 1]` — 0 folded, 1 fully deployed — the ONE
+ * eased curve both the sim's swing-collision guard (`bbRampSwingShapes`, `bodies.ts`) and the
+ * renderer's own ease use, so the physics box and the drawn ramp cannot show two different poses
+ * for the same tick. `null` when there is no swing in flight (settled either way, or never
+ * toggled) — the caller's cue to skip the guard's own (Rapier or 2D-rect) query entirely.
+ *
+ * The curve is the standard smoothstep `t²(3−2t)` over `t = (time − bbRampAt) / BB_RAMP_DEPLOY_S`
+ * — DEPLOYING (`bbRampOut` true) sweeps `e` from 0 to 1, FOLDING sweeps it from 1 to 0 (`1 − e`),
+ * so a fold started at any point along a deploy retraces the SAME angle curve backward rather
+ * than snapping.
+ */
+export function bbRampSwingProgress(r: RobotState, time: number): number | null {
+  if (bbIntakeKindOf(r.spec) !== 'ramp') return null;
+  const at = r.bbRampAt;
+  if (at === undefined) return null;
+  const elapsed = time - at;
+  if (elapsed < 0 || elapsed >= BB_RAMP_DEPLOY_S) return null; // settled, either way
+  const t = clamp(elapsed / BB_RAMP_DEPLOY_S, 0, 1);
+  const e = t * t * (3 - 2 * t);
+  return r.bbRampOut ? e : 1 - e;
+}
+
+/**
+ * REVERSE A BLOCKED SWING (owner, 2026-09-20: "if it collides with the flower or any non-moving
+ * solid thing as it is being deployed, it should fold back up... same with un-deploying"). Flips
+ * `bbRampOut` and re-stamps `bbRampAt` so the SAME smoothstep curve (`bbRampSwingProgress`) picks
+ * up from exactly the CURRENT angle running the other way — symmetric, so no visible or physical
+ * snap — and sets the oscillation guard so this one swing is not tested again (it can only ever
+ * retrace ground already proven clear). `elapsed` is the caller's own `time − (the OLD bbRampAt)`,
+ * from just before this call flips it.
+ */
+export function bbRampReverse(r: RobotState, time: number, elapsed: number): void {
+  r.bbRampOut = !r.bbRampOut;
+  r.bbRampAt = time - (BB_RAMP_DEPLOY_S - elapsed);
+  r.bbRampBlocked = true;
 }
 
 /**
@@ -1474,4 +1531,18 @@ export function bbRampStep(r: RobotState, cmd: RobotCommand | undefined, enabled
  */
 export function bbRampSettled(r: RobotState, time: number): boolean {
   return !!r.bbRampOut && time - (r.bbRampAt ?? -Infinity) >= BB_RAMP_DEPLOY_S;
+}
+
+/**
+ * `BbIntakeOpts.extraReach` FOR THIS ROBOT RIGHT NOW — the ONE predicate both `bbIntakeAct`
+ * callers (`play.ts`'s `step2d`, `sim3d/elements3d.ts`'s `elements3dCapture`) compute it from, so
+ * 2D and 3D cannot disagree about how far a deployed ramp's own pull reaches (owner report
+ * 2026-09-20, ramp intake). Zero for every build but a DEPLOYED, SETTLED `ramp`: a folded or
+ * still-swinging ramp has no reach hardware out there to pull an element off of, exactly the same
+ * gate `bbFlowerReachOf`'s caller already uses. `BB_RAMP_OUT` is the crossbar's own reach past the
+ * roller line (`uOut`), so an element sitting anywhere inside the U — on the tiles or resting on
+ * the crossbar — is inside the extended eligibility bound.
+ */
+export function bbIntakeExtraReach(r: RobotState, time: number): number {
+  return bbIntakeKindOf(r.spec) === 'ramp' && bbRampSettled(r, time) ? BB_RAMP_OUT : 0;
 }

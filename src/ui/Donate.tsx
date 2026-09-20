@@ -222,7 +222,7 @@ export function Donate({ signedIn }: { signedIn: boolean }) {
               {MAX_SAVED_STARTS_SUPPORTER} saved start positions per side, up from{' '}
               {MAX_SAVED_STARTS}
             </li>
-            <li>Cosmetic chassis colours in the robot builder</li>
+            <li>Six premium chassis colours, every accent, patterned decals, the bold plate</li>
           </ul>
           <a
             className="ds-cta"

@@ -1,4 +1,4 @@
-<!-- governs: src/sim/**, src/config.ts, src/math.ts, src/types.ts -->
+<!-- governs: src/sim/**, src/config.ts, src/math.ts, src/types.ts, src/cosmetics.ts -->
 # Shared physics, determinism and drive feel
 
 The Rapier solve, the two-solve round loop, pins, artifact contact, the wall square-up, `RobotSpec` + `coerceSpec`, and the real-motor drivetrain model. Almost every number here was settled by a measurement that is quoted beside it — change one and re-read the paragraph that explains why it is that value.
@@ -281,6 +281,16 @@ Chain-only (optional, defaulted in `coerceSpec`): `ballStorage`, `groundClearanc
 - The builder's slider envelopes come from the SAME limit functions (`massLimits`,
   `rpmLimits`, `lengthLimits`, `widthLimits` in `drivetrain.ts`), so the UI can't offer an
   illegal value the coercer would then rewrite.
+- **`chassisColor`/`accent`/`decal`/`plate` (`src/cosmetics.ts`) are the four cosmetic axes**,
+  clamped here by `clampCosmetics` exactly like every other enum field — SHAPE only, an
+  unrecognised key falls back to `base`'s own value if that is itself legal, else the hard
+  default. Deliberately **NO entitlement check in `coerceSpec`**: this function also runs over
+  REPLAY RE-SIMULATION, and baking a tier check in here would downgrade an old replay's look
+  to whoever is watching it TODAY the first time a membership lapses or a key is re-tiered.
+  Entitlement (`stripUnentitledCosmetics`) is a separate step the server's live ingress runs
+  AFTER this clamp — `server/index.ts` (join, ranked queue) and `server/room.ts` (`update`) —
+  see `docs/area/accounts.md` and `docs/cosmetics-plan.md` §3.3. Never touches physics: a
+  smoke check pins `worldHash` bit-identical across every cosmetic combination.
 
 ### Drivetrain feel — REAL-MOTOR model (`BALANCE_VERSION` 2)
 

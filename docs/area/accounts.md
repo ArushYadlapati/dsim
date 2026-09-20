@@ -167,6 +167,29 @@ Tests: covered in `npm run dbtest` (which prints its own count — an exact numb
 into this file goes stale the first time anyone adds a check, as the three that said 36 and
 ~61 had).
 
+**COSMETICS — TWO SEPARATE LEDGERS, DONE** (`docs/cosmetics-plan.md`). `chassisColor` /
+`accent` / `decal` / `plate` (`src/cosmetics.ts`) are four closed-set axes on `RobotSpec`;
+`coerceSpec` clamps their SHAPE only (see `docs/area/physics.md`). Entitlement is enforced
+separately, at the server's live ingress: `stripUnentitledCosmetics(spec, supporter, earned)`
+runs AFTER `coerceSpec`, at every point a client DECLARES a spec — `server/index.ts` (join,
+the ranked queue player, since its spec feeds the staged roster's pre-match build preview)
+and `server/room.ts` (the `update` patch, off `Client.earnedCosmetics` cached at join so a
+re-pick costs no DB round trip). It NEVER runs over replay re-simulation or `createWorld` —
+an old replay must keep the look it was recorded with, whoever watches it and whatever their
+entitlements are today; see physics.md's note on why that check cannot live in `coerceSpec`.
+A supporter's palette is the existing `SUPPORTER_COL` predicate, unlocking all at once — this
+ledger holds only EARNED, permanent unlocks: `profiles.cosmetics jsonb` (migration `0044`),
+`"<axis>:<key>"` strings, written only by `grantCosmetic`/`revokeCosmetic` (repo.ts, id
+validated against `COSMETIC_AXES`) and logged to `admin_audit` (0041) like a supporter grant
+— never by a client. The two ledgers are deliberately kept apart: a lapsed membership must
+never delete something earned, and an earned unlock must never quietly become something sold.
+`GET /api/user/entitlements` carries the account's unlocks as `unlockedCosmetics` (decorative
+only — the server independently strips regardless of what a client remembers this said).
+Tests: `npm run dbtest` (migration, grant/revoke round-trip incl. idempotent re-grant, the
+audit rows, and the strip's three cases — free downgrade, supporter keeps a paid key, earned
+survives a lapsed/absent membership); `npm test` for `coerceSpec`'s shape clamp, its
+replay-safety invariant, and the `worldHash` non-interference check.
+
 **MATCH REPLAYS ARE PRIVATE BY DEFAULT — THEY BELONG TO THE PEOPLE WHO PLAYED THEM**
 (`profiles.replays_public`, migration `0038`). A replay is an input log re-simulated at full
 fidelity, so it does not show a score, it shows the GAME PLAN — where you start, what you go for

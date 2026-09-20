@@ -9,7 +9,7 @@ import {
   BB_RAMP_PIVOT_BACK,
   BB_SIDE_ROLLER_OUT,
   BB_SIDE_ROLLER_R,
-  BB_SIDE_ROLLER_Y,
+  bbSideRollerY,
 } from './config';
 import { bbIntakeKindOf, bbLauncherOf, bbLiftOf } from './mechs';
 import { BB_MODE_LABELS } from './labels';
@@ -192,18 +192,19 @@ export function BiobuzzRobotPreview({
                 toggle against, so a `ramp` build always shows FOLDED. */}
             {intakeKind === 'siderollers'
               ? [1, -1].map((sg) => (
+                  // AT THE EDGE, not the centreline (owner, 2026-09-20) — `bbSideRollerY(f.half)`
                   <g key={`sr-${sg}`}>
                     <line
                       x1={f.depth}
-                      y1={sg * BB_SIDE_ROLLER_Y}
+                      y1={sg * bbSideRollerY(f.half)}
                       x2={f.depth + BB_SIDE_ROLLER_OUT}
-                      y2={sg * BB_SIDE_ROLLER_Y}
+                      y2={sg * bbSideRollerY(f.half)}
                       stroke={stroke}
                       strokeWidth={0.18}
                     />
                     <circle
                       cx={f.depth + BB_SIDE_ROLLER_OUT}
-                      cy={sg * BB_SIDE_ROLLER_Y}
+                      cy={sg * bbSideRollerY(f.half)}
                       r={BB_SIDE_ROLLER_R}
                       fill="var(--ds-bg)"
                       stroke={stroke}

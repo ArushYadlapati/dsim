@@ -3,6 +3,139 @@ import * as C from '../config';
 import { footprintExtents } from '../sim/field';
 import { turretWorldPos } from '../sim/robot';
 import { rot } from '../math';
+import { accentFill, clampCosmetics, OUTLINE_HALO } from '../cosmetics';
+
+/**
+ * ROBOT COSMETICS — 2D SHARED HELPERS (`docs/cosmetics-plan.md` §3.4). Used by all three 2D
+ * sprites (DECODE here, CR/BIOBUZZ import them), so the halo, the decal shapes and the accent
+ * tint are drawn identically everywhere instead of drifting per game.
+ *
+ * `RobotSpec.accent`/`decal`/`plate` are landing on a parallel lane (`src/types.ts`); read them
+ * through `clampCosmetics`, which is shape-safe on a spec that does not declare them yet (every
+ * field is optional, so an object missing them entirely is already a valid `Cosmetics`) — no cast
+ * needed, and no renderer here has to wait on the type before drawing the fields it names.
+ */
+
+/** how wide the dark ring between a vivid fill and the alliance outline is drawn (in). */
+const OUTLINE_HALO_WIDTH = 0.6;
+
+/**
+ * THE OUTLINE HALO — a dark ring just inboard of where the alliance stroke sits, so a vivid
+ * cosmetic fill never drops the red/blue outline's contrast (a red fill under a red outline
+ * measures ~1.4:1; the halo keeps it readable regardless of the chassis colour). `insetFromEdge`
+ * is the game's own alliance stroke width (`C.CHASSIS_OUTLINE`), so the band starts exactly where
+ * that stroke's inner edge lands rather than overlapping or leaving a gap.
+ */
+export function drawOutlineHalo(
+  ctx: CanvasRenderingContext2D,
+  length: number,
+  width: number,
+  corner: number,
+  insetFromEdge: number,
+): void {
+  const hl = length / 2 - insetFromEdge;
+  const hw = width / 2 - insetFromEdge;
+  if (hl <= 0 || hw <= 0) return;
+  ctx.strokeStyle = OUTLINE_HALO;
+  strokeInside(ctx, () => roundRect(ctx, -hl, -hw, hl * 2, hw * 2, Math.max(0, corner - insetFromEdge)), OUTLINE_HALO_WIDTH);
+}
+
+/** blend `accent` into a structural `base` colour by `amt` (0..1) and an optional alpha — used to
+ * tint an aluminium/rubber part (a tread bar, a roller stripe) with the cosmetic accent without
+ * losing the material shading that says "this is rubber", not painting it flat. */
+export function tintColor(base: string, accent: string, amt: number, alpha = 1): string {
+  const b = hexToRgb(base);
+  const a = hexToRgb(accent);
+  if (!b || !a) return base;
+  const mix = (x: number, y: number) => Math.round(x + (y - x) * amt);
+  return `rgba(${mix(b.r, a.r)},${mix(b.g, a.g)},${mix(b.b, a.b)},${alpha})`;
+}
+function hexToRgb(hex: string): { r: number; g: number; b: number } | null {
+  const m = /^#?([0-9a-f]{6})$/i.exec(hex);
+  if (!m) return null;
+  const n = parseInt(m[1], 16);
+  return { r: (n >> 16) & 255, g: (n >> 8) & 255, b: n & 255 };
+}
+
+/**
+ * THE DECAL — a vector shape over the chassis fill, under the halo/outline, parametric in the
+ * FOOTPRINT (fractions of length/width, never absolute inches — a decal must scale to any legal
+ * chassis, the risk `docs/cosmetics-plan.md` §4 names). Called with the caller's already
+ * translated+rotated, footprint-clipped context, `hl`/`hw` the chassis half-length/half-width.
+ */
+export function drawDecal(ctx: CanvasRenderingContext2D, hl: number, hw: number, decal: string, accent: string): void {
+  if (decal === 'none') return;
+  const L = hl * 2;
+  const W = hw * 2;
+  ctx.fillStyle = accent;
+  switch (decal) {
+    case 'stripe': {
+      // one centre stripe, front to back, 18% of the width
+      const w = W * 0.18;
+      ctx.fillRect(-hl, -w / 2, L, w);
+      break;
+    }
+    case 'racing': {
+      // two parallel stripes either side of centre
+      const w = W * 0.1;
+      const off = W * 0.15;
+      ctx.fillRect(-hl, off - w / 2, L, w);
+      ctx.fillRect(-hl, -off - w / 2, L, w);
+      break;
+    }
+    case 'chevron': {
+      // a forward-pointing chevron across the deck (+x is forward)
+      const d = L * 0.22;
+      const half = hw * 0.82;
+      const notch = d * 0.55;
+      ctx.beginPath();
+      ctx.moveTo(d * 0.5, 0);
+      ctx.lineTo(-d * 0.5, -half);
+      ctx.lineTo(-d * 0.5 + notch, -half);
+      ctx.lineTo(d * 0.5 + notch, 0);
+      ctx.lineTo(-d * 0.5 + notch, half);
+      ctx.lineTo(-d * 0.5, half);
+      ctx.closePath();
+      ctx.fill();
+      break;
+    }
+    case 'hazard': {
+      // diagonal bands, rear third only
+      const x0 = -hl;
+      const x1 = -hl + L / 3;
+      ctx.save();
+      ctx.beginPath();
+      ctx.rect(x0, -hw, x1 - x0, W);
+      ctx.clip();
+      const bw = W * 0.16;
+      for (let o = -W; o < L / 3 + W; o += bw * 2) {
+        ctx.beginPath();
+        ctx.moveTo(x0 + o, -hw);
+        ctx.lineTo(x0 + o + bw, -hw);
+        ctx.lineTo(x0 + o + bw + W, hw);
+        ctx.lineTo(x0 + o + W, hw);
+        ctx.closePath();
+        ctx.fill();
+      }
+      ctx.restore();
+      break;
+    }
+    case 'checker': {
+      // a 4-wide checker band across the middle of the deck
+      const cols = 4;
+      const cw = L / cols;
+      const bandH = W * 0.3;
+      const rows = Math.max(1, Math.round(bandH / cw));
+      const rh = bandH / rows;
+      for (let i = 0; i < cols; i++) {
+        for (let j = 0; j < rows; j++) {
+          if ((i + j) % 2 === 0) ctx.fillRect(-hl + i * cw, -bandH / 2 + j * rh, cw, rh);
+        }
+      }
+      break;
+    }
+  }
+}
 
 export function drawRobot(
   ctx: CanvasRenderingContext2D,
@@ -31,6 +164,10 @@ export function drawRobot(
   // The alliance lives in `color` (the OUTLINE). `fill` is the supporter cosmetic
   // and can never change which alliance a robot reads as.
   const fill = C.chassisFill(r.spec.chassisColor);
+  // COSMETICS: `accent`/`decal`/`plate` land on `RobotSpec` on a parallel lane; `clampCosmetics`
+  // is shape-safe against a spec that does not declare them yet.
+  const cosm = clampCosmetics(r.spec);
+  const accent = accentFill(cosm.accent, r.spec.chassisColor);
 
   ctx.save();
   ctx.translate(r.pos.x, r.pos.y);
@@ -65,7 +202,9 @@ export function drawRobot(
   body();
   ctx.fill();
 
-  drawWheels(ctx, r, color);
+  drawDecal(ctx, hl, hw, cosm.decal, accent);
+
+  drawWheels(ctx, r, color, accent);
 
   // intake at the front (RobotPreview.tsx draws the same). FUNNEL presets
   // (sloped/triangle) are two RIGHT TRIANGLES — one per side — whose hypotenuses
@@ -183,6 +322,7 @@ export function drawRobot(
    * poking through the outline: "the gate opener outline seems to be protruding out too".
    * Drawn last it is the boundary of the whole object, which is what an outline is.
    */
+  drawOutlineHalo(ctx, r.spec.length, r.spec.width, C.CHASSIS_CORNER, C.CHASSIS_OUTLINE);
   ctx.strokeStyle = color;
   strokeInside(ctx, body, C.CHASSIS_OUTLINE);
 
@@ -240,7 +380,7 @@ export function drawRobot(
  * so every drivetrain reads identically across games: mecanum/tank point forward, SWERVE
  * pods steer to `moduleAngles`, X-drive omnis sit at ±45° (an X).
  */
-export function drawWheels(ctx: CanvasRenderingContext2D, r: RobotState, color: string): void {
+export function drawWheels(ctx: CanvasRenderingContext2D, r: RobotState, color: string, accent: string): void {
   const hl = r.spec.length / 2;
   const hw = r.spec.width / 2;
   const wx = Math.max(hl - C.WHEEL_INSET, 1);
@@ -251,7 +391,9 @@ export function drawWheels(ctx: CanvasRenderingContext2D, r: RobotState, color: 
     [-wx, wy],
     [-wx, -wy],
   ] as const;
-  const drawWheel = (px: number, py: number, ang: number, len = 4.4, wid = 2.2, fill = '#12171e'): void => {
+  // the tyre's own fill DEFAULTS to the cosmetic accent (closure over `accent`); a call site
+  // only overrides it for a non-tyre part (the swerve module housing below).
+  const drawWheel = (px: number, py: number, ang: number, len = 4.4, wid = 2.2, fill = accent): void => {
     ctx.save();
     ctx.translate(px, py);
     ctx.rotate(ang);
@@ -276,7 +418,7 @@ export function drawWheels(ctx: CanvasRenderingContext2D, r: RobotState, color: 
       ctx.lineWidth = 0.4;
       ctx.strokeRect(-2.6, -2.6, 5.2, 5.2);
       ctx.restore();
-      drawWheel(px, py, ang, 4.2, 1.8, '#1b212b');
+      drawWheel(px, py, ang, 4.2, 1.8, accent);
       // a tick showing which way this pod points
       ctx.save();
       ctx.translate(px, py);
@@ -304,7 +446,7 @@ export function drawWheels(ctx: CanvasRenderingContext2D, r: RobotState, color: 
     // the same size as a traction wheel. They used to be stretched to `reach * 1.15` so the
     // old X would read as an X — with the wheels turned the right way the diamond reads on
     // its own, and at that length the four of them looked like bars rather than wheels.
-    for (const [px, py] of corners) drawWheel(px, py, px * py >= 0 ? -Math.PI / 4 : Math.PI / 4, 4.4, 2.2, '#2b333e');
+    for (const [px, py] of corners) drawWheel(px, py, px * py >= 0 ? -Math.PI / 4 : Math.PI / 4, 4.4, 2.2, accent);
   } else {
     for (const [px, py] of corners) drawWheel(px, py, 0);
   }

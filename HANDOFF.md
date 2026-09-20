@@ -1,3 +1,42 @@
+# HANDOFF — 2026-09-20c (alpha: ramp physics + swing guard, side rollers at the edges, cadence, COSMETICS)
+
+**READ FIRST.** Four owner rounds on top of 2026-09-20b. Gates on the final tree: `npm test` ALL PASS
+(3,322 biobuzz + shared), `build`, `server:check`, `uiaudit`, `docaudit`, `contrast`, `bundleaudit`
+(scene 209.3 KB gz), `dbtest`, `test:mm`. `dsim-alpha` redeployed (migration 0044, the strip, the wire).
+
+- **The ramp is solid to POLLEN and takes a FLOWER's pollen physically-ish** (owner: "it just looks
+  like the pollen is passing through the ramp"). Crossbar + rails are element colliders; a deployed,
+  settled ramp extends the intake's pull out to the crossbar (`bbIntakeExtraReach`, both pipelines).
+  Measured: the proximity gate always fires before the bar can lift the ball, so the gate now
+  RELEASES the bottom pollen as a `ground` element under the crossbar (`BB_RAMP_RELEASE_V` offsets it
+  sideways past the tube's membership radius, else `derive.ts` re-tags it) and the pull takes it —
+  8–13 ticks of visible transit, never instant, nothing crosses the bar (30 in/s probe). 2D keeps the
+  proximity capture. Rails 4.5 → 5.3 in at 18.7° (`BB_RAMP_OUT` 3.02: 0.64 past the pollen's centre).
+- **Swing guard** (owner: "should not be able to deploy INTO a flower ... same with un-deploying"):
+  during a swing the rail/crossbar boxes at the eased angle are tested against STATICS (Rapier query
+  in 3D, flat SAT in 2D); a hit REVERSES from that angle (`bbRampReverse`, `bbRampBlocked` guards
+  oscillation). A rotating arm overshoots its settled reach mid-swing (peaks at 90°): 3 in off a
+  flower is refused, 4 in settles.
+- **Side rollers are at the intake's EDGES** (owner). Axis `bbSideRollerY(mouthHalf)`; at a FLOWER
+  one wheel grips (`edgeGrip`): the driver lines an end of the intake up on the opening. Tutorial
+  offsets the loaned build by that.
+- **Cadence halved again**: `BB_INTAKE_PERIOD_MIN/MAX` 0.03/0.06, `BB_FLOWER_RETRIEVE_S` 0.15. The
+  corner-capture check needed an empty field (the run-up now eats four pollen in 0.43 s).
+- **COSMETICS** per `docs/cosmetics-plan.md` (owner: "colour options are dull ... follow our plan").
+  `src/cosmetics.ts` is the registry: 18 vivid fills (12 free, 6 supporter), accent (wheels/rollers),
+  decal (stripe/chevron/racing/hazard/checker, parametric), plate frame (classic/rounded/bold).
+  `OUTLINE_HALO`: a dark ring between fill and alliance outline (5.2:1 vs both alliance colours),
+  and dark trim under the 3D silhouette line. Four builder rows, locked options visible with the
+  reason. `coerceSpec` clamps shape only; the SERVER strips entitlement at join/queue/update
+  (`stripUnentitledCosmetics`, `server/index.ts` + `room.ts`) — never in `coerceSpec`, so replays
+  keep their look. Migration `0044_cosmetics.sql` (`profiles.cosmetics`, earned unlocks, empty
+  until the rewards ledger); `grantCosmetic`/`revokeCosmetic` in repo.ts, audited. `worldHash` is
+  invariant across the whole palette (smoke). Old dark keys fold to `default`.
+  Not done: editable number plates, cosmetics on leaderboard rows.
+- Follow-up flagged by the sim lane: none real — the "corner deadlock" it named was the hopper cap.
+
+---
+
 # HANDOFF — 2026-09-20b (alpha: three intake archetypes — only hardware that reaches a FLOWER's opening takes from it)
 
 **READ FIRST.** One owner item: "intaking from the flower is not physically accurate. Current rollers

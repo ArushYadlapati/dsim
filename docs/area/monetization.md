@@ -44,8 +44,10 @@ Not yet deployed. `HANDOFF.md` has the full write-up; the load-bearing rules:
   membership?" has to stay answerable.
 - **Perks are cosmetic/convenience ONLY** — never anything affecting how a robot drives
   or scores. That is a product rule AND a statement in the terms. All four advertised
-  perks are BUILT (badge, ads-off, 6 saved starts, chassis colours); **do not list a
-  perk on the Donate page before it exists.**
+  perks are BUILT (badge, ads-off, 6 saved starts, and — since the cosmetics registry,
+  `src/cosmetics.ts` — the six premium chassis colours, every accent, the four patterned
+  decals, and the bold plate); **do not list a perk on the Donate page before it
+  exists.**
 - **The saved-start PERSIST cap is the SUPPORTER ceiling**
   (`MAX_SAVED_STARTS_SUPPORTER`), in `coerceSettings` AND `saveStart`. Only the editor's
   Save button applies the free cap. Sanitizing to the free cap would DELETE a supporter's

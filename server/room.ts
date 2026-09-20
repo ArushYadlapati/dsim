@@ -47,6 +47,7 @@ import {
   type ServerMsg,
 } from '../src/net/protocol';
 import { sanitizePlayerPatch } from '../src/net/sanitize';
+import { stripUnentitledCosmetics } from '../src/cosmetics';
 import type { DodgeKind, DodgeVerdict } from '../src/dodge';
 import { chargedForParticipation, judgeParticipation } from '../src/standing';
 import { roomPersists } from './channel';
@@ -299,6 +300,15 @@ export interface Client {
    * left as a quiet capability.
    */
   hidden?: boolean;
+  /**
+   * This account's EARNED cosmetic unlocks (`profiles.cosmetics`), resolved once at join
+   * alongside `player.supporter`/`player.role` — see the note there. Server-only: unlike
+   * `supporter`/`role` it never rides on `LobbyPlayer` (nothing broadcasts it, nothing
+   * needs to), it exists only so the `update` handler's entitlement strip
+   * (`stripUnentitledCosmetics`) doesn't need a database round trip on every spec re-pick.
+   * `[]` for a guest or when the lookup found nothing.
+   */
+  earnedCosmetics?: string[];
 }
 
 /** one driver's outcome in a finished match (for persistence) */
@@ -1479,6 +1489,16 @@ export class Room {
         // sanitize the patch against this player's current config: a spoofed
         // spec/size/assist patch is clamped to legal ranges before it applies
         const patch = sanitizePlayerPatch(msg.patch, c.player, this.game);
+        // ENTITLEMENT STRIP (docs/cosmetics-plan.md §3.3), AFTER the shape clamp above and
+        // BEFORE it lands on the roster: a re-pick is the other live point (besides join)
+        // where a client DECLARES a spec, and `sanitizePlayerPatch` only shape-validated it
+        // (`coerceSpec` inside it never checks entitlement — see that function's header).
+        // `c.player.supporter`/`c.earnedCosmetics` were resolved once at join; never a DB
+        // read per patch. Never runs over replay re-simulation or `createWorld` — neither
+        // reaches this handler.
+        if (patch.spec) {
+          patch.spec = stripUnentitledCosmetics(patch.spec, !!c.player.supporter, c.earnedCosmetics ?? []);
+        }
         // in the ranked strategy window, alliance is server-authoritative (staged by
         // the matchmaker) — a client may re-pick its spec / pose / ready, never its
         // side, or two partners could stack one alliance.

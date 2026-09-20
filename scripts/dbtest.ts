@@ -19,6 +19,9 @@
 import { PGlite } from '@electric-sql/pglite';
 import { setPoolForTests, type DbPool } from '../server/db/pool';
 import { monthsFor, whyNoMonths, DEFAULT_POLICY, policyFromEnv } from '../server/kofi';
+// a LEAF module (no imports, no env read at module scope — see its own header), so unlike
+// `server/db/repo` this is safe to import up front rather than after the pool swap.
+import { stripUnentitledCosmetics } from '../src/cosmetics';
 
 /**
  * MODERATION, STUBBED AT THE TRANSPORT — so `saveReplay`'s name scrub can be exercised
@@ -108,6 +111,7 @@ async function main(): Promise<void> {
   check('migrations: profiles.supporter_until exists', cols.includes('supporter_until'));
   check('migrations: profiles.kofi_email exists', cols.includes('kofi_email'));
   check('migrations: 0020 added profiles.role', cols.includes('role'));
+  check('migrations: 0044 added profiles.cosmetics', cols.includes('cosmetics'));
 
   // re-running must be a no-op, not an error — every regional machine boots this
   await migrate();
@@ -3057,6 +3061,104 @@ async function main(): Promise<void> {
       'audit: an absurd limit is clamped rather than honoured',
       (await repo.listAudit({ limit: 10_000 })).rows.length === 3,
     );
+
+    // -------------------------------------------------- earned cosmetics (11)
+    //
+    // `profiles.cosmetics` (0044) is the SECOND ledger docs/cosmetics-plan.md §3.2 calls
+    // for — separate from `supporter_until` so a lapsed membership can never delete
+    // something earned, and an earned unlock can never quietly become something sold
+    // (plan §1's non-goal). Run down here, AFTER the admin_audit count assertions above:
+    // `grantCosmetic`/`revokeCosmetic` write to that same table, and this block's own
+    // writes must not shift the exact row counts the audit section just checked.
+    await repo.ensureProfile('cos-free', 'Free');
+    await repo.ensureProfile('cos-sup', 'Supporter');
+    await repo.ensureProfile('cos-earn', 'Earner');
+    await db.query(
+      `update profiles set supporter_until = now() + interval '30 days' where user_id = 'cos-sup'`,
+    );
+
+    check('cosmetics: a fresh profile has no earned unlocks', (await repo.getCosmeticsUnlocks('cos-earn')).length === 0);
+    check(
+      'cosmetics: getProfile carries the (empty) list too',
+      ((await repo.getProfile('cos-earn'))?.cosmetics ?? []).length === 0,
+    );
+
+    // shape validation — the SAME closed set coerceSpec/stripUnentitledCosmetics clamp to
+    check('cosmetics: grantCosmetic refuses a malformed id (no colon)', !(await repo.grantCosmetic('cos-earn', 'chevron', 'admin')));
+    check('cosmetics: grantCosmetic refuses an unknown axis', !(await repo.grantCosmetic('cos-earn', 'paint:chevron', 'admin')));
+    check('cosmetics: grantCosmetic refuses a key not on the axis', !(await repo.grantCosmetic('cos-earn', 'decal:nope', 'admin')));
+    check('cosmetics: none of the refused grants wrote anything', (await repo.getCosmeticsUnlocks('cos-earn')).length === 0);
+    check('cosmetics: grantCosmetic refuses an unknown account', !(await repo.grantCosmetic('cos-nobody', 'decal:chevron', 'admin')));
+
+    const granted = await repo.grantCosmetic('cos-earn', 'decal:chevron', 'admin-1', 'contributor thank-you');
+    check('cosmetics: a valid grant succeeds', granted);
+    check('cosmetics: the unlock is on the account', (await repo.getCosmeticsUnlocks('cos-earn')).includes('decal:chevron'));
+    check(
+      'cosmetics: re-granting the same id is idempotent (no duplicate array entry)',
+      (await repo.grantCosmetic('cos-earn', 'decal:chevron', 'admin-1')) &&
+        (await repo.getCosmeticsUnlocks('cos-earn')).filter((id) => id === 'decal:chevron').length === 1,
+    );
+
+    const cosGrantAudit = (
+      await db.query<{ action: string; target_user: string; note: string | null }>(
+        `select action, target_user, note from admin_audit
+          where action = 'cosmetics.grant' and target_user = 'cos-earn' order by at asc limit 1`,
+      )
+    ).rows[0];
+    check('audit: a cosmetics grant is logged to admin_audit (0041)', cosGrantAudit?.action === 'cosmetics.grant');
+    check('audit: ...with the note kept', (cosGrantAudit?.note ?? '').includes('contributor'));
+
+    check(
+      'cosmetics: revoking an unheld id reports nothing to revoke',
+      !(await repo.revokeCosmetic('cos-earn', 'plate:bold', 'admin-1')),
+    );
+    const revokedCos = await repo.revokeCosmetic('cos-earn', 'decal:chevron', 'admin-1', 'mistake');
+    check('cosmetics: revoke removes a held unlock', revokedCos);
+    check('cosmetics: the unlock is gone', !(await repo.getCosmeticsUnlocks('cos-earn')).includes('decal:chevron'));
+    const cosRevokeAudit = (
+      await db.query<{ action: string }>(
+        `select action from admin_audit
+          where action = 'cosmetics.revoke' and target_user = 'cos-earn' order by at desc limit 1`,
+      )
+    ).rows[0];
+    check('audit: a cosmetics revoke is logged too', cosRevokeAudit?.action === 'cosmetics.revoke');
+
+    // re-grant it — the strip tests below need 'cos-earn' to actually have it
+    await repo.grantCosmetic('cos-earn', 'decal:chevron', 'admin-1');
+
+    // ---------------------------------------- entitlement strip semantics (§3.3)
+    //
+    // `stripUnentitledCosmetics` itself is a pure function (src/cosmetics.ts, covered by
+    // `npm test`'s fuzz); what only a live database can prove is that the ACCOUNT STATE it
+    // is fed — `getSupporter().supporter` and `getCosmeticsUnlocks()` — lines up with what
+    // the room's entitlement strip (server/index.ts, server/room.ts) actually reads.
+    const spoofed = { chassisColor: 'gold', accent: 'match', decal: 'chevron', plate: 'classic' };
+
+    const freeSupporter = (await repo.getSupporter('cos-free')).supporter;
+    const freeEarned = await repo.getCosmeticsUnlocks('cos-free');
+    const freeOut = stripUnentitledCosmetics(spoofed, freeSupporter, freeEarned);
+    check(
+      'strip: a non-supporter declaring gold+chevron is downgraded on both unowned axes',
+      freeOut.chassisColor === 'default' && freeOut.decal === 'none',
+      JSON.stringify(freeOut),
+    );
+    check(
+      'strip: ...but keeps a FREE-tier chassis colour (red)',
+      stripUnentitledCosmetics({ chassisColor: 'red' }, freeSupporter, freeEarned).chassisColor === 'red',
+    );
+
+    const supSupporter = (await repo.getSupporter('cos-sup')).supporter;
+    const supOut = stripUnentitledCosmetics(spoofed, supSupporter, await repo.getCosmeticsUnlocks('cos-sup'));
+    check('strip: a supporter keeps a supporter-tier chassis colour (gold)', supSupporter && supOut.chassisColor === 'gold');
+
+    const earnSupporter = (await repo.getSupporter('cos-earn')).supporter;
+    const earnOut = stripUnentitledCosmetics(spoofed, earnSupporter, await repo.getCosmeticsUnlocks('cos-earn'));
+    check(
+      'strip: an EARNED decal survives even for a non-supporter',
+      !earnSupporter && earnOut.decal === 'chevron',
+      JSON.stringify({ supporter: earnSupporter, decal: earnOut.decal }),
+    );
+    check('strip: ...but the same account still loses the gold chassis it never earned or paid for', earnOut.chassisColor === 'default');
 
     // ⚠️ IT MUST NEVER THROW INTO A ROUTE. A moderator who has just pardoned somebody must
     // not see the pardon fail because a logging insert did — the same rule server/standing.ts

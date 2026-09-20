@@ -2,7 +2,8 @@ import type { Artifact, ArtifactColor, RobotSpec, RobotState, Vec2, World } from
 import * as C from '../../config';
 import { clamp } from '../../math';
 import { robotsEnabled } from '../../sim/match';
-import { roundRect } from '../../render/drawRobot';
+import { drawDecal, drawOutlineHalo, roundRect, tintColor } from '../../render/drawRobot';
+import { accentFill, clampCosmetics } from '../../cosmetics';
 import { BB_BOX_TUBE_OVERLAP, BB_PLACE_MARK_R, bbBoxTubeGlyph, drawChassisBody, drawChassisOutline, drawWheels } from './parts';
 import {
   BB_HOOD_DEFAULT_DEG,
@@ -15,7 +16,7 @@ import {
   BB_RAMP_PIVOT_BACK,
   BB_SIDE_ROLLER_OUT,
   BB_SIDE_ROLLER_R,
-  BB_SIDE_ROLLER_Y,
+  bbSideRollerY,
   BB_TURRET_PITCH_MAX,
   BB_TURRET_PITCH_MIN,
   bbHopperCap,
@@ -94,12 +95,14 @@ function drawRoller(
   spanHalf: number,
   dia: number,
   on: boolean,
+  accent: string,
   flapEvery = 2.3,
 ): void {
   const rh = dia / 2;
   const g = ctx.createLinearGradient(cx - rh, 0, cx + rh, 0);
   g.addColorStop(0, RUBBER_LO);
-  g.addColorStop(0.42, RUBBER_HI);
+  // the lit crown carries the cosmetic accent — see `games/chain/drawRobot.ts`'s twin
+  g.addColorStop(0.42, tintColor(RUBBER_HI, accent, 0.5));
   g.addColorStop(0.75, '#2a3240');
   g.addColorStop(1, RUBBER_LO);
   ctx.fillStyle = g;
@@ -141,6 +144,10 @@ export function drawBiobuzzRobot(
   // `ELEMENT_FILL` header carries the measurement. Red stays shared: it was never the complaint.
   const color = r.alliance === 'blue' ? BB_ALLIANCE_BLUE : C.COLORS.red;
   const loaded = r.hopper.length > 0;
+  // COSMETICS: see `render/drawRobot.ts`'s header — `accent`/`decal` land on `RobotSpec` on a
+  // parallel lane; `clampCosmetics` is shape-safe against a spec that does not declare them yet.
+  const cosm = clampCosmetics(r.spec);
+  const accent = accentFill(cosm.accent, r.spec.chassisColor);
   // THE MECHANISM LOADOUT — see the file header. The launcher is never null; the tube may be.
   const launcher = bbLauncherOf(r.spec, BB_HOOD_DEFAULT_DEG);
   const lift = bbLiftOf(r.spec);
@@ -175,9 +182,10 @@ export function drawBiobuzzRobot(
   // the SHARED body (deck, rails, structure) and the drivetrain, so a robot is recognisably
   // the same object across games
   drawChassisBody(ctx, r, C.chassisFill(r.spec.chassisColor));
-  drawWheels(ctx, r, color);
+  drawDecal(ctx, hl, r.spec.width / 2, cosm.decal, accent);
+  drawWheels(ctx, r, color, accent);
 
-  drawBiobuzzIntake(ctx, r, intaking);
+  drawBiobuzzIntake(ctx, r, intaking, accent);
 
   // The turretless launcher (chassis-fixed). The dumper sits just inside its MOUNTED edge: rotate
   // the local frame to that edge and draw the same shape, so a left/right mount spans the chassis
@@ -196,6 +204,7 @@ export function drawBiobuzzRobot(
   // The BOX TUBE — bolted flat to the frame at its mount, no independent heading and no raise.
   if (lift) drawBoxTube(ctx, r.spec, lift);
 
+  drawOutlineHalo(ctx, r.spec.length, r.spec.width, C.CHASSIS_CORNER, C.CHASSIS_OUTLINE);
   drawChassisOutline(ctx, r, color); // the silhouette line, over everything that reaches it
 
   ctx.restore(); // ...end of the footprint clip
@@ -235,7 +244,7 @@ export function drawBiobuzzRobot(
     const pollen = r.hopper.some((c) => c === 'yellow');
     const nectar = r.hopper.some((c) => c === 'red' || c === 'blue');
     if (launcher.kind === 'twinturret') {
-      drawTurret(ctx, r, launcher.mount, r.turretHeading, r.bbTurretPitch ?? 0, pollen, null);
+      drawTurret(ctx, r, launcher.mount, r.turretHeading, r.bbTurretPitch ?? 0, pollen, null, accent);
       drawTurret(
         ctx,
         r,
@@ -244,9 +253,10 @@ export function drawBiobuzzRobot(
         r.bbTurret2Pitch ?? 0,
         nectar,
         color,
+        accent,
       );
     } else {
-      drawTurret(ctx, r, launcher.mount, r.turretHeading, r.bbTurretPitch ?? 0, loaded, null);
+      drawTurret(ctx, r, launcher.mount, r.turretHeading, r.bbTurretPitch ?? 0, loaded, null, accent);
     }
   }
 }
@@ -262,7 +272,7 @@ export function drawBiobuzzRobot(
  * between the plates stays OPEN — you can see the mat through it, which is what an intake
  * looks like from above and what makes it read as a mouth rather than a wall.
  */
-function drawBiobuzzIntake(ctx: CanvasRenderingContext2D, r: RobotState, on: boolean): void {
+function drawBiobuzzIntake(ctx: CanvasRenderingContext2D, r: RobotState, on: boolean, accent: string): void {
   for (const m of bbMouths(r.spec)) {
     const f = bbMouthFrame(m, r.spec.length / 2, r.spec.width / 2);
     const d = f.depth;
@@ -313,9 +323,9 @@ function drawBiobuzzIntake(ctx: CanvasRenderingContext2D, r: RobotState, on: boo
         ctx.lineTo(outer, s * (h - 0.78));
         ctx.stroke();
       }
-      drawRoller(ctx, inner, h - 1.35, 0.8, on, 3.2);
+      drawRoller(ctx, inner, h - 1.35, 0.8, on, accent, 3.2);
     }
-    drawRoller(ctx, outer, h - 0.75, 1.5, on);
+    drawRoller(ctx, outer, h - 0.75, 1.5, on, accent);
     ctx.restore();
   }
 }
@@ -353,7 +363,7 @@ export function drawBiobuzzIntakeReach(ctx: CanvasRenderingContext2D, r: RobotSt
 
     if (kind === 'siderollers') {
       for (const s of [1, -1] as const) {
-        const y = s * BB_SIDE_ROLLER_Y;
+        const y = s * bbSideRollerY(f.half); // AT THE EDGE (owner, 2026-09-20), not the centreline
         const x = tip + BB_SIDE_ROLLER_OUT;
         // the bracket, back to the brace at the tip line
         ctx.strokeStyle = ALU;
@@ -494,7 +504,11 @@ function drawTurret(
   heading: number,
   pitchRad: number,
   live: boolean,
-  accent: string | null,
+  /** the NECTAR turret's alliance rim colour (`null` for a POLLEN-only or single turret) —
+   * unrelated to the cosmetic accent below; see the JSDoc on the call site. */
+  nectarAccent: string | null,
+  /** the cosmetic accent (`accentFill(spec.accent, spec.chassisColor)`) — tints the flywheel. */
+  cosmeticAccent: string,
 ): void {
   const ring = turretRadius(r.spec);
   const local = turretLocal(r.spec, pos);
@@ -510,8 +524,8 @@ function drawTurret(
   ctx.beginPath();
   ctx.arc(0, 0, ring, 0, TAU);
   ctx.fill();
-  ctx.strokeStyle = accent ?? 'rgba(200,214,230,0.34)';
-  ctx.lineWidth = accent ? 0.5 : 0.22;
+  ctx.strokeStyle = nectarAccent ?? 'rgba(200,214,230,0.34)';
+  ctx.lineWidth = nectarAccent ? 0.5 : 0.22;
   ctx.stroke();
   // gear teeth around the rim: the one detail that says "this rotates"
   ctx.strokeStyle = 'rgba(200,214,230,0.34)';
@@ -524,9 +538,9 @@ function drawTurret(
     ctx.lineTo(Math.cos(a) * ring, Math.sin(a) * ring);
     ctx.stroke();
   }
-  if (accent) {
+  if (nectarAccent) {
     // the NECTAR turret's SECOND rim, inside the teeth — the shape half of the distinction
-    ctx.strokeStyle = accent;
+    ctx.strokeStyle = nectarAccent;
     ctx.lineWidth = 0.3;
     ctx.beginPath();
     ctx.arc(0, 0, ring - 0.75, 0, TAU);
@@ -597,7 +611,7 @@ function drawTurret(
   ctx.save();
   ctx.translate(wheelX, 0);
   ctx.rotate(Math.PI / 2); // drawRoller lays its barrel along local y; the axle runs across
-  drawRoller(ctx, 0, gap / 2 - 0.35, 1.5, live, 1.2);
+  drawRoller(ctx, 0, gap / 2 - 0.35, 1.5, live, cosmeticAccent, 1.2);
   ctx.restore();
 
   // the exit, and the running accent: a short bar across the channel at the muzzle line

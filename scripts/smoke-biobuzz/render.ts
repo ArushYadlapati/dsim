@@ -103,8 +103,13 @@ import {
   BB_SIDE_PLATE_BOTTOM_Z,
   BB_SIDE_PLATE_FRONT_X,
   BB_SIDE_PLATE_TOP_Z,
+  BB_SIDE_ROLLER_R,
   BB_SIDE_ROLLER_REACH,
-  BB_SIDE_ROLLER_Y,
+  bbSideRollerY,
+  BB_MIN_LENGTH,
+  BB_MAX_LENGTH,
+  BB_MIN_WIDTH,
+  BB_MAX_WIDTH,
   BB_TURRET_AXLE_Z,
   BB_TURRET_BRACE_R,
   BB_TURRET_BRACES,
@@ -188,8 +193,12 @@ import {
 import { BB_ENVIRONMENTS, environmentDef, hdriEnvironments } from '../../src/games/biobuzz/graphics/environments';
 import { THIRD_PARTY } from '../../src/contributors';
 import { Renderer } from '../../src/render/renderer';
-import type { World } from '../../src/types';
+import type { RobotSpec, World } from '../../src/types';
 import { mkWorld, type Check } from './harness';
+// COSMETICS (Day 4, `docs/cosmetics-plan.md`) — the 2D halo/decal helpers are DOM-free, so they
+// are checked directly against a stub context, same as the tape probe above.
+import { drawDecal, drawOutlineHalo } from '../../src/render/drawRobot';
+import { OUTLINE_HALO } from '../../src/cosmetics';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const BIOBUZZ_DIR = join(root, 'src', 'games', 'biobuzz');
@@ -1138,6 +1147,134 @@ export function renderChecks(check: Check): void {
 
   graphicsChecks(check, allFiles);
   hudBandChecks(check);
+  cosmeticsChecks(check);
+}
+
+/**
+ * COSMETICS (Day 4, `docs/cosmetics-plan.md` §3.4) — accent/decal/plate render identically in
+ * both the 2D sprites and this scene. `buildIntake`/`buildTurret`/`buildSwervePod` are DOM-free
+ * (no canvas texture on the paths this touches), so they are exercised directly, the same
+ * bargain the rest of Lane B makes; `buildRobotGroup` itself needs a DOM canvas (the sign/decal
+ * textures) and stays untested here, same as before this feature existed. Every new `accent`
+ * parameter defaults to a no-op (the part's own base colour), so a call with no argument is the
+ * REGRESSION check: the exact pixel a build had before cosmetics landed.
+ */
+function cosmeticsChecks(check: Check): void {
+  // `RobotSpec.accent`/`decal`/`plate` are landing on a parallel lane; build fixtures
+  // structurally rather than waiting on the type (`CLAUDE.md`'s note on this file's scope).
+  const withCosm = (extra: { accent?: string; decal?: string; plate?: string }): RobotSpec =>
+    ({ ...BB_DEFAULT_SPEC, ...extra }) as unknown as RobotSpec;
+
+  // ---- bbSpecKey: the rebuild key moves on every axis, and is unchanged for none of them -----
+  {
+    const base = bbSpecKey(BB_DEFAULT_SPEC);
+    check('bbSpecKey is unchanged for a spec with none of the three cosmetics set (no regression)', bbSpecKey(BB_DEFAULT_SPEC) === base);
+    check('bbSpecKey changes when accent changes', bbSpecKey(withCosm({ accent: 'red' })) !== base);
+    check('bbSpecKey changes when decal changes', bbSpecKey(withCosm({ decal: 'stripe' })) !== base);
+    check('bbSpecKey changes when plate changes', bbSpecKey(withCosm({ plate: 'bold' })) !== base);
+  }
+
+  // ---- buildIntake: the roller hub tints with the accent; a default (no argument) call is a
+  // byte-for-byte no-op against the SWEEPER colour every build had before cosmetics -------------
+  {
+    const hubHex = (accent?: string): string | undefined => {
+      const built = accent === undefined ? buildIntake(BB_DEFAULT_SPEC) : buildIntake(BB_DEFAULT_SPEC, accent);
+      let roll: THREE.Object3D | undefined;
+      for (const n of built.nodes) n.traverse((o) => { if (o.name.startsWith('robot:sweeper:')) roll = o; });
+      const mesh = roll?.children.find((c) => c instanceof THREE.Mesh) as THREE.Mesh | undefined;
+      return (mesh?.material as THREE.MeshStandardMaterial | undefined)?.color.getHexString();
+    };
+    const bare = hubHex();
+    check('buildIntake with no accent argument keeps the roller hub at bare SWEEPER (no regression)', bare === '12161c', String(bare));
+    const tinted = hubHex('#ff0000');
+    check('buildIntake WITH an accent tints the roller hub away from bare SWEEPER', tinted !== undefined && tinted !== '12161c', String(tinted));
+  }
+
+  // ---- buildTurret: the flywheel tints with the accent; default is the same no-op -------------
+  {
+    const flywheelHex = (accent?: string): string | undefined => {
+      const t = accent === undefined ? buildTurret(BB_DEFAULT_SPEC, 'center') : buildTurret(BB_DEFAULT_SPEC, 'center', 0, accent);
+      let mesh: THREE.Mesh | undefined;
+      t.traverse((o) => {
+        if (o.name === 'bb-turret-flywheel') mesh = o as THREE.Mesh;
+      });
+      return (mesh?.material as THREE.MeshStandardMaterial | undefined)?.color.getHexString();
+    };
+    const bare = flywheelHex();
+    check('buildTurret with no accent argument keeps the flywheel at bare SWEEPER (no regression)', bare === '12161c', String(bare));
+    const tinted = flywheelHex('#3b82f6');
+    check('buildTurret WITH an accent tints the flywheel away from bare SWEEPER', tinted !== undefined && tinted !== '12161c', String(tinted));
+  }
+
+  // ---- buildSwervePod: the tyre tints with the accent; default is the same no-op -------------
+  {
+    const tyreHex = (accent?: string): string | undefined => {
+      const pod = accent === undefined ? buildSwervePod() : buildSwervePod(accent);
+      let mesh: THREE.Mesh | undefined;
+      pod.traverse((o) => {
+        if (o.name === 'bb-pod-wheel') mesh = o as THREE.Mesh;
+      });
+      return (mesh?.material as THREE.MeshStandardMaterial | undefined)?.color.getHexString();
+    };
+    const bare = tyreHex();
+    check('buildSwervePod with no accent argument builds (a bare TREAD tyre) -- no regression', bare !== undefined, String(bare));
+    const tinted = tyreHex('#22c55e');
+    check('buildSwervePod WITH an accent tints the tyre away from the bare build', tinted !== undefined && tinted !== bare, String(tinted));
+  }
+
+  // ---- 2D: the halo ring and the decal path, against a stub context (the tape probe's own
+  // technique above) -- proves a default-cosmetic sprite issues the halo and no decal path -----
+  {
+    let strokeStyle = '';
+    let strokeCount = 0;
+    let fillCount = 0;
+    const ctx = {
+      save() {},
+      restore() {},
+      beginPath() {},
+      closePath() {},
+      clip() {},
+      rect() {},
+      moveTo() {},
+      lineTo() {},
+      arc() {},
+      arcTo() {},
+      fillRect() {
+        fillCount++;
+      },
+      strokeRect() {},
+      fill() {
+        fillCount++;
+      },
+      stroke() {
+        strokeCount++;
+      },
+      set strokeStyle(v: string) {
+        strokeStyle = v;
+      },
+      get strokeStyle() {
+        return strokeStyle;
+      },
+      set fillStyle(_v: string) {},
+      set lineWidth(_v: number) {},
+    } as unknown as CanvasRenderingContext2D;
+
+    fillCount = 0;
+    drawDecal(ctx, 8, 6, 'none', '#ff0000');
+    check('a default-cosmetic sprite (decal "none") issues NO decal drawing', fillCount === 0, String(fillCount));
+
+    fillCount = 0;
+    drawDecal(ctx, 8, 6, 'stripe', '#ff0000');
+    check('a "stripe" decal issues at least one fill', fillCount > 0, String(fillCount));
+
+    strokeCount = 0;
+    drawOutlineHalo(ctx, 24, 18, 1.2, 0.5);
+    check(
+      'drawOutlineHalo strokes the halo colour, on a build big enough to carry the band',
+      strokeCount > 0 && strokeStyle === OUTLINE_HALO,
+      `${strokeCount} strokes, colour ${strokeStyle}`,
+    );
+  }
 }
 
 /**
@@ -2048,7 +2185,9 @@ function graphicsChecks(check: Check, allFiles: string[]): void {
       );
       check(
         'buildWheels reads the SPEC only — a taller robot does not get bigger wheels',
-        /function buildWheels\(spec: RobotSpec\): BbWheels/.test(robotsSrc),
+        // `accent` (the cosmetic tint, `docs/cosmetics-plan.md` §3.4) is not a size term, so the
+        // regex allows it without weakening what this pins.
+        /function buildWheels\(spec: RobotSpec, accent: string[^)]*\): BbWheels/.test(robotsSrc),
       );
       // ⚠️ A ROBOT'S VISUAL HEIGHT IS WHATEVER ITS MECHANISMS REACH (owner, 2026-09-18). The first
       // answer to #9 carried `heightIn` as an open two-post mast, which is the same complaint in a
@@ -2933,7 +3072,9 @@ function graphicsChecks(check: Check, allFiles: string[]): void {
         );
         check(
           'a DOUBLE turret builds its NECTAR head as turret 1, so the picture and bbMuzzleLocal pick the same one',
-          robotsCode.includes('buildTurret(spec, launcher.mount, 0)') && robotsCode.includes('buildTurret(spec, launcher.mount2, 1)'),
+          // trailing `accent` (the cosmetic tint) is not the seam this pins — the WHICH argument is.
+          robotsCode.includes('buildTurret(spec, launcher.mount, 0, accent)') &&
+            robotsCode.includes('buildTurret(spec, launcher.mount2, 1, accent)'),
         );
       }
       // ── 2026-09-19 OWNER PLAYTEST: "SWERVE IS NOT RENDERED PROPERLY AT ALL" ───────────────
@@ -3083,7 +3224,9 @@ function graphicsChecks(check: Check, allFiles: string[]): void {
           );
           check(
             '...and the pod’s wheel is plain TRACTION, not one of the mecanum rollers the loop hands every other drivetrain',
-            robotsCode.includes("new THREE.Mesh(wheelGeometry(BB_POD_WHEEL_R, BB_WHEEL_W), solidMat(TREAD, 0.95, 0))"),
+            // `tint3d(TREAD, accent, 0.4)` is a cosmetic tint (a no-op for the default accent) —
+            // still a solid TREAD-family fill, never the mecanum roller texture.
+            robotsCode.includes("new THREE.Mesh(wheelGeometry(BB_POD_WHEEL_R, BB_WHEEL_W), solidMat(tint3d(TREAD, accent, 0.4), 0.95, 0))"),
           );
           disposeRobotGroup(pod);
         }
@@ -3243,7 +3386,7 @@ function graphicsChecks(check: Check, allFiles: string[]): void {
         );
         check(
           'a mecanum roller and an omni roller are drawn as different wheels (45° vs 90°)',
-          robotsCode.includes("getRollerMat(dt === 'xdrive' ? 'omni' : 'mecanum')") &&
+          robotsCode.includes("getRollerMat(dt === 'xdrive' ? 'omni' : 'mecanum', accent)") &&
             robotsCode.includes("kind === 'mecanum' ? i - size : i"),
         );
         const typesSrc = readFileSync(join(root, 'src', 'types.ts'), 'utf8');
@@ -3573,12 +3716,36 @@ function graphicsChecks(check: Check, allFiles: string[]): void {
                       Math.abs(ext.zMax - BB_SIDE_ROLLER_REACH.z[1]) < 1e-6,
                     `[${ext.zMin.toFixed(6)}, ${ext.zMax.toFixed(6)}] vs [${BB_SIDE_ROLLER_REACH.z[0]}, ${BB_SIDE_ROLLER_REACH.z[1]}]`,
                   );
-                  const wantV = side === 'l' ? BB_SIDE_ROLLER_Y : -BB_SIDE_ROLLER_Y;
+                  const edgeV = bbSideRollerY(f.half);
+                  const wantV = side === 'l' ? edgeV : -edgeV;
                   const centreV = (ext.vMin + ext.vMax) / 2;
                   check(
-                    `${label}/${m.edge}/${side}: centred at ±BB_SIDE_ROLLER_Y off the mouth centreline`,
+                    `${label}/${m.edge}/${side}: centred at ±bbSideRollerY(f.half) off the mouth centreline`,
                     Math.abs(centreV - wantV) < 1e-6,
                     `${centreV.toFixed(6)} vs ${wantV}`,
+                  );
+                }
+              }
+
+              // ⚠️ EDGE CONTAINMENT (owner, 2026-09-20: "situated on the edges of the robot, not
+              // near the center"): whatever the chassis size, a wheel's OUTER face must stay
+              // inside the mouth's own lateral edge — the whole point of the edge mount is a
+              // wheel BESIDE the opening, never poking past the chassis it is bolted to. Checked
+              // across the legal size range, not just `BB_DEFAULT_SPEC`, since `bbSideRollerY`
+              // is a function of `f.half` and a small chassis is the tight case.
+              for (const [length, width] of [
+                [BB_MIN_LENGTH, BB_MIN_WIDTH],
+                [BB_DEFAULT_SPEC.length, BB_DEFAULT_SPEC.width],
+                [BB_MAX_LENGTH, BB_MAX_WIDTH],
+              ] as const) {
+                const szSpec = mk({ length, width, intakeMount: mount, bbMech: { intake: { kind } } } as Partial<RobotSpec>);
+                for (const sm of bbMouths(szSpec)) {
+                  const sf = bbMouthFrame(sm, szSpec.length / 2, szSpec.width / 2);
+                  const outerFace = bbSideRollerY(sf.half) + BB_SIDE_ROLLER_R;
+                  check(
+                    `${label}/${sm.edge}/${length}x${width}: the wheel's outer face stays inside the mouth's lateral edge`,
+                    outerFace <= sf.half + 1e-9,
+                    `${outerFace.toFixed(6)} vs half ${sf.half.toFixed(6)}`,
                   );
                 }
               }

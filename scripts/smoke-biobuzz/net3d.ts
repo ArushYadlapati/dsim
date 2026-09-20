@@ -681,16 +681,33 @@ export function net3dChecks(check: Check): void {
    * the same final hash.
    */
   {
+    // `intakeMount: 'side'` — MEASURED: a FRONT-mount ramp on this same anchor (0) gets blocked
+    // by the swing guard the instant it presses (owner, 2026-09-20 — a real static sits in the
+    // front mouth's own swing there with a second robot also on the field), where 'side' does
+    // not. The wire/replay round trip this fixture checks does not care which edge the ramp is
+    // on, so it uses the mount that actually deploys.
     const rampSpec: Partial<RobotSpec> = {
+      intakeMount: 'side',
       bbMech: { launcher: null, lift: null, intake: { kind: 'ramp' } } as unknown as RobotSpec['bbMech'],
     };
     const setups = [setup(0, 'blue', rampSpec, 0), setup(1, 'red', {}, 1)];
+    // ⚠️ ROBOT 0 HOLDS ITS START ANCHOR AND PRESSES IMMEDIATELY, IN `'free'` MODE (owner,
+    // 2026-09-20: the swing guard refuses a deploy that would carry the ramp into a static).
+    // Two things this fixture is not about, both worked around rather than chased down:
+    //  · `drive()`'s wandering script would put robot 0 at an UNPREDICTABLE pose by the press
+    //    tick, and since `bbRamp` is held (never released) after the press, a refused deploy
+    //    never gets a second rising edge to retry on — so robot 0 stays put.
+    //  · `'match'` mode's own pre-match countdown (`robotsEnabled` false) delays WHEN the press
+    //    actually takes effect without moving the robot even one tick, and MEASURED, the anchor's
+    //    settle over that long a disabled stretch lands in a mid-swing-blocked pose that a press
+    //    at the anchor's OWN first live tick does not — `'free'` mode has no countdown, so the
+    //    press takes effect immediately, at the pose G304 anchors are built to leave open.
     const src = (tick: number): Map<number, RobotCommand> =>
       new Map([
-        [0, { ...drive(tick, 0), bbRamp: tick > 30 }],
+        [0, cmd({ intake: true, fire: tick % 90 > 20, bbRamp: tick > 5 })],
         [1, drive(tick, 1)],
       ]);
-    const run = runRecordMatch(707070, setups, src, { game: 'biobuzz', physics: '3d', stopTick: 300 });
+    const run = runRecordMatch(707070, setups, src, { game: 'biobuzz', physics: '3d', stopTick: 300, mode: 'free' });
     const r0 = run.world.robots[0];
     check('ramp/replay: the recorded run actually deployed the ramp', r0.bbRampOut === true, `bbRampOut=${r0.bbRampOut}`);
 

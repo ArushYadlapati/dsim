@@ -169,6 +169,7 @@ import {
   ENDGAME_START,
   PRE_COUNTDOWN,
 } from '../src/config';
+import { CHASSIS_COLOR_KEYS, ACCENT_KEYS, DECAL_KEYS, PLATE_KEYS, COSMETIC_DEFAULTS } from '../src/cosmetics';
 import {
   pointDepthInRobot,
   robotCorners,
@@ -610,10 +611,96 @@ const slotCount = (w: World, a: 'red' | 'blue') =>
   });
   check('coerceSettings still caps runaway saved starts at the supporter ceiling', overflow.savedStartPoses.close.length === MAX_SAVED_STARTS_SUPPORTER);
   check('savedStartCap: free players get MAX_SAVED_STARTS, supporters get more', savedStartCap(false) === MAX_SAVED_STARTS && savedStartCap(true) === MAX_SAVED_STARTS_SUPPORTER);
-  // the supporter chassis colour is an ALLOWLIST — a spoofed spec cannot inject
-  // an arbitrary CSS colour into the renderer, and an unknown key falls back
-  check('chassisColor: coerceSpec accepts only allowlisted keys', coerceSpec({ chassisColor: 'plum' }).chassisColor === 'plum' && coerceSpec({ chassisColor: 'url(javascript:x)' }).chassisColor === undefined);
+  // COSMETICS (docs/cosmetics-plan.md): four closed axes, each an ALLOWLIST — a spoofed
+  // spec cannot inject an arbitrary CSS colour / free string into the renderer. SHAPE
+  // only (`coerceSpec` never checks entitlement — see its own comment at the clamp).
+  check(
+    'cosmetics: coerceSpec accepts only allowlisted keys, per axis',
+    coerceSpec({ chassisColor: 'red' }).chassisColor === 'red' &&
+      coerceSpec({ chassisColor: 'url(javascript:x)' }).chassisColor === COSMETIC_DEFAULTS.chassisColor &&
+      coerceSpec({ accent: 'gold' }).accent === 'gold' &&
+      coerceSpec({ accent: 'rgb(0,0,0)' }).accent === COSMETIC_DEFAULTS.accent &&
+      coerceSpec({ decal: 'chevron' }).decal === 'chevron' &&
+      coerceSpec({ decal: '<img onerror=x>' }).decal === COSMETIC_DEFAULTS.decal &&
+      coerceSpec({ plate: 'bold' }).plate === 'bold' &&
+      coerceSpec({ plate: 'nope' }).plate === COSMETIC_DEFAULTS.plate,
+  );
+  check(
+    'cosmetics: an unrecognised value falls back to a LEGAL base value before the hard default',
+    coerceSpec({ chassisColor: 'nope' }, { ...DEFAULT_SPEC, chassisColor: 'teal' }).chassisColor === 'teal' &&
+      coerceSpec({ chassisColor: 'nope' }, { ...DEFAULT_SPEC, chassisColor: 'also-not-a-key' }).chassisColor ===
+        COSMETIC_DEFAULTS.chassisColor,
+  );
+  check(
+    'cosmetics: coerceSpec is idempotent over its own output',
+    (() => {
+      const once = coerceSpec({ chassisColor: 'gold', accent: 'lime', decal: 'hazard', plate: 'bold' });
+      const twice = coerceSpec(once, once);
+      return (
+        once.chassisColor === twice.chassisColor &&
+        once.accent === twice.accent &&
+        once.decal === twice.decal &&
+        once.plate === twice.plate
+      );
+    })(),
+  );
   check('chassisFill: an unknown/absent key renders the default fill', chassisFill(undefined) === CHASSIS_COLORS.default && chassisFill('nope') === CHASSIS_COLORS.default);
+  // ⚠️ THE LOAD-BEARING DECISION IN THE PLAN (§3.3): `coerceSpec` runs over REPLAY
+  // RE-SIMULATION too, and must NEVER downgrade a recorded cosmetic to the viewer's
+  // current entitlements — that check is a DB/server concern (`stripUnentitledCosmetics`,
+  // `npm run dbtest`), not `coerceSpec`'s. Here: a replay-style setups blob with no DB in
+  // sight keeps whatever cosmetics it was recorded with, unchanged, through the coercer.
+  check(
+    'cosmetics: coerceSpec on a replay-style spec (no DB) keeps recorded cosmetics unchanged',
+    (() => {
+      const recorded: RobotSpec = { ...DEFAULT_SPEC, chassisColor: 'gold', accent: 'magenta', decal: 'checker', plate: 'bold' };
+      const replayed = coerceSpec(recorded, DEFAULT_SPEC, 'decode');
+      return (
+        replayed.chassisColor === 'gold' &&
+        replayed.accent === 'magenta' &&
+        replayed.decal === 'checker' &&
+        replayed.plate === 'bold'
+      );
+    })(),
+  );
+  // worldHash INVARIANCE across cosmetics (plan §1's non-goal: "never touch physics").
+  // `worldHash` (src/net/checksum.ts) never reads `spec` at all today, so this is a
+  // regression guard against somebody later teaching it to. Cycles through the (shorter)
+  // lists in lockstep so every key on every axis is exercised at least once, without a
+  // several-thousand-entry cartesian product.
+  {
+    const axisLens = [CHASSIS_COLOR_KEYS.length, ACCENT_KEYS.length, DECAL_KEYS.length, PLATE_KEYS.length];
+    const n = Math.max(...axisLens);
+    const hashesFor = (game: GameId): number[] =>
+      Array.from({ length: n }, (_, i) => {
+        const spec = coerceSpec(
+          {
+            chassisColor: CHASSIS_COLOR_KEYS[i % CHASSIS_COLOR_KEYS.length],
+            accent: ACCENT_KEYS[i % ACCENT_KEYS.length],
+            decal: DECAL_KEYS[i % DECAL_KEYS.length],
+            plate: PLATE_KEYS[i % PLATE_KEYS.length],
+          },
+          DEFAULT_SPEC,
+          game,
+        );
+        const setup = coerceSetup({ id: 0, alliance: 'red', spec, assists: DEFAULT_ASSISTS, startIndex: 0 }, game);
+        const w = simModuleFor(game).createWorld('match', 11, [setup]);
+        simModuleFor(game).step(w, SIM_DT, new Map());
+        return worldHash(w);
+      });
+    const decodeHashes = hashesFor('decode');
+    check(
+      'cosmetics never move worldHash: DECODE, every chassisColor/accent/decal/plate value',
+      decodeHashes.every((h) => h === decodeHashes[0]),
+      JSON.stringify(decodeHashes),
+    );
+    const bbHashes = hashesFor('biobuzz');
+    check(
+      'cosmetics never move worldHash: BIOBUZZ 2D, every chassisColor/accent/decal/plate value',
+      bbHashes.every((h) => h === bbHashes[0]),
+      JSON.stringify(bbHashes),
+    );
+  }
 
   // PER-GAME loadouts: switching games swaps robot + saved robots + start positions; nothing bleeds
   {

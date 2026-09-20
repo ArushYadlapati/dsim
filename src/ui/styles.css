@@ -2479,7 +2479,7 @@ p.resx-standing {
   padding: 4px 8px;
   font: inherit;
 }
-/* ---- supporter cosmetic: chassis colour swatches ----------------------- */
+/* ---- cosmetics: chassis colour / accent / decal / plate swatches ------- */
 /* The swatch IS the preview (RobotPreview keeps the themed panel fill — see the
    comment there), so the background is the literal CHASSIS_COLORS hex and the
    selected state has to be carried by the RING, not by the fill. `--ds-ink` for
@@ -2500,6 +2500,11 @@ p.resx-standing {
 .chassis-sw:hover:not(:disabled) { transform: translateY(-1px); }
 .chassis-sw.on { box-shadow: 0 0 0 2px var(--ds-ink); }
 .chassis-sw:disabled { opacity: 0.4; cursor: not-allowed; }
+/* a decal/plate swatch draws an inline SVG preview instead of a flat fill —
+   clip it to the same rounded square and centre it, rather than a second
+   button skeleton next to `.chassis-sw`. */
+.cosmetic-sw { overflow: hidden; display: flex; align-items: center; justify-content: center; }
+.cosmetic-sw svg { width: 100%; height: 100%; display: block; }
 
 /* ---- name badges: supporter / admin / owner ----------------------------- */
 /* A FILL with fixed ink, not coloured text. shell.css's rule — "a colour that is

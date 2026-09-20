@@ -19,9 +19,11 @@ import {
   BB_NECTAR_R,
   BB_POLLEN_R,
   BB_POLLEN_WALL_REST,
+  BB_RAMP_OUT,
   bbFlowerReachOf,
   bbHopperCap,
   bbLoadingZoneSpot,
+  bbSideRollerY,
   type BbFlowerReach,
 } from './config';
 import { biobuzzColliders } from './colliders';
@@ -30,16 +32,20 @@ import { bbBites, bbElementRadius, flowerFits, flowerRetrieve, flowerStackZ, typ
 import { hiveAccepts, hiveCellPos, hiveDeflect, hiveStep, hiveTakingSide, spillPoses } from './hive';
 import { bbIntakeKindOf, bbIsTurreted, bbLauncherOf, bbLiftOf } from './mechs';
 import {
+  type BbMouthAxes,
   type BbShot,
   bbAimHeading,
   bbDumpCluster,
   bbDumpSolution,
   bbFlowerInReach,
   bbIntakeAct,
+  bbIntakeExtraReach,
   bbLaunch,
   bbMouths,
+  bbRampReverse,
   bbRampSettled,
   bbRampStep,
+  bbRampSwingProgress,
   bbSlewTurret,
   bbTurretRelease,
   bbTurretSolution,
@@ -234,7 +240,11 @@ function intakeTick(
   enabled: boolean,
 ): void {
   if (!(enabled && (rob.autoIntake || (cmd?.intake ?? false)))) return;
-  const act = bbIntakeAct(world, rob);
+  // ⚠️ `extraReach` — same predicate as 3D's `elements3dCapture` (owner report 2026-09-20). 2D
+  // HAS NO RAMP COLLIDER (`docs/area/biobuzz.md`: "2D stays DRAWING-ONLY"), so nothing here is
+  // solid for the element to meet — it is simply pulled from further out, the same shape as the
+  // sweeper's own reach, and a real bar's push is not modelled here on purpose.
+  const act = bbIntakeAct(world, rob, { extraReach: bbIntakeExtraReach(rob, world.time) });
   for (const p of act.pull) p.ball.vel = p.vel;
   for (const b of act.take) capturePollen(world, rob, b);
 }
@@ -693,6 +703,8 @@ export function updateBiobuzz(
     // just below, a ramp press IS driver control (like drive/intake/fire) and is gated on
     // `enabled`, so a press during `pre`/a phase transition/`post` is dropped, not queued.
     bbRampStep(rob, cmds.get(rob.id), enabled, world.time);
+    // THE SWING GUARD, right after the toggle — the 2D half of it (`bbRampSwingStep2d`).
+    bbRampSwingStep2d(world, rob);
     // A TURRET TRACKS WHETHER OR NOT THE ROBOTS ARE ENABLED. `robotsEnabled` gates DRIVER
     // CONTROL — drive, intake, fire — and a turret auto-tracking is none of those; `bbLaunch`
     // still refuses to fire while disabled. Spawn aims a turret at FIELD CENTRE, so gating this
@@ -929,14 +941,31 @@ export function placeInFlower(
  * reaches at least `BB_FLOWER_BITE`.
  *
  * VERIFIED NUMERICALLY at `u = BB_PLACE_REACH` (flush, `standoff = 0`): the sweeper's reach is
- * `null`, so it never gets a box to test at all; side rollers bite **1.5 in** in x and, against
- * the bottom POLLEN's own floor-rest height, **2.0 in** in z; the ramp bites **1.18 in** in x and
- * **0.88 in** in z. The standoff a build may back off flush and still bite (`BB_FLOWER_BITE`,
- * 0.5 in of overlap) is **≈1.17 in** for side rollers and **≈0.68 in** for the ramp — both pinned
- * by the ROBOT lane's own standoff checks (0.8 in bites, 1.5 in does not, for side rollers) and
- * the pure CAD-geometry block next to them.
+ * `null`, so it never gets a box to test at all; the ramp bites **2.04 in** in x and **1.02 in**
+ * in z (`BB_RAMP_L`/`BB_RAMP_ANGLE` lengthened 2026-09-20 — see `config.ts`'s own header). The
+ * standoff a build may back off flush and still bite (`BB_FLOWER_BITE`, 0.5 in of overlap) is
+ * **≈1.54 in** for the ramp, pinned by the ROBOT lane's own standoff checks and the pure
+ * CAD-geometry block next to them.
+ *
+ * ⚠️ **SIDE ROLLERS ARE `edgeGrip`, NOT `half`** (owner, 2026-09-20: "situated on the edges of the
+ * robot, not near the center. It is to funnel things from the edge"). The pair sits at
+ * `±bbSideRollerY(ax.half)`, 12–17 in apart on a real chassis, which cannot straddle a 2.8-in
+ * POLLEN — so `reach.half` (a band about the mouth's CENTRELINE) is the wrong test for this
+ * hardware. `reach.edgeGrip` set means ONE wheel does the gripping: the lateral test becomes
+ * "is the POLLEN's centre within `edgeGrip` of EITHER wheel's own axis"
+ * (`min(|v − wy|, |v + wy|) ≤ edgeGrip`), so a driver lines an END of the intake up on the
+ * opening rather than the middle of it.
  */
-export function bbFlowerAtIntake(r: RobotState, reach: BbFlowerReach): number | null {
+/** which FLOWER, and through which of this robot's mouths — the richer answer `flowerRetrieve3d`
+ * needs (3D only) to place a physically-released ramp POLLEN in that SAME mouth's own frame,
+ * rather than re-deriving it. `bbFlowerAtIntake` below is the thin `.i`-only mirror every other
+ * caller (2D, and the 3D gate check itself) has always used. */
+export interface BbFlowerIntakeHit {
+  i: number;
+  ax: BbMouthAxes;
+}
+
+export function bbFlowerAtIntakeMouth(r: RobotState, reach: BbFlowerReach): BbFlowerIntakeHit | null {
   const mouths = bbMouths(r.spec);
   const hl = r.spec.length / 2;
   const hw = r.spec.width / 2;
@@ -946,12 +975,19 @@ export function bbFlowerAtIntake(r: RobotState, reach: BbFlowerReach): number | 
     for (const m of mouths) {
       const ax = mouthAxes(m, hl, hw);
       const v = local.x * ax.p.x + local.y * ax.p.y;
-      if (Math.abs(v) > (reach.half ?? ax.half)) continue;
+      if (reach.edgeGrip !== undefined) {
+        const wy = bbSideRollerY(ax.half);
+        if (Math.min(Math.abs(v - wy), Math.abs(v + wy)) > reach.edgeGrip) continue;
+      } else if (Math.abs(v) > (reach.half ?? ax.half)) continue;
       const u = local.x * ax.n.x + local.y * ax.n.y - ax.uOut;
-      if (bbBites(reach.out[0], reach.out[1], u, BB_POLLEN_R)) return i;
+      if (bbBites(reach.out[0], reach.out[1], u, BB_POLLEN_R)) return { i, ax };
     }
   }
   return null;
+}
+
+export function bbFlowerAtIntake(r: RobotState, reach: BbFlowerReach): number | null {
+  return bbFlowerAtIntakeMouth(r, reach)?.i ?? null;
 }
 
 /**
@@ -1009,6 +1045,89 @@ export function retrieveFromFlower(
     b.z = zs[k];
   });
   return true;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// THE RAMP SWING GUARD — 2D's half (owner, 2026-09-20: "if it collides with the flower or any
+// non-moving solid thing as it is being deployed, it should fold back up... same with
+// un-deploying"). See `sim3d/elements3d.ts`'s `bbRampSwingStep3d` for the 3D twin, which tests the
+// SWINGING shape against real Rapier statics at the current eased angle; 2D has no z and no
+// partial-swing geometry (`docs/area/biobuzz.md`: "2D stays DRAWING-ONLY"), so this tests the
+// FULL DEPLOYED FOOTPRINT — the flat rect a `ramp` build's reach already draws from
+// (`BB_RAMP_REACH`) — against the 2D field's own static rects, every tick a swing is in flight
+// (which covers "at the press" for free: the press tick is the first tick `bbRampSwingProgress`
+// returns non-null for).
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** the ramp's flat, fully-deployed footprint rect's 4 corners, in WORLD space, for one mouth. */
+function bbRampFootprintCorners(rob: RobotState, ax: BbMouthAxes): Vec2[] {
+  const corners: Vec2[] = [];
+  for (const u of [ax.uOut, ax.uOut + BB_RAMP_OUT]) {
+    for (const v of [-ax.half, ax.half]) {
+      const local = { x: u * ax.n.x + v * ax.p.x, y: u * ax.n.y + v * ax.p.y };
+      const w = rot(local, rob.heading);
+      corners.push({ x: rob.pos.x + w.x, y: rob.pos.y + w.y });
+    }
+  }
+  return corners;
+}
+
+/** SAT overlap between an arbitrary (already WORLD-space) quad and an axis-aligned rect — every
+ * 2D BIOBUZZ static (`biobuzzColliders.statics`) carries `rot: 0`, so the rect's own two axes are
+ * always world x/y and need no per-static rotation. `extraAxes` are the quad's own edge normals
+ * (the ramp rect's, rotated to the robot's current heading). */
+function bbSatOverlap(quad: readonly Vec2[], rect: { x0: number; x1: number; y0: number; y1: number }, extraAxes: readonly Vec2[]): boolean {
+  const rectCorners: Vec2[] = [
+    { x: rect.x0, y: rect.y0 },
+    { x: rect.x1, y: rect.y0 },
+    { x: rect.x1, y: rect.y1 },
+    { x: rect.x0, y: rect.y1 },
+  ];
+  const axes: Vec2[] = [{ x: 1, y: 0 }, { x: 0, y: 1 }, ...extraAxes];
+  for (const ax of axes) {
+    let aMin = Infinity;
+    let aMax = -Infinity;
+    for (const c of quad) {
+      const p = c.x * ax.x + c.y * ax.y;
+      aMin = Math.min(aMin, p);
+      aMax = Math.max(aMax, p);
+    }
+    let bMin = Infinity;
+    let bMax = -Infinity;
+    for (const c of rectCorners) {
+      const p = c.x * ax.x + c.y * ax.y;
+      bMin = Math.min(bMin, p);
+      bMax = Math.max(bMax, p);
+    }
+    if (aMax < bMin || bMax < aMin) return false;
+  }
+  return true;
+}
+
+function bbRampSwingStep2d(world: World, rob: RobotState): void {
+  if (rob.bbRampBlocked) return;
+  const e = bbRampSwingProgress(rob, world.time);
+  if (e === null) return; // no swing in flight — settled either way
+  const hl = rob.spec.length / 2;
+  const hw = rob.spec.width / 2;
+  const edgeAxes = [rot({ x: 1, y: 0 }, rob.heading), rot({ x: 0, y: 1 }, rob.heading)];
+  let hit = false;
+  for (const m of bbMouths(rob.spec)) {
+    const ax = mouthAxes(m, hl, hw);
+    const corners = bbRampFootprintCorners(rob, ax);
+    for (const s of biobuzzColliders.statics) {
+      const rect = { x0: s.tx - s.hx, x1: s.tx + s.hx, y0: s.ty - s.hy, y1: s.ty + s.hy };
+      if (bbSatOverlap(corners, rect, edgeAxes)) {
+        hit = true;
+        break;
+      }
+    }
+    if (hit) break;
+  }
+  if (hit) {
+    const elapsed = world.time - (rob.bbRampAt ?? world.time);
+    bbRampReverse(rob, world.time, elapsed);
+  }
 }
 
 /**

@@ -1,4 +1,5 @@
 import type { RobotSpec } from '../../types';
+import { clampCosmetics } from '../../cosmetics';
 import { bbDeployedHeightIn } from './config';
 import { bbIntakeKindOf, bbLauncherOf, bbLiftOf } from './mechs';
 
@@ -34,15 +35,26 @@ import { bbIntakeKindOf, bbLauncherOf, bbLiftOf } from './mechs';
  * keep the previous number on both plates — on the robot AND in the cached thumbnail, which is
  * the exact "a key the generator does not rebuild on" failure this module exists to prevent. It
  * is the one entry here that is not a shape, and that is why it carries this note.
+ *
+ * ⚠️ **`accent`/`decal`/`plate` ARE IN IT TOO, FOR THE SAME REASON `chassisColor` IS.** All four
+ * are baked into build-time materials/textures (the frame skin, the roller/wheel tint, the deck
+ * decal texture, the sign plate frame) — a change to any of them with no matching rebuild would
+ * leave the OLD cosmetic on the group. `clampCosmetics` is the one shape-safe reader, same as
+ * every renderer uses, so a key computed here and a fill computed in `buildRobotGroup` can never
+ * disagree about what an unrecognised or absent value defaults to.
  */
 export function bbSpecKey(spec: RobotSpec): string {
   const launcher = bbLauncherOf(spec, 0);
   const lift = bbLiftOf(spec);
+  const cosm = clampCosmetics(spec);
   return [
     spec.length,
     spec.width,
     bbDeployedHeightIn(spec),
     spec.chassisColor ?? '',
+    cosm.accent,
+    cosm.decal,
+    cosm.plate,
     spec.teamNumber ?? '',
     spec.intakeMount ?? '',
     spec.intake,

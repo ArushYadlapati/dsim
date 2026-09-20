@@ -21,7 +21,7 @@
  */
 import type { RobotSpec, RobotState } from '../../types';
 import * as C from '../../config';
-import { roundRect, strokeInside } from '../../render/drawRobot';
+import { roundRect, strokeInside, tintColor } from '../../render/drawRobot';
 import { hyp } from '../../math';
 import { MOUNT_DIR, mountOrigin, type BbMountPos } from './mounts';
 
@@ -96,7 +96,7 @@ export function drawChassisBody(
  * sprite. Mecanum/tank point forward, SWERVE pods steer to `moduleAngles`, X-drive omnis sit
  * at ±45° (an X), and butterfly shows the set that is currently on the floor.
  */
-export function drawWheels(ctx: CanvasRenderingContext2D, r: RobotState, color: string): void {
+export function drawWheels(ctx: CanvasRenderingContext2D, r: RobotState, color: string, accent: string): void {
   const hl = r.spec.length / 2;
   const hw = r.spec.width / 2;
   const wx = Math.max(hl - C.WHEEL_INSET, 1);
@@ -113,6 +113,9 @@ export function drawWheels(ctx: CanvasRenderingContext2D, r: RobotState, color: 
    *  • traction — a rubber tyre with tread bars ACROSS the roll direction (grip, no strafe)
    *  • mecanum  — barrel rollers at 45 degrees (see drawMecanumRollers)
    *  • omni     — barrel rollers ACROSS the tyre, in a row: rolls freely sideways
+   *
+   * The tyre's own fill DEFAULTS to the cosmetic `accent` (closure); tread/barrel overlays keep
+   * their own structural tone but TINTED toward the accent — see `docs/cosmetics-plan.md` §3.4.
    */
   const drawWheel = (
     px: number,
@@ -121,7 +124,7 @@ export function drawWheels(ctx: CanvasRenderingContext2D, r: RobotState, color: 
     kind: 'traction' | 'omni' | 'plain' = 'plain',
     len = 4.4,
     wid = 2.2,
-    fill = '#12171e',
+    fill = accent,
   ): void => {
     ctx.save();
     ctx.translate(px, py);
@@ -139,7 +142,7 @@ export function drawWheels(ctx: CanvasRenderingContext2D, r: RobotState, color: 
     ctx.clip(); // tread never bleeds past the rim
     if (kind === 'traction') {
       // tread bars across the roll direction — what gives a traction wheel its grip
-      ctx.strokeStyle = 'rgba(205,218,232,0.30)';
+      ctx.strokeStyle = tintColor('#cddae8', accent, 0.35, 0.3);
       ctx.lineWidth = 0.3;
       for (let o = -len / 2 + 0.55; o < len / 2; o += 0.9) {
         ctx.beginPath();
@@ -150,7 +153,7 @@ export function drawWheels(ctx: CanvasRenderingContext2D, r: RobotState, color: 
     } else if (kind === 'omni') {
       // the barrels: short rollers set across the tyre, which is what lets an omni slide
       // sideways at all. Drawn as discrete capsules, not a hatch — you can count them.
-      ctx.fillStyle = 'rgba(205,218,232,0.34)';
+      ctx.fillStyle = tintColor('#cddae8', accent, 0.35, 0.34);
       for (let o = -len / 2 + 0.62; o < len / 2; o += 1.05) {
         roundRect(ctx, o - 0.26, -wid / 2 + 0.22, 0.52, wid - 0.44, 0.26);
         ctx.fill();
@@ -183,7 +186,7 @@ export function drawWheels(ctx: CanvasRenderingContext2D, r: RobotState, color: 
     ctx.beginPath();
     ctx.rect(-len / 2, -wid / 2, len, wid);
     ctx.clip(); // the hatch is the wheel's tread — never let it bleed past the rim
-    ctx.strokeStyle = 'rgba(200,214,230,0.55)';
+    ctx.strokeStyle = tintColor('#c8d6e6', accent, 0.35, 0.55);
     ctx.lineWidth = 0.34;
     const span = len + wid;
     for (let o = -span / 2; o <= span / 2; o += 1.15) {
@@ -208,7 +211,7 @@ export function drawWheels(ctx: CanvasRenderingContext2D, r: RobotState, color: 
       ctx.lineWidth = 0.4;
       ctx.strokeRect(-2.6, -2.6, 5.2, 5.2);
       ctx.restore();
-      drawWheel(px, py, ang, 'traction', 4.2, 1.8, '#1b212b');
+      drawWheel(px, py, ang, 'traction', 4.2, 1.8, accent);
       // a tick showing which way this pod points
       ctx.save();
       ctx.translate(px, py);
@@ -226,7 +229,7 @@ export function drawWheels(ctx: CanvasRenderingContext2D, r: RobotState, color: 
     // lighter so the X clearly reads; the diagonals nearly meet at the center.
     const reach = hyp(wx, wy);
     for (const [px, py] of corners)
-      drawWheel(px, py, px * py >= 0 ? Math.PI / 4 : -Math.PI / 4, 'omni', Math.min(reach * 1.15, 7.5), 2.0, '#2b333e');
+      drawWheel(px, py, px * py >= 0 ? Math.PI / 4 : -Math.PI / 4, 'omni', Math.min(reach * 1.15, 7.5), 2.0, accent);
   } else if (r.spec.drivetrain === 'butterfly') {
     // BUTTERFLY: draw the set that is actually DOWN, and show the other one STOWED. The
     // deployed wheels are full-size and lit; the stowed set is a thin dim bar tucked just
@@ -241,7 +244,7 @@ export function drawWheels(ctx: CanvasRenderingContext2D, r: RobotState, color: 
       ctx.restore();
       // deployed set: traction wheels read SOLID, the mecanum set gets the real
       // alternating 45° roller hatch (same helper the mecanum drivetrain uses)
-      drawWheel(px, py, 0, tank ? 'traction' : 'plain', undefined, undefined, tank ? '#39424f' : '#12171e');
+      drawWheel(px, py, 0, tank ? 'traction' : 'plain', undefined, undefined, accent);
       if (!tank) drawMecanumRollers(px, py);
     }
   } else {

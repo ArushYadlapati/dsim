@@ -4,6 +4,7 @@ import type { PendingMatch, PendingRosterEntry } from '../matchTypes';
 import { BALANCE_VERSION, PLACEMENT_GAMES } from '../../src/config';
 import { coerceGameId, GAME_IDS, serverPhysics } from '../../src/games/types';
 import { simModuleFor } from '../../src/games/sim';
+import { COSMETIC_AXES } from '../../src/cosmetics';
 import {
   STANDING_MAX, HEAL_PER_DAY, HEAL_PER_CLEAN_MATCH, clampScore, type StandingVerdict,
 } from '../../src/standing';
@@ -348,6 +349,14 @@ export interface PublicProfile {
    * and renders as no badge, identically to a null role.
    */
   role?: StaffRole;
+  /**
+   * EARNED, PERMANENT cosmetic unlocks (`profiles.cosmetics`, migration 0044) — `"<axis>:<key>"`
+   * ids, `src/cosmetics.ts`. Separate ledger from `supporter`: these survive a lapsed
+   * membership, so the server's entitlement strip (`server/index.ts`/`server/room.ts`, run
+   * after `coerceSpec`) reads both rather than either alone. Optional for the same "not asked
+   * / older server" reason as `supporter`/`role`.
+   */
+  cosmetics?: string[];
 }
 
 /** who runs the service. Projected from `ADMIN_USER_IDS` / `OWNER_USER_ID` into
@@ -445,15 +454,19 @@ export async function staffAmong(userIds: string[]): Promise<Map<string, StaffRo
   return out;
 }
 
-/** a user's public profile (display handle + unique username), or null */
+/** a user's public profile (display handle + unique username), or null. Also carries
+ *  `cosmetics` (earned unlocks) — the ONE query the room join and the ranked queue path
+ *  already make for the supporter/role badge, so the entitlement strip's "earned" set
+ *  rides along for free rather than costing a second round trip. */
 export async function getProfile(userId: string): Promise<PublicProfile | null> {
   const rows = await q<{
     handle: string;
     username: string | null;
     supporter: boolean;
     role: string | null;
+    cosmetics: string[];
   }>(
-    `select handle, username, role, ${SUPPORTER_COL} from profiles where user_id = $1`,
+    `select handle, username, role, cosmetics, ${SUPPORTER_COL} from profiles where user_id = $1`,
     [userId],
   );
   return rows[0]
@@ -463,6 +476,7 @@ export async function getProfile(userId: string): Promise<PublicProfile | null> 
         username: rows[0].username,
         supporter: !!rows[0].supporter,
         role: asRole(rows[0].role),
+        cosmetics: rows[0].cosmetics ?? [],
       }
     : null;
 }
@@ -729,6 +743,89 @@ export async function listSupporterGrants(
       order by created_at desc limit $2`,
     [userId, limit],
   );
+}
+
+// ------------------------------------------------ earned cosmetic unlocks ---
+//
+// `profiles.cosmetics` (migration 0044) is the SECOND, SEPARATE ledger `docs/cosmetics-
+// plan.md` §3.2/§3.7 calls for: a supporter's palette unlocks all at once off
+// `supporter_until` (SUPPORTER_COL above) and never touches this column, so a lapsed
+// membership can never delete something EARNED, and an earned unlock can never quietly
+// become something sold. Written only by the server (an admin comp today; a rewards
+// ledger per `docs/rewards-plan.md` later) — never by a client.
+
+/** shape-check an id against the SAME closed set `coerceSpec`/`stripUnentitledCosmetics`
+ *  clamp to, before it ever reaches SQL — a typo'd or stale axis name must not silently
+ *  grant nothing while reporting success, and must never let a free-text value land in
+ *  the column and later read back as "entitled". */
+function isCosmeticId(id: string): boolean {
+  const i = id.indexOf(':');
+  if (i < 0) return false;
+  const axis = id.slice(0, i) as keyof typeof COSMETIC_AXES;
+  const key = id.slice(i + 1);
+  return Object.prototype.hasOwnProperty.call(COSMETIC_AXES, axis) && COSMETIC_AXES[axis].includes(key);
+}
+
+/** this account's earned unlocks, or `[]`. The room join / ranked queue paths get this
+ *  for free off `getProfile` above; this is for a caller that wants it alone. */
+export async function getCosmeticsUnlocks(userId: string): Promise<string[]> {
+  const rows = await q<{ cosmetics: string[] }>(
+    `select cosmetics from profiles where user_id = $1`,
+    [userId],
+  );
+  return rows[0]?.cosmetics ?? [];
+}
+
+/**
+ * Grant one permanent unlock. Idempotent (the `?` containment check skips the write, and
+ * still logs, when the account already has it — a re-run of a reward ledger must not pile
+ * up duplicate array entries or duplicate audit rows for the SAME grant... though a repeat
+ * call is rare enough that logging it plainly beats hiding it). Refuses silently (`false`)
+ * on a malformed id or an unknown account, same shape as `revokeSupporter`.
+ *
+ * Logged to `admin_audit` (0041) exactly like a supporter grant — `source` is free text
+ * (an admin's user id today, a ledger name like `'rewards'` once that ships), never a
+ * client value.
+ */
+export async function grantCosmetic(
+  userId: string,
+  id: string,
+  source = 'admin',
+  note?: string,
+): Promise<boolean> {
+  if (!isCosmeticId(id)) return false;
+  const rows = await q<{ user_id: string }>(
+    `update profiles
+        set cosmetics = case when cosmetics ? $2 then cosmetics else cosmetics || jsonb_build_array($2::text) end,
+            updated_at = now()
+      where user_id = $1
+      returning user_id`,
+    [userId, id],
+  );
+  if (rows.length === 0) return false;
+  await writeAudit({ adminId: source, action: 'cosmetics.grant', targetUser: userId, detail: { id }, note: note ?? undefined });
+  return true;
+}
+
+/** Revoke one earned unlock — a mistake, or a reward later retired. `false` if the
+ *  account did not have it (nothing to revoke), matching `revokeSupporter`'s shape. */
+export async function revokeCosmetic(
+  userId: string,
+  id: string,
+  source = 'admin',
+  note?: string,
+): Promise<boolean> {
+  const rows = await q<{ user_id: string }>(
+    `update profiles
+        set cosmetics = cosmetics - $2::text,
+            updated_at = now()
+      where user_id = $1 and cosmetics ? $2
+      returning user_id`,
+    [userId, id],
+  );
+  if (rows.length === 0) return false;
+  await writeAudit({ adminId: source, action: 'cosmetics.revoke', targetUser: userId, detail: { id }, note: note ?? undefined });
+  return true;
 }
 
 // ------------------------------------------------------- Ko-fi payments -----

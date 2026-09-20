@@ -2953,24 +2953,13 @@ export const COLORS = {
  * The KEY is what goes over the wire and into replays, never the hex — so these
  * values can be retuned later without invalidating a single saved robot.
  */
-export const CHASSIS_COLORS = {
-  default: '#1f242c',
-  slate: '#374151',
-  plum: '#3b2b45',
-  moss: '#25382c',
-  rust: '#452b25',
-  navy: '#1f2d45',
-  cocoa: '#3a2f28',
-} as const;
-
-export type ChassisColor = keyof typeof CHASSIS_COLORS;
-export const CHASSIS_COLOR_KEYS = Object.keys(CHASSIS_COLORS) as ChassisColor[];
-
-/** the chassis fill for a spec — the default for everyone without the perk, and
- *  for any key an older or spoofed spec carries that we no longer recognise. */
-export function chassisFill(key: string | undefined): string {
-  return (key && CHASSIS_COLORS[key as ChassisColor]) || CHASSIS_COLORS.default;
-}
+/*
+ * MOVED to `src/cosmetics.ts` on 2026-09-20 (the registry grew accents, decals and plates, and
+ * the palette went vivid — see that file's header for the halo that keeps the outline readable).
+ * Re-exported here so every existing importer keeps its name. The seven old dark keys
+ * (slate/plum/moss/rust/navy/cocoa) are gone; a saved robot carrying one reads as `default`.
+ */
+export { CHASSIS_COLORS, CHASSIS_COLOR_KEYS, chassisFill, type ChassisColor } from './cosmetics';
 export const VIEW_MARGIN = 14; // in of world margin around the field when fitting (just clears the obelisk)
 
 // ------------------------------------------------------------ off-field ----

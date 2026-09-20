@@ -1,6 +1,7 @@
 import type { Artifact, RobotState, Vec2, World } from '../../types';
 import * as C from '../../config';
-import { roundRect } from '../../render/drawRobot';
+import { drawDecal, drawOutlineHalo, roundRect, tintColor } from '../../render/drawRobot';
+import { accentFill, clampCosmetics } from '../../cosmetics';
 import { footprintExtents } from '../../sim/field';
 import { drawChassisBody, drawChassisOutline, drawWheels } from './parts';
 import {
@@ -101,12 +102,15 @@ function drawRoller(
   spanHalf: number,
   dia: number,
   on: boolean,
+  accent: string,
   flapEvery = 2.3,
 ): void {
   const rh = dia / 2;
   const g = ctx.createLinearGradient(cx - rh, 0, cx + rh, 0);
   g.addColorStop(0, RUBBER_LO);
-  g.addColorStop(0.42, RUBBER_HI);
+  // the lit crown carries the cosmetic accent — a hint of colour on the one part of the
+  // gradient that reads brightest, without losing the dark lips that say "this is rubber"
+  g.addColorStop(0.42, tintColor(RUBBER_HI, accent, 0.5));
   g.addColorStop(0.75, '#2a3240');
   g.addColorStop(1, RUBBER_LO);
   ctx.fillStyle = g;
@@ -147,6 +151,10 @@ export function drawChainRobot(
   const color = r.alliance === 'blue' ? C.COLORS.blue : C.COLORS.red;
   const loaded = r.hopper.length > 0;
   const mode = r.spec.scoreMode ?? CHAIN_DEFAULT_SCORE_MODE;
+  // COSMETICS: see `render/drawRobot.ts`'s header — `accent`/`decal` land on `RobotSpec` on a
+  // parallel lane; `clampCosmetics` is shape-safe against a spec that does not declare them yet.
+  const cosm = clampCosmetics(r.spec);
+  const accent = accentFill(cosm.accent, r.spec.chassisColor);
   // the intake reads ACTIVE (green) whenever it can still collect — i.e. it's on (auto or the
   // held command) AND the hopper isn't full — not just when nearly empty.
   const intaking = (intakeOn || r.autoIntake) && r.hopper.length < chainHopperCap(r.spec);
@@ -195,9 +203,10 @@ export function drawChainRobot(
   // the terrain shadow above is already drawn at the true footprint, and two would read as
   // two robots.
   drawChassisBody(ctx, r, C.chassisFill(r.spec.chassisColor), lift <= 0.15);
-  drawWheels(ctx, r, color);
+  drawDecal(ctx, hl, hw, cosm.decal, accent);
+  drawWheels(ctx, r, color, accent);
 
-  drawChainIntake(ctx, r, intaking);
+  drawChainIntake(ctx, r, intaking, accent);
 
   // scoring-archetype launcher (chassis-fixed part). Drum + catapult sit just inside the
   // MOUNTED edge — rotate the local frame to that edge and draw the same shape, so a
@@ -213,11 +222,12 @@ export function drawChainRobot(
     ctx.restore();
   }
 
+  drawOutlineHalo(ctx, r.spec.length, r.spec.width, C.CHASSIS_CORNER, C.CHASSIS_OUTLINE);
   drawChassisOutline(ctx, r, color); // the silhouette line, over everything that reaches it
 
   ctx.restore(); // ...end of the footprint clip
 
-  drawCatalystMech(ctx, r, world);
+  drawCatalystMech(ctx, r, accent, world);
 
   drawHopperFill(ctx, r, hw);
 
@@ -232,7 +242,7 @@ export function drawChainRobot(
 
   ctx.restore();
 
-  if (mode === 'turret' || mode === 'twinturret') drawTurret(ctx, r, loaded, ox, oy, mode === 'twinturret');
+  if (mode === 'turret' || mode === 'twinturret') drawTurret(ctx, r, loaded, accent, ox, oy, mode === 'twinturret');
 }
 
 /**
@@ -246,7 +256,7 @@ export function drawChainRobot(
  * The throat between the plates stays OPEN — you can see the mat through it, which is what
  * an intake looks like from above and what makes it read as a mouth rather than a wall.
  */
-function drawChainIntake(ctx: CanvasRenderingContext2D, r: RobotState, on: boolean): void {
+function drawChainIntake(ctx: CanvasRenderingContext2D, r: RobotState, on: boolean, accent: string): void {
   for (const m of chainIntakeMouths(r.spec)) {
     const f = intakeMouthFrame(m, r.spec.length / 2, r.spec.width / 2);
     const d = f.depth;
@@ -288,9 +298,9 @@ function drawChainIntake(ctx: CanvasRenderingContext2D, r: RobotState, on: boole
         ctx.lineTo(outer, s * (h - 0.78));
         ctx.stroke();
       }
-      drawRoller(ctx, inner, h - 1.35, 0.8, on, 3.2);
+      drawRoller(ctx, inner, h - 1.35, 0.8, on, accent, 3.2);
     }
-    drawRoller(ctx, outer, h - 0.75, 1.5, on);
+    drawRoller(ctx, outer, h - 0.75, 1.5, on, accent);
     ctx.restore();
   }
 }
@@ -452,6 +462,7 @@ function drawTurret(
   ctx: CanvasRenderingContext2D,
   r: RobotState,
   loaded: boolean,
+  accent: string,
   ox = 0,
   oy = 0,
   twin = false,
@@ -556,7 +567,7 @@ function drawTurret(
     ctx.save();
     ctx.translate(wheelX, off);
     ctx.rotate(Math.PI / 2); // drawRoller lays its barrel along local y; the axle runs across
-    drawRoller(ctx, 0, gap / 2 - 0.35, 1.5, loaded, 1.2);
+    drawRoller(ctx, 0, gap / 2 - 0.35, 1.5, loaded, accent, 1.2);
     ctx.restore();
 
     // the exit, and the only accent: a short bar across the channel at the muzzle line
@@ -610,7 +621,7 @@ function drawHopperFill(ctx: CanvasRenderingContext2D, r: RobotState, hw: number
  *  • turret   — a pivot ring whose claw TRACKS the nearest hook, so it visibly swivels
  *    independently of the chassis (its whole perk is not needing to point the robot)
  */
-function drawCatalystMech(ctx: CanvasRenderingContext2D, r: RobotState, world?: World): void {
+function drawCatalystMech(ctx: CanvasRenderingContext2D, r: RobotState, accent: string, world?: World): void {
   const type = r.spec.catalystType ?? CHAIN_DEFAULT_CATALYST;
   // A FRONTBACK swing is ONE arm on a pivot that rotates between the ends, so it is drawn at
   // the front — where it stows. Drawing it at both ends would read as two arms, which is
@@ -739,7 +750,7 @@ function drawCatalystMech(ctx: CanvasRenderingContext2D, r: RobotState, world?: 
     }
     ctx.save();
     ctx.translate(dist + 1.5, 0);
-    drawRoller(ctx, 0, 1.0, 0.9, carrying, 1.4);
+    drawRoller(ctx, 0, 1.0, 0.9, carrying, accent, 1.4);
     ctx.restore();
   } else {
     // TURRET: a pivot at the edge with a claw arm swivelled toward its NEAREST TARGET, so the

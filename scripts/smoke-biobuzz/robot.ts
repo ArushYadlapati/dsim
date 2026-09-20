@@ -44,7 +44,8 @@ import {
   BB_RAMP_TIP_Z,
   BB_SIDE_ROLLER_R,
   BB_SIDE_ROLLER_REACH,
-  BB_SIDE_ROLLER_Y,
+  BB_SIDE_ROLLER_GRIP,
+  bbSideRollerY,
   bbFlowerReachOf,
   FLOWER_MOUTH,
   BB_START_POSE_COUNT,
@@ -105,12 +106,14 @@ import {
   bbPlacePoint,
   bbPlacePointLocal,
   bbRampSettled,
+  bbRampSwingProgress,
   bbRobotSolids,
   bbSlewTurret,
   bbSolveShot,
   bbTurretOrigin,
   bbTurretRelease,
   bbTurretSolution,
+  mouthAxes,
 } from '../../src/games/biobuzz/robot';
 import { bbConfigSummary } from '../../src/games/biobuzz/labels';
 import { bbAimTarget, bbFlightEnters, bbKindOf } from '../../src/games/biobuzz/play';
@@ -1713,6 +1716,10 @@ export function robotChecks(check: Check): void {
       const f = bbFootprint(BB_DEFAULT_SPEC);
       const { w, r } = staged(42, BB_HALF_X - f.front - 16, BB_HALF_Y - f.half);
       void r;
+      // AN EMPTY FIELD: the run-up along the wall crosses the staged loading-zone POLLEN, and at
+      // the 2026-09-20 cadence the roller eats four of them in 0.43 s and arrives at the corner
+      // with a FULL hopper — which is a hopper cap, not a corner. The corner is what this asks.
+      w.balls.length = 0;
       w.balls.push(bbPollen(nextId(w), BB_HALF_X - BB_POLLEN_R, BB_HALF_Y - BB_POLLEN_R));
       const b = w.balls[w.balls.length - 1];
       run(w, cmd({ driveY: 0.7, intake: true }), 3);
@@ -1819,21 +1826,21 @@ export function robotChecks(check: Check): void {
 
     // THROUGHPUT: a wide bar feeds two lanes side by side, and it is still a CADENCE — four
     // POLLEN across the throat are not swallowed on one tick the way the rect test swallowed them.
-    // WAS a 1.2 s budget (4 × the old `BB_INTAKE_PERIOD_MAX` of 0.3 s, worst case one lane,
-    // sequential). PERIOD_MAX halved to 0.12 s, so the same worst case is 4 × 0.12 = 0.48 s;
-    // 0.6 s keeps a margin without leaving the bound so loose it stops demonstrating the
-    // "way faster" cadence fix.
+    // The budget is DERIVED from `BB_INTAKE_PERIOD_MAX` (worst case, one lane, sequential) rather
+    // than a literal, so a future re-tune of the constant moves this bound with it instead of
+    // leaving a stale number a halving can silently outrun.
     {
       const { w, r } = staged(46, 0, -30);
       const hl = r.spec.length / 2;
       for (const y of [-6, -2, 2, 6]) w.balls.push(bbPollen(nextId(w), hl + 1, -30 + y));
       run(w, cmd({ intake: true }), 1 / 60);
       const firstTick = heldCount(w, r);
-      run(w, cmd({ intake: true }), 0.6);
+      const budget = 4 * BB_INTAKE_PERIOD_MAX * 1.25; // 25% margin, same ratio the old fixed bound kept
+      run(w, cmd({ intake: true }), budget);
       check(
-        'roller: four POLLEN across the throat feed a lane at a time, and all four are in within 0.6 s',
+        `roller: four POLLEN across the throat feed a lane at a time, and all four are in within ${budget.toFixed(2)}s (4 * BB_INTAKE_PERIOD_MAX * 1.25)`,
         firstTick <= 2 && heldCount(w, r) === 4,
-        `tick1=${firstTick} end=${heldCount(w, r)}`,
+        `tick1=${firstTick} end=${heldCount(w, r)} budget=${budget.toFixed(3)}`,
       );
     }
 
@@ -1917,14 +1924,17 @@ export function robotChecks(check: Check): void {
     // that cap regardless of value, so a bigger `ballStorage` cannot do this the way the
     // diagnosis's own scratch measurement did; draining is the equivalent for this suite.
     //
-    // `CADENCE_FLOOR = 10`/s comes from the new worst-case PERIOD (lateral edge or wall grab,
-    // no closing bonus): `BB_INTAKE_PERIOD_MAX` = 0.12 s → 8.33/s on its own; driving full-stick
-    // adds the closing bonus (`BB_INTAKE_CLOSE_BONUS`) on most of the line, and `BB_DEFAULT_SPEC`
-    // is a single-lane intake (`BB_INTAKE_LANE_W` unchanged at 9), so 10/s is a floor with margin
-    // below the measured rate, not the measured rate itself — it is the number a future
-    // regression on either constant should trip, not a tight fit to today's build.
+    // `CADENCE_FLOOR` is DERIVED from `BB_INTAKE_PERIOD_MAX` rather than a literal, so a future
+    // re-tune of the constant moves the floor with it instead of leaving a stale number behind (a
+    // halving of `BB_INTAKE_PERIOD_MAX` that this floor did not follow would silently pass at a
+    // rate the mechanism no longer needs to clear). `1 / BB_INTAKE_PERIOD_MAX` is the worst-case
+    // PERIOD's own rate (lateral edge or wall grab, no closing bonus) on its own; driving
+    // full-stick adds the closing bonus (`BB_INTAKE_CLOSE_BONUS`) on most of the line, and
+    // `BB_DEFAULT_SPEC` is a single-lane intake (`BB_INTAKE_LANE_W` unchanged at 9), so a 0.6x
+    // factor is a floor with margin below the measured rate, not the measured rate itself — the
+    // number a future regression on either constant should trip, not a tight fit to today's build.
     {
-      const CADENCE_FLOOR = 10;
+      const CADENCE_FLOOR = (1 / BB_INTAKE_PERIOD_MAX) * 0.6;
       const DURATION = 2;
       const { w, r } = staged(50, -BB_HALF_X + 6, -60, 0);
       // a dense line of POLLEN every 1.5 in along the drive direction (a robot at full stick
@@ -2480,8 +2490,21 @@ export function robotChecks(check: Check): void {
       return { w, r };
     };
     /** the mouth's own outward bound (the collision footprint edge) flush on the foot
-     * (`standoff` further back); heading 0 faces F3. */
+     * (`standoff` further back); heading 0 faces F3, centred on the mouth's own centreline. */
     const flush = (r: RobotState, standoff = 0): void => park(r, f0.x - BB_PLACE_REACH - bbFootprint(r.spec).front - standoff, f0.y, 0);
+    /**
+     * ⚠️ SIDE ROLLERS ARE `edgeGrip`, NOT `half` (owner, 2026-09-20: "situated on the edges of the
+     * robot, not near the center"). The pair is 12–17 in apart and cannot straddle a 2.8-in
+     * POLLEN, so a centreline `flush()` pose no longer bites — the driver has to line up an END of
+     * the intake instead: offset laterally by the wheel's own `bbSideRollerY(mouthHalf)` so ONE
+     * wheel sits on the opening. `side` picks which wheel (either one grips identically by
+     * symmetry).
+     */
+    const flushEdge = (r: RobotState, standoff = 0, side: 1 | -1 = 1): void => {
+      const half = mouthAxes(bbMouths(r.spec)[0], r.spec.length / 2, r.spec.width / 2).half;
+      const wy = bbSideRollerY(half);
+      park(r, f0.x - BB_PLACE_REACH - bbFootprint(r.spec).front - standoff, f0.y - side * wy, 0);
+    };
     /** hold a pose across several ticks — re-parking before each one, so the Rapier robot solve
      * (which does not know this chassis is "flush" by the archetype's own idealized convention,
      * only by its own collision footprint) cannot walk it off the tested standoff. */
@@ -2491,19 +2514,26 @@ export function robotChecks(check: Check): void {
         tick(w, c);
       }
     };
+    /** the edge-offset twin of `holdTicks`, for the side-roller fixtures below. */
+    const holdTicksEdge = (w: World, r: RobotState, standoff: number, c: RobotCommand, n: number): void => {
+      for (let i = 0; i < n; i++) {
+        flushEdge(r, standoff);
+        tick(w, c);
+      }
+    };
     {
       const { w, r } = pullWorld(101, 'siderollers');
       const stack = w.biobuzz!.flowers[FR].stack;
       const before = [...stack];
       const n = w.balls.length;
-      flush(r);
+      flushEdge(r);
       tick(w, cmd({}));
       check('flower intake: nothing comes out without the intake running', stack.length === before.length && r.hopper.length === 0, `stack=${stack.length} hopper=${r.hopper.length}`);
-      flush(r);
+      flushEdge(r);
       tick(w, cmd({ intake: true }));
       const kids = w.balls.filter((b) => b.state.kind === 'element' && b.state.el === `flower:${FR}`);
       check(
-        'flower intake: SIDE ROLLERS flush on the foot pull the BOTTOM POLLEN into the hopper',
+        'flower intake: SIDE ROLLERS, one wheel lined up on the opening, pull the BOTTOM POLLEN into the hopper',
         r.hopper.join(',') === 'yellow' && stack.join(',') === before.slice(1).join(',') && w.balls.find((b) => b.id === before[0])?.state.kind === 'held',
         `hopper=${r.hopper.join(',')} stack ${before.join(',')}→${stack.join(',')}`,
       );
@@ -2512,9 +2542,9 @@ export function robotChecks(check: Check): void {
       bbIndexElements(copy);
       check('flower intake: the stack rebuilt off world.balls agrees with the live one', copy.biobuzz!.flowers[FR].stack.join(',') === stack.join(','), `${copy.biobuzz!.flowers[FR].stack.join(',')} vs ${stack.join(',')}`);
       const firstPullAt = r.lastIntakeAt;
-      holdTicks(w, r, 0, cmd({ intake: true }), Math.round((BB_FLOWER_RETRIEVE_S - C.SIM_DT) / C.SIM_DT));
+      holdTicksEdge(w, r, 0, cmd({ intake: true }), Math.round((BB_FLOWER_RETRIEVE_S - C.SIM_DT) / C.SIM_DT));
       check('flower intake: SIDE ROLLERS are PACED at BB_FLOWER_RETRIEVE_S, not one a tick', r.hopper.length === 1, `hopper=${r.hopper.length} elapsed=${(w.time - firstPullAt).toFixed(3)} < ${BB_FLOWER_RETRIEVE_S}`);
-      holdTicks(w, r, 0, cmd({ intake: true }), Math.round(3 / C.SIM_DT));
+      holdTicksEdge(w, r, 0, cmd({ intake: true }), Math.round(3 / C.SIM_DT));
       const want = Math.min(bbHopperCap(r.spec), before.length);
       check('flower intake: held on, it pulls until the hopper is full (or the POLLEN run out) and no further', r.hopper.length === want && stack.length === before.length - want, `hopper=${r.hopper.length} stack=${stack.length} want=${want}`);
       check('flower intake: nothing is created or destroyed', w.balls.length === n, `${n}→${w.balls.length}`);
@@ -2530,12 +2560,15 @@ export function robotChecks(check: Check): void {
       check('flower intake: a SWEEPER flush on the foot, held 3 s, pulls NOTHING', stack.length === n0 && r.hopper.length === 0, `stack=${stack.length} hopper=${r.hopper.length}`);
     }
     {
-      // side rollers' own standoff tolerance is ≈1.17 in (`bbFlowerAtIntake`'s comment): past it,
-      // nothing; inside it, they bite.
+      // ⚠️ EDGE-GRIP, NOT A CENTRELINE BAND (owner, 2026-09-20). At `flushEdge` (one wheel's axis
+      // exactly aligned on the opening, `v == wy`) the lateral test is trivially satisfied, so the
+      // standoff tolerance is governed purely by the X-BITE — the SAME `out` range as before the
+      // relocation — and stays ≈1.17 in (`bbFlowerAtIntake`'s comment): past it, nothing; inside
+      // it, they bite.
       const { w, r } = pullWorld(105, 'siderollers');
       const stack = w.biobuzz!.flowers[FR].stack;
       const n0 = stack.length;
-      flush(r, 1.5);
+      flushEdge(r, 1.5);
       tick(w, cmd({ intake: true }));
       check('flower intake: SIDE ROLLERS at 1.5 in standoff pull NOTHING (past the ≈1.17 in tolerance)', stack.length === n0 && r.hopper.length === 0, `stack=${stack.length} hopper=${r.hopper.length}`);
     }
@@ -2543,9 +2576,23 @@ export function robotChecks(check: Check): void {
       const { w, r } = pullWorld(107, 'siderollers');
       const stack = w.biobuzz!.flowers[FR].stack;
       const n0 = stack.length;
-      flush(r, 0.8);
+      flushEdge(r, 0.8);
       tick(w, cmd({ intake: true }));
       check('flower intake: SIDE ROLLERS at 0.8 in standoff DO pull', r.hopper.length === 1 && stack.length === n0 - 1, `hopper=${r.hopper.length} stack=${stack.length}`);
+    }
+    {
+      // ⚠️ AND FLUSH ON THE CENTRELINE (the OLD pose) NO LONGER BITES — the pair cannot straddle
+      // a 2.8-in ball, so a driver who does not line an end of the intake up on the opening pulls
+      // nothing, however long the intake runs.
+      const { w, r } = pullWorld(106, 'siderollers');
+      const stack = w.biobuzz!.flowers[FR].stack;
+      const n0 = stack.length;
+      holdTicks(w, r, 0, cmd({ intake: true }), Math.round(1 / C.SIM_DT));
+      check(
+        'flower intake: SIDE ROLLERS flush on the CENTRELINE (neither wheel on the opening) pull NOTHING',
+        stack.length === n0 && r.hopper.length === 0,
+        `stack=${stack.length} hopper=${r.hopper.length}`,
+      );
     }
     {
       const { w, r } = pullWorld(109, 'siderollers');
@@ -2553,7 +2600,7 @@ export function robotChecks(check: Check): void {
       const bottom = w.balls.find((b) => b.id === stack[0])!;
       bottom.color = 'blue'; // a NECTAR at the bottom
       const n0 = stack.length;
-      holdTicks(w, r, 0, cmd({ intake: true }), Math.round(1 / C.SIM_DT));
+      holdTicksEdge(w, r, 0, cmd({ intake: true }), Math.round(1 / C.SIM_DT));
       check('flower intake: a NECTAR at the bottom LOCKS the FLOWER (nothing comes out)', stack.length === n0 && r.hopper.length === 0, `stack=${stack.length} hopper=${r.hopper.length}`);
     }
     {
@@ -2574,6 +2621,14 @@ export function robotChecks(check: Check): void {
     }
 
     // ── THE RAMP TOGGLE ────────────────────────────────────────────────────
+    // ⚠️ DEPLOYED IN THE OPEN FIELD, NOT FLUSH ON THE FOOT (owner, 2026-09-20: "The ramp should
+    // not be able to deploy INTO a flower... It needs to be deployed before going in"). The swing
+    // guard (`bbRampSwingStep2d`) now REFUSES a deploy whose footprint would land on a static —
+    // and `flush(r)` is standoff 0, i.e. AS CLOSE AS THE FOOT'S OWN COLLISION LETS THE CHASSIS
+    // GET, so pressing there is exactly the case the guard exists to catch. These fixtures are
+    // about the LATCH/PACING mechanics, not the guard (that has its own block below), so they
+    // press well clear of the foot (`openPark`) and drive flush only AFTER the ramp has settled.
+    const openPark = (r: RobotState): void => park(r, f0.x - 100, f0.y, 0);
     {
       const { w, r } = pullWorld(115, 'ramp');
       const stack = w.biobuzz!.flowers[FR].stack;
@@ -2585,59 +2640,190 @@ export function robotChecks(check: Check): void {
       // a HELD button fires the rising edge once — holding it 30 ticks does not re-fire it, or
       // toggle it back off. Deliberately no `intake` here, so this is purely about the latch.
       const { w, r } = pullWorld(117, 'ramp');
-      flush(r);
+      openPark(r);
       tick(w, cmd({ bbRamp: true }));
       const rampAt = r.bbRampAt;
       check('flower intake: cmd.bbRamp toggles the ramp OUT and stamps bbRampAt', r.bbRampOut === true && rampAt === w.time, `out=${r.bbRampOut} at=${rampAt} t=${w.time}`);
-      holdTicks(w, r, 0, cmd({ bbRamp: true }), 29);
+      const holdOpen = (rr: RobotState, standoff: number, c: RobotCommand, n: number): void => {
+        for (let i = 0; i < n; i++) {
+          openPark(rr);
+          tick(w, c);
+        }
+      };
+      holdOpen(r, 0, cmd({ bbRamp: true }), 29);
       check('flower intake: cmd.bbRamp held 30 ticks toggles ONCE', r.bbRampOut === true && r.bbRampAt === rampAt, `out=${r.bbRampOut} at=${r.bbRampAt} want=${rampAt}`);
     }
     {
       // ONE press, released immediately (so the deploy window is measured from a single stamp,
       // not stretched by a still-held button): nothing pulls until `BB_RAMP_DEPLOY_S` has
-      // elapsed, and it pulls once it has.
+      // elapsed, and it pulls once it has. Deployed in the open, THEN driven flush once settled.
       const { w, r } = pullWorld(119, 'ramp');
-      flush(r);
-      tick(w, cmd({ bbRamp: true, intake: true }));
+      openPark(r);
+      tick(w, cmd({ bbRamp: true }));
       const rampAt = r.bbRampAt!;
-      flush(r);
-      tick(w, cmd({ intake: true })); // release the button; the ramp stays deployed
-      check(
-        'flower intake: RAMP mid-swing (before BB_RAMP_DEPLOY_S) pulls nothing',
-        r.hopper.length === 0 && w.time - rampAt < BB_RAMP_DEPLOY_S,
-        `hopper=${r.hopper.length} elapsed=${(w.time - rampAt).toFixed(3)} deploy=${BB_RAMP_DEPLOY_S}`,
-      );
       let settledAt = -1;
-      for (let i = 0; i < 60 && r.hopper.length === 0; i++) {
-        flush(r);
-        tick(w, cmd({ intake: true }));
-        if (settledAt < 0 && bbRampSettled(r, w.time)) settledAt = w.time;
+      for (let i = 0; i < 60 && settledAt < 0; i++) {
+        openPark(r);
+        tick(w, cmd({}));
+        if (bbRampSettled(r, w.time)) settledAt = w.time;
       }
       check(
+        'flower intake: RAMP mid-swing (before BB_RAMP_DEPLOY_S) pulls nothing',
+        settledAt > rampAt + BB_RAMP_DEPLOY_S - 1e-6,
+        `settledAt=${settledAt} rampAt=${rampAt} deploy=${BB_RAMP_DEPLOY_S}`,
+      );
+      flush(r);
+      tick(w, cmd({ intake: true }));
+      check(
         'flower intake: RAMP pulls once BB_RAMP_DEPLOY_S has elapsed, and not before it settled',
-        r.hopper.length === 1 && w.time - rampAt >= BB_RAMP_DEPLOY_S && settledAt >= 0,
-        `hopper=${r.hopper.length} elapsed=${(w.time - rampAt).toFixed(3)}`,
+        r.hopper.length === 1 && settledAt >= 0,
+        `hopper=${r.hopper.length} settledAt=${settledAt}`,
       );
     }
     {
       // a SECOND press (a fresh rising edge — the button is released in between) folds the ramp
-      // back, and pulling stops.
+      // back, and pulling stops. Deployed AND folded in the open — folding FLUSH on the foot is
+      // its own case (the swing guard refusing an un-deploy that would carry the ramp back UP
+      // into the flower, "same with un-deploying"), covered below.
       const { w, r } = pullWorld(121, 'ramp');
-      flush(r);
-      tick(w, cmd({ bbRamp: true, intake: true }));
-      flush(r);
-      tick(w, cmd({ intake: true })); // release, so the next press is a genuine edge
-      for (let i = 0; i < 40 && r.hopper.length === 0; i++) {
-        flush(r);
-        tick(w, cmd({ intake: true }));
+      openPark(r);
+      tick(w, cmd({ bbRamp: true }));
+      for (let i = 0; i < 30 && !bbRampSettled(r, w.time); i++) {
+        openPark(r);
+        tick(w, cmd({}));
       }
+      flush(r);
+      tick(w, cmd({ intake: true }));
       const pulled = r.hopper.length;
       check('flower intake: (setup) the ramp pulled at least once before folding it back', pulled > 0, `hopper=${pulled}`);
-      flush(r);
+      openPark(r);
       tick(w, cmd({ bbRamp: true }));
       check('flower intake: a second press folds the ramp', r.bbRampOut === false, `out=${r.bbRampOut}`);
+      // ⚠️ LET THE FOLD FINISH SETTLING IN THE OPEN before moving flush — a fold still MID-SWING
+      // that gets re-parked flush is exactly the "folding into a static" case the swing guard
+      // above exists to catch, and it would reverse this fold back to deployed (re-enabling
+      // reach) rather than let it complete, which is not what this fixture is testing.
+      for (let i = 0; i < 30 && bbRampSwingProgress(r, w.time) !== null; i++) {
+        openPark(r);
+        tick(w, cmd({}));
+      }
       holdTicks(w, r, 0, cmd({ intake: true }), 30);
       check('flower intake: ...and pulling stops', r.hopper.length === pulled, `hopper=${r.hopper.length} was=${pulled}`);
+    }
+    // ── THE SWING GUARD (owner, 2026-09-20) ─────────────────────────────────
+    {
+      // a deploy attempted FLUSH ON THE FOOT (standoff 0 — as close as the collision lets the
+      // chassis get) is refused: it starts the swing and folds back before it ever settles.
+      const { w, r } = pullWorld(123, 'ramp');
+      flush(r);
+      tick(w, cmd({ bbRamp: true }));
+      for (let i = 0; i < 90; i++) {
+        flush(r);
+        tick(w, cmd({}));
+      }
+      check(
+        "flower swing guard: a deploy FLUSH ON THE FLOWER'S FOOT reverses back to folded rather than settling deployed",
+        r.bbRampOut === false && !bbRampSettled(r, w.time),
+        `out=${r.bbRampOut} settled=${bbRampSettled(r, w.time)}`,
+      );
+    }
+    {
+      // "same with un-deploying": deploy in the open (safe), drive flush, THEN fold — the fold
+      // sweeps the arm back UP through the same space the deploy swept down through, so folding
+      // FLUSH ON THE FOOT is refused exactly the way deploying there was, and reverses back to
+      // (re-settling) DEPLOYED rather than completing the fold.
+      const { w, r } = pullWorld(124, 'ramp');
+      park(r, f0.x - 100, f0.y, 0); // open field
+      tick(w, cmd({ bbRamp: true }));
+      for (let i = 0; i < 30 && !bbRampSettled(r, w.time); i++) {
+        park(r, f0.x - 100, f0.y, 0);
+        tick(w, cmd({}));
+      }
+      const wasSettledDeployed = r.bbRampOut === true && bbRampSettled(r, w.time);
+      flush(r);
+      tick(w, cmd({ bbRamp: true })); // fold, flush on the foot
+      for (let i = 0; i < 90; i++) {
+        flush(r);
+        tick(w, cmd({}));
+      }
+      check(
+        'flower swing guard: folding FLUSH ON THE FLOWER\'S FOOT reverses back to DEPLOYED rather than completing the fold',
+        wasSettledDeployed && r.bbRampOut === true && bbRampSettled(r, w.time),
+        `wasSettledDeployed=${wasSettledDeployed} out=${r.bbRampOut} settled=${bbRampSettled(r, w.time)}`,
+      );
+    }
+    {
+      // ⚠️ **4 IN OFF THE FOOT, NOT 3 — MEASURED.** The FINAL deployed footprint clears the
+      // peanut supports at 0 standoff by ≈0.55 in (`clearance` in the CAD block below), which
+      // reads as "3 in of standoff is a generous margin" — but a rigid arm rotating from vertical
+      // to `BB_RAMP_ANGLE` below level does not sweep monotonically outward: `sin(φ)` peaks at
+      // `φ = 90°` (horizontal), PAST the arm's own final resting angle
+      // (`90° + BB_RAMP_ANGLE`), so the swing's outward reach OVERSHOOTS the settled position by
+      // `BB_RAMP_L·(1 − cos(BB_RAMP_ANGLE))` at its mid-swing peak. Swept standoff 3..10 in: 3
+      // still gets refused, 4 and up settle clean — the guard is catching a REAL transient
+      // collision the final-pose-only clearance check cannot see, not a false positive.
+      const { w, r } = pullWorld(125, 'ramp');
+      flush(r, 4);
+      tick(w, cmd({ bbRamp: true }));
+      for (let i = 0; i < 30; i++) {
+        flush(r, 4);
+        tick(w, cmd({}));
+      }
+      check(
+        'flower swing guard: a deploy 4 in off the foot stays deployed and settles (3 in still catches the mid-swing overshoot)',
+        r.bbRampOut === true && bbRampSettled(r, w.time),
+        `out=${r.bbRampOut} settled=${bbRampSettled(r, w.time)}`,
+      );
+    }
+    {
+      // a WALL-FLUSH deploy, on the intake edge, is refused the same way.
+      const { w, r } = pullWorld(127, 'ramp');
+      const wallFlushX = BB_HALF_X - bbFootprint(r.spec).front;
+      const parkWall = (): void => park(r, wallFlushX, 0, 0); // heading 0: the FRONT mouth faces the +x wall
+      parkWall();
+      tick(w, cmd({ bbRamp: true }));
+      for (let i = 0; i < 30; i++) {
+        parkWall();
+        tick(w, cmd({}));
+      }
+      check(
+        'flower swing guard: a WALL-FLUSH deploy on the intake edge is refused',
+        r.bbRampOut === false,
+        `out=${r.bbRampOut}`,
+      );
+    }
+    {
+      // NO OSCILLATION: a blocked swing reverses at most once per press — `bbRampBlocked` stops
+      // the guard testing again for the rest of that one swing.
+      const { w, r } = pullWorld(129, 'ramp');
+      flush(r);
+      let changes = 0;
+      let prevOut = r.bbRampOut ?? false;
+      tick(w, cmd({ bbRamp: true }));
+      for (let i = 0; i < 90; i++) {
+        flush(r);
+        tick(w, cmd({}));
+        const now = r.bbRampOut ?? false;
+        if (now !== prevOut) changes++;
+        prevOut = now;
+      }
+      check('flower swing guard: a blocked swing changes state AT MOST TWICE per press (out, then back)', changes <= 2, `changes=${changes}`);
+    }
+    {
+      // DETERMINISM: two fresh worlds, same script, same blocked press — identical hashes.
+      const scriptedHash = (seed: number): number => {
+        const { w, r } = pullWorld(seed, 'ramp');
+        flush(r);
+        tick(w, cmd({ bbRamp: true }));
+        for (let i = 0; i < 40; i++) {
+          flush(r);
+          tick(w, cmd({}));
+        }
+        return worldHash(w);
+      };
+      const ha = scriptedHash(131);
+      const hb = scriptedHash(131);
+      check('flower swing guard: determinism holds with a BLOCKED press in the script', ha === hb, `${ha} vs ${hb}`);
     }
     {
       // a SWEEPER never READS `bbRamp` — the archetype gate in `bbRampStep` returns before
@@ -2737,11 +2923,22 @@ export function robotChecks(check: Check): void {
         }
       }
     }
-    check(
-      "flower reach (CAD): the side-roller pair's outer extent sits inside the mid plate's own half-width",
-      midRing !== undefined && BB_SIDE_ROLLER_Y + BB_SIDE_ROLLER_R < (vmax - vmin) / 2,
-      `pair=${BB_SIDE_ROLLER_Y + BB_SIDE_ROLLER_R} plateHalf=${((vmax - vmin) / 2).toFixed(3)}`,
-    );
+    // ⚠️ RELOCATED 2026-09-20 (owner: "situated on the edges of the robot, not near the center") —
+    // the pair no longer straddles the centreline, so "the pair's outer extent [off the chassis
+    // centreline]" is the wrong question — the wheel that GRIPS the ball is not fixed relative to
+    // the FLOWER's own axis, it is fixed relative to the CHASSIS, and the driver lines it up by
+    // moving the whole robot. What has to fit inside the plate is the GRIPPING wheel's own
+    // footprint relative to the BALL it has hold of: by definition (`BB_SIDE_ROLLER_GRIP`) its
+    // axis sits within that distance of the ball's own centre — i.e. of the flower's own axis —
+    // so its outer face is at most `BB_SIDE_ROLLER_GRIP + BB_SIDE_ROLLER_R` off that axis.
+    {
+      const outerFace = BB_SIDE_ROLLER_GRIP + BB_SIDE_ROLLER_R;
+      check(
+        "flower reach (CAD): a side roller GRIPPING the ball has its outer face inside the mid plate's own half-width",
+        midRing !== undefined && outerFace < (vmax - vmin) / 2,
+        `grip=${BB_SIDE_ROLLER_GRIP} outerFace=${outerFace.toFixed(3)} plateHalf=${((vmax - vmin) / 2).toFixed(3)}`,
+      );
+    }
     const lowerRingTop = cadFlowerRings(0)[0]?.z[1];
     check(
       "flower reach (CAD): the ramp's deployed tip clears the lower ring's top face",

@@ -120,6 +120,18 @@ export interface RobotSpec {
    * decorative — the alliance is carried by the OUTLINE, never this — and
    * optional, so every existing spec, save, and replay stays valid. */
   chassisColor?: string;
+  /** COSMETIC: an `ACCENT_KEYS` key for the wheels/rollers fill (`'match'` follows
+   * the chassis). Closed set, `src/cosmetics.ts`; optional so every existing spec,
+   * save, and replay stays valid. */
+  accent?: string;
+  /** COSMETIC: a `DECAL_KEYS` key for the vector shape drawn over the chassis
+   * fill, under the alliance outline. Closed set, `src/cosmetics.ts`; optional so
+   * every existing spec, save, and replay stays valid. */
+  decal?: string;
+  /** COSMETIC: a `PLATE_KEYS` key for the frame drawn around the sign placard —
+   * the placard's own fill stays alliance. Closed set, `src/cosmetics.ts`;
+   * optional so every existing spec, save, and replay stays valid. */
+  plate?: string;
   /** Chain Reaction: how many Particles the robot's hopper holds (1–30 slider).
    * Optional so DECODE specs/old saves omit it (defaulted in coerceSpec). */
   ballStorage?: number;
@@ -481,6 +493,13 @@ export interface RobotState {
   bbRampAt?: number;
   /** was `bbRamp` held last tick? — the edge latch, `driveModeHeld`'s twin. */
   bbRampHeld?: boolean;
+  /** OSCILLATION GUARD (owner, 2026-09-20: a swing that would carry the ramp into a static — the
+   * flower it is deploying into, or a wall it would fold up through — reverses back where it
+   * came from, `bbRampSwingStep`). Once a swing has reversed, it retraces a path that was already
+   * proven clear, so the guard skips re-testing for the REST of that swing. Absent reads false;
+   * cleared on the next fresh press (`bbRampStep`), which is what lets a later, different swing
+   * test again. Every other intake leaves this absent, same as the other `bbRamp*` fields. */
+  bbRampBlocked?: boolean;
   hopper: ArtifactColor[]; // FIFO, max 3
   fieldCentric: boolean;
   aimAssist: boolean;

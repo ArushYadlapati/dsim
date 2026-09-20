@@ -3072,6 +3072,14 @@ export function sim3dChecks(check: Check): void {
       undefined,
       '3d',
     );
+    // MOVE OFF THE START ANCHORS FIRST — they are wall-flush by design (G304), and the swing
+    // guard (owner, 2026-09-20: a deploy that would carry the ramp into a static reverses) is
+    // RIGHT to refuse a deploy on the ramp-mounted edge's own wall. This fixture only wants the
+    // reach colliders live for a cost measurement, so give both ramp builds open field first.
+    w.robots[1].pos = { x: -20, y: 20 };
+    w.robots[1].heading = 0;
+    w.robots[3].pos = { x: 20, y: -20 };
+    w.robots[3].heading = 0;
     // deploy both ramps and let them settle before timing
     step3d(w, 1 / 60, new Map([[1, cmd({ bbRamp: true })], [3, cmd({ bbRamp: true })]]));
     for (let t = 0; t < 30; t++) step3d(w, 1 / 60, new Map());

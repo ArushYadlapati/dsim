@@ -1,6 +1,20 @@
+import type { CSSProperties, ReactNode } from 'react';
 import type { GameSettings } from '../types';
 import type { ChainScoreMode, DrivetrainType, IntakeStyle, RobotSpec } from '../types';
-import { MAX_SAVED_ROBOTS, ROBOT_PRESETS, CHASSIS_COLORS, CHASSIS_COLOR_KEYS } from '../config';
+import { MAX_SAVED_ROBOTS, ROBOT_PRESETS, CHASSIS_COLORS, CHASSIS_COLOR_KEYS, chassisFill } from '../config';
+import {
+  ACCENT_KEYS,
+  DECAL_KEYS,
+  PLATE_KEYS,
+  OUTLINE_HALO,
+  accentFill,
+  clampCosmetics,
+  cosmeticAllowed,
+  cosmeticTier,
+  type CosmeticId,
+  type Decal,
+  type Plate,
+} from '../cosmetics';
 import { useAds } from '../ads/AdsProvider';
 import {
   CHAIN_CLEARANCE_DEFAULT,
@@ -130,51 +144,254 @@ interface Props {
   onChange: (s: GameSettings) => void;
 }
 
+/** no earned cosmetic exists yet (`src/cosmetics.ts`: every defined key today sits in
+ * `free` or `supporter` — nothing falls through), and `Entitlements.unlockedCosmetics`
+ * has not landed (`docs/cosmetics-plan.md` §3.8, server agent). `cosmeticAllowed` already
+ * takes the earned list structurally, so wiring the real one in later is this one name. */
+const NO_EARNED_COSMETICS: readonly string[] = [];
+
+/** why a locked swatch is locked, for `title`/`aria-label` — never "supporter perk" on
+ * the caption itself (free users have real choices on every axis now), only on the
+ * specific options they don't have yet. `earned` items never reach here disabled
+ * (`cosmeticAllowed` already passes them), so a locked id is always `supporter` or
+ * `earned`-and-not-owned. */
+function lockReason(id: CosmeticId, supporter: boolean, earned: readonly string[]): string | undefined {
+  if (cosmeticAllowed(id, supporter, earned)) return undefined;
+  return cosmeticTier(id) === 'earned' ? 'Earned — see Career' : 'Supporter perk';
+}
+
+/** one swatch button, shared by all four axis rows below: same size, hover, ring and
+ * disabled behavior the chassis row always had (`.chassis-sw`), whatever it paints
+ * inside. A swatch with `children` (a decal/plate preview) also gets `.cosmetic-sw`,
+ * which clips the SVG to the same rounded square. */
+function CosmeticSwatch({
+  active,
+  locked,
+  title,
+  label,
+  style,
+  children,
+  onClick,
+}: {
+  active: boolean;
+  locked: boolean;
+  title?: string;
+  label: string;
+  style?: CSSProperties;
+  children?: ReactNode;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      className={`chassis-sw${children ? ' cosmetic-sw' : ''}${active ? ' on' : ''}`}
+      style={style}
+      // A locked swatch is `disabled`, not hidden: the browser skips it in the tab
+      // order and announces it as unavailable, which is the right story for "you
+      // could have this" — and it can't be clicked past.
+      disabled={locked}
+      aria-label={locked ? `${label} (${title})` : label}
+      aria-pressed={active}
+      title={locked ? title : undefined}
+      onClick={onClick}
+    >
+      {children}
+    </button>
+  );
+}
+
+/** the decal's shape, drawn in the ACCENT colour over the swatch's chassis-coloured
+ * backdrop — parametric (fractions of a 24x24 footprint), never an image, matching how
+ * `drawRobot.ts` draws the real thing over the chassis footprint. */
+function decalShape(decal: Decal, accentHex: string): ReactNode {
+  switch (decal) {
+    case 'none':
+      return null;
+    case 'stripe':
+      return <rect x="10" y="1" width="4" height="22" fill={accentHex} />;
+    case 'chevron':
+      return <path d="M4 21 L12 3 L20 21 L15.5 21 L12 12 L8.5 21 Z" fill={accentHex} />;
+    case 'racing':
+      return (
+        <>
+          <rect x="7" y="1" width="3" height="22" fill={accentHex} />
+          <rect x="14" y="1" width="3" height="22" fill={accentHex} />
+        </>
+      );
+    case 'hazard':
+      return (
+        <g stroke={accentHex} strokeWidth="4">
+          <line x1="1" y1="7" x2="7" y2="1" />
+          <line x1="1" y1="17" x2="17" y2="1" />
+          <line x1="7" y1="23" x2="23" y2="7" />
+          <line x1="17" y1="23" x2="23" y2="17" />
+        </g>
+      );
+    case 'checker':
+      return (
+        <>
+          <rect x="0" y="0" width="8" height="8" fill={accentHex} />
+          <rect x="16" y="0" width="8" height="8" fill={accentHex} />
+          <rect x="8" y="8" width="8" height="8" fill={accentHex} />
+          <rect x="0" y="16" width="8" height="8" fill={accentHex} />
+          <rect x="16" y="16" width="8" height="8" fill={accentHex} />
+        </>
+      );
+  }
+}
+
+/** the plate frame around a placeholder placard (`OUTLINE_HALO` fill — a fixed dark
+ * chip, since the real placard's fill stays alliance and no alliance is picked here),
+ * stroked in the ACCENT colour. `classic` is genuinely no frame, per `PLATE_KEYS`. */
+function plateShape(plate: Plate, accentHex: string): ReactNode {
+  const sign = <rect x="5" y="7" width="14" height="10" rx="1" fill={OUTLINE_HALO} />;
+  if (plate === 'classic') return sign;
+  const frame =
+    plate === 'bold' ? (
+      <rect x="3" y="5" width="18" height="14" rx="1" fill="none" stroke={accentHex} strokeWidth="3" />
+    ) : (
+      <rect x="3" y="5" width="18" height="14" rx="5" fill="none" stroke={accentHex} strokeWidth="2" />
+    );
+  return (
+    <>
+      {sign}
+      {frame}
+    </>
+  );
+}
+
 /**
- * SUPPORTER COSMETIC: the chassis fill.
+ * ROBOT COSMETICS: four rows — chassis colour, accent, decal, plate (`src/cosmetics.ts`).
  *
- * Shown to EVERYONE, locked for non-supporters. A perk that is invisible until
- * you pay for it sells nothing and, worse, makes the tier feel like a mystery
- * box; a visible locked row is honest about what the membership actually is.
- * The swatches are the real hex values, so the row is also the preview — see the
- * comment in `RobotPreview` for why the SVG chassis deliberately is not.
+ * Shown to EVERYONE, with the options an account isn't entitled to `disabled`. A perk
+ * that is invisible until you pay for it sells nothing and, worse, makes the tier feel
+ * like a mystery box; a visible locked option is honest about what the membership
+ * actually is. Free users get a real palette on every axis now, so the caption always
+ * shows the CURRENT key — never a blanket "supporter perk", which used to be the only
+ * thing a free player's caption ever said.
  */
-function ChassisColorRow({
+function CosmeticsRows({
   spec,
   onPick,
 }: {
   spec: RobotSpec;
-  onPick: (key: string) => void;
+  onPick: (patch: Partial<RobotSpec>) => void;
 }) {
   const { supporter } = useAds();
-  const current = spec.chassisColor ?? 'default';
+  const earned = NO_EARNED_COSMETICS;
+  const current = clampCosmetics(spec);
+  const chassisHex = chassisFill(current.chassisColor);
+  const accentHex = accentFill(current.accent, current.chassisColor);
+
   return (
-    <div className="ds-field wide">
-      <span className="cap">
-        Chassis colour{' '}
-        <span className="val">
-          {supporter ? current : 'supporter perk'}
+    <>
+      <div className="ds-field wide">
+        <span className="cap">
+          Chassis colour <span className="val">{current.chassisColor}</span>
         </span>
-      </span>
-      <div className="chassis-swatches">
-        {CHASSIS_COLOR_KEYS.map((key) => (
-          <button
-            key={key}
-            type="button"
-            className={`chassis-sw${current === key ? ' on' : ''}`}
-            style={{ background: CHASSIS_COLORS[key] }}
-            // A locked swatch is `disabled`, not hidden: the browser skips it in
-            // the tab order and announces it as unavailable, which is the right
-            // story for "you could have this" — and it can't be clicked past.
-            disabled={!supporter && key !== 'default'}
-            aria-label={`Chassis colour ${key}${!supporter && key !== 'default' ? ' (supporter only)' : ''}`}
-            aria-pressed={current === key}
-            title={!supporter && key !== 'default' ? 'Supporter perk' : undefined}
-            onClick={() => onPick(key)}
-          />
-        ))}
+        <div className="chassis-swatches">
+          {CHASSIS_COLOR_KEYS.map((key) => {
+            const id: CosmeticId = `chassisColor:${key}`;
+            const locked = !cosmeticAllowed(id, supporter, earned);
+            return (
+              <CosmeticSwatch
+                key={key}
+                active={current.chassisColor === key}
+                locked={locked}
+                title={lockReason(id, supporter, earned)}
+                label={`Chassis colour ${key}`}
+                style={{ background: CHASSIS_COLORS[key] }}
+                onClick={() => onPick({ chassisColor: key })}
+              />
+            );
+          })}
+        </div>
       </div>
-    </div>
+
+      <div className="ds-field wide">
+        <span className="cap">
+          Accent <span className="val">{current.accent}</span>
+        </span>
+        <div className="chassis-swatches">
+          {ACCENT_KEYS.map((key) => {
+            const id: CosmeticId = `accent:${key}`;
+            const locked = !cosmeticAllowed(id, supporter, earned);
+            // 'match' has no fixed hex of its own — a split swatch of the chassis
+            // colour against the outline halo is the honest preview: "whatever the
+            // chassis is."
+            const style: CSSProperties =
+              key === 'match'
+                ? { background: `linear-gradient(135deg, ${chassisHex} 50%, ${OUTLINE_HALO} 50%)` }
+                : { background: CHASSIS_COLORS[key as keyof typeof CHASSIS_COLORS] };
+            return (
+              <CosmeticSwatch
+                key={key}
+                active={current.accent === key}
+                locked={locked}
+                title={lockReason(id, supporter, earned)}
+                label={`Accent ${key}`}
+                style={style}
+                onClick={() => onPick({ accent: key })}
+              />
+            );
+          })}
+        </div>
+      </div>
+
+      <div className="ds-field wide">
+        <span className="cap">
+          Decal <span className="val">{current.decal}</span>
+        </span>
+        <div className="chassis-swatches">
+          {DECAL_KEYS.map((key) => {
+            const id: CosmeticId = `decal:${key}`;
+            const locked = !cosmeticAllowed(id, supporter, earned);
+            return (
+              <CosmeticSwatch
+                key={key}
+                active={current.decal === key}
+                locked={locked}
+                title={lockReason(id, supporter, earned)}
+                label={`Decal ${key}`}
+                style={{ background: chassisHex }}
+                onClick={() => onPick({ decal: key })}
+              >
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  {decalShape(key, accentHex)}
+                </svg>
+              </CosmeticSwatch>
+            );
+          })}
+        </div>
+      </div>
+
+      <div className="ds-field wide">
+        <span className="cap">
+          Plate <span className="val">{current.plate}</span>
+        </span>
+        <div className="chassis-swatches">
+          {PLATE_KEYS.map((key) => {
+            const id: CosmeticId = `plate:${key}`;
+            const locked = !cosmeticAllowed(id, supporter, earned);
+            return (
+              <CosmeticSwatch
+                key={key}
+                active={current.plate === key}
+                locked={locked}
+                title={lockReason(id, supporter, earned)}
+                label={`Plate ${key}`}
+                style={{ background: chassisHex }}
+                onClick={() => onPick({ plate: key })}
+              >
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  {plateShape(key, accentHex)}
+                </svg>
+              </CosmeticSwatch>
+            );
+          })}
+        </div>
+      </div>
+    </>
   );
 }
 
@@ -718,7 +935,7 @@ export function Menu({ settings, onChange }: Props) {
               <>
                 <Builder spec={spec} onChange={setSpec} game={settings.game} />
                 <div className="ds-fields">
-                  <ChassisColorRow spec={spec} onPick={(chassisColor) => setSpec({ chassisColor })} />
+                  <CosmeticsRows spec={spec} onPick={setSpec} />
                 </div>
               </>
             ) : (
@@ -1109,7 +1326,7 @@ export function Menu({ settings, onChange }: Props) {
                       </label>
                     );
                   })()}
-                  <ChassisColorRow spec={spec} onPick={(chassisColor) => setSpec({ chassisColor })} />
+                  <CosmeticsRows spec={spec} onPick={setSpec} />
                 </div>
               </>
             )}

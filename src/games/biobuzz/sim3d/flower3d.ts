@@ -1,11 +1,20 @@
 import type { Artifact, RobotCommand, RobotState, World } from '../../../types';
 import type { BiobuzzState } from '../state';
 import type { BbElementKind } from '../flower';
+import { rot } from '../../../math';
 import { bbBites, bbElementRadius, bbFlowerDropSlack, bbFlowerScatter } from '../flower';
-import { BB_FLOWERS, BB_FLOWER_RETRIEVE_S, FLOWER_RING_Z, bbFlowerReachOf, bbHopperCap } from '../config';
+import {
+  BB_FLOWERS,
+  BB_FLOWER_RETRIEVE_S,
+  BB_RAMP_OUT,
+  BB_RAMP_RELEASE_V,
+  FLOWER_RING_Z,
+  bbFlowerReachOf,
+  bbHopperCap,
+} from '../config';
 import { capturePollen, takeHeld } from '../elements';
 import { bbIntakeKindOf, bbLiftOf } from '../mechs';
-import { bbFlowerAtIntake } from '../play';
+import { bbFlowerAtIntake, bbFlowerAtIntakeMouth } from '../play';
 import { bbFlowerInReach, bbRampSettled } from '../robot';
 import { flowerAtRetrieval } from './flowerTube';
 
@@ -199,6 +208,27 @@ export function flowerPlace3d(
  * ring centre, and — the one test only a physical column can ask — the Z-BITE (`bbBites`) against
  * the candidate's ACTUAL height, on top of `flowerAtRetrieval`'s coarser "is it in the opening's
  * band at all". `ball.z` is the element's BOTTOM in this pipeline, so `ball.z + r` is its centre.
+ *
+ * ⚠️ **A `ramp` BUILD DOES NOT `capturePollen` — IT RELEASES A `ground` ELEMENT UNDER THE BAR**
+ * (owner report 2026-09-20: "The pollen should be getting intaked from the deployable ramp
+ * BECAUSE it collides with the ramp and slides down towards the intake"). MEASURED: driving a
+ * real `ramp` build into F1's foot with the crossbar/rails now solid (`chassis3dReachShapes`,
+ * `bodies.ts`) and the intake's own pull extended by `BB_RAMP_OUT` (`bbIntakeExtraReach`) still
+ * hits the SAME proximity gate below (`bbFlowerAtIntakeMouth` + the Z-bite) before the physical
+ * push ever has a tick to act — over 10 runs (seeds 5001–5010, standoffs 10–25 in, stick
+ * 0.35–1.0) the gate always fired first, at tick 15–39 of the approach, with the ball's centre
+ * having moved under 0.6 in. So "physics alone" and "the gate" are not two competing paths here;
+ * the gate is what always wins the race, and the honest fix is what the gate DOES: instead of a
+ * teleport into the hopper, split the retrieval into the SAME two steps a real extraction would
+ * take — leave the tube as a `ground` element, under the bar, and let the extended pull sweep it
+ * in. `derive.ts`'s tube test (`flowerTubeOf`, a plain radius from the flower's own axis,
+ * `BB_FLOWER_OPEN_R`) would otherwise re-tag the release right back to `element`/`flower:i` on
+ * the very next `deriveTick` — MEASURED: releasing on the flower's own y (`v = 0`, dead centre)
+ * sits only ~1.06 in from the axis, inside a 2.086-in radius, and is reclassified before gameplay
+ * ever sees `ground`. `BB_RAMP_RELEASE_V` is the LATERAL offset (still under the crossbar, which
+ * spans the whole mouth width) that clears the radius — see its own header in `config.ts`.
+ * Every other archetype is UNCHANGED: `siderollers` and the direct proximity path both still
+ * `capturePollen` outright, exactly as before.
  */
 export function flowerRetrieve3d(
   world: World,
@@ -212,10 +242,12 @@ export function flowerRetrieve3d(
   if (!enabled || !(rob.autoIntake || (cmd?.intake ?? false))) return false;
   if (world.time - rob.lastIntakeAt < BB_FLOWER_RETRIEVE_S) return false;
   if (rob.hopper.length >= bbHopperCap(rob.spec)) return false;
-  const reach = bbFlowerReachOf(bbIntakeKindOf(rob.spec), bbRampSettled(rob, world.time));
+  const kind = bbIntakeKindOf(rob.spec);
+  const reach = bbFlowerReachOf(kind, bbRampSettled(rob, world.time));
   if (!reach) return false; // a sweeper, or a ramp not yet settled: nothing to reach with
-  const i = bbFlowerAtIntake(rob, reach);
-  if (i === null) return false;
+  const hit = bbFlowerAtIntakeMouth(rob, reach);
+  if (!hit) return false;
+  const { i, ax } = hit;
   const stack = bb.flowers[i].stack;
   if (stack.length === 0) return false;
   const id = stack[0]; // `derive.ts` orders the stack bottom to top by the bodies' own heights
@@ -226,6 +258,29 @@ export function flowerRetrieve3d(
   const zc = ball.z + r; // ball.z is the BOTTOM; the bite tests want the CENTRE
   if (!flowerAtRetrieval(zc)) return false;
   if (!bbBites(reach.z[0], reach.z[1], zc, r)) return false;
+
+  if (kind === 'ramp') {
+    // PHYSICAL HALF-STEP: a ground element under the bar, clear of the tube's own radius (see
+    // this function's header and `BB_RAMP_RELEASE_V`'s own), nudged toward the roller. Nothing
+    // captures it here — `bbIntakeAct`'s extended reach (`bbIntakeExtraReach`) does that, at the
+    // earliest on NEXT tick's `elements3dCapture` (it runs before this stage — `step3dImpl.ts`).
+    const u = ax.uOut + BB_RAMP_OUT - 0.3 - r; // just behind the crossbar's inner face
+    const v = BB_RAMP_RELEASE_V;
+    const local = { x: u * ax.n.x + v * ax.p.x, y: u * ax.n.y + v * ax.p.y };
+    const off = rot(local, rob.heading);
+    ball.pos.x = rob.pos.x + off.x;
+    ball.pos.y = rob.pos.y + off.y;
+    ball.z = FLOWER_RING_Z.lower[1]; // resting on the lower plate's own rim — ball.z is the BOTTOM
+    const nudge = rot({ x: -10 * ax.n.x, y: -10 * ax.n.y }, rob.heading); // ~10 in/s, inward (−n)
+    ball.vel.x = nudge.x;
+    ball.vel.y = nudge.y;
+    ball.vz = 0;
+    ball.state = { kind: 'ground' };
+    rob.lastIntakeAt = world.time; // the release is the paced action now, same as a capture was
+    bb.flowers[i].stack = stack.slice(1);
+    return true;
+  }
+
   const was = ball.state;
   ball.state = { kind: 'ground' };
   if (!capturePollen(world, rob, ball)) {

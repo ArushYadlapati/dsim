@@ -1864,6 +1864,17 @@ export interface Entitlements {
    * first two may put a dialog in front of anybody.
    */
   termsVersion?: string | null;
+  /**
+   * This account's EARNED, permanent cosmetic unlocks (`profiles.cosmetics`,
+   * `"<axis>:<key>"` ids from `src/cosmetics.ts`) — a separate ledger from `supporter`
+   * (docs/cosmetics-plan.md §3.2/§3.7) that survives a lapsed membership. Optional for
+   * the same "not asked / older server" reason as `termsVersion`: absent means "this
+   * server did not say", not "nothing earned" — `[]` means the latter. NEVER
+   * authoritative: the server independently strips an unowned cosmetic on join/update
+   * regardless of what this field says, so the client uses it only to decide which
+   * picker rows to render as owned rather than locked.
+   */
+  unlockedCosmetics?: string[];
 }
 
 const NO_ENTITLEMENTS: Entitlements = {
@@ -1892,6 +1903,9 @@ export async function fetchEntitlements(): Promise<Entitlements> {
       // would turn "this server never told us" into "never accepted" and show a
       // blocking dialog to everybody on a stale server.
       termsVersion: r.termsVersion,
+      // same pass-through-untouched rule as `termsVersion`: `undefined` means "this
+      // server did not say" (older build), not "nothing earned".
+      unlockedCosmetics: r.unlockedCosmetics,
     };
   } catch {
     return NO_ENTITLEMENTS;

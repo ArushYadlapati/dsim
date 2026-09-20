@@ -33,7 +33,7 @@ import {
   BB_SIDE_ROLLER_H,
   BB_SIDE_ROLLER_OUT,
   BB_SIDE_ROLLER_R,
-  BB_SIDE_ROLLER_Y,
+  bbSideRollerY,
   BB_SIDE_ROLLER_Z,
   BB_WALL_T,
 } from '../config';
@@ -811,6 +811,19 @@ export interface Chassis3dShape {
    * computed once where the edge is known so a collider builder never has to re-derive it.
    */
   rot?: Quat;
+  /**
+   * ⚠️ **TRUE FOR THE RAMP'S CROSSBAR AND RAILS, ABSENT FOR EVERYTHING ELSE `chassis3dReachShapes`
+   * BUILDS** (owner report 2026-09-20: "The pollen should be getting intaked from the deployable
+   * ramp BECAUSE it collides with the ramp and slides down towards the intake. Right now, it just
+   * looks like the pollen is passing through the ramp"). A ramp is a physical U-frame a POLLEN
+   * rides down; side rollers are compliant wheels a POLLEN passes BETWEEN — so only the ramp's
+   * hardware gets the DEFAULT collision groups (meets an element too) in `reachColliderDesc`,
+   * while side rollers stay in `GROUP_POCKET` (statics/walls/robots only, same as the pocket
+   * filler) exactly as before. Also picks up the chassis boxes' own edge break
+   * (`chassisBoxDesc`) instead of a bare square cuboid, so a ball meeting the bar behaves like
+   * meeting the frame rather than catching a knife corner.
+   */
+  elementSolid?: boolean;
 }
 
 /**
@@ -988,7 +1001,10 @@ function rampRailY(half: number): number {
  *
  *  · `siderollers` — two boxes standing in for the vertical-axis wheels (hx = hy = R, so the
  *    axis-aligned box is rotation-invariant about z and needs no `rot`) at
- *    `u = uOut + BB_SIDE_ROLLER_OUT`, `v = ±BB_SIDE_ROLLER_Y`, centred at `BB_SIDE_ROLLER_Z`.
+ *    `u = uOut + BB_SIDE_ROLLER_OUT`, `v = ±bbSideRollerY(axes.half)` (owner, 2026-09-20: "situated
+ *    on the edges of the robot, not near the center" — the mouth's OWN half-width, not a fixed
+ *    offset, so the wheel sits at the mouth's own edge on every chassis size), centred at
+ *    `BB_SIDE_ROLLER_Z`.
  *  · `ramp`, only once `rampReady` (`bbRampSettled`) — the crossbar (also axis-aligned; its own
  *    half-extents are re-expressed along whichever world axis is "outward" for this edge, the
  *    `|n.x|/|n.y|` trick above) plus the two rails, which are NOT axis-aligned: they tilt down at
@@ -1015,8 +1031,9 @@ export function chassis3dReachShapes(spec: RobotSpec, heightIn: number, rampRead
       cy: u * n.y + v * p.y,
     });
     if (kind === 'siderollers') {
+      const wheelY = bbSideRollerY(axes.half);
       for (const s of [1, -1] as const) {
-        const { cx, cy } = place(uOut + BB_SIDE_ROLLER_OUT, s * BB_SIDE_ROLLER_Y);
+        const { cx, cy } = place(uOut + BB_SIDE_ROLLER_OUT, s * wheelY);
         out.push({
           cx,
           cy,
@@ -1038,6 +1055,7 @@ export function chassis3dReachShapes(spec: RobotSpec, heightIn: number, rampRead
         hx: 0.15 * Math.abs(n.x) + railY * Math.abs(p.x),
         hy: 0.15 * Math.abs(n.y) + railY * Math.abs(p.y),
         hz: 0.25,
+        elementSolid: true,
       });
       // the two rails: midpoint between the pivot (u = uOut − BB_RAMP_PIVOT_BACK, z
       // BB_RAMP_PIVOT_Z) and the tip (u = uOut + BB_RAMP_OUT, z BB_RAMP_TIP_Z), tilted about the
@@ -1055,11 +1073,132 @@ export function chassis3dReachShapes(spec: RobotSpec, heightIn: number, rampRead
           hy: 0.125,
           hz: 0.25,
           rot,
+          elementSolid: true,
         });
       }
     }
   }
   return out;
+}
+
+/**
+ * ⚠️ **THE RAMP MID-SWING, AT WHATEVER ANGLE `e` NAMES** (owner, 2026-09-20: "if it collides with
+ * the flower or any non-moving solid thing as it is being deployed, it should fold back up...
+ * same with un-deploying"). `chassis3dReachShapes`'s ramp branch is this function's `e = 1`
+ * special case — folded (`e = 0`) contributes nothing there because a folded ramp is not solid to
+ * anything, but a SWINGING one still has to be tested against statics on the way through, so this
+ * builds the same two rails and crossbar at ANY progress `e` in `[0, 1]` (`bbRampSwingProgress`),
+ * for `bbRampSwingStep3d`'s own collision query alone — it is never added to a body, only used to
+ * ask Rapier "does a shape like this one overlap a static right here".
+ *
+ * ONE PIVOT, ONE SWEEP ANGLE. The rail direction is `φ(e) = e·(π/2 + BB_RAMP_ANGLE)` measured
+ * from STRAIGHT UP (`φ = 0`, the folded pose — the rails stand round the barrel) toward the
+ * deployed direction (`φ = π/2 + BB_RAMP_ANGLE`, outward and `BB_RAMP_ANGLE` below level) — a
+ * pivot-relative polar sweep, not a linear interpolation of the two endpoints, because the rail
+ * is a RIGID rod of fixed length `BB_RAMP_L` rotating about a fixed pivot, not a point sliding in
+ * a straight line between two poses. **Verified to reduce EXACTLY to `chassis3dReachShapes`'s own
+ * numbers at `e = 1`**: `sin(φ) = cos(BB_RAMP_ANGLE)`, `cos(φ) = −sin(BB_RAMP_ANGLE)` there, which
+ * algebraically collapse this function's `tipU`/`tipZ`/`midU`/`midZ` to that function's
+ * `uOut + BB_RAMP_OUT`/`BB_RAMP_TIP_Z`/`uMid`/`zMid` term for term.
+ *
+ * The crossbar is kept AXIS-ALIGNED at every `e` (the same simplification the deployed pose
+ * already makes — it is a 0.3-in-thick box, and its own tilt was never worth a second quaternion)
+ * and walked back from the CURRENT tip by the same 0.15 in along the rail direction, so it never
+ * separates from the rails' own end as they swing.
+ */
+export function bbRampSwingShapes(spec: RobotSpec, heightIn: number, e: number): Chassis3dShape[] {
+  if (bbIntakeKindOf(spec) !== 'ramp') return [];
+  const hl = spec.length / 2;
+  const hw = spec.width / 2;
+  const half = heightIn / 2;
+  const out: Chassis3dShape[] = [];
+  const phi = e * (Math.PI / 2 + BB_RAMP_ANGLE);
+  const sinPhi = dsin(phi);
+  const cosPhi = dcos(phi);
+  for (const m of bbMouths(spec)) {
+    const axes = mouthAxes(m, hl, hw);
+    const { n, p, uOut } = axes;
+    const place = (u: number, v: number): { cx: number; cy: number } => ({ cx: u * n.x + v * p.x, cy: u * n.y + v * p.y });
+    const pivotU = uOut - BB_RAMP_PIVOT_BACK;
+    const tipU = pivotU + BB_RAMP_L * sinPhi;
+    const tipZ = BB_RAMP_PIVOT_Z + BB_RAMP_L * cosPhi;
+    const midU = pivotU + (BB_RAMP_L / 2) * sinPhi;
+    const midZ = BB_RAMP_PIVOT_Z + (BB_RAMP_L / 2) * cosPhi;
+    const railY = rampRailY(axes.half);
+    const rot = quatMul(yawQuat(EDGE_ANGLE[m.edge]), pitchQuatY(phi - Math.PI / 2));
+    for (const s of [1, -1] as const) {
+      const rail = place(midU, s * railY);
+      out.push({ cx: rail.cx, cy: rail.cy, cz: midZ - half, hx: BB_RAMP_L / 2, hy: 0.125, hz: 0.25, rot });
+    }
+    const cross = place(tipU - 0.15 * sinPhi, 0);
+    out.push({
+      cx: cross.cx,
+      cy: cross.cy,
+      cz: tipZ - 0.15 * cosPhi + 0.25 - half,
+      hx: 0.15 * Math.abs(n.x) + railY * Math.abs(p.x),
+      hy: 0.15 * Math.abs(n.y) + railY * Math.abs(p.y),
+      hz: 0.25,
+    });
+  }
+  return out;
+}
+
+/**
+ * ⚠️ **DOES THE RAMP, MID-SWING AT `e`, TOUCH A STATIC?** (owner, 2026-09-20 — the swing-guard
+ * rule; see `bbRampSwingShapes`'s own header). A free-floating Rapier shape-intersection query —
+ * NOT a collider on any body, so it costs nothing on ticks that are not mid-swing and never
+ * appears in a contact manifold — for each of `bbRampSwingShapes`' boxes, placed in WORLD space
+ * off the robot's OWN JSON pose (`pos`/`heading`/`z`; this runs at stage 11, after readback, so
+ * that pose is the step's own final answer) rather than a re-read of the Rapier body.
+ *
+ * `filterPredicate` is `collider.parent()?.isFixed()`, which is exactly "STATICS ONLY" per the
+ * owner's own wording: walls, the flower plates/supports and the hive FRAME are fixed bodies
+ * (`buildStatics3d`); the hive TRAY (kinematic or dynamic), every robot and every element are
+ * not, and none of them should be able to block a swing — a ramp folding past another robot is
+ * a foul question (`bbRobotSolids`/robot-robot contact), not this guard's.
+ */
+export function rampSwingHitsStatic(
+  RAPIER: Rapier3d,
+  world3d: InstanceType<Rapier3d['World']>,
+  spec: RobotSpec,
+  heightIn: number,
+  pos: { x: number; y: number },
+  chassisBottomZ: number,
+  heading: number,
+  e: number,
+): boolean {
+  const shapes = bbRampSwingShapes(spec, heightIn, e);
+  if (shapes.length === 0) return false;
+  const bodyRot = yawQuat(heading);
+  const cosH = dcos(heading);
+  const sinH = dsin(heading);
+  const isStatic = (c: { parent(): { isFixed(): boolean } | null }): boolean => c.parent()?.isFixed() === true;
+  for (const s of shapes) {
+    const shapePos = {
+      x: pos.x + s.cx * cosH - s.cy * sinH,
+      y: pos.y + s.cx * sinH + s.cy * cosH,
+      z: chassisBottomZ + heightIn / 2 + s.cz,
+    };
+    const shapeRot = s.rot ? quatMul(bodyRot, s.rot) : bodyRot;
+    const shape = new RAPIER.Cuboid(s.hx, s.hy, s.hz);
+    let hit = false;
+    world3d.intersectionsWithShape(
+      shapePos,
+      shapeRot,
+      shape,
+      () => {
+        hit = true;
+        return true; // keep scanning; only the boolean matters
+      },
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      isStatic,
+    );
+    if (hit) return true;
+  }
+  return false;
 }
 
 /**
@@ -1133,11 +1272,26 @@ export function addChassis3dColliders(
 /** build ONE reach-hardware collider from a `Chassis3dShape` — shared by the authority
  * (`addChassis3dColliders`, above) and the FULL predictor (`predict.ts`'s `fitChassis`), so the
  * rotation composition (`chassis3dReachShapes`'s `rot`) and the group/friction/restitution are
- * written in exactly one place. */
+ * written in exactly one place.
+ *
+ * ⚠️ **`elementSolid` PICKS THE GROUP AND THE EDGE BREAK** (owner report 2026-09-20: "The pollen
+ * should be getting intaked from the deployable ramp BECAUSE it collides with the ramp... Right
+ * now, it just looks like the pollen is passing through the ramp"). Side rollers (`elementSolid`
+ * absent) keep `GROUP_POCKET` exactly as before — compliant wheels an element passes BETWEEN, the
+ * same group the pocket filler uses so an element never meets them. The ramp's crossbar and rails
+ * (`elementSolid: true`) get the DEFAULT groups instead (meets an element too, same as every
+ * other chassis box) and `chassisBoxDesc`'s contact-skin edge break, so a ball meeting the bar
+ * behaves like meeting the frame rather than catching a knife corner — friction/restitution were
+ * already `PHYS_FRICTION`/0, the same as the chassis boxes, so those two do not move. */
 export function reachColliderDesc(RAPIER: Rapier3d, s: Chassis3dShape): InstanceType<Rapier3d['ColliderDesc']> {
-  const desc = RAPIER.ColliderDesc.cuboid(s.hx, s.hy, s.hz).setTranslation(s.cx, s.cy, s.cz);
+  const desc = s.elementSolid
+    ? chassisBoxDesc(RAPIER, s.hx, s.hy, s.hz)
+    : RAPIER.ColliderDesc.cuboid(s.hx, s.hy, s.hz);
+  desc.setTranslation(s.cx, s.cy, s.cz);
   if (s.rot) desc.setRotation(s.rot);
-  return desc.setDensity(0).setFriction(PHYS_FRICTION).setRestitution(0).setCollisionGroups(GROUP_POCKET);
+  desc.setDensity(0).setFriction(PHYS_FRICTION).setRestitution(0);
+  if (!s.elementSolid) desc.setCollisionGroups(GROUP_POCKET);
+  return desc;
 }
 
 /**

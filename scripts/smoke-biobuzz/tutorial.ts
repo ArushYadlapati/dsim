@@ -182,6 +182,15 @@ function driveFor(step: TutorialStep, world: World, r: RobotState): RobotCommand
       } as RobotCommand;
     }
     case 'retrieve': {
+      // ⚠️ NO LATERAL OFFSET HERE (owner, 2026-09-20: side rollers are `edgeGrip`, not the
+      // centreline) — `mouthPoint` (`src/games/biobuzz/tutorial.ts`) already bakes the wheel's
+      // own offset into the STAGED HEADING, not into the robot's position: `stageAtFlower` sets
+      // `r.pos.y = FLOWER.y` exactly and rotates the chassis by the angle that puts the OFFSET
+      // wheel, not the centreline, on the world-+x line back to the flower. So the drive target
+      // is the SAME line the stage already put the robot on — `f.y`, unchanged — and adding a
+      // lateral term here would walk the chassis OFF the heading-encoded alignment instead of
+      // along it (measured: it broke the RED alliance's mirrored heading outright, never
+      // completing, while blue happened to drift the other way and still passed by luck).
       const f = BB_FLOWERS[a === 'blue' ? 2 : 0];
       return { ...toward(r, f.x - sgn * 4, f.y, 0.35), intake: true };
     }

@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import type { Alliance, RobotSpec, RobotState, World } from '../../../types';
 import { chassisFill, INTAKE_RAIL_T } from '../../../config';
+import { accentFill, clampCosmetics, OUTLINE_HALO } from '../../../cosmetics';
 import { robotsEnabled } from '../../../sim/match';
 import {
   BB3_MOUTH_SLOT_Z,
@@ -37,7 +38,7 @@ import {
   BB_SIDE_ROLLER_H,
   BB_SIDE_ROLLER_OUT,
   BB_SIDE_ROLLER_R,
-  BB_SIDE_ROLLER_Y,
+  bbSideRollerY,
   BB_SIDE_ROLLER_Z,
   BB_TURRET_AXLE_Z,
   BB_TURRET_BRACE_R,
@@ -148,6 +149,26 @@ const TURRET_BARREL = '#5c6676';
 const SWEEPER = '#12161c';
 const DUMPER_BUCKET = '#8a94a3';
 const MOTOR = '#2b313a';
+
+/**
+ * COSMETICS — the 3D twin of `render/drawRobot.ts`'s `tintColor` (not imported: that module
+ * pulls in `sim/field`/`sim/robot`, which have no business in this LAZY chunk — see the RENDER
+ * lane's chunk-boundary rules above). Blends `accent` into a structural base colour so a
+ * mechanism (a wheel, a roller hub) reads the cosmetic without losing its own material tone.
+ * Every caller that adds an `accent` parameter below defaults it to that part's OWN base colour,
+ * which makes `tint3d(base, base, amt) === base` — a true no-op, so every existing call site
+ * that predates cosmetics (this file's own tests included) is unchanged.
+ */
+function hexToRgb3d(hex: string): [number, number, number] {
+  const n = parseInt(hex.replace('#', ''), 16);
+  return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
+}
+function tint3d(base: string, accent: string, amt: number): string {
+  const [br, bg, bb] = hexToRgb3d(base);
+  const [ar, ag, ab] = hexToRgb3d(accent);
+  const mix = (x: number, y: number) => Math.round(x + (y - x) * amt);
+  return `#${[mix(br, ar), mix(bg, ag), mix(bb, ab)].map((v) => v.toString(16).padStart(2, '0')).join('')}`;
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // DRIVETRAIN DIMENSIONS — inches. GEOMETRY, not physics: nothing below is read by the sim, and
@@ -310,15 +331,19 @@ function lineMat(color: string): THREE.LineBasicMaterial {
  * corner once you are close enough to see a roller at all.
  */
 const ROLLER_TEX_CACHE = new Map<string, THREE.CanvasTexture>();
-function getRollerTexture(kind: 'mecanum' | 'omni'): THREE.CanvasTexture {
-  const hit = ROLLER_TEX_CACHE.get(kind);
+/** `accent` defaults to `WHEEL` — `tint3d(WHEEL, WHEEL, x) === WHEEL`, a no-op for any caller
+ * that predates cosmetics. Cached per `kind|accent` so two robots with different accents never
+ * share a texture. */
+function getRollerTexture(kind: 'mecanum' | 'omni', accent: string = WHEEL): THREE.CanvasTexture {
+  const key = `${kind}|${accent}`;
+  const hit = ROLLER_TEX_CACHE.get(key);
   if (hit) return hit;
   const size = 64;
   const canvas = document.createElement('canvas');
   canvas.width = size;
   canvas.height = size;
   const ctx = canvas.getContext('2d')!;
-  ctx.fillStyle = WHEEL;
+  ctx.fillStyle = tint3d(WHEEL, accent, 0.55);
   ctx.fillRect(0, 0, size, size);
   ctx.strokeStyle = '#3a4250';
   ctx.lineWidth = 4;
@@ -331,15 +356,16 @@ function getRollerTexture(kind: 'mecanum' | 'omni'): THREE.CanvasTexture {
   const tex = new THREE.CanvasTexture(canvas);
   tex.wrapS = THREE.RepeatWrapping;
   tex.wrapT = THREE.RepeatWrapping;
-  ROLLER_TEX_CACHE.set(kind, tex);
+  ROLLER_TEX_CACHE.set(key, tex);
   return tex;
 }
 const ROLLER_MAT_CACHE = new Map<string, THREE.MeshStandardMaterial>();
-function getRollerMat(kind: 'mecanum' | 'omni'): THREE.MeshStandardMaterial {
-  let m = ROLLER_MAT_CACHE.get(kind);
+function getRollerMat(kind: 'mecanum' | 'omni', accent: string = WHEEL): THREE.MeshStandardMaterial {
+  const key = `${kind}|${accent}`;
+  let m = ROLLER_MAT_CACHE.get(key);
   if (!m) {
-    m = new THREE.MeshStandardMaterial({ map: getRollerTexture(kind), roughness: 0.8 });
-    ROLLER_MAT_CACHE.set(kind, m);
+    m = new THREE.MeshStandardMaterial({ map: getRollerTexture(kind, accent), roughness: 0.8 });
+    ROLLER_MAT_CACHE.set(key, m);
     SHARED_MAT.add(m);
   }
   return m;
@@ -555,10 +581,13 @@ function podParts(): THREE.Object3D[] {
  * EXPORTED for `scripts/smoke-biobuzz/render.ts`, which builds one and MEASURES it — the same
  * bargain `buildTurret` makes, and for the same reason: the complaint this answers ("it looks like
  * a rectangular cylinder") is about a silhouette, and a lane that greps cannot see one.
+ *
+ * `accent` (the cosmetic accent) tints the tyre; it defaults to `TREAD` — `tint3d(TREAD, TREAD, x)
+ * === TREAD` — so the RENDER lane's existing no-argument call is unchanged.
  */
-export function buildSwervePod(): THREE.Group {
+export function buildSwervePod(accent: string = TREAD): THREE.Group {
   const pod = new THREE.Group();
-  const wheel = new THREE.Mesh(wheelGeometry(BB_POD_WHEEL_R, BB_WHEEL_W), solidMat(TREAD, 0.95, 0));
+  const wheel = new THREE.Mesh(wheelGeometry(BB_POD_WHEEL_R, BB_WHEEL_W), solidMat(tint3d(TREAD, accent, 0.4), 0.95, 0));
   wheel.name = 'bb-pod-wheel';
   wheel.position.set(0, 0, BB_POD_WHEEL_R);
   pod.add(cast(wheel));
@@ -608,13 +637,13 @@ interface BbWheels {
  * Every wheel sits at `y = ±(width/2 − plate − gap/2)`, i.e. in the channel between the inner
  * and outer side plate, which is what "wheels protected between parallel plates" means.
  */
-function buildWheels(spec: RobotSpec): BbWheels {
+function buildWheels(spec: RobotSpec, accent: string = TREAD): BbWheels {
   const out: BbWheels = { nodes: [], pods: [], traction: [], roller: [] };
   const wheelY = spec.width / 2 - BB_PLATE_T - BB_PLATE_GAP / 2;
   const hl = spec.length / 2;
   const hw = spec.width / 2;
   const dt = spec.drivetrain;
-  const mat = dt === 'tank' ? solidMat(TREAD, 0.95, 0) : getRollerMat(dt === 'xdrive' ? 'omni' : 'mecanum');
+  const mat = dt === 'tank' ? solidMat(tint3d(TREAD, accent, 0.5), 0.95, 0) : getRollerMat(dt === 'xdrive' ? 'omni' : 'mecanum', accent);
   const geo = wheelGeometry(BB_WHEEL_R, BB_WHEEL_W);
   for (const x of axleXs(spec)) {
     for (const sy of [1, -1] as const) {
@@ -629,7 +658,7 @@ function buildWheels(spec: RobotSpec): BbWheels {
         // inside the frame; `wheelY` (the channel between the two side plates) measured +0.88 in
         // outside it at 45° of steer. `buildFrame` drops the inner side plate for swerve to make
         // room, because a chassis on pods has no wheel channel to draw.
-        const pod = buildSwervePod();
+        const pod = buildSwervePod(accent);
         pod.name = `robot:pod:${out.pods.length}`;
         pod.position.set((Math.sign(x) || 1) * (hl - BB_POD_INSET), sy * (hw - BB_POD_INSET), 0);
         out.nodes.push(pod);
@@ -653,7 +682,7 @@ function buildWheels(spec: RobotSpec): BbWheels {
         // one is down — the sync does that, so a preview shows the spawn default (mecanum down).
         out.roller.push(wheel);
         const tx = x - Math.sign(x) * (BB_WHEEL_R * 2 + 0.5);
-        const tw = new THREE.Mesh(wheelGeometry(BB_WHEEL_R, BB_WHEEL_W * 0.7), solidMat(TREAD, 0.95, 0));
+        const tw = new THREE.Mesh(wheelGeometry(BB_WHEEL_R, BB_WHEEL_W * 0.7), solidMat(tint3d(TREAD, accent, 0.5), 0.95, 0));
         tw.position.set(tx, sy * wheelY, BB_WHEEL_R + BB_BUTTERFLY_LIFT);
         out.nodes.push(cast(tw));
         out.traction.push(tw);
@@ -860,6 +889,142 @@ function getSignTexture(text: string, alliance: 'red' | 'blue'): THREE.CanvasTex
 }
 
 /**
+ * THE DECAL TEXTURE — the `getSignTexture` technique, cached per `decal|accent|aspect`. Painted
+ * TRANSPARENT everywhere but the shape itself, so the deck's own `chassisFill` shows through the
+ * rest of the box the decal mesh sits on. `aspect` is the deck's own length÷width, so the same
+ * five shapes drawn in 2D (`render/drawRobot.ts`'s `drawDecal`) land in the same PARAMETRIC
+ * fractions of the footprint here — a decal must scale to any legal chassis, never absolute
+ * inches (`docs/cosmetics-plan.md` §4's stated risk). The canvas's U axis is a `BoxGeometry`
+ * top face's own U, which runs along local +x — the chassis' forward axis — so `chevron`'s point
+ * at high U is genuinely forward-pointing.
+ */
+const DECAL_TEX_CACHE = new Map<string, THREE.CanvasTexture>();
+function getDecalTexture(decal: string, accent: string, aspect: number): THREE.CanvasTexture {
+  const key = `${decal}|${accent}|${aspect.toFixed(3)}`;
+  const cached = DECAL_TEX_CACHE.get(key);
+  if (cached) return cached;
+  const w = 256;
+  const h = Math.max(1, Math.round(w / Math.max(0.05, aspect)));
+  const canvas = document.createElement('canvas');
+  canvas.width = w;
+  canvas.height = h;
+  const ctx = canvas.getContext('2d')!;
+  ctx.clearRect(0, 0, w, h);
+  ctx.fillStyle = accent;
+  const hw = w / 2;
+  const hh = h / 2;
+  switch (decal) {
+    case 'stripe': {
+      const sw = h * 0.18;
+      ctx.fillRect(0, hh - sw / 2, w, sw);
+      break;
+    }
+    case 'racing': {
+      const sw = h * 0.1;
+      const off = h * 0.15;
+      ctx.fillRect(0, hh - off - sw / 2, w, sw);
+      ctx.fillRect(0, hh + off - sw / 2, w, sw);
+      break;
+    }
+    case 'chevron': {
+      const d = w * 0.22;
+      const notch = d * 0.55;
+      const half = hh * 0.82;
+      ctx.beginPath();
+      ctx.moveTo(hw + d * 0.5, hh);
+      ctx.lineTo(hw - d * 0.5, hh - half);
+      ctx.lineTo(hw - d * 0.5 + notch, hh - half);
+      ctx.lineTo(hw + d * 0.5 + notch, hh);
+      ctx.lineTo(hw - d * 0.5 + notch, hh + half);
+      ctx.lineTo(hw - d * 0.5, hh + half);
+      ctx.closePath();
+      ctx.fill();
+      break;
+    }
+    case 'hazard': {
+      // rear third — LOW U, since the chassis' rear is local −x, i.e. canvas U → 0
+      ctx.save();
+      ctx.beginPath();
+      ctx.rect(0, 0, w / 3, h);
+      ctx.clip();
+      const bw = h * 0.16;
+      for (let o = -h; o < w / 3 + h; o += bw * 2) {
+        ctx.beginPath();
+        ctx.moveTo(o, 0);
+        ctx.lineTo(o + bw, 0);
+        ctx.lineTo(o + bw + h, h);
+        ctx.lineTo(o + h, h);
+        ctx.closePath();
+        ctx.fill();
+      }
+      ctx.restore();
+      break;
+    }
+    case 'checker': {
+      const cols = 4;
+      const cw = w / cols;
+      const bandH = h * 0.3;
+      const rows = Math.max(1, Math.round(bandH / cw));
+      const rh = bandH / rows;
+      for (let i = 0; i < cols; i++) {
+        for (let j = 0; j < rows; j++) {
+          if ((i + j) % 2 === 0) ctx.fillRect(i * cw, hh - bandH / 2 + j * rh, cw, rh);
+        }
+      }
+      break;
+    }
+  }
+  const tex = new THREE.CanvasTexture(canvas);
+  DECAL_TEX_CACHE.set(key, tex);
+  return tex;
+}
+
+/** silver frame colour for the `rounded` plate style. */
+const PLATE_SILVER = '#c7ced6';
+
+/**
+ * THE SIGN PLATE FRAME — a border round the sign placard (`docs/cosmetics-plan.md` §3.4), built
+ * as GEOMETRY (a `Shape` with a hole, the same technique `platePlane` uses), not a texture: a
+ * frame is a real border, not artwork, and this keeps it DOM-free. `'bold'` is a thick frame in
+ * the accent colour; `'rounded'` a thin rounded frame in silver — the placard's own fill/number
+ * are untouched, this sits a hair further out (see the call site).
+ */
+const SIGN_PLATE_GEO_CACHE = new Map<string, THREE.ExtrudeGeometry>();
+function buildSignPlateGeometry(plate: string): THREE.ExtrudeGeometry {
+  const hit = SIGN_PLATE_GEO_CACHE.get(plate);
+  if (hit) return hit;
+  const thick = plate === 'bold' ? 0.35 : 0.18;
+  const r = plate === 'rounded' ? 0.4 : 0;
+  const ow = BB_SIGN_W + thick * 2;
+  const oh = BB_SIGN_H + thick * 2;
+  const ohw = ow / 2;
+  const ohh = oh / 2;
+  const shape = new THREE.Shape();
+  shape.moveTo(-ohw + r, -ohh);
+  shape.lineTo(ohw - r, -ohh);
+  if (r) shape.quadraticCurveTo(ohw, -ohh, ohw, -ohh + r);
+  shape.lineTo(ohw, ohh - r);
+  if (r) shape.quadraticCurveTo(ohw, ohh, ohw - r, ohh);
+  shape.lineTo(-ohw + r, ohh);
+  if (r) shape.quadraticCurveTo(-ohw, ohh, -ohw, ohh - r);
+  shape.lineTo(-ohw, -ohh + r);
+  if (r) shape.quadraticCurveTo(-ohw, -ohh, -ohw + r, -ohh);
+  const hole = new THREE.Path();
+  const ihw = BB_SIGN_W / 2;
+  const ihh = BB_SIGN_H / 2;
+  hole.moveTo(-ihw, -ihh);
+  hole.lineTo(ihw, -ihh);
+  hole.lineTo(ihw, ihh);
+  hole.lineTo(-ihw, ihh);
+  hole.closePath();
+  shape.holes.push(hole);
+  const geo = new THREE.ExtrudeGeometry(shape, { depth: 0.08, bevelEnabled: false, curveSegments: 8 });
+  SIGN_PLATE_GEO_CACHE.set(plate, geo);
+  SHARED_GEO.add(geo);
+  return geo;
+}
+
+/**
  * The orientation of the sign on the side plate whose outward normal is `+y * side`.
  *
  * Built as an explicit BASIS rather than an `Euler`: a plane's texture "right" is its +x, so the
@@ -1016,7 +1181,11 @@ function smoothstep01(t: number): number {
  * is a canvas texture and the lane has no DOM. */
 export function buildIntake(
   spec: RobotSpec,
+  /** the cosmetic accent (`accentFill`). Defaults to `SWEEPER` — a no-op tint — so every
+   * existing caller, this lane's own included, is unchanged. */
+  accent: string = SWEEPER,
 ): { nodes: THREE.Object3D[]; rollers: BbRoller[]; sideRollers: BbSideRoller[]; rampPivots: THREE.Group[] } {
+  const rollerMat = solidMat(tint3d(SWEEPER, accent, 0.5), 0.5, 0.25);
   const nodes: THREE.Object3D[] = [];
   const rollers: BbRoller[] = [];
   const sideRollers: BbSideRoller[] = [];
@@ -1158,12 +1327,12 @@ export function buildIntake(
     const roll = new THREE.Group();
     roll.name = `robot:sweeper:${m.edge}`;
     roll.position.set(outer, 0, BB_ROLLER_Z);
-    const hubMesh = cast(new THREE.Mesh(hubGeo, solidMat(SWEEPER, 0.5, 0.25)));
+    const hubMesh = cast(new THREE.Mesh(hubGeo, rollerMat));
     roll.add(hubMesh);
     const flaps: THREE.Object3D[] = [];
     for (let i = 0; i < BB_ROLLER_FLAPS; i++) {
       const flap = new THREE.Group();
-      flap.add(cast(new THREE.Mesh(flapGeo, solidMat(SWEEPER, 0.5, 0.25))));
+      flap.add(cast(new THREE.Mesh(flapGeo, rollerMat)));
       roll.add(flap);
       flaps.push(flap);
     }
@@ -1173,7 +1342,7 @@ export function buildIntake(
     if (deep) {
       // the TRANSFER roller sits 0.9 in higher, well clear of the pocket, so it stays a plain
       // barrel — there is nothing for a flap of its to yield to
-      const t = new THREE.Mesh(hubGeo, solidMat(SWEEPER, 0.5, 0.25));
+      const t = new THREE.Mesh(hubGeo, rollerMat);
       t.name = `robot:transfer:${m.edge}`;
       t.scale.set(0.62, 1, 0.62);
       t.position.set(inner, 0, BB_ROLLER_Z + 0.9);
@@ -1183,21 +1352,24 @@ export function buildIntake(
       for (const s of [1, -1] as const) {
         const belt = new THREE.Mesh(
           new THREE.BoxGeometry(outer - inner, 0.12, 0.5),
-          solidMat(SWEEPER, 0.8, 0),
+          solidMat(tint3d(SWEEPER, accent, 0.35), 0.8, 0),
         );
         belt.position.set((outer + inner) / 2, s * (f.half - 0.45), BB_ROLLER_Z + 0.45);
         g.add(belt);
       }
     }
 
-    // ── SIDE ROLLERS: two vertical-axis compliant wheels straddling the opening, hung off the
-    // front brace. Cosmetic-only geometry — the REACH the sim credits is `BB_SIDE_ROLLER_REACH`
-    // in `config.ts`, and the wheels below sit at exactly its centre so the RENDER lane can check
-    // "the drawn part that reaches is the part the sim credits" against a real group.
+    // ── SIDE ROLLERS: two vertical-axis compliant wheels AT THE INTAKE'S EDGES (owner,
+    // 2026-09-20: "situated on the edges of the robot, not near the center. It is to funnel
+    // things from the edge"), hung off the front brace. Cosmetic-only geometry — the REACH the
+    // sim credits is `BB_SIDE_ROLLER_REACH` in `config.ts`, and the wheels below sit at exactly
+    // `bbSideRollerY(f.half)`, its own centre, so the RENDER lane can check "the drawn part that
+    // reaches is the part the sim credits" against a real group.
     if (kind === 'siderollers') {
       const memberT = INTAKE_RAIL_T * 0.6;
       const wheelTopZ = BB_SIDE_ROLLER_Z + BB_SIDE_ROLLER_H / 2;
       const braceZ = BB3_MOUTH_SLOT_Z + braceT / 2;
+      const rollerY = bbSideRollerY(f.half); // ±: as wide as the chassis, inboard of the side arm's plane
       // one strap + one outrigger, built centred on y = 0 like the arms above, so a single
       // geometry serves both sides and only the mesh's own position mirrors it
       const bracketGeo = framePart(`sideroller:bracket:${tip.toFixed(2)}`, () => [
@@ -1207,14 +1379,19 @@ export function buildIntake(
       for (const s of [1, -1] as const) {
         const bracket = cast(new THREE.Mesh(bracketGeo, solidMat(ALU, 0.45, 0.35)));
         bracket.name = `robot:sideroller:bracket:${m.edge}`;
-        bracket.position.set(0, s * BB_SIDE_ROLLER_Y, 0);
+        bracket.position.set(0, s * rollerY, 0);
         g.add(bracket);
 
-        const wheel = cast(new THREE.Mesh(sideRollerGeometry(), solidMat(SWEEPER, 0.5, 0.25)));
+        const wheel = cast(new THREE.Mesh(sideRollerGeometry(), rollerMat));
         wheel.name = `robot:sideroller:${m.edge}:${s === 1 ? 'l' : 'r'}`;
-        wheel.position.set(tip + BB_SIDE_ROLLER_OUT, s * BB_SIDE_ROLLER_Y, BB_SIDE_ROLLER_Z);
+        wheel.position.set(tip + BB_SIDE_ROLLER_OUT, s * rollerY, BB_SIDE_ROLLER_Z);
         g.add(wheel);
-        sideRollers.push({ mesh: wheel, sign: s, phase: 0 });
+        // FUNNEL INWARD: the wheel's leading face (local +x, where an oncoming POLLEN first
+        // touches it) carries the ball toward the centreline, not away — for the s=+1 (positive-y)
+        // wheel that is -y, which is `sign = -s` about the wheel's own vertical (z) axis; the
+        // s=-1 wheel mirrors it. See `BB_SIDE_ROLLER_REACH`'s header for why one wheel, not the
+        // pair, does the gripping at a flower.
+        sideRollers.push({ mesh: wheel, sign: (-s) as 1 | -1, phase: 0 });
       }
     }
 
@@ -1578,7 +1755,7 @@ function buildHoodNode(H: BbHeadDims, which: 0 | 1): THREE.Group {
  * node on the rotation axis, and the only things built in it are the two parts centred on that
  * axis: the turret plate and its feed slot.
  */
-function addFixedShooter(head: THREE.Group, axle: THREE.Group, H: BbHeadDims, which: 0 | 1): void {
+function addFixedShooter(head: THREE.Group, axle: THREE.Group, H: BbHeadDims, which: 0 | 1, accent: string = SWEEPER): void {
   // ── THE TURRET PLATE, ON THE SLEW RING, CUT THROUGH FOR THE FEED ──────────────────────────
   // ⚠️ THE SLOT IS THE POINT. The element comes up the rotation axis, through the ring bearing's
   // bore and through this plate, which is what makes the feed path something you can see rather
@@ -1635,7 +1812,7 @@ function addFixedShooter(head: THREE.Group, axle: THREE.Group, H: BbHeadDims, wh
   // turret's own rotation axis. Its LATERAL position is y = 0, dead centre of the channel: see
   // `BB_FLYWHEEL_W_FRAC` for the owner report that is.
   const fwW = H.elemR * 2 * BB_FLYWHEEL_W_FRAC;
-  const wheel = new THREE.Mesh(wheelGeometry(BB_FLYWHEEL_R, fwW), solidMat(SWEEPER, 0.45, 0.2));
+  const wheel = new THREE.Mesh(wheelGeometry(BB_FLYWHEEL_R, fwW), solidMat(tint3d(SWEEPER, accent, 0.5), 0.45, 0.2));
   wheel.name = 'bb-turret-flywheel';
   axle.add(cast(wheel));
   // the HUB inside it, and a spacer collar each side — a wheel on a shaft rather than a puck
@@ -1804,7 +1981,14 @@ function addFixedShooter(head: THREE.Group, axle: THREE.Group, H: BbHeadDims, wh
  * the bug. It is not imported anywhere in `src/` — `buildRobotGroup` below is still the one
  * generator the match and the builder share.
  */
-export function buildTurret(spec: RobotSpec, mountPos: BbMountPos, which: 0 | 1 = 0): THREE.Group {
+export function buildTurret(
+  spec: RobotSpec,
+  mountPos: BbMountPos,
+  which: 0 | 1 = 0,
+  /** the cosmetic accent — tints the flywheel. Defaults to `SWEEPER`, a no-op, so this lane's
+   * own no-argument calls are unchanged. */
+  accent: string = SWEEPER,
+): THREE.Group {
   const group = new THREE.Group();
   const H = bbHead(which);
   const ring = turretRadius(spec);
@@ -1841,7 +2025,7 @@ export function buildTurret(spec: RobotSpec, mountPos: BbMountPos, which: 0 | 1 
   const axle = new THREE.Group();
   axle.name = 'bb-turret-axle';
   axle.position.set(H.axleX, 0, BB_TURRET_AXLE_Z - BB_DECK_Z);
-  addFixedShooter(head, axle, H, which);
+  addFixedShooter(head, axle, H, which, accent);
 
   const pitch = buildHoodNode(H, which);
   pitch.name = 'bb-turret-pitch';
@@ -1974,14 +2158,29 @@ export function buildRobotGroup(spec: RobotSpec, id: number, alliance: Alliance)
   const color = alliance === 'blue' ? BLUE : RED;
   const launcher = bbLauncherOf(spec, 0);
   const lift = bbLiftOf(spec);
+  // COSMETICS: see `render/drawRobot.ts`'s header — `accent`/`decal`/`plate` land on `RobotSpec`
+  // on a parallel lane; `clampCosmetics` is shape-safe against a spec that does not declare them
+  // yet. The FILL is the cosmetic (see below); the ALLIANCE stays the silhouette line + the signs.
+  const cosm = clampCosmetics(spec);
+  const accent = accentFill(cosm.accent, spec.chassisColor);
 
   for (const part of buildFrame(spec)) group.add(part);
-  const wheels = buildWheels(spec);
+  const wheels = buildWheels(spec, accent);
   for (const w of wheels.nodes) group.add(w);
   // the handles the per-frame sync poses a MOVING drivetrain with. Absent for the three that do
   // not move (a preview has no `RobotState` at all, so both lists are simply empty there).
   group.userData.swervePods = wheels.pods;
   group.userData.butterflySets = { traction: wheels.traction, roller: wheels.roller };
+
+  // THE HALO — the 3D twin of the 2D sprites' dark inner ring (`docs/cosmetics-plan.md` §3.4): a
+  // second, darker edge trace sitting just INSIDE the alliance line so a vivid cosmetic fill never
+  // drops the silhouette's contrast. Scaled between the skin's own true edge (1.0) and the alliance
+  // line below (1.004), so it reads as trim UNDER the alliance line rather than a second outline.
+  const halo = new THREE.LineSegments(chassisEdges(spec.length, spec.width, BB_PLATE_H), lineMat(OUTLINE_HALO));
+  halo.name = `robot:${id}:outlineHalo`;
+  halo.position.z = BB_PLATE_H / 2;
+  halo.scale.set(1.002, 1.002, 1.0015);
+  group.add(halo);
 
   // THE ALLIANCE LINE, round the BUMPER BAND (the drivetrain) — where an alliance colour sits on
   // a real robot. Scaled out by a whisker so it cannot z-fight with the faces it traces: a
@@ -2000,6 +2199,20 @@ export function buildRobotGroup(spec: RobotSpec, id: number, alliance: Alliance)
   nose.position.set(spec.length / 2 - 0.55, 0, BB_DECK_Z + 0.25);
   group.add(cast(nose));
 
+  // THE DECAL — a baked CanvasTexture on the deck (the `getSignTexture` technique), cached per
+  // decal key × accent colour. `'none'` adds no node, matching a default-cosmetic build's node
+  // set byte-for-byte. It sits a hair above the deck's own top face so it never z-fights it.
+  if (cosm.decal !== 'none') {
+    const deckL = spec.length - BB_RAIL_T * 2.6;
+    const deckW = innerHalfWidth(spec) * 2;
+    const decalTex = getDecalTexture(cosm.decal, accent, deckL / deckW);
+    const decalMat = new THREE.MeshStandardMaterial({ map: decalTex, roughness: 0.7, transparent: true });
+    const decal = new THREE.Mesh(new THREE.BoxGeometry(deckL, deckW, 0.02), decalMat);
+    decal.name = `robot:${id}:decal`;
+    decal.position.set(0, 0, BB_DECK_Z + 0.02);
+    group.add(decal);
+  }
+
   // THE TWO ROBOT SIGNS (R401: "Minimum of two ROBOT SIGNS per ROBOT … on opposite or adjacent
   // surfaces"). Both side plates is the OPPOSITE case, and it is the one that reads from either
   // side of the FIELD — the header above has the rule text and every dimension's citation. ONE
@@ -2007,6 +2220,11 @@ export function buildRobotGroup(spec: RobotSpec, id: number, alliance: Alliance)
   const signTex = getSignTexture(bbRobotSignText(spec), alliance);
   const signGeo = new THREE.PlaneGeometry(BB_SIGN_W, BB_SIGN_H);
   const signMat = new THREE.MeshStandardMaterial({ map: signTex, roughness: 0.6 });
+  // THE PLATE — a frame round the sign placard (`docs/cosmetics-plan.md` §3.4). `'classic'` is no
+  // frame, so it adds no node either, same rule as the decal. The placard's own fill/number stay
+  // untouched — only a frame sits a hair further out, in front of it.
+  const plateGeo = cosm.plate !== 'classic' ? buildSignPlateGeometry(cosm.plate) : null;
+  const plateMat = plateGeo ? solidMat(cosm.plate === 'bold' ? accent : PLATE_SILVER, 0.5, cosm.plate === 'bold' ? 0.3 : 0.6) : null;
   for (const [side, where] of [[1, 'left'], [-1, 'right']] as const) {
     const sign = new THREE.Mesh(signGeo, signMat);
     sign.name = `robot:${id}:sign:${where}`;
@@ -2016,9 +2234,16 @@ export function buildRobotGroup(spec: RobotSpec, id: number, alliance: Alliance)
     sign.position.set(0, side * (spec.width / 2 + 0.05), BB_PLATE_H * 0.5);
     sign.quaternion.copy(bbRobotSignOrientation(side));
     group.add(sign);
+    if (plateGeo && plateMat) {
+      const plate = new THREE.Mesh(plateGeo, plateMat);
+      plate.name = `robot:${id}:plate:${where}`;
+      plate.position.set(0, side * (spec.width / 2 + 0.05 + 0.02), BB_PLATE_H * 0.5);
+      plate.quaternion.copy(bbRobotSignOrientation(side));
+      group.add(plate);
+    }
   }
 
-  const intake = buildIntake(spec);
+  const intake = buildIntake(spec, accent);
   for (const n of intake.nodes) group.add(n);
   group.userData.intakeRollers = intake.rollers;
   group.userData.sideRollers = intake.sideRollers;
@@ -2027,7 +2252,7 @@ export function buildRobotGroup(spec: RobotSpec, id: number, alliance: Alliance)
   const heads: THREE.Group[] = [];
   const pitches: THREE.Group[] = [];
   if (bbIsTurreted(launcher)) {
-    const t0 = buildTurret(spec, launcher.mount, 0);
+    const t0 = buildTurret(spec, launcher.mount, 0, accent);
     group.add(t0);
     heads.push(t0.userData.head as THREE.Group);
     pitches.push(t0.userData.pitch as THREE.Group);
@@ -2035,7 +2260,7 @@ export function buildRobotGroup(spec: RobotSpec, id: number, alliance: Alliance)
       // ⚠️ `1`, AND IT IS NOT A LABEL. Turret 1 is the NECTAR exit (`bbTurretFor`), and a NECTAR
       // is 3.6 in where a POLLEN is 2.8 — so this head is built to a different dimension set and
       // releases from a different muzzle, which is the sim's own answer too.
-      const t1 = buildTurret(spec, launcher.mount2, 1);
+      const t1 = buildTurret(spec, launcher.mount2, 1, accent);
       group.add(t1);
       heads.push(t1.userData.head as THREE.Group);
       pitches.push(t1.userData.pitch as THREE.Group);

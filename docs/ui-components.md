@@ -142,12 +142,12 @@ The look and the depth model are `DESIGN.md`. This file is only the inventory.
 
 | class | declared | used |
 |---|---|---|
-| `.ds-lan-banner` | src/ui/styles.css:3258 | 1 |
-| `.ds-lan-leave` | src/ui/styles.css:3271 | 1 |
-| `.ds-lan-state` | src/ui/styles.css:3181 | 4 |
-| `.ds-lan-steps` | src/ui/styles.css:3234 | 1 |
-| `.ds-lan-url` | src/ui/styles.css:3197 | 3 |
-| `.ds-lan-urls` | src/ui/styles.css:3187 | 1 |
+| `.ds-lan-banner` | src/ui/styles.css:3263 | 1 |
+| `.ds-lan-leave` | src/ui/styles.css:3276 | 1 |
+| `.ds-lan-state` | src/ui/styles.css:3186 | 4 |
+| `.ds-lan-steps` | src/ui/styles.css:3239 | 1 |
+| `.ds-lan-url` | src/ui/styles.css:3202 | 3 |
+| `.ds-lan-urls` | src/ui/styles.css:3192 | 1 |
 
 ## `ds-panel` — 6
 
@@ -342,7 +342,7 @@ The look and the depth model are `DESIGN.md`. This file is only the inventory.
 
 | class | declared | used |
 |---|---|---|
-| `.ds-field` | src/ui/shell.css:1895 | 48 |
+| `.ds-field` | src/ui/shell.css:1895 | 51 |
 | `.ds-field-row` | src/ui/shell.css:1822 | 5 |
 
 ## `ds-head` — 2

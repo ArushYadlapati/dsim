@@ -1,5 +1,5 @@
 import type { Alliance, Artifact, RobotCommand, RobotState, World } from '../../../types';
-import { BB_HOOD_DEFAULT_DEG } from '../config';
+import { BB_HOOD_DEFAULT_DEG, bbHeightNow } from '../config';
 import { capturePollen } from '../elements';
 import {
   bbAimTarget,
@@ -9,11 +9,23 @@ import {
   bbPretendHive,
   bbTurretShotEnters,
 } from '../play';
-import { bbIntakeAct, bbLaunch, bbRampStep, bbSlewTurret, bbTurretSolution, type BbShot } from '../robot';
+import {
+  bbIntakeAct,
+  bbIntakeExtraReach,
+  bbLaunch,
+  bbRampReverse,
+  bbRampStep,
+  bbRampSwingProgress,
+  bbSlewTurret,
+  bbTurretSolution,
+  type BbShot,
+} from '../robot';
 import { bbIsTurreted, bbLauncherOf } from '../mechs';
 import { type BiobuzzState } from '../state';
 import { flowerPlace3d, flowerRetrieve3d } from './flower3d';
-import type { Engine3d } from './engineImpl';
+import { engineFor, type Engine3d } from './engineImpl';
+import { rapier3d } from './engine';
+import { rampSwingHitsStatic } from './bodies';
 import { bbKindIndex } from '../score';
 
 /**
@@ -91,7 +103,7 @@ export function elements3dCapture(
     if (rob.passive) continue;
     const cmd = cmds.get(rob.id);
     if (!(enabled && (rob.autoIntake || (cmd?.intake ?? false)))) continue;
-    const act = bbIntakeAct(world, rob, { lowFlight: true });
+    const act = bbIntakeAct(world, rob, { lowFlight: true, extraReach: bbIntakeExtraReach(rob, world.time) });
     for (const p of act.pull) p.ball.vel = p.vel;
     for (const b of act.take) capturePollen(world, rob, b);
   }
@@ -106,6 +118,29 @@ const ZERO_CMD3D: RobotCommand = Object.freeze({
   intake: false,
   fire: false,
 });
+
+/**
+ * ⚠️ **THE SWING GUARD, 3D'S HALF** (owner, 2026-09-20: "if it collides with the flower or any
+ * non-moving solid thing as it is being deployed, it should fold back up... same with
+ * un-deploying"). Runs right after `bbRampStep` every tick of a swing that is still in flight —
+ * `bbRampSwingProgress` returns `null` (and this is a no-op) once the swing has settled, and the
+ * oscillation guard (`r.bbRampBlocked`) skips the query outright once one reversal has already
+ * proven this swing needs it. `rampSwingHitsStatic` is the actual Rapier query
+ * (`bodies.ts`); a hit reverses the swing (`bbRampReverse`) in place, so the very next tick's
+ * `bbRampSwingProgress` picks up the SAME eased curve running the other way.
+ */
+function bbRampSwingStep3d(world: World, r: RobotState): void {
+  if (r.bbRampBlocked) return;
+  const e = bbRampSwingProgress(r, world.time);
+  if (e === null) return;
+  const engine = engineFor(world);
+  const heightIn = bbHeightNow(world, r.spec);
+  const hit = rampSwingHitsStatic(rapier3d(), engine.world3d, r.spec, heightIn, r.pos, r.z ?? 0, r.heading, e);
+  if (hit) {
+    const elapsed = world.time - (r.bbRampAt ?? world.time);
+    bbRampReverse(r, world.time, elapsed);
+  }
+}
 
 /**
  * AIM + LAUNCH: slew each robot's mechanism toward its own hive (`bbAimTarget`, the nearer own
@@ -128,6 +163,8 @@ export function elements3dAimAndLaunch(
     // THE RAMP TOGGLE — same place the 2D pipeline steps it (`play.ts` stage 5b), alongside the
     // turret slew just below, with the same `enabled` gate driver control runs under.
     bbRampStep(rob, cmds.get(rob.id), enabled, world.time);
+    // THE SWING GUARD, right after the toggle — see `bbRampSwingStep3d`'s own header.
+    bbRampSwingStep3d(world, rob);
     const launcher = bbLauncherOf(rob.spec, BB_HOOD_DEFAULT_DEG);
     const target = bbAimTarget(world, rob);
     // THE SAME LANDING GATE THE 2D PIPELINE RUNS (`play.ts` stage 5b) — see this file's header,

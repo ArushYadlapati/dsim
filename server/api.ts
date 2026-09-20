@@ -55,6 +55,7 @@ import {
   getUserSettings,
   getUserStats,
   getSupporter,
+  getCosmeticsUnlocks,
   getTermsAcceptance,
   acceptTerms,
   claimKofiPayment,
@@ -760,6 +761,9 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse): Prom
             // (A local dev server without Postgres therefore shows the dialog, and its
             // Accept answers 503 — correct, and visible, rather than quietly fine.)
             termsVersion: null,
+            // no database ⇒ nothing was ever granted, same "not asked = false" rule as
+            // every other field on this no-db branch.
+            unlockedCosmetics: [],
           }),
           true
         );
@@ -786,6 +790,13 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse): Prom
            * check into a paid-perk decision.
            */
           termsVersion: (await getTermsAcceptance(user.userId)).version,
+          // EARNED, permanent unlocks (`profiles.cosmetics`, migration 0044) — separate
+          // from the `supporter` fields above on purpose (docs/cosmetics-plan.md §3.2/
+          // §3.7): the client uses this only to decide which picker rows to show as
+          // owned rather than locked. Never trusted back — the server independently
+          // strips on join/update (`stripUnentitledCosmetics`) regardless of what this
+          // endpoint ever said.
+          unlockedCosmetics: await getCosmeticsUnlocks(user.userId),
         }),
         true
       );
