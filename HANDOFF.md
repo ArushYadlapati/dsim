@@ -1,6 +1,49 @@
+# HANDOFF — 2026-09-20a (alpha: third playtest pass — phantom hive corner, phantom hive tip, the hive's pivot hardware, Box Tube reach, disabled-robot prediction, intake in the transition, spent friend challenges)
+
+**READ FIRST.** Seven owner items. Gates on the final tree: `npm test` ALL PASS (3,143 biobuzz +
+shared), `build`, `server:check`, `uiaudit`, `docaudit`, `bundleaudit`, `test:mm` (200), `dbtest`.
+Not run: `shiftaudit`, `test:ai`. `dsim-alpha` was redeployed (server code moved: the challenge
+clear and the 3D collider set). Production untouched.
+
+- **The hive foot bar is ONE box** (`sim3d/fieldColliders.ts`, `squareFootBars`). The exporter's
+  bar plus two feet buried 0.11 in behind its face left an internal edge; a pressed chassis sits
+  0.09 in in and its leading corner stopped dead on the foot's side face (mecanum, 0.8 push / 0.5
+  strafe, stuck at y 9.14, blue bar, +y only). The 8-point decimation had also made the bar a
+  wedge (24.73 → 24.62). Same class of bug to look for anywhere two CAD hulls are near-coplanar.
+- **Parts bolted to the TRAY are tray colliders** (`cadTrayRiders`, `buildHiveTray3d`): the eight
+  Churro braces and, per hive, two pivot brackets, two damper holders, two dampers. They ship under
+  the static frame in both the GLB and the collider JSON. The renderer now carries all of them on
+  the tilting group (`renderFieldGlb.ts`, selected per welded COMPONENT within 1.25 in of the tray
+  centreline — per-triangle slices the A-frame top corner); physics had them frozen at the captured
+  pose. Zero density, so the see-saw's calibration does not move.
+- **Only the UP cell loads the tip** (`sim3d/derive.ts`). Both cells went into `contents`, which the
+  tip pin, the HUD and Table 10-2 read as the up cell's load; a miss through the open down cell
+  counted. 7 up + 1 down tipped at tick 330. Both cells are still TAGGED `hive:<a>`. A physical
+  knock was ruled out: 480 shots at 260 in/s never moved a pinned tray.
+- **The 3D predictors zero the command while robots are disabled** (`sim3d/predict.ts`, `liveCmd`).
+  They re-stepped the raw stick through `pre`, the transition and `post`. The phase read is the
+  last snapshot's, so the local robot wakes one snapshot after the server enables it.
+- **The drawn intake is gated on `robotsEnabled`** in `render/renderer.ts` (all games),
+  `biobuzz/drawRobot.ts` and the 3D roller.
+- **The Box Tube reaches the flower's opening** (`scene/renderRobots.ts`, `bbBoxTubeStages` /
+  `bbBoxTubeAim` in `config.ts`). Shoulder on the frame rail (an inboard pivot rose through a centre
+  turret), fixed cradle + four pitching stages, pose solved per frame from the flower
+  `bbFlowerInReach` returns, 0.12 s. Render only.
+- **A friend challenge is cleared when it is used** (`clearRoomInvitesTo` on the recipient's join,
+  `clearRoomInvites` when the matchmaker stages a rated party token, plus the client's own dismiss
+  in `onJoinInvite`). It only ever aged out at `INVITE_TTL_S`. The join clear is scoped to the
+  recipient on purpose: a host reconnect must not delete an unanswered invite. No WS-level test
+  exists for the two call sites; `dbtest` covers the repo half.
+
+Open: the AI lane's `bot-driven 2v2 step3d p95 <= 1.5ms` flickers under load on the dev box
+(1.41–1.61); it passed in the full run. An element can still come to REST in the down cell — it is
+excluded from the load and counted when that cell comes up, which is right, but nothing evicts it.
+
+---
+
 # HANDOFF — 2026-09-19e (alpha: THE FLOWER LANE FINISHED, plus the owner's second playtest pass — intake front, shooter head, turret lead, catapult dumper, tape, hive sheets, G417 out / G407 per the manual, FPS slider, game-specific keybinds on top of PR 81)
 
-**READ FIRST.** Twelve owner items, run as parallel lanes and merged here. Every gate below was run
+Twelve owner items, run as parallel lanes and merged here. Every gate below was run
 on the MERGED tree. The one thing that needed the coordinator rather than a lane is the first
 section: the lanes each wrote a real 2x room-tick regression off as "machine load".
 
