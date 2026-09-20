@@ -61,11 +61,19 @@ import { hiveTiltAngle } from '../../src/games/biobuzz/sim3d/hive3d';
 import { rotate2 } from '../../src/games/biobuzz/sim3d/math3';
 import { BB3_HIVE_PIVOT_Z, BB_HIVE_UP_STAGED, BB_POLLEN_R } from '../../src/games/biobuzz/config';
 import { BB_TIP_SWING_S } from '../../src/games/biobuzz/hive';
+import { bbFootprint } from '../../src/games/biobuzz/robot';
 
 const urlParams = new URLSearchParams(location.search);
 const physicsMode = urlParams.get('physics') === '3d' ? '3d' : '2d';
 const hiveProbeAlliance: Alliance | null = urlParams.get('probe') === 'hive' ? 'red' : null;
 const forceTip = urlParams.get('tip') === '1';
+// INTAKE ARCHETYPE PICTURES (2026-09-20): `?intake=siderollers|ramp` builds every robot with that
+// intake; `&park=flower` parks robot 0 flush on F1's foot, facing it, on idle commands, so the
+// reach hardware can be photographed in the opening; `&ramp=1` deploys robot 0's ramp, settled.
+const intakeParam = urlParams.get('intake');
+const parkAtFlower = urlParams.get('park') === 'flower';
+const parkOpen = urlParams.get('park') === 'open'; // robot 0 alone on open tiles, facing −x
+const deployRamp = urlParams.get('ramp') === '1';
 
 /**
  * Places one already-staged ball INSIDE alliance's UP cell, resting a few inches above its own
@@ -111,7 +119,10 @@ function setup(id: number, alliance: Alliance, startIndex: number): RobotSetup {
   return {
     id,
     alliance,
-    spec: { ...BB_DEFAULT_SPEC },
+    spec:
+      intakeParam === 'siderollers' || intakeParam === 'ramp'
+        ? { ...BB_DEFAULT_SPEC, bbMech: { ...BB_DEFAULT_SPEC.bbMech!, intake: { kind: intakeParam } } }
+        : { ...BB_DEFAULT_SPEC },
     assists: { ...DEFAULT_ASSISTS },
     startIndex,
   };
@@ -161,7 +172,7 @@ async function main(): Promise<void> {
   // fire, so the only thing moving is gravity on the placed ball and, if asked, the forced tip)
   // and skips the 180-tick warm-up entirely — the ball is placed the instant the world exists,
   // while `hive.up`/`.tipping` are still exactly `BB_HIVE_UP_STAGED`/`0`.
-  const drive: RobotCommand = hiveProbeAlliance
+  const drive: RobotCommand = hiveProbeAlliance || parkAtFlower || parkOpen
     ? { driveX: 0, driveY: 0, rotate: 0, leftDrive: 0, rightDrive: 0, intake: false, fire: false }
     : { driveX: 0, driveY: 1, rotate: 0.15, leftDrive: 0, rightDrive: 0, intake: true, fire: true };
   const commands = new Map<number, RobotCommand>([
@@ -170,8 +181,36 @@ async function main(): Promise<void> {
     [2, drive],
     [3, drive],
   ]);
-  const warmupTicks = hiveProbeAlliance ? 0 : 180;
+  const warmupTicks = hiveProbeAlliance || parkAtFlower || parkOpen ? 0 : 180;
   for (let i = 0; i < warmupTicks; i++) biobuzzStep(world, SIM_DT, commands);
+
+  if (parkOpen) {
+    const r0 = world.robots[0];
+    r0.pos = { x: -40, y: -24 };
+    r0.heading = Math.PI;
+    r0.vel = { x: 0, y: 0 };
+    r0.angVel = 0;
+    if (deployRamp) {
+      r0.bbRampOut = true;
+      r0.bbRampAt = world.time - 1;
+    }
+  }
+  if (parkAtFlower) {
+    // robot 0 flush on F1's foot (mouth +x), front mouth toward the wall: the footprint's front
+    // face on the foot's field face, which is `BB_FLOWER_FOOT.deep − BB_FLOWER_D` past the ring
+    const r0 = world.robots[0];
+    const f = BB_FLOWERS[0];
+    const front = bbFootprint(r0.spec).front;
+    r0.pos = { x: f.x + (BB_FLOWER_FOOT.deep - BB_FLOWER_D) + front, y: f.y };
+    r0.heading = Math.PI;
+    r0.vel = { x: 0, y: 0 };
+    r0.angVel = 0;
+    if (deployRamp) {
+      r0.bbRampOut = true;
+      r0.bbRampAt = world.time - 1;
+    }
+    status(`parked robot 0 at (${r0.pos.x.toFixed(2)}, ${r0.pos.y.toFixed(2)}) on F1${deployRamp ? ', ramp down' : ''}`);
+  }
 
   if (hiveProbeAlliance) {
     placeElementInUpCell(world, hiveProbeAlliance);
@@ -348,6 +387,7 @@ async function main(): Promise<void> {
     freeCam.position.set(freeView.eye[0], freeView.eye[1], freeView.eye[2]);
     freeCam.lookAt(freeView.target[0], freeView.target[1], freeView.target[2]);
     freeCam.updateProjectionMatrix();
+    renderer.setRenderTarget(null); // the scene blits from its own MSAA target; draw to the CANVAS
     renderer.render(three, freeCam);
   }
 
@@ -417,6 +457,7 @@ async function main(): Promise<void> {
     freeCam.position.set(eye[0], eye[1], eye[2]);
     freeCam.lookAt(target[0], target[1], target[2]);
     freeCam.updateProjectionMatrix();
+    renderer.setRenderTarget(null); // the scene blits from its own MSAA target; draw to the CANVAS
     renderer.render(three, freeCam);
   }
   /** the live tray pose, so a probe script can place a camera on a CELL's own mouth/back normal

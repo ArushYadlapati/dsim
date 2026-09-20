@@ -9,14 +9,17 @@ import {
   type Predictor,
 } from '../../src/games/biobuzz/sim3d/predict';
 import {
+  BB_HALF_Y,
   BB_POLLEN_R,
+  BB_SIDE_ROLLER_OUT,
+  BB_SIDE_ROLLER_R,
   PREDICT_ELEMENT_RADIUS,
   PREDICT_FULL_BUDGET_MS,
   PREDICT_LIGHT_BUDGET_MS,
   PREDICT_MAX_TICKS,
 } from '../../src/games/biobuzz/config';
 import { SIM_DT } from '../../src/config';
-import type { Artifact, RobotCommand, World } from '../../src/types';
+import type { Artifact, RobotCommand, RobotSpec, World } from '../../src/types';
 
 /**
  * PREDICT — the two client-side prediction worlds (Day 2 lane A, `docs/biobuzz/plan-3d.md` §9).
@@ -355,5 +358,103 @@ export function predictChecks(check: Check): void {
       time: w.time,
     });
     check('neither predictor writes to the authoritative world it was reset from', before === after, 'robot and element state compared before/after');
+  }
+
+  // =============================================================================================
+  // ARCHETYPE REACH HARDWARE, PREDICTED (owner, 2026-09-20: "It should be a collider.") — both
+  // predictors now build the SAME reach shapes (GROUP_POCKET) the authority does
+  // (`chassis3dReachShapes`, `bodies.ts`), re-fit at the same settle edge. Without this a driver
+  // with side rollers or a deployed ramp would rubber-band ~2.65in / ~2.17in at every wall the
+  // authority stands them off from and the predictor does not.
+  // =============================================================================================
+  const archWallScene = (seed: number, archSpec: Partial<RobotSpec>): World => {
+    const w = mkWorld3dPair('free', seed, archSpec);
+    w.balls.length = 0;
+    const r = w.robots[LOCAL];
+    r.hopper.length = 0;
+    r.pos.x = 0;
+    r.pos.y = BB_HALF_Y - 30;
+    r.heading = Math.PI / 2; // 'front' mount faces +y, straight at the wall
+    r.vel = { x: 0, y: 0 };
+    r.angVel = 0;
+    return w;
+  };
+  const SIDEROLLER_SPEC: Partial<RobotSpec> = {
+    intakeMount: 'front',
+    bbMech: { launcher: null, lift: null, intake: { kind: 'siderollers' } } as unknown as RobotSpec['bbMech'],
+  };
+  const RAMP_SPEC: Partial<RobotSpec> = {
+    intakeMount: 'front',
+    bbMech: { launcher: null, lift: null, intake: { kind: 'ramp' } } as unknown as RobotSpec['bbMech'],
+  };
+
+  // (f) FULL agrees with the authority on the wall standoff, for both a side-roller build and a
+  // DEPLOYED ramp — the LIGHT predictor is not part of this claim (it has no colliders at all;
+  // that is the trade `createLightPredictor`'s own header documents).
+  for (const [label, spec, deploy] of [
+    ['SIDE ROLLERS', SIDEROLLER_SPEC, false],
+    ['a DEPLOYED RAMP', RAMP_SPEC, true],
+  ] as const) {
+    const drive = cmd({ driveY: 1, leftDrive: 1, rightDrive: 1 });
+    const truth = archWallScene(9200, spec);
+    const predWorld = archWallScene(9200, spec);
+    if (deploy) {
+      truth.robots[LOCAL].bbRampOut = true;
+      truth.robots[LOCAL].bbRampAt = -10; // long since settled
+      predWorld.robots[LOCAL].bbRampOut = true;
+      predWorld.robots[LOCAL].bbRampAt = -10;
+    }
+    const auth = authoritative(truth, drive, PREDICT_MAX_TICKS);
+    const full = createFullPredictor(predWorld, LOCAL);
+    full.reset(predWorld, predWorld.tick);
+    const fr = replay(full, drive, PREDICT_MAX_TICKS);
+    full.dispose();
+    const df = dist(fr.pose, auth);
+    // the bare footprint's own standoff (no archetype) for scale, so a FAILURE reads as "close to
+    // the archetype's own extra" (predictor missing the reach hardware) rather than a mystery
+    // number — `BB_SIDE_ROLLER_OUT + BB_SIDE_ROLLER_R` is the side-roller figure either way (the
+    // ramp's own extra, `BB_RAMP_OUT`, is smaller, so this is the conservative one to print).
+    console.log(
+      `[smoke-bb predict] wall standoff, ${label}: authority (${auth.pos.x.toFixed(3)}, ${auth.pos.y.toFixed(3)}) vs ` +
+        `FULL (${fr.pose.pos.x.toFixed(3)}, ${fr.pose.pos.y.toFixed(3)}) — off by ${df.toFixed(3)}in ` +
+        `(the archetype's own extra reach is ${(BB_SIDE_ROLLER_OUT + BB_SIDE_ROLLER_R).toFixed(2)}in)`,
+    );
+    check(
+      `wall standoff: FULL agrees with the authority within 1in for ${label} (both carry the reach hardware now)`,
+      df < 1,
+      `off by ${df.toFixed(3)}in`,
+    );
+  }
+
+  // the reconcile-cost delta the reach hardware buys, measured directly against the SAME
+  // 40-tick budget the mouth-pocket compound was rejected over (`predict.ts`'s own note above
+  // `makeRobotBody`) — a handful of small boxes is a different trade from a whole compound.
+  {
+    const baseline = pushScene(9210); // the file's own default-spec fixture, no archetype
+    let baselineMs = Infinity;
+    for (let i = 0; i < 5; i++) baselineMs = Math.min(baselineMs, probeFullReconcileMs(baseline, LOCAL, () => Date.now()));
+    const sideWorld = archWallScene(9211, SIDEROLLER_SPEC);
+    let sideMs = Infinity;
+    for (let i = 0; i < 5; i++) sideMs = Math.min(sideMs, probeFullReconcileMs(sideWorld, LOCAL, () => Date.now()));
+    const rampWorld = archWallScene(9212, RAMP_SPEC);
+    rampWorld.robots[LOCAL].bbRampOut = true;
+    rampWorld.robots[LOCAL].bbRampAt = -10;
+    let rampMs = Infinity;
+    for (let i = 0; i < 5; i++) rampMs = Math.min(rampMs, probeFullReconcileMs(rampWorld, LOCAL, () => Date.now()));
+    console.log(
+      `[smoke-bb predict] FULL reconcile cost, best of 5, ${PREDICT_MAX_TICKS} ticks: ` +
+        `no archetype (baseline) ${baselineMs.toFixed(1)}ms · SIDE ROLLERS ${sideMs.toFixed(1)}ms · DEPLOYED RAMP ${rampMs.toFixed(1)}ms · ` +
+        `budget ${PREDICT_FULL_BUDGET_MS}ms`,
+    );
+    check(
+      `FULL still reconciles inside PREDICT_FULL_BUDGET_MS with SIDE ROLLERS live`,
+      sideMs <= PREDICT_FULL_BUDGET_MS,
+      `${sideMs.toFixed(1)}ms vs budget ${PREDICT_FULL_BUDGET_MS}ms (baseline ${baselineMs.toFixed(1)}ms)`,
+    );
+    check(
+      `FULL still reconciles inside PREDICT_FULL_BUDGET_MS with a DEPLOYED RAMP live`,
+      rampMs <= PREDICT_FULL_BUDGET_MS,
+      `${rampMs.toFixed(1)}ms vs budget ${PREDICT_FULL_BUDGET_MS}ms (baseline ${baselineMs.toFixed(1)}ms)`,
+    );
   }
 }

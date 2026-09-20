@@ -24,15 +24,28 @@ import {
   BB_HIVE_BOTTOM_Z,
   BB_HIVE_TILT_DEG,
   BB_HIVE_X,
+  BB_RAMP_ANGLE,
+  BB_RAMP_L,
+  BB_RAMP_OUT,
+  BB_RAMP_PIVOT_BACK,
+  BB_RAMP_PIVOT_Z,
+  BB_RAMP_TIP_Z,
+  BB_SIDE_ROLLER_H,
+  BB_SIDE_ROLLER_OUT,
+  BB_SIDE_ROLLER_R,
+  BB_SIDE_ROLLER_Y,
+  BB_SIDE_ROLLER_Z,
   BB_WALL_T,
 } from '../config';
 import { biobuzzColliders, BB_WALL_COUNT } from '../colliders';
 import { INTAKE_RAIL_T, PHYS_FRICTION } from '../../../config';
 import { BB3_INTAKE_CORNER_CLAMP, BB3_INTAKE_CORNER_R, BB3_MOUTH_SLOT_Z, bbIntakeReach } from '../config';
-import { bbMouths } from '../robot';
+import { bbMouths, mouthAxes } from '../robot';
+import { bbIntakeKindOf } from '../mechs';
+import { EDGE_ANGLE } from '../mounts';
 import { cadCellBox, cadStatics, cadTrayHulls, cadTrayRiders } from './fieldColliders';
 import { buildFlowerTubes3d } from './flowerTube';
-import { tiltQuatX, yawQuat } from './math3';
+import { pitchQuatY, quatMul, tiltQuatX, yawQuat, type Quat } from './math3';
 
 /**
  * TEST-ONLY OVERRIDE for `BB3_FIELD_COLLIDERS`, read by every CAD-vs-fallback branch in this
@@ -789,6 +802,15 @@ export interface Chassis3dShape {
   hx: number;
   hy: number;
   hz: number;
+  /**
+   * this box's rotation, applied as `ColliderDesc.setRotation` in the body's own frame; absent
+   * means axis-aligned (identity), true of every shape but the ramp's two rails
+   * (`chassis3dReachShapes`). A bare "rotate about Y" scalar cannot say this box's tilt for a
+   * FLANK mount, whose outward axis is world Y and whose tilt is therefore about world X — so
+   * this is the fully composed quaternion (`quatMul(yawQuat(edge), pitchQuatY(angle))`),
+   * computed once where the edge is known so a collider builder never has to re-derive it.
+   */
+  rot?: Quat;
 }
 
 /**
@@ -930,6 +952,117 @@ export function chassis3dPocketShapes(spec: RobotSpec, heightIn: number): Chassi
 }
 
 /**
+ * DUPLICATED from `scene/renderRobots.ts`'s `BB_PLATE_T` (0.22, the outer chassis plate's own
+ * thickness) — `sim3d/` may not import `scene/` (the lazy-chunk boundary the RENDER lane
+ * enforces: the physics chunk must not drag `three` in), so the physics side keeps its own copy
+ * of the one number the drawn ramp rails' inboard offset is built from
+ * (`BB_INTAKE_ARM_INSET = BB_PLATE_T + 0.06`, the clearance a side arm bolts inboard of the
+ * frame by). The RENDER lane's own check asserts the two agree rather than trusting the copy.
+ */
+const BB_PLATE_T_DUP = 0.22;
+const BB_INTAKE_ARM_INSET_DUP = BB_PLATE_T_DUP + 0.06;
+
+/** the ramp's rails sit inboard of the intake's own side arms, same formula as
+ * `scene/renderRobots.ts`'s `railY` (see `BB_INTAKE_ARM_INSET_DUP`'s own comment). `half` is the
+ * mouth's own half-width (`mouthAxes(...).half`). */
+function rampRailY(half: number): number {
+  return half - BB_INTAKE_ARM_INSET_DUP - INTAKE_RAIL_T - 0.15;
+}
+
+/**
+ * ⚠️ **THE ARCHETYPE REACH HARDWARE, SOLID** (owner, 2026-09-20: "It should be a collider.").
+ * `chassis3dShapes` is what an ELEMENT meets and stays untouched by this; this is what a WALL,
+ * another ROBOT and a FLOWER's low-plate opening meet instead — the same hardware
+ * `bbFlowerReachOf` already credits for reaching a FLOWER's retrieval opening (`config.ts`'s
+ * "ROBOT — intake ARCHETYPES"), now standing the chassis off a wall the same way it stands off a
+ * POLLEN. `sweeper` returns nothing: its roller never passes the plate edge and has no reach to
+ * make solid (`bbFlowerReachOf('sweeper', …)` is `null`, always).
+ *
+ * Per mouth, placed via `mouthAxes` — the SAME (n outward, p lateral, uOut tip-line) frame
+ * `bbFlowerAtIntake` gates against, so a flank mount gets exactly the rotated placement an end
+ * mount gets without a second derivation: a point at `(u, v)` in that frame is `u·n + v·p` in the
+ * robot frame, and because `n`/`p` are always exact ±1/0 world-axis vectors, the same formula also
+ * picks which of a box's own `hx`/`hy` is "along the mouth's outward axis" — `0.15·|n.x| +
+ * railY·|p.x|` reads as `0.15` on an end mount (`n.x = ±1`) and `railY` on a flank one, with no
+ * per-edge branch.
+ *
+ *  · `siderollers` — two boxes standing in for the vertical-axis wheels (hx = hy = R, so the
+ *    axis-aligned box is rotation-invariant about z and needs no `rot`) at
+ *    `u = uOut + BB_SIDE_ROLLER_OUT`, `v = ±BB_SIDE_ROLLER_Y`, centred at `BB_SIDE_ROLLER_Z`.
+ *  · `ramp`, only once `rampReady` (`bbRampSettled`) — the crossbar (also axis-aligned; its own
+ *    half-extents are re-expressed along whichever world axis is "outward" for this edge, the
+ *    `|n.x|/|n.y|` trick above) plus the two rails, which are NOT axis-aligned: they tilt down at
+ *    `BB_RAMP_ANGLE` from the pivot to the tip, in the (outward, up) plane — world (X, Z) for an
+ *    end mount, world (Y, Z) for a flank one. One quaternion expresses both: yaw the mount's own
+ *    edge onto the world axes, then pitch about the (now correctly placed) lateral axis
+ *    (`quatMul(yawQuat(EDGE_ANGLE[edge]), pitchQuatY(BB_RAMP_ANGLE))`) — derived and verified
+ *    against the four edges by hand (front: pure Y pitch; the others: the composed quaternion maps
+ *    the mouth-local outward+up plane onto the correct world plane in every case), computed once
+ *    here where the edge is known.
+ */
+export function chassis3dReachShapes(spec: RobotSpec, heightIn: number, rampReady: boolean): Chassis3dShape[] {
+  const kind = bbIntakeKindOf(spec);
+  if (kind === 'sweeper') return [];
+  const hl = spec.length / 2;
+  const hw = spec.width / 2;
+  const half = heightIn / 2;
+  const out: Chassis3dShape[] = [];
+  for (const m of bbMouths(spec)) {
+    const axes = mouthAxes(m, hl, hw);
+    const { n, p, uOut } = axes;
+    const place = (u: number, v: number): { cx: number; cy: number } => ({
+      cx: u * n.x + v * p.x,
+      cy: u * n.y + v * p.y,
+    });
+    if (kind === 'siderollers') {
+      for (const s of [1, -1] as const) {
+        const { cx, cy } = place(uOut + BB_SIDE_ROLLER_OUT, s * BB_SIDE_ROLLER_Y);
+        out.push({
+          cx,
+          cy,
+          cz: BB_SIDE_ROLLER_Z - half,
+          hx: BB_SIDE_ROLLER_R,
+          hy: BB_SIDE_ROLLER_R,
+          hz: BB_SIDE_ROLLER_H / 2,
+        });
+      }
+    } else if (kind === 'ramp' && rampReady) {
+      const railY = rampRailY(axes.half);
+      // the crossbar: hx 0.15 / hy railY on an end mount, swapped on a flank one via the
+      // |n.x|/|n.y| trick (both are 0 or 1 here, never fractional)
+      const cross = place(uOut + BB_RAMP_OUT - 0.15, 0);
+      out.push({
+        cx: cross.cx,
+        cy: cross.cy,
+        cz: BB_RAMP_TIP_Z + 0.25 - half,
+        hx: 0.15 * Math.abs(n.x) + railY * Math.abs(p.x),
+        hy: 0.15 * Math.abs(n.y) + railY * Math.abs(p.y),
+        hz: 0.25,
+      });
+      // the two rails: midpoint between the pivot (u = uOut − BB_RAMP_PIVOT_BACK, z
+      // BB_RAMP_PIVOT_Z) and the tip (u = uOut + BB_RAMP_OUT, z BB_RAMP_TIP_Z), tilted about the
+      // mouth's own lateral axis to connect the two.
+      const uMid = uOut + (BB_RAMP_OUT - BB_RAMP_PIVOT_BACK) / 2;
+      const zMid = (BB_RAMP_PIVOT_Z + BB_RAMP_TIP_Z) / 2;
+      const rot = quatMul(yawQuat(EDGE_ANGLE[m.edge]), pitchQuatY(BB_RAMP_ANGLE));
+      for (const s of [1, -1] as const) {
+        const rail = place(uMid, s * railY);
+        out.push({
+          cx: rail.cx,
+          cy: rail.cy,
+          cz: zMid - half,
+          hx: BB_RAMP_L / 2,
+          hy: 0.125,
+          hz: 0.25,
+          rot,
+        });
+      }
+    }
+  }
+  return out;
+}
+
+/**
  * ⚠️ **THE ONE CHASSIS-COLLIDER BUILDER FOR THE AUTHORITY.** `engineImpl.ts`'s `syncRobot` calls
  * it twice — at body creation and again at the R102 deploy edge — and nothing else builds the
  * compound. It lives here rather than in `engineImpl.ts` so the shape is one function away from
@@ -947,6 +1080,9 @@ export function chassis3dPocketShapes(spec: RobotSpec, heightIn: number): Chassi
  *
  * Every box is DENSITY 0: mass and inertia are written explicitly by whoever owns the body, so
  * the compound's box count can never move drive feel.
+ *
+ * `rampReady` is `bbRampSettled(r, world.time)` — SEE `chassis3dReachShapes`'s own header for
+ * the archetype reach hardware this now adds, in `GROUP_POCKET` alongside the pocket filler.
  */
 export function addChassis3dColliders(
   RAPIER: Rapier3d,
@@ -954,6 +1090,7 @@ export function addChassis3dColliders(
   body: InstanceType<Rapier3d['RigidBody']>,
   spec: RobotSpec,
   heightIn: number,
+  rampReady: boolean,
 ): void {
   for (const s of chassis3dShapes(spec, heightIn)) {
     world3d.createCollider(
@@ -986,6 +1123,21 @@ export function addChassis3dColliders(
       body,
     );
   }
+  // ...and the ARCHETYPE REACH HARDWARE (side rollers / a settled ramp) — solid now, same group
+  // as the pocket filler (statics, walls and robots meet them; an ELEMENT does not).
+  for (const s of chassis3dReachShapes(spec, heightIn, rampReady)) {
+    world3d.createCollider(reachColliderDesc(RAPIER, s), body);
+  }
+}
+
+/** build ONE reach-hardware collider from a `Chassis3dShape` — shared by the authority
+ * (`addChassis3dColliders`, above) and the FULL predictor (`predict.ts`'s `fitChassis`), so the
+ * rotation composition (`chassis3dReachShapes`'s `rot`) and the group/friction/restitution are
+ * written in exactly one place. */
+export function reachColliderDesc(RAPIER: Rapier3d, s: Chassis3dShape): InstanceType<Rapier3d['ColliderDesc']> {
+  const desc = RAPIER.ColliderDesc.cuboid(s.hx, s.hy, s.hz).setTranslation(s.cx, s.cy, s.cz);
+  if (s.rot) desc.setRotation(s.rot);
+  return desc.setDensity(0).setFriction(PHYS_FRICTION).setRestitution(0).setCollisionGroups(GROUP_POCKET);
 }
 
 /**

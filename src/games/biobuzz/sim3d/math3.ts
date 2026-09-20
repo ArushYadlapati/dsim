@@ -90,6 +90,36 @@ export function rotate2(a: number, b: number, theta: number): { a: number; b: nu
   return { a: a * c - b * s, b: a * s + b * c };
 }
 
+/**
+ * A rotation of `theta` radians about the world/body Y axis -- `tiltQuatX`'s twin for the one
+ * axis neither it nor `yawQuat` covers. The one caller is `bodies.ts`'s ramp rails: a rail is
+ * built in its own mouth-local frame (local +x outward, +z up) tilted about local Y, and that
+ * local rotation is composed with the mouth's own yaw (`quatMul(yawQuat(edge), pitchQuatY(a))`)
+ * to land it in the robot frame -- see `chassis3dReachShapes`'s own header for the derivation.
+ */
+export function pitchQuatY(theta: number): Quat {
+  const half = theta / 2;
+  return { x: 0, y: dsin(half), z: 0, w: dcos(half) };
+}
+
+/**
+ * Hamilton product `a ⊗ b` -- the ACTIVE-rotation composition "apply `b`'s rotation first, then
+ * `a`'s" (the convention `v' = q ⊗ v ⊗ q⁻¹` uses). The one place two of this file's quaternions
+ * need to compose into a single collider rotation: `bodies.ts`'s tilted ramp rails, where a
+ * mount edge's yaw and a local pitch about that mount's own lateral axis are computed once, here,
+ * so `addChassis3dColliders` and `predict.ts`'s chassis builder can both apply the result blindly
+ * with `ColliderDesc.setRotation` and never have to know which world axis a mouth's own "lateral"
+ * direction is.
+ */
+export function quatMul(a: Quat, b: Quat): Quat {
+  return {
+    x: a.w * b.x + a.x * b.w + a.y * b.z - a.z * b.y,
+    y: a.w * b.y - a.x * b.z + a.y * b.w + a.z * b.x,
+    z: a.w * b.z + a.x * b.y - a.y * b.x + a.z * b.w,
+    w: a.w * b.w - a.x * b.x - a.y * b.y - a.z * b.z,
+  };
+}
+
 /** 3D magnitude via sqrt(x^2+y^2+z^2) -- `Math.sqrt` is IEEE-correctly-rounded (unlike
  * `Math.hypot`), so this stays as safe for lockstep as the 2D `hyp` it is modelled on. */
 export function hyp3(x: number, y: number, z: number): number {

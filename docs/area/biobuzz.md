@@ -425,11 +425,48 @@ newest-first — it is never ranked, which is what keeps the two eras from meeti
     ring) and the RETRIEVE tutorial step never completed. `uOut` is where a robot driven flush
     against the foot actually rests, so `u ≈ BB_PLACE_REACH` there — the design intent, reached
     by the collision the field enforces rather than by a pose only a test can teleport to.
-    The reach hardware ITSELF is not a collider, by design, the same as the Box Tube's placement
-    point above: the archetype boxes reach past the footprint edge on purpose, so a wall-flush
-    pose draws the side rollers or the ramp INSIDE the wall — the physics footprint
-    (`bbFootprint`/`footprintExtents`) is unchanged in both pipelines, only what a mouth's gate
-    will credit changed. The wire widened for the ramp toggle: `QCommand.buttons` is 16 bits now
+    ⚠️ **THE REACH HARDWARE IS A COLLIDER IN 3D NOW** (owner, 2026-09-20: "It should be a
+    collider."). It used to be drawing + capture-gate only, on purpose, the same as the Box
+    Tube's placement point above — that is GONE for 3D: `chassis3dReachShapes` (`sim3d/bodies.ts`)
+    builds side rollers and a SETTLED ramp (`bbRampSettled`; folded, a ramp contributes nothing)
+    as real boxes in `GROUP_POCKET` — statics, walls and robots meet them, an ELEMENT does not, the
+    same group the intake pocket filler uses — in the AUTHORITY (`addChassis3dColliders`) and in
+    BOTH predictors (`predict.ts`'s `fitChassis`; the FULL predictor keeps its own single
+    `robotExtents` cuboid for the bare chassis but adds these small boxes on top of it — cheap
+    enough that it did not move the 40-tick reconcile budget, measured: baseline 3.0 ms, with side
+    rollers live 2.0 ms, with a deployed ramp live 2.0 ms, against an 8 ms budget). A side-roller
+    build now stands off a wall by `bbIntakeReach + BB_SIDE_ROLLER_OUT + BB_SIDE_ROLLER_R`
+    (measured 13.15 in against a bare-footprint 10.50), not the bare footprint; a wall-flush FULL
+    prediction agrees with the authority to within half an inch (measured 0.25 in for side
+    rollers, 0.42 in for a deployed ramp, both server-corrected trivially under the 16-in
+    `SMOOTH_MAX_DIST` snap threshold). The ramp's collider set is rebuilt at the same SETTLE edge
+    `bbRampReady` already gated the flower credit on — `BB_RAMP_DEPLOY_S` after the press going
+    in, and immediately (no settle wait) coming out, because a fold only removes solid, nothing has
+    to arrive (measured: the collider count changes at exactly tick 18 = `BB_RAMP_DEPLOY_S`·60
+    deploying, and on the very next sync folding, and at no other tick). Two of the ramp's parts —
+    the crossbar and the two rails — tilt at `BB_RAMP_ANGLE`, which for a FLANK mount is a genuine
+    3D rotation (the mount's own yaw composed with the local pitch,
+    `quatMul(yawQuat(EDGE_ANGLE[edge]), pitchQuatY(BB_RAMP_ANGLE))`, `math3.ts`) — a bare "rotate
+    about Y" cannot say a flank mount's tilt, which is about world X.
+    ⚠️ **A WALL-FLUSH SPAWN NEEDED A FIX ON THE SPAWN SIDE, AND THE FAILURE WAS WORSE THAN SLOW.**
+    `bbSnapStart` seats an anchor at the bare footprint, so a side-roller build's wheels started
+    embedded 2.65 in in the wall on every real anchor whose intake edge faced it — and MEASURED,
+    that never resolved: a wheel box sitting low near the floor gives Rapier's own SAT a SHORTER
+    escape through the floor (its own 2.5-in height) than sideways (2.65 in), so the correction
+    went into the floor collider and the two cancelled every tick — 300 ticks / 5 s, exactly zero
+    drift on every axis, not merely slow. `spawn.ts`'s `bb3dStartFootprint` (3D worlds only; `2d`
+    calls `bbFootprint` exactly as before) grows the containment footprint `bbFitPose` already
+    clamps against by `bbArchetypeWallExtra(kind)` (`config.ts`, a plain scalar so `spawn.ts` —
+    main-bundle — need not import the lazy `sim3d/` chunk) on whichever edge the archetype's mount
+    already grows, so the SAME clamp that keeps a robot inside the field also backs a
+    reach-equipped anchor off before the engine ever builds a collider: MEASURED, zero protrusion
+    now on every real anchor × mount × alliance (32 combos), and the settled pose drifts nothing
+    (< 0.00001 in) with no yaw over a 90-tick window.
+    **2D stays DRAWING-ONLY, and stays that way on purpose**: `bbFootprint`/`footprintExtents` are
+    UNCHANGED in both pipelines (2D has no z, the foot is a solid rect there, so a reach part
+    cannot be solid without also being solid to a ball it should let pass under) — a wall-flush 2D
+    pose still draws the side rollers or the ramp INSIDE the wall, exactly as before; only 3D's
+    collision changed. The wire widened for the ramp toggle: `QCommand.buttons` is 16 bits now
     (`BTN_BBRAMP` = 256, `src/net/protocol.ts`), and `packKey` (`src/sim/replay.ts`) carries the
     buttons ALONGSIDE the packed axes rather than inside them — packed in, bit 256 masked to 0 and
     a ramp press was invisible to the replay recorder.

@@ -1028,6 +1028,34 @@ export function bbFlowerReachOf(kind: BbIntakeKind, rampReady: boolean): BbFlowe
       return rampReady ? BB_RAMP_REACH : null;
   }
 }
+
+/**
+ * ⚠️ **HOW FAR AN ARCHETYPE'S OWN REACH HARDWARE STICKS OUT PAST `bbFootprint`'S OWN EDGE, FOLDED**
+ * (in) — the one number `spawn.ts` needs to keep a wall-flush 3D start from POPPING (owner,
+ * 2026-09-20: "It should be a collider."). MEASURED: a `siderollers` build's wheels sit
+ * `BB_SIDE_ROLLER_OUT + BB_SIDE_ROLLER_R` = 2.65 in past the footprint's tip line, and — near the
+ * floor, where the wheel box (`BB_SIDE_ROLLER_H` = 2 in tall) sits — Rapier's own SAT pick
+ * between "push the box out sideways" (2.65 in) and "push it out through the floor" (its OWN
+ * height, 2.5 in — the shorter escape) goes to the floor: it meets the real floor collider
+ * immediately, the two corrections cancel, and a wall-flush spawn never settles at all (measured:
+ * a `back`-mount `siderollers` build on the REAR-WALL anchor, 300 ticks / 5 s, ZERO drift on
+ * every axis — not slow, exactly frozen, because the two opposing pushes are equal and opposite
+ * every tick). `ramp` is FOLDED at spawn — `RobotState.bbRampOut` is absent, reading false, with
+ * no deploy in flight, so `bbRampSettled` is false and `chassis3dReachShapes` gives it no
+ * collider at all — so this is zero for every archetype but `siderollers` today, and it stays
+ * here (not a `siderollers`-only signature) for the day a fourth archetype ships its own
+ * always-solid hardware.
+ *
+ * PLAIN NUMBERS ONLY, deliberately. `spawn.ts` builds every world, 2D and 3D alike, and it is a
+ * MAIN-BUNDLE file — it may not import `sim3d/bodies.ts`'s `chassis3dReachShapes` (the lazy-chunk
+ * boundary `docs/area/biobuzz.md` documents: dragging the Rapier3D physics chunk into the main
+ * bundle is exactly the cost that split exists to avoid). This is that geometry's one scalar,
+ * reachable with no Rapier and no `sim3d/` import at all.
+ */
+export function bbArchetypeWallExtra(kind: BbIntakeKind): number {
+  return kind === 'siderollers' ? BB_SIDE_ROLLER_OUT + BB_SIDE_ROLLER_R : 0;
+}
+
 /** extra lb on the chassis mass FLOOR for carrying a Box Tube. APPROX. */
 export const BB_LIFT_MASS_FLOOR = 2.0;
 

@@ -30,6 +30,7 @@ import {
   BB_NECTAR_R,
   BB_POLLEN_R,
   BB_START_POSES,
+  bbArchetypeWallExtra,
   bbLoadingZoneSpot,
   bbMirror,
 } from './config';
@@ -37,11 +38,12 @@ import { capturePollen } from './elements';
 import { bbFlowerDropSlack, bbFlowerScatter, flowerStackZ } from './flower';
 import { bbCoerceSpec } from './robotConfig';
 import { bbFootprint } from './robot';
+import { bbIntakeMountOf } from './mounts';
 import { bbSnapStart } from './start';
 import { bbWallsTouched } from './score';
 import { biobuzzPhysics, emptyBiobuzzState, type BiobuzzState } from './state';
 import { BB_HOOD_DEFAULT_DEG } from './config';
-import { bbIsTurreted, bbLauncherOf } from './mechs';
+import { bbIntakeKindOf, bbIsTurreted, bbLauncherOf } from './mechs';
 
 /**
  * BIOBUZZ world spawn — a PLAYABLE, UNSCORED match.
@@ -120,8 +122,8 @@ function coerceBiobuzzSetup(s: RobotSetup): RobotSetup {
  * it means there is no spawn path left that can place a robot through a wall. Deterministic
  * and idempotent — `f(f(x)) === f(x)`, so it cannot walk a pose across repeated coercion.
  */
-function bbFitPose(spec: RobotSpec, pose: Pose): Pose {
-  const e = bbFootprint(spec);
+function bbFitPose(spec: RobotSpec, pose: Pose, footprint: { front: number; rear: number; half: number } = bbFootprint(spec)): Pose {
+  const e = footprint;
   const c = dcos(pose.heading);
   const s = dsin(pose.heading);
   // the footprint's own centre — offset from the robot's origin whenever the sweeper makes it
@@ -138,6 +140,37 @@ function bbFitPose(spec: RobotSpec, pose: Pose): Pose {
   return {
     pos: { x: pose.pos.x + (clamp(cx, -limX, limX) - cx), y: pose.pos.y + (clamp(cy, -limY, limY) - cy) },
     heading: pose.heading,
+  };
+}
+
+/**
+ * ⚠️ **THE FOLDED ARCHETYPE'S OWN REACH HARDWARE, GROWN INTO THE CONTAINMENT FOOTPRINT — 3D
+ * ONLY** (owner, 2026-09-20: "It should be a collider."). `bbFootprint` itself is UNCHANGED
+ * (2D has no archetype collider to protect and stays exactly as drawn — see
+ * `docs/area/biobuzz.md`'s "2D stays drawing-only" bullet); this is ADDITIVE, at the one place a
+ * robot is placed against a wall, using `bbArchetypeWallExtra`'s plain scalar (`config.ts`) on
+ * whichever edge(s) the archetype's own mount already grows (the SAME front/rear/half
+ * conditional `bbFootprint` uses, since the extra hardware sits on exactly the edge the reach
+ * itself does).
+ *
+ * Why here and not a spawn-time SIMULATION: a `siderollers` wheel sitting low and near the floor
+ * puts Rapier's own SAT pick between "push it out sideways" and "push it out through the floor"
+ * close enough that the floor wins, the two corrections cancel, and the robot never settles at
+ * all (measured — see `bbArchetypeWallExtra`'s own header). Backing the pose off BEFORE the
+ * engine ever builds a collider is deterministic by construction (no solver, no settle time) and
+ * sidesteps that failure mode outright rather than tuning around it.
+ */
+function bb3dStartFootprint(spec: RobotSpec): { front: number; rear: number; half: number } {
+  const fe = bbFootprint(spec);
+  const extra = bbArchetypeWallExtra(bbIntakeKindOf(spec));
+  if (extra <= 0) return fe;
+  const mount = bbIntakeMountOf(spec);
+  const ends = mount === 'front' || mount === 'frontback';
+  const rearMounted = mount === 'back' || mount === 'frontback';
+  return {
+    front: fe.front + (ends ? extra : 0),
+    rear: fe.rear + (rearMounted ? extra : 0),
+    half: fe.half + (mount === 'side' ? extra : 0),
   };
 }
 
@@ -170,7 +203,13 @@ function bbFitPose(spec: RobotSpec, pose: Pose): Pose {
  * Both paths are still fitted inside the perimeter (`bbFitPose`) — containment is not a rule
  * from the manual, it is what makes the pose representable at all.
  */
-function bbStartPose(spec: RobotSpec, alliance: Alliance, index: number, custom?: StartPose | null): Pose {
+function bbStartPose(
+  spec: RobotSpec,
+  alliance: Alliance,
+  index: number,
+  custom: StartPose | null | undefined,
+  physics: Physics,
+): Pose {
   const base: Pose = custom
     ? { pos: { x: custom.x, y: custom.y }, heading: (custom.headingDeg * Math.PI) / 180 }
     : (() => {
@@ -180,7 +219,11 @@ function bbStartPose(spec: RobotSpec, alliance: Alliance, index: number, custom?
       })();
   const m = alliance === 'blue' ? { ...base.pos, heading: base.heading } : bbMirror({ ...base.pos, heading: base.heading });
   const actual: Pose = { pos: { x: m.x, y: m.y }, heading: wrapAngle(m.heading ?? base.heading) };
-  if (custom) return bbFitPose(spec, actual);
+  // the archetype-grown footprint (`bb3dStartFootprint`) is a NO-OP for '2d' (`bbFootprint`
+  // itself, unchanged) and for every archetype but a `siderollers` build with no deploy in
+  // flight — see that function's header for why 3D needs it at all.
+  const footprint = physics === '3d' ? bb3dStartFootprint(spec) : bbFootprint(spec);
+  if (custom) return bbFitPose(spec, actual, footprint);
   // `bbSnapStart` speaks `StartPose` (degrees), which is what every other start surface in the
   // repo speaks — the editor, `coerceStartPose`, DECODE's `evalStartPose`. The radians are this
   // spawner's own internal `Pose`, so the conversion belongs HERE and not in the rule file.
@@ -189,10 +232,14 @@ function bbStartPose(spec: RobotSpec, alliance: Alliance, index: number, custom?
     { x: actual.pos.x, y: actual.pos.y, headingDeg: (actual.heading * 180) / Math.PI },
     alliance,
   );
-  return bbFitPose(spec, {
-    pos: { x: snapped.x, y: snapped.y },
-    heading: wrapAngle((snapped.headingDeg * Math.PI) / 180),
-  });
+  return bbFitPose(
+    spec,
+    {
+      pos: { x: snapped.x, y: snapped.y },
+      heading: wrapAngle((snapped.headingDeg * Math.PI) / 180),
+    },
+    footprint,
+  );
 }
 
 /** the shared goal state, present and INERT. BIOBUZZ has no goal — Section 9 lands at
@@ -211,12 +258,12 @@ function inertGoal(alliance: Alliance): GoalState {
   };
 }
 
-function makeBiobuzzRobot(setup: RobotSetup, nth: number): RobotState {
+function makeBiobuzzRobot(setup: RobotSetup, nth: number, physics: Physics): RobotState {
   const spec: RobotSpec = setup.spec;
   const assists = setup.assists;
   // honour the chosen start (the selector's `startIndex`); default a 2-robot alliance to its
   // two anchors, so the pair never stacks
-  const pose = bbStartPose(spec, setup.alliance, setup.startIndex ?? nth, setup.startPose);
+  const pose = bbStartPose(spec, setup.alliance, setup.startIndex ?? nth, setup.startPose, physics);
   // A TURRET starts ALREADY POINTED. It slews at a finite rate (`BB_TURRET_SLEW`), so a
   // turreted robot that spawned on the chassis heading would spend the first second of auto
   // swinging round. There is no target to point AT yet, so it points at the field CENTRE —
@@ -709,7 +756,7 @@ export function createBiobuzzWorld(
   const allianceCount: Record<Alliance, number> = { red: 0, blue: 0 };
   for (const s of [...setups].sort((p, q) => p.id - q.id)) {
     const safe = coerceBiobuzzSetup(s);
-    robots.push(makeBiobuzzRobot(safe, allianceCount[safe.alliance]++));
+    robots.push(makeBiobuzzRobot(safe, allianceCount[safe.alliance]++, physics));
   }
 
   const biobuzz = emptyBiobuzzState();

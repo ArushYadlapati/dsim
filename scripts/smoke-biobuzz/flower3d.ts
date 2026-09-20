@@ -1,5 +1,5 @@
 import type { Check } from './harness';
-import { cmd, mkWorld, mkWorld3d, run, setup } from './harness';
+import { cmd, mkWorld, mkWorld3d, run, run3d, setup } from './harness';
 import { step3d } from '../../src/games/biobuzz/sim3d/step3d';
 import { createBiobuzzWorld } from '../../src/games/biobuzz/spawn';
 import { engineFor } from '../../src/games/biobuzz/sim3d/engineImpl';
@@ -291,6 +291,47 @@ export function flower3dChecks(check: Check): void {
       'retrieval pops the LOWEST POLLEN off the bottom (G418.B)',
       took && w.biobuzz!.flowers[F].stack.length === 1 && w.biobuzz!.flowers[F].stack[0] === stack[1],
       `took=${took} stack ${JSON.stringify(w.biobuzz!.flowers[F].stack)} (was ${JSON.stringify(stack)})`,
+    );
+  }
+  // ---- AND THROUGH A REAL DRIVE-IN, NOT A TELEPORT (owner, 2026-09-20: "It should be a
+  // collider.") — the reach hardware is now solid (`chassis3dReachShapes`, `GROUP_POCKET`), so
+  // the flush pose above has to be something a driver actually reaches under full stick, with
+  // the side rollers passing UNDER the mid plate into the open space the CAD leaves there,
+  // while the chassis BRACE (the frame face) still stops at the plate edge as it always did.
+  {
+    const w = mkWorld3d('free', 937, REACHING);
+    w.balls.length = 0;
+    drop(w, F, 'pollen', 1);
+    for (let t = 0; t < 300; t++) step3d(w, 1 / 60, new Map());
+    const rob = w.robots[0];
+    rob.hopper.length = 0;
+    rob.lastIntakeAt = -99;
+    const f = BB_FLOWERS[F];
+    const wantX = f.x + BB_PLACE_REACH + bbFootprint(rob.spec).front;
+    // start 20in further out, facing the foot, and DRIVE full stick — the CAD hulls (the peanut
+    // supports, the plate edge) decide the standoff, not an assignment to `rob.pos`.
+    rob.pos.x = wantX + 20;
+    rob.pos.y = f.y;
+    rob.heading = Math.PI;
+    rob.vel = { x: 0, y: 0 };
+    rob.angVel = 0;
+    run3d(w, new Map([[0, cmd({ driveY: 1, leftDrive: 1, rightDrive: 1 })]]), 3);
+    const drivenX = rob.pos.x;
+    console.log(
+      `[smoke-bb flower3d] drive-in: started ${(wantX + 20).toFixed(2)}, driven to ${drivenX.toFixed(3)} ` +
+        `(teleport convention wants ${wantX.toFixed(3)}, i.e. u ~= BB_PLACE_REACH ${BB_PLACE_REACH})`,
+    );
+    check(
+      'drive-in: a SIDE-ROLLER build driven full-stick into F1\'s foot stops at the SAME flush distance the teleport fixtures assume (u ~= BB_PLACE_REACH, within 0.2in)',
+      Math.abs(drivenX - wantX) < 0.2,
+      `driven to x=${drivenX.toFixed(3)}, want ${wantX.toFixed(3)} (delta ${(drivenX - wantX).toFixed(3)})`,
+    );
+    const ballById = new Map(w.balls.map((b) => [b.id, b] as const));
+    const took = flowerRetrieve3d(w, w.biobuzz!, rob, cmd({ intake: true }), true, ballById, kindOfIn(w));
+    check(
+      'drive-in: flowerRetrieve3d then takes the bottom POLLEN through the pose a REAL drive-in reached',
+      took && w.biobuzz!.flowers[F].stack.length === 0,
+      `took=${took} stack ${JSON.stringify(w.biobuzz!.flowers[F].stack)}`,
     );
   }
   {

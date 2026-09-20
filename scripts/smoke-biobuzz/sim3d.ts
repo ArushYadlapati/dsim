@@ -15,7 +15,7 @@ import { worldHash } from '../../src/net/checksum';
 import { bbScoreWorld } from '../../src/games/biobuzz/score';
 import { bbFootprint, bbMouths, bbSolveShot } from '../../src/games/biobuzz/robot';
 import { robotExtents } from '../../src/sim/physics';
-import { chassis3dShapes, chassis3dPocketShapes, GROUP_POCKET } from '../../src/games/biobuzz/sim3d/bodies';
+import { chassis3dShapes, chassis3dPocketShapes, chassis3dReachShapes, GROUP_POCKET } from '../../src/games/biobuzz/sim3d/bodies';
 import { solveShotPath } from '../../src/games/biobuzz/shotPath';
 import {
   BB3_HEIGHT_MAX,
@@ -40,10 +40,18 @@ import {
   BB_HIVE_CELL_DY,
   BB_HIVE_OPEN_Z,
   BB_HIVE_X,
+  BB_PLACE_REACH,
   BB_POLLEN_R,
+  BB_RAMP_DEPLOY_S,
+  BB_RAMP_OUT,
+  BB_RAMP_TIP_Z,
+  BB_SIDE_ROLLER_OUT,
+  BB_SIDE_ROLLER_R,
+  BB_START_POSES,
   BB_TAPE,
   BB_TILE_PITCH,
   BB_TIP_POLLEN,
+  bbArchetypeWallExtra,
   bbHeightNow,
   bbIntakeReach,
 } from '../../src/games/biobuzz/config';
@@ -51,7 +59,7 @@ import * as C from '../../src/config';
 import { biobuzzColliders, BB_WALL_COUNT } from '../../src/games/biobuzz/colliders';
 import { renderDims } from '../field-cad/emit-dims.mjs';
 import { readFileSync } from 'node:fs';
-import type { Artifact, RobotCommand, World } from '../../src/types';
+import type { Artifact, RobotCommand, RobotSpec, World } from '../../src/types';
 // eslint-disable-next-line @typescript-eslint/no-var-requires -- tsx (not tsc) runs this suite;
 // `scripts/` is outside tsconfig.json's `include`, so a JSON import here never reaches `tsc`.
 import fieldMeasurements from '../../public/models/biobuzz/field-measurements.json';
@@ -2754,6 +2762,268 @@ export function sim3dChecks(check: Check): void {
     );
   }
 
+  // =============================================================================================
+  // ARCHETYPE REACH HARDWARE IS SOLID (owner, 2026-09-20: "It should be a collider.") ------------
+  // `chassis3dReachShapes` (`bodies.ts`) puts side rollers and a settled ramp into `GROUP_POCKET`
+  // in the authority AND both predictors — see that function's own header for the geometry and
+  // `docs/area/biobuzz.md`'s rewritten bullet for the summary.
+  // =============================================================================================
+  const bbArchSpec = (kind: 'sweeper' | 'siderollers' | 'ramp', mount: 'front' | 'back' | 'side' | 'frontback' = 'front'): Partial<RobotSpec> => ({
+    intakeMount: mount,
+    bbMech: { launcher: null, lift: null, intake: { kind } } as unknown as RobotSpec['bbMech'],
+  });
+
+  // (a) A side-roller robot driven into a wall stops with the WHEEL BOXES' faces on the wall —
+  // frame + `bbIntakeReach` + `BB_SIDE_ROLLER_OUT` + `BB_SIDE_ROLLER_R` off — and a `sweeper`
+  // build in the same rig still goes flush at the bare footprint, unaffected.
+  {
+    const driveIntoWall = (kind: 'sweeper' | 'siderollers'): number => {
+      const w = mkWorld3d('free', 8100, bbArchSpec(kind, 'front'));
+      w.balls.length = 0;
+      const r = w.robots[0];
+      // start CLOSE to the +x wall and drive further in — the same rig the "flat-wall rest
+      // distance" check above uses, so nothing in the middle of the field (the HIVE, a FLOWER
+      // support) is crossed on the way.
+      r.pos = { x: BB_HALF_X - 30, y: 0 };
+      r.heading = 0;
+      r.vel = { x: 0, y: 0 };
+      r.angVel = 0;
+      run3d(w, new Map([[0, cmd({ driveY: 1, leftDrive: 1, rightDrive: 1 })]]), 4);
+      const gap = BB_HALF_X - w.robots[0].pos.x;
+      disposeEngineFor(w);
+      return gap;
+    };
+    const sweeperGap = driveIntoWall('sweeper');
+    const sideGap = driveIntoWall('siderollers');
+    const spec = bbCoerce({ ...bbArchSpec('siderollers', 'front') });
+    const wantSweeper = bbFootprint(bbCoerce(bbArchSpec('sweeper', 'front'))).front;
+    const wantSide = bbFootprint(spec).front + BB_SIDE_ROLLER_OUT + BB_SIDE_ROLLER_R;
+    console.log(
+      `[smoke-bb sim3d] wall standoff: sweeper ${sweeperGap.toFixed(4)} (want ${wantSweeper.toFixed(4)}) · ` +
+        `siderollers ${sideGap.toFixed(4)} (want ${wantSide.toFixed(4)}, extra ${(sideGap - sweeperGap).toFixed(4)} of a wanted ${(wantSide - wantSweeper).toFixed(4)})`,
+    );
+    check(
+      'archetype 3d: a SWEEPER driven flat into a wall still stops flush at the bare footprint',
+      Math.abs(sweeperGap - wantSweeper) < 0.1,
+      `gap ${sweeperGap.toFixed(4)} vs ${wantSweeper.toFixed(4)}`,
+    );
+    check(
+      'archetype 3d: SIDE ROLLERS driven flat into a wall stand the chassis off by the wheel boxes, not the bare footprint',
+      Math.abs(sideGap - wantSide) < 0.1,
+      `gap ${sideGap.toFixed(4)} vs ${wantSide.toFixed(4)} (bare footprint would be ${wantSweeper.toFixed(4)})`,
+    );
+  }
+
+  // (c) A ground POLLEN still enters the mouth BETWEEN the side rollers and is captured — the
+  // wheels straddle it (`config.ts`'s own geometry note); they do not close the mouth.
+  {
+    const capture = (kind: 'sweeper' | 'siderollers'): boolean => {
+      const w = mkWorld3d('free', 8110, bbArchSpec(kind, 'front'));
+      const r = w.robots[0];
+      for (const b of w.balls) if (b.state.kind === 'held' && b.state.robot === r.id) b.state = { kind: 'stock', alliance: r.alliance };
+      r.hopper = [];
+      r.autoIntake = false;
+      r.autoFire = false;
+      r.pos = { x: -20, y: 0 };
+      r.heading = 0;
+      r.vel = { x: 0, y: 0 };
+      r.angVel = 0;
+      w.balls.length = 0;
+      w.balls.push({ id: 9001, color: 'yellow', r: BB_POLLEN_R, state: { kind: 'ground' }, pos: { x: -12, y: 0 }, vel: { x: 0, y: 0 }, z: 0, vz: 0 });
+      run3d(w, new Map([[0, cmd({ driveY: 1, leftDrive: 1, rightDrive: 1, intake: true })]]), 3);
+      const took = r.hopper.length > 0;
+      disposeEngineFor(w);
+      return took;
+    };
+    check(
+      'archetype 3d: a ground POLLEN driven straight at the mouth is still CAPTURED with a SWEEPER',
+      capture('sweeper'),
+    );
+    check(
+      'archetype 3d: a ground POLLEN driven straight at the mouth is still CAPTURED between the SIDE ROLLERS',
+      capture('siderollers'),
+    );
+  }
+
+  // (d) The RAMP's collider count changes at exactly two edges: the SETTLE (`BB_RAMP_DEPLOY_S`
+  // after the press) and the FOLD (immediately on the next press) — and at no other tick.
+  {
+    const w = mkWorld3d('match', 8120, bbArchSpec('ramp', 'front'));
+    w.balls.length = 0;
+    w.match.phase = 'teleop';
+    w.match.phaseTimeLeft = 90;
+    const r = w.robots[0];
+    const countOf = (): number => robotBodyOf(engineFor(w), 0)!.numColliders();
+    step3d(w, 1 / 60, new Map()); // build the engine, folded
+    const foldedCount = countOf();
+    const deploySteps = Math.round(BB_RAMP_DEPLOY_S / (1 / 60));
+    let pressChanges: number[] = [];
+    // PRESS 1: fold -> deploy, settling `deploySteps` ticks after the press
+    step3d(w, 1 / 60, new Map([[0, cmd({ bbRamp: true })]]));
+    let prev = countOf();
+    for (let t = 1; t <= deploySteps + 3; t++) {
+      step3d(w, 1 / 60, new Map());
+      const now = countOf();
+      if (now !== prev) pressChanges.push(t);
+      prev = now;
+    }
+    const deployedCount = countOf();
+    // a FOLDED ramp adds no reach collider at all — same count as the same mount's own sweeper
+    // build (`chassis3dShapes` + `chassis3dPocketShapes` only; `chassis3dReachShapes` is empty
+    // for `sweeper` always and for `ramp` until `rampReady`).
+    const sweeperCount = (() => {
+      const sw = mkWorld3d('free', 8121, bbArchSpec('sweeper', 'front'));
+      step3d(sw, 1 / 60, new Map());
+      const n = robotBodyOf(engineFor(sw), 0)!.numColliders();
+      disposeEngineFor(sw);
+      return n;
+    })();
+    check(
+      'archetype 3d: a FOLDED ramp adds NO reach colliders — the same count as the same mount\'s SWEEPER build',
+      foldedCount === sweeperCount,
+      `folded ramp=${foldedCount} sweeper=${sweeperCount}`,
+    );
+    check(
+      'archetype 3d: the ramp collider count changes at exactly the SETTLE tick and no other, deploying',
+      pressChanges.length === 1 && pressChanges[0] === deploySteps && deployedCount > foldedCount,
+      `changes at ticks ${JSON.stringify(pressChanges)} (want [${deploySteps}]), folded=${foldedCount} deployed=${deployedCount}`,
+    );
+    // FOLD: `bbRampStep` flips `bbRampOut` false DURING the press tick's own gameplay stage,
+    // which runs AFTER that same tick's `syncRobot` (the collider is built from the world JSON
+    // as it stood at the START of the tick) — so the rebuild itself lands on the NEXT tick's
+    // sync, the same one-tick lag the deploy edge shows (measured above: the change lands at
+    // tick `deploySteps` counted from the FIRST tick after the deploy press, not on the press
+    // tick itself). No SETTLE delay is still true: unlike deploy, nothing has to wait out
+    // `BB_RAMP_DEPLOY_S` on the way back in.
+    step3d(w, 1 / 60, new Map([[0, cmd({ bbRamp: true })]])); // the fold press itself
+    const pressTickCount = countOf();
+    step3d(w, 1 / 60, new Map()); // the next sync, where the rebuild actually lands
+    const foldTickCount = countOf();
+    check(
+      'archetype 3d: the ramp collider count drops back to the folded count on the fold press\'s very next sync, no settle delay',
+      pressTickCount === deployedCount && foldTickCount === foldedCount,
+      `deployed=${deployedCount} pressTick=${pressTickCount} nextTick=${foldTickCount} folded=${foldedCount}`,
+    );
+  }
+
+  // (e) determinism: two fresh 3D worlds, same seed, a script that PRESSES THE RAMP, hash equal.
+  {
+    function rampScript(t: number): RobotCommand {
+      const phase = Math.floor(t / 40) % 5;
+      const base = cmd({});
+      if (phase === 0) return { ...base, driveY: 1 };
+      if (phase === 1) return { ...base, bbRamp: t % 40 === 0 };
+      if (phase === 2) return { ...base, driveY: 1, intake: true };
+      if (phase === 3) return { ...base, bbRamp: t % 40 === 0 };
+      return { ...base, rotate: 1 };
+    }
+    const wa = mkWorld3d('free', 8130, bbArchSpec('ramp', 'front'));
+    const wb = mkWorld3d('free', 8130, bbArchSpec('ramp', 'front'));
+    wa.match.phase = wb.match.phase = 'freeplay';
+    const hashesA: number[] = [];
+    const hashesB: number[] = [];
+    for (let t = 0; t < 240; t++) {
+      const c = rampScript(t);
+      step3d(wa, 1 / 60, new Map([[0, c]]));
+      step3d(wb, 1 / 60, new Map([[0, c]]));
+      if (t % 40 === 0) {
+        hashesA.push(worldHash(wa));
+        hashesB.push(worldHash(wb));
+      }
+    }
+    check(
+      'archetype 3d: determinism holds with a RAMP press in the script — hash equal every 40 ticks',
+      // `rampScript` presses twice (phase 1 deploys, phase 3 folds), so `bbRampAt` being stamped
+      // at all is the proof a press actually landed — the script's own design folds it again
+      // before the run ends, which is deliberate (it is the FOLD edge that is one tick's lag from
+      // the DEPLOY edge above, and this check wants both exercised, not a specific end state).
+      hashesA.every((h, i) => h === hashesB[i]) && wa.robots[0].bbRampAt !== undefined,
+      `${JSON.stringify(hashesA)} vs ${JSON.stringify(hashesB)}, bbRampAt=${wa.robots[0].bbRampAt} bbRampOut=${wa.robots[0].bbRampOut}`,
+    );
+    check(
+      'archetype 3d: determinism holds with a RAMP press in the script — final JSON identical',
+      JSON.stringify(wa) === JSON.stringify(wb),
+    );
+  }
+
+  // (h) THE WALL-FLUSH START, MEASURED (plan item 4). Every real anchor x both alliances x the
+  // four intake mounts, for `siderollers` — the one archetype that is ALWAYS solid, including at
+  // spawn (a folded `ramp` contributes no collider until it deploys, well after the pre-match
+  // countdown, so it never reaches this at all). The fix is at the SPAWN side
+  // (`spawn.ts`'s `bb3dStartFootprint`): the archetype's own extra protrusion
+  // (`bbArchetypeWallExtra`) is folded into the containment clamp `bbFitPose` already runs, so the
+  // anchor is placed with ZERO protrusion in the first place rather than popped out by the solver.
+  {
+    let worst = 0;
+    let worstDetail = '';
+    for (const alliance of ['red', 'blue'] as const) {
+      for (let idx = 0; idx < BB_START_POSES.length; idx++) {
+        for (const mount of ['front', 'back', 'side', 'frontback'] as const) {
+          const spec = bbCoerce(bbArchSpec('siderollers', mount));
+          const w = createBiobuzzWorld(
+            'match',
+            1,
+            [{ id: 0, alliance, spec, assists: { fieldCentric: false, aimAssist: false, autoIntake: false, autoFire: false, autoPathEnabled: false }, startIndex: idx }],
+            undefined,
+            '3d',
+          );
+          const r0 = w.robots[0];
+          const h = bbHeightNow(w, r0.spec);
+          const shapes = chassis3dReachShapes(r0.spec, h, false);
+          for (const s of shapes) {
+            for (const sx of [-1, 1] as const) {
+              for (const sy of [-1, 1] as const) {
+                const l = rot({ x: s.cx + sx * s.hx, y: s.cy + sy * s.hy }, r0.heading);
+                const px = r0.pos.x + l.x;
+                const py = r0.pos.y + l.y;
+                const over = Math.max(px - BB_HALF_X, -BB_HALF_X - px, py - BB_HALF_Y, -BB_HALF_Y - py);
+                if (over > worst) {
+                  worst = over;
+                  worstDetail = `${alliance} idx=${idx} mount=${mount}`;
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+    console.log(`[smoke-bb sim3d] wall-flush start (siderollers), worst protrusion over 32 (alliance x anchor x mount) combos: ${worst.toFixed(4)}in (${worstDetail || 'n/a'})`);
+    check(
+      'archetype 3d: a SIDE-ROLLER build spawns with the archetype hardware never past the wall, on every real anchor x mount x alliance',
+      worst <= 1e-6,
+      `worst protrusion ${worst.toFixed(4)}in at ${worstDetail}`,
+    );
+  }
+
+  // ...and that pose is a REST POSE, not just a geometric fit: physics does not move it, over a
+  // real settle window, and — MEASURED, before the spawn fix — it used to be worse than slow: a
+  // `siderollers` build embedded 2.65in in the wall never settled AT ALL (300 ticks / 5s, zero
+  // drift on every axis), because the wheel box's own escape-through-the-floor distance (its OWN
+  // height) was SHORTER than its escape-sideways distance, so Rapier's own SAT pick sent the
+  // correction into the floor, where it cancelled against the floor collider every tick.
+  {
+    const spec = bbCoerce(bbArchSpec('siderollers', 'back'));
+    const w = createBiobuzzWorld(
+      'match',
+      1,
+      [{ id: 0, alliance: 'red' as const, spec, assists: { fieldCentric: false, aimAssist: false, autoIntake: false, autoFire: false, autoPathEnabled: false }, startIndex: 0 }],
+      undefined,
+      '3d',
+    );
+    const start = { x: w.robots[0].pos.x, y: w.robots[0].pos.y, h: w.robots[0].heading };
+    for (let t = 0; t < 90; t++) step3d(w, 1 / 60, new Map());
+    const r = w.robots[0];
+    const drift = Math.hypot(r.pos.x - start.x, r.pos.y - start.y);
+    const yawDrift = Math.abs(wrapAngle(r.heading - start.h)) * (180 / Math.PI);
+    console.log(`[smoke-bb sim3d] wall-flush start settle (90 ticks, siderollers/back/idx0/red): drift ${drift.toFixed(5)}in, yaw ${yawDrift.toFixed(3)}deg`);
+    check(
+      'archetype 3d: the wall-flush start settles at REST — deterministic, no pop, no yaw, nothing moves once auto starts',
+      drift < 0.05 && yawDrift < 0.5,
+      `drift ${drift.toFixed(5)}in yaw ${yawDrift.toFixed(3)}deg`,
+    );
+    disposeEngineFor(w);
+  }
+
   // ---- perf: 2v2 (4 robots), median/p95 step3d cost ----------------------------------------
   {
     const w = createBiobuzzWorld(
@@ -2782,6 +3052,53 @@ export function sim3dChecks(check: Check): void {
     console.log(`[smoke-bb sim3d] step3d 2v2: median ${median}ms, p95 ${p95}ms (Date.now() resolution -- see detail on failure)`);
     check(
       'perf: 2v2 step3d median <= 1.5ms',
+      median <= 1.5,
+      `median=${median}ms p95=${p95}ms (${times.length} samples)`,
+    );
+  }
+
+  // ---- perf: 2v2 with the ARCHETYPE reach hardware live on every robot (siderollers + a
+  // deployed ramp), median/p95 step3d cost -- the same budget, now with the extra colliders.
+  {
+    const w = createBiobuzzWorld(
+      'free',
+      32,
+      [
+        setup(0, 'blue', bbArchSpec('siderollers', 'front'), 0),
+        setup(1, 'blue', bbArchSpec('ramp', 'back'), 1),
+        setup(2, 'red', bbArchSpec('siderollers', 'side'), 0),
+        setup(3, 'red', bbArchSpec('ramp', 'frontback'), 1),
+      ],
+      undefined,
+      '3d',
+    );
+    // deploy both ramps and let them settle before timing
+    step3d(w, 1 / 60, new Map([[1, cmd({ bbRamp: true })], [3, cmd({ bbRamp: true })]]));
+    for (let t = 0; t < 30; t++) step3d(w, 1 / 60, new Map());
+    check(
+      'archetype 3d perf fixture: both ramp builds are actually deployed before timing',
+      w.robots[1].bbRampOut === true && w.robots[3].bbRampOut === true,
+      `r1=${w.robots[1].bbRampOut} r3=${w.robots[3].bbRampOut}`,
+    );
+    const cmds = new Map([
+      [0, cmd({ driveY: 1, intake: true })],
+      [1, cmd({ rotate: 1, fire: true })],
+      [2, cmd({ driveY: -1, intake: true })],
+      [3, cmd({ driveX: 1, fire: true })],
+    ]);
+    for (let t = 0; t < 60; t++) step3d(w, 1 / 60, cmds); // warm-up, excluded
+    const times: number[] = [];
+    for (let t = 0; t < 600; t++) {
+      const t0 = Date.now();
+      step3d(w, 1 / 60, cmds);
+      times.push(Date.now() - t0);
+    }
+    times.sort((a, b) => a - b);
+    const median = times[Math.floor(times.length / 2)];
+    const p95 = times[Math.floor(times.length * 0.95)];
+    console.log(`[smoke-bb sim3d] step3d 2v2 (archetype hardware live): median ${median}ms, p95 ${p95}ms`);
+    check(
+      'perf: 2v2 step3d median <= 1.5ms with the archetype reach hardware live on every robot',
       median <= 1.5,
       `median=${median}ms p95=${p95}ms (${times.length} samples)`,
     );

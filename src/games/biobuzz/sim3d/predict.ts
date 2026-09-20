@@ -16,13 +16,16 @@ import {
   PREDICT_MAX_TICKS,
   bbHeightNow,
 } from '../config';
+import { bbRampSettled } from '../robot';
 import { rapier3d, type Rapier3d } from './engine';
 import {
   buildHiveTray3d,
   buildStatics3d,
   chassisBoxDesc,
+  chassis3dReachShapes,
   clearChassis3dColliders,
   elementMass,
+  reachColliderDesc,
   ELEMENT_FRICTION,
   ELEMENT_RESTITUTION,
   ELEMENT_ROLL_DAMP,
@@ -313,6 +316,12 @@ export function createFullPredictor(world: World, localRobotId: number): Predict
    * so recomputing it instead of recording it is how a robot's z jumps on the deploy tick. */
   let localHeight = 0;
   const otherHeights = new Map<number, number>();
+  /** the RAMP-READY state each chassis was last built with — `Engine3d.robotRampReady`'s twin
+   * here, so a predicted wall/flower contact with a deployed ramp matches the authority's
+   * collider set at the same settle edge (`bbRampSettled`) rather than one tick's worth of
+   * "the server has a crossbar there and I don't". */
+  let localRampReady = false;
+  const otherRampReady = new Map<number, boolean>();
   const others = new Map<number, InstanceType<Rapier3d['RigidBody']>>();
   const elements = new Map<number, InstanceType<Rapier3d['RigidBody']>>();
   let tick = 0;
@@ -339,14 +348,19 @@ export function createFullPredictor(world: World, localRobotId: number): Predict
         trays[a].setNextKinematicRotation(tiltQuatX(hiveTiltAngle(w, a)));
       }
 
-      // the LOCAL robot: created once, RE-FITTED across the deploy edge, re-seated every reset.
+      // the LOCAL robot: created once, RE-FITTED across the deploy edge (and the ramp-settle
+      // edge, now), re-seated every reset.
       if (local) {
         const h = bbHeightNow(w, local.spec);
+        const ramp = bbRampSettled(local, w.time);
         if (!localBody) {
-          localBody = makeRobotBody(RAPIER, world3d, local, true, h);
+          localBody = makeRobotBody(RAPIER, world3d, local, true, h, ramp);
           localHeight = h;
+          localRampReady = ramp;
         } else {
-          localHeight = refitRobotBody(RAPIER, world3d, localBody, local, localHeight, h);
+          const fit = refitRobotBody(RAPIER, world3d, localBody, local, localHeight, h, localRampReady, ramp);
+          localHeight = fit.height;
+          localRampReady = fit.ramp;
         }
         seatRobot(localBody, local, localHeight);
       }
@@ -354,12 +368,15 @@ export function createFullPredictor(world: World, localRobotId: number): Predict
       for (const r of w.robots) {
         if (r.id === localRobotId) continue;
         const h = bbHeightNow(w, r.spec);
+        const ramp = bbRampSettled(r, w.time);
         let body = others.get(r.id);
         if (!body) {
-          body = makeRobotBody(RAPIER, world3d, r, false, h);
+          body = makeRobotBody(RAPIER, world3d, r, false, h, ramp);
           others.set(r.id, body);
+          otherRampReady.set(r.id, ramp);
         } else {
-          refitRobotBody(RAPIER, world3d, body, r, otherHeights.get(r.id) ?? h, h);
+          const fit = refitRobotBody(RAPIER, world3d, body, r, otherHeights.get(r.id) ?? h, h, otherRampReady.get(r.id) ?? false, ramp);
+          otherRampReady.set(r.id, fit.ramp);
         }
         otherHeights.set(r.id, h);
         seatRobot(body, r, h);
@@ -464,6 +481,14 @@ function buildKinematicTray(
  * `syncRobots` does, and the body is re-fitted across the deploy edge. It used to be
  * `robotHeightIn` (deployed, whatever the phase), so the predicted robot stood at the wrong
  * height for the whole of `pre` and its readback subtracted a half-height it had not added.
+ *
+ * ⚠️ **THE ARCHETYPE REACH HARDWARE IS NOT PART OF THAT TRADE, AND IS ADDED ANYWAY** (owner,
+ * 2026-09-20: "It should be a collider."). It is not the mouth-pocket compound this note is
+ * about — it is two or three SMALL boxes (`chassis3dReachShapes`, `GROUP_POCKET`, same as the
+ * authority), and skipping them would leave a driver with side rollers or a deployed ramp
+ * rubber-banding at every wall the authority stands them off from and the predictor does not
+ * (2.65 in for side rollers, 2.17 for a settled ramp — see this file's measurement in the PREDICT
+ * lane for the actual reconcile-cost delta this added).
  */
 function makeRobotBody(
   RAPIER: Rapier3d,
@@ -471,12 +496,13 @@ function makeRobotBody(
   r: RobotState,
   dynamic: boolean,
   heightIn: number,
+  rampReady: boolean,
 ): InstanceType<Rapier3d['RigidBody']> {
   const desc = dynamic
     ? RAPIER.RigidBodyDesc.dynamic().enabledRotations(false, false, true)
     : RAPIER.RigidBodyDesc.kinematicPositionBased();
   const body = world3d.createRigidBody(desc);
-  fitChassis(RAPIER, world3d, body, r, heightIn);
+  fitChassis(RAPIER, world3d, body, r, heightIn, rampReady);
   return body;
 }
 
@@ -505,6 +531,7 @@ function fitChassis(
   body: InstanceType<Rapier3d['RigidBody']>,
   r: RobotState,
   heightIn: number,
+  rampReady: boolean,
 ): void {
   const fe = robotExtents(r);
   const hx = (fe.front + fe.rear) / 2;
@@ -517,14 +544,21 @@ function fitChassis(
       .setRestitution(0),
     body,
   );
+  // the SAME reach shapes the authority builds (`chassis3dReachShapes`, `bodies.ts`) — see
+  // `makeRobotBody`'s own note on why this is added despite the predictor otherwise keeping one
+  // bare cuboid.
+  for (const s of chassis3dReachShapes(r.spec, heightIn, rampReady)) {
+    world3d.createCollider(reachColliderDesc(RAPIER, s), body);
+  }
 }
 
 /**
- * Re-fit an existing chassis body to `heightIn` if it was built to something else — the R102
- * DEPLOY EDGE, seen from the predictor. A collider cannot be resized in place, so the shape is
- * dropped and rebuilt, which is what the authority does at the same edge. Returns the height
- * the body now carries, so the caller can record it and read back against the SAME half-height
- * it added (get that wrong and the predicted robot sinks a few inches for one tick).
+ * Re-fit an existing chassis body to `heightIn`/`rampReady` if it was built to something else —
+ * the R102 DEPLOY EDGE and the ramp's own SETTLE EDGE, seen from the predictor. A collider cannot
+ * be resized in place, so the shape is dropped and rebuilt, which is what the authority does at
+ * the same edges. Returns what the body now carries, so the caller can record it and read back
+ * against the SAME half-height it added (get the height wrong and the predicted robot sinks a
+ * few inches for one tick).
  */
 function refitRobotBody(
   RAPIER: Rapier3d,
@@ -533,11 +567,13 @@ function refitRobotBody(
   r: RobotState,
   builtHeight: number,
   heightIn: number,
-): number {
-  if (Math.abs(builtHeight - heightIn) <= 1e-9) return builtHeight;
+  builtRamp: boolean,
+  rampReady: boolean,
+): { height: number; ramp: boolean } {
+  if (Math.abs(builtHeight - heightIn) <= 1e-9 && builtRamp === rampReady) return { height: builtHeight, ramp: builtRamp };
   clearChassis3dColliders(world3d, body);
-  fitChassis(RAPIER, world3d, body, r, heightIn);
-  return heightIn;
+  fitChassis(RAPIER, world3d, body, r, heightIn, rampReady);
+  return { height: heightIn, ramp: rampReady };
 }
 
 function seatRobot(body: InstanceType<Rapier3d['RigidBody']>, r: RobotState, heightIn: number): void {

@@ -16,6 +16,7 @@ import { chassisInertia } from '../../../sim/robot';
 import { shoveMass } from '../../../sim/drivetrain';
 import { BALL_REST_SPEED, PHYS_WALL_FRICTION, GRAVITY, PHYS_SOLVER_ITERS, PHYS_ALLOWED_ERROR } from '../../../config';
 import { BB3_CCD_SPEED, BB3_CONTACT_FREQ, BB3_LAUNCH_CLEAR_MAX, BB3_LAUNCH_CLEAR_SLOP, BB3_LAUNCH_CLEAR_STEP, BB3_REST_SPEED, BB3_REST_TICKS, BB3_ROLL_DECEL, BB3_ROLL_FLOOR_Z, BB3_WALL_H, BB_POLLEN_R, bbHeightNow } from '../config';
+import { bbRampSettled } from '../robot';
 import { addChassis3dColliders, clearChassis3dColliders, chassis3dShapes, type Chassis3dShape } from './bodies';
 import {
   buildHiveTray3d,
@@ -92,6 +93,17 @@ export interface Engine3d {
    * that moves for no gameplay reason.
    */
   robotHeights: Map<number, number>;
+  /**
+   * The RAMP-READY state (`bbRampSettled(r, world.time)`) each robot's chassis collider was
+   * actually BUILT with -- `robotHeights`'s twin (the rebuild key is now (height, rampReady)
+   * together). A side-roller build needs no edge: it is built in with the body and never rebuilt.
+   * A `ramp` build's reach hardware only becomes solid `BB_RAMP_DEPLOY_S` after the toggle (the
+   * tick `bbRampSettled` turns true, when the sim starts crediting the reach) and stops being
+   * solid the instant it folds (`bbRampOut` false makes `bbRampSettled` false immediately, no
+   * settle delay on the way back in) -- so this, unlike height, can flip either direction on any
+   * tick, not only once at the `pre` boundary.
+   */
+  robotRampReady: Map<number, boolean>;
   /** `world.tick` as of the last `engineFor` call -- a SMALLER tick next time means a restart
    * or a reseed (a fresh world reusing the same JS object is not a case that arises here, but a
    * scene or a smoke fixture rebuilding `world.tick` back to 0 on the SAME `World` object is),
@@ -189,13 +201,14 @@ function buildEngine(world: World): Engine3d {
     lastRobot: new Map(),
     lastElement: new Map(),
     robotHeights: new Map(),
+    robotRampReady: new Map(),
     lastTick: world.tick,
     containmentFixes: 0,
   };
   // DETERMINISTIC BUILD ORDER: statics, the two trays (above), robots by ascending id, elements
   // by ascending id (plan section 3.2 / this lane's binding design point 1).
   for (const r of [...world.robots].sort((a, b) => a.id - b.id)) {
-    syncRobot(RAPIER, engine, r, bbHeightNow(world, r.spec));
+    syncRobot(RAPIER, engine, r, bbHeightNow(world, r.spec), bbRampSettled(r, world.time));
   }
   for (const b of [...world.balls].sort((a, b) => a.id - b.id)) syncElement(RAPIER, engine, world, b);
   return engine;
@@ -258,8 +271,9 @@ function addChassisCollider(
   body: InstanceType<Rapier3d['RigidBody']>,
   r: RobotState,
   heightIn: number,
+  rampReady: boolean,
 ): void {
-  addChassis3dColliders(RAPIER, engine.world3d, body, r.spec, heightIn);
+  addChassis3dColliders(RAPIER, engine.world3d, body, r.spec, heightIn, rampReady);
 }
 
 /** the height a robot's collider is CURRENTLY built to — the recorded one, falling back to the
@@ -280,7 +294,7 @@ function builtHeight(engine: Engine3d, r: RobotState): number {
  * `solveRobots` picks it up fresh every rebuild. Setting mass properties does not move the body,
  * so it cannot fight the "leave a resting body alone" rule above.
  */
-function syncRobot(RAPIER: Rapier3d, engine: Engine3d, r: RobotState, wantHeight: number): void {
+function syncRobot(RAPIER: Rapier3d, engine: Engine3d, r: RobotState, wantHeight: number, rampReady: boolean): void {
   const z = r.z ?? 0;
   const heightIn = wantHeight;
   const centreZ = z + heightIn / 2;
@@ -320,24 +334,38 @@ function syncRobot(RAPIER: Rapier3d, engine: Engine3d, r: RobotState, wantHeight
      * end -- `hx`/`half` collapse to `spec.length/2`/`spec.width/2` for a mount with no reach,
      * so this is a strict generalization, not a behavior change, for a robot that has none.
      */
-    addChassisCollider(RAPIER, engine, body, r, heightIn);
+    addChassisCollider(RAPIER, engine, body, r, heightIn, rampReady);
     engine.robots.set(r.id, body);
     engine.robotHeights.set(r.id, heightIn);
-  } else if (Math.abs((engine.robotHeights.get(r.id) ?? heightIn) - heightIn) > 1e-9) {
-    /**
-     * THE DEPLOY EDGE (plan §3.3): the robot has just stood up (or, on a rewind, sat back down),
-     * so the chassis collider is REBUILT at the new height and the body re-seated so its BOTTOM
-     * stays where `RobotState.z` says it is. A collider cannot be resized in place, and scaling
-     * the body would scale the intake-reach footprint with it.
-     *
-     * It happens ONCE per robot per match, at the `pre` boundary, and only for a build over
-     * R102's cube — every 18-in-and-under robot takes the `!body` path above and never comes
-     * back here.
-     */
-    clearChassis3dColliders(engine.world3d, body);
-    addChassisCollider(RAPIER, engine, body, r, heightIn);
-    engine.robotHeights.set(r.id, heightIn);
-    body.setTranslation({ x: r.pos.x, y: r.pos.y, z: centreZ }, true);
+    engine.robotRampReady.set(r.id, rampReady);
+  } else {
+    const heightChanged = Math.abs((engine.robotHeights.get(r.id) ?? heightIn) - heightIn) > 1e-9;
+    const rampChanged = (engine.robotRampReady.get(r.id) ?? false) !== rampReady;
+    if (heightChanged || rampChanged) {
+      /**
+       * THE REBUILD EDGE — height OR ramp-ready changing. Height's is the DEPLOY EDGE (plan
+       * §3.3): the robot has just stood up (or, on a rewind, sat back down), so the chassis
+       * collider is REBUILT at the new height and the body re-seated so its BOTTOM stays where
+       * `RobotState.z` says it is. A collider cannot be resized in place, and scaling the body
+       * would scale the intake-reach footprint with it. It happens ONCE per robot per match, at
+       * the `pre` boundary, and only for a build over R102's cube — every 18-in-and-under robot
+       * takes the `!body` path above and never comes back here for height.
+       *
+       * `rampReady`'s edge is the RAMP'S OWN SETTLE — `BB_RAMP_DEPLOY_S` after a toggle turns it
+       * true, and it turns false again the instant the ramp folds (no settle delay coming IN) —
+       * so this can fire any number of times over a match, in either direction, for a `ramp`
+       * build. Side rollers never trigger it: `rampReady` is irrelevant to them and
+       * `chassis3dReachShapes` reads only the archetype and the height.
+       *
+       * A ramp-only change does NOT re-seat the translation (unlike height) — the body's bottom
+       * has not moved.
+       */
+      clearChassis3dColliders(engine.world3d, body);
+      addChassisCollider(RAPIER, engine, body, r, heightIn, rampReady);
+      engine.robotHeights.set(r.id, heightIn);
+      engine.robotRampReady.set(r.id, rampReady);
+      if (heightChanged) body.setTranslation({ x: r.pos.x, y: r.pos.y, z: centreZ }, true);
+    }
   }
 
   // the SAME mass `updateRobot`'s wrench was computed against -- see `robot3d.ts`'s header for
@@ -379,7 +407,7 @@ function syncRobot(RAPIER: Rapier3d, engine: Engine3d, r: RobotState, wantHeight
  * into this module's internals for a per-robot loop it would otherwise have to duplicate. */
 export function syncRobots(world: World, engine: Engine3d): void {
   const RAPIER = rapier3d();
-  for (const r of world.robots) syncRobot(RAPIER, engine, r, bbHeightNow(world, r.spec));
+  for (const r of world.robots) syncRobot(RAPIER, engine, r, bbHeightNow(world, r.spec), bbRampSettled(r, world.time));
 }
 
 /** the robot a chassis-body TRANSLATION corresponds to, for `readback` and `robot3d.ts`'s yaw

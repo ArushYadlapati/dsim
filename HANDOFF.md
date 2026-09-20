@@ -1,7 +1,7 @@
 # HANDOFF — 2026-09-20b (alpha: three intake archetypes — only hardware that reaches a FLOWER's opening takes from it)
 
 **READ FIRST.** One owner item: "intaking from the flower is not physically accurate. Current rollers
-cannot actually reach the pollen under." Gates on the final tree: `npm test` ALL PASS (3,261 biobuzz +
+cannot actually reach the pollen under." Gates on the final tree: `npm test` ALL PASS (3,280 biobuzz +
 shared), `build`, `server:check`, `uiaudit`, `docaudit`, `bundleaudit` (scene 208.2 KB gz, +2.4),
 `test:mm` (200). Not run: `dbtest` (no DB change), `shiftaudit`, `test:ai`. `dsim-alpha` redeployed
 (server: the wire's `buttons` widened, `room.ts` counts a ramp press as activity). Production untouched.
@@ -22,9 +22,18 @@ shared), `build`, `server:check`, `uiaudit`, `docaudit`, `bundleaudit` (scene 20
 - ⚠️ **`u` is measured from `mouthAxes.uOut` (the footprint edge), not the chassis frame.** The frame
   can never get nearer than `bbIntakeReach`; measured from it nothing reached and the tutorial's
   retrieve step never completed. `uOut` sits ON the foot face when driven flush, so `u ≈ BB_PLACE_REACH`.
-- **Reach parts are NOT colliders** (a choice, reversible): drawn past the footprint like the Box Tube,
-  so a wall-flush pose shows them inside the wall. Rigid colliders would stand every robot off every wall
-  and pop a wall-flush start on the deploy edge.
+- **Reach parts ARE colliders in 3D** (owner: "It should be a collider"), in the authority AND both
+  predictors, in `GROUP_POCKET` (walls/statics/robots meet them, elements pass through):
+  `chassis3dReachShapes` (`sim3d/bodies.ts`; `Chassis3dShape.rot` for the tilted rails). The ramp's
+  appear at the settle edge (0.3 s after the press) and go on the fold press; rebuild key is
+  (height, rampReady). Measured: side rollers stand off a wall by exactly 2.65 in; predictors agree
+  with the authority to 0.25/0.42 in; step3d 1.0 ms; predictor cost unchanged.
+  ⚠️ A wall-flush start with the wheels in the wall NEVER settles (Rapier escapes through the floor
+  — the wheel is 2.5 tall vs 2.65 sideways — and the floor cancels it, zero drift for 300 ticks), so
+  `spawn.ts` backs a 3D start off by `bbArchetypeWallExtra` (side rollers only; 0 elsewhere). 2D is
+  drawing-only (no z; the foot is a solid rect) — documented in the biobuzz.md bullet.
+- Pictures: `scratch/shots.cjs` (one Electron process per shot) against `scene-preview` with
+  `?physics=3d&intake=…&park=flower|open&ramp=1`; `.claude/launch.json` has `scene-preview-b` on 5177.
 - **The ramp toggle**: `RobotCommand.bbRamp` (edge, like `driveMode`), `RobotState.bbRampOut/bbRampAt/
   bbRampHeld` (absent on every other build; written only on a press), `bbRampStep` in both pipelines at
   the turret-slew site, gated on `robotsEnabled`; credited only `BB_RAMP_DEPLOY_S` (0.3 s) after the
