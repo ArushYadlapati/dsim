@@ -140,9 +140,19 @@ at/under · `docaudit` ALL PASS · `contrast` ALL PASS · `bundleaudit` ALL ROUT
   was NOT raised.
 - 3D still slides past a tall post at 0.4 in of overlap where 2D manages 1.0 — a box chassis in
   the 3D solve; no corner treatment closes it (a cylinder does 1.6).
-- `MODERATION_API_KEY`: `scratch/modtest.ts` is ready; the session could not read the owner's
-  `.env` (permission layer). Owner's ruling: `fly secrets set` immediately on `dsim-alpha`,
-  `--stage` on production.
+- **NAME MODERATION IS TWO LAYERS NOW, AND THE WORD LIST IS NOT IN THIS REPO.** The owner's key
+  works (42/42 names really checked) and is set: DEPLOYED on `dsim-alpha`, STAGED on production
+  (`dohun-sim-decode` — takes effect on its next deploy; nothing was restarted). Measured with it,
+  the hosted model refuses slurs and threats and ALLOWS most bare obscenities (it classifies
+  hate/harassment; it is not a profanity filter). So `server/blocklist.ts` is a local matcher in
+  FRONT of it, fed by the `MODERATION_BLOCKLIST` secret — ⚠️ **owner ruling: no profanity in the
+  repo and no published list; the checks in `smoke.ts` use a NONSENSE vocabulary on purpose, do
+  not paste a real word into one.** The real list lives at `D:\Projectsddecodesim\.env.blocklist`
+  (git-ignored there by `.env.*`), same secret on both Fly apps, same alpha-now / production-staged
+  split. Both layers together: 35/35 should-block, 21/22 should-allow; the one false positive
+  ("Assassins …") is the HOSTED model's and no list can fix it — an allowlist secret would.
+  Whole-word entries by default (the Scunthorpe problem is real: it was the first false positive
+  the real list produced), `*` for substring; CamelCase is a word boundary.
 - The models README records the single-sided clear sheets as an asset defect for `field-cad`.
 
 ## Next steps

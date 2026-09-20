@@ -276,6 +276,7 @@ import type { PendingRosterEntry } from '../server/matchTypes';
 import { maintenanceBiting } from '../server/db/repo';
 import { maintenanceLine } from '../src/ui/MaintenanceBanner';
 import { moderateName, scrubName, moderationEnabled } from '../server/moderation';
+import { blocklistHit, parseBlocklist, EMPTY_BLOCKLIST } from '../server/blocklist';
 import { Matchmaker, radiusCeiling, type QueueEntry } from '../server/matchmaking';
 import { bestHost } from '../server/regions';
 import type { PendingMatch } from '../server/matchTypes';
@@ -21331,6 +21332,36 @@ const mkMM = () => {
     check('disabled: moderateName allows any name (checked=false)', off.allowed === true && off.checked === false);
     check('disabled: scrubName passes a name through unchanged', (await scrubName('My Robot', 'x')) === 'My Robot');
   }
+}
+
+// ---- the LOCAL name blocklist: the matcher, on a MADE-UP vocabulary ------------
+/**
+ * `server/blocklist.ts` is the machine; the words are a runtime secret (`MODERATION_BLOCKLIST`)
+ * and are in no file of this repository — owner ruling, 2026-09-19: no profanity in the repo and
+ * no published list to route around. So every entry below is NONSENSE, chosen to have the same
+ * SHAPE as the cases that matter: `zorp` is a short word that is also the inside of innocent ones
+ * (so it is a whole-word entry), `*quaffle` is a word with no innocent superstring (so it is
+ * starred), `blat` exists to be spelt with digits. ⚠️ Do not "improve" this by pasting a real word
+ * in: the point of the fixture is that it proves the normaliser without being the list.
+ */
+{
+  const list = parseBlocklist('zorp, blat\n*quaffle   # a starred entry matches anywhere\n, ,x, *y\nsnib');
+  check('blocklist: entries parse, blanks and one-letter entries are dropped, comments ignored', list.size === 4 && list.words.size === 3 && list.anywhere.length === 1, `size=${list.size}`);
+  check('blocklist: an absent or empty secret is the EMPTY list, which blocks nothing', parseBlocklist(undefined) === EMPTY_BLOCKLIST && parseBlocklist('  \n , ') === EMPTY_BLOCKLIST && !blocklistHit(EMPTY_BLOCKLIST, 'zorp'));
+  const hit = (n: string): boolean => blocklistHit(list, n);
+  const blocked = ['zorp', 'ZORP', 'Team Zorp', 'ZorpSquad', 'megaZorp', 'zorp-bots', 'the_zorp_9000', 'zorps', 'zorping', 'zorper', 'zorpy', 'z o r p', 'z.o.r.p', 'zooorp', 'zorrrp', 'Zörp', 'bl4t', 'BL@T', '8lat', 'blat!', 'MegaQuaffleBots', 'qu4ffl3', 'q u a f f l e', 'quaaaffle', 'sn1b'];
+  const missed = blocked.filter((n) => !hit(n));
+  check('blocklist: case, separators, endings, accents, digit/symbol spellings, stretched and spaced-out letters all still hit', missed.length === 0, missed.join(' | '));
+  // THE FALSE POSITIVES THIS DESIGN EXISTS TO NOT SHIP: a whole-word entry inside a longer word,
+  // and a team NUMBER read back as letters.
+  const clean = ['Zorpington Robotics', 'Azorpa', 'Blatant Force', 'Snibbet', 'Team 16236', 'Team 8147', 'Iron Giants', 'dohun', 'Gear Grinders 455', 'zo rp', ''];
+  const wrong = clean.filter((n) => hit(n));
+  check('blocklist: a whole-word entry does NOT fire inside a longer word, and a team number is not a word', wrong.length === 0, wrong.join(' | '));
+  check('blocklist: a STARRED entry does fire inside a longer word (that is what the star is for)', hit('xxquafflexx') && !hit('xxzorpxx'));
+  check('blocklist: digits alone never complete a starred word ("Team 455" is not three letters)', !blocklistHit(parseBlocklist('*teamass'), 'Team 455'));
+  // and the file that must never hold the words does not grow a default list
+  const blSrc = readFileSync(pathResolve('server', 'blocklist.ts'), 'utf8');
+  check('blocklist: the matcher ships NO built-in entries (the list is a runtime secret)', !/parseBlocklist\(\s*['"`]/.test(blSrc) && /envVar\('MODERATION_BLOCKLIST'\)/.test(readFileSync(pathResolve('server', 'moderation.ts'), 'utf8')));
 }
 
 // ---- ENCODE-ONCE IS SAFE WITH permessage-deflate NEGOTIATED -----------------

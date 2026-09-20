@@ -1,4 +1,5 @@
 import { envVar } from './runtimeEnv';
+import { blocklistHit, parseBlocklist } from './blocklist';
 // `specDefaults` is a LEAF on purpose (see its own header) — importing it here adds no
 // browser-hostile weight to the modules `server/room.ts` pulls into the LAN host's tab.
 import { DEFAULT_SPEC } from '../src/sim/specDefaults';
@@ -23,6 +24,10 @@ import type { RobotSpec } from '../src/types';
  *   MODERATION_API_URL    endpoint (default https://api.openai.com/v1/moderations)
  *   MODERATION_MODEL      model id (default omni-moderation-latest)
  *   MODERATION_TIMEOUT_MS request timeout (default 4000)
+ *   MODERATION_BLOCKLIST  the LOCAL word list, checked BEFORE the hosted model and with no round
+ *                         trip (`server/blocklist.ts` has the format and the reason it exists).
+ *                         ⚠️ A SECRET, NEVER A FILE IN THIS REPO — owner ruling 2026-09-19. It
+ *                         works on its own: with no API key the list still refuses what is on it.
  *
  * POLICY — FAIL OPEN. If the service is unconfigured, unreachable, times out, or
  * errors, the name is ALLOWED and a warning is logged. Moderation is a guardrail with
@@ -36,8 +41,15 @@ const API_URL = envVar('MODERATION_API_URL') ?? 'https://api.openai.com/v1/moder
 const MODEL = envVar('MODERATION_MODEL') ?? 'omni-moderation-latest';
 const TIMEOUT_MS = Number(envVar('MODERATION_TIMEOUT_MS') ?? 4000);
 
-/** true when a moderation service is configured; when false everything is allowed */
-export const moderationEnabled = API_KEY.length > 0;
+/** the local word list — see `server/blocklist.ts`. Parsed once; only its SIZE is ever logged. */
+const BLOCKLIST = parseBlocklist(envVar('MODERATION_BLOCKLIST'));
+
+/** true when ANY moderation is configured — the hosted model, the local list, or both; when false
+ * everything is allowed */
+export const moderationEnabled = API_KEY.length > 0 || BLOCKLIST.size > 0;
+/** the hosted half on its own: the local list needs no key, and must not make the code below
+ * call a provider it has no credentials for */
+const hostedEnabled = API_KEY.length > 0;
 
 export interface ModerationResult {
   /** whether the name may be used */
@@ -87,6 +99,10 @@ async function callProvider(text: string): Promise<boolean> {
 export async function moderateName(raw: string): Promise<ModerationResult> {
   const text = (raw ?? '').trim();
   if (!text || !moderationEnabled) return { allowed: true, checked: false };
+
+  // THE LOCAL LIST FIRST: exact, free, and it cannot fail open — there is no network to lose.
+  if (blocklistHit(BLOCKLIST, text)) return { allowed: false, checked: true };
+  if (!hostedEnabled) return { allowed: true, checked: true };
 
   const key = text.toLowerCase();
   const cached = cache.get(key);
