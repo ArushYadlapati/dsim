@@ -364,10 +364,10 @@ function buildFloor(withTape: boolean): THREE.Mesh {
  * that the hive's back panel is too transparent from behind). This file used to build its own
  * `MeshStandardMaterial` beside the CAD path's, which meant the two paths agreed on the two
  * numbers a check compared and on nothing else: the Fresnel alpha, the un-attenuated reflection,
- * the restored mirror and the scuff haze all landed on the CAD path only, so the fallback field's
+ * the restored mirror and the additive veil all landed on the CAD path only, so the fallback field's
  * panels were still the flat constant-alpha sheets the first pass had already been shown to be
- * wrong. `clearPanelMaterial` and both opacities are imported from `renderFieldGlb.ts` now — the
- * direction this file already depends in — and there is exactly one clear-plastic surface in the
+ * wrong. `cellPanelMaterial` and `wallPanelMaterial` are imported from `renderFieldGlb.ts` now — the
+ * direction this file already depends in — and there is exactly TWO clear-plastic surfaces in the
  * game. The one visible consequence: the fallback's panels take `CLEAR_PANEL_TINT` like the CAD
  * path's, rather than `C.COLORS.wall` and a hand-picked `#cfd8e3`.
  */

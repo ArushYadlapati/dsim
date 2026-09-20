@@ -216,22 +216,13 @@ export const WALL_PANEL_OPACITY = 0.08;
 /**
  * the hive CELL skins sit denser than the perimeter — they are what a driver reads the cell's
  * shape off, and there are fewer of them in any one line of sight. 0.10 → 0.13 when the outline
- * pass came out, and **0.13 → 0.18 on 2026-09-19**, which is a number this file has twice been
- * warned not to touch, so here is the measurement that moved it.
+ * pass came out, and **it is still 0.13** — which is worth writing down, because 0.18 was tried
+ * on 2026-09-19 and MEASURED, and it moved the view the owner was reporting by 0.1 of a level.
  *
- * Against the lit room that sits behind a hive at driver eye height (the background measures
- * 175–186 of 255), a sheet can only be seen by taking light OUT of that ground: its own shading
- * would have to out-glow the room to be seen by adding any. The most it can take out is its own
- * alpha. At 0.13 the ceiling is |ΔL| ≈ 10 and the shipped panel was already measuring **8.9 of
- * that 10** — 87 % of everything the number allows — which is why the first pass's Fresnel, and
- * then a restored mirror, and then a damped ambient, each moved the back view by under 0.1 of a
- * level. Nothing in the shading was short. The opacity was.
- *
- * 0.18 is the value that reads from behind while the MOUTH-side view, which the owner says
- * already looks right, stays inside its own measured contrast — see the after table in the
- * dielectric header. It is not more, because a CELL stacks three of these between the eye and an
- * element and 1 − 0.82³ = 45 % is as much haze as looking into a cell can carry before the
- * white-board complaint of 2026-09-18 comes back.
+ * Alpha is a multiplier on `bg − tint`, and against the lit room behind a hive the ground IS the
+ * tint's own value, so there is nothing there for a multiplier to scale. That is the whole of why
+ * three separate shading passes and then the opacity itself all failed the same way; the answer
+ * is `PANEL_VEIL`, which ADDS. See the dielectric header.
  */
 export const CELL_PANEL_OPACITY = 0.13;
 /**
@@ -357,29 +348,16 @@ const CELL_RENDER_ORDER = 5;
  * guarding against cannot return through it: what is restored is `indirectSpecular`, weighted by
  * the dielectric's own Fresnel, not the irradiance that tinted the sheet.
  *
- * ⚠️ **AND THE NUMBER WAS SHORT, WHICH NO AMOUNT OF SHADING COULD HAVE FIXED.** Against the lit
- * room the only thing a sheet can do is take light OUT of the ground behind it — its own shading
- * would have to out-glow that room to be seen by adding any — and the most it can take is its own
- * alpha. At 0.13 the ceiling is |ΔL| ≈ 10 and the shipped panel was measuring **8.9 of it**. Three
- * separate shading changes were tried against that view — the restored mirror, a scuff-scatter
- * haze, a damped ambient — and each moved it by **under 0.1 of a level**, which is what 87 % of a
- * hard ceiling looks like from the inside. `CELL_PANEL_OPACITY` goes 0.13 → 0.18 for that reason
- * and no other; its own comment carries the rest.
+ * ⚠️ **AND SO DID EVERY OTHER MULTIPLIER, INCLUDING THE OPACITY.** The mirror restore, a
+ * scuff-scatter haze, a damped ambient and finally `CELL_PANEL_OPACITY` 0.13 → 0.18 were each
+ * measured against that camera and each moved it by **under 0.1 of a level**. The next section
+ * is why, and the opacity is back at 0.13.
  *
  * And the third term, which is what carries an ordinary look rather than an extreme one:
  * **thickness** (`PANEL_PATH_MIN_COS`). The first pass's alpha was flat until the last 20° and it
  * justified that as buying the EDGE, "a slab's 0.020-in side face at grazing from almost
  * everywhere" — at 78 in, a driver's distance from a hive, that face is 0.03 px wide and draws
  * nothing. A sheet at an angle shows more SHEET, not more edge.
- *
- * AFTER, same cameras, same probe (mean per-channel Δ over the panel's own silhouette):
- *
- * | the whole cell's skins, from | red | blue |
- * |---|---|---|
- * | the MOUTH side | 32.8 → **55.2** | 37.9 → **70.2** |
- * | BEHIND the cell | 32.6 → **58.1** | 31.1 → **60.1** |
- * | a driver's own station | 24.1 → **39.9** | 19.9 → **30.6** |
- * | the perimeter WALLS, same station | 18.1 → **23.1** | 21.5 → **23.6** |
  *
  * ── AND THAT DID NOT FIX IT EITHER, AND THE REASON IS THE BLEND ITSELF ───────────────────────
  *
@@ -406,7 +384,162 @@ const CELL_RENDER_ORDER = 5;
  * It is on the CELL skins ONLY. The perimeter walls keep their face-on 0.08 and get no veil: the
  * 2026-09-18 report about those was that they read as solid beige bands, they measure present
  * from every camera checked here, and the owner has not said otherwise.
+ *
+ * AFTER — mean per-channel Δ over the panel's own silhouette, bracket = the share of the
+ * background's own luminance SPREAD the panel leaves behind, which is what says the elements are
+ * still readable through it. ⚠️ These are the numbers WITH the culling fix below, which landed
+ * after this section was written and is what actually answered the report; the veil came down
+ * from 0.075 to 0.018 once the sheets it was standing in for were being drawn again.
+ *
+ * | camera | red | blue |
+ * |---|---|---|
+ * | the hive from its OWN driver station | 25.7 → **67.7** (82→66 %) | 25.3 → **67.7** (82→67 %) |
+ * | the hive from the FAR station | 23.4 → **58.8** (85→72 %) | 23.6 → **58.9** (84→72 %) |
+ * | 3/4 orbit BEHIND, 25° up | 32.0 → **63.4** (73→64 %) | 33.1 → **64.5** (72→59 %) |
+ * | tight, from BEHIND the cell | 36.4 → **66.4** (72→83 %) | 41.0 → **77.5** (69→66 %) |
+ * | tight, through the MOUTH | 34.3 → **60.4** | 41.5 → **68.8** |
+ * | **the BACK SKIN alone, from behind** | 12.2 → **34.5** (104→73 %) | 10.9 → **36.1** (97→71 %) |
+ * | the same skin from the MOUTH side | 32.7 → **38.7** (76→70 %) | 40.5 → **52.5** (65→62 %) |
+ * | the perimeter WALLS | 18.1 → **22.3** (86→82 %) | 21.5 → **23.6** (85→84 %) |
+ *
+ * The row that matters is the back skin ALONE: 12.2 against 32.7 before — a sheet that was
+ * invisible from one side of itself — and 34.5 against 38.7 after, **89 % of what the same sheet
+ * shows from the mouth**, which is the parity the report asked for. It did not move at all under
+ * four shading passes because it was not being drawn; see below.
+ *
+ * ⚠️ AND THE KEY LIGHT NO LONGER DECIDES IT. The same back view under the four sun positions:
+ * **69.0 / 71.1 / 72.2 / 72.5**, a 5 % spread, against 31.1 / 32.6 / 33.1 / 34.2 before.
  */
+/**
+ * ── IT WAS BACK-FACE CULLING AFTER ALL, AND THE PROOF THAT IT WAS NOT WAS COUNTING THE WRONG
+ *    THING (2026-09-19, fourth pass) ─────────────────────────────────────────────────────────
+ *
+ * Every paragraph above this one is a fix to the SHADING of a sheet that, from behind, was not
+ * being rasterised at all. The picture said so plainly and three passes read past it: in a
+ * from-behind render the cell's FLOOR and SIDE skins were milky and the two diagonal sheets that
+ * close the back of the cell were simply absent — the NECTAR behind them crisp, the gold room
+ * showing through with no film of any kind. A term that is view-independent, light-independent
+ * and un-attenuated by alpha cannot be invisible on a face that is being drawn.
+ *
+ * ⚠️ **THE OLD DISPROOF BINNED ONLY AXIS-ALIGNED NORMALS.** It reported "face normals in matched
+ * opposite pairs (±y 1,203 / 1,233 tris, ±x 204 / 192)" and concluded every skin is a closed
+ * slab. A cell's back is a GABLE: its two sheets are diagonal, normal ≈ (0.54, 0, ±0.84) in the
+ * tray frame, so they were in neither bin and the count could not see them. "0 boundary edges"
+ * did not catch it either — that was measured over a welded, decimated six-skin soup with 317
+ * non-manifold edges, where it means nothing.
+ *
+ * MEASURED PROPERLY, area-weighted, per PLANE (triangles clustered by plane normal and offset),
+ * in each tray's own local frame — a closed slab's two faces land in one cluster and split its
+ * area both ways; a single sheet puts all of it one way:
+ *
+ * | part | planes | area facing + / − | balance |
+ * |---|---|---|---|
+ * | red tray `plastic#e6e6e6` | 5 | every one 100 / 0 | **0 %** |
+ * | blue tray `plastic#e6e6e6` | 7 | every one 100 / 0 | **0 %** |
+ * | `walls` `glass#e6e6e6` | 4 big + 10 posts | every one 100 / 0 | **0 %** |
+ *
+ * **Not one clear surface on this field is a closed slab.** They are single-sided sheets, wound
+ * to face INWARD — into the cell, into the field — which is exactly the owner's report in both
+ * of its halves: correct through the mouth and from inside the field, gone from behind a cell
+ * and from outside the perimeter. Rendered the same camera three ways, the red up cell from
+ * behind at 46 in: `FrontSide` 294,116 px of clear surface, **`DoubleSide` 757,157**, `BackSide`
+ * 733,645. Two thirds of it was being thrown away.
+ *
+ * ⚠️ **SO `DoubleSide` DOES NOT DOUBLE ANYTHING HERE, AND THE HEADER THAT SAYS IT DOES WAS
+ * REASONING FROM THE SAME WRONG PREMISE.** "`DoubleSide` doubled every one of them… at 0.22 each,
+ * six surfaces sum to 78 % opaque" is true of closed slabs and false of sheets: one sheet drawn
+ * from either side is ONE layer. The white-board fix was the ALPHA (0.22 → 0.13 / 0.08), and that
+ * is untouched. What `FrontSide` bought was not half the layers, it was half the field.
+ *
+ * ⚠️ **THE ASSET IS THE REAL DEFECT AND THIS IS THE LOAD-TIME COMPENSATION.** `convert.py` /
+ * `assemble-gltf.mjs` export these panels as open sheeting rather than as the solids the STEP
+ * models; `public/models/biobuzz/README.md` carries the note for whoever next touches that
+ * pipeline. Nothing is regenerated in this pass — the renderer copes, and the RENDER lane pins
+ * the measurement so the day the asset ships closed slabs this decision gets revisited rather
+ * than silently doubling them.
+ */
+export const CLEAR_SHEETS_ARE_SINGLE_SIDED = true;
+
+/** how far apart two faces of the same slab may sit and still be recognised as ONE plane. The
+ *  skins are 0.020 in; a quarter inch is loose enough to survive the decimator's jitter and far
+ *  tighter than any gap between two genuinely different sheets of this field. */
+const SHEET_PLANE_TOL_IN = 0.25;
+
+/**
+ * IS THIS CLEAR GEOMETRY MADE OF CLOSED SLABS OR OF OPEN SHEETS — the measurement the four
+ * paragraphs above rest on, exported so the RENDER lane runs THIS code over the shipped `.glb`
+ * rather than a re-implementation that could agree with a wrong belief.
+ *
+ * Triangles are clustered by their plane (unsigned normal, quantized offset) and each cluster's
+ * area is split by which way its triangles wind. A closed slab puts its two faces in one cluster
+ * and splits the area evenly; an open sheet puts all of it one way. `twoFacedFraction` is the
+ * share of the total area that has an opposing partner in its own plane — near 1 means slabs and
+ * `FrontSide` is safe, near 0 means sheeting and `FrontSide` deletes it from one whole side.
+ *
+ * `toLocal` is optional and exists because a glTF with `KHR_mesh_quantization` stores positions
+ * normalized and keeps the scale on the node: pass the mesh's own world matrix or the areas come
+ * out in units of nothing.
+ */
+export function sheetFacingBalance(
+  geo: THREE.BufferGeometry,
+  toLocal?: THREE.Matrix4,
+): { planes: number; totalArea: number; twoFacedFraction: number; worstPlaneArea: number } {
+  const pos = geo.getAttribute('position');
+  const index = geo.getIndex();
+  const count = index ? index.count : pos.count;
+  const a = new THREE.Vector3();
+  const b = new THREE.Vector3();
+  const c = new THREE.Vector3();
+  const e1 = new THREE.Vector3();
+  const e2 = new THREE.Vector3();
+  const n = new THREE.Vector3();
+  const planes = new Map<string, { fwd: number; back: number }>();
+  let totalArea = 0;
+  for (let t = 0; t < count; t += 3) {
+    const i0 = index ? index.getX(t) : t;
+    const i1 = index ? index.getX(t + 1) : t + 1;
+    const i2 = index ? index.getX(t + 2) : t + 2;
+    a.fromBufferAttribute(pos, i0);
+    b.fromBufferAttribute(pos, i1);
+    c.fromBufferAttribute(pos, i2);
+    if (toLocal) {
+      a.applyMatrix4(toLocal);
+      b.applyMatrix4(toLocal);
+      c.applyMatrix4(toLocal);
+    }
+    e1.subVectors(b, a);
+    e2.subVectors(c, a);
+    n.crossVectors(e1, e2);
+    const area = n.length() / 2;
+    if (area <= 1e-9) continue;
+    n.divideScalar(area * 2);
+    totalArea += area;
+    // an UNSIGNED plane key, so the two faces of one slab collide and a lone sheet does not
+    const sign = n.x + n.y * 1e-3 + n.z * 1e-6 >= 0 ? 1 : -1;
+    const ux = n.x * sign;
+    const uy = n.y * sign;
+    const uz = n.z * sign;
+    const d = ux * a.x + uy * a.y + uz * a.z;
+    const key = `${ux.toFixed(2)},${uy.toFixed(2)},${uz.toFixed(2)}|${Math.round(d / SHEET_PLANE_TOL_IN)}`;
+    const p = planes.get(key) ?? { fwd: 0, back: 0 };
+    if (sign > 0) p.fwd += area;
+    else p.back += area;
+    planes.set(key, p);
+  }
+  let twoFaced = 0;
+  let worst = 0;
+  for (const p of planes.values()) {
+    twoFaced += 2 * Math.min(p.fwd, p.back);
+    worst = Math.max(worst, p.fwd + p.back);
+  }
+  return {
+    planes: planes.size,
+    totalArea,
+    twoFacedFraction: totalArea > 0 ? twoFaced / totalArea : 0,
+    worstPlaneArea: worst,
+  };
+}
+
 /** polycarbonate's own refractive index (Makrolon / Lexan datasheet nD = 1.586), which is where
  *  every number below comes from rather than from a look. */
 const PANEL_IOR = 1.586;
@@ -445,7 +578,7 @@ const PANEL_ENV_SPEC_RESTORE = 1 / CLEAR_ENV_INTENSITY;
  * luminance spread it has with no panel at all, which the RENDER lane states and the probe in
  * `scripts/scene-preview` measures.
  */
-const PANEL_VEIL = 0.085;
+const PANEL_VEIL = 0.018;
 /** the veil's own colour: a cool near-white, NOT `CLEAR_PANEL_TINT`. The tint is what the sheet
  *  TRANSMITS; scatter off an abraded surface is the room's own white, slightly cool. */
 const PANEL_VEIL_TINT = 0xdfe6ec;
@@ -577,7 +710,11 @@ export function clearPanelMaterial(opacity: number, veil = 0): THREE.Material {
     transparent: true,
     opacity,
     depthWrite: false,
-    side: THREE.FrontSide,
+    // ⚠️ DoubleSide, AND IT IS NOT A REVERSAL OF THE WHITE-BOARD RE-TUNE. See
+    // `CLEAR_SHEETS_ARE_SINGLE_SIDED` — these are SHEETS, so this draws each one ONCE from
+    // either side; it is `FrontSide` that was drawing them zero times from one of the two. The
+    // constant is the one-word revert for the day the CAD pipeline exports closed slabs.
+    side: CLEAR_SHEETS_ARE_SINGLE_SIDED ? THREE.DoubleSide : THREE.FrontSide,
     envMapIntensity: CLEAR_ENV_INTENSITY,
   });
   // ⚠️ THE HOOK IS KEYED, or three caches one program for every panel and the second material to

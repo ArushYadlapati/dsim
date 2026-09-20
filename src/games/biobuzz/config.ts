@@ -2229,14 +2229,33 @@ export const BB3_MOUTH_SLOT_Z = 2 * BB_NECTAR_R;
  *     against the 2D pipeline's OWN flower-foot box, it slides past 0.3 in where the 2D
  *     pipeline manages 1.0 — same geometry, both solvers, so what is left is the solve.
  *
- * **0.125 is where the benefit saturates, and the ARM is what caps it.** The radius is clamped
- * per box to `BB3_INTAKE_CORNER_CLAMP × min(hx, hy, hz)` so no core can go degenerate, and the
- * arm is `INTAKE_RAIL_T` = 0.5 in thick (half-extent 0.25) — the thinnest box in the compound
- * and the one carrying the corner that actually grazes. 0.125, 0.1875, 0.25 and 0.375 all
- * measure the same 0.4 in threshold, because all four clamp the arm to at most 0.2; the
- * smallest of them is taken. A right CYLINDER of the chassis width — no corners at all — slides
- * past EVERY overlap out to 1.6 in, so the rest of the gap to the 2D pipeline is the box
- * chassis itself and not the static, and no radius closes it.
+ * **0.125 IS WHERE THE BENEFIT SATURATES, AND THE ARM IS WHAT CAPS IT.** Swept against three
+ * different corners — the FLOWER column, a parked ROBOT's corner, the HIVE frame bar's end —
+ * with the invariants measured at every step:
+ *
+ *   r      flower  robot  hive   yaw@hook   flat-wall delta   start drift   no-climb max z
+ *   0      0.2 in  2.4    0.6    105 deg    —                 0.0000        0.0000
+ *   0.125  0.4 in  2.4    0.6    101 deg    0.00000/0.00000   0.0000        0.0000
+ *   0.25   0.4 in  2.4    0.6    100 deg    0.00000/0.00000   0.0000        0.0000
+ *   0.375  0.4 in  2.4    0.6     98 deg    0.00000/0.00000   0.0000        0.0000
+ *   0.5    0.4 in  2.4    0.6     97 deg    0.00000/0.00000   0.0000        0.0000
+ *   0.75   0.4 in  2.4    0.6     94 deg    0.00000/0.00000   0.0000        0.0000
+ *   1.0    0.4 in  2.4    0.6     92 deg    0.00000/0.00010   0.0000        0.0000
+ *
+ * Nothing above 0.125 moves a single graze number, and capture is flat across the whole sweep
+ * (a six-element cluster 12/18, a strafe past a line 4/4, an element riding the mouth's lateral
+ * edge 3/4, identical at r = 0, 0.125, 0.25, 0.5 and 1.0), so the smallest radius that buys the
+ * whole effect is taken.
+ *
+ * ⚠️ **AND THE CEILING IS THE ARM, NOT THE CLAMP.** The radius is clamped per box to
+ * `BB3_INTAKE_CORNER_CLAMP × min(hx, hy, hz)` so no core can go degenerate, and the arm is
+ * `INTAKE_RAIL_T` = 0.5 in thick (half-extent 0.25), so its own fillet can never exceed 0.25 in
+ * by geometry. Rebuild the compound WITHOUT the arms and the limit keeps climbing with r —
+ * 0.4 / 0.5 / 0.7 / 1.2 in at r = 0.125 / 0.25 / 0.5 / 1.0 — because the frame box's half-extent
+ * is 7.5 and can carry any of them; with the arms present it is 0.4 at every radius. A right
+ * CYLINDER of the chassis width slides past EVERY overlap out to 1.6 in. So a bigger break is
+ * not available to this mouth without thickening the arm, and that is `bbRobotSolids`' geometry
+ * and the 2D pipeline's.
  *
  * ⚠️ **NOTHING ANY INVARIANT MEASURES MOVES.** A skinned box is the Minkowski sum of a
  * smaller box with a ball: the six faces sit in their original planes, so flat-wall rest
@@ -2262,6 +2281,7 @@ export const BB3_INTAKE_CORNER_R = 0.125;
  * the same measured threshold under it, so it binds only as a floor on the core.
  */
 export const BB3_INTAKE_CORNER_CLAMP = 0.8;
+
 
 /**
  * ⚠️ **HOW FAR CLEAR OF A CHASSIS SOLID A FLIGHT BODY IS BORN (in)** — `syncElement`
@@ -2343,8 +2363,9 @@ export const BB3_FLOWER_RING_SEGMENTS = 32;
  * plus `BB3_FLOWER_CAGE_T`, which has to clear the pipes' own 2.205: N = 6 is 2.375, N = 8 is
  * 2.233, N = 10 is 2.173 and **N = 12 is 2.142**. 10 would fit; 12 is taken because it costs
  * nothing — the cage is ONE trimesh collider per flower, so the segment count is vertices, not
- * broad-phase proxies. `buildFlowerCage3d`'s header carries the measurement that made that the
- * build, and it is a 15 % `step3d` regression either way round.
+ * broad-phase proxies. `buildFlowerCage3d`'s header carries the measurement that made a PRISM
+ * the build rather than a fan of 48 cuboid slabs, and the short version is that the two cost the
+ * same at the MEDIAN (~+13 % of `step3d`) and only the fan fails the AI lane's p95.
  */
 export const BB3_FLOWER_CAGE_SEGMENTS = 12;
 

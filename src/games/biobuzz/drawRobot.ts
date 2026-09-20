@@ -276,6 +276,15 @@ function drawBiobuzzIntake(ctx: CanvasRenderingContext2D, r: RobotState, on: boo
       ctx.stroke();
     }
 
+    // THE FRONT BRACE, tying the two plates at the tip (owner, 2026-09-19: "add a bracing across
+    // the two intake plates in the front"). The same part the 3D scene draws
+    // (`robot:intake:brace:*`) and the same thing the collider's lintel + pocket filler are, so
+    // the map, the 3D view and the solve all show one closed rectangular front instead of a fork.
+    // From above it is simply a bar: the height it clears an element at is the side view's story.
+    roundRect(ctx, d - 0.55, -h, 0.55, h * 2, 0.18);
+    ctx.fill();
+    ctx.stroke();
+
     const outer = d - 0.95; // roller axis, a shade inside the tip
     const inner = f.rail - 0.2; // transfer roller, right at the frame line
     const deep = d - f.rail > 2.2; // a shallow mouth gets ONE roller, not two crammed together

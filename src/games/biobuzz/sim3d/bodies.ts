@@ -881,6 +881,18 @@ export function chassis3dShapes(spec: RobotSpec, heightIn: number): Chassis3dSha
  * another robot, and an element still sees the open pocket it needs. Density 0 like the rest,
  * and no new constant: every dimension is `bbMouths` and `BB3_MOUTH_SLOT_Z`, already the
  * authority for the mouth.
+ *
+ * ⚠️ **IT COSTS ~5 % OF A 2v2 `step3d`, AND THAT COST IS CONTACTS, NOT BOOKKEEPING.** Measured
+ * over 8 PAIRED alternating rounds: without it 0.763 ms, with it 0.800 (**1.049x**). Two extra
+ * colliders per robot in a group that meets NOTHING measure 0.960x, i.e. an extra collider is
+ * free — what this one buys is real manifolds against the low statics the fork used to drive
+ * through. Two ways of getting it back were measured and BOTH REJECTED: giving the tile plane
+ * its own group bit and filtering it out of the filler does nothing (1.098x on the noisier
+ * four-round run, i.e. no effect), and lifting the box 0.15 in off the tiles measures 1.030x —
+ * a 1.9-point difference inside the run-to-run spread, bought by re-opening the hole to
+ * anything under 0.15 in tall when the shortest static a robot can reach is **0.240 in**. The
+ * room-tick A/B sees none of it: paired against a 2v2 Chain Reaction room, 1.445 before and
+ * 1.434 after.
  */
 export function chassis3dPocketShapes(spec: RobotSpec, heightIn: number): Chassis3dShape[] {
   const reach = bbIntakeReach(spec);
@@ -942,12 +954,19 @@ export function addChassis3dColliders(
       body,
     );
   }
-  // ...and the POCKET FILLER, which is the same chassis to everything that is not an element.
-  // It gets NO edge break: its four outer vertical edges are coincident with the lintel's, which
-  // already carries one, and a skin here would only round the edges buried inside the compound.
+  /**
+   * ...and the POCKET FILLER, which is the same chassis to everything that is not an element.
+   *
+   * ⚠️ **IT TAKES THE EDGE BREAK TOO, AND THE FIRST CUT OF THIS DID NOT.** Its outer vertical
+   * edges look redundant — they are coincident in (x, y) with the lintel's, which is already
+   * broken — but they are the ONLY ones at the height of a low static, and a low static is the
+   * whole reason this box exists. Shipped square, it handed the flower's 0.35-in base plate
+   * (z -0.20..0.35, reaching 0.19 in further infield than the column above it) a knife corner,
+   * and the column graze that the break had lifted to 0.4 in fell straight back to 0.2.
+   */
   for (const s of chassis3dPocketShapes(spec, heightIn)) {
     world3d.createCollider(
-      RAPIER.ColliderDesc.cuboid(s.hx, s.hy, s.hz)
+      chassisBoxDesc(RAPIER, s.hx, s.hy, s.hz)
         .setTranslation(s.cx, s.cy, s.cz)
         .setDensity(0)
         .setFriction(PHYS_FRICTION)

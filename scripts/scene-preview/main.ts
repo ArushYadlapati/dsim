@@ -439,6 +439,104 @@ async function main(): Promise<void> {
     }
     return out;
   };
+  /** force the clear panels' `side`, to settle "is this face being drawn at all" by looking
+   * rather than by counting normals — the 2026-09-19 culling question. */
+  (window as unknown as { __bbSide: (s: 'front' | 'back' | 'double') => unknown }).__bbSide = (s) => {
+    const want = s === 'front' ? THREE.FrontSide : s === 'back' ? THREE.BackSide : THREE.DoubleSide;
+    const mats = new Set<THREE.Material>();
+    for (const m of panelMeshes('cells')) {
+      const mm = Array.isArray(m.material) ? m.material[0] : m.material;
+      if (mm) mats.add(mm);
+    }
+    for (const m of mats) {
+      m.side = want;
+      m.needsUpdate = true;
+    }
+    return mats.size;
+  };
+
+  /**
+   * AREA-WEIGHTED TRIANGLE-NORMAL BINS for the hive tray's clear-plastic mesh, in the TRAY's own
+   * local frame (the pivot group's inverse), by AZIMUTH — 16 bins, so a diagonal sheet lands in a
+   * bin of its own instead of being invisible to a ±x/±y count. Plus, per PLANE (triangles
+   * clustered by their plane's normal and offset), the area facing each way, which is what says
+   * whether a sheet is two-faced or single-sided.
+   */
+  (window as unknown as { __bbClearGeom: (alliance: Alliance | 'walls') => unknown }).__bbClearGeom = (alliance) => {
+    const three = (scene as unknown as { scene: THREE.Scene }).scene;
+    const walls = alliance === 'walls';
+    const pivot = walls
+      ? three
+      : findOriginal(three, `hive_${alliance}/tray-pivot`) ?? findOriginal(three, `hive_${alliance}/tray`);
+    const out: { mesh: string; localBox: string; tris: number; azBins: number[]; planes: { n: string; d: number; fwd: number; back: number }[] }[] = [];
+    three.traverse((o) => {
+      if (!(o instanceof THREE.Mesh)) return;
+      const m = Array.isArray(o.material) ? o.material[0] : o.material;
+      const want = walls ? /^glass#/ : /plastic#e6e6e6@hive_tray/;
+      if (!want.test(m?.name ?? '')) return;
+      let anc: THREE.Object3D | null = o;
+      let mine = false;
+      while (anc) {
+        if (anc === pivot) mine = true;
+        anc = anc.parent;
+      }
+      if (!mine) return;
+      o.updateWorldMatrix(true, false);
+      const toLocal = new THREE.Matrix4().copy(pivot!.matrixWorld).invert().multiply(o.matrixWorld);
+      const pos = o.geometry.getAttribute('position');
+      const idx = o.geometry.getIndex();
+      const count = idx ? idx.count : pos.count;
+      const a = new THREE.Vector3();
+      const b = new THREE.Vector3();
+      const c = new THREE.Vector3();
+      const e1 = new THREE.Vector3();
+      const e2 = new THREE.Vector3();
+      const azBins = new Array(16).fill(0);
+      const planes = new Map<string, { n: THREE.Vector3; d: number; fwd: number; back: number }>();
+      for (let t = 0; t < count; t += 3) {
+        const i0 = idx ? idx.getX(t) : t;
+        const i1 = idx ? idx.getX(t + 1) : t + 1;
+        const i2 = idx ? idx.getX(t + 2) : t + 2;
+        a.fromBufferAttribute(pos, i0).applyMatrix4(toLocal);
+        b.fromBufferAttribute(pos, i1).applyMatrix4(toLocal);
+        c.fromBufferAttribute(pos, i2).applyMatrix4(toLocal);
+        e1.subVectors(b, a);
+        e2.subVectors(c, a);
+        const n = new THREE.Vector3().crossVectors(e1, e2);
+        const area = n.length() / 2;
+        if (area <= 0) continue;
+        n.normalize();
+        const az = Math.atan2(n.y, n.x); // the tray's own arm axis is y, its width axis x
+        azBins[Math.min(15, Math.max(0, Math.floor(((az + Math.PI) / (2 * Math.PI)) * 16)))] += area;
+        // cluster by unsigned plane: the same sheet's two faces share a plane and differ in sign
+        const sign = n.x + n.y * 1e-3 + n.z * 1e-6 >= 0 ? 1 : -1;
+        const un = n.clone().multiplyScalar(sign);
+        const d = un.dot(a);
+        const key = `${un.x.toFixed(2)},${un.y.toFixed(2)},${un.z.toFixed(2)}|${(Math.round(d / 0.25) * 0.25).toFixed(2)}`;
+        let p = planes.get(key);
+        if (!p) {
+          p = { n: un, d, fwd: 0, back: 0 };
+          planes.set(key, p);
+        }
+        if (sign > 0) p.fwd += area;
+        else p.back += area;
+      }
+      const bb = new THREE.Box3().setFromBufferAttribute(pos as THREE.BufferAttribute).applyMatrix4(toLocal);
+      out.push({
+        mesh: (o.userData as { name?: string })?.name ?? o.name,
+        localBox: `${bb.min.x.toFixed(1)}..${bb.max.x.toFixed(1)} x ${bb.min.y.toFixed(1)}..${bb.max.y.toFixed(1)} x ${bb.min.z.toFixed(1)}..${bb.max.z.toFixed(1)}`,
+        tris: count / 3,
+        azBins: azBins.map((v) => Math.round(v)),
+        planes: [...planes.values()]
+          .filter((p) => p.fwd + p.back > 0.5)
+          .sort((p, q) => q.fwd + q.back - (p.fwd + p.back))
+          .slice(0, 14)
+          .map((p) => ({ n: `${p.n.x.toFixed(2)},${p.n.y.toFixed(2)},${p.n.z.toFixed(2)}`, d: +p.d.toFixed(2), fwd: Math.round(p.fwd), back: Math.round(p.back) })),
+      });
+    });
+    return out;
+  };
+
   /** move the key light, to separate "this panel is lit" from "this panel is visible" — the whole
    * point of the 2026-09-19 measurement. `null` restores `renderScene.ts`'s own position. */
   (window as unknown as { __bbSun: (p: [number, number, number] | null) => unknown }).__bbSun = (p) => {

@@ -9,6 +9,8 @@
  * never boots physics or steps a world.
  */
 import * as THREE from 'three';
+import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
+import { MeshoptDecoder } from 'three/examples/jsm/libs/meshopt_decoder.module.js';
 import { readdirSync, readFileSync } from 'node:fs';
 import { dirname, join, relative, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -40,8 +42,12 @@ import {
   apriltag36h11Cells,
   clearPanelAlphaAt,
   clearPanelLightIndependent,
+  clearPanelPresence,
   clearPanelSheenGain,
+  clearPanelVeilAt,
   computeCreasedNormals,
+  sheetFacingBalance,
+  CLEAR_SHEETS_ARE_SINGLE_SIDED,
 } from '../../src/games/biobuzz/scene/renderFieldGlb';
 import { COLORS as SHARED_COLORS } from '../../src/config';
 import {
@@ -105,6 +111,7 @@ import {
   bbRobotSignOrientation,
   bbRobotSignText,
   buildFrame,
+  buildIntake,
   buildSwervePod,
   buildTurret,
   disposeRobotGroup,
@@ -168,6 +175,28 @@ const BIOBUZZ_DIR = join(root, 'src', 'games', 'biobuzz');
 const SCENE_DIR = join(BIOBUZZ_DIR, 'scene');
 
 /** every `.ts`/`.tsx` file under `dir`, recursively, as paths relative to the repo root. */
+/**
+ * THE SHIPPED FIELD ASSET, DECODED ONCE AT MODULE LOAD — GL-free, in Node, through the very
+ * loader the app uses. It is a TOP-LEVEL await because a lane function is synchronous and
+ * `GLTFLoader.parse` is not: `EXT_meshopt_compression` is required by this file, so the decoder's
+ * wasm has to come up before a single triangle exists. ~1 s, once, and it is what lets the
+ * back-face check below measure the REAL geometry instead of a belief about it.
+ */
+const FIELD_GLB_SCENE: THREE.Object3D | null = await (async (): Promise<THREE.Object3D | null> => {
+  try {
+    const here = dirname(fileURLToPath(import.meta.url));
+    const buf = readFileSync(join(here, '..', '..', 'public', 'models', 'biobuzz', 'field.glb'));
+    const ab = buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength) as ArrayBuffer;
+    const loader = new GLTFLoader();
+    loader.setMeshoptDecoder(MeshoptDecoder);
+    return await new Promise<THREE.Object3D | null>((resolve) => {
+      loader.parse(ab, '', (g) => resolve(g.scene), () => resolve(null));
+    });
+  } catch {
+    return null;
+  }
+})();
+
 function walkTs(dir: string): string[] {
   const out: string[] = [];
   for (const e of readdirSync(dir, { withFileTypes: true })) {
@@ -3202,6 +3231,83 @@ function graphicsChecks(check: Check, allFiles: string[]): void {
       );
       check('the muzzle height both renderers use is the sim’s release height', BB_LAUNCH_Z0 > 0 && robotsCode.includes('BB_LAUNCH_Z0'));
 
+      /**
+       * ── 2026-09-19 OWNER: THE FRONT BRACE ────────────────────────────────────────────────
+       * *"The intake plates stick out further than the intake rollers so the hitboxes are
+       * weird... add a bracing across the two intake plates in the front"*, and then *"let's do
+       * a bracing in the front then, to make the collision hitbox a long rectangle across in the
+       * front"*. The solve's half is `chassis3dPocketShapes`; this is the PICTURE's half, and
+       * the two must say the same thing: a bar the full mouth width, ending on the tip line, its
+       * underside one NECTAR diameter up so an element still passes under into the mouth.
+       *
+       * Measured on the built GROUP, not grepped: every vertex of every intake node, in the
+       * mouth's own frame, against the tip line. A plate that grows back past the roller, or a
+       * brace that slips down into the element's path, fails here.
+       */
+      {
+        const mk = (over: Partial<RobotSpec>): RobotSpec => bbCoerceSpec({ ...BB_DEFAULT_SPEC, ...over } as RobotSpec);
+        for (const mount of ['front', 'back', 'side', 'frontback'] as const) {
+          for (const chainIntake of ['sloped', 'vector', 'triangle'] as const) {
+            const spec = mk({ intakeMount: mount, chainIntake } as Partial<RobotSpec>);
+            const group = new THREE.Group();
+            for (const n of buildIntake(spec).nodes) group.add(n);
+            group.updateMatrixWorld(true);
+            const hl = spec.length / 2;
+            const hw = spec.width / 2;
+            for (const m of bbMouths(spec)) {
+              const f = bbMouthFrame(m, hl, hw);
+              const node = group.getObjectByName(`robot:intake:${m.edge}`);
+              const brace = group.getObjectByName(`robot:intake:brace:${m.edge}`);
+              if (!node || !brace) {
+                check(`intake ${mount}/${chainIntake}/${m.edge}: the front brace exists`, false, 'no node');
+                continue;
+              }
+              /**
+               * every vertex, carried into the MOUTH's own frame (+x OUTWARD from its origin).
+               * ⚠️ The tolerance is 0.06 in and it is MEASURED, not chosen: the arm's DIAGONAL
+               * member is a rotated box, so half its 0.34-in thickness projects 0.0496 in past
+               * the line its centre ends on. That predates this pass and is a rotated member's
+               * corner, not a plate reaching past the roller — which is what the check is for.
+               */
+              const OVERHANG = 0.06;
+              const along = (o: THREE.Object3D): number => {
+                let best = -Infinity;
+                const v = new THREE.Vector3();
+                o.traverse((n) => {
+                  const g3 = (n as THREE.Mesh).geometry as THREE.BufferGeometry | undefined;
+                  const pos = g3?.getAttribute?.('position');
+                  if (!pos) return;
+                  for (let i = 0; i < pos.count; i++) {
+                    v.fromBufferAttribute(pos as THREE.BufferAttribute, i).applyMatrix4(n.matrixWorld);
+                    best = Math.max(best, (v.x - f.ox) * Math.cos(f.rot) + (v.y - f.oy) * Math.sin(f.rot));
+                  }
+                });
+                return best;
+              };
+              const outer = along(node);
+              const braceOut = along(brace);
+              const bb = new THREE.Box3().setFromObject(brace);
+              const span = m.edge === 'front' || m.edge === 'back' ? bb.max.y - bb.min.y : bb.max.x - bb.min.x;
+              check(
+                `intake ${mount}/${chainIntake}/${m.edge}: nothing drawn reaches past the collision tip`,
+                outer <= f.depth + OVERHANG,
+                `outermost vertex ${outer.toFixed(4)} vs tip ${f.depth.toFixed(4)}`,
+              );
+              check(
+                `intake ${mount}/${chainIntake}/${m.edge}: the front brace spans the mouth and ends on the tip`,
+                span > f.half * 2 - 1.5 && Math.abs(braceOut - f.depth) < 1e-6,
+                `span ${span.toFixed(2)} of ${(f.half * 2).toFixed(2)}, brace face ${braceOut.toFixed(4)} vs tip ${f.depth.toFixed(4)}`,
+              );
+              check(
+                `intake ${mount}/${chainIntake}/${m.edge}: an element still passes under the brace`,
+                bb.min.z >= 2 * BB_NECTAR_R - 1e-6,
+                `underside ${bb.min.z.toFixed(3)} vs a NECTAR's ${(2 * BB_NECTAR_R).toFixed(3)}`,
+              );
+            }
+          }
+        }
+      }
+
       // ── 2026-09-19 OWNER PLAYTEST: THE INTAKE'S SIDES, AND PASSING UNDER THE ROLLER ───────
       // "its sides must not be solid aluminium plate" and "it should still allow for pollen and
       // nectar to pass under". Both were the picture claiming solid the COLLIDER does not have:
@@ -3438,10 +3544,10 @@ function graphicsChecks(check: Check, allFiles: string[]): void {
       const body = panelMat(glbSrc);
       // a clear panel is four things, not just a low opacity -- see the policy header
       check('a clear panel damps the environment map (what made these read as solid white)', body.includes('CLEAR_ENV_INTENSITY'));
-      check(
-        'a clear panel is FrontSide with depthWrite off (the 2026-09-19 re-tune)',
-        /depthWrite: false/.test(body) && /side: THREE\.FrontSide/.test(body) && !/side: THREE\.DoubleSide/.test(body),
-      );
+      // ⚠️ `depthWrite: false` STAYS and `FrontSide` is GONE -- the second is the 2026-09-19
+      // culling fix and the two are unrelated: depth-writing would let one clear panel occlude
+      // another drawn after it, while the SIDE decides whether a sheet exists from behind at all.
+      check('a clear panel still never writes depth', /depthWrite: false/.test(body));
     }
     // ⚠️ AND THERE IS ONLY ONE OF THEM NOW (2026-09-19, the owner's SECOND back-panel report).
     // This used to be a pair of checks comparing TWO `clearPanelMaterial`s -- one per path -- on
@@ -3482,17 +3588,16 @@ function graphicsChecks(check: Check, allFiles: string[]): void {
       // the re-tune's DIRECTION, so nobody walks the file back to the first pass: a cell skin is
       // denser than the perimeter, and both are far below the rejected 0.22.
       //
-      // ⚠️ THE CELL CEILING IS 0.20, NOT 0.15. 0.13 -> 0.18 on 2026-09-19 and the measurement is
-      // on `CELL_PANEL_OPACITY` itself: against the lit room behind a hive the only thing a sheet
-      // can do is take light OUT of that ground, the most it can take is its own alpha, and at
-      // 0.13 the panel was already measuring 87% of that ceiling -- so no amount of shading could
-      // move the view the owner was reporting. 0.20 is where a CELL's three stacked skins reach
-      // 1 - 0.8^3 = 49%, which is the white-board complaint again.
+      // ⚠️ AND THE CELL SKIN IS BACK AT 0.13, ON PURPOSE. Raising it to 0.18 was tried and
+      // MEASURED on 2026-09-19: it moved the back view by 0.1 of a level, because alpha is a
+      // multiplier on `bg - tint` and the ground behind a hive IS the tint's own value. What
+      // answers that report is the VEIL, which adds; the opacity went back to where the
+      // white-board re-tune had put it.
       const cell = num(glbSrc, 'CELL_PANEL_OPACITY');
       const wall = num(glbSrc, 'WALL_PANEL_OPACITY');
       check(
         'a clear panel is nearly invisible face-on, and a cell skin is the denser of the two',
-        wall > 0 && wall <= 0.12 && cell > wall && cell <= 0.2,
+        wall > 0 && wall <= 0.12 && cell > wall && cell <= 0.15,
         `wall ${wall}, cell ${cell}`,
       );
       check('the perimeter wall is UNCHANGED by the cell re-tune (0.08, measured)', wall === 0.08, `${wall}`);
@@ -3994,13 +4099,63 @@ function graphicsChecks(check: Check, allFiles: string[]): void {
       }
     }
 
+    // ⚠️ IT WAS BACK-FACE CULLING, AND THIS IS THE CHECK THAT WOULD HAVE SAID SO.
+    //
+    // The 2026-09-19 header said "it is NOT back-face culling -- 0 boundary edges, face normals in
+    // matched opposite pairs (+-y 1,203/1,233, +-x 204/192), so every skin is a closed slab". That
+    // count binned only AXIS-ALIGNED normals and a cell's back is a GABLE: its two sheets are
+    // diagonal, normal ~ (0.54, 0, +-0.84) in the tray frame, so they were in neither bin. Three
+    // passes of SHADING fixes followed, on faces that were not being rasterised from behind.
+    //
+    // So this measures the asset PER PLANE, with the loader's own exported function: a closed slab
+    // puts its two faces in one plane cluster and splits the area both ways, an open sheet puts all
+    // of it one way. Run over the shipped `.glb` in Node -- no GL context, no camera, no opinion.
+    {
+      const scene = FIELD_GLB_SCENE;
+      check('field.glb parses headlessly, so the asset itself can be measured here', scene !== null);
+      if (scene) {
+        scene.updateMatrixWorld(true);
+        const clear: { name: string; frac: number; area: number; planes: number }[] = [];
+        scene.traverse((o) => {
+          const mesh = o as THREE.Mesh;
+          if (!mesh.isMesh || !mesh.geometry) return;
+          const mat = Array.isArray(mesh.material) ? mesh.material[0] : mesh.material;
+          const mn = mat?.name ?? '';
+          const node = String((o.parent?.userData as { name?: string })?.name ?? o.parent?.name ?? '');
+          const isTraySkin = mn === 'plastic#e6e6e6' && /^hive_(red|blue)[/]?tray$/.test(node);
+          const isWallGlass = mn.startsWith('glass#');
+          if (!isTraySkin && !isWallGlass) return;
+          const r = sheetFacingBalance(mesh.geometry, mesh.matrixWorld);
+          clear.push({ name: `${node || 'walls'} ${mn}`, frac: r.twoFacedFraction, area: r.totalArea, planes: r.planes });
+        });
+        check('the GLB carries the clear tray skins and the perimeter glass', clear.length >= 3, `${clear.length} primitives`);
+        for (const c of clear) {
+          check(
+            `EVERY clear surface is open SHEETING, not a closed slab -- ${c.name}`,
+            c.frac < 0.1,
+            `two-faced ${(c.frac * 100).toFixed(1)}% of ${c.area.toFixed(0)} sq in over ${c.planes} planes`,
+          );
+        }
+        // ...which is exactly why the material may not cull a face. The two travel together.
+        check(
+          'so the clear material is DoubleSide, keyed on that measurement',
+          CLEAR_SHEETS_ARE_SINGLE_SIDED &&
+            glbSrc.includes('side: CLEAR_SHEETS_ARE_SINGLE_SIDED ? THREE.DoubleSide : THREE.FrontSide'),
+        );
+      }
+      // THE FUNCTION ITSELF, against geometry whose answer is known -- a lane check that only ever
+      // sees one asset cannot tell "measured" from "always returns 0".
+      const slab = new THREE.BoxGeometry(20, 12, 0.02).toNonIndexed();
+      const sheet = new THREE.PlaneGeometry(20, 12).toNonIndexed();
+      check('a closed SLAB measures two-faced', sheetFacingBalance(slab).twoFacedFraction > 0.9, `${sheetFacingBalance(slab).twoFacedFraction.toFixed(3)}`);
+      check('...and a single SHEET measures single-sided', sheetFacingBalance(sheet).twoFacedFraction < 0.01, `${sheetFacingBalance(sheet).twoFacedFraction.toFixed(3)}`);
+    }
+
     // ITEM 8 -- A CLEAR PANEL IS A DIELECTRIC, NOT A CONSTANT ALPHA.
     //
-    // Owner, 2026-09-19: "the hive's back panel reads as perfectly transparent from behind, and
-    // should not." It is NOT back-face culling -- measured on the shipped `field.glb`, red tray,
-    // the `plastic#e6e6e6` primitive has 0 BOUNDARY edges and matched opposite normal bins, so
-    // every skin is a closed slab and `FrontSide` culls nothing. The panel is drawn; it is drawn
-    // at a constant 0.13 alpha, which also divides its own reflection by 0.13, and a reflection
+    // Owner, 2026-09-19, and the fix above is the one that answered it. What follows is the
+    // SHADING half, which stands on its own: a constant alpha divides a panel's own reflection by
+    // that alpha, and a reflection
     // does not pass through the sheet. See `clearPanelMaterial`'s header.
     //
     // ⚠️ AND THE ANSWER MUST NOT BRING BACK THE STRAY DASHES. `addPanelEdges` is what was removed
@@ -4045,7 +4200,7 @@ function graphicsChecks(check: Check, allFiles: string[]): void {
       );
 
       // THE CURVE, run rather than grepped -- the shader's own `pow(1-c,5)` is this reduced.
-      for (const base of [0.08, 0.18] as const) {
+      for (const base of [0.08, 0.13] as const) {
         check(
           `face-on, a ${base} panel is still EXACTLY ${base} (the white-board re-tune is untouched)`,
           Math.abs(clearPanelAlphaAt(base, 1) - base) < 1e-12,
@@ -4103,8 +4258,8 @@ function graphicsChecks(check: Check, allFiles: string[]): void {
       }
       // THE SHEEN GAIN: face-on is exactly where the panel needs it most, and the cap does not
       // bind on either shipped opacity (it exists so a future lower one cannot divide by ~0).
-      check('the sheen gain restores the reflection face-on', clearPanelSheenGain(0.18) > 4, `${clearPanelSheenGain(0.18).toFixed(2)}x`);
-      check('...more so on the thinner perimeter panel', clearPanelSheenGain(0.08) > clearPanelSheenGain(0.18));
+      check('the sheen gain restores the reflection face-on', clearPanelSheenGain(0.13) > 6, `${clearPanelSheenGain(0.13).toFixed(2)}x`);
+      check('...more so on the thinner perimeter panel', clearPanelSheenGain(0.08) > clearPanelSheenGain(0.13));
       check('...and the cap never binds on a shipped value', clearPanelSheenGain(0.08) < 12, `${clearPanelSheenGain(0.08).toFixed(2)}`);
       check('...but does bind on an absurd one', clearPanelSheenGain(0.001) === 12);
 
@@ -4114,7 +4269,7 @@ function graphicsChecks(check: Check, allFiles: string[]): void {
       // light is exactly what a face pointing away from it does not get. Moving the sun through
       // four positions swung the back view 3.0% -> 13.1% and left the mouth-side view flat, so
       // the panel needs a floor that no light position can take away. These pin it.
-      for (const base of [0.08, 0.18] as const) {
+      for (const base of [0.08, 0.13] as const) {
         // a face turned right away from the rig still has the mirror AND its own body
         const away = clearPanelLightIndependent(base, 0.85);
         check(
@@ -4135,8 +4290,73 @@ function graphicsChecks(check: Check, allFiles: string[]): void {
       // a CELL skin carries more of that floor than a perimeter panel, the same way its alpha does
       check(
         'a cell skin has more body from behind than a wall panel',
-        clearPanelLightIndependent(0.18, 0.85).total > clearPanelLightIndependent(0.08, 0.85).total,
+        clearPanelLightIndependent(0.13, 0.85).total > clearPanelLightIndependent(0.08, 0.85).total,
       );
+
+      // ⚠️ THE VEIL -- THE TERM THAT ADDS, AND THE ONLY ONE THAT SURVIVES A MID-TONE GROUND.
+      //
+      // Three passes at this bug were spent on terms that MULTIPLY `bg - tint`: a Fresnel alpha, a
+      // restored mirror, a damped ambient, and finally the alpha itself at 0.18. Every one of them
+      // moved the owner's view by under 0.1 of a level, because `CLEAR_PANEL_TINT` is a mid grey
+      // and the lit room behind a hive is its own value -- the difference they were scaling was
+      // already zero. These checks are about the term that does not multiply anything.
+      {
+        const veilSrc = /const PANEL_VEIL = ([\d.]+);/.exec(glbSrc);
+        const veil = veilSrc ? Number(veilSrc[1]) : NaN;
+        check('the cell skins carry a veil, and it is a real number', Number.isFinite(veil) && veil > 0, `${veil}`);
+        check(
+          'it is ADDED in the shader, un-attenuated, and not blended toward the tint',
+          glbSrc.includes('float bbVeilG = min( 1.0 / max( diffuseColor.a, 0.02 ),') &&
+            /outgoingLight \+= vec3\( \$\{veilRgb\.r/.test(glbSrc),
+        );
+        check(
+          '...in its own COOL NEAR-WHITE, not the transmission tint',
+          /const PANEL_VEIL_TINT = 0xdfe6ec;/.test(glbSrc) && glbSrc.includes('setHex(PANEL_VEIL_TINT, THREE.SRGBColorSpace)'),
+        );
+        // IT DOES NOT DEPEND ON THE LIGHT OR ON THE VIEW. The JS mirror takes neither, and the
+        // shader's own expression names no light term -- that is the whole of the owner's report.
+        check(
+          '...and it is LIGHT-INDEPENDENT: the veil expression names no light term',
+          (() => {
+            const at = glbSrc.indexOf('float bbVeilT =');
+            const end = glbSrc.indexOf('#include <opaque_fragment>', at);
+            const body = at < 0 ? '' : glbSrc.slice(at, end);
+            return body.length > 0 && !/reflectedLight|directLight|irradiance|hemisphere/i.test(body);
+          })(),
+        );
+        // ONE SKIN, in the band the measurement asked for, against ANY ground -- the value is the
+        // same number three times because an added term does not care what is behind it.
+        // ⚠️ IT IS SMALL, AND IT WAS NOT ALWAYS. 0.075 was tuned while two thirds of the clear
+        // surface was being back-face culled from behind, so the veil was standing in for sheets
+        // that were simply not drawn. With the sheets back it is 0.018 -- a floor under the
+        // geometry, not a substitute for it.
+        const one = clearPanelVeilAt(veil, 0.13, 0.9);
+        check('one cell skin adds a real, background-independent amount', one > 0.01 && one < 0.06, `${one.toFixed(4)}`);
+        check(
+          '...and it is the same amount whichever way the skin faces (|N.V| is symmetric)',
+          Math.abs(clearPanelVeilAt(veil, 0.13, 0.9) - clearPanelVeilAt(veil, 0.13, -0.9)) < 1e-12,
+        );
+        // THE STACK. `FrontSide` leaves three of these between the eye and an element through the
+        // mouth, and each ADDS -- so the per-skin value is sized against the stack, not on its own.
+        const stack = 3 * clearPanelVeilAt(veil, 0.13, 0.55);
+        check('the worst stack is capped well short of an opaque sheet', stack < 0.55, `${stack.toFixed(4)} over 3 skins`);
+        check(
+          '...because the graze growth is bounded, not free',
+          /const PANEL_VEIL_GRAZE_MAX = [\d.]+;/.test(glbSrc) &&
+            clearPanelVeilAt(veil, 0.13, 0.05) < clearPanelVeilAt(veil, 0.13, 1) * 2,
+          `${clearPanelVeilAt(veil, 0.13, 0.05).toFixed(4)} vs ${clearPanelVeilAt(veil, 0.13, 1).toFixed(4)}`,
+        );
+        // AND THE PERIMETER WALLS GET NONE OF IT. The 2026-09-18 report about those was that they
+        // read as solid beige bands; they measure present from every camera the probe checks.
+        check('a wall panel has no veil at all', clearPanelVeilAt(0, 0.08, 0.9) === 0);
+        check(
+          '...and `clearPanelPresence` splits the three terms so the lane can name which moved',
+          (() => {
+            const p = clearPanelPresence(veil, 0.13, 0.9);
+            return p.veil > 0 && p.mirror > 0 && p.body > 0;
+          })(),
+        );
+      }
 
       // THE ROUGHNESS -- the half of the fix that does not depend on the viewing angle
       check('a season-old panel is not showroom acrylic', /const PANEL_ROUGHNESS = 0\.18;/.test(glbSrc) && !/roughness: 0\.08/.test(glbCode));
@@ -4153,7 +4373,7 @@ function graphicsChecks(check: Check, allFiles: string[]): void {
         );
         check('...it is one material, whose only addition is a fragment-shader replace', body.includes('shader.fragmentShader = shader.fragmentShader.replace('));
         // the FrontSide / depthWrite policy the 2026-09-19 re-tune set is unchanged by all this
-        check('...and FrontSide + depthWrite:false survive it', /side: THREE\.FrontSide/.test(body) && /depthWrite: false/.test(body) && !/DoubleSide/.test(body));
+        check('...and depthWrite:false survives it', /depthWrite: false/.test(body));
       }
     }
 

@@ -953,7 +953,10 @@ interface BbRoller {
  * no chance of a flank intake being drawn where a front one acts. `rail` is where the frame
  * line falls in that frame, so everything outboard of it is genuinely outside the robot.
  */
-function buildIntake(spec: RobotSpec): { nodes: THREE.Object3D[]; rollers: BbRoller[] } {
+/* EXPORTED for the RENDER lane, which measures the drawn plate tips and the front brace against
+ * `bbMouths` on the real group. It cannot go through `buildRobotGroup`: the wheel roller stripe
+ * is a canvas texture and the lane has no DOM. */
+export function buildIntake(spec: RobotSpec): { nodes: THREE.Object3D[]; rollers: BbRoller[] } {
   const nodes: THREE.Object3D[] = [];
   const rollers: BbRoller[] = [];
   const hl = spec.length / 2;
@@ -988,6 +991,19 @@ function buildIntake(spec: RobotSpec): { nodes: THREE.Object3D[]; rollers: BbRol
       const parts: THREE.BufferGeometry[] = [];
       // (1) THE BOTTOM RAIL, its underside flush with the collider's open pocket
       parts.push(boxAt(armLen, armT, 0.5, armX0 + armLen / 2, 0, railZ));
+      /**
+       * (1b) THE ROUNDED NOSE. ⚠️ The rail used to end on a SQUARE corner at the tip line, 1.25
+       * in forward of the roller hub's own front face — which is the thing the owner was
+       * looking at: *"The intake plates stick out further than the intake rollers so the
+       * hitboxes are weird."* The plate still ends exactly on `tip` (the reach is the sim's and
+       * nothing here may move it), but it ends on an ARC swept about the tip line's own centre
+       * height instead of on a knife corner, so it reads as a plate wrapping the roller rather
+       * than as a prong sticking past it. Radius is half the rail's depth, so the nose cannot
+       * dip below the rail's underside and cannot close the pocket an element passes through.
+       */
+      const nose = new THREE.CylinderGeometry(0.25, 0.25, armT, 12);
+      nose.translate(tip - 0.25, 0, railZ);
+      parts.push(nose);
       // (2) THE AXLE BOSS, where the roller shaft is carried
       const boss = new THREE.CylinderGeometry(0.55, 0.55, armT, 12);
       boss.translate(outer, 0, BB_ROLLER_Z);
@@ -1021,6 +1037,33 @@ function buildIntake(spec: RobotSpec): { nodes: THREE.Object3D[]; rollers: BbRol
       arm.position.set(0, s * (f.half - BB_INTAKE_ARM_INSET - armT / 2), 0);
       g.add(cast(arm));
     }
+
+    /**
+     * ⚠️ **THE FRONT BRACE — THE PART THE OWNER ASKED FOR, AND THE DRAWN TWIN OF THE LINTEL.**
+     * Owner, 2026-09-19: *"add a bracing across the two intake plates in the front to make the
+     * whole thing just have a rectangular hitbox"*, and then *"let's do a bracing in the front
+     * then, to make the collision hitbox a long rectangle across in the front"*.
+     *
+     * A straight bar the FULL mouth width, its outer face flush on the tip line, tying the two
+     * plates: what the picture had instead was two free-ended prongs with open air between them,
+     * which is exactly what the collider had too (`chassis3dPocketShapes`, `sim3d/bodies.ts`,
+     * closes the solve's half of it). The two halves are built from the same three numbers —
+     * `bbMouths` for the width, `f.depth` for the tip, `BB3_MOUTH_SLOT_Z` for the underside —
+     * so the drawn brace and the lintel cannot drift apart.
+     *
+     * ⚠️ **ITS UNDERSIDE IS THE SLOT, NOT A CHOSEN HEIGHT.** `BB3_MOUTH_SLOT_Z` is one NECTAR
+     * diameter (3.6 in), the tallest element there is, so a POLLEN or a NECTAR still passes
+     * under it and into the mouth — the same clearance the roller's flaps yield to keep, and the
+     * same plane the collider's lintel starts on. Drop it and the picture blocks a gap the
+     * physics says is open, which is the bug the compliant flaps were written to fix.
+     */
+    const braceT = 0.55;
+    const braceGeo = framePart(`intakeBrace:${f.half.toFixed(2)}|${braceT.toFixed(2)}`, () => [
+      boxAt(braceT, f.half * 2 - 2 * BB_INTAKE_ARM_INSET, braceT, tip - braceT / 2, 0, BB3_MOUTH_SLOT_Z + braceT / 2),
+    ]);
+    const brace = new THREE.Mesh(braceGeo, solidMat(ALU, 0.45, 0.35));
+    brace.name = `robot:intake:brace:${m.edge}`;
+    g.add(cast(brace));
 
     const barrel = f.half * 2 - 0.9;
     const hubGeo = framePart(`rollerHub:${barrel.toFixed(2)}`, () => [

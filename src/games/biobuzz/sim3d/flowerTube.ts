@@ -54,14 +54,14 @@ import { cadFlowerRings, type FieldFlowerRing } from './fieldColliders';
  * face catches on every shared edge it crosses.
  *
  * ── AND THE CAGE, WHICH IS THE WALL BETWEEN THE TOP TWO PLATES THE CAD HAS NO PART FOR ──────
- * `buildFlowerCage3d` (below) closes the 15-in gap between the mid plate's top face and the
- * top plate's underside with a fan of tangent slabs at the MIDDLE BORE's own radius. Read
+ * `buildFlowerCage3d` (below) closes the 15-in gap between the mid plate's top face and the top
+ * plate's underside with one more prism, its faces on the MIDDLE BORE's own radius. Read
  * `BB3_FLOWER_CAGE_SEGMENTS`'s header in `config.ts` first: it carries the measurement (a POLLEN
  * centre reaching 1.046 in off-axis through the gaps between the four HIPS pipes, and a column
  * arching on it 22 times in 24) and the argument that a wall at an aperture every element in the
- * tube has already passed cannot stop anything. The slab fan is the exception to the paragraph
- * above, not a contradiction of it: a plate's bore has to be ROUND to the thousandth because it
- * SORTS a 3.6-in nectar from a 3.222-in hole, and a cage sorts nothing.
+ * tube has already passed cannot stop anything. It is a TRIMESH for the same reason the plates
+ * are, and it is CIRCUMSCRIBED where they are inscribed — a plate's bore SORTS a 3.6-in nectar
+ * from a 3.222-in hole and must never be generous; a cage sorts nothing and must never be mean.
  */
 
 /** one tessellated plate, ready for `RAPIER.ColliderDesc.trimesh`. */
@@ -216,15 +216,18 @@ export function flowerCageBand(rings: readonly FieldFlowerRing[]): readonly [num
  * Close one FLOWER's open span with a fan of tangent slabs — see `BB3_FLOWER_CAGE_SEGMENTS` in
  * `config.ts` for the measurement that made this necessary and for why a wall here stops nothing.
  *
- * ⚠️ **ONE TRIMESH PRISM, NOT A FAN OF CUBOIDS, AND THE REASON IS THE PERF BUDGET.** The fan was
- * the obvious build (a ring is non-convex, so it is a trimesh or N boxes — see this file's header
- * for why the PLATES chose the trimesh) and it shipped 12 colliders per flower, 48 across the
- * field. MEASURED on a 2v2 room, three interleaved rounds of `step3d` medians: the fan read
- * 0.394 / 0.401 / 0.402 ms against 0.338 / 0.349 / 0.350 with no cage at all — **+15 %** — and it
- * took the AI lane's `bot-driven p95` from 1.30 to 1.93 ms against a 1.5 budget. The identical
- * geometry as ONE trimesh prism reads **0.354**, i.e. inside the noise of having no cage. The
- * difference is 48 broad-phase proxies against 4, since the narrow phase sees the same walls
- * either way.
+ * ⚠️ **ONE TRIMESH PRISM, NOT A FAN OF CUBOIDS, AND WHAT SEPARATES THEM IS THE TAIL.** The fan
+ * was the obvious build (a ring is non-convex, so it is a trimesh or N boxes — see this file's
+ * header for why the PLATES chose the trimesh) and it shipped 12 colliders per flower, 48 across
+ * the field. On the MEDIAN the two are the same: three interleaved rounds of `step3d` on a 2v2
+ * room read the fan at 0.394 / 0.401 / 0.402 ms and the prism at 0.374 / 0.381 / 0.371, against
+ * 0.333 / 0.331 / 0.330 with no cage at all — both about +13 %.
+ *
+ * The AI lane's `bot-driven 2v2 step3d p95 <= 1.5ms` is where they part: the fan measured
+ * **1.86 and 1.95 ms — a hard FAIL** — and the prism 1.248 and 1.436 against 1.220 and 1.352
+ * with no cage. 48 static proxies near four flowers produce expensive OUTLIER ticks that the
+ * median never shows; the narrow phase sees the same walls either way, so the 4 proxies are free.
+ * ⚠️ **Measure the p95, not the median, if this is ever rebuilt.**
  *
  * Closed and outward-oriented, laid out exactly like `ringTrimesh`'s: four vertices per ray
  * (inner/outer × bottom/top), eight triangles per pair of adjacent rays. `FIX_INTERNAL_EDGES`
@@ -253,6 +256,11 @@ export function buildFlowerCage3d(
   const [cx, cy] = mid.bore;
   const n = BB3_FLOWER_CAGE_SEGMENTS;
   const t = BB3_FLOWER_CAGE_T;
+  // BUILD NOTHING rather than a degenerate prism: fewer than three rays has no interior, and
+  // `cageVertexR` divides by `cos(π/N)`, which is not a number at N = 0. The same fail-safe
+  // `ringTrimesh` takes — no collider beats a wrong one — and it is also what makes the constant
+  // a clean A/B switch when somebody measures what the cage costs.
+  if (!(n >= 3) || !(t > 0)) return 0;
   // ⚠️ **CIRCUMSCRIBED, WHICH IS THE OPPOSITE OF `ringTrimesh`'S RULE, AND ON PURPOSE.** A plate's
   // bore is INSCRIBED because it SORTS — a hole a hair too generous lets through something that
   // should have been stopped, and nothing puts it back. The cage sorts nothing; what it must not

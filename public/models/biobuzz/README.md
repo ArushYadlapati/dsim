@@ -91,6 +91,28 @@ A part `convert.py` cannot classify goes to node `misc` with the `misc` finish a
 it is never dropped. `assemble-gltf.mjs` additionally refuses to finish if any STL it was handed
 went unclaimed by a node.
 
+## ⚠️ The clear panels export as open SHEETING, not as solids (2026-09-19)
+
+Measured on the shipped `field.glb`, with `sheetFacingBalance` (`scene/renderFieldGlb.ts`, the
+same function the RENDER lane runs): triangles clustered by plane, area split by winding.
+
+| primitive | area | two-faced |
+|---|---|---|
+| `walls` `glass#e6e6e6` | 12,245 sq in | **0.0 %** |
+| `hive_red/tray` `plastic#e6e6e6` | 3,733 sq in | **0.4 %** |
+| `hive_blue/tray` `plastic#e6e6e6` | 3,733 sq in | **0.4 %** |
+
+Not one clear surface is a closed slab. They are single-sided sheets wound to face INWARD — into
+the cell, into the field — although the STEP models them as 0.020-in solids. Consequence in the
+renderer: with `side: THREE.FrontSide` two thirds of the clear surface vanished when the camera
+was behind a hive cell or outside the perimeter, which is the owner's "the back panel of the hive
+is too transparent when seen from the back, but from the front it looks fine".
+
+The renderer compensates at load (`CLEAR_SHEETS_ARE_SINGLE_SIDED` → `DoubleSide`, which draws a
+sheet exactly once from either side) and the RENDER lane pins the measurement, so the day
+`convert.py` / `assemble-gltf.mjs` export these as real solids that check fails loudly and the
+side goes back to `FrontSide` rather than silently drawing every slab twice.
+
 ## Decimation
 
 There is no document-wide `gltf-transform simplify` step. A global `--ratio` is the wrong
