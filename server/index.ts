@@ -81,6 +81,7 @@ import {
   type PresenceGuest,
   type MaintenanceWindow,
   challengeParty,
+  clearRoomInvitesTo,
   syncStaffRoles,
   type GlobalPresence,
   // the admin console's own layer (migration 0041)
@@ -3072,6 +3073,13 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
     room.add(client);
     conn = client.conn ?? 0; // remember which socket-generation owns our slot
     room.maybeStartRanked(); // no-op unless a staged ranked room is now fully present
+    // A CHALLENGE IS SPENT THE MOMENT ITS RECIPIENT JOINS THE ROOM IT NAMED. Scoped to the joiner
+    // AS RECIPIENT, not to the room code: the host re-joining after a reconnect must not delete
+    // an invite nobody has answered yet, and one friend joining a lobby must not clear the
+    // others' invites to it. The accepting client dismisses its own copy too (`onJoinInvite`),
+    // but every older client does not, which is how an accepted challenge outlived its match.
+    // Fire-and-forget, after `add` per the no-await rule above; a miss leaves the row to its TTL.
+    if (dbEnabled && client.userId) void clearRoomInvitesTo(code, client.userId).catch(() => {});
   };
 
   // inbound rate bucket for this socket — see MSG_RATE_LIMIT

@@ -1,6 +1,6 @@
 import { Room, type Client } from './room';
 import { persistMatch, persistDodges, persistBehaviour } from './persist';
-import { actFor, getRating, getSkill, createPendingMatch } from './db/repo';
+import { actFor, getRating, getSkill, createPendingMatch, clearRoomInvites } from './db/repo';
 import { dbEnabled } from './db/pool';
 import type { GameId, Physics } from '../src/types';
 import { simModuleFor } from '../src/games/sim';
@@ -701,6 +701,18 @@ export class Matchmaker {
       physics: Matchmaker.stagedPhysics(group[0].game),
     });
     for (const e of group) e.send({ t: 'matchAssigned', mode, room: code, hostRegion });
+    // A RATED CHALLENGE'S PARTY TOKEN IS SPENT the instant its match is staged — both
+    // members necessarily cleared `challengeParty` to be queued under it at all, so
+    // nothing downstream ever reads the row again. Without this the challenge sat in
+    // both players' friends lists as still "pending" for up to INVITE_TTL_S after the
+    // match it produced had already been played. Distinct tokens only: a ranked2v2
+    // group can carry two premade pairs at once. Fire-and-forget, after `stage` has
+    // actually committed the match — never gate the match on this.
+    if (dbEnabled) {
+      for (const token of new Set(group.map((e) => e.party).filter((t): t is string => !!t))) {
+        void clearRoomInvites(token).catch(() => {});
+      }
+    }
   }
 
   /** DEV/no-DB fallback: run the match on THIS machine. Only reachable when

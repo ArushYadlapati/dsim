@@ -7,6 +7,7 @@ import {
   fetchAdminStatus,
   fetchProfile,
   fetchFriends,
+  dismissRoomInvite,
   type Activity,
   type RoomInvite,
 } from '../net/api';
@@ -594,6 +595,14 @@ export function App() {
    * format means.
    */
   const onJoinInvite = (invite: RoomInvite): void => {
+    // Accepting CONSUMES the challenge. The server also clears it once we actually
+    // join the room (or, for a rated format, once the matchmaker stages the match
+    // this token produced) — that half covers every client, including one that
+    // predates this call — but doing it here too means OUR OWN friends list stops
+    // showing "waiting to accept" the moment we act on it, rather than after the
+    // next poll finds the server already agrees. Fire-and-forget: a failed dismiss
+    // here just leaves the row for the server-side clear (or its TTL) to catch.
+    void dismissRoomInvite(invite.id).catch(() => {});
     const challenge = challengeOf(invite, invite.from.username ?? invite.from.handle ?? '');
     if (challenge) {
       startChallenge(challenge);

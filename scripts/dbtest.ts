@@ -549,6 +549,52 @@ async function main(): Promise<void> {
     (await repo.searchUsersByName('own'))[0]?.role === 'owner',
   );
 
+  // ---- "PLAY A FRIEND" CHALLENGES: clearing a spent one -------------------
+  // Reported bug: an ACCEPTED challenge kept reading as "pending" — on both the
+  // recipient's incoming list and the sender's sent list — for the rest of
+  // INVITE_TTL_S even after the match it produced had been played to completion.
+  // Nothing ever told `room_invites` the row was spent. `clearRoomInvites` is the
+  // fix: the server calls it once the room a casual challenge named is actually
+  // joined (`server/index.ts` `joinRoom`) or once a rated party token's match is
+  // staged (`server/matchmaking.ts` `assign`) — this only covers the repo-level
+  // half, which both call sites share.
+  await repo.inviteToRoom('badge-own', 'badge-nil', 'ROOMCLR', 'decode', 'versus', null, 'casual1v1');
+  check(
+    'challenge: a fresh invite shows on both the recipient’s and the sender’s side',
+    (await repo.listRoomInvites('badge-nil')).some((i) => i.room === 'ROOMCLR') &&
+      (await repo.listFriends('badge-own')).sent.some((s) => s.room === 'ROOMCLR'),
+  );
+  await repo.clearRoomInvites('ROOMCLR');
+  check(
+    'challenge: clearing it drops it from the recipient’s incoming list',
+    !(await repo.listRoomInvites('badge-nil')).some((i) => i.room === 'ROOMCLR'),
+  );
+  check(
+    'challenge: ...and from the sender’s sent list — the exact symptom reported',
+    !(await repo.listFriends('badge-own')).sent.some((s) => s.room === 'ROOMCLR'),
+  );
+  // scoped to the one room code: clearing a spent challenge must never touch a
+  // different, still-live one polled in the same request.
+  await repo.inviteToRoom('badge-own', 'badge-nil', 'ROOMKEEP', 'decode', 'versus', null, 'casual1v1');
+  await repo.clearRoomInvites('ROOMCLR'); // already gone — must be a silent no-op
+  check(
+    'challenge: clearing one room code never touches another',
+    (await repo.listRoomInvites('badge-nil')).some((i) => i.room === 'ROOMKEEP'),
+  );
+  // the JOIN path is scoped to the recipient: the host re-joining their own room (a reconnect)
+  // must not delete an invite nobody has answered, and the recipient joining must.
+  await repo.clearRoomInvitesTo('ROOMKEEP', 'badge-own');
+  check(
+    'challenge: the SENDER joining the room does not clear an unanswered invite',
+    (await repo.listRoomInvites('badge-nil')).some((i) => i.room === 'ROOMKEEP'),
+  );
+  await repo.clearRoomInvitesTo('ROOMKEEP', 'badge-nil');
+  check(
+    'challenge: the RECIPIENT joining the room clears it, on both sides',
+    !(await repo.listRoomInvites('badge-nil')).some((i) => i.room === 'ROOMKEEP') &&
+      !(await repo.listFriends('badge-own')).sent.some((s) => s.room === 'ROOMKEEP'),
+  );
+
   // ---- global presence aggregation ---------------------------------------
   // Rewritten from two statements into one (the sum, plus a distinct-count over the
   // same rows) to halve the cost of the site's most-called query. It had no coverage,

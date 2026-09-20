@@ -5268,6 +5268,24 @@ export async function cancelRoomInvite(userId: string, id: string): Promise<bool
 }
 
 /**
+ * A RATED challenge's `room` is its PARTY TOKEN (see `inviteToRoom`), and the token is spent the
+ * instant the matchmaker stages the match it produced (`server/matchmaking.ts` `assign`): both
+ * members passed `challengeParty` to be queued under it, and nothing reads the row again. Called
+ * by the server, so it is not scoped to a party. A token is unguessable and names one challenge;
+ * a bare ROOM CODE is neither, which is why the join path uses `clearRoomInvitesTo` instead.
+ */
+export async function clearRoomInvites(room: string): Promise<void> {
+  await q(`delete from room_invites where room = $1`, [room]);
+}
+
+/** a casual challenge is spent when ITS RECIPIENT joins the room it named. Scoped to that
+ * recipient: a host reconnecting to their own room, or a second friend joining the same lobby,
+ * clears nothing that is still unanswered. */
+export async function clearRoomInvitesTo(room: string, toUserId: string): Promise<void> {
+  await q(`delete from room_invites where room = $1 and to_user_id = $2`, [room, toUserId]);
+}
+
+/**
  * Resolve a party token to the two accounts it belongs to, for a caller claiming
  * to be one of them. Returns null if there is no live challenge on that token
  * naming the caller.
