@@ -147,7 +147,7 @@ at/under · `docaudit` ALL PASS · `contrast` ALL PASS · `bundleaudit` ALL ROUT
   hate/harassment; it is not a profanity filter). So `server/blocklist.ts` is a local matcher in
   FRONT of it, fed by the `MODERATION_BLOCKLIST` secret — ⚠️ **owner ruling: no profanity in the
   repo and no published list; the checks in `smoke.ts` use a NONSENSE vocabulary on purpose, do
-  not paste a real word into one.** The real list lives at `D:\Projectsddecodesim\.env.blocklist`
+  not paste a real word into one.** The real list lives at `D:/Projects/2ddecodesim/.env.blocklist`
   (git-ignored there by `.env.*`), same secret on both Fly apps, same alpha-now / production-staged
   split. Both layers together: 35/35 should-block, 21/22 should-allow; the one false positive
   ("Assassins …") is the HOSTED model's and no list can fix it — an allowlist secret would.
