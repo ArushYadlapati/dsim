@@ -38,13 +38,18 @@ if [ "$ALPHA" -eq 1 ]; then
   # -c pins the config: without it `fly deploy` reads fly.toml and would deploy PRODUCTION
   # under an alpha app name, quietly giving the preview production's multi-region VM block.
   deploy_rc=0
+update_rc=0 # any satellite whose re-shrink failed — reported at the end, never silent
   # --ha=false: Fly's default launches a SECOND machine for high availability, and for this
   # server that is not redundancy, it is a SPLIT. Rooms live in the process's memory and the
   # routing hints resolve to a REGION, not a machine — so two machines in one region means
   # two players can land on different ones and sit in different rooms with the same code,
   # which is exactly the cross-region bug this app just fixed, one level down.
   fly deploy --remote-only --ha=false -c "$CONFIG" -a "$APP" "$@" || deploy_rc=$?
-  if [ "$deploy_rc" -ne 0 ]; then
+  if [ "$update_rc" -ne 0 ]; then
+  echo "!! AT LEAST ONE SATELLITE WAS NOT RE-SHRUNK (see above). A machine left on fly.toml's"
+  echo "   [[vm]] is running shared-cpu-4x AND MAX_ROOMS 24 — costly, and oversubscribed."
+fi
+if [ "$deploy_rc" -ne 0 ]; then
     echo "!! fly deploy exited $deploy_rc — CHECK THE DEPLOY (fly machine list -a $APP)"
     exit "$deploy_rc"
   fi
@@ -114,6 +119,27 @@ SATELLITE_SIZES=(
 SATELLITES=()
 for entry in "${SATELLITE_SIZES[@]}"; do SATELLITES+=("${entry%%:*}"); done
 
+# MAX_ROOMS for a satellite, applied to EVERY size above. The default (server/index.ts) is
+# 24 for EVERY region with FLY_REGION set, sized for iad's dedicated performance-2x core —
+# far more than any satellite here, dedicated-core or shared, is meant to carry alone.
+# 6 is a RUNAWAY GUARD (see server/index.ts), not an admission limit: most rooms are PARKED
+# (0.031 cores) rather than driven (0.075). If satellites start refusing players with
+# `region_full` while `/api/perf` shows headroom, raise this to 8-10, not back to 24 — and
+# raise it PER SIZE if the dedicated-core satellites (ord/sjc/lhr) are the ones refusing
+# while the shared-cpu-4x ones are not.
+# ⚠️ IT MUST BE APPLIED HERE, NOT IN fly.toml. `fly deploy` regenerates machine config
+# from fly.toml, so a hand-run `fly machine update --env` reverts on the next deploy,
+# silently. A fly.toml `[env]` block is the wrong fix in the other direction: it would
+# cap iad at 6 too.
+# ⚠️ THE COST OF A CAP THAT BITES, stated because the matchmaker cannot see it. A staged
+# RANKED match is created through the same `join` path this cap gates (server/index.ts), and
+# the matchmaker is NOT load-aware — so a satellite already at its cap refuses the room with
+# `region_full`, nobody connects, `RANKED_JOIN_GRACE_MS` lapses, and `cancelPending` charges
+# the innocent players a NO-SHOW dodge. Do not "fix" it by exempting staged rooms from the cap
+# unless the exemption is verified against `pending_matches` (a room CODE is client-supplied,
+# so trusting its shape would be an admission bypass).
+SATELLITE_MAX_ROOMS=6
+
 echo "==> fly deploy ($APP)"
 # NOTE: do NOT let a non-zero deploy skip the re-shrink below. `fly deploy` exits
 # non-zero on transient api.machines.dev flakes (health-check wait timeouts, cancelled
@@ -121,14 +147,38 @@ echo "==> fly deploy ($APP)"
 # the script mid-way, silently leaving the satellites on shared-cpu-4x. Observed
 # 2026-07-20. So capture the status, ALWAYS re-shrink, and re-raise at the end.
 deploy_rc=0
-fly deploy --remote-only -a "$APP" "$@" || deploy_rc=$?
+# --ha=false: the note on the ALPHA deploy line above applies here word for word, and
+# harder — production has EIGHT regions where the preview has one. Fly's default launches
+# a SECOND machine for high availability, and for this server that is not redundancy, it
+# is a SPLIT: rooms live in the process's memory and `routeTarget` resolves a room code to
+# a REGION, not to a machine, so the proxy is free to put two players sharing one code on
+# different machines. Two lobbies, one code, both sides waiting, no error on either
+# screen. docs/deploy.md ("Can a region run TWO machines?") is the long form.
+# ⚠️ THIS FLAG IS PREVENTIVE ONLY, and it was missing from this line for the life of the
+# script. It stops a second machine being CREATED; it cannot remove one Fly already made,
+# so the duplicate-region warning below is the half that finds existing damage.
+fly deploy --remote-only --ha=false -a "$APP" "$@" || deploy_rc=$?
 [ "$deploy_rc" -ne 0 ] && echo "!! fly deploy exited $deploy_rc — re-applying VM sizes anyway, then failing"
 
-echo "==> re-applying per-region VM sizes (satellites: ${SATELLITE_SIZES[*]})"
+echo "==> re-applying per-region VM sizes (satellites: ${SATELLITE_SIZES[*]}, MAX_ROOMS=$SATELLITE_MAX_ROOMS)"
 ids=$(fly machine list -a "$APP" --json | node -e '
   const data = JSON.parse(require("fs").readFileSync(0, "utf8"));
   const want = new Set(process.argv.slice(1));
-  for (const m of data) if (want.has(m.region)) console.log(`${m.region} ${m.id}`);
+  // Fly keeps destroyed rows in this JSON after a replace. Drop them BEFORE both uses
+  // below: a dead id handed to `fly machine update` fails the deploy, and counting one
+  // would print the duplicate warning on every healthy deploy.
+  const live = data.filter((m) => m.state !== "destroyed");
+  // TWO MACHINES IN ONE REGION IS THE SILENT SPLIT described on the deploy line above,
+  // and --ha=false only prevents a NEW one. This deploy ran without that flag until
+  // 2026-09-13, so a duplicate may already exist; nothing else in the repo can see it.
+  // stderr, NOT stdout: this stdout is captured into `ids` and read line-by-line as
+  // "region id" pairs by the loop below, so a warning on stdout would be handed to
+  // `fly machine update` as a machine id.
+  const byRegion = new Map();
+  for (const m of live) byRegion.set(m.region, (byRegion.get(m.region) ?? 0) + 1);
+  for (const [r, n] of byRegion)
+    if (n > 1) console.error(`!! ${r} has ${n} machines — ONE PER REGION is load-bearing: two players sharing a room code can land in different rooms, silently. Destroy the extra (docs/deploy.md).`);
+  for (const m of live) if (want.has(m.region)) console.log(`${m.region} ${m.id}`);
 ' "${SATELLITES[@]}")
 
 while read -r region id; do
@@ -146,8 +196,22 @@ while read -r region id; do
     echo "!! no size listed for $region ($id), leaving it alone"
     continue
   fi
-  fly machine update "$id" --vm-size "$size" --vm-memory "$memory" -a "$APP" -y >/dev/null
-  echo "   $region ($id) -> $size/${memory}MB"
+  # --env is safe to pass alongside the size flags only because fly.toml has NO `[env]`
+  # block, so there is nothing else in machine env for it to clobber (Fly SECRETS are a
+  # separate mechanism and are untouched). Re-check that if an `[env]` block is ever added.
+  # ⚠️ TOLERATE A FAILURE HERE, for the same reason the `fly deploy` line above is guarded.
+  # `set -euo pipefail` is on (line 21), so an unguarded non-zero exit on the FIRST satellite
+  # aborts the script and leaves EVERY remaining satellite on fly.toml's size with MAX_ROOMS 24
+  # — which is verbatim the failure observed 2026-07-20 and the whole reason this loop exists.
+  # `--env` is the newest flag on this line and the one most likely to be renamed or dropped by
+  # a flyctl upgrade; a CLI change must degrade to a loud line, not to a silently half-resized
+  # fleet. The mmsmoke check reads this SCRIPT, not the CLI, so it gives no signal here.
+  if fly machine update "$id" --vm-size "$size" --vm-memory "$memory" --env MAX_ROOMS="$SATELLITE_MAX_ROOMS" -a "$APP" -y >/dev/null; then
+    echo "   $region ($id) -> $size/${memory}MB, MAX_ROOMS=$SATELLITE_MAX_ROOMS"
+  else
+    update_rc=1
+    echo "!! $region ($id) UPDATE FAILED — it may still be on fly.toml's size/MAX_ROOMS. Check: fly machine list -a $APP"
+  fi
 done <<< "$ids"
 
 if [ "$deploy_rc" -ne 0 ]; then
