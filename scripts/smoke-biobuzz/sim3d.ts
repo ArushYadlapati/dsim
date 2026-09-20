@@ -6,7 +6,7 @@ import { biobuzzStep } from '../../src/games/biobuzz/step';
 import { step3d } from '../../src/games/biobuzz/sim3d/step3d';
 import { rapier3d } from '../../src/games/biobuzz/sim3d/engine';
 import { disposeEngineFor, engineFor, robotBodyOf, syncElements } from '../../src/games/biobuzz/sim3d/engineImpl';
-import { cadStatics, cadTrayRefTheta, fieldColliders3d } from '../../src/games/biobuzz/sim3d/fieldColliders';
+import { cadStatics, cadTrayRefTheta, cadTrayRiders, fieldColliders3d } from '../../src/games/biobuzz/sim3d/fieldColliders';
 import { hiveCellLocalBox, hivePivotX, hiveTrayRefTheta, __setFieldCollidersOverrideForTests } from '../../src/games/biobuzz/sim3d/bodies';
 import { hiveTiltAngle } from '../../src/games/biobuzz/sim3d/hive3d';
 import { hyp3, rotate2 } from '../../src/games/biobuzz/sim3d/math3';
@@ -2712,6 +2712,45 @@ export function sim3dChecks(check: Check): void {
       'foot bar 3d: a chassis pressed flat against either foot bar strafes its whole length, both ways, without stopping',
       worst === '' && slowest > 3,
       worst || `slowest slide ${slowest.toFixed(1)} in/s`,
+    );
+  }
+
+  // ---- the parts bolted to the TRAY tip with it in the physics too ---------------------------
+  //
+  // The exporter files the Churro cross-braces and the pivot hardware under the static frame; the
+  // renderer carries them on the tilting group. As fixed statics they stayed at the STEP's
+  // captured pose, so after a tip an element could strike a brace drawn 20 in away.
+  {
+    const rider = /_(10_5in_churro_lite|goal_pivot_bracket|pivot_damper_holder|blumotion_970a_damper)(_\d+)?$/;
+    const left = cadStatics().filter((st) => rider.test(st.name));
+    let bad = '';
+    for (const a of ['red', 'blue'] as const) {
+      const riders = cadTrayRiders(a);
+      if (riders.length !== 10) bad += `${a}: ${riders.length} riders; `;
+      // mirror-symmetric about the pivot in the TRAY's frame is what "bolted to the tray" means:
+      // the four braces sit at the same |v| and the same w, which they do not in the world frame
+      const braces = riders
+        .filter((h) => h.name.includes('churro'))
+        .map((h) => {
+          let v = 0;
+          let wz = 0;
+          for (let i = 0; i < h.points.length; i += 3) {
+            v += h.points[i + 1];
+            wz += h.points[i + 2];
+          }
+          const n = h.points.length / 3;
+          return { v: v / n, w: wz / n };
+        });
+      const v0 = Math.abs(braces[0]?.v ?? 0);
+      const w0 = braces[0]?.w ?? 0;
+      if (braces.length !== 4 || braces.some((b) => Math.abs(Math.abs(b.v) - v0) > 0.05 || Math.abs(b.w - w0) > 0.05)) {
+        bad += `${a}: braces ${braces.map((b) => `${b.v.toFixed(2)}/${b.w.toFixed(2)}`).join(' ')}; `;
+      }
+    }
+    check(
+      'tray riders 3d: the cross-braces and pivot hardware are on the tray body, un-tilted and mirror-symmetric, and none is left a fixed static',
+      left.length === 0 && bad === '',
+      bad || `${left.length} left static`,
     );
   }
 

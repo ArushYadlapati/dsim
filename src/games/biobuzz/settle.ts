@@ -92,12 +92,9 @@ export function bbSettled(world: World): boolean {
        * THE DYNAMIC TRAY IS ASKED ITS ANGULAR SPEED AND NOTHING ELSE, and it stays that way even
        * though it now tips on the SAME table (`sim3d/hive3d.ts`, 2026-09-19 — the trigger moved
        * from a torque balance to `BB_TIP_POLLEN` so the HUD's "N MORE TO TIP" cannot be a lie).
-       * Re-asking the table here would look right and would reintroduce the hang from the other
-       * side: `hives[a].contents` counts what is resting in EITHER cell (`sim3d/derive.ts` says
-       * so deliberately — an element can fly into the down cell's still-open outer face and must
-       * still score), so a DOWN-cell load answers "a tip is due" on a tray that is correctly
-       * pinned by that very load. The original measurement is what this test exists for: a cell
-       * the physics did not tip answered "a tip is due" on every tick forever and the match
+       * Re-asking the table here would look right and would reintroduce the hang. The original
+       * measurement is what this test exists for: a cell the physics did not tip answered "a tip
+       * is due" on every tick forever and the match
        * finalized on the cap every time a cell was loaded at the buzzer (seed 99: 601 ticks of
        * it, `tipping` flat at 0). A tray at rest on a stop HAS come to rest in the only state it
        * has — §10.5 A is satisfied — so the test is motion, like every other test in this file.

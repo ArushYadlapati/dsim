@@ -1,5 +1,6 @@
 import type { Alliance, World } from '../../../types';
 import { BB3_CELL_SEAT_DEPTH, BB3_REST_SPEED, BB3_REST_TICKS, BB_POLLEN_R } from '../config';
+import { hiveTakingSide } from '../hive';
 import { hiveTiltAngle, insideCell } from './hive3d';
 import { flowerTubeOf } from './flowerTube';
 import type { Engine3d } from './engineImpl';
@@ -38,8 +39,10 @@ import type { Engine3d } from './engineImpl';
  * A CELL's INTERIOR IS TESTED IN ITS OWN CURRENT (TILTED) FRAME, for BOTH cells of BOTH hives
  * every tick -- `hiveCellLocalBox`/`hiveTiltAngle`/`rotate2` -- so an element resting in EITHER
  * cell of an alliance's tray (the one currently up, or, rarely, one that flew into the currently-
- * down cell's still-open outer face) is tagged for that alliance. See `bodies.ts`'s file header
- * for the geometry and its one flagged residual.
+ * down cell's still-open outer face) is TAGGED for that alliance. Only the TAKING cell's ids
+ * reach `hives[a].contents`, which is a different question with three readers of its own -- see
+ * the `taking` note in the function. See `bodies.ts`'s file header for the geometry and its one
+ * flagged residual.
  *
  * ⚠️ **AND IT IS TESTED ON GEOMETRY ALONE -- THERE IS NO REST REQUIREMENT** (2026-09-19). A new
  * element has to be `BB3_CELL_SEAT_DEPTH` below the cell's open rim to be counted the first time,
@@ -63,6 +66,32 @@ export function deriveTick(world: World, engine: Engine3d): void {
   if (!bb) return;
 
   const theta: Record<Alliance, number> = { red: hiveTiltAngle(world, 'red'), blue: hiveTiltAngle(world, 'blue') };
+  /**
+   * ⚠️ **`contents` IS ONE CELL'S, AND IT IS THE CELL `hiveTakingSide` NAMES** (owner report
+   * 2026-09-20: "the hive tips with nothing inside sometimes ... could be when balls are shot
+   * towards the hive that is actively moving upwards").
+   *
+   * Both cells are still TAGGED below — an element in the down cell is in the hive structure,
+   * not loose on the tiles, and `el` is what says so. But `contents` is not a tag list: it is
+   * the UP CELL'S LOAD, and three readers treat it as one. `hiveDetentHold` lifts the tip pin
+   * off it, `hud.ts` prints "N MORE TO TIP" off it, and Table 10-2 pays 2 each for what is
+   * "remaining in an upward-facing CELL" off it. Counting the DOWN cell in it made all three
+   * wrong at once, and the first is the owner's bug: an element that merely CROSSES the down
+   * cell's still-open outer face — a miss dropping past the structure — was one more toward the
+   * up cell's tip. Measured, and the HIVE3D lane's "DOWN cell" block is the fixture: 7 POLLEN in
+   * the up cell (ONE SHORT of the table) plus ONE element in the down cell lifts the pin, and the
+   * freed see-saw then goes over on the seven at tick 330, where seven alone never moves at all.
+   * Nothing tipped is the down cell's business: its own load holds the tray ON its stop.
+   *
+   * `hiveTakingSide` rather than `up` because it is the game's one answer to "which cell is
+   * taking right now", and it keeps the handover at the release: a driver filling the rising
+   * tray through the second half of a swing (the documented mechanic) is counted as he fires
+   * rather than two ticks after it settles.
+   */
+  const taking: Record<Alliance, 1 | -1> = {
+    red: hiveTakingSide(bb.hives.red) === 'north' ? 1 : -1,
+    blue: hiveTakingSide(bb.hives.blue) === 'north' ? 1 : -1,
+  };
   const hiveIds: Record<Alliance, number[]> = { red: [], blue: [] };
   // per FLOWER, the ids inside its tube with the CENTRE HEIGHT that orders them
   const flowerIds: { id: number; z: number }[][] = bb.flowers.map(() => []);
@@ -167,7 +196,8 @@ export function deriveTick(world: World, engine: Engine3d): void {
       for (const sideSign of [1, -1] as const) {
         if (insideCell(b.pos.x, b.pos.y, centreZ, a, sideSign, theta[a], depth)) {
           b.state = { kind: 'element', el: `hive:${a}`, slot: 0 }; // `slot` is set below, by id order
-          hiveIds[a].push(b.id);
+          // the TAG is either cell's; the LOAD is the taking cell's alone — see `taking` above.
+          if (sideSign === taking[a]) hiveIds[a].push(b.id);
           tagged = true;
           break;
         }

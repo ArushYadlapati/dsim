@@ -142,6 +142,20 @@ newest-first — it is never ranked, which is what keeps the two eras from meeti
   is anywhere inside the interior; that hysteresis is in `derive.ts` and NOT at the score, because
   `contents` being one list with one reader-set is the whole of why the HUD's promise and the tray
   cannot come apart.
+- ⚠️ **AND IT COUNTS ONE CELL — THE ONE `hiveTakingSide` NAMES** (owner report 2026-09-20: "the hive
+  tips with nothing inside sometimes... could be when balls are shot towards the hive that is
+  actively moving upwards"). `derive.ts` TAGS an element in either cell `hive:<alliance>` — it is in
+  the structure, not loose on the tiles, and the AI and the capture read that — but it used to put
+  BOTH cells into `hives[a].contents`, which is not a tag list: it is the UP CELL'S LOAD, and the tip
+  pin, the HUD's "N MORE TO TIP" and Table 10-2's "remaining in an UPWARD-FACING CELL" all read it as
+  one. The down cell's outer face is open at every height, so a MISS dropping past the structure is
+  inside that interior for a handful of ticks — and was one more element toward the up cell's tip.
+  Measured: 7 POLLEN in the up cell (one short of the table) plus ONE element in the down cell lifts
+  the pin, and the freed see-saw then goes over on the seven at tick 330, where seven alone never
+  moves; over 28 randomized volleys, 3 counted ids sat outside the up cell across 6 tips and 2 of
+  those tips began under-seated. The HIVE3D lane's "DOWN cell" block is the repro. `hiveTakingSide`
+  rather than `up` because it is already the game's one answer to which cell is taking, so a driver
+  filling the rising tray through the second half of a swing is counted as he fires.
 - ⚠️ **`BB3_HIVE_DYNAMIC = false` IS NOT THE ONE-WORD REVERT IT IS DOCUMENTED AS.** `bb.spill` —
   G409's entire tag — is written only inside `hiveDynamicTick`; the kinematic path never writes
   it, and all four G409 checks sit inside `if (BB3_HIVE_DYNAMIC)` blocks, so flipping the word

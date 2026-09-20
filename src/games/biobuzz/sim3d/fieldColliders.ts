@@ -195,7 +195,9 @@ export function cadFlowerRings(i: number): readonly FieldFlowerRing[] {
  * (determinism). Empty when the collider set is absent or carries nothing physical. */
 export function cadStatics(): readonly FieldStatic[] {
   if (!cachedStatics) {
-    cachedStatics = squareFootBars(fieldColliders3d().statics.filter((s) => PHYSICAL_STATIC_CLASSES.has(s.class)));
+    cachedStatics = squareFootBars(
+      fieldColliders3d().statics.filter((s) => PHYSICAL_STATIC_CLASSES.has(s.class) && !ridesTray(s)),
+    );
   }
   return cachedStatics;
 }
@@ -397,6 +399,56 @@ export function cadCaptureTheta(alliance: Alliance): number {
  */
 export function cadTrayHulls(alliance: Alliance): readonly FieldTrayHull[] {
   return fieldColliders3d().trays[alliance].hulls;
+}
+
+/**
+ * ⚠️ PARTS THE EXPORTER FILES UNDER THE FRAME THAT ARE BOLTED TO THE TRAY: the eight Churro
+ * cross-braces and, per hive, the two goal pivot brackets, two damper holders and two dampers.
+ * `scene/renderFieldGlb.ts` already carries all of them on the tilting group (they are
+ * mirror-symmetric about the pivot only in the TRAY's frame). As fixed statics they stayed at the
+ * STEP's captured pose, so after a tip an element could strike a brace that was drawn 20 in away.
+ */
+const TRAY_RIDER = /_(10_5in_churro_lite|goal_pivot_bracket|pivot_damper_holder|blumotion_970a_damper)(_\d+)?$/;
+
+function ridesTray(s: FieldStatic): boolean {
+  return s.class === 'hive_frame' && TRAY_RIDER.test(s.name);
+}
+
+const cachedRiders: Partial<Record<Alliance, readonly FieldTrayHull[]>> = {};
+
+/**
+ * The tray-riding frame parts of one hive, in the tray's own pivot-local UN-TILTED frame — the
+ * frame `cadTrayHulls` is in, so `buildHiveTray3d` adds them to the same body. The inverse of the
+ * rotation `probeColliders` applies: world = pivot + Rot(captureTheta) · local. A `shared_frame`
+ * brace belongs to the hive on its own side of x = 0.
+ */
+export function cadTrayRiders(alliance: Alliance): readonly FieldTrayHull[] {
+  const hit = cachedRiders[alliance];
+  if (hit) return hit;
+  const fc = fieldColliders3d();
+  const tray = fc.trays[alliance];
+  const other = fc.trays[alliance === 'red' ? 'blue' : 'red'];
+  const c = dcos(tray.captureTheta);
+  const sn = dsin(tray.captureTheta);
+  const out: FieldTrayHull[] = [];
+  for (const s of fc.statics) {
+    if (!ridesTray(s)) continue;
+    let mx = 0;
+    for (let i = 0; i < s.points.length; i += 3) mx += s.points[i];
+    mx /= s.points.length / 3;
+    if (Math.abs(mx - tray.pivot[0]) > Math.abs(mx - other.pivot[0])) continue;
+    const local: number[] = new Array(s.points.length);
+    for (let i = 0; i < s.points.length; i += 3) {
+      const dy = s.points[i + 1] - tray.pivot[1];
+      const dz = s.points[i + 2] - tray.pivot[2];
+      local[i] = s.points[i] - tray.pivot[0];
+      local[i + 1] = dy * c + dz * sn;
+      local[i + 2] = -dy * sn + dz * c;
+    }
+    out.push({ name: s.name, class: s.class, points: local });
+  }
+  cachedRiders[alliance] = out;
+  return out;
 }
 
 /** the angle `engine.ts`'s `applyHiveTilt` and `scene/renderField.ts` subtract from the absolute

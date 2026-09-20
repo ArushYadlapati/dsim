@@ -40,7 +40,8 @@ import {
   BB_POLLEN_R,
   BB_TIP_POLLEN,
 } from '../../src/games/biobuzz/config';
-import { BB_TIP_SWING_S } from '../../src/games/biobuzz/hive';
+import { BB_TIP_SWING_S, hiveLoad, hiveWillTip } from '../../src/games/biobuzz/hive';
+import { bbKindIndex } from '../../src/games/biobuzz/score';
 import type { Alliance, Artifact, World } from '../../src/types';
 
 /**
@@ -1031,6 +1032,201 @@ export function hive3dChecks(check: Check): void {
       );
     }
     check('determinism: two identical tips produce the identical tray state', angles[0] === angles[1], `${angles[0]} vs ${angles[1]}`);
+  });
+
+  /**
+   * ---- THE DOWN CELL IS NOT PART OF THE UP CELL'S LOAD (owner report 2026-09-20) -------------
+   *
+   * "The hive tips with nothing inside sometimes. Could be when balls are shot towards the hive
+   * that is actively moving upwards." `sim3d/derive.ts` tagged BOTH cells into
+   * `hives[a].contents`, and `contents` is what lifts the tip pin, what `hud.ts` prints "N MORE
+   * TO TIP" from, and what Table 10-2 pays 2 each for "remaining in an UPWARD-FACING CELL". So a
+   * miss dropping past the structure — the down cell's outer face is open at every height, and a
+   * shot crossing it is inside the interior for a handful of ticks — was one more toward the up
+   * cell's tip. The cell that counts is the one `hiveTakingSide` names, and this is what says so.
+   *
+   * The numbers below are the repro, measured against the old code: 7 POLLEN in the up cell (ONE
+   * SHORT of the table) plus ONE element in the down cell lifted the pin, and the free see-saw
+   * then went over on the seven, at tick 330 — where 7 alone never moves at all. Over 40
+   * randomized volleys at a staged tray, 3 counted ids sat outside the up cell over 6 tips and 2
+   * of those tips began under-seated.
+   */
+  withTray(true, () => {
+    /** stage `n` elements on the floor of ONE named cell, at the tray's settled tilt. */
+    const fillSide = (w: World, side: 1 | -1, n: number, nectar: boolean, idBase: number): number[] => {
+      const theta = hiveTiltAngle(w, A);
+      const box = hiveCellLocalBox(side, A);
+      const innerV = side > 0 ? box.vMin : box.vMax;
+      const ids: number[] = [];
+      for (let i = 0; i < n; i++) {
+        const r = nectar ? BB_NECTAR_R : BB_POLLEN_R;
+        const p = cellPoint(A, theta, ((i % 4) - 1.5) * 4.6, innerV + side * (r + 0.3 + Math.floor(i / 4) * 3.4), box.wMin + r + 0.4);
+        ids.push(idBase + i);
+        w.balls.push({
+          id: idBase + i,
+          color: nectar ? 'blue' : 'yellow',
+          state: { kind: 'ground' },
+          pos: { x: p.x, y: p.y },
+          vel: { x: 0, y: 0 },
+          z: p.z - r,
+          vz: 0,
+          r,
+        } as Artifact);
+      }
+      return ids;
+    };
+    /** stage `up` in the up cell and `down` in the down one; run; report what happened. */
+    const staged = (seed: number, up: number, down: number, nectarDown: boolean, ticks = 700) => {
+      const w = mkWorld3d('free', seed);
+      w.balls.length = 0;
+      const { side } = upBox(w);
+      fillSide(w, side, up, false, 1);
+      const downIds = fillSide(w, (-side) as 1 | -1, down, nectarDown, 50);
+      const startUp = w.biobuzz!.hives[A].up;
+      const tagsIn = (): number =>
+        downIds.filter((id) => {
+          const b = w.balls.find((x) => x.id === id);
+          return b !== undefined && b.state.kind === 'element' && b.state.el === `hive:${A}`;
+        }).length;
+      let peak = 0;
+      let tipAt = -1;
+      let tagged = 0;
+      for (let t = 0; t < ticks; t++) {
+        step3d(w, 1 / 60, new Map());
+        // the TAG is read on tick 1, while the staged element is still in the down cell: the
+        // down cell's floor runs downhill to its open mouth, so it rolls out of its own accord.
+        if (t === 0) tagged = tagsIn();
+        peak = Math.max(peak, w.biobuzz!.hives[A].contents.length);
+        if (tipAt < 0 && w.biobuzz!.hives[A].up !== startUp) tipAt = t;
+      }
+      return { world: w, peak, tipAt, tagged, cellCount: bbScoreWorld(w)[A].cellCount };
+    };
+
+    const short = staged(890, 7, 1, false);
+    check(
+      'the DOWN cell is not part of the UP cell\'s load: 7 POLLEN up + 1 in the down cell does NOT tip',
+      short.tipAt < 0 && short.peak === 7,
+      `tipped at t${short.tipAt}, peak contents ${short.peak} (the up cell holds 7)`,
+    );
+    // the control, same staging minus the down-cell element: the table is still the table.
+    const full = staged(891, 8, 1, false);
+    check(
+      'and the table still governs: 8 POLLEN up (plus 1 in the down cell) tips',
+      full.tipAt >= 0,
+      `tipped at t${full.tipAt}, peak contents ${full.peak}`,
+    );
+    // ⚠️ the TAG is a different question from the LOAD and it did not move: an element in the
+    // down cell is in the HIVE, not loose on the tiles, or the AI would drive at it forever.
+    check(
+      'an element in the DOWN cell is still TAGGED `hive:<alliance>` — only the LOAD narrowed',
+      short.tagged === 1,
+      `${short.tagged} of 1 still tagged`,
+    );
+    // Table 10-2 pays for what is "remaining in an UPWARD-FACING CELL"; the down cell is not one.
+    check(
+      'Table 10-2: a DOWN-cell element is not scored as remaining in an upward-facing CELL',
+      short.cellCount === 7,
+      `cellCount ${short.cellCount}, expected the 7 that are up`,
+    );
+
+    /**
+     * THE SWEEP, which is the form the bug was actually found in: randomized volleys at random
+     * points of either cell, at 90–260 in/s, against a tray staged empty / one short / at the
+     * table. At every tick the tray LEAVES ITS STOP — the instant the pin let go — every id in
+     * `contents` has to be inside the cell that is up, and seated (`BB3_CELL_SEAT_DEPTH`).
+     */
+    const mulberry = (a: number) => () => {
+      a |= 0;
+      a = (a + 0x6d2b79f5) | 0;
+      let t = Math.imul(a ^ (a >>> 15), 1 | a);
+      t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+    let tips = 0;
+    let elsewhere = 0;
+    let underSeated = 0;
+    for (let s = 0; s < 28; s++) {
+      const rng = mulberry(9300 + s);
+      const w = mkWorld3d('free', 9300 + s);
+      w.balls.length = 0;
+      const { side } = upBox(w);
+      const stage = rng();
+      fillSide(w, side, stage < 0.34 ? 0 : stage < 0.67 ? 7 : 8, false, 1);
+      const engine = engineFor(w);
+      let was = true;
+      let prev = { contents: [] as number[], up: w.biobuzz!.hives[A].up, theta: 0 };
+      const volley = 2 + Math.floor(rng() * 10);
+      const firstAt = Math.floor(rng() * 220);
+      const gap = 2 + Math.floor(rng() * 14);
+      let fired = 0;
+      let nextId = 100;
+      for (let t = 0; t < 420; t++) {
+        if (fired < volley && t >= firstAt && (t - firstAt) % gap === 0) {
+          const aimSide: 1 | -1 = rng() < 0.5 ? 1 : -1;
+          const box = hiveCellLocalBox(aimSide, A);
+          const target = cellPoint(
+            A,
+            aimSide > 0 ? REST_RAD : -REST_RAD,
+            (rng() * 2 - 1) * box.xHalf * 1.4,
+            box.vMin + rng() * (box.vMax - box.vMin),
+            box.wMin + rng() * (box.wMax - box.wMin) * 1.3,
+          );
+          const az = (rng() * 2 - 1) * 0.5;
+          const el = rng() * 1.2 - 0.1;
+          const d = { x: Math.sin(az), y: -aimSide * Math.cos(az) * Math.cos(el), z: Math.sin(el) };
+          const n = Math.sqrt(d.x * d.x + d.y * d.y + d.z * d.z);
+          const speed = 90 + rng() * 170;
+          const dist = 15 + rng() * 45;
+          const nectar = rng() < 0.4;
+          const r = nectar ? BB_NECTAR_R : BB_POLLEN_R;
+          w.balls.push({
+            id: nextId++,
+            color: nectar ? 'blue' : 'yellow',
+            state: { kind: 'flight', target: 'blue' },
+            pos: { x: target.x - (d.x / n) * dist, y: target.y - (d.y / n) * dist },
+            vel: { x: (d.x / n) * speed, y: (d.y / n) * speed },
+            z: target.z - (d.z / n) * dist - r,
+            vz: (d.z / n) * speed,
+            r,
+          } as Artifact);
+          fired++;
+        }
+        step3d(w, 1 / 60, new Map());
+        const th = trayTilt(engine.hiveTrays[A]);
+        const now = Math.abs(th) >= STOP_RAD;
+        if (was && !now) {
+          tips++;
+          const upSide: 1 | -1 = prev.up === 'north' ? 1 : -1;
+          const box = hiveCellLocalBox(upSide, A);
+          let seated = 0;
+          for (const id of prev.contents) {
+            const b = w.balls.find((x) => x.id === id);
+            if (!b) {
+              elsewhere++;
+              continue;
+            }
+            const z = b.z + (b.r ?? BB_POLLEN_R);
+            if (!insideCell(b.pos.x, b.pos.y, z, A, upSide, prev.theta)) elsewhere++;
+            else if (box.wMax - localW(prev.theta, b.pos.y, z) >= BB3_CELL_SEAT_DEPTH) seated++;
+          }
+          const load = hiveLoad(prev.contents, bbKindIndex(w));
+          if (!hiveWillTip({ pollen: seated, nectar: 0 }) && seated < load.pollen + load.nectar) underSeated++;
+        }
+        was = now;
+        prev = { contents: [...w.biobuzz!.hives[A].contents], up: w.biobuzz!.hives[A].up, theta: th };
+      }
+    }
+    console.log(`[smoke-bb hive3d] volley sweep: 28 runs, ${tips} tips began, ${elsewhere} counted elements were not in the up cell`);
+    check(
+      'volley sweep: no tip begins on an element that is not in the CELL THAT IS UP',
+      elsewhere === 0,
+      `${elsewhere} such ids over ${tips} tips (3 ids over 6 tips, 2 of them under-seated, before the load narrowed to the taking cell)`,
+    );
+    check(
+      'volley sweep: every tip that began had its load SEATED in the up cell',
+      underSeated === 0,
+      `${underSeated} of ${tips} tips began under-seated`,
+    );
   });
 
   settleChecks(check);

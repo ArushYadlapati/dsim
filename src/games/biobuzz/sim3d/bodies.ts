@@ -30,7 +30,7 @@ import { biobuzzColliders, BB_WALL_COUNT } from '../colliders';
 import { INTAKE_RAIL_T, PHYS_FRICTION } from '../../../config';
 import { BB3_INTAKE_CORNER_CLAMP, BB3_INTAKE_CORNER_R, BB3_MOUTH_SLOT_Z, bbIntakeReach } from '../config';
 import { bbMouths } from '../robot';
-import { cadCellBox, cadStatics, cadTrayHulls } from './fieldColliders';
+import { cadCellBox, cadStatics, cadTrayHulls, cadTrayRiders } from './fieldColliders';
 import { buildFlowerTubes3d } from './flowerTube';
 import { tiltQuatX, yawQuat } from './math3';
 
@@ -711,6 +711,17 @@ function buildTrayColliders(
           .setFriction(trayFriction(h.name))
           .setRestitution(trayRestitution(h.name))
           .setRestitutionCombineRule(TRAY_RESTITUTION_COMBINE),
+        body,
+      );
+    }
+    // THE PARTS BOLTED TO THE TRAY THAT THE EXPORTER FILED UNDER THE FRAME (`cadTrayRiders`): the
+    // cross-braces and the pivot hardware. Same body, same zero density, so the see-saw's mass
+    // and calibration do not move; they simply tip with the tray now, as they are drawn.
+    for (const h of cadTrayRiders(alliance)) {
+      const desc = RAPIER.ColliderDesc.convexHull(new Float32Array(h.points));
+      if (!desc) continue;
+      world3d.createCollider(
+        zeroDensity(desc).setFriction(0.5).setRestitution(0.15).setRestitutionCombineRule(TRAY_RESTITUTION_COMBINE),
         body,
       );
     }
