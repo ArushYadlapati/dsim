@@ -9,7 +9,7 @@ import {
   bbPretendHive,
   bbTurretShotEnters,
 } from '../play';
-import { bbIntakeAct, bbLaunch, bbSlewTurret, bbTurretSolution, type BbShot } from '../robot';
+import { bbIntakeAct, bbLaunch, bbRampStep, bbSlewTurret, bbTurretSolution, type BbShot } from '../robot';
 import { bbIsTurreted, bbLauncherOf } from '../mechs';
 import { type BiobuzzState } from '../state';
 import { flowerPlace3d, flowerRetrieve3d } from './flower3d';
@@ -125,6 +125,9 @@ export function elements3dAimAndLaunch(
   const shots = new Map<number, BbShot>();
   for (const rob of world.robots) {
     if (rob.passive) continue;
+    // THE RAMP TOGGLE — same place the 2D pipeline steps it (`play.ts` stage 5b), alongside the
+    // turret slew just below, with the same `enabled` gate driver control runs under.
+    bbRampStep(rob, cmds.get(rob.id), enabled, world.time);
     const launcher = bbLauncherOf(rob.spec, BB_HOOD_DEFAULT_DEG);
     const target = bbAimTarget(world, rob);
     // THE SAME LANDING GATE THE 2D PIPELINE RUNS (`play.ts` stage 5b) — see this file's header,

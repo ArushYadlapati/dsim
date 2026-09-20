@@ -1,12 +1,14 @@
 import type { Check } from './harness';
-import { cmd, mkWorld3d, setup } from './harness';
+import { cmd, mkWorld, mkWorld3d, run, setup } from './harness';
 import { step3d } from '../../src/games/biobuzz/sim3d/step3d';
 import { createBiobuzzWorld } from '../../src/games/biobuzz/spawn';
 import { engineFor } from '../../src/games/biobuzz/sim3d/engineImpl';
 import { cadFlowerRings, cadStatics } from '../../src/games/biobuzz/sim3d/fieldColliders';
 import { ringTrimesh, flowerTubeOf, flowerAtRetrieval, flowerCageBand, cageVertexR, FLOWER_CAGE_R } from '../../src/games/biobuzz/sim3d/flowerTube';
 import { flowerPlace3d, flowerRetrieve3d } from '../../src/games/biobuzz/sim3d/flower3d';
-import { bbPlacePointLocal } from '../../src/games/biobuzz/robot';
+import { bbFootprint, bbPlacePointLocal } from '../../src/games/biobuzz/robot';
+import { retrieveFromFlower } from '../../src/games/biobuzz/play';
+import { BB_INTAKE_KINDS, type BbIntakeKind } from '../../src/games/biobuzz/mechs';
 import { PHYS_ALLOWED_ERROR, PHYS_LENGTH_UNIT } from '../../src/config';
 import {
   BB3_FLOWER_CAGE_SEGMENTS,
@@ -26,7 +28,18 @@ import {
   FLOWER_RING_Z,
 } from '../../src/games/biobuzz/config';
 import { bbFlowerDropSlack, flowerCapacity, flowerScore, flowerScoreZ, flowerStackZ, type BbElementKind } from '../../src/games/biobuzz/flower';
-import type { Artifact, World } from '../../src/types';
+import type { Artifact, RobotSpec, World } from '../../src/types';
+
+/**
+ * A REACHING intake archetype (owner, 2026-09-20: "intaking from the flower should now only be
+ * done if it is physically possible") — `siderollers`, always ready with no deploy swing to wait
+ * out — for every fixture in this file whose subject is the retrieval GATE or the TUBE itself,
+ * not the archetype choice. The default build coerces to `sweeper`, which never reaches
+ * (`bbFlowerReachOf('sweeper', …) === null`), so a fixture that does not ask for this explicitly
+ * refuses every retrieval it drives regardless of pose. `launcher: null` migrates from the flat
+ * default rather than repeating it here.
+ */
+const REACHING: Partial<RobotSpec> = { bbMech: { launcher: null, lift: null, intake: { kind: 'siderollers' } } as unknown as RobotSpec['bbMech'] };
 
 /**
  * FLOWER3D — the real TUBE (Day 2 lane A, `docs/biobuzz/plan-3d.md` §9).
@@ -241,7 +254,7 @@ export function flower3dChecks(check: Check): void {
 
   // ---- retrieval: the lowest POLLEN, and only when it is at the opening ----------------------
   {
-    const w = mkWorld3d('free', 930);
+    const w = mkWorld3d('free', 930, REACHING);
     w.balls.length = 0;
     drop(w, F, 'pollen', 1);
     for (let t = 0; t < 90; t++) step3d(w, 1 / 60, new Map());
@@ -265,13 +278,12 @@ export function flower3dChecks(check: Check): void {
     // (`elements.ts`), so a fixture that clears one has to clear the other.
     rob.hopper.length = 0;
     rob.lastIntakeAt = -99;
-    // park the robot's mouth on the retrieval opening: the foot's field-side face, square on
+    // park the robot's chassis FRAME FACE flush on the foot: `BB_PLACE_REACH` out from the ring
+    // centre, the same "chassis face flush" convention `bbFlowerAtIntake`'s own reach numbers are
+    // measured from (`config.ts`'s FLOWER-opening header) — archetype-aware since 2026-09-20, so
+    // `REACHING` above is what makes this pose actually bite.
     const f = BB_FLOWERS[F];
-    // the opening's own point is `BB_FLOWER_FOOT.deep - BB_FLOWER_D` (2.384) out from the ring,
-    // and `bbFlowerAtIntake` wants it INSIDE a mouth rect — which begins at the footprint's front
-    // face, not behind it. Parking flush put the point 0.1 in short of the roller and read as
-    // "no flower at the intake"; 1.5 in further out puts it in the middle of the rect.
-    rob.pos.x = f.x + 2.384 + rob.spec.length / 2 + 1.5;
+    rob.pos.x = f.x + BB_PLACE_REACH + bbFootprint(rob.spec).front;
     rob.pos.y = f.y;
     rob.heading = Math.PI;
     const took = flowerRetrieve3d(w, w.biobuzz!, rob, cmd({ intake: true }), true, ballById, kindOfIn(w));
@@ -283,7 +295,7 @@ export function flower3dChecks(check: Check): void {
   }
   {
     // ...and a NECTAR at the bottom LOCKS the flower, which is the whole of G418's asymmetry.
-    const w = mkWorld3d('free', 931);
+    const w = mkWorld3d('free', 931, REACHING);
     w.balls.length = 0;
     drop(w, F, 'nectar', 1);
     for (let t = 0; t < 300; t++) step3d(w, 1 / 60, new Map());
@@ -296,7 +308,7 @@ export function flower3dChecks(check: Check): void {
     rob.hopper.length = 0;
     rob.lastIntakeAt = -99;
     const f = BB_FLOWERS[F];
-    rob.pos.x = f.x + 2.384 + rob.spec.length / 2 + 1.5;
+    rob.pos.x = f.x + BB_PLACE_REACH + bbFootprint(rob.spec).front;
     rob.pos.y = f.y;
     rob.heading = Math.PI;
     const ballById = new Map(w.balls.map((b) => [b.id, b] as const));
@@ -305,6 +317,90 @@ export function flower3dChecks(check: Check): void {
       'a NECTAR at the bottom LOCKS the FLOWER — 3.6 in passes neither the 3.222 bore nor the 3.550 opening',
       !took && w.biobuzz!.flowers[F].stack.length === 1,
       `took=${took} stack ${JSON.stringify(w.biobuzz!.flowers[F].stack)}`,
+    );
+  }
+  {
+    // a SWEEPER in the SAME pose pulls nothing in 3D either — this is `sweeper` in every other
+    // respect the default spec already is, so no `REACHING` override.
+    const w = mkWorld3d('free', 933);
+    w.balls.length = 0;
+    drop(w, F, 'pollen', 1);
+    for (let t = 0; t < 300; t++) step3d(w, 1 / 60, new Map());
+    const rob = w.robots[0];
+    rob.hopper.length = 0;
+    rob.lastIntakeAt = -99;
+    const f = BB_FLOWERS[F];
+    rob.pos.x = f.x + BB_PLACE_REACH + bbFootprint(rob.spec).front;
+    rob.pos.y = f.y;
+    rob.heading = Math.PI;
+    const ballById = new Map(w.balls.map((b) => [b.id, b] as const));
+    const took = flowerRetrieve3d(w, w.biobuzz!, rob, cmd({ intake: true }), true, ballById, kindOfIn(w));
+    check(
+      'a SWEEPER flush on the foot pulls NOTHING in 3D — never reaches the opening, same as 2D',
+      !took && w.biobuzz!.flowers[F].stack.length === 1,
+      `took=${took} stack ${JSON.stringify(w.biobuzz!.flowers[F].stack)}`,
+    );
+  }
+
+  // ---- 2D/3D PARITY: the archetype gate agrees across both pipelines --------------------------
+  /**
+   * `bbFlowerAtIntake` is the ONE function both `retrieveFromFlower` (2D) and `flowerRetrieve3d`
+   * (3D) call — so a divergence here would be a divergence in the Z-BITE half of the gate, which
+   * each pipeline runs against a DIFFERENT bottom-element height (2D: the modelled
+   * `flowerStackZ`; 3D: the real settled body). Swept over the three archetypes and four
+   * standoffs the ROBOT lane's own numbers are pinned against (flush, and past/within/at the
+   * side-roller tolerance), each pipeline gets a FRESH single-pollen flower and a robot parked at
+   * the SAME nominal pose (`BB_PLACE_REACH + standoff`, chassis face flush + standoff).
+   */
+  {
+    const standoffs = [0, 0.5, 1.0, 1.5];
+    let mismatches = 0;
+    const detail: string[] = [];
+    for (const kind of BB_INTAKE_KINDS) {
+      for (const standoff of standoffs) {
+        const archetype = { bbMech: { launcher: null, lift: null, intake: { kind } } as unknown as RobotSpec['bbMech'] };
+
+        const w2 = mkWorld('free', 935, archetype);
+        const r2 = w2.robots[0];
+        r2.autoIntake = false;
+        r2.hopper.length = 0;
+        r2.lastIntakeAt = -10;
+        if (kind === 'ramp') {
+          r2.bbRampOut = true;
+          r2.bbRampAt = -10; // long since settled
+        }
+        const f2 = BB_FLOWERS[F];
+        r2.pos = { x: f2.x + BB_PLACE_REACH + bbFootprint(r2.spec).front + standoff, y: f2.y };
+        r2.heading = Math.PI;
+        const ballById2 = new Map(w2.balls.map((b) => [b.id, b] as const));
+        const took2 = retrieveFromFlower(w2, w2.biobuzz!, r2, cmd({ intake: true }), true, ballById2, kindOfIn(w2));
+
+        const w3 = mkWorld3d('free', 935, archetype);
+        for (let t = 0; t < 90; t++) step3d(w3, 1 / 60, new Map()); // let the staged column settle
+        const r3 = w3.robots[0];
+        r3.autoIntake = false;
+        r3.hopper.length = 0;
+        r3.lastIntakeAt = -99;
+        if (kind === 'ramp') {
+          r3.bbRampOut = true;
+          r3.bbRampAt = -10;
+        }
+        const f3 = BB_FLOWERS[F];
+        r3.pos = { x: f3.x + BB_PLACE_REACH + bbFootprint(r3.spec).front + standoff, y: f3.y };
+        r3.heading = Math.PI;
+        const ballById3 = new Map(w3.balls.map((b) => [b.id, b] as const));
+        const took3 = flowerRetrieve3d(w3, w3.biobuzz!, r3, cmd({ intake: true }), true, ballById3, kindOfIn(w3));
+
+        if (took2 !== took3) {
+          mismatches++;
+          detail.push(`${kind}@${standoff}in: 2D=${took2} 3D=${took3}`);
+        }
+      }
+    }
+    check(
+      'the 2D and 3D gate return the SAME verdict for the same 12 poses (3 archetypes × 4 standoffs)',
+      mismatches === 0,
+      mismatches === 0 ? '12/12 agree' : detail.join(' · '),
     );
   }
 
@@ -662,7 +758,7 @@ export function flower3dChecks(check: Check): void {
  * height rather than only at the top ring. It is the same `bbFlowerDropSlack` either way.
  */
 function flowerStagedScatterChecks(check: Check): void {
-  const staged = (seed: number): World => createBiobuzzWorld('free', seed, [setup(0, 'blue')], undefined, '3d');
+  const staged = (seed: number): World => createBiobuzzWorld('free', seed, [setup(0, 'blue', REACHING)], undefined, '3d');
   const cols = (w: World, i: number) => {
     const f = BB_FLOWERS[i];
     return w.balls
@@ -717,15 +813,32 @@ function flowerStagedScatterChecks(check: Check): void {
     for (let t = 0; t < 400; t++) step3d(w, 1 / 60, new Map());
     const f0 = BB_FLOWERS[0];
     const rob = w.robots[0];
-    rob.pos.x = f0.x + BB_PLACE_REACH + rob.spec.length / 2 + 1.5;
-    rob.pos.y = f0.y;
-    rob.heading = Math.PI;
+    // RE-PARKED every attempt, and moved CLEAR OF THE TUBE while it settles — see `placeDrain`'s
+    // comment on why.
+    const park = (): void => {
+      rob.pos.x = f0.x + BB_PLACE_REACH + bbFootprint(rob.spec).front;
+      rob.pos.y = f0.y;
+      rob.heading = Math.PI;
+      rob.vel = { x: 0, y: 0 };
+      rob.angVel = 0;
+    };
+    const clear = (): void => {
+      rob.pos = { x: -50, y: -50 };
+      rob.heading = 0;
+      rob.vel = { x: 0, y: 0 };
+      rob.angVel = 0;
+    };
+    clear();
+    // see `placeDrain`'s comment: 400 ticks of settle, a plain `break` on refusal.
     for (let p = 0; p < 6; p++) {
+      park();
       rob.hopper.length = 0;
       rob.lastIntakeAt = -99;
       const byId = new Map(w.balls.map((b) => [b.id, b] as const));
-      if (!flowerRetrieve3d(w, w.biobuzz!, rob, cmd({ intake: true }), true, byId, kindOfIn(w))) break;
-      for (let t = 0; t < 120; t++) step3d(w, 1 / 60, new Map());
+      const took = flowerRetrieve3d(w, w.biobuzz!, rob, cmd({ intake: true }), true, byId, kindOfIn(w));
+      clear();
+      if (!took) break;
+      for (let t = 0; t < 400; t++) step3d(w, 1 / 60, new Map());
     }
     check(
       'a STAGED column drains dry through the real retrieval',
@@ -874,7 +987,12 @@ function placeRig(seed: number, n: number, nectarFirst: boolean): World {
   w.balls.length = 0;
   const f = BB_FLOWERS[F];
   const rob = w.robots[0];
-  rob.spec = { ...rob.spec, bbMech: { ...rob.spec.bbMech!, lift: { kind: 'boxtube', mount: 'front' } } };
+  // the Box Tube PLACES (unaffected by the intake archetype); `placeDrain` below RETRIEVES
+  // through the same build's sweeper mouth, which needs a REACHING archetype since 2026-09-20.
+  rob.spec = {
+    ...rob.spec,
+    bbMech: { ...rob.spec.bbMech!, lift: { kind: 'boxtube', mount: 'front' }, intake: { kind: 'siderollers' } },
+  };
   const local = bbPlacePointLocal(rob.spec)!;
   rob.heading = Math.PI;
   rob.pos.x = f.x + local.x;
@@ -926,15 +1044,49 @@ function placedColumn(w: World): { id: number; c: number; d: number; x: number; 
 function placeDrain(w: World, n: number): number {
   const f = BB_FLOWERS[F];
   const rob = w.robots[0];
-  rob.pos.x = f.x + BB_PLACE_REACH + rob.spec.length / 2 + 1.5;
-  rob.pos.y = f.y;
-  rob.heading = Math.PI;
+  // FLUSH on the foot — `BB_PLACE_REACH` out from the ring, the chassis-face convention
+  // `bbFlowerAtIntake`'s own reach numbers are measured from (`config.ts`'s FLOWER-opening
+  // header) — which the Rapier robot solve does not know about: its own (wider) collision
+  // footprint would rather rest ~3in further out, so it walks the chassis off this pose over a
+  // settle window, and RE-PARKS it before every attempt.
+  const park = (): void => {
+    rob.pos.x = f.x + BB_PLACE_REACH + bbFootprint(rob.spec).front;
+    rob.pos.y = f.y;
+    rob.heading = Math.PI;
+    rob.vel = { x: 0, y: 0 };
+    rob.angVel = 0;
+  };
+  // ⚠️ PARKED OUT OF THE WAY WHILE THE COLUMN SETTLES, NOT FLUSH. `park()`'s pose puts the
+  // chassis BOX itself inside the foot's own collision volume (a real robot cannot physically
+  // occupy it — only the archetype's reach HARDWARE is allowed past the footprint, same as the
+  // Box Tube's placement point, `docs/area/biobuzz.md`'s BOX TUBE note). Left there for the
+  // whole settle window, the chassis being pushed back out by the solve sat squarely in the
+  // falling column's path for part of it and stalled a cascading column short of the floor —
+  // measured, a 5-element column stopped at 4.14in, nowhere near the ~1.4in a settled bottom
+  // POLLEN rests at. Parked away instead, the column falls clear, and `park()` only puts the
+  // chassis in the way for the ONE tick the gate check itself runs on (no physics step between
+  // `park()` and `flowerRetrieve3d`, so nothing is ever solved against it there).
+  const clear = (): void => {
+    rob.pos = { x: -50, y: -50 }; // a far corner, clear of every FLOWER's foot and the HIVEs
+    rob.heading = 0;
+    rob.vel = { x: 0, y: 0 };
+    rob.angVel = 0;
+  };
+  clear();
+  // 400 ticks (6.67s), not 120: retrieval now carries a Z-BITE the old gate never asked, which
+  // wants the bottom element genuinely AT REST — a taller column's cascade (each pop drops the
+  // whole stack above it by one pitch, ~2.7in) needs real time to settle into the reach band. A
+  // `break` on refusal, not a retry: retried, the extra settle time was occasionally enough for
+  // jostling to reorder a NECTAR off the bottom and drain a FLOWER that G418.B locks.
   for (let p = 0; p < n + 3; p++) {
+    park();
     rob.hopper.length = 0;
     rob.lastIntakeAt = -99;
     const byId = new Map(w.balls.map((b) => [b.id, b] as const));
-    if (!flowerRetrieve3d(w, w.biobuzz!, rob, cmd({ intake: true }), true, byId, kindOfIn(w))) break;
-    for (let t = 0; t < 120; t++) step3d(w, 1 / 60, new Map());
+    const took = flowerRetrieve3d(w, w.biobuzz!, rob, cmd({ intake: true }), true, byId, kindOfIn(w));
+    clear();
+    if (!took) break;
+    for (let t = 0; t < 400; t++) step3d(w, 1 / 60, new Map());
   }
   return w.biobuzz!.flowers[F].stack.length;
 }

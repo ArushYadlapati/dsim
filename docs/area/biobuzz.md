@@ -395,6 +395,44 @@ newest-first — it is never ranked, which is what keeps the two eras from meeti
   - **The hood's own feed mouth rotates away from the feed at elevation**, which is why the wrap is
     0.556 rad and not the 1.05 it was: a FIXED feed shoe at `BB_FEED_SHOE_R` spans 146°–202° and
     takes over the entry. It bolts to both side plates, so it is also the rear tie.
+  - ⚠️ **INTAKING FROM A FLOWER IS ARCHETYPE-AWARE** (owner, 2026-09-20: "intaking from the flower
+    should now only be done if it is physically possible"). `BB_INTAKE_KINDS` — `sweeper` /
+    `siderollers` / `ramp` (`RobotSpec.bbMech.intake`, `bbIntakeKindOf`) — are three hardware
+    variants on the SAME sweeper mouth (`bbMouths`, `bbRobotSolids` stay archetype-blind; a ground
+    POLLEN is taken identically by every build). What differs is whether the hardware can reach
+    the retrieval opening measured off the CAD: the bottom POLLEN sits on the tiles inside the
+    lower bore, 3.55 in tall and open from the plate's field edge back 3.57 in to the peanut
+    supports (§9.7 Fig 9-12; the numbers are `config.ts`'s "ROBOT — intake ARCHETYPES" section
+    header). A `sweeper`'s roller rides at ~4.5 in, two inches behind the tip line at the tip
+    line itself — it never passes the plate edge and its reach (`bbFlowerReachOf`) is `null`,
+    always. `siderollers` straddle the POLLEN (reach `[1.15, 2.65]` past the tip line, z
+    `[0.5, 2.5]`); a `ramp` (`bbRamp`, an edge-triggered toggle — `RobotState.bbRampOut`/
+    `bbRampAt`) wedges under it once DEPLOYED and SETTLED (`bbRampSettled`,
+    `BB_RAMP_DEPLOY_S` after the toggle; reach `[0, 2.17]`, z `[0.5, 1.38]`).
+    `bbFlowerAtIntake` (`play.ts`) puts the FLOWER's ring centre into the mouth's own frame
+    (`mouthAxes`) and asks a BITE — `bbBites` (`flower.ts`), one helper for both axes — of at
+    least `BB_FLOWER_BITE` (0.5 in) between the archetype's box and the POLLEN's own extent, in x
+    (`reach.out` against `[u−r, u+r]`) and in z (`reach.z` against the bottom element's own
+    centre height, read from `ball.z` in 2D — already a centre, `flowerStackZ` — and `ball.z + r`
+    in 3D, where `ball.z` is the bottom). At flush (`u = BB_PLACE_REACH`, 2.384 in): side rollers
+    bite 1.5 in in x and 2.0 in in z; the ramp bites 1.18 in and 0.88 in; the standoff tolerance
+    past flush is ≈1.17 in for side rollers and ≈0.68 in for the ramp.
+    ⚠️ **`u` IS MEASURED FROM THE MOUTH'S OWN OUTWARD BOUND (`uOut`, the roller line — the
+    collision footprint's edge on this side), NOT THE BARE CHASSIS FRAME.** The frame sits
+    `bbIntakeReach` (3–5 in) further BACK than that, which is where `footprintExtents` actually
+    stops the chassis in a real match — measuring from the frame instead left the opening
+    physically unreachable by any archetype (a robot driven flush settled ~5.2–5.4 in from the
+    ring) and the RETRIEVE tutorial step never completed. `uOut` is where a robot driven flush
+    against the foot actually rests, so `u ≈ BB_PLACE_REACH` there — the design intent, reached
+    by the collision the field enforces rather than by a pose only a test can teleport to.
+    The reach hardware ITSELF is not a collider, by design, the same as the Box Tube's placement
+    point above: the archetype boxes reach past the footprint edge on purpose, so a wall-flush
+    pose draws the side rollers or the ramp INSIDE the wall — the physics footprint
+    (`bbFootprint`/`footprintExtents`) is unchanged in both pipelines, only what a mouth's gate
+    will credit changed. The wire widened for the ramp toggle: `QCommand.buttons` is 16 bits now
+    (`BTN_BBRAMP` = 256, `src/net/protocol.ts`), and `packKey` (`src/sim/replay.ts`) carries the
+    buttons ALONGSIDE the packed axes rather than inside them — packed in, bit 256 masked to 0 and
+    a ramp press was invisible to the replay recorder.
 - **Verification:** `scripts/smoke-biobuzz/sim3d.ts` (SIM3D lane: seam, drive parity, two-run
   hash, conservation, containment with `containmentFixes === 0`, CCD, capture, launch into either
   up cell, 18/29-in clearance, tip/spill, perf ≤ 1.5 ms, CAD probe agreement) and `render.ts`

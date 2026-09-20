@@ -22,6 +22,7 @@ import {
   BB_LAUNCH_SPEED_MAX,
   BB_LAUNCH_Z0,
   BB_PLACE_REACH,
+  BB_RAMP_DEPLOY_S,
   BB_TURRET_AXLE_Z,
   BB_TURRET_SOLVE_PASSES,
   BB_PLACE_TOL,
@@ -67,7 +68,7 @@ import {
   BB_TURRET_PITCH_SLEW,
   BB_TURRET_SLEW,
 } from './config';
-import { bbIntakeAccepts, bbIsTurreted, bbLauncherOf, bbLiftOf, bbTurretFor } from './mechs';
+import { bbIntakeAccepts, bbIntakeKindOf, bbIsTurreted, bbLauncherOf, bbLiftOf, bbTurretFor } from './mechs';
 import { approach } from '../../math';
 
 /**
@@ -249,17 +250,27 @@ export { bbHopperCap };
  * Derived from the rect `bbMouths` published, never re-derived from the spec: the drawn mouth
  * IS the capture area, and a second derivation is how those two drift apart.
  */
-interface BbMouthAxes {
+export interface BbMouthAxes {
   n: Vec2;
   p: Vec2;
-  /** the chassis face on this edge (`hl` for an end, `hw` for a flank) */
+  /** the chassis face on this edge (`hl` for an end, `hw` for a flank) — where `BB_PLACE_REACH`
+   * and `config.ts`'s FLOWER-opening header measure "a chassis face flush" from, but NOT the
+   * archetype "tip line" (`bbFlowerAtIntake` uses `uOut` for that — see its own comment for why
+   * the bare frame is the wrong reference in a real match). */
   dist: number;
   uIn: number;
+  /** the mouth's own OUTWARD bound — the roller line, and the collision footprint's edge on this
+   * mounted side (`bbFootprint`/`footprintExtents` grow it by the same `bbIntakeReach`). This IS
+   * the archetype "tip line" `BbFlowerReach.out` is measured from (`u − uOut`): it is where a
+   * robot driven flush against a solid on this edge actually rests, which `dist` is not. */
   uOut: number;
   half: number;
 }
 
-function mouthAxes(m: LocalRect, hl: number, hw: number): BbMouthAxes {
+/** EXPORTED for `play.ts`'s `bbFlowerAtIntake`: the FLOWER gate needs the same per-mouth (n, p,
+ * uOut) frame the roller model above uses, so the two cannot end up disagreeing about where a
+ * mouth's centreline or tip line is. */
+export function mouthAxes(m: LocalRect, hl: number, hw: number): BbMouthAxes {
   const n = EDGE_DIR[m.edge];
   const p = EDGE_PERP[m.edge];
   const uA = m.x0 * n.x + m.y0 * n.y;
@@ -1418,4 +1429,49 @@ export function bbFlowerInReach(world: World, r: RobotState): number | null {
     }
   }
   return best;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// THE RAMP TOGGLE (`ramp` intake only)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * DEPLOY / FOLD the `ramp` intake's U-frame — the one caller of `RobotCommand.bbRamp`, called
+ * from both pipelines at the same place the turret slew runs (`play.ts` stage 5b,
+ * `sim3d/elements3d.ts`'s `elements3dAimAndLaunch`), with the same `enabled` those passes gate
+ * driver control on.
+ *
+ * EDGE-TRIGGERED like `driveMode` (`src/sim/robot.ts:100`) — a held button flips the ramp once,
+ * not every tick — but with its OWN latch (`bbRampHeld`) rather than reusing `driveModeHeld`,
+ * because a butterfly-drivetrain ramp build would otherwise fold its ramp every time it swapped
+ * wheel sets.
+ *
+ * ⚠️ **A NON-RAMP BUILD WRITES NO FIELD AT ALL.** `bbIntakeKindOf(r.spec) !== 'ramp'` returns
+ * before touching `r` — `bbRampOut`/`bbRampAt`/`bbRampHeld` all stay `undefined`, which is what
+ * keeps the 2D pipeline byte-identical for every spec that existed before this archetype did
+ * (`npm test` hashes worlds). `enabled` false (pre-match, a phase transition, post-match) drops
+ * the press on the floor the same way drive/intake/fire do, rather than letting it queue.
+ */
+export function bbRampStep(r: RobotState, cmd: RobotCommand | undefined, enabled: boolean, time: number): void {
+  if (bbIntakeKindOf(r.spec) !== 'ramp') return;
+  const wants = enabled && (cmd?.bbRamp ?? false);
+  if (wants && !r.bbRampHeld) {
+    r.bbRampOut = !(r.bbRampOut ?? false);
+    r.bbRampAt = time;
+  }
+  r.bbRampHeld = wants;
+}
+
+/**
+ * Is the ramp not merely OUT but SETTLED — `BB_RAMP_DEPLOY_S` past its last toggle, the swing
+ * time a servo-driven U-frame actually takes? The ONE reader is `bbFlowerReachOf`'s caller
+ * (`play.ts`'s `retrieveFromFlower`, `sim3d/flower3d.ts`'s `flowerRetrieve3d`): a ramp mid-swing
+ * reaches nothing, exactly like a folded one.
+ *
+ * Absent `bbRampAt` (the ramp has never been toggled) reads as SETTLED rather than unsettled —
+ * there is no swing in flight to wait out, which matters only for `bbRampOut` written some other
+ * way (a staged scene, a future spawn default) with no matching stamp.
+ */
+export function bbRampSettled(r: RobotState, time: number): boolean {
+  return !!r.bbRampOut && time - (r.bbRampAt ?? -Infinity) >= BB_RAMP_DEPLOY_S;
 }

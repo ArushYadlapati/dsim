@@ -26,9 +26,19 @@ import {
   BB_HOOD_WRAP,
   BB_INTAKE_DRAW_IN,
   BB_LAUNCH_Z0,
+  BB_RAMP_ANGLE,
+  BB_RAMP_DEPLOY_S,
+  BB_RAMP_L,
+  BB_RAMP_PIVOT_BACK,
+  BB_RAMP_PIVOT_Z,
   BB_SIDE_PLATE_BOTTOM_Z,
   BB_SIDE_PLATE_FRONT_X,
   BB_SIDE_PLATE_TOP_Z,
+  BB_SIDE_ROLLER_H,
+  BB_SIDE_ROLLER_OUT,
+  BB_SIDE_ROLLER_R,
+  BB_SIDE_ROLLER_Y,
+  BB_SIDE_ROLLER_Z,
   BB_TURRET_AXLE_Z,
   BB_TURRET_BRACE_R,
   BB_TURRET_BRACES,
@@ -41,7 +51,7 @@ import {
   bbHopperCap,
   type BbHeadDims,
 } from '../config';
-import { bbIsTurreted, bbLauncherOf, bbLiftOf, type BbLauncherSpec } from '../mechs';
+import { bbIntakeKindOf, bbIsTurreted, bbLauncherOf, bbLiftOf, type BbLauncherSpec } from '../mechs';
 import { bbBoxTubeGlyph } from '../parts';
 import { bbFlowerInReach, bbMouths, bbMuzzleLocal, bbPlacePointLocal } from '../robot';
 import { bbSpecKey } from '../specKey';
@@ -947,6 +957,46 @@ interface BbRoller {
   phase: number;
 }
 
+/** ONE side-roller wheel (`siderollers`): a plain compliant-wheel cylinder that just spins about
+ *  its own (vertical) axis — no flap fold, unlike the sweeper. `sign` is which way it turns, so
+ *  the pair draws a POLLEN in rather than fighting each other. */
+interface BbSideRoller {
+  mesh: THREE.Object3D;
+  sign: 1 | -1;
+  phase: number;
+}
+
+/** the `siderollers` wheel geometry: a cylinder standing on its own vertical axis (`rotateX`
+ *  turns the default y-axis barrel to z), 8 radial segments — cheap, and the facets read as the
+ *  compliant wheel's own lobes rather than as a smooth puck. One geometry for every wheel on
+ *  every robot; there is nothing spec-dependent about it. */
+let sideRollerGeo: THREE.CylinderGeometry | null = null;
+function sideRollerGeometry(): THREE.CylinderGeometry {
+  if (!sideRollerGeo) {
+    const g = new THREE.CylinderGeometry(BB_SIDE_ROLLER_R, BB_SIDE_ROLLER_R, BB_SIDE_ROLLER_H, 8);
+    g.rotateX(Math.PI / 2);
+    SHARED_GEO.add(g);
+    sideRollerGeo = g;
+  }
+  return sideRollerGeo;
+}
+
+// ── RAMP DIMENSIONS THAT ARE THE PICTURE'S, NOT THE SIM'S — the rail/crossbar section. The
+// reach itself (`BB_RAMP_L`, `_PIVOT_BACK`, `_PIVOT_Z`, `_ANGLE`) is `config.ts`'s; these three
+// only say how thick the frame that carries it is drawn.
+const BB_RAMP_RAIL_X = 0.5;
+const BB_RAMP_RAIL_Y = 0.25;
+const BB_RAMP_CROSS_T = 0.3;
+const BB_RAMP_CROSS_H = 0.5;
+/** the pivot's DEPLOYED rotation about the mouth's own y-axis (rad): level (π/2 off the
+ *  folded-vertical rest, built along local +z) plus the deployed tilt below it. FOLDED is
+ *  rotation 0 — see the header on `buildIntake`'s `ramp` branch for the derivation. */
+const BB_RAMP_DEPLOYED_ROT = Math.PI / 2 + BB_RAMP_ANGLE;
+
+function smoothstep01(t: number): number {
+  return t * t * (3 - 2 * t);
+}
+
 /**
  * THE OVER-THE-BUMPER INTAKE (owner playtest #14), one assembly per mounted edge.
  *
@@ -964,9 +1014,17 @@ interface BbRoller {
 /* EXPORTED for the RENDER lane, which measures the drawn plate tips and the front brace against
  * `bbMouths` on the real group. It cannot go through `buildRobotGroup`: the wheel roller stripe
  * is a canvas texture and the lane has no DOM. */
-export function buildIntake(spec: RobotSpec): { nodes: THREE.Object3D[]; rollers: BbRoller[] } {
+export function buildIntake(
+  spec: RobotSpec,
+): { nodes: THREE.Object3D[]; rollers: BbRoller[]; sideRollers: BbSideRoller[]; rampPivots: THREE.Group[] } {
   const nodes: THREE.Object3D[] = [];
   const rollers: BbRoller[] = [];
+  const sideRollers: BbSideRoller[] = [];
+  const rampPivots: THREE.Group[] = [];
+  // one archetype for the whole robot (`bbIntakeKindOf`), never per mouth — every mounted edge
+  // carries the same hardware. Byte-identical for `sweeper`: nothing below reads `kind` on that
+  // path except to skip the two blocks that draw the other archetypes' extra parts.
+  const kind = bbIntakeKindOf(spec);
   const hl = spec.length / 2;
   const hw = spec.width / 2;
   for (const m of bbMouths(spec)) {
@@ -1073,7 +1131,15 @@ export function buildIntake(spec: RobotSpec): { nodes: THREE.Object3D[]; rollers
     brace.name = `robot:intake:brace:${m.edge}`;
     g.add(cast(brace));
 
-    const barrel = f.half * 2 - 0.9;
+    // the `ramp`'s own rails sit inboard of the arms (`railY` below); its barrel is shortened to
+    // pass between them with the stated clearance. Every other kind keeps the full-width barrel
+    // that shipped before archetypes existed.
+    let barrel = f.half * 2 - 0.9;
+    let railY = 0;
+    if (kind === 'ramp') {
+      railY = f.half - BB_INTAKE_ARM_INSET - armT - 0.15;
+      barrel = Math.min(barrel, 2 * (railY - 0.25));
+    }
     const hubGeo = framePart(`rollerHub:${barrel.toFixed(2)}`, () => [
       new THREE.CylinderGeometry(BB_ROLLER_HUB_R, BB_ROLLER_HUB_R, barrel, 12),
     ]);
@@ -1123,9 +1189,92 @@ export function buildIntake(spec: RobotSpec): { nodes: THREE.Object3D[]; rollers
         g.add(belt);
       }
     }
+
+    // ── SIDE ROLLERS: two vertical-axis compliant wheels straddling the opening, hung off the
+    // front brace. Cosmetic-only geometry — the REACH the sim credits is `BB_SIDE_ROLLER_REACH`
+    // in `config.ts`, and the wheels below sit at exactly its centre so the RENDER lane can check
+    // "the drawn part that reaches is the part the sim credits" against a real group.
+    if (kind === 'siderollers') {
+      const memberT = INTAKE_RAIL_T * 0.6;
+      const wheelTopZ = BB_SIDE_ROLLER_Z + BB_SIDE_ROLLER_H / 2;
+      const braceZ = BB3_MOUTH_SLOT_Z + braceT / 2;
+      // one strap + one outrigger, built centred on y = 0 like the arms above, so a single
+      // geometry serves both sides and only the mesh's own position mirrors it
+      const bracketGeo = framePart(`sideroller:bracket:${tip.toFixed(2)}`, () => [
+        boxAt(memberT, memberT, braceZ - wheelTopZ, tip, 0, (braceZ + wheelTopZ) / 2),
+        boxAt(BB_SIDE_ROLLER_OUT, memberT, memberT, tip + BB_SIDE_ROLLER_OUT / 2, 0, wheelTopZ),
+      ]);
+      for (const s of [1, -1] as const) {
+        const bracket = cast(new THREE.Mesh(bracketGeo, solidMat(ALU, 0.45, 0.35)));
+        bracket.name = `robot:sideroller:bracket:${m.edge}`;
+        bracket.position.set(0, s * BB_SIDE_ROLLER_Y, 0);
+        g.add(bracket);
+
+        const wheel = cast(new THREE.Mesh(sideRollerGeometry(), solidMat(SWEEPER, 0.5, 0.25)));
+        wheel.name = `robot:sideroller:${m.edge}:${s === 1 ? 'l' : 'r'}`;
+        wheel.position.set(tip + BB_SIDE_ROLLER_OUT, s * BB_SIDE_ROLLER_Y, BB_SIDE_ROLLER_Z);
+        g.add(wheel);
+        sideRollers.push({ mesh: wheel, sign: s, phase: 0 });
+      }
+    }
+
+    // ── RAMP: a U-frame pivoting on a bracket under the side arms, folded round the sweeper's own
+    // barrel and deployed to wedge under a POLLEN. Built in the PIVOT's own local frame with the
+    // rails along local +z — the FOLDED pose, so `pivot.rotation.y = 0` draws it there for free —
+    // and eased in `sync` toward `BB_RAMP_DEPLOYED_ROT` (derivation: rotating the folded tip
+    // `(0,0,BB_RAMP_L)` by `π/2 + BB_RAMP_ANGLE` about local y lands it at
+    // `(BB_RAMP_L·cos(BB_RAMP_ANGLE), 0, −BB_RAMP_L·sin(BB_RAMP_ANGLE))`, which added to the pivot's
+    // own position is exactly `(tip + BB_RAMP_OUT, ·, BB_RAMP_TIP_Z)` — `config.ts`'s own numbers,
+    // reached by construction rather than typed a second time).
+    if (kind === 'ramp') {
+      const pivot = new THREE.Group();
+      pivot.name = `robot:ramp:${m.edge}`;
+      // the pivot sits on the sweeper's own axle line (`BB_RAMP_PIVOT_BACK === BB_ROLLER_FLAP_R`,
+      // asserted by the RENDER lane) so the folded rails stand round the barrel, not through it
+      pivot.position.set(tip - BB_RAMP_PIVOT_BACK, 0, BB_RAMP_PIVOT_Z);
+      g.add(pivot);
+      rampPivots.push(pivot);
+
+      const railGeo = framePart(`ramp:rail|${railY.toFixed(2)}`, () => [
+        boxAt(BB_RAMP_RAIL_X, BB_RAMP_RAIL_Y, BB_RAMP_L, 0, 0, BB_RAMP_L / 2),
+      ]);
+      for (const s of [1, -1] as const) {
+        const rail = cast(new THREE.Mesh(railGeo, solidMat(ALU, 0.5, 0.3)));
+        rail.name = `robot:ramp:rail:${m.edge}:${s === 1 ? 'l' : 'r'}`;
+        rail.position.set(0, s * railY, 0);
+        pivot.add(rail);
+      }
+      const barGeo = framePart(`ramp:bar|${railY.toFixed(2)}`, () => [
+        boxAt(BB_RAMP_CROSS_T, railY * 2, BB_RAMP_CROSS_H, 0, 0, BB_RAMP_L - BB_RAMP_CROSS_H / 2),
+      ]);
+      const bar = cast(new THREE.Mesh(barGeo, solidMat(ALU, 0.5, 0.3)));
+      bar.name = `robot:ramp:bar:${m.edge}`;
+      pivot.add(bar);
+
+      // the pivot BRACKET is fixed to the chassis (it does not rotate with the ramp) — a short
+      // strap hanging from each side arm's own rail down to the pivot axle
+      const pivotArmY = f.half - BB_INTAKE_ARM_INSET - armT / 2;
+      const pivotBracketGeo = framePart(`ramp:pivotbracket:${(tip - BB_RAMP_PIVOT_BACK).toFixed(2)}`, () => [
+        boxAt(
+          INTAKE_RAIL_T * 0.6,
+          INTAKE_RAIL_T * 0.6,
+          Math.abs(railZ - BB_RAMP_PIVOT_Z),
+          tip - BB_RAMP_PIVOT_BACK,
+          0,
+          (railZ + BB_RAMP_PIVOT_Z) / 2,
+        ),
+      ]);
+      for (const s of [1, -1] as const) {
+        const pb = cast(new THREE.Mesh(pivotBracketGeo, solidMat(ALU, 0.45, 0.35)));
+        pb.name = `robot:ramp:pivotbracket:${m.edge}`;
+        pb.position.set(0, s * pivotArmY, 0);
+        g.add(pb);
+      }
+    }
+
     nodes.push(g);
   }
-  return { nodes, rollers };
+  return { nodes, rollers, sideRollers, rampPivots };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1872,6 +2021,8 @@ export function buildRobotGroup(spec: RobotSpec, id: number, alliance: Alliance)
   const intake = buildIntake(spec);
   for (const n of intake.nodes) group.add(n);
   group.userData.intakeRollers = intake.rollers;
+  group.userData.sideRollers = intake.sideRollers;
+  group.userData.rampPivots = intake.rampPivots;
 
   const heads: THREE.Group[] = [];
   const pitches: THREE.Group[] = [];
@@ -2141,6 +2292,33 @@ export function buildBiobuzzRobots(): BbRobots {
             roller.flaps[k].rotation.y = -(a - fold);
           }
         }
+      }
+
+      // THE SIDE ROLLERS SPIN WHENEVER THE SWEEPER DOES — same gate, same clock — but the two
+      // wheels of a pair turn OPPOSITE senses, drawing a POLLEN in from both faces rather than
+      // fighting each other. No flap fold: a plain compliant wheel has nothing to yield.
+      const sideRollers = entry.group.userData.sideRollers as BbSideRoller[] | undefined;
+      if (sideRollers && sideRollers.length > 0) {
+        const running =
+          robotsEnabled(world) &&
+          (r.autoIntake || world.time - r.lastIntakeAt < 0.4) &&
+          r.hopper.length < bbHopperCap(r.spec);
+        for (const sr of sideRollers) {
+          if (running) sr.phase += BB_ROLLER_SPIN * dt * sr.sign;
+          sr.mesh.rotation.z = sr.phase;
+        }
+      }
+
+      // THE RAMP EASES BETWEEN FOLDED AND DEPLOYED OFF `bbRampAt` — the WORLD clock, exactly like
+      // the roller and the Box Tube, so a replay scrub that jumps backwards does not unwind it.
+      // An absent `bbRampAt` sends `t` straight to 1: the robot is drawn fully at its current pose
+      // rather than mid-swing from a toggle that never happened this match.
+      const rampPivots = entry.group.userData.rampPivots as THREE.Group[] | undefined;
+      if (rampPivots && rampPivots.length > 0) {
+        const t = Math.max(0, Math.min(1, (world.time - (r.bbRampAt ?? -Infinity)) / BB_RAMP_DEPLOY_S));
+        const e = smoothstep01(t);
+        const angle = r.bbRampOut ? BB_RAMP_DEPLOYED_ROT * e : BB_RAMP_DEPLOYED_ROT * (1 - e);
+        for (const pivot of rampPivots) pivot.rotation.y = angle;
       }
 
       // THE DRIVETRAIN POSE. Both of these are state the sim already writes and the 3D view was

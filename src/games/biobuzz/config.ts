@@ -40,7 +40,7 @@
 
 import type { Alliance, AssistConfig, RobotSpec, StartCat, Vec2, World } from '../../types';
 import { INTAKE_PRESETS, ROBOT_MAX_SIZE } from '../../config';
-import { datan2, dcos, hyp, wrapAngle } from '../../math';
+import { datan2, dcos, dsin, hyp, wrapAngle } from '../../math';
 import { lengthLimits, massLimits, widthLimits } from '../../sim/drivetrain';
 import {
   BB_DEFAULT_INTAKE_MOUNT,
@@ -51,7 +51,7 @@ import {
 } from './mounts';
 // `mechs.ts` is a LEAF over `types` + `mounts`, so this import adds no cycle — the same reason
 // `mounts.ts` itself is safe to import here.
-import { bbLauncherOf, bbLiftOf } from './mechs';
+import { type BbIntakeKind, bbLauncherOf, bbLiftOf } from './mechs';
 // THE FIELD'S DIMENSIONS ARE GENERATED FROM THE CAD, NOT TYPED HERE (owner ruling, 2026-09-18:
 // "the CAD is authoritative for dimensions"). `fieldDims.gen.ts` is written by `npm run
 // field-cad` out of `public/models/biobuzz/field-measurements.json`, and its header states the
@@ -894,9 +894,140 @@ export const BB_PLACE_TOL = 2.0;
  * seconds. APPROX — one element worked out from under the stack through a 3.55-in hole, not a
  * roller sweeping loose elements off the tiles, so it is slower than a ground pickup. */
 export const BB_FLOWER_RETRIEVE_S = 0.35;
-/** how far past its roller line an intake mouth can be from the FLOWER foot's field-side face and
- * still pull from the retrieval opening (in). APPROX — the contact slop of a compliant roller. */
-export const BB_FLOWER_RETRIEVE_PAD = 1.0;
+// `BB_FLOWER_RETRIEVE_PAD` (the old flat-rect padding this constant used to be) is GONE: the
+// gate below is archetype-aware and asks an actual overlap (`BB_FLOWER_BITE`) instead of a
+// padded rect, so there is nothing left for a slop constant to pad.
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ROBOT — intake ARCHETYPES, and what each one can physically reach in a FLOWER
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * ⚠️ **THE RETRIEVAL OPENING, MEASURED, AND WHY THE SWEEPER CANNOT USE IT** (owner, 2026-09-20:
+ * "intaking from the flower is not physically accurate. Current rollers cannot actually reach the
+ * pollen under").
+ *
+ * The bottom POLLEN of a FLOWER sits ON THE TILES inside the lower plate's 3.222-in bore (a 2.8-in
+ * POLLEN falls through it — `sim3d/flowerTube.ts`), centre `BB_POLLEN_R` up and on the ring axis,
+ * which is `BB_PLACE_REACH` (2.384 in) BEHIND the foot's field-side face. The space it sits in,
+ * off the CAD hulls (`scratch` probe on F1, ring-centre frame, u into the field):
+ *
+ *   mid plate underside   z 3.904               the ceiling (`BB_FLOWER_RETRIEVE_Z[1]`)
+ *   lower plate top       z 0.354, to u 2.404   a rim the POLLEN's bottom is 0.354 BELOW
+ *   peanut supports       u −2.45 … −1.19       the only solids under the mid plate: wall side
+ *   plate half-width      ±2.97 along the wall
+ *
+ * So the opening is open from the plate's field edge 3.57 in back to the supports, 3.55 in tall,
+ * the full plate width — the manual's "3.55 in tall and 3.57 in deep" (§9.7) to the hundredth —
+ * and a POLLEN in it is reachable by anything that can get **more than 0.98 in past the plate
+ * edge, under 3.9 in, at POLLEN height**. The SWEEPER's roller is a 4.5-in axle with 2-in
+ * compliant flaps whose lowest sweep is 2.5 in at the axle, TWO INCHES BEHIND the tip line: at the
+ * tip line the flaps are at axle height, above the mid plate. Nothing on it ever passes the plate
+ * edge, so `bbFlowerAtIntake` refuses it — which is what this section exists to say in numbers.
+ *
+ * Each archetype's REACH is one box in the MOUTH frame (`bbMouthFrame`: +x OUTWARD past the tip
+ * line, y across the mouth, z off the tiles) — the volume of the hardware that touches the
+ * POLLEN. The sim asks whether that box BITES the POLLEN (`BB_FLOWER_BITE` of overlap along both
+ * x and z, and the POLLEN's centre within `half` of the mouth's centreline), and BOTH renderers
+ * draw the hardware from these same numbers, so the drawn part that reaches is the part the sim
+ * credits — the `bbMouths` rule, one mechanism further out.
+ */
+export interface BbFlowerReach {
+  /** the hardware's extent OUTWARD of the tip line (in): `[inner, outer]`. Negative is behind
+   * the tip, inside the mouth. */
+  out: readonly [number, number];
+  /** how far off the mouth's centreline the POLLEN's centre may sit and still be gripped (in).
+   * `null` ⇒ anywhere across the mouth (a full-width part). */
+  half: number | null;
+  /** the hardware's z band off the tiles (in). */
+  z: readonly [number, number];
+}
+
+/** the least overlap, along x AND along z, between a reach box and the POLLEN's own extent for
+ * the hardware to count as having hold of it (in). APPROX — half an inch of a compliant wheel's
+ * face or a ramp's lip under a ball, i.e. contact and not a graze. */
+export const BB_FLOWER_BITE = 0.5;
+
+/** the SIDE ROLLERS (`siderollers`): two vertical-axis compliant wheels, one each side of the
+ * mouth's centreline, hung from the front brace. APPROX — sized to STRADDLE a POLLEN in the
+ * opening with the chassis flush on the foot: at `BB_SIDE_ROLLER_OUT` past the tip the pair sits
+ * 0.48 in short of the POLLEN's centre and ±`BB_SIDE_ROLLER_Y` off it, so each wheel's face is
+ * 0.19 in INTO the POLLEN's skin (the compression that grips), the pair spans ±2.65 in (inside
+ * the plate's ±2.97), tops out at 2.5 in (under the 3.904 ceiling) and reaches 2.65 in past the
+ * plate edge (short of the supports at 3.57). */
+export const BB_SIDE_ROLLER_R = 0.75;
+/** the wheel's height (in): a 2-in compliant wheel stack. */
+export const BB_SIDE_ROLLER_H = 2.0;
+/** the wheel's mid-height off the tiles (in) — a hair above a POLLEN's own centre. */
+export const BB_SIDE_ROLLER_Z = 1.5;
+/** the wheel's axis, past the tip line (in). */
+export const BB_SIDE_ROLLER_OUT = 1.9;
+/** the wheel's axis, off the mouth's centreline (in). */
+export const BB_SIDE_ROLLER_Y = 1.9;
+export const BB_SIDE_ROLLER_REACH: BbFlowerReach = {
+  out: [BB_SIDE_ROLLER_OUT - BB_SIDE_ROLLER_R, BB_SIDE_ROLLER_OUT + BB_SIDE_ROLLER_R],
+  // between the wheels: a POLLEN further off-centre than the inner faces meets one wheel's face
+  // square-on and is pushed, not gripped
+  half: BB_SIDE_ROLLER_Y - BB_SIDE_ROLLER_R,
+  z: [BB_SIDE_ROLLER_Z - BB_SIDE_ROLLER_H / 2, BB_SIDE_ROLLER_Z + BB_SIDE_ROLLER_H / 2],
+};
+
+/**
+ * THE DEPLOYABLE RAMP (`ramp`): a U-frame — two rails and a leading crossbar — pivoting on a
+ * bracket under the intake's side arms. FOLDED it stands vertical with the sweeper's roller
+ * inside the U (the rails either side of the barrel, the crossbar above the flap sweep);
+ * DEPLOYED it drops forward and down to `BB_RAMP_ANGLE` below level, the crossbar out past the
+ * tip line at `BB_RAMP_TIP_Z`, so the frame TILTS TOWARD THE ROBOT and the crossbar wedges under
+ * a POLLEN as the chassis pushes into the opening. All APPROX — the sim's own hardware model.
+ *
+ *   pivot   `BB_RAMP_PIVOT_BACK` behind the tip line (the sweeper's own axle line, so the folded
+ *           rails stand round the roller), `BB_RAMP_PIVOT_Z` up
+ *   rails   `BB_RAMP_L` long: folded, the crossbar is at 6.7 in, above the 6.5-in flap sweep
+ *   tip     `BB_RAMP_TIP_Z` off the tiles: clears the lower plate's 0.354 rim on the way in, and
+ *           is under a POLLEN's centre by 0.9 in, which is the wedge
+ *
+ * Deployed, the crossbar is `BB_RAMP_OUT` = 2.17 in past the tip line (into the opening, 1.4 in
+ * short of the supports; 2.84 in off the wall) and the surface past the tip line runs 0.5 → 1.39
+ * in high — every part of it under a POLLEN's centre. The rails span the mouth's width, so they
+ * pass either side of the 5.95-in foot on open tiles.
+ */
+export const BB_RAMP_L = 4.5;
+export const BB_RAMP_PIVOT_BACK = 2.0;
+export const BB_RAMP_PIVOT_Z = 2.2;
+/** how far below level the deployed rails lie (rad) — 22.2°, TYPED, so the tip height and the
+ * reach below are `dsin`/`dcos` of it rather than an inverse function this file may not call
+ * (the determinism guard: an engine's `asin` is not required to be correctly rounded). */
+export const BB_RAMP_ANGLE = 0.3875;
+/** the deployed crossbar's height off the tiles (in): `pivotZ − L·sin(angle)` = 0.50, above the
+ * lower plate's 0.354 rim. */
+export const BB_RAMP_TIP_Z = BB_RAMP_PIVOT_Z - BB_RAMP_L * dsin(BB_RAMP_ANGLE);
+/** the deployed crossbar's reach past the tip line (in): `L·cos(angle) − pivotBack` = 2.17. */
+export const BB_RAMP_OUT = BB_RAMP_L * dcos(BB_RAMP_ANGLE) - BB_RAMP_PIVOT_BACK;
+/** how long the ramp takes to swing between its two poses (s). APPROX — a servo-driven drop;
+ * the sim credits the ramp only once it has arrived (`bbRampSettled`), and the renderer eases
+ * the same interval off `RobotState.bbRampAt`, so the drawn ramp and the credited one agree. */
+export const BB_RAMP_DEPLOY_S = 0.3;
+export const BB_RAMP_REACH: BbFlowerReach = {
+  out: [0, BB_RAMP_OUT],
+  half: null, // the full mouth width
+  z: [BB_RAMP_TIP_Z, BB_RAMP_TIP_Z + (BB_RAMP_OUT * dsin(BB_RAMP_ANGLE)) / dcos(BB_RAMP_ANGLE)],
+};
+
+/**
+ * WHAT THIS ARCHETYPE CAN REACH IN A FLOWER'S OPENING RIGHT NOW, or `null` for nothing: the
+ * sweeper never, the side rollers always, the ramp only once deployed and settled (`rampReady`,
+ * which is `bbRampSettled` in `robot.ts`). The ONE reader in the sim is `bbFlowerAtIntake`.
+ */
+export function bbFlowerReachOf(kind: BbIntakeKind, rampReady: boolean): BbFlowerReach | null {
+  switch (kind) {
+    case 'sweeper':
+      return null;
+    case 'siderollers':
+      return BB_SIDE_ROLLER_REACH;
+    case 'ramp':
+      return rampReady ? BB_RAMP_REACH : null;
+  }
+}
 /** extra lb on the chassis mass FLOOR for carrying a Box Tube. APPROX. */
 export const BB_LIFT_MASS_FLOOR = 2.0;
 

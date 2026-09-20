@@ -39,7 +39,7 @@ export interface QCommand {
   dx: number; // int8, -127..127  (driveX * 127)
   dy: number; // int8
   rot: number; // int8
-  buttons: number; // uint8 bitfield: bit0 intake, bit1 fire, bit2 catalyst
+  buttons: number; // uint16 bitfield: bit0 intake, bit1 fire, bit2 catalyst … bit8 bbRamp
   // TANK drive steers via leftDrive/rightDrive (NOT dx/dy) — these MUST be on the
   // wire or a networked tank robot gets zero drive and sits frozen at spawn. Optional
   // so a packet from an older client still decodes (missing ⇒ 0, the old behavior).
@@ -63,11 +63,18 @@ const BTN_DRIVEMODE = 16;
 const BTN_BBPLACE_NECTAR = 32;
 const BTN_BBPLACE = 64;
 // The HUMAN PLAYER button (G426) — an EDGE like `catalyst`, held on the wire and edge-detected
-// in the sim, so a reconciled or replayed tick cannot enter two NECTAR off one press. This is
-// the LAST bit `buttons` has: it is a uint8 and 128 fills it, so the next held action added to
-// this protocol needs a wider field, not another constant. Say so here rather than discover it
-// when bit 256 silently truncates to 0.
+// in the sim, so a reconciled or replayed tick cannot enter two NECTAR off one press. It was
+// the last bit of a uint8; see `BTN_BBRAMP` for the widening.
 const BTN_BBNECTAR = 128;
+// ⚠️ `buttons` IS 16 BITS WIDE SINCE 2026-09-20. It is a JSON number on the wire and a plain
+// number in a replay track, so the width was only ever `sanitizeQCommand`'s range check and
+// `packKey`'s byte mask (`src/sim/replay.ts`) — both widened with this bit. An OLDER SERVER
+// refuses a packet carrying it (its sanitizer still stops at 255), which costs that sender one
+// tick of input on a build that has no ramp to deploy; an older peer reading a newer replay masks
+// the bits it knows, as always. The BIOBUZZ deployable-ramp toggle, an EDGE like `driveMode`.
+const BTN_BBRAMP = 256;
+/** the widest `buttons` an honest sender can produce — every bit above is refused. */
+const BUTTONS_MAX = 0xffff;
 
 export function quantizeCommand(c: RobotCommand): QCommand {
   return {
@@ -82,7 +89,8 @@ export function quantizeCommand(c: RobotCommand): QCommand {
       (c.driveMode ? BTN_DRIVEMODE : 0) |
       (c.bbPlaceNectar ? BTN_BBPLACE_NECTAR : 0) |
       (c.bbPlace ? BTN_BBPLACE : 0) |
-      (c.bbNectar ? BTN_BBNECTAR : 0),
+      (c.bbNectar ? BTN_BBNECTAR : 0) |
+      (c.bbRamp ? BTN_BBRAMP : 0),
     ld: Math.round(clamp(c.leftDrive ?? 0, -1, 1) * 127),
     rd: Math.round(clamp(c.rightDrive ?? 0, -1, 1) * 127),
   };
@@ -113,7 +121,7 @@ export function sanitizeQCommand(raw: unknown): QCommand | null {
   const dy = axis(q.dy);
   const rot = axis(q.rot);
   if (dx === null || dy === null || rot === null) return null;
-  if (typeof q.buttons !== 'number' || !Number.isInteger(q.buttons) || q.buttons < 0 || q.buttons > 255) {
+  if (typeof q.buttons !== 'number' || !Number.isInteger(q.buttons) || q.buttons < 0 || q.buttons > BUTTONS_MAX) {
     return null;
   }
   // ld/rd stay OPTIONAL (a pre-tank client sends neither and means zero), but a present
@@ -121,10 +129,9 @@ export function sanitizeQCommand(raw: unknown): QCommand | null {
   const ld = q.ld === undefined ? undefined : axis(q.ld);
   const rd = q.rd === undefined ? undefined : axis(q.rd);
   if (ld === null || rd === null) return null;
-  // `buttons` is kept WHOLE rather than masked to the bits this build knows: `buttons` is a
-  // uint8 and every one of its eight bits is now a button, so a mask here is either a no-op or
-  // — once the field widens — a silent way to drop a newer client's action. `dequantizeCommand`
-  // reads the bits it understands and ignores the rest, which is the back-compat rule already.
+  // `buttons` is kept WHOLE rather than masked to the bits this build knows: a mask here would
+  // be a silent way to drop a newer client's action. `dequantizeCommand` reads the bits it
+  // understands and ignores the rest, which is the back-compat rule already.
   const out: QCommand = { dx, dy, rot, buttons: q.buttons };
   if (ld !== undefined) out.ld = ld;
   if (rd !== undefined) out.rd = rd;
@@ -146,6 +153,7 @@ export function dequantizeCommand(q: QCommand): RobotCommand {
     bbPlaceNectar: (q.buttons & BTN_BBPLACE_NECTAR) !== 0,
     bbPlace: (q.buttons & BTN_BBPLACE) !== 0,
     bbNectar: (q.buttons & BTN_BBNECTAR) !== 0,
+    bbRamp: (q.buttons & BTN_BBRAMP) !== 0,
   };
 }
 

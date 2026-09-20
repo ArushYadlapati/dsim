@@ -671,6 +671,40 @@ export function net3dChecks(check: Check): void {
   resim('3d', '3d');
   resim('2d', '2d');
 
+  /**
+   * ⚠️ THE RAMP PRESS SURVIVES THE WIRE AND THE REPLAY. `packKey`'s own header
+   * (`src/sim/replay.ts`) names the regression: `bbRamp` is bit 256, past the protocol's old
+   * uint8, and a recorder that still masked `buttons` to 8 bits would see no change on the tick
+   * it was pressed, write nothing, and a re-simulation would end with the ramp FOLDED while the
+   * original run ended DEPLOYED. Short 3D match, a `ramp`-archetype robot, `bbRamp` pressed once
+   * partway through and held — the recorded run and its re-simulation must agree: deployed, and
+   * the same final hash.
+   */
+  {
+    const rampSpec: Partial<RobotSpec> = {
+      bbMech: { launcher: null, lift: null, intake: { kind: 'ramp' } } as unknown as RobotSpec['bbMech'],
+    };
+    const setups = [setup(0, 'blue', rampSpec, 0), setup(1, 'red', {}, 1)];
+    const src = (tick: number): Map<number, RobotCommand> =>
+      new Map([
+        [0, { ...drive(tick, 0), bbRamp: tick > 30 }],
+        [1, drive(tick, 1)],
+      ]);
+    const run = runRecordMatch(707070, setups, src, { game: 'biobuzz', physics: '3d', stopTick: 300 });
+    const r0 = run.world.robots[0];
+    check('ramp/replay: the recorded run actually deployed the ramp', r0.bbRampOut === true, `bbRampOut=${r0.bbRampOut}`);
+
+    const stored = JSON.parse(JSON.stringify(run.replay)) as Replay;
+    const player = new ReplayPlayer(stored);
+    while (!player.done) player.stepOnce();
+    const p0 = player.world.robots[0];
+    check(
+      'ramp/replay: re-simulation reproduces the deploy (bbRampOut true) with the same final hash',
+      p0.bbRampOut === true && worldHash(player.world) === run.result.hash,
+      `bbRampOut=${p0.bbRampOut} hash ${worldHash(player.world)} vs ${run.result.hash}`,
+    );
+  }
+
   // ═══ 9. THE PREDICTION WIRING (Day 3 lane C, plan §5) ══════════════════════
   //
   // The PREDICT lane proves the two predictors are right against a scripted scene. This proves

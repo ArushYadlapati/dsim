@@ -23,12 +23,15 @@ import {
   mountsClash,
 } from './mounts';
 import {
+  BB_INTAKE_KINDS,
   BB_LIFT_KINDS,
+  type BbIntakeKind,
   type BbLauncherSpec,
   type BbLiftKind,
   type BbLiftSpec,
   bbCellsAdjacent,
   bbFoldTwinMount,
+  bbIntakeKindOf,
   bbIsTurreted,
   bbLauncherBlocker,
   bbLauncherOf,
@@ -37,6 +40,7 @@ import {
   bbResolveMount2,
 } from './mechs';
 import {
+  BB_INTAKE_KIND_BLURBS,
   BB_INTAKE_LABELS,
   BB_INTAKE_MOUNT_BLURBS,
   BB_INTAKE_MOUNT_LABELS,
@@ -149,6 +153,7 @@ export function BiobuzzBuilder({ spec, setSpec }: BiobuzzBuilderProps) {
   // Box Tube" is decided, migration included.
   const launcher = bbLauncherOf(spec, BB_HOOD_DEFAULT_DEG);
   const lift = bbLiftOf(spec);
+  const intakeKind = bbIntakeKindOf(spec);
   const dials = bbDials(spec);
   const store = Math.min(spec.ballStorage ?? dials.storage.max, dials.storage.max);
   // THE HEIGHT PAIR (R105.A's expanded height and R102's starting cube). Read through the
@@ -165,8 +170,23 @@ export function BiobuzzBuilder({ spec, setSpec }: BiobuzzBuilderProps) {
   // disagreeing answers about the same launcher. So every edit goes through `send`, which writes
   // both from the one launcher it is given. The NECTAR turret's cell and the Box Tube have no
   // flat field, so they live in the container alone.
-  function send(next: BbLauncherSpec, nextLift: BbLiftSpec | null) {
-    setSpec({ scoreMode: next.kind, shooterMount: next.mount, bbMech: { launcher: next, lift: nextLift } });
+  //
+  // `nextIntake` DEFAULTS TO THE CURRENT KIND, not to the sweeper: a launcher or Box Tube edit
+  // rebuilds `bbMech` from scratch (it is a container, not a set of independent fields), and
+  // without this default every one of those edits would silently fold the intake back to the
+  // sweeper on the next coercion (`coerceBbMech` reads `bbMech.intake` off exactly what is sent).
+  function send(next: BbLauncherSpec, nextLift: BbLiftSpec | null, nextIntake: BbIntakeKind = intakeKind) {
+    setSpec({
+      scoreMode: next.kind,
+      shooterMount: next.mount,
+      bbMech: { launcher: next, lift: nextLift, intake: { kind: nextIntake } },
+    });
+  }
+
+  /** INTAKE pick. The launcher and the Box Tube survive the swap — same reasoning as `pickLift`
+   * keeping the launcher, the other way round. */
+  function pickIntake(kind: BbIntakeKind) {
+    send(launcher, lift, kind);
   }
 
   /** LAUNCHER pick. The mount and hood survive the swap. A corner a turret was bolted to folds
@@ -339,13 +359,20 @@ export function BiobuzzBuilder({ spec, setSpec }: BiobuzzBuilderProps) {
 
       {/* ---- INTAKE ---- */}
       <h3 className="ds-subh">Intake</h3>
-      {/* BIOBUZZ has ONE intake design, so this is a statement, not a picker. `.static` keeps
-          the card look and drops the pointer affordances — NOT `disabled`, which would grey it
-          out and say "unavailable" about the only intake the robot has. */}
-      <div className="ds-opts fill">
-        <div className="ds-opt on static">
-          <span className="ot">{BB_INTAKE_LABELS.sweeper}</span>
-        </div>
+      {/* THREE cards, same anatomy as the launcher picker above: every build carries an intake,
+          so there is no "none" to offer. All three take a ground POLLEN identically; the blurb
+          says the one thing that actually differs — whether it reaches into a FLOWER. */}
+      <div className="ds-opts three">
+        {BB_INTAKE_KINDS.map((k) => (
+          <button
+            key={k}
+            className={`ds-opt ${intakeKind === k ? 'on' : ''}`}
+            onClick={() => pickIntake(k)}
+          >
+            <span className="ot">{BB_INTAKE_LABELS[k]}</span>
+            <span className="od">{BB_INTAKE_KIND_BLURBS[k]}</span>
+          </button>
+        ))}
       </div>
       <div className="ds-opts four">
         {BB_INTAKE_MOUNTS.map((m) => (

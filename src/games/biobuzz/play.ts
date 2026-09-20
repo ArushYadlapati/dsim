@@ -9,9 +9,6 @@ import {
   BB_AIM_GAIN,
   BB_AIM_TOL,
   BB_FLOWERS,
-  BB_FLOWER_D,
-  BB_FLOWER_FOOT,
-  BB_FLOWER_RETRIEVE_PAD,
   BB_FLOWER_RETRIEVE_S,
   BB_FLOWER_UNLOCK_S,
   BB_HALF_X,
@@ -22,15 +19,16 @@ import {
   BB_NECTAR_R,
   BB_POLLEN_R,
   BB_POLLEN_WALL_REST,
-  FLOWER_MOUTH,
+  bbFlowerReachOf,
   bbHopperCap,
   bbLoadingZoneSpot,
+  type BbFlowerReach,
 } from './config';
 import { biobuzzColliders } from './colliders';
 import { capturePollen, hiveCellTarget, scoreTargets, takeHeld } from './elements';
-import { bbElementRadius, flowerFits, flowerRetrieve, flowerStackZ, type BbElementKind } from './flower';
+import { bbBites, bbElementRadius, flowerFits, flowerRetrieve, flowerStackZ, type BbElementKind } from './flower';
 import { hiveAccepts, hiveCellPos, hiveDeflect, hiveStep, hiveTakingSide, spillPoses } from './hive';
-import { bbIsTurreted, bbLauncherOf, bbLiftOf } from './mechs';
+import { bbIntakeKindOf, bbIsTurreted, bbLauncherOf, bbLiftOf } from './mechs';
 import {
   type BbShot,
   bbAimHeading,
@@ -40,11 +38,14 @@ import {
   bbIntakeAct,
   bbLaunch,
   bbMouths,
+  bbRampSettled,
+  bbRampStep,
   bbSlewTurret,
   bbTurretRelease,
   bbTurretSolution,
+  mouthAxes,
 } from './robot';
-import { rectContains, type BiobuzzState, type ScoreTarget, type Vec3 } from './state';
+import { type BiobuzzState, type ScoreTarget, type Vec3 } from './state';
 
 /**
  * BIOBUZZ GAMEPLAY TICK — POLLEN physics and the intake/launch loop.
@@ -687,6 +688,11 @@ export function updateBiobuzz(
   const shots = new Map<number, BbShot>();
   for (const rob of world.robots) {
     if (rob.passive) continue; // a practice dummy has no mechanisms to run
+    // THE RAMP TOGGLE — here, alongside the turret slew, because both are per-tick mechanism
+    // updates that run after the solve and before the launch. UNLIKE the turret's own tracking
+    // just below, a ramp press IS driver control (like drive/intake/fire) and is gated on
+    // `enabled`, so a press during `pre`/a phase transition/`post` is dropped, not queued.
+    bbRampStep(rob, cmds.get(rob.id), enabled, world.time);
     // A TURRET TRACKS WHETHER OR NOT THE ROBOTS ARE ENABLED. `robotsEnabled` gates DRIVER
     // CONTROL — drive, intake, fire — and a turret auto-tracking is none of those; `bbLaunch`
     // still refuses to fire while disabled. Spawn aims a turret at FIELD CENTRE, so gating this
@@ -895,24 +901,55 @@ export function placeInFlower(
 }
 
 /**
- * WHICH FLOWER'S RETRIEVAL OPENING one of this robot's intake mouths is up against, or `null`.
+ * WHICH FLOWER'S RETRIEVAL OPENING one of this robot's intake mouths can actually REACH INTO,
+ * or `null` — ARCHETYPE-AWARE (owner, 2026-09-20: "intaking from the flower should now only be
+ * done if it is physically possible"). `reach` is the hardware box the caller already resolved
+ * (`bbFlowerReachOf(bbIntakeKindOf(spec), bbRampSettled(...))`) — a sweeper, or a folded / still-
+ * swinging ramp, has no reach at all and the caller bails before this ever runs.
  *
- * The opening is at the BOTTOM of the FLOWER on its field side (§9.7 Fig 9-12, the 3.55-in hole
- * above the lower ring), so the point tested is the centre of the foot's FIELD-SIDE FACE: the ring
- * centre pushed `BB_FLOWER_FOOT.deep − BB_FLOWER_D` along `FLOWER_MOUTH`, which is where a robot
- * driven square into the foot has its roller. It must lie inside a mouth rect (`bbMouths`, the
- * same rects the ground capture uses), padded OUTWARD only by `BB_FLOWER_RETRIEVE_PAD` — so the
- * mounted edge has to be the one facing the FLOWER, and laterally the opening has to be within
- * the roller's span.
+ * ⚠️ **THE "TIP LINE" `config.ts`'s ARCHETYPE NUMBERS ARE MEASURED FROM IS THE MOUTH'S OWN
+ * OUTWARD BOUND (`ax.uOut`), NOT THE BARE CHASSIS FRAME.** The frame face (`ax.dist`) reads
+ * right off `BB_PLACE_REACH`'s own derivation ("a chassis face flush on the flower foot") and a
+ * first pass measured from there — every number in `config.ts`'s header still checks out against
+ * it, because a pure call can put the chassis anywhere. It cannot in a real match: `bbFootprint`
+ * (`footprintExtents`) grows the Rapier collision box on this SAME edge by the sweeper's own
+ * `bbIntakeReach` (3–5in, every archetype's shared base hardware), so the chassis FRAME can never
+ * close nearer than that — measured, a robot driven flush against the foot settles with its frame
+ * ~5.2–5.4in from the ring, past every archetype's reach, and the retrieve TUTORIAL STEP (which
+ * drives a real robot in) never completed. `ax.uOut` is exactly the footprint's own edge (for an
+ * END mouth it is `hl + bbIntakeReach`, the same sum `bbFootprint.front` is), so a robot driven
+ * flush rests with `uOut` ON the foot's own face — `u ≈ BB_PLACE_REACH`, the SAME number, reached
+ * by the collision the field actually enforces rather than by a pose only a test can reach.
+ *
+ * For each mouth (`bbMouths`, the same rects the ground capture uses) this puts the FLOWER's ring
+ * CENTRE — not a padded point on the foot — into that mouth's own frame (`mouthAxes`: `n`/`p` the
+ * mouth's outward/lateral axes) and asks two things: the POLLEN's centre sits within `reach.half`
+ * of the mouth's centreline (or the mouth's own half-span, for a full-width part like the ramp),
+ * and the X-BITE — `bbBites` — the overlap of `reach.out` against the POLLEN's own `[u − r, u + r]`
+ * reaches at least `BB_FLOWER_BITE`.
+ *
+ * VERIFIED NUMERICALLY at `u = BB_PLACE_REACH` (flush, `standoff = 0`): the sweeper's reach is
+ * `null`, so it never gets a box to test at all; side rollers bite **1.5 in** in x and, against
+ * the bottom POLLEN's own floor-rest height, **2.0 in** in z; the ramp bites **1.18 in** in x and
+ * **0.88 in** in z. The standoff a build may back off flush and still bite (`BB_FLOWER_BITE`,
+ * 0.5 in of overlap) is **≈1.17 in** for side rollers and **≈0.68 in** for the ramp — both pinned
+ * by the ROBOT lane's own standoff checks (0.8 in bites, 1.5 in does not, for side rollers) and
+ * the pure CAD-geometry block next to them.
  */
-export function bbFlowerAtIntake(r: RobotState): number | null {
-  const out = BB_FLOWER_FOOT.deep - BB_FLOWER_D;
+export function bbFlowerAtIntake(r: RobotState, reach: BbFlowerReach): number | null {
   const mouths = bbMouths(r.spec);
+  const hl = r.spec.length / 2;
+  const hw = r.spec.width / 2;
   for (let i = 0; i < BB_FLOWERS.length; i++) {
     const f = BB_FLOWERS[i];
-    const n = FLOWER_MOUTH[f.wall];
-    const local = rot({ x: f.x + n.x * out - r.pos.x, y: f.y + n.y * out - r.pos.y }, -r.heading);
-    for (const m of mouths) if (rectContains(m, local.x, local.y, BB_FLOWER_RETRIEVE_PAD)) return i;
+    const local = rot({ x: f.x - r.pos.x, y: f.y - r.pos.y }, -r.heading);
+    for (const m of mouths) {
+      const ax = mouthAxes(m, hl, hw);
+      const v = local.x * ax.p.x + local.y * ax.p.y;
+      if (Math.abs(v) > (reach.half ?? ax.half)) continue;
+      const u = local.x * ax.n.x + local.y * ax.n.y - ax.uOut;
+      if (bbBites(reach.out[0], reach.out[1], u, BB_POLLEN_R)) return i;
+    }
   }
   return null;
 }
@@ -920,11 +957,13 @@ export function bbFlowerAtIntake(r: RobotState): number | null {
 /**
  * INTAKE OFF A FLOWER — G418.B: a ROBOT may "only remove POLLEN from the bottom of a FLOWER".
  *
- * A running intake (the same `autoIntake || cmd.intake` the ground capture reads) with a mouth on
- * a FLOWER's retrieval opening (`bbFlowerAtIntake`) pulls the BOTTOM element into the hopper —
- * only when it is a POLLEN (`flowerRetrieve`: a 3.6-in NECTAR does not pass the 3.55-in opening,
- * so a NECTAR at the bottom LOCKS the FLOWER), only with hopper room, and at most one per
- * `BB_FLOWER_RETRIEVE_S`, paced off `lastIntakeAt` (which the ground capture also stamps) so a
+ * A running intake (the same `autoIntake || cmd.intake` the ground capture reads) whose archetype
+ * can physically reach the opening (`bbFlowerReachOf`) with a mouth on it (`bbFlowerAtIntake`)
+ * pulls the BOTTOM element into the hopper — only when it is a POLLEN (`flowerRetrieve`: a 3.6-in
+ * NECTAR does not pass the 3.55-in opening, so a NECTAR at the bottom LOCKS the FLOWER), only with
+ * hopper room, only when the Z-BITE (`bbBites`, `reach.z` against the bottom element's own centre
+ * height — `ball.z`, already a centre in this model, see `flowerStackZ`) reaches, and at most one
+ * per `BB_FLOWER_RETRIEVE_S`, paced off `lastIntakeAt` (which the ground capture also stamps) so a
  * stack does not empty in four ticks.
  *
  * The element goes through `capturePollen`, so the hopper and the held set stay one multiset and
@@ -945,13 +984,16 @@ export function retrieveFromFlower(
   if (!enabled || !(rob.autoIntake || (cmd?.intake ?? false))) return false;
   if (world.time - rob.lastIntakeAt < BB_FLOWER_RETRIEVE_S) return false;
   if (rob.hopper.length >= bbHopperCap(rob.spec)) return false;
-  const i = bbFlowerAtIntake(rob);
+  const reach = bbFlowerReachOf(bbIntakeKindOf(rob.spec), bbRampSettled(rob, world.time));
+  if (!reach) return false; // a sweeper, or a ramp not yet settled: nothing to reach with
+  const i = bbFlowerAtIntake(rob, reach);
   if (i === null) return false;
   const flower = bb.flowers[i];
   const { id } = flowerRetrieve(flower.stack, kindOf);
   if (id === null) return false;
   const ball = ballById.get(id);
   if (!ball) return false;
+  if (!bbBites(reach.z[0], reach.z[1], ball.z, BB_POLLEN_R)) return false;
   const was = ball.state;
   ball.state = { kind: 'ground' };
   if (!capturePollen(world, rob, ball)) {

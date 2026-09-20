@@ -90,17 +90,23 @@ export interface Replay {
   tracks: Record<number, CommandTrack>;
 }
 
-function packKey(q: QCommand): number {
-  // dx/dy/rot/ld/rd ∈ [-127,127] (8 bits signed), buttons ∈ [0,3]; pack for cheap
+function packKey(q: QCommand): string {
+  // dx/dy/rot/ld/rd ∈ [-127,127] (8 bits signed), buttons ∈ [0, 0xffff]; pack for cheap
   // change-detection (not stored — just an equality key).
   //
-  // MULTIPLICATION, not bit shifts: six bytes is 48 bits and JS bitwise operators truncate
+  // MULTIPLICATION, not bit shifts: five bytes is 40 bits and JS bitwise operators truncate
   // to 32, which would silently fold ld/rd out of the key. That is not a hypothetical — the
   // key omitted them entirely before, so a TANK robot (whose only drive input IS ld/rd) had
   // every change after its first look identical, and the recorder skipped all of them.
+  //
+  // ⚠️ THE BUTTONS RIDE ALONGSIDE, NOT INSIDE. They were `& 0xff` in the same number, and the
+  // day the field grew to 16 bits (`BTN_BBRAMP`) that mask made a ramp press INVISIBLE to the
+  // recorder: bit 256 masked to 0, the key never changed, the toggle was never written, and the
+  // replay drove a robot whose ramp stayed folded. 40 + 16 bits is past a double's 53, so the
+  // key is a string of the two halves rather than one number.
   const b = (n: number): number => n & 0xff;
-  return ((((b(q.dx) * 256 + b(q.dy)) * 256 + b(q.rot)) * 256 + (q.buttons & 0xff)) * 256 +
-    b(q.ld ?? 0)) * 256 + b(q.rd ?? 0);
+  const axes = (((b(q.dx) * 256 + b(q.dy)) * 256 + b(q.rot)) * 256 + b(q.ld ?? 0)) * 256 + b(q.rd ?? 0);
+  return `${axes}:${q.buttons & 0xffff}`;
 }
 
 /**
@@ -110,7 +116,7 @@ function packKey(q: QCommand): number {
  */
 export class ReplayRecorder {
   private readonly tracks = new Map<number, CommandTrack>();
-  private readonly last = new Map<number, number>(); // robotId -> last recorded packKey
+  private readonly last = new Map<number, string>(); // robotId -> last recorded packKey
   private ticks = 0;
 
   constructor(

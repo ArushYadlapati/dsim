@@ -1,7 +1,7 @@
 import type { ArtifactColor, World } from '../../types';
 import { BB_HOOD_DEFAULT_DEG, bbHopperCap } from './config';
 import type { BbScoreMode } from './mounts';
-import { bbLauncherOf } from './mechs';
+import { bbIntakeKindOf, bbLauncherOf } from './mechs';
 import { bbFlowerInReach } from './robot';
 import { biobuzzFieldHud, type BiobuzzFieldHud } from './hud';
 
@@ -38,6 +38,10 @@ export interface BiobuzzRobotHud {
   /** a FLOWER ring is within `BB_PLACE_TOL` of this robot's Box Tube placement point. Always
    * false for a build with no Box Tube. */
   flowerInReach: boolean;
+  /** the `ramp` intake's deployed state — `RobotState.bbRampOut`, mirrored here only for a
+   * build that actually carries a ramp (`bbIntakeKindOf`). `undefined` for every other intake,
+   * which is the HUD's cue to draw no chip at all rather than a permanent "RAMP UP". */
+  rampOut?: boolean;
 }
 
 /** The full HUD slice — the shape the contract fixes, `{ field, robot }`. */
@@ -63,6 +67,7 @@ export function biobuzzHud(world: World, robotId: number): BiobuzzHud {
       cap: bbHopperCap(r.spec),
       mode: bbLauncherOf(r.spec, BB_HOOD_DEFAULT_DEG).kind,
       flowerInReach: bbFlowerInReach(world, r) !== null,
+      rampOut: bbIntakeKindOf(r.spec) === 'ramp' ? !!r.bbRampOut : undefined,
     },
   };
 }

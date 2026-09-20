@@ -14,6 +14,8 @@ import {
   BB_FIRE_INTERVAL,
   BB_FLOWER_D,
   BB_FLOWER_FOOT,
+  BB_FLOWER_RETRIEVE_S,
+  BB_FLOWER_RETRIEVE_Z,
   BB_FLOWER_TOP_Z,
   BB_FLOWERS,
   BB_HIVE_OPEN_Z,
@@ -36,6 +38,15 @@ import {
   BB_PRISM,
   BB_PRISM_NARROW,
   BB_PTS,
+  BB_RAMP_DEPLOY_S,
+  BB_RAMP_OUT,
+  BB_RAMP_REACH,
+  BB_RAMP_TIP_Z,
+  BB_SIDE_ROLLER_R,
+  BB_SIDE_ROLLER_REACH,
+  BB_SIDE_ROLLER_Y,
+  bbFlowerReachOf,
+  FLOWER_MOUTH,
   BB_START_POSE_COUNT,
   BB_TURRET_ACCEL,
   BB_TURRET_PITCH_ACCEL,
@@ -93,6 +104,7 @@ import {
   bbMuzzleZ,
   bbPlacePoint,
   bbPlacePointLocal,
+  bbRampSettled,
   bbRobotSolids,
   bbSlewTurret,
   bbSolveShot,
@@ -104,13 +116,16 @@ import { bbConfigSummary } from '../../src/games/biobuzz/labels';
 import { bbAimTarget, bbFlightEnters, bbKindOf } from '../../src/games/biobuzz/play';
 import { hiveCellTarget } from '../../src/games/biobuzz/elements';
 import {
+  BB_INTAKE_KINDS,
   bbCarriesNectar,
   bbCellsAdjacent,
   bbIntakeAccepts,
+  bbIntakeKindOf,
   bbIsTurreted,
   bbLauncherBlocker,
   bbLauncherOf,
   bbLiftOf,
+  type BbIntakeKind,
 } from '../../src/games/biobuzz/mechs';
 import { flowerFits, flowerScore } from '../../src/games/biobuzz/flower';
 import { biobuzzHud } from '../../src/games/biobuzz/hudRobot';
@@ -126,6 +141,8 @@ import { robotPenetration, robotSolids } from '../../src/sim/artifactSolids';
 import { simModuleFor } from '../../src/games/sim';
 import { BB_DEFAULT_SPEC, bbDials } from '../../src/games/biobuzz/robotConfig';
 import { BB_SCENES, bbPollen, bbSceneAt } from '../../src/games/biobuzz/scenes';
+import { bbSpecKey } from '../../src/games/biobuzz/specKey';
+import { cadFlowerRings, fieldColliders3d } from '../../src/games/biobuzz/sim3d/fieldColliders';
 import { bbCoerce, cmd, mkWorld, run, setup, type Check } from './harness';
 
 /**
@@ -2428,12 +2445,31 @@ export function robotChecks(check: Check): void {
    * "only remove POLLEN from the bottom of a FLOWER": a running intake against a FLOWER foot's
    * field side pulls the BOTTOM POLLEN into the hopper, paced, never a NECTAR, and never from out
    * of position. Every FLOWER is staged with four POLLEN.
+   *
+   * ⚠️ ARCHETYPE-AWARE SINCE 2026-09-20 (owner: "intaking from the flower should now only be
+   * done if it is physically possible") — the SWEEPER never reaches the opening at all; only
+   * `siderollers` and a SETTLED `ramp` do. `flush`/`standoff` position the mouth's own outward
+   * bound (`bbFootprint(spec).front`, the sweeper's collision footprint edge — the "tip line"
+   * `bbFlowerAtIntake`'s own numbers are measured from, `BB_PLACE_REACH` further out from the
+   * ring) rather than the bare chassis FRAME: the frame sits `bbIntakeReach` further BACK than
+   * that, which is where a real robot's collision actually rests when driven flush, so measuring
+   * from the frame instead once left the retrieval opening physically unreachable in real
+   * gameplay (the TUTORIAL's "retrieve" step never completed — see `bbFlowerAtIntake`'s own
+   * comment for the fix and the numbers). A fixed pose is held by RE-PARKING it every tick
+   * rather than driving in, so a multi-tick check is not confounded by the robot solve's own
+   * contact correction nudging the chassis off the tested standoff between ticks.
    */
   {
     const FR = 2; // F3, the +x wall at y = 24
-    /** a blue robot with a FRONT sweeper (dumper on the back, no Box Tube), assists off, empty */
-    const pullWorld = (seed: number): { w: World; r: RobotState } => {
-      const w = mkWorld('free', seed, mech({ launcher: { kind: 'dumper', mount: 'back', hoodDeg: 75 }, lift: null }, { intakeMount: 'front' }));
+    const f0 = BB_FLOWERS[FR];
+    /** a blue robot with a `dumper` on the BACK (so the FRONT sweeper is free, no Box Tube),
+     * the given INTAKE ARCHETYPE, assists off, hopper emptied. */
+    const pullWorld = (seed: number, intake: BbIntakeKind): { w: World; r: RobotState } => {
+      const w = mkWorld(
+        'free',
+        seed,
+        mech({ launcher: { kind: 'dumper', mount: 'back', hoodDeg: 75 }, lift: null, intake: { kind: intake } }, { intakeMount: 'front' }),
+      );
       const r = w.robots[0];
       r.autoFire = false;
       r.autoIntake = false;
@@ -2443,20 +2479,31 @@ export function robotChecks(check: Check): void {
       r.lastIntakeAt = -10;
       return { w, r };
     };
-    const flushFront = (r: RobotState, back = 0.2): void =>
-      park(r, 72 - BB_FLOWER_FOOT.deep - r.spec.length / 2 - C.INTAKE_PRESETS[r.spec.intake].reach - back, BB_FLOWERS[FR].y, 0);
+    /** the mouth's own outward bound (the collision footprint edge) flush on the foot
+     * (`standoff` further back); heading 0 faces F3. */
+    const flush = (r: RobotState, standoff = 0): void => park(r, f0.x - BB_PLACE_REACH - bbFootprint(r.spec).front - standoff, f0.y, 0);
+    /** hold a pose across several ticks — re-parking before each one, so the Rapier robot solve
+     * (which does not know this chassis is "flush" by the archetype's own idealized convention,
+     * only by its own collision footprint) cannot walk it off the tested standoff. */
+    const holdTicks = (w: World, r: RobotState, standoff: number, c: RobotCommand, n: number): void => {
+      for (let i = 0; i < n; i++) {
+        flush(r, standoff);
+        tick(w, c);
+      }
+    };
     {
-      const { w, r } = pullWorld(101);
+      const { w, r } = pullWorld(101, 'siderollers');
       const stack = w.biobuzz!.flowers[FR].stack;
       const before = [...stack];
       const n = w.balls.length;
-      flushFront(r);
+      flush(r);
       tick(w, cmd({}));
       check('flower intake: nothing comes out without the intake running', stack.length === before.length && r.hopper.length === 0, `stack=${stack.length} hopper=${r.hopper.length}`);
+      flush(r);
       tick(w, cmd({ intake: true }));
       const kids = w.balls.filter((b) => b.state.kind === 'element' && b.state.el === `flower:${FR}`);
       check(
-        'flower intake: the intake against the foot pulls the BOTTOM POLLEN into the hopper',
+        'flower intake: SIDE ROLLERS flush on the foot pull the BOTTOM POLLEN into the hopper',
         r.hopper.join(',') === 'yellow' && stack.join(',') === before.slice(1).join(',') && w.balls.find((b) => b.id === before[0])?.state.kind === 'held',
         `hopper=${r.hopper.join(',')} stack ${before.join(',')}→${stack.join(',')}`,
       );
@@ -2464,41 +2511,244 @@ export function robotChecks(check: Check): void {
       const copy = JSON.parse(JSON.stringify(w)) as World;
       bbIndexElements(copy);
       check('flower intake: the stack rebuilt off world.balls agrees with the live one', copy.biobuzz!.flowers[FR].stack.join(',') === stack.join(','), `${copy.biobuzz!.flowers[FR].stack.join(',')} vs ${stack.join(',')}`);
-      for (let t = 0; t < 6; t++) tick(w, cmd({ intake: true }));
-      check('flower intake: it is PACED, not one element per tick', r.hopper.length === 1, `hopper=${r.hopper.length} after 6 more ticks`);
-      run(w, cmd({ intake: true }), 3);
+      const firstPullAt = r.lastIntakeAt;
+      holdTicks(w, r, 0, cmd({ intake: true }), Math.round((BB_FLOWER_RETRIEVE_S - C.SIM_DT) / C.SIM_DT));
+      check('flower intake: SIDE ROLLERS are PACED at BB_FLOWER_RETRIEVE_S, not one a tick', r.hopper.length === 1, `hopper=${r.hopper.length} elapsed=${(w.time - firstPullAt).toFixed(3)} < ${BB_FLOWER_RETRIEVE_S}`);
+      holdTicks(w, r, 0, cmd({ intake: true }), Math.round(3 / C.SIM_DT));
       const want = Math.min(bbHopperCap(r.spec), before.length);
       check('flower intake: held on, it pulls until the hopper is full (or the POLLEN run out) and no further', r.hopper.length === want && stack.length === before.length - want, `hopper=${r.hopper.length} stack=${stack.length} want=${want}`);
       check('flower intake: nothing is created or destroyed', w.balls.length === n, `${n}→${w.balls.length}`);
     }
     {
-      const { w, r } = pullWorld(103);
+      // ⚠️ REVERSED 2026-09-20: a SWEEPER's roller rides above the mid plate and never passes
+      // the plate edge (`config.ts`'s opening header) — flush on the foot, held 3 s, it pulls
+      // NOTHING, where every archetype used to pull the same way.
+      const { w, r } = pullWorld(103, 'sweeper');
+      const stack = w.biobuzz!.flowers[FR].stack;
+      const n0 = stack.length;
+      holdTicks(w, r, 0, cmd({ intake: true }), Math.round(3 / C.SIM_DT));
+      check('flower intake: a SWEEPER flush on the foot, held 3 s, pulls NOTHING', stack.length === n0 && r.hopper.length === 0, `stack=${stack.length} hopper=${r.hopper.length}`);
+    }
+    {
+      // side rollers' own standoff tolerance is ≈1.17 in (`bbFlowerAtIntake`'s comment): past it,
+      // nothing; inside it, they bite.
+      const { w, r } = pullWorld(105, 'siderollers');
+      const stack = w.biobuzz!.flowers[FR].stack;
+      const n0 = stack.length;
+      flush(r, 1.5);
+      tick(w, cmd({ intake: true }));
+      check('flower intake: SIDE ROLLERS at 1.5 in standoff pull NOTHING (past the ≈1.17 in tolerance)', stack.length === n0 && r.hopper.length === 0, `stack=${stack.length} hopper=${r.hopper.length}`);
+    }
+    {
+      const { w, r } = pullWorld(107, 'siderollers');
+      const stack = w.biobuzz!.flowers[FR].stack;
+      const n0 = stack.length;
+      flush(r, 0.8);
+      tick(w, cmd({ intake: true }));
+      check('flower intake: SIDE ROLLERS at 0.8 in standoff DO pull', r.hopper.length === 1 && stack.length === n0 - 1, `hopper=${r.hopper.length} stack=${stack.length}`);
+    }
+    {
+      const { w, r } = pullWorld(109, 'siderollers');
       const stack = w.biobuzz!.flowers[FR].stack;
       const bottom = w.balls.find((b) => b.id === stack[0])!;
       bottom.color = 'blue'; // a NECTAR at the bottom
       const n0 = stack.length;
-      flushFront(r);
-      run(w, cmd({ intake: true }), 1);
+      holdTicks(w, r, 0, cmd({ intake: true }), Math.round(1 / C.SIM_DT));
       check('flower intake: a NECTAR at the bottom LOCKS the FLOWER (nothing comes out)', stack.length === n0 && r.hopper.length === 0, `stack=${stack.length} hopper=${r.hopper.length}`);
     }
     {
-      const { w, r } = pullWorld(105);
+      const { w, r } = pullWorld(111, 'siderollers');
       const stack = w.biobuzz!.flowers[FR].stack;
       const n0 = stack.length;
-      park(r, 72 - BB_FLOWER_FOOT.deep - r.spec.length / 2 - C.INTAKE_PRESETS[r.spec.intake].reach - 6, BB_FLOWERS[FR].y, 0);
+      park(r, f0.x - BB_PLACE_REACH - r.spec.length / 2 - 6, f0.y, 0);
       tick(w, cmd({ intake: true }));
       check('flower intake: six inches off the foot, nothing comes out', stack.length === n0 && r.hopper.length === 0);
-      run(w, cmd({ intake: true, driveY: 0.5 }), 1.5);
-      check('flower intake: DRIVING the sweeper into the foot reaches the opening (the collider allows it)', r.hopper.length > 0 && stack.length < n0, `hopper=${r.hopper.length} stack=${stack.length} x=${r.pos.x.toFixed(2)}`);
     }
     {
-      const { w, r } = pullWorld(107);
+      const { w, r } = pullWorld(113, 'siderollers');
       const stack = w.biobuzz!.flowers[FR].stack;
       const n0 = stack.length;
-      park(r, 72 - BB_FLOWER_FOOT.deep - r.spec.length / 2 - 0.2, BB_FLOWERS[FR].y, Math.PI); // BACK to the FLOWER: no sweeper there
+      park(r, f0.x - BB_PLACE_REACH - r.spec.length / 2 - 0.2, f0.y, Math.PI); // BACK to the FLOWER: no sweeper there
       run(w, cmd({ intake: true }), 1);
       check('flower intake: the edge without a sweeper pulls nothing', stack.length === n0 && r.hopper.length === 0, `stack=${stack.length} hopper=${r.hopper.length}`);
     }
+
+    // ── THE RAMP TOGGLE ────────────────────────────────────────────────────
+    {
+      const { w, r } = pullWorld(115, 'ramp');
+      const stack = w.biobuzz!.flowers[FR].stack;
+      const n0 = stack.length;
+      holdTicks(w, r, 0, cmd({ intake: true }), Math.round(1 / C.SIM_DT));
+      check('flower intake: RAMP folded pulls NOTHING', stack.length === n0 && r.hopper.length === 0 && r.bbRampOut !== true, `stack=${stack.length} hopper=${r.hopper.length} out=${r.bbRampOut}`);
+    }
+    {
+      // a HELD button fires the rising edge once — holding it 30 ticks does not re-fire it, or
+      // toggle it back off. Deliberately no `intake` here, so this is purely about the latch.
+      const { w, r } = pullWorld(117, 'ramp');
+      flush(r);
+      tick(w, cmd({ bbRamp: true }));
+      const rampAt = r.bbRampAt;
+      check('flower intake: cmd.bbRamp toggles the ramp OUT and stamps bbRampAt', r.bbRampOut === true && rampAt === w.time, `out=${r.bbRampOut} at=${rampAt} t=${w.time}`);
+      holdTicks(w, r, 0, cmd({ bbRamp: true }), 29);
+      check('flower intake: cmd.bbRamp held 30 ticks toggles ONCE', r.bbRampOut === true && r.bbRampAt === rampAt, `out=${r.bbRampOut} at=${r.bbRampAt} want=${rampAt}`);
+    }
+    {
+      // ONE press, released immediately (so the deploy window is measured from a single stamp,
+      // not stretched by a still-held button): nothing pulls until `BB_RAMP_DEPLOY_S` has
+      // elapsed, and it pulls once it has.
+      const { w, r } = pullWorld(119, 'ramp');
+      flush(r);
+      tick(w, cmd({ bbRamp: true, intake: true }));
+      const rampAt = r.bbRampAt!;
+      flush(r);
+      tick(w, cmd({ intake: true })); // release the button; the ramp stays deployed
+      check(
+        'flower intake: RAMP mid-swing (before BB_RAMP_DEPLOY_S) pulls nothing',
+        r.hopper.length === 0 && w.time - rampAt < BB_RAMP_DEPLOY_S,
+        `hopper=${r.hopper.length} elapsed=${(w.time - rampAt).toFixed(3)} deploy=${BB_RAMP_DEPLOY_S}`,
+      );
+      let settledAt = -1;
+      for (let i = 0; i < 60 && r.hopper.length === 0; i++) {
+        flush(r);
+        tick(w, cmd({ intake: true }));
+        if (settledAt < 0 && bbRampSettled(r, w.time)) settledAt = w.time;
+      }
+      check(
+        'flower intake: RAMP pulls once BB_RAMP_DEPLOY_S has elapsed, and not before it settled',
+        r.hopper.length === 1 && w.time - rampAt >= BB_RAMP_DEPLOY_S && settledAt >= 0,
+        `hopper=${r.hopper.length} elapsed=${(w.time - rampAt).toFixed(3)}`,
+      );
+    }
+    {
+      // a SECOND press (a fresh rising edge — the button is released in between) folds the ramp
+      // back, and pulling stops.
+      const { w, r } = pullWorld(121, 'ramp');
+      flush(r);
+      tick(w, cmd({ bbRamp: true, intake: true }));
+      flush(r);
+      tick(w, cmd({ intake: true })); // release, so the next press is a genuine edge
+      for (let i = 0; i < 40 && r.hopper.length === 0; i++) {
+        flush(r);
+        tick(w, cmd({ intake: true }));
+      }
+      const pulled = r.hopper.length;
+      check('flower intake: (setup) the ramp pulled at least once before folding it back', pulled > 0, `hopper=${pulled}`);
+      flush(r);
+      tick(w, cmd({ bbRamp: true }));
+      check('flower intake: a second press folds the ramp', r.bbRampOut === false, `out=${r.bbRampOut}`);
+      holdTicks(w, r, 0, cmd({ intake: true }), 30);
+      check('flower intake: ...and pulling stops', r.hopper.length === pulled, `hopper=${r.hopper.length} was=${pulled}`);
+    }
+    {
+      // a SWEEPER never READS `bbRamp` — the archetype gate in `bbRampStep` returns before
+      // touching `r`, so all three fields stay `undefined` even under a held press.
+      const { w, r } = pullWorld(119, 'sweeper');
+      holdTicks(w, r, 0, cmd({ bbRamp: true }), 10);
+      check(
+        'flower intake: a SWEEPER build with bbRamp held writes NO ramp field',
+        r.bbRampOut === undefined && r.bbRampAt === undefined && r.bbRampHeld === undefined,
+        `out=${r.bbRampOut} at=${r.bbRampAt} held=${r.bbRampHeld}`,
+      );
+    }
+    {
+      // a press during `pre` is DRIVER CONTROL, and `enabled` is false: it does nothing.
+      const { w, r } = pullWorld(121, 'ramp');
+      w.match.phase = 'pre';
+      flush(r);
+      tick(w, cmd({ bbRamp: true }));
+      check('flower intake: a bbRamp press during `pre` does nothing', r.bbRampOut !== true, `out=${r.bbRampOut}`);
+    }
+  }
+
+  // ── THE INTAKE ARCHETYPE: coercion and identity ───────────────────────────
+  {
+    for (const kind of BB_INTAKE_KINDS) {
+      const once = bbCoerce({ ...BB_DEFAULT_SPEC, ...mech({ launcher: { kind: 'turret', mount: 'front', hoodDeg: BB_HOOD_DEFAULT_DEG }, lift: null, intake: { kind } }) });
+      check(`intake: ${kind} round-trips through bbIntakeKindOf`, bbIntakeKindOf(once) === kind, `got ${bbIntakeKindOf(once)}`);
+      check(`intake: ${kind} coercion is a fixed point`, specKey(once) === specKey(bbCoerce(once)));
+    }
+    check(
+      'intake: an unknown stored kind folds to the sweeper',
+      bbIntakeKindOf({ ...BB_DEFAULT_SPEC, bbMech: { launcher: { kind: 'turret', mount: 'front', hoodDeg: BB_HOOD_DEFAULT_DEG }, lift: null, intake: { kind: 'auger' as unknown as BbIntakeKind } } }) === 'sweeper',
+    );
+    check(
+      'intake: an absent container reads as the sweeper (a pre-archetype save)',
+      bbIntakeKindOf({ ...BB_DEFAULT_SPEC, bbMech: undefined }) === 'sweeper',
+    );
+    const keys = BB_INTAKE_KINDS.map((kind) =>
+      bbSpecKey(bbCoerce({ ...BB_DEFAULT_SPEC, ...mech({ launcher: { kind: 'turret', mount: 'front', hoodDeg: BB_HOOD_DEFAULT_DEG }, lift: null, intake: { kind } }) })),
+    );
+    check('intake: bbSpecKey differs across kinds', new Set(keys).size === BB_INTAKE_KINDS.length, keys.join(' | '));
+  }
+
+  // ── GEOMETRY FACTS AGAINST THE CAD (pure) ─────────────────────────────────
+  /**
+   * The archetype reach boxes in `config.ts` are `APPROX` hardware sized against the CAD's
+   * numbers, copied into constants rather than read live. This re-derives the same facts off the
+   * LIVE collider export (`scratch/flowerhulls.ts`'s own transform: `u` outward along the flower's
+   * mouth normal from the ring centre, `v` along the wall) so a field-CAD regeneration that moves
+   * a support or a plate edge fails HERE instead of shipping a reach that pokes into one.
+   */
+  {
+    const fc = fieldColliders3d();
+    const f0 = fc.flowers[0];
+    const bf0 = BB_FLOWERS[0];
+    const n = FLOWER_MOUTH[bf0.wall];
+    const byName = new Map(fc.statics.map((s) => [s.name, s]));
+    let nearestSupportU = -Infinity;
+    for (const name of f0.staticNames) {
+      if (!name.includes('peanut_support')) continue;
+      const s = byName.get(name);
+      if (!s) continue;
+      const pts = s.points as number[];
+      for (let i = 0; i < pts.length; i += 3) {
+        const u = (pts[i] - bf0.x) * n.x + (pts[i + 1] - bf0.y) * n.y;
+        nearestSupportU = Math.max(nearestSupportU, u);
+      }
+    }
+    // the clearance from the plate's own field edge (`BB_PLACE_REACH` past the ring centre) back
+    // to the nearest support face — measured 3.57 (config.ts's header); both archetypes' reach
+    // must stay inside it, or their drawn hardware would poke into the support.
+    const clearance = BB_PLACE_REACH - nearestSupportU;
+    check(
+      'flower reach (CAD): SIDE ROLLERS stay clear of the peanut supports under the mid plate',
+      BB_SIDE_ROLLER_REACH.out[1] < clearance,
+      `out[1]=${BB_SIDE_ROLLER_REACH.out[1]} clearance=${clearance.toFixed(3)}`,
+    );
+    check(
+      'flower reach (CAD): the RAMP stays clear of the peanut supports under the mid plate',
+      BB_RAMP_OUT < clearance,
+      `BB_RAMP_OUT=${BB_RAMP_OUT} clearance=${clearance.toFixed(3)}`,
+    );
+    check(
+      'flower reach (CAD): both archetypes\' z-maxima sit below the retrieval ceiling',
+      BB_SIDE_ROLLER_REACH.z[1] < BB_FLOWER_RETRIEVE_Z[1] && BB_RAMP_REACH.z[1] < BB_FLOWER_RETRIEVE_Z[1],
+      `siderollers=${BB_SIDE_ROLLER_REACH.z[1]} ramp=${BB_RAMP_REACH.z[1]} ceiling=${BB_FLOWER_RETRIEVE_Z[1]}`,
+    );
+    let vmin = Infinity;
+    let vmax = -Infinity;
+    const midRing = cadFlowerRings(0).find((r) => r.id === 'mid');
+    if (midRing) {
+      for (const x of midRing.rect.x) {
+        for (const y of midRing.rect.y) {
+          const v = -(x - bf0.x) * n.y + (y - bf0.y) * n.x;
+          vmin = Math.min(vmin, v);
+          vmax = Math.max(vmax, v);
+        }
+      }
+    }
+    check(
+      "flower reach (CAD): the side-roller pair's outer extent sits inside the mid plate's own half-width",
+      midRing !== undefined && BB_SIDE_ROLLER_Y + BB_SIDE_ROLLER_R < (vmax - vmin) / 2,
+      `pair=${BB_SIDE_ROLLER_Y + BB_SIDE_ROLLER_R} plateHalf=${((vmax - vmin) / 2).toFixed(3)}`,
+    );
+    const lowerRingTop = cadFlowerRings(0)[0]?.z[1];
+    check(
+      "flower reach (CAD): the ramp's deployed tip clears the lower ring's top face",
+      lowerRingTop !== undefined && BB_RAMP_TIP_Z > lowerRingTop,
+      `BB_RAMP_TIP_Z=${BB_RAMP_TIP_Z} lowerRingTop=${lowerRingTop}`,
+    );
+    check("flower reach: the SWEEPER's reach is null — it never gets a box to bite with", bbFlowerReachOf('sweeper', true) === null);
   }
   /** the HUD reads the launcher through the resolver, never the flat mirror */
   {

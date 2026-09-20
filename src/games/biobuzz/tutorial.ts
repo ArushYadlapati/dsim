@@ -13,7 +13,7 @@ import {
   bbMirror,
 } from './config';
 import { bbFootprint, bbHopperCap, bbMouths, bbPlacePointLocal } from './robot';
-import { bbCarriesNectar, bbLauncherOf, bbLiftOf } from './mechs';
+import { bbCarriesNectar, bbIntakeKindOf, bbLauncherOf, bbLiftOf } from './mechs';
 import { bbIndexElements } from './spawn';
 import { capturePollen } from './elements';
 import { bbParkedNow } from './score';
@@ -374,11 +374,23 @@ const steps: TutorialStep[] = [
     id: 'retrieve',
     title: 'Take a pollen from a flower',
     applies: (spec: RobotSpec) => !canPlaceNectar(spec),
+    // the lesson lends a sweeper-only build SIDE ROLLERS (see `stage`), and says so: the robot on
+    // screen grows a pair for this step, and the driver should know why their own build cannot
     hint: (c) =>
-      `Drive square into the FLOWER’s foot with ${control(c, 'intake', 'intake')} held. POLLEN come out of the bottom.`,
+      `Drive square into the FLOWER’s foot with ${control(c, 'intake', 'intake')} held. POLLEN come out of the bottom — only an intake that reaches into the opening can take them, so this lesson lends you side rollers.`,
     stage: (w, id) => {
       const r = me(w, id);
       if (!r) return;
+      // ⚠️ A SWEEPER CANNOT REACH THE OPENING (owner, 2026-09-20: "intaking from the flower
+      // should now only be done if it is physically possible" — `bbFlowerReachOf`). This step
+      // teaches the MECHANIC, which a `sweeper`-only build (the default new-player loadout)
+      // no longer has the hardware for, so it is LENT a `siderollers` one for the lesson —
+      // the same shape of adjustment `freeHopper` below makes to hopper room, and just as
+      // scoped: it mutates this practice world's live `RobotState.spec`, never the player's
+      // own saved build.
+      if (bbIntakeKindOf(r.spec) === 'sweeper') {
+        r.spec = { ...r.spec, bbMech: { ...r.spec.bbMech!, intake: { kind: 'siderollers' } } };
+      }
       stageAtFlower(w, id, mouthPoint(r.spec), 8);
       freeHopper(w, r, 1);
     },

@@ -13306,7 +13306,7 @@ function pinScene(
   // step) unless it is added to the mask — which is exactly what happened to `fling` and
   // `driveMode`. This asserts each one round-trips, so the next one can't regress quietly.
   {
-    const btns: (keyof RobotCommand)[] = ['intake', 'fire', 'catalyst', 'fling', 'driveMode', 'bbPlaceNectar', 'bbPlace'];
+    const btns: (keyof RobotCommand)[] = ['intake', 'fire', 'catalyst', 'fling', 'driveMode', 'bbPlaceNectar', 'bbPlace', 'bbRamp'];
     const lost = btns.filter((b) => {
       const rt = dequantizeCommand(quantizeCommand(cmd({ [b]: true } as Partial<RobotCommand>)));
       return rt[b] !== true;
@@ -13317,7 +13317,14 @@ function pinScene(
     check(
       'wire: button bits are independent (fling does not imply catalyst/fire)',
       only.fling === true && !only.catalyst && !only.fire && !only.intake && !only.driveMode &&
-        !only.bbPlaceNectar && !only.bbPlace,
+        !only.bbPlaceNectar && !only.bbPlace && !only.bbRamp,
+    );
+    // `bbRamp` is bit 256 — the first button past the old protocol's uint8 (`BTN_BBRAMP`,
+    // `src/net/protocol.ts`), so it is the one bit a width regression would silently truncate.
+    const ramp = dequantizeCommand(quantizeCommand(cmd({ bbRamp: true })));
+    check(
+      'wire: bbRamp (bit 256) round-trips and sets nothing else',
+      ramp.bbRamp === true && !ramp.fling && !ramp.catalyst && !ramp.fire && !ramp.bbPlace,
     );
   }
 
@@ -13352,13 +13359,20 @@ function pinScene(
       { dx: 128, dy: 0, rot: 0, buttons: 0 },         // out of int8 range
       { dx: 0, dy: 0, rot: 0, buttons: 0, ld: 1e9 },  // the impossible track speed
       { dx: 0, dy: 0, rot: 0, buttons: -1 },
-      { dx: 0, dy: 0, rot: 0, buttons: 256 },
+      { dx: 0, dy: 0, rot: 0, buttons: 65536 }, // one past the uint16 ceiling (`BTN_BBRAMP` widened it from 255)
     ];
     check('sanitizeQCommand: every malformed payload is refused, not coerced',
       bad.every((b) => sanitizeQCommand(b) === null));
-    const allBits = sanitizeQCommand({ dx: 0, dy: 0, rot: 0, buttons: 255 });
-    check('sanitizeQCommand: a full uint8 of buttons is legal — every bit is a real action now',
-      allBits !== null && allBits.buttons === 255);
+    const allBits = sanitizeQCommand({ dx: 0, dy: 0, rot: 0, buttons: 0xffff });
+    check('sanitizeQCommand: a full uint16 of buttons is legal — every bit is a real action now',
+      allBits !== null && allBits.buttons === 0xffff);
+    // ⚠️ 256 USED TO BE REFUSED (the protocol was a uint8). `BTN_BBRAMP` is exactly that bit, so
+    // this is the one value whose meaning inverted the day the field widened — worth its own
+    // check rather than folding it into `allBits` above, where a regression back to uint8 would
+    // still pass (255 stays legal either way) and only THIS value would catch it.
+    const bbRampBit = sanitizeQCommand({ dx: 0, dy: 0, rot: 0, buttons: 256 });
+    check('sanitizeQCommand: buttons: 256 (BTN_BBRAMP) is legal, not refused',
+      bbRampBit !== null && bbRampBit.buttons === 256);
   }
 }
 
@@ -13763,6 +13777,25 @@ function pinScene(
         worldHash(simulateReplay(rec.finish())) !== worldHash(w),
       );
     }
+  }
+
+  // ⚠️ THE PACKKEY REGRESSION (`src/sim/replay.ts`'s own header): `buttons` used to be masked
+  // `& 0xff` INSIDE the packed axes number, so a `bbRamp` press (bit 256, past the old uint8)
+  // changed nothing the mask could see, the key never changed, and the recorder silently wrote
+  // NOTHING — a replayed robot whose ramp stayed folded. Two ticks identical but for `bbRamp`
+  // must write TWO entries, not one (hold-last would otherwise fold them into one).
+  {
+    const setup: RobotSetup = { id: 0, alliance: 'blue', spec: DEFAULT_SPEC, assists: { ...DEFAULT_ASSISTS }, startIndex: 0 };
+    const rec = new ReplayRecorder(1, [setup], 'match', 'decode');
+    rec.record(1, new Map([[0, cmd({})]]));
+    rec.record(2, new Map([[0, cmd({ bbRamp: true })]])); // ONLY bbRamp differs from tick 1
+    const replay = rec.finish();
+    const track = replay.tracks[0] ?? [];
+    check(
+      'ReplayRecorder: a tick that changes ONLY bbRamp still writes an entry (the packKey regression)',
+      track.length / trackStride(replay.format) === 2,
+      `${track.length / trackStride(replay.format)} entries`,
+    );
   }
 
   // the container itself: entries carry the tank axes, and a format-1 track still reads

@@ -6,8 +6,12 @@ import {
   BB_LAUNCH_PLATE_GAP,
   BB_LAUNCH_PLATE_OVERHANG,
   BB_POLLEN_R,
+  BB_RAMP_PIVOT_BACK,
+  BB_SIDE_ROLLER_OUT,
+  BB_SIDE_ROLLER_R,
+  BB_SIDE_ROLLER_Y,
 } from './config';
-import { bbLauncherOf, bbLiftOf } from './mechs';
+import { bbIntakeKindOf, bbLauncherOf, bbLiftOf } from './mechs';
 import { BB_MODE_LABELS } from './labels';
 import { BB_BOX_TUBE_OVERLAP, BB_PLACE_MARK_R, bbBoxTubeGlyph } from './parts';
 import { EDGE_ANGLE, type BbMountPos, bbMouthFrame, bbShooterEdgeOf, edgeGeom, turretLocal, turretRadius } from './mounts';
@@ -62,9 +66,23 @@ export function BiobuzzRobotPreview({
   // `bbFootprint` (the sim's own hitbox) rather than from the chassis front.
   const mouths = bbMouths(spec);
   const ext = bbFootprint(spec);
-  const half = ext.half; // ±y half-span (grown by a flank mount)
-  const tipY = -ext.front; // front-most in SCREEN y (robot +x → screen −y), for the viewBox
-  const rearY = ext.rear; // rear-most in SCREEN y
+  // THE INTAKE ARCHETYPE — `siderollers` reaches past the footprint the same way the placement
+  // marker does, so the viewBox has to grow for it too; `ramp`'s preview draws only the FOLDED
+  // rest pose (there is no `RobotState.bbRampOut` on a bare spec to ease against), which never
+  // leaves the footprint, so it needs no extra room.
+  const intakeKind = bbIntakeKindOf(spec);
+  const sideRollerOut = intakeKind === 'siderollers' ? BB_SIDE_ROLLER_OUT + BB_SIDE_ROLLER_R : 0;
+  let extraFront = 0;
+  let extraRear = 0;
+  let extraHalf = 0;
+  for (const m of mouths) {
+    if (m.edge === 'front') extraFront = Math.max(extraFront, sideRollerOut);
+    else if (m.edge === 'back') extraRear = Math.max(extraRear, sideRollerOut);
+    else extraHalf = Math.max(extraHalf, sideRollerOut);
+  }
+  const half = ext.half + extraHalf; // ±y half-span (grown by a flank mount, or the side rollers)
+  const tipY = -(ext.front + extraFront); // front-most in SCREEN y (robot +x → screen −y)
+  const rearY = ext.rear + extraRear; // rear-most in SCREEN y
   // THE LOADOUT — a mandatory launcher and an optional Box Tube, read through `mechs.ts`, which is
   // safe on the RAW spec this live builder preview is handed.
   const launcher = bbLauncherOf(spec, BB_HOOD_DEFAULT_DEG);
@@ -169,6 +187,42 @@ export function BiobuzzRobotPreview({
             ))}
             {deep ? roller(inner, f.half - 1.35, 0.8, 'in') : null}
             {roller(outer, f.half - 0.75, 1.5, 'out')}
+            {/* ARCHETYPE EXTRAS — same numbers as `drawBiobuzzIntakeReach` in `drawRobot.ts`,
+                the sweeper's rest state only: this preview has no `RobotState` to ease a ramp
+                toggle against, so a `ramp` build always shows FOLDED. */}
+            {intakeKind === 'siderollers'
+              ? [1, -1].map((sg) => (
+                  <g key={`sr-${sg}`}>
+                    <line
+                      x1={f.depth}
+                      y1={sg * BB_SIDE_ROLLER_Y}
+                      x2={f.depth + BB_SIDE_ROLLER_OUT}
+                      y2={sg * BB_SIDE_ROLLER_Y}
+                      stroke={stroke}
+                      strokeWidth={0.18}
+                    />
+                    <circle
+                      cx={f.depth + BB_SIDE_ROLLER_OUT}
+                      cy={sg * BB_SIDE_ROLLER_Y}
+                      r={BB_SIDE_ROLLER_R}
+                      fill="var(--ds-bg)"
+                      stroke={stroke}
+                      strokeWidth={0.22}
+                    />
+                  </g>
+                ))
+              : null}
+            {intakeKind === 'ramp' ? (
+              <rect
+                x={f.depth - BB_RAMP_PIVOT_BACK - 0.15}
+                y={-(f.half - 0.7)}
+                width={0.3}
+                height={(f.half - 0.7) * 2}
+                rx={0.12}
+                fill={stroke}
+                opacity={0.75}
+              />
+            ) : null}
           </g>
         );
       })}

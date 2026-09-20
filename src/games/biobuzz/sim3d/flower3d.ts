@@ -1,12 +1,12 @@
 import type { Artifact, RobotCommand, RobotState, World } from '../../../types';
 import type { BiobuzzState } from '../state';
 import type { BbElementKind } from '../flower';
-import { bbElementRadius, bbFlowerDropSlack, bbFlowerScatter } from '../flower';
-import { BB_FLOWERS, BB_FLOWER_RETRIEVE_S, FLOWER_RING_Z, bbHopperCap } from '../config';
+import { bbBites, bbElementRadius, bbFlowerDropSlack, bbFlowerScatter } from '../flower';
+import { BB_FLOWERS, BB_FLOWER_RETRIEVE_S, FLOWER_RING_Z, bbFlowerReachOf, bbHopperCap } from '../config';
 import { capturePollen, takeHeld } from '../elements';
-import { bbLiftOf } from '../mechs';
+import { bbIntakeKindOf, bbLiftOf } from '../mechs';
 import { bbFlowerAtIntake } from '../play';
-import { bbFlowerInReach } from '../robot';
+import { bbFlowerInReach, bbRampSettled } from '../robot';
 import { flowerAtRetrieval } from './flowerTube';
 
 /**
@@ -193,6 +193,12 @@ export function flowerPlace3d(
  * A NECTAR at the bottom LOCKS the flower exactly as it does in 2D, and for the same reason
  * measured rather than assumed: a 3.6-in nectar passes neither the 3.222-in lower bore nor the
  * 3.550-in opening.
+ *
+ * ARCHETYPE-AWARE exactly as 2D is (owner, 2026-09-20): `bbFlowerReachOf` resolves what this
+ * build's intake can reach, `bbFlowerAtIntake` asks the X/lateral bite against the flower's own
+ * ring centre, and — the one test only a physical column can ask — the Z-BITE (`bbBites`) against
+ * the candidate's ACTUAL height, on top of `flowerAtRetrieval`'s coarser "is it in the opening's
+ * band at all". `ball.z` is the element's BOTTOM in this pipeline, so `ball.z + r` is its centre.
  */
 export function flowerRetrieve3d(
   world: World,
@@ -206,7 +212,9 @@ export function flowerRetrieve3d(
   if (!enabled || !(rob.autoIntake || (cmd?.intake ?? false))) return false;
   if (world.time - rob.lastIntakeAt < BB_FLOWER_RETRIEVE_S) return false;
   if (rob.hopper.length >= bbHopperCap(rob.spec)) return false;
-  const i = bbFlowerAtIntake(rob);
+  const reach = bbFlowerReachOf(bbIntakeKindOf(rob.spec), bbRampSettled(rob, world.time));
+  if (!reach) return false; // a sweeper, or a ramp not yet settled: nothing to reach with
+  const i = bbFlowerAtIntake(rob, reach);
   if (i === null) return false;
   const stack = bb.flowers[i].stack;
   if (stack.length === 0) return false;
@@ -214,7 +222,10 @@ export function flowerRetrieve3d(
   if (kindOf(id) !== 'pollen') return false;
   const ball = ballById.get(id);
   if (!ball) return false;
-  if (!flowerAtRetrieval(ball.z + (ball.r ?? bbElementRadius('pollen')))) return false;
+  const r = ball.r ?? bbElementRadius('pollen');
+  const zc = ball.z + r; // ball.z is the BOTTOM; the bite tests want the CENTRE
+  if (!flowerAtRetrieval(zc)) return false;
+  if (!bbBites(reach.z[0], reach.z[1], zc, r)) return false;
   const was = ball.state;
   ball.state = { kind: 'ground' };
   if (!capturePollen(world, rob, ball)) {

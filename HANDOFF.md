@@ -1,6 +1,50 @@
+# HANDOFF — 2026-09-20b (alpha: three intake archetypes — only hardware that reaches a FLOWER's opening takes from it)
+
+**READ FIRST.** One owner item: "intaking from the flower is not physically accurate. Current rollers
+cannot actually reach the pollen under." Gates on the final tree: `npm test` ALL PASS (3,261 biobuzz +
+shared), `build`, `server:check`, `uiaudit`, `docaudit`, `bundleaudit` (scene 208.2 KB gz, +2.4),
+`test:mm` (200). Not run: `dbtest` (no DB change), `shiftaudit`, `test:ai`. `dsim-alpha` redeployed
+(server: the wire's `buttons` widened, `room.ts` counts a ramp press as activity). Production untouched.
+
+- **The opening, measured off the CAD hulls** (`config.ts`, "ROBOT — intake ARCHETYPES" header): the
+  bottom POLLEN rests on the tiles inside the lower bore, centre 1.4 up and 2.384 in BEHIND the plate's
+  field edge; under the mid plate (ceiling 3.904) the field side is open the full 5.95-in plate width
+  and 3.57 in deep to the peanut supports. The sweeper's roller (axle 4.5, flaps to 2.5 two inches
+  behind the tip line) never passes the plate edge. `scratch/flowerhulls.ts` is the probe.
+- **Three archetypes** (`mechs.ts` `BB_INTAKE_KINDS`, `bbMech.intake.kind`, absent = `sweeper`). All
+  keep the same sweeper mouth/footprint/solids — ground POLLEN is unchanged for every build, and the 2D
+  pipeline is byte-identical for every existing spec. What differs is a REACH box in the mouth frame
+  (`bbFlowerReachOf`): sweeper `null`; `siderollers` two 1.5-in compliant wheels at ±1.9 / 1.9 past the
+  tip line, z 0.5–2.5; `ramp` a 4.5-in U-frame pivoting 2.0 behind the tip line at 2.2 up, deployed 22°
+  down so the crossbar sits 2.17 in into the opening at 0.5 (over the lower plate's 0.354 rim, under the
+  POLLEN's centre). The gate (`bbFlowerAtIntake` + `bbBites`) wants ≥ 0.5 in of overlap in x AND z with
+  the actual bottom element. Standoff tolerance: ≈1.17 in side rollers, ≈0.68 in ramp.
+- ⚠️ **`u` is measured from `mouthAxes.uOut` (the footprint edge), not the chassis frame.** The frame
+  can never get nearer than `bbIntakeReach`; measured from it nothing reached and the tutorial's
+  retrieve step never completed. `uOut` sits ON the foot face when driven flush, so `u ≈ BB_PLACE_REACH`.
+- **Reach parts are NOT colliders** (a choice, reversible): drawn past the footprint like the Box Tube,
+  so a wall-flush pose shows them inside the wall. Rigid colliders would stand every robot off every wall
+  and pop a wall-flush start on the deploy edge.
+- **The ramp toggle**: `RobotCommand.bbRamp` (edge, like `driveMode`), `RobotState.bbRampOut/bbRampAt/
+  bbRampHeld` (absent on every other build; written only on a press), `bbRampStep` in both pipelines at
+  the turret-slew site, gated on `robotsEnabled`; credited only `BB_RAMP_DEPLOY_S` (0.3 s) after the
+  stamp, and both renderers ease off the same stamp. Key `L`, pad RS (11). HUD chip RAMP DOWN/UP.
+- ⚠️ **`QCommand.buttons` is 16 bits** (`BTN_BBRAMP` = 256; sanitizer to 0xffff). The replay
+  recorder's `packKey` masked buttons `& 0xff` inside a packed number — bit 256 was invisible and a
+  ramp press was never recorded; it is a string with the buttons alongside now. No `REPLAY_FORMAT`
+  bump: the track is plain numbers and an old reader masks the bits it knows. An OLD server refuses a
+  packet carrying bit 256 (one tick of input lost, only on a build with no ramp to press).
+- **Builder**: the static "Sweeper" card is a 3-card picker; `send()` now carries the intake through a
+  launcher/Box Tube edit (it used to rebuild `bbMech` without it, which would have reset the kind).
+- **Tutorial**: the retrieve step lends a sweeper-only build side rollers for the lesson and says so.
+- **Open**: the AI never retrieves from a flower (unchanged). A ramp deployed against a wall is drawn
+  through it. `RobotPreview.tsx` (SVG) draws the ramp folded only.
+
+---
+
 # HANDOFF — 2026-09-20a (alpha: third playtest pass — phantom hive corner, phantom hive tip, the hive's pivot hardware, Box Tube reach, disabled-robot prediction, intake in the transition, spent friend challenges)
 
-**READ FIRST.** Seven owner items. Gates on the final tree: `npm test` ALL PASS (3,143 biobuzz +
+Seven owner items. Gates on the final tree: `npm test` ALL PASS (3,143 biobuzz +
 shared), `build`, `server:check`, `uiaudit`, `docaudit`, `bundleaudit`, `test:mm` (200), `dbtest`.
 Not run: `shiftaudit`, `test:ai`. `dsim-alpha` was redeployed (server code moved: the challenge
 clear and the 3D collider set). Production untouched.

@@ -63,10 +63,11 @@ import {
 } from '../../src/games/biobuzz/nectarBox';
 // ── LANE B (ROBOT RENDER) imports — the 3D robot model's own checks, kept in their own block so
 // they are easy to see and easy to move. ───────────────────────────────────────────────────────
-import type { RobotSpec } from '../../src/types';
+import type { RobotSpec, RobotState } from '../../src/types';
 import { bbFlowerInReach, bbFootprint, bbMouths, bbPlacePointLocal } from '../../src/games/biobuzz/robot';
 import { bbBoxTubeGlyph } from '../../src/games/biobuzz/parts';
-import { bbLiftOf } from '../../src/games/biobuzz/mechs';
+import { BB_INTAKE_KINDS, bbIntakeKindOf, bbLiftOf } from '../../src/games/biobuzz/mechs';
+import { drawBiobuzzIntakeReach } from '../../src/games/biobuzz/drawRobot';
 import {
   BB_BOX_TUBE_EXTEND_S,
   BB_BOX_TUBE_SECTIONS,
@@ -92,10 +93,18 @@ import {
   BB_HOOD_T,
   BB_HOOD_WRAP,
   BB_LAUNCH_Z0,
+  BB_RAMP_ANGLE,
+  BB_RAMP_DEPLOY_S,
+  BB_RAMP_L,
+  BB_RAMP_OUT,
+  BB_RAMP_PIVOT_BACK,
+  BB_RAMP_TIP_Z,
   BB_SHOOTER_PLATE_T,
   BB_SIDE_PLATE_BOTTOM_Z,
   BB_SIDE_PLATE_FRONT_X,
   BB_SIDE_PLATE_TOP_Z,
+  BB_SIDE_ROLLER_REACH,
+  BB_SIDE_ROLLER_Y,
   BB_TURRET_AXLE_Z,
   BB_TURRET_BRACE_R,
   BB_TURRET_BRACES,
@@ -3455,6 +3464,260 @@ function graphicsChecks(check: Check, allFiles: string[]): void {
           /function flapFold\(a: number\): number/.test(robotsCode) &&
             robotsCode.includes('const fold = flapFold(a);'),
         );
+      }
+
+      // ── 2026-09-20 OWNER: "INTAKING FROM THE FLOWER SHOULD NOW ONLY BE DONE IF IT IS
+      // PHYSICALLY POSSIBLE" — THE THREE INTAKE ARCHETYPES ────────────────────────────────────
+      // `siderollers` and `ramp` are extra hardware on the SAME sweeper every build already
+      // carries (`bbIntakeKindOf`); the sweeper's own drawing must not move a vertex — every
+      // check above this one already re-runs on the sweeper path (it is `mk`'s default, no
+      // `bbMech.intake` override), so it is already the byte-identical proof. What is new here
+      // is measured on the BUILT group, the same style as the front brace above: "the drawn part
+      // that reaches is the part `bbFlowerReachOf` credits" (`config.ts`'s own header).
+      {
+        const mk = (over: Partial<RobotSpec>): RobotSpec => bbCoerceSpec({ ...BB_DEFAULT_SPEC, ...over } as RobotSpec);
+        const num = (name: string): number => Number(new RegExp(`const ${name} = ([\\d.]+);`).exec(robotsSrc)?.[1] ?? NaN);
+        const flapR = num('BB_ROLLER_FLAP_R');
+        const hubR = num('BB_ROLLER_HUB_R');
+        const rollerZ = BB3_MOUTH_SLOT_Z + hubR + 0.15;
+
+        check(
+          'the ramp pivots on the sweeper’s own axle line — BB_RAMP_PIVOT_BACK is BB_ROLLER_FLAP_R',
+          Number.isFinite(flapR) && Math.abs(BB_RAMP_PIVOT_BACK - flapR) < 1e-9,
+          `${BB_RAMP_PIVOT_BACK} vs ${flapR}`,
+        );
+        check(
+          'the archetype vocabulary is exactly the three kinds this lane tests',
+          BB_INTAKE_KINDS.length === 3 && BB_INTAKE_KINDS.includes('siderollers') && BB_INTAKE_KINDS.includes('ramp'),
+          BB_INTAKE_KINDS.join(','),
+        );
+
+        // a vertex → (u, v, z) in the MOUTH's own frame: u outward past the tip, v across the
+        // mouth, z off the tiles. The same projection the front-brace check above uses for u
+        // alone, generalised to all three axes so the ramp's deployed pose can be measured too.
+        const mouthExtent = (o: THREE.Object3D, f: { ox: number; oy: number; rot: number }) => {
+          let uMin = Infinity, uMax = -Infinity, vMin = Infinity, vMax = -Infinity, zMin = Infinity, zMax = -Infinity;
+          const v3 = new THREE.Vector3();
+          o.traverse((n) => {
+            const g3 = (n as THREE.Mesh).geometry as THREE.BufferGeometry | undefined;
+            const pos = g3?.getAttribute?.('position');
+            if (!pos) return;
+            for (let i = 0; i < pos.count; i++) {
+              v3.fromBufferAttribute(pos as THREE.BufferAttribute, i).applyMatrix4(n.matrixWorld);
+              const dx = v3.x - f.ox;
+              const dy = v3.y - f.oy;
+              const u = dx * Math.cos(f.rot) + dy * Math.sin(f.rot);
+              const v = -dx * Math.sin(f.rot) + dy * Math.cos(f.rot);
+              uMin = Math.min(uMin, u); uMax = Math.max(uMax, u);
+              vMin = Math.min(vMin, v); vMax = Math.max(vMax, v);
+              zMin = Math.min(zMin, v3.z); zMax = Math.max(zMax, v3.z);
+            }
+          });
+          return { uMin, uMax, vMin, vMax, zMin, zMax };
+        };
+
+        for (const mount of ['front', 'back', 'side', 'frontback'] as const) {
+          for (const kind of BB_INTAKE_KINDS) {
+            const spec = mk({ intakeMount: mount, bbMech: { intake: { kind } } } as Partial<RobotSpec>);
+            const built = buildIntake(spec);
+            const group = new THREE.Group();
+            for (const n of built.nodes) group.add(n);
+            group.updateMatrixWorld(true);
+            const hl = spec.length / 2;
+            const hw = spec.width / 2;
+            const mouths = bbMouths(spec);
+            const label = `intake ${mount}/${kind}`;
+
+            if (kind === 'sweeper') {
+              check(
+                `${label}: builds no side-roller or ramp hardware`,
+                built.sideRollers.length === 0 && built.rampPivots.length === 0,
+                `${built.sideRollers.length} rollers, ${built.rampPivots.length} pivots`,
+              );
+              check(
+                `${label}: and no such node is anywhere in the group`,
+                group.getObjectByName(`robot:sideroller:${mouths[0].edge}:l`) === undefined &&
+                  group.getObjectByName(`robot:ramp:${mouths[0].edge}`) === undefined,
+              );
+              continue;
+            }
+
+            if (kind === 'siderollers') {
+              check(
+                `${label}: one wheel pair per mouth`,
+                built.sideRollers.length === mouths.length * 2,
+                `${built.sideRollers.length} vs ${mouths.length * 2}`,
+              );
+              for (const m of mouths) {
+                const f = bbMouthFrame(m, hl, hw);
+                for (const side of ['l', 'r'] as const) {
+                  const wheel = group.getObjectByName(`robot:sideroller:${m.edge}:${side}`);
+                  if (!wheel) {
+                    check(`${label}/${m.edge}/${side}: the wheel node exists`, false);
+                    continue;
+                  }
+                  const ext = mouthExtent(wheel, f);
+                  // `BB_SIDE_ROLLER_REACH.out` is measured FROM THE TIP LINE (`config.ts`'s own
+                  // header); the built wheel sits at absolute mouth-local u = tip + that reach.
+                  const outMin = ext.uMin - f.depth;
+                  const outMax = ext.uMax - f.depth;
+                  check(
+                    `${label}/${m.edge}/${side}: reaches exactly BB_SIDE_ROLLER_REACH.out past the tip`,
+                    Math.abs(outMin - BB_SIDE_ROLLER_REACH.out[0]) < 1e-6 &&
+                      Math.abs(outMax - BB_SIDE_ROLLER_REACH.out[1]) < 1e-6,
+                    `[${outMin.toFixed(6)}, ${outMax.toFixed(6)}] vs [${BB_SIDE_ROLLER_REACH.out[0]}, ${BB_SIDE_ROLLER_REACH.out[1]}]`,
+                  );
+                  check(
+                    `${label}/${m.edge}/${side}: and BB_SIDE_ROLLER_REACH.z`,
+                    Math.abs(ext.zMin - BB_SIDE_ROLLER_REACH.z[0]) < 1e-6 &&
+                      Math.abs(ext.zMax - BB_SIDE_ROLLER_REACH.z[1]) < 1e-6,
+                    `[${ext.zMin.toFixed(6)}, ${ext.zMax.toFixed(6)}] vs [${BB_SIDE_ROLLER_REACH.z[0]}, ${BB_SIDE_ROLLER_REACH.z[1]}]`,
+                  );
+                  const wantV = side === 'l' ? BB_SIDE_ROLLER_Y : -BB_SIDE_ROLLER_Y;
+                  const centreV = (ext.vMin + ext.vMax) / 2;
+                  check(
+                    `${label}/${m.edge}/${side}: centred at ±BB_SIDE_ROLLER_Y off the mouth centreline`,
+                    Math.abs(centreV - wantV) < 1e-6,
+                    `${centreV.toFixed(6)} vs ${wantV}`,
+                  );
+                }
+              }
+            }
+
+            if (kind === 'ramp') {
+              check(
+                `${label}: one pivot per mouth`,
+                built.rampPivots.length === mouths.length,
+                `${built.rampPivots.length} vs ${mouths.length}`,
+              );
+              for (const m of mouths) {
+                const f = bbMouthFrame(m, hl, hw);
+                const pivot = group.getObjectByName(`robot:ramp:${m.edge}`);
+                const bar = group.getObjectByName(`robot:ramp:bar:${m.edge}`);
+                const railL = group.getObjectByName(`robot:ramp:rail:${m.edge}:l`);
+                const railR = group.getObjectByName(`robot:ramp:rail:${m.edge}:r`);
+                const roller = group.getObjectByName(`robot:sweeper:${m.edge}`);
+                if (!pivot || !bar || !railL || !railR || !roller) {
+                  check(`${label}/${m.edge}: every ramp node exists`, false, `pivot=${!!pivot} bar=${!!bar} rails=${!!railL}/${!!railR} roller=${!!roller}`);
+                  continue;
+                }
+                group.updateMatrixWorld(true);
+
+                // ── FOLDED (the built default: `pivot.rotation.y` starts at 0) ──────────────
+                const barFolded = mouthExtent(bar, f);
+                check(
+                  `${label}/${m.edge}: folded, the crossbar top clears the flap sweep`,
+                  barFolded.zMax > rollerZ + flapR,
+                  `${barFolded.zMax.toFixed(3)} vs sweep top ${(rollerZ + flapR).toFixed(3)}`,
+                );
+                // MOUTH-LOCAL (u, v, z), not world Box3: a `back`/`right` mouth is itself
+                // rotated (`f.rot`), which flips which WORLD side "l" lands on — `mouthExtent`
+                // undoes that rotation, so "l" reads as the +v side on every edge.
+                const rollerExt = mouthExtent(roller, f);
+                const railLExt = mouthExtent(railL, f);
+                const railRExt = mouthExtent(railR, f);
+                check(
+                  `${label}/${m.edge}: the rails clear the (shortened) barrel, one each side`,
+                  railLExt.vMin >= rollerExt.vMax - 1e-6 && railRExt.vMax <= rollerExt.vMin + 1e-6,
+                  `barrel v [${rollerExt.vMin.toFixed(3)}, ${rollerExt.vMax.toFixed(3)}], rails v [${railRExt.vMax.toFixed(3)}, ${railLExt.vMin.toFixed(3)}]`,
+                );
+
+                // ── DEPLOYED — posed by hand, off the SAME angle `config.ts` derives its own
+                // reach from, so this measures the BUILT geometry against that derivation
+                // rather than re-deriving it a second time. A specific REFERENCE POINT, not a
+                // bounding-box extreme: the crossbar box has its own thickness, so its axis-
+                // aligned corners are not the rail-tip centreline once the pivot is rotated.
+                pivot.rotation.y = Math.PI / 2 + BB_RAMP_ANGLE;
+                group.updateMatrixWorld(true);
+                const tipWorld = new THREE.Vector3(0, 0, BB_RAMP_L).applyMatrix4(pivot.matrixWorld);
+                const dxTip = tipWorld.x - f.ox;
+                const dyTip = tipWorld.y - f.oy;
+                const tipU = dxTip * Math.cos(f.rot) + dyTip * Math.sin(f.rot);
+                check(
+                  `${label}/${m.edge}: deployed, the rail tip (and the crossbar's outer face) lands at (tip + BB_RAMP_OUT, BB_RAMP_TIP_Z)`,
+                  Math.abs(tipU - (f.depth + BB_RAMP_OUT)) < 1e-3 && Math.abs(tipWorld.z - BB_RAMP_TIP_Z) < 1e-3,
+                  `u ${tipU.toFixed(4)} vs ${(f.depth + BB_RAMP_OUT).toFixed(4)}, z ${tipWorld.z.toFixed(4)} vs ${BB_RAMP_TIP_Z.toFixed(4)}`,
+                );
+                const baseWorld = new THREE.Vector3(0, 0, 0).applyMatrix4(pivot.matrixWorld);
+                const dxBase = baseWorld.x - f.ox;
+                const dyBase = baseWorld.y - f.oy;
+                const baseU = dxBase * Math.cos(f.rot) + dyBase * Math.sin(f.rot);
+                const railAngle = Math.atan2(tipWorld.z - baseWorld.z, tipU - baseU);
+                check(
+                  `${label}/${m.edge}: deployed, the rails lie BB_RAMP_ANGLE below level`,
+                  Math.abs(railAngle + BB_RAMP_ANGLE) < 1e-6,
+                  `${railAngle.toFixed(6)} rad vs ${(-BB_RAMP_ANGLE).toFixed(6)}`,
+                );
+                pivot.rotation.y = 0; // leave it as `buildIntake` built it
+              }
+            }
+          }
+        }
+
+        // ── THE EASE — the same smoothstep the Box Tube uses, wired the same way (`bbRampAt` /
+        // `world.time`, clamped to [0, 1]) and re-derived standalone here (the RENDER lane has no
+        // `World` to run `sync` against — see the file header). At t0 the robot is still FOLDED
+        // (frac 0); a `BB_RAMP_DEPLOY_S` later it is fully DEPLOYED (frac 1).
+        check(
+          'the sync code eases the ramp off `bbRampAt`/`world.time`, clamped and smoothstepped',
+          robotsCode.includes('r.bbRampAt ?? -Infinity') &&
+            robotsCode.includes('BB_RAMP_DEPLOY_S') &&
+            robotsCode.includes('smoothstep01(t)'),
+        );
+        check(
+          'the side rollers spin off the SAME running gate as the sweeper, opposite senses',
+          robotsCode.includes('sr.phase += BB_ROLLER_SPIN * dt * sr.sign;'),
+        );
+        {
+          const ease = (t: number) => { const c = Math.max(0, Math.min(1, t)); return c * c * (3 - c * 2); };
+          const deployedAngle = Math.PI / 2 + BB_RAMP_ANGLE;
+          const poseAt = (raw: number, out: boolean) => {
+            const frac = ease(raw);
+            return out ? deployedAngle * frac : deployedAngle * (1 - frac);
+          };
+          check(
+            'ease: at t0 (deploying) the pose is FOLDED',
+            Math.abs(poseAt(0, true) - 0) < 1e-9,
+          );
+          check(
+            'ease: a BB_RAMP_DEPLOY_S later (deploying) the pose is DEPLOYED',
+            Math.abs(poseAt(1, true) - deployedAngle) < 1e-9,
+          );
+          check(
+            'ease: at t0 (retracting) the pose is still DEPLOYED, and a BB_RAMP_DEPLOY_S later it is FOLDED',
+            Math.abs(poseAt(0, false) - deployedAngle) < 1e-9 && Math.abs(poseAt(1, false) - 0) < 1e-9,
+          );
+          check(
+            'BB_RAMP_DEPLOY_S is a positive, finite window (else the ease divides by zero or never arrives)',
+            Number.isFinite(BB_RAMP_DEPLOY_S) && BB_RAMP_DEPLOY_S > 0,
+            `${BB_RAMP_DEPLOY_S}s`,
+          );
+        }
+
+        // ── THE 2D SPRITE: same archetypes, drawn OUTSIDE the footprint clip (`drawRobot.ts`'s
+        // header on `drawBiobuzzIntakeReach`). Behavioural, not a string match — the calls ARE
+        // the behaviour, same as the shot path above.
+        interface ReachOp { op: string }
+        const reachOps = (kind: (typeof BB_INTAKE_KINDS)[number]): ReachOp[] => {
+          const ops: ReachOp[] = [];
+          const rec = (op: string) => () => { ops.push({ op }); };
+          const ctx = {
+            save: rec('save'), restore: rec('restore'), beginPath: rec('beginPath'),
+            moveTo: rec('moveTo'), lineTo: rec('lineTo'), stroke: rec('stroke'), fill: rec('fill'),
+            arc: rec('arc'), translate: rec('translate'), rotate: rec('rotate'),
+            set strokeStyle(_v: string) {}, set fillStyle(_v: string) {}, set lineWidth(_v: number) {},
+          } as unknown as CanvasRenderingContext2D;
+          const spec = mk({ bbMech: { intake: { kind } } } as Partial<RobotSpec>);
+          const r = { spec, bbRampOut: false } as unknown as RobotState;
+          drawBiobuzzIntakeReach(ctx, r, false, undefined);
+          return ops;
+        };
+        check(
+          '2D: the sweeper kind draws NOTHING extra past the footprint (byte-identical sprite)',
+          reachOps('sweeper').length === 0,
+        );
+        check('2D: the siderollers kind draws its wheels', reachOps('siderollers').length > 0);
+        check('2D: the ramp kind draws its rest-pose outline', reachOps('ramp').length > 0);
       }
 
       // ── 2026-09-19 OWNER PLAYTEST: "THE BOX TUBE MUST RENDER PROPERLY" ───────────────────

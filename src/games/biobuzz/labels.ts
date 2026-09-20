@@ -7,7 +7,7 @@ import { sponsorActive } from '../../sponsor';
 // VALUE import here would close the registry cycle `presets.ts` already hit once at boot
 // (`Cannot access 'BB_PRESET_LIST' before initialization`). `import type` is erased.
 import type { GameStatTile } from '../module';
-import { BB_HOOD_DEFAULT_DEG, type BbIntakeStyle } from './config';
+import { BB_HOOD_DEFAULT_DEG } from './config';
 import {
   BB_DEFAULT_INTAKE_MOUNT,
   type BbIntakeMount,
@@ -16,6 +16,7 @@ import {
   bbIntakeMountOf,
 } from './mounts';
 import {
+  type BbIntakeKind,
   type BbLauncherSpec,
   type BbLiftKind,
   type BbLiftSpec,
@@ -113,8 +114,19 @@ export function bbLiftLabel(lift: BbLiftSpec | null, now?: number): string {
   return lift ? bbLiftKindLabel(lift.kind, now) : BB_LIFT_NONE_LABEL;
 }
 
-export const BB_INTAKE_LABELS: Record<BbIntakeStyle, string> = {
+export const BB_INTAKE_LABELS: Record<BbIntakeKind, string> = {
   sweeper: 'Sweeper',
+  siderollers: 'Side rollers',
+  ramp: 'Deployable ramp',
+};
+
+/** the one-line TRADEOFF each intake archetype is picked for. All three take a ground POLLEN
+ * identically (`mechs.ts`); what differs is whether the hardware can also reach the POLLEN
+ * sitting at the bottom of a FLOWER's opening, which the sweeper's roller line never does. */
+export const BB_INTAKE_KIND_BLURBS: Record<BbIntakeKind, string> = {
+  sweeper: 'Ground POLLEN only · can’t reach into a FLOWER’s opening',
+  siderollers: 'Reaches into a FLOWER’s opening and pulls the bottom POLLEN out',
+  ramp: 'Deploy to wedge under a FLOWER’s bottom POLLEN · folded, it takes nothing',
 };
 
 /** MOUNT labels — kept SHORT, because they sit in a 4-up button grid; the tradeoff goes in

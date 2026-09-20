@@ -192,6 +192,11 @@ const BB_MECH_FIELDS = [
   'bbTurretPitchVel',
   'bbTurret2YawVel',
   'bbTurret2PitchVel',
+  // NOT `bbRampOut`/`bbRampAt`/`bbRampHeld`: the `ramp` intake archetype's three fields
+  // (`robot.ts`'s `bbRampStep`). Unlike the turret's angular rates above, they are written only
+  // on a PRESS — an edge, not a per-tick value — so they cost the wire nothing on the 30 Hz
+  // cadence this list prices; they simply ride along, absent, in every snapshot a driver is not
+  // actively toggling the ramp on.
 ] as const;
 
 /**

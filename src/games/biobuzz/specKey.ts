@@ -1,6 +1,6 @@
 import type { RobotSpec } from '../../types';
 import { bbDeployedHeightIn } from './config';
-import { bbLauncherOf, bbLiftOf } from './mechs';
+import { bbIntakeKindOf, bbLauncherOf, bbLiftOf } from './mechs';
 
 /**
  * A BUILD'S GEOMETRY IDENTITY — the fields that change what a BIOBUZZ robot LOOKS like in 3D,
@@ -46,6 +46,7 @@ export function bbSpecKey(spec: RobotSpec): string {
     spec.teamNumber ?? '',
     spec.intakeMount ?? '',
     spec.intake,
+    bbIntakeKindOf(spec),
     spec.drivetrain,
     launcher.kind,
     launcher.mount,

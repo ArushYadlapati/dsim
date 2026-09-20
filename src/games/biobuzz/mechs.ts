@@ -82,10 +82,48 @@ export interface BbLiftSpec {
   mount: BbMountPos;
 }
 
-/** BOTH SLOTS, as they sit on the spec. The launcher is mandatory; the lift may be `null`. */
+/**
+ * INTAKE archetypes (owner, 2026-09-20: "intaking from the flower should now only be done if it
+ * is physically possible"). All three carry the same over-the-bumper SWEEPER on the mounted
+ * edge(s) — `bbMouths`, `bbFootprint`, `bbRobotSolids` and the 3D chassis compound are archetype-
+ * blind, so a ground POLLEN is taken the same way by every build. What differs is whether the
+ * hardware can reach a POLLEN sitting at the bottom of a FLOWER, which the sweeper cannot: its
+ * roller rides at ~4.5 in and the retrieval opening is 0.354 … 3.904 in tall with the POLLEN a
+ * full inch back inside it (`BB_FLOWER_REACH` in `config.ts` carries the numbers).
+ *
+ *   `sweeper`      the roller alone. Ground only; never reaches the opening.
+ *   `siderollers`  two low vertical-axis compliant wheels either side of the mouth centreline,
+ *                  standing past the roller line into the opening — they straddle the POLLEN.
+ *   `ramp`         the sweeper plus a deployable U-frame ramp (`bbRamp` command, a toggle) that
+ *                  drops forward off a pivot on the chassis and wedges under the POLLEN. Folded,
+ *                  it stands vertical round the roller and reaches nothing.
+ *
+ * An enum for the same reason `BB_LIFT_KINDS` is: a fourth archetype is a union member, not a
+ * boolean. The DECODE-shared `spec.intake` (sloped/vector/triangle) still picks the REACH the
+ * sweeper sticks out (`bbIntakeReach`) and nothing else.
+ */
+export const BB_INTAKE_KINDS = ['sweeper', 'siderollers', 'ramp'] as const;
+export type BbIntakeKind = (typeof BB_INTAKE_KINDS)[number];
+
+/** THE INTAKE SLOT. Optional on the container: a spec written before archetypes existed reads
+ * as the `sweeper`, which is exactly the hardware it was drawn with. */
+export interface BbIntakeSpec {
+  kind: BbIntakeKind;
+}
+
+/** ALL THREE SLOTS, as they sit on the spec. The launcher is mandatory; the lift may be `null`;
+ * an absent intake is the sweeper (`bbIntakeKindOf`). */
 export interface BbMechSpec {
   launcher: BbLauncherSpec;
   lift: BbLiftSpec | null;
+  intake?: BbIntakeSpec;
+}
+
+/** The INTAKE archetype this spec has. Never null: an absent slot, or an unknown kind written by
+ * a newer peer, is the sweeper. PURE and safe on a raw spec, like `bbLauncherOf`. */
+export function bbIntakeKindOf(spec: RobotSpec): BbIntakeKind {
+  const k = spec.bbMech?.intake?.kind;
+  return (BB_INTAKE_KINDS as readonly string[]).includes(k as string) ? (k as BbIntakeKind) : BB_INTAKE_KINDS[0];
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

@@ -2,6 +2,7 @@ import type { Alliance, Vec2 } from '../../types';
 import { dcos, dsin, nextRandom } from '../../math';
 import {
   BB3_FLOWER_SCATTER_FRAC,
+  BB_FLOWER_BITE,
   BB_FLOWER_LOW_HOLE,
   BB_FLOWER_LOW_Z,
   BB_FLOWER_MID_HOLE,
@@ -183,6 +184,21 @@ export function flowerAccepts(flower: Vec2, pos: Vec2, z: number, vz: number, r:
   const dy = pos.y - flower.y;
   if (dx * dx + dy * dy > BB_FLOWER_OPEN_R * BB_FLOWER_OPEN_R) return false;
   return z >= BB_FLOWER_TOP_Z - r && z <= BB_FLOWER_TOP_Z + BB_FLOWER_ENTRY_MARGIN;
+}
+
+/**
+ * THE BITE TEST — how much a hardware interval `[lo, hi]` overlaps an element's own extent
+ * `[c − r, c + r]`, required to be at least `BB_FLOWER_BITE` for the hardware to actually have
+ * hold of the element rather than graze it.
+ *
+ * ONE helper for the two axes the sim asks it of: the X-bite (`bbFlowerAtIntake`, `play.ts` —
+ * a `BbFlowerReach.out` against the POLLEN's own extent past the mouth's tip line) and the
+ * Z-bite (`retrieveFromFlower` / `flowerRetrieve3d` — a `BbFlowerReach.z` against the bottom
+ * element's own height), so the 2D and 3D retrieval gates cannot drift onto two formulas for
+ * one rule.
+ */
+export function bbBites(lo: number, hi: number, c: number, r: number): boolean {
+  return Math.min(hi, c + r) - Math.max(lo, c - r) >= BB_FLOWER_BITE;
 }
 
 /**

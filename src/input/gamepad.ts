@@ -27,6 +27,7 @@ export interface GamepadSample {
   bbPlaceNectar: boolean;
   bbPlace: boolean;
   bbNectar: boolean;
+  bbRamp: boolean;
   driveMode: boolean;
   flipFront: boolean;
   park: boolean;
@@ -48,6 +49,7 @@ const EMPTY: GamepadSample = {
   bbPlaceNectar: false,
   bbPlace: false,
   bbNectar: false,
+  bbRamp: false,
   driveMode: false,
   flipFront: false,
   park: false,
@@ -102,6 +104,7 @@ export class GamepadInput {
       bbPlaceNectar: on.bbPlaceNectar,
       bbPlace: on.bbPlace,
       bbNectar: on.bbNectar,
+      bbRamp: on.bbRamp,
       driveMode: on.driveMode,
       flipFront: on.flipFront && !this.prevFlip,
       park: on.park && !this.prevPark,

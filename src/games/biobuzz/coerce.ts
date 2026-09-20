@@ -25,6 +25,7 @@ import {
   type BbLiftSpec,
   type BbMechSpec,
   bbFoldTwinMount,
+  bbIntakeKindOf,
   bbLauncherBlocker,
   bbLauncherOf,
   bbLiftOf,
@@ -275,5 +276,8 @@ function coerceBbMech(raw: RobotSpec): BbMechSpec {
     if (liftMount) lift = { kind: liftKind as BbLiftSpec['kind'], mount: liftMount };
   }
 
-  return { launcher, lift };
+  // THE INTAKE ARCHETYPE. Always written, so a container that arrived without one (every spec
+  // saved before 2026-09-20) leaves here saying `sweeper` in as many words; an unknown kind from
+  // a newer peer folds to the sweeper the same way (`bbIntakeKindOf`).
+  return { launcher, lift, intake: { kind: bbIntakeKindOf(raw) } };
 }

@@ -62,6 +62,11 @@ export interface RobotCommand {
    * in the sim like `catalyst`, so a held button flips once. Ignored by every other
    * drivetrain. Optional (old clients/replays omit it). */
   driveMode?: boolean;
+  /** BIOBUZZ, the `ramp` intake archetype: drop / fold the deployable ramp. EDGE-triggered like
+   * `driveMode` (a held button toggles once, off `RobotState.bbRampHeld`); ignored by every
+   * other intake. Protocol bit 256 — the first button past the old uint8 (`src/net/protocol.ts`).
+   * Optional; absent reads false. */
+  bbRamp?: boolean;
 }
 
 /** menu-configured driver assists */
@@ -467,6 +472,15 @@ export interface RobotState {
   /** was the `driveMode` button held last tick? The sim edge-triggers the butterfly swap
    * off this, so holding the button swaps once (not every tick). Plain bool ⇒ snapshot-safe. */
   driveModeHeld: boolean;
+  /** BIOBUZZ `ramp` intake: is the ramp DEPLOYED (dropped forward)? Absent reads false, the
+   * folded start R102 requires. RUNTIME state the driver toggles with `bbRamp`; the sim credits
+   * the ramp's reach only `BB_RAMP_DEPLOY_S` after `bbRampAt`, and the renderer eases the swing
+   * over the same interval off the same stamp. Every other intake leaves both absent. */
+  bbRampOut?: boolean;
+  /** `world.time` of the last ramp toggle (either direction). */
+  bbRampAt?: number;
+  /** was `bbRamp` held last tick? — the edge latch, `driveModeHeld`'s twin. */
+  bbRampHeld?: boolean;
   hopper: ArtifactColor[]; // FIFO, max 3
   fieldCentric: boolean;
   aimAssist: boolean;

@@ -20,6 +20,7 @@ export type KeyAction =
   | 'bbPlaceNectar'
   | 'bbPlace'
   | 'bbNectar'
+  | 'bbRamp'
   | 'driveMode'
   | 'flipFront'
   | 'park'
@@ -34,6 +35,7 @@ export type PadAction =
   | 'bbPlaceNectar'
   | 'bbPlace'
   | 'bbNectar'
+  | 'bbRamp'
   | 'driveMode'
   | 'flipFront'
   | 'park'
@@ -152,6 +154,7 @@ export interface ControlBindings {
 //   fling    → `src/games/chain/play.ts` (the catapult throw)
 //   bbPlace / bbPlaceNectar → `src/games/biobuzz/play.ts` + `sim3d/elements3d.ts`
 //   bbNectar → `src/games/biobuzz/play.ts` (`bbHumanPlayerTick`, shared by the 2D and 3D paths)
+//   bbRamp → `src/games/biobuzz/robot.ts` (the `ramp` intake archetype only)
 //   intake / fire → all three, through three unrelated sites each
 //   driveMode → `src/sim/robot.ts`, which every game's step routes through (`updateRobot`)
 //   the drive/rotate/tank actions → every game, through `updateRobot`
@@ -175,6 +178,7 @@ export const ACTION_GAMES: Readonly<Record<KeyAction, readonly GameId[]>> = {
   bbPlaceNectar: ['biobuzz'],
   bbPlace: ['biobuzz'],
   bbNectar: ['biobuzz'],
+  bbRamp: ['biobuzz'],
   driveMode: ALL,
   flipFront: ALL,
   park: ALL,
@@ -222,6 +226,7 @@ export const KEY_ACTIONS: KeyAction[] = [
   'bbPlaceNectar',
   'bbPlace',
   'bbNectar',
+  'bbRamp',
   'driveMode',
   'flipFront',
   'park',
@@ -237,6 +242,7 @@ export const PAD_ACTIONS: PadAction[] = [
   'bbPlaceNectar',
   'bbPlace',
   'bbNectar',
+  'bbRamp',
   'driveMode',
   'flipFront',
   'park',
@@ -282,6 +288,11 @@ export const DEFAULT_BINDINGS: ControlBindings = {
     // does something to the ALLIANCE rather than to the robot, and it is pressed at a cue
     // rather than in the drive rhythm, so it sits away from the cluster a thumb sweeps.
     bbNectar: ['n'],
+    // BIOBUZZ, the `ramp` intake: drop / fold the deployable ramp. 'l' for "lower"; free on the
+    // default map. NOT 'g', 'h', 'j' or 'y' — every one of those is a stock "assumed free key"
+    // fixture the bindings smoke lane reuses across independent tests, and a real default there
+    // makes an unrelated conflict test grow a stray per-game override.
+    bbRamp: ['l'],
     // BUTTERFLY: drop the other wheel set. 'b' for butterfly; free on the default map.
     driveMode: ['b'],
     flipFront: ['f'],
@@ -298,7 +309,7 @@ export const DEFAULT_BINDINGS: ControlBindings = {
       fling: [10], // L3 (left stick click)
       // D-DOWN — place a NECTAR. The pair sits on the d-pad because placement is a MOMENTARY
       // press, which can afford to cost the drive thumb its stick; every trigger, bumper and
-      // face button was already taken. RS (11) is free again.
+      // face button was already taken.
       bbPlaceNectar: [13],
       // D-UP — place a POLLEN.
       bbPlace: [12],
@@ -307,8 +318,11 @@ export const DEFAULT_BINDINGS: ControlBindings = {
       // double-fire, not a conflict the rebinder reports. The d-pad is still the right home —
       // a MOMENTARY press can afford the drive thumb leaving its stick for an instant — and
       // this button keeps its own direction, one step away from the pair it must not be
-      // confused with. RS (11) stays free.
+      // confused with.
       bbNectar: [14],
+      // RS (11) — the right-stick click was the last free button; a ramp toggle is a MOMENTARY
+      // press like the d-pad pair above, so costing the stick for an instant is the same trade.
+      bbRamp: [11],
       driveMode: [5], // RB — the only unused face/shoulder button
       flipFront: [3], // Y
       park: [2], // X

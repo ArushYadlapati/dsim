@@ -259,6 +259,12 @@ export function BiobuzzHudChips({ hud }: GameHudProps) {
         </div>
       )}
       {r?.flowerInReach && <span className="chip on">FLOWER IN REACH</span>}
+      {/* the `ramp` intake's own state — absent (no chip) for every other archetype, per
+          `hudRobot.ts`'s `rampOut`. `.on`/`.off` are the same GATE OPEN/CLOSED pair, not a new
+          colour: down is the ready state, folded recedes like a closed gate does. */}
+      {r?.rampOut !== undefined && (
+        <span className={`chip ${r.rampOut ? 'on' : 'off'}`}>{r.rampOut ? 'RAMP DOWN' : 'RAMP UP'}</span>
+      )}
       {/* NO CELL CHIP. `BiobuzzScoreBar` already prints this alliance's up-CELL line under its
           own score panel — `cellLine`, the same two states ("n MORE TO TIP" / "TIPPING") the
           chips carried, in the place a driver already watches for the score. Two readouts of

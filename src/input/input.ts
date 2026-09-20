@@ -18,6 +18,7 @@ export interface VirtualInput {
   bbPlaceNectar: boolean;
   bbPlace: boolean;
   bbNectar: boolean;
+  bbRamp: boolean;
   driveMode: boolean;
 }
 
@@ -49,6 +50,7 @@ export class InputManager {
     bbPlaceNectar: false,
     bbPlace: false,
     bbNectar: false,
+    bbRamp: false,
     driveMode: false,
   };
 
@@ -151,6 +153,9 @@ export class InputManager {
       // either robot may trigger, so the press has to be reconciled and replayed like any
       // other command bit rather than latched on one client.
       bbNectar: heldAny(keys.bbNectar) || g.bbNectar || this.virtualState.bbNectar,
+      // BIOBUZZ `ramp` intake — held here, edge-triggered in the sim off `bbRampHeld`, same
+      // contract as `driveMode` below (a replayed input can't double-toggle a client-side edge).
+      bbRamp: heldAny(keys.bbRamp) || g.bbRamp || this.virtualState.bbRamp,
       // BUTTERFLY wheel-set swap — also passed HELD, edge-triggered in the sim. Doing the
       // edge sim-side (not here) keeps it deterministic under prediction + reconcile:
       // a replayed input can't double-toggle the way a client-side edge flag would.
