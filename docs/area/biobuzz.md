@@ -337,6 +337,11 @@ newest-first — it is never ranked, which is what keeps the two eras from meeti
     dummy, and a dumper's 0.75 s re-arm — but NOT a turret's 77 ms beat, which would strobe it).
     The one deliberate difference stays: the gate asks Aim Assist's pretend-up hive and the path
     asks the REAL one, which is one-directional, so a drawn path is never a shot the gate refuses.
+    A cell that is MID-SWING now draws nothing either — `hiveTakingSide` names one all through a
+    tip, which is right for the capture and wrong for a promise, and it was the ENTIRE residual of
+    "a path was drawn and the shot did not score" (28 of 28 in 3D). Measured after, over 1,152
+    pose/velocity/hive cases in both physics and both mechanisms: **P(path drawn AND the shot would
+    not score) = 0**, 113 paths drawn.
   - ⚠️ **A DUMPER IS A CATAPULT: ONE FLING, THE WHOLE BUCKET** (owner, 2026-09-19: "a dumper
     should not shoot one at a time. It holds four in a small 'hopper' and it would fling it like a
     catapult"). 3D used to POUR — one element every 0.3 s — because `bbDumpSolution` CONVERGES every

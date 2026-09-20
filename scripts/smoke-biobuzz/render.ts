@@ -709,6 +709,18 @@ export function renderChecks(check: Check): void {
       const wPassive = aimed(cell.pos.x, cell.pos.y + 40);
       wPassive.robots[0].passive = true;
       check('shot path: a PASSIVE practice dummy reports NOT MADE', !solveShotPath(wPassive, wPassive.robots[0]) && !SHOT.made);
+      // ⚠️ AND A SWINGING HIVE. `hiveTakingSide` names a cell all the way through a tip, which is
+      // right for the CAPTURE and wrong for a PROMISE: the flight predictor freezes the hive, the
+      // swing takes longer than the shot, and in 3D the tray is a real see-saw the element lands on
+      // while it is still moving. Measured, it was the ENTIRE residual of "a path was drawn and the
+      // shot did not score" — 28 of 28 in 3D.
+      const wTip = aimed(cell.pos.x, cell.pos.y + 40);
+      wTip.biobuzz!.hives.blue.tipping = 1.5;
+      check(
+        'shot path: a cell MID-SWING reports NOT MADE (the predictor freezes a hive that is moving)',
+        !solveShotPath(wTip, wTip.robots[0]) && !SHOT.made && SHOT.points === 0,
+        `tipping=${wTip.biobuzz!.hives.blue.tipping}`,
+      );
     }
 
     // ---- THE OTHER MECHANISM: A DUMPER ---------------------------------------------------

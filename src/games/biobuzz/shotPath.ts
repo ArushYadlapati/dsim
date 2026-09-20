@@ -98,6 +98,18 @@ export function solveShotPath(world: World, r: RobotState): boolean {
   const bb = world.biobuzz;
   if (!bb || !bbCanFire(world, r)) return false;
   const hive = bb.hives[r.alliance];
+  // ⚠️ **A SWINGING HIVE IS NOT A TARGET A PATH MAY PROMISE.** `bbFlightEnters` integrates against
+  // a FROZEN hive, and a tip takes `BB_TIP_SWING_S` while a shot takes ~0.7 s — so a cell that is
+  // mid-swing when the path is drawn is a different cell by the time the element arrives.
+  // `hiveTakingSide` still names one throughout the swing, which is right for the CAPTURE (an
+  // element already in the air belongs to the tray that is still holding its load) and wrong for a
+  // PROMISE. MEASURED over a 288-case pose/velocity/hive grid: it is the ENTIRE residual of "the
+  // dotted line was drawn and the shot did not score" — 28 of 28 in 3D, where the tray is a real
+  // see-saw the element lands on while it is still moving, and the whole of the difference between
+  // the two pipelines' agreement. Refusing here costs a handful of 2D shots that would have gone
+  // in and makes the rule the one the guide already states: a cell that is down or mid-swing draws
+  // nothing.
+  if (hive.tipping > 0) return false;
   const launcher = bbLauncherOf(r.spec, BB_HOOD_DEFAULT_DEG);
   const target = bbAimTarget(world, r);
 
