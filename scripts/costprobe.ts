@@ -155,8 +155,9 @@ interface Scenario {
  * A FULLY-EQUIPPED BIOBUZZ ROBOT — a DOUBLE turret AND a Box Tube, which is the EXPENSIVE case
  * and therefore the one worth pricing.
  *
- * A double turret writes THREE per-tick `RobotState` fields from `bbSlewTurret` — turret 0's
- * `bbTurretPitch` and turret 1's `bbTurret2Heading` / `bbTurret2Pitch` — and a field on a robot
+ * A double turret writes SEVEN per-tick `RobotState` fields from `bbSlewTurret` — turret 0's
+ * `bbTurretPitch`, turret 1's `bbTurret2Heading` / `bbTurret2Pitch`, and one angular RATE per axis
+ * per turret (the acceleration limit's state) — and a field on a robot
  * ships in full on every 30 Hz snapshot to every client in the room (robots are not delta'd,
  * only balls are). The Box Tube writes NO per-tick robot field: placement is a proximity action,
  * and the removed lift's `bbLiftZ` is gone. `fields` below prices the difference exactly, off
@@ -173,8 +174,21 @@ const BB_EQUIPPED: RobotSpec = {
   },
 };
 
-/** the per-tick fields a BIOBUZZ mechanism adds to every robot in every snapshot */
-const BB_MECH_FIELDS = ['bbTurretPitch', 'bbTurret2Heading', 'bbTurret2Pitch'] as const;
+/** the per-tick fields a BIOBUZZ mechanism adds to every robot in every snapshot.
+ *
+ * ⚠️ SEVEN, NOT THREE, SINCE 2026-09-19. The turret slews under an ACCELERATION limit now
+ * (`bbSlewTurret`), and an acceleration limit is a constraint on the CHANGE of a velocity — so the
+ * per-axis angular RATE has to survive the tick. A double turret writes four of them. They are
+ * quantized to 1e-4 rad/s for exactly this line's sake. */
+const BB_MECH_FIELDS = [
+  'bbTurretPitch',
+  'bbTurret2Heading',
+  'bbTurret2Pitch',
+  'bbTurretYawVel',
+  'bbTurretPitchVel',
+  'bbTurret2YawVel',
+  'bbTurret2PitchVel',
+] as const;
 
 /**
  * BIOBUZZ command bits. Both place buttons are EDGES (a held button places once), so each is

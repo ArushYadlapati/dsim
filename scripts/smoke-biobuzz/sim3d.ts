@@ -9,7 +9,7 @@ import { disposeEngineFor, engineFor, robotBodyOf, syncElements } from '../../sr
 import { cadTrayRefTheta, fieldColliders3d } from '../../src/games/biobuzz/sim3d/fieldColliders';
 import { hiveCellLocalBox, hivePivotX, hiveTrayRefTheta, __setFieldCollidersOverrideForTests } from '../../src/games/biobuzz/sim3d/bodies';
 import { hiveTiltAngle } from '../../src/games/biobuzz/sim3d/hive3d';
-import { rotate2 } from '../../src/games/biobuzz/sim3d/math3';
+import { hyp3, rotate2 } from '../../src/games/biobuzz/sim3d/math3';
 import { rot, wrapAngle } from '../../src/math';
 import { worldHash } from '../../src/net/checksum';
 import { bbScoreWorld } from '../../src/games/biobuzz/score';
@@ -29,7 +29,9 @@ import {
   BB_FLOWER_TOP_Z,
   BB_FRAME_BAR_IN,
   BB_FRAME_BAR_OUT,
-  BB_DUMP_STAGGER_S,
+  BB_DUMP_BUCKET,
+  BB_DUMP_RELOAD_S,
+  BB_DUMP_SEAT_PITCH,
   BB_GARDEN,
   BB_HALF_X,
   BB_HALF_Y,
@@ -1119,6 +1121,57 @@ export function sim3dChecks(check: Check): void {
     }
   }
 
+  // ---- PATH <=> GATE: ONE VERDICT, BY CONSTRUCTION -------------------------------------------
+  //
+  // ⚠️ Owner, 2026-09-19: "the dotted lines still appear when the shot is not able to be made."
+  // The picture and the trigger used to be two different predicates in 3D — the drawn path ran the
+  // ballistic landing check and `elements3dAimAndLaunch` gated on ALIGNMENT — so each could say
+  // yes while the other said no. They are `bbTurretShotEnters` / `bbDumpShotEnters` (`play.ts`)
+  // now, and this sweeps for the one direction that matters: a path DRAWN while the fire gate
+  // would refuse to release is a promise about a shot that never happens.
+  {
+    const TURRET_C = { bbMech: { launcher: { kind: 'turret' as const, mount: 'center' as const, hoodDeg: 75 }, lift: null } };
+    let drawn = 0;
+    let drawnNoRelease = 0;
+    let cases = 0;
+    for (const [x, y] of [[BB_HIVE_X, 50], [BB_HIVE_X + 22, 44], [-28, 52], [40, 36], [-55, 30], [BB_HIVE_X, 12]] as const) {
+      for (const [vx, vy, wz] of [[0, 0, 0], [55, 0, 0], [-35, 35, 0], [0, 0, 2.2]] as const) {
+        for (const up of ['north', 'south'] as const) {
+          cases++;
+          const w = createBiobuzzWorld('free', 42, [setup(0, 'blue', TURRET_C)], undefined, '3d');
+          const r = w.robots[0];
+          w.biobuzz!.hives.blue.up = up;
+          const idle = new Map([[0, cmd({})]]);
+          const hold = (): void => {
+            r.pos = { x, y };
+            r.heading = 0.4;
+            r.vel = { x: vx, y: vy };
+            r.angVel = wz;
+          };
+          hold();
+          r.hopper.length = 1;
+          for (let t = 0; t < 80; t++) {
+            step3d(w, 1 / 60, idle);
+            hold(); // the POSE is held; the turret is left to slew
+          }
+          const path = solveShotPath(w, r);
+          const before = r.hopper.length;
+          step3d(w, 1 / 60, new Map([[0, cmd({ fire: true })]]));
+          const released = r.hopper.length < before;
+          if (path) {
+            drawn++;
+            if (!released) drawnNoRelease++;
+          }
+        }
+      }
+    }
+    check(
+      'shot path: over the pose/velocity/hive grid, a DRAWN path always means the gate fires',
+      drawn > 6 && drawnNoRelease === 0,
+      `${drawn} drawn of ${cases}, ${drawnNoRelease} with no release`,
+    );
+  }
+
   // ---- LANE D: A DUMPER SCORES UNDER 3D PHYSICS ----------------------------------------------
   //
   // ⚠️ **THIS LANE HAD NO DUMPER COVERAGE AT ALL, WHICH IS WHY A DUMPER THAT COULD NOT SCORE
@@ -1133,12 +1186,17 @@ export function sim3dChecks(check: Check): void {
   //       four elements rose ~2 in, jammed, and rode the chassis. `syncElement`'s `birthClear`
   //       fixes it, along the element's own arc so the solved trajectory survives.
   //   (b) `bbDumpSolution` converges EVERY element on ONE cell-centre point, so a simultaneous
-  //       dump is a four-way pile-up in the opening. `BbShot.perDump` staggers it in 3D only.
+  //       dump is a four-way pile-up in the opening. 3D used to answer that with a STAGGER — one
+  //       element every 0.3 s — and the owner replaced the machine instead (2026-09-19): a dumper
+  //       is a CATAPULT, one arm, one velocity, the whole bucket in one motion, so the four fly
+  //       PARALLEL and keep the bucket's own footprint all the way into the opening
+  //       (`bbDumpCluster`, `BB_DUMP_BUCKET`).
   //
   // Measured on the 28-pose tutorial grid (`shoot`, dx 0/3/6/9 in, dy 14..38 in off the cell):
-  // 0/28 before, 20/28 after — every pose from 22 in out. The four that still miss are the two
-  // closest rows, where the lob clips the HIVE underside; that is the 2026-09-18 CAD ruling's own
-  // documented consequence and not this bug, so this lane stands the robot back.
+  // 0/28 with the bug, 20/28 staggered, and the catapult is re-measured in this lane's report.
+  // The poses that miss are the two closest rows, where the lob clips the HIVE underside; that is
+  // the 2026-09-18 CAD ruling's own documented consequence and not this bug, so this lane stands
+  // the robot back.
   {
     const DUMPER = { bbMech: { launcher: { kind: 'dumper' as const, mount: 'back' as const, hoodDeg: 45 }, lift: null } };
     /** the element's clearance from every chassis solid of every robot, in inches; < 0 is inside. */
@@ -1161,7 +1219,14 @@ export function sim3dChecks(check: Check): void {
 
     // Parked on the open side of blue's up (north) CELL, back edge to the hive, hopper full.
     // Three standoffs across the range the grid says a dumper owns.
-    for (const dy of [22, 30, 38]) {
+    //
+    // ⚠️ **26 IN IS THE NEAR END, AND IT IS A MEASUREMENT.** Swept over the 28-pose grid, the
+    // catapult puts elements in the CELL from 22 in out (20 poses of 28, the same poses the old
+    // stagger reached) but only lands its WHOLE bucket from 26 (16 poses, 70 of 112 elements).
+    // At 22 the bottom row's arc clips the HIVE structure below the opening while the top row
+    // goes over it — the 2026-09-18 CAD ruling's own documented close-range consequence, pinned
+    // on its own below rather than smoothed away here.
+    for (const dy of [26, 30, 38]) {
       const w = createBiobuzzWorld('free', 44, [setup(0, 'blue', DUMPER)], undefined, '3d');
       const r = w.robots[0];
       r.pos = { x: BB_HIVE_X, y: BB_HIVE_CELL_DY + dy };
@@ -1182,12 +1247,34 @@ export function sim3dChecks(check: Check): void {
       let minGap = Infinity;
       let bestPollen = 0;
       const releaseTicks: number[] = [];
+      const flungVels: { x: number; y: number; z: number }[] = [];
+      let minPair = Infinity;
+      let rearm = 0;
       let hopper = load;
       for (let t = 0; t < 420; t++) {
         step3d(w, 1 / 60, fire);
         if (r.hopper.length < hopper) {
           releaseTicks.push(t);
+          rearm = r.fireReadyAt - w.time;
+          for (const b of w.balls) {
+            if (b.state.kind === 'flight' && mine.has(b.id) && !born.has(b.id)) {
+              flungVels.push({ x: b.vel.x, y: b.vel.y, z: b.vz ?? 0 });
+            }
+          }
           hopper = r.hopper.length;
+        }
+        // the cluster must never close up on itself — measured while it is still IN THE AIR,
+        // i.e. above the top of the opening band. Past that they are landing in a box and a pile
+        // of four in one cell is the point.
+        {
+          const air = w.balls.filter(
+            (b) => b.state.kind === 'flight' && mine.has(b.id) && (b.z ?? 0) > BB_HIVE_OPEN_Z[1],
+          );
+          for (let i = 0; i < air.length; i++) {
+            for (let j = i + 1; j < air.length; j++) {
+              minPair = Math.min(minPair, hyp3(air[i].pos.x - air[j].pos.x, air[i].pos.y - air[j].pos.y, (air[i].z ?? 0) - (air[j].z ?? 0)));
+            }
+          }
         }
         for (const b of w.balls) {
           if (b.state.kind !== 'flight' || !mine.has(b.id)) continue;
@@ -1231,13 +1318,37 @@ export function sim3dChecks(check: Check): void {
         apex >= BB_HIVE_OPEN_Z[0],
         `lowest apex ${apex.toFixed(1)}in, band starts ${BB_HIVE_OPEN_Z[0].toFixed(1)}in`,
       );
-      // ONE ELEMENT PER RELEASE, `BB_DUMP_STAGGER_S` apart — `perDump`. Simultaneous releases
-      // would show up here as a single tick in `releaseTicks`.
-      const gaps = releaseTicks.slice(1).map((t, i) => t - releaseTicks[i]);
+      // ⚠️ ONE FLING, ONE TICK. `r.hopper.length` drops by the whole bucket on a single tick, so
+      // a catapult shows up here as ONE entry in `releaseTicks` where the old stagger showed
+      // `load` of them 18 ticks apart.
       check(
-        `dump 3d: ...released ONE at a time, ${BB_DUMP_STAGGER_S}s apart (${dy} in)`,
-        releaseTicks.length === load && gaps.every((g) => g >= Math.round(BB_DUMP_STAGGER_S * 60) - 1),
-        `ticks=${JSON.stringify(releaseTicks)}`,
+        `dump 3d: ...flung in ONE motion, not poured (${dy} in)`,
+        releaseTicks.length === 1,
+        `release ticks=${JSON.stringify(releaseTicks)} load=${load}`,
+      );
+      // ONE ARM, ONE VELOCITY — which is what makes the cluster unable to collide with itself.
+      check(
+        `dump 3d: ...every seat leaves on the SAME velocity (${dy} in)`,
+        flungVels.length === load &&
+          flungVels.every((v) => Math.abs(v.x - flungVels[0].x) < 1e-9 && Math.abs(v.y - flungVels[0].y) < 1e-9 && Math.abs(v.z - flungVels[0].z) < 1e-9),
+        `n=${flungVels.length} spread=${flungVels.map((v) => hyp3(v.x - flungVels[0].x, v.y - flungVels[0].y, v.z - flungVels[0].z).toFixed(4)).join('/')}`,
+      );
+      // ...and no pair of them ever touches on the way. Sum of radii is the bar; the seats are
+      // `BB_DUMP_SEAT_PITCH` apart and parallel arcs preserve that exactly.
+      check(
+        `dump 3d: ...no two elements of the cluster ever touch (${dy} in)`,
+        minPair === Infinity || minPair >= BB_DUMP_SEAT_PITCH - 1e-3,
+        `closest pair ${minPair === Infinity ? 'n/a' : minPair.toFixed(3)}in, seats ${BB_DUMP_SEAT_PITCH}in`,
+      );
+      check(
+        `dump 3d: ...and the bucket holds at most ${BB_DUMP_BUCKET} (${dy} in)`,
+        load <= BB_DUMP_BUCKET,
+        `load=${load}`,
+      );
+      check(
+        `dump 3d: ...and re-arms on the full BB_DUMP_RELOAD_S (${dy} in)`,
+        Math.abs(rearm - BB_DUMP_RELOAD_S) < 1e-6,
+        `${rearm.toFixed(4)}s vs ${BB_DUMP_RELOAD_S}`,
       );
       check(
         `dump 3d: ...and POLLEN lands in blue's own CELL (${dy} in)`,
@@ -1246,10 +1357,38 @@ export function sim3dChecks(check: Check): void {
       );
     }
 
-    // ⚠️ THE 2D PIPELINE IS PERMANENT, AND `perDump` IS WHAT COULD HAVE BROKEN IT. Nothing in 2D
-    // sets the field, so the dumper branch must still throw the WHOLE hopper on ONE tick. A
-    // shared `launchClearance()` was tried for (a) and reverted for exactly this reason (it took
-    // 3D to 3/28 and 2D to 24/28), so the claim is asserted rather than remembered.
+    // ⚠️ THE CLOSE-RANGE LIMIT, STATED AS A NUMBER RATHER THAN AVOIDED. A bucket is 4 in tall, and
+    // at 22 in the bottom row cannot clear what the top row clears. This is the honest edge of the
+    // catapult's range and it is asserted so that a change which moves it shows up here.
+    {
+      const w = createBiobuzzWorld('free', 44, [setup(0, 'blue', DUMPER)], undefined, '3d');
+      const r = w.robots[0];
+      r.pos = { x: BB_HIVE_X, y: BB_HIVE_CELL_DY + 22 };
+      r.heading = Math.PI / 2;
+      r.vel = { x: 0, y: 0 };
+      r.angVel = 0;
+      const mine = new Set(
+        w.balls.filter((b) => b.state.kind === 'held' && b.state.robot === 0).map((b) => b.id),
+      );
+      const load = r.hopper.length;
+      const fire = new Map([[0, cmd({ fire: true })]]);
+      let best = 0;
+      for (let t = 0; t < 300; t++) {
+        step3d(w, 1 / 60, fire);
+        best = Math.max(best, w.biobuzz!.hives.blue.contents.filter((id) => mine.has(id)).length);
+      }
+      check(
+        'dump 3d: at 22 in the TOP row scores and the BOTTOM row clips — the documented close limit',
+        load === 4 && best === 2,
+        `load=${load} scored=${best}`,
+      );
+    }
+
+    // ⚠️ THE 2D PIPELINE IS PERMANENT, AND `BbShot.cluster` IS WHAT COULD HAVE BROKEN IT. Nothing
+    // in 2D sets the field, so the dumper branch must still throw the WHOLE hopper on ONE tick
+    // along its CONVERGING arcs. A shared `launchClearance()` was tried for (a) and reverted for
+    // exactly this reason (it took 3D to 3/28 and 2D to 24/28), so the claim is asserted rather
+    // than remembered.
     {
       const w = createBiobuzzWorld('free', 44, [setup(0, 'blue', DUMPER)], undefined, '2d');
       const r = w.robots[0];
@@ -1260,7 +1399,7 @@ export function sim3dChecks(check: Check): void {
       check('dump 2d: the fixture is really the 2D pipeline', biobuzzPhysics(w) === '2d', biobuzzPhysics(w));
       biobuzzStep(w, 1 / 60, new Map([[0, cmd({ fire: true })]]));
       check(
-        'dump 2d: with no perDump the WHOLE hopper still leaves on one tick',
+        'dump 2d: with no cluster flag the WHOLE hopper still leaves on one tick',
         load >= 2 && r.hopper.length === 0,
         `load=${load} → ${r.hopper.length}`,
       );

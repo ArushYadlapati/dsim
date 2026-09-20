@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
-import type { Alliance, RobotSpec, World } from '../../../types';
+import type { Alliance, RobotSpec, RobotState, World } from '../../../types';
 import { chassisFill, INTAKE_RAIL_T } from '../../../config';
 import {
   BB3_MOUTH_SLOT_Z,
@@ -9,6 +9,8 @@ import {
   BB_BOX_TUBE_STAGE_OVERLAP,
   BB_BOX_TUBE_WALL,
   BB_DECK_Z,
+  BB_DUMP_RELOAD_S,
+  BB_DUMP_SEAT_PITCH,
   BB_FEED_WALL_T,
   BB_FLYWHEEL_R,
   bbHead,
@@ -1698,10 +1700,40 @@ export function buildTurret(spec: RobotSpec, mountPos: BbMountPos, which: 0 | 1 
 }
 
 /**
- * THE DUMPER — a pivoted tray, not a flywheel (`bbLaunch` throws its whole hopper over one edge
- * as a lob). Two throwing arms off a shaft well inside the frame, a tray floor between them and
- * the release lip at the mounted edge, `BB_LAUNCH_Z0` off the tile so the elements leave where
- * the sim says they do. APPROX size: BIOBUZZ publishes no dumper hardware.
+ * ⚠️ **HOW FAR THROUGH ITS THROW A CATAPULT'S ARM IS, AS A PURE FUNCTION OF SIM STATE.**
+ *
+ * 0 at rest, 1 at the top of the fling. `lastFireAt` is stamped on the tick the bucket leaves
+ * (`bbLaunch`) and `BB_DUMP_RELOAD_S` is how long the mechanism takes to re-arm, so the whole
+ * animation is those two numbers and `world.time` — **no new per-tick wire field, and nothing
+ * stored in the renderer**, which is what lets a spectator, a replay and a reconciled client all
+ * draw the same arm at the same instant.
+ *
+ * The shape is a SNAP and a RETURN: up over `SNAP` of the reload (0.075 s at the shipped 0.75)
+ * and easing back over the rest. The fling is one motion, so the picture is one motion.
+ */
+const DUMP_SNAP = 0.1;
+function dumpThrowPhase(world: World, r: RobotState): number {
+  const u = (world.time - r.lastFireAt) / BB_DUMP_RELOAD_S;
+  if (!(u >= 0) || u >= 1) return 0;
+  if (u < DUMP_SNAP) return u / DUMP_SNAP;
+  const k = (u - DUMP_SNAP) / (1 - DUMP_SNAP);
+  return (1 - k) * (1 - k); // ease out of the throw, slower than it went up
+}
+
+/** how far the arm swings at full throw (rad, about the pivot shaft). APPROX. */
+const DUMP_THROW_ANGLE = 1.05;
+
+/**
+ * THE DUMPER — a CATAPULT, not a flywheel and not a pouring tray: `bbLaunch` flings its whole
+ * bucket over one edge in one motion (`bbDumpCluster`, owner 2026-09-19). Two throwing arms off a
+ * shaft well inside the frame, a small open bucket between them sized for the four seats, and the
+ * release lip at the mounted edge `BB_LAUNCH_Z0` off the tile, so the elements leave where the sim
+ * says they do. APPROX size: BIOBUZZ publishes no dumper hardware.
+ *
+ * ⚠️ **THE ARM IS ITS OWN NODE, PIVOTED ON THE SHAFT.** Everything that swings — floor, arms, back
+ * wall, lip — hangs off `bb-dump-arm`, whose origin IS the shaft; the shaft itself and the two
+ * posts that carry it stay on the chassis. The per-frame sync rotates that one node by
+ * `dumpThrowPhase`, and nothing else about the dumper moves.
  */
 function buildDumper(spec: RobotSpec, launcher: BbLauncherSpec): THREE.Group {
   const edge = bbShooterEdgeOf({ shooterMount: launcher.mount });
@@ -1713,35 +1745,54 @@ function buildDumper(spec: RobotSpec, launcher: BbLauncherSpec): THREE.Group {
   const pivot = dist - Math.min(8, dist * 0.8);
   const lip = dist - 0.7;
   const len = lip - pivot;
+  const shaftZ = BB_LAUNCH_Z0 - 2.3;
   const mat = solidMat(DUMPER_BUCKET, 0.5, 0.3);
 
-  const tray = framePart(`dumper:${len.toFixed(2)}|${half.toFixed(2)}`, () => {
+  // the FIXED half: the shaft and the posts that stand it off the deck.
+  const mount = framePart(`dumpmount:${half.toFixed(2)}|${pivot.toFixed(2)}`, () => {
     const parts: THREE.BufferGeometry[] = [];
-    // floor, tilted up toward the lip
-    const floor = new THREE.BoxGeometry(len, half * 2, 0.22);
-    floor.rotateY(-0.22);
-    floor.translate(pivot + len / 2, 0, BB_LAUNCH_Z0 - 1.5);
-    parts.push(floor);
-    // the two throwing arms, and the lip they end in
-    for (const s of [1, -1] as const) {
-      const arm = new THREE.BoxGeometry(len, 0.3, 1.9);
-      arm.rotateY(-0.22);
-      arm.translate(pivot + len / 2, s * (half - 0.15), BB_LAUNCH_Z0 - 1.1);
-      parts.push(arm);
-    }
-    parts.push(boxAt(0.6, half * 2, 0.5, lip, 0, BB_LAUNCH_Z0 - 0.25));
-    // the BACK WALL over the pivot — without it the tray reads as a plank rather than a bucket
-    parts.push(boxAt(0.3, half * 2, 2.6, pivot + 0.4, 0, BB_LAUNCH_Z0 - 2.4));
-    // the pivot shaft, and the two posts that hold it over the deck
     const shaft = new THREE.CylinderGeometry(0.34, 0.34, half * 2, 8);
-    shaft.translate(pivot, 0, BB_LAUNCH_Z0 - 2.3);
+    shaft.translate(pivot, 0, shaftZ);
     parts.push(shaft);
     for (const s of [1, -1] as const) {
-      parts.push(boxAt(0.6, 0.6, BB_LAUNCH_Z0 - 2.3 - BB_DECK_Z, pivot, s * (half - 0.3), (BB_LAUNCH_Z0 - 2.3 + BB_DECK_Z) / 2));
+      parts.push(boxAt(0.6, 0.6, shaftZ - BB_DECK_Z, pivot, s * (half - 0.3), (shaftZ + BB_DECK_Z) / 2));
     }
     return parts;
   });
-  group.add(cast(new THREE.Mesh(tray, mat)));
+  group.add(cast(new THREE.Mesh(mount, mat)));
+
+  // the SWINGING half, built about the shaft so the node's own rotation IS the throw.
+  const arm = new THREE.Group();
+  arm.name = 'bb-dump-arm';
+  arm.position.set(pivot, 0, shaftZ);
+  const tray = framePart(`dumper:${len.toFixed(2)}|${half.toFixed(2)}`, () => {
+    const parts: THREE.BufferGeometry[] = [];
+    const dz = BB_LAUNCH_Z0 - shaftZ;
+    // floor, tilted up toward the lip
+    const floor = new THREE.BoxGeometry(len, half * 2, 0.22);
+    floor.rotateY(-0.22);
+    floor.translate(len / 2, 0, dz - 1.5);
+    parts.push(floor);
+    // the two throwing arms, and the lip they end in
+    for (const s of [1, -1] as const) {
+      const a = new THREE.BoxGeometry(len, 0.3, 1.9);
+      a.rotateY(-0.22);
+      a.translate(len / 2, s * (half - 0.15), dz - 1.1);
+      parts.push(a);
+    }
+    parts.push(boxAt(0.6, half * 2, 0.5, len, 0, dz - 0.25));
+    // the BACK WALL over the pivot — without it the tray reads as a plank rather than a bucket
+    parts.push(boxAt(0.3, half * 2, 2.6, 0.4, 0, dz - 2.4));
+    // ...and the two SIDE WALLS that make it a bucket rather than a trough. The bucket holds four
+    // (`BB_DUMP_BUCKET`, two across by two high), so it has to look deep enough to.
+    for (const s of [1, -1] as const) {
+      parts.push(boxAt(len * 0.8, 0.28, BB_DUMP_SEAT_PITCH, len * 0.45, s * half, dz - 1.2 + BB_DUMP_SEAT_PITCH / 2));
+    }
+    return parts;
+  });
+  arm.add(cast(new THREE.Mesh(tray, mat)));
+  group.add(arm);
+  group.userData.dumpArm = arm;
   return group;
 }
 
@@ -1833,7 +1884,9 @@ export function buildRobotGroup(spec: RobotSpec, id: number, alliance: Alliance)
       pitches.push(t1.userData.pitch as THREE.Group);
     }
   } else if (launcher.kind === 'dumper') {
-    group.add(buildDumper(spec, launcher));
+    const d = buildDumper(spec, launcher);
+    group.add(d);
+    group.userData.dumpArm = d.userData.dumpArm;
   }
   group.userData.turretHeads = heads;
   group.userData.turretPitches = pitches;
@@ -2054,6 +2107,10 @@ export function buildBiobuzzRobots(): BbRobots {
           pitches[1].rotation.y = -(r.bbTurret2Pitch ?? 0);
         }
       }
+
+      // THE CATAPULT'S ARM — one node, one rotation, off sim state alone (`dumpThrowPhase`).
+      const dumpArm = entry.group.userData.dumpArm as THREE.Group | undefined;
+      if (dumpArm) dumpArm.rotation.y = -DUMP_THROW_ANGLE * dumpThrowPhase(world, r);
     }
     for (const [id, entry] of entries) {
       if (!seen.has(id)) {

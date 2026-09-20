@@ -1,10 +1,11 @@
 import type { RobotState, World } from '../../types';
 import { SIM_DT } from '../../config';
-import { wrapAngle } from '../../math';
-import { BB_AIM_TOL, BB_HOOD_DEFAULT_DEG, BB_LAUNCH_Z0 } from './config';
+import { robotsEnabled } from '../../sim/match';
+import { BB_HOOD_DEFAULT_DEG } from './config';
 import { bbIsTurreted, bbLauncherOf, bbTurretFor } from './mechs';
-import { bbAimHeading, bbDumpSolution, bbTurretRelease, bbTurretSolution } from './robot';
-import { bbAimTarget, bbFlightEnters, type BbFlightTrace } from './play';
+import { bbTurretSolution } from './robot';
+import { bbAimTarget, bbDumpShotEnters, bbTurretShotEnters, type BbFlightTrace } from './play';
+import { biobuzzPhysics } from './state';
 
 /**
  * THE SHOT PATH — will the local robot's next shot go in, and what does it fly through on the way
@@ -74,56 +75,100 @@ export const SHOT: BbShotPath = { made: false, points: 0 };
 /**
  * Solve THIS robot's current shot into `SHOT` / `shotArc`. `false` ⇒ the renderers draw nothing.
  *
- * NOT gated on the hopper: the question a driver is asking while they line up is "if I fired from
- * here, would it go in", and the hopper count is already a HUD chip. A turret with something
- * loaded predicts the exit that element would actually leave by (a double turret sends NECTAR out
- * of turret 1), so the path matches the next shot rather than an average of two.
+ * ⚠️ **EVERY `return false` BELOW HAS ALREADY ZEROED `SHOT`** (the two lines at the top), so a
+ * renderer that reads the module buffers after a refused solve reads an empty path and not the
+ * last frame's. Both renderers additionally key on the RETURN plus `SHOT.points`, which is belt
+ * and braces on a buffer that is rewritten in place.
+ *
+ * ── ⚠️ WHAT MAKES A SHOT IMPOSSIBLE, AND NOT ONLY WHAT MAKES IT MISS ────────
+ * Owner, 2026-09-19: "the dotted lines still appear when the shot is not able to be made." A
+ * ballistic verdict is not the whole question — a shot that would go in but cannot be TAKEN is
+ * exactly as un-made as one that falls short. So the gate is `bbCanFire` first (a live phase, a
+ * loaded hopper, a robot that is not a practice dummy) and the ballistics second, and both halves
+ * are the ones the fire gate itself uses.
+ *
+ * This file used to say "NOT gated on the hopper: the question a driver is asking while they line
+ * up is 'if I fired from here, would it go in'". That reading lost: a path over an empty hopper is
+ * a promise about a shot that does not exist, and the hopper count being on the HUD is an
+ * argument for the HUD, not for the path.
  */
 export function solveShotPath(world: World, r: RobotState): boolean {
   SHOT.made = false;
   SHOT.points = 0;
   const bb = world.biobuzz;
-  if (!bb || r.passive) return false;
+  if (!bb || !bbCanFire(world, r)) return false;
   const hive = bb.hives[r.alliance];
+  // ⚠️ **A SWINGING HIVE IS NOT A TARGET A PATH MAY PROMISE.** `bbFlightEnters` integrates against
+  // a FROZEN hive, and a tip takes `BB_TIP_SWING_S` while a shot takes ~0.7 s — so a cell that is
+  // mid-swing when the path is drawn is a different cell by the time the element arrives.
+  // `hiveTakingSide` still names one throughout the swing, which is right for the CAPTURE (an
+  // element already in the air belongs to the tray that is still holding its load) and wrong for a
+  // PROMISE. MEASURED over a 288-case pose/velocity/hive grid: it is the ENTIRE residual of "the
+  // dotted line was drawn and the shot did not score" — 28 of 28 in 3D, where the tray is a real
+  // see-saw the element lands on while it is still moving, and the whole of the difference between
+  // the two pipelines' agreement. Refusing here costs a handful of 2D shots that would have gone
+  // in and makes the rule the one the guide already states: a cell that is down or mid-swing draws
+  // nothing.
+  if (hive.tipping > 0) return false;
   const launcher = bbLauncherOf(r.spec, BB_HOOD_DEFAULT_DEG);
   const target = bbAimTarget(world, r);
 
   if (bbIsTurreted(launcher)) {
-    const top = r.hopper.length > 0 ? r.hopper[r.hopper.length - 1] : undefined;
-    const which = top === undefined ? 0 : bbTurretFor(launcher, top === 'red' || top === 'blue');
+    const top = r.hopper[r.hopper.length - 1];
+    const which = bbTurretFor(launcher, top === 'red' || top === 'blue');
     const sol = bbTurretSolution(r, target, which);
     // an arc the barrel cannot make is fired anyway (honestly, and it misses) — there is no path
     // to promise for it
     if (!sol || !sol.reachable) return false;
-    const rel = bbTurretRelease(r, which, sol.speed);
-    // `rel.z` — the hood lip at this turret's CURRENT pitch. The drawn arc starts where the
-    // element starts, which is the whole point of reading the sim's own release.
-    if (!bbFlightEnters(hive, r.alliance, rel.origin, rel.z, rel.vel, SIM_DT, TRACE)) return false;
+    // ⚠️ AGAINST THE REAL HIVE, NOT AIM ASSIST'S PRETEND-UP COPY. The assist aims at the nearer
+    // cell whichever way the HIVE is tilted; a path drawn off that belief would promise a shot at
+    // a cell that is DOWN. `bbPretendHive`'s header shows the difference is one-directional, so
+    // this is strictly the stricter of the two and a drawn path is never a shot the gate refuses.
+    if (!bbTurretShotEnters(hive, r, which, sol.speed, SIM_DT, TRACE)) return false;
     SHOT.made = true;
     SHOT.points = TRACE.n;
     return true;
   }
 
-  // A DUMPER throws its WHOLE hopper on converging arcs (`bbDumpSolution`). "Made" is every one of
-  // them landing, which is the same verdict stage 5b reaches; the drawn arc is the MIDDLE throw,
-  // the honest summary of a spread whose whole design is to converge on the cell centre.
+  // A DUMPER: the 3D CATAPULT's one fling of its bucket, or the 2D pipeline's converging throws —
+  // the same `cluster` switch `BbShot` carries, read off the world's own physics so the drawn arc
+  // is the arc THIS match will actually fly. "Made" is every element of it landing, which is the
+  // verdict stage 5b reaches; the arc drawn is the MIDDLE one.
   //
-  // THE HEADING GATE IS PART OF THAT VERDICT. A dumper turns the WHOLE ROBOT, and stage 5b will
-  // not fire one until the chassis is within `BB_AIM_TOL` of `bbAimHeading` — same wrap, same
-  // strict `<`. Without it the path promised a made shot for a dumper pointing the wrong way,
-  // which is exactly the shot that does not happen.
-  const want = bbAimHeading(r, target);
-  if (want === null || Math.abs(wrapAngle(want - r.heading)) >= BB_AIM_TOL) return false;
-  const throws = bbDumpSolution(r, target, Math.max(1, r.hopper.length));
-  if (!throws || throws.length === 0) return false;
-  const mid = (throws.length - 1) >> 1;
-  for (let i = 0; i < throws.length; i++) {
-    const t = throws[i];
-    const ok = bbFlightEnters(hive, r.alliance, t.origin, BB_LAUNCH_Z0, t.vel, SIM_DT, i === mid ? TRACE : undefined);
-    if (!ok) return false;
+  // ⚠️ A DUMPER'S RE-ARM IS PART OF "CAN IT BE MADE" AND A TURRET'S BEAT IS NOT. `bbCanFire`
+  // explains which and why.
+  if (!bbDumpShotEnters(hive, r, target, Math.max(1, r.hopper.length), biobuzzPhysics(world) === '3d', SIM_DT, TRACE)) {
+    return false;
   }
   SHOT.made = true;
   SHOT.points = TRACE.n;
+  return true;
+}
+
+/**
+ * ⚠️ **IS THERE A SHOT TO TAKE AT ALL THIS TICK** — the non-ballistic half of the fire gate,
+ * exported so the drawn path and `bbLaunch` cannot disagree about it.
+ *
+ * · a PASSIVE practice dummy has no mechanisms (`play.ts` stage 5b skips it outright);
+ * · nothing fires outside a live phase — `robotsEnabled` is false in `pre`, across the
+ *   auto→teleop transition and after the buzzer, and `bbLaunch` is handed `enabled` from it.
+ *   R102's stow is inside this: a stowed robot is a robot before the match started;
+ * · an empty hopper fires nothing (`bbLaunch` returns on `r.hopper.length === 0`);
+ * · ⚠️ a DUMPER'S RE-ARM counts and a TURRET'S BEAT does not. `bbLaunch` refuses a dump outright
+ *   while `fireReadyAt` is ahead (`BB_DUMP_RELOAD_S`, 0.75 s — three quarters of a second in
+ *   which a reloaded driver holding fire gets nothing), where a turret's `BB_FIRE_INTERVAL` is
+ *   77 ms and a held fire simply goes on the next beat from essentially this pose. Gating the
+ *   path on the turret's beat would strobe it at 13 Hz, which is a worse lie than the one it
+ *   would fix.
+ *
+ * NOT gated on the fire BUTTON: the path is the instrument a driver lines a shot up with, and one
+ * that only appeared once they were already shooting would have nothing to aim.
+ */
+export function bbCanFire(world: World, r: RobotState): boolean {
+  if (r.passive || r.hopper.length === 0) return false;
+  if (!robotsEnabled(world)) return false;
+  const launcher = bbLauncherOf(r.spec, BB_HOOD_DEFAULT_DEG);
+  if (!bbIsTurreted(launcher) && r.fireReadyAt > world.time) return false;
   return true;
 }
 

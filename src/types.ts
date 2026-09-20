@@ -405,6 +405,28 @@ export interface RobotState {
    * `bbTurretPitch`. Written ONLY for a `twinturret` build. Absent reads as 0 (level).
    */
   bbTurret2Pitch?: number;
+  /**
+   * ⚠️ **BIOBUZZ TURRET AXIS VELOCITIES (rad/s) — THE STATE AN ACCELERATION LIMIT NEEDS.**
+   *
+   * `bbSlewTurret` is a rate- AND acceleration-limited profile (owner, 2026-09-19: "animate the
+   * turret properly"), and an acceleration limit is a constraint on the CHANGE of a velocity, so
+   * the velocity has to survive the tick. It cannot be derived from the angle alone — the previous
+   * angle is not carried either, and deriving one from the other is the same field under a
+   * different name.
+   *
+   * `bbTurretYawVel` is turret 0's yaw rate in the FIELD frame (the frame `turretHeading` is in),
+   * `bbTurretPitchVel` its elevation rate; the `bbTurret2*` pair is a DOUBLE turret's second
+   * turret, written only for a `twinturret` build exactly as its angles are.
+   *
+   * Optional plain numbers; **absent reads as 0 (at rest)** everywhere, so an old snapshot, an old
+   * replay and a DECODE or Chain Reaction robot all load unchanged and carry nothing. QUANTIZED to
+   * 1e-4 rad/s by the slew (the same rounding the 3D readback uses) — 0.0014% of the yaw rate, and
+   * it is what keeps a 30 Hz snapshot from shipping four 17-digit floats per robot.
+   */
+  bbTurretYawVel?: number;
+  bbTurretPitchVel?: number;
+  bbTurret2YawVel?: number;
+  bbTurret2PitchVel?: number;
   /** SWERVE per-module steer angles (robot frame, rad), one per wheel in the
    * corner order [FL, FR, BL, BR] (matching drawRobot's wheels). Each module has
    * its OWN imperfect steering loop, so their small INDEPENDENT angle errors don't

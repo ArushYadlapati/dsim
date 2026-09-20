@@ -9,8 +9,9 @@ import {
   BB_DUMP_APEX_ABOVE,
   BB_DUMP_MAX_DIST,
   BB_DUMP_MIN_DIST,
+  BB_DUMP_BUCKET,
   BB_DUMP_RELOAD_S,
-  BB_DUMP_STAGGER_S,
+  BB_DUMP_SEAT_PITCH,
   BB_FIRE_BURST_MAX,
   BB_FIRE_INTERVAL,
   BB_FLOWERS,
@@ -59,6 +60,8 @@ import { releasePollen } from './elements';
 import type { LocalRect, ScoreTarget, Vec3 } from './state';
 import {
   BB_HOOD_DEFAULT_DEG,
+  BB_TURRET_ACCEL,
+  BB_TURRET_PITCH_ACCEL,
   BB_TURRET_PITCH_MAX,
   BB_TURRET_PITCH_MIN,
   BB_TURRET_PITCH_SLEW,
@@ -560,6 +563,44 @@ function turretPitchOf(r: RobotState, which: 0 | 1): number {
 }
 
 /**
+ * ⚠️ **WHAT A POINT BOLTED TO A MOVING ROBOT IS ACTUALLY DOING — `v + ω × r`.**
+ *
+ * The chassis's own velocity plus the tangential velocity the yaw rate gives a point `p` inches
+ * off the chassis centre. In the plane, `ω × r` is `(−ω·ry, ω·rx)`.
+ *
+ * ⚠️ **AND IT IS WHAT A RELEASED ELEMENT INHERITS** (owner, 2026-09-19: the turret must have "a
+ * 'shooting on the move' correction algorithm built in"). Before this, a BIOBUZZ launch left with
+ * `speed` along the muzzle's heading and NOTHING from the chassis — a shot fired at 89 in/s of
+ * drive flew as if the robot were parked, which is not physics and left a lead correction with
+ * nothing to correct. A corner-mounted turret on a spinning chassis really does throw sideways,
+ * which is the `ω × r` half and the reason the offset matters rather than only `r.vel`.
+ *
+ * Chain Reaction has done this since it shipped (`launchToAccel`, `src/games/chain/play.ts`);
+ * this is the same model with the muzzle offset and the elevation added.
+ *
+ * PLANAR, because `RobotState` has no vertical velocity a launch could inherit: a driving robot's
+ * `vz` is zero under both physics and the yaw rate is about z, so `ω × r` has no z component.
+ */
+export function bbPointVel(r: RobotState, p: Vec2): Vec2 {
+  const w = r.angVel;
+  return { x: r.vel.x - w * (p.y - r.pos.y), y: r.vel.y + w * (p.x - r.pos.x) };
+}
+
+/**
+ * WHERE turret `which`'s muzzle IS RIGHT NOW, in the plane — its bolt point walked back along its
+ * CURRENT heading by the hood lip's own setback at its CURRENT pitch (`bbMuzzleLocal`).
+ *
+ * Split out of `bbTurretRelease` because the SOLVE needs it too: the lead is the velocity of the
+ * point the element actually leaves from, and that point is not the bolt point.
+ */
+function bbMuzzlePoint(r: RobotState, which: 0 | 1): Vec2 {
+  const h = which === 1 ? (r.bbTurret2Heading ?? r.turretHeading) : r.turretHeading;
+  const back = bbMuzzleLocal(turretPitchOf(r, which), which).back;
+  const o = bbTurretOrigin(r, which);
+  return { x: o.x - dcos(h) * back, y: o.y - dsin(h) * back };
+}
+
+/**
  * THE RELEASE turret `which` makes RIGHT NOW at `speed`: where the element is born — in the
  * plane AND in height — and the velocity it leaves with, along that turret's current heading and
  * pitch (not its solution — a turret still swinging fires where it points). ONE function because
@@ -572,6 +613,19 @@ function turretPitchOf(r: RobotState, which: 0 | 1): number {
  * point and creeps back toward it as the barrel elevates, dropping as it goes. Both halves come
  * out of `bbMuzzleLocal`, which is the one place the dimension chain is read — and it is read
  * with `which`, because a DOUBLE turret's NECTAR head is a bigger machine than its POLLEN one.
+ *
+ * ⚠️ **`speed` IS THE MUZZLE SPEED AND `vel` IS NOT.** The element leaves the barrel at `speed`
+ * RELATIVE TO THE MUZZLE and then carries the muzzle's own velocity with it (`bbPointVel`), so
+ * `vel` is the sum. `bbTurretSolution` solves `speed` against a target already displaced by that
+ * same inherited velocity, which is what makes the pair agree; a turret still slewing fires the
+ * stale pair from a muzzle moving the way it is moving NOW, and misses honestly.
+ *
+ * ⚠️ WHICH TICK'S VELOCITY: `r.vel`/`r.angVel` as the sim has them at the moment of release.
+ * 2D reaches here after `solveRobots` has written this tick's post-contact velocity (stage 5a →
+ * 5b → 6 in `play.ts`); 3D reaches here at stage 11, after `readback` (8) has written the step's
+ * own answer. Both are therefore the velocity the chassis has where the muzzle IS on this tick,
+ * which is the pairing that matters — NOT 3D's `preVels3d`, which is the pre-solve snapshot
+ * `squareUpRobotsWalls` and G417 want and is one solve behind the pose.
  */
 export function bbTurretRelease(
   r: RobotState,
@@ -580,13 +634,13 @@ export function bbTurretRelease(
 ): { origin: Vec2; z: number; vel: Vec3 } {
   const h = which === 1 ? (r.bbTurret2Heading ?? r.turretHeading) : r.turretHeading;
   const pitch = turretPitchOf(r, which);
-  const m = bbMuzzleLocal(pitch, which);
-  const o = bbTurretOrigin(r, which);
+  const o = bbMuzzlePoint(r, which);
+  const carry = bbPointVel(r, o);
   const vh = dcos(pitch);
   return {
-    origin: { x: o.x - dcos(h) * m.back, y: o.y - dsin(h) * m.back },
+    origin: o,
     z: bbMuzzleZ(r.spec, pitch, which),
-    vel: { x: dcos(h) * speed * vh, y: dsin(h) * speed * vh, z: speed * dsin(pitch) },
+    vel: { x: dcos(h) * speed * vh + carry.x, y: dsin(h) * speed * vh + carry.y, z: speed * dsin(pitch) },
   };
 }
 
@@ -632,27 +686,22 @@ export interface BbShot {
    * the driver holds fire; `false` otherwise. This is the whole of Aim Assist's firing gate. */
   lands: readonly boolean[];
   /**
-   * ⚠️ **3D ONLY, AND ABSENT EVERYWHERE ELSE** — the most elements ONE dump tick releases.
+   * ⚠️ **3D ONLY, AND ABSENT EVERYWHERE ELSE** — is this pipeline's dumper a CATAPULT?
    *
-   * A 2D flight element collides with nothing, so throwing the whole hopper on one tick is free
-   * there and the 2D pipeline never sets this. In 3D every one of those elements is a real body,
-   * and `bbDumpSolution` converges ALL of them on the single cell-centre point: four spheres born
-   * a couple of inches apart, aimed at the same place, meet each other in the opening and knock
-   * one another off the arc. Measured on the 28-pose tutorial grid, with the birth clearance of
-   * `syncElement` already in: a simultaneous four-element dump scored 3/28, and one element every
-   * `BB_DUMP_STAGGER_S` scores 20/28 — every pose from 22 in out. (The four that still miss are
-   * the two closest rows, where the lob clips the HIVE underside; that is the CAD ruling's own
-   * documented consequence, not this bug.)
+   * `true` ⇒ the dump is ONE FLING of the whole bucket on ONE tick, every element leaving with
+   * the SAME velocity on a PARALLEL arc (`bbDumpCluster`). `sim3d/elements3d.ts` is the only
+   * caller that sets it, and it sets it always.
    *
-   * So `sim3d/elements3d.ts` sets it to 1 and the dump STAGGERS — `BB_DUMP_STAGGER_S` between
-   * elements while the hopper still has some, the full `BB_DUMP_RELOAD_S` once it empties. It is
-   * also the more honest picture: a tipping tray pours, it does not teleport four balls out on
-   * one tick.
+   * Absent ⇒ the 2D pipeline's CONVERGING dump (`bbDumpSolution`), every element aimed from its
+   * own seat at the cell centre. That is free in 2D, where a flight element collides with
+   * nothing, and it is what the permanent 2D pipeline has always done — **with this field absent
+   * the dumper branch below runs byte-identically to before it existed.**
    *
-   * **With the field absent the dumper branch below runs byte-identically to before it existed**,
-   * which is the 2D pipeline's permanence rule.
+   * The two differ because the two physics genuinely do: in 3D four converging spheres meet in
+   * the opening. `BB_DUMP_BUCKET`'s header in `config.ts` carries the measurement and the history
+   * (this used to be `perDump`, a one-element-per-0.3 s POUR that treated the symptom).
    */
-  perDump?: number;
+  cluster?: boolean;
 }
 
 /**
@@ -734,12 +783,19 @@ export function bbLaunch(world: World, r: RobotState, cmd: RobotCommand, enabled
     // re-dumping on every capture.
     if (r.fireReadyAt > world.time) return;
     const target = shot?.target ?? null;
-    // STAGGERED ONLY WHEN THE CALLER ASKS (3D — see `BbShot.perDump`). Absent, `n` is the whole
-    // hopper and every line below is what it always was.
-    const cap = shot?.perDump;
-    const n = cap === undefined ? r.hopper.length : Math.min(r.hopper.length, Math.max(1, Math.trunc(cap)));
-    const throws = target ? bbDumpSolution(r, target, n) : null;
-    if (throws) {
+    // ⚠️ THE CATAPULT'S BUCKET HOLDS `BB_DUMP_BUCKET`; the CONVERGING 2D dump takes the whole
+    // hopper, as it always has (`BbShot.cluster`). A build that stores more than the bucket
+    // simply flings a bucketful and re-arms on the full reload for the rest.
+    const catapult = shot?.cluster ?? false;
+    const n = catapult ? Math.min(r.hopper.length, BB_DUMP_BUCKET) : r.hopper.length;
+    const fling = catapult && target ? bbDumpCluster(r, target, n) : null;
+    const throws = !catapult && target ? bbDumpSolution(r, target, n) : null;
+    if (fling) {
+      // ONE ARM, ONE VELOCITY: every seat leaves on the same vector, so the bucket's own
+      // footprint is what arrives at the opening and the cluster cannot collide with itself.
+      // The SEAT's own height travels with it — the bucket is two across and two high.
+      for (const st of fling.seats) releasePollen(world, r, fling.vel, target ?? undefined, st.pos, undefined, st.z);
+    } else if (throws) {
       // LIFO, each element onto its own converging arc
       for (const t of throws) releasePollen(world, r, t.vel, target ?? undefined, t.origin);
     } else {
@@ -759,11 +815,9 @@ export function bbLaunch(world: World, r: RobotState, cmd: RobotCommand, enabled
       }
     }
     r.lastFireAt = world.time;
-    // A STAGGERED DUMP RE-ARMS SHORT WHILE IT STILL HAS LOAD, and takes the full reload on the
-    // tick that empties it — so the tray pours over `BB_DUMP_STAGGER_S` intervals and the
-    // re-dump cost a driver feels is unchanged.
-    const more = cap !== undefined && r.hopper.length > 0;
-    r.fireReadyAt = world.time + (more ? BB_DUMP_STAGGER_S : BB_DUMP_RELOAD_S);
+    // A FLING IS ONE MOTION, so the re-arm is the full `BB_DUMP_RELOAD_S` either way. The
+    // short "still pouring" re-arm the stagger needed is gone with the stagger.
+    r.fireReadyAt = world.time + BB_DUMP_RELOAD_S;
     return;
   }
 
@@ -826,6 +880,10 @@ export function bbSolveShot(d: number, dh: number): { speed: number; angle: numb
  * The apex is always ABOVE the target, so the element always arrives descending — the thing
  * `hiveAccepts` needs, and the thing a fixed hood only managed past its own apex distance. That is
  * why the minimum is geometry alone and a dumper scores from right under the opening's outer lip.
+ *
+ * ⚠️ **ITS FLIGHT TIME DOES NOT DEPEND ON `d`** — `t = vz/g + √(2·apex/g)`, and `vz` comes from
+ * `dh` alone. That is what makes a dumper's LEAD (`bbLeadTime` below) EXACT in one step where a
+ * turret's needs a fixed point: the time is known before the throw is solved.
  */
 export function bbLobThrow(d: number, dh: number): { vh: number; vz: number } | null {
   if (!(d >= BB_DUMP_MIN_DIST) || d > BB_DUMP_MAX_DIST) return null;
@@ -835,6 +893,14 @@ export function bbLobThrow(d: number, dh: number): { vh: number; vz: number } | 
   const vh = d / (vz / GRAVITY + Math.sqrt((2 * BB_DUMP_APEX_ABOVE) / GRAVITY));
   if (hyp(vh, vz) > BB_LAUNCH_SPEED_MAX) return null;
   return { vh, vz };
+}
+
+/** how long a lob to a target `dh` inches above the release spends in the air — see
+ * `bbLobThrow`, whose answer this is the closed form of. 0 when there is no lob to make. */
+function bbLobTime(dh: number): number {
+  const rise = dh + BB_DUMP_APEX_ABOVE;
+  if (!(rise > 0)) return 0;
+  return Math.sqrt(2 * GRAVITY * rise) / GRAVITY + Math.sqrt((2 * BB_DUMP_APEX_ABOVE) / GRAVITY);
 }
 
 /** one element's throw out of a dump: where it leaves and the velocity it leaves with. */
@@ -865,19 +931,117 @@ export function bbDumpSolution(r: RobotState, target: ScoreTarget, n: number): B
   if (launcher.kind !== 'dumper') return null;
   const dh = target.z - BB_LAUNCH_Z0;
   const { origin, perp, half } = launchLine(r, bbShooterEdgeOf({ shooterMount: launcher.mount }));
+  // THE TRAY MOVES WITH THE ROBOT TOO (owner, 2026-09-19). Same model as the turret's: the throw
+  // inherits the release point's velocity, so it is solved against a target displaced by
+  // `−v·t`. A lob's flight time is a closed form in `dh` alone (`bbLobTime`), so a dumper's lead
+  // is EXACT in one step — no fixed point, and with the robot parked every term below is the one
+  // that was here before (`x − 0 === x`).
+  const tf = bbLobTime(dh);
   const out: BbThrow[] = [];
   const count = Math.max(1, n);
   for (let i = 0; i < count; i++) {
     const t = count === 1 ? 0 : (i / (count - 1)) * 2 - 1;
     const o = { x: origin.x + perp.x * t * half, y: origin.y + perp.y * t * half };
-    const dx = target.pos.x - o.x;
-    const dy = target.pos.y - o.y;
+    const v = bbPointVel(r, o);
+    const dx = target.pos.x - v.x * tf - o.x;
+    const dy = target.pos.y - v.y * tf - o.y;
     const d = hyp(dx, dy);
     const lob = bbLobThrow(d, dh);
     if (!lob) return null;
-    out.push({ origin: o, vel: { x: (dx / d) * lob.vh, y: (dy / d) * lob.vh, z: lob.vz } });
+    out.push({ origin: o, vel: { x: (dx / d) * lob.vh + v.x, y: (dy / d) * lob.vh + v.y, z: lob.vz } });
   }
   return out;
+}
+
+/**
+ * ⚠️ **THE CATAPULT — ONE ARM, ONE VELOCITY, THE WHOLE BUCKET** (owner, 2026-09-19: "a dumper
+ * should not shoot one at a time. It holds four in a small 'hopper' and it would fling it like a
+ * catapult"). `n` seats' release points and the ONE velocity every one of them leaves with, or
+ * `null` when this build is not a dumper or the cluster has no accepted arc.
+ *
+ * ── WHY IT IS A SECOND FUNCTION AND NOT A FLAG ON `bbDumpSolution` ──────────
+ * `bbDumpSolution` CONVERGES: each element is aimed from its own seat at the cell centre, which
+ * removes the chassis-heading error and is free in 2D, where a flight element collides with
+ * nothing at all. In 3D every one of them is a real sphere, and four spheres converging on one
+ * point meet in the opening — measured 3/28 on the tutorial grid, which is why 3D used to POUR
+ * one element every 0.3 s instead (`BB_DUMP_BUCKET`'s header has the whole history). The 2D
+ * pipeline is permanent, so `bbDumpSolution` stays exactly what it is and 2D goes on calling it;
+ * **this is the 3D pipeline's solve**, and the two differ because the two physics genuinely do.
+ *
+ * ── THE GEOMETRY: TWO ACROSS AND TWO HIGH, ON THE END OF AN ARM ─────────────
+ * The seats are a 2x2 at `BB_DUMP_SEAT_PITCH` — two side by side ACROSS the firing edge and two
+ * STACKED above them, which is how four balls sit in a bucket and not how four balls sit in a
+ * trough. Two consequences, both load-bearing:
+ *  · the cluster's PLAN footprint is `pitch` wide and NOTHING deep, so what has to fit the cell
+ *    opening is 4 + 3.6 = 7.6 in against a 10.18-in short axis at ANY approach bearing. A 2x2
+ *    laid flat is 5.66 in across its diagonal and only just fits at 45°;
+ *  · the upper pair rides exactly `pitch` above the lower pair for the WHOLE flight (same
+ *    velocity, same gravity), so the pair that lands second lands on top of the pair that landed
+ *    first — which is what a flung bucket does.
+ * The bucket sits ON the firing edge's own COLLISION FOOTPRINT — the frame face for an edge with
+ * no sweeper, which is exactly the line every dump has released from since the dumper shipped.
+ * ⚠️ IT WAS TRIED FURTHER OUT, on the grounds that a release point inside the chassis is one
+ * `birthClear` has to march out along the arc. It is a straight loss: every inch of arm is an
+ * inch nearer the HIVE, and what kills a close-range lob is the structure it has to clear on the
+ * way up. MEASURED on the 28-pose grid, elements in the CELL out of 112 — arm 0: **70**, 1: 64,
+ * 2.5: 57, 4: 49.
+ *
+ * The throw is solved from the CENTROID of the seats used (in x, y AND z), and every element gets
+ * that ONE velocity — so the cluster's relative offsets are preserved exactly, it cannot collide
+ * with itself, and its footprint at the opening is its footprint in the bucket. The rigid arm's
+ * outboard seats would really leave a touch faster; that spread is NOT modelled, because the only
+ * thing it could buy is a cluster that spreads on the way, and spreading is the failure this
+ * function exists to avoid.
+ *
+ * The inherited velocity (shooting on the move) is read ONCE at the centroid for the same reason —
+ * a per-seat `ω × r` would make the cluster converge or diverge under a spinning chassis.
+ */
+export function bbDumpCluster(
+  r: RobotState,
+  target: ScoreTarget,
+  n: number,
+): { seats: { pos: Vec2; z: number }[]; vel: Vec3 } | null {
+  const launcher = bbLauncherOf(r.spec, BB_HOOD_DEFAULT_DEG);
+  if (launcher.kind !== 'dumper') return null;
+  const count = clamp(Math.trunc(n), 1, BB_DUMP_BUCKET);
+  const edge = bbShooterEdgeOf({ shooterMount: launcher.mount });
+  const { origin, dir, perp } = launchLine(r, edge);
+  const s = BB_DUMP_SEAT_PITCH;
+  // THE BUCKET SITS ON THE FIRING EDGE'S OWN COLLISION FOOTPRINT. `launchLine`'s origin is the
+  // FRAME FACE, which for an edge with no sweeper on it is the same point — i.e. exactly the
+  // release line every dump has always used — and for an edge that does carry one it is pushed
+  // out past the roller, so the bucket is never born inside the intake's plates.
+  const f = bbFootprint(r.spec);
+  const out =
+    (edge === 'front' ? f.front : edge === 'back' ? f.rear : f.half) -
+    (edge === 'front' || edge === 'back' ? r.spec.length / 2 : r.spec.width / 2);
+  const seats: { pos: Vec2; z: number }[] = [];
+  let cx = 0;
+  let cy = 0;
+  for (let k = 0; k < count; k++) {
+    const dv = (k % 2 === 0 ? -s : s) / 2;
+    const z = BB_LAUNCH_Z0 + (k < 2 ? 0 : s);
+    const pos = { x: origin.x + dir.x * out + perp.x * dv, y: origin.y + dir.y * out + perp.y * dv };
+    seats.push({ pos, z });
+    cx += pos.x;
+    cy += pos.y;
+  }
+  cx /= count;
+  cy /= count;
+  // ⚠️ SOLVED FROM THE BOTTOM ROW'S HEIGHT, NOT THE BUCKET'S MID-HEIGHT. The bottom row then flies
+  // EXACTLY the arc a single-element dump has always flown, and the top row rides `pitch` above it
+  // — which is the safe direction, since what a close-range lob clips is the structure BELOW the
+  // opening. Solved from the mid-height instead, the bottom row sits `pitch/2` under that arc and
+  // the grid below loses two rows (measured 18/28 poses against 20/28).
+  const dh = target.z - BB_LAUNCH_Z0;
+  const tf = bbLobTime(dh);
+  const v = bbPointVel(r, { x: cx, y: cy });
+  const dx = target.pos.x - v.x * tf - cx;
+  const dy = target.pos.y - v.y * tf - cy;
+  const d = hyp(dx, dy);
+  const lob = bbLobThrow(d, dh);
+  if (!lob) return null;
+  return { seats, vel: { x: (dx / d) * lob.vh + v.x, y: (dy / d) * lob.vh + v.y, z: lob.vz } };
 }
 
 /**
@@ -963,6 +1127,38 @@ export function bbMuzzleZ(spec: RobotSpec, pitch: number = BB_TURRET_PITCH_MIN, 
  * speed-capped, and the worst required muzzle speed rises from 253.26 to 256.37 against a 260
  * cap. The release is ~2.1 in lower at hive elevations, which costs a little speed and unblocks
  * more of the field than it loses — the owner authorised the outcome change knowingly.
+ *
+ * ── ⚠️ AND IT LEADS, BECAUSE THE MUZZLE IS MOVING ───────────────────────────
+ * (owner, 2026-09-19: "animate the turret properly so that it has a 'shooting on the move'
+ * correction algorithm built in".) A release inherits the muzzle's own velocity now
+ * (`bbTurretRelease` / `bbPointVel`), so the element's world velocity is `speed·û + v` and the
+ * only way to put it in the cell is to solve the plain ballistic problem against a VIRTUAL target
+ * displaced by `−v · t_flight`:
+ *
+ *     s·û·t − ½g t² ẑ = (T − muzzle) − v·t     ⇒     solve to T' = T − v·t, fire at s along û, +v
+ *
+ * That is exact, and it is exactly what the identity above says. `t` is a function of the
+ * solution, so it is a second fixed point over the first — FOLDED INTO THE SAME
+ * `BB_TURRET_SOLVE_PASSES` loop, with the flight time of pass `i` feeding pass `i+1`. No early
+ * exit, no tolerance, same reason as the muzzle's.
+ *
+ * ⚠️ **A PARKED ROBOT IS BYTE-IDENTICAL.** Every lead term is `v · t` with `v` exactly zero, and
+ * `x − 0 === x` in IEEE, so a stopped robot runs the same floats through the same four passes and
+ * the field's scoreable-cell counts above do not move. The ROBOT lane pins it.
+ *
+ * ⚠️ **THE SEED PASS COSTS ONE EXTRA `bbSolveShot` AND BUYS A FACTOR OF FOUR.** The loop's first
+ * pass needs a flight time before it has a solution; starting it at zero (no lead at all) leaves
+ * three refinements to walk ~53 in of displacement down, and the contraction factor `|v|·dt/dd'`
+ * is only ~0.2–0.3 at HIVE ranges. A no-lead solve at the level muzzle, used ONLY to estimate
+ * `t`, starts the loop 4x closer — and it cannot disturb the byte-identity above, because
+ * whatever it estimates is multiplied by a zero velocity.
+ *
+ * MEASURED residual — the distance from the cell centre to where the solved shot actually lands
+ * with the turret exactly on its own solution, over 2,567 reachable pose-headings (a 6-in field
+ * grid by eight headings) at the drivetrain's top speed of 89 in/s: **mean 0.140 in, p50 0.124,
+ * p99 0.305, worst 1.749**, against a 20.14 x 10.18-in opening. The same poses with the pre-lead
+ * solve — solved parked, fired at 89 in/s — miss by **mean 53.22 in, worst 63.58**, i.e. the lead
+ * is not a refinement of the old answer, it is the difference between scoring and not.
  */
 export function bbTurretSolution(
   r: RobotState,
@@ -975,20 +1171,33 @@ export function bbTurretSolution(
   // FROM THE TURRET'S BOLT POINT, NOT THE CHASSIS CENTRE — see `bbTurretOrigin`. The muzzle's own
   // SETBACK from that point is the `back` term inside the loop, and it grows with elevation.
   const o = bbTurretOrigin(r, which);
-  const dx = target.pos.x - o.x;
-  const dy = target.pos.y - o.y;
-  const d0 = hyp(dx, dy);
+  // THE VELOCITY THE RELEASE WILL CARRY, read at the muzzle the turret has RIGHT NOW — the same
+  // point `bbTurretRelease` releases from, so the solve and the shot lead by the same vector.
+  const v = bbPointVel(r, bbMuzzlePoint(r, which));
+  const dh0 = target.z - bbMuzzleZ(r.spec, BB_TURRET_PITCH_MIN, which);
+  const back0 = bbMuzzleLocal(BB_TURRET_PITCH_MIN, which).back;
+  // the SEED — a no-lead solve at the level muzzle, read for its FLIGHT TIME only.
+  let d = hyp(target.pos.x - o.x, target.pos.y - o.y) + back0;
+  let t = flightTime(bbSolveShot(d, dh0), d);
+
   // PASS 1 starts from the LEVEL muzzle and every later pass re-reads it at the pitch the
   // previous one produced. It used to skip the `back` term on the first pass, on the grounds
   // that a level lip sat exactly over the bolt point; it does not any more — the lip is a full
   // `axleX` in FRONT of the rotation axis at rest — so the first pass reads the muzzle like the
   // rest and the loop is one shape.
   let pitch = BB_TURRET_PITCH_MIN;
-  let sol = bbSolveShot(d0 + bbMuzzleLocal(pitch, which).back, target.z - bbMuzzleZ(r.spec, pitch, which));
+  let dx = target.pos.x - v.x * t - o.x;
+  let dy = target.pos.y - v.y * t - o.y;
+  d = hyp(dx, dy) + back0;
+  let sol = bbSolveShot(d, dh0);
   for (let i = 1; i < BB_TURRET_SOLVE_PASSES; i++) {
     pitch = clamp(sol.angle, BB_TURRET_PITCH_MIN, BB_TURRET_PITCH_MAX);
     const m = bbMuzzleLocal(pitch, which);
-    sol = bbSolveShot(d0 + m.back, target.z - bbMuzzleZ(r.spec, pitch, which));
+    t = flightTime(sol, d);
+    dx = target.pos.x - v.x * t - o.x;
+    dy = target.pos.y - v.y * t - o.y;
+    d = hyp(dx, dy) + m.back;
+    sol = bbSolveShot(d, target.z - bbMuzzleZ(r.spec, pitch, which));
   }
   pitch = clamp(sol.angle, BB_TURRET_PITCH_MIN, BB_TURRET_PITCH_MAX);
   return {
@@ -999,6 +1208,23 @@ export function bbTurretSolution(
   };
 }
 
+/**
+ * How long a `bbSolveShot` answer spends in the air covering `d` inches of ground — `d /
+ * (speed · cos angle)`, the horizontal leg of its own arc.
+ *
+ * BOUNDED, because it is fed straight back into a lead displacement: a near-vertical solution has
+ * `cos angle → 0`, and an unbounded flight time there would throw the virtual target off the
+ * field. The bound is the four seconds `bbFlightEnters` integrates for, which is already past any
+ * arc a legal launch speed can make; a non-finite or negative answer reads as 0, which is "no
+ * lead", the honest fallback.
+ */
+function flightTime(sol: { speed: number; angle: number }, d: number): number {
+  const vh = sol.speed * dcos(sol.angle);
+  if (!(vh > 1e-6)) return 0;
+  const t = d / vh;
+  return t > 0 ? Math.min(t, 4) : 0;
+}
+
 /** The ELEVATION turret 0 must be at to put an element into `target`, in RADIANS, or `null` when
  * this build has no turret to elevate. The pitch half of `bbTurretSolution`. */
 export function bbAimPitch(r: RobotState, target: ScoreTarget): number | null {
@@ -1006,10 +1232,96 @@ export function bbAimPitch(r: RobotState, target: ScoreTarget): number | null {
 }
 
 /**
+ * ⚠️ **ONE AXIS OF THE TURRET, MOVED LIKE A MECHANISM RATHER THAN LIKE A CLAMP** — a rate AND
+ * acceleration limited step that decelerates into its target and does not overshoot or ring.
+ *
+ * ── WHY A RATE CLAMP IS NOT AN ANIMATION ────────────────────────────────────
+ * `angle += clamp(err, ±W·dt)` reaches full speed in ONE tick and stops dead in ONE tick. On
+ * screen that is a barrel that snaps into a constant sweep and freezes — which is the owner's
+ * "animate the turret properly" (2026-09-19), and it is not a picture problem: the yaw and pitch
+ * ARE sim state and the renderer only draws them, so the only way to animate the mechanism is to
+ * move the mechanism properly.
+ *
+ * ── THE PROFILE, AND WHY IT IS THE DISCRETE ONE ─────────────────────────────
+ * Bang-bang with a stopping distance: carry the most speed from which the remaining error can
+ * still be killed at `maxAcc`. Written continuously (`v ≤ √(2A|e|)`) that CHATTERS at 60 Hz —
+ * inside `2A·dt²` (0.033 rad at the shipped cap, i.e. 1.9°) one tick's step overshoots, the error
+ * flips sign and the barrel buzzes. So the cap is the exact DISCRETE one: decelerating from
+ * `n` ticks' worth of speed covers `A·dt²·n(n+1)/2`, so
+ *
+ *     n_max = (√(1 + 8|e|/(A·dt²)) − 1) / 2       v_cap = min(W, A·dt·n_max)
+ *
+ * lands exactly on the target with the velocity reaching exactly zero, every change inside
+ * `A·dt`, at any `|e|`. No tolerance, no snap, no oscillation — and no float-dependent branch,
+ * so a client's prediction and the server's authority take the same path.
+ *
+ * ── ⚠️ `base` IS THE THING THE MOUNT IS TURNING AT, AND IT IS NOT FEED-FORWARD ──
+ * `turretHeading` is a WORLD angle (`bbTurretRelease` fires along `dcos(h)` directly; the 3D
+ * scene draws `heading − r.heading`). A real turret on a rotating base holds a world bearing by
+ * COUNTER-ROTATING, and its motor only has `W` to spend: so the reachable world rate is the
+ * window `[base − W, base + W]` centred on the chassis's own yaw rate, not `[−W, W]`. A robot
+ * spinning at 3 rad/s can still hold a bearing for free (0 is inside [−4, 10]) and a robot
+ * spinning FASTER than the turret can counter is DRAGGED, at exactly the difference. The pitch
+ * axis passes `base = 0`: chassis yaw does not tilt a barrel.
+ *
+ * Returns the new angle and the new rate; the caller stores both.
+ */
+function slewAxis(
+  cur: number,
+  want: number,
+  vel: number,
+  maxRate: number,
+  maxAcc: number,
+  base: number,
+  dt: number,
+  wrap: boolean,
+): { at: number; vel: number } {
+  const e = wrap ? wrapAngle(want - cur) : want - cur;
+  // ⚠️ `q` IS ONE TICK'S WORTH OF ACCELERATION EXPRESSED AS A DISTANCE, and the whole profile is
+  // written in units of it: `E` is the remaining error in those units and `u` is the velocity, in
+  // ticks' worth of acceleration, that this tick may END at.
+  //
+  // Braking at full `maxAcc` from `u`, the velocities that follow are `u−1, u−2, …` down to zero,
+  // so the distance from here to a standstill is `q·((f+1)u − f(f+1)/2)` with `f = floor(u)`.
+  // That is PIECEWISE LINEAR in `u`, and the closed form below inverts it: `f` is the largest
+  // whole number of braking ticks that fits inside `E`, and `u` is the interpolation inside that
+  // piece. ⚠️ The smooth `√(2E)` version of this is WRONG for `u < 1` and it overshoots — it
+  // charges `u(u+1)/2` for a stop that really costs `u`, so a turret one tick from its target
+  // stepped past it and then rang for hundreds of ticks at ±0.14°. Measured, and it is the reason
+  // this is not the two-line formula it looks like it should be.
+  const q = maxAcc * dt * dt;
+  const E = Math.abs(e) / q;
+  const f = Math.floor((Math.sqrt(1 + 8 * E) - 1) / 2);
+  const u = Math.min(f + 1, (E + (f * (f + 1)) / 2) / (f + 1));
+  const cap = Math.min(maxRate, maxAcc * dt * u);
+  // the world rate we WANT this tick, pulled into the motor's own window (see `base` above)
+  const step = maxAcc * dt;
+  const w = clamp(clamp(e >= 0 ? cap : -cap, base - maxRate, base + maxRate) - vel, -step, step) + vel;
+  // QUANTIZED to 1e-4 rad/s, the grain the 3D readback already rounds to — 0.0014% of the yaw rate,
+  // and what keeps four floats per robot per 30 Hz snapshot from being 17 digits each
+  // (`RobotState.bbTurretYawVel`). TOWARD ZERO, never to nearest: rounding up would put the tick's
+  // step above the cap the profile just proved is safe, which is an overshoot by a rounding error.
+  const v2 = Math.trunc(w * 1e4) / 1e4;
+  // ...and the last grain lands exactly. Under one quantum the truncated rate is zero, so without
+  // this the axis would sit forever a micro-radian short of its target (measured 1.3e-6 rad) and
+  // "the turret is on its solution" would never be exactly true.
+  if (v2 === 0 && Math.abs(e) <= 1e-4 * dt) return { at: want, vel: 0 };
+  const at = cur + v2 * dt;
+  return { at: wrap ? wrapAngle(at) : at, vel: v2 };
+}
+
+/**
  * Ease turret `which`'s yaw and pitch toward a solution, one tick's worth. BOTH AXES SLEW, and
  * neither snaps; pitch is deliberately the slower axis. Turret 1 (a double turret's NECTAR
  * turret) writes `bbTurret2Heading` / `bbTurret2Pitch`, so only a caller that has a second
  * turret should name it.
+ *
+ * ⚠️ **IT IS A RATE AND AN ACCELERATION NOW** (`slewAxis` above, owner 2026-09-19). The per-axis
+ * angular VELOCITY is carried on `RobotState` (`bbTurretYawVel` and friends, optional, absent
+ * reads 0), because an acceleration limit constrains the change of a velocity and a velocity that
+ * is not carried is not a velocity. The pitch axis is clamped into the barrel's envelope AFTER
+ * the profile, and a clamp that bites kills the rate with it — a barrel resting on its stop is
+ * not still elevating.
  */
 export function bbSlewTurret(
   r: RobotState,
@@ -1018,26 +1330,35 @@ export function bbSlewTurret(
   dt: number,
   which: 0 | 1 = 0,
 ): void {
-  const yawStep = BB_TURRET_SLEW * dt; // rad/s * s
-  const pitchStep = BB_TURRET_PITCH_SLEW * dt;
-  if (which === 1) {
-    if (wantYaw !== null) {
-      const now = r.bbTurret2Heading ?? r.turretHeading;
-      r.bbTurret2Heading = wrapAngle(now + clamp(wrapAngle(wantYaw - now), -yawStep, yawStep));
-    }
-    if (wantPitch !== null) {
-      const now = r.bbTurret2Pitch ?? 0;
-      r.bbTurret2Pitch = clamp(now + clamp(wantPitch - now, -pitchStep, pitchStep), BB_TURRET_PITCH_MIN, BB_TURRET_PITCH_MAX);
-    }
-    return;
-  }
   if (wantYaw !== null) {
-    const err = wrapAngle(wantYaw - r.turretHeading);
-    r.turretHeading = wrapAngle(r.turretHeading + clamp(err, -yawStep, yawStep));
+    const now = which === 1 ? (r.bbTurret2Heading ?? r.turretHeading) : r.turretHeading;
+    const was = (which === 1 ? r.bbTurret2YawVel : r.bbTurretYawVel) ?? 0;
+    // the CHASSIS's own yaw rate is the base the turret ring is bolted to — see `slewAxis`
+    const s = slewAxis(now, wantYaw, was, BB_TURRET_SLEW, BB_TURRET_ACCEL, r.angVel, dt, true);
+    if (which === 1) {
+      r.bbTurret2Heading = s.at;
+      r.bbTurret2YawVel = s.vel;
+    } else {
+      r.turretHeading = s.at;
+      r.bbTurretYawVel = s.vel;
+    }
   }
   if (wantPitch !== null) {
-    const now = r.bbTurretPitch ?? 0;
-    r.bbTurretPitch = clamp(now + clamp(wantPitch - now, -pitchStep, pitchStep), BB_TURRET_PITCH_MIN, BB_TURRET_PITCH_MAX);
+    const now = (which === 1 ? r.bbTurret2Pitch : r.bbTurretPitch) ?? 0;
+    const was = (which === 1 ? r.bbTurret2PitchVel : r.bbTurretPitchVel) ?? 0;
+    const s = slewAxis(now, wantPitch, was, BB_TURRET_PITCH_SLEW, BB_TURRET_PITCH_ACCEL, 0, dt, false);
+    const at = clamp(s.at, BB_TURRET_PITCH_MIN, BB_TURRET_PITCH_MAX);
+    // A BARREL ON ITS STOP IS NOT STILL MOVING. Without this the rate keeps its sign against the
+    // clamp, and the tick the target comes back inside the envelope the profile starts from a
+    // velocity the axis never had.
+    const vel = at === s.at ? s.vel : 0;
+    if (which === 1) {
+      r.bbTurret2Pitch = at;
+      r.bbTurret2PitchVel = vel;
+    } else {
+      r.bbTurretPitch = at;
+      r.bbTurretPitchVel = vel;
+    }
   }
 }
 

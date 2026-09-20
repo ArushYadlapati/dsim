@@ -806,6 +806,41 @@ export function renderChecks(check: Check): void {
       !solveShotPath(w4, w4.robots[0]) && !SHOT.made,
     );
 
+    // ⚠️ **A SHOT THAT CANNOT BE TAKEN IS AS UN-MADE AS ONE THAT FALLS SHORT** (owner,
+    // 2026-09-19: "the dotted lines still appear when the shot is not able to be made").
+    // `bbCanFire` is the non-ballistic half of the gate and these are its three clauses.
+    {
+      const wEmpty = aimed(cell.pos.x, cell.pos.y + 40);
+      wEmpty.robots[0].hopper.length = 0;
+      check(
+        'shot path: an EMPTY hopper reports NOT MADE (there is no shot to promise)',
+        !solveShotPath(wEmpty, wEmpty.robots[0]) && !SHOT.made && SHOT.points === 0,
+        `points=${SHOT.points}`,
+      );
+      const wPre = aimed(cell.pos.x, cell.pos.y + 40);
+      wPre.match = { ...wPre.match, phase: 'pre' };
+      check(
+        'shot path: outside a LIVE phase reports NOT MADE (nothing fires in `pre`)',
+        !solveShotPath(wPre, wPre.robots[0]) && !SHOT.made,
+        `phase=${wPre.match.phase}`,
+      );
+      const wPassive = aimed(cell.pos.x, cell.pos.y + 40);
+      wPassive.robots[0].passive = true;
+      check('shot path: a PASSIVE practice dummy reports NOT MADE', !solveShotPath(wPassive, wPassive.robots[0]) && !SHOT.made);
+      // ⚠️ AND A SWINGING HIVE. `hiveTakingSide` names a cell all the way through a tip, which is
+      // right for the CAPTURE and wrong for a PROMISE: the flight predictor freezes the hive, the
+      // swing takes longer than the shot, and in 3D the tray is a real see-saw the element lands on
+      // while it is still moving. Measured, it was the ENTIRE residual of "a path was drawn and the
+      // shot did not score" — 28 of 28 in 3D.
+      const wTip = aimed(cell.pos.x, cell.pos.y + 40);
+      wTip.biobuzz!.hives.blue.tipping = 1.5;
+      check(
+        'shot path: a cell MID-SWING reports NOT MADE (the predictor freezes a hive that is moving)',
+        !solveShotPath(wTip, wTip.robots[0]) && !SHOT.made && SHOT.points === 0,
+        `tipping=${wTip.biobuzz!.hives.blue.tipping}`,
+      );
+    }
+
     // ---- THE OTHER MECHANISM: A DUMPER ---------------------------------------------------
     //
     // `solveShotPath` has two arms and everything above exercises one of them. A dumper does not

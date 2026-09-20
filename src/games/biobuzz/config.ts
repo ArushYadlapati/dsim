@@ -802,8 +802,44 @@ export const BB_DEFAULT_SCORE_MODE: BbScoreMode = 'turret';
 /** turret slew rate (rad/s). A turret does NOT snap to a heading — it swings at a finite rate,
  * which is why a turreted robot must spawn already pointed at its target rather than spending
  * the first second of auto rotating. APPROX: CR's tuned value, and turret hardware has not
- * changed. */
+ * changed.
+ *
+ * ⚠️ IT IS THE RATE AND NOT THE WHOLE MOTION — see `BB_TURRET_ACCEL` below. */
 export const BB_TURRET_SLEW = 7;
+
+/**
+ * ⚠️ **A TURRET HAS AN ACCELERATION, NOT ONLY A RATE** (owner, 2026-09-19: "animate the turret
+ * properly ... make the turret be fairly fast though"). rad/s² on the YAW axis.
+ *
+ * A rate-only clamp is a machine that reaches full speed in one tick and stops dead in one tick,
+ * which is precisely what reads as un-animated: the drawn barrel jumps to a constant sweep and
+ * then freezes. `bbSlewTurret` runs a rate- AND acceleration-limited profile now, and this is the
+ * second half of it. The profile is the discrete "accelerate, cruise, decelerate into the target"
+ * one — no overshoot, no oscillation, and every velocity change inside this cap (`slewAxis`,
+ * `robot.ts`).
+ *
+ * MEASURED at the shipped pair (7 rad/s, 70 rad/s²), a parked turret swung onto a static target,
+ * to the exact bearing with the rate back at zero: **30° in 0.183 s, 90° in 0.333 s, 180° in
+ * 0.550 s**, peak rate 7.000, peak acceleration 70.0, overshoot **0.00**. The owner asked for
+ * 0.25–0.35 s on the 90° swing. The closed form is `|e|/W + W/A` = 1.5708/7 + 7/70 = 0.324 s and
+ * the discrete profile pays a third of a tick over it; a rate-only clamp would do the same swing
+ * in 0.224 s and read as a jump.
+ *
+ * ⚠️ AND IT IS NOT FAST ENOUGH TO TRACK PERFECTLY, WHICH IS THE POINT (owner: "this does mean
+ * that perfect tracking is not possible"). MEASURED driving flat out past the HIVE at 77–78 in/s:
+ * steady-state yaw error **mean 0.5–1.3°, p95 1.2–6.0°** (worst at the closest standoff, where
+ * the bearing sweeps fastest), and **75–100% of released shots score**. On a HARD REVERSAL of the
+ * drive stick the lead solution jumps and the barrel is left **22–24° behind**, recovering in
+ * **0.60 s (2D) / 0.75 s (3D)** — during which Aim Assist's landing gate released **0** shots,
+ * i.e. the shot waits rather than missing. APPROX.
+ */
+export const BB_TURRET_ACCEL = 70; // APPROX
+
+/** the ELEVATION axis's acceleration cap (rad/s²), the twin of `BB_TURRET_ACCEL`. Deliberately
+ * sized so the pitch axis reaches its (already slow) `BB_TURRET_PITCH_SLEW` in ~0.13 s: elevation
+ * carries the barrel's weight, so it is the slower axis in BOTH terms. MEASURED: level → the 80°
+ * cap takes **1.005 s** (60 ticks) against 0.873 s for a rate-only clamp. APPROX. */
+export const BB_TURRET_PITCH_ACCEL = 12; // APPROX
 
 /** heading error (rad) under which a TURNED robot counts as aimed, and the P-gain that turns
  * it. Only turretless archetypes use these: the fire button steers the chassis. APPROX. */
@@ -923,26 +959,37 @@ export const BB_HOOD_MAX_DEG = 85;
 export const BB_DUMP_RELOAD_S = 0.75;
 
 /**
- * how long a STAGGERED dump waits between elements (s) — the 3D pipeline only, via
- * `BbShot.perDump` (`robot.ts`). APPROX: a tray pouring, not four balls teleported out on one
- * tick.
+ * ⚠️ **A DUMPER IS A CATAPULT: ONE FLING, THE WHOLE BUCKET** (owner, 2026-09-19: "a dumper should
+ * not shoot one at a time. It holds four in a small 'hopper' and it would fling it like a
+ * catapult"). This is how many seats the bucket has.
  *
- * 2D never reads it, because 2D never sets `perDump`. In 3D the elements are real bodies and
- * `bbDumpSolution` converges ALL of them on ONE cell-centre point, so a simultaneous dump is a
- * four-way pile-up in the opening.
+ * ── WHAT IT REPLACED, AND WHY THE REPLACEMENT IS A DIFFERENT MACHINE ─────────
+ * 3D used to POUR — `BbShot.perDump = 1` and a `BB_DUMP_STAGGER_S` of 0.3 s between elements —
+ * because `bbDumpSolution` aims every element of a dump from its OWN release point at the SAME
+ * cell-centre point, so four real spheres released together converge and knock each other off the
+ * arc (measured 3/28 on the tutorial grid simultaneous against 20/28 staggered). The stagger
+ * treated the symptom. A CATAPULT does not converge: one arm, one velocity, four seats, so the
+ * cluster flies on PARALLEL arcs and keeps its bucket footprint all the way into the opening —
+ * which is what `bbDumpCluster` (`robot.ts`) builds, and why the stagger is gone.
  *
- * ⚠️ **IT IS MEASURED, AND THE CURVE IS A KNEE, NOT A SLOPE.** Swept on the 28-pose tutorial
- * grid (`shoot`, BLUE, the Box-Tube dumper, dx 0/3/6/9 in and dy 14..38 in off the cell), with
- * the birth clearance of `syncElement` already in: 0.05 s → 3/28, 0.1 → 11, 0.2 → 17, **0.3 →
- * 20**, and 0.35/0.4/0.5/0.7 → 20. So 0.3 is the point at which the previous element is clear of
- * the opening before the next arrives, and paying more buys nothing but a slower pour. The
- * dumper's own lob is ~0.67 s in the air, which is why the knee sits where it does.
- *
- * A four-element hopper therefore takes 0.9 s to empty. That is a tray tipping, and the re-dump
- * cost a driver feels is still `BB_DUMP_RELOAD_S` — the stagger only applies while the hopper
- * still has load.
+ * FOUR because the opening is 20.14 x 10.18 in (`BB_CELL_OPEN`) and a 2x2 bucket at
+ * `BB_DUMP_SEAT_PITCH` presents a 4 x 4 in square of centres — 5.66 in across its diagonal,
+ * against the 10.18 in short axis, so the cluster fits the narrow way round at ANY approach
+ * bearing with 2.4 in of clear rim on a NECTAR's 1.8-in radius. A row of four does NOT: it is
+ * 12 + 3.6 = 15.6 in long and only fits the 20.14 axis, i.e. only on one bearing.
  */
-export const BB_DUMP_STAGGER_S = 0.3;
+export const BB_DUMP_BUCKET = 4;
+
+/**
+ * the centre-to-centre spacing of the bucket's seats (in) — see `BB_DUMP_BUCKET`.
+ *
+ * It has to clear the biggest element the bucket can hold (a NECTAR, `BB_NECTAR_R` 1.8, so 3.6 in
+ * of diameter) with room for the birth clearance not to see an overlap, and it has to keep the
+ * 2x2's diagonal inside the cell opening's SHORT axis. 4.0 in does both: a 0.4-in gap between two
+ * NECTAR, a 1.2-in gap between two POLLEN, and a 5.66-in diagonal inside 10.18. APPROX.
+ */
+export const BB_DUMP_SEAT_PITCH = 4;
+
 
 /** the most BEATS of the accumulated cadence clock one tick may serve (`bbLaunch`). With
  * `BB_FIRE_INTERVAL` above a tick it is normally 1; this only bounds a pathological catch-up. A
@@ -1359,6 +1406,20 @@ export const BB_HOOD_PATH_R = BB_HEAD_POLLEN.pathR; // 2.51732
  * the field is under a thousandth of an inch at the opening. The map contracts hard because the
  * release moves by well under an inch per degree of pitch at HIVE ranges. Three passes would
  * very likely do; four is one more than the measurement needs and still a fixed cost.
+ *
+ * ⚠️ **IT IS ALSO THE LEAD'S PASS COUNT, AND THAT IS ONE LOOP AND NOT TWO** (owner, 2026-09-19:
+ * "animate the turret properly so that it has a 'shooting on the move' correction algorithm built
+ * in"). A shot inherits the muzzle's own velocity now, so the solve aims at the target DISPLACED
+ * BY `−v · t_flight`, and `t_flight` is a function of the solution — a second fixed point over the
+ * first. Folding it into these same four passes is what keeps the trip count fixed AND keeps a
+ * PARKED robot byte-identical: every lead term is multiplied by a velocity that is exactly zero,
+ * so `bbTurretSolution` of a stopped robot computes the same floats it always did (the ROBOT lane
+ * pins it, and the scoreable-cell counts of 1382 north / 1439 south do not move).
+ *
+ * MEASURED residual of the lead at four passes — how far from the cell centre the solved shot
+ * actually lands, over 4,096 field poses × 8 headings at the drivetrain's own top speed, turret
+ * exactly on solution: see `BB_TURRET_ACCEL`'s neighbours in `robot.ts`'s `bbTurretSolution`
+ * header, which carries the table.
  */
 export const BB_TURRET_SOLVE_PASSES = 4;
 /** the mass floor a DOUBLE turret's second turret assembly adds (lb on the chassis mass FLOOR).
