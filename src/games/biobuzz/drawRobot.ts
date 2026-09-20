@@ -1,6 +1,7 @@
 import type { Artifact, ArtifactColor, RobotSpec, RobotState, Vec2, World } from '../../types';
 import * as C from '../../config';
 import { clamp } from '../../math';
+import { robotsEnabled } from '../../sim/match';
 import { roundRect } from '../../render/drawRobot';
 import { BB_BOX_TUBE_OVERLAP, BB_PLACE_MARK_R, bbBoxTubeGlyph, drawChassisBody, drawChassisOutline, drawWheels } from './parts';
 import {
@@ -140,7 +141,10 @@ export function drawBiobuzzRobot(
   // The intake reads ACTIVE whenever it can still collect — on (auto or the held command) AND
   // the hopper not full. Not "nearly empty": a driver needs to know the difference between
   // "my intake is off" and "my intake is on but I am full", and those are different actions.
-  const intaking = (intakeOn || r.autoIntake) && r.hopper.length < bbHopperCap(r.spec);
+  // ...and only while the robots are ENABLED: auto-intake is a standing assist, so without this it
+  // read as running all through the auto→teleop transition, when the sim captures nothing.
+  const live = !world || robotsEnabled(world);
+  const intaking = live && (intakeOn || r.autoIntake) && r.hopper.length < bbHopperCap(r.spec);
 
   ctx.save();
   ctx.translate(r.pos.x, r.pos.y);

@@ -97,6 +97,35 @@ function replay(p: Predictor, c: RobotCommand, ticks: number): { pose: Predicted
 const dist = (a: PredictedPose, b: PredictedPose): number => Math.hypot(a.pos.x - b.pos.x, a.pos.y - b.pos.y);
 
 export function predictChecks(check: Check): void {
+  // ---- a DISABLED robot does not move, in either predictor --------------------------------------
+  //
+  // Owner, 2026-09-20: "in a server-required game, the robot can move slightly VISUALLY". `step3d`
+  // hands a disabled robot a zero command; the predictors re-stepped the raw stick, so holding a
+  // direction through the countdown, the auto→teleop transition or the buzzer slid the LOCAL robot
+  // on screen until the next snapshot pulled it back. Both must now sit exactly where they were.
+  {
+    const drive = cmd({ driveY: 1, driveX: 1, rotate: 1, leftDrive: 1, rightDrive: -1 });
+    for (const phase of ['pre', 'transition', 'post'] as const) {
+      for (const kind of ['light', 'full'] as const) {
+        const w = pushScene(1000);
+        w.balls.length = 0;
+        w.match.phase = phase;
+        const p = kind === 'light' ? createLightPredictor(w, LOCAL) : createFullPredictor(w, LOCAL);
+        p.reset(w, w.tick);
+        const start = { x: w.robots[LOCAL].pos.x, y: w.robots[LOCAL].pos.y, h: w.robots[LOCAL].heading };
+        const { pose } = replay(p, drive, PREDICT_MAX_TICKS);
+        const moved = Math.hypot(pose.pos.x - start.x, pose.pos.y - start.y);
+        const turned = Math.abs(pose.heading - start.h);
+        check(
+          `a DISABLED robot (${phase}) does not move under full stick in the ${kind.toUpperCase()} predictor`,
+          moved < 1e-3 && turned < 1e-3,
+          `moved ${moved.toFixed(4)}in, turned ${turned.toFixed(4)}rad over ${PREDICT_MAX_TICKS} ticks`,
+        );
+        p.dispose();
+      }
+    }
+  }
+
   // ---- open floor: both predictors should be EXACT, because nothing is touching ---------------
   //
   // This is the case Light exists for, and it is the one where "converges to the authoritative

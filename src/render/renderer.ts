@@ -3,6 +3,7 @@ import { COLORS } from '../config';
 import { Camera } from './camera';
 import { drawRobot } from './drawRobot';
 import { gameOf } from '../games';
+import { robotsEnabled } from '../sim/match';
 import type { GameScene } from '../games/module';
 
 /**
@@ -113,9 +114,12 @@ export class Renderer {
           this.drawAutoPath(ctx, r);
         }
 
+        // A DISABLED robot's intake is not running (pre-match, the auto→teleop transition, after the
+        // buzzer): the sim zeroes its command and refuses every capture, so a held button or
+        // auto-intake must not draw it live either.
         const intakeOn =
-          (r.id === localRobotId && (lastCommand?.intake ?? false)) ||
-          (r.autoIntake && r.hopper.length < 3);
+          robotsEnabled(world) &&
+          ((r.id === localRobotId && (lastCommand?.intake ?? false)) || (r.autoIntake && r.hopper.length < 3));
         // NO_HELD is shared and never written to — every `drawRobot` treats `held` as read-only.
         const held = heldBy.get(r.id) ?? NO_HELD;
         (mod.drawRobot ?? drawRobot)(ctx, r, intakeOn, held, screenUp, world);

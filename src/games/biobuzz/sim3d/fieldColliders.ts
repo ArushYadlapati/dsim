@@ -194,7 +194,77 @@ export function cadFlowerRings(i: number): readonly FieldFlowerRing[] {
 /** every CAD static this build should turn into a real collider, in the file's own array order
  * (determinism). Empty when the collider set is absent or carries nothing physical. */
 export function cadStatics(): readonly FieldStatic[] {
-  return fieldColliders3d().statics.filter((s) => PHYSICAL_STATIC_CLASSES.has(s.class));
+  if (!cachedStatics) {
+    cachedStatics = squareFootBars(fieldColliders3d().statics.filter((s) => PHYSICAL_STATIC_CLASSES.has(s.class)));
+  }
+  return cachedStatics;
+}
+
+let cachedStatics: readonly FieldStatic[] | null = null;
+
+/** how far a part may poke out of a foot bar's box and still be folded into it (in). The feet
+ * overhang their bar by 0.02 at most; the A-frame legs leave it by 39. */
+const FOOT_FOLD_EPS = 0.05;
+
+/**
+ * ⚠️ THE HIVE'S FOOT ASSEMBLY IS ONE BOX, NOT A BAR AND TWO FEET (owner, 2026-09-20: "when I
+ * strafe across while my front is flat with the support beam, I get stuck on a corner that does
+ * not exist").
+ *
+ * The exporter emits the sheet-metal foot bar and the two frame feet bolted inside its ends as
+ * three hulls, the feet's outer faces 0.11 in BEHIND the bar's. A chassis pressed against the bar
+ * sits 0.09 in into it (contact skin plus the solver's allowed error), which is enough for its
+ * leading corner to meet the buried foot's SIDE face — a contact whose normal is along the bar, so
+ * the slide stops dead at y = 17.2 with nothing drawn there. Measured: mecanum, 0.8 push, 0.5
+ * strafe, stuck at y 9.14 (leading edge 17.64) on the blue bar's +y foot. The 8-point decimation
+ * also left the bar itself a wedge — its outer face 24.73 at one end and 24.62 at the other.
+ *
+ * So each bar becomes its own bounding box, grown to take in every frame part that lies inside it
+ * (the feet), and those parts are dropped: one convex solid has no internal edge to catch on. The
+ * box is what the drawn bar's silhouette is, to within the bevel on its top edge.
+ */
+function squareFootBars(statics: readonly FieldStatic[]): readonly FieldStatic[] {
+  const bars = statics.filter((s) => s.name.endsWith('_sheet_metal_foot_bar'));
+  if (bars.length === 0) return statics;
+  const folded = new Set<FieldStatic>();
+  const boxes = new Map<FieldStatic, Aabb>();
+  for (const bar of bars) {
+    const box = aabbOfFlat(bar.points);
+    const min: [number, number, number] = [box.min[0], box.min[1], box.min[2]];
+    const max: [number, number, number] = [box.max[0], box.max[1], box.max[2]];
+    for (const s of statics) {
+      if (s === bar || s.class !== bar.class || bars.includes(s)) continue;
+      const b = aabbOfFlat(s.points);
+      let inside = true;
+      for (let k = 0; k < 3; k++) {
+        if (b.min[k] < box.min[k] - FOOT_FOLD_EPS || b.max[k] > box.max[k] + FOOT_FOLD_EPS) inside = false;
+      }
+      if (!inside) continue;
+      folded.add(s);
+      for (let k = 0; k < 3; k++) {
+        if (b.min[k] < min[k]) min[k] = b.min[k];
+        if (b.max[k] > max[k]) max[k] = b.max[k];
+      }
+    }
+    boxes.set(bar, { min, max });
+  }
+  const out: FieldStatic[] = [];
+  for (const s of statics) {
+    if (folded.has(s)) continue;
+    const box = boxes.get(s);
+    if (!box) {
+      out.push(s);
+      continue;
+    }
+    const pts: number[] = [];
+    for (const x of [box.min[0], box.max[0]]) {
+      for (const y of [box.min[1], box.max[1]]) {
+        for (const z of [box.min[2], box.max[2]]) pts.push(x, y, z);
+      }
+    }
+    out.push({ name: s.name, class: s.class, points: pts });
+  }
+  return out;
 }
 
 interface Aabb {

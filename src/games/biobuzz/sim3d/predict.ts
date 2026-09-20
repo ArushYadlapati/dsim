@@ -1,6 +1,7 @@
 import type { Artifact, RobotCommand, RobotState, Vec2, World } from '../../../types';
 import { SIM_DT, PHYS_FRICTION, PHYS_WALL_FRICTION, GRAVITY, PHYS_SOLVER_ITERS, PHYS_ALLOWED_ERROR } from '../../../config';
 import { updateRobot } from '../../../sim/robot';
+import { robotsEnabled } from '../../../sim/match';
 import { chassisInertia } from '../../../sim/robot';
 import { shoveMass } from '../../../sim/drivetrain';
 import { robotExtents, squareUpRobotsWalls } from '../../../sim/physics';
@@ -104,6 +105,28 @@ function poseOf(r: RobotState): PredictedPose {
   };
 }
 
+/** what `step3d` stage 1 hands a DISABLED robot. */
+const ZERO_CMD: RobotCommand = {
+  driveX: 0,
+  driveY: 0,
+  rotate: 0,
+  leftDrive: 0,
+  rightDrive: 0,
+  intake: false,
+  fire: false,
+};
+
+/**
+ * THE COMMAND AS THE AUTHORITY WOULD APPLY IT. `step3d` zeroes every command while the robots are
+ * disabled (pre-match, the auto→teleop transition, after the buzzer); a predictor that re-stepped
+ * the raw stick anyway drove the local robot a few inches ON SCREEN ONLY, every frame, until the
+ * next snapshot pulled it back (owner, 2026-09-20: "in a server-required game, the robot can move
+ * slightly VISUALLY"). The phase read is the scratch world's, which is the last snapshot's — a
+ * predicted 3D room never advances its own match clock — so the local robot wakes one snapshot
+ * after the server enables it rather than a round trip before.
+ */
+const liveCmd = (w: World, cmd: RobotCommand): RobotCommand => (robotsEnabled(w) ? cmd : ZERO_CMD);
+
 /**
  * A SCRATCH WORLD holding one robot.
  *
@@ -201,7 +224,7 @@ export function createLightPredictor(world: World, localRobotId: number): Predic
     step(cmd: RobotCommand): PredictedPose {
       if (!local || !scratch) return { pos: { x: 0, y: 0 }, vel: { x: 0, y: 0 }, heading: 0, angVel: 0, z: 0, vz: 0 };
       const preVels = new Map<number, Vec2>([[local.id, { x: local.vel.x, y: local.vel.y }]]);
-      const wr = updateRobot(scratch, local, cmd, SIM_DT);
+      const wr = updateRobot(scratch, local, liveCmd(scratch, cmd), SIM_DT);
       const m = shoveMass(local.spec, local.butterflyTank, local.powerDraw);
       const inertia = chassisInertia(m, local.spec);
       local.vel.x += (wr.fx / m) * SIM_DT;
@@ -361,7 +384,7 @@ export function createFullPredictor(world: World, localRobotId: number): Predict
         return { pos: { x: 0, y: 0 }, vel: { x: 0, y: 0 }, heading: 0, angVel: 0, z: 0, vz: 0 };
       }
       const preVels = new Map<number, Vec2>([[local.id, { x: local.vel.x, y: local.vel.y }]]);
-      const wr = updateRobot(scratch, local, cmd, SIM_DT);
+      const wr = updateRobot(scratch, local, liveCmd(scratch, cmd), SIM_DT);
       const m = shoveMass(local.spec, local.butterflyTank, local.powerDraw);
       const inertia = chassisInertia(m, local.spec);
       localBody.setAdditionalMassProperties(

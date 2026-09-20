@@ -6,7 +6,7 @@ import { biobuzzStep } from '../../src/games/biobuzz/step';
 import { step3d } from '../../src/games/biobuzz/sim3d/step3d';
 import { rapier3d } from '../../src/games/biobuzz/sim3d/engine';
 import { disposeEngineFor, engineFor, robotBodyOf, syncElements } from '../../src/games/biobuzz/sim3d/engineImpl';
-import { cadTrayRefTheta, fieldColliders3d } from '../../src/games/biobuzz/sim3d/fieldColliders';
+import { cadStatics, cadTrayRefTheta, fieldColliders3d } from '../../src/games/biobuzz/sim3d/fieldColliders';
 import { hiveCellLocalBox, hivePivotX, hiveTrayRefTheta, __setFieldCollidersOverrideForTests } from '../../src/games/biobuzz/sim3d/bodies';
 import { hiveTiltAngle } from '../../src/games/biobuzz/sim3d/hive3d';
 import { hyp3, rotate2 } from '../../src/games/biobuzz/sim3d/math3';
@@ -2649,6 +2649,69 @@ export function sim3dChecks(check: Check): void {
       "predict: both worlds take BIOBUZZ's own contact stiffness, not the shared robot one",
       engineSrc.contact_natural_frequency === 'BB3_CONTACT_FREQ',
       `engine=${engineSrc.contact_natural_frequency}`,
+    );
+  }
+
+  // ---- the HIVE's foot bar is ONE box: a chassis slides its whole length ---------------------
+  //
+  // Owner, 2026-09-20: "when I strafe across while my front is flat with the support beam, I get
+  // stuck on a corner that does not exist". The exporter's bar + two buried feet left an internal
+  // edge 0.11 in behind the bar's face; a pressed chassis sits 0.09 in in, and its leading corner
+  // stopped dead on the foot's side face (mecanum, 0.8 push / 0.5 strafe, stuck at y 9.14).
+  // `squareFootBars` folds each assembly into its bounding box.
+  {
+    const statics = cadStatics();
+    const bars = statics.filter((s) => s.name.endsWith('_sheet_metal_foot_bar'));
+    const feet = statics.filter((s) => /_frame_foot_[ab]$/.test(s.name));
+    const boxy = bars.every((b) => {
+      const xs = new Set<number>();
+      for (let i = 0; i < b.points.length; i += 3) xs.add(b.points[i]);
+      return b.points.length === 24 && xs.size === 2;
+    });
+    check(
+      'foot bar 3d: each HIVE foot assembly is one axis-aligned box and the buried feet are gone',
+      bars.length === 2 && feet.length === 0 && boxy,
+      `${bars.length} bars, ${feet.length} feet, boxes ${boxy}`,
+    );
+
+    const FACE = 24.73;
+    let worst = '';
+    let slowest = Infinity;
+    for (const bar of [1, -1]) {
+      for (const dir of [1, -1]) {
+        for (const dt of ['mecanum', 'swerve'] as const) {
+          const w = mkWorld3dPair('free', 7, { drivetrain: dt });
+          w.balls.length = 0;
+          w.robots[1].pos.x = -60 * bar;
+          w.robots[1].pos.y = 60;
+          const r = w.robots[0];
+          r.fieldCentric = false;
+          r.heading = bar === 1 ? Math.PI : 0;
+          r.vel.x = r.vel.y = 0;
+          r.angVel = 0;
+          const fe = robotExtents(r);
+          r.pos.x = bar * (FACE + fe.front + 0.2);
+          r.pos.y = -9 * dir;
+          // front pressed INTO the bar, strafing along it, robot-centric
+          const c = cmd({ driveY: 0.8, driveX: dir * bar * 0.5 });
+          let lastY = r.pos.y;
+          let slow = Infinity;
+          for (let t = 0; t < 400 && Math.abs(r.pos.y) < 22; t++) {
+            step3d(w, C.SIM_DT, new Map([[0, c]]));
+            const v = Math.abs(r.pos.y - lastY) / C.SIM_DT;
+            lastY = r.pos.y;
+            if (t > 40 && v < slow) slow = v;
+          }
+          if (slow < slowest) slowest = slow;
+          if (Math.abs(r.pos.y) < 22) worst += `${dt} bar ${bar} dir ${dir} stopped at y ${r.pos.y.toFixed(2)}; `;
+          disposeEngineFor(w);
+        }
+      }
+    }
+    check(
+      'foot bar 3d: a chassis pressed flat against either foot bar strafes its whole length, both ways, without stopping',
+      worst === '' && slowest > 3,
+      worst || `slowest slide ${slowest.toFixed(1)} in/s`,
     );
   }
 
