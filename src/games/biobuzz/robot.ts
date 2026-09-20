@@ -1153,9 +1153,12 @@ export function bbMuzzleZ(spec: RobotSpec, pitch: number = BB_TURRET_PITCH_MIN, 
  * `t`, starts the loop 4x closer — and it cannot disturb the byte-identity above, because
  * whatever it estimates is multiplied by a zero velocity.
  *
- * MEASURED residual (the distance from the cell centre to where the solved shot actually lands,
- * turret exactly on solution, at the drivetrain's top speed on eight headings over the field
- * grid): see the numbers quoted on `BB_TURRET_ACCEL`'s neighbours in `config.ts`.
+ * MEASURED residual — the distance from the cell centre to where the solved shot actually lands
+ * with the turret exactly on its own solution, over 2,567 reachable pose-headings (a 6-in field
+ * grid by eight headings) at the drivetrain's top speed of 89 in/s: **mean 0.140 in, p50 0.124,
+ * p99 0.305, worst 1.749**, against a 20.14 x 10.18-in opening. The same poses with the pre-lead
+ * solve — solved parked, fired at 89 in/s — miss by **mean 53.22 in, worst 63.58**, i.e. the lead
+ * is not a refinement of the old answer, it is the difference between scoring and not.
  */
 export function bbTurretSolution(
   r: RobotState,
@@ -1274,17 +1277,35 @@ function slewAxis(
   wrap: boolean,
 ): { at: number; vel: number } {
   const e = wrap ? wrapAngle(want - cur) : want - cur;
+  // ⚠️ `q` IS ONE TICK'S WORTH OF ACCELERATION EXPRESSED AS A DISTANCE, and the whole profile is
+  // written in units of it: `E` is the remaining error in those units and `u` is the velocity, in
+  // ticks' worth of acceleration, that this tick may END at.
+  //
+  // Braking at full `maxAcc` from `u`, the velocities that follow are `u−1, u−2, …` down to zero,
+  // so the distance from here to a standstill is `q·((f+1)u − f(f+1)/2)` with `f = floor(u)`.
+  // That is PIECEWISE LINEAR in `u`, and the closed form below inverts it: `f` is the largest
+  // whole number of braking ticks that fits inside `E`, and `u` is the interpolation inside that
+  // piece. ⚠️ The smooth `√(2E)` version of this is WRONG for `u < 1` and it overshoots — it
+  // charges `u(u+1)/2` for a stop that really costs `u`, so a turret one tick from its target
+  // stepped past it and then rang for hundreds of ticks at ±0.14°. Measured, and it is the reason
+  // this is not the two-line formula it looks like it should be.
   const q = maxAcc * dt * dt;
-  const n = (Math.sqrt(1 + (8 * Math.abs(e)) / q) - 1) / 2;
-  const cap = Math.min(maxRate, maxAcc * dt * n);
+  const E = Math.abs(e) / q;
+  const f = Math.floor((Math.sqrt(1 + 8 * E) - 1) / 2);
+  const u = Math.min(f + 1, (E + (f * (f + 1)) / 2) / (f + 1));
+  const cap = Math.min(maxRate, maxAcc * dt * u);
   // the world rate we WANT this tick, pulled into the motor's own window (see `base` above)
   const step = maxAcc * dt;
   const w = clamp(clamp(e >= 0 ? cap : -cap, base - maxRate, base + maxRate) - vel, -step, step) + vel;
-  // QUANTIZED to 1e-4 rad/s — the rounding the 3D readback already uses. It is 0.0014% of the yaw
-  // rate and it is what keeps four floats per robot per 30 Hz snapshot from being 17 digits each
-  // (`RobotState.bbTurretYawVel`). The profile is self-correcting, so the rounding costs nothing:
-  // `cap` falls to 0 at the target and `step` is four orders of magnitude bigger than the grain.
-  const v2 = Math.round(w * 1e4) / 1e4;
+  // QUANTIZED to 1e-4 rad/s, the grain the 3D readback already rounds to — 0.0014% of the yaw rate,
+  // and what keeps four floats per robot per 30 Hz snapshot from being 17 digits each
+  // (`RobotState.bbTurretYawVel`). TOWARD ZERO, never to nearest: rounding up would put the tick's
+  // step above the cap the profile just proved is safe, which is an overshoot by a rounding error.
+  const v2 = Math.trunc(w * 1e4) / 1e4;
+  // ...and the last grain lands exactly. Under one quantum the truncated rate is zero, so without
+  // this the axis would sit forever a micro-radian short of its target (measured 1.3e-6 rad) and
+  // "the turret is on its solution" would never be exactly true.
+  if (v2 === 0 && Math.abs(e) <= 1e-4 * dt) return { at: want, vel: 0 };
   const at = cur + v2 * dt;
   return { at: wrap ? wrapAngle(at) : at, vel: v2 };
 }

@@ -1,6 +1,6 @@
 import type { Artifact, RobotCommand, RobotSpec, RobotState, Vec2, World } from '../../src/types';
 import * as C from '../../src/config';
-import { hyp, wrapAngle } from '../../src/math';
+import { datan2, hyp, wrapAngle } from '../../src/math';
 import { worldHash } from '../../src/net/checksum';
 import { defaultSettings, switchGame } from '../../src/settings';
 import { DEFAULT_ASSISTS, DEFAULT_SPEC } from '../../src/sim/spawn';
@@ -37,9 +37,13 @@ import {
   BB_PRISM_NARROW,
   BB_PTS,
   BB_START_POSE_COUNT,
+  BB_TURRET_ACCEL,
+  BB_TURRET_PITCH_ACCEL,
   BB_TURRET_PITCH_MAX,
   BB_TURRET_PITCH_MIN,
+  BB_TURRET_PITCH_SLEW,
   BB_TURRET_SLEW,
+  BB_TURRET_SOLVE_PASSES,
   bbStorageMax,
   BB_DECK_Z,
   BB_FEED_SLIDE,
@@ -90,13 +94,14 @@ import {
   bbPlacePoint,
   bbPlacePointLocal,
   bbRobotSolids,
+  bbSlewTurret,
   bbSolveShot,
   bbTurretOrigin,
   bbTurretRelease,
   bbTurretSolution,
 } from '../../src/games/biobuzz/robot';
 import { bbConfigSummary } from '../../src/games/biobuzz/labels';
-import { bbAimTarget, bbKindOf } from '../../src/games/biobuzz/play';
+import { bbAimTarget, bbFlightEnters, bbKindOf } from '../../src/games/biobuzz/play';
 import { hiveCellTarget } from '../../src/games/biobuzz/elements';
 import {
   bbCarriesNectar,
@@ -1101,6 +1106,263 @@ export function robotChecks(check: Check): void {
     check('aim assist: ...not vacuous — the opponent\'s HIVE was nearer at many poses', oppNearer > 100, `${oppNearer}`);
     check('aim assist: the pick does NOT change when the HIVE tips (it cannot sense which cell is up)', tipChanged === 0, `${tipChanged}/${n}`);
     check('aim assist: ...so it does aim at the DOWN cell from that side', aimedAtDown > 0, `${aimedAtDown}`);
+  }
+
+  // ── SHOOTING ON THE MOVE: INHERITANCE, THE LEAD, AND THE PROFILE ──────────
+  //
+  // Owner, 2026-09-19: "animate the turret properly so that it has a 'shooting on the move'
+  // correction algorithm built in its animation. This does mean that perfect tracking is not
+  // possible. Make the turret be fairly fast though." Four claims, one block.
+  {
+    const TURRET_C = { launcher: { kind: 'turret' as const, mount: 'center' as const, hoodDeg: BB_HOOD_DEFAULT_DEG }, lift: null };
+
+    // (1) ⚠️ A PARKED ROBOT IS BYTE-IDENTICAL. Every lead term is multiplied by a velocity of
+    // exactly zero, so the solve of a stopped robot must be the same FLOATS it was before the
+    // lead existed — that is what keeps the field's scoreable-cell counts (1382 north / 1439
+    // south) from moving. Pinned against the pre-lead loop, written out here in full.
+    {
+      const w = mkWorld('free', 61, mech(TURRET_C));
+      const r = w.robots[0];
+      let worst = 0;
+      let n = 0;
+      for (let x = -60; x <= 60; x += 7.5) {
+        for (let y = -60; y <= 60; y += 7.5) {
+          park(r, x, y, 0.3);
+          const target = bbAimTarget(w, r);
+          const sol = bbTurretSolution(r, target)!;
+          const o = bbTurretOrigin(r);
+          const dx = target.pos.x - o.x;
+          const dy = target.pos.y - o.y;
+          const d0 = hyp(dx, dy);
+          let p = BB_TURRET_PITCH_MIN;
+          let s = bbSolveShot(d0 + bbMuzzleLocal(p).back, target.z - bbMuzzleZ(r.spec, p));
+          for (let i = 1; i < BB_TURRET_SOLVE_PASSES; i++) {
+            p = Math.min(Math.max(s.angle, BB_TURRET_PITCH_MIN), BB_TURRET_PITCH_MAX);
+            s = bbSolveShot(d0 + bbMuzzleLocal(p).back, target.z - bbMuzzleZ(r.spec, p));
+          }
+          p = Math.min(Math.max(s.angle, BB_TURRET_PITCH_MIN), BB_TURRET_PITCH_MAX);
+          worst = Math.max(
+            worst,
+            Math.abs(sol.pitch - p),
+            Math.abs(wrapAngle(sol.yaw - datan2(dy, dx))),
+            Math.abs(sol.speed - Math.min(s.speed, BB_LAUNCH_SPEED_MAX)),
+          );
+          n++;
+        }
+      }
+      check(
+        `lead: a PARKED robot's solve is byte-identical to the pre-lead one (${n} poses)`,
+        worst === 0,
+        `worst deviation ${worst.toExponential(2)}`,
+      );
+    }
+
+    // (2) INHERITANCE. A release from a robot moving at v (and spinning at omega) leaves with the
+    // muzzle-relative velocity PLUS `v + omega x r` at the muzzle point — the thing that did not
+    // happen at all before, and the thing a lead has to correct.
+    {
+      const w = mkWorld('free', 62, mech(TURRET_C));
+      const r = w.robots[0];
+      park(r, 20, 30, 0.7);
+      r.bbTurretPitch = 0.6;
+      r.turretHeading = 1.1;
+      const still = bbTurretRelease(r, 0, 180);
+      r.vel = { x: 37, y: -19 };
+      r.angVel = 1.7;
+      const moving = bbTurretRelease(r, 0, 180);
+      const rx = still.origin.x - r.pos.x;
+      const ry = still.origin.y - r.pos.y;
+      const wantX = r.vel.x - r.angVel * ry;
+      const wantY = r.vel.y + r.angVel * rx;
+      check(
+        'lead: a release inherits v + omega x r at the MUZZLE, and nothing else',
+        Math.abs(moving.vel.x - still.vel.x - wantX) < 1e-9 &&
+          Math.abs(moving.vel.y - still.vel.y - wantY) < 1e-9 &&
+          moving.vel.z === still.vel.z &&
+          moving.origin.x === still.origin.x,
+        `dv=(${(moving.vel.x - still.vel.x).toFixed(4)},${(moving.vel.y - still.vel.y).toFixed(4)}) want=(${wantX.toFixed(4)},${wantY.toFixed(4)})`,
+      );
+      r.vel = { x: 0, y: 0 };
+      r.angVel = 3;
+      const spun = bbTurretRelease(r, 0, 180);
+      check(
+        'lead: ...and a SPINNING chassis alone moves the release velocity (the omega x r term)',
+        Math.abs(rx) + Math.abs(ry) > 0.5 && hyp(spun.vel.x - still.vel.x, spun.vel.y - still.vel.y) > 1,
+        `arm=(${rx.toFixed(2)},${ry.toFixed(2)}) dv=${hyp(spun.vel.x - still.vel.x, spun.vel.y - still.vel.y).toFixed(2)}`,
+      );
+      r.angVel = 0;
+    }
+
+    // (3) THE LEAD ACTUALLY LEADS. With the turret ON its solution at a real drive speed, the
+    // solved release has to land in the CELL — which is exactly what firing the pre-lead pair at
+    // the same speed does not do.
+    {
+      const w = mkWorld('free', 63, mech(TURRET_C));
+      const r = w.robots[0];
+      let led = 0;
+      let unled = 0;
+      let n = 0;
+      for (const [x, y] of [
+        [-30, 45],
+        [10, 55],
+        [40, 40],
+        [-50, 20],
+        [0, 62],
+      ] as const) {
+        for (let h = 0; h < 8; h++) {
+          const a = (h * Math.PI) / 4;
+          park(r, x, y, 0);
+          const target = bbAimTarget(w, r);
+          const hive = { ...w.biobuzz!.hives.blue, up: 'north' as const, tipping: 0, released: false };
+          const cold = bbTurretSolution(r, target)!;
+          r.turretHeading = cold.yaw;
+          r.bbTurretPitch = cold.pitch;
+          r.vel = { x: Math.cos(a) * 70, y: Math.sin(a) * 70 };
+          if (cold.reachable) {
+            const stale = bbTurretRelease(r, 0, cold.speed);
+            if (bbFlightEnters(hive, 'blue', stale.origin, stale.z, stale.vel, C.SIM_DT)) unled++;
+          }
+          // the LED solve from the same MOVING pose — put the turret on its own fixed point first
+          for (let k = 0; k < 4; k++) {
+            const s = bbTurretSolution(r, target)!;
+            r.turretHeading = s.yaw;
+            r.bbTurretPitch = s.pitch;
+          }
+          const hot = bbTurretSolution(r, target)!;
+          // ⚠️ COUNTED ON THE LED SOLUTION'S OWN `reachable`, not the parked one's. A robot driving
+          // AWAY from its cell needs a longer shot than the same robot standing still, and past the
+          // barrel's envelope the solve says so honestly — that is a miss the driver can see, not
+          // a lead failure.
+          if (hot.reachable) {
+            n++;
+            const rel = bbTurretRelease(r, 0, hot.speed);
+            if (bbFlightEnters(hive, 'blue', rel.origin, rel.z, rel.vel, C.SIM_DT)) led++;
+          }
+          r.vel = { x: 0, y: 0 };
+        }
+      }
+      check('lead: a shot from a robot driving at 70 in/s ENTERS the cell', n > 20 && led === n, `${led}/${n}`);
+      check('lead: ...and the PRE-LEAD pair fired from the same pose does not', unled * 4 < n, `${unled}/${n} would have entered`);
+    }
+
+    // (4) THE PROFILE. A rate AND an acceleration, decelerating into the target, never past it —
+    // and "fairly fast" is a NUMBER: 90 degrees in 0.25..0.35 s from rest.
+    {
+      const w = mkWorld('free', 64, mech(TURRET_C));
+      const r = w.robots[0];
+      park(r, 0, 0, 0);
+      r.turretHeading = 0;
+      r.bbTurretYawVel = 0;
+      const want = Math.PI / 2;
+      let ticks = -1;
+      let peakRate = 0;
+      let peakAcc = 0;
+      let overshoot = 0;
+      let prev = 0;
+      for (let i = 0; i < 400; i++) {
+        bbSlewTurret(r, want, null, C.SIM_DT, 0);
+        const v = r.bbTurretYawVel ?? 0;
+        peakRate = Math.max(peakRate, Math.abs(v));
+        peakAcc = Math.max(peakAcc, Math.abs(v - prev) / C.SIM_DT);
+        prev = v;
+        overshoot = Math.max(overshoot, -wrapAngle(want - r.turretHeading));
+        if (ticks < 0 && r.turretHeading === want && v === 0) ticks = i + 1;
+      }
+      check(
+        'turret profile: a 90-degree swing from rest takes 0.25..0.35 s (owner: "fairly fast")',
+        ticks > 0 && ticks * C.SIM_DT >= 0.25 && ticks * C.SIM_DT <= 0.35,
+        `${ticks} ticks = ${(ticks * C.SIM_DT).toFixed(3)}s`,
+      );
+      check('turret profile: ...never exceeding the RATE limit', peakRate <= BB_TURRET_SLEW + 1e-9, `${peakRate.toFixed(4)}/${BB_TURRET_SLEW}`);
+      check(
+        'turret profile: ...never exceeding the ACCELERATION limit',
+        // the tolerance is ONE QUANTUM of the rate per tick (1e-4 rad/s / dt = 6e-3 rad/s^2) — the
+        // profile is exact and the rounding of `bbTurretYawVel` is what this allows for.
+        peakAcc <= BB_TURRET_ACCEL + 1e-2,
+        `${peakAcc.toFixed(3)}/${BB_TURRET_ACCEL}`,
+      );
+      check('turret profile: ...and never overshooting or ringing', overshoot <= 0, `overshoot=${overshoot.toExponential(2)}`);
+      park(r, 0, 0, 0);
+      r.turretHeading = 0;
+      r.bbTurretYawVel = 0;
+      bbSlewTurret(r, want, null, C.SIM_DT, 0);
+      check(
+        'turret profile: ...and a rate-only clamp is ruled out (tick one is at the ACCEL, not the RATE)',
+        Math.abs((r.bbTurretYawVel ?? 0) - BB_TURRET_ACCEL * C.SIM_DT) < 1e-3,
+        `v1=${(r.bbTurretYawVel ?? 0).toFixed(4)} accel*dt=${(BB_TURRET_ACCEL * C.SIM_DT).toFixed(4)}`,
+      );
+      park(r, 0, 0, 0);
+      r.bbTurretPitch = 0;
+      r.bbTurretPitchVel = 0;
+      let pk = 0;
+      let pacc = 0;
+      let pprev = 0;
+      for (let i = 0; i < 400; i++) {
+        bbSlewTurret(r, null, BB_TURRET_PITCH_MAX, C.SIM_DT, 0);
+        const v = r.bbTurretPitchVel ?? 0;
+        pk = Math.max(pk, Math.abs(v));
+        pacc = Math.max(pacc, Math.abs(v - pprev) / C.SIM_DT);
+        pprev = v;
+      }
+      check(
+        'turret profile: the PITCH axis keeps its own (slower) rate and acceleration',
+        pk <= BB_TURRET_PITCH_SLEW + 1e-9 && pacc <= BB_TURRET_PITCH_ACCEL + 1e-2 && (r.bbTurretPitch ?? 0) === BB_TURRET_PITCH_MAX,
+        `rate ${pk.toFixed(3)}/${BB_TURRET_PITCH_SLEW} accel ${pacc.toFixed(2)}/${BB_TURRET_PITCH_ACCEL}`,
+      );
+    }
+
+    // (5) A SPINNING CHASSIS IS THE BASE THE RING TURNS ON. `turretHeading` is a WORLD angle, so
+    // holding a bearing on a rotating robot costs the motor its own rate — and a chassis spinning
+    // faster than the turret can counter DRAGS it.
+    {
+      const w = mkWorld('free', 65, mech(TURRET_C));
+      const r = w.robots[0];
+      park(r, 0, 0, 0);
+      r.turretHeading = 0;
+      r.bbTurretYawVel = 0;
+      r.angVel = BB_TURRET_SLEW + 5;
+      for (let i = 0; i < 30; i++) bbSlewTurret(r, 0, null, C.SIM_DT, 0);
+      const dragged = r.turretHeading;
+      check(
+        'turret profile: a chassis spinning faster than the ring DRAGS the world bearing off target',
+        dragged > 0.05,
+        `bearing drifted ${dragged.toFixed(3)} rad while holding 0`,
+      );
+      park(r, 0, 0, 0);
+      r.turretHeading = 0;
+      r.bbTurretYawVel = 0;
+      r.angVel = 3;
+      for (let i = 0; i < 60; i++) bbSlewTurret(r, 0, null, C.SIM_DT, 0);
+      check(
+        'turret profile: ...and at a spin it CAN counter, the world bearing is held',
+        Math.abs(r.turretHeading) < 1e-6,
+        `bearing=${r.turretHeading.toExponential(2)}`,
+      );
+      r.angVel = 0;
+    }
+
+    // (6) THE GATE HOLDS A SHOT IT WOULD MISS. A hard reversal moves the lead solution faster than
+    // the barrel can follow; Aim Assist must WAIT rather than release a miss.
+    {
+      const w = mkWorld('free', 66, mech(TURRET_C));
+      const r = w.robots[0];
+      park(r, -45, 52, 0);
+      const fwd = cmd({ leftDrive: 1, rightDrive: 1, driveY: 1, fire: true });
+      const back = cmd({ leftDrive: -1, rightDrive: -1, driveY: -1, fire: true });
+      run(w, fwd, 2.5);
+      const settled = Math.abs(wrapAngle(bbTurretSolution(r, bbAimTarget(w, r))!.yaw - r.turretHeading));
+      let peak = 0;
+      let firedOff = 0;
+      for (let t = 0; t < 120; t++) {
+        const before = r.hopper.length;
+        tick(w, back);
+        const e = Math.abs(wrapAngle(bbTurretSolution(r, bbAimTarget(w, r))!.yaw - r.turretHeading));
+        peak = Math.max(peak, e);
+        if (r.hopper.length < before && e > settled + 0.02) firedOff++;
+      }
+      check('lead: a hard REVERSAL leaves the barrel visibly behind its solution', peak > 0.15, `peak error ${(peak / BB_DEG).toFixed(1)} deg`);
+      check('lead: ...and the landing gate HOLDS the shot rather than firing a miss', firedOff === 0, `${firedOff} releases while off-solution`);
+    }
   }
 
   // ── A TURRET SLEWS, AND ITS ARC ARRIVES (through the world) ──────────────

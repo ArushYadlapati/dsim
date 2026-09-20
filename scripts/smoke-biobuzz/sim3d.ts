@@ -958,6 +958,57 @@ export function sim3dChecks(check: Check): void {
     }
   }
 
+  // ---- PATH <=> GATE: ONE VERDICT, BY CONSTRUCTION -------------------------------------------
+  //
+  // ⚠️ Owner, 2026-09-19: "the dotted lines still appear when the shot is not able to be made."
+  // The picture and the trigger used to be two different predicates in 3D — the drawn path ran the
+  // ballistic landing check and `elements3dAimAndLaunch` gated on ALIGNMENT — so each could say
+  // yes while the other said no. They are `bbTurretShotEnters` / `bbDumpShotEnters` (`play.ts`)
+  // now, and this sweeps for the one direction that matters: a path DRAWN while the fire gate
+  // would refuse to release is a promise about a shot that never happens.
+  {
+    const TURRET_C = { bbMech: { launcher: { kind: 'turret' as const, mount: 'center' as const, hoodDeg: 75 }, lift: null } };
+    let drawn = 0;
+    let drawnNoRelease = 0;
+    let cases = 0;
+    for (const [x, y] of [[BB_HIVE_X, 50], [BB_HIVE_X + 22, 44], [-28, 52], [40, 36], [-55, 30], [BB_HIVE_X, 12]] as const) {
+      for (const [vx, vy, wz] of [[0, 0, 0], [55, 0, 0], [-35, 35, 0], [0, 0, 2.2]] as const) {
+        for (const up of ['north', 'south'] as const) {
+          cases++;
+          const w = createBiobuzzWorld('free', 42, [setup(0, 'blue', TURRET_C)], undefined, '3d');
+          const r = w.robots[0];
+          w.biobuzz!.hives.blue.up = up;
+          const idle = new Map([[0, cmd({})]]);
+          const hold = (): void => {
+            r.pos = { x, y };
+            r.heading = 0.4;
+            r.vel = { x: vx, y: vy };
+            r.angVel = wz;
+          };
+          hold();
+          r.hopper.length = 1;
+          for (let t = 0; t < 80; t++) {
+            step3d(w, 1 / 60, idle);
+            hold(); // the POSE is held; the turret is left to slew
+          }
+          const path = solveShotPath(w, r);
+          const before = r.hopper.length;
+          step3d(w, 1 / 60, new Map([[0, cmd({ fire: true })]]));
+          const released = r.hopper.length < before;
+          if (path) {
+            drawn++;
+            if (!released) drawnNoRelease++;
+          }
+        }
+      }
+    }
+    check(
+      'shot path: over the pose/velocity/hive grid, a DRAWN path always means the gate fires',
+      drawn > 6 && drawnNoRelease === 0,
+      `${drawn} drawn of ${cases}, ${drawnNoRelease} with no release`,
+    );
+  }
+
   // ---- LANE D: A DUMPER SCORES UNDER 3D PHYSICS ----------------------------------------------
   //
   // ⚠️ **THIS LANE HAD NO DUMPER COVERAGE AT ALL, WHICH IS WHY A DUMPER THAT COULD NOT SCORE

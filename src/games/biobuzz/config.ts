@@ -818,11 +818,20 @@ export const BB_TURRET_SLEW = 7;
  * one — no overshoot, no oscillation, and every velocity change inside this cap (`slewAxis`,
  * `robot.ts`).
  *
- * MEASURED at the shipped pair (7 rad/s, 70 rad/s²), a parked turret swung onto a target 90° away:
- * **0.333 s** (20 ticks), against the owner's 0.25–0.35 s. The closed form is `|e|/W + W/A` =
- * 1.5708/7 + 7/70 = 0.324 s; the discrete profile pays a fraction of a tick over it.
- * Dropping the cap to 40 rad/s² gives 0.399 s (too slow to feel "fairly fast"); raising it to
- * 140 gives 0.274 s and the swing stops reading as a mechanism accelerating at all. APPROX.
+ * MEASURED at the shipped pair (7 rad/s, 70 rad/s²), a parked turret swung onto a static target,
+ * to the exact bearing with the rate back at zero: **30° in 0.183 s, 90° in 0.333 s, 180° in
+ * 0.550 s**, peak rate 7.000, peak acceleration 70.0, overshoot **0.00**. The owner asked for
+ * 0.25–0.35 s on the 90° swing. The closed form is `|e|/W + W/A` = 1.5708/7 + 7/70 = 0.324 s and
+ * the discrete profile pays a third of a tick over it; a rate-only clamp would do the same swing
+ * in 0.224 s and read as a jump.
+ *
+ * ⚠️ AND IT IS NOT FAST ENOUGH TO TRACK PERFECTLY, WHICH IS THE POINT (owner: "this does mean
+ * that perfect tracking is not possible"). MEASURED driving flat out past the HIVE at 77–78 in/s:
+ * steady-state yaw error **mean 0.5–1.3°, p95 1.2–6.0°** (worst at the closest standoff, where
+ * the bearing sweeps fastest), and **75–100% of released shots score**. On a HARD REVERSAL of the
+ * drive stick the lead solution jumps and the barrel is left **22–24° behind**, recovering in
+ * **0.60 s (2D) / 0.75 s (3D)** — during which Aim Assist's landing gate released **0** shots,
+ * i.e. the shot waits rather than missing. APPROX.
  */
 export const BB_TURRET_ACCEL = 70; // APPROX
 

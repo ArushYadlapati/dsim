@@ -688,6 +688,29 @@ export function renderChecks(check: Check): void {
       !solveShotPath(w4, w4.robots[0]) && !SHOT.made,
     );
 
+    // ⚠️ **A SHOT THAT CANNOT BE TAKEN IS AS UN-MADE AS ONE THAT FALLS SHORT** (owner,
+    // 2026-09-19: "the dotted lines still appear when the shot is not able to be made").
+    // `bbCanFire` is the non-ballistic half of the gate and these are its three clauses.
+    {
+      const wEmpty = aimed(cell.pos.x, cell.pos.y + 40);
+      wEmpty.robots[0].hopper.length = 0;
+      check(
+        'shot path: an EMPTY hopper reports NOT MADE (there is no shot to promise)',
+        !solveShotPath(wEmpty, wEmpty.robots[0]) && !SHOT.made && SHOT.points === 0,
+        `points=${SHOT.points}`,
+      );
+      const wPre = aimed(cell.pos.x, cell.pos.y + 40);
+      wPre.match = { ...wPre.match, phase: 'pre' };
+      check(
+        'shot path: outside a LIVE phase reports NOT MADE (nothing fires in `pre`)',
+        !solveShotPath(wPre, wPre.robots[0]) && !SHOT.made,
+        `phase=${wPre.match.phase}`,
+      );
+      const wPassive = aimed(cell.pos.x, cell.pos.y + 40);
+      wPassive.robots[0].passive = true;
+      check('shot path: a PASSIVE practice dummy reports NOT MADE', !solveShotPath(wPassive, wPassive.robots[0]) && !SHOT.made);
+    }
+
     // ---- THE OTHER MECHANISM: A DUMPER ---------------------------------------------------
     //
     // `solveShotPath` has two arms and everything above exercises one of them. A dumper does not

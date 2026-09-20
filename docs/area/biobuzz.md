@@ -308,6 +308,48 @@ newest-first — it is never ranked, which is what keeps the two eras from meeti
     pitch by at most 1.76e-9 rad. The outcome change was authorised: scoreable field cells 1359 →
     1382 north and 1417 → 1439 south, pitch-capped cells 255 → 211, nothing speed-capped, worst
     required muzzle speed 253.26 → 256.37 against a 260 cap.
+  - ⚠️ **A LAUNCH INHERITS THE MUZZLE'S OWN VELOCITY, AND THE TURRET LEADS** (owner, 2026-09-19:
+    "animate the turret properly so that it has a 'shooting on the move' correction algorithm built
+    in its animation... this does mean that perfect tracking is not possible"). A release leaves
+    with `speed` along the barrel PLUS `v + ω × r` at the muzzle (`bbPointVel`) — before this a shot
+    fired at full drive flew as if the robot were parked — so `bbTurretSolution` solves against a
+    target displaced by `−v·t_flight`, folded into the SAME `BB_TURRET_SOLVE_PASSES` loop. A PARKED
+    robot is byte-identical (every lead term is multiplied by zero, and the ROBOT lane pins it), so
+    the 1382/1439 scoreable-cell counts do not move. Measured residual at 89 in/s: mean 0.14 in,
+    worst 1.75; the pre-lead pair fired from the same pose misses by a mean of 53 in. A DUMPER's
+    lead is exact in one step, because a lob's flight time is a closed form in the height alone.
+  - ⚠️ **THE TURRET HAS AN ACCELERATION, NOT ONLY A RATE.** `bbSlewTurret` runs a discrete
+    bang-bang profile (`slewAxis`) that decelerates into its target and never overshoots or rings;
+    the per-axis angular velocity is carried on `RobotState` (`bbTurretYawVel` and its three
+    siblings — optional, absent reads 0, quantized to 1e-4). `BB_TURRET_ACCEL` 70 rad/s² with the
+    unchanged 7 rad/s rate puts a 90° swing at **0.333 s**; driving flat out past the HIVE the
+    steady-state yaw error is 0.5–1.3° and 75–100% of released shots score, while a HARD REVERSAL
+    leaves the barrel **22–24°** behind for 0.6–0.75 s — during which the landing gate releases
+    **nothing**. The motor's rate window is centred on the CHASSIS yaw rate, so `turretHeading`
+    being a WORLD angle costs the ring its own rate to hold, and a chassis spinning faster than the
+    ring DRAGS the bearing.
+  - ⚠️ **THE DRAWN PATH AND THE FIRE GATE ARE ONE PREDICATE** (owner, 2026-09-19: "the dotted
+    lines still appear when the shot is not able to be made"). `bbTurretShotEnters` /
+    `bbDumpShotEnters` (`play.ts`) are what stage 5b, `sim3d/elements3d.ts` and `shotPath.ts` all
+    call — which closes 3D's Day 1 deviation, where release was gated on ALIGNMENT and the path on
+    a landing prediction, so each could say yes while the other said no. The path is additionally
+    gated on there being a shot to TAKE (`bbCanFire`: a live phase, a loaded hopper, not a passive
+    dummy, and a dumper's 0.75 s re-arm — but NOT a turret's 77 ms beat, which would strobe it).
+    The one deliberate difference stays: the gate asks Aim Assist's pretend-up hive and the path
+    asks the REAL one, which is one-directional, so a drawn path is never a shot the gate refuses.
+  - ⚠️ **A DUMPER IS A CATAPULT: ONE FLING, THE WHOLE BUCKET** (owner, 2026-09-19: "a dumper
+    should not shoot one at a time. It holds four in a small 'hopper' and it would fling it like a
+    catapult"). 3D used to POUR — one element every 0.3 s — because `bbDumpSolution` CONVERGES every
+    throw on the cell centre and four real spheres meeting there knock each other off the arc. The
+    stagger treated the symptom. `bbDumpCluster` is the 3D solve: `BB_DUMP_BUCKET` (4) seats, two
+    ACROSS by two HIGH at `BB_DUMP_SEAT_PITCH`, sitting on the firing edge's own collision
+    footprint, all leaving on ONE velocity so the cluster flies PARALLEL and arrives with the
+    bucket's footprint. The 2D pipeline is permanent and keeps the converging solve (`BbShot.
+    cluster` is the switch, and 2D never sets it) — a 2D flight element collides with nothing, so
+    convergence is free there. Measured on the 28-pose tutorial grid: **20 of 28 poses score, 16 of
+    them all four, 70 of 112 elements**, against the stagger's 20 of 28 poses. The row at 22 in is
+    the honest near edge — the bottom row's arc clips the HIVE structure below the opening while
+    the top row goes over it.
   - ⚠️ **A DUMPER HAS NO HOOD AND ITS RELEASE IS STILL FLAT.** `BB_LAUNCH_Z0` is a tipping tray's
     lip; it does not swing about a flywheel axle. `bbLobThrow`, `bbDumpSolution` and `bbLaunch`'s
     dumper branch all still read it directly, and the ROBOT lane has a leak guard: a dumper's release
