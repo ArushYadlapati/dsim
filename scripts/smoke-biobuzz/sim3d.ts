@@ -433,6 +433,14 @@ export function sim3dChecks(check: Check): void {
      * hundred more ticks". So: worst per-axis drift over consecutive 600-tick windows must at
      * least HALVE each window while it is still above the 1e-3 tolerance, and once under it may
      * never climb back. Measured ratios on seed 23: 0.107, 0.190, 0.250, 0.500, 0.
+     *
+     * ALL-ZERO IS A PASS, AND SINCE 2026-09-19 IT IS THE EXPECTED READING. Those ratios were
+     * measured while a resting element could never sleep (the zeroing writes in `groundRoll3d`
+     * and `syncElement` woke it every tick), so a packed line went on relaxing at the 1e-4 level
+     * for thousands of ticks. It sleeps now once its rounded position has stopped moving, so by
+     * the first window there is nothing left to decay — which is the strongest form of "it dies
+     * out", not a scenario that stopped measuring anything. The old `drifts[0] > 0` guard read
+     * that as a failure.
      */
     const w = mkWorld3d('free', 23);
     const take = (): Map<number, { x: number; y: number; z: number }> =>
@@ -460,7 +468,7 @@ export function sim3dChecks(check: Check): void {
     }
     check(
       'the residual contact relaxation DECAYS — each 600-tick window drifts at most half the last',
-      ok && drifts[0] > 0,
+      ok,
       `worst drift per window: ${drifts.map((d) => d.toExponential(2)).join(' -> ')}`,
     );
   }

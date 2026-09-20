@@ -226,6 +226,21 @@ export function engineFor(world: World): Engine3d {
 }
 
 const POSE_EPS = 1e-4;
+/**
+ * how far an element's rounded position must move in ONE tick to count as STILL RELAXING, and so
+ * be kept from sleeping — see READBACK. APPROX, and it is a KNEE, measured on the staged columns
+ * of an idle 2v2 world (worst pollen-pollen interpenetration against the FLOWER3D lane's 0.2-in
+ * bound / ticks until the four columns are asleep):
+ *
+ *   5e-5   0.132 in   > 900 ticks (4 elements still awake at tick 900)
+ *   5e-4   0.131 in   ~ 400 ticks      ← here
+ *   1e-3   0.529 in   ~ 300 ticks      (frozen mid-separation — FAILS the bound)
+ *   3e-3   0.616 in   ~ 300 ticks
+ *
+ * So half a thousandth of an inch per tick (0.03 in/s) is the slowest motion that is still
+ * un-jamming a column rather than polishing it.
+ */
+const RELAX_EPS = 5e-4;
 
 /**
  * THE CHASSIS COLLIDER, at `heightIn`. Built twice here: once when the body is created, and
@@ -718,8 +733,32 @@ function syncElement(RAPIER: Rapier3d, engine: Engine3d, world: World, b: Artifa
     Math.abs(last.vy - b.vel.y) > POSE_EPS ||
     Math.abs(last.vz - b.vz) > POSE_EPS;
   if (changed) {
-    existing.setTranslation({ x: b.pos.x, y: b.pos.y, z: centreZ }, true);
-    existing.setLinvel({ x: b.vel.x, y: b.vel.y, z: b.vz }, true);
+    // ⚠️ A REST SNAP IS NOT A TELEPORT, AND TREATING IT AS ONE KEPT EVERY SEATED ELEMENT AWAKE
+    // FOR THE WHOLE MATCH. `derive.ts` holds a settled element's JSON velocity at exactly zero;
+    // the solver hands the body a residual of a few 1e-4 every step; so this diff fired EVERY
+    // tick for every element at rest in a FLOWER or a CELL, and its `wakeUp: true` reset the
+    // sleep timer each time. Measured in an idle 3D world at tick 900: 16 of 16 FLOWER elements
+    // and 6 of 6 CELL elements awake at `vmax` 0, against 0 of 16 on the tiles. It was nearly
+    // free while a column stood dead on the bore axis and stopped being free the day columns
+    // SCATTERED (2026-09-19) — every leaning element is a standing wall contact the solver
+    // re-solves each tick: idle step 0.168 → 0.302 ms, the 2v2 room tick from 0.77x a Chain
+    // Reaction room's to 1.5x, over its 1.2x budget. So the case is told apart: the position is
+    // where the body already is and the velocity asked for is zero ⇒ zero it WITHOUT waking, and
+    // the body sleeps like any other resting one. Anything else is a real edit and still wakes.
+    const restSnap =
+      !!last &&
+      b.vel.x === 0 &&
+      b.vel.y === 0 &&
+      b.vz === 0 &&
+      Math.abs(last.x - b.pos.x) <= POSE_EPS &&
+      Math.abs(last.y - b.pos.y) <= POSE_EPS &&
+      Math.abs(last.z - b.z) <= POSE_EPS;
+    if (restSnap) {
+      existing.setLinvel({ x: 0, y: 0, z: 0 }, false);
+    } else {
+      existing.setTranslation({ x: b.pos.x, y: b.pos.y, z: centreZ }, true);
+      existing.setLinvel({ x: b.vel.x, y: b.vel.y, z: b.vz }, true);
+    }
   }
   // ONLY TOUCH CCD WHEN IT ACTUALLY CHANGES. `enableCcd` is a write even when the value is
   // unchanged, and (measured) calling any RigidBody setter every tick on a body that would
@@ -848,8 +887,19 @@ export function readback(world: World, engine: Engine3d): void {
     const v = body.linvel();
     const r = b.r ?? BB_POLLEN_R;
     const z = round4(t.z - r);
-    b.pos.x = round4(t.x);
-    b.pos.y = round4(t.y);
+    const x = round4(t.x);
+    const y = round4(t.y);
+    // ⚠️ STILL RELAXING ⇒ NOT ALLOWED TO SLEEP. Rapier sleeps a body that has been under ~4 in/s
+    // (0.4 × `lengthUnit`) for two seconds, and a settling FLOWER column pushes its overlaps
+    // apart far slower than that for far longer — so once seated elements COULD sleep (the REST
+    // SNAP note in `syncElement`) a scattered column froze mid-separation: worst pollen-pollen
+    // interpenetration 0.161 → 0.687 in. The test is whether the ROUNDED position moved this
+    // tick at all: a column still relaxing keeps resetting its own timer, and one that has
+    // stopped to 1e-4 in sleeps two seconds later. A sleeping body does not move, so this can
+    // never wake one.
+    if (Math.abs(x - b.pos.x) > RELAX_EPS || Math.abs(y - b.pos.y) > RELAX_EPS || Math.abs(z - b.z) > RELAX_EPS) body.wakeUp();
+    b.pos.x = x;
+    b.pos.y = y;
     b.z = z;
     b.vel.x = round4(v.x);
     b.vel.y = round4(v.y);
@@ -975,11 +1025,17 @@ export function groundRoll3d(world: World, engine: Engine3d, dt: number): void {
       // itself at rest, and `BALL_REST_SPEED` (2 in/s) is the same threshold the planar half
       // uses. A settled element still snaps exactly as before: its `vz` is already ~0.
       if (ns === 0 && Math.abs(b.vz) < BALL_REST_SPEED) b.vz = 0;
-      body.setLinvel({ x: b.vel.x, y: b.vel.y, z: b.vz }, true);
+      // WAKE ONLY WHAT IS MOVING. The bottom element of a FLOWER column sits in this floor band,
+      // and the column above it hands it a residual of a few 1e-4 every step — so zeroing it with
+      // `wakeUp: true` woke it, and through it the whole column's island, on every tick of the
+      // match (see `syncElement`'s REST SNAP note for the cost). A lone element on open tile
+      // never showed it: one floor contact leaves no residual, so the write was a no-op.
+      const moving = ns > 0 || b.vz !== 0;
+      body.setLinvel({ x: b.vel.x, y: b.vel.y, z: b.vz }, moving);
       // THE SPIN GOES WITH IT. Scaled by the same factor while it is rolling, zeroed with it at
       // rest — a stopped sphere still spinning re-accelerates itself through floor contact.
       const w = body.angvel();
-      body.setAngvel({ x: w.x * k, y: w.y * k, z: w.z * k }, true);
+      body.setAngvel({ x: w.x * k, y: w.y * k, z: w.z * k }, moving);
       continue;
     }
 
@@ -997,7 +1053,9 @@ export function groundRoll3d(world: World, engine: Engine3d, dt: number): void {
     b.vel.x = 0;
     b.vel.y = 0;
     b.vz = 0;
-    body.setLinvel({ x: 0, y: 0, z: 0 }, true);
-    body.setAngvel({ x: 0, y: 0, z: 0 }, true);
+    // `wakeUp: false` — a zeroing write has no reason to reset the sleep timer of a body that is
+    // at rest; see `syncElement`'s REST SNAP note for what waking it every tick cost.
+    body.setLinvel({ x: 0, y: 0, z: 0 }, false);
+    body.setAngvel({ x: 0, y: 0, z: 0 }, false);
   }
 }
