@@ -17,7 +17,7 @@ import { fileURLToPath } from 'node:url';
 import { moduleFor } from '../../src/games';
 import { hiveCellTarget } from '../../src/games/biobuzz/elements';
 import { bbAimHeading, bbTurretSolution } from '../../src/games/biobuzz/robot';
-import { bbAimTarget } from '../../src/games/biobuzz/play';
+import { bbAimTarget, bbCellSideOf, bbPretendHive, bbTurretShotEnters } from '../../src/games/biobuzz/play';
 import { BB_AIM_TOL, BB_CELL_OPEN, BB_HIVE_OPEN_Z, BB_HOOD_DEFAULT_DEG } from '../../src/games/biobuzz/config';
 // -- LANE A (FIELD RENDER) imports, kept in their own block beside lane B's --------------
 import {
@@ -778,17 +778,29 @@ export function renderChecks(check: Check): void {
       `points=${SHOT.points}`,
     );
 
-    // THE FAR CORNER: the turret has the range (`reachable`), and the shot still does not arrive —
-    // it crosses the hive axis from the wrong side, so it never comes down INBOARD through the
-    // opening. The verdict is the sim's own `hiveAccepts`, not a distance test, and this is the
-    // case that tells the two apart.
-    const w3 = aimed(-60, -60);
-    const far = solveShotPath(w3, w3.robots[0]);
-    check(
-      'shot path: a reachable arc that still misses the opening reports NOT MADE',
-      !far && !SHOT.made,
-      `reachable=${bbTurretSolution(w3.robots[0], bbAimTarget(w3, w3.robots[0]), 0)?.reachable}, made=${far}`,
-    );
+    // ⚠️ THE PATH'S VERDICT IS THE FIRE GATE'S, POSE FOR POSE (owner ruling, 2026-09-19: the path
+    // is drawn "in the case that we can make the shot assuming that the hive is completely up on
+    // the side that we are aiming for"). Stage 5b's gate asks `bbTurretShotEnters` of
+    // `bbPretendHive(hive, bbCellSideOf(target))`; so does the path, and this re-asks it by hand
+    // over a spread of poses — the far corner included, which used to read NOT MADE only because
+    // the REAL hive had the nearer cell down.
+    {
+      let disagree = 0;
+      let mades = 0;
+      const poses: [number, number][] = [[-60, -60], [-60, 60], [60, -60], [60, 60], [0, -50], [0, 50], [-40, 0], [40, 0], [cell.pos.x, cell.pos.y + 40], [cell.pos.x, 5]];
+      for (const [px, py] of poses) {
+        const wp = aimed(px, py);
+        const rp = wp.robots[0];
+        const tp = bbAimTarget(wp, rp);
+        const solp = bbTurretSolution(rp, tp, 0);
+        const gate =
+          !!solp && solp.reachable && bbTurretShotEnters(bbPretendHive(wp.biobuzz!.hives[rp.alliance], bbCellSideOf(tp)), rp, 0, solp.speed, 1 / 60);
+        const path = solveShotPath(wp, rp);
+        if (path) mades++;
+        if (path !== gate) disagree++;
+      }
+      check('shot path: over a spread of poses the path is drawn EXACTLY when the fire gate would release', disagree === 0 && mades > 0 && mades < poses.length, `${disagree} disagreements, ${mades}/${poses.length} made`);
+    }
 
     // AND THE CLOSED SIDE: parked between the two cells, the nearer one is the one facing away.
     const w3b = aimed(cell.pos.x, 5);
@@ -797,13 +809,16 @@ export function renderChecks(check: Check): void {
       !solveShotPath(w3b, w3b.robots[0]) && !SHOT.made,
     );
 
-    // THE REAL HIVE, NOT AIM ASSIST'S PRETEND-UP COPY: flip the aimed cell DOWN and the same shot
-    // that was made a moment ago is not made any more.
+    // THE AIMED CELL IS ASSUMED FULLY UP (owner ruling, 2026-09-19). Flip it DOWN and the path is
+    // still drawn: what the path promises is the SHOT, not the tray's timing, and a driver lining
+    // up on the cell that is about to come up is exactly who needs it. This check used to assert
+    // the opposite ("the REAL hive is read").
     const w4 = aimed(cell.pos.x, cell.pos.y + 40);
     w4.biobuzz!.hives.blue.up = 'south';
     check(
-      'shot path: the same shot at a cell that is DOWN reports NOT MADE (the REAL hive is read)',
-      !solveShotPath(w4, w4.robots[0]) && !SHOT.made,
+      'shot path: the same shot at a cell that is DOWN is still MADE (the aimed cell is assumed up)',
+      solveShotPath(w4, w4.robots[0]) && SHOT.made && SHOT.points >= 2,
+      `points=${SHOT.points}`,
     );
 
     // ⚠️ **A SHOT THAT CANNOT BE TAKEN IS AS UN-MADE AS ONE THAT FALLS SHORT** (owner,
@@ -827,16 +842,16 @@ export function renderChecks(check: Check): void {
       const wPassive = aimed(cell.pos.x, cell.pos.y + 40);
       wPassive.robots[0].passive = true;
       check('shot path: a PASSIVE practice dummy reports NOT MADE', !solveShotPath(wPassive, wPassive.robots[0]) && !SHOT.made);
-      // ⚠️ AND A SWINGING HIVE. `hiveTakingSide` names a cell all the way through a tip, which is
-      // right for the CAPTURE and wrong for a PROMISE: the flight predictor freezes the hive, the
-      // swing takes longer than the shot, and in 3D the tray is a real see-saw the element lands on
-      // while it is still moving. Measured, it was the ENTIRE residual of "a path was drawn and the
-      // shot did not score" — 28 of 28 in 3D.
+      // A SWINGING HIVE DOES NOT DARKEN THE PATH EITHER — same ruling. For one afternoon this
+      // refused outright (`hive.tipping > 0`), because a mid-swing cell was the whole residual of
+      // "a path was drawn and the shot did not score" (28 of 28 in 3D). The owner's rule is that
+      // the path answers for the shot with the aimed side assumed up; whether the tray is there
+      // when the element arrives is the driver's call, off the HUD's cell state.
       const wTip = aimed(cell.pos.x, cell.pos.y + 40);
       wTip.biobuzz!.hives.blue.tipping = 1.5;
       check(
-        'shot path: a cell MID-SWING reports NOT MADE (the predictor freezes a hive that is moving)',
-        !solveShotPath(wTip, wTip.robots[0]) && !SHOT.made && SHOT.points === 0,
+        'shot path: a cell MID-SWING is still MADE (the aimed cell is assumed up and settled)',
+        solveShotPath(wTip, wTip.robots[0]) && SHOT.made && SHOT.points >= 2,
         `tipping=${wTip.biobuzz!.hives.blue.tipping}`,
       );
     }
@@ -903,13 +918,13 @@ export function renderChecks(check: Check): void {
         `points=${SHOT.points}, tol=${BB_AIM_TOL}`,
       );
 
-      // and the same two negatives the turret has: the REAL hive is read, and range is not the
-      // test — the far corner is a dump that cannot arrive at all.
+      // the same ruling as the turret — the aimed cell is assumed up — and the one negative that
+      // is about RANGE: the far corner is a dump that cannot arrive at all.
       const wd3 = dumper(cell.pos.x, cell.pos.y + 30);
       wd3.biobuzz!.hives.blue.up = 'south';
       check(
-        'shot path (dumper): the same dump at a cell that is DOWN reports NOT MADE',
-        !solveShotPath(wd3, wd3.robots[0]) && !SHOT.made,
+        'shot path (dumper): the same dump at a cell that is DOWN is still MADE (assumed up)',
+        solveShotPath(wd3, wd3.robots[0]) && SHOT.made,
       );
       const wd4 = dumper(-60, -60);
       check('shot path (dumper): from the far corner, out of a lob’s reach, reports NOT MADE', !solveShotPath(wd4, wd4.robots[0]) && !SHOT.made);

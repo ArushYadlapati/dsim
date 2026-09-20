@@ -81,7 +81,13 @@ expected reading; its comment says why.
   passive robot, a dumper mid re-arm, 3D gating on alignment while the path ran a landing
   prediction (ONE predicate now: `bbTurretShotEnters` / `bbDumpShotEnters`), and a MID-SWING hive
   (28 of the last 28). Before 24.6 % (2D) / 53.8 % (3D) false paths over 1,600 cases; after 0.
-  The cost: a shot that WOULD score into a swinging cell draws nothing.
+  ⚠️ **THEN THE OWNER RULED ON THE LAST ONE, THE SAME DAY: the path is drawn "in the case that we
+  can make the shot assuming that the hive is completely up on the side that we are aiming for".**
+  So `solveShotPath` asks `bbPretendHive` — the fire gate's own copy — and a cell that is DOWN or
+  MID-SWING still draws a path; the `hive.tipping > 0` refusal is gone, and so is "against the
+  REAL hive". Path and gate are one verdict with no exception (a RENDER check re-asks the gate by
+  hand over a pose spread: 0 disagreements). The "0 false paths" figure above was measured with
+  the refusal in, and no longer holds for a down/swinging cell BY DESIGN.
 - **THE DUMPER IS A CATAPULT.** `bbDumpCluster`: four seats, two across × two high, ONE velocity,
   parallel arcs; the whole hopper on one tick. The 3D stagger (`perDump`, `BB_DUMP_STAGGER_S`) is
   deleted; 2D keeps the converging solve (`BbShot.cluster` is the switch). 20/28 poses score
@@ -127,8 +133,11 @@ at/under · `docaudit` ALL PASS · `contrast` ALL PASS · `bundleaudit` ALL ROUT
 
 ## Open, and owner decisions pending
 
-- Reset-to-defaults wipes per-season overrides too; the scope switch always opens on All games.
-- A mid-swing cell draws no path even for a shot that would score.
+- Keybinds: owner, same day — "keybinds should stay the same across seasons for sure". Read as:
+  shared is the default. Reset wiping per-season overrides and the scope switch opening on All
+  games are therefore right as built; nothing changed.
+- AI: owner — ignore the bots for now, they get an overall pass later. `BB_AI_WIN_RATE_FLOOR`
+  was NOT raised.
 - 3D still slides past a tall post at 0.4 in of overlap where 2D manages 1.0 — a box chassis in
   the 3D solve; no corner treatment closes it (a cylinder does 1.6).
 - `MODERATION_API_KEY`: `scratch/modtest.ts` is ready; the session could not read the owner's

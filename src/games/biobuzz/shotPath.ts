@@ -4,7 +4,7 @@ import { robotsEnabled } from '../../sim/match';
 import { BB_HOOD_DEFAULT_DEG } from './config';
 import { bbIsTurreted, bbLauncherOf, bbTurretFor } from './mechs';
 import { bbTurretSolution } from './robot';
-import { bbAimTarget, bbDumpShotEnters, bbTurretShotEnters, type BbFlightTrace } from './play';
+import { bbAimTarget, bbCellSideOf, bbDumpShotEnters, bbPretendHive, bbTurretShotEnters, type BbFlightTrace } from './play';
 import { biobuzzPhysics } from './state';
 
 /**
@@ -27,14 +27,24 @@ import { biobuzzPhysics } from './state';
  * wherever it goes and a driver aims by it. There is one loop now.
  *
  * ── WHAT "MADE" MEANS, EXACTLY ──────────────────────────────────────────────────────────────
- * The predicted flight enters the robot's OWN HIVE CELL — `hiveAccepts`, the same predicate the
- * capture pass uses: inside the taking cell's opening footprint, within the opening-height band,
- * descending, and travelling inboard. Against the REAL hive state, not Aim Assist's pretend-up
- * copy (`play.ts` stage 5b): the assist aims at the nearer cell whichever way the HIVE is tilted,
- * and a path drawn off that belief would promise a shot at a cell that is down. Anything else —
- * out of range, a barrel that cannot make the arc (`reachable`), a swing that has taken the cell
- * away, a dumper off its aim heading, a dump where any one element would fall short — is NOT made,
- * and NOTHING is drawn.
+ * The predicted flight enters the HIVE CELL the robot is aiming at — `hiveAccepts`, the same
+ * predicate the capture pass uses: inside that cell's opening footprint, within the opening-height
+ * band, descending, and travelling inboard — **ASSUMING THAT CELL IS FULLY UP** (owner ruling,
+ * 2026-09-19: "we draw it in the case that we can make the shot assuming that the hive is
+ * completely up on the side that we are aiming for"). That is `bbPretendHive`, the very copy
+ * stage 5b's fire gate asks, so the path and the gate are now ONE verdict with no exception: a
+ * path is drawn exactly when holding fire would release.
+ *
+ * This REVERSES two earlier readings, both on record here so nobody re-derives them: the path
+ * used to ask the REAL hive (so a cell that was down drew nothing), and for one afternoon it also
+ * refused outright while the hive was mid-swing (`hive.tipping > 0`). Both made the path go dark
+ * for a driver lining up on the cell that is about to come up, which is precisely when they need
+ * it. What the path promises is the SHOT — range, barrel, arc, aim — not the tray's timing; a
+ * shot at a cell that is down or swinging is released and misses, as it would on a real field,
+ * and the HUD's cell state is what tells a driver which side is live.
+ *
+ * Anything else — out of range, a barrel that cannot make the arc (`reachable`), a dumper off its
+ * aim heading, a dump where any one element would fall short — is NOT made, and NOTHING is drawn.
  *
  * A turret's shot is the one it would take RIGHT NOW, at its CURRENT yaw and pitch (not at its
  * solution), so a turret still slewing shows nothing until it is actually on target. A dumper's
@@ -97,21 +107,10 @@ export function solveShotPath(world: World, r: RobotState): boolean {
   SHOT.points = 0;
   const bb = world.biobuzz;
   if (!bb || !bbCanFire(world, r)) return false;
-  const hive = bb.hives[r.alliance];
-  // ⚠️ **A SWINGING HIVE IS NOT A TARGET A PATH MAY PROMISE.** `bbFlightEnters` integrates against
-  // a FROZEN hive, and a tip takes `BB_TIP_SWING_S` while a shot takes ~0.7 s — so a cell that is
-  // mid-swing when the path is drawn is a different cell by the time the element arrives.
-  // `hiveTakingSide` still names one throughout the swing, which is right for the CAPTURE (an
-  // element already in the air belongs to the tray that is still holding its load) and wrong for a
-  // PROMISE. MEASURED over a 288-case pose/velocity/hive grid: it is the ENTIRE residual of "the
-  // dotted line was drawn and the shot did not score" — 28 of 28 in 3D, where the tray is a real
-  // see-saw the element lands on while it is still moving, and the whole of the difference between
-  // the two pipelines' agreement. Refusing here costs a handful of 2D shots that would have gone
-  // in and makes the rule the one the guide already states: a cell that is down or mid-swing draws
-  // nothing.
-  if (hive.tipping > 0) return false;
   const launcher = bbLauncherOf(r.spec, BB_HOOD_DEFAULT_DEG);
   const target = bbAimTarget(world, r);
+  // THE CELL BEING AIMED AT, ASSUMED FULLY UP — the fire gate's own copy (see the header).
+  const hive = bbPretendHive(bb.hives[r.alliance], bbCellSideOf(target));
 
   if (bbIsTurreted(launcher)) {
     const top = r.hopper[r.hopper.length - 1];
@@ -120,10 +119,6 @@ export function solveShotPath(world: World, r: RobotState): boolean {
     // an arc the barrel cannot make is fired anyway (honestly, and it misses) — there is no path
     // to promise for it
     if (!sol || !sol.reachable) return false;
-    // ⚠️ AGAINST THE REAL HIVE, NOT AIM ASSIST'S PRETEND-UP COPY. The assist aims at the nearer
-    // cell whichever way the HIVE is tilted; a path drawn off that belief would promise a shot at
-    // a cell that is DOWN. `bbPretendHive`'s header shows the difference is one-directional, so
-    // this is strictly the stricter of the two and a drawn path is never a shot the gate refuses.
     if (!bbTurretShotEnters(hive, r, which, sol.speed, SIM_DT, TRACE)) return false;
     SHOT.made = true;
     SHOT.points = TRACE.n;

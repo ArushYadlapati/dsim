@@ -1012,11 +1012,9 @@ export function bbCellSideOf(t: ScoreTarget): 'north' | 'south' {
  * capture reads the real HIVE, so a shot at a down or swinging cell is released and misses,
  * which is what a driver would get on a real field.
  *
- * ⚠️ AND IT IS THE ONE PLACE THE FIRE GATE AND THE DRAWN PATH DELIBERATELY DIFFER: the gate asks
- * this copy, `shotPath.ts` asks the REAL hive. That difference is ONE-DIRECTIONAL by construction
- * — `hiveAccepts` reads a hive only through `hiveTakingSide`, and this copy's taking side is
- * `side` by definition, so REAL-accepts implies PRETEND-accepts and never the other way. A path
- * is therefore never drawn for a shot the gate would refuse.
+ * THE DRAWN PATH ASKS THIS SAME COPY (owner ruling, 2026-09-19 — `shotPath.ts`'s header). It used
+ * to ask the REAL hive, which made the gate and the path differ by design; they are one verdict
+ * now, and a path is drawn exactly when holding fire would release.
  */
 export function bbPretendHive(hive: BiobuzzState['hives'][Alliance], side: 'north' | 'south'): BiobuzzState['hives'][Alliance] {
   return { ...hive, up: side, tipping: 0, released: false };

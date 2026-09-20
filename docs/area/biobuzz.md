@@ -276,8 +276,10 @@ newest-first — it is never ranked, which is what keeps the two eras from meeti
   import from it — answers "would this shot go in, and what does it fly through". `drawShot.ts`
   draws it on the 2D map and `scene/renderReticle.ts` in 3D, and neither works anything out for
   itself. The rules: a path ONLY for a shot that is MADE, drawn DOTTED, with no landing ring at the
-  end. "Made" is `hiveAccepts` against the REAL hive (not Aim Assist's pretend-up copy), so a cell
-  that is down or mid-swing draws nothing. `bbFlightEnters` now takes an optional `BbFlightTrace`
+  end. "Made" is `hiveAccepts` with the AIMED cell ASSUMED FULLY UP (`bbPretendHive`, the copy stage
+  5b's fire gate asks — owner ruling 2026-09-19, reversing "against the REAL hive"), so the path
+  is drawn exactly when holding fire would release, and a cell that is down or mid-swing still
+  draws one. `bbFlightEnters` now takes an optional `BbFlightTrace`
   out-parameter and records the arc into a caller-owned buffer, which is what retired
   `scene/renderLanding.ts` — that file carried a COPY of the integrator, and its own header said
   the copy would drift.
