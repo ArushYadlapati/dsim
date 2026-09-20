@@ -213,6 +213,10 @@ export function BiobuzzHudChips({ hud }: GameHudProps) {
     hud.phase,
     BB_WARN_HOLD_S,
   );
+  // ...and whether it has climbed all the way to the STRATEGIC MAJOR (owner ruling 2026-09-19).
+  // A flag, not a held bump: the MAJOR is a per-MATCH latch, so once it is true it stays the
+  // fact for the rest of the match, the same way a red card would.
+  const majored = f?.controlMajor[hud.alliance] ?? false;
   /**
    * G410, FROM THE OTHER SIDE: the moment the FLOWERS OPEN.
    *
@@ -281,12 +285,19 @@ export function BiobuzzHudChips({ hud }: GameHudProps) {
           one chip is a new pair to justify, and the meaning here is the same one `FLOWER IN
           REACH` already uses — a thing you may now do. */}
       {opened && <span className="chip on">FLOWERS OPEN</span>}
-      {/* G407 — CONTROL of a fifth SCORING ELEMENT. The owner's ruling makes this a WARNING
-          worth no points and no card, which is exactly why it needs a chip: a sanction that
-          moves no number is invisible on a scoreboard unless the HUD says it happened. Held
+      {/* G407 — CONTROL of a fifth SCORING ELEMENT. The base sanction is a WARNING worth no
+          points and no card, which is exactly why it needs a chip: a sanction that moves no
+          number is invisible on a scoreboard unless the HUD says it happened. Held
           `BB_WARN_HOLD_S` off the match clock (see `useHeldBump`), because the underlying
-          count never comes back down. */}
-      {warned && <span className="chip warn">CONTROL 5+</span>}
+          count never comes back down.
+          ⚠️ ONCE THE STRATEGIC MAJOR BILLS (owner ruling 2026-09-19), the chip SWITCHES rather
+          than adds a second one: same slot, `.chip.bad` in place of `.chip.warn`, so the driver
+          sees the escalation coming without a row that grows. `majored` is a latch, not a held
+          bump, so the chip stays up for the rest of the match once it is true — existing
+          classes only, no new colour to audit. */}
+      {(warned || majored) && (
+        <span className={`chip ${majored ? 'bad' : 'warn'}`}>{majored ? 'CONTROL 5+ MAJOR' : 'CONTROL 5+'}</span>
+      )}
       {/* G421 — a PIN, counting. 20 points every three seconds, and the clock runs in a
           referee's head, so `nextIn` is the only warning either driver gets.
 

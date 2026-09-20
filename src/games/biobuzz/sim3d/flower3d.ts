@@ -1,7 +1,7 @@
 import type { Artifact, RobotCommand, RobotState, World } from '../../../types';
 import type { BiobuzzState } from '../state';
 import type { BbElementKind } from '../flower';
-import { bbElementRadius } from '../flower';
+import { bbElementRadius, bbFlowerDropSlack, bbFlowerScatter } from '../flower';
 import { BB_FLOWERS, BB_FLOWER_RETRIEVE_S, FLOWER_RING_Z, bbHopperCap } from '../config';
 import { capturePollen, takeHeld } from '../elements';
 import { bbLiftOf } from '../mechs';
@@ -57,30 +57,55 @@ export { bbFlowerAtIntake };
  * (`sqrt(r² − 0.375²)` below 22.40); the top plate's underside, 20.254, is below both with room
  * to spare and is a MEASURED feature rather than a number tuned against that arithmetic.
  *
- * ⚠️ **AND THE DROP IS DEAD ON THE AXIS ON PURPOSE. DO NOT JITTER IT.** This is the obvious
- * thing to try, because the column it produces is a mathematically perfect vertical line — every
- * POLLEN settles at dxy 0.0000, and the 3.222-in lower bore leaves a 2.8-in POLLEN 0.211 in of
- * radial slack it never uses, so a lateral seat looks like the cure for "the balls stack too
- * perfectly". MEASURED through `step3d` in flower 0 at `BB3_CONTACT_FREQ` = 30, worst
- * pollen-pollen centre gap against the ideal 2.800 (4-stack / 8-stack overlap, max dxy):
+ * ⚠️ **THE DROP IS SCATTERED, AND IT COULD NOT BE UNTIL THE TUBE HAD A WALL.** This comment used
+ * to say "DEAD ON THE AXIS ON PURPOSE, DO NOT JITTER IT", and the table it carried was real:
+ * through `step3d` in flower 0 at `BB3_CONTACT_FREQ` = 30, worst pollen-pollen centre gap
+ * against the ideal 2.800 (4-stack / 8-stack overlap, max dxy), **with no cage in the tube**:
  *
- *   offset 0      0.065 / 0.152 in, dxy 0.000   ← today
+ *   offset 0      0.065 / 0.152 in, dxy 0.000
  *   offset 0.032  0.795 / 0.834,    dxy 1.015
- *   offset 0.053  0.790 / 0.834,    dxy 1.015
- *   offset 0.084  0.796 / 0.831,    dxy 1.015
  *   offset 0.160  0.790 / 0.829,    dxy 1.015
  *
- * An offset of 15 % of the slack already TOPPLES the column — a ball ends up an inch off the
- * axis, resting on the shoulder of the one below instead of on top of it — and that costs an
- * ORDER OF MAGNITUDE of interpenetration, because a shouldered pair's centres sit far closer
- * than a stacked pair's. The response is not proportional either: 0.032 and 0.160 topple the
- * same amount, so there is no small safe value. The reason is the tube itself: above the lower
- * plate the bore opens to 3.896 and then to 4.171, and nothing up there holds a column vertical.
- * What made the picture read as fake was the INTERPENETRATION, not the alignment, and that was a
- * contact-stiffness question — `BB3_CONTACT_FREQ`, applied in `engineImpl.ts` — not a drop-point
- * one. The FLOWER3D lane measures both halves.
+ * An offset of 15 % of the slack toppled the column and cost an ORDER OF MAGNITUDE of
+ * interpenetration, and the response was not proportional — 0.032 and 0.160 toppled the same
+ * amount — so there was no small safe value. That was never a fact about the drop point. It was
+ * the same fact as the JAM the owner reported: above the mid plate the tube had **no wall at
+ * all**, only four HIPS pipes at the diagonals, so a POLLEN centre could reach 1.046 in off-axis
+ * through the gaps between them and a column simply fell onto its own shoulders. See
+ * `BB3_FLOWER_CAGE_SEGMENTS` in `config.ts` for that measurement.
+ *
+ * With the cage in (`flowerTube.ts`) the same sweep is FLAT, because there is nowhere left to
+ * topple to. Re-measured the same way, worst pollen-pollen interpenetration as a TRUE 3D centre
+ * distance (the old table's z gap and the centre distance are the same number only for a column
+ * that is dead on the axis, which is exactly what this change stops being true):
+ *
+ *   offset   4-stack / 8-stack   max dxy
+ *   0.000    0.066 / 0.151       0.000
+ *   0.032    0.059 / 0.145       0.668
+ *   0.160    0.064 / 0.133       0.671   ← a POLLEN's scatter today (0.158)
+ *   0.411    0.054 / 0.126       0.664
+ *   0.548    0.061 / 0.133       0.669   ← the whole of the cage's slack
+ *
+ * So the scatter is free: it costs no interpenetration at any magnitude the cage allows, and the
+ * dxy it produces is bounded by the tube rather than by the drop point. What the drop point IS
+ * still bounded by is the fall — `bbFlowerDropSlack` in `flower.ts`, which is a BORE and not
+ * the cage, and whose header carries the ejection that settled it. `BB3_FLOWER_SCATTER_FRAC`
+ * sizes the draw; `bbFlowerScatter` is the draw, and it is a HASH and not the world's PRNG chain,
+ * for the reason written there. The pre-match STAGED columns take the same draw in `spawn.ts`,
+ * under a `'3d'` gate, so the first four columns of a match are scattered too.
  */
 const PLACE_CENTRE_Z = FLOWER_RING_Z.top[0];
+
+/**
+ * THE SCATTER MIX for a PLACED element: the world's own `rngState` (read, never advanced) with
+ * the TICK folded in. `bbFlowerScatter` (`../flower.ts`) is the draw and its header carries why
+ * it is a hash rather than a chain; the tick is added here and not there because it is what tells
+ * two placements of the SAME element apart — a POLLEN retrieved out of the bottom and put back in
+ * later should not land in the same spot it did the first time, and its id has not changed.
+ */
+function placeMix(world: World): number {
+  return (world.rngState ^ Math.imul(world.tick + 1, 0x9e3779b1)) | 0;
+}
 
 /**
  * Is there ROOM in flower `i` for one more element of radius `r`?
@@ -137,10 +162,17 @@ export function flowerPlace3d(
   const ball = takeHeld(world, rob, color);
   if (!ball) return false;
   const f = BB_FLOWERS[i];
+  // the room the TIGHTEST BORE THIS ELEMENT FITS THROUGH leaves its centre — a POLLEN 0.211 in,
+  // a NECTAR 0.148. NOT the cage's 0.548: see `bbFlowerDropSlack` for the ejection that measured
+  // the difference.
+  const off = bbFlowerScatter(placeMix(world), ball.id, i, bbFlowerDropSlack(r));
   ball.state = { kind: 'element', el: `flower:${i}`, slot: 0 };
-  ball.pos.x = f.x;
-  ball.pos.y = f.y;
+  ball.pos.x = f.x + off.x;
+  ball.pos.y = f.y + off.y;
   ball.z = PLACE_CENTRE_Z - r;
+  // STILL ZERO VELOCITY (§3.7's "dropped at the top ring with zero velocity"). The scatter is a
+  // seat, not a throw: a lateral velocity would have to be small enough not to bounce the element
+  // off the cage and large enough to see, and the offset already does the visible half.
   ball.vel.x = 0;
   ball.vel.y = 0;
   ball.vz = 0;

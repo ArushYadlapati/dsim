@@ -351,6 +351,246 @@ async function main(): Promise<void> {
     renderer.render(three, freeCam);
   }
 
+  // ── CLEAR-PANEL CONTRIBUTION PROBE (2026-09-19, owner: "the back panel of the hive is TOO
+  // transparent when seen from the back, but from the front it looks fine") ──────────────────
+  //
+  // A panel's real bug is not its alpha, it is HOW MANY PIXELS IT CHANGES. So this renders the
+  // same free-camera view TWICE — once with the clear panels visible, once with them hidden —
+  // and reports the per-pixel luminance delta. That number is the panel's visibility, in the
+  // real shader, against whatever happens to be behind it in that view, which is the whole
+  // question. `hide` picks the family: the hive CELL skins (`plastic#e6e6e6` in a tray node) or
+  // the perimeter WALL glass. Preview-only, additive; it touches nothing the app ships.
+  function panelMeshes(kind: 'cells' | 'walls'): THREE.Mesh[] {
+    const three = (scene as unknown as { scene: THREE.Scene }).scene;
+    const out: THREE.Mesh[] = [];
+    three.traverse((o) => {
+      if (!(o instanceof THREE.Mesh)) return;
+      const m = Array.isArray(o.material) ? o.material[0] : o.material;
+      const mn = m?.name ?? '';
+      const on = o.name ?? '';
+      const isCell = mn.startsWith('plastic#e6e6e6@hive_tray') || /:cell:[a-z]+:(back|side|ceiling)/.test(on);
+      const isWall = mn.startsWith('glass#') || /^wall:/.test(on);
+      if (kind === 'cells' ? isCell : isWall) out.push(o);
+    });
+    return out;
+  }
+  function lum(d: Uint8Array, i: number): number {
+    return 0.2126 * d[i] + 0.7152 * d[i + 1] + 0.0722 * d[i + 2];
+  }
+  function readFrame(): { data: Uint8Array; w: number; h: number } {
+    const renderer = (scene as unknown as { renderer: THREE.WebGLRenderer }).renderer;
+    const gl = renderer.getContext();
+    const wpx = gl.drawingBufferWidth;
+    const hpx = gl.drawingBufferHeight;
+    const data = new Uint8Array(wpx * hpx * 4);
+    gl.readPixels(0, 0, wpx, hpx, gl.RGBA, gl.UNSIGNED_BYTE, data);
+    return { data, w: wpx, h: hpx };
+  }
+  function toPng(f: { data: Uint8Array; w: number; h: number }): string {
+    const cv = document.createElement('canvas');
+    cv.width = f.w;
+    cv.height = f.h;
+    const c = cv.getContext('2d')!;
+    const img = c.createImageData(f.w, f.h);
+    // readPixels is bottom-up; an ImageData is top-down.
+    for (let y = 0; y < f.h; y++) {
+      const src = (f.h - 1 - y) * f.w * 4;
+      img.data.set(f.data.subarray(src, src + f.w * 4), y * f.w * 4);
+    }
+    c.putImageData(img, 0, 0);
+    return cv.toDataURL('image/png');
+  }
+  function renderAt(eye: [number, number, number], target: [number, number, number], fov: number): void {
+    scene.render(world, {
+      alpha: 1,
+      viewAngle: viewAngleOf(alliance),
+      camera,
+      localRobotId: alliance === 'red' ? 0 : 2,
+      width: host.clientWidth,
+      height: host.clientHeight,
+      dpr: window.devicePixelRatio || 1,
+    });
+    const renderer = (scene as unknown as { renderer: THREE.WebGLRenderer }).renderer;
+    const three = (scene as unknown as { scene: THREE.Scene }).scene;
+    freeCam.fov = fov;
+    freeCam.aspect = host.clientWidth / host.clientHeight;
+    freeCam.position.set(eye[0], eye[1], eye[2]);
+    freeCam.lookAt(target[0], target[1], target[2]);
+    freeCam.updateProjectionMatrix();
+    renderer.render(three, freeCam);
+  }
+  /** the live tray pose, so a probe script can place a camera on a CELL's own mouth/back normal
+   * instead of guessing one — the local (v, w) box rotates by `theta` about the pivot, exactly as
+   * `placeElementInUpCell` above does it. */
+  (window as unknown as { __bbHive: () => unknown }).__bbHive = () => {
+    const out: Record<string, unknown> = {};
+    for (const a of ['red', 'blue'] as const) {
+      const h = world.biobuzz?.hives[a];
+      const theta = hiveTiltAngle(world, a);
+      const up = h?.up ?? BB_HIVE_UP_STAGED[a];
+      out[a] = {
+        theta,
+        up,
+        tipping: h?.tipping ?? 0,
+        pivot: [hivePivotX(a), 0, BB3_HIVE_PIVOT_Z],
+        north: hiveCellLocalBox(1, a),
+        south: hiveCellLocalBox(-1, a),
+      };
+    }
+    return out;
+  };
+  /** move the key light, to separate "this panel is lit" from "this panel is visible" — the whole
+   * point of the 2026-09-19 measurement. `null` restores `renderScene.ts`'s own position. */
+  (window as unknown as { __bbSun: (p: [number, number, number] | null) => unknown }).__bbSun = (p) => {
+    const three = (scene as unknown as { scene: THREE.Scene }).scene;
+    let hit: THREE.DirectionalLight | null = null;
+    three.traverse((o) => {
+      if (!hit && (o as THREE.DirectionalLight).isDirectionalLight) hit = o as THREE.DirectionalLight;
+    });
+    if (!hit) return 'no directional light';
+    const sun = hit as THREE.DirectionalLight;
+    const q = p ?? [60, -80, 140];
+    sun.position.set(q[0], q[1], q[2]);
+    return q;
+  };
+
+  /**
+   * ⚠️ THE MASK IS THE PANEL'S OWN FOOTPRINT, NOT "the pixels that changed". A mean taken over
+   * changed pixels alone cannot see the failure being measured — a panel that vanishes over half
+   * its area scores the same as one that is uniformly present, because the vanished half is not
+   * in the denominator. So a THIRD pass renders the same panel OPAQUE and that silhouette is the
+   * denominator, and `deadFrac` reports how much of it the eye cannot find.
+   *
+   * `clip` narrows the clear-panel material to a convex region (each entry keeps `n·p + c ≥ 0`),
+   * which is how ONE skin of a six-skin merged mesh gets measured on its own.
+   *
+   * The reported contrast is WEBER, |ΔL| / L(background): a +15 on a bright khaki backdrop and a
+   * +15 on the dark tiles are not the same picture, and the owner is reporting the first one.
+   */
+  (
+    window as unknown as {
+      __bbProbe: (spec: {
+        eye: [number, number, number];
+        target: [number, number, number];
+        fov?: number;
+        hide?: 'cells' | 'walls';
+        clip?: { n: [number, number, number]; c: number }[];
+        png?: boolean;
+      }) => unknown;
+    }
+  ).__bbProbe = (spec) => {
+    w.__bbFreeze = true;
+    freeView = null; // the frame loop must not re-render over the buffer we are about to read
+    const fov = spec.fov ?? 35;
+    const kind = spec.hide ?? 'cells';
+    const meshes = panelMeshes(kind);
+    const renderer = (scene as unknown as { renderer: THREE.WebGLRenderer }).renderer;
+    const mats = [...new Set(meshes.map((m) => (Array.isArray(m.material) ? m.material[0] : m.material)))];
+    const planes = (spec.clip ?? []).map((p) => new THREE.Plane(new THREE.Vector3(p.n[0], p.n[1], p.n[2]), p.c));
+    const prevLocal = renderer.localClippingEnabled;
+    if (planes.length) {
+      renderer.localClippingEnabled = true;
+      for (const m of mats) m.clippingPlanes = planes;
+    }
+
+    renderAt(spec.eye, spec.target, fov);
+    const withP = readFrame();
+    const png = spec.png ? toPng(withP) : undefined;
+
+    const prevVis = meshes.map((m) => m.visible);
+    for (const m of meshes) m.visible = false;
+    renderAt(spec.eye, spec.target, fov);
+    const without = readFrame();
+    meshes.forEach((m, i) => (m.visible = prevVis[i]));
+    const pngHidden = spec.png ? toPng(without) : undefined;
+
+    // the silhouette pass
+    const prevT = mats.map((m) => [(m as THREE.MeshStandardMaterial).transparent, (m as THREE.MeshStandardMaterial).opacity, (m as THREE.MeshStandardMaterial).depthWrite] as const);
+    for (const m of mats) {
+      const s = m as THREE.MeshStandardMaterial;
+      s.transparent = false;
+      s.opacity = 1;
+      s.depthWrite = true;
+      s.needsUpdate = true;
+    }
+    renderAt(spec.eye, spec.target, fov);
+    const solid = readFrame();
+    mats.forEach((m, i) => {
+      const s = m as THREE.MeshStandardMaterial;
+      s.transparent = prevT[i][0];
+      s.opacity = prevT[i][1];
+      s.depthWrite = prevT[i][2];
+      s.needsUpdate = true;
+    });
+    if (planes.length) {
+      for (const m of mats) m.clippingPlanes = null;
+      renderer.localClippingEnabled = prevLocal;
+    }
+
+    let mask = 0;
+    // DETAIL KEPT: the luminance spread inside the panel's own silhouette, with the panel and
+    // without it. A veil that washes the elements out shows up here and nowhere else — a mean
+    // delta cannot tell "a milky sheet you can still read a NECTAR through" from "a white board".
+    let sumW = 0;
+    let sumW2 = 0;
+    let sumO = 0;
+    let sumO2 = 0;
+    let sumAbs = 0;
+    let sumSigned = 0;
+    let sumWeber = 0;
+    let sumRgb = 0;
+    let sumBg = 0;
+    let dead = 0;
+    let peak = 0;
+    const total = withP.w * withP.h;
+    // ⚠️ THE SILHOUETTE TEST IS PER CHANNEL, NOT ON LUMINANCE. A grey panel and the warm room
+    // behind it can sit at the SAME luminance and differ entirely in hue — a luminance test threw
+    // most of the panel's own area out of its own denominator and left a rim, which is how the
+    // first run of this probe reported a 13k-pixel mask for a panel covering ten times that.
+    const chan = (d: Uint8Array, i: number, bs: Uint8Array): number =>
+      Math.max(Math.abs(d[i] - bs[i]), Math.abs(d[i + 1] - bs[i + 1]), Math.abs(d[i + 2] - bs[i + 2]));
+    for (let i = 0; i < total * 4; i += 4) {
+      if (chan(solid.data, i, without.data) < 2) continue; // not the panel's own silhouette
+      mask++;
+      const bg = lum(without.data, i);
+      const lw = lum(withP.data, i);
+      sumW += lw;
+      sumW2 += lw * lw;
+      sumO += bg;
+      sumO2 += bg * bg;
+      const d = lw - bg;
+      const ad = Math.abs(d);
+      const rgb = chan(withP.data, i, without.data);
+      sumAbs += ad;
+      sumSigned += d;
+      sumRgb += rgb;
+      sumBg += bg;
+      sumWeber += rgb / Math.max(bg, 1);
+      if (rgb < 2) dead++;
+      if (ad > peak) peak = ad;
+    }
+    return {
+      meshes: meshes.length,
+      w: withP.w,
+      h: withP.h,
+      maskPx: mask,
+      maskFrac: mask / total,
+      detailKeep: mask
+        ? Math.sqrt(Math.max(sumW2 / mask - (sumW / mask) ** 2, 0)) /
+          Math.max(Math.sqrt(Math.max(sumO2 / mask - (sumO / mask) ** 2, 0)), 1e-6)
+        : 0,
+      meanAbs: mask ? sumAbs / mask : 0,
+      meanRgb: mask ? sumRgb / mask : 0,
+      meanSigned: mask ? sumSigned / mask : 0,
+      weber: mask ? sumWeber / mask : 0,
+      meanBg: mask ? sumBg / mask : 0,
+      deadFrac: mask ? dead / mask : 0,
+      peak,
+      png,
+      pngHidden,
+    };
+  };
+
   status('rendering (stepping the world live)...');
   let tick = 0;
   function frame(): void {

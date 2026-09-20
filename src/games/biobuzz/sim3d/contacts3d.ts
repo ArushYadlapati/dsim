@@ -1,39 +1,37 @@
-import type { Alliance, Vec2, World } from '../../../types';
+import type { Alliance, World } from '../../../types';
 import { BB3_REST_SPEED } from '../config';
-import { BB_FRAME_RAM_SPEED, bbBillG409 } from '../penalties';
-import { GROUP_FRAME, GROUP_TRAY } from './bodies';
+import { bbBillG409 } from '../penalties';
+import { GROUP_TRAY } from './bodies';
 import type { Engine3d } from './engineImpl';
 import type { Rapier3d } from './engine';
 
 /**
- * BIOBUZZ 3D PHYSICS — THE TWO RULES THAT ARE ABOUT TOUCHING SOMETHING (Day 2, plan §3.6).
+ * BIOBUZZ 3D PHYSICS — THE ONE RULE THAT IS ABOUT TOUCHING SOMETHING (Day 2, plan §3.6).
  *
- * G409 and G417 are the only BIOBUZZ rules whose subject is a CONTACT rather than a position,
- * and neither of them could be asked in the 2D pipeline at all:
+ * **G409** — "a ROBOT may not catch SCORING ELEMENTS spilling from a TIPPED HIVE" — is a
+ * CONTACT rather than a position, and it could not be asked in the 2D pipeline at all: the 2D
+ * spill is `spillPoses`, a scatter of positions the tray HANDS to the tiles; nothing flies, so
+ * there is no "first thing it touched" to catch. `penalties.ts` has always recorded it as "not
+ * modelled (spill lands on tiles)".
  *
- *  · **G409** — "a ROBOT may not catch SCORING ELEMENTS spilling from a TIPPED HIVE". The 2D
- *    spill is `spillPoses`, a scatter of positions the tray HANDS to the tiles; nothing flies,
- *    so there is no "first thing it touched" to catch. `penalties.ts` has always recorded it as
- *    "not modelled (spill lands on tiles)".
- *  · **G417** — "ROBOTS may not manipulate the motion of the HIVE in any way other than by
- *    LAUNCHING". It is OFF in 2D by owner ruling (2026-09-13) for a reason that was true and no
- *    longer is: no robot could move the hive, so every award was a major charged for an outcome
- *    the simulation could not produce. Under the DYNAMIC see-saw the tray is a body a 29-in
- *    chassis reaches, so the rule comes back — for this pipeline only.
+ * ⚠️ **3D-ONLY, AND THE 2D PIPELINE IS BYTE-IDENTICAL BECAUSE OF HOW.** The rule is not
+ * implemented here in terms of "the offence happened"; it writes a PLAIN JSON FACT onto
+ * `world.biobuzz` (`spill`) and `penalties.ts` bills from it. A 2D world never gets that field
+ * written, so the same penalty loop finds nothing and does nothing, exactly the way it already
+ * treats an absent `physics` tag.
  *
- * ⚠️ **BOTH ARE 3D-ONLY, AND THE 2D PIPELINE IS BYTE-IDENTICAL BECAUSE OF HOW.** Neither rule is
- * implemented here in terms of "the offence happened"; each writes a PLAIN JSON FACT onto
- * `world.biobuzz` (`spill`, `hiveRam`) and `penalties.ts` bills from it. A 2D world never gets
- * those fields written, so the same penalty loop finds nothing and does nothing, exactly the way
- * it already treats an absent `physics` tag.
+ * **G417** (meddling with the HIVE, including ramming its frame) used to live here too — this
+ * file wrote `bb.hiveRam` from the solve's own contact pairs, and `penalties.ts` billed a MAJOR
+ * from it. It is REMOVED entirely (owner ruling, 2026-09-19: every HIVE-ramming penalty is gone
+ * from both pipelines), so `hiveRam` no longer exists on `world.biobuzz` and this file no
+ * longer reads a HIVE FRAME collider at all — the group discriminator below is the TRAY alone.
  *
  * ── DETERMINISM ─────────────────────────────────────────────────────────────────────────────
  * Rapier's contact pairs come back in whatever order the narrow phase holds them, which is a
- * solver-internal ordering this lane does not get to assume anything about. Everything below is
- * therefore ORDER-INSENSITIVE by construction: G417 keeps the LARGEST closing speed per robot
- * (a max, not a first), and G409 iterates the SPILLED ELEMENTS in ascending id and takes the
- * first robot contact each one has, which is a question with one answer however the pairs are
- * enumerated. Nothing here appends to a list whose order could differ between two peers.
+ * solver-internal ordering this lane does not get to assume anything about. G409 iterates the
+ * SPILLED ELEMENTS in ascending id and takes the first robot contact each one has, which is a
+ * question with one answer however the pairs are enumerated. Nothing here appends to a list
+ * whose order could differ between two peers.
  */
 
 /** which collider group a collider belongs to — the discriminator `bodies.ts` already had to
@@ -43,94 +41,17 @@ function groupsOf(collider: { collisionGroups(): number }): number {
   return collider.collisionGroups();
 }
 
-/** is this collider part of a HIVE (either tray or frame)? The two are the whole of "the HIVE"
- * for G417: Table 10-4's example A is "ramming into the HIVE frame at high-speed", and the tray
- * is the half a tall robot can actually move. */
-function isHiveCollider(groups: number): boolean {
-  return groups === GROUP_TRAY || groups === GROUP_FRAME;
-}
-
 /**
- * ONE PASS over the 3D solve's contact pairs, after the step, filling `bb.spill` and
- * `bb.hiveRam` and billing G409 where a robot caught a spilling element.
+ * ONE PASS over the 3D solve's contact pairs, after the step, filling `bb.spill` and billing
+ * G409 where a robot caught a spilling element.
  *
  * Runs in `step3d.ts` between the readback and the gameplay stage: the contact set is the one
  * the step just resolved, and the JSON positions it is read against are the ones the readback
  * just wrote, so the two halves of every judgement are from the same instant.
  */
-export function hiveContactPass(world: World, engine: Engine3d, preVels?: Map<number, Vec2>): void {
+export function hiveContactPass(world: World, engine: Engine3d): void {
   const bb = world.biobuzz;
   if (!bb) return;
-
-  // ── G417: which robots hit a HIVE, and how hard ───────────────────────────────────────────
-  // Rebuilt from scratch every tick — it is a read of what is touching right now, and the
-  // "once per MATCH per ROBOT" half of the rule is `bb.held[robot].g417billed`, where it has
-  // always lived. A latch here would be a second, redundant memory of the same fact.
-  const ram: Record<number, number> = {};
-  for (const r of world.robots) {
-    if (r.passive) continue;
-    const body = engine.robots.get(r.id);
-    if (!body) continue;
-    /**
-     * ⚠️ **THE APPROACH VELOCITY, NOT THE ONE THE COLLISION LEFT BEHIND.** This pass runs after
-     * the step and after the readback, so `r.vel` is what the robot has AFTER the frame stopped
-     * it — and a ram is precisely the event that destroys the number it is measured by. Driven
-     * headlessly (2026-09-19): a swerve chassis crossing open floor into the HIVE frame arrived
-     * at **69.6 in/s**, and the tick the contact resolved read back **21.5**; on the next tick it
-     * was 0.5. Against `BB_FRAME_RAM_SPEED`'s 30 that is never a ram, at any speed the field is
-     * long enough to reach, so `bb.hiveRam` was never written and **G417 could not be billed in
-     * 3D at all** — the one pipeline the rule is turned on for.
-     *
-     * `preVels` is the same pre-solve snapshot stage 8b hands `squareUpRobotsWalls`, and the 2D
-     * solve's own contact bookkeeping (`squareUpPair`, `src/sim/physics.ts`) measures its press
-     * from exactly that quantity for exactly this reason. Absent, this falls back to `r.vel`,
-     * which is only right for a caller that has not stepped yet.
-     */
-    const v = preVels?.get(r.id) ?? r.vel;
-    let worst = 0;
-    for (let i = 0; i < body.numColliders(); i++) {
-      const own = body.collider(i);
-      engine.world3d.contactPairsWith(own, (other) => {
-        if (!isHiveCollider(groupsOf(other))) return;
-        /**
-         * CLOSING SPEED ALONG THE CONTACT NORMAL, not the robot's speed — the same distinction
-         * the 2D `frameRam` makes and for the same reason: "a robot driving fast ALONG the
-         * structure is not ramming it, and a slow deliberate shove would fail a plain speed test
-         * while being exactly the thing the rule is about" (`penalties.ts`). In 3D the normal is
-         * the manifold's own, which is the honest version of the 2D detector's guess at which
-         * bar FACE the robot was against.
-         */
-        engine.world3d.contactPair(own, other, (manifold, flipped) => {
-          if (manifold.numContacts() === 0) return;
-          const n = manifold.normal();
-          /**
-           * ⚠️ **THE NORMAL MUST END UP POINTING OUT OF THE *HIVE*, TOWARD THE ROBOT** — the
-           * convention the 2D `frameRam` states in as many words ("n points OUT of the bar
-           * toward the robot") and the one `closing = −v·n` is written against. `normal()` is
-           * expressed for the pair AS STORED in the narrow phase, pointing out of its first
-           * collider, and `flipped` says the two arguments arrived the other way round from how
-           * it is stored. So when `flipped` is TRUE the stored first collider is `other` — the
-           * hive — and the normal is ALREADY the one we want; it is the UNflipped case that
-           * needs negating.
-           *
-           * This read `flipped ? -1 : 1`, which is that backwards, and the field colliders are
-           * built before the robots so their handles are lower and every robot-hive pair is
-           * stored hive-first: `flipped` is true for all of them. Measured on a full-speed run
-           * at the red frame (2026-09-19): normal (−1, 0, 0), robot approaching at +69.6 in/s,
-           * `closing` computed as **−69.6**. `worst` starts at 0 and only ever rises, so a
-           * negative never registered and `bb.hiveRam` was never written — G417 could not fire
-           * in 3D from any direction at any speed. With the sign right it reads +69.6.
-           */
-          const s = flipped ? 1 : -1;
-          const closing = -(v.x * n.x * s + v.y * n.y * s);
-          if (closing > worst) worst = closing;
-        });
-      });
-    }
-    if (worst >= BB_FRAME_RAM_SPEED) ram[r.id] = Math.round(worst * 10000) / 10000;
-  }
-  if (Object.keys(ram).length > 0) bb.hiveRam = ram;
-  else if (bb.hiveRam) delete bb.hiveRam;
 
   // ── G409: a spilled element's FIRST non-tray contact ──────────────────────────────────────
   const spill = bb.spill;

@@ -28,7 +28,7 @@ import {
 } from '../config';
 import { biobuzzColliders, BB_WALL_COUNT } from '../colliders';
 import { INTAKE_RAIL_T, PHYS_FRICTION } from '../../../config';
-import { BB3_MOUTH_SLOT_Z, bbIntakeReach } from '../config';
+import { BB3_INTAKE_CORNER_CLAMP, BB3_INTAKE_CORNER_R, BB3_MOUTH_SLOT_Z, bbIntakeReach } from '../config';
 import { bbMouths } from '../robot';
 import { cadCellBox, cadStatics, cadTrayHulls } from './fieldColliders';
 import { buildFlowerTubes3d } from './flowerTube';
@@ -222,6 +222,42 @@ const GROUP_FRAME_BIT = 0x0002;
 export const GROUP_TRAY = (GROUP_TRAY_BIT << 16) | (0xffff & ~GROUP_FRAME_BIT);
 /** the hive FRAME's colliders: they meet everything EXCEPT the tray. */
 export const GROUP_FRAME = (GROUP_FRAME_BIT << 16) | (0xffff & ~GROUP_TRAY_BIT);
+
+/**
+ * ⚠️ **THE THIRD BIT: AN ELEMENT, AND THE ONE BOX THAT MUST NOT MEET ONE.**
+ *
+ * The intake mouth is open below `BB3_MOUTH_SLOT_Z` because an ELEMENT has to roll in under the
+ * roller — that is the whole reason `chassis3dShapes` is a compound at all, and closing the
+ * pocket with geometry was measured and is badly wrong (a six-element cluster 10/18, a strafe
+ * past a line 1/4). But nothing ELSE should fit in there, and things did: see
+ * `chassis3dPocketShapes`. So the pocket is closed with a FILTER instead of with a shape.
+ *
+ * | collider          | memberships          | filter                | meets an element? |
+ * |-------------------|----------------------|-----------------------|-------------------|
+ * | element (ball)    | `ELEMENT` only       | everything            | yes (other balls) |
+ * | pocket filler     | everything           | everything but ELEMENT| **no**            |
+ * | hive tray         | `TRAY`               | everything but FRAME  | yes               |
+ * | hive frame        | `FRAME`              | everything but TRAY   | yes               |
+ * | everything else   | `0xFFFF` (default)   | `0xFFFF` (default)    | yes               |
+ *
+ * ⚠️ **AN ELEMENT'S MEMBERSHIPS ARE NARROWED TO ONE BIT, WHICH IS THE HALF THAT CAN GO WRONG
+ * SILENTLY.** Rapier's rule is symmetric — a pair interacts iff `(A.memberships & B.filter)` and
+ * `(B.memberships & A.filter)` are BOTH non-zero — so the filler's filter can only exclude
+ * elements if an element's memberships are exclusively the element bit. That makes every OTHER
+ * collider's filter load-bearing: a filter that stops carrying `ELEMENT` drops elements through
+ * the floor, out of the walls, or through the tray, and nothing errors. The two narrowed filters
+ * above both still carry it (`~FRAME` and `~TRAY` are not `~ELEMENT`), everything else is
+ * `0xFFFF`, and the SIM3D lane's conservation/containment run is what proves it rather than this
+ * paragraph.
+ */
+const GROUP_ELEMENT_BIT = 0x0004;
+/** an ELEMENT's collider: it is the ONLY thing carrying this bit, and it meets everything. */
+export const GROUP_ELEMENT = (GROUP_ELEMENT_BIT << 16) | 0xffff;
+/** the intake POCKET FILLER: ordinary membership, and it meets everything but an element.
+ * `>>> 0` because `0xffff << 16` is NEGATIVE as a signed 32-bit int, and `collisionGroups()`
+ * reads back unsigned — the value Rapier stores is the same either way, but a check comparing
+ * the two would be comparing -5 against 4294967291. */
+export const GROUP_POCKET = (((0xffff << 16) | (0xffff & ~GROUP_ELEMENT_BIT)) >>> 0) as number;
 
 /**
  * THE HIVE FRAME IS A REAL COLLIDER AGAIN (2026-09-18 CAD round 2).
@@ -820,6 +856,57 @@ export function chassis3dShapes(spec: RobotSpec, heightIn: number): Chassis3dSha
 }
 
 /**
+ * ⚠️ **THE POCKET FILLER — WHAT MAKES THE HITBOX A RECTANGLE TO EVERYTHING BUT AN ELEMENT.**
+ * Owner report, 2026-09-19: *"The intake plates stick out further than the intake rollers so the
+ * hitboxes are weird. All you probably need to do is shrink the intake plate or add a bracing
+ * across the two intake plates in the front to make the whole thing just have a rectangular
+ * hitbox."* This is that bracing, in the solve. It is deliberately NOT part of
+ * `chassis3dShapes`, because that list is **what an ELEMENT meets** — `birthClear` and the
+ * mouth-is-open check read it, and both would be wrong if the filler were in it.
+ *
+ * ⚠️ **THE COMPOUND IS A FORK, AND A FORK CATCHES THINGS A BOX DOES NOT.** Arms + lintel leave
+ * exactly one hole in the outer prism: between the arm tips, in front of the frame face, floor to
+ * `BB3_MOUTH_SLOT_Z`. Everything taller meets the lintel, so the hole is invisible to a wall, a
+ * FLOWER column or another robot (`BB3_HEIGHT_MIN` is 12 in). What fits is an element — and the
+ * EIGHT hive A-frame base bars and feet, 2.13–2.15 in tall against a 3.6-in slot. Measured
+ * driving at the blue frame bar's low-y end over 9 lateral offsets x 5 approach angles: 3D put
+ * the arm tips **5.67 in** past the bar's near face — the bar is 1.98 in wide, so the chassis
+ * drove clean OVER a bar it is supposed to stop at — and took **141°** of yaw doing it, against
+ * the 2D pipeline's 1.99 in and 18°. 2D never had this bug and that is not luck: its
+ * robot-vs-static collider is the single `robotExtents` box (`solveRobots`, `physicsEngine.ts`),
+ * i.e. a rectangle, which is also why it tolerated five times the corner graze.
+ *
+ * The filler spans arm to arm, the frame face out to the arm tips, the chassis floor up to the
+ * lintel — so frame + arms + lintel + filler is ONE rectangular prism to a static, a wall and
+ * another robot, and an element still sees the open pocket it needs. Density 0 like the rest,
+ * and no new constant: every dimension is `bbMouths` and `BB3_MOUTH_SLOT_Z`, already the
+ * authority for the mouth.
+ */
+export function chassis3dPocketShapes(spec: RobotSpec, heightIn: number): Chassis3dShape[] {
+  const reach = bbIntakeReach(spec);
+  if (reach <= 1e-6) return [];
+  const hl = spec.length / 2;
+  const hw = spec.width / 2;
+  const half = heightIn / 2;
+  const slot = Math.min(BB3_MOUTH_SLOT_Z, heightIn - 0.1);
+  // the pocket floor is the chassis floor; its ceiling is the lintel's own underside, so the two
+  // meet exactly and the prism has no seam an edge can be generated on.
+  const cz = -half + slot / 2;
+  const hz = slot / 2;
+  const out: Chassis3dShape[] = [];
+  for (const m of bbMouths(spec)) {
+    if (m.edge === 'front' || m.edge === 'back') {
+      const cx = (m.edge === 'front' ? 1 : -1) * (hl + reach / 2);
+      out.push({ cx, cy: (m.y0 + m.y1) / 2, cz, hx: reach / 2, hy: (m.y1 - m.y0) / 2, hz });
+    } else {
+      const cy = (m.edge === 'left' ? 1 : -1) * (hw + reach / 2);
+      out.push({ cx: (m.x0 + m.x1) / 2, cy, cz, hx: (m.x1 - m.x0) / 2, hy: reach / 2, hz });
+    }
+  }
+  return out;
+}
+
+/**
  * ⚠️ **THE ONE CHASSIS-COLLIDER BUILDER FOR THE AUTHORITY.** `engineImpl.ts`'s `syncRobot` calls
  * it twice — at body creation and again at the R102 deploy edge — and nothing else builds the
  * compound. It lives here rather than in `engineImpl.ts` so the shape is one function away from
@@ -847,7 +934,7 @@ export function addChassis3dColliders(
 ): void {
   for (const s of chassis3dShapes(spec, heightIn)) {
     world3d.createCollider(
-      RAPIER.ColliderDesc.cuboid(s.hx, s.hy, s.hz)
+      chassisBoxDesc(RAPIER, s.hx, s.hy, s.hz)
         .setTranslation(s.cx, s.cy, s.cz)
         .setDensity(0)
         .setFriction(PHYS_FRICTION)
@@ -855,6 +942,65 @@ export function addChassis3dColliders(
       body,
     );
   }
+  // ...and the POCKET FILLER, which is the same chassis to everything that is not an element.
+  // It gets NO edge break: its four outer vertical edges are coincident with the lintel's, which
+  // already carries one, and a skin here would only round the edges buried inside the compound.
+  for (const s of chassis3dPocketShapes(spec, heightIn)) {
+    world3d.createCollider(
+      RAPIER.ColliderDesc.cuboid(s.hx, s.hy, s.hz)
+        .setTranslation(s.cx, s.cy, s.cz)
+        .setDensity(0)
+        .setFriction(PHYS_FRICTION)
+        .setRestitution(0)
+        .setCollisionGroups(GROUP_POCKET),
+      body,
+    );
+  }
+}
+
+/**
+ * ⚠️ **ONE CHASSIS BOX, WITH ITS EDGES BROKEN** — `BB3_INTAKE_CORNER_R`, whose header carries
+ * the measurement. The box is SHRUNK by `r` on every axis and given a CONTACT SKIN of `r`,
+ * which Rapier defines as "as if the collider was enlarged with a skin of width
+ * `skin_thickness` around it": the Minkowski sum of the smaller box with a ball, so the six
+ * FLAT FACES land back in exactly the planes a bare `cuboid(hx, hy, hz)` put them in and only
+ * the EDGES pull in (0.037 in at a vertical corner, 0.053 at a vertex — both inside the
+ * solver's own resting penetration). Flat-wall rest distance, a wall-flush start and
+ * `startLegal` therefore cannot move, and what it buys is the graze: the overlap a driver
+ * slides past a field static's corner with goes 0.2 in to 0.4 in.
+ *
+ * ⚠️ **IT IS A SKIN AND NOT A `roundCuboid` FOR ONE REASON, AND THE REASON IS THE ROOM
+ * BUDGET.** The two measure the SAME graze threshold to 0.1 in, and a round cuboid is the
+ * obvious shape — but it is a different narrow phase, and every box in this compound rests on
+ * the tile plane every tick of every match. A/B'd four paired rounds against a 2v2 Chain
+ * Reaction room (`perf: a 2v2 BIOBUZZ ROOM tick costs <= 1.2x ...`, `field.ts`), alternating
+ * the order and with an A/A control: square 0.848, **`roundCuboid` 1.065**, **contact skin
+ * 0.867**. The round shape spent a quarter of the whole room budget to buy what the skin buys
+ * for nothing, and that check already reads 1.20-1.42 on a loaded box.
+ *
+ * ⚠️ **THE SHAPE IS THE SMALLER BOX; ONLY CONTACTS SEE THE SKIN.** Nothing may read a robot
+ * collider's own geometry and treat it as the chassis. Nothing does: `birthClear` and the
+ * containment net build from `chassis3dShapes` (the analytic boxes) and the only collider
+ * queries in `sim3d/` are CONTACT queries, which the skin covers.
+ *
+ * It lives here rather than inline because BOTH chassis builders take it — this file's compound
+ * and the FULL PREDICTOR's single `robotExtents` cuboid (`predict.ts` `fitChassis`), which has
+ * to break the same edges or it would predict a catch the authority does not have.
+ *
+ * `r` is CLAMPED per box (`BB3_INTAKE_CORNER_CLAMP`) because the core is the box shrunk by `r`
+ * on every axis and the intake arm is only `INTAKE_RAIL_T` thick; a non-positive core is a
+ * collider Rapier refuses to build. A box too thin for any radius at all falls back to the
+ * plain cuboid, so this is a strict generalization.
+ */
+export function chassisBoxDesc(
+  RAPIER: Rapier3d,
+  hx: number,
+  hy: number,
+  hz: number,
+): InstanceType<Rapier3d['ColliderDesc']> {
+  const r = Math.min(BB3_INTAKE_CORNER_R, BB3_INTAKE_CORNER_CLAMP * Math.min(hx, hy, hz));
+  if (r <= 1e-6) return RAPIER.ColliderDesc.cuboid(hx, hy, hz);
+  return RAPIER.ColliderDesc.cuboid(hx - r, hy - r, hz - r).setContactSkin(r);
 }
 
 /** drop every collider off a chassis body so it can be re-built at a new height. Shared by the

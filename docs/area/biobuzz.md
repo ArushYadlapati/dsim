@@ -362,8 +362,10 @@ different program". **No tier may read anything a lower tier cannot** — diffic
 - **Fouls are the tier table's real constraint.** A faster bot that drives through an opponent
   collects G421 PINNING majors and hands them 20 points each; the first tuning that made HARD
   genuinely faster also made it LOSE to EASY. `BB_AI_PIN_DECISIONS` backs a bot off an opponent it
-  has been leaning on, `BB_AI_HIVE_CREEP` slows it under the HIVE so a legal drive-under is not a
-  G417 ram, and `BB_AI_ROBOT_CLEAR` keeps it out of contact it does not need.
+  has been leaning on, and `BB_AI_ROBOT_CLEAR` keeps it out of contact it does not need.
+  `BB_AI_HIVE_CREEP` slows it under the HIVE — it used to be there so a legal drive-under was not
+  a G417 ram; G417 is REMOVED (owner ruling, 2026-09-19) and the creep is kept as measured tuning
+  pending a `test:ai` re-measure, not because the rule still needs it.
 - **Verification:** the `AI` lane in `npm test` (the seam, determinism over 3,600 ticks under BOTH
   physics, the read list, quantization, R102's stow/deploy, `step3d` perf with bots driving, and
   that a bot can actually score) and `npm run test:ai` (`scripts/aismoke.ts`, ~9 min, OUTSIDE

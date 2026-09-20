@@ -27,6 +27,7 @@ import {
   ELEMENT_FRICTION,
   ELEMENT_RESTITUTION,
   ELEMENT_ROLL_DAMP,
+  GROUP_ELEMENT,
 } from './bodies';
 import { hyp3, QUAT_IDENTITY, round4, yawQuat, yawOfQuat } from './math3';
 import { datan2, rot } from '../../../math';
@@ -689,12 +690,18 @@ function syncElement(RAPIER: Rapier3d, engine: Engine3d, world: World, b: Artifa
     // that -- MAX(elementFriction, otherSurface) keeps this element's own 0.6 against a
     // 0-friction floor while still reading the higher of the two against anything (a wall, a
     // hive wall, another element) whose own friction happens to exceed it.
+    // ...and the ELEMENT GROUP, which is what lets the intake POCKET FILLER filter elements out
+    // while meeting everything else (`GROUP_ELEMENT` / `GROUP_POCKET`, `bodies.ts`). Memberships
+    // are narrowed to the one bit; the filter stays open, so an element still meets the floor,
+    // the walls, the statics, the tray, the frame, every other chassis box and every other
+    // element, exactly as it did on the default groups.
     engine.world3d.createCollider(
       RAPIER.ColliderDesc.ball(r)
         .setMass(elementMass(isNectar))
         .setFriction(ELEMENT_FRICTION)
         .setRestitution(ELEMENT_RESTITUTION)
-        .setFrictionCombineRule(RAPIER.CoefficientCombineRule.Max),
+        .setFrictionCombineRule(RAPIER.CoefficientCombineRule.Max)
+        .setCollisionGroups(GROUP_ELEMENT),
       body,
     );
     engine.elements.set(b.id, body);

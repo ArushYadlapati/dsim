@@ -4,7 +4,8 @@ import { createBiobuzzWorld } from '../../src/games/biobuzz/spawn';
 import { biobuzzPhysics } from '../../src/games/biobuzz/state';
 import { biobuzzStep } from '../../src/games/biobuzz/step';
 import { step3d } from '../../src/games/biobuzz/sim3d/step3d';
-import { engineFor, syncElements } from '../../src/games/biobuzz/sim3d/engineImpl';
+import { rapier3d } from '../../src/games/biobuzz/sim3d/engine';
+import { disposeEngineFor, engineFor, robotBodyOf, syncElements } from '../../src/games/biobuzz/sim3d/engineImpl';
 import { cadTrayRefTheta, fieldColliders3d } from '../../src/games/biobuzz/sim3d/fieldColliders';
 import { hiveCellLocalBox, hivePivotX, hiveTrayRefTheta, __setFieldCollidersOverrideForTests } from '../../src/games/biobuzz/sim3d/bodies';
 import { hiveTiltAngle } from '../../src/games/biobuzz/sim3d/hive3d';
@@ -14,7 +15,7 @@ import { worldHash } from '../../src/net/checksum';
 import { bbScoreWorld } from '../../src/games/biobuzz/score';
 import { bbFootprint, bbMouths, bbSolveShot } from '../../src/games/biobuzz/robot';
 import { robotExtents } from '../../src/sim/physics';
-import { chassis3dShapes } from '../../src/games/biobuzz/sim3d/bodies';
+import { chassis3dShapes, chassis3dPocketShapes, GROUP_POCKET } from '../../src/games/biobuzz/sim3d/bodies';
 import { solveShotPath } from '../../src/games/biobuzz/shotPath';
 import {
   BB3_HEIGHT_MAX,
@@ -42,6 +43,7 @@ import {
   BB_TILE_PITCH,
   BB_TIP_POLLEN,
   bbHeightNow,
+  bbIntakeReach,
 } from '../../src/games/biobuzz/config';
 import * as C from '../../src/config';
 import { biobuzzColliders, BB_WALL_COUNT } from '../../src/games/biobuzz/colliders';
@@ -797,6 +799,167 @@ export function sim3dChecks(check: Check): void {
         !low && high,
         `low=${low} high=${high} slot=${BB3_MOUTH_SLOT_Z}`,
       );
+    }
+
+    /**
+     * THE EDGE BREAK (`BB3_INTAKE_CORNER_R`). Every box of the compound is shrunk by `r` and
+     * carries a CONTACT SKIN of `r`, so the outer surface is where it was and only the edges
+     * pull in. Three things are pinned because each can go wrong in silence: the box must stay
+     * a plain CUBOID (a `roundCuboid` is the obvious substitute and costs a quarter of the room
+     * budget — `chassisBoxDesc`'s header has the A/B), the SKIN must actually be on each
+     * collider (a shrunken box with no skin is a chassis 0.25 in small in every direction), and
+     * the COUNT must match `chassis3dShapes` (a core half-extent driven non-positive is a
+     * collider Rapier refuses to build, and the robot would drive with a missing arm).
+     */
+    {
+      const RAPIER = rapier3d();
+      const w = mkWorld3d('free', 73, { intakeMount: 'frontback' });
+      step3d(w, 1 / 60, new Map());
+      const body = robotBodyOf(engineFor(w), 0)!;
+      const h = bbHeightNow(w, w.robots[0].spec);
+      const shapes = chassis3dShapes(w.robots[0].spec, h);
+      const pockets = chassis3dPocketShapes(w.robots[0].spec, h);
+      const all = [...shapes, ...pockets];
+      let bad = '';
+      for (let i = 0; i < body.numColliders(); i++) {
+        const col = body.collider(i);
+        const s = all[i];
+        const isPocket = i >= shapes.length;
+        const r = col.contactSkin();
+        const half = (col.shape as unknown as { halfExtents: { x: number; y: number; z: number } }).halfExtents;
+        const outer = [half.x + r - s.hx, half.y + r - s.hy, half.z + r - s.hz];
+        if (col.shapeType() !== RAPIER.ShapeType.Cuboid) bad = `#${i} shapeType ${col.shapeType()}`;
+        else if (isPocket && col.collisionGroups() !== GROUP_POCKET) bad = `#${i} pocket groups ${col.collisionGroups().toString(16)}`;
+        else if (!isPocket && r <= 0) bad = `#${i} no contact skin`;
+        else if (outer.some((d) => Math.abs(d) > 1e-9)) bad = `#${i} outer surface off by [${outer.join(', ')}]`;
+      }
+      check(
+        'corner 3d: every chassis box is a cuboid at its stated outer surface, edge-broken, and the pocket fillers carry the element filter',
+        body.numColliders() === all.length && pockets.length === bbMouths(w.robots[0].spec).length && bad === '',
+        `colliders=${body.numColliders()} shapes=${shapes.length}+${pockets.length} mouths=${bbMouths(w.robots[0].spec).length} ${bad}`,
+      );
+      disposeEngineFor(w);
+    }
+
+    /**
+     * ⚠️ **THE FRONT FACE IS ONE CONTINUOUS RECTANGLE** (owner, 2026-09-19: "a bracing in the
+     * front then, to make the collision hitbox a long rectangle across in the front"). Above
+     * `BB3_MOUTH_SLOT_Z` that is the LINTEL; below it, the element-transparent POCKET FILLER.
+     * Both end on the arm tips' own plane, and the filler's top is the lintel's underside to the
+     * last bit — a step or a gap between them is a lip a corner could find, and it would be
+     * invisible to every other check here.
+     */
+    {
+      const spec = mkWorld3d('free', 77, { intakeMount: 'front' }).robots[0].spec;
+      const h = 18;
+      const solid = [...chassis3dShapes(spec, h), ...chassis3dPocketShapes(spec, h)];
+      const m = bbMouths(spec)[0];
+      const tip = spec.length / 2 + bbIntakeReach(spec);
+      let bad = '';
+      // walk the whole front face: every (y, z) just inside the tip plane must be covered
+      for (let y = m.y0 + 0.05; y <= m.y1 - 0.05 && !bad; y += 0.25) {
+        for (let z = 0.05; z <= h - 0.05 && !bad; z += 0.1) {
+          const hit = solid.some(
+            (b) =>
+              Math.abs(tip - 0.05 - b.cx) < b.hx && Math.abs(y - b.cy) < b.hy && Math.abs(z - h / 2 - b.cz) < b.hz,
+          );
+          if (!hit) bad = `hole at y=${y.toFixed(2)} z=${z.toFixed(2)}`;
+        }
+      }
+      // ...and nothing sticks out past the tip plane
+      const out = Math.max(...solid.map((b) => b.cx + b.hx));
+      check(
+        'corner 3d: the collider front face is one unbroken rectangle across the whole mouth, floor to full height',
+        bad === '' && Math.abs(out - tip) < 1e-9,
+        `${bad} outermost ${out} vs tip ${tip}`,
+      );
+    }
+
+    /**
+     * ⚠️ **THE EDGE BREAK MOVES NO FLAT FACE** — the invariant the whole approach rests on. A
+     * robot driven square into a wall at heading 0 and at pi/2 rests where it always did, so a
+     * wall-flush start position and `startLegal` cannot have moved either. Pinned as ABSOLUTE
+     * distances rather than as a before/after diff, so a later change to the wall or to the
+     * footprint fails here too. Both were measured at 10.5008/10.5006 in on the default spec
+     * (outermost solid `hl + reach` = 10.5); the window is +-0.06 in, the brief's tolerance.
+     */
+    {
+      const bad: string[] = [];
+      for (const heading of [0, Math.PI / 2]) {
+        const w = mkWorld3d('free', 74);
+        const r = w.robots[0];
+        r.heading = heading;
+        r.pos.x = heading === 0 ? BB_HALF_X - 30 : 0;
+        r.pos.y = heading === 0 ? 0 : BB_HALF_Y - 30;
+        run3d(w, new Map([[0, cmd({ driveY: 1, leftDrive: 1, rightDrive: 1 })]]), 4);
+        const gap = heading === 0 ? BB_HALF_X - r.pos.x : BB_HALF_Y - r.pos.y;
+        const want = r.spec.length / 2 + bbIntakeReach(r.spec);
+        if (Math.abs(gap - want) > 0.06) bad.push(`h=${heading.toFixed(2)} gap ${gap.toFixed(4)} want ${want.toFixed(4)}`);
+        disposeEngineFor(w);
+      }
+      check('corner 3d: flat-wall rest distance is the outermost solid, both headings', bad.length === 0, bad.join(' | '));
+    }
+
+    /**
+     * ⚠️ **THE OWNER'S CORNER CATCH** ("I can get stuck on a corner"). Driving at full stick
+     * past the LEFT FLOWER's support column with the flank 0.35 in past the column's field-side
+     * face, the robot used to lose the corner and yaw about it: **0.32 of a free run** and 107
+     * degrees of yaw with square chassis corners, against **1.00 and 0 degrees** with the edge
+     * break. Measured at 0.35 because that is inside the band the break bought (it slid past to
+     * 0.2 in before, to 0.4 in now) — a margin on each side, not the threshold itself.
+     *
+     * ⚠️ It is NOT the intake compound: a single `robotExtents` cuboid caught at the same 0.2
+     * in to two decimals. See `BB3_INTAKE_CORNER_R`'s header for the four things that were
+     * measured and ruled out on the way, so nobody re-runs them.
+     */
+    {
+      const FACE_X = -65.83; // the column's field-side face, `cadStatics()`
+      const POST_Y0 = -25.62; // its low-y end
+      const DRIVE = cmd({ driveY: 1, leftDrive: 1, rightDrive: 1 });
+      const graze = (overlap: number | null): { frac: number; yaw: number } => {
+        const w = mkWorld3d('free', 75);
+        const r = w.robots[0];
+        r.heading = Math.PI / 2;
+        r.pos.x = overlap === null ? -40 : FACE_X + r.spec.width / 2 - overlap;
+        r.pos.y = POST_Y0 - (r.spec.length / 2 + bbIntakeReach(r.spec)) - 16;
+        const y0 = r.pos.y;
+        const h0 = r.heading;
+        run3d(w, new Map([[0, DRIVE]]), 3);
+        const out = { frac: r.pos.y - y0, yaw: Math.abs(((r.heading - h0) * 180) / Math.PI) };
+        disposeEngineFor(w);
+        return out;
+      };
+      const free = graze(null).frac;
+      const hit = graze(0.35);
+      const frac = hit.frac / free;
+      check(
+        'corner 3d: a 0.35in graze past a FLOWER column slides by instead of hooking the corner',
+        frac > 0.9 && hit.yaw < 10,
+        `travelled ${frac.toFixed(2)} of a free run (${free.toFixed(1)}in), yaw ${hit.yaw.toFixed(0)} degrees`,
+      );
+    }
+
+    /**
+     * ...AND THE LINTEL STILL STOPS THE CLIMB. The reason the mouth pocket is closed above
+     * `BB3_MOUTH_SLOT_Z` is that two thin arms let a robot catch a low static's top edge on its
+     * frame's bottom edge and ride up it (parked 2.14 in in the air, stalled). The HIVE FRAME's
+     * base bar is 2.15 in tall and is exactly that static; rounding the edges must not have
+     * turned it back into a ramp.
+     */
+    {
+      const w = mkWorld3d('free', 76);
+      const r = w.robots[0];
+      r.heading = 0;
+      r.pos.x = BB_FRAME_BAR_IN - 30;
+      r.pos.y = 8;
+      let maxZ = 0;
+      const m = new Map([[0, cmd({ driveY: 1, leftDrive: 1, rightDrive: 1 })]]);
+      for (let t = 0; t < 240; t++) {
+        step3d(w, 1 / 60, m);
+        maxZ = Math.max(maxZ, r.z ?? 0);
+      }
+      check('corner 3d: a robot driven at the HIVE frame bar does not climb it', maxZ < 0.1, `max z ${maxZ.toFixed(4)}`);
+      disposeEngineFor(w);
     }
 
     {

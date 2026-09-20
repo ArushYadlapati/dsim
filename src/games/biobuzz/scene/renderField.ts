@@ -20,7 +20,9 @@ import {
   BB_TAPE,
   BB_TILE_SEAMS,
   FLOWER_MOUTH,
+  type BbRect,
 } from '../config';
+import { snapTapeGroup } from '../drawField';
 import { BB_FLOWER_FLOOR_Z, BB_FLOWER_MID_Z } from '../flower';
 import {
   BB_BOX_DEPTH,
@@ -32,7 +34,7 @@ import {
   bbNectarBoxSlot,
 } from '../nectarBox';
 import { hiveTiltAngle, hiveTrayRefTheta } from '../sim3d/tilt';
-import { loadFieldGlb, type FieldGroups } from './renderFieldGlb';
+import { cellPanelMaterial, loadFieldGlb, wallPanelMaterial, type FieldGroups } from './renderFieldGlb';
 
 /**
  * BIOBUZZ 3D SCENE — the field: floor, walls, the two hives (frame + tilting tray) and the four
@@ -162,6 +164,9 @@ function toTex(x: number, y: number): [number, number] {
   return [(x + BB_HALF_X) * TEX_SCALE, (BB_HALF_Y - y) * TEX_SCALE];
 }
 
+/** `toTex` as the 2×3 `snapTapeGroup` reads — the same map, so the two cannot disagree. */
+const TEX_XFORM = { a: TEX_SCALE, b: 0, c: 0, d: -TEX_SCALE, e: BB_HALF_X * TEX_SCALE, f: BB_HALF_Y * TEX_SCALE };
+
 /**
  * OWNER BUG 12 (2026-09-19): "the blue alliance looks too purple — are you sure that is the
  * exact colour AndyMark uses?" Measured, the complaint is right and BOTH answers the repo had
@@ -215,12 +220,34 @@ function fillStripTex(ctx: CanvasRenderingContext2D, x0: number, y0: number, x1:
  */
 function drawZoneTape(ctx: CanvasRenderingContext2D, a: Alliance): void {
   const colour = TAPE_GAFFER[a];
-  for (const strip of BB_TAPE.loadingZone[a]) fillStripTex(ctx, strip.x0, strip.y0, strip.x1, strip.y1, colour);
-  for (const strip of BB_TAPE.garden[a]) fillStripTex(ctx, strip.x0, strip.y0, strip.x1, strip.y1, colour);
+  // SNAPPED TO THE TEXEL GRID AS A GROUP, AT ONE WIDTH — `snapTapeGroup` (`drawField.ts`) has the
+  // why: at 7.24 texels per inch a strip's edges land mid-texel, so two 1-in tapes came out as
+  // different mixes of solid and half-lit columns and read as different widths.
+  const fill = (strips: readonly BbRect[], paint: readonly BbRect[]): void => {
+    const snapped = snapTapeGroup(TEX_XFORM, strips);
+    if (!snapped) {
+      for (const s of paint) fillStripTex(ctx, s.x0, s.y0, s.x1, s.y1, colour);
+      return;
+    }
+    ctx.fillStyle = colour;
+    for (const [x, y, w, h] of snapped) ctx.fillRect(x, y, w, h);
+  };
+  fill(BB_TAPE.loadingZone[a], BB_TAPE.loadingZone[a]);
+  // the GARDEN's two side-by-side tapes AND its corner patch tile one 2-in band; snapped as three
+  // rectangles they can open a one-texel seam, snapped as the band they cannot. The patch is the
+  // one strip that is not in the CAD — see `buildSupplementalTape` for why it exists at all.
+  const garden = [...BB_TAPE.garden[a], ...BB_TAPE.gardenSupplement[a]];
+  const band: BbRect = {
+    x0: Math.min(...garden.map((r) => r.x0)),
+    y0: Math.min(...garden.map((r) => r.y0)),
+    x1: Math.max(...garden.map((r) => r.x1)),
+    y1: Math.max(...garden.map((r) => r.y1)),
+  };
+  fill([band], garden);
 }
 
 /**
- * THE ONE STRIP THAT IS NOT IN THE CAD — drawn on BOTH paths, which is why it is its own pass.
+ * THE ONE STRIP THAT IS NOT IN THE CAD.
  *
  * The GARDEN's measured band stops 0.573 in clear of the wall at the alliance's corner (no tape
  * on this field runs onto the perimeter), while `BB_GARDEN` — the zone a GARDEN element scores in
@@ -228,15 +255,9 @@ function drawZoneTape(ctx: CanvasRenderingContext2D, a: Alliance): void {
  * to reach (2026-09-18 playtest: "you might need to add a very tiny short section of tape on the
  * bounds"). `TAPE.gardenSupplement` is the 0.573 × 2.000 in patch that closes it; see
  * `fieldDims.gen.ts`'s header for why it is generated into a group of its own and cannot move a
- * rule. On the CAD path the 16 real strips are GEOMETRY from the GLB, so this patch has to be
- * geometry too rather than a second painted layer — `buildSupplementalTape` below.
+ * rule. The fallback texture paints it as part of the garden band (`drawZoneTape`); on the CAD
+ * path the 16 real strips are GEOMETRY from the GLB, so the patch is geometry too.
  */
-function drawSupplementalTape(ctx: CanvasRenderingContext2D, a: Alliance): void {
-  for (const strip of BB_TAPE.gardenSupplement[a]) {
-    fillStripTex(ctx, strip.x0, strip.y0, strip.x1, strip.y1, TAPE_GAFFER[a]);
-  }
-}
-
 /** the CAD path's copy of the same patch, as real geometry at the CAD tape's own height (the
  * strips sit z 0.000–0.010 on the tiles). */
 function buildSupplementalTape(): THREE.Group {
@@ -294,9 +315,8 @@ function buildFloorTexture(withTape: boolean): THREE.CanvasTexture {
   // seam grid and the tape, full stop; this was a white cross at tape width on both.
 
   if (withTape) for (const a of ALLIANCES) drawZoneTape(ctx, a);
-  // the supplement is painted on the fallback only; the CAD path gets it as geometry, beside the
-  // GLB's own real tape (a painted copy under real strips would double every line).
-  if (withTape) for (const a of ALLIANCES) drawSupplementalTape(ctx, a);
+  // (the garden's corner patch is painted with its band above; the CAD path gets it as geometry,
+  // beside the GLB's own real tape — a painted copy under real strips would double every line)
 
   const tex = new THREE.CanvasTexture(canvas);
   tex.colorSpace = THREE.SRGBColorSpace;
@@ -339,37 +359,20 @@ function buildFloor(withTape: boolean): THREE.Mesh {
  * WRITES depth can incorrectly occlude something drawn after it at a similar distance (here,
  * another transparent wall on the far side of the field), and Three.js does not sort transparent
  * objects by triangle depth, only by render order.
+ *
+ * ⚠️ AND THE MATERIAL ITSELF IS NOT THIS FILE'S ANY MORE (2026-09-19, the owner's SECOND report
+ * that the hive's back panel is too transparent from behind). This file used to build its own
+ * `MeshStandardMaterial` beside the CAD path's, which meant the two paths agreed on the two
+ * numbers a check compared and on nothing else: the Fresnel alpha, the un-attenuated reflection,
+ * the restored mirror and the scuff haze all landed on the CAD path only, so the fallback field's
+ * panels were still the flat constant-alpha sheets the first pass had already been shown to be
+ * wrong. `clearPanelMaterial` and both opacities are imported from `renderFieldGlb.ts` now — the
+ * direction this file already depends in — and there is exactly one clear-plastic surface in the
+ * game. The one visible consequence: the fallback's panels take `CLEAR_PANEL_TINT` like the CAD
+ * path's, rather than `C.COLORS.wall` and a hand-picked `#cfd8e3`.
  */
-const WALL_OPACITY = 0.08;
-/** the HIVE CELL's own skins — the fallback's stand-in for `Hive Goal {Top,Back,Bottom} Skin`,
- * which are polycarbonate on the real field. A hair denser than the perimeter because a cell is
- * what a driver reads a shape and its contents off, and there are fewer of them in any one line
- * of sight; the CAD path uses the same number (`renderFieldGlb.ts`'s `CELL_PANEL_OPACITY`). */
-const CELL_OPACITY = 0.13;
-/** how much of the IBL environment a clear panel gathers. At the default 1.0 a glossy near-white
- * panel mirrors the room and reads as a sheet of solid white — that, more than the alpha, is the
- * 2026-09-18 report's "opaque white that is too strong", and the warm practice HDRI is where the
- * "beige bands" came from. Same number as the CAD path's `CLEAR_ENV_INTENSITY`. */
-const CLEAR_ENV_INTENSITY = 0.15;
-
-function clearPanelMaterial(color: string, opacity: number): THREE.MeshStandardMaterial {
-  return new THREE.MeshStandardMaterial({
-    color,
-    transparent: true,
-    opacity,
-    roughness: 0.12,
-    metalness: 0,
-    depthWrite: false,
-    // FrontSide, NOT DoubleSide — see the header: every clear panel this file builds is a closed
-    // box, so the near face is always the front-facing one whichever side the camera is on, and
-    // drawing the far face as well only doubles what the eye has to look through.
-    side: THREE.FrontSide,
-    envMapIntensity: CLEAR_ENV_INTENSITY,
-  });
-}
-
-function wallMaterial(): THREE.MeshStandardMaterial {
-  return clearPanelMaterial(C.COLORS.wall, WALL_OPACITY);
+function wallMaterial(): THREE.Material {
+  return wallPanelMaterial();
 }
 /** drawn well after the field/robots/elements (all at the default `renderOrder` 0) so a
  * transparent wall never fights another transparent wall or a robot for a pixel. */
@@ -470,7 +473,7 @@ function buildCell(s: 1 | -1, accent: string, alliance: Alliance): THREE.Group {
   // the fallback's half of "transparent panels rendered as opaque white". The FLOOR keeps the
   // alliance accent and stays solid — it is the one surface an element rests on and the one that
   // says whose hive this is.
-  const structure = clearPanelMaterial('#cfd8e3', CELL_OPACITY);
+  const structure = cellPanelMaterial();
   const accentMat = mat(accent, 0.85);
   const cellY = s * HIVE_ARM;
   const w = HIVE_CELL_WALL;

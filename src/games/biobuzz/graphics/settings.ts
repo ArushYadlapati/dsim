@@ -30,13 +30,12 @@
 /**
  * §4.4 row 2 — the draw-loop frame cap, in frames per second, with TWO SENTINELS.
  *
- * It is a plain `number` and not a union of literals because the row is no longer a fixed
- * ladder: the owner asked for a rate you type (2026-09-19), so any integer in
- * `[GFX_FPS_MIN, GFX_FPS_MAX]` is a legal cap and the five tiles in the picker are a shortcut,
- * not the domain. `coerceMaxFps` below is what keeps that honest — this is the first field in
- * the whole settings object whose value arrives from a TEXT BOX rather than from a click, so
- * it is the first one that has to reject shapes (`NaN`, `Infinity`, `'60'`, `59.5`) instead of
- * merely choosing between known ones.
+ * It is a plain `number` and not a union of literals because the row is not a fixed ladder:
+ * the owner asked for a rate you drag or type (2026-09-19), so any integer in `[GFX_FPS_MIN,
+ * GFX_FPS_MAX]` is a legal cap. `coerceMaxFps` below is what keeps that honest — this is the
+ * first field in the whole settings object whose value can arrive from a TEXT BOX, so it is
+ * the first one that has to reject shapes (`NaN`, `Infinity`, `'60'`, `59.5`) instead of merely
+ * choosing between known ones.
  *
  * ── THE TWO SENTINELS, AND WHY THEY ARE NOT "A BIGGER NUMBER" ──────────────────────────────
  *
@@ -47,30 +46,33 @@
  * CAP rather than as the absence of one.
  *
  * **`-1` — Unlimited.** Negative is the one thing a frame rate can never be, so it cannot
- * collide with a real rate however the picker grows, and it survives `JSON.stringify` exactly
+ * collide with a real rate however the range grows, and it survives `JSON.stringify` exactly
  * (a `null` or a `'unlimited'` string would not survive `Number` coercion anywhere this value
  * is compared). It behaves IDENTICALLY to VSync inside the loop — `frameIntervalMs` returns
  * `0` for both — because the difference is not in the loop at all: it is whether the SHELL has
  * let the compositor run free.
  *
- * ── WHY UNLIMITED IS DESKTOP-ONLY, AND WHY IT IS STILL SHOWN ON THE WEB ────────────────────
+ * ── WHY UNLIMITED IS NO LONGER SHOWN ON THE WEB (owner ruling 2026-09-19) ──────────────────
  * Genuinely exceeding vsync needs Chromium's `disable-frame-rate-limit` and
  * `disable-gpu-vsync`, which only the desktop shell can pass (`electron/main.cjs`), and which
  * must be appended BEFORE `app.whenReady()` — so changing it cannot take effect until the app
  * restarts. Neither switch exists for a web page: a browser tab cannot ask its own compositor
- * for this, at any price.
+ * for this, at any price. This used to be reason to show the control anyway, captioned
+ * `Desktop app only`, on the theory that hiding a control that does something ELSEWHERE is
+ * worse than a caption. The owner's report was that seeing "Unlimited" on the web — reading
+ * 164 fps on a 165 Hz monitor, indistinguishable from VSync — read as broken, not as a caption
+ * nobody had read yet. So the rule this row now follows is the other one this repo already
+ * uses elsewhere: **hide what does not apply.** `GraphicsSection.tsx` never renders the word
+ * "Unlimited" on the web at all; the row's top stop is labelled "Display rate" there instead —
+ * the honest name for "every frame the compositor hands us", which is what `0` always was.
  *
- * It is NOT hidden on the web anyway. The rule this repo follows is "do not ship a control
- * that silently does nothing", and hiding it fails that in the other direction: a player who
- * has read the download page, or who practises on the desktop app at home and the web build at
- * school, would find the option missing on one of them with nothing saying why. So the tile is
- * present in both builds, says `Desktop app only` on its face, and the row prints the whole
- * truth — in a browser it behaves as VSync — when it is the selected value.
- *
- * The numeric values are caps BELOW the vsync ceiling, which is the only direction a cap could
- * go before Unlimited existed. 144 and 240 are tiles because the ladder used to stop at 120, so
- * a 144/165/240 Hz panel had nothing between "120" and "every frame" — that gap is the other
- * half of what the owner hit, and a typed rate is what covers 165 and every other panel.
+ * ── THE CONTROL IS A SLIDER PLUS A TYPED RATE, NOT A ROW OF TILES ──────────────────────────
+ * `GFX_FPS_SLIDER_MAX`/`GFX_FPS_SLIDER_NO_CAP` and `fpsFromSliderPos`/`sliderPosFromFps` below
+ * are the slider's own mapping: drag position `[GFX_FPS_MIN, GFX_FPS_SLIDER_MAX]` reads off the
+ * number line, and one more stop past it means "no cap" — VSync alone on the web, VSync or
+ * Unlimited on the desktop (a second control next to the slider chooses which, only once the
+ * slider is already at that stop). The number box beside it still takes the full typed range up
+ * to `GFX_FPS_MAX`, for the panels and the budgets past what a drag can aim at precisely.
  */
 export type MaxFps = number;
 
@@ -87,20 +89,63 @@ export const MAX_FPS_UNLIMITED = -1;
  *   • **24** — the film rate, and the floor at which this is still a driver-practice sim. The
  *     fixed sim step is 60 Hz; a render cap under 24 means most ticks are never drawn, a shot
  *     cannot be timed by eye, and the player is breaking their own practice rather than tuning
- *     it. The lowest TILE is 30 for the same reason; 24 leaves a little room under it on
- *     purpose, for the battery-saving and thermal cases the tiles do not cover.
+ *     it. It also doubles as the slider's own minimum, so a drag can never reach lower.
  *   • **1000** — past every panel that exists (the fastest shipping displays are under 600 Hz),
  *     so it is already indistinguishable from no cap, and a four-digit box reads as a frame
- *     rate rather than as a budget in some other unit. Anything genuinely uncapped is the
- *     Unlimited sentinel, which is a different control for a different reason.
+ *     rate rather than as a budget in some other unit. Anything genuinely uncapped is a
+ *     sentinel, which is a different control for a different reason — see `GFX_FPS_SLIDER_MAX`
+ *     for why the slider's own numeric span stops well short of this.
  */
 export const GFX_FPS_MIN = 24;
 export const GFX_FPS_MAX = 1000;
 
-/** the one-click rates in the picker. A shortcut over the range, never the range itself. */
+/**
+ * The slider's own numeric ceiling, in fps — the highest rate a DRAG can aim at; the box beside
+ * it still reaches `GFX_FPS_MAX`. Picked at 360: the fastest class of monitor actually sold
+ * today (esports panels top out around there), comfortably past the 240 Hz gaming tier and the
+ * 165 Hz panel that started this conversation, while a rate past it (400, 500, a HFR capture
+ * rig) is rare enough that aiming a drag at it is harder than typing the number — the box takes
+ * anything up to `GFX_FPS_MAX` for exactly that case.
+ */
+export const GFX_FPS_SLIDER_MAX = 360;
+
+/** one past the slider's numeric ceiling: the drag position that means "no cap" at all — see
+ * `fpsFromSliderPos`. Never itself a returned `MaxFps`; it is a position, not a rate. */
+export const GFX_FPS_SLIDER_NO_CAP = GFX_FPS_SLIDER_MAX + 1;
+
+/**
+ * Drag position → the value to store. Below the ceiling it is the number line, rounded and
+ * clamped; AT the ceiling it is "no cap", and which sentinel that means depends on the
+ * platform and on what was already selected:
+ *   • the web has exactly one way to say "no cap" (`isDesktop` false always yields VSync,
+ *     whatever `preferUnlimited` says) — this is the one place that rule is enforced, so the
+ *     web can never produce Unlimited by dragging, typing, or any other path through this row;
+ *   • the desktop has two, and `preferUnlimited` (the caller passes "is the current value
+ *     already Unlimited") is what keeps a drag that merely revisits the top stop from silently
+ *     switching Unlimited back to VSync — the platform-specific chooser next to the slider is
+ *     the only other way to change which of the two it means.
+ */
+export function fpsFromSliderPos(pos: number, isDesktop: boolean, preferUnlimited: boolean): MaxFps {
+  if (pos >= GFX_FPS_SLIDER_NO_CAP) {
+    return isDesktop && preferUnlimited ? MAX_FPS_UNLIMITED : MAX_FPS_VSYNC;
+  }
+  return Math.max(GFX_FPS_MIN, Math.min(GFX_FPS_SLIDER_MAX, Math.round(pos)));
+}
+
+/** the inverse, for drawing the puck: either sentinel is the top stop, and a real rate clamps
+ * into the slider's own numeric span — a typed rate past `GFX_FPS_SLIDER_MAX` (up to
+ * `GFX_FPS_MAX`) still shows pinned at the right rather than running off the track. */
+export function sliderPosFromFps(v: MaxFps): number {
+  if (v === MAX_FPS_VSYNC || v === MAX_FPS_UNLIMITED) return GFX_FPS_SLIDER_NO_CAP;
+  return Math.max(GFX_FPS_MIN, Math.min(GFX_FPS_SLIDER_MAX, v));
+}
+
+/** recognizable round numbers along the slider's span, for its tick marks (`<datalist>` in
+ * `GraphicsSection.tsx`) — a shortcut a drag can snap towards, never the domain itself. */
 export const GFX_FPS_STEPS: readonly number[] = [30, 60, 120, 144, 240];
 
-/** a positive cap that is not one of the tiles — i.e. what the Custom field is showing. */
+/** a positive rate that is not one of the tick marks above — i.e. a typed value with nothing
+ * round about it. Kept for the settings that still carry one from before the slider. */
 export function isCustomFps(v: MaxFps): boolean {
   return v > 0 && !GFX_FPS_STEPS.includes(v);
 }

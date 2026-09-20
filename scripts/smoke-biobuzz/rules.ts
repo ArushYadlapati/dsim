@@ -9,9 +9,6 @@ import { createBiobuzzWorld } from '../../src/games/biobuzz/spawn';
 import { biobuzzStep } from '../../src/games/biobuzz/step';
 import {
   BB_FLOWER_UNLOCK_S,
-  BB_FRAME_BAR_IN,
-  BB_FRAME_BAR_OUT,
-  BB_FRAME_Y,
   BB_GARDEN,
   BB_HALF_X,
   BB_LZ,
@@ -43,8 +40,7 @@ import {
 } from '../../src/games/biobuzz/score';
 import {
   BB_CONTROL_LIMIT,
-  BB_FRAME_RAM_SPEED,
-  BB_G417_ENABLED,
+  BB_MOMENTARY_S,
   bbAwardFoul,
   bbFootprintGap,
   bbIntrusion,
@@ -1189,69 +1185,44 @@ function g402DrivenChecks(check: Check): void {
 
 /**
  * ─────────────────────────────────────────────────────────────────────────────
- * G417 — RAMMING THE HIVE, WHICH IS A 3D RULE AND WAS NOT FIRING AT ALL
+ * G417 IS REMOVED — A HIGH-SPEED RAM OF THE HIVE BILLS NOTHING, EITHER PIPELINE
  * ─────────────────────────────────────────────────────────────────────────────
  *
- * The rule is OFF in 2D by owner ruling (2026-09-13: nothing a 2D chassis does moves the HIVE)
- * and ON in 3D, where the tray is a jointed dynamic body a 29-in robot reaches. It is billed
- * from `bb.hiveRam`, which `sim3d/contacts3d.ts` writes from the solve's own contact pairs —
- * and it was never written, for two independent reasons that each hid the other:
- *
- *   1. the closing speed was read from `r.vel` AFTER the step and the readback, i.e. after the
- *      collision had already absorbed it. Measured: 69.6 in/s on approach, 21.5 read back on
- *      the contact tick, 0.5 the tick after, against a 30 in/s threshold;
- *   2. the contact normal was negated the wrong way round. The field colliders are built before
- *      the robots, so every robot-hive pair is stored hive-first and `flipped` is always true —
- *      the branch that was wrong was the only branch ever taken, and a full-speed ram computed
- *      a closing speed of **−69.6**.
- *
- * So these checks drive a real chassis at the real frame. There is no hand-built fixture that
- * could have caught either: both are properties of the contact the SOLVER produces.
+ * Owner ruling, 2026-09-19: every HIVE-ramming penalty is gone, in both pipelines — a driver
+ * clipping the structure while driving under it is ordinary play in this sim. The rule used to
+ * be 3D-only (billed from `bb.hiveRam`, which `sim3d/contacts3d.ts` wrote from the solve's own
+ * contact pairs) and off in 2D by an earlier ruling; both code paths are gone with it, so what
+ * is worth proving now is the NEGATIVE — that a real chassis driven full-speed into the real
+ * frame, in either physics, produces no foul, no points and no event line, so the rule cannot
+ * quietly come back through an untouched code path.
  */
-function hiveRamChecks(check: Check): void {
+function hiveRamRemovedChecks(check: Check): void {
   /** one robot, driven at the red HIVE frame's foot bar (x ≈ −24, |y| ≤ 19.4). */
-  const ram = (
-    physics: '2d' | '3d',
-    x0: number,
-    cmds: (tick: number) => RobotCommand,
-    seconds: number,
-  ): { majors: number; lines: string[] } => {
+  const ram = (physics: '2d' | '3d', x0: number, seconds: number): { major: number; pts: number; events: string[] } => {
     const w = createBiobuzzWorld('match', 7, [setup(0, 'red', {}, 0)], undefined, physics);
     w.match.phase = 'teleop';
     w.match.phaseTimeLeft = 90;
     place(w, 0, x0, 5);
     const n = Math.round(seconds / SIM_DT);
-    for (let i = 0; i < n; i++) biobuzzStep(w, SIM_DT, new Map([[0, cmds(i)]]));
-    return {
-      majors: w.match.fouls.red.major,
-      lines: w.events.filter((e) => e.includes('G417')),
-    };
+    for (let i = 0; i < n; i++) biobuzzStep(w, SIM_DT, new Map([[0, driveX(1)]]));
+    return { major: w.match.fouls.red.major, pts: w.match.scores.blue.foulPoints, events: [...w.events] };
   };
-  const go = (): RobotCommand => driveX(1);
 
-  const fast = ram('3d', -62, go, 1.5);
-  check('G417 3D: a full-speed run at the HIVE frame IS a ram', fast.majors === 1, String(fast.majors));
-  check('G417 3D: ...and the line names the act',
-    fast.lines[0] === `MAJOR FOUL - BLUE +${BB_PTS.foulMajor} (G417 STRATEGIC ramming of the HIVE)`,
-    fast.lines.join(' | '));
+  for (const physics of ['3d', '2d'] as const) {
+    // a full-speed run at the frame, long enough to still be pressed against it at the end —
+    // exactly the geometry the old 3D detector called a ram at 69.6 in/s.
+    const hit = ram(physics, -62, 1.5);
+    check(`HIVE ram (${physics}): no MAJOR`, hit.major === 0, String(hit.major));
+    check(`HIVE ram (${physics}): no points move`, hit.pts === 0, String(hit.pts));
+    check(`HIVE ram (${physics}): no event mentions ramming`,
+      !hit.events.some((e) => /ram/i.test(e)), hit.events.join(' | '));
 
-  // the manual's own "likely NOT STRATEGIC" example — "accidentally bumping the frame while
-  // attempting to pick up POLLEN". A quarter-throttle approach peaks at 20.6 in/s, well under
-  // `BB_FRAME_RAM_SPEED`, and must say nothing at all.
-  const slow = ram('3d', -40, () => cmd({ driveY: 0.25, leftDrive: 0.25, rightDrive: 0.25 }), 2);
-  check('G417 3D: a slow bump into the frame is not a ram', slow.majors === 0, String(slow.majors));
-
-  // "MAJOR FOUL and YELLOW CARD **per MATCH**" (Table 10-4), in deliberate contrast with G416's
-  // per-instance: back off and run it down again and the team still owes exactly one.
-  const twice = ram('3d', -62, (t) => driveX(t >= 60 && t < 150 ? -1 : 1), 5);
-  check('G417 3D: a SECOND ram is still one MAJOR — the tariff is per MATCH',
-    twice.majors === 1, String(twice.majors));
-
-  // ...and none of it in 2D, where the rule is off by owner ruling because nothing a chassis
-  // does there can move the HIVE. `BB_G417_ENABLED` is the switch; this is the behaviour.
-  const flat = ram('2d', -62, go, 1.5);
-  check('G417 2D: the same ram bills nothing — the rule is off in that pipeline',
-    flat.majors === 0 && !BB_G417_ENABLED, `${flat.majors}`);
+    // and holding the contact for several seconds — the old "per MATCH" latch's own repeat-ram
+    // stress case — still bills nothing.
+    const held = ram(physics, -62, 5);
+    check(`HIVE ram (${physics}): a sustained press still bills nothing`,
+      held.major === 0 && held.pts === 0, `major=${held.major} pts=${held.pts}`);
+  }
 }
 
 function penaltyChecks(check: Check): void {
@@ -1276,16 +1247,15 @@ function penaltyChecks(check: Check): void {
    * here as well as there.
    *
    * ⚠️ Typographic punctuation is part of the ruling (`’`, never `'`, measured 60:18), which is
-   * why G402's line carries U+2019. G407's line is a template literal (it interpolates
-   * `BB_CONTROL_LIMIT`), so it cannot be grepped — it is pinned as a rendered event in the G407
-   * block instead, and `foulLines` says so rather than quietly covering four of five.
+   * why G402's line carries U+2019. BOTH G407 lines are template literals (they interpolate
+   * `BB_CONTROL_LIMIT`), so neither can be grepped — both are pinned as rendered events in the
+   * G407 block instead, and `foulLines` says so rather than quietly covering three of four.
    */
   {
     const src = readRepo('src/games/biobuzz/penalties.ts');
     const foulLines: [string, string][] = [
       ['G402 crossing into the opponent\u2019s half in AUTO', 'the ACT is CROSSING, not "AUTO interference"'],
       ['G410 NECTAR in a FLOWER before 1:00', 'the element, the place and the cue'],
-      ['G417 STRATEGIC ramming of the HIVE frame', 'the act, and why it skipped the warning'],
       ['G421 PINNING an opponent for more than 3 s', 'the act AND the threshold, not a bare "PINNING"'],
     ];
     for (const [line, why] of foulLines) {
@@ -1303,6 +1273,11 @@ function penaltyChecks(check: Check): void {
     bbAwardFoul(w, 'red', 'warning', 'G407 CONTROL of 5+ elements');
     check('UI COPY: a WARNING names the OFFENDER and no points, because it moves none',
       w.events[0] === 'WARNING - RED (G407 CONTROL of 5+ elements)', w.events[0]);
+    w.events.length = 0;
+    bbAwardFoul(w, 'red', 'major', 'G407 STRATEGIC CONTROL of 5+ elements');
+    check('UI COPY: the escalated G407 MAJOR names STRATEGIC, not just the warning line',
+      w.events[0] === `MAJOR FOUL - BLUE +${BB_PTS.foulMajor} (G407 STRATEGIC CONTROL of 5+ elements)`,
+      w.events[0]);
   }
 
   // ── G410: NECTAR into a FLOWER before the 1:00 cue ─────────────────────────
@@ -1501,13 +1476,14 @@ function penaltyChecks(check: Check): void {
   }
 
   g402DrivenChecks(check);
-  hiveRamChecks(check);
+  hiveRamRemovedChecks(check);
 
-  // ── G407: CONTROL of a fifth element — a WARNING, and only a warning ──────
+  // ── G407: CONTROL of a fifth element — the base WARNING, held briefly ─────
   /**
-   * Owner ruling 2026-09-12 (field-plan §4.3): G407 is a WARNING, not a cap. Table 10-4's base
-   * sanction is a VERBAL WARNING, with MAJOR + YELLOW only if STRATEGIC, and the sim does not
-   * guess at intent — so the tariff here is an event line, a HUD count, and zero points.
+   * Table 10-4's base sanction is a VERBAL WARNING, with MAJOR + YELLOW when STRATEGIC — every
+   * scenario in THIS block holds 5+ only briefly (well under `BB_MOMENTARY_S`), so none of them
+   * is strategic and the tariff is an event line, a HUD count, and zero points. The STRATEGIC
+   * MAJOR (owner ruling 2026-09-19) has its own scenarios further down.
    *
    * The hopper is set DIRECTLY. `bbHopperCap` clamps a driven robot to 4 (`BB_STORAGE_MAX`, an
    * owner ruling that overrides Lane B relay 2), so a driven fixture could not reach five at all,
@@ -1554,6 +1530,107 @@ function penaltyChecks(check: Check): void {
     const hud = biobuzzFieldHud(w);
     check('HUD: the G407 warning count reaches the slice', hud.warnings.red === 2, String(hud.warnings.red));
     check('HUD: and it is per ALLIANCE — blue drew none', hud.warnings.blue === 0, String(hud.warnings.blue));
+  }
+
+  // ── G407: STRATEGIC — a MAJOR for 6+ past MOMENTARY, or a second 5+ instance ─
+  /**
+   * Owner ruling 2026-09-19 (manual-distilled p108, verbatim examples): likely STRATEGIC is (A)
+   * "A ROBOT that picks up and CONTROLS 6 or more SCORING ELEMENTS, moving them to a scoring
+   * location" and (B) "Multiple instances of greater than MOMENTARY CONTROL of 5 or more
+   * SCORING ELEMENTS by a ROBOT throughout a MATCH". Likely NOT strategic: "A ROBOT MOMENTARILY
+   * CONTROLS 5 SCORING ELEMENTS which they 'reverse' quickly". `BB_MOMENTARY_S` is the manual's
+   * own number (§10.6, "fewer than approximately 3 seconds") for both (A)'s and (B)'s clocks.
+   */
+  {
+    const w = bare([{ id: 0, alliance: 'red' }]);
+    w.match.phase = 'teleop';
+    w.match.phaseTimeLeft = 90;
+    const r = w.robots[0];
+    const majors = () => w.match.fouls.red.major;
+    const hold = (n: number, seconds: number) => {
+      r.hopper = Array(n).fill('yellow');
+      bill(w, ticks(seconds));
+    };
+
+    // 5, MOMENTARILY, then back to 4 — the manual's "reversed quickly" case.
+    hold(5, 1);
+    hold(4, 1);
+    check('G407 STRATEGIC: a MOMENTARY 5 that drops back never MAJORS', majors() === 0, String(majors()));
+
+    // 5, held PAST MOMENTARY, ONCE — the first such instance, so a warning but no MAJOR.
+    hold(5, BB_MOMENTARY_S + 0.5);
+    check('G407 STRATEGIC: a single >MOMENTARY 5+ instance MAJORS nothing', majors() === 0, String(majors()));
+
+    // drop and re-raise past MOMENTARY again: the SECOND instance MAJORS the opponent.
+    hold(4, 1);
+    hold(5, BB_MOMENTARY_S + 0.5);
+    check('G407 STRATEGIC: a second >MOMENTARY 5+ instance MAJORS the opponent',
+      majors() === 1 && w.match.scores.blue.foulPoints === BB_PTS.foulMajor,
+      `major=${majors()} pts=${w.match.scores.blue.foulPoints}`);
+
+    // the HUD chip escalates from WARNED to MAJORED — same slot, `.chip.bad` in `HudSlots.tsx`.
+    const hud = biobuzzFieldHud(w);
+    check('HUD: controlMajor flips for the offending alliance once the MAJOR bills',
+      hud.controlMajor.red === true && hud.controlMajor.blue === false,
+      `red=${hud.controlMajor.red} blue=${hud.controlMajor.blue}`);
+
+    // a THIRD instance, after the MAJOR already billed: latched PER MATCH, no second MAJOR.
+    hold(4, 1);
+    hold(5, BB_MOMENTARY_S + 0.5);
+    check('G407 STRATEGIC: a third instance draws no second MAJOR (per MATCH)', majors() === 1, String(majors()));
+  }
+
+  {
+    const w = bare([{ id: 0, alliance: 'blue' }]);
+    w.match.phase = 'teleop';
+    w.match.phaseTimeLeft = 90;
+
+    // 6, held PAST MOMENTARY: rule (A) MAJORS on the very FIRST instance — no second 5+
+    // instance is needed.
+    w.robots[0].hopper = Array(6).fill('yellow');
+    const held = bill(w, ticks(BB_MOMENTARY_S + 0.5));
+    check('G407 STRATEGIC: 6+ held past MOMENTARY MAJORS on the first instance',
+      held.major.blue === 1 && held.pts.red === BB_PTS.foulMajor,
+      `major=${held.major.blue} pts=${held.pts.red}`);
+
+    // 6, for a SINGLE tick: not sustained, so no MAJOR — "a referee could not see it".
+    const w2 = bare([{ id: 0, alliance: 'blue' }]);
+    w2.match.phase = 'teleop';
+    w2.match.phaseTimeLeft = 90;
+    w2.robots[0].hopper = Array(6).fill('yellow');
+    const one = bill(w2, 1);
+    check('G407 STRATEGIC: 6 for a single tick never MAJORS', one.major.blue === 0, String(one.major.blue));
+  }
+
+  {
+    // a PASSIVE robot is counted (its clocks still drain) but never sanctioned.
+    const w = bare([{ id: 0, alliance: 'red' }]);
+    w.match.phase = 'teleop';
+    w.match.phaseTimeLeft = 90;
+    w.robots[0].passive = true;
+    w.robots[0].hopper = Array(6).fill('yellow');
+    const out = bill(w, ticks(BB_MOMENTARY_S + 1));
+    check('G407 STRATEGIC: a passive robot draws no MAJOR', out.major.red === 0 && out.pts.blue === 0,
+      `major=${out.major.red} pts=${out.pts.blue}`);
+  }
+
+  {
+    // the two robots of ONE alliance latch INDEPENDENTLY — a per-ROBOT flag, not per-alliance.
+    const w = bare([
+      { id: 0, alliance: 'red' },
+      { id: 1, alliance: 'red' },
+    ]);
+    w.match.phase = 'teleop';
+    w.match.phaseTimeLeft = 90;
+    w.robots[0].hopper = Array(6).fill('yellow');
+    w.robots[1].hopper = [];
+    bill(w, ticks(BB_MOMENTARY_S + 0.5));
+    check('G407 STRATEGIC: robot 0 MAJORS on its own 6+ streak', w.match.fouls.red.major === 1,
+      String(w.match.fouls.red.major));
+    w.robots[1].hopper = Array(6).fill('yellow');
+    bill(w, ticks(BB_MOMENTARY_S + 0.5));
+    check('G407 STRATEGIC: robot 1 MAJORS independently of robot 0’s latch',
+      w.match.fouls.red.major === 2, String(w.match.fouls.red.major));
   }
 
   // ── G407: a HERDED pile — the half the hopper count could never see ───────
@@ -1818,67 +1895,8 @@ function penaltyChecks(check: Check): void {
       zone.map((b) => `${b.pos.x.toFixed(1)},${b.pos.y.toFixed(1)}`).join(' '));
   }
 
-  // ── G417: ramming the HIVE frame — STRATEGIC, so a MAJOR on the FIRST hit ─
-  /**
-   * The escalation condition is STRATEGIC, **not** REPEATED (manual-distilled §11 item 4).
-   * "Ramming into the HIVE frame at high-speed" is example A of what is likely STRATEGIC, and
-   * it is strategic on a SINGLE hit — so `BB_FRAME_RAM_SPEED` is this sim's strategic test and
-   * there is no free first warning above it. REPEATED is example F, one indicator among six,
-   * and reading it as the trigger is what dropped example A.
-   *
-   * "MAJOR FOUL and YELLOW CARD **per MATCH**" (Table 10-4), in deliberate contrast with
-   * G416's "per instance" two rows above — so the tariff is paid ONCE however many times the
-   * robot rams. The YELLOW CARD is not modelled; BIOBUZZ has no card machinery.
-   */
-  /**
-   * ⚠️ POSES ARE ON THE FOOTPRINT (`footprintExtents`, sweepers included), NOT THE CHASSIS.
-   * This check used to park the robot at x = 24 − 8, which with a 10.5-in footprint front is
-   * BETWEEN the bars with its footprint reaching clean through the +x bar, and drove it in −x —
-   * AWAY from the bar. It billed only because the old `frameRam` hard-coded "a robot on the +x
-   * bar rams it by moving −x" whatever side the robot was on. Now the outside-in ram is staged
-   * genuinely outside, flush on the bar's OUTER face.
-   */
-  const ramWorld = (x: number, y: number, vx: number, vy: number): World => {
-    const q = bare([{ id: 0, alliance: 'blue' }]);
-    q.match.phase = 'teleop';
-    q.match.phaseTimeLeft = 60;
-    place(q, 0, x, y);
-    q.robots[0].vel = { x: vx, y: vy };
-    return q;
-  };
-  const fe = footprintExtents(bare([{ id: 0, alliance: 'blue' }]).robots[0].spec);
-  {
-    /**
-     * G417 IS OFF (`BB_G417_ENABLED`, owner ruling 2026-09-13), so what these cases assert is
-     * that NONE of them bills. They are the same five geometries the rule used to be measured
-     * on — outside-in, inner face, bar end, the mirrored bar, and the along-the-bar and gentle
-     * cases that never billed — kept rather than deleted because they are what proves the
-     * rule is off everywhere it used to be on, and because they come straight back if the
-     * HIVE ever becomes something a robot can tip.
-     */
-    check('G417: the rule is disabled', BB_G417_ENABLED === false);
-    const innerX = BB_FRAME_BAR_IN - fe.front;
-    const endX = (BB_FRAME_BAR_IN + BB_FRAME_BAR_OUT) / 2;
-    const cases: [string, World][] = [
-      ['an outside-in ram on the +x bar', ramWorld(BB_FRAME_BAR_OUT + fe.rear, 0, -(BB_FRAME_RAM_SPEED + 10), 0)],
-      ['a ram on the INNER face', ramWorld(innerX, 0, BB_FRAME_RAM_SPEED + 10, 0)],
-      ['a ram into a bar END along y', ramWorld(endX, BB_FRAME_Y + fe.half, 0, -(BB_FRAME_RAM_SPEED + 10))],
-      ['driving ALONG a frame bar', ramWorld(innerX, 0, 0, BB_FRAME_RAM_SPEED + 40)],
-      ['a gentle brush', ramWorld(endX, BB_FRAME_Y + fe.half, 0, -(BB_FRAME_RAM_SPEED - 10))],
-    ];
-    for (const [what, q] of cases) {
-      const out = bill(q, 20);
-      check(`G417: ${what} bills nothing`, out.major.blue === 0 && out.pts.red === 0,
-        `major=${out.major.blue} red=${out.pts.red}`);
-      check(`G417: ${what} writes no event`, !q.events.some((e) => e.includes('G417')),
-        q.events.filter((e) => e.includes('G417')).join(' | '));
-    }
-    // the mirrored bar, staged the way the +x side is (rear toward the bar)
-    const mirror = ramWorld(-BB_FRAME_BAR_OUT - fe.rear, 0, BB_FRAME_RAM_SPEED + 10, 0);
-    mirror.robots[0].heading = Math.PI;
-    check('G417: the -x bar bills nothing either', bill(mirror, 20).major.blue === 0,
-      String(mirror.match.fouls.blue.major));
-  }
+  // G417 (ramming the HIVE frame) is REMOVED entirely — see `hiveRamRemovedChecks` above, which
+  // drives a real chassis into the real frame under both physics and proves nothing bills.
 
   // ── the edge memory is CLEARED outside the played periods ─────────────────
   {

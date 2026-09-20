@@ -51,9 +51,10 @@ import { elements3dAimAndLaunch, elements3dCapture, elements3dHumanPlayer, eleme
  *       It also RECORDS world.rrContacts (SAT on geometric overlap alone, byte-identical to
  *       2D's own test), which replaces this lane's previous bespoke fillRrContacts3d.
  *   9. CONTAINMENT -- the safety net, never the design; see `engine.ts`'s `containmentPass`.
- *  9b. CONTACT RULES -- G409 (a robot catching a spilling element) and G417 (ramming the HIVE),
- *      the only two BIOBUZZ rules whose subject is a contact rather than a position, and both
- *      3D-only for that reason (`contacts3d.ts`).
+ *  9b. CONTACT RULES -- G409 (a robot catching a spilling element), the only BIOBUZZ rule whose
+ *      subject is a contact rather than a position, and 3D-only for that reason
+ *      (`contacts3d.ts`). G417 (ramming the HIVE) used to live in this stage too; it is REMOVED
+ *      entirely (owner ruling, 2026-09-19).
  *  10. DERIVE -- `deriveTick`: cell membership, ground/flight tagging, `hives[a].contents`.
  *  11. GAMEPLAY -- capture, aim+launch, place/retrieve, human player (`elements3d.ts`), then the
  *      hive TIMER over what derive just wrote (`hive3dTick`) -- in that order, so a tip
@@ -131,14 +132,11 @@ export function step3d(world: World, dt: number, commands: Map<number, RobotComm
   //     readback, so it is the step's own answer being damped rather than last tick's.
   groundRoll3d(world, engine, dt);
 
-  // 9b. THE CONTACT RULES -- G409's spill tag and G417's hive ram, read off the pairs the step
-  //     just resolved (`contacts3d.ts`). BEFORE derive, because `derive.ts` is about to re-tag
-  //     every element and a spilled one has to be judged against the contact that actually
-  //     happened rather than against the state it ends the tick in.
-  //     ⚠️ It takes `preVels3d` for the same reason 8b does: G417's test is the CLOSING speed of
-  //     a ram, and by the time this runs the collision has already absorbed it (measured 69.6
-  //     in/s on approach, 21.5 read back) — see `contacts3d.ts`.
-  if (world.biobuzz) hiveContactPass(world, engine, preVels3d);
+  // 9b. THE CONTACT RULES -- G409's spill tag, read off the pairs the step just resolved
+  //     (`contacts3d.ts`). BEFORE derive, because `derive.ts` is about to re-tag every element
+  //     and a spilled one has to be judged against the contact that actually happened rather
+  //     than against the state it ends the tick in.
+  if (world.biobuzz) hiveContactPass(world, engine);
 
   // 10. derive.
   deriveTick(world, engine);

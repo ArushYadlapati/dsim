@@ -883,7 +883,15 @@ export function robotChecks(check: Check): void {
     /** owner item (b) of the pass before: the hood extends above the plates. Not by a tuned offset
      * — the plate's outer arc IS the head's own `hoodR` and the hood occupies the shell outside
      * it, so the hood is proud by exactly `BB_HOOD_T` in the worst case and by the plate's
-     * flat-top cut everywhere else. */
+     * flat-top cut everywhere else.
+     *
+     * ⚠️ **THIS IS THE COMPACT PROFILE AND IT IS THE SHIPPED ONE AGAIN.** Two passes grew the
+     * fixed plate up to `hoodR` to close the gap to the hood — a relief ramp, then an exit cut
+     * with a raked tail — and the owner rejected both ("the shooter parallel plates became ugly.
+     * remember that the arc does not need to be big"), because a fixed plate sized to a part that
+     * swings away from it is a bare fin at the 80° cap. The hood carries its own CHEEKS now
+     * (`buildHoodNode`), so this arithmetic and `sidePlateR` agree again. The RENDER lane measures
+     * the drawn meshes; this stays the arithmetic statement, restated rather than imported. */
     const plateR = (th: number): number => {
       const c = Math.cos(th);
       const sn = Math.sin(th);
@@ -1982,10 +1990,11 @@ export function robotChecks(check: Check): void {
     const rebuilt = JSON.stringify({ f: bb.flowers.map((f) => f.stack), h: [bb.hives.red.contents, bb.hives.blue.contents] });
     check('place: bbIndexElements rebuilds exactly the live stacks after a placement', live === rebuilt, `${live} vs ${rebuilt}`);
     // The allowlist is EVERY owner of this per-robot map, across lanes: `placeP`/`placeN` are
-    // this lane's, `g417warned` the rules lane's, `nectarPress` the field lane's HUMAN PLAYER
-    // latch (`play.ts` NECTAR_PRESS_KEY). A new key belongs here the day it is written — the
-    // check exists to catch a latch stored under a name nobody else knows about.
-    check('place: the latch is namespaced and only TRUE keys are stored', Object.entries(bb.held[r.id] ?? {}).every(([k, v]) => v === true && (k === 'placeP' || k === 'placeN' || k === 'g417warned' || k === 'nectarPress')));
+    // this lane's, `g402billed`/`g407billed` the rules lane's per-MATCH latches, `nectarPress`
+    // the field lane's HUMAN PLAYER latch (`play.ts` NECTAR_PRESS_KEY). A new key belongs here
+    // the day it is written — the check exists to catch a latch stored under a name nobody else
+    // knows about. `g417billed` was here too; G417 is REMOVED (owner ruling, 2026-09-19).
+    check('place: the latch is namespaced and only TRUE keys are stored', Object.entries(bb.held[r.id] ?? {}).every(([k, v]) => v === true && (k === 'placeP' || k === 'placeN' || k === 'g402billed' || k === 'g407billed' || k === 'nectarPress')));
   }
   {
     const { w, r } = tubeWorld(65);

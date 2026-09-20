@@ -1,6 +1,10 @@
 import type { Alliance, Vec2 } from '../../types';
+import { dcos, dsin, nextRandom } from '../../math';
 import {
+  BB3_FLOWER_SCATTER_FRAC,
+  BB_FLOWER_LOW_HOLE,
   BB_FLOWER_LOW_Z,
+  BB_FLOWER_MID_HOLE,
   BB_FLOWER_MID_Z as BB_FLOWER_MID_Z_CAD,
   BB_FLOWER_OPEN_R,
   BB_FLOWER_TOP_Z,
@@ -254,4 +258,70 @@ export function flowerScoreZ(
     bonusPts: bonusAlliance ? BB_PTS.bottomNectar : 0,
     inVolume,
   };
+}
+
+// ---------------------------------------------------------------------------------------------
+// THE DROP SCATTER — shared by the 3D placement path (`sim3d/flower3d.ts`) and the 3D STAGING
+// (`spawn.ts`). PURE, and here rather than under `sim3d/` because `spawn.ts` may not import that
+// directory at all: it is the LAZY chunk, and only `engine.ts`/`tilt.ts` may be reached from
+// outside it (`docs/area/biobuzz.md`). Nothing in the 2D pipeline calls either function.
+// ---------------------------------------------------------------------------------------------
+
+/**
+ * ⚠️ **HOW FAR OFF THE AXIS AN ELEMENT OF RADIUS `r` MAY BE PUT AND STILL FALL ALL THE WAY —
+ * AND IT IS A BORE THAT ANSWERS, NOT THE TUBE'S WIDEST POINT.** The 3D cage
+ * (`BB3_FLOWER_CAGE_SEGMENTS`) leaves a POLLEN 0.548 in of room between the two upper plates,
+ * and sizing the scatter against THAT was measured to be wrong: at a 0.411-in offset toward the
+ * WALL a POLLEN fell the length of the tube and arrived 0.09 in inside the two `flower peanut
+ * support` hulls, which stand 1.718 from the axis between the lower and middle plates, and the
+ * solver threw it 8–28 in clear of the flower. Nothing below the middle plate is round — the
+ * supports are on the wall side only.
+ *
+ * The bound that is safe is the one the element's own fall already proves: the TIGHTEST BORE IT
+ * FITS THROUGH. A POLLEN passes all three plates, so its bore is the lower one (1.611 → 0.211 in
+ * of slack); a NECTAR does not pass the lower bore at all (that is G418's lock), so its bore is
+ * the middle one (1.948 → 0.148). At `BB3_FLOWER_SCATTER_FRAC` that is 0.158 and 0.111, both
+ * comfortably inside the supports' 0.318 for a POLLEN — and an element that fits a hole can be
+ * put anywhere in it by construction.
+ */
+export function bbFlowerDropSlack(elementR: number): number {
+  let best = Infinity;
+  for (const r of [BB_FLOWER_LOW_HOLE / 2, BB_FLOWER_MID_HOLE / 2, BB_FLOWER_OPEN_R]) {
+    if (r > elementR) best = Math.min(best, r);
+  }
+  return Number.isFinite(best) ? Math.max(0, best - elementR) : 0;
+}
+
+/**
+ * THE SCATTER DRAW, and it is a PURE HASH OF WORLD JSON rather than a draw off `world.rngState`.
+ *
+ * Both are deterministic and both would be legal at the PLACEMENT call site — that one runs
+ * inside `step3d`, i.e. on the authority, in a local practice and in a replay re-simulation
+ * alike, and the predictors (`sim3d/predict.ts`) never run gameplay at all. The hash is chosen
+ * because it is the weaker claim: `world.rngState` is CONSUMED, so a draw would move every later
+ * draw in the match, a reconcile that re-steps a tick would have to agree about how many draws
+ * had happened rather than merely about the world, and — the reason it is not even a choice at
+ * the STAGING call site — `stageBiobuzz` must leave a 2D world's chain and every 2D position
+ * byte-identical to what they were before this existed.
+ *
+ * ⚠️ **`mix` IS READ, NEVER ADVANCED.** Callers pass `world.rngState`, which is plain world JSON:
+ * `slimWorld` carries it in every snapshot, `checksum.ts` mixes it, and a reconcile or a replay
+ * restores it with the rest of the world. Every peer that agrees about `(mix, element id, flower
+ * index)` agrees about the offset, and re-simulating a tick reproduces it exactly however many
+ * times it is re-run.
+ *
+ * `nextRandom` is the shared mulberry32 the rest of the sim draws with, called twice off an
+ * integer mix; the radius is `sqrt(u)`-warped so the offset is uniform over the DISC rather than
+ * over the radius, which is the difference between a column that looks dropped and one that
+ * looks like it is tracing a circle.
+ */
+export function bbFlowerScatter(mix: number, id: number, i: number, slack: number): Vec2 {
+  if (!(slack > 0)) return { x: 0, y: 0 };
+  const seed =
+    (Math.imul(mix | 0, 0x27d4eb2f) ^ Math.imul(id + 1, 0x85ebca6b) ^ Math.imul(i + 1, 0xc2b2ae35)) | 0;
+  const a = nextRandom(seed);
+  const m = nextRandom(a.state);
+  const ang = a.value * 2 * Math.PI;
+  const rad = BB3_FLOWER_SCATTER_FRAC * slack * Math.sqrt(m.value);
+  return { x: dcos(ang) * rad, y: dsin(ang) * rad };
 }

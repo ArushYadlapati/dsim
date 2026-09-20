@@ -331,12 +331,12 @@ CONTINUOUS > ~10 s, REPEATED = more than once per match, STRATEGIC = for advanta
 | G304 | start position (see §3) | match will not start | `bbEvalStart` (A/C/D/E) + the anchor snap at spawn; `startLegality: false` (the shared ready-up gate is DECODE's `evalStartPose`, see `sim.ts`) |
 | G402 | no AUTO opponent interference; red side = columns A–C, blue = D–F | MAJOR per match (+ card if STRATEGIC) | DECODE's G402 shape: crosser on the wrong side + contact during AUTO |
 | G405 | don't eject elements from the field | MAJOR per element | structural (nothing leaves the field) |
-| G407 | **CONTROL no more than 4 SCORING ELEMENTS** | VERBAL; MAJOR + card if STRATEGIC (example A: 6+) | hopper cap 4; CONTROL of 5+ (hopper + herded) is a VERBAL WARNING only, never a foul (owner ruling) |
+| G407 | **CONTROL no more than 4 SCORING ELEMENTS** | VERBAL; MAJOR + card if STRATEGIC (example A: 6+) | hopper cap 4; CONTROL of 5+ (hopper + herded) is a VERBAL WARNING, escalating to a MAJOR once per MATCH per robot when 6+ is sustained past MOMENTARY or this is a second-or-later >MOMENTARY instance of 5+ (owner ruling 2026-09-19). Card not modelled |
 | G408 | don't CONTROL opponent NECTAR | VERBAL; card if STRATEGIC | intake refuses opponent nectar |
 | G409 | don't catch elements spilling from a TIPPED HIVE | VERBAL; card if STRATEGIC | not modelled (spill lands on tiles) |
 | **G410** | **no NECTAR into a FLOWER before 1:00 left** | **MAJOR per NECTAR** | element entry event; the achievement still scores |
 | G411 | no hoarding | MAJOR + card | not modelled |
-| G417 | don't meddle with the HIVE (ram the frame, launch at the outside of a cell) | VERBAL; MAJOR + card if STRATEGIC | a frame ram at/over `BB_FRAME_RAM_SPEED` (`APPROX`) is the STRATEGIC test: MAJOR once per MATCH per robot; below it, nothing. Card not modelled |
+| G417 | don't meddle with the HIVE (ram the frame, launch at the outside of a cell) | VERBAL; MAJOR + card if STRATEGIC | REMOVED entirely, both pipelines (owner ruling 2026-09-19): a driver clipping the structure while driving under it is ordinary play in this sim |
 | G418 | FLOWER: enter only via the top, remove only POLLEN from the bottom | VERBAL; MAJOR + card if STRATEGIC | structural |
 | G421 | PIN ≤ 3 s (2-ft / 3-s release, pause/resume) | MAJOR + MAJOR per further 3 s | DECODE's pin detector, MAJOR tariff |
 | G426/G427 | humans enter NECTAR only per TIP / at ≤ 60 s, only via own LOADING ZONE, contacting the tile first | MINOR per nectar | structural (the sim's human player obeys) |

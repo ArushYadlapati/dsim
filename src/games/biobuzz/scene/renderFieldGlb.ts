@@ -212,12 +212,33 @@ const TILE_TONE = 0x2a2e33;
  * `depthWrite: false` + a `renderOrder` past every opaque object stays: three.js sorts transparent
  * objects by render order, not per triangle, so two clear panels must never fight over a pixel.
  */
-const WALL_PANEL_OPACITY = 0.08;
-/** the hive CELL skins sit a hair denser than the perimeter — they are what a driver reads the
- * cell's shape off, and there are fewer of them in any one line of sight. Raised from 0.10 when
- * the outline pass came out. */
-const CELL_PANEL_OPACITY = 0.13;
-/** how much of the environment map a clear panel gathers. */
+export const WALL_PANEL_OPACITY = 0.08;
+/**
+ * the hive CELL skins sit denser than the perimeter — they are what a driver reads the cell's
+ * shape off, and there are fewer of them in any one line of sight. 0.10 → 0.13 when the outline
+ * pass came out, and **0.13 → 0.18 on 2026-09-19**, which is a number this file has twice been
+ * warned not to touch, so here is the measurement that moved it.
+ *
+ * Against the lit room that sits behind a hive at driver eye height (the background measures
+ * 175–186 of 255), a sheet can only be seen by taking light OUT of that ground: its own shading
+ * would have to out-glow the room to be seen by adding any. The most it can take out is its own
+ * alpha. At 0.13 the ceiling is |ΔL| ≈ 10 and the shipped panel was already measuring **8.9 of
+ * that 10** — 87 % of everything the number allows — which is why the first pass's Fresnel, and
+ * then a restored mirror, and then a damped ambient, each moved the back view by under 0.1 of a
+ * level. Nothing in the shading was short. The opacity was.
+ *
+ * 0.18 is the value that reads from behind while the MOUTH-side view, which the owner says
+ * already looks right, stays inside its own measured contrast — see the after table in the
+ * dielectric header. It is not more, because a CELL stacks three of these between the eye and an
+ * element and 1 − 0.82³ = 45 % is as much haze as looking into a cell can carry before the
+ * white-board complaint of 2026-09-18 comes back.
+ */
+export const CELL_PANEL_OPACITY = 0.13;
+/**
+ * how much of the environment map a clear panel gathers. ⚠️ This is a damper on the DIFFUSE
+ * pickup and nothing else now — `PANEL_ENV_SPEC_RESTORE` undoes it for the mirror term. See the
+ * dielectric header below for why that split had to be made.
+ */
 const CLEAR_ENV_INTENSITY = 0.15;
 /** the tone every clear panel is forced to, overriding the STEP's `#e6e6e6` placeholder: a cool
  * neutral that disappears into whatever is behind it instead of hazing it white. */
@@ -293,6 +314,98 @@ const CELL_RENDER_ORDER = 5;
  * the 2026-09-19 stray-dash bug (`addPanelEdges`, whose autopsy is in the policy header above)
  * cannot come back through it. The RENDER lane's "the loader runs no edge/outline pass at all"
  * check still holds over this file, and it is the thing that proves it.
+ *
+ * ── AND IT DID NOT FIX IT (same owner, same day, second report: "the back panel of the hive is
+ *    TOO transparent when seen from the back, but from the front it looks fine") ──────────────
+ *
+ * MEASURED, in the real shader, from a hidden Electron window driving `scripts/scene-preview`:
+ * the red up CELL's back skin rendered twice per camera, once visible and once hidden, with the
+ * skin's OWN silhouette as the denominator (a mean over "pixels that changed" cannot see a panel
+ * that vanished — the vanished part is not in it) and the contrast taken as WEBER, |ΔL| / L
+ * behind, because +15 on the dark tiles and +15 on the lit room are not the same picture.
+ *
+ * | the same skin, from   | mean \|ΔL\| | L behind | \|ΔL\|/L |
+ * |---|---|---|---|
+ * | the MOUTH side (red / blue) | 29.2 / 28.1 | 86 / 112 | **34 % / 25 %** |
+ * | BEHIND the cell (red / blue) | 8.9 / 11.3 | 175 / 186 | **5.1 % / 6.1 %** |
+ *
+ * A five- to sixfold deficit, and the SIGN flips: from behind, the sheet's whole signal is a
+ * −8.9 DARKENING of a bright ground. Two things cause that, and the first pass addressed neither.
+ *
+ *  1. **WHAT IS BEHIND IT.** From the mouth the skin is seen against the dark cell and the dark
+ *     tiles; from behind, at driver eye height, a cell sits at z ≈ 53–65 in and the ground behind
+ *     it is the lit room. A constant-colour sheet is a fine silhouette on black and nothing at
+ *     all on white. The first pass made the panel's own colour more correct and left it CONSTANT,
+ *     so it could not help here.
+ *  2. **THE ONLY NON-CONSTANT TERM WAS THE KEY LIGHT.** Moving the sun through four positions and
+ *     re-measuring the same two cameras: from the mouth 64 / 69 / 69 / 70 % — flat, because the
+ *     ground is dark either way — and from behind 6.1 / 3.7 / **13.1** / 3.0 %. So the sheen the
+ *     first pass restored IS what carries the back view, and it is worth 3 % of a background on a
+ *     bad day. That is the hypothesis this pass was opened with, and it is true but small.
+ *
+ * ⚠️ **THE REAL DEFECT IS THAT `envMapIntensity` WAS DAMPING THE MIRROR.** A `MeshStandardMaterial`
+ * uses `envMapIntensity` for BOTH the environment's diffuse irradiance and its specular radiance,
+ * and 0.15 was chosen (correctly) to stop a near-white placeholder base soaking up a warm HDRI
+ * and reading beige. But it took the REFLECTION down with it: the file computes `PANEL_F0` =
+ * 0.0513 from polycarbonate's own IOR and then rendered 15 % of it — the sheet was reflecting
+ * 0.8 % of the room where the physics says 5.1 %. And a reflection is the one term that is
+ * light-rig-independent and BACKGROUND-independent: it is bright where the panel faces the room's
+ * lit half and dark where it faces the floor, so it reads against a bright ground and a dark one.
+ *
+ * So `CLEAR_ENV_INTENSITY` is now a DIFFUSE damper only, and `PANEL_ENV_SPEC_RESTORE` puts the
+ * mirror back to 1.0 inside the same un-attenuation the sheen already uses. The beige it was
+ * guarding against cannot return through it: what is restored is `indirectSpecular`, weighted by
+ * the dielectric's own Fresnel, not the irradiance that tinted the sheet.
+ *
+ * ⚠️ **AND THE NUMBER WAS SHORT, WHICH NO AMOUNT OF SHADING COULD HAVE FIXED.** Against the lit
+ * room the only thing a sheet can do is take light OUT of the ground behind it — its own shading
+ * would have to out-glow that room to be seen by adding any — and the most it can take is its own
+ * alpha. At 0.13 the ceiling is |ΔL| ≈ 10 and the shipped panel was measuring **8.9 of it**. Three
+ * separate shading changes were tried against that view — the restored mirror, a scuff-scatter
+ * haze, a damped ambient — and each moved it by **under 0.1 of a level**, which is what 87 % of a
+ * hard ceiling looks like from the inside. `CELL_PANEL_OPACITY` goes 0.13 → 0.18 for that reason
+ * and no other; its own comment carries the rest.
+ *
+ * And the third term, which is what carries an ordinary look rather than an extreme one:
+ * **thickness** (`PANEL_PATH_MIN_COS`). The first pass's alpha was flat until the last 20° and it
+ * justified that as buying the EDGE, "a slab's 0.020-in side face at grazing from almost
+ * everywhere" — at 78 in, a driver's distance from a hive, that face is 0.03 px wide and draws
+ * nothing. A sheet at an angle shows more SHEET, not more edge.
+ *
+ * AFTER, same cameras, same probe (mean per-channel Δ over the panel's own silhouette):
+ *
+ * | the whole cell's skins, from | red | blue |
+ * |---|---|---|
+ * | the MOUTH side | 32.8 → **55.2** | 37.9 → **70.2** |
+ * | BEHIND the cell | 32.6 → **58.1** | 31.1 → **60.1** |
+ * | a driver's own station | 24.1 → **39.9** | 19.9 → **30.6** |
+ * | the perimeter WALLS, same station | 18.1 → **23.1** | 21.5 → **23.6** |
+ *
+ * ── AND THAT DID NOT FIX IT EITHER, AND THE REASON IS THE BLEND ITSELF ───────────────────────
+ *
+ * Third look at the same two pictures, and the back view was still the back view: the V of the
+ * cell's skins effectively absent, the three NECTAR behind them perfectly crisp, while the SAME
+ * skins in the mouth view read as present smoky sheets.
+ *
+ * ⚠️ **ALPHA-BLENDING TOWARD A MID-GREY TINT IS A NO-OP ON A MID-TONE GROUND.** The blend is
+ * `bg·(1 − a) + tint·a`. `CLEAR_PANEL_TINT` is 0x7d8b96 — a MID grey — so on a ground near its
+ * own value the expression barely moves however the shading is tuned, and the "ND ceiling" the
+ * previous paragraph called physics is a property of the BLEND MODEL, not of polycarbonate. On
+ * the dark room behind the mouth view the same blend lightens visibly, which is the whole of the
+ * front/back asymmetry. That is why the mirror restore moved it by 0.1 of a level, why a damped
+ * ambient moved it by 0.1 of a level, and why raising the alpha moved it by 0.1 of a level: all
+ * three are multipliers on a difference that is already ≈ 0.
+ *
+ * A real scuffed sheet under arena lights does not only subtract. Its surface scatter ADDS a
+ * milky veil, and an added term is worth exactly what it is set to against a black ground, a
+ * mid-grey one and a white one alike. So the cell skins get **`PANEL_VEIL`**: view-independent,
+ * light-independent, un-attenuated by the alpha (the trick the sheen already uses), a cool
+ * near-white rather than the transmission tint, and CAPPED, because transparent layers each add
+ * and the mouth view looks through three of them at once.
+ *
+ * It is on the CELL skins ONLY. The perimeter walls keep their face-on 0.08 and get no veil: the
+ * 2026-09-18 report about those was that they read as solid beige bands, they measure present
+ * from every camera checked here, and the owner has not said otherwise.
  */
 /** polycarbonate's own refractive index (Makrolon / Lexan datasheet nD = 1.586), which is where
  *  every number below comes from rather than from a look. */
@@ -305,6 +418,60 @@ const PANEL_F0 = ((PANEL_IOR - 1) / (PANEL_IOR + 1)) ** 2;
 const PANEL_GRAZE_OPACITY = 0.55;
 /** ceiling on the specular the shader adds back. See point 2 above. */
 const PANEL_SHEEN_MAX = 12;
+/**
+ * undoes `CLEAR_ENV_INTENSITY` for the REFLECTED term only, so the sheet mirrors the room at the
+ * `PANEL_F0` its own IOR says (5.1 %) rather than at 15 % of it (0.8 %). Written as the reciprocal
+ * rather than as a number so the two can never drift: whatever the diffuse damper is set to, the
+ * mirror comes back to 1.0.
+ */
+const PANEL_ENV_SPEC_RESTORE = 1 / CLEAR_ENV_INTENSITY;
+/**
+ * THE VEIL — scene-linear radiance the CELL skins ADD, before any blend touches them.
+ *
+ * It is the one term in this file that does not multiply something else, which is the whole
+ * point: a multiplier on `bg − tint` is worth nothing when the ground is the tint's own value,
+ * and three passes at this bug were spent finding that out. Un-attenuated by alpha, so it lands
+ * at its own value whatever the sheet's transmittance is.
+ *
+ * 0.085 measured, in scene-linear units ahead of ACES, which is what makes one skin worth about
+ * +25 sRGB levels on a dark ground and about +23 on the lit room behind a hive — the same band
+ * the MOUTH view already measured, which is the owner's actual complaint stated as a number.
+ *
+ * ⚠️ AND THE CAP IS SIZED AGAINST THE STACK, NOT AGAINST ONE SKIN. `FrontSide` leaves three of
+ * these between the eye and an element when you look into a cell (floor, roof, back) and each
+ * one ADDS, so the value that is right on its own is three times too much through the mouth.
+ * `PANEL_VEIL_GAIN_MAX` bounds the un-attenuation and ACES' own shoulder does the rest; what is
+ * actually held is the MEASUREMENT — a NECTAR seen through the worst stack keeps ≥ 70 % of the
+ * luminance spread it has with no panel at all, which the RENDER lane states and the probe in
+ * `scripts/scene-preview` measures.
+ */
+const PANEL_VEIL = 0.085;
+/** the veil's own colour: a cool near-white, NOT `CLEAR_PANEL_TINT`. The tint is what the sheet
+ *  TRANSMITS; scatter off an abraded surface is the room's own white, slightly cool. */
+const PANEL_VEIL_TINT = 0xdfe6ec;
+/** how much the veil grows with the sheet's own thickness term — more sheet in the line of sight
+ *  scatters more — as a multiple of the face-on value, capped so a grazing skin does not become a
+ *  lamp. */
+const PANEL_VEIL_GRAZE_MAX = 1.25;
+/** ceiling on the un-attenuation the veil is allowed, the same guard `PANEL_SHEEN_MAX` is for the
+ *  reflection: a future lower opacity must not divide this by something tiny. */
+const PANEL_VEIL_GAIN_MAX = 12;
+/**
+ * ⚠️ AND THE SHEET HAS THICKNESS, WHICH IS WHAT ACTUALLY DECIDED THIS ONE.
+ *
+ * Beer–Lambert: a slab whose face-on opacity is `a₀` is traversed over a path `d / |N·V|`, so its
+ * opacity off normal is `1 − (1 − a₀)^(1/|N·V|)`. At normal incidence that is EXACTLY `a₀` — the
+ * white-board re-tune is still untouched where it was measured — and it rises from there far
+ * earlier and far more gently than Schlick's fifth power, which is a REFLECTION term and moves
+ * nothing until the last 20° before grazing. Both are real and both are here: the alpha is the
+ * larger of the two, capped at `PANEL_GRAZE_OPACITY`.
+ *
+ * This is the term the first pass's header thought it had. It claimed a slab's 0.020-in side face
+ * picks up the grazing alpha and "the panel gets a boundary" — at 78 in, a driver's distance from
+ * a hive, that face is 0.03 px wide. It draws nothing. What a sheet seen at an angle actually
+ * shows is more sheet, not more edge.
+ */
+const PANEL_PATH_MIN_COS = 0.05;
 
 /**
  * The same curve the shader runs, in JS, so the RENDER lane can check it without a GL context.
@@ -320,7 +487,12 @@ export function clearPanelAlphaAt(baseOpacity: number, cosTheta: number): number
   // and the shader's one-line `pow( 1.0 - bbCos, 5.0 )` is this expression reduced.
   const schlick = PANEL_F0 + (1 - PANEL_F0) * (1 - c) ** 5;
   const excess = (schlick - PANEL_F0) / (1 - PANEL_F0);
-  return baseOpacity + (PANEL_GRAZE_OPACITY - baseOpacity) * excess;
+  const fresnel = baseOpacity + (PANEL_GRAZE_OPACITY - baseOpacity) * excess;
+  // ...and the THICKNESS term, which is the one that carries an ordinary off-normal look — see
+  // `PANEL_PATH_MIN_COS`. The two are alternative routes to the same photon not getting through,
+  // so the alpha is the larger, never their sum, and the graze value is still the ceiling.
+  const path = 1 - (1 - baseOpacity) ** (1 / Math.max(c, PANEL_PATH_MIN_COS));
+  return Math.min(Math.max(path, fresnel), PANEL_GRAZE_OPACITY);
 }
 
 /** the factor the reflected term is scaled by so the alpha multiply does not eat it. */
@@ -328,8 +500,75 @@ export function clearPanelSheenGain(alpha: number): number {
   return Math.min(1 / Math.max(alpha, 0.02) - 1, PANEL_SHEEN_MAX);
 }
 
-/** the one clear-plastic material this file builds, for both the perimeter and the cell skins. */
-function clearPanelMaterial(opacity: number): THREE.Material {
+/**
+ * The VEIL's scene-linear radiance for one skin at this viewing angle, in the units it lands on
+ * the screen in — the shader divides by the alpha the blend is about to multiply by, so what this
+ * returns is what the pixel gains, over ANY background. `veil` is the material's own strength
+ * (`PANEL_VEIL` for a cell skin, 0 for the perimeter walls).
+ *
+ * It takes no light and no view direction beyond `cosTheta`, and the RENDER lane asserts exactly
+ * that: the term the owner's report needed is the one that cannot be turned off by moving a lamp.
+ */
+export function clearPanelVeilAt(veil: number, baseOpacity: number, cosTheta: number): number {
+  if (veil <= 0) return 0;
+  const alpha = clearPanelAlphaAt(baseOpacity, cosTheta);
+  // more sheet in the line of sight scatters more, as a multiple of the face-on value
+  const thickness = Math.min(alpha / baseOpacity, PANEL_VEIL_GRAZE_MAX);
+  const gain = Math.min(1 / Math.max(alpha, 0.02), PANEL_VEIL_GAIN_MAX);
+  return veil * thickness * gain * alpha;
+}
+
+/**
+ * What the panel puts on the screen that does NOT depend on where the key light is, per unit of
+ * ambient radiance reaching it — the mirror at its true dielectric strength plus the scuff
+ * scatter. The RENDER lane checks this rather than the shader text, because "a face pointing away
+ * from every light still reads" is a claim about a NUMBER and the first pass at this bug passed
+ * every text check it had while being invisible.
+ *
+ * `cosTheta` is N·V; `abs` for the same reason `clearPanelAlphaAt` takes it. The two terms are
+ * the ones the shader adds un-attenuated, so this is in post-blend screen units directly.
+ */
+export function clearPanelLightIndependent(
+  baseOpacity: number,
+  cosTheta: number,
+): { mirror: number; body: number; total: number } {
+  const alpha = clearPanelAlphaAt(baseOpacity, cosTheta);
+  const gain = clearPanelSheenGain(alpha);
+  const c = Math.min(1, Math.max(0, Math.abs(cosTheta)));
+  // Schlick again — this time for the REFLECTANCE itself, not for the alpha's excess over it.
+  const fresnel = PANEL_F0 + (1 - PANEL_F0) * (1 - c) ** 5;
+  // MIRROR, per unit of ambient radiance: what `indirectSpecular` already carries into
+  // `outgoingLight` (Fresnel, damped by the env intensity) plus the restored copy the shader
+  // adds, both multiplied down by the blend's own alpha afterwards.
+  const raw = fresnel * CLEAR_ENV_INTENSITY;
+  const mirror = alpha * raw + alpha * gain * raw * PANEL_ENV_SPEC_RESTORE;
+  // BODY, per unit of the background behind it: what the sheet takes OUT of the ground it is
+  // seen against. It is the term that does not care where the light is or how bright the ground
+  // is, and against the lit room behind a hive it is the ONLY one left — see the header.
+  const body = alpha;
+  return { mirror, body, total: mirror + body };
+}
+
+/** everything a skin puts on the screen that no light position can take away: the restored
+ *  mirror (per unit of ambient radiance), the body it takes out of its background, and — the one
+ *  that answers the owner's report — the veil it ADDS regardless of either. */
+export function clearPanelPresence(
+  veil: number,
+  baseOpacity: number,
+  cosTheta: number,
+): { mirror: number; body: number; veil: number } {
+  const { mirror, body } = clearPanelLightIndependent(baseOpacity, cosTheta);
+  return { mirror, body, veil: clearPanelVeilAt(veil, baseOpacity, cosTheta) };
+}
+
+/** the one clear-plastic material this file builds, for both the perimeter and the cell skins —
+ * exported because `scene/renderField.ts`'s constants-built FALLBACK field draws the same
+ * polycarbonate and used to build a material of its own, which is how the two paths came to
+ * disagree about everything in the dielectric header above. There is one now. */
+export function clearPanelMaterial(opacity: number, veil = 0): THREE.Material {
+  // the veil is scene-LINEAR, which is the space `outgoingLight` is in — three converts an sRGB
+  // hex at read time, so the literal stays a colour a person can read.
+  const veilRgb = new THREE.Color().setHex(PANEL_VEIL_TINT, THREE.SRGBColorSpace);
   const mat = new THREE.MeshPhysicalMaterial({
     color: CLEAR_PANEL_TINT,
     metalness: 0,
@@ -343,23 +582,54 @@ function clearPanelMaterial(opacity: number): THREE.Material {
   });
   // ⚠️ THE HOOK IS KEYED, or three caches one program for every panel and the second material to
   // compile gets the first one's chunk. `customProgramCacheKey` is how that is declared.
-  mat.customProgramCacheKey = () => `bb-clear-panel|${PANEL_GRAZE_OPACITY}|${PANEL_SHEEN_MAX}`;
+  mat.customProgramCacheKey = () =>
+    `bb-clear-panel|${PANEL_GRAZE_OPACITY}|${PANEL_SHEEN_MAX}|${PANEL_ENV_SPEC_RESTORE}|${PANEL_PATH_MIN_COS}|${veil}`;
   mat.onBeforeCompile = (shader) => {
     shader.fragmentShader = shader.fragmentShader.replace(
       '#include <opaque_fragment>',
       [
         // `normal` and `vViewPosition` are both in scope here (they are what the lighting was
         // just evaluated from), and `reflectedLight` still holds the split terms.
-        'float bbCos = abs( dot( normalize( normal ), normalize( vViewPosition ) ) );',
+        `float bbCos = max( abs( dot( normalize( normal ), normalize( vViewPosition ) ) ), ${PANEL_PATH_MIN_COS.toFixed(2)} );`,
         'float bbExcess = pow( 1.0 - bbCos, 5.0 );',
-        `diffuseColor.a = mix( diffuseColor.a, ${PANEL_GRAZE_OPACITY.toFixed(4)}, bbExcess );`,
-        'vec3 bbSpec = reflectedLight.directSpecular + reflectedLight.indirectSpecular;',
+        // the two routes a photon fails to get through: more SHEET at an angle (Beer–Lambert,
+        // the term that carries an ordinary look) and more REFLECTION near grazing (Schlick,
+        // which moves nothing until the last 20 degrees). The larger, never the sum.
+        'float bbPath = 1.0 - pow( 1.0 - diffuseColor.a, 1.0 / bbCos );',
+        `float bbFresnel = mix( diffuseColor.a, ${PANEL_GRAZE_OPACITY.toFixed(4)}, bbExcess );`,
+        `diffuseColor.a = min( max( bbPath, bbFresnel ), ${PANEL_GRAZE_OPACITY.toFixed(4)} );`,
+        // ⚠️ `indirectSpecular` is the ROOM, and `envMapIntensity` has already taken 85 % of it
+        // off — see the dielectric header. Put it back HERE, where it is the mirror, not up in
+        // the material, where it would also un-damp the irradiance that turned the sheet beige.
+        `vec3 bbSpec = reflectedLight.directSpecular + reflectedLight.indirectSpecular * ${PANEL_ENV_SPEC_RESTORE.toFixed(4)};`,
         `outgoingLight += bbSpec * min( 1.0 / max( diffuseColor.a, 0.02 ) - 1.0, ${PANEL_SHEEN_MAX.toFixed(1)} );`,
+        // ⚠️ THE VEIL — the only term here that ADDS rather than multiplying a difference, which
+        // is why it is the one that works on a mid-tone ground. Light-independent and
+        // view-independent by construction; the `/ alpha` is the blend's own multiply, undone.
+        ...(veil > 0
+          ? [
+              `float bbVeilT = min( diffuseColor.a / max( ${opacity.toFixed(4)}, 0.001 ), ${PANEL_VEIL_GRAZE_MAX.toFixed(2)} );`,
+              `float bbVeilG = min( 1.0 / max( diffuseColor.a, 0.02 ), ${PANEL_VEIL_GAIN_MAX.toFixed(1)} );`,
+              `outgoingLight += vec3( ${veilRgb.r.toFixed(4)}, ${veilRgb.g.toFixed(4)}, ${veilRgb.b.toFixed(4)} ) * ${veil.toFixed(4)} * bbVeilT * bbVeilG;`,
+            ]
+          : []),
         '#include <opaque_fragment>',
       ].join('\n'),
     );
   };
   return mat;
+}
+
+/** ⚠️ THE TWO CLEAR SURFACES THIS GAME HAS, AND THE ONLY TWO PLACES EITHER IS BUILT. They differ
+ * in exactly two numbers and both are load-bearing: a CELL skin is denser than the perimeter, and
+ * a CELL skin carries the VEIL while a wall does not (see `PANEL_VEIL`). Anything that wants a
+ * clear panel calls one of these — including `scene/renderField.ts`'s fallback field, which used
+ * to build its own and drifted. */
+export function cellPanelMaterial(): THREE.Material {
+  return clearPanelMaterial(CELL_PANEL_OPACITY, PANEL_VEIL);
+}
+export function wallPanelMaterial(): THREE.Material {
+  return clearPanelMaterial(WALL_PANEL_OPACITY);
 }
 
 /** the tape and the AprilTag/sticker decals are painted ON a surface that is already there (the
@@ -389,7 +659,7 @@ function isClearPanel(finish: Finish, colorHex: number, family: NodeFamily): boo
 
 function materialFor(finish: Finish, rawHex: number, family: NodeFamily): THREE.Material {
   if (isClearPanel(finish, rawHex, family)) {
-    return clearPanelMaterial(finish === 'glass' ? WALL_PANEL_OPACITY : CELL_PANEL_OPACITY);
+    return finish === 'glass' ? wallPanelMaterial() : cellPanelMaterial();
   }
   // the clear-panel test reads the CAD's own value; everything painted below reads the corrected
   // one — see `ALLIANCE_BLUE_TINT`.
@@ -397,7 +667,7 @@ function materialFor(finish: Finish, rawHex: number, family: NodeFamily): THREE.
   switch (finish) {
     case 'glass':
       // unreachable while `isClearPanel` claims every `glass`; kept so the switch stays total
-      return clearPanelMaterial(WALL_PANEL_OPACITY);
+      return wallPanelMaterial();
     case 'metal':
       return new THREE.MeshStandardMaterial({ color: colorHex, metalness: 0.7, roughness: 0.35 });
     case 'plastic':

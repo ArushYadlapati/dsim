@@ -8,9 +8,6 @@ import { bbPinSolid } from './colliders';
 import {
   BB_FLOWER_UNLOCK_S,
   BB_FOUL_SLOP,
-  BB_FRAME_BAR_IN,
-  BB_FRAME_BAR_OUT,
-  BB_FRAME_Y,
   BB_LZ,
   BB_POLLEN_R,
   BB_PTS,
@@ -35,14 +32,14 @@ import { bbKindOf } from './score';
  * manual's own repeat clauses are counted in VIOLATIONS, not in seconds (§10.6).
  *
  * ── KEYS NAME THE INSTANCE, NOT THE RULE ────────────────────────────────────
- * `g402-<offender>-<victim>`, `g410-<element id>`, `g417-<robot>-<alliance>`. Two simultaneous
+ * `g402-<offender>-<victim>`, `g410-<element id>`, `g407-<robot>`. Two simultaneous
  * violations of one rule must be two keys or they collapse into one award, and a violation
  * that moves from one victim to another must re-fire.
  *
  * ── WHAT IS ENFORCED, AND WHAT IS DELIBERATELY NOT ──────────────────────────
  * HERE: **G410** (NECTAR into a FLOWER before the 1:00 cue), **G402** (AUTO interference
- * across the field's halves), **G417** (ramming the HIVE frame), **G421** (PINNING),
- * **G407** (CONTROL of more than 4 SCORING ELEMENTS — a WARNING, not a foul) and **G409**
+ * across the field's halves), **G421** (PINNING), **G407** (CONTROL of more than 4 SCORING
+ * ELEMENTS — a WARNING, escalating to a MAJOR when STRATEGIC per Table 10-4) and **G409**
  * (catching a spilling element — a WARNING, and 3D only; see `bbBillG409`).
  *
  * G421 IS THE ONE RULE HERE THAT IS NOT EDGE-TRIGGERED, and it is not an exception to the
@@ -50,12 +47,8 @@ import { bbKindOf } from './score';
  * (manual-distilled §3.2), so it counts in SECONDS rather than in instances and owns a
  * per-ordered-pair accumulator instead of a key in `foulEdge`. See `bbUpdatePins`.
  *
- * G407 USED TO BE LISTED BELOW AS "STRUCTURAL", and the owner's ruling (field-plan §4.3)
- * retired that: **G407 is a WARNING, not a cap.** Table 10-4 gives it a VERBAL WARNING, with
- * MAJOR + YELLOW only if STRATEGIC. Controlling a fifth element costs a log line and a HUD chip:
- * no points, no MAJOR, no card. Separately, the hopper stays capped at 4 (owner ruling
- * 2026-09-12, Lane B's `BB_STORAGE_MAX`), so a hopper alone cannot reach five in a driven match.
- * See `bbControlled` for what this can and cannot yet count.
+ * G407'S STRATEGIC BRANCH is dated 2026-09-19 and supersedes the 2026-09-12 "warning and
+ * nothing else" ruling — see the rule's own block below for the manual test it now follows.
  *
  * NOT HERE, each for a stated reason rather than an oversight:
  *  • **G405 / G411 / G418 / G419 / G420 / G426 / G427** are structural (nothing leaves the
@@ -63,6 +56,9 @@ import { bbKindOf } from './score';
  *    judgement a sim cannot see. G409 used to be on this list and is off it: the 3D spill is a
  *    real flight with a real first contact, so it is billed (as a WARNING) by `bbBillG409`,
  *    and it stays unmodelled in 2D, where the spill is handed straight to the tiles.
+ *  • **G417** (meddling with the HIVE, including ramming its frame) is REMOVED entirely
+ *    (owner ruling, 2026-09-19: every HIVE-ramming penalty is gone from both pipelines). A
+ *    driver clipping the structure while driving under it is ordinary play in this sim.
  *
  * RUNS BEFORE gameplay (`step.ts`, stage 7), so a foul awarded this tick folds into the
  * alliance total the score pass writes at the end of the same tick.
@@ -79,12 +75,14 @@ import { bbKindOf } from './score';
  *
  * ── AND A THIRD SEVERITY THE SHARED FUNCTION DOES NOT HAVE: `warning` ───────
  * Table 10-4's base sanction for most of Section 11 is a **VERBAL WARNING**, with the FOUL
- * reserved for the STRATEGIC case — and after the owner's G407 ruling (field-plan §4.3) this
- * game has a rule whose ONLY sanction is that warning. A warning moves **no points** and bumps
- * **no tally**: it is an event line and nothing else, which is exactly what a referee saying
- * "four, blue" across the field is. It is modelled here rather than as a bare
- * `world.events.push` at the call site so that every sanction in this game goes through one
- * function and reads the same way in a toast and a replay.
+ * reserved for the STRATEGIC case, and this game has a rule whose ONLY sanction is that
+ * warning: **G409** (catching a spill), which BIOBUZZ has no card machinery to escalate.
+ * **G407** starts at the same warning and can climb to a MAJOR (owner ruling 2026-09-19, see
+ * the rule's own block below). A warning moves **no points** and bumps **no tally**: it is an
+ * event line and nothing else, which is exactly what a referee saying "four, blue" across the
+ * field is. It is modelled here rather than as a bare `world.events.push` at the call site so
+ * that every sanction in this game goes through one function and reads the same way in a toast
+ * and a replay.
  *
  * Everything else matches the shared function exactly, because the chrome reads it: the points
  * go to the VICTIM (the alliance that did not commit it), the offender's committed-foul tally
@@ -151,12 +149,15 @@ export function bbBillG409(world: World, spilledBy: Alliance, robotId: number): 
 export const BB_CONTROL_LIMIT = 4;
 
 /**
- * IS G417 ENFORCED AT ALL? No, by owner ruling (2026-09-13). The rule is about TIPPING the
- * HIVE, which no robot in this sim can do, so the loop that awarded it (`updateBiobuzzPenalties`)
- * reads this and stops. Kept as a named constant rather than commented-out code: the rule is a
- * decision with a reason attached, and turning it back on is one word.
+ * THE MANUAL'S OWN NUMBER FOR "MOMENTARY" (manual-distilled §3.1, Table 10-4's duration
+ * definitions, p92, verbatim): "MOMENTARY describes durations that are fewer than
+ * approximately 3 seconds." G407's STRATEGIC test (below) uses it for both of its clocks — how
+ * long a CONTROL of 6+ must be sustained before it is STRATEGIC on its own, and how long a
+ * CONTROL of 5+ must be sustained before it counts as an INSTANCE toward "a second time this
+ * match". Not spelled `PIN_SECONDS`: that is DECODE's G421 clock, reads the same digit, and
+ * means something unrelated.
  */
-export const BB_G417_ENABLED = false;
+export const BB_MOMENTARY_S = 3;
 
 /**
  * HOW MANY SCORING ELEMENTS THIS ROBOT IS CONTROLLING (G407) — HOPPER **PLUS HERDED**.
@@ -332,159 +333,110 @@ export function updateBiobuzzPenalties(
     }
   }
 
-  // ── G407 — CONTROL of more than 4 SCORING ELEMENTS. A WARNING. ────────────
+  // ── G407 — CONTROL of more than 4 SCORING ELEMENTS. WARNING, then MAJOR. ──
   /**
    * "A ROBOT may not CONTROL more than 4 SCORING ELEMENTS." Violation: **VERBAL WARNING**;
-   * MAJOR FOUL and YELLOW CARD only if STRATEGIC (Table 10-4). Owner ruling 2026-09-12,
-   * field-plan §4.3: **the sim models the warning and nothing else** — no points, no MAJOR,
-   * no card. (The hopper's 4-element cap is a separate owner ruling on the hardware, in
-   * `config.ts`; it does not replace this warning.)
+   * MAJOR FOUL and YELLOW CARD per MATCH, if STRATEGIC (Table 10-4). Owner ruling 2026-09-19
+   * supersedes the 2026-09-12 "the sim models the warning and nothing else" ruling: unlike
+   * G417's, this rule's STRATEGIC test turned out to have a MEASURABLE reading, so it is now
+   * modelled rather than left as a warning forever. (The hopper's 4-element cap is a separate
+   * owner ruling on the hardware, in `config.ts`; it does not replace this rule.)
    *
-   * ── WHY THERE IS NO "STRATEGIC" BRANCH HERE, UNLIKE G417 ──────────────────
-   * G417's strategic test is a MEASURABLE one — example A is "ramming at high-speed" and the
-   * sim has a closing speed. G407's strategic examples are about INTENT (hoarding to deny the
-   * opponent, carrying a wall of elements for advantage) and the sim has no honest reading of
-   * intent. So the base sanction is the only one modelled, and the deliberate consequence is
-   * that BIOBUZZ never turns over-control into points. That is the safe direction for a
-   * warning whose entire purpose is to TEACH: an invented MAJOR teaches the wrong lesson
-   * twice, once on the scoreboard and once in the habit.
+   * ── THE MANUAL'S OWN STRATEGIC TEST (p108, verbatim examples) ─────────────
+   * Likely STRATEGIC: (A) "A ROBOT that picks up and CONTROLS 6 or more SCORING ELEMENTS,
+   * moving them to a scoring location"; (B) "Multiple instances of greater than MOMENTARY
+   * CONTROL of 5 or more SCORING ELEMENTS by a ROBOT throughout a MATCH." Likely **not**
+   * STRATEGIC: "A ROBOT MOMENTARILY CONTROLS 5 SCORING ELEMENTS which they 'reverse' quickly so
+   * that at least one SCORING ELEMENT returns to approximately its original state." So the
+   * sim's test is (A) CONTROL of 6+ sustained past MOMENTARY, OR (B) this robot's SECOND (or
+   * later) instance this match of CONTROL of 5+ sustained past MOMENTARY — an instance
+   * "reversed quickly" (ended within MOMENTARY) never counts toward (B) and never bills.
+   * `BB_MOMENTARY_S` is the manual's own number for both clocks, so a one-tick contact-chain
+   * blip to six is not a MAJOR — a referee could not see it either.
    *
-   * ── EDGE-TRIGGERED, AND THE COUNT IS A PER-MATCH TALLY ────────────────────
-   * The key is per ROBOT, so a robot that climbs to five, drops back to four and climbs again
-   * warns TWICE — two separate instances of the violation, which is what §10.6 means by "each
-   * instance". Holding five for a minute is ONE warning, because the edge memory says the
-   * condition never went away.
+   * ⚠️ THE YELLOW CARD IS NOT MODELLED. BIOBUZZ has no card machinery at all — `bbAwardFoul`
+   * awards points and nothing else, and a card carries DQ consequences through scoring and the
+   * results screen that no BIOBUZZ lane has built. The FOUL is the half that changes a score,
+   * so the foul is the half that is here.
    *
-   * The tally rides `world.penalties.controlInstances` — the SHARED `PenaltyState`, already
-   * `Record<robotId, number>`, already initialised on a BIOBUZZ world and already meaning
-   * exactly this in DECODE ("how many stretches of over-control this match"). Same argument as
-   * the pin clocks: a second copy on the state bag would be a `state.ts` edit to store what the
-   * world already stores. Unlike the pin clocks it is NOT cleared at a phase boundary — a
-   * clock is live state and a tally is history, and the HUD chip counts the match.
+   * ── THE WARNING IS EDGE-TRIGGERED, AND ITS COUNT IS A PER-MATCH TALLY ─────
+   * Unchanged from the 2026-09-12 model: the key is per ROBOT, so a robot that climbs to five,
+   * drops back to four and climbs again warns TWICE — two separate instances of the violation,
+   * which is what §10.6 means by "each instance". Holding five for a minute is ONE warning,
+   * because the edge memory says the condition never went away.
+   *
+   * The warning tally rides `world.penalties.controlInstances` — the SHARED `PenaltyState`,
+   * already `Record<robotId, number>`, already initialised on a BIOBUZZ world and already
+   * meaning exactly this in DECODE ("how many stretches of over-control this match"). The two
+   * STRATEGIC clocks below reuse two more of DECODE's own fields the same way, since BIOBUZZ
+   * never runs a line of `src/sim/penalties.ts` and both sit unused on a BIOBUZZ world:
+   * `controlHeld` (DECODE's own clause-B 5+/MOMENTARY clock) for the 5+ streak, and
+   * `possession` (DECODE's G408 leaky clock) repurposed for the 6+ streak. Same argument as the
+   * pin clocks: a second copy on the state bag would be a `state.ts` edit to store what the
+   * world already stores. None of the three is cleared at a phase boundary — a clock is live
+   * state and a tally is history, and the HUD chip counts the match.
+   *
+   * The MAJOR is a separate per-robot LATCH, `bb.held[robot].g407billed` — the same idiom the
+   * old G417 code used for "per MATCH" — because "MAJOR FOUL ... per MATCH" (Table 10-4) means
+   * a robot pays ONCE however many qualifying instances it racks up, whichever of (A) or (B)
+   * gets there first. `bb.held` is plain JSON on `world.biobuzz` and rides every snapshot and
+   * every reconcile exactly like the flags G402 keeps there.
    */
   /**
    * The clock sweep runs ONCE, before the per-robot loop, because it is keyed on every
    * (robot, element) pair and would otherwise redo the whole scan per robot.
    */
   bbSweepControlClocks(world);
+  const pen = world.penalties;
   for (const r of world.robots) {
     /**
-     * The COUNT runs for EVERY robot, passive included, and only the WARNING is skipped.
-     * `controlledArtifacts` is not a pure reader — it advances and DRAINS the per-element hold
-     * clocks as a side effect — so skipping a passive robot here would freeze its clocks at
-     * whatever they held when it went passive, and an element it was once against would still
-     * be latched to it if it came back. DECODE's own loop has no passive guard for the same
-     * reason. A passive robot is a prop; it draws no sanction, but it still lets go.
+     * THE COUNT AND BOTH STRATEGIC CLOCKS RUN FOR EVERY ROBOT, passive included, and only the
+     * SANCTIONS are skipped. `controlledArtifacts` is not a pure reader — it advances and
+     * DRAINS the per-element hold clocks as a side effect — so skipping a passive robot here
+     * would freeze its clocks at whatever they held when it went passive, and an element it was
+     * once against would still be latched to it if it came back. DECODE's own loop has no
+     * passive guard for the same reason. A passive robot is a prop; it draws no sanction, but
+     * its clocks still drain like anyone else's.
      */
     const intaking = (commands.get(r.id)?.intake ?? false) || r.autoIntake;
     const controlled = bbControlled(world, r, dt, intaking);
+
+    // THE 5+ STREAK — rule (B)'s underlying instance count. One continuous stretch of
+    // controlling 5+; the INSTANCE is counted the tick the stretch crosses MOMENTARY, exactly
+    // DECODE's own clause-B idiom (`updatePossession`). A stretch that never reaches MOMENTARY
+    // — "reversed quickly" — resets to 0 without ever incrementing the count, which is what
+    // keeps it from ever billing.
+    const five = controlled >= BB_CONTROL_LIMIT + 1;
+    const prev5 = pen.controlHeld[r.id] ?? 0;
+    const now5 = five ? prev5 + dt : 0;
+    pen.controlHeld[r.id] = now5;
+    const qualified5 = five && prev5 < BB_MOMENTARY_S && now5 >= BB_MOMENTARY_S;
+    if (qualified5) pen.possessionBilled[r.id] = (pen.possessionBilled[r.id] ?? 0) + 1;
+
+    // THE 6+ STREAK — rule (A). A second, independent clock: 6+ can open and close inside a
+    // longer 5+ episode, and rule (A) asks about 6+ ALONE, sustained on its own past MOMENTARY.
+    const six = controlled >= BB_CONTROL_LIMIT + 2;
+    const prev6 = pen.possession[r.id] ?? 0;
+    const now6 = six ? prev6 + dt : 0;
+    pen.possession[r.id] = now6;
+    const qualified6 = six && prev6 < BB_MOMENTARY_S && now6 >= BB_MOMENTARY_S;
+
+    // THE MAJOR — (A) OR (B), latched per MATCH, and never for a passive prop.
+    const strategic = qualified6 || (qualified5 && (pen.possessionBilled[r.id] ?? 0) >= 2);
+    if (!r.passive && strategic) {
+      const flags = (bb.held[r.id] ??= {});
+      if (!flags.g407billed) {
+        flags.g407billed = true;
+        bbAwardFoul(world, r.alliance, 'major', `G407 STRATEGIC CONTROL of ${BB_CONTROL_LIMIT + 1}+ elements`);
+      }
+    }
+
     if (r.passive) continue;
     if (controlled <= BB_CONTROL_LIMIT) continue;
     const key = `g407-${r.id}`;
     if (!bb.foulEdge[key]) {
-      world.penalties.controlInstances[r.id] = (world.penalties.controlInstances[r.id] ?? 0) + 1;
+      pen.controlInstances[r.id] = (pen.controlInstances[r.id] ?? 0) + 1;
       bbAwardFoul(world, r.alliance, 'warning', `G407 CONTROL of ${BB_CONTROL_LIMIT + 1}+ elements`);
-    }
-    seen[key] = true;
-  }
-
-  // ── G417 — meddling with the HIVE: ramming a frame bar. STRATEGIC. ────────
-  /**
-   * "ROBOTS may not manipulate the motion of the HIVE in any way other than by LAUNCHING
-   * SCORING ELEMENTS into an upward-facing CELL." Violation: **VERBAL WARNING. MAJOR FOUL and
-   * YELLOW CARD per MATCH, if STRATEGIC** (manual-distilled §11.4.4, Table 10-4, pp111–112).
-   *
-   * ── THE ESCALATION IS "STRATEGIC", NOT "REPEATED", AND THAT IS A REAL FIX ──
-   * This rule used to read VERBAL-first / MAJOR-on-a-repeat, from `field-plan.md` §4.4. The
-   * distilled manual settles it (§11 item 4): **REPEATED is not the trigger.** It is example F
-   * of six listed indicators that an action is LIKELY STRATEGIC, and reading it as the
-   * condition drops **example A — "ramming into the HIVE frame at high-speed" — which is
-   * STRATEGIC on a single hit.** A robot that runs the frame down once, hard, was getting a
-   * free warning for the one interaction the rule names first.
-   *
-   * So `BB_FRAME_RAM_SPEED` IS THIS SIM'S STRATEGIC TEST, and that is the honest mapping: the
-   * manual's likely-NOT-STRATEGIC list is headed by "accidentally bumping the frame while
-   * attempting to pick up POLLEN", which is exactly a low-speed contact. Below the threshold
-   * the sim says nothing at all — a brush that could not cause or impede a TIP is not a
-   * violation of the blanket sentence in the first place. At or above it, the contact is the
-   * high-speed ram of example A and the STRATEGIC line applies on the FIRST instance.
-   *
-   * ── "PER MATCH", WHICH IS WHY THE LATCH SURVIVED THE REWRITE ──────────────
-   * Table 10-4 says "MAJOR FOUL and YELLOW CARD **per MATCH**", and it says it in deliberate
-   * contrast with G416 two rows above ("MAJOR FOUL **per instance**, if STRATEGIC"). So a robot
-   * pays ONCE however many times it rams, and the latch that used to hold "already warned" now
-   * holds "already billed". It rides `bb.held[robot]`, the state bag's per-robot flag map, so
-   * it survives the edge trigger clearing between contacts — that map is what makes a new
-   * rule's flag a key rather than a state-type edit (see `state.ts`).
-   *
-   * ⚠️ THE YELLOW CARD IS NOT MODELLED. BIOBUZZ has no card machinery at all — `bbAwardFoul`
-   * awards points and nothing else, and a card carries DQ consequences through scoring and the
-   * results screen that no BIOBUZZ lane has built. The FOUL is the half that changes a score,
-   * so the foul is the half that is here; the card is named in the handoff as an open item.
-   *
-   * The speed test is CLOSING speed against the normal of the bar FACE the robot is against
-   * (outer, inner or end — see `frameRam`), not the robot's speed: a robot driving fast ALONG
-   * the structure is not ramming it, and a slow deliberate shove
-   * would fail a plain speed test while being exactly the thing the rule is about. The
-   * threshold is `APPROX` and belongs on the 09-14 field-test list.
-   */
-  for (const r of world.robots) {
-    /**
-     * G417 IS OFF, AND IT IS OFF DELIBERATELY (owner ruling, 2026-09-13).
-     *
-     * The rule exists to stop a robot TIPPING THE HIVE, and in this sim no robot can. The
-     * structure is not a body a chassis can topple: nothing a driver does with a drivetrain
-     * moves it, and the only way to disturb what sits on it at all is a shot fired underneath
-     * a CELL, which is not ramming and is not what G417 describes. So every award this loop
-     * could make was a major charged for an outcome the simulation cannot produce, to a
-     * driver who clipped a bar while doing something else.
-     *
-     * A penalty that cannot be earned and can only be suffered is worse than an unmodelled
-     * one, so it does not fire. The measurement below (`frameRam`, `BB_FRAME_RAM_SPEED`) is
-     * LEFT INTACT rather than deleted: if the HIVE ever becomes tippable the rule comes back
-     * by flipping one flag, and re-deriving a closing-speed test against the right bar face
-     * is the expensive half to lose. The `bb.foulEdge` / `flags.g417billed` keys simply stop
-     * being written, which is inert: nothing else reads them.
-     */
-    /**
-     * ✅ **AND IT IS BACK ON IN 3D, FOR THE REASON IT WAS TURNED OFF.** The ruling above is not
-     * "G417 is unfair", it is "no robot in this sim can move the HIVE". Under the DYNAMIC
-     * see-saw (`BB3_HIVE_DYNAMIC`, plan §3.6) the tray IS a body a 29-in chassis reaches and
-     * shoves, so the outcome the rule exists to prevent is one a driver can now produce — and a
-     * rule that can be earned is a rule that may be billed.
-     *
-     * The evidence is `bb.hiveRam`, written by `sim3d/contacts3d.ts` from the 3D solve's own
-     * contact pairs: robot id → the closing speed along the contact normal, already filtered at
-     * `BB_FRAME_RAM_SPEED`. That is the SAME test `frameRam` makes below, asked of a real
-     * contact instead of of a guess at which bar face the robot is against.
-     *
-     * A 2D world never writes the field, so this branch is absent there and the 2D pipeline is
-     * byte-identical — which is why the rule comes back as a READ of physics rather than as a
-     * flag flip on `BB_G417_ENABLED`, whose ruling still stands for the pipeline it was made for.
-     */
-    if (!r.passive && bb.hiveRam && bb.hiveRam[r.id] !== undefined) {
-      const key3d = `g417-${r.id}`;
-      if (!bb.foulEdge[key3d]) {
-        const flags = (bb.held[r.id] ??= {});
-        if (!flags.g417billed) {
-          flags.g417billed = true;
-          bbAwardFoul(world, r.alliance, 'major', 'G417 STRATEGIC ramming of the HIVE');
-        }
-      }
-      seen[key3d] = true;
-      continue;
-    }
-    if (!BB_G417_ENABLED) continue;
-    if (r.passive) continue;
-    const ram = frameRam(r);
-    if (ram === null) continue;
-    const key = `g417-${r.id}`;
-    if (!bb.foulEdge[key]) {
-      const flags = (bb.held[r.id] ??= {});
-      if (!flags.g417billed) {
-        flags.g417billed = true;
-        bbAwardFoul(world, r.alliance, 'major', 'G417 STRATEGIC ramming of the HIVE frame');
-      }
     }
     seen[key] = true;
   }
@@ -501,7 +453,7 @@ export function updateBiobuzzPenalties(
       const A = world.robots[i];
       const B = world.robots[j];
       if (A.alliance === B.alliance) continue;
-      // `passive` robots — free-drive dummies — draw no sanction, the same way G407, G417 and
+      // `passive` robots — free-drive dummies — draw no sanction, the same way G407 and
       // the pin accumulator skip them. Billing a MAJOR to whichever colour a dummy was spawned
       // as is a foul awarded to nobody. This loop was the one place that did not skip them.
       if (A.passive || B.passive) continue;
@@ -541,17 +493,17 @@ export function updateBiobuzzPenalties(
        *
        * ── "PER MATCH", WHICH THIS RULE ALSO CARRIES — AND USED TO IGNORE ──────
        * Table 10-4's G402 row reads "**MAJOR FOUL per MATCH.** MAJOR FOUL and YELLOW CARD per
-       * MATCH, if STRATEGIC" (manual-distilled §3.3, p106) — the same two-clause shape as G417
-       * two sections above, and the same word doing the same work. This used to bill per rising
-       * edge of a (crosser, victim) pair, so a robot that crossed once and brushed BOTH
-       * opponents paid 40, and one that bumped, backed off and bumped again paid 40 — where the
-       * manual says a team pays 20 for AUTO interference, once, however much of it there was.
-       * The tariff audit against §3.1 caught it.
+       * MATCH, if STRATEGIC" (manual-distilled §3.3, p106) — the same two-clause shape as
+       * G407's MAJOR two sections above, and the same word doing the same work. This used to
+       * bill per rising edge of a (crosser, victim) pair, so a robot that crossed once and
+       * brushed BOTH opponents paid 40, and one that bumped, backed off and bumped again paid
+       * 40 — where the manual says a team pays 20 for AUTO interference, once, however much of
+       * it there was. The tariff audit against §3.1 caught it.
        *
        * So the EDGE stays (it is what stops a two-second brush billing 120) and a per-MATCH
-       * LATCH sits behind it, exactly G417's `bb.held[robot]` flag. The subject of the sentence
-       * is "a TEAM", and an FTC team is one robot, so the latch is per ROBOT — which is also
-       * why two crossers still pay separately.
+       * LATCH sits behind it, exactly G407's `bb.held[robot].g407billed` flag. The subject of
+       * the sentence is "a TEAM", and an FTC team is one robot, so the latch is per ROBOT —
+       * which is also why two crossers still pay separately.
        */
       const depthA = bbIntrusion(A);
       const depthB = bbIntrusion(B);
@@ -673,7 +625,7 @@ function bbUpdatePins(world: World, dt: number, commands: Map<number, RobotComma
    * whether A is pinning B cannot be settled until it is known whether B is pinning A.
    *
    * `passive` robots — free-drive practice dummies — are skipped on both sides, the same way
-   * G417 and `bbAssess` skip them. They have no alliance in any meaningful sense, and billing
+   * G407 and `bbAssess` skip them. They have no alliance in any meaningful sense, and billing
    * a MAJOR to whichever colour a dummy happened to be spawned as is a foul awarded to nobody.
    */
   const verdict = new Map<string, boolean>();
@@ -816,106 +768,6 @@ function bbEscapeDir(pinner: RobotState, pinned: RobotState): Vec2 | null {
   const d = hyp(dx, dy);
   if (d < 1e-3) return null;
   return { x: dx / d, y: dy / d };
-}
-
-/**
- * CLOSING SPEED against whichever HIVE frame bar this robot is touching, or `null` if it is
- * touching neither or is not closing fast enough to be a ram.
- *
- * The bars are the two vertical strips the HIVE structure stands on: 1 in thick with the inner
- * edge on the ±24 tile seam and the other edge outward (reference §2.2), running in y between
- * ±`BB_FRAME_Y`. A robot's footprint against one is an OBB-vs-rect test.
- *
- * ── A BAR HAS FOUR FACES, AND A RAM CAN LAND ON ANY OF THEM ─────────────────
- * This used to read `closing = -sign * vel.x`, i.e. only a robot OUTSIDE the bars driving
- * inward. A robot between the bars (under the hives, where G409 says robots drive) ramming the
- * INNER face, and a robot hitting a bar END while driving along y, were never caught — and
- * example A ("ramming into the HIVE frame at high-speed") names neither side nor face.
- *
- * So the contact normal is taken from where the robot IS relative to the bar: `barFaceNormal`
- * picks the face the footprint is least far past, and the closing speed is the robot's
- * velocity INTO that face. Driving along a face still reads zero however fast it is, and
- * driving away from one reads negative.
- */
-function frameRam(r: RobotState): number | null {
-  for (const sign of [-1, 1] as const) {
-    const bar = {
-      x0: sign < 0 ? -BB_FRAME_BAR_OUT : BB_FRAME_BAR_IN,
-      x1: sign < 0 ? -BB_FRAME_BAR_IN : BB_FRAME_BAR_OUT,
-      y0: -BB_FRAME_Y,
-      y1: BB_FRAME_Y,
-    };
-    if (!rectTouchesRobot(r, bar)) continue;
-    const n = barFaceNormal(r, bar);
-    // n points OUT of the bar toward the robot, so a robot closing on the face moves along −n
-    const closing = -(r.vel.x * n.x + r.vel.y * n.y);
-    if (closing >= BB_FRAME_RAM_SPEED) return closing;
-  }
-  return null;
-}
-
-/**
- * The OUTWARD normal of the face of an axis-aligned bar that this robot's footprint is in
- * contact with — the face it is LEAST far past.
- *
- * For each of the four faces this measures how far the footprint's axis-aligned extent
- * clears that face (positive: a gap on that side; negative: the footprint reaches past it).
- * The face with the largest value is the one the robot is actually against: a robot beside
- * the bar clears the near x-face by ~0 and every other face by the bar's whole length, and a
- * robot off a bar END clears the end face by ~0 while spanning both x-faces. It is the
- * separating-axis minimum-penetration axis restricted to the bar's own two axes, which is
- * enough because the bar is axis-aligned. Ties resolve in a fixed order, so it is
- * deterministic.
- */
-function barFaceNormal(r: RobotState, bar: { x0: number; x1: number; y0: number; y1: number }): Vec2 {
-  const rc = robotCorners(r);
-  const ex = projectExtent(rc, { x: 1, y: 0 });
-  const ey = projectExtent(rc, { x: 0, y: 1 });
-  const faces: [number, Vec2][] = [
-    [ex.min - bar.x1, { x: 1, y: 0 }], // robot on the +x side
-    [bar.x0 - ex.max, { x: -1, y: 0 }], // robot on the −x side
-    [ey.min - bar.y1, { x: 0, y: 1 }], // robot off the +y end
-    [bar.y0 - ey.max, { x: 0, y: -1 }], // robot off the −y end
-  ];
-  let best = faces[0];
-  for (const f of faces) if (f[0] > best[0]) best = f;
-  return best[1];
-}
-
-/**
- * The closing speed at which contact with a frame bar becomes RAMMING (in/s).
- *
- * `APPROX` — the manual says "don't meddle with the HIVE" and prints no number, so this is the
- * field-plan's §4.4 guess: fast enough that brushing the structure while manoeuvring under it
- * is never a foul (G409 assumes robots drive under the hives), slow enough that a deliberate
- * run at it is. On the 09-14 field-test list.
- */
-export const BB_FRAME_RAM_SPEED = 30; // APPROX
-
-/** OBB (robot) vs axis-aligned rect, with the same bumper slack the robot-robot test uses. A
- * local copy rather than `robotIntersectsRect` because that one is exact, and a structure
- * contact wants the same slack a robot contact gets — otherwise a ram registers a tick later
- * against a bar than against a chassis. */
-function rectTouchesRobot(r: RobotState, rect: { x0: number; x1: number; y0: number; y1: number }): boolean {
-  const rc = robotCorners(r);
-  const rectC = [
-    { x: rect.x0, y: rect.y0 },
-    { x: rect.x1, y: rect.y0 },
-    { x: rect.x1, y: rect.y1 },
-    { x: rect.x0, y: rect.y1 },
-  ];
-  const axes = [
-    { x: 1, y: 0 },
-    { x: 0, y: 1 },
-    edgeNormal(rc[0], rc[1]),
-    edgeNormal(rc[1], rc[2]),
-  ];
-  for (const ax of axes) {
-    const a = projectExtent(rc, ax);
-    const b = projectExtent(rectC, ax);
-    if (a.max + BB_FOUL_SLOP < b.min || b.max + BB_FOUL_SLOP < a.min) return false;
-  }
-  return true;
 }
 
 /**

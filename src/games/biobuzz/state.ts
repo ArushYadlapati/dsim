@@ -311,19 +311,6 @@ export interface BiobuzzState {
    * the 2D pipeline is byte-identical, exactly as it is for `physics` itself.
    */
   spill?: Record<number, Alliance>;
-  /**
-   * **G417's CONTACT LIST**: robot ids that touched a HIVE's tray or frame HARD this tick, with
-   * the closing speed that made it count. Rebuilt from the 3D solve's own contact pairs every
-   * tick, so it is a transient read rather than a latch — the "once per MATCH per ROBOT" half of
-   * the rule lives in `bb.held[robot].g417billed`, where it always has.
-   *
-   * ⚠️ **3D ONLY, same rule as `spill`.** G417 has been OFF since 2026-09-13 because no robot in
-   * the 2D sim can move the HIVE, and a penalty that can only be suffered is worse than an
-   * unmodelled one (`penalties.ts`'s own comment). Under the DYNAMIC see-saw a robot CAN move
-   * it — the tray is a body a 29-in chassis reaches — so the rule comes back, for that pipeline
-   * only, driven by this list. A 2D world never writes it and never bills it.
-   */
-  hiveRam?: Record<number, number>;
   /** the four FLOWERS, in `BB_FLOWERS` order (F1…F4). A fixed-length tuple because there are
    * exactly four and the index IS the id everywhere else — a variable-length array would let
    * a bug produce a fifth flower that renders and scores. DRAFT. */

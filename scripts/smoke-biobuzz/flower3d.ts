@@ -3,14 +3,16 @@ import { cmd, mkWorld3d, setup } from './harness';
 import { step3d } from '../../src/games/biobuzz/sim3d/step3d';
 import { createBiobuzzWorld } from '../../src/games/biobuzz/spawn';
 import { engineFor } from '../../src/games/biobuzz/sim3d/engineImpl';
-import { cadFlowerRings } from '../../src/games/biobuzz/sim3d/fieldColliders';
-import { ringTrimesh, flowerTubeOf, flowerAtRetrieval } from '../../src/games/biobuzz/sim3d/flowerTube';
+import { cadFlowerRings, cadStatics } from '../../src/games/biobuzz/sim3d/fieldColliders';
+import { ringTrimesh, flowerTubeOf, flowerAtRetrieval, flowerCageBand, cageVertexR, FLOWER_CAGE_R } from '../../src/games/biobuzz/sim3d/flowerTube';
 import { flowerPlace3d, flowerRetrieve3d } from '../../src/games/biobuzz/sim3d/flower3d';
-import { engineFor } from '../../src/games/biobuzz/sim3d/engineImpl';
 import { bbPlacePointLocal } from '../../src/games/biobuzz/robot';
 import { PHYS_ALLOWED_ERROR, PHYS_LENGTH_UNIT } from '../../src/config';
 import {
+  BB3_FLOWER_CAGE_SEGMENTS,
+  BB3_FLOWER_CAGE_T,
   BB3_FLOWER_RING_SEGMENTS,
+  BB3_FLOWER_SCATTER_FRAC,
   BB_FLOWERS,
   BB_FLOWER_LOW_HOLE,
   BB_FLOWER_LOW_Z,
@@ -20,9 +22,10 @@ import {
   BB_FLOWER_TOP_Z,
   BB_NECTAR_R,
   BB_POLLEN_R,
+  BB_PLACE_REACH,
   FLOWER_RING_Z,
 } from '../../src/games/biobuzz/config';
-import { flowerCapacity, flowerScore, flowerScoreZ, flowerStackZ, type BbElementKind } from '../../src/games/biobuzz/flower';
+import { bbFlowerDropSlack, flowerCapacity, flowerScore, flowerScoreZ, flowerStackZ, type BbElementKind } from '../../src/games/biobuzz/flower';
 import type { Artifact, World } from '../../src/types';
 
 /**
@@ -618,6 +621,430 @@ export function flower3dChecks(check: Check): void {
         w3.balls.find((b) => b.id === ids[0])!.z >= -PHYS_ALLOWED_ERROR * PHYS_LENGTH_UNIT &&
         cs.slice(1).some((z, k) => Math.abs(z - cs[k] - 2 * BB_POLLEN_R) > 0.005),
       `settled [${cs.map((z) => z.toFixed(4)).join(', ')}], bottom ${w3.balls.find((b) => b.id === ids[0])!.z.toFixed(4)}`,
+    );
+
+    /**
+     * ⚠️ **AND THE 2D STAGING IS BYTE-IDENTICAL, WHICH IS THE OTHER HALF OF THE `'3d'` GATE.**
+     * The check above this block already pins the staged `z` against `flowerStackZ`; this one
+     * pins the x/y, because that is what the scatter touches. `world.rngState` is the scatter's
+     * MIX and is never advanced, so the chain is asserted too — staging has always taken zero
+     * draws and still does.
+     */
+    const w2b = createBiobuzzWorld('free', 7, [setup(0, 'blue')]);
+    const flat = w2b.balls.filter((b) => b.state.kind === 'element' && String(b.state.el).startsWith('flower:'));
+    check(
+      'a 2D world stages every FLOWER element DEAD ON the bore axis, and takes no draw doing it',
+      flat.length === 16 &&
+        flat.every((b) => {
+          const i = Number(String((b.state as { el: string }).el).slice('flower:'.length));
+          return b.pos.x === BB_FLOWERS[i].x && b.pos.y === BB_FLOWERS[i].y;
+        }) &&
+        w2b.rngState === w2.rngState,
+      `${flat.length} staged, max |dxy| ${Math.max(
+        ...flat.map((b) => {
+          const i = Number(String((b.state as { el: string }).el).slice('flower:'.length));
+          return Math.hypot(b.pos.x - BB_FLOWERS[i].x, b.pos.y - BB_FLOWERS[i].y);
+        }),
+      ).toExponential(1)}; rngState ${w2b.rngState}`,
+    );
+  }
+
+  flowerCageChecks(check);
+  flowerScatterChecks(check);
+  flowerStagedScatterChecks(check);
+}
+
+/**
+ * THE PRE-MATCH STAGED COLUMNS, which in a `'3d'` world are scattered too (`spawn.ts`'s
+ * `flowerStack`). They are the FIRST four columns a driver sees every match, so "the balls stack
+ * too perfectly" is not answered by fixing the PLACED path alone — and a staged element is not
+ * dropped, it is created at a modelled height inside the tube, so the bound has to hold at that
+ * height rather than only at the top ring. It is the same `bbFlowerDropSlack` either way.
+ */
+function flowerStagedScatterChecks(check: Check): void {
+  const staged = (seed: number): World => createBiobuzzWorld('free', seed, [setup(0, 'blue')], undefined, '3d');
+  const cols = (w: World, i: number) => {
+    const f = BB_FLOWERS[i];
+    return w.balls
+      .filter((b) => b.state.kind === 'element' && b.state.el === `flower:${i}`)
+      .map((b) => ({ id: b.id, c: b.z + BB_POLLEN_R, d: Math.hypot(b.pos.x - f.x, b.pos.y - f.y) }))
+      .sort((a, b) => a.c - b.c);
+  };
+  const dump = (w: World) =>
+    JSON.stringify(
+      w.balls
+        .filter((b) => b.state.kind === 'element' && String(b.state.el).startsWith('flower:'))
+        .map((b) => [b.id, b.pos.x, b.pos.y]),
+    );
+
+  {
+    const w = staged(7);
+    const bornD = [0, 1, 2, 3].flatMap((i) => cols(w, i).map((r) => r.d));
+    for (let t = 0; t < 400; t++) step3d(w, 1 / 60, new Map());
+    const after = [0, 1, 2, 3].map((i) => cols(w, i));
+    console.log(
+      `[smoke-bb flower3d] STAGED in 3D: born off-axis [${bornD.map((d) => d.toFixed(3)).join(', ')}] · ` +
+        `settled ${after.map((c, i) => `F${i} ${c.length}@[${c.map((r) => r.c.toFixed(2)).join(',')}]`).join(' ')}`,
+    );
+    check(
+      'a 3D world STAGES its FLOWER columns off the bore axis — the first four columns of a match are not perfect stacks either',
+      bornD.length === 16 && bornD.every((d) => d > 0) && Math.max(...bornD) <= BB3_FLOWER_SCATTER_FRAC * bbFlowerDropSlack(BB_POLLEN_R) + 1e-9,
+      `${bornD.filter((d) => d > 0).length}/16 off-axis, max ${Math.max(...bornD).toFixed(4)} of a ${(BB3_FLOWER_SCATTER_FRAC * bbFlowerDropSlack(BB_POLLEN_R)).toFixed(4)} bound`,
+    );
+    /**
+     * ⚠️ AND NOTHING IS EJECTED. A staged element is BORN at a modelled height with its body
+     * built a radius higher (`syncElement` reads `b.z + r`), so the bottom one starts inside the
+     * z band the peanut supports occupy — the exact profile that threw a 0.411-in wall-side drop
+     * 8–28 in clear of the flower. All sixteen have to still be in their own tube after the fall,
+     * or `derive.ts` hands the HUD and §10.5.2 a short column on tick 1.
+     */
+    check(
+      'every STAGED element is still in its own tube after the fall — membership intact from tick 1',
+      after.every((c) => c.length === 4 && c.every((r, k) => k === 0 || r.c > c[k - 1].c)),
+      after.map((c, i) => `F${i}:${c.length}`).join(' '),
+    );
+  }
+
+  check(
+    'the STAGED scatter is deterministic: one seed twice is byte-identical, and another seed is not',
+    dump(staged(7)) === dump(staged(7)) && dump(staged(7)) !== dump(staged(8)),
+    `same-seed identical=${dump(staged(7)) === dump(staged(7))}, cross-seed differs=${dump(staged(7)) !== dump(staged(8))}`,
+  );
+
+  // and a staged column still drains dry through the REAL retrieval
+  {
+    const w = staged(9);
+    for (let t = 0; t < 400; t++) step3d(w, 1 / 60, new Map());
+    const f0 = BB_FLOWERS[0];
+    const rob = w.robots[0];
+    rob.pos.x = f0.x + BB_PLACE_REACH + rob.spec.length / 2 + 1.5;
+    rob.pos.y = f0.y;
+    rob.heading = Math.PI;
+    for (let p = 0; p < 6; p++) {
+      rob.hopper.length = 0;
+      rob.lastIntakeAt = -99;
+      const byId = new Map(w.balls.map((b) => [b.id, b] as const));
+      if (!flowerRetrieve3d(w, w.biobuzz!, rob, cmd({ intake: true }), true, byId, kindOfIn(w))) break;
+      for (let t = 0; t < 120; t++) step3d(w, 1 / 60, new Map());
+    }
+    check(
+      'a STAGED column drains dry through the real retrieval',
+      w.biobuzz!.flowers[0].stack.length === 0,
+      `${w.biobuzz!.flowers[0].stack.length} left at [${cols(w, 0).map((r) => r.c.toFixed(2)).join(', ')}]`,
+    );
+  }
+}
+
+// =============================================================================================
+// THE CAGE AND THE SCATTER (owner reports: "POLLEN get stuck in a flower instead of dropping"
+// and "placing balls in a flower is too uniform" — one geometry fix and one placement fix,
+// because the SECOND is only safe once the FIRST is in; see `flower3d.ts`'s header).
+// =============================================================================================
+
+/** the four HIPS pipes of flower `i`, as their own xy extent about the tube axis. */
+function pipeReach(i: number): { inner: number; outerFace: number } {
+  const f = BB_FLOWERS[i];
+  let inner = Infinity;
+  let outerFace = 0;
+  for (const s of cadStatics()) {
+    if (!s.name.startsWith(`flower_${i}_`) || !s.name.includes('hips_pipe')) continue;
+    let far = 0;
+    for (let k = 0; k < s.points.length; k += 3) {
+      const d = Math.hypot(s.points[k] - f.x, s.points[k + 1] - f.y);
+      inner = Math.min(inner, d);
+      // the pipe's own outermost FACE along each axis — what a flat chassis face meets first
+      far = Math.max(far, Math.abs(s.points[k] - f.x), Math.abs(s.points[k + 1] - f.y));
+    }
+    outerFace = outerFace === 0 ? far : Math.min(outerFace, far);
+  }
+  return { inner, outerFace };
+}
+
+function flowerCageChecks(check: Check): void {
+  /**
+   * THE MEASUREMENT THAT MADE THE CAGE NECESSARY, pinned so a future CAD revision that closes
+   * the gap on its own (or opens it further) is seen rather than assumed. The pipes are round
+   * posts at the four diagonals: their inner tangent circle is the only thing between the mid
+   * plate and the top plate, and the four gaps between them are open air.
+   */
+  {
+    const { inner, outerFace } = pipeReach(F);
+    const rings = cadFlowerRings(F);
+    const band = flowerCageBand(rings);
+    console.log(
+      `[smoke-bb flower3d] the HIPS pipes' inner tangent circle is ${inner.toFixed(3)} from the tube axis and their ` +
+        `outermost face ${outerFace.toFixed(3)}; the cage spans z [${band ? band.map((z) => z.toFixed(3)).join(', ') : 'NONE'}] ` +
+        `with its faces on r ${FLOWER_CAGE_R.toFixed(3)}, as one ${BB3_FLOWER_CAGE_SEGMENTS}-sided trimesh prism ${BB3_FLOWER_CAGE_T}in thick`,
+    );
+    /** the tolerance is not slack: `FLOWER_RING_Z` is the four-flower MEAN the generated dims
+     * carry, and each plate's exported band is its OWN measurement — they agree to ~1e-4. */
+    check(
+      'the CAGE spans exactly the open run between the MID plate and the TOP plate',
+      !!band && Math.abs(band[0] - FLOWER_RING_Z.mid[1]) < 0.01 && Math.abs(band[1] - FLOWER_RING_Z.top[0]) < 0.01,
+      `[${band ? band.map((z) => z.toFixed(4)).join(', ') : 'NONE'}] vs the constants' [${FLOWER_RING_Z.mid[1]}, ${FLOWER_RING_Z.top[0]}]`,
+    );
+    /**
+     * ⚠️ THE CAGE CANNOT STOP ANYTHING, and this is the check that says so rather than the
+     * comment. Its radius IS the middle bore, an aperture every element above that plate has
+     * already passed, so a NECTAR keeps the same 0.148 in of clearance it had coming through.
+     */
+    check(
+      'the CAGE is the MIDDLE BORE extended upward — it is an aperture every element in the tube has already cleared',
+      Math.abs(FLOWER_CAGE_R - BB_FLOWER_MID_HOLE / 2) < 1e-12 && FLOWER_CAGE_R - BB_NECTAR_R > 0.1,
+      `cage r ${FLOWER_CAGE_R.toFixed(4)} = mid bore ${(BB_FLOWER_MID_HOLE / 2).toFixed(4)}; a NECTAR keeps ${(FLOWER_CAGE_R - BB_NECTAR_R).toFixed(4)}in of slack`,
+    );
+    /**
+     * ⚠️ AND IT MUST NOT PRESENT THE FIELD A SURFACE THE PIPES DO NOT ALREADY PRESENT, or a
+     * robot's reach onto a flower moves — `BB_PLACE_REACH` (a chassis flush on the foot) is the
+     * number that would change. See `BB3_FLOWER_CAGE_T`'s header.
+     */
+    // ⚠️ THE POLYGON'S VERTEX, NOT ITS FACE. The cage is CIRCUMSCRIBED (faces on
+    // `FLOWER_CAGE_R`, vertices `1/cos(π/N)` further out), so its furthest point from the axis is
+    // `cageVertexR() + BB3_FLOWER_CAGE_T` — and it is the face distance, not that, which looks
+    // reassuring. The fan this started as read a safe 2.198 at the face and 2.330 at the corner,
+    // i.e. 0.125 in PAST the pipe a robot meets today. See `BB3_FLOWER_CAGE_T`.
+    const corner = cageVertexR() + BB3_FLOWER_CAGE_T;
+    let worstPipe = Infinity;
+    for (let i = 0; i < BB_FLOWERS.length; i++) worstPipe = Math.min(worstPipe, pipeReach(i).outerFace);
+    check(
+      'the CAGE stays inside the pipes the field already meets, and inside a chassis flush on the foot',
+      corner < worstPipe && corner < BB_PLACE_REACH,
+      `cage vertex ${corner.toFixed(3)} (faces on ${FLOWER_CAGE_R.toFixed(3)}) vs the pipes' ${worstPipe.toFixed(3)} and BB_PLACE_REACH ${BB_PLACE_REACH.toFixed(3)}`,
+    );
+  }
+
+  /**
+   * THE JAM ITSELF, reproduced and then not reproduced. A settled column given a seeded lateral
+   * kick used to arch on the open span: measured over 24 seeds per row, 10/24 at n = 4 and
+   * 22–24/24 at n = 7 left an element hanging above an empty tube at centres 9.07 / 10.59 /
+   * 12.80, with 1.52 in between the lowest pair where 2.80 is the touching pitch, and the
+   * retrieval then refused for the rest of the match. With the cage it is 0/360 across
+   * n ∈ {2,4,7} × kick ∈ {1,3,6,12,25} × 24 seeds (`scratch/flowerperturb.ts`); the lane runs a
+   * representative corner of that sweep.
+   */
+  {
+    const jams: string[] = [];
+    for (const n of [4, 7]) {
+      for (const seed of [12003]) {
+        const w = mkWorld3d('free', seed + n);
+        w.balls.length = 0;
+        w.robots[0].pos.x = 0;
+        w.robots[0].pos.y = 0;
+        for (let k = 0; k < n; k++) {
+          drop(w, F, 'pollen', k + 1);
+          for (let t = 0; t < 60; t++) step3d(w, 1 / 60, new Map());
+        }
+        for (let t = 0; t < 200; t++) step3d(w, 1 / 60, new Map());
+        // a seeded lateral kick on every element — the disturbance a robot driving into a flower
+        // (or an element landing on the column) delivers, without needing one in the fixture.
+        let st = (seed * 2654435761) | 0;
+        for (const b of w.balls) {
+          const a = (st = (Math.imul(st, 1103515245) + 12345) | 0);
+          const ang = ((a >>> 0) / 4294967296) * 2 * Math.PI;
+          b.vel.x = Math.cos(ang) * 12;
+          b.vel.y = Math.sin(ang) * 12;
+        }
+        for (let t = 0; t < 400; t++) step3d(w, 1 / 60, new Map());
+        // drain it bodilessly from the bottom — the same order `flowerRetrieve3d` pops in,
+        // without a robot in the fixture to confuse the cause.
+        for (let p = 0; p < n + 2; p++) {
+          const stk = w.biobuzz!.flowers[F].stack;
+          if (stk.length === 0) break;
+          const b = w.balls.find((x) => x.id === stk[0])!;
+          if (b.z + BB_POLLEN_R > BB_FLOWER_RETRIEVE_Z[1]) break; // a real retrieval refuses this
+          b.state = { kind: 'stock' };
+          w.biobuzz!.flowers[F].stack = stk.slice(1);
+          for (let t = 0; t < 120; t++) step3d(w, 1 / 60, new Map());
+        }
+        const left = w.biobuzz!.flowers[F].stack.length;
+        if (left > 0) jams.push(`n=${n} seed=${seed}: ${left} left at [${realZ(w, w.biobuzz!.flowers[F].stack).map((z) => z.toFixed(2)).join(', ')}]`);
+      }
+    }
+    check(
+      'a DISTURBED column still drains to the bottom — the cage is what stops a pair arching across the bore',
+      jams.length === 0,
+      jams.length === 0 ? '2 kicked columns, all emptied' : jams.join(' · '),
+    );
+  }
+}
+
+/** a world whose robot's Box Tube is on flower F's ring with `n` elements in the hopper. */
+function placeRig(seed: number, n: number, nectarFirst: boolean): World {
+  const w = mkWorld3d('free', seed);
+  w.balls.length = 0;
+  const f = BB_FLOWERS[F];
+  const rob = w.robots[0];
+  rob.spec = { ...rob.spec, bbMech: { ...rob.spec.bbMech!, lift: { kind: 'boxtube', mount: 'front' } } };
+  const local = bbPlacePointLocal(rob.spec)!;
+  rob.heading = Math.PI;
+  rob.pos.x = f.x + local.x;
+  rob.pos.y = f.y - local.y;
+  rob.hopper = [];
+  for (let k = 0; k < n; k++) {
+    const nect = nectarFirst && k === 0;
+    rob.hopper.push(nect ? 'blue' : 'yellow');
+    w.balls.push({
+      id: k + 1,
+      color: nect ? 'blue' : 'yellow',
+      state: { kind: 'held', robot: rob.id, slot: k },
+      pos: { x: rob.pos.x, y: rob.pos.y },
+      vel: { x: 0, y: 0 },
+      z: 0,
+      vz: 0,
+      r: nect ? BB_NECTAR_R : BB_POLLEN_R,
+    } as Artifact);
+  }
+  return w;
+}
+
+/** fill flower F through the REAL `flowerPlace3d` and let it settle. */
+function placeFill(seed: number, n: number, nectarFirst = false): World {
+  const w = placeRig(seed, n, nectarFirst);
+  const rob = w.robots[0];
+  for (let k = 0; k < n; k++) {
+    flowerPlace3d(w, w.biobuzz!, rob, nectarFirst && k === 0, kindOfIn(w));
+    for (let t = 0; t < 60; t++) step3d(w, 1 / 60, new Map());
+  }
+  for (let t = 0; t < 300; t++) step3d(w, 1 / 60, new Map());
+  return w;
+}
+
+/** the settled column of flower F, bottom to top, in the tube's own frame. */
+function placedColumn(w: World): { id: number; c: number; d: number; x: number; y: number; r: number }[] {
+  const f = BB_FLOWERS[F];
+  return w.balls
+    .filter((b) => b.state.kind === 'element' && b.state.el === `flower:${F}`)
+    .map((b) => {
+      const x = b.pos.x - f.x;
+      const y = b.pos.y - f.y;
+      return { id: b.id, c: b.z + (b.r ?? BB_POLLEN_R), d: Math.hypot(x, y), x, y, r: b.r ?? BB_POLLEN_R };
+    })
+    .sort((a, b) => a.c - b.c);
+}
+
+/** drain flower F through the REAL `flowerRetrieve3d`; returns what is left in the tube. */
+function placeDrain(w: World, n: number): number {
+  const f = BB_FLOWERS[F];
+  const rob = w.robots[0];
+  rob.pos.x = f.x + BB_PLACE_REACH + rob.spec.length / 2 + 1.5;
+  rob.pos.y = f.y;
+  rob.heading = Math.PI;
+  for (let p = 0; p < n + 3; p++) {
+    rob.hopper.length = 0;
+    rob.lastIntakeAt = -99;
+    const byId = new Map(w.balls.map((b) => [b.id, b] as const));
+    if (!flowerRetrieve3d(w, w.biobuzz!, rob, cmd({ intake: true }), true, byId, kindOfIn(w))) break;
+    for (let t = 0; t < 120; t++) step3d(w, 1 / 60, new Map());
+  }
+  return w.biobuzz!.flowers[F].stack.length;
+}
+
+function flowerScatterChecks(check: Check): void {
+  /**
+   * ⚠️ **THE INTERPENETRATION IS A TRUE 3D CENTRE DISTANCE, NOT A z GAP.** For a column dead on
+   * the axis the two are the same number, which is why every earlier measurement in this file is
+   * written as a gap; with the scatter in they are not, and a z gap would read a scattered pair
+   * as deeply overlapping when their centres are a clean 2.8 apart.
+   */
+  const worstOverlap = (rows: ReturnType<typeof placedColumn>): number => {
+    let worst = 0;
+    for (let a = 0; a < rows.length; a++) {
+      for (let b = a + 1; b < rows.length; b++) {
+        const d = Math.hypot(rows[a].x - rows[b].x, rows[a].y - rows[b].y, rows[a].c - rows[b].c);
+        worst = Math.max(worst, rows[a].r + rows[b].r - d);
+      }
+    }
+    return worst;
+  };
+
+  // ---- the whole owner bar in one loop: fill 1..8, measure, then drain through the real pop ---
+  {
+    const OVERLAP_MAX = 0.2; // the same bound the on-axis capacity check above holds itself to
+    let fails = 0;
+    let trials = 0;
+    let worstPen = 0;
+    let onAxis = 0;
+    let maxSpread = 0;
+    const bad: string[] = [];
+    for (let n = 1; n <= 8; n++) {
+      const w = placeFill(90000 + n * 137, n);
+      const rows = placedColumn(w);
+      worstPen = Math.max(worstPen, worstOverlap(rows));
+      onAxis += rows.filter((r) => r.d < 1e-9).length;
+      if (rows.length > 1) maxSpread = Math.max(maxSpread, ...rows.map((r) => Math.hypot(r.x - rows[0].x, r.y - rows[0].y)));
+      const left = placeDrain(w, n);
+      trials++;
+      if (rows.length !== n || left > 0) {
+        fails++;
+        bad.push(`n=${n}: placed ${rows.length}, ${left} left at [${placedColumn(w).map((r) => r.c.toFixed(2)).join(', ')}]`);
+      }
+    }
+    console.log(
+      `[smoke-bb flower3d] SCATTER: ${trials} columns placed through the real Box Tube path and drained through the real ` +
+        `retrieval · worst pollen-pollen interpenetration ${worstPen.toFixed(4)}in (3D centre distance) · widest lateral ` +
+        `spread within one column ${maxSpread.toFixed(3)}in · ${onAxis} elements on the axis`,
+    );
+    check(
+      'every FLOWER column n = 1…8 fills and then DRAINS DRY through the real retrieval (owner: POLLEN get stuck)',
+      fails === 0,
+      fails === 0 ? `${trials}/${trials} emptied` : bad.join(' · '),
+    );
+    check(
+      `the SCATTER costs no interpenetration — worst pair still under ${OVERLAP_MAX}in`,
+      worstPen < OVERLAP_MAX,
+      `worst ${worstPen.toFixed(4)}in of a 2.800 touching pitch`,
+    );
+    /**
+     * NON-DEGENERATE, which is the owner's actual complaint ("placing balls in a flower is too
+     * uniform"): before this, every placed POLLEN settled at dxy 0.0000 and a column was a
+     * mathematically perfect vertical line.
+     */
+    check(
+      'a placed column is NOT a perfect stack — no element lands on the bore axis, and they spread (owner: too uniform)',
+      onAxis === 0 && maxSpread > 0.2,
+      `${onAxis} elements at dxy 0, widest spread ${maxSpread.toFixed(3)}in`,
+    );
+  }
+
+  // ---- the scatter is a pure function of world JSON, so it is the same on every peer ----------
+  {
+    const a = JSON.stringify(placedColumn(placeFill(31337, 3)));
+    const b = JSON.stringify(placedColumn(placeFill(31337, 3)));
+    const c = JSON.stringify(placedColumn(placeFill(31338, 3)));
+    check(
+      'the SCATTER is deterministic: one seed twice is byte-identical, and another seed is not',
+      a === b && a !== c,
+      `same-seed identical=${a === b}, cross-seed differs=${a !== c}`,
+    );
+    /**
+     * ⚠️ AND IT IS BOUNDED BY THE TIGHTEST BORE THE ELEMENT FITS THROUGH, not by the cage: a
+     * POLLEN dropped at the cage's own 0.411 of slack arrived 0.09 in inside the peanut supports
+     * (which are on the WALL side only, between the lower and middle plates, and are the one
+     * thing in this tube that is not round) and was thrown 8–28 in clear of the flower. See
+     * `bbFlowerDropSlack`. Nothing below asserts a number: it asserts the ORDERING that keeps the
+     * fall survivable.
+     */
+    const pollenOff = BB3_FLOWER_SCATTER_FRAC * bbFlowerDropSlack(BB_POLLEN_R);
+    const nectarOff = BB3_FLOWER_SCATTER_FRAC * bbFlowerDropSlack(BB_NECTAR_R);
+    check(
+      'the SCATTER radius is a fraction of the tightest BORE the element fits through, never of the cage',
+      pollenOff > 0 && pollenOff < bbFlowerDropSlack(BB_POLLEN_R) && pollenOff < FLOWER_CAGE_R - BB_POLLEN_R && nectarOff > 0,
+      `POLLEN ${pollenOff.toFixed(4)}in of ${bbFlowerDropSlack(BB_POLLEN_R).toFixed(4)} bore slack ` +
+        `(the cage would have allowed ${(FLOWER_CAGE_R - BB_POLLEN_R).toFixed(4)}), NECTAR ${nectarOff.toFixed(4)}`,
+    );
+    // nothing asserts "no drop is ejected" separately: the n = 1…8 loop above already fails on a
+    // column that placed fewer elements than it was handed, which is exactly that.
+  }
+
+  // ---- and a NECTAR at the bottom still LOCKS the flower (G418.B), scatter or no --------------
+  {
+    const w = placeFill(77001, 4, true);
+    const rows = placedColumn(w);
+    const left = placeDrain(w, 4);
+    check(
+      'a NECTAR at the bottom still LOCKS the FLOWER with the scatter on — nothing comes out (G418.B)',
+      rows.length === 4 && left === 4 && rows[0].r === BB_NECTAR_R,
+      `${left} of ${rows.length} left, bottom r=${rows[0]?.r} at centre ${rows[0]?.c.toFixed(3)}`,
     );
   }
 }

@@ -1152,16 +1152,13 @@ export const BB_FLYWHEEL_CLEAR = 0.3;
 export const BB_TURRET_AXLE_Z = BB_TURRET_PLATE_TOP_Z + BB_FLYWHEEL_CLEAR + BB_FLYWHEEL_R; // 7.11732
 
 /**
- * THE SIDE PLATE — an ARC INTERSECTED WITH A BOX, in the axle frame:
+ * THE SIDE PLATE — three FLATS, a vertical EXIT CUT, the hood's own ARC and a raked REAR EDGE, in
+ * the axle frame. `sidePlateR` (`scene/renderRobots.ts`) is the profile and the only reader these
+ * three constants have; what lives here is the three flats.
  *
- *     r(θ) = min( hoodR,
- *                 BB_SIDE_PLATE_TOP_Z    / sin θ   (sin θ > 0),
- *                 BB_SIDE_PLATE_BOTTOM_Z / sin θ   (sin θ < 0),
- *                 BB_SIDE_PLATE_FRONT_X  / cos θ   (cos θ > 0) )
- *
- * cut by a FLAT TOP, a FLAT FRONT and a FLAT BOTTOM that lands on the turret plate. Only the ARC
- * is per-head; the three flats are shared, and the top one is the same number for either element
- * by construction rather than by coincidence — see below.
+ * A FLAT FRONT, a FLAT TOP over the outgoing corridor, and a FLAT BOTTOM that lands on the turret
+ * plate. Only the arc and the rake are per-head; the three flats are shared, and the top one is
+ * the same number for either element by construction rather than by coincidence — see below.
  *
  * ⚠️ **THE FLAT TOP IS THE OWNER'S "the arc in the parallel plates reaches too high; the hood
  * extends above the supporting plates".** It is not a taste offset: it is one element radius plus
@@ -1173,9 +1170,16 @@ export const BB_TURRET_AXLE_Z = BB_TURRET_PLATE_TOP_Z + BB_FLYWHEEL_CLEAR + BB_F
  * ⚠️ **AND IT IS A *FORWARD* CUT, NOT A HEMISPHERE ONE — see `sidePlateR` (`scene/renderRobots.ts`),
  * which is the only reader this constant has.** Applied over the whole upper half it also cut the
  * plate away BEHIND the exit lip, where there is no outgoing corridor and where the hood, its tail
- * and the feed shoe are — leaving the hood 2.95 in above anything fixed and carried by two 0.26-in
+ * and the motor are — leaving the hood 2.95 in above anything fixed and carried by two 0.26-in
  * arms (owner item (B), 2026-09-19). The value here is unchanged; the angular range it binds over
  * is not. Nothing in the muzzle chain reads it.
+ *
+ * ⚠️ **AND WHAT THE PLATE DOES PAST THE LIP IS A STEP, NOT A RAMP** (owner, same day: "the shooter
+ * parallel plates became ugly. remember that the arc does not need to be big"). The first attempt
+ * ramped up to the arc over 22° and then followed it round to the bottom — 64° of arc and a hump
+ * behind the wheel. The profile jumps to the hood's radius at the lip instead, holds it for the
+ * hood's own `BB_HOOD_WRAP` and comes down a straight rake. Again the value here did not move:
+ * this is a PICTURE, and the release chain is not allowed to pay for one.
  */
 export const BB_SIDE_PLATE_TOP_Z = BB_FLYWHEEL_R - BB_HOOD_COMPRESSION - 0.15; // +0.96732 above the axle
 /**
@@ -1578,12 +1582,12 @@ export const BB_STORAGE_MIN = 1;
 /**
  * CEILING: **4 elements, POLLEN and NECTAR together. This is an OWNER RULING (2026-09-12), final.**
  *
- * In the manual, G407 ("A ROBOT may not CONTROL more than 4 SCORING ELEMENTS") is only a
- * WARNING: Table 10-4 gives it a VERBAL WARNING, with MAJOR + YELLOW only if STRATEGIC. The
- * sim caps the hopper at 4 anyway, so a robot cannot hold a fifth element. The owner's ruling
- * overrides the earlier request to lift this cap (Lane B relay 2, field-plan §4.3). The rules
- * lane's G407 warning (`penalties.ts`, `BB_CONTROL_LIMIT`) stays as written. It is a separate
- * number, and it still catches anything that reaches five without going through the hopper.
+ * In the manual, G407 ("A ROBOT may not CONTROL more than 4 SCORING ELEMENTS") starts at a
+ * VERBAL WARNING, with MAJOR + YELLOW when STRATEGIC (Table 10-4). The sim caps the hopper at
+ * 4 anyway, so a robot cannot hold a fifth element. The owner's ruling overrides the earlier
+ * request to lift this cap (Lane B relay 2, field-plan §4.3). The rules lane's G407 test
+ * (`penalties.ts`, `BB_CONTROL_LIMIT`) stays as written. It is a separate number, and it still
+ * catches anything that reaches five without going through the hopper.
  *
  * The staging rule agrees from the other side: §10.3.1 pre-loads exactly 4 POLLEN per ROBOT,
  * so a legal robot starts FULL.
@@ -1819,8 +1823,7 @@ export function bbMirror(p: BbPoint): BbPoint {
 
 /** inches of bumper slack for the robot-robot contact test the BIOBUZZ penalty engine
  * (`penalties.ts`) reads. That engine enforces the V1 Section 11 rules a 2D sim can see (G402,
- * G407's warning, G410, G417, G421); its header lists them and says why the rest are not
- * modelled. */
+ * G407, G410, G421); its header lists them and says why the rest are not modelled. */
 export const BB_FOUL_SLOP = 1;
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -2193,6 +2196,74 @@ export const BB3_INTAKE_Z = 5;
 export const BB3_MOUTH_SLOT_Z = 2 * BB_NECTAR_R;
 
 /**
+ * ⚠️ **THE CHASSIS EDGE BREAK (in)** — every box of the 3D chassis compound is SHRUNK by this
+ * on every axis and given a CONTACT SKIN of this, which Rapier defines as an outward skin of
+ * that width, so every FLAT FACE stays in exactly the plane it was in and only the EDGES are
+ * broken (`chassisBoxDesc`, `sim3d/bodies.ts`, whose header has the A/B that chose a skin over
+ * a `roundCuboid`). APPROX: a measured threshold, not a dimension.
+ *
+ * ⚠️ **THE OWNER'S "I can get stuck on a corner" IS A GRAZE, NOT A HEAD-ON STOP**, and it is
+ * NOT the intake compound. Measured by driving a robot at full stick past the LEFT FLOWER's
+ * support column with its flank a given overlap past the column's field-side face, travel over
+ * 4 s against the same 4 s unobstructed:
+ *
+ *   largest overlap it still slides past (>=90% of a free run)  shipped   with this
+ *     the intake compound (frame + arms + lintel)                 0.2 in     0.4 in
+ *     one `robotExtents` cuboid (the FULL predictor's shape)      0.2 in     0.4 in
+ *     the bare chassis box, no intake reach at all                0.2 in      —
+ *     the 2D pipeline, same manoeuvre                             1.0 in      —
+ *
+ * The compound and the single cuboid catch at the SAME overlap to two decimals, so the arms and
+ * the lintel are not what hooks — a square chassis corner in the 3D solve is. Past the
+ * threshold the robot does not merely slow: it keeps **0.32** of a free run, yaws **107°** about
+ * the corner and crawls at 8 in/s, which is the report. It is still escapable (reverse frees it
+ * in 24 in, a strafe in 76), so it is lost momentum and a spin-out, not a lock.
+ *
+ * Three other suspects were measured and RULED OUT, each by making it not matter:
+ *   - FRICTION. The statics' µ set to 0 leaves the threshold at 0.25 in (yaw 77° instead of
+ *     107°), so the yaw comes from the NORMAL impulse at a corner far ahead of the centre of
+ *     mass, not from Coulomb drag.
+ *   - CONTACT STIFFNESS. `contact_natural_frequency` at 30 (shipped), 20 and the 2D robot
+ *     world's 12 give bit-identical rows.
+ *   - THE FIELD. Rebuilt with `__setFieldCollidersOverrideForTests(false)`, i.e. the 3D solve
+ *     against the 2D pipeline's OWN flower-foot box, it slides past 0.3 in where the 2D
+ *     pipeline manages 1.0 — same geometry, both solvers, so what is left is the solve.
+ *
+ * **0.125 is where the benefit saturates, and the ARM is what caps it.** The radius is clamped
+ * per box to `BB3_INTAKE_CORNER_CLAMP × min(hx, hy, hz)` so no core can go degenerate, and the
+ * arm is `INTAKE_RAIL_T` = 0.5 in thick (half-extent 0.25) — the thinnest box in the compound
+ * and the one carrying the corner that actually grazes. 0.125, 0.1875, 0.25 and 0.375 all
+ * measure the same 0.4 in threshold, because all four clamp the arm to at most 0.2; the
+ * smallest of them is taken. A right CYLINDER of the chassis width — no corners at all — slides
+ * past EVERY overlap out to 1.6 in, so the rest of the gap to the 2D pipeline is the box
+ * chassis itself and not the static, and no radius closes it.
+ *
+ * ⚠️ **NOTHING ANY INVARIANT MEASURES MOVES.** A skinned box is the Minkowski sum of a
+ * smaller box with a ball: the six faces sit in their original planes, so flat-wall rest
+ * distance, wall-flush starts and `startLegal` are untouched. Only the corners pull in — a
+ * two-edge (vertical) corner by `(1 − 1/√2)r` = **0.037 in** and a three-edge vertex by
+ * `(1 − 1/√3)r` = **0.053 in**, both under the ≈0.1 in of resting penetration the solver allows
+ * anyway (`PHYS_ALLOWED_ERROR` × `PHYS_LENGTH_UNIT`).
+ *
+ * ⚠️ **THERE IS NO SEGMENT COUNT, AND THAT IS THE ANSWER TO THE OPEN QUESTION, NOT A SHORTCUT.**
+ * The previous pass at this left a note that "a 45-degree chamfer still has lockable edges (and
+ * locks harder at depth) — try a multi-segment arc". A swept ball IS the arc: no facets, no
+ * segment count to pick, so a chamfer's own edges never exist to be caught on.
+ */
+export const BB3_INTAKE_CORNER_R = 0.125;
+
+/**
+ * How much of a chassis box's SMALLEST half-extent the edge break above may consume. APPROX.
+ *
+ * A `roundCuboid`'s core is the box shrunk by `r` on every axis, and a core half-extent at or
+ * below zero is a collider Rapier will not build — the same reason `chassis3dShapes` already
+ * clamps the arm thickness. 0.8 leaves a fifth of the thinnest box as core (the arm: 0.25 →
+ * 0.05 in) and is not a tuned number in its own right: every radius from 0.125 to 0.375 gives
+ * the same measured threshold under it, so it binds only as a floor on the core.
+ */
+export const BB3_INTAKE_CORNER_CLAMP = 0.8;
+
+/**
  * ⚠️ **HOW FAR CLEAR OF A CHASSIS SOLID A FLIGHT BODY IS BORN (in)** — `syncElement`
  * (`sim3d/engineImpl.ts`), 3D only.
  *
@@ -2235,6 +2306,97 @@ export const BB3_ROUND = 1e-4;
  * the whole match.
  */
 export const BB3_FLOWER_RING_SEGMENTS = 32;
+
+/**
+ * ⚠️ **THE FLOWER CAGE — THE TUBE HAS NO WALL BETWEEN ITS MIDDLE AND TOP PLATES, AND THAT IS
+ * WHAT JAMS A COLUMN** (owner report: "POLLEN get stuck in a flower instead of dropping").
+ *
+ * MEASURED off the CAD hulls themselves (`scratch/flowercage.ts`: every static projected onto
+ * the xy plane in the band, 2D-hulled, then a 1.4-in sphere centre marched out along 360
+ * directions). Between the MID plate's top face (5.254) and the TOP plate's underside (20.254)
+ * — 15.0 in, which is where elements 3 through 8 of a column live — the only solids are the four
+ * HIPS pipes, round posts tangent to a cylinder of radius **1.929** at the four DIAGONALS. The
+ * four gaps between them are open:
+ *
+ *   direction        a POLLEN centre can reach   a NECTAR centre can reach
+ *   toward a pipe    0.530 in                    0.130 in
+ *   into a gap       **1.046 in**                0.316 in
+ *
+ * Two POLLEN at opposite extremes are 2.09 in apart laterally and need 2.80 to pass each other,
+ * so they SHOULDER and the column ARCHES: measured over 24 seeds of a settled column given a
+ * seeded lateral kick, **10/24 (n=4) and 22–24/24 (n=7)** left an element hanging above an empty
+ * tube, at centres 9.07 / 10.59 / 12.80 with 1.52 in between the lowest pair where 2.80 is the
+ * touching pitch. The retrieval then refuses forever, because the bottom of the stack is nowhere
+ * near the opening. Nothing was frozen and nothing was asleep — it is a friction arch.
+ *
+ * THE CAGE IS THE MIDDLE BORE, EXTENDED UPWARD: an `BB3_FLOWER_CAGE_SEGMENTS`-sided prism whose
+ * FACES lie on the cylinder of radius `BB_FLOWER_MID_HOLE / 2` (1.948), spanning exactly that
+ * plate-to-plate gap (`sim3d/flowerTube.ts`). It invents no dimension and it cannot stop
+ * anything: **every element above the mid plate got there by passing that same 3.896-in bore**,
+ * so a wall at that radius is an aperture it has already cleared, and it stands within 0.019 in
+ * of where the pipes' own inner tangent circle already is. What it removes is the four gaps — a
+ * POLLEN centre is capped at 0.548 in, a pair at 1.096, well under the 2.80 they would need to
+ * shoulder past one another.
+ *
+ * ⚠️ **THE COUNT IS BOUNDED BELOW BY THE PIPES, NOT BY TASTE.** The prism is CIRCUMSCRIBED (see
+ * `buildFlowerCage3d`), so its vertices sit at `1.948 / cos(π/N)` and its outermost point at that
+ * plus `BB3_FLOWER_CAGE_T`, which has to clear the pipes' own 2.205: N = 6 is 2.375, N = 8 is
+ * 2.233, N = 10 is 2.173 and **N = 12 is 2.142**. 10 would fit; 12 is taken because it costs
+ * nothing — the cage is ONE trimesh collider per flower, so the segment count is vertices, not
+ * broad-phase proxies. `buildFlowerCage3d`'s header carries the measurement that made that the
+ * build, and it is a 15 % `step3d` regression either way round.
+ */
+export const BB3_FLOWER_CAGE_SEGMENTS = 12;
+
+/**
+ * how thick each cage slab is (in). APPROX, and the ONE thing it is sized against is the
+ * OUTSIDE: the cage must not present the field a surface the four HIPS pipes do not already
+ * present, or a robot's reach onto a flower moves. MEASURED over all four flowers, the tightest
+ * pipe's own outermost face sits **2.205** in from the tube axis and a chassis flush on the
+ * flower foot is `BB_PLACE_REACH` = 2.384 out.
+ *
+ * ⚠️ **AND THE NUMBER THAT HAS TO CLEAR THEM IS THE POLYGON'S VERTEX, NOT ITS FACE.** The cage
+ * is circumscribed, so its furthest point is `1.948/cos(π/N) + t` = **2.142**, against a face
+ * distance of 1.948 that looks far safer than the thing actually is. The build this started as
+ * (a fan of 0.25-in cuboid slabs) read 2.198 at the face and **2.330** at the corner — 0.125 in
+ * PAST the pipe a robot meets today, so a robot pressing on a flower would have stopped early,
+ * and no check looking at the face would ever have said so. Tunnelling is not the constraint it
+ * looks like: a 2.8-in sphere has to travel 2 r + t = 2.93 in in one tick (176 in/s) to skip the
+ * wall, and CCD is already on above `BB3_CCD_SPEED` (60).
+ *
+*/
+export const BB3_FLOWER_CAGE_T = 0.125;
+
+/**
+ * ⚠️ **HOW FAR OFF THE BORE AXIS A PLACED ELEMENT'S CENTRE IS SCATTERED (in)** — owner report:
+ * "placing balls in a flower is too uniform". `flowerPlace3d` used to drop every element dead on
+ * the axis at zero velocity, which produces a mathematically perfect stack (every POLLEN settled
+ * at dxy 0.0000).
+ *
+ * APPROX, and it is a FRACTION OF THE TIGHTEST BORE THE ELEMENT FITS THROUGH, not a free number
+ * and NOT a fraction of the cage: `sim3d/flowerTube.ts`'s `flowerDropSlack` answers 0.211 in for
+ * a POLLEN (the 3.222 lower bore) and 0.148 for a NECTAR (the 3.896 middle one, because the
+ * lower bore is what locks a nectar), so the offset is 0.158 and 0.111. Its header carries the
+ * EJECTION that settled this: sized against the cage instead, at 0.411, a POLLEN dropped toward
+ * the wall arrived 0.09 in inside the peanut supports and was thrown 8–28 in clear of the
+ * flower. A radius drawn as `slack · sqrt(u)` at a uniform azimuth is uniform over the DISC,
+ * which is what makes a column read as dropped rather than as a sine wave.
+ *
+ * ⚠️ **THE MEASUREMENT THAT USED TO SAY "DO NOT JITTER IT" WAS TRUE AND IS NOW OBSOLETE, AND
+ * THE CAGE IS THE ENTIRE DIFFERENCE.** Before the cage, an offset of 0.032 in toppled a column
+ * (worst pollen-pollen overlap 0.065 → 0.795 in, max dxy 1.015) because above the mid plate
+ * nothing held the column vertical; the response was not proportional, so there was no small
+ * safe value. With the cage the same sweep is FLAT at every offset from 0 to the full 0.548 of
+ * slack — see `flower3d.ts`'s header for the re-run table.
+ *
+ * ⚠️ **AND THE FRACTION IS NOT WHAT DECIDES WHERE AN ELEMENT COMES TO REST.** Measured over
+ * n = 1…8 × 8 seeds through the real place-and-settle, a column's elements end up at dxy
+ * 0.54–0.67 whatever they were dropped at: a ball rolls off the one under it and the cage stops
+ * it. The fraction decides the AZIMUTH SPREAD, which is the part that reads as natural (0.025 to
+ * 1.224 in between the extremes of one column), and 1 is avoided only so a birth is never
+ * exactly on the cage face.
+ */
+export const BB3_FLOWER_SCATTER_FRAC = 0.75;
 
 // ── THE DYNAMIC HIVE SEE-SAW (plan §3.6) — calibrated block below ────────────────────────────
 
@@ -2553,10 +2715,12 @@ export const BB_AI_LZ_GUARD = 42;
  *
  * ⚠️ **THIS IS A FOUL AVOIDANCE NUMBER, NOT A DRIVING STYLE.** Measured before it existed: a
  * full-speed bot routing straight through an opponent parked on the same line collected G421
- * PINNING majors four times in one match (80 points, handed to the opponent) plus a G417 for
- * shouldering the HIVE, and LOST head-to-head to a tier that drove at half speed and therefore
- * never reached anybody. The faster tier has to be the cleaner one or "harder" just means "gives
- * away more points". APPROX.
+ * PINNING majors four times in one match (80 points, handed to the opponent) while shouldering
+ * the HIVE on the way through, and LOST head-to-head to a tier that drove at half speed and
+ * therefore never reached anybody. The faster tier has to be the cleaner one or "harder" just
+ * means "gives away more points". (The measurement also predates G417's removal, 2026-09-19 —
+ * the HIVE contact itself no longer costs anything, but the PINNING alone made the case.)
+ * APPROX.
  */
 export const BB_AI_ROBOT_CLEAR = 6;
 
@@ -2576,10 +2740,13 @@ export const BB_AI_PIN_DECISIONS = 12;
 /**
  * The speed cap (fraction of stick) a bot uses inside the HIVE footprint.
  *
- * G417 bills a MAJOR for STRATEGIC ramming of the HIVE, and the 3D rule reads the CLOSING SPEED
- * of the contact — so the fix for a bot that drives under the assembly is not to keep it out (the
- * space under the trays is the shortest path across the field, and G409's drive-under is legal)
- * but to make it arrive slowly enough that brushing the frame is not a ram. APPROX.
+ * ⚠️ **G417 (STRATEGIC ramming of the HIVE) IS REMOVED, 2026-09-19** — there is no longer a
+ * closing-speed test this creep needs to stay under. The value is kept as MEASURED TUNING
+ * rather than reverted: it was set when the fix for a bot driving under the assembly (the
+ * space under the trays is the shortest path across the field, and G409's drive-under is
+ * legal) was to arrive slowly, and undoing it is a behaviour change to a bot that currently
+ * passes `test:ai`'s win-rate ratchet, not a correctness fix. Leave it until that ~9-minute
+ * lane is re-run and shows the cap can move without cost. APPROX.
  */
 export const BB_AI_HIVE_CREEP = 0.45;
 

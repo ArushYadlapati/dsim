@@ -135,10 +135,18 @@ export interface BiobuzzFieldHud {
    *
    * A COUNT rather than a flag because the rule counts instances: climbing to five, dropping
    * back and climbing again is two warnings. Worth nothing on the scoreboard by design (the
-   * owner's ruling makes G407 a warning, not a foul), which is exactly why it needs a chip —
-   * a sanction with no points is invisible unless the HUD says it happened.
+   * base sanction moves no points), which is exactly why it needs a chip — a sanction with no
+   * points is invisible unless the HUD says it happened.
    */
   warnings: Record<Alliance, number>;
+  /**
+   * G407 MAJOR — has this alliance drawn the STRATEGIC escalation this MATCH (owner ruling
+   * 2026-09-19)? A FLAG, not a count: the MAJOR is latched once per robot per match
+   * (`bb.held[robot].g407billed`), so there is nothing to count past the first — but the driver
+   * needs to see the escalation coming, so the chip distinguishes "warned" from "MAJOR billed"
+   * (`HudSlots.tsx`).
+   */
+  controlMajor: Record<Alliance, boolean>;
 }
 
 /** an empty slice — the shape a pre-BIOBUZZ snapshot gets, with every count at 0. */
@@ -190,6 +198,7 @@ function emptyHud(): BiobuzzFieldHud {
     nectarIn: null,
     pins: [],
     warnings: { red: 0, blue: 0 },
+    controlMajor: { red: false, blue: false },
   };
 }
 
@@ -208,6 +217,23 @@ function controlWarnings(world: World): Record<Alliance, number> {
   for (const r of world.robots) {
     if (r.passive) continue;
     out[r.alliance] += counts[r.id] ?? 0;
+  }
+  return out;
+}
+
+/**
+ * HAS EITHER ALLIANCE DRAWN THE G407 MAJOR THIS MATCH — a robot with `bb.held[id].g407billed`
+ * set, read off `world.biobuzz` for the same reason the warning above reads
+ * `world.penalties`: the latch already exists (`penalties.ts`), already rides every snapshot,
+ * and a second copy on the HUD's own state would be a `state.ts` edit to store what the world
+ * already stores. Defaulted at every step — a snapshot from a build that predates the rule
+ * arrives without `held` at all, and a HUD is the last place that should throw.
+ */
+function controlMajors(world: World, bb: NonNullable<World['biobuzz']>): Record<Alliance, boolean> {
+  const out: Record<Alliance, boolean> = { red: false, blue: false };
+  for (const r of world.robots) {
+    if (r.passive) continue;
+    if (bb.held[r.id]?.g407billed) out[r.alliance] = true;
   }
   return out;
 }
@@ -292,5 +318,6 @@ export function biobuzzFieldHud(world: World): BiobuzzFieldHud {
     world.match.phase === 'teleop' ? Math.max(0, world.match.phaseTimeLeft - BB_FLOWER_UNLOCK_S) : null;
   out.pins = livePins(world);
   out.warnings = controlWarnings(world);
+  out.controlMajor = controlMajors(world, bb);
   return out;
 }

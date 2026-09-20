@@ -25,6 +25,7 @@ import {
   BB_NECTAR_R,
   BB_POLLEN_R,
   BB_TAPE,
+  BB_TAPE_W,
   BB_TILE_SEAMS,
   FLOWER_MOUTH,
   type BbRect,
@@ -310,6 +311,120 @@ function fillStrip(ctx: CanvasRenderingContext2D, r: BbRect, fill: string): void
   ctx.fillStyle = fill;
   ctx.fillRect(r.x0, r.y0, r.x1 - r.x0, r.y1 - r.y0);
   ctx.restore();
+}
+
+/** the 2×3 of a canvas transform — what `snapTapeGroup` reads, so the RENDER lane can hand it one */
+export interface BbTapeXform {
+  a: number;
+  b: number;
+  c: number;
+  d: number;
+  e: number;
+  f: number;
+}
+
+/**
+ * ONE ZONE'S TAPE, SNAPPED TO THE DEVICE PIXEL GRID AT ONE WIDTH — `[x, y, w, h]` per strip in
+ * DEVICE pixels, or `null` when the view is not axis-aligned (a rotated strip has no pixel grid to
+ * snap to, and antialiasing is then uniform anyway).
+ *
+ * ⚠️ THIS IS THE TAPE-WIDTH BUG, AND IT WAS NEVER IN THE DATA (owner, 2026-09-19, the fifth
+ * report). Every strip in `BB_TAPE` is 1.000 in — five rounds confirmed and re-confirmed that —
+ * but the map draws at 2–6 device px per inch, so a 1-in strip is e.g. 3.1 px wide and WHERE its
+ * edges fall inside a pixel decides what it looks like: one strip lands as three solid columns,
+ * its neighbour as two solid and two half-lit ones, and the pair read as different widths and
+ * different brightnesses of the same tape. A data fix cannot touch that. So every strip of a zone
+ * takes the SAME integer width `round(BB_TAPE_W · scale)` (a side-by-side band a whole multiple
+ * of it), anchored on the zone's own snapped outline so the corners of a LOADING ZONE's U meet
+ * exactly: an edge on the zone's bounding box takes the box's rounded edge, an end that butts a
+ * neighbour one tape-width inside the box takes `box ± width`, and nothing is rounded on its own
+ * unless it touches neither.
+ */
+export function snapTapeGroup(m: BbTapeXform, strips: readonly BbRect[]): [number, number, number, number][] | null {
+  const s = Math.sqrt(Math.abs(m.a * m.d - m.b * m.c));
+  if (!(s > 0) || strips.length === 0) return null;
+  const eps = 1e-6 * s;
+  const straight = Math.abs(m.b) < eps && Math.abs(m.c) < eps;
+  const quarter = Math.abs(m.a) < eps && Math.abs(m.d) < eps;
+  if (!straight && !quarter) return null;
+  const dev = (r: BbRect): { x0: number; x1: number; y0: number; y1: number } => {
+    const ax = m.a * r.x0 + m.c * r.y0 + m.e;
+    const ay = m.b * r.x0 + m.d * r.y0 + m.f;
+    const bx = m.a * r.x1 + m.c * r.y1 + m.e;
+    const by = m.b * r.x1 + m.d * r.y1 + m.f;
+    return { x0: Math.min(ax, bx), x1: Math.max(ax, bx), y0: Math.min(ay, by), y1: Math.max(ay, by) };
+  };
+  const ds = strips.map(dev);
+  const box = {
+    x0: Math.min(...ds.map((d) => d.x0)),
+    x1: Math.max(...ds.map((d) => d.x1)),
+    y0: Math.min(...ds.map((d) => d.y0)),
+    y1: Math.max(...ds.map((d) => d.y1)),
+  };
+  const one = BB_TAPE_W * s;
+  const wpx = Math.max(1, Math.round(one));
+  const tol = 0.02 * s;
+  /** one axis of one strip: `[lo, hi]` in whole device pixels */
+  const axis = (lo: number, hi: number, bLo: number, bHi: number, narrow: boolean): [number, number] => {
+    const rLo = Math.round(bLo);
+    const rHi = Math.round(bHi);
+    if (narrow) {
+      const w = Math.max(1, Math.round((hi - lo) / one)) * wpx;
+      if (Math.abs(lo - bLo) < tol) return [rLo, rLo + w];
+      if (Math.abs(hi - bHi) < tol) return [rHi - w, rHi];
+      const at = Math.round(lo);
+      return [at, at + w];
+    }
+    const end = (v: number): number => {
+      if (Math.abs(v - bLo) < tol) return rLo;
+      if (Math.abs(v - bHi) < tol) return rHi;
+      if (Math.abs(v - (bLo + one)) < tol) return rLo + wpx; // butts the strip along the box's low edge
+      if (Math.abs(v - (bHi - one)) < tol) return rHi - wpx; // ...or its high edge
+      return Math.round(v);
+    };
+    return [end(lo), end(hi)];
+  };
+  return ds.map((d) => {
+    const narrowX = d.x1 - d.x0 <= d.y1 - d.y0;
+    const [x0, x1] = axis(d.x0, d.x1, box.x0, box.x1, narrowX);
+    const [y0, y1] = axis(d.y0, d.y1, box.y0, box.y1, !narrowX);
+    return [x0, y0, Math.max(1, x1 - x0), Math.max(1, y1 - y0)];
+  });
+}
+
+/**
+ * Paint one zone's strips. On a real canvas they are pixel-snapped as a group (`snapTapeGroup`);
+ * a context with no `canvas` behind it — the RENDER lane's recorder — has no device grid, so it
+ * gets the world rectangles untouched, which is what that lane compares against the CAD.
+ */
+function fillTapeGroup(
+  ctx: CanvasRenderingContext2D,
+  strips: readonly BbRect[],
+  fill: string,
+  snapAs: readonly BbRect[] = strips,
+): void {
+  const snapped = ctx.canvas && typeof ctx.getTransform === 'function' ? snapTapeGroup(ctx.getTransform(), snapAs) : null;
+  if (!snapped) {
+    for (const r of strips) fillStrip(ctx, r, fill);
+    return;
+  }
+  ctx.save();
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.fillStyle = fill;
+  for (const [x, y, w, h] of snapped) ctx.fillRect(x, y, w, h);
+  ctx.restore();
+}
+
+/** the bounding rectangle of strips that TILE one — the GARDEN's two side-by-side tapes and its
+ * corner patch are one 2-in band, and snapping three rectangles separately can open a one-pixel
+ * seam between them that snapping the band cannot. */
+function bandOf(strips: readonly BbRect[]): BbRect {
+  return {
+    x0: Math.min(...strips.map((r) => r.x0)),
+    y0: Math.min(...strips.map((r) => r.y0)),
+    x1: Math.max(...strips.map((r) => r.x1)),
+    y1: Math.max(...strips.map((r) => r.y1)),
+  };
 }
 
 /** a rounded-rect PATH (no fill, no stroke — the caller decides). The radius is clamped to
@@ -944,9 +1059,10 @@ export function drawBiobuzzField(
   // edge onto it, so the band as drawn stopped short of the corner it is defined to reach. See
   // `fieldDims.gen.ts`'s header for why it is a separate group.
   for (const a of ALLIANCES) {
-    for (const strip of BB_TAPE.loadingZone[a]) fillStrip(ctx, strip, TAPE_GAFFER[a]);
-    for (const strip of BB_TAPE.garden[a]) fillStrip(ctx, strip, TAPE_GAFFER[a]);
-    for (const strip of BB_TAPE.gardenSupplement[a]) fillStrip(ctx, strip, TAPE_GAFFER[a]);
+    // each ZONE is snapped to the pixel grid as a group, at one tape width — `snapTapeGroup`
+    fillTapeGroup(ctx, BB_TAPE.loadingZone[a], TAPE_GAFFER[a]);
+    const garden = [...BB_TAPE.garden[a], ...BB_TAPE.gardenSupplement[a]];
+    fillTapeGroup(ctx, garden, TAPE_GAFFER[a], [bandOf(garden)]);
   }
 
   // HIVE FRAME (§9.6.1, Fig 9-8) — two triangular structures joined at the apex. Top-down,

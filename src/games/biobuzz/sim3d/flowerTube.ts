@@ -2,12 +2,16 @@ import type { Rapier3d } from './engine';
 import { datan2, dcos, dsin } from '../../../math';
 import {
   BB_FLOWERS,
+  BB_FLOWER_MID_HOLE,
   BB_FLOWER_OPEN_R,
   BB_FLOWER_RETRIEVE_Z,
   BB_FLOWER_TOP_Z,
   BB_NECTAR_R,
+  BB3_FLOWER_CAGE_SEGMENTS,
+  BB3_FLOWER_CAGE_T,
   BB3_FLOWER_RING_SEGMENTS,
 } from '../config';
+
 import { cadFlowerRings, type FieldFlowerRing } from './fieldColliders';
 
 /**
@@ -48,6 +52,16 @@ import { cadFlowerRings, type FieldFlowerRing } from './fieldColliders';
  * broad-phase work. `TriMeshFlags.FIX_INTERNAL_EDGES` is what makes the trimesh behave as a
  * surface rather than as a bag of triangles: without it a sphere rolling across the plate's top
  * face catches on every shared edge it crosses.
+ *
+ * ── AND THE CAGE, WHICH IS THE WALL BETWEEN THE TOP TWO PLATES THE CAD HAS NO PART FOR ──────
+ * `buildFlowerCage3d` (below) closes the 15-in gap between the mid plate's top face and the
+ * top plate's underside with a fan of tangent slabs at the MIDDLE BORE's own radius. Read
+ * `BB3_FLOWER_CAGE_SEGMENTS`'s header in `config.ts` first: it carries the measurement (a POLLEN
+ * centre reaching 1.046 in off-axis through the gaps between the four HIPS pipes, and a column
+ * arching on it 22 times in 24) and the argument that a wall at an aperture every element in the
+ * tube has already passed cannot stop anything. The slab fan is the exception to the paragraph
+ * above, not a contradiction of it: a plate's bore has to be ROUND to the thousandth because it
+ * SORTS a 3.6-in nectar from a 3.222-in hole, and a cage sorts nothing.
  */
 
 /** one tessellated plate, ready for `RAPIER.ColliderDesc.trimesh`. */
@@ -172,8 +186,113 @@ export function buildFlowerTubes3d(
       world3d.createCollider(desc.setFriction(friction).setRestitution(0), body);
       built++;
     }
+    built += buildFlowerCage3d(RAPIER, world3d, body, rings, friction);
   }
   return built;
+}
+
+/** the CAGE's own radius (in) — the MIDDLE plate's bore, which is the tightest aperture every
+ * element above it has already been through. A derived number, not a typed dimension: change the
+ * CAD's middle bore and the cage follows it. */
+export const FLOWER_CAGE_R = BB_FLOWER_MID_HOLE / 2;
+
+/**
+ * The z band the cage spans: the MID plate's top face up to the TOP plate's underside — exactly
+ * the open run between two real plates, and nothing else. It deliberately does NOT reach into
+ * either plate's own z range: the plates' bores are the sorters (3.896 passes a NECTAR by
+ * 0.148 in, 3.222 stops one), and a cage overlapping them would re-decide a sort it has no
+ * business in.
+ */
+export function flowerCageBand(rings: readonly FieldFlowerRing[]): readonly [number, number] | null {
+  const mid = rings.find((r) => r.id === 'mid');
+  const top = rings.find((r) => r.id === 'top');
+  if (!mid || !top) return null;
+  const zLo = mid.z[1];
+  const zHi = top.z[0];
+  return zHi - zLo > 2 * BB3_FLOWER_CAGE_T ? [zLo, zHi] : null;
+}
+
+/**
+ * Close one FLOWER's open span with a fan of tangent slabs — see `BB3_FLOWER_CAGE_SEGMENTS` in
+ * `config.ts` for the measurement that made this necessary and for why a wall here stops nothing.
+ *
+ * ⚠️ **ONE TRIMESH PRISM, NOT A FAN OF CUBOIDS, AND THE REASON IS THE PERF BUDGET.** The fan was
+ * the obvious build (a ring is non-convex, so it is a trimesh or N boxes — see this file's header
+ * for why the PLATES chose the trimesh) and it shipped 12 colliders per flower, 48 across the
+ * field. MEASURED on a 2v2 room, three interleaved rounds of `step3d` medians: the fan read
+ * 0.394 / 0.401 / 0.402 ms against 0.338 / 0.349 / 0.350 with no cage at all — **+15 %** — and it
+ * took the AI lane's `bot-driven p95` from 1.30 to 1.93 ms against a 1.5 budget. The identical
+ * geometry as ONE trimesh prism reads **0.354**, i.e. inside the noise of having no cage. The
+ * difference is 48 broad-phase proxies against 4, since the narrow phase sees the same walls
+ * either way.
+ *
+ * Closed and outward-oriented, laid out exactly like `ringTrimesh`'s: four vertices per ray
+ * (inner/outer × bottom/top), eight triangles per pair of adjacent rays. `FIX_INTERNAL_EDGES`
+ * for the same reason the plates take it — without it a sphere sliding down the wall catches on
+ * every shared edge it crosses.
+ */
+/** the cage polygon's VERTEX radius — `FLOWER_CAGE_R / cos(π/N)`, so its FACES land on
+ * `FLOWER_CAGE_R` exactly. The cage's furthest point from the tube axis is `cageVertexR() +
+ * BB3_FLOWER_CAGE_T`, and that is the number that has to stay inside the HIPS pipes. */
+export function cageVertexR(n: number = BB3_FLOWER_CAGE_SEGMENTS): number {
+  return FLOWER_CAGE_R / dcos(Math.PI / n);
+}
+
+export function buildFlowerCage3d(
+  RAPIER: Rapier3d,
+  world3d: InstanceType<Rapier3d['World']>,
+  body: InstanceType<Rapier3d['RigidBody']>,
+  rings: readonly FieldFlowerRing[],
+  friction: number,
+): number {
+  const band = flowerCageBand(rings);
+  if (!band) return 0;
+  const [zLo, zHi] = band;
+  const mid = rings.find((r) => r.id === 'mid');
+  if (!mid) return 0;
+  const [cx, cy] = mid.bore;
+  const n = BB3_FLOWER_CAGE_SEGMENTS;
+  const t = BB3_FLOWER_CAGE_T;
+  // ⚠️ **CIRCUMSCRIBED, WHICH IS THE OPPOSITE OF `ringTrimesh`'S RULE, AND ON PURPOSE.** A plate's
+  // bore is INSCRIBED because it SORTS — a hole a hair too generous lets through something that
+  // should have been stopped, and nothing puts it back. The cage sorts nothing; what it must not
+  // do is be TIGHTER than the aperture it claims to be, because a NECTAR has only 0.148 in of
+  // slack through the middle bore and an inscribed polygon would eat 0.066 of it (and 0.111 of
+  // that is the nectar's own scatter). So the vertices sit at `R / cos(π/N)` and the FACES sit at
+  // exactly `FLOWER_CAGE_R`. `cageVertexR` is the same number the FLOWER3D lane clears against
+  // the pipes.
+  const vr = cageVertexR();
+  const verts: number[] = [];
+  for (let k = 0; k < n; k++) {
+    // `dsin`/`dcos` only — the source guard scans this directory.
+    const a = (k * 2 * Math.PI) / n;
+    const ux = dcos(a);
+    const uy = dsin(a);
+    verts.push(cx + ux * vr, cy + uy * vr, zLo); // 0 inner bottom
+    verts.push(cx + ux * vr, cy + uy * vr, zHi); // 1 inner top
+    verts.push(cx + ux * (vr + t), cy + uy * (vr + t), zLo); // 2 outer bottom
+    verts.push(cx + ux * (vr + t), cy + uy * (vr + t), zHi); // 3 outer top
+  }
+  const idx: number[] = [];
+  const IB = (k: number) => 4 * k;
+  const IT = (k: number) => 4 * k + 1;
+  const OB = (k: number) => 4 * k + 2;
+  const OT = (k: number) => 4 * k + 3;
+  for (let k = 0; k < n; k++) {
+    const j = (k + 1) % n;
+    idx.push(IT(k), OT(k), OT(j), IT(k), OT(j), IT(j)); // top face (+z outward)
+    idx.push(IB(k), OB(j), OB(k), IB(k), IB(j), OB(j)); // bottom face (−z outward)
+    idx.push(IB(k), IT(k), IT(j), IB(k), IT(j), IB(j)); // the inner wall, normals INTO the tube
+    idx.push(OB(k), OB(j), OT(j), OB(k), OT(j), OT(k)); // the outer wall, normals away
+  }
+  const desc = RAPIER.ColliderDesc.trimesh(
+    new Float32Array(verts),
+    new Uint32Array(idx),
+    RAPIER.TriMeshFlags.FIX_INTERNAL_EDGES,
+  );
+  if (!desc) return 0;
+  world3d.createCollider(desc.setFriction(friction).setRestitution(0), body);
+  return 1;
 }
 
 // ---------------------------------------------------------------------------------------------

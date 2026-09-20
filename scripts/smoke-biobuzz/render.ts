@@ -28,7 +28,7 @@ import {
   BB_TAPE_W,
   BB_VIEW_MARGIN,
 } from '../../src/games/biobuzz/config';
-import { drawBiobuzzField } from '../../src/games/biobuzz/drawField';
+import { drawBiobuzzField, snapTapeGroup } from '../../src/games/biobuzz/drawField';
 // the CAD loader's own DOM-free exports — the AprilTag bitmap, the ID table the manual sets, and
 // the creased-normal pass. Importing a `scene/` module here is fine: this is a script, not the
 // bundle, and the chunk-boundary checks above read the SOURCE rather than the module graph.
@@ -39,6 +39,7 @@ import {
   TAG_SIZE_IN,
   apriltag36h11Cells,
   clearPanelAlphaAt,
+  clearPanelLightIndependent,
   clearPanelSheenGain,
   computeCreasedNormals,
 } from '../../src/games/biobuzz/scene/renderFieldGlb';
@@ -128,9 +129,12 @@ import {
   coerceGraphicsSettings,
   coerceMaxFps,
   effectivePixelRatio,
+  fpsFromSliderPos,
   frameIntervalMs,
   GFX_FPS_MAX,
   GFX_FPS_MIN,
+  GFX_FPS_SLIDER_MAX,
+  GFX_FPS_SLIDER_NO_CAP,
   GFX_FPS_STEPS,
   isCustomFps,
   matchesPreset,
@@ -138,6 +142,7 @@ import {
   MAX_FPS_VSYNC,
   msaaSamples,
   shadowMapSize,
+  sliderPosFromFps,
 } from '../../src/games/biobuzz/graphics/settings';
 import {
   SLIP_MS,
@@ -530,6 +535,90 @@ export function renderChecks(check: Check): void {
       painted.length === expected.length && [...painted].sort().join('|') === [...expected].sort().join('|'),
       `${painted.length} painted vs ${expected.length} expected`,
     );
+
+    // ══ EVERY TAPE ON SCREEN IS ONE WIDTH, IN PIXELS ═════════════════════════════════════════
+    // Owner, 2026-09-19, the FIFTH report of "tape widths look inconsistent" — and the data was
+    // never wrong (the check above; every strip is 1.000 in). The map draws at 2–6 device px per
+    // inch, so a 1-in strip is ~3.1 px and where its edges fall inside a pixel decided whether it
+    // came out as three solid columns or two solid and two half-lit. `snapTapeGroup` gives every
+    // strip of a zone the same whole-pixel width on a real canvas. Swept over scales, sub-pixel
+    // offsets, both y senses and both axis-aligned rotations: one width, the LOADING ZONE's U
+    // closed with no pixel painted twice and none missed, the GARDEN band exactly two widths.
+    {
+      let cases = 0;
+      let badWidth = 0;
+      let badJoin = 0;
+      let badBand = 0;
+      for (let sc = 1.3; sc < 9; sc += 0.137) {
+        for (let off = 0; off < 1; off += 0.23) {
+          for (const flip of [1, -1]) {
+            for (const quarter of [false, true]) {
+              const m = quarter
+                ? { a: 0, b: sc, c: -sc * flip, d: 0, e: 400.3 + off, f: 300.7 + off * 2 }
+                : { a: sc, b: 0, c: 0, d: -sc * flip, e: 400.3 + off, f: 300.7 + off * 2 };
+              const w = Math.max(1, Math.round(sc * BB_TAPE_W));
+              for (const a of ['red', 'blue'] as const) {
+                cases++;
+                const lz = snapTapeGroup(m, BB_TAPE.loadingZone[a]);
+                if (!lz || lz.some(([, , ww, hh]) => Math.min(ww, hh) !== w)) badWidth++;
+                if (lz) {
+                  const x0 = Math.min(...lz.map((r) => r[0]));
+                  const y0 = Math.min(...lz.map((r) => r[1]));
+                  const W = Math.max(...lz.map((r) => r[0] + r[2])) - x0;
+                  const H = Math.max(...lz.map((r) => r[1] + r[3])) - y0;
+                  const grid = new Uint8Array(W * H);
+                  for (const [x, y, ww, hh] of lz) {
+                    for (let j = y; j < y + hh; j++) for (let i = x; i < x + ww; i++) grid[(j - y0) * W + (i - x0)]++;
+                  }
+                  // a closed U of thickness w on three sides of a W×H box covers exactly this many
+                  // pixels once each: the two full-depth strips plus the span between them
+                  const depth = lz.map((r) => Math.max(r[2], r[3])).sort((p, q) => p - q);
+                  const want = 2 * w * depth[0] + w * (depth[2] - 0) ;
+                  let painted = 0;
+                  let twice = 0;
+                  for (const v of grid) {
+                    if (v) painted++;
+                    if (v > 1) twice++;
+                  }
+                  const area = lz.reduce((acc, r) => acc + r[2] * r[3], 0);
+                  const spans = Math.max(W, H) === depth[2] + 2 * w; // the inner strip reaches both depth strips exactly
+                  if (twice !== 0 || painted !== area || !spans || !(want > 0)) badJoin++;
+                }
+                const garden = [...BB_TAPE.garden[a], ...BB_TAPE.gardenSupplement[a]];
+                const band = {
+                  x0: Math.min(...garden.map((r) => r.x0)),
+                  y0: Math.min(...garden.map((r) => r.y0)),
+                  x1: Math.max(...garden.map((r) => r.x1)),
+                  y1: Math.max(...garden.map((r) => r.y1)),
+                };
+                const gd = snapTapeGroup(m, [band]);
+                if (!gd || Math.min(gd[0][2], gd[0][3]) !== 2 * w) badBand++;
+              }
+            }
+          }
+        }
+      }
+      check('tape: every LOADING ZONE strip is the same whole-pixel width at every scale and offset', badWidth === 0, `${badWidth} of ${cases}`);
+      check('tape: the LOADING ZONE’s U closes exactly — no pixel twice, none missed, the inner strip meets both', badJoin === 0, `${badJoin} of ${cases}`);
+      check('tape: the GARDEN band is exactly two tape widths (Fig 9-3: two 1-in tapes side by side)', badBand === 0, `${badBand} of ${cases}`);
+      check(
+        'tape: a rotated view is left to the rasteriser (there is no pixel grid to snap to)',
+        snapTapeGroup({ a: 0.7, b: 0.7, c: -0.7, d: 0.7, e: 0, f: 0 }, BB_TAPE.loadingZone.red) === null,
+      );
+      const garden = [...BB_TAPE.garden.red, ...BB_TAPE.gardenSupplement.red];
+      const bandArea =
+        (Math.max(...garden.map((r) => r.x1)) - Math.min(...garden.map((r) => r.x0))) *
+        (Math.max(...garden.map((r) => r.y1)) - Math.min(...garden.map((r) => r.y0)));
+      const sum = garden.reduce((acc, r) => acc + (r.x1 - r.x0) * (r.y1 - r.y0), 0);
+      check('tape: the GARDEN’s two strips and its corner patch TILE their band (so it may be drawn as one)', Math.abs(bandArea - sum) < 1e-6, `${bandArea.toFixed(4)} vs ${sum.toFixed(4)}`);
+      const drawSrc2 = readFileSync(join(root, 'src/games/biobuzz/drawField.ts'), 'utf8');
+      check(
+        'tape: the 2D map paints each zone through the snapped group, never strip by strip',
+        drawSrc2.includes('fillTapeGroup(ctx, BB_TAPE.loadingZone[a], TAPE_GAFFER[a]);') &&
+          drawSrc2.includes('fillTapeGroup(ctx, garden, TAPE_GAFFER[a], [bandOf(garden)]);') &&
+          !/for \(const strip of BB_TAPE\.\w+\[a\]\) fillStrip\(/.test(drawSrc2),
+      );
+    }
     // every painted mark is BB_TAPE_W across -- the same statement as the data check above, but
     // made against what actually reached the canvas.
     const tapeRects = rects.filter((r) => gaffer.includes(String(r.fill).toLowerCase()));
@@ -1087,6 +1176,35 @@ function graphicsChecks(check: Check, allFiles: string[]): void {
     check('a stored blob from the fixed-ladder build still loads', coerceGraphicsSettings({ maxFps: 240 }, GFX_PRESETS.medium).maxFps === 240);
     check('a stored blob with junk in it keeps the base rate', coerceGraphicsSettings({ maxFps: 'fast' }, GFX_PRESETS.low).maxFps === GFX_PRESETS.low.maxFps);
   }
+  // ---- the slider, since the tile row is gone (owner ruling 2026-09-19) -------------------
+  {
+    check(
+      'the slider round-trips every numeric stop, both directions',
+      Array.from({ length: GFX_FPS_SLIDER_MAX - GFX_FPS_MIN + 1 }, (_, i) => GFX_FPS_MIN + i).every(
+        (fps) => fpsFromSliderPos(sliderPosFromFps(fps), true, false) === fps,
+      ),
+    );
+    check(
+      'a typed rate past the slider ceiling still shows pinned at the top numeric stop, not off the track',
+      sliderPosFromFps(GFX_FPS_MAX) === GFX_FPS_SLIDER_MAX && sliderPosFromFps(500) === GFX_FPS_SLIDER_MAX,
+    );
+    check('either sentinel draws the puck at the one no-cap stop', sliderPosFromFps(MAX_FPS_VSYNC) === GFX_FPS_SLIDER_NO_CAP && sliderPosFromFps(MAX_FPS_UNLIMITED) === GFX_FPS_SLIDER_NO_CAP);
+    check(
+      'the web can never drag its way to Unlimited — the no-cap stop is always VSync there, whatever it was asked to prefer',
+      fpsFromSliderPos(GFX_FPS_SLIDER_NO_CAP, false, false) === MAX_FPS_VSYNC && fpsFromSliderPos(GFX_FPS_SLIDER_NO_CAP, false, true) === MAX_FPS_VSYNC,
+    );
+    check(
+      'the desktop reaches Unlimited only by asking for it, and reaches VSync by not',
+      fpsFromSliderPos(GFX_FPS_SLIDER_NO_CAP, true, true) === MAX_FPS_UNLIMITED && fpsFromSliderPos(GFX_FPS_SLIDER_NO_CAP, true, false) === MAX_FPS_VSYNC,
+    );
+    check(
+      'a position below the no-cap stop never yields a sentinel, on either platform',
+      [true, false].every(
+        (isDesktop) => fpsFromSliderPos(GFX_FPS_SLIDER_MAX, isDesktop, true) !== MAX_FPS_VSYNC && fpsFromSliderPos(GFX_FPS_SLIDER_MAX, isDesktop, true) !== MAX_FPS_UNLIMITED,
+      ),
+    );
+    check('the slider ceiling sits inside the typed range, so a drag and a typed value can agree', GFX_FPS_SLIDER_MAX >= GFX_FPS_MIN && GFX_FPS_SLIDER_MAX < GFX_FPS_MAX);
+  }
   check('MSAA maps to a real sample count, and off means no render target', msaaSamples('off') === 0 && msaaSamples('msaa2') === 2 && msaaSamples('msaa4') === 4);
   check(
     'soft shadows reuse the high map size (they are a wider blur, not a fourth resolution)',
@@ -1599,8 +1717,14 @@ function graphicsChecks(check: Check, allFiles: string[]): void {
         );
 
         // THE GEOMETRY, run rather than grepped. `sidePlateR` is not exported (it is an internal
-        // profile), so this measures the BUILT side plate: the highest point of the plate's own
-        // mesh, against where the hood's arc actually is.
+        // profile), so this measures the BUILT parts.
+        //
+        // ⚠️ **AND WHAT REACHES THE HOOD IS THE HOOD'S OWN CHEEK, NOT THE FIXED PLATE.** Two
+        // passes grew the fixed plate up to `hoodR` to close this gap, and the owner rejected both
+        // ("the shooter parallel plates became ugly. remember that the arc does not need to be
+        // big") — because a plate sized to the hood is sized to a part that swings away from it,
+        // and at the 80° cap it is left standing as a bare fin. The cheeks are on the PITCH node,
+        // so they close the gap at EVERY elevation instead of at one.
         const H = bbHead(0);
         const hoodInner = H.hoodR;
         // the plate's reach, sampled round the profile off the built turret
@@ -1608,26 +1732,27 @@ function graphicsChecks(check: Check, allFiles: string[]): void {
         turret.updateMatrixWorld(true);
         let plate: THREE.Mesh | null = null;
         let hood: THREE.Mesh | null = null;
+        let cheek: THREE.Mesh | null = null;
         turret.traverse((o) => {
           if (!(o instanceof THREE.Mesh)) return;
           if (o.name === 'bb-turret-side-plate' && !plate) plate = o;
           if (o.name === 'bb-turret-hood' && !hood) hood = o;
+          if (o.name === 'bb-turret-hood-cheek' && !cheek) cheek = o;
         });
-        check('the turret builds both a side plate and a hood (else the next checks are vacuous)', plate !== null && hood !== null);
-        if (plate && hood) {
+        check('the turret builds a side plate, a hood and a cheek (else the next checks are vacuous)', plate !== null && hood !== null && cheek !== null);
+        if (plate && hood && cheek) {
           const pBox = new THREE.Box3().setFromObject(plate);
           const hBox = new THREE.Box3().setFromObject(hood);
-          // the SHORTFALL the owner saw: how far the plate's top sits below the hood's underside.
-          const shortfall = hBox.min.z - pBox.max.z;
+          const cBox = new THREE.Box3().setFromObject(cheek);
           check(
-            'the side plate now reaches the hood rather than stopping ~3 in short of it',
-            shortfall <= 0.05,
-            `plate top ${pBox.max.z.toFixed(3)}, hood bottom ${hBox.min.z.toFixed(3)}, shortfall ${shortfall.toFixed(3)} in`,
+            'the CHEEK reaches the hood — the gap the owner saw is closed by the thing that moves',
+            cBox.max.z >= hBox.max.z - 1e-3 && cBox.min.z <= BB_TURRET_AXLE_Z,
+            `cheek z ${cBox.min.z.toFixed(3)}…${cBox.max.z.toFixed(3)} spans the axle ${BB_TURRET_AXLE_Z.toFixed(3)} to the hood top ${hBox.max.z.toFixed(3)}`,
           );
           check(
-            '...and it does so by climbing to the hood own arc, not by moving the hood',
-            Math.abs(pBox.max.z - (BB_TURRET_AXLE_Z + hoodInner)) < 0.35,
-            `plate top ${(pBox.max.z - BB_TURRET_AXLE_Z).toFixed(3)} above the axle vs hoodR ${hoodInner.toFixed(3)}`,
+            '...and the FIXED plate went back to hugging the wheel rather than chasing the hood',
+            Math.abs(pBox.max.z - (BB_TURRET_AXLE_Z + BB_SIDE_PLATE_TOP_Z)) < 1e-3,
+            `plate top ${(pBox.max.z - BB_TURRET_AXLE_Z).toFixed(3)} above the axle — the cut, not hoodR ${hoodInner.toFixed(3)}`,
           );
           // THE EXIT IS STILL RELIEVED. The plate must not climb in FRONT of the lip, which is
           // what the flat top was for: forward of the axle it stays at the corridor cut.
@@ -1649,8 +1774,14 @@ function graphicsChecks(check: Check, allFiles: string[]): void {
         }
         disposeRobotGroup(turret);
 
-        check('the relief is a named ramp, not a bare step at the exit', /const BB_HOOD_RELIEF = /.test(robotsSrc));
-        check('the hood arm has a middle spoke now, so a 32-degree rim is not held at its ends alone', robotsSrc.includes('radialBar((TH_EXIT + thFeed) / 2,'));
+        // ⚠️ BOTH ATTEMPTS AT GROWING THE FIXED PLATE ARE GONE BY NAME, so neither can come back
+        // as a "small" edit: the 22° relief ramp of the first, and the rear rake of the second.
+        check('no BB_HOOD_RELIEF ramp is left to tune', !robotsSrc.includes('BB_HOOD_RELIEF'));
+        check('...and no rear rake either — the fixed profile is the arc-and-box it always was', !robotsSrc.includes('rearRake'));
+        check(
+          'the hood hangs on SOLID cheeks, not on spokes — no radialBar left in the file',
+          !robotsSrc.includes('radialBar') && robotsSrc.includes("cheek.name = 'bb-turret-hood-cheek'"),
+        );
         // ⚠️ AND THE MUZZLE CONTRACT IS UNTOUCHED -- the SHOOTER block above proves the drawn lip
         // sits on `bbMuzzleLocal` at every pitch. These two say the constants it reads did not
         // move to get this picture.
@@ -1959,17 +2090,18 @@ function graphicsChecks(check: Check, allFiles: string[]): void {
           'bb-turret-plate',
           'bb-turret-side-plate',
           'bb-turret-flywheel',
+          'bb-turret-flywheel-hub',
           'bb-turret-shaft',
           'bb-turret-brace',
           'bb-turret-throat',
           'bb-turret-motor',
           'bb-turret-belt',
           'bb-turret-hood',
-          'bb-turret-hood-arm',
+          'bb-turret-hood-cheek',
         ] as const;
         check(
           `${tag}: the shooter is an ASSEMBLY of named parts, and every one of them was built`,
-          PARTS.every((n) => named(n).length > 0) && named('bb-turret-side-plate').length === 2 && named('bb-turret-hood-arm').length === 2,
+          PARTS.every((n) => named(n).length > 0) && named('bb-turret-side-plate').length === 2 && named('bb-turret-hood-cheek').length === 2,
           PARTS.map((n) => `${n}×${named(n).length}`).join(' '),
         );
         check(
@@ -1989,7 +2121,7 @@ function graphicsChecks(check: Check, allFiles: string[]): void {
         // A part's fingerprint is its vertex extent in the ROBOT frame. Sampled over 41 pitches:
         // everything but the hood must not move by so much as a float, and the hood must.
         {
-          const MOVES = ['bb-turret-hood', 'bb-turret-hood-arm'];
+          const MOVES = ['bb-turret-hood', 'bb-turret-hood-cheek'];
           const print = (m: THREE.Mesh): THREE.Box3 => new THREE.Box3().setFromPoints(robotVerts(m));
           pose(BB_TURRET_PITCH_MIN);
           const base = new Map<THREE.Mesh, THREE.Box3>(meshes.map((m) => [m, print(m)]));
@@ -2010,12 +2142,12 @@ function graphicsChecks(check: Check, allFiles: string[]): void {
             `worst drift ${worstFixed.toFixed(6)} in over ${PITCHES} pitches`,
           );
           check(
-            `${tag}: ...and the hood and its two arms DO — they are on the pitch node, so this is not vacuous`,
+            `${tag}: ...and the hood and its two cheeks DO — they are on the pitch node, so this is not vacuous`,
             leastMoved > 1,
             `least-moved hood part travels ${leastMoved.toFixed(3)} in`,
           );
           check(
-            `${tag}: ...and the pitch node carries NOTHING ELSE (three meshes: the arc and two arms)`,
+            `${tag}: ...and the pitch node carries NOTHING ELSE (three meshes: the arc and its two cheeks)`,
             pitchNode.children.filter((c) => (c as THREE.Mesh).isMesh).length === 3,
             pitchNode.children.map((c) => c.name || c.type).join(', '),
           );
@@ -2097,23 +2229,20 @@ function graphicsChecks(check: Check, allFiles: string[]): void {
         // the hood occupies `hoodR … +BB_HOOD_T`, so the hood is the outermost part at every angle
         // in the wrap and at every elevation, with no offset anybody can drift.
         //
-        // ⚠️ THE FLAT TOP IS A FORWARD CUT (owner item (B), 2026-09-19). Applied over the whole
-        // upper hemisphere it also cut the plate away BEHIND the exit lip, where the hood, its
-        // tail and the feed shoe are — leaving the hood 2.95 in above anything fixed. Past
-        // `TH_EXIT` the plate climbs a straight relief ramp over `BB_HOOD_RELIEF` and then follows
-        // the arc. Restated here rather than imported, the way this lane always restates the
-        // profile, so the two copies have to agree.
+        // ⚠️ AND THE FIXED PLATE IS THE COMPACT ARC-AND-BOX, which is where it started and where
+        // it is back. Two passes grew it up to `hoodR` to reach the hood — a 22° relief ramp with
+        // a 64° arc, then an exit cut with a raked tail — and the owner rejected both ("the
+        // shooter parallel plates became ugly. remember that the arc does not need to be big").
+        // A fixed plate sized to a part that swings away from it is a fin at the 80° cap whatever
+        // its outline; what reaches the hood is the hood's own CHEEK, measured further down.
+        // Restated here rather than imported, the way this lane always restates the profile, so
+        // the two copies have to agree.
         const TH_EXIT = Math.PI / 2;
-        const BB_HOOD_RELIEF = 22 * (Math.PI / 180);
         const plateR = (th: number): number => {
           const st = Math.sin(th);
           const ct = Math.cos(th);
           let r = H.hoodR;
-          if (st > 1e-9) {
-            const past = th - TH_EXIT;
-            if (past <= 0) r = Math.min(r, BB_SIDE_PLATE_TOP_Z / st);
-            else if (past < BB_HOOD_RELIEF) r = Math.min(r, BB_SIDE_PLATE_TOP_Z + (H.hoodR - BB_SIDE_PLATE_TOP_Z) * (past / BB_HOOD_RELIEF));
-          }
+          if (st > 1e-9) r = Math.min(r, BB_SIDE_PLATE_TOP_Z / st);
           if (st < -1e-9) r = Math.min(r, BB_SIDE_PLATE_BOTTOM_Z / st);
           if (ct > 1e-9) r = Math.min(r, BB_SIDE_PLATE_FRONT_X / ct);
           return r;
@@ -2142,15 +2271,15 @@ function graphicsChecks(check: Check, allFiles: string[]): void {
             worst >= BB_HOOD_T - 1e-9 && top >= BB_HOOD_T - 1e-9,
             `worst +${worst.toFixed(4)} (${worstAt}); rest +${rest.toFixed(3)}, 80° +${top.toFixed(3)}`,
           );
-          // ⚠️ AND IT IS CARRIED. The clause that used to sit in the line above was `rest > 3`,
-          // i.e. "at rest the plate is more than 3 in clear of the hood everywhere in the wrap" —
-          // which is owner item (B) written down as a requirement. The requirement is the
-          // opposite: SOMEWHERE in the wrap the plate must come right up under the hood's inner
-          // face, while never passing it (the line above).
+          // ⚠️ AND THE FIXED PLATE IS *NOT* WHAT CLOSES THE GAP. The clause that sat here for one
+          // pass was `rest <= BB_HOOD_T`, i.e. "somewhere in the wrap the fixed plate comes right
+          // up under the hood" — which is what grew the plate into a fin. The hood is carried by
+          // its CHEEKS (measured below, at every elevation rather than at rest); the fixed plate
+          // is free to stay compact, and this says it does.
           check(
-            `${tag}: ...and at rest the plate comes right up under it somewhere in the wrap`,
-            rest <= BB_HOOD_T + 1e-6,
-            `closest approach +${rest.toFixed(4)} vs the hood's own ${BB_HOOD_T} thickness`,
+            `${tag}: ...and the fixed plate does NOT chase it — at rest it stays below the corridor cut`,
+            rest > 2.5,
+            `the plate is +${rest.toFixed(3)} clear of the hood through the whole wrap; a plate grown to meet it reads +${BB_HOOD_T}`,
           );
           pose(BB_TURRET_PITCH_MIN);
           // the DRAWN hood: its vertices live in exactly the band the arithmetic above assumes
@@ -2185,23 +2314,21 @@ function graphicsChecks(check: Check, allFiles: string[]): void {
           pose(BB_TURRET_PITCH_MIN);
           const plateTop = Math.max(...robotVerts(named('bb-turret-side-plate')[0]).map((v) => v.z));
           const hoodTop = Math.max(...robotVerts(named('bb-turret-hood')[0]).map((v) => v.z));
-          // ⚠️ THESE USED TO PIN THE BUG. They asserted `plateTop < hoodTop - 3` and that the
-          // plate's own top WAS `BB_SIDE_PLATE_TOP_Z` — i.e. that the plate stopped 3 in short of
-          // the hood, everywhere, which is exactly owner item (B) of 2026-09-19 written down as a
-          // requirement. What they say now is the shape the fix has: the plate reaches the hood's
-          // inner face and stops there, and the cut that keeps the outgoing corridor clear applies
-          // FORWARD of the axle, where the corridor actually is.
-          // the plate's own top is on the ARC now (behind the relief ramp), not on the flat cut,
-          // so it sits just under the hood instead of 3.2 in below it. The RADIAL statement — the
-          // plate reaching the hood's inner face somewhere in the wrap — is the one above.
+          // ⚠️ THESE HAVE NOW PINNED THE BUG IN BOTH DIRECTIONS, AND THAT IS WHY THEY READ AS
+          // THEY DO. First they asserted `plateTop < hoodTop - 3` — the plate stopping 3 in short
+          // of the hood everywhere, i.e. owner item (B) written down as a requirement. Then they
+          // asserted the opposite, `hoodTop - plateTop < 1` — which is the plate grown into a fin,
+          // the thing the owner called ugly. Neither is the rule. The rule is that the FIXED plate
+          // is the compact cut and the CHEEK is what reaches the hood, so what is pinned here is
+          // the plate's own top being exactly `BB_SIDE_PLATE_TOP_Z` and nothing else.
           check(
-            `${tag}: at rest the plate’s top is right under the hood’s, not 3 in below it`,
-            hoodTop - plateTop < 1,
-            `gap ${(hoodTop - plateTop).toFixed(3)} in (it was ${(hoodTop - (BB_TURRET_AXLE_Z + BB_SIDE_PLATE_TOP_Z)).toFixed(3)})`,
+            `${tag}: the fixed plate's top IS the corridor cut, at every angle — it is not sized to the hood`,
+            Math.abs(plateTop - (BB_TURRET_AXLE_Z + BB_SIDE_PLATE_TOP_Z)) < 1e-3,
+            `plate top ${(plateTop - BB_TURRET_AXLE_Z).toFixed(4)} above the axle vs the cut ${BB_SIDE_PLATE_TOP_Z.toFixed(4)}; the hood is up at ${(hoodTop - BB_TURRET_AXLE_Z).toFixed(3)}`,
           );
           check(
-            `${tag}: ...and the hood is still the topmost part, by its own thickness`,
-            plateTop < hoodTop - BB_HOOD_T + 1e-3 && hoodTop - plateTop < BB_HOOD_T + 0.5,
+            `${tag}: ...and the hood is the topmost part of the assembly, well above it`,
+            plateTop < hoodTop - BB_HOOD_T,
             `plate ${plateTop.toFixed(3)} vs hood ${hoodTop.toFixed(3)}`,
           );
           const fwdTop = Math.max(...axleVerts(named('bb-turret-side-plate')[0]).filter((v) => v.x > 0.05).map((v) => v.z));
@@ -2212,17 +2339,168 @@ function graphicsChecks(check: Check, allFiles: string[]): void {
           );
         }
 
-        // ══ THE FLYWHEEL IS 72 mm AND IT SITS ON THE TURRET PLATE ══════════════════════════
+        // ══ AND THE FIXED PLATE STAYS COMPACT — A RATCHET ON ITS REACH ═════════════════════
+        //
+        // ⚠️ **OWNER, 2026-09-19, ON THE PASS THAT FIXED THE FLOATING HOOD: "the shooter parallel
+        // plates became ugly. remember that the arc does not need to be big."** Two passes grew
+        // this plate to reach the hood, and the 80° pose is where both showed: the hood swings
+        // down behind the wheel and leaves the plate standing as a bare fin at `hoodR`. The
+        // checks above pin the plate's TOP; this pins its REACH over the whole upper hemisphere,
+        // which is the number a relief ramp, a raked tail or any other clever outline would have
+        // to raise. It may get smaller, never bigger.
+        {
+          let reach = 0;
+          let reachAt = 0;
+          for (let i = 0; i <= 18000; i++) {
+            const th = (Math.PI * i) / 18000;
+            const r = plateR(th);
+            if (r > reach) {
+              reach = r;
+              reachAt = th;
+            }
+          }
+          // the arc at `hoodR` legitimately closes the REAR of the plate, where it is behind the
+          // wheel and below the corridor — the bound is on how high that reach gets, which is the
+          // flat top's own cut plus the chord a 0.75° sample can miss it by.
+          check(
+            `${tag}: over the upper hemisphere the fixed plate never reaches higher than the corridor cut`,
+            reach * Math.sin(reachAt) <= BB_SIDE_PLATE_TOP_Z + 1e-6,
+            `highest ${(reach * Math.sin(reachAt)).toFixed(4)} at θ=${((reachAt * 180) / Math.PI).toFixed(1)}° vs the cut ${BB_SIDE_PLATE_TOP_Z.toFixed(4)} (the ramp read 3.632, the rake 3.917)`,
+          );
+          const NS = 36000;
+          const dth = (Math.PI * 2) / NS;
+          let area = 0;
+          for (let i = 0; i < NS; i++) {
+            const r = plateR(i * dth);
+            area += ((r * r) / 2) * dth;
+          }
+          // ½∮r²dθ is exact for a profile single-valued about the axle, which this one is by
+          // construction. The teardrop measured 22.80 (POLLEN) / 28.80 (NECTAR) and the raked cut
+          // 20.83 / 26.80; this is the compact plate's own area plus a working margin.
+          const AREA_MAX = which === 1 ? 18.8 : 16.6;
+          check(
+            `${tag}: ...and its silhouette stays under ${AREA_MAX} sq in`,
+            area <= AREA_MAX,
+            `${area.toFixed(2)} sq in (the ramp was ${which === 1 ? '28.80' : '22.80'}, the rake ${which === 1 ? '26.80' : '20.83'})`,
+          );
+        }
+
+        // ══ THE HOOD AND ITS CHEEKS ARE ONE RIGID ASSEMBLY ON THE AXLE ═════════════════════
+        //
+        // ⚠️ **THIS IS WHAT REPLACED "grow the fixed plate".** The hood's arc cannot bolt to
+        // anything fixed, because it elevates; what a real adjustable hood has is a pair of CHEEK
+        // plates that are part of it — a pivot boss on the shooter axle and a solid sector out to
+        // the hood's own outer face. Because they are on `bb-turret-pitch`, the hood is carried at
+        // EVERY elevation rather than at rest, which is the failure both plate-growing passes had
+        // at the 80° cap. "The arc does not need to be big" is the sector's own size rule.
+        {
+          pose(BB_TURRET_PITCH_MIN);
+          const cheeks = named('bb-turret-hood-cheek');
+          const cv = cheeks.map((m) => axleVerts(m));
+          const rs = cv.flat().map((v) => Math.hypot(v.x, v.z));
+          check(
+            `${tag}: each cheek runs from a boss ON the axle out to the hood's own outer face`,
+            cheeks.length === 2 && Math.min(...rs) <= 0.05 && Math.abs(Math.max(...rs) - (H.hoodR + BB_HOOD_T)) < F32,
+            `r ${Math.min(...rs).toFixed(4)} … ${Math.max(...rs).toFixed(4)} vs the hood's outer face ${(H.hoodR + BB_HOOD_T).toFixed(4)}`,
+          );
+          // THE SECTOR IS NO WIDER THAN THE ARC IT CARRIES. Everything past the boss — the radius
+          // at which a sector is a sector rather than a hub — must lie inside the hood's own wrap.
+          const hub = 0.75;
+          let span = 0;
+          let spanAt = '';
+          for (const v of cv.flat()) {
+            const r = Math.hypot(v.x, v.z);
+            if (r <= hub + F32) continue;
+            const th = Math.atan2(v.z, v.x);
+            const off = Math.max(TH_EXIT - th, th - (TH_EXIT + BB_HOOD_WRAP));
+            if (off > span) {
+              span = off;
+              spanAt = `θ=${((th * 180) / Math.PI).toFixed(1)}° at r=${r.toFixed(2)}`;
+            }
+          }
+          check(
+            `${tag}: ...and the sector is no wider than the wrap it carries — "the arc does not need to be big"`,
+            span <= 1e-3,
+            span <= 1e-3 ? `inside [90°, ${(((TH_EXIT + BB_HOOD_WRAP) * 180) / Math.PI).toFixed(1)}°] everywhere past the boss` : `${((span * 180) / Math.PI).toFixed(2)}° outside it — ${spanAt}`,
+          );
+          // ONE ASSEMBLY: the cheek's inner face IS the hood's side face, so the two are flush
+          // rather than two parts near each other. Lateral, because that is the only axis on
+          // which they are separable at all — they share the arc in the other two.
+          const hoodY = Math.max(...axleVerts(named('bb-turret-hood')[0]).map((v) => Math.abs(v.y)));
+          const cheekInner = Math.min(...cv.flat().map((v) => Math.abs(v.y)));
+          check(
+            `${tag}: ...and hood and cheek are FLUSH across the channel — one assembly, not two parts`,
+            Math.abs(cheekInner - hoodY) <= F32,
+            `hood side face ±${hoodY.toFixed(4)}, cheek inner face ±${cheekInner.toFixed(4)}`,
+          );
+          // ⚠️ AND NOTHING FIXED IS IN THE VOLUME THE CHEEK SWEEPS. The sweep is stated rather
+          // than sampled: the cheek lives in the lateral band [elemR, plateGap/2 − inset], and
+          // over 0…80° it covers r ≤ hoodR + BB_HOOD_T for θ ∈ [90°, 90° + cap + wrap] (plus its
+          // boss at every θ). So a fixed vertex inside ALL THREE is an interpenetration, and the
+          // SHAFT is the one exemption — a pivot boss and the shaft it is journalled on share an
+          // axis by definition. The band is the whole reason the cheeks are inboard: outboard,
+          // the belt and the flywheel pulley own everything past ±1.98.
+          const bandIn = H.elemR;
+          const bandOut = H.plateGap / 2 - BB_HOOD_ARM_INSET;
+          const sweptTo = TH_EXIT + BB_TURRET_PITCH_MAX + BB_HOOD_WRAP;
+          let intruder = '';
+          let nearest = Infinity;
+          for (const m of meshes) {
+            if (m.name === 'bb-turret-hood' || m.name === 'bb-turret-hood-cheek' || m.name === 'bb-turret-shaft') continue;
+            for (const v of axleVerts(m)) {
+              const ay = Math.abs(v.y);
+              if (ay < bandIn - F32 || ay > bandOut + F32) continue;
+              const r = Math.hypot(v.x, v.z);
+              const th = Math.atan2(v.z, v.x);
+              const thn = th < -1e-9 ? th + Math.PI * 2 : th;
+              if (thn < TH_EXIT - F32 || thn > sweptTo + F32) continue;
+              nearest = Math.min(nearest, r - (H.hoodR + BB_HOOD_T));
+              if (r <= H.hoodR + BB_HOOD_T + F32) intruder = `${m.name} at r=${r.toFixed(2)} θ=${((thn * 180) / Math.PI).toFixed(0)}° |y|=${ay.toFixed(2)}`;
+            }
+          }
+          check(
+            `${tag}: ...and nothing fixed is inside the volume a cheek sweeps over 0…80°, bar the shaft it pivots on`,
+            intruder === '',
+            intruder || `nearest fixed part in the cheeks' lane (±${bandIn.toFixed(2)}…${bandOut.toFixed(2)}) clears the sector by ${Number.isFinite(nearest) ? nearest.toFixed(3) : 'the whole band is empty'}`,
+          );
+        }
+
+        // ══ THE FLYWHEEL IS 72 mm, IT SITS ON THE TURRET PLATE, AND THERE IS ONE OF IT ═════
         // "The flywheel can be situated much lower. It just needs to be right above the turret
         // plate." — and "a standard flywheel is 72 mm diameter". Both are measurements now, and
         // the radius is checked by converting it BACK: a decimal literal that had drifted would
         // not come out at 72. It is the SAME wheel on both heads.
+        //
+        // ⚠️ **AND IT IS ONE WHEEL, CENTRED** (owner, 2026-09-19: "the flywheel on the shooter
+        // looks like there are two wheels stacked next to each other. there should just be one in
+        // the center"). It was two 0.9-in meshes at y = ±0.7. There was no seam and no groove to
+        // blame — two meshes is what two wheels look like — so this counts the meshes, puts the
+        // one that is left on the centreline, and holds its width off the ELEMENT rather than off
+        // a literal, since a NECTAR head grips a bigger ball with a wider tyre.
         {
           pose(BB_TURRET_PITCH_MIN);
           const wheel = named('bb-turret-flywheel');
           const vs = wheel.flatMap((m) => axleVerts(m));
           const rim = Math.max(...vs.map((v) => Math.hypot(v.x, v.z)));
           const bottom = Math.min(...wheel.flatMap((m) => robotVerts(m)).map((v) => v.z));
+          const ys = vs.map((v) => v.y);
+          const centre = (Math.min(...ys) + Math.max(...ys)) / 2;
+          const width = Math.max(...ys) - Math.min(...ys);
+          check(
+            `${tag}: there is exactly ONE flywheel mesh and it is centred on the channel`,
+            wheel.length === 1 && Math.abs(centre) < F32,
+            `${wheel.length} wheel(s), centre y ${centre.toFixed(5)} (it was two, at ±0.700)`,
+          );
+          check(
+            `${tag}: ...its width is half an element diameter — enough tyre to grip the ball it pinches`,
+            Math.abs(width - H.elemR) < F32,
+            `${width.toFixed(3)} in on an element of radius ${H.elemR}`,
+          );
+          check(
+            `${tag}: ...and the shaft shows between the tyre and each plate, rather than the gap being filled`,
+            H.plateGap / 2 - width / 2 > 0.5 && width < H.plateGap - 1.0,
+            `${(H.plateGap / 2 - width / 2).toFixed(3)} in of bare shaft each side of a ${width.toFixed(2)}-in wheel in a ${H.plateGap.toFixed(2)} channel`,
+          );
           check(
             `${tag}: the flywheel’s drawn radius back-converts to 72 mm`,
             Math.abs(rim * 25.4 * 2 - BB_FLYWHEEL_D_MM) < 0.5,
@@ -2298,7 +2576,7 @@ function graphicsChecks(check: Check, allFiles: string[]): void {
           let swept = Infinity;
           for (let i = 0; i < PITCHES; i++) {
             pose(pitchAt(i));
-            for (const n of ['bb-turret-hood', 'bb-turret-hood-arm']) {
+            for (const n of ['bb-turret-hood', 'bb-turret-hood-cheek']) {
               for (const m of named(n)) for (const v of robotVerts(m)) swept = Math.min(swept, v.z);
             }
           }
@@ -2342,7 +2620,7 @@ function graphicsChecks(check: Check, allFiles: string[]): void {
           let hoodBack = Infinity;
           for (let i = 0; i < PITCHES; i++) {
             pose(pitchAt(i));
-            for (const n of ['bb-turret-hood', 'bb-turret-hood-arm']) {
+            for (const n of ['bb-turret-hood', 'bb-turret-hood-cheek']) {
               for (const m of named(n)) for (const v of robotVerts(m)) hoodBack = Math.min(hoodBack, v.x);
             }
           }
@@ -2404,7 +2682,7 @@ function graphicsChecks(check: Check, allFiles: string[]): void {
           let hoodBack = Infinity;
           for (let i = 0; i < PITCHES; i++) {
             pose(pitchAt(i));
-            for (const n of ['bb-turret-hood', 'bb-turret-hood-arm']) {
+            for (const n of ['bb-turret-hood', 'bb-turret-hood-cheek']) {
               for (const m of named(n)) for (const v of robotVerts(m)) hoodBack = Math.min(hoodBack, v.x);
             }
           }
@@ -2421,33 +2699,18 @@ function graphicsChecks(check: Check, allFiles: string[]): void {
           );
         }
 
-        // ══ THE HOOD HANGS OFF SOMETHING ═══════════════════════════════════════════════════
+        // ══ WHERE THE CHEEKS LIVE ══════════════════════════════════════════════════════════
         //
-        // The plates stop at `BB_SIDE_PLATE_TOP_Z` and the hood's arc is three inches above that,
-        // so without arms the hood is a floating band. Each arm reaches the axle, carries the arc,
-        // and stays in the lateral strip between the element and the side plate — which is the
-        // only place it can be: in the x–z PROJECTION the element fills every path from the axle
-        // to the hood, and an element is a sphere, so at lateral offset `elemR` it has no
-        // cross-section left to foul.
+        // The lateral strip between the element and the side plate is the only place they CAN be:
+        // in the x–z PROJECTION the element fills every path from the axle to the hood, and an
+        // element is a sphere, so at lateral offset `elemR` it has no cross-section left to foul.
+        // It is also where the clearance is — outboard, the belt and the flywheel pulley own
+        // everything past ±1.98 on the drive side.
         {
           pose(BB_TURRET_PITCH_MIN);
-          const arms = named('bb-turret-hood-arm');
-          const av = arms.map((m) => axleVerts(m));
-          const rs = av.flat().map((v) => Math.hypot(v.x, v.z));
-          // its spokes run to the axle and out to the hood's OUTER face; the outermost vertex is
-          // a spoke's own end CORNER, half a thickness off that centreline, so both bounds carry
-          // the arm's own section rather than pretending it is a line.
-          const corner = Math.hypot(H.hoodR + BB_HOOD_T, BB_HOOD_ARM_T / 2);
+          const ys = named('bb-turret-hood-cheek').flatMap((m) => axleVerts(m)).map((v) => Math.abs(v.y));
           check(
-            `${tag}: each hood ARM reaches from the axle out to the arc it carries`,
-            Math.min(...rs) <= BB_HOOD_ARM_T / 2 + F32 &&
-              Math.max(...rs) >= H.hoodR + BB_HOOD_T - F32 &&
-              Math.max(...rs) <= corner + F32,
-            `r ${Math.min(...rs).toFixed(3)} … ${Math.max(...rs).toFixed(4)} (hood face ${(H.hoodR + BB_HOOD_T).toFixed(4)}, spoke corner ${corner.toFixed(4)})`,
-          );
-          const ys = av.flat().map((v) => Math.abs(v.y));
-          check(
-            `${tag}: ...inboard of the side plate by BB_HOOD_ARM_INSET, and never inside the element’s own width`,
+            `${tag}: a cheek is inboard of the side plate by BB_HOOD_ARM_INSET, and never inside the element’s own width`,
             Math.min(...ys) >= H.elemR - F32 && Math.abs(Math.max(...ys) - (H.plateGap / 2 - BB_HOOD_ARM_INSET)) < F32,
             `|y| ${Math.min(...ys).toFixed(3)} … ${Math.max(...ys).toFixed(3)}; element ±${H.elemR}, plate face ${(H.plateGap / 2).toFixed(3)}`,
           );
@@ -2456,10 +2719,11 @@ function graphicsChecks(check: Check, allFiles: string[]): void {
             Math.max(...ys) < H.plateGap / 2,
             `${Math.max(...ys).toFixed(3)} vs ${(H.plateGap / 2).toFixed(3)}`,
           );
+          const fwY = Math.max(...named('bb-turret-flywheel').flatMap((m) => axleVerts(m)).map((v) => Math.abs(v.y)));
           check(
             `${tag}: ...and they clear the flywheel they straddle`,
-            Math.min(...ys) - Math.max(...named('bb-turret-flywheel').flatMap((m) => axleVerts(m)).map((v) => Math.abs(v.y))) > 0.1,
-            `${(Math.min(...ys) - Math.max(...named('bb-turret-flywheel').flatMap((m) => axleVerts(m)).map((v) => Math.abs(v.y)))).toFixed(3)} in`,
+            Math.min(...ys) - fwY > 0.1,
+            `${(Math.min(...ys) - fwY).toFixed(3)} in`,
           );
         }
 
@@ -2476,7 +2740,7 @@ function graphicsChecks(check: Check, allFiles: string[]): void {
         // is paid.
         {
           const CHORD = 0.02;
-          const EXCLUDE = ['bb-turret-hood', 'bb-turret-hood-arm', 'bb-turret-flywheel', 'bb-turret-side-plate'];
+          const EXCLUDE = ['bb-turret-hood', 'bb-turret-hood-cheek', 'bb-turret-flywheel', 'bb-turret-side-plate'];
           let worst = Infinity;
           let who = '';
           for (let i = 0; i < PITCHES; i++) {
@@ -2808,9 +3072,51 @@ function graphicsChecks(check: Check, allFiles: string[]): void {
         // ...and the frame must stop drawing a channel the pod would be built through
         check(
           'buildFrame drops the inner side plate for swerve (a pod at the new inset runs through it)',
-          robotsCode.includes("const plateYs = spec.drivetrain === 'swerve' ? [outerY] : [outerY, innerY];") &&
+          robotsCode.includes("const dropInner = spec.drivetrain === 'swerve' || spec.drivetrain === 'xdrive';") &&
+            robotsCode.includes('const plateYs = dropInner ? [outerY] : [outerY, innerY];') &&
             robotsCode.includes('for (const y of plateYs) {'),
         );
+
+        // ══ AN X-DRIVE OMNI STAYS INSIDE THE FRAME TOO ══════════════════════════════════════
+        // Owner, 2026-09-19: "selecting x drive makes the wheels stick out of the robot". A wheel
+        // `2R × W` canted 45° reaches `(2R + W) / (2√2)` along BOTH axes; in the mecanum channel
+        // (centre-line `plate + gap/2` = 1.17 in inside the frame) that stood 0.78 in proud of the
+        // side plate on every chassis. The inset is the canted reach plus what it has to clear:
+        // the side plate laterally, the cross member fore-and-aft.
+        const wheelR = num('BB_WHEEL_R');
+        const reach = (2 * wheelR + wheelW) / (2 * Math.SQRT2);
+        const insetX = reach + num('BB_RAIL_T') + 0.15;
+        const insetY = reach + num('BB_PLATE_T') + 0.15;
+        check(
+          'the X-drive insets are the canted wheel’s own reach, re-derived here',
+          robotsCode.includes('const BB_XDRIVE_REACH = (2 * BB_WHEEL_R + BB_WHEEL_W) / (2 * Math.SQRT2);') &&
+            robotsCode.includes('export const BB_XDRIVE_INSET_X = BB_XDRIVE_REACH + BB_RAIL_T + BB_XDRIVE_CLEAR;') &&
+            robotsCode.includes('export const BB_XDRIVE_INSET_Y = BB_XDRIVE_REACH + BB_PLATE_T + BB_XDRIVE_CLEAR;') &&
+            /const BB_XDRIVE_CLEAR = 0\.15;/.test(robotsCode),
+          `reach ${reach.toFixed(3)}, inset x ${insetX.toFixed(3)} / y ${insetY.toFixed(3)}`,
+        );
+        check(
+          '...and buildWheels places an X-drive wheel by them, not in the mecanum channel',
+          robotsCode.includes('Math.max(0.5, hl - BB_XDRIVE_INSET_X)') && robotsCode.includes('Math.max(0.5, hw - BB_XDRIVE_INSET_Y)'),
+        );
+        for (const [L, W] of [
+          [12, 12],
+          [14.5, 16.5],
+          [18, 18],
+        ] as const) {
+          const cx = L / 2 - insetX;
+          const cy = W / 2 - insetY;
+          check(
+            `xdrive ${L}x${W}: every wheel clears the side plate and the cross member, inside the frame`,
+            cx > 0.5 && cy > 0.5 && cx + reach <= L / 2 - num('BB_RAIL_T') && cy + reach <= W / 2 - num('BB_PLATE_T'),
+            `centre ±${cx.toFixed(2)},±${cy.toFixed(2)}, outermost ${(cx + reach).toFixed(2)} of ${L / 2}, ${(cy + reach).toFixed(2)} of ${W / 2}`,
+          );
+          check(
+            `xdrive ${L}x${W}: the four wheels clear each other`,
+            2 * cx > 2 * reach && 2 * cy > 2 * reach,
+            `${(2 * Math.min(cx, cy)).toFixed(2)} apart vs ${(2 * reach).toFixed(2)}`,
+          );
+        }
       }
 
       // ── ALL FIVE DRIVETRAINS, AND THE ONE THAT WAS ACTUALLY WRONG ────────────────────────
@@ -3128,46 +3434,68 @@ function graphicsChecks(check: Check, allFiles: string[]): void {
       const end = src.indexOf('\n}', at);
       return at < 0 || end < 0 ? '' : src.slice(at, end);
     };
-    for (const [rel, src] of [
-      ['scene/renderFieldGlb.ts', glbSrc],
-      ['scene/renderField.ts', fieldSrc],
-    ] as const) {
-      const body = panelMat(src);
+    {
+      const body = panelMat(glbSrc);
       // a clear panel is four things, not just a low opacity -- see the policy header
-      check(`${rel}: a clear panel damps the environment map (what made these read as solid white)`, body.includes('CLEAR_ENV_INTENSITY'), rel);
+      check('a clear panel damps the environment map (what made these read as solid white)', body.includes('CLEAR_ENV_INTENSITY'));
       check(
-        `${rel}: a clear panel is FrontSide with depthWrite off (the 2026-09-19 re-tune)`,
+        'a clear panel is FrontSide with depthWrite off (the 2026-09-19 re-tune)',
         /depthWrite: false/.test(body) && /side: THREE\.FrontSide/.test(body) && !/side: THREE\.DoubleSide/.test(body),
-        rel,
       );
     }
-    // THE TWO PATHS AGAINST EACH OTHER, not against a literal: a literal is exactly what went
-    // stale here — the CAD path was re-tuned and the checks kept pinning the rejected number,
-    // so they passed on the old value and failed on the new one. What matters is that a driver
-    // who falls back to the constants path sees the same field.
+    // ⚠️ AND THERE IS ONLY ONE OF THEM NOW (2026-09-19, the owner's SECOND back-panel report).
+    // This used to be a pair of checks comparing TWO `clearPanelMaterial`s -- one per path -- on
+    // the two numbers a regex could reach, which is how the fallback field came to agree about
+    // its opacities and about nothing else: the Fresnel alpha, the un-attenuated reflection and
+    // the restored mirror all landed on the CAD path alone. A constants-path driver was looking
+    // at the material from before the fix. The fallback imports this one instead, so the two
+    // paths cannot drift at all rather than cannot drift in two places.
     {
+      check(
+        'the fallback field builds NO clear-panel material of its own',
+        !fieldSrc.includes('function clearPanelMaterial'),
+      );
+      check(
+        '...it imports the CAD path’s two clear surfaces by name',
+        /import \{[^}]*\bcellPanelMaterial\b/s.test(fieldSrc) && /import \{[^}]*\bwallPanelMaterial\b/s.test(fieldSrc),
+      );
+      check(
+        '...and keeps no second opacity of its own to drift',
+        !/const (CELL|WALL)_OPACITY =/.test(fieldSrc),
+      );
+      // ⚠️ AND A CELL SKIN AND A WALL ARE NOT THE SAME CALL. They differ in two numbers and both
+      // matter: the skin is denser AND it carries the veil. A `clearPanelMaterial(...)` written
+      // out longhand anywhere else is how one of the two would quietly get the other's answer.
+      check(
+        'the two clear surfaces are built in exactly one place each',
+        /export function cellPanelMaterial\(\): THREE\.Material \{\s*return clearPanelMaterial\(CELL_PANEL_OPACITY, PANEL_VEIL\);/.test(glbSrc) &&
+          /export function wallPanelMaterial\(\): THREE\.Material \{\s*return clearPanelMaterial\(WALL_PANEL_OPACITY\);/.test(glbSrc),
+      );
+      check(
+        '...and the perimeter wall takes NO veil (the 2026-09-18 white-board report stands)',
+        !/wallPanelMaterial\(\)[\s\S]{0,120}PANEL_VEIL/.test(glbSrc) && clearPanelVeilAt(0, 0.08, 0.9) === 0,
+      );
       const num = (src: string, name: string): number => {
         const m = new RegExp(`const ${name} = ([\\d.]+);`).exec(src);
         return m ? Number(m[1]) : NaN;
       };
-      for (const [what, glbName, fieldName] of [
-        ['cell-panel opacity', 'CELL_PANEL_OPACITY', 'CELL_OPACITY'],
-        ['wall-panel opacity', 'WALL_PANEL_OPACITY', 'WALL_OPACITY'],
-        ['clear-panel env intensity', 'CLEAR_ENV_INTENSITY', 'CLEAR_ENV_INTENSITY'],
-      ] as const) {
-        const a = num(glbSrc, glbName);
-        const b = num(fieldSrc, fieldName);
-        check(`the two paths use the same ${what}`, Number.isFinite(a) && a === b, `glb ${a} vs fallback ${b}`);
-      }
-      // and the re-tune's DIRECTION, so nobody walks both files back to the first pass together:
-      // a cell skin is denser than the perimeter, and both are far below the rejected 0.22.
+      // the re-tune's DIRECTION, so nobody walks the file back to the first pass: a cell skin is
+      // denser than the perimeter, and both are far below the rejected 0.22.
+      //
+      // ⚠️ THE CELL CEILING IS 0.20, NOT 0.15. 0.13 -> 0.18 on 2026-09-19 and the measurement is
+      // on `CELL_PANEL_OPACITY` itself: against the lit room behind a hive the only thing a sheet
+      // can do is take light OUT of that ground, the most it can take is its own alpha, and at
+      // 0.13 the panel was already measuring 87% of that ceiling -- so no amount of shading could
+      // move the view the owner was reporting. 0.20 is where a CELL's three stacked skins reach
+      // 1 - 0.8^3 = 49%, which is the white-board complaint again.
       const cell = num(glbSrc, 'CELL_PANEL_OPACITY');
       const wall = num(glbSrc, 'WALL_PANEL_OPACITY');
       check(
         'a clear panel is nearly invisible face-on, and a cell skin is the denser of the two',
-        wall > 0 && wall <= 0.12 && cell > wall && cell <= 0.15,
+        wall > 0 && wall <= 0.12 && cell > wall && cell <= 0.2,
         `wall ${wall}, cell ${cell}`,
       );
+      check('the perimeter wall is UNCHANGED by the cell re-tune (0.08, measured)', wall === 0.08, `${wall}`);
     }
 
     // ITEM 3 -- THE STALE TRAY BRACES. `convert.py` files all eight `10.5in Churro Lite` as
@@ -3688,7 +4016,12 @@ function graphicsChecks(check: Check, allFiles: string[]): void {
         'the alpha is FRESNEL-weighted, in the shader, on |N.V| (so behind behaves like in front)',
         glbSrc.includes('mat.onBeforeCompile = (shader)') &&
           glbSrc.includes('abs( dot( normalize( normal ), normalize( vViewPosition ) ) )') &&
-          glbSrc.includes('diffuseColor.a = mix( diffuseColor.a,'),
+          glbSrc.includes('float bbFresnel = mix( diffuseColor.a,'),
+      );
+      check(
+        '...and the SHEET HAS THICKNESS, which is the term that carries an ordinary look',
+        glbSrc.includes('float bbPath = 1.0 - pow( 1.0 - diffuseColor.a, 1.0 / bbCos );') &&
+          glbSrc.includes('diffuseColor.a = min( max( bbPath, bbFresnel ),'),
       );
       check(
         '...and the injected program is CACHE-KEYED, or three hands every panel the first one',
@@ -3699,9 +4032,20 @@ function graphicsChecks(check: Check, allFiles: string[]): void {
         glbSrc.includes('reflectedLight.directSpecular + reflectedLight.indirectSpecular') &&
           glbSrc.includes('outgoingLight += bbSpec * min( 1.0 / max( diffuseColor.a, 0.02 ) - 1.0,'),
       );
+      // ⚠️ AND THE MIRROR IS NOT DAMPED WITH THE DIFFUSE. `envMapIntensity` scales BOTH the
+      // environment's irradiance and its radiance, and 0.15 was set to stop a near-white
+      // placeholder base soaking up a warm HDRI -- it took the REFLECTION down with it, so a sheet
+      // whose own `PANEL_F0` says 5.1% was mirroring 0.8% of the room. That is the one term that
+      // is both light-rig-independent and background-independent, and it was the missing half of
+      // the first back-panel fix.
+      check(
+        'the env damper is DIFFUSE-only: the mirror is restored to 1.0 in the shader',
+        /const PANEL_ENV_SPEC_RESTORE = 1 \/ CLEAR_ENV_INTENSITY;/.test(glbSrc) &&
+          glbSrc.includes('reflectedLight.indirectSpecular * ${PANEL_ENV_SPEC_RESTORE.toFixed(4)}'),
+      );
 
       // THE CURVE, run rather than grepped -- the shader's own `pow(1-c,5)` is this reduced.
-      for (const base of [0.08, 0.13] as const) {
+      for (const base of [0.08, 0.18] as const) {
         check(
           `face-on, a ${base} panel is still EXACTLY ${base} (the white-board re-tune is untouched)`,
           Math.abs(clearPanelAlphaAt(base, 1) - base) < 1e-12,
@@ -3725,33 +4069,74 @@ function graphicsChecks(check: Check, allFiles: string[]): void {
         }
         check(`the ${base} panel alpha rises monotonically off normal`, monotone);
         check(`...and is identical for a NEGATIVE N.V (the whole of "from behind")`, symmetric);
-        // ⚠️ AND IT IS AN EDGE TERM, WHICH IS THE HALF OF THE FIX THAT IS EASY TO MISREAD.
-        // Schlick's fifth power is steep: at 45 deg the excess is 0.010 and at 60 it is 0.031,
-        // so the alpha anywhere near face-on is the measured one to within a rounding -- the
-        // re-tune is untouched over most of the sphere, deliberately. What the term buys is the
-        // last 20 deg before grazing, which is where a slab's 0.020-in side face always is, and
-        // that is the EDGE. The thing that answers "invisible from behind, FACE-ON" is the sheen
-        // gain below, not this.
+        // ⚠️ THE FIRST PASS'S CLAIM HERE WAS THE BUG, AND THE CHECK THAT PINNED IT PASSED.
+        // Schlick's fifth power moves nothing until the last 20 deg (at 45 deg the excess is
+        // 0.010), and the header defended that as "the term buys the EDGE: a slab's 0.020-in side
+        // face is at grazing from almost everywhere". At 78 in, a driver's distance from a hive,
+        // that face is 0.03 px wide. It draws nothing, which is why the owner reported the same
+        // panel twice. What a sheet at an angle actually shows is MORE SHEET -- Beer-Lambert over
+        // the path length -- and that is now the term that carries an ordinary off-normal look,
+        // while the face-on value stays exactly where it was measured.
         {
           const at = (deg: number): number => clearPanelAlphaAt(base, Math.cos((deg * Math.PI) / 180));
           check(
-            `${base}: a look within 45 deg of normal is the measured opacity, to a rounding`,
-            at(45) - base < 0.005,
+            `${base}: a 45 deg look is THICKER than face-on, by a visible margin`,
+            at(45) > base * 1.25,
             `${at(45).toFixed(4)} vs ${base}`,
+          );
+          check(
+            `${base}: ...and the rise starts early -- 30 deg is already above face-on`,
+            at(30) > base * 1.08,
+            `${at(30).toFixed(4)} vs ${base}`,
           );
           check(
             `${base}: ...and at 80 deg the edge is real (more than double)`,
             at(80) > base * 2,
             `${at(80).toFixed(4)} vs ${base}`,
           );
+          check(
+            `${base}: ...and nothing ever exceeds the graze ceiling`,
+            at(1) <= 0.55 + 1e-12 && at(89) <= 0.55 + 1e-12,
+            `${at(89).toFixed(4)}`,
+          );
         }
       }
       // THE SHEEN GAIN: face-on is exactly where the panel needs it most, and the cap does not
       // bind on either shipped opacity (it exists so a future lower one cannot divide by ~0).
-      check('the sheen gain restores the reflection face-on', clearPanelSheenGain(0.13) > 6, `${clearPanelSheenGain(0.13).toFixed(2)}x`);
-      check('...more so on the thinner perimeter panel', clearPanelSheenGain(0.08) > clearPanelSheenGain(0.13));
+      check('the sheen gain restores the reflection face-on', clearPanelSheenGain(0.18) > 4, `${clearPanelSheenGain(0.18).toFixed(2)}x`);
+      check('...more so on the thinner perimeter panel', clearPanelSheenGain(0.08) > clearPanelSheenGain(0.18));
       check('...and the cap never binds on a shipped value', clearPanelSheenGain(0.08) < 12, `${clearPanelSheenGain(0.08).toFixed(2)}`);
       check('...but does bind on an absurd one', clearPanelSheenGain(0.001) === 12);
+
+      // ⚠️ THE CLAIM THIS PASS IS ACTUALLY MAKING, AS A NUMBER RATHER THAN AS SHADER TEXT.
+      // The first fix passed every text check it had while being invisible from behind, because
+      // what it restored was the SPECULAR -- and the measurement that followed showed the key
+      // light is exactly what a face pointing away from it does not get. Moving the sun through
+      // four positions swung the back view 3.0% -> 13.1% and left the mouth-side view flat, so
+      // the panel needs a floor that no light position can take away. These pin it.
+      for (const base of [0.08, 0.18] as const) {
+        // a face turned right away from the rig still has the mirror AND its own body
+        const away = clearPanelLightIndependent(base, 0.85);
+        check(
+          `${base}: a face pointing away from every light still contributes`,
+          away.total >= base && away.mirror > 0 && away.body > 0,
+          `mirror ${away.mirror.toFixed(4)} + body ${away.body.toFixed(4)} = ${away.total.toFixed(4)}`,
+        );
+        // the mirror is at the dielectric's own strength, not at 15% of it
+        const damped = away.mirror / (1 + clearPanelSheenGain(clearPanelAlphaAt(base, 0.85)));
+        check(
+          `${base}: ...and the mirror is the restored one, several times the damped term`,
+          away.mirror > damped * 4,
+          `${away.mirror.toFixed(5)} vs damped ${damped.toFixed(5)}`,
+        );
+        // and it never runs away: the light-independent floor stays well under an opaque sheet
+        check(`${base}: ...and it is a floor, not a white board`, away.total < 0.5, `${away.total.toFixed(4)}`);
+      }
+      // a CELL skin carries more of that floor than a perimeter panel, the same way its alpha does
+      check(
+        'a cell skin has more body from behind than a wall panel',
+        clearPanelLightIndependent(0.18, 0.85).total > clearPanelLightIndependent(0.08, 0.85).total,
+      );
 
       // THE ROUGHNESS -- the half of the fix that does not depend on the viewing angle
       check('a season-old panel is not showroom acrylic', /const PANEL_ROUGHNESS = 0\.18;/.test(glbSrc) && !/roughness: 0\.08/.test(glbCode));

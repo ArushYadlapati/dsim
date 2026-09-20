@@ -668,8 +668,9 @@ function route(
 
   // EASE OFF ON ARRIVAL — see `BB_AI_SLOW_RADIUS` for the measurement that made this mandatory.
   const ease = clamp(dist / BB_AI_SLOW_RADIUS, BB_AI_SLOW_FLOOR, 1);
-  // …and CREEP under the HIVE, whatever the tier's cap: G417 reads the closing speed of a contact
-  // with the structure, so arriving slowly is what makes a legal drive-under stay legal.
+  // …and CREEP under the HIVE, whatever the tier's cap. G417 (which used to read the closing
+  // speed of a contact with the structure) was removed 2026-09-19; the creep is kept as
+  // measured tuning (`BB_AI_HIVE_CREEP`) pending a `test:ai` re-measure, not as a rule dodge.
   const creep = underHive(r.pos, BB_HIVE_LEN / 2) ? Math.min(t.speedCap, BB_AI_HIVE_CREEP) : t.speedCap;
   return command(r, { x: dirX, y: dirY }, creep * ease, turnFor(r, heading, t), buttons);
 }

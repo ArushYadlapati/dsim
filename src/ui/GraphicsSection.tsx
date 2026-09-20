@@ -1,10 +1,12 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useId, useState } from 'react';
 import {
   coerceMaxFps,
+  fpsFromSliderPos,
   GFX_FOV_MAX,
   GFX_FOV_MIN,
   GFX_FPS_MAX,
   GFX_FPS_MIN,
+  GFX_FPS_SLIDER_NO_CAP,
   GFX_FPS_STEPS,
   GFX_NOT_OFFERED,
   GFX_PIXEL_BUDGET,
@@ -12,12 +14,12 @@ import {
   GFX_RENDER_SCALE_MAX,
   GFX_RENDER_SCALE_MIN,
   getGraphics,
-  isCustomFps,
   MAX_FPS_UNLIMITED,
   MAX_FPS_VSYNC,
   resetGraphicsToAuto,
   setGraphicsPreset,
   setGraphicsSetting,
+  sliderPosFromFps,
   subscribeGraphics,
   type GraphicsPreset,
   type GraphicsSettings,
@@ -105,55 +107,60 @@ function OptRow<T extends string | number | boolean>({
 
 /**
  * MAX FRAME RATE — the one row in this screen that is not a fixed set of choices, and the one
- * whose effect is not entirely inside this process. It gets its own component for three
- * reasons `OptRow` cannot carry:
+ * whose effect is not entirely inside this process. A slider plus a typed rate, the way most
+ * PC games present a frame-rate cap, rather than a row of tiles — it gets its own component for
+ * three reasons `OptRow` cannot carry:
  *
- *  1. **TWO OF THE EIGHT TILES ARE NOT NUMBERS.** VSync and Unlimited are the ABSENCE of a
- *     cap, not a bigger one, so they carry a sub-line saying what they are while the rates
- *     stay bare. That is also what keeps them from reading as the top of the ladder.
- *  2. **A RATE YOU TYPE.** The tiles are the common panels; the field covers 165 Hz and every
- *     other one. It commits on blur or Enter rather than per keystroke, because clamping mid-
- *     type turns `144` into `24` the moment you have deleted two digits, and it CANNOT reach
- *     either sentinel: a minus sign is a slip, not a choice.
- *  3. **UNLIMITED IS A SETTING IN TWO PLACES.** The value lives here; the Chromium switches
- *     live in the desktop shell's own store and are read before the app is ready. So this row
- *     reconciles the two, and says plainly which of the three situations the player is in —
- *     web build (it behaves as VSync), desktop needing a restart, or desktop already running
- *     with the limit off.
- *
- * ⚠️ **EIGHT TILES, SO THE GRID IS `.eight`** — a modifier that exists for this row, with the
- * measurement in `shell.css` beside it. The short version: `.three` ends in a 2-tile orphan at
- * panel width, and `.four`'s auto-fit track collapses to ONE column in a 298px panel at 375,
- * which is eight stacked tiles for one setting. `.eight` is a fixed 4, and a fixed 2 under
- * 560px.
+ *  1. **THE TOP OF THE SLIDER IS NOT A NUMBER.** Dragging to `GFX_FPS_SLIDER_NO_CAP` asks for
+ *     the absence of a cap, not a bigger one — `fpsFromSliderPos` is what turns that position
+ *     into a sentinel, and it is the one place the platform rule is enforced: the web can only
+ *     ever land on VSync there, never Unlimited (owner ruling 2026-09-19 — hide what does not
+ *     apply, rather than show a control that does nothing in a browser tab).
+ *  2. **A RATE YOU TYPE.** The slider covers the common panels up to `GFX_FPS_SLIDER_MAX`; the
+ *     box beside it reaches `GFX_FPS_MAX` for the rest. It commits on blur or Enter rather than
+ *     per keystroke, because clamping mid-type turns `144` into `24` the moment you have
+ *     deleted two digits, and it CANNOT reach either sentinel: a minus sign is a slip, not a
+ *     choice — the uncapped state is reached by the slider (or the desktop's own VSync/
+ *     Unlimited pair below), never by typing.
+ *  3. **UNLIMITED IS A SETTING IN TWO PLACES, DESKTOP ONLY.** The value lives here; the
+ *     Chromium switches live in the desktop shell's own store and are read before the app is
+ *     ready. So this row reconciles the two, and says plainly which of the two situations the
+ *     desktop player is in — needing a restart, or already running with the limit off. Nothing
+ *     about Unlimited is shown on the web at all, including this reconciliation.
  */
 function MaxFpsRow({ value, onPick }: { value: MaxFps; onPick: (v: MaxFps) => void }) {
   const bridge = desktop();
+  const isDesktop = !!bridge;
   /** what the shell reports. `null` until it answers, and on the web for ever. */
   const [perf, setPerf] = useState<DesktopPerfState | null>(null);
   /** a desktop shell older than this feature — the app loads the live site, so a new client
    *  in last month's shell is ordinary. `bridge.perf` is optional for exactly this. */
   const [shellTooOld, setShellTooOld] = useState(false);
   const [dismissed, setDismissed] = useState(false);
+  const ticksId = useId();
 
-  const custom = isCustomFps(value);
-  const [showCustom, setShowCustom] = useState(custom);
-  const [draft, setDraft] = useState(custom ? String(value) : '');
-  const inputRef = useRef<HTMLInputElement>(null);
+  // `uncapped` folds BOTH sentinels together for every purpose except the desktop's own
+  // VSync/Unlimited pair below: a stored `-1` reaching the web (this device's own pick from
+  // before this row was a slider, or a rare account synced from `GameSettings` — it is not,
+  // but a corrupt blob is still a blob) reads and behaves exactly like `0` here. Nothing on
+  // this path REWRITES that stored value; it only ever changes if the player moves the slider
+  // or (on desktop) picks a mode explicitly, same as any other setting.
+  const unlimited = value === MAX_FPS_UNLIMITED;
+  const uncapped = unlimited || value === MAX_FPS_VSYNC;
+  const [draft, setDraft] = useState(uncapped ? '' : String(value));
 
   useEffect(() => {
-    if (custom) setDraft(String(value));
-  }, [custom, value]);
-  useEffect(() => {
-    if (showCustom) inputRef.current?.focus();
-  }, [showCustom]);
+    setDraft(uncapped ? '' : String(value));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [value]);
 
   /**
    * RECONCILE, then report. Runs on mount and after every change to the value, and the
    * renderer's value always wins: it is the thing the player last clicked, while the shell's
    * copy can be left over from an install whose `localStorage` has since been cleared. The
    * store's own `commit` writes the same thing for the writers that never open this screen —
-   * both are idempotent, so the double write costs one no-op IPC.
+   * both are idempotent, so the double write costs one no-op IPC. Web has no bridge at all, so
+   * this never runs there.
    */
   useEffect(() => {
     if (!bridge) return;
@@ -163,7 +170,7 @@ function MaxFpsRow({ value, onPick }: { value: MaxFps; onPick: (v: MaxFps) => vo
       return;
     }
     let alive = true;
-    const want = value === MAX_FPS_UNLIMITED;
+    const want = unlimited;
     void p
       .get()
       .then((st) => (st.unlimitedFps === want ? st : p.setUnlimitedFps(want)))
@@ -176,13 +183,7 @@ function MaxFpsRow({ value, onPick }: { value: MaxFps; onPick: (v: MaxFps) => vo
     return () => {
       alive = false;
     };
-  }, [bridge, value]);
-
-  const pickTile = (v: MaxFps) => {
-    setShowCustom(false);
-    setDismissed(false);
-    onPick(v);
-  };
+  }, [bridge, unlimited]);
 
   const commitDraft = () => {
     const n = Number.parseInt(draft, 10);
@@ -190,7 +191,7 @@ function MaxFpsRow({ value, onPick }: { value: MaxFps; onPick: (v: MaxFps) => vo
     // the field. Typing your way into one is an accident, so anything that is not a positive
     // integer snaps the box back to what is actually set.
     if (!Number.isInteger(n) || n < 1) {
-      setDraft(isCustomFps(value) ? String(value) : '');
+      setDraft(uncapped ? '' : String(value));
       return;
     }
     const next = coerceMaxFps(n, value);
@@ -199,90 +200,96 @@ function MaxFpsRow({ value, onPick }: { value: MaxFps; onPick: (v: MaxFps) => vo
     onPick(next);
   };
 
-  const unlimited = value === MAX_FPS_UNLIMITED;
   const needsRestart = !!perf && perf.unlimitedFps !== perf.active;
+
+  // the one word this row ever shows for "no cap" — "Display rate" everywhere the web can see
+  // it (the honest name for rAF paced by the compositor), "VSync"/"Unlimited" only once the
+  // desktop shell can tell them apart.
+  const capWord = !isDesktop ? 'Display rate' : unlimited ? 'Unlimited' : 'VSync';
+  const ariaValueText = uncapped ? capWord : `${value} fps`;
+  const sliderPos = sliderPosFromFps(value);
 
   return (
     <div className="ds-field">
-      <span className="cap">Max frame rate</span>
-      <div className="ds-opts eight">
-        {GFX_FPS_STEPS.map((f) => (
-          <button
-            key={f}
-            className={`ds-opt ${value === f ? 'on' : ''}`}
-            aria-pressed={value === f}
-            onClick={() => pickTile(f)}
-          >
-            <span className="ot">{f}</span>
-          </button>
-        ))}
-        <button
-          className={`ds-opt ${custom ? 'on' : ''}`}
-          aria-pressed={custom}
-          onClick={() => {
-            setShowCustom(true);
-            inputRef.current?.focus();
+      <label className="ds-field">
+        <span className="cap">
+          Max frame rate <span className="val">{ariaValueText}</span>
+        </span>
+        <input
+          className="ds-range"
+          type="range"
+          min={GFX_FPS_MIN}
+          max={GFX_FPS_SLIDER_NO_CAP}
+          step={1}
+          list={ticksId}
+          value={sliderPos}
+          style={rangeFill(sliderPos, GFX_FPS_MIN, GFX_FPS_SLIDER_NO_CAP)}
+          aria-label="Max frame rate"
+          aria-valuetext={ariaValueText}
+          onChange={(e) => {
+            setDismissed(false);
+            onPick(fpsFromSliderPos(Number(e.target.value), isDesktop, unlimited));
           }}
-        >
-          <span className="ot">Custom</span>
-          <span className="od">{custom ? `${value} fps` : 'Type a rate'}</span>
-        </button>
-        <button
-          className={`ds-opt ${value === MAX_FPS_VSYNC ? 'on' : ''}`}
-          aria-pressed={value === MAX_FPS_VSYNC}
-          onClick={() => pickTile(MAX_FPS_VSYNC)}
-        >
-          <span className="ot">VSync</span>
-          <span className="od">Paced by your display</span>
-        </button>
-        <button
-          className={`ds-opt ${unlimited ? 'on' : ''}`}
-          aria-pressed={unlimited}
-          onClick={() => pickTile(MAX_FPS_UNLIMITED)}
-        >
-          <span className="ot">Unlimited</span>
-          <span className="od">Desktop app only</span>
-        </button>
-      </div>
+        />
+        {/* native tick marks at the recognizable rates — a shortcut a drag can feel for,
+            never the domain (typing still reaches anything in range). */}
+        <datalist id={ticksId}>
+          {GFX_FPS_STEPS.map((f) => (
+            <option key={f} value={f} label={String(f)} />
+          ))}
+          <option value={GFX_FPS_SLIDER_NO_CAP} label={capWord} />
+        </datalist>
+      </label>
 
-      {(showCustom || custom) && (
-        <label className="ds-field">
-          <span className="cap">
-            Custom rate{' '}
-            <span className="val">
-              {GFX_FPS_MIN}–{GFX_FPS_MAX} fps
-            </span>
+      <label className="ds-field">
+        <span className="cap">
+          Type a rate{' '}
+          <span className="val">
+            {GFX_FPS_MIN}–{GFX_FPS_MAX} fps
           </span>
-          <input
-            ref={inputRef}
-            className="ds-input"
-            type="number"
-            min={GFX_FPS_MIN}
-            max={GFX_FPS_MAX}
-            step={1}
-            inputMode="numeric"
-            value={draft}
-            onChange={(e) => setDraft(e.target.value)}
-            onBlur={commitDraft}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter') {
-                e.preventDefault();
-                commitDraft();
-              }
-            }}
-          />
-        </label>
+        </span>
+        <input
+          className="ds-input"
+          type="number"
+          min={GFX_FPS_MIN}
+          max={GFX_FPS_MAX}
+          step={1}
+          inputMode="numeric"
+          placeholder={capWord}
+          aria-label="Max frame rate, typed"
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          onBlur={commitDraft}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') {
+              e.preventDefault();
+              commitDraft();
+            }
+          }}
+        />
+      </label>
+
+      {/* THE DESKTOP'S OWN CHOICE OF WHAT "NO CAP" MEANS. Only once the slider is already at
+          the top — it is what that stop is choosing between, not a second way to reach it —
+          and only on the desktop, where the two behave differently. The web never renders
+          either word. */}
+      {isDesktop && uncapped && (
+        <OptRow
+          label="At the top of the range"
+          value={unlimited}
+          cols="two"
+          onPick={(v: boolean) => {
+            setDismissed(false);
+            onPick(v ? MAX_FPS_UNLIMITED : MAX_FPS_VSYNC);
+          }}
+          options={[
+            { v: false, t: 'VSync', d: 'Paced by your display' },
+            { v: true, t: 'Unlimited', d: 'Needs a restart' },
+          ]}
+        />
       )}
 
-      {/* THE THREE TRUTHS ABOUT UNLIMITED, one per situation. Only ever shown when Unlimited
-          is the selected value — the tile already says "Desktop app only" on its face, and a
-          paragraph about a shell restart under a row set to 60 is noise. */}
-      {unlimited && !bridge && (
-        <p className="ds-hint">
-          Unlimited needs the desktop app. A browser tab is drawn by the compositor at your
-          display’s refresh, so here it behaves exactly as VSync.
-        </p>
-      )}
+      {/* THE TRUTHS ABOUT UNLIMITED, one per situation, desktop only. */}
       {unlimited && shellTooOld && (
         <p className="ds-hint warn">
           This copy of the desktop app is older than the setting. Update it from the download

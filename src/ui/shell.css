@@ -3833,21 +3833,6 @@ tr.lb-detail td {
   justify-content: center;
   text-align: center;
 }
-/* EIGHT, for the Max frame rate row: five rates, Custom, VSync, Unlimited. Fixed columns
-   rather than an `auto-fit` track, because every auto-fit modifier above gets one of the two
-   ends wrong at this count. `.three` leaves a 2-tile orphan at panel width; `.four`'s 150px
-   track needs 312px to hold two columns and the panel is 298px wide at 375, so the whole row
-   collapses to EIGHT stacked tiles on a phone — one setting, half a screen. 4 then 2 is the
-   only pair that reads as a block at both ends. 560px is the breakpoint this file already
-   uses three times. */
-.ds-opts.eight {
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-}
-@media (max-width: 560px) {
-  .ds-opts.eight {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-}
 /* Same fix for a row of four CARDS (title + blurb, left-aligned): the base `.ds-opts`
    200px track only fits three at panel width, so a four-archetype row broke 3+1. */
 .ds-opts.card4 {

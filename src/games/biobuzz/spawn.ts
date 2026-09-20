@@ -37,12 +37,12 @@ import {
   bbMirror,
 } from './config';
 import { capturePollen } from './elements';
-import { flowerStackZ } from './flower';
+import { bbFlowerDropSlack, bbFlowerScatter, flowerStackZ } from './flower';
 import { bbCoerceSpec } from './robotConfig';
 import { bbFootprint } from './robot';
 import { bbSnapStart } from './start';
 import { bbWallsTouched } from './score';
-import { emptyBiobuzzState, type BiobuzzState } from './state';
+import { biobuzzPhysics, emptyBiobuzzState, type BiobuzzState } from './state';
 import { BB_HOOD_DEFAULT_DEG } from './config';
 import { bbIsTurreted, bbLauncherOf } from './mechs';
 
@@ -60,6 +60,12 @@ import { bbIsTurreted, bbLauncherOf } from './mechs';
  * the match to continue. Nothing here reads a clock, the DOM or `Math.random`: same seed,
  * same world, on the client and on the server, which is what makes a replay and a
  * multiplayer match agree.
+ *
+ * ⚠️ **ONE EXCEPTION, AND IT IS STILL NOT A DRAW: a `'3d'` world's four FLOWER columns are
+ * SCATTERED off the bore axis** (`flowerStack`). The offset is a pure HASH of `world.rngState`
+ * — read as a mix, never advanced — with the element's id and its flower's index, so the chain
+ * is untouched, a 2D world takes no offset at all and keeps its exact previous bytes, and two
+ * peers with the same seed still stage the same field.
  */
 
 interface Pose {
@@ -378,8 +384,18 @@ function element(
  * The four staged POLLEN pass the middle ring, so they rest on the LOWER ring (0.43) and the
  * bottom one is BELOW the scoring volume: a staged FLOWER reads 3 elements in volume and 0
  * points, which is the outcome the seat rule exists to produce.
+ *
+ * ⚠️ **AND IN A `'3d'` WORLD THE COLUMN IS SCATTERED OFF THE BORE AXIS — `scatter` IS `null` FOR
+ * EVERY 2D WORLD AND THE 2D BYTES DO NOT MOVE.** These are the first four columns a driver sees
+ * every match, and on the axis they are a mathematically perfect vertical line (the owner's
+ * "placing balls in a flower is too uniform" is about the same picture the played path had).
+ * `stageBiobuzz` decides, off `biobuzzPhysics(world)`; the draw is the SAME `bbFlowerScatter`
+ * the 3D placement path takes, bounded by the SAME `bbFlowerDropSlack` — 0.158 in for a POLLEN,
+ * against the 0.318 the peanut supports leave at the bottom element's own staged height, which
+ * is the clearance whose violation ejected a placed POLLEN 8–28 in out of the flower. Nothing is
+ * drawn from `world.rngState`: it is READ as the mix, so a 2D world's chain is untouched too.
  */
-function flowerStack(startId: number): Artifact[] {
+function flowerStack(startId: number, scatter: ((id: number, i: number) => Vec2) | null): Artifact[] {
   const out: Artifact[] = [];
   let id = startId;
   // every staged element is a POLLEN, so the kind lookup is a constant here
@@ -389,12 +405,13 @@ function flowerStack(startId: number): Artifact[] {
   );
   BB_FLOWERS.forEach((f, i) => {
     for (let slot = 0; slot < POLLEN_PER_FLOWER; slot++) {
+      const off = scatter ? scatter(id, i) : null;
       out.push(
         element(
           id++,
           POLLEN_COLOR,
           BB_POLLEN_R,
-          { x: f.x, y: f.y },
+          off ? { x: f.x + off.x, y: f.y + off.y } : { x: f.x, y: f.y },
           { kind: 'element', el: `flower:${i}`, slot },
           zs[slot],
         ),
@@ -607,7 +624,25 @@ export function stageBiobuzz(world: World): void {
   // so the hopper HUD draws four POLLEN the driver can never fire.
   for (const r of world.robots) r.hopper = [];
   const staged: Artifact[] = [];
-  staged.push(...take(flowerStack(id)));
+  /**
+   * ⚠️ **THE ONE 3D-ONLY LINE IN THIS FILE, AND IT IS GATED THE WAY EVERY OTHER READER GATES.**
+   * `biobuzzPhysics(world)` is the single reader of `world.biobuzz.physics` (`state.ts`), and an
+   * absent key reads `'2d'` — so a 2D world takes `null` here and every staged POLLEN keeps the
+   * exact bytes it had before this existed. `world.rngState` is the MIX and is not advanced, so
+   * a 2D world's chain does not move either; staging has always taken zero draws and still does.
+   *
+   * Every peer agrees because every peer builds this from the same inputs: `createBiobuzzWorld`
+   * seeds `rngState` from the match seed before calling here, the server sends the result as the
+   * initial snapshot, and a replay re-creates the world from the same (seed, setups, physics).
+   * Re-staging a world whose chain has since advanced gives a DIFFERENT layout — that is true of
+   * a re-stage generally (it is a full reset, not an increment) and it is still a pure function
+   * of the world's own JSON.
+   */
+  const scatter =
+    biobuzzPhysics(world) === '3d'
+      ? (ballId: number, i: number) => bbFlowerScatter(world.rngState, ballId, i, bbFlowerDropSlack(BB_POLLEN_R))
+      : null;
+  staged.push(...take(flowerStack(id, scatter)));
   staged.push(...take(gardenLine(id, 'red')));
   staged.push(...take(gardenLine(id, 'blue')));
   staged.push(...take(preloads(world, id)));

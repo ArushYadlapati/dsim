@@ -19,11 +19,13 @@ import { rapier3d, type Rapier3d } from './engine';
 import {
   buildHiveTray3d,
   buildStatics3d,
+  chassisBoxDesc,
   clearChassis3dColliders,
   elementMass,
   ELEMENT_FRICTION,
   ELEMENT_RESTITUTION,
   ELEMENT_ROLL_DAMP,
+  GROUP_ELEMENT,
 } from './bodies';
 import { hiveTiltAngle } from './hive3d';
 import { hyp3, QUAT_IDENTITY, round4, tiltQuatX, yawQuat, yawOfQuat } from './math3';
@@ -455,8 +457,25 @@ function makeRobotBody(
   return body;
 }
 
-/** the one `robotExtents` cuboid — see the note above `makeRobotBody` for why it is not the
- * authority's compound. Density 0: the predictor writes the body's mass itself. */
+/**
+ * The one `robotExtents` cuboid — see the note above `makeRobotBody` for why it is not the
+ * authority's compound. Density 0: the predictor writes the body's mass itself.
+ *
+ * ⚠️ **ITS EDGES ARE BROKEN THE SAME WAY THE AUTHORITY'S ARE** (`chassisBoxDesc`,
+ * `bodies.ts`). The two chassis shapes are allowed to differ about the MOUTH POCKET, because
+ * only an element fits through it and a mispredicted element is a cheap reconcile; they are
+ * NOT allowed to differ about the outer corner, because that is the driver's own pose. With a
+ * square predictor corner against a rounded authority one, a graze at 0.25–0.45 in of overlap
+ * is a CATCH locally and a clean slide on the server — the client stops dead and is then
+ * snapped forward, which is the worst-looking disagreement the reconcile can produce. Measured
+ * by putting THIS shape on the authority's own body and running the flower-column graze, so the
+ * only variable is the corner: at 0.35 in of overlap a square cuboid keeps **0.33** of a free
+ * run and yaws **107°**, an edge-broken one keeps **1.00** and yaws **0°** — 70+ in of
+ * divergence from the compound the server actually solves, every time a driver clips a column.
+ * It is ONE collider on each body and it is still a plain cuboid (the break is a contact skin,
+ * see `chassisBoxDesc`), so it costs nothing `PREDICT_FULL_BUDGET_MS` can see; the COMPOUND is
+ * what that budget refused, not the edge break.
+ */
 function fitChassis(
   RAPIER: Rapier3d,
   world3d: InstanceType<Rapier3d['World']>,
@@ -468,7 +487,7 @@ function fitChassis(
   const hx = (fe.front + fe.rear) / 2;
   const forward = (fe.front - fe.rear) / 2;
   world3d.createCollider(
-    RAPIER.ColliderDesc.cuboid(hx, fe.half, heightIn / 2)
+    chassisBoxDesc(RAPIER, hx, fe.half, heightIn / 2)
       .setTranslation(forward, 0, 0)
       .setDensity(0)
       .setFriction(PHYS_FRICTION)
@@ -518,12 +537,17 @@ function makeElementBody(
       .setAngularDamping(ELEMENT_ROLL_DAMP)
       .setCcdEnabled(hyp3(b.vel.x, b.vel.y, b.vz) > BB3_CCD_SPEED),
   );
+  // the same narrowed memberships the authority gives an element (`GROUP_ELEMENT`). This world
+  // has no pocket filler to filter against — the predictor's chassis is one cuboid — but the
+  // groups are part of what an element IS, and two worlds that disagree about them would be a
+  // reconcile difference nobody would think to look for.
   world3d.createCollider(
     RAPIER.ColliderDesc.ball(r)
       .setMass(elementMass(b.color === 'red' || b.color === 'blue'))
       .setFriction(ELEMENT_FRICTION)
       .setRestitution(ELEMENT_RESTITUTION)
-      .setFrictionCombineRule(RAPIER.CoefficientCombineRule.Max),
+      .setFrictionCombineRule(RAPIER.CoefficientCombineRule.Max)
+      .setCollisionGroups(GROUP_ELEMENT),
     body,
   );
   return body;
