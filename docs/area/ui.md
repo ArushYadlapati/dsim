@@ -30,6 +30,96 @@ and then the code. **`uiaudit`** is what actually enforces both, as ratchets.
   reserved (menu/cancel — never bindable). Conflict policy: a rebound key is STOLEN from its
   old action (may show UNBOUND). Defaults: WASD drive, Q/E or ←/→ turn, Shift/K intake,
   Space fire, C catalyst (CR), F flip-front, P park, Enter start, R restart.
+  **Every action carries as many alternatives as the player wants**: the `+` keycap at the end
+  of a row captures into a new slot, and Backspace or Delete while a slot is waiting removes
+  it (neither key is anywhere a driving hand goes, so nothing bindable is lost). The screen
+  used to let you REPLACE a slot and never ADD one, which with sixteen buttons and twelve pad
+  actions meant every rebind cascaded into an UNBOUND somewhere else.
+- **GAMEPAD COMBOS** (`PadBindings.combos`, `src/input/padChords.ts`): two or three buttons
+  held together fire one action (`RT + D-UP` for a lift), the way real drive-team code reads
+  `gamepad.dpad_up && gamepad.right_trigger > 0.5`. Capture commits on the first RELEASE, so a
+  second button can join; a chord is stored canonical (ascending, unique, `2..PAD_CHORD_MAX`)
+  and `padBinds(pad, action)` is the one view — singles then combos — that the resolver, the
+  keycaps, the start overlay and the tutorial hints all read.
+  ⚠️ **`combos` is a SEPARATE field from `buttons`, on purpose.** A settings blob is persisted
+  and account-synced VERBATIM, so an older client reading `buttons` full of arrays would reject
+  every pad binding and, on its next save, write the defaults back over them. Kept apart, an
+  older client ignores the field and the singles keep working.
+  **Stealing is EXACT**: a single steals that single from every action and touches no combo; a
+  combo steals the identical combo and touches no single. RT can be Shoot AND half of a lift
+  combo at once, which is the whole point.
+  **The resolver has three rules, and each one wrong is a lift that fires a shot** (DECODE's
+  first shot is instant): (1) the longest satisfied chord wins, masking the singles it is made
+  of; (2) a satisfied chord that is a strict prefix of a bound, unsatisfied chord WAITS
+  the COMBO WAIT from the moment it completed, because nobody presses two buttons on the
+  same frame — `PadBindings.chordGraceMs`, the player's own slider under the gamepad block
+  (default `PAD_CHORD_GRACE_MS` 80 ms, clamped to 20..200 on load, disabled rather than
+  hidden while no combo is bound so the rows under it never move); (3) a fired combo CONSUMES its buttons until they are released, so
+  letting go of D-UP with RT still down does not start shooting, and one finger lifting off a
+  three-chord does not fire the two-chord under it; (4) a tap INSIDE the wait still counts —
+  a prefix let go before the wait runs out, with no wider chord having fired, fires once on
+  the frame of the release, so a quick RT tap is still one shot and park / flip / start /
+  restart still work on a button that also lives in a combo (rule 2 alone swallowed it, which
+  a review caught). ⚠️ **A rule-4 tap is held asserted for `PAD_TAP_HOLD_MS` (34 ms), not one
+  frame.** `resolve()` runs once per FRAME, but the HELD-level bits it produces are consumed by
+  the SIM on a fixed 60 Hz accumulator, and above 60 fps most frames step ZERO ticks — so a
+  one-frame pulse landed on a frame that stepped nothing about two in three at 165 Hz and the
+  shot was silently lost (multiplayer has the same hole: a jittery `setInterval` at the sim
+  period). With frame period `p` and sim period `T`, at most `floor(T/p)` frames in a row step
+  nothing, so the gap between stepping frames is always under `2T` = 33.34 ms; 34 is that floor
+  rounded up. The window is CONTINUOUS, so `gamepad.ts`'s `prev*` detectors still see exactly
+  one rising edge. Two things the rules deliberately do NOT do, so nobody rediscovers them:
+  overlapping chords that are not nested all fire (`LB + RT` and `RB + D-UP` held together
+  also satisfies an `RT + D-UP` bound elsewhere, exactly as `&&` on the real pad would), and
+  masking reads SATISFIED rather than fired, so under a three-chord the two-chord's wait also
+  silences the single for its length. With no combo bound, none of this runs: the fast path is
+  the old any-button test with no state. All of it is pinned in `npm test`.
+- **GAME-SPECIFIC BINDS — one main map, per-season overrides** (`ControlBindings.perGame`,
+  `effectiveBindings`). `ControlBindings` (keys + pad + combos) stays THE MAIN SETTING, the
+  shared map every season starts from. `perGame?: Partial<Record<GameId, {keys?, padButtons?,
+  padCombos?}>>` is a NEW SIBLING FIELD — same reasoning as `combos`, and it matters more here:
+  an older client ignores it and plays the main map. An action PRESENT in a game's override is
+  **DESYNCED** there (its binds are exactly the override); ABSENT means it inherits main
+  (**SYNCED**), and "sync back" is the deletion of the entry, nothing else. `padButtons` and
+  `padCombos` for one action are ONE UNIT. Stick role, deadzone, curve, trigger threshold and
+  the combo wait stay GLOBAL — they are how a hand works, not what a button means.
+  **`effectiveBindings(b, game)` is the one resolver**, and everything that drives or NAMES a
+  control reads it, never `settings.bindings`: `InputManager` (via `GameController.bindings`,
+  resolved once from `gameId`), the start overlay, and the tutorial hints. It returns a plain
+  main-shaped `ControlBindings` with the overrides applied, `perGame` stripped, and the actions
+  the game does not use **EMPTIED** — not ignored later. That emptying is load-bearing: the
+  chord resolver reads a `PadBindings` and has no idea what a game is, so a Chain Reaction combo
+  left in a BIOBUZZ map would mask a single, consume its buttons, and make a tap wait for a
+  combo that can never fire.
+  ⚠️ **`ACTION_GAMES` (`bindings.ts`) is the table that makes a duplicate legal**, and every row
+  was checked against which `RobotCommand` bit that game's SIM reads: `catalyst`/`fling` are
+  Chain Reaction only, `bbPlace`/`bbPlaceNectar`/`bbNectar` are BIOBUZZ only, everything else is
+  every game (`driveMode` included — it is read in `src/sim/robot.ts`, which all three route
+  through). **Two actions conflict only if some game uses both.** So MAIN may put one key on
+  both `catalyst` and `bbPlace` — no session offers both — while `fire` still steals from
+  everything. Inside a game scope the steal scope is that game's EFFECTIVE map, and the victim
+  is DESYNCED in that game rather than edited in main; the game-scope editors are literally the
+  main editors run against the effective map, where the non-actions are already empty, so the
+  scope comes out right by construction. **Main-edit vs override**: when a main edit would put a
+  bind on an action that is SYNCED in game G while some other action G uses holds it in a
+  DESYNCED override, **the override loses that bind** — so the edit the player just made
+  survives everywhere, and an edit under "All games" never silently does nothing.
+  `mergeBindings` validates `perGame` entry by entry (unknown game ids, unknown actions, and
+  actions a game does not use are all dropped; lists go through the same validators as main),
+  and **`BIND_SLOTS_MAX` (8) caps every list, main included** — `+` could grow one without
+  bound, and the server caps the settings blob at 64 KB. A blob with no `perGame` round-trips
+  byte for byte, and the field is pruned back to absent when the last override is synced away.
+  UI: a scope switch (`.ds-segs`) at the top of the Controls card — `All games` plus one entry
+  per **visible** season. A season scope lists only that season's actions, each row marked
+  SYNCED or CUSTOM (in BOTH states, so the marker never changes a row's height mid-edit) with a
+  Sync control, and a "Sync all to shared" in the foot, disabled rather than hidden for the same
+  reason the combo-wait slider is. The main scope tags a row with its seasons when they are not
+  all of them, so a key shared by Catalyst and Place POLLEN does not read as a bug.
+  ⚠️ **The capture effects on the controls screen depend on `capture` ALONE**, with
+  `bindings`/`onChange` in refs: `onChange` is a fresh arrow every render and the App re-renders
+  on its own every few seconds (the presence poll), which restarted the pad effect mid-capture
+  and swept the buttons still held into `alreadyDown` — the release then bound nothing. A
+  single-press capture never showed it; commit-on-release made it a real window.
 - "Flip front" reverses robot-centric drive so the shooter side leads — applied at INPUT level
   in `GameController`, sim untouched; REVERSED chip in the HUD.
 - All `GameSettings` persist to `localStorage['decodesim.settings.v1']` via `src/settings.ts`

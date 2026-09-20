@@ -1,6 +1,79 @@
+# HANDOFF — 2026-09-19d (branch `ArushYadlapati/gamepad-combo-keybinds` off alpha: GAMEPAD COMBOS + add/remove binding slots, PR into alpha)
+
+**READ FIRST.** One commit on the owner's fork, rebased onto alpha `f17395f` and opened as a PR
+into `alpha` with the owner's go-ahead (the only conflicts on the rebase were this file and the
+generated class inventory). `npm run build` is green, `npm test`'s shared suite is green
+(51 new checks in the `gamepad COMBOS` block), `uiaudit`, `docaudit`, `contrast` and
+`server:check` are green. An independent review pass (2026-09-19) found two real gaps, both
+fixed and pinned: a prefix TAPPED inside the combo wait fired nothing (now rule 4, below), and
+the pad capture effect restarted on every App re-render (the 8 s presence poll), dropping a
+half-built chord (the effects now depend on `capture` alone, values in refs). The BIOBUZZ
+suite has ONE failure that predates this branch and is not touched by it: `fieldDims.gen.ts is
+exactly what emit-dims.mjs renders from field-measurements.json`. Its own message says to run
+`npm run field-cad`; **do not, on a Mac** — it drops a 92 MB `C:/` tree into the repo root.
+
+## What was built (the owner's request, verbatim intent)
+
+"Combo keybinds for the gamepad, like the multiple keybinds people use IRL … chain keybinds
+together once the other keybinds run out, e.g. a lift on D-UP and RT" — and the complaint under
+it: changing one binding "messed up everything else", because the screen could only REPLACE a
+slot, never ADD one, so every rebind on a full pad cascaded into an UNBOUND somewhere else.
+
+- **Every action takes any number of alternatives**, keyboard and pad: a `+` keycap at the end
+  of each row captures into a new slot; Backspace or Delete while a slot is waiting removes it.
+- **Gamepad COMBOS**: hold two or three buttons during a capture and the bind is the chord
+  (`RT + D-UP`). Capture commits on the first RELEASE so a second button can join; a lone press
+  is still a single. `PAD_CHORD_MAX` is 3.
+- **The model** (`src/input/bindings.ts`): `PadBindings.combos: Record<PadAction, PadChord[]>`,
+  a SEPARATE field from `buttons` — a settings blob is persisted and account-synced verbatim,
+  and an older client reading arrays inside `buttons` would reject every pad binding and save
+  the defaults back over them. `padBinds(pad, action)` (singles then combos) is the one view
+  the resolver, the keycaps, the start overlay and the tutorial hints read. The edit helpers
+  (`assignKey` / `removeKey` / `assignPadBind` / `removePadBind`) moved here from the screen so
+  the steal policy is pinned by smoke: **stealing is exact** — a single steals that single and
+  touches no combo, a combo steals the identical combo and touches no single.
+- **The resolver** (`src/input/padChords.ts`, DOM-free, clock-injected): (1) longest satisfied
+  chord wins and masks the singles it is made of; (2) a satisfied chord that is a strict prefix
+  of a bound, unsatisfied chord waits `PAD_CHORD_GRACE_MS` (80 ms) — nobody presses two buttons
+  on one frame, and DECODE's first shot is instant — the wait is the player's own
+  `chordGraceMs` (the "Combo wait" slider under Trigger threshold, 20..200 ms, greyed until a
+  combo is bound); (3) a fired combo consumes its buttons until released, so letting go of
+  D-UP with RT still down does not start shooting; (4) a prefix let go INSIDE the wait fires
+  once on release, so a quick tap still counts. Rule 3 is tested before rule 2 so a blocked
+  chord is never a waiting one. With no combo bound it takes an explicit fast path: the old
+  any-button test, no state. `docs/area/ui.md` lists the two things the rules deliberately do
+  not do (non-nested overlapping chords all fire; masking reads satisfied, not fired).
+- `gamepad.ts` builds the held set (triggers past `triggerThreshold`) and asks the resolver;
+  edge detection for start/restart/flip/park is unchanged. `GameView`'s start overlay and
+  `tutorial/hints.ts` print the first bind's label (`padBindLabel`). `.ds-key.add` is the one
+  new class (`uiindex` regenerated). `docs/area/ui.md` carries the rules.
+
+## Verified at the surface (hidden offscreen Electron, `scratch/verify-combos.cjs`)
+
+Fake `navigator.getGamepads` stub, DOM assertions: the `+` captures; the keycap reads
+`D-UP + …` then `RT + D-UP + …` while the chord builds; releasing binds `RT + D-UP` on the
+catapult throw with Shoot's RT and Place POLLEN's D-UP untouched; an identical combo bound to
+Park is stolen from the throw; Backspace removes it; keyboard `+`/steal/UNBOUND/Backspace all
+behave; the saved blob carries `combos.fling = [[7,12]]` beside untouched singles. In a Solo
+Practice AUTO with auto-fire off: holding RT + D-UP for 1.5 s leaves the hopper at 3 of 3
+(Shoot masked); with the wait at 200 ms, RT held 100 ms fires nothing and RT held on empties it.
+A capture held across the 8 s presence re-render still binds. Screenshots in
+`scratch/shots-combos/` (gitignored).
+
+⚠️ **The owner does not want a test window on their desktop.** The driver runs
+`show: false` + `offscreen: true`; the verify skill now says so. Do not go back to `show: true`.
+
+## Next steps
+
+1. PR review on `genius0412/dsim` (base `alpha`). Nothing server-side to deploy.
+2. Feel-test the default combo wait with a real pad; 80 ms is a judgment call, not a measurement,
+   and the slider's 20..200 bounds are the same kind of call.
+3. Not built, deliberately: keyboard chords (the request was the pad), and a touch-only way to
+   remove a slot (Backspace needs a keyboard; a phone with a pad is rare).
+
 # HANDOFF — 2026-09-19c (alpha: THE OWNER'S PLAYTEST PASS — two launch bugs, the hive registration delay, the robot signs, the frame-rate row; FLOWER LANE STOPPED AND NOT LANDED)
 
-**READ FIRST.** Six lanes ran off `d64cf19`. Five landed and are in this commit. **The SIXTH — the
+**(Previously READ FIRST.)** Six lanes ran off `d64cf19`. Five landed and are in this commit. **The SIXTH — the
 FLOWER lane — was STOPPED mid-work on owner instruction and its source edits were REVERTED**; what
 it learned is written down below and its probes survive in `scratch/`. Read "THE FLOWER LANE"
 before picking that up, because the expensive half (the measurement harnesses) is already done.

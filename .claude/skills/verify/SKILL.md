@@ -23,6 +23,18 @@ Two surfaces:
   chars, just the empty `<div id="root">`) confirms it's this, not your change.
 - Electron loads `dist/index.html` (see `electron/main.cjs`).
 - Write a driver script (CJS) in the scratchpad and run `npx electron <script>`.
+- **NEVER SHOW THE WINDOW.** The owner's rule (2026-09-19): a surface test must not pop a
+  window onto the desktop or take focus. Create it `show: false` with
+  `webPreferences: { offscreen: true, backgroundThrottling: false }` and screenshot from the
+  offscreen buffer: `capturePage()` works on an offscreen window without `show()`/`focus()`
+  (and a `'paint'` listener keeping the last `NativeImage` is the fallback if it ever throws).
+  The `UnknownVizError` note below is for a SHOWN window; offscreen does not need it. The other
+  way that is acceptable is driving `npm run dev`/`vite preview` through the Claude in Chrome
+  tools, which stays inside the user's own browser. The shape that worked (2026-09-19, the
+  combo-keybinds drive): an offscreen window, `executeJavaScript` clicks by button text, a
+  fake `navigator.getGamepads` stub whose `buttons[i].pressed` the driver flips, DOM readouts
+  of `.ds-key` labels and `.hopper-pip:not(.empty)`, and `localStorage['decodesim.settings.v1']`
+  for persistence. It lived in `scratch/` (gitignored), so do not expect to find it.
 - **Gotchas (Windows, this machine):**
   - Agent shells export `ELECTRON_RUN_AS_NODE=1`, which makes a bare `npx electron
     script.cjs` run the script as plain Node — `app`/`BrowserWindow` are `undefined`.

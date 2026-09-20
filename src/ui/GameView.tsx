@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   GameController,
   type GameSettings,
@@ -9,7 +9,7 @@ import {
 import { PerfHud } from './PerfHud';
 import { PERF_DISPLAY_LEVELS } from '../settings';
 import type { PerfDisplay } from '../types';
-import { keyLabel, padButtonLabel } from '../input/bindings';
+import { effectiveBindings, keyLabel, padBindLabel, padBinds } from '../input/bindings';
 import { ENDGAME_START, POWER_DRAW_MAX } from '../config';
 import { MobileControls } from './MobileControls';
 import { AdSlot, useAdUnitActive } from './AdSlot';
@@ -511,6 +511,16 @@ export function GameView({
    * per frame), and the view-pref subscription is kept alongside it so a flip back to 2D is
    * reflected even if the teardown order ever changes.
    */
+  /**
+   * THE EFFECTIVE MAP for whatever season is on the field — what the pre-match overlay must
+   * name. Main plus this season's overrides, with the actions the season does not use emptied;
+   * the controller resolves the same thing for the input layer. Read `hud.game` first (the
+   * world is authoritative in a room) and fall back to the setting before the first HUD poll.
+   */
+  const effBindings = useMemo(
+    () => effectiveBindings(settings.bindings, hud?.game ?? settings.game),
+    [settings.bindings, settings.game, hud?.game],
+  );
   const [scene3d, setScene3d] = useState(false);
   useEffect(() => {
     const host = viewportRef.current;
@@ -739,8 +749,8 @@ export function GameView({
             )}
             {!coarsePointer && (
               <p className="big">
-                Press {keyLabel(settings.bindings.keys.start[0] ?? 'enter')} or{' '}
-                {padButtonLabel(settings.bindings.pad.buttons.start[0] ?? 9)} to start
+                Press {keyLabel(effBindings.keys.start[0] ?? 'enter')} or{' '}
+                {padBindLabel(padBinds(effBindings.pad, 'start')[0] ?? [9])} to start
               </p>
             )}
             {/* `.overlay-buttons`, not `.ds-cta`: every other button in every
@@ -759,7 +769,7 @@ export function GameView({
                 MENU precisely because it has no keys to press. */}
             {!coarsePointer && (
               <p className="ds-hint">
-                Esc · menu &nbsp;·&nbsp; {keyLabel(settings.bindings.keys.restart[0] ?? '?')} · restart
+                Esc · menu &nbsp;·&nbsp; {keyLabel(effBindings.keys.restart[0] ?? '?')} · restart
               </p>
             )}
           </div>

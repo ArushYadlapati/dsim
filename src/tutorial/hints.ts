@@ -1,4 +1,4 @@
-import { keyLabel, padButtonLabel, type KeyAction, type PadAction } from '../input/bindings';
+import { keyLabel, padBindLabel, padBinds, type KeyAction, type PadAction } from '../input/bindings';
 import type { TutorialHintCtx } from './types';
 
 /**
@@ -46,10 +46,12 @@ export function keyFor(ctx: TutorialHintCtx, action: KeyAction): string {
   return k === undefined ? 'unbound' : keyLabel(k);
 }
 
-/** the FIRST pad button bound to an action, as a face label, or `—` when it is unbound. */
+/** the FIRST pad bind of an action — a face label, or a combo's buttons joined by `+` — or
+ * `unbound` when it has none. `padBinds` lists singles before combos, so a player who kept a
+ * single is told the single. */
 export function padFor(ctx: TutorialHintCtx, action: PadAction): string {
-  const b = ctx.bindings.pad.buttons[action][0];
-  return b === undefined ? 'unbound' : padButtonLabel(b);
+  const b = padBinds(ctx.bindings.pad, action)[0];
+  return b === undefined ? 'unbound' : padBindLabel(b);
 }
 
 /**
