@@ -32,6 +32,9 @@ import { BB_DEFAULT_SPEC } from '../../src/games/biobuzz/robotConfig';
 import { BB_POLLEN_R } from '../../src/games/biobuzz/config';
 import { readFileSync } from 'node:fs';
 import { cmd, setup, type Check } from './harness';
+import { mkWorld3d } from './harness';
+import { step3d } from '../../src/games/biobuzz/sim3d/step3d';
+import { PREDICT_ELEMENT_RADIUS } from '../../src/games/biobuzz/config';
 
 /**
  * NET3D — a 3D-physics BIOBUZZ match through the REAL authoritative `Room`, the real wire
@@ -1181,6 +1184,70 @@ export function net3dChecks(check: Check): void {
       'balls: nothing about this touches `this.world` (it is cosmetic, like `localSmooth`)',
       !/drawPredictedElements[\s\S]{0,2000}?this\.world\.balls\s*=/.test(game),
     );
+  }
+
+  /**
+   * 15. A SEATED ELEMENT IS NOT PREDICTED — IT IS PINNED WHERE THE AUTHORITY PUT IT.
+   *
+   * The near set is every non-`held`/`stock` ball within `PREDICT_ELEMENT_RADIUS`, and it used
+   * to make ALL of them DYNAMIC. An `element` tag means the authority is holding it (latched in
+   * a HIVE cell, seated in a FLOWER's bore) by its own derived structure, and nothing in the
+   * prediction world catches one — so those bodies FELL for the whole replay window, every
+   * window. The owner saw it as elements "drooping downwards and teleporting back up" inside
+   * the hive: the drooped pose reaches the screen whenever the drawn source is the predictor,
+   * and the next snapshot puts it back.
+   *
+   * ⚠️ THE TOLERANCE IS TIGHT ON PURPOSE AND THE OLD BEHAVIOUR MISSES IT BY A MILE. Kinematic,
+   * the error is 0; dynamic, it was -1.76 in mean and -1.96 worst over 100 reconciles, which is
+   * ½gt² for a 6-tick window — i.e. free fall. A check that allowed an inch would pass on the
+   * bug it exists to catch.
+   */
+  {
+    const w = mkWorld3d('match', 4242);
+    for (let t = 0; t < 180; t++) step3d(w, C.SIM_DT, new Map());
+    const me = w.robots[0];
+    const seat = w.balls.find((b) => b.state.kind === 'element' && b.state.el.startsWith('hive:'));
+    if (!seat) {
+      check('predict: the staged world has a hive-seated element to measure', false);
+    } else {
+      // park the robot beside the hive so those cells are inside the near set
+      me.pos.x = seat.pos.x + 10;
+      me.pos.y = seat.pos.y + 10;
+      for (let t = 0; t < 60; t++) step3d(w, C.SIM_DT, new Map());
+
+      const near = w.balls.filter((b) => {
+        if (b.state.kind !== 'element') return false;
+        const dx = b.pos.x - me.pos.x;
+        const dy = b.pos.y - me.pos.y;
+        return dx * dx + dy * dy <= PREDICT_ELEMENT_RADIUS * PREDICT_ELEMENT_RADIUS;
+      });
+      const p = createFullPredictor(w, me.id);
+      const still = cmd({});
+      let worst = 0;
+      let authMoved = 0;
+      for (let round = 0; round < 20; round++) {
+        for (let t = 0; t < 6; t++) step3d(w, C.SIM_DT, new Map());
+        p.reset(w, w.tick);
+        for (let k = 0; k < 6; k++) p.step(still);
+        const got = new Map((p.elements() ?? []).map((e) => [e.id, e] as const));
+        for (const b of near) {
+          const e = got.get(b.id);
+          if (!e) continue;
+          worst = Math.max(worst, Math.abs(e.z - b.z));
+        }
+      }
+      for (const b of near) {
+        const now = w.balls.find((x) => x.id === b.id)!;
+        authMoved = Math.max(authMoved, Math.abs(now.z - b.z));
+      }
+      p.dispose();
+      check(
+        '⚠️ predict: a HIVE-seated element is pinned at the authority`s height, not dropped (it used to free-fall 1.8in a window)',
+        near.length > 0 && worst < 0.05,
+        `${near.length} seated elements, worst |predicted z - authoritative z| ${worst.toFixed(4)}in over 20 reconciles ` +
+          `(authoritative z itself moved ${authMoved.toFixed(4)}in)`,
+      );
+    }
   }
 }
 

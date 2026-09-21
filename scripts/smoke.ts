@@ -15673,6 +15673,13 @@ for (const game of ['decode', 'chain', 'biobuzz'] as const) {
 // source can check it. `Math.round/floor/ceil/abs/min/max/sqrt/sign/trunc/imul`
 // are IEEE-exact and stay allowed.
 {
+  // ⚠️ SPLIT ON /\r?\n/, NOT '\n' - A LONE \r DEFEATS THE COMMENT STRIPPING BELOW.
+  // JS `.` does not match a carriage return, so on a CRLF checkout `^\s*\*.*$` cannot reach the
+  // end of a JSDoc line and strips NOTHING - the guard then reads the COMMENT as code. It cost a
+  // false failure on `freeCam.ts`, whose header legitimately NAMES a `Math.exp(...)` while saying
+  // the call itself has to live in a `render*` file. Git normalised that file to CRLF on commit
+  // and the suite went red on a tree nobody had edited - i.e. the state every Windows checkout
+  // with `core.autocrlf` is already in.
   const BANNED = ['sin', 'cos', 'tan', 'asin', 'acos', 'atan', 'atan2', 'hypot',
     'pow', 'exp', 'expm1', 'log', 'log2', 'log10', 'log1p', 'cbrt', 'fround', 'random'];
   const rx = new RegExp(`Math\\.(${BANNED.join('|')})\\s*\\(`);
@@ -15686,7 +15693,7 @@ for (const game of ['decode', 'chain', 'biobuzz'] as const) {
       // renderers are NOT sim-reachable — they read world state and draw it, so
       // an engine-specific cosine there changes pixels, never the match
       if (/^(draw|render)/i.test(e.name)) continue;
-      readFileSync(p, 'utf8').split('\n').forEach((line, i) => {
+      readFileSync(p, 'utf8').split(/\r?\n/).forEach((line, i) => {
         const code = line.replace(/\/\/.*$/, '').replace(/^\s*\*.*$/, '');
         if (rx.test(code)) offenders.push(`${p}:${i + 1}`);
       });
@@ -15705,7 +15712,7 @@ for (const game of ['decode', 'chain', 'biobuzz'] as const) {
       const p = joinPath(dir, e.name);
       if (e.isDirectory()) { walkClock(p); continue; }
       if (!e.name.endsWith('.ts') || /^(draw|render)/i.test(e.name)) continue;
-      readFileSync(p, 'utf8').split('\n').forEach((line, i) => {
+      readFileSync(p, 'utf8').split(/\r?\n/).forEach((line, i) => {
         const code = line.replace(/\/\/.*$/, '').replace(/^\s*\*.*$/, '');
         if (/\bDate\.now\s*\(|\bnew Date\s*\(|performance\.now\s*\(/.test(code)) clockers.push(`${p}:${i + 1}`);
       });

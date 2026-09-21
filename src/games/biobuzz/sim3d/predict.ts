@@ -439,7 +439,34 @@ export function createFullPredictor(world: World, localRobotId: number): Predict
           const dx = b.pos.x - local.pos.x;
           const dy = b.pos.y - local.pos.y;
           if (dx * dx + dy * dy > r2) continue;
-          elements.set(b.id, { body: makeElementBody(RAPIER, world3d, b), r: b.r ?? BB_POLLEN_R });
+          /**
+           * ⚠️ A STRUCTURE-SEATED ELEMENT IS KINEMATIC, FOR THE REASON THE TRAYS AND THE REMOTE
+           * ROBOTS ARE — and it used to be DYNAMIC, which put every one of them in FREE FALL.
+           *
+           * An `element` tag means the AUTHORITY is holding it: latched in a HIVE cell or seated
+           * in a FLOWER's bore. What holds it there is the server's own derived structure, not a
+           * contact this world reproduces — nothing here catches a hive cell's element — so a
+           * dynamic body dropped at the snapshot pose simply fell for the whole replay window.
+           * MEASURED against a settled match world, six hive-seated elements, 100 consecutive
+           * reconciles at a 6-tick window: the predicted body sat **-1.76 in mean (-1.96 worst)**
+           * under an authoritative z whose own range was **0.000**, which is ½gt² for the window
+           * exactly — i.e. unsupported, every time.
+           *
+           * That is what the owner saw as elements "drooping downwards and teleporting back up"
+           * inside the hive: the drooped pose reaches the screen whenever the drawn source is
+           * the predictor, and the next snapshot puts it back. `drawPredictedElements`
+           * (`game.ts`) already states the rule this restores — a seated element "is the
+           * authority's derived structure rather than a free body the local chassis is about to
+           * hit" — but it can only choose not to DRAW the prediction; it cannot stop the
+           * predictor from making one, and `noteElementCorrection` accumulates the error into a
+           * visual offset that is applied whether or not the draw used it.
+           *
+           * Kinematic rather than skipped, so the local chassis still feels a flower column as a
+           * solid: the choice is the same one the header makes for a remote robot — hold it where
+           * the authority last had it, because this client has no business predicting it.
+           */
+          const seated = b.state.kind === 'element';
+          elements.set(b.id, { body: makeElementBody(RAPIER, world3d, b, seated), r: b.r ?? BB_POLLEN_R });
         }
       }
     },
@@ -670,15 +697,19 @@ function makeElementBody(
   RAPIER: Rapier3d,
   world3d: InstanceType<Rapier3d['World']>,
   b: Artifact,
+  seated = false,
 ): InstanceType<Rapier3d['RigidBody']> {
   const r = b.r ?? BB_POLLEN_R;
-  const body = world3d.createRigidBody(
-    RAPIER.RigidBodyDesc.dynamic()
-      .setTranslation(b.pos.x, b.pos.y, b.z + r)
-      .setLinvel(b.vel.x, b.vel.y, b.vz)
-      .setAngularDamping(ELEMENT_ROLL_DAMP)
-      .setCcdEnabled(hyp3(b.vel.x, b.vel.y, b.vz) > BB3_CCD_SPEED),
-  );
+  // `seated` — the authority has this one in a HIVE cell or a FLOWER bore, so it is pinned where
+  // the snapshot put it rather than simulated. See the near-set loop for the measurement.
+  const desc = seated
+    ? RAPIER.RigidBodyDesc.kinematicPositionBased().setTranslation(b.pos.x, b.pos.y, b.z + r)
+    : RAPIER.RigidBodyDesc.dynamic()
+        .setTranslation(b.pos.x, b.pos.y, b.z + r)
+        .setLinvel(b.vel.x, b.vel.y, b.vz)
+        .setAngularDamping(ELEMENT_ROLL_DAMP)
+        .setCcdEnabled(hyp3(b.vel.x, b.vel.y, b.vz) > BB3_CCD_SPEED);
+  const body = world3d.createRigidBody(desc);
   // the same narrowed memberships the authority gives an element (`GROUP_ELEMENT`). This world
   // has no pocket filler to filter against — the predictor's chassis is one cuboid — but the
   // groups are part of what an element IS, and two worlds that disagree about them would be a

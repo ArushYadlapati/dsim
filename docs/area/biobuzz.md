@@ -783,7 +783,23 @@ newest-first — it is never ranked, which is what keeps the two eras from meeti
     9.634 in level, 8.466 at 57.6° and 7.554 at the 80° cap, and it retreats along the heading as it
     drops. Same "one predictor, two drawings" rule the shot path follows, and the RENDER lane proves
     the drawn lip sits on the sim's muzzle at every pitch rather than assuming it.
-  - ⚠️ **`bbTurretSolution` IS A FIXED POINT** — the elevation moves the release and the release
+  - ⚠️ **A SEATED ELEMENT IS KINEMATIC IN THE FULL PREDICTOR — DYNAMIC PUT IT IN FREE FALL.**
+    The near set is every non-`held`/`stock` ball within `PREDICT_ELEMENT_RADIUS`, and it used to
+    build all of them DYNAMIC. An `element` tag means the AUTHORITY is holding it (latched in a
+    HIVE cell, seated in a FLOWER bore) through its own derived structure, and **nothing in the
+    prediction world catches one** — so those bodies fell for the whole replay window, every
+    window. MEASURED on a settled match world, six hive-seated elements over 100 consecutive
+    reconciles at a 6-tick window: the predicted body sat **-1.76 in mean, -1.96 worst** under an
+    authoritative z whose own range was **0.000** — which is ½gt² for the window exactly, i.e.
+    unsupported every time. The owner saw it as elements “drooping downwards and teleporting back
+    up” inside the hive: the drooped pose reaches the screen whenever the drawn source is the
+    predictor, and the next snapshot puts it back. `drawPredictedElements` (`game.ts`) already
+    said a seated element is “the authority’s derived structure rather than a free body the local
+    chassis is about to hit” — but it can only decline to DRAW the prediction, it cannot stop the
+    predictor making one, and `noteElementCorrection` folds the error into a visual offset that is
+    applied whether or not the draw used it. Kinematic rather than skipped, so the local chassis
+    still feels a flower column as a solid — the same call the header makes for a remote robot.
+    Client-only: no wire change, and the authority is untouched. Pinned by NET3D §15.  - ⚠️ **`bbTurretSolution` IS A FIXED POINT** — the elevation moves the release and the release
     moves the elevation. `BB_TURRET_SOLVE_PASSES` (4) passes ALWAYS, with no early exit and no
     tolerance, because a trip count that depends on a float comparison can differ between a client's
     prediction and the server's authority. Measured over 7,688 field poses, a fifth pass moves the
