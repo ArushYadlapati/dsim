@@ -142,12 +142,12 @@ The look and the depth model are `DESIGN.md`. This file is only the inventory.
 
 | class | declared | used |
 |---|---|---|
-| `.ds-lan-banner` | src/ui/styles.css:3354 | 1 |
-| `.ds-lan-leave` | src/ui/styles.css:3367 | 1 |
-| `.ds-lan-state` | src/ui/styles.css:3277 | 4 |
-| `.ds-lan-steps` | src/ui/styles.css:3330 | 1 |
-| `.ds-lan-url` | src/ui/styles.css:3293 | 3 |
-| `.ds-lan-urls` | src/ui/styles.css:3283 | 1 |
+| `.ds-lan-banner` | src/ui/styles.css:3355 | 1 |
+| `.ds-lan-leave` | src/ui/styles.css:3368 | 1 |
+| `.ds-lan-state` | src/ui/styles.css:3278 | 4 |
+| `.ds-lan-steps` | src/ui/styles.css:3331 | 1 |
+| `.ds-lan-url` | src/ui/styles.css:3294 | 3 |
+| `.ds-lan-urls` | src/ui/styles.css:3284 | 1 |
 
 ## `ds-panel` — 6
 
@@ -370,8 +370,8 @@ The look and the depth model are `DESIGN.md`. This file is only the inventory.
 
 | class | declared | used |
 |---|---|---|
-| `.ds-maint` | src/ui/styles.css:2345 | 3 |
-| `.ds-maint-wrap` | src/ui/styles.css:2342 | 2 |
+| `.ds-maint` | src/ui/styles.css:2346 | 3 |
+| `.ds-maint-wrap` | src/ui/styles.css:2343 | 2 |
 
 ## `ds-menu` — 2
 
@@ -760,7 +760,7 @@ The look and the depth model are `DESIGN.md`. This file is only the inventory.
 
 | class | declared | used |
 |---|---|---|
-| `.ds-tip` | src/ui/styles.css:2323 | 2 |
+| `.ds-tip` | src/ui/styles.css:2324 | 2 |
 
 ## `ds-title` — 1
 

@@ -298,7 +298,8 @@ function RosterList({
         <li key={p.robotId} className="resx-roster-row" style={{ animationDelay: `${i * 90}ms` }}>
           {order(
             <span className="resx-roster-name">
-              {order(p.isLocal ? <span className="resx-you">YOU</span> : null, p.name)}
+              {p.name}
+              {p.isLocal && <span className="resx-you">YOU</span>}
             </span>,
             <span className="resx-roster-meta">
               {order(
