@@ -5,10 +5,12 @@ import { BB_HALF_X, BB_HALF_Y, BB_VIEW_MARGIN } from '../config';
 import {
   CAMERA_PREFS,
   getCameraPref,
+  getDriverHeightIn,
   resolveSceneCamera,
   setCameraPref,
   setViewPref,
   subscribeCameraPref,
+  subscribeDriverHeightIn,
   type CameraPref,
 } from '../graphics/store';
 import { subscribeFreeCamReset } from '../graphics/freeCam';
@@ -30,7 +32,7 @@ import { buildBiobuzzField, updateBiobuzzField, type BbFieldHandles } from './re
 import { buildBiobuzzElements, setElementShadows, updateBiobuzzElements, type BbElements } from './renderElements';
 import { buildBiobuzzRobots, updateBiobuzzRobots, type BbRobots } from './renderRobots';
 import { buildBiobuzzReticle, updateBiobuzzReticle, type BbReticle } from './renderReticle';
-import { createCameras, setCameraTuning, type BbCameras } from './renderCameras';
+import { createCameras, setCameraTuning, setDriverHeightIn, type BbCameras } from './renderCameras';
 import { createEnvironment, type BbEnvironment } from './renderEnvironment';
 import { createStats, type BbStats } from './renderStats';
 import {
@@ -482,6 +484,11 @@ class BiobuzzScene implements GameScene {
         this.cameraPref = pref;
       }),
     );
+    // "YOUR HEIGHT" (owner, 2026-09-21) — module-scope state on `renderCameras.ts`, the same
+    // shape `setCameraTuning` already uses for FOV/motion, so it is set once from storage here
+    // and kept live for every scene that mounts (the gallery's several scenes included).
+    setDriverHeightIn(getDriverHeightIn());
+    this.teardown.push(subscribeDriverHeightIn(setDriverHeightIn));
     // A FIXED-TIER SCENE DOES NOT SUBSCRIBE. A replay export runs at High by contract (§4.7), and
     // a player who opened the Graphics section in another tab mid-encode must not change the
     // resolution of a video that is halfway written.

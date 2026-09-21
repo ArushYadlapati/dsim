@@ -629,7 +629,7 @@ newest-first — it is never ranked, which is what keeps the two eras from meeti
        bottom POLLEN already sits **0.44 in** toward the wall, perched on the lower bore's rim (the
        cage's 0.548 in of slack, transmitted down) — which IS the owner's "it depends on how they
        are stacked". The blade asks for 0.48 in of lift and nothing more.
-    So the deployed ramp is ONE LEVEL BOX, `BB_RAMP_IN` … `BB_RAMP_OUT` (0.15 … 3.54 past the tip
+    So the deployed ramp is ONE LEVEL BOX, `BB_RAMP_IN` … `BB_RAMP_OUT` (0.85 … 3.54 past the tip
     line), `BB_RAMP_FLOOR_Z` 0.40 underneath and `BB_RAMP_DECK_Z` 0.48 on top, rail to rail wide,
     plus the two rails. The owner's "slight slope up and a larger slope down" is the blade itself:
     the 0.08-in step at the lip lifts the POLLEN onto the deck, and the deck's inboard end drops
@@ -639,6 +639,24 @@ newest-first — it is never ranked, which is what keeps the two eras from meeti
     ⚠️ **THE DECK IS THE HALF THAT DELIVERS.** The old wedge stopped at its drop point 2.29 in out
     and left a 2.29-in VOID between itself and the mouth, so a POLLEN it did lift had nothing to
     stand on and fell back into the bore.
+    ⚠️ **AND `BB_RAMP_IN` IS SET BY THE FOLDED POSE, NOT THE DEPLOYED ONE** (owner's spec for this
+    mechanism: *"when deployed, from the top down, it should look like an upside down U shape. This
+    is because the hole created by the U is where the intake rollers are situated in when the ramp
+    is folded up vertically."*). The pivot is ON the roller's own axle line, so FOLDED the rails
+    stand straight up past the roller and the rigid HUB (r 0.75) is the rail band **1.55 … 3.05**
+    that no ramp member may enter. MEASURED on the built group (`scratch/rampfold.ts`, every
+    `robot:ramp:*` mesh's own vertices against the roller's axis): at `BB_RAMP_IN` 0.15 the blade
+    spanned rail **2.563 … 5.825** — inside the hub's band, clearing it only sideways (+0.289); at
+    0.85 it spans **3.232 … 5.825**, starting 0.18 in past the hub's top with a +0.477 radial gap,
+    and the U reads as a U. The rails clear by 1.56, and the pivot BRACKET is fixed to the chassis
+    at `±pivotArmY`, outboard of the shortened barrel's ±7.32, so its −0.08 radial figure is the
+    (u, z) metric over-reporting a part that never meets the barrel laterally. **The FLAPS are
+    pressed and that is allowed**: a stowed blade sits 0.773 in inside their r-2.0 sweep, they are
+    compliant and hinged (`flapFold`), and clearing them would mean starting the blade above rail
+    4.3 and leaving 1.5 in of deck. It costs the extraction nothing — the same 400-run grid reads
+    **400/400 either way** (mean 0.403 s → 0.386), forced heights identical, the drain 75 → 76
+    ticks. The RENDER lane pins both halves: no ramp member within 0.1 in of the hub, and the
+    blade's inboard edge outboard of the hub along the rail.
   - ⚠️ **AND THE LIP IS DRIVEN, BECAUSE NO PASSIVE PROFILE CAN DO THIS.** `rampRollerDrive`
     (`sim3d/flower3d.ts`) raises the candidate POLLEN's velocity COMPONENT along the deck toward
     the rollers to `BB_RAMP_ROLLER_V` (50 in/s) and never reduces it, leaving every other component
@@ -663,7 +681,7 @@ newest-first — it is never ranked, which is what keeps the two eras from meeti
     16 in out with the stick held, no teleports; columns staged through the drop point and
     `bbFlowerScatter`, so they LEAN the way a match's do): four FLOWERS × stick 0.35/0.5/0.7/1.0 ×
     lateral −2…+2 in × approach angle −8…+8° × column height 1–8 × legal POLLEN/NECTAR mixes ×
-    scatter seed — **400 runs, 400 extracted (100%)**, mean **0.40 s** and p95 **1.10 s** from the
+    scatter seed — **400 runs, 400 extracted (100%)**, mean **0.39 s** and p95 **1.10 s** from the
     ramp reaching the opening to the POLLEN being in the hopper, 100% at every column height, every
     approach angle and every lateral offset. Forcing the height instead of drawing it: **h1
     400/400, h4 400/400, h8 398/400** — the two misses are the compounding corner every archetype's
@@ -671,7 +689,7 @@ newest-first — it is never ranked, which is what keeps the two eras from meeti
     are the honest residue of a 1.156-in reach, and nothing in the code papers over them. BEFORE,
     on the same harness: the wedge extracted by physics in 0 of 5 staged columns and needed the
     stall fallback's teleport in every one. **DRAIN**: a full 8-POLLEN column empties completely on
-    one held stick in **75 ticks (1.25 s)** — 0.47 s for the first and **0.05–0.13 s** for each one
+    one held stick in **76 ticks (1.27 s)** — 0.50 s for the first and **0.05–0.20 s** for each one
     after, the column re-seating between each. The fast slice, worst seeds included, is in
     `scripts/smoke-biobuzz/flower3d.ts`; the through-the-blade probe and the ground-capture sweep
     (10 lateral offsets, intake on and off) are in `sim3d.ts`.

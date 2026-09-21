@@ -1,4 +1,4 @@
-import { useEffect, useId, useState } from 'react';
+import { useEffect, useId, useState, type KeyboardEvent } from 'react';
 import {
   coerceMaxFps,
   fpsFromSliderPos,
@@ -30,13 +30,25 @@ import { BB_ENVIRONMENTS } from '../games/biobuzz/graphics/environments';
 import {
   CAMERA_PREFS,
   getCameraPref,
+  getDriverHeightIn,
   getViewPref,
   setCameraPref,
+  setDriverHeightIn,
   setViewPref,
   subscribeCameraPref,
+  subscribeDriverHeightIn,
   subscribeViewPref,
   type CameraPref,
 } from '../games/biobuzz/graphics/store';
+import {
+  cmFromIn,
+  coerceDriverHeightIn,
+  DRIVER_HEIGHT_MAX_IN,
+  DRIVER_HEIGHT_MIN_IN,
+  ftInFromIn,
+  inFromCm,
+  inFromFtIn,
+} from '../games/biobuzz/graphics/driverEye';
 import { installViewKey } from '../games/biobuzz/graphics/viewKey';
 import { rangeFill } from './rangeFill';
 import { useCoarsePointer } from './useCoarsePointer';
@@ -321,6 +333,126 @@ function MaxFpsRow({ value, onPick }: { value: MaxFps; onPick: (v: MaxFps) => vo
   );
 }
 
+/**
+ * "YOUR HEIGHT" (owner, 2026-09-21) — beside the Camera row, because it only ever changes the
+ * `driver` camera: set it and the eye stands at your own real eye level, at the wall your own
+ * alliance and role stand behind (`graphics/driverEye.ts`). Per device, same as Camera — see
+ * that file's own header for why.
+ *
+ * Two units, one stored value: the field always holds INCHES (`coerceDriverHeightIn`'s own
+ * domain), and `ft/in` vs `cm` is a display toggle with no memory of its own — reopening this
+ * screen always starts on `ft/in`, which is harmless because switching costs one tap and the
+ * unit never changes what is actually stored.
+ */
+function DriverHeightRow({ value, onChange }: { value: number | null; onChange: (v: number | null) => void }) {
+  const [unit, setUnit] = useState<'ftin' | 'cm'>('ftin');
+
+  const parts = value != null ? ftInFromIn(value) : null;
+  const [draftFeet, setDraftFeet] = useState(parts ? String(parts.feet) : '');
+  const [draftInches, setDraftInches] = useState(parts ? String(parts.inches) : '');
+  const [draftCm, setDraftCm] = useState(value != null ? String(Math.round(cmFromIn(value))) : '');
+
+  useEffect(() => {
+    const p = value != null ? ftInFromIn(value) : null;
+    setDraftFeet(p ? String(p.feet) : '');
+    setDraftInches(p ? String(p.inches) : '');
+    setDraftCm(value != null ? String(Math.round(cmFromIn(value))) : '');
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [value]);
+
+  // BOTH BOXES BLANK IS "CLEAR", not "zero" — a height of 0 is not in the clamp's own range
+  // (`DRIVER_HEIGHT_MIN_IN`), so there is no legal value this could be confused with.
+  const commitFtIn = (): void => {
+    const f = Number.parseInt(draftFeet, 10);
+    const i = Number.parseInt(draftInches, 10);
+    if (!Number.isFinite(f) && !Number.isFinite(i)) {
+      onChange(null);
+      return;
+    }
+    onChange(coerceDriverHeightIn(inFromFtIn(Number.isFinite(f) ? f : 0, Number.isFinite(i) ? i : 0), value));
+  };
+  const commitCm = (): void => {
+    const c = Number.parseFloat(draftCm);
+    if (!Number.isFinite(c)) {
+      onChange(null);
+      return;
+    }
+    onChange(coerceDriverHeightIn(inFromCm(c), value));
+  };
+  const onEnter = (commit: () => void) => (e: KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      commit();
+    }
+  };
+
+  return (
+    <div className="ds-field">
+      <span className="cap">
+        Your height <span className="val">{value != null ? `${value.toFixed(1)} in eye level` : 'Not set'}</span>
+      </span>
+      <div className="ds-opts two">
+        <button className={`ds-opt ${unit === 'ftin' ? 'on' : ''}`} aria-pressed={unit === 'ftin'} onClick={() => setUnit('ftin')}>
+          <span className="ot">ft / in</span>
+        </button>
+        <button className={`ds-opt ${unit === 'cm' ? 'on' : ''}`} aria-pressed={unit === 'cm'} onClick={() => setUnit('cm')}>
+          <span className="ot">cm</span>
+        </button>
+      </div>
+      {unit === 'ftin' ? (
+        <div className="ds-field-row">
+          <input
+            className="ds-input"
+            type="number"
+            inputMode="numeric"
+            min={Math.floor(DRIVER_HEIGHT_MIN_IN / 12)}
+            max={Math.floor(DRIVER_HEIGHT_MAX_IN / 12)}
+            placeholder="ft"
+            aria-label="Height, feet"
+            value={draftFeet}
+            onChange={(e) => setDraftFeet(e.target.value)}
+            onBlur={commitFtIn}
+            onKeyDown={onEnter(commitFtIn)}
+          />
+          <input
+            className="ds-input"
+            type="number"
+            inputMode="numeric"
+            min={0}
+            max={11}
+            placeholder="in"
+            aria-label="Height, inches"
+            value={draftInches}
+            onChange={(e) => setDraftInches(e.target.value)}
+            onBlur={commitFtIn}
+            onKeyDown={onEnter(commitFtIn)}
+          />
+        </div>
+      ) : (
+        <input
+          className="ds-input"
+          type="number"
+          inputMode="numeric"
+          min={Math.round(cmFromIn(DRIVER_HEIGHT_MIN_IN))}
+          max={Math.round(cmFromIn(DRIVER_HEIGHT_MAX_IN))}
+          placeholder="cm"
+          aria-label="Height, centimetres"
+          value={draftCm}
+          onChange={(e) => setDraftCm(e.target.value)}
+          onBlur={commitCm}
+          onKeyDown={onEnter(commitCm)}
+        />
+      )}
+      {value != null && (
+        <button className="ds-btn small ghost" onClick={() => onChange(null)}>
+          Clear
+        </button>
+      )}
+      <p className="ds-hint">Sets the driver camera to your real eye level, standing where your drive team stands.</p>
+    </div>
+  );
+}
+
 const PRESETS: readonly GraphicsPreset[] = ['auto', 'low', 'medium', 'high', 'ultra'];
 
 /** megapixels, one decimal — the number the render-scale row is capped by, printed so the cap
@@ -340,6 +472,9 @@ export function GraphicsSection() {
 
   const [camera, setCamera] = useState<CameraPref>(() => getCameraPref());
   useEffect(() => subscribeCameraPref(setCamera), []);
+
+  const [driverHeight, setDriverHeight] = useState<number | null>(() => getDriverHeightIn());
+  useEffect(() => subscribeDriverHeightIn(setDriverHeight), []);
   /** FREE CAM (owner, 2026-09-21) is MOUSE-ONLY — two-finger orbit/pinch dolly would collide
    * with the on-screen drive sticks (`MobileControls`) reliably enough that it is left out
    * rather than shipped half-working, so the picker hides the option on a touch surface rather
@@ -387,6 +522,7 @@ export function GraphicsSection() {
               t: c === 'auto' ? 'Auto' : c[0].toUpperCase() + c.slice(1),
             }))}
           />
+          <DriverHeightRow value={driverHeight} onChange={setDriverHeightIn} />
         </div>
       </section>
 

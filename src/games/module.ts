@@ -436,6 +436,16 @@ export interface SceneFrame {
   viewAngle: number;
   camera: SceneCamera;
   localRobotId?: number;
+  /**
+   * The LOCAL PLAYER's own start category (`close`/`far`) — the same field the HUD and the
+   * start editor read, carried here so a scene can resolve a TOP/BOTTOM drive-station role for
+   * `localRobotId` without a second lookup (BIOBUZZ's height-accurate driver camera,
+   * `docs/area/biobuzz.md`'s "BIOBUZZ 3D" section: `graphics/driverEye.ts`). It is a fact about
+   * THIS CLIENT's own settings, not the network, so it means nothing without `localRobotId`
+   * alongside it and every other game ignores it. Absent for a spectator, same as
+   * `localRobotId`.
+   */
+  localStartCat?: StartCat;
   width: number;
   height: number;
   dpr: number;

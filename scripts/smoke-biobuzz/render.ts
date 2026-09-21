@@ -98,6 +98,7 @@ import {
   BB_HOOD_WRAP,
   BB_INTAKE_THROAT_FRAC,
   BB_LAUNCH_Z0,
+  BB_MOTOR_MOUNT_RIM,
   BB_RAMP_ANGLE,
   BB_RAMP_DEPLOY_S,
   BB_RAMP_DECK_Z,
@@ -107,6 +108,7 @@ import {
   BB_RAMP_L,
   BB_RAMP_OUT,
   BB_RAMP_PIVOT_BACK,
+  BB_RAMP_PIVOT_Z,
   BB_RAMP_TIP_Z,
   BB_SHOOTER_PLATE_T,
   BB_SIDE_PLATE_BOTTOM_Z,
@@ -177,6 +179,22 @@ import {
   FREE_CAM_PITCH_MIN,
   type FreeCamState,
 } from '../../src/games/biobuzz/graphics/freeCam';
+import {
+  coerceDriverHeightIn,
+  driverEyeAim,
+  driverEyePoint,
+  DRIVER_EYE_VFOV_DEG,
+  DRIVER_HEIGHT_MAX_IN,
+  DRIVER_HEIGHT_MIN_IN,
+  EYE_VERTEX_OFFSET_IN,
+  ROLE_ALONG_WALL_FRACTION,
+  STAND_BACK_IN,
+  type DriverRole,
+} from '../../src/games/biobuzz/graphics/driverEye';
+import { ALLIANCE_AREA } from '../../src/games/biobuzz/fieldDims.gen';
+import { bbRoleLabel } from '../../src/games/biobuzz/config';
+import { createCameras, setDriverHeightIn } from '../../src/games/biobuzz/scene/renderCameras';
+import type { SceneFrame } from '../../src/games/module';
 import { viewAngleOf } from '../../src/sim/field';
 import {
   GFX_PIXEL_BUDGET,
@@ -1177,6 +1195,7 @@ export function renderChecks(check: Check): void {
   endPlateChecks(check);
   hoodPlateChecks(check);
   freeCamChecks(check);
+  driverEyeChecks(check);
 }
 
 /**
@@ -1730,6 +1749,81 @@ function hoodPlateChecks(check: Check): void {
       );
     }
 
+    // ── …AND IT IS THE *ONLY* PLATE ON ITS SIDE, FROM THE MOTOR MOUNT TO THE MUZZLE ─────────
+    //
+    // ⚠️ **OWNER, 2026-09-21, SECOND CORRECTION ON THIS MECHANISM: "The parallel plates of the
+    // shooter has a split. The plate in the back that mounts the motor and the plate that retains
+    // the flywheel should be the same plate."** The χ test above only ever saw ONE mesh at a time,
+    // so it said "one piece" about a part that was one of TWO per side: the plate stopped at the
+    // hood's radius (−3.917 in the axle frame, POLLEN) and a 1.47 × 0.22-in EAR carried the motor
+    // from 0.63 in further back, in the plate's own plane, with the feed wall's perpendicular face
+    // in the gap. A per-mesh check cannot see that. These are about the SET of meshes.
+    {
+      pose(BB_TURRET_PITCH_MIN);
+      const plates = meshes.filter((m) => m.name === 'bb-turret-side-plate');
+      const axleV = (m: THREE.Mesh): THREE.Vector3[] => {
+        const pos = m.geometry.getAttribute('position') as THREE.BufferAttribute;
+        const out: THREE.Vector3[] = [];
+        for (let i = 0; i < pos.count; i++)
+          out.push(new THREE.Vector3().fromBufferAttribute(pos, i).applyMatrix4(m.matrixWorld).applyMatrix4(axleInv));
+        return out;
+      };
+      const boxes = plates.map((m) => new THREE.Box3().setFromPoints(axleV(m)));
+      // each plate is PLANAR — its whole length lies in one |y| band, one plate thickness wide —
+      // and the two are mirror images, which is what makes them one part and its reflection
+      const bands = boxes.map((b) => [Math.min(Math.abs(b.min.y), Math.abs(b.max.y)), Math.max(Math.abs(b.min.y), Math.abs(b.max.y))]);
+      check(
+        `hood-inside/${label}: exactly TWO side plates, one per side, mirror images at one |y| each`,
+        plates.length === 2 &&
+          boxes.every((b, i) => Math.abs(bands[i][1] - bands[i][0] - BB_SHOOTER_PLATE_T) < 1e-6 && b.min.y * b.max.y > 0) &&
+          boxes[0].min.y * boxes[1].min.y < 0 &&
+          Math.abs(bands[0][0] - bands[1][0]) < 1e-6 &&
+          Math.abs(bands[0][1] - bands[1][1]) < 1e-6 &&
+          Math.abs(boxes[0].min.x - boxes[1].min.x) < 1e-6 &&
+          Math.abs(boxes[0].max.x - boxes[1].max.x) < 1e-6 &&
+          Math.abs(boxes[0].min.z - boxes[1].min.z) < 1e-6 &&
+          Math.abs(boxes[0].max.z - boxes[1].max.z) < 1e-6,
+        `${plates.length} plate(s); y ${boxes.map((b) => `[${b.min.y.toFixed(3)}, ${b.max.y.toFixed(3)}]`).join(' ')} (one thickness ${BB_SHOOTER_PLATE_T} each), x [${boxes[0].min.x.toFixed(3)}, ${boxes[0].max.x.toFixed(3)}], z [${boxes[0].min.z.toFixed(3)}, ${boxes[0].max.z.toFixed(3)}]`,
+      );
+      // ONE PLATE SPANS THE WHOLE MACHINE: the motor's mounting station at the back, the flywheel
+      // axle it journals in the middle, and the front standoffs at the nose. Measured off the
+      // drawn mesh's own x-extent, not off the constants it was built from.
+      const braceFront = Math.max(...BB_TURRET_BRACES.map((s) => Math.cos(s.th) * s.r + BB_TURRET_BRACE_R));
+      const motorAxis = -H.motorR;
+      check(
+        `hood-inside/${label}: ...and each one reaches from the motor's mount past the axle to the exit standoffs`,
+        boxes.every((b) => b.min.x <= motorAxis - BB_TURRET_MOTOR_R - 1e-6 && b.max.x >= braceFront - 1e-6 && b.min.x < 0 && b.max.x > 0),
+        `plate x [${boxes[0].min.x.toFixed(3)}, ${boxes[0].max.x.toFixed(3)}] vs motor axis ${motorAxis.toFixed(3)} (can rear ${(motorAxis - BB_TURRET_MOTOR_R).toFixed(3)}), axle 0.000, front standoff ${braceFront.toFixed(3)}`,
+      );
+      // NOTHING ELSE MAY LIE IN A SIDE PLATE'S OWN PLANE. That is exactly what the ears were, and
+      // it is the difference between a cross member and a second plate: a member SPANS the
+      // channel (its y interval crosses the centreline); anything that does not must keep clear of
+      // both plate bands. Two parts are in that class and both clear it — the hood's CHEEK
+      // inboard by `BB_HOOD_SIDE_CLEAR`, and the belt outboard by 0.21 in (`BB_BELT_CLEAR` less
+      // half the pulley's own width) — where an ear read 0.000 on both sides of the band.
+      {
+        const band = [H.plateGap / 2, H.plateGap / 2 + BB_SHOOTER_PLATE_T] as const;
+        let intruder = '';
+        let nearest = Infinity;
+        for (const m of meshes) {
+          if (m.name === 'bb-turret-side-plate') continue;
+          const ys = axleV(m).map((v) => v.y);
+          const lo = Math.min(...ys);
+          const hi = Math.max(...ys);
+          if (lo < 0 && hi > 0) continue; // a cross member: it spans the channel
+          const a = Math.min(Math.abs(lo), Math.abs(hi));
+          const b = Math.max(Math.abs(lo), Math.abs(hi));
+          if (b > band[0] && a < band[1]) intruder = `${m.name} at |y| [${a.toFixed(3)}, ${b.toFixed(3)}] inside the plate's own [${band[0].toFixed(3)}, ${band[1].toFixed(3)}]`;
+          else nearest = Math.min(nearest, a >= band[1] ? a - band[1] : band[0] - b);
+        }
+        check(
+          `hood-inside/${label}: ...and NOTHING else lies in a plate's plane — no second "rear plate", only members that cross the channel`,
+          intruder === '',
+          intruder || `nearest part that does not span the channel clears the plate band by ${nearest.toFixed(3)} in (the ears read 0.000 — they were the plate's own plane)`,
+        );
+      }
+    }
+
     // ── AND THE FLYWHEEL IS BLACK, WHATEVER THE SPEC SAYS ───────────────────────────────────
     // Three accents, because one accent that happens to be near-black would pass by accident.
     for (const accent of ['magenta', 'red', 'white'] as const) {
@@ -1884,6 +1978,177 @@ function freeCamChecks(check: Check): void {
     const src = readFileSync(join(BIOBUZZ_DIR, 'graphics', 'freeCam.ts'), 'utf8');
     check('freeCam/source: graphics/freeCam.ts does not import three', !/from\s+['"]three['"]/.test(src));
     check('freeCam/source: graphics/freeCam.ts does not import scene/', !/from\s+['"]\.\.\/scene\//.test(src));
+  }
+}
+
+/**
+ * DRIVER EYE (owner, 2026-09-21) — "Your height": the height-accurate BIOBUZZ 3D driver camera.
+ * `graphics/driverEye.ts` is pure math (eye point, aim, clamps); this checks that math directly,
+ * then wires `scene/renderCameras.ts`'s actual `createCameras()` against it for the two
+ * behaviours that live in that file rather than in the pure module — falling all the way back
+ * to the legacy fit when the setting is unset, and landing EXACTLY on `driverEyePoint`'s answer
+ * when it is set.
+ */
+function driverEyeChecks(check: Check): void {
+  const frameFor = (overrides: Partial<SceneFrame> = {}): SceneFrame => ({
+    alpha: 0,
+    viewAngle: viewAngleOf('blue'),
+    camera: 'driver',
+    width: 1600,
+    height: 900,
+    dpr: 1,
+    ...overrides,
+  });
+
+  // ---- coerceDriverHeightIn: field-by-field, like every other stored setting -----------------
+  {
+    check('driverEye/coerce: null is the explicit "unset", passed through', coerceDriverHeightIn(null, 70) === null);
+    check('driverEye/coerce: a value in range round-trips (to 0.1 in)', coerceDriverHeightIn(68.25, null) === 68.3);
+    check(
+      'driverEye/coerce: below the floor clamps UP to it, never falls back',
+      coerceDriverHeightIn(DRIVER_HEIGHT_MIN_IN - 20, 70) === DRIVER_HEIGHT_MIN_IN,
+    );
+    check(
+      'driverEye/coerce: above the ceiling clamps DOWN to it, never falls back',
+      coerceDriverHeightIn(DRIVER_HEIGHT_MAX_IN + 20, 70) === DRIVER_HEIGHT_MAX_IN,
+    );
+    check('driverEye/coerce: NaN/junk falls back to what was already stored, not to null', coerceDriverHeightIn(Number.NaN, 70) === 70);
+    check('driverEye/coerce: a non-number falls back the same way', coerceDriverHeightIn('5 ft 8 in', 70) === 70);
+  }
+
+  // ---- driverEyePoint: red/blue are point mirrors of each other through the field centre -----
+  // (TOP mirrors to BOTTOM, not to TOP — see driverEye.ts's own header on why: point-mirroring
+  // flips the y sign the role already encodes, and `bbRoleLabel` already resolves TOP/BOTTOM so
+  // that the label means the same world-y sign on either alliance's own wall.)
+  {
+    const h = 70;
+    const redTop = driverEyePoint('red', 'TOP', h);
+    const blueBottom = driverEyePoint('blue', 'BOTTOM', h);
+    const redBottom = driverEyePoint('red', 'BOTTOM', h);
+    const blueTop = driverEyePoint('blue', 'TOP', h);
+    check(
+      "driverEye/mirror: red TOP is blue BOTTOM's point mirror through the field centre",
+      Math.abs(redTop.x + blueBottom.x) < 1e-9 && Math.abs(redTop.y + blueBottom.y) < 1e-9 && redTop.z === blueBottom.z,
+      `${JSON.stringify(redTop)} vs -${JSON.stringify(blueBottom)}`,
+    );
+    check(
+      "driverEye/mirror: red BOTTOM is blue TOP's point mirror through the field centre",
+      Math.abs(redBottom.x + blueTop.x) < 1e-9 && Math.abs(redBottom.y + blueTop.y) < 1e-9 && redBottom.z === blueTop.z,
+      `${JSON.stringify(redBottom)} vs -${JSON.stringify(blueTop)}`,
+    );
+  }
+
+  // ---- TOP vs BOTTOM differ by exactly the stated along-wall offset and NOTHING else ----------
+  {
+    for (const alliance of ['red', 'blue'] as const) {
+      const h = 65;
+      const top = driverEyePoint(alliance, 'TOP', h);
+      const bottom = driverEyePoint(alliance, 'BOTTOM', h);
+      const area = ALLIANCE_AREA[alliance];
+      const expectedOffset = 2 * ROLE_ALONG_WALL_FRACTION * (area.y1 - area.y0);
+      check(`driverEye/role: ${alliance} TOP and BOTTOM sit at the same x (the same wall)`, top.x === bottom.x, `${top.x} vs ${bottom.x}`);
+      check(`driverEye/role: ${alliance} TOP and BOTTOM sit at the same eye height`, top.z === bottom.z);
+      check(
+        `driverEye/role: ${alliance} TOP/BOTTOM differ along the wall by exactly a quarter each way`,
+        Math.abs(top.y - bottom.y - expectedOffset) < 1e-9,
+        `${top.y - bottom.y} vs ${expectedOffset}`,
+      );
+    }
+  }
+
+  // ---- eye z tracks the height setting, less the vertex offset --------------------------------
+  {
+    for (const h of [DRIVER_HEIGHT_MIN_IN, 60, 70.4, DRIVER_HEIGHT_MAX_IN]) {
+      const p = driverEyePoint('blue', 'TOP', h);
+      check(`driverEye/z: eye height at ${h} in tracks height − ${EYE_VERTEX_OFFSET_IN}`, Math.abs(p.z - (h - EYE_VERTEX_OFFSET_IN)) < 1e-9, String(p.z));
+    }
+  }
+
+  // ---- the point is inside the alliance area rect and outside the field -----------------------
+  {
+    for (const alliance of ['red', 'blue'] as const) {
+      for (const role of ['TOP', 'BOTTOM'] as const) {
+        const p = driverEyePoint(alliance, role, 66);
+        const area = ALLIANCE_AREA[alliance];
+        const inArea = p.x >= Math.min(area.x0, area.x1) - 1e-9 && p.x <= Math.max(area.x0, area.x1) + 1e-9 && p.y >= area.y0 - 1e-9 && p.y <= area.y1 + 1e-9;
+        check(`driverEye/area: ${alliance} ${role} sits inside its own ALLIANCE_AREA rect`, inArea, JSON.stringify(p));
+        check(`driverEye/area: ${alliance} ${role} sits outside the field`, Math.abs(p.x) > BB_HALF_X, String(p.x));
+      }
+      // and it is `STAND_BACK_IN` past the area's own field-side edge, not merely "outside".
+      const p = driverEyePoint(alliance, 'TOP', 66);
+      const area = ALLIANCE_AREA[alliance];
+      const fieldSideX = Math.abs(area.x0) < Math.abs(area.x1) ? area.x0 : area.x1;
+      check(`driverEye/area: ${alliance} stands STAND_BACK_IN behind its own wall`, Math.abs(Math.abs(p.x - fieldSideX) - STAND_BACK_IN) < 1e-9, String(p.x - fieldSideX));
+    }
+  }
+
+  // ---- driverEyeAim: yaw/pitch point at field centre with no robot, and blend toward one ------
+  {
+    const eye = { x: -90, y: 0, z: 60 };
+    const noRobot = driverEyeAim(eye, null);
+    check('driverEye/aim: with no robot, yaw points toward field centre (+x from a red-side eye)', Math.abs(noRobot.yaw) < 1e-9, String(noRobot.yaw));
+    const withRobot = driverEyeAim(eye, { x: 0, y: 40, z: 0 });
+    check('driverEye/aim: a robot off to one side pulls the yaw off zero, toward it', withRobot.yaw > 1e-6, String(withRobot.yaw));
+    check('driverEye/aim: yaw stays finite and pitch stays finite for an ordinary eye/robot pair', Number.isFinite(withRobot.yaw) && Number.isFinite(withRobot.pitch));
+  }
+
+  // ---- graphics/ still imports neither three nor scene/ ---------------------------------------
+  {
+    const src = readFileSync(join(BIOBUZZ_DIR, 'graphics', 'driverEye.ts'), 'utf8');
+    check('driverEye/source: graphics/driverEye.ts does not import three', !/from\s+['"]three['"]/.test(src));
+    check('driverEye/source: graphics/driverEye.ts does not import scene/', !/from\s+['"]\.\.\/scene\//.test(src));
+  }
+
+  // ---- WIRING: scene/renderCameras.ts's actual driver camera --------------------------------
+  {
+    const cams = createCameras();
+    // a real BIOBUZZ world (`harness.ts`'s own fixture) rather than a hand-built stub — its one
+    // robot is id 0, blue, and this block only ever moves its `pos`/`z`.
+    const world = mkWorld('practice', 1);
+    const robot = world.robots[0];
+    robot.pos = { x: 20, y: 30 };
+
+    // no height set ⇒ the driver pose is unaffected by role data being present or absent at all
+    setDriverHeightIn(null);
+    cams.update(frameFor({ localRobotId: undefined, localStartCat: undefined }), world, 'driver');
+    const posUnset = cams.driver.position.clone();
+    cams.update(frameFor({ localRobotId: robot.id, localStartCat: 'close' }), world, 'driver');
+    const posUnsetWithRobot = cams.driver.position.clone();
+    check(
+      'driverEye/wiring: with no height set, the driver pose is byte-identical whether a local robot/role is present or not (the legacy pose)',
+      posUnset.equals(posUnsetWithRobot),
+      `${posUnset.toArray()} vs ${posUnsetWithRobot.toArray()}`,
+    );
+    check('driverEye/wiring: with no height set, the driver camera actually moved to a real pose (else the check above is vacuous)', posUnset.length() > 1);
+
+    // height set + a resolvable TOP/BOTTOM role ⇒ the camera lands EXACTLY on driverEyePoint's
+    // own answer, and nowhere near the un-set (fit-based) pose.
+    setDriverHeightIn(68);
+    robot.pos = { x: 10, y: -5 };
+    cams.update(frameFor({ localRobotId: robot.id, localStartCat: 'close' }), world, 'driver');
+    const role = bbRoleLabel('close', robot.alliance);
+    check('driverEye/wiring: bbRoleLabel resolves close+blue to TOP (sanity for the expectation below)', role === 'TOP', role);
+    const expected = driverEyePoint(robot.alliance, role as DriverRole, 68);
+    const got = cams.driver.position;
+    check(
+      "driverEye/wiring: with a height set, the driver camera's position is EXACTLY driverEyePoint's answer",
+      Math.abs(got.x - expected.x) < 1e-6 && Math.abs(got.y - expected.y) < 1e-6 && Math.abs(got.z - expected.z) < 1e-6,
+      `${got.toArray()} vs ${JSON.stringify(expected)}`,
+    );
+    check('driverEye/wiring: the height-accurate pose is NOT the legacy pose (the fallback did not silently win)', !got.equals(posUnset));
+    check('driverEye/wiring: the height-accurate camera uses DRIVER_EYE_VFOV_DEG, not the solved fit', cams.driver.fov === DRIVER_EYE_VFOV_DEG, String(cams.driver.fov));
+
+    // an UNRESOLVABLE role (no locked start category) falls back to the legacy pose too.
+    setDriverHeightIn(68);
+    cams.update(frameFor({ localRobotId: robot.id, localStartCat: undefined }), world, 'driver');
+    check(
+      "driverEye/wiring: height set but no locked role ⇒ falls back to the legacy pose (bbRoleLabel(undefined) is '-')",
+      cams.driver.position.equals(posUnset),
+      String(cams.driver.position.toArray()),
+    );
+
+    // clean up module-scope state so no other lane in this same process observes it.
+    setDriverHeightIn(null);
   }
 }
 
@@ -3078,51 +3343,101 @@ function graphicsChecks(check: Check, allFiles: string[]): void {
         //
         // "The arc in the parallel plates of the shooter reaches too high. The hood extends above
         // the supporting parallel plates." The plate's outer boundary is `config.ts`'s profile —
-        // an arc at the head's own `hoodR` cut by a flat top, a flat front and a flat bottom — and
-        // the hood occupies `hoodR … +BB_HOOD_T`, so the hood is the outermost part at every angle
-        // in the wrap and at every elevation, with no offset anybody can drift.
+        // FIVE FLATS: the top at the corridor cut, the front past the standoffs, the bottom on the
+        // turret plate, the rear at the motor's mount station, and the undercut between the last
+        // two — and the hood occupies `hoodR … +BB_HOOD_T`.
         //
-        // ⚠️ AND THE FIXED PLATE IS THE COMPACT ARC-AND-BOX, which is where it started and where
-        // it is back. Two passes grew it up to `hoodR` to reach the hood — a 22° relief ramp with
-        // a 64° arc, then an exit cut with a raked tail — and the owner rejected both ("the
-        // shooter parallel plates became ugly. remember that the arc does not need to be big").
-        // A fixed plate sized to a part that swings away from it is a fin at the 80° cap whatever
-        // its outline; what reaches the hood is the hood's own CHEEK, measured further down.
+        // ⚠️ AND THE FIXED PLATE IS ONE PIECE, MOTOR MOUNT TO MUZZLE (owner, 2026-09-21: "the plate
+        // in the back that mounts the motor and the plate that retains the flywheel should be the
+        // same plate"). The ARC at `hoodR` that used to close the rear is gone with the split it
+        // caused; the plate's TOP has not moved and neither has the ratchet below it, because
+        // reaching BACKWARD to the motor is a different axis from the two passes that grew this
+        // plate UP to chase the hood ("the shooter parallel plates became ugly. remember that the
+        // arc does not need to be big"). What reaches the hood is still the hood's own CHEEK.
         // Restated here rather than imported, the way this lane always restates the profile, so
         // the two copies have to agree.
         const TH_EXIT = Math.PI / 2;
+        const UNDER = ((): { nx: number; nz: number; c: number } => {
+          const px = -(H.wallR + BB_FEED_WALL_T); // the feed wall's back face, on the bottom flat
+          const pz = BB_SIDE_PLATE_BOTTOM_Z;
+          const dx = -H.motorR - px;
+          const dz = -pz;
+          const d = Math.hypot(dx, dz);
+          const ca = (BB_TURRET_MOTOR_R + BB_MOTOR_MOUNT_RIM) / d;
+          const sa = Math.sqrt(1 - ca * ca);
+          const nx = (dx * ca + dz * sa) / d;
+          const nz = (-dx * sa + dz * ca) / d;
+          return { nx, nz, c: nx * px + nz * pz };
+        })();
         const plateR = (th: number): number => {
           const st = Math.sin(th);
           const ct = Math.cos(th);
-          let r = H.hoodR;
+          let r = Infinity;
           if (st > 1e-9) r = Math.min(r, BB_SIDE_PLATE_TOP_Z / st);
           if (st < -1e-9) r = Math.min(r, BB_SIDE_PLATE_BOTTOM_Z / st);
           if (ct > 1e-9) r = Math.min(r, BB_SIDE_PLATE_FRONT_X / ct);
+          if (ct < -1e-9) r = Math.min(r, H.sideRearX / ct);
+          const nu = UNDER.nx * ct + UNDER.nz * st;
+          if (nu < -1e-9) r = Math.min(r, UNDER.c / nu);
           return r;
         };
         {
+          // ⚠️ **THE STATEMENT IS A PARTITION NOW, AND THAT IS WHAT THE LONGER PLATE MADE IT.**
+          // It used to be one clause — the hood is proud of the plate at every angle in the wrap,
+          // at every elevation — which a plate ending at `hoodR` satisfied everywhere. A plate
+          // that reaches the motor cannot: at θ = 180° it runs out to `sideRearX`, 2.0 in past the
+          // hood's own swept disc, so at high elevation the hood's tail is radially INSIDE it.
+          // That is not the bug the old clause was written for; it is what a hood between two
+          // plates does. So the rule is the partition the geometry actually makes, and the two
+          // branches MEET EXACTLY at sin θ = BB_SIDE_PLATE_TOP_Z / hoodR (165.7° on a POLLEN
+          // head): either the hood stands BB_HOOD_T proud of the plate along that ray, or its arc
+          // has dropped to or below the plate's flat top, where it is carried between the plates
+          // and `BB_HOOD_SIDE_CLEAR` plus the 41-elevation interpenetration sweep are what hold it
+          // off. Both branches must be NON-EMPTY, or a plate swallowing the hood would pass by
+          // having no angle in the first branch at all.
           let worst = Infinity;
           let worstAt = '';
           let rest = Infinity;
-          let top = Infinity;
+          let proudN = 0;
+          let underN = 0;
+          let neither = '';
           const NA = 24;
           for (let i = 0; i < PITCHES; i++) {
             const p = pitchAt(i);
             for (let j = 0; j <= NA; j++) {
-              const th = Math.PI / 2 + (BB_HOOD_WRAP * j) / NA;
-              const proud = H.hoodR + BB_HOOD_T - plateR(th + p);
-              if (proud < worst) {
-                worst = proud;
-                worstAt = `p=${((p * 180) / Math.PI).toFixed(1)}° θ=${(((th + p) * 180) / Math.PI).toFixed(1)}°`;
+              const th = Math.PI / 2 + p + (BB_HOOD_WRAP * j) / NA;
+              const proud = H.hoodR + BB_HOOD_T - plateR(th);
+              if (proud >= BB_HOOD_T - 1e-9) {
+                proudN++;
+                if (proud < worst) {
+                  worst = proud;
+                  worstAt = `p=${((p * 180) / Math.PI).toFixed(1)}° θ=${((th * 180) / Math.PI).toFixed(1)}°`;
+                }
+              } else if (H.hoodR * Math.sin(th) <= BB_SIDE_PLATE_TOP_Z + 1e-9) underN++;
+              else if (!neither) {
+                neither = `p=${((p * 180) / Math.PI).toFixed(1)}° θ=${((th * 180) / Math.PI).toFixed(1)}°: proud ${proud.toFixed(4)}, hood arc at z ${(H.hoodR * Math.sin(th)).toFixed(4)} over the cut ${BB_SIDE_PLATE_TOP_Z.toFixed(4)}`;
               }
               if (i === 0) rest = Math.min(rest, proud);
-              if (i === PITCHES - 1) top = Math.min(top, proud);
             }
           }
           check(
-            `${tag}: the hood stands PROUD of the plate at every angle in the wrap, at rest AND at full elevation`,
-            worst >= BB_HOOD_T - 1e-9 && top >= BB_HOOD_T - 1e-9,
-            `worst +${worst.toFixed(4)} (${worstAt}); rest +${rest.toFixed(3)}, 80° +${top.toFixed(3)}`,
+            `${tag}: at every elevation the hood is either PROUD of the plate or below its flat top — never covered by it`,
+            neither === '' && proudN > 0 && underN > 0,
+            neither || `${proudN} angles proud (worst +${worst.toFixed(4)}, ${worstAt}), ${underN} below the cut`,
+          );
+          // …and the two ENDS of the envelope are each entirely in one branch, which is the shape
+          // of the mechanism rather than an average over it.
+          let restWorst = Infinity;
+          let capHighest = -Infinity;
+          for (let j = 0; j <= NA; j++) {
+            const off = (BB_HOOD_WRAP * j) / NA;
+            restWorst = Math.min(restWorst, H.hoodR + BB_HOOD_T - plateR(Math.PI / 2 + off));
+            capHighest = Math.max(capHighest, H.hoodR * Math.sin(Math.PI / 2 + BB_TURRET_PITCH_MAX + off));
+          }
+          check(
+            `${tag}: ...AT REST the whole wrap is proud of it, and AT THE 80° CAP the whole wrap has dropped under the cut`,
+            restWorst >= BB_HOOD_T - 1e-9 && capHighest <= BB_SIDE_PLATE_TOP_Z + 1e-9,
+            `rest worst +${restWorst.toFixed(3)}; at the cap the hood's arc tops out at ${capHighest.toFixed(3)} against the cut ${BB_SIDE_PLATE_TOP_Z.toFixed(3)}`,
           );
           // ⚠️ AND THE FIXED PLATE IS *NOT* WHAT CLOSES THE GAP. The clause that sat here for one
           // pass was `rest <= BB_HOOD_T`, i.e. "somewhere in the wrap the fixed plate comes right
@@ -3151,10 +3466,18 @@ function graphicsChecks(check: Check, allFiles: string[]): void {
             over = Math.max(over, r - lim);
             reach = Math.max(reach, r);
           }
+          // the profile's own farthest point is the REAR-TOP corner now — the motor mount's outside
+          // corner — where it used to be the arc at `hoodR`. Compared against the analytic max
+          // rather than a literal, so the two copies still have to agree.
+          // the corner itself, not a sample of it: a convex profile's farthest point is a vertex,
+          // and no ray may pass it
+          const profileMax = Math.hypot(H.sideRearX, BB_SIDE_PLATE_TOP_Z);
+          let sampled = 0;
+          for (let i = 0; i < 36000; i++) sampled = Math.max(sampled, plateR((Math.PI * 2 * i) / 36000));
           check(
-            `${tag}: ...and the DRAWN side plate IS that profile: nothing outside it, and its arc is reached`,
-            over < 1e-6 && Math.abs(reach - H.hoodR) < 1e-6,
-            `worst overshoot ${over.toExponential(2)}, max r ${reach.toFixed(4)} vs hoodR ${H.hoodR.toFixed(4)}`,
+            `${tag}: ...and the DRAWN side plate IS that profile: nothing outside it, and its far corner is reached`,
+            over < 1e-6 && sampled <= profileMax + 1e-9 && Math.abs(reach - profileMax) < F32,
+            `worst overshoot ${over.toExponential(2)}, max r ${reach.toFixed(4)} vs the rear-top corner (${H.sideRearX.toFixed(3)}, ${BB_SIDE_PLATE_TOP_Z.toFixed(3)}) at ${profileMax.toFixed(4)}; the profile's own sampled max ${sampled.toFixed(4)}`,
           );
         }
 
@@ -3228,13 +3551,19 @@ function graphicsChecks(check: Check, allFiles: string[]): void {
             area += ((r * r) / 2) * dth;
           }
           // ½∮r²dθ is exact for a profile single-valued about the axle, which this one is by
-          // construction. The teardrop measured 22.80 (POLLEN) / 28.80 (NECTAR) and the raked cut
-          // 20.83 / 26.80; this is the compact plate's own area plus a working margin.
-          const AREA_MAX = which === 1 ? 18.8 : 16.6;
+          // construction (five half-planes with the axle inside them — convex).
+          //
+          // ⚠️ **RE-BASELINED 2026-09-21, ONCE, FOR THE OWNER'S ONE-PIECE RULING**: 16.2 → 21.41
+          // POLLEN, 18.4 → 23.55 NECTAR, all of it the tail that reaches the motor. The rejected
+          // shapes are NOT let back in by that — they were rejected for reaching UP, and the check
+          // above this one (the upper hemisphere never rises above the corridor cut, which the
+          // ramp read 3.632 and the rake 3.917 against) is what holds them out, unchanged. This
+          // stays a ratchet on the plate's total size at the new outline.
+          const AREA_MAX = which === 1 ? 23.7 : 21.6;
           check(
             `${tag}: ...and its silhouette stays under ${AREA_MAX} sq in`,
             area <= AREA_MAX,
-            `${area.toFixed(2)} sq in (the ramp was ${which === 1 ? '28.80' : '22.80'}, the rake ${which === 1 ? '26.80' : '20.83'})`,
+            `${area.toFixed(2)} sq in (the compact plate that could not reach the motor was ${which === 1 ? '18.4' : '16.2'}; the ramp ${which === 1 ? '28.80' : '22.80'}, the rake ${which === 1 ? '26.80' : '20.83'})`,
           );
         }
 
@@ -3485,11 +3814,35 @@ function graphicsChecks(check: Check, allFiles: string[]): void {
             `can front ${motorFront.toFixed(3)} vs hood rear-most over the sweep ${hoodBack.toFixed(3)}`,
           );
           check(
-            `${tag}: ...bolted to the feed wall's ears rather than floating, and over the turret plate`,
+            `${tag}: ...standing clear behind the feed wall rather than floating, and over the turret plate`,
             Math.min(...mv.map((v) => v.z)) >= BB_TURRET_PLATE_TOP_Z - F32 &&
               Math.abs(motorFront - (H.axleX - H.wallR - BB_FEED_WALL_T - 0.05)) < F32,
             `can front ${motorFront.toFixed(3)} vs wall rear face ${(H.axleX - H.wallR - BB_FEED_WALL_T).toFixed(3)}, bottom ${Math.min(...mv.map((v) => v.z)).toFixed(3)}`,
           );
+          // ⚠️ **AND IT BOLTS TO A SIDE PLATE** (owner, 2026-09-21). The can's axis is lateral, so
+          // its mounting FACE is a y = const plane; the ears it used to bolt to were a slab in the
+          // side plate's own plane with a 0.63-in gap to the plate itself. Its face is ON the
+          // plate now — the drive side's inner face, the same plate the belt runs down and the
+          // flywheel is journalled in — and the plate's rear flat leaves one `BB_MOTOR_MOUNT_RIM`
+          // of material all the way round the can (measured: 0.150 everywhere, both heads).
+          {
+            const faceY = Math.max(...mv.map((v) => v.y));
+            const plateInner = H.plateGap / 2;
+            let rim = Infinity;
+            for (let i = 0; i < 720; i++) {
+              const a = (Math.PI * 2 * i) / 720;
+              const px = -H.motorR + Math.cos(a) * BB_TURRET_MOTOR_R;
+              const pz = Math.sin(a) * BB_TURRET_MOTOR_R;
+              // the three plate edges the can comes near: the undercut under it, the rear flat
+              // behind it, the top flat over it
+              rim = Math.min(rim, UNDER.nx * px + UNDER.nz * pz - UNDER.c, px - H.sideRearX, BB_SIDE_PLATE_TOP_Z - pz);
+            }
+            check(
+              `${tag}: ...and its mounting FACE is ON the drive-side plate, inside a rim of plate all round the can`,
+              Math.abs(faceY - plateInner) <= 1e-3 && Math.abs(rim - BB_MOTOR_MOUNT_RIM) < 1e-6,
+              `face y ${faceY.toFixed(4)} vs the plate's inner face ${plateInner.toFixed(4)}; worst rim ${rim.toFixed(4)} vs ${BB_MOTOR_MOUNT_RIM}`,
+            );
+          }
           const bv = robotVerts(named('bb-turret-belt')[0]);
           check(
             `${tag}: the drive is a BELT, and it runs OUTBOARD of a side plate — the hood's shell crosses every line inside`,
@@ -3518,11 +3871,22 @@ function graphicsChecks(check: Check, allFiles: string[]): void {
           pose(BB_TURRET_PITCH_MIN);
           const throat = named('bb-turret-throat')[0];
           const tv = robotVerts(throat);
-          const plateOuterY = H.plateGap / 2 + BB_SHOOTER_PLATE_T;
+          // ⚠️ IT REACHES EACH PLATE'S INNER FACE AND NO FURTHER (owner, 2026-09-21: the side plate
+          // must read as ONE piece). This used to require the wall to pass THROUGH both plates and
+          // stand proud of their outer faces — which drew a vertical rib across each plate, exactly
+          // where the old motor ear began, so a one-piece plate still looked split.
+          const plateInnerY = H.plateGap / 2;
+          const wallMaxY = Math.max(...tv.map((v) => v.y));
+          const wallMinY = Math.min(...tv.map((v) => v.y));
           check(
-            `${tag}: the FEED THROAT ties both plates — it spans the channel and both plate thicknesses`,
-            Math.max(...tv.map((v) => v.y)) > plateOuterY && Math.min(...tv.map((v) => v.y)) < -plateOuterY,
-            `y ±${Math.max(...tv.map((v) => v.y)).toFixed(3)} vs plate face ±${plateOuterY.toFixed(3)}`,
+            `${tag}: the FEED THROAT ties both plates — it spans the channel to each plate's INNER face, and never shows through one`,
+            Math.abs(wallMaxY - plateInnerY) < F32 && Math.abs(wallMinY + plateInnerY) < F32,
+            `y ${wallMinY.toFixed(3)}…${wallMaxY.toFixed(3)} vs inner faces ±${plateInnerY.toFixed(3)}`,
+          );
+          check(
+            `${tag}: ...and its top sits below the plates' top edge (no line along the top of a plate)`,
+            Math.max(...tv.map((v) => v.z)) < BB_TURRET_AXLE_Z + BB_SIDE_PLATE_TOP_Z - 1e-3,
+            `wall top ${Math.max(...tv.map((v) => v.z)).toFixed(3)} vs plate top ${(BB_TURRET_AXLE_Z + BB_SIDE_PLATE_TOP_Z).toFixed(3)}`,
           );
           check(
             `${tag}: ...and it STANDS ON the turret plate, at the back of the rising element`,
@@ -4388,6 +4752,63 @@ function graphicsChecks(check: Check, allFiles: string[]): void {
                   barFolded.zMax > rollerZ + flapR,
                   `${barFolded.zMax.toFixed(3)} vs sweep top ${(rollerZ + flapR).toFixed(3)}`,
                 );
+                /**
+                 * ⚠️ **THE FOLDED U HAS TO HAVE A HOLE IN IT, AND THE HOLE IS THE ROLLER'S**
+                 * (owner: *"when deployed, from the top down, it should look like an upside down
+                 * U shape. This is because the hole created by the U is where the intake rollers
+                 * are situated in when the ramp is folded up vertically."*). The pivot is ON the
+                 * roller's own axle line, so FOLDED the rails stand straight up past it and the
+                 * roller's axis sits `BB_ROLLER_Z − BB_RAMP_PIVOT_Z` up that rail — which makes
+                 * the rigid HUB a band on the rail that no ramp member may enter.
+                 *
+                 * Measured off the meshes' OWN VERTICES rather than a Box3, in the roller's own
+                 * (u, z) plane, because a Box3 of a diagonal blade is mostly air. `BB_RAMP_IN`'s
+                 * header carries the before/after table and the reason the FLAPS are exempt: they
+                 * are compliant and hinged, they yield against the field the same way, and
+                 * clearing their r-2.0 sweep would leave 1.5 in of deck.
+                 */
+                {
+                  const axisU = f.depth - BB_RAMP_PIVOT_BACK;
+                  const axisZ = rollerZ;
+                  const v3f = new THREE.Vector3();
+                  let minHub = Infinity;
+                  let bladeRailLo = Infinity;
+                  let worst = '';
+                  for (const node of [bar, railL, railR]) {
+                    node.traverse((o) => {
+                      const mesh = o as THREE.Mesh;
+                      const geo = mesh.geometry as THREE.BufferGeometry | undefined;
+                      if (!geo?.attributes?.position) return;
+                      const pos = geo.attributes.position as THREE.BufferAttribute;
+                      for (let i = 0; i < pos.count; i++) {
+                        v3f.fromBufferAttribute(pos, i).applyMatrix4(mesh.matrixWorld);
+                        const du = (v3f.x - f.ox) * Math.cos(f.rot) + (v3f.y - f.oy) * Math.sin(f.rot) - axisU;
+                        const dz = v3f.z - axisZ;
+                        const gap = Math.sqrt(du * du + dz * dz) - hubR;
+                        if (gap < minHub) {
+                          minHub = gap;
+                          worst = o.name || node.name;
+                        }
+                        if (node === bar) bladeRailLo = Math.min(bladeRailLo, v3f.z - BB_RAMP_PIVOT_Z);
+                      }
+                    });
+                  }
+                  check(
+                    `${label}/${m.edge}: folded, no ramp member touches the roller's rigid HUB (>= 0.1 in)`,
+                    minHub >= 0.1,
+                    `closest ${minHub.toFixed(3)} in on ${worst}`,
+                  );
+                  // ...and the BLADE, which is the U's own bight, starts OUTBOARD of the hub along
+                  // the rail — the difference between "the hub is in the opening" and "the hub is
+                  // merely beside the blade", which is what `BB_RAMP_IN` 0.15 was.
+                  const hubTopRail = rollerZ - BB_RAMP_PIVOT_Z + hubR;
+                  check(
+                    `${label}/${m.edge}: folded, the blade's inboard edge lies outboard of the hub along the rail`,
+                    bladeRailLo >= hubTopRail + 0.1,
+                    `blade starts ${bladeRailLo.toFixed(3)} up the rail, hub top ${hubTopRail.toFixed(3)}`,
+                  );
+                }
+
                 // MOUTH-LOCAL (u, v, z), not world Box3: a `back`/`right` mouth is itself
                 // rotated (`f.rot`), which flips which WORLD side "l" lands on — `mouthExtent`
                 // undoes that rotation, so "l" reads as the +v side on every edge.

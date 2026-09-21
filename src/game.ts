@@ -1600,6 +1600,7 @@ export class GameController {
           viewAngle: this.renderer.camera.viewAngle,
           camera: this.sceneCameraFor(),
           localRobotId: this.spectator ? undefined : this.localRobotId,
+          localStartCat: this.spectator ? undefined : this.settings.startCat,
           width: this.canvas.clientWidth,
           height: this.canvas.clientHeight,
           dpr: window.devicePixelRatio || 1,

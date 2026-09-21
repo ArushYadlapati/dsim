@@ -282,7 +282,7 @@ The look and the depth model are `DESIGN.md`. This file is only the inventory.
 
 | class | declared | used |
 |---|---|---|
-| `.ds-opt` | src/ui/shell.css:1503 | 90 |
+| `.ds-opt` | src/ui/shell.css:1503 | 92 |
 | `.ds-opt-add` | src/ui/shell.css:3926 | 2 |
 | `.ds-opt-del` | src/ui/shell.css:3903 | 2 |
 
@@ -342,8 +342,8 @@ The look and the depth model are `DESIGN.md`. This file is only the inventory.
 
 | class | declared | used |
 |---|---|---|
-| `.ds-field` | src/ui/shell.css:1895 | 51 |
-| `.ds-field-row` | src/ui/shell.css:1822 | 5 |
+| `.ds-field` | src/ui/shell.css:1895 | 53 |
+| `.ds-field-row` | src/ui/shell.css:1822 | 6 |
 
 ## `ds-head` — 2
 
@@ -448,7 +448,7 @@ The look and the depth model are `DESIGN.md`. This file is only the inventory.
 
 | class | declared | used |
 |---|---|---|
-| `.ds-btn` | src/ui/shell.css:578 | 196 |
+| `.ds-btn` | src/ui/shell.css:578 | 197 |
 
 ## `ds-checkline` — 1
 
@@ -544,13 +544,13 @@ The look and the depth model are `DESIGN.md`. This file is only the inventory.
 
 | class | declared | used |
 |---|---|---|
-| `.ds-hint` | src/ui/shell.css:1841 | 171 |
+| `.ds-hint` | src/ui/shell.css:1841 | 172 |
 
 ## `ds-input` — 1
 
 | class | declared | used |
 |---|---|---|
-| `.ds-input` | src/ui/shell.css:1583 | 27 |
+| `.ds-input` | src/ui/shell.css:1583 | 30 |
 
 ## `ds-key` — 1
 
@@ -598,7 +598,7 @@ The look and the depth model are `DESIGN.md`. This file is only the inventory.
 
 | class | declared | used |
 |---|---|---|
-| `.ds-opts` | src/ui/shell.css:3808 | 55 |
+| `.ds-opts` | src/ui/shell.css:3808 | 56 |
 
 ## `ds-page` — 1
 

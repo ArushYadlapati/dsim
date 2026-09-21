@@ -1093,7 +1093,7 @@ export const BB_SIDE_ROLLER_RELEASE_CLEAR = BB_FLOWER_OPEN_R + 0.3;
  *           rails stand round the roller), `BB_RAMP_PIVOT_Z` up
  *   rails   `BB_RAMP_L` long, `BB_RAMP_ANGLE` below level — solved so the rail's own tip lands
  *           exactly on the blade's lip
- *   blade   one LEVEL box, `BB_RAMP_IN` (0.15) … `BB_RAMP_OUT` (3.54) past the tip line,
+ *   blade   one LEVEL box, `BB_RAMP_IN` (0.85) … `BB_RAMP_OUT` (3.54) past the tip line,
  *           `BB_RAMP_FLOOR_Z` (0.40) underneath and `BB_RAMP_DECK_Z` (0.48) on top, rail to rail
  *
  * ── WHY IT IS A FLAT BLADE AND NOT THE WEDGE IT WAS, ALL FOUR MEASUREMENTS ───────────────────
@@ -1199,9 +1199,46 @@ export const BB_RAMP_WEDGE_THICK = 0.04;
 /** the blade's own outward reach past the tip line (in): as far under a flush POLLEN's own centre
  * (`BB_PLACE_REACH`, 2.384 — so 1.156 in past it) as the peanut supports allow. */
 export const BB_RAMP_OUT = BB_FLOWER_PEANUT_U - BB_RAMP_PEANUT_CLEAR; // 3.54
-/** the blade's inboard end, past the tip line (in) — just clear of the chassis frame's own face,
- * so the deck and the roller line meet with no gap for a POLLEN to drop into. */
-export const BB_RAMP_IN = 0.15;
+/**
+ * ⚠️ **THE BLADE'S INBOARD END, AND WHAT SETS IT IS THE FOLDED POSE, NOT THE DEPLOYED ONE** (in,
+ * past the tip line). Owner's own spec for this mechanism: *"when deployed, from the top down, it
+ * should look like an upside down U shape. This is because the hole created by the U is where the
+ * intake rollers are situated in when the ramp is folded up vertically."* So the U's OPENING has
+ * to contain the sweeper's roller when the ramp is stowed, and the blade is the U's bight.
+ *
+ * FOLDED, the rails stand straight up from the pivot, which is ON the roller's own axle line
+ * (`BB_RAMP_PIVOT_BACK === BB_ROLLER_FLAP_R`) `BB_RAMP_PIVOT_Z` up, and the roller's axis sits
+ * `BB_ROLLER_Z − BB_RAMP_PIVOT_Z` = **2.30 in** further up that rail. The rigid HUB (r 0.75) is
+ * therefore the rail band **1.55 … 3.05**, and the blade must start outboard of it.
+ *
+ * MEASURED on the built group (`scratch/rampfold.ts`, every `robot:ramp:*` mesh's own vertices
+ * against the roller's axis), at 0.15 and at 0.85:
+ *
+ *            blade rail span      hub gap      flap-sweep gap
+ *   0.15     2.563 … 5.825        +0.289       −0.961
+ *   0.85     3.232 … 5.825        +0.477       −0.773
+ *
+ * At 0.15 the blade's inboard edge sits INSIDE the hub's own rail band and clears it only
+ * sideways; at 0.85 it starts **0.18 in past the hub's top** and the U reads as a U. The RAILS
+ * clear both by 1.56/0.31 and the PIVOT BRACKET is fixed to the chassis at `±pivotArmY`, outboard
+ * of the shortened barrel's own ±7.32, so its −0.08 radial figure is the (u, z) metric
+ * over-reporting a part that never meets the barrel laterally.
+ *
+ * ⚠️ **THE FLAPS ARE PRESSED AND THAT IS ALLOWED; THE HUB IS NOT.** A stowed blade still sits
+ * 0.773 in inside the flap SWEEP envelope, and it has to: the sweep is r 2.0 against a blade whose
+ * inboard corner is ~1.04 in off the rail, so clearing it would mean starting the blade above rail
+ * 4.3 and leaving 1.5 in of deck — a deck that no longer bridges the lip to the mouth, which is
+ * the half that delivers (see `BB_RAMP_DECK_Z`). The flaps are compliant and hinged (`flapFold`,
+ * `scene/renderRobots.ts`) and yield exactly this way against the field too. The HUB, its bosses
+ * and the arm rails are rigid and are not touched.
+ *
+ * ⚠️ **AND IT COSTS THE EXTRACTION NOTHING.** The POLLEN now leaves the driven deck 0.85 in inside
+ * the opening and is carried the rest of the way by the intake's own extended pull, over the lower
+ * plate's rim. RE-MEASURED on the same 400-run grid: **400/400 either way**, mean 0.403 s → 0.386,
+ * p95 1.100 s → 1.100; forced heights h1 400/400, h4 400/400, h8 398/400, identical at both
+ * values; the 8-column drain 75 → 76 ticks.
+ */
+export const BB_RAMP_IN = 0.85;
 
 /**
  * ⚠️ **THE DECK — THE BLADE'S TOP SURFACE, AND THE ONE HEIGHT THE WHOLE MECHANISM TURNS ON** (in).
@@ -1697,8 +1734,11 @@ export const BB_HOOD_SIDE_CLEAR = 0.08;
  * put it: the feed comes up the ROTATION AXIS, so the two side plates already ARE the throat's
  * cheeks and the only part missing is its BACK — one flat vertical wall, `BB_FEED_WALL_T` thick,
  * standing on the turret plate at the back of the rising element. It spans the whole channel and
- * both plate thicknesses, so it is also the rear tie; the motor bolts to its two rearward ears;
- * and the turret plate is cut through beneath it, which is what makes the path visible.
+ * both plate thicknesses, so it is also the rear tie — a plain cross member between the two side
+ * plates, like the front standoffs, and nothing else. (It carried two EARS for the motor until
+ * 2026-09-21; the side plate reaches the motor itself now, and a member that stands in for a side
+ * plate is the bug the owner reported.) The turret plate is cut through beneath it, which is what
+ * makes the path visible.
  *
  * `BB_FEED_SLIDE` is how far its FRONT FACE stands outboard of the hood's own outermost swept
  * radius. The hood sweeps a disc of radius `hoodR + BB_HOOD_T` about the axle, so a vertical
@@ -1747,13 +1787,27 @@ export const BB_FLYWHEEL_CLEAR = 0.3;
 export const BB_TURRET_AXLE_Z = BB_TURRET_PLATE_TOP_Z + BB_FLYWHEEL_CLEAR + BB_FLYWHEEL_R; // 7.11732
 
 /**
- * THE SIDE PLATE — three FLATS, a vertical EXIT CUT, the hood's own ARC and a raked REAR EDGE, in
- * the axle frame. `sidePlateR` (`scene/renderRobots.ts`) is the profile and the only reader these
- * three constants have; what lives here is the three flats.
+ * THE SIDE PLATE — FOUR FLATS AND AN UNDERCUT, in the axle frame. `sidePlateR`
+ * (`scene/renderRobots.ts`) is the profile and the only reader these three constants have; what
+ * lives here is the three flats that are shared between the heads. The fourth, the REAR edge, is
+ * per-head (`BbHeadDims.sideRearX`), and the undercut is derived from the feed wall and the motor.
  *
- * A FLAT FRONT, a FLAT TOP over the outgoing corridor, and a FLAT BOTTOM that lands on the turret
- * plate. Only the arc and the rake are per-head; the three flats are shared, and the top one is
- * the same number for either element by construction rather than by coincidence — see below.
+ * A FLAT FRONT past the standoffs, a FLAT TOP over the outgoing corridor, a FLAT BOTTOM that lands
+ * on the turret plate, a FLAT REAR at the motor's own mount station, and one straight UNDERCUT
+ * that takes the bottom up from the back of the feed wall into the motor boss. The top one is the
+ * same number for either element by construction rather than by coincidence — see below.
+ *
+ * ⚠️ **IT IS ONE PIECE FROM THE MOTOR TO THE MUZZLE, AND THAT IS THE OWNER'S SECOND CORRECTION OF
+ * 2026-09-21:** "the plate in the back that mounts the motor and the plate that retains the
+ * flywheel should be the same plate." The plate used to stop at the hood's own radius (−3.917 in
+ * the axle frame on a POLLEN head) and the motor hung off two EARS on the feed wall — a 1.47 ×
+ * 0.22-in slab in the plate's exact plane, starting 0.63 in further back, with the wall's
+ * perpendicular face in the gap. That is two pieces per side and it read as the step it was. A
+ * real FTC shooter is two long parallel plates, each journalling the flywheel at one end and
+ * carrying the motor at the other, and the ARC that used to close the rear is gone with the split:
+ * it is now the rear FLAT, at the station the turret plate already ended at, so the head's swept
+ * envelope did not move (measured: rear-most part `plateBackX` −3.650 in the turret frame, before
+ * and after).
  *
  * ⚠️ **THE FLAT TOP IS THE OWNER'S "the arc in the parallel plates reaches too high; the hood
  * extends above the supporting plates".** It is not a taste offset: it is one element radius plus
@@ -1769,12 +1823,13 @@ export const BB_TURRET_AXLE_Z = BB_TURRET_PLATE_TOP_Z + BB_FLYWHEEL_CLEAR + BB_F
  * arms (owner item (B), 2026-09-19). The value here is unchanged; the angular range it binds over
  * is not. Nothing in the muzzle chain reads it.
  *
- * ⚠️ **AND WHAT THE PLATE DOES PAST THE LIP IS A STEP, NOT A RAMP** (owner, same day: "the shooter
- * parallel plates became ugly. remember that the arc does not need to be big"). The first attempt
- * ramped up to the arc over 22° and then followed it round to the bottom — 64° of arc and a hump
- * behind the wheel. The profile jumps to the hood's radius at the lip instead, holds it for the
- * hood's own `BB_HOOD_WRAP` and comes down a straight rake. Again the value here did not move:
- * this is a PICTURE, and the release chain is not allowed to pay for one.
+ * ⚠️ **AND PAST THE LIP IT DOES NOTHING AT ALL — IT STAYS AT THIS CUT** (owner, same day: "the
+ * shooter parallel plates became ugly. remember that the arc does not need to be big"). One
+ * attempt ramped up to the hood's radius over 22° and followed it round — 64° of arc and a hump
+ * behind the wheel; the pass after that held the hood's radius for the whole wrap and came down a
+ * rake. The top edge is now ONE straight line from the nose to the motor mount, so there is
+ * nothing above this cut anywhere on the plate and no corner where two ideas met. Again the value
+ * here did not move: this is a PICTURE, and the release chain is not allowed to pay for one.
  */
 export const BB_SIDE_PLATE_TOP_Z = BB_FLYWHEEL_R - BB_HOOD_COMPRESSION - 0.15; // +0.96732 above the axle
 /**
@@ -1811,8 +1866,17 @@ export const BB_TURRET_BRACES: readonly { th: number; r: number }[] = [
 ];
 
 /**
- * THE FLYWHEEL MOTOR — its can, and the gap left between the can's front face and the feed wall
- * it bolts to.
+ * THE FLYWHEEL MOTOR — its can, the gap left between the can's front face and the feed wall it
+ * stands behind, and the rim of plate left around it where it BOLTS.
+ *
+ * ⚠️ **IT BOLTS TO A SIDE PLATE, NOT TO THE FEED WALL'S EARS** (owner, 2026-09-21, second
+ * correction on this mechanism: "the plate in the back that mounts the motor and the plate that
+ * retains the flywheel should be the same plate"). The can's axis is LATERAL, so the part it can
+ * face-mount to is a y = const plane — and the two side plates are the only ones the machine has.
+ * The ears were a 1.47 × 0.22-in slab in exactly the side plate's own plane, starting 0.63 in
+ * behind the plate's rear-most point and carried by the feed wall instead: two pieces per side
+ * with a visible step between them. The side plate reaches the motor itself now
+ * (`BbHeadDims.sideRearX`) and the ears are gone.
  *
  * ⚠️ **IT IS BEHIND THE HOOD NOW, AND THAT IS OWNER ITEM (a) OF 2026-09-19: "the motor should be
  * on the other side of the flywheel, behind the hood".** It used to sit at θ = −15°, forward and
@@ -1826,6 +1890,12 @@ export const BB_TURRET_BRACES: readonly { th: number; r: number }[] = [
  */
 export const BB_TURRET_MOTOR_R = 0.71;
 export const BB_TURRET_MOTOR_GAP = 0.05;
+/** the rim of plate left around the can where it bolts — what turns the plate's rear end into a
+ * motor mount rather than a cut that grazes the pilot. It sets the side plate's rear edge
+ * (`sideRearX`) AND the turret plate's own (`plateBackX`), which is why the two end at the same
+ * station: one mount, one station. It was a bare `0.15` inside `bbHeadDims` and the renderer's
+ * ear height (`2 · (BB_TURRET_MOTOR_R + 0.15)`) was a second copy of it. APPROX. */
+export const BB_MOTOR_MOUNT_RIM = 0.15;
 
 /** side-plate thickness, and how far every cross member stands PROUD of each plate's outer face
  * (owner, 2026-09-19: "i dont see the bracing" — a standoff the plate can occlude is a standoff
@@ -1867,6 +1937,11 @@ export interface BbHeadDims {
   /** the flywheel motor's axis, as a radius from the axle, at θ = 180° — dead behind the wheel,
    *  level with it, and outboard of everything the hood sweeps. */
   readonly motorR: number;
+  /** the SIDE PLATE's rear edge, in the AXLE frame: one can radius plus a mount rim behind the
+   *  motor's axis. ⚠️ It is the same station `plateBackX` puts the TURRET plate's rear at — the
+   *  motor's mount is what sets both — so the head's rear-most extent does not move when the side
+   *  plate grows back to reach the motor. */
+  readonly sideRearX: number;
   /** what every member that ties the two side plates together spans: the channel, both plate
    *  thicknesses and the proud ends. */
   readonly tieSpan: number;
@@ -1904,11 +1979,12 @@ function bbHeadDims(elemR: number): BbHeadDims {
     plateGap,
     wallR,
     motorR,
+    sideRearX: -(motorR + BB_TURRET_MOTOR_R + BB_MOTOR_MOUNT_RIM),
     tieSpan,
     // it carries the motor's mount, the feed wall and the whole wheel's footprint; only the side
     // plates' NOSE cantilevers past it, and the plate's own rounded corner stays inside that nose
     // so the widest thing on a slewing head is the shooter and not its turntable
-    plateBackX: backX - 0.15,
+    plateBackX: backX - BB_MOTOR_MOUNT_RIM,
     plateFrontX: axleX + BB_FLYWHEEL_R + 0.15,
     plateHalfW: tieSpan / 2 + 0.2,
     slotBackX: axleX - wallR, // = −(elemR + BB_HOOD_T + BB_FEED_SLIDE): the wall's own front face

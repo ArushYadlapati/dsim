@@ -13,8 +13,9 @@
  * the renderer that actually exists is the only default that draws anything.
  */
 
-import { VIEW_KEY, CAMERA_KEY } from '../../../storageKeys';
+import { VIEW_KEY, CAMERA_KEY, DRIVER_HEIGHT_KEY } from '../../../storageKeys';
 import type { SceneCamera } from '../../module';
+import { coerceDriverHeightIn } from './driverEye';
 
 export type ViewPref = '2d' | '3d';
 
@@ -144,4 +145,51 @@ export function resolveSceneCamera(
 ): SceneCamera {
   if (!interactive) return hostPick;
   return devicePref === 'auto' ? hostPick : devicePref;
+}
+
+// ────────────────────────────────────────────────────────── "your height" (Day 4/owner spec) ──
+
+/**
+ * THE DRIVER'S OWN HEIGHT — per device, same reasoning as everything else in this file: how
+ * tall the person in front of THIS screen is has nothing to do with which account is signed in.
+ * `null` (absent, corrupt, or storage unavailable) means unset, which is what keeps the driver
+ * camera at its ORIGINAL solved framing — `graphics/driverEye.ts`'s own header. Coercion goes
+ * through `coerceDriverHeightIn` so a corrupt value falls back to unset rather than to a made-up
+ * height, and `DRIVER_HEIGHT_KEY` is the one storage literal this repo allows for it
+ * (`src/storageKeys.ts`).
+ */
+export function getDriverHeightIn(): number | null {
+  try {
+    const raw = localStorage.getItem(DRIVER_HEIGHT_KEY);
+    if (raw === null) return null;
+    return coerceDriverHeightIn(JSON.parse(raw), null);
+  } catch {
+    return null;
+  }
+}
+
+type DriverHeightListener = (heightIn: number | null) => void;
+
+const driverHeightListeners = new Set<DriverHeightListener>();
+
+/** persist a height (or `null` to clear it — the settings row's "Clear" affordance) and notify
+ * this tab's subscribers. Best-effort, exactly like every other pref here. */
+export function setDriverHeightIn(heightIn: number | null): void {
+  try {
+    if (heightIn === null) localStorage.removeItem(DRIVER_HEIGHT_KEY);
+    else localStorage.setItem(DRIVER_HEIGHT_KEY, JSON.stringify(heightIn));
+  } catch {
+    /* non-fatal: the pick still applies for this session */
+  }
+  for (const fn of driverHeightListeners) fn(heightIn);
+}
+
+/** subscribe to `setDriverHeightIn` calls made anywhere in this tab (the Graphics section; the
+ * scene's own module-scope camera tuning, `scene/renderCameras.ts`'s `setDriverHeightIn`).
+ * Returns an unsubscribe function — call it on unmount/dispose. */
+export function subscribeDriverHeightIn(fn: DriverHeightListener): () => void {
+  driverHeightListeners.add(fn);
+  return () => {
+    driverHeightListeners.delete(fn);
+  };
 }

@@ -26,6 +26,7 @@ import {
   BB_HOOD_WRAP,
   BB_INTAKE_DRAW_IN,
   BB_LAUNCH_Z0,
+  BB_MOTOR_MOUNT_RIM,
   BB_RAMP_ANGLE,
   BB_RAMP_DEPLOY_S,
   BB_RAMP_DECK_Z,
@@ -1715,17 +1716,36 @@ const BB_BELT_CLEAR = 0.25;
 const TH_EXIT = Math.PI / 2;
 
 /**
- * THE FIXED SIDE PLATE'S OUTER BOUNDARY at one axle-frame angle — an ARC INTERSECTED WITH A BOX,
- * and nothing else:
+ * THE FIXED SIDE PLATE'S OUTER BOUNDARY at one axle-frame angle — FIVE HALF-PLANES, and nothing
+ * else. The plate is CONVEX and the axle is inside it, so one radius per angle is the whole shape:
  *
- *     r(θ) = min( hoodR,
- *                 BB_SIDE_PLATE_TOP_Z    / sin θ   (sin θ > 0),
+ *     r(θ) = min( BB_SIDE_PLATE_TOP_Z    / sin θ   (sin θ > 0),
  *                 BB_SIDE_PLATE_BOTTOM_Z / sin θ   (sin θ < 0),
- *                 BB_SIDE_PLATE_FRONT_X  / cos θ   (cos θ > 0) )
+ *                 BB_SIDE_PLATE_FRONT_X  / cos θ   (cos θ > 0),
+ *                 H.sideRearX            / cos θ   (cos θ < 0),
+ *                 c_undercut             / (n · u) (n · u < 0) )
  *
- * A flat TOP at the outgoing corridor's ceiling, a flat FRONT, a flat BOTTOM on the turret plate,
- * and the arc at `hoodR` closing the rear. It hugs the wheel, and on a 17-in chassis it is 16.2
- * sq in of plate (NECTAR 18.4). `hoodR` is the only per-head term.
+ * A flat TOP at the outgoing corridor's ceiling, a flat FRONT past the standoffs, a flat BOTTOM on
+ * the turret plate, a flat REAR at the motor's mount station, and the UNDERCUT that takes the
+ * bottom up from the back of the feed wall into the motor boss. On a 17-in chassis it is 21.4 sq
+ * in of plate (NECTAR 23.5). `sideRearX` and the undercut's offset are the per-head terms.
+ *
+ * ── ⚠️ ONE PLATE, MOTOR MOUNT TO AXLE TO STANDOFFS ───────────────────────────────────────────
+ * Owner, 2026-09-21: "the plate in the back that mounts the motor and the plate that retains the
+ * flywheel should be the same plate." The rear used to be closed by an ARC at `hoodR` — the plate
+ * stopped 0.63 in short of the feed wall's own back face — and the motor hung off two EARS carried
+ * by that wall, a 1.47 × 0.22-in slab in the side plate's exact plane. Two pieces per side, a
+ * perpendicular piece between them, and a step you could see. The arc is gone: past the wheel the
+ * profile is a straight top and a straight underside meeting a straight rear edge.
+ *
+ * The rear edge is at `sideRearX`, which is where the TURRET plate already ended (`plateBackX` —
+ * both are the motor's mount station), so the head's rear-most extent is unchanged and no slew
+ * envelope moved. The UNDERCUT is not a taste line either: it is the common tangent through the
+ * bottom flat at the feed wall's back face and around the motor's can plus `BB_MOTOR_MOUNT_RIM`,
+ * so the plate is full depth wherever it stands on the turret plate and carries the feed, then
+ * tapers into a mount that keeps one rim of material around the can everywhere. Its normal is the
+ * SAME on both heads — the wall-to-motor offset is `BB_TURRET_MOTOR_GAP + BB_TURRET_MOTOR_R`
+ * whatever the element is — so the rake is one angle, 38.9°, and only the offset differs.
  *
  * ── ⚠️ A FIXED PLATE MUST NOT BE SIZED TO A PART THAT MOVES AWAY FROM IT ─────────────────────
  * Two passes tried to answer "the hood floats 3 in above anything fixed" by GROWING this plate up
@@ -1736,10 +1756,11 @@ const TH_EXIT = Math.PI / 2;
  * reaches too high", then "the shooter parallel plates became ugly. remember that the arc does not
  * need to be big."
  *
- * **Nobody ever complained about THIS shape.** What was wrong was never the plate: it was that the
- * hood hung off two 0.26-in spokes. So the plate is back to the compact outline and the hood
- * carries its own CHEEKS instead — see `buildHoodNode`. The thing that has to reach the hood is
- * the thing that moves with it.
+ * **Nobody ever complained about the plate's HEIGHT after that.** What was wrong was never the
+ * plate's top: it was that the hood hung off two 0.26-in spokes. The hood carries its own CHEEKS
+ * instead — see `buildHoodNode` — and the thing that has to reach the hood is the thing that moves
+ * with it. Reaching BACKWARD to the motor is a different axis and a different complaint: the top
+ * cut did not move for it, and the ratchet on how high this profile reaches did not either.
  *
  * ⚠️ **AND THE WHEEL-TO-HOOD GAP IS NOT WHAT MOVED — IT NEVER IS.** That gap is one element
  * diameter less the compression; it is the channel the element travels up, and `bbMuzzleLocal` is
@@ -1747,26 +1768,61 @@ const TH_EXIT = Math.PI / 2;
  * a picture fix. What changes is how much PLATE is left, which `BB_SIDE_PLATE_TOP_Z` is the only
  * reader of: grep it — it appears in this file and in its own doc comment, never in `robot.ts`.
  */
-function sidePlateR(th: number, hoodR: number): number {
+/**
+ * THE UNDERCUT, as a line `n · p = c` in the axle frame with the plate on the `n · p ≥ c` side.
+ *
+ * It runs from the bottom flat at the feed wall's own back face — the last station the plate has
+ * to be full depth at, because that is where it stands on the turret plate and cheeks the feed —
+ * tangent to the motor's can plus `BB_MOTOR_MOUNT_RIM`. Tangency is what makes it a mount rather
+ * than a cut: one rim of material all the way round the can, at every x, without a second
+ * constant to tune. `n` is head-independent (the wall-to-can offset is `GAP + MOTOR_R` on both
+ * heads); only `c`, which is `n · P`, moves with the wall.
+ */
+function plateUndercut(H: BbHeadDims): { nx: number; nz: number; c: number } {
+  const px = -(H.wallR + BB_FEED_WALL_T); // the wall's own back face, on the bottom flat
+  const pz = BB_SIDE_PLATE_BOTTOM_Z;
+  const dx = -H.motorR - px;
+  const dz = -pz;
+  const d = Math.hypot(dx, dz);
+  const boss = BB_TURRET_MOTOR_R + BB_MOTOR_MOUNT_RIM;
+  // rotate the unit vector P→C by −acos(boss/d): the normal that puts the can exactly `boss` above
+  // the line, with the line through P
+  const ca = boss / d;
+  const sa = Math.sqrt(1 - ca * ca);
+  const nx = (dx * ca + dz * sa) / d;
+  const nz = (-dx * sa + dz * ca) / d;
+  return { nx, nz, c: nx * px + nz * pz };
+}
+
+function sidePlateR(th: number, H: BbHeadDims): number {
   const st = Math.sin(th);
   const ct = Math.cos(th);
-  let r = hoodR;
+  let r = Infinity;
   if (st > 1e-9) r = Math.min(r, BB_SIDE_PLATE_TOP_Z / st);
   if (st < -1e-9) r = Math.min(r, BB_SIDE_PLATE_BOTTOM_Z / st);
   if (ct > 1e-9) r = Math.min(r, BB_SIDE_PLATE_FRONT_X / ct);
+  if (ct < -1e-9) r = Math.min(r, H.sideRearX / ct);
+  const u = plateUndercut(H);
+  const nu = u.nx * ct + u.nz * st;
+  if (nu < -1e-9) r = Math.min(r, u.c / nu);
   return r;
 }
 
 /**
- * The four angles where the profile above CHANGES WHICH CONSTRAINT BINDS. Sampling alone rounds a
+ * The angles where the profile above CHANGES WHICH CONSTRAINT BINDS. Sampling alone rounds a
  * corner off; these go into the sample set so every corner is an exact vertex and every flat face
- * is genuinely flat rather than a 0.75° chord.
+ * is genuinely flat rather than a 0.75° chord. Six of them now: the plate is a convex hexagon.
  */
-function sidePlateCorners(hoodR: number): number[] {
+function sidePlateCorners(H: BbHeadDims): number[] {
+  const u = plateUndercut(H);
+  // where the undercut meets the bottom flat, and where it meets the rear flat
+  const cutBottomX = (u.c - u.nz * BB_SIDE_PLATE_BOTTOM_Z) / u.nx;
+  const cutRearZ = (u.c - u.nx * H.sideRearX) / u.nz;
   return [
     Math.atan2(BB_SIDE_PLATE_TOP_Z, BB_SIDE_PLATE_FRONT_X), //                   front ↔ top
-    Math.PI - Math.asin(BB_SIDE_PLATE_TOP_Z / hoodR), //                         top ↔ arc
-    Math.PI - Math.asin(BB_SIDE_PLATE_BOTTOM_Z / hoodR), //                      arc ↔ bottom
+    Math.atan2(BB_SIDE_PLATE_TOP_Z, H.sideRearX), //                             top ↔ rear
+    Math.PI * 2 + Math.atan2(cutRearZ, H.sideRearX), //                          rear ↔ undercut
+    Math.PI * 2 + Math.atan2(BB_SIDE_PLATE_BOTTOM_Z, cutBottomX), //             undercut ↔ bottom
     Math.PI * 2 + Math.atan2(BB_SIDE_PLATE_BOTTOM_Z, BB_SIDE_PLATE_FRONT_X), //  bottom ↔ front
   ];
 }
@@ -1963,15 +2019,22 @@ function addFixedShooter(head: THREE.Group, axle: THREE.Group, H: BbHeadDims, wh
   // no `shape.holes`, one extrusion — measured, 1 connected component, 0 boundary loops, χ=2, so
   // genus 0. The hood never needed a slot: its arms pivot on the axle INSIDE the channel,
   // `BB_HOOD_SIDE_CLEAR` clear of this face. `hoodPlateChecks` pins all of it.
+  //
+  // ⚠️ **AND ONE PIECE FROM THE MOTOR MOUNT TO THE MUZZLE** (owner, 2026-09-21, second correction:
+  // "the plate in the back that mounts the motor and the plate that retains the flywheel should be
+  // the same plate"). It is the same extrusion of the same outline — `sidePlateR` is simply the
+  // whole plate now, rear flat included, so there is no seam to draw and nothing to keep in step.
+  // The genus-0 ruling is also why there are no bolt HOLES in it: a hole is a hole to the check
+  // that caught the hood-shaped one, and the pilot is where `bb-turret-shaft` crosses the plate.
   const sideGeo = framePart(`shooterSidePlate:${which}`, () => {
     const angles: number[] = [];
     const N = 480;
     for (let i = 0; i < N; i++) angles.push((Math.PI * 2 * i) / N);
-    for (const c of sidePlateCorners(H.hoodR)) angles.push(((c % (Math.PI * 2)) + Math.PI * 2) % (Math.PI * 2));
+    for (const c of sidePlateCorners(H)) angles.push(((c % (Math.PI * 2)) + Math.PI * 2) % (Math.PI * 2));
     angles.sort((a, b) => a - b);
     const shape = new THREE.Shape();
     angles.forEach((th, i) => {
-      const r = sidePlateR(th, H.hoodR);
+      const r = sidePlateR(th, H);
       const x = Math.cos(th) * r;
       const y = Math.sin(th) * r;
       if (i === 0) shape.moveTo(x, y);
@@ -2045,51 +2108,51 @@ function addFixedShooter(head: THREE.Group, axle: THREE.Group, H: BbHeadDims, wh
   // part is its BACK: one flat vertical wall standing on the turret plate, `BB_FEED_SLIDE` clear
   // of the hood's outermost swept radius (a plane outside that radius clears the hood at every
   // elevation, with no angular bookkeeping). It spans the channel and both plates, so it is the
-  // rear tie; its two rearward EARS carry the motor.
+  // rear tie — a plain cross member, exactly like the front standoffs.
+  //
+  // ⚠️ **AND ITS TWO EARS ARE GONE** (owner, 2026-09-21). They carried the motor: a slab in the
+  // side plate's OWN plane, 0.63 in behind the plate's rear-most point, with this wall's
+  // perpendicular face in the gap — which is a second plate standing in for the side plate, and it
+  // is what the owner saw as a split. The side plate reaches the motor itself now. What is left
+  // here crosses the channel and nothing else, which is the test a member has to pass.
+  //
+  // ⚠️ **AND IT STOPS AT THE PLATES' INNER FACES, UNDER THEIR TOP EDGE** (owner, 2026-09-21, third
+  // pass: the plate must read as ONE piece). It used to span `H.tieSpan` — through both side
+  // plates and `BB_BRACE_PROUD` past each outer face, at exactly the plates' own height — so from
+  // outside it drew a vertical rib across each plate and a line along its top: a one-piece plate
+  // that still LOOKED split, right where the old ear used to start. A wall between two plates is
+  // fastened through them with screws, it does not pass through them.
   const wallX = -(H.wallR + BB_FEED_WALL_T / 2);
-  const earX0 = -(H.wallR + BB_FEED_WALL_T);
-  const earX1 = -(H.motorR + BB_TURRET_MOTOR_R);
-  const earH = 2 * (BB_TURRET_MOTOR_R + 0.15);
-  const throatGeo = framePart(`feedThroat:${which}`, () => {
-    const parts: THREE.BufferGeometry[] = [
-      boxAt(
-        BB_FEED_WALL_T,
-        H.tieSpan,
-        BB_SIDE_PLATE_TOP_Z - BB_SIDE_PLATE_BOTTOM_Z,
-        wallX,
-        0,
-        (BB_SIDE_PLATE_TOP_Z + BB_SIDE_PLATE_BOTTOM_Z) / 2,
-      ),
-    ];
-    for (const s of [1, -1] as const) {
-      parts.push(
-        boxAt(
-          earX0 - earX1,
-          BB_SHOOTER_PLATE_T,
-          earH,
-          (earX0 + earX1) / 2,
-          s * (H.plateGap / 2 + BB_SHOOTER_PLATE_T / 2),
-          0,
-        ),
-      );
-    }
-    return parts;
-  });
+  const wallTop = BB_SIDE_PLATE_TOP_Z - 0.06;
+  const throatGeo = framePart(`feedThroat:${which}`, () => [
+    boxAt(BB_FEED_WALL_T, H.plateGap, wallTop - BB_SIDE_PLATE_BOTTOM_Z, wallX, 0, (wallTop + BB_SIDE_PLATE_BOTTOM_Z) / 2),
+  ]);
   const throat = new THREE.Mesh(throatGeo, solidMat(ALU, 0.4, 0.45));
   throat.name = 'bb-turret-throat';
   axle.add(cast(throat));
 
-  // ── THE MOTOR, BEHIND THE HOOD, BOLTED TO THE FEED WALL'S EARS ────────────────────────────
+  // ── THE MOTOR, BEHIND THE HOOD, FACE-BOLTED TO THE DRIVE-SIDE PLATE ───────────────────────
   // ⚠️ OWNER ITEM (a): "the motor should be on the other side of the flywheel, behind the hood."
   // It sat at θ = −15°, in front of and under the wheel. `BbHeadDims.motorR` puts it at θ = 180°
   // — dead behind the axle and level with it — just clear of the feed wall, which is the only
   // pocket left once the hood sweeps 90°…202° and the element owns everything inside that.
+  //
+  // ⚠️ **ITS FACE IS ON A SIDE PLATE** (owner, 2026-09-21). The can's axis is LATERAL, so the only
+  // parts it can face-mount to are the y = const planes — the two side plates — and the plate now
+  // reaches it. Its output face sits exactly on the BELT side's inner face (+y), the shaft passes
+  // through the plate to its pulley, and the belt runs down that same plate's outer face to the
+  // flywheel: one plate carries the motor, the drive and the axle. INBOARD rather than outboard,
+  // from the numbers: the can is drawn one channel long less a working clearance (3.00 in on a
+  // POLLEN head, 3.80 on a NECTAR one) and a 1.42-in can hung outboard would stand the belt plane
+  // ~2 in further out on the drive side for nothing the picture gains.
   const mx = -H.motorR;
+  const motorFaceY = H.plateGap / 2; // the drive-side plate's inner face
+  const motorLen = H.plateGap - 0.1;
   // ⚠️ THE CAN AND NOTHING ELSE. Its output SHAFT is part of `bb-turret-shaft` below: the lane's
   // "between the plates" measurement is about the can, and a shaft merged in here would put the
   // motor's own vertices out at the belt's plane and make that reading a lie.
   const motorGeo = framePart(`shooterMotor:${which}`, () => [
-    new THREE.CylinderGeometry(BB_TURRET_MOTOR_R, BB_TURRET_MOTOR_R, H.plateGap - 0.1, 12).translate(mx, 0, 0),
+    new THREE.CylinderGeometry(BB_TURRET_MOTOR_R, BB_TURRET_MOTOR_R, motorLen, 12).translate(mx, motorFaceY - motorLen / 2, 0),
   ]);
   const motor = new THREE.Mesh(motorGeo, solidMat(MOTOR, 0.5, 0.4));
   motor.name = 'bb-turret-motor';
@@ -2098,13 +2161,12 @@ function addFixedShooter(head: THREE.Group, axle: THREE.Group, H: BbHeadDims, wh
   // ── THE TWO SHAFTS — the flywheel's, which runs right through and out the belt side to carry
   // its pulley, and the motor's output, which reaches out to meet it. Both cross a side plate
   // because the belt has to run outboard of one.
+  // the motor's own reaches from its mounting FACE — which is the plate's inner face, so the shaft
+  // crosses the plate the way a real one crosses its mount's pilot bore, and the pulley lands
+  // outboard beside the flywheel's.
   const shaftGeo = framePart(`shooterShaft:${which}`, () => [
     new THREE.CylinderGeometry(0.26, 0.26, shaftOut - shaftIn, 8).translate(0, (shaftIn + shaftOut) / 2, 0),
-    new THREE.CylinderGeometry(0.16, 0.16, shaftOut - (H.plateGap / 2 - 0.05), 8).translate(
-      mx,
-      (shaftOut + H.plateGap / 2 - 0.05) / 2,
-      0,
-    ),
+    new THREE.CylinderGeometry(0.16, 0.16, shaftOut - motorFaceY, 8).translate(mx, (shaftOut + motorFaceY) / 2, 0),
   ]);
   const shaft = new THREE.Mesh(shaftGeo, solidMat(ALU, 0.3, 0.7));
   shaft.name = 'bb-turret-shaft';

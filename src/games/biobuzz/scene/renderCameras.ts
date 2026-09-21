@@ -2,8 +2,9 @@ import * as THREE from 'three';
 import type { SceneCamera, SceneFrame } from '../../module';
 import type { Alliance, RobotState, World } from '../../../types';
 import { wrapAngle } from '../../../math';
-import { BB3_WALL_H, BB_HALF_X, BB_HALF_Y, BB_HIVE_X, BB_VIEW_MARGIN } from '../config';
+import { BB3_WALL_H, BB_HALF_X, BB_HALF_Y, BB_HIVE_X, BB_VIEW_MARGIN, bbRoleLabel } from '../config';
 import { defaultFreeCam, dollyFreeCam, freeCamPose, orbitFreeCam, panFreeCam, type FreeCamState } from '../graphics/freeCam';
+import { DRIVER_EYE_VFOV_DEG, driverEyeAim, driverEyePoint, type DriverRole } from '../graphics/driverEye';
 
 /**
  * BIOBUZZ 3D SCENE — cameras (Day 1, `docs/biobuzz/plan-3d.md` §4.3, §13.1).
@@ -105,6 +106,11 @@ let tunedChaseFov = 68;
 let tunedOrbitFov = 55;
 /** the player's own "reduced" pick, OR-ed with `prefers-reduced-motion` (which always wins). */
 let tunedReducedMotion = false;
+/** "Your height" (owner, 2026-09-21) — per-device, `null` = unset. Set by `renderScene.ts` on
+ * every settings change, same as the tuning above; read only by `updateDriver`, which falls
+ * straight back to the solved fit below when this is `null` or there is no local robot to
+ * stand a driver behind. See `graphics/driverEye.ts` for the placement math. */
+let tunedDriverHeightIn: number | null = null;
 
 /**
  * Apply §4.4's two camera rows. Called by `renderScene.ts` on every settings change; cheap
@@ -120,6 +126,13 @@ export function setCameraTuning(fovDeg: number, motion: 'full' | 'reduced'): voi
   tunedOrbitFov = Math.max(DRIVER_FOV_MIN - 15, deg - 15);
   tunedReducedMotion = motion === 'reduced';
   cachedAspect = NaN; // force `fitDriverCamera` to re-solve against the new ceiling
+}
+
+/** apply "Your height" (`graphics/driverEye.ts`'s per-device setting). Called by
+ * `renderScene.ts` beside `setCameraTuning`; `null` reverts the driver camera to the solved fit
+ * exactly as it behaved before this setting existed. */
+export function setDriverHeightIn(heightIn: number | null): void {
+  tunedDriverHeightIn = heightIn;
 }
 
 /** the tray's own peak height during a tip, APPROX — the manual's up-cell opening tops out at
@@ -568,13 +581,58 @@ export function createCameras(): BbCameras {
     return null;
   }
 
-  function updateDriver(frame: SceneFrame): void {
-    const fwd = forwardOf(frame.viewAngle);
+  /**
+   * HEIGHT-ACCURATE DRIVER EYE (owner, 2026-09-21) — when the player has set "Your height" AND
+   * there is a local robot to resolve a TOP/BOTTOM role for, this REPLACES the solved fit below
+   * entirely: the eye sits at the exact point and height a real drive-team member would stand
+   * at (`graphics/driverEye.ts`), never moved to keep the field in frame. Returns `null` for
+   * every case that must fall back to the fit — no height set, no local robot (a spectator, a
+   * replay with no viewpoint), or a role the game has not locked yet.
+   */
+  function driverEyePoseFor(frame: SceneFrame, world: World): { eye: { x: number; y: number; z: number }; yaw: number; pitch: number } | null {
+    if (tunedDriverHeightIn == null) return null;
+    const robot = localRobot(world, frame);
+    if (!robot) return null;
+    const role = bbRoleLabel(frame.localStartCat, robot.alliance);
+    if (role !== 'TOP' && role !== 'BOTTOM') return null;
+    const eye = driverEyePoint(robot.alliance, role as DriverRole, tunedDriverHeightIn);
+    const aim = driverEyeAim(eye, { x: robot.pos.x, y: robot.pos.y, z: robot.z ?? 0 });
+    return { eye, yaw: aim.yaw, pitch: aim.pitch };
+  }
+
+  function updateDriver(frame: SceneFrame, world: World): void {
     // THE FIT IS AGAINST THE SAFE RECT, not the canvas — the field has to land inside the part
     // of the viewport the HUD is not covering, so that is the aspect (and the virtual image)
     // every number below is solved for.
     resolveSafeRect(frame);
     const aspect = Math.max(1e-3, safe.w / safe.h);
+
+    const heightPose = driverEyePoseFor(frame, world);
+    if (heightPose) {
+      // THE EYE STAYS PUT — no fit search, no `i`/`o` nudge, no re-centring: a standing person
+      // turns their head, they do not float or slide. Vertical FOV is a named DISPLAY choice
+      // (`DRIVER_EYE_VFOV_DEG`'s own comment); the eye POSITION is exact. `driver.near` (set at
+      // construction, 1 in) already clears "the wall top a foot in front of the eye" — no
+      // change needed for it to render.
+      driver.aspect = aspect;
+      driver.fov = DRIVER_EYE_VFOV_DEG;
+      applyViewOffset(driver);
+      driver.position.set(heightPose.eye.x, heightPose.eye.y, heightPose.eye.z);
+      driver.up.set(0, 0, 1);
+      const cosP = Math.cos(heightPose.pitch);
+      const sinP = Math.sin(heightPose.pitch);
+      const lookDist = 100;
+      scratchTarget.set(
+        heightPose.eye.x + Math.cos(heightPose.yaw) * cosP * lookDist,
+        heightPose.eye.y + Math.sin(heightPose.yaw) * cosP * lookDist,
+        heightPose.eye.z - sinP * lookDist,
+      );
+      driver.lookAt(scratchTarget);
+      driver.updateProjectionMatrix();
+      return;
+    }
+
+    const fwd = forwardOf(frame.viewAngle);
     // the field is square (BB_HALF_X === BB_HALF_Y), so one half-extent is the wall distance on
     // every side regardless of which alliance's viewAngle this frame carries
     const fit = fitDriverCamera('red', frame.viewAngle, aspect);
@@ -771,7 +829,7 @@ export function createCameras(): BbCameras {
       // satisfied this frame (no local robot). Chase, orbit and free only run when asked: each
       // keeps smoothed STATE, and advancing it while it is not on screen would have it fly in
       // from wherever it last was when the player last looked.
-      updateDriver(frame);
+      updateDriver(frame, world);
       updateOverhead(frame);
       let picked: THREE.Camera;
       if (camera === 'chase') picked = updateChase(frame, world, dt) ? chase : driver;

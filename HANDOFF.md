@@ -1,3 +1,41 @@
+# HANDOFF — 2026-09-21a (alpha: ramp by physics, one-piece shooter plates, free cam, real-eye driver cam, full top plate)
+
+**READ FIRST.** Gates on the final tree: `npm test` ALL PASS (2,090 shared + 3,716 biobuzz, 26 s wall),
+`build`, `server:check`, `uiaudit`, `docaudit`, `contrast`, `bundleaudit` (scene 211.0 KB gz), `dbtest`,
+`test:mm`. `dsim-alpha` redeployed. The agents below each prepended their own notes further down.
+
+- **RAMP EXTRACTS BY PHYSICS (opus).** The "0.42 jam" was the LOWER RING PLATE: a tilted box hangs below
+  its profile line (0.42 → 0.307 vs the plate's 0.354); the old probe sampled the centreline, where the
+  bore is open. And NO PASSIVE LIP works: a ball backed by the supports climbs only below 0.637 in, and
+  below 0.175 once the column has walked it 0.44 in wallward (the owner's "depends how they're stacked").
+  So: one LEVEL blade (`BB_RAMP_FLOOR_Z` 0.40 / `BB_RAMP_DECK_Z` 0.48, `BB_RAMP_IN` 0.85 … `BB_RAMP_OUT`
+  3.54) with a DRIVEN LIP (`BB_RAMP_ROLLER_V` 50 in/s). 400/400 real drive-ins, mean 0.39 s; forced
+  h1/h4/h8 400·400·398; an 8-column drains 8/8 in 76 ticks. The stall fallback, its constants and two
+  `RobotState` fields are GONE. `BB_RAMP_IN` 0.85 (not 0.15) so that FOLDED the roller's hub sits in the
+  U's opening (owner's original spec) — flaps are pressed 0.77 in by design; render checks pin the hub.
+- **SHOOTER SIDE PLATES ARE ONE PIECE (opus + me).** The split was the feed wall's two EARS carrying the
+  motor in the side plate's own plane, 0.63 in behind it. Now one outline per side (straight top, 0.15
+  rim round the motor, rear at the turntable's own `plateBackX` so the envelope did not grow), motor
+  face-bolted INBOARD to the drive-side plate, belt on that plate. The feed wall stops at the plates'
+  INNER faces under their top edge — it used to pass through and stand proud, which still read as a
+  seam. Hood arms solid (bore removed), `BB_HOOD_SIDE_CLEAR` 0.08, flywheel never tinted.
+- **FREE CAM** (`'free'` SceneCamera; `graphics/freeCam.ts` pure state, `renderCameras.ts` pose):
+  left-drag orbit, right/shift-drag pan, wheel dolly, double-click or the HUD ⟲ RESET VIEW chip.
+  Mouse only, hidden on touch. **DRIVER EYE** (`graphics/driverEye.ts`): optional per-device "Your
+  height"; eye = height − 4.5 in, 12 in behind the field edge in the local ALLIANCE AREA, ± a quarter of
+  the area along the wall by TOP/BOTTOM (`SceneFrame.localStartCat`); the eye never moves, only aims.
+  Unset = the legacy driver camera, byte-identical. ⚠️ `graphics/` may not use bare `Math.sin/cos/pow`.
+- **Chassis**: the top plate is the FULL footprint (reverses the 2026-09-19 "not a slab" ruling; the
+  check asserts ≥ 99 %); cross members sit behind the end plates and under the deck (they z-fought the
+  back plate and the deck).
+- ⚠️ PROCESS: subagents ignore SendMessage redirects as injection unless their brief says coordinator
+  messages are genuine — put the spec in the brief or start a new agent. Resuming a STOPPED agent via
+  SendMessage works. Electron captures are headless (`scratch/shots.cjs`).
+- OPEN: side rollers' skewed approach (72 % over ±10°); split the `sim3d` lane (the test floor);
+  TOP-position driver eye stands behind the wall flower (true to life, maybe unwanted).
+
+---
+
 # HANDOFF — 2026-09-21a (alpha: the ramp's wedge is a FLAT PLOW BLADE with a driven lip, and it extracts 400/400 by physics)
 
 **READ FIRST.** Owner: "the pollen should be getting intaked from the deployable ramp BECAUSE it
@@ -37,11 +75,24 @@ in this same worktree and is not from this pass; the lane subset
   mean 0.40 s / p95 1.10 s from the ramp reaching the opening to the hopper; 100% at every column
   height, approach angle and lateral offset. Forcing the height: h1 400/400, h4 400/400, **h8
   398/400** — the compounding offset+angle corner, reported rather than papered over. DRAIN: a
-  full 8-column empties on one held stick in 1.25 s, 0.05–0.13 s per POLLEN after the first.
-- Checks: `flower3d.ts` (five representative drive-ins + the drain), `sim3d.ts` (the ramp's own
+  full 8-column empties on one held stick in 1.27 s, 0.05–0.20 s per POLLEN after the first.
+- **AND THE FOLDED U HAS ITS HOLE BACK.** Owner's own spec: *"when deployed, from the top down, it
+  should look like an upside down U shape... the hole created by the U is where the intake rollers
+  are situated in when the ramp is folded up vertically."* The pivot is ON the roller's axle line,
+  so FOLDED the rails stand past it and the rigid HUB is the rail band 1.55 … 3.05. MEASURED on the
+  built group (`scratch/rampfold.ts`): at `BB_RAMP_IN` 0.15 the blade spanned rail **2.563 … 5.825**
+  — inside the hub's band, clearing it sideways only (+0.289); at **0.85** it spans 3.232 … 5.825,
+  0.18 in past the hub's top, +0.477 radial. Rails clear by 1.56; the pivot bracket's −0.08 is the
+  (u, z) metric over-reporting a part that sits outboard of the barrel laterally. The FLAPS are
+  pressed 0.773 in and that is allowed — they are compliant and hinged, and clearing their r-2.0
+  sweep would leave 1.5 in of deck. **It cost the extraction nothing**: 400/400 either way (mean
+  0.403 → 0.386 s), h1/h4/h8 identical, drain 75 → 76 ticks.
+- Checks: `flower3d.ts` (five representative drive-ins + the drain), `render.ts` (folded: nothing
+  within 0.1 in of the hub, blade's inboard edge outboard of it along the rail), `sim3d.ts` (the ramp's own
   ground-capture sweep over 10 lateral offsets, intake on and off; the 30 in/s through-the-blade
   probe re-pointed at the deck), `render.ts` (the drawn blade's lip/inboard end/UNDERSIDE pinned
-  to config). Screenshots: `scratch/shots/ramp2-down-side.png`, `scratch/shots/ramp2-down-open.png`.
+  to config). Screenshots: `scratch/shots/ramp3-up.png` (folded, the roller inside the U),
+  `scratch/shots/ramp3-down.png`, `scratch/shots/ramp2-down-side.png`, `scratch/shots/ramp2-down-open.png`.
 - ⚠️ **ANOTHER SESSION IS EDITING THIS WORKTREE** (`src/cosmetics.ts`, `graphics/freeCam.ts`,
   `scene/renderCameras.ts`, `ui/*`, the hood constants). Nothing above touches those files.
 

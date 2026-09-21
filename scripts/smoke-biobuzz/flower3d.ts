@@ -1412,7 +1412,7 @@ function flowerScatterChecks(check: Check): void {
    * ⚠️ **THIS IS THE ONE THAT ANSWERS "IT SHOULD WORK 100% OF THE TIME"** (owner, 2026-09-20),
    * and the full grid it is a slice of lives in `scratch/rampsweep.ts`: four FLOWERS x stick
    * 0.35/0.5/0.7/1.0 x lateral -2..+2 in x approach angle -8..+8 deg x column height 1-8 x legal
-   * POLLEN/NECTAR mixes x scatter seed, **400 real drive-ins, 400 extracted**, mean 0.40 s and p95
+   * POLLEN/NECTAR mixes x scatter seed, **400 real drive-ins, 400 extracted**, mean 0.39 s and p95
    * 1.10 s from the ramp reaching the opening to the POLLEN being in the hopper. Forcing the
    * column height instead of drawing it: h1 400/400, h4 400/400, h8 398/400 — the two are the
    * compounding corner every archetype's sweep finds hardest (a lateral offset AND an approach

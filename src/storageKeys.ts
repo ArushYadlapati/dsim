@@ -74,6 +74,8 @@ export const GRAPHICS_KEY = 'decodesim.graphics';
 export const VIEW_KEY = 'decodesim.view';
 /** which 3D camera the last match was watched from */
 export const CAMERA_KEY = 'decodesim.camera';
+/** the driver's own height, for the height-accurate BIOBUZZ 3D driver camera — per device */
+export const DRIVER_HEIGHT_KEY = 'decodesim.driverHeight';
 /** client-side prediction on/off — a per-device netcode preference */
 export const PREDICTION_KEY = 'decodesim.prediction';
 /** that the "prediction is off" notice has been shown once, so it is not shown again */
@@ -180,6 +182,14 @@ export const STORAGE_KEYS: readonly StorageKeyEntry[] = [
     category: 'preference',
     purpose: 'That you have read the notice explaining Chain Reaction is an unofficial game.',
     retention: 'Until you clear your browser data.',
+  },
+  {
+    key: DRIVER_HEIGHT_KEY,
+    storage: 'local',
+    category: 'preference',
+    purpose:
+      'Your own height, if you entered it, to place BIOBUZZ’s 3D driver camera at your real eye level. Kept per device, since the person in front of the screen is not an account fact.',
+    retention: 'Until you clear your browser data, or use the setting’s "Clear" button.',
   },
   {
     key: FRIENDS_PANEL_OPEN_KEY,
