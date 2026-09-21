@@ -24,6 +24,7 @@ import {
   chassisBoxDesc,
   chassis3dReachShapes,
   clearChassis3dColliders,
+  swapChassis3dReachColliders,
   elementMass,
   reachColliderDesc,
   ELEMENT_FRICTION,
@@ -572,6 +573,12 @@ function refitRobotBody(
   rampReady: boolean,
 ): { height: number; ramp: boolean } {
   if (Math.abs(builtHeight - heightIn) <= 1e-9 && builtRamp === rampReady) return { height: builtHeight, ramp: builtRamp };
+  if (Math.abs(builtHeight - heightIn) <= 1e-9) {
+    // a RAMP edge alone: keep the one chassis cuboid (and its floor contact) and swap only the
+    // reach hardware, exactly as the authority does — a full clear sinks the robot 0.28 in.
+    swapChassis3dReachColliders(RAPIER, world3d, body, 1, r.spec, heightIn, rampReady);
+    return { height: heightIn, ramp: rampReady };
+  }
   clearChassis3dColliders(world3d, body);
   fitChassis(RAPIER, world3d, body, r, heightIn, rampReady);
   return { height: heightIn, ramp: rampReady };

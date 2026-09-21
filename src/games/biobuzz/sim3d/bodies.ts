@@ -1452,6 +1452,41 @@ export function clearChassis3dColliders(
   }
 }
 
+/**
+ * SWAP ONLY THE REACH HARDWARE — the ramp's SETTLE/FOLD edge. The first `keep` colliders (the
+ * chassis itself, in creation order) are left alone and everything after them is dropped and
+ * rebuilt for `rampReady`.
+ *
+ * ⚠️ **NEVER CLEAR THE WHOLE COMPOUND FOR A RAMP EDGE.** That shipped, and the robot sank into
+ * the tiles every time the ramp came down (owner report 2026-09-21). MEASURED: a chassis whose
+ * every collider is replaced has NO floor contact for three ticks — it free-falls (vz −6.4,
+ * −12.9, −19.3 in/s), lands 0.28 in under the floor, and the solver's bounded correction then
+ * walks it back at ~0.001 in a tick, i.e. never while it stands still. The floor contacts belong
+ * to the boxes that REST on the floor, and none of those change at a ramp edge.
+ */
+export function swapChassis3dReachColliders(
+  RAPIER: Rapier3d,
+  world3d: InstanceType<Rapier3d['World']>,
+  body: InstanceType<Rapier3d['RigidBody']>,
+  keep: number,
+  spec: RobotSpec,
+  heightIn: number,
+  rampReady: boolean,
+): void {
+  for (let i = body.numColliders() - 1; i >= keep; i--) {
+    world3d.removeCollider(body.collider(i), false);
+  }
+  for (const s of chassis3dReachShapes(spec, heightIn, rampReady)) {
+    world3d.createCollider(reachColliderDesc(RAPIER, s), body);
+  }
+}
+
+/** how many colliders of the authority's compound are the chassis itself (`addChassis3dColliders`
+ * builds them FIRST, the reach hardware after) — `swapChassis3dReachColliders`'s `keep`. */
+export function chassis3dBaseColliderCount(spec: RobotSpec, heightIn: number): number {
+  return chassis3dShapes(spec, heightIn).length + chassis3dPocketShapes(spec, heightIn).length;
+}
+
 // ---- ELEMENTS -----------------------------------------------------------------
 // a dynamic sphere per element that wants a body at all — ground, flight, hive cell AND flower.
 // The Day 1 sentence here said a flower-parked element was FIXED instead; that has been false

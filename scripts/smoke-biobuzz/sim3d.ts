@@ -3172,6 +3172,43 @@ export function sim3dChecks(check: Check): void {
     );
   }
 
+  // (c2) THE RAMP EDGE NEVER MOVES THE CHASSIS (owner report 2026-09-21: "deploying the ramp is
+  // lowering the entire robot into the ground"). Clearing the WHOLE compound at the settle edge
+  // dropped the floor contacts: three ticks of free fall, 0.28 in under the tiles, and no
+  // recovery while standing still. Only the reach hardware may be swapped.
+  {
+    for (const mount of ['front', 'back', 'frontback'] as const) {
+      const w = mkWorld3d('match', 8121, bbArchSpec('ramp', mount));
+      w.match.phase = 'teleop';
+      w.match.phaseTimeLeft = 90;
+      w.balls.length = 0;
+      const r = w.robots[0];
+      r.pos = { x: -50, y: 34 };
+      r.heading = 0;
+      r.vel = { x: 0, y: 0 };
+      r.angVel = 0;
+      for (let t = 0; t < 40; t++) step3d(w, 1 / 60, new Map());
+      const z0 = r.z ?? 0;
+      let worst = 0;
+      const watch = (n: number): void => {
+        for (let t = 0; t < n; t++) {
+          step3d(w, 1 / 60, new Map());
+          worst = Math.max(worst, Math.abs((r.z ?? 0) - z0), Math.abs(r.vz ?? 0));
+        }
+      };
+      step3d(w, 1 / 60, new Map([[0, cmd({ bbRamp: true })]]));
+      watch(Math.round(BB_RAMP_DEPLOY_S * 60) + 30);
+      const settled = r.bbRampOut === true;
+      step3d(w, 1 / 60, new Map([[0, cmd({ bbRamp: true })]]));
+      watch(Math.round(BB_RAMP_DEPLOY_S * 60) + 30);
+      check(
+        `archetype 3d: a ${mount} RAMP deploying and folding never moves the chassis in z`,
+        settled && r.bbRampOut === false && worst < 0.01,
+        `deployed=${settled} folded=${r.bbRampOut === false} worst |dz|,|vz| = ${worst.toFixed(4)}`,
+      );
+      disposeEngineFor(w);
+    }
+  }
   // (d) The RAMP's collider count changes at exactly two edges: the SETTLE (`BB_RAMP_DEPLOY_S`
   // after the press) and the FOLD (immediately on the next press) — and at no other tick.
   {

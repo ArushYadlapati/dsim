@@ -17,7 +17,15 @@ import { shoveMass } from '../../../sim/drivetrain';
 import { BALL_REST_SPEED, PHYS_WALL_FRICTION, GRAVITY, PHYS_SOLVER_ITERS, PHYS_ALLOWED_ERROR } from '../../../config';
 import { BB3_CCD_SPEED, BB3_CONTACT_FREQ, BB3_LAUNCH_CLEAR_MAX, BB3_LAUNCH_CLEAR_SLOP, BB3_LAUNCH_CLEAR_STEP, BB3_REST_SPEED, BB3_REST_TICKS, BB3_ROLL_DECEL, BB3_ROLL_FLOOR_Z, BB3_WALL_H, BB_POLLEN_R, bbHeightNow } from '../config';
 import { bbRampSettled } from '../robot';
-import { addChassis3dColliders, clearChassis3dColliders, chassis3dShapes, chassis3dReachShapes, type Chassis3dShape } from './bodies';
+import {
+  addChassis3dColliders,
+  chassis3dBaseColliderCount,
+  clearChassis3dColliders,
+  chassis3dShapes,
+  chassis3dReachShapes,
+  swapChassis3dReachColliders,
+  type Chassis3dShape,
+} from './bodies';
 import {
   buildHiveTray3d,
   buildStatics3d,
@@ -364,10 +372,16 @@ function syncRobot(RAPIER: Rapier3d, engine: Engine3d, r: RobotState, wantHeight
        * `chassis3dReachShapes` reads only the archetype and the height.
        *
        * A ramp-only change does NOT re-seat the translation (unlike height) — the body's bottom
-       * has not moved.
+       * has not moved — AND DOES NOT TOUCH THE CHASSIS BOXES: only the reach hardware is swapped
+       * (`swapChassis3dReachColliders`'s header has the measurement — a full clear drops the
+       * floor contacts and the robot sinks 0.28 in every time the ramp comes down).
        */
-      clearChassis3dColliders(engine.world3d, body);
-      addChassisCollider(RAPIER, engine, body, r, heightIn, rampReady);
+      if (heightChanged) {
+        clearChassis3dColliders(engine.world3d, body);
+        addChassisCollider(RAPIER, engine, body, r, heightIn, rampReady);
+      } else {
+        swapChassis3dReachColliders(RAPIER, engine.world3d, body, chassis3dBaseColliderCount(r.spec, heightIn), r.spec, heightIn, rampReady);
+      }
       engine.robotHeights.set(r.id, heightIn);
       engine.robotRampReady.set(r.id, rampReady);
       if (heightChanged) body.setTranslation({ x: r.pos.x, y: r.pos.y, z: centreZ }, true);

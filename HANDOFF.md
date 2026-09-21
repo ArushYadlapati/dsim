@@ -15,6 +15,12 @@
   (headless Electron `sendInputEvent`, per preset). The Browser pane is `hidden` when the owner is away,
   so rAF never fires there — use the Electron script, not the pane, for anything frame-driven.
 - scene-preview: `free` is in the camera cycle; `window.__bbGameScene` exposes the scene.
+- **RAMP DEPLOY SANK THE ROBOT 0.28 in** (owner report). The settle edge cleared the WHOLE chassis compound
+  (`removeCollider(…, false)` on a resting body): three ticks with no floor contact = free fall, then the
+  solver walks it back ~0.001 in/tick, i.e. never while parked. Fix: `swapChassis3dReachColliders`
+  (`sim3d/bodies.ts`) swaps ONLY the reach hardware at a ramp edge, authority and predictor both; the
+  height edge still does the full clear (it re-seats with wake and measures 0.0000). Check: sim3d (c2),
+  three mounts, deploy + fold, worst |dz| 0.0002. Probes: `scratch/rampsink.ts`, `rampsink2.ts`.
 - OPEN (in flight when written): side-roller protrusion (owner: "do they need to stick out that much").
 
 ---
