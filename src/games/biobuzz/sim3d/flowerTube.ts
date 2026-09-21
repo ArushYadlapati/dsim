@@ -13,6 +13,7 @@ import {
 } from '../config';
 
 import { cadFlowerRings, type FieldFlowerRing } from './fieldColliders';
+import { GROUP_FLOWER_RING } from './groups';
 
 /**
  * BIOBUZZ 3D PHYSICS — THE FLOWER TUBE (Day 2, `docs/biobuzz/plan-3d.md` §3.7).
@@ -183,7 +184,8 @@ export function buildFlowerTubes3d(
       if (!mesh) continue;
       const desc = RAPIER.ColliderDesc.trimesh(mesh.vertices, mesh.indices, RAPIER.TriMeshFlags.FIX_INTERNAL_EDGES);
       if (!desc) continue;
-      world3d.createCollider(desc.setFriction(friction).setRestitution(0), body);
+      // a ring plate does not meet a deployed RAMP — `groups.ts` has the measurement
+      world3d.createCollider(desc.setFriction(friction).setRestitution(0).setCollisionGroups(GROUP_FLOWER_RING), body);
       built++;
     }
     built += buildFlowerCage3d(RAPIER, world3d, body, rings, friction);

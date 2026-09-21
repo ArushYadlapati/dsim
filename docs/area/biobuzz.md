@@ -639,24 +639,27 @@ newest-first — it is never ranked, which is what keeps the two eras from meeti
     ⚠️ **THE DECK IS THE HALF THAT DELIVERS.** The old wedge stopped at its drop point 2.29 in out
     and left a 2.29-in VOID between itself and the mouth, so a POLLEN it did lift had nothing to
     stand on and fell back into the bore.
-    ⚠️ **AND `BB_RAMP_IN` IS SET BY THE FOLDED POSE, NOT THE DEPLOYED ONE** (owner's spec for this
-    mechanism: *"when deployed, from the top down, it should look like an upside down U shape. This
-    is because the hole created by the U is where the intake rollers are situated in when the ramp
-    is folded up vertically."*). The pivot is ON the roller's own axle line, so FOLDED the rails
-    stand straight up past the roller and the rigid HUB (r 0.75) is the rail band **1.55 … 3.05**
-    that no ramp member may enter. MEASURED on the built group (`scratch/rampfold.ts`, every
-    `robot:ramp:*` mesh's own vertices against the roller's axis): at `BB_RAMP_IN` 0.15 the blade
-    spanned rail **2.563 … 5.825** — inside the hub's band, clearing it only sideways (+0.289); at
-    0.85 it spans **3.232 … 5.825**, starting 0.18 in past the hub's top with a +0.477 radial gap,
-    and the U reads as a U. The rails clear by 1.56, and the pivot BRACKET is fixed to the chassis
-    at `±pivotArmY`, outboard of the shortened barrel's ±7.32, so its −0.08 radial figure is the
-    (u, z) metric over-reporting a part that never meets the barrel laterally. **The FLAPS are
-    pressed and that is allowed**: a stowed blade sits 0.773 in inside their r-2.0 sweep, they are
-    compliant and hinged (`flapFold`), and clearing them would mean starting the blade above rail
-    4.3 and leaving 1.5 in of deck. It costs the extraction nothing — the same 400-run grid reads
-    **400/400 either way** (mean 0.403 s → 0.386), forced heights identical, the drain 75 → 76
-    ticks. The RENDER lane pins both halves: no ramp member within 0.1 in of the hub, and the
-    blade's inboard edge outboard of the hub along the rail.
+    ⚠️ **THE RAMP PIVOTS ON THE SWEEPER'S OWN SHAFT** (owner, 2026-09-21: "the ramp collides with
+    the intake rollers when it is folded up"; and the original spec — *"the hole created by the U
+    is where the intake rollers are situated in when the ramp is folded up vertically"*).
+    `BB_RAMP_PIVOT_Z` = the roller's axis height (4.5; the RENDER lane pins it to `BB_ROLLER_Z`),
+    `BB_RAMP_PIVOT_BACK` = its `u`. It used to hang 2.3 in UNDER the axle on the same `u`, so a
+    folded rail stood across the shaft exactly where it runs from the barrel's end into its
+    bearing, and the blade sat 0.77 in inside the r-2.0 flap sweep. On the shaft the rail's eye IS
+    the bearing, the rails stand outboard of the barrel's ±7.32, and the blade keeps 4.93 in from
+    the axle at EVERY swing angle (+2.93 past the flap sweep; `scratch/rampfold.ts`). Rails 18.7°
+    → 36°, 5.8 → 6.9 in; a folded ramp stands 11.4 in. `BB_RAMP_IN` stays 0.85 (2.05 also
+    measured 400/400 — the deck's length is not what extracts). Same grid: **400/400**, mean
+    0.285 s, an 8-column drains in 72 ticks.
+  - ⚠️ **A DEPLOYED RAMP DOES NOT MEET A FLOWER'S RING PLATES** (`sim3d/groups.ts`: `GROUP_RAMP` /
+    `GROUP_FLOWER_RING`). Owner report: "it kinda gets caught on the bottom aluminum part of the
+    flower and makes the whole robot jump upwards". MEASURED, 171 of 240 drive-ins lifted the
+    chassis (to 0.23 in, vz 10 in/s) with NO penetration anywhere: the blade rides 0.046 in over
+    the lower plate, and blade-bottom-edge × plate-top-edge is a SPECULATIVE contact with a
+    diagonal normal, which a chassis that cannot pitch takes as a hop. No affordable clearance
+    fixes it (it scales with speed). A hinged ramp would ride up; this one skips the ring plates
+    only — posts, cage, walls, robots and every element still meet it, and the swing guard's
+    query carries no groups. After: **0/240**, extraction 400/400.
   - ⚠️ **AND THE LIP IS DRIVEN, BECAUSE NO PASSIVE PROFILE CAN DO THIS.** `rampRollerDrive`
     (`sim3d/flower3d.ts`) raises the candidate POLLEN's velocity COMPONENT along the deck toward
     the rollers to `BB_RAMP_ROLLER_V` (50 in/s) and never reduces it, leaving every other component
@@ -803,6 +806,42 @@ newest-first — it is never ranked, which is what keeps the two eras from meeti
     the compounding failure mode at a combined offset+angle is a real, measured limit of the
     current contact radius rather than a bug, and is left here as the open item for the next
     tuning pass rather than a claim this session did not earn.
+    That sweep is a SAVED SCRIPT now — `scratch/sidesweep.ts`, the same 135-cell grid (`SS_ALL=1`
+    runs all four FLOWERS per cell, 540) with the skew modelled as a straight approach AT the
+    angle that ENDS on the lineup pose rather than a heading error held blind for 16 in, which is
+    a driver aiming from one side rather than simply missing. It reproduces the envelope at
+    **73.3 % overall, 100 % straight-on**, −10° 80 %, +10° 40 %.
+  - ⚠️ **HOW FAR THE WHEELS HAVE TO STICK OUT — 1.004 in IS THE FLOOR, 1.90 IS THE KNEE, AND THE
+    PROTRUSION DID NOT MOVE** (owner, 2026-09-21: "do the side roller wheels need to stick out
+    that much for flower intaking? it looks ugly and not the most realistic in terms of
+    packaging"). Both halves are measured; `config.ts`'s own header on `BB_SIDE_ROLLER_R` carries
+    the working and the full table.
+    - **What the chassis stops against is the FLOWER's own ring plates, on the TIP LINE.** A
+      BIOBUZZ chassis is one RECTANGULAR PRISM to a static (frame + arms + lintel +
+      `chassis3dPocketShapes`), so its whole front face stops at `uOut`. Probed off the real 3D
+      colliders (`scratch/srgeom.ts`), in the approach frame: the LOWER RING PLATE is `u ≤ 2.404`,
+      `z −0.199 … 0.354`, the MID PLATE `u ≤ 2.415`, `z 3.904 … 5.254`, and between them the
+      retrieval window is clear back to the peanut supports at `u −1.185`, the full ±2.976 plate
+      width. A real square drive-in settles at `uTip` **2.4145** — `BB_PLACE_REACH` to 0.03 in.
+      Only the wheel (z 0.5 … 2.5) gets through the window, so its FRONT must stand
+      `2.404 − BB_POLLEN_R` = **1.004 in** past the tip line to touch the bottom POLLEN at all.
+      Relieving the arm nose to get deeper is not available: the pocket filler is what stopped a
+      fork driving over the hive's foot bars.
+    - **And everything above that floor is spent on the SKEWED approach.** 540 real drive-ins per
+      value: protrusion 2.05 → 73.5 %, **1.90 → 73.3 %**, 1.85 → 68.5 %, 1.80 → 64.4 %,
+      1.75 → 60.0 %, 1.40 → 60.0 %, 1.20 → 43.7 %, 1.00 → 44.3 %; straight-on holds 100 % down to
+      1.40 and breaks below it. The curve is FLAT above 1.90 and falls 4–5 points per 0.05 in
+      below it, so the shipped value is the KNEE and the honest reduction is ZERO.
+    - **What was actually wrong was the PACKAGING**, which is the owner's second sentence. The
+      wheel hung on one diagonal strut with 63 % of it forward of the arm tips and nothing around
+      it. It is a bracketed module now — a retainer plate over it, a plate under it, a dead axle
+      between them and a strap/web back to the side arm's own rail — and the drawn envelope ENDS
+      on `tip + BB_SIDE_ROLLER_PROTRUDE`, the wheel's own solid front, so the package added no
+      reach. `BB_SIDE_ROLLER_PLATE_T` (0.12) is set by the BOTTOM plate, which is the one part
+      that drives over the lower ring rim: 0.5 − 0.354 leaves 0.146 in. Pinned in the RENDER lane
+      (3D nodes + the 2D sprite's closed filled path) and the ROBOT lane (the 1.004-in floor, and
+      that `BB_SIDE_ROLLER_PROTRUDE` is the one number `BbFlowerReach.out[1]`,
+      `bbArchetypeWallExtra` and `bbIntakeExtraReach` all read).
 - **Verification:** `scripts/smoke-biobuzz/sim3d.ts` (SIM3D lane: seam, drive parity, two-run
   hash, conservation, containment with `containmentFixes === 0`, CCD, capture, launch into either
   up cell, 18/29-in clearance, tip/spill, perf ≤ 1.5 ms, CAD probe agreement) and `render.ts`

@@ -49,6 +49,7 @@ import { bbIntakeKindOf } from '../mechs';
 import { EDGE_ANGLE, type BbEdge } from '../mounts';
 import { cadCellBox, cadStatics, cadTrayHulls, cadTrayRiders } from './fieldColliders';
 import { buildFlowerTubes3d } from './flowerTube';
+import { GROUP_RAMP } from './groups';
 import { pitchQuatY, quatMul, tiltQuatX, yawQuat, type Quat } from './math3';
 
 /**
@@ -829,6 +830,9 @@ export interface Chassis3dShape {
    * a knife corner; a side roller's CYLINDER (see `shape` below) has no edges to break.
    */
   elementSolid?: boolean;
+  /** a deployed RAMP's blade or rail: built in `GROUP_RAMP`, so it meets everything EXCEPT a
+   * FLOWER's ring plates (`groups.ts` — the speculative-contact hop). */
+  ramp?: boolean;
   /**
    * ⚠️ **A SIDE ROLLER IS A CYLINDER, EVERYTHING ELSE IS A BOX** (owner ruling 2026-09-20: "it
    * should be a collider... colliding with everything"). Absent (or `'box'`) means the existing
@@ -1074,6 +1078,7 @@ function rampWedgeSegment(
     hz: BB_RAMP_WEDGE_THICK,
     rot: quatMul(yawQuat(EDGE_ANGLE[edge]), pitchQuatY(angle)),
     elementSolid: true,
+    ramp: true,
   };
 }
 
@@ -1135,6 +1140,7 @@ export function chassis3dReachShapes(spec: RobotSpec, heightIn: number, rampRead
           hz: 0.25,
           rot,
           elementSolid: true,
+          ramp: true,
         });
       }
     }
@@ -1391,6 +1397,7 @@ export function reachColliderDesc(RAPIER: Rapier3d, s: Chassis3dShape): Instance
   if (rot) desc.setRotation(rot);
   desc.setDensity(0).setFriction(PHYS_FRICTION).setRestitution(0);
   if (!s.elementSolid) desc.setCollisionGroups(GROUP_POCKET);
+  else if (s.ramp) desc.setCollisionGroups(GROUP_RAMP);
   return desc;
 }
 

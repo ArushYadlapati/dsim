@@ -24,6 +24,7 @@ import {
   BB3_MOUTH_SLOT_Z,
   BB_INTAKE_PERIOD_MAX,
   BB_FLOWERS,
+  FLOWER_MOUTH,
   BB_FLOWER_D,
   BB_FLOWER_OPEN_R,
   BB_FLOWER_TOP_Z,
@@ -3208,6 +3209,48 @@ export function sim3dChecks(check: Check): void {
       );
       disposeEngineFor(w);
     }
+  }
+  // (c3) A DEPLOYED RAMP DRIVEN INTO A FLOWER DOES NOT HOP THE ROBOT (owner report 2026-09-21: "it
+  // kinda gets caught on the bottom aluminum part of the flower and makes the whole robot jump
+  // upwards"). `sim3d/groups.ts` has the cause — a speculative edge-edge contact between the blade
+  // and the lower ring plate it rides 0.046 in over. Measured before: up to 0.23 in at vz 10 in/s.
+  {
+    let worstZ = 0;
+    let worstVz = 0;
+    let took = 0;
+    const runs: [number, number, number][] = [[0, 0.5, 0], [0, 0.5, 2], [1, 1, -2], [2, 0.5, 4], [3, 1, 0]];
+    for (const [fi, stick, lat] of runs) {
+      const w = mkWorld3d('match', 8130 + fi, bbArchSpec('ramp', 'front'));
+      w.match.phase = 'teleop';
+      w.match.phaseTimeLeft = 90;
+      w.balls.length = 0;
+      const f = BB_FLOWERS[fi];
+      w.balls.push({ id: 9300, color: 'yellow', r: BB_POLLEN_R, state: { kind: 'element', el: `flower:${fi}`, slot: 0 }, pos: { x: f.x, y: f.y }, vel: { x: 0, y: 0 }, z: 0, vz: 0 } as unknown as World['balls'][number]);
+      const r = w.robots[0];
+      r.hopper = [];
+      const n = FLOWER_MOUTH[f.wall];
+      const standoff = bbFootprint(r.spec).front + 16;
+      r.pos = { x: f.x + n.x * standoff - n.y * lat, y: f.y + n.y * standoff + n.x * lat };
+      r.heading = Math.atan2(-n.y, -n.x);
+      r.vel = { x: 0, y: 0 };
+      r.angVel = 0;
+      for (let t = 0; t < 30; t++) step3d(w, 1 / 60, new Map());
+      step3d(w, 1 / 60, new Map([[0, cmd({ bbRamp: true })]]));
+      for (let t = 0; t < Math.round(BB_RAMP_DEPLOY_S * 60) + 3; t++) step3d(w, 1 / 60, new Map());
+      for (let t = 0; t < 150; t++) {
+        step3d(w, 1 / 60, new Map([[0, cmd({ driveY: stick, leftDrive: stick, rightDrive: stick, intake: true })]]));
+        worstZ = Math.max(worstZ, Math.abs(r.z ?? 0));
+        worstVz = Math.max(worstVz, Math.abs(r.vz ?? 0));
+      }
+      if (r.hopper.length > 0) took++;
+      disposeEngineFor(w);
+    }
+    check(
+      'archetype 3d: a deployed RAMP driven into a FLOWER never lifts the chassis off the tiles',
+      worstZ < 0.02 && worstVz < 1,
+      `worst |z| ${worstZ.toFixed(4)} in, worst |vz| ${worstVz.toFixed(3)} in/s over ${runs.length} drive-ins`,
+    );
+    check('archetype 3d: ...and those same drive-ins still take the POLLEN (the lane-centred ones)', took >= 3, `${took}/${runs.length}`);
   }
   // (d) The RAMP's collider count changes at exactly two edges: the SETTLE (`BB_RAMP_DEPLOY_S`
   // after the press) and the FOLD (immediately on the next press) — and at no other tick.

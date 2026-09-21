@@ -38,6 +38,7 @@ export * from './derive';
 export * from './elements3d';
 export * from './flower3d';
 export * from './flowerTube';
+export * from './groups';
 export * from './hive3d';
 export * from './math3';
 export * from './robot3d';

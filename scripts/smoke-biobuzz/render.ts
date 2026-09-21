@@ -114,6 +114,8 @@ import {
   BB_SIDE_PLATE_BOTTOM_Z,
   BB_SIDE_PLATE_FRONT_X,
   BB_SIDE_PLATE_TOP_Z,
+  BB_FLOWER_RETRIEVE_Z,
+  BB_SIDE_ROLLER_PROTRUDE,
   BB_SIDE_ROLLER_R,
   BB_SIDE_ROLLER_REACH,
   bbSideRollerY,
@@ -4785,6 +4787,60 @@ function graphicsChecks(check: Check, allFiles: string[]): void {
                   );
                 }
               }
+
+              /**
+               * ⚠️ **THE HOUSING (owner, 2026-09-21: "it looks ugly and not the most realistic in
+               * terms of packaging"). The wheel used to hang off a single diagonal strut with
+               * nothing around it; it is a bracketed module now — a retainer plate above it, a
+               * plate under it, a dead axle between them and a web back to the arm rail. The
+               * PROTRUSION did not move (`config.ts`'s own header carries the 540-run measurement
+               * that says 1.90 is the knee and 1.004 the floor), so what these checks pin is that
+               * the drawing gained a package and NOT a thousandth of extra reach: nothing in the
+               * module may stand further out than the wheel's own SOLID front,
+               * `tip + BB_SIDE_ROLLER_PROTRUDE`, which is exactly what `chassis3dReachShapes`
+               * makes solid.
+               */
+              for (const m of mouths) {
+                const f = bbMouthFrame(m, hl, hw);
+                const front = f.depth + BB_SIDE_ROLLER_PROTRUDE;
+                const names = [
+                  `robot:sideroller:house:top:${m.edge}`,
+                  `robot:sideroller:house:bot:${m.edge}`,
+                  `robot:sideroller:axle:${m.edge}`,
+                  `robot:sideroller:web:${m.edge}`,
+                ];
+                for (const nm of names) {
+                  const node = group.getObjectByName(nm);
+                  check(`${label}/${m.edge}: ${nm.split(':').slice(2, -1).join(':')} exists`, node !== undefined);
+                  if (!node) continue;
+                  const ext = mouthExtent(node, f);
+                  check(
+                    `${label}/${m.edge}: ${nm.split(':').slice(2, -1).join(':')} reaches no further out than the wheel's own solid`,
+                    ext.uMax <= front + 1e-6,
+                    `uMax ${ext.uMax.toFixed(6)} vs ${front.toFixed(6)}`,
+                  );
+                }
+                const top = group.getObjectByName(`robot:sideroller:house:top:${m.edge}`);
+                const bot = group.getObjectByName(`robot:sideroller:house:bot:${m.edge}`);
+                if (top && bot) {
+                  const te = mouthExtent(top, f);
+                  const be = mouthExtent(bot, f);
+                  check(
+                    `${label}/${m.edge}: the two plates sandwich the wheel and never cut into it`,
+                    Math.abs(te.zMin - BB_SIDE_ROLLER_REACH.z[1]) < 1e-6 && Math.abs(be.zMax - BB_SIDE_ROLLER_REACH.z[0]) < 1e-6,
+                    `top zMin ${te.zMin.toFixed(4)} vs ${BB_SIDE_ROLLER_REACH.z[1]}, bot zMax ${be.zMax.toFixed(4)} vs ${BB_SIDE_ROLLER_REACH.z[0]}`,
+                  );
+                  // ⚠️ the bottom plate is the one part of the module that drives OVER a FLOWER's
+                  // lower ring plate (`BB_FLOWER_RETRIEVE_Z[0]`, the rim the retrieval window
+                  // starts above) — it is what sets `BB_SIDE_ROLLER_PLATE_T`, so a thicker sheet
+                  // must fail here rather than silently clip the rim in the picture.
+                  check(
+                    `${label}/${m.edge}: the bottom plate still clears a FLOWER's lower ring rim`,
+                    be.zMin > BB_FLOWER_RETRIEVE_Z[0] + 1e-9,
+                    `${be.zMin.toFixed(4)} vs rim ${BB_FLOWER_RETRIEVE_Z[0]}`,
+                  );
+                }
+              }
             }
 
             if (kind === 'ramp') {
@@ -4817,16 +4873,16 @@ function graphicsChecks(check: Check, allFiles: string[]): void {
                  * ⚠️ **THE FOLDED U HAS TO HAVE A HOLE IN IT, AND THE HOLE IS THE ROLLER'S**
                  * (owner: *"when deployed, from the top down, it should look like an upside down
                  * U shape. This is because the hole created by the U is where the intake rollers
-                 * are situated in when the ramp is folded up vertically."*). The pivot is ON the
-                 * roller's own axle line, so FOLDED the rails stand straight up past it and the
-                 * roller's axis sits `BB_ROLLER_Z − BB_RAMP_PIVOT_Z` up that rail — which makes
-                 * the rigid HUB a band on the rail that no ramp member may enter.
+                 * are situated in when the ramp is folded up vertically."*). The ramp pivots ON
+                 * THE ROLLER'S OWN SHAFT (owner, 2026-09-21: "the ramp collides with the intake
+                 * rollers when it is folded up" — the pivot used to hang 2.3 in under the axle, so
+                 * a folded rail stood across the shaft where it runs into its bearing). So the
+                 * rails' eyes ARE the bearing, they stand outboard of the barrel's ends (checked
+                 * below), and the BLADE keeps one fixed distance from the axle at every swing
+                 * angle — which has to clear the whole r-2.0 FLAP SWEEP, not just the hub.
                  *
-                 * Measured off the meshes' OWN VERTICES rather than a Box3, in the roller's own
-                 * (u, z) plane, because a Box3 of a diagonal blade is mostly air. `BB_RAMP_IN`'s
-                 * header carries the before/after table and the reason the FLAPS are exempt: they
-                 * are compliant and hinged, they yield against the field the same way, and
-                 * clearing their r-2.0 sweep would leave 1.5 in of deck.
+                 * Measured off the blade's OWN VERTICES rather than a Box3, in the roller's own
+                 * (u, z) plane, because a Box3 of a diagonal blade is mostly air.
                  */
                 {
                   const axisU = f.depth - BB_RAMP_PIVOT_BACK;
@@ -4835,7 +4891,13 @@ function graphicsChecks(check: Check, allFiles: string[]): void {
                   let minHub = Infinity;
                   let bladeRailLo = Infinity;
                   let worst = '';
-                  for (const node of [bar, railL, railR]) {
+                  const sweepR = num('BB_ROLLER_FLAP_R');
+                  check(
+                    `${label}/${m.edge}: the ramp pivots on the roller's own shaft — BB_RAMP_PIVOT_Z is the roller's axis height`,
+                    Math.abs(BB_RAMP_PIVOT_Z - rollerZ) < 1e-9,
+                    `${BB_RAMP_PIVOT_Z} vs ${rollerZ}`,
+                  );
+                  for (const node of [bar]) {
                     node.traverse((o) => {
                       const mesh = o as THREE.Mesh;
                       const geo = mesh.geometry as THREE.BufferGeometry | undefined;
@@ -4845,7 +4907,7 @@ function graphicsChecks(check: Check, allFiles: string[]): void {
                         v3f.fromBufferAttribute(pos, i).applyMatrix4(mesh.matrixWorld);
                         const du = (v3f.x - f.ox) * Math.cos(f.rot) + (v3f.y - f.oy) * Math.sin(f.rot) - axisU;
                         const dz = v3f.z - axisZ;
-                        const gap = Math.sqrt(du * du + dz * dz) - hubR;
+                        const gap = Math.sqrt(du * du + dz * dz) - sweepR;
                         if (gap < minHub) {
                           minHub = gap;
                           worst = o.name || node.name;
@@ -4855,8 +4917,8 @@ function graphicsChecks(check: Check, allFiles: string[]): void {
                     });
                   }
                   check(
-                    `${label}/${m.edge}: folded, no ramp member touches the roller's rigid HUB (>= 0.1 in)`,
-                    minHub >= 0.1,
+                    `${label}/${m.edge}: folded, the blade clears the roller's whole FLAP SWEEP (>= 0.1 in)`,
+                    Number.isFinite(sweepR) && minHub >= 0.1,
                     `closest ${minHub.toFixed(3)} in on ${worst}`,
                   );
                   // ...and the BLADE, which is the U's own bight, starts OUTBOARD of the hub along
@@ -5005,7 +5067,7 @@ function graphicsChecks(check: Check, allFiles: string[]): void {
           const ctx = {
             save: rec('save'), restore: rec('restore'), beginPath: rec('beginPath'),
             moveTo: rec('moveTo'), lineTo: rec('lineTo'), stroke: rec('stroke'), fill: rec('fill'),
-            arc: rec('arc'), translate: rec('translate'), rotate: rec('rotate'),
+            arc: rec('arc'), closePath: rec('closePath'), translate: rec('translate'), rotate: rec('rotate'),
             set strokeStyle(_v: string) {}, set fillStyle(_v: string) {}, set lineWidth(_v: number) {},
           } as unknown as CanvasRenderingContext2D;
           const spec = mk({ bbMech: { intake: { kind } } } as Partial<RobotSpec>);
@@ -5018,6 +5080,64 @@ function graphicsChecks(check: Check, allFiles: string[]): void {
           reachOps('sweeper').length === 0,
         );
         check('2D: the siderollers kind draws its wheels', reachOps('siderollers').length > 0);
+        // ⚠️ the sprite draws the HOUSING too (owner, 2026-09-21) — the plan outline of the same
+        // bracket `scene/renderRobots.ts` builds, not a bare segment to the axle. One CLOSED,
+        // FILLED path per wheel before its rubber circle: `moveTo → lineTo → arc → lineTo →
+        // closePath → fill`, which is what distinguishes a package from the single stroked line
+        // this replaced.
+        {
+          const ops = reachOps('siderollers').map((o) => o.op);
+          const spec2d = mk({ bbMech: { intake: { kind: 'siderollers' } } } as Partial<RobotSpec>);
+          const wheels = bbMouths(spec2d).length * 2;
+          check(
+            '2D: and it draws each wheel a HOUSING, closed and filled, not a bracket line',
+            ops.filter((o) => o === 'closePath').length === wheels && ops.filter((o) => o === 'fill').length === 2 * wheels,
+            `${wheels} wheels: ${ops.join(',')}`,
+          );
+          // ...and the OUTLINE's own numbers, not just its shape of calls: every point and every
+          // arc the sprite emits has to stay inside the same envelope the 3D module does, and the
+          // cap has to sweep through the OUTWARD point rather than round the back of the wheel
+          // (the −y wheel needs the anticlockwise arc; mirroring the +y sweep draws the housing
+          // INSIDE OUT, and nothing about the op sequence would say so).
+          {
+            const pts: { x: number; y: number }[] = [];
+            const arcs: { x: number; y: number; r: number; a0: number; a1: number; ccw: boolean }[] = [];
+            const xy = (x: number, y: number) => { pts.push({ x, y }); };
+            const ctx2 = {
+              save() {}, restore() {}, beginPath() {}, stroke() {}, fill() {}, closePath() {},
+              translate() {}, rotate() {}, moveTo: xy, lineTo: xy,
+              arc(x: number, y: number, r: number, a0: number, a1: number, ccw = false) { arcs.push({ x, y, r, a0, a1, ccw }); },
+              set strokeStyle(_v: string) {}, set fillStyle(_v: string) {}, set lineWidth(_v: number) {},
+            } as unknown as CanvasRenderingContext2D;
+            drawBiobuzzIntakeReach(ctx2, { spec: spec2d, bbRampOut: false } as unknown as RobotState, false, undefined);
+            const m0 = bbMouths(spec2d)[0];
+            const f0 = bbMouthFrame(m0, spec2d.length / 2, spec2d.width / 2);
+            const front = f0.depth + BB_SIDE_ROLLER_PROTRUDE;
+            check(
+              "2D: no point of the drawn housing reaches past the wheel's own solid front",
+              pts.every((p) => p.x <= front + 1e-9) && arcs.every((a) => a.x + a.r <= front + 1e-9),
+              `front=${front.toFixed(4)} maxPt=${Math.max(...pts.map((p) => p.x)).toFixed(4)} maxArc=${Math.max(...arcs.map((a) => a.x + a.r)).toFixed(4)}`,
+            );
+            // the CAP arcs are the housings' (two per wheel is the wheel's own rubber circle,
+            // drawn as a full 0..TAU arc); a cap is the half-sweep, and its mid-angle must point
+            // outward (+x in the mouth frame).
+            const caps = arcs.filter((a) => Math.abs(Math.abs(a.a1 - a.a0) - Math.PI) < 1e-9);
+            check(
+              '2D: one half-sweep cap per wheel, each sweeping through the OUTWARD point',
+              caps.length === wheels &&
+                caps.every((a) => {
+                  // the swept midpoint, for a canvas arc: clockwise runs a0 UP to a1 and
+                  // anticlockwise runs it DOWN, each wrapping by 2π until the end is on the
+                  // right side of the start.
+                  let end = a.a1;
+                  if (a.ccw) while (end > a.a0) end -= 2 * Math.PI;
+                  else while (end < a.a0) end += 2 * Math.PI;
+                  return Math.cos((a.a0 + end) / 2) > 0.999;
+                }),
+              `${caps.length} caps of ${arcs.length} arcs`,
+            );
+          }
+        }
         check('2D: the ramp kind draws its rest-pose outline', reachOps('ramp').length > 0);
       }
 

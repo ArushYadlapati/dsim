@@ -14,6 +14,7 @@ import {
   BB_RAMP_DEPLOY_S,
   BB_RAMP_OUT,
   BB_RAMP_PIVOT_BACK,
+  BB_SIDE_ROLLER_HOUSE_BACK,
   BB_SIDE_ROLLER_OUT,
   BB_SIDE_ROLLER_R,
   bbSideRollerY,
@@ -364,12 +365,27 @@ export function drawBiobuzzIntakeReach(ctx: CanvasRenderingContext2D, r: RobotSt
       for (const s of [1, -1] as const) {
         const y = s * bbSideRollerY(f.half); // AT THE EDGE (owner, 2026-09-20), not the centreline
         const x = tip + BB_SIDE_ROLLER_OUT;
-        // the bracket, back to the brace at the tip line
+        // ⚠️ **THE HOUSING, NOT A BRACKET LINE** (owner, 2026-09-21: "it looks ugly and not the
+        // most realistic in terms of packaging"). This used to be a bare segment from the tip
+        // line to the axle with a loose circle on the end — a wheel on a stick, in plan as much
+        // as in 3D. It is the same sandwich `scene/renderRobots.ts` builds: a plate from the side
+        // arm's rail out around the wheel, capped on the WHEEL'S OWN RADIUS, so the drawn outline
+        // ends exactly where the collider does (`tip + BB_SIDE_ROLLER_PROTRUDE`) and not a
+        // thousandth further.
+        const backX = x - BB_SIDE_ROLLER_HOUSE_BACK;
+        const inner = y - s * BB_SIDE_ROLLER_R;
+        ctx.fillStyle = 'rgba(152,163,178,0.32)';
         ctx.strokeStyle = ALU;
-        ctx.lineWidth = 0.16;
+        ctx.lineWidth = 0.14;
         ctx.beginPath();
-        ctx.moveTo(tip, y);
-        ctx.lineTo(x, y);
+        ctx.moveTo(backX, inner);
+        ctx.lineTo(x, inner);
+        // ⚠️ the cap must sweep through the OUTWARD point (+x), never round the back of the
+        // wheel: for the −y wheel that means the anticlockwise arc, not the same sweep mirrored.
+        ctx.arc(x, y, BB_SIDE_ROLLER_R, (-s * Math.PI) / 2, (s * Math.PI) / 2, s < 0);
+        ctx.lineTo(backX, s * f.half);
+        ctx.closePath();
+        ctx.fill();
         ctx.stroke();
         // the wheel itself — the same rubber shading the sweeper's own roller wears
         ctx.fillStyle = on ? RUBBER_HI : RUBBER_LO;

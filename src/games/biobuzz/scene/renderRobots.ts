@@ -40,7 +40,9 @@ import {
   BB_SIDE_PLATE_FRONT_X,
   BB_SIDE_PLATE_TOP_Z,
   BB_SIDE_ROLLER_H,
+  BB_SIDE_ROLLER_HOUSE_BACK,
   BB_SIDE_ROLLER_OUT,
+  BB_SIDE_ROLLER_PLATE_T,
   BB_SIDE_ROLLER_R,
   bbSideRollerY,
   BB_SIDE_ROLLER_Z,
@@ -260,27 +262,6 @@ function platePlane(along: number, up: number, t: number, holes: number): THREE.
 function boxAt(sx: number, sy: number, sz: number, x: number, y: number, z: number): THREE.BoxGeometry {
   const g = new THREE.BoxGeometry(sx, sy, sz);
   g.translate(x, y, z);
-  return g;
-}
-
-/** a square-section strut spanning two arbitrary points (world-space, pre-placed like `boxAt`) —
- *  for a gusset that is not axis-aligned, e.g. the side-roller bracket below, which drops from
- *  the side arm's nose to the wheel's own axis on a diagonal that is neither level nor a plain
- *  vertical. `thick` is the cross-section on both remaining axes. */
-function strutBetween(
-  ax: number,
-  ay: number,
-  az: number,
-  bx: number,
-  by: number,
-  bz: number,
-  thick: number,
-): THREE.BoxGeometry {
-  const len = Math.hypot(bx - ax, by - ay, bz - az);
-  const g = new THREE.BoxGeometry(len, thick, thick);
-  const dir = new THREE.Vector3(bx - ax, by - ay, bz - az).normalize();
-  g.applyQuaternion(new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(1, 0, 0), dir));
-  g.translate((ax + bx) / 2, (ay + by) / 2, (az + bz) / 2);
   return g;
 }
 
@@ -1502,31 +1483,73 @@ export function buildIntake(
       }
     }
 
-    // ── SIDE ROLLERS: two vertical-axis compliant wheels, each hung from a single diagonal
-    // gusset off the SIDE ARM's own nose — TUCKED IN FRONT OF THE DRIVE WHEELS, not sticking out
-    // on a separate outrigger off the front brace (owner, 2026-09-20: "The side rollers should be
-    // right in front of the wheels. They should not be sticking out like that"). The arm's own
-    // rail ends on its rounded nose at the tip line (`nose`, above) and does not reach out to the
-    // wheel's axis (`BB_SIDE_ROLLER_OUT` is only 0.9 in past the tip now, was 1.9), so one strut
-    // runs nose-to-axle on the diagonal rather than a level outrigger plus a separate drop.
-    // Cosmetic-only geometry — the REACH the sim credits is `BB_SIDE_ROLLER_REACH` in `config.ts`,
-    // and the wheels below sit at exactly `bbSideRollerY(f.half)`, its own centre, so the RENDER
-    // lane can check "the drawn part that reaches is the part the sim credits" against a real
-    // group.
+    // ── SIDE ROLLERS: two vertical-axis compliant wheels at the mouth's own edges, each one now
+    // HOUSED between a plate above it and a plate below it, both cantilevered off the side arm's
+    // own rail and capped on the wheel's own radius (owner, 2026-09-21: "do the side roller wheels
+    // need to stick out that much for flower intaking? it looks ugly and not the most realistic in
+    // terms of packaging"). What was there before was a single diagonal strut from the arm's nose
+    // to the axle, which left the wheel hanging in free air with 63 % of it forward of the arm
+    // tips and nothing around it — a caster on a stalk.
+    //
+    // ⚠️ **THE HOUSING ENDS EXACTLY WHERE THE WHEEL'S OWN SOLID DOES** — `wheelX + R`, i.e.
+    // `tip + BB_SIDE_ROLLER_PROTRUDE`, the collider's own front — so nothing drawn reaches one
+    // thousandth past what the sim makes solid, and the module's outline IS the reach the sim
+    // credits. The protrusion itself did NOT move, and `config.ts`'s own header on
+    // `BB_SIDE_ROLLER_R` carries the 540-run measurement that says why (1.004 in is the floor at
+    // which the wheel can still touch a FLOWER's bottom POLLEN, 1.90 is the knee of the skewed
+    // retrieval curve). The RENDER lane checks both facts against a real built group.
     if (kind === 'siderollers') {
-      const memberT = INTAKE_RAIL_T * 0.6; // ≤ INTAKE_RAIL_T, same cap as every open-truss member
-      const noseX = tip; // the rail's own nose ends flush on the tip line (`nose`'s translate, above)
       const armY = f.half - BB_INTAKE_ARM_INSET - armT / 2; // the arm rail's own y-centre
       const wheelX = tip + BB_SIDE_ROLLER_OUT;
+      const wheelZ0 = BB_SIDE_ROLLER_Z - BB_SIDE_ROLLER_H / 2;
+      const wheelZ1 = BB_SIDE_ROLLER_Z + BB_SIDE_ROLLER_H / 2;
+      const backX = wheelX - BB_SIDE_ROLLER_HOUSE_BACK;
       for (const s of [1, -1] as const) {
         const rollerY = s * bbSideRollerY(f.half); // ±: as wide as the chassis, inboard of the arm plane
-        // NOT a shared/cached geometry (unlike `bracketGeo` before it): the strut is not a plain
-        // y-mirror of a y=0 shape — it runs nose (arm's own y) to axle (`bbSideRollerY`'s own y),
-        // which differ — so each side gets its own strut, same as the belts above.
-        const gusset = strutBetween(noseX, s * armY, railZ, wheelX, rollerY, BB_SIDE_ROLLER_Z, memberT);
-        const bracket = cast(new THREE.Mesh(gusset, solidMat(ALU, 0.45, 0.35)));
-        bracket.name = `robot:sideroller:bracket:${m.edge}`;
-        g.add(bracket);
+        const armOuter = s * (armY + armT / 2); // the arm rail's own outboard face
+        // ONE housing plate: a RETAINER DISC on the wheel's own radius plus a narrow STRAP back
+        // along the arm rail that carries it. A full-width slab was tried first and reads as a
+        // shelf bolted over the wheel rather than as a bracket — the strap is what a real dead
+        // axle hangs from. Built per (z, side) rather than cached across them: `rollerY` and
+        // `armY` differ by side and by chassis width, the same reason the belts above are not
+        // shared either.
+        const strapW = 0.9;
+        const plate = (z0: number): THREE.BufferGeometry =>
+          framePart(`srHouse:${wheelX.toFixed(3)}:${backX.toFixed(3)}:${rollerY.toFixed(3)}:${(s * armY).toFixed(3)}:${z0.toFixed(3)}`, () => {
+            const cap = new THREE.CylinderGeometry(BB_SIDE_ROLLER_R, BB_SIDE_ROLLER_R, BB_SIDE_ROLLER_PLATE_T, 12);
+            cap.rotateX(Math.PI / 2);
+            cap.translate(wheelX, rollerY, z0 + BB_SIDE_ROLLER_PLATE_T / 2);
+            return [
+              boxAt(wheelX - backX, strapW, BB_SIDE_ROLLER_PLATE_T, (backX + wheelX) / 2, s * armY, z0 + BB_SIDE_ROLLER_PLATE_T / 2),
+              cap,
+            ];
+          });
+        for (const [tag, z0] of [
+          ['top', wheelZ1],
+          ['bot', wheelZ0 - BB_SIDE_ROLLER_PLATE_T],
+        ] as const) {
+          const house = cast(new THREE.Mesh(plate(z0), solidMat(ALU, 0.45, 0.35)));
+          house.name = `robot:sideroller:house:${tag}:${m.edge}`;
+          g.add(house);
+        }
+        // the DEAD AXLE the wheel turns on, plate to plate — what makes the sandwich read as a
+        // bearing block rather than two loose shelves.
+        const axle = new THREE.CylinderGeometry(0.17, 0.17, wheelZ1 - wheelZ0 + 2 * BB_SIDE_ROLLER_PLATE_T, 8);
+        axle.rotateX(Math.PI / 2);
+        axle.translate(wheelX, rollerY, BB_SIDE_ROLLER_Z);
+        const axleMesh = cast(new THREE.Mesh(axle, solidMat(ALU_DK, 0.5, 0.5)));
+        axleMesh.name = `robot:sideroller:axle:${m.edge}`;
+        g.add(axleMesh);
+        // the WEB closing the housing's outboard side between the two plates, from the plates'
+        // own back edge out to where the wheel's own radius takes over. It sits on the arm rail's
+        // outboard face, so the module is a U in section opening INWARD — the side a POLLEN is
+        // funnelled from.
+        const webT = INTAKE_RAIL_T * 0.6;
+        const webLen = Math.max(0.2, BB_SIDE_ROLLER_HOUSE_BACK - BB_SIDE_ROLLER_R);
+        const web = boxAt(webLen, webT, wheelZ1 - wheelZ0, backX + webLen / 2, armOuter - (s * webT) / 2, BB_SIDE_ROLLER_Z);
+        const webMesh = cast(new THREE.Mesh(web, solidMat(ALU, 0.45, 0.35)));
+        webMesh.name = `robot:sideroller:web:${m.edge}`;
+        g.add(webMesh);
 
         const wheel = cast(new THREE.Mesh(sideRollerGeometry(), rollerMat));
         wheel.name = `robot:sideroller:${m.edge}:${s === 1 ? 'l' : 'r'}`;

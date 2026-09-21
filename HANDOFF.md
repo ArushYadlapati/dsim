@@ -1,6 +1,47 @@
+# HANDOFF — 2026-09-21c (alpha: side rollers are a HOUSED module; the protrusion is measured, not guessed)
+
+Gates on this tree: `npm test` ALL PASS (2,090 shared + 3,816 biobuzz, 33 s), `build`,
+`server:check`, `docaudit`, `uiaudit`, `bundleaudit` (scene 211.26 KB gz). The side-roller work moved nothing in
+the sim. **READ FIRST: the SAME commit also carries two RAMP sim changes — the pivot on the roller shaft and the
+ramp/flower-ring collision group — written up in 21b just below** (final tree: 2,090 + 3,818 ALL PASS).
+
+- **OWNER: "do the side roller wheels need to stick out that much for flower intaking? it looks
+  ugly and not the most realistic in terms of packaging." MEASURED ANSWER: the floor is 1.004 in
+  and the shipped 1.90 is the KNEE, so the number stays and the PACKAGING is what changed.**
+  - **What the chassis stops against** (`scratch/srgeom.ts`, real 3D colliders): a BIOBUZZ chassis
+    is ONE RECTANGULAR PRISM to a static (frame + arms + lintel + `chassis3dPocketShapes`), so at a
+    FLOWER its whole front face stops with the TIP LINE on the ring plates — LOWER RING PLATE
+    `u ≤ 2.404`, `z −0.199…0.354`; MID PLATE `u ≤ 2.415`, `z 3.904…5.254`. A real square drive-in
+    settles at `uTip` **2.4145**. Only the wheel (z 0.5…2.5) passes into the retrieval window, so
+    its front must reach `2.404 − 1.400` = **1.004 in** past the tip line to touch the POLLEN.
+    Relieving the arm nose is NOT available — the pocket filler is what stopped a fork driving over
+    the hive foot bars.
+  - **Every thousandth above that floor buys the skew.** `scratch/sidesweep.ts`, 540 real drive-ins
+    per value: 2.05 → 73.5 %, **1.90 → 73.3 %**, 1.85 → 68.5 %, 1.80 → 64.4 %, 1.75 → 60.0 %,
+    1.40 → 60.0 %, 1.20 → 43.7 %, 1.00 → 44.3 %; straight-on holds 100 % to 1.40 and breaks below.
+    FLAT above 1.90, −4/−5 points per 0.05 in below it. `BB_SIDE_ROLLER_OUT` therefore UNCHANGED at
+    0.4 and the before/after sweep is identical (73.3 % / 100 % straight-on, both).
+  - **The packaging IS the fix.** The wheel hung off one diagonal strut, 63 % of it forward of the
+    arm tips, nothing around it. Now a retainer plate over it, a plate under it, a dead axle between
+    them and a strap/web back to the side arm's rail — and the drawn envelope ENDS on
+    `tip + BB_SIDE_ROLLER_PROTRUDE` (the wheel's own SOLID front), so the package bought no reach.
+    Same bracket in the 2D sprite. `BB_SIDE_ROLLER_PLATE_T` 0.12 is set by the BOTTOM plate, the one
+    part that drives over the lower ring rim (0.5 − 0.354 = 0.146 in of room).
+  - New: `BB_SIDE_ROLLER_PROTRUDE` — the ONE number `BbFlowerReach.out[1]`, `bbArchetypeWallExtra`
+    and `bbIntakeExtraReach` now all read. Checks in `render.ts` (the four module nodes, their
+    outward extent, the plates' sandwich, the rim clearance, the sprite's closed filled path) and
+    `robot.ts` (the 1.004-in floor; the one-number identity).
+  - Pictures: `scratch/shots/sr2-open.png` (BEFORE, 2026-09-20) vs `scratch/shots/sr3-34.png`,
+    `sr3-close.png`, `sr3-top.png`, `sr3-flower.png`. Shooter: `scratch/srshots.cjs` (headless).
+  - OPEN, unchanged: the skewed envelope is still 73 %. It is bounded by the protrusion, and the
+    protrusion is bounded by the flower's own plate rim — a bigger envelope needs a different
+    mechanism or a driver assist, not a tuning pass.
+
+---
+
 # HANDOFF — 2026-09-21b (alpha: free cam mouse layouts)
 
-**READ FIRST.** Gates: `npm test` ALL PASS, `build`, `uiaudit` (index regenerated), `docaudit`, `bundleaudit`.
+Gates: `npm test` ALL PASS, `build`, `uiaudit` (index regenerated), `docaudit`, `bundleaudit`.
 
 - **FREE CAM MOUSE LAYOUTS** (owner: "scroll wheel click to slide around ... presets for popular cad
   software"). `graphics/freeCam.ts` `freeCamGesture(preset, button, mods)` is the ONE table; `renderScene.ts`
@@ -21,6 +62,17 @@
   (`sim3d/bodies.ts`) swaps ONLY the reach hardware at a ramp edge, authority and predictor both; the
   height edge still does the full clear (it re-seats with wake and measures 0.0000). Check: sim3d (c2),
   three mounts, deploy + fold, worst |dz| 0.0002. Probes: `scratch/rampsink.ts`, `rampsink2.ts`.
+- **RAMP PIVOTS ON THE ROLLER SHAFT** (owner: "the ramp collides with the intake rollers when folded").
+  `BB_RAMP_PIVOT_Z` 2.2 → 4.5 (= `BB_ROLLER_Z`, render-pinned). The old pivot hung under the axle on the
+  same `u`, so a folded rail crossed the shaft at its bearing and the blade sat 0.77 in inside the flap
+  sweep. Now the blade is 4.93 in from the axle at every swing angle. `BB_RAMP_ANGLE`/`_L`/`_TIP_Z` derive
+  (36°, 6.9 in; folded top 11.4 in). `BB_RAMP_REACH.z` top = the rail at the TIP LINE (3.05), not the pivot.
+- **RAMP HOP AT A FLOWER** (owner: "gets caught on the bottom aluminum part ... robot jumps upwards").
+  171/240 drive-ins lifted the chassis ≤ 0.23 in with NO penetration: a speculative edge-edge contact,
+  blade (0.40) over lower ring plate (0.354), diagonal normal, yaw-only chassis ⇒ hop. New
+  `sim3d/groups.ts`: `GROUP_RAMP` (blade + rails) does not meet `GROUP_FLOWER_RING` (the ring trimeshes
+  only). 0/240 after; extraction 400/400 (mean 0.285 s), drain 72 ticks. Checks: sim3d (c3), render
+  fold pair. Probes: `scratch/ramphop.ts`, `ramphop2.ts`, `rampfold.ts`.
 - OPEN (in flight when written): side-roller protrusion (owner: "do they need to stick out that much").
 
 ---

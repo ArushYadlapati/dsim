@@ -1003,6 +1003,46 @@ export const BB_FLOWER_BITE = 0.5;
  * biobuzz.md`: "2D stays DRAWING-ONLY"), so there the robot CAN overlap; the same ≤ test, with
  * no lower bound, still works there — it just never binds as tightly as it does in 3D, where the
  * solid wheel keeps the true distance pinned near the contact radius.
+ *
+ * ⚠️ **HOW FAR THE WHEEL HAS TO STICK OUT, MEASURED — 1.004 in IS THE FLOOR AND 1.90 IS THE KNEE**
+ * (owner, 2026-09-21: "do the side roller wheels need to stick out that much for flower intaking?
+ * it looks ugly and not the most realistic in terms of packaging"). Both halves were probed on the
+ * real 3D colliders (`scratch/srgeom.ts` for the geometry, `scratch/sidesweep.ts` for the driving)
+ * and the answer came out in two parts that point opposite ways:
+ *
+ *  1. **WHAT THE CHASSIS STOPS AGAINST IS THE FLOWER'S OWN RING PLATES, ON THE TIP LINE.** A
+ *     BIOBUZZ chassis is ONE RECTANGULAR PRISM to a static — frame + side arms + lintel + the
+ *     pocket filler (`chassis3dPocketShapes`, which exists because a fork drove over the hive's
+ *     foot bars) — so its whole front face, full width, floor to roof, stops at `uOut`. Off the
+ *     CAD hulls in the approach frame (`u` out of the wall, 0 = the ring axis): the LOWER RING
+ *     PLATE is `u ≤ 2.404`, `z −0.199 … 0.354` and the MID PLATE is `u ≤ 2.415`, `z 3.904 …
+ *     5.254`; between them the retrieval window is clear from 2.404 back to the peanut supports
+ *     at −1.185, the full ±2.976 plate width. So the tip line rests on **2.404** (MEASURED on a
+ *     real square drive-in: 2.4145) — `BB_PLACE_REACH` 2.384 to within 0.03 in — and only the
+ *     wheel, which lives at `z 0.5 … 2.5`, gets through the window. The bottom POLLEN's near
+ *     surface is `BB_POLLEN_R` from the ring axis, so the wheel's own front must reach
+ *     `2.404 − 1.400` = **1.004 in past the tip line** to touch it at all. Below that no
+ *     tolerance saves it: the two bodies are not in contact and widening
+ *     `BB_SIDE_ROLLER_CONTACT_TOL` to cover the gap would be a fake.
+ *  2. **AND EVERY THOUSANDTH ABOVE THAT FLOOR IS SPENT ON THE SKEWED APPROACH.** 540 real
+ *     drive-ins per value (5 lateral offsets × 3 approach angles × 3 sticks × 3 column heights ×
+ *     4 FLOWERS, one held stick, no teleports), share retrieved:
+ *
+ *       protrusion   2.05   1.90   1.85   1.80   1.75   1.70   1.65   1.40   1.20   1.00
+ *       overall     73.5%  73.3%  68.5%  64.4%  60.0%  63.9%  63.9%  60.0%  43.7%  44.3%
+ *       straight-on  100%   100%   100%   100%   100%   100%   100%   100%  73.3%  86.1%
+ *
+ *     `OUT + R` = 1.90 is the KNEE: the curve is FLAT above it (2.05 buys 0.2 of a point) and
+ *     falls monotonically below it, 4–5 points per 0.05 in, because at ±10° the prism stalls on
+ *     the plate rim with the near wheel 4.2–4.6 in from the POLLEN and it is the last tenth of
+ *     reach that decides the marginal cases. The protrusion therefore STAYS 1.90.
+ *
+ * What was actually wrong was the PACKAGING, which is what the owner's second sentence says: the
+ * wheel hung in free air on a single diagonal strut, 63 % of it forward of the arm tips and
+ * nothing around it. It is a HOUSED module now — `BB_SIDE_ROLLER_PLATE_T` plates above and below,
+ * cantilevered off the side arm's own rail and capped on the wheel's own radius, so the drawn
+ * envelope is exactly the wheel's SOLID envelope and not one thousandth further
+ * (`scene/renderRobots.ts`, `drawRobot.ts`, both pinned by the RENDER lane).
  */
 export const BB_SIDE_ROLLER_R = 1.5;
 /** the wheel's height (in): a 2-in compliant wheel stack. */
@@ -1011,6 +1051,22 @@ export const BB_SIDE_ROLLER_H = 2.0;
 export const BB_SIDE_ROLLER_Z = 1.5;
 /** the wheel's axis, past the tip line (in). */
 export const BB_SIDE_ROLLER_OUT = 0.4;
+/** how far the wheel's own FRONT stands past the tip line (in) — the one number the owner asked
+ * about, and the one the wall standoff, `bbArchetypeWallExtra`, `bbIntakeExtraReach` and both
+ * drawings all read. FLOOR 1.004 (the wheel cannot otherwise touch a FLOWER's bottom POLLEN with
+ * the chassis prism stopped on the ring plates); KNEE 1.90 — see this section's own header for
+ * both measurements. */
+export const BB_SIDE_ROLLER_PROTRUDE = BB_SIDE_ROLLER_OUT + BB_SIDE_ROLLER_R;
+/** the housing's own sheet (in): the plate above the wheel and the plate under it, both
+ * cantilevered off the side arm's rail and capped on the wheel's own radius. The BOTTOM plate is
+ * what sets this — it has to fit between the wheel's underside (`BB_SIDE_ROLLER_Z − H/2` = 0.5)
+ * and the FLOWER's lower ring plate rim (0.354 in, the one thing at that height the module drives
+ * over), which leaves 0.146 in; 0.12 is the nearest real sheet with clearance left (0.026 in). */
+export const BB_SIDE_ROLLER_PLATE_T = 0.12;
+/** how far BACK along the side arm the housing plates run from the wheel's axis (in) — far
+ * enough inboard of the arm's own nose that the module reads as bolted along the rail rather
+ * than hung off its end. Drawing only; nothing in the sim reads it. */
+export const BB_SIDE_ROLLER_HOUSE_BACK = 2.4;
 /** how far INBOARD of the mouth's lateral edge a wheel's axis sits (in): its own radius plus a
  * 0.1-in clearance to the side arm's plane. */
 export const BB_SIDE_ROLLER_EDGE_INSET = BB_SIDE_ROLLER_R + 0.1;
@@ -1163,7 +1219,19 @@ export const BB_SIDE_ROLLER_RELEASE_CLEAR = BB_FLOWER_OPEN_R + 0.3;
  * draws the same box from the same four numbers.
  */
 export const BB_RAMP_PIVOT_BACK = 2.0;
-export const BB_RAMP_PIVOT_Z = 2.2;
+/**
+ * ⚠️ **THE RAMP PIVOTS ON THE SWEEPER'S OWN SHAFT** (owner, 2026-09-21: "the ramp collides with the
+ * intake rollers when it is folded up"). The pivot used to hang 2.3 in BELOW the axle on the same
+ * `u`, so a folded (vertical) rail stood exactly where the roller's shaft runs from the barrel's
+ * end into its bearing — a rail through an axle, at every width. On the shaft, the rail's eye IS
+ * the bearing: nothing crosses anything, and every point of the blade stays 4.9 in from the axle
+ * at EVERY swing angle, clear of the 2.0-in flap sweep without shortening the deck. It is how a
+ * real over-the-roller ramp is carried. `BB3_MOUTH_SLOT_Z + 0.9` is `scene/renderRobots.ts`'s
+ * `BB_ROLLER_Z` (the RENDER lane pins the two together); spelled from `BB_NECTAR_R` because
+ * `BB3_MOUTH_SLOT_Z` is declared further down this file. The rails get steeper (18.7° → 36°) and
+ * longer (5.8 → 6.9 in), so a folded ramp stands 11.4 in tall, still inside R102's cube.
+ */
+export const BB_RAMP_PIVOT_Z = 2 * BB_NECTAR_R + 0.9;
 
 /** how far short of the peanut supports' own inner edge the ramp's lip stops (in). APPROX — the
  * supports' hulls start at z 0.35, i.e. at lip height, so this is a real hardware clearance and
@@ -1200,43 +1268,18 @@ export const BB_RAMP_WEDGE_THICK = 0.04;
  * (`BB_PLACE_REACH`, 2.384 — so 1.156 in past it) as the peanut supports allow. */
 export const BB_RAMP_OUT = BB_FLOWER_PEANUT_U - BB_RAMP_PEANUT_CLEAR; // 3.54
 /**
- * ⚠️ **THE BLADE'S INBOARD END, AND WHAT SETS IT IS THE FOLDED POSE, NOT THE DEPLOYED ONE** (in,
- * past the tip line). Owner's own spec for this mechanism: *"when deployed, from the top down, it
+ * ⚠️ **THE BLADE'S INBOARD END** (in, past the tip line). Owner's own spec for this mechanism: *"when deployed, from the top down, it
  * should look like an upside down U shape. This is because the hole created by the U is where the
  * intake rollers are situated in when the ramp is folded up vertically."* So the U's OPENING has
  * to contain the sweeper's roller when the ramp is stowed, and the blade is the U's bight.
  *
- * FOLDED, the rails stand straight up from the pivot, which is ON the roller's own axle line
- * (`BB_RAMP_PIVOT_BACK === BB_ROLLER_FLAP_R`) `BB_RAMP_PIVOT_Z` up, and the roller's axis sits
- * `BB_ROLLER_Z − BB_RAMP_PIVOT_Z` = **2.30 in** further up that rail. The rigid HUB (r 0.75) is
- * therefore the rail band **1.55 … 3.05**, and the blade must start outboard of it.
- *
- * MEASURED on the built group (`scratch/rampfold.ts`, every `robot:ramp:*` mesh's own vertices
- * against the roller's axis), at 0.15 and at 0.85:
- *
- *            blade rail span      hub gap      flap-sweep gap
- *   0.15     2.563 … 5.825        +0.289       −0.961
- *   0.85     3.232 … 5.825        +0.477       −0.773
- *
- * At 0.15 the blade's inboard edge sits INSIDE the hub's own rail band and clears it only
- * sideways; at 0.85 it starts **0.18 in past the hub's top** and the U reads as a U. The RAILS
- * clear both by 1.56/0.31 and the PIVOT BRACKET is fixed to the chassis at `±pivotArmY`, outboard
- * of the shortened barrel's own ±7.32, so its −0.08 radial figure is the (u, z) metric
- * over-reporting a part that never meets the barrel laterally.
- *
- * ⚠️ **THE FLAPS ARE PRESSED AND THAT IS ALLOWED; THE HUB IS NOT.** A stowed blade still sits
- * 0.773 in inside the flap SWEEP envelope, and it has to: the sweep is r 2.0 against a blade whose
- * inboard corner is ~1.04 in off the rail, so clearing it would mean starting the blade above rail
- * 4.3 and leaving 1.5 in of deck — a deck that no longer bridges the lip to the mouth, which is
- * the half that delivers (see `BB_RAMP_DECK_Z`). The flaps are compliant and hinged (`flapFold`,
- * `scene/renderRobots.ts`) and yield exactly this way against the field too. The HUB, its bosses
- * and the arm rails are rigid and are not touched.
- *
- * ⚠️ **AND IT COSTS THE EXTRACTION NOTHING.** The POLLEN now leaves the driven deck 0.85 in inside
- * the opening and is carried the rest of the way by the intake's own extended pull, over the lower
- * plate's rim. RE-MEASURED on the same 400-run grid: **400/400 either way**, mean 0.403 s → 0.386,
- * p95 1.100 s → 1.100; forced heights h1 400/400, h4 400/400, h8 398/400, identical at both
- * values; the 8-column drain 75 → 76 ticks.
+ * The pivot is on the roller's SHAFT now (`BB_RAMP_PIVOT_Z`), so every point of the blade keeps
+ * one distance from the axle through the whole swing: **4.93 in** at the inboard corner, 2.93 past
+ * the r-2.0 flap sweep (`scratch/rampfold.ts`). `BB_RAMP_IN` therefore no longer has to buy
+ * clearance — under the old low pivot 0.85 still left the blade 0.77 in inside the flap sweep, and
+ * clearing it needed 2.05. Both values extract **400/400** on the 400-run grid (0.85: mean 0.285 s,
+ * drain 72 ticks; 2.05: 0.293 s, 69), so 0.85 stays: the longer deck is the one the owner described
+ * ("slides down towards the intake").
  */
 export const BB_RAMP_IN = 0.85;
 
@@ -1292,8 +1335,12 @@ export const BB_RAMP_REACH: BbFlowerReach = {
    * instead would cost the column 0.33 in of lift for nothing (see `BB_RAMP_DECK_Z`). 2D's own
    * verdict does not move either way — the bite passed before at 0.58 in of overlap and passes
    * now at 1.80.
+   *
+   * The TOP is the rail's height where it crosses the TIP LINE, not the pivot: `out` only claims
+   * what is past the tip, and the pivot (on the roller shaft since 2026-09-21, 4.5 in up) is 2 in
+   * behind it. Past the tip the rails are at 3.05 in and falling — under the 3.904-in ceiling.
    */
-  z: [BB_RAMP_FLOOR_Z, BB_RAMP_PIVOT_Z],
+  z: [BB_RAMP_FLOOR_Z, BB_RAMP_PIVOT_Z - ((BB_RAMP_PIVOT_Z - BB_RAMP_DECK_Z) * BB_RAMP_PIVOT_BACK) / (BB_RAMP_OUT + BB_RAMP_PIVOT_BACK)],
 };
 
 /**
@@ -1382,7 +1429,7 @@ export function bbFlowerReachOf(kind: BbIntakeKind, rampReady: boolean): BbFlowe
  * reachable with no Rapier and no `sim3d/` import at all.
  */
 export function bbArchetypeWallExtra(kind: BbIntakeKind): number {
-  return kind === 'siderollers' ? BB_SIDE_ROLLER_OUT + BB_SIDE_ROLLER_R : 0;
+  return kind === 'siderollers' ? BB_SIDE_ROLLER_PROTRUDE : 0;
 }
 
 /** extra lb on the chassis mass FLOOR for carrying a Box Tube. APPROX. */

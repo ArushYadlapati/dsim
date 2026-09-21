@@ -24,8 +24,7 @@ import {
   BB_PLACE_REACH,
   BB_RAMP_DEPLOY_S,
   BB_RAMP_OUT,
-  BB_SIDE_ROLLER_OUT,
-  BB_SIDE_ROLLER_R,
+  BB_SIDE_ROLLER_PROTRUDE,
   BB_TURRET_AXLE_Z,
   BB_TURRET_SOLVE_PASSES,
   BB_PLACE_TOL,
@@ -1544,14 +1543,14 @@ export function bbRampSettled(r: RobotState, time: number): boolean {
  * to where it lands, see `flowerRetrieve3d`'s side-roller branch). A DEPLOYED, SETTLED `ramp`
  * reaches `BB_RAMP_OUT`, the crossbar's own reach past the roller line (`uOut`) — a folded or
  * still-swinging ramp has no reach hardware out there to pull an element off of, exactly the same
- * gate `bbFlowerReachOf`'s caller already uses. `siderollers` always reaches `BB_SIDE_ROLLER_OUT +
- * BB_SIDE_ROLLER_R`, the wheel's own FRONT past the roller line (`chassis3dReachShapes`'s own
+ * gate `bbFlowerReachOf`'s caller already uses. `siderollers` always reaches
+ * `BB_SIDE_ROLLER_PROTRUDE`, the wheel's own FRONT past the roller line (`chassis3dReachShapes`'s own
  * placement) — there is no fold/settle state for a wheel that is always mounted. Every other build
  * is zero.
  */
 export function bbIntakeExtraReach(r: RobotState, time: number): number {
   const kind = bbIntakeKindOf(r.spec);
   if (kind === 'ramp') return bbRampSettled(r, time) ? BB_RAMP_OUT : 0;
-  if (kind === 'siderollers') return BB_SIDE_ROLLER_OUT + BB_SIDE_ROLLER_R;
+  if (kind === 'siderollers') return BB_SIDE_ROLLER_PROTRUDE;
   return 0;
 }

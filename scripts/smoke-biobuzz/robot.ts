@@ -45,6 +45,8 @@ import {
   BB_SIDE_ROLLER_R,
   BB_SIDE_ROLLER_REACH,
   BB_SIDE_ROLLER_GRIP,
+  BB_SIDE_ROLLER_PROTRUDE,
+  bbArchetypeWallExtra,
   bbSideRollerY,
   bbFlowerReachOf,
   FLOWER_MOUTH,
@@ -2922,6 +2924,30 @@ export function robotChecks(check: Check): void {
       'flower reach (CAD): both archetypes\' z-maxima sit below the retrieval ceiling',
       BB_SIDE_ROLLER_REACH.z[1] < BB_FLOWER_RETRIEVE_Z[1] && BB_RAMP_REACH.z[1] < BB_FLOWER_RETRIEVE_Z[1],
       `siderollers=${BB_SIDE_ROLLER_REACH.z[1]} ramp=${BB_RAMP_REACH.z[1]} ceiling=${BB_FLOWER_RETRIEVE_Z[1]}`,
+    );
+    /**
+     * ⚠️ **THE MINIMUM PROTRUSION, AND WHY IT IS NOT A STYLE CHOICE** (owner, 2026-09-21: "do the
+     * side roller wheels need to stick out that much for flower intaking?"). A BIOBUZZ chassis is
+     * ONE RECTANGULAR PRISM to a static — frame, arms, lintel and `chassis3dPocketShapes` — so
+     * driving at a FLOWER it stops with its TIP LINE on the ring plates' own rim, `BB_PLACE_REACH`
+     * past the ring axis (MEASURED on a real square drive-in: 2.4145 against the CAD's 2.404/2.415
+     * plate edges). Only the wheel, which lives inside the retrieval window's z band, gets past
+     * that. So the wheel's own FRONT has to stand at least `BB_PLACE_REACH − BB_POLLEN_R` past the
+     * tip line or it cannot touch the bottom POLLEN AT ALL, and no tolerance may be widened to
+     * pretend otherwise — `BB_SIDE_ROLLER_CONTACT_TOL` is a contact skin, not a reach.
+     * `config.ts`'s own header on `BB_SIDE_ROLLER_R` carries the 540-drive-in sweep that says the
+     * shipped 1.90 is also the KNEE of the skewed-retrieval curve.
+     */
+    check(
+      'flower reach (CAD): a side roller stands far enough past the tip line to TOUCH the bottom POLLEN with the chassis stopped on the ring plates',
+      BB_SIDE_ROLLER_PROTRUDE >= BB_PLACE_REACH - BB_POLLEN_R,
+      `protrude=${BB_SIDE_ROLLER_PROTRUDE.toFixed(3)} floor=${(BB_PLACE_REACH - BB_POLLEN_R).toFixed(3)}`,
+    );
+    check(
+      'flower reach (CAD): and BB_SIDE_ROLLER_PROTRUDE is the wheel reach box\'s own outer face, not a second number',
+      Math.abs(BB_SIDE_ROLLER_PROTRUDE - BB_SIDE_ROLLER_REACH.out[1]) < 1e-12 &&
+        Math.abs(bbArchetypeWallExtra('siderollers') - BB_SIDE_ROLLER_PROTRUDE) < 1e-12,
+      `${BB_SIDE_ROLLER_PROTRUDE} vs out[1]=${BB_SIDE_ROLLER_REACH.out[1]} wallExtra=${bbArchetypeWallExtra('siderollers')}`,
     );
     // ⚠️ RELOCATED 2026-09-20 (owner: "situated on the edges of the robot, not near the center") —
     // the pair no longer straddles the centreline, so "the pair's outer extent [off the chassis
