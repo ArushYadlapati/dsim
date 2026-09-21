@@ -1,3 +1,81 @@
+# HANDOFF — 2026-09-21d (the match-results screen: full-height panels, a per-section cascade)
+
+Gates on this tree: `build`, `server:check`, `docaudit`, `uiaudit` (ALL RULES AT OR UNDER
+BASELINE, no baseline moved), `contrast` (221 ALL PASS), `tsc --noEmit`, and the BIOBUZZ suite
+at 3,822 checks.
+
+⚠️ **READ FIRST — `npm test`'s SHARED suite is red on this tree and it is NOT this work.**
+`scripts/smoke.ts`'s "sim source uses NO engine-defined Math" check flags
+`src/games/biobuzz/graphics/freeCam.ts:159`, which is a **doc comment** that spells
+`Math.exp(deltaY * rate)` while describing where the real call lives. It arrived with 0701544
+(the free-cam commit) and is untouched by anything below. It is a one-word fix in either
+direction — reword the comment, or teach the grep to skip comments — but it belongs to
+whoever owns that file, and while it is red the BIOBUZZ suite does not run at all under
+`npm test` (use `npm run test:bb`).
+
+Also: this tree is **one commit behind `origin/alpha`** (b9a093f, the alliance-outline and
+username-label work). Nothing below touches those files; it just has not been pulled.
+
+- **THE BREAKDOWN'S ORDER, AND RANKING POINTS.** `END OF MATCH` sat second in
+  `biobuzzResultsRows`, so the two sections settled at the buzzer were a table apart. Now
+  AUTONOMOUS · HIVE · FLOWER · GARDEN · **END OF MATCH · PENALTIES**. DECODE and Chain Reaction
+  were checked and already had theirs adjacent on BOTH the versus and the record screens, so
+  neither moved — "all three games" needed one edit, not three.
+  **RANKING POINTS is REMOVED** (owner's call). It was the only surface in the product that
+  printed one, so SWARM / POLLINATOR 1 / POLLINATOR 2 now reach nobody. `BbRankPoints` is still
+  computed and still rides the HUD slice; restoring the section is one tuple. BB-11 rewritten,
+  BB-51 closed, the `:1904` ledger line marked false.
+
+- **THE SCREEN.** Panels run the full height and the header sits between them: `.resx-body` is
+  the whole layout grid, three rows down its centre column (header / breakdown / actions) with
+  each half spanning all three, placed by `grid-area` so the DOM keeps its tab order. The
+  WINNER banner is alone across the top, bleeding past the half's padding to the outer edge —
+  squared against the wall, rounded on the inner end — rendered on both versus halves and
+  hidden on the loser so the rosters and totals stay on one line. The alliance name labels its
+  own total and the number is bare. The roster carries the TEAM NUMBER (`-` for the 0 that
+  means unset) instead of the drivetrain. The two halves MIRROR: every row is written
+  inner→outer and the LEFT half renders each group outer-first.
+
+- **ANIMATION.** The stagger restarts at each section, heading first (`headDelay`/`rowDelay`),
+  where one capped index had put every BIOBUZZ row past the tenth on the same frame. Each value
+  flashes as its own count-up lands — a SECOND TIMER, not a second animation of the number,
+  because `useCountUp` has no completion event and both obvious substitutes restart every
+  frame. `filter` only, so nothing moves.
+
+- **⚠️ THE ROW ENTRANCE IS NOW GATED ON `rowsActive`,** and that was a real bug: `.resx-row`
+  animated on MOUNT (`phase !== 'wait'`, i.e. during `wipe`) while `rowsActive` is 1350 ms
+  later, so rows cascaded in reading 0 and sat there for over a second. The old flat ramp hid
+  it; a per-section rhythm does not.
+
+- **⚠️ FIXED IN PASSING: `resx-body-solo` was hard-coded OFF** in the versus component
+  (`Results.tsx`), so a one-sided run drew its half in column 1 of a three-column grid with
+  half the stage dead beside it, and "breakdown beside the total" had never fired on that path.
+  `RecordResults` had it right.
+
+- **`NET SCORE` STAYS on the record screen.** The brief said "same treatment everywhere", but
+  that number has the runner's own penalties subtracted and deliberately does not equal the
+  breakdown beside it — which is why that screen prints a NEGATIVE penalties row. `totalLabel`
+  stayed an optional prop; only the versus screen drops it.
+
+- **Two traps worth keeping.** `.resx-body-solo` must NOT be a grid: its overrides tie on
+  specificity with `.resx-half.red { grid-area }`, so the half kept spanning three rows and the
+  header landed below it. It is a flex column and the `grid-area`s are inert. And
+  `uiaudit`'s `duplicate-selector` does NOT catch a repeated DESCENDANT selector — I declared
+  `.resx-body-solo .resx-half` twice and the audit stayed green.
+
+- **Verified by eye, not just by gate.** `scratch/results.{html,tsx}` + `scratch/resshot.cjs`
+  (gitignored) mount the real `<Results>` against a synthetic hud and capture it offscreen, so
+  every state is reachable without playing a 2:30 match: `--states versus,tie,solo,record`,
+  `--w/--h` for the narrow stack. Both solo defects above were found that way and by nothing
+  else. `npm run shiftaudit` cannot help here — it visits 13 menu routes and a Free Drive
+  session, and never sees a match result.
+
+- OPEN, small: at a 1440×860 viewport the record and solo screens SCROLL, because a 14-row
+  breakdown beside the total is simply taller than the panel. The stage has always been
+  `overflow-y: auto`. It fits from roughly 960 px up.
+
+---
+
 # HANDOFF — 2026-09-21c (alpha: side rollers are a HOUSED module; the protrusion is measured, not guessed)
 
 Gates on this tree: `npm test` ALL PASS (2,090 shared + 3,816 biobuzz, 33 s), `build`,
