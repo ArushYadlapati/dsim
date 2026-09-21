@@ -2,6 +2,7 @@ import type { Replay } from '../../src/sim/replay';
 import type { AssistConfig, GameId, RobotSpec } from '../../src/types';
 import type { PendingMatch, PendingRosterEntry } from '../matchTypes';
 import { BALANCE_VERSION, PLACEMENT_GAMES } from '../../src/config';
+import { awardTitleId } from '../../src/awards';
 import { coerceGameId, GAME_IDS, serverPhysics } from '../../src/games/types';
 import { simModuleFor } from '../../src/games/sim';
 import { COSMETIC_AXES } from '../../src/cosmetics';
@@ -444,7 +445,16 @@ const SUPPORTER_COL = `${supporterPred()} as supporter`;
 function badgeCols(a: string, prefix?: string): string {
   const role = prefix ? `"${prefix}Role"` : 'role';
   const sup = prefix ? `"${prefix}Supporter"` : 'supporter';
-  return `${a}role as ${role}, coalesce(${supporterPred(a)}, false) as ${sup}`;
+  const title = prefix ? `"${prefix}Title"` : 'title';
+  /**
+   * ⚠️ THE EQUIPPED TITLE RIDES ALONG, AND IT COSTS NOTHING EXTRA. It is one more column
+   * off a `profiles` row this query has already joined — no second join, no per-row
+   * lookup of `season_awards`, because the title ID ENCODES the whole award
+   * (`awardTitleId`) and `parseAwardTitleId` (`src/awards.ts`) reads it back on the
+   * client. That is the reason the id is derived from the slot rather than being a
+   * surrogate key: a board can print the award without ever reading the award table.
+   */
+  return `${a}role as ${role}, coalesce(${supporterPred(a)}, false) as ${sup}, ${a}title as ${title}`;
 }
 
 /**
@@ -881,7 +891,7 @@ export async function revokeCosmetic(
  * unique slot index.
  */
 export interface SeasonAward {
-  game: string;
+  game: Game;
   balanceVersion: number;
   act: number;
   /** the season's number within its act — “Act 2 Season 3” */
@@ -895,27 +905,13 @@ export interface SeasonAward {
 }
 
 /** how deep each board's award slice goes — the owner's counts, in exactly one place. */
+export { awardTitleId };
+
 export const AWARD_DEPTH = { ranked: 3, record_overall: 3, record_drivetrain: 1 } as const;
 
 /** the drivetrains a per-drivetrain award is minted for. `DrivetrainType`, spelled out
  *  here because this module must not import from `src/types.ts` for a runtime value. */
 export const AWARD_DRIVETRAINS = ['mecanum', 'tank', 'swerve', 'xdrive', 'butterfly'] as const;
-
-/**
- * THE TITLE ID FOR AN AWARD — derived from the slot, never stored as a string.
- *
- * `award:<game>:<version>:<kind>:<mode>[:<drivetrain>]:<rank>`. Derived so a title can
- * never disagree with the row that justifies it, and so `setTitle`'s validation is a
- * set-membership test against freshly read rows rather than a second copy of the truth.
- * The rendered SENTENCE is the client's job (`awardTitleText`, `src/awards.ts`); this is
- * the key, and it is what `profiles.title` holds.
- */
-export function awardTitleId(
-  a: Pick<SeasonAward, 'game' | 'balanceVersion' | 'kind' | 'mode' | 'drivetrain' | 'rank'>,
-): string {
-  const dt = a.drivetrain ? `:${a.drivetrain}` : '';
-  return `award:${a.game}:${a.balanceVersion}:${a.kind}:${a.mode}${dt}:${a.rank}`;
-}
 
 /**
  * COMPUTE one closed season's awards. READ-ONLY — `startNewSeason` writes them.
@@ -975,7 +971,7 @@ export async function computeSeasonAwards(
 /** every award this account holds, newest season first — the profile read. */
 export async function userAwards(userId: string): Promise<SeasonAward[]> {
   const rows = await q<{
-    game: string; balance_version: number; act: number; season_no: number; kind: SeasonAward['kind'];
+    game: Game; balance_version: number; act: number; season_no: number; kind: SeasonAward['kind'];
     mode: SeasonAward['mode']; drivetrain: string | null; rank: number; score: number | null;
   }>(
     `select game, balance_version, act, season_no, kind, mode, drivetrain, rank, score
@@ -984,7 +980,7 @@ export async function userAwards(userId: string): Promise<SeasonAward[]> {
     [userId],
   );
   return rows.map((r) => ({
-    game: r.game, balanceVersion: r.balance_version, act: r.act, seasonNo: r.season_no, kind: r.kind,
+    game: r.game as Game, balanceVersion: r.balance_version, act: r.act, seasonNo: r.season_no, kind: r.kind,
     mode: r.mode, drivetrain: r.drivetrain, rank: r.rank, userId, score: r.score,
   }));
 }

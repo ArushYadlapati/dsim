@@ -46,6 +46,13 @@ export interface BadgeFields {
   supporter?: boolean;
   /** 'owner' | 'admin' — renders the staff badge in place of the supporter one */
   role?: StaffRole;
+  /**
+   * the EQUIPPED TITLE id, or null. It rides `badgeCols` for the same reason the two
+   * above do — every surface that prints a name prints this beside it, and writing the
+   * column out by hand per query is how a board ends up quietly missing it.
+   * `parseAwardTitleId` turns it back into an award without touching `season_awards`.
+   */
+  title?: string | null;
 }
 
 export interface RecordConfig {
@@ -67,6 +74,8 @@ export interface RecordRow extends BadgeFields {
   /** the partner's own badge — a duo row prints two names, so it carries two */
   partnerSupporter?: boolean;
   partnerRole?: StaffRole;
+  /** ...and the partner's equipped title, for the same reason. */
+  partnerTitle?: string | null;
   score: number;
   replayId: string | null;
   createdAt: string;

@@ -83,6 +83,57 @@ export function awardBadgeRank(a: Pick<AwardRow, 'rank'>): 1 | 2 | 3 {
 }
 
 /**
+ * THE TITLE ID FOR AN AWARD — derived from the slot, never stored as a string.
+ *
+ * ⚠️ IT LIVES HERE, BESIDE `parseAwardTitleId`, AND NOT IN `repo.ts`, so the writer and the
+ * reader cannot drift. The server mints ids with it and the leaderboard reads them back;
+ * two copies of this format in two languages of the stack is the shape of bug that shows up
+ * as a chip that silently stops rendering.
+ */
+export function awardTitleId(
+  a: Pick<AwardRow, 'game' | 'balanceVersion' | 'kind' | 'mode' | 'drivetrain' | 'rank'>,
+): string {
+  const dt = a.drivetrain ? `:${a.drivetrain}` : '';
+  return `award:${a.game}:${a.balanceVersion}:${a.kind}:${a.mode}${dt}:${a.rank}`;
+}
+
+/**
+ * READ A TITLE ID BACK INTO AN AWARD — `award:<game>:<version>:<kind>:<mode>[:<dt>]:<rank>`.
+ *
+ * ⚠️ THIS IS WHY THE ID IS DERIVED FROM THE SLOT RATHER THAN BEING A SURROGATE KEY. A
+ * leaderboard prints the equipped title beside every name, and the alternative to parsing
+ * is joining `season_awards` once per row on a board that already joins `profiles` — so
+ * the id carrying its own meaning is what keeps the chip free. `badgeCols` ships the
+ * column; this reads it.
+ *
+ * ⚠️ `act` AND `seasonNo` CANNOT BE RECOVERED and are returned as 0. They are denormalised
+ * ON THE ROW for the sentence, and they are not in the key because they are not part of
+ * what makes a slot unique — a season is identified by its `balanceVersion`. So a parsed
+ * award renders correctly through `awardShortText` (which does not name the season) and
+ * NOT through `awardTitleText`. Callers that need the full sentence read the row.
+ *
+ * Returns null for anything that is not a well-formed award id, including a `title:` grant
+ * from the cosmetics ledger — those are registry keys, not awards, and a caller that
+ * assumed otherwise would render "undefined Champion".
+ */
+export function parseAwardTitleId(id: string): AwardRow | null {
+  const parts = id.split(':');
+  if (parts[0] !== 'award') return null;
+  if (parts.length !== 6 && parts.length !== 7) return null;
+  const [, game, version, kind, mode, ...rest] = parts;
+  const drivetrain = rest.length === 2 ? rest[0] : null;
+  const rank = Number(rest[rest.length - 1]);
+  const balanceVersion = Number(version);
+  if (!Number.isFinite(rank) || !Number.isFinite(balanceVersion)) return null;
+  if (kind !== 'ranked' && kind !== 'record_overall' && kind !== 'record_drivetrain') return null;
+  if (mode !== '1v1' && mode !== '2v2' && mode !== 'solo' && mode !== 'duo') return null;
+  // a drivetrain belongs to exactly one kind; anything else is a malformed id, not a
+  // tolerable variant, and letting it through would print a board word that is a lie
+  if ((kind === 'record_drivetrain') !== (drivetrain !== null)) return null;
+  return { game: game as AwardRow['game'], balanceVersion, act: 0, seasonNo: 0, kind, mode, drivetrain, rank, score: null };
+}
+
+/**
  * SORT for a profile's award list: newest season first, then the most impressive.
  *
  * Rank ascends before board, so a player's 1st places group ahead of their 3rds within a

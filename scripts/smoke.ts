@@ -249,7 +249,9 @@ import {
   awardRankWord,
   awardShortText,
   awardTitleText,
+  awardTitleId,
   compareAwards,
+  parseAwardTitleId,
   type AwardRow,
 } from '../src/awards';
 import {
@@ -24619,6 +24621,57 @@ const dumperSetup = (): RobotSetup => {
     sorted[0].balanceVersion === 12 && sorted[0].rank === 1 && sorted[1].rank === 3 && sorted[2].balanceVersion === 11,
     sorted.map((a) => `${a.balanceVersion}/${a.rank}`).join(' '),
   );
+  /**
+   * ⚠️ THE ID ROUND-TRIPS, WHICH IS WHAT MAKES THE LEADERBOARD CHIP FREE. A board prints
+   * the equipped title beside every name; the alternative to parsing the id is joining
+   * `season_awards` once per row on a query that already joins `profiles`. So the id
+   * carrying its own meaning is load-bearing, not a convenience, and this is the check
+   * that keeps the two functions in step.
+   */
+  {
+    for (const r of [
+      row(),
+      row({ kind: 'record_overall', mode: 'duo', rank: 3 }),
+      row({ kind: 'record_drivetrain', mode: 'solo', drivetrain: 'butterfly', rank: 1 }),
+      row({ game: 'biobuzz', kind: 'ranked', mode: '2v2', rank: 2 }),
+    ]) {
+      const back = parseAwardTitleId(awardTitleId(r));
+      check(
+        `awards: the id round-trips — ${awardShortText(r)}`,
+        !!back &&
+          back.game === r.game &&
+          back.balanceVersion === r.balanceVersion &&
+          back.kind === r.kind &&
+          back.mode === r.mode &&
+          back.drivetrain === r.drivetrain &&
+          back.rank === r.rank,
+        `${awardTitleId(r)} -> ${JSON.stringify(back)}`,
+      );
+    }
+    // ⚠️ `act`/`seasonNo` are NOT in the key and cannot come back — they are denormalised
+    // on the row for the sentence. A parsed award is for `awardShortText`, never the full
+    // one, and the check says so rather than leaving the next caller to discover it.
+    const parsed = parseAwardTitleId(awardTitleId(row()))!;
+    check('⚠️ awards: a parsed id has NO act/season — those live on the row, not in the key', parsed.act === 0 && parsed.seasonNo === 0);
+    check(
+      'awards: a `title:` grant is not an award and parses to null (it is a registry key)',
+      parseAwardTitleId('title:stargazer') === null,
+    );
+    check(
+      'awards: malformed ids are refused rather than rendered',
+      parseAwardTitleId('award:decode:12:ranked:1v1') === null &&
+        parseAwardTitleId('award:decode:x:ranked:1v1:1') === null &&
+        parseAwardTitleId('award:decode:12:bogus:1v1:1') === null &&
+        parseAwardTitleId('award:decode:12:ranked:9v9:1') === null,
+    );
+    // a drivetrain belongs to exactly one kind, both ways round
+    check(
+      '⚠️ awards: a drivetrain on a non-drivetrain kind (and a drivetrain kind without one) are both refused',
+      parseAwardTitleId('award:decode:12:ranked:1v1:mecanum:1') === null &&
+        parseAwardTitleId('award:decode:12:record_drivetrain:solo:1') === null,
+    );
+  }
+
   check(
     'awards: a BIOBUZZ award names BIOBUZZ, so the sentence follows the season registry',
     awardTitleText(row({ game: 'biobuzz' })).startsWith('BIOBUZZ'),
