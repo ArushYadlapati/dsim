@@ -1,4 +1,4 @@
-<!-- governs: server/db/**, server/ranked.ts, server/matchmaking.ts, server/persist.ts, server/standing.ts, src/lib/**, src/standing.ts, src/dodge.ts, src/report.ts, src/playtime.ts, src/ui/Leaderboard.tsx, src/ui/Admin.tsx -->
+<!-- governs: server/db/**, server/ranked.ts, server/matchmaking.ts, server/persist.ts, server/standing.ts, src/lib/**, src/standing.ts, src/awards.ts, src/dodge.ts, src/report.ts, src/playtime.ts, src/ui/Leaderboard.tsx, src/ui/Admin.tsx -->
 # Accounts, ranked, leaderboards, records, staff roles
 
 Glicko-2, per-game boards and periods, the badge rules, challenges and the party token, and the background ranked queue.

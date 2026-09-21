@@ -1016,6 +1016,13 @@ export async function earnedTitles(userId: string): Promise<string[]> {
  * 0046's column is bare `text`, so this is the only thing standing between it and an
  * unearned value. Returns false when the account has not earned `id`.
  */
+/** the equipped title id, or null. A one-column read so the title route does not have to
+ *  build a whole `getUserStats` (which needs a season and a game it has no opinion about). */
+export async function getTitle(userId: string): Promise<string | null> {
+  const rows = await q<{ title: string | null }>(`select title from profiles where user_id = $1`, [userId]);
+  return rows[0]?.title ?? null;
+}
+
 export async function setTitle(userId: string, id: string | null): Promise<boolean> {
   if (id !== null) {
     const earned = await earnedTitles(userId);
@@ -3956,6 +3963,17 @@ export interface UserStats {
    * every season would make the number meaningless the moment it got interesting.
    */
   activity?: { games: number; seconds: number; allGames: number; allSeconds: number };
+  /**
+   * EVERY SEASON AWARD THIS ACCOUNT HOLDS, and the title it is wearing (0045/0046).
+   *
+   * Deliberately NOT season-scoped like `elo` and `records` above: a trophy case is a
+   * fact about the account, and filtering it to the season the page happens to be
+   * showing would hide every award the moment a new season opened — which is the one
+   * thing an award must never do. Same reasoning as `activity` directly above.
+   */
+  awards?: SeasonAward[];
+  /** the equipped title id, or null — validated on write by `setTitle`. */
+  title?: string | null;
 }
 
 /**
@@ -4086,6 +4104,8 @@ export async function getUserStats(
       allGames: activity.total.games,
       allSeconds: activity.total.seconds,
     },
+    awards: await userAwards(userId),
+    title: (await q<{ title: string | null }>(`select title from profiles where user_id = $1`, [userId]))[0]?.title ?? null,
   };
 }
 

@@ -244,6 +244,15 @@ import {
 } from '../src/input/bindings';
 import { PadChordResolver, PAD_CHORD_GRACE_MS, PAD_TAP_HOLD_MS } from '../src/input/padChords';
 import {
+  awardBadgeRank,
+  awardBoardWord,
+  awardRankWord,
+  awardShortText,
+  awardTitleText,
+  compareAwards,
+  type AwardRow,
+} from '../src/awards';
+import {
   PAD_GLYPHS,
   PAD_MENU_BUTTON,
   PAD_NAV_REPEAT,
@@ -24541,6 +24550,80 @@ const dumperSetup = (): RobotSetup => {
   const armed = oskReduce({ value: 'abc', layout: 'letters', caps: true }, { t: 'char', c: 'd' }, 3);
   check('padnav: a refused character still RELEASES caps, so it cannot stick armed forever', armed.value === 'abc' && armed.caps === false);
   check('padnav: `set` truncates to the cap', oskReduce(oskInit(''), { t: 'set', value: 'abcdef' }, 4).value === 'abcd');
+}
+
+// ---- SEASON AWARD TITLES: the sentence, and the one word that is not relative ----
+// `src/awards.ts` turns an award row into words. The server owns the KEY (`awardTitleId`)
+// and the rows; this is the half a designer rewrites, which is exactly why the sentence is
+// rendered rather than stored — storing it would have frozen every past award's wording at
+// the moment it was minted.
+{
+  const row = (over: Partial<AwardRow> = {}): AwardRow => ({
+    game: 'decode', balanceVersion: 12, act: 2, seasonNo: 3,
+    kind: 'ranked', mode: '1v1', drivetrain: null, rank: 1, score: 1500, ...over,
+  });
+
+  check(
+    'awards: the full sentence is season · act/season · board rank',
+    awardTitleText(row()) === 'DECODE · Act 2 Season 3 · 1v1 Champion',
+    awardTitleText(row()),
+  );
+  check(
+    'awards: ranks 1..3 are Champion / Finalist / Semifinalist (owner, 2026-09-21)',
+    awardRankWord('ranked', 1) === 'Champion' && awardRankWord('ranked', 2) === 'Finalist' && awardRankWord('ranked', 3) === 'Semifinalist',
+  );
+  /**
+   * ⚠️ A PER-DRIVETRAIN AWARD IS ALWAYS `Champion`, WHATEVER ITS RANK SAYS. That board's
+   * depth is ONE (`AWARD_DEPTH`), so every row on it is rank 1 and there is no 2nd or 3rd
+   * for the word to be relative to — "Finalist" on a field of one is a lie, and the rank
+   * column always being 1 is what would make that lie easy to ship unnoticed.
+   */
+  check(
+    '⚠️ awards: a per-drivetrain award is Champion even at a rank that would read Finalist',
+    awardRankWord('record_drivetrain', 2) === 'Champion' && awardRankWord('record_drivetrain', 1) === 'Champion',
+  );
+  check(
+    'awards: the board word names the board, and a duo record says so',
+    awardBoardWord({ kind: 'ranked', mode: '2v2', drivetrain: null }) === '2v2' &&
+      awardBoardWord({ kind: 'record_overall', mode: 'solo', drivetrain: null }) === 'Record' &&
+      awardBoardWord({ kind: 'record_overall', mode: 'duo', drivetrain: null }) === 'Duo Record',
+    `${awardBoardWord({ kind: 'record_overall', mode: 'duo', drivetrain: null })}`,
+  );
+  check(
+    'awards: a drivetrain award uses the SHARED label, not the raw enum',
+    awardBoardWord({ kind: 'record_drivetrain', mode: 'solo', drivetrain: 'xdrive' }) === 'X-drive Record',
+    awardBoardWord({ kind: 'record_drivetrain', mode: 'solo', drivetrain: 'xdrive' }),
+  );
+  check(
+    'awards: an unknown drivetrain falls back to its own id rather than rendering undefined',
+    awardBoardWord({ kind: 'record_drivetrain', mode: 'solo', drivetrain: 'hovercraft' }) === 'hovercraft Record',
+  );
+  check(
+    'awards: the SHORT form drops the season, which is context on a chip',
+    awardShortText(row({ kind: 'record_overall', mode: 'duo', rank: 2 })) === 'Duo Record Finalist',
+    awardShortText(row({ kind: 'record_overall', mode: 'duo', rank: 2 })),
+  );
+  // the badge carries 1/2/3 and nothing else — a 12px hexagon cannot hold "#11"
+  check(
+    'awards: the badge rank clamps into 1..3',
+    awardBadgeRank({ rank: 1 }) === 1 && awardBadgeRank({ rank: 3 }) === 3 && awardBadgeRank({ rank: 11 }) === 3 && awardBadgeRank({ rank: 0 }) === 1,
+  );
+  // newest season first, then the most impressive — the order you read your own trophies in
+  const sorted = [
+    row({ balanceVersion: 11, rank: 1 }),
+    row({ balanceVersion: 12, rank: 3 }),
+    row({ balanceVersion: 12, rank: 1 }),
+  ].sort(compareAwards);
+  check(
+    'awards: sorted newest season first, then by rank',
+    sorted[0].balanceVersion === 12 && sorted[0].rank === 1 && sorted[1].rank === 3 && sorted[2].balanceVersion === 11,
+    sorted.map((a) => `${a.balanceVersion}/${a.rank}`).join(' '),
+  );
+  check(
+    'awards: a BIOBUZZ award names BIOBUZZ, so the sentence follows the season registry',
+    awardTitleText(row({ game: 'biobuzz' })).startsWith('BIOBUZZ'),
+    awardTitleText(row({ game: 'biobuzz' })),
+  );
 }
 
 console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILURES`);

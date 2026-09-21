@@ -52,6 +52,9 @@ import {
   replayAccess,
   replayRefusalMessage,
   setReplaysPublic,
+  earnedTitles,
+  getTitle,
+  setTitle,
   getUserSettings,
   getUserStats,
   getSupporter,
@@ -118,6 +121,8 @@ import { DEPLOY_REGIONS, interRegionMs } from './regions';
  *   POST /api/user/settings {settings}       — save your settings (Bearer JWT)
  *   GET  /api/user/privacy                   — your replay-visibility setting (Bearer JWT)
  *   POST /api/user/privacy {replaysPublic}   — set it (Bearer JWT)
+ *   GET  /api/user/title                     — your equipped title + what you have earned
+ *   POST /api/user/title {title}             — equip one, or null to clear (Bearer JWT)
  *   GET  /api/user/export                    — everything we hold about you (Bearer JWT)
  *   GET  /api/replay/<id>                    — 403 when the people in it have not published it
  *
@@ -674,6 +679,40 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse): Prom
       await ensureProfile(user.userId, user.handle);
       await setReplaysPublic(user.userId, body.replaysPublic);
       return json(200, { replaysPublic: body.replaysPublic }), true;
+    }
+
+    /**
+     * YOUR EQUIPPED TITLE (0046). GET lists what you have earned; POST equips one, or
+     * clears it with null.
+     *
+     * ⚠️ THE SERVER DECIDES WHAT IS EARNED, NOT THE CLIENT. `setTitle` validates against
+     * `earnedTitles` and answers false for anything else — `profiles.title` is bare `text`
+     * with no check constraint, so this route and that function are the whole guard. A
+     * self-declared title is the same impersonation primitive `LobbyPlayer.role` is
+     * server-authored to prevent (`docs/area/accounts.md`).
+     */
+    if (url.pathname === '/api/user/title' && (req.method === 'GET' || req.method === 'POST')) {
+      const user = await verifyAuthToken(bearer(req));
+      if (!user) return json(401, { error: 'sign in required' }), true;
+      if (!dbEnabled) return json(200, { title: null, earned: [] }), true;
+
+      if (req.method === 'GET') {
+        return json(200, { title: await getTitle(user.userId), earned: await earnedTitles(user.userId) }), true;
+      }
+      let body: Record<string, unknown>;
+      try {
+        body = JSON.parse(await readBody(req)) as Record<string, unknown>;
+      } catch {
+        return json(400, { error: 'bad json' }), true;
+      }
+      const wanted = body.title;
+      if (wanted !== null && typeof wanted !== 'string') {
+        return json(400, { error: 'title must be a string or null' }), true;
+      }
+      await ensureProfile(user.userId, user.handle);
+      const ok = await setTitle(user.userId, wanted);
+      if (!ok) return json(403, { error: 'You have not earned that title.' }), true;
+      return json(200, { title: wanted }), true;
     }
 
     // ---- per-account settings (read + write your own) ----------------------

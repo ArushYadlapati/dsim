@@ -326,6 +326,9 @@ const serverPairs = (t) => {
     // point: the assertion is that the PAIR stays legible, not that the hex does.
     ['SupporterBadge owner glyph', t('--ds-accent-ink'), t('--ds-accent'), AA],
     ['SupporterBadge admin glyph', '#ffffff', t('--ds-blue-chip'), AA],
+    // The SEASON-AWARD badge (0045). Like gold it does NOT invert, so one pair covers
+    // both themes; the rank numeral is the glyph, and it is what has to stay readable.
+    ['AwardBadge rank numeral', t('--ds-award-ink'), t('--ds-award'), AA],
     // .legal-warn paints --ds-warn as TEXT on a 9% tint of itself over the page
     ['Legal unfinished-terms warning', t('--ds-warn'), composite(t('--ds-warn'), 0.09, bg), AA],
     ['Leaderboard .lb-standing.placing text', t('--ds-warn'), composite(t('--ds-gold'), 0.09, panel), AA],

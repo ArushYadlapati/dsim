@@ -1,4 +1,5 @@
 import type { Replay } from '../sim/replay';
+import type { AwardRow } from '../awards';
 import type { LiveRoom, StaffRole } from './protocol';
 import type { ReportedUser, ReportRow } from '../report';
 import type { AssistConfig, GameId, RobotSpec } from '../types';
@@ -219,6 +220,11 @@ export interface UserStats {
   /** LIFETIME playtime + games played: this game, and the total across all of them.
    *  Absent from a server older than the tracker, which renders as nothing at all. */
   activity?: { games: number; seconds: number; allGames: number; allSeconds: number };
+  /** every SEASON AWARD this account holds — account-wide, never season-scoped, or a
+   *  trophy case would empty itself the moment a new season opened. */
+  awards?: AwardRow[];
+  /** the equipped title id, or null. */
+  title?: string | null;
 }
 
 /** One round-trip: a user's whole competitive profile for the current season
@@ -568,6 +574,26 @@ export function fetchReplay(id: string): Promise<Replay> {
 
 /** may anyone watch your versus match replays? Default FALSE, and retroactively so — see
  * migration 0037. A match is released only when EVERY player in it has this on. */
+/** your equipped title and the ids you have earned (0045/0046). */
+export function fetchTitle(): Promise<{ title: string | null; earned: string[] }> {
+  return authedJson('/api/user/title');
+}
+
+/**
+ * EQUIP a title, or clear it with `null`.
+ *
+ * ⚠️ The server re-validates against what you have actually earned and answers 403
+ * otherwise — this call is the UI's convenience, never the authority. A title the client
+ * could assert would be the same impersonation primitive the staff role is server-authored
+ * to prevent.
+ */
+export function saveTitle(title: string | null): Promise<{ title: string | null }> {
+  return authedJson('/api/user/title', {
+    method: 'POST',
+    body: JSON.stringify({ title }),
+  });
+}
+
 export function fetchReplaysPublic(): Promise<{ replaysPublic: boolean }> {
   return authedJson('/api/user/privacy');
 }
