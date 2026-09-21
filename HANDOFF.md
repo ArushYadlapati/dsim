@@ -1,6 +1,91 @@
+# HANDOFF — 2026-09-21h (the ONE-PANEL results screen: a full-height panel beside its content)
+
+**READ FIRST — `npm test` is red on this tree for TWO reasons and NEITHER is this work.**
+`npm run test:bb --lane core` is ALL PASS, and `build`, `server:check`, `uiaudit` (all at
+baseline, none moved), `contrast` (235) and `docaudit` are green.
+
+1. `scripts/smoke.ts` — "sim source uses NO engine-defined Math" flags
+   `src/games/biobuzz/graphics/freeCam.ts:186`, which is a **doc comment** spelling
+   `Math.exp(deltaY * rate)` while describing where the real call lives. It was at :159 before
+   the free-cam work moved it, so it has now survived two commits. ⚠️ **21g's header claims
+   `npm test` ALL PASS; on this tree it does not** — this is a deterministic source grep, so it
+   fails everywhere. One word, either in the comment or in the grep, but it is that file's
+   owner's call. While it is red the BIOBUZZ suite does not run under `npm test` at all.
+2. `perf: bot-driven 2v2 step3d p95 <= 1.5ms` — wall-clock, and it swings with machine load
+   (1.63 / 1.66 / 2.07 / 4.66 ms across runs today, and it PASSES when its lane runs alone).
+   Established earlier by running the full suite on a clean tree and getting the same numbers.
+
+- **THE PANEL RUNS TOP TO BOTTOM AND NOTHING TRIMS IT** (owner: "blue must be top to bottom …
+  when buttons or the title text appears, it should not trim the blue"). A record run and a
+  practice run with no opponent drew a 640px card centred in a flex column — title above,
+  buttons below, both eating into the fill, and the panel's height changing as the sequence
+  revealed them. `.resx-body-solo` is **two columns** now (`1fr 2fr`): the alliance panel owns
+  the left one and spans all three rows; the header, the breakdown and the actions stack down
+  the right. **Measured, not eyeballed**: 480×860 before the actions row and after it, in all
+  six one-panel states.
+  - ⚠️ **COMPOUND placements.** A plain `.resx-body-solo .resx-half` ties
+    `.resx-half.red { grid-area }` at (0,2,0) and loses on source order — the exact bug that
+    put the header under the panel in `8812b4c`. `.red`/`.blue` wins at (0,3,0), and a
+    multi-selector list claims no name so `duplicate-selector` stays 0.
+  - The BREAKDOWN moved OUT of the panel into the content column, so the panel is short and
+    the laptop-scroll open item from 21e is closed.
+
+- **⚠️ AN EMPTY BANNER RESERVED NOTHING, AND THAT WAS A LIVE REGRESSION ON THE VERSUS BOARD.**
+  `visibility: hidden` keeps a box, but a block with no text has no line box, so the slot
+  collapsed to its 8px of padding. Measured: `bannerH=[8,36] rosterTop=[40,68]` — the losing
+  half's roster sat **28px above** the winner's, which is the one thing the reserved slot
+  exists to prevent. `min-height: calc(1em + 2 * var(--ds-s-1))` fixes it; the padding is
+  added back because the box is border-box (`min-height: 1em` alone gave 28, not 36). Now
+  `[36,36]` / `[68,68]`.
+
+- **The banner is a PROP, not a `versus` flag.** `AllianceHalf` gated it on `versus`, which is
+  what removed it from this screen; `win`/`tie` are gone and an empty `text` means "reserved
+  but blank" — the versus loser and a rank still in flight, from one rule.
+  `src/ui/recordBanner.ts` is a DOM-free leaf (the smoke suite imports it) deciding: **gold**
+  for a WORLD RECORD, the ordinary banner for a PERSONAL BEST, a quiet `#9 OF 128` for a plain
+  placing, blank while the rank is in flight, PRACTICE for a run with no leaderboard.
+  `--ds-gold-ink` on `--ds-gold` is already an audited AA pair, so the loudest thing on the
+  screen cost no new colour.
+
+- **`RecordStanding` qualifies the banner and never repeats it.** A record prints
+  `Solo · Mecanum · #1 of 128`; a plain placing has its rank in the banner already, so only the
+  category is left. Its five state classes had **no CSS at all** before this — a world record
+  and 12th place rendered identically.
+
+- **The signed-out prompt is a BUTTON.** It read "… see your rank →" as a plain `<p>`, an arrow
+  promising an affordance the markup did not have. `onSignIn` threads App → GameView → Results
+  the way `Matchmaking` already does, and is optional.
+
+- ⚠️ **KNOWN, on the VERSUS board only, and NOT fixed:** the actions row's buttons are wider
+  than the breakdown, the versus centre track is `auto`, so when the row appears both panels
+  narrow — **525px → 516px**. Neither `width: 0; min-width: 100%` nor `contain: inline-size`
+  stops an intrinsic contribution there; the deterministic fix is a percentage track
+  (`33% 1fr 33%`), which changes that board's proportions and wants its own commit. The
+  one-panel screens are immune: `fr` tracks never size to content.
+
+- ⚠️ **OPEN, owner's call:** with the panel now full height, "name and stats towards the
+  centre" is only *partly* delivered. The restored slot moves the driver row down ~35px, which
+  is what was asked for, but there is far more empty blue below it than there was in the 640px
+  card, so it still reads as top-anchored. One line
+  (`.resx-half-top { margin-block: auto }`, roughly) would centre it properly.
+
+- **Verified with the harness, extended:** `scratch/results.{html,tsx}` now covers
+  `versus | tie | solo | wr | pb | rank | pending | signedout` and passes **blue** (a record run
+  is forced to blue server-side — the earlier captures used red and were unrepresentative).
+  `scratch/resshot.cjs` MEASURES the panel box before and after the actions row and prints
+  "panel steady" / "PANEL MOVED", which is the must-have itself; `scratch/measure.cjs` prints
+  banner heights and roster tops, which is how the collapse above was found. Neither
+  `shiftaudit` (13 menu routes) nor `uiindex` (`ds-` classes only) can see this screen.
+
+- New check: `recordBanner` in `scripts/smoke-biobuzz/core.ts` — every state's text and tone,
+  that a world record outranks the personal best it also is, and that no two VISIBLE states
+  print the same banner.
+
+---
+
 # HANDOFF — 2026-09-21g (alpha: controller navigation finished and wired; free-cam presets carried over)
 
-**READ FIRST.** Gates on this tree: `npm test` ALL PASS (**2,165** shared + **4,494** biobuzz),
+Gates on this tree: `npm test` ALL PASS (**2,165** shared + **4,494** biobuzz),
 `build`, `server:check`, `uiaudit` (ALL AT BASELINE), `docaudit`, `contrast` (235). The tree is
 `.claude/worktrees/alpha-flower-intake-plate-930ef5`, branch
 `claude/alpha-flower-intake-plate-930ef5`, which sits on alpha's tip.
