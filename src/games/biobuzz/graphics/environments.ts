@@ -113,6 +113,83 @@ export interface EnvironmentLook {
   intensity: number;
 }
 
+/**
+ * ── THE VENUE (2026-09-21) ─────────────────────────────────────────────────────────────────
+ *
+ * ⚠️ **A BLURRED DOME IS NOT A PLACE, AND THAT IS WHAT THE OWNER REPORTED** ("The graphic
+ * lighting environment is too basic. Make it render an actual environment instead of blurry
+ * lights"). Everything above this comment describes the SURROUND as an image at infinity: a
+ * `scene.background` texture, painted or photographed, drawn with `backgroundBlurriness` 0.16 –
+ * 0.30 so its own coarse structure reads as atmosphere rather than as a picture on a wall. Three
+ * things follow from that, and all three were visible in the captures:
+ *   • **it has no parallax.** A background texture is sampled by view DIRECTION, so it does not
+ *     move when the camera does. Orbiting the field slides the mat across a gradient that never
+ *     shifts, which is the single strongest cue that there is nothing out there.
+ *   • **it has no horizon.** The camera looks DOWN at the field, so most of the frame samples the
+ *     dome's lower half — which is one gradient stop to the next. A `gym` orbit shot is a brown
+ *     wash from edge to edge with the field slab floating in the middle of it.
+ *   • **and on the CAD field path there is no floor beyond the perimeter at all.** The procedural
+ *     `bb-room` (`scene/renderField.ts`) is built by the CONSTANTS fallback only; `glbFieldToHandles`
+ *     never adds it, so the shipping field hangs in the clear colour with its own alliance-area
+ *     tape running off into the void.
+ *
+ * So each environment now also describes a VENUE: real geometry around the field — a ground that
+ * reaches past the perimeter, walls, a ceiling with fixtures in it, trussing, seating, or an open
+ * horizon — built by `scene/renderVenue.ts` and lit by the SAME `rig`. The dome stays: it is still
+ * the light-gathering map, it is still what a robot's metal reflects, and outdoors it is still the
+ * sky above the horizon the ground now draws.
+ *
+ * ⚠️ **THE FIELD IS UNTOUCHED AND MUST STAY THE BRIGHTEST, MOST SATURATED THING ON SCREEN.**
+ * Every colour below is desaturated and sits clear of the mat's own band — a venue that competes
+ * with the field for the eye is a worse bug than an empty one. Same standing constraint as the
+ * rig's (`EnvironmentRig`'s warning): the tiles, tape, alliance reds/blues, POLLEN and NECTAR are
+ * drawn at constants, so anything that changes what is AROUND them has to leave their pairs alone.
+ */
+export type VenueKind =
+  /** four walls, a flat ceiling with light fittings in it: a practice room, a gym, a school hall. */
+  | 'hall'
+  /** a dark house, a lighting truss overhead and seating banks down both sides. */
+  | 'arena'
+  /** a seamless cyclorama — a coved floor-to-wall sweep and softboxes above it. */
+  | 'studio'
+  /** no ceiling: ground to a horizon, with the dome's own sky above it. */
+  | 'outdoor';
+
+export interface VenueSpec {
+  kind: VenueKind;
+  /** the ground beyond the perimeter. */
+  floor: number;
+  /** the far vertical surfaces — hall walls, the cyclorama sweep, the arena's house. */
+  wall: number;
+  /** structure: trusses, columns, stand risers, floodlight masts, the horizon's own solids. */
+  trim: number;
+  /** the fixtures' emissive colour and how hot they read. `power` 0 means no fittings at all. */
+  lamp: number;
+  lampPower: number;
+  /**
+   * half-extent of the room in inches (the ground reaches further; outdoors this is the
+   * distance to the horizon line). The field's own half-extent is 70.674.
+   *
+   * ⚠️ **AN ENCLOSED VENUE MUST BE WIDER THAN THE CAMERAS CAN REACH, AND 290 IS NOT.** The
+   * first `workshop` was a 290-in shop, which is the size a shop actually is — and the orbit
+   * camera zooms to `ORBIT_RADIUS_MAX` 620 (`scene/renderCameras.ts`), so it stood OUTSIDE its
+   * own walls. The shell is `BackSide`, so from outside there is nothing to see: the picture
+   * became the far half of the room viewed through a wall that had vanished. Every hall, arena
+   * and studio therefore starts at `VENUE_MIN_HALF` (`scene/renderVenue.ts`, which clamps this
+   * as a guard rather than trusting the numbers below), and character comes from the CEILING
+   * height, the colours and what is in the room — a low dark 660-in shop still reads as a shop.
+   * Going ABOVE a ceiling degrades gracefully to a cutaway and needs no guard; going outside a
+   * WALL does not.
+   */
+  half: number;
+  /** ceiling height, inches. Ignored by `outdoor`. */
+  ceil: number;
+  /** seating banks down the two long sides (`high` detail only). */
+  stands?: boolean;
+  /** a painted panel/court grid on the ground — a sports floor rather than a poured slab. */
+  gridded?: boolean;
+}
+
 export interface EnvironmentDef {
   id: EnvironmentId;
   /** the picker's label. */
@@ -125,6 +202,9 @@ export interface EnvironmentDef {
    * 2026-09-21 set carry `BASE_RIG`, which IS `renderCore.ts`'s shared default, so none of them
    * changed a pixel when this field was added. */
   rig: EnvironmentRig;
+  /** the real geometry around the field. Every entry carries one — an environment with no venue
+   * is the empty-void picture this field was reported for. */
+  venue: VenueSpec;
   /** the painted dome. Absent means the surround comes from somewhere else: three's own
    * `RoomEnvironment` for `room` (whose background is the THEMED letterbox colour), or the
    * fetched image for an `hdri` entry. */
@@ -179,6 +259,10 @@ export const BB_ENVIRONMENTS: readonly EnvironmentDef[] = [
     name: 'Practice room',
     note: 'Generated, nothing to download',
     rig: BASE_RIG,
+    // THE DEFAULT ON LOW AND MEDIUM, and therefore the venue most players will ever see. A
+    // light neutral room with a sports floor: the brightest mat in the list (0.097) wants a
+    // ground it can sit ON rather than a darker one it floats above.
+    venue: { kind: 'hall', floor: 0x555b63, wall: 0x676d76, trim: 0x828892, lamp: 0xf4f7ff, lampPower: 1.1, half: 660, ceil: 288, gridded: true },
   },
   {
     /**
@@ -202,6 +286,9 @@ export const BB_ENVIRONMENTS: readonly EnvironmentDef[] = [
       sunIntensity: 2.1,
       exposure: 1.38,
     },
+    // THE CHAMPIONSHIP DIVISION SHOT: a dark house, a truss ring overhead and seating down
+    // both sides. The one venue DARKER than the mat, which is the whole reason it exists.
+    venue: { kind: 'arena', floor: 0x23272d, wall: 0x151920, trim: 0x3b414a, lamp: 0xd8e6ff, lampPower: 1.9, half: 760, ceil: 360, stands: true },
     look: {
       sky: [
         [0, 0x0a0d12],
@@ -237,6 +324,10 @@ export const BB_ENVIRONMENTS: readonly EnvironmentDef[] = [
       sunIntensity: 1.85,
       exposure: 1.15,
     },
+    // A WOOD FLOOR AND BLEACHERS, because that is the room most practice happens in. The
+    // ground is the warmest surface in the list and still well short of a saturated brown —
+    // it is the bounce the rig's `hemiGround` already describes, now visible.
+    venue: { kind: 'hall', floor: 0x8a6e49, wall: 0xa49d8c, trim: 0x6d6354, lamp: 0xfff4e0, lampPower: 1.2, half: 680, ceil: 312, stands: true, gridded: true },
     look: {
       sky: [
         [0, 0xe8e4d8],
@@ -271,6 +362,10 @@ export const BB_ENVIRONMENTS: readonly EnvironmentDef[] = [
       sunIntensity: 1.8,
       exposure: 1.35,
     },
+    // A TEAM'S OWN SHOP: small, low, concrete, dark walls, two rows of strip lights. The
+    // half-extent is a THIRD of the arena's — a shop you can practise in is a small room,
+    // and the near walls are most of what makes it read as one.
+    venue: { kind: 'hall', floor: 0x494c51, wall: 0x2c2e33, trim: 0x53575f, lamp: 0xfff0d0, lampPower: 1.7, half: 660, ceil: 200 },
     look: {
       sky: [
         [0, 0x2b2b2e],
@@ -305,6 +400,9 @@ export const BB_ENVIRONMENTS: readonly EnvironmentDef[] = [
       sunIntensity: 1.3,
       exposure: 1.1,
     },
+    // OUTDOORS, FLAT LIGHT: ground to a far horizon with a low treeline on it, and the dome's
+    // own overcast sky above. No ceiling and no fittings — the sky IS the fixture.
+    venue: { kind: 'outdoor', floor: 0x6c7168, wall: 0x9aa3a8, trim: 0x565d52, lamp: 0, lampPower: 0, half: 1700, ceil: 0 },
     look: {
       sky: [
         [0, 0xd6dee6],
@@ -351,6 +449,10 @@ export const BB_ENVIRONMENTS: readonly EnvironmentDef[] = [
       sunIntensity: 2,
       exposure: 1.3,
     },
+    // The same open ground under the warm dome. The horizon solids are the DARKEST thing in
+    // this environment on purpose: a silhouette against a lit sky is what a sunset looks like,
+    // and it is also what keeps the warm cast out of the field's own colours.
+    venue: { kind: 'outdoor', floor: 0x6a5e51, wall: 0x8d6d5b, trim: 0x3c3444, lamp: 0, lampPower: 0, half: 1700, ceil: 0 },
     look: {
       sky: [
         [0, 0x2a3a5e],
@@ -386,6 +488,10 @@ export const BB_ENVIRONMENTS: readonly EnvironmentDef[] = [
       sunIntensity: 2,
       exposure: 1.38,
     },
+    // FLOODLIT, OUTDOORS: four masts at the field's corners with lit heads, over dark ground.
+    // The masts are the only fittings in the list that stand IN the picture rather than hanging
+    // above it, which is what tells a player this is a car park and not a dark room.
+    venue: { kind: 'outdoor', floor: 0x32373e, wall: 0x0f141d, trim: 0x161b24, lamp: 0xdfe9ff, lampPower: 2.4, half: 1700, ceil: 0 },
     look: {
       sky: [
         [0, 0x050912],
@@ -421,6 +527,10 @@ export const BB_ENVIRONMENTS: readonly EnvironmentDef[] = [
       sunIntensity: 1.7,
       exposure: 1.12,
     },
+    // A REAL CYCLORAMA — a coved floor-to-wall sweep with no corner in it, which is the one
+    // thing a gradient cannot fake: the cove catches the key light as a soft band and that
+    // band is what says "a studio" rather than "a white screen".
+    venue: { kind: 'studio', floor: 0xdfe1e5, wall: 0xedeff2, trim: 0xc6cad0, lamp: 0xffffff, lampPower: 1.3, half: 660, ceil: 300 },
     look: {
       sky: [
         [0, 0xf4f5f6],
@@ -455,6 +565,9 @@ export const BB_ENVIRONMENTS: readonly EnvironmentDef[] = [
       sunIntensity: 1.95,
       exposure: 1.35,
     },
+    // The same sweep, dark. Its softboxes are the brightest thing above the field, which is
+    // the only light a dark studio has.
+    venue: { kind: 'studio', floor: 0x1c1e22, wall: 0x24262b, trim: 0x34383e, lamp: 0xf0f4ff, lampPower: 1.6, half: 660, ceil: 300 },
     look: {
       sky: [
         [0, 0x24262a],
@@ -483,6 +596,12 @@ export const BB_ENVIRONMENTS: readonly EnvironmentDef[] = [
     // two pictures that nothing asked to change (this is also the EXPORT's environment; see
     // `GFX_PRESETS.high`).
     rig: BASE_RIG,
+    // ⚠️ THE VENUE STANDS EVEN THOUGH THE SURROUND IS A PHOTOGRAPH, and this is the DEFAULT on
+    // High and Ultra and the fixed environment every replay export renders in. The HDRI keeps
+    // its two real jobs — it is the light-gathering map and it is what a robot's metal
+    // reflects — and loses only the one it was worst at: being the thing you see past the
+    // field. A 1k equirect blurred to 0.4 has no horizon and no parallax; a hall does.
+    venue: { kind: 'hall', floor: 0x8a7352, wall: 0xaaa392, trim: 0x796f5e, lamp: 0xfff8ec, lampPower: 1.1, half: 700, ceil: 330, gridded: true },
     hdri: {
       url: PH_HDR('school_hall'),
       bytes: 1_693_261,
@@ -507,6 +626,9 @@ export const BB_ENVIRONMENTS: readonly EnvironmentDef[] = [
     name: 'Photo studio',
     note: 'Neutral softboxes, 1.6 MB',
     rig: BASE_RIG,
+    // Softboxes over a neutral sweep — the geometry of the photograph it is lit by, so the
+    // reflections on a frame rail and the room they appear to come from agree.
+    venue: { kind: 'studio', floor: 0x3b3e43, wall: 0x494d53, trim: 0x5b6068, lamp: 0xffffff, lampPower: 1.5, half: 660, ceil: 300 },
     hdri: {
       url: PH_HDR('monochrome_studio_02'),
       bytes: 1_562_415,

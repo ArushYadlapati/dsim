@@ -281,7 +281,8 @@ import {
   stepTier,
   type GpuProbe,
 } from '../../src/games/biobuzz/graphics/auto';
-import { BASE_RIG, BB_ENVIRONMENTS, BB_ENVIRONMENT_IDS, environmentDef, hdriEnvironments } from '../../src/games/biobuzz/graphics/environments';
+import { BASE_RIG, BB_ENVIRONMENTS, BB_ENVIRONMENT_IDS, environmentDef, hdriEnvironments, type VenueSpec } from '../../src/games/biobuzz/graphics/environments';
+import { bbVenueDetail, buildBiobuzzVenue } from '../../src/games/biobuzz/scene/renderVenue';
 import { ENVIRONMENT_IDS, type EnvironmentId } from '../../src/games/biobuzz/graphics/settings';
 import { drawBiobuzzFlowerReadout } from '../../src/games/biobuzz/drawFlowerReadout';
 import { BIOBUZZ_MODULE } from '../../src/games/biobuzz';
@@ -8444,6 +8445,216 @@ function environmentAndReadoutChecks(check: Check): void {
           sil.top >= 0.5 && sil.bottom > sil.top && sil.bottom <= 1 && sil.teeth >= 4 && sil.alpha > 0 && sil.alpha <= 1,
           JSON.stringify(sil),
         );
+      }
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────────────────
+    // THE VENUE (owner, 2026-09-21: "The graphic lighting environment is too basic. Make it
+    // render an actual environment instead of blurry lights").
+    //
+    // A `scene.background` dome has no parallax, no horizon and — on the CAD field path — no
+    // ground under it at all, so every environment now also builds REAL geometry around the
+    // field (`scene/renderVenue.ts`). Every check below is a rule that geometry had to be
+    // tuned INTO, and three of them are bugs the first build shipped and the captures caught.
+    //
+    // ⚠️ **THE VENUE IS BUILT FOR REAL HERE, BEHIND A ONE-METHOD CANVAS STUB.** It is DOM-free
+    // except for the ground's `CanvasTexture`, and that one call is what this stub answers —
+    // `THREE.CanvasTexture` only ever stores the object as `image`, so nothing downstream of it
+    // needs a real 2D context. Measuring the built group is the whole point: "the shell is wider
+    // than the orbit camera can zoom" is not a claim a grep can make.
+    {
+      const hadDoc = 'document' in globalThis;
+      const stubCtx = new Proxy({}, { get: () => () => ({ addColorStop(): void {} }) });
+      if (!hadDoc) {
+        (globalThis as { document?: unknown }).document = {
+          createElement: () => ({ width: 0, height: 0, getContext: () => stubCtx }),
+        };
+      }
+      try {
+        const ORBIT_RADIUS_MAX = 620; // `scene/renderCameras.ts` — the escape the guard exists for
+
+        check('every environment carries a venue of a known kind', BB_ENVIRONMENTS.every((e) =>
+          ['hall', 'arena', 'studio', 'outdoor'].includes(e.venue.kind)));
+        check(
+          'the eleven venues are not all one kind — a picker of identical rooms is one room',
+          new Set(BB_ENVIRONMENTS.map((e) => e.venue.kind)).size === 4,
+        );
+
+        const chanOfV = (hexv: number): number[] => [(hexv >> 16) & 255, (hexv >> 8) & 255, hexv & 255];
+        const chromaV = (hexv: number): number => {
+          const c = chanOfV(hexv);
+          return (Math.max(...c) - Math.min(...c)) / 255;
+        };
+
+        for (const e of BB_ENVIRONMENTS) {
+          const v: VenueSpec = e.venue;
+          // ⚠️ THE CAMERA-ESCAPE BOUND. `workshop` first shipped at 290 in — smaller than the
+          // orbit ring's own zoom-out — so the eye stood outside a `BackSide` shell and the
+          // walls simply vanished. The DATA is held to it as well as the builder's clamp, so a
+          // new environment cannot reintroduce it and quietly rely on the guard.
+          if (v.kind !== 'outdoor') {
+            check(`${e.id}: the enclosure is wider than the orbit camera can zoom`, v.half > ORBIT_RADIUS_MAX, `half ${v.half}`);
+            check(`${e.id}: the ceiling is above the field's tallest furniture and below the room's width`,
+              v.ceil >= 160 && v.ceil < v.half, `ceil ${v.ceil}`);
+          } else {
+            check(`${e.id}: an outdoor horizon is far, and its ground stays inside the 4000-in far plane`,
+              v.half >= 800 && v.half * 1.35 < 4000, `half ${v.half}`);
+          }
+          // GAMEPLAY BEATS MOOD, the same rule the rigs are held to: the alliance reds/blues, the
+          // yellow POLLEN and the blue NECTAR are the only saturated things allowed in frame, so
+          // no venue surface may be a colour — only a tint.
+          for (const [what, hexv] of [['floor', v.floor], ['wall', v.wall], ['trim', v.trim]] as const) {
+            check(`${e.id}: the venue ${what} is a tint, not a colour`, chromaV(hexv) <= 0.26, `${hexv.toString(16)} chroma ${chromaV(hexv).toFixed(3)}`);
+          }
+          check(`${e.id}: an unlit venue declares no fittings, and a lit one is not blinding`,
+            v.lampPower >= 0 && v.lampPower <= 3 && (v.lampPower === 0 || v.lamp > 0), `${v.lampPower}`);
+        }
+
+        // ── the BUILT group ────────────────────────────────────────────────────────────────
+        for (const e of BB_ENVIRONMENTS) {
+          const g = buildBiobuzzVenue(e.venue, 'high');
+          check(`${e.id}: the venue builds as one named group with a ground in it`,
+            g.name === 'bb-venue' && !!g.getObjectByName('bb-venue:ground'));
+
+          const ground = g.getObjectByName('bb-venue:ground') as THREE.Mesh;
+          // BELOW the CAD's own ALLIANCE AREA tape (z −0.589…−0.579), which a ground at −0.5
+          // covers — the same number and the same reason the deleted `bb-room` floor carried.
+          check(`${e.id}: the ground is under the CAD's alliance-area tape`, Math.abs(ground.position.z + 0.75) < 1e-9, String(ground.position.z));
+          check(`${e.id}: the ground receives shadow`, ground.receiveShadow === true);
+          // ⚠️ WHITE TINT, NOT THE FLOOR COLOUR. `color` MULTIPLIES `map`, and the first build
+          // passed the floor colour to both: a 0x555b63 practice-room floor rendered as its own
+          // albedo SQUARED, i.e. near black, which is exactly what the first capture showed.
+          check(`${e.id}: the ground's tint is white, so its texture is not squared`,
+            (ground.material as THREE.MeshStandardMaterial).color.getHex() === 0xffffff);
+
+          let casters = 0;
+          let meshes = 0;
+          g.traverse((o) => {
+            const m = o as THREE.Mesh;
+            if (!m.isMesh) return;
+            meshes++;
+            if (m.castShadow) casters++;
+          });
+          // ⚠️ NOTHING IN A VENUE CASTS. The sun's shadow camera is sized to the FIELD
+          // (±90.674, far 260) so its texels are spent where a robot is; a venue caster is
+          // outside that frustum by construction and would cost a depth-pass submission for a
+          // shadow that cannot land anywhere.
+          check(`${e.id}: no venue mesh casts a shadow`, casters === 0, `${casters} of ${meshes}`);
+          // DRAWS are the budget a venue can spend badly, which is why every structural part is
+          // an `InstancedMesh` over one unit box. MEASURED at `high`: 2 (outdoor) … 7 (arena,
+          // the only ones carrying seating and a crowd), 470 … 5,762 triangles — against a
+          // High scene total of 337k–462k (`docs/area/biobuzz.md`'s element measurement).
+          check(`${e.id}: the whole venue is a handful of draws, not a scene`, meshes <= 9, String(meshes));
+          let tris = 0;
+          g.traverse((o) => {
+            const m = o as THREE.Mesh & THREE.InstancedMesh;
+            if (!m.isMesh) return;
+            const geo = m.geometry;
+            const n = geo.index ? geo.index.count / 3 : geo.attributes.position.count / 3;
+            tris += n * (m.isInstancedMesh ? m.count : 1);
+          });
+          check(`${e.id}: and its triangle budget stays inside 2 % of a High scene`, tris <= 8000, String(Math.round(tris)));
+
+          // ⚠️ NOTHING THIS MODULE BUILDS MAY STAND ON THE MAT, and the test has to be
+          // PER-INSTANCE. The first spelling took `Box3.setFromObject` of each `InstancedMesh`
+          // and failed on every one of them, correctly and uselessly: a colonnade RING's AABB
+          // encloses the field by definition while no column is anywhere near it. So: walk the
+          // instances, and a member passes if its own footprint clears the field rect OR it
+          // hangs clear above it (a lighting truss and a ceiling fitting are over the field on
+          // purpose; 130 in is well above the flowers, the hives and any shot arc that matters).
+          const FIELD_RECT = 71;
+          const OVERHEAD_CLEAR = 130;
+          const im4 = new THREE.Matrix4();
+          const pos3 = new THREE.Vector3();
+          const scl3 = new THREE.Vector3();
+          const quat = new THREE.Quaternion();
+          for (const child of g.children) {
+            const im = child as THREE.InstancedMesh;
+            if (!im.isInstancedMesh) continue;
+            let intruders = 0;
+            let worst = '';
+            for (let i = 0; i < im.count; i++) {
+              im.getMatrixAt(i, im4);
+              im4.decompose(pos3, quat, scl3);
+              const clearsRect =
+                Math.abs(pos3.x) - scl3.x / 2 > FIELD_RECT || Math.abs(pos3.y) - scl3.y / 2 > FIELD_RECT;
+              if (clearsRect || pos3.z - scl3.z / 2 >= OVERHEAD_CLEAR) continue;
+              intruders++;
+              worst = `(${pos3.x.toFixed(0)}, ${pos3.y.toFixed(0)}, ${pos3.z.toFixed(0)})`;
+            }
+            check(`${e.id}: every ${child.name} member clears the field or hangs over it`, intruders === 0, `${intruders} at ${worst}`);
+          }
+
+          if (e.venue.kind !== 'outdoor') {
+            const shell = g.getObjectByName('bb-venue:shell') ?? g.getObjectByName('bb-venue:cyc');
+            const box = new THREE.Box3().setFromObject(shell!);
+            check(`${e.id}: the built enclosure clears the orbit camera's furthest zoom`,
+              Math.min(box.max.x, box.max.y, -box.min.x, -box.min.y) > ORBIT_RADIUS_MAX,
+              `${box.max.x.toFixed(0)} / ${box.max.y.toFixed(0)}`);
+          }
+
+          // DETERMINISM: the crowd, the horizon and the ground's mottle all come off a hash, so
+          // two builds are the same venue — an exported replay's first frame cannot differ from
+          // its second, or from anybody else's.
+          const again = buildBiobuzzVenue(e.venue, 'high');
+          const key = (root3: THREE.Object3D): string => {
+            const parts: string[] = [];
+            root3.traverse((o) => {
+              const im = o as THREE.InstancedMesh;
+              if (im.isInstancedMesh) parts.push(`${im.name}:${im.count}:${Array.from(im.instanceMatrix.array).join(',')}`);
+            });
+            return parts.join('|');
+          };
+          check(`${e.id}: two builds of the same venue are identical`, key(g) === key(again));
+        }
+
+        // ⚠️ THE CAMERA GUARD IS THE BUILDER'S, NOT THE DATA'S — a spec under the bound is
+        // clamped rather than trusted, which is what makes the rule survive a new environment.
+        {
+          const tiny: VenueSpec = { kind: 'hall', floor: 0x555555, wall: 0x666666, trim: 0x777777, lamp: 0xffffff, lampPower: 1, half: 290, ceil: 172 };
+          const box = new THREE.Box3().setFromObject(buildBiobuzzVenue(tiny, 'high').getObjectByName('bb-venue:shell')!);
+          check('a venue authored too small is CLAMPED past the orbit zoom, not built as written',
+            box.max.x > ORBIT_RADIUS_MAX, box.max.x.toFixed(0));
+        }
+
+        // THE LADDER. Low pays for a ground, a shell and its fittings and nothing else; the
+        // trussing, the colonnade, the seating and the crowd are the three higher columns'.
+        {
+          const arena = environmentDef('arena').venue;
+          const countOf = (d: 'low' | 'high'): number => {
+            let n = 0;
+            buildBiobuzzVenue(arena, d).traverse((o) => {
+              if ((o as THREE.Mesh).isMesh) n++;
+            });
+            return n;
+          };
+          check('the low venue is strictly cheaper than the high one', countOf('low') < countOf('high'), `${countOf('low')} vs ${countOf('high')}`);
+          check('low still has a ground and an enclosure — it is a cheaper room, not no room',
+            !!buildBiobuzzVenue(arena, 'low').getObjectByName('bb-venue:ground') &&
+              !!buildBiobuzzVenue(arena, 'low').getObjectByName('bb-venue:shell'));
+        }
+
+        // WHICH TIER GETS WHICH, and why it is not `bbWheelDetail`'s split: MEDIUM is where the
+        // empty backdrop looked worst (image-based lighting is off there, so the dome was not
+        // even lighting anything), and nine instanced boxes is not the budget a wheel's
+        // sixteen lathed corners are.
+        check('only Low takes the cut; Medium and up get the full venue',
+          bbVenueDetail(GFX_PRESETS.low, 'low') === 'low' &&
+            bbVenueDetail(GFX_PRESETS.medium, 'medium') === 'high' &&
+            bbVenueDetail(GFX_PRESETS.high, 'high') === 'high' &&
+            bbVenueDetail(GFX_PRESETS.ultra, 'ultra') === 'high');
+        check('meshDetail: low keeps its promise here too',
+          bbVenueDetail({ meshDetail: 'low' }, 'ultra') === 'low');
+
+        // AND THE OLD SURROUND IS GONE. `bb-room` was a grey disc and a grey cylinder built by
+        // the CONSTANTS fallback alone — a second floor at the venue's own z would z-fight
+        // across the whole frame, and its 424-in cylinder would sit inside every hall's walls.
+        {
+          const fieldSrc = readFileSync(join(SCENE_DIR, 'renderField.ts'), 'utf8');
+          check('the procedural bb-room is gone from the constants field', !/name = 'bb-room'/.test(fieldSrc));
+        }
+      } finally {
+        if (!hadDoc) delete (globalThis as { document?: unknown }).document;
       }
     }
 

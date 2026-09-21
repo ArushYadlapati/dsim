@@ -60,8 +60,13 @@ const BACKDROP_FALLBACK = 0x20262c;
  * stale colour was most of the picture. `BiobuzzScene` watches `documentElement`'s `data-theme`
  * attribute — the attribute `src/theme.ts`'s `applyTheme` stamps, and the same signal
  * `docs/area/ui.md` tells JS to read instead of `getComputedStyle` — and re-reads this. The
- * ROOM's own greys (`bb-room:floor`/`:backdrop`) stay fixed: they are a gym, their ground is
- * the canvas, category 3 in the theming note. */
+ * VENUE's own colours (`scene/renderVenue.ts`, per environment) stay fixed: their ground is the
+ * canvas, category 3 in the theming note, so a hall does not turn white in the light theme.
+ *
+ * ⚠️ AND IT MATTERS LESS THAN IT DID. The backdrop is only ever seen where the venue is not —
+ * above an outdoor horizon, in the gap a camera finds past a hall's wall — because there is real
+ * geometry around the field now instead of a grey cylinder that existed on the constants path
+ * alone. It is still read on every theme change; it is just no longer most of the picture. */
 export function readBackdropColor(): number {
   try {
     const raw = getComputedStyle(document.documentElement).getPropertyValue('--ds-bg').trim();

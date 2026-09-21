@@ -616,42 +616,19 @@ function buildFlower(f: (typeof BB_FLOWERS)[number], idx: number): THREE.Group {
 }
 
 /**
- * A PROCEDURAL ROOM around the field — a wide floor beyond the perimeter and a backdrop
- * cylinder, so the driver camera (a 12-in-or-more setback outside the wall, `renderCameras.ts`'s
- * `fitDriverCamera`) does not look into the WebGL clear colour when it pans off the field.
- * APPROX, no CAD reference: this is stagecraft, not a measured space, and is deliberately cheap
- * (two meshes, one shared-per-mesh material).
+ * ⚠️ **THE PROCEDURAL ROOM IS GONE — `scene/renderVenue.ts` IS THE SURROUND NOW** (owner,
+ * 2026-09-21: "Make it render an actual environment instead of blurry lights").
  *
- * ⚠️ LIGHTENED HERE (2026-09-18 playtest, issue 3: "very dark"). The Day 1 colours (`0x14171c`
- * floor, `0x20262c` backdrop) were near-black — closer to a blacked-out soundstage than the gym
- * a real FTC event is held in — so the transparent walls (see `wallMaterial`) looked into a void
- * past them instead of a room, and the field itself had nothing bright nearby to bounce light off
- * of. A lighter, neutral grey (still darker than the field mat, so the field itself stays the
- * thing your eye lands on) reads as a gym floor/wall instead of a black box, and gives the
- * hemisphere fill and the IBL environment (`renderScene.ts`) something to actually reflect.
+ * `buildRoom` was a grey floor disc and a grey cylinder, added by THIS path only: the CAD
+ * `glbFieldToHandles` never called it, so the shipping field had no ground past the perimeter
+ * at all and the constants fallback had two flat greys. Both are now the same real venue —
+ * chosen by the ENVIRONMENT, with a coved studio, a floodlit car park or a hall with trussing,
+ * seating and light fittings in it — built once per pick and owned by `renderScene.ts`.
+ *
+ * ⚠️ Nothing replaces it HERE, and that is deliberate: a second floor at z −0.75 under the
+ * venue's own would z-fight across the whole frame, and a 424-in backdrop cylinder inside a
+ * 460-in hall would intersect its walls. The field builds the FIELD.
  */
-const ROOM_R = BB_HALF_X * 6;
-
-function buildRoom(): THREE.Group {
-  const group = new THREE.Group();
-  group.name = 'bb-room';
-  const floorMat = new THREE.MeshStandardMaterial({ color: 0x4a4f57, roughness: 0.95 });
-  const floor = new THREE.Mesh(new THREE.CircleGeometry(ROOM_R, 32), floorMat);
-  floor.name = 'bb-room:floor';
-  // BELOW the CAD's own ALLIANCE AREA tape, which lies on the gym floor at z -0.589..-0.579 (the
-  // three-sided outline outside each perimeter wall). At the old -0.5 the room floor covered it.
-  floor.position.z = -0.75;
-  floor.receiveShadow = true;
-  group.add(floor);
-
-  const backdropMat = new THREE.MeshStandardMaterial({ color: 0x5b616a, side: THREE.BackSide, roughness: 0.95 });
-  const backdrop = new THREE.Mesh(new THREE.CylinderGeometry(ROOM_R, ROOM_R, 260, 24, 1, true), backdropMat);
-  backdrop.name = 'bb-room:backdrop';
-  backdrop.position.z = 130;
-  group.add(backdrop);
-
-  return group;
-}
 
 /**
  * ONE HIVE — the pivot group named `hive:<alliance>` (per the field-import seam, plan-3d.md §8:
@@ -807,10 +784,9 @@ function buildBiobuzzFieldConstants(): BbFieldHandles {
   const group = new THREE.Group();
   group.name = 'bb-field';
 
-  const room = buildRoom();
   const floor = buildFloor(true);
   const walls = buildWalls();
-  group.add(room, floor, walls, buildCrossbar());
+  group.add(floor, walls, buildCrossbar());
 
   const hives = {} as Record<Alliance, THREE.Group>;
   const trays = {} as Record<Alliance, THREE.Group>;
