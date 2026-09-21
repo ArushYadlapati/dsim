@@ -1,4 +1,4 @@
-import type { Alliance, RobotCommand, RobotState, Vec2, World } from '../../types';
+import type { Alliance, Artifact, RobotCommand, RobotState, Vec2, World } from '../../types';
 import { dcos, dsin, hyp } from '../../math';
 import { PIN_END_S, PIN_ESCAPE_DIST, PIN_SECONDS, PIN_STUCK_SPEED } from '../../config';
 import { driveIntent, robotCorners } from '../../sim/physics';
@@ -14,6 +14,7 @@ import {
   bbHopperCap,
 } from './config';
 import { bbKindOf } from './score';
+import { biobuzzPhysics } from './state';
 
 /**
  * BIOBUZZ penalty engine — Section 11, Table 10-4.
@@ -192,18 +193,73 @@ export const BB_MOMENTARY_S = 3;
  * never exceed the limit on its own in a driven match; the HERDED half can, and does, which is
  * the whole point of counting it.
  */
-const BB_CONTROL_GEOMETRY: ControlGeometry = {
-  // the REAL LOADING ZONE, so a robot collecting its own restock is not billed for herding it.
-  carveOut: (a) => BB_LZ[a],
-  // the fallback for an element that carries no `r` of its own; POLLEN is the common case.
-  radius: BB_POLLEN_R,
-  // the same cap the intake and the HUD read, so the carve-out closes exactly when the hopper
-  // is actually full rather than one element early.
-  hopperCap: (r) => bbHopperCap(r.spec),
-};
+/**
+ * HOW FAR OFF THE TILES AN ELEMENT MAY BE AND STILL BE ON THE FLOOR, for `bbLooseElement` (in,
+ * measured to the element's BOTTOM, which is what `Artifact.z` is under the 3D solve).
+ *
+ * MEASURED, not chosen (`scratch/skitter.ts`, 3D, four seeds x three headings, every tick a
+ * chassis was in contact with an element it was pushing): a PLOWED element's bottom never rose
+ * above **0.92 in** (p50 0.00, p95 0.92, n=14,340), and a real SHOT passing over a chassis in
+ * plan was never lower than **7.60 in** (p50 28.9, n=246). Anything in that gap separates the
+ * two perfectly; 2 in sits 2.2x above the skip and 3.8x below the lowest shot, so neither
+ * number has to be re-measured to the inch for this to keep holding.
+ */
+export const BB_CONTROL_SKITTER_Z = 2; // in
+
+/**
+ * IS THIS ELEMENT LOOSE ON THE FLOOR? — the `ControlGeometry.loose` slot, and the whole of why
+ * G407 could not fire in a server room.
+ *
+ * ⚠️ **EVERY SERVER-CONNECTED MATCH IS 3D, AND IN 3D A PLOWED ELEMENT IS TAGGED `flight`.**
+ * `derive.ts` calls an element airborne when its bottom is off the tiles by 0.05 in or its `vz`
+ * exceeds 1 in/s and it has not read at rest — which is a fair description of a ball in the air
+ * and ALSO of a 3-in ball being shoved across a tile seam, because a plowed ball SKIPS. Measured
+ * on a driven six-element herd, the element was tagged `flight` on 14.3% of the ticks it was in
+ * chassis contact, and those ticks were interleaved with the `ground` ones every few frames.
+ *
+ * Both halves of the rule read that tag, and both broke on it:
+ *   · `controlledArtifacts` filters the field to `ground`, so a skipping element was not even a
+ *     candidate to be counted;
+ *   · `bbSweepControlClocks` treats a non-`ground` element as GONE and DELETES its hold, anchor
+ *     and carry — so every skip reset the confirm clock to zero. Measured over six driven
+ *     scenes, both phases, empty and full hopper: the per-element hold peaked at **0.000 s**
+ *     against a `POSSESSION_CONFIRM` of 0.45, nothing ever latched, and the count never left
+ *     the hopper. G407 was unreachable in 3D by construction — a WARNING and a MAJOR that no
+ *     amount of bulldozing could earn.
+ *
+ * So the predicate asks the physical question the tag was standing in for: is it loose (not in
+ * a cell, a tube, a hopper or the human player's box) AND is it on the floor. `ground` always
+ * is. `flight` is too when its bottom is under `BB_CONTROL_SKITTER_Z` — which a skip is and a
+ * shot is not.
+ *
+ * ⚠️ **AND IT IS GATED ON THE 3D SOLVE, WHICH IS NOT SUPERSTITION.** The 2D pipeline is
+ * PERMANENT (owner rule) and byte-identical is the bar. 2D has no skip — a `ground` element
+ * stays `ground` from the moment it lands — so the `flight` arm buys that pipeline nothing,
+ * while a 2D arc's descending tail does pass through this band on its way down. Taking the arm
+ * out of 2D is the difference between a fix and a fix plus an unrelated change nobody asked for.
+ */
+function bbLooseElement(world: World): (b: Artifact) => boolean {
+  const is3d = biobuzzPhysics(world) === '3d';
+  return (b) =>
+    b.state.kind === 'ground' || (is3d && b.state.kind === 'flight' && b.z <= BB_CONTROL_SKITTER_Z);
+}
+
+function bbControlGeometry(world: World): ControlGeometry {
+  return {
+    // the REAL LOADING ZONE, so a robot collecting its own restock is not billed for herding it.
+    carveOut: (a) => BB_LZ[a],
+    // the fallback for an element that carries no `r` of its own; POLLEN is the common case.
+    radius: BB_POLLEN_R,
+    // the same cap the intake and the HUD read, so the carve-out closes exactly when the hopper
+    // is actually full rather than one element early.
+    hopperCap: (r) => bbHopperCap(r.spec),
+    // ...and what counts as loose on the floor, which under the 3D solve is not the tag alone.
+    loose: bbLooseElement(world),
+  };
+}
 
 function bbControlled(world: World, r: RobotState, dt: number, intaking: boolean): number {
-  return controlledArtifacts(world, r, dt, intaking, BB_CONTROL_GEOMETRY);
+  return controlledArtifacts(world, r, dt, intaking, bbControlGeometry(world));
 }
 
 /**
@@ -229,8 +285,12 @@ function bbControlled(world: World, r: RobotState, dt: number, intaking: boolean
 function bbSweepControlClocks(world: World): void {
   const pen = world.penalties;
   const live = new Set<string>();
+  // ⚠️ THE SAME PREDICATE THE COUNT USES, and it has to be: a sweep that is stricter than the
+  // count deletes the clock of an element the count is still looking at. That is precisely what
+  // `kind === 'ground'` did here under the 3D solve — see `bbLooseElement`.
+  const isLoose = bbLooseElement(world);
   for (const r of world.robots) {
-    for (const b of world.balls) if (b.state.kind === 'ground') live.add(`${r.id}:${b.id}`);
+    for (const b of world.balls) if (isLoose(b)) live.add(`${r.id}:${b.id}`);
   }
   pen.ballCarry ??= {};
   for (const key of Object.keys(pen.ballHold)) {
@@ -255,9 +315,17 @@ function bbSweepControlClocks(world: World): void {
  *
  * Exported because the HUD chip and the smoke lane both ask the same question, and two
  * spellings of one boundary is how a cue ends up one tick away from the rule it announces.
+ *
+ * ⚠️ **FREE DRIVE IS THE ONE PHASE WHERE "LOCKED BY DEFAULT" IS THE WRONG DEFAULT**, and it is
+ * the exception the paragraph above earns by being explicit. `freeplay` has no AUTO, no buzzer
+ * and no clock — `phaseTimeLeft` is not counting anything — so there is no 1:00 cue to be early
+ * for, and the negated form would have made every NECTAR ever placed in a FLOWER in free drive
+ * a MAJOR the moment the engine started running in that phase. A rule about a moment in a match
+ * cannot be enforced in a mode that has no moments.
  */
 export function bbNectarLocked(world: World): boolean {
   const m = world.match;
+  if (m.phase === 'freeplay') return false;
   return !(m.phase === 'teleop' && m.phaseTimeLeft <= BB_FLOWER_UNLOCK_S);
 }
 
@@ -271,8 +339,29 @@ export function updateBiobuzzPenalties(
   const phase = world.match.phase;
   const isAuto = phase === 'auto';
   const isTeleop = phase === 'teleop';
-  if (!isAuto && !isTeleop) {
-    // No fouls outside the PLAYED periods (pre / transition / post / freeplay), and the memory
+  /**
+   * ⚠️ **FREE DRIVE COUNTS**, and this line is DECODE's own, arrived at the same way.
+   *
+   * `freeplay` is a LIVE phase everywhere else in this game — `robotsEnabled` says so, the human
+   * player restocks in it, the shooter fires in it, the score pass runs in it — and the penalty
+   * engine was the one subsystem that quietly excluded it. So the whole of Section 11 was OFF in
+   * the mode people actually practise in. Measured on an identical driven eight-element herd,
+   * 3D, the same robot and the same command: a MATCH drew the G407 WARNING and the STRATEGIC
+   * MAJOR, and free drive drew **nothing at all** — the per-element hold clock never left 0.000,
+   * because no line of this function ran.
+   *
+   * Free Drive is DRIVER PRACTICE, and practising without the fouls a match would give you is
+   * the opposite of practice. `src/sim/penalties.ts` carries the identical paragraph for DECODE,
+   * which got here first and for the same reported reason.
+   *
+   * The phase-specific rules stay correctly inert on their own terms rather than by a second
+   * list kept here: G402 tests `isAuto`, and G410's cue is explicitly absent in a mode with no
+   * clock (`bbNectarLocked`). G407 and G421 are about what a robot is doing right now, so they
+   * are exactly the two that should be live in practice.
+   */
+  const isFree = phase === 'freeplay';
+  if (!isAuto && !isTeleop && !isFree) {
+    // No fouls outside the PLAYED periods (pre / transition / post), and the memory
     // is CLEARED rather than kept: a condition that was true at the buzzer must not count as
     // "already fired" when play resumes, or the first real instance of it goes unbilled.
     bb.foulEdge = {};

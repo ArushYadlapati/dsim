@@ -1,10 +1,138 @@
-# HANDOFF — 2026-09-21d (the match-results screen: full-height panels, a per-section cascade)
+# HANDOFF — 2026-09-21g (alpha: controller navigation finished and wired; free-cam presets carried over)
+
+**READ FIRST.** Gates on this tree: `npm test` ALL PASS (**2,165** shared + **4,494** biobuzz),
+`build`, `server:check`, `uiaudit` (ALL AT BASELINE), `docaudit`, `contrast` (235). The tree is
+`.claude/worktrees/alpha-flower-intake-plate-930ef5`, branch
+`claude/alpha-flower-intake-plate-930ef5`, which sits on alpha's tip.
+
+A previous round of agents stopped mid-flight at 12:30 — the gate logs in `scratch/`
+(`npmtest.log`, `gate-build.log`, `gate-server.log`) are stamped 12:26–12:27 and three pad-nav
+files were written AFTER them. Two workstreams were in the tree:
+
+- **Free camera presets, the invisible robot, and the rest of the 21f follow-ups** — code
+  complete and GATED at 12:26, untouched since. `docs/biobuzz/free-cam-presets.md` is the
+  evidence file for each preset row (vendor page, its own wording, and what it does NOT state);
+  `scratch/handoff-invisbox.md` is the long form of the chassis-envelope fix. Nothing here was
+  re-opened.
+- **Controller navigation** — the core and the layer were written, they typechecked, and they
+  were **not wired to anything**. Three gaps, all closed below.
+
+## What was missing, and what closed it
+
+- **THE FOCUS RING DID NOT EXIST.** `PadNavLayer` sets `data-padnav="on"` and renders
+  `.ds-padhint` / `.ds-osk*`, and **not one of those selectors was in any stylesheet** — the
+  layer drew an unstyled keyboard and no ring at all. `shell.css` now carries the block, and it
+  rings plain `:focus` under the attribute rather than `:focus-visible`, because a pad move is a
+  synthetic `.focus()` that Chromium does not reliably grant `:focus-visible` to. Inside
+  `.hud`/`.game-root` it takes `--ds-on-field-accent` (category 3 — the field is hardcoded dark).
+  Verified in a real browser, both themes: ring `#366758` in the shell, `#5fb597` over the field.
+- ⚠️ **THE IN-MATCH CONTRACT WAS NEVER APPLIED.** The design says the pad is the robot's in a
+  match, and `PadNavLayer`'s own comment says `GameView` registers the menu opener — but
+  `GameView` did not import `padNav` at all, so **nothing suspended the layer and
+  `setPadMenuHandler` had no caller**: a connected pad would have moved focus and fired
+  synthetic clicks off the same stick the driver was steering with. `GameView` now suspends for
+  its whole mount and registers `onExit`, MOUNT-ONCE with `onExit` in a ref — it is a fresh
+  arrow every render and `App` re-renders on the presence poll, which would otherwise tear the
+  suspension down mid-match. (The Controls screen's `'capture'` suspend was already wired.)
+- **NO CHECKS.** The core was split DOM-free explicitly so `npm test` could drive it, and had
+  none. 48 new checks in one block in `scripts/smoke.ts` (2,117 → 2,165): the picker's
+  cross-axis term on a ragged grid, the strictly-past rule, determinism on repeated geometry,
+  wrap, the repeat clock's monotonicity and floor, the slider profile crossing 100 steps under
+  4 s, family detection by name and by USB vendor id, the Nintendo confirm/back swap, the
+  suspend registry's overlap, the mask's release semantics, and the OSK reducer's one-shot caps
+  and `maxLength` cap. The load-bearing one is **`⚠️ padnav: the in-match MENU button is an
+  index no default pad bind uses`** — it asserts 15 against `DEFAULT_BINDINGS` instead of
+  trusting the comment, because a future default taking it would make the button that leaves a
+  match also drive the robot.
+
+## The one design change
+
+`.ds-key` was reused for the legend rather than declaring a second keycap — but it is sized for
+a bind ROW, where the cap has to hold SHIFT (`min-width: 34px`, `4px 10px`). At that size the
+caps were wider than the words they annotate and the legend read as three empty boxes. The
+legend and the keyboard's foot size it down (`--ds-s-0`, which §2 permits inside a chip and
+nowhere else) instead of adding a class. Caught by looking at it; it is not something an audit
+would have flagged.
+
+The durable rules are in **`docs/area/ui.md` ▸ "Controller navigation"**. `scratch/padnav-design.md`
+was the working note and `scratch/` is gitignored, so the guide is the only copy that survives.
+
+## Next
+
+- **Not pushed, and alpha is not advanced.** The commit is on
+  `claude/alpha-flower-intake-plate-930ef5`, which was level with `alpha`/`origin/alpha` at
+  `eb6c9ac`. Fast-forwarding alpha and pushing is a one-liner when you want it.
+- **Untried at the real surface: the pad itself.** Every rule above is verified by `npm test` on
+  synthetic rects or by measurement in a browser; nothing has been driven with a physical
+  controller. The things to try first are the menu button leaving a match without firing a shot
+  on the way out, and A on a text field.
+- `.claude/worktrees/_verify` holds an exact copy of the free-cam half and can be deleted.
+
+---
+
+# HANDOFF — 2026-09-21f (alpha: nine owner items in one commit — see each bullet)
+
+Gates on the merged tree: `npm test` ALL PASS (shared + 4,357 biobuzz), `build`, `server:check`,
+`uiaudit`, `docaudit`, `contrast` (235), `bundleaudit` (scene 216.6 KB gz, baseline raised with reasons), `test:mm`
+(200), `dbtest`. Nine opus agents ran in ONE shared worktree; a usage limit killed all of them mid-edit once and
+every one resumed cleanly via SendMessage. Each area guide carries the long form; this is the index.
+
+- **THE INVISIBLE CORNER (owner, 5th report).** `slimFootBars` (2026-09-20) narrowed the hive foot bar across its
+  width and left it SQUARE-TOPPED on two ramps: the flange stood 1.91 in over a top that starts at 0.24 in, and each
+  of the four outer corners carried a 1.94-in block over a 0.19-in chamfer. ⚠️ A chassis is a floor-to-roof prism
+  and stops on a 0.16-in lip exactly as on a 2.15-in one — so FOUR driving probes were clean; what it held up was
+  ELEMENTS (a POLLEN rested 2.13 in up in mid-air). Six pieces, each now the hull of its own polytope (⚠️ six is
+  part of the fix: a stacked-box version changed the collider COUNT and flipped a ramp check 60 in away). Checks:
+  `sim3d.ts` "THE INVISIBLE CORNER". If the owner means the ROBOT catching, this is not it — ask where.
+- **FIELD MESH WINDING.** All 193 components of `field.glb` are closed shells with MIXED winding (49.2 % of
+  triangles inward); `repairFieldWinding` (`scene/renderFieldGlb.ts`) REPLACES `fixGroundBeamWinding`: propagate
+  across shared edges, orient by signed volume, index-only, before `styleScene`. Ray parity 44.9 % → 1.7 %. Clear
+  panels untouched (pinned). DoubleSide only for genuinely open comps (none on the high LOD). Real defect is
+  `convert.py`'s.
+- **BALLS IN SERVER GAMES.** Two clocks in one frame: the local robot drew from the PREDICTION, elements from the
+  INTERPOLATION ~6 ticks behind (p95 8.65 in of a pushed POLLEN drawn inside the chassis; identical at 0 and 140 ms;
+  prediction off = 0.01). `Predictor.elements()` + `drawPredictedElements`/`ballSmooth` in `game.ts` → 0.99 in. And the
+  kind-change SNAP fired on BIOBUZZ 3D's DERIVED ground/flight re-tags → narrowed to `held`/`stock`. Client-only, no
+  wire/egress change, solo bit-identical. LIGHT predictor keeps the old drawing. `net3d.ts` §13–14.
+- **G407 OVER-CONTROL.** Unreachable in 3D (a plowed ball SKIPS, `derive.ts` tags it `flight` 14.3 % of contact
+  ticks, the sweep deleted its hold clock: peak hold 0.000 s vs 0.45 s) and inert in free drive. `ControlGeometry.loose`
+  + `bbLooseElement` (`flight` under `BB_CONTROL_SKITTER_Z` 2 in, 3D only; measured 0.92 vs 7.60). ⚠️ FREE DRIVE NOW
+  BILLS in BIOBUZZ (DECODE precedent; G410 unlocked there) — owner CONFIRMED ("free drive should show fouls"); the bar
+  shows no score outside a match, so a foul there is a line in the event log and nothing else.
+  Egress +135 B/snap deflated in 3D. DECODE G408 healthy; Chain has no such rule by design.
+- **SIDE ROLLERS pass 2.** Protrusion 1.90 → **1.65** (not the 1.40 I asked for: park-then-intake is 58 % at 1.65,
+  44 % at 1.60, 0 % at ≤ 1.45 — reach covers the 18–22° yaw a one-sided plate contact gives). Frictionless wheels
+  tried: 324/540 both ways, reverted. Bracket = rear yoke to the axle, 264° of tread open; wheel = hub + lugged tread.
+- **NO EDGE LINE ON A 3D ROBOT** (the dark halo went too: "the robot now just has a black outline"). 2D keeps
+  `ROBOT_TRIM`. `chassisEdges`/`lineMat` deleted.
+- **ELEMENTS ARE THE REAL CAD SOLID on High/Ultra/export** (`npm run element-cad`, `elements.glb` 16 KB br; new
+  seventeenth setting `elementDetail`), they ROLL (visual only), and two instancing bugs fixed (stale frustum sphere;
+  56 instances drawn). DECIDED by the owner ("Keep the sim ... as long as it is consistent"): `BB_NECTAR_R` stays 1.800
+  and `bake` FITS the CAD mesh (1.810) onto the config radius, so drawn = solved at every tier.
+- **DRIVE WHEELS ARE CATALOGUE PARTS** (`BB_WHEEL_PARTS`): 104 mm GripForce mecanum (11 rollers, handed, X pattern
+  measured), 96 mm omni, 96/72 mm Hogback. Stripe texture gone. Renderer reads `C.WHEEL_DIAMETER_MM`. 2D: BIOBUZZ's
+  X-drive omnis were drawn radially — fixed. A wheel is nearly invisible behind the side plate; owner: leave the
+  plate, keep the wheel accurate at the higher tiers (it is).
+- **11 BACKGROUNDS** (8 painted, procedural, per-environment light rig; Low/Medium get a picker for the first time;
+  ⚠️ env maps were on their side — z-up vs three's y-up, `+π/2`; rigs held to ≥ 25° sun). **FLOWER READ-OUT** on the
+  3D overhead camera via the NEW slot `GameModule.drawSceneOverlay` + `GameScene.camera` (⚠️ a third arg on
+  `drawOverlays` drew DECODE's ramp strips in screen pixels).
+- **CONFIGURE REDESIGN.** Task order (Robot · Controls · Match · Audio and Visual · Graphics; route keys unchanged),
+  Robot = Start from/Build/Look/Driving with the preview in a sticky rail ≥ 1320 px, rare controls behind `.ds-fold`,
+  one `OptRow`/`ToggleRow` (`src/ui/OptRow.tsx`), duplicate view picker in `MatchSetup` deleted, slop strings 34 → 1.
+  Audit: `scratch/configure-audit.md`. No stored-data change.
+- Tooling: `.claude/launch.json` gained `dev-b` (5186). Headless capture scripts that destroy a window per shot need
+  `app.on('window-all-closed', () => {})` or Electron quits after shot one.
+
+---
+
+# HANDOFF — 2026-09-21e (the match-results screen: full-height panels, a per-section cascade)
 
 Gates on this tree: `build`, `server:check`, `docaudit`, `uiaudit` (ALL RULES AT OR UNDER
 BASELINE, no baseline moved), `contrast` (221 ALL PASS), `tsc --noEmit`, and the BIOBUZZ suite
 at 3,822 checks.
 
-⚠️ **READ FIRST — `npm test`'s SHARED suite is red on this tree and it is NOT this work.**
+⚠️ **(Previously READ FIRST.)** `npm test`'s SHARED suite was red on this tree at the time, and it was NOT this work.
 `scripts/smoke.ts`'s "sim source uses NO engine-defined Math" check flags
 `src/games/biobuzz/graphics/freeCam.ts:159`, which is a **doc comment** that spells
 `Math.exp(deltaY * rate)` while describing where the real call lives. It arrived with 0701544
@@ -76,11 +204,35 @@ username-label work). Nothing below touches those files; it just has not been pu
 
 ---
 
+# HANDOFF — 2026-09-21d (alpha: no alliance outline; usernames over robots in alliance colour)
+
+Gates: `npm test` ALL PASS, `build`, `server:check`, `contrast` (235), `docaudit`, `uiaudit`, `test:mm`.
+⚠️ FIVE agents were still in flight in this worktree when this was committed (field-mesh winding, the hive's
+invisible corner, CAD element meshes, ball behaviour under prediction, side-roller pass 2) — their files were
+left OUT of this commit on purpose.
+
+- **THE RED/BLUE OUTLINE IS GONE** (owner). Every sprite STROKE in all three games is `ROBOT_TRIM` (#9aa3ad,
+  `render/drawRobot.ts`); `drawOutlineHalo` deleted. The alliance is FILLS only: the heading chevron, the sign
+  placard, BIOBUZZ's NECTAR turret rim. 3D: the alliance `LineSegments` round the bumper band is removed, the
+  dark `outlineHalo` trace stays as plain edge trim. Check: a permissive Proxy ctx records the `strokeStyle` at
+  every stroke — no sprite strokes in an alliance colour (3 games × 2 alliances × intake on/off).
+- **In-match labels are the driver's username, in their alliance colour.** `matchStart` gained an optional
+  `drivers?: MatchDriver[]` (`robotId` → username; a bot seat is named for its tier), built once in
+  `Room.beginMatch` via `seatedDrivers()` and FROZEN there — `robotOf` is torn down as people leave, so a list
+  derived at send time could not name a dropped driver's robot for a late spectator. Additive both ways, so no
+  `caps` gate. Path: `NetSession.driverName(id)` → `GameController.driverName` → `Renderer.render(…, driverName?)`,
+  both the 2D and the projected 3D label pass. NOT in `World`/`RobotState` (30 Hz egress; deterministic JSON).
+  No name ⇒ the old `teamNumber + spec.name`; the local robot is still never labelled. ⚠️ `drivers` is the
+  FOURTH field `ActiveGameRef.start` carries by hand (after `physics`, `gen`) — copied in `App.beginSession`,
+  pinned by smoke. Fill = `COLORS.redLabel` #f87171 / `blueLabel` #60a5fa: the raw hues are 3.52 / 3.60:1 as type
+  on the tiles; the tints are 4.78 / 5.20. `contrast.mjs` owns the arithmetic (7 new pairs).
+
+---
 # HANDOFF — 2026-09-21c (alpha: side rollers are a HOUSED module; the protrusion is measured, not guessed)
 
 Gates on this tree: `npm test` ALL PASS (2,090 shared + 3,816 biobuzz, 33 s), `build`,
 `server:check`, `docaudit`, `uiaudit`, `bundleaudit` (scene 211.26 KB gz). The side-roller work moved nothing in
-the sim. **READ FIRST: the SAME commit also carries two RAMP sim changes — the pivot on the roller shaft and the
+the sim. **The SAME commit also carries two RAMP sim changes — the pivot on the roller shaft and the
 ramp/flower-ring collision group — written up in 21b just below** (final tree: 2,090 + 3,818 ALL PASS).
 
 - **OWNER: "do the side roller wheels need to stick out that much for flower intaking? it looks

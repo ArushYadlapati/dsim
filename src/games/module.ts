@@ -46,6 +46,20 @@ export interface GameModule extends GameSimModule {
   drawField(ctx: CanvasRenderingContext2D, world: World, screenUp?: Vec2): void;
   /** extra overlays drawn after the field, before robots (DECODE: ramp strips) */
   drawOverlays?(ctx: CanvasRenderingContext2D, world: World): void;
+  /**
+   * THE SAME IDEA ON THE 3D OVERLAY PASS — drawn on the 2D canvas that sits above a live scene
+   * (`Renderer.drawProjectedOverlay`), where there is no field drawing underneath and the
+   * context's transform is SCREEN pixels rather than field inches. BIOBUZZ fills it with the
+   * FLOWER contents read-out over the top-down shot (`biobuzz/drawFlowerReadout.ts`).
+   *
+   * ⚠️ **A SLOT OF ITS OWN, AND NOT A THIRD ARGUMENT ON `drawOverlays`.** That was tried and it
+   * is a trap: `drawOverlays` is written in FIELD INCHES, a game that ignores the extra argument
+   * keeps compiling, and DECODE's ramp strips were duly drawn — in world coordinates, onto a
+   * screen-pixel transform, off the side of the canvas. An OPTIONAL SECOND SLOT cannot do that,
+   * because a game that has no 3D view simply does not fill it, which is DECODE and Chain
+   * Reaction. Absent ⇒ nothing is drawn, exactly as before this existed.
+   */
+  drawSceneOverlay?(ctx: CanvasRenderingContext2D, world: World, view: SceneOverlayView): void;
   /** per-robot sprite. DECODE omits it (the shared `drawRobot` is used); CR provides its
    * own so the archetype launcher + intake design read correctly. `screenUp` lets CR bob the
    * chassis up onto a beam it's crossing. `world` is optional and read-only — CR's rail-turret
@@ -463,6 +477,33 @@ export interface SceneFrame {
  * mounted. The renderer lane fills an implementation (Three.js); the controller lane calls
  * `render`/`resize`/`dispose` from its own loop. It reads `World`, it never writes it.
  */
+/**
+ * WHAT A GAME'S `drawOverlays` IS TOLD WHEN IT IS CALLED OVER A LIVE 3D SCENE (2026-09-21).
+ *
+ * The 2D canvas sits above the WebGL one and keeps drawing the cheap overlays
+ * (`Renderer.drawProjectedOverlay`). On that pass the context's transform is the plain DPR scale
+ * — CSS PIXELS, not field inches — and there is no field drawing underneath, so a game that
+ * wants to put something over the 3D shot needs three things it cannot work out for itself:
+ * WHICH camera is live (a read-out that belongs on a top-down shot is nonsense on a driver's),
+ * the `viewAngle` the shot is oriented by, and `project`.
+ *
+ * `project` is `GameScene.project`, already bound to its scene — the caller passes it on rather
+ * than handing over the scene, so a game module never holds a reference to a renderer it does
+ * not own.
+ */
+export interface SceneOverlayView {
+  /** the camera the scene actually RENDERED this frame — the resolved one, after the device's
+   * own camera preference has been applied over what the host asked for. */
+  camera: SceneCamera;
+  /** the frame's view angle (`SceneFrame.viewAngle`) — which alliance's wall is at the bottom. */
+  viewAngle: number;
+  /** the canvas's device pixel ratio, already applied to the context's transform. A caller that
+   * wants to compose its own transform (a projected affine, say) has to re-apply it. */
+  dpr: number;
+  /** `GameScene.project`, bound: field inches + height → CSS pixels on this canvas. */
+  project(x: number, y: number, z: number, out: { x: number; y: number; visible: boolean }): void;
+}
+
 export interface GameScene {
   readonly element: HTMLCanvasElement;
   render(world: World, frame: SceneFrame): void;
@@ -490,6 +531,19 @@ export interface GameScene {
    * drawing exactly what it drew before, through the 2D camera.
    */
   project?(x: number, y: number, z: number, out: { x: number; y: number; visible: boolean }): void;
+  /**
+   * WHICH camera the last `render` actually used — the RESOLVED one (the device's camera
+   * preference applied over the host's pick), not what the host asked for.
+   *
+   * The overlay pass needs it and cannot derive it: `SceneFrame.camera` is the host's REQUEST,
+   * and on an interactive scene the player's own preference wins over it (`resolveSceneCamera`),
+   * so a caller reading the frame would be told `overhead` while a driver camera was on screen.
+   *
+   * OPTIONAL, like `project`. A scene that does not report one is read as `'driver'`, which is
+   * the answer that draws the LEAST: an overlay placed for the wrong camera is worse than one
+   * that is missing, and every scene before this existed drew none of them.
+   */
+  readonly camera?: SceneCamera;
 }
 
 /**

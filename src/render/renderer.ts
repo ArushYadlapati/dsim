@@ -4,7 +4,7 @@ import { Camera } from './camera';
 import { drawRobot } from './drawRobot';
 import { gameOf } from '../games';
 import { robotsEnabled } from '../sim/match';
-import type { GameScene } from '../games/module';
+import type { GameModule, GameScene } from '../games/module';
 
 /**
  * The letterbox around the field follows the app theme (the FIELD itself never does).
@@ -34,6 +34,35 @@ const LABEL_Z = 30;
 /** how far above the projected point the text is drawn, in CSS px — the 3D projection puts the
  * anchor at the top of the robot, and this lifts the baseline clear of it. */
 const LABEL_SCREEN_LIFT = 4;
+
+/**
+ * THE DARK OUTLINE UNDER EVERY LABEL, and it is what makes the alliance colours work.
+ *
+ * A label follows its robot anywhere, so its ground is not one colour: the dark mat, the
+ * lighter tiles, the LIGHT backdrop when a robot is pinned to the far wall, and in 3D whatever
+ * the scene has behind it. No single fill reads on all of those. The stroke does — it is 9.34:1
+ * on the backdrop — so the fill only has to clear AA against the DARK grounds, which is exactly
+ * what `COLORS.redLabel`/`blueLabel` are picked for.
+ */
+const LABEL_STROKE = 'rgba(20,22,26,0.8)';
+
+/**
+ * WHO TO PRINT OVER A ROBOT: the person driving it, else the thing they built.
+ *
+ * The username is the answer to the question the label is asked mid-match ("who is that"), and
+ * it is why the team number is dropped with it — `12345 Kraken` is a build's identity, and
+ * stacking it in front of an account name says the same thing twice in a label that has to be
+ * read at a glance. The fallback is unchanged from before there were usernames, and it is what
+ * every solo/bot/replay/old-server frame draws.
+ */
+const labelFor = (r: RobotState, driverName?: (robotId: number) => string | undefined): string => {
+  const who = driverName?.(r.id);
+  if (who) return who;
+  return r.spec.teamNumber > 0 ? `${r.spec.teamNumber} ${r.spec.name}` : r.spec.name;
+};
+
+/** a label's fill: its robot's ALLIANCE, in the tints tuned for 12-px type on the field. */
+const labelInk = (r: RobotState): string => (r.alliance === 'red' ? COLORS.redLabel : COLORS.blueLabel);
 
 export class Renderer {
   readonly camera = new Camera();
@@ -75,6 +104,16 @@ export class Renderer {
      * False for every game/view before this seam, unchanged.
      */
     overlayOnly = false,
+    /**
+     * WHO IS DRIVING ROBOT `id` — `NetSession.driverName`, handed down by the GameController.
+     *
+     * Absent for every path that has nobody to name: solo practice, a replay, the builder
+     * preview, and a match on a server that predates `matchStart.drivers`. Those all draw the
+     * label they always drew. It is a FUNCTION and not a field on the world on purpose — a
+     * username has no business in `World`/`RobotState`, which is deterministic JSON that ships
+     * to every client 30 times a second.
+     */
+    driverName?: (robotId: number) => string | undefined,
   ): void {
     const canvas = ctx.canvas;
     ctx.setTransform(1, 0, 0, 1, 0, 0);
@@ -135,11 +174,13 @@ export class Renderer {
     // before the hook, or a controller that has not handed the scene over) nothing changes.
     const scene = this.scene;
     if (overlayOnly && scene?.project) {
-      this.drawProjectedOverlay(ctx, world, localRobotId, scene);
+      this.drawProjectedOverlay(ctx, world, localRobotId, scene, mod, driverName);
       return;
     }
 
-    // name/team labels above the OTHER robots (the local driver knows theirs)
+    // DRIVER labels above the OTHER robots (the local driver knows who they are). The fill is
+    // the robot's ALLIANCE — since the chassis outline stopped carrying it, this label is where
+    // a name and a side are read together.
     if (world.robots.length > 1) {
       for (const r of world.robots) {
         if (r.id === localRobotId) continue;
@@ -150,14 +191,14 @@ export class Renderer {
         ctx.scale(1, -1);
         ctx.font = '600 4px system-ui, sans-serif';
         ctx.textAlign = 'center';
-        const label = r.spec.teamNumber > 0 ? `${r.spec.teamNumber} ${r.spec.name}` : r.spec.name;
+        const label = labelFor(r, driverName);
         // a robot pinned to the far wall pushes its label off the mat onto the
-        // light backdrop, so the light glyphs carry a dark outline to read on both
+        // light backdrop, so the glyphs carry a dark outline to read on both
         ctx.lineWidth = 0.7;
         ctx.lineJoin = 'round';
-        ctx.strokeStyle = 'rgba(20,22,26,0.8)';
+        ctx.strokeStyle = LABEL_STROKE;
         ctx.strokeText(label, 0, -14);
-        ctx.fillStyle = 'rgba(229,231,235,0.9)';
+        ctx.fillStyle = labelInk(r);
         ctx.fillText(label, 0, -14);
         ctx.restore();
       }
@@ -183,10 +224,40 @@ export class Renderer {
     world: World,
     localRobotId: number,
     scene: GameScene,
+    mod: GameModule,
+    driverName?: (robotId: number) => string | undefined,
   ): void {
     const project = scene.project!;
     const out = this.projOut;
     ctx.setTransform(this.camera.dpr, 0, 0, this.camera.dpr, 0, 0);
+
+    /**
+     * THE GAME'S OWN 3D OVERLAY, FIRST — under the auto paths and the labels, because those two
+     * are about a ROBOT and belong on top of anything that is about the field.
+     *
+     * `drawSceneOverlay`, NOT `drawOverlays`: the 2D slot is written in field inches and this
+     * pass is in screen pixels — see that slot's own note for the bug the distinction exists to
+     * prevent. BIOBUZZ uses it for the FLOWER contents read-out, which a top-down 3D shot cannot
+     * show any other way (the flower's own top plate is between the camera and the column);
+     * DECODE and Chain Reaction fill it with nothing and nothing is drawn.
+     *
+     * `scene.camera` and not `frame.camera`: on an interactive scene the player's own camera
+     * preference wins over the host's pick, so the frame is not what is on screen.
+     */
+    if (mod.drawSceneOverlay) {
+      ctx.save();
+      mod.drawSceneOverlay(ctx, world, {
+        // a scene that does not report one is assumed to be showing a DRIVER shot — the answer
+        // that draws the least, because an overlay placed for the wrong camera is worse than one
+        // that is missing
+        camera: scene.camera ?? 'driver',
+        viewAngle: this.camera.viewAngle,
+        dpr: this.camera.dpr,
+        project: (x, y, z, o) => project.call(scene, x, y, z, o),
+      });
+      ctx.restore();
+      ctx.setTransform(this.camera.dpr, 0, 0, this.camera.dpr, 0, 0);
+    }
 
     // AUTO PATHS first, so a label is never drawn under one.
     for (const r of world.robots) {
@@ -204,13 +275,14 @@ export class Renderer {
       if (r.id === localRobotId) continue;
       project.call(scene, r.pos.x, r.pos.y, (r.z ?? 0) + LABEL_Z, out);
       if (!out.visible) continue;
-      const label = r.spec.teamNumber > 0 ? `${r.spec.teamNumber} ${r.spec.name}` : r.spec.name;
+      const label = labelFor(r, driverName);
       // the same dark outline the 2D pass gives these: a 3D scene can put any brightness behind
-      // a label (a white wall, the dark floor), and the outline is what makes the light glyphs
-      // hold on both — same reasoning as the field/backdrop case the 2D pass was written for.
-      ctx.strokeStyle = 'rgba(20,22,26,0.8)';
+      // a label (a white wall, the dark floor), and the outline is what makes the alliance
+      // glyphs hold on both — same reasoning as the field/backdrop case the 2D pass was
+      // written for.
+      ctx.strokeStyle = LABEL_STROKE;
       ctx.strokeText(label, out.x, out.y - LABEL_SCREEN_LIFT);
-      ctx.fillStyle = 'rgba(229,231,235,0.92)';
+      ctx.fillStyle = labelInk(r);
       ctx.fillText(label, out.x, out.y - LABEL_SCREEN_LIFT);
     }
   }

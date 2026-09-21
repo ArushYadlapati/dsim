@@ -1,5 +1,5 @@
 /**
- * GRAPHICS SETTINGS — the sixteen dials of `docs/biobuzz/plan-3d.md` §4.4, their four preset
+ * GRAPHICS SETTINGS — the seventeen dials of `docs/biobuzz/plan-3d.md` §4.4, their four preset
  * columns, and the per-device store that holds them.
  *
  * ── WHY PER DEVICE, AND NOT IN `GameSettings` ──────────────────────────────────────────────
@@ -11,7 +11,7 @@
  *
  * ── THE SHAPE, AND WHY THERE ARE THREE FIELDS AND NOT ONE ──────────────────────────────────
  * `{ preset, tier, settings }`.
- *   • `settings` is the truth — sixteen values, and the only thing the renderer ever reads.
+ *   • `settings` is the truth — seventeen values, and the only thing the renderer ever reads.
  *   • `preset` is what the PICKER shows: one of the four named columns, `auto`, or `custom`
  *     the moment any single setting differs from the column it claims.
  *   • `tier` is one of the four columns ALWAYS, even under `custom`/`auto`, because the PIXEL
@@ -25,7 +25,7 @@
  * GraphicsSection.tsx` renders it. A headless smoke lane can import it with no DOM at all.
  */
 
-// ─────────────────────────────────────────────────────────────────────── the sixteen values ──
+// ───────────────────────────────────────────────────────────────────── the seventeen values ──
 
 /**
  * §4.4 row 2 — the draw-loop frame cap, in frames per second, with TWO SENTINELS.
@@ -200,6 +200,26 @@ export type Anisotropy = 1 | 4 | 8 | 16;
 export type MeshDetail = 'low' | 'high';
 
 /**
+ * The SEVENTEENTH row, added 2026-09-21 — which geometry the 56 scoring elements are drawn with.
+ *
+ *   sphere — a smooth `THREE.SphereGeometry`, 12×8, ~176 triangles
+ *   cad    — the perforated CAD solid (`public/models/biobuzz/elements.glb`, 26 bores),
+ *            2,286 triangles for a POLLEN and 2,542 for a NECTAR
+ *
+ * ⚠️ **IT IS NOT `meshDetail`, AND THE REASON IS MEDIUM.** `meshDetail` is already `high` on
+ * Medium (it is `low` on Low alone — the RENDER lane pins that), so folding the elements into it
+ * would put 100 perforated balls, and on High/Ultra 100 more shadow casters of them, on the
+ * tier that exists for a machine that could not hold the frame rate at Medium's own settings.
+ * A row of its own is what lets the ladder be sphere / sphere / cad / cad, and it is the same
+ * reason `elementShadows` is not folded into `shadows`.
+ *
+ * Applied LIVE: the asset is fetched once and both geometries are kept, so switching is an
+ * assignment. The sphere is also what stands while the fetch is in flight and what stands
+ * forever if it fails — `scene/renderElements.ts` never blocks on it.
+ */
+export type ElementDetail = 'sphere' | 'cad';
+
+/**
  * §4.4 row 12 — how much of the cosmetic layer runs.
  *   minimal  — no landing reticle, no rolling spin on the elements, no wheel rotation
  *   standard — reticle + rolling spin + wheels
@@ -225,11 +245,48 @@ export type CameraMotion = 'full' | 'reduced';
  */
 export type PerfOverlay = 'off' | 'fps' | 'full';
 
-/** the environment ids `graphics/environments.ts` defines, repeated here as a type so this
- * module stays the one place the settings SHAPE is written. */
-export type EnvironmentId = 'room' | 'school-hall' | 'monochrome-studio';
+/**
+ * The environment ids `graphics/environments.ts` defines, repeated here as a TYPE so this module
+ * stays the one place the settings SHAPE is written — the other file carries the data, and it
+ * imports this, so the dependency only ever points one way.
+ *
+ * Nine of the eleven are PROCEDURAL (2026-09-21): they are painted, they cost no download, and
+ * they are therefore live on every tier including the two where image-based lighting is off.
+ * `school-hall` and `monochrome-studio` are the two fetched HDRIs and the only entries that cost
+ * bytes; `school-hall` is also what the fixed-High replay export renders in, so it is a
+ * CONTRACT, not merely a default (`GFX_PRESETS.high`, and the RENDER lane pins it).
+ */
+export type EnvironmentId =
+  | 'room'
+  | 'arena'
+  | 'gym'
+  | 'workshop'
+  | 'overcast'
+  | 'sunset'
+  | 'night'
+  | 'cyc-light'
+  | 'cyc-dark'
+  | 'school-hall'
+  | 'monochrome-studio';
 
-/** THE SIXTEEN. In §4.4's own table order, so the two can be diffed by eye. */
+/** the allowlist `coerceGraphicsSettings` checks a stored `environment` against. A removed or
+ * misspelled id falls back to the TIER's own column, which is the same field-by-field rule every
+ * other row follows — never a reset of the whole object. */
+export const ENVIRONMENT_IDS: readonly EnvironmentId[] = [
+  'room',
+  'arena',
+  'gym',
+  'workshop',
+  'overcast',
+  'sunset',
+  'night',
+  'cyc-light',
+  'cyc-dark',
+  'school-hall',
+  'monochrome-studio',
+];
+
+/** THE SEVENTEEN (§4.4 has sixteen rows; `elementDetail` is this build's own). In §4.4's own table order, so the two can be diffed by eye. */
 export interface GraphicsSettings {
   /** 50–200 % of CSS pixels, before the tier's pixel budget caps the backbuffer. */
   renderScale: number;
@@ -240,6 +297,7 @@ export interface GraphicsSettings {
   ao: AmbientOcclusion;
   anisotropy: Anisotropy;
   meshDetail: MeshDetail;
+  elementDetail: ElementDetail;
   environment: EnvironmentId;
   /** image-based lighting: `scene.environment` set, or lights only. */
   envLighting: boolean;
@@ -291,6 +349,7 @@ export const GFX_PRESETS: Record<GraphicsTier, GraphicsSettings> = {
     ao: 'off',
     anisotropy: 1,
     meshDetail: 'low',
+    elementDetail: 'sphere',
     environment: 'room',
     envLighting: false,
     reflections: false,
@@ -309,6 +368,7 @@ export const GFX_PRESETS: Record<GraphicsTier, GraphicsSettings> = {
     ao: 'off',
     anisotropy: 4,
     meshDetail: 'high',
+    elementDetail: 'sphere',
     environment: 'room',
     envLighting: false,
     reflections: false,
@@ -327,6 +387,7 @@ export const GFX_PRESETS: Record<GraphicsTier, GraphicsSettings> = {
     ao: 'off',
     anisotropy: 8,
     meshDetail: 'high',
+    elementDetail: 'cad',
     environment: 'school-hall',
     envLighting: true,
     reflections: true,
@@ -345,6 +406,7 @@ export const GFX_PRESETS: Record<GraphicsTier, GraphicsSettings> = {
     ao: 'off',
     anisotropy: 16,
     meshDetail: 'high',
+    elementDetail: 'cad',
     environment: 'school-hall',
     envLighting: true,
     reflections: true,
@@ -414,7 +476,7 @@ function presetState(tier: GraphicsTier, preset: GraphicsPreset = tier): Graphic
  * FIELD-BY-FIELD COERCION, the same discipline `src/settings.ts` applies to `GameSettings`:
  * every value is checked against its own allowlist and a bad one falls back to the tier's,
  * never to a default for the whole object. A stored blob written by an older build (fifteen
- * settings, or an `aa: 'smaa'` from a build that offered it) therefore keeps the fourteen it
+ * settings, or an `aa: 'smaa'` from a build that offered it) therefore keeps the ones it
  * still understands instead of resetting the lot.
  */
 const oneOf = <T>(allowed: readonly T[], v: unknown, fallback: T): T =>
@@ -439,7 +501,8 @@ export function coerceGraphicsSettings(raw: unknown, base: GraphicsSettings): Gr
     ao: oneOf<AmbientOcclusion>(['off', 'ssao'], o.ao, base.ao),
     anisotropy: oneOf<Anisotropy>([1, 4, 8, 16], o.anisotropy, base.anisotropy),
     meshDetail: oneOf<MeshDetail>(['low', 'high'], o.meshDetail, base.meshDetail),
-    environment: oneOf<EnvironmentId>(['room', 'school-hall', 'monochrome-studio'], o.environment, base.environment),
+    elementDetail: oneOf<ElementDetail>(['sphere', 'cad'], o.elementDetail, base.elementDetail),
+    environment: oneOf<EnvironmentId>(ENVIRONMENT_IDS, o.environment, base.environment),
     envLighting: typeof o.envLighting === 'boolean' ? o.envLighting : base.envLighting,
     reflections: typeof o.reflections === 'boolean' ? o.reflections : base.reflections,
     effects: oneOf<EffectsLevel>(['minimal', 'standard', 'full'], o.effects, base.effects),
@@ -484,7 +547,7 @@ export function getGraphics(): GraphicsState {
   return state;
 }
 
-/** just the sixteen — the shape every renderer call site actually wants. */
+/** just the seventeen — the shape every renderer call site actually wants. */
 export function getGraphicsSettings(): GraphicsSettings {
   return getGraphics().settings;
 }

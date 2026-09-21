@@ -75,6 +75,14 @@ const getter = (table, themeName) => (name) => {
 // The canvas, which NEVER themes (src/render/, src/config.ts COLORS).
 const FIELD = '#14161a'; // the dark tiles the robots drive on
 const MAT = '#23262b'; // COLORS.mat, the lightest thing a HUD card can sit on
+const TILE = '#2c3038'; // COLORS.tile, the lightest ground an on-field LABEL crosses
+const BACKDROP = '#f9faf7'; // COLORS.backdrop — the LIGHT letterbox a far-wall robot's label lands on
+// the driver-name labels over remote robots (src/render/renderer.ts, COLORS.*Label)
+const LABEL_RED = '#f87171';
+const LABEL_BLUE = '#60a5fa';
+// their outline, composited over each of the two grounds it has to work on
+const LABEL_STROKE_ON_TILE = composite('#14161a', 0.8, TILE);
+const LABEL_STROKE_ON_BACKDROP = composite('#14161a', 0.8, BACKDROP);
 // the ranked-intro scrim, and the results/net scrim: dark in BOTH themes
 const INTRO_SCRIM = composite('#080a0e', 0.72, FIELD);
 
@@ -255,6 +263,28 @@ const hudPairs = (t) => {
     ['canvas .intro-vs on the scrim', t('--ds-on-field-dim'), INTRO_SCRIM, AA],
     ['canvas .intro-eyebrow on the scrim', t('--ds-on-field-accent'), INTRO_SCRIM, AA],
     ['canvas .mobile-joystick-label', t('--ds-on-field-dim'), FIELD, AA],
+
+    /* THE DRIVER-NAME LABELS over remote robots (`renderer.ts`), in COLORS.redLabel /
+       COLORS.blueLabel. Fixed literals rather than tokens: they are canvas colours, and the
+       field never themes.
+
+       Measured against the LIGHTEST ground a label crosses — COLORS.tile, not the mat — because
+       a label follows its robot and the tiles are what it spends most of a match over. That is
+       also the pair that rules out the raw alliance hues: COLORS.red is 3.52:1 there and
+       COLORS.blue 3.60:1, fine for the fat shapes they were drawn for and under the floor for a
+       name somebody reads mid-match.
+
+       The SECOND ground is the label's own stroke, which sits directly under every glyph. And
+       the stroke is measured against the light BACKDROP, because that is the case the fill
+       cannot cover: a robot pinned to the far wall pushes its label off the mat entirely, and
+       the outline is the only thing holding the text there. */
+    ['canvas driver label (red) on the tiles', LABEL_RED, TILE, AA],
+    ['canvas driver label (blue) on the tiles', LABEL_BLUE, TILE, AA],
+    ['canvas driver label (red) on the mat', LABEL_RED, MAT, AA],
+    ['canvas driver label (blue) on the mat', LABEL_BLUE, MAT, AA],
+    ['canvas driver label (red) against its own stroke', LABEL_RED, LABEL_STROKE_ON_TILE, AA],
+    ['canvas driver label (blue) against its own stroke', LABEL_BLUE, LABEL_STROKE_ON_TILE, AA],
+    ['canvas driver label stroke on the light backdrop', LABEL_STROKE_ON_BACKDROP, BACKDROP, AA],
 
     // the RESULTS SCREEN's own fixed-dark stage (`--ds-stage-bg`) — a broadcast scoreboard,
     // same non-inverting doctrine as the field above but its own token (see shell.css).

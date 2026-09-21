@@ -3,7 +3,7 @@ import * as C from '../config';
 import { footprintExtents } from '../sim/field';
 import { turretWorldPos } from '../sim/robot';
 import { rot } from '../math';
-import { accentFill, clampCosmetics, OUTLINE_HALO } from '../cosmetics';
+import { accentFill, clampCosmetics } from '../cosmetics';
 
 /**
  * ROBOT COSMETICS — 2D SHARED HELPERS (`docs/cosmetics-plan.md` §3.4). Used by all three 2D
@@ -16,29 +16,16 @@ import { accentFill, clampCosmetics, OUTLINE_HALO } from '../cosmetics';
  * needed, and no renderer here has to wait on the type before drawing the fields it names.
  */
 
-/** how wide the dark ring between a vivid fill and the alliance outline is drawn (in). */
-const OUTLINE_HALO_WIDTH = 0.6;
-
 /**
- * THE OUTLINE HALO — a dark ring just inboard of where the alliance stroke sits, so a vivid
- * cosmetic fill never drops the red/blue outline's contrast (a red fill under a red outline
- * measures ~1.4:1; the halo keeps it readable regardless of the chassis colour). `insetFromEdge`
- * is the game's own alliance stroke width (`C.CHASSIS_OUTLINE`), so the band starts exactly where
- * that stroke's inner edge lands rather than overlapping or leaving a gap.
+ * THE ROBOT'S EDGE LINE — NEUTRAL, NOT THE ALLIANCE'S (owner, 2026-09-21: "Remove the red/blue
+ * alliance outline. For multiplayer, display people's username in the color of their alliance").
+ * Every STROKE on a sprite (the chassis silhouette, the wheels, the intake members) takes this;
+ * the alliance now lives on the name label over the robot (`render/renderer.ts`), the sign
+ * placard and the heading chevron, which are FILLS. A machined-aluminium grey: 5.9:1 on the mat,
+ * so a charcoal chassis still has an edge, and it needs no dark halo under it the way a red line
+ * on a red fill did (the halo is gone with the outline it existed for).
  */
-export function drawOutlineHalo(
-  ctx: CanvasRenderingContext2D,
-  length: number,
-  width: number,
-  corner: number,
-  insetFromEdge: number,
-): void {
-  const hl = length / 2 - insetFromEdge;
-  const hw = width / 2 - insetFromEdge;
-  if (hl <= 0 || hw <= 0) return;
-  ctx.strokeStyle = OUTLINE_HALO;
-  strokeInside(ctx, () => roundRect(ctx, -hl, -hw, hl * 2, hw * 2, Math.max(0, corner - insetFromEdge)), OUTLINE_HALO_WIDTH);
-}
+export const ROBOT_TRIM = '#9aa3ad';
 
 /** blend `accent` into a structural `base` colour by `amt` (0..1) and an optional alpha — used to
  * tint an aluminium/rubber part (a tread bar, a roller stripe) with the cosmetic accent without
@@ -160,9 +147,9 @@ export function drawRobot(
 ): void {
   const hl = r.spec.length / 2;
   const hw = r.spec.width / 2;
-  const color = outline ?? (r.alliance === 'blue' ? C.COLORS.blue : C.COLORS.red);
-  // The alliance lives in `color` (the OUTLINE). `fill` is the supporter cosmetic
-  // and can never change which alliance a robot reads as.
+  // the alliance is FILLS only now (the chevron); every stroke is the neutral `trim`.
+  const color = r.alliance === 'blue' ? C.COLORS.blue : C.COLORS.red;
+  const trim = outline ?? ROBOT_TRIM;
   const fill = C.chassisFill(r.spec.chassisColor);
   // COSMETICS: `accent`/`decal`/`plate` land on `RobotSpec` on a parallel lane; `clampCosmetics`
   // is shape-safe against a spec that does not declare them yet.
@@ -197,14 +184,14 @@ export function drawRobot(
 
   // chassis
   ctx.fillStyle = fill;
-  ctx.strokeStyle = color;
+  ctx.strokeStyle = trim;
   const body = () => roundRect(ctx, -hl, -hw, r.spec.length, r.spec.width, C.CHASSIS_CORNER);
   body();
   ctx.fill();
 
   drawDecal(ctx, hl, hw, cosm.decal, accent);
 
-  drawWheels(ctx, r, color, accent);
+  drawWheels(ctx, r, trim, accent);
 
   // intake at the front (RobotPreview.tsx draws the same). FUNNEL presets
   // (sloped/triangle) are two RIGHT TRIANGLES — one per side — whose hypotenuses
@@ -239,7 +226,7 @@ export function drawRobot(
         const y0 = sg === 1 ? rw : -hw;
         ctx.fillStyle = intakeOn ? '#14532d' : '#334155';
         ctx.fillRect(axis - C.INTAKE_OPENER_THICK / 2, y0, C.INTAKE_OPENER_THICK, hw - rw);
-        ctx.strokeStyle = color;
+        ctx.strokeStyle = trim;
         ctx.lineWidth = 0.8;
         ctx.strokeRect(axis - C.INTAKE_OPENER_THICK / 2, y0, C.INTAKE_OPENER_THICK, hw - rw);
       }
@@ -277,7 +264,7 @@ export function drawRobot(
     // two right triangles (right angle at the chassis front-outer corner; the
     // hypotenuse from the front corner in to the throat is the slope)
     ctx.fillStyle = fill;
-    ctx.strokeStyle = color;
+    ctx.strokeStyle = trim;
     ctx.lineWidth = 1;
     // wedge body per side: outer edge forward to the axle, then a LONG slope from the
     // mouth edge back in to the throat. Running the slope to the mouth edge (rw) rather
@@ -322,8 +309,7 @@ export function drawRobot(
    * poking through the outline: "the gate opener outline seems to be protruding out too".
    * Drawn last it is the boundary of the whole object, which is what an outline is.
    */
-  drawOutlineHalo(ctx, r.spec.length, r.spec.width, C.CHASSIS_CORNER, C.CHASSIS_OUTLINE);
-  ctx.strokeStyle = color;
+  ctx.strokeStyle = trim;
   strokeInside(ctx, body, C.CHASSIS_OUTLINE);
 
   ctx.restore(); // ...end of the footprint clip

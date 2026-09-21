@@ -1314,7 +1314,7 @@
   min-width: 0;
   display: flex;
   flex-direction: column;
-  gap: 22px;
+  gap: var(--ds-s-5);
 }
 
 .ds-tabs {
@@ -1501,6 +1501,7 @@ button.ds-chip {
 .ds-tab:focus-visible,
 .ds-cta:focus-visible,
 .ds-opt:focus-visible,
+.ds-fold > summary:focus-visible,
 button.ds-key:focus-visible {
   outline: 2px solid var(--ds-accent);
   outline-offset: 2px;
@@ -3773,8 +3774,162 @@ tr.lb-detail td {
 .ds-robot {
   display: flex;
   flex-direction: column;
-  gap: 22px;
+  gap: var(--ds-s-5);
   margin-top: 18px;
+}
+.ds-robot-main {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ds-s-5);
+  min-width: 0;
+}
+
+/* ── THE BUILDER'S PINNED RAIL ─────────────────────────────────────────────────────────
+   The robot IS the feedback for every control on this screen, and the screen is 2,100px
+   of scroll, so it left the viewport after the first slider. A COLUMN rather than the
+   sticky strip that shipped in 2026 and was reverted: that one held 26% of a 720px
+   viewport even after shrinking (see `Menu.tsx`), because the stat tiles set the height,
+   not the sprite. A rail costs nothing vertically, so the trade the revert was about
+   does not arise.
+
+   The breakpoint is on the VIEWPORT but sized from the BODY: `.ds-main` caps at 1080 with
+   22px of padding and the sub-nav takes 190 + 22, so the section is 824px wide at any
+   viewport past ~1124px and never wider. 300 for the rail leaves ~500 for the build,
+   which still fits three `.ds-field` columns and a 3x3 mount map.
+
+   The rail is FIRST in the DOM so the one-column layout below this width puts the robot at
+   the top, where it already was — the grid areas put it back on the right. */
+.ds-robot-rail,
+.ds-robot-wide {
+  min-width: 0;
+}
+
+/* CONFIGURE IS A WIDER PAGE THAN THE READING PAGES. `.ds-main` caps at 1080 because that is a
+   comfortable measure for prose, and it leaves Configure's section body at 824 no matter how
+   big the screen is — 500 once a rail takes its 300, which is not enough for a builder. 1280
+   here is what buys the rail back without making the app feel like a different app: the section
+   body reaches 1024 and the build column 700.
+
+   SCOPED TO THE WHOLE DESTINATION, not to the robot section. A width that applied to one
+   sub-nav tab would make the page jump every time you switched tabs inside it. */
+.ds-main:has(.ds-subnav-layout) {
+  max-width: 1280px;
+}
+
+/* THE BREAKPOINT IS WHERE THE BUILD COLUMN IS STILL A BUILD COLUMN. Measured, not guessed:
+   the section body is `viewport − 562` (the nav rail, the app's own gutters, the sub-nav and
+   its gap), so a 260px rail leaves `viewport − 846`. At 1320 that is 474, which still holds a
+   three-column `.ds-fields` row and a 3x3 mount map; below it there is no rail and the card
+   goes back to the top of the page, exactly as it was. */
+@media (min-width: 1320px) {
+  .ds-robot {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 260px;
+    gap: var(--ds-s-5);
+  }
+  /* `Start from` spans BOTH columns: preset cards are the one thing on this screen that
+     genuinely wants the width, and squeezing five of them into the build column put each on
+     its own row. */
+  .ds-robot-wide {
+    grid-area: 1 / 1 / 2 / 3;
+  }
+  .ds-robot-main {
+    grid-area: 2 / 1;
+  }
+  /* the rail ITEM stretches to the row (which the build column sets) and the CARD inside it is
+     what sticks. A sticky element can only travel inside its containing block, so a rail sized
+     to its own content — which `align-items: start` would do — would pin to nothing. */
+  .ds-robot-rail {
+    grid-area: 2 / 2;
+  }
+  .ds-robot-rail > .ds-hero {
+    position: sticky;
+    /* clears the sticky app bar, the same contract `.ds-subnav` keeps */
+    top: 84px;
+    /* a tall build's stat grid must not run off a short viewport with no way back to it */
+    max-height: calc(100dvh - 104px);
+    overflow: auto;
+    /* one column in a 260px rail: the preview stacks over the stats instead of sitting beside
+       them. Nothing else about the card changes. */
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+/* ── DISCLOSURE ────────────────────────────────────────────────────────────────────────
+   Configure's rare controls FOLD rather than being routed somewhere else: folded they
+   cost one row, open they are exactly where they were, so nothing is hidden from anyone
+   who knows it exists. `.fr-fold` is the same idea scoped to the friends panel; this is
+   the one every Configure section shares.
+
+   CLOSED, the summary is shaped like the panels it sits among — it is a row in a list of
+   panels, so it should read as one. OPEN, the body is plain: whatever is inside brings its
+   own cards, and a card inside a card inside a card is the thing this is meant to avoid.
+
+   The marker ROTATES IN PLACE and the open rule changes only a border COLOUR, never a
+   width — a summary that grew by a pixel on open would move every row under it
+   (`docs/ui-standard.md` §1.4). */
+.ds-fold > summary {
+  list-style: none;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: var(--ds-s-2);
+  padding: var(--ds-s-3) var(--ds-s-4);
+  border: 1px solid var(--ds-line);
+  border-radius: var(--ds-round);
+  background: var(--ds-panel);
+  box-shadow: var(--ds-block-sm);
+  font-family: var(--ds-font-mono);
+  font-size: var(--ds-t-sm);
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--ds-mut);
+  transition: color 0.14s, border-color 0.14s;
+}
+.ds-fold > summary::-webkit-details-marker {
+  display: none;
+}
+.ds-fold > summary::before {
+  content: '▸';
+  display: inline-block;
+  width: 12px;
+  transition: transform 0.12s ease;
+}
+.ds-fold[open] > summary::before {
+  transform: rotate(90deg);
+}
+.ds-fold > summary:hover {
+  color: var(--ds-ink);
+  border-color: var(--ds-line-strong);
+}
+.ds-fold-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ds-s-3);
+  padding-top: var(--ds-s-4);
+}
+/* a body that is itself a stack of `.ds-panel`s (Graphics ▸ Advanced): those already own
+   their sibling gap, so this must not add a second one. */
+.ds-fold-body.panels {
+  display: block;
+}
+/* INSIDE a panel body (Audio ▸ individual sounds), where a second card would be nesting.
+   Same summary, no box. */
+.ds-fold.inset > summary {
+  border: 0;
+  background: none;
+  box-shadow: none;
+  padding-inline: 0;
+}
+.ds-fold.inset > .ds-fold-body {
+  padding-top: var(--ds-s-3);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ds-fold > summary,
+  .ds-fold > summary::before {
+    transition: none;
+  }
 }
 
 /* ---- section --------------------------------------------------------- */
@@ -4300,12 +4455,11 @@ input[type='range']:focus-visible {
 }
 
 /* ---- robot hero ------------------------------------------------------ */
-/* THE HERO PINS. Every control below it changes the robot, and the robot + its stats ARE the
-   feedback for that change — having to scroll back to the top to see what a slider did made
-   the builder feel like guesswork. Sticky to the scroll container (`.ds-app`).
-   It also SHRINKS once you scroll past it (`.stuck`, driven by a sentinel + IntersectionObserver
-   in Menu.tsx): a 230px card pinned to the top of an 800px viewport costs more than it returns,
-   while a ~110px strip keeps the preview and the numbers without eating the page. */
+/* Every control in the builder changes the robot, and the robot + its stats ARE the feedback
+   for that change, so the card has to stay on screen. It does NOT do that by pinning itself
+   here: a sticky strip across the top was tried and reverted (it held 26% of a 720px viewport
+   even shrunk, because the stat tiles set the height). `.ds-robot-rail` is where the pinning
+   lives now — a 300px column past 1124px, and the card back at the top below that. */
 .ds-hero {
   display: grid;
   grid-template-columns: 220px 1fr;
@@ -4782,7 +4936,19 @@ a.ds-cta {
 .ds-binds {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
-  gap: 14px;
+  gap: var(--ds-s-4);
+  align-items: start;
+}
+/* THE GAMEPAD'S TWO BLOCKS ARE ONE COLUMN. `.ds-binds` is an auto-fit grid, so splitting the
+   pad into "sticks" and "buttons" gave it three children and they wrapped 2 + 1 — the short
+   sticks card left ~600px of dead space beside the keyboard and the buttons started a row of
+   their own underneath. Nesting them keeps the grid at two children, which is what the
+   auto-fit track count was written for. */
+.ds-bind-col {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ds-s-4);
+  min-width: 0;
 }
 .ds-bind-block {
   border: 1px solid var(--ds-line);
@@ -6481,4 +6647,157 @@ button.ds-key:active {
   .an-chip {
     transition: none;
   }
+}
+
+/* ====================================================================================
+   CONTROLLER NAVIGATION — `src/ui/PadNavLayer.tsx`, core in `src/input/padNav.ts`.
+   Nothing here transitions or animates, which is why the block may sit after the
+   reduced-motion cap above: there is no motion for that cap to own.
+   ==================================================================================== */
+
+/* THE PAD FOCUS RING. A pad move is a synthetic `.focus()`, which the browser treats as
+   PROGRAMMATIC — Chromium grants `:focus-visible` after keyboard-ish interaction but not
+   reliably from a gamepad, so the app's own `:focus-visible` rings cannot be leaned on here.
+   The layer sets `data-padnav="on"` while a pad is the ACTIVE input (any pointer move clears
+   it, so a mouse user never sees this), and this rings plain `:focus` underneath it.
+   It is an OUTLINE, so it moves no layout — §1.4, and `shiftaudit` enforces it. */
+[data-padnav='on'] :focus {
+  outline: 2px solid var(--ds-accent);
+  outline-offset: 2px;
+}
+/* Category 3 (CLAUDE.md THEMING): the field is hardcoded dark, so a ring drawn over the
+   canvas takes the on-field accent rather than the themed one, which does not invert. */
+[data-padnav='on'] .hud :focus,
+[data-padnav='on'] .game-root :focus {
+  outline-color: var(--ds-on-field-accent);
+}
+
+/* THE LEGEND. Above the modal layer (100) because pad navigation works INSIDE a modal and
+   the legend has to stay readable there. It is a note, never a control: `pointer-events:
+   none` so it cannot eat a click meant for the page under it. `--ds-hud-line` because it is
+   a floating surface — `--ds-line` is tuned against the page, not against a card over it. */
+.ds-padhint {
+  position: fixed;
+  left: 50%;
+  bottom: var(--ds-s-4);
+  transform: translateX(-50%);
+  z-index: 110;
+  display: flex;
+  align-items: center;
+  gap: var(--ds-s-2);
+  padding: var(--ds-s-2) var(--ds-s-3);
+  background: var(--ds-panel);
+  border: 1px solid var(--ds-hud-line);
+  border-radius: var(--ds-round-full);
+  font-family: var(--ds-font-ui);
+  font-size: var(--ds-t-sm);
+  font-weight: 600;
+  line-height: 1;
+  color: var(--ds-mut);
+  white-space: nowrap;
+  pointer-events: none;
+  box-shadow: var(--ds-edge-soft);
+}
+
+/* THE ON-SCREEN KEYBOARD, shown only when a text field was activated BY PAD. Ordinary
+   buttons, so the same layer navigates it and no second input model exists. */
+.ds-osk {
+  position: fixed;
+  left: 50%;
+  bottom: var(--ds-s-4);
+  transform: translateX(-50%);
+  z-index: 120;
+  width: min(560px, calc(100vw - var(--ds-s-6)));
+  display: flex;
+  flex-direction: column;
+  gap: var(--ds-s-2);
+  padding: var(--ds-s-3);
+  background: var(--ds-panel);
+  border: 1px solid var(--ds-hud-line);
+  border-radius: var(--ds-round-md);
+  box-shadow: 6px 6px 0 var(--ds-line-soft);
+}
+.ds-osk-val {
+  padding: var(--ds-s-2);
+  background: var(--ds-tile);
+  border: 1px solid var(--ds-line-strong);
+  border-radius: var(--ds-round-sm);
+  font-family: var(--ds-font-mono);
+  font-size: var(--ds-t-md);
+  line-height: 1;
+  color: var(--ds-ink);
+  white-space: pre;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ds-osk-grid {
+  display: grid;
+  grid-template-columns: repeat(10, 1fr);
+  gap: var(--ds-s-1);
+}
+.ds-osk-row {
+  display: flex;
+  gap: var(--ds-s-1);
+}
+/* the keycap language of `.ds-key`, on the recessed tile fill because these sit on a card */
+.ds-osk-key {
+  min-height: 32px;
+  padding: var(--ds-s-1);
+  background: var(--ds-tile);
+  border: 1px solid var(--ds-line);
+  border-radius: var(--ds-round-sm);
+  font-family: var(--ds-font-mono);
+  font-size: var(--ds-t-md);
+  font-weight: 700;
+  line-height: 1;
+  color: var(--ds-ink);
+  cursor: pointer;
+}
+.ds-osk-key.wide {
+  flex: 1;
+}
+.ds-osk-key:hover {
+  border-color: var(--ds-accent);
+}
+.ds-osk-key:active {
+  transform: translateY(1px);
+}
+.ds-osk-key:focus-visible {
+  outline: 2px solid var(--ds-accent);
+  outline-offset: 2px;
+}
+.ds-osk-key:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+/* CAPS is a toggle, so it carries the selected fill the rest of the app uses for one */
+.ds-osk-key.on {
+  background: var(--ds-accent-soft);
+  border-color: var(--ds-accent);
+  color: var(--ds-accent-soft-ink);
+}
+.ds-osk-key.ghost {
+  background: var(--ds-panel);
+  color: var(--ds-mut);
+}
+/* ⚠️ `.ds-key` is sized for a bind ROW, where the cap has to hold SHIFT — `min-width: 34px`
+   and roomy padding. In a legend it is a chip around ONE glyph, and at the row's size the caps
+   are wider than the words they annotate, which reads as three empty boxes. So the legend and
+   the keyboard's foot size it down rather than declaring a second keycap: `--ds-s-0` (2px) is
+   allowed exactly here — §2 permits it inside a chip or badge and nowhere else. */
+.ds-padhint .ds-key.fixed,
+.ds-osk-foot .ds-key.fixed {
+  min-width: 0;
+  padding: var(--ds-s-0) var(--ds-s-1);
+  font-size: var(--ds-t-xs);
+}
+.ds-osk-foot {
+  display: flex;
+  align-items: center;
+  gap: var(--ds-s-2);
+  font-family: var(--ds-font-ui);
+  font-size: var(--ds-t-sm);
+  font-weight: 600;
+  line-height: 1;
+  color: var(--ds-mut);
 }

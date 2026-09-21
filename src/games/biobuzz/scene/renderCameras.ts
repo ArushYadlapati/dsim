@@ -3,7 +3,20 @@ import type { SceneCamera, SceneFrame } from '../../module';
 import type { Alliance, RobotState, World } from '../../../types';
 import { wrapAngle } from '../../../math';
 import { BB3_WALL_H, BB_HALF_X, BB_HALF_Y, BB_HIVE_X, BB_VIEW_MARGIN, bbRoleLabel } from '../config';
-import { defaultFreeCam, dollyFreeCam, freeCamPose, orbitFreeCam, panFreeCam, type FreeCamState } from '../graphics/freeCam';
+import {
+  defaultFreeCam,
+  dollyFreeCam,
+  dollyFreeCamToward,
+  freeCamOrbitDelta,
+  freeCamPanGain,
+  freeCamPose,
+  freeCamWheelSign,
+  FREE_CAM_NAV_DEFAULT,
+  orbitFreeCam,
+  panFreeCam,
+  type FreeCamNav,
+  type FreeCamState,
+} from '../graphics/freeCam';
 import { DRIVER_EYE_VFOV_DEG, driverEyeAim, driverEyePoint, type DriverRole } from '../graphics/driverEye';
 
 /**
@@ -512,13 +525,20 @@ export interface BbCameras {
   orbitDrag(dx: number, dy: number): void;
   /** orbit: a wheel notch (`deltaY`), zooming the ring in/out between its radius bounds. */
   orbitZoom(deltaY: number): void;
-  /** free cam: a left-drag of (`dx`,`dy`) CSS pixels — orbits about the look-at point. */
+  /** free cam: the per-device mouse layout, inversions, sensitivities and wheel direction
+   * (`graphics/freeCam.ts`). Pushed in by `renderScene.ts` at construction and on every change;
+   * the three gestures below read it rather than taking pre-adjusted numbers, so the direction
+   * senses live in ONE pure, checkable place. */
+  setFreeNav(nav: FreeCamNav): void;
+  /** free cam: an orbit drag of (`dx`,`dy`) CSS pixels. */
   freeOrbit(dx: number, dy: number): void;
-  /** free cam: a right-drag (or shift+left-drag) of (`dx`,`dy`) CSS pixels — pans the look-at
-   * point across the floor plane. */
+  /** free cam: a pan drag of (`dx`,`dy`) CSS pixels — moves the look-at point across the floor
+   * plane, the ground following the cursor. */
   freePan(dx: number, dy: number): void;
-  /** free cam: a wheel notch (`deltaY`) — dollies toward/away from the look-at point. */
-  freeDolly(deltaY: number): void;
+  /** free cam: a wheel notch (`deltaY`, or a drag-zoom's pixel equivalent) — dollies toward or
+   * away from the look-at point. `ndc` is the cursor in clip space, used only when the device
+   * has "zoom to cursor" on; omit it and the dolly goes to the look-at point as it always did. */
+  freeDolly(deltaY: number, ndc?: { x: number; y: number }): void;
   /** free cam: reset to the default framing for `viewAngle` (double-click, the HUD's "Reset
    * view" chip). Sets the GOAL only — the eased pose (`update`) eases into it over a few
    * frames, same as every other free-cam move. */
@@ -560,6 +580,9 @@ export function createCameras(): BbCameras {
   let freeGoal: FreeCamState = defaultFreeCam(0);
   let freeCurrent: FreeCamState = freeGoal;
   let freeHave = false;
+  /** the device's own free-cam layout. Defaulted rather than read from storage here: this file
+   * is constructed by headless harnesses too, and `renderScene.ts` pushes the real one in. */
+  let freeNav: FreeCamNav = FREE_CAM_NAV_DEFAULT;
   /** wall-clock delta between updates, for the smoothing and the turntable. A RENDER file, so
    * `performance.now()` is allowed here (`scripts/smoke.ts`'s clock guard exempts `render*`/
    * `draw*` by name) — and required: `SceneFrame` carries no dt, and a camera that eased by a
@@ -792,7 +815,10 @@ export function createCameras(): BbCameras {
     // the chase camera uses above, never overshooting. `yaw` wraps the SHORT way round
     // (`wrapAngle`, `src/math.ts`) so orbiting past ±π eases back rather than spinning the long
     // way to a goal that only looks different because it was never wrapped.
-    const k = blend(dt, reducedMotion() ? REDUCED_HALFLIFE : FREE_CAM_HALFLIFE);
+    // SMOOTHING OFF is a snap, not a shorter half-life: the player asked for the camera to be
+    // exactly where they put it, and "nearly there, very fast" is still a frame of lag on every
+    // mouse-up. Reduced motion keeps its own near-rigid half-life, which is already less motion.
+    const k = !freeNav.smoothing ? 1 : blend(dt, reducedMotion() ? REDUCED_HALFLIFE : FREE_CAM_HALFLIFE);
     freeCurrent =
       k <= 0
         ? freeCurrent
@@ -813,6 +839,37 @@ export function createCameras(): BbCameras {
     scratchTarget.set(pose.target[0], pose.target[1], pose.target[2]);
     free.lookAt(scratchTarget);
     free.updateProjectionMatrix();
+  }
+
+  /**
+   * THE INVERSE OF `GameScene.project`, for the free camera alone: a cursor in clip space → the
+   * FLOOR point (z = 0) it is over, or `null` when there is not one.
+   *
+   * It unprojects through the camera that was actually RENDERED (`free`, i.e. the eased
+   * `freeCurrent`), not through `freeGoal`, because the point under the cursor is a fact about
+   * the picture on screen. Clip space is the right input: `setViewOffset` bakes the HUD safe
+   * rect into `projectionMatrix`, so NDC from the canvas rect stays correct with chrome up.
+   *
+   * `null` for the three cases a floor point does not exist or is not useful: a ray parallel to
+   * the floor, a ray pointing AWAY from it (the sky above the horizon), and a hit so far outside
+   * the field that zooming toward it would be a pan to nowhere — the caller then does an
+   * ordinary dolly toward the look-at point.
+   */
+  const floorScratch = new THREE.Vector3();
+  const FLOOR_HIT_LIMIT = 4 * (BB_HALF_X + BB_VIEW_MARGIN);
+  function floorUnder(ndcX: number, ndcY: number): [number, number] | null {
+    if (!Number.isFinite(ndcX) || !Number.isFinite(ndcY)) return null;
+    floorScratch.set(ndcX, ndcY, 0.5).unproject(free);
+    const dx = floorScratch.x - free.position.x;
+    const dy = floorScratch.y - free.position.y;
+    const dz = floorScratch.z - free.position.z;
+    if (!(Math.abs(dz) > 1e-9)) return null;
+    const t = -free.position.z / dz;
+    if (!(t > 0) || !Number.isFinite(t)) return null;
+    const x = free.position.x + dx * t;
+    const y = free.position.y + dy * t;
+    if (!Number.isFinite(x) || !Number.isFinite(y) || Math.abs(x) > FLOOR_HIT_LIMIT || Math.abs(y) > FLOOR_HIT_LIMIT) return null;
+    return [x, y];
   }
 
   const cams: BbCameras = {
@@ -862,17 +919,26 @@ export function createCameras(): BbCameras {
       const factor = Math.exp(deltaY * 0.0012);
       orbitRadius = Math.max(ORBIT_RADIUS_MIN, Math.min(ORBIT_RADIUS_MAX, orbitRadius * factor));
     },
+    setFreeNav(nav: FreeCamNav): void {
+      freeNav = nav;
+    },
     freeOrbit(dx: number, dy: number): void {
-      freeGoal = orbitFreeCam(freeGoal, dx * ORBIT_DRAG_YAW, dy * ORBIT_DRAG_PITCH);
+      // ⚠️ THE SENSE IS `freeCamOrbitDelta`'S, NOT THIS FILE'S. It negates `dx` so the field
+      // turns with the cursor — the same direction the spectator `orbitDrag` above has always
+      // gone, and the one free cam shipped backwards (owner, 2026-09-21).
+      const d = freeCamOrbitDelta(freeNav, dx, dy, ORBIT_DRAG_YAW, ORBIT_DRAG_PITCH);
+      freeGoal = orbitFreeCam(freeGoal, d.dYaw, d.dPitch);
     },
     freePan(dx: number, dy: number): void {
-      freeGoal = panFreeCam(freeGoal, dx, dy);
+      freeGoal = panFreeCam(freeGoal, dx, dy, freeCamPanGain(freeNav));
     },
-    freeDolly(deltaY: number): void {
+    freeDolly(deltaY: number, ndc?: { x: number; y: number }): void {
       // the engine-specific exponential lives HERE (a `render*`-named file), never in
-      // `graphics/freeCam.ts` — see that file's own header. `dollyFreeCam` only multiplies and
-      // clamps the `factor` this computes, same shape as `orbitZoom` above.
-      freeGoal = dollyFreeCam(freeGoal, Math.exp(deltaY * FREE_DOLLY_RATE));
+      // `graphics/freeCam.ts` — see that file's own header. The two pure modules only multiply
+      // and clamp the `factor` this computes, same shape as `orbitZoom` above.
+      const factor = Math.exp(deltaY * freeCamWheelSign(freeNav) * freeNav.zoomSpeed * FREE_DOLLY_RATE);
+      const at = freeNav.zoomToCursor && ndc ? floorUnder(ndc.x, ndc.y) : null;
+      freeGoal = at ? dollyFreeCamToward(freeGoal, factor, at[0], at[1]) : dollyFreeCam(freeGoal, factor);
     },
     freeReset(viewAngle: number): void {
       freeGoal = defaultFreeCam(viewAngle);

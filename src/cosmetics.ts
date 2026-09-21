@@ -13,18 +13,18 @@
  *   chassisColor  the chassis FILL (existing field)
  *   accent        the DRIVE wheels / intake rollers fill; `'match'` = the chassis colour. Never
  *                 the shooter: a flywheel is black in both games (owner, 2026-09-21)
- *   decal         a vector shape drawn over the fill, under the alliance outline
+ *   decal         a vector shape drawn over the fill, under the edge line
  *   plate         a frame drawn AROUND the sign placard — the placard's own fill stays alliance
  * The KEY goes over the wire and into replays, never a hex, a path or an image: the wire never
  * parses a colour, nothing can name the artifact green/purple, and every hex here can be retuned
  * without touching a saved robot.
  *
- * ── THE ALLIANCE IS THE OUTLINE, AND THE OUTLINE GETS A HALO ────────────────────────────────
- * The old seven fills were all near-black so the red/blue outline stayed readable against them.
- * A vivid fill cannot promise that (a red fill under a red outline is 1.4:1), so the SPRITES now
- * draw a dark inner ring (`OUTLINE_HALO`) between the fill and the alliance stroke, and the 3D
- * silhouette line sits on the same dark trim. That is what lets the palette be bright without a
- * red robot ever reading as blue.
+ * ── THE ALLIANCE IS NOT ON THE CHASSIS EDGE ANY MORE ───────────────────────────────────────
+ * It used to be a red/blue OUTLINE, and a vivid fill needed a dark halo under it to keep that line
+ * readable. The owner removed the outline (2026-09-21): every sprite stroke is the neutral
+ * `ROBOT_TRIM` (`render/drawRobot.ts`), and the alliance is the NAME LABEL over the robot, the
+ * sign placard and the heading chevron. `OUTLINE_HALO` survives only as the dark swatch in the
+ * builder's placard and accent pickers (the 3D edge line went the same day). So a fill still cannot change which alliance a robot reads as.
  *
  * ── TIERS ───────────────────────────────────────────────────────────────────────────────────
  * `free` is always allowed. `supporter` unlocks on the account's `supporter_until`
@@ -37,7 +37,7 @@
 
 export type CosmeticTier = 'free' | 'supporter' | 'earned';
 
-/** CHASSIS FILLS. Vivid on purpose; the outline halo carries the alliance. `default` is the
+/** CHASSIS FILLS. Vivid on purpose; the alliance is never on the fill. `default` is the
  * charcoal every robot has always had. Nothing here is the artifact green (#22c55e) or purple
  * (#a855f7), and nothing is the exact alliance red (#ef4444) or blue (#3b82f6). */
 export const CHASSIS_COLORS = {
@@ -70,7 +70,7 @@ export function chassisFill(key: string | undefined): string {
   return (key && CHASSIS_COLORS[key as ChassisColor]) || CHASSIS_COLORS.default;
 }
 
-/** the dark ring between a fill and the alliance outline (2D) / under the silhouette line (3D). */
+/** the fixed dark swatch the builder's placard and accent pickers draw against. */
 export const OUTLINE_HALO = '#0b0d10';
 
 /** ACCENT — wheels and rollers. `match` follows the chassis. */

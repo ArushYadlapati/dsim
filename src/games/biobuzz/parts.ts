@@ -225,11 +225,21 @@ export function drawWheels(ctx: CanvasRenderingContext2D, r: RobotState, color: 
       ctx.restore();
     });
   } else if (r.spec.drivetrain === 'xdrive') {
-    // omni wheels canted 45°, opposite corners on the same diagonal → an X. Long +
-    // lighter so the X clearly reads; the diagonals nearly meet at the center.
-    const reach = hyp(wx, wy);
+    // Omni wheels canted 45°, each one lying ACROSS its corner rather than along it, so the four
+    // of them read as the four sides of a DIAMOND.
+    //
+    // ⚠️ **THIS COPY NEVER GOT THE FIX THE OTHER TWO DID** (found 2026-09-21, doing the wheels).
+    // It drew them RADIALLY — `+45°` on the main diagonal is the direction that POINTS AT THE
+    // CENTRE — and stretched them to `reach * 1.15` so the resulting X would read. DECODE's
+    // `src/render/drawRobot.ts` and Chain Reaction's `src/games/chain/parts.ts` both carry the
+    // correction and the reason: a wheel whose force line passes through the centre of mass has
+    // no moment arm about it, so four radial omnis could translate and could never yaw. That is
+    // not the drive this sim models, and BIOBUZZ — the one game with a 3D view to disagree with —
+    // was the one still drawing it. The 3D scene cants by `x * sy >= 0 ? −45° : +45°`; this is now
+    // the same expression, and the same 4.4 × 2.2 as every other wheel here (an omni is not a
+    // longer wheel; the stretch existed only to prop up the old X).
     for (const [px, py] of corners)
-      drawWheel(px, py, px * py >= 0 ? Math.PI / 4 : -Math.PI / 4, 'omni', Math.min(reach * 1.15, 7.5), 2.0, accent);
+      drawWheel(px, py, px * py >= 0 ? -Math.PI / 4 : Math.PI / 4, 'omni', 4.4, 2.2, accent);
   } else if (r.spec.drivetrain === 'butterfly') {
     // BUTTERFLY: draw the set that is actually DOWN, and show the other one STOWED. The
     // deployed wheels are full-size and lit; the stowed set is a thin dim bar tucked just

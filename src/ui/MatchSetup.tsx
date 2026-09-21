@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import type {
   GameSettings,
   AutoPathData,
@@ -15,7 +15,7 @@ import { useAds } from '../ads/AdsProvider';
 import { selectStart, switchCategory, saveStart, deleteSavedStart } from './startPositions';
 import { ChainStartEditor } from './ChainStartEditor';
 import { moduleFor } from '../games';
-import { getViewPref, setViewPref, subscribeViewPref } from '../games/biobuzz/graphics/store';
+import { OptRow, ToggleRow } from './OptRow';
 
 /**
  * A BOT TIER, IN SENTENCE CASE. The seam's tiers are opaque lower-case strings a game owns, and
@@ -46,16 +46,6 @@ export function MatchSetup({
   const set = (patch: Partial<GameSettings>) => onChange({ ...settings, ...patch });
   /** the outcome of the last .pp import, shown in the auto-path section */
   const [notice, setNotice] = useState<{ bad: boolean; text: string } | null>(null);
-  /**
-   * BIOBUZZ 3D SEAM (Day 1, `docs/biobuzz/plan-3d.md` §2.2/§6): the VIEW is per DEVICE, not
-   * a synced `GameSettings` field (`getViewPref`'s own header — a GPU is a property of the
-   * machine, not the account), so it needs its own subscription rather than living in
-   * `settings`. Only read when the active game actually has a `scene` (below); the
-   * subscription is cheap to keep either way.
-   */
-  const [viewPref, setViewPrefState] = useState(() => getViewPref());
-  useEffect(() => subscribeViewPref(setViewPrefState), []);
-
   function getErrorMessage(error: unknown): string {
     return error instanceof Error ? error.message : String(error);
   }
@@ -187,9 +177,6 @@ export function MatchSetup({
   // actually step the second physics offers the picker — absent `physicsOptions` (DECODE,
   // Chain Reaction) reads as `['2d']` only, so this never shows for them.
   const physicsOptions = moduleFor(settings.game).physicsOptions;
-  // the VIEW picker needs a 3D renderer to switch to at all — absent on every game/build
-  // until Lane B fills `scene` (Day 1 lands the seam, not the renderer).
-  const hasScene = !!moduleFor(settings.game).scene;
   // OPPONENTS (plan §6). The tier list is the GAME's (`GameSimModule.bot.tiers`) — opaque
   // strings, so a game can add or rename a difficulty without this file changing — and its
   // absence is what hides the control for DECODE and Chain Reaction.
@@ -213,15 +200,20 @@ export function MatchSetup({
       <div className="ds-panel-body stack">
         <section className="ds-sec">
           <h2>Alliance</h2>
+          {/* ALL CAPS here is the deliberate one `docs/area/ui.md` records: an alliance reads
+              RED and BLUE on the FTC scoring display and in this app's own HUD chips, and a
+              sentence-case alliance would be the only place in DSIM that disagrees. */}
           <div className="ds-opts two">
             <button
               className={`ds-opt red ${settings.alliance === 'red' ? 'on' : ''}`}
+              aria-pressed={settings.alliance === 'red'}
               onClick={() => setAlliance('red')}
             >
               <span className="ot">RED</span>
             </button>
             <button
               className={`ds-opt blue ${settings.alliance === 'blue' ? 'on' : ''}`}
+              aria-pressed={settings.alliance === 'blue'}
               onClick={() => setAlliance('blue')}
             >
               <span className="ot">BLUE</span>
@@ -275,79 +267,56 @@ export function MatchSetup({
               onDeleteSaved={(c, i) => set(deleteSavedStart(settings, c, i))}
             />
           )}
-          <div className="ds-opts fill">
-            <button
-              className={`ds-opt mini ${settings.practiceDummies ? 'on' : ''}`}
-              onClick={() => set({ practiceDummies: !settings.practiceDummies })}
-            >
-              <span className="ot">Practice dummies {settings.practiceDummies ? 'ON' : 'OFF'}</span>
-            </button>
-          </div>
-          {/* BIOBUZZ 3D SEAM: which physics a SOLO practice steps on — absent reads '3d',
-              the seam's default (`settings.ts`). Ranked/matchmade/record rooms always run
-              3D; this picker only ever applies here. */}
-          {physicsOptions?.includes('3d') && (
-            <div className="ds-opts two">
-              <button
-                className={`ds-opt mini ${(settings.practicePhysics ?? '3d') === '2d' ? 'on' : ''}`}
-                onClick={() => set({ practicePhysics: '2d' })}
-              >
-                <span className="ot">Physics 2D</span>
-              </button>
-              <button
-                className={`ds-opt mini ${(settings.practicePhysics ?? '3d') === '3d' ? 'on' : ''}`}
-                onClick={() => set({ practicePhysics: '3d' })}
-              >
-                <span className="ot">Physics 3D</span>
-              </button>
-            </div>
-          )}
-          {/* OPPONENTS (plan §6): fill the empty seats of the format with AI drivers, at a tier
-              this game names itself. Hidden entirely for a game with no `bot` driver — offering
-              difficulties nothing can play is worse than offering nothing. Solo PRACTICE only:
-              free drive has no match for a bot to play, and its `practiceDummies` above are a
-              different thing on purpose (inert obstacles). */}
-          {botTiers && settings.mode === 'match' && (
-            <div className="ds-opts fill">
-              <button
-                className={`ds-opt mini ${activeBotTier === 'off' ? 'on' : ''}`}
-                onClick={() => set({ practiceBots: 'off' })}
-              >
-                <span className="ot">Opponents off</span>
-              </button>
-              {botTiers.map((t) => (
-                <button
-                  key={t}
-                  className={`ds-opt mini ${activeBotTier === t ? 'on' : ''}`}
-                  onClick={() => set({ practiceBots: t })}
-                >
-                  <span className="ot">{botLabel(t)}</span>
-                </button>
-              ))}
-            </div>
-          )}
-          {/* the VIEW is per DEVICE (`getViewPref`), never synced — a Graphics section in
-              Configure replaces this control on Day 3. */}
-          {hasScene && (
-            <>
-              <div className="ds-opts two">
-                <button
-                  className={`ds-opt mini ${viewPref === '2d' ? 'on' : ''}`}
-                  onClick={() => setViewPref('2d')}
-                >
-                  <span className="ot">View 2D</span>
-                </button>
-                <button
-                  className={`ds-opt mini ${viewPref === '3d' ? 'on' : ''}`}
-                  onClick={() => setViewPref('3d')}
-                >
-                  <span className="ot">View 3D</span>
-                </button>
-              </div>
-              <p className="ds-hint">Saved on this device.</p>
-            </>
-          )}
         </section>
+
+        {/* ---------- WHO ELSE IS ON THE FIELD ----------
+            Both of these used to hang off the `Start position` heading, along with the physics
+            picker and a second copy of the 3D view toggle, because that is the order they were
+            added in. Neither is a start position. */}
+        <section className="ds-sec">
+          <h2>Opponents</h2>
+            {/* OPPONENTS (plan §6): fill the empty seats of the format with AI drivers, at a tier
+                this game names itself. The row is absent for a game with no `bot` driver —
+                offering difficulties nothing can play is worse than offering nothing. Solo
+                PRACTICE only: free drive has no match for a bot to play. */}
+            {botTiers && settings.mode === 'match' && (
+              <OptRow<string>
+                label="AI drivers"
+                value={activeBotTier}
+                onPick={(t) => set({ practiceBots: t })}
+                options={[{ v: 'off', t: 'None' }, ...botTiers.map((t) => ({ v: t, t: botLabel(t) }))]}
+              />
+            )}
+            {/* DUMMIES are a different thing from the bots on purpose: inert obstacles, and the
+                only opponents free drive has. */}
+          <ToggleRow
+            label="Practice dummies"
+            value={settings.practiceDummies}
+            onPick={(practiceDummies) => set({ practiceDummies })}
+          />
+        </section>
+
+        {/* BIOBUZZ 3D SEAM: which physics a SOLO practice steps on — absent reads '3d',
+            the seam's default (`settings.ts`). Ranked/matchmade/record rooms always run
+            3D; this picker only ever applies here.
+            ⚠️ THE 2D/3D *VIEW* PICKER THAT USED TO SIT BESIDE IT IS GONE. It wrote the same
+            per-device store as Graphics ▸ Field view, so there were two controls for one
+            setting on two screens — and this file's own comment already said a Graphics
+            section "replaces this control on Day 3". It did; this is the removal. */}
+        {physicsOptions?.includes('3d') && (
+          <section className="ds-sec">
+            <h2>Practice physics</h2>
+            <OptRow<'2d' | '3d'>
+              value={settings.practicePhysics ?? '3d'}
+              cols="two"
+              onPick={(practicePhysics) => set({ practicePhysics })}
+              options={[
+                { v: '2d', t: '2D', d: 'The original solver. Lighter on a slow machine' },
+                { v: '3d', t: '3D', d: 'What ranked and record rooms run' },
+              ]}
+            />
+          </section>
+        )}
 
         {runsAutoPaths && (
         <section className="ds-sec">
@@ -390,22 +359,20 @@ export function MatchSetup({
             })}
             {settings.savedAutos.length < MAX_SAVED_AUTOS && (
               <label className="ds-opt ds-opt-add">
-                <span className="ot">＋ Import .pp</span>
+                <span className="ot">Import a .pp file</span>
                 <input type="file" accept=".pp" onChange={handleFileChange} style={{ display: 'none' }} />
               </label>
             )}
           </div>
+          {/* THE FILENAME IS THE LABEL. The row used to read "Auto path ON" with the name
+              underneath, so the tile said what its own fill already said and the one thing
+              the off state cannot otherwise tell you was demoted to a sub-line. */}
           {settings.autoPath && (
-            <button
-              className={`ds-opt ${settings.autoPathEnabled ? 'on' : ''}`}
-              onClick={() => set({ autoPathEnabled: !settings.autoPathEnabled })}
-            >
-              <span className="ot">Auto path {settings.autoPathEnabled ? 'ON' : 'OFF'}</span>
-              {/* the FILENAME either way. The `.ot` line above already says ON/OFF, so
-                  the old OFF branch ("Selected auto is off") said nothing twice AND
-                  dropped the one thing the OFF state cannot otherwise tell you. */}
-              <span className="od">{settings.autoPath.fileName}</span>
-            </button>
+            <ToggleRow
+              label={`Run ${settings.autoPath.fileName}`}
+              value={settings.autoPathEnabled}
+              onPick={(autoPathEnabled) => set({ autoPathEnabled })}
+            />
           )}
           {notice && (
             <p className={notice.bad ? 'ds-form-err' : 'ds-hint'} role="status">

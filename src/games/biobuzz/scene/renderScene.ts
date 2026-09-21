@@ -31,15 +31,15 @@ import {
 import { applyFirstGuess, createQualityGovernor, probeAdapter, type QualityGovernor } from '../graphics/auto';
 import { installViewKey } from '../graphics/viewKey';
 import { buildBiobuzzField, updateBiobuzzField, type BbFieldHandles } from './renderField';
-import { buildBiobuzzElements, setElementShadows, updateBiobuzzElements, type BbElements } from './renderElements';
-import { buildBiobuzzRobots, updateBiobuzzRobots, type BbRobots } from './renderRobots';
+import { buildBiobuzzElements, setElementDetail, setElementShadows, updateBiobuzzElements, type BbElements } from './renderElements';
+import { loadElementGeometries } from './renderElementsGlb';
+import { bbWheelDetail, buildBiobuzzRobots, updateBiobuzzRobots, type BbRobots } from './renderRobots';
 import { buildBiobuzzReticle, updateBiobuzzReticle, type BbReticle } from './renderReticle';
 import { createCameras, setCameraTuning, setDriverHeightIn, type BbCameras } from './renderCameras';
-import { createEnvironment, type BbEnvironment } from './renderEnvironment';
+import { applyEnvironmentRig, createEnvironment, type BbEnvironment } from './renderEnvironment';
+import { environmentDef } from '../graphics/environments';
 import { createStats, type BbStats } from './renderStats';
 import {
-  SCENE_HEMI_INTENSITY,
-  SCENE_HEMI_INTENSITY_NO_IBL,
   SceneUnsupportedError,
   createSceneLights,
   createSceneRenderer,
@@ -142,6 +142,12 @@ class BiobuzzScene implements GameScene {
    * the canvas without breaking that contract. */
   get element(): HTMLCanvasElement {
     return this.canvas;
+  }
+  /** `GameScene.camera` — the camera the last frame RESOLVED to, which is what the 2D overlay
+   * pass above this canvas has to know (`SceneOverlayView`). The same value `project` projects
+   * through, so a read-out and a label can never disagree about which shot they are on. */
+  get camera(): SceneCamera {
+    return this.lastCamera;
   }
   private readonly canvas: HTMLCanvasElement;
   private readonly renderer: THREE.WebGLRenderer;
@@ -281,7 +287,7 @@ class BiobuzzScene implements GameScene {
 
     this.field = field;
     this.scene.add(this.field.group);
-    this.elements = buildBiobuzzElements();
+    this.elements = buildBiobuzzElements(this.settings.elementDetail);
     this.scene.add(this.elements.group);
     this.robots = buildBiobuzzRobots();
     this.scene.add(this.robots.group);
@@ -338,6 +344,7 @@ class BiobuzzScene implements GameScene {
    *   render scale + budget → `syncSize`      max frame rate → `frameInterval`
    *   anti-aliasing         → `syncTarget`    shadows        → below
    *   element shadows       → `setElementShadows`
+   *   element detail        → `setElementDetail` (fetches `elements.glb` behind the spheres)
    *   ambient occlusion     → NOT OFFERED (`GFX_NOT_OFFERED`, and the UI says so)
    *   anisotropy            → `tuneMaterials` reflections    → `tuneMaterials`
    *   mesh detail           → the ONE setting that needs a rebuild: it selects which GLB
@@ -371,25 +378,44 @@ class BiobuzzScene implements GameScene {
     }
     this.renderer.shadowMap.needsUpdate = true;
     setElementShadows(this.elements, s.elementShadows);
+    // the CAD-detail row: live, and its own asset load is fire-and-forget behind the spheres
+    setElementDetail(this.elements, s.elementDetail);
+
+    // THE DRIVE WHEELS' own tessellation. Not applied in place — the geometry is baked when a
+    // robot group is built — so `buildBiobuzzRobots`'s `sync` folds it into its rebuild key and
+    // the four robots re-generate on the next frame. See `bbWheelDetail` for why it reads BOTH
+    // `meshDetail` and the preset column rather than asking for a seventeenth dial.
+    this.robots.wheelDetail = bbWheelDetail(s, this.tier);
 
     // ── effects ────────────────────────────────────────────────────────────────────────────
     this.elements.rollingSpin = s.effects !== 'minimal';
+    // the same row's other half, and the one the §4.4 table has always promised ("minimal — …
+    // no wheel rotation") with nothing behind it until the wheels became real parts that could
+    // be seen to turn
+    this.robots.wheelSpin = s.effects !== 'minimal';
     // ⚠️ A FLAG, NOT `group.visible`. `updateBiobuzzReticle` writes `visible` every frame, so a
     // value set here was overwritten on the next one and `minimal` never actually turned the shot
     // path off.
     this.reticleOn = s.effects !== 'minimal';
 
     // ── environment and its lighting ───────────────────────────────────────────────────────
-    // With the IBL off there is no ambient term but the hemisphere light, so it carries more.
-    this.hemi.intensity = s.envLighting ? SCENE_HEMI_INTENSITY : SCENE_HEMI_INTENSITY_NO_IBL;
-    if (!s.envLighting) {
-      // and no HDRI is fetched at all — an environment map that is not lighting anything is a
-      // 1.7 MB download for a backdrop, which is not a trade this setting is offering
-      void this.env.apply('room', this.onQualityEvent);
-      this.scene.environment = null;
-    } else {
-      void this.env.apply(s.environment, this.onQualityEvent);
-    }
+    //
+    // ONE CALL FOR BOTH ROWS (2026-09-21). It used to branch here: with `envLighting` off the
+    // scene forced `'room'` and nulled `scene.environment`, because the only two environments
+    // that were not the room were 1.7 MB HDRIs and fetching one for a BACKDROP is not a trade
+    // that setting offers. Eight PAINTED domes later that reasoning only covers the two fetched
+    // ones — a painted surround costs no network at all — so `env.apply` takes the row as an
+    // argument and owns the distinction: a painted environment still paints, an HDRI still falls
+    // back to the room, and `scene.environment` is set only when the lighting is on. The effect
+    // is that Low and Medium, where §4.4 has `envLighting` off, have a background picker at all.
+    //
+    // THE LIGHT RIG comes with the environment (`graphics/environments.ts`'s `rig`): the hemi
+    // pair, the sun's direction/colour/intensity and the exposure, so a gym is lit like a gym.
+    // `renderCore.ts`'s `SCENE_*` constants are still the DEFAULT rig's values — `BASE_RIG`
+    // copies them and the RENDER lane asserts the copy — and the builder preview still lights
+    // from them directly, which is what keeps a robot the same colour in both places.
+    applyEnvironmentRig(this.renderer, this.hemi, this.sun, environmentDef(s.environment), s.envLighting);
+    void this.env.apply(s.environment, this.onQualityEvent, s.envLighting);
 
     this.tuneMaterials();
     setCameraTuning(s.fov, s.cameraMotion);
@@ -497,9 +523,14 @@ class BiobuzzScene implements GameScene {
     // and kept live for every scene that mounts (the gallery's several scenes included).
     setDriverHeightIn(getDriverHeightIn());
     this.teardown.push(subscribeDriverHeightIn(setDriverHeightIn));
+    // the free camera's layout reaches the CAMERAS as well as this file: the buttons are decided
+    // here (a DOM event), the direction senses and sensitivities inside `freeOrbit`/`freePan`/
+    // `freeDolly`, so both have to see the same object.
+    this.cameras.setFreeNav(this.freeNav);
     this.teardown.push(
       subscribeFreeCamNav((nav) => {
         this.freeNav = nav;
+        this.cameras.setFreeNav(nav);
       }),
     );
     // A FIXED-TIER SCENE DOES NOT SUBSCRIBE. A replay export runs at High by contract (§4.7), and
@@ -543,7 +574,9 @@ class BiobuzzScene implements GameScene {
       else if (this.dragMode === 'free-pan') this.cameras.freePan(dx, dy);
       // drag-zoom: pulling DOWN zooms in, the way the CAD packages that have it do. One pixel of
       // drag is worth `FREE_ZOOM_DRAG_PX` of wheel delta, so a full-height drag spans the range.
-      else this.cameras.freeDolly(-dy * FREE_ZOOM_DRAG_PX * (this.freeNav.invertZoom ? -1 : 1));
+      // The device's zoom DIRECTION and sensitivity are applied inside `freeDolly`, along with
+      // "zoom to cursor" — a drag-zoom zooms toward where the drag started, same as the wheel.
+      else this.cameras.freeDolly(-dy * FREE_ZOOM_DRAG_PX, this.ndcOf(e));
     };
     const endDrag = (e: PointerEvent): void => {
       if (this.dragMode) {
@@ -560,7 +593,9 @@ class BiobuzzScene implements GameScene {
       if (this.lastCamera === 'orbit' && e.button === 0) {
         this.dragMode = 'orbit';
       } else if (this.lastCamera === 'free') {
-        const g = freeCamGesture(this.freeNav.preset, e.button, { shift: e.shiftKey, ctrl: e.ctrlKey || e.metaKey });
+        // ⌘ IS CTRL HERE. A Mac has no ctrl-drag to spare (it is a right-click at the OS level),
+        // so `metaKey` folds into the same flag and every "Ctrl+…" mapping works on both.
+        const g = freeCamGesture(this.freeNav, e.button, { shift: e.shiftKey, ctrl: e.ctrlKey || e.metaKey, alt: e.altKey });
         if (!g) return;
         this.dragMode = g === 'orbit' ? 'free-orbit' : g === 'pan' ? 'free-pan' : 'free-zoom';
       } else {
@@ -580,7 +615,7 @@ class BiobuzzScene implements GameScene {
         this.cameras.orbitZoom(e.deltaY);
       } else if (this.lastCamera === 'free') {
         e.preventDefault();
-        this.cameras.freeDolly(this.freeNav.invertZoom ? -e.deltaY : e.deltaY);
+        this.cameras.freeDolly(e.deltaY, this.ndcOf(e));
       }
     };
     // A MIDDLE PRESS STARTS THE BROWSER'S AUTOSCROLL (the four-way arrow cursor) on Windows, and
@@ -618,6 +653,25 @@ class BiobuzzScene implements GameScene {
       host.removeEventListener('contextmenu', onContextMenu);
       host.removeEventListener('dblclick', onDblClick);
     });
+  }
+
+  /**
+   * A MOUSE EVENT → CLIP SPACE on the rendered canvas, for "zoom to cursor" (`freeDolly`'s
+   * second argument). The INVERSE of `project`'s last two lines, and against the same rect:
+   * `projectionMatrix` already carries `setViewOffset`, so NDC taken over the whole canvas is
+   * what the camera's own unprojection expects with the HUD up.
+   *
+   * Reads the live `getBoundingClientRect()` rather than `cssW`/`cssH`: those are the canvas's
+   * SIZE, and a `clientX` is measured from the viewport, so the canvas's own offset is needed
+   * too. It is one uncached layout read per wheel notch, which is exactly the rate a wheel
+   * arrives at.
+   */
+  private ndcOf(e: { clientX: number; clientY: number }): { x: number; y: number } | undefined {
+    const el = this.canvas;
+    if (typeof el.getBoundingClientRect !== 'function') return undefined;
+    const r = el.getBoundingClientRect();
+    if (!(r.width > 0) || !(r.height > 0)) return undefined;
+    return { x: ((e.clientX - r.left) / r.width) * 2 - 1, y: -(((e.clientY - r.top) / r.height) * 2 - 1) };
   }
 
   /**
@@ -916,8 +970,17 @@ export const createBiobuzzScene: GameSceneFactory = async (host: HTMLElement, op
   canvas.style.display = 'block';
   canvas.style.width = '100%';
   canvas.style.height = '100%';
-  const detail = (opts.quality ? GFX_PRESETS[opts.quality as GraphicsTier] : getGraphics().settings).meshDetail;
-  const field = await buildBiobuzzField(detail);
+  const quality = opts.quality ? GFX_PRESETS[opts.quality as GraphicsTier] : getGraphics().settings;
+  // THE ELEMENT CAD RIDES ALONG WITH THE FIELD'S OWN AWAIT, and is allowed to fail. 22 KB
+  // against `field.glb`'s 754 adds nothing measurable to a load that is already happening, and
+  // it is what makes the REPLAY EXPORT (a fixed-High scene, §4.7) draw perforated balls on its
+  // very first frame instead of spheres for however long a fetch takes. A live scene does not
+  // depend on it: `buildBiobuzzElements` starts on spheres and swaps whenever the promise
+  // lands, so this await is an optimisation and the `catch` is the whole error path.
+  const [field] = await Promise.all([
+    buildBiobuzzField(quality.meshDetail),
+    quality.elementDetail === 'cad' ? loadElementGeometries().catch(() => null) : null,
+  ]);
   host.appendChild(canvas);
   // `host` is handed on: the orbit camera's pointer listeners live on it (see the class's own
   // note — the 2D overlay canvas is above this one and would otherwise swallow every press).

@@ -29,6 +29,7 @@ import { DEFAULT_ASSISTS, type RobotSetup } from '../../src/sim/spawn';
 import { ReplayPlayer, maxMatchTicks, runRecordMatch, type Replay } from '../../src/sim/replay';
 import { Room, type Client } from '../../server/room';
 import { BB_DEFAULT_SPEC } from '../../src/games/biobuzz/robotConfig';
+import { BB_POLLEN_R } from '../../src/games/biobuzz/config';
 import { readFileSync } from 'node:fs';
 import { cmd, setup, type Check } from './harness';
 
@@ -1084,6 +1085,279 @@ export function net3dChecks(check: Check): void {
       /const need3d =\s*\n?\s*!session &&/.test(view),
     );
   }
+
+  // ═══ 13. THE ROBOT AND THE BALL IT IS PUSHING ARE ONE MOMENT ═══════════════
+  //
+  // Owner report 2026-09-21: "in server-required games, the balls behave really weirdly. Maybe
+  // it is something with the prediction?"
+  //
+  // It was. In a predicted 3D room the LOCAL ROBOT is drawn from the prediction — (about) the
+  // newest server tick — and every ELEMENT is drawn INTERPOLATED, `INTERP_DELAY_TICKS` behind
+  // it. Two different moments in one frame, and the gap is structural: it does not shrink with
+  // a better connection, and it measured the same at 0 ms RTT as at 140. Everything below is
+  // about the two clocks agreeing again, so each check states a DISTANCE in inches between
+  // where an element is DRAWN and where the server had it AT THE ROBOT'S OWN TICK.
+  //
+  // ⚠️ THE BASELINE IS ASSERTED TOO, and it is not padding: a check that only bounds the fixed
+  // number passes just as well if the whole scene stops moving, and this lane has been bitten
+  // by exactly that (see `drive`'s `fieldCentric` note). The interpolated draw MUST still be
+  // far off, or the comparison is measuring nothing.
+  {
+    const LAT = 2; // ticks of one-way latency — 66 ms RTT, an ordinary connection
+    const r = elementDrawProbe(LAT, 460);
+    check(
+      'balls: the element-draw probe actually pushed something (non-vacuous)',
+      r.samples >= 40 && r.moved > 12,
+      `${r.samples} frames, the element travelled ${r.moved.toFixed(1)} in`,
+    );
+    check(
+      'balls: INTERPOLATED, an element is drawn far from where the robot`s own tick has it',
+      r.samples >= 40 && r.interpP95 > 4,
+      `p95 ${r.interpP95.toFixed(2)} in (the artifact this section exists for)`,
+    );
+    check(
+      'balls: ...and drawn from the PREDICTOR it is on the robot`s own tick',
+      r.samples >= 40 && r.predP95 < 1.5 && r.predMax < 4,
+      `p95 ${r.predP95.toFixed(2)} in, max ${r.predMax.toFixed(2)} in (was p95 ${r.interpP95.toFixed(2)})`,
+    );
+    check(
+      'balls: ...which is at least a 4x improvement, not a rounding one',
+      r.samples >= 40 && r.interpP95 > r.predP95 * 4,
+      `${(r.interpP95 / Math.max(1e-6, r.predP95)).toFixed(1)}x`,
+    );
+    /**
+     * THE PREDICTOR'S ELEMENTS ARE NOT A SECOND AUTHORITY, and this is the check that keeps it
+     * that way: what it hands back has to stay within a POLLEN of the server across a whole
+     * driven run, or it is not a way of drawing the server's world, it is a different one.
+     */
+    check(
+      'balls: the predicted element never wanders more than a POLLEN from the authority',
+      r.samples >= 40 && r.predMax < 2 * (2 * BB_POLLEN_R),
+      `max ${r.predMax.toFixed(2)} in against ${(2 * (2 * BB_POLLEN_R)).toFixed(2)}`,
+    );
+    check(
+      'balls: a LIGHT predictor carries no elements and says so with null, not an empty list',
+      r.lightElements === null,
+      String(r.lightElements),
+    );
+  }
+
+  // ═══ 14. A RE-TAG IS NOT A TELEPORT ════════════════════════════════════════
+  //
+  // `displayWorld` SNAPS an element to the newer snapshot whenever its `state.kind` changed,
+  // because an element entering a hopper teleports. But a 3D BIOBUZZ world DERIVES those tags
+  // from body positions every tick (`derive.ts`), and `ground` / `flight` / `element` all
+  // describe the same continuously-moving sphere — a missed shot skidding across the tiles
+  // re-tags itself on consecutive ticks while travelling in a straight line. Each flicker threw
+  // it two ticks forward and froze it for a frame: measured, the worst jump ANY element made
+  // was 2.61 in against a true per-tick motion of 1.34 — a pop of nearly twice the distance it
+  // was really covering, on a ball nobody had touched. Only `held` and `stock` teleport.
+  {
+    const game = readFileSync('src/game.ts', 'utf8');
+    check(
+      'retag: the SNAP is gated on a CARRIED kind, not on any kind change',
+      /if \(p\.kind !== q\.kind && \(isCarried\(p\.kind\) \|\| isCarried\(q\.kind\)\)\)/.test(game),
+      'the kind-change snap is not where it was',
+    );
+    check(
+      'retag: ...and `isCarried` names exactly the two kinds that are CARRIED',
+      /const isCarried = \(kind: string\): boolean => kind === 'held' \|\| kind === 'stock';/.test(game),
+    );
+    check(
+      'balls: the elements` visual offset is captured at ONE tick, inside the reconcile',
+      /const before = p\.elements\(\);[\s\S]{0,400}?this\.noteElementCorrection\(before, p\.elements\(\)\)/.test(game),
+      'reading it across a FRAME pins every element a tick behind for the rest of the match',
+    );
+    check(
+      'balls: ...and it is cleared with the interpolation buffer and with the predictor',
+      /this\.clearElementSmoothing\(\);/.test(game) &&
+        (game.match(/this\.clearElementSmoothing\(\)/g) ?? []).length >= 2,
+    );
+    check(
+      'balls: ...and only `ground` and `flight` are drawn from it — never one seated in a structure',
+      /const use = !!e && \(kind === 'ground' \|\| kind === 'flight'\);/.test(game),
+    );
+    check(
+      'balls: nothing about this touches `this.world` (it is cosmetic, like `localSmooth`)',
+      !/drawPredictedElements[\s\S]{0,2000}?this\.world\.balls\s*=/.test(game),
+    );
+  }
+}
+
+/**
+ * ONE CLIENT DRAWING ONE ELEMENT, TWO WAYS, against a real `Room` over a real delay.
+ *
+ * This is `GameController`'s networked path reduced to the question section 13 asks. It sends
+ * inputs stamped on its own prediction clock, buffers them, reconciles on each snapshot through
+ * a FULL predictor, and then — for the one element it staged in front of the robot — records
+ * BOTH candidate drawings for the same frame:
+ *
+ *   · INTERPOLATED, between the two buffered snapshots bracketing `renderTick`, which is what
+ *     shipped, and
+ *   · PREDICTED, straight off the predictor's own body, which is what ships now.
+ *
+ * Each is scored against the authoritative position AT `predictTick` — the tick the local robot
+ * is being drawn at. That is the whole claim in one number and it needs no nearest-tick
+ * matching: the robot's moment is known exactly.
+ *
+ * ⚠️ `ServerSession` KEEPS ONLY THE FRESHEST SNAPSHOT and `stepServer` consumes ONE per frame,
+ * so two arriving together is one buffered snapshot and a 4-tick hole in `snapBuf`. Modelled,
+ * because an interpolator that never sees a hole is not the one in the game.
+ */
+function elementDrawProbe(
+  latTicks: number,
+  ticks: number,
+): {
+  samples: number;
+  moved: number;
+  interpP95: number;
+  predP95: number;
+  predMax: number;
+  lightElements: unknown;
+} {
+  const room = new Room('n3-draw', () => {}, { kind: 'versus', game: 'biobuzz', physics: '3d' });
+  let setups: RobotSetup[] = [];
+  const baseline = new Map<number, Artifact>();
+  const inbox: { at: number; tick: number; world: World }[] = [];
+  let now = 0;
+  const sink = (raw: ServerMsg): void => {
+    const m = wireCopy(raw);
+    if (m.t === 'matchStart') {
+      setups = m.setups;
+      return;
+    }
+    if (m.t !== 'snapshot') return;
+    const balls = applyBallDelta(baseline, m.balls);
+    inbox.push({
+      at: now + latTicks,
+      tick: m.serverTick,
+      world: unslimWorld(m.w, balls, (id) => setups.find((s) => s.id === id)!.spec),
+    });
+  };
+  for (const s of ROSTER) {
+    const c = mkClient(s, s.id === 'n3-b1' ? sink : () => {});
+    // ⚠️ `fieldCentric` OFF, the trap `docs/area/netcode.md` names and this lane's own `drive`
+    // repeats: with the default assists a robot handed `driveY: 1` drives in the ALLIANCE's
+    // frame, so it slides past the element staged along its own heading and pushes nothing.
+    // `mkClient` keeps the defaults because every other check here wants them.
+    c.player.assists = { ...DEFAULT_ASSISTS, fieldCentric: false, aimAssist: false };
+    room.add(c);
+  }
+  room.onMessage('n3-b1', { t: 'start' });
+  room.advanceForTest(1);
+
+  // STAGE one element on the tiles, dead ahead of the local robot, and drive straight at it.
+  const w0 = room.worldForTest()!;
+  const me = w0.robots.find((r) => r.id === 0)!;
+  const target = w0.balls.find((b) => b.state.kind === 'ground');
+  if (!target) return { samples: 0, moved: 0, interpP95: 0, predP95: 0, predMax: 0, lightElements: undefined };
+  const startX = me.pos.x + Math.cos(me.heading) * 26;
+  const startY = me.pos.y + Math.sin(me.heading) * 26;
+  target.pos.x = startX;
+  target.pos.y = startY;
+  target.vel.x = 0;
+  target.vel.y = 0;
+  target.z = 0;
+  target.vz = 0;
+  const id = target.id;
+
+  const light = createLightPredictor(w0, 0);
+  const lightElements = light.elements();
+  light.dispose();
+
+  const predictor = createFullPredictor(w0, 0);
+  const buf: { tick: number; cmd: RobotCommand }[] = [];
+  const snapBuf: { tick: number; x: number; y: number; kind: string }[] = [];
+  const auth = new Map<number, { x: number; y: number }>();
+  const interpErr: number[] = [];
+  const predErr: number[] = [];
+  let predictTick = 0;
+  let lastServerTick = 0;
+  let renderTick = 0;
+  let applied = -1;
+  let last = { x: startX, y: startY };
+
+  for (now = 0; now < ticks; now++) {
+    room.advanceForTest(1);
+    const aw = room.worldForTest()!;
+    const ab = aw.balls.find((b) => b.id === id)!;
+    auth.set(aw.tick, { x: ab.pos.x, y: ab.pos.y });
+    last = { x: ab.pos.x, y: ab.pos.y };
+
+    let fresh: { tick: number; world: World } | null = null;
+    for (let i = inbox.length - 1; i >= 0; i--) {
+      if (inbox[i].at > now) continue;
+      const s = inbox[i];
+      inbox.splice(i, 1);
+      if (s.tick <= applied) continue;
+      if (!fresh || s.tick > fresh.tick) fresh = s;
+    }
+    if (fresh) {
+      applied = fresh.tick;
+      const fb = fresh.world.balls.find((b) => b.id === id)!;
+      snapBuf.push({ tick: fresh.tick, x: fb.pos.x, y: fb.pos.y, kind: fb.state.kind });
+      if (snapBuf.length > 8) snapBuf.shift();
+      lastServerTick = fresh.tick;
+      while (buf.length && buf[0].tick <= fresh.tick) buf.shift();
+      predictor.reset(fresh.world, fresh.tick);
+      for (const b of buf) predictor.step(b.cmd);
+      predictTick = fresh.tick + buf.length;
+    }
+
+    // one predicted tick, exactly as `stepServer` runs it
+    if (!(predictTick - lastServerTick >= 40)) {
+      const tick = predictTick + 1;
+      const c = cmd({ driveY: 1, leftDrive: 1, rightDrive: 1 });
+      room.onMessage('n3-b1', { t: 'input', tick, q: quantizeCommand(c) });
+      buf.push({ tick, cmd: localizeCommand(c) });
+      predictor.step(localizeCommand(c));
+      predictTick = tick;
+    }
+
+    // ── the frame. `renderTick` is `displayWorld`'s clock, restated.
+    if (snapBuf.length < 2) continue;
+    const latest = snapBuf[snapBuf.length - 1].tick;
+    const oldest = snapBuf[0].tick;
+    renderTick += 1;
+    renderTick += (latest - 5 - renderTick) * (1 - Math.pow(2, -(1 / 60) / 0.11));
+    renderTick = Math.max(oldest, Math.min(renderTick, latest));
+    let s0 = snapBuf[0];
+    let s1 = snapBuf[1];
+    for (let i = snapBuf.length - 2; i >= 0; i--) {
+      if (snapBuf[i].tick <= renderTick) {
+        s0 = snapBuf[i];
+        s1 = snapBuf[i + 1];
+        break;
+      }
+    }
+    const span = s1.tick - s0.tick;
+    const a = span > 0 ? Math.max(0, Math.min(1, (renderTick - s0.tick) / span)) : 0;
+    const drawnInterp = { x: s0.x + (s1.x - s0.x) * a, y: s0.y + (s1.y - s0.y) * a };
+    const pe = predictor.elements()?.find((e) => e.id === id);
+    const truth = auth.get(predictTick);
+    const was = auth.get(predictTick - 1);
+    if (!truth || !was || !pe) continue;
+    // ⚠️ ONLY WHILE IT IS MOVING. A still element is at the same place on every clock, so
+    // sampling one would dilute both percentiles with frames where the bug cannot exist —
+    // which is the vacuous-check trap this lane's header warns about, in numeric form.
+    if (Math.hypot(truth.x - was.x, truth.y - was.y) < 0.05) continue;
+    interpErr.push(Math.hypot(drawnInterp.x - truth.x, drawnInterp.y - truth.y));
+    predErr.push(Math.hypot(pe.x - truth.x, pe.y - truth.y));
+  }
+  predictor.dispose();
+  const p95 = (v: number[]): number => {
+    if (!v.length) return 0;
+    const s = [...v].sort((x, y) => x - y);
+    return s[Math.min(s.length - 1, Math.floor(s.length * 0.95))];
+  };
+  return {
+    samples: predErr.length,
+    moved: Math.hypot(last.x - startX, last.y - startY),
+    interpP95: p95(interpErr),
+    predP95: p95(predErr),
+    predMax: predErr.length ? Math.max(...predErr) : 0,
+    lightElements,
+  };
 }
 
 /**

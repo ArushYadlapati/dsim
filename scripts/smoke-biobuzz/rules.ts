@@ -40,6 +40,7 @@ import {
 } from '../../src/games/biobuzz/score';
 import {
   BB_CONTROL_LIMIT,
+  BB_CONTROL_SKITTER_Z,
   BB_MOMENTARY_S,
   bbAwardFoul,
   bbFootprintGap,
@@ -1222,6 +1223,296 @@ function hiveRamRemovedChecks(check: Check): void {
     const held = ram(physics, -62, 5);
     check(`HIVE ram (${physics}): a sustained press still bills nothing`,
       held.major === 0 && held.pts === 0, `major=${held.major} pts=${held.pts}`);
+  }
+}
+
+/**
+ * ─────────────────────────────────────────────────────────────────────────────
+ * G407 ON A ROBOT THAT ACTUALLY DRIVES — BOTH PIPELINES, AND FREE DRIVE
+ * ─────────────────────────────────────────────────────────────────────────────
+ *
+ * ⚠️ **THIS BLOCK BREAKS THIS LANE'S "DO NOT DRIVE" DOCTRINE FOR THE SAME REASON
+ * `g402DrivenChecks` DOES, AND IT IS THE SAME CLASS OF BUG A SECOND TIME.** Every G407
+ * fixture above advances its pile BY HAND, which is right for asserting what the COUNT means —
+ * and twenty of them passed green against an engine that, on a robot that had to DRIVE into a
+ * pile, billed **nothing at all** in the physics every server-connected match runs. Owner
+ * report 2026-09-21: "Overpossession penalties are not being given right now."
+ *
+ * MEASURED BEFORE THE FIX (`scratch/g407probe.ts`: a driven six- and eight-element herd, empty
+ * and full hopper, intake on and off, AUTO and TELEOP and free drive, both pipelines):
+ *
+ *   pipeline / phase        peak per-element hold     count reached      G407 lines
+ *   2D match  (auto+teleop)        1.27 s                  6/10          WARNING + MAJOR
+ *   2D free drive                  0.00 s                  0             none
+ *   3D, every phase                0.00 s                  0/4           none
+ *
+ * Two independent causes, one per row:
+ *   · **3D** tags a PLOWED element `flight` — it skips, and `derive.ts` calls anything off the
+ *     tiles by 0.05 in airborne. `controlledArtifacts` only ever looked at `ground`, and
+ *     `bbSweepControlClocks` DELETED the hold of anything that was not, so every skip reset the
+ *     confirm clock. `ControlGeometry.loose` / `bbLooseElement` is the fix.
+ *   · **free drive** was not a played period here, where DECODE made it one long ago and wrote
+ *     down why (`src/sim/penalties.ts`, "FREE DRIVE COUNTS"). Free drive is driver practice.
+ *
+ * So these runs DRIVE, they run on both pipelines and in all three live phases, and they assert
+ * the carve-outs on a driven robot too — because a rule that fires on a bulldozer and also on
+ * everyone else is not a fix. A failure here means the rule stopped reaching a robot that
+ * drove; the placed fixtures above still say what the rule MEANS.
+ */
+function g407DrivenChecks(check: Check): void {
+  /**
+   * One driven scene: a blue robot at (−55, 40) nose along +x, `n` POLLEN on the floor `gap`
+   * inches ahead of its own footprint and `lateral` inches off its centreline.
+   *
+   * y = 40 keeps the whole run clear of the HIVE frame bars (|y| ≤ `BB_FRAME_Y`), and x runs
+   * −55 → 0, clear of both walls and of BOTH loading-zone rectangles — this field's `BB_LZ` and
+   * DECODE's, which the shared test used to read. The field's own elements and the human
+   * player's box are CLEARED so every element in the count is one this scene put there.
+   */
+  const scene = (
+    physics: '2d' | '3d',
+    phase: 'auto' | 'teleop' | 'freeplay',
+    n: number,
+    opts: { hopper?: number; intake?: boolean; gap?: number; lateral?: number } = {},
+  ): { w: World; drive: (dir: number, s: number) => void; lines: () => string[] } => {
+    const w = createBiobuzzWorld(
+      phase === 'freeplay' ? 'free' : 'match',
+      7,
+      [setup(0, 'blue', {}, 0)],
+      undefined,
+      physics,
+    );
+    w.match.phase = phase;
+    w.match.phaseTimeLeft = phase === 'teleop' ? 90 : 30;
+    const r = w.robots[0];
+    r.autoIntake = opts.intake ?? false;
+    r.autoFire = false;
+    w.balls.length = 0;
+    for (const a of ['red', 'blue'] as const) w.humanPlayers[a].box = [];
+    const bb = w.biobuzz;
+    if (bb) {
+      bb.flowers.forEach((f) => {
+        f.stack = [];
+      });
+      bb.hives.red.contents = [];
+      bb.hives.blue.contents = [];
+    }
+    place(w, 0, -55, 40);
+    r.hopper = Array.from({ length: opts.hopper ?? 0 }, () => 'yellow' as const);
+    const e = footprintExtents(r.spec);
+    const span = (n - 1) * 3.2;
+    // ⚠️ `z` IS NOT THE SAME QUANTITY IN THE TWO PIPELINES: 2D carries the element's CENTRE
+    // height, 3D its BOTTOM. An element staged at the wrong one starts embedded in the tiles.
+    for (let i = 0; i < n; i++) {
+      w.balls.push({
+        id: i + 1,
+        color: 'yellow',
+        r: BB_POLLEN_R,
+        state: { kind: 'ground' },
+        pos: { x: -55 + e.front + BB_POLLEN_R + (opts.gap ?? 1), y: 40 + (opts.lateral ?? 0) - span / 2 + i * 3.2 },
+        vel: { x: 0, y: 0 },
+        z: physics === '3d' ? 0 : BB_POLLEN_R,
+        vz: 0,
+      });
+    }
+    return {
+      w,
+      drive: (dir, s) => {
+        const c = new Map([[0, cmd({ driveY: dir, intake: opts.intake ?? false })]]);
+        for (let i = 0; i < ticks(s); i++) biobuzzStep(w, SIM_DT, c);
+      },
+      lines: () => w.events.filter((x) => x.includes('G407')),
+    };
+  };
+
+  // ═══ THE RULE REACHES A ROBOT THAT DRIVES — in BOTH pipelines ═════════════
+  for (const physics of ['2d', '3d'] as const) {
+    {
+      // SIX herded, empty hopper: every element in the count is one it shoved.
+      const s = scene(physics, 'teleop', 6);
+      s.drive(1, 6);
+      const warn = s.lines().filter((e) => e.startsWith('WARNING'));
+      const major = s.lines().filter((e) => e.includes('MAJOR'));
+      check(`G407 DRIVEN (${physics}): shoving six across the floor WARNS`,
+        warn.length === 1, `${warn.length} :: ${s.lines().join(' | ')}`);
+      check(`G407 DRIVEN (${physics}): ...and the line names the rule and the count`,
+        warn[0] === `WARNING - BLUE (G407 CONTROL of ${BB_CONTROL_LIMIT + 1}+ elements)`, warn[0] ?? '(none)');
+      /**
+       * ...AND IT ESCALATES. Six sustained past `BB_MOMENTARY_S` is Table 10-4's clause (A)
+       * outright — "picks up and CONTROLS 6 or more SCORING ELEMENTS, moving them to a scoring
+       * location" — so a six-second shove is a MAJOR on the first instance, not a second one.
+       */
+      check(`G407 DRIVEN (${physics}): a sustained 6+ shove escalates to the STRATEGIC MAJOR`,
+        major.length === 1 && s.w.match.fouls.blue.major === 1,
+        `${major.length} major, tally ${s.w.match.fouls.blue.major}`);
+      check(`G407 DRIVEN (${physics}): ...and the MAJOR moves ${BB_PTS.foulMajor} points to RED`,
+        s.w.match.scores.red.foulPoints === BB_PTS.foulMajor, String(s.w.match.scores.red.foulPoints));
+      check(`G407 DRIVEN (${physics}): the warning tally reaches the HUD slice`,
+        biobuzzFieldHud(s.w).warnings.blue === 1, String(biobuzzFieldHud(s.w).warnings.blue));
+      // the per-element clock is what the 3D bug zeroed; assert the MECHANISM, not just the tally
+      check(`G407 DRIVEN (${physics}): at least one element's hold clock actually latched`,
+        Object.values(s.w.penalties.ballHold).some((t) => t >= 0.45),
+        JSON.stringify(s.w.penalties.ballHold));
+    }
+
+    {
+      // A FULL HOPPER plus a herd: the hopper is capped at 4 for good, so everything past the
+      // limit here is plowed. This is the owner's own shape — driving with a full load.
+      const s = scene(physics, 'teleop', 6, { hopper: BB_CONTROL_LIMIT });
+      s.drive(1, 6);
+      check(`G407 DRIVEN (${physics}): a FULL hopper plowing a pile is billed too`,
+        s.lines().some((e) => e.startsWith('WARNING')) && s.w.match.fouls.blue.major === 1,
+        s.lines().join(' | ') || '(none)');
+    }
+
+    {
+      // FOUR herded is the legal number, driven exactly the same way.
+      const s = scene(physics, 'teleop', 4);
+      s.drive(1, 6);
+      check(`G407 DRIVEN (${physics}): shoving FOUR bills nothing — that is the legal number`,
+        s.lines().length === 0, s.lines().join(' | '));
+    }
+
+    // ═══ AND IT STILL DOES NOT FIRE ON ORDINARY PLAY ════════════════════════
+    /**
+     * The three carve-out shapes, DRIVEN. Measured over six seeds each in
+     * `scratch/g407fp2.ts`: **0 G407 lines** in every one, both pipelines, clumps of six and
+     * eight. They are asserted on one seed here because the lane pays for every tick it steps.
+     */
+    {
+      // A POKE: touch the pile and reverse off it inside `POSSESSION_CONFIRM` (0.45 s).
+      const s = scene(physics, 'teleop', 8);
+      s.drive(1, 0.35);
+      s.drive(-1, 2.5);
+      check(`G407 DRIVEN (${physics}): a POKE and a retreat inside MOMENTARY bills nothing`,
+        s.lines().length === 0, s.lines().join(' | '));
+    }
+    {
+      // A DRIVE-PAST: the clump is off the centreline, so only a flank grazes it in transit.
+      const s = scene(physics, 'teleop', 8, { lateral: 11 });
+      s.drive(1, 4);
+      check(`G407 DRIVEN (${physics}): clipping a clump while driving PAST it bills nothing`,
+        s.lines().length === 0, s.lines().join(' | '));
+    }
+    {
+      // PARKED against it, sticks neutral, for six seconds. CONTROL is not contact.
+      const s = scene(physics, 'teleop', 8);
+      s.drive(1, 0.42);
+      s.drive(0, 6);
+      check(`G407 DRIVEN (${physics}): rolling up to a clump and PARKING on it bills nothing`,
+        s.lines().length === 0, s.lines().join(' | '));
+    }
+  }
+
+  // ═══ FREE DRIVE IS A PLAYED PERIOD — the DECODE ruling, applied here ══════
+  /**
+   * ⚠️ `freeplay` used to fall through this engine's "no fouls outside the played periods"
+   * guard, so the whole of Section 11 was inert in the mode people practise in. Measured on
+   * the identical driven eight-element herd: a match billed the WARNING and the MAJOR and free
+   * drive billed nothing, in both pipelines. `src/sim/penalties.ts` carries the same paragraph
+   * for DECODE and got there first, for the same reported reason.
+   */
+  for (const physics of ['2d', '3d'] as const) {
+    const s = scene(physics, 'freeplay', 6);
+    s.drive(1, 6);
+    check(`G407 FREE DRIVE (${physics}): practice bills what a match would`,
+      s.lines().some((e) => e.startsWith('WARNING')) && s.w.match.fouls.blue.major === 1,
+      s.lines().join(' | ') || '(none)');
+    const quiet = scene(physics, 'freeplay', 8);
+    quiet.drive(1, 0.35);
+    quiet.drive(-1, 2.5);
+    check(`G407 FREE DRIVE (${physics}): ...and the carve-outs come with it`,
+      quiet.lines().length === 0, quiet.lines().join(' | '));
+  }
+  {
+    /**
+     * ...AND G410 IS THE ONE RULE THAT MUST NOT COME WITH IT. Its cue is written as "unlocked
+     * WHEN teleop is inside 1:00" and negated, so every other phase is LOCKED by default —
+     * which is the safe direction in a match and the wrong one in a mode that has no clock to
+     * be early against. Without the carve-out, opening free drive made every NECTAR ever
+     * placed in a FLOWER in practice a MAJOR.
+     */
+    const w = bare([{ id: 0, alliance: 'blue' }]);
+    w.match.phase = 'freeplay';
+    w.match.phaseTimeLeft = 0;
+    check('G410: entry is NOT locked in free drive — there is no 1:00 cue to be early for',
+      !bbNectarLocked(w));
+    intoFlower(w, 0, ['red']);
+    bill(w, 3);
+    check('G410: ...so a NECTAR in a FLOWER in free drive bills nothing',
+      w.match.fouls.red.major === 0 && w.events.filter((e) => e.includes('G410')).length === 0,
+      w.events.join(' | '));
+  }
+
+  // ═══ WHAT `loose` COUNTS — KINEMATIC, because the TAG IS DERIVED ══════════
+  /**
+   * ⚠️ **THIS ONE CANNOT BE DRIVEN, AND THE REASON IS THE BUG ITSELF.** `state.kind` is not
+   * authored, it is DERIVED from the element's height and motion every tick — `derive.ts` in
+   * 3D, `play.ts`'s flight integrator in 2D. A driven fixture that hand-tags a row `flight`
+   * has it re-tagged before the next penalty pass reads it, so the run measures the tagger and
+   * not the rule. (Measured: both pipelines re-derived the row to `ground` and billed, which
+   * is right behaviour and a useless check.) So the pile is advanced by hand here, exactly as
+   * the placed G407 fixtures above are, and what is asserted is the PREDICATE.
+   *
+   * Three facts, each of which was wrong before:
+   *   · under the 3D solve a `flight` element at SKITTER height is loose and counts (the bug:
+   *     it was not, so a plowed pile was invisible on 14.3% of its contact ticks and its hold
+   *     clock was deleted on every one of them);
+   *   · in 2D it is NOT — the 2D pipeline is PERMANENT and has no skip to forgive;
+   *   · and a real SHOT overhead is not, in either.
+   */
+  {
+    const staged = (physics: '2d' | '3d', kind: 'ground' | 'flight', z: number): number => {
+      const w = bare([{ id: 0, alliance: 'blue' }]);
+      const bb = w.biobuzz;
+      if (bb) bb.physics = physics;
+      w.match.phase = 'teleop';
+      w.match.phaseTimeLeft = 90;
+      const r = w.robots[0];
+      r.autoIntake = false;
+      place(w, 0, -40, 40);
+      r.hopper = [];
+      const e = footprintExtents(r.spec);
+      const pile: Artifact[] = [];
+      for (let i = 0; i < 5; i++) {
+        const b = el('yellow', kind === 'ground' ? { kind: 'ground' } : { kind: 'flight', target: 'blue' },
+          r.pos.x + e.front + BB_POLLEN_R, r.pos.y - 6 + i * 3);
+        b.z = z;
+        w.balls.push(b);
+        pile.push(b);
+      }
+      // robot and pile travel +x together at a herding speed, billed every tick — the same
+      // hand-advance the placed G407 fixtures use.
+      const v = 30;
+      r.vel = { x: v, y: 0 };
+      for (const b of pile) b.vel = { x: v, y: 0 };
+      for (let i = 0; i < ticks(1.2); i++) {
+        r.pos = { x: r.pos.x + v * SIM_DT, y: r.pos.y };
+        for (const b of pile) b.pos = { x: b.pos.x + v * SIM_DT, y: b.pos.y };
+        updateBiobuzzPenalties(w, SIM_DT, new Map());
+      }
+      return w.events.filter((x) => x.includes('G407')).length;
+    };
+
+    // the control: a plain `ground` row is counted in both, which is what makes the rest a
+    // statement about the TAG rather than about the fixture.
+    check('LOOSE: a `ground` row of five is counted in 2D', staged('2d', 'ground', 0) === 1, String(staged('2d', 'ground', 0)));
+    check('LOOSE: a `ground` row of five is counted in 3D', staged('3d', 'ground', 0) === 1, String(staged('3d', 'ground', 0)));
+    check('LOOSE (3d): a `flight` row at SKITTER height counts — a plowed element SKIPS',
+      staged('3d', 'flight', 0.5) === 1, String(staged('3d', 'flight', 0.5)));
+    check('LOOSE (2d): ...and in 2D it does NOT — that pipeline is permanent and has no skip',
+      staged('2d', 'flight', 0.5) === 0, String(staged('2d', 'flight', 0.5)));
+    check('LOOSE (3d): a `flight` row in the AIR is not controlled, whatever it passes over',
+      staged('3d', 'flight', BB_CONTROL_SKITTER_Z + 6) === 0,
+      String(staged('3d', 'flight', BB_CONTROL_SKITTER_Z + 6)));
+    /**
+     * The bound is MEASURED, not chosen (`scratch/skitter.ts`, 3D, four seeds x three headings):
+     * over 14,340 ticks of chassis-on-element contact while plowing, the element's bottom never
+     * rose above 0.92 in; over 246 ticks of a real shot passing over a chassis in plan, it was
+     * never below 7.60 in. Anything in that gap separates them, so this asserts the GAP.
+     */
+    check('LOOSE: the skitter bound sits between the measured plow (0.92 in) and shot (7.60 in)',
+      BB_CONTROL_SKITTER_Z > 0.92 && BB_CONTROL_SKITTER_Z < 7.6, String(BB_CONTROL_SKITTER_Z));
   }
 }
 
@@ -2573,6 +2864,7 @@ function settleChecks(check: Check): void {
 export function rulesChecks(check: Check): void {
   scoringChecks(check);
   penaltyChecks(check);
+  g407DrivenChecks(check);
   pinChecks(check);
   cueChecks(check);
   sceneChecks(check);

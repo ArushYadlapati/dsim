@@ -8,6 +8,7 @@ import { robotExtents, squareUpRobotsWalls } from '../../../sim/physics';
 import { dcos, dsin } from '../../../math';
 import {
   BB3_CCD_SPEED,
+  BB3_CHASSIS_TOP_Z,
   BB3_CONTACT_FREQ,
   BB_HALF_X,
   BB_HALF_Y,
@@ -22,7 +23,9 @@ import {
   buildHiveTray3d,
   buildStatics3d,
   chassisBoxDesc,
+  chassis3dMechShapes,
   chassis3dReachShapes,
+  CYL_AXIS_Z,
   clearChassis3dColliders,
   swapChassis3dReachColliders,
   elementMass,
@@ -82,11 +85,33 @@ export interface PredictedPose {
   vz: number;
 }
 
+/** one predicted element, in the SAME frame `Artifact` uses: `z` is the sphere's BOTTOM. */
+export interface PredictedElement {
+  id: number;
+  x: number;
+  y: number;
+  z: number;
+}
+
 export interface Predictor {
   /** `'light'` or `'full'` — what the Prediction setting and the Auto probe name it by. */
   readonly kind: 'light' | 'full';
   /** the server tick this predictor was last reset to. */
   readonly tick: number;
+  /**
+   * THE ELEMENTS THIS PREDICTOR IS CARRYING, at its current tick — `null` when it carries none
+   * (LIGHT always; FULL before its first reset).
+   *
+   * ⚠️ **THIS IS A RENDER READ, NOT A SIM ONE.** The FULL predictor has always pushed the near
+   * elements with the predicted chassis and then thrown the answer away, which is what made a
+   * pushed POLLEN the most visible netcode artifact in the game: `displayWorld` drew the local
+   * robot from the prediction (≈ the newest server tick) and the ball it was shoving from the
+   * INTERPOLATION (`INTERP_DELAY_TICKS` behind it), so the two were ~6 ticks out of step inside
+   * one frame — measured at 8.4 in of a POLLEN drawn INSIDE the chassis that was pushing it, at
+   * every RTT including zero. Nothing here is authoritative and nothing here reaches `World`;
+   * the server still owns every element's real position and corrects it on the next snapshot.
+   */
+  elements(): PredictedElement[] | null;
   /** adopt an authoritative snapshot. Cheap for LIGHT (one pose copy); for FULL this is where
    * the bodies are re-seated and the near-element set is rebuilt. */
   reset(world: World, serverTick: number): void;
@@ -219,6 +244,9 @@ export function createLightPredictor(world: World, localRobotId: number): Predic
     get tick() {
       return tick;
     },
+    // LIGHT has no elements at all — the shared drive model and the walls, nothing else. `null`
+    // rather than an empty list, so a caller can tell "I carry none" from "none are near".
+    elements: () => null,
     reset(w: World, serverTick: number): void {
       const src = w.robots.find((r) => r.id === localRobotId);
       local = src ? cloneRobot(src) : null;
@@ -324,12 +352,15 @@ export function createFullPredictor(world: World, localRobotId: number): Predict
   let localRampReady = false;
   const otherRampReady = new Map<number, boolean>();
   const others = new Map<number, InstanceType<Rapier3d['RigidBody']>>();
-  const elements = new Map<number, InstanceType<Rapier3d['RigidBody']>>();
+  /** the near elements, plus the RADIUS each body was built with — the readback subtracts it to
+   *  get back to `Artifact.z` (the sphere's BOTTOM), the same way the chassis readback subtracts
+   *  the half-height it added. */
+  const elements = new Map<number, { body: InstanceType<Rapier3d['RigidBody']>; r: number }>();
   let tick = 0;
   let disposed = false;
 
   function clearElements(): void {
-    for (const b of elements.values()) world3d.removeRigidBody(b);
+    for (const e of elements.values()) world3d.removeRigidBody(e.body);
     elements.clear();
   }
 
@@ -337,6 +368,21 @@ export function createFullPredictor(world: World, localRobotId: number): Predict
     kind: 'full',
     get tick() {
       return tick;
+    },
+    /**
+     * READ LAZILY, ONCE PER FRAME — not accumulated per `step`. A reconcile re-steps up to
+     * `PREDICT_MAX_TICKS` times and only the LAST pose is ever drawn, so reading inside `step`
+     * would do forty times the work for one answer. See the interface's own note for what this
+     * is for and what it deliberately is not.
+     */
+    elements(): PredictedElement[] | null {
+      if (disposed || elements.size === 0) return null;
+      const out: PredictedElement[] = [];
+      for (const [id, e] of elements) {
+        const t = e.body.translation();
+        out.push({ id, x: round4(t.x), y: round4(t.y), z: round4(t.z - e.r) });
+      }
+      return out;
     },
     reset(w: World, serverTick: number): void {
       if (disposed) return;
@@ -393,7 +439,7 @@ export function createFullPredictor(world: World, localRobotId: number): Predict
           const dx = b.pos.x - local.pos.x;
           const dy = b.pos.y - local.pos.y;
           if (dx * dx + dy * dy > r2) continue;
-          elements.set(b.id, makeElementBody(RAPIER, world3d, b));
+          elements.set(b.id, { body: makeElementBody(RAPIER, world3d, b), r: b.r ?? BB_POLLEN_R });
         }
       }
     },
@@ -538,20 +584,49 @@ function fitChassis(
   const fe = robotExtents(r);
   const hx = (fe.front + fe.rear) / 2;
   const forward = (fe.front - fe.rear) / 2;
+  /**
+   * ⚠️ **THE HEIGHT PROFILE IS NOT PART OF THE TRADE — IT IS COPIED EXACTLY** (owner's invisible
+   * corner, 2026-09-21). The cuboid runs floor-to-`BB3_CHASSIS_TOP_Z`, not floor-to-`heightIn`,
+   * and the SAME tall mechanism shapes the authority builds (`chassis3dMechShapes`) go on top of
+   * it. The mouth pocket is a cheap reconcile; the height profile decides WHICH CONTACTS HAPPEN
+   * AT ALL, so a predictor that still thought it was `heightIn` tall everywhere would predict the
+   * catch under the hive that the authority no longer has — the largest class of disagreement
+   * there is, and exactly the one the driver feels.
+   */
+  const bodyTop = Math.min(BB3_CHASSIS_TOP_Z, heightIn);
   world3d.createCollider(
-    chassisBoxDesc(RAPIER, hx, fe.half, heightIn / 2)
-      .setTranslation(forward, 0, 0)
+    chassisBoxDesc(RAPIER, hx, fe.half, bodyTop / 2)
+      .setTranslation(forward, 0, -heightIn / 2 + bodyTop / 2)
       .setDensity(0)
       .setFriction(PHYS_FRICTION)
       .setRestitution(0),
     body,
   );
+  for (const s of chassis3dMechShapes(r.spec, heightIn, { front: fe.front, back: fe.rear, left: fe.half, right: fe.half })) {
+    world3d.createCollider(
+      (s.shape === 'cylinder'
+        ? RAPIER.ColliderDesc.cylinder(s.hz, s.hx).setRotation(CYL_AXIS_Z)
+        : chassisBoxDesc(RAPIER, s.hx, s.hy, s.hz)
+      )
+        .setTranslation(s.cx, s.cy, s.cz)
+        .setDensity(0)
+        .setFriction(PHYS_FRICTION)
+        .setRestitution(0),
+      body,
+    );
+  }
   // the SAME reach shapes the authority builds (`chassis3dReachShapes`, `bodies.ts`) — see
   // `makeRobotBody`'s own note on why this is added despite the predictor otherwise keeping one
   // bare cuboid.
   for (const s of chassis3dReachShapes(r.spec, heightIn, rampReady)) {
     world3d.createCollider(reachColliderDesc(RAPIER, s), body);
   }
+}
+
+/** how many colliders `fitChassis` puts on before the reach hardware — the cuboid plus one per
+ * standing mechanism. `refitRobotBody`'s `keep` for a RAMP-only edge; it was a bare `1`. */
+function predictBaseColliderCount(r: RobotState, heightIn: number): number {
+  return 1 + chassis3dMechShapes(r.spec, heightIn).length;
 }
 
 /**
@@ -576,7 +651,7 @@ function refitRobotBody(
   if (Math.abs(builtHeight - heightIn) <= 1e-9) {
     // a RAMP edge alone: keep the one chassis cuboid (and its floor contact) and swap only the
     // reach hardware, exactly as the authority does — a full clear sinks the robot 0.28 in.
-    swapChassis3dReachColliders(RAPIER, world3d, body, 1, r.spec, heightIn, rampReady);
+    swapChassis3dReachColliders(RAPIER, world3d, body, predictBaseColliderCount(r, heightIn), r.spec, heightIn, rampReady);
     return { height: heightIn, ramp: rampReady };
   }
   clearChassis3dColliders(world3d, body);

@@ -2,7 +2,7 @@ import type { Transport } from './transport';
 import type { Physics, GameId, RobotCommand, World } from '../types';
 import type { RobotSetup } from '../sim/spawn';
 import type { Replay, ReplayResult } from '../sim/replay';
-import type { EloDelta, PlayerIntro, RecordKind, RecordRankInfo, RoomKind } from './protocol';
+import type { EloDelta, MatchDriver, PlayerIntro, RecordKind, RecordRankInfo, RoomKind } from './protocol';
 
 /** the server's authoritative end-of-match payload (score + recorded replay) */
 export interface MatchResultInfo {
@@ -126,6 +126,24 @@ export interface NetSession {
   readonly gen?: number;
   /** per-driver ELO for the intro overlay (empty unless ranked) */
   intros: PlayerIntro[];
+  /**
+   * WHO IS IN EACH SEAT (`matchStart.drivers`) — the usernames the in-match labels print.
+   *
+   * Here for the same reason `gen` above it is: the rejoin record is built field by field
+   * from a live session, so a field this type does not name is a field nobody copies. Optional
+   * because a solo run and an older server both have nobody to name. It is deliberately NOT in
+   * `World`/`RobotState`: a per-tick field ships 30 times a second to every client, and the sim
+   * is a deterministic JSON state machine that has no business knowing who is driving.
+   */
+  drivers?: MatchDriver[];
+  /**
+   * The username driving `robotId`, or undefined — the renderer's lookup.
+   *
+   * A FUNCTION rather than the array, because the label pass asks once per remote robot per
+   * frame and a linear scan of `drivers` on the render loop is the kind of thing that is free
+   * at 4 robots and not free at all once somebody reuses it. The implementation keeps a map.
+   */
+  driverName?(robotId: number): string | undefined;
   /** per-driver overall-ELO change for the results screen (populated shortly
    * after phase 'post' in ranked matches; empty otherwise) */
   eloResults: EloDelta[];

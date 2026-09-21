@@ -62,11 +62,11 @@ export interface FieldGroups {
   /** the same count for the PIVOT ROCKER (the two Goal Pivot Bracket plates, the damper holders
    * and the dampers) — see THE PIVOT ROCKER THE PIPELINE ALSO FILED AS FRAME. */
   rockerTris: number;
-  /** how many triangles `fixGroundBeamWinding` split into their own `DoubleSide` sibling mesh —
-   * the Sheet Metal Foot Bar, the Frame Foot pads and the Under Tile Bar. See THE GROUND BARS ARE
-   * WOUND INCONSISTENTLY above. Non-zero on the shipped asset; zero once `convert.py` exports
-   * these with consistent winding. */
-  groundBeamTris: number;
+  /** what the load-time WINDING REPAIR did — see IT IS NOT THE GROUND BARS above. On the shipped
+   * asset `reversedTris` is about half of `totalTris` and `openTris` is 0 on the high LOD; both go
+   * to zero the day `convert.py` orients its tessellation before merging. Replaces the
+   * `groundBeamTris` count, whose three-part `DoubleSide` patch this generalises. */
+  winding: ShellRepairStats;
   /** what the PRINTED FIELD MARKINGS block built — all zero on the LOW LOD, by design. */
   markings: FieldMarkings;
 }
@@ -1297,55 +1297,27 @@ const ROCKER_HALF_SPAN_IN = 1.25;
  * 149 ms the normal pass already costs there.
  */
 /** exported for the RENDER lane, which needs to enumerate hive-frame components from the shipped
- *  GLB the same way `hiveFrameComponents`/`fixGroundBeamWinding` do — a re-implementation could
+ *  GLB the same way `hiveFrameComponents`/`reparentTrayBraces` do — a re-implementation could
  *  agree with a wrong belief about the topology instead of measuring the real one. */
 export function weldedComponents(
   mesh: THREE.Mesh,
 ): { ofTriangle: Int32Array; spans: Map<number, { tris: number; xMin: number; xMax: number; zMin: number; zMax: number }> } {
-  const geo = mesh.geometry;
-  const pos = geo.getAttribute('position');
-  const idx = geo.getIndex();
-  const triCount = idx ? idx.count / 3 : pos.count / 3;
+  const { tri, triCount, siteCount, sitePos } = weldTriangles(mesh.geometry);
   const ofTriangle = new Int32Array(triCount).fill(-1);
   const spans = new Map<number, { tris: number; xMin: number; xMax: number; zMin: number; zMax: number }>();
-  if (!pos || triCount === 0) return { ofTriangle, spans };
+  if (triCount === 0) return { ofTriangle, spans };
   mesh.updateWorldMatrix(true, false);
   const v = new THREE.Vector3();
-  const site = new Map<string, number>();
-  const rep = new Int32Array(pos.count);
-  const worldX: number[] = [];
-  const worldZ: number[] = [];
-  for (let i = 0; i < pos.count; i++) {
-    const key = `${pos.getX(i)},${pos.getY(i)},${pos.getZ(i)}`;
-    let r = site.get(key);
-    if (r === undefined) {
-      r = site.size;
-      site.set(key, r);
-      v.fromBufferAttribute(pos, i).applyMatrix4(mesh.matrixWorld);
-      worldX.push(v.x);
-      worldZ.push(v.z);
-    }
-    rep[i] = r;
+  const worldX = new Float64Array(siteCount);
+  const worldZ = new Float64Array(siteCount);
+  for (let s = 0; s < siteCount; s++) {
+    v.set(sitePos[s * 3], sitePos[s * 3 + 1], sitePos[s * 3 + 2]).applyMatrix4(mesh.matrixWorld);
+    worldX[s] = v.x;
+    worldZ[s] = v.z;
   }
-  const parent = new Int32Array(site.size);
-  for (let i = 0; i < parent.length; i++) parent[i] = i;
-  const find = (a: number): number => {
-    while (parent[a] !== a) {
-      parent[a] = parent[parent[a]];
-      a = parent[a];
-    }
-    return a;
-  };
-  const at = (t: number, k: number): number => (idx ? idx.getX(t * 3 + k) : t * 3 + k);
+  const root = vertexComponents(tri, triCount, siteCount);
   for (let t = 0; t < triCount; t++) {
-    const a = find(rep[at(t, 0)]);
-    const b = find(rep[at(t, 1)]);
-    const c = find(rep[at(t, 2)]);
-    if (a !== b) parent[b] = a;
-    if (find(c) !== find(a)) parent[find(c)] = find(a);
-  }
-  for (let t = 0; t < triCount; t++) {
-    const r = find(rep[at(t, 0)]);
+    const r = root[t];
     ofTriangle[t] = r;
     let s = spans.get(r);
     if (!s) {
@@ -1354,7 +1326,7 @@ export function weldedComponents(
     }
     s.tris++;
     for (let k = 0; k < 3; k++) {
-      const rr = rep[at(t, k)];
+      const rr = tri[t * 3 + k];
       const x = worldX[rr];
       const z = worldZ[rr];
       if (x < s.xMin) s.xMin = x;
@@ -1364,6 +1336,75 @@ export function weldedComponents(
     }
   }
   return { ofTriangle, spans };
+}
+
+/**
+ * The weld itself, split out of `weldedComponents` so the winding repair below and the component
+ * passes above share ONE welder rather than each carrying a copy of it. Triangles come back as
+ * triples of WELDED SITE ids, in the geometry's own LOCAL frame; a caller that needs world
+ * coordinates transforms the `siteCount` sites, not the `pos.count` vertices.
+ *
+ * ⚠️ A NON-INDEXED GEOMETRY IS GIVEN AN IDENTITY INDEX FIRST. The winding repair rewrites the
+ * index and nothing else, which is what makes it free of attribute copying; the shipped asset is
+ * indexed, and this is the guard for one that is not.
+ */
+function weldTriangles(geo: THREE.BufferGeometry): {
+  tri: Int32Array;
+  triCount: number;
+  siteCount: number;
+  sitePos: Float64Array;
+} {
+  const pos = geo.getAttribute('position');
+  if (!pos) return { tri: new Int32Array(0), triCount: 0, siteCount: 0, sitePos: new Float64Array(0) };
+  if (!geo.getIndex()) {
+    const ident = new Uint32Array(pos.count);
+    for (let i = 0; i < pos.count; i++) ident[i] = i;
+    geo.setIndex(new THREE.BufferAttribute(ident, 1));
+  }
+  const idx = geo.getIndex()!;
+  const triCount = Math.floor(idx.count / 3);
+  const site = new Map<string, number>();
+  const rep = new Int32Array(pos.count);
+  const px: number[] = [];
+  for (let i = 0; i < pos.count; i++) {
+    const x = pos.getX(i);
+    const y = pos.getY(i);
+    const z = pos.getZ(i);
+    const key = `${x},${y},${z}`;
+    let r = site.get(key);
+    if (r === undefined) {
+      r = site.size;
+      site.set(key, r);
+      px.push(x, y, z);
+    }
+    rep[i] = r;
+  }
+  const tri = new Int32Array(triCount * 3);
+  for (let t = 0; t < triCount * 3; t++) tri[t] = rep[idx.getX(t)];
+  return { tri, triCount, siteCount: site.size, sitePos: Float64Array.from(px) };
+}
+
+/** union-find over welded sites; returns each triangle's component root. */
+function vertexComponents(tri: Int32Array, triCount: number, siteCount: number): Int32Array {
+  const parent = new Int32Array(siteCount);
+  for (let i = 0; i < siteCount; i++) parent[i] = i;
+  const find = (a: number): number => {
+    while (parent[a] !== a) {
+      parent[a] = parent[parent[a]];
+      a = parent[a];
+    }
+    return a;
+  };
+  for (let t = 0; t < triCount; t++) {
+    const a = find(tri[t * 3]);
+    const b = find(tri[t * 3 + 1]);
+    const c = find(tri[t * 3 + 2]);
+    if (a !== b) parent[b] = a;
+    if (find(c) !== find(a)) parent[find(c)] = find(a);
+  }
+  const out = new Int32Array(triCount);
+  for (let t = 0; t < triCount; t++) out[t] = find(tri[t * 3]);
+  return out;
 }
 
 /** one connected part of a hive FRAME node, and how far it reaches from the NEARER tray's
@@ -1408,54 +1449,116 @@ function trayPivotX(): Record<Alliance, number> {
   return { red: fieldColliders3d().trays.red.pivot[0], blue: fieldColliders3d().trays.blue.pivot[0] };
 }
 
-// ── THE GROUND BARS ARE WOUND INCONSISTENTLY, AND `FrontSide` SHOWS ONLY HALF OF THEM ──────────
+// ── IT IS NOT THE GROUND BARS. THE WHOLE ASSET IS WOUND AT RANDOM, AND `FrontSide` DELETES ABOUT
+//    HALF OF EVERY PART ON THIS FIELD ─────────────────────────────────────────────────────────
 //
-// owner report 2026-09-20: "the structural beams on the ground are rendered as transparent on one
-// side and opaque on the other." The parts: `am-5878 Sheet Metal Foot Bar` (one per hive, the
-// full-length bar under both A-frame feet) and `am-5879-A/B Frame Foot` (the two pads at its
-// ends) — plus `am-5880 Under Tile Bar`, which shares the defect but sits below the tiles and is
-// never actually seen.
+// owner report 2026-09-21: "a lot of mounting brackets, especially black and gray ones with
+// complex geometry, have holes in them from different angles and they are glitchy and broken."
 //
-// THIS IS NOT THE OPEN-SHEETING DEFECT the clear panels have (`CLEAR_SHEETS_ARE_SINGLE_SIDED`).
-// Measured on the shipped `field.glb` with the connected-component welder above
-// (`scratch/groundbeam-analyze.ts`, kept out of the repo's build): the Sheet Metal Foot Bar and
-// the two Frame Foot components have **0 boundary edges** each — closed shells, not sheets — with
-// a plausible triangle count for their size. What is wrong is the WINDING: the mesh's own
-// enclosed volume (the divergence-theorem sum over its triangles, `Σ a·(b×c)/6`, which telescopes
-// to the true volume only when every triangle's normal points consistently outward) comes out at
-// **2.7–7.8× the component's own bounding-box volume** — physically impossible for a real solid,
-// however many bolt holes it has, since a hole can only REMOVE volume from the bbox, never add to
-// it. A REFERENCE solid of comparable bulk, the A-Frame Leg (`comp` bbox 3.25×3.05×4.73 in),
-// measured the same way lands at **0.5–0.8×**, well inside the box, as a real strut should. So a
-// real minority of each ground bar's own triangles are wound the SAME direction as the rest
-// instead of oppositely — a genuinely closed shape, but not a consistently ORIENTED one as
-// exported — and `THREE.FrontSide` culls exactly the triangles whose normal ended up pointing
-// inward, which is what "opaque from here, see-through from there" looks like on a flat bar.
+// This block used to be `fixGroundBeamWinding` — a `DoubleSide` patch over three named parts
+// (`am-5878 Sheet Metal Foot Bar`, `am-5879 Frame Foot`, `am-5880 Under Tile Bar`), selected by a
+// z-band, written for the 2026-09-20 report "the structural beams on the ground are rendered as
+// transparent on one side and opaque on the other". That report was true and the patch worked. The
+// DIAGNOSIS was three parts too small: those bars are not special, they are just the three the
+// owner happened to be standing next to.
 //
-// ⚠️ A PER-TRIANGLE Z TEST WOULD SLICE THE A-FRAME LEG'S OWN FOOT INTO THIS BUCKET. The leg's
-// bbox starts at z 0.218 — inside the ground band — because it is ONE connected component running
-// all the way to its z-41.4 apex. `GROUND_BEAM_MAX_Z` is therefore tested against a component's
-// own `zMax` (whole-part), never a triangle centroid, the same reasoning `isTrayBracePoint`'s own
-// header gives for why the rocker selector has to be a whole connected part.
+// MEASURED over EVERY mesh and EVERY welded connected component of both shipped GLBs
+// (`scratch/bracket-winding.ts`), `field.glb`:
 //
-// THE FIX IS `DoubleSide`, SCOPED TO ONLY THESE COMPONENTS — not the blanket `hive_frame` metal
-// mesh, which would double the fragment cost of every A-Frame Leg, Churro, Top Bar and Axle
-// Holder alongside them for no reason (none of those show this defect: their own volume ratios
-// measured 0.5–0.8×, see above). Measured extraction on `field.glb`: **6,690 of the three
-// `hive_*/frame` nodes' 50,278 combined triangles (13.3%)** — Frame Foot ×2 + Sheet Metal Foot
-// Bar per alliance (3,148 red, 3,134 blue), plus the shared Under Tile Bar pair (408). On
-// `field-low.glb`: 1,511 of 7,386 (20.5%) — a bigger SHARE at the low LOD only because the
-// simplifier cannot shrink these small parts much further, not because more of them are wrong.
-// The real defect is the exporter's (`convert.py`'s tessellation of these sheet-metal parts);
-// this is the load-time compensation, the same relationship `CLEAR_SHEETS_ARE_SINGLE_SIDED` has
-// to the open-sheeting bug — see that constant's header and `public/models/biobuzz/README.md`'s
-// note for whoever next touches `convert.py`.
-const GROUND_BEAM_MAX_Z = 3;
+//   | class                                        | comps | tris    | share |
+//   |---|---|---|---|
+//   | closed, consistently wound, facing OUT (fine)| 0     | 0       | 0 %   |
+//   | closed, consistently wound, INVERTED         | 1     | 12      | 0.0 % |
+//   | closed, MIXED winding inside one shell       | 193   | 268,880 | 100 % |
+//   | genuinely OPEN sheeting                      | 0     | 0       | 0 %   |
+//
+// **Not one component of the high-detail field is correctly wound, and not one of them is open
+// sheeting either.** Every part is a closed shell — 0 boundary edges across all 268,892 triangles
+// — whose faces are wound in no consistent direction. Propagating orientation across shared edges
+// and then turning each shell outward by its own signed volume REVERSES **132,190 of 268,892
+// triangles (49.2 %)**, and 193 of 193 shells are orientable, so nothing here is a Möbius strip or
+// a genuine modelling error: it is an exporter that never fixed its tessellation's handedness.
+//
+// ⚠️ **AND THE PROOF IS NOT THE EDGE TOPOLOGY, BECAUSE THE EDGE TOPOLOGY IS WHAT EVERY PREVIOUS
+// PASS AT THIS BUG ALSO BELIEVED.** The verdict is confirmed by RAY PARITY (`scratch/wparity.ts`),
+// which never looks at winding at all: a point one hundredth of an inch off a face along that
+// face's own normal is outside the shell iff the normal points outward, and "outside" is an
+// even/odd crossing count along a fixed direction. Sampled ~250 faces per component:
+// `hive_red/frame` 36–56 % of faces pointing INWARD, the flowers 34–50 %, and the perimeter
+// `walls` rails **69–76 %**. Two independent methods, the same answer.
+//
+// WHAT THE TWO EARLIER PASSES GOT WRONG, both of which were reasoning from a partial measurement:
+//  - THE GROUND BARS (2026-09-20). "Volume 2.7–7.8× the bounding box, physically impossible" is
+//    right, and the A-Frame Top Corner it took as a healthy REFERENCE measures 0.73× — inside its
+//    box, so it looked fine — while being 46.6 % reversed. A scrambled shell's divergence sum is a
+//    number with no meaning; it lands outside the box sometimes and inside it sometimes, and the
+//    reference was the second case.
+//  - THE CLEAR PANELS (2026-09-19, `CLEAR_SHEETS_ARE_SINGLE_SIDED`). `sheetFacingBalance` reports
+//    "every plane 100 / 0" for the cell skins and the wall glass and reads it as "single-sided
+//    sheets". A 0.020-in slab puts BOTH its faces in one plane cluster (the key quantizes the
+//    offset at `SHEET_PLANE_TOL_IN` = 0.25 in), so a healthy slab splits that cluster 50 / 50 and
+//    100 / 0 means the two faces wind the SAME way — i.e. half of them point into the slab. That
+//    is this defect, measured, and named as open sheeting. The panels do measure 0 boundary edges,
+//    which a sheet cannot have; the contradiction was in the file the whole time.
+//
+// THE FIX, PER CONNECTED COMPONENT, CHEAPEST FIRST — `repairGeometryWinding` below:
+//  (a) closed and consistently wound already        → nothing (`FrontSide`, one-sided, cheap).
+//  (b) closed and consistently wound but INVERTED    → reverse the index winding; still FrontSide.
+//  (c) closed with MIXED winding                     → propagate orientation across every shared
+//      edge from one seed face, which makes the shell consistent, then reverse the whole shell if
+//      its signed volume came out negative. Still FrontSide. This is the case the whole field is.
+//  (d) genuinely OPEN sheeting                       → `DoubleSide`, for THAT component only.
+//
+// ⚠️ **NORMALS ARE NOT A SEPARATE STEP, AND THE ORDER IS WHY.** This pass rewrites the INDEX and
+// nothing else, and it runs BEFORE `styleScene`, so `computeCreasedNormals` — which is the one
+// normal pass in this file and computes a face normal as `(b−a)×(c−a)` — reads the CORRECTED
+// winding and there is no second place for the two to disagree. Reversing a triangle after the
+// normals were computed is how a "fixed" face goes black.
+//
+// ⚠️ **THE CLEAR PANELS ARE SKIPPED ENTIRELY.** `isClearPanel`'s meshes keep their winding, their
+// normals and their `DoubleSide` material exactly as they are. Their look is four measured tuning
+// passes deep (see the dielectric header) and every one of those numbers was measured against the
+// asset as it ships; a winding repair under them would quietly halve the layer count the veil and
+// the Fresnel alpha were fitted to. `CLEAR_SHEETS_ARE_SINGLE_SIDED`'s premise is now known to be
+// wrong, but its OUTCOME — draw every clear face from both sides — is what the measurements were
+// taken under, and it stays until someone re-measures. The RENDER lane pins the skip.
+//
+// COST. `field.glb`: 268,892 triangles repaired in ~285 ms once at load, against the 149 ms
+// `computeCreasedNormals` already spends there; nothing per frame, nothing per instance (the pass
+// is keyed by GEOMETRY, so the four flower nodes that share six geometries pay once). DRAW cost is
+// UNCHANGED on the high LOD — zero components come out open, so not one triangle moves off
+// `FrontSide`, and the field renders one-sided exactly as it did. `field-low.glb` is the only
+// place `DoubleSide` is used at all: the simplifier opens real holes in the small parts, and 78 of
+// its 174 components (3,498 of 84,708 triangles, **4.1 %**) exceed `OPEN_SHELL_BOUNDARY_FRAC`.
+//
+// The real defect is still the exporter's — `convert.py` / `assemble-gltf.mjs` should orient the
+// tessellation before it merges parts, and `public/models/biobuzz/README.md` carries that note.
+// This is the load-time compensation, and it is a no-op the day the asset ships oriented (every
+// component classifies (a) and nothing is reversed).
 
-/** whole-COMPONENT test — see the header above for why a per-triangle one is wrong here. */
-function isGroundBeamSpan(zMax: number): boolean {
-  return zMax <= GROUND_BEAM_MAX_Z;
-}
+/**
+ * How much of a component's own edge budget may be BOUNDARY before it stops counting as a closed
+ * shell that merely has holes punched in it and starts counting as genuine sheeting.
+ *
+ * ⚠️ NOT ZERO, and the low LOD is why. `field.glb` has no boundary edge anywhere, but the
+ * simplifier that makes `field-low.glb` nicks small parts: measured there, 23 components carrying
+ * **31,352 triangles** have a boundary fraction at or under 3 % — a solid with a few decimated
+ * corners, whose signed volume is still its true volume to a fraction of a percent and which is
+ * correct and CHEAP one-sided — while 78 components carrying only 3,498 triangles are 3 % or more
+ * open, which is what a flattened sheet or a stripped tube looks like. Treating every nick as
+ * sheeting would put 41 % of the LOW-detail field on `DoubleSide`, on the preset that can least
+ * afford it, to fix nothing.
+ */
+const OPEN_SHELL_BOUNDARY_FRAC = 0.03;
+
+/**
+ * A face-island whose signed volume is under this share of its own bounding box has no usable
+ * inside — a flat sliver pair, or the two-triangle offcuts the decimator leaves behind — so its
+ * orientation is left exactly as authored rather than decided by the sign of a number that is
+ * numerically zero. They cover no pixels either way; what this buys is DETERMINISM, so two loads
+ * of the same asset always produce the same index buffer.
+ */
+const ISLAND_VOLUME_EPS = 1e-6;
 
 /**
  * boundary/flip/volume stats for one connected component's triangles, exported so the RENDER lane
@@ -1508,63 +1611,452 @@ export function shellWindingStats(
   return { boundaryEdges, flippedEdges, okInteriorEdges, nonManifoldEdges, signedVolume };
 }
 
-/** one `THREE.DoubleSide` clone per source material, so every ground-beam component sharing a
- *  finish (e.g. both alliances' `metal#303030` Frame Foot pads) reuses one material instance
- *  instead of each getting its own — and so the ORIGINAL cached material (shared with the
- *  A-Frame Leg, Churro, etc. in `styleScene`'s own cache) is never mutated in place. */
-const groundBeamMaterialCache = new Map<THREE.Material, THREE.Material>();
-function groundBeamMaterial(src: THREE.Material): THREE.Material {
-  let mat = groundBeamMaterialCache.get(src);
+/** one connected component's winding verdict, as `analyseMeshShells` reports it. */
+export interface ShellComponent {
+  tris: number;
+  boundaryEdges: number;
+  flippedEdges: number;
+  okInteriorEdges: number;
+  nonManifoldEdges: number;
+  /** divergence-theorem volume, meaningful only once the shell is consistently wound */
+  signedVolume: number;
+  /** `boundaryEdges / totalEdges` — over `OPEN_SHELL_BOUNDARY_FRAC` means sheeting */
+  boundaryFraction: number;
+  open: boolean;
+}
+
+/** what one geometry's repair did. `open` is a per-triangle flag, `null` when nothing is open. */
+interface GeometryWinding {
+  components: number;
+  openComponents: number;
+  reversedTris: number;
+  openTris: number;
+  nonOrientableIslands: number;
+  open: Uint8Array | null;
+}
+
+/** running totals over a whole load, surfaced on `FieldGroups.winding` and pinned by the lane. */
+export interface ShellRepairStats {
+  meshes: number;
+  components: number;
+  openComponents: number;
+  totalTris: number;
+  /** triangles whose index winding this pass reversed — cases (b) and (c) */
+  reversedTris: number;
+  /** triangles moved onto a `DoubleSide` sibling mesh — case (d) */
+  openTris: number;
+  /** triangles left alone because they belong to a clear panel (see the header) */
+  clearPanelTris: number;
+  /** face-islands that could not be consistently oriented at all — expected 0 */
+  nonOrientableIslands: number;
+  ms: number;
+}
+
+/**
+ * The edge topology and winding verdict of every connected component of one mesh, exported so the
+ * RENDER lane measures the SHIPPED asset (and the post-repair scene) with this code rather than a
+ * re-implementation that could agree with a wrong belief — which is exactly how the two earlier
+ * passes at this bug went wrong. See the header above.
+ */
+export function analyseMeshShells(mesh: THREE.Mesh): ShellComponent[] {
+  const { tri, triCount, siteCount, sitePos } = weldTriangles(mesh.geometry);
+  if (triCount === 0) return [];
+  const topo = shellTopology(tri, triCount, siteCount, sitePos);
+  return [...topo.components.values()];
+}
+
+/**
+ * The shared core: weld -> components -> edges -> face-island orientation. Returns everything both
+ * `analyseMeshShells` (read-only) and `repairGeometryWinding` (which rewrites the index) need, so
+ * the measurement and the fix can never disagree about what they are looking at.
+ */
+function shellTopology(
+  tri: Int32Array,
+  triCount: number,
+  siteCount: number,
+  sitePos: Float64Array,
+): {
+  components: Map<number, ShellComponent>;
+  componentOf: Int32Array;
+  /** +1 keep, −1 reverse, 0 degenerate/untouched */
+  orient: Int8Array;
+  nonOrientableIslands: number;
+} {
+  // ⚠️ A DEGENERATE TRIANGLE HAS NO ORIENTATION AND NO ADJACENCY. `KHR_mesh_quantization` snaps
+  // positions onto a 16-bit grid and collapses slivers onto it (116 of them in one hive-frame mesh
+  // alone), and a collapsed triangle's two coincident corners make a self-edge that would wire
+  // unrelated faces together and split the real shell into hundreds of islands. Skipped
+  // throughout, left exactly as authored, and they draw no pixels either way.
+  const degenerate = new Uint8Array(triCount);
+  for (let t = 0; t < triCount; t++) {
+    const a = tri[t * 3];
+    const b = tri[t * 3 + 1];
+    const c = tri[t * 3 + 2];
+    if (a === b || b === c || c === a) degenerate[t] = 1;
+  }
+
+  const componentOf = vertexComponents(tri, triCount, siteCount);
+
+  // ── edges, as flat slots keyed by the undirected welded pair. `dir` is +1 when the triangle
+  // traverses the pair in (min, max) order, so two faces sharing an edge are consistently wound
+  // exactly when their signed directions cancel.
+  const cap = triCount * 3;
+  const slotOf = new Map<number, number>();
+  const eTri0 = new Int32Array(cap);
+  const eTri1 = new Int32Array(cap);
+  const eDir0 = new Int8Array(cap);
+  const eDir1 = new Int8Array(cap);
+  const eUses = new Int32Array(cap);
+  let slots = 0;
+  for (let t = 0; t < triCount; t++) {
+    if (degenerate[t]) continue;
+    for (let k = 0; k < 3; k++) {
+      const p = tri[t * 3 + k];
+      const q = tri[t * 3 + ((k + 1) % 3)];
+      const key = p < q ? p * siteCount + q : q * siteCount + p;
+      let s = slotOf.get(key);
+      if (s === undefined) {
+        s = slots++;
+        slotOf.set(key, s);
+      }
+      const used = eUses[s]++;
+      if (used === 0) {
+        eTri0[s] = t;
+        eDir0[s] = p < q ? 1 : -1;
+      } else if (used === 1) {
+        eTri1[s] = t;
+        eDir1[s] = p < q ? 1 : -1;
+      }
+    }
+  }
+
+  const components = new Map<number, ShellComponent>();
+  const compOf = (t: number): ShellComponent => {
+    const id = componentOf[t];
+    let c = components.get(id);
+    if (!c) {
+      c = {
+        tris: 0, boundaryEdges: 0, flippedEdges: 0, okInteriorEdges: 0, nonManifoldEdges: 0,
+        signedVolume: 0, boundaryFraction: 0, open: false,
+      };
+      components.set(id, c);
+    }
+    return c;
+  };
+  for (let t = 0; t < triCount; t++) compOf(t).tris++;
+  for (let s = 0; s < slots; s++) {
+    const c = compOf(eTri0[s]);
+    if (eUses[s] === 1) c.boundaryEdges++;
+    else if (eUses[s] === 2) {
+      if (eDir0[s] === eDir1[s]) c.flippedEdges++;
+      else c.okInteriorEdges++;
+    } else c.nonManifoldEdges++;
+  }
+
+  // ── face-adjacency, over MANIFOLD edges only. A non-manifold edge (two solids fused along a
+  // face) is a legitimate junction between two shells that each want their own outward, so
+  // propagation deliberately stops at it and each side is oriented by its own volume.
+  const adjStart = new Int32Array(triCount + 1);
+  for (let s = 0; s < slots; s++) {
+    if (eUses[s] !== 2) continue;
+    adjStart[eTri0[s] + 1]++;
+    adjStart[eTri1[s] + 1]++;
+  }
+  for (let t = 0; t < triCount; t++) adjStart[t + 1] += adjStart[t];
+  const cursor = adjStart.slice(0, triCount);
+  const adjTri = new Int32Array(adjStart[triCount]);
+  const adjSlot = new Int32Array(adjStart[triCount]);
+  for (let s = 0; s < slots; s++) {
+    if (eUses[s] !== 2) continue;
+    const u = eTri0[s];
+    const v = eTri1[s];
+    adjTri[cursor[u]] = v;
+    adjSlot[cursor[u]++] = s;
+    adjTri[cursor[v]] = u;
+    adjSlot[cursor[v]++] = s;
+  }
+
+  const orient = new Int8Array(triCount);
+  let nonOrientableIslands = 0;
+  const stack: number[] = [];
+  const island: number[] = [];
+  for (let seed = 0; seed < triCount; seed++) {
+    if (orient[seed] !== 0 || degenerate[seed]) continue;
+    orient[seed] = 1;
+    stack.length = 0;
+    island.length = 0;
+    stack.push(seed);
+    let conflict = false;
+    while (stack.length > 0) {
+      const u = stack.pop()!;
+      island.push(u);
+      for (let i = adjStart[u]; i < adjStart[u + 1]; i++) {
+        const v = adjTri[i];
+        const s = adjSlot[i];
+        // u and v both traverse the shared edge; consistently wound means the signs cancel
+        const du = (eTri0[s] === u ? eDir0[s] : eDir1[s]) * orient[u];
+        const dv = eTri0[s] === u ? eDir1[s] : eDir0[s];
+        const want: 1 | -1 = du * dv > 0 ? -1 : 1;
+        if (orient[v] === 0) {
+          orient[v] = want;
+          stack.push(v);
+        } else if (orient[v] !== want) conflict = true;
+      }
+    }
+    if (conflict) nonOrientableIslands++;
+
+    // ...and now turn the island outward. `Σ a·(b×c)/6` over consistently wound triangles is the
+    // enclosed volume, POSITIVE when the faces point out — in the geometry's own local frame,
+    // which is safe because every node on this asset has a positive-determinant world matrix
+    // (`assembleFieldGroups` asserts it) and a rotation cannot change a winding's handedness.
+    let vol = 0;
+    let bx0 = Infinity; let by0 = Infinity; let bz0 = Infinity;
+    let bx1 = -Infinity; let by1 = -Infinity; let bz1 = -Infinity;
+    for (const t of island) {
+      const s = orient[t];
+      const ia = tri[t * 3];
+      const ib = tri[t * 3 + (s > 0 ? 1 : 2)];
+      const ic = tri[t * 3 + (s > 0 ? 2 : 1)];
+      const ax = sitePos[ia * 3]; const ay = sitePos[ia * 3 + 1]; const az = sitePos[ia * 3 + 2];
+      const bx = sitePos[ib * 3]; const by = sitePos[ib * 3 + 1]; const bz = sitePos[ib * 3 + 2];
+      const cx = sitePos[ic * 3]; const cy = sitePos[ic * 3 + 1]; const cz = sitePos[ic * 3 + 2];
+      vol += (ax * (by * cz - bz * cy) + ay * (bz * cx - bx * cz) + az * (bx * cy - by * cx)) / 6;
+      for (const [x, y, z] of [[ax, ay, az], [bx, by, bz], [cx, cy, cz]] as const) {
+        if (x < bx0) bx0 = x; if (x > bx1) bx1 = x;
+        if (y < by0) by0 = y; if (y > by1) by1 = y;
+        if (z < bz0) bz0 = z; if (z > bz1) bz1 = z;
+      }
+    }
+    const bbox = Math.max((bx1 - bx0) * (by1 - by0) * (bz1 - bz0), 1e-12);
+    if (vol < 0 && Math.abs(vol) / bbox > ISLAND_VOLUME_EPS) {
+      for (const t of island) orient[t] = orient[t] > 0 ? -1 : 1;
+      vol = -vol;
+    }
+    compOf(seed).signedVolume += vol;
+  }
+
+  for (const c of components.values()) {
+    const edges = c.boundaryEdges + c.flippedEdges + c.okInteriorEdges + c.nonManifoldEdges;
+    c.boundaryFraction = edges > 0 ? c.boundaryEdges / edges : 1;
+    c.open = c.boundaryFraction > OPEN_SHELL_BOUNDARY_FRAC;
+  }
+  return { components, componentOf, orient, nonOrientableIslands };
+}
+
+/**
+ * Repairs ONE geometry's winding in place — cases (a)–(c) of the header — and reports which of its
+ * triangles belong to a genuinely open component, case (d), for the caller to route onto a
+ * `DoubleSide` sibling. Only the INDEX is rewritten; positions and every other attribute are
+ * untouched, which is why this is cheap enough to run at load over the whole field.
+ */
+function repairGeometryWinding(geo: THREE.BufferGeometry): GeometryWinding {
+  const none: GeometryWinding = {
+    components: 0, openComponents: 0, reversedTris: 0, openTris: 0, nonOrientableIslands: 0, open: null,
+  };
+  const { tri, triCount, siteCount, sitePos } = weldTriangles(geo);
+  if (triCount === 0) return none;
+  const { components, componentOf, orient, nonOrientableIslands } = shellTopology(tri, triCount, siteCount, sitePos);
+
+  const idx = geo.getIndex()!;
+  let reversedTris = 0;
+  for (let t = 0; t < triCount; t++) {
+    if (orient[t] >= 0) continue;
+    const b = idx.getX(t * 3 + 1);
+    idx.setX(t * 3 + 1, idx.getX(t * 3 + 2));
+    idx.setX(t * 3 + 2, b);
+    reversedTris++;
+  }
+  if (reversedTris > 0) idx.needsUpdate = true;
+
+  let openComponents = 0;
+  let openTris = 0;
+  let open: Uint8Array | null = null;
+  for (const c of components.values()) if (c.open) openComponents++;
+  if (openComponents > 0) {
+    open = new Uint8Array(triCount);
+    for (let t = 0; t < triCount; t++) {
+      if (!components.get(componentOf[t])?.open) continue;
+      open[t] = 1;
+      openTris++;
+    }
+  }
+  return { components: components.size, openComponents, reversedTris, openTris, nonOrientableIslands, open };
+}
+
+/**
+ * Walks every mesh of the loaded scene and repairs its winding — see the header above.
+ *
+ * Keyed by GEOMETRY, not by mesh: the four `flower_*` nodes share six geometries between them, and
+ * reversing a shared index buffer once per instance would reverse it four times, which is a no-op
+ * and an extremely quiet one. Clear-panel meshes are skipped entirely.
+ *
+ * Runs BEFORE `styleScene`, so it reads the glTF's own `<finish>#<hex>` material names (which is
+ * what `isClearPanel` is keyed on) and so `computeCreasedNormals` sees the corrected winding.
+ */
+function repairFieldWinding(root: THREE.Object3D): { stats: ShellRepairStats; open: Map<THREE.BufferGeometry, Uint8Array> } {
+  const t0 = nowMs();
+  const stats: ShellRepairStats = {
+    meshes: 0, components: 0, openComponents: 0, totalTris: 0, reversedTris: 0, openTris: 0,
+    clearPanelTris: 0, nonOrientableIslands: 0, ms: 0,
+  };
+  const open = new Map<THREE.BufferGeometry, Uint8Array>();
+  const done = new Set<THREE.BufferGeometry>();
+  const walk = (obj: THREE.Object3D, family: NodeFamily): void => {
+    const own = nodeFamilyOf((obj.userData as { name?: string } | undefined)?.name ?? obj.name);
+    const here = own ?? family;
+    if (obj instanceof THREE.Mesh && obj.geometry) {
+      const src = Array.isArray(obj.material) ? obj.material[0] : obj.material;
+      const parsed = parseMaterialName(src?.name);
+      const tris = triangleCount(obj.geometry);
+      if (parsed && isClearPanel(parsed.finish, parsed.colorHex, here)) {
+        stats.clearPanelTris += tris;
+      } else if (!done.has(obj.geometry)) {
+        done.add(obj.geometry);
+        stats.meshes++;
+        stats.totalTris += tris;
+        const r = repairGeometryWinding(obj.geometry);
+        stats.components += r.components;
+        stats.openComponents += r.openComponents;
+        stats.reversedTris += r.reversedTris;
+        stats.openTris += r.openTris;
+        stats.nonOrientableIslands += r.nonOrientableIslands;
+        if (r.open) open.set(obj.geometry, r.open);
+      }
+    }
+    for (const child of obj.children) walk(child, here);
+  };
+  walk(root, 'other');
+  stats.ms = nowMs() - t0;
+  return { stats, open };
+}
+
+function triangleCount(geo: THREE.BufferGeometry): number {
+  const idx = geo.getIndex();
+  const pos = geo.getAttribute('position');
+  return Math.floor((idx ? idx.count : (pos?.count ?? 0)) / 3);
+}
+
+/** a load-time stopwatch that degrades to 0 where there is no `performance` (the Node lane). */
+function nowMs(): number {
+  return typeof performance !== 'undefined' && typeof performance.now === 'function' ? performance.now() : 0;
+}
+
+/** one `THREE.DoubleSide` clone per source material, so every open component sharing a finish
+ *  reuses one instance — and so the ORIGINAL cached material (shared with the correctly-wound
+ *  parts in `styleScene`'s own cache) is never mutated in place. */
+const doubleSidedMaterialCache = new Map<THREE.Material, THREE.Material>();
+function doubleSidedMaterial(src: THREE.Material): THREE.Material {
+  let mat = doubleSidedMaterialCache.get(src);
   if (!mat) {
     mat = src.clone();
     mat.side = THREE.DoubleSide;
-    mat.name = `${src.name}|groundbeam`;
-    groundBeamMaterialCache.set(src, mat);
+    mat.name = `${src.name}|doubleside`;
+    doubleSidedMaterialCache.set(src, mat);
   }
   return mat;
 }
 
 /**
- * Pulls the ground-beam triangles (see the header above) out of each hive FRAME node's merged
- * mesh into their own sibling mesh, rendered `DoubleSide` — everything else in the node is
- * untouched and stays `FrontSide`. Returns the triangle count moved, which the RENDER lane asserts
- * is a small minority of the frame's own (never zero, never the majority).
+ * Case (d): moves each genuinely OPEN component's triangles onto their own sibling mesh, rendered
+ * `DoubleSide`. Everything else in the mesh is untouched and stays `FrontSide` — the "scoped, not
+ * blanket" property `fixGroundBeamWinding` had and the RENDER lane still asserts.
+ *
+ * ⚠️ IN THE GEOMETRY'S OWN LOCAL FRAME, AND ONCE PER GEOMETRY. The predecessor baked WORLD
+ * coordinates and then un-did the node transform, which is correct for a mesh with one user and
+ * silently wrong for the six geometries the four flower nodes SHARE: the first flower's world bake
+ * would be handed to all four. The split part is added as a CHILD of its source mesh, so it
+ * inherits that mesh's own transform whatever it is and the shared result is placed correctly four
+ * times over.
+ *
+ * Runs AFTER `styleScene`, because it clones the resolved runtime material.
  */
-function fixGroundBeamWinding(root: THREE.Object3D): number {
+function splitOpenShells(root: THREE.Object3D, open: Map<THREE.BufferGeometry, Uint8Array>): number {
+  if (open.size === 0) return 0;
+  const meshes: THREE.Mesh[] = [];
+  root.traverse((o) => {
+    if (o instanceof THREE.Mesh && open.has(o.geometry)) meshes.push(o);
+  });
+  const split = new Map<THREE.BufferGeometry, { kept: THREE.BufferGeometry; open: THREE.BufferGeometry }>();
   let movedTris = 0;
-  for (const nodeName of HIVE_FRAME_NODES) {
-    const node = findOptional(root, nodeName);
-    if (!node) continue;
-    const meshes: THREE.Mesh[] = [];
-    node.traverse((o) => {
-      if (o instanceof THREE.Mesh) meshes.push(o);
-    });
-    for (const mesh of meshes) {
-      const { ofTriangle, spans } = weldedComponents(mesh);
-      const groundBeamComponents = new Set<number>();
-      for (const [id, s] of spans) if (isGroundBeamSpan(s.zMax)) groundBeamComponents.add(id);
-      if (groundBeamComponents.size === 0) continue;
-      const parts = partitionTrianglesWorld(mesh, (_cx, _cy, _cz, tri) =>
-        groundBeamComponents.has(ofTriangle[tri]) ? 'groundbeam' : null,
-      );
-      const geo = parts.get('groundbeam');
-      if (!geo) continue;
-      // the mesh's own transform, un-done: `partitionTrianglesWorld` bakes WORLD coordinates into
-      // the extracted geometry, and the new part is parented back under the SAME node (whose own
-      // transform may not be identity) — the same un-transform `reparentTrayBraces` applies
-      // before parenting into the tray, minus the tilt term that only the tray needs.
-      node.updateWorldMatrix(true, false);
-      geo.applyMatrix4(node.matrixWorld.clone().invert());
-      const src = Array.isArray(mesh.material) ? mesh.material[0] : mesh.material;
-      const part = new THREE.Mesh(geo, groundBeamMaterial(src));
-      part.name = `${mesh.name || nodeName}/groundbeam`;
-      part.castShadow = true;
-      part.receiveShadow = true;
-      node.add(part);
-      movedTris += geo.getAttribute('position').count / 3;
+  for (const mesh of meshes) {
+    const flags = open.get(mesh.geometry);
+    if (!flags) continue;
+    let parts = split.get(mesh.geometry);
+    if (!parts) {
+      const made = splitGeometryLocal(mesh.geometry, flags);
+      if (!made) continue;
+      parts = made;
+      split.set(mesh.geometry, parts);
+      movedTris += triangleCount(parts.open);
     }
+    mesh.geometry = parts.kept;
+    const src = Array.isArray(mesh.material) ? mesh.material[0] : mesh.material;
+    const part = new THREE.Mesh(parts.open, doubleSidedMaterial(src));
+    part.name = `${mesh.name || 'mesh'}/doubleside`;
+    part.castShadow = mesh.castShadow;
+    part.receiveShadow = mesh.receiveShadow;
+    part.renderOrder = mesh.renderOrder;
+    // ⚠️ the marker `meshesUnder` filters on. Without it the printed-markings pass would find a
+    // `decal#ffffff` split twice and build every AprilTag plate and banner two deep.
+    part.userData.bbDoubleSided = true;
+    mesh.add(part);
   }
   return movedTris;
+}
+
+/** splits one geometry's triangles into (kept, open) by a per-triangle flag, LOCAL frame, index
+ *  only — both halves share nothing with the original, which is disposed. */
+function splitGeometryLocal(
+  geo: THREE.BufferGeometry,
+  flags: Uint8Array,
+): { kept: THREE.BufferGeometry; open: THREE.BufferGeometry } | null {
+  const idx = geo.getIndex();
+  if (!idx) return null;
+  const triCount = Math.floor(idx.count / 3);
+  const keptIdx: number[] = [];
+  const openIdx: number[] = [];
+  for (let t = 0; t < triCount; t++) {
+    const dst = flags[t] ? openIdx : keptIdx;
+    dst.push(idx.getX(t * 3), idx.getX(t * 3 + 1), idx.getX(t * 3 + 2));
+  }
+  if (openIdx.length === 0) return null;
+  // ⚠️ EVERY ATTRIBUTE IS COPIED THROUGH `getX/getY/getZ/getW`, for the `KHR_mesh_quantization`
+  // reason `partitionTrianglesWorld` documents: a position attribute is a NORMALIZED Int16Array
+  // and its raw array holds counts, not inches.
+  const names = Object.keys(geo.attributes);
+  const get = (src: THREE.BufferAttribute | THREE.InterleavedBufferAttribute, i: number, k: number): number =>
+    k === 0 ? src.getX(i) : k === 1 ? src.getY(i) : k === 2 ? src.getZ(i) : src.getW(i);
+  // the halves stay INDEXED, over only the vertices each one actually names — de-indexing here
+  // would triple the vertex pool of the KEPT half, which is 96 % of the mesh.
+  const build = (order: number[]): THREE.BufferGeometry => {
+    const g = new THREE.BufferGeometry();
+    const remap = new Map<number, number>();
+    const used: number[] = [];
+    const out = new Uint32Array(order.length);
+    for (let i = 0; i < order.length; i++) {
+      let n = remap.get(order[i]);
+      if (n === undefined) {
+        n = used.length;
+        remap.set(order[i], n);
+        used.push(order[i]);
+      }
+      out[i] = n;
+    }
+    for (const name of names) {
+      const src = geo.getAttribute(name);
+      const size = src.itemSize;
+      const dst = new Float32Array(used.length * size);
+      for (let i = 0; i < used.length; i++) for (let k = 0; k < size; k++) dst[i * size + k] = get(src, used[i], k);
+      g.setAttribute(name, new THREE.BufferAttribute(dst, size));
+    }
+    g.setIndex(new THREE.BufferAttribute(out, 1));
+    if (!g.getAttribute('normal')) computeCreasedNormals(g, CREASE_ANGLE_DEG);
+    return g;
+  };
+  const kept = build(keptIdx);
+  const open = build(openIdx);
+  geo.dispose();
+  return { kept, open };
 }
 
 /**
@@ -1626,6 +2118,11 @@ function reparentTrayBraces(
         part.name = `hive_${alliance}/tray-${kind}`;
         part.castShadow = true;
         part.receiveShadow = true;
+        // the source may itself be a `splitOpenShells` sibling (the low LOD's decimated frame
+        // parts), in which case these triangles are open-shell triangles too and the material they
+        // inherit is the DoubleSide clone. Carry the marker so they are not read as a blanket
+        // doubling of a correctly-wound part.
+        if (mesh.userData.bbDoubleSided) part.userData.bbDoubleSided = true;
         const tris = geo.getAttribute('position').count / 3;
         if (kind === 'rocker') rockerTris += tris;
         else braceTris += tris;
@@ -2067,10 +2564,13 @@ function glbMaterialName(obj: THREE.Mesh): string {
   return at > 0 ? name.slice(0, at) : name;
 }
 
+/** ⚠️ SKIPS A `splitOpenShells` SIBLING (`userData.bbDoubleSided`). Its material is a clone of its
+ *  source's, so `glbMaterialName` gives the same answer for both, and a `decal#ffffff` that got
+ *  split would otherwise have its AprilTag plates and its banner built twice over. */
 function meshesUnder(node: THREE.Object3D, material: string): THREE.Mesh[] {
   const out: THREE.Mesh[] = [];
   node.traverse((o) => {
-    if (o instanceof THREE.Mesh && glbMaterialName(o) === material) out.push(o);
+    if (o instanceof THREE.Mesh && !o.userData.bbDoubleSided && glbMaterialName(o) === material) out.push(o);
   });
   return out;
 }
@@ -2247,8 +2747,12 @@ export async function loadFieldGlb(url: string, quality: 'high' | 'low' = 'high'
  * its own copy. `quality` is `'low'` there: only the HIGH path allocates a canvas.
  */
 export function assembleFieldGroups(root: THREE.Group, quality: 'high' | 'low'): FieldGroups {
+  // ⚠️ BEFORE `styleScene`, so `computeCreasedNormals` reads the CORRECTED winding and the clear
+  // panels can still be recognised by their glTF material names. See the winding header.
+  assertRightHandedNodes(root);
+  const { stats: winding, open } = repairFieldWinding(root);
   styleScene(root);
-  const groundBeamTris = fixGroundBeamWinding(root);
+  splitOpenShells(root, open);
 
   const floor = mustFind(root, 'tiles');
   const walls = mustFind(root, 'walls');
@@ -2268,7 +2772,30 @@ export function assembleFieldGroups(root: THREE.Group, quality: 'high' | 'low'):
 
   checkTrayFloorAgreement(hives);
 
-  return { floor, walls, tape, sharedFrame, stations, hives, flowers, root, braceTris, rockerTris, groundBeamTris, markings };
+  return { floor, walls, tape, sharedFrame, stations, hives, flowers, root, braceTris, rockerTris, winding, markings };
+}
+
+/**
+ * The winding repair decides "outward" from a signed volume taken in each geometry's own LOCAL
+ * frame, which is only equal to the world answer while every node's world matrix preserves
+ * handedness. Every node of both shipped GLBs has determinant +1; a MIRRORED instance would want
+ * the opposite winding from the geometry it shares, so this says so out loud rather than rendering
+ * one flower inside out.
+ */
+function assertRightHandedNodes(root: THREE.Object3D): void {
+  let mirrored = 0;
+  root.traverse((o) => {
+    if (!(o instanceof THREE.Mesh)) return;
+    o.updateWorldMatrix(true, false);
+    if (o.matrixWorld.determinant() < 0) mirrored++;
+  });
+  if (mirrored > 0) {
+    // eslint-disable-next-line no-console
+    console.warn(
+      `renderFieldGlb: ${mirrored} mesh node(s) carry a MIRRORED world transform. The winding repair ` +
+        `orients shells by a local signed volume and will turn those inside out — see the winding header.`,
+    );
+  }
 }
 
 /** how far the drawn tray floor may sit from the collider floor before the picture and the

@@ -168,6 +168,7 @@ import {
   PLACEMENT_GAMES,
   ENDGAME_START,
   PRE_COUNTDOWN,
+  COLORS,
 } from '../src/config';
 import { CHASSIS_COLOR_KEYS, ACCENT_KEYS, DECAL_KEYS, PLATE_KEYS, COSMETIC_DEFAULTS } from '../src/cosmetics';
 import {
@@ -241,6 +242,31 @@ import {
   syncPadInGame,
 } from '../src/input/bindings';
 import { PadChordResolver, PAD_CHORD_GRACE_MS, PAD_TAP_HOLD_MS } from '../src/input/padChords';
+import {
+  PAD_GLYPHS,
+  PAD_MENU_BUTTON,
+  PAD_NAV_REPEAT,
+  PAD_SLIDER_REPEAT,
+  applyPadMask,
+  clearPadMask,
+  maskPadButtons,
+  oskInit,
+  oskReduce,
+  padBackButton,
+  padConfirmButton,
+  padFamily,
+  padMaskSize,
+  padNavSuspendReasons,
+  padNavSuspended,
+  pickNav,
+  repeatCount,
+  repeatDueMs,
+  resetPadNavSuspend,
+  resumePadNav,
+  suspendPadNav,
+  wrapNav,
+  type NavRect,
+} from '../src/input/padNav';
 import { quantizeCommand, dequantizeCommand, localizeCommand, sanitizeQCommand, slimWorld, unslimWorld, encodeBallDelta, applyBallDelta } from '../src/net/protocol';
 import type { Artifact } from '../src/types';
 import { worldHash } from '../src/net/checksum';
@@ -298,6 +324,8 @@ import { initPhysics3d } from '../src/games/biobuzz/sim3d/engine';
 import { simModuleFor } from '../src/games/sim';
 import { serverPhysics, GAME_IDS } from '../src/games/types';
 import { moduleFor, gameOf } from '../src/games';
+import { Renderer } from '../src/render/renderer';
+import type { GameScene } from '../src/games/module';
 import { decodeColliders } from '../src/games/decode/colliders';
 import { createChainWorld } from '../src/games/chain/spawn';
 import {
@@ -23933,6 +23961,455 @@ const dumperSetup = (): RobotSetup => {
     ds.fire === true && ds.catalyst === false && ds.bbPlace === false && ds.bbPlaceNectar === false,
     J(ds),
   );
+}
+
+/**
+ * ---- `matchStart.drivers`: THE MATCH KNOWS WHO IS IN IT ----------------------------------
+ *
+ * The in-match label used to print `spec.name`, which is what somebody called their CHASSIS —
+ * so a room of default builds labelled every robot identically, and nothing on the wire mapped
+ * a robot id onto the username sitting on the lobby roster the whole time. `Room.beginMatch`
+ * now freezes a `MatchDriver[]` and every `matchStart` for that match carries it.
+ *
+ * Driven through the REAL room rather than asserted off the source, because the property that
+ * matters is "every door hands out the same seating": the three start paths, a rematch, and a
+ * spectator who arrives after somebody has already dropped.
+ */
+{
+  type MS = Extract<ServerMsg, { t: 'matchStart' }>;
+  const lastStart = (sink: ServerMsg[]): MS | undefined =>
+    [...sink].reverse().find((m): m is MS => m.t === 'matchStart');
+  /** the `drivers` list as `id:name`, sorted, so a comparison reads in the failure line */
+  const seating = (m: MS | undefined): string =>
+    (m?.drivers ?? []).map((d) => `${d.robotId}:${d.name}`).join(',');
+
+  const mkD = (id: string, name: string, alliance: Alliance, sink: ServerMsg[]): Client => ({
+    id,
+    send: (m) => sink.push(m),
+    player: {
+      clientId: id,
+      name,
+      teamName: 'T',
+      teamNumber: 7,
+      alliance,
+      startIndex: 0,
+      ready: true,
+      // EVERY build is the DEFAULT one, on purpose: that is the room this feature exists for,
+      // and a check where the chassis names differ would pass on the old behaviour too.
+      spec: { ...DEFAULT_SPEC },
+      assists: { ...DEFAULT_ASSISTS },
+    },
+    connected: true,
+    disconnectAt: 0,
+    userId: `u-${id}`,
+  });
+
+  // ---- 1. the HOST-HANDSHAKE path (a custom room) --------------------------------------
+  {
+    const a: ServerMsg[] = [];
+    const b: ServerMsg[] = [];
+    const room = new Room('smoke-drivers-host', () => {}, { kind: 'versus' });
+    room.add(mkD('ca', 'ashley', 'red', a));
+    room.add(mkD('cb', 'bo', 'blue', b));
+    room.onMessage('ca', { t: 'start' });
+    check('drivers: the host start names both seats, by robot id', seating(lastStart(a)) === '0:ashley,1:bo', seating(lastStart(a)));
+    check('drivers: ...and the OTHER driver is handed the same list', seating(lastStart(b)) === '0:ashley,1:bo', seating(lastStart(b)));
+    // the usernames, not the builds: every spec here is the default one
+    check(
+      'drivers: the names are the PEOPLE, not the chassis (both builds are the default)',
+      lastStart(a)?.setups.every((s) => s.spec.name === DEFAULT_SPEC.name) === true &&
+        (lastStart(a)?.drivers ?? []).every((d) => d.name !== DEFAULT_SPEC.name),
+    );
+    check('drivers: yourRobotId still points each client at its own seat', lastStart(a)?.yourRobotId === 0 && lastStart(b)?.yourRobotId === 1);
+
+    // ---- 2. a REMATCH re-authors the world and must re-state the seating -----------------
+    forceRoomToPost(room);
+    a.length = 0;
+    room.onMessage('ca', { t: 'rematch', on: true });
+    room.onMessage('cb', { t: 'rematch', on: true });
+    check('drivers: a rematch’s matchStart carries the seating too', seating(lastStart(a)) === '0:ashley,1:bo', seating(lastStart(a)));
+
+    // ---- 3. a SPECTATOR arriving AFTER a driver dropped still gets both names ------------
+    // This is why the list is frozen at `beginMatch`: `robotOf` is torn down as people leave,
+    // so a list derived at send time could not name the robot still standing on the field.
+    room.detach('cb');
+    const watch: ServerMsg[] = [];
+    room.addSpectator({ ...mkD('w1', 'watcher', 'blue', watch), userId: undefined });
+    check('drivers: a spectator gets the seating, with no slot of its own', lastStart(watch)?.yourRobotId === -1);
+    check(
+      '⚠️ drivers: ...INCLUDING the driver who already dropped (the list is frozen at beginMatch)',
+      seating(lastStart(watch)) === '0:ashley,1:bo',
+      seating(lastStart(watch)),
+    );
+    room.advanceForTest(1); // stop the rematch's real-time loop
+  }
+
+  // ---- 4. BOT SEATS are drivers too, named for their tier ------------------------------
+  // BIOBUZZ because it is the only game with an AI driver to seat — and a server-connected
+  // BIOBUZZ room is 3D, which refuses to tick (and so never sends `matchStart`) until the 3D
+  // WASM is up. Awaited here rather than in the preamble so only this block pays for it.
+  {
+    await initPhysics3d();
+    const a: ServerMsg[] = [];
+    const room = new Room('smoke-drivers-bots', () => {}, { kind: 'versus', game: 'biobuzz' });
+    room.add(mkD('ch', 'ashley', 'red', a));
+    room.addBot();
+    room.onMessage('ch', { t: 'start' });
+    const drivers = lastStart(a)?.drivers ?? [];
+    check('drivers: a bot seat is named, by the robot id it was actually seated on', drivers.length === 2 && drivers[0].name === 'ashley', seating(lastStart(a)));
+    check(
+      'drivers: ...and it is named for what it IS, never a human-looking default',
+      /^\S+ bot$/.test(drivers[1]?.name ?? ''),
+      drivers[1]?.name,
+    );
+  }
+
+  // ---- 5. the TWO RANKED paths (strategy window, and the old-client immediate one) -------
+  for (const withStrategy of [true, false] as const) {
+    const rec: Record<string, ServerMsg[]> = { red: [], blue: [] };
+    const mkR = (id: string, userId: string, alliance: Alliance): Client => ({
+      ...mkD(id, id === 'red' ? 'cass' : 'devi', alliance, rec[id]),
+      id,
+      userId,
+      // no 'strategy' cap ⇒ the room starts immediately, which is the other path
+      caps: withStrategy ? ['strategy'] : [],
+    });
+    const room = new Room(`smoke-drivers-ranked-${withStrategy}`, () => {}, { kind: 'versus' });
+    room.applyPending({
+      code: 'iad-drivers',
+      hostRegion: 'iad',
+      mode: '1v1',
+      seed: 21,
+      ranked: true,
+      roster: [
+        { userId: 'u-red', name: 'cass', teamName: 'T', teamNumber: 111, spec: { ...DEFAULT_SPEC }, assists: { ...DEFAULT_ASSISTS }, startIndex: 0, alliance: 'red', introElo: 1200 },
+        { userId: 'u-blue', name: 'devi', teamName: 'T', teamNumber: 222, spec: { ...DEFAULT_SPEC }, assists: { ...DEFAULT_ASSISTS }, startIndex: 0, alliance: 'blue', introElo: 1300 },
+      ],
+    });
+    room.add(mkR('red', 'u-red', 'red'));
+    room.add(mkR('blue', 'u-blue', 'blue'));
+    room.maybeStartRanked();
+    if (withStrategy) {
+      room.onMessage('red', { t: 'update', patch: { ready: true } });
+      room.onMessage('blue', { t: 'update', patch: { ready: true } });
+    }
+    const lane = withStrategy ? 'beginRanked' : 'startRankedImmediate';
+    check(`drivers: the ranked ${lane} path names both seats`, seating(lastStart(rec.red)) === '0:cass,1:devi', `${lane}: ${seating(lastStart(rec.red))}`);
+    room.advanceForTest(1);
+  }
+
+  // ---- 6. NOTHING LEAKS INTO THE SIM. A username is not per-tick state ------------------
+  // A field on `RobotState` would ship 30 times a second to every client (see costprobe) and
+  // would have to be part of a deterministic JSON world. The seating rides the handshake and
+  // the handshake only.
+  {
+    const a: ServerMsg[] = [];
+    const room = new Room('smoke-drivers-nosnap', () => {}, { kind: 'versus' });
+    room.add(mkD('cn', 'ashley', 'red', a));
+    room.onMessage('cn', { t: 'start' });
+    room.advanceForTest(8);
+    const snaps = a.filter((m) => m.t === 'snapshot');
+    check('drivers: the match really is running (snapshots are flowing)', snaps.length > 0, `${snaps.length} snapshots`);
+    check(
+      '⚠️ drivers: the username is NOWHERE in a snapshot — not in the world, not on a robot',
+      snaps.every((m) => !JSON.stringify(m).includes('ashley')),
+    );
+    room.advanceForTest(1);
+  }
+}
+
+/**
+ * ---- THE IN-MATCH LABEL: a USERNAME, in that robot's ALLIANCE colour ---------------------
+ *
+ * Run rather than grepped. `Renderer.render` in `overlayOnly` mode with no scene draws exactly
+ * the label pass and nothing else, so a recording context is the whole behaviour: what text was
+ * written, for which robot, in which colour.
+ */
+{
+  interface Glyph { text: string; fill: string; stroke: string }
+  /** a 2D context that records only what the label pass does with it */
+  const recorder = (): { ctx: CanvasRenderingContext2D; glyphs: Glyph[] } => {
+    const glyphs: Glyph[] = [];
+    let fillStyle = '';
+    let strokeStyle = '';
+    let pendingStroke = '';
+    const c = {
+      canvas: { width: 800, height: 600 },
+      save() {}, restore() {}, translate() {}, rotate() {}, scale() {},
+      setTransform() {}, clearRect() {}, fillRect() {},
+      // the pass strokes and then fills the SAME string; pair them into one glyph
+      strokeText(text: string) { pendingStroke = strokeStyle; glyphs.push({ text, fill: '', stroke: pendingStroke }); },
+      fillText(text: string) {
+        const g = glyphs[glyphs.length - 1];
+        if (g && g.text === text && g.fill === '') g.fill = fillStyle;
+        else glyphs.push({ text, fill: fillStyle, stroke: '' });
+      },
+      measureText() { return { width: 0 }; },
+      set fillStyle(v: string) { fillStyle = v; },
+      get fillStyle() { return fillStyle; },
+      set strokeStyle(v: string) { strokeStyle = v; },
+      get strokeStyle() { return strokeStyle; },
+      set lineWidth(_v: number) {}, set lineJoin(_v: string) {},
+      set font(_v: string) {}, set textAlign(_v: string) {}, set textBaseline(_v: string) {},
+    } as unknown as CanvasRenderingContext2D;
+    return { ctx: c, glyphs };
+  };
+
+  const world = createWorld('match', 4, [
+    { id: 0, alliance: 'red', spec: { ...DEFAULT_SPEC }, assists: { ...DEFAULT_ASSISTS }, startIndex: 0 },
+    { id: 1, alliance: 'blue', spec: { ...DEFAULT_SPEC }, assists: { ...DEFAULT_ASSISTS }, startIndex: 0 },
+  ]);
+  const names = new Map([[0, 'ashley'], [1, 'bo']]);
+  const lookup = (id: number): string | undefined => names.get(id);
+  /** the labels drawn for a frame, as `text|fill` */
+  const drawn = (localId: number, look?: (id: number) => string | undefined, scene?: GameScene): string[] => {
+    const { ctx, glyphs } = recorder();
+    const r = new Renderer();
+    r.setScene(scene ?? null);
+    r.render(ctx, world, null, localId, true, look);
+    return glyphs.map((g) => `${g.text}|${g.fill}`);
+  };
+
+  check('label: the username wins over the build’s name', drawn(0, lookup).join(';') === `bo|${COLORS.blueLabel}`, drawn(0, lookup).join(';'));
+  check(
+    'label: ...and the LOCAL robot is still never labelled (the driver knows who they are)',
+    drawn(1, lookup).join(';') === `ashley|${COLORS.redLabel}`,
+    drawn(1, lookup).join(';'),
+  );
+  check(
+    '⚠️ label: NO lookup at all (solo, a replay, a server that predates `drivers`) falls back to the build',
+    drawn(0).join(';') === `${DEFAULT_SPEC.teamNumber > 0 ? `${DEFAULT_SPEC.teamNumber} ` : ''}${DEFAULT_SPEC.name}|${COLORS.blueLabel}`,
+    drawn(0).join(';'),
+  );
+  check(
+    'label: a lookup that does not know THIS seat falls back for that seat alone',
+    drawn(0, () => undefined).join(';') === drawn(0).join(';'),
+    drawn(0, () => undefined).join(';'),
+  );
+  check(
+    'label: the fill is the robot’s ALLIANCE, in the tints tuned for 12-px type on the field',
+    drawn(1, lookup)[0].endsWith(`|${COLORS.redLabel}`) && drawn(0, lookup)[0].endsWith(`|${COLORS.blueLabel}`),
+  );
+  // ⚠️ the raw hues are 3.52:1 / 3.60:1 as text on COLORS.tile. `npm run contrast` owns the
+  // arithmetic; this is the cheap guard in the suite that always runs, because "simplifying"
+  // the label back to COLORS.red/blue is an easy and invisible regression.
+  check(
+    '⚠️ label: the tints are NOT the raw alliance hues (those miss AA as type on the field)',
+    COLORS.redLabel !== COLORS.red && COLORS.blueLabel !== COLORS.blue,
+  );
+
+  // THE 3D PASS DRAWS THE SAME LABELS. It lays them out through `scene.project` instead of the
+  // 2D camera, and it is a SECOND copy of this code — so it is a second place for the username
+  // to be dropped, which is why it is asserted rather than assumed.
+  {
+    const scene = {
+      project(_x: number, _y: number, _z: number, out: { x: number; y: number; visible: boolean }) {
+        out.x = 100;
+        out.y = 100;
+        out.visible = true;
+      },
+    } as unknown as GameScene;
+    check('label/3D: the projected pass prints the username in the alliance colour too', drawn(0, lookup, scene).join(';') === `bo|${COLORS.blueLabel}`, drawn(0, lookup, scene).join(';'));
+    check('label/3D: ...and falls back the same way', drawn(0, undefined, scene).join(';') === drawn(0).join(';'), drawn(0, undefined, scene).join(';'));
+  }
+}
+
+/**
+ * ---- THE SEATING SURVIVES A REJOIN -------------------------------------------------------
+ *
+ * `ActiveGameRef.start` is written FIELD BY FIELD out of a live session, and it has now lost a
+ * field three times (`physics`, `gen`, and the one before them). `drivers` is the fourth field
+ * that has to be in that copy. Source-level because `ServerSession`/`App` cannot be imported
+ * here — `src/net/env.ts` reads `import.meta.env` at load — and because the hole is precisely a
+ * missing LINE rather than a behaviour any runnable object would expose.
+ */
+{
+  const ss = readFileSync('src/net/serverSession.ts', 'utf8');
+  const app = readFileSync('src/ui/App.tsx', 'utf8');
+  const lc = readFileSync('src/net/lobbyClient.ts', 'utf8');
+  const sess = readFileSync('src/net/session.ts', 'utf8');
+  check('rejoin/drivers: `MatchStart` NAMES the field (a field the type omits is one nobody copies)', /drivers\?: MatchDriver\[\]/.test(lc));
+  check('rejoin/drivers: ...and so does `NetSession`, which is what beginSession reads', /drivers\?: MatchDriver\[\]/.test(sess));
+  check('rejoin/drivers: the rejoin record COPIES it', /drivers: s\.drivers,/.test(app));
+  check('rejoin/drivers: the session adopts it from the handshake', /this\.drivers = start\.drivers \?\? \[\];/.test(ss));
+  check(
+    '⚠️ rejoin/drivers: ...and RE-READS it on a later matchStart, unconditionally (a recycled room can seat different people)',
+    /this\.drivers = m\.drivers \?\? \[\];/.test(ss) && !/if \(m\.drivers\)/.test(ss),
+  );
+  check(
+    'rejoin/drivers: the renderer is handed a LOOKUP, not a per-tick world field',
+    /driverName\?\(robotId: number\)/.test(sess) && !/drivers/.test(readFileSync('src/types.ts', 'utf8')),
+  );
+}
+
+// ---- PAD NAVIGATION: the DOM-free half ------------------------------------------
+// `src/input/padNav.ts` is split out of the layer precisely so this can drive it frame by
+// frame on synthetic rects and an injected clock, which is the only way to test spatial
+// navigation without a browser. The DOM half is `src/ui/PadNavLayer.tsx`.
+{
+  const J = (v: unknown): string => JSON.stringify(v);
+  const R = (x: number, y: number, w = 100, h = 40): NavRect => ({ x, y, w, h });
+  // a 3x3 grid of identical tiles: columns at 0/120/240, rows at 0/60/120
+  const grid: NavRect[] = [];
+  for (let row = 0; row < 3; row++) for (let col = 0; col < 3; col++) grid.push(R(col * 120, row * 60));
+
+  check('padnav: right moves one column', pickNav(grid, 0, 'right') === 1);
+  check('padnav: down moves one row', pickNav(grid, 0, 'down') === 3);
+  check(
+    'padnav: from the centre, all four directions are the four neighbours',
+    pickNav(grid, 4, 'left') === 3 && pickNav(grid, 4, 'right') === 5 && pickNav(grid, 4, 'up') === 1 && pickNav(grid, 4, 'down') === 7,
+  );
+  check(
+    'padnav: an edge has nothing past it, and says so with -1',
+    pickNav(grid, 0, 'left') === -1 && pickNav(grid, 0, 'up') === -1 && pickNav(grid, 8, 'right') === -1 && pickNav(grid, 8, 'down') === -1,
+  );
+  check('padnav: an empty list, and an index that is not in it, are both -1', pickNav([], 0, 'down') === -1 && pickNav(grid, 99, 'down') === -1);
+
+  // THE CROSS-GAP TERM is what makes a ragged grid behave. A narrow tile sitting over a row of
+  // wide ones must hand the pointer to whatever is actually UNDERNEATH it — by straight-line
+  // centre distance the far tile can win, which is the bug this weighting exists to prevent.
+  const ragged: NavRect[] = [R(0, 0, 40, 40), R(0, 60, 100, 40), R(110, 60, 100, 40)];
+  check('padnav: down out of a narrow tile lands on the wide tile UNDER it, not the nearest centre', pickNav(ragged, 0, 'down') === 1);
+
+  // A candidate must be STRICTLY past the source on the axis, so a row whose centres line up
+  // is not a candidate for itself and a move cannot sit still.
+  check('padnav: a rect with the same centre on the axis is not a candidate', pickNav([R(0, 0), R(0, 0)], 0, 'down') === -1);
+  check('padnav: a zero-size rect is never picked', pickNav([R(0, 0), { x: 0, y: 60, w: 0, h: 0 }], 0, 'down') === -1);
+
+  // Repeated geometry must resolve the SAME way every time, or a grid of identical tiles
+  // navigates differently depending on document-order noise.
+  check(
+    'padnav: the pick is deterministic for repeated geometry',
+    pickNav(grid, 0, 'right') === pickNav(grid.slice(), 0, 'right') && pickNav(grid, 4, 'down') === 7,
+  );
+
+  // WRAP: used only when the picker found nothing and the container is a list or a strip.
+  const strip: NavRect[] = [R(0, 0, 60, 30), R(70, 0, 60, 30), R(140, 0, 60, 30)];
+  check('padnav: wrapping right off the end lands on the first segment', wrapNav(strip, 2, 'right') === 0);
+  check('padnav: wrapping left off the start lands on the last', wrapNav(strip, 0, 'left') === 2);
+  check('padnav: a container with one thing in it has nowhere to wrap to', wrapNav([R(0, 0)], 0, 'right') === -1);
+
+  // ---- the repeat clock ----
+  check('padnav: a TAP is exactly one move — the press fires, the first repeat is 420 ms away', repeatCount(0) === 1 && repeatCount(419) === 1 && repeatCount(420) === 2);
+  check(
+    'padnav: repeatDueMs is monotone in n (which is what lets the driver keep a counter, not a timestamp)',
+    Array.from({ length: 40 }, (_, i) => repeatDueMs(i + 1)).every((v, i, a) => i === 0 || v > a[i - 1]),
+  );
+  const gaps = Array.from({ length: 12 }, (_, i) => repeatDueMs(i + 2) - repeatDueMs(i + 1));
+  check(
+    'padnav: the gap ACCELERATES and then floors at `min`, never below it',
+    gaps.every((g, i) => i === 0 || g <= gaps[i - 1] + 1e-9) && Math.min(...gaps) >= PAD_NAV_REPEAT.min - 1e-9,
+    gaps.map((g) => g.toFixed(1)).join(','),
+  );
+  check(
+    'padnav: the first gap is `start` and the floor is reached by `ramp` repeats',
+    Math.abs(gaps[0] - PAD_NAV_REPEAT.start) < 1e-9 && Math.abs(repeatDueMs(12) - repeatDueMs(11) - PAD_NAV_REPEAT.min) < 1e-9,
+  );
+  // A 0..1 range in 100 steps has to be crossable without a sore thumb — that is the whole
+  // reason the slider carries its own profile rather than the navigation one.
+  const sliderCross = repeatCount(4000, PAD_SLIDER_REPEAT);
+  check('padnav: a 100-step slider is crossable in under 4 s on the slider profile', sliderCross >= 100, `${sliderCross} steps`);
+  check('padnav: ...and the slider profile is strictly the faster of the two', repeatCount(2000, PAD_SLIDER_REPEAT) > repeatCount(2000, PAD_NAV_REPEAT));
+
+  // ---- families and glyphs ----
+  check(
+    'padnav: a pad is identified by NAME',
+    padFamily('Xbox Wireless Controller') === 'xbox' && padFamily('DualSense Wireless Controller') === 'playstation' && padFamily('Pro Controller') === 'nintendo',
+  );
+  check(
+    'padnav: ...and by the USB VENDOR ID a browser falls back to for one it does not know',
+    padFamily('054c-0ce6-Wireless Controller') === 'playstation' && padFamily('045e-02fd-Bluetooth') === 'xbox' && padFamily('057e-2009-Pad') === 'nintendo',
+  );
+  check(
+    'padnav: an unknown pad stays GENERIC rather than guessing Xbox (a wrong glyph is pressed)',
+    padFamily('Some Unbranded Pad') === 'generic' && padFamily('') === 'generic' && padFamily(null) === 'generic' && padFamily(undefined) === 'generic',
+  );
+  check(
+    'padnav: every family prints a full glyph set — a blank legend is worse than none',
+    (['xbox', 'playstation', 'nintendo', 'generic'] as const).every((f) => Object.values(PAD_GLYPHS[f]).every((g) => typeof g === 'string' && g.length > 0)),
+  );
+  // Index 0 is the BOTTOM face button and 1 the RIGHT one. On a Switch pad the RIGHT one is A,
+  // so confirm and back SWAP — relabelling alone would hand a Switch player a legend that says
+  // A and a layer that listens to B.
+  check(
+    'padnav: Nintendo SWAPS confirm and back; everyone else confirms on 0',
+    padConfirmButton('nintendo') === 1 &&
+      padBackButton('nintendo') === 0 &&
+      (['xbox', 'playstation', 'generic'] as const).every((f) => padConfirmButton(f) === 0 && padBackButton(f) === 1),
+  );
+
+  // THE MENU BUTTON'S WHOLE CLAIM is that 15 is the one standard-mapping index no default bind
+  // uses. If a future default takes it, the button that leaves a match also drives the robot.
+  const defaultPad = new Set<number>();
+  for (const list of Object.values(DEFAULT_BINDINGS.pad.buttons)) for (const b of list) defaultPad.add(b);
+  for (const combos of Object.values(DEFAULT_BINDINGS.pad.combos)) for (const c of combos) for (const b of c) defaultPad.add(b);
+  check(
+    '⚠️ padnav: the in-match MENU button is an index no default pad bind uses',
+    !defaultPad.has(PAD_MENU_BUTTON),
+    `menu=${PAD_MENU_BUTTON} defaults=[${[...defaultPad].sort((a, b) => a - b).join(',')}]`,
+  );
+  check('padnav: the default menu button is a standard-mapping index', PAD_MENU_BUTTON >= 0 && PAD_MENU_BUTTON < 32);
+
+  // ---- the suspend registry ----
+  // A registry rather than a boolean because the reasons OVERLAP: Controls can be reached from
+  // a match, and a boolean would have the second release undo the first.
+  resetPadNavSuspend();
+  check('padnav: nothing suspended to begin with', !padNavSuspended() && padNavSuspendReasons().length === 0);
+  suspendPadNav('match');
+  suspendPadNav('capture');
+  check('padnav: two reasons are both held', padNavSuspended() && J(padNavSuspendReasons()) === J(['capture', 'match']));
+  resumePadNav('capture');
+  check('⚠️ padnav: releasing ONE reason does not resume the layer', padNavSuspended() && J(padNavSuspendReasons()) === J(['match']));
+  resumePadNav('match');
+  check('padnav: the last release resumes it', !padNavSuspended());
+  suspendPadNav('match');
+  suspendPadNav('match');
+  resumePadNav('match');
+  check('padnav: the same reason twice is still one reason (a Set, not a count)', !padNavSuspended());
+  resumePadNav('never-held');
+  check('padnav: releasing a reason nobody held is a no-op', !padNavSuspended());
+  resetPadNavSuspend();
+
+  // ---- the button mask ----
+  // ONE PRESS, ONE MEANING: the press that leaves the match must not also fire a shot.
+  clearPadMask();
+  check('padnav: an unmasked held list passes through untouched', J(applyPadMask([1, 7])) === J([1, 7]) && padMaskSize() === 0);
+  maskPadButtons([15, 7]);
+  check('padnav: a masked button is dropped while it is still down', J(applyPadMask([15, 7, 1])) === J([1]));
+  check('⚠️ padnav: ...and it stays dropped for as long as it is held', J(applyPadMask([15, 7])) === J([]));
+  check('padnav: a button that comes UP clears its own mask entry, and only its own', J(applyPadMask([7])) === J([]) && padMaskSize() === 1);
+  check('padnav: once released, the next genuine press is delivered', J(applyPadMask([])) === J([]) && padMaskSize() === 0 && J(applyPadMask([7])) === J([7]));
+  maskPadButtons([15]);
+  clearPadMask();
+  check('padnav: a disconnect clears the mask outright', padMaskSize() === 0 && J(applyPadMask([15])) === J([15]));
+
+  // ---- the on-screen keyboard's reducer ----
+  let o = oskInit('');
+  check('padnav: osk starts empty, lower case, on letters', o.value === '' && !o.caps && o.layout === 'letters');
+  o = oskReduce(o, { t: 'char', c: 'a' });
+  o = oskReduce(o, { t: 'caps' });
+  check('padnav: caps arms', o.caps === true);
+  o = oskReduce(o, { t: 'char', c: 'b' });
+  check('⚠️ padnav: caps is ONE-SHOT — it capitalises the next letter and releases', o.value === 'aB' && o.caps === false);
+  o = oskReduce(o, { t: 'space' });
+  o = oskReduce(o, { t: 'char', c: 'c' });
+  check('padnav: space and a following letter', o.value === 'aB c');
+  o = oskReduce(o, { t: 'back' });
+  check('padnav: backspace drops the last character', o.value === 'aB ');
+  o = oskReduce(o, { t: 'layout', l: 'digits' });
+  check('padnav: the layout switch keeps the value', o.layout === 'digits' && o.value === 'aB ');
+  o = oskReduce(o, { t: 'clear' });
+  check('padnav: clear empties it, and backspace on empty is a no-op', o.value === '' && oskReduce(o, { t: 'back' }).value === '');
+  // THE CAP IS THE FIELD'S OWN `maxLength` — a username field is 20, and a keyboard that let a
+  // pad user past it would write a value the form then rejects.
+  let full = oskInit('abc');
+  full = oskReduce(full, { t: 'char', c: 'd' }, 3);
+  check('padnav: a full field refuses another character', full.value === 'abc');
+  full = oskReduce(full, { t: 'space' }, 3);
+  check('padnav: ...and another space', full.value === 'abc');
+  const armed = oskReduce({ value: 'abc', layout: 'letters', caps: true }, { t: 'char', c: 'd' }, 3);
+  check('padnav: a refused character still RELEASES caps, so it cannot stick armed forever', armed.value === 'abc' && armed.caps === false);
+  check('padnav: `set` truncates to the cap', oskReduce(oskInit(''), { t: 'set', value: 'abcdef' }, 4).value === 'abcd');
 }
 
 console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILURES`);

@@ -24,7 +24,7 @@ import {
   gpuProbe,
 } from './renderCore';
 import { createEnvironment, type BbEnvironment } from './renderEnvironment';
-import { buildRobotGroup, disposeRobotGroup } from './renderRobots';
+import { bbWheelDetail, buildRobotGroup, disposeRobotGroup, type BbWheelDetail } from './renderRobots';
 
 /**
  * THE ROBOT-BUILDER TURNTABLE (`docs/roadmap.md` item 1) — a small 3D scene that shows ONE robot,
@@ -427,6 +427,12 @@ export const createRobotPreviewScene: RobotPreviewFactory = (host, options) => {
     return line;
   }
 
+  /** the spec the live group was built from, so a QUALITY change can rebuild it without the
+   *  caller handing the spec back — the wheel tessellation is baked at build time (see
+   *  `bbWheelDetail`) and is the one setting this preview cannot apply in place. */
+  let builtSpec: RobotSpec | null = null;
+  let builtWheelDetail: BbWheelDetail = bbWheelDetail(settings, tier);
+
   function rebuild(spec: RobotSpec): void {
     if (group) {
       scene.remove(group);
@@ -437,7 +443,9 @@ export const createRobotPreviewScene: RobotPreviewFactory = (host, options) => {
     }
     // ⚠️ id 1: the sign panel's texture is cached per (id, alliance) and a preview has no slot
     // number, so it borrows the first rather than minting a cache entry per saved robot.
-    group = buildRobotGroup(spec, 1, alliance);
+    builtSpec = spec;
+    builtWheelDetail = bbWheelDetail(settings, tier);
+    group = buildRobotGroup(spec, 1, alliance, builtWheelDetail);
     // the measurement envelope rides ALONG with the group rather than inside the generator, so
     // it is framed by the same `Box3`, removed by the same `scene.remove` and freed by the same
     // `disposeRobotGroup` walk (its geometry and material are this preview's, not shared caches)
@@ -578,6 +586,12 @@ export const createRobotPreviewScene: RobotPreviewFactory = (host, options) => {
         tier = state.tier;
       }
       applyQuality();
+      // THE ONE SETTING `applyQuality` CANNOT APPLY: the wheels' tessellation is baked into the
+      // group's geometry, so a column change that moves it has to re-generate the robot. Same
+      // rule the match scene follows through its own rebuild key — and the preview is the
+      // BUILDER's window, where a player switching presets expects to see the difference.
+      const wantWheels = bbWheelDetail(settings, tier);
+      if (builtSpec && wantWheels !== builtWheelDetail) rebuild(builtSpec);
     },
     resize(width: number, height: number, dpr: number): void {
       if (disposed) return;

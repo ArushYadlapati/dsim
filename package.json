@@ -48,6 +48,7 @@
     "costprobe": "tsx scripts/costprobe.ts",
     "bundleaudit": "node scripts/bundleaudit.mjs",
     "field-cad": "node scripts/field-cad.mjs",
+    "element-cad": "node scripts/field-cad/elements.mjs",
     "hive-calibrate": "tsx scripts/hive-calibrate.ts"
   },
   "build": {

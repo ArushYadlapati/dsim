@@ -75,6 +75,7 @@ import { RobotPreview } from './RobotPreview';
 import { ChainRobotPreview } from '../games/chain/RobotPreview';
 import { moduleFor } from '../games';
 import { DRIVETRAIN_LABELS, INTAKE_SHORT } from './robotLabels';
+import { OptRow, ToggleRow } from './OptRow';
 import { rangeFill } from './rangeFill';
 
 const INTAKE_LABELS: Record<IntakeStyle, string> = {
@@ -560,11 +561,14 @@ export function Menu({ settings, onChange }: Props) {
       {/* the page heading is owned by the Configure host */}
       <div className="ds-robot">
         {/* ---------- robot hero ----------
-            NOT pinned. It used to be `position: sticky`, which held 32% of a 720px
-            viewport at rest and still 26% once the compact strip engaged — the strip
-            saved only 40px, because the two rows of stat tiles set the height, not the
-            sprite. A live readout while you drag a slider is worth something, but not a
-            third of the screen for the whole time you are in the builder. */}
+            PINNED AGAIN, as a 260px RAIL rather than a strip across the top (`.ds-robot-rail`).
+            The sticky strip this replaces held 26% of a 720px viewport even once compact,
+            because the two rows of stat tiles set its height, not the sprite — so it was
+            reverted and the robot then left the screen after the first slider. A column beside
+            the builder costs no vertical space at all, so that trade does not arise.
+            Below 1124px there is no width for a rail and the card goes back to the top of the
+            page, unpinned, which is why it is FIRST in the DOM. */}
+        <div className="ds-robot-rail">
         <div className="ds-hero">
           <div className="ds-hero-view">
             {/* TWO components, not one with a `chain` flag: DECODE's schematic is
@@ -677,12 +681,29 @@ export function Menu({ settings, onChange }: Props) {
           </div>
         </div>
 
-        {/* ---------- saved robots (the player's own garage) ---------- */}
-        <section className="ds-sec">
-          <h2>
-            Saved robots <span className="ds-count">{savedRobots.length}/{MAX_SAVED_ROBOTS}</span>
-          </h2>
-          <div className="ds-opts">
+        </div>
+
+        <div className="ds-robot-wide">
+        {/* ---------- START FROM: the player's own garage, then the presets ----------
+            ONE panel, and the garage is in it only when there is something in it. It used to be
+            the FIRST section on the page in every state, so a new player's first screen was an
+            empty `SAVED ROBOTS 0/3` sitting above the presets that would actually give them a
+            robot. Saving moved to where you are when you have finished building — the Build
+            panel's header action. */}
+        <section className="ds-panel">
+          <div className="ds-panel-h">
+            <span className="ds-panel-title">Start from</span>
+          </div>
+          <div className="ds-panel-body stack">
+            {savedRobots.length > 0 && (
+              <div className="ds-field">
+                <span className="cap">
+                  Your robots{' '}
+                  <span className="val">
+                    {savedRobots.length}/{MAX_SAVED_ROBOTS}
+                  </span>
+                </span>
+                <div className="ds-opts">
             {savedRobots.map((r, i) => (
               <div
                 key={i}
@@ -740,27 +761,13 @@ export function Menu({ settings, onChange }: Props) {
                 )}
               </div>
             ))}
-            {savedRobots.length < MAX_SAVED_ROBOTS && (
-              <button
-                className="ds-opt ds-opt-add"
-                onClick={saveCurrentRobot}
-                disabled={alreadySaved}
-              >
-                <span className="ot">＋ Save current</span>
-                <span className="od">
-                  {alreadySaved
-                    ? 'Already saved'
-                    : `${spec.name || 'Unnamed'} → slot ${savedRobots.length + 1}`}
-                </span>
-              </button>
+                </div>
+              </div>
             )}
-          </div>
-        </section>
 
-        {/* ---------- presets ---------- */}
-        <section className="ds-sec">
-          <h2>Presets</h2>
-          <div className="ds-opts">
+            <div className="ds-field">
+              <span className="cap">Presets</span>
+              <div className="ds-opts">
             {presets.map((p, i) => (
               <button
                 key={p.name}
@@ -806,7 +813,7 @@ export function Menu({ settings, onChange }: Props) {
                       {INTAKE_SHORT[p.intake]} · {p.flywheelInertia} inertia
                       {p.canSort ? ' · sorter' : ''}
                     </span>
-                    <span className="oz">🎯 {optimizedZone(p.flywheelInertia)}</span>
+                    <span className="oz">{optimizedZone(p.flywheelInertia)}</span>
                   </>
                 ) : (
                   <>
@@ -817,7 +824,7 @@ export function Menu({ settings, onChange }: Props) {
                     </span>
                     {/* a turret is top-mounted, so naming its shooter mount would be noise */}
                     <span className="oz">
-                      🎯 {CHAIN_MODE_LABELS[p.scoreMode ?? CHAIN_DEFAULT_SCORE_MODE]}
+                      {CHAIN_MODE_LABELS[p.scoreMode ?? CHAIN_DEFAULT_SCORE_MODE]}
                       {!isTurreted(p.scoreMode ?? CHAIN_DEFAULT_SCORE_MODE)
                         ? ` · ${CHAIN_SHOOTER_MOUNT_LABELS[shooterMountOf(p)]}`
                         : ''}
@@ -826,13 +833,36 @@ export function Menu({ settings, onChange }: Props) {
                 )}
               </button>
             ))}
+              </div>
+            </div>
           </div>
         </section>
+        </div>
 
-        {/* ---------- builder ---------- */}
-        <section className="ds-sec">
-          <h2>Customize</h2>
-          <div className="ds-panelbox">
+        <div className="ds-robot-main">
+        {/* ---------- builder ----------
+            SAVE IS THE PANEL'S ACTION, not a card at the top of the page: you are here when
+            you have finished building, and this is the one button on the screen that adds
+            something rather than changing something. */}
+        <section className="ds-panel">
+          <div className="ds-panel-h">
+            <span className="ds-panel-title">Build</span>
+            <button
+              className="ds-btn small"
+              disabled={alreadySaved || savedRobots.length >= MAX_SAVED_ROBOTS}
+              title={
+                alreadySaved
+                  ? 'This robot is already saved'
+                  : savedRobots.length >= MAX_SAVED_ROBOTS
+                    ? `You have ${MAX_SAVED_ROBOTS} saved robots. Delete one first`
+                    : undefined
+              }
+              onClick={saveCurrentRobot}
+            >
+              Save this robot
+            </button>
+          </div>
+          <div className="ds-panel-body stack">
             <div className="ds-fields">
               <label className="ds-field">
                 <span className="cap">Robot name</span>
@@ -932,12 +962,7 @@ export function Menu({ settings, onChange }: Props) {
                 it used to replace the whole section, and BIOBUZZ lost the identity fields,
                 the drivetrain picker, the RPM sliders and the chassis colour row with it. */}
             {Builder ? (
-              <>
-                <Builder spec={spec} onChange={setSpec} game={settings.game} />
-                <div className="ds-fields">
-                  <CosmeticsRows spec={spec} onPick={setSpec} />
-                </div>
-              </>
+              <Builder spec={spec} onChange={setSpec} game={settings.game} />
             ) : (
               <>
                 {/* ---- SCORING ---- */}
@@ -963,18 +988,14 @@ export function Menu({ settings, onChange }: Props) {
                         />
                       </label>
                     </div>
-                    {/* its OWN row, not a column of `.ds-fields`. As the one non-`.ds-field`
+                    {/* its OWN row, not a column of `.ds-fields`: as the one non-`.ds-field`
                         child of that row it was stretched to the slider's height with its
-                        label pinned to the top edge, landing on the slider's caption line.
-                        `.fill` is auto-FILL, so a single toggle stays one card wide. */}
-                    <div className="ds-opts fill">
-                      <button
-                        className={`ds-opt mini ${spec.canSort ? 'on' : ''}`}
-                        onClick={() => setSpec({ canSort: !spec.canSort })}
-                      >
-                        <span className="ot">Sorter {spec.canSort ? 'ON' : 'OFF'}</span>
-                      </button>
-                    </div>
+                        label pinned to the top edge, landing on the slider's caption line. */}
+                    <ToggleRow
+                      label="Colour sorter"
+                      value={spec.canSort}
+                      onPick={(canSort) => setSpec({ canSort })}
+                    />
                   </>
                 ) : (
                   <>
@@ -1326,100 +1347,97 @@ export function Menu({ settings, onChange }: Props) {
                       </label>
                     );
                   })()}
-                  <CosmeticsRows spec={spec} onPick={setSpec} />
                 </div>
               </>
             )}
           </div>
         </section>
 
-        {/* ---------- driver preferences (remembered per drivetrain) ---------- */}
-        <section className="ds-sec">
-          {/* No helper caption, per main's caption sweep. The one that used to sit here
-              explained the retired per-drivetrain memory; assists now ride spec.assists. */}
-          <h2>Drive style</h2>
-          <div className="ds-opts two">
-            <button
-              className={`ds-opt ${settings.assists.fieldCentric ? 'on' : ''}`}
-              onClick={() => setAssist({ fieldCentric: true })}
-            >
-              <span className="ot">Field-centric</span>
-            </button>
-            <button
-              className={`ds-opt ${!settings.assists.fieldCentric ? 'on' : ''}`}
-              onClick={() => setAssist({ fieldCentric: false })}
-            >
-              <span className="ot">Robot-centric</span>
-            </button>
+        {/* ---------- LOOK ----------
+            ITS OWN PANEL, IN EVERY SEASON. The four rows used to render as `.ds-field wide`
+            children of the Frame row, so "what colour is it" was laid out as though it were a
+            chassis dimension — and BIOBUZZ put them somewhere else again, because its module
+            `Builder` owns the frame and the host appended them after it. One place now. */}
+        <section className="ds-panel">
+          <div className="ds-panel-h">
+            <span className="ds-panel-title">Look</span>
           </div>
-          {spec.drivetrain === 'tank' && (
-            <div className="ds-opts two">
-              <button
-                className={`ds-opt ${settings.tankControlMode === 'normal' ? 'on' : ''}`}
-                onClick={() => set({ tankControlMode: 'normal' })}
-              >
-                <span className="ot">Normal Tank</span>
-                <span className="od">L-stick/W-S: Fwd/Back · R-stick/Arrows: Turn</span>
-              </button>
-              <button
-                className={`ds-opt ${settings.tankControlMode === 'traditional' ? 'on' : ''}`}
-                onClick={() => set({ tankControlMode: 'traditional' })}
-              >
-                <span className="ot">Traditional Tank</span>
-                <span className="od">L-stick/W-S: Left · R-stick/Arrows: Right</span>
-              </button>
-            </div>
-          )}
-        </section>
-
-        <section className="ds-sec">
-          <h2>Driver assists</h2>
-          {/* `.two` to match Drive style directly above: the base `.ds-opts` auto-fit
-              collapses to one column at a width where that row is still two, and the
-              two sections stop lining up mid-breakpoint. */}
-          <div className="ds-opts two">
-            {/* AIM ASSIST IS NOT OFFERED — it is always on, in both games. The flag and
-                the sim's manual-aim path both still exist (`coerceSettings` forces the
-                stored value true), so putting the toggle back is this block returning. */}
-            <button
-              className={`ds-opt ${settings.assists.autoIntake ? 'on' : ''}`}
-              onClick={() => setAssist({ autoIntake: !settings.assists.autoIntake })}
-            >
-              <span className="ot">Auto intake {settings.assists.autoIntake ? 'ON' : 'OFF'}</span>
-            </button>
-            {mod.offersAutoFire !== false && (
-              <button
-                className={`ds-opt ${settings.assists.autoFire ? 'on' : ''}`}
-                onClick={() => setAssist({ autoFire: !settings.assists.autoFire })}
-              >
-                <span className="ot">Auto fire {settings.assists.autoFire ? 'ON' : 'OFF'}</span>
-              </button>
-            )}
-          </div>
-        </section>
-
-        <section className="ds-sec">
-          <h2>Park mode</h2>
-          <div className="ds-panelbox">
+          <div className="ds-panel-body stack">
             <div className="ds-fields">
-              <label className="ds-field">
-                <span className="cap">
-                  Speed cap <span className="val">{settings.parkSpeedPct}%</span>
-                </span>
-                <input
-                  className="ds-range"
-                  type="range"
-                  min={0}
-                  max={100}
-                  step={5}
-                  value={settings.parkSpeedPct}
-                  style={rangeFill(settings.parkSpeedPct, 0, 100)}
-                  onChange={(e) => set({ parkSpeedPct: Number(e.target.value) })}
-                />
-              </label>
+              <CosmeticsRows spec={spec} onPick={setSpec} />
             </div>
           </div>
         </section>
+
+        {/* ---------- DRIVING ----------
+            Drive style, tank sticks, the assists and park were four `.ds-sec`s of one or two
+            controls each, at the bottom of the longest page in the app. They are one panel:
+            every one of them is a fact about how the robot answers the sticks, and all four
+            ride `spec.assists` / `GameSettings`, so they save with the build. */}
+        <section className="ds-panel">
+          <div className="ds-panel-h">
+            <span className="ds-panel-title">Driving</span>
+          </div>
+          <div className="ds-panel-body stack">
+            <OptRow<boolean>
+              label="Drive style"
+              value={settings.assists.fieldCentric}
+              cols="two"
+              onPick={(fieldCentric) => setAssist({ fieldCentric })}
+              options={[
+                { v: false, t: 'Robot-centric', d: 'Forward is where the robot points' },
+                { v: true, t: 'Field-centric', d: 'Forward is away from you, whichever way it faces' },
+              ]}
+            />
+            {spec.drivetrain === 'tank' && (
+              <OptRow<GameSettings['tankControlMode']>
+                label="Tank sticks"
+                value={settings.tankControlMode}
+                cols="two"
+                onPick={(tankControlMode) => set({ tankControlMode })}
+                options={[
+                  // NO KEY NAMES in these sub-lines any more. Every control in this app is
+                  // rebindable, so "L-stick/W-S: Fwd/Back" is a claim that goes stale the
+                  // moment somebody uses the Controls screen — the same reason the tutorial's
+                  // hints are functions of the bindings rather than strings.
+                  { v: 'normal', t: 'One stick each', d: 'Drive on one, turn on the other' },
+                  { v: 'traditional', t: 'One side each', d: 'Each stick drives its own side' },
+                ]}
+              />
+            )}
+            {/* AIM ASSIST IS NOT OFFERED — it is always on, in all three games. The flag and
+                the sims' manual-aim paths both still exist (`coerceAssists` forces the stored
+                value true), so putting the toggle back is one more row here. */}
+            <ToggleRow
+              label="Auto intake"
+              value={settings.assists.autoIntake}
+              onPick={(autoIntake) => setAssist({ autoIntake })}
+            />
+            {mod.offersAutoFire !== false && (
+              <ToggleRow
+                label="Auto fire"
+                value={settings.assists.autoFire}
+                onPick={(autoFire) => setAssist({ autoFire })}
+              />
+            )}
+            <label className="ds-field">
+              <span className="cap">
+                Park speed cap <span className="val">{settings.parkSpeedPct}%</span>
+              </span>
+              <input
+                className="ds-range"
+                type="range"
+                min={0}
+                max={100}
+                step={5}
+                value={settings.parkSpeedPct}
+                style={rangeFill(settings.parkSpeedPct, 0, 100)}
+                onChange={(e) => set({ parkSpeedPct: Number(e.target.value) })}
+              />
+            </label>
+          </div>
+        </section>
+        </div>
       </div>
     </>
   );

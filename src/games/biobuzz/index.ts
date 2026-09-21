@@ -9,6 +9,7 @@ import {
 } from './HudSlots';
 import { drawBiobuzzBalls } from './draw';
 import { drawBiobuzzField } from './drawField';
+import { drawBiobuzzFlowerReadout } from './drawFlowerReadout';
 import { drawBiobuzzRobot } from './drawRobot';
 import { bbConfigSummary, bbStatTiles } from './labels';
 import { BB_PRESET_LIST, BB_REAL_PRESETS, bbPresetLines, bbSpecMatches } from './presets';
@@ -29,10 +30,10 @@ import { BIOBUZZ_TUTORIAL } from './tutorial';
  * `mod.X ? <the slot> : <the existing branch, unchanged>`.
  *
  * WHAT IS DELIBERATELY NOT FILLED, each an absence rather than an omission:
- *  • `drawOverlays` — the slot draws between the field and the robots (DECODE's ramp strips).
- *    BIOBUZZ has no published structure to underlay: Section 9 (ARENA) is a Kickoff
- *    placeholder, so the field is four walls and a tile grid. A no-op costs a call per frame
- *    and tells the next reader there is something to see. It lands with the geometry.
+ *  • `drawOverlays` — the 2D slot draws between the field and the robots (DECODE's ramp strips),
+ *    in FIELD INCHES. BIOBUZZ has nothing to underlay there: everything this game draws over the
+ *    mat belongs to the field renderer or to `drawBalls`. Its 3D sibling `drawSceneOverlay` IS
+ *    filled (2026-09-21) — a different slot in a different coordinate system, over a live scene.
  */
 export const BIOBUZZ_MODULE: GameModule = {
   ...BIOBUZZ_SIM,
@@ -42,6 +43,16 @@ export const BIOBUZZ_MODULE: GameModule = {
   drawField: drawBiobuzzField,
   drawRobot: drawBiobuzzRobot,
   drawBalls: drawBiobuzzBalls,
+  /**
+   * THE 3D OVERLAY SLOT — the FLOWER contents read-out over a top-down 3D shot.
+   *
+   * ⚠️ AND NOT `drawOverlays`, WHICH STAYS EMPTY. On the 2D path `drawBiobuzzField` draws the
+   * four sections itself, in the same pixels, so a second pass there would paint them twice —
+   * and the two slots are in different coordinate systems besides (`games/module.ts` carries the
+   * bug that distinction exists to prevent). `drawBiobuzzFlowerReadout` refuses every camera but
+   * `overhead`; see its header for why the side-on cameras do not want one.
+   */
+  drawSceneOverlay: drawBiobuzzFlowerReadout,
   // ---- UI slots ----
   Builder: BiobuzzBuilderSlot,
   /**

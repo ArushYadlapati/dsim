@@ -583,6 +583,21 @@ export interface ControlGeometry {
    * an inch — the chain by twice that.
    */
   radius?: number;
+  /**
+   * WHICH ARTIFACTS ARE LOOSE ON THE FLOOR, i.e. the set this rule is allowed to count at all.
+   *
+   * Default `b.state.kind === 'ground'`, which is what this function has always used and is
+   * exactly right for a PLANAR solve: DECODE and Chain Reaction tag an artifact `ground` from
+   * the moment it lands until something takes it, so the tag and the fact agree.
+   *
+   * ⚠️ They stop agreeing under a 3D solve. A ball being PLOWED skips — it leaves the tiles by
+   * a fraction of an inch between strikes — and a tagger that asks "is it off the floor or
+   * moving vertically?" calls that `flight`. Measured on BIOBUZZ 3D, 14.3% of the ticks a
+   * chassis was in contact with an element it was pushing, that element was tagged `flight`,
+   * so the rule could neither count it nor keep a clock on it. A game whose tag flickers
+   * supplies its own answer here; the ones whose tag does not, say nothing and are unchanged.
+   */
+  loose?(b: Artifact): boolean;
 }
 
 export function controlledArtifacts(
@@ -603,7 +618,8 @@ export function controlledArtifacts(
    * collapse to exactly the constants they replace.
    */
   const rad = (b: Artifact): number => b.r ?? R0;
-  const loose = world.balls.filter((b) => b.state.kind === 'ground');
+  const isLoose = geom?.loose ?? ((b: Artifact): boolean => b.state.kind === 'ground');
+  const loose = world.balls.filter(isLoose);
 
   const held = new Set<number>();
   /**

@@ -145,6 +145,125 @@ and then the code. **`uiaudit`** is what actually enforces both, as ratchets.
   edge-detection on world state in `GameController.handleActionAudio` — **the sim core stays
   event-free for these**.
 
+## Controller navigation — the pad drives the MENUS too
+
+One focus-navigation layer for the whole app (`src/input/padNav.ts` + `src/ui/PadNavLayer.tsx`).
+It drives NATIVE focus and NATIVE activation on the real DOM, so everything keyboard-reachable
+is pad-reachable and every fix it forces is an accessibility fix in its own right. **Nothing
+here invents a parallel selection state** — a second model of "what is selected" would drift
+from the one the browser already keeps, and the two would disagree first on exactly the screens
+that are hardest to test.
+
+- **The split is what makes it testable.** `padNav.ts` is DOM-free, clock-free and
+  `navigator`-free: the geometry picker, the repeat clock, the glyph families, the on-screen
+  keyboard's reducer, the suspend registry and the button mask. `npm test` drives all of it on
+  synthetic rects and an injected clock, which is the only way to test spatial navigation
+  without a browser. `PadNavLayer.tsx` is the half that touches focus, and it is the ONLY half
+  that may.
+- **The layer is mounted beside `<App/>` (`main.tsx`), not inside it**, for the reason the ad
+  provider wraps it: the game, lobby, record and ranked screens are returned EARLY, so anything
+  inside `App` would have to be remembered by each of them. It renders through a portal to
+  `body`, so its position in the tree costs it nothing, and it polls nothing until a pad
+  connects.
+- **Focus moves by GEOMETRY, and the cross-axis term is the whole trick.** A candidate qualifies
+  when its centre is strictly past the source's on that axis (strictly, or a row whose centres
+  line up is a candidate for itself and a move sits still); the winner minimises
+  `alongDistance + 2 × crossGap`, where `crossGap` is 0 while the two boxes overlap on the other
+  axis. That is what makes a ragged grid behave — moving down out of a narrow tile picks
+  whatever is actually UNDERNEATH it, not whatever is nearest by straight-line distance. With no
+  candidate it scrolls, then wraps within the container, then stays put.
+- ⚠️ **THE RING IS ON `:focus`, NOT `:focus-visible`.** A pad move is a synthetic `.focus()`,
+  which the browser treats as programmatic — Chromium grants `:focus-visible` after keyboard-ish
+  interaction but not reliably from a gamepad, so the app's own rings cannot be leaned on. The
+  layer sets `data-padnav="on"` on `<html>` while a pad is the ACTIVE input (any pointer move
+  clears it, so a mouse user never sees a ring), and one rule set in `shell.css` rings plain
+  `:focus` underneath it. It is an `outline`, so it moves no layout. Inside `.hud`/`.game-root`
+  it takes `--ds-on-field-accent` — **category 3**, because the field is hardcoded dark.
+
+### The in-match contract
+
+**In a match the pad is the robot's.** `GameView` calls `suspendPadNav('match')` for its whole
+mount, so there are no focus moves and no synthetic clicks while somebody is driving. The
+Controls screen stands the layer down the same way while a rebind is armed
+(`suspendPadNav('capture')`) — without it, A-to-activate binds A to whatever row was just opened.
+
+- **A registry, not a boolean.** The two reasons OVERLAP (Controls is reachable from a match),
+  and with a boolean the second release would undo the first.
+- ⚠️ **`GameView`'s effect is MOUNT-ONCE, with `onExit` in a ref.** It is a fresh arrow every
+  render and `App` re-renders on its own every few seconds (the presence poll), so depending on
+  it would tear the suspension down and rebuild it mid-match — the same trap the capture effects
+  above document.
+- **The way back in is the MENU button**, watched even while the layer is suspended because it
+  is the way back out. Default `PAD_MENU_BUTTON` (15, D-RIGHT): the one standard-mapping index
+  no default bind uses, and `npm test` asserts that against `DEFAULT_BINDINGS` rather than
+  trusting the comment, because a future default taking it would make the button that leaves a
+  match also drive the robot.
+- ⚠️ **EDGE CONSUMPTION.** The press that opens the menu must not also drive, and the press that
+  closes it must not fire a shot. `maskPadButtons(held)` records everything held at that instant;
+  `GamepadInput.sample` runs `applyPadMask` over the held list **before the chord resolver sees
+  it**, and an entry clears when its button is physically released. Same rule as the chord
+  resolver's rule 3, same reason. It is module state because the two sides are different objects
+  on different loops — the pad-nav rAF sets it, the sim's input manager reads it.
+
+### Preferences, text and glyphs
+
+- **Two new `PadBindings` fields, both NEW SIBLINGS** validated field-by-field like
+  `chordGraceMs`: `menuButton` (0..31) and `navEnabled` (default true, the "Controller menu
+  navigation" toggle in Controls ▸ More). Same reasoning as `combos` — an older client ignores
+  them and keeps its Esc-only exit. No new storage key: both ride the settings blob that already
+  persists and syncs. `App` mirrors them into `padNav.ts`'s little store because the layer is
+  mounted outside it; importing `PadBindings` as a value there would close the cycle
+  `bindings.ts → padNav.ts`.
+- **A text field activated BY PAD gets an on-screen keyboard.** Ordinary buttons, so the same
+  layer navigates it and no second input model exists. Caps is ONE-SHOT, and the cap on length
+  is the field's own `maxLength` — a keyboard that let a pad user past it would write a value
+  the form then rejects.
+- ⚠️ **Confirm is not always index 0.** In the standard mapping 0 is the BOTTOM face button and
+  1 the RIGHT one; on a Switch pad the RIGHT one is A, so `padConfirmButton`/`padBackButton`
+  SWAP for `nintendo`. Relabelling alone would hand that player a legend saying A and a layer
+  listening to B. An unrecognised pad stays `generic` rather than guessing Xbox — a wrong glyph
+  is worse than a neutral one, because the player trusts it and presses it.
+- **No keyboard view keys, and the arrows stay the driver's.** Every bind in this app is
+  rebindable, so a navigation layer that ate the arrows would either steal a driving control or
+  need a runtime conflict check against `effectiveBindings` on every keystroke.
+
+## Configure — the five sections, and the three rules that hold them together
+
+`src/ui/Configure.tsx` routes five sections at `/configure/<key>`. **The ARRAY is the order on
+screen; the KEYS are shipped URLs** (`audio` is Audio and Visual), so reordering must never
+rename one. Order is task order — Robot, Controls, Match, Audio and Visual, Graphics: build it,
+learn to drive it, set up the session, then the two output sections.
+
+- **ONE SPELLING OF A PICK: `OptRow` / `ToggleRow` (`src/ui/OptRow.tsx`).** There used to be
+  three — a single tile whose LABEL carried the state (`Auto intake ON`), a two-tile `Off`/`On`
+  row, and a segmented strip — and the first is the bad one: the tile is already filled accent
+  when it is on, so the word says a second time what the fill says, and an unlit `Sorter OFF`
+  beside a lit `Sorter ON` reads as two different controls. Every boolean and small enum in
+  Configure goes through this component, which is also where the `aria-pressed` fourteen
+  hand-rolled toggles were missing comes from. **Toggle buttons, never an ARIA radiogroup** —
+  a radiogroup owes roving tabindex and arrow keys, and half that pattern is worse than none.
+- **RARE CONTROLS FOLD; THEY ARE NOT ROUTED ELSEWHERE.** `<details class="ds-fold">` — Graphics
+  ▸ Advanced (the sixteen overrides the Quality preset already sets), Controls ▸ More (touch
+  controls, network prediction), Audio ▸ Individual sounds (the five per-emitter trims). Closed
+  it is one row; open it is exactly where it was, so nothing is hidden from somebody who knows
+  it exists. `.ds-fold.inset` is the variant for inside a panel body, where a second card would
+  be nesting. The marker rotates and `[open]` changes a border COLOUR, never a width.
+- **THE ROBOT PREVIEW STAYS ON SCREEN.** `.ds-robot-rail` pins the hero in a 260px column past
+  1320px; below that it is back at the top of the page, which is why it is FIRST in the DOM.
+  ⚠️ **Do not make it a sticky strip across the top again** — that shipped, and it held 26% of a
+  720px viewport even compact, because the two rows of stat tiles set the height rather than the
+  sprite. The rail costs nothing vertically. It needs the widened page
+  (`.ds-main:has(.ds-subnav-layout)`, 1280) to exist at all: at 1080 the section body is 824 and
+  a rail leaves 500, which is not a build column. The rail ITEM stretches and the CARD inside it
+  sticks — a rail sized to its own content pins to nothing.
+
+**Configure copy.** No decorative glyph (the `🎯` on preset cards and the `＋` on the add cards
+are gone), no sentence whose content is where another screen is, and no sub-line naming a KEY —
+every control in this app is rebindable, so `L-stick/W-S: Fwd/Back` is a claim that goes stale
+the moment somebody opens Controls. A blurb survives only where it names a trade-off the player
+is choosing between (`docs/ui-standard.md` §8): the archetype and drivetrain descriptions, the
+four `PERF_DISPLAY_BLURB` lines, an option's download size, and the R102 stow note.
+
 ## HUD / UX product rules
 
 - HUD mimics the FTC live scoring display: red|timer|blue bar at the BOTTOM.
@@ -154,6 +273,15 @@ and then the code. **`uiaudit`** is what actually enforces both, as ratchets.
   BEGINS IN" text lead-in before the 3-2-1 digits.
 - END GAME at 20 s left (`ENDGAME_START` / `CHAIN_ENDGAME_S`): warning cue + HUD label/tint.
 - Games opt into chrome via `GameModule.ui` (`showScoreHud`, `startEditor`, `intakes`).
+- **THE LABEL OVER A ROBOT IS THE DRIVER'S USERNAME, IN THEIR ALLIANCE COLOUR**
+  (`renderer.ts`, both the 2D pass and the 3D projected one). It answers "who is that", so the
+  username wins over the build's `spec.name` and the team-number prefix goes with it; a seat the
+  server did not name — solo, a bot before `matchStart.drivers` existed, a replay, an old server
+  — falls back to the old `teamNumber + spec.name`. The LOCAL robot is still never labelled.
+  The fill is `COLORS.redLabel` / `COLORS.blueLabel`, a separate pair because `COLORS.red`/`blue`
+  are under 4.5:1 as 12-px type on the field; the dark stroke stays, and it is what carries the
+  glyphs onto the light backdrop and onto a 3D background. Category 3 (their ground is the
+  canvas), so they do not theme.
 - ⚠️ **`.hud` IS `pointer-events: none`** so the canvas keeps a drag. Anything in it meant to
   be clicked re-enables them ON ITSELF (`.game-btn`, `.sponsor-chip`, `.mobile-btn`,
   `.pred-panel`). The connection chip did not, for months: its `onClick` opened a ping graph

@@ -11,6 +11,7 @@ import {
   type ServerMsg,
   CLIENT_CAPS,
   type LobbyPlayer,
+  type MatchDriver,
   type PlayerIntro,
   type PlayerPatch,
   type QueueMode,
@@ -51,6 +52,17 @@ export interface MatchStart {
   /** ranked rooms only: drives the pre-match ELO intro overlay */
   ranked?: boolean;
   intros?: PlayerIntro[];
+  /**
+   * WHO IS IN EACH SEAT (`matchStart.drivers`; absent ⇒ nothing known) — the usernames the
+   * in-match labels print.
+   *
+   * ⚠️ **NAMED HERE BECAUSE OF WHAT THIS TYPE IS FOR.** `App.beginSession` rebuilds this object
+   * field by field for the rejoin record, and `physics` and `gen` both shipped missing from it
+   * for exactly as long as they were missing from this declaration. The symptom is mild for
+   * this one — a returning driver's labels fall back to chassis names — but it is the same
+   * hole, and the fix is to be in the list.
+   */
+  drivers?: MatchDriver[];
   /** the Fly region hosting the match (for the "matched on …" HUD chip) */
   region?: string;
 }

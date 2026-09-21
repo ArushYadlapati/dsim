@@ -94,6 +94,7 @@ import { trackPageview } from '../pageviews';
 import type { GameId } from '../games/types';
 import { chainDisclaimerSeen, markChainDisclaimerSeen } from '../chainDisclaimer';
 import { startSelectionLegal } from './startPositions';
+import { setPadNavPrefs } from '../input/padNav';
 
 type Screen =
   | 'home'
@@ -535,6 +536,13 @@ export function App() {
     trackPageview(path, settings.game);
   }, [screen, route, settings.game]);
 
+  /* Mirror the two pad-nav preferences into the module store the navigation layer reads. The
+     layer is mounted beside `<App/>` (main.tsx) and cannot see this state; `setPadNavPrefs` is a
+     no-op when neither field moved, so this costs a comparison per render. */
+  useEffect(() => {
+    setPadNavPrefs(settings.bindings.pad);
+  }, [settings.bindings.pad]);
+
   // surface the one-time Chain Reaction disclaimer the first time CR is selected
   useEffect(() => {
     setShowChainDisclaimer(settings.game === 'chain' && !chainDisclaimerSeen());
@@ -794,6 +802,12 @@ export function App() {
           gen: s.gen,
           ranked: s.ranked,
           intros: s.intros,
+          // ⚠️ AND WHO IS IN THE SEATS — the third field to be listed here for the reason the
+          // two above it were. The symptom is the mildest of the three (a returning driver's
+          // labels fall back to chassis names, so everyone in a room of default builds is
+          // labelled the same thing) but the hole is identical: this object is written field by
+          // field and a field nobody copies is a field the rejoined session never has.
+          drivers: s.drivers,
           region: s.region,
         },
         ranked: s.ranked,

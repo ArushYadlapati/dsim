@@ -3,6 +3,7 @@
  * (menu / cancel capture) and never bindable. */
 
 import { GAME_IDS, type GameId } from '../games/types';
+import { PAD_MENU_BUTTON } from './padNav';
 
 export type KeyAction =
   | 'driveUp'
@@ -90,6 +91,21 @@ export interface PadBindings {
   triggerThreshold: number;
   /** the combo wait in ms, `PAD_CHORD_GRACE_MIN_MS..PAD_CHORD_GRACE_MAX_MS` (see the constant) */
   chordGraceMs: number;
+  /**
+   * THE IN-MATCH MENU BUTTON, and the two reasons it is a bare field rather than a thirteenth
+   * `PadAction`. It is not an action: the sim never reads it, there is no `RobotCommand` bit for
+   * it, and `ACTION_GAMES` is keyed on `KeyAction` with `PadAction` a strict subset — so adding
+   * one would ripple a UI affordance through the command table. And it is a NEW SIBLING FIELD
+   * for the reason `combos` is: an older client ignores it and keeps its old Esc-only exit.
+   * Default `PAD_MENU_BUTTON` (15, D-RIGHT), the one index no default bind uses.
+   */
+  menuButton: number;
+  /**
+   * Is the pad allowed to drive the MENUS as well as the robot? On by default; the toggle
+   * exists for a player who wants a connected pad to be the robot's and nothing else.
+   * Validated like every other field, so an older blob without it reads as on.
+   */
+  navEnabled: boolean;
 }
 
 /**
@@ -337,6 +353,8 @@ export const DEFAULT_BINDINGS: ControlBindings = {
     curve: 1,
     triggerThreshold: 0.35,
     chordGraceMs: PAD_CHORD_GRACE_MS,
+    menuButton: PAD_MENU_BUTTON,
+    navEnabled: true,
   },
 };
 
@@ -359,6 +377,8 @@ export function cloneBindings(b: ControlBindings): ControlBindings {
       curve: b.pad.curve,
       triggerThreshold: b.pad.triggerThreshold,
       chordGraceMs: b.pad.chordGraceMs,
+      menuButton: b.pad.menuButton,
+      navEnabled: b.pad.navEnabled,
     },
   };
   const pg = clonePerGame(b.perGame);
@@ -453,7 +473,11 @@ export function mergeBindings(saved: unknown): ControlBindings {
       curve?: unknown;
       triggerThreshold?: unknown;
       chordGraceMs?: unknown;
+      menuButton?: unknown;
+      navEnabled?: unknown;
     };
+    if (isButtonIndex(pad.menuButton)) out.pad.menuButton = pad.menuButton;
+    if (typeof pad.navEnabled === 'boolean') out.pad.navEnabled = pad.navEnabled;
     if (pad.driveStick === 'left' || pad.driveStick === 'right') {
       out.pad.driveStick = pad.driveStick;
     }

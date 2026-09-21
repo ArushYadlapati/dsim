@@ -119,29 +119,56 @@ export function defaultFreeCam(viewAngle: number): FreeCamState {
   return clampFreeCam({ yaw, pitch: FREE_CAM_PITCH_DEFAULT, dist: FREE_CAM_DIST_DEFAULT, target: [0, 0] });
 }
 
+// ──────────────────────────────────────────────────────────────── THE DIRECTION SENSES ───────
+//
+// ⚠️ ORBIT DRAGS THE FIELD, IT DOES NOT FLY THE CAMERA (owner report, 2026-09-21: "Onshape orbit
+// is right drag but it is reversed"). The gesture every CAD package implements is "put your
+// finger on the model and turn it": a drag to the RIGHT swings the model right, which means the
+// EYE goes left. `yaw` is the azimuth of the eye about the target, and d(eye)/d(yaw) is exactly
+// the camera's own screen-RIGHT vector (`freeCamPose` below; `(-sin yaw, cos yaw)`), so the eye
+// follows the cursor when yaw INCREASES with `dx` — which is what shipped, and is backwards.
+// `freeCamOrbitDelta` negates it. Two independent confirmations that this, not the other, is the
+// house sense: `renderCameras.ts`'s own spectator `orbitDrag` has always done `orbitYaw -= dx`,
+// so free cam was the one camera in the app that turned the other way; and three.js's
+// `OrbitControls`, which is the de-facto spelling of this gesture on the web, rotates by
+// `-dx` too.
+//
+// The PITCH axis was already right and is NOT flipped: grab the front of a ball and pull DOWN
+// and its top rolls toward you, i.e. you end up looking from HIGHER — elevation increases with
+// `dy`. (`OrbitControls` agrees: a positive `dy` decreases its polar angle, which raises the
+// eye.) Both senses are pinned with explicit geometry in the RENDER lane.
+//
+// PAN is the same "the ground follows the cursor" rule, and it was already right: drag right and
+// the field slides right, so the look-at point moves screen-LEFT. That one was measured with
+// real mouse input on 2026-09-21 after shipping backwards once, and the vendors agree by
+// construction — a pan that moved the camera with the cursor would send the model the other way
+// from an orbit in the same hand.
+//
+// NO VENDOR DOCUMENTS EITHER SENSE. Onshape, SOLIDWORKS, Fusion and Blender all publish which
+// BUTTON does what (see the table below, and `docs/biobuzz/free-cam-presets.md` for the URLs)
+// and none of them states which way the model turns; this is the owner's report plus the app's
+// own orbit camera, written down so the next pass does not re-derive it.
+
 // ──────────────────────────────────────────────────────────────────────── the three gestures ──
 
-/** left-drag: orbit. `dYaw`/`dPitch` are already-scaled radians (the caller applies its own
- * px-to-radian rate, the same way `renderCameras.ts`'s `orbitDrag` does for the orbit camera). */
+/** orbit: `dYaw`/`dPitch` are already-scaled radians. Use `freeCamOrbitDelta` to turn a screen
+ * drag into them — it owns the direction sense and the player's own inversions. */
 export function orbitFreeCam(s: FreeCamState, dYaw: number, dPitch: number): FreeCamState {
   return clampFreeCam({ ...s, yaw: s.yaw + dYaw, pitch: s.pitch + dPitch });
 }
 
-/** right-drag (or shift+left-drag): pan the look-at point across the floor plane, in SCREEN-
- * relative directions — `dxPx` positive is "drag right", `dyPx` positive is "drag down" (the DOM
- * convention). Scaled by the CURRENT distance so the ground tracks the cursor at any zoom level,
- * the same reasoning `OrbitControls`-style pan uses; pitch does not tilt a FLOOR-plane pan. */
+/** pan: move the look-at point across the floor plane, in SCREEN-relative directions — `dxPx`
+ * positive is "drag right", `dyPx` positive is "drag down" (the DOM convention). Scaled by the
+ * CURRENT distance so the ground tracks the cursor at any zoom level; pitch does not tilt a
+ * FLOOR-plane pan. `gain` is the player's pan sensitivity, negated when they have inverted it. */
 const PAN_RATE = 0.0022;
 
-export function panFreeCam(s: FreeCamState, dxPx: number, dyPx: number): FreeCamState {
-  const scale = s.dist * PAN_RATE;
+export function panFreeCam(s: FreeCamState, dxPx: number, dyPx: number, gain = 1): FreeCamState {
+  const scale = s.dist * PAN_RATE * gain;
   const cy = dcos(s.yaw);
   const sy = dsin(s.yaw);
   // `right`: screen-right on the floor. `into`: FROM the eye TOWARD the target on the floor.
-  // THE GROUND FOLLOWS THE CURSOR, the way every CAD package pans: dragging right slides the
-  // field right, so the look-at point moves LEFT; dragging down slides it toward the viewer, so
-  // the look-at point moves INTO the screen. (Shipped the other way round on 2026-09-21 — the
-  // camera followed the cursor — and was measured backwards with real mouse input.)
+  // THE GROUND FOLLOWS THE CURSOR — see THE DIRECTION SENSES above.
   const rightX = -sy;
   const rightY = cy;
   const intoX = -cy;
@@ -167,27 +194,69 @@ export function dollyFreeCam(s: FreeCamState, factor: number): FreeCamState {
   return clampFreeCam({ ...s, dist: s.dist * factor });
 }
 
-// ───────────────────────────────────────────────────────────────────── mouse navigation presets ──
+/**
+ * ZOOM TOWARD THE CURSOR — the same dolly, plus the look-at point sliding so that the floor
+ * point the cursor is over stays exactly under the cursor.
+ *
+ * THE MATH IS ONE LINE AND IT IS EXACT. Scaling the whole camera about a fixed point `P` —
+ * `eye' = P + (eye − P)·f`, `target' = P + (target − P)·f` — leaves every direction from the eye
+ * to `P` unchanged (the eye only slides along the line through `P`) and leaves the eye→target
+ * direction unchanged too, so `P` keeps its screen position and the scene grows about it. In
+ * this parametrisation `eye − target` scales by `f`, so `dist' = dist·f` with yaw and pitch
+ * untouched, and `target'` is the lerp above. `P` is on the floor and so is `target`, so the
+ * target never leaves the floor plane and the state stays a `FreeCamState`.
+ *
+ * The CLAMPS still bind, and where one bites the point under the cursor does move — a dolly that
+ * has hit `FREE_CAM_DIST_MIN`, or a target pushed past the field margin, is a bounded camera
+ * rather than a broken one, and the alternative (letting the target chase the cursor off the
+ * field) is the bug the margin exists to prevent.
+ */
+export function dollyFreeCamToward(s: FreeCamState, factor: number, floorX: number, floorY: number): FreeCamState {
+  if (!Number.isFinite(floorX) || !Number.isFinite(floorY)) return dollyFreeCam(s, factor);
+  const f = Number.isFinite(factor) ? factor : 1;
+  return clampFreeCam({
+    ...s,
+    dist: s.dist * factor,
+    target: [floorX + (s.target[0] - floorX) * f, floorY + (s.target[1] - floorY) * f],
+  });
+}
+
+// ───────────────────────────────────────────────────────────────── mouse navigation presets ──
 
 /**
  * WHICH MOUSE BUTTON DOES WHAT (owner, 2026-09-21: "scroll wheel click to slide around ... presets
- * for popular cad software"). A CAD user's hands already know one of these by heart, and the
- * packages disagree on every button, so the mapping is a per-device pick rather than one more
- * compromise. `dsim` is the superset default: everything it did before, plus middle-drag pan.
+ * for popular cad software", then "the presets for free camera are incorrect ... review them
+ * thoroughly and make it absolutely accurate"). A CAD user's hands already know one of these by
+ * heart, and the packages disagree on every button, so the mapping is a per-device pick.
  *
- *   preset       orbit            pan                          zoom (drag)
- *   dsim         left             middle · right · shift+left  —
- *   onshape      right            middle · ctrl+right          —
- *   solidworks   middle           ctrl+middle                  shift+middle
- *   fusion       shift+middle     middle                       —
- *   blender      middle           shift+middle                 ctrl+middle
+ * EVERY ROW BELOW IS OFF THE VENDOR'S OWN CURRENT HELP PAGE. `docs/biobuzz/free-cam-presets.md`
+ * carries the URLs, the quoted wording and what each vendor does NOT state.
  *
- * The wheel dollies in every preset; its DIRECTION is the separate `invertZoom` switch, because
- * that is a preference those same packages expose on its own and their defaults disagree.
- * A CAD preset leaves the LEFT button unbound on purpose — it is "select" in all four, and here
- * that keeps it free for the start-position editor.
+ *   preset       orbit                pan                        zoom (drag)          wheel fwd
+ *   dsim         right · left         middle · ctrl+right ·      —                    in
+ *                                     shift+left
+ *   onshape      right                middle · ctrl+right        —                    in
+ *   solidworks   middle               ctrl+middle                shift+middle         in *
+ *   fusion       shift+middle         middle                     ctrl+shift+middle    in *
+ *   blender      middle               shift+middle               ctrl+middle          in
+ *   custom       whatever the player bound                                            in
+ *
+ * `*` = the vendor publishes the buttons but not the wheel's default direction; ours matches the
+ * two that DO publish it (Onshape "Scroll wheel up: Zoom in", Blender's default keymap binds
+ * `WHEELINMOUSE` to `view3d.zoom` with `delta 1`). The player can override it per device.
+ *
+ * ALT IS NOT PART OF ANY PRESET, and is ignored when one is matched — so Onshape's own
+ * `Alt + right-drag` constrained rotate lands on a plain orbit here rather than on nothing. A
+ * CUSTOM bind matches Alt exactly, because there it is the player's own choice.
+ *
+ * A CAD preset leaves the LEFT button unbound on purpose — it is "select" in all of them, and
+ * here that keeps it free for the start-position editor. `dsim` is the exception and it is
+ * deliberate: it is ONSHAPE's mapping (owner: "DSIM default should also be very close to how the
+ * onshape one works") plus left-drag orbit and shift+left pan, because this app's OTHER
+ * spectator camera has always orbited on a left-drag and a player who cycles `orbit` → `free`
+ * should not have the gesture disappear under their hand.
  */
-export const FREE_CAM_PRESETS = ['dsim', 'onshape', 'solidworks', 'fusion', 'blender'] as const;
+export const FREE_CAM_PRESETS = ['dsim', 'onshape', 'solidworks', 'fusion', 'blender', 'custom'] as const;
 export type FreeCamPreset = (typeof FREE_CAM_PRESETS)[number];
 
 export type FreeCamGesture = 'orbit' | 'pan' | 'zoom';
@@ -195,39 +264,253 @@ export type FreeCamGesture = 'orbit' | 'pan' | 'zoom';
 export interface FreeCamMods {
   shift: boolean;
   ctrl: boolean;
+  alt: boolean;
 }
 
-/** `button` is `PointerEvent.button`: 0 left, 1 middle, 2 right. `ctrl` is ctrl OR meta at the
- * call site, so a Mac's ⌘ works wherever a PC's ctrl does. `null` = this press is not a camera
- * gesture, and the listener must leave it alone. */
-export function freeCamGesture(preset: FreeCamPreset, button: number, mods: FreeCamMods): FreeCamGesture | null {
-  const { shift, ctrl } = mods;
-  switch (preset) {
-    case 'onshape':
-      if (button === 2) return ctrl ? 'pan' : 'orbit';
-      return button === 1 ? 'pan' : null;
-    case 'solidworks':
-      if (button !== 1) return null;
-      return ctrl ? 'pan' : shift ? 'zoom' : 'orbit';
-    case 'fusion':
-      if (button !== 1) return null;
-      return shift ? 'orbit' : 'pan';
-    case 'blender':
-      if (button !== 1) return null;
-      return shift ? 'pan' : ctrl ? 'zoom' : 'orbit';
-    default:
-      if (button === 0) return shift ? 'pan' : 'orbit';
-      return button === 1 || button === 2 ? 'pan' : null;
+/** one mouse chord. `button` is `PointerEvent.button`: 0 left, 1 middle, 2 right. `ctrl` is ctrl
+ * OR meta at the call site, so a Mac's ⌘ works wherever a PC's ctrl does. */
+export interface FreeCamBind {
+  button: 0 | 1 | 2;
+  shift: boolean;
+  ctrl: boolean;
+  alt: boolean;
+}
+
+/** the CUSTOM preset's three assignments. `null` is UNBOUND — the same state the key binder
+ * leaves a victim in when a chord is stolen from it. */
+export interface FreeCamCustom {
+  orbit: FreeCamBind | null;
+  pan: FreeCamBind | null;
+  zoom: FreeCamBind | null;
+}
+
+const bind = (button: 0 | 1 | 2, shift = false, ctrl = false, alt = false): FreeCamBind => ({ button, shift, ctrl, alt });
+
+interface PresetRow {
+  b: 0 | 1 | 2;
+  shift?: true;
+  ctrl?: true;
+  g: FreeCamGesture;
+}
+
+const PRESET_TABLE: Record<Exclude<FreeCamPreset, 'custom'>, readonly PresetRow[]> = {
+  dsim: [
+    { b: 2, g: 'orbit' },
+    { b: 0, g: 'orbit' },
+    { b: 1, g: 'pan' },
+    { b: 2, ctrl: true, g: 'pan' },
+    { b: 0, shift: true, g: 'pan' },
+  ],
+  onshape: [
+    { b: 2, g: 'orbit' },
+    { b: 1, g: 'pan' },
+    { b: 2, ctrl: true, g: 'pan' },
+  ],
+  solidworks: [
+    { b: 1, g: 'orbit' },
+    { b: 1, ctrl: true, g: 'pan' },
+    { b: 1, shift: true, g: 'zoom' },
+  ],
+  fusion: [
+    { b: 1, g: 'pan' },
+    { b: 1, shift: true, g: 'orbit' },
+    { b: 1, shift: true, ctrl: true, g: 'zoom' },
+  ],
+  blender: [
+    { b: 1, g: 'orbit' },
+    { b: 1, shift: true, g: 'pan' },
+    { b: 1, ctrl: true, g: 'zoom' },
+  ],
+};
+
+/** which way a preset's WHEEL goes by default: `'in'` = pushing the wheel forward (away from the
+ * hand, `deltaY < 0`) moves the camera closer. See the table above for which two are the
+ * vendor's published default and which two are ours. */
+export const FREE_CAM_PRESET_WHEEL: Record<FreeCamPreset, 'in' | 'out'> = {
+  dsim: 'in',
+  onshape: 'in',
+  solidworks: 'in',
+  fusion: 'in',
+  blender: 'in',
+  custom: 'in',
+};
+
+/** the persisted navigation pick (`graphics/store.ts`, `FREE_CAM_NAV_KEY`) — ONE object in ONE
+ * key, field-by-field coerced, so an older stored blob (which carried `preset` + `invertZoom`
+ * and nothing else) still loads and simply picks up the defaults for everything added since. */
+export interface FreeCamNav {
+  preset: FreeCamPreset;
+  /** `'preset'` follows `FREE_CAM_PRESET_WHEEL`; the other two are the player overriding it. */
+  wheel: 'preset' | 'in' | 'out';
+  invertOrbitX: boolean;
+  invertOrbitY: boolean;
+  invertPan: boolean;
+  /** zoom toward the floor point under the cursor rather than toward the look-at point. OFF by
+   * default: of the four packages, only Blender documents the behaviour at all, and it documents
+   * it as an option you ENABLE ("instead of the 2D window center"). */
+  zoomToCursor: boolean;
+  /** ease the camera toward its goal (`renderCameras.ts`'s `FREE_CAM_HALFLIFE`), or snap. */
+  smoothing: boolean;
+  orbitSpeed: number;
+  panSpeed: number;
+  zoomSpeed: number;
+  custom: FreeCamCustom;
+}
+
+export const FREE_CAM_SPEED_MIN = 0.25;
+export const FREE_CAM_SPEED_MAX = 4;
+
+export const FREE_CAM_NAV_DEFAULT: FreeCamNav = {
+  preset: 'dsim',
+  wheel: 'preset',
+  invertOrbitX: false,
+  invertOrbitY: false,
+  invertPan: false,
+  zoomToCursor: false,
+  smoothing: true,
+  orbitSpeed: 1,
+  panSpeed: 1,
+  zoomSpeed: 1,
+  // a CUSTOM layout nobody has edited yet is Onshape's, which is also `dsim`'s three primaries —
+  // starting from "unbound" would hand the player a camera that cannot move.
+  custom: { orbit: bind(2), pan: bind(1), zoom: bind(1, true) },
+};
+
+/** the nav a bare preset name means — for the checks, and for anywhere a preset has to be
+ * evaluated without a stored blob in hand. */
+export function freeCamNavFor(preset: FreeCamPreset): FreeCamNav {
+  return { ...FREE_CAM_NAV_DEFAULT, preset, custom: { ...FREE_CAM_NAV_DEFAULT.custom } };
+}
+
+function coerceBind(raw: unknown): FreeCamBind | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const r = raw as Record<string, unknown>;
+  const b = r.button;
+  if (b !== 0 && b !== 1 && b !== 2) return null;
+  return { button: b, shift: r.shift === true, ctrl: r.ctrl === true, alt: r.alt === true };
+}
+
+function coerceSpeed(raw: unknown): number {
+  return typeof raw === 'number' && Number.isFinite(raw) ? clampNum(raw, FREE_CAM_SPEED_MIN, FREE_CAM_SPEED_MAX) : 1;
+}
+
+/** field-by-field, so a corrupt or older stored value degrades to the default per field.
+ * ⚠️ `invertZoom` is the field the FIRST version of this setting shipped with; a blob written by
+ * that build still means "forward zooms out", so it is read as `wheel: 'out'` rather than
+ * dropped. An unknown preset — including a `custom` written by some future build — falls back to
+ * `dsim`, which is the one preset guaranteed to exist. */
+export function coerceFreeCamNav(raw: unknown): FreeCamNav {
+  const r = (raw && typeof raw === 'object' ? raw : {}) as Record<string, unknown>;
+  const preset = (FREE_CAM_PRESETS as readonly unknown[]).includes(r.preset) ? (r.preset as FreeCamPreset) : FREE_CAM_NAV_DEFAULT.preset;
+  const wheel = r.wheel === 'in' || r.wheel === 'out' || r.wheel === 'preset' ? r.wheel : r.invertZoom === true ? 'out' : 'preset';
+  const rc = (r.custom && typeof r.custom === 'object' ? r.custom : {}) as Record<string, unknown>;
+  const custom: FreeCamCustom = {
+    orbit: 'orbit' in rc ? coerceBind(rc.orbit) : FREE_CAM_NAV_DEFAULT.custom.orbit,
+    pan: 'pan' in rc ? coerceBind(rc.pan) : FREE_CAM_NAV_DEFAULT.custom.pan,
+    zoom: 'zoom' in rc ? coerceBind(rc.zoom) : FREE_CAM_NAV_DEFAULT.custom.zoom,
+  };
+  return {
+    preset,
+    wheel,
+    invertOrbitX: r.invertOrbitX === true,
+    invertOrbitY: r.invertOrbitY === true,
+    invertPan: r.invertPan === true,
+    zoomToCursor: r.zoomToCursor === true,
+    smoothing: r.smoothing !== false,
+    orbitSpeed: coerceSpeed(r.orbitSpeed),
+    panSpeed: coerceSpeed(r.panSpeed),
+    zoomSpeed: coerceSpeed(r.zoomSpeed),
+    custom,
+  };
+}
+
+/** assign `b` to `gesture`, STEALING it from whichever other gesture held the identical chord —
+ * the same conflict policy the key binder uses (`docs/area/ui.md`: "a rebound key is STOLEN from
+ * its old action (may show UNBOUND)"), because the alternative is two gestures on one chord and
+ * an arbitrary winner. */
+export function bindFreeCamCustom(custom: FreeCamCustom, gesture: FreeCamGesture, b: FreeCamBind): FreeCamCustom {
+  const next: FreeCamCustom = { ...custom };
+  for (const g of ['orbit', 'pan', 'zoom'] as const) {
+    if (g !== gesture && next[g] && sameBind(next[g] as FreeCamBind, b)) next[g] = null;
   }
+  next[gesture] = { ...b };
+  return next;
 }
 
-/** the one-line reminder the Graphics section prints under the picker. */
+export function sameBind(a: FreeCamBind, b: FreeCamBind): boolean {
+  return a.button === b.button && a.shift === b.shift && a.ctrl === b.ctrl && a.alt === b.alt;
+}
+
+/**
+ * WHAT THIS PRESS MEANS. `null` = not a camera gesture, and the listener must leave it alone
+ * (a right-click keeps its context menu, the start-position editor keeps its left-click).
+ *
+ * A PRESET matches button + shift + ctrl and IGNORES alt; CUSTOM matches all four, because there
+ * the modifiers are the player's own choice and an ignored one would make two of their bindings
+ * indistinguishable.
+ */
+export function freeCamGesture(nav: FreeCamNav, button: number, mods: FreeCamMods): FreeCamGesture | null {
+  if (button !== 0 && button !== 1 && button !== 2) return null;
+  if (nav.preset === 'custom') {
+    const probe: FreeCamBind = { button, shift: mods.shift, ctrl: mods.ctrl, alt: mods.alt };
+    for (const g of ['orbit', 'pan', 'zoom'] as const) {
+      const b = nav.custom[g];
+      if (b && sameBind(b, probe)) return g;
+    }
+    return null;
+  }
+  for (const row of PRESET_TABLE[nav.preset]) {
+    if (row.b === button && (row.shift === true) === mods.shift && (row.ctrl === true) === mods.ctrl) return row.g;
+  }
+  return null;
+}
+
+/** which way the wheel goes for this nav — the preset's own default unless the player overrode
+ * it. `'in'` means a forward push (`deltaY < 0`) moves the camera closer. */
+export function freeCamWheelDir(nav: FreeCamNav): 'in' | 'out' {
+  return nav.wheel === 'preset' ? FREE_CAM_PRESET_WHEEL[nav.preset] : nav.wheel;
+}
+
+/** `+1` when the wheel's raw `deltaY` may be used as-is (a positive delta — scrolling toward the
+ * hand — pushes the camera OUT), `-1` when the player has asked for the other way round. */
+export function freeCamWheelSign(nav: FreeCamNav): 1 | -1 {
+  return freeCamWheelDir(nav) === 'in' ? 1 : -1;
+}
+
+/**
+ * A SCREEN DRAG → the orbit's two angle deltas, with the CAD direction sense (see THE DIRECTION
+ * SENSES above), the player's own inversions and their sensitivity all applied in ONE place.
+ * `yawRate`/`pitchRate` are the caller's radians-per-pixel (`renderCameras.ts` owns them, beside
+ * the spectator orbit's identical pair).
+ */
+export function freeCamOrbitDelta(
+  nav: FreeCamNav,
+  dxPx: number,
+  dyPx: number,
+  yawRate: number,
+  pitchRate: number,
+): { dYaw: number; dPitch: number } {
+  const speed = nav.orbitSpeed;
+  return {
+    dYaw: -dxPx * yawRate * speed * (nav.invertOrbitX ? -1 : 1),
+    dPitch: dyPx * pitchRate * speed * (nav.invertOrbitY ? -1 : 1),
+  };
+}
+
+/** the multiplier `panFreeCam` takes — sensitivity, negated when the player inverts the pan. */
+export function freeCamPanGain(nav: FreeCamNav): number {
+  return nav.panSpeed * (nav.invertPan ? -1 : 1);
+}
+
+/** the one-line reminder the Graphics section prints under the picker — each states the TRUE
+ * mapping of its own preset, which is the only thing the label cannot say. */
 export const FREE_CAM_PRESET_HINT: Record<FreeCamPreset, string> = {
-  dsim: 'Drag to orbit · middle or right-drag to pan · scroll to zoom',
+  dsim: 'Right or left-drag to orbit · middle-drag, Ctrl+right or Shift+left to pan · scroll to zoom',
   onshape: 'Right-drag to orbit · middle-drag or Ctrl+right-drag to pan · scroll to zoom',
   solidworks: 'Middle-drag to orbit · Ctrl+middle to pan · Shift+middle or scroll to zoom',
-  fusion: 'Middle-drag to pan · Shift+middle to orbit · scroll to zoom',
+  fusion: 'Middle-drag to pan · Shift+middle to orbit · Ctrl+Shift+middle or scroll to zoom',
   blender: 'Middle-drag to orbit · Shift+middle to pan · Ctrl+middle or scroll to zoom',
+  custom: 'Your own buttons, below · scroll to zoom',
 };
 
 export const FREE_CAM_PRESET_LABEL: Record<FreeCamPreset, string> = {
@@ -236,21 +519,19 @@ export const FREE_CAM_PRESET_LABEL: Record<FreeCamPreset, string> = {
   solidworks: 'SolidWorks',
   fusion: 'Fusion',
   blender: 'Blender',
+  custom: 'Custom',
 };
 
-/** the persisted navigation pick (`graphics/store.ts`, `FREE_CAM_NAV_KEY`). */
-export interface FreeCamNav {
-  preset: FreeCamPreset;
-  invertZoom: boolean;
-}
-
-export const FREE_CAM_NAV_DEFAULT: FreeCamNav = { preset: 'dsim', invertZoom: false };
-
-/** field-by-field, so a corrupt or older stored value degrades to the default per field. */
-export function coerceFreeCamNav(raw: unknown): FreeCamNav {
-  const r = (raw && typeof raw === 'object' ? raw : {}) as Record<string, unknown>;
-  const preset = (FREE_CAM_PRESETS as readonly unknown[]).includes(r.preset) ? (r.preset as FreeCamPreset) : FREE_CAM_NAV_DEFAULT.preset;
-  return { preset, invertZoom: r.invertZoom === true };
+/** a chord as the UI prints it on a keycap — `Ctrl` covers ⌘ too, which is what the listener
+ * does with `metaKey`. */
+export function freeCamBindLabel(b: FreeCamBind | null): string {
+  if (!b) return 'Unbound';
+  const parts: string[] = [];
+  if (b.ctrl) parts.push('Ctrl');
+  if (b.shift) parts.push('Shift');
+  if (b.alt) parts.push('Alt');
+  parts.push(b.button === 0 ? 'Left' : b.button === 1 ? 'Middle' : 'Right');
+  return parts.join('+');
 }
 
 // ─────────────────────────────────────────────────────────────────────────────────── the pose ──

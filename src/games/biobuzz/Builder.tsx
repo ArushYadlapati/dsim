@@ -124,8 +124,11 @@ function TwinTurretGrid(props: {
 }) {
   const { caption, at, other, otherName, onPick } = props;
   return (
-    <>
-      <p className="ds-hint">{caption}</p>
+    // A `.ds-field` with a `.cap`, not a `.ds-hint` over a loose grid: "POLLEN turret" is the
+    // grid's LABEL, and a hint is for the thing a label cannot say. Both maps then read as the
+    // same kind of row as every other pick on the screen.
+    <div className="ds-field">
+      <span className="cap">{caption}</span>
       <div className="ds-opts three">
         {BB_MOUNT_POSITIONS.map((m) => {
           const why = twinCellBlock(m, at, other, otherName);
@@ -142,7 +145,7 @@ function TwinTurretGrid(props: {
           );
         })}
       </div>
-    </>
+    </div>
   );
 }
 
@@ -312,11 +315,12 @@ export function BiobuzzBuilder({ spec, setSpec }: BiobuzzBuilderProps) {
       )}
       {/* NO ELEVATION DIAL FOR EITHER. A turret solves its own elevation per shot, and a dumper
           lobs each dump for its distance (owner, 2026-09-13 — `bbLobThrow`), so a Hood slider
-          would offer a control the sim never reads. One line says what each does instead. */}
-      {bbIsTurreted(launcher) ? (
-        <p className="ds-hint">A turret sets its own elevation for every shot.</p>
-      ) : (
-        <p className="ds-hint">A dumper lobs its load from up to {BB_DUMP_MAX_DIST} in away.</p>
+          would offer a control the sim never reads.
+          ONLY THE DUMPER SAYS SO. Its line carries a NUMBER that is nowhere else on the screen;
+          the turret's said that the control it does not have is not needed, which is a sentence
+          about an absence (`docs/ui-standard.md` §8). */}
+      {!bbIsTurreted(launcher) && (
+        <p className="ds-hint">Lobs its load from up to {BB_DUMP_MAX_DIST} in away.</p>
       )}
 
       {/* ---- FLOWER SCORING: the Box Tube ---- */}

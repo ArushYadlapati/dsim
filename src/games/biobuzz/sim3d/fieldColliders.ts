@@ -251,16 +251,84 @@ let cachedStatics: readonly FieldStatic[] | null = null;
  * this file cannot fix from here. Non-overlapping (this version) removes the coincidence outright
  * and the strafe check is clean at every y sampled, not merely above the 3 in/s floor.
  *
- * KNOWN RESIDUAL, not attempted: the flange's own 0.62-in RAMP (0 in at the true outer edge up to
- * 2.14 in) is still represented as one box at the plateau height, same as the old box was in that
- * narrow strip — a box can't follow a slope, and a slope this steep (≈3.2 in of rise per in of
- * run) would need on the order of twenty 0.03-in-wide steps to hold every slice within 0.1 in. Not
- * done: this is the SAME behaviour the field has always shipped with in that 0.66-in strip, it is
- * far narrower than the 1.98-in bug this fixes, and the owner's two reports were both about the
- * WIDE floor, not this edge. The feet's own faceted top (holes, bevels — the raw hulls this box
- * replaces) is a second, smaller residual of the same kind, confined to their ~2.3-in Y-range.
+ * ⚠️ AND THE TWO RESIDUALS THE PARAGRAPH ABOVE USED TO CLOSE WITH ARE THE OWNER'S "INVISIBLE
+ * CORNER" — reported five times, the last on 2026-09-21: "this invisible corner in the center
+ * structure is STILL not fixed". Both are the SAME mistake the wide floor was, one axis over: a
+ * SQUARE-TOPPED BOX standing on a RAMP. Measured off the shipped GLB at 0.02 in
+ * (`scratch/footprofile2.ts`; `scratch/hivetop.ts` is the per-cell collider-top-vs-drawn-top
+ * table this is the answer to), and all four corners agree to 0.01 in:
+ *
+ *  - ACROSS the bar, `d` inward from the true outer face: the drawn top is **0.24 in at d = 0**
+ *    and rises LINEARLY at **3.44 in per in** to the 2.15-in plateau at d = 0.56…0.68, then drops
+ *    to the 0.07-in channel floor. The flange box was 2.15 in tall across its whole 0.66 in, so
+ *    it stood up to **1.91 in above the drawn bar** over the outer 0.5 in of its width, the whole
+ *    38.9-in length — 37 in² of solid nothing is drawn under, both bars.
+ *  - ALONG it, `e` inward from the bar's own y end: the whole assembly ENDS IN A RAMP. The drawn
+ *    top is **0.16 in at the end**, rising at **2.144 in per in** to full height 0.92 in in. The
+ *    flange box and both foot boxes ran square to the end at full height, so each of the centre
+ *    structure's **four outer corners** carried a **1.94-in-tall block** over a chamfer that is
+ *    0.19 in tall where the block is 2.13.
+ *
+ * A chassis is a floor-to-roof prism and is stopped by a 0.16-in lip exactly as by a 2.15-in one,
+ * so neither residual ever moved a ROBOT — which is why the driving probes of 2026-09-20 came back
+ * clean and the report survived them. What they moved was everything with a HEIGHT: an element
+ * lands on the corner and rests in mid-air, which is the owner's whole complaint and the same
+ * sentence ("nothing actually holding it up") the wide floor drew.
+ *
+ * THE FIX: each of the six pieces is a LIP at its full plan extent — `FOOT_BAR_LIP_Z` tall, so
+ * every vertical face a chassis can reach is exactly where it was and no robot behaviour moves at
+ * all — plus `FOOT_BAR_STEPS` boxes stacked on it, each spanning only the plan region where the
+ * DRAWN top actually reaches that step's own ceiling. The collider is therefore NEVER above the
+ * drawn surface; the residual is one step (0.50 in) of collider missing UNDER a ramp, and a ramp
+ * that steep holds no element anyway. Steps and not one sloped hull, which would follow the ramp
+ * exactly: a slanted static face carries 0.42 of its contact normal upward, and a chassis that
+ * cannot pitch reads that as a HOP — the same speculative-diagonal-normal failure the deployed
+ * ramp hit on a FLOWER's ring plate (`GROUP_RAMP`, 171 of 240 drive-ins lifted). Every face here
+ * is vertical or horizontal.
  */
 const FOOT_BAR_FLANGE_W = 0.66;
+
+/** the drawn nose height (in) at the bar's outer face and at either end of the assembly — the
+ * height up to which every piece keeps its part's FULL plan extent, so a chassis meets exactly
+ * what it always met. 0.16 is the SMALLER of the two measured noses (0.24 across, 0.16 along),
+ * which is what makes that lip legal on both axes at once. */
+const FOOT_BAR_LIP_Z = 0.16;
+
+/** the bar's own plateau top and the frame foot's own pad top (in), MEASURED — they differ by
+ * 0.02 and each part is built to its own. */
+const FOOT_BAR_TOP_Z = 2.15;
+const FOOT_PAD_TOP_Z = 2.13;
+
+/** the drawn top's rise (in of height per in of run) going inward from the bar's outer face, and
+ * its nose height there. */
+const FOOT_BAR_X_RISE = 3.44;
+const FOOT_BAR_X_NOSE_Z = 0.24;
+
+/** the drawn top's rise (in per in) going inward from either END of the assembly, off
+ * `FOOT_BAR_LIP_Z`. Both bars, both ends, bar and foot alike. */
+const FOOT_BAR_Y_RISE = 2.144;
+
+/**
+ * ⚠️ ONE HULL PER PIECE, STILL SIX PIECES — NOT A STACK OF BOXES, AND THE COUNT IS THE REASON.
+ *
+ * The obvious build for a ramp with no slanted face is a stack of receding boxes, and it works:
+ * measured, four steps put every piece within 0.043 in of the drawn surface. It also ADDS 24
+ * static colliders, and a collider count is not a local change — every handle created after it
+ * shifts, which reorders Rapier's own islands, and MEASURED that flipped one edge-of-envelope
+ * case 60 in away (the ramp ground-capture sweep's −7.65 offset, the extreme corner of the mouth)
+ * at 3, 4, 5 and 6 steps alike, while the same six pieces with entirely DIFFERENT heights left it
+ * untouched. Geometry is local; the count is not.
+ *
+ * So each piece is one `convexHull` of its own true polytope instead. The solid is
+ * `z <= min(TOP, NOSE_X + RISE_X·dx, NOSE_Y + RISE_Y·dy)` over its plan rect — an intersection of
+ * half-spaces, hence convex, hence exactly what a hull of its vertices is. Both boundaries are
+ * piecewise linear with ONE breakpoint each, so the cross-section rect sampled at
+ * `{base, NOSE_Y, NOSE_X, TOP}` carries every vertex there is and the hull is EXACT, not an
+ * approximation. The faces it does slant are the top ones the ramp really has; the faces a chassis
+ * meets stay VERTICAL at the part's full plan extent, because the solid is at full extent all the
+ * way up to the nose height and a chassis is a floor-to-roof prism.
+ */
+const FOOT_BAR_SECTION_Z = [FOOT_BAR_LIP_Z, FOOT_BAR_X_NOSE_Z] as const;
 
 /** per bar: the bar's own true outer face, its true (full-width) inner face, and the flange's own
  * (narrower) inner face — all in one place so the flange box and its two foot boxes are built from
@@ -305,11 +373,32 @@ function slimFootBars(statics: readonly FieldStatic[]): readonly FieldStatic[] {
     // the flange occupies [outer, flangeInner]; a foot occupies [flangeInner, fullInner] -- they
     // touch at `flangeInner` and never overlap (see the header above for why that matters).
     const [x0, x1] = asBar ? [outer, flangeInner] : [flangeInner, fullInner];
+    const inward = x1 > x0 ? 1 : -1; // which way "in from the outer face" runs on this alliance
+    const topZ = asBar ? FOOT_BAR_TOP_Z : FOOT_PAD_TOP_Z;
+    // which y ends ramp down to the tiles: BOTH of a bar's, and only the OUTER one of a foot --
+    // a foot's inboard end is a square cut standing under the A-frame leg's own flared foot,
+    // which is drawn 3-5 in tall right there and is its own collider besides.
+    const rampLo = asBar || box.min[1] < -Math.abs(box.max[1]);
+    const rampHi = asBar || box.max[1] > Math.abs(box.min[1]);
+    /** the piece's own cross-section rect at height `z` — the plan region where the DRAWN
+     * assembly still reaches that high. Full extent up to the nose heights, then receding. */
+    const sectionAt = (z: number): readonly number[] => {
+      const dx = asBar ? Math.max(0, (z - FOOT_BAR_X_NOSE_Z) / FOOT_BAR_X_RISE) : 0;
+      const dy = Math.max(0, (z - FOOT_BAR_LIP_Z) / FOOT_BAR_Y_RISE);
+      const xOuter = x0 + inward * dx; // only the OUTER face moves; the inner one is a real edge
+      const y0 = box.min[1] + (rampLo ? dy : 0);
+      const y1 = box.max[1] - (rampHi ? dy : 0);
+      const pts: number[] = [];
+      if (Math.abs(x1 - xOuter) < 1e-6 || y1 - y0 < 1e-6) return pts;
+      for (const x of [xOuter, x1]) for (const y of [y0, y1]) pts.push(x, y, z);
+      return pts;
+    };
+    // base, then each breakpoint, then the plateau. Every vertex of the polytope is a corner of
+    // one of these rects, so the hull of them is the polytope exactly -- see the header.
     const pts: number[] = [];
-    for (const x of [x0, x1]) {
-      for (const y of [box.min[1], box.max[1]]) {
-        for (const z of [box.min[2], box.max[2]]) pts.push(x, y, z);
-      }
+    for (const z of [box.min[2], ...FOOT_BAR_SECTION_Z, topZ]) {
+      if (z < box.min[2] || z > topZ) continue;
+      pts.push(...sectionAt(z));
     }
     out.push({ name: s.name, class: s.class, points: pts });
   }

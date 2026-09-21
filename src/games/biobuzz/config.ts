@@ -46,12 +46,16 @@ import {
   BB_DEFAULT_INTAKE_MOUNT,
   type BbIntakeMount,
   type BbScoreMode,
+  EDGE_ANGLE,
   MOUNT_DIR,
   bbIntakeMountOf,
+  bbShooterEdgeOf,
+  edgeGeom,
+  turretLocal,
 } from './mounts';
 // `mechs.ts` is a LEAF over `types` + `mounts`, so this import adds no cycle — the same reason
 // `mounts.ts` itself is safe to import here.
-import { type BbIntakeKind, bbLauncherOf, bbLiftOf } from './mechs';
+import { type BbIntakeKind, bbLauncherOf, bbLiftOf, bbResolveMount2 } from './mechs';
 // THE FIELD'S DIMENSIONS ARE GENERATED FROM THE CAD, NOT TYPED HERE (owner ruling, 2026-09-18:
 // "the CAD is authoritative for dimensions"). `fieldDims.gen.ts` is written by `npm run
 // field-cad` out of `public/models/biobuzz/field-measurements.json`, and its header states the
@@ -1004,9 +1008,10 @@ export const BB_FLOWER_BITE = 0.5;
  * no lower bound, still works there — it just never binds as tightly as it does in 3D, where the
  * solid wheel keeps the true distance pinned near the contact radius.
  *
- * ⚠️ **HOW FAR THE WHEEL HAS TO STICK OUT, MEASURED — 1.004 in IS THE FLOOR AND 1.90 IS THE KNEE**
+ * ⚠️ **HOW FAR THE WHEEL HAS TO STICK OUT, MEASURED — 1.004 in IS THE FLOOR, 1.65 IS SHIPPED**
  * (owner, 2026-09-21: "do the side roller wheels need to stick out that much for flower intaking?
- * it looks ugly and not the most realistic in terms of packaging"). Both halves were probed on the
+ * it looks ugly and not the most realistic in terms of packaging", and again on the first pass'
+ * answer: "still sticking out a ton"). Both halves were probed on the
  * real 3D colliders (`scratch/srgeom.ts` for the geometry, `scratch/sidesweep.ts` for the driving)
  * and the answer came out in two parts that point opposite ways:
  *
@@ -1024,49 +1029,102 @@ export const BB_FLOWER_BITE = 0.5;
  *     `2.404 − 1.400` = **1.004 in past the tip line** to touch it at all. Below that no
  *     tolerance saves it: the two bodies are not in contact and widening
  *     `BB_SIDE_ROLLER_CONTACT_TOL` to cover the gap would be a fake.
- *  2. **AND EVERY THOUSANDTH ABOVE THAT FLOOR IS SPENT ON THE SKEWED APPROACH.** 540 real
- *     drive-ins per value (5 lateral offsets × 3 approach angles × 3 sticks × 3 column heights ×
- *     4 FLOWERS, one held stick, no teleports), share retrieved:
+ *  2. **AND EVERY THOUSANDTH ABOVE THAT FLOOR IS SPENT ON RECOVERING FROM YAW.** Two populations,
+ *     both real drive-ins with no teleports, and they do NOT agree — which is the whole of why the
+ *     cut stopped where it did:
  *
- *       protrusion   2.05   1.90   1.85   1.80   1.75   1.70   1.65   1.40   1.20   1.00
- *       overall     73.5%  73.3%  68.5%  64.4%  60.0%  63.9%  63.9%  60.0%  43.7%  44.3%
- *       straight-on  100%   100%   100%   100%   100%   100%   100%   100%  73.3%  86.1%
+ *       protrusion         1.90   1.85   1.80   1.75   1.70  |1.65|  1.60   1.50   1.45   1.40
+ *       held-intake all   73.3%  68.5%  64.4%  60.0%  63.9% |63.9%| 57.6%  60.0%    -    60.0%
+ *       held straight-on   100%   100%   100%   100%   100% | 100%| 99.4%   100%    -     100%
+ *       PARK then intake  61.1%     -      -      -      -  |58.3%| 44.4%  33.3%   0.0%   0.0%
  *
- *     `OUT + R` = 1.90 is the KNEE: the curve is FLAT above it (2.05 buys 0.2 of a point) and
- *     falls monotonically below it, 4–5 points per 0.05 in, because at ±10° the prism stalls on
- *     the plate rim with the near wheel 4.2–4.6 in from the POLLEN and it is the last tenth of
- *     reach that decides the marginal cases. The protrusion therefore STAYS 1.90.
+ *     (held-intake: 540 runs, 5 lateral offsets × 3 approach angles × 3 sticks × 3 column heights
+ *     × 4 FLOWERS, the trigger held through the approach. PARK: 36 runs, drive in with the intake
+ *     OFF, let the chassis settle, THEN hold it — `scratch/sidesweep.ts`, `SS_MODE=park`.)
  *
- * What was actually wrong was the PACKAGING, which is what the owner's second sentence says: the
- * wheel hung in free air on a single diagonal strut, 63 % of it forward of the arm tips and
- * nothing around it. It is a HOUSED module now — `BB_SIDE_ROLLER_PLATE_T` plates above and below,
- * cantilevered off the side arm's own rail and capped on the wheel's own radius, so the drawn
- * envelope is exactly the wheel's SOLID envelope and not one thousandth further
- * (`scene/renderRobots.ts`, `drawRobot.ts`, both pinned by the RENDER lane).
+ *     The held-intake sweep alone would allow **1.40**: a driver holding the trigger takes the
+ *     POLLEN on the way in, a mean 0.24 s after the mouth reaches the opening, and never sees the
+ *     settled pose. But a chassis driven into a FLOWER meets the ring plate over only ONE SIDE of
+ *     its own width — the driver is offset `bbSideRollerY` to put a wheel on the opening — so the
+ *     normal force is a long lever and the pose picks up **18–22° of yaw** as it settles, which
+ *     swings the gripping wheel out. REACH is what covers that yaw, and at 1.45 and below a
+ *     driver who rolls up and only then presses the trigger gets **nothing at all**. 1.65 is the
+ *     largest cut that costs neither population anything measurable (58.3 % against 61.1 %,
+ *     straight-on still 180/180), and `scripts/smoke-biobuzz/flower3d.ts`'s own F1 drive-in
+ *     fixture is the canary: driven in with the intake OFF and asked once at the settled pose it
+ *     bites at 1.90 and at no smaller value at all, so that fixture now holds the trigger through
+ *     the drive and its header carries this table.
+ *
+ * ⚠️ **AND THE BRACKET MAY NOT COVER THE WHEEL** (owner, 2026-09-21, rejecting the first pass at
+ * this section, which kept 1.90 and answered the complaint with packaging alone: "The side
+ * rollers are rendered as being covered and still sticking out a ton. It cant be covered fully
+ * because it needs to actually touch the balls"). That draft capped each wheel with a retainer
+ * plate on the wheel's OWN radius — in plan, the whole wheel. It is a REAR YOKE now: a strap
+ * above and a strap below, both running diagonally from the side arm's rail to the AXLE and
+ * stopping there in a `BB_SIDE_ROLLER_BOSS_R` bearing boss, with nothing drawn forward of the
+ * axle line except that boss and **223° of tread** left visible from every angle, full height.
+ * The wheel itself is a hub with a lugged compliant tread. Both renderers build it and the RENDER
+ * lane measures the open arc off the built meshes' own vertices rather than trusting the numbers.
  */
 export const BB_SIDE_ROLLER_R = 1.5;
 /** the wheel's height (in): a 2-in compliant wheel stack. */
 export const BB_SIDE_ROLLER_H = 2.0;
 /** the wheel's mid-height off the tiles (in) — a hair above a POLLEN's own centre. */
 export const BB_SIDE_ROLLER_Z = 1.5;
-/** the wheel's axis, past the tip line (in). */
-export const BB_SIDE_ROLLER_OUT = 0.4;
+/** the wheel's axis, past the tip line (in) — NEGATIVE: the axis sits just INSIDE the footprint
+ * and only the wheel's front quadrant stands proud. See `BB_SIDE_ROLLER_PROTRUDE`. */
+export const BB_SIDE_ROLLER_OUT = 0.15;
 /** how far the wheel's own FRONT stands past the tip line (in) — the one number the owner asked
  * about, and the one the wall standoff, `bbArchetypeWallExtra`, `bbIntakeExtraReach` and both
- * drawings all read. FLOOR 1.004 (the wheel cannot otherwise touch a FLOWER's bottom POLLEN with
- * the chassis prism stopped on the ring plates); KNEE 1.90 — see this section's own header for
- * both measurements. */
+ * drawings all read. FLOOR **1.004** (the wheel cannot otherwise touch a FLOWER's bottom POLLEN
+ * with the chassis prism stopped on the ring plates); shipped **1.65**, the largest cut off the
+ * old 1.90 that costs neither retrieval population anything measurable — see this section's own
+ * header for the two sweeps that fix both ends. */
 export const BB_SIDE_ROLLER_PROTRUDE = BB_SIDE_ROLLER_OUT + BB_SIDE_ROLLER_R;
-/** the housing's own sheet (in): the plate above the wheel and the plate under it, both
- * cantilevered off the side arm's rail and capped on the wheel's own radius. The BOTTOM plate is
- * what sets this — it has to fit between the wheel's underside (`BB_SIDE_ROLLER_Z − H/2` = 0.5)
- * and the FLOWER's lower ring plate rim (0.354 in, the one thing at that height the module drives
- * over), which leaves 0.146 in; 0.12 is the nearest real sheet with clearance left (0.026 in). */
+/** the yoke's own sheet (in): the plate above the wheel and the plate under it, both cantilevered
+ * off the side arm's rail and stopping at the AXLE. The BOTTOM plate is what sets this — it has
+ * to fit between the wheel's underside (`BB_SIDE_ROLLER_Z − H/2` = 0.5) and the FLOWER's lower
+ * ring plate rim (0.354 in, the one thing at that height the module drives over), which leaves
+ * 0.146 in; 0.12 is the nearest real sheet with clearance left (0.026 in). */
 export const BB_SIDE_ROLLER_PLATE_T = 0.12;
-/** how far BACK along the side arm the housing plates run from the wheel's axis (in) — far
- * enough inboard of the arm's own nose that the module reads as bolted along the rail rather
- * than hung off its end. Drawing only; nothing in the sim reads it. */
-export const BB_SIDE_ROLLER_HOUSE_BACK = 2.4;
+/** how far BACK along the side arm the yoke's plates run from the wheel's axis (in) — far enough
+ * inboard of the arm's own nose that the module reads as bolted along the rail rather than hung
+ * off its end. Drawing only; nothing in the sim reads it. */
+export const BB_SIDE_ROLLER_YOKE_BACK = 2.4;
+/**
+ * ⚠️ **THE BRACKET IS A REAR YOKE AND IT MAY NOT COVER THE WHEEL** (owner, 2026-09-21, rejecting
+ * the housed module: "The side rollers are rendered as being covered and still sticking out a
+ * ton. It cant be covered fully because it needs to actually touch the balls"). The plates run
+ * from the arm to the AXLE and stop there in a bearing BOSS of this radius; nothing is drawn
+ * forward of the axle line except that boss, and nothing caps the wheel's radius. The yoke STRAP
+ * is `BB_SIDE_ROLLER_YOKE_W` wide and rides on the arm rail's own centreline, which is what keeps
+ * the working arc open: MEASURED off the rail's `armY` on the default chassis, the strap first
+ * occludes the wheel from above at **111.6°** off the outward direction, so **223°** of tread —
+ * the whole forward and outboard working arc — is visible from every angle, full height. A
+ * 0.9-wide strap (the first draft) starts occluding at 90° and leaves only 180°.
+ */
+export const BB_SIDE_ROLLER_BOSS_R = 0.55;
+/** the yoke strap's width (in) — see `BB_SIDE_ROLLER_BOSS_R` for the 223°-of-tread measurement
+ * this number is chosen by. */
+export const BB_SIDE_ROLLER_YOKE_W = 0.5;
+/**
+ * how far inboard of the mouth's lateral edge the yoke strap rides (in): the side ARM RAIL's own
+ * centreline, `BB_INTAKE_ARM_INSET` (`BB_PLATE_T` 0.22 + 0.06) plus half a rail (`INTAKE_RAIL_T`
+ * 0.5). Both of those live in `scene/renderRobots.ts`, which `drawRobot.ts` may not import (the
+ * lazy-chunk boundary the RENDER lane enforces), so the ONE number both drawings place the yoke
+ * by lives here instead of being typed twice — the same treatment `bbSideRollerY` gets, and the
+ * RENDER lane asserts it against the 3D arm's own `armY` rather than trusting it.
+ */
+export const BB_SIDE_ROLLER_YOKE_INSET = 0.53;
+/** the yoke strap's own y off the mouth's centreline, for a mouth of half-width `mouthHalf` (in).
+ * ONE placement, read by the 3D scene, the 2D sprite and the checks. */
+export function bbSideRollerYokeY(mouthHalf: number): number {
+  return mouthHalf - BB_SIDE_ROLLER_YOKE_INSET;
+}
+/** the wheel's own HUB radius (in): a moulded centre with the compliant tread lugged round it,
+ * the same hub-and-lug language the sweeper's barrel uses. Drawing only — the SOLID is the full
+ * `BB_SIDE_ROLLER_R` cylinder, and the drawn lugs' outer corners land exactly on it. */
+export const BB_SIDE_ROLLER_HUB_R = 0.62;
 /** how far INBOARD of the mouth's lateral edge a wheel's axis sits (in): its own radius plus a
  * 0.1-in clearance to the side arm's plane. */
 export const BB_SIDE_ROLLER_EDGE_INSET = BB_SIDE_ROLLER_R + 0.1;
@@ -2926,6 +2984,161 @@ export const BB3_INTAKE_Z = 5;
  * single-cuboid collider put them at.
  */
 export const BB3_MOUTH_SLOT_Z = 2 * BB_NECTAR_R;
+
+// ─────────────────────────────────────────────────────────────────────────────
+// THE DRAWN HEIGHT PROFILE — what the 3D chassis compound is TALL AT
+//
+// ⚠️ **A BIOBUZZ CHASSIS USED TO BE A FLOOR-TO-`heightIn` PRISM OVER ITS WHOLE FOOTPRINT**, and
+// that is the owner's invisible corner, sixth report (2026-09-21): *"try putting the front of the
+// robot against the center of the horizontal beam, and strafe, from under the hive. You will
+// suddenly turn because you hit something invisible."* MEASURED (`scratch/beamstrafe.ts`): at the
+// jam the ONLY non-floor, non-flange contact is the hive's A-FRAME LEG, whose underside at the
+// chassis' −y edge is at z ≈ 14.1 — exactly the top of a default 14-in prism, and 8.8 in above
+// anything that is DRAWN there. The five earlier passes all looked at the FIELD's geometry; the
+// invisible thing was the ROBOT.
+//
+// The numbers below are the drawn robot, measured off the built meshes' own vertices over every
+// archetype the builder can make (three launchers × nine mounts, three intakes × four mounts,
+// five drivetrains, the height slider's whole range, the chassis size envelope) — see
+// `scratch/drawnheight.ts` / `scratch/mechenv.ts`. The RENDER lane re-measures them against
+// `buildRobotGroup` and fails if the picture moves, which is the same bargain
+// `BB_PLATE_T_DUP` makes in `sim3d/bodies.ts`: `sim3d/` may not import `scene/`, so the
+// agreement is a CHECK rather than an import.
+//
+// ⚠️ **`heightIn` IS A CAP NOW, NOT AN EXTRUSION** — see `bbMechEnvelopes` below.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * THE DRAWN CHASSIS' OWN TOP (in) — the height the LOW BODY (frame, intake side arms, lintel and
+ * the pocket filler) is built to.
+ *
+ * MEASURED, every archetype: the frame's top cap `BB_DECK_Z + 0.2` = **4.80**, the nose **5.10**,
+ * the sweeper roller **5.25**, the intake arm's diagonal **5.26** — and a side roller's own wheel
+ * tops out at `BB_SIDE_ROLLER_Z + BB_SIDE_ROLLER_H/2` = 2.50, well under. 5.3 is the smallest
+ * round number above all of them, i.e. the drawn chassis with 0.04 in of air.
+ *
+ * ⚠️ **IT MUST STAY ABOVE THE FLOWER'S MID PLATE** (z 3.904…5.254, `scratch/srgeom.ts`), which is
+ * the surface a chassis stops its whole front face against at a FLOWER. A low body that ended at
+ * the deck (4.80) would still meet it — the plate's band starts at 3.90 — but a low body under
+ * 3.90 would drive straight under the flower and the retrieval geometry would move. Nothing here
+ * is allowed to go below `BB3_MOUTH_SLOT_Z` for the same reason.
+ */
+export const BB3_CHASSIS_TOP_Z = 5.3;
+
+/** the drawn top of a POLLEN turret head, and the radius it sweeps about its own ring centre.
+ * MEASURED 11.315 / 5.038 over all nine mounts and the whole chassis-size envelope — the head is
+ * built from `BB_FLYWHEEL_R` and the hood constants, so neither figure scales with the chassis. */
+export const BB3_TURRET_TOP_Z = 11.35;
+export const BB3_TURRET_R = 5.05;
+/** the same pair for a DOUBLE turret's second head, which is built to the NECTAR dimension set
+ * (`bbTurretFor`) and is therefore taller and wider. MEASURED 12.115 / 5.558. */
+export const BB3_NECTAR_TURRET_TOP_Z = 12.15;
+export const BB3_NECTAR_TURRET_R = 5.6;
+
+/**
+ * THE DUMPER'S DRAWN ENVELOPE, in its own edge frame (`u` outward, `v` lateral). Every number is
+ * `buildDumper`'s own, and the RENDER lane checks the two agree to 0.01 in on every edge and
+ * chassis size: the shaft stands `min(8, 0.8·dist)` back from the edge with radius 0.34, the lip
+ * ends 0.7 in short of it and is 0.6 in deep, and the bucket is `0.86·span` half-wide plus a
+ * 0.28-in side wall. MEASURED top **12.80**, bottom `BB_DECK_Z`.
+ *
+ * ⚠️ **AT REST, NOT MID-THROW.** The tray swings up about its shaft when it fires
+ * (`DUMP_THROW_ANGLE`), which takes the lip to ≈14.3 in for ~0.3 s — taller than the prism this
+ * replaces ever was, and taller than `BB3_HEIGHT_DEFAULT`. Nothing on the field lives in that
+ * band over a robot's own deck (the lowest overhead structure is `BB_HIVE_BOTTOM_Z`, 31.98), so
+ * the throw is a drawn part outside the collider rather than a collider outside the drawing —
+ * the harmless direction, and the one the old prism was also on.
+ */
+export const BB3_DUMPER_TOP_Z = 12.85;
+export const BB3_DUMPER_PIVOT_BACK = 8;
+export const BB3_DUMPER_PIVOT_FRAC = 0.8;
+export const BB3_DUMPER_SHAFT_R = 0.34;
+export const BB3_DUMPER_LIP_BACK = 0.4;
+export const BB3_DUMPER_SPAN_FRAC = 0.86;
+export const BB3_DUMPER_WALL_T = 0.14;
+
+/**
+ * one STANDING mechanism's drawn envelope in the robot frame (+x forward, +y left), for
+ * `chassis3dShapes` to turn into one tall collider. A turret is a CYLINDER because it aims
+ * itself: the collider is built once per deploy edge and the head yaws every tick, so the disc it
+ * sweeps IS its drawn geometry — the same bargain `bbRampSwingShapes` makes for the ramp.
+ *
+ * ⚠️ **THE DUMPER'S BOX IS ALREADY AXIS-ALIGNED IN THE ROBOT FRAME, AND CARRIES NO ROTATION.**
+ * Every `EDGE_ANGLE` is a multiple of 90°, so a flank mount simply swaps `hx`/`hy` — which is
+ * what lets `birthClear`'s `boxGap` (which ignores rotation, `engineImpl.ts`) stay a conservative
+ * over-approximation rather than a wrong one.
+ */
+export interface BbMechEnvelope {
+  /** the mechanism's own name, for the smoke lanes' own reporting */
+  what: 'turret' | 'nectarTurret' | 'dumper';
+  cx: number;
+  cy: number;
+  /** a cylinder of this radius about `(cx, cy)`, or `undefined` for the box below */
+  r?: number;
+  hx?: number;
+  hy?: number;
+  /** the drawn top above the tiles */
+  top: number;
+}
+
+/**
+ * EVERY STANDING MECHANISM THIS BUILD DRAWS, with its own footprint and its own drawn top.
+ *
+ * ⚠️ **AND THIS IS WHERE `spec.heightIn` STOPPED BEING AN EXTRUSION.** It used to be the height
+ * of a prism over the WHOLE footprint; it is a CAP now — `top` is never above it — so the rules
+ * that read it are untouched (`bbDeployedHeightIn`/`bbStowHeightIn`/`bbStowLegal` are spec rules
+ * and never looked at a collider; `bbHeightNow` still names the height the compound is built to,
+ * and the R102 deploy edge still rebuilds on it) and what changes is only WHERE the robot is that
+ * tall. It bites exactly once in the whole envelope: a 12-in declared robot with a DUMPER, whose
+ * drawn bucket is 12.80.
+ *
+ * ⚠️ **THE DIAL PROMISES A HEIGHT THE PICTURE DOES NOT BUILD, AND THE PICTURE WINS.** The drawn
+ * robot tops out at 11.31 (turret) / 12.11 (double) / 12.80 (dumper) whatever the slider says —
+ * the builder shows the declared height as a DASHED ENVELOPE (`buildHeightEnvelope`,
+ * `renderPreview.ts`) precisely because no mesh stands that tall, and the match draws nothing at
+ * all. Extruding a declared 29 in over the turret's own footprint would have kept 17 in of
+ * invisible column exactly where the owner's report puts it (the A-frame leg's underside crosses
+ * 11–14 in right under the hive), so the collider follows the drawing. MEASURED, that is the ONLY
+ * behaviour a declared height still had: of 69 fixed colliders, everything a robot can reach
+ * above the deck is VERTICAL over it (the walls, the flower columns 4.25…21.25, the hive frame)
+ * except the four sloping A-FRAME LEGS and a 0.9-in rim on each flower's top plate — so
+ * "declared taller ⇒ stopped sooner" only ever meant "gets less far under the hive", and it was
+ * never drawn.
+ */
+export function bbMechEnvelopes(spec: RobotSpec, heightIn: number): BbMechEnvelope[] {
+  const launcher = bbLauncherOf(spec, BB_HOOD_DEFAULT_DEG);
+  const cap = (z: number): number => Math.min(z, heightIn);
+  const out: BbMechEnvelope[] = [];
+  if (launcher.kind === 'dumper') {
+    const edge = bbShooterEdgeOf({ shooterMount: launcher.mount });
+    const { dist, span } = edgeGeom(spec, edge);
+    const pivot = dist - Math.min(BB3_DUMPER_PIVOT_BACK, dist * BB3_DUMPER_PIVOT_FRAC);
+    const u0 = pivot - BB3_DUMPER_SHAFT_R;
+    const u1 = dist - BB3_DUMPER_LIP_BACK;
+    const vHalf = span * BB3_DUMPER_SPAN_FRAC + BB3_DUMPER_WALL_T;
+    const a = EDGE_ANGLE[edge];
+    const uMid = (u0 + u1) / 2;
+    const uHalf = (u1 - u0) / 2;
+    const end = edge === 'front' || edge === 'back';
+    out.push({
+      what: 'dumper',
+      cx: uMid * dcos(a),
+      cy: uMid * dsin(a),
+      hx: end ? uHalf : vHalf,
+      hy: end ? vHalf : uHalf,
+      top: cap(BB3_DUMPER_TOP_Z),
+    });
+    return out;
+  }
+  const t0 = turretLocal(spec, launcher.mount);
+  out.push({ what: 'turret', cx: t0.x, cy: t0.y, r: BB3_TURRET_R, top: cap(BB3_TURRET_TOP_Z) });
+  if (launcher.kind === 'twinturret') {
+    const m2 = launcher.mount2 ?? bbResolveMount2(launcher.mount, undefined);
+    const t1 = turretLocal(spec, m2);
+    out.push({ what: 'nectarTurret', cx: t1.x, cy: t1.y, r: BB3_NECTAR_TURRET_R, top: cap(BB3_NECTAR_TURRET_TOP_Z) });
+  }
+  return out;
+}
 
 /**
  * ⚠️ **THE CHASSIS EDGE BREAK (in)** — every box of the 3D chassis compound is SHRUNK by this

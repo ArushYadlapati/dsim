@@ -1,4 +1,4 @@
-import { useEffect, useId, useState, type KeyboardEvent } from 'react';
+import { useEffect, useId, useRef, useState, type KeyboardEvent } from 'react';
 import {
   coerceMaxFps,
   fpsFromSliderPos,
@@ -53,17 +53,25 @@ import {
   inFromFtIn,
 } from '../games/biobuzz/graphics/driverEye';
 import {
+  bindFreeCamCustom,
+  freeCamBindLabel,
+  FREE_CAM_NAV_DEFAULT,
   FREE_CAM_PRESET_HINT,
   FREE_CAM_PRESET_LABEL,
   FREE_CAM_PRESETS,
+  FREE_CAM_SPEED_MAX,
+  FREE_CAM_SPEED_MIN,
+  type FreeCamGesture,
+  type FreeCamNav,
   type FreeCamPreset,
 } from '../games/biobuzz/graphics/freeCam';
 import { installViewKey } from '../games/biobuzz/graphics/viewKey';
+import { OptRow, ToggleRow } from './OptRow';
 import { rangeFill } from './rangeFill';
 import { useCoarsePointer } from './useCoarsePointer';
 
 /**
- * GRAPHICS — the sixteen settings of `docs/biobuzz/plan-3d.md` §4.4, the preset that sets them
+ * GRAPHICS — the seventeen settings of `docs/biobuzz/plan-3d.md` §4.4, the preset that sets them
  * all at once, and the environment picker of §4.5.
  *
  * ── WHY IT IS ITS OWN SECTION AND NOT A BLOCK INSIDE "AUDIO AND VISUAL" ────────────────────
@@ -86,46 +94,9 @@ import { useCoarsePointer } from './useCoarsePointer';
  * player who changed it and saw nothing would be looking at a bug.
  */
 
-/** one row of mutually exclusive choices, rendered as the option grid the rest of Configure
- * uses. `cols` matches `.ds-opts`'s own modifiers — there is no five-wide row here, so the two
- * the grid offers are enough. */
-function OptRow<T extends string | number | boolean>({
-  label,
-  value,
-  options,
-  onPick,
-  cols,
-  hint,
-}: {
-  label: string;
-  value: T;
-  options: readonly { v: T; t: string; d?: string }[];
-  onPick: (v: T) => void;
-  cols?: 'two' | 'three' | 'four';
-  hint?: string;
-}) {
-  return (
-    <div className="ds-field">
-      <span className="cap">
-        {label}
-        {hint && <span className="val">{hint}</span>}
-      </span>
-      <div className={`ds-opts${cols ? ` ${cols}` : ''}`}>
-        {options.map((o) => (
-          <button
-            key={String(o.v)}
-            className={`ds-opt ${value === o.v ? 'on' : ''}`}
-            aria-pressed={value === o.v}
-            onClick={() => onPick(o.v)}
-          >
-            <span className="ot">{o.t}</span>
-            {o.d && <span className="od">{o.d}</span>}
-          </button>
-        ))}
-      </div>
-    </div>
-  );
-}
+/* `OptRow` used to live here. It is `src/ui/OptRow.tsx` now, unchanged in shape: the robot
+ * builder, the match setup and Audio and Visual all spell a pick this way too, and three
+ * copies of one row is how a design system drifts. Nothing about a row here changes. */
 
 /**
  * MAX FRAME RATE — the one row in this screen that is not a fixed set of choices, and the one
@@ -457,7 +428,174 @@ function DriverHeightRow({ value, onChange }: { value: number | null; onChange: 
           Clear
         </button>
       )}
-      <p className="ds-hint">Sets the driver camera to your real eye level, standing where your drive team stands.</p>
+      {/* the one thing the label cannot say: WHICH camera this moves, and that the answer is
+          only ever that one. Everything about "your real eye level" is already in the label
+          and in the value beside it. */}
+      <p className="ds-hint">Used by the driver camera only.</p>
+    </div>
+  );
+}
+
+/**
+ * THE FREE CAMERA'S MOUSE BLOCK — the preset picker, its one-line mapping, and everything the
+ * owner asked for on top of it ("give people further configuration options for it", 2026-09-21).
+ *
+ * WHAT IS ABOVE THE FOLD IS WHAT A NEW PLAYER TOUCHES: which package their hands already know,
+ * and — only when they have picked `Custom` — the three chords. Everything else is an ADJUSTMENT
+ * to a mapping that is already correct (inversions, sensitivities, the wheel's direction, zoom to
+ * cursor, smoothing), which is exactly the rare-controls test `docs/area/ui.md` set for
+ * `.ds-fold`. `.inset` because this sits inside a panel body and a second card would be nesting.
+ *
+ * Everything writes ONE key through `setFreeCamNav` (`graphics/store.ts`), per device, coerced
+ * field by field on the way back in.
+ */
+function FreeCamRows({ nav }: { nav: FreeCamNav }) {
+  const set = (patch: Partial<FreeCamNav>): void => setFreeCamNav({ ...nav, ...patch });
+  return (
+    <>
+      <OptRow
+        label="Free camera mouse"
+        value={nav.preset}
+        cols="three"
+        onPick={(preset: FreeCamPreset) => set({ preset })}
+        options={FREE_CAM_PRESETS.map((v) => ({ v, t: FREE_CAM_PRESET_LABEL[v] }))}
+      />
+      <p className="ds-hint">{FREE_CAM_PRESET_HINT[nav.preset]} · double-click to reset</p>
+      {nav.preset === 'custom' && <FreeCamCustomRows nav={nav} />}
+      <details className="ds-fold inset">
+        <summary>Free camera options</summary>
+        <div className="ds-fold-body">
+          <OptRow
+            label="Scroll zoom"
+            value={nav.wheel}
+            cols="three"
+            onPick={(wheel: 'preset' | 'in' | 'out') => set({ wheel })}
+            options={[
+              { v: 'preset' as const, t: 'Preset default' },
+              { v: 'in' as const, t: 'Forward zooms in' },
+              { v: 'out' as const, t: 'Forward zooms out' },
+            ]}
+          />
+          <ToggleRow label="Zoom to cursor" value={nav.zoomToCursor} onPick={(zoomToCursor) => set({ zoomToCursor })} />
+          <ToggleRow label="Smoothing" value={nav.smoothing} onPick={(smoothing) => set({ smoothing })} />
+          <ToggleRow label="Invert orbit left and right" value={nav.invertOrbitX} onPick={(invertOrbitX) => set({ invertOrbitX })} />
+          <ToggleRow label="Invert orbit up and down" value={nav.invertOrbitY} onPick={(invertOrbitY) => set({ invertOrbitY })} />
+          <ToggleRow label="Invert pan" value={nav.invertPan} onPick={(invertPan) => set({ invertPan })} />
+          <SpeedRow label="Orbit speed" value={nav.orbitSpeed} onPick={(orbitSpeed) => set({ orbitSpeed })} />
+          <SpeedRow label="Pan speed" value={nav.panSpeed} onPick={(panSpeed) => set({ panSpeed })} />
+          <SpeedRow label="Zoom speed" value={nav.zoomSpeed} onPick={(zoomSpeed) => set({ zoomSpeed })} />
+          <div className="ds-actions">
+            <button
+              className="ds-btn small"
+              onClick={() => setFreeCamNav({ ...FREE_CAM_NAV_DEFAULT, preset: nav.preset, custom: { ...FREE_CAM_NAV_DEFAULT.custom } })}
+            >
+              Reset camera options
+            </button>
+          </div>
+        </div>
+      </details>
+    </>
+  );
+}
+
+/** one sensitivity, as a percentage of the shipped rate. Stored as the multiplier itself. */
+function SpeedRow({ label, value, onPick }: { label: string; value: number; onPick: (v: number) => void }) {
+  const pct = Math.round(value * 100);
+  return (
+    <label className="ds-field">
+      <span className="cap">
+        {label} <span className="val">{pct}%</span>
+      </span>
+      <input
+        className="ds-range"
+        type="range"
+        min={FREE_CAM_SPEED_MIN * 100}
+        max={FREE_CAM_SPEED_MAX * 100}
+        step={5}
+        value={pct}
+        style={rangeFill(pct, FREE_CAM_SPEED_MIN * 100, FREE_CAM_SPEED_MAX * 100)}
+        aria-label={label}
+        aria-valuetext={`${pct} percent`}
+        onChange={(e) => onPick(Number(e.target.value) / 100)}
+      />
+    </label>
+  );
+}
+
+const CUSTOM_GESTURES: readonly { g: FreeCamGesture; label: string }[] = [
+  { g: 'orbit', label: 'Orbit' },
+  { g: 'pan', label: 'Pan' },
+  { g: 'zoom', label: 'Zoom by dragging' },
+];
+
+/**
+ * THE CUSTOM LAYOUT'S THREE CHORDS, captured the way the key binder captures a key: press the
+ * row's button, then press the mouse button (with whatever modifiers you want held) anywhere.
+ * Conflicts STEAL, so the loser reads `Unbound` — the same policy, and the same wording, the
+ * rebindable controls use (`docs/area/ui.md`).
+ *
+ * ⚠️ THE CAPTURE EFFECT DEPENDS ON `capture` ALONE, with the nav in a ref. That is the pitfall
+ * the controls screen already hit and wrote down: `nav` is a fresh object on every parent render
+ * and the App re-renders on its own every few seconds (the presence poll), so listing it as a
+ * dependency tears the listeners down and rebuilds them mid-capture.
+ *
+ * `capture: true` on every listener, and `preventDefault` on the press: a middle press would
+ * otherwise start Windows' autoscroll and a right press would open the context menu — over a
+ * settings screen, not a canvas, so there is no other handler to be polite to.
+ */
+function FreeCamCustomRows({ nav }: { nav: FreeCamNav }) {
+  const [capture, setCapture] = useState<FreeCamGesture | null>(null);
+  const navRef = useRef(nav);
+  navRef.current = nav;
+
+  useEffect(() => {
+    if (!capture) return;
+    const onDown = (e: MouseEvent): void => {
+      e.preventDefault();
+      e.stopPropagation();
+      const button: 0 | 1 | 2 | null = e.button === 0 ? 0 : e.button === 1 ? 1 : e.button === 2 ? 2 : null;
+      if (button === null) return;
+      const b = { button, shift: e.shiftKey, ctrl: e.ctrlKey || e.metaKey, alt: e.altKey };
+      const cur = navRef.current;
+      setFreeCamNav({ ...cur, custom: bindFreeCamCustom(cur.custom, capture, b) });
+      setCapture(null);
+    };
+    const swallow = (e: Event): void => e.preventDefault();
+    const onKey = (e: globalThis.KeyboardEvent): void => {
+      // Escape cancels rather than binds — it is reserved app-wide (`docs/area/ui.md`).
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        setCapture(null);
+      }
+    };
+    window.addEventListener('mousedown', onDown, true);
+    window.addEventListener('contextmenu', swallow, true);
+    window.addEventListener('auxclick', swallow, true);
+    window.addEventListener('keydown', onKey, true);
+    return () => {
+      window.removeEventListener('mousedown', onDown, true);
+      window.removeEventListener('contextmenu', swallow, true);
+      window.removeEventListener('auxclick', swallow, true);
+      window.removeEventListener('keydown', onKey, true);
+    };
+  }, [capture]);
+
+  return (
+    <div className="ds-field">
+      <span className="cap">Custom buttons</span>
+      <div className="ds-opts three">
+        {CUSTOM_GESTURES.map(({ g, label }) => (
+          <button
+            key={g}
+            className={`ds-opt${capture === g ? ' on' : ''}`}
+            aria-pressed={capture === g}
+            onClick={() => setCapture(capture === g ? null : g)}
+          >
+            <span className="ot">{label}</span>
+            <span className="od">{capture === g ? 'Press a mouse button' : freeCamBindLabel(nav.custom[g])}</span>
+          </button>
+        ))}
+      </div>
     </div>
   );
 }
@@ -536,28 +674,7 @@ export function GraphicsSection() {
           {/* the free camera's mouse layout — only while it is the pick, and never on touch (the
               option itself is hidden there). Named after the CAD packages whose layout each one
               copies, because that is how a player already knows which one their hands want. */}
-          {camera === 'free' && !touch && (
-            <>
-              <OptRow
-                label="Free camera mouse"
-                value={freeNav.preset}
-                cols="three"
-                onPick={(preset: FreeCamPreset) => setFreeCamNav({ ...freeNav, preset })}
-                options={FREE_CAM_PRESETS.map((v) => ({ v, t: FREE_CAM_PRESET_LABEL[v] }))}
-              />
-              <p className="ds-hint">{FREE_CAM_PRESET_HINT[freeNav.preset]} · double-click to reset</p>
-              <OptRow
-                label="Scroll zoom"
-                value={freeNav.invertZoom}
-                cols="two"
-                onPick={(invertZoom: boolean) => setFreeCamNav({ ...freeNav, invertZoom })}
-                options={[
-                  { v: false, t: 'Forward zooms in' },
-                  { v: true, t: 'Forward zooms out' },
-                ]}
-              />
-            </>
-          )}
+          {camera === 'free' && !touch && <FreeCamRows nav={freeNav} />}
           <DriverHeightRow value={driverHeight} onChange={setDriverHeightIn} />
         </div>
       </section>
@@ -584,16 +701,26 @@ export function GraphicsSection() {
               ...(gfx.preset === 'custom' ? [{ v: 'custom' as GraphicsPreset, t: 'Custom' }] : []),
             ]}
           />
-          {/* the ONE line the preset row cannot say for itself: what Auto did, and that it
-              measures rather than guesses. */}
-          <p className="ds-hint">
-            Auto reads the GPU, then measures two seconds of real frames and moves one step. A
-            match that keeps dropping below 40 fps lowers the preset once and says so in the
-            match log.
-          </p>
+          {/* the ONE thing the preset row cannot say for itself: Auto measures rather than
+              guesses, and it keeps measuring. */}
+          <p className="ds-hint">Auto measures two seconds of real frames, and lowers itself a step if a match keeps dropping under 40 fps.</p>
         </div>
       </section>
 
+      {/* ── EVERYTHING BELOW IS AN OVERRIDE OF THE PRESET ────────────────────────────────
+          The Quality preset sets fifteen of these seventeen values, which six flat panels in a
+          row never said: the one control almost everybody wants had the same weight as sixteen
+          they will never touch. Folded, the preset is the screen; open, the panels are exactly
+          as they were.
+
+          THE PANELS KEEP THEIR OWN BODIES on purpose. A new row (an element or mesh detail, a
+          new AA mode) drops into the panel it belongs to and a new environment arrives as DATA
+          in `graphics/environments.ts` — neither needs this structure to change.
+          `.panels`: `.ds-panel + .ds-panel` already owns the gap between them, so the fold body
+          must not add a second one. */}
+      <details className="ds-fold">
+        <summary>Advanced</summary>
+        <div className="ds-fold-body panels">
       <section className="ds-panel">
         <div className="ds-panel-h">
           <span className="ds-panel-title">Resolution</span>
@@ -672,29 +799,17 @@ export function GraphicsSection() {
             onPick={set('environment')}
             options={BB_ENVIRONMENTS.map((e) => ({ v: e.id, t: e.name, d: e.note }))}
           />
-          <p className="ds-hint">
-            The two photographed rooms are CC0 images from Poly Haven, fetched the first time you
-            pick one and then cached by the browser. Credited on the Contributors page.
-          </p>
-          <OptRow
-            label="Environment lighting"
-            value={s.envLighting}
-            cols="two"
-            onPick={set('envLighting')}
-            options={[
-              { v: false, t: 'Off' },
-              { v: true, t: 'On' },
-            ]}
-          />
-          <OptRow
+          {/* THE ONE COST A TILE CANNOT STATE FOR ITSELF, and it does not count the rooms:
+              environments arrive as DATA (`graphics/environments.ts`), so a sentence saying
+              "the two with a size" goes stale the day a third lands. A size on a tile means a
+              download; no size means generated. Credits are on the Contributors page. */}
+          <p className="ds-hint">A choice with a size downloads once, the first time you pick it.</p>
+          <ToggleRow label="Environment lighting" value={s.envLighting} onPick={set('envLighting')} />
+          <ToggleRow
             label="Reflections"
             value={s.reflections}
-            cols="two"
             onPick={set('reflections')}
-            options={[
-              { v: false, t: 'Off' },
-              { v: true, t: 'On', d: 'Metal parts pick up the room' },
-            ]}
+            onDesc="Metal parts pick up the room"
           />
         </div>
       </section>
@@ -727,6 +842,21 @@ export function GraphicsSection() {
               { v: 'high' as const, t: 'High' },
             ]}
           />
+          {/* THE SCORING ELEMENTS. Both options name what they draw, and the CAD one states its
+              cost, the same way "Real" element shadows states theirs — a sub-line here is a
+              trade-off, never a restatement of the label (§8). Unlike "Mesh detail" above it
+              needs no "applies next time" hint: the asset is fetched once and both geometries
+              are kept, so the pick lands on the frame it is made. */}
+          <OptRow
+            label="Element detail"
+            value={s.elementDetail}
+            cols="two"
+            onPick={set('elementDetail')}
+            options={[
+              { v: 'sphere' as const, t: 'Smooth' },
+              { v: 'cad' as const, t: 'Perforated', d: '2,300 triangles each' },
+            ]}
+          />
           <OptRow
             label="Effects"
             value={s.effects}
@@ -743,7 +873,7 @@ export function GraphicsSection() {
 
       <section className="ds-panel">
         <div className="ds-panel-h">
-          <span className="ds-panel-title">Camera and read-outs</span>
+          <span className="ds-panel-title">Camera</span>
         </div>
         <div className="ds-panel-body stack">
           <label className="ds-field">
@@ -773,25 +903,23 @@ export function GraphicsSection() {
               { v: 'full' as const, t: 'Full' },
             ]}
           />
-          <OptRow
+          <ToggleRow
             label="Minimap"
             value={s.minimap}
-            cols="two"
             onPick={set('minimap')}
-            options={[
-              { v: false, t: 'Off' },
-              { v: true, t: 'On', d: 'A second pass over the field' },
-            ]}
+            onDesc="A second pass over the field"
           />
           {/* THE PERFORMANCE OVERLAY ROW IS GONE FROM HERE. It was 3D-only, and it drew its
               own corner div on top of the event log; the read-out is one display for all
               three games now, under Audio and Visual, because it is a `GameSettings` field
               and nothing in this section is. The 3D renderer's draw calls and triangles are
-              on it, at the Detailed level. */}
-          <p className="ds-hint">The performance read-out is under Audio and Visual.</p>
-          {/* §4.4 lists two rows this build does not ship. Saying so here — with the reason —
-              beats a disabled switch, which reads as a bug, and beats silence, which reads as
-              an oversight to anyone holding the plan doc. */}
+              on it, at the Detailed level.
+              ⚠️ THE LINE THAT SAID SO IS GONE TOO. A sentence whose whole content is where
+              another screen is is signposting, not a setting — and this panel is called
+              Camera now, so nothing on it claims a read-out to go looking for. */}
+          {/* §4.4 lists two rows this build does not ship. Saying so — with the reason — beats
+              a disabled switch, which reads as a bug, and beats silence, which reads as an
+              oversight to anyone holding the plan doc. */}
           <p className="ds-hint">
             Not on this build:{' '}
             {GFX_NOT_OFFERED.map((n, i) => (
@@ -804,6 +932,8 @@ export function GraphicsSection() {
           </p>
         </div>
       </section>
+        </div>
+      </details>
     </>
   );
 }

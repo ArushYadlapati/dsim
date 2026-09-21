@@ -4,6 +4,7 @@ import { MatchAudio } from '../audio';
 import { loadThemePref, setThemePref, type ThemePref } from '../theme';
 import { PERF_DISPLAY_LEVELS } from '../settings';
 import type { PerfDisplay } from '../types';
+import { OptRow, ToggleRow } from './OptRow';
 import { rangeFill } from './rangeFill';
 
 /**
@@ -146,45 +147,6 @@ export function AudioSection({
             onChange={(game) => setVolume({ game })}
             onAudition={() => audio.play('resume')}
           />
-          {/* ONE ROW PER EMITTER. These four were a single slider labelled
-              "Beeping" — which moved the launcher, the intake and the gate as well,
-              and was named after the rarest of them. Each auditions its own sound,
-              so the label is checkable rather than a claim. */}
-          <VolumeRow
-            label="Shooter"
-            value={vol.shoot}
-            muted={silent}
-            onChange={(shoot) => setVolume({ shoot })}
-            onAudition={() => audio.sfxShoot()}
-          />
-          <VolumeRow
-            label="Intake"
-            value={vol.intake}
-            muted={silent}
-            onChange={(intake) => setVolume({ intake })}
-            onAudition={() => audio.sfxIntake()}
-          />
-          <VolumeRow
-            label="Classifier gate"
-            value={vol.gate}
-            muted={silent}
-            onChange={(gate) => setVolume({ gate })}
-            onAudition={() => audio.sfxGate()}
-          />
-          <VolumeRow
-            label="Countdown beeps"
-            value={vol.beep}
-            muted={silent}
-            onChange={(beep) => setVolume({ beep })}
-            onAudition={() => audio.beep()}
-          />
-          <VolumeRow
-            label="Match alerts"
-            value={vol.alert}
-            muted={silent}
-            onChange={(alert) => setVolume({ alert })}
-            onAudition={() => audio.sfxMatchFound()}
-          />
           <VolumeRow
             label="Voice lines"
             value={vol.voice}
@@ -192,6 +154,53 @@ export function AudioSection({
             onChange={(voice) => setVolume({ voice })}
             onAudition={() => audio.say('Volume', true)}
           />
+          {/* ONE ROW PER EMITTER, BEHIND A FOLD. These five were a single slider labelled
+              "Beeping" — which moved the launcher, the intake and the gate as well, and was
+              named after the rarest of them — so each one exists because the label is now
+              checkable against its own audition. But eight identical sliders in a column is
+              still a wall, and three of them (master, game, voice) are the ones anybody
+              actually moves. `.inset`: this is inside a panel body, and a card in a card is
+              what the fold is meant to avoid. */}
+          <details className="ds-fold inset">
+            <summary>Individual sounds</summary>
+            <div className="ds-fold-body">
+              <VolumeRow
+                label="Shooter"
+                value={vol.shoot}
+                muted={silent}
+                onChange={(shoot) => setVolume({ shoot })}
+                onAudition={() => audio.sfxShoot()}
+              />
+              <VolumeRow
+                label="Intake"
+                value={vol.intake}
+                muted={silent}
+                onChange={(intake) => setVolume({ intake })}
+                onAudition={() => audio.sfxIntake()}
+              />
+              <VolumeRow
+                label="Classifier gate"
+                value={vol.gate}
+                muted={silent}
+                onChange={(gate) => setVolume({ gate })}
+                onAudition={() => audio.sfxGate()}
+              />
+              <VolumeRow
+                label="Countdown beeps"
+                value={vol.beep}
+                muted={silent}
+                onChange={(beep) => setVolume({ beep })}
+                onAudition={() => audio.beep()}
+              />
+              <VolumeRow
+                label="Match alerts"
+                value={vol.alert}
+                muted={silent}
+                onChange={(alert) => setVolume({ alert })}
+                onAudition={() => audio.sfxMatchFound()}
+              />
+            </div>
+          </details>
           {/* NO "master is at 0%" line. The `muted` prop already greys every value in
               the panel for exactly this state and the Master row itself reads 0%; a
               sentence that appears and disappears also moved the panel's height. */}
@@ -203,31 +212,21 @@ export function AudioSection({
           <span className="ds-panel-title">Visual</span>
         </div>
         <div className="ds-panel-body stack">
-          <div className="ds-opts three">
-            {THEMES.map((t) => (
-              <button
-                key={t.id}
-                className={`ds-opt ${theme === t.id ? 'on' : ''}`}
-                aria-pressed={theme === t.id}
-                onClick={() => pickTheme(t.id)}
-              >
-                <span className="ot">{t.title}</span>
-              </button>
-            ))}
-          </div>
+          <OptRow<ThemePref>
+            label="Theme"
+            value={theme}
+            cols="three"
+            onPick={pickTheme}
+            options={THEMES.map((t) => ({ v: t.id, t: t.title }))}
+          />
           {/* the stack of messages in the field's top-left corner during a match
               (scoring, gate, penalties). It is a read-out and never a control, so
               turning it off costs nothing but the reading. */}
-          <div className="ds-opts">
-            <button
-              className={`ds-opt ${settings.showEventLog ? 'on' : ''}`}
-              aria-pressed={settings.showEventLog}
-              onClick={() => onChange({ ...settings, showEventLog: !settings.showEventLog })}
-            >
-              <span className="ot">In-match messages {settings.showEventLog ? 'ON' : 'OFF'}</span>
-              <span className="od">Scoring and penalty notices in the field’s top-left corner</span>
-            </button>
-          </div>
+          <ToggleRow
+            label="In-match messages"
+            value={settings.showEventLog}
+            onPick={(showEventLog) => onChange({ ...settings, showEventLog })}
+          />
           {/**
             * THE PERFORMANCE READ-OUT'S LEVEL — beside the messages toggle, because they are
             * the two read-outs a match draws over the field and they sit in opposite corners
@@ -241,22 +240,17 @@ export function AudioSection({
             * Four tiles rather than a switch and a checkbox: the whole point of the change is
             * that ONE setting decides what is drawn, with nothing to click on the field.
             */}
-          <div className="ds-field">
-            <span className="cap">Performance read-out</span>
-            <div className="ds-opts four">
-              {PERF_DISPLAY_LEVELS.map((lv) => (
-                <button
-                  key={lv}
-                  className={`ds-opt ${settings.perfDisplay === lv ? 'on' : ''}`}
-                  aria-pressed={settings.perfDisplay === lv}
-                  onClick={() => onChange({ ...settings, perfDisplay: lv })}
-                >
-                  <span className="ot">{PERF_DISPLAY_LABEL[lv]}</span>
-                  <span className="od">{PERF_DISPLAY_BLURB[lv]}</span>
-                </button>
-              ))}
-            </div>
-          </div>
+          <OptRow<PerfDisplay>
+            label="Performance read-out"
+            value={settings.perfDisplay}
+            cols="four"
+            onPick={(perfDisplay) => onChange({ ...settings, perfDisplay })}
+            options={PERF_DISPLAY_LEVELS.map((lv) => ({
+              v: lv,
+              t: PERF_DISPLAY_LABEL[lv],
+              d: PERF_DISPLAY_BLURB[lv],
+            }))}
+          />
         </div>
       </section>
     </>

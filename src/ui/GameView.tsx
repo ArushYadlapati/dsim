@@ -29,6 +29,8 @@ import type { Alliance, DrivetrainType } from '../types';
 import { initPhysics3d, physics3dReady } from '../games/biobuzz/sim3d/engine';
 import { getCameraPref, subscribeCameraPref, subscribeViewPref, type CameraPref } from '../games/biobuzz/graphics/store';
 import { requestFreeCamReset } from '../games/biobuzz/graphics/freeCam';
+import { resumePadNav, suspendPadNav } from '../input/padNav';
+import { setPadMenuHandler } from './PadNavLayer';
 import {
   PREDICTION_BLURBS,
   PREDICTION_LABELS,
@@ -248,6 +250,32 @@ export function GameView({
   // (`SceneInsets`, `games/module.ts`). Handed over as `hudHost`; a 2D view never reads it.
   const rootRef = useRef<HTMLDivElement>(null);
   const controllerRef = useRef<GameController | null>(null);
+
+  /**
+   * THE IN-MATCH CONTRACT: while this screen is mounted, THE PAD IS THE ROBOT'S.
+   *
+   * `PadNavLayer` would otherwise keep moving focus and firing synthetic clicks off the same
+   * stick and buttons the driver is steering with, so the layer stands down for the whole
+   * mount and the only thing it still listens for is the MENU button — `PadBindings.menuButton`
+   * (default D-RIGHT/15, the one standard-mapping index no default bind uses). That press is
+   * masked out of `GamepadInput.sample` on its way through, so the button that leaves the match
+   * cannot also fire a shot on the way out; `src/input/padNav.ts` says why.
+   *
+   * ⚠️ MOUNT-ONCE, with `onExit` in a ref. It is a fresh arrow every render and `App`
+   * re-renders on its own every few seconds (the presence poll) — depending on it would tear
+   * the suspension down and rebuild it mid-match, which is the same trap the Controls screen's
+   * capture effects document.
+   */
+  const exitRef = useRef(onExit);
+  exitRef.current = onExit;
+  useEffect(() => {
+    suspendPadNav('match');
+    setPadMenuHandler(() => exitRef.current());
+    return () => {
+      setPadMenuHandler(null);
+      resumePadNav('match');
+    };
+  }, []);
   const [hud, setHud] = useState<HudSnapshot | null>(null);
   const [intro, setIntro] = useState<IntroPlayer[] | null>(null);
   const [editingLayout, setEditingLayout] = useState(editLayout);
