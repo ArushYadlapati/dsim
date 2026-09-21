@@ -68,10 +68,17 @@ button is the last piece. Stage C (Discord) needs bespoke OAuth for the same rea
   Auth offers Google, GitHub and Vercel ONLY** (owner, 2026-09-21), so **Discord needs a
   bespoke authorization-code flow** in `server/api.ts` — `identify` scope, store the
   snowflake, discard the tokens. Budget +0.5–1 day on stage C.
-- **Stage C still hinges on the `GUILD_MEMBERS` privileged intent.** `guilds.members.read`
-  returns `premium_since` and needs no intent, but re-checking then needs a stored refresh
-  token or a user-present button. If the intent is refused, re-cost the perk rather than
-  building it.
+- ⚠️ **THE `GUILD_MEMBERS` INTENT IS A TOGGLE, NOT AN APPROVAL — corrected 2026-09-21,
+  earlier entries in this log say otherwise and are WRONG.** Discord moved the review
+  threshold on 2026-06-10 from “100 servers” to **10,000 unique users across every server
+  the app is in**; below that it is a checkbox in the Developer Portal. DSIM's bot would be
+  in one guild. So stage C's blocker is the bespoke OAuth alone — do not re-cost the perk
+  around a refusal that is not coming. `docs/rewards-round2-plan.md` §10.4.
+  ⚠️ **But WITHOUT the intent `GET /guilds/{id}/members` returns an EMPTY ARRAY WITH NO
+  ERROR.** The boost perk is a rolling FLOOR, so that does not revoke anything outright —
+  it stops extending, and every booster lapses at the end of the grace window with nothing
+  in the log. The boost sweep needs `fetchStargazers`' `complete` discipline, and an empty
+  member list must be treated as SUSPECT rather than as “nobody is boosting”.
 - **NO INSTAGRAM FOLLOW REWARD** (owner, decided). A follow is unverifiable: the
   follower/relationship endpoints went in 2018, Basic Display died 2024-12-04, and there is no
   `follows` webhook. `docs/rewards-round2-plan.md` §10 is the framework for the next platform.

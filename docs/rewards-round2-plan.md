@@ -441,7 +441,8 @@ The §3.1 guess is therefore half resolved, and the two asks split:
   are discarded on the spot. Everything after that is the BOT reading the guild
   (§3.2), so nothing here ever needs to act as the user again. That keeps the property the
   whole design is built on: the server asks about the RESOURCE, never about the PERSON.
-  If the `GUILD_MEMBERS` intent is refused, that property is what is lost — the fallback
+  If the `GUILD_MEMBERS` intent were ever unavailable (§10.4 — it is a toggle here), that
+  property is what is lost — the fallback
   there does need a stored refresh token per account, and at that point the boost perk is
   worth re-costing rather than building.
 
@@ -623,9 +624,8 @@ Stated plainly rather than assumed, because each one can change a stage:
 
 - Whether the Neon Auth project can enable GitHub and Discord providers (§3.1). The SDK
   methods exist; the project configuration is an owner dashboard question.
-- Whether the Discord application can get the GUILD_MEMBERS privileged intent (§3.2). The
-  fallback costs a stored refresh token per account, which this design otherwise avoids
-  entirely.
+- ~~Whether the Discord application can get the GUILD_MEMBERS privileged intent.~~
+  **RESOLVED 2026-09-21 — it is a self-serve toggle at this size, see §10.4.**
 - GitHub's stargazer endpoint pagination and ETag behaviour at DSIM's star count — cheap
   at any plausible number, but the sweep's cost should be measured once rather than
   assumed.
@@ -679,7 +679,8 @@ Linking is **bespoke OAuth** either way: Neon Auth offers Google, GitHub and Ver
 **Route A — bot in the guild (tier 1).** `GET /guilds/{id}/members?limit=1000` with a bot
 token, reading `premium_since`. One request per sweep for the entire guild whatever the
 number of linked accounts, and no user token is stored anywhere. **Needs the
-`GUILD_MEMBERS` privileged intent**, which is an approval, not a code change.
+`GUILD_MEMBERS` privileged intent — which is A TOGGLE, NOT AN APPROVAL** at this app's
+size. See §10.4.
 
 **Route B — `guilds.members.read` (tier 2).** The OAuth scope returns the caller's own
 member object for one guild, `premium_since` included, and **needs no privileged intent**.
@@ -751,3 +752,36 @@ exposes a channel's subscriber COUNT but a subscriber LIST only to the channel o
 `subscriptions.list` with their own OAuth (tier 2); Twitch exposes follows through the
 Helix API with the broadcaster's token (tier 1-ish). GitHub and Discord are unusually
 friendly here, and that is not the norm.
+
+
+### 10.4 The `GUILD_MEMBERS` intent is a toggle, not an approval — corrected 2026-09-21
+
+Earlier drafts of this document treated the intent as an approval and costed stage C around
+the chance of refusal. **That was wrong, and it was wrong because of a rule that changed.**
+
+- `GUILD_MEMBERS` (the Developer Portal calls it **Server Members Intent**) is one of
+  Discord's three PRIVILEGED gateway intents. It gates member events and the ability to LIST
+  a guild's members — which is exactly what the boost sweep does.
+- ⚠️ **THE REVIEW THRESHOLD CHANGED ON 2026-06-10.** It is no longer "100 servers". It is now
+  **10,000 unique users who can see the app across every server it is in**. Below that, an
+  app turns privileged intents on and off in the Developer Portal with no review at all.
+- DSIM's bot would be in ONE guild. Unless that guild has ten thousand members, this is a
+  checkbox: Developer Portal → the app → Bot → Privileged Gateway Intents → Server Members
+  Intent → Save.
+
+**So stage C's blocker is the bespoke OAuth (\u00a710.2), not an approval, and route A is simply
+the right one.** Do not re-cost the perk around a refusal that is not going to happen.
+
+⚠️ **WHAT THE RESEARCH DID TURN UP, AND IT IS A REAL DESIGN CONSTRAINT: WITHOUT THE INTENT,
+`GET /guilds/{id}/members` RETURNS AN EMPTY ARRAY WITH NO ERROR.** It fails SILENTLY, which
+is the same failure class \u00a73.1's `complete` flag exists for on the GitHub side.
+
+For boosts the consequence is quieter than the star reward's and therefore easier to miss.
+The perk is a rolling FLOOR that expires by arriving, so an empty list revokes nothing
+immediately — it just stops extending, and every booster's membership lapses at the end of
+the grace window with nothing in the log to say why. So the boost sweep MUST carry the same
+discipline as `fetchStargazers`:
+
+- an empty member list is treated as SUSPECT, not as "nobody is boosting";
+- anything that is not a complete, successful read leaves the floors alone;
+- and the check for it gets written before the code, exactly as \u00a77 says for the floor itself.
