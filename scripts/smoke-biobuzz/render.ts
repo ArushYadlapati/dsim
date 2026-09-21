@@ -6293,6 +6293,14 @@ function graphicsChecks(check: Check, allFiles: string[]): void {
       // thickness off the tiles and the beads rest on that slab, so nothing floats.
       check('the holding box floor slab sits ON the tiles', fieldSrc.includes('floorSlab.position.set(cx, cy, BB_BOX_T / 2)'));
       check('and the nectar rest on the box floor, not at table height', fieldSrc.includes('BB_BOX_T + BB_NECTAR_R'));
+      // NO COPLANAR BLACK-ON-RED (owner, 2026-09-21: "the black part and the red part is
+      // meshing"): the dark slab is inset one wall thickness, so it never shares an outer face
+      // with an alliance wall.
+      check(
+        'the holding box floor slab is INSET inside its walls — no face shared with a wall\'s outer face',
+        fieldSrc.includes('new THREE.BoxGeometry(BB_BOX_DEPTH - 2 * BB_BOX_T, BB_BOX_LEN - 2 * BB_BOX_T, BB_BOX_T)') &&
+          !fieldSrc.includes('new THREE.BoxGeometry(BB_BOX_DEPTH, BB_BOX_LEN, BB_BOX_T)'),
+      );
       for (const gone of ['RACK_SHELF_Z', 'RACK_SHELF_T', 'RACK_DEPTH', ':leg', ':lip']) {
         check(`the shelf-on-legs geometry is gone (${gone})`, !fieldSrc.includes(gone), gone);
       }

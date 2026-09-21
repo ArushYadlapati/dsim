@@ -710,8 +710,12 @@ function buildNectarBox(a: Alliance): BbNectarBox {
   // plus four low side walls — an OPEN-TOPPED tray, so the balls in it are visible from the
   // driver's camera and from straight above.
   const backingMat = mat('#191d24'); // `src/render/drawField.ts`'s own backing fill
+  // ⚠️ THE SLAB SITS INSIDE THE WALLS, NOT UNDER THEM (owner, 2026-09-21: "the black part and the
+  // red part is meshing"). Built to the box's full footprint, its four outer faces were coplanar
+  // with the alliance walls' outer faces for the bottom `BB_BOX_T` — a black band z-fighting a red
+  // one all the way round. Inset by one wall thickness it only ever meets a wall's INNER face.
   const floorSlab = new THREE.Mesh(
-    new THREE.BoxGeometry(BB_BOX_DEPTH, BB_BOX_LEN, BB_BOX_T),
+    new THREE.BoxGeometry(BB_BOX_DEPTH - 2 * BB_BOX_T, BB_BOX_LEN - 2 * BB_BOX_T, BB_BOX_T),
     backingMat,
   );
   floorSlab.name = `${group.name}:floor`;
