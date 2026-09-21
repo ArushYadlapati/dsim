@@ -39,6 +39,7 @@ import {
 } from '../games/biobuzz/graphics/store';
 import { installViewKey } from '../games/biobuzz/graphics/viewKey';
 import { rangeFill } from './rangeFill';
+import { useCoarsePointer } from './useCoarsePointer';
 
 /**
  * GRAPHICS — the sixteen settings of `docs/biobuzz/plan-3d.md` §4.4, the preset that sets them
@@ -339,6 +340,12 @@ export function GraphicsSection() {
 
   const [camera, setCamera] = useState<CameraPref>(() => getCameraPref());
   useEffect(() => subscribeCameraPref(setCamera), []);
+  /** FREE CAM (owner, 2026-09-21) is MOUSE-ONLY — two-finger orbit/pinch dolly would collide
+   * with the on-screen drive sticks (`MobileControls`) reliably enough that it is left out
+   * rather than shipped half-working, so the picker hides the option on a touch surface rather
+   * than offering a camera that cannot be aimed there. */
+  const touch = useCoarsePointer();
+  const cameraOptions = touch ? CAMERA_PREFS.filter((c) => c !== 'free') : CAMERA_PREFS;
 
   const s = gfx.settings;
   const set = <K extends keyof GraphicsSettings>(k: K) => (v: GraphicsSettings[K]) => setGraphicsSetting(k, v);
@@ -373,8 +380,9 @@ export function GraphicsSection() {
             label="Camera"
             value={camera}
             cols="three"
+            hint={camera === 'free' ? 'Drag to orbit · right-drag to pan · scroll to zoom · double-click to reset' : undefined}
             onPick={setCameraPref}
-            options={CAMERA_PREFS.map((c) => ({
+            options={cameraOptions.map((c) => ({
               v: c,
               t: c === 'auto' ? 'Auto' : c[0].toUpperCase() + c.slice(1),
             }))}

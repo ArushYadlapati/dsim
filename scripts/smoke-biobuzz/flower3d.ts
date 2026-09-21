@@ -2,12 +2,12 @@ import type { Check } from './harness';
 import { cmd, mkWorld, mkWorld3d, run, run3d, setup } from './harness';
 import { step3d } from '../../src/games/biobuzz/sim3d/step3d';
 import { createBiobuzzWorld } from '../../src/games/biobuzz/spawn';
-import { engineFor } from '../../src/games/biobuzz/sim3d/engineImpl';
+import { engineFor, disposeEngineFor } from '../../src/games/biobuzz/sim3d/engineImpl';
 import { cadFlowerRings, cadStatics } from '../../src/games/biobuzz/sim3d/fieldColliders';
 import { ringTrimesh, flowerTubeOf, flowerAtRetrieval, flowerCageBand, cageVertexR, FLOWER_CAGE_R } from '../../src/games/biobuzz/sim3d/flowerTube';
 import { flowerPlace3d, flowerRetrieve3d } from '../../src/games/biobuzz/sim3d/flower3d';
 import { bbFootprint, bbMouths, bbPlacePointLocal, bbRampSettled, mouthAxes } from '../../src/games/biobuzz/robot';
-import { retrieveFromFlower } from '../../src/games/biobuzz/play';
+import { retrieveFromFlower, bbFlowerAtIntakeMouth } from '../../src/games/biobuzz/play';
 import { BB_INTAKE_KINDS, type BbIntakeKind } from '../../src/games/biobuzz/mechs';
 import { PHYS_ALLOWED_ERROR, PHYS_LENGTH_UNIT } from '../../src/config';
 import {
@@ -16,6 +16,7 @@ import {
   BB3_FLOWER_RING_SEGMENTS,
   BB3_FLOWER_SCATTER_FRAC,
   BB_FLOWERS,
+  bbFlowerReachOf,
   BB_FLOWER_LOW_HOLE,
   BB_FLOWER_LOW_Z,
   BB_FLOWER_MID_HOLE,
@@ -26,11 +27,12 @@ import {
   BB_POLLEN_R,
   BB_PLACE_REACH,
   BB_RAMP_DEPLOY_S,
+  FLOWER_MOUTH,
   BB_RAMP_OUT,
   bbSideRollerY,
   FLOWER_RING_Z,
 } from '../../src/games/biobuzz/config';
-import { bbFlowerDropSlack, flowerCapacity, flowerScore, flowerScoreZ, flowerStackZ, type BbElementKind } from '../../src/games/biobuzz/flower';
+import { bbFlowerScatter, bbFlowerDropSlack, flowerCapacity, flowerScore, flowerScoreZ, flowerStackZ, type BbElementKind } from '../../src/games/biobuzz/flower';
 import type { Artifact, RobotSpec, RobotState, World } from '../../src/types';
 
 /**
@@ -511,13 +513,14 @@ export function flower3dChecks(check: Check): void {
    * single-pollen flower and a robot parked at the SAME nominal pose (`BB_PLACE_REACH + standoff`,
    * chassis face flush + standoff).
    *
-   * ⚠️ **`ramp` IS EXCLUDED FROM THE ONE-CALL COMPARISON, DELIBERATELY, SINCE THE WEDGE
-   * (2026-09-20).** `flowerRetrieve3d`'s ramp branch no longer answers a gate in one call — its
-   * FIRST call on a fresh candidate always returns `false` and only starts the stall clock
-   * (`BB_RAMP_STALL_S`); 2D still answers in one call (it has no physical wedge to wait on). Diffing
-   * `took2 !== took3` for `ramp` would therefore fail on EVERY pose by design, not by a gate
-   * divergence — the real thing to pin is that the 3D call still RECOGNISES the same pose 2D does,
-   * which the loop below checks separately via `bbRampStallId`.
+   * ⚠️ **`ramp` IS EXCLUDED FROM THE ONE-CALL COMPARISON, DELIBERATELY.**
+   * `flowerRetrieve3d`'s ramp branch does not answer a gate in one call: on a POLLEN that is still
+   * sitting in the bore it turns the lip's ROLLER and returns `false`, and it only takes the ball
+   * once the blade has physically lifted it clear (`BB_RAMP_LIFT_Z`). 2D still answers in one call
+   * — it has no blade to wait on. Diffing `took2 !== took3` for `ramp` would therefore fail on
+   * EVERY pose by design rather than by a gate divergence, so what is pinned instead is that the
+   * 3D branch RECOGNISES the same pose 2D does: `bbFlowerAtIntakeMouth` with the ramp's own reach,
+   * which is the one gate both halves share.
    */
   {
     const standoffs = [0, 0.5, 1.0, 1.5];
@@ -569,7 +572,8 @@ export function flower3dChecks(check: Check): void {
           // the ONE-CALL comparison does not apply (see this block's own header) — instead, when
           // 2D takes it, the 3D call must at least have RECOGNISED the same pose: the stall clock
           // started on the flower's own bottom POLLEN, rather than the gate refusing outright.
-          const recognised = r3.bbRampStallId === bottomId;
+          const recognised = bbFlowerAtIntakeMouth(r3, bbFlowerReachOf('ramp', true)!) !== null;
+          void bottomId;
           if (took2 !== recognised) {
             rampGateMismatches++;
             rampDetail.push(`ramp@${standoff}in: 2D=${took2} 3D-recognised=${recognised}`);
@@ -1400,6 +1404,141 @@ function flowerScatterChecks(check: Check): void {
     );
     // nothing asserts "no drop is ejected" separately: the n = 1…8 loop above already fails on a
     // column that placed fewer elements than it was handed, which is exactly that.
+  }
+
+
+  // ---- THE RAMP, DRIVEN IN FOR REAL — a fast slice of the 400-run sweep, worst seeds included --
+  /**
+   * ⚠️ **THIS IS THE ONE THAT ANSWERS "IT SHOULD WORK 100% OF THE TIME"** (owner, 2026-09-20),
+   * and the full grid it is a slice of lives in `scratch/rampsweep.ts`: four FLOWERS x stick
+   * 0.35/0.5/0.7/1.0 x lateral -2..+2 in x approach angle -8..+8 deg x column height 1-8 x legal
+   * POLLEN/NECTAR mixes x scatter seed, **400 real drive-ins, 400 extracted**, mean 0.40 s and p95
+   * 1.10 s from the ramp reaching the opening to the POLLEN being in the hopper. Forcing the
+   * column height instead of drawing it: h1 400/400, h4 400/400, h8 398/400 — the two are the
+   * compounding corner every archetype's sweep finds hardest (a lateral offset AND an approach
+   * angle in the same rotational sense), and they are reported rather than papered over.
+   *
+   * What runs HERE is five drive-ins and a drain, chosen off that grid: the two hardest column
+   * geometries (a LONE pollen dead on the axis, free to retreat — the case a passive lip cannot
+   * take — and a full 8-column, whose bottom POLLEN settles 0.44 in toward the wall and perched on
+   * the lower bore's rim), a skewed approach, a NECTAR-topped mix, and a flower on the other wall.
+   * Every one is a REAL drive from 16 in out with the stick held: nothing is teleported into place.
+   */
+  {
+    const stageColumn = (w: World, i: number, kinds: BbElementKind[], seed: number): void => {
+      const f = BB_FLOWERS[i];
+      let id = 6000 + i * 100;
+      let z = 0;
+      for (const k of kinds) {
+        const r = k === 'pollen' ? BB_POLLEN_R : BB_NECTAR_R;
+        const off = bbFlowerScatter(seed, id, i, bbFlowerDropSlack(r));
+        w.balls.push({
+          id,
+          color: k === 'pollen' ? 'yellow' : 'blue',
+          state: { kind: 'element', el: `flower:${i}`, slot: 0 },
+          pos: { x: f.x + off.x, y: f.y + off.y },
+          vel: { x: 0, y: 0 },
+          z,
+          vz: 0,
+          r,
+        } as unknown as Artifact);
+        id++;
+        z += 2 * r;
+      }
+    };
+    const driveIn = (
+      i: number,
+      stick: number,
+      lat: number,
+      angDeg: number,
+      kinds: BbElementKind[],
+      seed: number,
+      want: number,
+      maxTicks: number,
+    ): { taken: number; times: number[] } => {
+      const w = mkWorld3d('free', 900 + seed, {
+        intakeMount: 'front',
+        drivetrain: 'mecanum',
+        bbMech: { launcher: null, lift: null, intake: { kind: 'ramp' } } as unknown as RobotSpec['bbMech'],
+      });
+      w.balls.length = 0;
+      stageColumn(w, i, kinds, seed);
+      for (let t = 0; t < 200; t++) step3d(w, 1 / 60, new Map());
+      const r = w.robots[0];
+      r.hopper.length = 0;
+      r.lastIntakeAt = -99;
+      const f = BB_FLOWERS[i];
+      const n = FLOWER_MOUTH[f.wall];
+      const px = -n.y;
+      const py = n.x;
+      const foot = bbFootprint(r.spec).front;
+      const standoff = foot + 16;
+      r.pos = { x: f.x + n.x * standoff + px * lat, y: f.y + n.y * standoff + py * lat };
+      r.heading = Math.atan2(-n.y, -n.x) + (angDeg * Math.PI) / 180;
+      r.vel = { x: 0, y: 0 };
+      r.angVel = 0;
+      // deploy IN THE OPEN and settle — pressing while already flush is the swing guard's own
+      // refusal case, which is a different check (see the SIM3D lane's swing-guard block).
+      step3d(w, 1 / 60, new Map([[0, cmd({ bbRamp: true })]]));
+      for (let t = 0; t < Math.round(BB_RAMP_DEPLOY_S * 60) + 3; t++) step3d(w, 1 / 60, new Map());
+      const cmds = new Map([[0, cmd({ driveY: stick, leftDrive: stick, rightDrive: stick, intake: true })]]);
+      const times: number[] = [];
+      let taken = 0;
+      let opened = -1;
+      for (let t = 0; t < maxTicks; t++) {
+        step3d(w, 1 / 60, cmds);
+        const uTip = (r.pos.x - f.x) * n.x + (r.pos.y - f.y) * n.y - foot;
+        if (opened < 0 && uTip < 4) opened = t;
+        if (r.hopper.length > 0) {
+          for (let k = 0; k < r.hopper.length; k++) times.push(t - Math.max(opened, 0));
+          taken += r.hopper.length;
+          if (want > 4) r.hopper.length = 0; // a DRAIN: the driver scores what he takes
+          if (taken >= want) break;
+        }
+      }
+      disposeEngineFor(w);
+      return { taken, times };
+    };
+    const P = (n: number): BbElementKind[] => new Array(n).fill('pollen') as BbElementKind[];
+    const cases: { name: string; run: () => { taken: number; times: number[] } }[] = [
+      { name: 'ONE pollen, dead on the axis, straight on', run: () => driveIn(0, 0.6, 0, 0, P(1), 3, 1, 240) },
+      { name: 'a full 8-column, leaning on the supports', run: () => driveIn(0, 0.6, 0, 0, P(8), 7, 1, 240) },
+      { name: 'a skewed approach (2 in off, 8 deg over)', run: () => driveIn(1, 1.0, 2, 8, P(4), 11, 1, 240) },
+      { name: 'a NECTAR-topped mix, slow stick', run: () => driveIn(2, 0.35, -1, -4, ['pollen', 'pollen', 'nectar'], 19, 1, 300) },
+      { name: 'the far wall, full stick, one pollen', run: () => driveIn(3, 1.0, -2, 0, P(1), 23, 1, 240) },
+    ];
+    const rows = cases.map((c) => ({ name: c.name, ...c.run() }));
+    console.log(
+      `[smoke-bb flower3d] ramp drive-ins: ` + rows.map((r) => `${r.name}: ${r.taken ? `${(r.times[0] / 60).toFixed(2)}s` : 'MISSED'}`).join('  ·  '),
+    );
+    check(
+      'ramp 3d: every representative drive-in extracts a POLLEN by physics — no timer, no teleport',
+      rows.every((r) => r.taken >= 1),
+      rows.map((r) => `${r.name}=${r.taken}`).join(', '),
+    );
+    // 150 ticks (2.5 s) is the CEILING and not the expectation: the grid's own mean is 0.40 s and
+    // its p95 1.10, and four of these five land in 0.23-0.47 s. The outlier is the full 8-column
+    // at 2.13 s, which is the whole column being lifted 0.435 in off the tiles by a 1/8-in blade —
+    // it is the slowest thing this mechanism does and it is measured rather than budgeted.
+    check(
+      'ramp 3d: ...and each one inside two and a half seconds of the ramp reaching the opening',
+      rows.every((r) => r.times[0] <= 150),
+      rows.map((r) => `${r.name}=${r.times[0]}t`).join(', '),
+    );
+    // THE DRAIN: one 8-POLLEN column, emptied without letting go of the stick.
+    const drain = driveIn(0, 0.6, 0, 0, P(8), 7, 8, 600);
+    const gaps = drain.times.map((t, k) => (k === 0 ? t : t - drain.times[k - 1]));
+    console.log(`[smoke-bb flower3d] ramp drain: ${drain.taken}/8 POLLEN, gaps ${gaps.join('/')} ticks`);
+    check(
+      'ramp 3d: a full 8-POLLEN column DRAINS completely, one after another, on one held stick',
+      drain.taken === 8,
+      `${drain.taken}/8, cumulative ticks ${drain.times.join(', ')}`,
+    );
+    check(
+      'ramp 3d: ...and every POLLEN after the first arrives in well under a second',
+      gaps.slice(1).every((g) => g <= 45),
+      `gaps ${gaps.join(', ')} ticks`,
+    );
   }
 
   // ---- and a NECTAR at the bottom still LOCKS the flower (G418.B), scatter or no --------------

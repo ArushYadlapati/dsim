@@ -242,7 +242,7 @@ export function drawChainRobot(
 
   ctx.restore();
 
-  if (mode === 'turret' || mode === 'twinturret') drawTurret(ctx, r, loaded, accent, ox, oy, mode === 'twinturret');
+  if (mode === 'turret' || mode === 'twinturret') drawTurret(ctx, r, loaded, ox, oy, mode === 'twinturret');
 }
 
 /**
@@ -462,7 +462,6 @@ function drawTurret(
   ctx: CanvasRenderingContext2D,
   r: RobotState,
   loaded: boolean,
-  accent: string,
   ox = 0,
   oy = 0,
   twin = false,
@@ -564,10 +563,15 @@ function drawTurret(
   for (const off of chans) {
     // THE FLYWHEEL, spanning the channel on its axle: the Particle is pinched between
     // it and the opposite plate, so it sits ON the centreline — not in a pair.
+    //
+    // ⚠️ `RUBBER_HI`, NOT THE ACCENT — `tintColor(RUBBER_HI, RUBBER_HI, …)` is RUBBER_HI, so this
+    // is the bare crown every build had before cosmetics. The flywheel is BLACK whatever the
+    // accent (owner, 2026-09-21, ruled on BIOBUZZ's; this is the same wheel); the intake
+    // rollers still take it.
     ctx.save();
     ctx.translate(wheelX, off);
     ctx.rotate(Math.PI / 2); // drawRoller lays its barrel along local y; the axle runs across
-    drawRoller(ctx, 0, gap / 2 - 0.35, 1.5, loaded, accent, 1.2);
+    drawRoller(ctx, 0, gap / 2 - 0.35, 1.5, loaded, RUBBER_HI, 1.2);
     ctx.restore();
 
     // the exit, and the only accent: a short bar across the channel at the muzzle line

@@ -2679,7 +2679,8 @@ export function robotChecks(check: Check): void {
       );
       // ⚠️ THE RAMP IS A TWO-PHASE PULL NOW, NOT A ONE-TICK GATE (2026-09-20, the wedge). Once
       // settled the wedge is a real collider and the FIRST tick only starts the stall clock
-      // (`flowerRetrieve3d`'s ramp branch, `BB_RAMP_STALL_S` = 1.2 s = 72 ticks); the fallback
+      // (`flowerRetrieve3d`'s ramp branch: the lip's roller turns and the take waits on the blade
+      // having physically lifted the POLLEN, `BB_RAMP_LIFT_Z`); the pull
       // release fires after that, and the extended pull sweeps it in a handful of ticks more —
       // MEASURED (`scratch/ramp_debug.ts`, a real drive-in) 112 ticks pop-to-hopper end to end.
       // 150 ticks held flush covers that with margin.

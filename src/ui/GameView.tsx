@@ -27,7 +27,8 @@ import { seasonFor } from '../seasons';
 import { useCoarsePointer } from './useCoarsePointer';
 import type { Alliance, DrivetrainType } from '../types';
 import { initPhysics3d, physics3dReady } from '../games/biobuzz/sim3d/engine';
-import { subscribeViewPref } from '../games/biobuzz/graphics/store';
+import { getCameraPref, subscribeCameraPref, subscribeViewPref, type CameraPref } from '../games/biobuzz/graphics/store';
+import { requestFreeCamReset } from '../games/biobuzz/graphics/freeCam';
 import {
   PREDICTION_BLURBS,
   PREDICTION_LABELS,
@@ -536,6 +537,12 @@ export function GameView({
     };
   }, []);
 
+  /** the device's camera pick — read here only to gate the "Reset view" chip below, which exists
+   * only while a live 3D scene is actually showing the free camera (`scene3d`, not the bare
+   * preference: a scene that failed to mount or fell back to 2D has no free camera to reset). */
+  const [cameraPref, setCameraPrefState] = useState<CameraPref>(() => getCameraPref());
+  useEffect(() => subscribeCameraPref(setCameraPrefState), []);
+
   // MOBILE zoom/select guard: iOS Safari ignores `user-scalable=no`, so a two-finger
   // pinch still zooms and a two-finger touch can pop the text-selection callout. Kill
   // the iOS `gesture*` events and any multi-touch default while the game is up, plus
@@ -721,6 +728,15 @@ export function GameView({
         {session && onRestartRun && !hud?.rematch?.need && (
           <button className="game-btn" onClick={onRestartRun}>
             ⟲ NEW RUN
+          </button>
+        )}
+        {/* FREE CAM's own on-field affordance (owner, 2026-09-21): the camera has no keyboard
+            binding (mouse-only, see `renderScene.ts`'s pointer handling), so double-click is the
+            only other way back to the default framing. Gated on `scene3d`, not the bare
+            preference — a scene that failed to mount or fell back to 2D has nothing to reset. */}
+        {scene3d && cameraPref === 'free' && (
+          <button className="game-btn" onClick={requestFreeCamReset} title="Double-click the field to do the same">
+            ⟲ RESET VIEW
           </button>
         )}
         {/* THE IN-GAMEPLAY PLACEMENT, LAST on this line — after RESET, and after

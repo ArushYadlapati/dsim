@@ -25,18 +25,14 @@ import {
   BB_HIVE_TILT_DEG,
   BB_HIVE_X,
   BB_RAMP_ANGLE,
-  BB_RAMP_CREST_OUT,
-  BB_RAMP_CREST_Z,
-  BB_RAMP_DROP_OUT,
-  BB_RAMP_DROP_Z,
+  BB_RAMP_DECK_Z,
+  BB_RAMP_FLOOR_Z,
+  BB_RAMP_IN,
   BB_RAMP_L,
-  BB_RAMP_LEAD_Z,
   BB_RAMP_OUT,
   BB_RAMP_PIVOT_BACK,
   BB_RAMP_PIVOT_Z,
   BB_RAMP_TIP_Z,
-  BB_RAMP_WEDGE_DROP_ANGLE,
-  BB_RAMP_WEDGE_RISE_ANGLE,
   BB_RAMP_WEDGE_THICK,
   BB_SIDE_ROLLER_H,
   BB_SIDE_ROLLER_OUT,
@@ -1036,11 +1032,22 @@ function rampRailY(half: number): number {
  *    correct world plane in every case), computed once per box where the edge is known.
  */
 
-/** one tilted box of the ramp's wedge, from `(u0, z0)` to `(u1, z1)` in the mouth frame — shared
- * by `chassis3dReachShapes` (the settled, `rampReady` collider) below. `angle` is the
- * `pitchQuatY` argument that makes the box's own long axis run between the two points; the sign
- * is part of the CALLER's own derivation (`config.ts`'s "THE DEPLOYABLE RAMP" works both out), not
- * re-derived here, so this stays a plain box-between-two-points helper with no trig of its own. */
+/**
+ * one box of the ramp, from `(u0, z0)` to `(u1, z1)` in the mouth frame — shared by
+ * `chassis3dReachShapes` (the settled, `rampReady` collider) below. `angle` is the `pitchQuatY`
+ * argument that makes the box's own long axis run between the two points; the sign is part of the
+ * CALLER's own derivation (`config.ts`'s "THE DEPLOYABLE RAMP" works all three out), not
+ * re-derived here, so this stays a plain box-between-two-points helper with no trig of its own.
+ *
+ * ⚠️ **THE TWO POINTS ARE THE TOP SURFACE, AND THE BOX HANGS BELOW THEM.** It used to CENTRE the
+ * box on the line, which is the same thing as saying the ramp's real lowest point is
+ * `2·thick·cos(angle)` under the number `config.ts` names — and that is precisely what jammed the
+ * first wedge on the FLOWER's lower ring plate (0.3067 against a 0.354 plate top; the
+ * `intersectionsWithShape` run that named the collider is in that section's header). Hanging the
+ * box below its own profile line makes `BB_RAMP_LEAD_Z`/`BB_RAMP_CREST_Z`/`BB_RAMP_DECK_Z` mean
+ * what they say — the surface a POLLEN rides on — and puts the ramp's underside where
+ * `BB_RAMP_FLOOR_Z` says, which is the number that has to clear the plate.
+ */
 function rampWedgeSegment(
   place: (u: number, v: number) => { cx: number; cy: number },
   edge: BbEdge,
@@ -1052,12 +1059,16 @@ function rampWedgeSegment(
   z1: number,
   angle: number,
 ): Chassis3dShape {
-  const mid = place((u0 + u1) / 2, 0);
   const hx = Math.sqrt((u1 - u0) * (u1 - u0) + (z1 - z0) * (z1 - z0)) / 2;
+  // the "down" perpendicular of the segment, one half-thickness of it: the box's own centre sits
+  // there, so its TOP face lands on the (u0,z0)–(u1,z1) line exactly.
+  const du = (u1 - u0) / (2 * hx);
+  const dz = (z1 - z0) / (2 * hx);
+  const mid = place((u0 + u1) / 2 + BB_RAMP_WEDGE_THICK * dz, 0);
   return {
     cx: mid.cx,
     cy: mid.cy,
-    cz: (z0 + z1) / 2 - half,
+    cz: (z0 + z1) / 2 - BB_RAMP_WEDGE_THICK * du - half,
     hx,
     hy: railY,
     hz: BB_RAMP_WEDGE_THICK,
@@ -1097,14 +1108,14 @@ export function chassis3dReachShapes(spec: RobotSpec, heightIn: number, rampRead
       }
     } else if (kind === 'ramp' && rampReady) {
       const railY = rampRailY(axes.half);
-      // the WEDGE: two tilted boxes, rail-to-rail wide (`railY`, same as the old flat crossbar's
-      // own width), replacing the single flat bar — see `config.ts`'s "THE DEPLOYABLE RAMP" for
-      // the three named points (`uOut` + each is a mouth-frame `u`) and why two boxes rather than
-      // a `ColliderDesc.convexHull`. `rampWedgeSegment` composes the SAME `pitchQuatY` the rails
-      // use, at the wedge's OWN angle rather than the rail's.
+      // the PLOW: three boxes, rail-to-rail wide (`railY`) — the LIP→CREST rise, the CREST→DROP
+      // fall, and the level DECK that carries a lifted POLLEN the rest of the way to the mouth.
+      // See `config.ts`'s "THE DEPLOYABLE RAMP" for the four named points (`uOut` + each is a
+      // mouth-frame `u`), why the boxes hang BELOW them, and why this is not a `convexHull`.
+      // `rampWedgeSegment` composes the SAME `pitchQuatY` the rails use, at each segment's own
+      // angle rather than the rail's.
       out.push(
-        rampWedgeSegment(place, m.edge, half, railY, uOut + BB_RAMP_CREST_OUT, BB_RAMP_CREST_Z, uOut + BB_RAMP_OUT, BB_RAMP_LEAD_Z, BB_RAMP_WEDGE_RISE_ANGLE),
-        rampWedgeSegment(place, m.edge, half, railY, uOut + BB_RAMP_DROP_OUT, BB_RAMP_DROP_Z, uOut + BB_RAMP_CREST_OUT, BB_RAMP_CREST_Z, -BB_RAMP_WEDGE_DROP_ANGLE),
+        rampWedgeSegment(place, m.edge, half, railY, uOut + BB_RAMP_IN, BB_RAMP_DECK_Z, uOut + BB_RAMP_OUT, BB_RAMP_DECK_Z, 0),
       );
       // the two rails: midpoint between the pivot (u = uOut − BB_RAMP_PIVOT_BACK, z
       // BB_RAMP_PIVOT_Z) and the tip — now the wedge's own LEADING EDGE (u = uOut + BB_RAMP_OUT,
@@ -1156,10 +1167,10 @@ export function chassis3dReachShapes(spec: RobotSpec, heightIn: number, rampRead
  * its own two-segment shape. Reproducing the wedge's exact tilt mid-swing would need the rise/drop
  * angles composed with the rail's own swinging tilt — two more quaternions for a guard that only
  * has to catch an overlap, not model one. Instead this walks the SAME "tip" point the old crossbar
- * tracked — now the wedge's own LEADING EDGE, which is the rail's tip by construction
- * (`config.ts`'s "THE DEPLOYABLE RAMP") — and wraps it in a box sized to the wedge's full SETTLED
- * extent: back to the drop point (`BB_RAMP_OUT − BB_RAMP_DROP_OUT` behind the tip) and from the
- * drop point's height up to the crest's. A box that size, carried rigidly with the tip through the
+ * tracked — now the ramp's own LIP, which is the rail's tip by construction (`config.ts`'s "THE
+ * DEPLOYABLE RAMP") — and wraps it in a box sized to the ramp's full SETTLED extent: back to the
+ * deck's inboard end (`BB_RAMP_OUT − BB_RAMP_IN` behind the tip) and from the ramp's own
+ * underside (`BB_RAMP_FLOOR_Z`) up to the crest. A box that size, carried rigidly with the tip through the
  * whole swing, is a SUPERSET of the true wedge at every `e` in the (outward, up) plane the swing
  * moves in (the true wedge's own extent is never larger than its settled one, only differently
  * oriented within it), so a reversal can fire slightly early but never miss a real overlap.
@@ -1176,13 +1187,13 @@ export function bbRampSwingShapes(spec: RobotSpec, heightIn: number, e: number):
   const sinPhi = dsin(phi);
   const cosPhi = dcos(phi);
   // the wedge's own settled footprint, relative to its leading edge (the tip): how far back the
-  // drop point sits, the z band from the drop point up to the crest, and that band's own centre
-  // offset from the tip's settled height (`BB_RAMP_LEAD_Z`) — a CONSTANT added to the swinging
-  // `tipZ` below, so the box tracks the fold/deploy motion rather than sitting at one fixed z.
-  const wedgeBackU = BB_RAMP_OUT - BB_RAMP_DROP_OUT;
-  const wedgeZLo = BB_RAMP_DROP_Z;
-  const wedgeZHi = BB_RAMP_CREST_Z;
-  const wedgeZOffset = (wedgeZLo + wedgeZHi) / 2 - BB_RAMP_LEAD_Z;
+  // deck's inboard end sits, the z band the blade occupies, and that band's own centre offset
+  // from the tip's settled height (`BB_RAMP_DECK_Z`) — a CONSTANT added to the swinging `tipZ`
+  // below, so the box tracks the fold/deploy motion rather than sitting at one fixed z.
+  const wedgeBackU = BB_RAMP_OUT - BB_RAMP_IN;
+  const wedgeZLo = BB_RAMP_FLOOR_Z;
+  const wedgeZHi = BB_RAMP_DECK_Z;
+  const wedgeZOffset = (wedgeZLo + wedgeZHi) / 2 - BB_RAMP_DECK_Z;
   for (const m of bbMouths(spec)) {
     const axes = mouthAxes(m, hl, hw);
     const { n, p, uOut } = axes;

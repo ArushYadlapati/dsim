@@ -75,12 +75,15 @@ export function subscribeViewPref(fn: ViewListener): () => void {
  */
 // CAMERA_KEY is imported at the top, beside VIEW_KEY (src/storageKeys.ts)
 
-export type CameraPref = 'auto' | 'driver' | 'overhead' | 'chase' | 'orbit';
+export type CameraPref = 'auto' | 'driver' | 'overhead' | 'chase' | 'orbit' | 'free';
 
 /** the cycle order the in-scene `c` key walks, starting from whatever is stored. `auto` is in
  * the ring on purpose: a player who cycled away from it must be able to get back to "let the
- * game decide" without opening a settings screen. */
-export const CAMERA_PREFS: readonly CameraPref[] = ['auto', 'driver', 'overhead', 'chase', 'orbit'];
+ * game decide" without opening a settings screen. `free` (owner, 2026-09-21) is last: it is a
+ * mouse-only camera (see `graphics/freeCam.ts`), so cycling past it on a keyboard-only pass
+ * costs nothing and a touch device that hides the picker option still reaches every other
+ * camera by pressing `c`. */
+export const CAMERA_PREFS: readonly CameraPref[] = ['auto', 'driver', 'overhead', 'chase', 'orbit', 'free'];
 
 const isCameraPref = (v: unknown): v is CameraPref =>
   typeof v === 'string' && (CAMERA_PREFS as readonly string[]).includes(v);

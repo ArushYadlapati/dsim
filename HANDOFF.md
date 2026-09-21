@@ -1,6 +1,53 @@
+# HANDOFF — 2026-09-21a (alpha: the ramp's wedge is a FLAT PLOW BLADE with a driven lip, and it extracts 400/400 by physics)
+
+**READ FIRST.** Owner: "the pollen should be getting intaked from the deployable ramp BECAUSE it
+collides with the ramp and slides down towards the intake"; "the old ramp works 99% of the
+time... when it does not work, the pollen don't budge... I think it depends on how the pollen are
+stacked". Gates on this tree: `npm test` **3649 checks, 1 failure** — `every non-auto camera
+preference is a real SceneCamera`, which is ANOTHER session's in-flight `graphics/freeCam.ts` work
+in this same worktree and is not from this pass; the lane subset
+`render,robot,sim3d,flower3d,tutorial,predict,net3d,hive3d` is otherwise clean, `build`,
+`server:check`, `docaudit` and `bundleaudit` all green.
+
+- **THE 0.42 FREEZE THE LAST PASS LEFT UNEXPLAINED IS THE LOWER RING PLATE**, and the previous
+  CAD probe missed it for one reason: it sampled the wedge's CENTRELINE (`v = 0`), which is
+  exactly where the 3.222-in bore is open. A tilted box hangs `2·thick·cos(angle)` BELOW its own
+  profile line, so "lead z 0.42" really reached **0.3067** against a plate top of **0.354**, and
+  the ramp is ±7.57 in wide against a 1.611-in bore radius. A free-shape `intersectionsWithShape`
+  NAMES the collider: `LEAD_Z 0.42 -> trimesh z=[-0.199,0.354] FLOWER0` at every standoff, 0.50
+  and up CLEAR.
+- **AND THE 0.60 LEAD THAT "FIXED" IT COULD NOT LIFT ANYTHING.** A POLLEN backed by the peanut
+  supports climbs only while `h < BB_POLLEN_R·(1 − μ/√(1+μ²))` = **0.637** at μ 0.65; a tilted
+  box's outermost point is its end cap's TOP corner, at **0.713**. Measured on a real drive-in:
+  the chassis stalls 1.47 in short of flush, the POLLEN is driven 0.42 in onto the supports
+  (normals `(0.89, ±0.46, 0)`) and 0.054 in into the tiles, and its centre never rises.
+- **THE RAMP IS ONE LEVEL BLADE NOW** — `BB_RAMP_IN` 0.15 … `BB_RAMP_OUT` 3.54 past the tip line,
+  `BB_RAMP_FLOOR_Z` 0.40 under / `BB_RAMP_DECK_Z` 0.48 over, a 0.08-in sheet, rail to rail. A
+  tilted cap OVERHANGS and traps the ball (measured: no clear at a roller speed of 160 in/s); a
+  crest is pure cost, because everything the ball climbs the column climbs. **And the lip is
+  DRIVEN** (`rampRollerDrive`, `BB_RAMP_ROLLER_V` 50 in/s along the deck), because no passive
+  profile can do it: a ball met on its flank retreats 0.458 in onto the supports, the lip would
+  then need 1.541 in of reach and the same supports cap it at 1.156.
+- **`BB_RAMP_STALL_S`, `BB_RAMP_RELEASE_V` AND `RobotState.bbRampStallId/Since` ARE GONE.** The 3D
+  ramp gate is the ball's own height (`BB_RAMP_LIFT_Z` — its bottom above the ramp's underside,
+  which is above the plate's rim); the release is a RE-TAG IN PLACE and the intake's own extended
+  pull does the rest. `derive.ts` carries the other half: a `ground` element lifted clear of the
+  rim is not re-claimed into the tube.
+- **MEASURED (`scratch/rampsweep.ts`, real drive-ins, no teleports): 400 runs, 400 extracted**,
+  mean 0.40 s / p95 1.10 s from the ramp reaching the opening to the hopper; 100% at every column
+  height, approach angle and lateral offset. Forcing the height: h1 400/400, h4 400/400, **h8
+  398/400** — the compounding offset+angle corner, reported rather than papered over. DRAIN: a
+  full 8-column empties on one held stick in 1.25 s, 0.05–0.13 s per POLLEN after the first.
+- Checks: `flower3d.ts` (five representative drive-ins + the drain), `sim3d.ts` (the ramp's own
+  ground-capture sweep over 10 lateral offsets, intake on and off; the 30 in/s through-the-blade
+  probe re-pointed at the deck), `render.ts` (the drawn blade's lip/inboard end/UNDERSIDE pinned
+  to config). Screenshots: `scratch/shots/ramp2-down-side.png`, `scratch/shots/ramp2-down-open.png`.
+- ⚠️ **ANOTHER SESSION IS EDITING THIS WORKTREE** (`src/cosmetics.ts`, `graphics/freeCam.ts`,
+  `scene/renderCameras.ts`, `ui/*`, the hood constants). Nothing above touches those files.
+
 # HANDOFF — 2026-09-20d (alpha: hive tip trap, solid side rollers, ramp wedge (interim), ground beams, perched pollen, end plates, TEST SUITE 110 s → 25 s)
 
-**READ FIRST.** Gates on the final tree: `npm test` ALL PASS (2,090 shared + 3,541 biobuzz, **25 s wall**),
+**Earlier.** Gates on that tree: `npm test` ALL PASS (2,090 shared + 3,541 biobuzz, **25 s wall**),
 `build`, `server:check`, `uiaudit`, `docaudit`, `contrast`, `bundleaudit` (scene 210.2 KB gz, baseline
 raised 205.83 → 209.99 with the reason in the file), `dbtest`, `test:mm`. `dsim-alpha` redeployed.
 

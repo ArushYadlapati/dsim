@@ -11,6 +11,7 @@ import {
   subscribeCameraPref,
   type CameraPref,
 } from '../graphics/store';
+import { subscribeFreeCamReset } from '../graphics/freeCam';
 import {
   GFX_PRESETS,
   effectivePixelRatio,
@@ -187,7 +188,13 @@ class BiobuzzScene implements GameScene {
   private lastH = 1;
   private readonly projScratch = new THREE.Vector3();
   private lastCamera: SceneCamera = 'driver';
-  private dragging = false;
+  /** the viewAngle the LAST frame carried — what a free-cam reset (double-click, the HUD chip)
+   * frames against, since neither trigger has a `SceneFrame` of its own to read one from. */
+  private lastViewAngle = 0;
+  /** `null` while no drag is in flight; otherwise which gesture the pointer that went down is
+   * driving — orbit's own left-drag, or free cam's three (orbit/pan are separate buttons/
+   * modifiers there; dolly has no drag at all). */
+  private dragMode: 'orbit' | 'free-orbit' | 'free-pan' | null = null;
   private dragX = 0;
   private dragY = 0;
 
@@ -304,6 +311,9 @@ class BiobuzzScene implements GameScene {
       this.bindPointer();
       this.bindKeys();
       this.teardown.push(installViewKey());
+      // the HUD's "Reset view" chip (`GameView.tsx`) lives outside this scene entirely, so it
+      // reaches the free camera through the same signal the double-click gesture below uses.
+      this.teardown.push(subscribeFreeCamReset(() => this.cameras.freeReset(this.lastViewAngle)));
     }
   }
 
@@ -486,45 +496,95 @@ class BiobuzzScene implements GameScene {
   }
 
   /**
-   * ORBIT INPUT — drag to swing the turntable, wheel to zoom. MOUSE ONLY, and only while the
-   * orbit camera is the one on screen: a touch drag over the field is the driving control on a
-   * phone, and a wheel that swallowed the page's scroll on every other camera would be a
-   * regression for a view that has no zoom to give.
+   * ORBIT + FREE CAM INPUT — drag to swing the turntable or orbit/pan the free camera, wheel to
+   * zoom/dolly, double-click to reset the free camera. MOUSE ONLY throughout (`e.pointerType`),
+   * and every branch is gated on `this.lastCamera`, the RESOLVED camera the last frame actually
+   * rendered: a touch drag over the field is the driving control on a phone, a wheel that
+   * swallowed the page's scroll on every other camera would be a regression, and a listener that
+   * acted before the free camera was ever selected would fight the start-position editor and
+   * every ordinary canvas click (owner spec: "must be inert ... unless the 3D view is showing
+   * AND the camera is 'free'").
+   *
+   * These listeners go on `this.host` (`.game-viewport`), the SAME element orbit has always used
+   * — the 2D overlay canvas sits above the WebGL one and is what actually receives the pointer
+   * (`docs/area/biobuzz.md`'s BIOBUZZ 3D section), but it is a CHILD of `host`, so the pointer
+   * events bubble up to exactly this listener regardless of which canvas was hit.
    */
   private bindPointer(): void {
     const host = this.host;
     const onMove = (e: PointerEvent): void => {
-      if (!this.dragging) return;
-      this.cameras.orbitDrag(e.clientX - this.dragX, e.clientY - this.dragY);
+      if (!this.dragMode) return;
+      const dx = e.clientX - this.dragX;
+      const dy = e.clientY - this.dragY;
       this.dragX = e.clientX;
       this.dragY = e.clientY;
+      if (this.dragMode === 'orbit') this.cameras.orbitDrag(dx, dy);
+      else if (this.dragMode === 'free-orbit') this.cameras.freeOrbit(dx, dy);
+      else this.cameras.freePan(dx, dy);
     };
-    const endDrag = (): void => {
-      this.dragging = false;
+    const endDrag = (e: PointerEvent): void => {
+      if (this.dragMode) {
+        try {
+          host.releasePointerCapture(e.pointerId);
+        } catch {
+          /* capture was never taken, or the pointer is already gone — nothing to release */
+        }
+      }
+      this.dragMode = null;
     };
     const onDown = (e: PointerEvent): void => {
-      if (e.pointerType !== 'mouse' || e.button !== 0 || this.lastCamera !== 'orbit') return;
-      this.dragging = true;
+      if (e.pointerType !== 'mouse') return;
+      if (this.lastCamera === 'orbit' && e.button === 0) {
+        this.dragMode = 'orbit';
+      } else if (this.lastCamera === 'free' && (e.button === 0 || e.button === 2)) {
+        // right-drag OR shift+left-drag pans; a bare left-drag orbits.
+        this.dragMode = e.button === 2 || e.shiftKey ? 'free-pan' : 'free-orbit';
+      } else {
+        return;
+      }
       this.dragX = e.clientX;
       this.dragY = e.clientY;
+      try {
+        host.setPointerCapture(e.pointerId);
+      } catch {
+        /* an element that cannot capture still gets the window-level move/up below */
+      }
     };
     const onWheel = (e: WheelEvent): void => {
-      if (this.lastCamera !== 'orbit') return;
-      e.preventDefault();
-      this.cameras.orbitZoom(e.deltaY);
+      if (this.lastCamera === 'orbit') {
+        e.preventDefault();
+        this.cameras.orbitZoom(e.deltaY);
+      } else if (this.lastCamera === 'free') {
+        e.preventDefault();
+        this.cameras.freeDolly(e.deltaY);
+      }
+    };
+    // right-drag panning the free camera must not pop a context menu on release — but ONLY
+    // while the free camera is active, so an ordinary right-click elsewhere on the page (or on
+    // any other camera) is untouched.
+    const onContextMenu = (e: MouseEvent): void => {
+      if (this.lastCamera === 'free') e.preventDefault();
+    };
+    const onDblClick = (): void => {
+      if (this.lastCamera !== 'free') return;
+      this.cameras.freeReset(this.lastViewAngle);
     };
     host.addEventListener('pointerdown', onDown);
     window.addEventListener('pointermove', onMove);
     window.addEventListener('pointerup', endDrag);
     window.addEventListener('pointercancel', endDrag);
-    // `passive: false` or `preventDefault()` is ignored and the page scrolls under the zoom
+    // `passive: false` or `preventDefault()` is ignored and the page scrolls/zooms under it
     host.addEventListener('wheel', onWheel, { passive: false });
+    host.addEventListener('contextmenu', onContextMenu);
+    host.addEventListener('dblclick', onDblClick);
     this.teardown.push(() => {
       host.removeEventListener('pointerdown', onDown);
       window.removeEventListener('pointermove', onMove);
       window.removeEventListener('pointerup', endDrag);
       window.removeEventListener('pointercancel', endDrag);
       host.removeEventListener('wheel', onWheel);
+      host.removeEventListener('contextmenu', onContextMenu);
+      host.removeEventListener('dblclick', onDblClick);
     });
   }
 
@@ -596,6 +656,7 @@ class BiobuzzScene implements GameScene {
 
     this.lastW = Math.max(1, frame.width);
     this.lastH = Math.max(1, frame.height);
+    this.lastViewAngle = frame.viewAngle;
     this.lastCamera = this.resolvedCamera(frame.camera);
     const camera = this.cameras.update(frame, world, this.lastCamera);
 

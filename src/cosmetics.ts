@@ -11,7 +11,8 @@
  *
  * ── FOUR AXES, EVERY ONE A CLOSED SET OF KEYS ───────────────────────────────────────────────
  *   chassisColor  the chassis FILL (existing field)
- *   accent        the wheels / rollers fill; `'match'` = the chassis colour
+ *   accent        the DRIVE wheels / intake rollers fill; `'match'` = the chassis colour. Never
+ *                 the shooter: a flywheel is black in both games (owner, 2026-09-21)
  *   decal         a vector shape drawn over the fill, under the alliance outline
  *   plate         a frame drawn AROUND the sign placard — the placard's own fill stays alliance
  * The KEY goes over the wire and into replays, never a hex, a path or an image: the wire never

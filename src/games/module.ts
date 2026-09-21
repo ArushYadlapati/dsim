@@ -392,8 +392,13 @@ export interface GameDevRoute {
  * A scene that cannot honour one falls back rather than throwing — `chase` with no
  * `localRobotId` (a spectator, a replay of someone else's match) has nothing to chase, and
  * BIOBUZZ's scene renders `overhead` instead.
+ *
+ * `free` (owner, 2026-09-21) is a fifth, MOUSE-DRIVEN camera reached the same way as `chase`/
+ * `orbit` — never picked by a controller, only through the device's camera preference or an
+ * explicit export choice. Its own state (`src/games/biobuzz/graphics/freeCam.ts`) lives outside
+ * `three` entirely, which is what lets it be unit-tested with no GPU.
  */
-export type SceneCamera = 'driver' | 'overhead' | 'chase' | 'orbit';
+export type SceneCamera = 'driver' | 'overhead' | 'chase' | 'orbit' | 'free';
 
 /**
  * The HUD's OCCUPIED BANDS over the render surface, in CSS pixels, measured off the live DOM

@@ -1,5 +1,5 @@
 import type { Alliance, World } from '../../../types';
-import { BB3_CELL_SEAT_DEPTH, BB3_REST_SPEED, BB3_REST_TICKS, BB_POLLEN_R } from '../config';
+import { BB3_CELL_SEAT_DEPTH, BB3_REST_SPEED, BB3_REST_TICKS, BB_POLLEN_R, BB_RAMP_LIFT_Z } from '../config';
 import { hiveTakingSide } from '../hive';
 import { hiveTiltAngle, insideCell } from './hive3d';
 import { flowerTubeOf } from './flowerTube';
@@ -208,7 +208,23 @@ export function deriveTick(world: World, engine: Engine3d): void {
     // A FLOWER TUBE, tested SECOND. A tube has one way in and no way out but the retrieval
     // opening, so an element inside it is in it, with no entry margin at all -- unlike a cell,
     // whose open top a shot can graze across (see `BB3_CELL_SEAT_DEPTH` above).
-    if (!tagged) {
+    /**
+     * ⚠️ **AN ELEMENT LIFTED CLEAR OF THE BORE IS ON THE ROBOT, NOT IN THE TUBE.**
+     * `flowerTubeOf` is a bare 2.086-in radius from the flower's own axis, and a POLLEN standing
+     * on a deployed `ramp`'s DECK is still well inside it — measured, dead on the axis, 0.525 in
+     * up (`BB_RAMP_DECK_Z`). Without this the retrieval's own release would be undone on the very
+     * next tick, invisibly, and the rollers would never get a `ground` element to draw in.
+     *
+     * The test is a fact about the tube, not about the robot: inside it a POLLEN rests on the
+     * TILES (bottom 0) or on the element under it (bottom ≥ 2·BB_POLLEN_R), and the lower plate's
+     * own 0.354 rim carries a NECTAR, which is `element`-tagged from the moment it was placed and
+     * so never reaches this line. Only a `ground` element can be hovering here, and the only thing
+     * it can be standing on is hardware a robot drove in through the opening. A PLACED element
+     * falling down the tube is tagged `element` the tick it is dropped and stays tagged; a shot
+     * arriving from outside is `flight` until it lands, and it lands on the tiles or the column.
+     */
+    const liftedOut = b.state.kind === 'ground' && b.z >= BB_RAMP_LIFT_Z;
+    if (!tagged && !liftedOut) {
       const i = flowerTubeOf(b.pos.x, b.pos.y, centreZ);
       if (i !== null && i < flowerIds.length) {
         b.state = { kind: 'element', el: `flower:${i}`, slot: 0 }; // `slot` is set below, by z

@@ -244,7 +244,7 @@ export function drawBiobuzzRobot(
     const pollen = r.hopper.some((c) => c === 'yellow');
     const nectar = r.hopper.some((c) => c === 'red' || c === 'blue');
     if (launcher.kind === 'twinturret') {
-      drawTurret(ctx, r, launcher.mount, r.turretHeading, r.bbTurretPitch ?? 0, pollen, null, accent);
+      drawTurret(ctx, r, launcher.mount, r.turretHeading, r.bbTurretPitch ?? 0, pollen, null);
       drawTurret(
         ctx,
         r,
@@ -253,10 +253,9 @@ export function drawBiobuzzRobot(
         r.bbTurret2Pitch ?? 0,
         nectar,
         color,
-        accent,
       );
     } else {
-      drawTurret(ctx, r, launcher.mount, r.turretHeading, r.bbTurretPitch ?? 0, loaded, null, accent);
+      drawTurret(ctx, r, launcher.mount, r.turretHeading, r.bbTurretPitch ?? 0, loaded, null);
     }
   }
 }
@@ -504,11 +503,10 @@ function drawTurret(
   heading: number,
   pitchRad: number,
   live: boolean,
-  /** the NECTAR turret's alliance rim colour (`null` for a POLLEN-only or single turret) —
-   * unrelated to the cosmetic accent below; see the JSDoc on the call site. */
+  /** the NECTAR turret's alliance rim colour (`null` for a POLLEN-only or single turret). It is
+   * the only colour this head takes: the cosmetic accent used to tint the flywheel here and no
+   * longer reaches the shooter at all (owner, 2026-09-21: "keep the flywheel black"). */
   nectarAccent: string | null,
-  /** the cosmetic accent (`accentFill(spec.accent, spec.chassisColor)`) — tints the flywheel. */
-  cosmeticAccent: string,
 ): void {
   const ring = turretRadius(r.spec);
   const local = turretLocal(r.spec, pos);
@@ -608,10 +606,14 @@ function drawTurret(
 
   // THE FLYWHEEL, spanning the channel on its axle: the element is pinched between it and the
   // opposite plate, so it sits ON the centreline.
+  //
+  // ⚠️ `RUBBER_HI`, NOT THE ACCENT — `tintColor(RUBBER_HI, RUBBER_HI, …)` is RUBBER_HI, so this is
+  // the bare crown every build had before cosmetics. The flywheel is BLACK whatever the accent
+  // (owner, 2026-09-21); the intake rollers above still take it.
   ctx.save();
   ctx.translate(wheelX, 0);
   ctx.rotate(Math.PI / 2); // drawRoller lays its barrel along local y; the axle runs across
-  drawRoller(ctx, 0, gap / 2 - 0.35, 1.5, live, cosmeticAccent, 1.2);
+  drawRoller(ctx, 0, gap / 2 - 0.35, 1.5, live, RUBBER_HI, 1.2);
   ctx.restore();
 
   // the exit, and the running accent: a short bar across the channel at the muzzle line

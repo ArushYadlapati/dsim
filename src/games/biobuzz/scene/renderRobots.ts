@@ -21,25 +21,19 @@ import {
   BB_FEED_WALL_T,
   BB_FLYWHEEL_R,
   bbHead,
-  BB_HOOD_ARM_INSET,
-  BB_HOOD_ARM_T,
+  BB_HOOD_SIDE_CLEAR,
   BB_HOOD_T,
   BB_HOOD_WRAP,
   BB_INTAKE_DRAW_IN,
   BB_LAUNCH_Z0,
   BB_RAMP_ANGLE,
-  BB_RAMP_CREST_OUT,
-  BB_RAMP_CREST_Z,
   BB_RAMP_DEPLOY_S,
-  BB_RAMP_DROP_OUT,
-  BB_RAMP_DROP_Z,
+  BB_RAMP_DECK_Z,
+  BB_RAMP_IN,
   BB_RAMP_L,
-  BB_RAMP_LEAD_Z,
   BB_RAMP_OUT,
   BB_RAMP_PIVOT_BACK,
   BB_RAMP_PIVOT_Z,
-  BB_RAMP_WEDGE_DROP_ANGLE,
-  BB_RAMP_WEDGE_RISE_ANGLE,
   BB_RAMP_WEDGE_THICK,
   BB_SIDE_PLATE_BOTTOM_Z,
   BB_SIDE_PLATE_FRONT_X,
@@ -742,6 +736,9 @@ const BB_TOP_CAP_W = BB_PLATE_T + 0.5;
  * needs to change"). The header here CLAIMED the deck carried it; the code put the deck in the
  * structural part, and the comment on that line said so explicitly.
  *
+ * ⚠️ 2026-09-21: THE DECK IS FULL-FOOTPRINT NOW (owner ruling — see the deck line below); the
+ * paragraph that follows is the history of why it used to be inset.
+ *
  * That line's reason was real: a full-width coloured deck plus coloured plates "turned the top of
  * the robot back into one flat slab". What answers BOTH is that the deck is INSET — it is
  * `length − 2.47` by `innerHW × 2` (12.32 in on a 17-in chassis), framed on every side by the
@@ -789,18 +786,27 @@ export function buildFrame(spec: RobotSpec): THREE.Object3D[] {
         boxAt(spec.length, BB_TOP_CAP_W, BB_TOP_CAP_T, 0, sy * (hw - BB_TOP_CAP_W / 2), BB_PLATE_H + BB_TOP_CAP_T / 2),
       );
     }
-    // THE DECK — the polycarb floor mechanisms bolt to, and the biggest surface a top-down camera
-    // sees. COSMETIC (see the header): it is inset from the frame line on every side, so it reads
-    // as a coloured panel inside a dark frame rather than as the one flat slab the full-width
-    // version was.
-    parts.push(boxAt(spec.length - BB_RAIL_T * 2.6, innerHW * 2, 0.26, 0, 0, BB_DECK_Z - 0.13));
+    // THE DECK — the top plate mechanisms bolt to, and the biggest surface a top-down camera sees.
+    // ⚠️ IT COVERS THE WHOLE CHASSIS, WHEELS INCLUDED (owner, 2026-09-21: "make the robot's chassis
+    // top plate cover the wheels too (so essentially the plate covers the whole chassis)"). It was
+    // INSET — `length − 2.47` by the inner channel — to avoid "one flat slab", which left the wheel
+    // pockets open from above; that ruling is reversed. Every wheel and pod already lives under
+    // `BB_DECK_Z − 0.26` (the pod stack is derived from it), so nothing pokes through the lid.
+    parts.push(boxAt(spec.length, spec.width, 0.26, 0, 0, BB_DECK_Z - 0.13));
     return parts;
   });
   const frame = framePart(`frame:${key}`, () => {
     const parts: THREE.BufferGeometry[] = [];
-    // CROSS MEMBERS, front and rear, tying the two side assemblies together at deck level
+    // CROSS MEMBERS, front and rear, tying the two side assemblies together under the deck.
+    // ⚠️ SET BACK BEHIND THE END PLATES AND BELOW THE DECK'S UNDERSIDE (owner, 2026-09-21: "something
+    // with the back plate must be meshing because it is glitching"). They used to end flush on the
+    // chassis end (outer face at ±hl) with their top at `BB_DECK_Z` — exactly the END PLATE's outer
+    // face and the full-footprint DECK's top face, in a different material, which is per-pixel
+    // z-fighting on both planes. One plate thickness in and one deck thickness down shares no face.
     for (const sx of [1, -1] as const) {
-      parts.push(boxAt(BB_RAIL_T, hw * 2 - BB_PLATE_T * 2, BB_RAIL_T, sx * (hl - BB_RAIL_T / 2), 0, BB_DECK_Z - BB_RAIL_T / 2));
+      parts.push(
+        boxAt(BB_RAIL_T, hw * 2 - BB_PLATE_T * 2, BB_RAIL_T, sx * (hl - BB_PLATE_T - BB_RAIL_T / 2), 0, BB_DECK_Z - 0.26 - BB_RAIL_T / 2),
+      );
     }
     // BELLY PAN — thin, low, spanning the inner channel
     parts.push(boxAt(spec.length - BB_RAIL_T * 2.6, innerHW * 2, 0.22, 0, 0, 0.85));
@@ -1579,8 +1585,11 @@ export function buildIntake(
       pivot.add(wedgeGroup);
       const wedgeSegment = (u0: number, z0: number, u1: number, z1: number, worldAngle: number, tag: string): void => {
         const length = Math.hypot(u1 - u0, z1 - z0);
-        const uMid = (u0 + u1) / 2;
-        const zMid = (z0 + z1) / 2;
+        // ⚠️ the two points are the ramp's TOP SURFACE and the box HANGS BELOW them — the same
+        // rule (and the same arithmetic) as `sim3d/bodies.ts`'s `rampWedgeSegment`, which is what
+        // makes `BB_RAMP_FLOOR_Z` the drawn underside too. The RENDER lane pins both to config.
+        const uMid = (u0 + u1) / 2 + (BB_RAMP_WEDGE_THICK * (z1 - z0)) / length;
+        const zMid = (z0 + z1) / 2 - (BB_RAMP_WEDGE_THICK * (u1 - u0)) / length;
         // mouth-frame (u, z), relative to the pivot (`u = tip − BB_RAMP_PIVOT_BACK` local-x-wise),
         // rotated by `−θ_full` into the pivot's own UN-rotated ("folded") local frame — the inverse
         // of the same rotation this docstring's derivation above applies forward.
@@ -1599,8 +1608,7 @@ export function buildIntake(
         mesh.rotation.y = worldAngle - thetaFull;
         wedgeGroup.add(mesh);
       };
-      wedgeSegment(BB_RAMP_CREST_OUT, BB_RAMP_CREST_Z, BB_RAMP_OUT, BB_RAMP_LEAD_Z, BB_RAMP_WEDGE_RISE_ANGLE, 'rise');
-      wedgeSegment(BB_RAMP_DROP_OUT, BB_RAMP_DROP_Z, BB_RAMP_CREST_OUT, BB_RAMP_CREST_Z, -BB_RAMP_WEDGE_DROP_ANGLE, 'drop');
+      wedgeSegment(BB_RAMP_IN, BB_RAMP_DECK_Z, BB_RAMP_OUT, BB_RAMP_DECK_Z, 0, 'deck');
 
       // the pivot BRACKET is fixed to the chassis (it does not rotate with the ramp) — a short
       // strap hanging from each side arm's own rail down to the pivot axle
@@ -1845,15 +1853,18 @@ function roundedRect<T extends THREE.Path>(p: T, x0: number, x1: number, halfW: 
 function buildHoodNode(H: BbHeadDims, which: 0 | 1): THREE.Group {
   const pitch = new THREE.Group();
   const halfW = H.elemR;
-  // a cheek's lateral width is DERIVED, not chosen: the channel's half, less the inset from the
-  // side plate's inner face, less the hood. 0.09 in on EITHER head — a sheet-metal cheek.
+  // a cheek's lateral width is DERIVED, not chosen: the channel's half, less `BB_HOOD_SIDE_CLEAR`
+  // from the side plate's inner face, less the hood. 0.07 in on EITHER head — 14-gauge sheet. The
+  // cheeks are the WIDEST thing on this node, so that one constant is the whole hood's clearance
+  // to each plate, at every elevation (owner, 2026-09-21: "it should be inside, with a very slight
+  // gap" — it was 0.06, which reads as touching).
   //
   // ⚠️ **THE CHEEK'S INBOARD FACE IS THE CHANNEL WALL, AND THAT IS WHY IT MAY CROSS THE ELEMENT'S
   // PATH.** An element is a SPHERE: at lateral offset `elemR` its cross-section is a point, so a
   // member that starts there sweeps no volume the element occupies, at any radius and any angle.
   // That is the only reason a SOLID sector can run from the axle out to the hood — in the x–z
   // PROJECTION there is no such path, because the element fills it.
-  const armW = H.plateGap / 2 - BB_HOOD_ARM_INSET - halfW;
+  const armW = H.plateGap / 2 - BB_HOOD_SIDE_CLEAR - halfW;
   const armHubR = 0.75;
   const thFeed = TH_EXIT + BB_HOOD_WRAP;
 
@@ -1869,29 +1880,19 @@ function buildHoodNode(H: BbHeadDims, which: 0 | 1): THREE.Group {
   // THE TWO CHEEKS — see the header. One merged part per side; the key carries the side, because
   // the two are mirror images and a shared buffer would put both on one.
   //
-  // The LIGHTENING BORE is what keeps a solid sector reading as a machined bracket rather than a
-  // slab. It sits half way out the sector and is sized off the sector's OWN half-chord there less
-  // one `BB_HOOD_ARM_T`, so whatever the head, the web left at each radial edge is exactly an
-  // arm's thickness and the rim and the apex come out the same width as each other.
+  // ⚠️ A SOLID SECTOR, NO LIGHTENING BORE (owner, 2026-09-21: "the shooter's parallel plate should
+  // not be split in a half (there shouldn't be a hole for the hood)"). The side plates were never
+  // cut — what read as a holed, split plate was THIS arm: a dark sector with a big round bore,
+  // standing above the light plate 0.06 in off its face. The bore is gone; the arm is a plain
+  // bracket between the plate and the wheel.
   for (const s of [1, -1] as const) {
     const y0 = s * (halfW + armW / 2);
     const cheekGeo = framePart(`hoodCheek:${which}:${s}`, () => {
       const rOut = H.hoodR + BB_HOOD_T;
-      const holeR = (rOut + armHubR) / 2;
       const shape = new THREE.Shape();
       shape.absarc(0, 0, rOut, TH_EXIT, thFeed, false);
       shape.lineTo(0, 0);
       shape.closePath();
-      const bore = new THREE.Path();
-      bore.absarc(
-        Math.cos(TH_EXIT + BB_HOOD_WRAP / 2) * holeR,
-        Math.sin(TH_EXIT + BB_HOOD_WRAP / 2) * holeR,
-        holeR * Math.sin(BB_HOOD_WRAP / 2) - BB_HOOD_ARM_T,
-        0,
-        Math.PI * 2,
-        true,
-      );
-      shape.holes.push(bore);
       const sector = new THREE.ExtrudeGeometry(shape, { depth: armW, bevelEnabled: false, curveSegments: 24 });
       sector.rotateX(Math.PI / 2);
       sector.translate(0, y0 + armW / 2, 0);
@@ -1928,8 +1929,13 @@ function buildHoodNode(H: BbHeadDims, which: 0 | 1): THREE.Group {
  * (θ, r) read off as (cos θ · r, sin θ · r) with no frame shift to get wrong. `head` is the YAW
  * node on the rotation axis, and the only things built in it are the two parts centred on that
  * axis: the turret plate and its feed slot.
+ *
+ * ⚠️ **NO `accent` ARGUMENT, AND THAT IS THE OWNER'S "keep the flywheel black"** (2026-09-21).
+ * The 2026-09-20 cosmetics pass tinted the tyre here; nothing on the shooter takes the accent now,
+ * so the parameter is gone rather than left dead. The DRIVE wheels and the intake rollers still
+ * take it — see `buildWheels`/`buildIntake`.
  */
-function addFixedShooter(head: THREE.Group, axle: THREE.Group, H: BbHeadDims, which: 0 | 1, accent: string = SWEEPER): void {
+function addFixedShooter(head: THREE.Group, axle: THREE.Group, H: BbHeadDims, which: 0 | 1): void {
   // ── THE TURRET PLATE, ON THE SLEW RING, CUT THROUGH FOR THE FEED ──────────────────────────
   // ⚠️ THE SLOT IS THE POINT. The element comes up the rotation axis, through the ring bearing's
   // bore and through this plate, which is what makes the feed path something you can see rather
@@ -1951,6 +1957,12 @@ function addFixedShooter(head: THREE.Group, axle: THREE.Group, H: BbHeadDims, wh
   // SOLID, not a band with a bore: a side plate is what the flywheel is JOURNALLED in, and the
   // bare annulus an earlier band left between its hub and its rim is what made the wheel read as
   // unconstrained. Everywhere the flat top does not cut it, the plate is behind the wheel's rim.
+  //
+  // ⚠️ **ONE PIECE, NO SLOT AND NO HOOD-SHAPED HOLE** (owner, 2026-09-21: "the shooter's parallel
+  // plate should not be split in a half (there shouldn't be a hole for the hood)"). One outline,
+  // no `shape.holes`, one extrusion — measured, 1 connected component, 0 boundary loops, χ=2, so
+  // genus 0. The hood never needed a slot: its arms pivot on the axle INSIDE the channel,
+  // `BB_HOOD_SIDE_CLEAR` clear of this face. `hoodPlateChecks` pins all of it.
   const sideGeo = framePart(`shooterSidePlate:${which}`, () => {
     const angles: number[] = [];
     const N = 480;
@@ -1985,8 +1997,12 @@ function addFixedShooter(head: THREE.Group, axle: THREE.Group, H: BbHeadDims, wh
   // file's either — the axle node carries `axleX`, and that is what puts the first contact on the
   // turret's own rotation axis. Its LATERAL position is y = 0, dead centre of the channel: see
   // `BB_FLYWHEEL_W_FRAC` for the owner report that is.
+  //
+  // ⚠️ AND ITS COLOUR IS `SWEEPER`, FLAT, WHATEVER THE COSMETICS SAY (owner, 2026-09-21: "keep the
+  // flywheel black"). It was `tint3d(SWEEPER, accent, 0.5)` for one day; a magenta accent made the
+  // one part of the machine that is obviously a compliant tyre read as painted plastic.
   const fwW = H.elemR * 2 * BB_FLYWHEEL_W_FRAC;
-  const wheel = new THREE.Mesh(wheelGeometry(BB_FLYWHEEL_R, fwW), solidMat(tint3d(SWEEPER, accent, 0.5), 0.45, 0.2));
+  const wheel = new THREE.Mesh(wheelGeometry(BB_FLYWHEEL_R, fwW), solidMat(SWEEPER, 0.45, 0.2));
   wheel.name = 'bb-turret-flywheel';
   axle.add(cast(wheel));
   // the HUB inside it, and a spacer collar each side — a wheel on a shaft rather than a puck
@@ -2155,14 +2171,7 @@ function addFixedShooter(head: THREE.Group, axle: THREE.Group, H: BbHeadDims, wh
  * the bug. It is not imported anywhere in `src/` — `buildRobotGroup` below is still the one
  * generator the match and the builder share.
  */
-export function buildTurret(
-  spec: RobotSpec,
-  mountPos: BbMountPos,
-  which: 0 | 1 = 0,
-  /** the cosmetic accent — tints the flywheel. Defaults to `SWEEPER`, a no-op, so this lane's
-   * own no-argument calls are unchanged. */
-  accent: string = SWEEPER,
-): THREE.Group {
+export function buildTurret(spec: RobotSpec, mountPos: BbMountPos, which: 0 | 1 = 0): THREE.Group {
   const group = new THREE.Group();
   const H = bbHead(which);
   const ring = turretRadius(spec);
@@ -2199,7 +2208,7 @@ export function buildTurret(
   const axle = new THREE.Group();
   axle.name = 'bb-turret-axle';
   axle.position.set(H.axleX, 0, BB_TURRET_AXLE_Z - BB_DECK_Z);
-  addFixedShooter(head, axle, H, which, accent);
+  addFixedShooter(head, axle, H, which);
 
   const pitch = buildHoodNode(H, which);
   pitch.name = 'bb-turret-pitch';
@@ -2378,8 +2387,8 @@ export function buildRobotGroup(spec: RobotSpec, id: number, alliance: Alliance)
   // decal key × accent colour. `'none'` adds no node, matching a default-cosmetic build's node
   // set byte-for-byte. It sits a hair above the deck's own top face so it never z-fights it.
   if (cosm.decal !== 'none') {
-    const deckL = spec.length - BB_RAIL_T * 2.6;
-    const deckW = innerHalfWidth(spec) * 2;
+    const deckL = spec.length; // the deck is the whole footprint (2026-09-21)
+    const deckW = spec.width;
     const decalTex = getDecalTexture(cosm.decal, accent, deckL / deckW);
     const decalMat = new THREE.MeshStandardMaterial({ map: decalTex, roughness: 0.7, transparent: true });
     const decal = new THREE.Mesh(new THREE.BoxGeometry(deckL, deckW, 0.02), decalMat);
@@ -2427,7 +2436,7 @@ export function buildRobotGroup(spec: RobotSpec, id: number, alliance: Alliance)
   const heads: THREE.Group[] = [];
   const pitches: THREE.Group[] = [];
   if (bbIsTurreted(launcher)) {
-    const t0 = buildTurret(spec, launcher.mount, 0, accent);
+    const t0 = buildTurret(spec, launcher.mount, 0);
     group.add(t0);
     heads.push(t0.userData.head as THREE.Group);
     pitches.push(t0.userData.pitch as THREE.Group);
@@ -2435,7 +2444,7 @@ export function buildRobotGroup(spec: RobotSpec, id: number, alliance: Alliance)
       // ⚠️ `1`, AND IT IS NOT A LABEL. Turret 1 is the NECTAR exit (`bbTurretFor`), and a NECTAR
       // is 3.6 in where a POLLEN is 2.8 — so this head is built to a different dimension set and
       // releases from a different muzzle, which is the sim's own answer too.
-      const t1 = buildTurret(spec, launcher.mount2, 1, accent);
+      const t1 = buildTurret(spec, launcher.mount2, 1);
       group.add(t1);
       heads.push(t1.userData.head as THREE.Group);
       pitches.push(t1.userData.pitch as THREE.Group);

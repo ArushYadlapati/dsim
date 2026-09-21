@@ -1248,7 +1248,7 @@ export function ReplayView({
                     <div className="ds-dl-row">
                       <span className="rl">Camera</span>
                       <div className="ds-dl-seg">
-                        {(['driver', 'chase', 'orbit'] as const).map((c) => (
+                        {(['driver', 'chase', 'orbit', 'free'] as const).map((c) => (
                           <button
                             key={c}
                             className={exportCam === c ? 'on' : ''}

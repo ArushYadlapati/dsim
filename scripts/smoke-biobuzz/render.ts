@@ -92,20 +92,19 @@ import {
   BB_FLYWHEEL_D_MM,
   BB_FLYWHEEL_R,
   bbHead,
-  BB_HOOD_ARM_INSET,
   BB_HOOD_ARM_T,
+  BB_HOOD_SIDE_CLEAR,
   BB_HOOD_T,
   BB_HOOD_WRAP,
   BB_INTAKE_THROAT_FRAC,
   BB_LAUNCH_Z0,
   BB_RAMP_ANGLE,
-  BB_RAMP_CREST_OUT,
-  BB_RAMP_CREST_Z,
   BB_RAMP_DEPLOY_S,
-  BB_RAMP_DROP_OUT,
-  BB_RAMP_DROP_Z,
+  BB_RAMP_DECK_Z,
+  BB_RAMP_WEDGE_THICK,
+  BB_RAMP_FLOOR_Z,
+  BB_RAMP_IN,
   BB_RAMP_L,
-  BB_RAMP_LEAD_Z,
   BB_RAMP_OUT,
   BB_RAMP_PIVOT_BACK,
   BB_RAMP_TIP_Z,
@@ -156,7 +155,7 @@ import {
   endWheelSpanY,
 } from '../../src/games/biobuzz/scene/renderRobots';
 import { lengthLimits } from '../../src/sim/drivetrain';
-import { bbMouthFrame } from '../../src/games/biobuzz/mounts';
+import { bbMouthFrame, turretLocal, type BbMountPos } from '../../src/games/biobuzz/mounts';
 import { bbMuzzleLocal } from '../../src/games/biobuzz/robot';
 import { INTAKE_RAIL_T } from '../../src/config';
 import { BB_DEFAULT_SPEC } from '../../src/games/biobuzz/coerce';
@@ -165,6 +164,20 @@ import { bbSpecKey } from '../../src/games/biobuzz/specKey';
 import { SHOT, SHOT_ARC_MAX, shotArc, solveShotPath } from '../../src/games/biobuzz/shotPath';
 import { drawBiobuzzShotPath } from '../../src/games/biobuzz/drawShot';
 import { CAMERA_PREFS, getCameraPref, resolveSceneCamera } from '../../src/games/biobuzz/graphics/store';
+import {
+  clampFreeCam,
+  defaultFreeCam,
+  dollyFreeCam,
+  freeCamPose,
+  orbitFreeCam,
+  panFreeCam,
+  FREE_CAM_DIST_MAX,
+  FREE_CAM_DIST_MIN,
+  FREE_CAM_PITCH_MAX,
+  FREE_CAM_PITCH_MIN,
+  type FreeCamState,
+} from '../../src/games/biobuzz/graphics/freeCam';
+import { viewAngleOf } from '../../src/sim/field';
 import {
   GFX_PIXEL_BUDGET,
   GFX_PRESETS,
@@ -1086,8 +1099,8 @@ export function renderChecks(check: Check): void {
   {
     const moduleSrc = readFileSync(join(root, 'src', 'games', 'module.ts'), 'utf8');
     check(
-      "SceneCamera carries all four cameras ('driver' | 'overhead' | 'chase' | 'orbit')",
-      /export type SceneCamera[^;]*'driver'[^;]*'overhead'[^;]*'chase'[^;]*'orbit'/s.test(moduleSrc),
+      "SceneCamera carries all five cameras ('driver' | 'overhead' | 'chase' | 'orbit' | 'free')",
+      /export type SceneCamera[^;]*'driver'[^;]*'overhead'[^;]*'chase'[^;]*'orbit'[^;]*'free'/s.test(moduleSrc),
     );
     check(
       'GameScene declares the optional project() hook (the 3D overlay’s only way to place a label)',
@@ -1117,7 +1130,7 @@ export function renderChecks(check: Check): void {
       'every non-auto camera preference is a real SceneCamera',
       CAMERA_PREFS[0] === 'auto' &&
         CAMERA_PREFS.slice(1).every((p) => moduleSrc.includes(`'${p}'`)) &&
-        CAMERA_PREFS.length === 5,
+        CAMERA_PREFS.length === 6,
       CAMERA_PREFS.join('|'),
     );
     /**
@@ -1162,6 +1175,8 @@ export function renderChecks(check: Check): void {
   hudBandChecks(check);
   cosmeticsChecks(check);
   endPlateChecks(check);
+  hoodPlateChecks(check);
+  freeCamChecks(check);
 }
 
 /**
@@ -1204,20 +1219,47 @@ function cosmeticsChecks(check: Check): void {
     check('buildIntake WITH an accent tints the roller hub away from bare SWEEPER', tinted !== undefined && tinted !== '12161c', String(tinted));
   }
 
-  // ---- buildTurret: the flywheel tints with the accent; default is the same no-op -------------
+  // ---- buildTurret: THE FLYWHEEL IS BLACK, AND NO ACCENT REACHES IT ---------------------------
+  //
+  // ⚠️ THIS PAIR SAID THE OPPOSITE FOR ONE DAY. The 2026-09-20 cosmetics pass tinted the tyre and
+  // these checks asserted the tint; the owner reversed it on 2026-09-21 ("keep the flywheel
+  // black"), so `buildTurret` has no `accent` parameter at all any more — a dead one would be the
+  // next pass's temptation to re-wire it. What is left is the fact, measured off the material the
+  // mesh actually carries, under three different accents rather than one.
   {
-    const flywheelHex = (accent?: string): string | undefined => {
-      const t = accent === undefined ? buildTurret(BB_DEFAULT_SPEC, 'center') : buildTurret(BB_DEFAULT_SPEC, 'center', 0, accent);
+    const flywheelHex = (): string | undefined => {
+      const t = buildTurret(BB_DEFAULT_SPEC, 'center');
       let mesh: THREE.Mesh | undefined;
       t.traverse((o) => {
         if (o.name === 'bb-turret-flywheel') mesh = o as THREE.Mesh;
       });
       return (mesh?.material as THREE.MeshStandardMaterial | undefined)?.color.getHexString();
     };
-    const bare = flywheelHex();
-    check('buildTurret with no accent argument keeps the flywheel at bare SWEEPER (no regression)', bare === '12161c', String(bare));
-    const tinted = flywheelHex('#3b82f6');
-    check('buildTurret WITH an accent tints the flywheel away from bare SWEEPER', tinted !== undefined && tinted !== '12161c', String(tinted));
+    check('buildTurret keeps the flywheel at bare SWEEPER black', flywheelHex() === '12161c', String(flywheelHex()));
+    check(
+      'buildTurret takes NO accent argument — the cosmetic cannot reach the flywheel from anywhere',
+      /export function buildTurret\(spec: RobotSpec, mountPos: BbMountPos, which: 0 \| 1 = 0\): THREE\.Group/.test(
+        readFileSync(join(root, 'src', 'games', 'biobuzz', 'scene', 'renderRobots.ts'), 'utf8'),
+      ),
+    );
+    const robotsSrc = readFileSync(join(root, 'src', 'games', 'biobuzz', 'scene', 'renderRobots.ts'), 'utf8');
+    check(
+      '...and the wheel mesh is built on a FLAT SWEEPER, not a tint3d of it',
+      robotsSrc.includes('wheelGeometry(BB_FLYWHEEL_R, fwW), solidMat(SWEEPER, 0.45, 0.2)'),
+    );
+    // the 2D sprites make the same promise, in both games — one `drawRoller` call each, and the
+    // accent is not what they hand it
+    for (const [game, file] of [
+      ['biobuzz', join(root, 'src', 'games', 'biobuzz', 'drawRobot.ts')],
+      ['chain', join(root, 'src', 'games', 'chain', 'drawRobot.ts')],
+    ] as const) {
+      const src = readFileSync(file, 'utf8');
+      check(
+        `${game}'s 2D turret draws its flywheel on RUBBER_HI, never the cosmetic accent`,
+        src.includes('drawRoller(ctx, 0, gap / 2 - 0.35, 1.5, live, RUBBER_HI, 1.2)') ||
+          src.includes('drawRoller(ctx, 0, gap / 2 - 0.35, 1.5, loaded, RUBBER_HI, 1.2)'),
+      );
+    }
   }
 
   // ---- buildSwervePod: the tyre tints with the accent; default is the same no-op -------------
@@ -1449,6 +1491,399 @@ function endPlateChecks(check: Check): void {
       const box = new THREE.Box3().setFromObject(p);
       check(`endplate-height: ${p.name} runs from the floor up (hides the wheel, not just the top of it)`, box.min.z <= 1e-6, `plate z bottom ${box.min.z.toFixed(3)}`);
     }
+  }
+}
+
+/**
+ * THE HOOD IS INSIDE THE PLATES, AND A SIDE PLATE IS ONE PIECE (owner, 2026-09-21).
+ *
+ * Two sentences: "the shooter's hood meshes with the shooter's parallel plates. It should be
+ * inside, with a very slight gap", and "the shooter's parallel plate should not be split in a half
+ * (there shouldn't be a hole for the hood)".
+ *
+ * ⚠️ **NEITHER WAS EVER TRUE OF THE GEOMETRY, AND THAT IS EXACTLY WHY THEY GO IN A CHECK.**
+ * Measured on the built group before the change: the arc sat 0.150 clear of each plate's inner
+ * face and the arms 0.060, a triangle-AABB sweep of every moving mesh against every fixed one over
+ * 41 elevations found only the arms' own pivot boss on the SHAFT it is journalled on, and the side
+ * plate was already one extrusion of one outline — 1 component, 0 boundary loops, χ=2. What was
+ * wrong was that 0.060 is invisible: an arm that close to a plate READS as part of it, and the
+ * arm's lightening bore then reads as a hole in the plate. So the clearance is one named constant
+ * now (`BB_HOOD_SIDE_CLEAR`, 0.08), it is the same on both sides at every elevation, and the
+ * plate's topology is pinned rather than left to nobody cutting a slot in it later.
+ *
+ * The interpenetration test is triangle-AABB, which is CONSERVATIVE: an axis-aligned box contains
+ * its triangle, so zero box overlaps is a proof of zero interpenetration (the converse does not
+ * hold, which is why the two documented contacts are exempted by NAME and not by a tolerance).
+ */
+function hoodPlateChecks(check: Check): void {
+  const DEG = Math.PI / 180;
+  // the four the owner's report names, in the order the release table in `config.ts` lists them
+  const PITCHES: readonly [string, number][] = [
+    ['min', BB_TURRET_PITCH_MIN],
+    ['default', BB_TURRET_PITCH_MIN],
+    ['57.6°', 57.6 * DEG],
+    ['80° cap', BB_TURRET_PITCH_MAX],
+  ];
+  // every launcher this builder can make a HOOD for: the single turret's head, and the double's
+  // two. The MOUNT is a rigid translation of the whole group (`group.position`), so it cannot
+  // change a hood-to-plate relationship — it is swept anyway, cheaply, so that stays a measurement.
+  const HEADS: readonly [string, 0 | 1, BbMountPos][] = [
+    ['single turret', 0, 'center'],
+    ['double turret head 0', 0, 'left'],
+    ['double turret head 1', 1, 'right'],
+  ];
+
+  for (const [label, which, mount] of HEADS) {
+    const H = bbHead(which);
+    const turret = buildTurret({ ...BB_DEFAULT_SPEC }, mount, which);
+    const root3 = new THREE.Group();
+    root3.add(turret);
+    const axleNode = turret.userData.axle as THREE.Group;
+    const pitchNode = turret.userData.pitch as THREE.Group;
+    const exitNode = pitchNode.getObjectByName('bb-turret-exit') as THREE.Object3D;
+    const axleInv = new THREE.Matrix4();
+    const pose = (p: number): void => {
+      pitchNode.rotation.y = -p;
+      root3.updateMatrixWorld(true);
+      axleInv.copy(axleNode.matrixWorld).invert();
+    };
+    const meshes: THREE.Mesh[] = [];
+    turret.traverse((o) => {
+      if ((o as THREE.Mesh).isMesh) meshes.push(o as THREE.Mesh);
+    });
+    const moving = new Set<THREE.Mesh>();
+    pitchNode.traverse((o) => {
+      if ((o as THREE.Mesh).isMesh) moving.add(o as THREE.Mesh);
+    });
+    /** every triangle of `m` as an AABB, in the AXLE frame. */
+    const triBoxes = (m: THREE.Mesh): THREE.Box3[] => {
+      const pos = m.geometry.getAttribute('position') as THREE.BufferAttribute;
+      const idx = m.geometry.getIndex();
+      const n = idx ? idx.count : pos.count;
+      const out: THREE.Box3[] = [];
+      for (let i = 0; i < n; i += 3) {
+        const pts = [0, 1, 2].map((k) =>
+          new THREE.Vector3()
+            .fromBufferAttribute(pos, idx ? idx.getX(i + k) : i + k)
+            .applyMatrix4(m.matrixWorld)
+            .applyMatrix4(axleInv),
+        );
+        out.push(new THREE.Box3().setFromPoints(pts));
+      }
+      return out;
+    };
+    const lateral = (ms: THREE.Mesh[]): { lo: number; hi: number } => {
+      let lo = Infinity;
+      let hi = -Infinity;
+      for (const m of ms) {
+        const pos = m.geometry.getAttribute('position') as THREE.BufferAttribute;
+        for (let i = 0; i < pos.count; i++) {
+          const y = new THREE.Vector3().fromBufferAttribute(pos, i).applyMatrix4(m.matrixWorld).applyMatrix4(axleInv).y;
+          lo = Math.min(lo, y);
+          hi = Math.max(hi, y);
+        }
+      }
+      return { lo, hi };
+    };
+
+    const inner = H.plateGap / 2; // a side plate's INNER face, both sides
+    const want = inner - BB_HOOD_SIDE_CLEAR; // …and where the hood's widest part must stop
+    const hoodMeshes = meshes.filter((m) => moving.has(m));
+    for (const [tag, p] of PITCHES) {
+      pose(p);
+      const { lo, hi } = lateral(hoodMeshes);
+      check(
+        `hood-inside/${label} @${tag}: the whole hood stops BB_HOOD_SIDE_CLEAR short of both plate faces`,
+        Math.abs(hi - want) < 1e-6 && Math.abs(lo + want) < 1e-6,
+        `hood y [${lo.toFixed(6)}, ${hi.toFixed(6)}] vs ±${want.toFixed(6)}; plate faces ±${inner.toFixed(3)}, clear ${BB_HOOD_SIDE_CLEAR}`,
+      );
+      check(
+        `hood-inside/${label} @${tag}: ...strictly inside them, with the gap the owner asked for on EACH side`,
+        inner - hi >= BB_HOOD_SIDE_CLEAR - 1e-6 && inner + lo >= BB_HOOD_SIDE_CLEAR - 1e-6 && BB_HOOD_SIDE_CLEAR >= 0.06 && BB_HOOD_SIDE_CLEAR <= 0.1,
+        `left ${(inner + lo).toFixed(6)}, right ${(inner - hi).toFixed(6)} (it shipped at 0.060, which reads as touching)`,
+      );
+      // AND THE RELEASE DID NOT MOVE. Narrowing the hood may not touch `bbMuzzleLocal`: the sim
+      // fires from it, so a picture change that moved it would be the sixth round of the same bug.
+      const w = new THREE.Vector3();
+      exitNode.getWorldPosition(w);
+      const mz = bbMuzzleLocal(p, which);
+      const local = turretLocal(BB_DEFAULT_SPEC, mount);
+      check(
+        `hood-inside/${label} @${tag}: ...and the drawn lip is still exactly bbMuzzleLocal(pitch)`,
+        Math.hypot(w.x - local.x + mz.back, w.y - local.y, w.z - mz.z) < 1e-9,
+        `drawn (${(w.x - local.x).toFixed(6)}, ${w.z.toFixed(6)}) vs sim (${(-mz.back).toFixed(6)}, ${mz.z.toFixed(6)})`,
+      );
+    }
+
+    // ── ZERO INTERPENETRATION, MOVING × FIXED, OVER THE WHOLE ENVELOPE ──────────────────────
+    // Two exemptions, by NAME, and each is a pair a BOX test cannot adjudicate rather than one
+    // nobody looked at:
+    //  · the SHAFT — the arms' pivot boss is journalled on it, and a boss and its shaft share an
+    //    axis by definition;
+    //  · the TURRET PLATE — the NECTAR hood's tail dips 0.14 in BELOW it at full elevation, which
+    //    is legal because it goes through the FEED SLOT. The slot is a hole, so the plate's
+    //    triangles around it have boxes that reach into open air, and a box test reads that as
+    //    contact (measured: 81 pairs, POLLEN 0). The vertex statement below is what replaces it,
+    //    and it is stricter than a box: every moving vertex is above the plate or inside the slot.
+    {
+      let hits = 0;
+      let worst = '';
+      let throughPlate = 0;
+      let where = '';
+      const N = 41;
+      const plateTop = BB_TURRET_PLATE_TOP_Z - BB_TURRET_AXLE_Z; // the plate's top face, axle frame
+      for (let i = 0; i < N; i++) {
+        const p = BB_TURRET_PITCH_MIN + ((BB_TURRET_PITCH_MAX - BB_TURRET_PITCH_MIN) * i) / (N - 1);
+        pose(p);
+        const mv = hoodMeshes.map((m) => ({ m, t: triBoxes(m) }));
+        for (const f of meshes) {
+          if (moving.has(f) || f.name === 'bb-turret-shaft' || f.name === 'bb-turret-plate') continue;
+          const ft = triBoxes(f);
+          for (const { m, t } of mv) {
+            for (const a of t) {
+              for (const b of ft) {
+                if (!a.intersectsBox(b)) continue;
+                hits++;
+                if (!worst) worst = `${m.name} × ${f.name} @${((p * 180) / Math.PI).toFixed(0)}°`;
+              }
+            }
+          }
+        }
+        // …and the plate, per VERTEX, in its own frame: below its top face only through the slot
+        for (const m of hoodMeshes) {
+          const pos = m.geometry.getAttribute('position') as THREE.BufferAttribute;
+          for (let k = 0; k < pos.count; k++) {
+            const v = new THREE.Vector3().fromBufferAttribute(pos, k).applyMatrix4(m.matrixWorld).applyMatrix4(axleInv);
+            if (v.z >= plateTop - 1e-6) continue;
+            const inSlot =
+              v.x >= H.slotBackX - H.axleX - 1e-6 && v.x <= H.slotFrontX - H.axleX + 1e-6 && Math.abs(v.y) <= H.slotHalfW + 1e-6;
+            if (inSlot) continue;
+            throughPlate++;
+            if (!where) where = `${m.name} (${v.x.toFixed(3)}, ${v.y.toFixed(3)}, ${v.z.toFixed(3)}) @${((p * 180) / Math.PI).toFixed(0)}°`;
+          }
+        }
+      }
+      check(
+        `hood-inside/${label}: nothing on the pitch node touches anything fixed, at any of ${N} elevations`,
+        hits === 0,
+        hits === 0 ? 'triangle-AABB is conservative, so this is a proof and not a sample' : `${hits} overlapping triangle boxes — first ${worst}`,
+      );
+      check(
+        `hood-inside/${label}: ...and where it passes the turret plate it passes through the FEED SLOT, nowhere else`,
+        throughPlate === 0,
+        where || `slot x [${H.slotBackX.toFixed(2)}, ${H.slotFrontX.toFixed(2)}] ±${H.slotHalfW.toFixed(2)} (the NECTAR tail is the only part that ever goes below)`,
+      );
+    }
+
+    // ── A SIDE PLATE IS ONE CONTINUOUS SOLID ────────────────────────────────────────────────
+    // An extrusion of ONE outline with no holes is a closed genus-0 surface: one component, no
+    // boundary edge anywhere, χ = V − E + F = 2. A slot or a hood-shaped hole would make it
+    // genus 1 (χ = 0) and a split would make it two components; either shows here, and neither can
+    // be argued away. The bosses this plate is allowed are BLIND — it carries the shaft through a
+    // bearing, not through a cut — so the count it is held to is zero boundary loops.
+    for (const plate of meshes.filter((m) => m.name === 'bb-turret-side-plate')) {
+      const pos = plate.geometry.getAttribute('position') as THREE.BufferAttribute;
+      const idx = plate.geometry.getIndex();
+      const n = idx ? idx.count : pos.count;
+      const ids = new Map<string, number>();
+      const vid = (j: number): number => {
+        const v = new THREE.Vector3().fromBufferAttribute(pos, j);
+        const k = `${v.x.toFixed(5)},${v.y.toFixed(5)},${v.z.toFixed(5)}`;
+        let id = ids.get(k);
+        if (id === undefined) {
+          id = ids.size;
+          ids.set(k, id);
+        }
+        return id;
+      };
+      const faces: [number, number, number][] = [];
+      for (let i = 0; i < n; i += 3) {
+        const a = vid(idx ? idx.getX(i) : i);
+        const b = vid(idx ? idx.getX(i + 1) : i + 1);
+        const c = vid(idx ? idx.getX(i + 2) : i + 2);
+        if (a !== b && b !== c && a !== c) faces.push([a, b, c]); // welding makes some degenerate
+      }
+      const edges = new Map<string, number>();
+      const ek = (a: number, b: number): string => (a < b ? `${a}|${b}` : `${b}|${a}`);
+      const parent = new Map<number, number>();
+      const find = (x: number): number => {
+        let r = x;
+        while ((parent.get(r) ?? r) !== r) r = parent.get(r) as number;
+        return r;
+      };
+      for (let i = 0; i < ids.size; i++) parent.set(i, i);
+      for (const [a, b, c] of faces) {
+        for (const [q, s] of [[a, b], [b, c], [c, a]] as const) edges.set(ek(q, s), (edges.get(ek(q, s)) ?? 0) + 1);
+        const ra = find(a);
+        const rb = find(b);
+        const rc = find(c);
+        if (ra !== rb) parent.set(ra, rb);
+        if (find(b) !== rc) parent.set(find(b), rc);
+      }
+      const comps = new Set([...parent.keys()].map(find)).size;
+      const boundary = [...edges.values()].filter((c) => c === 1).length;
+      const chi = ids.size - edges.size + faces.length;
+      check(
+        `hood-inside/${label}: the side plate is ONE piece with no slot and no hole for the hood`,
+        comps === 1 && boundary === 0 && chi === 2,
+        `${comps} component(s), ${boundary} boundary edge(s), χ=${chi} → genus ${(2 - chi) / 2} (a slot reads χ=0, a split reads 2 components)`,
+      );
+    }
+
+    // ── AND THE FLYWHEEL IS BLACK, WHATEVER THE SPEC SAYS ───────────────────────────────────
+    // Three accents, because one accent that happens to be near-black would pass by accident.
+    for (const accent of ['magenta', 'red', 'white'] as const) {
+      const t = buildTurret({ ...BB_DEFAULT_SPEC, accent }, mount, which);
+      let hex: string | undefined;
+      t.traverse((o) => {
+        if (o.name === 'bb-turret-flywheel') hex = ((o as THREE.Mesh).material as THREE.MeshStandardMaterial).color.getHexString();
+      });
+      check(`hood-inside/${label}: the flywheel is base black under accent "${accent}"`, hex === '12161c', String(hex));
+    }
+  }
+
+  // ── A DUMPER HAS NO HOOD AT ALL, WHICH IS WHY ITS RELEASE IS FLAT ─────────────────────────
+  // `buildDumper` is not exported and `buildRobotGroup` needs a DOM canvas for the sign, so this
+  // is the one thing here read off the SOURCE rather than the mesh: the dumper branch builds
+  // `bb-dump-arm` and names no turret part. `bbMuzzleZ`'s own leak guard (ROBOT lane) is the other
+  // half — a dumper's release stays `BB_LAUNCH_Z0` at every pitch.
+  {
+    const src = readFileSync(join(root, 'src', 'games', 'biobuzz', 'scene', 'renderRobots.ts'), 'utf8');
+    const from = src.indexOf('function buildDumper(');
+    const to = src.indexOf('\nexport function buildRobotGroup(', from);
+    const body = src.slice(from, to > from ? to : undefined);
+    check(
+      'a DUMPER builds no hood and no shooter side plates — nothing for a hood to mesh with',
+      from > 0 && to > from && !/bb-turret-|hood/i.test(body) && body.includes("arm.name = 'bb-dump-arm'"),
+      `${body.length} chars of buildDumper scanned`,
+    );
+  }
+}
+
+/**
+ * FREE CAM (owner, 2026-09-21) — `graphics/freeCam.ts`'s pure state math, checked with no GPU
+ * and no scene: the clamps, the reset framing, and the closed-form pose every frame derives from
+ * a `FreeCamState`. The SMOOTHING is not here — it lives in `scene/renderCameras.ts` (a
+ * `render*`-named file), because it needs `Math.pow`, which this lane's `graphics/` cannot use
+ * (see `freeCam.ts`'s own header). `graphicsChecks` above already asserts the whole `graphics/`
+ * directory imports neither `three` nor `scene/`; this function pins that rule against this one
+ * file too, by name, since the owner spec calls it out specifically.
+ */
+function freeCamChecks(check: Check): void {
+  // ---- clamps hold under extreme input ------------------------------------------------------
+  {
+    const base: FreeCamState = { yaw: 0, pitch: 0, dist: 100, target: [0, 0] };
+
+    const orbited = orbitFreeCam(base, 1e9, 1e9);
+    check(
+      'freeCam/clamp: an extreme orbit still clamps pitch into its own envelope',
+      orbited.pitch >= FREE_CAM_PITCH_MIN - 1e-9 && orbited.pitch <= FREE_CAM_PITCH_MAX + 1e-9,
+      String(orbited.pitch),
+    );
+    check('freeCam/clamp: an extreme orbit leaves yaw finite (unbounded, but never NaN/Infinity)', Number.isFinite(orbited.yaw), String(orbited.yaw));
+    const orbitedNeg = orbitFreeCam(base, -1e9, -1e9);
+    check(
+      'freeCam/clamp: an extreme NEGATIVE orbit still clamps pitch',
+      orbitedNeg.pitch >= FREE_CAM_PITCH_MIN - 1e-9 && orbitedNeg.pitch <= FREE_CAM_PITCH_MAX + 1e-9,
+      String(orbitedNeg.pitch),
+    );
+
+    // `dollyFreeCam` takes an already-computed multiplicative FACTOR (the caller,
+    // `renderCameras.ts`, is what turns a wheel `deltaY` into one — see that file's own note on
+    // why the exponential lives there and not here), so an "extreme dolly" is an extreme factor.
+    const dolliedIn = dollyFreeCam(base, 1e-9);
+    check('freeCam/clamp: an extreme dolly IN never reaches, let alone crosses, the target', dolliedIn.dist >= FREE_CAM_DIST_MIN - 1e-9, String(dolliedIn.dist));
+    const dolliedOut = dollyFreeCam(base, 1e9);
+    check('freeCam/clamp: an extreme dolly OUT stays at or under the ceiling', dolliedOut.dist <= FREE_CAM_DIST_MAX + 1e-9, String(dolliedOut.dist));
+    // and the sentinel path (an overflowed/underflowed factor, which a genuinely pathological
+    // `deltaY` could produce) clamps the same way rather than propagating a non-finite distance.
+    const dolliedInf = dollyFreeCam(base, Infinity);
+    check('freeCam/clamp: a dolly factor of +Infinity clamps to the ceiling, not NaN', dolliedInf.dist === FREE_CAM_DIST_MAX, String(dolliedInf.dist));
+    const dolliedZero = dollyFreeCam(base, 0);
+    check('freeCam/clamp: a dolly factor of 0 clamps to the floor, not 0', dolliedZero.dist === FREE_CAM_DIST_MIN, String(dolliedZero.dist));
+
+    const panned = panFreeCam(base, 1e9, 1e9);
+    check(
+      'freeCam/clamp: an extreme pan stays inside the field bounds + margin, x',
+      Math.abs(panned.target[0]) <= BB_HALF_X + BB_VIEW_MARGIN + 1e-6,
+      String(panned.target[0]),
+    );
+    check(
+      'freeCam/clamp: an extreme pan stays inside the field bounds + margin, y',
+      Math.abs(panned.target[1]) <= BB_HALF_Y + BB_VIEW_MARGIN + 1e-6,
+      String(panned.target[1]),
+    );
+    const pannedNeg = panFreeCam(base, -1e9, -1e9);
+    check(
+      'freeCam/clamp: an extreme pan the OTHER way also stays inside bounds',
+      Math.abs(pannedNeg.target[0]) <= BB_HALF_X + BB_VIEW_MARGIN + 1e-6 && Math.abs(pannedNeg.target[1]) <= BB_HALF_Y + BB_VIEW_MARGIN + 1e-6,
+    );
+
+    // a real UI event can never hand this module a NaN or an Infinity (a `deltaY`/`clientX`
+    // delta is always a real number), but the clamp is the first thing a fuzzer would reach for,
+    // and a clamp that lets one non-finite field slip through the whole state is not a clamp.
+    const garbage = clampFreeCam({ yaw: NaN, pitch: NaN, dist: NaN, target: [NaN, Infinity] });
+    check(
+      'freeCam/clamp: NaN/Infinity input clamps to finite, in-range values throughout',
+      [garbage.yaw, garbage.pitch, garbage.dist, ...garbage.target].every((v) => Number.isFinite(v)),
+      JSON.stringify(garbage),
+    );
+  }
+
+  // ---- reset equals the default, for BOTH alliances, and is deterministic ------------------
+  {
+    for (const alliance of ['red', 'blue'] as const) {
+      const viewAngle = viewAngleOf(alliance);
+      const a = defaultFreeCam(viewAngle);
+      const b = defaultFreeCam(viewAngle);
+      check(
+        `freeCam/reset: ${alliance}'s default framing is deterministic (same viewAngle in, same state out)`,
+        a.yaw === b.yaw && a.pitch === b.pitch && a.dist === b.dist && a.target[0] === b.target[0] && a.target[1] === b.target[1],
+      );
+      check(`freeCam/reset: ${alliance}'s default is already inside every clamp`, JSON.stringify(a) === JSON.stringify(clampFreeCam(a)));
+      check(`freeCam/reset: ${alliance}'s default looks at the field centre`, a.target[0] === 0 && a.target[1] === 0);
+    }
+    const red = defaultFreeCam(viewAngleOf('red'));
+    const blue = defaultFreeCam(viewAngleOf('blue'));
+    check("freeCam/reset: red and blue reset to DIFFERENT framings (each faces its own wall)", red.yaw !== blue.yaw, `${red.yaw} vs ${blue.yaw}`);
+    // `yaw` is the azimuth FROM the target TO the eye, so two alliances standing on opposite
+    // walls put the two eyes on exactly opposite sides of the field — π apart.
+    const wrapped = Math.atan2(Math.sin(red.yaw - blue.yaw), Math.cos(red.yaw - blue.yaw));
+    check('freeCam/reset: red and blue reset to OPPOSITE azimuths (π apart)', Math.abs(Math.abs(wrapped) - Math.PI) < 1e-9, String(wrapped));
+  }
+
+  // ---- the pose looks AT the target from the stated distance/angles, tolerance 1e-6 --------
+  {
+    const cases: FreeCamState[] = [
+      { yaw: 0, pitch: FREE_CAM_PITCH_MIN, dist: FREE_CAM_DIST_MIN, target: [0, 0] },
+      { yaw: Math.PI / 3, pitch: (45 * Math.PI) / 180, dist: 200, target: [30, -40] },
+      { yaw: -2.7, pitch: FREE_CAM_PITCH_MAX, dist: FREE_CAM_DIST_MAX, target: [-BB_HALF_X, BB_HALF_Y] },
+      defaultFreeCam(viewAngleOf('red')),
+      defaultFreeCam(viewAngleOf('blue')),
+    ];
+    for (const s of cases) {
+      const pose = freeCamPose(s);
+      const [ex, ey, ez] = pose.eye;
+      const [tx, ty, tz] = pose.target;
+      check("freeCam/pose: the target is the state's own target, on the floor", tx === s.target[0] && ty === s.target[1] && tz === 0);
+      const dx = ex - tx;
+      const dy = ey - ty;
+      const dz = ez - tz;
+      const dist = Math.hypot(dx, dy, dz);
+      check('freeCam/pose: the eye sits exactly `dist` from the target', Math.abs(dist - s.dist) < 1e-6, `${dist} vs ${s.dist}`);
+      const pitch = Math.atan2(dz, Math.hypot(dx, dy));
+      check("freeCam/pose: the eye's elevation IS the state's pitch", Math.abs(pitch - s.pitch) < 1e-6, `${pitch} vs ${s.pitch}`);
+      const yaw = Math.atan2(dy, dx);
+      const yawDiff = Math.abs(Math.atan2(Math.sin(yaw - s.yaw), Math.cos(yaw - s.yaw)));
+      check("freeCam/pose: the eye's azimuth IS the state's yaw", yawDiff < 1e-6, `${yaw} vs ${s.yaw}`);
+    }
+  }
+
+  // ---- graphics/ still imports neither three nor scene/, pinned for this file by name -------
+  {
+    const src = readFileSync(join(BIOBUZZ_DIR, 'graphics', 'freeCam.ts'), 'utf8');
+    check('freeCam/source: graphics/freeCam.ts does not import three', !/from\s+['"]three['"]/.test(src));
+    check('freeCam/source: graphics/freeCam.ts does not import scene/', !/from\s+['"]\.\.\/scene\//.test(src));
   }
 }
 
@@ -2261,10 +2696,10 @@ function graphicsChecks(check: Check, allFiles: string[]): void {
             `${up.toFixed(1)} sq in of ${foot.toFixed(0)} footprint`,
           );
           check(`${dt}: ...at least a quarter of the footprint`, up / foot > 0.25, `${((up / foot) * 100).toFixed(0)} %`);
-          // ...but NOT a lid: the frame is still open, so the deck stays inset and the structure
-          // reads past it. A cosmetic top covering the whole footprint is the "one flat slab" the
-          // previous arrangement was avoiding, and it is still forbidden.
-          check(`${dt}: ...and not the whole top (the frame stays open, not a slab)`, up / foot < 0.75, `${((up / foot) * 100).toFixed(0)} %`);
+          // THE TOP PLATE COVERS THE WHOLE CHASSIS, WHEELS INCLUDED (owner, 2026-09-21). This used
+          // to assert the opposite — an inset deck, under 75 % of the footprint, "not a slab" — and
+          // that ruling is reversed: from above, no wheel pocket may be open.
+          check(`${dt}: the top plate covers the whole chassis, wheels included`, up / foot >= 0.99, `${((up / foot) * 100).toFixed(0)} %`);
         }
         check('the deck is cosmetic now, and the header says why', robotsSrc.includes('WHAT CARRIES THE COSMETIC COLOUR, AND WHY IT CHANGED'));
         check('there is a cosmetic top cap on each side plate', /const BB_TOP_CAP_W = /.test(robotsSrc) && robotsSrc.includes('sy * (hw - BB_TOP_CAP_W / 2), BB_PLATE_H + BB_TOP_CAP_T / 2'));
@@ -2852,14 +3287,14 @@ function graphicsChecks(check: Check, allFiles: string[]): void {
             `hood side face ±${hoodY.toFixed(4)}, cheek inner face ±${cheekInner.toFixed(4)}`,
           );
           // ⚠️ AND NOTHING FIXED IS IN THE VOLUME THE CHEEK SWEEPS. The sweep is stated rather
-          // than sampled: the cheek lives in the lateral band [elemR, plateGap/2 − inset], and
+          // than sampled: the cheek lives in the lateral band [elemR, plateGap/2 − clear], and
           // over 0…80° it covers r ≤ hoodR + BB_HOOD_T for θ ∈ [90°, 90° + cap + wrap] (plus its
           // boss at every θ). So a fixed vertex inside ALL THREE is an interpenetration, and the
           // SHAFT is the one exemption — a pivot boss and the shaft it is journalled on share an
           // axis by definition. The band is the whole reason the cheeks are inboard: outboard,
           // the belt and the flywheel pulley own everything past ±1.98.
           const bandIn = H.elemR;
-          const bandOut = H.plateGap / 2 - BB_HOOD_ARM_INSET;
+          const bandOut = H.plateGap / 2 - BB_HOOD_SIDE_CLEAR;
           const sweptTo = TH_EXIT + BB_TURRET_PITCH_MAX + BB_HOOD_WRAP;
           let intruder = '';
           let nearest = Infinity;
@@ -3128,8 +3563,8 @@ function graphicsChecks(check: Check, allFiles: string[]): void {
           pose(BB_TURRET_PITCH_MIN);
           const ys = named('bb-turret-hood-cheek').flatMap((m) => axleVerts(m)).map((v) => Math.abs(v.y));
           check(
-            `${tag}: a cheek is inboard of the side plate by BB_HOOD_ARM_INSET, and never inside the element’s own width`,
-            Math.min(...ys) >= H.elemR - F32 && Math.abs(Math.max(...ys) - (H.plateGap / 2 - BB_HOOD_ARM_INSET)) < F32,
+            `${tag}: a cheek is inboard of the side plate by BB_HOOD_SIDE_CLEAR, and never inside the element’s own width`,
+            Math.min(...ys) >= H.elemR - F32 && Math.abs(Math.max(...ys) - (H.plateGap / 2 - BB_HOOD_SIDE_CLEAR)) < F32,
             `|y| ${Math.min(...ys).toFixed(3)} … ${Math.max(...ys).toFixed(3)}; element ±${H.elemR}, plate face ${(H.plateGap / 2).toFixed(3)}`,
           );
           check(
@@ -3247,9 +3682,10 @@ function graphicsChecks(check: Check, allFiles: string[]): void {
         );
         check(
           'a DOUBLE turret builds its NECTAR head as turret 1, so the picture and bbMuzzleLocal pick the same one',
-          // trailing `accent` (the cosmetic tint) is not the seam this pins — the WHICH argument is.
-          robotsCode.includes('buildTurret(spec, launcher.mount, 0, accent)') &&
-            robotsCode.includes('buildTurret(spec, launcher.mount2, 1, accent)'),
+          // the WHICH argument is the seam this pins. There USED to be a trailing `accent` here;
+          // the flywheel stopped taking the cosmetic on 2026-09-21 and the parameter went with it.
+          robotsCode.includes('buildTurret(spec, launcher.mount, 0)') &&
+            robotsCode.includes('buildTurret(spec, launcher.mount2, 1)'),
         );
       }
       // ── 2026-09-19 OWNER PLAYTEST: "SWERVE IS NOT RENDERED PROPERLY AT ALL" ───────────────
@@ -3991,46 +4427,44 @@ function graphicsChecks(check: Check, allFiles: string[]): void {
                   `${railAngle.toFixed(6)} rad vs ${(-BB_RAMP_ANGLE).toFixed(6)}`,
                 );
 
-                // ── THE WEDGE PROFILE — the drawn LEADING EDGE/CREST/DROP points must land on
-                // `config.ts`'s own numbers to 1e-3, the same discipline the rail tip check above
-                // follows: a SPECIFIC REFERENCE POINT (each box's own local ±half-length along its
-                // own long axis, which is a corner ONLY the box's own centreline reaches, not a
-                // Box3 extreme padded by its thickness) rather than a bounding box.
-                const wedgeRise = group.getObjectByName(`robot:ramp:bar:${m.edge}:rise`);
-                const wedgeDrop = group.getObjectByName(`robot:ramp:bar:${m.edge}:drop`);
-                if (!wedgeRise || !wedgeDrop) {
-                  check(`${label}/${m.edge}: both wedge segments exist`, false, `rise=${!!wedgeRise} drop=${!!wedgeDrop}`);
+                // ── THE BLADE PROFILE — the drawn LIP and the drawn INBOARD END must land on
+                // `config.ts`'s own numbers to 1e-3, and the blade's UNDERSIDE on
+                // `BB_RAMP_FLOOR_Z`, which is the number that has to clear the FLOWER's lower ring
+                // plate (see that constant's own header). The reference points are the box's own
+                // local ±half-length along its long axis — a point only the box's centreline
+                // reaches — rather than a Box3 extreme padded by its thickness.
+                const blade = group.getObjectByName(`robot:ramp:bar:${m.edge}:deck`);
+                if (!blade) {
+                  check(`${label}/${m.edge}: the ramp's blade exists`, false, 'no robot:ramp:bar:*:deck');
                 } else {
-                  const uz = (o: THREE.Object3D, localX: number): { u: number; z: number } => {
-                    const p = new THREE.Vector3(localX, 0, 0).applyMatrix4(o.matrixWorld);
+                  const uz = (o: THREE.Object3D, localX: number, localZ: number): { u: number; z: number } => {
+                    const p = new THREE.Vector3(localX, 0, localZ).applyMatrix4(o.matrixWorld);
                     const dx = p.x - f.ox;
                     const dy = p.y - f.oy;
                     return { u: dx * Math.cos(f.rot) + dy * Math.sin(f.rot), z: p.z };
                   };
-                  const riseLen = Math.hypot(BB_RAMP_OUT - BB_RAMP_CREST_OUT, BB_RAMP_LEAD_Z - BB_RAMP_CREST_Z);
-                  const dropLen = Math.hypot(BB_RAMP_CREST_OUT - BB_RAMP_DROP_OUT, BB_RAMP_CREST_Z - BB_RAMP_DROP_Z);
-                  const riseLead = uz(wedgeRise, riseLen / 2);
-                  const riseCrest = uz(wedgeRise, -riseLen / 2);
-                  const dropCrest = uz(wedgeDrop, dropLen / 2);
-                  const dropDrop = uz(wedgeDrop, -dropLen / 2);
-                  const wantLead = { u: f.depth + BB_RAMP_OUT, z: BB_RAMP_LEAD_Z };
-                  const wantCrest = { u: f.depth + BB_RAMP_CREST_OUT, z: BB_RAMP_CREST_Z };
-                  const wantDrop = { u: f.depth + BB_RAMP_DROP_OUT, z: BB_RAMP_DROP_Z };
+                  const len = BB_RAMP_OUT - BB_RAMP_IN;
+                  const lip = uz(blade, len / 2, BB_RAMP_WEDGE_THICK);
+                  const inner = uz(blade, -len / 2, BB_RAMP_WEDGE_THICK);
+                  const under = uz(blade, len / 2, -BB_RAMP_WEDGE_THICK);
+                  const wantLip = { u: f.depth + BB_RAMP_OUT, z: BB_RAMP_DECK_Z };
+                  const wantIn = { u: f.depth + BB_RAMP_IN, z: BB_RAMP_DECK_Z };
+                  const wantUnder = { u: f.depth + BB_RAMP_OUT, z: BB_RAMP_FLOOR_Z };
                   const near = (a: { u: number; z: number }, b: { u: number; z: number }): boolean => Math.abs(a.u - b.u) < 1e-3 && Math.abs(a.z - b.z) < 1e-3;
                   check(
-                    `${label}/${m.edge}: the drawn wedge's LEADING EDGE lands on config's own (BB_RAMP_OUT, BB_RAMP_LEAD_Z)`,
-                    near(riseLead, wantLead),
-                    `(${riseLead.u.toFixed(4)}, ${riseLead.z.toFixed(4)}) vs (${wantLead.u.toFixed(4)}, ${wantLead.z.toFixed(4)})`,
+                    `${label}/${m.edge}: the drawn blade's LIP lands on config's own (BB_RAMP_OUT, BB_RAMP_DECK_Z)`,
+                    near(lip, wantLip),
+                    `(${lip.u.toFixed(4)}, ${lip.z.toFixed(4)}) vs (${wantLip.u.toFixed(4)}, ${wantLip.z.toFixed(4)})`,
                   );
                   check(
-                    `${label}/${m.edge}: the drawn wedge's CREST agrees between both segments and lands on config's own point`,
-                    near(riseCrest, wantCrest) && near(dropCrest, wantCrest),
-                    `rise-side (${riseCrest.u.toFixed(4)}, ${riseCrest.z.toFixed(4)}), drop-side (${dropCrest.u.toFixed(4)}, ${dropCrest.z.toFixed(4)}) vs (${wantCrest.u.toFixed(4)}, ${wantCrest.z.toFixed(4)})`,
+                    `${label}/${m.edge}: the drawn blade's INBOARD END lands on config's own (BB_RAMP_IN, BB_RAMP_DECK_Z)`,
+                    near(inner, wantIn),
+                    `(${inner.u.toFixed(4)}, ${inner.z.toFixed(4)}) vs (${wantIn.u.toFixed(4)}, ${wantIn.z.toFixed(4)})`,
                   );
                   check(
-                    `${label}/${m.edge}: the drawn wedge's DROP point lands on config's own (BB_RAMP_DROP_OUT, BB_RAMP_DROP_Z)`,
-                    near(dropDrop, wantDrop),
-                    `(${dropDrop.u.toFixed(4)}, ${dropDrop.z.toFixed(4)}) vs (${wantDrop.u.toFixed(4)}, ${wantDrop.z.toFixed(4)})`,
+                    `${label}/${m.edge}: the drawn blade's UNDERSIDE is BB_RAMP_FLOOR_Z, clear of the FLOWER's 0.354 plate`,
+                    near(under, wantUnder) && BB_RAMP_FLOOR_Z > 0.354,
+                    `(${under.u.toFixed(4)}, ${under.z.toFixed(4)}) vs (${wantUnder.u.toFixed(4)}, ${wantUnder.z.toFixed(4)})`,
                   );
                 }
                 pivot.rotation.y = 0; // leave it as `buildIntake` built it

@@ -496,16 +496,20 @@ newest-first — it is never ranked, which is what keeps the two eras from meeti
     line itself — it never passes the plate edge and its reach (`bbFlowerReachOf`) is `null`,
     always. `siderollers` straddle the POLLEN (reach `[1.15, 2.65]` past the tip line, z
     `[0.5, 2.5]`); a `ramp` (`bbRamp`, an edge-triggered toggle — `RobotState.bbRampOut`/
-    `bbRampAt`) wedges under it once DEPLOYED and SETTLED (`bbRampSettled`,
-    `BB_RAMP_DEPLOY_S` after the toggle; reach `[0, 2.17]`, z `[0.5, 1.38]`).
+    `bbRampAt`) slides its BLADE under it once DEPLOYED and SETTLED (`bbRampSettled`,
+    `BB_RAMP_DEPLOY_S` after the toggle; reach `[0, 3.54]` past the tip line, and a z band of
+    `[BB_RAMP_FLOOR_Z, BB_RAMP_PIVOT_Z]` — the HARDWARE's own band, blade underside to pivot,
+    which the 2D z-bite reads; see that constant for why it is not the blade's own silhouette).
     `bbFlowerAtIntake` (`play.ts`) puts the FLOWER's ring centre into the mouth's own frame
     (`mouthAxes`) and asks a BITE — `bbBites` (`flower.ts`), one helper for both axes — of at
     least `BB_FLOWER_BITE` (0.5 in) between the archetype's box and the POLLEN's own extent, in x
     (`reach.out` against `[u−r, u+r]`) and in z (`reach.z` against the bottom element's own
     centre height, read from `ball.z` in 2D — already a centre, `flowerStackZ` — and `ball.z + r`
     in 3D, where `ball.z` is the bottom). At flush (`u = BB_PLACE_REACH`, 2.384 in): side rollers
-    bite 1.5 in in x and 2.0 in in z; the ramp bites 1.18 in and 0.88 in; the standoff tolerance
-    past flush is ≈1.17 in for side rollers and ≈0.68 in for the ramp.
+    bite 1.5 in in x and 2.0 in in z; the ramp bites 2.56 in and 1.80 in against the 2D model's
+    own bottom POLLEN; the standoff tolerance past flush is ≈1.17 in for side rollers and ≈2.06 in
+    for the ramp. ⚠️ In 3D the ramp does NOT use the z-bite at all: its gate is the ball's own
+    height () — see its own bullet below.
     ⚠️ **`u` IS MEASURED FROM THE MOUTH'S OWN OUTWARD BOUND (`uOut`, the roller line — the
     collision footprint's edge on this side), NOT THE BARE CHASSIS FRAME.** The frame sits
     `bbIntakeReach` (3–5 in) further BACK than that, which is where `footprintExtents` actually
@@ -582,75 +586,95 @@ newest-first — it is never ranked, which is what keeps the two eras from meeti
     3D cannot disagree about how far the pull reaches. **2D has no ramp collider at all** ("2D
     stays DRAWING-ONLY" above still holds) — nothing is solid there, so the extended reach simply
     pulls a ground POLLEN in from further out; a real bar's PUSH is 3D-only.
-  - ⚠️ **A `ramp` BUILD'S FLOWER RETRIEVAL IS A TWO-STEP RELEASE IN 3D, NOT A TELEPORT INTO THE
-    HOPPER.** MEASURED (10 runs, seeds 5001–5010, standoff 10–25 in, stick 0.35–1.0): driving a
-    real `ramp` build into a FLOWER's foot with the intake held, the PROXIMITY GATE
-    (`bbFlowerAtIntakeMouth` + the Z-bite) always fires before the physical push has a tick to act
-    — the ball's centre moves under 0.6 in before the old code would have swallowed it whole. So
-    `flowerRetrieve3d` (`sim3d/flower3d.ts`) does not `capturePollen` for a `ramp`: it releases the
-    bottom POLLEN as a `ground` element under the crossbar — position `ax.uOut + BB_RAMP_OUT −
-    0.3 − r` outward (just behind the bar's inner face) and `BB_RAMP_RELEASE_V` sideways
-    (`config.ts`), `z` at the lower plate's own rim, a small nudge inward — tags it `ground`,
-    splices it off `flowers[i].stack`, and lets the extended pull (above) sweep it the rest of the
-    way in. **THE LATERAL OFFSET IS LOAD-BEARING, NOT COSMETIC**: `derive.ts`'s tube-membership
-    test (`flowerTubeOf`) is a bare radius from the FLOWER's own axis (`BB_FLOWER_OPEN_R`, 2.086
-    in) — a release dead on the flower's own y sits only ≈1.06 in from that axis (the ramp's own
-    reach past the POLLEN's centre is only 0.64 in) and gets re-tagged `element`/`flower:i` on the
-    very next `deriveTick`, before gameplay ever sees `ground`. `BB_RAMP_RELEASE_V` solves for the
-    sideways distance (under the crossbar, which spans the whole mouth width) that clears the
-    radius, plus margin. MEASURED transit (release tick to swallow): 8–13 ticks (0.13–0.22 s),
-    never instant, never a second tunnel through the bar. Every other archetype (`siderollers`,
-    and the direct proximity path in general) is unchanged: still a straight `capturePollen`.
-  - ⚠️ **THE FLAT CROSSBAR BECAME A WEDGE, 2026-09-20** (owner: "It is incredibly hard to get the
-    ramp under the pollen right now... a slight slope up and a larger slope down for it to first
-    get under the pollen... just pushing on the pollen with whatever is likely enough to get it up
-    due to impulse but also the ball's geometry"; "the old ramp works 99% of the time... when it
-    does not work, the pollen don't budge... I think it depends on how the pollen are stacked").
-    The flat crossbar's own vertical leading face met a bottom POLLEN BELOW its centre and shoved
-    it square into the tube's back; a scattered column leaning on the bottom ball toward the field
-    side arched against the peanut supports and nothing moved. `chassis3dReachShapes` now builds
-    the crossbar as TWO tilted boxes (`config.ts`'s "THE DEPLOYABLE RAMP": a thin LEADING EDGE at
-    `BB_RAMP_OUT`/`BB_RAMP_LEAD_Z`, a CREST at `BB_RAMP_CREST_OUT`/`BB_RAMP_CREST_Z` = 1.00 — 0.104
-    in under the mid plate's 3.904 ceiling — and a steep DROP back into the U), the same
-    `pitchQuatY` composition the rails already use, at the wedge's own rise/drop angles rather than
-    a `ColliderDesc.convexHull` (a hull needs no new Rapier surface for the rails, but the swing
-    guard queries with a bare `RAPIER.Cuboid`, and two boxes reuse that unchanged).
-    `scene/renderRobots.ts` draws the same two boxes in place of the old flat bar, under the SAME
-    node name (`robot:ramp:bar:<edge>`, now a group) the RENDER lane already found by.
-    ⚠️ **`BB_RAMP_LEAD_Z` IS 0.60, NOT THE OWNER'S OWN "0.40–0.45" TARGET** — a real drive-in
-    (`scratch/ramp_debug.ts`) at 0.42 stopped the chassis dead 2.27 in short of flush, frozen
-    (`world3d.contactPairsWith` pinned a contact on the wedge itself, not the rails); the CAD-hull
-    probe (`scratch/wedge_cad_probe2.ts`) could not reproduce the exact hit against the eight named
-    `flower_support` hulls or the ring plates' own bore, so it is a mesh feature finer than those
-    checks already resolve elsewhere in this file — an OPEN measurement gap, not a solved one.
-    0.60 was found empirically (raised until the chassis reached within 0.5 in of true flush) and
-    costs some of the "slip under the ball" clearance the lower target would have bought, which is
-    most of why the wedge alone does not yet clear every pose (below). `BB_RAMP_DROP_Z` is pinned
-    at 0.42 SEPARATELY from `BB_RAMP_LEAD_Z` (it used to move with it): `BB_RAMP_REACH.z` is
-    `[BB_RAMP_DROP_Z, BB_RAMP_CREST_Z]`, read by the PERMANENT 2D pipeline's own z-bite against the
-    model's fixed bottom-POLLEN centre (1.754) — tying `DROP_Z` to the 0.60 `LEAD_Z` fix dropped the
-    2D overlap to 0.40 in, under `BB_FLOWER_BITE`'s 0.5-in floor, and went dark for every 2D ramp
-    pose. The two heights are independent constants now for exactly that reason.
-    ⚠️ **THE WEDGE DOES NOT YET REACH 100% ON PHYSICS ALONE, SO THE OLD RELEASE SURVIVES AS A
-    FALLBACK, RESTRUCTURED.** `flowerRetrieve3d`'s ramp branch no longer releases on the proximity
-    gate at all — it tracks how long the SAME bottom POLLEN has sat gated (`RobotState.
-    bbRampStallId`/`bbRampStallSince`, `BB_RAMP_STALL_S` = 1.2 s) and only then intervenes: with a
-    column above the stuck ball it shoves that ABOVE element (a small deterministic hash-driven
-    kick, the same discipline `engineImpl.ts`'s perched-element vibration follows — `rngState`
-    read-only, `dsin`/`dcos` only) rather than the ball itself; with nothing to unlean it falls back
-    to the old teleport-release, now anchored behind `BB_RAMP_DROP_OUT` (the wedge's own innermost
-    point now that it is two boxes wide, not the single point the flat crossbar was — releasing
-    at the old `BB_RAMP_OUT`-relative point spawned the ball INSIDE the drop segment's own solid
-    box). The stall clock reads the MOUTH gate only (`bbFlowerAtIntakeMouth`, a function of the
-    robot's pose and the flower's fixed axis, never `ball.z`) — gating it behind the real z-bite
-    too, tried first, meant a ball the wedge pressed out of the eligible band without lifting it
-    stalled the clock forever, since nothing ever revisited a gate that kept failing. MEASURED (a
-    real drive-in, `scratch/ramp_debug.ts`): the fix reaches flush without jamming, and pop-to-
-    hopper end to end is 111–112 ticks (1.85–1.87 s) — mostly the stall wait, not the drive.
-    A FULL measured sweep (300+ runs across standoff/lateral/angle/column-height/scatter-seed, the
-    task this bullet answers to) is the open item for the next pass; what shipped here is real,
-    verified in the SIM3D/FLOWER3D/RENDER/ROBOT lanes and by direct physics debugging, but not yet
-    that scale of statistical claim.
+  - ⚠️ **A `ramp` BUILD'S FLOWER RETRIEVAL IS PHYSICS, WITH ONE GATE AND NO TIMER, SINCE
+    2026-09-21** (owner, 2026-09-20: "the pollen should be getting intaked from the deployable ramp
+    BECAUSE it collides with the ramp and slides down towards the intake"; "the old ramp works 99%
+    of the time. When it does not work, the pollen don't budge... I think it depends on how the
+    pollen are stacked"). `flowerRetrieve3d`'s ramp branch turns the lip's ROLLER while the POLLEN
+    is still in the bore and takes it the moment the blade has physically LIFTED it — `ball.z >=
+    BB_RAMP_LIFT_Z`, the ramp's own underside, which is above the lower plate's 0.354 rim. The
+    release is a RE-TAG IN PLACE (same position, same velocity, same height) and `bbIntakeAct`'s
+    extended pull (`bbIntakeExtraReach`) walks it down the deck into the hopper. There is no stall
+    clock, no proximity release and no teleport of the bottom ball left in the 3D path.
+    `derive.ts` carries the other half of that fact: a `ground` element whose bottom is above
+    `BB_RAMP_LIFT_Z` is NOT re-claimed into the tube, because `flowerTubeOf` is a bare 2.086-in
+    radius and a POLLEN standing on the robot's deck is still inside it. The test is about the
+    TUBE, not the robot — inside it a POLLEN rests on the tiles (bottom 0) or on the element under
+    it (bottom ≥ 2.8), and the rim carries a NECTAR, which is `element`-tagged from the moment it
+    is placed.
+  - ⚠️ **THE WEDGE BECAME A FLAT PLOW BLADE, AND FOUR MEASUREMENTS SAY WHY.** The 2026-09-20 wedge
+    (lead 0.60, crest 1.00, two tilted boxes centred on their own profile line) never extracted a
+    POLLEN by physics at all. `scratch/rampx.ts` drove it in for real — `contactPairsWith` +
+    `contactPair`, every manifold named — and `config.ts`'s "THE DEPLOYABLE RAMP" carries the full
+    working. In short:
+    1. **A tilted box hangs `2·thick·cos(angle)` BELOW its own profile line**, so the "lead z 0.42"
+       wedge really reached **0.3067**, under the LOWER RING PLATE's 0.354 top face. A free-shape
+       `intersectionsWithShape` NAMES the collider: `LEAD_Z 0.42 -> trimesh z=[-0.199,0.354]
+       FLOWER0` at every standoff, `0.50` and up CLEAR. That is the unexplained 0.42 freeze the
+       previous pass left open, and its CAD probe missed it only because it sampled the wedge's
+       CENTRELINE (`v = 0`), which is exactly where the 3.222-in bore is — the ramp is ±7.57 in
+       wide and everything outside the bore's chord is over solid annulus.
+    2. **Raising the lead to 0.60 put the lip on the ball's FLANK.** A tilted box's outermost point
+       is its end cap's TOP corner, at 0.713. A POLLEN backed by the peanut supports climbs only
+       while `(r − h)/d(h) > μ`, i.e. while `h < BB_POLLEN_R·(1 − μ/√(1+μ²))` = **0.637** at
+       μ = 0.65 (`Max` of `BB3_ELEMENT_FRICTION` and `PHYS_WALL_FRICTION`). At 0.713 the ratio is
+       0.564: the ball SELF-LOCKS. Measured — the chassis stalls **1.47 in short of flush**, the
+       POLLEN is driven 0.42 in onto the supports (manifold normals `(0.89, ±0.46, 0)`) and 0.054
+       in into the tiles, and its centre never rises.
+    3. **A tilted lip's end cap OVERHANGS** (its normal carries `−sin(rise)` of down), which with
+       the supports makes a downward-closing V the ball cannot rise out of at any drive strength:
+       measured, a stacked column's bottom POLLEN did not clear at a roller speed of **160 in/s**.
+       A level blade's leading face is VERTICAL and the ball rides up it.
+    4. **A crest is pure cost.** Everything the ball climbs, the column climbs. A settled 8-column's
+       bottom POLLEN already sits **0.44 in** toward the wall, perched on the lower bore's rim (the
+       cage's 0.548 in of slack, transmitted down) — which IS the owner's "it depends on how they
+       are stacked". The blade asks for 0.48 in of lift and nothing more.
+    So the deployed ramp is ONE LEVEL BOX, `BB_RAMP_IN` … `BB_RAMP_OUT` (0.15 … 3.54 past the tip
+    line), `BB_RAMP_FLOOR_Z` 0.40 underneath and `BB_RAMP_DECK_Z` 0.48 on top, rail to rail wide,
+    plus the two rails. The owner's "slight slope up and a larger slope down" is the blade itself:
+    the 0.08-in step at the lip lifts the POLLEN onto the deck, and the deck's inboard end drops
+    it into the mouth. It is BOXES and not a `ColliderDesc.convexHull` for one reason —
+    `groundRoll3d`'s perched-element rule reads a `ConvexPolyhedron` as "a narrow CAD hull" and
+    would vibrate every POLLEN resting on the ramp's own deck.
+    ⚠️ **THE DECK IS THE HALF THAT DELIVERS.** The old wedge stopped at its drop point 2.29 in out
+    and left a 2.29-in VOID between itself and the mouth, so a POLLEN it did lift had nothing to
+    stand on and fell back into the bore.
+  - ⚠️ **AND THE LIP IS DRIVEN, BECAUSE NO PASSIVE PROFILE CAN DO THIS.** `rampRollerDrive`
+    (`sim3d/flower3d.ts`) raises the candidate POLLEN's velocity COMPONENT along the deck toward
+    the rollers to `BB_RAMP_ROLLER_V` (50 in/s) and never reduces it, leaving every other component
+    to the solver — a friction drive, which is what the roller at the top of a real ramp lip is,
+    on the same motor as the intake. The bound it exists for: a POLLEN met on its flank retreats
+    **0.458 in** onto the supports before it wedges, the lip would then need **1.541 in** of reach
+    past the ball's centre, and the same supports cap the ramp at **1.156** (measured,
+    `scratch/rampsup.ts`: the two `flower_peanut_support` hulls occupy `u 1.19…2.45` at
+    `|v| 0.62…1.89`, and the 1.24-in lane between them moves with the driver's own lateral offset,
+    so a tongue that fits it is a 0.1-in alignment requirement rather than a mechanism). The only
+    lip height that beats it passively is `h ≤ 0.175`, under the plate's own rim.
+    ⚠️ **THE DRIVE IS FLAT, AND THAT IS MEASURED, NOT ASSUMED.** Sweeping its rise angle over 400
+    real drive-ins at the hardest column height (ONE pollen, dead on the axis, free to retreat):
+    **0° 400/400, 10° 381/400, 18° 360/400, 25° 314/400, 35° 193/400, 45° 56/400.** Every degree of
+    lift pops the ball off the deck instead of walking it along, and a ball in the air is one
+    `derive.ts` re-claims into the tube. A version aimed at the mouth's own SEAT rather than
+    straight down the deck measured no better (3 failures in 1200 against 2).
+    ⚠️ **AND `BB_FLOWER_RETRIEVE_S` MOVED BELOW THE ROLLER.** It paces how often a POLLEN may be
+    TAKEN; with the check above the branch the roller turned for one tick in nine. Every other
+    retrieval path still reads it one line before it acts, so no other cadence moved.
+  - **MEASURED, the sweep the previous pass owed** (`scratch/rampsweep.ts`, real drive-ins from
+    16 in out with the stick held, no teleports; columns staged through the drop point and
+    `bbFlowerScatter`, so they LEAN the way a match's do): four FLOWERS × stick 0.35/0.5/0.7/1.0 ×
+    lateral −2…+2 in × approach angle −8…+8° × column height 1–8 × legal POLLEN/NECTAR mixes ×
+    scatter seed — **400 runs, 400 extracted (100%)**, mean **0.40 s** and p95 **1.10 s** from the
+    ramp reaching the opening to the POLLEN being in the hopper, 100% at every column height, every
+    approach angle and every lateral offset. Forcing the height instead of drawing it: **h1
+    400/400, h4 400/400, h8 398/400** — the two misses are the compounding corner every archetype's
+    sweep finds hardest (a lateral offset AND an approach angle in the same rotational sense), they
+    are the honest residue of a 1.156-in reach, and nothing in the code papers over them. BEFORE,
+    on the same harness: the wedge extracted by physics in 0 of 5 staged columns and needed the
+    stall fallback's teleport in every one. **DRAIN**: a full 8-POLLEN column empties completely on
+    one held stick in **75 ticks (1.25 s)** — 0.47 s for the first and **0.05–0.13 s** for each one
+    after, the column re-seating between each. The fast slice, worst seeds included, is in
+    `scripts/smoke-biobuzz/flower3d.ts`; the through-the-blade probe and the ground-capture sweep
+    (10 lateral offsets, intake on and off) are in `sim3d.ts`.
   - ⚠️ **THE RAMP SWING GUARD: A DEPLOY OR FOLD THAT WOULD CARRY THE RAMP INTO A STATIC REVERSES**
     (owner, 2026-09-20: deploying into a FLOWER should be refused, "same with un-deploying").
     `bbRampSwingProgress(r, time)` (`robot.ts`) is the ONE eased curve (smoothstep,

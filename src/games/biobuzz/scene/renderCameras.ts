@@ -1,7 +1,9 @@
 import * as THREE from 'three';
 import type { SceneCamera, SceneFrame } from '../../module';
 import type { Alliance, RobotState, World } from '../../../types';
+import { wrapAngle } from '../../../math';
 import { BB3_WALL_H, BB_HALF_X, BB_HALF_Y, BB_HIVE_X, BB_VIEW_MARGIN } from '../config';
+import { defaultFreeCam, dollyFreeCam, freeCamPose, orbitFreeCam, panFreeCam, type FreeCamState } from '../graphics/freeCam';
 
 /**
  * BIOBUZZ 3D SCENE — cameras (Day 1, `docs/biobuzz/plan-3d.md` §4.3, §13.1).
@@ -413,6 +415,14 @@ const REDUCED_HALFLIFE = 0.012;
  * remote robot into place — and the camera cuts rather than flying across the field. */
 const CHASE_SNAP_DIST = 72;
 
+/** FREE CAM's own half-life — "smooth the motion a little", not a follow camera's full damping;
+ * a free-look camera that lagged as much as `CHASE_POS_HALFLIFE` would feel like driving through
+ * syrup on every mouse-up. The Math.pow-based blend lives HERE, in a `render*`-named file, and
+ * not in `graphics/freeCam.ts` — `scripts/smoke.ts`'s source guard scans every non-`render*`/
+ * `draw*` file under `src/games` for engine trig/exp/pow, so the smoothing curve is computed
+ * exactly where the chase camera's own `blend()` below already is. */
+const FREE_CAM_HALFLIFE = 0.08;
+
 /** orbit: the spectator ring's default radius and elevation, and what a wheel may zoom to. The
  * field is 141 in across, so ~250 in out at 32° holds the whole field with the hives' tops
  * inside the frame. */
@@ -431,6 +441,9 @@ const ORBIT_AUTO_RATE = 0.05;
  * turn, which is what "grab the field and swing it round" should cost. */
 const ORBIT_DRAG_YAW = 0.006;
 const ORBIT_DRAG_PITCH = 0.004;
+/** free cam's own wheel-to-factor rate, same shape as `orbitZoom`'s literal below (a dedicated
+ * constant here since `freeDolly` reuses it in one place rather than inline like orbit's). */
+const FREE_DOLLY_RATE = 0.0012;
 
 /** the driver/chase eye-height nudge (`i` / `o`, plan §4.3), in inches, and the total offset the
  * keys may accumulate. The driver camera SOLVES its own eye height (`fitDriverCamera`), so this
@@ -463,6 +476,9 @@ export interface BbCameras {
   overhead: THREE.OrthographicCamera;
   chase: THREE.PerspectiveCamera;
   orbit: THREE.PerspectiveCamera;
+  /** FREE CAM (owner, 2026-09-21) — mouse orbit/pan/dolly over the field; see
+   * `graphics/freeCam.ts` for the state this camera is a pose of. */
+  free: THREE.PerspectiveCamera;
   /** the camera the LAST `update` returned — what `GameScene.project` must project through, so
    * a label lands on the robot the player is actually looking at. */
   active: THREE.Camera;
@@ -483,6 +499,17 @@ export interface BbCameras {
   orbitDrag(dx: number, dy: number): void;
   /** orbit: a wheel notch (`deltaY`), zooming the ring in/out between its radius bounds. */
   orbitZoom(deltaY: number): void;
+  /** free cam: a left-drag of (`dx`,`dy`) CSS pixels — orbits about the look-at point. */
+  freeOrbit(dx: number, dy: number): void;
+  /** free cam: a right-drag (or shift+left-drag) of (`dx`,`dy`) CSS pixels — pans the look-at
+   * point across the floor plane. */
+  freePan(dx: number, dy: number): void;
+  /** free cam: a wheel notch (`deltaY`) — dollies toward/away from the look-at point. */
+  freeDolly(deltaY: number): void;
+  /** free cam: reset to the default framing for `viewAngle` (double-click, the HUD's "Reset
+   * view" chip). Sets the GOAL only — the eased pose (`update`) eases into it over a few
+   * frames, same as every other free-cam move. */
+  freeReset(viewAngle: number): void;
 }
 
 /** scratch target for `driver.lookAt` — one object, mutated every frame, never reallocated. */
@@ -497,6 +524,8 @@ export function createCameras(): BbCameras {
   chase.up.set(0, 0, 1);
   const orbit = new THREE.PerspectiveCamera(ORBIT_FOV, 1, 1, 4000);
   orbit.up.set(0, 0, 1);
+  const free = new THREE.PerspectiveCamera(ORBIT_FOV, 1, 1, 4000);
+  free.up.set(0, 0, 1);
 
   // ── per-camera state, all module-free so two scenes (the gallery mounts several) never share
   //    a turntable angle or a chase position.
@@ -510,6 +539,14 @@ export function createCameras(): BbCameras {
   let orbitRadius = ORBIT_RADIUS_DEFAULT;
   let orbitAuto = true;
   let eyeOffset = 0;
+  /** FREE CAM state (`graphics/freeCam.ts`) — `Goal` is set IMMEDIATELY by input; `Current` is
+   * what is actually rendered, eased toward the goal every frame (`dampFreeCam`). `Have` mirrors
+   * `chaseHave`: the first `updateFree` call replaces both with the ALLIANCE-correct default
+   * (`defaultFreeCam(frame.viewAngle)`) rather than the `viewAngle`-blind placeholder these are
+   * declared with, which only ever runs for zero frames. */
+  let freeGoal: FreeCamState = defaultFreeCam(0);
+  let freeCurrent: FreeCamState = freeGoal;
+  let freeHave = false;
   /** wall-clock delta between updates, for the smoothing and the turntable. A RENDER file, so
    * `performance.now()` is allowed here (`scripts/smoke.ts`'s clock guard exempts `render*`/
    * `draw*` by name) — and required: `SceneFrame` carries no dt, and a camera that eased by a
@@ -676,19 +713,64 @@ export function createCameras(): BbCameras {
     orbit.updateProjectionMatrix();
   }
 
+  /**
+   * FREE CAM — mouse orbit/pan/dolly about a look-at point on the floor (owner, 2026-09-21). The
+   * three gestures (`freeOrbit`/`freePan`/`freeDolly` below) only ever move `freeGoal`; this is
+   * the one place `freeCurrent` moves, eased toward it every frame, and the one place the state
+   * becomes a `THREE.Camera` pose (`freeCamPose`). Shares the orbit camera's FOV row (`§4.4`) —
+   * both are spectator-style framing shots, not the driver's solved fit.
+   */
+  function updateFree(frame: SceneFrame, dt: number): void {
+    resolveSafeRect(frame);
+    free.aspect = Math.max(1e-3, safe.w / safe.h);
+    free.fov = tunedOrbitFov;
+    applyViewOffset(free);
+    if (!freeHave) {
+      freeGoal = defaultFreeCam(frame.viewAngle);
+      freeCurrent = freeGoal;
+      freeHave = true;
+    }
+    // EASE `freeCurrent` toward `freeGoal`, one field at a time — the same half-life `blend()`
+    // the chase camera uses above, never overshooting. `yaw` wraps the SHORT way round
+    // (`wrapAngle`, `src/math.ts`) so orbiting past ±π eases back rather than spinning the long
+    // way to a goal that only looks different because it was never wrapped.
+    const k = blend(dt, reducedMotion() ? REDUCED_HALFLIFE : FREE_CAM_HALFLIFE);
+    freeCurrent =
+      k <= 0
+        ? freeCurrent
+        : k >= 1
+          ? freeGoal
+          : {
+              yaw: freeCurrent.yaw + wrapAngle(freeGoal.yaw - freeCurrent.yaw) * k,
+              pitch: freeCurrent.pitch + (freeGoal.pitch - freeCurrent.pitch) * k,
+              dist: freeCurrent.dist + (freeGoal.dist - freeCurrent.dist) * k,
+              target: [
+                freeCurrent.target[0] + (freeGoal.target[0] - freeCurrent.target[0]) * k,
+                freeCurrent.target[1] + (freeGoal.target[1] - freeCurrent.target[1]) * k,
+              ],
+            };
+    const pose = freeCamPose(freeCurrent);
+    free.position.set(pose.eye[0], pose.eye[1], pose.eye[2]);
+    free.up.set(0, 0, 1);
+    scratchTarget.set(pose.target[0], pose.target[1], pose.target[2]);
+    free.lookAt(scratchTarget);
+    free.updateProjectionMatrix();
+  }
+
   const cams: BbCameras = {
     driver,
     overhead,
     chase,
     orbit,
+    free,
     active: driver,
     update(frame: SceneFrame, world: World, camera: SceneCamera): THREE.Camera {
       const dt = frameDt();
       // THE DRIVER AND OVERHEAD CAMERAS ARE UPDATED EVERY FRAME whichever is active — they are
       // two cheap closed-form solves, and both are the fallback for a camera that cannot be
-      // satisfied this frame (no local robot). Chase and orbit only run when asked: chase keeps
-      // smoothed STATE, and advancing it while it is not on screen would have it fly in from
-      // wherever the robot was when the player last looked.
+      // satisfied this frame (no local robot). Chase, orbit and free only run when asked: each
+      // keeps smoothed STATE, and advancing it while it is not on screen would have it fly in
+      // from wherever it last was when the player last looked.
       updateDriver(frame);
       updateOverhead(frame);
       let picked: THREE.Camera;
@@ -696,6 +778,9 @@ export function createCameras(): BbCameras {
       else if (camera === 'orbit') {
         updateOrbit(frame, dt);
         picked = orbit;
+      } else if (camera === 'free') {
+        updateFree(frame, dt);
+        picked = free;
       } else picked = camera === 'overhead' ? overhead : driver;
       cams.active = picked;
       return picked;
@@ -718,6 +803,21 @@ export function createCameras(): BbCameras {
       // close in.
       const factor = Math.exp(deltaY * 0.0012);
       orbitRadius = Math.max(ORBIT_RADIUS_MIN, Math.min(ORBIT_RADIUS_MAX, orbitRadius * factor));
+    },
+    freeOrbit(dx: number, dy: number): void {
+      freeGoal = orbitFreeCam(freeGoal, dx * ORBIT_DRAG_YAW, dy * ORBIT_DRAG_PITCH);
+    },
+    freePan(dx: number, dy: number): void {
+      freeGoal = panFreeCam(freeGoal, dx, dy);
+    },
+    freeDolly(deltaY: number): void {
+      // the engine-specific exponential lives HERE (a `render*`-named file), never in
+      // `graphics/freeCam.ts` — see that file's own header. `dollyFreeCam` only multiplies and
+      // clamps the `factor` this computes, same shape as `orbitZoom` above.
+      freeGoal = dollyFreeCam(freeGoal, Math.exp(deltaY * FREE_DOLLY_RATE));
+    },
+    freeReset(viewAngle: number): void {
+      freeGoal = defaultFreeCam(viewAngle);
     },
   };
   return cams;

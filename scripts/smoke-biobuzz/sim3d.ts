@@ -42,8 +42,8 @@ import {
   BB_HIVE_X,
   BB_PLACE_REACH,
   BB_POLLEN_R,
-  BB_RAMP_CREST_OUT,
-  BB_RAMP_CREST_Z,
+  BB_RAMP_DECK_Z,
+  BB_RAMP_IN,
   BB_RAMP_DEPLOY_S,
   BB_RAMP_OUT,
   BB_RAMP_TIP_Z,
@@ -3046,7 +3046,7 @@ export function sim3dChecks(check: Check): void {
       const deploySteps = Math.round(BB_RAMP_DEPLOY_S / (1 / 60)) + 2;
       for (let t = 0; t < deploySteps; t++) step3d(w, 1 / 60, new Map());
       const ax = mouthAxes(bbMouths(r.spec)[0], r.spec.length / 2, r.spec.width / 2);
-      const wallX = r.pos.x + ax.uOut + BB_RAMP_CREST_OUT; // the crest's own u, the wedge's tallest point
+      const wallX = r.pos.x + ax.uOut + (BB_RAMP_OUT + BB_RAMP_IN) / 2; // the blade's own mid-span
       w.balls.push({
         id: 9102,
         color: 'yellow',
@@ -3062,13 +3062,13 @@ export function sim3dChecks(check: Check): void {
       disposeEngineFor(w);
       return { crossed: ball.pos.x < wallX - 1, finalX: ball.pos.x, wallX };
     };
-    // low: fired with its CENTRE at the crest's own height, well below the mid-plate ceiling —
-    // squarely into the wedge's own solid body, not skimming over it.
-    const low = probeAt(BB_RAMP_CREST_Z);
+    // low: fired with its CENTRE at the blade's own deck height — squarely into its solid
+    // body, not skimming over it.
+    const low = probeAt(BB_RAMP_DECK_Z);
     check(
-      'archetype 3d: a 30 in/s ground POLLEN fired at the deployed WEDGE (low, at the crest\'s own height) never crosses it',
+      'archetype 3d: a 30 in/s ground POLLEN fired at the deployed BLADE (low, at the deck\'s own height) never crosses it',
       !low.crossed,
-      `final x=${low.finalX.toFixed(2)} crest x=${low.wallX.toFixed(2)} crossed=${low.crossed}`,
+      `final x=${low.finalX.toFixed(2)} blade x=${low.wallX.toFixed(2)} crossed=${low.crossed}`,
     );
   }
 
@@ -3113,6 +3113,62 @@ export function sim3dChecks(check: Check): void {
       'archetype 3d: SIDE ROLLERS capture an OFF-WHEEL offset exactly like a SWEEPER does',
       offWheel.every((r) => r.side === r.sweeper),
       JSON.stringify(rows),
+    );
+  }
+
+  // (c4) THE RAMP'S OWN GROUND-CAPTURE SWEEP — the blade is a solid deck across the whole mouth
+  // now (`config.ts`'s "THE DEPLOYABLE RAMP": one level box, `BB_RAMP_IN` .. `BB_RAMP_OUT`), so a
+  // POLLEN on open tiles has to ride OVER it to be taken. It still is, at every offset the sweeper
+  // takes one at; and with the intake OFF the blade PUSHES it rather than swallowing it.
+  {
+    const probeSpec = bbCoerce(bbArchSpec('sweeper', 'front'));
+    const half = mouthAxes(bbMouths(probeSpec)[0], probeSpec.length / 2, probeSpec.width / 2).half;
+    const offsets = [-0.9, -0.7, -0.5, -0.25, -0.1, 0.1, 0.25, 0.5, 0.7, 0.9].map((f) => f * half);
+    const runRamp = (offsetY: number, intake: boolean): { took: boolean; moved: number } => {
+      const w = mkWorld3d('match', 8119, bbArchSpec('ramp', 'front'));
+      w.match.phase = 'teleop';
+      w.match.phaseTimeLeft = 90;
+      const r = w.robots[0];
+      for (const b of w.balls) if (b.state.kind === 'held' && b.state.robot === r.id) b.state = { kind: 'stock', alliance: r.alliance };
+      r.hopper = [];
+      r.autoIntake = false;
+      r.autoFire = false;
+      // OUT IN THE OPEN, clear of the HIVE: the swing guard REVERSES a deploy that would carry
+      // the ramp into a fixed static, and the hive frame stands over the field's own centre.
+      r.pos = { x: -50, y: 34 };
+      r.heading = 0;
+      r.vel = { x: 0, y: 0 };
+      r.angVel = 0;
+      w.balls.length = 0;
+      // deploy and settle the ramp IN THE OPEN before driving (the swing guard's own rule)
+      step3d(w, 1 / 60, new Map());
+      step3d(w, 1 / 60, new Map([[0, cmd({ bbRamp: true })]]));
+      for (let t = 0; t < Math.round(BB_RAMP_DEPLOY_S * 60) + 3; t++) step3d(w, 1 / 60, new Map());
+      const x0 = -38;
+      w.balls.push({ id: 9103, color: 'yellow', r: BB_POLLEN_R, state: { kind: 'ground' }, pos: { x: x0, y: 34 + offsetY }, vel: { x: 0, y: 0 }, z: 0, vz: 0 });
+      run3d(w, new Map([[0, cmd({ driveY: 1, leftDrive: 1, rightDrive: 1, intake })]]), 3);
+      const took = r.hopper.length > 0;
+      const ball = w.balls.find((b) => b.id === 9103);
+      const moved = ball ? ball.pos.x - x0 : 0;
+      if (offsetY > 0 && offsetY < 1) console.log();
+      disposeEngineFor(w);
+      return { took, moved };
+    };
+    const on = offsets.map((off) => ({ off, ...runRamp(off, true) }));
+    const off = offsets.map((o) => ({ off: o, ...runRamp(o, false) }));
+    console.log(
+      `[smoke-bb sim3d] ramp ground-capture sweep (offset: intake on / off-pushed in): ` +
+        on.map((r, i) => `${r.off.toFixed(2)}: ${r.took ? 'Y' : 'n'}/${off[i].moved.toFixed(1)}`).join('  '),
+    );
+    check(
+      'archetype 3d: a deployed RAMP still takes a ground POLLEN over its own deck, at every offset across the mouth',
+      on.every((r) => r.took),
+      JSON.stringify(on.map((r) => [r.off.toFixed(2), r.took])),
+    );
+    check(
+      'archetype 3d: with the intake OFF the deployed RAMP PUSHES a ground POLLEN instead of taking it',
+      off.every((r) => !r.took && r.moved > 2),
+      JSON.stringify(off.map((r) => [r.off.toFixed(2), r.took, r.moved.toFixed(2)])),
     );
   }
 
@@ -3280,9 +3336,12 @@ export function sim3dChecks(check: Check): void {
     );
   }
 
-  // (e3) determinism: the RAMP's own retrieval — the WEDGE (2026-09-20) plus the stall fallback
-  // (`BB_RAMP_STALL_S`, `flowerRetrieve3d`'s ramp branch), a NEW code path relative to (e)'s bare
-  // deploy/fold script above (which never drives at a flower at all). HELD AT THE ANALYTIC FLUSH
+  // (e3) determinism: the RAMP's own retrieval — the BLADE plus its DRIVEN LIP
+  // (`rampRollerDrive`, `flowerRetrieve3d`'s ramp branch), a NEW code path relative to (e)'s bare
+  // deploy/fold script above (which never drives at a flower at all). The script empties a
+  // two-POLLEN column out of the tube (`stack` 0 either side), so the roller, the release, the
+  // re-tag and the intake's own extended pull are all in the hashed bytes, twice. HELD AT THE
+  // ANALYTIC FLUSH
   // POSE, same reasoning as (e2): a real drive-in's own standoff is what the flower3d lane's own
   // sweep characterizes, and the wrong thing to depend on for "the same script produces the same
   // bytes twice".
@@ -3303,7 +3362,7 @@ export function sim3dChecks(check: Check): void {
       // exactly the swing guard's own refusal case ("a deploy FLUSH ON THE FLOWER'S FOOT reverses
       // back to folded rather than settling deployed"), which left `bbRampSettled` false forever
       // and this fixture's `reach` permanently null — MEASURED (`scratch/ramp_flush_debug.ts`):
-      // `bbRampStallId` never left `undefined` across 500 ticks. Same fix `robot.ts`'s own
+      // the branch never fired once across 500 ticks. Same fix `robot.ts`'s own
       // `openPark`-then-`flush` fixtures already use for this exact mechanic.
       r.pos = { x: f.x - 100, y: f.y };
       r.heading = 0;
@@ -3327,7 +3386,7 @@ export function sim3dChecks(check: Check): void {
     const wb = buildRampRetrieveWorld(8150);
     const flushPose = (w: World): void => {
       // held at the analytic flush pose every tick, same discipline `robot.ts`'s own `holdTicks`
-      // follows for the ramp — the wedge's own contact force (MEASURED, `scratch/ramp_debug.ts`)
+      // follows for the ramp — the blade's own contact force (MEASURED, `scratch/rampx.ts`)
       // nudges an un-held chassis enough over ~30 ticks to drop the mouth gate for good, which
       // would make this determinism claim vacuous (nothing left for `hopper.length > 0` to find).
       const f = BB_FLOWERS[0];

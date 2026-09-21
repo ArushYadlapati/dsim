@@ -2,14 +2,13 @@ import type { Artifact, RobotCommand, RobotState, World } from '../../../types';
 import type { BiobuzzState } from '../state';
 import type { BbElementKind } from '../flower';
 import type { Vec2 } from '../../../types';
-import { dcos, dsin, rot } from '../../../math';
+import { rot } from '../../../math';
 import { bbBites, bbElementRadius, bbFlowerDropSlack, bbFlowerScatter } from '../flower';
 import {
   BB_FLOWERS,
   BB_FLOWER_RETRIEVE_S,
-  BB_RAMP_DROP_OUT,
-  BB_RAMP_RELEASE_V,
-  BB_RAMP_STALL_S,
+  BB_RAMP_LIFT_Z,
+  BB_RAMP_ROLLER_V,
   BB_SIDE_ROLLER_RELEASE_CLEAR,
   FLOWER_RING_Z,
   bbFlowerReachOf,
@@ -19,6 +18,7 @@ import { capturePollen, takeHeld } from '../elements';
 import { bbIntakeKindOf, bbLiftOf } from '../mechs';
 import { bbFlowerAtIntake, bbFlowerAtIntakeMouth } from '../play';
 import { bbFlowerInReach, bbRampSettled } from '../robot';
+import type { BbMouthAxes } from '../robot';
 import { flowerAtRetrieval } from './flowerTube';
 
 /**
@@ -257,6 +257,53 @@ function releaseFromFlowerGround(
   bb.flowers[i].stack = stack.slice(1);
 }
 
+/**
+ * ⚠️ **THE RAMP'S LIP IS DRIVEN, AND WITHOUT THAT A RIGID RAMP CANNOT DO THIS AT ALL.** The
+ * free-body argument is worked in `config.ts`'s "THE DEPLOYABLE RAMP": a lip meeting a POLLEN's
+ * flank pushes it along the contact normal, `d(h)/r` sideways against `(r−h)/r` up, so the ball
+ * RETREATS while it climbs. MEASURED (`scratch/rampx.ts`): it retreats **0.458 in** before it
+ * wedges between the two `flower_peanut_support` hulls, and from there the lip would have to
+ * reach `d(h) + 0.458` = **1.541 in** past the ball's own centre to be under it — against a hard
+ * **1.136 in** ceiling, because the same supports stop the ramp at `BB_FLOWER_PEANUT_U`
+ * (measured: they occupy `u 1.19…2.45` at `|v| 0.62…1.89`, so the only lane past them is 1.24 in
+ * wide and moves with the driver's own lateral offset — a tongue that fits it is not a mechanism,
+ * it is a 0.1-in alignment requirement). So no PASSIVE profile extracts this ball, at any lip
+ * height that also clears the lower plate's 0.354 rim: the honest bound is `h ≤ 0.175`, and the
+ * plate is at 0.354.
+ *
+ * What a real ramp intake has at the top of its lip is a ROLLER, and that is what closes it: a
+ * DRIVEN surface drags the ball up the slope instead of shoving it along the normal. This is that
+ * surface — the friction drive, not a teleport: it raises the ball's velocity COMPONENT along the
+ * lip's own rise direction to `BB_RAMP_ROLLER_V` and never reduces it, leaving every other
+ * component to the solver, so the ball still has to physically climb the plate's rim, ride the
+ * nose and reach the deck, and every collision on the way is Rapier's. It runs only while the
+ * driver holds the intake (the roller is on the same motor), only on the candidate the retrieval
+ * gates have already agreed on, and it stops the tick the release fires.
+ */
+function rampRollerDrive(rob: RobotState, ax: BbMouthAxes, ball: Artifact): void {
+  /**
+   * ⚠️ **ALONG THE DECK, AND FLAT — WHICH IS THE OPPOSITE OF THE FIRST THREE DRAFTS.** A roller on
+   * a TILTED lip drives up the slope, and the first three drafts of this did, because the ramp was
+   * a wedge. The blade is LEVEL, so the surface it presents is level too — but the measurement is
+   * what settled it rather than the geometry. Sweeping the drive's own rise angle over 400 real
+   * drive-ins at the hardest column height (ONE pollen, dead on the axis, free to retreat, so
+   * nothing behind it stops the lip pushing it away): **0 deg 400/400, 10 deg 381/400, 18 deg
+   * 360/400, 25 deg 314/400, 35 deg 193/400, 45 deg 56/400.** Every degree of lift pops the ball
+   * off the deck instead of walking it along, and a ball in the air is one `derive.ts` re-claims
+   * into the tube on the next tick.
+   *
+   * A version aimed at the mouth's own SEAT rather than straight down the deck — a funnel, which
+   * is what a pair of rollers is — was tried and measured NO BETTER: 1200 runs across three column
+   * heights, 3 failures against this one's 2, both in the same skewed corner of the envelope.
+   */
+  const dir = rot({ x: -ax.n.x, y: -ax.n.y }, rob.heading);
+  const along = ball.vel.x * dir.x + ball.vel.y * dir.y;
+  if (along < BB_RAMP_ROLLER_V) {
+    ball.vel.x += (BB_RAMP_ROLLER_V - along) * dir.x;
+    ball.vel.y += (BB_RAMP_ROLLER_V - along) * dir.y;
+  }
+}
+
 export function flowerRetrieve3d(
   world: World,
   bb: BiobuzzState,
@@ -267,8 +314,12 @@ export function flowerRetrieve3d(
   kindOf: (id: number) => BbElementKind,
 ): boolean {
   if (!enabled || !(rob.autoIntake || (cmd?.intake ?? false))) return false;
-  if (world.time - rob.lastIntakeAt < BB_FLOWER_RETRIEVE_S) return false;
   if (rob.hopper.length >= bbHopperCap(rob.spec)) return false;
+  // ⚠️ **THE PACING GATE MOVED BELOW THE ROLLER, AND IT IS WORTH FOUR TIMES THE RETRIEVAL RATE.**
+  // `BB_FLOWER_RETRIEVE_S` paces how often a POLLEN may be TAKEN; it was never meant to pace the
+  // hardware. With the check up here, the ramp's own roller (`rampRollerDrive`) turned for one
+  // tick in nine. Every other path still reads it, one line before it acts, so no other cadence
+  // moves.
   const kind = bbIntakeKindOf(rob.spec);
   const reach = bbFlowerReachOf(kind, bbRampSettled(rob, world.time));
   if (!reach) return false; // a sweeper, or a ramp not yet settled: nothing to reach with
@@ -284,85 +335,42 @@ export function flowerRetrieve3d(
   const r = ball.r ?? bbElementRadius('pollen');
   const zc = ball.z + r; // ball.z is the BOTTOM; the bite tests want the CENTRE
   const zEligible = flowerAtRetrieval(zc) && bbBites(reach.z[0], reach.z[1], zc, r);
+  const paced = world.time - rob.lastIntakeAt >= BB_FLOWER_RETRIEVE_S;
 
   /**
-   * ⚠️ **THE STALL CLOCK RUNS OFF THE MOUTH GATE ALONE, NOT THE Z-BITE** — `hit` above
-   * (`bbFlowerAtIntakeMouth`) is a function of the ROBOT's own pose and the FLOWER's fixed axis
-   * only (it bites a POLLEN's ASSUMED position, never reads `ball.z`), so it stays true the whole
-   * time a driver holds position at the foot. `zEligible` reads the ball's REAL height, and a
-   * wedge that presses down on the ball rather than lifting it (MEASURED: a `ramp` build pushed
-   * the bottom POLLEN to an off-band height and then never fired the fallback at all, because the
-   * old code gated the stall clock behind this same z-bite — a robot could sit at the foot forever
-   * with the ball wedged just out of band and nothing would ever try again) can fail this without
-   * the ball having gone anywhere. The clock has to survive that, or the fallback it exists to
-   * reach can never fire for the one failure it was written for.
+   * ⚠️ **A `ramp` RETRIEVAL HAS ONE GATE AND IT IS THE BALL'S OWN HEIGHT.** Not a proximity
+   * bite, not a timer: the POLLEN has to have been PICKED UP — its bottom above `BB_RAMP_LIFT_Z`,
+   * which is the ramp's own underside and is above the lower plate's rim (0.354). Inside the tube
+   * a POLLEN can only rest on the TILES (bottom 0) or on the element under it (bottom ≥ 2.8), so
+   * a POLLEN standing at deck height in the retrieval opening is standing on the ROBOT.
+   *
+   * Nothing here moves it. The release is a RE-TAG IN PLACE — same position, same velocity, same
+   * height, the body untouched — and `bbIntakeAct`'s own extended pull (`bbIntakeExtraReach`,
+   * which reaches `BB_RAMP_OUT` further out for exactly this) draws it down the deck and into the
+   * hopper from there, which is what the owner described: it collides with the ramp and slides
+   * down towards the intake. It replaced a 0.25-s STALL CLOCK whose expiry teleported the POLLEN
+   * out from under the column, because the wedge of the day could not lift one at all — see
+   * `config.ts`'s "THE DEPLOYABLE RAMP" for the two geometric reasons and the free-body bound that
+   * fixed them.
+   *
+   * The z-BITE below (`zEligible`) is deliberately NOT asked of this branch: it tests the reach
+   * box against a POLLEN sitting where the 2D model says, and this one is on the robot's deck by
+   * the time the gate is true.
    */
   if (kind === 'ramp') {
-    // ⚠️ PHYSICS FIRST, NOW — the wedge (`chassis3dReachShapes`, `config.ts`'s "THE DEPLOYABLE
-    // RAMP") is a real collider once deployed and settled: an ordinary forward push, over several
-    // ticks of the driver holding stick, rides the bottom POLLEN up the rise and over the crest,
-    // at which point it is outside `BB_FLOWER_OPEN_R` and `derive.ts`'s own tube-membership test
-    // un-tags it to `ground` on its own — nothing here has to release it. This branch's only job
-    // now is the FALLBACK for the leaning-column failure the owner named ("I think it depends on
-    // how the pollen are stacked... when it does not work, the pollen don't budge"): track how
-    // long the SAME bottom POLLEN has sat gated here, and if the wedge alone has not cleared it
-    // within `BB_RAMP_STALL_S`, shove the LEANING element — the one resting ON the bottom ball,
-    // which is what pins it against the peanut supports — rather than teleport the ball itself.
-    if (rob.bbRampStallId !== id) {
-      rob.bbRampStallId = id;
-      rob.bbRampStallSince = world.time;
-      return false; // freshly gated: give the wedge its full window before considering a shove
+    if (paced && ball.z >= BB_RAMP_LIFT_Z) {
+      ball.state = { kind: 'ground' };
+      rob.lastIntakeAt = world.time; // the release is the paced action, same as a capture was
+      bb.flowers[i].stack = stack.slice(1);
+      return true;
     }
-    if (world.time - (rob.bbRampStallSince ?? world.time) < BB_RAMP_STALL_S) return false;
-    if (stack.length > 1) {
-      // shove the element ABOVE the stuck one, not the stuck one itself — a small deterministic
-      // kick, the same discipline `engineImpl.ts`'s perched-element vibration follows: a hash of
-      // (id, tick, rngState), rngState READ-only and never advanced, `dsin`/`dcos` only, never
-      // `Math.random` and never a chain draw (that would fork prediction/replay).
-      const leanId = stack[1];
-      const lean = ballById.get(leanId);
-      if (lean) {
-        const h = (Math.imul(leanId + 1, 0x9e3779b1) ^ Math.imul(world.tick + 1, 0x85ebca6b) ^ world.rngState) | 0;
-        const ang = ((h >>> 0) / 0xffffffff) * Math.PI * 2;
-        const toward = rot({ x: -1 * ax.n.x, y: -1 * ax.n.y }, rob.heading); // toward the roller
-        lean.vel.x += 6 * toward.x + 4 * dcos(ang);
-        lean.vel.y += 6 * toward.y + 4 * dsin(ang);
-        lean.vz = (lean.vz ?? 0) + 3;
-      }
-      rob.bbRampStallSince = world.time; // one shove per window, then let the wedge try again
-      return false;
-    }
-    // nothing above it to unlean — a genuine geometric dead-end rather than a leaning column, so
-    // the old physical half-step (a `ground` element just behind the wedge, offset clear of the
-    // tube's own radius — see `BB_RAMP_RELEASE_V`'s own header) is the least-bad remaining option
-    // rather than an infinite stall. `u` sits behind `BB_RAMP_DROP_OUT` — the wedge's OWN
-    // innermost point now that it is two boxes wide (drop..lead), not the single point the flat
-    // crossbar was — so the release cannot spawn INSIDE the drop segment's own solid box (MEASURED:
-    // releasing at the old `BB_RAMP_OUT`-relative point did exactly that, and the ball settled at
-    // an abnormal sub-rim height and never re-cleared the tube).
-    const u = ax.uOut + BB_RAMP_DROP_OUT - 0.3 - r;
-    const v = BB_RAMP_RELEASE_V;
-    const local = { x: u * ax.n.x + v * ax.p.x, y: u * ax.n.y + v * ax.p.y };
-    const off = rot(local, rob.heading);
-    const nudge = rot({ x: -10 * ax.n.x, y: -10 * ax.n.y }, rob.heading); // ~10 in/s, inward (−n)
-    rob.bbRampStallId = undefined;
-    rob.bbRampStallSince = undefined;
-    releaseFromFlowerGround(
-      world,
-      bb,
-      rob,
-      i,
-      stack,
-      ball,
-      { x: rob.pos.x + off.x, y: rob.pos.y + off.y },
-      FLOWER_RING_Z.lower[1], // resting on the lower plate's own rim — ball.z is the BOTTOM
-      nudge,
-    );
-    return true;
+    rampRollerDrive(rob, ax, ball);
+    return false;
   }
 
   // every remaining path (siderollers, and the direct sweeper/lift capture below) DOES need the
-  // real z-bite — only the ramp's own stall clock (above) had to survive it failing.
+  // real z-bite AND the pacing — only the ramp's own roller (above) turns between takes.
+  if (!paced) return false;
   if (!zEligible) return false;
 
   if (kind === 'siderollers') {
