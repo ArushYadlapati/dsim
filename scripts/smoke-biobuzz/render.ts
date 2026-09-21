@@ -170,6 +170,11 @@ import {
   clampFreeCam,
   defaultFreeCam,
   dollyFreeCam,
+  coerceFreeCamNav,
+  FREE_CAM_PRESET_HINT,
+  FREE_CAM_PRESET_LABEL,
+  FREE_CAM_PRESETS,
+  freeCamGesture,
   freeCamPose,
   orbitFreeCam,
   panFreeCam,
@@ -1971,6 +1976,62 @@ function freeCamChecks(check: Check): void {
       const yawDiff = Math.abs(Math.atan2(Math.sin(yaw - s.yaw), Math.cos(yaw - s.yaw)));
       check("freeCam/pose: the eye's azimuth IS the state's yaw", yawDiff < 1e-6, `${yaw} vs ${s.yaw}`);
     }
+  }
+
+  // ---- mouse layouts (owner, 2026-09-21: middle-drag pans; CAD presets) ----------------------
+  {
+    // THE GROUND FOLLOWS THE CURSOR. Eye on the -x side looking +x (yaw = PI): screen-right is
+    // -y, so a drag RIGHT must move the look-at point to +y, and a drag DOWN must move it +x.
+    const grab: FreeCamState = { yaw: Math.PI, pitch: 0.6, dist: 100, target: [0, 0] };
+    const right = panFreeCam(grab, 100, 0).target;
+    const down = panFreeCam(grab, 0, 100).target;
+    check('freeCam/pan: dragging right slides the field right (the look-at point moves screen-left)', right[1] > 1 && Math.abs(right[0]) < 1e-6, String(right));
+    check('freeCam/pan: dragging down slides the field toward the viewer (the look-at point moves away)', down[0] > 1 && Math.abs(down[1]) < 1e-6, String(down));
+    const none = { shift: false, ctrl: false };
+    const shift = { shift: true, ctrl: false };
+    const ctrl = { shift: false, ctrl: true };
+    check('freeCam/nav: the default layout pans on a MIDDLE drag', freeCamGesture('dsim', 1, none) === 'pan');
+    check(
+      'freeCam/nav: the default layout keeps every gesture it had — left orbits, right and shift+left pan',
+      freeCamGesture('dsim', 0, none) === 'orbit' && freeCamGesture('dsim', 2, none) === 'pan' && freeCamGesture('dsim', 0, shift) === 'pan',
+    );
+    check(
+      'freeCam/nav: onshape — right orbits, middle and ctrl+right pan, left is left alone',
+      freeCamGesture('onshape', 2, none) === 'orbit' &&
+        freeCamGesture('onshape', 1, none) === 'pan' &&
+        freeCamGesture('onshape', 2, ctrl) === 'pan' &&
+        freeCamGesture('onshape', 0, none) === null,
+    );
+    check(
+      'freeCam/nav: solidworks — middle orbits, ctrl+middle pans, shift+middle zooms',
+      freeCamGesture('solidworks', 1, none) === 'orbit' && freeCamGesture('solidworks', 1, ctrl) === 'pan' && freeCamGesture('solidworks', 1, shift) === 'zoom',
+    );
+    check('freeCam/nav: fusion — middle pans, shift+middle orbits', freeCamGesture('fusion', 1, none) === 'pan' && freeCamGesture('fusion', 1, shift) === 'orbit');
+    check(
+      'freeCam/nav: blender — middle orbits, shift+middle pans, ctrl+middle zooms',
+      freeCamGesture('blender', 1, none) === 'orbit' && freeCamGesture('blender', 1, shift) === 'pan' && freeCamGesture('blender', 1, ctrl) === 'zoom',
+    );
+    // a layout nobody can aim with is the failure that matters: every preset must reach BOTH
+    // orbit and pan from some button + modifier, and must ignore the back/forward buttons.
+    const combos = [none, shift, ctrl];
+    for (const preset of FREE_CAM_PRESETS) {
+      const reach = new Set<string | null>();
+      for (const b of [0, 1, 2]) for (const m of combos) reach.add(freeCamGesture(preset, b, m));
+      check(`freeCam/nav: ${preset} can both orbit and pan`, reach.has('orbit') && reach.has('pan'), [...reach].join(','));
+      check(`freeCam/nav: ${preset} ignores mouse buttons 3 and 4`, freeCamGesture(preset, 3, none) === null && freeCamGesture(preset, 4, none) === null);
+      check(`freeCam/nav: ${preset} has a label and a hint`, FREE_CAM_PRESET_LABEL[preset].length > 0 && FREE_CAM_PRESET_HINT[preset].length > 10);
+    }
+    check(
+      'freeCam/nav: a corrupt stored layout falls back to the default, field by field',
+      JSON.stringify(coerceFreeCamNav({ preset: 'nope', invertZoom: 'yes' })) === JSON.stringify({ preset: 'dsim', invertZoom: false }) &&
+        JSON.stringify(coerceFreeCamNav(null)) === JSON.stringify({ preset: 'dsim', invertZoom: false }) &&
+        JSON.stringify(coerceFreeCamNav({ preset: 'onshape', invertZoom: true })) === JSON.stringify({ preset: 'onshape', invertZoom: true }),
+    );
+    // the scene must ASK the table rather than hardcode buttons, and must cancel the middle
+    // press's autoscroll or a middle-drag dies after its first pixel on Windows.
+    const scene = readFileSync(join(BIOBUZZ_DIR, 'scene', 'renderScene.ts'), 'utf8');
+    check('freeCam/nav: renderScene routes the press through freeCamGesture', scene.includes('freeCamGesture(this.freeNav.preset, e.button'));
+    check("freeCam/nav: renderScene cancels a middle press's autoscroll while the free camera is up", scene.includes("addEventListener('mousedown', onMouseDown)") && scene.includes('e.button === 1) e.preventDefault()'));
   }
 
   // ---- graphics/ still imports neither three nor scene/, pinned for this file by name -------

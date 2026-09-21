@@ -31,12 +31,15 @@ import {
   CAMERA_PREFS,
   getCameraPref,
   getDriverHeightIn,
+  getFreeCamNav,
   getViewPref,
   setCameraPref,
   setDriverHeightIn,
+  setFreeCamNav,
   setViewPref,
   subscribeCameraPref,
   subscribeDriverHeightIn,
+  subscribeFreeCamNav,
   subscribeViewPref,
   type CameraPref,
 } from '../games/biobuzz/graphics/store';
@@ -49,6 +52,12 @@ import {
   inFromCm,
   inFromFtIn,
 } from '../games/biobuzz/graphics/driverEye';
+import {
+  FREE_CAM_PRESET_HINT,
+  FREE_CAM_PRESET_LABEL,
+  FREE_CAM_PRESETS,
+  type FreeCamPreset,
+} from '../games/biobuzz/graphics/freeCam';
 import { installViewKey } from '../games/biobuzz/graphics/viewKey';
 import { rangeFill } from './rangeFill';
 import { useCoarsePointer } from './useCoarsePointer';
@@ -475,6 +484,9 @@ export function GraphicsSection() {
 
   const [driverHeight, setDriverHeight] = useState<number | null>(() => getDriverHeightIn());
   useEffect(() => subscribeDriverHeightIn(setDriverHeight), []);
+
+  const [freeNav, setFreeNav] = useState(() => getFreeCamNav());
+  useEffect(() => subscribeFreeCamNav(setFreeNav), []);
   /** FREE CAM (owner, 2026-09-21) is MOUSE-ONLY — two-finger orbit/pinch dolly would collide
    * with the on-screen drive sticks (`MobileControls`) reliably enough that it is left out
    * rather than shipped half-working, so the picker hides the option on a touch surface rather
@@ -515,13 +527,37 @@ export function GraphicsSection() {
             label="Camera"
             value={camera}
             cols="three"
-            hint={camera === 'free' ? 'Drag to orbit · right-drag to pan · scroll to zoom · double-click to reset' : undefined}
             onPick={setCameraPref}
             options={cameraOptions.map((c) => ({
               v: c,
               t: c === 'auto' ? 'Auto' : c[0].toUpperCase() + c.slice(1),
             }))}
           />
+          {/* the free camera's mouse layout — only while it is the pick, and never on touch (the
+              option itself is hidden there). Named after the CAD packages whose layout each one
+              copies, because that is how a player already knows which one their hands want. */}
+          {camera === 'free' && !touch && (
+            <>
+              <OptRow
+                label="Free camera mouse"
+                value={freeNav.preset}
+                cols="three"
+                onPick={(preset: FreeCamPreset) => setFreeCamNav({ ...freeNav, preset })}
+                options={FREE_CAM_PRESETS.map((v) => ({ v, t: FREE_CAM_PRESET_LABEL[v] }))}
+              />
+              <p className="ds-hint">{FREE_CAM_PRESET_HINT[freeNav.preset]} · double-click to reset</p>
+              <OptRow
+                label="Scroll zoom"
+                value={freeNav.invertZoom}
+                cols="two"
+                onPick={(invertZoom: boolean) => setFreeCamNav({ ...freeNav, invertZoom })}
+                options={[
+                  { v: false, t: 'Forward zooms in' },
+                  { v: true, t: 'Forward zooms out' },
+                ]}
+              />
+            </>
+          )}
           <DriverHeightRow value={driverHeight} onChange={setDriverHeightIn} />
         </div>
       </section>

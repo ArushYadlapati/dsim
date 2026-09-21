@@ -239,6 +239,8 @@ async function main(): Promise<void> {
   // rather than widening the class's real public API for a debug hook.
   (window as unknown as { __bbScene: THREE.Scene }).__bbScene = (scene as unknown as { scene: THREE.Scene }).scene;
   (window as unknown as { __bbWorld: World }).__bbWorld = world;
+  // the `GameScene` itself, so a verification script can read `cameras.free` after a synthetic drag
+  (window as unknown as { __bbGameScene: unknown }).__bbGameScene = scene;
   (window as unknown as { __bbRenderer: THREE.WebGLRenderer }).__bbRenderer = (
     scene as unknown as { renderer: THREE.WebGLRenderer }
   ).renderer;
@@ -268,12 +270,12 @@ async function main(): Promise<void> {
   window.addEventListener('resize', resize);
   resize();
 
-  // all FOUR cameras (`SceneCamera`, Day 2): driver → overhead → chase → orbit. The scene
+  // all FIVE cameras (`SceneCamera`): driver → overhead → chase → orbit → free. The scene
   // resolves the DEVICE preference over whatever is passed here, so this page also has to be
   // able to say "leave it alone": `setCameraPref('auto')` below, once, does that — otherwise a
   // preference left behind by the app in the same browser profile would quietly win over every
   // click of this button and make the page look broken.
-  const CAMERAS: SceneCamera[] = ['driver', 'overhead', 'chase', 'orbit'];
+  const CAMERAS: SceneCamera[] = ['driver', 'overhead', 'chase', 'orbit', 'free'];
   setCameraPref('auto');
   camBtn.addEventListener('click', () => {
     camera = CAMERAS[(CAMERAS.indexOf(camera) + 1) % CAMERAS.length];

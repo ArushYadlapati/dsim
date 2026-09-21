@@ -13,9 +13,10 @@
  * the renderer that actually exists is the only default that draws anything.
  */
 
-import { VIEW_KEY, CAMERA_KEY, DRIVER_HEIGHT_KEY } from '../../../storageKeys';
+import { VIEW_KEY, CAMERA_KEY, DRIVER_HEIGHT_KEY, FREE_CAM_NAV_KEY } from '../../../storageKeys';
 import type { SceneCamera } from '../../module';
 import { coerceDriverHeightIn } from './driverEye';
+import { coerceFreeCamNav, FREE_CAM_NAV_DEFAULT, type FreeCamNav } from './freeCam';
 
 export type ViewPref = '2d' | '3d';
 
@@ -191,5 +192,43 @@ export function subscribeDriverHeightIn(fn: DriverHeightListener): () => void {
   driverHeightListeners.add(fn);
   return () => {
     driverHeightListeners.delete(fn);
+  };
+}
+
+// ─────────────────────────────────────────────────────────── free cam mouse layout (owner spec) ──
+
+/**
+ * THE FREE CAMERA'S MOUSE LAYOUT — per device like everything else here: which CAD package a
+ * hand was trained on is a fact about the person at this mouse, not the account.
+ */
+export function getFreeCamNav(): FreeCamNav {
+  try {
+    const raw = localStorage.getItem(FREE_CAM_NAV_KEY);
+    return raw === null ? FREE_CAM_NAV_DEFAULT : coerceFreeCamNav(JSON.parse(raw));
+  } catch {
+    return FREE_CAM_NAV_DEFAULT;
+  }
+}
+
+type FreeCamNavListener = (nav: FreeCamNav) => void;
+
+const freeCamNavListeners = new Set<FreeCamNavListener>();
+
+/** persist and notify this tab's subscribers. Best-effort, exactly like every other pref here. */
+export function setFreeCamNav(nav: FreeCamNav): void {
+  const clean = coerceFreeCamNav(nav);
+  try {
+    localStorage.setItem(FREE_CAM_NAV_KEY, JSON.stringify(clean));
+  } catch {
+    /* non-fatal: the pick still applies for this session */
+  }
+  for (const fn of freeCamNavListeners) fn(clean);
+}
+
+/** subscribe to `setFreeCamNav`. Returns an unsubscribe function — call it on unmount/dispose. */
+export function subscribeFreeCamNav(fn: FreeCamNavListener): () => void {
+  freeCamNavListeners.add(fn);
+  return () => {
+    freeCamNavListeners.delete(fn);
   };
 }

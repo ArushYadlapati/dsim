@@ -137,15 +137,17 @@ export function panFreeCam(s: FreeCamState, dxPx: number, dyPx: number): FreeCam
   const scale = s.dist * PAN_RATE;
   const cy = dcos(s.yaw);
   const sy = dsin(s.yaw);
-  // `right`: perpendicular to the eye→target azimuth. `intoScreen`: the azimuth itself, i.e. the
-  // direction FROM the eye TOWARD the target projected onto the floor — dragging "up" (negative
-  // `dyPx`) pulls the ground away from the eye, exactly like pushing a map away from you.
+  // `right`: screen-right on the floor. `into`: FROM the eye TOWARD the target on the floor.
+  // THE GROUND FOLLOWS THE CURSOR, the way every CAD package pans: dragging right slides the
+  // field right, so the look-at point moves LEFT; dragging down slides it toward the viewer, so
+  // the look-at point moves INTO the screen. (Shipped the other way round on 2026-09-21 — the
+  // camera followed the cursor — and was measured backwards with real mouse input.)
   const rightX = -sy;
   const rightY = cy;
   const intoX = -cy;
   const intoY = -sy;
-  const dRight = dxPx * scale;
-  const dInto = -dyPx * scale;
+  const dRight = -dxPx * scale;
+  const dInto = dyPx * scale;
   return clampFreeCam({
     ...s,
     target: [s.target[0] + dRight * rightX + dInto * intoX, s.target[1] + dRight * rightY + dInto * intoY],
@@ -163,6 +165,92 @@ export function panFreeCam(s: FreeCamState, dxPx: number, dyPx: number): FreeCam
  */
 export function dollyFreeCam(s: FreeCamState, factor: number): FreeCamState {
   return clampFreeCam({ ...s, dist: s.dist * factor });
+}
+
+// ───────────────────────────────────────────────────────────────────── mouse navigation presets ──
+
+/**
+ * WHICH MOUSE BUTTON DOES WHAT (owner, 2026-09-21: "scroll wheel click to slide around ... presets
+ * for popular cad software"). A CAD user's hands already know one of these by heart, and the
+ * packages disagree on every button, so the mapping is a per-device pick rather than one more
+ * compromise. `dsim` is the superset default: everything it did before, plus middle-drag pan.
+ *
+ *   preset       orbit            pan                          zoom (drag)
+ *   dsim         left             middle · right · shift+left  —
+ *   onshape      right            middle · ctrl+right          —
+ *   solidworks   middle           ctrl+middle                  shift+middle
+ *   fusion       shift+middle     middle                       —
+ *   blender      middle           shift+middle                 ctrl+middle
+ *
+ * The wheel dollies in every preset; its DIRECTION is the separate `invertZoom` switch, because
+ * that is a preference those same packages expose on its own and their defaults disagree.
+ * A CAD preset leaves the LEFT button unbound on purpose — it is "select" in all four, and here
+ * that keeps it free for the start-position editor.
+ */
+export const FREE_CAM_PRESETS = ['dsim', 'onshape', 'solidworks', 'fusion', 'blender'] as const;
+export type FreeCamPreset = (typeof FREE_CAM_PRESETS)[number];
+
+export type FreeCamGesture = 'orbit' | 'pan' | 'zoom';
+
+export interface FreeCamMods {
+  shift: boolean;
+  ctrl: boolean;
+}
+
+/** `button` is `PointerEvent.button`: 0 left, 1 middle, 2 right. `ctrl` is ctrl OR meta at the
+ * call site, so a Mac's ⌘ works wherever a PC's ctrl does. `null` = this press is not a camera
+ * gesture, and the listener must leave it alone. */
+export function freeCamGesture(preset: FreeCamPreset, button: number, mods: FreeCamMods): FreeCamGesture | null {
+  const { shift, ctrl } = mods;
+  switch (preset) {
+    case 'onshape':
+      if (button === 2) return ctrl ? 'pan' : 'orbit';
+      return button === 1 ? 'pan' : null;
+    case 'solidworks':
+      if (button !== 1) return null;
+      return ctrl ? 'pan' : shift ? 'zoom' : 'orbit';
+    case 'fusion':
+      if (button !== 1) return null;
+      return shift ? 'orbit' : 'pan';
+    case 'blender':
+      if (button !== 1) return null;
+      return shift ? 'pan' : ctrl ? 'zoom' : 'orbit';
+    default:
+      if (button === 0) return shift ? 'pan' : 'orbit';
+      return button === 1 || button === 2 ? 'pan' : null;
+  }
+}
+
+/** the one-line reminder the Graphics section prints under the picker. */
+export const FREE_CAM_PRESET_HINT: Record<FreeCamPreset, string> = {
+  dsim: 'Drag to orbit · middle or right-drag to pan · scroll to zoom',
+  onshape: 'Right-drag to orbit · middle-drag or Ctrl+right-drag to pan · scroll to zoom',
+  solidworks: 'Middle-drag to orbit · Ctrl+middle to pan · Shift+middle or scroll to zoom',
+  fusion: 'Middle-drag to pan · Shift+middle to orbit · scroll to zoom',
+  blender: 'Middle-drag to orbit · Shift+middle to pan · Ctrl+middle or scroll to zoom',
+};
+
+export const FREE_CAM_PRESET_LABEL: Record<FreeCamPreset, string> = {
+  dsim: 'DSIM',
+  onshape: 'Onshape',
+  solidworks: 'SolidWorks',
+  fusion: 'Fusion',
+  blender: 'Blender',
+};
+
+/** the persisted navigation pick (`graphics/store.ts`, `FREE_CAM_NAV_KEY`). */
+export interface FreeCamNav {
+  preset: FreeCamPreset;
+  invertZoom: boolean;
+}
+
+export const FREE_CAM_NAV_DEFAULT: FreeCamNav = { preset: 'dsim', invertZoom: false };
+
+/** field-by-field, so a corrupt or older stored value degrades to the default per field. */
+export function coerceFreeCamNav(raw: unknown): FreeCamNav {
+  const r = (raw && typeof raw === 'object' ? raw : {}) as Record<string, unknown>;
+  const preset = (FREE_CAM_PRESETS as readonly unknown[]).includes(r.preset) ? (r.preset as FreeCamPreset) : FREE_CAM_NAV_DEFAULT.preset;
+  return { preset, invertZoom: r.invertZoom === true };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────────── the pose ──

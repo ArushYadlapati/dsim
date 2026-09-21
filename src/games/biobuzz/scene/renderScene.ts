@@ -6,14 +6,16 @@ import {
   CAMERA_PREFS,
   getCameraPref,
   getDriverHeightIn,
+  getFreeCamNav,
   resolveSceneCamera,
   setCameraPref,
   setViewPref,
   subscribeCameraPref,
   subscribeDriverHeightIn,
+  subscribeFreeCamNav,
   type CameraPref,
 } from '../graphics/store';
-import { subscribeFreeCamReset } from '../graphics/freeCam';
+import { freeCamGesture, subscribeFreeCamReset, type FreeCamNav } from '../graphics/freeCam';
 import {
   GFX_PRESETS,
   effectivePixelRatio,
@@ -129,6 +131,10 @@ const PIP_MARGIN = 12;
 const PIP_MIN_PX = 120;
 const PIP_MAX_PX = 260;
 
+/** free cam drag-zoom: wheel-delta units per pixel of drag. The whole 20–420 in dolly range is
+ * ~2,500 wheel units, so ~630 px of drag crosses it. */
+const FREE_ZOOM_DRAG_PX = 4;
+
 class BiobuzzScene implements GameScene {
   /** A GETTER, not a field. The canvas is stable for the life of the scene today, but the
    * contract's `readonly element` is satisfied either way and the host (`game.ts`) reads it at
@@ -194,9 +200,11 @@ class BiobuzzScene implements GameScene {
    * frames against, since neither trigger has a `SceneFrame` of its own to read one from. */
   private lastViewAngle = 0;
   /** `null` while no drag is in flight; otherwise which gesture the pointer that went down is
-   * driving — orbit's own left-drag, or free cam's three (orbit/pan are separate buttons/
-   * modifiers there; dolly has no drag at all). */
-  private dragMode: 'orbit' | 'free-orbit' | 'free-pan' | null = null;
+   * driving — orbit's own left-drag, or one of free cam's three. WHICH button/modifier means
+   * which is `freeNav.preset`'s call (`graphics/freeCam.ts`'s `freeCamGesture`). */
+  private dragMode: 'orbit' | 'free-orbit' | 'free-pan' | 'free-zoom' | null = null;
+  /** the free camera's mouse layout + wheel direction, per device (`graphics/store.ts`). */
+  private freeNav: FreeCamNav = getFreeCamNav();
   private dragX = 0;
   private dragY = 0;
 
@@ -489,6 +497,11 @@ class BiobuzzScene implements GameScene {
     // and kept live for every scene that mounts (the gallery's several scenes included).
     setDriverHeightIn(getDriverHeightIn());
     this.teardown.push(subscribeDriverHeightIn(setDriverHeightIn));
+    this.teardown.push(
+      subscribeFreeCamNav((nav) => {
+        this.freeNav = nav;
+      }),
+    );
     // A FIXED-TIER SCENE DOES NOT SUBSCRIBE. A replay export runs at High by contract (§4.7), and
     // a player who opened the Graphics section in another tab mid-encode must not change the
     // resolution of a video that is halfway written.
@@ -527,7 +540,10 @@ class BiobuzzScene implements GameScene {
       this.dragY = e.clientY;
       if (this.dragMode === 'orbit') this.cameras.orbitDrag(dx, dy);
       else if (this.dragMode === 'free-orbit') this.cameras.freeOrbit(dx, dy);
-      else this.cameras.freePan(dx, dy);
+      else if (this.dragMode === 'free-pan') this.cameras.freePan(dx, dy);
+      // drag-zoom: pulling DOWN zooms in, the way the CAD packages that have it do. One pixel of
+      // drag is worth `FREE_ZOOM_DRAG_PX` of wheel delta, so a full-height drag spans the range.
+      else this.cameras.freeDolly(-dy * FREE_ZOOM_DRAG_PX * (this.freeNav.invertZoom ? -1 : 1));
     };
     const endDrag = (e: PointerEvent): void => {
       if (this.dragMode) {
@@ -543,9 +559,10 @@ class BiobuzzScene implements GameScene {
       if (e.pointerType !== 'mouse') return;
       if (this.lastCamera === 'orbit' && e.button === 0) {
         this.dragMode = 'orbit';
-      } else if (this.lastCamera === 'free' && (e.button === 0 || e.button === 2)) {
-        // right-drag OR shift+left-drag pans; a bare left-drag orbits.
-        this.dragMode = e.button === 2 || e.shiftKey ? 'free-pan' : 'free-orbit';
+      } else if (this.lastCamera === 'free') {
+        const g = freeCamGesture(this.freeNav.preset, e.button, { shift: e.shiftKey, ctrl: e.ctrlKey || e.metaKey });
+        if (!g) return;
+        this.dragMode = g === 'orbit' ? 'free-orbit' : g === 'pan' ? 'free-pan' : 'free-zoom';
       } else {
         return;
       }
@@ -563,8 +580,14 @@ class BiobuzzScene implements GameScene {
         this.cameras.orbitZoom(e.deltaY);
       } else if (this.lastCamera === 'free') {
         e.preventDefault();
-        this.cameras.freeDolly(e.deltaY);
+        this.cameras.freeDolly(this.freeNav.invertZoom ? -e.deltaY : e.deltaY);
       }
+    };
+    // A MIDDLE PRESS STARTS THE BROWSER'S AUTOSCROLL (the four-way arrow cursor) on Windows, and
+    // that swallows every move after it — so a middle-drag gesture has to cancel the press's
+    // default. It is the legacy `mousedown` that carries that default, not `pointerdown`.
+    const onMouseDown = (e: MouseEvent): void => {
+      if (this.lastCamera === 'free' && e.button === 1) e.preventDefault();
     };
     // right-drag panning the free camera must not pop a context menu on release — but ONLY
     // while the free camera is active, so an ordinary right-click elsewhere on the page (or on
@@ -577,6 +600,7 @@ class BiobuzzScene implements GameScene {
       this.cameras.freeReset(this.lastViewAngle);
     };
     host.addEventListener('pointerdown', onDown);
+    host.addEventListener('mousedown', onMouseDown);
     window.addEventListener('pointermove', onMove);
     window.addEventListener('pointerup', endDrag);
     window.addEventListener('pointercancel', endDrag);
@@ -586,6 +610,7 @@ class BiobuzzScene implements GameScene {
     host.addEventListener('dblclick', onDblClick);
     this.teardown.push(() => {
       host.removeEventListener('pointerdown', onDown);
+      host.removeEventListener('mousedown', onMouseDown);
       window.removeEventListener('pointermove', onMove);
       window.removeEventListener('pointerup', endDrag);
       window.removeEventListener('pointercancel', endDrag);

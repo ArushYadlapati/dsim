@@ -1,6 +1,26 @@
+# HANDOFF — 2026-09-21b (alpha: free cam mouse layouts)
+
+**READ FIRST.** Gates: `npm test` ALL PASS, `build`, `uiaudit` (index regenerated), `docaudit`, `bundleaudit`.
+
+- **FREE CAM MOUSE LAYOUTS** (owner: "scroll wheel click to slide around ... presets for popular cad
+  software"). `graphics/freeCam.ts` `freeCamGesture(preset, button, mods)` is the ONE table; `renderScene.ts`
+  asks it on `pointerdown`. Presets `dsim` (default: left orbit, MIDDLE/right/shift+left pan), `onshape`,
+  `solidworks`, `fusion`, `blender`; drag-zoom exists where the package has it. CAD presets leave LEFT
+  unbound. Wheel direction is a separate `invertZoom`. Stored per device in `FREE_CAM_NAV_KEY`
+  (`decodesim.freeCamNav`, in the privacy inventory); picker shows in Graphics only while Camera = Free.
+- ⚠️ A middle press starts the browser AUTOSCROLL on Windows and eats the drag: `renderScene.ts` cancels
+  the legacy `mousedown` (not `pointerdown`) for button 1 while the free camera is up.
+- ⚠️ PAN WAS BACKWARDS as shipped in 21a (the camera followed the cursor). Now the GROUND follows the
+  cursor, as CAD does; two direction checks pin it. Measured with trusted input: `scratch/freenav.cjs`
+  (headless Electron `sendInputEvent`, per preset). The Browser pane is `hidden` when the owner is away,
+  so rAF never fires there — use the Electron script, not the pane, for anything frame-driven.
+- scene-preview: `free` is in the camera cycle; `window.__bbGameScene` exposes the scene.
+- OPEN (in flight when written): side-roller protrusion (owner: "do they need to stick out that much").
+
+---
 # HANDOFF — 2026-09-21a (alpha: ramp by physics, one-piece shooter plates, free cam, real-eye driver cam, full top plate)
 
-**READ FIRST.** Gates on the final tree: `npm test` ALL PASS (2,090 shared + 3,716 biobuzz, 26 s wall),
+Gates on the final tree: `npm test` ALL PASS (2,090 shared + 3,716 biobuzz, 26 s wall),
 `build`, `server:check`, `uiaudit`, `docaudit`, `contrast`, `bundleaudit` (scene 211.0 KB gz), `dbtest`,
 `test:mm`. `dsim-alpha` redeployed. The agents below each prepended their own notes further down.
 

@@ -544,7 +544,7 @@ The look and the depth model are `DESIGN.md`. This file is only the inventory.
 
 | class | declared | used |
 |---|---|---|
-| `.ds-hint` | src/ui/shell.css:1841 | 172 |
+| `.ds-hint` | src/ui/shell.css:1841 | 173 |
 
 ## `ds-input` — 1
 

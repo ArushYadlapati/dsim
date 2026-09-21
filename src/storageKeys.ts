@@ -76,6 +76,8 @@ export const VIEW_KEY = 'decodesim.view';
 export const CAMERA_KEY = 'decodesim.camera';
 /** the driver's own height, for the height-accurate BIOBUZZ 3D driver camera — per device */
 export const DRIVER_HEIGHT_KEY = 'decodesim.driverHeight';
+/** which mouse-button layout the BIOBUZZ 3D free camera uses, and its zoom direction */
+export const FREE_CAM_NAV_KEY = 'decodesim.freeCamNav';
 /** client-side prediction on/off — a per-device netcode preference */
 export const PREDICTION_KEY = 'decodesim.prediction';
 /** that the "prediction is off" notice has been shown once, so it is not shown again */
@@ -190,6 +192,13 @@ export const STORAGE_KEYS: readonly StorageKeyEntry[] = [
     purpose:
       'Your own height, if you entered it, to place BIOBUZZ’s 3D driver camera at your real eye level. Kept per device, since the person in front of the screen is not an account fact.',
     retention: 'Until you clear your browser data, or use the setting’s "Clear" button.',
+  },
+  {
+    key: FREE_CAM_NAV_KEY,
+    storage: 'local',
+    category: 'preference',
+    purpose: 'Which mouse-button layout the free 3D camera uses, and which way the scroll wheel zooms.',
+    retention: 'Until you clear your browser data.',
   },
   {
     key: FRIENDS_PANEL_OPEN_KEY,
