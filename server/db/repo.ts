@@ -3,6 +3,7 @@ import type { AssistConfig, GameId, RobotSpec } from '../../src/types';
 import type { PendingMatch, PendingRosterEntry } from '../matchTypes';
 import { BALANCE_VERSION, PLACEMENT_GAMES } from '../../src/config';
 import { awardTitleId } from '../../src/awards';
+import { isTitleId } from '../../src/cosmetics';
 import { coerceGameId, GAME_IDS, serverPhysics } from '../../src/games/types';
 import { simModuleFor } from '../../src/games/sim';
 import { COSMETIC_AXES } from '../../src/cosmetics';
@@ -810,6 +811,10 @@ export async function listSupporterGrants(
  *  grant nothing while reporting success, and must never let a free-text value land in
  *  the column and later read back as "entitled". */
 function isCosmeticId(id: string): boolean {
+  // a LEDGER TITLE lives in the same jsonb array but is not a robot-spec axis, so it has
+  // its own closed set (`TITLE_KEYS`, src/cosmetics.ts) rather than widening COSMETIC_AXES
+  // — see that constant's header for why a title must not become a spec axis.
+  if (id.startsWith('title:')) return isTitleId(id);
   const i = id.indexOf(':');
   if (i < 0) return false;
   const axis = id.slice(0, i) as keyof typeof COSMETIC_AXES;
@@ -1039,6 +1044,149 @@ export async function setTitle(userId: string, id: string | null): Promise<boole
  */
 export async function clearTitleIfEquipped(userId: string, id: string): Promise<void> {
   await q(`update profiles set title = null, updated_at = now() where user_id = $1 and title = $2`, [userId, id]);
+}
+
+
+// ------------------------------------------------- linked social accounts --
+/** the providers a DSIM account can link (0047). */
+export type LinkProvider = 'github' | 'discord';
+
+/**
+ * LINKED SOCIAL ACCOUNTS (0047) and the STAR REWARD that reads them.
+ * `docs/rewards-round2-plan.md` §2.1 / §3.1.
+ */
+export interface ProviderLink {
+  provider: LinkProvider;
+  providerUserId: string;
+  userId: string;
+  linkedAt: string;
+  unlinkedAt: string | null;
+}
+
+/**
+ * LINK an external account. Answers false when that external account is already bound to a
+ * DIFFERENT DSIM account — including one that has since unlinked.
+ *
+ * ⚠️ THAT REFUSAL IS THE WHOLE ANTI-FARM, and it is why the row survives an unlink. Without
+ * it, unlink → relink on a second account mints the reward again for free, which is the
+ * cheapest farm available against any of these. Re-linking the SAME pair is allowed and
+ * simply clears `unlinked_at`, because that is a person undoing their own mistake.
+ */
+export async function linkProvider(userId: string, provider: LinkProvider, providerUserId: string): Promise<boolean> {
+  const rows = await q<{ user_id: string }>(
+    `insert into provider_links (provider, provider_user_id, user_id)
+     values ($1, $2, $3)
+     on conflict (provider, provider_user_id) do update
+       set unlinked_at = null
+       where provider_links.user_id = excluded.user_id
+     returning user_id`,
+    [provider, providerUserId, userId],
+  );
+  return rows.length > 0;
+}
+
+/** UNLINK: stamp `unlinked_at`, never delete — see `linkProvider`. */
+export async function unlinkProvider(userId: string, provider: LinkProvider): Promise<boolean> {
+  const rows = await q<{ user_id: string }>(
+    `update provider_links set unlinked_at = now()
+      where user_id = $1 and provider = $2 and unlinked_at is null
+      returning user_id`,
+    [userId, provider],
+  );
+  return rows.length > 0;
+}
+
+/** what this account has linked right now (unlinked rows excluded). */
+export async function providerLinks(userId: string): Promise<ProviderLink[]> {
+  const rows = await q<{ provider: LinkProvider; provider_user_id: string; linked_at: string }>(
+    `select provider, provider_user_id, linked_at from provider_links
+      where user_id = $1 and unlinked_at is null order by provider`,
+    [userId],
+  );
+  return rows.map((r) => ({ provider: r.provider, providerUserId: r.provider_user_id, userId, linkedAt: r.linked_at, unlinkedAt: null }));
+}
+
+/** every LIVE link for one provider — the sweep's left-hand side. */
+export async function liveLinks(provider: LinkProvider): Promise<{ providerUserId: string; userId: string }[]> {
+  const rows = await q<{ provider_user_id: string; user_id: string }>(
+    `select provider_user_id, user_id from provider_links where provider = $1 and unlinked_at is null`,
+    [provider],
+  );
+  return rows.map((r) => ({ providerUserId: r.provider_user_id, userId: r.user_id }));
+}
+
+/** the ledger id the GitHub star reward grants. */
+export const STARGAZER_TITLE = 'title:stargazer';
+
+/** every account holding one ledger id — ONE query, so a sweep does not ask per account. */
+export async function cosmeticHolders(id: string): Promise<Set<string>> {
+  const rows = await q<{ user_id: string }>(`select user_id from profiles where cosmetics ? $1`, [id]);
+  return new Set(rows.map((r) => r.user_id));
+}
+
+export interface StarSweepResult {
+  granted: string[];
+  revoked: string[];
+  /** false ⇒ nothing was changed, because the fetch could not be trusted. */
+  applied: boolean;
+}
+
+/**
+ * THE GITHUB STAR SWEEP — grant to everyone who stars, revoke from everyone who stops.
+ *
+ * `stargazers` is the COMPLETE set of stargazer ids for the repo, and `complete` says
+ * whether the fetch that produced it actually finished. The caller does the HTTP; this does
+ * the set algebra, so the interesting half is testable without a network or a token.
+ *
+ * ⚠️ **`complete: false` CHANGES NOTHING, AND THIS IS THE ENTIRE COST OF MAKING THE REWARD
+ * REVOCABLE** (owner ruling, 2026-09-21: "unstarring should revoke the reward honestly").
+ * Grant-only, a failed or truncated fetch meant "no new grants this cycle" and was harmless.
+ * With revocation the SAME failure would strip the title from every holder at once — a
+ * non-2xx, a timeout, a page loop that ended early, or a `304 Not Modified` misread as an
+ * empty list. So the sweep refuses to act on a set it does not trust, and the caller must
+ * pass `complete: false` rather than an empty array when anything went wrong.
+ *
+ * Revocation costs no extra traffic: it is the same set difference read the other way. It
+ * also costs no write for an account that did not hold the title, because `revokeCosmetic`
+ * is guarded by `and cosmetics ? $2`.
+ *
+ * ⚠️ AND IT CLEARS AN EQUIPPED TITLE. `profiles.title` may be wearing the very id being
+ * taken away, and leaving it would be a dangling reference for a render path to discover —
+ * the same rule `clearUsername` follows.
+ */
+export async function sweepStargazers(
+  stargazers: readonly string[],
+  complete: boolean,
+): Promise<StarSweepResult> {
+  if (!complete) return { granted: [], revoked: [], applied: false };
+  const stars = new Set(stargazers);
+  const links = await liveLinks('github');
+  /**
+   * ⚠️ WHO ALREADY HOLDS IT IS READ UP FRONT, IN ONE QUERY, AND IT IS NOT OPTIONAL.
+   * `grantCosmetic` is idempotent in EFFECT (its `case when cosmetics ? $2` never writes a
+   * duplicate) but NOT in its return value: the UPDATE matches the profile row either way,
+   * so it answers true every time. Driving the audit off that answer would write a
+   * `cosmetics.grant` row on EVERY sweep — turning an append-only table that exists to
+   * answer "why does this account have this?" into one that cannot, which is the same
+   * failure the boost floor's own note warns about. So the set difference decides, and
+   * `grantCosmetic` is only called for an account that does not already hold it.
+   */
+  const holders = await cosmeticHolders(STARGAZER_TITLE);
+  const granted: string[] = [];
+  const revoked: string[] = [];
+  for (const l of links) {
+    const has = holders.has(l.userId);
+    if (stars.has(l.providerUserId)) {
+      if (has) continue;
+      if (await grantCosmetic(l.userId, STARGAZER_TITLE, 'rewards', 'github star')) granted.push(l.userId);
+    } else if (has) {
+      if (await revokeCosmetic(l.userId, STARGAZER_TITLE, 'rewards', 'github star withdrawn')) {
+        await clearTitleIfEquipped(l.userId, STARGAZER_TITLE);
+        revoked.push(l.userId);
+      }
+    }
+  }
+  return { granted, revoked, applied: true };
 }
 
 // ------------------------------------------------------- Ko-fi payments -----

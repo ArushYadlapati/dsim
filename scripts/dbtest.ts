@@ -3469,6 +3469,72 @@ async function main(): Promise<void> {
     check('awards: a deleted account takes its awards with it (the FK cascades, no deleteAccount line needed)', Number(left.rows[0].n) === 0);
   }
 
+
+  // ---- PROVIDER LINKS + THE STAR SWEEP (0047) --------------------------------------
+  /**
+   * The anti-farm and the fail-safe. `docs/rewards-round2-plan.md` §3.1/§6 asks for both by
+   * name, and the fail-safe is the one that was written before the code.
+   */
+  {
+    await repo.ensureProfile('gh-1', 'Star');
+    await repo.ensureProfile('gh-2', 'Other');
+
+    check('links: linking an account takes', (await repo.linkProvider('gh-1', 'github', '1001')) === true);
+    check('links: ...and it shows up as live', (await repo.providerLinks('gh-1')).length === 1);
+    check('links: re-linking the SAME pair is fine (somebody undoing their own mistake)', (await repo.linkProvider('gh-1', 'github', '1001')) === true);
+    check(
+      '⚠️ links: the SAME external account cannot be linked to a SECOND DSIM account',
+      (await repo.linkProvider('gh-2', 'github', '1001')) === false,
+    );
+
+    // the sweep grants to a linked stargazer and not to anybody else
+    let r = await repo.sweepStargazers(['1001'], true);
+    check('star sweep: a linked stargazer is granted', r.applied && r.granted.includes('gh-1'), JSON.stringify(r));
+    check('star sweep: ...and holds the title', (await repo.earnedTitles('gh-1')).includes(repo.STARGAZER_TITLE));
+    r = await repo.sweepStargazers(['1001'], true);
+    check('star sweep: a second identical sweep grants nothing new (grantCosmetic is idempotent)', r.granted.length === 0 && r.revoked.length === 0);
+
+    // ⚠️ THE FAIL-SAFE. A fetch that did not finish must change NOTHING — with revocation
+    // on, the same failure that used to mean "no grants this cycle" would otherwise strip
+    // the title from every holder at once.
+    r = await repo.sweepStargazers([], false);
+    check(
+      '⚠️ star sweep: an INCOMPLETE fetch revokes nobody and grants nobody',
+      r.applied === false && r.revoked.length === 0 && r.granted.length === 0,
+    );
+    check('⚠️ star sweep: ...and the title is still held after it', (await repo.earnedTitles('gh-1')).includes(repo.STARGAZER_TITLE));
+
+    // unstarring revokes (owner ruling 2026-09-21) — and takes the EQUIPPED title with it
+    await repo.setTitle('gh-1', repo.STARGAZER_TITLE);
+    const wearing = await db.query<{ title: string | null }>(`select title from profiles where user_id = 'gh-1'`);
+    check('star sweep: the title can be equipped before it is taken away', wearing.rows[0].title === repo.STARGAZER_TITLE);
+    r = await repo.sweepStargazers([], true);
+    check('⚠️ star sweep: unstarring REVOKES (owner, 2026-09-21)', r.applied && r.revoked.includes('gh-1'), JSON.stringify(r));
+    check('star sweep: ...the ledger no longer has it', !(await repo.earnedTitles('gh-1')).includes(repo.STARGAZER_TITLE));
+    const after = await db.query<{ title: string | null }>(`select title from profiles where user_id = 'gh-1'`);
+    check(
+      '⚠️ star sweep: ...and the EQUIPPED title was cleared, not left dangling',
+      after.rows[0].title === null,
+      `title=${after.rows[0].title}`,
+    );
+
+    // unlink keeps the row, so the pair can never earn on another account
+    check('links: unlinking takes', (await repo.unlinkProvider('gh-1', 'github')) === true);
+    check('links: ...and the account has no live link', (await repo.providerLinks('gh-1')).length === 0);
+    check(
+      '⚠️ links: ...but the PAIR is still spoken for — unlink/relink is not a free reward mint',
+      (await repo.linkProvider('gh-2', 'github', '1001')) === false,
+    );
+    check('links: the original owner may relink it', (await repo.linkProvider('gh-1', 'github', '1001')) === true);
+
+    // a ledger title is a closed set; an unknown one is refused like any cosmetic id
+    check('links: an unknown title id cannot be granted', (await repo.grantCosmetic('gh-1', 'title:selfawarded', 'rewards')) === false);
+
+    await repo.deleteAccount('gh-2');
+    const left = await db.query<{ n: number }>(`select count(*)::int as n from provider_links where user_id = 'gh-2'`);
+    check('links: a deleted account takes its links with it (the FK cascades)', Number(left.rows[0].n) === 0);
+  }
+
   await db.close();
   console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILURES`);
   process.exit(failures === 0 ? 0 : 1);

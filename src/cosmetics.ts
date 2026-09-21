@@ -144,6 +144,34 @@ export const COSMETIC_AXES: { [K in keyof Required<Cosmetics>]: readonly string[
   plate: PLATE_KEYS,
 };
 
+/**
+ * LEDGER-ONLY TITLE KEYS — granted titles that are NOT season awards.
+ *
+ * ⚠️ DELIBERATELY NOT AN AXIS IN `COSMETIC_AXES`. That registry is the ROBOT SPEC's
+ * cosmetic axes: `clampCosmetics` folds each one onto a field of `Cosmetics`, and a title
+ * is not a field of a robot — it is a decoration on an ACCOUNT NAME. Adding `title` there
+ * would make `clampCosmetics` write a key the spec has no room for, and `CosmeticId`'s
+ * template type would start claiming a title is something a builder can pick.
+ *
+ * So it is its own closed set, living in the same `profiles.cosmetics` LEDGER (0044) —
+ * which brings `grantCosmetic`'s idempotency, its `admin_audit` row, `revokeCosmetic`, the
+ * entitlements payload and the admin console with it — while `earnedTitles` unions these
+ * with the titles derived from `season_awards`.
+ *
+ * SEASON TITLES ARE NOT HERE AND MUST NOT BE: they are DATA, one per season per board, and
+ * a closed compile-time registry is exactly the wrong place for a set that grows whenever
+ * a season rolls.
+ */
+export const TITLE_KEYS = ['stargazer'] as const;
+
+/** `"title:<key>"` — the ledger form, the sibling of `CosmeticId`. */
+export type TitleId = `title:${string}`;
+
+/** is `id` a ledger title this build knows? `title:` ids not in the set are refused. */
+export function isTitleId(id: string): boolean {
+  return id.startsWith('title:') && (TITLE_KEYS as readonly string[]).includes(id.slice('title:'.length));
+}
+
 /** SHAPE: fold every axis onto its closed set, unknown ⇒ the default. Pure; no entitlement. */
 export function clampCosmetics(c: Cosmetics): Required<Cosmetics> {
   const out = { ...COSMETIC_DEFAULTS };
