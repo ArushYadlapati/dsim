@@ -2519,6 +2519,17 @@ button {
   margin: 28px 0 12px;
 }
 
+/* only when it follows the maintenance card directly (Live tab) — `.adm-user`'s own
+   `.adm-stats.small` already sits in a flex column with its own gap, and adding a
+   margin here too would double it. */
+.admin-card + .adm-stats {
+  margin-top: var(--ds-s-4);
+}
+/* the "N sessions belong to N accounts + N guests…" line right under the tiles — same
+   missing-gap bug, one sibling further down. */
+.adm-stats + .ds-hint {
+  margin-top: var(--ds-s-4);
+}
 .adm-stats { display: flex; flex-wrap: wrap; gap: 10px; }
 .adm-stat {
   flex: 1 1 120px;
@@ -2614,8 +2625,11 @@ button {
 
 /* the standing note about what this page can and cannot see. Bordered rather than
    muted into the background on purpose: the limits are part of the feature, not a
-   footnote to it. */
-.adm-privacy {
+   footnote to it. `p.adm-privacy` (not `.adm-privacy` alone) because `styles.css` loads
+   before `shell.css`, so `.ds-hint`'s own `margin: 0` — same specificity, later in the
+   cascade — was winning the tie and silently zeroing this margin-top. The element
+   qualifier breaks the tie without touching load order. */
+p.adm-privacy {
   margin-top: 28px;
   border: 1px solid var(--ds-line);
   border-radius: 10px;

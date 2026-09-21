@@ -1754,8 +1754,16 @@ button.ds-chip {
 /* STACKED PANELS OWN THEIR OWN GAP. Without this every page had to hand-type one, and
    they disagreed: 0 (Donate, so up to four cards met border-on-border), 16 (WatchLive),
    18 (Account ×3, DesktopUpdate, MatchHistory), 22, 28. `.ds-main` is a plain block with
-   no gap and `styles.css` opens with `* { margin: 0 }`, so nothing supplied it. */
-.ds-panel + .ds-panel {
+   no gap and `styles.css` opens with `* { margin: 0 }`, so nothing supplied it.
+   `.ds-sec` needs the exact same gap wherever it plays the same role — a flat top-level
+   page section (Account, Career) rather than one nested inside a flex column that already
+   owns a gap of its own (`.ds-robot`, `.ds-subnav-body`) — so it is scoped to a DIRECT
+   child of `.ds-main` here: nested one level deeper it must NOT also get a margin, or the
+   two gaps would add instead of the wrapper's alone applying. */
+.ds-panel + .ds-panel,
+.ds-main > .ds-sec + .ds-sec,
+.ds-main > .ds-panel + .ds-sec,
+.ds-main > .ds-sec + .ds-panel {
   margin-top: var(--ds-s-4);
 }
 /* ...and the trailing half, because the sibling rule above only fires when a panel is
@@ -1764,7 +1772,8 @@ button.ds-chip {
    against the next control. `.ds-main` is a block, so this collapses with the rule
    above rather than adding to it: consecutive panels stay 16 apart. Scoped to
    `.ds-main` on purpose — `.ds-console-in` already owns a 22px gap for its children. */
-.ds-main > .ds-panel {
+.ds-main > .ds-panel,
+.ds-main > .ds-sec {
   margin-bottom: var(--ds-s-4);
 }
 /* the panel BODY. Written out as `style={{ padding: 16 }}` twelve times because this
@@ -2448,10 +2457,9 @@ button.ds-chip {
   display: flex;
   align-items: center;
   gap: 12px;
-  margin: 2px 0 12px;
+  margin: 0 0 12px;
   padding: 10px 14px;
   border: 1px solid var(--ds-line);
-  border-radius: 10px;
   background: color-mix(in srgb, var(--ds-accent) 8%, var(--ds-panel));
 }
 .lb-standing.placed {
