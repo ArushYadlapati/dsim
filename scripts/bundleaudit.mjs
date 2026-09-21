@@ -133,6 +133,10 @@ function routeFor(file, buf) {
   const base = file;
   if (/^index-[^/]*\.js$/.test(base)) return 'main';
   if (/^hostWorker-[^/]*\.js$/.test(base)) return 'hostWorker';
+  // the Embedded App SDK, reached only through `src/net/discordSdk.ts` (a facade that
+  // exists precisely so this chunk is NOT named `index-*` — the package's own entry is
+  // index.js, and without the facade it was billed against main's baseline).
+  if (/^discordSdk-[^/]*\.js$/.test(base)) return 'discord';
   if (/^Gallery-[^/]*\.js$/.test(base)) return 'gallery';
   // The admin console's chunks, by FILENAME like the three above — Vite names a lazy chunk
   // after its facade module, so `Admin-*.js` and `AdminAnalytics-*.js` are what it emits, and
@@ -275,11 +279,44 @@ const fmtKB = (bytes) => `${(bytes / 1000).toFixed(2)} KB`;
  *               9162190, because `AdminAnalytics-*.js` had no route of its own and fell through
  *               to the bucket whose near-zero baseline exists to catch exactly that.
  *
+ * ── RE-MEASURED 2026-09-19, `discord-activity` after pulling alpha (PR #41) ──────────
+ *   main        927.11 KB — +3.22 over 923.89, and the split was measured against a clean
+ *               `origin/alpha` worktree built the same minute (924.97): **+2.14 is the
+ *               activity** — `discordActivity.ts`, the lobby browser, the Lobby "You"
+ *               section, the home button and the App/ModeSelect wiring, all MAIN by design
+ *               because `inDiscordActivity()` is what decides whether to render them — and
+ *               +1.08 is alpha's own tip since the console pass (the URL-state fix in
+ *               d64cf19). Under the 4 KB tolerance, which is the overhang this header warns
+ *               about, so it is measured here instead.
+ *
+ * ── RE-MEASURED 2026-09-21, merging PR #41 into alpha ──────────────────────────
+ *   main        946.79 KB — RAISED from 927.11, and ⚠️ ALMOST NONE OF THE RISE IS THIS PR.
+ *               Measured both trees the same minute, same machine: `origin/alpha` ALONE builds
+ *               a 944.61 KB entry chunk, i.e. alpha was ALREADY 20.72 KB over its own 923.89
+ *               baseline and this audit was ALREADY RED on it before the merge — the
+ *               match-results redesign (5392737..918173b) grew the entry chunk and did not
+ *               re-measure here. The merge adds 946.79 − 944.61 = **+2.18 KB**, which is the
+ *               activity itself and matches the +2.14 the 2026-09-19 entry above predicted.
+ *               Raised to the measured merged value so the ratchet is honest again; the 20.72
+ *               is alpha's to explain, and it is called out here rather than folded in
+ *               silently, because a baseline raised without an attribution is how a ratchet
+ *               stops meaning anything.
+ *   discord      44.30 KB — unchanged, and still exactly the SDK: nothing of the activity's
+ *               own code leaks into the lazy chunk.
+ *   hostWorker 709.94, physics3d 1130.92, scene 203.60 — IDENTICAL to clean alpha to
+ *               within 0.05 KB, i.e. alpha's own drift since its last entry (+3.63, +5.86,
+ *               +2.16), none of it this branch's. Left where alpha left them, for alpha to
+ *               re-measure with whatever moved them.
+ *
  * RECALIBRATE by running `npm run build && npm run bundleaudit` and copying the printed gzip
  * totals in here, the same way `uiaudit.mjs`'s header describes lowering ITS baseline.
  */
 const BASELINE = {
-  main: { gzip: 923.89 * 1000 },
+  main: { gzip: 946.79 * 1000 },
+  // `@discord/embedded-app-sdk` behind `watchDiscordParticipants`'s dynamic import —
+  // loaded only inside a real Discord Activity embed (`onDiscordHost()` gates the
+  // import), so no ordinary player downloads it. MEASURED 2026-09-18.
+  discord: { gzip: 44.30 * 1000 },
   hostWorker: { gzip: 706.26 * 1000 },
   physics3d: { gzip: 1125.06 * 1000 },
   // 2026-09-19: 199.48 -> 201.44 (+1.96). The owner's render pass made three meshes REAL —

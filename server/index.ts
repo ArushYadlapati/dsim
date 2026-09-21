@@ -2169,6 +2169,56 @@ const httpServer = createServer((req, res) => {
     }
     return;
   }
+  /**
+   * GET /api/lobbies?group=<id> — OPEN lobbies for a Discord Activity.
+   *
+   * The Discord lobby browser lists the rooms of ONE activity so more than four
+   * players can split into several games cleanly. Scoped strictly by `group` (the
+   * activity instance id, set by each room's creator): a request without a group,
+   * or for a group with no rooms, gets an empty list — this never exposes the
+   * global custom-room set (those are private-by-code, deliberately absent from
+   * every public list). LOCAL rooms only: Discord's `/gs` mapping targets a single
+   * region, so an activity's rooms all live on one machine.
+   */
+  if (req.method === 'GET' && req.url?.startsWith('/api/lobbies')) {
+    const u = new URL(req.url, 'http://x');
+    // Region PIN (see the Discord client's DISCORD_REGION): all of an activity's
+    // rooms live on one machine, so the listing must be READ from that same machine
+    // or an anycast-nearest read returns a different region's (empty) set. On Fly we
+    // fly-replay this GET to the requested region; locally (REGION='') we answer here.
+    /* ⚠️ VALIDATE THE REGION BEFORE IT REACHES A HEADER. `want` is untrusted and goes into a
+       `fly-replay` header value; Node rejects a CRLF there by THROWING `ERR_INVALID_CHAR` inside
+       the request handler, and the process-level `uncaughtException` hook only logs it — so the
+       socket is left with no response until it times out. `?region=%0Ax` in a loop is then a
+       free way to pile up hung sockets. A Fly region is three lowercase letters; anything else
+       is simply not a region and is answered locally. (`/health` above takes the same untrusted
+       value the same way and wants the same guard — flagged, not fixed here, because it is not
+       this change's to make.) */
+    const want = u.searchParams.get('region');
+    if (REGION && want && /^[a-z]{3}$/.test(want) && want !== REGION && !req.headers['fly-replay-src']) {
+      res.writeHead(200, {
+        'fly-replay': `region=${want}`,
+        'access-control-allow-origin': '*',
+        'cache-control': 'no-store',
+      });
+      res.end();
+      return;
+    }
+    const group = (u.searchParams.get('group') ?? '').replace(/[^A-Za-z0-9._:-]/g, '').slice(0, 64);
+    const lobbies = group
+      ? [...rooms.values()]
+          .filter((r) => r.group === group)
+          .map((r) => r.lobbySummary())
+          .filter((s): s is NonNullable<ReturnType<Room['lobbySummary']>> => s !== null)
+      : [];
+    res.writeHead(200, {
+      'content-type': 'application/json',
+      'cache-control': 'no-store',
+      'access-control-allow-origin': '*',
+    });
+    res.end(JSON.stringify({ region: REGION, lobbies }));
+    return;
+  }
   // machine-sizing evidence for THIS machine (see the perf probe above). Public and
   // read-only: counts and timings, no player or account data. `?reset=1` zeroes the
   // lag histogram so a sample can be scoped to one match instead of since boot.
@@ -2780,6 +2830,33 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
       });
       return;
     }
+    /**
+     * THE ACTIVITY'S GROUP IS PART OF THE KEY, NOT JUST A LABEL.
+     *
+     * `GET /api/lobbies?group=` lists a Discord activity's open rooms AND THEIR CODES to any
+     * unauthenticated caller who knows the group — and the group is the activity `instance_id`,
+     * which sits in the iframe URL, is shared by every participant and never rotates. Without
+     * this guard a code harvested from that list stayed a bearer token FOREVER AND EVERYWHERE:
+     * it could be typed into the ordinary web join box, from any browser, long after the voice
+     * channel emptied. That is the "private by code" invariant the custom-room path is built on,
+     * handed away by a public list.
+     *
+     * So a room that was CREATED with a group is joinable only by a client presenting the same
+     * group. The code alone is no longer enough; you need the code and the activity. It does not
+     * make the list private — anyone with the instance id can still enumerate, which is the
+     * activity's own trust boundary and is Discord's model, not ours — but it stops what the
+     * list hands out from being useful anywhere else.
+     *
+     * ⚠️ Only for rooms that HAVE a group. Every web, LAN and matchmade room has `group === ''`
+     * and is completely unaffected, which is why this is not gated on `caps`: an older client
+     * has no `group` to send and could never have been in an activity room in the first place.
+     */
+    const wantGroup = typeof msg.group === 'string' ? msg.group.replace(/[^A-Za-z0-9._:-]/g, '').slice(0, 64) : '';
+    if (r && r.group && r.group !== wantGroup) {
+      console.warn(`[admit] refused room ${code}: grouped room, group mismatch`);
+      send({ t: 'error', message: 'That code belongs to a Discord activity. Open it from the activity to join.' });
+      return;
+    }
     if (!r) {
       r = new Room(
         code,
@@ -2795,6 +2872,13 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
         // every one of them was dead in production while the DB-off dev path ran them fine.
         (b) => void persistBehaviour(b),
       );
+      // tag a freshly-created room with the creator's group (the Discord Activity
+      // instance) so the lobby browser can list this activity's rooms. Sanitized:
+      // the id is untrusted, so clamp to a bounded, safe token. Only set on
+      // creation — a joiner never changes an existing room's group.
+      if (typeof msg.group === 'string') {
+        r.group = msg.group.replace(/[^A-Za-z0-9._:-]/g, '').slice(0, 64);
+      }
       rooms.set(code, r);
       created = true;
     }

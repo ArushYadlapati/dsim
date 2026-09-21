@@ -1,4 +1,4 @@
-import { Suspense, lazy, useCallback, useEffect, useRef, useState } from 'react';
+import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { ComponentType } from 'react';
 import type { GameSettings } from '../game';
 import { loadSettings, saveSettings, switchGame, syncAudioMirrors } from '../settings';
@@ -42,6 +42,15 @@ import { WatchLive } from './WatchLive';
 import { LobbyClient } from '../net/lobbyClient';
 import { AppShell, type ShellNav } from './AppShell';
 import { HomeMenu } from './HomeMenu';
+import {
+  inDiscordActivity,
+  discordInstanceId,
+  discordGroup,
+  roomCodeForInstance,
+  watchDiscordParticipants,
+  type DiscordParticipant,
+} from '../net/discordActivity';
+import { DiscordLobbyList } from './DiscordLobbyList';
 import { ModeSelect } from './ModeSelect';
 import { LanPanel } from './LanPanel';
 import { Configure, isConfigureSection, type ConfigureSection } from './Configure';
@@ -102,6 +111,7 @@ type Screen =
   | 'configure'
   | 'records'
   | 'lobby'
+  | 'discordlobbies'
   | 'record'
   | 'duorecord'
   | 'matchmaking'
@@ -196,6 +206,8 @@ function screenSuffix(screen: Screen, a: RouteArgs): string {
       return a.username ? `/profile/${encodeURIComponent(a.username)}` : '/records';
     case 'lobby':
       return '/lobby';
+    case 'discordlobbies':
+      return '/discord-lobbies';
     case 'record':
       return '/record';
     case 'duorecord':
@@ -266,6 +278,13 @@ function parseScreen(rest: string): { screen: Screen } & RouteArgs {
 
   if (rest.startsWith('/modes')) return at('modes');
   if (rest.startsWith('/lobby')) return at('lobby');
+  /* ⚠️ THE DISCORD LOBBY BROWSER NEEDS A CASE HERE OR IT IS A WRITE-ONLY ROUTE. `screenSuffix`
+     pushes `/discord-lobbies` and the canonicalise effect puts it in the address bar, but with
+     no arm here the path fell through to `at('home')` — so a RELOAD while browsing lobbies
+     landed on home. A reload inside an activity is not hypothetical: it is why the instance id
+     is persisted at all (`DISCORD_INSTANCE_KEY`). Gated like `/lan` is, because outside an
+     activity the screen has nothing to list. */
+  if (inDiscordActivity() && rest.startsWith('/discord-lobbies')) return at('discordlobbies');
   if (rest.startsWith('/duo-record')) return at('duorecord');
   if (rest.startsWith('/record')) return at('record');
   if (rest.startsWith('/ranked')) return at('matchmaking');
@@ -348,6 +367,7 @@ function navFor(screen: Screen): ShellNav {
     case 'modes':
     case 'game':
     case 'lobby':
+    case 'discordlobbies':
     case 'record':
     case 'duorecord':
     case 'matchmaking':
@@ -579,6 +599,41 @@ export function App() {
   const [pendingAutoJoin, setPendingAutoJoin] = useState<
     { room: string; config: RoomConfig; region?: string } | null
   >(null);
+
+  // DISCORD ACTIVITY: the home page offers a "Join Discord Lobby" button (with the
+  // activity participants' avatars via the Embedded App SDK) that opens a LOBBY
+  // BROWSER scoped to this activity — so more than one game can run at once instead
+  // of everyone piling into a single four-seat room. `discordGroupId` (the sanitized
+  // instance id) is the room GROUP the server lists by; `discordMainCode` is the
+  // deterministic "main lobby" code so simultaneous first-joiners still converge on
+  // one room. The KIND is pinned (versus); the SEASON is the room's own — the browser
+  // reports it per room and the creator's pick for a new one — and is switched to
+  // BEFORE the join, exactly as an accepted invite does, because the server refuses a
+  // config-mismatched joiner and the Lobby renders the PLAYER's season, not the
+  // room's. (Pinned to DECODE, the activity could not play Chain Reaction or BIOBUZZ,
+  // and a BIOBUZZ player saw a BIOBUZZ lobby for a DECODE match.) All captured once at
+  // mount; `discordInstanceId` also remembers the id for the tab, since the router
+  // canonicalizes the launch URL to a bare path and a reload would otherwise lose it.
+  const discordGroupId = useMemo(() => (inDiscordActivity() ? discordGroup() : ''), []);
+  const discordMainCode = useMemo(
+    () => (discordGroupId ? roomCodeForInstance(discordInstanceId()) : ''),
+    [discordGroupId],
+  );
+  const [discordPeople, setDiscordPeople] = useState<DiscordParticipant[]>([]);
+  useEffect(() => {
+    if (!discordGroupId) return;
+    return watchDiscordParticipants(setDiscordPeople);
+  }, [discordGroupId]);
+  const joinDiscordLobby = (): void => navigate('discordlobbies');
+  /** enter a specific Discord room (from the browser) — join-or-create, tagged with
+   * the activity group so it shows in everyone else's lobby browser. `game` is the
+   * season the room runs; switch to it first so the lobby, the start editor and the
+   * robot all belong to the match about to be played. */
+  const enterDiscordRoom = (code: string, game: GameId): void => {
+    selectGame(game);
+    setPendingAutoJoin({ room: code, config: { kind: 'versus', game } });
+    navigate('lobby');
+  };
   // a RATED challenge waiting to be queued under its party token. Same one-shot
   // shape as pendingAutoJoin and for the same reason: the Matchmaking screen
   // consumes it on mount, so a later ordinary visit to /ranked is an ordinary
@@ -1512,6 +1567,17 @@ export function App() {
       />
     );
   }
+  if (screen === 'discordlobbies') {
+    return (
+      <DiscordLobbyList
+        group={discordGroupId}
+        mainCode={discordMainCode}
+        game={settings.game}
+        onEnter={enterDiscordRoom}
+        onBack={() => navigate('home')}
+      />
+    );
+  }
   if (screen === 'lobby') {
     const auto = pendingAutoJoin?.config.kind === 'versus' ? pendingAutoJoin : undefined;
     return roomScreen(
@@ -1538,6 +1604,8 @@ export function App() {
         autoJoin={auto?.room}
         autoJoinRegion={auto?.region}
         onAutoJoinConsumed={() => setPendingAutoJoin(null)}
+        discordActivity={!!discordGroupId}
+        group={discordGroupId}
         resume={resumedRoom ?? undefined}
       />
     );
@@ -1577,6 +1645,8 @@ export function App() {
         autoJoin={auto?.room}
         autoJoinRegion={auto?.region}
         onAutoJoinConsumed={() => setPendingAutoJoin(null)}
+        discordActivity={!!discordGroupId}
+        group={discordGroupId}
       />
     );
   }
@@ -1688,6 +1758,7 @@ export function App() {
         <HomeMenu
           settings={settings}
           multiplayer={multiplayer}
+          discord={discordGroupId ? { people: discordPeople, onJoin: joinDiscordLobby } : null}
           onNav={(n) => navigate(screenForNav(n))}
           onGame={(g) => {
             update(switchGame(settings, g));
@@ -1727,6 +1798,7 @@ export function App() {
           onCustomRoom={() => guardStart(() => navigate('lobby'))}
           onWatch={() => navigate('watch')}
           onLan={() => navigate('lan')}
+          compete={!discordGroupId}
           /* THE FIRST-RUN OFFER. Absent once the device flag is set, and absent for a game with
              no tutorial — `ModeSelect` renders nothing for it either way, so the page loses a
              section rather than gaining a disabled tile. */
