@@ -1,6 +1,87 @@
+# HANDOFF — 2026-09-21i (alpha: the venue, PASS, rewards stage A, and four fixes)
+
+**READ FIRST.** Gates on alpha at `4755321`: `npm test` ALL PASS (**2,184** shared + **4,702**
+biobuzz), `build`, `server:check`, `dbtest`, `uiaudit` (all at baseline), `contrast` (237),
+`docaudit`, `bundleaudit`. `dsim-alpha` redeployed and healthy (0045/0046 applied at boot).
+
+⚠️ **`npm test` WAS RED ON EVERY WINDOWS CHECKOUT AND NOBODY HAD CHANGED THE CODE.** 21h's
+header blames `freeCam.ts:186` and calls it "that file's owner's call" — it was neither the
+comment's fault nor the file's. The two source guards in `smoke.ts` split on `'\n'`, and JS
+`.` does not match `\r`, so on a CRLF checkout `^\s*\*.*$` cannot reach the end of a JSDoc
+line and strips NOTHING — the guard then reads a COMMENT as code. They split on `/\r?\n/`
+now. It went red the moment git normalised that file on commit; every `core.autocrlf`
+checkout was already in that state.
+
+- **HIVE ELEMENTS STOPPED DROOPING IN SERVER ROOMS** (owner: "constantly drooping downwards
+  and teleporting back up"). The FULL predictor's near set is every non-held ball within
+  `PREDICT_ELEMENT_RADIUS` and it built them all DYNAMIC — but an `element` tag means the
+  AUTHORITY holds it, and nothing in the prediction world catches a hive cell. MEASURED, six
+  seated elements over 100 reconciles: the predicted body sat **-1.76 in mean, -1.96 worst**
+  under an authoritative z whose range was **0.000** — ½gt² for the window, i.e. free fall.
+  Kinematic now (not skipped, so a chassis still feels a flower column). NET3D §15.
+- **THE RAMP WILL NOT DEPLOY THROUGH ANOTHER ROBOT.** The swing guard filtered on
+  `isFixed()` — written to the first wording of the rule, "any non-moving solid thing" — and
+  a chassis is not fixed. `rampSwingHitsStatic` is `rampSwingBlocked` and takes the other
+  robots' body handles. Refused at 16..24 in nose-to-nose, deploys at 26+; with robots left
+  out it deploys at every gap, so the SIM3D check is not vacuous.
+- **PR #41 (Discord Activity) MERGED** after four conflicts (all generated/log files) and
+  four fixes: a grouped room is no longer joinable by code alone (`/api/lobbies?group=`
+  publishes CODES to anyone holding the `instance_id`, and a harvested code was a bearer
+  token in the ordinary web join box forever); the fly-replay region is validated before it
+  reaches a header (an unvalidated one THROWS inside the handler and the socket hangs);
+  `/discord-lobbies` had no `parsePath` arm so a reload landed on home; and an inline
+  negative margin that `uiaudit`'s regex cannot see.
+  ⚠️ **ALPHA'S BUNDLE RATCHET WAS ALREADY RED BEFORE THAT MERGE** — alpha alone builds a
+  944.61 KB entry chunk against a 923.89 baseline. The results redesign (5392737..918173b)
+  grew it ~20.7 KB and did not re-measure. PR #41 added **+2.18 KB**. Baseline raised to the
+  measured 946.79 WITH the split attributed in `bundleaudit.mjs`'s header; **the 20.7 is not
+  explained and is not mine.**
+- **A REAL VENUE AROUND THE FIELD.** The surround was `scene.background` alone: no parallax
+  (sampled by view direction), no horizon (every camera looks DOWN, so the frame samples the
+  dome's lower half and `backgroundBlurriness` smears it — that band IS the "blurry lights"),
+  and no ground at all on the CAD field (`bb-room` was only added by the constants fallback).
+  `renderVenue.ts`: hall / arena / studio / outdoor, one InstancedMesh per category. +1.86 KB
+  scene, **zero asset bytes**, worst case 7 draws and 5,762 tris. Only LOW takes the cut.
+- **PASS TO YOUR PARTNER** (`bbPass`). ⚠️ **The target is a POINT, never the partner** —
+  owner: "in real life, you can't know where your opponent is accurately." `spec.bbPassTarget`
+  or the alliance LOADING ZONE. Lands 0.2/3.0/5.8 in from a 102-in preset.
+  ⚠️ **Gating on `sol.reachable` alone is wrong and I shipped it once in draft**: a solved arc
+  says a shot EXISTS, not that the turret has slewed onto it — the hive path gets that free
+  from `bbTurretShotEnters`. Without `bbTurretOnTarget` the three passes landed 34.8/64.2/78.3
+  in short. Turreted builds only; **unbound on the pad** (0..15 all taken, 15 is the menu
+  button) with an EXACT allowlist in the smoke check so a second one cannot join quietly.
+- **REWARDS STAGE A** — `0045_season_awards`, `0046_titles`, and `startNewSeason` is one
+  transaction at last (it was four loose `q()` calls, and `q()` takes a connection per call).
+  Owner's counts: ranked top 3/mode, record overall top 3 + per-drivetrain top 1, and the DUO
+  board gets the same pair. ⚠️ `user_id` is IN the unique slot index because a duo award has
+  TWO holders. ⚠️ The **closing** season is awarded, at the act it belonged to — `act` may
+  already be bumped for the one being opened. Titles are DERIVED (`awardTitleId`), never
+  stored. `docs/rewards-round2-plan.md` is the plan; §10 is the framework for adding socials.
+  **Owner decisions taken: unstarring REVOKES** (free — same sweep, `revokeCosmetic` already
+  exists; the cost is the FAIL-SAFE rule, since a failed fetch would otherwise strip everyone)
+  and **NO Instagram follow reward** — a follow is unverifiable, the follower/relationship
+  endpoints went in 2018, Basic Display died 2024-12-04, and there is no `follows` webhook.
+
+## Next
+
+- Stage A's **UI half is not built**: `awardTitleText`, the `AwardBadge` chip (decided: one
+  hexagon, one saturated violet, rank as a numeral — gold/silver/bronze is the trap, gold is
+  supporter and the other two are desaturated by definition), the leaderboard chip, Career
+  "Awards", the title picker, the API surface, and a `contrast.mjs` pair for the new hue.
+- Stage B (GitHub) is unblocked — Neon Auth has GitHub. **Discord needs bespoke OAuth**: Neon
+  Auth offers Google, GitHub and Vercel only. `guilds.members.read` returns `premium_since`
+  and needs no privileged intent, but re-checking needs a stored refresh token or a
+  user-present button — the bot + `GUILD_MEMBERS` intent is still the cleaner route.
+- `docs/area/biobuzz.md`'s Environments bullet is now partly stale (it says the surround is
+  the dome) and wants a Venue paragraph.
+- The two HDRIs (`school-hall`, `monochrome-studio`) still download 1.6–1.7 MB and now buy
+  only IBL and reflections, since the geometry hides the photograph. Product call.
+
+---
+
 # HANDOFF — 2026-09-21h (the ONE-PANEL results screen: a full-height panel beside its content)
 
-**READ FIRST — `npm test` is red on this tree for TWO reasons and NEITHER is this work.**
+** `npm test` is red on this tree for TWO reasons and NEITHER is this work.**
 `npm run test:bb --lane core` is ALL PASS, and `build`, `server:check`, `uiaudit` (all at
 baseline, none moved), `contrast` (235) and `docaudit` are green.
 
@@ -431,7 +512,7 @@ Gates on the final tree: `npm test` ALL PASS (2,090 shared + 3,716 biobuzz, 26 s
 
 # HANDOFF — 2026-09-21a (alpha: the ramp's wedge is a FLAT PLOW BLADE with a driven lip, and it extracts 400/400 by physics)
 
-**READ FIRST.** Owner: "the pollen should be getting intaked from the deployable ramp BECAUSE it
+Owner: "the pollen should be getting intaked from the deployable ramp BECAUSE it
 collides with the ramp and slides down towards the intake"; "the old ramp works 99% of the
 time... when it does not work, the pollen don't budge... I think it depends on how the pollen are
 stacked". Gates on this tree: `npm test` **3649 checks, 1 failure** — `every non-auto camera
