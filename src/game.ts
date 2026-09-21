@@ -391,6 +391,16 @@ export class GameController {
   private world: World;
   private readonly input: InputManager;
   private readonly renderer = new Renderer();
+  /**
+   * The renderer's driver-name lookup — one bound arrow, built once.
+   *
+   * It is a field rather than a literal at the call site because the call site is the rAF
+   * loop: a fresh closure there is an allocation 144 times a second for a function whose
+   * behaviour never changes. It reads `this.session` live, so a rematch (which re-reads
+   * `drivers` on the session) needs nothing here.
+   */
+  private readonly driverName = (robotId: number): string | undefined =>
+    this.session?.driverName?.(robotId);
   private readonly ctx: CanvasRenderingContext2D;
   private readonly audio = new MatchAudio();
   private raf = 0;
@@ -1617,7 +1627,7 @@ export class GameController {
     }
     // a live scene draws the field/robots/balls beneath this canvas — the 2D pass then
     // stays transparent and draws only its cheap overlay (name labels), never the field.
-    this.renderer.render(this.ctx, world, this.lastCmd, this.localRobotId, !!this.scene);
+    this.renderer.render(this.ctx, world, this.lastCmd, this.localRobotId, !!this.scene, this.driverName);
     this.renderTimes.push(performance.now() - drawT0);
     this.sampleFrame(dtMs);
     this.raf = requestAnimationFrame(this.loop);

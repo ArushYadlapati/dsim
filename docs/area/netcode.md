@@ -53,6 +53,21 @@ The old P2P lockstep/mesh/TURN/Supabase-lobby is DELETED. Full roadmap: `docs/ne
   against every deployed server), and `Room.reattach` states the live generation on
   `rejoined` (`{ok: true, gen}`), which corrects a record that is merely STALE — a rematch
   moved the room on after it was written. Both additive and optional on the wire.
+- **`matchStart.drivers` IS WHO IS IN THE SEATS** (`MatchDriver[]`, `robotId` → username; a bot
+  seat is named for its tier). It exists because nothing mapped a match's robot ids onto the
+  lobby's usernames: `setups` carries each robot's `RobotSpec`, whose `name` is the CHASSIS, so
+  the in-match label named the build and two default builds were labelled identically. Built
+  ONCE in `Room.beginMatch` (`seatedDrivers`), which is where all three start paths and every
+  rematch meet, and FROZEN there — `robotOf` is torn down as people leave, so deriving it per
+  send would hand a spectator arriving late a handshake that cannot name the robot still on the
+  field. Additive and optional both ways, so **no `caps` gate**: an older client ignores the key,
+  an older server sends none and the client falls back to `spec.name`. It is NOT in
+  `World`/`RobotState` and must not become so — that is a per-tick field at 30 Hz to every
+  client, and the sim is deterministic JSON that has no business knowing who is driving.
+  ⚠️ **And it is the FOURTH field `ActiveGameRef.start` has to carry** — `MatchStart`,
+  `NetSession`, `App.beginSession` — after `physics` and `gen` each shipped missing from that
+  hand-written copy. Cheapest symptom of the three (a rejoined driver's labels fall back to
+  chassis names), identical hole.
 - **WHETHER A LEAVE KEEPS YOUR SEAT IS PER ROOM KIND, and the rejoin offer must agree with it.**
   Custom, ranked and duo-record hold the seat for the grace, so their offer is real (and in
   ranked, going back is what stops away ticks accruing against standing). A SOLO RECORD room is

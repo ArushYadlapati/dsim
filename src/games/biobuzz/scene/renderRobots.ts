@@ -2416,19 +2416,18 @@ function buildDumper(spec: RobotSpec, launcher: BbLauncherSpec): THREE.Group {
  * ── THE ALLIANCE AND THE COSMETIC COLOUR (roadmap item 1) ──────────────────────────────────
  * The chassis FILL is the supporter cosmetic (`chassisFill`, the 7-key allowlist in
  * `src/config.ts`) — it goes on the drivetrain side plates and the deck — and the ALLIANCE is
- * the silhouette line plus the sign panel, the same split the 2D sprite has always made
- * (`drawRobot.ts`). Scoping the cosmetic to the FILL is what keeps it from ever making a red
+ * the sign panel (the red/blue silhouette line was removed 2026-09-21; the name label over the
+ * robot carries the alliance now). Scoping the cosmetic to the FILL is what keeps it from ever making a red
  * robot read as blue, which is the one thing a cosmetic may not do here.
  */
 export function buildRobotGroup(spec: RobotSpec, id: number, alliance: Alliance): THREE.Group {
   const group = new THREE.Group();
   group.name = `robot:${id}`;
-  const color = alliance === 'blue' ? BLUE : RED;
   const launcher = bbLauncherOf(spec, 0);
   const lift = bbLiftOf(spec);
   // COSMETICS: see `render/drawRobot.ts`'s header — `accent`/`decal`/`plate` land on `RobotSpec`
   // on a parallel lane; `clampCosmetics` is shape-safe against a spec that does not declare them
-  // yet. The FILL is the cosmetic (see below); the ALLIANCE stays the silhouette line + the signs.
+  // yet. The FILL is the cosmetic (see below); the ALLIANCE is the signs (and the name label).
   const cosm = clampCosmetics(spec);
   const accent = accentFill(cosm.accent, spec.chassisColor);
 
@@ -2441,25 +2440,15 @@ export function buildRobotGroup(spec: RobotSpec, id: number, alliance: Alliance)
   group.userData.swervePods = wheels.pods;
   group.userData.butterflySets = { traction: wheels.traction, roller: wheels.roller };
 
-  // THE HALO — the 3D twin of the 2D sprites' dark inner ring (`docs/cosmetics-plan.md` §3.4): a
-  // second, darker edge trace sitting just INSIDE the alliance line so a vivid cosmetic fill never
-  // drops the silhouette's contrast. Scaled between the skin's own true edge (1.0) and the alliance
-  // line below (1.004), so it reads as trim UNDER the alliance line rather than a second outline.
+  // THE EDGE TRIM — one dark trace round the BUMPER BAND, a whisker outside the skin's own faces so
+  // it cannot z-fight them. It used to sit UNDER a red/blue ALLIANCE LINE; that line is gone
+  // (owner, 2026-09-21: "Remove the red/blue alliance outline") and the alliance is carried by the
+  // name label over the robot (`render/renderer.ts`) and the signs. The node keeps its name.
   const halo = new THREE.LineSegments(chassisEdges(spec.length, spec.width, BB_PLATE_H), lineMat(OUTLINE_HALO));
   halo.name = `robot:${id}:outlineHalo`;
   halo.position.z = BB_PLATE_H / 2;
   halo.scale.set(1.002, 1.002, 1.0015);
   group.add(halo);
-
-  // THE ALLIANCE LINE, round the BUMPER BAND (the drivetrain) — where an alliance colour sits on
-  // a real robot. Scaled out by a whisker so it cannot z-fight with the faces it traces: a
-  // co-planar line and surface flicker per pixel per frame, which reads as a rendering fault
-  // rather than as an outline.
-  const edges = new THREE.LineSegments(chassisEdges(spec.length, spec.width, BB_PLATE_H), lineMat(color));
-  edges.name = `robot:${id}:outline`;
-  edges.position.z = BB_PLATE_H / 2;
-  edges.scale.set(1.004, 1.004, 1.002);
-  group.add(edges);
 
   // the NOSE — a small white block on the front cross member, so the forward end of a symmetric
   // drivetrain is readable from any angle

@@ -318,6 +318,31 @@ export interface PlayerIntro {
   elo: number | null;
 }
 
+/**
+ * WHO IS DRIVING ROBOT `robotId` — the account username, keyed by the robot id the server
+ * assigned at matchStart.
+ *
+ * It exists because a match had no way to name the PEOPLE in it. `matchStart.setups` carries
+ * each robot's `RobotSpec`, whose `name` is what the builder called the CHASSIS, and the
+ * in-match label drew that — so two drivers who both left the default name on their build were
+ * labelled identically. The username is on the lobby `roster` the whole time and nothing mapped
+ * it onto a robot id.
+ *
+ * A BOT SEAT IS A DRIVER HERE TOO, named for its tier exactly as its roster row is: the label
+ * is answering "who is that", and "Medium bot" is the honest answer.
+ *
+ * No `caps` gate: the field is purely additive on a message every build already parses, so an
+ * older client destructures the fields it knows and never sees this one, and an older SERVER
+ * sends none and the client falls back to `spec.name` — which is what it drew before this
+ * existed. Same reasoning as `error.code`.
+ */
+export interface MatchDriver {
+  /** the robot id assigned in `matchStart.setups` */
+  robotId: number;
+  /** the driver's username, already moderated (`scrubName` at join) */
+  name: string;
+}
+
 /** one driver's overall-ELO change, sent after a ranked match is scored so the
  * results screen can show before → after (+delta). Keyed by robot id. */
 export interface EloDelta {
@@ -784,6 +809,12 @@ export type ServerMsg =
       physics?: Physics;
       ranked?: boolean;
       intros?: PlayerIntro[];
+      /**
+       * WHO IS IN THE SEATS — one entry per robot the room could name (see `MatchDriver`).
+       * The in-match label reads this and falls back to `spec.name` for a robot it does not
+       * cover. Absent from an older server, and absent for a room with nobody seated.
+       */
+      drivers?: MatchDriver[];
       /**
        * MATCH GENERATION — bumped every time this room authors a world, so a
        * rematch is distinguishable from the run it replaced.

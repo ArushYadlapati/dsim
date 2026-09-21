@@ -1,8 +1,32 @@
+# HANDOFF — 2026-09-21d (alpha: no alliance outline; usernames over robots in alliance colour)
+
+**READ FIRST.** Gates: `npm test` ALL PASS, `build`, `server:check`, `contrast` (235), `docaudit`, `uiaudit`, `test:mm`.
+⚠️ FIVE agents were still in flight in this worktree when this was committed (field-mesh winding, the hive's
+invisible corner, CAD element meshes, ball behaviour under prediction, side-roller pass 2) — their files were
+left OUT of this commit on purpose.
+
+- **THE RED/BLUE OUTLINE IS GONE** (owner). Every sprite STROKE in all three games is `ROBOT_TRIM` (#9aa3ad,
+  `render/drawRobot.ts`); `drawOutlineHalo` deleted. The alliance is FILLS only: the heading chevron, the sign
+  placard, BIOBUZZ's NECTAR turret rim. 3D: the alliance `LineSegments` round the bumper band is removed, the
+  dark `outlineHalo` trace stays as plain edge trim. Check: a permissive Proxy ctx records the `strokeStyle` at
+  every stroke — no sprite strokes in an alliance colour (3 games × 2 alliances × intake on/off).
+- **In-match labels are the driver's username, in their alliance colour.** `matchStart` gained an optional
+  `drivers?: MatchDriver[]` (`robotId` → username; a bot seat is named for its tier), built once in
+  `Room.beginMatch` via `seatedDrivers()` and FROZEN there — `robotOf` is torn down as people leave, so a list
+  derived at send time could not name a dropped driver's robot for a late spectator. Additive both ways, so no
+  `caps` gate. Path: `NetSession.driverName(id)` → `GameController.driverName` → `Renderer.render(…, driverName?)`,
+  both the 2D and the projected 3D label pass. NOT in `World`/`RobotState` (30 Hz egress; deterministic JSON).
+  No name ⇒ the old `teamNumber + spec.name`; the local robot is still never labelled. ⚠️ `drivers` is the
+  FOURTH field `ActiveGameRef.start` carries by hand (after `physics`, `gen`) — copied in `App.beginSession`,
+  pinned by smoke. Fill = `COLORS.redLabel` #f87171 / `blueLabel` #60a5fa: the raw hues are 3.52 / 3.60:1 as type
+  on the tiles; the tints are 4.78 / 5.20. `contrast.mjs` owns the arithmetic (7 new pairs).
+
+---
 # HANDOFF — 2026-09-21c (alpha: side rollers are a HOUSED module; the protrusion is measured, not guessed)
 
 Gates on this tree: `npm test` ALL PASS (2,090 shared + 3,816 biobuzz, 33 s), `build`,
 `server:check`, `docaudit`, `uiaudit`, `bundleaudit` (scene 211.26 KB gz). The side-roller work moved nothing in
-the sim. **READ FIRST: the SAME commit also carries two RAMP sim changes — the pivot on the roller shaft and the
+the sim. **The SAME commit also carries two RAMP sim changes — the pivot on the roller shaft and the
 ramp/flower-ring collision group — written up in 21b just below** (final tree: 2,090 + 3,818 ALL PASS).
 
 - **OWNER: "do the side roller wheels need to stick out that much for flower intaking? it looks

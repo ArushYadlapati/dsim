@@ -2,7 +2,7 @@ import type { Artifact, ArtifactColor, RobotSpec, RobotState, Vec2, World } from
 import * as C from '../../config';
 import { clamp } from '../../math';
 import { robotsEnabled } from '../../sim/match';
-import { drawDecal, drawOutlineHalo, roundRect, tintColor } from '../../render/drawRobot';
+import { drawDecal, ROBOT_TRIM, roundRect, tintColor } from '../../render/drawRobot';
 import { accentFill, clampCosmetics } from '../../cosmetics';
 import { BB_BOX_TUBE_OVERLAP, BB_PLACE_MARK_R, bbBoxTubeGlyph, drawChassisBody, drawChassisOutline, drawWheels } from './parts';
 import {
@@ -184,7 +184,7 @@ export function drawBiobuzzRobot(
   // the same object across games
   drawChassisBody(ctx, r, C.chassisFill(r.spec.chassisColor));
   drawDecal(ctx, hl, r.spec.width / 2, cosm.decal, accent);
-  drawWheels(ctx, r, color, accent);
+  drawWheels(ctx, r, ROBOT_TRIM, accent);
 
   drawBiobuzzIntake(ctx, r, intaking, accent);
 
@@ -205,8 +205,7 @@ export function drawBiobuzzRobot(
   // The BOX TUBE — bolted flat to the frame at its mount, no independent heading and no raise.
   if (lift) drawBoxTube(ctx, r.spec, lift);
 
-  drawOutlineHalo(ctx, r.spec.length, r.spec.width, C.CHASSIS_CORNER, C.CHASSIS_OUTLINE);
-  drawChassisOutline(ctx, r, color); // the silhouette line, over everything that reaches it
+  drawChassisOutline(ctx, r, ROBOT_TRIM); // the silhouette line — neutral; the alliance is the name label + the fills
 
   ctx.restore(); // ...end of the footprint clip
 

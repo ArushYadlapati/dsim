@@ -2927,6 +2927,23 @@ export const COLORS = {
   redDim: 'rgba(239,68,68,0.10)',
   blue: '#3b82f6',
   blueDim: 'rgba(59,130,246,0.10)',
+  /**
+   * THE ALLIANCE HUES AS 12-PX TYPE — the driver-name labels `renderer.ts` floats over
+   * every remote robot, and nothing else.
+   *
+   * A separate pair because `red`/`blue` do not clear AA as TEXT on the field: measured
+   * against the lightest ground a label ever crosses (`tile`, #2c3038) they are 3.52:1 and
+   * 3.60:1, i.e. fine as the fat shapes they were drawn for and under the 4.5:1 floor for a
+   * name somebody has to read mid-match. The tints are 4.78:1 and 5.20:1 there, 5.49:1 and
+   * 5.97:1 on the mat, and 6.23:1 and 6.78:1 against the label's own dark stroke — which is
+   * the other pair that matters, since the stroke is what carries the glyphs onto the LIGHT
+   * backdrop (9.34:1 there) and onto whatever a 3D scene puts behind them.
+   *
+   * Category 3 in CLAUDE.md's theming note: their ground is the CANVAS, and the field is
+   * hardcoded dark, so they never theme. `scripts/contrast.mjs` asserts every number above.
+   */
+  redLabel: '#f87171',
+  blueLabel: '#60a5fa',
   white: '#e5e7eb',
   purple: '#a855f7',
   green: '#22c55e',
@@ -2936,9 +2953,10 @@ export const COLORS = {
 /**
  * Supporter cosmetic: the robot's CHASSIS FILL.
  *
- * Scoped to the fill on purpose. A robot's alliance is carried entirely by its
- * OUTLINE (`COLORS.red` / `COLORS.blue` — see `drawRobot`), and the fill has
- * always been one flat `#1f242c`. Recolouring only the fill therefore cannot make
+ * Scoped to the fill on purpose. A robot's alliance is carried by its NAME LABEL,
+ * sign placard and heading chevron (the red/blue outline was removed 2026-09-21 —
+ * see `ROBOT_TRIM` in `render/drawRobot.ts`), never by the fill, which was always
+ * one flat `#1f242c`. Recolouring only the fill therefore cannot make
  * a red robot read as blue, which is the one thing a cosmetic must never do in a
  * game where you identify targets at a glance.
  *

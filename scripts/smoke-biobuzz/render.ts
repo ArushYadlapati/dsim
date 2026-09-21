@@ -248,8 +248,12 @@ import type { RobotSpec, World } from '../../src/types';
 import { mkWorld, type Check } from './harness';
 // COSMETICS (Day 4, `docs/cosmetics-plan.md`) — the 2D halo/decal helpers are DOM-free, so they
 // are checked directly against a stub context, same as the tape probe above.
-import { drawDecal, drawOutlineHalo } from '../../src/render/drawRobot';
-import { OUTLINE_HALO } from '../../src/cosmetics';
+import { drawDecal, drawRobot as drawDecodeRobot, ROBOT_TRIM } from '../../src/render/drawRobot';
+import { drawChainRobot } from '../../src/games/chain/drawRobot';
+import { createChainWorld } from '../../src/games/chain/spawn';
+import { createBiobuzzWorld } from '../../src/games/biobuzz/spawn';
+import { drawBiobuzzRobot } from '../../src/games/biobuzz/drawRobot';
+import { createWorld as createDecodeWorld } from '../../src/sim/spawn';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const BIOBUZZ_DIR = join(root, 'src', 'games', 'biobuzz');
@@ -1349,13 +1353,58 @@ function cosmeticsChecks(check: Check): void {
     drawDecal(ctx, 8, 6, 'stripe', '#ff0000');
     check('a "stripe" decal issues at least one fill', fillCount > 0, String(fillCount));
 
-    strokeCount = 0;
-    drawOutlineHalo(ctx, 24, 18, 1.2, 0.5);
-    check(
-      'drawOutlineHalo strokes the halo colour, on a build big enough to carry the band',
-      strokeCount > 0 && strokeStyle === OUTLINE_HALO,
-      `${strokeCount} strokes, colour ${strokeStyle}`,
-    );
+    void strokeCount;
+    void strokeStyle;
+  }
+
+  // ---- NO SPRITE STROKES IN AN ALLIANCE COLOUR (owner, 2026-09-21: "Remove the red/blue alliance
+  // outline") — all three games, both alliances, intake on and off. A permissive recording ctx:
+  // every call is a no-op, and the `strokeStyle` in force at each stroke is what is kept.
+  {
+    const strokesOf = (draw: (ctx: CanvasRenderingContext2D) => void): string[] => {
+      const seen: string[] = [];
+      let style = '';
+      const sink: unknown = new Proxy(function () {}, { get: () => sink, apply: () => sink });
+      const ctx = new Proxy(
+        {},
+        {
+          get: (_t, k) => {
+            if (k === 'strokeStyle') return style;
+            if (k === 'stroke' || k === 'strokeRect') return () => { seen.push(String(style).toLowerCase()); };
+            return sink;
+          },
+          set: (_t, k, v) => {
+            if (k === 'strokeStyle') style = v;
+            return true;
+          },
+        },
+      ) as unknown as CanvasRenderingContext2D;
+      draw(ctx);
+      return seen;
+    };
+    const ALLIANCE = ['#ef4444', '#3b82f6', '#007be1'];
+    const seat = (a: 'red' | 'blue') => ({ id: 0, alliance: a, spec: {} as RobotSpec, assists: {} as never, startIndex: 0 });
+    for (const a of ['red', 'blue'] as const) {
+      const worlds = {
+        decode: createDecodeWorld('free', 5, [seat(a)]),
+        chain: createChainWorld('free', 5, [seat(a)]),
+        biobuzz: createBiobuzzWorld('free', 5, [seat(a)]),
+      };
+      const draws = {
+        decode: (c: CanvasRenderingContext2D, on: boolean) => drawDecodeRobot(c, worlds.decode.robots[0], on, []),
+        chain: (c: CanvasRenderingContext2D, on: boolean) => drawChainRobot(c, worlds.chain.robots[0], on, [], { x: 0, y: 1 }, worlds.chain),
+        biobuzz: (c: CanvasRenderingContext2D, on: boolean) => drawBiobuzzRobot(c, worlds.biobuzz.robots[0], on, [], { x: 0, y: 1 }, worlds.biobuzz),
+      };
+      for (const game of ['decode', 'chain', 'biobuzz'] as const) {
+        const strokes = [...strokesOf((c) => draws[game](c, false)), ...strokesOf((c) => draws[game](c, true))];
+        const bad = strokes.filter((st) => ALLIANCE.includes(st));
+        check(
+          `2D (${game}, ${a}): the sprite strokes NOTHING in an alliance colour, and its edge is the neutral trim`,
+          strokes.length > 0 && bad.length === 0 && strokes.includes(ROBOT_TRIM),
+          `${strokes.length} strokes, ${bad.length} alliance-coloured, trim used ${strokes.filter((st) => st === ROBOT_TRIM).length}×`,
+        );
+      }
+    }
   }
 }
 
@@ -2731,8 +2780,11 @@ function graphicsChecks(check: Check, allFiles: string[]): void {
           robotsSrc.includes('solidMat(chassisFill(spec.chassisColor)'),
       );
       check(
-        '...and the ALLIANCE is the outline plus the ROBOT SIGNS, never the fill',
-        /LineSegments\(chassisEdges\([^)]*\), lineMat\(color\)\)/.test(robotsSrc) &&
+        // the red/blue silhouette line is GONE (owner, 2026-09-21): the one edge trace left is the
+        // dark trim, and no `LineSegments` may be built in an alliance colour again.
+        '...and the ALLIANCE is the ROBOT SIGNS only: no alliance-coloured edge line, never the fill',
+        !/LineSegments\(chassisEdges\([^)]*\), lineMat\((color|RED|BLUE)\)\)/.test(robotsSrc) &&
+          /LineSegments\(chassisEdges\([^)]*\), lineMat\(OUTLINE_HALO\)\)/.test(robotsSrc) &&
           robotsSrc.includes('getSignTexture(bbRobotSignText(spec), alliance)') &&
           !/chassisGeometry\([^)]*\), solidMat\(color/.test(robotsSrc),
       );

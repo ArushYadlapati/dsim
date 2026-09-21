@@ -14,6 +14,7 @@ import {
   applyBallDelta,
   unslimWorld,
   type EloDelta,
+  type MatchDriver,
   type PlayerIntro,
   type RecordRankInfo,
 } from './protocol';
@@ -68,6 +69,13 @@ export class ServerSession implements NetSession {
   setups: RobotSetup[];
   ranked: boolean;
   intros: PlayerIntro[];
+  /**
+   * WHO IS IN EACH SEAT (`matchStart.drivers`; empty against an older server or a room with
+   * nobody to name). Public because `App.beginSession` copies it into the rejoin record.
+   */
+  drivers: MatchDriver[];
+  /** `drivers` as a lookup, rebuilt wherever `drivers` is written — see `driverName`. */
+  private names = new Map<number, string>();
   /** the Fly region hosting this match (raw, for reconnect routing) */
   readonly region?: string;
   /** per-driver overall-ELO change, arrives shortly after matchResult (ranked) */
@@ -154,6 +162,7 @@ export class ServerSession implements NetSession {
       physics?: Physics;
       ranked?: boolean;
       intros?: PlayerIntro[];
+      drivers?: MatchDriver[];
       region?: string;
     },
     readonly clientId: string,
@@ -167,6 +176,8 @@ export class ServerSession implements NetSession {
     this.setups = start.setups;
     this.ranked = start.ranked ?? false;
     this.intros = start.intros ?? [];
+    this.drivers = start.drivers ?? [];
+    this.rebuildNames();
     this.gen = (start as { gen?: number }).gen ?? 0;
     this.region = start.region;
     this.localRobotId = start.yourRobotId;
@@ -218,6 +229,16 @@ export class ServerSession implements NetSession {
 
   isHost(): boolean {
     return this.host;
+  }
+
+  /** the username driving `robotId`, or undefined — the in-match label's lookup. Undefined
+   *  for a seat the server did not name, which the label answers with the chassis name. */
+  driverName(robotId: number): string | undefined {
+    return this.names.get(robotId);
+  }
+
+  private rebuildNames(): void {
+    this.names = new Map(this.drivers.map((d) => [d.robotId, d.name]));
   }
 
   requestRestart(): void {
@@ -473,6 +494,11 @@ export class ServerSession implements NetSession {
       this.rematch = { votes: 0, need: 0, mine: false }; // a new match, a clean tally
       this.ranked = m.ranked ?? false;
       this.intros = m.intros ?? [];
+      // ALWAYS re-read, for the reason `physics` two statements up is: a recycled room can
+      // start a match with a different set of people in it, and a stale name would label the
+      // new driver with the old one's.
+      this.drivers = m.drivers ?? [];
+      this.rebuildNames();
       this.eloResults = [];
       this.snapshot = null;
       this.matchResult = null;

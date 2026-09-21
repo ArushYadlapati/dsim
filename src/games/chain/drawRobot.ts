@@ -1,6 +1,6 @@
 import type { Artifact, RobotState, Vec2, World } from '../../types';
 import * as C from '../../config';
-import { drawDecal, drawOutlineHalo, roundRect, tintColor } from '../../render/drawRobot';
+import { drawDecal, ROBOT_TRIM, roundRect, tintColor } from '../../render/drawRobot';
 import { accentFill, clampCosmetics } from '../../cosmetics';
 import { footprintExtents } from '../../sim/field';
 import { drawChassisBody, drawChassisOutline, drawWheels } from './parts';
@@ -204,7 +204,7 @@ export function drawChainRobot(
   // two robots.
   drawChassisBody(ctx, r, C.chassisFill(r.spec.chassisColor), lift <= 0.15);
   drawDecal(ctx, hl, hw, cosm.decal, accent);
-  drawWheels(ctx, r, color, accent);
+  drawWheels(ctx, r, ROBOT_TRIM, accent);
 
   drawChainIntake(ctx, r, intaking, accent);
 
@@ -222,8 +222,7 @@ export function drawChainRobot(
     ctx.restore();
   }
 
-  drawOutlineHalo(ctx, r.spec.length, r.spec.width, C.CHASSIS_CORNER, C.CHASSIS_OUTLINE);
-  drawChassisOutline(ctx, r, color); // the silhouette line, over everything that reaches it
+  drawChassisOutline(ctx, r, ROBOT_TRIM); // the silhouette line — neutral; the alliance is the name label + the fills
 
   ctx.restore(); // ...end of the footprint clip
 

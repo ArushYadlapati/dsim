@@ -40,6 +40,7 @@ import {
   type EloDelta,
   type LiveRoom,
   type LobbyPlayer,
+  type MatchDriver,
   type PlayerIntro,
   type QCommand,
   type RecordRankInfo,
@@ -392,6 +393,17 @@ export class Room {
   // reconnect, can be handed the same `matchStart` the drivers got)
   private matchSeed = 0;
   private matchSetups: RobotSetup[] = [];
+  /**
+   * WHO IS IN EACH SEAT, frozen at `beginMatch` — the `drivers` list every `matchStart` for
+   * this match carries (see `MatchDriver`).
+   *
+   * FROZEN, not derived per send, and that is the whole reason it is a field. `robotOf` is
+   * torn down as people leave (`detach`, the grace sweep, `onMessage`'s leave), so a spectator
+   * who opens the match after a driver has dropped would be handed a `matchStart` that cannot
+   * name the robot still sitting on the field — and the label would fall back to a chassis
+   * name mid-match, for the one robot whose driver is the interesting question.
+   */
+  private matchDrivers: MatchDriver[] = [];
   private readonly robotOf = new Map<string, number>(); // clientId -> robotId
   // per robot: future inputs keyed by the tick they apply to (consumed in order)
   private readonly pending = new Map<number, Map<number, RobotCommand>>();
@@ -670,6 +682,29 @@ export class Room {
       assists: { ...DEFAULT_ASSISTS },
       bot: b.tier,
     };
+  }
+
+  /**
+   * WHO IS DRIVING WHAT, off the seating `beginMatch`'s caller has just laid out.
+   *
+   * Sorted by robot id so the list reads the same on every send and a diff of two handshakes
+   * is about the seating rather than about Map iteration order. A seat with neither a client
+   * nor a tier — a staged ranked slot whose player never connected — is simply absent, and the
+   * label falls back to that build's own name, which is the only thing the room knows about it.
+   */
+  private seatedDrivers(): MatchDriver[] {
+    const out: MatchDriver[] = [];
+    for (const c of this.clients.values()) {
+      const rid = this.robotOf.get(c.id);
+      // `player.name` and not `spec.name`: the person, not the chassis. Already moderated —
+      // `sanitizePlayer` scrubs it at join, so nothing here is a second gate on it.
+      if (rid !== undefined) out.push({ robotId: rid, name: c.player.name });
+    }
+    // A BOT IS A DRIVER, named as its roster row is. `botPlayer` builds the same string, but
+    // off `bots` — the LOBBY list, keyed by seat id and carrying no robot id. `botTiers` is the
+    // seating `startMatch` actually laid out, so it is the only one that can answer this.
+    for (const [rid, tier] of this.botTiers) out.push({ robotId: rid, name: `${tier} bot` });
+    return out.sort((a, b) => a.robotId - b.robotId);
   }
 
   constructor(
@@ -1000,6 +1035,10 @@ export class Room {
       physics: this.physics === '3d' ? '3d' : undefined,
       ranked: this.ranked,
       intros: this.ranked ? this.intros : undefined,
+      // OMITTED when there is nobody to name, for the reason `physics` above is: an empty
+      // array is a key an older server never sent, and a client reads absent and empty the
+      // same way (fall back to the chassis name).
+      drivers: this.matchDrivers.length ? this.matchDrivers : undefined,
       gen: this.matchGen,
       region: SERVER_REGION || undefined,
     };
@@ -1750,6 +1789,14 @@ export class Room {
     this.rematchVotes.clear();
     this.matchSeed = seed; // remembered so a spectator joining mid-match gets matchStart
     this.matchSetups = setups;
+    /**
+     * NAME THE SEATS HERE, once, for the same reason the seed and the setups are remembered
+     * here: this is the ONE place all three start paths and every rematch funnel through, and
+     * every `matchStart` for this match — the drivers', a spectator's, a rematch's — is sent
+     * from the same three fields. The caller has just populated `robotOf`/`botTiers`, which is
+     * the contract this method already states.
+     */
+    this.matchDrivers = this.seatedDrivers();
     // THE ROOM'S physics, not a setting: the server holds no `GameSettings`, so the fifth
     // argument is the only route a room's choice has into the builder. `undefined` for the
     // settings bag is what every server-side build already passed.
@@ -2752,6 +2799,7 @@ export class Room {
     this.phase = 'connecting';
     this.matchSeed = 0;
     this.matchSetups = [];
+    this.matchDrivers = [];
     this.robotOf.clear();
     // the SEATS survive a recycle — the host set up a 1v3 and the room going back to its lobby
     // is not a reason to take their opponents away — but the per-match tier map and the live

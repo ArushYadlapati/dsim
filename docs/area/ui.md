@@ -154,6 +154,15 @@ and then the code. **`uiaudit`** is what actually enforces both, as ratchets.
   BEGINS IN" text lead-in before the 3-2-1 digits.
 - END GAME at 20 s left (`ENDGAME_START` / `CHAIN_ENDGAME_S`): warning cue + HUD label/tint.
 - Games opt into chrome via `GameModule.ui` (`showScoreHud`, `startEditor`, `intakes`).
+- **THE LABEL OVER A ROBOT IS THE DRIVER'S USERNAME, IN THEIR ALLIANCE COLOUR**
+  (`renderer.ts`, both the 2D pass and the 3D projected one). It answers "who is that", so the
+  username wins over the build's `spec.name` and the team-number prefix goes with it; a seat the
+  server did not name — solo, a bot before `matchStart.drivers` existed, a replay, an old server
+  — falls back to the old `teamNumber + spec.name`. The LOCAL robot is still never labelled.
+  The fill is `COLORS.redLabel` / `COLORS.blueLabel`, a separate pair because `COLORS.red`/`blue`
+  are under 4.5:1 as 12-px type on the field; the dark stroke stays, and it is what carries the
+  glyphs onto the light backdrop and onto a 3D background. Category 3 (their ground is the
+  canvas), so they do not theme.
 - ⚠️ **`.hud` IS `pointer-events: none`** so the canvas keeps a drag. Anything in it meant to
   be clicked re-enables them ON ITSELF (`.game-btn`, `.sponsor-chip`, `.mobile-btn`,
   `.pred-panel`). The connection chip did not, for months: its `onClick` opened a ping graph

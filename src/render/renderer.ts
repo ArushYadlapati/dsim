@@ -35,6 +35,35 @@ const LABEL_Z = 30;
  * anchor at the top of the robot, and this lifts the baseline clear of it. */
 const LABEL_SCREEN_LIFT = 4;
 
+/**
+ * THE DARK OUTLINE UNDER EVERY LABEL, and it is what makes the alliance colours work.
+ *
+ * A label follows its robot anywhere, so its ground is not one colour: the dark mat, the
+ * lighter tiles, the LIGHT backdrop when a robot is pinned to the far wall, and in 3D whatever
+ * the scene has behind it. No single fill reads on all of those. The stroke does — it is 9.34:1
+ * on the backdrop — so the fill only has to clear AA against the DARK grounds, which is exactly
+ * what `COLORS.redLabel`/`blueLabel` are picked for.
+ */
+const LABEL_STROKE = 'rgba(20,22,26,0.8)';
+
+/**
+ * WHO TO PRINT OVER A ROBOT: the person driving it, else the thing they built.
+ *
+ * The username is the answer to the question the label is asked mid-match ("who is that"), and
+ * it is why the team number is dropped with it — `12345 Kraken` is a build's identity, and
+ * stacking it in front of an account name says the same thing twice in a label that has to be
+ * read at a glance. The fallback is unchanged from before there were usernames, and it is what
+ * every solo/bot/replay/old-server frame draws.
+ */
+const labelFor = (r: RobotState, driverName?: (robotId: number) => string | undefined): string => {
+  const who = driverName?.(r.id);
+  if (who) return who;
+  return r.spec.teamNumber > 0 ? `${r.spec.teamNumber} ${r.spec.name}` : r.spec.name;
+};
+
+/** a label's fill: its robot's ALLIANCE, in the tints tuned for 12-px type on the field. */
+const labelInk = (r: RobotState): string => (r.alliance === 'red' ? COLORS.redLabel : COLORS.blueLabel);
+
 export class Renderer {
   readonly camera = new Camera();
 
@@ -75,6 +104,16 @@ export class Renderer {
      * False for every game/view before this seam, unchanged.
      */
     overlayOnly = false,
+    /**
+     * WHO IS DRIVING ROBOT `id` — `NetSession.driverName`, handed down by the GameController.
+     *
+     * Absent for every path that has nobody to name: solo practice, a replay, the builder
+     * preview, and a match on a server that predates `matchStart.drivers`. Those all draw the
+     * label they always drew. It is a FUNCTION and not a field on the world on purpose — a
+     * username has no business in `World`/`RobotState`, which is deterministic JSON that ships
+     * to every client 30 times a second.
+     */
+    driverName?: (robotId: number) => string | undefined,
   ): void {
     const canvas = ctx.canvas;
     ctx.setTransform(1, 0, 0, 1, 0, 0);
@@ -135,11 +174,13 @@ export class Renderer {
     // before the hook, or a controller that has not handed the scene over) nothing changes.
     const scene = this.scene;
     if (overlayOnly && scene?.project) {
-      this.drawProjectedOverlay(ctx, world, localRobotId, scene);
+      this.drawProjectedOverlay(ctx, world, localRobotId, scene, driverName);
       return;
     }
 
-    // name/team labels above the OTHER robots (the local driver knows theirs)
+    // DRIVER labels above the OTHER robots (the local driver knows who they are). The fill is
+    // the robot's ALLIANCE — since the chassis outline stopped carrying it, this label is where
+    // a name and a side are read together.
     if (world.robots.length > 1) {
       for (const r of world.robots) {
         if (r.id === localRobotId) continue;
@@ -150,14 +191,14 @@ export class Renderer {
         ctx.scale(1, -1);
         ctx.font = '600 4px system-ui, sans-serif';
         ctx.textAlign = 'center';
-        const label = r.spec.teamNumber > 0 ? `${r.spec.teamNumber} ${r.spec.name}` : r.spec.name;
+        const label = labelFor(r, driverName);
         // a robot pinned to the far wall pushes its label off the mat onto the
-        // light backdrop, so the light glyphs carry a dark outline to read on both
+        // light backdrop, so the glyphs carry a dark outline to read on both
         ctx.lineWidth = 0.7;
         ctx.lineJoin = 'round';
-        ctx.strokeStyle = 'rgba(20,22,26,0.8)';
+        ctx.strokeStyle = LABEL_STROKE;
         ctx.strokeText(label, 0, -14);
-        ctx.fillStyle = 'rgba(229,231,235,0.9)';
+        ctx.fillStyle = labelInk(r);
         ctx.fillText(label, 0, -14);
         ctx.restore();
       }
@@ -183,6 +224,7 @@ export class Renderer {
     world: World,
     localRobotId: number,
     scene: GameScene,
+    driverName?: (robotId: number) => string | undefined,
   ): void {
     const project = scene.project!;
     const out = this.projOut;
@@ -204,13 +246,14 @@ export class Renderer {
       if (r.id === localRobotId) continue;
       project.call(scene, r.pos.x, r.pos.y, (r.z ?? 0) + LABEL_Z, out);
       if (!out.visible) continue;
-      const label = r.spec.teamNumber > 0 ? `${r.spec.teamNumber} ${r.spec.name}` : r.spec.name;
+      const label = labelFor(r, driverName);
       // the same dark outline the 2D pass gives these: a 3D scene can put any brightness behind
-      // a label (a white wall, the dark floor), and the outline is what makes the light glyphs
-      // hold on both — same reasoning as the field/backdrop case the 2D pass was written for.
-      ctx.strokeStyle = 'rgba(20,22,26,0.8)';
+      // a label (a white wall, the dark floor), and the outline is what makes the alliance
+      // glyphs hold on both — same reasoning as the field/backdrop case the 2D pass was
+      // written for.
+      ctx.strokeStyle = LABEL_STROKE;
       ctx.strokeText(label, out.x, out.y - LABEL_SCREEN_LIFT);
-      ctx.fillStyle = 'rgba(229,231,235,0.92)';
+      ctx.fillStyle = labelInk(r);
       ctx.fillText(label, out.x, out.y - LABEL_SCREEN_LIFT);
     }
   }
