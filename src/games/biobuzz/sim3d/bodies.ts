@@ -43,7 +43,15 @@ import {
 } from '../config';
 import { biobuzzColliders, BB_WALL_COUNT } from '../colliders';
 import { INTAKE_RAIL_T, PHYS_FRICTION } from '../../../config';
-import { BB3_INTAKE_CORNER_CLAMP, BB3_INTAKE_CORNER_R, BB3_MOUTH_SLOT_Z, bbIntakeReach } from '../config';
+import {
+  BB3_CHASSIS_TOP_Z,
+  BB3_INTAKE_CORNER_CLAMP,
+  BB3_INTAKE_CORNER_R,
+  BB3_MOUTH_SLOT_Z,
+  BB_DECK_Z,
+  bbIntakeReach,
+  bbMechEnvelopes,
+} from '../config';
 import { bbMouths, mouthAxes } from '../robot';
 import { bbIntakeKindOf } from '../mechs';
 import { EDGE_ANGLE, type BbEdge } from '../mounts';
@@ -94,6 +102,22 @@ export function __setHiveDynamicOverrideForTests(value: boolean | null): void {
  * branches `applyHiveTilt` on it, `hive3d.ts` picks its bookkeeping pass with it. */
 export function useHiveDynamic(): boolean {
   return hiveDynamicOverride ?? BB3_HIVE_DYNAMIC;
+}
+
+/**
+ * THE FOURTH TEST-ONLY OVERRIDE, AND THE ONE THAT KEEPS A RULE HONEST: build the chassis as the
+ * FLOOR-TO-`heightIn` PRISM it was before 2026-09-21 (`chassis3dShapes`' own header).
+ *
+ * It exists because the SIM3D lane's "no contact in air" rule would otherwise be VACUOUS — a
+ * check that passes is worth nothing until the shape it replaced is shown to FAIL it, which is
+ * the same discipline `slimFootBars`' invisible-corner rule follows. The lane sets it, measures
+ * the owner's own repro and the rule against the old prism, and resets it in a `finally`; nothing
+ * in production calls the setter at all. `false` is production.
+ */
+let legacyPrismOverride = false;
+
+export function __setLegacyPrismForTests(value: boolean): void {
+  legacyPrismOverride = value;
 }
 
 /**
@@ -871,12 +895,91 @@ export interface Chassis3dShape {
  * properties are set explicitly each tick (`syncRobot`), so drive parity with 2D is not a
  * function of how many boxes the compound has.
  */
+/** the compound's own plan envelope (`hl`/`hw` grown by `bbIntakeReach` on each MOUNTED edge),
+ * which is `robotExtents` by construction — see `chassis3dShapes`' own note on why a mechanism
+ * shape is clamped into it. */
+export function chassis3dPlanEnvelope(spec: RobotSpec): { front: number; back: number; left: number; right: number } {
+  const hl = spec.length / 2;
+  const hw = spec.width / 2;
+  const ex = { front: hl, back: hl, left: hw, right: hw };
+  const reach = bbIntakeReach(spec);
+  if (reach > 1e-6) for (const m of bbMouths(spec)) ex[m.edge] = (m.edge === 'front' || m.edge === 'back' ? hl : hw) + reach;
+  return ex;
+}
+
+/**
+ * THE TALL SHAPES — one per STANDING mechanism this build draws (`bbMechEnvelopes`, `config.ts`,
+ * whose header carries the drawn measurements and what `heightIn` means now), each from the deck
+ * to that mechanism's own drawn top and over its own drawn footprint, CLAMPED into `ex`.
+ *
+ * Exported because BOTH chassis builders take it: this file's compound and the FULL PREDICTOR's
+ * otherwise-single cuboid (`predict.ts` `fitChassis`). The predictor is allowed to differ about
+ * the MOUTH POCKET and is NOT allowed to differ about the height profile — the whole point of
+ * the profile is which contacts happen at all, and a predictor that thinks it is 14 in tall
+ * everywhere predicts the catch the owner reported while the authority slides past it.
+ */
+export function chassis3dMechShapes(
+  spec: RobotSpec,
+  heightIn: number,
+  ex: { front: number; back: number; left: number; right: number } = chassis3dPlanEnvelope(spec),
+): Chassis3dShape[] {
+  const half = heightIn / 2;
+  const out: Chassis3dShape[] = [];
+  for (const e of bbMechEnvelopes(spec, heightIn)) {
+    const lo = Math.min(BB_DECK_Z, e.top - 0.1);
+    const hz = Math.max(1e-3, (e.top - lo) / 2);
+    const cz = -half + lo + hz;
+    if (e.r !== undefined) {
+      const r = Math.max(1e-3, Math.min(e.r, ex.front - e.cx, ex.back + e.cx, ex.left - e.cy, ex.right + e.cy));
+      out.push({ cx: e.cx, cy: e.cy, cz, hx: r, hy: r, hz, shape: 'cylinder' });
+    } else {
+      const x0 = Math.max(e.cx - (e.hx ?? 0), -ex.back);
+      const x1 = Math.min(e.cx + (e.hx ?? 0), ex.front);
+      const y0 = Math.max(e.cy - (e.hy ?? 0), -ex.right);
+      const y1 = Math.min(e.cy + (e.hy ?? 0), ex.left);
+      out.push({ cx: (x0 + x1) / 2, cy: (y0 + y1) / 2, cz, hx: Math.max(1e-3, (x1 - x0) / 2), hy: Math.max(1e-3, (y1 - y0) / 2), hz });
+    }
+  }
+  return out;
+}
+
 export function chassis3dShapes(spec: RobotSpec, heightIn: number): Chassis3dShape[] {
   const hl = spec.length / 2;
   const hw = spec.width / 2;
   const half = heightIn / 2;
-  const out: Chassis3dShape[] = [{ cx: 0, cy: 0, cz: 0, hx: hl, hy: hw, hz: half }];
+  /**
+   * ⚠️ **THE LOW BODY STOPS AT THE DRAWN CHASSIS, NOT AT `heightIn`** — the fix for the owner's
+   * invisible corner (`BB3_CHASSIS_TOP_Z`'s own header in `config.ts` has the repro and the
+   * measurement). The box is still centred on the chassis mid-height's own origin (`cz` is
+   * measured from `heightIn/2` above the floor and nothing about the BODY's bookkeeping moves:
+   * `syncRobot` still translates to `z + heightIn/2` and `readback` still subtracts
+   * `builtHeight/2`), so its BOTTOM is still exactly the chassis floor at `-half` and only its
+   * TOP came down.
+   */
+  const bodyTop = legacyPrismOverride ? heightIn : Math.min(BB3_CHASSIS_TOP_Z, heightIn);
+  const bodyHz = bodyTop / 2;
+  const bodyCz = -half + bodyHz;
+  const out: Chassis3dShape[] = [{ cx: 0, cy: 0, cz: bodyCz, hx: hl, hy: hw, hz: bodyHz }];
   const reach = bbIntakeReach(spec);
+  /**
+   * THE COMPOUND'S OWN PLAN ENVELOPE — `hl`/`hw` grown by `reach` on each MOUNTED edge, which is
+   * `robotExtents` by construction (it is the same arithmetic the arms below are built to).
+   *
+   * ⚠️ **A MECHANISM SHAPE MAY NOT GROW IT.** The drawn turret head overhangs its own rail by up
+   * to 1.45 in on an EDGE or CORNER mount whose edge carries no intake reach — genuinely drawn,
+   * and still not allowed to be solid there: `robotExtents` is the 2D solve's footprint, the
+   * wall-flush START POSITIONS are seated on it, `startLegal` judges it and the 2D/3D parity
+   * checks pin it, so a chassis that got 1.45 in wider in 3D alone would spawn inside a wall.
+   * The head is therefore CLAMPED INTO the envelope (a cylinder by its radius, a dumper's box by
+   * its faces) and the overhang is a DRAWN PART OUTSIDE THE COLLIDER — the harmless direction,
+   * the same call the mid-throw dumper bucket makes (`BB3_DUMPER_TOP_Z`).
+   */
+  const ex = chassis3dPlanEnvelope(spec);
+  // ...and one TALL shape per STANDING mechanism, over that mechanism's own drawn footprint.
+  // They go in `chassis3dShapes` rather than beside the pocket filler because this list is WHAT
+  // AN ELEMENT MEETS and a turret/dumper is solid to one — which is also what the floor-to-roof
+  // prism they replace was.
+  if (!legacyPrismOverride) out.push(...chassis3dMechShapes(spec, heightIn, ex));
   if (reach <= 1e-6) return out;
   // never thicker than the frame it is bolted to — `bbRobotSolids`' own clamp, for the same
   // reason (a degenerate or inverted box is a collider Rapier cannot build).
@@ -898,22 +1001,26 @@ export function chassis3dShapes(spec: RobotSpec, heightIn: number): Chassis3dSha
    * structure, a FLOWER — meets the same outermost surface at the same distance as the single
    * `robotExtents` cuboid did, and only an ELEMENT fits through the slot.
    */
-  const slot = Math.min(BB3_MOUTH_SLOT_Z, heightIn - 0.1);
-  const lintelHz = Math.max(1e-3, (heightIn - slot) / 2);
-  const lintelCz = slot / 2;
+  // ⚠️ THE LINTEL NOW ENDS AT THE DRAWN CHASSIS TOO — it spans the slot to `bodyTop`, not the
+  // slot to `heightIn`. Its job is unchanged (only an ELEMENT fits through the mouth's pocket;
+  // a wall, a robot, the HIVE and a FLOWER all meet it at the arm tips' own distance) because
+  // everything it has to stop is met by the LOW BODY at exactly the same plan extent.
+  const slot = Math.min(BB3_MOUTH_SLOT_Z, bodyTop - 0.1);
+  const lintelHz = Math.max(1e-3, (bodyTop - slot) / 2);
+  const lintelCz = -half + slot + lintelHz;
   for (const m of bbMouths(spec)) {
     if (m.edge === 'front' || m.edge === 'back') {
       const cx = (m.edge === 'front' ? 1 : -1) * (hl + reach / 2);
       for (const s of [1, -1]) {
         const outer = s > 0 ? m.y1 : m.y0;
-        out.push({ cx, cy: outer - (s * t) / 2, cz: 0, hx: reach / 2, hy: t / 2, hz: half });
+        out.push({ cx, cy: outer - (s * t) / 2, cz: bodyCz, hx: reach / 2, hy: t / 2, hz: bodyHz });
       }
       out.push({ cx, cy: (m.y0 + m.y1) / 2, cz: lintelCz, hx: reach / 2, hy: (m.y1 - m.y0) / 2, hz: lintelHz });
     } else {
       const cy = (m.edge === 'left' ? 1 : -1) * (hw + reach / 2);
       for (const s of [1, -1]) {
         const outer = s > 0 ? m.x1 : m.x0;
-        out.push({ cx: outer - (s * t) / 2, cy, cz: 0, hx: t / 2, hy: reach / 2, hz: half });
+        out.push({ cx: outer - (s * t) / 2, cy, cz: bodyCz, hx: t / 2, hy: reach / 2, hz: bodyHz });
       }
       out.push({ cx: (m.x0 + m.x1) / 2, cy, cz: lintelCz, hx: (m.x1 - m.x0) / 2, hy: reach / 2, hz: lintelHz });
     }
@@ -1319,12 +1426,15 @@ export function addChassis3dColliders(
   rampReady: boolean,
 ): void {
   for (const s of chassis3dShapes(spec, heightIn)) {
+    // a MECHANISM shape may be a CYLINDER (a turret sweeps a disc — `bbMechEnvelopes`); every
+    // other box keeps the edge break exactly as it was. Groups/friction/restitution unchanged,
+    // so a mechanism is solid to the same set the prism it replaces was.
+    const desc =
+      s.shape === 'cylinder'
+        ? RAPIER.ColliderDesc.cylinder(s.hz, s.hx).setRotation(CYL_AXIS_Z)
+        : chassisBoxDesc(RAPIER, s.hx, s.hy, s.hz);
     world3d.createCollider(
-      chassisBoxDesc(RAPIER, s.hx, s.hy, s.hz)
-        .setTranslation(s.cx, s.cy, s.cz)
-        .setDensity(0)
-        .setFriction(PHYS_FRICTION)
-        .setRestitution(0),
+      desc.setTranslation(s.cx, s.cy, s.cz).setDensity(0).setFriction(PHYS_FRICTION).setRestitution(0),
       body,
     );
   }
@@ -1363,7 +1473,7 @@ export function addChassis3dColliders(
  * (`Y → Z`: rotating about X by 90° sends `(0,1,0)` to `(0,0,1)`). Module-level so it is computed
  * once — `tiltQuatX` runs the shared deterministic `dsin`/`dcos`, so this is bit-identical on
  * every peer, the same discipline `HIVE_BRACKET_W` above follows for its own load-once constant. */
-const CYL_AXIS_Z: Quat = tiltQuatX(Math.PI / 2);
+export const CYL_AXIS_Z: Quat = tiltQuatX(Math.PI / 2);
 
 /** build ONE reach-hardware collider from a `Chassis3dShape` — shared by the authority
  * (`addChassis3dColliders`, above) and the FULL predictor (`predict.ts`'s `fitChassis`), so the

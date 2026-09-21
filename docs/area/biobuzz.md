@@ -313,6 +313,82 @@ newest-first — it is never ranked, which is what keeps the two eras from meeti
   vacuous), the ELEMENT (a POLLEN set on any of the four corners falls), the ROBOT (every stop
   position unchanged), and the 2D pipeline's own pair — whose frame bars ARE the rects
   `drawField.ts` fills, one construction read twice, so 2D has no invisible corner to slim.
+- ⚠️ **AND THE SIXTH REPORT WAS NOT THE FIELD AT ALL — THE INVISIBLE THING WAS THE ROBOT**
+  (2026-09-21: "try putting the front of the robot against the center of the horizontal beam, and
+  strafe, from under the hive. You will suddenly turn because you hit something invisible").
+  `chassis3dShapes` built the frame, both intake arms, the lintel and the pocket filler at the FULL
+  `heightIn` over the whole footprint — a floor-to-roof prism, 14 in on a default build. The DRAWN
+  robot is a **5.3-in** chassis with a mechanism standing up only where it is bolted. MEASURED with
+  the owner's own manoeuvre (`scratch/beamstrafe.ts`): the chassis jammed at y −3.89 with its −y
+  edge at −12.39 and yawed 3° at the kick, 11° after 5 s — and the only non-floor contact was the
+  hive's **A-FRAME LEG**, whose underside crosses z ≈ 14.1 at that y. The robot was being stopped
+  by its own roof, 8.8 in above anything drawn there. Five earlier passes missed it because all
+  five looked at the FIELD.
+  **THE COMPOUND IS THE DRAWING NOW** (`chassis3dShapes` + `chassis3dMechShapes`; the measurements
+  are `BB3_CHASSIS_TOP_Z` / `bbMechEnvelopes` in `config.ts`, taken off the built meshes' own
+  vertices over every archetype the builder can make — `scratch/drawnheight.ts`,
+  `scratch/mechenv.ts`): a LOW BODY to **5.30** in (frame top cap 4.80, nose 5.10, sweeper roller
+  5.25, intake arm 5.26) carrying the unchanged plan logic — arms, lintel, mouth slot, the edge-break
+  skin, `GROUP_POCKET`, the reach hardware — plus **one tall shape per standing mechanism**: a
+  CYLINDER per turret head (POLLEN r **5.04** top **11.31**, NECTAR r **5.56** top **12.12**) and a
+  BOX for a dumper (top **12.80**, its own edge-frame extents reproduced from `mounts.ts`). A turret
+  is a cylinder because it AIMS ITSELF — the collider is built once per deploy edge and the head
+  yaws every tick, so the disc it sweeps IS its drawn geometry, the same bargain `bbRampSwingShapes`
+  makes. Each shape is CLAMPED into `robotExtents` in plan, because a drawn head overhangs its own
+  rail by up to 1.45 in on an edge mount with no intake reach there and the wall-flush START POSES
+  are seated on that footprint.
+  ⚠️ **`spec.heightIn` IS A CAP NOW, NOT AN EXTRUSION.** R102/R105, `bbDeployedHeightIn`,
+  `bbStowHeightIn`, `bbStowLegal` and the deploy-edge rebuild are all untouched — they are spec
+  rules and none of them ever read a collider — but a declared height no longer makes the robot
+  tall anywhere. The dial promises a height the picture does not build (the builder draws it as a
+  DASHED ENVELOPE, `buildHeightEnvelope`, precisely because no mesh stands that tall) and the
+  PICTURE WINS: extruding a declared 29 in over the turret's footprint would have kept 17 in of
+  invisible column exactly where this report puts it. MEASURED, that is the only behaviour a
+  declared height still had: of 69 fixed colliders, everything a robot can reach above the deck is
+  VERTICAL over it (walls, the flower columns 4.25…21.25, the hive frame) except the four sloping
+  A-FRAME LEGS and a 0.9-in rim on each flower top plate — so "declared taller ⇒ stopped sooner"
+  only ever meant "gets less far under the hive", and it was never drawn. The one check that
+  depended on the prism was the drive-under's own NON-VACUITY probe (a 34.98-in robot stopped by
+  the tray); it is a free SHAPE QUERY now, which proves the same thing without a robot shape that
+  does not exist.
+  **MEASURED BEFORE/AFTER**, same 32 cases — both bars, both strafe directions, mecanum/x-drive/
+  swerve/butterfly, robot- and field-centric (`scratch/beamsweep.ts`, with
+  `__setLegacyPrismForTests` rebuilding the prism so the comparison is one process):
+  travel before the heading first moves 1° **min 3.21 → 7.40 in, mean 3.89 → 18.06**, and the worst
+  contact-in-air at the stop **8.575 in → 0.163**. The general rule is the same one the foot-bar fix
+  used, one level up: over **171,217** sampled chassis/static contacts across five builds and a pose
+  grid round the whole centre structure, the flowers and the walls (`scratch/aircontact.ts`), every
+  contact point lies within **0.377 in** of the drawn robot — and that worst case is a LATERAL skin
+  artefact at an arm tip, not a height one. The tolerance the lane binds at is **0.3 in**, which is
+  built rather than picked: the edge-break contact skin is 0.15, Rapier's speculative margin looks
+  ahead of the surface, and `BB3_CHASSIS_TOP_Z` itself sits 0.04 over the tallest drawn part.
+  **WHAT ELSE MOVED, ALL MEASURED:** the FULL predictor takes the same profile (a low
+  `robotExtents` cuboid plus the same mechanism shapes — the mouth pocket stays the documented
+  cheap-reconcile trade, the height profile does NOT, because it decides which contacts happen at
+  all); `step3d` on a 2v2 is **1.024×** (0.141 → 0.144 ms, 5 paired alternating rounds, +1 collider
+  per default robot); TURRET accuracy is unchanged-to-better over a 3-archetype × 20-stand sweep
+  (72→73, 68→70, 68→68 of 80, nothing ever unlaunched); the side-roller and ramp retrieval sweeps
+  and the hive tip are untouched; two-run determinism holds. The DUMPER's documented close-range
+  limit moved **22 → 24 in** (scored of 4 by distance: 22 **1→0**, 24 **2→3**, 26 and beyond 4/4
+  either side, with the release point identical at 10.69 in out / z 14.00) — a four-ball volley's
+  own in-flight collisions resolve differently once there is no roof to meet, at the range where
+  the volley is marginal anyway.
+  **AND A POLLEN CAN LAND ON THE REAL DECK NOW**, which the prism made impossible to see. It RESTS
+  there (a deck is genuinely broad and flat, and `groundRoll3d` keeps a `Cuboid` contact BROAD), it
+  is never tagged and never captured (its bottom sits at 5.3, above `BB3_INTAKE_Z` 5, and it is
+  inside the frame rather than in a mouth rect), it is conserved, and it falls the moment the robot
+  drives out from under it. A POLLEN perched on a turret's swept disc gets the other answer on
+  purpose: **a `Cylinder` is NARROW to `groundRoll3d` now**, alongside `ConvexPolyhedron`, because
+  every cylinder in this world is a round robot part — a turret's envelope or a side roller's wheel
+  — and a ball on the flat top of one is resting on something not drawn there, which is the exact
+  class the narrow-hull vibration exists for. Checks in `scripts/smoke-biobuzz/sim3d.ts` under "THE
+  INVISIBLE ROBOT": the RULE, the REPRO (with the prism failing it by 8.5 in, so it is not vacuous),
+  and the two ELEMENT cases. Pictures: `scratch/shots/invisbox-{before,after}-{side,along}.png`.
+  KNOWN RESIDUALS, stated rather than widened away: the Box Tube's cradle is drawn to 6.55 and has
+  no tall shape (its band is met by the same vertical surfaces the low body already meets; it is
+  worth 0.37 in of plan against a sloping A-frame leg and nothing else), and a dumper MID-THROW
+  reaches ≈14.3 in for ~0.3 s — both are a drawn part outside the collider, the harmless direction,
+  and the second one was outside the old prism too.
 - **Drive feel is the shared wrench.** Parity checks measure in OPEN FIELD: two solvers' wall
   contact legitimately differs; the drive model itself matches 2D to four decimals.
 - **Field geometry is CAD-derived** (owner decision 2026-09-17, licence risk accepted).
@@ -513,6 +589,41 @@ newest-first — it is never ranked, which is what keeps the two eras from meeti
     reference-counted). It CANNOT live in the scene: the listener dies with the scene, so from
     the 2D map there is nothing left to press. It is not a `KeyAction` — it changes which
     renderer is mounted, not the robot.
+  - **THE FREE CAMERA AND ITS CAD PRESETS** (owner, 2026-09-21). `graphics/freeCam.ts` is the whole
+    model — a `FreeCamState` (yaw/pitch/dist plus a look-at point ON THE FLOOR), the clamps, the
+    reset framing, the mapping tables and the pure gesture math — and it is DOM-free, `three`-free
+    and engine-trig-free like everything else under `graphics/`; `scene/renderCameras.ts` owns the
+    `PerspectiveCamera`, the easing and the one `Math.exp` the dolly needs, and `renderScene.ts`
+    owns the listeners. Per device, ONE storage key (`FREE_CAM_NAV_KEY`), coerced field by field.
+    - ⚠️ **ORBIT DRAGS THE FIELD; IT DOES NOT FLY THE CAMERA** (owner, 2026-09-21: "Onshape orbit
+      is right drag but it is reversed"). The first version added `+dx·rate` to `yaw` — and
+      `d(eye)/d(yaw)` is exactly the camera's screen-RIGHT vector, so the EYE followed the cursor
+      and the field swung the other way from every CAD package and from this app's OWN spectator
+      orbit camera, whose `orbitDrag` has always done `orbitYaw -= dx`. The PITCH axis was already
+      right and is not flipped: pulling down rolls the field's top toward you, i.e. the eye rises.
+      PAN was already "the ground follows the cursor", which is the same gesture. No vendor
+      documents either sense — see the presets doc for what they do and do not publish.
+    - **The presets are `dsim · onshape · solidworks · fusion · blender · custom`**, and every row
+      of every one is off the vendor's own current help page:
+      **[docs/biobuzz/free-cam-presets.md](../biobuzz/free-cam-presets.md)** carries the URLs, the
+      quoted wording, what each vendor does NOT state, and which packages were DROPPED for want of
+      a primary source (Inventor, Creo, NX, FreeCAD, SketchUp, Tinkercad). `dsim` IS the Onshape
+      mapping (owner: "DSIM default should also be very close to how the onshape one works") plus
+      left-drag orbit and Shift+left pan, because left is free here and the orbit camera already
+      used it. `⌘` folds into Ctrl; ALT is ignored by a preset (so Onshape's own Alt+right
+      constrained rotate is an orbit here) and exact in a custom layout.
+    - **The options are all in that one key**: wheel direction (preset default / forward zooms in /
+      forward zooms out — the preset column is `FREE_CAM_PRESET_WHEEL`), invert orbit X, invert
+      orbit Y, invert pan, three sensitivities, zoom to cursor, smoothing, and a custom layout whose
+      three chords are captured like a keybind and STEAL on conflict. Rare ones sit behind the
+      `.ds-fold` in Graphics ▸ View. An older stored blob (`{preset, invertZoom}`) still loads:
+      `invertZoom: true` reads as `wheel: 'out'`.
+    - **Zoom to cursor is exact and OFF by default.** `dollyFreeCamToward` scales the camera about
+      the floor point under the cursor, which leaves that point's screen position and the view
+      direction untouched by construction; `renderCameras.floorUnder` is the unprojection that
+      finds the point, through the camera that was actually RENDERED and therefore through the
+      `setViewOffset` window the HUD's safe rect sets. Off by default because the only vendor that
+      documents the behaviour at all documents it as one you enable.
   - **THE FLOWER CONTENTS READ-OUT ON THE TOP-DOWN 3D SHOT** (owner, 2026-09-21: "for the top down
     view of the 3d render, add a separate thing (like the 2d display) that shows inside the
     flower"). A FLOWER is a 21.5-in column and its contents are the one thing a plan view cannot

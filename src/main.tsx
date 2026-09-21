@@ -3,6 +3,7 @@ import { createRoot } from 'react-dom/client';
 import { App } from './ui/App';
 import { ServerNoticeBanner } from './ui/ServerNoticeBanner';
 import { NoticePoller } from './ui/NoticePoller';
+import { PadNavLayer } from './ui/PadNavLayer';
 import { initPhysics } from './sim/physicsEngine';
 import { initTheme } from './theme';
 import { AdsProvider } from './ads/AdsProvider';
@@ -55,6 +56,11 @@ Promise.all([initPhysics(), lanReady]).then(() => {
       </AdsProvider>
       <ServerNoticeBanner />
       <NoticePoller />
+      {/* CONTROLLER NAVIGATION. Beside `<App/>` rather than inside it, for the reason the ad
+          provider wraps it: the game, lobby, record and ranked screens are returned EARLY and
+          would each have to remember to mount this. It renders through a portal to `body`, so
+          its position here costs it nothing, and it polls nothing until a pad connects. */}
+      <PadNavLayer />
       {/* Cookieless page views. Gated on VITE_ANALYTICS so a self-hosted or
           Electron build never beacons a host it does not run on.
 

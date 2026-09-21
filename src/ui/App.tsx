@@ -94,6 +94,7 @@ import { trackPageview } from '../pageviews';
 import type { GameId } from '../games/types';
 import { chainDisclaimerSeen, markChainDisclaimerSeen } from '../chainDisclaimer';
 import { startSelectionLegal } from './startPositions';
+import { setPadNavPrefs } from '../input/padNav';
 
 type Screen =
   | 'home'
@@ -534,6 +535,13 @@ export function App() {
     // `src/pageviews.ts`, along with every gate that decides whether anything is sent at all.
     trackPageview(path, settings.game);
   }, [screen, route, settings.game]);
+
+  /* Mirror the two pad-nav preferences into the module store the navigation layer reads. The
+     layer is mounted beside `<App/>` (main.tsx) and cannot see this state; `setPadNavPrefs` is a
+     no-op when neither field moved, so this costs a comparison per render. */
+  useEffect(() => {
+    setPadNavPrefs(settings.bindings.pad);
+  }, [settings.bindings.pad]);
 
   // surface the one-time Chain Reaction disclaimer the first time CR is selected
   useEffect(() => {

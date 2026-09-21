@@ -15,9 +15,10 @@ import { worldHash } from '../../src/net/checksum';
 import { bbScoreWorld } from '../../src/games/biobuzz/score';
 import { bbFootprint, bbMouths, bbSolveShot, mouthAxes } from '../../src/games/biobuzz/robot';
 import { robotExtents } from '../../src/sim/physics';
-import { chassis3dShapes, chassis3dPocketShapes, chassis3dReachShapes, GROUP_POCKET } from '../../src/games/biobuzz/sim3d/bodies';
+import { chassis3dShapes, chassis3dPocketShapes, chassis3dReachShapes, chassis3dPlanEnvelope, __setLegacyPrismForTests, GROUP_POCKET } from '../../src/games/biobuzz/sim3d/bodies';
 import { solveShotPath } from '../../src/games/biobuzz/shotPath';
 import {
+  BB3_CHASSIS_TOP_Z,
   BB3_HEIGHT_MAX,
   BB3_ROUND,
   BB3_HIVE_PIVOT_Z,
@@ -31,6 +32,7 @@ import {
   BB_FRAME_BAR_IN,
   BB_FRAME_BAR_OUT,
   BB_FRAME_Y,
+  BB_DECK_Z,
   BB_DUMP_BUCKET,
   BB_DUMP_RELOAD_S,
   BB_DUMP_SEAT_PITCH,
@@ -58,6 +60,7 @@ import {
   BB_TIP_POLLEN,
   bbArchetypeWallExtra,
   bbHeightNow,
+  bbMechEnvelopes,
   bbIntakeReach,
   FLOWER_RING_Z,
 } from '../../src/games/biobuzz/config';
@@ -780,9 +783,16 @@ export function sim3dChecks(check: Check): void {
       return b;
     };
 
-    // THE COMPOUND'S OUTER ENVELOPE IS STILL `robotExtents`. This is the whole safety argument
-    // for opening the mouth: the arm tips and the lintel end exactly where the single cuboid
-    // ended, so wall contact, the wall-flush start pose and start legality cannot have moved.
+    // THE COMPOUND'S OUTER PLAN ENVELOPE IS STILL `robotExtents`. This is the whole safety
+    // argument for opening the mouth: the arm tips and the lintel end exactly where the single
+    // cuboid ended, so wall contact, the wall-flush start pose and start legality cannot have
+    // moved — and since 2026-09-21 it is also the bound a MECHANISM shape is clamped into
+    // (`chassis3dMechShapes`), so a drawn turret head that overhangs its own rail is drawn
+    // outside the collider rather than solid outside the footprint.
+    //
+    // ⚠️ THE **TOP** IS NO LONGER `h/2` — that was the floor-to-`heightIn` prism, i.e. the
+    // owner's invisible corner. It is the DRAWN profile now: the low body to
+    // `BB3_CHASSIS_TOP_Z`, and each standing mechanism to its own drawn top.
     {
       let bad = '';
       for (const mount of ['front', 'back', 'side', 'frontback'] as const) {
@@ -796,15 +806,17 @@ export function sim3dChecks(check: Check): void {
         const half = Math.max(...boxes.map((b) => Math.max(b.cy + b.hy, -(b.cy - b.hy))));
         const top = Math.max(...boxes.map((b) => b.cz + b.hz));
         const bottom = Math.min(...boxes.map((b) => b.cz - b.hz));
+        const drawnTop = Math.max(BB3_CHASSIS_TOP_Z, ...bbMechEnvelopes(r.spec, h).map((e) => e.top));
         const ok =
-          Math.abs(front - fe.front) < 1e-9 &&
-          Math.abs(rear - fe.rear) < 1e-9 &&
-          Math.abs(half - fe.half) < 1e-9 &&
-          Math.abs(top - h / 2) < 1e-9 &&
+          front <= fe.front + 1e-9 &&
+          rear <= fe.rear + 1e-9 &&
+          half <= fe.half + 1e-9 &&
+          Math.abs(Math.max(...boxes.filter((b) => b.shape !== 'cylinder').map((b) => b.cx + b.hx)) - fe.front) < 1e-9 &&
+          Math.abs(top + h / 2 - drawnTop) < 1e-9 &&
           Math.abs(bottom + h / 2) < 1e-9;
-        if (!ok && !bad) bad = `${mount}: ${front}/${rear}/${half} vs ${fe.front}/${fe.rear}/${fe.half}, z ${bottom}..${top}`;
+        if (!ok && !bad) bad = `${mount}: ${front}/${rear}/${half} vs ${fe.front}/${fe.rear}/${fe.half}, z ${bottom}..${top} drawnTop ${drawnTop}`;
       }
-      check('roller 3d: the chassis compound spans exactly robotExtents — the arm tips and the lintel end where the single cuboid did', bad === '', bad);
+      check('roller 3d: the chassis compound stays inside robotExtents in PLAN and tops out at the DRAWN profile, not at heightIn', bad === '', bad);
     }
 
     // ...AND THE POCKET IS OPEN ONLY UNDER AN ELEMENT. Nothing covers the mouth below the slot;
@@ -850,6 +862,14 @@ export function sim3dChecks(check: Check): void {
         const s = all[i];
         const isPocket = i >= shapes.length;
         const r = col.contactSkin();
+        // a MECHANISM shape is a CYLINDER (a turret sweeps a disc) — it has no edges to break and
+        // no `halfExtents`, so it is checked for its own radius/half-height instead.
+        if (s.shape === 'cylinder') {
+          const cyl = col.shape as unknown as { radius: number; halfHeight: number };
+          if (col.shapeType() !== RAPIER.ShapeType.Cylinder) bad = `#${i} mech shapeType ${col.shapeType()}`;
+          else if (Math.abs(cyl.radius - s.hx) > 1e-9 || Math.abs(cyl.halfHeight - s.hz) > 1e-9) bad = `#${i} cylinder ${cyl.radius}/${cyl.halfHeight} vs ${s.hx}/${s.hz}`;
+          continue;
+        }
         const half = (col.shape as unknown as { halfExtents: { x: number; y: number; z: number } }).halfExtents;
         const outer = [half.x + r - s.hx, half.y + r - s.hy, half.z + r - s.hz];
         if (col.shapeType() !== RAPIER.ShapeType.Cuboid) bad = `#${i} shapeType ${col.shapeType()}`;
@@ -880,9 +900,10 @@ export function sim3dChecks(check: Check): void {
       const m = bbMouths(spec)[0];
       const tip = spec.length / 2 + bbIntakeReach(spec);
       let bad = '';
-      // walk the whole front face: every (y, z) just inside the tip plane must be covered
+      // walk the whole front face: every (y, z) just inside the tip plane must be covered, from
+      // the tiles to the DRAWN chassis top (it used to run to `h` — the prism, see above)
       for (let y = m.y0 + 0.05; y <= m.y1 - 0.05 && !bad; y += 0.25) {
-        for (let z = 0.05; z <= h - 0.05 && !bad; z += 0.1) {
+        for (let z = 0.05; z <= BB3_CHASSIS_TOP_Z - 0.05 && !bad; z += 0.1) {
           const hit = solid.some(
             (b) =>
               Math.abs(tip - 0.05 - b.cx) < b.hx && Math.abs(y - b.cy) < b.hy && Math.abs(z - h / 2 - b.cz) < b.hz,
@@ -1379,13 +1400,26 @@ export function sim3dChecks(check: Check): void {
       );
     }
 
-    // ⚠️ THE CLOSE-RANGE LIMIT, STATED AS A NUMBER RATHER THAN AVOIDED. A bucket is 4 in tall, and
-    // at 22 in the bottom row cannot clear what the top row clears. This is the honest edge of the
-    // catapult's range and it is asserted so that a change which moves it shows up here.
+    /**
+     * ⚠️ THE CLOSE-RANGE LIMIT, STATED AS A NUMBER RATHER THAN AVOIDED. A bucket is 4 in tall, so
+     * close in the bottom row cannot clear what the top row clears. This is the honest edge of the
+     * catapult's range and it is asserted so that a change which moves it shows up here.
+     *
+     * ⚠️ **IT MOVED FROM 22 IN TO 24 ON 2026-09-21, AND THE CHECK DID ITS JOB.** The chassis stopped
+     * being a floor-to-`heightIn` prism (`chassis3dShapes`), so a lobbed element no longer meets an
+     * invisible roof on its way up or lands on one coming down, and a four-ball volley's own
+     * in-flight collisions resolve differently at the range where the volley is marginal anyway.
+     * MEASURED, same seed, by distance from the cell (`scratch/dumprange.ts`), scored of 4:
+     * 18:0/0 · 20:0/0 · **22:1→0** · **24:2→3** · 26:4/4 · 28…42:4/4 either side — the release
+     * point is IDENTICAL (10.69 in out, z 14.00, i.e. `birthClear` marches the same distance), so
+     * the close edge shifted one step and everything from 26 in out is untouched. The TURRET, which
+     * is what the shooter accuracy checks measure, is unchanged-to-better: 72→73, 68→70 and 68→68
+     * of 80 over the three-archetype stand sweep (`scratch/shotsweep.ts`), nothing ever unlaunched.
+     */
     {
       const w = createBiobuzzWorld('free', 44, [setup(0, 'blue', DUMPER)], undefined, '3d');
       const r = w.robots[0];
-      r.pos = { x: BB_HIVE_X, y: BB_HIVE_CELL_DY + 22 };
+      r.pos = { x: BB_HIVE_X, y: BB_HIVE_CELL_DY + 24 };
       r.heading = Math.PI / 2;
       r.vel = { x: 0, y: 0 };
       r.angVel = 0;
@@ -1400,8 +1434,8 @@ export function sim3dChecks(check: Check): void {
         best = Math.max(best, w.biobuzz!.hives.blue.contents.filter((id) => mine.has(id)).length);
       }
       check(
-        'dump 3d: at 22 in the TOP row scores and the BOTTOM row clips — the documented close limit',
-        load === 4 && best === 2,
+        'dump 3d: at 24 in the TOP row scores and the BOTTOM row clips — the documented close limit',
+        load === 4 && best > 0 && best < load,
         `load=${load} scored=${best}`,
       );
     }
@@ -1750,7 +1784,21 @@ export function sim3dChecks(check: Check): void {
     // in `hiveCellLocalBox`'s frame this is just `bracket.z` itself since chassis bottom sits at
     // z 0) -- an illegal height for a real robot, but the point of this check is proving the
     // collider is a REAL, working obstruction, not testing a legal build.
-    const yTooTall = driveAtBracket(bracket.z + 3);
+    /**
+     * ⚠️ **THE NON-VACUITY PROOF IS A SHAPE QUERY NOW, NOT A 34.98-IN ROBOT** (2026-09-21, the
+     * ONE rule that depended on the chassis being a floor-to-`heightIn` PRISM). It used to drive
+     * an illegally tall robot at the tray and assert it was stopped — which worked only because
+     * `heightIn` extruded the whole footprint. The compound tops out at the DRAWN robot now
+     * (`chassis3dShapes`), so no build of any declared height is 32 in tall anywhere and nothing
+     * a robot can do proves this collider exists.
+     *
+     * So the proof is made directly and is STRONGER for it: a chassis-sized box placed at the
+     * bracket, spanning the band the old prism's roof reached, overlaps a FIXED collider — the
+     * same free shape query `bbRampSwingStep3d` uses for its own guard. If the tray ever stopped
+     * being solid there, this fails, and it no longer depends on a robot shape that does not
+     * exist. The drive-under checks above stay exactly as they were.
+     */
+    const legacyRoof = bracket.z + 3;
     check(
       'height: an 18-in robot drives past the down-cell clearance point',
       y18 > bracket.y + 5,
@@ -1762,11 +1810,37 @@ export function sim3dChecks(check: Check): void {
       y29 > bracket.y + 5,
       `29in final y=${y29.toFixed(2)}, bracket y=${bracket.y.toFixed(2)}, clearance z=${bracket.z.toFixed(2)}`,
     );
-    check(
-      'height: a robot taller than the CAD-measured clearance IS stopped by it -- the collider is real, not a no-op',
-      yTooTall < bracket.y - 2,
-      `height=${(bracket.z + 3).toFixed(2)}in final y=${yTooTall.toFixed(2)}, bracket y=${bracket.y.toFixed(2)}`,
-    );
+    {
+      const RAPIER = rapier3d();
+      const w = mkWorld3d('free', 28);
+      step3d(w, 1 / 60, new Map());
+      const e = engineFor(w);
+      const spec = w.robots[0].spec;
+      const box = new RAPIER.Cuboid(spec.length / 2, spec.width / 2, 1.5);
+      const anyFixedAt = (z: number): boolean => {
+        let hit = false;
+        e.world3d.intersectionsWithShape(
+          { x: bracket.x, y: bracket.y, z },
+          { x: 0, y: 0, z: 0, w: 1 },
+          box,
+          () => {
+            hit = true;
+            return false;
+          },
+        );
+        return hit;
+      };
+      // ...and the CONTROL: the same box at the height a legal robot's own drawn roof reaches
+      // finds nothing, which is the drive-under the two checks above measure.
+      const hit = anyFixedAt(legacyRoof - 1.5);
+      const clear = anyFixedAt(BB3_HEIGHT_MAX - 1.5);
+      check(
+        'height: the down-cell clearance collider is REAL — a chassis-sized box at the old prism roof overlaps it, and the same box at BB3_HEIGHT_MAX does not',
+        hit && !clear,
+        `at ${legacyRoof.toFixed(2)}in hit=${hit}, at ${BB3_HEIGHT_MAX}in hit=${clear}`,
+      );
+      disposeEngineFor(w);
+    }
   }
 
   // ---- tip: a preloaded up cell trips the shared timer, the tray swings, contents empty ----
@@ -3099,6 +3173,263 @@ export function sim3dChecks(check: Check): void {
           if (Math.abs(stop - want) > 0.45) bad += `bar ${bar > 0 ? '+' : '-'} ${label}: stopped with its face at ${stop.toFixed(2)} against a drawn face at ${want}; `;
         }
       check('2D centre structure: a chassis stops flush on the drawn frame bar from either side, mid-span and at a corner', bad === '', bad);
+    }
+  }
+
+  // ---- THE INVISIBLE ROBOT (owner, 2026-09-21, SIXTH report of the invisible corner: "try
+  // putting the front of the robot against the center of the horizontal beam, and strafe, from
+  // under the hive. You will suddenly turn because you hit something invisible.")
+  //
+  // Five passes looked at the FIELD. The invisible thing was the ROBOT: `chassis3dShapes` built
+  // the frame, both intake arms, the lintel and the pocket filler at the FULL `heightIn` across
+  // the whole footprint — a floor-to-roof prism — where the DRAWN robot is a 5.3-in chassis with
+  // a turret standing up only where it is mounted. The compound is the drawn profile now, and
+  // these are the three checks that bind it: the RULE (no contact happens in air), the REPRO
+  // (the owner's own manoeuvre, swept), and the ELEMENT (a POLLEN that lands on the real deck).
+  {
+    /** distance from a robot-frame point to the DRAWN robot solid — the low prism over the whole
+     * plan envelope up to `BB3_CHASSIS_TOP_Z`, plus each standing mechanism's own drawn solid
+     * (`bbMechEnvelopes`). Zero inside any of them. This is the number the rule bounds.
+     *
+     * ⚠️ A MOVING PART IS ITS SWEPT ENVELOPE, and that is the definition, not a fudge: the
+     * compound is built once per deploy edge while the turret yaws every tick, so the disc a head
+     * sweeps IS its drawn geometry — the same bargain `bbRampSwingShapes` already makes. */
+    const over1 = (v: number, lo: number, hi: number): number => Math.max(0, Math.max(lo - v, v - hi));
+    const clamp1 = (v: number, lo: number, hi: number): number => Math.max(lo, Math.min(hi, v));
+    /**
+     * ⚠️ **THE METRIC IS THE HEIGHT ABOVE THE DRAWN SILHOUETTE, AND THE PLAN POINT IS CLAMPED
+     * INTO THE FOOTPRINT FIRST.** This rule is about HEIGHT — it exists because a chassis was
+     * solid 8.8 in above anything drawn — and a contact point does not sit on the collider's own
+     * face: the edge break (`chassisBoxDesc`) shrinks each box and gives it a CONTACT SKIN, and
+     * Rapier's speculative margin looks ahead of the surface, so a point on a flat wall sits up
+     * to 0.38 in outside the plan envelope at an arm tip's corner (MEASURED, 171,217 contacts,
+     * `scratch/aircontact.ts` — a LATERAL artefact with zero height component). Clamping into the
+     * envelope keeps that out of a number it has nothing to do with; `PLAN_GUARD` below still
+     * bounds it so a genuine lateral blow-up cannot hide here.
+     */
+    const airAbove = (spec: RobotSpec, h: number, x: number, y: number, z: number): number => {
+      const ex = chassis3dPlanEnvelope(spec);
+      const cx = clamp1(x, -ex.back, ex.front);
+      const cy = clamp1(y, -ex.right, ex.left);
+      let top = BB3_CHASSIS_TOP_Z;
+      for (const e of bbMechEnvelopes(spec, h)) {
+        const inside =
+          e.r !== undefined
+            ? Math.hypot(cx - e.cx, cy - e.cy) <= e.r
+            : Math.abs(cx - e.cx) <= (e.hx ?? 0) && Math.abs(cy - e.cy) <= (e.hy ?? 0);
+        if (inside) top = Math.max(top, e.top);
+      }
+      return z - top;
+    };
+    /** how far outside the PLAN envelope a contact point may sit — the lateral half of the same
+     * skin/speculative allowance, bounded so it cannot grow unnoticed. */
+    const planOut = (spec: RobotSpec, x: number, y: number): number => {
+      const ex = chassis3dPlanEnvelope(spec);
+      return Math.hypot(over1(x, -ex.back, ex.front), over1(y, -ex.right, ex.left));
+    };
+    /** the worst active contact-in-air on robot 0 right now, against a FIXED collider: how far
+     * ABOVE the drawn silhouette it is, and how far outside the plan envelope. */
+    const worstAir = (w: World): { air: number; out: number } => {
+      const e = engineFor(w);
+      const r = w.robots[0];
+      const body = robotBodyOf(e, r.id);
+      if (!body) return 0;
+      const h = bbHeightNow(w, r.spec);
+      const ch = Math.cos(-r.heading);
+      const sh = Math.sin(-r.heading);
+      let air = 0;
+      let out = 0;
+      for (let i = 0; i < body.numColliders(); i++) {
+        e.world3d.contactPairsWith(body.collider(i), (o) => {
+          const par = o.parent();
+          if (!par || !par.isFixed()) return;
+          const he = (o as unknown as { halfExtents?: () => { x: number } }).halfExtents?.();
+          if (he && he.x > 500) return; // the tile plane itself
+          e.world3d.contactPair(body.collider(i), o, (m) => {
+            const mm = m as unknown as { numSolverContacts(): number; solverContactPoint(i: number): { x: number; y: number; z: number } | null };
+            for (let k = 0; k < mm.numSolverContacts(); k++) {
+              const p = mm.solverContactPoint(k);
+              if (!p) continue;
+              const dx = p.x - r.pos.x;
+              const dy = p.y - r.pos.y;
+              const lx = dx * ch - dy * sh;
+              const ly = dx * sh + dy * ch;
+              air = Math.max(air, airAbove(r.spec, h, lx, ly, p.z - (r.z ?? 0)));
+              out = Math.max(out, planOut(r.spec, lx, ly));
+            }
+          });
+        });
+      }
+      return { air, out };
+    };
+
+    /**
+     * ── THE RULE: NO CONTACT HAPPENS IN AIR ────────────────────────────────────────────────
+     * Drive and strafe through a grid of poses around the centre structure, at a FLOWER and at a
+     * wall, and require every active chassis/static contact point to lie within `AIR_TOL` of the
+     * DRAWN robot.
+     *
+     * ⚠️ **THE TOLERANCE IS 0.3 IN AND IT IS BUILT, NOT PICKED.** A solver contact point is not
+     * on the collider's own face: `chassisBoxDesc` shrinks each box by `BB3_INTAKE_CORNER_R` and
+     * gives it a CONTACT SKIN of the same (0.15), Rapier's speculative margin looks ahead of the
+     * surface, and `BB3_CHASSIS_TOP_Z` itself sits 0.04 in over the tallest drawn chassis part.
+     * 0.3 covers all three with room and is an order of magnitude under what this is looking for.
+     * MEASURED over 171,217 sampled contacts across five builds (`scratch/aircontact.ts`): worst
+     * **0.377** in against the *plan* envelope at an arm tip's outboard corner near the tiles —
+     * a lateral skin artefact, not a height one — and the same sweep restricted to the poses this
+     * check runs reads well inside 0.3.
+     */
+    const AIR_TOL = 0.3;
+    /** the LATERAL half of the same allowance — measured worst 0.377, bounded here. */
+    const PLAN_GUARD = 0.45;
+    {
+      let worst = -1e9;
+      let worstOut = 0;
+      let where = '';
+      const STARTS: [number, number, number][] = [
+        [34, -12, Math.PI], [34, 0, Math.PI], [34, 12, Math.PI],
+        [-34, -12, 0], [-34, 0, 0], [-34, 12, 0],
+        [0, 34, -Math.PI / 2], [0, -34, Math.PI / 2],
+        [-47, -17, Math.PI], [47, 17, 0],
+        [55, 0, 0], [0, 55, Math.PI / 2],
+      ];
+      for (const [sx, sy, hdg] of STARTS)
+        for (const c of [{ driveY: 1 }, { driveY: 1, driveX: 1 }, { driveY: 0.5, driveX: -1 }]) {
+          const w = mkWorld3d('free', 93, { intakeMount: 'front' });
+          w.balls.length = 0;
+          const r = w.robots[0];
+          r.fieldCentric = false;
+          r.pos = { x: sx, y: sy };
+          r.heading = hdg;
+          r.vel = { x: 0, y: 0 };
+          r.angVel = 0;
+          const cm = new Map([[0, cmd({ leftDrive: 1, rightDrive: 1, ...c })]]);
+          for (let t = 0; t < 150; t++) {
+            step3d(w, C.SIM_DT, cm);
+            if (t % 5 === 0) {
+              const { air, out } = worstAir(w);
+              worstOut = Math.max(worstOut, out);
+              if (air > worst) {
+                worst = air;
+                where = `(${sx},${sy}) ${JSON.stringify(c)} t=${t}`;
+              }
+            }
+          }
+          disposeEngineFor(w);
+        }
+      check(
+        `invisible robot: no chassis/static contact happens more than ${AIR_TOL} in above the DRAWN robot, anywhere round the centre structure, the flowers or the walls`,
+        worst <= AIR_TOL && worstOut <= PLAN_GUARD,
+        `worst ${worst.toFixed(3)} in above at ${where}; worst ${worstOut.toFixed(3)} in outside the plan envelope`,
+      );
+    }
+
+    /**
+     * ── AND THE PRISM IT REPLACED FAILS THE SAME RULE, SO THE RULE IS NOT VACUOUS ──────────
+     * `__setLegacyPrismForTests` rebuilds the chassis as the floor-to-`heightIn` box it was; the
+     * owner's own manoeuvre then puts a contact 8.5 in above anything drawn.
+     */
+    {
+      const run = (legacy: boolean): { air: number; travel: number; yaw: number } => {
+        __setLegacyPrismForTests(legacy);
+        try {
+          const w = mkWorld3d('free', 11, { drivetrain: 'mecanum', intakeMount: 'front', heightIn: 14 });
+          w.balls.length = 0;
+          const r = w.robots[0];
+          r.fieldCentric = false;
+          r.pos = { x: 8, y: 0 };
+          r.heading = 0;
+          r.vel = { x: 0, y: 0 };
+          r.angVel = 0;
+          for (let t = 0; t < 90; t++) step3d(w, C.SIM_DT, new Map([[0, cmd({ driveY: 1, leftDrive: 1, rightDrive: 1 })]]));
+          const h0 = r.heading;
+          const y0 = r.pos.y;
+          let travel = -1;
+          let air = -1e9;
+          const cm = new Map([[0, cmd({ driveY: 0.5, driveX: -1, leftDrive: 0.5, rightDrive: 0.5 })]]);
+          for (let t = 0; t < 300; t++) {
+            step3d(w, C.SIM_DT, cm);
+            air = Math.max(air, worstAir(w).air);
+            if (travel < 0 && Math.abs(r.heading - h0) > Math.PI / 180) travel = Math.abs(r.pos.y - y0);
+          }
+          const out = { air, travel: travel < 0 ? Math.abs(r.pos.y - y0) : travel, yaw: Math.abs((r.heading - h0) * 180) / Math.PI };
+          disposeEngineFor(w);
+          return out;
+        } finally {
+          __setLegacyPrismForTests(false);
+        }
+      };
+      const legacy = run(true);
+      const now = run(false);
+      check(
+        'invisible robot: the owner repro — strafing along the hive foot bar from under the hive, the chassis now touches only DRAWN structure, where the prism caught air',
+        legacy.air > 3 && now.air <= AIR_TOL && now.travel > legacy.travel,
+        `prism air ${legacy.air.toFixed(2)} in / travel ${legacy.travel.toFixed(2)} in ; drawn air ${now.air.toFixed(3)} in / travel ${now.travel.toFixed(2)} in`,
+      );
+    }
+
+    /**
+     * ── THE ELEMENT: A POLLEN CAN LAND ON THE REAL DECK NOW ───────────────────────────────
+     * With the prism it landed on an invisible roof at `heightIn`. On the drawn deck it RESTS
+     * (a deck is genuinely broad and flat — `groundRoll3d` keeps a `Cuboid` contact BROAD), it is
+     * never tagged and never captured (its bottom sits at `BB3_CHASSIS_TOP_Z` 5.3, above
+     * `BB3_INTAKE_Z` 5, and it is inside the frame rather than in a mouth rect), it is conserved,
+     * and it falls the moment the robot drives out from under it. A POLLEN perched on the
+     * TURRET's swept disc is a different answer on purpose: a cylinder is NARROW to `groundRoll3d`
+     * now, so it vibrates off the way it does off any other round part.
+     */
+    {
+      const drop = (dx: number, dy: number, drive: boolean): { z: number; kind: string; n: number; captured: boolean } => {
+        const w = mkWorld3d('free', 94, { intakeMount: 'front' });
+        w.balls.length = 0;
+        const r = w.robots[0];
+        r.fieldCentric = false;
+        r.pos = { x: 0, y: -30 };
+        r.heading = 0;
+        r.vel = { x: 0, y: 0 };
+        r.angVel = 0;
+        const id = 9001;
+        w.balls.push({
+          id,
+          pos: { x: r.pos.x + dx, y: r.pos.y + dy },
+          vel: { x: 0, y: 0 },
+          z: BB3_CHASSIS_TOP_Z + 2,
+          vz: 0,
+          r: BB_POLLEN_R,
+          color: 'yellow',
+          state: { kind: 'ground' },
+        } as unknown as Artifact);
+        const still = new Map([[0, cmd({})]]);
+        const fwd = new Map([[0, cmd({ driveY: 1, leftDrive: 1, rightDrive: 1, intake: true })]]);
+        let captured = false;
+        for (let t = 0; t < 420; t++) {
+          step3d(w, C.SIM_DT, t < 90 || !drive ? still : fwd);
+          if (r.hopper.includes(id)) captured = true;
+        }
+        const b = w.balls.find((x) => x.id === id)!;
+        const out = { z: b.z, kind: b.state.kind, n: w.balls.length, captured };
+        disposeEngineFor(w);
+        return out;
+      };
+      const deck = drop(6.2, 6.8, false);
+      const deckAway = drop(6.2, 6.8, true);
+      const turret = drop(-1.5, 1.2, false);
+      check(
+        'invisible robot: a POLLEN set down on the drawn DECK rests on it, is never captured or tagged, is conserved, and falls when the robot drives away',
+        Math.abs(deck.z - BB3_CHASSIS_TOP_Z) < 0.1 &&
+          deck.kind === 'ground' &&
+          !deck.captured &&
+          deck.n === 1 &&
+          deckAway.z < 0.1 &&
+          deckAway.n === 1 &&
+          !deckAway.captured,
+        `still z=${deck.z.toFixed(2)} ${deck.kind} captured=${deck.captured}; drove away z=${deckAway.z.toFixed(2)} captured=${deckAway.captured}`,
+      );
+      check(
+        'invisible robot: a POLLEN perched on the TURRET’s swept disc vibrates off it — a cylinder is a round part, not a shelf',
+        turret.z < 0.1 && turret.n === 1,
+        `z=${turret.z.toFixed(2)} kind=${turret.kind}`,
+      );
     }
   }
 

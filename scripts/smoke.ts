@@ -242,6 +242,31 @@ import {
   syncPadInGame,
 } from '../src/input/bindings';
 import { PadChordResolver, PAD_CHORD_GRACE_MS, PAD_TAP_HOLD_MS } from '../src/input/padChords';
+import {
+  PAD_GLYPHS,
+  PAD_MENU_BUTTON,
+  PAD_NAV_REPEAT,
+  PAD_SLIDER_REPEAT,
+  applyPadMask,
+  clearPadMask,
+  maskPadButtons,
+  oskInit,
+  oskReduce,
+  padBackButton,
+  padConfirmButton,
+  padFamily,
+  padMaskSize,
+  padNavSuspendReasons,
+  padNavSuspended,
+  pickNav,
+  repeatCount,
+  repeatDueMs,
+  resetPadNavSuspend,
+  resumePadNav,
+  suspendPadNav,
+  wrapNav,
+  type NavRect,
+} from '../src/input/padNav';
 import { quantizeCommand, dequantizeCommand, localizeCommand, sanitizeQCommand, slimWorld, unslimWorld, encodeBallDelta, applyBallDelta } from '../src/net/protocol';
 import type { Artifact } from '../src/types';
 import { worldHash } from '../src/net/checksum';
@@ -24215,6 +24240,176 @@ const dumperSetup = (): RobotSetup => {
     'rejoin/drivers: the renderer is handed a LOOKUP, not a per-tick world field',
     /driverName\?\(robotId: number\)/.test(sess) && !/drivers/.test(readFileSync('src/types.ts', 'utf8')),
   );
+}
+
+// ---- PAD NAVIGATION: the DOM-free half ------------------------------------------
+// `src/input/padNav.ts` is split out of the layer precisely so this can drive it frame by
+// frame on synthetic rects and an injected clock, which is the only way to test spatial
+// navigation without a browser. The DOM half is `src/ui/PadNavLayer.tsx`.
+{
+  const J = (v: unknown): string => JSON.stringify(v);
+  const R = (x: number, y: number, w = 100, h = 40): NavRect => ({ x, y, w, h });
+  // a 3x3 grid of identical tiles: columns at 0/120/240, rows at 0/60/120
+  const grid: NavRect[] = [];
+  for (let row = 0; row < 3; row++) for (let col = 0; col < 3; col++) grid.push(R(col * 120, row * 60));
+
+  check('padnav: right moves one column', pickNav(grid, 0, 'right') === 1);
+  check('padnav: down moves one row', pickNav(grid, 0, 'down') === 3);
+  check(
+    'padnav: from the centre, all four directions are the four neighbours',
+    pickNav(grid, 4, 'left') === 3 && pickNav(grid, 4, 'right') === 5 && pickNav(grid, 4, 'up') === 1 && pickNav(grid, 4, 'down') === 7,
+  );
+  check(
+    'padnav: an edge has nothing past it, and says so with -1',
+    pickNav(grid, 0, 'left') === -1 && pickNav(grid, 0, 'up') === -1 && pickNav(grid, 8, 'right') === -1 && pickNav(grid, 8, 'down') === -1,
+  );
+  check('padnav: an empty list, and an index that is not in it, are both -1', pickNav([], 0, 'down') === -1 && pickNav(grid, 99, 'down') === -1);
+
+  // THE CROSS-GAP TERM is what makes a ragged grid behave. A narrow tile sitting over a row of
+  // wide ones must hand the pointer to whatever is actually UNDERNEATH it — by straight-line
+  // centre distance the far tile can win, which is the bug this weighting exists to prevent.
+  const ragged: NavRect[] = [R(0, 0, 40, 40), R(0, 60, 100, 40), R(110, 60, 100, 40)];
+  check('padnav: down out of a narrow tile lands on the wide tile UNDER it, not the nearest centre', pickNav(ragged, 0, 'down') === 1);
+
+  // A candidate must be STRICTLY past the source on the axis, so a row whose centres line up
+  // is not a candidate for itself and a move cannot sit still.
+  check('padnav: a rect with the same centre on the axis is not a candidate', pickNav([R(0, 0), R(0, 0)], 0, 'down') === -1);
+  check('padnav: a zero-size rect is never picked', pickNav([R(0, 0), { x: 0, y: 60, w: 0, h: 0 }], 0, 'down') === -1);
+
+  // Repeated geometry must resolve the SAME way every time, or a grid of identical tiles
+  // navigates differently depending on document-order noise.
+  check(
+    'padnav: the pick is deterministic for repeated geometry',
+    pickNav(grid, 0, 'right') === pickNav(grid.slice(), 0, 'right') && pickNav(grid, 4, 'down') === 7,
+  );
+
+  // WRAP: used only when the picker found nothing and the container is a list or a strip.
+  const strip: NavRect[] = [R(0, 0, 60, 30), R(70, 0, 60, 30), R(140, 0, 60, 30)];
+  check('padnav: wrapping right off the end lands on the first segment', wrapNav(strip, 2, 'right') === 0);
+  check('padnav: wrapping left off the start lands on the last', wrapNav(strip, 0, 'left') === 2);
+  check('padnav: a container with one thing in it has nowhere to wrap to', wrapNav([R(0, 0)], 0, 'right') === -1);
+
+  // ---- the repeat clock ----
+  check('padnav: a TAP is exactly one move — the press fires, the first repeat is 420 ms away', repeatCount(0) === 1 && repeatCount(419) === 1 && repeatCount(420) === 2);
+  check(
+    'padnav: repeatDueMs is monotone in n (which is what lets the driver keep a counter, not a timestamp)',
+    Array.from({ length: 40 }, (_, i) => repeatDueMs(i + 1)).every((v, i, a) => i === 0 || v > a[i - 1]),
+  );
+  const gaps = Array.from({ length: 12 }, (_, i) => repeatDueMs(i + 2) - repeatDueMs(i + 1));
+  check(
+    'padnav: the gap ACCELERATES and then floors at `min`, never below it',
+    gaps.every((g, i) => i === 0 || g <= gaps[i - 1] + 1e-9) && Math.min(...gaps) >= PAD_NAV_REPEAT.min - 1e-9,
+    gaps.map((g) => g.toFixed(1)).join(','),
+  );
+  check(
+    'padnav: the first gap is `start` and the floor is reached by `ramp` repeats',
+    Math.abs(gaps[0] - PAD_NAV_REPEAT.start) < 1e-9 && Math.abs(repeatDueMs(12) - repeatDueMs(11) - PAD_NAV_REPEAT.min) < 1e-9,
+  );
+  // A 0..1 range in 100 steps has to be crossable without a sore thumb — that is the whole
+  // reason the slider carries its own profile rather than the navigation one.
+  const sliderCross = repeatCount(4000, PAD_SLIDER_REPEAT);
+  check('padnav: a 100-step slider is crossable in under 4 s on the slider profile', sliderCross >= 100, `${sliderCross} steps`);
+  check('padnav: ...and the slider profile is strictly the faster of the two', repeatCount(2000, PAD_SLIDER_REPEAT) > repeatCount(2000, PAD_NAV_REPEAT));
+
+  // ---- families and glyphs ----
+  check(
+    'padnav: a pad is identified by NAME',
+    padFamily('Xbox Wireless Controller') === 'xbox' && padFamily('DualSense Wireless Controller') === 'playstation' && padFamily('Pro Controller') === 'nintendo',
+  );
+  check(
+    'padnav: ...and by the USB VENDOR ID a browser falls back to for one it does not know',
+    padFamily('054c-0ce6-Wireless Controller') === 'playstation' && padFamily('045e-02fd-Bluetooth') === 'xbox' && padFamily('057e-2009-Pad') === 'nintendo',
+  );
+  check(
+    'padnav: an unknown pad stays GENERIC rather than guessing Xbox (a wrong glyph is pressed)',
+    padFamily('Some Unbranded Pad') === 'generic' && padFamily('') === 'generic' && padFamily(null) === 'generic' && padFamily(undefined) === 'generic',
+  );
+  check(
+    'padnav: every family prints a full glyph set — a blank legend is worse than none',
+    (['xbox', 'playstation', 'nintendo', 'generic'] as const).every((f) => Object.values(PAD_GLYPHS[f]).every((g) => typeof g === 'string' && g.length > 0)),
+  );
+  // Index 0 is the BOTTOM face button and 1 the RIGHT one. On a Switch pad the RIGHT one is A,
+  // so confirm and back SWAP — relabelling alone would hand a Switch player a legend that says
+  // A and a layer that listens to B.
+  check(
+    'padnav: Nintendo SWAPS confirm and back; everyone else confirms on 0',
+    padConfirmButton('nintendo') === 1 &&
+      padBackButton('nintendo') === 0 &&
+      (['xbox', 'playstation', 'generic'] as const).every((f) => padConfirmButton(f) === 0 && padBackButton(f) === 1),
+  );
+
+  // THE MENU BUTTON'S WHOLE CLAIM is that 15 is the one standard-mapping index no default bind
+  // uses. If a future default takes it, the button that leaves a match also drives the robot.
+  const defaultPad = new Set<number>();
+  for (const list of Object.values(DEFAULT_BINDINGS.pad.buttons)) for (const b of list) defaultPad.add(b);
+  for (const combos of Object.values(DEFAULT_BINDINGS.pad.combos)) for (const c of combos) for (const b of c) defaultPad.add(b);
+  check(
+    '⚠️ padnav: the in-match MENU button is an index no default pad bind uses',
+    !defaultPad.has(PAD_MENU_BUTTON),
+    `menu=${PAD_MENU_BUTTON} defaults=[${[...defaultPad].sort((a, b) => a - b).join(',')}]`,
+  );
+  check('padnav: the default menu button is a standard-mapping index', PAD_MENU_BUTTON >= 0 && PAD_MENU_BUTTON < 32);
+
+  // ---- the suspend registry ----
+  // A registry rather than a boolean because the reasons OVERLAP: Controls can be reached from
+  // a match, and a boolean would have the second release undo the first.
+  resetPadNavSuspend();
+  check('padnav: nothing suspended to begin with', !padNavSuspended() && padNavSuspendReasons().length === 0);
+  suspendPadNav('match');
+  suspendPadNav('capture');
+  check('padnav: two reasons are both held', padNavSuspended() && J(padNavSuspendReasons()) === J(['capture', 'match']));
+  resumePadNav('capture');
+  check('⚠️ padnav: releasing ONE reason does not resume the layer', padNavSuspended() && J(padNavSuspendReasons()) === J(['match']));
+  resumePadNav('match');
+  check('padnav: the last release resumes it', !padNavSuspended());
+  suspendPadNav('match');
+  suspendPadNav('match');
+  resumePadNav('match');
+  check('padnav: the same reason twice is still one reason (a Set, not a count)', !padNavSuspended());
+  resumePadNav('never-held');
+  check('padnav: releasing a reason nobody held is a no-op', !padNavSuspended());
+  resetPadNavSuspend();
+
+  // ---- the button mask ----
+  // ONE PRESS, ONE MEANING: the press that leaves the match must not also fire a shot.
+  clearPadMask();
+  check('padnav: an unmasked held list passes through untouched', J(applyPadMask([1, 7])) === J([1, 7]) && padMaskSize() === 0);
+  maskPadButtons([15, 7]);
+  check('padnav: a masked button is dropped while it is still down', J(applyPadMask([15, 7, 1])) === J([1]));
+  check('⚠️ padnav: ...and it stays dropped for as long as it is held', J(applyPadMask([15, 7])) === J([]));
+  check('padnav: a button that comes UP clears its own mask entry, and only its own', J(applyPadMask([7])) === J([]) && padMaskSize() === 1);
+  check('padnav: once released, the next genuine press is delivered', J(applyPadMask([])) === J([]) && padMaskSize() === 0 && J(applyPadMask([7])) === J([7]));
+  maskPadButtons([15]);
+  clearPadMask();
+  check('padnav: a disconnect clears the mask outright', padMaskSize() === 0 && J(applyPadMask([15])) === J([15]));
+
+  // ---- the on-screen keyboard's reducer ----
+  let o = oskInit('');
+  check('padnav: osk starts empty, lower case, on letters', o.value === '' && !o.caps && o.layout === 'letters');
+  o = oskReduce(o, { t: 'char', c: 'a' });
+  o = oskReduce(o, { t: 'caps' });
+  check('padnav: caps arms', o.caps === true);
+  o = oskReduce(o, { t: 'char', c: 'b' });
+  check('⚠️ padnav: caps is ONE-SHOT — it capitalises the next letter and releases', o.value === 'aB' && o.caps === false);
+  o = oskReduce(o, { t: 'space' });
+  o = oskReduce(o, { t: 'char', c: 'c' });
+  check('padnav: space and a following letter', o.value === 'aB c');
+  o = oskReduce(o, { t: 'back' });
+  check('padnav: backspace drops the last character', o.value === 'aB ');
+  o = oskReduce(o, { t: 'layout', l: 'digits' });
+  check('padnav: the layout switch keeps the value', o.layout === 'digits' && o.value === 'aB ');
+  o = oskReduce(o, { t: 'clear' });
+  check('padnav: clear empties it, and backspace on empty is a no-op', o.value === '' && oskReduce(o, { t: 'back' }).value === '');
+  // THE CAP IS THE FIELD'S OWN `maxLength` — a username field is 20, and a keyboard that let a
+  // pad user past it would write a value the form then rejects.
+  let full = oskInit('abc');
+  full = oskReduce(full, { t: 'char', c: 'd' }, 3);
+  check('padnav: a full field refuses another character', full.value === 'abc');
+  full = oskReduce(full, { t: 'space' }, 3);
+  check('padnav: ...and another space', full.value === 'abc');
+  const armed = oskReduce({ value: 'abc', layout: 'letters', caps: true }, { t: 'char', c: 'd' }, 3);
+  check('padnav: a refused character still RELEASES caps, so it cannot stick armed forever', armed.value === 'abc' && armed.caps === false);
+  check('padnav: `set` truncates to the cap', oskReduce(oskInit(''), { t: 'set', value: 'abcdef' }, 4).value === 'abcd');
 }
 
 console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILURES`);

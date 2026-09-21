@@ -8,6 +8,7 @@ import { robotExtents, squareUpRobotsWalls } from '../../../sim/physics';
 import { dcos, dsin } from '../../../math';
 import {
   BB3_CCD_SPEED,
+  BB3_CHASSIS_TOP_Z,
   BB3_CONTACT_FREQ,
   BB_HALF_X,
   BB_HALF_Y,
@@ -22,7 +23,9 @@ import {
   buildHiveTray3d,
   buildStatics3d,
   chassisBoxDesc,
+  chassis3dMechShapes,
   chassis3dReachShapes,
+  CYL_AXIS_Z,
   clearChassis3dColliders,
   swapChassis3dReachColliders,
   elementMass,
@@ -581,20 +584,49 @@ function fitChassis(
   const fe = robotExtents(r);
   const hx = (fe.front + fe.rear) / 2;
   const forward = (fe.front - fe.rear) / 2;
+  /**
+   * ⚠️ **THE HEIGHT PROFILE IS NOT PART OF THE TRADE — IT IS COPIED EXACTLY** (owner's invisible
+   * corner, 2026-09-21). The cuboid runs floor-to-`BB3_CHASSIS_TOP_Z`, not floor-to-`heightIn`,
+   * and the SAME tall mechanism shapes the authority builds (`chassis3dMechShapes`) go on top of
+   * it. The mouth pocket is a cheap reconcile; the height profile decides WHICH CONTACTS HAPPEN
+   * AT ALL, so a predictor that still thought it was `heightIn` tall everywhere would predict the
+   * catch under the hive that the authority no longer has — the largest class of disagreement
+   * there is, and exactly the one the driver feels.
+   */
+  const bodyTop = Math.min(BB3_CHASSIS_TOP_Z, heightIn);
   world3d.createCollider(
-    chassisBoxDesc(RAPIER, hx, fe.half, heightIn / 2)
-      .setTranslation(forward, 0, 0)
+    chassisBoxDesc(RAPIER, hx, fe.half, bodyTop / 2)
+      .setTranslation(forward, 0, -heightIn / 2 + bodyTop / 2)
       .setDensity(0)
       .setFriction(PHYS_FRICTION)
       .setRestitution(0),
     body,
   );
+  for (const s of chassis3dMechShapes(r.spec, heightIn, { front: fe.front, back: fe.rear, left: fe.half, right: fe.half })) {
+    world3d.createCollider(
+      (s.shape === 'cylinder'
+        ? RAPIER.ColliderDesc.cylinder(s.hz, s.hx).setRotation(CYL_AXIS_Z)
+        : chassisBoxDesc(RAPIER, s.hx, s.hy, s.hz)
+      )
+        .setTranslation(s.cx, s.cy, s.cz)
+        .setDensity(0)
+        .setFriction(PHYS_FRICTION)
+        .setRestitution(0),
+      body,
+    );
+  }
   // the SAME reach shapes the authority builds (`chassis3dReachShapes`, `bodies.ts`) — see
   // `makeRobotBody`'s own note on why this is added despite the predictor otherwise keeping one
   // bare cuboid.
   for (const s of chassis3dReachShapes(r.spec, heightIn, rampReady)) {
     world3d.createCollider(reachColliderDesc(RAPIER, s), body);
   }
+}
+
+/** how many colliders `fitChassis` puts on before the reach hardware — the cuboid plus one per
+ * standing mechanism. `refitRobotBody`'s `keep` for a RAMP-only edge; it was a bare `1`. */
+function predictBaseColliderCount(r: RobotState, heightIn: number): number {
+  return 1 + chassis3dMechShapes(r.spec, heightIn).length;
 }
 
 /**
@@ -619,7 +651,7 @@ function refitRobotBody(
   if (Math.abs(builtHeight - heightIn) <= 1e-9) {
     // a RAMP edge alone: keep the one chassis cuboid (and its floor contact) and swap only the
     // reach hardware, exactly as the authority does — a full clear sinks the robot 0.28 in.
-    swapChassis3dReachColliders(RAPIER, world3d, body, 1, r.spec, heightIn, rampReady);
+    swapChassis3dReachColliders(RAPIER, world3d, body, predictBaseColliderCount(r, heightIn), r.spec, heightIn, rampReady);
     return { height: heightIn, ramp: rampReady };
   }
   clearChassis3dColliders(world3d, body);

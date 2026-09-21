@@ -18,7 +18,17 @@ import { moduleFor } from '../../src/games';
 import { hiveCellTarget } from '../../src/games/biobuzz/elements';
 import { bbAimHeading, bbTurretSolution } from '../../src/games/biobuzz/robot';
 import { bbAimTarget, bbCellSideOf, bbPretendHive, bbTurretShotEnters } from '../../src/games/biobuzz/play';
-import { BB_AIM_TOL, BB_CELL_OPEN, BB_HIVE_OPEN_Z, BB_HOOD_DEFAULT_DEG } from '../../src/games/biobuzz/config';
+import {
+  BB3_CHASSIS_TOP_Z,
+  BB3_NECTAR_TURRET_R,
+  BB3_NECTAR_TURRET_TOP_Z,
+  BB3_TURRET_R,
+  BB3_TURRET_TOP_Z,
+  BB_AIM_TOL,
+  BB_CELL_OPEN,
+  BB_HIVE_OPEN_Z,
+  BB_HOOD_DEFAULT_DEG,
+} from '../../src/games/biobuzz/config';
 // -- LANE A (FIELD RENDER) imports, kept in their own block beside lane B's --------------
 import {
   BB_GARDEN,
@@ -171,22 +181,33 @@ import {
   wheelKindOf,
 } from '../../src/games/biobuzz/scene/renderRobots';
 import { lengthLimits } from '../../src/sim/drivetrain';
-import { bbMouthFrame, turretLocal, type BbMountPos } from '../../src/games/biobuzz/mounts';
+import { BB_MOUNT_POSITIONS, bbMouthFrame, turretLocal, type BbMountPos } from '../../src/games/biobuzz/mounts';
 import { bbMuzzleLocal } from '../../src/games/biobuzz/robot';
 import { INTAKE_RAIL_T } from '../../src/config';
 import { BB_DEFAULT_SPEC } from '../../src/games/biobuzz/coerce';
 import { bbCoerceSpec } from '../../src/games/biobuzz/robotConfig';
+import { bbCoerce } from './harness';
 import { bbSpecKey } from '../../src/games/biobuzz/specKey';
 import { SHOT, SHOT_ARC_MAX, shotArc, solveShotPath } from '../../src/games/biobuzz/shotPath';
 import { drawBiobuzzShotPath } from '../../src/games/biobuzz/drawShot';
 import { CAMERA_PREFS, getCameraPref, resolveSceneCamera } from '../../src/games/biobuzz/graphics/store';
 import {
+  bindFreeCamCustom,
   clampFreeCam,
   defaultFreeCam,
   dollyFreeCam,
+  dollyFreeCamToward,
   coerceFreeCamNav,
+  freeCamBindLabel,
+  freeCamNavFor,
+  freeCamOrbitDelta,
+  freeCamPanGain,
+  freeCamWheelDir,
+  freeCamWheelSign,
+  FREE_CAM_NAV_DEFAULT,
   FREE_CAM_PRESET_HINT,
   FREE_CAM_PRESET_LABEL,
+  FREE_CAM_PRESET_WHEEL,
   FREE_CAM_PRESETS,
   freeCamGesture,
   freeCamPose,
@@ -196,6 +217,9 @@ import {
   FREE_CAM_DIST_MIN,
   FREE_CAM_PITCH_MAX,
   FREE_CAM_PITCH_MIN,
+  type FreeCamBind,
+  type FreeCamGesture,
+  type FreeCamPreset,
   type FreeCamState,
 } from '../../src/games/biobuzz/graphics/freeCam';
 import {
@@ -1242,10 +1266,122 @@ export function renderChecks(check: Check): void {
   hudBandChecks(check);
   environmentAndReadoutChecks(check);
   cosmeticsChecks(check);
+  drawnHeightChecks(check);
   endPlateChecks(check);
   hoodPlateChecks(check);
   freeCamChecks(check);
   driverEyeChecks(check);
+}
+
+/**
+ * THE DRAWN HEIGHT PROFILE (owner, 2026-09-21, the sixth invisible-corner report) — the
+ * agreement between what `renderRobots.ts` BUILDS and the numbers `sim3d/` extrudes its chassis
+ * compound to (`BB3_CHASSIS_TOP_Z`, `BB3_TURRET_R`, `BB3_TURRET_TOP_Z`, `config.ts`).
+ *
+ * ⚠️ **IT HAS TO BE A CHECK AND NOT AN IMPORT.** `sim3d/` may not import `scene/` (the lazy-chunk
+ * boundary this lane enforces a few hundred lines up), so the physics side carries its own copy
+ * of the drawn robot's heights — the same bargain `BB_PLATE_T_DUP` makes for the ramp rails'
+ * inboard offset. What makes the copy safe is this: the meshes are BUILT here and measured off
+ * their own vertices, so a picture that grows taller than the collider fails immediately.
+ *
+ * `buildFrame`/`buildIntake`/`buildTurret` are DOM-free and are called directly, the same bargain
+ * `cosmeticsChecks` makes; `buildRobotGroup` needs a canvas and is not called here. The DUMPER's
+ * own envelope (`BB3_DUMPER_*`) is not reachable — `buildDumper` is not exported — and is pinned
+ * by `scratch/mechenv.ts`'s measurement instead, which reproduces every one of its numbers from
+ * `mounts.ts` to 0.01 in.
+ */
+function drawnHeightChecks(check: Check): void {
+  /**
+   * ⚠️ **THE RAMP'S OWN PARTS ARE SKIPPED, AND THAT IS NOT A CONVENIENCE.** A FOLDED ramp stands
+   * its rails and blade up round the barrel to 11.39 in — drawn hardware that the collider gives
+   * nothing at all, because a folded ramp is not solid to anything (`chassis3dReachShapes`
+   * returns an empty list until `rampReady`). That predates the height profile and is the
+   * harmless direction (drawn outside the collider); what this function bounds is the LOW BODY,
+   * and the ramp's SETTLED shapes are the reach hardware's own business.
+   */
+  const RAMP_PART = /^robot:ramp:/;
+  const zMax = (nodes: THREE.Object3D[]): number => {
+    let z = -Infinity;
+    const v = new THREE.Vector3();
+    for (const n of nodes) {
+      if (RAMP_PART.test(n.name)) continue;
+      n.updateWorldMatrix(true, true);
+      n.traverse((o) => {
+        const m = o as THREE.Mesh;
+        if (!(m as { isMesh?: boolean }).isMesh) return;
+        if (RAMP_PART.test(o.name) || RAMP_PART.test(o.parent?.name ?? '')) return;
+        const pos = m.geometry.getAttribute('position');
+        for (let i = 0; i < pos.count; i++) {
+          v.fromBufferAttribute(pos as THREE.BufferAttribute, i).applyMatrix4(m.matrixWorld);
+          if (v.z > z) z = v.z;
+        }
+      });
+    }
+    return z;
+  };
+
+  // ---- the LOW BODY: the frame and the intake assembly both sit under `BB3_CHASSIS_TOP_Z` ----
+  {
+    let worst = -Infinity;
+    let where = '';
+    for (const mount of ['front', 'back', 'side', 'frontback'] as const)
+      for (const kind of ['sweeper', 'siderollers', 'ramp'] as const) {
+        const spec = bbCoerce({
+          ...BB_DEFAULT_SPEC,
+          intakeMount: mount,
+          bbMech: { launcher: { kind: 'turret', mount: 'center', hoodDeg: BB_HOOD_DEFAULT_DEG }, lift: null, intake: { kind } },
+        });
+        const z = Math.max(zMax(buildFrame(spec)), zMax(buildIntake(spec).nodes));
+        if (z > worst) {
+          worst = z;
+          where = `${kind}@${mount}`;
+        }
+      }
+    check(
+      `drawn height: the frame and every intake archetype stay under BB3_CHASSIS_TOP_Z (${BB3_CHASSIS_TOP_Z}) — the height the 3D low body is built to`,
+      worst <= BB3_CHASSIS_TOP_Z && worst > BB3_CHASSIS_TOP_Z - 0.2,
+      `tallest drawn chassis part ${worst.toFixed(3)} in (${where})`,
+    );
+  }
+
+  // ---- the TURRET: its drawn top and the radius it sweeps about its own ring -----------------
+  //
+  // ⚠️ A RADIUS, NOT A BOX, because the head YAWS and the collider is built once — the disc it
+  // sweeps is its drawn geometry (`bbMechEnvelopes`' own header). Neither figure scales with the
+  // chassis: the head is built from `BB_FLYWHEEL_R` and the hood constants.
+  {
+    const worst: Record<0 | 1, { z: number; r: number }> = { 0: { z: -Infinity, r: 0 }, 1: { z: -Infinity, r: 0 } };
+    const v = new THREE.Vector3();
+    for (const mount of BB_MOUNT_POSITIONS)
+      for (const which of [0, 1] as const)
+        for (const [l, w] of [[13.5, 14.5], [15, 17], [17, 18]] as const) {
+          const spec = bbCoerce({ ...BB_DEFAULT_SPEC, length: l, width: w });
+          const head = buildTurret(spec, mount, which);
+          head.updateWorldMatrix(true, true);
+          const c = turretLocal(spec, mount);
+          head.traverse((o) => {
+            const m = o as THREE.Mesh;
+            if (!(m as { isMesh?: boolean }).isMesh) return;
+            const pos = m.geometry.getAttribute('position');
+            for (let i = 0; i < pos.count; i++) {
+              v.fromBufferAttribute(pos as THREE.BufferAttribute, i).applyMatrix4(m.matrixWorld);
+              worst[which].z = Math.max(worst[which].z, v.z);
+              worst[which].r = Math.max(worst[which].r, Math.hypot(v.x - c.x, v.y - c.y));
+            }
+          });
+        }
+    for (const [which, label, rc, zc] of [
+      [0, 'POLLEN', BB3_TURRET_R, BB3_TURRET_TOP_Z],
+      [1, 'NECTAR', BB3_NECTAR_TURRET_R, BB3_NECTAR_TURRET_TOP_Z],
+    ] as const) {
+      const got = worst[which];
+      check(
+        `drawn height: the ${label} turret head fits its own collider cylinder (r ${rc}, top ${zc}) at every mount and chassis size`,
+        got.z <= zc && got.r <= rc && got.z > zc - 0.2 && got.r > rc - 0.2,
+        `drawn top ${got.z.toFixed(3)} r ${got.r.toFixed(3)}`,
+      );
+    }
+  }
 }
 
 /**
@@ -2078,51 +2214,268 @@ function freeCamChecks(check: Check): void {
     const down = panFreeCam(grab, 0, 100).target;
     check('freeCam/pan: dragging right slides the field right (the look-at point moves screen-left)', right[1] > 1 && Math.abs(right[0]) < 1e-6, String(right));
     check('freeCam/pan: dragging down slides the field toward the viewer (the look-at point moves away)', down[0] > 1 && Math.abs(down[1]) < 1e-6, String(down));
-    const none = { shift: false, ctrl: false };
-    const shift = { shift: true, ctrl: false };
-    const ctrl = { shift: false, ctrl: true };
-    check('freeCam/nav: the default layout pans on a MIDDLE drag', freeCamGesture('dsim', 1, none) === 'pan');
-    check(
-      'freeCam/nav: the default layout keeps every gesture it had — left orbits, right and shift+left pan',
-      freeCamGesture('dsim', 0, none) === 'orbit' && freeCamGesture('dsim', 2, none) === 'pan' && freeCamGesture('dsim', 0, shift) === 'pan',
-    );
-    check(
-      'freeCam/nav: onshape — right orbits, middle and ctrl+right pan, left is left alone',
-      freeCamGesture('onshape', 2, none) === 'orbit' &&
-        freeCamGesture('onshape', 1, none) === 'pan' &&
-        freeCamGesture('onshape', 2, ctrl) === 'pan' &&
-        freeCamGesture('onshape', 0, none) === null,
-    );
-    check(
-      'freeCam/nav: solidworks — middle orbits, ctrl+middle pans, shift+middle zooms',
-      freeCamGesture('solidworks', 1, none) === 'orbit' && freeCamGesture('solidworks', 1, ctrl) === 'pan' && freeCamGesture('solidworks', 1, shift) === 'zoom',
-    );
-    check('freeCam/nav: fusion — middle pans, shift+middle orbits', freeCamGesture('fusion', 1, none) === 'pan' && freeCamGesture('fusion', 1, shift) === 'orbit');
-    check(
-      'freeCam/nav: blender — middle orbits, shift+middle pans, ctrl+middle zooms',
-      freeCamGesture('blender', 1, none) === 'orbit' && freeCamGesture('blender', 1, shift) === 'pan' && freeCamGesture('blender', 1, ctrl) === 'zoom',
-    );
+    // THE FULL MAPPING TABLE, one row per preset — every chord that IS a gesture, and the
+    // no-modifier/other-modifier cases that must be nothing at all. Written out rather than
+    // derived from the same table the code reads, which would assert nothing.
+    type Row = [button: number, mods: string, want: FreeCamGesture | null];
+    const M = (s: string) => ({ shift: s.includes('S'), ctrl: s.includes('C'), alt: s.includes('A') });
+    const TABLE: Record<Exclude<FreeCamPreset, 'custom'>, readonly Row[]> = {
+      // DSIM is ONSHAPE plus left-drag orbit and shift+left pan (owner: "DSIM default should
+      // also be very close to how the onshape one works").
+      dsim: [
+        [2, '', 'orbit'],
+        [0, '', 'orbit'],
+        [1, '', 'pan'],
+        [2, 'C', 'pan'],
+        [0, 'S', 'pan'],
+        [2, 'S', null],
+        [1, 'C', null],
+        [0, 'C', null],
+      ],
+      // help.onshape.com, "View Navigation and the View Cube": 3D rotate = "Right-mouse-button
+      // click, then drag"; 2D pan = "Ctrl + Right-mouse-button click, then drag / Middle-mouse-
+      // button click, then drag". Left is SELECT and stays unbound.
+      onshape: [
+        [2, '', 'orbit'],
+        [1, '', 'pan'],
+        [2, 'C', 'pan'],
+        [0, '', null],
+        [0, 'S', null],
+        [1, 'S', null],
+        [2, 'S', null],
+      ],
+      // SOLIDWORKS: middle drag rotates (help.solidworks.com, "Middle Mouse Button Functions");
+      // Ctrl+middle pans and Shift+middle zooms (Autodesk's own SolidWorks mouse preset).
+      solidworks: [
+        [1, '', 'orbit'],
+        [1, 'C', 'pan'],
+        [1, 'S', 'zoom'],
+        [0, '', null],
+        [2, '', null],
+        [1, 'SC', null],
+      ],
+      // Fusion preferences reference: "Zoom: Roll the middle mouse button or Ctrl + Shift +
+      // middle mouse button. Pan: Middle mouse button. Orbit: Shift + middle mouse button."
+      fusion: [
+        [1, '', 'pan'],
+        [1, 'S', 'orbit'],
+        [1, 'SC', 'zoom'],
+        [1, 'C', null],
+        [0, '', null],
+        [2, '', null],
+      ],
+      // Blender's own default keymap: `view3d.rotate` MIDDLEMOUSE, `view3d.move` shift+MIDDLE,
+      // `view3d.zoom` ctrl+MIDDLE.
+      blender: [
+        [1, '', 'orbit'],
+        [1, 'S', 'pan'],
+        [1, 'C', 'zoom'],
+        [1, 'SC', null],
+        [0, '', null],
+        [2, '', null],
+      ],
+    };
+    for (const preset of Object.keys(TABLE) as (keyof typeof TABLE)[]) {
+      const nav = freeCamNavFor(preset);
+      for (const [button, mods, want] of TABLE[preset]) {
+        const got = freeCamGesture(nav, button, M(mods));
+        check(`freeCam/nav: ${preset} — button ${button}${mods ? ` +${mods}` : ''} is ${want ?? 'nothing'}`, got === want, String(got));
+      }
+      // ALT IS IGNORED BY A PRESET, so Onshape's own `Alt + right-drag` constrained rotate lands
+      // on a plain orbit here rather than on nothing at all.
+      for (const [button, mods, want] of TABLE[preset]) {
+        check(`freeCam/nav: ${preset} — alt does not change button ${button}${mods ? ` +${mods}` : ''}`, freeCamGesture(nav, button, M(`${mods}A`)) === want);
+      }
+    }
     // a layout nobody can aim with is the failure that matters: every preset must reach BOTH
     // orbit and pan from some button + modifier, and must ignore the back/forward buttons.
-    const combos = [none, shift, ctrl];
+    const combos = ['', 'S', 'C', 'SC'].map(M);
     for (const preset of FREE_CAM_PRESETS) {
+      const nav = freeCamNavFor(preset);
       const reach = new Set<string | null>();
-      for (const b of [0, 1, 2]) for (const m of combos) reach.add(freeCamGesture(preset, b, m));
+      for (const b of [0, 1, 2]) for (const m of combos) reach.add(freeCamGesture(nav, b, m));
       check(`freeCam/nav: ${preset} can both orbit and pan`, reach.has('orbit') && reach.has('pan'), [...reach].join(','));
-      check(`freeCam/nav: ${preset} ignores mouse buttons 3 and 4`, freeCamGesture(preset, 3, none) === null && freeCamGesture(preset, 4, none) === null);
+      check(`freeCam/nav: ${preset} ignores mouse buttons 3 and 4`, freeCamGesture(nav, 3, M('')) === null && freeCamGesture(nav, 4, M('')) === null);
       check(`freeCam/nav: ${preset} has a label and a hint`, FREE_CAM_PRESET_LABEL[preset].length > 0 && FREE_CAM_PRESET_HINT[preset].length > 10);
     }
-    check(
-      'freeCam/nav: a corrupt stored layout falls back to the default, field by field',
-      JSON.stringify(coerceFreeCamNav({ preset: 'nope', invertZoom: 'yes' })) === JSON.stringify({ preset: 'dsim', invertZoom: false }) &&
-        JSON.stringify(coerceFreeCamNav(null)) === JSON.stringify({ preset: 'dsim', invertZoom: false }) &&
-        JSON.stringify(coerceFreeCamNav({ preset: 'onshape', invertZoom: true })) === JSON.stringify({ preset: 'onshape', invertZoom: true }),
-    );
     // the scene must ASK the table rather than hardcode buttons, and must cancel the middle
     // press's autoscroll or a middle-drag dies after its first pixel on Windows.
     const scene = readFileSync(join(BIOBUZZ_DIR, 'scene', 'renderScene.ts'), 'utf8');
-    check('freeCam/nav: renderScene routes the press through freeCamGesture', scene.includes('freeCamGesture(this.freeNav.preset, e.button'));
+    check('freeCam/nav: renderScene routes the press through freeCamGesture', scene.includes('freeCamGesture(this.freeNav, e.button'));
+    check('freeCam/nav: renderScene folds ⌘ into ctrl and passes alt through', scene.includes('e.ctrlKey || e.metaKey, alt: e.altKey'));
     check("freeCam/nav: renderScene cancels a middle press's autoscroll while the free camera is up", scene.includes("addEventListener('mousedown', onMouseDown)") && scene.includes('e.button === 1) e.preventDefault()'));
+  }
+
+  // ---- THE DIRECTION SENSES, pinned with explicit geometry ----------------------------------
+  //
+  // ⚠️ This block is the owner's 2026-09-21 report ("Onshape orbit is right drag but it is
+  // reversed"). Yesterday's `freeOrbit` added `+dx·rate` to `yaw`, and d(eye)/d(yaw) is exactly
+  // the camera's screen-RIGHT vector — so the EYE followed the cursor and the field went the
+  // other way. Every CAD package drags the MODEL. The geometry below is stated in full so that a
+  // future change cannot satisfy it by accident.
+  {
+    const nav = freeCamNavFor('onshape');
+    // Eye on the −x side looking +x: yaw = π puts the eye at (−dist, 0), so screen-right is −y
+    // and screen-left is +y.
+    const s: FreeCamState = { yaw: Math.PI, pitch: 0.5, dist: 150, target: [0, 0] };
+    const dragRight = freeCamOrbitDelta(nav, 100, 0, 0.006, 0.004);
+    const afterRight = orbitFreeCam(s, dragRight.dYaw, dragRight.dPitch);
+    const eyeRight = freeCamPose(afterRight).eye;
+    check(
+      'freeCam/sense: an orbit drag to the RIGHT swings the FIELD right — the eye goes screen-LEFT (+y here)',
+      dragRight.dYaw < 0 && eyeRight[1] > 1,
+      `dYaw ${dragRight.dYaw}, eye ${eyeRight}`,
+    );
+    const dragLeft = freeCamOrbitDelta(nav, -100, 0, 0.006, 0.004);
+    const eyeLeft = freeCamPose(orbitFreeCam(s, dragLeft.dYaw, dragLeft.dPitch)).eye;
+    check('freeCam/sense: and a drag to the LEFT is the mirror of it (the eye goes to −y)', eyeLeft[1] < -1, String(eyeLeft));
+    // DOWN tips the field's top toward the viewer, i.e. the eye RISES. (Grab the front of a ball,
+    // pull down, and its top rolls toward you.) This axis was already right and is NOT flipped.
+    const dragDown = freeCamOrbitDelta(nav, 0, 100, 0.006, 0.004);
+    const downPose = freeCamPose(orbitFreeCam(s, dragDown.dYaw, dragDown.dPitch));
+    check(
+      'freeCam/sense: an orbit drag DOWN raises the eye (the field tips its top toward the viewer)',
+      dragDown.dPitch > 0 && downPose.eye[2] > freeCamPose(s).eye[2],
+      `dPitch ${dragDown.dPitch}`,
+    );
+    const dragUp = freeCamOrbitDelta(nav, 0, -100, 0.006, 0.004);
+    check('freeCam/sense: an orbit drag UP lowers the eye', freeCamPose(orbitFreeCam(s, dragUp.dYaw, dragUp.dPitch)).eye[2] < freeCamPose(s).eye[2]);
+    // THE SPECTATOR ORBIT CAMERA IS THE HOUSE REFERENCE and has always gone this way: `orbitDrag`
+    // does `orbitYaw -= dx · ORBIT_DRAG_YAW`, in the same yaw convention. Free cam disagreeing
+    // with it was the bug, so the two are pinned to the same sign here.
+    const cams = readFileSync(join(BIOBUZZ_DIR, 'scene', 'renderCameras.ts'), 'utf8');
+    check('freeCam/sense: the spectator orbit still subtracts dx from its yaw (the sense free cam now matches)', /orbitYaw\s*-=\s*dx\s*\*\s*ORBIT_DRAG_YAW/.test(cams));
+    check('freeCam/sense: free cam takes its orbit delta from the pure module, not from a sign written at the call site', cams.includes('freeCamOrbitDelta(freeNav, dx, dy'));
+
+    // the INVERSIONS are the player putting either axis back, and each one moves only its own.
+    const invX = { ...nav, invertOrbitX: true };
+    const invY = { ...nav, invertOrbitY: true };
+    const base = freeCamOrbitDelta(nav, 100, 100, 0.006, 0.004);
+    const x = freeCamOrbitDelta(invX, 100, 100, 0.006, 0.004);
+    const y = freeCamOrbitDelta(invY, 100, 100, 0.006, 0.004);
+    check('freeCam/sense: invert orbit left/right flips ONLY the yaw', x.dYaw === -base.dYaw && x.dPitch === base.dPitch);
+    check('freeCam/sense: invert orbit up/down flips ONLY the pitch', y.dPitch === -base.dPitch && y.dYaw === base.dYaw);
+    // and the sensitivity is a plain multiplier on both
+    const fast = freeCamOrbitDelta({ ...nav, orbitSpeed: 2 }, 100, 100, 0.006, 0.004);
+    check('freeCam/sense: orbit sensitivity scales both axes', Math.abs(fast.dYaw - base.dYaw * 2) < 1e-12 && Math.abs(fast.dPitch - base.dPitch * 2) < 1e-12);
+    // PAN: the gain is the sensitivity, negated when inverted, and inverting it really does send
+    // the ground the other way.
+    check('freeCam/sense: invert pan negates the gain', freeCamPanGain({ ...nav, invertPan: true }) === -1 && freeCamPanGain(nav) === 1);
+    const pannedInv = panFreeCam(s, 100, 0, freeCamPanGain({ ...nav, invertPan: true })).target;
+    check('freeCam/sense: an inverted pan dragged right moves the look-at point the other way', pannedInv[1] < -1, String(pannedInv));
+    const pannedFast = panFreeCam(s, 100, 0, 2).target;
+    const pannedSlow = panFreeCam(s, 100, 0, 1).target;
+    check('freeCam/sense: pan sensitivity scales the travel', Math.abs(pannedFast[1] - pannedSlow[1] * 2) < 1e-9);
+  }
+
+  // ---- the wheel: per-preset default, and the override ---------------------------------------
+  {
+    // The two packages that PUBLISH a default agree with ours: Onshape's own navigation table
+    // says "Scroll wheel up: Zoom in", and Blender's default keymap binds `WHEELINMOUSE` to
+    // `view3d.zoom` with `delta 1`. The other two publish the buttons and not the wheel — see
+    // `docs/biobuzz/free-cam-presets.md`.
+    for (const preset of FREE_CAM_PRESETS) {
+      const nav = freeCamNavFor(preset);
+      check(`freeCam/wheel: ${preset} defaults to its own published direction`, freeCamWheelDir(nav) === FREE_CAM_PRESET_WHEEL[preset], freeCamWheelDir(nav));
+      check(`freeCam/wheel: ${preset} — "preset default" is not a third behaviour`, nav.wheel === 'preset' && (freeCamWheelDir(nav) === 'in' || freeCamWheelDir(nav) === 'out'));
+    }
+    const onshape = freeCamNavFor('onshape');
+    check('freeCam/wheel: onshape — forward zooms IN, as its table says', freeCamWheelDir(onshape) === 'in' && freeCamWheelSign(onshape) === 1);
+    check('freeCam/wheel: the override beats the preset in both directions', freeCamWheelSign({ ...onshape, wheel: 'out' }) === -1 && freeCamWheelSign({ ...onshape, wheel: 'in' }) === 1);
+    // END TO END, with `renderCameras.ts`'s own formula spelled out here: a FORWARD push is a
+    // NEGATIVE `deltaY`, and on the default it must shorten the distance.
+    const s: FreeCamState = { yaw: 1, pitch: 0.5, dist: 200, target: [0, 0] };
+    const forward = (nav: typeof onshape): number => dollyFreeCam(s, Math.exp(-100 * freeCamWheelSign(nav) * 1 * 0.0012)).dist;
+    check('freeCam/wheel: a forward push zooms IN on the default', forward(onshape) < s.dist, String(forward(onshape)));
+    check('freeCam/wheel: a forward push zooms OUT once the player inverts it', forward({ ...onshape, wheel: 'out' }) > s.dist);
+    const slow = dollyFreeCam(s, Math.exp(-100 * 1 * 0.5 * 0.0012)).dist;
+    const fastD = dollyFreeCam(s, Math.exp(-100 * 1 * 2 * 0.0012)).dist;
+    check('freeCam/wheel: zoom sensitivity moves the same notch further', fastD < slow && slow < s.dist, `${fastD} < ${slow} < ${s.dist}`);
+    const cams = readFileSync(join(BIOBUZZ_DIR, 'scene', 'renderCameras.ts'), 'utf8');
+    check('freeCam/wheel: the camera applies the sign and the sensitivity, not the listener', cams.includes('freeCamWheelSign(freeNav) * freeNav.zoomSpeed * FREE_DOLLY_RATE'));
+  }
+
+  // ---- zoom to cursor keeps the point under the cursor exactly where it is --------------------
+  {
+    // The invariant that MAKES it true, checked rather than eyeballed: scaling the camera about
+    // the floor point `P` leaves every direction from the eye to `P` unchanged (the eye only
+    // slides along the line through `P`) and leaves the view direction unchanged — so `P` keeps
+    // its screen position whatever the projection is.
+    const s: FreeCamState = { yaw: 2.1, pitch: 0.5, dist: 200, target: [10, -20] };
+    const P: [number, number, number] = [35, 12, 0];
+    for (const f of [0.8, 1.25]) {
+      const n = dollyFreeCamToward(s, f, P[0], P[1]);
+      check(`freeCam/cursor: f=${f} — the dolly itself is unchanged (dist × f), and no clamp bit`, Math.abs(n.dist - s.dist * f) < 1e-9, String(n.dist));
+      check(`freeCam/cursor: f=${f} — yaw and pitch are untouched`, n.yaw === s.yaw && n.pitch === s.pitch);
+      const e0 = freeCamPose(s).eye;
+      const e1 = freeCamPose(n).eye;
+      const ok = [0, 1, 2].every((i) => Math.abs(e1[i] - P[i] - (e0[i] - P[i]) * f) < 1e-9);
+      check(`freeCam/cursor: f=${f} — the eye moves exactly along the line through the cursor point`, ok, `${e0} -> ${e1}`);
+      const t1 = freeCamPose(n).target;
+      const tOk = [0, 1, 2].every((i) => Math.abs(t1[i] - P[i] - (freeCamPose(s).target[i] - P[i]) * f) < 1e-9);
+      check(`freeCam/cursor: f=${f} — and so does the look-at point, so the view direction is identical`, tOk, String(t1));
+    }
+    // zooming toward the point you are ALREADY looking at is the ordinary dolly, to the bit.
+    const same = dollyFreeCamToward(s, 0.8, s.target[0], s.target[1]);
+    check('freeCam/cursor: with the cursor on the look-at point it IS the plain dolly', JSON.stringify(same) === JSON.stringify(dollyFreeCam(s, 0.8)));
+    // a non-finite cursor point (an unprojection that degenerated) falls back rather than
+    // poisoning the target
+    check('freeCam/cursor: a non-finite cursor point falls back to the plain dolly', JSON.stringify(dollyFreeCamToward(s, 0.8, NaN, 0)) === JSON.stringify(dollyFreeCam(s, 0.8)));
+    check('freeCam/cursor: it is OFF by default — only Blender documents the behaviour, as one you enable', FREE_CAM_NAV_DEFAULT.zoomToCursor === false);
+    const scene = readFileSync(join(BIOBUZZ_DIR, 'scene', 'renderScene.ts'), 'utf8');
+    check('freeCam/cursor: the wheel listener hands the camera the cursor in clip space', scene.includes('this.cameras.freeDolly(e.deltaY, this.ndcOf(e))'));
+    const cams = readFileSync(join(BIOBUZZ_DIR, 'scene', 'renderCameras.ts'), 'utf8');
+    check('freeCam/cursor: the camera only consults it when the device asked for it', cams.includes('freeNav.zoomToCursor && ndc ? floorUnder('));
+  }
+
+  // ---- the CUSTOM layout: capture, steal, and what an unbound gesture does --------------------
+  {
+    const b = (button: 0 | 1 | 2, shift = false, ctrl = false, alt = false): FreeCamBind => ({ button, shift, ctrl, alt });
+    const nav = freeCamNavFor('custom');
+    check('freeCam/custom: an untouched custom layout is already usable (orbit, pan and zoom all bound)', !!nav.custom.orbit && !!nav.custom.pan && !!nav.custom.zoom);
+    check('freeCam/custom: and it is Onshape-shaped — right orbits, middle pans', freeCamGesture(nav, 2, { shift: false, ctrl: false, alt: false }) === 'orbit' && freeCamGesture(nav, 1, { shift: false, ctrl: false, alt: false }) === 'pan');
+    // STEALING, the key binder's own policy: the chord moves, the loser goes UNBOUND.
+    const stolen = bindFreeCamCustom(nav.custom, 'pan', b(2));
+    check('freeCam/custom: binding pan to a chord orbit held STEALS it', stolen.pan?.button === 2 && stolen.orbit === null);
+    const navStolen = { ...nav, custom: stolen };
+    check('freeCam/custom: and the stolen-from gesture then answers to nothing', freeCamGesture(navStolen, 2, { shift: false, ctrl: false, alt: false }) === 'pan');
+    check('freeCam/custom: an unbound gesture is simply unreachable, never a fallback to a preset', ![0, 1, 2].some((btn) => freeCamGesture(navStolen, btn, { shift: false, ctrl: false, alt: false }) === 'orbit'));
+    // a DIFFERENT chord on the same button does not steal — the modifiers are part of it.
+    const kept = bindFreeCamCustom(nav.custom, 'zoom', b(2, true));
+    check('freeCam/custom: shift+right does not steal plain right', kept.orbit?.button === 2 && kept.zoom?.shift === true);
+    // ALT IS EXACT in a custom layout (it is ignored only by the PRESETS), or two of the
+    // player's own bindings would be indistinguishable.
+    const withAlt = { ...nav, custom: bindFreeCamCustom(nav.custom, 'zoom', b(0, false, false, true)) };
+    check('freeCam/custom: alt+left is a gesture, and plain left is not', freeCamGesture(withAlt, 0, { shift: false, ctrl: false, alt: true }) === 'zoom' && freeCamGesture(withAlt, 0, { shift: false, ctrl: false, alt: false }) === null);
+    check('freeCam/custom: the keycap label spells the whole chord', freeCamBindLabel(b(1, true, true, true)) === 'Ctrl+Shift+Alt+Middle' && freeCamBindLabel(null) === 'Unbound');
+    const ui = readFileSync(join(root, 'src', 'ui', 'GraphicsSection.tsx'), 'utf8');
+    check('freeCam/custom: the capture effect depends on `capture` alone, with the nav in a ref', ui.includes('navRef.current') && /\}, \[capture\]\);/.test(ui));
+    check('freeCam/custom: Escape cancels a capture rather than binding anything', ui.includes("if (e.key === 'Escape')"));
+  }
+
+  // ---- ONE key, coerced field by field, and an older blob still loads -------------------------
+  {
+    const d = FREE_CAM_NAV_DEFAULT;
+    check('freeCam/store: an absent or corrupt blob is the default, whole', JSON.stringify(coerceFreeCamNav(null)) === JSON.stringify(d) && JSON.stringify(coerceFreeCamNav('nope')) === JSON.stringify(d) && JSON.stringify(coerceFreeCamNav({})) === JSON.stringify(d));
+    check('freeCam/store: an unknown preset falls back to dsim, which is the one that must exist', coerceFreeCamNav({ preset: 'catia' }).preset === 'dsim');
+    // ⚠️ THE FIRST SHIPPED SHAPE was `{ preset, invertZoom }`. A device that stored `invertZoom:
+    // true` asked for "forward zooms out" and must still get it.
+    const old = coerceFreeCamNav({ preset: 'onshape', invertZoom: true });
+    check('freeCam/store: an OLD blob keeps its preset and its inverted wheel', old.preset === 'onshape' && old.wheel === 'out' && freeCamWheelSign(old) === -1);
+    const oldPlain = coerceFreeCamNav({ preset: 'blender', invertZoom: false });
+    check('freeCam/store: an old blob that never inverted follows its preset', oldPlain.wheel === 'preset' && freeCamWheelDir(oldPlain) === FREE_CAM_PRESET_WHEEL.blender);
+    check('freeCam/store: every new field defaults on an old blob', old.smoothing === true && old.zoomToCursor === false && old.orbitSpeed === 1 && old.custom.orbit?.button === 2);
+    // per-field degradation, not per-blob
+    const mixed = coerceFreeCamNav({ preset: 'fusion', wheel: 'sideways', orbitSpeed: 'fast', panSpeed: 99, zoomSpeed: -3, smoothing: 0, invertPan: 1, custom: { orbit: { button: 7 }, zoom: null } });
+    check('freeCam/store: a bad wheel value degrades to the preset default alone', mixed.preset === 'fusion' && mixed.wheel === 'preset');
+    check('freeCam/store: a non-numeric speed is 1 and an out-of-range one clamps', mixed.orbitSpeed === 1 && mixed.panSpeed === 4 && mixed.zoomSpeed === 0.25);
+    check('freeCam/store: only a literal false turns smoothing off, and only a literal true inverts', mixed.smoothing === true && mixed.invertPan === false);
+    check('freeCam/store: an illegal custom button is UNBOUND, and an explicit null stays null', mixed.custom.orbit === null && mixed.custom.zoom === null);
+    check('freeCam/store: a custom entry the blob never mentioned keeps its default', mixed.custom.pan?.button === 1);
+    check('freeCam/store: a full round trip is byte-identical', JSON.stringify(coerceFreeCamNav(JSON.parse(JSON.stringify(mixed)))) === JSON.stringify(mixed));
+    // ONE key, so the whole thing survives or falls over together
+    const keys = readFileSync(join(root, 'src', 'storageKeys.ts'), 'utf8');
+    check('freeCam/store: it is still ONE storage key', (keys.match(/FREE_CAM_NAV_KEY/g) ?? []).length >= 1);
   }
 
   // ---- graphics/ still imports neither three nor scene/, pinned for this file by name -------

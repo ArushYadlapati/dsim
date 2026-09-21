@@ -34,10 +34,12 @@ import {
   type PadAction,
   type PadChord,
 } from '../input/bindings';
+import { padButtonLabel } from '../input/bindings';
+import { resumePadNav, suspendPadNav } from '../input/padNav';
 import type { GameId } from '../games/types';
 import { seasonFor } from '../seasons';
 import { visibleSeasons } from '../seasonVisibility';
-import { OptRow } from './OptRow';
+import { OptRow, ToggleRow } from './OptRow';
 import { rangeFill } from './rangeFill';
 import {
   PREDICTION_BLURBS,
@@ -158,6 +160,69 @@ export function ControlsSection({ bindings, onChange, onEditTouchControls, onTut
    */
   const [prediction, setPrediction] = useState<PredictionPref>(() => getPredictionPref());
   useEffect(() => subscribePredictionPref(setPrediction), []);
+
+  /**
+   * ⚠️ PAD NAVIGATION STANDS DOWN WHILE A CAPTURE IS ARMED.
+   *
+   * The pad capture below takes EVERY button that goes down, which is exactly what the
+   * navigation layer's A-to-activate reads — so without this, opening a pad slot with A binds A
+   * to that action and then to the next one, and the screen becomes unusable with the device it
+   * configures. Keyed on `capture` alone, like the two effects under it and for the same reason.
+   */
+  useEffect(() => {
+    if (!capture) return;
+    suspendPadNav('capture');
+    return () => resumePadNav('capture');
+  }, [capture]);
+
+  /**
+   * THE MATCH-MENU BUTTON's own capture, and it is a separate one on purpose: `menuButton` is not
+   * a `PadAction` (see `PadBindings.menuButton`), so it has no slot, no combo and no steal — it
+   * is one index. Commit on the first button DOWN, unlike the action capture beside it, because
+   * there is no combo to wait for; Escape cancels.
+   */
+  const [menuCapture, setMenuCapture] = useState(false);
+  useEffect(() => {
+    if (!menuCapture) return;
+    suspendPadNav('capture');
+    let raf = 0;
+    const alreadyDown = new Set<number>();
+    let first = true;
+    const poll = (): void => {
+      raf = requestAnimationFrame(poll);
+      const pads = navigator.getGamepads ? Array.from(navigator.getGamepads()) : [];
+      const pad = pads.find((p) => p && p.connected);
+      if (!pad) return;
+      const thr = bindingsRef.current.pad.triggerThreshold;
+      for (let i = 0; i < pad.buttons.length; i++) {
+        const b = pad.buttons[i];
+        const down = !!b && (b.pressed || b.value > thr);
+        if (first) {
+          if (down) alreadyDown.add(i);
+          continue;
+        }
+        if (!down || alreadyDown.has(i)) {
+          if (!down) alreadyDown.delete(i);
+          continue;
+        }
+        const b0 = cloneBindings(bindingsRef.current);
+        onChangeRef.current({ ...b0, pad: { ...b0.pad, menuButton: i } });
+        setMenuCapture(false);
+        return;
+      }
+      first = false;
+    };
+    raf = requestAnimationFrame(poll);
+    const onKey = (e: KeyboardEvent): void => {
+      if (e.key === 'Escape') setMenuCapture(false);
+    };
+    window.addEventListener('keydown', onKey);
+    return () => {
+      cancelAnimationFrame(raf);
+      window.removeEventListener('keydown', onKey);
+      resumePadNav('capture');
+    };
+  }, [menuCapture]);
 
   // keyboard capture: next keydown becomes the binding; Escape cancels. Backspace and Delete
   // REMOVE the slot instead, for either device: it is the only way to shrink a list that `+`
@@ -545,6 +610,34 @@ export function ControlsSection({ bindings, onChange, onEditTouchControls, onTut
             </div>
           </div>
           <p className="ds-hint">The stick roles and these five sliders are the same in every season.</p>
+        </div>
+
+        {/* MENU NAVIGATION. Global like the sliders above it, and for the same reason: it is how
+            a hand works, not what a button means in one season. */}
+        <div className="ds-bind-block">
+          <h3>Menu navigation</h3>
+          <ToggleRow
+            label="Controller menu navigation"
+            value={bindings.pad.navEnabled}
+            onPick={(v) =>
+              onChange({ ...cloneBindings(bindings), pad: { ...bindings.pad, navEnabled: v } })
+            }
+          />
+          <div className="ds-bind-grid">
+            <div className="ds-bind-row">
+              <span className="ds-bind-label">Match menu</span>
+              <button
+                className={`ds-key${menuCapture ? ' waiting' : ''}`}
+                onClick={() => setMenuCapture(true)}
+                title="Press a button on the pad to rebind"
+              >
+                {menuCapture ? '…' : padButtonLabel(bindings.pad.menuButton)}
+              </button>
+            </div>
+          </div>
+          <p className="ds-hint">
+            Opens the menu mid-match. The match keeps running in an online room.
+          </p>
         </div>
 
         <div className="ds-bind-block">

@@ -1,5 +1,6 @@
 import type { PadBindings } from './bindings';
 import { PadChordResolver } from './padChords';
+import { applyPadMask, clearPadMask } from './padNav';
 
 /** deadzone + sensitivity curve: below `deadzone` reads as dead center; past
  * it, the remaining travel is rescaled to 0-1 and raised to `curve` (1 =
@@ -77,13 +78,18 @@ export class GamepadInput {
       this.prevFlip = false;
       this.prevPark = false;
       this.chords.reset();
+      clearPadMask();
       return { ...EMPTY };
     }
-    const held: number[] = [];
+    const raw: number[] = [];
     for (let i = 0; i < pad.buttons.length; i++) {
       const b = pad.buttons[i];
-      if (b && (b.pressed || b.value > bindings.triggerThreshold)) held.push(i);
+      if (b && (b.pressed || b.value > bindings.triggerThreshold)) raw.push(i);
     }
+    /* THE MASK, before the resolver sees anything. A button spent on opening or closing the
+       in-match menu is dead until it is released, so the press that got the player out of the
+       menu cannot also fire a shot on the way back in — `padNav.ts` says why. */
+    const held = applyPadMask(raw);
     const now = typeof performance !== 'undefined' ? performance.now() : Date.now();
     const on = this.chords.resolve(held, bindings, now);
     const ax = (i: number): number => shape(pad.axes[i] ?? 0, bindings.deadzone, bindings.curve);

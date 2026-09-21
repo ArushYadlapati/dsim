@@ -1,4 +1,4 @@
-import { useEffect, useId, useState, type KeyboardEvent } from 'react';
+import { useEffect, useId, useRef, useState, type KeyboardEvent } from 'react';
 import {
   coerceMaxFps,
   fpsFromSliderPos,
@@ -53,9 +53,16 @@ import {
   inFromFtIn,
 } from '../games/biobuzz/graphics/driverEye';
 import {
+  bindFreeCamCustom,
+  freeCamBindLabel,
+  FREE_CAM_NAV_DEFAULT,
   FREE_CAM_PRESET_HINT,
   FREE_CAM_PRESET_LABEL,
   FREE_CAM_PRESETS,
+  FREE_CAM_SPEED_MAX,
+  FREE_CAM_SPEED_MIN,
+  type FreeCamGesture,
+  type FreeCamNav,
   type FreeCamPreset,
 } from '../games/biobuzz/graphics/freeCam';
 import { installViewKey } from '../games/biobuzz/graphics/viewKey';
@@ -429,6 +436,170 @@ function DriverHeightRow({ value, onChange }: { value: number | null; onChange: 
   );
 }
 
+/**
+ * THE FREE CAMERA'S MOUSE BLOCK — the preset picker, its one-line mapping, and everything the
+ * owner asked for on top of it ("give people further configuration options for it", 2026-09-21).
+ *
+ * WHAT IS ABOVE THE FOLD IS WHAT A NEW PLAYER TOUCHES: which package their hands already know,
+ * and — only when they have picked `Custom` — the three chords. Everything else is an ADJUSTMENT
+ * to a mapping that is already correct (inversions, sensitivities, the wheel's direction, zoom to
+ * cursor, smoothing), which is exactly the rare-controls test `docs/area/ui.md` set for
+ * `.ds-fold`. `.inset` because this sits inside a panel body and a second card would be nesting.
+ *
+ * Everything writes ONE key through `setFreeCamNav` (`graphics/store.ts`), per device, coerced
+ * field by field on the way back in.
+ */
+function FreeCamRows({ nav }: { nav: FreeCamNav }) {
+  const set = (patch: Partial<FreeCamNav>): void => setFreeCamNav({ ...nav, ...patch });
+  return (
+    <>
+      <OptRow
+        label="Free camera mouse"
+        value={nav.preset}
+        cols="three"
+        onPick={(preset: FreeCamPreset) => set({ preset })}
+        options={FREE_CAM_PRESETS.map((v) => ({ v, t: FREE_CAM_PRESET_LABEL[v] }))}
+      />
+      <p className="ds-hint">{FREE_CAM_PRESET_HINT[nav.preset]} · double-click to reset</p>
+      {nav.preset === 'custom' && <FreeCamCustomRows nav={nav} />}
+      <details className="ds-fold inset">
+        <summary>Free camera options</summary>
+        <div className="ds-fold-body">
+          <OptRow
+            label="Scroll zoom"
+            value={nav.wheel}
+            cols="three"
+            onPick={(wheel: 'preset' | 'in' | 'out') => set({ wheel })}
+            options={[
+              { v: 'preset' as const, t: 'Preset default' },
+              { v: 'in' as const, t: 'Forward zooms in' },
+              { v: 'out' as const, t: 'Forward zooms out' },
+            ]}
+          />
+          <ToggleRow label="Zoom to cursor" value={nav.zoomToCursor} onPick={(zoomToCursor) => set({ zoomToCursor })} />
+          <ToggleRow label="Smoothing" value={nav.smoothing} onPick={(smoothing) => set({ smoothing })} />
+          <ToggleRow label="Invert orbit left and right" value={nav.invertOrbitX} onPick={(invertOrbitX) => set({ invertOrbitX })} />
+          <ToggleRow label="Invert orbit up and down" value={nav.invertOrbitY} onPick={(invertOrbitY) => set({ invertOrbitY })} />
+          <ToggleRow label="Invert pan" value={nav.invertPan} onPick={(invertPan) => set({ invertPan })} />
+          <SpeedRow label="Orbit speed" value={nav.orbitSpeed} onPick={(orbitSpeed) => set({ orbitSpeed })} />
+          <SpeedRow label="Pan speed" value={nav.panSpeed} onPick={(panSpeed) => set({ panSpeed })} />
+          <SpeedRow label="Zoom speed" value={nav.zoomSpeed} onPick={(zoomSpeed) => set({ zoomSpeed })} />
+          <div className="ds-actions">
+            <button
+              className="ds-btn small"
+              onClick={() => setFreeCamNav({ ...FREE_CAM_NAV_DEFAULT, preset: nav.preset, custom: { ...FREE_CAM_NAV_DEFAULT.custom } })}
+            >
+              Reset camera options
+            </button>
+          </div>
+        </div>
+      </details>
+    </>
+  );
+}
+
+/** one sensitivity, as a percentage of the shipped rate. Stored as the multiplier itself. */
+function SpeedRow({ label, value, onPick }: { label: string; value: number; onPick: (v: number) => void }) {
+  const pct = Math.round(value * 100);
+  return (
+    <label className="ds-field">
+      <span className="cap">
+        {label} <span className="val">{pct}%</span>
+      </span>
+      <input
+        className="ds-range"
+        type="range"
+        min={FREE_CAM_SPEED_MIN * 100}
+        max={FREE_CAM_SPEED_MAX * 100}
+        step={5}
+        value={pct}
+        style={rangeFill(pct, FREE_CAM_SPEED_MIN * 100, FREE_CAM_SPEED_MAX * 100)}
+        aria-label={label}
+        aria-valuetext={`${pct} percent`}
+        onChange={(e) => onPick(Number(e.target.value) / 100)}
+      />
+    </label>
+  );
+}
+
+const CUSTOM_GESTURES: readonly { g: FreeCamGesture; label: string }[] = [
+  { g: 'orbit', label: 'Orbit' },
+  { g: 'pan', label: 'Pan' },
+  { g: 'zoom', label: 'Zoom by dragging' },
+];
+
+/**
+ * THE CUSTOM LAYOUT'S THREE CHORDS, captured the way the key binder captures a key: press the
+ * row's button, then press the mouse button (with whatever modifiers you want held) anywhere.
+ * Conflicts STEAL, so the loser reads `Unbound` — the same policy, and the same wording, the
+ * rebindable controls use (`docs/area/ui.md`).
+ *
+ * ⚠️ THE CAPTURE EFFECT DEPENDS ON `capture` ALONE, with the nav in a ref. That is the pitfall
+ * the controls screen already hit and wrote down: `nav` is a fresh object on every parent render
+ * and the App re-renders on its own every few seconds (the presence poll), so listing it as a
+ * dependency tears the listeners down and rebuilds them mid-capture.
+ *
+ * `capture: true` on every listener, and `preventDefault` on the press: a middle press would
+ * otherwise start Windows' autoscroll and a right press would open the context menu — over a
+ * settings screen, not a canvas, so there is no other handler to be polite to.
+ */
+function FreeCamCustomRows({ nav }: { nav: FreeCamNav }) {
+  const [capture, setCapture] = useState<FreeCamGesture | null>(null);
+  const navRef = useRef(nav);
+  navRef.current = nav;
+
+  useEffect(() => {
+    if (!capture) return;
+    const onDown = (e: MouseEvent): void => {
+      e.preventDefault();
+      e.stopPropagation();
+      const button: 0 | 1 | 2 | null = e.button === 0 ? 0 : e.button === 1 ? 1 : e.button === 2 ? 2 : null;
+      if (button === null) return;
+      const b = { button, shift: e.shiftKey, ctrl: e.ctrlKey || e.metaKey, alt: e.altKey };
+      const cur = navRef.current;
+      setFreeCamNav({ ...cur, custom: bindFreeCamCustom(cur.custom, capture, b) });
+      setCapture(null);
+    };
+    const swallow = (e: Event): void => e.preventDefault();
+    const onKey = (e: globalThis.KeyboardEvent): void => {
+      // Escape cancels rather than binds — it is reserved app-wide (`docs/area/ui.md`).
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        setCapture(null);
+      }
+    };
+    window.addEventListener('mousedown', onDown, true);
+    window.addEventListener('contextmenu', swallow, true);
+    window.addEventListener('auxclick', swallow, true);
+    window.addEventListener('keydown', onKey, true);
+    return () => {
+      window.removeEventListener('mousedown', onDown, true);
+      window.removeEventListener('contextmenu', swallow, true);
+      window.removeEventListener('auxclick', swallow, true);
+      window.removeEventListener('keydown', onKey, true);
+    };
+  }, [capture]);
+
+  return (
+    <div className="ds-field">
+      <span className="cap">Custom buttons</span>
+      <div className="ds-opts three">
+        {CUSTOM_GESTURES.map(({ g, label }) => (
+          <button
+            key={g}
+            className={`ds-opt${capture === g ? ' on' : ''}`}
+            aria-pressed={capture === g}
+            onClick={() => setCapture(capture === g ? null : g)}
+          >
+            <span className="ot">{label}</span>
+            <span className="od">{capture === g ? 'Press a mouse button' : freeCamBindLabel(nav.custom[g])}</span>
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 const PRESETS: readonly GraphicsPreset[] = ['auto', 'low', 'medium', 'high', 'ultra'];
 
 /** megapixels, one decimal — the number the render-scale row is capped by, printed so the cap
@@ -503,28 +674,7 @@ export function GraphicsSection() {
           {/* the free camera's mouse layout — only while it is the pick, and never on touch (the
               option itself is hidden there). Named after the CAD packages whose layout each one
               copies, because that is how a player already knows which one their hands want. */}
-          {camera === 'free' && !touch && (
-            <>
-              <OptRow
-                label="Free camera mouse"
-                value={freeNav.preset}
-                cols="three"
-                onPick={(preset: FreeCamPreset) => setFreeCamNav({ ...freeNav, preset })}
-                options={FREE_CAM_PRESETS.map((v) => ({ v, t: FREE_CAM_PRESET_LABEL[v] }))}
-              />
-              <p className="ds-hint">{FREE_CAM_PRESET_HINT[freeNav.preset]} · double-click to reset</p>
-              <OptRow
-                label="Scroll zoom"
-                value={freeNav.invertZoom}
-                cols="two"
-                onPick={(invertZoom: boolean) => setFreeCamNav({ ...freeNav, invertZoom })}
-                options={[
-                  { v: false, t: 'Forward zooms in' },
-                  { v: true, t: 'Forward zooms out' },
-                ]}
-              />
-            </>
-          )}
+          {camera === 'free' && !touch && <FreeCamRows nav={freeNav} />}
           <DriverHeightRow value={driverHeight} onChange={setDriverHeightIn} />
         </div>
       </section>

@@ -1,6 +1,78 @@
+# HANDOFF — 2026-09-21f (alpha: controller navigation finished and wired; free-cam presets carried over)
+
+**READ FIRST.** Gates on this tree: `npm test` ALL PASS (**2,165** shared + **4,494** biobuzz),
+`build`, `server:check`, `uiaudit` (ALL AT BASELINE), `docaudit`, `contrast` (235). The tree is
+`.claude/worktrees/alpha-flower-intake-plate-930ef5`, branch
+`claude/alpha-flower-intake-plate-930ef5`, which sits on alpha's tip.
+
+A previous round of agents stopped mid-flight at 12:30 — the gate logs in `scratch/`
+(`npmtest.log`, `gate-build.log`, `gate-server.log`) are stamped 12:26–12:27 and three pad-nav
+files were written AFTER them. Two workstreams were in the tree:
+
+- **Free camera presets, the invisible robot, and the rest of the 21e follow-ups** — code
+  complete and GATED at 12:26, untouched since. `docs/biobuzz/free-cam-presets.md` is the
+  evidence file for each preset row (vendor page, its own wording, and what it does NOT state);
+  `scratch/handoff-invisbox.md` is the long form of the chassis-envelope fix. Nothing here was
+  re-opened.
+- **Controller navigation** — the core and the layer were written, they typechecked, and they
+  were **not wired to anything**. Three gaps, all closed below.
+
+## What was missing, and what closed it
+
+- **THE FOCUS RING DID NOT EXIST.** `PadNavLayer` sets `data-padnav="on"` and renders
+  `.ds-padhint` / `.ds-osk*`, and **not one of those selectors was in any stylesheet** — the
+  layer drew an unstyled keyboard and no ring at all. `shell.css` now carries the block, and it
+  rings plain `:focus` under the attribute rather than `:focus-visible`, because a pad move is a
+  synthetic `.focus()` that Chromium does not reliably grant `:focus-visible` to. Inside
+  `.hud`/`.game-root` it takes `--ds-on-field-accent` (category 3 — the field is hardcoded dark).
+  Verified in a real browser, both themes: ring `#366758` in the shell, `#5fb597` over the field.
+- ⚠️ **THE IN-MATCH CONTRACT WAS NEVER APPLIED.** The design says the pad is the robot's in a
+  match, and `PadNavLayer`'s own comment says `GameView` registers the menu opener — but
+  `GameView` did not import `padNav` at all, so **nothing suspended the layer and
+  `setPadMenuHandler` had no caller**: a connected pad would have moved focus and fired
+  synthetic clicks off the same stick the driver was steering with. `GameView` now suspends for
+  its whole mount and registers `onExit`, MOUNT-ONCE with `onExit` in a ref — it is a fresh
+  arrow every render and `App` re-renders on the presence poll, which would otherwise tear the
+  suspension down mid-match. (The Controls screen's `'capture'` suspend was already wired.)
+- **NO CHECKS.** The core was split DOM-free explicitly so `npm test` could drive it, and had
+  none. 48 new checks in one block in `scripts/smoke.ts` (2,117 → 2,165): the picker's
+  cross-axis term on a ragged grid, the strictly-past rule, determinism on repeated geometry,
+  wrap, the repeat clock's monotonicity and floor, the slider profile crossing 100 steps under
+  4 s, family detection by name and by USB vendor id, the Nintendo confirm/back swap, the
+  suspend registry's overlap, the mask's release semantics, and the OSK reducer's one-shot caps
+  and `maxLength` cap. The load-bearing one is **`⚠️ padnav: the in-match MENU button is an
+  index no default pad bind uses`** — it asserts 15 against `DEFAULT_BINDINGS` instead of
+  trusting the comment, because a future default taking it would make the button that leaves a
+  match also drive the robot.
+
+## The one design change
+
+`.ds-key` was reused for the legend rather than declaring a second keycap — but it is sized for
+a bind ROW, where the cap has to hold SHIFT (`min-width: 34px`, `4px 10px`). At that size the
+caps were wider than the words they annotate and the legend read as three empty boxes. The
+legend and the keyboard's foot size it down (`--ds-s-0`, which §2 permits inside a chip and
+nowhere else) instead of adding a class. Caught by looking at it; it is not something an audit
+would have flagged.
+
+The durable rules are in **`docs/area/ui.md` ▸ "Controller navigation"**. `scratch/padnav-design.md`
+was the working note and `scratch/` is gitignored, so the guide is the only copy that survives.
+
+## Next
+
+- **Not pushed, and alpha is not advanced.** The commit is on
+  `claude/alpha-flower-intake-plate-930ef5`, which was level with `alpha`/`origin/alpha` at
+  `eb6c9ac`. Fast-forwarding alpha and pushing is a one-liner when you want it.
+- **Untried at the real surface: the pad itself.** Every rule above is verified by `npm test` on
+  synthetic rects or by measurement in a browser; nothing has been driven with a physical
+  controller. The things to try first are the menu button leaving a match without firing a shot
+  on the way out, and A on a text field.
+- `.claude/worktrees/_verify` holds an exact copy of the free-cam half and can be deleted.
+
+---
+
 # HANDOFF — 2026-09-21e (alpha: nine owner items in one commit — see each bullet)
 
-**READ FIRST.** Gates on the merged tree: `npm test` ALL PASS (shared + 4,357 biobuzz), `build`, `server:check`,
+Gates on the merged tree: `npm test` ALL PASS (shared + 4,357 biobuzz), `build`, `server:check`,
 `uiaudit`, `docaudit`, `contrast` (235), `bundleaudit` (scene 216.6 KB gz, baseline raised with reasons), `test:mm`
 (200), `dbtest`. Nine opus agents ran in ONE shared worktree; a usage limit killed all of them mid-edit once and
 every one resumed cleanly via SendMessage. Each area guide carries the long form; this is the index.

@@ -1197,7 +1197,14 @@ export function groundRoll3d(world: World, engine: Engine3d, dt: number): void {
     let touchingNarrow = false;
     for (let i = 0; i < body.numColliders(); i++) {
       engine.world3d.contactPairsWith(body.collider(i), (other) => {
-        if (other.shapeType() === RAPIER.ShapeType.ConvexPolyhedron) {
+        // ⚠️ **A CYLINDER IS NARROW FOR THE SAME REASON A HULL IS** (2026-09-21, with the drawn
+        // height profile). Every cylinder in this world is a ROUND part of a robot — a turret's
+        // swept disc (`bbMechEnvelopes`; the head is a hood, not a flat roof, and the disc is the
+        // envelope it sweeps) or a side roller's compliant wheel. A ball perched on the flat top
+        // of either is resting on something that is not drawn there, which is exactly the class
+        // of report the narrow-hull vibration exists for. A robot's DECK is a `Cuboid` and stays
+        // BROAD: a flat deck really can carry a ball.
+        if (other.shapeType() === RAPIER.ShapeType.ConvexPolyhedron || other.shapeType() === RAPIER.ShapeType.Cylinder) {
           touchingNarrow = true;
         } else {
           touchingBroad = true;

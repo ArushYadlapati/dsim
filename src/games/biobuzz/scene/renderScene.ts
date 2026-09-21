@@ -523,9 +523,14 @@ class BiobuzzScene implements GameScene {
     // and kept live for every scene that mounts (the gallery's several scenes included).
     setDriverHeightIn(getDriverHeightIn());
     this.teardown.push(subscribeDriverHeightIn(setDriverHeightIn));
+    // the free camera's layout reaches the CAMERAS as well as this file: the buttons are decided
+    // here (a DOM event), the direction senses and sensitivities inside `freeOrbit`/`freePan`/
+    // `freeDolly`, so both have to see the same object.
+    this.cameras.setFreeNav(this.freeNav);
     this.teardown.push(
       subscribeFreeCamNav((nav) => {
         this.freeNav = nav;
+        this.cameras.setFreeNav(nav);
       }),
     );
     // A FIXED-TIER SCENE DOES NOT SUBSCRIBE. A replay export runs at High by contract (§4.7), and
@@ -569,7 +574,9 @@ class BiobuzzScene implements GameScene {
       else if (this.dragMode === 'free-pan') this.cameras.freePan(dx, dy);
       // drag-zoom: pulling DOWN zooms in, the way the CAD packages that have it do. One pixel of
       // drag is worth `FREE_ZOOM_DRAG_PX` of wheel delta, so a full-height drag spans the range.
-      else this.cameras.freeDolly(-dy * FREE_ZOOM_DRAG_PX * (this.freeNav.invertZoom ? -1 : 1));
+      // The device's zoom DIRECTION and sensitivity are applied inside `freeDolly`, along with
+      // "zoom to cursor" — a drag-zoom zooms toward where the drag started, same as the wheel.
+      else this.cameras.freeDolly(-dy * FREE_ZOOM_DRAG_PX, this.ndcOf(e));
     };
     const endDrag = (e: PointerEvent): void => {
       if (this.dragMode) {
@@ -586,7 +593,9 @@ class BiobuzzScene implements GameScene {
       if (this.lastCamera === 'orbit' && e.button === 0) {
         this.dragMode = 'orbit';
       } else if (this.lastCamera === 'free') {
-        const g = freeCamGesture(this.freeNav.preset, e.button, { shift: e.shiftKey, ctrl: e.ctrlKey || e.metaKey });
+        // ⌘ IS CTRL HERE. A Mac has no ctrl-drag to spare (it is a right-click at the OS level),
+        // so `metaKey` folds into the same flag and every "Ctrl+…" mapping works on both.
+        const g = freeCamGesture(this.freeNav, e.button, { shift: e.shiftKey, ctrl: e.ctrlKey || e.metaKey, alt: e.altKey });
         if (!g) return;
         this.dragMode = g === 'orbit' ? 'free-orbit' : g === 'pan' ? 'free-pan' : 'free-zoom';
       } else {
@@ -606,7 +615,7 @@ class BiobuzzScene implements GameScene {
         this.cameras.orbitZoom(e.deltaY);
       } else if (this.lastCamera === 'free') {
         e.preventDefault();
-        this.cameras.freeDolly(this.freeNav.invertZoom ? -e.deltaY : e.deltaY);
+        this.cameras.freeDolly(e.deltaY, this.ndcOf(e));
       }
     };
     // A MIDDLE PRESS STARTS THE BROWSER'S AUTOSCROLL (the four-way arrow cursor) on Windows, and
@@ -644,6 +653,25 @@ class BiobuzzScene implements GameScene {
       host.removeEventListener('contextmenu', onContextMenu);
       host.removeEventListener('dblclick', onDblClick);
     });
+  }
+
+  /**
+   * A MOUSE EVENT → CLIP SPACE on the rendered canvas, for "zoom to cursor" (`freeDolly`'s
+   * second argument). The INVERSE of `project`'s last two lines, and against the same rect:
+   * `projectionMatrix` already carries `setViewOffset`, so NDC taken over the whole canvas is
+   * what the camera's own unprojection expects with the HUD up.
+   *
+   * Reads the live `getBoundingClientRect()` rather than `cssW`/`cssH`: those are the canvas's
+   * SIZE, and a `clientX` is measured from the viewport, so the canvas's own offset is needed
+   * too. It is one uncached layout read per wheel notch, which is exactly the rate a wheel
+   * arrives at.
+   */
+  private ndcOf(e: { clientX: number; clientY: number }): { x: number; y: number } | undefined {
+    const el = this.canvas;
+    if (typeof el.getBoundingClientRect !== 'function') return undefined;
+    const r = el.getBoundingClientRect();
+    if (!(r.width > 0) || !(r.height > 0)) return undefined;
+    return { x: ((e.clientX - r.left) / r.width) * 2 - 1, y: -(((e.clientY - r.top) / r.height) * 2 - 1) };
   }
 
   /**

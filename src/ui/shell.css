@@ -6648,3 +6648,156 @@ button.ds-key:active {
     transition: none;
   }
 }
+
+/* ====================================================================================
+   CONTROLLER NAVIGATION — `src/ui/PadNavLayer.tsx`, core in `src/input/padNav.ts`.
+   Nothing here transitions or animates, which is why the block may sit after the
+   reduced-motion cap above: there is no motion for that cap to own.
+   ==================================================================================== */
+
+/* THE PAD FOCUS RING. A pad move is a synthetic `.focus()`, which the browser treats as
+   PROGRAMMATIC — Chromium grants `:focus-visible` after keyboard-ish interaction but not
+   reliably from a gamepad, so the app's own `:focus-visible` rings cannot be leaned on here.
+   The layer sets `data-padnav="on"` while a pad is the ACTIVE input (any pointer move clears
+   it, so a mouse user never sees this), and this rings plain `:focus` underneath it.
+   It is an OUTLINE, so it moves no layout — §1.4, and `shiftaudit` enforces it. */
+[data-padnav='on'] :focus {
+  outline: 2px solid var(--ds-accent);
+  outline-offset: 2px;
+}
+/* Category 3 (CLAUDE.md THEMING): the field is hardcoded dark, so a ring drawn over the
+   canvas takes the on-field accent rather than the themed one, which does not invert. */
+[data-padnav='on'] .hud :focus,
+[data-padnav='on'] .game-root :focus {
+  outline-color: var(--ds-on-field-accent);
+}
+
+/* THE LEGEND. Above the modal layer (100) because pad navigation works INSIDE a modal and
+   the legend has to stay readable there. It is a note, never a control: `pointer-events:
+   none` so it cannot eat a click meant for the page under it. `--ds-hud-line` because it is
+   a floating surface — `--ds-line` is tuned against the page, not against a card over it. */
+.ds-padhint {
+  position: fixed;
+  left: 50%;
+  bottom: var(--ds-s-4);
+  transform: translateX(-50%);
+  z-index: 110;
+  display: flex;
+  align-items: center;
+  gap: var(--ds-s-2);
+  padding: var(--ds-s-2) var(--ds-s-3);
+  background: var(--ds-panel);
+  border: 1px solid var(--ds-hud-line);
+  border-radius: var(--ds-round-full);
+  font-family: var(--ds-font-ui);
+  font-size: var(--ds-t-sm);
+  font-weight: 600;
+  line-height: 1;
+  color: var(--ds-mut);
+  white-space: nowrap;
+  pointer-events: none;
+  box-shadow: var(--ds-edge-soft);
+}
+
+/* THE ON-SCREEN KEYBOARD, shown only when a text field was activated BY PAD. Ordinary
+   buttons, so the same layer navigates it and no second input model exists. */
+.ds-osk {
+  position: fixed;
+  left: 50%;
+  bottom: var(--ds-s-4);
+  transform: translateX(-50%);
+  z-index: 120;
+  width: min(560px, calc(100vw - var(--ds-s-6)));
+  display: flex;
+  flex-direction: column;
+  gap: var(--ds-s-2);
+  padding: var(--ds-s-3);
+  background: var(--ds-panel);
+  border: 1px solid var(--ds-hud-line);
+  border-radius: var(--ds-round-md);
+  box-shadow: 6px 6px 0 var(--ds-line-soft);
+}
+.ds-osk-val {
+  padding: var(--ds-s-2);
+  background: var(--ds-tile);
+  border: 1px solid var(--ds-line-strong);
+  border-radius: var(--ds-round-sm);
+  font-family: var(--ds-font-mono);
+  font-size: var(--ds-t-md);
+  line-height: 1;
+  color: var(--ds-ink);
+  white-space: pre;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ds-osk-grid {
+  display: grid;
+  grid-template-columns: repeat(10, 1fr);
+  gap: var(--ds-s-1);
+}
+.ds-osk-row {
+  display: flex;
+  gap: var(--ds-s-1);
+}
+/* the keycap language of `.ds-key`, on the recessed tile fill because these sit on a card */
+.ds-osk-key {
+  min-height: 32px;
+  padding: var(--ds-s-1);
+  background: var(--ds-tile);
+  border: 1px solid var(--ds-line);
+  border-radius: var(--ds-round-sm);
+  font-family: var(--ds-font-mono);
+  font-size: var(--ds-t-md);
+  font-weight: 700;
+  line-height: 1;
+  color: var(--ds-ink);
+  cursor: pointer;
+}
+.ds-osk-key.wide {
+  flex: 1;
+}
+.ds-osk-key:hover {
+  border-color: var(--ds-accent);
+}
+.ds-osk-key:active {
+  transform: translateY(1px);
+}
+.ds-osk-key:focus-visible {
+  outline: 2px solid var(--ds-accent);
+  outline-offset: 2px;
+}
+.ds-osk-key:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+/* CAPS is a toggle, so it carries the selected fill the rest of the app uses for one */
+.ds-osk-key.on {
+  background: var(--ds-accent-soft);
+  border-color: var(--ds-accent);
+  color: var(--ds-accent-soft-ink);
+}
+.ds-osk-key.ghost {
+  background: var(--ds-panel);
+  color: var(--ds-mut);
+}
+/* ⚠️ `.ds-key` is sized for a bind ROW, where the cap has to hold SHIFT — `min-width: 34px`
+   and roomy padding. In a legend it is a chip around ONE glyph, and at the row's size the caps
+   are wider than the words they annotate, which reads as three empty boxes. So the legend and
+   the keyboard's foot size it down rather than declaring a second keycap: `--ds-s-0` (2px) is
+   allowed exactly here — §2 permits it inside a chip or badge and nowhere else. */
+.ds-padhint .ds-key.fixed,
+.ds-osk-foot .ds-key.fixed {
+  min-width: 0;
+  padding: var(--ds-s-0) var(--ds-s-1);
+  font-size: var(--ds-t-xs);
+}
+.ds-osk-foot {
+  display: flex;
+  align-items: center;
+  gap: var(--ds-s-2);
+  font-family: var(--ds-font-ui);
+  font-size: var(--ds-t-sm);
+  font-weight: 600;
+  line-height: 1;
+  color: var(--ds-mut);
+}
