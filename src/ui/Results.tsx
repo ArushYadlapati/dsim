@@ -11,7 +11,7 @@ import type { Replay, ReplayResult } from '../sim/replay';
 import type { RobotSetup } from '../sim/spawn';
 import { moduleFor } from '../games';
 import { seasonFor } from '../seasons';
-import type { Alliance, DrivetrainType, ScoreBreakdown } from '../types';
+import type { Alliance, ScoreBreakdown } from '../types';
 
 /**
  * THE RESULTS SCREEN — a full-screen broadcast takeover, built against the official FTC
@@ -86,21 +86,60 @@ function useCountUp(target: number, active: boolean, duration = 900, from = 0): 
   return active ? val : from;
 }
 
-/** a single breakdown VALUE, counting up on its own short beat once `run` flips true,
- * staggered by `index` — the "rows cascade in, each pair of values counting up" beat.
- * Capped stagger (10 rows) so a long BIOBUZZ breakdown doesn't stretch the phase. */
-function RowVal({ value, run, index }: { value: number; run: boolean; index: number }) {
+/** the count-up's own length. Shared by the tween and the flash timer below so the two
+ * cannot drift apart. */
+const ROWVAL_MS = 350;
+
+/**
+ * THE CASCADE BEAT. One index used to run across the WHOLE table, capped at ten
+ * (`Math.min(idx, 10)`), so every BIOBUZZ row past the tenth appeared on the same frame.
+ * The stagger now restarts at each SECTION and the heading leads its own rows in by one
+ * beat, which is what makes a section read as a section rather than as more rows.
+ *
+ * Bounded by construction rather than by a cap: the worst case in any game today is
+ * BIOBUZZ's PENALTIES at section index 5, landing at 5·140 + 55 = 755 ms, inside the 900 ms
+ * `rows` phase. ponytail: a game shipping many more sections than that wants the step
+ * divided by the unit count instead of these two constants.
+ */
+const headDelay = (section: number): number => section * 140;
+const rowDelay = (section: number, row: number): number => section * 140 + (row + 1) * 55;
+
+/** a single breakdown VALUE, counting up on its own short beat once `run` flips true and
+ * flashing as it lands — the "rows cascade in, each pair of values counting up" beat. The
+ * delay is `rowDelay`'s, so the value moves with the row it sits in. */
+function RowVal({ value, run, delay }: { value: number; run: boolean; delay: number }) {
   const [go, setGo] = useState(false);
+  const [land, setLand] = useState(false);
   useEffect(() => {
     if (!run) {
       setGo(false);
+      setLand(false);
       return;
     }
-    const id = window.setTimeout(() => setGo(true), Math.min(index, 10) * 55);
-    return () => window.clearTimeout(id);
-  }, [run, index]);
-  const shown = useCountUp(value, go, 350);
-  return <>{shown}</>;
+    // a reduced-motion viewer gets the value AND its landed state at once. The stagger is
+    // motion too, and waiting out half a second of zeros is the same animation played slower
+    // — the trap the `prefersReducedMotion` branch in `useCountUp` already documents.
+    if (prefersReducedMotion()) {
+      setGo(true);
+      setLand(true);
+      return;
+    }
+    const start = window.setTimeout(() => setGo(true), delay);
+    // ⚠️ THE FLASH IS A SECOND TIMER, NOT A SECOND ANIMATION OF THE NUMBER. `useCountUp` has
+    // no completion event, and both obvious substitutes are the bug documented at the totals
+    // call site below: a `[shown]` dependency fires on every frame of the tween and restarts
+    // the flash forever, and `shown === value` is already true at MOUNT for every
+    // permanently-zero row (BIOBUZZ has several by design — `cellPts` and `gardenPts` read 0
+    // until the buzzer). `land` is in no dependency of the count-up's own effect, so setting
+    // it cannot restart the tween.
+    const flash = window.setTimeout(() => setLand(true), delay + ROWVAL_MS);
+    return () => {
+      window.clearTimeout(start);
+      window.clearTimeout(flash);
+    };
+  }, [run, delay]);
+  const shown = useCountUp(value, go, ROWVAL_MS);
+  return <span className={`resx-cell${land ? ' landed' : ''}`}>{shown}</span>;
 }
 
 /**
@@ -190,7 +229,9 @@ function usePhase(revealed: boolean): { phase: Phase; skip: () => void } {
 interface RosterEntry {
   robotId: number;
   name: string;
-  drivetrain: DrivetrainType;
+  /** `0` is UNSET, not team zero (`RobotSpec.teamNumber`) — every bot and every stock preset
+   *  is 0, so the row tests truthiness and prints the app's usual `-` for the rest. */
+  teamNumber: number;
   isLocal: boolean;
   elo: EloResultRow | null;
 }
@@ -206,7 +247,7 @@ function rosterFor(
     .map((s) => ({
       robotId: s.id,
       name: s.spec.name || `Driver ${s.id}`,
-      drivetrain: s.spec.drivetrain,
+      teamNumber: s.spec.teamNumber,
       isLocal: s.id === localRobotId,
       elo: eloResults?.find((r) => r.robotId === s.id) ?? null,
     }));
@@ -228,25 +269,49 @@ function useEloPending(ranked: boolean, eloResults: EloResultRow[] | null): stri
   return timedOut ? 'No rating change this match.' : 'Updating ELO…';
 }
 
-function RosterList({ roster, showElo }: { roster: readonly RosterEntry[]; showElo: boolean }) {
+function RosterList({
+  roster,
+  showElo,
+  outerFirst = false,
+}: {
+  roster: readonly RosterEntry[];
+  showElo: boolean;
+  /** render each group OUTER-first — see `outward` in `AllianceHalf`. */
+  outerFirst?: boolean;
+}) {
   if (roster.length === 0) return null;
+  const order = (inner: React.ReactNode, outer: React.ReactNode): React.ReactNode =>
+    outerFirst ? (
+      <>
+        {outer}
+        {inner}
+      </>
+    ) : (
+      <>
+        {inner}
+        {outer}
+      </>
+    );
   return (
     <ul className="resx-roster">
       {roster.map((p, i) => (
         <li key={p.robotId} className="resx-roster-row" style={{ animationDelay: `${i * 90}ms` }}>
-          <span className="resx-roster-name">
-            {p.name}
-            {p.isLocal && <span className="resx-you">YOU</span>}
-          </span>
-          <span className="resx-roster-meta">
-            {prettyDrivetrain(p.drivetrain)}
-            {showElo && p.elo && (
-              <span className="resx-elo" title={`ELO ${p.elo.before} → ${p.elo.after}`}>
-                {p.elo.after >= p.elo.before ? '▲' : '▼'}
-                {Math.abs(p.elo.after - p.elo.before)}
-              </span>
-            )}
-          </span>
+          {order(
+            <span className="resx-roster-name">
+              {order(p.isLocal ? <span className="resx-you">YOU</span> : null, p.name)}
+            </span>,
+            <span className="resx-roster-meta">
+              {order(
+                p.teamNumber ? p.teamNumber : '-',
+                showElo && p.elo ? (
+                  <span className="resx-elo" title={`ELO ${p.elo.before} → ${p.elo.after}`}>
+                    {p.elo.after >= p.elo.before ? '▲' : '▼'}
+                    {Math.abs(p.elo.after - p.elo.before)}
+                  </span>
+                ) : null,
+              )}
+            </span>,
+          )}
         </li>
       ))}
     </ul>
@@ -259,8 +324,17 @@ type SoloSection = readonly [string, readonly (readonly [string, number])[]];
 type VersusSection = readonly [string, readonly (readonly [string, number, number])[]];
 
 /** the shared centre breakdown table for a VERSUS match — one table, red value left /
- * category middle / blue value right, exactly the official board's anatomy. Rows cascade
- * in top-to-bottom once `rowsActive`, each pair counting up on its own beat. */
+ * category middle / blue value right, exactly the official board's anatomy. Each SECTION
+ * cascades on its own beat once `rowsActive`, led in by its heading, each pair of values
+ * counting up and flashing as it lands.
+ *
+ * ⚠️ The entrance is gated on `rowsActive`, not applied on mount. The table mounts during
+ * `wipe` but `rowsActive` is 1350 ms later, so an unconditional `resx-row` cascaded the rows
+ * in reading 0 and left them sitting there for over a second before they counted up. The old
+ * flat 55 ms ramp hid that; a per-section rhythm does not.
+ *
+ * ⚠️ The `<Fragment key={title}>` boundary is what keeps `key={label}` unique — BIOBUZZ
+ * prints `PARK (robots)` in two different sections. Do not flatten these to get an index. */
 function BreakdownTable({
   sections,
   rowsActive,
@@ -268,32 +342,28 @@ function BreakdownTable({
   sections: readonly VersusSection[];
   rowsActive: boolean;
 }) {
-  let i = -1;
+  const cls = `resx-row${rowsActive ? ' in' : ''}`;
   return (
     <table className="resx-breakdown" aria-label="Score breakdown">
       <tbody>
-        {sections.map(([title, rows]) => (
+        {sections.map(([title, rows], s) => (
           <Fragment key={title}>
-            <tr className="resx-section">
+            <tr className={`resx-section ${cls}`} style={{ animationDelay: `${headDelay(s)}ms` }}>
               <th className="resx-section-label" colSpan={3} scope="colgroup">
                 {title}
               </th>
             </tr>
-            {rows.map(([label, rv, bv]) => {
-              i++;
-              const idx = i;
-              return (
-                <tr key={label} className="resx-row" style={{ animationDelay: `${Math.min(idx, 10) * 55}ms` }}>
-                  <td className="resx-rv">
-                    <RowVal value={rv} run={rowsActive} index={idx} />
-                  </td>
-                  <td className="resx-cat">{label}</td>
-                  <td className="resx-bv">
-                    <RowVal value={bv} run={rowsActive} index={idx} />
-                  </td>
-                </tr>
-              );
-            })}
+            {rows.map(([label, rv, bv], r) => (
+              <tr key={label} className={cls} style={{ animationDelay: `${rowDelay(s, r)}ms` }}>
+                <td className="resx-rv">
+                  <RowVal value={rv} run={rowsActive} delay={rowDelay(s, r)} />
+                </td>
+                <td className="resx-cat">{label}</td>
+                <td className="resx-bv">
+                  <RowVal value={bv} run={rowsActive} delay={rowDelay(s, r)} />
+                </td>
+              </tr>
+            ))}
           </Fragment>
         ))}
       </tbody>
@@ -304,29 +374,25 @@ function BreakdownTable({
 /** the SOLO breakdown, sitting beside the total inside the one alliance half — same
  * cascading rows, single value column. */
 function SoloTable({ sections, rowsActive }: { sections: readonly SoloSection[]; rowsActive: boolean }) {
-  let i = -1;
+  const cls = `resx-row${rowsActive ? ' in' : ''}`;
   return (
     <table className="resx-breakdown resx-breakdown-solo" aria-label="Score breakdown">
       <tbody>
-        {sections.map(([title, rows]) => (
+        {sections.map(([title, rows], s) => (
           <Fragment key={title}>
-            <tr className="resx-section">
+            <tr className={`resx-section ${cls}`} style={{ animationDelay: `${headDelay(s)}ms` }}>
               <th className="resx-section-label" colSpan={2} scope="colgroup">
                 {title}
               </th>
             </tr>
-            {rows.map(([label, v]) => {
-              i++;
-              const idx = i;
-              return (
-                <tr key={label} className="resx-row" style={{ animationDelay: `${Math.min(idx, 10) * 55}ms` }}>
-                  <td className="resx-cat">{label}</td>
-                  <td className="resx-val">
-                    <RowVal value={v} run={rowsActive} index={idx} />
-                  </td>
-                </tr>
-              );
-            })}
+            {rows.map(([label, v], r) => (
+              <tr key={label} className={cls} style={{ animationDelay: `${rowDelay(s, r)}ms` }}>
+                <td className="resx-cat">{label}</td>
+                <td className="resx-val">
+                  <RowVal value={v} run={rowsActive} delay={rowDelay(s, r)} />
+                </td>
+              </tr>
+            ))}
           </Fragment>
         ))}
       </tbody>
@@ -334,21 +400,39 @@ function SoloTable({ sections, rowsActive }: { sections: readonly SoloSection[];
   );
 }
 
+/** the alliance's own name, which LABELS its total — the fill already says which side this
+ *  is, so the word `TOTAL` beside the number was saying nothing the panel had not said. */
+const ALLIANCE_NAME: Record<Alliance, string> = { red: 'Red', blue: 'Blue' };
+
 /**
- * ONE ALLIANCE HALF — full height, solid alliance fill. Team rows at the top, a huge total
- * at the bottom; the versus breakdown lives in the shared `BreakdownTable` between the two
- * halves, but a SOLO half draws its own (`soloSections`), beside the total, per the brief.
+ * ONE ALLIANCE HALF — full height, solid alliance fill. A WINNER banner across the top, team
+ * rows under it, a huge total at the bottom; the versus breakdown lives in the shared
+ * `BreakdownTable` between the two halves, but a SOLO half draws its own (`soloSections`),
+ * beside the total.
+ *
+ * ── THE TWO HALVES MIRROR ABOUT THE BREAKDOWN ───────────────────────────────
+ * Every row in here is written INNER→OUTER — inner being the centre of the stage, where the
+ * breakdown is — and the LEFT half renders each group outer-first (`outward`). So the name
+ * hugs the centre on both sides and the meta runs out to the wall on both sides, from one
+ * flag and no per-side markup.
+ *
+ * It is a child SWAP and not `flex-direction: row-reverse` on purpose: `.resx-roster-row` is
+ * `flex-wrap` and a long username is MEANT to wrap onto its own line rather than push the
+ * meta off the edge (see its CSS comment). Reversed items wrap per line, which leaves a
+ * wrapped name aligned against nothing. A swap also needs no undo in the narrow layout,
+ * where the halves stack and there is no centre to mirror about.
  */
 function AllianceHalf({
   alliance,
   phase,
   win,
   tie,
+  versus,
   standing,
   roster,
   showElo,
   total,
-  totalLabel = 'TOTAL',
+  totalLabel,
   soloSections,
   rowsActive,
 }: {
@@ -356,38 +440,64 @@ function AllianceHalf({
   phase: Phase;
   win: boolean;
   tie: boolean;
+  /** there is an OPPOSING half beside this one. It decides two things: this half mirrors
+   *  (above), and the WINNER banner keeps a hidden slot on the loser so both halves' rosters
+   *  and totals stay on one line. A solo or record half has no partner to do either with. */
+  versus?: boolean;
   standing?: React.ReactNode;
   roster: readonly RosterEntry[];
   showElo: boolean;
   total: number;
+  /** overrides the alliance name beside the total. The RECORD screen needs it: its number is
+   *  a NET score with the runner's own penalties already subtracted, so it deliberately does
+   *  not equal the breakdown above it — which is why that screen prints a negative penalties
+   *  row — and `Red` would delete the only word explaining the difference. */
   totalLabel?: string;
   soloSections?: readonly SoloSection[];
   rowsActive: boolean;
 }) {
   const settled = phase !== 'wait' && phase !== 'wipe';
   const totalsActive = phase === 'totals' || phase === 'done';
+  const outward = versus === true && alliance === 'red';
+  const label = totalLabel ?? ALLIANCE_NAME[alliance];
+  // the panel's ONLY heading, and so the accessible name for the `<section>` around it — a
+  // `<section>` with none is not exposed as a region at all. It used to be the `RED` /
+  // `BLUE` title at the top of the half; moving the text did not make the element optional.
+  const name = (
+    <h3 className="resx-total-label" key="name">
+      {label}
+    </h3>
+  );
+  const num = (
+    <strong
+      className={`resx-total-num ${totalsActive ? 'landed' : ''}`}
+      aria-label={`${label}: ${total}`}
+      key="num"
+    >
+      {totalsActive ? total : '–'}
+    </strong>
+  );
   return (
     <section className={`resx-half ${alliance}`}>
       <div className="resx-half-top">
-        <div className="resx-half-head">
-          <h3 className="resx-half-name">{alliance.toUpperCase()}</h3>
-          {totalsActive && win && <span className="resx-winbanner">WINNER</span>}
-          {totalsActive && tie && <span className="resx-winbanner tie">TIE</span>}
-        </div>
+        {/* rendered on BOTH versus halves and hidden on the loser, so the two rosters and
+            totals stay on one line without anyone having to guess this pill's height. */}
+        {versus && (
+          <span
+            className={`resx-winbanner${tie ? ' tie' : ''}${totalsActive && (win || tie) ? ' on' : ''}`}
+          >
+            {tie ? 'TIE' : 'WINNER'}
+          </span>
+        )}
         {settled && standing}
-        {settled && <RosterList roster={roster} showElo={showElo} />}
+        {settled && <RosterList roster={roster} showElo={showElo} outerFirst={outward} />}
       </div>
       {/* VERSUS: this wraps just the total, which `margin-top: auto` pins to the half's
           bottom edge. SOLO: it wraps the breakdown table TOO, and `.resx-body-solo` turns
           it into a row — "breakdown beside the big total", per the brief. */}
       <div className="resx-half-lower">
         {soloSections && <SoloTable sections={soloSections} rowsActive={rowsActive} />}
-        <div className="resx-total">
-          <span className="resx-total-label">{totalLabel}</span>
-          <strong className={`resx-total-num ${totalsActive ? 'landed' : ''}`}>
-            {totalsActive ? total : '–'}
-          </strong>
-        </div>
+        <div className="resx-total">{outward ? [name, num] : [num, name]}</div>
       </div>
     </section>
   );
@@ -690,21 +800,31 @@ export function Results({
           MATCH RESULTS
         </div>
       )}
-      <header className="resx-bar">
-        <span className="resx-eyebrow">{modeLabel}</span>
-        <h2 className="resx-title">{revealed ? 'MATCH RESULTS' : 'FINAL SCORE'}</h2>
-        <span className="resx-season">{season}</span>
-      </header>
-      {!revealed && (
-        <p className="resx-wait">
-          {lost
-            ? 'Couldn’t get the final score from the server. Check Career for the result.'
-            : 'Waiting for the field to settle…'}
-        </p>
-      )}
-      {phase !== 'wait' && (
-        <div className="resx-body">
-          {solo ? (
+      {/* ⚠️ THE HEADER AND THE ACTIONS ROW LIVE INSIDE THE BODY GRID, in its centre column,
+          because the two alliance halves run the FULL HEIGHT of the stage. A header band
+          above them would push both panels down off the top edge, and the mockup this screen
+          is built to has the panels meeting it. Placement is by `grid-area`, so the DOM keeps
+          its reading and tab order: header, red, breakdown, blue, actions.
+
+          ⚠️ `resx-body-solo` was MISSING on this branch — the class was hard-coded without
+          it, so a one-sided run drew its half in column 1 of a three-column grid with half
+          the stage dead beside it, and `.resx-body-solo .resx-half-lower`'s "breakdown beside
+          the total" never fired on this path at all. `RecordResults` had it right. */}
+      <div className={`resx-body${solo ? ' resx-body-solo' : ''}`}>
+        <header className="resx-bar">
+          <span className="resx-eyebrow">{modeLabel}</span>
+          <h2 className="resx-title">{revealed ? 'MATCH RESULTS' : 'FINAL SCORE'}</h2>
+          <span className="resx-season">{season}</span>
+        </header>
+        {!revealed && (
+          <p className="resx-wait">
+            {lost
+              ? 'Couldn’t get the final score from the server. Check Career for the result.'
+              : 'Waiting for the field to settle…'}
+          </p>
+        )}
+        {phase !== 'wait' &&
+          (solo ? (
             <AllianceHalf
               alliance={hud.alliance}
               phase={phase}
@@ -723,6 +843,7 @@ export function Results({
                 phase={phase}
                 win={winner === 'red'}
                 tie={winner === 'tie'}
+                versus
                 roster={redRoster}
                 showElo={ranked}
                 total={redTotal}
@@ -734,131 +855,131 @@ export function Results({
                 phase={phase}
                 win={winner === 'blue'}
                 tie={winner === 'tie'}
+                versus
                 roster={blueRoster}
                 showElo={ranked}
                 total={blueTotal}
                 rowsActive={rowsActive}
               />
             </>
-          )}
-        </div>
-      )}
-      {doneVisible && (
-        <div className="resx-secondary">
-          {/* A VOIDED total is 0 with a full breakdown above it, which reads as a bug unless
-              the reason is stated. Say it plainly. */}
-          {(red.voided || blue.voided) && (
-            <p className="resx-void">
-              RED CARD — {red.voided && blue.voided ? 'both alliances have' : `${red.voided ? 'RED' : 'BLUE'} has`}{' '}
-              forfeited the match. Points earned are shown above but do not count.
-            </p>
-          )}
-          {eloNote && <p className="resx-note">{eloNote}</p>}
-          {matchResult && (
-            <p className="resx-note ok">
-              {/* A LAN MATCH WAS NOT RECORDED BY THE SERVER THAT RAN IT, and "✓ Match recorded."
-                  is simply false there — a LAN box has no database. What actually happened
-                  depends on which end of the room you are, so it says which: the HOST keeps it
-                  (and their account gets it once they are online), and a guest keeps nothing. */}
-              {lanActive()
-                ? lanHost
-                  ? signedIn
-                    ? '✓ Saved on this computer. It goes to your account next time you’re online.'
-                    : '✓ Saved on this computer. Sign in to save it to your account.'
-                  : '✓ Match over. The host keeps the replay.'
-                : matchResult.kind === 'record'
-                  ? '✓ Recorded - sign in to save it to the leaderboard.'
-                  : '✓ Match recorded.'}
-            </p>
-          )}
-          {/* A practice run says what it IS. It was not on a leaderboard and never will be —
-              offline has no authority to put it there — so the copy promises only what happened:
-              the run is kept, and it is yours to watch. */}
-          {practiceRun && !matchResult && (
-            <p className="resx-note ok">
-              {signedIn
-                ? '✓ Saved to your practice replays.'
-                : '✓ Saved on this device. Sign in to keep it on your account.'}
-            </p>
-          )}
-          <div className="overlay-buttons" ref={actionsRef} onClick={(e) => e.stopPropagation()}>
-            {(matchResult ?? practiceRun) && onWatchReplay && (
-              <button onClick={() => onWatchReplay((matchResult ?? practiceRun)!.replay)}>
-                ▶ WATCH REPLAY
+          ))}
+        {doneVisible && (
+          <div className="resx-secondary">
+            {/* A VOIDED total is 0 with a full breakdown above it, which reads as a bug unless
+                the reason is stated. Say it plainly. */}
+            {(red.voided || blue.voided) && (
+              <p className="resx-void">
+                RED CARD — {red.voided && blue.voided ? 'both alliances have' : `${red.voided ? 'RED' : 'BLUE'} has`}{' '}
+                forfeited the match. Points earned are shown above but do not count.
+              </p>
+            )}
+            {eloNote && <p className="resx-note">{eloNote}</p>}
+            {matchResult && (
+              <p className="resx-note ok">
+                {/* A LAN MATCH WAS NOT RECORDED BY THE SERVER THAT RAN IT, and "✓ Match recorded."
+                    is simply false there — a LAN box has no database. What actually happened
+                    depends on which end of the room you are, so it says which: the HOST keeps it
+                    (and their account gets it once they are online), and a guest keeps nothing. */}
+                {lanActive()
+                  ? lanHost
+                    ? signedIn
+                      ? '✓ Saved on this computer. It goes to your account next time you’re online.'
+                      : '✓ Saved on this computer. Sign in to save it to your account.'
+                    : '✓ Match over. The host keeps the replay.'
+                  : matchResult.kind === 'record'
+                    ? '✓ Recorded - sign in to save it to the leaderboard.'
+                    : '✓ Match recorded.'}
+              </p>
+            )}
+            {/* A practice run says what it IS. It was not on a leaderboard and never will be —
+                offline has no authority to put it there — so the copy promises only what happened:
+                the run is kept, and it is yours to watch. */}
+            {practiceRun && !matchResult && (
+              <p className="resx-note ok">
+                {signedIn
+                  ? '✓ Saved to your practice replays.'
+                  : '✓ Saved on this device. Sign in to keep it on your account.'}
+              </p>
+            )}
+            <div className="overlay-buttons" ref={actionsRef} onClick={(e) => e.stopPropagation()}>
+              {(matchResult ?? practiceRun) && onWatchReplay && (
+                <button onClick={() => onWatchReplay((matchResult ?? practiceRun)!.replay)}>
+                  ▶ WATCH REPLAY
+                </button>
+              )}
+              {canRematch && <button onClick={onRematch}>REMATCH</button>}
+              {rematchVote && <RematchVote vote={rematchVote} onToggle={onRematchVote} />}
+              {/* the OTHER thing you want after a ranked match. REMATCH beside it plays
+                  the same people again; this finds new ones without going out to the
+                  menu and back in through Play ▸ Ranked. */}
+              {onQueueAgain && <button onClick={onQueueAgain}>QUEUE AGAIN</button>}
+              {/* REMATCH plays these same people on these same sides. This re-opens the room,
+                  so the next game is built from whoever is in it then — which is what you want
+                  when somebody left, or when the sides want swapping. */}
+              {onBackToLobby && <button onClick={onBackToLobby}>BACK TO LOBBY</button>}
+              {/* the EXIT, not a fourth primary: `.overlay-buttons button` is accent-filled
+                  unless `.ghost`, so an unmarked MENU sat beside REMATCH and WATCH REPLAY
+                  with nothing saying which one the screen expects. */}
+              <button className="ghost" onClick={onExit}>
+                MENU
+              </button>
+            </div>
+            {/* REPORT is deliberately not in the button row. It is a rare, deliberate action and
+                the row is where REMATCH and MENU live — the two things every player reaches for
+                every match. A quiet link below keeps it available without putting it under a
+                thumb aiming for the exit. */}
+            {onReport && reportable && reportable.length > 0 && !reporting && (
+              <button
+                className="ds-linkbtn results-report resx-linkbtn"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setReporting(true);
+                }}
+              >
+                ⚑ Report a player
               </button>
             )}
-            {canRematch && <button onClick={onRematch}>REMATCH</button>}
-            {rematchVote && <RematchVote vote={rematchVote} onToggle={onRematchVote} />}
-            {/* the OTHER thing you want after a ranked match. REMATCH beside it plays
-                the same people again; this finds new ones without going out to the
-                menu and back in through Play ▸ Ranked. */}
-            {onQueueAgain && <button onClick={onQueueAgain}>QUEUE AGAIN</button>}
-            {/* REMATCH plays these same people on these same sides. This re-opens the room,
-                so the next game is built from whoever is in it then — which is what you want
-                when somebody left, or when the sides want swapping. */}
-            {onBackToLobby && <button onClick={onBackToLobby}>BACK TO LOBBY</button>}
-            {/* the EXIT, not a fourth primary: `.overlay-buttons button` is accent-filled
-                unless `.ghost`, so an unmarked MENU sat beside REMATCH and WATCH REPLAY
-                with nothing saying which one the screen expects. */}
-            <button className="ghost" onClick={onExit}>
-              MENU
-            </button>
+            {/* ...and the SCORE itself. A separate action from reporting a player because it is a
+                separate claim: the score is the server's arithmetic, so a wrong one is nobody's
+                misconduct and asking the reporter to name a culprit would be asking them to
+                invent one. Only offered on a match that actually SCORED (a record run has its own
+                number and no opponent to dispute it with). */}
+            {onReportScore && matchResult && !scoreReporting && !scoreReported && (
+              <button
+                className="ds-linkbtn results-report resx-linkbtn"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setScoreReporting(true);
+                }}
+              >
+                ⚖ Report a misscore
+              </button>
+            )}
+            {scoreReported && <p className="results-report-done resx-linkbtn">Misscore reported. A moderator will check the replay.</p>}
+            {scoreReporting && onReportScore && (
+              <ScoreReportDialog
+                onSubmit={(detail) => {
+                  onReportScore(detail);
+                  setScoreReported(true);
+                  setScoreReporting(false);
+                }}
+                onClose={() => setScoreReporting(false)}
+              />
+            )}
+            {reporting && onReport && reportable && (
+              <ReportDialog
+                drivers={reportable}
+                onSubmit={(rid, reason, detail) => onReport(rid, reason, detail)}
+                onClose={() => setReporting(false)}
+              />
+            )}
+            {/* AFTER the buttons, deliberately. The results screen is a good place for an ad —
+                the match is over and the player is reading rather than driving — but REMATCH and
+                MENU must stay the first things reachable, by mouse and by tab order. */}
+            <ResultsAd />
           </div>
-          {/* REPORT is deliberately not in the button row. It is a rare, deliberate action and
-              the row is where REMATCH and MENU live — the two things every player reaches for
-              every match. A quiet link below keeps it available without putting it under a
-              thumb aiming for the exit. */}
-          {onReport && reportable && reportable.length > 0 && !reporting && (
-            <button
-              className="ds-linkbtn results-report resx-linkbtn"
-              onClick={(e) => {
-                e.stopPropagation();
-                setReporting(true);
-              }}
-            >
-              ⚑ Report a player
-            </button>
-          )}
-          {/* ...and the SCORE itself. A separate action from reporting a player because it is a
-              separate claim: the score is the server's arithmetic, so a wrong one is nobody's
-              misconduct and asking the reporter to name a culprit would be asking them to
-              invent one. Only offered on a match that actually SCORED (a record run has its own
-              number and no opponent to dispute it with). */}
-          {onReportScore && matchResult && !scoreReporting && !scoreReported && (
-            <button
-              className="ds-linkbtn results-report resx-linkbtn"
-              onClick={(e) => {
-                e.stopPropagation();
-                setScoreReporting(true);
-              }}
-            >
-              ⚖ Report a misscore
-            </button>
-          )}
-          {scoreReported && <p className="results-report-done resx-linkbtn">Misscore reported. A moderator will check the replay.</p>}
-          {scoreReporting && onReportScore && (
-            <ScoreReportDialog
-              onSubmit={(detail) => {
-                onReportScore(detail);
-                setScoreReported(true);
-                setScoreReporting(false);
-              }}
-              onClose={() => setScoreReporting(false)}
-            />
-          )}
-          {reporting && onReport && reportable && (
-            <ReportDialog
-              drivers={reportable}
-              onSubmit={(rid, reason, detail) => onReport(rid, reason, detail)}
-              onClose={() => setReporting(false)}
-            />
-          )}
-          {/* AFTER the buttons, deliberately. The results screen is a good place for an ad —
-              the match is over and the player is reading rather than driving — but REMATCH and
-              MENU must stay the first things reachable, by mouse and by tab order. */}
-          <ResultsAd />
-        </div>
-      )}
+        )}
+      </div>
     </div>
   );
 }
@@ -1021,20 +1142,26 @@ function RecordResults({
           RUN COMPLETE
         </div>
       )}
-      <header className="resx-bar">
-        <span className="resx-eyebrow">{modeLabel}</span>
-        <h2 className="resx-title">{revealed ? 'RUN COMPLETE' : 'FINAL SCORE'}</h2>
-        <span className="resx-season">{season}</span>
-      </header>
-      {!revealed && (
-        <p className="resx-wait">
-          {lost
-            ? 'Couldn’t get the final score from the server. Check Career for the result.'
-            : 'Waiting for the field to settle…'}
-        </p>
-      )}
-      {phase !== 'wait' && (
-        <div className="resx-body resx-body-solo">
+      {/* the header and the actions sit INSIDE the body grid here too — see the note at the
+          other screen. One column, so they simply stack above and below the half. */}
+      <div className="resx-body resx-body-solo">
+        <header className="resx-bar">
+          <span className="resx-eyebrow">{modeLabel}</span>
+          <h2 className="resx-title">{revealed ? 'RUN COMPLETE' : 'FINAL SCORE'}</h2>
+          <span className="resx-season">{season}</span>
+        </header>
+        {!revealed && (
+          <p className="resx-wait">
+            {lost
+              ? 'Couldn’t get the final score from the server. Check Career for the result.'
+              : 'Waiting for the field to settle…'}
+          </p>
+        )}
+        {/* `totalLabel` is NOT the alliance name here, unlike the versus screen: this number
+            is a NET score with the runner's own penalties already subtracted, so it does not
+            equal the breakdown beside it — which is exactly why that breakdown prints a
+            NEGATIVE penalties row. `Red` would delete the only word explaining the gap. */}
+        {phase !== 'wait' && (
           <AllianceHalf
             alliance={hud.alliance}
             phase={phase}
@@ -1048,26 +1175,26 @@ function RecordResults({
             soloSections={sections}
             rowsActive={rowsActive}
           />
-        </div>
-      )}
-      {doneVisible && (
-        <div className="resx-secondary">
-          <div className="overlay-buttons" ref={actionsRef} onClick={(e) => e.stopPropagation()}>
-            {(matchResult ?? practiceRun) && onWatchReplay && (
-              <button onClick={() => onWatchReplay((matchResult ?? practiceRun)!.replay)}>
-                ▶ WATCH REPLAY
+        )}
+        {doneVisible && (
+          <div className="resx-secondary">
+            <div className="overlay-buttons" ref={actionsRef} onClick={(e) => e.stopPropagation()}>
+              {(matchResult ?? practiceRun) && onWatchReplay && (
+                <button onClick={() => onWatchReplay((matchResult ?? practiceRun)!.replay)}>
+                  ▶ WATCH REPLAY
+                </button>
+              )}
+              {canRematch && <button onClick={onRematch}>RUN AGAIN</button>}
+              {/* CO-OP: the run belongs to both drivers, so restarting is a vote —
+                  the same control (and the same R binding) as mid-match. */}
+              {rematchVote && <RematchVote vote={rematchVote} onToggle={onRematchVote} />}
+              <button className="ghost" onClick={onExit}>
+                MENU
               </button>
-            )}
-            {canRematch && <button onClick={onRematch}>RUN AGAIN</button>}
-            {/* CO-OP: the run belongs to both drivers, so restarting is a vote —
-                the same control (and the same R binding) as mid-match. */}
-            {rematchVote && <RematchVote vote={rematchVote} onToggle={onRematchVote} />}
-            <button className="ghost" onClick={onExit}>
-              MENU
-            </button>
+            </div>
           </div>
-        </div>
-      )}
+        )}
+      </div>
     </div>
   );
 }

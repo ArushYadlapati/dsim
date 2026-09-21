@@ -46,7 +46,7 @@ inline branches stay untouched:
 | `Preview` | `Menu.tsx` + `MatchStrategy.tsx` (the robot schematic) |
 | `startEditor` | `MatchSetup.tsx` / `Lobby.tsx` / `MatchStrategy.tsx` |
 | `hudChips`, `scoreBar` | `GameView.tsx` (the `.robot-status` row / the whole bottom bar) |
-| `resultsRows` | `GameView.tsx` — both the versus results and `RecordResults`. Rows are ALLIANCE-RELATIVE (`[label, mine, opp]`) |
+| `resultsRows` | `Results.tsx` — both the versus results and `RecordResults`. Rows are ALLIANCE-RELATIVE (`[label, mine, opp]`) |
 | `mobileButtons` | `MobileControls.tsx`. A new key needs a `GameSettings.mobileLayout` entry, and a genuinely new action needs a protocol bit |
 | `labels.configSummary` | `robotLabels.ts` + `Leaderboard.tsx` |
 | `devRoutes` | `App.tsx` routing — **alpha channel only** (`devRoutesEnabled()`) |

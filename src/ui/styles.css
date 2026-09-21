@@ -1186,6 +1186,7 @@ button {
 }
 
 .resx-bar {
+  grid-area: 1 / 2 / 2 / 3;
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -1219,24 +1220,65 @@ button {
   color: var(--ds-on-field-dim);
 }
 
-/* ---- the body: RED half | breakdown | BLUE half, or one half centred (solo) ---- */
+/* ---- the body: RED half | breakdown | BLUE half, or one half centred (solo).
+
+   IT CARRIES THE HEADER AND THE ACTIONS ROW TOO, down its centre column, because the two
+   halves run the FULL HEIGHT of the stage — a header band above them would push both panels
+   off the top edge. Everything is placed by `grid-area` rather than by source order, so the
+   DOM keeps its reading and tab order (header, red, breakdown, blue, actions) while the
+   halves span every row. ---- */
 .resx-body {
   flex: 1;
   display: grid;
   grid-template-columns: 1fr auto 1fr;
+  grid-template-rows: auto 1fr auto;
   align-items: stretch;
   min-height: 0;
+}
+/* the placements themselves live in each element's OWN block further down — a selector may
+   be declared only once at the top level (`uiaudit`'s `duplicate-selector`, a hard 0). Row 1
+   is the header, row 2 the breakdown, row 3 the actions; the halves span all three. Only the
+   pair below shares a cell, and only because they are mutually exclusive: the wait line
+   shows while `!revealed`, which is only while the phase is `wait`, which is exactly when
+   the breakdown is not rendered. */
+.resx-wait,
+.resx-breakdown {
+  grid-area: 2 / 2 / 3 / 3;
 }
 .resx-body-solo {
   grid-template-columns: minmax(0, min(640px, 100%));
   justify-content: center;
 }
+/* one column, so everything simply stacks: header, the single half, the actions. */
+.resx-body-solo .resx-half,
+.resx-body-solo .resx-bar,
+.resx-body-solo .resx-secondary {
+  grid-column: 1;
+  grid-row: auto;
+}
 /* RED above BLUE on a narrow screen, breakdown between, full width each — instead of
-   three columns squeezed into 375px (which clipped every value). DOM order is already
-   red → breakdown → blue, so collapsing the grid to one column alone is the whole fix. */
+   three columns squeezed into 375px (which clipped every value). The header stays FIRST:
+   stacked, there is no centre column for it to sit beside. */
 @media (max-width: 720px) {
   .resx-body:not(.resx-body-solo) {
     grid-template-columns: 1fr;
+    grid-template-rows: auto auto auto auto auto;
+  }
+  .resx-body:not(.resx-body-solo) .resx-bar {
+    grid-area: 1 / 1 / 2 / 2;
+  }
+  .resx-body:not(.resx-body-solo) .resx-half.red {
+    grid-area: 2 / 1 / 3 / 2;
+  }
+  .resx-body:not(.resx-body-solo) .resx-wait,
+  .resx-body:not(.resx-body-solo) .resx-breakdown {
+    grid-area: 3 / 1 / 4 / 2;
+  }
+  .resx-body:not(.resx-body-solo) .resx-half.blue {
+    grid-area: 4 / 1 / 5 / 2;
+  }
+  .resx-body:not(.resx-body-solo) .resx-secondary {
+    grid-area: 5 / 1 / 6 / 2;
   }
 }
 
@@ -1250,11 +1292,13 @@ button {
   padding: var(--ds-s-5);
 }
 .resx-half.red {
+  grid-area: 1 / 1 / 4 / 2;
   background: var(--ds-red-chip);
   color: var(--ds-red-chip-ink);
   animation: resx-half-in-left 700ms cubic-bezier(0.2, 0.9, 0.25, 1) both;
 }
 .resx-half.blue {
+  grid-area: 1 / 3 / 4 / 4;
   background: var(--ds-blue-chip);
   color: var(--ds-blue-chip-ink);
   animation: resx-half-in-right 700ms cubic-bezier(0.2, 0.9, 0.25, 1) both;
@@ -1274,30 +1318,42 @@ button {
   flex-direction: column;
   gap: var(--ds-s-2);
 }
-.resx-half-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--ds-s-3);
-}
-.resx-half-name {
-  margin: 0;
-  font-size: var(--ds-t-2xl);
-  letter-spacing: 4px;
-  font-weight: 800;
-}
-/* a light pill ON the alliance fill, not a coloured tag — the fill already IS the
+/* a light banner ON the alliance fill, not a coloured tag — the fill already IS the
    alliance's colour, so the badge reads by flipping the relationship, like a real
    scoreboard's WINNER tag. Fixed ink (`--ds-stage-bg` on `--ds-on-field`), matching
-   the rest of the stage rather than the app's own inverting panel/ink pair. */
+   the rest of the stage rather than the app's own inverting panel/ink pair.
+
+   IT IS RENDERED ON BOTH HALVES AND HIDDEN ON THE LOSER, so the two rosters and the two
+   totals stay on one line without anything having to guess this element's height. It is a
+   block, so it fills the half's width, and it BLEEDS past the half's own padding to the
+   outer edge of the stage — squared off against the wall, rounded on the inner end, text
+   pushed toward the centre. */
 .resx-winbanner {
+  visibility: hidden;
+  display: block;
   background: var(--ds-on-field);
   color: var(--ds-stage-bg);
   border-radius: var(--ds-round-full);
   padding: var(--ds-s-1) var(--ds-s-3);
-  font-size: var(--ds-t-md);
+  font-size: var(--ds-t-2xl);
   font-weight: 800;
   letter-spacing: 2px;
+  line-height: 1;
+}
+.resx-half.red .resx-winbanner {
+  margin-left: calc(-1 * var(--ds-s-5));
+  border-radius: 0 var(--ds-round-full) var(--ds-round-full) 0;
+  text-align: right;
+}
+.resx-half.blue .resx-winbanner {
+  margin-right: calc(-1 * var(--ds-s-5));
+  border-radius: var(--ds-round-full) 0 0 var(--ds-round-full);
+  text-align: left;
+}
+/* only the WINNER's copy is visible, and only it animates — the loser's reserved slot must
+   never play an entrance for a banner nobody can see. */
+.resx-winbanner.on {
+  visibility: visible;
   /* ease-out-quint, NOT an overshooting curve: the overshoot is already in the keyframes
      (scale 1.08 at 60 %, settling to 1). A timing function that also overshoots is applied
      to EACH segment, so the banner rubber-bands twice on the way in. */
@@ -1427,9 +1483,23 @@ p.resx-standing {
 .resx-val {
   text-align: right;
 }
+/* ⚠️ THE ENTRANCE IS A SEPARATE CLASS BECAUSE IT IS GATED ON THE ROWS BEAT, not applied on
+   mount. The table mounts during `wipe` but `rowsActive` is 1350 ms later, so an
+   unconditional animation cascaded every row in reading 0 and left them sitting there for
+   over a second before they counted up. The old flat 55 ms ramp hid it; a per-section
+   rhythm with a leading heading does not. The bare class keeps them invisible until then. */
 .resx-row {
   opacity: 0;
+}
+.resx-row.in {
   animation: resx-row-in 400ms ease-out both;
+}
+
+/* one breakdown VALUE. It needs to be an element at all so that it has something to flash;
+   the row's `<td>` cannot do it, because the flash has to wait for THIS value's own
+   count-up to land and the cell does not know when that is. */
+.resx-cell.landed {
+  animation: resx-cell-land 320ms ease-out both;
 }
 
 /* ---- the lower band: VERSUS pins just the total to the half's bottom edge (`margin-
@@ -1452,17 +1522,23 @@ p.resx-standing {
   justify-content: space-between;
   gap: var(--ds-s-3);
 }
+/* `column-REVERSE`: the children are written number-then-label (inner→outer, see
+   `AllianceHalf`), and this screen wants its label ABOVE the number. */
 .resx-body-solo .resx-total {
-  flex-direction: column;
+  flex-direction: column-reverse;
   align-items: flex-end;
   gap: 2px;
   border-top: none;
   padding-top: 0;
 }
+/* the alliance's own name, labelling its total — and the half's ONLY heading, so it is what
+   names the `<section>` to a screen reader. `margin: 0` because it is an `<h3>`: the UA
+   margin would break the baseline `.resx-total` aligns on. */
 .resx-total-label {
-  font-size: var(--ds-t-sm);
+  margin: 0;
+  font-size: var(--ds-t-2xl);
   font-weight: 800;
-  letter-spacing: 3px;
+  letter-spacing: 1px;
 }
 .resx-total-num {
   font-family: var(--ds-font-mono);
@@ -1470,6 +1546,19 @@ p.resx-standing {
   font-variant-numeric: tabular-nums;
   line-height: 1;
 }
+/* a breakdown value flashes as its own count-up lands, drawing the eye down the cascade.
+   `filter` ALONE — no transform, no display change: a transform does not apply to a
+   non-replaced inline element anyway, and anything that resizes the box would move the
+   table while it reveals. Same technique as `.resx-total-num.landed` below, quieter. */
+@keyframes resx-cell-land {
+  from {
+    filter: brightness(1.9);
+  }
+  to {
+    filter: brightness(1);
+  }
+}
+
 /* the totals LAND with a punch + a brief brightness flash once the totals beat hits —
    `filter`, not a layout property, so it stays GPU-friendly. */
 .resx-total-num.landed {
@@ -1481,6 +1570,7 @@ p.resx-standing {
 /* ---- secondary info: ELO note, save/record confirmation, actions, ad — all fade in
    together once the sequence reaches `done` ---- */
 .resx-secondary {
+  grid-area: 3 / 2 / 4 / 3;
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -1619,6 +1709,7 @@ p.resx-standing {
   .resx-half,
   .resx-roster-row,
   .resx-row,
+  .resx-cell.landed,
   .resx-winbanner,
   .resx-total-num.landed,
   .resx-secondary {
