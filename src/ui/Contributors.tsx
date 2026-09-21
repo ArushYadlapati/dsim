@@ -2,8 +2,6 @@ import { useEffect, useState } from 'react';
 import { CORE_TEAM, CONTRIBUTORS, THIRD_PARTY, type Contributor } from '../contributors';
 import { fetchProfileByUsername } from '../net/api';
 import { APP_NAME, LINKS } from '../seasons';
-import { sponsorActive, sponsorLink } from '../sponsor';
-import { SponsorLogo } from './Sponsor';
 
 /**
  * Contributors — the people, sponsor and open-source projects behind the sim, linked
@@ -57,38 +55,20 @@ export function Contributors({ onOpenProfile }: { onOpenProfile: (username: stri
         </div>
       </section>
 
-      {/* PRESENTED BY. Not one of `SPONSOR_PLACEMENTS` (docs/area/sponsor.md's six are a
-          signed, measured contract, and this page is not one of them) — so this renders the
-          mark and the link straight from `sponsor.ts`/`sponsorAssets.ts` rather than through
-          `SponsorMark`, which is the one component allowed to FIRE the impression/click
-          events for a contracted placement. A second element tagged "footer" here would
-          double-count against that placement's real numbers. The link itself reuses the
-          footer's own UTM tag (`sponsorLink('footer')`) — there is no separate tag for a
-          credits mention, and inventing one is exactly what `docs/area/sponsor.md` says not
-          to do. */}
-      {sponsorActive() && (
-        <section className="ds-panel">
-          <div className="ds-panel-h">
-            <span className="ds-panel-title">Presented by</span>
-          </div>
-          <div className="ds-panel-body">
-            <a
-              className="sponsor-mark stacked"
-              href={sponsorLink('footer')}
-              target="_blank"
-              rel="noreferrer"
-            >
-              <span className="sponsor-pre">Presented by</span>
-              <SponsorLogo h={28} />
-            </a>
-          </div>
-        </section>
-      )}
+      {/* NO "Presented by" HERE. `AppShell`'s `<SponsorFooterMark />` already carries it on
+          every shell screen, including this one — a second mark on this page said the same
+          thing twice in one scroll. The contracted `footer` placement (docs/area/sponsor.md)
+          lives there and only there; this page does not need its own. */}
 
       {/* THIRD-PARTY CREDITS. A separate panel rather than more cards in the grid above: these
           are not people who worked on DSIM, and putting a stranger's name in "Built by" would
           credit them for something they did not do. Rows, not cards — a licence and a link are
-          a table, and `docs/ui-standard.md` §6 says a row is label left, value right. */}
+          a table, and `docs/ui-standard.md` §6 says a row is label left, value right.
+          `.credit-row` on `.ds-field`: plain `.cap` is a FORM FIELD caption, 12px and muted
+          because the control beside it (an input, a slider) carries the real weight. Here the
+          caption IS the row's content — the package name — so reusing it undersold the one
+          thing each row exists to say, and left the version number (a `.val`, bold and
+          accent-coloured by design) reading as more important than what it is a version OF. */}
       {THIRD_PARTY.length > 0 && (
         <section className="ds-panel">
           <div className="ds-panel-h">
@@ -97,7 +77,7 @@ export function Contributors({ onOpenProfile }: { onOpenProfile: (username: stri
           </div>
           <div className="ds-panel-body stack">
             {THIRD_PARTY.map((a) => (
-              <div key={a.name} className="ds-field">
+              <div key={a.name} className="ds-field credit-row">
                 {/* BOTH LINKS LIVE IN THE HINT, not in the caption. `.ds-hint a` is the app's
                     only anchor colour rule — there is no global one (see its own comment in
                     shell.css) — so an anchor in a `.cap` would render UA-blue on a themed
@@ -134,7 +114,7 @@ export function Contributors({ onOpenProfile }: { onOpenProfile: (username: stri
           <span className="ds-panel-title">Get involved</span>
         </div>
         <div className="ds-panel-body stack">
-          <div className="ds-field">
+          <div className="ds-field credit-row">
             <span className="cap">Source code</span>
             <p className="ds-hint">
               DSIM is open source — read it, fork it, or send a pull request on{' '}
@@ -144,7 +124,7 @@ export function Contributors({ onOpenProfile }: { onOpenProfile: (username: stri
               .
             </p>
           </div>
-          <div className="ds-field">
+          <div className="ds-field credit-row">
             <span className="cap">Contributor agreement</span>
             <p className="ds-hint">
               A pull request needs a signed{' '}
@@ -158,7 +138,7 @@ export function Contributors({ onOpenProfile }: { onOpenProfile: (username: stri
               for how to sign it.
             </p>
           </div>
-          <div className="ds-field">
+          <div className="ds-field credit-row">
             <span className="cap">Community</span>
             <p className="ds-hint">
               Join the{' '}

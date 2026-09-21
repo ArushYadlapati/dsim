@@ -4223,6 +4223,15 @@ tr.lb-detail td {
 .contrib-icon:active {
   transform: translateY(0);
 }
+/* Third-party and Get-involved rows (`.ds-field.credit-row`). Plain `.cap` is a FORM
+   FIELD caption — 12px, muted, sized to sit quietly above a loud input. On these two
+   panels the caption IS the row (a package name, a call to action), so it needs to
+   read as content, not as a footnote to the `.ds-hint` sentence underneath it. */
+.credit-row > .cap {
+  font-size: var(--ds-t-md);
+  font-weight: 700;
+  color: var(--ds-ink);
+}
 
 .ds-opt .ot {
   font-size: 14px;
